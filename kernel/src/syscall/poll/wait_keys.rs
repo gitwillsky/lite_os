@@ -197,7 +197,7 @@ impl PollWaitKeys {
     }
 
     /// 将 facade-provided socket source 追加到唯一 transient key backing。
-    pub(super) fn add_socket_source(
+    pub(in crate::syscall) fn add_socket_source(
         &mut self,
         source: SocketWaitSource,
         exclusive: bool,

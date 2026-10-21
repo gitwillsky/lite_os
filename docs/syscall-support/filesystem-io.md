@@ -86,7 +86,7 @@ tmpfs 选项：`size=`（字节，`k/m/g`/`%`）、`nr_blocks=`、`nr_inodes=`�
 
 io_uring 已实现的 opcode：`NOP`、`READV`/`WRITEV`/`READ`/`WRITE`、`FSYNC`、`CLOSE`、`POLL_ADD`/`POLL_REMOVE`、`TIMEOUT`/`TIMEOUT_REMOVE`、`ASYNC_CANCEL`、`ACCEPT`、`CONNECT`、`SEND`、`RECV`；
 `ACCEPT`/`CONNECT`/`SEND`/`RECV`：`ACCEPT` 的 multishot 与直接描述符、`SEND`/`RECV` 的目的地址、`ioprio` recvsend flags、除 `MSG_DONTWAIT`/`MSG_NOSIGNAL` 外的 `msg_flags` 返回 `-EOPNOTSUPP`；`SEND` 恒带 `MSG_NOSIGNAL`（`SIGPIPE` 不投递给提交线程）；
-`CONNECT` 对 Unix 目标 backlog 已满以 `-EAGAIN` 完成（Linux 在 io-wq 里等待容量）；AF_INET 路径与 AF_UNIX 共用同一核心，烟测只覆盖 AF_UNIX。
+`CONNECT` 对 Unix 目标 backlog 已满：阻塞 socket 挂起等容量后重试，`O_NONBLOCK` socket 以 `-EAGAIN` 完成；AF_INET 路径与 AF_UNIX 共用同一核心，烟测只覆盖 AF_UNIX。
 其余 opcode 的 SQE 完成为 `-EOPNOTSUPP` 并在 probe 中标为不支持。
 读写：`off == -1` 用并推进当前 position，`off >= 0` 对 regular/可定位文件是 pread/pwrite 语义，对 pipe/socket 等流式文件忽略；`ioprio`、`rw_flags`、
 `personality` 非零分别返回 `EINVAL`/`EOPNOTSUPP`/`EINVAL`，请求使用提交者提交时刻的凭据。会阻塞的 pipe/socket/eventfd/timerfd/tty 请求不占用提交线程：
@@ -102,7 +102,10 @@ signalfd 读无信号时返回 `-EAGAIN`（worker 无法代表提交线程登记
 ring 关闭（含进程退出关闭 fd）取消该 ring 的全部挂起请求，释放它们持有的目标 fd；提交线程已退出而 ring 仍被共享时，挂起请求以 `-ECANCELED` 结束。
 `IOSQE_IO_LINK`/`IO_HARDLINK`：链在一次提交批内组装，头先执行，成员失败（`res < 0`、读写短传输、非 `ETIME_SUCCESS` 的 `-ETIME`）取消其后非 hardlink 链的成员（`-ECANCELED`），prep 失败按 Linux 取消整条链，批末未结束的链按现状结束；
 后继的 fd 在其 issue 时才解析。
-已知偏差：对尚未开始的链成员发 `ASYNC_CANCEL` 返回 `-ENOENT`；`IORING_OP_LINK_TIMEOUT` 仍返回 `-EOPNOTSUPP`。
+`IORING_OP_LINK_TIMEOUT`：约束紧挨着它的前一个链成员，成员开始等待时计时；定时器先到则成员以 `-ECANCELED` 结束（其后成员按链规则取消）、timeout 得 `-ETIME`，
+成员先完成（含同步完成）则 timeout 得 `-ECANCELED` 且不使链断开。不在链中或跟在另一个 `LINK_TIMEOUT` 之后返回 `-EINVAL`；
+`off`、`REALTIME` 之外的非法 flags 同 `IORING_OP_TIMEOUT`（`REALTIME` 返回 `-EOPNOTSUPP`，`MULTISHOT`/`UPDATE` 返回 `-EINVAL`）；`ETIME_SUCCESS` 被接受但无可观察效果。
+对尚未 issue 的链成员发 `ASYNC_CANCEL` 返回 `-ENOENT`，与 Linux 相同（`io_try_cancel` 只搜索 io-wq、poll、waitid、futex 与 timeout，不遍历链）。
 `IOSQE_IO_DRAIN`：等所有更早的请求链完成才开始，其后的链等它完成；链中间的 DRAIN 使链头 DRAIN 且其后的下一条链也 DRAIN；ring 上用过 `CQE_SKIP_SUCCESS` 之后 DRAIN 返回 `-EOPNOTSUPP`（同 Linux）。
 `BUFFER_SELECT` 返回 `-EOPNOTSUPP`；`IOSQE_ASYNC` 被接受但只是调度提示；`FIXED_FILE` 因没有注册文件表返回 `-EBADF`。
 固定文件/缓冲区注册、其余 opcode、SQPOLL/IOPOLL、SQE128/CQE32 未开放。CQ 溢出链表上限为 CQ 容量的 8 倍，超出后丢弃并经 `EBADR` 通知。

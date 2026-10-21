@@ -214,12 +214,21 @@ fn wait(shared: &Shared) {
             && keys
                 .add_notification(&slot.waiter.ring().readiness_key().pipe())
                 .is_ok();
+        if let Some(due) = slot.waiter.link_deadline() {
+            deadline = Some(deadline.map_or(due, |current| current.min(due)));
+        }
         slot.waiter.with_interest(|interest| match interest {
             Interest::Ofd { ofd, mask, .. } => {
                 built = built && keys.add_interest(ofd, *mask, false, None).is_ok();
             }
             Interest::Timer { deadline: due, .. } => {
                 deadline = Some(deadline.map_or(*due, |current| current.min(*due)));
+            }
+            Interest::Capacity(capacity) => {
+                built = built
+                    && keys
+                        .add_socket_source(capacity.wait_source(), false, None)
+                        .is_ok();
             }
             Interest::Starting | Interest::None | Interest::Admission { .. } | Interest::Block => {}
         });
@@ -239,10 +248,10 @@ fn wait(shared: &Shared) {
     let mut index = 0;
     while let Some(slot) = slot_at(shared, index) {
         index += 1;
-        slot.waiter.with_interest(|interest| {
-            if let Interest::Ofd { ofd, .. } = interest {
-                prepare_wait_sources(ofd);
-            }
+        slot.waiter.with_interest(|interest| match interest {
+            Interest::Ofd { ofd, .. } => prepare_wait_sources(ofd),
+            Interest::Capacity(capacity) => capacity.prepare_wait(),
+            _ => {}
         });
     }
     let _ = wait_for_poll(keys, deadline, || guards.changed() || any_attention(shared));

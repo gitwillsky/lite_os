@@ -3563,6 +3563,7 @@ kernel/src/io_uring/abi.rs :: pub (crate) const OP_CLOSE : u8 = 19
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_CONNECT : u8 = 16
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_FSYNC : u8 = 3
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_LAST : u8 = 65
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_LINK_TIMEOUT : u8 = 15
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_NOP : u8 = 0
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_POLL_ADD : u8 = 6
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_POLL_REMOVE : u8 = 7
@@ -3608,6 +3609,7 @@ kernel/src/io_uring/abi.rs :: pub (crate) struct Sqe
 kernel/src/io_uring/chain.rs :: enum Link :: # [doc = " `IOSQE_IO_HARDLINK`：本成员失败也继续执行后继。"] Hard
 kernel/src/io_uring/chain.rs :: enum Link :: # [doc = " `IOSQE_IO_LINK`：本成员失败则取消其后全部成员。"] Soft
 kernel/src/io_uring/chain.rs :: enum Link :: # [doc = " 链的最后一个成员，或不在链中。"] None
+kernel/src/io_uring/chain.rs :: enum Step :: # [doc = " `IORING_OP_LINK_TIMEOUT`：约束它前面那个链成员的执行时间。单独成为一种 step，使链组装能校验它的位置"] # [doc = " （必须紧跟在链成员之后）并让执行者在前一个成员开始等待时把它摘下来装成定时器。"] LinkTimeout (Op)
 kernel/src/io_uring/chain.rs :: enum Step :: # [doc = " init/prep 失败：以该 `res`（负 errno）完成，所在链的其余成员被取消。"] Failed (i32)
 kernel/src/io_uring/chain.rs :: enum Step :: Nop (Nop)
 kernel/src/io_uring/chain.rs :: enum Step :: Op (Op)
@@ -3618,11 +3620,12 @@ kernel/src/io_uring/chain.rs :: pub (crate) Member :: user_data : u64
 kernel/src/io_uring/chain.rs :: pub (crate) enum Link
 kernel/src/io_uring/chain.rs :: pub (crate) enum Step < Op >
 kernel/src/io_uring/chain.rs :: pub (crate) fn cancel_rest < Op > (ring : & Ring , rest : impl Iterator < Item = Member < Op > > , skip : bool)
-kernel/src/io_uring/chain.rs :: pub (crate) impl Assembler < Op > :: fn add (& mut self , ring : & Ring , member : Member < Op >) -> (Option < Chain < Op > > , Flow)
+kernel/src/io_uring/chain.rs :: pub (crate) impl Assembler < Op > :: fn add (& mut self , ring : & Ring , mut member : Member < Op >) -> (Option < Chain < Op > > , Flow)
 kernel/src/io_uring/chain.rs :: pub (crate) impl Assembler < Op > :: fn end (& mut self , ring : & Ring) -> Option < Chain < Op > >
 kernel/src/io_uring/chain.rs :: pub (crate) impl Assembler < Op > :: fn new () -> Self
 kernel/src/io_uring/chain.rs :: pub (crate) impl Chain < Op > :: fn drain (& self) -> bool
 kernel/src/io_uring/chain.rs :: pub (crate) impl Chain < Op > :: fn into_members (self) -> Members < Op >
+kernel/src/io_uring/chain.rs :: pub (crate) impl Members < Op > :: fn next_if_link_timeout (& mut self) -> Option < Member < Op > >
 kernel/src/io_uring/chain.rs :: pub (crate) impl Nop :: fn result (& self , fd_exists : impl FnOnce (i32) -> bool) -> i32
 kernel/src/io_uring/chain.rs :: pub (crate) struct Assembler < Op >
 kernel/src/io_uring/chain.rs :: pub (crate) struct Chain < Op >
@@ -6470,6 +6473,7 @@ kernel/src/syscall/getrandom_flags.rs :: pub (super) const fn getrandom_flags_su
 kernel/src/syscall/io_uring/chain.rs :: pub (super) fn launch (task : & Arc < TaskControlBlock > , ring : & Arc < Ring > , chain : Chain < Op >)
 kernel/src/syscall/io_uring/exec.rs :: enum Issue :: Done (Outcome)
 kernel/src/syscall/io_uring/exec.rs :: enum Issue :: Wait (Wait)
+kernel/src/syscall/io_uring/exec.rs :: enum Op :: # [doc = " `IORING_OP_LINK_TIMEOUT`：约束它前面那个链成员。前一个成员需要等待时由链执行者摘下它装成定时器"] # [doc = " （[`Op::link_deadline`]）；走到 issue 说明前一个成员已经同步完成，定时器没有对象，以 `-ECANCELED` 结束。"] LinkTimeout { nanoseconds : u64 , absolute : bool , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: # [doc = " `IORING_OP_SEND`/`IORING_OP_RECV`：只对 socket，`MSG_NOSIGNAL` 恒开（SIGPIPE 不发给提交线程）。"] Socket { fd : Option < usize > , vectors : Vec < UserIoVec > , total : usize , write : bool , # [doc = " `MSG_DONTWAIT`：会阻塞时直接返回 `-EAGAIN`。"] dontwait : bool , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Accept { fd : Option < usize > , address : usize , length : usize , flags : usize , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Cancel { target : Target , # [doc = " `IORING_ASYNC_CANCEL_ALL`：取消全部匹配项并返回个数，否则只取消第一个。"] all : bool , }
@@ -6479,6 +6483,7 @@ kernel/src/syscall/io_uring/exec.rs :: enum Op :: Fsync { fd : Option < usize > 
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Poll { fd : Option < usize > , mask : i16 , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: ReadWrite { fd : Option < usize > , vectors : Vec < UserIoVec > , total : usize , write : bool , vectored : bool , # [doc = " `sqe->off`：`-1` 使用并推进当前 position，其他负值非法。"] offset : i64 , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Timeout { nanoseconds : u64 , absolute : bool , # [doc = " 非零：除 timeout 外又发布这么多 CQE 时完成。"] count : u32 , etime_success : bool , }
+kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " Unix 目标 backlog 已满：等它恢复容量后重新发起 connect（Linux 在 io-wq 里等同一个容量）。"] ConnectBacklog { ofd : Arc < OpenFileDescription > , address : usize , length : usize , capacity : Arc < SocketCapacityWait > , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " pipe/socket/eventfd 等流式读写：`EAGAIN` 时等目标 OFD 就绪再试。"] Stream { ofd : Arc < OpenFileDescription > , vectors : Vec < UserIoVec > , total : usize , write : bool , # [doc = " 经 socket 发送并强制 `MSG_NOSIGNAL`（`IORING_OP_SEND`）。"] no_signal : bool , # [doc = " 会阻塞时返回 `-EAGAIN` 而不是等待（`MSG_DONTWAIT`）。"] dontwait : bool , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " regular-file 读（显式偏移或当前位置）：cache 未命中时开始异步填页并让出，不占用任何线程。"] FileRead { read : AsyncPositionedRead , vectors : Vec < UserIoVec > , total : usize , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 一次性 poll：目标 OFD 出现 `mask` 中任一事件时以 revents 完成。"] Poll { ofd : Arc < OpenFileDescription > , mask : i16 , }
@@ -6493,6 +6498,7 @@ kernel/src/syscall/io_uring/exec.rs :: pub (super) enum Issue
 kernel/src/syscall/io_uring/exec.rs :: pub (super) enum Op
 kernel/src/syscall/io_uring/exec.rs :: pub (super) enum Wait
 kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Op :: fn issue (self , task : & TaskControlBlock , ring : & Arc < Ring >) -> Issue
+kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Op :: fn link_deadline (& self , now : u64) -> Option < u64 >
 kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Outcome :: fn canceled () -> Self
 kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Outcome :: fn of (res : isize) -> Self
 kernel/src/syscall/io_uring/exec.rs :: pub (super) impl Wait :: fn kind (& self) -> Kind
@@ -6512,6 +6518,7 @@ kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " deadline 到�
 kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 刚创建，提交者正在首次 poll 它：worker 不得抢先 poll。"] Starting
 kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 正在被 poll，没有等待条件。"] None
 kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 目标 OFD 出现 `mask` 中的事件；`task` 用于以提交线程的上下文判定就绪。"] Ofd { ofd : Arc < OpenFileDescription > , mask : i16 , task : Weak < TaskControlBlock > , }
+kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 等 AF_UNIX 目标（listener backlog）恢复容量。"] Capacity (Arc < SocketCapacityWait >)
 kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 等块层或阻塞车道的完成通知（[`Waiter::notifier`]）。"] Block
 kernel/src/syscall/io_uring/wait.rs :: enum Interest :: # [doc = " 等待链被接纳（DRAIN 顺序）：序号为 `sequence` 的链可以开始。"] Admission { ring : Arc < Ring > , sequence : u64 }
 kernel/src/syscall/io_uring/wait.rs :: enum Kind :: Io
@@ -6528,12 +6535,16 @@ kernel/src/syscall/io_uring/wait.rs :: pub (super) enum Only
 kernel/src/syscall/io_uring/wait.rs :: pub (super) enum Target
 kernel/src/syscall/io_uring/wait.rs :: pub (super) fn event_count_reached (ring : & Ring , target : u32) -> bool
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn admission (& self , sequence : u64) -> Suspend
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn arm_link_timeout (& self , deadline : u64)
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn attention (& self) -> bool
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn begin (& self , user_data : u64 , kind : Kind)
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn block (& self) -> Suspend
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn cancel (& self , target : & Target) -> bool
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn capacity (& self , capacity : & Arc < SocketCapacityWait >) -> Suspend
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn clear_notified (& self)
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn disarm_link_timeout (& self) -> bool
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn end (& self)
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn link_deadline (& self) -> Option < u64 >
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn new (ring : & Arc < Ring >) -> Result < Self , () >
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn notifier (& self) -> Arc < dyn CompletionNotify >
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn ofd_ready (& self , ofd : & Arc < OpenFileDescription > , mask : i16 , task : & Weak < TaskControlBlock > ,) -> Suspend
@@ -6610,10 +6621,10 @@ kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitK
 kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitKeys :: fn add_epoll_change_source (& mut self , epoll : & Arc < Epoll > ,) -> Result < () , () >
 kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitKeys :: fn add_interest (& mut self , ofd : & Arc < OpenFileDescription > , events : i16 , exclusive : bool , wake_group : Option < usize > ,) -> Result < () , () >
 kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitKeys :: fn add_notification (& mut self , pipe : & Arc < crate :: ipc :: Pipe > ,) -> Result < () , () >
+kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitKeys :: fn add_socket_source (& mut self , source : SocketWaitSource , exclusive : bool , wake_group : Option < usize > ,) -> Result < () , () >
 kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) impl PollWaitKeys :: fn finish (self) -> (Vec < PollWaitKey > , PollWaitGuards)
 kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) struct PollWaitGuards
 kernel/src/syscall/poll/wait_keys.rs :: pub (in crate :: syscall) struct PollWaitKeys
-kernel/src/syscall/poll/wait_keys.rs :: pub (super) impl PollWaitKeys :: fn add_socket_source (& mut self , source : SocketWaitSource , exclusive : bool , wake_group : Option < usize > ,) -> Result < () , () >
 kernel/src/syscall/process.rs :: pub (crate) fn sys_clone (flags : usize , stack : usize , parent_tid : usize , tls : usize , child_tid : usize ,) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_clone3 (address : usize , size : usize) -> isize
 kernel/src/syscall/process.rs :: pub (crate) fn sys_execve (path : * const u8 , argv : * const * const u8 , envp : * const * const u8) -> isize

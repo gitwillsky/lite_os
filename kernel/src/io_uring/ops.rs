@@ -15,7 +15,8 @@ use syscall_abi::errno;
 use super::{
     abi::{
         IOSQE_BUFFER_SELECT, IOSQE_CQE_SKIP_SUCCESS, IOSQE_IO_DRAIN, IOSQE_IO_HARDLINK,
-        IOSQE_IO_LINK, NOP_INJECT_RESULT, OP_LAST, OP_NOP, SQE_VALID_FLAGS, Sqe, op_supported,
+        IOSQE_IO_LINK, NOP_INJECT_RESULT, OP_LAST, OP_LINK_TIMEOUT, OP_NOP, SQE_VALID_FLAGS, Sqe,
+        op_supported,
     },
     chain::{Chain, Link, Member, Nop, Step},
     ring::Ring,
@@ -91,6 +92,7 @@ fn decode<S: Submitter>(ring: &Ring, sqe: &Sqe, submitter: &S) -> Result<Step<S:
     }
     match sqe.opcode {
         OP_NOP => nop(sqe).map(Step::Nop),
+        OP_LINK_TIMEOUT => submitter.prepare_op(ring, sqe).map(Step::LinkTimeout),
         _ => submitter.prepare_op(ring, sqe).map(Step::Op),
     }
 }

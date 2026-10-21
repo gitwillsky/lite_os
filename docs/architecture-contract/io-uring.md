@@ -61,7 +61,7 @@
 - `Ring::cq`（`spin::Mutex`）：CQ 发布与溢出链表。缺失时并发 post 会覆盖同一个 CQE 槽或打乱完成顺序。
 - `Shared::slots`（`spin::Mutex<Vec<Arc<Slot>>>`）与 `SHARED`（`spin::Once`）：所有挂起链的唯一登记表，同时是取消者查找目标的依据；只有 worker 移除条目。boot 时发布一次。
   缺失时挂起的链没有执行者，取消者找不到目标。`Slot::future`（`spin::Mutex<Option<_>>`）只被 worker（以及登记前的提交者）持有来 poll，不被取消者触碰，所以 poll 中可以回头取消别的链。
-- `Waiter`（`wait` 模块，`Arc<WaiterInner>`，内含 `spin::Mutex<State>`）：future 登记等待条件、正在运行的成员与取消标记，每条链一个，只在 worker、创建它的提交者与取消者之间短暂持有且不跨 `.await`。
+- `Waiter`（`wait` 模块，`Arc<WaiterInner>`，内含 `spin::Mutex<State>`）：future 登记等待条件、正在运行的成员、取消标记与 `LINK_TIMEOUT` 的 deadline（`link_deadline`/`timed_out`），每条链一个，只在 worker、创建它的提交者与取消者之间短暂持有且不跨 `.await`。
   缺失时 worker 不知道该等什么，取消者无从标记目标。
 - `Ring::units`（`spin::Mutex<Units>`）：已接纳未完成的链及其 DRAIN 标志，序号单调。缺失时 DRAIN 没有顺序依据。`Ring::drain_disabled`/`drain_next`（`AtomicBool`）：Linux `IO_RING_F_DRAIN_DISABLED`/`DRAIN_NEXT`，只在 `submit_lock` 下被提交路径修改。
 - `lane::Pool`（`spin::Mutex`，`lane::POOL` 经 `spin::Once` 在 boot 发布）：阻塞车道的共享 FIFO 与 worker 登记表（含空闲标志，只在该锁下改变，使“入队”与“worker 置空闲”不会交错成作业在队列里而全部 worker 都在睡）；

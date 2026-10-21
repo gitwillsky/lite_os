@@ -1286,6 +1286,75 @@ int verify_io_uring_sockets(void)
 	return 0;
 }
 
+/* ---- CONNECT 遇到 Unix backlog 已满：挂起等容量，而不是 -EAGAIN -------------------------------- */
+
+int verify_io_uring_connect_backlog(void)
+{
+	struct ring ring;
+	struct io_uring_cqe cqe;
+	struct io_uring_sqe *sqe;
+	struct sockaddr_un path = { .sun_family = AF_UNIX };
+	strcpy(path.sun_path, "/tmp/uring-backlog");
+	unlink(path.sun_path);
+	CHECK(1, map_ring(&ring, 8, 0, 0) == 0);
+	int listener = socket(AF_UNIX, SOCK_STREAM, 0);
+	CHECK(2, listener >= 0 && bind(listener, (struct sockaddr *)&path, sizeof path) == 0 &&
+		 listen(listener, 1) == 0);
+
+	/* 用非阻塞 connect 把 backlog 塞满：直到 -EAGAIN。 */
+	int fillers[8];
+	int filled = 0;
+	for (;;) {
+		CHECK(3, filled < 8);
+		int fd = socket(AF_UNIX, SOCK_STREAM | SOCK_NONBLOCK, 0);
+		CHECK(4, fd >= 0);
+		fillers[filled] = fd;
+		if (connect(fd, (struct sockaddr *)&path, sizeof path) == 0) {
+			filled++;
+			continue;
+		}
+		CHECK(5, errno == EAGAIN);
+		filled++;
+		break;
+	}
+
+	/* 阻塞 socket 经 io_uring CONNECT：不立即完成。腾出容量（accept 一个）后以 0 完成。 */
+	int waiter_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	CHECK(6, waiter_fd >= 0);
+	sqe = next_sqe(&ring);
+	sqe->opcode = IORING_OP_CONNECT;
+	sqe->fd = waiter_fd;
+	sqe->addr = (uintptr_t)&path;
+	sqe->off = sizeof path;
+	sqe->user_data = 1;
+	CHECK(7, submit_one(&ring) == 1 && ready(&ring) == 0);
+	int accepted = accept(listener, NULL, NULL);
+	CHECK(8, accepted >= 0);
+	CHECK(9, wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 1 && cqe.res == 0);
+
+	/* 同样的等待可以被取消：被取消的 CONNECT 得到 -ECANCELED，ring 之后仍可用。 */
+	int canceled_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	CHECK(10, canceled_fd >= 0);
+	sqe = next_sqe(&ring);
+	sqe->opcode = IORING_OP_CONNECT;
+	sqe->fd = canceled_fd;
+	sqe->addr = (uintptr_t)&path;
+	sqe->off = sizeof path;
+	sqe->user_data = 2;
+	CHECK(11, submit_one(&ring) == 1 && ready(&ring) == 0);
+	fill_cancel(next_sqe(&ring), IORING_OP_ASYNC_CANCEL, 2, 0, 3);
+	CHECK(12, submit_one(&ring) == 1 && expect_pair(&ring, 2, -ECANCELED, 3, 0));
+
+	close(canceled_fd);
+	close(accepted);
+	close(waiter_fd);
+	for (int i = 0; i < filled; i++) close(fillers[i]);
+	close(listener);
+	unlink(path.sun_path);
+	unmap_ring(&ring);
+	return 0;
+}
+
 /* ---- 冷读：page cache 未命中走异步填页 ------------------------------------------------------- */
 
 /* 与 scripts/verify_musl.py 生成冷文件的公式一致；hole_page 整页为零。 */
@@ -1474,6 +1543,105 @@ int verify_io_uring_cold(void)
 	return 0;
 }
 
+/* ---- LINK_TIMEOUT ------------------------------------------------------------------------------ */
+
+#ifndef IORING_OP_LINK_TIMEOUT
+#define IORING_OP_LINK_TIMEOUT 15
+#endif
+
+static void fill_link_timeout(struct io_uring_sqe *sqe, const struct __kernel_timespec *time, uint8_t flags,
+                              uint64_t user_data)
+{
+	sqe->opcode = IORING_OP_LINK_TIMEOUT;
+	sqe->fd = -1;
+	sqe->addr = (uintptr_t)time;
+	sqe->len = 1;
+	sqe->flags = flags;
+	sqe->user_data = user_data;
+}
+
+/* 取 n 个 CQE，不要求顺序；返回 user_data 对应的 res（缺失返回 INT32_MIN）。 */
+static int cqe_result(const struct io_uring_cqe *cqes, unsigned count, uint64_t user_data)
+{
+	for (unsigned i = 0; i < count; i++)
+		if (cqes[i].user_data == user_data) return cqes[i].res;
+	return INT32_MIN;
+}
+
+static int collect_cqes(struct ring *ring, struct io_uring_cqe *out, unsigned count)
+{
+	for (unsigned i = 0; i < count; i++)
+		if (wait_cqe(ring, &out[i]) != 1) return 0;
+	return 1;
+}
+
+int verify_io_uring_link_timeout(void)
+{
+	struct ring ring;
+	struct io_uring_cqe cqes[4];
+	struct io_uring_sqe *sqe;
+	char buffer[16];
+	int pipes[2];
+	const struct __kernel_timespec soon = { .tv_nsec = 50 * 1000 * 1000 };
+	const struct __kernel_timespec later = { .tv_sec = 30 };
+	CHECK(1, map_ring(&ring, 16, 0, 0) == 0 && pipe(pipes) == 0);
+
+	/* 定时器先到：被约束的读得到 -ECANCELED，timeout 得到 -ETIME，链上其后的成员按链规则取消。 */
+	sqe = next_sqe(&ring);
+	fill_read(sqe, pipes[0], buffer, sizeof buffer, 1);
+	sqe->flags = IOSQE_IO_LINK;
+	fill_link_timeout(next_sqe(&ring), &soon, IOSQE_IO_LINK, 2);
+	fill_nop(next_sqe(&ring), 0, 0, 3);
+	publish(&ring);
+	CHECK(2, uring_enter(ring.fd, 3, 0, 0, NULL, 0) == 3);
+	CHECK(3, collect_cqes(&ring, cqes, 3));
+	CHECK(4, cqe_result(cqes, 3, 1) == -ECANCELED && cqe_result(cqes, 3, 2) == -ETIME &&
+		 cqe_result(cqes, 3, 3) == -ECANCELED);
+
+	/* 成员先完成（管道里有数据，同步完成）：timeout 得到 -ECANCELED，且不使链断开。 */
+	CHECK(5, write(pipes[1], "x", 1) == 1);
+	sqe = next_sqe(&ring);
+	fill_read(sqe, pipes[0], buffer, 1, 10); /* 恰好 1 字节：短读会按链规则取消后继 */
+	sqe->flags = IOSQE_IO_LINK;
+	fill_link_timeout(next_sqe(&ring), &later, IOSQE_IO_LINK, 11);
+	fill_nop(next_sqe(&ring), 0, 0, 12);
+	publish(&ring);
+	CHECK(6, uring_enter(ring.fd, 3, 0, 0, NULL, 0) == 3);
+	CHECK(7, collect_cqes(&ring, cqes, 3));
+	CHECK(8, cqe_result(cqes, 3, 10) == 1 && cqe_result(cqes, 3, 11) == -ECANCELED &&
+		 cqe_result(cqes, 3, 12) == 0);
+
+	/* 成员开始等待、随后在 deadline 之前完成：timeout 同样得到 -ECANCELED。 */
+	sqe = next_sqe(&ring);
+	fill_read(sqe, pipes[0], buffer, sizeof buffer, 20);
+	sqe->flags = IOSQE_IO_LINK;
+	fill_link_timeout(next_sqe(&ring), &later, 0, 21);
+	publish(&ring);
+	CHECK(9, uring_enter(ring.fd, 2, 0, 0, NULL, 0) == 2 && ready(&ring) == 0);
+	CHECK(10, write(pipes[1], "y", 1) == 1);
+	CHECK(11, collect_cqes(&ring, cqes, 2));
+	CHECK(12, cqe_result(cqes, 2, 20) == 1 && cqe_result(cqes, 2, 21) == -ECANCELED);
+
+	/* 位置非法：孤立的 timeout、跟在另一个 timeout 之后的 timeout 都是 -EINVAL。 */
+	fill_link_timeout(next_sqe(&ring), &soon, 0, 30);
+	CHECK(13, submit_one(&ring) == 1 && wait_cqe(&ring, &cqes[0]) == 1 && cqes[0].user_data == 30 &&
+		  cqes[0].res == -EINVAL);
+	sqe = next_sqe(&ring);
+	fill_nop(sqe, IOSQE_IO_LINK, 0, 40);
+	fill_link_timeout(next_sqe(&ring), &soon, IOSQE_IO_LINK, 41);
+	fill_link_timeout(next_sqe(&ring), &soon, 0, 42);
+	publish(&ring);
+	CHECK(14, uring_enter(ring.fd, 3, 0, 0, NULL, 0) >= 1);
+	CHECK(15, collect_cqes(&ring, cqes, 3));
+	CHECK(16, cqe_result(cqes, 3, 42) == -EINVAL && cqe_result(cqes, 3, 40) == -ECANCELED &&
+		  cqe_result(cqes, 3, 41) == -ECANCELED);
+
+	close(pipes[0]);
+	close(pipes[1]);
+	unmap_ring(&ring);
+	return 0;
+}
+
 int verify_io_uring(void)
 {
 	int core = verify_io_uring_core();
@@ -1487,5 +1655,9 @@ int verify_io_uring(void)
 	int sockets = verify_io_uring_sockets();
 	if (sockets != 0) return 300 + sockets;
 	int cold = verify_io_uring_cold();
-	return cold != 0 ? 400 + cold : 0;
+	if (cold != 0) return 400 + cold;
+	int link_timeout = verify_io_uring_link_timeout();
+	if (link_timeout != 0) return 500 + link_timeout;
+	int backlog = verify_io_uring_connect_backlog();
+	return backlog != 0 ? 600 + backlog : 0;
 }

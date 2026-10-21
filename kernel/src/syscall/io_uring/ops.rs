@@ -16,8 +16,8 @@ use crate::{
         Chain, Ring, Submitter,
         abi::{
             IOSQE_FIXED_FILE, OP_ACCEPT, OP_ASYNC_CANCEL, OP_CLOSE, OP_CONNECT, OP_FSYNC,
-            OP_POLL_ADD, OP_POLL_REMOVE, OP_READ, OP_READV, OP_RECV, OP_SEND, OP_TIMEOUT,
-            OP_TIMEOUT_REMOVE, OP_WRITE, OP_WRITEV, Sqe,
+            OP_LINK_TIMEOUT, OP_POLL_ADD, OP_POLL_REMOVE, OP_READ, OP_READV, OP_RECV, OP_SEND,
+            OP_TIMEOUT, OP_TIMEOUT_REMOVE, OP_WRITE, OP_WRITEV, Sqe,
         },
     },
     syscall::{
@@ -73,6 +73,7 @@ impl Submitter for TaskSubmitter {
             OP_CONNECT => connect(sqe),
             OP_SEND | OP_RECV => self.send_recv(sqe),
             OP_TIMEOUT => self.timeout(sqe),
+            OP_LINK_TIMEOUT => self.link_timeout(sqe),
             OP_POLL_REMOVE | OP_TIMEOUT_REMOVE | OP_ASYNC_CANCEL => cancel(sqe),
             _ => unreachable!("op_supported admitted an opcode without a prep arm"),
         }
@@ -188,7 +189,19 @@ impl TaskSubmitter {
         if flags & (TIMEOUT_REALTIME | TIMEOUT_MULTISHOT) != 0 {
             return Err(errno::EOPNOTSUPP);
         }
-        let nanoseconds = if flags & TIMEOUT_IMMEDIATE_ARG != 0 {
+        let nanoseconds = self.timeout_nanoseconds(sqe, flags)?;
+        Ok(Op::Timeout {
+            nanoseconds,
+            absolute: flags & TIMEOUT_ABS != 0,
+            // sqe->off 是 u32（Linux `u32 off = READ_ONCE(sqe->off)`）。
+            count: sqe.off as u32,
+            etime_success: flags & TIMEOUT_ETIME_SUCCESS != 0,
+        })
+    }
+
+    /// `sqe->addr` 指向的 `__kernel_timespec`（或 `IMMEDIATE_ARG` 的纳秒值）解码成纳秒。
+    fn timeout_nanoseconds(&self, sqe: &Sqe, flags: u32) -> Result<u64, isize> {
+        Ok(if flags & TIMEOUT_IMMEDIATE_ARG != 0 {
             if (sqe.addr as i64) < 0 {
                 return Err(errno::EINVAL);
             }
@@ -206,13 +219,37 @@ impl TaskSubmitter {
             (seconds as u64)
                 .saturating_mul(1_000_000_000)
                 .saturating_add(fraction as u64)
-        };
-        Ok(Op::Timeout {
-            nanoseconds,
+        })
+    }
+
+    /// `IORING_OP_LINK_TIMEOUT`（Linux `__io_timeout_prep` 的 link 分支）：只允许绝对/相对与时钟选择。
+    fn link_timeout(&self, sqe: &Sqe) -> Result<Op, isize> {
+        if sqe.ioprio != 0
+            || sqe.personality != 0
+            || sqe.addr3 != 0
+            || sqe.pad2 != 0
+            || sqe.buf_index != 0
+            || sqe.len != 1
+            || sqe.splice_fd_in != 0
+            || sqe.off != 0
+        {
+            return Err(errno::EINVAL);
+        }
+        let flags = sqe.op_flags;
+        let known = TIMEOUT_ABS
+            | TIMEOUT_BOOTTIME
+            | TIMEOUT_REALTIME
+            | TIMEOUT_ETIME_SUCCESS
+            | TIMEOUT_IMMEDIATE_ARG;
+        if flags & !known != 0 || (flags & (TIMEOUT_BOOTTIME | TIMEOUT_REALTIME)).count_ones() > 1 {
+            return Err(errno::EINVAL);
+        }
+        if flags & TIMEOUT_REALTIME != 0 {
+            return Err(errno::EOPNOTSUPP);
+        }
+        Ok(Op::LinkTimeout {
+            nanoseconds: self.timeout_nanoseconds(sqe, flags)?,
             absolute: flags & TIMEOUT_ABS != 0,
-            // sqe->off 是 u32（Linux `u32 off = READ_ONCE(sqe->off)`）。
-            count: sqe.off as u32,
-            etime_success: flags & TIMEOUT_ETIME_SUCCESS != 0,
         })
     }
 }

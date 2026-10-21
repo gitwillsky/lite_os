@@ -19,7 +19,7 @@ use crate::{
     file::{OpenFileDescription, OpenFileKind},
     fs::O_NONBLOCK,
     io_uring::Ring,
-    socket::SocketError,
+    socket::{SocketCapacityWait, SocketError},
     syscall::{
         fs::{
             AsyncPositionedRead, AsyncReadStep, begin_current_position_read, begin_positioned_read,
@@ -116,6 +116,12 @@ pub(super) enum Op {
         count: u32,
         etime_success: bool,
     },
+    /// `IORING_OP_LINK_TIMEOUT`：约束它前面那个链成员。前一个成员需要等待时由链执行者摘下它装成定时器
+    /// （[`Op::link_deadline`]）；走到 issue 说明前一个成员已经同步完成，定时器没有对象，以 `-ECANCELED` 结束。
+    LinkTimeout {
+        nanoseconds: u64,
+        absolute: bool,
+    },
     Cancel {
         target: Target,
         /// `IORING_ASYNC_CANCEL_ALL`：取消全部匹配项并返回个数，否则只取消第一个。
@@ -158,6 +164,13 @@ pub(super) enum Wait {
     },
     /// 握手已发起：等 socket 可写或出错，再读连接结果。
     Connect { ofd: Arc<OpenFileDescription> },
+    /// Unix 目标 backlog 已满：等它恢复容量后重新发起 connect（Linux 在 io-wq 里等同一个容量）。
+    ConnectBacklog {
+        ofd: Arc<OpenFileDescription>,
+        address: usize,
+        length: usize,
+        capacity: Arc<SocketCapacityWait>,
+    },
     /// regular-file 读（显式偏移或当前位置）：cache 未命中时开始异步填页并让出，不占用任何线程。
     FileRead {
         read: AsyncPositionedRead,
@@ -189,6 +202,7 @@ impl Wait {
             Wait::Stream { .. }
             | Wait::Accept { .. }
             | Wait::Connect { .. }
+            | Wait::ConnectBacklog { .. }
             | Wait::FileRead { .. }
             | Wait::Lane { .. } => Kind::Io,
             Wait::Poll { .. } => Kind::Poll,
@@ -221,6 +235,21 @@ fn ofd_of(task: &TaskControlBlock, fd: Option<usize>) -> Option<Arc<OpenFileDesc
 }
 
 impl Op {
+    /// `LinkTimeout` 在 `now` 时刻装成定时器的绝对 monotonic deadline；其他 op 返回 `None`。
+    pub(super) fn link_deadline(&self, now: u64) -> Option<u64> {
+        match *self {
+            Op::LinkTimeout {
+                nanoseconds,
+                absolute,
+            } => Some(if absolute {
+                nanoseconds
+            } else {
+                now.saturating_add(nanoseconds)
+            }),
+            _ => None,
+        }
+    }
+
     /// 在 `task` 的上下文里 issue：同步 op 直接得出结果，会等待的 op 返回 [`Wait`]。
     pub(super) fn issue(self, task: &TaskControlBlock, ring: &Arc<Ring>) -> Issue {
         match self {
@@ -299,6 +328,11 @@ impl Op {
                 // 目标序号在 issue 时取（Linux `io_timeout`），而不是 prep 时。
                 target_events: (count != 0).then(|| ring.events_posted().wrapping_add(count)),
                 etime_success,
+            }),
+            Op::LinkTimeout { .. } => Issue::Done(Outcome {
+                res: -(errno::ECANCELED as i32),
+                // 没有对象可约束不是链失败：Linux 的 link timeout 取消不使其后成员被取消。
+                fail: false,
             }),
             Op::Cancel { target, all } => {
                 Issue::Done(Outcome::of(worker::cancel(ring, &target, all) as isize))
@@ -461,8 +495,8 @@ async fn run_lane(
     }
 }
 
-/// connect 只发起一次：已连接或出错同步完成，握手进行中才等待；Unix 目标 backlog 已满以
-/// `-EAGAIN` 完成（已知偏差：Linux 会在 io-wq 里等容量）。
+/// connect 先发起一次：已连接或出错同步完成；握手进行中或 Unix 目标 backlog 已满（阻塞 socket）才等待，
+/// `O_NONBLOCK` socket 的 backlog 已满以 `-EAGAIN` 完成。
 fn issue_connect(
     task: &TaskControlBlock,
     fd: Option<usize>,
@@ -478,12 +512,46 @@ fn issue_connect(
     };
     match connect_begin(task, &client, address, length) {
         Ok(ConnectBegin::Connected) => Issue::Done(Outcome::of(0)),
-        Ok(ConnectBegin::BacklogFull(_)) => Issue::Done(Outcome::of(-errno::EAGAIN)),
+        Ok(ConnectBegin::BacklogFull(_)) if ofd.status_flags() & O_NONBLOCK != 0 => {
+            Issue::Done(Outcome::of(-errno::EAGAIN))
+        }
+        Ok(ConnectBegin::BacklogFull(capacity)) => match Arc::try_new(capacity) {
+            Ok(capacity) => Issue::Wait(Wait::ConnectBacklog {
+                ofd,
+                address,
+                length,
+                capacity,
+            }),
+            Err(_) => Issue::Done(Outcome::of(-errno::ENOMEM)),
+        },
         Ok(ConnectBegin::InProgress) if ofd.status_flags() & O_NONBLOCK != 0 => {
             Issue::Done(Outcome::of(-errno::EINPROGRESS))
         }
         Ok(ConnectBegin::InProgress) => Issue::Wait(Wait::Connect { ofd }),
         Err(error) => Issue::Done(Outcome::of(error)),
+    }
+}
+
+/// 握手已发起：等 socket 可写或出错，再读连接结果。
+async fn await_connection(
+    ofd: &Arc<OpenFileDescription>,
+    task: &Weak<TaskControlBlock>,
+    waiter: &Waiter,
+) -> Outcome {
+    loop {
+        if waiter.take_canceled() {
+            return Outcome::canceled();
+        }
+        let result = match socket_of(ofd).map(|client| client.connection_result()) {
+            Ok(Ok(())) => 0,
+            Ok(Err(SocketError::InProgress)) => {
+                waiter.ofd_ready(ofd, POLLOUT | POLLERR, task).await;
+                continue;
+            }
+            Ok(Err(error)) => socket_error(error),
+            Err(error) => error,
+        };
+        return Outcome::of(result);
     }
 }
 
@@ -599,20 +667,37 @@ pub(super) async fn drive(
                 .ofd_ready(&ofd, POLLIN | POLLERR | POLLHUP, &task)
                 .await;
         },
-        Wait::Connect { ofd } => loop {
+        Wait::Connect { ofd } => await_connection(&ofd, &task, &waiter).await,
+        Wait::ConnectBacklog {
+            ofd,
+            address,
+            length,
+            mut capacity,
+        } => loop {
+            waiter.capacity(&capacity).await;
             if waiter.take_canceled() {
                 return Outcome::canceled();
             }
-            let result = match socket_of(&ofd).map(|client| client.connection_result()) {
-                Ok(Ok(())) => 0,
-                Ok(Err(SocketError::InProgress)) => {
-                    waiter.ofd_ready(&ofd, POLLOUT | POLLERR, &task).await;
-                    continue;
-                }
-                Ok(Err(error)) => socket_error(error),
-                Err(error) => error,
+            let Some(strong) = task.upgrade() else {
+                return Outcome::canceled();
             };
-            return Outcome::of(result);
+            let begun = match socket_of(&ofd) {
+                Ok(client) => connect_begin(&strong, &client, address, length),
+                Err(error) => Err(error),
+            };
+            drop(strong);
+            match begun {
+                Ok(ConnectBegin::Connected) => return Outcome::of(0),
+                Ok(ConnectBegin::InProgress) => {
+                    return await_connection(&ofd, &task, &waiter).await;
+                }
+                // 容量又被别的 connect 抢走：等下一次。
+                Ok(ConnectBegin::BacklogFull(next)) => match Arc::try_new(next) {
+                    Ok(next) => capacity = next,
+                    Err(_) => return Outcome::of(-errno::ENOMEM),
+                },
+                Err(error) => return Outcome::of(error),
+            }
         },
         Wait::Poll { ofd, mask } => loop {
             if waiter.take_canceled() {

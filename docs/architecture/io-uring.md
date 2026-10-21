@@ -35,7 +35,7 @@ io_uring 是 Linux ABI 里对应 Windows NT 完成端口的接口：用户态把
 
 ## Known limits
 
-- 未开放：multishot 的 poll/timeout、按 fd/opcode 取消、其余 opcode、`LINK_TIMEOUT`、`BUFFER_SELECT`、固定文件/缓冲区注册、SQPOLL/IOPOLL、SQE128/CQE32。
+- 未开放：multishot 的 poll/timeout、按 fd/opcode 取消、其余 opcode、`BUFFER_SELECT`、固定文件/缓冲区注册、SQPOLL/IOPOLL、SQE128/CQE32。
 - 阻塞车道最多 `MAX_WORKERS`（8）个线程：超过后作业在共享 FIFO 里排队（有界并发），空闲 worker 不退出。regular 文件的写与 fsync 在 worker 上同步执行，不是真异步（Linux io-wq 同样）。
 - regular 文件读只在 page cache 未命中且后端支持异步读（ext4；其固定 4 KiB profile 保证文件系统块恒等于设备块）时不占线程，其余后端与请求槽暂满时回退车道。
 - 同时发起的两个当前位置读读取同一区间（Linux 相同）：需要顺序语义的用户应使用链。

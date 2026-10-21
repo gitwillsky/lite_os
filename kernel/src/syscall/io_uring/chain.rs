@@ -23,6 +23,8 @@ struct Meta {
     skip_success: bool,
     link: Link,
     kind: Kind,
+    /// 约束这个成员的 `LINK_TIMEOUT`：`(它的 user_data, deadline)`。成员需要等待时才存在。
+    link_timer: Option<(u64, u64)>,
 }
 
 /// 链停在一个需要等待的成员上：正在等待的 op、它的元数据与尚未 issue 的成员。
@@ -79,6 +81,7 @@ fn advance(
             skip_success,
             link,
             kind: Kind::Io,
+            link_timer: None,
         };
         let outcome = match (step, task.upgrade()) {
             (Step::Failed(_), _) => {
@@ -90,10 +93,18 @@ fn advance(
                 nop.result(|fd| usize::try_from(fd).is_ok_and(|fd| task.fd_get(fd).is_some()))
                     as isize,
             ),
-            (Step::Op(op), Some(task)) => match op.issue(&task, ring) {
+            (Step::Op(op) | Step::LinkTimeout(op), Some(task)) => match op.issue(&task, ring) {
                 Issue::Done(outcome) => outcome,
                 Issue::Wait(wait) => {
                     meta.kind = wait.kind();
+                    // 成员开始等待：紧随其后的 LINK_TIMEOUT 此刻开始计时（Linux 在 issue 时装定时器）。
+                    meta.link_timer = rest.next_if_link_timeout().and_then(|timeout| {
+                        let Step::LinkTimeout(op) = timeout.step else {
+                            return None;
+                        };
+                        let deadline = op.link_deadline(crate::timer::get_time_ns())?;
+                        Some((timeout.user_data, deadline))
+                    });
                     return Some((wait, meta));
                 }
             },
@@ -135,9 +146,24 @@ async fn run(
     };
     loop {
         waiter.begin(meta.user_data, meta.kind);
+        if let Some((_, deadline)) = meta.link_timer {
+            waiter.arm_link_timeout(deadline);
+        }
         let outcome = drive(wait, ring.clone(), task.clone(), waiter.clone()).await;
         waiter.end();
-        if !finish(&ring, &meta, outcome, &mut rest) {
+        let timed_out = waiter.disarm_link_timeout();
+        let keep_going = finish(&ring, &meta, outcome, &mut rest);
+        // timeout 自己的 CQE：定时器先到并取消了成员为 `-ETIME`，成员先完成（或因别的原因结束）为 `-ECANCELED`。
+        // 它不属于链失败：被它约束的成员的结果已经决定了后继是否被取消。
+        if let Some((user_data, _)) = meta.link_timer {
+            let res = if timed_out {
+                errno::ETIME
+            } else {
+                errno::ECANCELED
+            };
+            ring.complete(user_data, false, -(res as i32));
+        }
+        if !keep_going {
             return;
         }
         match advance(&ring, &task, &mut rest) {
@@ -212,6 +238,9 @@ fn abandon(ring: &Ring, start: Start) {
         Start::Deferred(members) => cancel_with(ring, members, -(errno::ENOMEM as i32)),
         Start::Waiting(Waiting { meta, rest, .. }) => {
             ring.complete(meta.user_data, false, -(errno::ENOMEM as i32));
+            if let Some((user_data, _)) = meta.link_timer {
+                ring.complete(user_data, false, -(errno::ECANCELED as i32));
+            }
             cancel_with(ring, rest, -(errno::ENOMEM as i32));
         }
     }

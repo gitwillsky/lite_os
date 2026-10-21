@@ -52,6 +52,9 @@ pub(crate) enum Step<Op> {
     Failed(i32),
     Nop(Nop),
     Op(Op),
+    /// `IORING_OP_LINK_TIMEOUT`：约束它前面那个链成员的执行时间。单独成为一种 step，使链组装能校验它的位置
+    /// （必须紧跟在链成员之后）并让执行者在前一个成员开始等待时把它摘下来装成定时器。
+    LinkTimeout(Op),
 }
 
 /// 链中的一个已 prep 的 SQE。
@@ -110,6 +113,18 @@ pub(crate) struct Members<Op> {
     rest: vec::IntoIter<Member<Op>>,
 }
 
+impl<Op> Members<Op> {
+    /// 下一个成员是 `LINK_TIMEOUT` 时取走它，否则不消费任何成员。
+    pub(crate) fn next_if_link_timeout(&mut self) -> Option<Member<Op>> {
+        let is_timeout = |member: &Member<Op>| matches!(member.step, Step::LinkTimeout(_));
+        let next = match &self.head {
+            Some(head) => head,
+            None => self.rest.as_slice().first()?,
+        };
+        if is_timeout(next) { self.next() } else { None }
+    }
+}
+
 impl<Op> Iterator for Members<Op> {
     type Item = Member<Op>;
 
@@ -153,7 +168,20 @@ impl<Op> Assembler<Op> {
     ///
     /// prep 失败的成员在链中不中断组装（让链的剩余成员一并被取消），只有当失败成员自己结束了链
     /// （或不在链中）时才停止本次提交。
-    pub(crate) fn add(&mut self, ring: &Ring, member: Member<Op>) -> (Option<Chain<Op>>, Flow) {
+    pub(crate) fn add(&mut self, ring: &Ring, mut member: Member<Op>) -> (Option<Chain<Op>>, Flow) {
+        // LINK_TIMEOUT 只对紧挨着它的前一个链成员有意义：不在链中，或前一个成员也是 LINK_TIMEOUT，
+        // 都是 Linux 的 `-EINVAL`（缺失该校验时，孤立的 timeout 没有对象可约束，会被静默当成 no-op）。
+        if matches!(member.step, Step::LinkTimeout(_)) {
+            let after_member = self.open.as_ref().is_some_and(|chain| {
+                !matches!(
+                    chain.rest.last().unwrap_or(&chain.head).step,
+                    Step::LinkTimeout(_)
+                )
+            });
+            if !after_member {
+                member.step = Step::Failed(-(errno::EINVAL as i32));
+            }
+        }
         let failed = matches!(member.step, Step::Failed(_));
         let continues = member.link != Link::None;
         let chain = match self.open.take() {

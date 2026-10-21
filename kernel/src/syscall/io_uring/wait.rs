@@ -14,7 +14,8 @@ use core::{
 use spin::Mutex;
 
 use crate::{
-    file::OpenFileDescription, fs::CompletionNotify, io_uring::Ring, task::TaskControlBlock,
+    file::OpenFileDescription, fs::CompletionNotify, io_uring::Ring, socket::SocketCapacityWait,
+    task::TaskControlBlock,
 };
 
 /// 请求种类：只用于取消匹配和决定 CQE 的发布方式（timeout 的完成不计入事件数）。
@@ -83,6 +84,8 @@ pub(super) enum Interest {
     Admission { ring: Arc<Ring>, sequence: u64 },
     /// 等块层或阻塞车道的完成通知（[`Waiter::notifier`]）。
     Block,
+    /// 等 AF_UNIX 目标（listener backlog）恢复容量。
+    Capacity(Arc<SocketCapacityWait>),
 }
 
 impl Interest {
@@ -102,6 +105,7 @@ impl Interest {
             Interest::Admission { ring, sequence } => ring.may_start(*sequence),
             // 由 `Waiter::attention` 结合通知标志判定。
             Interest::Block => false,
+            Interest::Capacity(capacity) => capacity.is_ready(),
         }
     }
 }
@@ -112,6 +116,11 @@ struct State {
     running: Option<Running>,
     /// 取消请求：由 [`Waiter::cancel`] 置位，正在等待的成员观察到后以 `-ECANCELED` 结束。
     canceled: bool,
+    /// `LINK_TIMEOUT` 的 deadline：到期后正在等待的成员被当作取消，并记下是定时器造成的。
+    /// 缺失时 reactor 不会在 deadline 唤醒这条链，被约束的成员会一直等到自己的就绪条件。
+    link_deadline: Option<u64>,
+    /// 定时器到期并取消了成员；决定 timeout 自己的 CQE 是 `-ETIME` 还是 `-ECANCELED`。
+    timed_out: bool,
 }
 
 /// 一条挂起链的等待登记：每条链一个，由 future 登记、worker 读取、取消者置位。
@@ -161,6 +170,8 @@ impl Waiter {
                 interest: Interest::Starting,
                 running: None,
                 canceled: false,
+                link_deadline: None,
+                timed_out: false,
             }),
         })
         .map(Self)
@@ -202,6 +213,10 @@ impl Waiter {
             target_events,
             ring: ring.clone(),
         })
+    }
+
+    pub(super) fn capacity(&self, capacity: &Arc<SocketCapacityWait>) -> Suspend {
+        self.suspend(Interest::Capacity(capacity.clone()))
     }
 
     pub(super) fn admission(&self, sequence: u64) -> Suspend {
@@ -252,13 +267,40 @@ impl Waiter {
     }
 
     pub(super) fn take_canceled(&self) -> bool {
-        core::mem::take(&mut self.0.state.lock().canceled)
+        let mut state = self.0.state.lock();
+        if state.link_deadline.is_some_and(link_due) {
+            state.link_deadline = None;
+            state.timed_out = true;
+            state.canceled = false;
+            return true;
+        }
+        core::mem::take(&mut state.canceled)
+    }
+
+    /// 给正在开始等待的成员装上 `LINK_TIMEOUT` 定时器。
+    pub(super) fn arm_link_timeout(&self, deadline: u64) {
+        let mut state = self.0.state.lock();
+        state.link_deadline = Some(deadline);
+        state.timed_out = false;
+    }
+
+    /// 成员结束：撤下定时器，返回它是否因定时器到期而被取消。
+    pub(super) fn disarm_link_timeout(&self) -> bool {
+        let mut state = self.0.state.lock();
+        state.link_deadline = None;
+        core::mem::take(&mut state.timed_out)
+    }
+
+    /// 当前装着的 `LINK_TIMEOUT` deadline；reactor 据此决定睡眠上限。
+    pub(super) fn link_deadline(&self) -> Option<u64> {
+        self.0.state.lock().link_deadline
     }
 
     /// 是否该重新 poll 这条链：被取消，或登记的等待条件可能已满足。
     pub(super) fn attention(&self) -> bool {
         let state = self.0.state.lock();
         state.canceled
+            || state.link_deadline.is_some_and(link_due)
             || state.interest.attention()
             || (matches!(state.interest, Interest::Block)
                 && self.0.notified.load(Ordering::Acquire))
@@ -275,6 +317,10 @@ impl CompletionNotify for WaiterInner {
         self.notified.store(true, Ordering::Release);
         super::worker::wake();
     }
+}
+
+fn link_due(deadline: u64) -> bool {
+    deadline <= crate::timer::get_time_ns()
 }
 
 pub(super) fn event_count_reached(ring: &Ring, target: u32) -> bool {
