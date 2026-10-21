@@ -42,6 +42,9 @@ pub(in crate::syscall) use pathname::ferr as filesystem_error;
 pub(in crate::syscall) use pathname::ferr;
 pub(in crate::syscall) use pathname::path as user_path;
 pub(crate) use readlink::sys_readlinkat;
+pub(in crate::syscall) use statx::{
+    AT_EMPTY_PATH as STATX_AT_EMPTY_PATH, statx_at, statx_request_valid,
+};
 
 use crate::{
     file::{OpenFileDescription, OpenFileKind},
@@ -549,11 +552,37 @@ pub(super) fn resolve_stat_target(
     nofollow: bool,
     empty_path: bool,
 ) -> Result<(InodeMetadata, u64), isize> {
-    let path = if name.is_null() && empty_path {
-        Vec::new()
+    let path = copy_stat_path(task, name, empty_path)?;
+    resolve_stat_path(task, fd, path, nofollow, empty_path)
+}
+
+/// 复制 stat 类调用的路径；`AT_EMPTY_PATH` 允许空指针表示空路径。
+///
+/// 独立出来使 io_uring 能在 prep 时复制路径（之后用户态改写缓冲区不影响本次调用）。
+///
+/// # Returns
+///
+/// 路径字节（可能为空）；复制失败返回负 errno。
+pub(in crate::syscall) fn copy_stat_path(
+    task: &TaskControlBlock,
+    name: *const u8,
+    empty_path: bool,
+) -> Result<Vec<u8>, isize> {
+    if name.is_null() && empty_path {
+        Ok(Vec::new())
     } else {
-        pathname::path_allow_empty(task, name)?
-    };
+        pathname::path_allow_empty(task, name)
+    }
+}
+
+/// 在已复制的路径上解析 stat 目标；语义同 [`resolve_stat_target`]。
+pub(super) fn resolve_stat_path(
+    task: &TaskControlBlock,
+    fd: isize,
+    path: Vec<u8>,
+    nofollow: bool,
+    empty_path: bool,
+) -> Result<(InodeMetadata, u64), isize> {
     let opened = if path.is_empty() {
         if !empty_path {
             return Err(-errno::ENOENT);

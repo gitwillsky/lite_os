@@ -1,10 +1,10 @@
 //! `statx`：按 Linux `struct statx` 布局报告 inode metadata。
 
-use super::{AT_SYMLINK_NOFOLLOW, errno, resolve_stat_target};
+use super::{AT_SYMLINK_NOFOLLOW, copy_stat_path, errno, resolve_stat_path};
 use crate::{fs::DeviceNumber, fs::InodeMetadata, task::current_task};
 
 const AT_NO_AUTOMOUNT: u32 = 0x800;
-const AT_EMPTY_PATH: u32 = 0x1000;
+pub(in crate::syscall) const AT_EMPTY_PATH: u32 = 0x1000;
 /// `AT_STATX_SYNC_TYPE` 的两个位同时置位是互斥的 `FORCE_SYNC|DONT_SYNC`。
 const AT_STATX_SYNC_TYPE: u32 = 0x6000;
 
@@ -53,26 +53,51 @@ fn put_timestamp(bytes: &mut [u8; STATX_BYTES], offset: usize, seconds: u64, nan
 ///
 /// 成功返回 0；非法 flags/mask 返回 `-EINVAL`，路径/权限错误与 `stat` 一致，输出不可写返回 `-EFAULT`。
 pub(crate) fn sys_statx(fd: isize, name: *const u8, flags: u32, mask: u32, buffer: usize) -> isize {
-    if flags & !(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH | AT_STATX_SYNC_TYPE) != 0
-        || flags & AT_STATX_SYNC_TYPE == AT_STATX_SYNC_TYPE
-        || mask & STATX__RESERVED != 0
-    {
+    if !statx_request_valid(flags, mask) {
         return -errno::EINVAL;
     }
     let Some(task) = current_task() else {
         return -errno::ESRCH;
     };
-    let (metadata, mount_id) = match resolve_stat_target(
-        &task,
+    let path = match copy_stat_path(&task, name, flags & AT_EMPTY_PATH != 0) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    statx_at(&task, fd, path, flags, buffer)
+}
+
+/// `flags` 与 `mask` 是否都是 `statx` 接受的取值（未知 flags、互斥的同步类型位、保留 mask 位非法）。
+pub(in crate::syscall) fn statx_request_valid(flags: u32, mask: u32) -> bool {
+    flags & !(AT_SYMLINK_NOFOLLOW | AT_NO_AUTOMOUNT | AT_EMPTY_PATH | AT_STATX_SYNC_TYPE) == 0
+        && flags & AT_STATX_SYNC_TYPE != AT_STATX_SYNC_TYPE
+        && mask & STATX__RESERVED == 0
+}
+
+/// 在已复制的路径上执行 `statx` 并写回用户缓冲区；调用者已用 [`statx_request_valid`] 校验参数。
+///
+/// 显式接收 task，使 io_uring 的车道线程能以提交线程的 cwd、凭据与地址空间执行它。
+///
+/// # Returns
+///
+/// 成功返回 0；路径/权限错误与 `stat` 一致，输出不可写返回 `-EFAULT`。
+pub(in crate::syscall) fn statx_at(
+    task: &crate::task::TaskControlBlock,
+    fd: isize,
+    path: alloc::vec::Vec<u8>,
+    flags: u32,
+    buffer: usize,
+) -> isize {
+    let (metadata, mount_id) = match resolve_stat_path(
+        task,
         fd,
-        name,
+        path,
         flags & AT_SYMLINK_NOFOLLOW != 0,
         flags & AT_EMPTY_PATH != 0,
     ) {
         Ok(target) => target,
         Err(error) => return error,
     };
-    let bytes = encode_statx(&task, &metadata, mount_id);
+    let bytes = encode_statx(task, &metadata, mount_id);
     task.copy_to_user(buffer, &bytes)
         .map_or(-errno::EFAULT, |()| 0)
 }

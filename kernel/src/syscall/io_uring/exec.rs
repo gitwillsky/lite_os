@@ -24,7 +24,7 @@ use crate::{
         fs::{
             AsyncPositionedRead, AsyncReadStep, begin_current_position_read, begin_positioned_read,
             check_readable, check_writable, open_at, perform_read, perform_write, positioned_read,
-            positioned_write, sync_ofd,
+            positioned_write, statx_at, statx_request_valid, sync_ofd,
         },
         socket::{
             ConnectBegin, MSG_NOSIGNAL, accept_once, connect_begin, socket_error, socket_of,
@@ -88,6 +88,14 @@ pub(super) enum Op {
         path: Vec<u8>,
         flags: u32,
         mode: u32,
+    },
+    /// `IORING_OP_STATX`：在阻塞车道上以提交线程的 cwd、凭据与地址空间执行（解析路径可能读盘）。
+    Statx {
+        dirfd: isize,
+        path: Vec<u8>,
+        flags: u32,
+        mask: u32,
+        buffer: usize,
     },
     Close {
         fd: Option<usize>,
@@ -308,6 +316,22 @@ impl Op {
                 },
                 None,
             ),
+            Op::Statx {
+                dirfd,
+                path,
+                flags,
+                mask,
+                buffer,
+            } => {
+                if !statx_request_valid(flags, mask) {
+                    return Issue::Done(Outcome::of(-errno::EINVAL));
+                }
+                lane_issue(
+                    None,
+                    move |task| statx_at(task, dirfd, path, flags, buffer),
+                    None,
+                )
+            }
             Op::Close { fd } => Issue::Done(Outcome::of(fd.map_or(-errno::EBADF, |fd| {
                 task.fd_close(fd).map_or(-errno::EBADF, |_| 0)
             }))),

@@ -17,7 +17,7 @@ use crate::{
         abi::{
             IOSQE_FIXED_FILE, OP_ACCEPT, OP_ASYNC_CANCEL, OP_CLOSE, OP_CONNECT, OP_FSYNC,
             OP_LINK_TIMEOUT, OP_OPENAT, OP_POLL_ADD, OP_POLL_REMOVE, OP_READ, OP_READV, OP_RECV,
-            OP_SEND, OP_TIMEOUT, OP_TIMEOUT_REMOVE, OP_WRITE, OP_WRITEV, Sqe,
+            OP_SEND, OP_STATX, OP_TIMEOUT, OP_TIMEOUT_REMOVE, OP_WRITE, OP_WRITEV, Sqe,
         },
     },
     syscall::{
@@ -69,6 +69,7 @@ impl Submitter for TaskSubmitter {
             OP_FSYNC => fsync(sqe),
             OP_CLOSE => close(sqe),
             OP_OPENAT => self.openat(sqe),
+            OP_STATX => self.statx(sqe),
             OP_POLL_ADD => poll_add(sqe),
             OP_ACCEPT => accept(sqe),
             OP_CONNECT => connect(sqe),
@@ -113,6 +114,28 @@ impl TaskSubmitter {
             path,
             flags: sqe.op_flags,
             mode: sqe.len,
+        })
+    }
+
+    /// `IORING_OP_STATX`（Linux `io_statx_prep`）：路径在 prep 时复制；输出缓冲区在执行时写回。
+    fn statx(&self, sqe: &Sqe) -> Result<Op, isize> {
+        if sqe.buf_index != 0 || sqe.splice_fd_in != 0 {
+            return Err(errno::EINVAL);
+        }
+        if sqe.flags & IOSQE_FIXED_FILE != 0 {
+            return Err(errno::EBADF);
+        }
+        let empty_path = sqe.op_flags & crate::syscall::fs::STATX_AT_EMPTY_PATH != 0;
+        let path =
+            crate::syscall::fs::copy_stat_path(&self.task, sqe.addr as *const u8, empty_path)
+                .map_err(|error| -error)?;
+        Ok(Op::Statx {
+            dirfd: sqe.fd as isize,
+            path,
+            flags: sqe.op_flags,
+            mask: sqe.len,
+            // SQE 的 `addr2` 与 `off` 是同一个联合字段（offset 8）。
+            buffer: sqe.off as usize,
         })
     }
 

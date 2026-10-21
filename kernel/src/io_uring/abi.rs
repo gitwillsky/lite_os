@@ -80,6 +80,7 @@ pub(crate) const OP_LINK_TIMEOUT: u8 = 15;
 pub(crate) const OP_CONNECT: u8 = 16;
 pub(crate) const OP_OPENAT: u8 = 18;
 pub(crate) const OP_CLOSE: u8 = 19;
+pub(crate) const OP_STATX: u8 = 21;
 pub(crate) const OP_READ: u8 = 22;
 pub(crate) const OP_WRITE: u8 = 23;
 pub(crate) const OP_SEND: u8 = 26;
@@ -336,6 +337,7 @@ pub(crate) const fn op_supported(opcode: u8) -> bool {
             | OP_ASYNC_CANCEL
             | OP_LINK_TIMEOUT
             | OP_OPENAT
+            | OP_STATX
             | OP_CLOSE
             | OP_READ
             | OP_WRITE

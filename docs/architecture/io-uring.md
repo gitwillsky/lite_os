@@ -3,7 +3,7 @@
 ## 当前设计
 
 io_uring 是 Linux ABI 里对应 Windows NT 完成端口的接口：用户态把请求写进提交队列（SQ），内核把结果投到完成队列（CQ），
-双方只通过共享内存里的 head/tail 交接，不必为每个请求进内核。已实现骨架、`NOP`、读写类 opcode、`FSYNC`、`OPENAT`、`CLOSE` 以及阻塞请求的异步完成，
+双方只通过共享内存里的 head/tail 交接，不必为每个请求进内核。已实现骨架、`NOP`、读写类 opcode、`FSYNC`、`OPENAT`、`STATX`、`CLOSE` 以及阻塞请求的异步完成，
 其余 opcode 的接入按 [io_uring 契约](../architecture-contract/io-uring.md)分期进行。
 
 1. `io_uring_setup` 分配两块清零的 `DeviceBacking`：ring 区域（头部、CQE 数组、SQ array）与 SQE 数组，返回恒带

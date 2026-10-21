@@ -84,7 +84,10 @@
 
 tmpfs 选项：`size=`（字节，`k/m/g`/`%`）、`nr_blocks=`、`nr_inodes=`、`mode=`、`uid=`、`gid=`；`huge=`、`mpol=` 等返回 `EINVAL`。
 
-io_uring 已实现的 opcode：`NOP`、`READV`/`WRITEV`/`READ`/`WRITE`、`FSYNC`、`OPENAT`、`CLOSE`、`POLL_ADD`/`POLL_REMOVE`、`TIMEOUT`/`TIMEOUT_REMOVE`、`ASYNC_CANCEL`、`ACCEPT`、`CONNECT`、`SEND`、`RECV`；
+io_uring 已实现的 opcode：`NOP`、`READV`/`WRITEV`/`READ`/`WRITE`、`FSYNC`、`OPENAT`、`STATX`、`CLOSE`、`POLL_ADD`/`POLL_REMOVE`、`TIMEOUT`/`TIMEOUT_REMOVE`、`ASYNC_CANCEL`、`ACCEPT`、`CONNECT`、`SEND`、`RECV`；
+`STATX`：路径在 prep 时复制，在阻塞车道上以提交线程的 cwd、凭据与地址空间执行并写回 `addr2` 指向的缓冲区；
+参数校验与 `statx(2)` 共用同一核心（未知 flags、互斥同步类型位、保留 mask 位为 `-EINVAL`，坏输出地址为 `-EFAULT`）；
+`IOSQE_FIXED_FILE` 返回 `-EBADF`，`buf_index`/`file_index` 非零返回 `-EINVAL`。
 `OPENAT`：路径在 prep 时复制，在阻塞车道上以提交线程的 fd 表、cwd 与凭据执行（与 `openat(2)` 共用同一核心）；直接描述符（`file_index` 非零）返回 `-EOPNOTSUPP`，`IOSQE_FIXED_FILE` 返回 `-EBADF`，`buf_index` 非零返回 `-EINVAL`；
 被信号打断的阻塞 open 以 `-EINTR` 完成。`OPENAT2` 未实现。
 `ACCEPT`/`CONNECT`/`SEND`/`RECV`：`ACCEPT` 的 multishot 与直接描述符、`SEND`/`RECV` 的目的地址、`ioprio` recvsend flags、除 `MSG_DONTWAIT`/`MSG_NOSIGNAL` 外的 `msg_flags` 返回 `-EOPNOTSUPP`；`SEND` 恒带 `MSG_NOSIGNAL`（`SIGPIPE` 不投递给提交线程）；

@@ -1380,6 +1380,110 @@ int verify_io_uring_openat(void)
 	return 0;
 }
 
+/* ---- STATX ------------------------------------------------------------------------------------- */
+
+#ifndef IORING_OP_STATX
+#define IORING_OP_STATX 21
+#endif
+#define STATX_BASIC 0x7ffu
+#define URING_AT_EMPTY_PATH 0x1000
+
+static void fill_statx(struct io_uring_sqe *sqe, int dirfd, const char *path, unsigned flags, unsigned mask,
+                       void *buffer, uint64_t user_data)
+{
+	sqe->opcode = IORING_OP_STATX;
+	sqe->fd = dirfd;
+	sqe->addr = (uintptr_t)path;
+	sqe->len = mask;
+	sqe->statx_flags = flags;
+	sqe->off = (uintptr_t)buffer; /* addr2 与 off 是同一个联合字段 */
+	sqe->user_data = user_data;
+}
+
+/* struct statx 的字段偏移（Linux UAPI）：stx_mode@28(u16)、stx_ino@32、stx_size@40。 */
+static uint64_t statx_u64(const uint8_t *buffer, unsigned offset)
+{
+	uint64_t value;
+	memcpy(&value, buffer + offset, sizeof value);
+	return value;
+}
+
+int verify_io_uring_statx(void)
+{
+	struct ring ring;
+	struct io_uring_cqe cqe;
+	struct io_uring_sqe *sqe;
+	uint8_t via_ring[256], direct[256];
+	char path[64];
+	CHECK(1, map_ring(&ring, 8, 0, 0) == 0);
+	unlink("/tmp/uring-statx");
+	int file = open("/tmp/uring-statx", O_CREAT | O_RDWR, 0640);
+	CHECK(2, file >= 0 && write(file, "12345", 5) == 5);
+
+	/* 路径在 prep 时复制，提交后改写缓冲区不影响；结果与直接 statx 系统调用一致。 */
+	strcpy(path, "/tmp/uring-statx");
+	memset(via_ring, 0xee, sizeof via_ring);
+	fill_statx(next_sqe(&ring), AT_FDCWD, path, 0, STATX_BASIC, via_ring, 1);
+	CHECK(3, submit_one(&ring) == 1);
+	memset(path, 'x', sizeof path - 1);
+	CHECK(4, wait_cqe(&ring, &cqe) == 1 && cqe.user_data == 1 && cqe.res == 0);
+	CHECK(5, syscall(SYS_statx, AT_FDCWD, "/tmp/uring-statx", 0, STATX_BASIC, direct) == 0);
+	CHECK(6, statx_u64(via_ring, 40) == 5 && statx_u64(via_ring, 40) == statx_u64(direct, 40) &&
+		 statx_u64(via_ring, 32) == statx_u64(direct, 32));
+	uint16_t mode;
+	memcpy(&mode, via_ring + 28, sizeof mode);
+	CHECK(7, (mode & 0170000) == 0100000 && (mode & 0777) == 0640);
+
+	/* 目录 fd 加相对路径；AT_EMPTY_PATH 加空路径取 fd 自己的 metadata。 */
+	int dir = open("/tmp", O_RDONLY | O_DIRECTORY);
+	CHECK(8, dir >= 0);
+	memset(via_ring, 0, sizeof via_ring);
+	fill_statx(next_sqe(&ring), dir, "uring-statx", 0, STATX_BASIC, via_ring, 2);
+	CHECK(9, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == 0 &&
+		 statx_u64(via_ring, 40) == 5);
+	memset(via_ring, 0, sizeof via_ring);
+	fill_statx(next_sqe(&ring), file, "", URING_AT_EMPTY_PATH, STATX_BASIC, via_ring, 3);
+	CHECK(10, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == 0 &&
+		  statx_u64(via_ring, 40) == 5);
+
+	/* 错误：不存在 -ENOENT，无效目录 fd -EBADF，未知 flags / 保留 mask 位 -EINVAL，坏输出地址 -EFAULT。 */
+	fill_statx(next_sqe(&ring), AT_FDCWD, "/tmp/uring-statx-missing", 0, STATX_BASIC, via_ring, 4);
+	CHECK(11, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -ENOENT);
+	fill_statx(next_sqe(&ring), 9999, "relative", 0, STATX_BASIC, via_ring, 5);
+	CHECK(12, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -EBADF);
+	fill_statx(next_sqe(&ring), AT_FDCWD, "/tmp/uring-statx", 0x1, STATX_BASIC, via_ring, 6);
+	CHECK(13, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -EINVAL);
+	fill_statx(next_sqe(&ring), AT_FDCWD, "/tmp/uring-statx", 0, 0x80000000u, via_ring, 7);
+	CHECK(14, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -EINVAL);
+	fill_statx(next_sqe(&ring), AT_FDCWD, "/tmp/uring-statx", 0, STATX_BASIC, (void *)1, 8);
+	CHECK(15, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -EFAULT);
+
+	/* prep 校验：FIXED_FILE -EBADF，buf_index 非零 -EINVAL。 */
+	sqe = next_sqe(&ring);
+	fill_statx(sqe, AT_FDCWD, "/tmp/uring-statx", 0, STATX_BASIC, via_ring, 9);
+	sqe->flags = IOSQE_FIXED_FILE;
+	CHECK(16, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -EBADF);
+	sqe = next_sqe(&ring);
+	fill_statx(sqe, AT_FDCWD, "/tmp/uring-statx", 0, STATX_BASIC, via_ring, 10);
+	sqe->buf_index = 1;
+	CHECK(17, submit_one(&ring) == 1 && wait_cqe(&ring, &cqe) == 1 && cqe.res == -EINVAL);
+
+	/* 链：statx 失败取消其后成员。 */
+	sqe = next_sqe(&ring);
+	fill_statx(sqe, AT_FDCWD, "/tmp/uring-statx-missing", 0, STATX_BASIC, via_ring, 11);
+	sqe->flags = IOSQE_IO_LINK;
+	fill_nop(next_sqe(&ring), 0, 0, 12);
+	publish(&ring);
+	CHECK(18, uring_enter(ring.fd, 2, 0, 0, NULL, 0) == 2);
+	CHECK(19, expect_cqes(&ring, (const struct expect[]){ {11, -ENOENT}, {12, -ECANCELED} }, 2));
+
+	close(file);
+	close(dir);
+	unlink("/tmp/uring-statx");
+	unmap_ring(&ring);
+	return 0;
+}
+
 /* ---- 车道作业的取消：未开始可取消，已开始不可取消（-EALREADY）且照常完成 ----------------------------- */
 
 int verify_io_uring_lane_cancel(void)
@@ -1985,5 +2089,7 @@ int verify_io_uring(void)
 	int openat_result = verify_io_uring_openat();
 	if (openat_result != 0) return 1000 + openat_result;
 	int lane_cancel = verify_io_uring_lane_cancel();
-	return lane_cancel != 0 ? 1100 + lane_cancel : 0;
+	if (lane_cancel != 0) return 1100 + lane_cancel;
+	int statx_result = verify_io_uring_statx();
+	return statx_result != 0 ? 1200 + statx_result : 0;
 }

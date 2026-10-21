@@ -3572,6 +3572,7 @@ kernel/src/io_uring/abi.rs :: pub (crate) const OP_READ : u8 = 22
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_READV : u8 = 1
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_RECV : u8 = 27
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_SEND : u8 = 26
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_STATX : u8 = 21
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_TIMEOUT : u8 = 11
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_TIMEOUT_REMOVE : u8 = 12
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_WRITE : u8 = 23
@@ -6364,12 +6365,15 @@ kernel/src/syscall/fs.rs :: pub (crate) use namespace :: { sys_mkdirat , sys_mkn
 kernel/src/syscall/fs.rs :: pub (crate) use open :: { sys_chdir , sys_chroot , sys_fchdir , sys_openat }
 kernel/src/syscall/fs.rs :: pub (crate) use readlink :: sys_readlinkat
 kernel/src/syscall/fs.rs :: pub (crate) use swap :: { sys_swapoff , sys_swapon }
+kernel/src/syscall/fs.rs :: pub (in crate :: syscall) fn copy_stat_path (task : & TaskControlBlock , name : * const u8 , empty_path : bool ,) -> Result < Vec < u8 > , isize >
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) fn position_error (error : crate :: file :: PositionError) -> isize
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use io :: { AsyncPositionedRead , AsyncReadStep , begin_current_position_read , begin_positioned_read , check_readable , check_writable , import_iovecs , perform_read , perform_write , positioned_read , positioned_write , }
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use open :: open_at
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use pathname :: ferr
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use pathname :: ferr as filesystem_error
 kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use pathname :: path as user_path
+kernel/src/syscall/fs.rs :: pub (in crate :: syscall) use statx :: { AT_EMPTY_PATH as STATX_AT_EMPTY_PATH , statx_at , statx_request_valid , }
+kernel/src/syscall/fs.rs :: pub (super) fn resolve_stat_path (task : & TaskControlBlock , fd : isize , path : Vec < u8 > , nofollow : bool , empty_path : bool ,) -> Result < (InodeMetadata , u64) , isize >
 kernel/src/syscall/fs.rs :: pub (super) fn resolve_stat_target (task : & TaskControlBlock , fd : isize , name : * const u8 , nofollow : bool , empty_path : bool ,) -> Result < (InodeMetadata , u64) , isize >
 kernel/src/syscall/fs.rs :: pub (super) fn sync_file (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (super) fn sync_ofd (ofd : & OpenFileDescription) -> isize
@@ -6458,6 +6462,9 @@ kernel/src/syscall/fs/readlink.rs :: pub (crate) fn sys_readlinkat (fd : isize ,
 kernel/src/syscall/fs/statistics.rs :: pub (crate) fn sys_fstatfs (fd : usize , address : usize) -> isize
 kernel/src/syscall/fs/statistics.rs :: pub (crate) fn sys_statfs (name : * const u8 , address : usize) -> isize
 kernel/src/syscall/fs/statx.rs :: pub (crate) fn sys_statx (fd : isize , name : * const u8 , flags : u32 , mask : u32 , buffer : usize) -> isize
+kernel/src/syscall/fs/statx.rs :: pub (in crate :: syscall) const AT_EMPTY_PATH : u32 = 0x1000
+kernel/src/syscall/fs/statx.rs :: pub (in crate :: syscall) fn statx_at (task : & crate :: task :: TaskControlBlock , fd : isize , path : alloc :: vec :: Vec < u8 > , flags : u32 , buffer : usize ,) -> isize
+kernel/src/syscall/fs/statx.rs :: pub (in crate :: syscall) fn statx_request_valid (flags : u32 , mask : u32) -> bool
 kernel/src/syscall/fs/swap.rs :: pub (crate) fn sys_swapoff (address : usize) -> isize
 kernel/src/syscall/fs/swap.rs :: pub (crate) fn sys_swapon (address : usize , flags : u32) -> isize
 kernel/src/syscall/fs/xattr.rs :: pub (crate) const EMPTY_PATH : u32 = 0x1000
@@ -6484,6 +6491,7 @@ kernel/src/syscall/io_uring/exec.rs :: enum Issue :: Wait (Wait)
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: # [doc = " `IORING_OP_LINK_TIMEOUT`：约束它前面那个链成员。前一个成员需要等待时由链执行者摘下它装成定时器"] # [doc = " （[`Op::link_deadline`]）；走到 issue 说明前一个成员已经同步完成，定时器没有对象，以 `-ECANCELED` 结束。"] LinkTimeout { nanoseconds : u64 , absolute : bool , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: # [doc = " `IORING_OP_OPENAT`：在阻塞车道上以提交线程的 fd 表、cwd 与凭据打开。"] OpenAt { dirfd : isize , path : Vec < u8 > , flags : u32 , mode : u32 , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: # [doc = " `IORING_OP_SEND`/`IORING_OP_RECV`：只对 socket，`MSG_NOSIGNAL` 恒开（SIGPIPE 不发给提交线程）。"] Socket { fd : Option < usize > , vectors : Vec < UserIoVec > , total : usize , write : bool , # [doc = " `MSG_DONTWAIT`：会阻塞时直接返回 `-EAGAIN`。"] dontwait : bool , }
+kernel/src/syscall/io_uring/exec.rs :: enum Op :: # [doc = " `IORING_OP_STATX`：在阻塞车道上以提交线程的 cwd、凭据与地址空间执行（解析路径可能读盘）。"] Statx { dirfd : isize , path : Vec < u8 > , flags : u32 , mask : u32 , buffer : usize , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Accept { fd : Option < usize > , address : usize , length : usize , flags : usize , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Cancel { target : Target , # [doc = " `IORING_ASYNC_CANCEL_ALL`：取消全部匹配项并返回个数，否则只取消第一个。"] all : bool , # [doc = " `IORING_ASYNC_CANCEL_FD`：按这个 fd 所指的 OFD 匹配；外层 `Some` 表示给了 FD 条件，内层 `None` 是无效 fd（fixed 或负数）。"] by_fd : Option < Option < usize > > , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Close { fd : Option < usize > , }
