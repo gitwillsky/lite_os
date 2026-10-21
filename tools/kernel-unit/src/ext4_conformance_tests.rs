@@ -38,6 +38,8 @@ const FS_BLOCK: usize = 4096;
 
 #[path = "tests/ext4_async_read.rs"]
 mod async_read;
+#[path = "tests/ext4_directory_leaf.rs"]
+mod directory_leaf;
 #[path = "tests/ext4_xattr.rs"]
 mod xattr;
 

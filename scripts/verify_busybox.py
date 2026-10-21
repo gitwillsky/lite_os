@@ -2475,11 +2475,11 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_TMPFS_DEEP_52",
-                    ShellCommand(b"free() { /bin/df -kP / | /bin/tail -n 1 | { read _ _ _ a _; echo $a; }; }; b=$(free); /bin/dd if=/dev/zero of=/rel bs=64k count=64 2>/dev/null; /bin/cat /rel >/dev/null; m=$(free); /bin/rm /rel; a=$(free); [ $((b-m)) -ge 3000 ] && [ $((a-b)) -le 256 ] && [ $((b-a)) -le 256 ] && echo LITEOS_UNLINK_RELEASE_$((6*7+8))\n"),
+                    ShellCommand(b"free() { /bin/df -kP / | /bin/tail -n 1 | { read _ _ _ a _; echo $a; }; }; b=$(free); /bin/dd if=/dev/zero of=/rel bs=64k count=64 2>/dev/null; /bin/cat /rel >/dev/null; m=$(free); /bin/rm /rel; a=$(free); [ $((b-m)) -ge 3000 ] && [ $((a-b)) -le 256 ] && [ $((b-a)) -le 256 ] && echo LITEOS_UNLINK_RELEASE_$((6*7+8)) || echo LITEOS_UNLINK_RELEASE_DIAG first b=$b m=$m a=$a\n"),
                 ),
                 (
                     "LITEOS_UNLINK_RELEASE_50",
-                    ShellCommand(b"/bin/dd if=/dev/zero of=/rel2 bs=64k count=64 2>/dev/null; /bin/cat /rel2 >/dev/null; exec 5</rel2; c=$(free); /bin/rm /rel2; d=$(free); [ $((d-c)) -le 256 ] && exec 5<&- && e=$(free) && [ $((e-d)) -ge 3000 ] && echo LITEOS_UNLINK_RELEASE_$((6*7+9))\n"),
+                    ShellCommand(b"/bin/dd if=/dev/zero of=/rel2 bs=64k count=64 2>/dev/null; /bin/cat /rel2 >/dev/null; exec 5</rel2; c=$(free); /bin/rm /rel2; d=$(free); [ $((d-c)) -le 256 ] && exec 5<&- && e=$(free) && [ $((e-d)) -ge 3000 ] && echo LITEOS_UNLINK_RELEASE_$((6*7+9)) || echo LITEOS_UNLINK_RELEASE_DIAG second c=$c d=$d e=${e:-unset}\n"),
                 ),
                 (
                     "LITEOS_UNLINK_RELEASE_51",

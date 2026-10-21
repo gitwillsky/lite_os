@@ -91,19 +91,87 @@ impl Ext4Inode {
                 .try_into()
                 .map_err(|_| FileSystemError::InvalidFileSystem)?,
         );
+        let computed = directory_block_checksum(self.checksum_seed(), &bytes, usable);
         if tail.inode != 0
             || usize::from(tail.rec_len) != TAIL_SIZE
             || tail.name_len != 0
             || tail.file_type != TAIL_FILE_TYPE
-            || stored != directory_block_checksum(self.checksum_seed(), &bytes, usable)
+            || stored != computed
         {
-            error!(
-                "directory {} leaf {block} tail/checksum mismatch",
-                self.inode_num
-            );
+            self.report_leaf_mismatch(block, &bytes, &tail, stored, computed);
             return Err(FileSystemError::InvalidFileSystem);
         }
         Ok(bytes)
+    }
+
+    /// leaf 校验失败时一次性记录现场，供事后区分两类根因；只读诊断，不改变调用者看到的结果。
+    ///
+    /// 1. 绕过 metadata cache 重新读同一个块：若新读到的块校验通过，说明刚才那份是撕裂/过期的 image
+    ///    （读写竞态）；仍不通过，说明块内容本身就不是这个目录的 leaf。
+    /// 2. 重新扫描本目录的逻辑块，找出当前是否仍有逻辑块映射到该物理块：没有，说明读者拿着过期映射读到了
+    ///    已被释放（并可能重新分配给别的 inode）的块。
+    /// 3. 记录目录当时的 `i_links_count`/`i_size`/`i_generation`：`i_links_count == 0` 表示目录已被 rmdir。
+    ///
+    /// 缺失这些信息时，间歇性的校验和失败只剩一行 “mismatch”，无法判断是哪一类竞态。
+    #[cold]
+    fn report_leaf_mismatch(
+        &self,
+        block: u64,
+        bytes: &[u8],
+        tail: &Ext4DirEntry2Header,
+        stored: u32,
+        computed: u32,
+    ) {
+        let usable = self.leaf_usable();
+        let verdict = |image: &[u8]| -> &'static str {
+            let valid_tail = Ext4DirEntry2Header::decode(image, usable).is_some_and(|tail| {
+                tail.inode == 0
+                    && usize::from(tail.rec_len) == TAIL_SIZE
+                    && tail.name_len == 0
+                    && tail.file_type == TAIL_FILE_TYPE
+            });
+            let stored = u32::from_le_bytes(
+                image[usable + 8..usable + 12]
+                    .try_into()
+                    .unwrap_or_default(),
+            );
+            if valid_tail && stored == directory_block_checksum(self.checksum_seed(), image, usable)
+            {
+                "valid"
+            } else {
+                "invalid"
+            }
+        };
+        let fresh = match super::try_zeroed(self.fs.block_size) {
+            Ok(mut image) => match self.fs.read_fs_block(block, &mut image) {
+                Ok(()) => verdict(&image),
+                Err(_) => "read-error",
+            },
+            Err(_) => "no-memory",
+        };
+        let cached_matches = self
+            .fs
+            .metadata_cached(block)
+            .map(|cached| cached.as_slice() == bytes);
+        let (links, size, generation) = {
+            let disk = self.disk.lock();
+            (disk.i_links_count, disk.size(), disk.i_generation)
+        };
+        // 目录很小；上限只是防止损坏的 size 让诊断扫描过久。
+        const SCAN_LIMIT: u64 = 1024;
+        let logical_blocks = (size / self.fs.block_size as u64).min(SCAN_LIMIT) as u32;
+        let mapped_at = (0..logical_blocks).find(
+            |logical| matches!(self.map_block_sparse(*logical), Ok(Some(found)) if found == block),
+        );
+        error!(
+            "directory {} leaf {block} tail/checksum mismatch: stored={stored:#x} computed={computed:#x} \
+             tail={tail:?} first_record={:?} fresh_read={fresh} cached_image_unchanged={cached_matches:?} \
+             inode(links={links} size={size} generation={generation}) mapped_at_logical={mapped_at:?} \
+             scanned={logical_blocks} cache_generation={}",
+            self.inode_num,
+            Ext4DirEntry2Header::decode(bytes, 0),
+            self.fs.metadata_cache.lock().generation(),
+        );
     }
 
     /// 写入 tail 与 checksum 后 staged 一个 leaf block。
