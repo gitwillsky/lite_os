@@ -141,7 +141,9 @@
 
 ### UART 基线
 
-- init 只监督网络服务与 UART shell，不建立 seat socket、显示器文本 VT 或旧图形会话。
+- init 只监督网络服务、`display-service`（有 `/dev/dri/card0` 时 exec `/bin/compositor`，否则安静待命）与 UART shell，不建立 seat socket、显示器文本 VT 或旧图形会话。
+- `compositor` 独占 DRM master 与 evdev 读取；其首帧必须与内核 `boot_screen` 的最后一帧逐像素一致（`verify_display.py` 以 `LBS1` 参考解码器裁决），光标素材是 `LCS1` 数据文件，不内置常量。
+- Wayland 服务端以 `pread` 而非 mmap 读取客户端 shm（客户端截断文件只会得到协议错误，不会 SIGBUS）；每个连接一个协议状态机，窗口栈以稳定的连接 id 为键；`xdg_toplevel` 的 move/resize/maximize/minimize/fullscreen 请求目前被取走丢弃，尚未实现。
 - `keyboard`、`terminal-model`、`terminal-font`、`canvas`、`classic-theme`、`classic-ui`、`typeface`、`wayland-scanner` 和 `wayland-wire` 是独立库；不得恢复退休的私有显示、音频或 seat 协议。
 
 ## Failure and cleanup

@@ -3,6 +3,10 @@
 version = 4
 
 [[package]]
+name = "boot-scene"
+version = "0.1.0"
+
+[[package]]
 name = "canvas"
 version = "0.1.0"
 
@@ -17,6 +21,17 @@ dependencies = [
  "canvas",
  "classic-theme",
  "typeface",
+]
+
+[[package]]
+name = "compositor"
+version = "0.1.0"
+dependencies = [
+ "boot-scene",
+ "canvas",
+ "classic-theme",
+ "linux-uapi",
+ "wayland-wire",
 ]
 
 [[package]]

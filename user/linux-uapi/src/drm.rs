@@ -698,6 +698,25 @@ impl DumbBuffer {
         }
     }
 
+    /// 整个映射视为 `u32` 像素：行距为 [`DumbBuffer::stride`] 个像素，可直接交给 2D 光栅。
+    ///
+    /// 映射按页对齐且 `pitch` 是 4 的倍数，所以重解释总是对齐的。
+    pub fn pixels_mut(&mut self) -> &mut [u32] {
+        // SAFETY: `mapping` 是本缓冲独占的、长度为 `size` 的页对齐映射；返回的切片借用 `&mut self`，
+        // 在其存活期间没有别名访问。`size / 4` 个 u32 恰好落在映射内。
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.mapping.pointer.as_ptr().cast::<u32>(),
+                self.mapping.size / 4,
+            )
+        }
+    }
+
+    /// 行距，以像素计。
+    pub fn stride(&self) -> usize {
+        self.pitch / 4
+    }
+
     pub fn row(&self, row: usize) -> &[u32] {
         assert!(row < self.height);
         unsafe {

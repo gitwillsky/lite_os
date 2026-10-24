@@ -71,6 +71,8 @@ class WorkflowTests(unittest.TestCase):
                 "verify_apk_apps.py",
                 "verify_audio.py",
                 "verify_gpu.py",
+                "verify_display.py",
+                "verify_wayland.py",
                 "verify_scheduler_fairness.py",
             ],
         )

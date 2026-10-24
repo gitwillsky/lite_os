@@ -22,7 +22,7 @@ from local_inputs import INPUTS
 from apk_cache import cached_apk_bootstrap
 from apk_rootfs import assemble_apk_rootfs, install_apk_crash_fixtures
 from build_target import target_from_environment
-from classic_assets import boot_scene
+from classic_assets import boot_scene, cursors
 from build_cache import (
     build_environment,
     build_jobs_override,
@@ -1180,11 +1180,19 @@ class UserlandArtifact:
     mode: int = 0o644
 
 
-def base_userland() -> tuple[UserlandArtifact, ...]:
-    """返回 UART 基线的系统文件；rootfs 构建和开发镜像同步共用此清单。
+def build_compositor(musl: MuslCachePaths) -> Path:
+    """构建显示服务 compositor；它是产品 rootfs 的唯一 DRM master。"""
+    return build_rust_user_program(musl, "compositor", "compositor", "compositor", 1)
+
+
+def base_userland(compositor: Path) -> tuple[UserlandArtifact, ...]:
+    """返回产品的系统文件；rootfs 构建和开发镜像同步共用此清单。
+
+    Args:
+        compositor: 已构建并校验的 `/bin/compositor`。
 
     Returns:
-        按 guest 绝对路径排序的启动配置、关机命令和共享启动素材。
+        启动配置、关机命令、显示服务与共享启动素材。
     """
     return (
         UserlandArtifact(ROOT / "user/base/shutdown", "/bin/shutdown", 0o755),
@@ -1192,6 +1200,9 @@ def base_userland() -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(ROOT / "user/base/inittab", "/etc/inittab"),
         UserlandArtifact(ROOT / "user/base/profile", "/etc/profile"),
         UserlandArtifact(boot_scene(), "/usr/share/liteos/boot-scene.lbs"),
+        UserlandArtifact(cursors(), "/usr/share/liteos/cursors.lcs"),
+        UserlandArtifact(compositor, "/bin/compositor", 0o755),
+        UserlandArtifact(ROOT / "user/base/display-service", "/etc/init.d/display-service", 0o755),
     )
 
 
@@ -1299,7 +1310,7 @@ def create_image(
         ],
         ROOT,
     )
-    userland = base_userland()
+    userland = base_userland(build_compositor(musl))
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     commands = [
@@ -1489,7 +1500,7 @@ def create_published_image(
         RuntimeError: 构建工具、APK bootstrap 或 rootfs assembly 失败。
         OSError: cache publication 或 output copy 失败。
     """
-    userland = base_userland()
+    userland = base_userland(build_compositor(musl))
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     host_openssl = shutil.which("openssl")

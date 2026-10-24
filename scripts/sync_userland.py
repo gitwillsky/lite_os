@@ -15,7 +15,8 @@ from pathlib import Path, PurePosixPath
 from build_cache import fingerprint, sha256
 from build_target import target_from_environment
 from ext4_image import find_debugfs, recover_ext4_journal
-from verify_busybox import UserlandArtifact, base_userland
+from verify_busybox import UserlandArtifact, base_userland, build_compositor
+from verify_musl import cached_musl_paths, find_compiler
 
 ROOT = Path(__file__).resolve().parent.parent
 STAMP_PATH = "/usr/share/liteos/.userland-sync.json"
@@ -25,7 +26,7 @@ RECIPE_VERSION = 2
 # 仅用于离线撤销旧镜像中已退休的产品文件，不参与构建或启动。
 # 无历史 stamp 的旧 rootfs 也必须清理，否则旧 init 与应用仍会在开发实例里出现。
 RETIRED_FILES = tuple(f"/bin/{name}" for name in (
-    "audio-service", "compositor", "console", "seatd", "seatctl", "desktop",
+    "audio-service", "console", "seatd", "seatctl", "desktop",
     "file-manager", "my-computer", "music-player", "terminal", "session-launch",
     "terminal-session",
 )) + ("/etc/init.d/graphical-session", "/etc/terminfo/l/liteos")
@@ -293,7 +294,7 @@ def main() -> int:
     if not image.is_file():
         raise RuntimeError(f"development image does not exist: {image}")
 
-    synchronize(image, base_userland())
+    synchronize(image, base_userland(build_compositor(cached_musl_paths(find_compiler()))))
     return 0
 
 

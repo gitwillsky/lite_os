@@ -32,8 +32,12 @@ ALPINE_MIRROR = "https://mirrors.ustc.edu.cn/alpine"
 # 固定 APK 先走国内镜像；镜像返回 4xx/5xx 时回退官方 CDN。两者内容由同一 SHA-256 裁决，
 # 缺少回退时镜像的瞬时故障会让所有 APK gate 失败。
 ALPINE_DOWNLOAD_MIRRORS = (ALPINE_MIRROR, "https://dl-cdn.alpinelinux.org/alpine")
+# 固定 APK 的文件名在整个分支内唯一，所以 main 与 community 可以放在同一个搜索列表里；
+# 下载后由固定的 SHA-256 裁决，找错仓库只会多一次 404。
 ALPINE_PACKAGE_REPOSITORIES = tuple(
-    f"{mirror}/{ALPINE_BRANCH}/main/{ALPINE_ARCH}" for mirror in ALPINE_DOWNLOAD_MIRRORS
+    f"{mirror}/{ALPINE_BRANCH}/{repository}/{ALPINE_ARCH}"
+    for repository in ("main", "community")
+    for mirror in ALPINE_DOWNLOAD_MIRRORS
 )
 BOOTSTRAP_PACKAGE_NAMES = (
     "apk-tools-static-2.14.12-r0.apk",

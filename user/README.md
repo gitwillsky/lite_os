@@ -1,6 +1,6 @@
 # LiteOS userspace
 
-当前产品基线为 BusyBox init、网络服务与 UART shell。显示器保留 kernel `LBS1` 开机画面，
+当前产品基线为 BusyBox init、网络服务、显示服务（compositor，目前只接管并保持启动画面）与 UART shell。
 尚无登录、桌面或用户态媒体程序。新图形栈按[经典桌面计划](../docs/plans/classic-desktop.md)从公开协议实现。
 
 | Path | Interface | Owner |
@@ -16,6 +16,7 @@
 | `wayland-wire/` | Wayland wire | 对象 ID、消息帧、参数读写与上游协议 XML 生成的接口类型；不拥有 socket |
 | `classic-ui/` | 经典控件绘制 | `Painter`：边框、按钮、复选/单选、编辑框、滚动条、菜单、窗口框架与标题栏、提示；逻辑像素 × 整数 scale |
 | `typeface/` | 字体与文本 | BDF 点阵、sfnt 轮廓与内嵌点阵、灰度光栅、中西文选择、仿粗体、CJK 换行 |
+| `compositor/` | 显示服务 | 唯一 DRM master 与 evdev 读者；Wayland 服务端（`wl_compositor`/`wl_shm`/`xdg_wm_base`/`wl_output`）、窗口栈与整帧 CPU 合成；`wayland-probe` 是门禁客户端 |
 | `diagnostics/` | cputest、memtest、cachetest | 有界 multicall diagnostics |
 
 音频混音归属 kernel ALSA；用户态无需音频服务或私有音频协议。接口与失败路径见

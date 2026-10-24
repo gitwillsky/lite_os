@@ -1,0 +1,14 @@
+#!/bin/sh
+
+# @description BusyBox init 唯一监督的显示服务入口；compositor 保持前台运行以便 init 观察退出。
+# 1. 无头运行（没有 virtio-gpu）没有可监督的显示器：留在原地等待，避免 init 反复拉起一个必然失败的进程。
+if [ ! -c /dev/dri/card0 ]; then
+    echo "display-service: no display device"
+    exec /bin/sleep 2147483647
+fi
+# 2. Wayland socket 放在 XDG_RUNTIME_DIR；客户端用同一个变量找到它。
+mkdir -p /run/liteos
+chmod 0755 /run/liteos
+export XDG_RUNTIME_DIR=/run/liteos
+# 3. compositor 直接成为本进程；它退出后由 init 执行唯一 respawn policy。
+exec /bin/compositor

@@ -40,6 +40,7 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
         "canvas",
         "classic-theme",
         "classic-ui",
+        "compositor",
         "diagnostics",
         "keyboard",
         "linux-uapi",
@@ -70,6 +71,7 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
         "canvas/src/lib.rs",
         "classic-theme/src/lib.rs",
         "classic-ui/src/lib.rs",
+        "compositor/src/main.rs",
         "keyboard/src/lib.rs",
         "linux-uapi/src/lib.rs",
         "terminal-font/src/lib.rs",
@@ -92,6 +94,7 @@ fn check_workspace(root: &Path, errors: &mut Vec<String>) {
         "\"canvas\"",
         "\"classic-theme\"",
         "\"classic-ui\"",
+        "\"compositor\"",
         "\"keyboard\"",
         "\"linux-uapi\"",
         "\"terminal-font\"",
@@ -111,6 +114,7 @@ fn check_workspace(root: &Path, errors: &mut Vec<String>) {
         "\"user/canvas\"",
         "\"user/classic-theme\"",
         "\"user/classic-ui\"",
+        "\"user/compositor\"",
         "\"user/keyboard\"",
         "\"user/linux-uapi\"",
         "\"user/terminal-font\"",
@@ -151,10 +155,10 @@ fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
 fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
     let inittab = fs::read_to_string(root.join("user/base/inittab")).unwrap_or_default();
     let expected =
-        "::sysinit:/etc/init.d/rcS\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
+        "::sysinit:/etc/init.d/rcS\n::respawn:/etc/init.d/network-service\n::respawn:/etc/init.d/display-service\n::respawn:-/bin/sh\n";
     if inittab != expected {
         errors.push(
-            "user/base/inittab: must mount pseudo filesystems through rcS first, then supervise network and UART shell exactly once"
+            "user/base/inittab: must mount pseudo filesystems through rcS first, then supervise network, display and UART shell exactly once"
                 .to_owned(),
         );
     }
@@ -165,6 +169,7 @@ fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
         "user/base/rcS",
         "user/base/profile",
         "boot_scene()",
+        "cursors()",
     ] {
         if !builder.contains(required) {
             errors.push(format!("scripts/verify_busybox.py: missing `{required}`"));
@@ -174,7 +179,6 @@ fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
         "build_ui_assets",
         "build_graphical_userland",
         "/bin/audio-service",
-        "/bin/compositor",
         "ui/package.json",
     ] {
         if builder.contains(forbidden) {

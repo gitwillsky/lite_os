@@ -427,6 +427,8 @@ def verify_runtime_gates(environment: Mapping[str, str] | None = None) -> None:
         ["verify_apk_apps.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_audio.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_gpu.py", "--image", target_paths(environment)["rootfs"]],
+        ["verify_display.py", "--image", target_paths(environment)["rootfs"]],
+        ["verify_wayland.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_scheduler_fairness.py", "--image", target_paths(environment)["rootfs"]],
     ]
     for script, *arguments in commands:
@@ -441,6 +443,16 @@ def verify_runtime_audio(environment: Mapping[str, str] | None = None) -> None:
 def verify_runtime_gpu(environment: Mapping[str, str] | None = None) -> None:
     """执行不依赖 UI 的内核显示/GPU gate，不隐式重建 rootfs。"""
     run(python_script("verify_gpu.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
+
+
+def verify_runtime_display(environment: Mapping[str, str] | None = None) -> None:
+    """验证 compositor 接管启动画面并读取输入；不隐式重建 rootfs。"""
+    run(python_script("verify_display.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
+
+
+def verify_runtime_wayland(environment: Mapping[str, str] | None = None) -> None:
+    """用上游 wayland-info 与窗口探针验证 Wayland 服务端；不隐式重建 rootfs。"""
+    run(python_script("verify_wayland.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
 
 
 def verify_runtime_scheduler(environment: Mapping[str, str] | None = None) -> None:
@@ -672,6 +684,8 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         "verify-runtime-shutdown": verify_runtime_shutdown,
         "verify-runtime-audio": verify_runtime_audio,
         "verify-runtime-gpu": verify_runtime_gpu,
+        "verify-runtime-display": verify_runtime_display,
+        "verify-runtime-wayland": verify_runtime_wayland,
         "verify-runtime-scheduler": verify_runtime_scheduler,
         "diagnose-scheduler-latency": diagnose_scheduler_latency,
         "verify-runtime-musl": verify_runtime_musl,

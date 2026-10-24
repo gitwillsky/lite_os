@@ -189,7 +189,7 @@ class BusyBoxRoutingTests(unittest.TestCase):
     def test_login_path_exposes_npm_global_commands(self) -> None:
         module = reload_busybox("aarch64", "hvf")
         profile = (module.ROOT / "user/base/profile").read_text().strip()
-        artifacts = module.base_userland()
+        artifacts = module.base_userland(module.ROOT / "user/base/profile")
 
         self.assertEqual(
             profile,

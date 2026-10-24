@@ -315,6 +315,17 @@ adapter 只代表无竞争计数成本，不宣称实际 local IRQ 指令/设备
 不对应都使 gate 变红。此 gate 只在 AArch64+HVF 承担；RISC-V TCG 没有 VirGL 显示路径，脚本在该目标自跳过。
 统计与判定逻辑由探针内的 host 单测和 `scripts/tests/test_verify_gpu.py` 约束。
 
+显示服务门禁（`scripts/verify_display.py`，`make verify-runtime-display`）在 QEMU（virtio-gpu、键盘、平板，无窗口）冷启动产品 rootfs：
+先等 compositor 的首帧与输入就绪标记，再经 QMP `screendump` 取回 scanout，与 `LBS1` 参考解码器按同一整数缩放居中规则算出的整帧逐像素
+比对；内核 `boot_screen` 与 compositor 任一方的缩放、居中或进度填充规则漂移都会失败。随后注入一次平板移动与一次按键，要求
+compositor 报告各自的首个事件。它不测量时间，参考帧与比对函数由 `scripts/tests/test_verify_display.py` 约束；只在 AArch64+HVF 承担。
+
+Wayland 门禁（`scripts/verify_wayland.py`，`make verify-runtime-wayland`）在同一 QEMU 显示会话里注入固定的上游
+`wayland-info` 与本仓库的 `wayland-probe`（私有镜像，产品 rootfs 不含）：`wayland-info` 必须列出 `wl_compositor`、`wl_shm`（含格式）、
+`xdg_wm_base` 与 `wl_output`（模式、scale、名字）；探针走完 xdg configure/ack、五帧 shm buffer 与 frame callback；`screendump` 里
+窗口矩形是最后一帧颜色、其外是桌面背景、位置是层叠放置的第一个窗口；最后注入 Alt+F4，窗口必须消失、桌面恢复。协议状态机另有
+进程内测试（`user/compositor` 的 `cargo test`，含 socket、乱序/拆包/随机输入）。只在 AArch64+HVF 承担。
+
 idle tick suppression 不增加 host microbenchmark：收益来自 HVF/TCG 的 whole-machine exit 次数，
 host unit loop 无法代表它。改动必须通过双 architecture compile/static gate，并以单 QEMU、完整 SMP
 拓扑的多窗口 host CPU 采样作诊断；secondary idle→IPI→task 与 timeout runtime gate 负责活性语义。

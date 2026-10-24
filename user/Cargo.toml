@@ -2,6 +2,7 @@
 members = [
     "canvas",
     "classic-theme",
+    "compositor",
     "classic-ui",
     "keyboard",
     "linux-uapi",

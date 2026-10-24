@@ -15,8 +15,15 @@ from local_inputs import INPUTS
 ROOT = Path(__file__).resolve().parents[1]
 ORIGINAL_BOOT_SCENE = INPUTS / "windows2000/packed/boot-scene.lbs"
 DEFAULT_BOOT_SCENE = ROOT / "assets/classic/boot-scene.lbs"
+# 原版光标带 AND/XOR 掩码，需要 compositor 的软件光标路径后才能选用；在此之前只有仓库原创光标集。
+DEFAULT_CURSORS = ROOT / "assets/classic/cursors.lcs"
 
 
 def boot_scene() -> Path:
     """返回本次构建使用的 `LBS1` 启动画面：本地原版已打包则用它，否则用仓库默认。"""
     return ORIGINAL_BOOT_SCENE if ORIGINAL_BOOT_SCENE.is_file() else DEFAULT_BOOT_SCENE
+
+
+def cursors() -> Path:
+    """返回本次构建使用的 `LCS1` 光标集。"""
+    return DEFAULT_CURSORS

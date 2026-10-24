@@ -90,6 +90,9 @@ def boot_product_graphics(image: Path, kernel: Path) -> None:
             "VirtIO input event1",
             "VirtIO GPU",
             "init started: BusyBox v1.37.0",
+            # compositor 接管 scanout：DRM master、modeset 与启动画面续画都已成功。
+            "compositor: first frame presented",
+            "compositor: input ready",
         ),
     )
 

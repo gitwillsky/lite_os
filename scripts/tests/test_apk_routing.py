@@ -37,6 +37,8 @@ class ApkRoutingTests(unittest.TestCase):
         self.assertEqual(cache.ALPINE_PACKAGE_REPOSITORIES, (
             "https://mirrors.ustc.edu.cn/alpine/v3.22/main/aarch64",
             "https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64",
+            "https://mirrors.ustc.edu.cn/alpine/v3.22/community/aarch64",
+            "https://dl-cdn.alpinelinux.org/alpine/v3.22/community/aarch64",
         ))
         self.assertEqual(set(packages), set(cache.BOOTSTRAP_PACKAGE_NAMES))
         self.assertEqual(len(packages), 3)

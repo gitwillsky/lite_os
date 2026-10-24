@@ -106,6 +106,7 @@ def _qemu_command(
     kernel_arguments: str | None = None,
     scratch_disk: Path | None = None,
     audio_wav: Path | None = None,
+    display_qmp: Path | None = None,
 ) -> list[str]:
     runtime = qemu_runtime()
     qemu = shutil.which(runtime.binary)
@@ -174,6 +175,14 @@ def _qemu_command(
             "virtio-net-device,netdev=net0",
         ]
     )
+    if display_qmp is not None:
+        # 显示门禁：virtio-gpu 与输入设备由 compositor 接管；QMP 供截图与注入输入事件。
+        command.extend((
+            "-device", "virtio-gpu-device",
+            "-device", "virtio-keyboard-device",
+            "-device", "virtio-tablet-device",
+            "-qmp", f"unix:{display_qmp},server=on,wait=off",
+        ))
     if audio_wav is not None:
         command.extend((
             "-audiodev", "none,id=audio0,out.frequency=48000,out.channels=2,out.format=s16",

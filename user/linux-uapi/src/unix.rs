@@ -130,8 +130,10 @@ pub fn poll(descriptors: &mut [PollFd], timeout: Option<Duration>) -> io::Result
 
 const CMSG_FD_LEN: usize = 20;
 const CMSG_FD_SPACE: usize = 24;
+/// One `recvmsg` accepts at most this many descriptors (libwayland's `MAX_FDS_OUT`); more are `MSG_CTRUNC`.
+pub const MAX_RECEIVED_FDS: usize = 28;
 #[cfg(target_os = "linux")]
-const RECV_CONTROL_LEN: usize = 32;
+const RECV_CONTROL_LEN: usize = 16 + MAX_RECEIVED_FDS * size_of::<c_int>();
 
 #[repr(C)]
 struct FdControl {
@@ -178,8 +180,11 @@ pub fn send_fd(socket: BorrowedFd<'_>, bytes: &[u8], fd: BorrowedFd<'_>) -> io::
     }
 }
 
-/// Receives bytes and zero or exactly one owned `SCM_RIGHTS` descriptor.
-pub fn recv_fd(socket: BorrowedFd<'_>, bytes: &mut [u8]) -> io::Result<(usize, Option<OwnedFd>)> {
+/// Receives bytes and up to [`MAX_RECEIVED_FDS`] owned `SCM_RIGHTS` descriptors, in arrival order.
+///
+/// Malformed or truncated ancillary data closes every descriptor that did arrive and fails, so a
+/// peer cannot leak descriptors into this process by sending bad control messages.
+pub fn recv_fds(socket: BorrowedFd<'_>, bytes: &mut [u8]) -> io::Result<(usize, Vec<OwnedFd>)> {
     let mut vector = raw::IoVec {
         base: bytes.as_mut_ptr().cast(),
         len: bytes.len(),
@@ -217,7 +222,7 @@ pub fn recv_fd(socket: BorrowedFd<'_>, bytes: &mut [u8]) -> io::Result<(usize, O
     #[cfg(target_os = "linux")]
     let received = parse_received_control(&control.0, message.control_len)?;
     #[cfg(not(target_os = "linux"))]
-    let received = None;
+    let received = Vec::new();
     #[cfg(target_os = "linux")]
     if message.flags & raw::MSG_CTRUNC != 0 {
         drop(received);
@@ -230,7 +235,7 @@ pub fn recv_fd(socket: BorrowedFd<'_>, bytes: &mut [u8]) -> io::Result<(usize, O
 }
 
 #[cfg(target_os = "linux")]
-fn parse_received_control(bytes: &[u8], length: usize) -> io::Result<Option<OwnedFd>> {
+fn parse_received_control(bytes: &[u8], length: usize) -> io::Result<Vec<OwnedFd>> {
     const HEADER_BYTES: usize = 16;
     if length > bytes.len() {
         return Err(io::Error::new(
@@ -239,7 +244,7 @@ fn parse_received_control(bytes: &[u8], length: usize) -> io::Result<Option<Owne
         ));
     }
     let mut offset = 0usize;
-    let mut received = None;
+    let mut received = Vec::new();
     let mut invalid = false;
     while offset + HEADER_BYTES <= length {
         let header_length = usize::from_ne_bytes(
@@ -278,12 +283,7 @@ fn parse_received_control(bytes: &[u8], length: usize) -> io::Result<Option<Owne
                     invalid = true;
                     continue;
                 }
-                let owned = unsafe { OwnedFd::from_raw_fd(raw_fd) };
-                if received.is_some() {
-                    invalid = true;
-                } else {
-                    received = Some(owned);
-                }
+                received.push(unsafe { OwnedFd::from_raw_fd(raw_fd) });
             }
         }
         offset = offset.saturating_add((header_length + 7) & !7);
@@ -292,7 +292,7 @@ fn parse_received_control(bytes: &[u8], length: usize) -> io::Result<Option<Owne
         drop(received);
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            "expected zero or exactly one SCM_RIGHTS descriptor",
+            "malformed SCM_RIGHTS control message",
         ))
     } else {
         Ok(received)
@@ -306,16 +306,16 @@ mod host_tests {
         os::{fd::AsFd, unix::net::UnixStream},
     };
 
-    use super::recv_fd;
+    use super::recv_fds;
 
     #[test]
     fn recv_fd_receives_plain_payload_without_linux_ancillary_layout() {
         let (mut sender, receiver) = UnixStream::pair().unwrap();
         sender.write_all(b"plain-control-frame").unwrap();
         let mut output = [0u8; 32];
-        let (count, fd) = recv_fd(receiver.as_fd(), &mut output).unwrap();
+        let (count, fds) = recv_fds(receiver.as_fd(), &mut output).unwrap();
         assert_eq!(&output[..count], b"plain-control-frame");
-        assert!(fd.is_none());
+        assert!(fds.is_empty());
     }
 }
 
@@ -332,45 +332,60 @@ mod tests {
 
     use super::*;
 
-    #[repr(C)]
-    struct TwoFdControl {
-        header: raw::CmsgHdr,
-        descriptors: [c_int; 2],
-    }
-
-    #[test]
-    fn recv_fd_rejects_and_closes_multiple_rights() {
-        let (sender, receiver) = UnixDatagram::pair().unwrap();
-        let first = File::open("/dev/null").unwrap();
-        let second = File::open("/dev/null").unwrap();
+    /// 经 `sendmsg` 在一条数据报里发送 `count` 个 `/dev/null` 描述符。
+    fn send_rights(sender: &UnixDatagram, count: usize) {
+        let files: Vec<File> = (0..count)
+            .map(|_| File::open("/dev/null").unwrap())
+            .collect();
+        let descriptors: Vec<c_int> = files.iter().map(|file| file.as_raw_fd()).collect();
+        let mut control = vec![0u8; 16 + descriptors.len() * size_of::<c_int>()];
+        let length = control.len();
+        control[..8].copy_from_slice(&length.to_ne_bytes());
+        control[8..12].copy_from_slice(&raw::SOL_SOCKET.to_ne_bytes());
+        control[12..16].copy_from_slice(&raw::SCM_RIGHTS.to_ne_bytes());
+        for (slot, descriptor) in control[16..].chunks_exact_mut(4).zip(&descriptors) {
+            slot.copy_from_slice(&descriptor.to_ne_bytes());
+        }
         let mut byte = [1u8];
         let mut vector = raw::IoVec {
             base: byte.as_mut_ptr().cast::<c_void>(),
             len: byte.len(),
-        };
-        let mut control = TwoFdControl {
-            header: raw::CmsgHdr {
-                len: size_of::<TwoFdControl>(),
-                level: raw::SOL_SOCKET,
-                kind: raw::SCM_RIGHTS,
-            },
-            descriptors: [first.as_raw_fd(), second.as_raw_fd()],
         };
         let message = raw::MsgHdr {
             name: std::ptr::null_mut(),
             name_len: 0,
             iov: &mut vector,
             iov_len: 1,
-            control: (&raw mut control).cast(),
-            control_len: size_of::<TwoFdControl>(),
+            control: control.as_mut_ptr().cast(),
+            control_len: control.len(),
             flags: 0,
         };
         assert_eq!(
             unsafe { raw::sendmsg(sender.as_raw_fd(), &raw const message, 0) },
             1
         );
+    }
+
+    #[test]
+    fn recv_fds_receives_every_right_of_one_message() {
+        let (sender, receiver) = UnixDatagram::pair().unwrap();
+        send_rights(&sender, 3);
         let mut output = [0u8; 1];
-        let error = recv_fd(receiver.as_fd(), &mut output).unwrap_err();
+        let (count, fds) = recv_fds(receiver.as_fd(), &mut output).unwrap();
+        assert_eq!((count, fds.len()), (1, 3));
+    }
+
+    #[test]
+    fn recv_fds_accepts_the_maximum_and_rejects_more_without_leaking() {
+        let (sender, receiver) = UnixDatagram::pair().unwrap();
+        send_rights(&sender, MAX_RECEIVED_FDS);
+        let mut output = [0u8; 1];
+        assert_eq!(
+            recv_fds(receiver.as_fd(), &mut output).unwrap().1.len(),
+            MAX_RECEIVED_FDS
+        );
+        send_rights(&sender, MAX_RECEIVED_FDS + 1);
+        let error = recv_fds(receiver.as_fd(), &mut output).unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     }
 

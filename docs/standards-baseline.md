@@ -152,6 +152,8 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
   `dcb12279a03746301fe490aaed4b38a403485a925abfce2ccfceb644e104fe71`。
 - 来源：[Wayland](https://gitlab.freedesktop.org/wayland/wayland/-/tree/1.24.0)、
   [wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/tree/1.45)。
+- 运行时一致性消费者：Alpine v3.22 的 `wayland-utils-1.2.0-r0`（`wayland-info`）、`wayland-libs-client-1.23.1-r3`、
+  `libffi-3.4.8-r0`、`libdrm-2.4.124-r0`、`libpciaccess-0.18.1-r0`，SHA-256 固定在 `scripts/verify_wayland.py`。
   XML 原样放入 `user/wayland-wire/protocols/`，由 `wayland-scanner` 生成类型；wire 格式以 Wayland 文档为准。
 
 ### UTM/QEMU host display、clipboard 与 SPICE agent

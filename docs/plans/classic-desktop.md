@@ -304,6 +304,22 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
 - `classic-ui` 绘制层：`Painter` 按逻辑像素 × 整数 scale 绘制边框、按钮（常态/按下/默认/焦点/禁用）、复选框与单选框、编辑框、
   滚动条（含滑块几何 `thumb_span`、抖动轨道、按下反色）、分组框、工具提示、菜单与菜单栏、窗口外框与标题栏；18 个像素探针测试，
   `cargo run -p classic-ui --example gallery -- <scale> <out.ppm>` 渲染 1x/2x 对照图。修复了 `canvas::bevel` 在 scale>1 下斜接方块不整块的问题。
+
+## 阶段 5 进展（compositor）
+
+- `/bin/compositor` 由 `display-service` 经 init 监督（无 `/dev/dri/card0` 时安静待命）。第一版用 **CPU 合成到 dumb buffer**
+  （不上 VirGL）：唯一 DRM master、双缓冲、接管内核启动画面（首帧与内核逐像素一致）、读取全部 evdev 设备、
+  硬件光标（`LCS1` 光标集，`scripts/pack_cursors.py` 打包，仓库原创默认已提交）。HiDPI scale = 逻辑高度不低于 768 的最大整数。
+- `make verify-runtime-display`：首帧逐像素比对 + 注入指针/按键。
+- Wayland 服务端已实现：`wl_display`/`wl_registry`/`wl_callback`、`wl_compositor` v6（`preferred_buffer_scale`、`enter`）、
+  `wl_shm`（argb/xrgb8888，`pread` 读取）、`xdg_wm_base` v3 toplevel（initial configure、ack 校验、错误码）、`wl_output` v4；
+  协议状态机与 socket 层有 51 个进程内测试。窗口栈：层叠放置、点击激活置顶、新窗口获得焦点、Alt+F4 → `xdg_toplevel.close`。
+- `make verify-runtime-wayland`：上游 `wayland-info`（Alpine `wayland-utils`）列出全部全局对象；`wayland-probe` 走完整 xdg 生命周期与五帧 frame callback；
+  截图逐像素确认窗口位置与背景；Alt+F4 后桌面恢复。`weston-simple-shm` 因 weston-clients 依赖链过重（cairo/pango/EGL）未采用，改用探针。
+- 已知缺口：`wl_seat`（指针/键盘事件、XKB keymap）、popup 与 positioner、`xdg_toplevel` 的 move/resize/maximize/minimize、
+  `wl_data_device`、`wp_viewporter`/`zxdg_output_manager_v1`（Wine 需要）、layer-shell 与 foreign-toplevel（桌面外壳需要）、缩小客户端 scale > 输出 scale。
+- 下一步：`wl_seat`（指针先行，键盘需 `keyboard` 导出 XKB keymap）、窗口交互请求与标题栏拖动，然后 `logon`、`desktop`。
+
 - 待做：`classic-ui` 的窗口/输入层（Wayland 客户端、焦点与键盘导航、助记符下划线、菜单动画与交互）、黄金截图门禁。
 
 ## 风险

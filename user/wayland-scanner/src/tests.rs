@@ -113,6 +113,8 @@ fn generator_emits_types_codecs_and_dispatch() {
         "id: DynamicNewId,",
         "Interface::MiniThing => AnyRequest::MiniThing(mini_thing::Request::decode(opcode, reader)?)",
         "pub fn decode_event(",
+        "AnyRequest::MiniDisplay(message) => message.since(),",
+        "AnyEvent::MiniThing(message) => message.is_destructor(),",
         "pub fn from_name(name: &str) -> Option<Interface>",
     ] {
         assert!(code.contains(expected), "missing `{expected}`");
