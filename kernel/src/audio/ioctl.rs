@@ -3,12 +3,13 @@
 use syscall_abi::errno;
 
 use super::codec::{
-    HW_PARAMS_BYTES, PCM_PROTOCOL_VERSION, SNDRV_PCM_IOCTL_DELAY, SNDRV_PCM_IOCTL_DROP,
-    SNDRV_PCM_IOCTL_HW_FREE, SNDRV_PCM_IOCTL_HW_PARAMS, SNDRV_PCM_IOCTL_PREPARE,
-    SNDRV_PCM_IOCTL_PVERSION, SNDRV_PCM_IOCTL_START, SNDRV_PCM_IOCTL_STATUS,
-    SNDRV_PCM_IOCTL_SW_PARAMS, SNDRV_PCM_IOCTL_SYNC_PTR, SNDRV_PCM_IOCTL_WRITEI_FRAMES,
-    STATUS_BYTES, SW_PARAMS_BYTES, SYNC_PTR_BYTES, XFER_BYTES, exact_interval, exact_mask,
-    read_u32, read_u64, stop_or_error, write_u32, write_u64,
+    HW_PARAMS_BYTES, PCM_PROTOCOL_VERSION, PcmInfo, SNDRV_PCM_IOCTL_DELAY, SNDRV_PCM_IOCTL_DROP,
+    SNDRV_PCM_IOCTL_HW_FREE, SNDRV_PCM_IOCTL_HW_PARAMS, SNDRV_PCM_IOCTL_HW_REFINE,
+    SNDRV_PCM_IOCTL_INFO, SNDRV_PCM_IOCTL_PREPARE, SNDRV_PCM_IOCTL_PVERSION,
+    SNDRV_PCM_IOCTL_START, SNDRV_PCM_IOCTL_STATUS, SNDRV_PCM_IOCTL_SW_PARAMS,
+    SNDRV_PCM_IOCTL_SYNC_PTR, SNDRV_PCM_IOCTL_WRITEI_FRAMES, STATUS_BYTES, SW_PARAMS_BYTES,
+    SYNC_PTR_BYTES, XFER_BYTES, encode_pcm_info, exact_interval, exact_mask, read_u32, read_u64,
+    refine_hardware, stop_or_error, write_u32, write_u64,
 };
 use super::{
     AudioError, HardwareParameters, PCM_BUFFER_FRAMES, PCM_FRAME_BYTES, PCM_PERIOD_BYTES,
@@ -45,6 +46,15 @@ fn pcm_errno(error: AudioError) -> isize {
         AudioError::InvalidState => errno::EBADFD,
         AudioError::Device => errno::EIO,
     }
+}
+
+/// 写 `snd_pcm_hw_params` 里描述硬件能力的信息字段：`info`（`SNDRV_PCM_INFO_MMAP_VALID` 位）、
+/// `msbits`、以及有理数形式的采样率 `rate_num / rate_den`。`HW_REFINE` 与 `HW_PARAMS` 都要返回它们。
+fn describe_hardware(bytes: &mut [u8; HW_PARAMS_BYTES]) -> Result<(), isize> {
+    write_u32(bytes, 520, 0x0000_0100).ok_or(errno::EIO)?;
+    write_u32(bytes, 524, 32).ok_or(errno::EIO)?;
+    write_u32(bytes, 528, 48_000).ok_or(errno::EIO)?;
+    write_u32(bytes, 532, 1).ok_or(errno::EIO)
 }
 
 fn copy_status(user: &dyn UserMemory, file: &PcmFile, argument: usize) -> Result<(), isize> {
@@ -151,6 +161,35 @@ pub(super) fn ioctl(file: &PcmFile, call: &IoctlCall<'_>) -> Result<isize, Devic
                     .map_err(|_| errno::EFAULT)
             }
         }
+        SNDRV_PCM_IOCTL_INFO => {
+            if argument == 0 {
+                Err(errno::EFAULT)
+            } else {
+                let (subdevice, count, available) = file.subdevices();
+                let info = encode_pcm_info(&PcmInfo {
+                    subdevice: subdevice as u32,
+                    subdevices_count: count as u32,
+                    subdevices_available: available as u32,
+                    card_id: super::CARD_ID,
+                    name: super::PCM_NAME,
+                });
+                user.write(argument, &info).map_err(|_| errno::EFAULT)
+            }
+        }
+        SNDRV_PCM_IOCTL_HW_REFINE => {
+            if argument == 0 {
+                Err(errno::EFAULT)
+            } else {
+                let mut bytes = [0u8; HW_PARAMS_BYTES];
+                user.read(argument, &mut bytes)
+                    .map_err(|_| errno::EFAULT)
+                    .and_then(|()| refine_hardware(&mut bytes).map_err(|()| errno::EINVAL))
+                    .and_then(|()| {
+                        describe_hardware(&mut bytes)?;
+                        user.write(argument, &bytes).map_err(|_| errno::EFAULT)
+                    })
+            }
+        }
         SNDRV_PCM_IOCTL_HW_PARAMS => {
             if argument == 0 {
                 Err(errno::EFAULT)
@@ -161,10 +200,7 @@ pub(super) fn ioctl(file: &PcmFile, call: &IoctlCall<'_>) -> Result<isize, Devic
                     .and_then(|()| decode_hardware(&bytes).ok_or(errno::EINVAL))
                     .and_then(|parameters| file.hardware_parameters(parameters).map_err(pcm_errno))
                     .and_then(|()| {
-                        write_u32(&mut bytes, 520, 0x0000_0100).ok_or(errno::EIO)?;
-                        write_u32(&mut bytes, 524, 32).ok_or(errno::EIO)?;
-                        write_u32(&mut bytes, 528, 48_000).ok_or(errno::EIO)?;
-                        write_u32(&mut bytes, 532, 1).ok_or(errno::EIO)?;
+                        describe_hardware(&mut bytes)?;
                         user.write(argument, &bytes).map_err(|_| errno::EFAULT)
                     })
             }

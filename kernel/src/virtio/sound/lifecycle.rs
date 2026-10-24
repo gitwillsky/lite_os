@@ -25,11 +25,6 @@ impl DeviceState {
         (self == Self::Running).then_some(Self::Stopped)
     }
 
-    pub(super) fn after_release(self) -> Option<Self> {
-        matches!(self, Self::Configured | Self::Prepared | Self::Stopped).then_some(Self::Setup)
-    }
-
-    /// 进入 fail-stop；返回 true 表示 caller 是 reset/notification 的唯一发布者。
     pub(super) fn fail(&mut self) -> bool {
         if *self == Self::Failed {
             false

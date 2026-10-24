@@ -73,9 +73,6 @@ pub(crate) trait PcmOutput: Send + Sync {
     /// 停止 stream，并完成全部已经发布的 I/O。
     fn stop(&self) -> Result<(), PcmOutputError>;
 
-    /// 释放 device stream resources，回到可重新配置状态。
-    fn release(&self) -> Result<(), PcmOutputError>;
-
     /// 发布一个完整 256-frame interleaved float period。
     ///
     /// # Parameters

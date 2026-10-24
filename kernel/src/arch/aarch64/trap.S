@@ -100,10 +100,14 @@ __aarch64_kernel_irq:
     // ELR points at that WFI. The controller handler consumes the sole device edge, so return
     // directly to the mask-and-return label instead of sleeping again with no future wakeup.
     mrs x8, elr_el1
-    adr x9, __local_irq_wait_wfi
+    // 目标在普通 `.text`，与本向量（位于 `.text.trampoline`，链接在 `.text` 最前）的距离随内核大小增长；
+    // `adr` 只有 ±1 MiB 的范围，内核一变大就链接失败，所以用 `adrp + add`（±4 GiB）。
+    adrp x9, __local_irq_wait_wfi
+    add x9, x9, :lo12:__local_irq_wait_wfi
     cmp x8, x9
     b.ne 1f
-    adr x8, __local_irq_wait_wfi_resume
+    adrp x8, __local_irq_wait_wfi_resume
+    add x8, x8, :lo12:__local_irq_wait_wfi_resume
     msr elr_el1, x8
 1:
     mov x9, #1

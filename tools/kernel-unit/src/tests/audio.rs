@@ -142,6 +142,8 @@ fn memfd_without_allow_sealing_starts_sealed() {
 #[test]
 fn alsa_ioctl_numbers_and_layout_match_linux_native_64_bit_uapi() {
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_PVERSION, 0x8004_4100);
+    assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_INFO, 0x8120_4101);
+    assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_HW_REFINE, 0xc260_4110);
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_HW_PARAMS, 0xc260_4111);
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_HW_FREE, 0x0000_4112);
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_SW_PARAMS, 0xc088_4113);
@@ -153,6 +155,7 @@ fn alsa_ioctl_numbers_and_layout_match_linux_native_64_bit_uapi() {
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_DROP, 0x0000_4143);
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_WRITEI_FRAMES, 0x4018_4150);
     assert_eq!(alsa_codec::HW_PARAMS_BYTES, 608);
+    assert_eq!(alsa_codec::PCM_INFO_BYTES, 288);
     assert_eq!(alsa_codec::SW_PARAMS_BYTES, 136);
     assert_eq!(alsa_codec::STATUS_BYTES, 152);
     assert_eq!(alsa_codec::SYNC_PTR_BYTES, 136);
@@ -190,10 +193,12 @@ fn alsa_short_transfer_publishes_progress_before_later_fault() {
 
 #[test]
 fn virtio_sound_lifecycle_is_single_track_and_reset_is_idempotent() {
+    // 物理流只配置一次（Setup → Configured），之后只在 Prepared / Running / Stopped 间循环，永不回到 Setup。
     let mut state = DeviceState::Setup;
+    assert!(state.after_prepare().is_none(), "prepare before configure");
     state = state.after_configure().unwrap();
     assert_eq!(state, DeviceState::Configured);
-    assert_eq!(state.after_release(), Some(DeviceState::Setup));
+    assert!(state.after_configure().is_none(), "configure only once");
     state = state.after_prepare().unwrap();
     assert_eq!(state, DeviceState::Prepared);
     state = state.after_start().unwrap();
@@ -201,11 +206,13 @@ fn virtio_sound_lifecycle_is_single_track_and_reset_is_idempotent() {
     assert!(state.after_prepare().is_none());
     state = state.after_stop().unwrap();
     assert_eq!(state, DeviceState::Stopped);
-    state = state.after_release().unwrap();
-    assert_eq!(state, DeviceState::Setup);
-    state = state.after_configure().unwrap();
-    state = state.after_release().unwrap();
-    assert_eq!(state, DeviceState::Setup);
+    // 混音器排空后的重新装填路径：Stopped → Prepared → Running，可以反复进行。
+    for _ in 0..3 {
+        state = state.after_prepare().unwrap();
+        assert_eq!(state, DeviceState::Prepared);
+        state = state.after_start().unwrap();
+        state = state.after_stop().unwrap();
+    }
     assert!(state.fail());
     assert_eq!(state, DeviceState::Failed);
     assert!(!state.fail());
@@ -235,4 +242,193 @@ fn virtio_sound_polled_control_ack_preserves_coalesced_tx_work() {
     assert!(!polled_control_ack_requires_deferred(0));
     assert!(polled_control_ack_requires_deferred(1));
     assert!(polled_control_ack_requires_deferred(3));
+}
+
+mod hw_refine {
+    use crate::alsa_codec::{HW_PARAMS_BYTES, refine_hardware};
+
+    fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
+    fn set_u32(bytes: &mut [u8], offset: usize, value: u32) {
+        bytes[offset..offset + 4].copy_from_slice(&value.to_ne_bytes());
+    }
+
+    /// `alsa-lib` 开始协商时的样子：所有掩码全选、所有区间覆盖整个取值范围。
+    fn unconstrained() -> [u8; HW_PARAMS_BYTES] {
+        let mut bytes = [0u8; HW_PARAMS_BYTES];
+        for mask in 0..3 {
+            for byte in &mut bytes[4 + mask * 32..4 + (mask + 1) * 32] {
+                *byte = 0xff;
+            }
+        }
+        for parameter in 8..=19 {
+            let offset = 260 + (parameter - 8) * 12;
+            set_u32(&mut bytes, offset, 0);
+            set_u32(&mut bytes, offset + 4, u32::MAX);
+        }
+        bytes
+    }
+
+    fn interval(bytes: &[u8], parameter: usize) -> (u32, u32, u32) {
+        let offset = 260 + (parameter - 8) * 12;
+        (u32_at(bytes, offset), u32_at(bytes, offset + 4), u32_at(bytes, offset + 8))
+    }
+
+    #[test]
+    fn an_unconstrained_request_narrows_to_the_single_hardware_configuration() {
+        let mut bytes = unconstrained();
+        refine_hardware(&mut bytes).unwrap();
+        assert_eq!(u32_at(&bytes, 4), (1 << 0) | (1 << 3), "access: mmap-interleaved and rw-interleaved");
+        assert_eq!(u32_at(&bytes, 36), 1 << 14, "format: FLOAT_LE only");
+        assert_eq!(u32_at(&bytes, 68), 1, "subformat: standard");
+        for word in 1..8 {
+            assert_eq!(u32_at(&bytes, 4 + word * 4), 0, "no other access bits");
+        }
+        assert_eq!(interval(&bytes, 10).0..=interval(&bytes, 10).1, 2..=2, "channels");
+        assert_eq!((interval(&bytes, 11).0, interval(&bytes, 11).1), (48_000, 48_000));
+        assert_eq!((interval(&bytes, 13).0, interval(&bytes, 13).1), (256, 256), "period size");
+        assert_eq!((interval(&bytes, 15).0, interval(&bytes, 15).1), (4, 4), "periods");
+        assert_eq!((interval(&bytes, 17).0, interval(&bytes, 17).1), (1_024, 1_024), "buffer size");
+        // 每个被收窄的参数都出现在 cmask 里。
+        let changed = u32_at(&bytes, 516);
+        for parameter in [0usize, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18] {
+            assert_ne!(changed & (1 << parameter), 0, "parameter {parameter} must be reported changed");
+        }
+    }
+
+    #[test]
+    fn derived_times_keep_open_endpoints_so_alsa_lib_can_round_them() {
+        let mut bytes = unconstrained();
+        refine_hardware(&mut bytes).unwrap();
+        // 256/48000 s = 5333.33 µs 不是整数：必须是开区间 (5333, 5334)，不能被写成整数点。
+        assert_eq!(interval(&bytes, 12), (5_333, 5_334, 0b011));
+        assert_eq!(interval(&bytes, 16), (21_333, 21_334, 0b011));
+    }
+
+    #[test]
+    fn refining_a_refined_request_changes_nothing() {
+        let mut bytes = unconstrained();
+        refine_hardware(&mut bytes).unwrap();
+        let first = bytes;
+        refine_hardware(&mut bytes).unwrap();
+        assert_eq!(u32_at(&bytes, 516), 0, "idempotent: nothing left to narrow");
+        assert_eq!(&bytes[..512], &first[..512]);
+    }
+
+    #[test]
+    fn a_request_that_misses_the_hardware_point_is_rejected() {
+        for (parameter, value) in [(11usize, 44_100u32), (10, 1), (10, 6), (13, 512), (15, 2)] {
+            let mut bytes = unconstrained();
+            let offset = 260 + (parameter - 8) * 12;
+            set_u32(&mut bytes, offset, value);
+            set_u32(&mut bytes, offset + 4, value);
+            assert!(refine_hardware(&mut bytes).is_err(), "parameter {parameter} = {value} is unsupported");
+        }
+        // 只要求 S16_LE：硬件只有 FLOAT_LE，掩码求交为空。
+        let mut bytes = unconstrained();
+        for byte in &mut bytes[36..68] {
+            *byte = 0;
+        }
+        set_u32(&mut bytes, 36, 1 << 2);
+        assert!(refine_hardware(&mut bytes).is_err(), "S16_LE alone has no common format");
+        // 只要求 S16 访问以外的方式（NONINTERLEAVED=1）也为空。
+        let mut bytes = unconstrained();
+        for byte in &mut bytes[4..36] {
+            *byte = 0;
+        }
+        set_u32(&mut bytes, 4, 1 << 1);
+        assert!(refine_hardware(&mut bytes).is_err());
+    }
+
+    #[test]
+    fn a_range_that_contains_the_hardware_point_is_accepted_and_pinned() {
+        let mut bytes = unconstrained();
+        set_u32(&mut bytes, 260 + 3 * 12, 8_000);
+        set_u32(&mut bytes, 260 + 3 * 12 + 4, 96_000);
+        refine_hardware(&mut bytes).unwrap();
+        assert_eq!((interval(&bytes, 11).0, interval(&bytes, 11).1), (48_000, 48_000));
+    }
+
+    #[test]
+    fn an_empty_interval_is_rejected_even_if_its_numbers_overlap() {
+        let mut bytes = unconstrained();
+        set_u32(&mut bytes, 260 + 3 * 12 + 8, 1 << 3);
+        assert!(refine_hardware(&mut bytes).is_err());
+        let mut inverted = unconstrained();
+        set_u32(&mut inverted, 260 + 3 * 12, 50_000);
+        set_u32(&mut inverted, 260 + 3 * 12 + 4, 40_000);
+        assert!(refine_hardware(&mut inverted).is_err(), "min > max is empty");
+    }
+}
+
+mod pcm_info {
+    use crate::alsa_codec::{PCM_INFO_BYTES, PcmInfo, encode_pcm_info};
+
+    fn text(bytes: &[u8], offset: usize, width: usize) -> &str {
+        let field = &bytes[offset..offset + width];
+        let length = field.iter().position(|&byte| byte == 0).expect("NUL-terminated");
+        core::str::from_utf8(&field[..length]).unwrap()
+    }
+
+    fn u32_at(bytes: &[u8], offset: usize) -> u32 {
+        u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
+    }
+
+    #[test]
+    fn layout_matches_linux_snd_pcm_info() {
+        let bytes = encode_pcm_info(&PcmInfo {
+            subdevice: 3,
+            subdevices_count: 8,
+            subdevices_available: 5,
+            card_id: b"LiteOS",
+            name: b"LiteOS Playback",
+        });
+        assert_eq!(bytes.len(), PCM_INFO_BYTES);
+        assert_eq!(u32_at(&bytes, 0), 0, "device");
+        assert_eq!(u32_at(&bytes, 4), 3, "subdevice");
+        assert_eq!(u32_at(&bytes, 8), 0, "stream = playback");
+        assert_eq!(u32_at(&bytes, 12), 0, "card");
+        assert_eq!(text(&bytes, 16, 64), "LiteOS");
+        assert_eq!(text(&bytes, 80, 80), "LiteOS Playback");
+        assert_eq!(text(&bytes, 160, 32), "subdevice #3");
+        assert_eq!(u32_at(&bytes, 192), 0, "dev_class = generic");
+        assert_eq!(u32_at(&bytes, 196), 0, "dev_subclass = generic mix");
+        assert_eq!(u32_at(&bytes, 200), 8, "subdevices_count");
+        assert_eq!(u32_at(&bytes, 204), 5, "subdevices_avail");
+        assert!(bytes[208..].iter().all(|&byte| byte == 0), "sync and reserved stay zero");
+    }
+
+    #[test]
+    fn subname_numbers_have_no_leading_zero_and_handle_multiple_digits() {
+        let name = |subdevice: u32| {
+            let bytes = encode_pcm_info(&PcmInfo {
+                subdevice,
+                subdevices_count: 8,
+                subdevices_available: 0,
+                card_id: b"",
+                name: b"",
+            });
+            text(&bytes, 160, 32).to_owned()
+        };
+        assert_eq!(name(0), "subdevice #0");
+        assert_eq!(name(7), "subdevice #7");
+        assert_eq!(name(10), "subdevice #10");
+        assert_eq!(name(4_294_967_295), "subdevice #4294967295");
+    }
+
+    #[test]
+    fn overlong_strings_truncate_but_stay_nul_terminated() {
+        let long = [b'x'; 200];
+        let bytes = encode_pcm_info(&PcmInfo {
+            subdevice: 0,
+            subdevices_count: 8,
+            subdevices_available: 8,
+            card_id: &long,
+            name: &long,
+        });
+        assert_eq!(text(&bytes, 16, 64).len(), 63);
+        assert_eq!(text(&bytes, 80, 80).len(), 79);
+    }
 }

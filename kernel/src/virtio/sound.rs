@@ -457,15 +457,6 @@ impl PcmOutput for VirtIOSoundDevice {
         Ok(())
     }
 
-    fn release(&self) -> Result<(), PcmOutputError> {
-        let _command = self.command.lock();
-        let state = self.queues.lock().state;
-        let next = state.after_release().ok_or(PcmOutputError::InvalidState)?;
-        self.pcm_command(R_PCM_RELEASE)?;
-        self.queues.lock().state = next;
-        Ok(())
-    }
-
     fn submit_period(&self, bytes: &[u8]) -> Result<(), PcmOutputError> {
         if bytes.len() != PCM_PERIOD_BYTES {
             return Err(PcmOutputError::InvalidState);

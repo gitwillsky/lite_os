@@ -81,9 +81,11 @@ mod virtio;
 #[cfg(test)]
 mod sync;
 
+/// 与内核 `audio` 领域相同的模块层级：被包含的源文件通过 `super::state` 等路径互相引用，不需要为测试改写。
 #[cfg(test)]
-#[path = "../../../kernel/src/audio/state.rs"]
-mod audio_state;
+mod audio;
+#[cfg(test)]
+use audio::state as audio_state;
 
 #[cfg(test)]
 mod audio_readiness {
