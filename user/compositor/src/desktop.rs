@@ -181,7 +181,8 @@ impl Stack {
 
     /// 切换窗口模式。
     ///
-    /// 进入最大化/全屏时保存当前几何并让窗口铺满 `screen`；回到普通模式时恢复保存的几何。
+    /// 进入最大化时窗口铺满工作区 `work`（扣除任务栏等独占区），进入全屏时铺满整个输出 `full`；
+    /// 两者都保存进入之前的几何，回到普通模式时恢复。
     ///
     /// # Returns
     ///
@@ -191,7 +192,8 @@ impl Stack {
         client: ClientId,
         surface: ObjectId,
         target: Mode,
-        screen: (i32, i32),
+        work: Geometry,
+        full: Geometry,
     ) -> Option<(i32, i32)> {
         let placed = self.find(client, surface)?;
         if placed.mode == target {
@@ -206,11 +208,41 @@ impl Stack {
                 if placed.mode == Mode::Normal {
                     placed.restore = Some((placed.x, placed.y, placed.width, placed.height));
                 }
-                (placed.x, placed.y, placed.width, placed.height) = (0, 0, screen.0, screen.1);
+                let area = if target == Mode::Maximized {
+                    work
+                } else {
+                    full
+                };
+                (placed.x, placed.y, placed.width, placed.height) = area;
             }
         }
         placed.mode = target;
         Some((placed.width, placed.height))
+    }
+
+    /// 工作区变化（任务栏出现、消失、改变高度）后，让最大化与全屏窗口重新铺满各自的区域。
+    ///
+    /// # Returns
+    ///
+    /// 几何发生变化的窗口及其新的物理尺寸，调用者据此向客户端发 configure。
+    pub fn refit(
+        &mut self,
+        work: Geometry,
+        full: Geometry,
+    ) -> Vec<(ClientId, ObjectId, (i32, i32))> {
+        let mut changed = Vec::new();
+        for placed in &mut self.order {
+            let area = match placed.mode {
+                Mode::Normal => continue,
+                Mode::Maximized => work,
+                Mode::Fullscreen => full,
+            };
+            if (placed.x, placed.y, placed.width, placed.height) != area {
+                (placed.x, placed.y, placed.width, placed.height) = area;
+                changed.push((placed.client, placed.surface, (area.2, area.3)));
+            }
+        }
+        changed
     }
 
     /// 移动窗口左上角；最大化与全屏窗口不能移动。

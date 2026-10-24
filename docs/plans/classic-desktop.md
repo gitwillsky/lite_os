@@ -322,10 +322,13 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
 - 窗口交互已实现：`xdg_toplevel.move/resize`（serial 校验、抓取、屏内可达性约束、缩放最小尺寸、对边锚定）、最大化/全屏（保存还原几何、
   configure 状态与尺寸）、最小化、Alt+Tab（无面板）与 Alt+Esc；纯几何在 `interaction.rs`、窗口模式在 `desktop.rs`，各有单测；门禁逐步截图核对。
   限制：拖动时窗口内容实时跟随（W2 默认值），尚未实现"拖动时只画 XOR 框"（W3）；Alt+Tab 没有面板与反向（W12/W13）；
-  最大化占满整个输出，任务栏出现后要改成工作区。
-- 已知缺口：`wl_pointer.set_cursor`（客户端光标）、popup 与 positioner、
-  `wl_data_device`、`wp_viewporter`/`zxdg_output_manager_v1`（Wine 需要）、layer-shell 与 foreign-toplevel（桌面外壳需要）、缩小客户端 scale > 输出 scale。
-- 下一步：客户端光标（`wl_pointer.set_cursor` 与光标形状）、layer-shell 与 foreign-toplevel，然后 `logon`、`desktop`。
+  最大化现在使用外壳独占区扣除后的工作区，全屏仍覆盖完整输出。
+- 客户端 `wl_pointer.set_cursor`、缩放方向光标、layer-shell v5 与 foreign-toplevel v3 已实现；外壳只经 compositor
+  创建的 WAYLAND_SOCKET 连接获得特权，普通客户端看不到/不能绑定外壳全局对象。
+  `shell-probe` 只注入运行时门禁，以背景和任务栏控制另一个客户端，验证独占区、键盘焦点、光标、句柄状态与退出清理。
+  精确限制由 [当前设备架构](../architecture/devices-terminal.md) 维护。
+- 已知缺口：popup 与 positioner、`wl_data_device`、`wp_viewporter`/`zxdg_output_manager_v1`（Wine 需要）、缩小客户端 scale > 输出 scale。
+- 下一步：`classic-ui` 窗口/输入层，然后 `logon`、`desktop`；之后按 Wine 必需协议补齐。
 
 - 待做：`classic-ui` 的窗口/输入层（Wayland 客户端、焦点与键盘导航、助记符下划线、菜单动画与交互）、黄金截图门禁。
 

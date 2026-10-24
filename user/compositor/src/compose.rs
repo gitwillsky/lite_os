@@ -4,11 +4,12 @@ use canvas::{Color, Image, Rect, Surface};
 use classic_theme::{SystemColor, Theme};
 use linux_uapi::drm::DumbBuffer;
 
-use crate::{desktop::Placement, wayland::Content};
+use crate::wayland::Content;
 
-/// 一个待绘制的窗口：位置与尺寸，以及内容、整数放大倍数。
+/// 一个待绘制的 surface：左上角物理坐标、内容与放大倍数。
 pub struct Drawable<'a> {
-    pub placement: Placement,
+    pub x: i32,
+    pub y: i32,
     pub content: &'a Content,
     /// 内容相对其自身 scale 放大到输出 scale 所需的整数倍数。
     pub factor: i32,
@@ -40,7 +41,7 @@ pub fn compose(target: &mut DumbBuffer, theme: &Theme, windows: &[Drawable<'_>])
             height: window.content.height as i32,
             stride: window.content.width,
         };
-        surface.blit(image, window.placement.x, window.placement.y, window.factor);
+        surface.blit(image, window.x, window.y, window.factor);
     }
     true
 }

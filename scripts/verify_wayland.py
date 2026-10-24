@@ -32,7 +32,7 @@ from verify_busybox import build_rust_user_program
 from verify_musl import cached_musl_paths, find_compiler, run
 
 ROOT = Path(__file__).resolve().parent.parent
-RECIPE_VERSION = 1
+RECIPE_VERSION = 2
 # 只注入私有 gate 镜像：上游 wayland-info 及其运行时依赖（musl 由产品提供）。
 PACKAGES = (
     ("wayland-utils-1.2.0-r0.apk", "f228b6562d731433850d7ecafd3542812d4b8e3abf62322868fc2c8adfcba501"),
@@ -65,6 +65,10 @@ i=0
 while [ ! -s /var/tmp/keymap.xkb ] && [ $i -lt 60 ]; do sleep 1; i=$((i+1)); done
 /bin/xkb-check /var/tmp/keymap.xkb
 wait
+touch /var/tmp/shell-start
+i=0
+while [ ! -f /var/tmp/shell-ready ] && [ $i -lt 60 ]; do sleep 1; i=$((i+1)); done
+/bin/wayland-probe
 """
 # 上游 wayland-info 对齐输出：全局对象行、shm 格式（fourcc）与 wl_output 的几何、名字和模式。
 EXPECTED_INFO = (
@@ -132,7 +136,7 @@ def build_xkb_check(musl, tool_root: Path) -> Path:
     return binary
 
 
-def install(image: Path, tool_root: Path, probe: Path, xkb_check: Path, directory: Path) -> None:
+def install(image: Path, tool_root: Path, probe: Path, xkb_check: Path, shell_probe: Path, directory: Path) -> None:
     """把上游工具、探针与启动脚本写入私有镜像；保留产品 inittab 的显示服务监督。"""
     recover_ext4_journal(image)
     sources = []
@@ -144,7 +148,7 @@ def install(image: Path, tool_root: Path, probe: Path, xkb_check: Path, director
     script.write_text(SCRIPT)
     inittab = directory / "inittab"
     inittab.write_text((ROOT / "user/base/inittab").read_text() + "::once:/bin/sh /var/tmp/wayland.sh\n")
-    sources += [(probe, "/bin/wayland-probe"), (xkb_check, "/bin/xkb-check"), (script, "/var/tmp/wayland.sh"), (inittab, "/etc/inittab")]
+    sources += [(shell_probe, "/bin/logon"), (probe, "/bin/wayland-probe"), (xkb_check, "/bin/xkb-check"), (script, "/var/tmp/wayland.sh"), (inittab, "/etc/inittab")]
     directories = set()
     for _, destination in sources:
         parent = Path(destination).parent
@@ -166,6 +170,8 @@ def install(image: Path, tool_root: Path, probe: Path, xkb_check: Path, director
 def check_info(text: str) -> None:
     """`wayland-info` 的输出必须包含全部期望片段，缺失时指出是哪一条。"""
     missing = [pattern for pattern in EXPECTED_INFO if re.search(pattern, text) is None]
+    if "zwlr_layer_shell_v1" in text or "zwlr_foreign_toplevel_manager_v1" in text:
+        raise RuntimeError("ordinary clients can see privileged globals")
     if missing:
         raise RuntimeError(f"wayland-info output is missing {missing}\n{text[-2500:]}")
 
@@ -234,7 +240,7 @@ def wait_screen(session, expectations: list[tuple[tuple[int, int], tuple[int, in
         if not wrong:
             return
         if time.monotonic() > deadline:
-            raise RuntimeError(f"{what}: wrong pixels {wrong}")
+            raise RuntimeError(f"{what}: wrong pixels {wrong}\n{session.console.text[-3000:]}")
         time.sleep(0.25)
 
 
@@ -309,6 +315,70 @@ def check_window_interaction(session) -> None:
     wait_screen(session, [((150, 150), window), ((100, 80), window)], "alt+tab restore")
 
 
+SHELL_BACKGROUND = (0x18, 0x38, 0x58)
+SHELL_PANEL = (0xC0, 0xC0, 0xC0)
+
+
+def check_shell(session) -> None:
+    """实际特权连接映射外壳，控制另一个连接的窗口，并在退出时释放独占区与焦点。"""
+    console, window, back, panel = session.console, PROBE_LAST_COLOR, SHELL_BACKGROUND, SHELL_PANEL
+    console.wait_for(("shell-probe: ready", "shell-probe: toplevel", "shell-probe: title Wayland probe", "wayland-probe: frame 4 presented"), after=0)
+    wait_screen(session, [((0, 0), back), ((100, 100), window), ((0, 772), panel), ((1279, 799), panel)], "shell layers")
+
+    def click(x: int, action: str) -> int:
+        mark = console.mark()
+        pointer_to(session, x, 785)
+        button(session, True)
+        button(session, False)
+        console.wait_for((action,), after=mark)
+        return mark
+
+    # 1. 客户端光标必须成功经过 DRM 更新；screendump 不包含硬件 cursor plane。
+    pointer_to(session, 50, 785)
+    console.wait_for(("shell-probe: cursor requested", "compositor: client cursor 8x8 hotspot 2,3"))
+    # 2. 任务栏的 foreign handle 操作另一个客户端；最大化避开 28px panel。
+    mark = click(50, "shell-probe: action 0")
+    console.wait_for(("wayland-probe: resized 1280x772",), after=mark)
+    wait_screen(session, [((0, 0), window), ((1279, 771), window), ((1279, 772), panel)], "shell maximize")
+    mark = click(150, "shell-probe: action 1")
+    console.wait_for(("shell-probe: state [0, 1]",), after=mark)
+    wait_screen(session, [((50, 50), back), ((1279, 799), panel)], "shell minimize")
+    mark = click(250, "shell-probe: action 2")
+    console.wait_for(("shell-probe: state [0, 2]",), after=mark)
+    wait_screen(session, [((50, 50), window)], "shell activate")
+    # 3. panel 调高后已最大化窗口自动重排；独占键盘阻止 Alt+F4 越过外壳。
+    mark = click(450, "shell-probe: configured 1280x48")
+    console.wait_for(("wayland-probe: resized 1280x752",), after=mark)
+    wait_screen(session, [((1279, 751), window), ((1279, 752), panel)], "shell work area resize")
+    click(750, "shell-probe: on demand")
+    mark = click(750, "shell-probe: on demand")
+    console.wait_for(("shell-probe: keyboard enter",), after=mark)
+    mark = console.mark()
+    tap(session, "a")
+    console.wait_for(("shell-probe: key 30 Pressed",), after=mark)
+    mark = console.mark()
+    pointer_to(session, 100, 100)
+    button(session, True)
+    button(session, False)
+    console.wait_for(("wayland-probe: keyboard enter",), after=mark)
+    tap(session, "a")
+    console.wait_for(("wayland-probe: key 30 pressed",), after=mark)
+    mark = click(550, "shell-probe: exclusive true")
+    console.wait_for(("shell-probe: keyboard enter",), after=mark)
+    mark = console.mark()
+    tap(session, "alt", "f4")
+    tap(session, "a")
+    console.wait_for(("shell-probe: key 30 Pressed",), after=mark)
+    if "wayland-probe: close requested" in console.text[mark:]:
+        raise RuntimeError("Alt+F4 bypassed the exclusive shell keyboard focus")
+    mark = click(550, "shell-probe: exclusive false")
+    console.wait_for(("wayland-probe: keyboard enter",), after=mark)
+    # 4. 由外壳关闭窗口：closed/finished 后整个连接退出，图层与输入焦点随之清理。
+    mark = click(350, "shell-probe: action 3")
+    console.wait_for(("wayland-probe: close requested", "shell-probe: closed", "shell-probe: finished", "compositor: windows=0"), after=mark)
+    wait_screen(session, [((0, 0), DESKTOP_BACKGROUND), ((1279, 799), DESKTOP_BACKGROUND)], "shell disconnect cleanup")
+
+
 def default_image(target: BuildTarget) -> Path:
     return ROOT / "target" / "rootfs" / f"{target.arch}.img"
 
@@ -327,12 +397,13 @@ def main() -> int:
             raise RuntimeError(f"rootfs image is missing: {image}")
         musl = cached_musl_paths(find_compiler())
         probe = build_rust_user_program(musl, "compositor", "wayland-probe", "wayland-probe", 1)
+        shell_probe = build_rust_user_program(musl, "compositor", "shell-probe", "shell-probe", 1)
         tool_root, archives = tools()
         xkb_check = build_xkb_check(musl, tool_root)
         stamp = ROOT / "target" / "verify-gates" / "wayland-aarch64.json"
         payload = runtime_gate_payload(
             "wayland", RECIPE_VERSION,
-            (image, probe, xkb_check, *archives, ROOT / "scripts/fixtures/wayland/xkb-check.c", ROOT / "scripts/display_gate.py", ROOT / "scripts/qemu_gate.py", Path(__file__).resolve()),
+            (image, probe, shell_probe, xkb_check, *archives, ROOT / "scripts/fixtures/wayland/xkb-check.c", ROOT / "scripts/display_gate.py", ROOT / "scripts/qemu_gate.py", Path(__file__).resolve()),
         )
         if runtime_gate_hit(stamp, payload, (image,)):
             print("wayland verification cache hit")
@@ -340,7 +411,7 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="liteos-wayland-install-") as scratch:
             private = Path(scratch) / image.name
             shutil.copyfile(image, private)
-            install(private, tool_root, probe, xkb_check, Path(scratch))
+            install(private, tool_root, probe, xkb_check, shell_probe, Path(scratch))
             with display_session(private) as session:
                 session.console.wait_for(("WAYLAND_INFO_DONE", "wayland-probe: done", "XKB_OK"))
                 text = session.console.text
@@ -364,12 +435,13 @@ def main() -> int:
                 while True:
                     width, height, pixels = session.screendump()
                     gone = pixels[FIRST_WINDOW_ORIGIN * width + FIRST_WINDOW_ORIGIN + 10]
-                    if gone == DESKTOP_BACKGROUND:
+                    if gone in (DESKTOP_BACKGROUND, SHELL_BACKGROUND):
                         break
                     if time.monotonic() > deadline:
                         raise RuntimeError(f"closed window still on screen: {gone}")
                     time.sleep(0.25)
-        print("wayland gate: globals, keymap, pointer/keyboard order, window drag/resize/maximize/fullscreen/minimize/Alt+Tab, composited and closed by Alt+F4")
+                check_shell(session)
+        print("wayland gate: globals, keymap, pointer/keyboard order, window drag/resize/maximize/fullscreen/minimize/Alt+Tab, composited and closed by Alt+F4; privileged shell layers, work area, foreign handles, cursor and cleanup")
         publish_runtime_gate(stamp, payload)
     except RuntimeError as error:
         print(f"wayland verification failed: {error}", file=sys.stderr)

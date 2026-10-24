@@ -69,6 +69,12 @@ class InfoTests(unittest.TestCase):
                 check_info(broken)
 
 
+    def test_privileged_globals_are_hidden_even_from_a_root_socket_client(self) -> None:
+        for interface in ("zwlr_layer_shell_v1", "zwlr_foreign_toplevel_manager_v1"):
+            with self.assertRaisesRegex(RuntimeError, "privileged globals"):
+                check_info(INFO + f"interface: '{interface}', version: 1, name: 6\n")
+
+
 class InputEventTests(unittest.TestCase):
     def test_absolute_events_span_the_whole_tablet_range(self) -> None:
         self.assertEqual(abs_event("x", 0, 1280)["data"], {"axis": "x", "value": 0})

@@ -11,6 +11,17 @@ use wayland_wire::{
 
 use super::client::{Client, Data, Fail};
 
+/// 客户端对指针光标的请求（`wl_pointer.set_cursor`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CursorRequest {
+    /// 必须是该客户端最近一次收到的 `wl_pointer.enter` 的序号，否则请求过期。
+    pub serial: u32,
+    /// 光标图像所在的 `wl_surface`；`None` 表示隐藏光标。
+    pub surface: Option<ObjectId>,
+    /// 热点，相对 surface 左上角，逻辑像素。
+    pub hotspot: (i32, i32),
+}
+
 /// 重复按键：每秒字符数与首次重复前的延迟毫秒。由客户端自己实现重复，合成器只宣告参数。
 const REPEAT_RATE: i32 = 30;
 const REPEAT_DELAY_MS: i32 = 500;
@@ -89,6 +100,56 @@ impl Client {
             .encode(keyboard, &mut self.writer)?;
         }
         Ok(())
+    }
+
+    pub(super) fn pointer(
+        &mut self,
+        object: ObjectId,
+        request: wl_pointer::Request,
+    ) -> Result<(), Fail> {
+        match request {
+            wl_pointer::Request::SetCursor {
+                serial,
+                surface,
+                hotspot_x,
+                hotspot_y,
+            } => {
+                if let Some(surface) = surface {
+                    let state = self.surface_mut(surface)?;
+                    if state.xdg.is_some() || state.layer.is_some() {
+                        return Err(Fail::new(
+                            object,
+                            wl_pointer::Error::Role as u32,
+                            "cursor surface already has another role",
+                        ));
+                    }
+                    state.cursor = true;
+                }
+                self.cursor_requests.push(CursorRequest {
+                    serial,
+                    surface,
+                    hotspot: (hotspot_x, hotspot_y),
+                });
+                Ok(())
+            }
+            wl_pointer::Request::Release => Ok(()),
+        }
+    }
+
+    /// 取走自上次以来客户端的光标请求。
+    pub fn take_cursor_requests(&mut self) -> Vec<CursorRequest> {
+        std::mem::take(&mut self.cursor_requests)
+    }
+
+    /// 光标 surface 当前提交的图像（预乘 ARGB）及其 buffer scale。
+    pub fn cursor_image(&self, surface: ObjectId) -> Option<(&super::Content, i32)> {
+        match self.objects.get(&surface.get()) {
+            Some(super::client::Entry {
+                data: Data::Surface(state),
+                ..
+            }) => Some((state.content.as_ref()?, state.scale)),
+            _ => None,
+        }
     }
 
     fn objects_of(&self, interface: Interface) -> Vec<(ObjectId, u32)> {

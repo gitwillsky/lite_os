@@ -107,7 +107,8 @@ impl Client {
                 self.create(id, Interface::XdgPositioner, version, Data::None)
             }
             xdg_wm_base::Request::GetXdgSurface { id, surface } => {
-                if self.surface_mut(surface)?.xdg.is_some() {
+                let state = self.surface_mut(surface)?;
+                if state.xdg.is_some() || state.layer.is_some() || state.cursor {
                     return Err(Fail::new(
                         object,
                         xdg_wm_base::Error::Role as u32,

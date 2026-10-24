@@ -86,6 +86,8 @@ impl Harness {
         while let Some(frame) = framer.next_frame().unwrap() {
             let interface = if frame.object.get() == 1 {
                 Interface::WlDisplay
+            } else if frame.object.get() >= 0xFF00_0000 {
+                Interface::ZwlrForeignToplevelHandleV1
             } else {
                 interfaces
                     .iter()
@@ -131,7 +133,38 @@ impl Harness {
 
     /// 完成握手并绑定 compositor（id 3）、shm（id 4）与 xdg_wm_base（id 20）。
     fn bound() -> Self {
-        let mut harness = Self::new();
+        Self::bound_with(Self::new())
+    }
+
+    /// 特权客户端：额外绑定 layer-shell（id 51）与 foreign-toplevel 管理器（id 52）。
+    fn privileged() -> Self {
+        let mut harness = Self::bound_with(Harness {
+            client: Client::privileged(OUTPUT),
+        });
+        for (name, interface, version, new) in [
+            (6, "zwlr_layer_shell_v1", 5, 51),
+            (7, "zwlr_foreign_toplevel_manager_v1", 3, 52),
+        ] {
+            harness
+                .send(|w| {
+                    wl_registry::Request::Bind {
+                        name,
+                        id: DynamicNewId {
+                            interface: interface.into(),
+                            version,
+                            id: id(new),
+                        },
+                    }
+                    .encode(id(2), w)
+                    .unwrap()
+                })
+                .unwrap();
+        }
+        harness.events(&[]);
+        harness
+    }
+
+    fn bound_with(mut harness: Self) -> Self {
         harness
             .send(|w| {
                 wl_display::Request::GetRegistry { registry: id(2) }
@@ -849,7 +882,10 @@ fn fd_floods_and_random_garbage_never_panic() {
     }
 }
 
+mod foreign;
+mod layer;
 mod output;
+mod privilege;
 mod seat;
 #[cfg(target_os = "linux")]
 mod seat_socket;

@@ -5,13 +5,90 @@ use std::{
     io,
     io::{Read, Write},
     os::{
-        fd::{AsFd, AsRawFd},
+        fd::{AsFd, AsRawFd, OwnedFd},
         unix::process::CommandExt,
     },
     process::{Child, ChildStdin, ChildStdout, Command, ExitStatus, Stdio},
 };
 
 use crate::raw;
+
+/// 以 Wayland 约定拉起特权客户端，通过标准输入传递已连接的 socket。
+///
+/// # Parameters
+///
+/// - `program`: 要执行的程序；继承环境，`WAYLAND_SOCKET` 设为标准输入的编号 0。
+/// - `socket`: 客户端连接；交给 `Command` 的标准 I/O 装配，返回后父进程不再持有。
+///
+/// # Returns
+///
+/// 可等待回收的子进程。该客户端的标准输入专用于 Wayland，不用于终端输入。
+///
+/// # Errors
+///
+/// 程序不存在、不可执行或标准 I/O 装配失败。
+pub fn spawn_with_wayland_socket(program: &OsStr, socket: OwnedFd) -> io::Result<Child> {
+    Command::new(program)
+        .env("WAYLAND_SOCKET", "0")
+        .stdin(Stdio::from(socket))
+        .spawn()
+}
+
+/// 复制 `WAYLAND_SOCKET` 指定的连接，并为原描述符与副本设置 `FD_CLOEXEC`。
+///
+/// 保留环境变量，避免修改多线程进程环境；启动普通应用的调用者须用
+/// `Command::env_remove("WAYLAND_SOCKET")`，否则应用可能尝试使用已被 exec 关闭的描述符。
+/// 原描述符仍归进程启动时的继承状态所有，返回的连接拥有独立的描述符。
+///
+/// # Returns
+///
+/// 未设置 `WAYLAND_SOCKET` 或非 Linux 目标时返回 `Ok(None)`。
+///
+/// # Errors
+///
+/// 环境变量不是非负描述符编号、描述符没有打开或复制失败。
+pub fn wayland_socket_from_env() -> io::Result<Option<std::os::unix::net::UnixStream>> {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::fd::{FromRawFd, RawFd};
+        const F_GETFD: i32 = 1;
+        const F_SETFD: i32 = 2;
+        const F_DUPFD_CLOEXEC: i32 = 1030;
+        const FD_CLOEXEC: i32 = 1;
+        let Some(value) = std::env::var_os("WAYLAND_SOCKET") else {
+            return Ok(None);
+        };
+        let descriptor: RawFd = value
+            .to_str()
+            .and_then(|text| text.parse().ok())
+            .filter(|descriptor| *descriptor >= 0)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "WAYLAND_SOCKET is not a descriptor number",
+                )
+            })?;
+        // SAFETY: fcntl 只查询/设置内核描述符标志，不借用用户内存；无效描述符返回 errno。
+        let flags = unsafe { raw::fcntl(descriptor, F_GETFD, 0) };
+        // SAFETY: 保留已有标志，阻止继承的连接跨过后续 exec；不关闭可能仍被标准输入借用的 fd。
+        if flags < 0 || unsafe { raw::fcntl(descriptor, F_SETFD, flags | FD_CLOEXEC) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: 内核原子分配新的 CLOEXEC fd，不接管环境变量中可能已有其他 owner 的 fd。
+        let duplicate = unsafe { raw::fcntl(descriptor, F_DUPFD_CLOEXEC, 0) };
+        if duplicate < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: duplicate 是刚分配且未发布的有效 fd，唯一所有权交给返回的 UnixStream。
+        Ok(Some(unsafe {
+            std::os::unix::net::UnixStream::from_raw_fd(duplicate)
+        }))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Ok(None)
+    }
+}
 
 const SESSION_LAUNCHER: &str = "/bin/session-launch";
 const EXEC_STATUS_HEADER: [u8; 5] = *b"LSEX\x01";

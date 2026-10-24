@@ -27,6 +27,10 @@ pub struct Surface {
     pub scale: i32,
     /// 该 surface 的 `xdg_surface` 对象（若已建立）。
     pub xdg: Option<ObjectId>,
+    /// 该 surface 的 `zwlr_layer_surface_v1` 对象（若已建立）。
+    pub layer: Option<ObjectId>,
+    /// cursor 角色在 surface 生命周期内保留；否则光标可能被再次用作应用窗口。
+    pub cursor: bool,
     /// 已通知客户端进入输出（`wl_surface.enter`）。
     pub entered: bool,
 }

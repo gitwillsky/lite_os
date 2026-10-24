@@ -6,30 +6,21 @@
 //! 收到新的 configure 尺寸就按新尺寸重绘。
 //! 每个里程碑打印一行 `wayland-probe: ...`，门禁据此判定并随后截图比对窗口像素。
 
+#[path = "../probe_connection.rs"]
+mod probe_connection;
+use probe_connection::Connection;
 use std::{
-    collections::{HashMap, VecDeque},
-    env,
+    collections::HashMap,
     fs::{self, File},
-    io::{self, Read, Write},
-    os::{
-        fd::AsFd,
-        unix::{fs::FileExt, net::UnixStream},
-    },
-    path::PathBuf,
+    io::{self, Read},
     process::ExitCode,
-};
-
-use linux_uapi::{
-    shared_memory::MemFd,
-    unix::{recv_fds, send_fd},
 };
 use wayland_wire::{
     protocol::{
-        self, AnyEvent, Interface, wl_buffer, wl_callback, wl_compositor, wl_display, wl_keyboard,
-        wl_pointer, wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface, xdg_surface,
-        xdg_toplevel, xdg_wm_base,
+        AnyEvent, Interface, wl_callback, wl_compositor, wl_display, wl_keyboard, wl_pointer,
+        wl_registry, wl_seat, wl_surface, xdg_surface, xdg_toplevel, xdg_wm_base,
     },
-    wire::{DynamicNewId, Framer, ObjectId, Reader, Writer},
+    wire::{DynamicNewId, ObjectId},
 };
 
 /// 收到的 keymap 写到这里，guest 里的 `xkb-check` 用上游 libxkbcommon 编译它。
@@ -40,93 +31,6 @@ const FRAMES: u32 = 5;
 /// 第 `n` 帧的纯色（XRGB）；门禁用最后一帧的颜色比对屏幕像素。
 const FRAME_COLORS: [u32; FRAMES as usize] =
     [0xFF2040C0, 0xFF40C040, 0xFFC04020, 0xFFC0C020, 0xFF20C0C0];
-
-fn id(value: u32) -> ObjectId {
-    ObjectId::new(value).expect("probe object ids are non-zero")
-}
-
-struct Connection {
-    stream: UnixStream,
-    framer: Framer,
-    fds: VecDeque<std::os::fd::OwnedFd>,
-    writer: Writer,
-    interfaces: HashMap<u32, Interface>,
-}
-
-impl Connection {
-    fn new(stream: UnixStream) -> Self {
-        let interfaces = HashMap::from([(1, Interface::WlDisplay)]);
-        Self {
-            stream,
-            framer: Framer::new(),
-            fds: VecDeque::new(),
-            writer: Writer::new(),
-            interfaces,
-        }
-    }
-
-    /// 登记新对象的接口，以便解码它的事件。
-    fn track(&mut self, object: u32, interface: Interface) -> ObjectId {
-        self.interfaces.insert(object, interface);
-        id(object)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.stream.write_all(self.writer.bytes())?;
-        let sent = self.writer.bytes().len();
-        self.writer.consume(sent, 0);
-        Ok(())
-    }
-
-    fn next_event(&mut self) -> io::Result<(ObjectId, AnyEvent)> {
-        loop {
-            if let Some(frame) = self.framer.next_frame().map_err(io::Error::other)? {
-                let interface = *self.interfaces.get(&frame.object.get()).ok_or_else(|| {
-                    io::Error::other(format!("event for unknown object {}", frame.object.get()))
-                })?;
-                let event = protocol::decode_event(
-                    interface,
-                    frame.opcode,
-                    &mut Reader::new(&frame.body, &mut self.fds),
-                )
-                .map_err(io::Error::other)?;
-                return Ok((frame.object, event));
-            }
-            let mut buffer = [0u8; 4096];
-            let (count, fds) = recv_fds(self.stream.as_fd(), &mut buffer)?;
-            if count == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "compositor closed the connection",
-                ));
-            }
-            self.framer.push(&buffer[..count]);
-            self.fds.extend(fds);
-        }
-    }
-
-    /// 等待 `callback` 的 done；沿途把其他事件交给 `observe`。
-    fn wait_callback(
-        &mut self,
-        callback: ObjectId,
-        mut observe: impl FnMut(ObjectId, AnyEvent),
-    ) -> io::Result<()> {
-        loop {
-            let (object, event) = self.next_event()?;
-            if object == callback
-                && matches!(event, AnyEvent::WlCallback(wl_callback::Event::Done { .. }))
-            {
-                return Ok(());
-            }
-            if let AnyEvent::WlDisplay(wl_display::Event::Error { code, message, .. }) = &event {
-                return Err(io::Error::other(format!(
-                    "protocol error {code}: {message}"
-                )));
-            }
-            observe(object, event);
-        }
-    }
-}
 
 /// 窗口上部这么多像素内按下鼠标视为点在标题栏上。
 const TITLE_HEIGHT: i32 = 30;
@@ -160,7 +64,6 @@ struct Probe {
     xdg: ObjectId,
     toplevel: ObjectId,
     seat: ObjectId,
-    next_id: u32,
     size: (i32, i32),
     color: u32,
     /// 最近一次 configure 带来的非零目标尺寸，在 `xdg_surface.configure` 确认后生效。
@@ -173,9 +76,7 @@ struct Probe {
 
 impl Probe {
     fn new_object(&mut self, interface: Interface) -> ObjectId {
-        let object = self.connection.track(self.next_id, interface);
-        self.next_id += 1;
-        object
+        self.connection.new_object(interface)
     }
 
     fn send(&mut self, request: Result<(), wayland_wire::wire::EncodeError>) -> io::Result<()> {
@@ -184,69 +85,10 @@ impl Probe {
 
     /// 用纯色重绘整个窗口：新建 memfd 池与 buffer，附着并提交，随后销毁它们（服务端在 commit 时已复制）。
     fn draw(&mut self, color: u32, frame: Option<ObjectId>) -> io::Result<()> {
-        let (width, height) = self.size;
-        let stride = width * 4;
-        let size = (stride * height) as usize;
-        let memory = MemFd::create("wayland-probe", size)?;
-        let file = File::from(memory.as_fd().try_clone_to_owned()?);
-        let row: Vec<u8> = std::iter::repeat_n(color.to_le_bytes(), width as usize)
-            .flatten()
-            .collect();
-        for y in 0..height as u64 {
-            file.write_all_at(&row, y * stride as u64)?;
-        }
-        let pool = self.new_object(Interface::WlShmPool);
-        // 描述符随 create_pool 一起经 SCM_RIGHTS 发送；先发完前面排队的字节，保证顺序。
-        self.connection.flush()?;
-        let mut request = Writer::new();
-        request.begin(self.shm, 0);
-        request.object(Some(pool));
-        request.int(size as i32);
-        request.end().map_err(io::Error::other)?;
-        send_fd(
-            self.connection.stream.as_fd(),
-            request.bytes(),
-            memory.as_fd(),
-        )?;
-        let buffer = self.new_object(Interface::WlBuffer);
-        let create = wl_shm_pool::Request::CreateBuffer {
-            id: buffer,
-            offset: 0,
-            width,
-            height,
-            stride,
-            format: wl_shm::Format::Xrgb8888,
-        }
-        .encode(pool, &mut self.connection.writer);
-        self.send(create)?;
-        let surface = self.surface;
-        let writer = &mut self.connection.writer;
-        let mut requests = vec![
-            wl_surface::Request::Attach {
-                buffer: Some(buffer),
-                x: 0,
-                y: 0,
-            }
-            .encode(surface, writer),
-            wl_surface::Request::Damage {
-                x: 0,
-                y: 0,
-                width,
-                height,
-            }
-            .encode(surface, writer),
-        ];
-        if let Some(callback) = frame {
-            requests.push(wl_surface::Request::Frame { callback }.encode(surface, writer));
-        }
-        requests.push(wl_surface::Request::Commit.encode(surface, writer));
-        requests.push(wl_buffer::Request::Destroy.encode(buffer, writer));
-        requests.push(wl_shm_pool::Request::Destroy.encode(pool, writer));
-        for request in requests {
-            self.send(request)?;
-        }
+        self.connection
+            .draw_solid(self.shm, self.surface, self.size, color, 1, frame)?;
         self.color = color;
-        self.connection.flush()
+        Ok(())
     }
 
     /// 处理一个事件：打印里程碑，并对 configure、按钮与按键做出像真实客户端一样的反应。
@@ -448,17 +290,12 @@ fn observe(event: AnyEvent) {
 }
 
 fn run() -> io::Result<()> {
-    let runtime = env::var_os("XDG_RUNTIME_DIR")
-        .ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR is not set"))?;
-    let mut connection = Connection::new(UnixStream::connect(
-        PathBuf::from(runtime).join("wayland-0"),
-    )?);
-
-    let registry = connection.track(2, Interface::WlRegistry);
+    let mut connection = Connection::connect()?;
+    let registry = connection.new_object(Interface::WlRegistry);
     wl_display::Request::GetRegistry { registry }
         .encode(ObjectId::DISPLAY, &mut connection.writer)
         .map_err(io::Error::other)?;
-    let sync = connection.track(3, Interface::WlCallback);
+    let sync = connection.new_object(Interface::WlCallback);
     wl_display::Request::Sync { callback: sync }
         .encode(ObjectId::DISPLAY, &mut connection.writer)
         .map_err(io::Error::other)?;
@@ -475,16 +312,14 @@ fn run() -> io::Result<()> {
         }
     })?;
 
-    let mut next = 4;
-    let mut bind = |connection: &mut Connection, interface: Interface| -> io::Result<ObjectId> {
+    let bind = |connection: &mut Connection, interface: Interface| -> io::Result<ObjectId> {
         let (name, version) = *globals.get(interface.name()).ok_or_else(|| {
             io::Error::other(format!(
                 "compositor does not advertise {}",
                 interface.name()
             ))
         })?;
-        let object = connection.track(next, interface);
-        next += 1;
+        let object = connection.new_object(interface);
         let request = wl_registry::Request::Bind {
             name,
             id: DynamicNewId {
@@ -503,25 +338,25 @@ fn run() -> io::Result<()> {
     let wm_base = bind(&mut connection, Interface::XdgWmBase)?;
     let _output = bind(&mut connection, Interface::WlOutput)?;
     let seat = bind(&mut connection, Interface::WlSeat)?;
-    let pointer = connection.track(24, Interface::WlPointer);
+    let pointer = connection.new_object(Interface::WlPointer);
     wl_seat::Request::GetPointer { id: pointer }
         .encode(seat, &mut connection.writer)
         .map_err(io::Error::other)?;
-    let keyboard = connection.track(25, Interface::WlKeyboard);
+    let keyboard = connection.new_object(Interface::WlKeyboard);
     wl_seat::Request::GetKeyboard { id: keyboard }
         .encode(seat, &mut connection.writer)
         .map_err(io::Error::other)?;
     println!("wayland-probe: bound compositor shm xdg_wm_base output seat");
 
-    let surface = connection.track(20, Interface::WlSurface);
+    let surface = connection.new_object(Interface::WlSurface);
     wl_compositor::Request::CreateSurface { id: surface }
         .encode(compositor, &mut connection.writer)
         .map_err(io::Error::other)?;
-    let xdg = connection.track(21, Interface::XdgSurface);
+    let xdg = connection.new_object(Interface::XdgSurface);
     xdg_wm_base::Request::GetXdgSurface { id: xdg, surface }
         .encode(wm_base, &mut connection.writer)
         .map_err(io::Error::other)?;
-    let toplevel = connection.track(22, Interface::XdgToplevel);
+    let toplevel = connection.new_object(Interface::XdgToplevel);
     xdg_surface::Request::GetToplevel { id: toplevel }
         .encode(xdg, &mut connection.writer)
         .map_err(io::Error::other)?;
@@ -547,7 +382,6 @@ fn run() -> io::Result<()> {
         xdg,
         toplevel,
         seat,
-        next_id: 100,
         size: (WIDTH, HEIGHT),
         color: FRAME_COLORS[0],
         pending_size: None,

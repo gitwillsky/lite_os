@@ -52,7 +52,7 @@
   时等待统一 readiness edge 后重提，不把 controlq 的实现级串行化泄漏成 `EBUSY`。动态 mode 的
   userspace transaction 由用户态 `compositor` 拥有：它是唯一 DRM master 与 evdev 读者，接管内核启动画面，
   以硬件光标跟随输入，并作为 Wayland 服务端把客户端窗口整帧合成到 scanout（`$XDG_RUNTIME_DIR/wayland-0`；
-  `wl_seat` 有指针与键盘，尚无 popup 与桌面外壳）。键盘 keymap 由 `keyboard::xkb` 从同一张键码表生成，
+  `wl_seat` 有指针与键盘，特权连接有 layer-shell 与 foreign-toplevel；尚无 popup、登录或桌面程序）。键盘 keymap 由 `keyboard::xkb` 从同一张键码表生成，
   自包含、不依赖客户端的 xkeyboard-config。
   Legacy `CURSOR2` 把 64×64 ARGB dumb BO 通过规范要求的
   `RESOURCE_CREATE_2D`/`TRANSFER_TO_HOST_2D` 投影到 VirtIO-GPU 独立 cursorq；该 queue 的
@@ -77,6 +77,11 @@
   由实际 owner 的 OOM、观察者、重开和重复 close 回归用例验证。
 ## Known limits
 
+- Wayland 外壳支持 layer-shell v5 的背景/任务栏/覆盖层、锚点、边距、独占区与键盘交互，以及 foreign-toplevel v3 的窗口列表和控制。
+  当前限制：layer popup 不支持；layer 的定位/configure 目前相对整个输出，`exclusive_zone=0` 尚不避让其他图层的正独占区，
+  多个同边 panel 尚不按独占区依次排列；foreign-toplevel 尚无 output_enter/leave 与父子窗口关系；
+  硬件光标只显示放大后不超过 64×64、物理热点位于 0..63 的图像，其余回退默认箭头，不提供软件 cursor plane；
+  未实现 cursor-shape 扩展、素材忙碌光标计时动画、客户端 scale 高于输出时的缩小。
 - BusyBox init 监督网络服务、显示服务与 UART shell；显示器只有 compositor 接管的启动画面与光标，没有文本 VT、登录或桌面会话。
 - GPU 开放 compositor 独占的单一 VirGL2 context、3D resource/transfer/submit、VirGL scanout/flush、2D damage flush、
   64×64 hardware cursor 与

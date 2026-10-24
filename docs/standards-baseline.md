@@ -150,6 +150,11 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 - wayland-protocols `1.45`；tag commit `0091197f5c1b1f2c131f1410e99f9c95d50646be`；`stable/xdg-shell/xdg-shell.xml` SHA-256
   `9d9e27038ca722f159a361293f8c6cd270dab907ab52de5b8ecfbb8d6b9651c2`，`stable/viewporter/viewporter.xml` SHA-256
   `dcb12279a03746301fe490aaed4b38a403485a925abfce2ccfceb644e104fe71`。
+- wlr-protocols commit `bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a`：`unstable/wlr-layer-shell-unstable-v1.xml`（v5）SHA-256
+  `87e0b9c837aecd6977f76f3c47d73088b7159871f5d979dc1840f6cadb5e2ed8`；
+  `unstable/wlr-foreign-toplevel-management-unstable-v1.xml`（v3）SHA-256
+  `4ecc4588858e29fe680a33521e1f22bcf22071d66d1553fe96b4ddec03d591d2`。
+  来源：[wlr-protocols 固定提交](https://gitlab.freedesktop.org/wlroots/wlr-protocols/-/tree/bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a)。
 - 来源：[Wayland](https://gitlab.freedesktop.org/wayland/wayland/-/tree/1.24.0)、
   [wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/tree/1.45)。
 - 运行时一致性消费者：Alpine v3.22 的 `wayland-utils-1.2.0-r0`（`wayland-info`）、`wayland-libs-client-1.23.1-r3`、

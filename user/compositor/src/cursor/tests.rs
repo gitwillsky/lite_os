@@ -126,3 +126,46 @@ fn repository_cursor_set_is_valid_and_complete() {
     assert!(arrow.frame(1, 0).1.iter().any(|&pixel| pixel >> 24 == 0xFF));
     assert!(arrow.hotspot(2).0 < 64 && arrow.hotspot(2).1 < 64);
 }
+
+#[test]
+fn resize_cursors_match_the_grabbed_edges() {
+    use crate::interaction::Edges;
+    let edges = |left, right, top, bottom| Edges {
+        left,
+        right,
+        top,
+        bottom,
+    };
+    assert_eq!(
+        super::resize_cursor_name(edges(false, true, false, true)),
+        "resize-nwse"
+    );
+    assert_eq!(
+        super::resize_cursor_name(edges(true, false, true, false)),
+        "resize-nwse"
+    );
+    assert_eq!(
+        super::resize_cursor_name(edges(false, true, true, false)),
+        "resize-nesw"
+    );
+    assert_eq!(
+        super::resize_cursor_name(edges(true, false, false, true)),
+        "resize-nesw"
+    );
+    assert_eq!(
+        super::resize_cursor_name(edges(true, false, false, false)),
+        "resize-ew"
+    );
+    assert_eq!(
+        super::resize_cursor_name(edges(false, true, false, false)),
+        "resize-ew"
+    );
+    assert_eq!(
+        super::resize_cursor_name(edges(false, false, true, false)),
+        "resize-ns"
+    );
+    assert_eq!(
+        super::resize_cursor_name(edges(false, false, false, true)),
+        "resize-ns"
+    );
+}

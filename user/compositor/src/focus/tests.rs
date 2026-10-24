@@ -3,35 +3,18 @@ use wayland_wire::wire::{Fixed, ObjectId};
 use super::{KeyTracker, local_position, window_configure};
 use crate::desktop::Stack;
 use crate::wayland::ToplevelState;
-use crate::{
-    desktop::{Mode, Placement},
-    wayland::ClientId,
-};
-
-fn placement(x: i32, y: i32) -> Placement {
-    Placement {
-        client: ClientId(1),
-        surface: ObjectId::new(5).unwrap(),
-        x,
-        y,
-        width: 200,
-        height: 100,
-        mode: Mode::Normal,
-        minimized: false,
-        restore: None,
-    }
-}
+use crate::{desktop::Mode, wayland::ClientId};
 
 #[test]
 fn local_position_is_in_client_logical_pixels() {
-    let (x, y) = local_position(&placement(40, 40), (50, 60), 1);
+    let (x, y) = local_position((40, 40), (50, 60), 1);
     assert_eq!((x, y), (Fixed::from_int(10), Fixed::from_int(20)));
     // 2x：每个客户端逻辑像素占 2 个物理像素，奇数偏移得到半像素。
-    let (x, y) = local_position(&placement(80, 80), (91, 80), 2);
+    let (x, y) = local_position((80, 80), (91, 80), 2);
     assert_eq!((x, y), (Fixed::from_f64(5.5), Fixed::from_int(0)));
     // 窗口左上之外的负偏移也能表示（指针捕获时有用）。
     assert_eq!(
-        local_position(&placement(40, 40), (30, 40), 1).0,
+        local_position((40, 40), (30, 40), 1).0,
         Fixed::from_int(-10)
     );
 }
@@ -81,6 +64,7 @@ fn consumed_keys_swallow_exactly_one_release() {
 }
 
 const SCREEN: (i32, i32) = (1280, 800);
+const FULL: (i32, i32, i32, i32) = (0, 0, 1280, 800);
 
 fn stack_with_two() -> Stack {
     let mut stack = Stack::default();
@@ -120,7 +104,7 @@ fn a_normal_window_is_told_its_activation_only() {
 fn maximized_and_fullscreen_windows_keep_their_real_size_when_reconfigured() {
     let mut stack = stack_with_two();
     let surface = ObjectId::new(5).unwrap();
-    stack.set_mode(ClientId(1), surface, Mode::Maximized, SCREEN);
+    stack.set_mode(ClientId(1), surface, Mode::Maximized, FULL, FULL);
     // 失去激活的最大化窗口仍然是最大化，并带着屏幕尺寸（逻辑像素，2x 下减半）。
     assert_eq!(
         window_configure(&stack, (ClientId(1), surface), 1, None, false),
@@ -137,7 +121,7 @@ fn maximized_and_fullscreen_windows_keep_their_real_size_when_reconfigured() {
         window_configure(&stack, (ClientId(1), surface), 2, None, false).0,
         640
     );
-    stack.set_mode(ClientId(1), surface, Mode::Fullscreen, SCREEN);
+    stack.set_mode(ClientId(1), surface, Mode::Fullscreen, FULL, FULL);
     assert!(
         window_configure(&stack, (ClientId(1), surface), 1, None, false)
             .2

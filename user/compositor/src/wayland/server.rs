@@ -16,7 +16,10 @@ use std::{
 use linux_uapi::unix::{PollEvents, PollFd, recv_fds, send_fd};
 use wayland_wire::wire::ObjectId;
 
-use super::{Client, Output, Window, WindowRequest};
+use super::{
+    Client, Content, CursorRequest, ForeignInfo, ForeignRequest, LayerView, Output, Window,
+    WindowRequest,
+};
 
 /// 每次读取的上限；一条消息至多 4096 字节，所以一次读取至少能推进状态机。
 const READ_BYTES: usize = 4096;
@@ -92,7 +95,7 @@ pub struct Server {
 impl Server {
     /// 在 `path` 创建监听 socket：清理残留的同名 socket，权限 0666，非阻塞。
     ///
-    /// 任何本地用户都能连接；特权全局对象按对端凭据另行限制，不靠文件权限。
+    /// 任何本地用户都能连接；本监听入口始终只授予普通权限，外壳特权来自独立 socketpair。
     ///
     /// # Errors
     ///
@@ -163,6 +166,24 @@ impl Server {
         Ok(())
     }
 
+    /// 加入一个已连接的特权客户端（compositor 自己拉起的外壳程序，经 `WAYLAND_SOCKET` 传给它）。
+    ///
+    /// # Errors
+    ///
+    /// 无法把 socket 设为非阻塞。
+    pub fn add_privileged(&mut self, stream: UnixStream) -> io::Result<ClientId> {
+        stream.set_nonblocking(true)?;
+        let id = ClientId(self.next_id);
+        self.next_id += 1;
+        self.connections.push(Connection {
+            id,
+            stream,
+            client: Client::privileged(self.output),
+            closing: false,
+        });
+        Ok(id)
+    }
+
     fn accept(&mut self) -> io::Result<()> {
         loop {
             match self.listener.accept() {
@@ -204,6 +225,16 @@ impl Server {
         })
     }
 
+    /// 全部连接的已映射 layer surface（桌面外壳）。
+    pub fn layers(&self) -> impl Iterator<Item = (ClientId, LayerView<'_>)> {
+        self.connections.iter().flat_map(|connection| {
+            connection
+                .client
+                .layers()
+                .map(move |layer| (connection.id, layer))
+        })
+    }
+
     /// 全部连接已发生的 surface commit 总数；变化意味着画面内容可能变了。
     pub fn commits(&self) -> u64 {
         self.connections
@@ -240,5 +271,50 @@ impl Server {
                 connection.closing = true;
             }
         }
+    }
+
+    /// 让所有绑定了窗口管理器的外壳连接看到与 `windows` 一致的列表。
+    pub fn sync_foreign(&mut self, windows: &[ForeignInfo]) {
+        for connection in &mut self.connections {
+            if connection.client.has_foreign_manager() {
+                connection.client.sync_foreign(windows);
+                if connection.flush().is_err() {
+                    connection.closing = true;
+                }
+            }
+        }
+    }
+
+    /// 取走外壳提出的窗口操作。
+    pub fn take_foreign_requests(&mut self) -> Vec<ForeignRequest> {
+        self.connections
+            .iter_mut()
+            .flat_map(|connection| connection.client.take_foreign_requests())
+            .collect()
+    }
+
+    /// 取走全部连接的光标请求。
+    pub fn take_cursor_requests(&mut self) -> Vec<(ClientId, CursorRequest)> {
+        let mut all = Vec::new();
+        for connection in &mut self.connections {
+            let id = connection.id;
+            all.extend(
+                connection
+                    .client
+                    .take_cursor_requests()
+                    .into_iter()
+                    .map(|request| (id, request)),
+            );
+        }
+        all
+    }
+
+    /// 某个连接的光标 surface 的当前图像与 buffer scale。
+    pub fn cursor_image(&self, client: ClientId, surface: ObjectId) -> Option<(&Content, i32)> {
+        self.connections
+            .iter()
+            .find(|connection| connection.id == client)?
+            .client
+            .cursor_image(surface)
     }
 }

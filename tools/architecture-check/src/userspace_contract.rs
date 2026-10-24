@@ -154,8 +154,7 @@ fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
 
 fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
     let inittab = fs::read_to_string(root.join("user/base/inittab")).unwrap_or_default();
-    let expected =
-        "::sysinit:/etc/init.d/rcS\n::respawn:/etc/init.d/network-service\n::respawn:/etc/init.d/display-service\n::respawn:-/bin/sh\n";
+    let expected = "::sysinit:/etc/init.d/rcS\n::respawn:/etc/init.d/network-service\n::respawn:/etc/init.d/display-service\n::respawn:-/bin/sh\n";
     if inittab != expected {
         errors.push(
             "user/base/inittab: must mount pseudo filesystems through rcS first, then supervise network, display and UART shell exactly once"

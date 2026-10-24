@@ -144,6 +144,9 @@
   独占 CLOEXEC 写端；固定 frame 发布所有确定性 setup/exec 错误，空 EOF 表示没有这类已发布错误，
   不虚报异步致死与成功 exec 后立即退出可区分。错误、非空截断或非法 frame 必须 kill/wait 回收；
   禁止普通 spawn、raw fork 或重试兼容路径。
+- Wayland 外壳继承的连接经 `linux-uapi::process` 传递：发送端消费 `OwnedFd`，标准 I/O 装配失败时由 `Command` 回收；
+  接收端用 `F_DUPFD_CLOEXEC` 取得独立所有权，并给原 fd 设置 CLOEXEC，不接管可能被标准输入等对象借用的 fd。
+  接收不修改全局环境；之后启动普通客户端须显式 `env_remove("WAYLAND_SOCKET")`，避免它使用 exec 已关闭的继承编号。
 - APK 只接受所选 architecture repository 的固定摘要与精确 `.PKGINFO`。只有 `ca-certificates-bundle`、`git-init-template` 与 `ncurses-terminfo-base` 三个固定数据包预期 `noarch`；其余包必须精确匹配目标架构，禁止 blanket `noarch` 放宽。
 - `/etc/apk/repositories` 必须精确启用固定 Alpine stable branch 的 `main` 与 `community`；
   `main` 缺失会破坏基础包解析，`community` 缺失会让 npm 等标准拆分包不可见，禁止加入

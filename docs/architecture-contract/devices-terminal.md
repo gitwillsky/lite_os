@@ -149,6 +149,18 @@
 - 窗口请求：move/resize 只接受由仍按住的按钮触发、serial 匹配且窗口不是最大化/全屏的请求；抓取期间客户端看不到指针事件，
   窗口消失即结束抓取。最大化/全屏保存还原几何，取消时 configure 带还原尺寸。
 - 最小化的窗口不绘制、不命中、不是活动窗口。Alt+Tab 激活最久未用的窗口（也恢复最小化），Alt+Esc 把活动窗口放到最底层，二者吞掉按键。
+- `wayland::Client` 独占角色与协议状态：cursor、xdg 与 layer 不能混用；layer 状态只在 commit 生效，空 buffer 取消映射并清除旧 configure/ack，重新映射必须重新握手。
+- `Session` 独占外壳策略：Background/Bottom → 应用窗口 → Top/Overlay 的绘制与命中顺序；
+  `shell_layout` 只做锚点、边距和工作区的纯几何计算。正独占区（含对应边距）只从已映射图层投影，最大化窗口随其变化重排；全屏始终使用完整输出。
+  Top/Overlay 的 Exclusive 图层优先获得键盘并接收窗口快捷键；OnDemand 图层点击获得焦点，点击应用或切换窗口后释放。
+- 特权来自 compositor 创建的 socketpair，不来自 uid、环境变量或公开监听 socket。`linux-uapi::process::spawn_with_wayland_socket`
+  通过标准 `Command` stdin 装配传递连接（`WAYLAND_SOCKET=0`），不安装 pre_exec；普通监听连接即使同为 root 也不能看到或绑定外壳全局对象。
+  `/bin/logon` 存在时才启动外壳；其退出被 wait 回收，连接关闭后所有图层、工作区与输入焦点随协议状态销毁，不自动重启外壳。
+- `wayland::foreign` 独占每个 manager 的句柄及最近发送描述，`Session` 从窗口栈投影标题、app_id 与模式状态，
+  不复制一份可修改的窗口状态。每次绑定独立宣告窗口；stop 只销毁 manager，已有句柄继续更新直到窗口 closed 或客户端 destroy；
+  已销毁的句柄保留“已宣告”记录到窗口消失，防止同一窗口反复重新宣告。句柄操作由稳定的 `(ClientId, surface)` 路由，窗口消失后忽略。
+- `wl_pointer.set_cursor` 只采用当前指针焦点客户端的最新 enter serial。光标 surface commit 更新硬件图像，null surface 或无 buffer 隐藏，
+  换焦点恢复默认箭头；缩放抓取使用对应方向箭头，结束或目标消失时恢复。
 - `keyboard`、`terminal-model`、`terminal-font`、`canvas`、`classic-theme`、`classic-ui`、`typeface`、`wayland-scanner` 和 `wayland-wire` 是独立库；不得恢复退休的私有显示、音频或 seat 协议。
 
 ## Failure and cleanup

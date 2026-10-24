@@ -152,6 +152,53 @@ impl CursorSet {
     }
 }
 
+/// 缩放抓取时显示的方向箭头：按被抓住的边选择光标名。
+pub fn resize_cursor_name(edges: crate::interaction::Edges) -> &'static str {
+    match (edges.left, edges.right, edges.top, edges.bottom) {
+        (true, _, true, _) | (_, true, _, true) => "resize-nwse",
+        (_, true, true, _) | (true, _, _, true) => "resize-nesw",
+        (true, _, _, _) | (_, true, _, _) => "resize-ew",
+        _ => "resize-ns",
+    }
+}
+
+/// 把客户端光标图像按整数倍 `factor` 放大后写入 64×64 硬件光标缓冲，其余全透明。
+///
+/// # Errors
+///
+/// 缓冲不是 64 × 64，或放大后超出 64 × 64（调用者应先回退到默认光标）。
+pub fn blit_scaled(
+    target: &mut DumbBuffer,
+    pixels: &[u32],
+    width: usize,
+    height: usize,
+    factor: usize,
+) -> io::Result<()> {
+    let (scaled_width, scaled_height) = (width * factor, height * factor);
+    if target.width() != HARDWARE_EDGE
+        || target.height() != HARDWARE_EDGE
+        || scaled_width > HARDWARE_EDGE
+        || scaled_height > HARDWARE_EDGE
+        || pixels.len() != width * height
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "cursor image does not fit the 64x64 hardware cursor",
+        ));
+    }
+    for row in 0..HARDWARE_EDGE {
+        let line = target.row_mut(row);
+        line.fill(0);
+        if row < scaled_height {
+            let source = &pixels[(row / factor) * width..][..width];
+            for (column, pixel) in line[..scaled_width].iter_mut().enumerate() {
+                *pixel = source[column / factor];
+            }
+        }
+    }
+    Ok(())
+}
+
 /// 把 `frame` 写入 64×64 硬件光标缓冲：素材放在左上角，其余全透明。
 ///
 /// # Errors

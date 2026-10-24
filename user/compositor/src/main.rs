@@ -9,6 +9,7 @@ mod input;
 mod interaction;
 mod scanout;
 mod session;
+mod shell_layout;
 mod wayland;
 
 use std::{env, fs, path::Path, process::ExitCode};
@@ -19,6 +20,8 @@ const BOOT_SCENE: &str = "/usr/share/liteos/boot-scene.lbs";
 const CURSORS: &str = "/usr/share/liteos/cursors.lcs";
 /// 用户主题覆盖文件；不存在时使用内置默认。
 const THEME_OVERRIDE: &str = "/etc/liteos/classic.theme";
+/// 外壳程序（登录）；不存在时没有外壳，合成器只显示启动画面与客户端窗口。
+const SHELL: &str = "/bin/logon";
 const SOCKET_NAME: &str = "wayland-0";
 /// 逻辑桌面高度不低于 768 的最大整数 scale（见外观规格 HiDPI）。
 const MINIMUM_LOGICAL_HEIGHT: usize = 768;
@@ -50,18 +53,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         scanout.width() as i32,
         scanout.height() as i32,
     )?;
-    let arrow = cursors.get("arrow").ok_or("cursor set has no `arrow`")?;
-    let mut hardware = scanout
+    let hardware = scanout
         .device()
         .create_dumb(cursor::HARDWARE_EDGE as u32, cursor::HARDWARE_EDGE as u32)?;
-    let (edge, frame) = arrow.frame(scale, 0);
-    cursor::blit_to_hardware(&mut hardware, edge, frame)?;
-    let hotspot = arrow.hotspot(scale);
-    scanout.show_cursor(&hardware, input.pointer().position(), hotspot)?;
-    println!(
-        "compositor: input ready devices={} scale={scale}",
-        input.devices().count()
-    );
 
     let socket = Path::new(&runtime).join(SOCKET_NAME);
     let server = wayland::Server::bind(
@@ -75,7 +69,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|error| format!("{}: {error}", socket.display()))?;
     println!("compositor: wayland ready {}", socket.display());
 
-    Ok(session::Session::new(scanout, input, server, theme, scale, hardware).run()?)
+    let mut session =
+        session::Session::new(scanout, input, server, theme, scale, cursors, hardware)?;
+    println!(
+        "compositor: input ready devices={} scale={scale}",
+        session.input_devices()
+    );
+    session.spawn_shell(Path::new(SHELL))?;
+    Ok(session.run()?)
 }
 
 fn main() -> ExitCode {

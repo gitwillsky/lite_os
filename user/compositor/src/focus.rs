@@ -4,7 +4,7 @@ use keyboard::{Modifiers, xkb};
 use wayland_wire::wire::{Fixed, ObjectId};
 
 use crate::{
-    desktop::{Mode, Placement, Stack},
+    desktop::{Mode, Stack},
     wayland::{ClientId, Server, ToplevelState},
 };
 
@@ -56,14 +56,21 @@ impl KeyTracker {
     }
 }
 
+/// 指针下的 surface：所属客户端、surface，以及它左上角的物理坐标。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hit {
+    pub target: Target,
+    pub origin: (i32, i32),
+}
+
 /// 指针在窗口内的局部坐标，单位是客户端的逻辑像素：物理像素偏移除以输出 scale。
 ///
 /// 窗口内容总是被放大到输出 scale，所以一个客户端逻辑像素恰好占 `scale` 个物理像素。
-pub fn local_position(placement: &Placement, pointer: (i32, i32), scale: i32) -> (Fixed, Fixed) {
+pub fn local_position(origin: (i32, i32), pointer: (i32, i32), scale: i32) -> (Fixed, Fixed) {
     let scale = f64::from(scale.max(1));
     (
-        Fixed::from_f64(f64::from(pointer.0 - placement.x) / scale),
-        Fixed::from_f64(f64::from(pointer.1 - placement.y) / scale),
+        Fixed::from_f64(f64::from(pointer.0 - origin.0) / scale),
+        Fixed::from_f64(f64::from(pointer.1 - origin.1) / scale),
     )
 }
 
@@ -126,12 +133,22 @@ pub struct Seat {
     button_serial: Option<u32>,
     /// 合成器正在抓取指针（交互式移动/缩放）：客户端看不到指针事件。
     grabbed: bool,
+    /// 当前指针焦点收到的 `enter` 序号；`set_cursor` 必须带它才有效。
+    pointer_enter_serial: u32,
 }
 
 impl Seat {
     fn next_serial(&mut self) -> u32 {
         self.serial = self.serial.wrapping_add(1).max(1);
         self.serial
+    }
+
+    pub fn pointer_focus(&self) -> Option<Target> {
+        self.pointer_focus
+    }
+
+    pub fn pointer_enter_serial(&self) -> u32 {
+        self.pointer_enter_serial
     }
 
     /// 当前仍按住的按钮的序号。
@@ -161,7 +178,7 @@ impl Seat {
     pub fn update_pointer(
         &mut self,
         server: &mut Server,
-        stack: &Stack,
+        hit: Option<Hit>,
         pointer: (i32, i32),
         scale: i32,
         time: u32,
@@ -170,21 +187,32 @@ impl Seat {
         if self.grabbed {
             return;
         }
-        let hit = stack.window_at(pointer.0, pointer.1).copied();
-        let target = hit.map(|placement| (placement.client, placement.surface));
+        let target = hit.map(|hit| hit.target);
         if target != self.pointer_focus {
             if let Some((client, surface)) = self.pointer_focus {
                 let serial = self.next_serial();
                 server.with_client(client, |client| client.pointer_leave(serial, surface));
             }
-            if let (Some((client, surface)), Some(placement)) = (target, hit) {
+            if let Some(Hit {
+                target: (client, surface),
+                origin,
+            }) = hit
+            {
                 let serial = self.next_serial();
-                let (x, y) = local_position(&placement, pointer, scale);
+                self.pointer_enter_serial = serial;
+                let (x, y) = local_position(origin, pointer, scale);
                 server.with_client(client, |client| client.pointer_enter(serial, surface, x, y));
             }
             self.pointer_focus = target;
-        } else if let (true, Some((client, _)), Some(placement)) = (moved, target, hit) {
-            let (x, y) = local_position(&placement, pointer, scale);
+        } else if let (
+            true,
+            Some(Hit {
+                target: (client, _),
+                origin,
+            }),
+        ) = (moved, hit)
+        {
+            let (x, y) = local_position(origin, pointer, scale);
             server.with_client(client, |client| client.pointer_motion(time, x, y));
         }
     }
@@ -200,8 +228,16 @@ impl Seat {
     }
 
     /// 键盘焦点跟随活动窗口：旧窗口 leave 并标记未激活，新窗口标记已激活并 enter。
-    pub fn sync_keyboard(&mut self, server: &mut Server, stack: &Stack, scale: i32) {
-        let active = stack.active();
+    ///
+    /// `exclusive` 是持有独占键盘交互的外壳 surface（登录屏）；它存在时优先于任何窗口。
+    pub fn sync_keyboard(
+        &mut self,
+        server: &mut Server,
+        stack: &Stack,
+        scale: i32,
+        exclusive: Option<Target>,
+    ) {
+        let active = exclusive.or_else(|| stack.active());
         if active == self.keyboard_focus {
             return;
         }
@@ -231,10 +267,18 @@ impl Seat {
     }
 
     /// 处理一次按键：更新状态、识别合成器快捷键，其余转发给键盘焦点。
-    pub fn key(&mut self, server: &mut Server, code: u16, pressed: bool, time: u32) -> Shortcut {
+    /// `shortcuts=false` 用于外壳独占键盘；否则 Alt+F4 等会被吞掉，登录屏收不到完整按键。
+    pub fn key(
+        &mut self,
+        server: &mut Server,
+        code: u16,
+        pressed: bool,
+        time: u32,
+        shortcuts: bool,
+    ) -> Shortcut {
         let code = u32::from(code);
         let modifiers_changed = self.keys.track(code, pressed);
-        if pressed && self.keys.modifiers().alt {
+        if shortcuts && pressed && self.keys.modifiers().alt {
             let shortcut = match code {
                 KEY_F4 => Shortcut::CloseActive,
                 KEY_TAB => Shortcut::CycleWindows,

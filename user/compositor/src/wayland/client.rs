@@ -16,13 +16,14 @@ use wayland_wire::{
 
 use super::{
     Output,
+    foreign::{ForeignHandle, ForeignManager, ForeignRequest, SERVER_ID_BASE},
+    layer::LayerSurface,
+    seat::CursorRequest,
     shm::{BufferSpec, Pool},
     surface::{Content, Surface},
     xdg::{Toplevel, WindowRequest, XdgSurface},
 };
 
-/// 客户端分配的对象 id 必须小于此值；之上由服务端分配（本服务端目前不主动创建对象）。
-const SERVER_ID_BASE: u32 = 0xFF00_0000;
 /// 未消费的描述符上限：恶意客户端只发 fd 不发消息时，队列不能无限增长。
 const MAX_QUEUED_FDS: usize = 64;
 
@@ -80,6 +81,8 @@ pub(super) enum Data {
     Surface(Surface),
     XdgSurface(XdgSurface),
     Toplevel(Toplevel),
+    LayerSurface(LayerSurface),
+    ForeignHandle(ForeignHandle),
 }
 
 pub(super) struct Entry {
@@ -97,6 +100,13 @@ const GLOBALS: [(u32, Interface, u32); 5] = [
     (5, Interface::WlSeat, 7),
 ];
 
+/// 只有特权客户端（由 compositor 经 `WAYLAND_SOCKET` 直接拉起的 `logon`、`desktop`）能看到的全局对象：
+/// 桌面外壳需要它们，普通应用不能借此伪装成任务栏或枚举别人的窗口。
+const PRIVILEGED_GLOBALS: [(u32, Interface, u32); 2] = [
+    (6, Interface::ZwlrLayerShellV1, 5),
+    (7, Interface::ZwlrForeignToplevelManagerV1, 3),
+];
+
 pub struct Client {
     framer: Framer,
     fds: VecDeque<OwnedFd>,
@@ -108,12 +118,30 @@ pub struct Client {
     pub(super) requests: Vec<(ObjectId, WindowRequest)>,
     commits: u64,
     pub(super) output: Output,
+    /// 特权连接：额外公布 [`PRIVILEGED_GLOBALS`]。
+    pub(super) privileged: bool,
+    /// 外壳绑定的窗口管理器及其窗口列表（特权连接才会有）。
+    pub(super) foreign: Vec<ForeignManager>,
+    pub(super) foreign_requests: Vec<ForeignRequest>,
+    pub(super) cursor_requests: Vec<CursorRequest>,
+    /// 下一个服务端分配的对象 id（窗口句柄）。
+    pub(super) next_server_object: u32,
     /// 随消息发送的描述符：`(在待发字节中的偏移, fd)`，偏移按发送顺序递增。
     pub(super) outgoing_fds: VecDeque<(usize, OwnedFd)>,
 }
 
 impl Client {
+    /// 普通客户端。
     pub fn new(output: Output) -> Self {
+        Self::with_privilege(output, false)
+    }
+
+    /// 特权客户端：额外看到并可绑定 layer-shell 与 foreign-toplevel。
+    pub fn privileged(output: Output) -> Self {
+        Self::with_privilege(output, true)
+    }
+
+    fn with_privilege(output: Output, privileged: bool) -> Self {
         let display = Entry {
             interface: Interface::WlDisplay,
             version: 1,
@@ -129,6 +157,11 @@ impl Client {
             requests: Vec::new(),
             commits: 0,
             output,
+            privileged,
+            foreign: Vec::new(),
+            foreign_requests: Vec::new(),
+            cursor_requests: Vec::new(),
+            next_server_object: SERVER_ID_BASE,
             outgoing_fds: VecDeque::new(),
         }
     }
@@ -250,8 +283,12 @@ impl Client {
     /// 移除对象并通知客户端可以复用该 id。
     pub(super) fn release_id(&mut self, id: ObjectId) {
         self.objects.remove(&id.get());
-        let _ = wl_display::Event::DeleteId { id: id.get() }
-            .encode(ObjectId::DISPLAY, &mut self.writer);
+        // `delete_id` 只用于客户端分配的 id；服务端分配的 id（窗口句柄）由客户端自己回收，
+        // 对它发 delete_id 会让 libwayland 判定协议错误。
+        if id.get() < SERVER_ID_BASE {
+            let _ = wl_display::Event::DeleteId { id: id.get() }
+                .encode(ObjectId::DISPLAY, &mut self.writer);
+        }
     }
 
     pub(super) fn create(
@@ -317,7 +354,16 @@ impl Client {
             AnyRequest::XdgToplevel(request) => self.xdg_toplevel(object, request),
             AnyRequest::XdgPositioner(_) => Ok(()),
             AnyRequest::WlSeat(request) => self.seat(object, version, request),
-            AnyRequest::WlPointer(_) | AnyRequest::WlKeyboard(_) => Ok(()),
+            AnyRequest::WlPointer(request) => self.pointer(object, request),
+            AnyRequest::WlKeyboard(_) => Ok(()),
+            AnyRequest::ZwlrLayerShellV1(request) => self.layer_shell(object, version, request),
+            AnyRequest::ZwlrLayerSurfaceV1(request) => self.layer_surface(object, request),
+            AnyRequest::ZwlrForeignToplevelManagerV1(request) => {
+                self.foreign_manager(object, request)
+            }
+            AnyRequest::ZwlrForeignToplevelHandleV1(request) => {
+                self.foreign_handle(object, request)
+            }
             // 其余对象（buffer、region、callback）只有 destroy 或没有请求，销毁由通用路径完成。
             AnyRequest::WlBuffer(wl_buffer::Request::Destroy) | AnyRequest::WlRegion(_) => Ok(()),
             other => Err(Fail::invalid_method(
@@ -336,7 +382,7 @@ impl Client {
             }
             wl_display::Request::GetRegistry { registry } => {
                 self.create(registry, Interface::WlRegistry, 1, Data::None)?;
-                for (name, interface, version) in GLOBALS {
+                for (name, interface, version) in self.globals() {
                     wl_registry::Event::Global {
                         name,
                         interface: interface.name().to_owned(),
@@ -349,10 +395,23 @@ impl Client {
         Ok(())
     }
 
+    /// 本连接能看到的全局对象。
+    fn globals(&self) -> Vec<(u32, Interface, u32)> {
+        let privileged = self
+            .privileged
+            .then_some(PRIVILEGED_GLOBALS)
+            .into_iter()
+            .flatten();
+        GLOBALS.into_iter().chain(privileged).collect()
+    }
+
     fn registry(&mut self, registry: ObjectId, request: wl_registry::Request) -> Result<(), Fail> {
         let wl_registry::Request::Bind { name, id } = request;
-        let global = GLOBALS.iter().find(|(candidate, ..)| *candidate == name);
-        let Some(&(_, interface, maximum)) = global else {
+        let global = self
+            .globals()
+            .into_iter()
+            .find(|(candidate, ..)| *candidate == name);
+        let Some((_, interface, maximum)) = global else {
             return Err(Fail::invalid_object(format!("no global with name {name}")));
         };
         if id.interface != interface.name() || id.version == 0 || id.version > maximum {
@@ -372,6 +431,9 @@ impl Client {
         }
         if interface == Interface::WlSeat {
             self.announce_seat(id.id, id.version)?;
+        }
+        if interface == Interface::ZwlrForeignToplevelManagerV1 {
+            self.bind_foreign_manager(id.id, id.version)?;
         }
         let _ = registry;
         Ok(())
@@ -604,6 +666,8 @@ impl Client {
 
     fn commit(&mut self, object: ObjectId) -> Result<(), Fail> {
         self.xdg_check_commit(object)?;
+        let layer_before = self.layer_state(object);
+        self.layer_check_commit(object)?;
         self.commits += 1;
         let surface = self.surface_mut(object)?;
         let choice = surface.pending.buffer.take();
@@ -649,6 +713,11 @@ impl Client {
                 // 内容已复制，buffer 立即可复用。
                 wl_buffer::Event::Release.encode(buffer, &mut self.writer)?;
             }
+        }
+        if choice == Some(None) {
+            self.layer_unmap(object);
+        } else {
+            self.layer_after_commit(object, layer_before)?;
         }
         self.xdg_after_commit(object)
     }

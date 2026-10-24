@@ -443,9 +443,16 @@ pub fn generate(interfaces: &[Interface]) -> Result<String, String> {
         out.push_str("    })\n}\n");
         let _ = writeln!(out, "\nimpl Any{type_name} {{");
         for (function, ty) in [("since", "u32"), ("is_destructor", "bool")] {
-            let _ = writeln!(out, "    pub fn {function}(&self) -> {ty} {{\n        match self {{");
+            let _ = writeln!(
+                out,
+                "    pub fn {function}(&self) -> {ty} {{\n        match self {{"
+            );
             for interface in interfaces {
-                let _ = writeln!(out, "            Any{type_name}::{}(message) => message.{function}(),", camel(&interface.name));
+                let _ = writeln!(
+                    out,
+                    "            Any{type_name}::{}(message) => message.{function}(),",
+                    camel(&interface.name)
+                );
             }
             out.push_str("        }\n    }\n");
         }

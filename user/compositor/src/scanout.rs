@@ -148,6 +148,12 @@ impl Scanout {
             .update_cursor(&self.topology, Some(image), position, hotspot)
     }
 
+    /// 隐藏硬件光标；之后 [`Scanout::show_cursor`] 再次显示。
+    pub fn hide_cursor(&self, position: (i32, i32)) -> io::Result<()> {
+        self.device
+            .update_cursor(&self.topology, None, position, (0, 0))
+    }
+
     /// 只移动硬件光标，不改变图像。
     pub fn move_cursor(&self, position: (i32, i32)) -> io::Result<()> {
         self.device.move_cursor(&self.topology, position)

@@ -9,6 +9,8 @@ pub struct Output {
 }
 
 mod client;
+mod foreign;
+mod layer;
 mod seat;
 mod server;
 mod shm;
@@ -18,6 +20,14 @@ mod xdg;
 pub use client::Client;
 #[cfg(test)]
 pub use client::Disconnected;
+pub use foreign::{ForeignAction, ForeignInfo, ForeignRequest, ForeignState};
+pub use layer::{KeyboardInteractivity, Layer, LayerState, LayerView};
+
+/// 锚点位与独占边规则，供外壳布局使用。
+pub mod layer_edges {
+    pub use super::layer::{ANCHOR_BOTTOM, ANCHOR_LEFT, ANCHOR_RIGHT, ANCHOR_TOP, exclusive_side};
+}
+pub use seat::CursorRequest;
 pub use server::{ClientId, Server};
 pub use surface::Content;
 pub use xdg::{ToplevelState, Window, WindowRequest};
