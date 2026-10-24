@@ -1,7 +1,7 @@
 # LiteOS userspace
 
-当前产品基线为 BusyBox init、网络服务、显示服务（compositor，目前只接管并保持启动画面）与 UART shell。
-尚无登录、桌面或用户态媒体程序。新图形栈按[经典桌面计划](../docs/plans/classic-desktop.md)从公开协议实现。
+当前产品为 BusyBox init、网络服务、Wayland compositor、可信 logon、用户 desktop 与文件浏览器；UART 保留恢复 shell。
+首次账户设置与验证见[桌面验证](../docs/development/desktop-verification.md)。用户态媒体程序仍待后续实现。
 
 | Path | Interface | Owner |
 |---|---|---|
@@ -17,6 +17,9 @@
 | `classic-ui/` | 经典控件绘制 | `Painter`：边框、按钮、复选/单选、编辑框、滚动条、菜单、窗口框架与标题栏、提示；逻辑像素 × 整数 scale |
 | `typeface/` | 字体与文本 | BDF 点阵、sfnt 轮廓与内嵌点阵、灰度光栅、中西文选择、仿粗体、CJK 换行 |
 | `compositor/` | 显示服务 | 唯一 DRM master 与 evdev 读者；Wayland 服务端（`wl_compositor`/`wl_shm`/`xdg_wm_base`/`wl_output`）、窗口栈与整帧 CPU 合成；`wayland-probe` 是门禁客户端 |
+| `logon/` | 本机登录与会话监督 | shadow 认证、锁定/改密、凭据、桌面进程组与租约 |
+| `desktop/` | 用户桌面外壳 | 图标、任务栏、开始菜单、运行和应用任务窗口 |
+| `file-explorer/` | 普通 Wayland 应用 | 目录导航与有界 UTF-8 文本预览 |
 | `diagnostics/` | cputest、memtest、cachetest | 有界 multicall diagnostics |
 
 音频混音归属 kernel ALSA；用户态无需音频服务或私有音频协议。接口与失败路径见

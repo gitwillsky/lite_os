@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """显示服务运行时门禁：compositor 接管内核启动画面，并从 evdev 读到指针与按键。
 
-在 QEMU（virtio-gpu、键盘、平板，无窗口）里冷启动产品 rootfs：
+在 QEMU（virtio-gpu、键盘、平板，无窗口）的私有产品镜像中，让 logon fixture 保持存活且尚不绘制，以固定交接观察点：
 
 1. 串口出现 compositor 的首帧与输入就绪标记。
 2. 经 QMP `screendump` 取回 scanout，与 `LBS1` 参考解码器按同一整数缩放居中规则算出的帧逐像素比对；
@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import argparse
+import shutil
+import tempfile
 import struct
 import sys
 from pathlib import Path
@@ -21,9 +23,10 @@ from build_target import BuildTarget, acceleration_from_environment, target_from
 from classic_assets import boot_scene
 from display_gate import display_session
 from pack_boot_scene import HEIGHT, WIDTH, unpack
+from verify_wayland import install_files
 
 ROOT = Path(__file__).resolve().parent.parent
-RECIPE_VERSION = 1
+RECIPE_VERSION = 2
 # 与 boot-scene crate 的 KERNEL_PROGRESS_PERMILLE 一致：内核交接给 compositor 时的进度。
 HANDOFF_PERMILLE = 400
 STARTUP_MARKERS = ("compositor: first frame presented", "compositor: input ready")
@@ -122,7 +125,16 @@ def main() -> int:
         if runtime_gate_hit(stamp, payload, (image,)):
             print("display verification cache hit")
             return 0
-        run_gate(image)
+        # 只测试 scanout 交接时，让真实监督入口保持存活但尚不绘制；欢迎/桌面另由产品门禁验证。
+        with tempfile.TemporaryDirectory(prefix="liteos-handoff-") as scratch:
+            directory = Path(scratch)
+            private = directory / "rootfs.img"
+            shutil.copyfile(image, private)
+            logon = directory / "logon"
+            logon.write_text("#!/bin/sh\nexec /bin/sleep 2147483647\n")
+            logon.chmod(0o755)
+            install_files(private, [(logon, "/bin/logon")], directory)
+            run_gate(private)
         publish_runtime_gate(stamp, payload)
     except RuntimeError as error:
         print(f"display verification failed: {error}", file=sys.stderr)

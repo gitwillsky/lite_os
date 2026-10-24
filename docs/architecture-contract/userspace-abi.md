@@ -151,6 +151,7 @@
   xdg_toplevel.configure 先暂存，到 xdg_surface.configure 时 ack 并一次性发布；首轮 configure 前不能提交 buffer。
   每个窗口最多一条未完成 frame callback，`ready_to_draw` 是该状态的只读投影；收到 buffer.release 后销毁该 buffer，
   在此之前绝不修改提交的 memfd。窗口销毁撤销焦点、重复键和已排队语义事件；连接出错由应用退出/drop 一次性回收 fd。
+  Transport drop 对独占协议连接执行 shutdown，因此继承的 stdin 别名仍打开时 server 也能立即观察 EOF；不关闭外部借用的 fd。
 - `classic-ui::Decoration` 只消费语义事件，按钮命中与绘制共用 `window` 的几何事实；窗口尺寸和模式仍只来自 compositor configure。
   `Edit` 独占文本、UTF-8 光标与选择锚点；`FocusChain` 独占控件槽位的 Tab 顺序。Painter 只读这些状态，不拥有第二份可写控件模型。
 - `classic-ui` 的 Window 角色为互斥的 Toplevel/Layer；只有 Toplevel 持有待确认的 xdg configure，Layer 在自己的 configure/ack 时直接发布当前几何。
@@ -158,7 +159,7 @@
 - `classic-ui::delegate_shell` 通过标准 security-context-v1 注册独立 listener；0600 pathname 在预连接后立即 unlink，
   子进程只接收连接，父会话持有 ShellLease，drop 只撤销未来 accept，不终止已经连接的进程。
   `linux-uapi::process::spawn_with_wayland_socket` 的可选 Identity 使用标准 Command gid/uid，清空继承补充组；不使用 pre_exec，也不承担认证判断。
-  当前只设置主组，不建立账户的补充组成员关系；真实登录实现必须在认证策略中补齐这部分。
+  它只用于初始 logon/机制探针；实际用户桌面由 SessionChild 的 Wayland profile 启动，执行账户补充组与清洁环境契约。
 - `keyboard::xkb` 是 modifier masks 与 US keymap 的唯一事实 owner，客户端在接收 keymap 时验证支持范围后再解释按键。
   重复键只使用服务端 repeat_info；release、键盘 leave、能力撤销或窗口销毁清除重复，重复事件使用当前 modifiers，不延续已失焦窗口的按键。
 - APK 只接受所选 architecture repository 的固定摘要与精确 `.PKGINFO`。只有 `ca-certificates-bundle`、`git-init-template` 与 `ncurses-terminfo-base` 三个固定数据包预期 `noarch`；其余包必须精确匹配目标架构，禁止 blanket `noarch` 放宽。
@@ -206,3 +207,34 @@
   rootid的superblock/user namespace映射、授权与exec credential转移仍归各实际kernel owner。
   该codec固定最多24字节、无分配/锁；用固定disk vectors、截断/扩展/旧格式损失用例验证，
   不新增wall-time benchmark。
+
+## 本机登录与桌面会话
+
+- `logon::account` 是 passwd/shadow/group 解析、锁定/到期策略、用户主目录与补充组初始化的唯一 owner。
+  散列验证仅用固定 musl `crypt_r`，接受 SHA-256/512 crypt；空 shadow 字段只接受空输入，拒绝锁定值与需要强制改密的账户；不使用全局 crypt 存储。
+  `credentials` 独占 FFI 布局与 volatile 擦除；密码不会进入日志，提交、失败、取消和页面切换清空整个编辑分配（包括删除后的尾部）。
+  Purpose 仅区分登录与改密策略：非 UID 0 的改密检查最短间隔，正常登录不受最短改密间隔影响。
+- `SessionCommand::user` 将认证结果作为数据消费，不自行认证。单线程 `session-launch` 先打开诊断 console，
+  再依次 setgroups/setgid/setuid，最后设置 parent-death、复检 parent、setsid 并 exec；父进程不安装 pre_exec。
+  组列表按 musl getgrouplist 包含主组并去重。任一步失败通过原有 exec-status 发布，父进程 kill/wait 回收。
+- 子会话使用清洁 PATH/HOME/USER/LOGNAME/XDG_RUNTIME_DIR/WAYLAND_DISPLAY；运行时目录为用户拥有的 0700 `/run/user/<uid>`。
+  ShellLease、SessionChild 与监督 socket 都由同一个 UserSession 拥有；注销先请求安全覆盖，再 kill 拥有的进程组并 wait，最后撤销租约。
+  leader 已退出时仍清理后台组成员；terminated 仅在 group kill/wait 完成后设置，阻止析构再次 signal 已可复用的编号。主动 setsid/改变组的进程不属于此进程组监督；当前没有 cgroup/logind 会话资源域。
+- 标准 stdin 传递 Wayland，stdout 装配为独占 AF_UNIX socketpair，供同一会话应用内部监督使用：
+  desktop→logon 单字节 1=首帧完成、2=锁定、4=关机页；logon→desktop 5=任务窗口。
+  只有背景与任务栏都收到 frame callback 后可发 1；重复 ready、未知消息、提前 EOF 和启动超时均失败并回收会话。
+  该通道不接受密码、路径或身份，不能委派新能力；应用启动移除继承环境并重装标准 I/O，不能继承它。
+- `desktop` 拥有图标、任务栏、菜单、运行与应用任务窗口；窗口状态只读 foreign-toplevel 的 done 快照，操作等后续事件确认。
+  publish revision 只用于合并重绘，pending 属性不对界面可见，closed 立即删除句柄；服务端对象不能进入客户端编号复用队列。
+  待绘制窗口集合只记录失效，不复制窗口配置，避免一个窗口等待 frame 时反复重绘其他窗口。
+- 系统图像为带显式 RGBA masks 的标准 BITMAPV4HEADER BMP；只在启动加载，限制 2048²，像素转为预乘 ARGB 后复用。
+  新数据与 Vec 分配不进入内核，不增加锁；成本决策见桌面验证文档。
+- 默认 root 的 shadow 密码字段为空、nobody 保持锁定，文件 mode 0600；BusyBox passwd/adduser/addgroup 拥有账户文件写入。
+  增量同步在 shadow 缺失时创建默认，并仅迁移完整匹配的旧出厂锁定模板；已有密码与自定义账户不被覆盖；账户工具复用同一个固定 BusyBox ELF。
+
+- `alsa::control::MasterControl` 独占 card0 control fd，INFO 验证固定 stereo Master 的类型与范围，READ 返回只读快照，WRITE 后重新读取实际量化值。
+  Linux 7.1 LP64 的 ID/INFO/VALUE 布局与 ioctl 编号只在 linux-uapi 中编码；两个 control 分别写入，不伪装成原子事务。
+  GUI 不代理或扩大设备权限，默认 0600 节点只有有权账户可用；无权限/无设备显示禁用状态。
+- desktop 的 Volume 是任务栏与音量窗口共用的唯一 UI 投影，不复制第二份 mixer owner；内核仍拥有真实 gain/switch。
+  外部变化最多每 100ms 采样，防止指针频率放大 ioctl；slider gesture 仅在按住至 release/leave/focus-loss/close 期间有效，避免悬停修改音量。
+- 解锁只允许认证后的 UID 等于会话 owner 或为本机 UID 0；管理员解锁不替换既有 SessionUser、进程身份或设备权限。

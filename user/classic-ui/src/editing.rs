@@ -26,6 +26,13 @@ impl Edit {
         }
     }
 
+    /// 擦除当前分配内的文字并重置选区；用于认证结束、失败或取消时清除密码。
+    pub fn clear_secret(&mut self) {
+        linux_uapi::credentials::erase(&mut self.text);
+        self.cursor = 0;
+        self.anchor = 0;
+    }
+
     /// 当前原文。密码字段的绘制应使用 [`Edit::masked`]，不打印此返回值。
     pub fn text(&self) -> &str {
         &self.text

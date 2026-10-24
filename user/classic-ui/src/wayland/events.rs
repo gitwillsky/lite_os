@@ -39,6 +39,9 @@ impl Display {
     }
 
     pub(super) fn dispatch(&mut self, object: ObjectId, event: AnyEvent) -> io::Result<()> {
+        if self.foreign_event(object, &event)? {
+            return Ok(());
+        }
         match event {
             AnyEvent::WlSeat(wl_seat::Event::Capabilities { capabilities }) => {
                 if capabilities & wl_seat::capability::POINTER != 0 && self.pointer_device.is_none()
@@ -367,11 +370,50 @@ mod tests {
                 keyboard_device: None,
                 layer_shell: None,
                 security_manager: None,
+                foreign: Default::default(),
+                foreign_revision: 0,
             },
             peer,
             window,
         )
     }
+    #[test]
+    fn socket_release_precedes_an_overdue_synthetic_repeat() {
+        use std::io::Write;
+        use wayland_wire::wire::Writer;
+        let (mut display, mut peer, window) = display();
+        let keyboard = display.transport.allocate(Interface::WlKeyboard).unwrap();
+        display.keyboard = Some(window);
+        display.repeat = Some(Repeat {
+            window,
+            code: 28,
+            next: Instant::now() - Duration::from_millis(1),
+        });
+        let mut writer = Writer::new();
+        wl_keyboard::Event::Key {
+            serial: 1,
+            time: 1,
+            key: 28,
+            state: wl_keyboard::KeyState::Released,
+        }
+        .encode(keyboard, &mut writer)
+        .unwrap();
+        peer.write_all(writer.bytes()).unwrap();
+        let event = display
+            .next_event_timeout(Duration::from_millis(100))
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            event.kind,
+            EventKind::Key(Key {
+                pressed: false,
+                repeat: false,
+                ..
+            })
+        ));
+        assert!(display.repeat.is_none());
+    }
+
     #[test]
     fn configure_is_atomic_at_xdg_surface_ack_and_zero_sizes_keep_the_previous_preference() {
         let (mut display, _peer, window) = display();

@@ -1,0 +1,58 @@
+# 本机登录与桌面
+
+产品入口为 `display-service → compositor → logon → 用户 desktop`。
+`logon` 以初始受信任 Wayland 连接常驻；desktop 获得独立的 security-context Shell 连接。
+窗口管理仍由 compositor 拥有，账户与会话生命周期由 logon 拥有。
+
+## 首次运行
+
+1. `make build-rootfs` 构建产品，`make run-gui` 启动图形实例；旧开发镜像先运行 `make sync-userland`。
+2. 默认用户名 `root`，密码留空即可登录；仍需 Ctrl+Alt+Delete 开始，不自动登录。
+   可在 UART 恢复 shell 执行 `passwd root` 设置密码，或执行 `adduser <用户名>` 创建普通账户；nobody 保持锁定。
+3. 图形界面按 Ctrl+Alt+Delete，输入用户名与密码。登录后可通过同一序列锁定、注销、改密或关机。
+   用户主目录必须存在；会话创建用户拥有的 0700 `/run/user/<uid>`。
+
+`sync-userland` 安装账户工具；缺少 shadow 时创建空密码 root 默认，完整匹配旧出厂锁定模板时迁移到新默认，其他已有密码、自定义账户与主目录不被替换。
+密码变更先验证当前密码与 shadow 最短改密间隔（UID 0 保留管理员例外），再调用固定 BusyBox passwd 进行带随机 salt 的 SHA-512 crypt 更新与文件锁定/替换。
+
+## 当前可用范围
+
+- 欢迎页、SAS、密码登录/错误反馈、加载交接、安全页、锁定/解锁、更改密码、注销、关机与重启。
+- 蓝色桌面、三个图标、28 像素任务栏、应用按钮分页、显示桌面、我的文档、UTC 时钟、ALSA 音量与静音。
+- 开始菜单鼠标/上下键/Enter/Escape，点击外部关闭；Ctrl+Esc 开始，Super+R 运行。
+- 运行以当前用户执行 shell 命令；普通图形应用从公开 Wayland socket 连接，不能访问外壳权限。
+- 任务按钮激活/恢复和最小化，应用任务窗口请求正常关闭；文件浏览器支持路径输入、目录导航、刷新和 UTF-8 只读预览。
+- Desktop Entry 读取系统安装目录，支持 Application/Name[zh_CN]/Exec 与 Hidden/NoDisplay/Terminal；Exec 分词后直接 spawn，禁止 shell 展开。
+
+空 shadow 字段只接受空输入，`!`/`*` 锁定值仍拒绝。散列认证仅支持本机 SHA-256/512 crypt，锁定、账户过期、密码过期与强制改密的账户拒绝图形登录；没有 PAM、远程域或拨号。
+解锁接受原 UID 或本机 UID 0 管理员，其他普通账户不能接管既有会话；管理员解锁不改变原桌面的执行身份。图标固定网格，无位置持久化/拖动、壁纸、右键属性、完整开始菜单分类与个性化菜单。
+程序入口最多 12 项；没有终端应用，Terminal=true 条目不显示。回收站入口仅浏览用户 Trash/files，不实现删除/还原协议。
+文件浏览器最多 4096 项，预览限 64 KiB UTF-8；不编辑文件、不实现应用关联。
+任务窗口只请求应用正常关闭，不能强制结束无响应程序；输入法、日期设置及完整任务栏属性尚未提供。默认音频节点为 0600，音量仅对有设备权限的账户可用，无 GUI 提权路径。
+会话进程组监督覆盖正常启动的应用，主动脱离进程组的程序需要后续 cgroup 会话资源域。
+这些范围不代表完整 Windows 2000 shell 或所有经典桌面交互规格均已完成。
+
+## 门禁
+
+`make verify-runtime-desktop` 使用真实产品 logon/desktop/file-explorer，不用 UI 探针代替产品。
+它仅向一次性镜像注入 alice/bob 测试散列与产品原样的空密码 root、procfs 检查脚本与独立标准 ALSA C observer，绝不写入产品或开发账户。
+冷启动 topology 复用 display_session 的 AArch64/HVF、2 CPU、1280×800，并通过共用 QEMU owner 添加 VirtIO Sound。
+
+1. 欢迎、SAS、错误密码拒绝与正确密码；背景图标、任务栏像素和两个实际首帧 callback。
+2. procfs 四个 UID/GID、补充组集合与运行时目录的真实 owner/mode。
+3. 图标启动文件浏览器、任务按钮最小化与恢复，运行启动真实后台进程。
+4. 验证更改密码后旧密码拒绝、新密码可解锁；普通其他账户拒绝解锁、UID 0 解锁保留 alice 会话；注销清空图层并终止后台组成员。
+5. 无权限账户打开音量窗口保持桌面正常；root 登录后拖动 slider、切换静音，独立 C 程序直接用 Linux headers 和 ioctl 读回真实 Master 值。
+
+Wayland/控件协议回归仍由 [Wayland 门禁](wayland-ui-verification.md) 独立裁决。
+首帧接管测试在一次性镜像中暂时不启动 logon，以逐像素验证交接画面；产品欢迎与完整会话由本门禁覆盖。
+完整 `make verify` 串行包含这两个门禁；定向开发时不重复全量单测。
+
+## 成本与安全所有权
+
+- 没有内核热路径、锁或新 syscall。桌面按配置、输入、窗口列表变化和分钟更新合并失效窗口，每窗口最多一条在途 frame。
+- ALSA UI 投影按 100ms deadline 读取，仅实际变化合并重绘；操作使用现有 control ioctl，无新增内核锁/热路径。布局由固定 Linux headers 的 C static assertions 与真实 UI 读回验证，不增加宿主 wall-clock 阈值。
+- BMP V4 素材在启动期读取/校验并预乘 alpha，每帧复用；解码器有截断、大小和 alpha 测试，无新增独立 benchmark 阈值。
+- 认证 crypt_r 是交互低频、由固定 musl 实现；错误后至少一秒重试窗口，不缓存密码。当前分配内的明文（含已删除尾部）在提交/取消/切换后 volatile 清空，不声称擦除此前已释放的旧分配。
+- SAS 期间仅可信 Overlay 的来源优先级与输入屏障新增到 compositor 策略，不改变普通窗口布局或通用 kernel ownership。
+- 光栅成本沿用 canvas/typeface 诊断 benchmark；交互门禁验证帧节流与更新正确性，不把截图正确性宣称为性能证明。

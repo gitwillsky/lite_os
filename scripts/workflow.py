@@ -429,6 +429,7 @@ def verify_runtime_gates(environment: Mapping[str, str] | None = None) -> None:
         ["verify_gpu.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_display.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_wayland.py", "--image", target_paths(environment)["rootfs"]],
+        ["verify_desktop.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_scheduler_fairness.py", "--image", target_paths(environment)["rootfs"]],
     ]
     for script, *arguments in commands:
@@ -448,6 +449,11 @@ def verify_runtime_gpu(environment: Mapping[str, str] | None = None) -> None:
 def verify_runtime_display(environment: Mapping[str, str] | None = None) -> None:
     """验证 compositor 接管启动画面并读取输入；不隐式重建 rootfs。"""
     run(python_script("verify_display.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
+
+
+def verify_runtime_desktop(environment: Mapping[str, str] | None = None) -> None:
+    """用真实产品进程验证认证、桌面交互和用户会话清理。"""
+    run(python_script("verify_desktop.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
 
 
 def verify_runtime_wayland(environment: Mapping[str, str] | None = None) -> None:
@@ -686,6 +692,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         "verify-runtime-gpu": verify_runtime_gpu,
         "verify-runtime-display": verify_runtime_display,
         "verify-runtime-wayland": verify_runtime_wayland,
+        "verify-runtime-desktop": verify_runtime_desktop,
         "verify-runtime-scheduler": verify_runtime_scheduler,
         "diagnose-scheduler-latency": diagnose_scheduler_latency,
         "verify-runtime-musl": verify_runtime_musl,

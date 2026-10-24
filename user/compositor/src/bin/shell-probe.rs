@@ -298,7 +298,10 @@ fn run() -> io::Result<()> {
 
 fn main() -> ExitCode {
     match run() {
-        Ok(()) => ExitCode::SUCCESS,
+        // 探针连接已 drop；保持监督进程存活，使门禁能继续独立验证普通客户端。
+        Ok(()) => loop {
+            std::thread::park();
+        },
         Err(error) => {
             eprintln!("shell-probe: error: {error}");
             ExitCode::FAILURE

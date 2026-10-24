@@ -172,15 +172,18 @@ pub fn signal(pid: Pid, signal: Signal) -> io::Result<()> {
 /// A child that owns its process session and is killed and reaped on drop.
 pub struct SessionChild {
     child: Child,
+    /// 完成 group kill/wait 后不再 signal 相同编号，防止 Drop 二次终止已复用的进程组。
+    terminated: bool,
 }
 
 /// Exact standard-I/O shape supported by a supervised graphical-session child.
-#[derive(Clone, Copy)]
 pub enum SessionIo {
     /// Null standard input/output and target diagnostics on `/dev/console`.
     Background,
     /// Piped standard input/output and target diagnostics on `/dev/console`.
     Piped,
+    /// 消费 Wayland stdin 与双向监督 stdout socket；stderr 为控制台，不与 exec-status 混用。
+    Wayland { socket: OwnedFd, control: OwnedFd },
 }
 
 /// A checked command that can only be launched through the session trampoline.
@@ -188,6 +191,7 @@ pub struct SessionCommand {
     program: OsString,
     arguments: Vec<OsString>,
     io: SessionIo,
+    user: Option<SessionUser>,
 }
 
 impl SessionCommand {
@@ -207,7 +211,25 @@ impl SessionCommand {
             program: program.into(),
             arguments,
             io,
+            user: None,
         }
+    }
+}
+
+/// 已认证账户的执行环境；logon 独占账户策略，launcher 仅实施标准凭据切换。
+#[derive(Debug, Clone)]
+pub struct SessionUser {
+    pub identity: Identity,
+    pub groups: Vec<u32>,
+    pub name: String,
+    pub home: std::path::PathBuf,
+    pub runtime: std::path::PathBuf,
+}
+impl SessionCommand {
+    /// 指定认证后的用户、补充组与清洁环境；消费后只能通过 session trampoline 执行。
+    pub fn user(mut self, user: SessionUser) -> Self {
+        self.user = Some(user);
+        self
     }
 }
 
@@ -238,16 +260,49 @@ impl SessionChild {
         let mut launch = Command::new(SESSION_LAUNCHER);
         launch
             .arg(std::process::id().to_string())
+            .stderr(Stdio::piped());
+        if let Some(user) = command.user {
+            launch
+                .env_clear()
+                .env(
+                    "PATH",
+                    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+                )
+                .env("LANG", "zh_CN.UTF-8")
+                .env("HOME", &user.home)
+                .env("USER", &user.name)
+                .env("LOGNAME", &user.name)
+                .env("XDG_RUNTIME_DIR", &user.runtime)
+                .env("WAYLAND_DISPLAY", "/run/liteos/wayland-0")
+                .current_dir(&user.home);
+            launch
+                .arg("--user")
+                .arg(user.identity.uid.to_string())
+                .arg(user.identity.gid.to_string())
+                .arg(
+                    user.groups
+                        .iter()
+                        .map(u32::to_string)
+                        .collect::<Vec<_>>()
+                        .join(","),
+                );
+        }
+        launch
             .arg("--")
             .arg(&command.program)
-            .args(&command.arguments)
-            .stderr(Stdio::piped());
+            .args(&command.arguments);
         match command.io {
             SessionIo::Background => {
                 launch.stdin(Stdio::null()).stdout(Stdio::null());
             }
             SessionIo::Piped => {
                 launch.stdin(Stdio::piped()).stdout(Stdio::piped());
+            }
+            SessionIo::Wayland { socket, control } => {
+                launch
+                    .env("WAYLAND_SOCKET", "0")
+                    .stdin(Stdio::from(socket))
+                    .stdout(Stdio::from(control));
             }
         }
         let mut child = launch.spawn()?;
@@ -256,7 +311,12 @@ impl SessionChild {
             .take()
             .ok_or_else(|| io::Error::other("session exec-status pipe missing"))?;
         let error = match read_exec_status(&mut status) {
-            Ok(()) => return Ok(Self { child }),
+            Ok(()) => {
+                return Ok(Self {
+                    child,
+                    terminated: false,
+                });
+            }
             Err(error) => error,
         };
         let _ = child.kill();
@@ -315,6 +375,9 @@ impl SessionChild {
     /// Returns a group-signal error other than an already-absent group, or the
     /// standard blocking `wait` error.
     pub fn terminate(&mut self) -> io::Result<()> {
+        if self.terminated {
+            return Ok(());
+        }
         let pid = self.id().0;
         // Capture errno before wait: libc calls during reaping may overwrite the signal error.
         // SAFETY: pid is the checked leader identity of this owned session; kill takes no pointers.
@@ -330,6 +393,9 @@ impl SessionChild {
                 return Err(error);
             }
         }
+        if wait_result.is_ok() {
+            self.terminated = true;
+        }
         wait_result
     }
 }
@@ -341,13 +407,19 @@ impl SessionChild {
 /// - `expected_parent`: Parent identity captured before the trampoline spawn.
 /// - `program`: Target executable path.
 /// - `arguments`: Target arguments after `argv[0]`.
+/// - `user`: 可选的 uid/gid 与完整补充组；console 打开后、parent-death 设置前降权。
 ///
 /// # Returns
 ///
 /// This function never returns. Success replaces the current image with
 /// `program`; setup or `exec` failure is published to [`SessionChild::spawn`]
 /// and exits with status 127.
-pub fn exec_session_child(expected_parent: Pid, program: &OsStr, arguments: &[OsString]) -> ! {
+pub fn exec_session_child(
+    expected_parent: Pid,
+    program: &OsStr,
+    arguments: &[OsString],
+    user: Option<(Identity, Vec<u32>)>,
+) -> ! {
     let mut publication = match std::io::stderr().as_fd().try_clone_to_owned() {
         Ok(file) => std::fs::File::from(file),
         Err(error) => {
@@ -355,7 +427,6 @@ pub fn exec_session_child(expected_parent: Pid, program: &OsStr, arguments: &[Os
             std::process::exit(127);
         }
     };
-    enter_session(&mut publication, expected_parent);
     let console = match std::fs::OpenOptions::new().write(true).open("/dev/console") {
         Ok(console) => console,
         Err(error) => report_exec_failure(&mut publication, 4, error),
@@ -363,8 +434,28 @@ pub fn exec_session_child(expected_parent: Pid, program: &OsStr, arguments: &[Os
     if unsafe { raw::dup2(console.as_raw_fd(), 2) } < 0 {
         report_exec_failure(&mut publication, 5, io::Error::last_os_error());
     }
+    if let Some((identity, groups)) = user {
+        set_identity(&mut publication, identity, &groups);
+    }
+    // 先降权再设置 parent-death：setuid 会清除此前设置的信号，顺序反过来会留下孤儿 desktop。
+    enter_session(&mut publication, expected_parent);
     let error = Command::new(program).args(arguments).exec();
     report_exec_failure(&mut publication, 6, error);
+}
+
+#[cfg(target_os = "linux")]
+fn set_identity(publication: &mut std::fs::File, identity: Identity, groups: &[u32]) {
+    // SAFETY: trampoline 是尚未建立线程的独立进程；groups 切片在系统调用期间有效。
+    if unsafe { raw::setgroups(groups.len(), groups.as_ptr()) } < 0
+        || unsafe { raw::setgid(identity.gid) } < 0
+        || unsafe { raw::setuid(identity.uid) } < 0
+    {
+        report_exec_failure(publication, 6, io::Error::last_os_error());
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn set_identity(publication: &mut std::fs::File, _identity: Identity, _groups: &[u32]) {
+    report_exec_failure(publication, 6, io::ErrorKind::Unsupported.into());
 }
 
 #[cfg(target_os = "linux")]
@@ -457,9 +548,8 @@ fn read_exec_status(status: &mut impl Read) -> io::Result<()> {
 
 impl Drop for SessionChild {
     fn drop(&mut self) {
-        if self.child.try_wait().ok().flatten().is_none() {
-            let _ = self.terminate();
-        }
+        // leader 已退出也必须清理仍继承会话进程组的应用；只回收 leader 会漏掉后台应用。
+        let _ = self.terminate();
     }
 }
 
@@ -541,7 +631,10 @@ mod tests {
             .unwrap();
         assert_eq!(ready, *b"R");
         let pid = Pid::new(child.id() as i32).unwrap();
-        let mut session = SessionChild { child };
+        let mut session = SessionChild {
+            child,
+            terminated: false,
+        };
         session.terminate().unwrap();
         assert_eq!(
             signal(pid, Signal::Kill).unwrap_err().raw_os_error(),
@@ -557,7 +650,10 @@ mod tests {
             .spawn()
             .unwrap();
         assert!(child.wait().unwrap().success());
-        let mut session = SessionChild { child };
+        let mut session = SessionChild {
+            child,
+            terminated: false,
+        };
         session.terminate().unwrap();
         assert!(session.try_wait().unwrap().is_some());
     }

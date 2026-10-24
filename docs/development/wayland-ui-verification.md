@@ -58,3 +58,7 @@ macOS 没有相同 SO_ACCEPTCONN getter，宿主 metadata/所有权测试从 std
 新增 context 只在会话建立/撤销时分配 fd、metadata 和 listener 表项；每个 listener 在现有 poll 集合增加两个条目，
 不经过每像素、每字节或每次普通窗口 commit 的热路径。SO_ACCEPTCONN 只读取已有 owner guard，因而不新增 wall-clock benchmark 阈值；
 既有 benchmark 和实际 guest 会话工作负载承担成本回归，未声称这是完整登录或进程沙箱的验收。
+
+产品 `logon` 退出会让 compositor 交由 init 重建。机制探针在协议 owner drop/shutdown 后保持监督进程存活，
+因此仍验证真实 EOF 清理、创建者断开后的委派与普通 UI 客户端，不依赖探针退出绕过产品监督策略。
+完整的账户、桌面与音量 UI 由 [产品桌面门禁](desktop-verification.md) 裁决。

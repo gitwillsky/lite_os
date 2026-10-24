@@ -27,3 +27,10 @@ def boot_scene() -> Path:
 def cursors() -> Path:
     """返回本次构建使用的 `LCS1` 光标集。"""
     return DEFAULT_CURSORS
+
+
+def shell_bitmaps() -> tuple[Path, ...]:
+    """按名称选择 BMP V4：显式打包的本地原版优先，缺失项使用已提交默认。"""
+    original = INPUTS / "windows2000/packed/ui"
+    return tuple(original / path.name if (original / path.name).is_file() else path
+                 for path in sorted((ROOT / "assets/classic/ui").glob("*.bmp")))

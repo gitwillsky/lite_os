@@ -273,10 +273,9 @@ Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，�
 
 尚未做 / 已知限制：
 
-- **compositor 阶段的进度条动画**：当前停在 400‰ 直到桌面首帧。旧 compositor 已移除，新 Wayland compositor 尚待阶段 5 实现；`LBS1` 与里程碑常量已为接续预留。
-- `verify_boot` 的 UTM 路径覆盖 kernel 图形设备拓扑与 init 启动；完整桌面会话尚不存在，不能据此宣称 UI 验收通过。
+- **compositor 阶段的进度条动画**：保持 400‰ 直到 logon 首帧，当前行为见 [开机与登录](../design/classic-desktop/boot-logon.md)。
+- `verify_boot` 的 UTM 路径只裁决图形设备拓扑与 init；账户和桌面交互由 [产品桌面门禁](../development/desktop-verification.md) 裁决。
 - 原版进度条是"跑马灯"还是按比例填充尚未核实（目前按比例）。
-- 两张 640×480 以外的位图（登录横幅、开始菜单侧栏）已生成并对齐尺寸，但还没有消费者。
 
 ## UART 基线与阶段 3 进展
 
@@ -333,8 +332,8 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
   当前支持范围见 [用户态架构](../architecture/userspace-abi.md)，验证与成本决策见 [Wayland/控件验证](../development/wayland-ui-verification.md)。
 - layer-shell 客户端和标准 security-context-v1 委派已实现：会话父客户端为独立桌面连接授予 Shell 能力，
   标准 Command 可降 uid/gid 并清除继承补充组；guest 用例验证父连接断开、子进程身份、禁止嵌套委派与图层 remap。
-  未把探针中的手工触发称为认证；仍需账户认证、补充组初始化与真正的会话应用。
-- 下一步：登录认证、补充组初始化与安全注意序列，然后 `logon`、`desktop`；之后按 Wine 必需协议补齐。
+  未把探针中的手工触发称为认证；机制阶段已收敛，实际产品会话由 logon/desktop 消费。
+- `logon` 与 `desktop` 产品会话已接入；当前事实、范围和验证入口迁移到 [桌面验证](../development/desktop-verification.md)。后续继续 Wine 必需协议与应用完善。
 - 待做：助记符下划线、菜单动画与交互、鼠标文本选择、剪贴板/IME，以及完整应用的视觉验收。
 
 ## 风险

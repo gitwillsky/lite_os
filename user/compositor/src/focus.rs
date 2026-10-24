@@ -138,6 +138,19 @@ pub struct Seat {
 }
 
 impl Seat {
+    /// 仅供硬件输入路径查询 SAS；在 track 当前 Delete 之前读取已按住的 Ctrl/Alt。
+    pub fn secure_attention(&self, code: u16, pressed: bool) -> bool {
+        code == 111 && pressed && self.keys.modifiers().control && self.keys.modifiers().alt
+    }
+
+    /// 已有修饰键与硬件事件组成的桌面快捷键；只有会话装配能选择目标外壳。
+    pub fn desktop_shortcut(&self, code: u16, pressed: bool) -> bool {
+        let modifiers = self.keys.modifiers();
+        pressed
+            && ((code == 1 && modifiers.control && !modifiers.alt)
+                || (code == 19 && modifiers.super_key))
+    }
+
     fn next_serial(&mut self) -> u32 {
         self.serial = self.serial.wrapping_add(1).max(1);
         self.serial

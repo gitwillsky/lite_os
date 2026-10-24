@@ -185,9 +185,16 @@ fn desktop() -> io::Result<()> {
 }
 
 fn main() -> ExitCode {
+    let is_parent = identity().map(|(uid, _, _)| uid == [0; 4]);
     let result =
-        identity().and_then(|(uid, _, _)| if uid == [0; 4] { parent() } else { desktop() });
+        is_parent.and_then(|parent_process| if parent_process { parent() } else { desktop() });
     match result {
+        Ok(()) if identity().is_ok_and(|(uid, _, _)| uid == [0; 4]) => {
+            // 父协议连接和租约已释放；监督进程继续存活，避免触发产品的 logon 退出重建策略。
+            loop {
+                std::thread::park();
+            }
+        }
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("session-probe: error: {error}");

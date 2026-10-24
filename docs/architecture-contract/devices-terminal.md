@@ -155,7 +155,12 @@
   Top/Overlay 的 Exclusive 图层优先获得键盘并接收窗口快捷键；OnDemand 图层点击获得焦点，点击应用或切换窗口后释放。
 - 会话管理能力来自 compositor 创建的 socketpair，不来自 uid、环境变量或公开监听 socket。`linux-uapi::process::spawn_with_wayland_socket`
   通过标准 `Command` stdin 装配传递连接（`WAYLAND_SOCKET=0`），不安装 pre_exec；普通监听连接即使同为 root 也不能看到或绑定外壳全局对象。
-  `/bin/logon` 存在时才启动外壳；其退出被 wait 回收，连接关闭后所有图层、工作区与输入焦点随协议状态销毁，不自动重启外壳。
+  `/bin/logon` 存在时才启动外壳；其退出被 wait 回收后 compositor 退出，由 init 的唯一 display-service respawn 重建会话，避免留下无认证界面。
+- SAS 只从 evdev 的 Ctrl+Alt+Delete 识别；`Session` 保存初始 logon ClientId，将标准键盘焦点和完整序列投递给它持续映射的背景。
+  握手期间 secure_pending 阻断旧窗口指针输入与快捷键，直到可信 Overlay 映射；缺少此屏障会泄露安全切换期间的输入。
+  可信 Overlay 在同层渲染、命中与独占键盘排序中最高；该优先级不能作用于 Background，否则登录背景会遮住用户桌面。
+  Ctrl+Esc 与 Super+R 在没有独占安全层时路由到桌面背景；桌面获得焦点时 Alt+F4 交给外壳。
+  新窗口/退出改变活动窗口以及 foreign 操作时撤销旧 OnDemand 焦点；SAS 握手的可信目标不能被这些请求撤销。
 - security-context-v1 只向初始 Session 连接公布。`wayland::security::Context` 独占 Pending metadata 与 fd，commit 后将 listener 唯一所有权移交 Server，
   协议对象销毁或创建者断连都不撤销已提交 listener；只有 close_fd 的 HUP/ERROR 停止接受新连接，同轮 HUP 优先于 accept。
   Server 给 `org.liteos.session` / `org.liteos.desktop` 且 instance 非空的 context 分配 Shell 能力：Layer/Foreign 可用，security-context 不可见，禁止嵌套委派。

@@ -82,7 +82,7 @@
   多个同边 panel 尚不按独占区依次排列；foreign-toplevel 尚无 output_enter/leave 与父子窗口关系；
   硬件光标只显示放大后不超过 64×64、物理热点位于 0..63 的图像，其余回退默认箭头，不提供软件 cursor plane；
   未实现 cursor-shape 扩展、素材忙碌光标计时动画、客户端 scale 高于输出时的缩小。
-- BusyBox init 监督网络服务、显示服务与 UART shell；显示器只有 compositor 接管的启动画面与光标，没有文本 VT、登录或桌面会话。
+- BusyBox init 监督网络服务、显示服务与 UART shell；compositor 接续启动画面后进入 `logon`，认证成功启动用户 `desktop`；UART 保留恢复 shell，没有显示器文本 VT。
 - GPU 开放 compositor 独占的单一 VirGL2 context、3D resource/transfer/submit、VirGL scanout/flush、2D damage flush、
   64×64 hardware cursor 与
   单 connector mode change；Vulkan、多 client 3D context、DRM atomic/auth/lease、完整 evdev

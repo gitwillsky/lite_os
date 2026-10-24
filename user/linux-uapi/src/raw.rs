@@ -474,3 +474,26 @@ unsafe extern "C" {
     pub(crate) fn kill(pid: c_int, signal: c_int) -> c_int;
     pub(crate) fn setsid() -> c_int;
 }
+
+// musl 1.2.6 include/crypt.h；独占的调用存储，不使用 libc crypt 全局缓冲。
+#[cfg(all(target_os = "linux", target_env = "musl"))]
+#[repr(C)]
+pub(crate) struct CryptData {
+    pub initialized: c_int,
+    pub buffer: [c_char; 256],
+}
+#[cfg(all(target_os = "linux", target_env = "musl"))]
+unsafe extern "C" {
+    pub(crate) fn crypt_r(
+        key: *const c_char,
+        salt: *const c_char,
+        data: *mut CryptData,
+    ) -> *mut c_char;
+}
+
+#[cfg(target_os = "linux")]
+unsafe extern "C" {
+    pub(crate) fn setgroups(size: usize, groups: *const u32) -> c_int;
+    pub(crate) fn setgid(gid: u32) -> c_int;
+    pub(crate) fn setuid(uid: u32) -> c_int;
+}

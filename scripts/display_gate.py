@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import re
@@ -18,7 +19,7 @@ from pathlib import Path
 from qemu_gate import ANSI, _qemu_command, terminate
 
 ROOT = Path(__file__).resolve().parent.parent
-FATAL = ("panicked at", "[ERROR]", "compositor: error", "xkb-check: ", "wayland-probe: error", "shell-probe: error:", "ui-probe: error:", "session-probe: error:")
+FATAL = ("panicked at", "[ERROR]", "compositor: error", "xkb-check: ", "wayland-probe: error", "shell-probe: error:", "ui-probe: error:", "session-probe: error:", "logon: error:", "desktop: error:", "file-explorer: error:", "desktop-check: error:", "volume-check: error:")
 TIMEOUT_SECONDS = 90
 
 
@@ -85,6 +86,7 @@ class Console:
 
     def __init__(self, process: subprocess.Popen[bytes]) -> None:
         self.process, self.text = process, ""
+        self._decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
     def mark(self) -> int:
         """当前输出长度；之后用 `after=` 只等待这个位置之后才出现的内容。"""
@@ -111,7 +113,7 @@ class Console:
                 chunk = os.read(self.process.stdout.fileno(), 16 * 1024)
                 if not chunk:
                     raise RuntimeError(f"QEMU exited early\n{self.text[-1500:]}")
-                self.text += ANSI.sub("", chunk.decode(errors="replace"))
+                self.text = ANSI.sub("", self.text + self._decoder.decode(chunk))
             for fatal in FATAL:
                 if fatal in self.text:
                     raise RuntimeError(f"fatal marker `{fatal}`\n{self.text[-1500:]}")
@@ -139,14 +141,19 @@ class Session:
 
 
 @contextmanager
-def display_session(image: Path, memory: str = "2G") -> Iterator[Session]:
-    """冷启动 `image` 的私有副本（guest 写入不污染基线）；退出时关闭 QMP 并终止 QEMU。"""
+def display_session(image: Path, memory: str = "2G", sound: bool = False) -> Iterator[Session]:
+    """冷启动私有副本，退出时回收 QEMU；sound 启用共用 owner 的 VirtIO Sound 拓扑。
+
+    默认图形门禁不装声卡；ALSA/音量 UI 门禁必须启用，否则 guest 没有 controlC0。
+    本入口不抓取 WAV，声音分析仍由 verify_audio 的 boot owner 承担。
+    """
     with tempfile.TemporaryDirectory(prefix="liteos-display-gate-") as private:
         root = Path(private)
         private_image = root / image.name
         private_image.write_bytes(image.read_bytes())
         qmp_path = root / "display.qmp"
-        command = _qemu_command(private_image, 2, memory=memory, display_qmp=qmp_path)
+        command = _qemu_command(private_image, 2, memory=memory, display_qmp=qmp_path,
+                                audio_wav=root / "audio.wav" if sound else None)
         process = subprocess.Popen(
             command, cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, start_new_session=True
         )

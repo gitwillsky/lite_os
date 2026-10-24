@@ -39,7 +39,7 @@
   `run` 与 `run-gui` 自动同步；`reset-rootfs` 才从基线显式重建开发镜像。
 - Rust 验证探针以 target、工具链、sysroot、libunwind 与 link flags 隔离 Cargo compilation cache，
   最终 ELF 按完整源码内容发布不可变 generation。
-- `run-gui` 当前只显示 kernel 启动画面，交互 shell 位于 UART；没有显示器文本控制台、桌面或 seat 切换。
+- `run-gui` 进入 logon 与用户桌面，UART 保留恢复 shell；首次账户设置及产品会话门禁见[桌面验证](desktop-verification.md)。
 - macOS 的 `run-gui` 是唯一交互图形产品入口：要求固定 `/Applications/UTM.app` v4.7.5，生成确定
   UUID 的 UTM v4 配置，通过 UTM public scripting API import 注册，再由同一 API 创建 Metal
   display window。workflow 在 QEMU 启动前预监听 serial TCP，并把该次启动的完整 guest 输出覆盖写入

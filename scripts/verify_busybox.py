@@ -22,7 +22,7 @@ from local_inputs import INPUTS
 from apk_cache import cached_apk_bootstrap
 from apk_rootfs import assemble_apk_rootfs, install_apk_crash_fixtures
 from build_target import target_from_environment
-from classic_assets import boot_scene, cursors
+from classic_assets import boot_scene, cursors, shell_bitmaps
 from build_cache import (
     build_environment,
     build_jobs_override,
@@ -114,7 +114,9 @@ FORBIDDEN_BOOT_MARKERS = (
     "LITEOS_DNS_FAILURE",
     "\ufffd",
 )
+ACCOUNT_APPLETS = ("passwd", "adduser", "addgroup")
 BUSYBOX_LINKS = (
+    *ACCOUNT_APPLETS,
     "[",
     "[[",
     "arch",
@@ -1180,20 +1182,18 @@ class UserlandArtifact:
     mode: int = 0o644
 
 
-def build_compositor(musl: MuslCachePaths) -> Path:
-    """构建显示服务 compositor；它是产品 rootfs 的唯一 DRM master。"""
-    return build_rust_user_program(musl, "compositor", "compositor", "compositor", 1)
-
-
-def base_userland(compositor: Path) -> tuple[UserlandArtifact, ...]:
-    """返回产品的系统文件；rootfs 构建和开发镜像同步共用此清单。
-
-    Args:
-        compositor: 已构建并校验的 `/bin/compositor`。
-
-    Returns:
-        启动配置、关机命令、显示服务与共享启动素材。
-    """
+def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
+    """构建产品系统文件的唯一安装清单；构建与开发镜像同步共同消费。"""
+    programs = tuple(
+        UserlandArtifact(build_rust_user_program(musl, crate, binary, binary, 1), f"/bin/{binary}", 0o755)
+        for crate, binary in (("compositor", "compositor"), ("logon", "logon"),
+                              ("desktop", "desktop"), ("file-explorer", "file-explorer"),
+                              ("linux-uapi", "session-launch"))
+    )
+    fonts = tuple(UserlandArtifact(ROOT / "assets/fonts" / name, f"/usr/share/liteos/fonts/{name}")
+                  for name in ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf"))
+    ui = tuple(UserlandArtifact(path, f"/usr/share/liteos/ui/{path.name}")
+               for path in shell_bitmaps())
     return (
         UserlandArtifact(ROOT / "user/base/shutdown", "/bin/shutdown", 0o755),
         UserlandArtifact(ROOT / "user/base/rcS", "/etc/init.d/rcS", 0o755),
@@ -1201,8 +1201,9 @@ def base_userland(compositor: Path) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(ROOT / "user/base/profile", "/etc/profile"),
         UserlandArtifact(boot_scene(), "/usr/share/liteos/boot-scene.lbs"),
         UserlandArtifact(cursors(), "/usr/share/liteos/cursors.lcs"),
-        UserlandArtifact(compositor, "/bin/compositor", 0o755),
         UserlandArtifact(ROOT / "user/base/display-service", "/etc/init.d/display-service", 0o755),
+        UserlandArtifact(ROOT / "user/base/file-explorer.desktop", "/usr/share/applications/file-explorer.desktop"),
+        *programs, *fonts, *ui,
     )
 
 
@@ -1310,7 +1311,7 @@ def create_image(
         ],
         ROOT,
     )
-    userland = base_userland(build_compositor(musl))
+    userland = base_userland(musl)
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     commands = [
@@ -1333,6 +1334,10 @@ def create_image(
         "mkdir /usr/lib",
         "mkdir /usr/share",
         "mkdir /usr/share/liteos",
+        "mkdir /usr/share/liteos/fonts",
+        "mkdir /usr/share/liteos/ui",
+        "mkdir /usr/share/applications",
+        "mkdir /home",
         "mkdir /usr/share/udhcpc",
         "mkdir /var",
         "mkdir /var/cache",
@@ -1342,6 +1347,8 @@ def create_image(
         "set_inode_field /var/tmp mode 041777",
         f"write {ROOT / 'user' / 'base' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'base' / 'group'} /etc/group",
+        f"write {ROOT / 'user' / 'base' / 'shadow'} /etc/shadow",
+        "set_inode_field /etc/shadow mode 0100600",
         f"write {ROOT / 'user' / 'base' / 'network-service'} /etc/init.d/network-service",
         "set_inode_field /etc/init.d/network-service mode 0100755",
         f"write {ROOT / 'user' / 'base' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
@@ -1500,7 +1507,7 @@ def create_published_image(
         RuntimeError: 构建工具、APK bootstrap 或 rootfs assembly 失败。
         OSError: cache publication 或 output copy 失败。
     """
-    userland = base_userland(build_compositor(musl))
+    userland = base_userland(musl)
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     host_openssl = shutil.which("openssl")
@@ -1522,6 +1529,7 @@ def create_published_image(
         bootstrap.public_key,
         *alpine_keys,
         ROOT / "user/base/passwd",
+        ROOT / "user/base/shadow",
         ROOT / "user/base/group",
         ROOT / "user/base/inittab",
         ROOT / "user/base/profile",
@@ -1628,6 +1636,7 @@ def main() -> int:
                 *probes.values(),
                 openssl.binary,
                 ROOT / "user/base/passwd",
+        ROOT / "user/base/shadow",
                 ROOT / "user/base/group",
                 ROOT / "user/base/inittab",
                 ROOT / "user/base/profile",

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=File Explorer
+Name[zh_CN]=文件资源管理器
+Exec=/bin/file-explorer
+Icon=folder-closed
+Categories=System;FileTools;
+Terminal=false

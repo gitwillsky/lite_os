@@ -1,4 +1,6 @@
-//! Typed Linux ALSA PCM playback for LiteOS's fixed output contract.
+//! Typed Linux ALSA PCM playback and Master controls for LiteOS's fixed output contract.
+
+pub mod control;
 
 use std::{
     ffi::{CString, c_void},

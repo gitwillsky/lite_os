@@ -39,12 +39,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "desktop"
+version = "0.1.0"
+dependencies = [
+ "canvas",
+ "classic-theme",
+ "classic-ui",
+ "linux-uapi",
+ "typeface",
+]
+
+[[package]]
+name = "file-explorer"
+version = "0.1.0"
+dependencies = [
+ "canvas",
+ "classic-theme",
+ "classic-ui",
+ "typeface",
+]
+
+[[package]]
 name = "keyboard"
 version = "0.1.0"
 
 [[package]]
 name = "linux-uapi"
 version = "0.1.0"
+
+[[package]]
+name = "logon"
+version = "0.1.0"
+dependencies = [
+ "canvas",
+ "classic-theme",
+ "classic-ui",
+ "linux-uapi",
+ "typeface",
+]
 
 [[package]]
 name = "terminal-font"

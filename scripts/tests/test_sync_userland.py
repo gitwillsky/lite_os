@@ -62,6 +62,22 @@ class UserlandSyncTests(unittest.TestCase):
                 self.assertNotIn("Inode:", run_debugfs(image, f"stat {removed}"), removed)
             self.assertIn("old product", run_debugfs(image, "cat /root/project/keep.txt"))
             self.assertIn(config.read_text().strip(), run_debugfs(image, "cat /etc/inittab"))
+            self.assertIn("root::", run_debugfs(image, "cat /etc/shadow"))
+            self.assertIn("0600", run_debugfs(image, "stat /etc/shadow"))
+            legacy = directory / "legacy-shadow"
+            legacy.write_text("root:!:1:0:99999:7:::\nnobody:!:1:0:99999:7:::\n")
+            sync_userland.run_batch(image, ["rm /etc/shadow", f"write {legacy} /etc/shadow"], directory, "legacy-default", writable=True)
+            # 即使系统文件命中缓存，出厂默认迁移也必须生效并报告实际修改。
+            self.assertTrue(sync_userland.synchronize(image, artifacts))
+            self.assertIn("root::", run_debugfs(image, "cat /etc/shadow"))
+            self.assertIn("nobody:!:", run_debugfs(image, "cat /etc/shadow"))
+            self.assertFalse(sync_userland.synchronize(image, artifacts))
+            password = directory / "shadow"
+            password.write_text("root:$6$existing-user-hash:1:0:99999:7:::\n")
+            sync_userland.run_batch(image, ["rm /etc/shadow", f"write {password} /etc/shadow", "set_inode_field /etc/shadow mode 0100600"], directory, "existing-password", writable=True)
+            config.write_text(config.read_text() + "# new system generation\n")
+            self.assertTrue(sync_userland.synchronize(image, artifacts))
+            self.assertIn(password.read_text().strip(), run_debugfs(image, "cat /etc/shadow"))
 
     def test_managed_paths_cannot_escape_into_user_data(self):
         for path in ("/root/project", "/usr/share/liteos/../../bin/sh", "/usr/share/liteos//bad", "/etc/passwd"):
@@ -71,8 +87,10 @@ class UserlandSyncTests(unittest.TestCase):
         # 产品清单新增文件时，同步器的白名单必须同步更新；否则开发镜像同步会在运行时才报错。
         from verify_busybox import base_userland
 
-        for artifact in base_userland(Path("/nonexistent/compositor")):
-            self.assertTrue(sync_userland.managed_path(artifact.destination), artifact.destination)
+        from unittest.mock import patch, Mock
+        with patch("verify_busybox.build_rust_user_program", return_value=Path("/nonexistent/program")):
+            for artifact in base_userland(Mock()):
+                self.assertTrue(sync_userland.managed_path(artifact.destination), artifact.destination)
 
 
 if __name__ == "__main__":

@@ -59,6 +59,11 @@ struct LayerBox {
     height: i32,
 }
 
+/// 可信来源仅提升安全覆盖层；背景必须让之后加入的用户桌面正常覆盖。
+fn layer_order(layer: Layer, trusted: bool) -> (Layer, bool) {
+    (layer, layer == Layer::Overlay && trusted)
+}
+
 /// 光标当前的形状来源。
 #[derive(Clone, Copy)]
 enum Shape {
@@ -90,6 +95,10 @@ pub struct Session {
     keyboard_layer: Option<(ClientId, ObjectId)>,
     /// 合成器拉起的外壳进程（`logon`）；目前只检测它的退出。
     shell: Option<Child>,
+    /// compositor 创建的初始连接；仅它拥有 SAS 路由，委派 Shell 不能替代。
+    logon_client: Option<ClientId>,
+    /// SAS 后直到可信 Overlay 映射的输入屏障；缺少它会把握手期间的输入泄露给旧窗口。
+    secure_pending: bool,
     stack: Stack,
     seat: Seat,
     grab: Option<ActiveGrab>,
@@ -132,6 +141,8 @@ impl Session {
             last_pointer_focus: None,
             keyboard_layer: None,
             shell: None,
+            logon_client: None,
+            secure_pending: false,
             stack: Stack::default(),
             seat: Seat::default(),
             grab: None,
@@ -149,17 +160,12 @@ impl Session {
 
     /// 拉起外壳程序（`logon`）：它经 `WAYLAND_SOCKET` 得到一条特权连接，能绑定 layer-shell 与 foreign-toplevel。
     ///
-    /// 程序不存在时什么也不做（产品 rootfs 在 `logon` 实现之前没有它）。
-    ///
     /// # Errors
     ///
     /// 创建 socketpair 或启动进程失败。
     pub fn spawn_shell(&mut self, program: &Path) -> io::Result<()> {
-        if !program.exists() {
-            return Ok(());
-        }
         let (server_end, client_end) = UnixStream::pair()?;
-        self.server.add_session(server_end)?;
+        self.logon_client = Some(self.server.add_session(server_end)?);
         self.shell = Some(spawn_with_wayland_socket(
             program.as_os_str(),
             client_end.into(),
@@ -212,7 +218,8 @@ impl Session {
                 }
             })
             .collect();
-        boxes.sort_by_key(|layer| layer.layer);
+        boxes
+            .sort_by_key(|layer| layer_order(layer.layer, Some(layer.client) == self.logon_client));
         boxes
     }
 
@@ -227,6 +234,9 @@ impl Session {
 
     /// 指针下最上面的 surface：Overlay、Top 层，然后是应用窗口，最后是 Bottom、Background 层。
     fn hit_test(&self, boxes: &[LayerBox], point: (i32, i32)) -> Option<Hit> {
+        if self.secure_pending {
+            return None;
+        }
         let layer_hit = |wanted: &dyn Fn(Layer) -> bool| {
             boxes
                 .iter()
@@ -258,7 +268,7 @@ impl Session {
             .filter(|layer| {
                 layer.keyboard == KeyboardInteractivity::Exclusive && layer.layer >= Layer::Top
             })
-            .max_by_key(|layer| layer.layer)
+            .max_by_key(|layer| layer_order(layer.layer, Some(layer.client) == self.logon_client))
             .map(|layer| (layer.client, layer.surface))
     }
 
@@ -346,20 +356,23 @@ impl Session {
                     let point = self.input.pointer().position();
                     let boxes = self.layer_boxes();
                     let hit = self.hit_test(&boxes, point);
-                    self.keyboard_layer = hit
-                        .and_then(|hit| {
-                            boxes
-                                .iter()
-                                .find(|layer| (layer.client, layer.surface) == hit.target)
-                        })
-                        .filter(|layer| layer.keyboard == KeyboardInteractivity::OnDemand)
-                        .map(|layer| (layer.client, layer.surface));
+                    if !self.secure_pending {
+                        self.keyboard_layer = hit
+                            .and_then(|hit| {
+                                boxes
+                                    .iter()
+                                    .find(|layer| (layer.client, layer.surface) == hit.target)
+                            })
+                            .filter(|layer| layer.keyboard == KeyboardInteractivity::OnDemand)
+                            .map(|layer| (layer.client, layer.surface));
+                    }
                     let covered = hit.is_some_and(|hit| {
                         boxes.iter().any(|layer| {
                             (layer.client, layer.surface) == hit.target && layer.layer >= Layer::Top
                         })
                     });
-                    if !covered
+                    if !self.secure_pending
+                        && !covered
                         && let Some(target) = self
                             .stack
                             .window_at(point.0, point.1)
@@ -369,23 +382,62 @@ impl Session {
                         self.dirty = true;
                     }
                 }
-                self.seat.button(&mut self.server, code, pressed, time);
+                if !self.secure_pending {
+                    self.seat.button(&mut self.server, code, pressed, time);
+                }
             }
             Event::Key { code, pressed } => {
                 if !std::mem::replace(&mut self.saw_key, true) {
                     println!("compositor: first key event");
                 }
+                // SAS 只识别硬件输入；登录背景始终映射，因此使用标准 wl_keyboard 焦点与按键事件。
+                // 先撤销抓取，防止安全界面出现后旧窗口仍占有鼠标。
+                if self.seat.secure_attention(code, pressed) {
+                    if self.grab.is_some() {
+                        self.end_grab()?;
+                    }
+                    self.secure_pending = self.logon_client.is_some();
+                    self.keyboard_layer = self
+                        .layer_boxes()
+                        .iter()
+                        .find(|layer| Some(layer.client) == self.logon_client)
+                        .map(|layer| (layer.client, layer.surface));
+                }
                 // 键盘焦点必须先于这次按键同步：刚激活的窗口应该收到触发它之后的第一个键。
                 let exclusive = self.exclusive_keyboard(&self.layer_boxes());
+                if exclusive.is_none()
+                    && !self.secure_pending
+                    && self.seat.desktop_shortcut(code, pressed)
+                {
+                    self.keyboard_layer = self
+                        .layer_boxes()
+                        .iter()
+                        .find(|layer| {
+                            Some(layer.client) != self.logon_client
+                                && layer.layer == Layer::Background
+                                && layer.keyboard == KeyboardInteractivity::OnDemand
+                        })
+                        .map(|layer| (layer.client, layer.surface));
+                }
                 self.seat.sync_keyboard(
                     &mut self.server,
                     &self.stack,
                     scale,
-                    exclusive.or(self.keyboard_layer),
+                    if self.secure_pending {
+                        self.keyboard_layer
+                    } else {
+                        exclusive.or(self.keyboard_layer)
+                    },
                 );
-                let shortcut =
-                    self.seat
-                        .key(&mut self.server, code, pressed, time, exclusive.is_none());
+                let shortcut = self.seat.key(
+                    &mut self.server,
+                    code,
+                    pressed,
+                    time,
+                    exclusive.is_none()
+                        && !self.secure_pending
+                        && !(code == 62 && self.keyboard_layer.is_some()),
+                );
                 // 登录屏独占键盘时，窗口管理快捷键（Alt+Tab、Alt+F4…）不能越过它。
                 if exclusive.is_none() {
                     self.on_shortcut(shortcut);
@@ -437,7 +489,12 @@ impl Session {
             })
             .collect();
         let before = self.stack.windows().len();
+        let active_before = self.stack.active();
         if self.stack.sync(&mapped, self.screen(), self.scale as i32) {
+            // 映射/退出改变活动窗口时，焦点跟随窗口栈；SAS 握手仍由可信登录目标独占。
+            if self.stack.active() != active_before && !self.secure_pending {
+                self.keyboard_layer = None;
+            }
             self.dirty = true;
             if self.stack.windows().len() != before {
                 println!("compositor: windows={}", self.stack.windows().len());
@@ -492,17 +549,25 @@ impl Session {
         let scale = self.scale as i32;
         let boxes = self.layer_boxes();
         let exclusive = self.exclusive_keyboard(&boxes);
+        if exclusive.is_some_and(|(client, _)| Some(client) == self.logon_client) {
+            self.secure_pending = false;
+        }
         self.keyboard_layer = self.keyboard_layer.filter(|target| {
-            boxes.iter().any(|layer| {
-                (layer.client, layer.surface) == *target
-                    && layer.keyboard == KeyboardInteractivity::OnDemand
-            })
+            (self.secure_pending && Some(target.0) == self.logon_client)
+                || boxes.iter().any(|layer| {
+                    (layer.client, layer.surface) == *target
+                        && layer.keyboard == KeyboardInteractivity::OnDemand
+                })
         });
         self.seat.sync_keyboard(
             &mut self.server,
             &self.stack,
             scale,
-            exclusive.or(self.keyboard_layer),
+            if self.secure_pending {
+                self.keyboard_layer
+            } else {
+                exclusive.or(self.keyboard_layer)
+            },
         );
         let time = self.now_ms();
         let pointer = self.input.pointer().position();
@@ -575,6 +640,10 @@ impl Session {
             let (client, surface) = (request.client, request.surface);
             if self.stack.placement(client, surface).is_none() {
                 continue;
+            }
+            // 任务栏操作交还窗口焦点；SAS 期间不能撤销可信目标，否则握手中的按键会回落到旧应用。
+            if !self.secure_pending {
+                self.keyboard_layer = None;
             }
             match request.action {
                 ForeignAction::Activate | ForeignAction::Minimize(false) => {
@@ -813,7 +882,8 @@ impl Session {
             && let Ok(Some(status)) = shell.try_wait()
         {
             println!("compositor: shell exited {status}");
-            self.shell = None;
+            // 可信登录进程退出时 fail closed；让 init 的 display-service 一并重建显示会话。
+            std::process::exit(1);
         }
     }
 
@@ -868,5 +938,19 @@ impl Session {
             ));
         }
         self.scanout.request_flip()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn trusted_priority_is_exclusive_to_the_secure_overlay() {
+        assert_eq!(
+            layer_order(Layer::Background, true),
+            layer_order(Layer::Background, false)
+        );
+        assert!(layer_order(Layer::Overlay, true) > layer_order(Layer::Overlay, false));
+        assert!(layer_order(Layer::Overlay, false) > layer_order(Layer::Top, true));
     }
 }

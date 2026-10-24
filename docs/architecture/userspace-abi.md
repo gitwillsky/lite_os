@@ -27,7 +27,7 @@
   expiration counter 与 poll/epoll readiness；最后一个 fd/OFD 引用释放时同步撤销 timer record。
 - 产品 userspace 是按所选架构原生构建的固定 musl runtime、BusyBox `init + ash`、网络服务、Wayland compositor 与单 ELF
   `liteos-stress` diagnostics。Rust 库为 `linux-uapi`、`keyboard`、`terminal-model`、`terminal-font` `canvas`、`classic-theme`、`classic-ui`、`typeface`、`wayland-scanner` 与 `wayland-wire`，
-  归属单一 `user/` workspace 与 lockfile；当前尚未安装登录/桌面应用或用户态音频服务。
+  归属单一 `user/` workspace 与 lockfile；产品安装 `logon`、`desktop`、`file-explorer` 与 `session-launch`，没有用户态音频服务。
   kernel、rootfs、APK 与 cache 都携带同一个 architecture identity。
 - 标准 Rust consumer 使用官方 `aarch64-unknown-linux-musl`/`riscv64gc-unknown-linux-musl`
   target 与普通 `fn main`；builder 从固定 rust-src 构建 `std + panic_abort`，从同一源码树构建并
@@ -37,15 +37,15 @@
 - Rust `std` 已按 target 提供文件、socket、process、thread/TLS、时间与集合等稳定 OS façade，因此
   应用不再重复声明这些 FFI。ALSA/DRM/evdev/PTY ioctl、memfd、`poll` 与 SCM_RIGHTS 等 Linux
   专有 UAPI 不属于跨平台 `std` 稳定 surface，由内部
-  `linux-uapi::{alsa,drm,input,pty,process,shared_memory,unix}` 深模块独占 raw musl
+  `linux-uapi::{alsa,credentials,drm,input,pty,process,shared_memory,unix}` 深模块独占 raw musl
   FFI、layout/常量和 RAII；consumer 只使用安全 typed interface。
 - `classic-ui` 已包含 Wayland xdg 窗口客户端、整数 scale shm 提交、装饰拖动/边框缩放/标题按钮、
   单行 UTF-8 编辑（选择、删除、密码掩码、水平滚动）与 Tab 焦点链；`linux-uapi` 仍独占 fd/poll/memfd 机制。
   当前限制：单输出、固定 US XKB keymap（其他布局明确 Unsupported）、无 IME/剪贴板、无鼠标定位文本光标、
-  无光标闪烁与文本组合；装饰尚无双击标题栏和系统菜单。菜单交互/动画和真实 logon/desktop 应用仍待实现。
+  无光标闪烁与文本组合；装饰尚无双击标题栏和系统菜单。开始菜单已有键盘/鼠标交互，尚无菜单动画。
 - classic-ui 现有 layer-shell v4+ 客户端，支持背景、panel、Overlay、双缓冲配置与 unmap/remap；Toplevel 与 Layer 共用一份帧和输入 owner。
   Session 可用标准 security-context-v1 为桌面建立独立连接，父客户端断开后 listener 继续存活；通过标准 Command 降 uid/gid 后仍可使用继承连接。
-  这一步只完成能力委派与主身份机制，未实现密码认证、补充组初始化、会话注销/进程树终止和 Ctrl+Alt+Del 安全注意序列。
+  `logon` 拥有本机 shadow 认证、补充组初始化、锁定、本人/UID 0 管理员解锁、改密与注销；`desktop` 独占外壳。实际范围与运行入口见 [桌面验证](../development/desktop-verification.md)。
   `org.liteos.session` 的 context 只开放桌面能力，不开放新的 context manager；公开监听连接始终为普通应用权限。
 - write/send 的 stack/heap staging 统一由 `UserInputStaging` 管理 initialized prefix，memory copyin 直接写未初始化 storage。代表样本包含两条 64 KiB socket staging 和一条 1 MiB regular staging，共 1,179,648 bytes；其 copyin 前预清零成本降为 0。
 - 普通 fork 从多线程 parent 只复制 calling Thread，child 取得独立 process owner 与 COW

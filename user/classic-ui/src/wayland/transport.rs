@@ -63,6 +63,16 @@ impl Transport {
         }
     }
 
+    pub fn retire_server_object(&mut self, object: ObjectId) {
+        self.interfaces.remove(&object.get());
+    }
+    pub fn server_object(&mut self, object: ObjectId, interface: Interface) -> io::Result<()> {
+        if object.get() < 0xff00_0000 || self.interfaces.insert(object.get(), interface).is_some() {
+            return Err(io::Error::other("invalid server object id"));
+        }
+        Ok(())
+    }
+
     pub fn allocate(&mut self, interface: Interface) -> io::Result<ObjectId> {
         let raw = if let Some(raw) = self.reusable.pop_front() {
             raw
@@ -150,9 +160,28 @@ impl Transport {
     }
 }
 
+impl Drop for Transport {
+    fn drop(&mut self) {
+        // Transport 独占协议连接。继承的 stdin 可能仍是同一 OFD 的别名，单独 close 副本不能断开对端。
+        // shutdown 撤销整个连接的 I/O，不关闭其他 owner 借用的 fd，也不在析构中阻塞 flush。
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn protocol_drop_disconnects_even_when_the_inherited_descriptor_alias_survives() {
+        use std::io::Read;
+        let (stream, mut peer) = UnixStream::pair().unwrap();
+        let inherited = stream.try_clone().unwrap();
+        peer.set_read_timeout(Some(std::time::Duration::from_millis(20)))
+            .unwrap();
+        drop(Transport::new(stream));
+        assert_eq!(peer.read(&mut [0u8]).unwrap(), 0);
+        drop(inherited);
+    }
     #[test]
     fn ids_are_reused_only_after_delete_id_and_split_events_are_preserved() {
         let (stream, mut server) = UnixStream::pair().unwrap();

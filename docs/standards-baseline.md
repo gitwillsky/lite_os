@@ -128,6 +128,12 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
   [JBD2 文档](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/Documentation/filesystems/ext4/journal.rst)、
   [固定 JBD2 实现](https://github.com/torvalds/linux/tree/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/fs/jbd2)。
 
+### 桌面程序入口与系统图像
+
+- Desktop Entry Specification `1.5`；当前程序启动只实现 [Exec 规则](https://specifications.freedesktop.org/desktop-entry/1.5/exec-variables.html) 的明确子集，未支持项不作为完整兼容性声明。
+- 系统图像固定为 [BITMAPV4HEADER](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-bitmapv4header) 的 108-byte header、top-down、32-bit BI_BITFIELDS、显式 RGBA masks 与 sRGB；不使用 BI_RGB 保留字节承载 alpha。
+- 本机认证与组初始化的实现依据为上述固定 musl 的 `include/crypt.h`、`src/crypt/crypt_r.c`、`src/passwd/getgrouplist.c`、`src/misc/initgroups.c`；账户写入依据固定 BusyBox `loginutils/passwd.c` 与 `libbb/update_passwd.c`。
+
 ### Terminal
 
 - JetBrains Mono `2.304`；source zip SHA-256 `6f6376c6ed2960ea8a963cd7387ec9d76e3f629125bc33d1fdcd7eb7012f7bbf`；SIL OFL 1.1。

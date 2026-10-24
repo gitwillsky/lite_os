@@ -51,6 +51,7 @@
 - [固定规范与上游来源](standards-baseline.md)
 - [构建、测试与验证](development/build-and-verify.md)
 - [Wayland 与经典控件验证](development/wayland-ui-verification.md)
+- [本机登录与桌面验证](development/desktop-verification.md)
 - [生成的 scoped interface baseline](generated/architecture-interface.txt)
 
 ## 设计规格

@@ -1,0 +1,12 @@
+[package]
+name = "desktop"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+classic-ui = { path = "../classic-ui" }
+classic-theme = { path = "../classic-theme" }
+canvas = { path = "../canvas" }
+typeface = { path = "../typeface" }
+linux-uapi.workspace = true

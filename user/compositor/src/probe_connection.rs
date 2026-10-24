@@ -204,3 +204,10 @@ impl Connection {
         self.flush()
     }
 }
+
+impl Drop for Connection {
+    fn drop(&mut self) {
+        // 探针独占协议连接；监督进程保留 stdin 别名时，仍须让 server 立即观察到 EOF。
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+}

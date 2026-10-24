@@ -73,6 +73,7 @@ class WorkflowTests(unittest.TestCase):
                 "verify_gpu.py",
                 "verify_display.py",
                 "verify_wayland.py",
+                "verify_desktop.py",
                 "verify_scheduler_fairness.py",
             ],
         )

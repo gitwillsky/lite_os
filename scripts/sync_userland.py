@@ -15,12 +15,12 @@ from pathlib import Path, PurePosixPath
 from build_cache import fingerprint, sha256
 from build_target import target_from_environment
 from ext4_image import find_debugfs, recover_ext4_journal
-from verify_busybox import UserlandArtifact, base_userland, build_compositor
+from verify_busybox import ACCOUNT_APPLETS, UserlandArtifact, base_userland, build_busybox, obtain_source
 from verify_musl import cached_musl_paths, find_compiler
 
 ROOT = Path(__file__).resolve().parent.parent
 STAMP_PATH = "/usr/share/liteos/.userland-sync.json"
-RECIPE_VERSION = 2
+RECIPE_VERSION = 3
 
 
 # 仅用于离线撤销旧镜像中已退休的产品文件，不参与构建或启动。
@@ -38,8 +38,8 @@ def managed_path(path: str) -> bool:
     if not path.startswith("/") or str(PurePosixPath(path)) != path or ".." in PurePosixPath(path).parts:
         return False
     return path in {
-        *RETIRED_FILES, "/bin/shutdown", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
-        "/etc/init.d/display-service", "/etc/profile",
+        *RETIRED_FILES, *(f"/bin/{name}" for name in ACCOUNT_APPLETS), "/bin/shutdown", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
+        "/etc/init.d/display-service", "/etc/profile", "/bin/logon", "/bin/desktop", "/bin/file-explorer", "/bin/session-launch", "/usr/share/applications/file-explorer.desktop",
     } or any(path.startswith(root + "/") for root in RETIRED_TREES)
 
 
@@ -224,10 +224,26 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
         except BlockingIOError as error:
             raise RuntimeError(f"development image is already in use: {image}") from error
         recover_ext4_journal(image)
+        # 仅迁移完整匹配旧出厂模板的锁定默认；任何实际密码、自定义锁定或新增账户都必须保留。
+        account_changed = False
+        with tempfile.TemporaryDirectory(prefix="liteos-account-bootstrap-") as temporary:
+            directory = Path(temporary)
+            metadata = run_batch(image, ["stat /etc/shadow"], directory, "inspect-shadow", writable=False)
+            missing = "Inode:" not in metadata
+            previous_default = False
+            if not missing:
+                saved = directory / "shadow"
+                run_batch(image, [f"dump -p /etc/shadow {saved}"], directory, "read-shadow", writable=False)
+                previous_default = saved.is_file() and saved.read_bytes() == b"root:!:1:0:99999:7:::\nnobody:!:1:0:99999:7:::\n"
+            if missing or previous_default:
+                commands = [] if missing else ["rm /etc/shadow"]
+                commands += [f"write {ROOT / 'user/base/shadow'} /etc/shadow", "set_inode_field /etc/shadow mode 0100600"]
+                run_batch(image, commands, directory, "initialize-shadow", writable=True)
+                account_changed = True
         previous = read_stamp(image)
         if previous is not None and previous.get("identity") == identity:
             print(f"userland sync cache hit: {identity[:12]}")
-            return False
+            return account_changed
 
         current_paths = {artifact.destination for artifact in artifacts}
         stored_paths = previous.get("paths") if previous is not None else None
@@ -295,7 +311,12 @@ def main() -> int:
     if not image.is_file():
         raise RuntimeError(f"development image does not exist: {image}")
 
-    synchronize(image, base_userland(build_compositor(cached_musl_paths(find_compiler()))))
+    compiler = find_compiler()
+    binary = build_busybox(obtain_source(), compiler, None)
+    artifacts = base_userland(cached_musl_paths(compiler))
+    # 同一个固定 BusyBox ELF 以标准 applet 名安装，旧开发镜像无需替换 init 或覆盖账户数据。
+    artifacts += tuple(UserlandArtifact(binary, f"/bin/{name}", 0o755) for name in ACCOUNT_APPLETS)
+    synchronize(image, artifacts)
     return 0
 
 

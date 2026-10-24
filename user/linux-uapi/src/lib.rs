@@ -4,6 +4,7 @@
 //! declarations and Linux 7.1 UAPI layouts remain private to this crate.
 
 pub mod alsa;
+pub mod credentials;
 pub mod drm;
 pub mod input;
 pub mod kobject;

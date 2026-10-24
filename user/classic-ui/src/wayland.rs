@@ -1,7 +1,9 @@
 //! 标准 Wayland 客户端窗口。连接独占协议对象、configure、输入焦点与帧生命周期。
 
 mod events;
+mod foreign;
 mod frame;
+pub use foreign::{Toplevel, ToplevelId, ToplevelRequest};
 mod layer;
 mod security;
 mod transport;
@@ -167,6 +169,8 @@ pub struct Display {
     keyboard_device: Option<ObjectId>,
     layer_shell: Option<ObjectId>,
     security_manager: Option<ObjectId>,
+    foreign: std::collections::BTreeMap<u32, foreign::Pending>,
+    foreign_revision: u64,
 }
 
 impl Display {
@@ -253,6 +257,12 @@ impl Display {
         } else {
             None
         };
+        if globals
+            .iter()
+            .any(|(_, name, _)| name == "zwlr_foreign_toplevel_manager_v1")
+        {
+            bind(Interface::ZwlrForeignToplevelManagerV1, 3)?;
+        }
         let mut display = Self {
             transport,
             compositor,
@@ -273,6 +283,8 @@ impl Display {
             keyboard_device: None,
             layer_shell,
             security_manager,
+            foreign: Default::default(),
+            foreign_revision: 0,
         };
         // 3. 两轮 sync 分别收齐 output/seat，以及由 seat 能力请求产生的 keymap，之后才允许建窗口。
         display.roundtrip()?;
@@ -473,38 +485,62 @@ impl Display {
     ///
     /// 对端断开、协议、keymap 或 socket 失败。应用应退出并释放 Display，不在坏连接上继续请求。
     pub fn next_event(&mut self) -> io::Result<Event> {
+        self.wait_event(None)?
+            .ok_or_else(|| io::Error::other("unbounded wait timed out"))
+    }
+
+    /// 等待至多 `timeout`，便于会话回收子进程、桌面刷新时钟；超时返回 None。
+    /// 协议与连接错误仍返回 Err；重复键与真实输入沿用同一事件队列。
+    pub fn next_event_timeout(&mut self, timeout: Duration) -> io::Result<Option<Event>> {
+        self.wait_event(Some(Instant::now() + timeout))
+    }
+
+    fn wait_event(&mut self, deadline: Option<Instant>) -> io::Result<Option<Event>> {
         loop {
             if let Some(event) = self.events.pop_front() {
-                return Ok(event);
+                return Ok(Some(event));
             }
             if let Some((object, event)) = self.transport.buffered_event()? {
                 self.dispatch(object, event)?;
                 continue;
             }
             self.transport.flush()?;
-            let timeout = self.repeat.as_ref().map(|repeat| {
-                let remaining = repeat.next.saturating_duration_since(Instant::now());
-                // poll 的超时以毫秒计；向上保留最后不足 1ms，避免重复键 deadline 前忙轮询。
-                if remaining.is_zero() {
-                    remaining
-                } else {
-                    remaining.max(Duration::from_millis(1))
-                }
+            let now = Instant::now();
+            if deadline.is_some_and(|deadline| now >= deadline) {
+                return Ok(None);
+            }
+            let wake = self
+                .repeat
+                .as_ref()
+                .map(|repeat| repeat.next)
+                .into_iter()
+                .chain(deadline)
+                .min();
+            // 向上保留不足 1ms，避免 deadline 前忙轮询；所有超时回到顶部重新判断来源。
+            let timeout = wake.map(|wake| {
+                wake.saturating_duration_since(now)
+                    .max(Duration::from_millis(1))
             });
             let mut descriptors = [PollFd::new(self.transport.stream.as_fd(), PollEvents::READ)];
             match poll(&mut descriptors, timeout) {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error),
                 Ok(0) => {
-                    if let Some(repeat) = &mut self.repeat {
+                    // 先 poll/read 真正的 release/leave，再生成重复；阻塞操作结束时 socket 可能已有旧键释放。
+                    let now = Instant::now();
+                    if deadline.is_some_and(|deadline| now >= deadline) {
+                        return Ok(None);
+                    }
+                    if let Some(repeat) = &mut self.repeat
+                        && repeat.next <= now
+                    {
                         let (window, code) = (repeat.window, repeat.code);
-                        repeat.next = Instant::now()
-                            + Duration::from_secs_f64(1.0 / f64::from(self.repeat_rate.max(1)));
-                        let key = self.key(code, true, true);
-                        return Ok(Event {
+                        repeat.next =
+                            now + Duration::from_secs_f64(1.0 / f64::from(self.repeat_rate.max(1)));
+                        return Ok(Some(Event {
                             window,
-                            kind: EventKind::Key(key),
-                        });
+                            kind: EventKind::Key(self.key(code, true, true)),
+                        }));
                     }
                 }
                 Ok(_) => self.transport.read()?,
