@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "kernel",
+    "boot-scene",
     "syscall-abi",
     "tools/architecture-check",
     "tools/architecture-bench",

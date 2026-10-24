@@ -21,6 +21,7 @@ from pathlib import Path
 from apk_cache import cached_apk_bootstrap
 from apk_rootfs import assemble_apk_rootfs, install_apk_crash_fixtures
 from build_target import target_from_environment
+from classic_assets import boot_scene
 from build_cache import (
     build_environment,
     build_jobs_override,
@@ -1515,8 +1516,8 @@ def build_graphical_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ..
             "/etc/terminfo/l/liteos",
         ),
         UserlandArtifact(
-            ROOT / "assets/bootlogo.xrgb",
-            "/usr/share/liteos/bootlogo.xrgb",
+            boot_scene(),
+            "/usr/share/liteos/boot-scene.lbs",
         ),
         UserlandArtifact(
             ROOT / "assets/cursor.lc2",
@@ -1894,7 +1895,7 @@ def create_image(
         if "Type: regular" not in metadata or "Mode:  0755" not in metadata:
             raise RuntimeError(f"BusyBox rootfs lacks {session_binary}")
     for asset in (
-        "/usr/share/liteos/bootlogo.xrgb",
+        "/usr/share/liteos/boot-scene.lbs",
         "/usr/share/liteos/cursor.lc2",
         "/usr/share/liteos/cursor-pointer.lc2",
         "/usr/share/liteos/cursor-resize-ns.lc2",
@@ -2020,7 +2021,7 @@ def create_published_image(
         ROOT / "assets/fonts/liteos-ui-regular.otf",
         ROOT / "assets/fonts/liteos-ui-bold.otf",
         ROOT / "assets/fonts/liteos-icons.ttf",
-        ROOT / "assets/bootlogo.xrgb",
+        boot_scene(),
         ROOT / "assets/cursor.lc2",
         ROOT / "assets/cursor-pointer.lc2",
         ROOT / "assets/cursor-resize-ns.lc2",

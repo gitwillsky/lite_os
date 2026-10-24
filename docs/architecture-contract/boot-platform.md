@@ -9,6 +9,10 @@
   一次性 publication 与 hardware CPU 投影。`qemu_virt::virtio_mmio` 独占 VirtIO-MMIO transport 识别与
   有界 transport 表；`virtio::binding` 是 device ID 到 driver adapter 的唯一装配表，只消费 platform 给出的 transport 表、
   PCI host、physical→virtual 映射与 interrupt 注册入口；platform 不认识任何设备类，禁止恢复各架构自带的 `init_virtio_*` 分派。
+- 显示设备分两步装配：`virtio::bind_display` 在 `memory::init` 之后立即初始化首个 GPU（只需内存分配器、窗口地址转换
+  与 DTB 结果），让 `boot_screen` 在其余设备、文件系统与 scheduler 之前上屏；返回的 `EarlyDisplay` 令牌交给
+  `bind_platform_devices`，由它在 interrupt controller 就绪后补注册 GPU 中断。缺少这一步 GPU 永远收不到 completion。
+  `drivers::BootFramebuffer` 只在 DRM 绑定 completion work 之前接受同步写入与刷新，之后一律返回 `WouldBlock`。
 - `arch::<target>::io` 独占 MMIO 指令与 normal-memory/device ordering mechanism；通用
   `hal::MmioBus` 只做 window 边界/对齐验证并通过静态 façade 访问，具体 adapter
   不得直接选择 target 指令形态。

@@ -28,6 +28,7 @@ mod platform;
 mod log;
 
 mod drivers;
+mod boot_screen;
 mod drm;
 mod fallible_tree;
 mod file;
@@ -51,6 +52,13 @@ mod trap;
 mod tty;
 mod virtio;
 mod virtio_port;
+
+/// 内核编入的启动画面位图（`LBS1`）。
+///
+/// 文件系统挂载之前 GPU 就要显示它，所以无法从 rootfs 读取；具体文件由构建环境变量
+/// `LITEOS_BOOT_SCENE` 选择（默认值在根目录 `.cargo/config.toml`），缺失时编译失败。
+// OWNER: 内核镜像的只读数据；仅 boot CPU 在 `boot_screen::BootScreen::start` 中读取，没有可变状态。
+static BOOT_SCENE: &[u8] = include_bytes!(env!("LITEOS_BOOT_SCENE"));
 
 /// 标记全局内核设施已完成初始化。
 ///
@@ -76,6 +84,13 @@ fn kernel_main(context: entry::BootContext) -> ! {
         cpu::boot_id()
     );
     memory::init();
+    // 显示设备提前到这里建立：GPU 初始化只需要内存与设备窗口，开机画面因此在其余设备、文件系统与 scheduler
+    // 之前就上屏；GPU 中断仍等 interrupt controller 就绪后在 `bind_platform_devices` 补注册。
+    let display = virtio::bind_display();
+    let mut boot_screen = boot_screen::BootScreen::start(
+        display.as_ref().map(virtio::EarlyDisplay::framebuffer),
+        BOOT_SCENE,
+    );
     let parameters = cmdline::parse(platform::kernel_command_line())
         .unwrap_or_else(|error| panic!("invalid kernel command line: {error:?}"));
     if let Some(level) = parameters.log_level {
@@ -108,21 +123,27 @@ fn kernel_main(context: entry::BootContext) -> ! {
     namespace::initialize_time().expect("initial time namespace allocation failed");
     ipc::initialize_namespaces().expect("initial IPC namespace allocation failed");
     socket::initialize_net().expect("initial NET namespace allocation failed");
+    boot_screen.advance(boot_screen::Milestone::Namespaces);
     let vfs = fs::init_vfs();
     // 启动顺序由证明 token 约束：每一步只接受前置步骤返回的 token，顺序错误无法编译。
     let scheduler = task::initialize(vfs);
+    boot_screen.advance(boot_screen::Milestone::Scheduler);
     platform::initialize_devices();
-    virtio::bind_platform_devices();
+    virtio::bind_platform_devices(display.as_ref());
     let mut disk_index = 0;
     while let Some(disk) = block::device(disk_index) {
         fs::publish_block_device(disk).expect("block device publication failed");
         disk_index += 1;
     }
+    boot_screen.advance(boot_screen::Milestone::Devices);
     // ALSA、DRM 与 SPICE port 领域当前各只绑定首个已发现 adapter（card0/pcmC0D0p/唯一 named
     // port）；其余同类 adapter 已注册但不发布节点。
     if let Some(output) = drivers::pcm_output(0) {
         audio::init(output).expect("ALSA PCM initialization failed");
     }
+    // 最后一次内核绘制：DRM 初始化会绑定 completion work，此后 boot scanout 的同步刷新被拒绝，
+    // 进度条由 compositor 从 `KERNEL_PROGRESS_PERMILLE` 接着画。
+    boot_screen.advance(boot_screen::Milestone::Audio);
     if let Some(display) = drivers::display_device(0) {
         drm::device::init(display).expect("primary DRM initialization failed");
     }

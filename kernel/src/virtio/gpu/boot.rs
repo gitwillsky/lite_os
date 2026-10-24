@@ -3,8 +3,8 @@ use spin::Mutex;
 use crate::memory::{DeviceBacking, PAGE_SIZE};
 
 use super::{
-    CONTROL_QUEUE, CONTROL_REQUEST_SIZE, ControlQueue, DisplayMode, VirtIODevice, VirtIOGpuDevice,
-    wire::*,
+    CONTROL_QUEUE, CONTROL_REQUEST_SIZE, ControlQueue, DisplayError, DisplayMode, DisplayRect,
+    VirtIODevice, VirtIOGpuDevice, wire::*,
 };
 
 impl VirtIOGpuDevice {
@@ -191,6 +191,49 @@ impl VirtIOGpuDevice {
         Self::execute_ok(device, control, VIRTIO_GPU_CMD_RESOURCE_FLUSH, 48)
     }
 
+    /// 把 boot resource 的 `rect` 传到 host 并刷新，走启动期同步命令通道。
+    ///
+    /// # Parameters
+    ///
+    /// - `mode`: boot resource 的固定 mode，用来计算 `rect` 左上角在 backing 内的字节偏移。
+    /// - `rect`: 已确认位于 `mode` 内的非空矩形。
+    ///
+    /// # Returns
+    ///
+    /// 两条命令都完成后返回 `Some(())`；任一条失败返回 `None`。
+    ///
+    /// # Safety of use
+    ///
+    /// 只能在 DRM 绑定 completion work 之前调用：之后 controlq 的 completion 归 deferred worker，
+    /// 这里的轮询会抢走它们。调用方 `BootFramebuffer::flush` 负责检查。
+    pub(super) fn flush_boot_rect(
+        device: &VirtIODevice,
+        control: &Mutex<ControlQueue>,
+        mode: DisplayMode,
+        rect: DisplayRect,
+    ) -> Option<()> {
+        let offset = u64::from(rect.y)
+            .checked_mul(u64::from(mode.pitch))?
+            .checked_add(u64::from(rect.x).checked_mul(4)?)?;
+        {
+            let mut control = control.lock();
+            let request = &mut control.commands.boot_slot_mut().request;
+            request[..56].fill(0);
+            write_display_rect(request.as_mut_slice(), 24, rect)?;
+            write_u64(request.as_mut_slice(), 40, offset)?;
+            write_u32(request.as_mut_slice(), 48, BOOT_RESOURCE_ID)?;
+        }
+        Self::execute_ok(device, control, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, 56)?;
+        {
+            let mut control = control.lock();
+            let request = &mut control.commands.boot_slot_mut().request;
+            request[..48].fill(0);
+            write_display_rect(request.as_mut_slice(), 24, rect)?;
+            write_u32(request.as_mut_slice(), 40, BOOT_RESOURCE_ID)?;
+        }
+        Self::execute_ok(device, control, VIRTIO_GPU_CMD_RESOURCE_FLUSH, 48)
+    }
+
     fn execute_ok(
         device: &VirtIODevice,
         control: &Mutex<ControlQueue>,
@@ -266,5 +309,49 @@ impl VirtIOGpuDevice {
             device.interrupt_ack(status).ok()?;
         }
         Some(())
+    }
+}
+
+impl crate::drivers::BootFramebuffer for VirtIOGpuDevice {
+    fn mode(&self) -> DisplayMode {
+        self.control.lock().mode
+    }
+
+    fn write(&self, offset: usize, bytes: &[u8]) -> Result<(), DisplayError> {
+        // completion work 一旦绑定，controlq 归 deferred worker；此时也不再允许改写 boot 帧缓冲，
+        // 否则会在 DRM 已接管 scanout 后把残影写回屏幕。
+        if self.completion_work.get().is_some() {
+            return Err(DisplayError::WouldBlock);
+        }
+        let (backing, _) = self
+            .control
+            .lock()
+            .resources
+            .boot_backing()
+            .ok_or(DisplayError::WouldBlock)?;
+        backing
+            .write(offset, bytes)
+            .map_err(|()| DisplayError::InvalidRectangle)
+    }
+
+    fn flush(&self, rect: DisplayRect) -> Result<(), DisplayError> {
+        if self.completion_work.get().is_some() {
+            return Err(DisplayError::WouldBlock);
+        }
+        let mode = self
+            .control
+            .lock()
+            .resources
+            .boot_backing()
+            .ok_or(DisplayError::WouldBlock)?
+            .1;
+        let inside = rect.width != 0
+            && rect.height != 0
+            && rect.x.checked_add(rect.width).is_some_and(|end| end <= mode.width)
+            && rect.y.checked_add(rect.height).is_some_and(|end| end <= mode.height);
+        if !inside {
+            return Err(DisplayError::InvalidRectangle);
+        }
+        Self::flush_boot_rect(&self.device, &self.control, mode, rect).ok_or(DisplayError::Device)
     }
 }

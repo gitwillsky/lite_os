@@ -164,7 +164,7 @@ Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，�
 |---|---|---|
 | 0 | **参照 spike（已验证，见阶段 0 进展）**：Alpine aarch64 上运行 Wine + FEX 与 Win32 探针 | 产出 syscall 缺口、Wayland 必需集合与运行时构建配方 |
 | 1 | **（进行中，见"阶段 1 进展"）** 设计规格与素材：`docs/design/classic-desktop/`，`assets/classic/`（字体、1x/2x 图标、光标、开机画面、壁纸） | 规格评审通过；素材尺寸和格式由校验脚本检查 |
-| 2 | kernel `drm/boot_screen.rs` 与进度里程碑 | `verify_boot` 截图：第一帧即为 Win2000 风格的黑屏加进度条 |
+| 2 | **（内核侧已完成，见"阶段 2 进展"）** kernel `boot_screen` 与进度里程碑 | `verify_boot` 截图：第一帧即为 Win2000 风格的黑屏加进度条 |
 | 3 | kernel 混音（`substream` / `mixer` / `control`），删除 `audio-service`、`audio-proto` 及其决策文档 | 单元测试；多路同时播放的音频分析 gate；`amixer` 可调节音量 |
 | 4 | 用户态库：`wayland-wire`、`classic-theme`、`canvas`、`typeface`、`classic-ui` | codec 单元测试；黄金截图测试（1x 和 2x）；canvas 与字形 benchmark |
 | 5 | **一次性切换**：compositor 与应用迁移 Wayland，范围见下文 | 上游客户端一致性测试、完整会话 UI runtime gate 与 `make verify` |
@@ -252,6 +252,33 @@ Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，�
   已核对全部桌面图标、默认光标、三类位图和声音/字体的来源，见素材清单。尚未接入产品 rootfs，留待阶段 4/5
   的唯一素材打包入口消费，不能把素材准备算作桌面已切换。
 - 规格中"待核"项：按公开规范与原版静态资源核对，不依赖 Windows 2000 参照机；未核实项不提升置信度。
+
+## 阶段 2 进展（内核开机画面）
+
+已完成并验证：
+
+1. **从第一屏开始**：内核把 GPU 初始化提前到 `memory::init()` 之后（设备探测顺序改了：`virtio::bind_display` 先建立首个 GPU，
+   `EarlyDisplay` 令牌带到 `bind_platform_devices` 补注册中断），随后立即把 `LBS1` 启动画面画上屏幕，并在命名空间、
+   文件系统/scheduler、设备、音频四个里程碑推进进度条到 400‰。在 QEMU（HVF，1504×846）里截屏确认：画面居中、1 倍、
+   进度条停在 40%；换成本地原版画面后同一套代码画出原版启动画面，进度条精确落在原版的槽里。
+2. **素材选择只有一个点**：`scripts/classic_assets.py` 决定用本地原版（`target/…/packed/`）还是仓库默认
+   （`assets/classic/boot-scene.lbs`）；内核构建（`LITEOS_BOOT_SCENE` 环境变量，cargo 自动跟踪）与 rootfs 构建都经它取路径。
+3. **共用解码**：新增 `boot-scene` crate（`no_std`、不分配内存），内核与 compositor 共用，8 个单元测试；内核侧 `boot_screen`
+   模块有 6 个宿主测试（假帧缓冲），compositor 侧 4 个，打包器与选择函数共 16 个 Python 测试。
+4. **删除被取代的旧实现**：Aurora 启动场景（`assets/bootlogo.xrgb`、`scripts/convert_bootlogo.py`、compositor 里的程序化
+   背景与 logo 图层解析）整体删除，不保留第二套。
+5. **顺带根治的既有缺陷**：`arch::aarch64::mmu::virtual_to_physical` 用 `then_some` 急切求值，对内核镜像高地址在开启溢出检查的
+   构建里 panic（release 不检查所以一直没暴露）；改为惰性求值。
+6. 门禁：`boot-scene` 加入 `verify-unit` 与两处 `clippy -D warnings`（AArch64 与 RISC-V）；架构围栏、接口基线、依赖契约已更新；
+   `make verify-unit` 通过。
+
+尚未做 / 已知限制：
+
+- **compositor 阶段的进度条动画**：当前停在 400‰ 直到桌面首帧。原因是现有 compositor 的原地刷新要碰 flip/脏区机制，且它在
+  阶段 5 会按 Wayland 重写；`LBS1` 与里程碑常量已为接续预留。
+- 完整图形运行时门禁（`verify_boot` 的 UTM 路径）本机没有运行，只做了 QEMU 直启截屏验证。
+- 原版进度条是"跑马灯"还是按比例填充尚未核实（目前按比例）。
+- 两张 640×480 以外的位图（登录横幅、开始菜单侧栏）已生成并对齐尺寸，但还没有消费者。
 
 ## 风险
 

@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Mapping, Sequence
 
 from build_target import acceleration_from_environment, target_from_environment
+from classic_assets import boot_scene
 from host_topology import default_guest_cpu_count
 from ext4_image import find_debugfs, find_e2fsck, find_tune2fs
 from utm_runtime import run_gui as run_utm_gui
@@ -115,7 +116,8 @@ def build_kernel(environment: Mapping[str, str] | None = None) -> None:
     run(
         ["cargo", "build", "--target", target.kernel_triple, *cargo_profile],
         cwd=ROOT / "kernel",
-        environment=environment,
+        # 启动画面随内核编入；用哪份素材由 classic_assets 唯一决定，cargo 会跟踪该环境变量与文件内容。
+        environment=_env_with(environment, LITEOS_BOOT_SCENE=str(boot_scene())),
     )
     run(python_script("verify_artifacts.py", "--build-boot-artifact", "--profile", profile), environment=environment)
 
@@ -377,6 +379,8 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
             "-p",
             "architecture-check",
             "-p",
+            "boot-scene",
+            "-p",
             "kernel-unit",
             "-p",
             "scheduler-unit",
@@ -571,6 +575,8 @@ def verify_host(environment: Mapping[str, str] | None = None) -> None:
             "cargo",
             "clippy",
             "-p",
+            "boot-scene",
+            "-p",
             "syscall-abi",
             "-p",
             "kernel",
@@ -610,6 +616,8 @@ def verify_riscv64_secondary(environment: Mapping[str, str] | None = None) -> No
         [
             "cargo",
             "clippy",
+            "-p",
+            "boot-scene",
             "-p",
             "syscall-abi",
             "-p",

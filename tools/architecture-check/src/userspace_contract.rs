@@ -446,9 +446,11 @@ fn check_assets(root: &Path, errors: &mut Vec<String>) {
             "assets/fonts/liteos-terminal.a8: checked terminal atlas identity changed".to_owned(),
         );
     }
-    let bootlogo = fs::read(root.join("assets/bootlogo.xrgb")).unwrap_or_default();
-    if bootlogo.get(..8) != Some(b"LWP8\0\0\0\x03") || bootlogo.len() != 1_699_424 {
-        errors.push("assets/bootlogo.xrgb: checked boot scene identity changed".to_owned());
+    let boot_scene = fs::read(root.join("assets/classic/boot-scene.lbs")).unwrap_or_default();
+    if boot_scene.get(..4) != Some(b"LBS1") || boot_scene.len() != 30_416 {
+        errors.push(
+            "assets/classic/boot-scene.lbs: checked boot scene identity changed".to_owned(),
+        );
     }
     for removed in [
         "assets/wallpaper.xrgb",

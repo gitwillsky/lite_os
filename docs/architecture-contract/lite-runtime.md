@@ -295,12 +295,15 @@
   `POLLHUP/POLLERR` 是高于残留可读 frame 的 terminal transition；app teardown 必须先撤销其 pending
   paint、accepted/presented scene、routing、focus 与 grab，再释放 stream 和 GPU buffer。
   partial decode、allocation 或 SCM_RIGHTS failure 不得发布 resource identity。
-- boot fallback 由 compositor 在取得 DRM 后立即一次性绘制，之后不运行 timer 或 progress animation。
-  checked identity 资产只保存按最终物理像素生成的紧凑 logo/title/status premultiplied ARGB 图层，
-  compositor 不缩放；它只承担 LiteUI 尚未连接或 desktop 失败时的静态品牌画面。desktop 首个完整
-  scene latch 后由 React/CSS splash 原子接管；aurora、progress、hold 与 fade 只存在于 stylesheet，
-  CSS timeline 的下一帧只由真实 page flip 驱动。不得恢复 compositor 动画、JavaScript timer/rAF
-  动画或独立 splash 进程中的第二条实现。
+- 启动画面是一张 `LBS1` 位图（640 × 480，调色板加 RLE），内核在 GPU 初始化后第一刻就画上 boot scanout，进度推进到
+  `KERNEL_PROGRESS_PERMILLE`（400‰）；compositor 取得 DRM 后以同一进度、同一整数缩放居中规则一次性画出同一张图，
+  使接管逐像素连续。解码、缩放居中与进度矩形只在共用 crate `boot-scene` 实现，内核与 compositor 不得各存一份。
+  rootfs 的 `/usr/share/liteos/boot-scene.lbs` 与内核编入的位图由同一个选择函数决定来源；缺失或损坏时 compositor
+  只留黑屏并记录一次日志，不回退到另一套画面。
+- compositor 阶段不运行 timer 或 progress animation：进度条在 400‰ 保持到 desktop 首个完整 scene latch，之后由
+  React/CSS splash 原子接管（该 splash 随 LiteUI 一起移除）。CSS timeline 的下一帧只由真实 page flip 驱动。
+  用户态阶段的进度动画随新 compositor 实现；不得在现有 compositor 里增加动画、JavaScript timer/rAF 动画或独立
+  splash 进程中的第二条实现。
 - Splash 的 fixed overlay 必须由 CSS animation 在淡出 terminal frame 把 `display` 离散切到 `none`；
   renderer 对 `display:none` 不得生成 paint、hit 或 compositor overlay。只把 opacity 设为零仍会让
   全屏 desktop overlay 排在 foreign app 之后，导致应用 client surface 被永久覆盖。

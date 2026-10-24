@@ -1,0 +1,5 @@
+# 内核编入的启动画面位图。默认是仓库提交的原创画面；构建流程用环境变量 LITEOS_BOOT_SCENE 覆盖
+# （已设置的环境变量优先，cargo 不会用这里的值替换它），选择逻辑只在 scripts/classic_assets.py。
+# 放在仓库根目录，使从任何位置调用 cargo（包括编辑器后台检查）都能解析 `env!`。
+[env]
+LITEOS_BOOT_SCENE = { value = "assets/classic/boot-scene.lbs", relative = true }

@@ -135,7 +135,10 @@ def boot_product_seat_switch(image: Path, kernel: Path) -> None:
             "console: acquired 2",
         ),
         interactions=(
-            ("compositor: seat registered", b"seatctl desktop\n"),
+            # 触发点必须与门禁要验证的前提一致：文本控制台已持有座位并呈现首帧。若以 compositor 就绪为触发，
+            # compositor 初始化变快（它与 console 是互不排序的两个进程）就会让命令抢在 console 取得座位之前发出，
+            # seatd 把座位从尚未持有它的 console 切走，`console: released 1` 永远不会出现。
+            ("console: first frame presented", b"seatctl desktop\n"),
             ("compositor: desktop first scene presented", b"seatctl text\n"),
         ),
     )

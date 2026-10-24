@@ -36,6 +36,7 @@
 | `memory` | `arch`,`config`,`cpu`,`fallible_tree`,`id`,`platform`,`sync` | 领域规则见依赖说明 |
 | `drivers` | `deferred`,`fallible_tree`,`hal`,`memory`,`sync` | 领域规则见依赖说明 |
 | `block` | `hal` | 领域规则见依赖说明 |
+| `boot_screen` | `drivers` | 领域规则见依赖说明 |
 | `virtio` | `block`,`deferred`,`drivers`,`hal`,`memory`,`platform` | 领域规则见依赖说明 |
 | `virtio_port` | `deferred`,`drivers`,`fs`,`ipc` | 领域规则见依赖说明 |
 | `audio` | `drivers`,`fs`,`id`,`ipc`,`memory` | 领域规则见依赖说明 |
@@ -58,10 +59,9 @@
 | `id` | 无 | 领域规则见依赖说明 |
 | `cmdline` | 无 | 领域规则见依赖说明 |
 | `lang_item` | `arch`,`cpu`,`platform` | 领域规则见依赖说明 |
-| `main` | `arch`,`audio`,`block`,`cmdline`,`config`,`cpu`,`deferred`,`drivers`,`drm`,`entry`,`fallible_tree`,`file`,`fs`,`hal`,`id`,`input`,`ipc`,`log`,`memory`,`namespace`,`platform`,`random`,`socket`,`sync`,`syscall`,`system`,`task`,`timer`,`trap`,`tty`,`virtio_port`,`virtio` | 领域规则见依赖说明 |
+| `main` | `arch`,`audio`,`block`,`boot_screen`,`cmdline`,`config`,`cpu`,`deferred`,`drivers`,`drm`,`entry`,`fallible_tree`,`file`,`fs`,`hal`,`id`,`input`,`ipc`,`log`,`memory`,`namespace`,`platform`,`random`,`socket`,`sync`,`syscall`,`system`,`task`,`timer`,`trap`,`tty`,`virtio_port`,`virtio` | 见依赖说明 |
 
-同一 module 内引用不构成跨 seam 依赖。`main.rs` 可以依赖所有 kernel module，但只能做装配、启动顺序和 fail-stop 策略。
-正向 dependency matrix 必须无环；围栏检查 AST 与 macro token 路径（含 `$crate`、分组/别名 import），禁止 crate-root alias 绕过 owner。
+同一 module 内引用不构成跨 seam 依赖。`main.rs` 可以依赖所有 kernel module，但只能做装配、启动顺序和 fail-stop 策略。正向 dependency matrix 必须无环；围栏检查 AST 与 macro token 路径（含 `$crate`、分组/别名 import），禁止 crate-root alias 绕过 owner。
 
 ## State-owner registry
 

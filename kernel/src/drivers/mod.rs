@@ -12,7 +12,9 @@ pub(crate) use audio_output::{
     PCM_BUFFER_BYTES, PCM_BUFFER_FRAMES, PCM_CHANNELS, PCM_FRAME_BYTES, PCM_PERIOD_BYTES,
     PCM_PERIOD_FRAMES, PCM_PERIODS, PCM_RATE, PcmCompletionObserver, PcmOutput, PcmOutputError,
 };
-pub(crate) use display::{DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate};
+pub(crate) use display::{
+    BootFramebuffer, DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate,
+};
 pub(crate) use entropy::EntropySource;
 pub(crate) use graphics::{
     CursorCommand, GraphicsDevice, VirglBox, VirglCapsetInfo, VirglCommand, VirglTransferDirection,

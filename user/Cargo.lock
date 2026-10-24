@@ -77,6 +77,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "boot-scene"
+version = "0.1.0"
+
+[[package]]
 name = "bytemuck"
 version = "1.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -126,6 +130,7 @@ dependencies = [
 name = "compositor"
 version = "0.1.0"
 dependencies = [
+ "boot-scene",
  "display-proto",
  "linux-uapi",
  "seat-proto",

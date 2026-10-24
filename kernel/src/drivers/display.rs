@@ -153,3 +153,28 @@ pub(crate) trait DisplayDevice: Send + Sync {
     /// descriptor、fence 或 device response 不匹配返回 `Device`。
     fn poll_update(&self) -> Result<Option<DisplayUpdate>, DisplayError>;
 }
+
+/// DRM 接管 scanout 之前，内核直接改写 boot scanout 的同步接口。
+///
+/// 启动画面在 scheduler、文件系统与 DRM 都不存在时绘制，不能走 `DisplayDevice` 的异步 completion 模型。
+/// adapter 只在 DRM 绑定 completion work 之前接受这些调用；之后 controlq 的 completion 由 deferred
+/// worker 独占，同步路径继续轮询 used ring 会抢走它的 completion，所以此时一律返回 `WouldBlock`。
+pub(crate) trait BootFramebuffer {
+    /// 返回 boot scanout 的固定 XRGB8888 mode。
+    fn mode(&self) -> DisplayMode;
+
+    /// 把 `bytes` 写入 boot scanout 帧缓冲的 `offset` 字节处，尚不通知 host。
+    ///
+    /// # Errors
+    ///
+    /// 范围越过帧缓冲返回 `InvalidRectangle`；DRM 已接管返回 `WouldBlock`。
+    fn write(&self, offset: usize, bytes: &[u8]) -> Result<(), DisplayError>;
+
+    /// 同步把 `rect` 传输到 host 并刷新到屏幕，返回时画面已更新。
+    ///
+    /// # Errors
+    ///
+    /// `rect` 越界返回 `InvalidRectangle`；DRM 已接管返回 `WouldBlock`；transport 或 response 异常返回
+    /// `Device`。
+    fn flush(&self, rect: DisplayRect) -> Result<(), DisplayError>;
+}

@@ -40,6 +40,12 @@ per-CPU merged deferred-work bitmap 与设备类 handler 注册表的唯一 owne
 
 VMA/frame policy；页表只通过 `arch::mmu` 的静态 frame-owner adapter，不感知具体 ISA encoding；初始栈只接收 exec 准备的 strings/AT_RANDOM，不访问 entropy device
 
+## `boot_screen`
+
+内核开机画面的唯一 owner：解码共用 crate `boot-scene` 的 `LBS1` 位图，整数缩放居中后画进 boot scanout，并按启动里程碑推进进度条；只经 `drivers::BootFramebuffer` 触达显示，不认识具体 adapter
+
+画面纯属装饰：任何绘制失败只记录警告并停止更新，不得阻止启动。DRM 绑定 completion work 之后 adapter 拒绝同步刷新，进度条改由 compositor 从 `KERNEL_PROGRESS_PERMILLE` 接着画
+
 ## `drivers`
 
 设备类 seam（display、graphics、input、network、PCM output、entropy、named port）、只追加的设备注册表与 driver I/O completion；块 seam 属于 `block`，总线 adapter 属于 `virtio`，MMIO/中断/console 属于 `hal`
@@ -149,6 +155,8 @@ RTC 与 per-CPU deadline 由 timer 唯一拥有
 
 
 - `bootloader` 是独立 firmware domain，不依赖 kernel 或 userspace。
+- `boot-scene` 是内核与 compositor 共用的 `no_std` crate，唯一实现 `LBS1` 位图的解析校验、逐行解码、整数缩放居中与进度矩形，不依赖其他实现 crate。
+- 内核编入的启动画面由构建环境变量 `LITEOS_BOOT_SCENE` 选择，选择逻辑只在 `scripts/classic_assets.py`。
 - `syscall-abi` 只保存 dispatcher 接入的 Linux 64-bit asm-generic 编号与明确的 architecture extension，不依赖实现 crate。
 - `kernel/src/main.rs` 是唯一 composition root；初始化顺序和 adapter 装配不得下沉到 driver、filesystem 或 task。
 - binary crate 的跨 module interface 默认使用最窄的 `pub(super)`、`pub(in …)` 或 `pub(crate)`；扩大范围必须说明 production caller。

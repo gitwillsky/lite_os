@@ -266,6 +266,16 @@ impl ResourceSet {
         }
     }
 
+    /// 返回仍是 active scanout 的 boot resource 的 backing；DRM 切走 scanout 后返回 `None`。
+    ///
+    /// # Returns
+    ///
+    /// active slot 是 boot resource 时返回其 backing 的共享引用与 mode，否则 `None`。
+    pub(super) fn boot_backing(&self) -> Option<(Arc<DeviceBacking>, DisplayMode)> {
+        let resident = self.slots[self.active?].as_ref()?;
+        (resident.id == BOOT_RESOURCE_ID).then(|| (resident.backing.clone(), resident.mode))
+    }
+
     /// 为 stable DRM buffer 取得 resident slot 或预留唯一 inactive slot。
     ///
     /// # Parameters

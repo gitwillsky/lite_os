@@ -253,9 +253,11 @@ pub(crate) fn virtual_to_physical(address: usize) -> Option<usize> {
         mappings.iter().find_map(|mapping| {
             let size = mapping.physical_end - mapping.physical_start;
             let virtual_end = mapping.virtual_start.checked_add(size)?;
+            // 必须惰性求值：`then_some` 会对不属于该 mapping 的地址也先算 `physical_start + address`，
+            // 内核镜像高地址会让它在开启溢出检查的构建里 panic；区间内时先减后加不会溢出。
             (mapping.virtual_start..virtual_end)
                 .contains(&address)
-                .then_some(mapping.physical_start + address - mapping.virtual_start)
+                .then(|| mapping.physical_start + (address - mapping.virtual_start))
         })
     })
 }

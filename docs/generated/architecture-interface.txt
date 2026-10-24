@@ -831,6 +831,14 @@ kernel/src/block/range.rs :: trait BlockStore :: fn block_size (& self) -> usize
 kernel/src/block/range.rs :: trait BlockStore :: fn read_block (& self , block : usize , buffer : & mut [u8]) -> Result < () , Self :: Error >
 kernel/src/block/range.rs :: trait BlockStore :: fn write_block (& self , block : usize , buffer : & [u8]) -> Result < () , Self :: Error >
 kernel/src/block/range.rs :: trait BlockStore :: type Error
+kernel/src/boot_screen.rs :: enum Milestone :: # [doc = " 命名空间与 IPC/socket 全局状态就绪。"] Namespaces
+kernel/src/boot_screen.rs :: enum Milestone :: # [doc = " 平台设备与块设备发布完成。"] Devices
+kernel/src/boot_screen.rs :: enum Milestone :: # [doc = " 文件系统与 scheduler 就绪。"] Scheduler
+kernel/src/boot_screen.rs :: enum Milestone :: # [doc = " 音频初始化完成；这是 DRM 接管前内核的最后一步，进度到达 [`KERNEL_PROGRESS_PERMILLE`]。"] Audio
+kernel/src/boot_screen.rs :: pub (crate) enum Milestone
+kernel/src/boot_screen.rs :: pub (crate) impl BootScreen < 'a > :: fn advance (& mut self , milestone : Milestone)
+kernel/src/boot_screen.rs :: pub (crate) impl BootScreen < 'a > :: fn start (framebuffer : Option < & 'a dyn BootFramebuffer > , scene : & 'static [u8] ,) -> Self
+kernel/src/boot_screen.rs :: pub (crate) struct BootScreen < 'a >
 kernel/src/cmdline.rs :: enum CommandLineError :: # [doc = " `loglevel=` 的值不是十进制整数。"] InvalidLogLevel
 kernel/src/cmdline.rs :: enum CommandLineError :: # [doc = " 分配失败。"] OutOfMemory
 kernel/src/cmdline.rs :: enum CommandLineError :: # [doc = " 转交 init 的 argv 超过 32 项（Linux 同样 panic）。"] TooManyArguments
@@ -931,7 +939,11 @@ kernel/src/drivers/display.rs :: pub (crate) enum DisplayError
 kernel/src/drivers/display.rs :: pub (crate) enum DisplayUpdate
 kernel/src/drivers/display.rs :: pub (crate) struct DisplayMode
 kernel/src/drivers/display.rs :: pub (crate) struct DisplayRect
+kernel/src/drivers/display.rs :: pub (crate) trait BootFramebuffer
 kernel/src/drivers/display.rs :: pub (crate) trait DisplayDevice
+kernel/src/drivers/display.rs :: trait BootFramebuffer :: fn flush (& self , rect : DisplayRect) -> Result < () , DisplayError >
+kernel/src/drivers/display.rs :: trait BootFramebuffer :: fn mode (& self) -> DisplayMode
+kernel/src/drivers/display.rs :: trait BootFramebuffer :: fn write (& self , offset : usize , bytes : & [u8]) -> Result < () , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn bind_completion_work (& self , work : crate :: deferred :: DeferredWork)
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn disable_scanout (& self) -> Result < u64 , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn mode (& self) -> DisplayMode
@@ -1069,7 +1081,7 @@ kernel/src/drivers/io_completion/request_owner.rs :: pub (crate) struct RequestO
 kernel/src/drivers/mod.rs :: pub (crate) mod io_completion
 kernel/src/drivers/mod.rs :: pub (crate) mod network
 kernel/src/drivers/mod.rs :: pub (crate) use audio_output :: { PCM_BUFFER_BYTES , PCM_BUFFER_FRAMES , PCM_CHANNELS , PCM_FRAME_BYTES , PCM_PERIOD_BYTES , PCM_PERIOD_FRAMES , PCM_PERIODS , PCM_RATE , PcmCompletionObserver , PcmOutput , PcmOutputError , }
-kernel/src/drivers/mod.rs :: pub (crate) use display :: { DisplayDevice , DisplayError , DisplayMode , DisplayRect , DisplayUpdate }
+kernel/src/drivers/mod.rs :: pub (crate) use display :: { BootFramebuffer , DisplayDevice , DisplayError , DisplayMode , DisplayRect , DisplayUpdate , }
 kernel/src/drivers/mod.rs :: pub (crate) use entropy :: EntropySource
 kernel/src/drivers/mod.rs :: pub (crate) use graphics :: { CursorCommand , GraphicsDevice , VirglBox , VirglCapsetInfo , VirglCommand , VirglTransferDirection , }
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { InputAbsInfo , InputDevice , InputDeviceError , InputId , RawInputEvent }
@@ -8607,7 +8619,10 @@ kernel/src/tty/terminal/input_batch.rs :: pub (crate) const TERMINAL_INPUT_BATCH
 kernel/src/tty/terminal/input_batch.rs :: pub (crate) fn character_write_chunk (remaining : usize , pty_master : bool) -> usize
 kernel/src/tty/terminal/input_batch.rs :: pub (crate) fn terminal_input_chunk (consumed : usize , buffer_capacity : usize) -> usize
 kernel/src/tty/terminal/input_batch.rs :: pub (crate) struct TerminalInputBatch
-kernel/src/virtio/binding.rs :: pub (crate) fn bind_platform_devices ()
+kernel/src/virtio/binding.rs :: pub (crate) fn bind_display () -> Option < EarlyDisplay >
+kernel/src/virtio/binding.rs :: pub (crate) fn bind_platform_devices (display : Option < & EarlyDisplay >)
+kernel/src/virtio/binding.rs :: pub (crate) impl EarlyDisplay :: fn framebuffer (& self) -> & dyn BootFramebuffer
+kernel/src/virtio/binding.rs :: pub (crate) struct EarlyDisplay
 kernel/src/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/virtio/blk.rs :: pub (crate) struct VirtIOBlockDevice
@@ -8649,6 +8664,7 @@ kernel/src/virtio/gpu.rs :: pub (crate) impl VirtIOGpuDevice :: fn irq_handler_f
 kernel/src/virtio/gpu.rs :: pub (crate) impl VirtIOGpuDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/virtio/gpu.rs :: pub (crate) struct VirtIOGpuDevice
 kernel/src/virtio/gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn display_mode (device : & VirtIODevice , control : & Mutex < ControlQueue > ,) -> Option < DisplayMode >
+kernel/src/virtio/gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn flush_boot_rect (device : & VirtIODevice , control : & Mutex < ControlQueue > , mode : DisplayMode , rect : DisplayRect ,) -> Option < () >
 kernel/src/virtio/gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn initialize_scanout (device : & VirtIODevice , control : & Mutex < ControlQueue > , mode : DisplayMode , framebuffer : & DeviceBacking ,) -> Option < () >
 kernel/src/virtio/gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn load_virgl_capset (device : & VirtIODevice , control : & Mutex < ControlQueue > ,) -> Option < super :: VirglCapset >
 kernel/src/virtio/gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn parse_display_mode (response : & [u8]) -> Option < DisplayMode >
@@ -8731,6 +8747,7 @@ kernel/src/virtio/gpu/resource.rs :: pub (super) impl CursorTarget :: fn is_new 
 kernel/src/virtio/gpu/resource.rs :: pub (super) impl ResidentResource :: fn id (& self) -> u32
 kernel/src/virtio/gpu/resource.rs :: pub (super) impl ResourceRelease :: fn id (& self) -> u32
 kernel/src/virtio/gpu/resource.rs :: pub (super) impl ResourceSet :: const fn empty () -> Self
+kernel/src/virtio/gpu/resource.rs :: pub (super) impl ResourceSet :: fn boot_backing (& self) -> Option < (Arc < DeviceBacking > , DisplayMode) >
 kernel/src/virtio/gpu/resource.rs :: pub (super) impl ResourceSet :: fn cancel (& mut self , target : ResourceTarget) -> Option < ResidentResource >
 kernel/src/virtio/gpu/resource.rs :: pub (super) impl ResourceSet :: fn complete (& mut self , target : ResourceTarget , activate : bool , synchronized : bool ,) -> Option < ResidentResource >
 kernel/src/virtio/gpu/resource.rs :: pub (super) impl ResourceSet :: fn deactivate (& mut self)
@@ -8866,7 +8883,7 @@ kernel/src/virtio/gpu/wire.rs :: pub (super) fn write_u64 (bytes : & mut [u8] , 
 kernel/src/virtio/input.rs :: pub (crate) impl VirtIOInputDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/virtio/input.rs :: pub (crate) impl VirtIOInputDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/virtio/input.rs :: pub (crate) struct VirtIOInputDevice
-kernel/src/virtio/mod.rs :: pub (crate) use binding :: bind_platform_devices
+kernel/src/virtio/mod.rs :: pub (crate) use binding :: { EarlyDisplay , bind_display , bind_platform_devices }
 kernel/src/virtio/mod.rs :: pub (crate) use blk :: VirtIOBlockDevice
 kernel/src/virtio/mod.rs :: pub (crate) use console :: VirtIOConsoleDevice
 kernel/src/virtio/mod.rs :: pub (crate) use gpu :: VirtIOGpuDevice

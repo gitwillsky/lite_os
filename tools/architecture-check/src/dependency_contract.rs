@@ -14,6 +14,7 @@ const KERNEL_MODULES: &[&str] = &[
     "arch",
     "audio",
     "block",
+    "boot_screen",
     "cmdline",
     "config",
     "cpu",

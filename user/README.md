@@ -22,7 +22,7 @@ LiteOS userspace 的交互产品轨道是 Aurora React 图形桌面：`composito
 | `linux-uapi/` | safe typed Linux-specific interface | DRM/evdev/ALSA/memfd/process/poll/SCM_RIGHTS raw ABI |
 | `diagnostics/` | `cputest`, `memtest`, `cachetest` multicall executable | bounded product diagnostics |
 
-`compositor` 启动后立即显示 native boot scene，直到 React desktop 首个完整 scene latch；不再存在
-独立 splash process。共享 DRM OFD 只是当前可信 GUI 进程间的 mapping mechanism：buffer 只能由
+内核从 GPU 初始化后就显示启动画面（`LBS1` 位图），`compositor` 启动后以同一进度接着显示同一张图，直到 React
+desktop 首个完整 scene latch；不再存在独立 splash process。共享 DRM OFD 只是当前可信 GUI 进程间的 mapping mechanism：buffer 只能由
 compositor 创建和销毁。UART shell 仍是 BusyBox init 拥有的独立恢复路径。完整 owner/interface 与
 failure 契约见 [`docs/architecture-contract/lite-runtime.md`](../docs/architecture-contract/lite-runtime.md)。

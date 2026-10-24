@@ -13,6 +13,7 @@ spin = { version = "0.10.0", default-features = false, features = ["mutex", "onc
 dtb-walker = "=0.2.0-alpha.3"
 bitflags = "2.9.1"
 syscall-abi = { path = "../syscall-abi" }
+boot-scene = { path = "../boot-scene" }
 smoltcp = { version = "=0.13.1", path = "../vendor/smoltcp", default-features = false, features = ["alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-raw", "socket-tcp", "socket-tcp-reno", "socket-udp"] }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]

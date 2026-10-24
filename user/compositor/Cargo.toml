@@ -10,6 +10,7 @@ name = "compositor"
 path = "src/lib.rs"
 
 [dependencies]
+boot-scene = { path = "../../boot-scene" }
 display-proto.workspace = true
 linux-uapi.workspace = true
 seat-proto.workspace = true

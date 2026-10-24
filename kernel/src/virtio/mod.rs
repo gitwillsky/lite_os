@@ -19,7 +19,7 @@ mod rng;
 mod sound;
 mod transport;
 
-pub(crate) use binding::bind_platform_devices;
+pub(crate) use binding::{EarlyDisplay, bind_display, bind_platform_devices};
 pub(crate) use blk::VirtIOBlockDevice;
 pub(crate) use console::VirtIOConsoleDevice;
 pub(crate) use gpu::VirtIOGpuDevice;

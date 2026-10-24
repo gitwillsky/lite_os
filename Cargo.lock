@@ -34,6 +34,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1b8e56985ec62d17e9c1001dc89c88ecd7dc08e47eba5ec7c29c7b5eeecde967"
 
 [[package]]
+name = "boot-scene"
+version = "0.1.0"
+
+[[package]]
 name = "byteorder"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -127,6 +131,7 @@ name = "kernel"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.9.1",
+ "boot-scene",
  "dtb-walker",
  "riscv",
  "smoltcp",
@@ -139,6 +144,7 @@ name = "kernel-unit"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.9.1",
+ "boot-scene",
  "dtb-walker",
  "smoltcp",
  "spin",

@@ -80,7 +80,8 @@ pub struct Scanout {
     topology: Topology,
     targets: [Target; 2],
     front: usize,
-    logo: Vec<u8>,
+    /// `/usr/share/liteos/boot-scene.lbs` 的内容；缺失或损坏时启动画面只显示黑屏。
+    boot_scene: Vec<u8>,
     cursor: Cursor,
     cursor_published: bool,
     move_frames: MoveFrames,
@@ -125,13 +126,14 @@ impl Scanout {
             topology,
             targets,
             front: 0,
-            logo: fs::read("/usr/share/liteos/bootlogo.xrgb").unwrap_or_default(),
+            boot_scene: fs::read("/usr/share/liteos/boot-scene.lbs").unwrap_or_default(),
             cursor,
             cursor_published: false,
             move_frames: MoveFrames::default(),
         };
-        scanout.draw_boot(0);
-        scanout.draw_boot(1);
+        if !(scanout.draw_boot(0) && scanout.draw_boot(1)) {
+            eprintln!("compositor: boot scene unavailable");
+        }
         scanout.upload_boot(0)?;
         scanout.upload_boot(1)?;
         eprintln!("compositor: GPU mode {width}x{height}");
@@ -319,8 +321,8 @@ impl Scanout {
     /// Restores the pre-desktop boot image after an epoch reset.
     pub fn reset_to_boot(&mut self) -> io::Result<()> {
         self.move_frames.reset();
-        self.draw_boot(0);
-        self.draw_boot(1);
+        // 位图缺失只会让画面保持黑屏，`open` 已经记录过；这里没有更多可做的恢复动作。
+        let _ = (self.draw_boot(0), self.draw_boot(1));
         self.upload_boot(0)?;
         self.upload_boot(1)?;
         for target in &mut self.targets {
@@ -589,7 +591,11 @@ impl Scanout {
             .render_layers(target, &layers, damage.is_none())
     }
 
-    fn draw_boot(&mut self, target: usize) {
+    /// 以内核阶段结束时的进度画出启动画面，使内核到 compositor 的接管逐像素连续。
+    ///
+    /// # Returns
+    /// 画面已绘制时为 `true`；位图缺失、损坏或屏幕过小时留黑屏并返回 `false`。
+    fn draw_boot(&mut self, target: usize) -> bool {
         let buffer = &mut self.targets[target].buffer;
         let mut canvas = unsafe {
             Canvas::new(
@@ -599,8 +605,7 @@ impl Scanout {
                 buffer.height_usize(),
             )
         };
-        canvas.draw_background();
-        canvas.draw_bootlogo(&self.logo);
+        canvas.draw_scene(&self.boot_scene, boot_scene::KERNEL_PROGRESS_PERMILLE)
     }
 
     fn upload_boot(&self, target: usize) -> io::Result<()> {
