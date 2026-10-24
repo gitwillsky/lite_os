@@ -6,6 +6,7 @@ mod cursor;
 mod desktop;
 mod focus;
 mod input;
+mod interaction;
 mod scanout;
 mod session;
 mod wayland;
@@ -74,15 +75,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|error| format!("{}: {error}", socket.display()))?;
     println!("compositor: wayland ready {}", socket.display());
 
-    Ok(session::Session {
-        scanout,
-        input,
-        server,
-        theme,
-        scale,
-        _cursor: hardware,
-    }
-    .run()?)
+    Ok(session::Session::new(scanout, input, server, theme, scale, hardware).run()?)
 }
 
 fn main() -> ExitCode {

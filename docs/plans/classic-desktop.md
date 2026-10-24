@@ -319,9 +319,13 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
 - `wl_seat` v7（指针、键盘）已实现：焦点策略 `focus.rs`（指针 enter/leave/motion/button 带 frame，键盘 enter/leave/key/modifiers，局部坐标按输出
   scale 换算）；`keyboard::xkb` 从同一张键码表生成自包含的 XKB keymap，由 guest 里上游 libxkbcommon 逐键裁决（`xkb-check`）；
   `linux-uapi::recv_fds` 支持一次收多个 fd。键盘重复由客户端按 `repeat_info`（30/s、500 ms）自己做；Caps Lock 作为 locked 状态下发。
-- 已知缺口：`wl_pointer.set_cursor`（客户端光标）、popup 与 positioner、`xdg_toplevel` 的 move/resize/maximize/minimize、
+- 窗口交互已实现：`xdg_toplevel.move/resize`（serial 校验、抓取、屏内可达性约束、缩放最小尺寸、对边锚定）、最大化/全屏（保存还原几何、
+  configure 状态与尺寸）、最小化、Alt+Tab（无面板）与 Alt+Esc；纯几何在 `interaction.rs`、窗口模式在 `desktop.rs`，各有单测；门禁逐步截图核对。
+  限制：拖动时窗口内容实时跟随（W2 默认值），尚未实现"拖动时只画 XOR 框"（W3）；Alt+Tab 没有面板与反向（W12/W13）；
+  最大化占满整个输出，任务栏出现后要改成工作区。
+- 已知缺口：`wl_pointer.set_cursor`（客户端光标）、popup 与 positioner、
   `wl_data_device`、`wp_viewporter`/`zxdg_output_manager_v1`（Wine 需要）、layer-shell 与 foreign-toplevel（桌面外壳需要）、缩小客户端 scale > 输出 scale。
-- 下一步：窗口交互请求（move/resize/maximize/minimize）与客户端光标，然后 `logon`、`desktop`（需要 layer-shell 与 foreign-toplevel）。
+- 下一步：客户端光标（`wl_pointer.set_cursor` 与光标形状）、layer-shell 与 foreign-toplevel，然后 `logon`、`desktop`。
 
 - 待做：`classic-ui` 的窗口/输入层（Wayland 客户端、焦点与键盘导航、助记符下划线、菜单动画与交互）、黄金截图门禁。
 

@@ -225,6 +225,90 @@ def check_input(session) -> None:
     ))
 
 
+def wait_screen(session, expectations: list[tuple[tuple[int, int], tuple[int, int, int]]], what: str) -> None:
+    """限期轮询 scanout，直到所有 `((x, y), 颜色)` 都成立；合成与刷新晚于串口标记，所以不能立即断言。"""
+    deadline = time.monotonic() + 10
+    while True:
+        width, _, pixels = session.screendump()
+        wrong = {point: pixels[point[1] * width + point[0]] for point, color in expectations if pixels[point[1] * width + point[0]] != color}
+        if not wrong:
+            return
+        if time.monotonic() > deadline:
+            raise RuntimeError(f"{what}: wrong pixels {wrong}")
+        time.sleep(0.25)
+
+
+def pointer_to(session, x: int, y: int) -> None:
+    session.qmp.execute("input-send-event", {"events": [abs_event("x", x, 1280), abs_event("y", y, 800)]})
+
+
+def button(session, down: bool) -> None:
+    session.qmp.execute("input-send-event", {"events": [{"type": "btn", "data": {"down": down, "button": "left"}}]})
+
+
+def tap_steps(*keys: str) -> list[tuple[str, bool]]:
+    """组合键的按键序列：先按下修饰键，敲击最后一个键，再按相反顺序释放修饰键。"""
+    *modifiers, key = keys
+    return [(name, True) for name in modifiers] + [(key, True), (key, False)] + [(name, False) for name in reversed(modifiers)]
+
+
+def tap(session, *keys: str) -> None:
+    session.qmp.execute("input-send-event", {"events": key_events(*tap_steps(*keys))})
+
+
+def check_window_interaction(session) -> None:
+    """标题栏拖动、角缩放、最大化/全屏/最小化与 Alt+Tab 恢复；每一步都由截图裁决窗口的实际位置与大小。"""
+    console, window, back = session.console, PROBE_LAST_COLOR, DESKTOP_BACKGROUND
+    # 1. 拖动标题栏：窗口 (40,40) 局部 y<30 处按下并拖到 (+60,+40)。
+    mark = console.mark()
+    pointer_to(session, 100, 50)
+    console.wait_for(("wayland-probe: pointer enter",), after=mark)
+    mark = console.mark()
+    button(session, True)
+    console.wait_for(("wayland-probe: requested window drag at",), after=mark)
+    pointer_to(session, 160, 90)
+    wait_screen(session, [((105, 85), window), ((45, 45), back), ((299, 199), window), ((301, 201), back)], "title-bar drag")
+    button(session, False)
+    # 2. 拖右下角缩放：窗口现在是 (100,80)-(300,200)；拖角 +100,+100 → 300×220。
+    mark = console.mark()
+    pointer_to(session, 295, 195)
+    console.wait_for(("wayland-probe: pointer enter",), after=mark)
+    mark = console.mark()
+    button(session, True)
+    console.wait_for(("wayland-probe: requested window drag at",), after=mark)
+    pointer_to(session, 395, 295)
+    console.wait_for(("wayland-probe: resized 300x220",), after=mark)
+    console.wait_for_match(r'configure 300x220 states=\["resizing", "activated"\]', after=mark)
+    wait_screen(session, [((399, 299), window), ((401, 299), back), ((399, 301), back), ((100, 80), window)], "corner resize")
+    mark = console.mark()
+    button(session, False)
+    console.wait_for_match(r'configure 300x220 states=\["activated"\]', after=mark)
+    # 3. 最大化与还原：还原回到最大化之前的位置与尺寸。
+    mark = console.mark()
+    tap(session, "m")
+    console.wait_for(("wayland-probe: resized 1280x800",), after=mark)
+    console.wait_for_match(r'configure 1280x800 states=\["maximized", "activated"\]', after=mark)
+    wait_screen(session, [((0, 0), window), ((1279, 799), window)], "maximize")
+    mark = console.mark()
+    tap(session, "m")
+    console.wait_for(("wayland-probe: resized 300x220",), after=mark)
+    wait_screen(session, [((0, 0), back), ((100, 80), window), ((399, 299), window), ((401, 299), back)], "restore from maximize")
+    # 4. 全屏与还原。
+    mark = console.mark()
+    tap(session, "f")
+    console.wait_for_match(r'configure 1280x800 states=\["fullscreen", "activated"\]', after=mark)
+    wait_screen(session, [((0, 0), window), ((1279, 799), window)], "fullscreen")
+    mark = console.mark()
+    tap(session, "f")
+    console.wait_for(("wayland-probe: resized 300x220",), after=mark)
+    wait_screen(session, [((0, 0), back), ((100, 80), window)], "restore from fullscreen")
+    # 5. 最小化：窗口消失；Alt+Tab 恢复（只有一个窗口时也必须能恢复）。
+    tap(session, "n")
+    wait_screen(session, [((150, 150), back), ((100, 80), back)], "minimize")
+    tap(session, "alt", "tab")
+    wait_screen(session, [((150, 150), window), ((100, 80), window)], "alt+tab restore")
+
+
 def default_image(target: BuildTarget) -> Path:
     return ROOT / "target" / "rootfs" / f"{target.arch}.img"
 
@@ -267,6 +351,7 @@ def main() -> int:
                 width, height, pixels = session.screendump()
                 check_screen(width, height, pixels)
                 check_input(session)
+                check_window_interaction(session)
                 # Alt+F4 → compositor 对活动窗口发 xdg_toplevel.close → 探针退出 → 窗口消失、桌面恢复。
                 keys = [("alt", True), ("f4", True), ("f4", False), ("alt", False)]
                 session.qmp.execute(
@@ -284,7 +369,7 @@ def main() -> int:
                     if time.monotonic() > deadline:
                         raise RuntimeError(f"closed window still on screen: {gone}")
                     time.sleep(0.25)
-        print("wayland gate: wayland-info lists the globals; keymap compiles under libxkbcommon; pointer and keyboard events arrive in order; window composited and closed by Alt+F4")
+        print("wayland gate: globals, keymap, pointer/keyboard order, window drag/resize/maximize/fullscreen/minimize/Alt+Tab, composited and closed by Alt+F4")
         publish_runtime_gate(stamp, payload)
     except RuntimeError as error:
         print(f"wayland verification failed: {error}", file=sys.stderr)

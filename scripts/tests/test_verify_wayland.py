@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from verify_wayland import (  # noqa: E402
-    DESKTOP_BACKGROUND, FIRST_WINDOW_ORIGIN, PROBE_LAST_COLOR, PROBE_SIZE, abs_event, check_info, check_screen, key_events,
+    DESKTOP_BACKGROUND, FIRST_WINDOW_ORIGIN, PROBE_LAST_COLOR, PROBE_SIZE, abs_event, check_info, check_screen, key_events, tap_steps,
 )
 
 WIDTH, HEIGHT = 400, 300
@@ -80,6 +80,13 @@ class InputEventTests(unittest.TestCase):
         self.assertEqual([(e["data"]["key"]["data"], e["data"]["down"]) for e in events],
                          [("shift", True), ("a", True), ("a", False), ("shift", False)])
         self.assertTrue(all(e["type"] == "key" and e["data"]["key"]["type"] == "qcode" for e in events))
+
+    def test_chords_press_modifiers_first_and_release_them_in_reverse(self) -> None:
+        self.assertEqual(tap_steps("m"), [("m", True), ("m", False)])
+        self.assertEqual(
+            tap_steps("ctrl", "alt", "tab"),
+            [("ctrl", True), ("alt", True), ("tab", True), ("tab", False), ("alt", False), ("ctrl", False)],
+        )
 
 
 if __name__ == "__main__":

@@ -1,6 +1,6 @@
 use wayland_wire::wire::ObjectId;
 
-use super::Stack;
+use super::{Mode, Stack};
 use crate::wayland::ClientId;
 
 fn surface(value: u32) -> ObjectId {
@@ -132,4 +132,154 @@ fn the_top_of_the_stack_is_the_active_window_and_raise_changes_it() {
     // 栈顶窗口消失后，下一个窗口自动成为活动窗口。
     stack.sync(&[(ClientId(2), surface(5), 100, 100)], SCREEN, 1);
     assert_eq!(stack.active(), Some((ClientId(2), surface(5))));
+}
+
+fn two_windows() -> Stack {
+    let mut stack = Stack::default();
+    stack.sync(
+        &[
+            (ClientId(1), surface(5), 300, 200),
+            (ClientId(2), surface(5), 300, 200),
+        ],
+        SCREEN,
+        1,
+    );
+    stack
+}
+
+#[test]
+fn maximize_saves_the_geometry_and_restore_brings_it_back() {
+    let mut stack = two_windows();
+    let (client, window) = (ClientId(2), surface(5));
+    assert_eq!(
+        stack.set_mode(client, window, Mode::Maximized, SCREEN),
+        Some(SCREEN)
+    );
+    let placed = stack.placement(client, window).unwrap();
+    assert_eq!(
+        (placed.x, placed.y, placed.width, placed.height, placed.mode),
+        (0, 0, 1280, 800, Mode::Maximized)
+    );
+    assert_eq!(placed.restore, Some((59, 59, 300, 200)));
+    assert_eq!(
+        stack.set_mode(client, window, Mode::Maximized, SCREEN),
+        None,
+        "no change"
+    );
+    // 最大化 → 全屏不覆盖已保存的还原几何。
+    stack.set_mode(client, window, Mode::Fullscreen, SCREEN);
+    assert_eq!(
+        stack.placement(client, window).unwrap().restore,
+        Some((59, 59, 300, 200))
+    );
+    assert_eq!(
+        stack.set_mode(client, window, Mode::Normal, SCREEN),
+        Some((300, 200))
+    );
+    let placed = stack.placement(client, window).unwrap();
+    assert_eq!(
+        (placed.x, placed.y, placed.mode, placed.restore),
+        (59, 59, Mode::Normal, None)
+    );
+}
+
+#[test]
+fn maximized_windows_cannot_be_moved_and_normal_ones_can() {
+    let mut stack = two_windows();
+    assert!(stack.move_to(ClientId(2), surface(5), 100, 120));
+    assert!(
+        !stack.move_to(ClientId(2), surface(5), 100, 120),
+        "same position is not a change"
+    );
+    stack.set_mode(ClientId(2), surface(5), Mode::Maximized, SCREEN);
+    assert!(!stack.move_to(ClientId(2), surface(5), 5, 5));
+    assert!(
+        !stack.move_to(ClientId(9), surface(5), 5, 5),
+        "unknown window"
+    );
+}
+
+#[test]
+fn minimized_windows_are_invisible_to_hit_testing_and_activation() {
+    let mut stack = two_windows();
+    assert!(stack.minimize(ClientId(2), surface(5)));
+    assert!(
+        !stack.minimize(ClientId(2), surface(5)),
+        "already minimized"
+    );
+    assert_eq!(stack.active(), Some((ClientId(1), surface(5))));
+    assert_eq!(
+        stack.window_at(100, 100).unwrap().client,
+        ClientId(1),
+        "the window below is hit instead"
+    );
+    // 全部最小化后没有活动窗口。
+    stack.minimize(ClientId(1), surface(5));
+    assert_eq!(stack.active(), None);
+    assert!(stack.window_at(100, 100).is_none());
+    // 激活会恢复最小化并提到最上层，即使它本来就在栈顶。
+    assert!(stack.raise(ClientId(2), surface(5)));
+    assert_eq!(stack.active(), Some((ClientId(2), surface(5))));
+    assert!(!stack.placement(ClientId(2), surface(5)).unwrap().minimized);
+}
+
+#[test]
+fn mode_and_minimized_state_survive_sync() {
+    let mut stack = two_windows();
+    stack.set_mode(ClientId(1), surface(5), Mode::Maximized, SCREEN);
+    stack.minimize(ClientId(1), surface(5));
+    stack.sync(
+        &[
+            (ClientId(1), surface(5), 1280, 800),
+            (ClientId(2), surface(5), 300, 200),
+        ],
+        SCREEN,
+        1,
+    );
+    let placed = stack.placement(ClientId(1), surface(5)).unwrap();
+    assert!(placed.minimized && placed.mode == Mode::Maximized);
+    assert!(!stack.sync(
+        &[
+            (ClientId(1), surface(5), 1280, 800),
+            (ClientId(2), surface(5), 300, 200)
+        ],
+        SCREEN,
+        1
+    ));
+}
+
+#[test]
+fn alt_tab_rotates_through_least_recently_used_and_alt_esc_lowers() {
+    let mut stack = Stack::default();
+    assert_eq!(stack.cycle_target(), None);
+    stack.sync(&[(ClientId(1), surface(5), 100, 100)], SCREEN, 1);
+    assert_eq!(
+        stack.cycle_target(),
+        None,
+        "one window has nothing to switch to"
+    );
+    stack.sync(
+        &[
+            (ClientId(1), surface(5), 100, 100),
+            (ClientId(2), surface(5), 100, 100),
+            (ClientId(3), surface(5), 100, 100),
+        ],
+        SCREEN,
+        1,
+    );
+    // 栈底→栈顶：1, 2, 3；Alt+Tab 激活 1，再按激活 2，再按 3。
+    let order: Vec<u64> = (0..3)
+        .map(|_| {
+            let (client, window) = stack.cycle_target().unwrap();
+            stack.raise(client, window);
+            client.0
+        })
+        .collect();
+    assert_eq!(order, [1, 2, 3]);
+    // Alt+Esc：活动窗口去最底层，下一个成为活动窗口。
+    let (client, window) = stack.active().unwrap();
+    assert!(stack.lower(client, window));
+    assert_eq!(stack.windows()[0].client, client);
+    assert_ne!(stack.active().unwrap().0, client);
+    assert!(!stack.lower(client, window), "already at the bottom");
 }

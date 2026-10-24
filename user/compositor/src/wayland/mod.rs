@@ -20,7 +20,7 @@ pub use client::Client;
 pub use client::Disconnected;
 pub use server::{ClientId, Server};
 pub use surface::Content;
-pub use xdg::{Window, WindowRequest};
+pub use xdg::{ToplevelState, Window, WindowRequest};
 
 #[cfg(test)]
 mod tests;

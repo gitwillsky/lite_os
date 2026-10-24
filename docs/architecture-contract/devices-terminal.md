@@ -144,7 +144,11 @@
 - init 只监督网络服务、`display-service`（有 `/dev/dri/card0` 时 exec `/bin/compositor`，否则安静待命）与 UART shell，不建立 seat socket、显示器文本 VT 或旧图形会话。
 - `compositor` 独占 DRM master 与 evdev 读取；其首帧必须与内核 `boot_screen` 的最后一帧逐像素一致（`verify_display.py` 以 `LBS1` 参考解码器裁决），光标素材是 `LCS1` 数据文件，不内置常量。
 - 指针焦点跟随光标下的窗口，键盘焦点跟随栈顶（活动）窗口；带描述符的消息（`wl_keyboard.keymap`）按段发送，fd 总先于引用它的消息到达。
-- Wayland 服务端以 `pread` 而非 mmap 读取客户端 shm（客户端截断文件只会得到协议错误，不会 SIGBUS）；每个连接一个协议状态机，窗口栈以稳定的连接 id 为键；`xdg_toplevel` 的 move/resize/maximize/minimize/fullscreen 请求目前被取走丢弃，尚未实现。
+- Wayland 服务端以 `pread` 而非 mmap 读取客户端 shm（客户端截断文件只会得到协议错误，不会 SIGBUS）；
+  每个连接一个协议状态机，窗口栈以稳定的连接 id 为键。
+- 窗口请求：move/resize 只接受由仍按住的按钮触发、serial 匹配且窗口不是最大化/全屏的请求；抓取期间客户端看不到指针事件，
+  窗口消失即结束抓取。最大化/全屏保存还原几何，取消时 configure 带还原尺寸。
+- 最小化的窗口不绘制、不命中、不是活动窗口。Alt+Tab 激活最久未用的窗口（也恢复最小化），Alt+Esc 把活动窗口放到最底层，二者吞掉按键。
 - `keyboard`、`terminal-model`、`terminal-font`、`canvas`、`classic-theme`、`classic-ui`、`typeface`、`wayland-scanner` 和 `wayland-wire` 是独立库；不得恢复退休的私有显示、音频或 seat 协议。
 
 ## Failure and cleanup

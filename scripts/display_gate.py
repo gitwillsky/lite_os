@@ -86,14 +86,18 @@ class Console:
     def __init__(self, process: subprocess.Popen[bytes]) -> None:
         self.process, self.text = process, ""
 
-    def wait_for(self, markers: tuple[str, ...]) -> None:
-        """等待所有字面标记都出现在串口输出里。"""
-        self._wait(lambda: all(marker in self.text for marker in markers), markers)
+    def mark(self) -> int:
+        """当前输出长度；之后用 `after=` 只等待这个位置之后才出现的内容。"""
+        return len(self.text)
 
-    def wait_for_match(self, pattern: str) -> re.Match[str]:
+    def wait_for(self, markers: tuple[str, ...], after: int = 0) -> None:
+        """等待所有字面标记都出现在 `after` 之后的串口输出里。"""
+        self._wait(lambda: all(marker in self.text[after:] for marker in markers), markers)
+
+    def wait_for_match(self, pattern: str, after: int = 0) -> re.Match[str]:
         """等待正则整体匹配；用于需要取值的行（标记出现时该行可能还没完整到达）。"""
-        self._wait(lambda: re.search(pattern, self.text) is not None, pattern)
-        match = re.search(pattern, self.text)
+        self._wait(lambda: re.search(pattern, self.text[after:]) is not None, pattern)
+        match = re.search(pattern, self.text[after:])
         assert match is not None
         return match
 

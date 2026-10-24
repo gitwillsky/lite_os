@@ -325,7 +325,8 @@ Wayland 门禁（`scripts/verify_wayland.py`，`make verify-runtime-wayland`）�
 `xdg_wm_base` 与 `wl_output`（模式、scale、名字）；探针走完 xdg configure/ack、五帧 shm buffer 与 frame callback；`screendump` 里
 窗口矩形是最后一帧颜色、其外是桌面背景、位置是层叠放置的第一个窗口；收到的 keymap 由 guest 里链接上游 libxkbcommon 的 `xkb-check`
 （禁用默认 include，逐键与修饰键索引裁决）编译；注入平板移动/点击与 Shift+A，客户端必须按序收到 `wl_pointer` 的 enter/motion/button/leave
-与 `wl_keyboard` 的 modifiers/key（局部坐标按输出 scale 换算）；最后注入 Alt+F4，窗口必须消失、桌面恢复。协议状态机另有
+与 `wl_keyboard` 的 modifiers/key（局部坐标按输出 scale 换算）；随后依次拖动标题栏、拖右下角缩放、最大化/还原、全屏/还原、
+最小化与 Alt+Tab 恢复，每步都由截图核对窗口的实际位置与大小；最后注入 Alt+F4，窗口必须消失、桌面恢复。协议状态机另有
 进程内测试（`user/compositor` 的 `cargo test`，含 socket、乱序/拆包/随机输入）。只在 AArch64+HVF 承担。
 
 idle tick suppression 不增加 host microbenchmark：收益来自 HVF/TCG 的 whole-machine exit 次数，

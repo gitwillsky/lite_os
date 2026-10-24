@@ -31,12 +31,44 @@ pub struct Toplevel {
 /// 客户端对窗口提出的、需要窗口管理器裁决的请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WindowRequest {
-    Move,
-    /// `xdg_toplevel.resize_edge` 的数值。
-    Resize(u32),
+    /// `serial` 必须是客户端收到的、触发这次拖动的按钮事件的序号。
+    Move {
+        serial: u32,
+    },
+    /// `edges` 是 `xdg_toplevel.resize_edge` 的数值。
+    Resize {
+        serial: u32,
+        edges: u32,
+    },
     Maximize(bool),
     Minimize,
     Fullscreen(bool),
+}
+
+/// `xdg_toplevel.configure` 携带的窗口状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct ToplevelState {
+    pub activated: bool,
+    pub maximized: bool,
+    pub fullscreen: bool,
+    /// 用户正在拖动边框缩放；客户端据此可以放宽重绘质量。
+    pub resizing: bool,
+}
+
+impl ToplevelState {
+    /// `xdg_toplevel.state` 的数值，按协议编码为 u32 数组。
+    fn encode(self) -> Vec<u8> {
+        [
+            (self.maximized, 1u32),
+            (self.fullscreen, 2),
+            (self.resizing, 3),
+            (self.activated, 4),
+        ]
+        .into_iter()
+        .filter(|(set, _)| *set)
+        .flat_map(|(_, value)| value.to_ne_bytes())
+        .collect()
+    }
 }
 
 /// 一个已映射的顶层窗口。
@@ -237,10 +269,14 @@ impl Client {
                 }
                 Ok(())
             }
-            R::Move { .. } => self.window_request(object, WindowRequest::Move),
-            R::Resize { edges, .. } => {
-                self.window_request(object, WindowRequest::Resize(edges as u32))
-            }
+            R::Move { serial, .. } => self.window_request(object, WindowRequest::Move { serial }),
+            R::Resize { serial, edges, .. } => self.window_request(
+                object,
+                WindowRequest::Resize {
+                    serial,
+                    edges: edges as u32,
+                },
+            ),
             R::SetMaximized => self.window_request(object, WindowRequest::Maximize(true)),
             R::UnsetMaximized => self.window_request(object, WindowRequest::Maximize(false)),
             R::SetFullscreen { .. } => self.window_request(object, WindowRequest::Fullscreen(true)),
@@ -297,7 +333,7 @@ impl Client {
             return Ok(());
         };
         xdg_state.initial_sent = true;
-        self.send_configure(xdg, toplevel, 0, 0, false)
+        self.send_configure(xdg, toplevel, 0, 0, ToplevelState::default())
     }
 
     fn send_configure(
@@ -306,35 +342,33 @@ impl Client {
         toplevel: ObjectId,
         width: i32,
         height: i32,
-        activated: bool,
+        state: ToplevelState,
     ) -> Result<(), Fail> {
-        const STATE_ACTIVATED: u32 = 4;
         let serial = self.next_serial;
         self.next_serial = self.next_serial.wrapping_add(1).max(1);
         self.xdg_surface_mut(xdg)?.outstanding.push(serial);
-        let states = if activated {
-            STATE_ACTIVATED.to_le_bytes().to_vec()
-        } else {
-            Vec::new()
-        };
         xdg_toplevel::Event::Configure {
             width,
             height,
-            states,
+            states: state.encode(),
         }
         .encode(toplevel, &mut self.writer)?;
         xdg_surface::Event::Configure { serial }.encode(xdg, &mut self.writer)?;
         Ok(())
     }
 
-    /// 窗口管理器要求 `surface` 的窗口采用新尺寸与激活状态（0 表示由客户端决定）。
+    /// 窗口管理器要求 `surface` 的窗口采用新的尺寸与状态。
+    ///
+    /// # Parameters
+    ///
+    /// - `width`、`height`: surface 逻辑像素；0 表示由客户端决定。
     ///
     /// 窗口尚未建立角色时忽略。
-    pub fn configure(&mut self, surface: ObjectId, width: i32, height: i32, activated: bool) {
+    pub fn configure(&mut self, surface: ObjectId, width: i32, height: i32, state: ToplevelState) {
         let target = self.toplevel_of(surface);
         if let Some((xdg, toplevel)) = target {
             // 序号只会因缓冲区超长而失败，configure 是定长消息。
-            let _ = self.send_configure(xdg, toplevel, width, height, activated);
+            let _ = self.send_configure(xdg, toplevel, width, height, state);
         }
     }
 

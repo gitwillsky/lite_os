@@ -1,7 +1,12 @@
 use wayland_wire::wire::{Fixed, ObjectId};
 
-use super::{KeyTracker, local_position};
-use crate::{desktop::Placement, wayland::ClientId};
+use super::{KeyTracker, local_position, window_configure};
+use crate::desktop::Stack;
+use crate::wayland::ToplevelState;
+use crate::{
+    desktop::{Mode, Placement},
+    wayland::ClientId,
+};
 
 fn placement(x: i32, y: i32) -> Placement {
     Placement {
@@ -11,6 +16,9 @@ fn placement(x: i32, y: i32) -> Placement {
         y,
         width: 200,
         height: 100,
+        mode: Mode::Normal,
+        minimized: false,
+        restore: None,
     }
 }
 
@@ -70,4 +78,99 @@ fn consumed_keys_swallow_exactly_one_release() {
         !keys.take_consumed(62),
         "the mark is cleared after the release"
     );
+}
+
+const SCREEN: (i32, i32) = (1280, 800);
+
+fn stack_with_two() -> Stack {
+    let mut stack = Stack::default();
+    let surface = ObjectId::new(5).unwrap();
+    stack.sync(
+        &[
+            (ClientId(1), surface, 200, 100),
+            (ClientId(2), surface, 200, 100),
+        ],
+        SCREEN,
+        1,
+    );
+    stack
+}
+
+#[test]
+fn a_normal_window_is_told_its_activation_only() {
+    let stack = stack_with_two();
+    let surface = ObjectId::new(5).unwrap();
+    let active = window_configure(&stack, (ClientId(2), surface), 1, None, false);
+    assert_eq!(
+        active,
+        (
+            0,
+            0,
+            ToplevelState {
+                activated: true,
+                ..ToplevelState::default()
+            }
+        )
+    );
+    let inactive = window_configure(&stack, (ClientId(1), surface), 1, None, false);
+    assert_eq!(inactive, (0, 0, ToplevelState::default()));
+}
+
+#[test]
+fn maximized_and_fullscreen_windows_keep_their_real_size_when_reconfigured() {
+    let mut stack = stack_with_two();
+    let surface = ObjectId::new(5).unwrap();
+    stack.set_mode(ClientId(1), surface, Mode::Maximized, SCREEN);
+    // 失去激活的最大化窗口仍然是最大化，并带着屏幕尺寸（逻辑像素，2x 下减半）。
+    assert_eq!(
+        window_configure(&stack, (ClientId(1), surface), 1, None, false),
+        (
+            1280,
+            800,
+            ToplevelState {
+                maximized: true,
+                ..ToplevelState::default()
+            }
+        )
+    );
+    assert_eq!(
+        window_configure(&stack, (ClientId(1), surface), 2, None, false).0,
+        640
+    );
+    stack.set_mode(ClientId(1), surface, Mode::Fullscreen, SCREEN);
+    assert!(
+        window_configure(&stack, (ClientId(1), surface), 1, None, false)
+            .2
+            .fullscreen
+    );
+}
+
+#[test]
+fn resizing_carries_the_target_size_and_the_resizing_flag() {
+    let stack = stack_with_two();
+    let surface = ObjectId::new(5).unwrap();
+    let (width, height, state) =
+        window_configure(&stack, (ClientId(2), surface), 2, Some((500, 301)), true);
+    assert_eq!((width, height), (250, 150));
+    assert!(state.resizing && state.activated && !state.maximized);
+}
+
+#[test]
+fn a_vanished_window_gets_a_neutral_configure() {
+    let stack = stack_with_two();
+    let gone = ObjectId::new(9).unwrap();
+    assert_eq!(
+        window_configure(&stack, (ClientId(7), gone), 1, None, false),
+        (0, 0, ToplevelState::default())
+    );
+}
+
+#[test]
+fn restoring_from_maximized_carries_the_size_without_the_resizing_flag() {
+    let stack = stack_with_two();
+    let surface = ObjectId::new(5).unwrap();
+    let (width, height, state) =
+        window_configure(&stack, (ClientId(2), surface), 1, Some((300, 200)), false);
+    assert_eq!((width, height), (300, 200));
+    assert!(!state.resizing && state.activated);
 }

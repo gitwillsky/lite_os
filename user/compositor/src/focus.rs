@@ -4,8 +4,8 @@ use keyboard::{Modifiers, xkb};
 use wayland_wire::wire::{Fixed, ObjectId};
 
 use crate::{
-    desktop::{Placement, Stack},
-    wayland::{ClientId, Server},
+    desktop::{Mode, Placement, Stack},
+    wayland::{ClientId, Server, ToplevelState},
 };
 
 type Target = (ClientId, ObjectId);
@@ -73,9 +73,48 @@ pub enum Shortcut {
     None,
     /// Alt+F4：请求关闭活动窗口。
     CloseActive,
+    /// Alt+Tab：激活最久没用过的窗口（恢复最小化）。
+    CycleWindows,
+    /// Alt+Esc：把活动窗口放到最底层。
+    LowerActive,
 }
 
+const KEY_ESC: u32 = 1;
+const KEY_TAB: u32 = 15;
 const KEY_F4: u32 = 62;
+
+/// 窗口当前应该收到的 `configure`：`(逻辑宽, 逻辑高, 状态)`。
+///
+/// 普通窗口的尺寸由客户端决定（0×0），只有明确要求时才带目标尺寸；最大化与全屏窗口带实际尺寸，
+/// 否则客户端在失去激活时会把自己缩回默认大小。
+///
+/// # Parameters
+///
+/// - `size`: 要求客户端采用的目标物理尺寸（缩放抓取、取消最大化时的还原尺寸）；`None` 按窗口模式决定。
+/// - `resizing`: 用户是否正在拖动边框缩放。
+pub fn window_configure(
+    stack: &Stack,
+    target: Target,
+    scale: i32,
+    size: Option<(i32, i32)>,
+    resizing: bool,
+) -> (i32, i32, ToplevelState) {
+    let placement = stack.placement(target.0, target.1);
+    let mode = placement.map_or(Mode::Normal, |placed| placed.mode);
+    let state = ToplevelState {
+        activated: stack.active() == Some(target),
+        maximized: mode == Mode::Maximized,
+        fullscreen: mode == Mode::Fullscreen,
+        resizing,
+    };
+    let physical = match (size, mode, placement) {
+        (Some(size), ..) => size,
+        (None, Mode::Normal, _) | (None, _, None) => return (0, 0, state),
+        (None, _, Some(placed)) => (placed.width, placed.height),
+    };
+    let scale = scale.max(1);
+    (physical.0 / scale, physical.1 / scale, state)
+}
 
 #[derive(Default)]
 pub struct Seat {
@@ -83,12 +122,35 @@ pub struct Seat {
     pointer_focus: Option<Target>,
     keyboard_focus: Option<Target>,
     keys: KeyTracker,
+    /// 最近一次按下且尚未释放的按钮的序号；窗口的 move/resize 请求必须带它，否则视为过期请求。
+    button_serial: Option<u32>,
+    /// 合成器正在抓取指针（交互式移动/缩放）：客户端看不到指针事件。
+    grabbed: bool,
 }
 
 impl Seat {
     fn next_serial(&mut self) -> u32 {
         self.serial = self.serial.wrapping_add(1).max(1);
         self.serial
+    }
+
+    /// 当前仍按住的按钮的序号。
+    pub fn button_serial(&self) -> Option<u32> {
+        self.button_serial
+    }
+
+    /// 开始抓取：指针对当前焦点客户端就像离开了窗口。
+    pub fn begin_grab(&mut self, server: &mut Server) {
+        if let Some((client, surface)) = self.pointer_focus.take() {
+            let serial = self.next_serial();
+            server.with_client(client, |client| client.pointer_leave(serial, surface));
+        }
+        self.grabbed = true;
+    }
+
+    /// 结束抓取；下一次 `update_pointer` 会重新判定并向窗口发 enter。
+    pub fn end_grab(&mut self) {
+        self.grabbed = false;
     }
 
     /// 指针移动或窗口布局变化后重新判定指针焦点，并向新焦点发送 enter/motion。
@@ -105,6 +167,9 @@ impl Seat {
         time: u32,
         moved: bool,
     ) {
+        if self.grabbed {
+            return;
+        }
         let hit = stack.window_at(pointer.0, pointer.1).copied();
         let target = hit.map(|placement| (placement.client, placement.surface));
         if target != self.pointer_focus {
@@ -127,6 +192,7 @@ impl Seat {
     pub fn button(&mut self, server: &mut Server, code: u16, pressed: bool, time: u32) {
         if let Some((client, _)) = self.pointer_focus {
             let serial = self.next_serial();
+            self.button_serial = pressed.then_some(serial);
             server.with_client(client, |client| {
                 client.pointer_button(serial, time, u32::from(code), pressed)
             });
@@ -134,24 +200,29 @@ impl Seat {
     }
 
     /// 键盘焦点跟随活动窗口：旧窗口 leave 并标记未激活，新窗口标记已激活并 enter。
-    pub fn sync_keyboard(&mut self, server: &mut Server, stack: &Stack) {
+    pub fn sync_keyboard(&mut self, server: &mut Server, stack: &Stack, scale: i32) {
         let active = stack.active();
         if active == self.keyboard_focus {
             return;
         }
         if let Some((client, surface)) = self.keyboard_focus {
             let serial = self.next_serial();
+            // 窗口可能刚被最小化或移除；还存在时通知它失去激活，并保留它的最大化等状态。
+            let (width, height, state) =
+                window_configure(stack, (client, surface), scale, None, false);
             server.with_client(client, |client| {
                 client.keyboard_leave(serial, surface);
-                client.configure(surface, 0, 0, false);
+                client.configure(surface, width, height, state);
             });
         }
         if let Some((client, surface)) = active {
             let serial = self.next_serial();
             let (depressed, locked) = xkb::modifier_masks(self.keys.modifiers());
             let pressed = self.keys.pressed().to_vec();
+            let (width, height, state) =
+                window_configure(stack, (client, surface), scale, None, false);
             server.with_client(client, |client| {
-                client.configure(surface, 0, 0, true);
+                client.configure(surface, width, height, state);
                 client.keyboard_enter(serial, surface, &pressed);
                 client.keyboard_modifiers(serial, depressed, locked);
             });
@@ -163,9 +234,17 @@ impl Seat {
     pub fn key(&mut self, server: &mut Server, code: u16, pressed: bool, time: u32) -> Shortcut {
         let code = u32::from(code);
         let modifiers_changed = self.keys.track(code, pressed);
-        if pressed && code == KEY_F4 && self.keys.modifiers().alt {
-            self.keys.consume(code);
-            return Shortcut::CloseActive;
+        if pressed && self.keys.modifiers().alt {
+            let shortcut = match code {
+                KEY_F4 => Shortcut::CloseActive,
+                KEY_TAB => Shortcut::CycleWindows,
+                KEY_ESC => Shortcut::LowerActive,
+                _ => Shortcut::None,
+            };
+            if shortcut != Shortcut::None {
+                self.keys.consume(code);
+                return shortcut;
+            }
         }
         if !pressed && self.keys.take_consumed(code) {
             return Shortcut::None;

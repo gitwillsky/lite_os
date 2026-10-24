@@ -1,4 +1,5 @@
 use super::*;
+use crate::wayland::ToplevelState;
 
 const XDG_OBJECTS: [(u32, Interface); 2] =
     [(21, Interface::XdgSurface), (22, Interface::XdgToplevel)];
@@ -150,7 +151,15 @@ fn acknowledging_an_unknown_serial_is_rejected_and_a_later_ack_covers_earlier_on
 
     let mut harness = Harness::bound();
     let first = window(&mut harness);
-    harness.client.configure(id(5), 300, 200, true);
+    harness.client.configure(
+        id(5),
+        300,
+        200,
+        ToplevelState {
+            activated: true,
+            ..ToplevelState::default()
+        },
+    );
     let events = harness.events(&XDG_OBJECTS);
     let (width, height, states) = match &events[0].event {
         AnyEvent::XdgToplevel(xdg_toplevel::Event::Configure {
@@ -275,8 +284,11 @@ fn window_requests_are_queued_keyed_by_surface() {
     }
     let requests = harness.client.take_requests();
     let expected = [
-        WindowRequest::Move,
-        WindowRequest::Resize(xdg_toplevel::ResizeEdge::BottomRight as u32),
+        WindowRequest::Move { serial: 1 },
+        WindowRequest::Resize {
+            serial: 1,
+            edges: xdg_toplevel::ResizeEdge::BottomRight as u32,
+        },
         WindowRequest::Maximize(true),
         WindowRequest::Maximize(false),
         WindowRequest::Minimize,
@@ -343,5 +355,43 @@ fn destroying_the_role_unmaps_and_a_new_role_must_be_configured_again() {
             AnyEvent::XdgToplevel(xdg_toplevel::Event::Configure { .. })
         )),
         "a recreated toplevel gets a fresh initial configure"
+    );
+}
+
+#[test]
+fn configure_states_are_encoded_in_protocol_order() {
+    let mut harness = Harness::bound();
+    window(&mut harness);
+    let all = ToplevelState {
+        activated: true,
+        maximized: true,
+        fullscreen: true,
+        resizing: true,
+    };
+    harness.client.configure(id(5), 1280, 800, all);
+    harness
+        .client
+        .configure(id(5), 0, 0, ToplevelState::default());
+    let events = harness.events(&XDG_OBJECTS);
+    match &events[0].event {
+        AnyEvent::XdgToplevel(xdg_toplevel::Event::Configure {
+            width: 1280,
+            height: 800,
+            states,
+        }) => {
+            let values: Vec<u32> = states
+                .chunks(4)
+                .map(|c| u32::from_ne_bytes(c.try_into().unwrap()))
+                .collect();
+            assert_eq!(
+                values,
+                [1, 2, 3, 4],
+                "maximized, fullscreen, resizing, activated"
+            );
+        }
+        _ => panic!("expected a toplevel configure"),
+    }
+    assert!(
+        matches!(&events[2].event, AnyEvent::XdgToplevel(xdg_toplevel::Event::Configure { states, .. }) if states.is_empty())
     );
 }
