@@ -115,6 +115,32 @@
   job-control 共用的 host liveness bound，不作为 guest 性能阈值；全部 marker/workload 必须完成。
   trap/context/MMU 等性能只由 release ELF 确定性指令/事件计数门禁裁决，禁止用 wall-clock 代替。
 
+## 经典桌面本地素材
+
+这是经典桌面设计阶段的宿主准备流程，不进入产品构建、rootfs 指纹或 runtime gate。
+素材语义、原版来源及映射由[素材清单](../design/classic-desktop/assets.md#本地原版素材)拥有。
+先加载 shell 环境，安装离线提取工具，并准备独立 Python 环境：
+
+```bash
+source ~/.zshrc
+brew install sevenzip cabextract icoutils
+python3 -m venv target/classic-desktop/venv
+target/classic-desktop/venv/bin/pip install Pillow==13.0.0
+target/classic-desktop/venv/bin/python scripts/extract_windows2000_assets.py \
+  --iso "$HOME/Downloads/Windows 2000 Professional Service Pack 4 CHS.iso"
+python3 scripts/extract_windows2000_assets.py --check
+```
+
+提取器只读取 ISO/PE 数据，不在宿主执行镜像内的程序。默认输出是被 Git 忽略的
+`target/classic-desktop/windows2000/assets/`；`--output` 也只能指向本仓库 `target/` 内。
+已有目录不覆盖；重新提取使用新的 `--output`，核对后显式替换。
+失败会清理临时目录，完整解码与哈希检查通过后才发布最终目录。`--check` 不需要 Pillow 或外部提取工具。
+工具原始资源长度警告保存在 manifest 中；不能把完整性检查误报为画面/语义逐项验收。
+
+此流程只增加宿主离线工具，没有新增 kernel/userspace 热路径、锁、分配或 codec，故不新增 benchmark。
+验证包括独立提取的 manifest 一致性、全部原生图像帧解码、文件损坏/路径越界/悬空引用测试，
+不依赖 Windows 2000 参照机；产品完整门禁仍是 `make verify`。
+
 ## 推荐入口
 
 ```bash

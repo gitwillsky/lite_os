@@ -54,6 +54,19 @@
 - [构建、测试与验证](development/build-and-verify.md)
 - [生成的 scoped interface baseline](generated/architecture-interface.txt)
 
+## 设计规格
+
+- [经典桌面外观与交互规格（简体中文 Windows 2000 风格）](design/classic-desktop/README.md)
+- [经典桌面外观与字体](design/classic-desktop/appearance.md)
+- [经典桌面素材与本地原版映射](design/classic-desktop/assets.md)
+- [经典桌面开机与登录](design/classic-desktop/boot-logon.md)
+- [经典桌面交互验收](design/classic-desktop/interaction.md)
+- [经典桌面外壳](design/classic-desktop/shell.md)
+
+## 进行中的计划
+
+- [经典桌面与 Win32 运行时](plans/classic-desktop.md)
+
 ## 设计决策与术语
 
 - [首个声音里程碑只支持播放](decisions/audio-output-scope.md)
