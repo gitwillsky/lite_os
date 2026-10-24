@@ -12,16 +12,14 @@ use wayland_wire::wire::ObjectId;
 use crate::{
     compose::{self, Drawable},
     desktop::Stack,
+    focus::{Seat, Shortcut},
     input::{Event, Input},
     scanout::Scanout,
     wayland::{ClientId, Server},
 };
 
-/// Linux `BTN_LEFT` 与键盘键码（`linux/input-event-codes.h`）。
+/// Linux `BTN_LEFT`（`linux/input-event-codes.h`）。
 const BUTTON_LEFT: u16 = 0x110;
-const KEY_LEFTALT: u16 = 56;
-const KEY_RIGHTALT: u16 = 100;
-const KEY_F4: u16 = 62;
 
 pub struct Session {
     pub scanout: Scanout,
@@ -60,9 +58,7 @@ impl Session {
         let mut desktop_shown = false;
         let mut dirty = false;
         let mut commits_seen = 0;
-        // 已通知客户端"已激活"的窗口；与栈顶不同时发送 configure。缺少它，客户端永远不知道自己是否活动。
-        let mut notified = None;
-        let mut alt_down = false;
+        let mut seat = Seat::default();
         loop {
             if dirty && desktop_shown && !self.scanout.flip_pending() {
                 self.present(&stack)?;
@@ -100,43 +96,48 @@ impl Session {
                 self.input.drain(index, &mut events)?;
             }
             for event in events.drain(..) {
+                let time = Self::now_ms(started);
                 match event {
                     Event::PointerMoved { x, y } => {
                         self.scanout.move_cursor((x, y))?;
                         if !std::mem::replace(&mut saw_pointer, true) {
                             println!("compositor: first pointer event {x},{y}");
                         }
+                        seat.update_pointer(
+                            &mut self.server,
+                            &stack,
+                            (x, y),
+                            self.scale as i32,
+                            time,
+                            true,
+                        );
                     }
-                    Event::Button {
-                        code: BUTTON_LEFT,
-                        pressed: true,
-                    } => {
-                        // 单击窗口：激活并置顶。
-                        let (x, y) = self.input.pointer().position();
-                        if let Some(target) = stack
-                            .window_at(x, y)
-                            .map(|placed| (placed.client, placed.surface))
-                            && stack.raise(target.0, target.1)
-                        {
-                            dirty = true;
+                    Event::Button { code, pressed } => {
+                        if code == BUTTON_LEFT && pressed {
+                            // 单击窗口：激活并置顶。
+                            let (x, y) = self.input.pointer().position();
+                            if let Some(target) = stack
+                                .window_at(x, y)
+                                .map(|placed| (placed.client, placed.surface))
+                                && stack.raise(target.0, target.1)
+                            {
+                                dirty = true;
+                            }
                         }
+                        seat.button(&mut self.server, code, pressed, time);
                     }
-                    Event::Button { .. } => {}
                     Event::Key { code, pressed } => {
                         if !std::mem::replace(&mut saw_key, true) {
                             println!("compositor: first key event");
                         }
-                        match code {
-                            KEY_LEFTALT | KEY_RIGHTALT => alt_down = pressed,
-                            // Alt+F4：请求关闭活动窗口；客户端可以拒绝或先询问用户。
-                            KEY_F4 if pressed && alt_down => {
-                                if let Some((client, surface)) = stack.active() {
-                                    self.server
-                                        .with_client(client, |client| client.close(surface));
-                                    println!("compositor: close requested");
-                                }
-                            }
-                            _ => {}
+                        // 键盘焦点必须先于这次按键同步：刚激活的窗口应该收到触发它之后的第一个键。
+                        seat.sync_keyboard(&mut self.server, &stack);
+                        if seat.key(&mut self.server, code, pressed, time) == Shortcut::CloseActive
+                            && let Some((client, surface)) = stack.active()
+                        {
+                            self.server
+                                .with_client(client, |client| client.close(surface));
+                            println!("compositor: close requested");
                         }
                     }
                 }
@@ -170,17 +171,16 @@ impl Session {
                 }
             }
             desktop_shown |= !stack.windows().is_empty();
-            if stack.active() != notified {
-                if let Some((client, surface)) = notified {
-                    self.server
-                        .with_client(client, |client| client.configure(surface, 0, 0, false));
-                }
-                if let Some((client, surface)) = stack.active() {
-                    self.server
-                        .with_client(client, |client| client.configure(surface, 0, 0, true));
-                }
-                notified = stack.active();
-            }
+            seat.sync_keyboard(&mut self.server, &stack);
+            // 窗口布局变化（出现、消失、置顶）会改变光标下的窗口；位置没动，所以不发 motion。
+            seat.update_pointer(
+                &mut self.server,
+                &stack,
+                self.input.pointer().position(),
+                self.scale as i32,
+                Self::now_ms(started),
+                false,
+            );
             let commits = self.server.commits();
             if commits != commits_seen {
                 commits_seen = commits;

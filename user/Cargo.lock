@@ -30,6 +30,7 @@ dependencies = [
  "boot-scene",
  "canvas",
  "classic-theme",
+ "keyboard",
  "linux-uapi",
  "wayland-wire",
 ]

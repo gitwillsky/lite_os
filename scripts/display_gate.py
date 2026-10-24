@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import select
 import socket
 import subprocess
@@ -17,7 +18,7 @@ from pathlib import Path
 from qemu_gate import ANSI, _qemu_command, terminate
 
 ROOT = Path(__file__).resolve().parent.parent
-FATAL = ("panicked at", "[ERROR]", "compositor: error")
+FATAL = ("panicked at", "[ERROR]", "compositor: error", "xkb-check: ", "wayland-probe: error")
 TIMEOUT_SECONDS = 90
 
 
@@ -86,10 +87,21 @@ class Console:
         self.process, self.text = process, ""
 
     def wait_for(self, markers: tuple[str, ...]) -> None:
+        """等待所有字面标记都出现在串口输出里。"""
+        self._wait(lambda: all(marker in self.text for marker in markers), markers)
+
+    def wait_for_match(self, pattern: str) -> re.Match[str]:
+        """等待正则整体匹配；用于需要取值的行（标记出现时该行可能还没完整到达）。"""
+        self._wait(lambda: re.search(pattern, self.text) is not None, pattern)
+        match = re.search(pattern, self.text)
+        assert match is not None
+        return match
+
+    def _wait(self, satisfied, description) -> None:
         deadline = time.monotonic() + TIMEOUT_SECONDS
-        while not all(marker in self.text for marker in markers):
+        while not satisfied():
             if time.monotonic() > deadline:
-                raise RuntimeError(f"timed out waiting for {markers}\n{self.text[-1500:]}")
+                raise RuntimeError(f"timed out waiting for {description}\n{self.text[-1500:]}")
             ready, _, _ = select.select([self.process.stdout], [], [], 0.25)
             if ready:
                 chunk = os.read(self.process.stdout.fileno(), 16 * 1024)

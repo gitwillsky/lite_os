@@ -67,6 +67,13 @@ class UserlandSyncTests(unittest.TestCase):
         for path in ("/root/project", "/usr/share/liteos/../../bin/sh", "/usr/share/liteos//bad", "/etc/passwd"):
             self.assertFalse(sync_userland.managed_path(path), path)
 
+    def test_every_product_file_is_a_managed_path(self):
+        # 产品清单新增文件时，同步器的白名单必须同步更新；否则开发镜像同步会在运行时才报错。
+        from verify_busybox import base_userland
+
+        for artifact in base_userland(Path("/nonexistent/compositor")):
+            self.assertTrue(sync_userland.managed_path(artifact.destination), artifact.destination)
+
 
 if __name__ == "__main__":
     unittest.main()

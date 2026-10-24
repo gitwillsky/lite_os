@@ -4,6 +4,7 @@ mod boot;
 mod compose;
 mod cursor;
 mod desktop;
+mod focus;
 mod input;
 mod scanout;
 mod session;

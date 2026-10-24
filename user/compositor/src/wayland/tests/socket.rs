@@ -74,11 +74,11 @@ fn a_real_socket_connection_completes_the_registry_handshake() {
         .encode(ObjectId::DISPLAY, &mut writer)
         .unwrap();
     stream.write_all(writer.bytes()).unwrap();
-    let events = read_frames(&mut stream, &mut server, 4);
+    let events = read_frames(&mut stream, &mut server, 5);
     assert!(
         matches!(&events[0], AnyEvent::WlRegistry(wl_registry::Event::Global { name: 1, interface, .. }) if interface == "wl_compositor")
     );
-    assert_eq!(events.len(), 4);
+    assert_eq!(events.len(), 5);
     assert_eq!(server.connection_count(), 1);
     std::fs::remove_file(path).unwrap();
 }
@@ -138,7 +138,7 @@ fn many_clients_are_served_independently() {
         stream.write_all(writer.bytes()).unwrap();
     }
     for stream in &mut streams {
-        assert_eq!(read_frames(stream, &mut server, 4).len(), 4);
+        assert_eq!(read_frames(stream, &mut server, 5).len(), 5);
     }
     assert_eq!(server.connection_count(), 8);
     std::fs::remove_file(path).unwrap();

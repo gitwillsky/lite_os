@@ -2,7 +2,7 @@
 
 use std::{
     collections::{HashMap, VecDeque},
-    os::fd::{OwnedFd, RawFd},
+    os::fd::{AsFd, BorrowedFd, OwnedFd},
     rc::Rc,
 };
 
@@ -89,11 +89,12 @@ pub(super) struct Entry {
 }
 
 /// 向客户端公布的全局对象：`(name, 接口, 最高版本)`。
-const GLOBALS: [(u32, Interface, u32); 4] = [
+const GLOBALS: [(u32, Interface, u32); 5] = [
     (1, Interface::WlCompositor, 6),
     (2, Interface::WlShm, 1),
     (3, Interface::XdgWmBase, 3),
     (4, Interface::WlOutput, 4),
+    (5, Interface::WlSeat, 7),
 ];
 
 pub struct Client {
@@ -107,6 +108,8 @@ pub struct Client {
     pub(super) requests: Vec<(ObjectId, WindowRequest)>,
     commits: u64,
     pub(super) output: Output,
+    /// 随消息发送的描述符：`(在待发字节中的偏移, fd)`，偏移按发送顺序递增。
+    pub(super) outgoing_fds: VecDeque<(usize, OwnedFd)>,
 }
 
 impl Client {
@@ -126,6 +129,7 @@ impl Client {
             requests: Vec::new(),
             commits: 0,
             output,
+            outgoing_fds: VecDeque::new(),
         }
     }
 
@@ -173,13 +177,33 @@ impl Client {
         Err(Disconnected)
     }
 
-    /// 待发送给客户端的字节与随带的描述符（目前服务端不发送 fd）。
-    pub fn output(&self) -> (&[u8], &[RawFd]) {
-        (self.writer.bytes(), self.writer.fds())
+    /// 下一段可以一次发出的字节，以及必须随这段第一个字节发送的描述符（若有）。
+    ///
+    /// 段在下一个描述符所在消息之前截断：描述符必须先于引用它的消息到达，
+    /// 否则客户端解析到该消息时 fd 队列为空，会判定连接损坏。
+    pub fn output(&self) -> (&[u8], Option<BorrowedFd<'_>>) {
+        let bytes = self.writer.bytes();
+        match self.outgoing_fds.front() {
+            Some((0, fd)) => {
+                let end = self
+                    .outgoing_fds
+                    .get(1)
+                    .map_or(bytes.len(), |(offset, _)| *offset);
+                (&bytes[..end], Some(fd.as_fd()))
+            }
+            Some((offset, _)) => (&bytes[..*offset], None),
+            None => (bytes, None),
+        }
     }
 
-    /// 发送成功后丢弃已发出的前 `bytes` 个字节。
+    /// 发送成功后丢弃已发出的前 `bytes` 个字节；该段若带描述符，描述符随之完成使命。
     pub fn consume_output(&mut self, bytes: usize) {
+        if bytes > 0 && matches!(self.outgoing_fds.front(), Some((0, _))) {
+            self.outgoing_fds.pop_front();
+        }
+        for (offset, _) in &mut self.outgoing_fds {
+            *offset -= bytes;
+        }
         self.writer.consume(bytes, 0);
     }
 
@@ -292,6 +316,8 @@ impl Client {
             AnyRequest::XdgSurface(request) => self.xdg_surface(object, version, request),
             AnyRequest::XdgToplevel(request) => self.xdg_toplevel(object, request),
             AnyRequest::XdgPositioner(_) => Ok(()),
+            AnyRequest::WlSeat(request) => self.seat(object, version, request),
+            AnyRequest::WlPointer(_) | AnyRequest::WlKeyboard(_) => Ok(()),
             // 其余对象（buffer、region、callback）只有 destroy 或没有请求，销毁由通用路径完成。
             AnyRequest::WlBuffer(wl_buffer::Request::Destroy) | AnyRequest::WlRegion(_) => Ok(()),
             other => Err(Fail::invalid_method(
@@ -343,6 +369,9 @@ impl Client {
         }
         if interface == Interface::WlOutput {
             self.announce_output(id.id, id.version)?;
+        }
+        if interface == Interface::WlSeat {
+            self.announce_seat(id.id, id.version)?;
         }
         let _ = registry;
         Ok(())

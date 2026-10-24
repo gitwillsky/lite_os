@@ -38,7 +38,8 @@ def managed_path(path: str) -> bool:
     if not path.startswith("/") or str(PurePosixPath(path)) != path or ".." in PurePosixPath(path).parts:
         return False
     return path in {
-        *RETIRED_FILES, "/bin/shutdown", "/etc/inittab", "/etc/init.d/rcS", "/etc/profile",
+        *RETIRED_FILES, "/bin/shutdown", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
+        "/etc/init.d/display-service", "/etc/profile",
     } or any(path.startswith(root + "/") for root in RETIRED_TREES)
 
 

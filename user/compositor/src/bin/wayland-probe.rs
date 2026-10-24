@@ -7,8 +7,8 @@
 use std::{
     collections::{HashMap, VecDeque},
     env,
-    fs::File,
-    io::{self, Write},
+    fs::{self, File},
+    io::{self, Read, Write},
     os::{
         fd::AsFd,
         unix::{fs::FileExt, net::UnixStream},
@@ -23,12 +23,15 @@ use linux_uapi::{
 };
 use wayland_wire::{
     protocol::{
-        self, AnyEvent, Interface, wl_callback, wl_compositor, wl_display, wl_registry, wl_shm,
-        wl_shm_pool, wl_surface, xdg_surface, xdg_toplevel, xdg_wm_base,
+        self, AnyEvent, Interface, wl_callback, wl_compositor, wl_display, wl_keyboard, wl_pointer,
+        wl_registry, wl_seat, wl_shm, wl_shm_pool, wl_surface, xdg_surface, xdg_toplevel,
+        xdg_wm_base,
     },
     wire::{DynamicNewId, Framer, ObjectId, Reader, Writer},
 };
 
+/// 收到的 keymap 写到这里，guest 里的 `xkb-check` 用上游 libxkbcommon 编译它。
+const KEYMAP_PATH: &str = "/var/tmp/keymap.xkb";
 const WIDTH: i32 = 200;
 const HEIGHT: i32 = 120;
 const FRAMES: u32 = 5;
@@ -123,6 +126,73 @@ impl Connection {
     }
 }
 
+/// 把 seat 事件打印成门禁识别的里程碑；其余事件忽略。
+fn observe(event: AnyEvent) {
+    match event {
+        AnyEvent::WlKeyboard(wl_keyboard::Event::Keymap { fd, size, .. }) => {
+            let mut text = Vec::new();
+            let saved = File::from(fd)
+                .read_to_end(&mut text)
+                .and_then(|_| fs::write(KEYMAP_PATH, &text));
+            match saved {
+                Ok(()) => println!("wayland-probe: keymap {size} bytes"),
+                Err(error) => println!("wayland-probe: keymap error {error}"),
+            }
+        }
+        AnyEvent::WlKeyboard(wl_keyboard::Event::Enter { .. }) => {
+            println!("wayland-probe: keyboard enter")
+        }
+        AnyEvent::WlKeyboard(wl_keyboard::Event::Leave { .. }) => {
+            println!("wayland-probe: keyboard leave")
+        }
+        AnyEvent::WlKeyboard(wl_keyboard::Event::Key { key, state, .. }) => {
+            println!(
+                "wayland-probe: key {key} {}",
+                format!("{state:?}").to_lowercase()
+            );
+        }
+        AnyEvent::WlKeyboard(wl_keyboard::Event::Modifiers {
+            mods_depressed,
+            mods_locked,
+            ..
+        }) => {
+            println!("wayland-probe: modifiers depressed={mods_depressed} locked={mods_locked}");
+        }
+        AnyEvent::WlPointer(wl_pointer::Event::Enter {
+            surface_x,
+            surface_y,
+            ..
+        }) => {
+            println!(
+                "wayland-probe: pointer enter x={} y={}",
+                surface_x.to_int(),
+                surface_y.to_int()
+            );
+        }
+        AnyEvent::WlPointer(wl_pointer::Event::Leave { .. }) => {
+            println!("wayland-probe: pointer leave")
+        }
+        AnyEvent::WlPointer(wl_pointer::Event::Motion {
+            surface_x,
+            surface_y,
+            ..
+        }) => {
+            println!(
+                "wayland-probe: pointer motion x={} y={}",
+                surface_x.to_int(),
+                surface_y.to_int()
+            );
+        }
+        AnyEvent::WlPointer(wl_pointer::Event::Button { button, state, .. }) => {
+            println!(
+                "wayland-probe: pointer button {button} {}",
+                format!("{state:?}").to_lowercase()
+            );
+        }
+        _ => {}
+    }
+}
+
 fn run() -> io::Result<()> {
     let runtime = env::var_os("XDG_RUNTIME_DIR")
         .ok_or_else(|| io::Error::other("XDG_RUNTIME_DIR is not set"))?;
@@ -178,7 +248,16 @@ fn run() -> io::Result<()> {
     let shm = bind(&mut connection, Interface::WlShm)?;
     let wm_base = bind(&mut connection, Interface::XdgWmBase)?;
     let _output = bind(&mut connection, Interface::WlOutput)?;
-    println!("wayland-probe: bound compositor shm xdg_wm_base output");
+    let seat = bind(&mut connection, Interface::WlSeat)?;
+    let pointer = connection.track(24, Interface::WlPointer);
+    wl_seat::Request::GetPointer { id: pointer }
+        .encode(seat, &mut connection.writer)
+        .map_err(io::Error::other)?;
+    let keyboard = connection.track(25, Interface::WlKeyboard);
+    wl_seat::Request::GetKeyboard { id: keyboard }
+        .encode(seat, &mut connection.writer)
+        .map_err(io::Error::other)?;
+    println!("wayland-probe: bound compositor shm xdg_wm_base output seat");
 
     let surface = connection.track(20, Interface::WlSurface);
     wl_compositor::Request::CreateSurface { id: surface }
@@ -217,7 +296,7 @@ fn run() -> io::Result<()> {
                     "protocol error {code}: {message}"
                 )));
             }
-            _ => {}
+            other => observe(other),
         }
     };
     xdg_surface::Request::AckConfigure { serial }
@@ -282,15 +361,18 @@ fn run() -> io::Result<()> {
             .encode(surface, &mut connection.writer)
             .map_err(io::Error::other)?;
         connection.flush()?;
-        connection.wait_callback(callback, |_, _| {})?;
+        connection.wait_callback(callback, |_, event| observe(event))?;
         println!("wayland-probe: frame {frame} presented color={color:08x}");
     }
     println!("wayland-probe: done");
     // 窗口必须保持映射，门禁才能截图；之后只等待连接被关闭。
     loop {
-        if let (_, AnyEvent::XdgToplevel(xdg_toplevel::Event::Close)) = connection.next_event()? {
-            println!("wayland-probe: close requested");
-            return Ok(());
+        match connection.next_event()?.1 {
+            AnyEvent::XdgToplevel(xdg_toplevel::Event::Close) => {
+                println!("wayland-probe: close requested");
+                return Ok(());
+            }
+            event => observe(event),
         }
     }
 }

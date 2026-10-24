@@ -22,7 +22,7 @@ from pathlib import Path
 
 from apk_cache import SOURCE, download
 from build_cache import (
-    cache_lock, fingerprint, manifest_matches, publish_directory, publish_runtime_gate, runtime_gate_hit,
+    build_environment, cache_lock, fingerprint, manifest_matches, sha256, publish_directory, publish_runtime_gate, runtime_gate_hit,
     runtime_gate_payload, temporary_directory, write_manifest,
 )
 from build_target import BuildTarget, acceleration_from_environment, target_from_environment
@@ -40,7 +40,15 @@ PACKAGES = (
     ("libffi-3.4.8-r0.apk", "9391f60a14c146655deaf65115563bc8dcd749cf0f93ec567e6443f2ed7d3bfc"),
     ("libdrm-2.4.124-r0.apk", "e966fb3fc167255ed3de436134425e6207a38438e4df2e54ee807431ab4230f3"),
     ("libpciaccess-0.18.1-r0.apk", "22d0bb3ebc355338468b587325b5b624b9cf9ba10151918b48c6f7a575bb248a"),
+    # keymap 裁决者 libxkbcommon 及其运行时依赖；-dev 只提供头文件，不进入 guest。
+    ("libxkbcommon-1.8.1-r2.apk", "8a37b225bae2144e7caa0e7f01d7d65c6d9a8493ed640ca2a7a3836af70883dc"),
+    ("libxkbcommon-dev-1.8.1-r2.apk", "9d31d4c91ed851af2c400d1de6c4e19e5a0064b33d6e6fb80ca674ee561fe056"),
+    ("libxml2-2.13.9-r1.apk", "e358e1c32ba6923386263dd641a6e4bcb56a0345fecadef9ef1103892cf3d81d"),
+    ("zlib-1.3.2-r1.apk", "2d274cb1b2a36d0e8347d802e6dea8648cab952ea5fae1989ab72e725842a2c3"),
+    ("xz-libs-5.8.4-r0.apk", "8a64b55223f29e24f934ccbc8167d535b913bf923dab5e14de7946a7c36091a7"),
 )
+FIXTURES = ROOT / "scripts/fixtures/wayland"
+WORK = ROOT / "target/wayland-runtime"
 # 与 user/compositor/src/bin/wayland-probe.rs 的常量一致。
 PROBE_SIZE = (200, 120)
 PROBE_LAST_COLOR = (0x20, 0xC0, 0xC0)
@@ -52,7 +60,11 @@ i=0
 while [ ! -S $XDG_RUNTIME_DIR/wayland-0 ] && [ $i -lt 60 ]; do sleep 1; i=$((i+1)); done
 /usr/bin/wayland-info
 echo WAYLAND_INFO_DONE
-exec /bin/wayland-probe
+/bin/wayland-probe &
+i=0
+while [ ! -s /var/tmp/keymap.xkb ] && [ $i -lt 60 ]; do sleep 1; i=$((i+1)); done
+/bin/xkb-check /var/tmp/keymap.xkb
+wait
 """
 # 上游 wayland-info 对齐输出：全局对象行、shm 格式（fourcc）与 wl_output 的几何、名字和模式。
 EXPECTED_INFO = (
@@ -89,19 +101,50 @@ def tools() -> tuple[Path, tuple[Path, ...]]:
     return destination, archives
 
 
-def install(image: Path, tool_root: Path, probe: Path, directory: Path) -> None:
+def build_xkb_check(musl, tool_root: Path) -> Path:
+    """用固定 musl sysroot 链接上游 libxkbcommon 构建 keymap 裁决程序；产物只进入 target。"""
+    source = FIXTURES / "xkb-check.c"
+    payload = {
+        "kind": "xkb-check", "source": sha256(source), "sysroot": musl.sysroot_fingerprint,
+        "driver": sha256(ROOT / "scripts/musl_clang.py"), "packages": dict(PACKAGES),
+    }
+    destination = WORK / "xkb-check" / fingerprint(payload)
+    binary = destination / "xkb-check"
+    if manifest_matches(destination, payload, ("xkb-check",)):
+        return binary
+    generation = temporary_directory(WORK / "xkb-check", "build")
+    env = build_environment()
+    env.update({
+        "LITEOS_MUSL_CLANG": str(musl.compiler), "LITEOS_MUSL_LLD": str(musl.linker),
+        "LITEOS_MUSL_COMPILER_RUNTIME": str(musl.compiler_runtime), "LITEOS_MUSL_SYSROOT": str(musl.install),
+    })
+    command = [
+        sys.executable, ROOT / "scripts/musl_clang.py", source, "-D_GNU_SOURCE", "-std=gnu11", "-Wall", "-Wextra", "-Werror",
+        "-fPIE", "-pie", "-I", tool_root / "usr/include", "-L", tool_root / "usr/lib", "-l:libxkbcommon.so.0",
+        "-o", generation / "xkb-check",
+    ]
+    try:
+        run([str(argument) for argument in command], ROOT, env)
+        write_manifest(generation, payload)
+        publish_directory(generation, destination)
+    finally:
+        shutil.rmtree(generation, ignore_errors=True)
+    return binary
+
+
+def install(image: Path, tool_root: Path, probe: Path, xkb_check: Path, directory: Path) -> None:
     """把上游工具、探针与启动脚本写入私有镜像；保留产品 inittab 的显示服务监督。"""
     recover_ext4_journal(image)
     sources = []
     for path in sorted(tool_root.rglob("*")):
         relative = path.relative_to(tool_root).as_posix()
-        if (path.is_file() or path.is_symlink()) and (relative == "usr/bin/wayland-info" or (relative.startswith("usr/lib/") and ".so" in path.name)):
+        if (path.is_file() or path.is_symlink()) and (relative == "usr/bin/wayland-info" or (relative.startswith(("usr/lib/", "lib/")) and ".so" in path.name)):
             sources.append((path, "/" + relative))
     script = directory / "wayland.sh"
     script.write_text(SCRIPT)
     inittab = directory / "inittab"
     inittab.write_text((ROOT / "user/base/inittab").read_text() + "::once:/bin/sh /var/tmp/wayland.sh\n")
-    sources += [(probe, "/bin/wayland-probe"), (script, "/var/tmp/wayland.sh"), (inittab, "/etc/inittab")]
+    sources += [(probe, "/bin/wayland-probe"), (xkb_check, "/bin/xkb-check"), (script, "/var/tmp/wayland.sh"), (inittab, "/etc/inittab")]
     directories = set()
     for _, destination in sources:
         parent = Path(destination).parent
@@ -147,6 +190,41 @@ def check_screen(width: int, height: int, pixels: list[tuple[int, int, int]]) ->
         raise RuntimeError(f"composited screen is wrong: {wrong}")
 
 
+def abs_event(axis: str, pixel: int, extent: int) -> dict:
+    """virtio 平板的绝对坐标（0..=32767）对应屏幕像素 `pixel`。"""
+    return {"type": "abs", "data": {"axis": axis, "value": pixel * 32767 // (extent - 1)}}
+
+
+def key_events(*steps: tuple[str, bool]) -> list[dict]:
+    return [{"type": "key", "data": {"down": down, "key": {"type": "qcode", "data": key}}} for key, down in steps]
+
+
+def check_input(session) -> None:
+    """窗口内的指针移动与点击、Shift+A 都必须以正确的 seat 事件到达客户端。"""
+    console = session.console
+    # 窗口左上在 (40,40)：指针移到 (100,100) → 窗口局部约 (60,60)；输出 scale 为 1。
+    session.qmp.execute("input-send-event", {"events": [abs_event("x", 100, 1280), abs_event("y", 100, 800)]})
+    entered = console.wait_for_match(r"wayland-probe: pointer enter x=(-?\d+) y=(-?\d+)\r?\n")
+    if not all(59 <= int(value) <= 61 for value in entered.groups()):
+        raise RuntimeError(f"pointer entered at the wrong local position: {entered.group(0)!r}")
+    session.qmp.execute("input-send-event", {"events": [abs_event("x", 120, 1280), abs_event("y", 110, 800)]})
+    console.wait_for(("wayland-probe: pointer motion",))
+    session.qmp.execute("input-send-event", {"events": [{"type": "btn", "data": {"down": True, "button": "left"}}]})
+    session.qmp.execute("input-send-event", {"events": [{"type": "btn", "data": {"down": False, "button": "left"}}]})
+    console.wait_for(("wayland-probe: pointer button 272 pressed", "wayland-probe: pointer button 272 released"))
+    # 离开窗口。
+    session.qmp.execute("input-send-event", {"events": [abs_event("x", 600, 1280), abs_event("y", 600, 800)]})
+    console.wait_for(("wayland-probe: pointer leave",))
+    # Shift+A：先是修饰键状态，再是键本身（evdev 30 = A）。
+    session.qmp.execute("input-send-event", {"events": key_events(("shift", True), ("a", True), ("a", False), ("shift", False))})
+    console.wait_for((
+        "wayland-probe: modifiers depressed=1",
+        "wayland-probe: key 30 pressed",
+        "wayland-probe: key 30 released",
+        "wayland-probe: modifiers depressed=0",
+    ))
+
+
 def default_image(target: BuildTarget) -> Path:
     return ROOT / "target" / "rootfs" / f"{target.arch}.img"
 
@@ -166,10 +244,11 @@ def main() -> int:
         musl = cached_musl_paths(find_compiler())
         probe = build_rust_user_program(musl, "compositor", "wayland-probe", "wayland-probe", 1)
         tool_root, archives = tools()
+        xkb_check = build_xkb_check(musl, tool_root)
         stamp = ROOT / "target" / "verify-gates" / "wayland-aarch64.json"
         payload = runtime_gate_payload(
             "wayland", RECIPE_VERSION,
-            (image, probe, *archives, ROOT / "scripts/display_gate.py", ROOT / "scripts/qemu_gate.py", Path(__file__).resolve()),
+            (image, probe, xkb_check, *archives, ROOT / "scripts/fixtures/wayland/xkb-check.c", ROOT / "scripts/display_gate.py", ROOT / "scripts/qemu_gate.py", Path(__file__).resolve()),
         )
         if runtime_gate_hit(stamp, payload, (image,)):
             print("wayland verification cache hit")
@@ -177,16 +256,17 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="liteos-wayland-install-") as scratch:
             private = Path(scratch) / image.name
             shutil.copyfile(image, private)
-            install(private, tool_root, probe, Path(scratch))
+            install(private, tool_root, probe, xkb_check, Path(scratch))
             with display_session(private) as session:
-                session.console.wait_for(("WAYLAND_INFO_DONE", "wayland-probe: done"))
+                session.console.wait_for(("WAYLAND_INFO_DONE", "wayland-probe: done", "XKB_OK"))
                 text = session.console.text
                 check_info(text[text.index("interface: "):text.index("WAYLAND_INFO_DONE")])
-                for needed in ("wayland-probe: bound", "wayland-probe: configured", "wayland-probe: frame 4 presented", "compositor: windows=1"):
+                for needed in ("wayland-probe: bound", "wayland-probe: configured", "wayland-probe: frame 4 presented", "compositor: windows=1", "wayland-probe: keymap ", "wayland-probe: keyboard enter", "XKB_OK"):
                     if needed not in text:
                         raise RuntimeError(f"missing `{needed}`\n{text[-2000:]}")
                 width, height, pixels = session.screendump()
                 check_screen(width, height, pixels)
+                check_input(session)
                 # Alt+F4 → compositor 对活动窗口发 xdg_toplevel.close → 探针退出 → 窗口消失、桌面恢复。
                 keys = [("alt", True), ("f4", True), ("f4", False), ("alt", False)]
                 session.qmp.execute(
@@ -204,7 +284,7 @@ def main() -> int:
                     if time.monotonic() > deadline:
                         raise RuntimeError(f"closed window still on screen: {gone}")
                     time.sleep(0.25)
-        print("wayland gate: upstream wayland-info lists the globals; probe window composited at the expected pixels and closed by Alt+F4")
+        print("wayland gate: wayland-info lists the globals; keymap compiles under libxkbcommon; pointer and keyboard events arrive in order; window composited and closed by Alt+F4")
         publish_runtime_gate(stamp, payload)
     except RuntimeError as error:
         print(f"wayland verification failed: {error}", file=sys.stderr)

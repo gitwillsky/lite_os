@@ -13,7 +13,7 @@ use std::{
     path::Path,
 };
 
-use linux_uapi::unix::{PollEvents, PollFd, recv_fds};
+use linux_uapi::unix::{PollEvents, PollFd, recv_fds, send_fd};
 use wayland_wire::wire::ObjectId;
 
 use super::{Client, Output, Window, WindowRequest};
@@ -30,14 +30,18 @@ struct Connection {
 }
 
 impl Connection {
-    /// 把待发输出尽量写入 socket；返回是否已全部发完。
+    /// 把待发输出尽量写入 socket；返回是否已全部发完。带描述符的段用 `SCM_RIGHTS` 一并发送。
     fn flush(&mut self) -> io::Result<bool> {
         loop {
-            let (bytes, _) = self.client.output();
+            let (bytes, fd) = self.client.output();
             if bytes.is_empty() {
                 return Ok(true);
             }
-            match self.stream.write(bytes) {
+            let result = match fd {
+                Some(fd) => send_fd(self.stream.as_fd(), bytes, fd),
+                None => self.stream.write(bytes),
+            };
+            match result {
                 Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
                 Ok(written) => self.client.consume_output(written),
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),

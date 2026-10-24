@@ -9,6 +9,7 @@ pub struct Output {
 }
 
 mod client;
+mod seat;
 mod server;
 mod shm;
 mod surface;

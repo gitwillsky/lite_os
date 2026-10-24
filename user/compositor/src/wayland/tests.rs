@@ -239,7 +239,8 @@ fn registry_advertises_the_implemented_globals() {
             (1, "wl_compositor".to_owned(), 6),
             (2, "wl_shm".to_owned(), 1),
             (3, "xdg_wm_base".to_owned(), 3),
-            (4, "wl_output".to_owned(), 4)
+            (4, "wl_output".to_owned(), 4),
+            (5, "wl_seat".to_owned(), 7)
         ]
     );
 }
@@ -849,5 +850,8 @@ fn fd_floods_and_random_garbage_never_panic() {
 }
 
 mod output;
+mod seat;
+#[cfg(target_os = "linux")]
+mod seat_socket;
 mod socket;
 mod xdg;

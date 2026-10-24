@@ -316,9 +316,12 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
   协议状态机与 socket 层有 51 个进程内测试。窗口栈：层叠放置、点击激活置顶、新窗口获得焦点、Alt+F4 → `xdg_toplevel.close`。
 - `make verify-runtime-wayland`：上游 `wayland-info`（Alpine `wayland-utils`）列出全部全局对象；`wayland-probe` 走完整 xdg 生命周期与五帧 frame callback；
   截图逐像素确认窗口位置与背景；Alt+F4 后桌面恢复。`weston-simple-shm` 因 weston-clients 依赖链过重（cairo/pango/EGL）未采用，改用探针。
-- 已知缺口：`wl_seat`（指针/键盘事件、XKB keymap）、popup 与 positioner、`xdg_toplevel` 的 move/resize/maximize/minimize、
+- `wl_seat` v7（指针、键盘）已实现：焦点策略 `focus.rs`（指针 enter/leave/motion/button 带 frame，键盘 enter/leave/key/modifiers，局部坐标按输出
+  scale 换算）；`keyboard::xkb` 从同一张键码表生成自包含的 XKB keymap，由 guest 里上游 libxkbcommon 逐键裁决（`xkb-check`）；
+  `linux-uapi::recv_fds` 支持一次收多个 fd。键盘重复由客户端按 `repeat_info`（30/s、500 ms）自己做；Caps Lock 作为 locked 状态下发。
+- 已知缺口：`wl_pointer.set_cursor`（客户端光标）、popup 与 positioner、`xdg_toplevel` 的 move/resize/maximize/minimize、
   `wl_data_device`、`wp_viewporter`/`zxdg_output_manager_v1`（Wine 需要）、layer-shell 与 foreign-toplevel（桌面外壳需要）、缩小客户端 scale > 输出 scale。
-- 下一步：`wl_seat`（指针先行，键盘需 `keyboard` 导出 XKB keymap）、窗口交互请求与标题栏拖动，然后 `logon`、`desktop`。
+- 下一步：窗口交互请求（move/resize/maximize/minimize）与客户端光标，然后 `logon`、`desktop`（需要 layer-shell 与 foreign-toplevel）。
 
 - 待做：`classic-ui` 的窗口/输入层（Wayland 客户端、焦点与键盘导航、助记符下划线、菜单动画与交互）、黄金截图门禁。
 

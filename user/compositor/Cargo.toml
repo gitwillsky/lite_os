@@ -8,5 +8,6 @@ publish.workspace = true
 boot-scene = { path = "../../boot-scene" }
 canvas = { path = "../canvas" }
 classic-theme = { path = "../classic-theme" }
+keyboard.workspace = true
 linux-uapi.workspace = true
 wayland-wire = { path = "../wayland-wire" }

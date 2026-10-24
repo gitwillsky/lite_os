@@ -50,7 +50,10 @@
   uevent 通知 userspace；preferred mode 与已完成的 active CRTC mode 独立，旧 CRTC 在 userspace
   modeset 新 generation 前仍可 page-flip。同步 DRM ioctl 遇到 adapter 内部 display-info transaction
   时等待统一 readiness edge 后重提，不把 controlq 的实现级串行化泄漏成 `EBUSY`。动态 mode 的
-  userspace transaction 由用户态 `compositor` 拥有：它是唯一 DRM master 与 evdev 读者，接管内核启动画面，以硬件光标跟随输入，并作为 Wayland 服务端把客户端窗口整帧合成到 scanout（`$XDG_RUNTIME_DIR/wayland-0`；尚无 `wl_seat`、popup 与桌面外壳）。
+  userspace transaction 由用户态 `compositor` 拥有：它是唯一 DRM master 与 evdev 读者，接管内核启动画面，
+  以硬件光标跟随输入，并作为 Wayland 服务端把客户端窗口整帧合成到 scanout（`$XDG_RUNTIME_DIR/wayland-0`；
+  `wl_seat` 有指针与键盘，尚无 popup 与桌面外壳）。键盘 keymap 由 `keyboard::xkb` 从同一张键码表生成，
+  自包含、不依赖客户端的 xkeyboard-config。
   Legacy `CURSOR2` 把 64×64 ARGB dumb BO 通过规范要求的
   `RESOURCE_CREATE_2D`/`TRANSFER_TO_HOST_2D` 投影到 VirtIO-GPU 独立 cursorq；该 queue 的
   completion 水位与 controlq fence 分离。纯 position update 异步发布，slot 忙时只保留尚未发布的最新

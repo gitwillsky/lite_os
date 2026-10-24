@@ -7,7 +7,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from verify_wayland import (  # noqa: E402
-    DESKTOP_BACKGROUND, FIRST_WINDOW_ORIGIN, PROBE_LAST_COLOR, PROBE_SIZE, check_info, check_screen,
+    DESKTOP_BACKGROUND, FIRST_WINDOW_ORIGIN, PROBE_LAST_COLOR, PROBE_SIZE, abs_event, check_info, check_screen, key_events,
 )
 
 WIDTH, HEIGHT = 400, 300
@@ -67,6 +67,19 @@ class InfoTests(unittest.TestCase):
         ):
             with self.assertRaises(RuntimeError):
                 check_info(broken)
+
+
+class InputEventTests(unittest.TestCase):
+    def test_absolute_events_span_the_whole_tablet_range(self) -> None:
+        self.assertEqual(abs_event("x", 0, 1280)["data"], {"axis": "x", "value": 0})
+        self.assertEqual(abs_event("x", 1279, 1280)["data"]["value"], 32767)
+        self.assertEqual(abs_event("y", 400, 800)["data"], {"axis": "y", "value": 400 * 32767 // 799})
+
+    def test_key_events_keep_order_and_direction(self) -> None:
+        events = key_events(("shift", True), ("a", True), ("a", False), ("shift", False))
+        self.assertEqual([(e["data"]["key"]["data"], e["data"]["down"]) for e in events],
+                         [("shift", True), ("a", True), ("a", False), ("shift", False)])
+        self.assertTrue(all(e["type"] == "key" and e["data"]["key"]["type"] == "qcode" for e in events))
 
 
 if __name__ == "__main__":

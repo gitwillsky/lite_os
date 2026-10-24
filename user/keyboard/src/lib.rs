@@ -2,6 +2,8 @@
 //! (PTY bytes, for terminal clients) and the UI text-input
 //! primitive (editing intents) never carry rival maps.
 
+pub mod xkb;
+
 /// Latched modifier state accumulated from key press/release events.
 #[derive(Clone, Copy, Default)]
 pub struct Modifiers {
