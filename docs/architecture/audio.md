@@ -2,55 +2,29 @@
 
 ## 生产链路
 
-LiteOS 只有一条音频播放路径：
+用户态通过 Linux ALSA `/dev/snd/pcmC0D0p` 写入独立 playback 子流；`kernel::audio::engine`
+把运行中的子流混成一个物理 period，经 `drivers::PcmOutput` 交给 VirtIO Sound device ID 25。
+没有用户态混音服务、私有音频 IPC 或 Web media runtime，当前产品也没有媒体播放器。
 
-`HTMLMediaElement` → LiteUI process audio worker → `audio-proto` shared PCM ring →
-`audio-service` system mixer → Linux ALSA PCM OFD → `kernel::audio` →
-VirtIO Sound device ID 25。
+## 状态与调度
 
-应用用 `lite:fs.open()` 取得 filesystem-backed `File`，再以
-`URL.createObjectURL()` 产生 `blob:` source；app-relative resource 使用同一媒体状态机。
-`http:`、`https:`、`data:`、`file:`、Media Source、MediaStream、capture 和 Web Audio
-不属于当前能力。不存在按 path 播放的 Native audio API。
+- 卡提供 8 个软件 playback 子流；每次 open 占用首个空槽，OFD 独占状态、应用指针和全新 ring backing。
+- PCM 固定 48 kHz、双声道、F32_LE，period 256 帧、buffer 1024 帧；支持 RW 与 mmap interleaved。
+- 卡级 `Engine` 独占物理流、子流槽位、在途 period 的 contributor mask 和 Master；物理流在卡初始化时
+  configure/prepare 一次，各子流的 HW_PARAMS/PREPARE 不重配设备。
+- 应用提交或设备完成触发 tick，目标硬件队列深度为 2 个 period；完成时只推进实际贡献子流的 hw_ptr。
+- `mixer::Accumulator` 逐样本相加，NaN/Inf 按静音处理，施加左右 Master 增益后硬削波到 [-1, 1]。
+  音量 0..100 按平方曲线映射，默认 100 且开启；没有 lookahead limiter 或持久化音量。
+- `/dev/snd/controlC0` 发布卡信息、PCM 枚举和 Master Playback Volume/Switch；当前没有 per-substream 音量元素。
 
-## 进程与数据面
+## 失败与当前限制
 
-- init 监督唯一 `/bin/audio-service`。服务不创建窗口；compositor 和 LiteUI 不负责拉起或恢复它。
-- 每个 LiteUI process 只有一个 audio worker 和一条 AF_UNIX control connection；连接内最多复用
-  8 条 logical stream，整个 session 最多 32 条。
-- control connection 只传 v1 lifecycle、gain、generation、progress 和 typed error；每条 stream
-  创建成功时只经一次 `SCM_RIGHTS` 发布固定 65,600-byte memfd（64 KiB PCM + 64-byte header）。
-- 每条 memfd 是 8192-frame SPSC ring。worker 单写，mixer 单读；PCM 不经过 socket。
-- service control thread 独占连接、配额、fd publication 和设置持久化；mixer thread 独占 ALSA、
-  stream 消费、mix、limiter 与 progress。双向 control handoff 使用预分配有界 SPSC queue。
-- 默认 service console 只记录启动、stream/device lifecycle、master state 与错误；每秒 progress/
-  metrics 只由公开 `--diagnostic-log` 模式启用，音频 runtime gate 仅在隔离私有镜像中显式选择该模式。
+OFD close 清除该子流在所有在途 period 的归属，再归还槽位，旧 mmap backing 不会与新 open 共享。
+物理设备失败使整张卡断开，poll 返回错误/挂断；单子流欠载进入 XRUN。
 
-## PCM、调度与质量
+ALSA control 事件队列和偏好子设备选择尚未实现：当前 SUBSCRIBE_EVENTS 写回未订阅状态，
+PCM_PREFER_SUBDEVICE 不改变首空槽分配。它们不构成完整 ALSA control 语义，后续需修正后才能宣称兼容。
+PCM 仍缺少 TTSTAMP、USER_PVERSION、REWIND、RESET 等 Wine consumer 所需操作。
 
-worker 负责 probe、metadata、decode、trim、seek、channel conversion 与必要的带限重采样。进入共享
-ring 后的唯一格式是 48 kHz、stereo、interleaved IEEE-754 `f32`。worker render block 固定 128
-frames；mixer/ALSA period 固定 256 frames，device buffer 固定 4 periods。
-
-mixer 只执行 per-stream linear gain、float accumulation、master gain 和最终 overload protection。
-sum peak 不超过 1.0 时 limiter 完全透明；超过时使用 128-frame lookahead、无 makeup gain 的
-brick-wall limiter，并以 50 ms release 恢复。steady decode/resample/mix 不分配，idle 不使用 timer
-轮询。
-
-## Web media 状态
-
-LiteUI 实现冻结的 HTMLMediaElement playback surface。首次有声 `play()` 必须来自当前 app 的真实
-pointer/key activation；成功后授权持续到该 app process 退出。muted media 可在授权前开始，但变为
-audible 时重新检查。
-
-seek 是 generation transaction：先发布 `seeking`，等待 mixer flush/ack 旧 generation，再由 decoder
-定位到不晚于目标的合法 frame、精确 discard 到目标，然后发布新 generation 与 `seeked`。旧 completion
-不能推进新 source。服务断开使旧 stream 永久失效，pending `play()` 返回 `AbortError`；元素停在最后
-confirmed media time，不自动重连或恢复声音。
-
-## 设备与目标
-
-AArch64/HVF 是完整 runtime 与性能 owner。QEMU `virt` 暴露 modern VirtIO-MMIO
-`virtio-sound-device,streams=1`：交互运行使用 CoreAudio，自动门禁使用 WAV/none backend。
-RISC-V 复用同一 kernel/userspace source 并承担 compile、architecture、static 和 artifact gate，
-不发布声音 runtime 或延迟通过声明。
+AArch64/HVF 是声音 runtime 的目标；当前只有 host 状态/codec/数学测试及编译覆盖，没有多路真实输出或
+amixer runtime 通过证据。RISC-V 复用源码，只有编译与静态覆盖。

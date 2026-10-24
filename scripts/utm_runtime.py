@@ -128,7 +128,7 @@ def _configuration(
         "virtio-tablet-device",
     ]
     if kernel_arguments:
-        # 经 DTB /chosen/bootargs 进入 /proc/cmdline；seatd 读取其中的 liteos.target。
+        # 经 DTB /chosen/bootargs 进入 /proc/cmdline。
         additional.extend(("-append", f'"{kernel_arguments}"'))
     additional.extend(
         (

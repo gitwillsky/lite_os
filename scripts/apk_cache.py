@@ -10,6 +10,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from local_inputs import INPUTS, KEYS
+
 from build_target import target_from_environment
 from build_cache import (
     cache_lock,
@@ -23,8 +25,8 @@ from build_cache import (
 
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = target_from_environment()
-WORK = ROOT / "target" / "apk-runtime" / TARGET.arch
 ALPINE_BRANCH = "v3.22"
+SOURCE = INPUTS / "alpine" / ALPINE_BRANCH / TARGET.arch
 ALPINE_ARCH = TARGET.alpine_arch
 ALPINE_MIRROR = "https://mirrors.ustc.edu.cn/alpine"
 # 固定 APK 先走国内镜像；镜像返回 4xx/5xx 时回退官方 CDN。两者内容由同一 SHA-256 裁决，
@@ -36,7 +38,7 @@ ALPINE_PACKAGE_REPOSITORIES = tuple(
 BOOTSTRAP_PACKAGE_NAMES = (
     "apk-tools-static-2.14.12-r0.apk",
     "alpine-keys-2.5-r0.apk",
-    "ca-certificates-bundle-20260909-r0.apk",
+    "ca-certificates-bundle-20261020-r0.apk",
 )
 _BOOTSTRAP_PACKAGES_BY_ARCH: dict[str, dict[str, str]] = {
     "riscv64": {
@@ -47,7 +49,7 @@ _BOOTSTRAP_PACKAGES_BY_ARCH: dict[str, dict[str, str]] = {
             "ca4835c8907791ab172fc64e53a81ab4ed06ff21c493d2a7fe8f66a80e2ea200"
         ),
         BOOTSTRAP_PACKAGE_NAMES[2]: (
-            "687a1d048b9f8212e9e429831ef0c77e4fa8f5fc3dd261ac4e392dc1a262c21f"
+            "2569e1165fba02f8b8d65575217f8bf2dfdcf4156e5001359329c9aca97509cd"
         ),
     },
     "aarch64": {
@@ -58,13 +60,13 @@ _BOOTSTRAP_PACKAGES_BY_ARCH: dict[str, dict[str, str]] = {
             "2e4c85ae16cabeb53b4145006f883bf8e57d454bd3faff14d35ec7d8a0d05b1a"
         ),
         BOOTSTRAP_PACKAGE_NAMES[2]: (
-            "2309bfdee4fea4172d2c775e44608b6b204b729732f5a6da97a28c21357ed034"
+            "eb15a8dba0e6ae8c540d172836d44fe058d6c64adc4a2fca5d2c6eaffa015f1c"
         ),
     },
 }
 FIXED_NOARCH_PACKAGES = frozenset(
     {
-        "ca-certificates-bundle-20260909-r0.apk",
+        "ca-certificates-bundle-20261020-r0.apk",
         "git-init-template-2.49.1-r0.apk",
         "ncurses-terminfo-base-6.5_p20250503-r0.apk",
     }
@@ -136,7 +138,7 @@ def verify_package_metadata(archive: Path, name: str) -> None:
 
 def download(name: str, expected_sha256: str) -> Path:
     """下载固定 APK；校验失败的文件绝不进入后续 extraction。"""
-    archives = WORK / "archives"
+    archives = SOURCE / "archives"
     archives.mkdir(parents=True, exist_ok=True)
     archive = archives / name
     if archive.is_file() and sha256(archive) == expected_sha256:
@@ -188,12 +190,12 @@ def obtain_bootstrap() -> tuple[Path, Path, str]:
     packages = fixed_bootstrap_packages()
     payload = bootstrap_payload()
     identity = fingerprint(payload)
-    extracted = WORK / "bootstraps" / identity
+    extracted = SOURCE / "bootstraps" / identity
     required = ("sbin/apk.static", "etc/apk/keys")
     if manifest_matches(extracted, payload, (required[0],)) and (extracted / required[1]).is_dir():
         return extracted / required[0], extracted / required[1], identity
 
-    temporary = temporary_directory(WORK / "bootstraps", "bootstrap")
+    temporary = temporary_directory(SOURCE / "bootstraps", "bootstrap")
     try:
         for name in BOOTSTRAP_PACKAGE_NAMES[:2]:
             run(
@@ -211,13 +213,13 @@ def obtain_bootstrap() -> tuple[Path, Path, str]:
 
 
 def obtain_local_signing_key() -> tuple[Path, Path]:
-    """创建 repository-local key；private material 只存在 target cache，不进入仓库。"""
-    keys = WORK / "local-keys"
+    """创建 repository-local key；private material 只存在被 Git 忽略的 .local/keys/，不进入仓库。"""
+    keys = KEYS / "apk" / TARGET.arch
     private_key = keys / LOCAL_KEY_NAME
     public_key = keys / f"{LOCAL_KEY_NAME}.pub"
     if private_key.is_file() and public_key.is_file():
         return private_key, public_key
-    temporary = temporary_directory(WORK, "local-keys")
+    temporary = temporary_directory(keys.parent, "local-keys")
     try:
         temporary_private = temporary / LOCAL_KEY_NAME
         temporary_public = temporary / f"{LOCAL_KEY_NAME}.pub"
@@ -243,7 +245,7 @@ def obtain_local_signing_key() -> tuple[Path, Path]:
 def cached_apk_bootstrap() -> ApkBootstrapPaths:
     """返回完整 APK bootstrap；调用者不感知 archive/extraction/key storage。"""
     packages = fixed_bootstrap_packages()
-    with cache_lock(WORK / ".bootstrap.lock"):
+    with cache_lock(SOURCE / ".bootstrap.lock"):
         apk_static, alpine_keys, bootstrap_fingerprint = obtain_bootstrap()
         private_key, public_key = obtain_local_signing_key()
         identity = fingerprint(

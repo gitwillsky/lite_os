@@ -224,7 +224,6 @@ fn check_unit_root(
 
 fn check_user_sources(root: &Path, errors: &mut Vec<String>, review_notices: &mut Vec<String>) {
     let mut pending = vec![root.join("user")];
-    let quickjs_vendor = root.join("user/quickjs-runtime/vendor/quickjs");
     while let Some(directory) = pending.pop() {
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
@@ -239,9 +238,6 @@ fn check_user_sources(root: &Path, errors: &mut Vec<String>, review_notices: &mu
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                if path == quickjs_vendor {
-                    continue;
-                }
                 pending.push(path);
                 continue;
             }

@@ -3,11 +3,9 @@
 
 本脚本只安装 workflow 已经消费的外部工具，不改变任何构建输入的解析规则：
 1. 校验 macOS/arm64 与 Xcode Command Line Tools；
-2. 用 Homebrew 安装 Clang/LLVM archive 工具、e2fsprogs、QEMU、OpenSSL、
-   git-lfs，以及缺失时的 Node.js；
+2. 用 Homebrew 安装 Clang/LLVM archive 工具、e2fsprogs、QEMU 与 OpenSSL；
 3. 安装 rustup 并按 ``rust-toolchain.toml`` 安装固定 nightly、组件与 target；
 4. 按固定 SHA-256 安装 UTM v4.7.5；
-5. 拉取 Git LFS 预置音乐资产。
 
 所有步骤幂等；已满足的步骤直接跳过。
 """
@@ -23,14 +21,16 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+from local_inputs import INPUTS
 from typing import Sequence
 
 from utm_runtime import UTM_APP, UTM_INFO, UTM_VERSION
 
 ROOT = Path(__file__).resolve().parent.parent
-DOWNLOADS = ROOT / "target" / "host-setup"
+DOWNLOADS = INPUTS / "host"
 # llvm 与 e2fsprogs 为 keg-only；verify_musl/ext4_image 已固定从 /opt/homebrew/opt 回退定位。
-BREW_FORMULAE = ("llvm", "e2fsprogs", "qemu", "openssl@3", "git-lfs")
+BREW_FORMULAE = ("llvm", "e2fsprogs", "qemu", "openssl@3")
 UTM_DMG_URL = f"https://github.com/utmapp/UTM/releases/download/v{UTM_VERSION}/UTM.dmg"
 UTM_DMG_SHA256 = "a8435c93cfb5f8bbfeea4b134cfad1ac66b67632b75e438c63b1a8ae043bef0e"
 RUSTUP_INIT_URL = "https://static.rust-lang.org/rustup/dist/aarch64-apple-darwin/rustup-init"
@@ -80,9 +80,6 @@ def install_brew_formulae(brew: Path) -> None:
         ).stdout.split()
     )
     formulae = [name for name in BREW_FORMULAE if name not in installed]
-    # Node.js 只要求 PATH 上存在；保留 fnm/nvm 等用户已有的版本管理方式。
-    if shutil.which("node") is None or shutil.which("npm") is None:
-        formulae.append("node")
     if formulae:
         run([brew, "install", *formulae])
 
@@ -141,14 +138,6 @@ def install_utm() -> None:
             run(["hdiutil", "detach", mountpoint])
 
 
-def pull_lfs_assets() -> None:
-    """拉取 rootfs 基线安装的 Git LFS 音乐资产；缺失时 rootfs 只会得到 LFS pointer 文件。"""
-    if not (ROOT / ".git").exists():
-        return
-    run(["git", "lfs", "install", "--local"])
-    run(["git", "lfs", "pull"])
-
-
 def main() -> int:
     """按顺序执行全部 host setup 步骤，并返回 Make 可直接消费的退出码。"""
     try:
@@ -156,7 +145,6 @@ def main() -> int:
         install_brew_formulae(find_brew())
         install_rust_toolchain()
         install_utm()
-        pull_lfs_assets()
     except (OSError, RuntimeError, subprocess.CalledProcessError) as error:
         print(f"host setup failed: {error}", file=sys.stderr)
         return 1

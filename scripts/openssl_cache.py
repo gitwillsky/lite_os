@@ -9,6 +9,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from local_inputs import INPUTS
+
 from build_cache import (
     build_environment,
     fingerprint,
@@ -26,6 +28,7 @@ from verify_musl import MuslCachePaths, compiler_identity, find_stripper, run
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target/openssl-runtime"
+SOURCE = INPUTS / "openssl"
 TARGET = target_from_environment()
 # OpenSSL 的 Configure target 是 build target 的 compile-time 映射。缺少该映射会让
 # AArch64 rootfs 静默复用 RISC-V 配方，直到 guest exec 才暴露错误架构 ELF。
@@ -99,12 +102,12 @@ def _source() -> tuple[Path, str]:
         "strip_components": 1,
     }
     source_fingerprint = fingerprint(payload)
-    archive = WORK / f"openssl-{OPENSSL_VERSION}.tar.gz"
+    archive = SOURCE / f"openssl-{OPENSSL_VERSION}.tar.gz"
     _download(OPENSSL_URLS, archive, OPENSSL_SHA256, f"OpenSSL {OPENSSL_VERSION}")
-    source = WORK / "sources" / source_fingerprint
+    source = SOURCE / "sources" / source_fingerprint
     if manifest_matches(source, payload, ("Configure", "VERSION.dat")):
         return source, source_fingerprint
-    temporary = temporary_directory(WORK / "sources", "source")
+    temporary = temporary_directory(SOURCE / "sources", "source")
     try:
         run(
             ["tar", "-xzf", str(archive), "--strip-components=1", "-C", str(temporary)],
@@ -118,7 +121,7 @@ def _source() -> tuple[Path, str]:
 
 
 def _ca_bundle() -> Path:
-    bundle = WORK / f"cacert-{CA_BUNDLE_VERSION}.pem"
+    bundle = SOURCE / f"cacert-{CA_BUNDLE_VERSION}.pem"
     _download((CA_BUNDLE_URL,), bundle, CA_BUNDLE_SHA256, "Mozilla CA bundle")
     return bundle
 

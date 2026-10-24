@@ -39,10 +39,8 @@ unit-test source 的 review notice 不允许把新测试继续堆进入口文件
 
 `user/` 下项目自有 Rust/C/header/JS/TypeScript/CSS source 采用相同的 1000 行 review、1500 行
 默认拒绝两级围栏。review 必须检查状态 owner/interface，不能仅为降行数建立 pass-through module；
-checker 递归扫描实际文件集，避免新 crate、应用或 native bridge 绕过围栏。唯一排除目录是
-`user/quickjs-runtime/vendor/quickjs/`：它必须保持 standards baseline 固定官方 tarball 的原始文件，不能承载项目 patch；项目 C adapter 仍在 `src/`
-接受 1000/1500 两级围栏。缺少该精确排除会把不可拆分的上游实现误判成项目 module，扩大到其他 vendor
-目录则会形成逃逸围栏。
+checker 递归扫描实际文件集，用户态 Rust/C 源码不保留 vendor 排除项。
+
 
 ## 控制缓冲区资源边
 

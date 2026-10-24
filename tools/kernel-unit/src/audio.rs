@@ -1,15 +1,18 @@
 //! 内核 `audio` 领域里纯逻辑部分的宿主测试入口；子模块层级与 `kernel/src/audio/` 一致。
 
-#[path = "../../../kernel/src/audio/state.rs"]
-pub(crate) mod state;
-#[path = "../../../kernel/src/audio/mixer.rs"]
-pub(crate) mod mixer;
-#[path = "../../../kernel/src/audio/engine.rs"]
-pub(crate) mod engine;
 #[path = "../../../kernel/src/audio/codec.rs"]
 pub(crate) mod codec;
 #[path = "../../../kernel/src/audio/control.rs"]
 pub(crate) mod control;
+#[path = "../../../kernel/src/audio/engine.rs"]
+pub(crate) mod engine;
+#[path = "../../../kernel/src/audio/mixer.rs"]
+pub(crate) mod mixer;
+#[path = "../../../kernel/src/audio/state.rs"]
+pub(crate) mod state;
+
+#[cfg(test)]
+mod abi_tests;
 
 #[cfg(test)]
 mod mixing_tests {
@@ -51,7 +54,11 @@ mod mixing_tests {
         let out = mix(&[period(0.25, 0.0), period(0.125, -0.25)], [1.0, 1.0]);
         assert_eq!(sample(&out, 0), 0.375);
         assert_eq!(sample(&out, 1), -0.25);
-        assert_eq!(sample(&out, 2 * (PCM_PERIOD_FRAMES - 1)), 0.375, "last frame mixes too");
+        assert_eq!(
+            sample(&out, 2 * (PCM_PERIOD_FRAMES - 1)),
+            0.375,
+            "last frame mixes too"
+        );
     }
 
     #[test]
@@ -59,7 +66,10 @@ mod mixing_tests {
         let out = mix(&[period(0.5, 0.5)], [1.0, 0.5]);
         assert_eq!((sample(&out, 0), sample(&out, 1)), (0.5, 0.25));
         let silent = mix(&[period(0.5, 0.5)], [0.0, 0.0]);
-        assert!(silent.iter().all(|&byte| byte == 0), "silence is all-zero bytes");
+        assert!(
+            silent.iter().all(|&byte| byte == 0),
+            "silence is all-zero bytes"
+        );
     }
 
     #[test]
@@ -85,11 +95,18 @@ mod mixing_tests {
         assert_eq!(volume_gain(0), 0.0);
         assert_eq!(volume_gain(VOLUME_MAX), 1.0);
         assert_eq!(volume_gain(50), 0.25);
-        assert_eq!(volume_gain(VOLUME_MAX + 400), 1.0, "values above the maximum saturate");
+        assert_eq!(
+            volume_gain(VOLUME_MAX + 400),
+            1.0,
+            "values above the maximum saturate"
+        );
         let mut previous = 0.0;
         for volume in 0..=VOLUME_MAX {
             let gain = volume_gain(volume);
-            assert!(gain >= previous, "volume curve must not decrease at {volume}");
+            assert!(
+                gain >= previous,
+                "volume curve must not decrease at {volume}"
+            );
             previous = gain;
         }
     }
@@ -116,7 +133,11 @@ mod engine_tests {
 
     impl FakeRing {
         fn new() -> Self {
-            Self(Arc::new(Mutex::new(vec![0; PCM_BUFFER_FRAMES * PCM_FRAME_BYTES])))
+            Self(Arc::new(Mutex::new(vec![
+                0;
+                PCM_BUFFER_FRAMES
+                    * PCM_FRAME_BYTES
+            ])))
         }
 
         /// 把第 `slot`（0..4）个 period 位置填成恒定电平。
@@ -169,9 +190,15 @@ mod engine_tests {
         /// 设备消费掉最早的一个在途 period，返回应交给引擎的完成事件数。
         fn complete_one(&self) -> Events {
             let mut queued = self.queued.borrow_mut();
-            assert!(*queued > 0, "device completed a period that was never submitted");
+            assert!(
+                *queued > 0,
+                "device completed a period that was never submitted"
+            );
             *queued -= 1;
-            Events { completed: 1, disconnected: false }
+            Events {
+                completed: 1,
+                disconnected: false,
+            }
         }
     }
 
@@ -189,21 +216,33 @@ mod engine_tests {
         }
 
         fn prepare(&self) -> Result<(), PcmOutputError> {
-            assert_eq!(*self.phase.borrow(), Phase::Stopped, "prepare is only legal after stop");
+            assert_eq!(
+                *self.phase.borrow(),
+                Phase::Stopped,
+                "prepare is only legal after stop"
+            );
             self.history.borrow_mut().push("prepare");
             *self.phase.borrow_mut() = Phase::Prepared;
             Ok(())
         }
 
         fn start(&self) -> Result<(), PcmOutputError> {
-            assert_eq!(*self.phase.borrow(), Phase::Prepared, "start is only legal when prepared");
+            assert_eq!(
+                *self.phase.borrow(),
+                Phase::Prepared,
+                "start is only legal when prepared"
+            );
             self.history.borrow_mut().push("start");
             *self.phase.borrow_mut() = Phase::Running;
             Ok(())
         }
 
         fn stop(&self) -> Result<(), PcmOutputError> {
-            assert_eq!(*self.phase.borrow(), Phase::Running, "stop is only legal while running");
+            assert_eq!(
+                *self.phase.borrow(),
+                Phase::Running,
+                "stop is only legal while running"
+            );
             self.history.borrow_mut().push("stop");
             *self.phase.borrow_mut() = Phase::Stopped;
             Ok(())
@@ -236,17 +275,32 @@ mod engine_tests {
 
     /// 打开一个子流并走完 Open → Setup → Prepared 的前置步骤。
     fn open(engine: &mut Engine<FakeRing>, ring: &FakeRing) -> usize {
-        let index = engine.allocate(ring.clone()).unwrap_or_else(|_| panic!("no free substream"));
+        let index = engine
+            .allocate(ring.clone())
+            .unwrap_or_else(|_| panic!("no free substream"));
         engine.configure(index).unwrap();
         engine
-            .set_software(index, PERIOD, PCM_BUFFER_FRAMES as u64, PCM_BUFFER_FRAMES as u64, 1 << 20)
+            .set_software(
+                index,
+                PERIOD,
+                PCM_BUFFER_FRAMES as u64,
+                PCM_BUFFER_FRAMES as u64,
+                1 << 20,
+            )
             .unwrap();
         engine.prepare(index).unwrap();
         index
     }
 
     /// 应用写入 `periods` 个 period：先填数据再推进应用指针，与 `PcmFile::write_period` 的顺序一致。
-    fn write(engine: &mut Engine<FakeRing>, index: usize, ring: &FakeRing, left: f32, right: f32, periods: usize) {
+    fn write(
+        engine: &mut Engine<FakeRing>,
+        index: usize,
+        ring: &FakeRing,
+        left: f32,
+        right: f32,
+        periods: usize,
+    ) {
         for _ in 0..periods {
             let slot = (engine.state(index).application_frames / PERIOD) as usize % 4;
             ring.fill(slot, left, right);
@@ -254,7 +308,33 @@ mod engine_tests {
         }
     }
 
-    const NONE: Events = Events { completed: 0, disconnected: false };
+    const NONE: Events = Events {
+        completed: 0,
+        disconnected: false,
+    };
+
+    #[test]
+    fn hardware_free_rejects_running_and_preserves_card_master() {
+        let mut engine = Engine::new();
+        let ring = FakeRing::new();
+        let index = open(&mut engine, &ring);
+        let master = Master {
+            volume: [25, 50],
+            enabled: [true, false],
+        };
+        engine.set_master(master);
+        engine.start(index).unwrap();
+        assert!(engine.free_hardware(index).is_err());
+        engine.drop_stream(index).unwrap();
+        engine.free_hardware(index).unwrap();
+        assert_eq!(engine.state(index).state, PcmState::Open);
+        assert_eq!(engine.master(), master);
+        assert_eq!(
+            engine.available(),
+            SUBSTREAMS - 1,
+            "HW_FREE does not close the OFD"
+        );
+    }
 
     #[test]
     fn one_substream_is_mixed_started_and_credited_on_completion() {
@@ -307,15 +387,31 @@ mod engine_tests {
         engine.tick(NONE, &output);
         assert_eq!(level(&output.submitted.borrow()[0]), (0.75, 0.75));
         assert_eq!(level(&output.submitted.borrow()[1]), (0.25, 0.25));
-        assert_eq!(engine.state(b).state, PcmState::Xrun, "b's timeline has a gap");
-        assert_eq!(engine.state(a).state, PcmState::Running, "a is unaffected by b's underrun");
+        assert_eq!(
+            engine.state(b).state,
+            PcmState::Xrun,
+            "b's timeline has a gap"
+        );
+        assert_eq!(
+            engine.state(a).state,
+            PcmState::Running,
+            "a is unaffected by b's underrun"
+        );
         engine.tick(output.complete_one(), &output);
         assert_eq!(engine.state(a).hardware_frames, PERIOD);
         // Xrun 之后 hw_ptr 冻结：客户端必须 prepare 重来（指针清零），不会依赖 xrun 之后的位置。
-        assert_eq!(engine.state(b).hardware_frames, 0, "an xrun substream's hw_ptr stays frozen");
+        assert_eq!(
+            engine.state(b).hardware_frames,
+            0,
+            "an xrun substream's hw_ptr stays frozen"
+        );
         engine.tick(output.complete_one(), &output);
         assert_eq!(engine.state(a).hardware_frames, 2 * PERIOD);
-        assert_eq!(engine.state(b).hardware_frames, 0, "b never advances again until it is re-prepared");
+        assert_eq!(
+            engine.state(b).hardware_frames,
+            0,
+            "b never advances again until it is re-prepared"
+        );
     }
 
     #[test]
@@ -331,7 +427,11 @@ mod engine_tests {
         engine.prepare(a).unwrap();
         write(&mut engine, a, &ring, 0.5, 0.5, 2);
         engine.tick(output.complete_one(), &output);
-        assert_eq!(engine.state(a).hardware_frames, 0, "stale completion must not be credited");
+        assert_eq!(
+            engine.state(a).hardware_frames,
+            0,
+            "stale completion must not be credited"
+        );
         assert_eq!(engine.state(a).application_frames, 2 * PERIOD);
     }
 
@@ -343,7 +443,11 @@ mod engine_tests {
         engine.start(a).unwrap();
         engine.tick(NONE, &output);
         engine.tick(output.complete_one(), &output);
-        assert_eq!(engine.state(a).state, PcmState::Running, "one period is still in flight");
+        assert_eq!(
+            engine.state(a).state,
+            PcmState::Running,
+            "one period is still in flight"
+        );
         engine.tick(output.complete_one(), &output);
         // 数据耗尽且没有在途数据：子流 Xrun，物理流停下并重新 prepare。
         assert_eq!(engine.state(a).state, PcmState::Xrun);
@@ -355,7 +459,10 @@ mod engine_tests {
         engine.start(a).unwrap();
         engine.tick(NONE, &output);
         assert_eq!(*output.phase.borrow(), Phase::Running);
-        assert_eq!(*output.history.borrow(), ["start", "stop", "prepare", "start"]);
+        assert_eq!(
+            *output.history.borrow(),
+            ["start", "stop", "prepare", "start"]
+        );
     }
 
     #[test]
@@ -366,7 +473,11 @@ mod engine_tests {
         assert!(engine.tick(NONE, &output));
         assert_eq!(engine.state(a).state, PcmState::Xrun);
         assert!(output.submitted.borrow().is_empty());
-        assert_eq!(*output.phase.borrow(), Phase::Prepared, "hardware never started");
+        assert_eq!(
+            *output.phase.borrow(),
+            Phase::Prepared,
+            "hardware never started"
+        );
     }
 
     #[test]
@@ -374,14 +485,24 @@ mod engine_tests {
         let (mut engine, output, ring) = (Engine::new(), FakeOutput::new(), FakeRing::new());
         let a = open(&mut engine, &ring);
         write(&mut engine, a, &ring, 0.5, 0.5, 4);
-        engine.set_master(Master { volume: [50, 100], enabled: [true, false] });
+        engine.set_master(Master {
+            volume: [50, 100],
+            enabled: [true, false],
+        });
         engine.start(a).unwrap();
         engine.tick(NONE, &output);
         // 左声道 50% → 增益 0.25；右声道静音。
         assert_eq!(level(&output.submitted.borrow()[0]), (0.125, 0.0));
-        engine.set_master(Master { volume: [100, 100], enabled: [true, true] });
+        engine.set_master(Master {
+            volume: [100, 100],
+            enabled: [true, true],
+        });
         engine.tick(output.complete_one(), &output);
-        assert_eq!(level(&output.submitted.borrow()[2]), (0.5, 0.5), "next period uses the new gain");
+        assert_eq!(
+            level(&output.submitted.borrow()[2]),
+            (0.5, 0.5),
+            "next period uses the new gain"
+        );
     }
 
     #[test]
@@ -389,14 +510,29 @@ mod engine_tests {
         let mut engine = Engine::new();
         let mut indices = Vec::new();
         for _ in 0..SUBSTREAMS {
-            indices.push(engine.allocate(FakeRing::new()).unwrap_or_else(|_| panic!("free")));
+            indices.push(
+                engine
+                    .allocate(FakeRing::new())
+                    .unwrap_or_else(|_| panic!("free")),
+            );
         }
         assert_eq!(engine.available(), 0);
-        assert!(engine.allocate(FakeRing::new()).is_err(), "all substreams are busy");
+        assert!(
+            engine.allocate(FakeRing::new()).is_err(),
+            "all substreams are busy"
+        );
         assert!(engine.release(indices[3]).is_some());
         assert_eq!(engine.available(), 1);
-        assert_eq!(engine.allocate(FakeRing::new()).ok(), Some(indices[3]), "freed slot is reused");
-        assert_eq!(engine.state(indices[3]).state, PcmState::Open, "reused substream starts clean");
+        assert_eq!(
+            engine.allocate(FakeRing::new()).ok(),
+            Some(indices[3]),
+            "freed slot is reused"
+        );
+        assert_eq!(
+            engine.state(indices[3]).state,
+            PcmState::Open,
+            "reused substream starts clean"
+        );
     }
 
     #[test]
@@ -406,12 +542,20 @@ mod engine_tests {
         let (a, b) = (open(&mut engine, &ring_a), open(&mut engine, &ring_b));
         write(&mut engine, a, &ring_a, 0.25, 0.25, 2);
         engine.start(a).unwrap();
-        engine.tick(Events { completed: 0, disconnected: true }, &output);
+        engine.tick(
+            Events {
+                completed: 0,
+                disconnected: true,
+            },
+            &output,
+        );
         assert_eq!(engine.state(a).state, PcmState::Disconnected);
         assert_eq!(engine.state(b).state, PcmState::Disconnected);
         assert!(output.submitted.borrow().is_empty());
         // 之后新打开的子流也直接是 Disconnected，引擎不再触碰设备。
-        let late = engine.allocate(FakeRing::new()).unwrap_or_else(|_| panic!("free"));
+        let late = engine
+            .allocate(FakeRing::new())
+            .unwrap_or_else(|_| panic!("free"));
         assert_eq!(engine.state(late).state, PcmState::Disconnected);
         assert!(!engine.tick(NONE, &output));
     }
@@ -424,7 +568,11 @@ mod engine_tests {
         engine.start(a).unwrap();
         *output.fail_submit.borrow_mut() = Some(PcmOutputError::WouldBlock);
         engine.tick(NONE, &output);
-        assert_eq!(engine.state(a).state, PcmState::Running, "a full device queue is not a failure");
+        assert_eq!(
+            engine.state(a).state,
+            PcmState::Running,
+            "a full device queue is not a failure"
+        );
         assert!(output.submitted.borrow().is_empty());
         *output.fail_submit.borrow_mut() = Some(PcmOutputError::Device);
         engine.tick(NONE, &output);
@@ -441,7 +589,11 @@ mod engine_tests {
             engine.start(*index).unwrap();
         }
         engine.tick(NONE, &output);
-        assert_eq!(output.submitted.borrow().len(), 2, "lead-bounded regardless of substream count");
+        assert_eq!(
+            output.submitted.borrow().len(),
+            2,
+            "lead-bounded regardless of substream count"
+        );
         // 8 路 0.0625 相加恰为 0.5。
         assert_eq!(level(&output.submitted.borrow()[0]), (0.5, 0.5));
     }
@@ -460,7 +612,10 @@ mod control_tests {
     };
     use super::engine::Master;
 
-    const FULL: Master = Master { volume: [100, 100], enabled: [true, true] };
+    const FULL: Master = Master {
+        volume: [100, 100],
+        enabled: [true, true],
+    };
 
     fn u32_at(bytes: &[u8], at: usize) -> u32 {
         u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap())
@@ -509,7 +664,13 @@ mod control_tests {
         assert_eq!(SNDRV_CTL_IOCTL_PCM_PREFER_SUBDEVICE, 0x4004_5532);
         assert_eq!(CTL_PROTOCOL_VERSION, 131_081);
         assert_eq!(
-            (CARD_INFO_BYTES, ELEM_ID_BYTES, ELEM_LIST_BYTES, ELEM_INFO_BYTES, ELEM_VALUE_BYTES),
+            (
+                CARD_INFO_BYTES,
+                ELEM_ID_BYTES,
+                ELEM_LIST_BYTES,
+                ELEM_INFO_BYTES,
+                ELEM_VALUE_BYTES
+            ),
             (376, 64, 80, 272, 1224)
         );
     }
@@ -532,7 +693,10 @@ mod control_tests {
         assert_eq!(text(40), "LiteOS Sound");
         assert_eq!(text(72), "LiteOS VirtIO Sound");
         assert_eq!(text(168), "LiteOS Mixer");
-        assert!(bytes[248..].iter().all(|&b| b == 0), "components stay empty");
+        assert!(
+            bytes[248..].iter().all(|&b| b == 0),
+            "components stay empty"
+        );
     }
 
     #[test]
@@ -544,7 +708,10 @@ mod control_tests {
         assert_eq!(u32_at(&ids, 0), 1);
         assert_eq!(&ids[16..38], b"Master Playback Volume");
         assert_eq!(u32_at(&ids, ELEM_ID_BYTES), 2);
-        assert_eq!(&ids[ELEM_ID_BYTES + 16..ELEM_ID_BYTES + 38], b"Master Playback Switch");
+        assert_eq!(
+            &ids[ELEM_ID_BYTES + 16..ELEM_ID_BYTES + 38],
+            b"Master Playback Switch"
+        );
         // 只给 1 个空位：只返回第一个，但 count 仍报告总数，调用方据此知道还有剩余。
         let mut small = [0u8; ELEM_LIST_BYTES];
         put_u32(&mut small, 4, 1);
@@ -563,16 +730,38 @@ mod control_tests {
         let mut volume = [0u8; ELEM_INFO_BYTES];
         put_u32(&mut volume, 0, 1);
         describe_element(&mut volume).unwrap();
-        assert_eq!((u32_at(&volume, 64), u32_at(&volume, 68), u32_at(&volume, 72)), (2, 3, 2));
-        assert_eq!((u64_at(&volume, 80), u64_at(&volume, 88), u64_at(&volume, 96)), (0, 100, 1));
+        assert_eq!(
+            (
+                u32_at(&volume, 64),
+                u32_at(&volume, 68),
+                u32_at(&volume, 72)
+            ),
+            (2, 3, 2)
+        );
+        assert_eq!(
+            (
+                u64_at(&volume, 80),
+                u64_at(&volume, 88),
+                u64_at(&volume, 96)
+            ),
+            (0, 100, 1)
+        );
         let mut switch = [0u8; ELEM_INFO_BYTES];
         put_u32(&mut switch, 0, 2);
         describe_element(&mut switch).unwrap();
-        assert_eq!((u32_at(&switch, 64), u32_at(&switch, 72)), (1, 2), "boolean, two channels");
-        assert!(switch[80..].iter().all(|&b| b == 0), "booleans have no range");
+        assert_eq!(
+            (u32_at(&switch, 64), u32_at(&switch, 72)),
+            (1, 2),
+            "boolean, two channels"
+        );
+        assert!(
+            switch[80..].iter().all(|&b| b == 0),
+            "booleans have no range"
+        );
         // 按名字查询时 id 被补全（numid、iface 都填上），alsa-lib 依赖它拿到 numid。
         let mut named = [0u8; ELEM_INFO_BYTES];
-        named[..ELEM_ID_BYTES].copy_from_slice(&by_name(b"Master Playback Switch", 0)[..ELEM_ID_BYTES]);
+        named[..ELEM_ID_BYTES]
+            .copy_from_slice(&by_name(b"Master Playback Switch", 0)[..ELEM_ID_BYTES]);
         describe_element(&mut named).unwrap();
         assert_eq!(u32_at(&named, 0), 2);
     }
@@ -581,18 +770,31 @@ mod control_tests {
     fn lookup_rejects_unknown_elements_and_wrong_indexes() {
         let mut info = [0u8; ELEM_INFO_BYTES];
         put_u32(&mut info, 0, 99);
-        assert_eq!(describe_element(&mut info), Err(ControlError::NoSuchElement));
+        assert_eq!(
+            describe_element(&mut info),
+            Err(ControlError::NoSuchElement)
+        );
         let mut missing = [0u8; ELEM_INFO_BYTES];
         missing[..ELEM_ID_BYTES].copy_from_slice(&by_name(b"Nope", 0)[..ELEM_ID_BYTES]);
-        assert_eq!(describe_element(&mut missing), Err(ControlError::NoSuchElement));
+        assert_eq!(
+            describe_element(&mut missing),
+            Err(ControlError::NoSuchElement)
+        );
         let mut indexed = [0u8; ELEM_INFO_BYTES];
-        indexed[..ELEM_ID_BYTES].copy_from_slice(&by_name(b"Master Playback Volume", 1)[..ELEM_ID_BYTES]);
-        assert_eq!(describe_element(&mut indexed), Err(ControlError::NoSuchElement));
+        indexed[..ELEM_ID_BYTES]
+            .copy_from_slice(&by_name(b"Master Playback Volume", 1)[..ELEM_ID_BYTES]);
+        assert_eq!(
+            describe_element(&mut indexed),
+            Err(ControlError::NoSuchElement)
+        );
     }
 
     #[test]
     fn read_reports_per_channel_volume_and_switch() {
-        let master = Master { volume: [30, 70], enabled: [true, false] };
+        let master = Master {
+            volume: [30, 70],
+            enabled: [true, false],
+        };
         let mut volume = by_numid(1);
         read_element(&mut volume, master).unwrap();
         assert_eq!((u64_at(&volume, 72), u64_at(&volume, 80)), (30, 70));
@@ -608,14 +810,25 @@ mod control_tests {
         put_u64(&mut request, 80, 60);
         let (master, changed) = write_element(&request, FULL).unwrap();
         assert_eq!((master.volume, changed), ([40, 60], true));
-        assert_eq!(master.enabled, [true, true], "volume writes never touch the switch");
+        assert_eq!(
+            master.enabled,
+            [true, true],
+            "volume writes never touch the switch"
+        );
         let (again, changed) = write_element(&request, master).unwrap();
-        assert_eq!((again, changed), (master, false), "writing the same value is not a change");
+        assert_eq!(
+            (again, changed),
+            (master, false),
+            "writing the same value is not a change"
+        );
         let mut mute = by_numid(2);
         put_u64(&mut mute, 72, 1);
         put_u64(&mut mute, 80, 0);
         let (muted, changed) = write_element(&mute, master).unwrap();
-        assert_eq!((muted.enabled, muted.volume, changed), ([true, false], [40, 60], true));
+        assert_eq!(
+            (muted.enabled, muted.volume, changed),
+            ([true, false], [40, 60], true)
+        );
     }
 
     #[test]
@@ -631,6 +844,9 @@ mod control_tests {
         put_u64(&mut switch, 72, 1);
         put_u64(&mut switch, 80, 2);
         assert_eq!(write_element(&switch, FULL), Err(ControlError::Invalid));
-        assert_eq!(write_element(&by_numid(7), FULL), Err(ControlError::NoSuchElement));
+        assert_eq!(
+            write_element(&by_numid(7), FULL),
+            Err(ControlError::NoSuchElement)
+        );
     }
 }

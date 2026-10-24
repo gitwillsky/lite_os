@@ -10,8 +10,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from local_inputs import INPUTS
+
 ROOT = Path(__file__).resolve().parents[1]
-ORIGINAL_BOOT_SCENE = ROOT / "target/classic-desktop/windows2000/packed/boot-scene.lbs"
+ORIGINAL_BOOT_SCENE = INPUTS / "windows2000/packed/boot-scene.lbs"
 DEFAULT_BOOT_SCENE = ROOT / "assets/classic/boot-scene.lbs"
 
 

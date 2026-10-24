@@ -64,7 +64,7 @@ VirtIO transport（MMIO/PCI）、virtqueue/DMA、各设备类 adapter 与设备�
 
 ## `audio`
 
-拥有 Linux ALSA PCM playback 领域状态、position、poll/xrun、`snd/pcmC0D0p` 设备文件与 PCM ioctl UAPI；只经通用 PCM output seam 使用 device adapter
+拥有 Linux ALSA playback 子流、混音、Master control、position、poll/xrun、PCM/control 设备文件及其 ioctl UAPI；只经通用 PCM output seam 使用 device adapter
 
 ## `drm`
 
@@ -155,7 +155,7 @@ RTC 与 per-CPU deadline 由 timer 唯一拥有
 
 
 - `bootloader` 是独立 firmware domain，不依赖 kernel 或 userspace。
-- `boot-scene` 是内核与 compositor 共用的 `no_std` crate，唯一实现 `LBS1` 位图的解析校验、逐行解码、整数缩放居中与进度矩形，不依赖其他实现 crate。
+- `boot-scene` 是供内核和后续用户态共用的 `no_std` crate，唯一实现 `LBS1` 位图的解析校验、逐行解码、整数缩放居中与进度矩形，不依赖其他实现 crate。
 - 内核编入的启动画面由构建环境变量 `LITEOS_BOOT_SCENE` 选择，选择逻辑只在 `scripts/classic_assets.py`。
 - `syscall-abi` 只保存 dispatcher 接入的 Linux 64-bit asm-generic 编号与明确的 architecture extension，不依赖实现 crate。
 - `kernel/src/main.rs` 是唯一 composition root；初始化顺序和 adapter 装配不得下沉到 driver、filesystem 或 task。

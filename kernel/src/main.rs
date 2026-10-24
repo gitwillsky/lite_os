@@ -27,8 +27,8 @@ mod platform;
 #[macro_use]
 mod log;
 
-mod drivers;
 mod boot_screen;
+mod drivers;
 mod drm;
 mod fallible_tree;
 mod file;

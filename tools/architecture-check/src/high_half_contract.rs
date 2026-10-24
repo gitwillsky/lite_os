@@ -343,8 +343,8 @@ fn bootstrap_wfi_has_exact_irq_resume(trap: &str, interrupt: &str) -> bool {
         .is_some_and(|((((wait, enable), sleep), resume), disable)| {
             wait < enable && enable < sleep && sleep < resume && resume < disable
         })
-        && trap.contains("adr x9, __local_irq_wait_wfi")
-        && trap.contains("adr x8, __local_irq_wait_wfi_resume")
+        && trap.contains("adrp x9, __local_irq_wait_wfi\n    add x9, x9, :lo12:__local_irq_wait_wfi\n")
+        && trap.contains("adrp x8, __local_irq_wait_wfi_resume\n    add x8, x8, :lo12:__local_irq_wait_wfi_resume\n")
         && trap.contains("msr elr_el1, x8")
         && interrupt.contains("fn __wait_with_local_irq_masked();")
         && interrupt.contains("__wait_with_local_irq_masked()")
@@ -365,5 +365,25 @@ mod tests {
         let interrupt =
             std::fs::read_to_string(root.join(super::INTERRUPT)).expect("interrupt source");
         assert!(super::bootstrap_wfi_has_exact_irq_resume(&trap, &interrupt));
+    }
+
+    #[test]
+    fn bootstrap_wait_rejects_missing_low_address_or_resume_write() {
+        let root = super::super::repository_root();
+        let trap = std::fs::read_to_string(root.join(super::TRAP)).unwrap();
+        let interrupt = std::fs::read_to_string(root.join(super::INTERRUPT)).unwrap();
+        for required in [
+            "add x9, x9, :lo12:__local_irq_wait_wfi",
+            "add x8, x8, :lo12:__local_irq_wait_wfi_resume",
+            "msr elr_el1, x8",
+        ] {
+            assert!(
+                !super::bootstrap_wfi_has_exact_irq_resume(
+                    &trap.replace(required, "nop"),
+                    &interrupt
+                ),
+                "missing {required}"
+            );
+        }
     }
 }

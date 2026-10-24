@@ -26,7 +26,7 @@ def boot_graphics(
 ) -> str:
     """Cold-boot the sole UTM VirGL path until all markers are visible; return the serial text.
 
-    `kernel_arguments` is the guest kernel command line (e.g. `liteos.target=desktop`).
+    `kernel_arguments` is the guest kernel command line.
     Each `(marker, data)` in `interactions` is typed into the serial shell once, the first time
     `marker` appears in the output, in order.
     """

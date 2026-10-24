@@ -18,20 +18,13 @@ from typing import Mapping, Sequence
 
 from build_target import acceleration_from_environment, target_from_environment
 from classic_assets import boot_scene
+from local_inputs import TOOLS
 from host_topology import default_guest_cpu_count
 from ext4_image import find_debugfs, find_e2fsck, find_tune2fs
 from utm_runtime import run_gui as run_utm_gui
 
 ROOT = Path(__file__).resolve().parent.parent
 PYTHON = sys.executable
-
-
-def _boot_target_arguments(source: Mapping[str, str]) -> str:
-    """`LITEOS_TARGET=text|desktop` 转成内核命令行；默认文本控制台，seatd 读取 liteos.target。"""
-    value = source.get("LITEOS_TARGET", "text")
-    if value not in {"text", "desktop"}:
-        raise RuntimeError("LITEOS_TARGET must be text or desktop")
-    return f"liteos.target={value}"
 
 
 def _profile(environment: Mapping[str, str] | None = None) -> str:
@@ -182,7 +175,7 @@ def prepare_rootfs(environment: Mapping[str, str] | None = None, *, size_mib: st
 
 
 def sync_userland(environment: Mapping[str, str] | None = None, *, size_mib: str | None = None) -> None:
-    """构建 musl、准备开发镜像并增量同步图形用户态。"""
+    """构建 musl、准备开发镜像并增量同步系统文件。"""
     build_musl(environment)
     prepare_rootfs(environment, size_mib=size_mib)
     run(python_script("sync_userland.py", "--image", target_paths(environment)["fs"]), environment=environment)
@@ -283,14 +276,9 @@ def _qemu_command(
 def run_qemu(mode: str, environment: Mapping[str, str] | None = None, *, memory: str | None = None) -> None:
     """启动无窗口开发或 GDB QEMU。"""
     source = os.environ if environment is None else environment
-    if mode == "gdb":
-        build_kernel(environment)
-        build_bootloader(environment)
-        prepare_rootfs(environment)
-    else:
-        build_kernel(environment)
-        build_bootloader(environment)
-        sync_userland(environment)
+    build_kernel(environment)
+    build_bootloader(environment)
+    sync_userland(environment)
     paths = target_paths(environment)
     selected_memory = memory or source.get("QEMU_MEMORY", "2G")
     command = _qemu_command(paths["fs"], mode=mode, memory=selected_memory, environment=environment)
@@ -397,13 +385,7 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
             **dtb_fixtures,
         ),
     )
-    assets = run(
-        python_script("verify_busybox.py", "--build-ui-assets-only"),
-        environment=environment,
-        capture=True,
-    ).strip()
-    user_environment = _env_with(environment, LITE_UI_TEST_ASSETS=assets)
-    run(["cargo", "test", "--manifest-path", "user/Cargo.toml", "--workspace"], environment=user_environment)
+    run(["cargo", "test", "--manifest-path", "user/Cargo.toml", "--workspace"], environment=environment)
     # 门禁脚本自身的判定逻辑与固定值（APK digest、gate 阈值、cache 身份）由这些测试守住；
     # 缺少这一步它们会在无人运行时悄悄过期。
     run(
@@ -528,7 +510,7 @@ def verify_apk_apps_scope(environment: Mapping[str, str] | None = None) -> None:
 
 def regenerate_terminal_font(environment: Mapping[str, str] | None = None) -> None:
     """生成并立即校验 terminal font checked asset。"""
-    python = ROOT / "target/fontenv/bin/python"
+    python = TOOLS / "classic-assets/bin/python"
     run([python, ROOT / "scripts/generate_terminal_font.py"], environment=environment)
     run([python, ROOT / "scripts/generate_terminal_font.py", "--verify"], environment=environment)
 
@@ -646,11 +628,10 @@ def verify(environment: Mapping[str, str] | None = None) -> None:
 
 
 def clean(environment: Mapping[str, str] | None = None) -> None:
-    """清理 Cargo 构建和开发镜像，不触碰内容寻址 cache。"""
+    """清理各 Cargo workspace 的编译缓存，保留持久输入和开发镜像。"""
     run(["cargo", "clean"], environment=environment)
     run(["cargo", "clean"], cwd=ROOT / "bootloader", environment=environment)
-    for image in (ROOT / "fs-aarch64.img", ROOT / "fs-riscv64.img"):
-        image.unlink(missing_ok=True)
+    run(["cargo", "clean", "--manifest-path", "user/Cargo.toml"], environment=environment)
 
 
 def clean_musl(environment: Mapping[str, str] | None = None) -> None:
@@ -723,7 +704,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
             memory=source.get("QEMU_MEMORY", "2G"),
             cpu_count=int(_qemu_smp(source)),
             serial_log=ROOT / "target" / "logs" / "run-gui-serial.log",
-            kernel_arguments=_boot_target_arguments(source),
+            kernel_arguments="",
         )
         return
     if scope == "run-gdb":
@@ -739,8 +720,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
             memory=source.get("AGENT_QEMU_MEMORY", "6G"),
             cpu_count=int(_qemu_smp(source)),
             serial_log=ROOT / "target" / "logs" / "run-agent-development-serial.log",
-            # agent 开发直接验收桌面 UI，不经过文本控制台。
-            kernel_arguments="liteos.target=desktop",
+            kernel_arguments="",
         )
         return
     if scope == "gdb":

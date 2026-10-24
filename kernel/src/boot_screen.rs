@@ -123,8 +123,19 @@ impl<'a> Canvas<'a> {
             offset += length;
         }
         paint_scene(framebuffer, &scene, &layout, pitch)?;
-        framebuffer.flush(DisplayRect { x: 0, y: 0, width: mode.width, height: mode.height })?;
-        Ok(Self { framebuffer, scene, layout, mode, drawn: 0 })
+        framebuffer.flush(DisplayRect {
+            x: 0,
+            y: 0,
+            width: mode.width,
+            height: mode.height,
+        })?;
+        Ok(Self {
+            framebuffer,
+            scene,
+            layout,
+            mode,
+            drawn: 0,
+        })
     }
 
     fn fill_to(&mut self, permille: u16) -> Result<(), Failure> {
@@ -136,7 +147,8 @@ impl<'a> Canvas<'a> {
         }
         let fresh = rect.width - self.drawn;
         let mut line = Vec::new();
-        line.try_reserve_exact(fresh * 4).map_err(|_| Failure::OutOfMemory)?;
+        line.try_reserve_exact(fresh * 4)
+            .map_err(|_| Failure::OutOfMemory)?;
         let pixel = self.scene.fill_color().to_le_bytes();
         for _ in 0..fresh {
             line.extend_from_slice(&pixel);
@@ -144,7 +156,8 @@ impl<'a> Canvas<'a> {
         let x = rect.x + self.drawn;
         let pitch = self.mode.pitch as usize;
         for dy in 0..rect.height {
-            self.framebuffer.write((rect.y + dy) * pitch + x * 4, &line)?;
+            self.framebuffer
+                .write((rect.y + dy) * pitch + x * 4, &line)?;
         }
         self.framebuffer.flush(DisplayRect {
             x: x as u32,
@@ -165,7 +178,8 @@ fn paint_scene(
     pitch: usize,
 ) -> Result<(), Failure> {
     let mut line = Vec::new();
-    line.try_reserve_exact(WIDTH * layout.scale * 4).map_err(|_| Failure::OutOfMemory)?;
+    line.try_reserve_exact(WIDTH * layout.scale * 4)
+        .map_err(|_| Failure::OutOfMemory)?;
     let mut indices = [0u8; WIDTH];
     let mut rows = scene.rows();
     let mut row = 0;

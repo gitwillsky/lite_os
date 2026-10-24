@@ -42,8 +42,16 @@ struct Element {
 }
 
 const ELEMENTS: [Element; 2] = [
-    Element { numid: 1, name: b"Master Playback Volume", kind: TYPE_INTEGER },
-    Element { numid: 2, name: b"Master Playback Switch", kind: TYPE_BOOLEAN },
+    Element {
+        numid: 1,
+        name: b"Master Playback Volume",
+        kind: TYPE_INTEGER,
+    },
+    Element {
+        numid: 2,
+        name: b"Master Playback Switch",
+        kind: TYPE_BOOLEAN,
+    },
 ];
 
 /// 控制操作的失败原因，由调用方映射成 errno。
@@ -65,7 +73,10 @@ fn element_by_id(bytes: &[u8]) -> Result<&'static Element, ControlError> {
     }
     // numid 为 0 时按 (iface, device, subdevice, name, index) 查找，`alsa-lib` 打开混音器时就是这样定位元素的。
     let name = bytes.get(16..60).ok_or(ControlError::Invalid)?;
-    let length = name.iter().position(|&byte| byte == 0).unwrap_or(name.len());
+    let length = name
+        .iter()
+        .position(|&byte| byte == 0)
+        .unwrap_or(name.len());
     let index = read_u32(bytes, 60).ok_or(ControlError::Invalid)?;
     if read_u32(bytes, 4) != Some(IFACE_MIXER) || index != 0 {
         return Err(ControlError::NoSuchElement);
@@ -110,13 +121,18 @@ pub(super) fn encode_card_info(text: &CardText<'_>) -> [u8; CARD_INFO_BYTES] {
 ///
 /// 结构：`offset @0`、`space @4`（调用方数组可放多少个 id）、`used @8`（写出多少个）、`count @12`
 /// （元素总数）、`pids @16`（用户数组指针）。返回要写入 `pids` 的 id 序列；`list` 里的 `used`/`count` 原地更新。
-pub(super) fn list_elements(list: &mut [u8; ELEM_LIST_BYTES]) -> Result<([u8; ELEM_ID_BYTES * 2], usize), ControlError> {
+pub(super) fn list_elements(
+    list: &mut [u8; ELEM_LIST_BYTES],
+) -> Result<([u8; ELEM_ID_BYTES * 2], usize), ControlError> {
     let offset = read_u32(list, 0).ok_or(ControlError::Invalid)? as usize;
     let space = read_u32(list, 4).ok_or(ControlError::Invalid)? as usize;
     let mut ids = [0u8; ELEM_ID_BYTES * 2];
     let mut used = 0;
     for element in ELEMENTS.iter().skip(offset).take(space) {
-        write_id(&mut ids[used * ELEM_ID_BYTES..(used + 1) * ELEM_ID_BYTES], element);
+        write_id(
+            &mut ids[used * ELEM_ID_BYTES..(used + 1) * ELEM_ID_BYTES],
+            element,
+        );
         used += 1;
     }
     let _ = write_u32(list, 8, used as u32);

@@ -18,8 +18,10 @@ import tempfile
 import wave
 from pathlib import Path
 
+from local_inputs import INPUTS
+
 ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_OUTPUT = ROOT / "target/classic-desktop/windows2000/assets"
+DEFAULT_OUTPUT = INPUTS / "windows2000/assets"
 PE_FILES = (
     "shell32.dll", "explorer.exe", "msgina.dll", "ntoskrnl.exe", "user32.dll",
     "mmsys.cpl", "sysdm.cpl", "main.cpl", "timedate.cpl", "taskmgr.exe",
@@ -283,12 +285,12 @@ def extract(iso: Path, output: Path) -> dict:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--iso", type=Path, help="用户提供的 Windows 2000 简中 ISO")
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="必须位于被 Git 忽略的 target/ 下")
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="必须位于被 Git 忽略的 .local/inputs/ 下")
     parser.add_argument("--check", action="store_true", help="只校验已有提取结果")
     args = parser.parse_args()
     output = args.output.expanduser().resolve()
-    if not output.is_relative_to(ROOT / "target"):
-        parser.error("original assets must stay inside this repository's ignored target/ directory")
+    if not output.is_relative_to(INPUTS.resolve()):
+        parser.error("original assets must stay inside this repository's ignored .local/inputs/ directory")
     if not args.check and args.iso is None:
         parser.error("--iso is required for extraction")
     try:

@@ -14,6 +14,8 @@
 - 多步任务先列出“步骤 → 验证点”，持续执行到可验证成功标准达成。重构必须证明契约与行为保持一致。
 - 禁止双轨实现、兼容入口、补丁式 hack、面条控制流及无领域含义的 `common/utils/helpers/misc/manager/base/shared/core` module。
 
+- 本工程产生的持久下载、上游源码、原版素材、离线包、密钥和实验环境统一放在工程内的 `.local/`，该目录必须被 Git 忽略，禁止暂存或提交其中内容。
+
 ## 权威资料与路由
 
 - 所有文档入口与事实 owner：[`docs/README.md`](docs/README.md)。

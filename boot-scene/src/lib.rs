@@ -100,7 +100,9 @@ impl<'a> Scene<'a> {
         }
         let fill_color = u32::from_le_bytes([bytes[20], bytes[21], bytes[22], bytes[23]]);
         let palette_end = HEADER_LEN + colors * 4;
-        let palette = bytes.get(HEADER_LEN..palette_end).ok_or(ParseError::Truncated)?;
+        let palette = bytes
+            .get(HEADER_LEN..palette_end)
+            .ok_or(ParseError::Truncated)?;
         let rle = &bytes[palette_end..];
         if !rle.len().is_multiple_of(2) {
             return Err(ParseError::BadPixels);
@@ -116,7 +118,12 @@ impl<'a> Scene<'a> {
         if pixels != WIDTH * HEIGHT {
             return Err(ParseError::BadPixels);
         }
-        Ok(Self { palette, rle, fill, fill_color })
+        Ok(Self {
+            palette,
+            rle,
+            fill,
+            fill_color,
+        })
     }
 
     /// 返回调色板项 `index` 的颜色，格式 `0x00RRGGBB`。
@@ -142,7 +149,12 @@ impl<'a> Scene<'a> {
 
     /// 从第一行开始的逐行解码器。
     pub fn rows(&self) -> Rows<'a> {
-        Rows { rle: self.rle, position: 0, run_left: 0, index: 0 }
+        Rows {
+            rle: self.rle,
+            position: 0,
+            run_left: 0,
+            index: 0,
+        }
     }
 }
 
@@ -205,7 +217,12 @@ impl Layout {
 
     /// 缩放后位图占据的屏幕矩形。
     pub fn bounds(&self) -> Rect {
-        Rect { x: self.x, y: self.y, width: WIDTH * self.scale, height: HEIGHT * self.scale }
+        Rect {
+            x: self.x,
+            y: self.y,
+            width: WIDTH * self.scale,
+            height: HEIGHT * self.scale,
+        }
     }
 
     /// 进度为 `permille`（0..=1000，超出按 1000）时，需要涂成填充色的屏幕矩形；进度为 0 时返回 `None`。

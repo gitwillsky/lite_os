@@ -198,14 +198,17 @@ pub(super) fn refine_hardware(bytes: &mut [u8; HW_PARAMS_BYTES]) -> Result<(), (
         let highest = maximum.min(capability_max);
         let disjoint = empty
             || lowest > highest
-            || (capability_flags & INTERVAL_OPEN_MIN != 0
-                && maximum <= capability_min)
+            || (capability_flags & INTERVAL_OPEN_MIN != 0 && maximum <= capability_min)
             || (capability_flags & INTERVAL_OPEN_MAX != 0 && minimum >= capability_max);
         if disjoint {
             return Err(());
         }
         let unchanged = (minimum, maximum, flags & !INTERVAL_INTEGER)
-            == (capability_min, capability_max, capability_flags & !INTERVAL_INTEGER);
+            == (
+                capability_min,
+                capability_max,
+                capability_flags & !INTERVAL_INTEGER,
+            );
         if !unchanged || flags & INTERVAL_INTEGER != capability_flags & INTERVAL_INTEGER {
             changed |= 1 << parameter;
         }

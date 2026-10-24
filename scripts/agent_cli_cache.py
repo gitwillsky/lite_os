@@ -13,6 +13,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from local_inputs import INPUTS
+
 from apk_apps_cache import cached_application_apks
 from apk_cache import ALPINE_ARCH, ALPINE_BRANCH, ALPINE_DOWNLOAD_MIRRORS
 from build_cache import (
@@ -28,7 +30,7 @@ from build_target import target_from_environment
 
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = target_from_environment()
-WORK = ROOT / "target" / "agent-development" / TARGET.arch
+SOURCE = INPUTS / "agents" / TARGET.arch
 
 NPM_REGISTRY = "https://registry.npmjs.org"
 CODEX_PACKAGE = "@openai/codex"
@@ -119,7 +121,7 @@ def _run(command: list[str]) -> str:
 
 def _download(urls: tuple[str, ...], name: str, expected_sha256: str) -> Path:
     """按顺序从 ``urls`` 下载一个固定 APK，并只在摘要匹配后发布到共享 cache。"""
-    archives = WORK / "archives"
+    archives = SOURCE / "archives"
     archives.mkdir(parents=True, exist_ok=True)
     destination = archives / name
     if destination.is_file() and sha256(destination) == expected_sha256:
@@ -267,12 +269,12 @@ def _cached_npm_cache_archive() -> Path:
             for package, version, integrity in NPM_PACKAGE_INTEGRITIES
         },
     }
-    destination = WORK / "npm-cache" / fingerprint(payload)
+    destination = SOURCE / "npm-cache" / fingerprint(payload)
     output = destination / "npm-cache.tar"
     if manifest_matches(destination, payload, ("npm-cache.tar",)):
         return output
 
-    generation = temporary_directory(WORK / "npm-cache", "npm-cache")
+    generation = temporary_directory(SOURCE / "npm-cache", "npm-cache")
     published = False
     try:
         cache = generation / "npm-cache"
@@ -364,7 +366,7 @@ def cached_agent_cli_artifacts() -> AgentCliArtifacts:
         OSError: 网络、cache 或本地工具不可用。
     """
     ensure_supported_target()
-    with cache_lock(WORK / ".agent-cli.lock"):
+    with cache_lock(SOURCE / ".agent-cli.lock"):
         npm_cache_archive = _cached_npm_cache_archive()
         development_apks = []
         for repository, name, digest in AGENT_ALPINE_PACKAGES:

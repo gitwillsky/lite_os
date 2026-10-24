@@ -223,7 +223,7 @@ pub struct Model {
     active_charset: u8,
     direct_graphics: bool,
     // OWNER: selection follows the active VT grid. Without keeping it beside
-    // the cells, the React projection cannot resolve wide characters or soft wraps correctly.
+    // the cells, a terminal projection cannot resolve wide characters or soft wraps correctly.
     selection: Option<Selection>,
     selection_dirty: bool,
     viewport_offset: usize,

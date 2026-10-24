@@ -77,7 +77,6 @@ fn one_entry_enforces_production_unit_and_user_thresholds() {
     repository.write_lines("user/accepted.c", 1_000);
     repository.write_lines("user/review.c", 1_001);
     repository.write_lines("user/reject.c", 1_501);
-    repository.write_lines("user/quickjs-runtime/vendor/quickjs/quickjs.c", 60_000);
     let sources = [
         production("kernel/src/fs/accepted.rs", "fs", 1_000),
         production("kernel/src/fs/review.rs", "fs", 1_001),

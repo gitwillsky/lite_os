@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Generate the checked LiteOS terminal A8 atlas from fixed Latin and CJK faces.
 
-Run with the pinned host interpreter: target/fontenv/bin/python scripts/generate_terminal_font.py
+Run with the pinned host interpreter: .local/tools/classic-assets/bin/python scripts/generate_terminal_font.py
 Normal builds consume the checked atlas and need neither Pillow nor the font sources.
 """
 
@@ -10,24 +10,10 @@ from __future__ import annotations
 import argparse
 import hashlib
 import struct
+import urllib.request
 from pathlib import Path
 
-try:
-    from PIL import Image, ImageDraw, ImageFont
-except ModuleNotFoundError as error:
-    raise SystemExit("regen-font requires Pillow; normal builds consume the checked atlas") from error
-
-from generate_ui_font import (
-    BOLD as CJK_BOLD,
-    BOLD_SHA256 as CJK_BOLD_SHA256,
-    BOLD_URL as CJK_BOLD_URL,
-    REGULAR as CJK_REGULAR,
-    REGULAR_SHA256 as CJK_REGULAR_SHA256,
-    REGULAR_URL as CJK_REGULAR_URL,
-    codepoints as cjk_codepoints,
-    ensure_font,
-)
-
+from local_inputs import INPUTS
 
 ROOT = Path(__file__).resolve().parents[1]
 MEDIUM = ROOT / "assets/fonts/JetBrainsMonoNL-Medium.ttf"
@@ -49,6 +35,63 @@ def sha256(path: Path) -> str:
     """Return the lowercase SHA-256 identity of one font/build artifact."""
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
+
+CJK_REGULAR = INPUTS / "fonts/NotoSansCJKsc-Regular.otf"
+CJK_BOLD = INPUTS / "fonts/NotoSansCJKsc-Bold.otf"
+
+CJK_REGULAR_SHA256 = "2c76254f6fc379fddfce0a7e84fb5385bb135d3e399294f6eeb6680d0365b74b"
+
+CJK_BOLD_SHA256 = "b5f0d1a190a7f9b43c310a8850630af12553df32c4c050543f9059732d9b4c0a"
+
+CJK_REGULAR_URL = (
+    "https://raw.githubusercontent.com/notofonts/noto-cjk/main/"
+    "Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Regular.otf"
+)
+
+CJK_BOLD_URL = (
+    "https://raw.githubusercontent.com/notofonts/noto-cjk/main/"
+    "Sans/OTF/SimplifiedChinese/NotoSansCJKsc-Bold.otf"
+)
+
+def ensure_font(path: Path, url: str, expected: str) -> None:
+    """Fetch one pinned OTF into the cache; a matching cached copy skips the network."""
+    if path.exists():
+        actual = sha256(path)
+        if actual == expected:
+            return
+        raise RuntimeError(f"cached font identity mismatch: {path}: expected {expected}, got {actual}")
+    try:
+        with urllib.request.urlopen(url) as response:
+            data = response.read()
+    except OSError as error:
+        raise SystemExit(f"font download failed and cache is missing: {path}: {error}") from error
+    actual = hashlib.sha256(data).hexdigest()
+    if actual != expected:
+        raise RuntimeError(f"downloaded font identity mismatch: {url}: expected {expected}, got {actual}")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
+
+def cjk_codepoints() -> list[int]:
+    """Return the sorted, duplicate-free CJK terminal glyph contract.
+
+    1. ASCII 0x20-0x7E plus U+FFFD fallback.
+    2. GB2312 level-1 hanzi (0xB0A1-0xD7F9, 3755 codepoints).
+    3. GB2312 symbol rows 0xA1A1-0xA2FE and 0xA3A1-0xA3FE; undefined slots
+       raise UnicodeDecodeError in the gb2312 codec and are skipped.
+    """
+    values = set(range(0x20, 0x7F)) | {0xFFFD}
+    # Rows 0xB0-0xD6 are full; row 0xD7 stops at trail byte 0xF9 (3755 hanzi total).
+    for first in range(0xB0, 0xD8):
+        last = 0xF9 if first == 0xD7 else 0xFE
+        for second in range(0xA1, last + 1):
+            values.update(ord(char) for char in bytes((first, second)).decode("gb2312"))
+    for first in (0xA1, 0xA2, 0xA3):
+        for second in range(0xA1, 0xFF):
+            try:
+                values.update(ord(char) for char in bytes((first, second)).decode("gb2312"))
+            except UnicodeDecodeError:
+                continue
+    return sorted(values)
 
 def primary_codepoints() -> set[int]:
     """Return glyphs rendered by JetBrains Mono rather than the CJK fallback."""
@@ -74,6 +117,11 @@ def codepoints() -> list[int]:
 
 def render_face(primary_path: Path, cjk_path: Path, glyphs: list[int]) -> bytes:
     """Rasterize one fixed-cell face with a pinned Noto CJK fallback."""
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+    except ModuleNotFoundError as error:
+        raise SystemExit("regen-font requires Pillow; --verify only needs Python") from error
+
     primary = ImageFont.truetype(
         primary_path,
         PRIMARY_PIXEL_SIZE,

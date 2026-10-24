@@ -1,5 +1,5 @@
 //! Shared evdev keycode translation. Owns the single keycode→character table so the terminal
-//! (PTY bytes, used by the React terminal helper and the text console) and the UI text-input
+//! (PTY bytes, for terminal clients) and the UI text-input
 //! primitive (editing intents) never carry rival maps.
 
 /// Latched modifier state accumulated from key press/release events.
@@ -85,7 +85,7 @@ pub fn character(code: u16, modifiers: Modifiers) -> Option<char> {
 }
 
 /// One editing intent produced from a key event for a focused text field. The
-/// renderer maps keys to these and lets the field's `onInput`/`onKeyDown` React
+/// client maps keys to these and lets the field's input/key
 /// handlers apply them (standard controlled-input).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextEdit {

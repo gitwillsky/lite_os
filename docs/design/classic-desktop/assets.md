@@ -6,7 +6,7 @@
 ## 本地原版素材
 
 用户已选择保留 LiteOS 界面文案、优先使用自己的原版图像、声音和字体。提取 owner 是
-`scripts/extract_windows2000_assets.py`，输出仅位于 Git 忽略的 `target/classic-desktop/windows2000/assets/`。
+`scripts/extract_windows2000_assets.py`，输出仅位于 Git 忽略的 `.local/inputs/windows2000/assets/`。
 仓库中的原创素材和替代字体保留。当前产物是经过校验的素材目录，**尚未接入产品 rootfs**；
 后续经典桌面在唯一素材打包入口选择来源，不引入第二套渲染实现。操作见
 [构建与验证](../../development/build-and-verify.md#经典桌面本地素材)。
@@ -177,7 +177,7 @@
 字体 `name` 表的描述字段（name ID 10）。删除点阵表的原因：这些点阵来自 Firefly 补丁，来源存在争议（待核），
 LiteOS 不分发它们；1x 改用来源清楚的文泉驿点阵。
 
-选择依据（2026-10-24 对比渲染，脚本在仓库外 `~/liteos-spike/scripts/font-compare.py`）：
+选择依据（2026-10-24 对比渲染，脚本在工程内 `.local/spikes/classic-desktop/scripts/font-compare.py`）：
 
 1. 1x：文泉驿点阵宋体最接近宋体 9 磅的点阵观感；文鼎 PL 宋体 GB（`gbsn00lp`）在 12 像素下笔画粗细不均、字形歪斜，淘汰。
 2. 2x：文鼎 PL 明体 CN 轮廓比文鼎 PL 宋体 GB 更干净。

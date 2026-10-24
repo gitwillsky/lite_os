@@ -23,7 +23,6 @@ System Center、Music、窗口 resize/scroll/move）。UI 布局一变，坐标�
 
 ## 结果
 
-- 音频没有端到端 runtime 覆盖：[声音能力以可分析输出和真实全链路 gate 完成](audio-verification-gates.md)
-  中的 QEMU WAV 与全链路条目暂不满足；host/unit 层不变。
-- UI frame 预算（lite-runtime 契约的 60 Hz 目标）没有端到端门禁；内核 page-flip 节奏仍有覆盖。
-- 恢复条件：UI 重构完成后，按新的交互设计重建 UI 门禁，并且不依赖固定屏幕坐标。
+- 旧图形用户态整体移除，当前没有 UI 交互或音频端到端 runtime 覆盖。
+- 内核 page-flip、像素读回与 GPU 节奏仍由独立探针覆盖。
+- 新桌面按 Wayland 设计实现后重建 UI 门禁，音频混音另需多路真实输出验证；两者均不依赖固定屏幕坐标。

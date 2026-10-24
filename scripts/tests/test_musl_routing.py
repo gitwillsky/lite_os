@@ -107,7 +107,8 @@ class MuslRoutingTests(unittest.TestCase):
                 return module.MUSL_SHA256
 
             with (
-                patch.object(module, "WORK", work),
+                patch.object(module, "WORK", work / "target"),
+                patch.object(module, "SOURCE", work / ".local"),
                 patch.object(module.urllib.request, "urlretrieve", side_effect=download) as retrieve,
                 patch.object(module, "sha256", side_effect=digest),
                 patch.object(module, "manifest_matches", return_value=True),

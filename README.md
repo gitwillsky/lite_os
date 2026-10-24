@@ -1,9 +1,9 @@
 # LiteOS
 
 LiteOS 是一个以 Rust `no_std` 实现的多架构操作系统 kernel，配套 musl/BusyBox 用户态、APK 包管理和
-React 图形桌面。通用 kernel 只通过编译期静态 `arch` 与 `platform` façade 消费硬件能力：
+UART shell；经典桌面按新计划实现中。通用 kernel 只通过编译期静态 `arch` 与 `platform` façade 消费硬件能力：
 
-- **AArch64 + QEMU `virt` + HVF**：Apple Silicon 上的 first-class 产品路径，图形桌面经 UTM 运行。
+- **AArch64 + QEMU `virt` + HVF**：Apple Silicon 上的 first-class 产品路径，图形设备与内核启动画面经 UTM 运行。
 - **RISC-V64 + QEMU `virt`**：保留 backend，持续通过编译、静态与启动门禁，不承担完整应用门禁。
 
 项目追求清晰的状态所有权、窄接口、可证明的错误与清理路径，以及可持续执行的单元、性能和运行时验证。
@@ -19,9 +19,9 @@ React 图形桌面。通用 kernel 只通过编译期静态 `arch` 与 `platform
 然后在仓库根目录执行：
 
 ```bash
-make setup     # 安装 LLVM、QEMU、e2fsprogs、rustup 固定 toolchain、UTM 与 Git LFS 资产
-make build     # 构建 kernel、musl、BusyBox、OpenSSL、图形用户态与 rootfs 基线
-make run-gui   # 在 UTM 窗口中启动图形桌面
+make setup     # 安装 LLVM、QEMU、e2fsprogs、rustup 固定 toolchain、UTM
+make build     # 构建 kernel、musl、BusyBox、OpenSSL与 rootfs 基线
+make run-gui   # 在 UTM 窗口中显示内核启动画面，shell 位于串口
 ```
 
 `make setup` 幂等，可重复执行；首次安装 rustup 后需新开 shell 让 `~/.cargo/bin` 进入 PATH。
@@ -30,7 +30,7 @@ make run-gui   # 在 UTM 窗口中启动图形桌面
 ## 日常开发循环
 
 1. 修改代码前先读 [AGENTS.md](AGENTS.md)（开发规则）和对应领域的架构文档（见下方“文档导航”）。
-2. 修改后运行 `make run-gui` 看效果：它增量构建 kernel，并只同步图形用户态到开发镜像，保留已装 APK 和用户数据。
+2. 修改后运行 `make run-gui` 看效果：它增量构建 kernel，并同步系统文件到开发镜像，保留已装 APK 和用户数据。
 3. 日常快速反馈用 `make verify-fast`（fmt、clippy、单元测试，不启动 QEMU）。
 4. 提交前必须通过 `make verify`（快速门禁 + release/artifact/架构门禁 + 全部 runtime gate + RISC-V 次级门禁）。
 
@@ -40,7 +40,7 @@ make run-gui   # 在 UTM 窗口中启动图形桌面
 |---|---|
 | `make setup` | 一次性准备 host 工具链与依赖 |
 | `make build` | 构建全部产物与只读 rootfs 基线 `target/rootfs/<arch>.img` |
-| `make run-gui` | UTM 图形桌面；Ctrl-C 只停止该 VM |
+| `make run-gui` | UTM 图形设备与内核启动画面；Ctrl-C 只停止该 VM |
 | `make run` | 无窗口 QEMU，串口在当前终端，用于非图形调试 |
 | `make verify-fast` | host 静态检查与单元测试 |
 | `make verify-runtime` | 构建一次后串行运行全部 QEMU/UTM runtime gate |
@@ -69,11 +69,10 @@ make run-gui   # 在 UTM 窗口中启动图形桌面
 | `kernel/` | `no_std` kernel：`arch`/`platform` backend、内存、进程调度、VFS/ext4、IPC/socket、DRM/evdev/音频驱动、syscall |
 | `syscall-abi/` | Linux 64-bit syscall 编号与 UAPI 定义 |
 | `bootloader/` | RISC-V 启动链；AArch64 不需要 |
-| `user/` | Rust 用户态 workspace：compositor、lite-runtime（GUI/JS 运行时库）、各窗口应用、audio-service、terminal-session 等，见 [user/README.md](user/README.md) |
-| `ui/` | React 桌面与应用前端（desktop、file-manager、music-player、my-computer、terminal），`explorer` 为共享文件浏览组件，`design-system` 为共享控件与主题 |
+| `user/` | 基础 Rust 库、BusyBox init 配置与 diagnostics，见 [user/README.md](user/README.md) |
 | `tools/` | `architecture-check`（架构/依赖/文档围栏）、`architecture-bench`、`kernel-unit`、`scheduler-unit` |
 | `scripts/` | 构建、运行与门禁脚本；`workflow.py` 是唯一编排 owner，Makefile 只是稳定入口 |
-| `assets/` | 字体、光标、图标、启动画面、预置音乐（Git LFS） |
+| `assets/` | 经典桌面字体、光标、图标与启动画面 |
 | `docs/` | 架构、契约、ABI 矩阵、规范基线与设计决策 |
 
 ## 开发规则速览
@@ -95,36 +94,10 @@ make run-gui   # 在 UTM 窗口中启动图形桌面
 - Linux 用户态 ABI 支持矩阵与已知缺口：[docs/syscall-support.md](docs/syscall-support.md)
 - 固定的工具链、上游版本与来源：[docs/standards-baseline.md](docs/standards-baseline.md)
 
-## 当前进度（2026-10-05 快照）
+## 当前实现边界
 
-本节是阶段性快照；能力的权威描述以上述文档为准。
+旧图形用户态和用户态音频服务已拆除。当前 init 监督网络服务和 UART shell，显示器保留内核启动画面；
+不提供登录、桌面应用、显示器文本 VT 或 seat 切换。kernel DRM/evdev、ALSA 混音和经典桌面素材保留。
 
-### 已经可用
-
-- AArch64/HVF 下 kernel 启动并运行 React 图形桌面：compositor 独占 DRM/evdev，经 VirGL 3D 加速合成，支持窗口移动、
-  最大化/半屏、Dock、Alt+Tab 切换、文本光标闪烁与毛玻璃背景。
-- 窗口应用：文件管理器、终端（PTY）、音乐播放器（VirtIO Sound + 系统 mixer）、我的电脑。
-- 用户态：musl 动态链接、BusyBox、标准库 Rust 应用、Alpine APK 包管理（curl、SQLite、Git 闭包已验证）、TLS。
-- 存储与网络：ext4（`mke2fs -t ext4` 默认 profile：extent、htree、metadata_csum、orphan_file）+ JBD2 journal、page cache；AF_UNIX、IPv4 TCP/UDP 与 AF_PACKET socket。
-- Agent 开发镜像：guest 内可运行固定版本的 Node/npm 与 Codex/Claude CLI。
-- 新 Mac 可通过 `make setup` 一条命令准备开发环境。
-
-### 最近完成（2026-10-05）
-
-- 新增 `make setup`；Rust toolchain 升级到新 nightly，并为 AArch64 musl 补齐 compiler-rt `__multc3`。
-- OpenSSL、compiler-rt、npm 依赖改走国内镜像；`ui/package-lock.json` 去除私有 registry 地址。
-- 升级已被 Alpine 上游移除的 bootstrap 与应用 APK 版本。
-- root filesystem 从 ext2 直接升级为 ext4，不保留 ext2 路径；kernel-unit 以 `e2fsck -fn` 裁决 kernel 写出的结构。
-  已有开发镜像 `fs-aarch64.img` 需执行 `make reset-rootfs` 重建。
-
-### 待处理
-
-- UI 交互类 runtime 门禁（audio、frame-timing）已移除，UI 重构后按新的交互设计重建；内核显示/GPU 由不依赖 UI 的
-  `verify_gpu` 裁决。音频目前没有端到端 runtime 覆盖，见 [ADR](docs/decisions/ui-interaction-gates-deferred.md)。
-- 当前重心不在 UI：桌面全局快捷键表与命令中心启动面板的 bundle 测试已移除，后续回到 UI 时需按当时的交互设计重建。
-- architecture-check 仍有 1000 行 review 提示（非失败）：`compositor/src/gpu.rs`、`gpu/paint.rs`、
-  `display-proto/src/paint.rs`、`lite-runtime/src/renderer/gpu_paint.rs`，继续扩展前应先审视其 owner/interface 拆分。
-- 本轮目标是学习型内核的核心正确性：使用现有 buddy/slab、VMA AVL、有序调度/deadline 队列和 FIFO，保持唯一状态 owner、可回滚 OOM 与明确的资源退休顺序。
-- 网络目标为一张物理 NIC 加 lo 的 IPv4 TCP/UDP，继续使用 smoltcp；IPv6、多网卡不在当前目标内。
-- 已接入 inotify、queued realtime signal、System V IPC 及有限 namespace/seccomp/swap 路径，精确支持范围以 ABI 矩阵为准。
-- 暂不扩展完整 namespace/seccomp 隔离、futex PI、复杂内存回收策略、io_uring 等子系统；Agent 镜像仍无完整 sandbox。
+新图形栈按[经典桌面与 Win32 运行时计划](docs/plans/classic-desktop.md)使用公开 Wayland/ALSA 协议实现。
+音频尚缺多路真实输出和 amixer consumer 验证；新桌面尚未实现，不能把构建或内核门禁通过视作桌面验收。

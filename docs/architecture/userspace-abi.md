@@ -25,10 +25,9 @@
   exec 原子替换；`/proc/<pid>/exe` 可跟随 rename/unlink 并作为 magic link 再打开当前映像。
 - timerfd 是标准匿名 OFD：`TimerQueue` 独占 clock/setting/deadline index，`TimerFd` 独占未读
   expiration counter 与 poll/epoll readiness；最后一个 fd/OFD 引用释放时同步撤销 timer record。
-- 产品 userspace 是按所选架构原生构建的固定 musl runtime、BusyBox `init + ash`、普通 Rust `std`
-  binary `audio-service`/`compositor`/`desktop` 等 app bin/`terminal-session`、
-  `audio-proto`/`quickjs-runtime`/`display-proto`/`linux-uapi` library 和单 ELF
-  `liteos-stress` diagnostics。`user/` 是单一 Cargo workspace 与 lockfile；
+- 产品 userspace 是按所选架构原生构建的固定 musl runtime、BusyBox `init + ash`、网络服务与单 ELF
+  `liteos-stress` diagnostics。Rust 库保留 `linux-uapi`、`keyboard`、`terminal-model` 与 `terminal-font`，
+  归属单一 `user/` workspace 与 lockfile；当前不安装图形或用户态音频服务。
   kernel、rootfs、APK 与 cache 都携带同一个 architecture identity。
 - 标准 Rust consumer 使用官方 `aarch64-unknown-linux-musl`/`riscv64gc-unknown-linux-musl`
   target 与普通 `fn main`；builder 从固定 rust-src 构建 `std + panic_abort`，从同一源码树构建并
@@ -39,19 +38,16 @@
   应用不再重复声明这些 FFI。ALSA/DRM/evdev/PTY ioctl、memfd、`poll` 与 SCM_RIGHTS 等 Linux
   专有 UAPI 不属于跨平台 `std` 稳定 surface，由内部
   `linux-uapi::{alsa,drm,input,pty,process,shared_memory,unix}` 深模块独占 raw musl
-  FFI、layout/常量和 RAII；应用、`audio-proto` 与 `display-proto` 只消费安全 typed interface。
+  FFI、layout/常量和 RAII；consumer 只使用安全 typed interface。
 - write/send 的 stack/heap staging 统一由 `UserInputStaging` 管理 initialized prefix，memory copyin 直接写未初始化 storage。代表样本包含两条 64 KiB socket staging 和一条 1 MiB regular staging，共 1,179,648 bytes；其 copyin 前预清零成本降为 0。
 - 普通 fork 从多线程 parent 只复制 calling Thread，child 取得独立 process owner 与 COW
   AddressSpace；这使 Node/libuv 等标准 launcher 可在 sibling Thread 存活时 fork/exec，
   而 parent 的其他 Thread 不进入 child graph。多线程 Process 原地 exec 仍未开放。
 - rootfs 由对应 Alpine architecture repository 的固定 package/key/摘要输入构造；运行时
   `/etc/apk/repositories` 只启用同一稳定分支的 `main` 与 `community`，不接入 edge/testing。
-  BusyBox `env` 同时发布标准 `/bin/env` 与 `/usr/bin/env`；login profile 与图形 Terminal 的
-  PTY 会话都把 `/usr/local/bin` 纳入同一标准 PATH，使 npm/pnpm 等全局安装的
+  BusyBox `env` 同时发布标准 `/bin/env` 与 `/usr/bin/env`；login profile 把 `/usr/local/bin` 纳入同一标准 PATH，使 npm/pnpm 等全局安装的
   `#!/usr/bin/env node` 入口和开发实例中的 Codex 可直接执行。增量用户态同步拥有
   `/etc/profile`，已有持久镜像不会继续保留旧路径。
-  图形 Terminal 的确定性 PTY 环境还显式发布 `USER=root` 与 `SHELL=/bin/sh`；Claude 等需要
-  user/shell discovery 的原生 CLI 不得依赖被 `env_clear` 移除的宿主环境。
   BusyBox 同时提供 `add-shell`/`remove-shell`，使 Bash 等 stable APK 的 maintainer script
   通过标准 `/etc/shells` owner 完成安装。
   `liteos-base` 同时携带源码构建的 musl 头文件、`crt*.o` 与静态库，并声明 `musl-dev=1.2.6`；

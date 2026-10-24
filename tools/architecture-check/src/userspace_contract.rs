@@ -8,8 +8,7 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     check_ffi_owners(root, errors);
     check_boot_route(root, errors);
     check_aarch64_el0_execution_access(root, errors);
-    check_ui_product(root, errors);
-    check_ui_performance_path(root, errors);
+    check_graphics_device_path(root, errors);
     check_assets(root, errors);
 }
 
@@ -37,23 +36,12 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
         "Cargo.lock",
         "Cargo.toml",
         "README.md",
-        "audio-proto",
-        "audio-service",
-        "apps",
         "base",
-        "compositor",
-        "console",
         "diagnostics",
-        "display-proto",
         "keyboard",
         "linux-uapi",
-        "lite-runtime",
-        "quickjs-runtime",
-        "seat-proto",
-        "seatd",
         "terminal-font",
         "terminal-model",
-        "terminal-session",
     ])
     .into_iter()
     .map(str::to_owned)
@@ -69,52 +57,18 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
         .unwrap_or_default();
     if actual != expected {
         errors.push(format!(
-            "user/: expected the LiteUI runtime library + app-binary track {expected:?}, found {actual:?}"
+            "user/: expected the UART baseline and retained standard libraries {expected:?}, found {actual:?}"
         ));
     }
-    // Obsolete GUI tracks must not reappear at the top level; each app now lives
-    // under `user/apps/<id>` as its own binary linking the `lite-runtime` lib.
-    for forbidden in ["desktop", "splash", "terminal", "lite-ui"] {
-        if root.join("user").join(forbidden).exists() {
-            errors.push(format!(
-                "user/{forbidden}: obsolete GUI track must be removed"
-            ));
-        }
-    }
     for required in [
-        "compositor/src/lib.rs",
-        "compositor/src/boot.rs",
-        "compositor/src/scanout.rs",
-        "compositor/src/session.rs",
-        "audio-proto/src/lib.rs",
-        "audio-proto/src/ring.rs",
-        "audio-proto/src/transport.rs",
-        "audio-service/src/main.rs",
-        "audio-service/src/mixer.rs",
-        "audio-service/src/service.rs",
-        "display-proto/src/lib.rs",
-        "display-proto/src/scene.rs",
-        "lite-runtime/src/lib.rs",
-        "lite-runtime/src/host/extension.rs",
-        "lite-runtime/src/audio/mod.rs",
-        "lite-runtime/src/audio/decode.rs",
-        "lite-runtime/src/renderer.rs",
-        "apps/desktop/src/main.rs",
-        "apps/file-manager/src/main.rs",
-        "apps/my-computer/src/main.rs",
-        "apps/terminal/src/main.rs",
-        "apps/music-player/src/main.rs",
-        "quickjs-runtime/src/raw.rs",
-        "quickjs-runtime/vendor/quickjs/quickjs.c",
-        "console/src/main.rs",
-        "seat-proto/src/lib.rs",
-        "seatd/src/main.rs",
-        "terminal-session/src/lib.rs",
+        "keyboard/src/lib.rs",
+        "linux-uapi/src/lib.rs",
+        "terminal-font/src/lib.rs",
         "terminal-model/src/lib.rs",
     ] {
         if !root.join("user").join(required).is_file() {
             errors.push(format!(
-                "user/{required}: required product owner is missing"
+                "user/{required}: required library owner is missing"
             ));
         }
     }
@@ -123,32 +77,12 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
 fn check_workspace(root: &Path, errors: &mut Vec<String>) {
     let user = fs::read_to_string(root.join("user/Cargo.toml")).unwrap_or_default();
     for required in [
-        "\"audio-proto\"",
-        "\"audio-service\"",
-        "\"compositor\"",
-        "\"console\"",
-        "\"display-proto\"",
         "\"keyboard\"",
         "\"linux-uapi\"",
-        "\"lite-runtime\"",
-        "\"apps/desktop\"",
-        "\"apps/file-manager\"",
-        "\"apps/my-computer\"",
-        "\"apps/terminal\"",
-        "\"apps/music-player\"",
-        "\"quickjs-runtime\"",
-        "\"seat-proto\"",
-        "\"seatd\"",
         "\"terminal-font\"",
         "\"terminal-model\"",
-        "\"terminal-session\"",
-        "audio-proto = { path = \"audio-proto\" }",
-        "quickjs-runtime = { path = \"quickjs-runtime\" }",
-        "symphonia = { version = \"=0.6.0\", default-features = false, features = [\"all\", \"opt-simd-neon\"] }",
-        "cssparser = \"=0.37.0\"",
-        "taffy = \"=0.12.2\"",
-        "swash = { version = \"=0.2.5\", default-features = false, features = [\"std\", \"scale\", \"render\"] }",
-        "version = \"=0.11.0\"",
+        "linux-uapi = { path = \"linux-uapi\" }",
+        "unicode-width = \"=0.2.2\"",
     ] {
         if !user.contains(required) {
             errors.push(format!("user/Cargo.toml: missing `{required}`"));
@@ -156,22 +90,10 @@ fn check_workspace(root: &Path, errors: &mut Vec<String>) {
     }
     let root_workspace = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
     for excluded in [
-        "\"user/audio-proto\"",
-        "\"user/audio-service\"",
-        "\"user/compositor\"",
-        "\"user/console\"",
-        "\"user/display-proto\"",
         "\"user/keyboard\"",
         "\"user/linux-uapi\"",
-        "\"user/lite-runtime\"",
-        "\"user/apps/desktop\"",
-        "\"user/apps/music-player\"",
-        "\"user/quickjs-runtime\"",
-        "\"user/seat-proto\"",
-        "\"user/seatd\"",
         "\"user/terminal-font\"",
         "\"user/terminal-model\"",
-        "\"user/terminal-session\"",
     ] {
         if !root_workspace.contains(excluded) {
             errors.push(format!(
@@ -188,15 +110,14 @@ fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
         return;
     }
     for source in sources {
-        let allowed = source.starts_with(root.join("user/linux-uapi"))
-            || source == root.join("user/quickjs-runtime/src/raw.rs");
+        let allowed = source.starts_with(root.join("user/linux-uapi"));
         if allowed {
             continue;
         }
         let text = fs::read_to_string(&source).unwrap_or_default();
         if text.contains("extern \"C\"") || text.contains("#[link(") {
             errors.push(format!(
-                "{}: raw FFI belongs only to linux-uapi or quickjs-runtime/raw.rs",
+                "{}: raw FFI belongs only to linux-uapi",
                 source.display()
             ));
         }
@@ -205,117 +126,46 @@ fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
 
 fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
     let inittab = fs::read_to_string(root.join("user/base/inittab")).unwrap_or_default();
-    let expected = "::sysinit:/etc/init.d/rcS\n::respawn:/bin/audio-service\n::respawn:/bin/seatd\n::respawn:/bin/console\n::once:/etc/init.d/graphical-session /bin/compositor\n::once:/etc/init.d/graphical-session /bin/desktop\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
+    let expected =
+        "::sysinit:/etc/init.d/rcS\n::respawn:/etc/init.d/network-service\n::respawn:-/bin/sh\n";
     if inittab != expected {
         errors.push(
-            "user/base/inittab: must mount pseudo filesystems through rcS first, then supervise the audio service, seat arbiter, text console, compositor, React desktop, network and UART recovery exactly once"
+            "user/base/inittab: must mount pseudo filesystems through rcS first, then supervise network and UART shell exactly once"
                 .to_owned(),
         );
     }
-    let graphical =
-        fs::read_to_string(root.join("user/base/graphical-session")).unwrap_or_default();
-    for required in ["/bin/compositor --probe", "while :", "\"$@\""] {
-        if !graphical.contains(required) {
-            errors.push(format!("user/base/graphical-session: missing `{required}`"));
-        }
-    }
     let builder = fs::read_to_string(root.join("scripts/verify_busybox.py")).unwrap_or_default();
     for required in [
-        "def build_compositor(",
-        "def build_audio_service(",
-        "def build_app_binary(",
-        "def build_terminal_session(",
-        "def build_console(",
-        "def build_seatd(",
-        "def build_seatctl(",
-        "def build_ui_assets(",
-        "/bin/audio-service",
-        "/bin/compositor",
-        "/bin/desktop",
-        "/bin/file-manager",
-        "/bin/my-computer",
-        "/bin/music-player",
-        "/bin/terminal",
-        "/bin/terminal-session",
-        "/usr/lib/lite-runtime/runtime.js",
-        "/usr/share/liteos/liteos-icons.ttf",
-        "/usr/share/liteos/desktop/main.js",
-        "/usr/share/liteos/apps/terminal/app.json",
-        "/usr/share/liteos/apps/music-player/app.json",
+        "def base_userland(",
+        "user/base/inittab",
+        "user/base/rcS",
+        "user/base/profile",
+        "boot_scene()",
     ] {
         if !builder.contains(required) {
             errors.push(format!("scripts/verify_busybox.py: missing `{required}`"));
         }
     }
     for forbidden in [
-        "/bin/lite-ui",
-        "/bin/splash",
-        "startmenu.conf",
-        "wallpaper.xrgb",
+        "build_ui_assets",
+        "build_graphical_userland",
+        "/bin/audio-service",
+        "/bin/compositor",
+        "ui/package.json",
     ] {
         if builder.contains(forbidden) {
             errors.push(format!(
-                "scripts/verify_busybox.py: obsolete product `{forbidden}` remains"
+                "scripts/verify_busybox.py: retired userland `{forbidden}` remains"
             ));
         }
     }
-}
-
-fn check_ui_product(root: &Path, errors: &mut Vec<String>) {
-    let package = fs::read_to_string(root.join("ui/package.json")).unwrap_or_default();
-    for required in [
-        "\"react\": \"19.2.7\"",
-        "\"react-reconciler\": \"0.33.0\"",
-        "\"esbuild\": \"0.28.1\"",
-    ] {
-        if !package.contains(required) {
-            errors.push(format!("ui/package.json: missing `{required}`"));
-        }
-    }
-    for required in [
-        "ui/build.mjs",
-        "ui/package-lock.json",
-        "ui/src/runtime/renderer.ts",
-        "ui/src/design-system/shell.tsx",
-        "ui/src/design-system/system-icons.generated.ts",
-        "ui/src/design-system/window.tsx",
-        "ui/src/desktop/main.tsx",
-        "ui/src/desktop/style.css",
-        "ui/src/terminal/main.tsx",
-        "ui/src/terminal/app.json",
-        "ui/src/music-player/main.tsx",
-        "ui/src/music-player/app.json",
-    ] {
-        if !root.join(required).is_file() {
-            errors.push(format!(
-                "{required}: required React product source is missing"
-            ));
-        }
+    if root.join("user/base/graphical-session").exists() || root.join("ui").exists() {
+        errors.push("retired graphical session and React frontend must remain absent".to_owned());
     }
 }
 
-fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
+fn check_graphics_device_path(root: &Path, errors: &mut Vec<String>) {
     let required = [
-        (
-            "user/compositor/src/lib.rs",
-            "scanout.compose_move(",
-            "window drag must use compositor-side damage composition",
-        ),
-        (
-            "user/compositor/src/session.rs",
-            "let mut app_ids = [0; MAX_APP_SURFACES];",
-            "compositor poll must use fixed-capacity app staging",
-        ),
-        (
-            "user/compositor/src/scanout.rs",
-            "move_frames: MoveFrames",
-            "window-move presentation must have one fixed-capacity pacing owner",
-        ),
-        (
-            "user/compositor/src/scanout.rs",
-            "self.device.move_cursor(&self.topology, position)",
-            "pointer motion must use the hardware cursor queue without scene composition",
-        ),
         (
             "kernel/src/virtio/gpu.rs",
             "notify_queue(CURSOR_QUEUE)",
@@ -327,69 +177,9 @@ fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
             "cursor motion must coalesce in the adapter instead of blocking userspace",
         ),
         (
-            "user/compositor/src/input.rs",
-            "EV_SYN if event.code() == SYN_REPORT",
-            "hardware cursor motion must preserve complete evdev report cadence",
-        ),
-        (
-            "user/compositor/src/gpu.rs",
-            "const EFFECT_TARGET_CAPACITY: usize = display_proto::MAX_DISPLAY_STACK_DEPTH * 2 + 3;",
-            "GPU effects must reuse one protocol-bounded target pool",
-        ),
-        (
-            "user/compositor/src/gpu.rs",
-            "self.context.exec(commands.words(), &resources)",
-            "one render pass must retain a single bounded execbuffer seam",
-        ),
-        (
             "scripts/utm_runtime.py",
             "agent-mouse=off",
             "UTM pointer input must stay on the sole virtio-tablet path",
-        ),
-        (
-            "user/compositor/src/session.rs",
-            "PollFd::new(self.device.as_fd(), PollEvents::READ)",
-            "window-move page-flip completion must join the compositor poll owner",
-        ),
-        (
-            "user/lite-runtime/src/display.rs",
-            "submitted: VecDeque<u64>",
-            "LiteUI commits must retain asynchronous revision ordering",
-        ),
-        (
-            "user/lite-runtime/src/lib.rs",
-            "state.composition_is_dirty()",
-            "foreign-surface adoption must preserve desktop raster pixels",
-        ),
-        (
-            "user/compositor/src/lib.rs",
-            "render_display_list_excluding(",
-            "window drag must rasterize exactly one underlay after authorization",
-        ),
-        (
-            "user/compositor/src/session.rs",
-            "self.idle_targets.insert(\n            buffer.owner,\n            buffers::PaintTarget {\n                pixels: buffer.pixels,",
-            "retired GPU paint targets must return to the per-owner reuse path",
-        ),
-        (
-            "user/display-proto/src/paint.rs",
-            "pub base_revision: u64",
-            "retained display lists must name their exact pixel base revision",
-        ),
-        (
-            "user/compositor/src/gpu.rs",
-            "prepare_retained_target",
-            "retained GPU paint must copy and replace only declared damage",
-        ),
-        (
-            "user/lite-runtime/src/renderer/retained.rs",
-            "classify_gpu_paint",
-            "LiteUI must derive local damage from retained host identity",
-        ),
-        (
-            "user/lite-runtime/src/display.rs",
-            "paint_revision: u64",
-            "retained paint bases must not be inferred from interleaved scene revisions",
         ),
     ];
     for (path, marker, failure) in required {
@@ -398,48 +188,9 @@ fn check_ui_performance_path(root: &Path, errors: &mut Vec<String>) {
             errors.push(format!("{path}: {failure}"));
         }
     }
-    let scanout =
-        fs::read_to_string(root.join("user/compositor/src/scanout.rs")).unwrap_or_default();
-    if scanout.contains("dirty_framebuffer(") || scanout.contains("DRM_IOCTL_MODE_DIRTYFB") {
-        errors.push(
-            "user/compositor/src/scanout.rs: hardware cursor presentation must not create a DIRTYFB path"
-                .to_owned(),
-        );
-    }
-    let gpu = fs::read_to_string(root.join("user/compositor/src/gpu.rs")).unwrap_or_default();
-    if gpu.contains("target.wait()") {
-        errors.push(
-            "user/compositor/src/gpu.rs: render pass must not synchronously wait on its target"
-                .to_owned(),
-        );
-    }
-    let display =
-        fs::read_to_string(root.join("user/lite-runtime/src/display.rs")).unwrap_or_default();
-    if display.contains("wait_presented") {
-        errors.push(
-            "user/lite-ui/src/display.rs: synchronous presentation wait blocks latest-only pacing"
-                .to_owned(),
-        );
-    }
 }
 
 fn check_assets(root: &Path, errors: &mut Vec<String>) {
-    // Checked UI text faces: subsetted Noto Sans CJK SC OpenType (CFF
-    // outlines, "OTTO" sfnt version) consumed by the runtime parley/swash
-    // text path.
-    for (path, size) in [
-        ("assets/fonts/liteos-ui-regular.otf", 1_528_936),
-        ("assets/fonts/liteos-ui-bold.otf", 1_532_156),
-    ] {
-        let face = fs::read(root.join(path)).unwrap_or_default();
-        if face.get(..4) != Some(b"OTTO") || face.len() != size {
-            errors.push(format!("{path}: checked UI face identity changed"));
-        }
-    }
-    let icon_face = fs::read(root.join("assets/fonts/liteos-icons.ttf")).unwrap_or_default();
-    if icon_face.get(..4) != Some(b"\0\x01\0\0") || icon_face.len() != 1_376 {
-        errors.push("assets/fonts/liteos-icons.ttf: checked icon face identity changed".to_owned());
-    }
     let terminal_atlas = fs::read(root.join("assets/fonts/liteos-terminal.a8")).unwrap_or_default();
     if terminal_atlas.get(..8) != Some(b"LTA8\0\0\0\x03") || terminal_atlas.len() != 9_172_472 {
         errors.push(
@@ -448,9 +199,8 @@ fn check_assets(root: &Path, errors: &mut Vec<String>) {
     }
     let boot_scene = fs::read(root.join("assets/classic/boot-scene.lbs")).unwrap_or_default();
     if boot_scene.get(..4) != Some(b"LBS1") || boot_scene.len() != 30_416 {
-        errors.push(
-            "assets/classic/boot-scene.lbs: checked boot scene identity changed".to_owned(),
-        );
+        errors
+            .push("assets/classic/boot-scene.lbs: checked boot scene identity changed".to_owned());
     }
     for removed in [
         "assets/wallpaper.xrgb",

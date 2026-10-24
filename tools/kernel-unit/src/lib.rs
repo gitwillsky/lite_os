@@ -121,14 +121,6 @@ mod memory_sparse;
 mod kmsg_wire;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/audio/codec.rs"]
-mod alsa_codec;
-
-#[cfg(test)]
-#[path = "tests/audio.rs"]
-mod audio_tests;
-
-#[cfg(test)]
 #[path = "../../../kernel/src/ipc/receive_buffer.rs"]
 #[allow(dead_code)]
 mod receive_buffer;

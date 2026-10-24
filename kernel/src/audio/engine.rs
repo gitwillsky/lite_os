@@ -21,7 +21,10 @@ pub(super) const SUBSTREAMS: usize = 8;
 /// 混音器保持的硬件队列深度（period）。小于设备的 [`PCM_PERIODS`] 个槽位，留出余量吸收完成回调的抖动。
 const LEAD_PERIODS: usize = 2;
 
-const _: () = assert!(SUBSTREAMS <= u8::BITS as usize, "contributor mask is one byte");
+const _: () = assert!(
+    SUBSTREAMS <= u8::BITS as usize,
+    "contributor mask is one byte"
+);
 const _: () = assert!(LEAD_PERIODS <= PCM_PERIODS);
 
 /// 子流环形缓冲的读取接口；`offset` 是缓冲内字节偏移。
@@ -215,9 +218,12 @@ impl<R: Ring> Engine<R> {
         stop_threshold: u64,
         boundary: u64,
     ) -> Result<(), ()> {
-        self.slots[index]
-            .state
-            .set_software(available_min, start_threshold, stop_threshold, boundary)
+        self.slots[index].state.set_software(
+            available_min,
+            start_threshold,
+            stop_threshold,
+            boundary,
+        )
     }
 
     /// Setup 或 Xrun → Prepared，指针清零。
@@ -347,7 +353,10 @@ impl<R: Ring> Engine<R> {
             for index in each_bit(ready) {
                 let slot = &self.slots[index];
                 let offset = (slot.mixed % PCM_BUFFER_FRAMES as u64) as usize * PCM_FRAME_BYTES;
-                let read = slot.ring.as_ref().map(|ring| ring.read(offset, &mut period));
+                let read = slot
+                    .ring
+                    .as_ref()
+                    .map(|ring| ring.read(offset, &mut period));
                 if read == Some(Ok(())) {
                     accumulator.add(&period);
                     mixed |= 1 << index;

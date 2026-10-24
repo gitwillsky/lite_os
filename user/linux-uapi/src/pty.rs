@@ -39,7 +39,7 @@ impl PtySession {
     /// - `program`: Exact executable path; no shell lookup or default is applied.
     /// - `arguments`: Exact argv entries after argv[0].
     /// - `environment`: Application-owned variables added after the fixed
-    ///   terminal-session environment.
+    ///   terminal client environment.
     ///
     /// # Returns
     ///

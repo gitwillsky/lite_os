@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import io
 import lzma
 import shutil
@@ -17,6 +16,8 @@ import urllib.request
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from local_inputs import INPUTS
 
 from apk_cache import cached_apk_bootstrap
 from apk_rootfs import assemble_apk_rootfs, install_apk_crash_fixtures
@@ -55,6 +56,7 @@ from verify_musl import (
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = target_from_environment()
 WORK = ROOT / "target" / "busybox-runtime" / TARGET.arch
+SOURCE = INPUTS / "busybox" / TARGET.arch
 # 主 BusyBox gate 以完整 kernel command line 冷启动：root/rootfstype/rootwait/console 由内核消费，
 # LITEOS_BOOT_ENV 按 Linux 规则转交 init 环境并由 init 派生的 shell 继承，/proc/cmdline 原样回显。
 # `root=LABEL=` 经超级块卷标解析根设备（不依赖设备枚举顺序）。
@@ -78,14 +80,10 @@ BINARY_RECIPE_VERSION = 7
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext4 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
-ROOTFS_RECIPE_VERSION = 15
-# APK assembly temporarily holds both the installed tree and its signed base
-# package. The bundled FLAC makes the old 128 MiB image fail with ENOSPC during
-# that transaction, so the product baseline reserves 512 MiB to keep package
-# installation atomic.
+ROOTFS_RECIPE_VERSION = 16
+# APK assembly 同时保留安装树与已签名 base package；固定 512 MiB 容量为安装事务预留空间。
 ROOTFS_SIZE_MIB = 512
 RUST_USER_CARGO_CACHE_RECIPE_VERSION = 1
-UI_ASSET_RECIPE_VERSION = 2
 if TARGET.arch == "aarch64":
     BUSYBOX_ARCH = "arm64"
     BUSYBOX_TARGET_CFLAGS = "-march=armv8-a"
@@ -102,129 +100,6 @@ RUST_USER_RUSTFLAGS = (
     "-C relocation-model=pic -C panic=abort "
     "-C link-arg=-Wl,--gc-sections,-z,relro,-z,now,-z,noexecstack"
 )
-UI_REQUIRED_OUTPUTS = (
-    "runtime.js",
-    "desktop/main.js",
-    "desktop/style.css",
-    "desktop/assets/all-apps.png",
-    "desktop/assets/aurora-background.png",
-    "desktop/assets/aurora-logo.png",
-    "desktop/assets/liteos.png",
-    "desktop/assets/files.png",
-    "desktop/assets/music.png",
-    "desktop/assets/package.png",
-    "desktop/assets/power.png",
-    "desktop/assets/restart.png",
-    "desktop/assets/settings.png",
-    "desktop/assets/terminal.png",
-    "desktop/assets/volume.png",
-    "desktop/assets/wallpaper.png",
-    "terminal/app.json",
-    "terminal/main.js",
-    "terminal/style.css",
-    "terminal/assets/terminal.png",
-    "file-manager/app.json",
-    "file-manager/main.js",
-    "file-manager/style.css",
-    "file-manager/assets/caret-down.png",
-    "file-manager/assets/file-16.png",
-    "file-manager/assets/files.png",
-    "file-manager/assets/file.png",
-    "file-manager/assets/folder-16.png",
-    "file-manager/assets/folder.png",
-    "file-manager/assets/nav-back.png",
-    "file-manager/assets/nav-forward.png",
-    "file-manager/assets/nav-home.png",
-    "file-manager/assets/nav-up.png",
-    "file-manager/assets/sidebar-documents.png",
-    "file-manager/assets/sidebar-downloads.png",
-    "file-manager/assets/sidebar-home.png",
-    "file-manager/assets/sidebar-music.png",
-    "file-manager/assets/sidebar-pictures.png",
-    "file-manager/assets/sidebar-storage.png",
-    "file-manager/assets/sidebar-videos.png",
-    "file-manager/assets/view-grid.png",
-    "my-computer/app.json",
-    "my-computer/main.js",
-    "my-computer/style.css",
-    "my-computer/assets/caret-down.png",
-    "my-computer/assets/chev-down.png",
-    "my-computer/assets/chev-up.png",
-    "my-computer/assets/drive-16.png",
-    "my-computer/assets/drive.png",
-    "my-computer/assets/file-16.png",
-    "my-computer/assets/file.png",
-    "my-computer/assets/files.png",
-    "my-computer/assets/folder-16.png",
-    "my-computer/assets/folder.png",
-    "my-computer/assets/nav-back.png",
-    "my-computer/assets/nav-forward.png",
-    "my-computer/assets/nav-up.png",
-    "my-computer/assets/package.png",
-    "my-computer/assets/view-grid.png",
-    "music-player/app.json",
-    "music-player/main.js",
-    "music-player/style.css",
-    "music-player/assets/badge-netease.png",
-    "music-player/assets/badge-qq.png",
-    "music-player/assets/cover-placeholder.png",
-    "music-player/assets/file-16.png",
-    "music-player/assets/folder.png",
-    "music-player/assets/music.png",
-    "music-player/assets/next.png",
-    "music-player/assets/pause.png",
-    "music-player/assets/play.png",
-    "music-player/assets/prev.png",
-    "music-player/assets/search.png",
-)
-UI_EXTERNAL_INPUTS = (
-    ROOT / "assets/fonts/liteos-icons.json",
-    ROOT / "assets/fonts/liteos-icons.ttf",
-    ROOT / "assets/aurora/files.png",
-    ROOT / "assets/aurora/liteos.png",
-    ROOT / "assets/aurora/package.png",
-    ROOT / "assets/aurora/settings.png",
-    ROOT / "assets/aurora/terminal.png",
-    ROOT / "assets/aurora/view-grid.png",
-    ROOT / "assets/aurora/wallpaper.png",
-    ROOT / "assets/aurora-glyphs-src/all-apps.png",
-    ROOT / "assets/aurora-glyphs-src/nav-back.png",
-    ROOT / "assets/aurora-glyphs-src/nav-forward.png",
-    ROOT / "assets/aurora-glyphs-src/nav-home.png",
-    ROOT / "assets/aurora-glyphs-src/nav-up.png",
-    ROOT / "assets/aurora-glyphs-src/power.png",
-    ROOT / "assets/aurora-glyphs-src/restart.png",
-    ROOT / "assets/aurora-glyphs-src/volume.png",
-    ROOT / "assets/aurora-sidebar-src/documents.png",
-    ROOT / "assets/aurora-sidebar-src/downloads.png",
-    ROOT / "assets/aurora-sidebar-src/home.png",
-    ROOT / "assets/aurora-sidebar-src/music.png",
-    ROOT / "assets/aurora-sidebar-src/pictures.png",
-    ROOT / "assets/aurora-sidebar-src/storage.png",
-    ROOT / "assets/aurora-sidebar-src/videos.png",
-    ROOT / "assets/music-online-src/app-256.png",
-    ROOT / "assets/music-online-src/badge-netease.png",
-    ROOT / "assets/music-online-src/badge-qq.png",
-    ROOT / "assets/music-online-src/cover-placeholder.png",
-    ROOT / "assets/music-online-src/next.png",
-    ROOT / "assets/music-online-src/pause.png",
-    ROOT / "assets/music-online-src/play.png",
-    ROOT / "assets/music-online-src/prev.png",
-    ROOT / "assets/music-online-src/search.png",
-    ROOT / "assets/splash/aurora-background.png",
-    ROOT / "assets/splash/aurora-logo.png",
-    ROOT / "assets/sprites-src/caret-down.png",
-    ROOT / "assets/sprites-src/chev-down.png",
-    ROOT / "assets/sprites-src/chev-up.png",
-    ROOT / "assets/sprites-src/file.png",
-    ROOT / "assets/sprites-src/file-16.png",
-    ROOT / "assets/sprites-src/folder.png",
-    ROOT / "assets/sprites-src/folder-16.png",
-    ROOT / "assets/sprites-src/icon-drive.png",
-    ROOT / "assets/sprites-src/icon-drive-16.png",
-)
-BUNDLED_MUSIC_SOURCE = ROOT / "assets/music/跟太阳系说再见/二向箔降维打击.flac"
-BUNDLED_MUSIC_DESTINATION = "/root/Music/跟太阳系说再见-二向箔降维打击.flac"
 # BusyBox 的 make-time `ARCH=arm64|riscv` 会覆盖 recipe 环境。CC/LD 必须在执行
 # LiteOS wrapper 前恢复 canonical selector；缺少该边界时 wrapper 会把 BusyBox 的
 # architecture spelling 当成公共 `ARCH` 并在编译第一项 target object 时 fail-stop。
@@ -624,12 +499,13 @@ def source_payload() -> dict[str, object]:
 
 
 def source_cache_path() -> Path:
-    return WORK / "sources" / fingerprint(source_payload())
+    return SOURCE / "sources" / fingerprint(source_payload())
 
 
 def obtain_source() -> Path:
     """获取并缓存固定源码；完整目录只在校验和解压成功后发布。"""
-    archive = WORK / f"busybox-{BUSYBOX_VERSION}.tar.bz2"
+    SOURCE.mkdir(parents=True, exist_ok=True)
+    archive = SOURCE / f"busybox-{BUSYBOX_VERSION}.tar.bz2"
     if not archive.is_file() or sha256(archive) != BUSYBOX_SHA256:
         archive.unlink(missing_ok=True)
         temporary = archive.with_suffix(".download")
@@ -660,7 +536,7 @@ def obtain_source() -> Path:
     if manifest_matches(source, payload, ("Makefile", "scripts/kconfig/mconf.c")):
         return source
 
-    temporary = temporary_directory(WORK / "sources", "source")
+    temporary = temporary_directory(SOURCE / "sources", "source")
     try:
         run(
             ["tar", "-xjf", str(archive), "--strip-components=1", "-C", str(temporary)],
@@ -1146,40 +1022,6 @@ def rust_user_cargo_target(
     return WORK / "rust-user-cargo-targets" / fingerprint(compilation_payload)
 
 
-def ui_asset_payload(ui: Path, node_version: str, npm_version: str) -> dict[str, object]:
-    """构造 LiteUI bundle 的完整 host 构建输入身份。
-
-    Args:
-        ui: 包含 lockfile、build recipe 与 TypeScript/CSS 输入的目录。
-        node_version: 实际执行的 Node.js 版本字符串。
-        npm_version: 实际执行的 npm 版本字符串。
-
-    Returns:
-        排除 mutable output/dependency directory、包含外部 presentation assets 的规范 payload。
-
-    Raises:
-        OSError: 任一声明输入缺失或不可读。
-    """
-    inputs = tuple(
-        sorted(
-            path
-            for path in ui.rglob("*")
-            if path.is_file()
-            and path.relative_to(ui).parts[0] not in {"dist", "node_modules"}
-        )
-    )
-    return {
-        "kind": "lite-ui-assets",
-        "recipe_version": UI_ASSET_RECIPE_VERSION,
-        "node": node_version,
-        "npm": npm_version,
-        "inputs": {
-            str(path.relative_to(ROOT)): sha256(path)
-            for path in (*inputs, *UI_EXTERNAL_INPUTS)
-        },
-    }
-
-
 def build_rust_user_program(
     musl: MuslCachePaths,
     crate_name: str,
@@ -1248,13 +1090,6 @@ def build_rust_user_program(
     generation = generation_directory(WORK / "rust-user-program-generations", fingerprint(payload))
     env = build_environment()
     linker_variable = f"CARGO_TARGET_{RUST_USER_TARGET.upper().replace('-', '_')}_LINKER"
-    # `ring` (rustls TLS backend, pulled in by the online music player) compiles
-    # C sources via the `cc` crate, which by default probes for a
-    # `<triple>-gcc`. Point it at the pinned musl clang + sysroot for this
-    # target so the cross build finds a working C toolchain.
-    target_key = RUST_USER_TARGET.replace("-", "_")
-    cc_invocation = f"{musl.compiler} --target={TARGET.linux_triple}"
-    cflags = f"-nostdlibinc -isystem {musl.install}/usr/include"
     env.update(
         {
             "LITEOS_MUSL_CLANG": str(musl.compiler),
@@ -1265,9 +1100,6 @@ def build_rust_user_program(
             "CARGO_INCREMENTAL": "0",
             "CARGO_TARGET_DIR": str(cargo_target),
             linker_variable: str(ROOT / "scripts/musl_clang.py"),
-            f"CC_{target_key}": cc_invocation,
-            f"AR_{target_key}": str(musl.archiver),
-            f"CFLAGS_{target_key}": cflags,
             "RUSTFLAGS": (
                 f"{RUST_USER_RUSTFLAGS} "
                 f"-L native={libunwind.parent} -D warnings"
@@ -1322,69 +1154,6 @@ def build_rust_user_program(
     return entry / binary_name
 
 
-def build_compositor(musl: MuslCachePaths) -> Path:
-    """构建唯一 DRM/input/scanout owner。"""
-    return build_rust_user_program(
-        musl,
-        "compositor",
-        "compositor",
-        "compositor",
-        1,
-    )
-
-
-def build_app_binary(musl: MuslCachePaths, app_id: str) -> Path:
-    """构建一个链接 lite-runtime 库的应用二进制(desktop / 各 app)。
-
-    每个 app 是独立 crate(`user/apps/<id>`),crate 名与 bin 名均为 `<id>`,
-    链接通用运行时库 `lite-runtime`(QuickJS/React host、渲染器、事件循环)。
-    """
-    return build_rust_user_program(
-        musl,
-        app_id,
-        app_id,
-        f"app-{app_id}",
-        1,
-    )
-
-
-def build_terminal_session(musl: MuslCachePaths) -> Path:
-    """构建无窗体 PTY/VT helper。"""
-    return build_rust_user_program(
-        musl,
-        "terminal-session",
-        "terminal-session",
-        "terminal-session",
-        1,
-    )
-
-
-def build_console(musl: MuslCachePaths) -> Path:
-    """构建显示器上的文本控制台（seat 的 Text session）。"""
-    return build_rust_user_program(musl, "console", "console", "console", 1)
-
-
-def build_seatd(musl: MuslCachePaths) -> Path:
-    """构建显示器/键盘座位仲裁进程。"""
-    return build_rust_user_program(musl, "seatd", "seatd", "seatd", 1)
-
-
-def build_seatctl(musl: MuslCachePaths) -> Path:
-    """构建从 shell 切换座位的命令行工具。"""
-    return build_rust_user_program(musl, "seatd", "seatctl", "seatctl", 1)
-
-
-def build_session_launch(musl: MuslCachePaths) -> Path:
-    """构建唯一的单线程 session/exec trampoline。"""
-    return build_rust_user_program(
-        musl,
-        "linux-uapi",
-        "session-launch",
-        "session-launch",
-        1,
-    )
-
-
 def build_drm_flip_probe(musl: MuslCachePaths) -> Path:
     """构建内核显示/GPU 门禁使用的 DRM page-flip 探针；它不进入产品 rootfs。"""
     return build_rust_user_program(
@@ -1396,68 +1165,9 @@ def build_drm_flip_probe(musl: MuslCachePaths) -> Path:
     )
 
 
-def build_audio_service(musl: MuslCachePaths) -> Path:
-    """构建唯一 physical PCM 与 system mixer owner。"""
-    return build_rust_user_program(
-        musl,
-        "audio-service",
-        "audio-service",
-        "audio-service",
-        1,
-    )
-
-
-UI_NPM_REGISTRY = "https://registry.npmmirror.com"
-
-
-def build_ui_assets() -> Path:
-    """以唯一 lockfile 构建共享 React runtime、desktop 与 app bundles。"""
-    npm = shutil.which("npm")
-    node = shutil.which("node")
-    if npm is None or node is None:
-        raise RuntimeError("Node.js and npm are required to build LiteUI bundles")
-    ui = ROOT / "ui"
-    payload = ui_asset_payload(
-        ui,
-        run([node, "--version"], ui).strip(),
-        run([npm, "--version"], ui).strip(),
-    )
-    # OWNER: verify_busybox 在 WORK/.build.lock 下发布唯一 LiteUI bundle cache。
-    # PROOF: Node/npm、全部 ui 输入和 build.mjs 引用的外部图标进入身份，manifest 与必需产物完整后
-    # 才原子发布。
-    # FAILURE: 缺少此 cache 会让每次 run-gui 重复 npm ci/check/build。
-    identity = fingerprint(payload)
-    entry = WORK / "ui-assets" / identity
-    cached_outputs = tuple(f"output/{path}" for path in UI_REQUIRED_OUTPUTS)
-    if manifest_matches(entry, payload, cached_outputs):
-        print(f"LiteUI asset cache hit: {identity[:12]}")
-        return entry / "output"
-
-    # lockfile 只记录官方 registry URL 与 sha512 integrity；npm 默认把官方 host 替换为
-    # 这里的国内镜像，内容仍由 lockfile integrity 校验，镜像不会成为依赖身份的一部分。
-    run([npm, "ci", "--ignore-scripts", f"--registry={UI_NPM_REGISTRY}"], ui)
-    run([npm, "run", "check"], ui)
-    run([npm, "run", "build"], ui)
-    output = ui / "dist"
-    if any(not (output / path).is_file() for path in UI_REQUIRED_OUTPUTS):
-        raise RuntimeError("LiteUI build omitted a required product artifact")
-    generation = generation_directory(WORK / "ui-asset-generations", identity)
-    published = False
-    try:
-        shutil.copytree(output, generation / "output")
-        write_manifest(generation, payload)
-        publish_generation(generation, entry)
-        published = True
-    finally:
-        if not published:
-            shutil.rmtree(generation, ignore_errors=True)
-    print(f"LiteUI asset cache populated: {identity[:12]}")
-    return entry / "output"
-
-
 @dataclass(frozen=True)
 class UserlandArtifact:
-    """一个由 host 构建并安装到开发/rootfs 镜像的图形用户态文件。
+    """一个安装到开发/rootfs 镜像的系统文件。
 
     Attributes:
         source: 已构建并校验的 host 文件。
@@ -1470,110 +1180,19 @@ class UserlandArtifact:
     mode: int = 0o644
 
 
-def build_graphical_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
-    """构建图形会话的唯一可热同步文件集合。
-
-    Args:
-        musl: 与目标架构绑定的已校验 musl 工具链和 sysroot。
+def base_userland() -> tuple[UserlandArtifact, ...]:
+    """返回 UART 基线的系统文件；rootfs 构建和开发镜像同步共用此清单。
 
     Returns:
-        按 guest 绝对路径排序、无重复 destination 的完整文件集合。
-
-    Raises:
-        RuntimeError: Rust、frontend 构建或产物完整性检查失败。
+        按 guest 绝对路径排序的启动配置、关机命令和共享启动素材。
     """
-    ui = build_ui_assets()
-    artifacts = [
-        UserlandArtifact(build_audio_service(musl), "/bin/audio-service", 0o755),
-        UserlandArtifact(build_compositor(musl), "/bin/compositor", 0o755),
-        UserlandArtifact(build_console(musl), "/bin/console", 0o755),
-        UserlandArtifact(build_seatd(musl), "/bin/seatd", 0o755),
-        UserlandArtifact(build_seatctl(musl), "/bin/seatctl", 0o755),
-        # Each GUI app is its own binary (`/bin/<id>`) linking the lite-runtime
-        # library; the desktop shell spawns them by that path.
-        UserlandArtifact(build_app_binary(musl, "desktop"), "/bin/desktop", 0o755),
-        UserlandArtifact(
-            build_app_binary(musl, "file-manager"), "/bin/file-manager", 0o755
-        ),
-        UserlandArtifact(build_app_binary(musl, "my-computer"), "/bin/my-computer", 0o755),
-        UserlandArtifact(
-            build_app_binary(musl, "music-player"), "/bin/music-player", 0o755
-        ),
-        UserlandArtifact(build_app_binary(musl, "terminal"), "/bin/terminal", 0o755),
-        UserlandArtifact(build_session_launch(musl), "/bin/session-launch", 0o755),
-        UserlandArtifact(build_terminal_session(musl), "/bin/terminal-session", 0o755),
-        UserlandArtifact(ROOT / "user/base/inittab", "/etc/inittab"),
-        UserlandArtifact(ROOT / "user/base/rcS", "/etc/init.d/rcS", 0o755),
-        UserlandArtifact(ROOT / "user/base/profile", "/etc/profile"),
-        UserlandArtifact(
-            ROOT / "user/base/graphical-session",
-            "/etc/init.d/graphical-session",
-            0o755,
-        ),
+    return (
         UserlandArtifact(ROOT / "user/base/shutdown", "/bin/shutdown", 0o755),
-        UserlandArtifact(
-            ROOT / "assets/terminfo/l/liteos",
-            "/etc/terminfo/l/liteos",
-        ),
-        UserlandArtifact(
-            boot_scene(),
-            "/usr/share/liteos/boot-scene.lbs",
-        ),
-        UserlandArtifact(
-            ROOT / "assets/cursor.lc2",
-            "/usr/share/liteos/cursor.lc2",
-        ),
-        UserlandArtifact(
-            ROOT / "assets/cursor-pointer.lc2",
-            "/usr/share/liteos/cursor-pointer.lc2",
-        ),
-        UserlandArtifact(
-            ROOT / "assets/cursor-resize-ns.lc2",
-            "/usr/share/liteos/cursor-resize-ns.lc2",
-        ),
-        UserlandArtifact(
-            ROOT / "assets/cursor-resize-ew.lc2",
-            "/usr/share/liteos/cursor-resize-ew.lc2",
-        ),
-        UserlandArtifact(
-            ROOT / "assets/cursor-resize-nesw.lc2",
-            "/usr/share/liteos/cursor-resize-nesw.lc2",
-        ),
-        UserlandArtifact(
-            ROOT / "assets/cursor-resize-nwse.lc2",
-            "/usr/share/liteos/cursor-resize-nwse.lc2",
-        ),
-        UserlandArtifact(
-            ROOT / "assets/fonts/liteos-ui-regular.otf",
-            "/usr/share/liteos/liteos-ui-regular.otf",
-        ),
-        UserlandArtifact(
-            ROOT / "assets/fonts/liteos-ui-bold.otf",
-            "/usr/share/liteos/liteos-ui-bold.otf",
-        ),
-        UserlandArtifact(
-            ROOT / "assets/fonts/liteos-icons.ttf",
-            "/usr/share/liteos/liteos-icons.ttf",
-        ),
-        UserlandArtifact(
-            ROOT / "assets/fonts/liteos-terminal.a8",
-            "/usr/share/liteos/liteos-terminal.a8",
-        ),
-    ]
-    for source in sorted(path for path in ui.rglob("*") if path.is_file()):
-        relative = source.relative_to(ui)
-        if relative == Path("runtime.js"):
-            destination = "/usr/lib/lite-runtime/runtime.js"
-        elif relative.parts[0] == "desktop":
-            destination = f"/usr/share/liteos/{relative.as_posix()}"
-        else:
-            destination = f"/usr/share/liteos/apps/{relative.as_posix()}"
-        artifacts.append(UserlandArtifact(source, destination))
-    artifacts.sort(key=lambda artifact: artifact.destination)
-    destinations = [artifact.destination for artifact in artifacts]
-    if len(destinations) != len(set(destinations)):
-        raise RuntimeError("graphical userland contains duplicate guest paths")
-    return tuple(artifacts)
+        UserlandArtifact(ROOT / "user/base/rcS", "/etc/init.d/rcS", 0o755),
+        UserlandArtifact(ROOT / "user/base/inittab", "/etc/inittab"),
+        UserlandArtifact(ROOT / "user/base/profile", "/etc/profile"),
+        UserlandArtifact(boot_scene(), "/usr/share/liteos/boot-scene.lbs"),
+    )
 
 
 def musl_development_commands(install: Path) -> list[str]:
@@ -1666,11 +1285,6 @@ def create_image(
     image: Path,
 ) -> Path:
     """构造 BusyBox、唯一 musl runtime、标准 loader symlink 与固定 inittab。"""
-    with BUNDLED_MUSIC_SOURCE.open("rb") as music:
-        if music.read(4) != b"fLaC":
-            raise RuntimeError(
-                "bundled music is missing its Git LFS payload or is not FLAC"
-            )
     run(
         [
             sys.executable,
@@ -1685,15 +1299,13 @@ def create_image(
         ],
         ROOT,
     )
-    graphical_userland = build_graphical_userland(musl)
+    userland = base_userland()
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     commands = [
         "mkdir /etc",
         "mkdir /etc/init.d",
         "mkdir /etc/ssl",
-        "mkdir /etc/terminfo",
-        "mkdir /etc/terminfo/l",
         "mkdir /lib",
         "mkdir /run",
         "mkdir /root",
@@ -1708,33 +1320,17 @@ def create_image(
         "mkdir /usr",
         "mkdir /usr/bin",
         "mkdir /usr/lib",
-        "mkdir /usr/lib/lite-runtime",
         "mkdir /usr/share",
         "mkdir /usr/share/liteos",
-        "mkdir /usr/share/liteos/apps",
-        "mkdir /usr/share/liteos/apps/terminal",
-        "mkdir /usr/share/liteos/apps/terminal/assets",
-        "mkdir /usr/share/liteos/apps/file-manager",
-        "mkdir /usr/share/liteos/apps/file-manager/assets",
-        "mkdir /usr/share/liteos/apps/my-computer",
-        "mkdir /usr/share/liteos/apps/my-computer/assets",
-        "mkdir /usr/share/liteos/apps/music-player",
-        "mkdir /usr/share/liteos/apps/music-player/assets",
-        "mkdir /usr/share/liteos/desktop",
-        "mkdir /usr/share/liteos/desktop/assets",
         "mkdir /usr/share/udhcpc",
         "mkdir /var",
         "mkdir /var/cache",
         "mkdir /var/empty",
         "mkdir /var/lib",
-        "mkdir /var/lib/liteos",
-        "mkdir /var/lib/liteos/audio",
         "mkdir /var/tmp",
         "set_inode_field /var/tmp mode 041777",
         f"write {ROOT / 'user' / 'base' / 'passwd'} /etc/passwd",
         f"write {ROOT / 'user' / 'base' / 'group'} /etc/group",
-        f"write {BUNDLED_MUSIC_SOURCE} {BUNDLED_MUSIC_DESTINATION}",
-        f"set_inode_field {BUNDLED_MUSIC_DESTINATION} mode 0100644",
         f"write {ROOT / 'user' / 'base' / 'network-service'} /etc/init.d/network-service",
         "set_inode_field /etc/init.d/network-service mode 0100755",
         f"write {ROOT / 'user' / 'base' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
@@ -1752,8 +1348,8 @@ def create_image(
         f"symlink {TARGET.musl_loader} /usr/lib/libc.so",
         *musl_development_commands(musl.install),
     ]
-    # compositor 只消费 boot/cursor；Aurora presentation 与 app 资产由同一清单独占。
-    for artifact in graphical_userland:
+    # 启动配置与共享开机素材只有 base_userland 一份安装清单。
+    for artifact in userland:
         commands.append(f"write {artifact.source} {artifact.destination}")
         commands.append(
             f"set_inode_field {artifact.destination} mode 0100{artifact.mode:o}"
@@ -1818,37 +1414,6 @@ def create_image(
     )
     if "Mode:  01777" not in temporary_directory_metadata:
         raise RuntimeError("BusyBox rootfs /tmp must have mode 01777")
-    bundled_music_metadata = run(
-        [
-            str(find_debugfs()),
-            "-R",
-            f"stat {BUNDLED_MUSIC_DESTINATION}",
-            str(image),
-        ],
-        ROOT,
-    )
-    if (
-        "Type: regular" not in bundled_music_metadata
-        or "Mode:  0644" not in bundled_music_metadata
-        or (
-            f"Size: {BUNDLED_MUSIC_SOURCE.stat().st_size}"
-            not in bundled_music_metadata
-        )
-    ):
-        raise RuntimeError("BusyBox rootfs lacks the bundled music file")
-    with tempfile.TemporaryDirectory(prefix="liteos-bundled-music-") as directory:
-        readback = Path(directory) / "readback.flac"
-        run(
-            [
-                str(find_debugfs()),
-                "-R",
-                f"dump {BUNDLED_MUSIC_DESTINATION} {readback}",
-                str(image),
-            ],
-            ROOT,
-        )
-        if sha256(readback) != sha256(BUNDLED_MUSIC_SOURCE):
-            raise RuntimeError("BusyBox rootfs bundled music bytes differ from source")
     passwd = run([str(find_debugfs()), "-R", "cat /etc/passwd", str(image)], ROOT)
     group = run([str(find_debugfs()), "-R", "cat /etc/group", str(image)], ROOT)
     if "root:x:0:0:root:/root:/bin/sh" not in passwd or "root:x:0:" not in group:
@@ -1875,71 +1440,14 @@ def create_image(
     openssl_binary = run([str(find_debugfs()), "-R", "stat /bin/openssl", str(image)], ROOT)
     if "Type: regular" not in openssl_binary or "Mode:  0755" not in openssl_binary:
         raise RuntimeError("BusyBox rootfs lacks the verified HTTPS helper")
-    for session_binary in (
-        "/bin/audio-service",
-        "/bin/compositor",
-        "/bin/console",
-        "/bin/seatd",
-        "/bin/seatctl",
-        "/bin/desktop",
-        "/bin/file-manager",
-        "/bin/my-computer",
-        "/bin/music-player",
-        "/bin/terminal",
-        "/bin/session-launch",
-        "/bin/terminal-session",
-    ):
-        metadata = run(
-            [str(find_debugfs()), "-R", f"stat {session_binary}", str(image)], ROOT
-        )
-        if "Type: regular" not in metadata or "Mode:  0755" not in metadata:
-            raise RuntimeError(f"BusyBox rootfs lacks {session_binary}")
-    for asset in (
-        "/usr/share/liteos/boot-scene.lbs",
-        "/usr/share/liteos/cursor.lc2",
-        "/usr/share/liteos/cursor-pointer.lc2",
-        "/usr/share/liteos/cursor-resize-ns.lc2",
-        "/usr/share/liteos/cursor-resize-ew.lc2",
-        "/usr/share/liteos/cursor-resize-nesw.lc2",
-        "/usr/share/liteos/cursor-resize-nwse.lc2",
-        "/usr/share/liteos/liteos-ui-regular.otf",
-        "/usr/share/liteos/liteos-ui-bold.otf",
-        "/usr/share/liteos/liteos-icons.ttf",
-        "/usr/share/liteos/liteos-terminal.a8",
-        "/usr/lib/lite-runtime/runtime.js",
-        "/usr/share/liteos/desktop/main.js",
-        "/usr/share/liteos/desktop/style.css",
-        "/usr/share/liteos/desktop/assets/liteos.png",
-        "/usr/share/liteos/desktop/assets/files.png",
-        "/usr/share/liteos/desktop/assets/terminal.png",
-        "/usr/share/liteos/desktop/assets/wallpaper.png",
-        "/usr/share/liteos/apps/terminal/app.json",
-        "/usr/share/liteos/apps/terminal/main.js",
-        "/usr/share/liteos/apps/terminal/style.css",
-        "/usr/share/liteos/apps/file-manager/app.json",
-        "/usr/share/liteos/apps/file-manager/main.js",
-        "/usr/share/liteos/apps/file-manager/style.css",
-        "/usr/share/liteos/apps/my-computer/app.json",
-        "/usr/share/liteos/apps/my-computer/main.js",
-        "/usr/share/liteos/apps/my-computer/style.css",
-        "/usr/share/liteos/apps/my-computer/assets/package.png",
-        "/usr/share/liteos/apps/my-computer/assets/files.png",
-        "/usr/share/liteos/apps/my-computer/assets/nav-back.png",
-        "/usr/share/liteos/apps/my-computer/assets/nav-forward.png",
-        "/usr/share/liteos/apps/my-computer/assets/nav-up.png",
-        "/usr/share/liteos/apps/my-computer/assets/view-grid.png",
-        "/usr/share/liteos/apps/my-computer/assets/drive.png",
-        "/usr/share/liteos/apps/my-computer/assets/drive-16.png",
-        "/usr/share/liteos/apps/music-player/app.json",
-        "/usr/share/liteos/apps/music-player/main.js",
-        "/usr/share/liteos/apps/music-player/style.css",
-        "/usr/share/liteos/apps/music-player/assets/music.png",
-        "/usr/share/liteos/apps/music-player/assets/folder.png",
-        "/usr/share/liteos/apps/music-player/assets/file-16.png",
-    ):
-        metadata = run([str(find_debugfs()), "-R", f"stat {asset}", str(image)], ROOT)
-        if "Type: regular" not in metadata:
-            raise RuntimeError(f"BusyBox rootfs lacks runtime asset {asset}")
+    with tempfile.TemporaryDirectory(prefix="liteos-base-readback-") as directory:
+        for index, artifact in enumerate(userland):
+            observed = Path(directory) / str(index)
+            run([str(find_debugfs()), "-R", f"dump -p {artifact.destination} {observed}", str(image)], ROOT)
+            if not observed.is_file() or sha256(observed) != sha256(artifact.source):
+                raise RuntimeError(f"BusyBox rootfs system file differs: {artifact.destination}")
+            if observed.stat().st_mode & 0o777 != artifact.mode:
+                raise RuntimeError(f"BusyBox rootfs system mode differs: {artifact.destination}")
     ca_bundle = run([str(find_debugfs()), "-R", "stat /etc/ssl/cert.pem", str(image)], ROOT)
     ca_store = run(
         [str(find_debugfs()), "-R", "stat /etc/ssl/certs/ca-certificates.crt", str(image)],
@@ -1981,7 +1489,7 @@ def create_published_image(
         RuntimeError: 构建工具、APK bootstrap 或 rootfs assembly 失败。
         OSError: cache publication 或 output copy 失败。
     """
-    graphical_userland = build_graphical_userland(musl)
+    userland = base_userland()
     stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     host_openssl = shutil.which("openssl")
@@ -1994,7 +1502,7 @@ def create_published_image(
         *target_runtime_artifacts(),
         binary,
         musl.install / "usr/lib/libc.so",
-        *(artifact.source for artifact in graphical_userland),
+        *(artifact.source for artifact in userland),
         stress_tools,
         openssl.binary,
         bootstrap.apk_static,
@@ -2006,38 +1514,11 @@ def create_published_image(
         ROOT / "user/base/group",
         ROOT / "user/base/inittab",
         ROOT / "user/base/profile",
-        ROOT / "user/base/graphical-session",
-        ROOT / "user/Cargo.toml",
-        ROOT / "user/Cargo.lock",
-        *sorted((ROOT / "user").glob("*/Cargo.toml")),
-        *sorted(
-            source
-            for crate_src in (ROOT / "user").glob("*/src")
-            for source in crate_src.rglob("*.rs")
-        ),
         ROOT / "user/diagnostics/liteos-stress.c",
-        ROOT / "assets/terminfo/l/liteos",
-        ROOT / "assets/fonts/liteos-terminal.a8",
-        ROOT / "assets/fonts/liteos-ui-regular.otf",
-        ROOT / "assets/fonts/liteos-ui-bold.otf",
-        ROOT / "assets/fonts/liteos-icons.ttf",
         boot_scene(),
-        ROOT / "assets/cursor.lc2",
-        ROOT / "assets/cursor-pointer.lc2",
-        ROOT / "assets/cursor-resize-ns.lc2",
-        ROOT / "assets/cursor-resize-ew.lc2",
-        ROOT / "assets/cursor-resize-nesw.lc2",
-        ROOT / "assets/cursor-resize-nwse.lc2",
-        BUNDLED_MUSIC_SOURCE,
-        ROOT / "scripts/pack_cursor_assets.py",
-        ROOT / "user/base/liteos.terminfo",
         ROOT / "user/base/network-service",
         ROOT / "user/base/shutdown",
         ROOT / "user/base/udhcpc.script",
-        ROOT / "ui/package.json",
-        ROOT / "ui/package-lock.json",
-        ROOT / "ui/build.mjs",
-        *sorted(path for path in (ROOT / "ui/src").rglob("*") if path.is_file()),
         ROOT / "create_fs.py",
         Path(__file__).resolve(),
         ROOT / "scripts/apk_cache.py",
@@ -2087,11 +1568,6 @@ def main() -> int:
         help="只构建 rootfs，不执行 runtime gates；cache miss 时仍启动 target guest 装配 APK 数据库",
     )
     parser.add_argument(
-        "--build-ui-assets-only",
-        action="store_true",
-        help="只调用 build_ui_assets 并向 stdout 返回已校验 bundle 目录",
-    )
-    parser.add_argument(
         "--image",
         type=Path,
         default=WORK / "fs.img",
@@ -2103,20 +1579,11 @@ def main() -> int:
         help="忽略当前 fingerprint 的 BusyBox ELF 命中并重新构建",
     )
     args = parser.parse_args()
-    if args.build_only and args.build_ui_assets_only:
-        parser.error("--build-only 与 --build-ui-assets-only 不能同时使用")
     runtime_directory: tempfile.TemporaryDirectory[str] | None = None
     http_server: subprocess.Popen[bytes] | None = None
     https_server: subprocess.Popen[bytes] | None = None
     try:
         WORK.mkdir(parents=True, exist_ok=True)
-        if args.build_ui_assets_only:
-            # 构建日志留在 stderr，stdout 只输出机器可消费的目录；否则 Make
-            # command substitution 会把 cache-hit 文本误当成测试资源路径。
-            with contextlib.redirect_stdout(sys.stderr):
-                assets = build_ui_assets()
-            print(assets)
-            return 0
         jobs_override = build_jobs_override()
         compiler = find_compiler()
         with cache_lock(WORK / ".build.lock"):
@@ -2153,12 +1620,8 @@ def main() -> int:
                 ROOT / "user/base/group",
                 ROOT / "user/base/inittab",
                 ROOT / "user/base/profile",
-                ROOT / "user/base/graphical-session",
                 ROOT / "user/Cargo.toml",
                 ROOT / "user/Cargo.lock",
-                ROOT / "ui/package.json",
-                ROOT / "ui/package-lock.json",
-                ROOT / "ui/build.mjs",
                 ROOT / "user/base/network-service",
                 ROOT / "user/base/shutdown",
                 ROOT / "user/base/udhcpc.script",

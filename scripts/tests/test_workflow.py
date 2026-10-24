@@ -76,7 +76,7 @@ class WorkflowTests(unittest.TestCase):
 
     @patch("workflow.subprocess.Popen")
     @patch("workflow.shutil.which", return_value="/opt/qemu-system-aarch64")
-    def test_gdb_qemu_keeps_rootfs_only_preparation(self, _: object, popen: object) -> None:
+    def test_gdb_qemu_syncs_current_init_before_guest_execution(self, _: object, popen: object) -> None:
         process = popen.return_value
         process.returncode = 0
         with patch.object(workflow, "build_kernel") as build_kernel, patch.object(
@@ -88,8 +88,8 @@ class WorkflowTests(unittest.TestCase):
 
         build_kernel.assert_called_once()
         build_bootloader.assert_called_once()
-        prepare_rootfs.assert_called_once()
-        sync_userland.assert_not_called()
+        prepare_rootfs.assert_not_called()
+        sync_userland.assert_called_once()
         process.wait.assert_called_once()
 
     @patch("workflow.shutil.which", return_value="/opt/qemu-system-aarch64")

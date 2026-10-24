@@ -142,9 +142,14 @@ pub(crate) fn init(output: Arc<dyn PcmOutput>) -> Result<(), ()> {
     crate::fs::devnode::register_node(pcm_file::PCM_PATH, pcm_file::PCM_NUMBER, 0o600)
         .map_err(|_| ())?;
     let control = Arc::try_new(control_file::ControlDriver).map_err(|_| ())?;
-    crate::fs::chardev::register_driver(control_file::CONTROL_NUMBER, 1, control).map_err(|_| ())?;
-    crate::fs::devnode::register_node(control_file::CONTROL_PATH, control_file::CONTROL_NUMBER, 0o600)
-        .map_err(|_| ())
+    crate::fs::chardev::register_driver(control_file::CONTROL_NUMBER, 1, control)
+        .map_err(|_| ())?;
+    crate::fs::devnode::register_node(
+        control_file::CONTROL_PATH,
+        control_file::CONTROL_NUMBER,
+        0o600,
+    )
+    .map_err(|_| ())
 }
 
 impl Card {
@@ -466,11 +471,7 @@ impl PcmFile {
 
     /// 本子流的编号与卡上总子流数、仍空闲的子流数，供 `SNDRV_PCM_IOCTL_INFO` 使用。
     pub(crate) fn subdevices(&self) -> (usize, usize, usize) {
-        (
-            self.index,
-            SUBSTREAMS,
-            self.card.engine.lock().available(),
-        )
+        (self.index, SUBSTREAMS, self.card.engine.lock().available())
     }
 }
 

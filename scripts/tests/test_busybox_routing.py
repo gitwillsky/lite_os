@@ -185,45 +185,11 @@ class BusyBoxRoutingTests(unittest.TestCase):
             ),
         )
 
-    def test_ui_lockfile_resolves_only_through_official_registry(self) -> None:
-        # npm 只把官方 host 替换为 UI_NPM_REGISTRY；私有 registry URL 会绕过镜像并在其他 host 上失败。
-        lockfile = json.loads((SCRIPTS.parent / "ui/package-lock.json").read_text())
-        resolved = {
-            entry["resolved"].split("/", 3)[2]
-            for entry in lockfile["packages"].values()
-            if "resolved" in entry
-        }
-
-        self.assertEqual(resolved, {"registry.npmjs.org"})
 
     def test_login_path_exposes_npm_global_commands(self) -> None:
         module = reload_busybox("aarch64", "hvf")
         profile = (module.ROOT / "user/base/profile").read_text().strip()
-        with (
-            tempfile.TemporaryDirectory() as temporary,
-            patch.object(
-                module, "build_ui_assets", return_value=Path(temporary)
-            ),
-            patch.object(
-                module, "build_audio_service", return_value=Path("audio-service")
-            ),
-            patch.object(module, "build_compositor", return_value=Path("compositor")),
-            patch.object(module, "build_console", return_value=Path("console")),
-            patch.object(module, "build_seatd", return_value=Path("seatd")),
-            patch.object(module, "build_seatctl", return_value=Path("seatctl")),
-            patch.object(
-                module, "build_app_binary", side_effect=lambda _musl, app_id: Path(app_id)
-            ),
-            patch.object(
-                module, "build_session_launch", return_value=Path("session-launch")
-            ),
-            patch.object(
-                module,
-                "build_terminal_session",
-                return_value=Path("terminal-session"),
-            ),
-        ):
-            artifacts = module.build_graphical_userland(Mock())
+        artifacts = module.base_userland()
 
         self.assertEqual(
             profile,
@@ -278,9 +244,9 @@ class BusyBoxRoutingTests(unittest.TestCase):
             ):
                 module.build_rust_user_program(
                     musl,
-                    "desktop",
-                    "desktop",
-                    "desktop",
+                    "linux-uapi",
+                    "drm-flip-probe",
+                    "drm-flip-probe",
                     1,
                 )
 
@@ -316,80 +282,7 @@ class BusyBoxRoutingTests(unittest.TestCase):
         self.assertNotEqual(first, changed_sysroot)
         self.assertEqual(first.parent.name, "rust-user-cargo-targets")
 
-    def test_ui_asset_payload_ignores_outputs_and_tracks_external_assets(self) -> None:
-        module = reload_busybox("aarch64", "hvf")
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            ui = root / "ui"
-            source = ui / "src/main.ts"
-            ignored_dependency = ui / "node_modules/package/index.js"
-            ignored_output = ui / "dist/main.js"
-            external = root / "assets/icon.png"
-            for path, content in (
-                (source, "source-a"),
-                (ignored_dependency, "dependency-a"),
-                (ignored_output, "output-a"),
-                (external, "asset-a"),
-            ):
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(content)
 
-            with (
-                patch.object(module, "ROOT", root),
-                patch.object(module, "UI_EXTERNAL_INPUTS", (external,)),
-            ):
-                initial = module.ui_asset_payload(ui, "node 1", "npm 1")
-                ignored_dependency.write_text("dependency-b")
-                ignored_output.write_text("output-b")
-                ignored = module.ui_asset_payload(ui, "node 1", "npm 1")
-                external.write_text("asset-b")
-                changed = module.ui_asset_payload(ui, "node 1", "npm 1")
-
-        self.assertEqual(initial, ignored)
-        self.assertNotEqual(ignored, changed)
-
-    def test_ui_asset_cache_hit_skips_npm_build(self) -> None:
-        module = reload_busybox("aarch64", "hvf")
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            work = root / "target"
-            ui = root / "ui"
-            source = ui / "src/main.ts"
-            external = root / "assets/icon.png"
-            for path in (source, external):
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(path.name)
-
-            def version_output(command: list[str], _: Path) -> str:
-                if command == ["/tools/node", "--version"]:
-                    return "node 1"
-                if command == ["/tools/npm", "--version"]:
-                    return "npm 1"
-                raise AssertionError(f"unexpected build command: {command}")
-
-            with (
-                patch.object(module, "ROOT", root),
-                patch.object(module, "WORK", work),
-                patch.object(module, "UI_EXTERNAL_INPUTS", (external,)),
-                patch.object(
-                    module.shutil,
-                    "which",
-                    side_effect=lambda name: f"/tools/{name}",
-                ),
-                patch.object(module, "run", side_effect=version_output) as run_mock,
-            ):
-                payload = module.ui_asset_payload(ui, "node 1", "npm 1")
-                entry = work / "ui-assets" / module.fingerprint(payload)
-                for relative in module.UI_REQUIRED_OUTPUTS:
-                    output = entry / "output" / relative
-                    output.parent.mkdir(parents=True, exist_ok=True)
-                    output.write_text(relative)
-                module.write_manifest(entry, payload)
-
-                observed = module.build_ui_assets()
-
-        self.assertEqual(observed, entry / "output")
-        self.assertEqual(run_mock.call_count, 2)
 
     def test_verify_elf_accepts_aarch64_machine_and_loader(self) -> None:
         module = reload_busybox("aarch64", "hvf")

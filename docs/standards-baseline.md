@@ -132,27 +132,6 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 - checked atlas SHA-256 为 `dab03e4beb2ee1b5ac689bc3a608461530ce58774557d011881f782f8a892d61`；
   terminfo 使用 ncurses `6.5` source format。
 
-### LiteUI
-
-- QuickJS `2026-06-04`；官方 tarball SHA-256
-  `b376e839b322978313d929fd20663b11ba58b75df5a46c126dd19ea2fa70ad2a`。来源：
-  [官方 release](https://bellard.org/quickjs/quickjs-2026-06-04.tar.xz)。只编译 vendored original C source，
-  不使用 fork、系统 library、JIT 或构建时下载。
-- React `19.2.7`、react-reconciler `0.33.0`、esbuild `0.28.1`；npm integrity 分别为
-  `sha512-HNe9WslTbXmFK8o8cmwgAeJFSBvt1bPdHCVKtaaV+WlAN36mpT4hcRpwbf3fY56ar2oIXzsBpOAiIRHAdY0OlQ==`、
-  `sha512-KetWRytFv1epdpJc3J4G75I4WrplZE5jOL7Yq0p34+OVOKF4Se7WrdIdVC45XsSSmUTlht2FM/fM1FZb1mfQeA==`、
-  `sha512-HrJrvZv5ayxBzPfwphOoNzkzOIIlifzk0KJrGK2c8R4+LKpMtpYLQeUdjnwjWv/LZlkH2laZk+4w78pi99D4Vw==`。
-  来源：[npm React](https://www.npmjs.com/package/react)、
-  [npm react-reconciler](https://www.npmjs.com/package/react-reconciler)、
-  [npm esbuild](https://www.npmjs.com/package/esbuild)。唯一解析 owner 是 `ui/package-lock.json`。
-- renderer 固定使用 cssparser `0.37.0`、Taffy `0.12.2`、Parley `0.11.0`、tiny-skia `0.12.0`
-  与 unicode-width `0.2.2`；
-  来源分别为 [cssparser](https://crates.io/crates/cssparser/0.37.0)、
-  [Taffy](https://crates.io/crates/taffy/0.12.2)、[Parley](https://crates.io/crates/parley/0.11.0)、
-  [tiny-skia](https://crates.io/crates/tiny-skia/0.12.0) 与
-  [unicode-width](https://crates.io/crates/unicode-width/0.2.2)。Taffy 只启用 Flexbox/block，Parley
-  禁止 system font discovery；精确 transitive source/checksum 由 `user/Cargo.lock` 唯一固定。
-
 ### UTM/QEMU host display、clipboard 与 SPICE agent
 
 - QEMU `11.0.2`；tag commit `e545d8bb9d63e9dd61542b88463183314cff9482`；官方 tarball SHA-256
@@ -165,21 +144,9 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 - macOS 图形产品固定 [UTM v4.7.5](https://github.com/utmapp/UTM/releases/tag/v4.7.5)，只消费其
   official signed app、HVF、Metal/virgl 与 native SPICE `com.redhat.spice.0` PCI port；headless
   QEMU `11.0.2` 只服务验证/调试，不提供第二个 GUI backend。
-- guest 只实现 spice-protocol 定义的 VDI chunk、`VD_AGENT_MONITORS_CONFIG`、capability 与 UTF-8
-  clipboard message；显示请求通过标准 DRM/KMS CVT modeset，不引入 UTM 私有 guest ABI。
-  QEMU/SPICE 不定义 LiteUI focus policy、display-protocol request identity 或 kernel devfs ABI。
-
-### 媒体解码
-
-- Symphonia `0.6.0`；source commit `980bf5830a90e069fd64641d9c38f067ab772a24`；
-  顶层 crate SHA-256 `1758d6c853020a7244de03cc3e0185eaea3f58715122422dd3cc7452e6d4c16a`；
-  MPL-2.0。来源：[固定源码](https://github.com/pdeljanov/Symphonia/tree/980bf5830a90e069fd64641d9c38f067ab772a24)、
-  [crate release](https://crates.io/crates/symphonia/0.6.0)。
-- `user/Cargo.lock` 唯一固定全部拆分 codec/format/metadata crate 与 transitive checksum。LiteUI 禁用
-  default feature，只启用 `all` 与 AArch64 可用的 NEON optimization；不启用 experimental
-  subtitle/video feature，不加载 system codec、plugin、FFmpeg executable 或运行时下载内容。
-- Symphonia 只定义 container/codec/metadata 实现，不定义 HTMLMediaElement、autoplay、File/blob、
-  ALSA、mixer 或设备 ABI。
+- SPICE port 的 kernel byte-stream adapter 保留；guest agent 尚待新 compositor 实现。
+  后续显示请求仍须通过标准 DRM/KMS modeset，不引入 UTM 私有 guest ABI。
+  QEMU/SPICE 不定义窗口策略或 kernel devfs ABI。
 
 ### Alpine、APK 与 TLS
 
@@ -188,15 +155,19 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
   固定 bootstrap repository
   固定文件，下载后必须通过固定 SHA-256 校验。AArch64 的
   `apk-tools-static 2.14.12-r0`、`alpine-keys 2.5-r0`、
-  `ca-certificates-bundle 20260909-r0` SHA-256 依次为
+  `ca-certificates-bundle 20261020-r0` SHA-256 依次为
   `69f8d3f981440d9f2b69771b2718cc038c50e73cdbbecbc4416430ffc29ed70a`、
   `2e4c85ae16cabeb53b4145006f883bf8e57d454bd3faff14d35ec7d8a0d05b1a`、
-  `2309bfdee4fea4172d2c775e44608b6b204b729732f5a6da97a28c21357ed034`。
+  `eb15a8dba0e6ae8c540d172836d44fe058d6c64adc4a2fca5d2c6eaffa015f1c`。
 - RISC-V 的同三包 SHA-256 依次为
   `3b94df19b7d84aee21e6bab7c5689a9627067df44f83b96a8c172aada8013cc2`、
   `ca4835c8907791ab172fc64e53a81ab4ed06ff21c493d2a7fe8f66a80e2ea200`、
-  `687a1d048b9f8212e9e429831ef0c77e4fa8f5fc3dd261ac4e392dc1a262c21f`；curl/SQLite/Git
+  `2569e1165fba02f8b8d65575217f8bf2dfdcf4156e5001359329c9aca97509cd`；curl/SQLite/Git
   应用闭包也由各架构的固定摘要完整锁定，禁止 latest 或跨架构推导。
+- 应用闭包固定 brotli-libs `1.1.1-r0`、c-ares `1.34.9-r0`、curl/libcurl `8.14.1-r4`、
+  libexpat `2.9.0-r0`、pcre2 `10.46-r1`；AArch64 与 RISC-V64 的完整 SHA-256 由
+  `scripts/apk_apps_cache.py` 唯一维护，下载后校验 `.PKGINFO` 的 name/version/arch。
+  来源：[Alpine v3.22 main](https://dl-cdn.alpinelinux.org/alpine/v3.22/main/)；不跨稳定分支取包。
 - 本项目从官方 AArch64 repository 固定的闭包中，只有 `ca-certificates-bundle`、`git-init-template` 与 `ncurses-terminfo-base` 三个数据包以 `.PKGINFO arch=noarch` 发布；其余闭包必须是 `arch=aarch64`，该语义不是通用 `noarch` 豁免。
 - OpenSSL `3.5.7`；commit `8cf17aaeb4599f8af87fefd810b5b5fee90fe69e`；tarball SHA-256 `a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8`。
 - 来源：[Alpine aarch64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/aarch64/)、[Alpine riscv64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/riscv64/)、

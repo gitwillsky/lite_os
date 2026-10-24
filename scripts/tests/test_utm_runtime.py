@@ -19,10 +19,10 @@ class UtmRuntimeTests(unittest.TestCase):
         self.assertNotIn("-append", plain["QEMU"]["AdditionalArguments"])
 
         config = utm_runtime._configuration(
-            memory_mib=2048, cpu_count=1, kernel_arguments="liteos.target=desktop"
+            memory_mib=2048, cpu_count=1, kernel_arguments="console=ttyAMA0"
         )
         arguments = config["QEMU"]["AdditionalArguments"]
-        self.assertEqual(arguments[arguments.index("-append") + 1], '"liteos.target=desktop"')
+        self.assertEqual(arguments[arguments.index("-append") + 1], '"console=ttyAMA0"')
 
     def test_configuration_is_one_metal_virtio_gpu_path(self) -> None:
         config = utm_runtime._configuration(memory_mib=2048, cpu_count=6)

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""把最新图形用户态产物离线同步到持久开发镜像。"""
+"""把最新系统文件离线同步到持久开发镜像。"""
 
 from __future__ import annotations
 
@@ -12,39 +12,77 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
 
-from build_cache import cache_lock, fingerprint, sha256
+from build_cache import fingerprint, sha256
 from build_target import target_from_environment
 from ext4_image import find_debugfs, recover_ext4_journal
-from verify_busybox import WORK, UserlandArtifact, build_graphical_userland
-from verify_musl import cached_musl_paths, find_compiler
+from verify_busybox import UserlandArtifact, base_userland
 
 ROOT = Path(__file__).resolve().parent.parent
 STAMP_PATH = "/usr/share/liteos/.userland-sync.json"
-RECIPE_VERSION = 1
+RECIPE_VERSION = 2
+
+
+# 仅用于离线撤销旧镜像中已退休的产品文件，不参与构建或启动。
+# 无历史 stamp 的旧 rootfs 也必须清理，否则旧 init 与应用仍会在开发实例里出现。
+RETIRED_FILES = tuple(f"/bin/{name}" for name in (
+    "audio-service", "compositor", "console", "seatd", "seatctl", "desktop",
+    "file-manager", "my-computer", "music-player", "terminal", "session-launch",
+    "terminal-session",
+)) + ("/etc/init.d/graphical-session", "/etc/terminfo/l/liteos")
+RETIRED_TREES = ("/usr/lib/lite-runtime", "/usr/share/liteos")
 
 
 def managed_path(path: str) -> bool:
-    """返回 path 是否属于增量同步唯一拥有的 guest 文件集合。"""
+    """只接受同步器拥有的规范绝对路径，拒绝父目录跳转。"""
+    if not path.startswith("/") or str(PurePosixPath(path)) != path or ".." in PurePosixPath(path).parts:
+        return False
     return path in {
-        "/bin/audio-service",
-        "/bin/compositor",
-        "/bin/console",
-        "/bin/seatd",
-        "/bin/seatctl",
-        "/bin/desktop",
-        "/bin/file-manager",
-        "/bin/my-computer",
-        "/bin/music-player",
-        "/bin/terminal",
-        "/bin/session-launch",
-        "/bin/shutdown",
-        "/bin/terminal-session",
-        "/etc/inittab",
-        "/etc/init.d/rcS",
-        "/etc/init.d/graphical-session",
-        "/etc/profile",
-        "/etc/terminfo/l/liteos",
-    } or path.startswith(("/usr/lib/lite-runtime/", "/usr/share/liteos/"))
+        *RETIRED_FILES, "/bin/shutdown", "/etc/inittab", "/etc/init.d/rcS", "/etc/profile",
+    } or any(path.startswith(root + "/") for root in RETIRED_TREES)
+
+
+def retired_commands(image: Path, retained: set[str], directory: Path) -> list[str]:
+    """按子文件先于目录的顺序删除旧产品文件，不跟随符号链接。
+
+    Args:
+        image: 已取得独占锁的开发镜像。
+        retained: 当前系统清单仍拥有的文件。
+        directory: debugfs batch 的临时目录。
+
+    Returns:
+        限定在旧产品路径内的删除命令；不触碰 /root 或 APK 安装的其他文件。
+
+    Raises:
+        RuntimeError: debugfs 执行失败或目录项无法安全解析。
+    """
+    commands = [f"rm {path}" for path in RETIRED_FILES if path not in retained]
+
+    def visit(path: str) -> None:
+        listing = run_batch(image, [f"ls -p {path}"], directory, "list-retired", writable=False)
+        for line in listing.splitlines():
+            if not line.startswith("/") or ": File not found" in line:
+                continue
+            fields = line.split("/")
+            if len(fields) < 7:
+                raise RuntimeError(f"invalid debugfs directory entry: {line}")
+            name = fields[5]
+            if name in (".", "..", "") or fields[1] == "0":
+                continue
+            child = f"{path}/{name}"
+            if not managed_path(child):
+                raise RuntimeError(f"retired file escaped managed paths: {child}")
+            if stat.S_ISDIR(int(fields[2], 8)):
+                visit(child)
+                if not any(item.startswith(child + "/") for item in retained):
+                    commands.append(f"rmdir {child}")
+            elif child not in retained and child != STAMP_PATH:
+                commands.append(f"rm {child}")
+
+    for path in RETIRED_TREES:
+        visit(path)
+        if not any(item.startswith(path + "/") for item in retained):
+            commands.append(f"rmdir {path}")
+    return commands
 
 
 def read_stamp(image: Path) -> dict[str, object] | None:
@@ -122,7 +160,7 @@ def artifact_payload(
         for artifact in artifacts
     ]
     payload: dict[str, object] = {
-        "kind": "graphical-userland-sync",
+        "kind": "base-userland-sync",
         "recipe_version": RECIPE_VERSION,
         "arch": target.arch,
         "files": files,
@@ -166,7 +204,7 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
 
     Args:
         image: 持久开发 ext 镜像，调用期间不得由 QEMU 使用。
-        artifacts: 当前构建得到的完整图形用户态文件集合。
+        artifacts: 当前构建得到的完整系统文件集合。
 
     Returns:
         实际修改镜像返回 True，已命中内容指纹返回 False。
@@ -199,7 +237,8 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
         )
         with tempfile.TemporaryDirectory(prefix="liteos-userland-sync-") as temporary:
             directory = Path(temporary)
-            commands = [f"rm {STAMP_PATH}"]
+            retired = retired_commands(image, current_paths, directory)
+            commands = [f"rm {STAMP_PATH}", *retired]
             commands.extend(f"mkdir {path}" for path in parent_directories(artifacts))
             commands.extend(f"rm {path}" for path in stale_paths)
             for artifact in artifacts:
@@ -212,6 +251,14 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
                 )
             run_batch(image, commands, directory, "write-userland", writable=True)
             verify_artifacts(image, artifacts, directory)
+            removed_paths = [command.split(" ", 1)[1] for command in retired]
+            removed_paths.extend(stale_paths)
+            retired_metadata = run_batch(
+                image, [f"stat {path}" for path in removed_paths], directory,
+                "verify-retirement", writable=False,
+            )
+            if "Inode:" in retired_metadata:
+                raise RuntimeError("retired userland files remain; sync stamp was not published")
 
             stamp = {
                 "identity": identity,
@@ -238,7 +285,7 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
 
 
 def main() -> int:
-    """构建当前目标的图形用户态并同步到指定开发镜像。"""
+    """将当前目标的系统文件同步到指定开发镜像。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", type=Path, required=True)
     arguments = parser.parse_args()
@@ -246,11 +293,7 @@ def main() -> int:
     if not image.is_file():
         raise RuntimeError(f"development image does not exist: {image}")
 
-    compiler = find_compiler()
-    with cache_lock(WORK / ".build.lock"):
-        musl = cached_musl_paths(compiler)
-        artifacts = build_graphical_userland(musl)
-    synchronize(image, artifacts)
+    synchronize(image, base_userland())
     return 0
 
 

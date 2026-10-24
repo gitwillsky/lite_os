@@ -14,6 +14,8 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 
+from local_inputs import INPUTS
+
 from build_target import target_from_environment
 
 from build_cache import (
@@ -39,6 +41,7 @@ from qemu_gate import boot, cpu_topology_markers
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = target_from_environment()
 WORK = ROOT / "target" / "musl-runtime" / TARGET.arch
+SOURCE = INPUTS / "musl" / TARGET.arch
 MUSL_VERSION = "1.2.6"
 MUSL_REVISION = "9fa28ece75d8a2191de7c5bb53bed224c5947417"
 MUSL_URLS = (
@@ -159,12 +162,13 @@ def source_payload() -> dict[str, object]:
 
 
 def source_cache_path() -> Path:
-    return WORK / "sources" / fingerprint(source_payload())
+    return SOURCE / "sources" / fingerprint(source_payload())
 
 
 def obtain_source() -> Path:
     """获取并缓存固定源码；完整目录只在校验和解压成功后发布。"""
-    archive = WORK / f"musl-{MUSL_VERSION}.tar.gz"
+    SOURCE.mkdir(parents=True, exist_ok=True)
+    archive = SOURCE / f"musl-{MUSL_VERSION}.tar.gz"
     if not archive.is_file() or sha256(archive) != MUSL_SHA256:
         archive.unlink(missing_ok=True)
         temporary = archive.with_suffix(".download")
@@ -195,7 +199,7 @@ def obtain_source() -> Path:
     if manifest_matches(source, payload, ("configure", "tools/musl-gcc.specs.sh")):
         return source
 
-    temporary = temporary_directory(WORK / "sources", "source")
+    temporary = temporary_directory(SOURCE / "sources", "source")
     try:
         run(
             ["tar", "-xzf", str(archive), "--strip-components=1", "-C", str(temporary)],
@@ -210,13 +214,14 @@ def obtain_source() -> Path:
 
 def obtain_linux_source() -> Path:
     """获取固定 Linux 基线，作为 sysroot 中 UAPI headers 的唯一来源。"""
+    SOURCE.mkdir(parents=True, exist_ok=True)
     payload = {
         "kind": "linux-uapi-source",
         "version": LINUX_VERSION,
         "archive_sha256": LINUX_SHA256,
         "strip_components": 1,
     }
-    archive = WORK / f"linux-{LINUX_VERSION}.tar.xz"
+    archive = SOURCE / f"linux-{LINUX_VERSION}.tar.xz"
     if not archive.is_file() or sha256(archive) != LINUX_SHA256:
         archive.unlink(missing_ok=True)
         temporary_archive = archive.with_suffix(".download")
@@ -238,10 +243,10 @@ def obtain_linux_source() -> Path:
         else:
             raise RuntimeError("failed to download Linux release tarball:\n" + "\n".join(errors))
         temporary_archive.replace(archive)
-    source = WORK / "linux-sources" / fingerprint(payload)
+    source = SOURCE / "linux-sources" / fingerprint(payload)
     if manifest_matches(source, payload, ("Makefile", "include/uapi/linux/vt.h")):
         return source
-    temporary = temporary_directory(WORK / "linux-sources", "source")
+    temporary = temporary_directory(SOURCE / "linux-sources", "source")
     try:
         run(["tar", "-xJf", str(archive), "--strip-components=1", "-C", str(temporary)], ROOT)
         write_manifest(temporary, payload)
@@ -253,11 +258,12 @@ def obtain_linux_source() -> Path:
 
 def obtain_gnu_make(jobs_override: int | None) -> Path:
     """构建仓库私有 GNU Make，避免 Linux UAPI 生成依赖 host make 版本。"""
+    SOURCE.mkdir(parents=True, exist_ok=True)
     payload = {"kind": "gnu-make", "version": MAKE_VERSION, "archive_sha256": MAKE_SHA256}
     install = WORK / "tools" / fingerprint(payload)
     if manifest_matches(install, payload, ("bin/make",)):
         return install / "bin/make"
-    archive = WORK / f"make-{MAKE_VERSION}.tar.lz"
+    archive = SOURCE / f"make-{MAKE_VERSION}.tar.lz"
     if not archive.is_file() or sha256(archive) != MAKE_SHA256:
         archive.unlink(missing_ok=True)
         temporary_archive = archive.with_suffix(".download")
@@ -494,10 +500,10 @@ def obtain_compiler_rt_sources() -> Path:
         "version": COMPILER_RT_VERSION,
         "sha256": COMPILER_RT_SOURCES,
     }
-    source = WORK / "compiler-rt-sources" / fingerprint(payload)
+    source = SOURCE / "compiler-rt-sources" / fingerprint(payload)
     if manifest_matches(source, payload, tuple(COMPILER_RT_SOURCES)):
         return source
-    temporary = temporary_directory(WORK / "compiler-rt-sources", "source")
+    temporary = temporary_directory(SOURCE / "compiler-rt-sources", "source")
     try:
         print(f"downloading compiler-rt {COMPILER_RT_VERSION} builtins supplement")
         for name, digest in COMPILER_RT_SOURCES.items():

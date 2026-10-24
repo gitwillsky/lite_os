@@ -1,10 +1,7 @@
 [workspace]
 members = [
-    "console",
     "keyboard",
     "linux-uapi",
-    "seat-proto",
-    "seatd",
     "terminal-font",
     "terminal-model",
 ]
@@ -17,7 +14,6 @@ publish = false
 [workspace.dependencies]
 linux-uapi = { path = "linux-uapi" }
 keyboard = { path = "keyboard" }
-seat-proto = { path = "seat-proto" }
 terminal-font = { path = "terminal-font" }
 terminal-model = { path = "terminal-model" }
 unicode-width = "=0.2.2"

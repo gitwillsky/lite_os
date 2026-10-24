@@ -347,8 +347,14 @@ impl crate::drivers::BootFramebuffer for VirtIOGpuDevice {
             .1;
         let inside = rect.width != 0
             && rect.height != 0
-            && rect.x.checked_add(rect.width).is_some_and(|end| end <= mode.width)
-            && rect.y.checked_add(rect.height).is_some_and(|end| end <= mode.height);
+            && rect
+                .x
+                .checked_add(rect.width)
+                .is_some_and(|end| end <= mode.width)
+            && rect
+                .y
+                .checked_add(rect.height)
+                .is_some_and(|end| end <= mode.height);
         if !inside {
             return Err(DisplayError::InvalidRectangle);
         }

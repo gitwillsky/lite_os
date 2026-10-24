@@ -3,35 +3,12 @@
 version = 4
 
 [[package]]
-name = "console"
-version = "0.1.0"
-dependencies = [
- "keyboard",
- "linux-uapi",
- "seat-proto",
- "terminal-font",
- "terminal-model",
-]
-
-[[package]]
 name = "keyboard"
 version = "0.1.0"
 
 [[package]]
 name = "linux-uapi"
 version = "0.1.0"
-
-[[package]]
-name = "seat-proto"
-version = "0.1.0"
-
-[[package]]
-name = "seatd"
-version = "0.1.0"
-dependencies = [
- "linux-uapi",
- "seat-proto",
-]
 
 [[package]]
 name = "terminal-font"

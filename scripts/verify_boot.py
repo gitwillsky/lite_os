@@ -79,11 +79,7 @@ def boot(image: Path, smp: int) -> None:
 
 
 def boot_product_graphics(image: Path, kernel: Path) -> None:
-    """通过隐藏 UTM VirGL 产品路径验证 GPU、输入设备拓扑与桌面全链路。
-
-    compositor 首帧 marker 证明真实 splash 已由 Aurora 桌面原子替换；随后
-    Files 与 Terminal 的 marker 证明两个固定启动窗口完成首帧发布。
-    """
+    """通过隐藏 UTM VirGL 产品路径验证 kernel 设备拓扑和 UART 基线启动。"""
     boot_graphics(
         image,
         kernel,
@@ -94,52 +90,6 @@ def boot_product_graphics(image: Path, kernel: Path) -> None:
             "VirtIO input event1",
             "VirtIO GPU",
             "init started: BusyBox v1.37.0",
-            "compositor: GPU mode",
-            "compositor: desktop connected",
-            "compositor: desktop first scene presented",
-            "lite-ui: desktop ready",
-            "compositor: app 1 connected",
-            "lite-ui: app terminal ready",
-            "terminal-session: shell spawned",
-            "compositor: app 2 connected",
-            "lite-ui: app file-manager ready",
-        ),
-        kernel_arguments="liteos.target=desktop",
-    )
-
-
-def boot_product_seat_switch(image: Path, kernel: Path) -> None:
-    """默认文本控制台启动，经 seatctl 切到桌面再切回，验证座位交接的两个方向。
-
-    串口 marker 证明：文本控制台完成首帧；切到桌面时控制台先释放、compositor 随后取得座位并呈现
-    桌面首帧；切回时 compositor 先释放、控制台重新取得座位。缺少先释放后取得的顺序，后一个
-    session 的 `set_master` 会因 EBUSY 失败，对应 marker 永远不会出现。
-    """
-    boot_graphics(
-        image,
-        kernel,
-        (
-            "VirtIO GPU",
-            "seatd: ready target=text",
-            "seatd: active text",
-            "console: acquired 1",
-            "console: first frame presented",
-            "console: shell spawned",
-            "compositor: GPU mode",
-            "compositor: seat registered",
-            "console: released 1",
-            "compositor: seat acquired 1",
-            "seatd: active desktop",
-            "compositor: desktop first scene presented",
-            "compositor: seat released 1",
-            "console: acquired 2",
-        ),
-        interactions=(
-            # 触发点必须与门禁要验证的前提一致：文本控制台已持有座位并呈现首帧。若以 compositor 就绪为触发，
-            # compositor 初始化变快（它与 console 是互不排序的两个进程）就会让命令抢在 console 取得座位之前发出，
-            # seatd 把座位从尚未持有它的 console 切走，`console: released 1` 永远不会出现。
-            ("console: first frame presented", b"seatctl desktop\n"),
-            ("compositor: desktop first scene presented", b"seatctl text\n"),
         ),
     )
 
@@ -164,7 +114,7 @@ def main() -> int:
         stamp = ROOT / "target" / "verify-gates" / f"boot-{target.arch}.json"
         payload = runtime_gate_payload(
             "boot-topology",
-            8,
+            9,
             gate_inputs(target, image, busybox, musl.install),
         )
         if runtime_gate_hit(stamp, payload, (image,)):
@@ -179,8 +129,6 @@ def main() -> int:
         ):
             boot_product_graphics(image, ROOT / target.kernel_boot_artifact())
             print("UTM AArch64 VirGL product graphics boot verification passed")
-            boot_product_seat_switch(image, ROOT / target.kernel_boot_artifact())
-            print("UTM AArch64 text console and desktop seat switch verification passed")
         elif target.arch == "aarch64":
             print("UTM VirGL boot gate skipped outside the AArch64/HVF product runtime")
         publish_runtime_gate(stamp, payload)

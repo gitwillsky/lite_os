@@ -3,7 +3,7 @@
 //! The atlas mirrors `scripts/generate_terminal_font.py`: a 32-byte header, a
 //! sorted u32 codepoint table, then two tightly packed 32x32 A8 faces. A narrow
 //! glyph uses the first 16 physical pixels; a wide glyph spans both terminal
-//! cells, while the VT grid, React cursor math and resize divisor retain one
+//! cells, while the VT grid, client cursor math and resize divisor retain one
 //! 16x32 physical cell geometry.
 
 use std::{fs, io};

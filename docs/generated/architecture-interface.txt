@@ -683,6 +683,8 @@ kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_DELAY : usize = 0
 kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_DROP : usize = 0x0000_4143
 kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_HW_FREE : usize = 0x0000_4112
 kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_HW_PARAMS : usize = 0xc260_4111
+kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_HW_REFINE : usize = 0xc260_4110
+kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_INFO : usize = 0x8120_4101
 kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_PREPARE : usize = 0x0000_4140
 kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_PVERSION : usize = 0x8004_4100
 kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_START : usize = 0x0000_4142
@@ -690,20 +692,107 @@ kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_STATUS : usize = 
 kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_SW_PARAMS : usize = 0xc088_4113
 kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_SYNC_PTR : usize = 0xc088_4123
 kernel/src/audio/codec.rs :: pub (crate) const SNDRV_PCM_IOCTL_WRITEI_FRAMES : usize = 0x4018_4150
+kernel/src/audio/codec.rs :: pub (super) PcmInfo :: card_id : & 'a [u8]
+kernel/src/audio/codec.rs :: pub (super) PcmInfo :: name : & 'a [u8]
+kernel/src/audio/codec.rs :: pub (super) PcmInfo :: subdevice : u32
+kernel/src/audio/codec.rs :: pub (super) PcmInfo :: subdevices_available : u32
+kernel/src/audio/codec.rs :: pub (super) PcmInfo :: subdevices_count : u32
+kernel/src/audio/codec.rs :: pub (super) const ACCESS : usize = 0
+kernel/src/audio/codec.rs :: pub (super) const BUFFER_BYTES : usize = 18
+kernel/src/audio/codec.rs :: pub (super) const BUFFER_SIZE : usize = 17
+kernel/src/audio/codec.rs :: pub (super) const BUFFER_TIME : usize = 16
+kernel/src/audio/codec.rs :: pub (super) const CHANNELS : usize = 10
+kernel/src/audio/codec.rs :: pub (super) const FORMAT : usize = 1
+kernel/src/audio/codec.rs :: pub (super) const FRAME_BITS : usize = 9
 kernel/src/audio/codec.rs :: pub (super) const HW_PARAMS_BYTES : usize = 608
+kernel/src/audio/codec.rs :: pub (super) const PCM_INFO_BYTES : usize = 288
 kernel/src/audio/codec.rs :: pub (super) const PCM_PROTOCOL_VERSION : i32 = 0x0002_0012
+kernel/src/audio/codec.rs :: pub (super) const PERIODS : usize = 15
+kernel/src/audio/codec.rs :: pub (super) const PERIOD_BYTES : usize = 14
+kernel/src/audio/codec.rs :: pub (super) const PERIOD_SIZE : usize = 13
+kernel/src/audio/codec.rs :: pub (super) const PERIOD_TIME : usize = 12
+kernel/src/audio/codec.rs :: pub (super) const RATE : usize = 11
+kernel/src/audio/codec.rs :: pub (super) const SAMPLE_BITS : usize = 8
 kernel/src/audio/codec.rs :: pub (super) const STATUS_BYTES : usize = 152
+kernel/src/audio/codec.rs :: pub (super) const SUBFORMAT : usize = 2
 kernel/src/audio/codec.rs :: pub (super) const SW_PARAMS_BYTES : usize = 136
 kernel/src/audio/codec.rs :: pub (super) const SYNC_PTR_BYTES : usize = 136
+kernel/src/audio/codec.rs :: pub (super) const TICK_TIME : usize = 19
 kernel/src/audio/codec.rs :: pub (super) const XFER_BYTES : usize = 24
+kernel/src/audio/codec.rs :: pub (super) fn encode_pcm_info (info : & PcmInfo < '_ >) -> [u8 ; PCM_INFO_BYTES]
 kernel/src/audio/codec.rs :: pub (super) fn exact_interval (bytes : & [u8] , parameter : usize) -> Option < u32 >
 kernel/src/audio/codec.rs :: pub (super) fn exact_mask (bytes : & [u8] , offset : usize) -> Option < i32 >
 kernel/src/audio/codec.rs :: pub (super) fn read_u32 (bytes : & [u8] , offset : usize) -> Option < u32 >
 kernel/src/audio/codec.rs :: pub (super) fn read_u64 (bytes : & [u8] , offset : usize) -> Option < u64 >
+kernel/src/audio/codec.rs :: pub (super) fn refine_hardware (bytes : & mut [u8 ; HW_PARAMS_BYTES]) -> Result < () , () >
 kernel/src/audio/codec.rs :: pub (super) fn stop_or_error (completed : usize , error : isize) -> Result < () , isize >
 kernel/src/audio/codec.rs :: pub (super) fn write_u32 (bytes : & mut [u8] , offset : usize , value : u32) -> Option < () >
 kernel/src/audio/codec.rs :: pub (super) fn write_u64 (bytes : & mut [u8] , offset : usize , value : u64) -> Option < () >
+kernel/src/audio/codec.rs :: pub (super) struct PcmInfo < 'a >
+kernel/src/audio/control.rs :: enum ControlError :: # [doc = " 值越界或字节不是合法结构（`EINVAL`）。"] Invalid
+kernel/src/audio/control.rs :: enum ControlError :: # [doc = " 没有这个元素（`ENOENT`）。"] NoSuchElement
+kernel/src/audio/control.rs :: pub (crate) const SNDRV_CTL_IOCTL_CARD_INFO : usize = 0x8178_5501
+kernel/src/audio/control.rs :: pub (crate) const SNDRV_CTL_IOCTL_ELEM_INFO : usize = 0xc110_5511
+kernel/src/audio/control.rs :: pub (crate) const SNDRV_CTL_IOCTL_ELEM_LIST : usize = 0xc050_5510
+kernel/src/audio/control.rs :: pub (crate) const SNDRV_CTL_IOCTL_ELEM_READ : usize = 0xc4c8_5512
+kernel/src/audio/control.rs :: pub (crate) const SNDRV_CTL_IOCTL_ELEM_WRITE : usize = 0xc4c8_5513
+kernel/src/audio/control.rs :: pub (crate) const SNDRV_CTL_IOCTL_PCM_INFO : usize = 0xc120_5531
+kernel/src/audio/control.rs :: pub (crate) const SNDRV_CTL_IOCTL_PCM_NEXT_DEVICE : usize = 0x8004_5530
+kernel/src/audio/control.rs :: pub (crate) const SNDRV_CTL_IOCTL_PCM_PREFER_SUBDEVICE : usize = 0x4004_5532
+kernel/src/audio/control.rs :: pub (crate) const SNDRV_CTL_IOCTL_PVERSION : usize = 0x8004_5500
+kernel/src/audio/control.rs :: pub (crate) const SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS : usize = 0xc004_5516
+kernel/src/audio/control.rs :: pub (super) CardText :: id : & 'a [u8]
+kernel/src/audio/control.rs :: pub (super) CardText :: long_name : & 'a [u8]
+kernel/src/audio/control.rs :: pub (super) CardText :: mixer_name : & 'a [u8]
+kernel/src/audio/control.rs :: pub (super) CardText :: name : & 'a [u8]
+kernel/src/audio/control.rs :: pub (super) const CARD_INFO_BYTES : usize = 376
+kernel/src/audio/control.rs :: pub (super) const CTL_PROTOCOL_VERSION : i32 = 0x0002_0009
+kernel/src/audio/control.rs :: pub (super) const ELEM_ID_BYTES : usize = 64
+kernel/src/audio/control.rs :: pub (super) const ELEM_INFO_BYTES : usize = 272
+kernel/src/audio/control.rs :: pub (super) const ELEM_LIST_BYTES : usize = 80
+kernel/src/audio/control.rs :: pub (super) const ELEM_VALUE_BYTES : usize = 1224
+kernel/src/audio/control.rs :: pub (super) enum ControlError
+kernel/src/audio/control.rs :: pub (super) fn describe_element (bytes : & mut [u8 ; ELEM_INFO_BYTES]) -> Result < () , ControlError >
+kernel/src/audio/control.rs :: pub (super) fn encode_card_info (text : & CardText < '_ >) -> [u8 ; CARD_INFO_BYTES]
+kernel/src/audio/control.rs :: pub (super) fn list_elements (list : & mut [u8 ; ELEM_LIST_BYTES] ,) -> Result < ([u8 ; ELEM_ID_BYTES * 2] , usize) , ControlError >
+kernel/src/audio/control.rs :: pub (super) fn read_element (bytes : & mut [u8 ; ELEM_VALUE_BYTES] , master : Master ,) -> Result < () , ControlError >
+kernel/src/audio/control.rs :: pub (super) fn write_element (bytes : & [u8 ; ELEM_VALUE_BYTES] , master : Master ,) -> Result < (Master , bool) , ControlError >
+kernel/src/audio/control.rs :: pub (super) struct CardText < 'a >
+kernel/src/audio/control_file.rs :: pub (super) const CONTROL_NUMBER : DeviceNumber = DeviceNumber :: new (116 , 0)
+kernel/src/audio/control_file.rs :: pub (super) const CONTROL_PATH : & [u8] = b"snd/controlC0"
+kernel/src/audio/control_file.rs :: pub (super) struct ControlDriver
+kernel/src/audio/engine.rs :: pub (super) Events :: completed : usize
+kernel/src/audio/engine.rs :: pub (super) Events :: disconnected : bool
+kernel/src/audio/engine.rs :: pub (super) Master :: enabled : [bool ; 2]
+kernel/src/audio/engine.rs :: pub (super) Master :: volume : [u32 ; 2]
+kernel/src/audio/engine.rs :: pub (super) const SUBSTREAMS : usize = 8
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn allocate (& mut self , ring : R) -> Result < usize , R >
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn application_period (& mut self , index : usize) -> Result < () , () >
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn available (& self) -> usize
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn configure (& mut self , index : usize) -> Result < () , () >
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn drop_stream (& mut self , index : usize) -> Result < () , () >
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn free_hardware (& mut self , index : usize) -> Result < () , () >
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn master (& self) -> Master
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn new () -> Self
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn prepare (& mut self , index : usize) -> Result < () , () >
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn release (& mut self , index : usize) -> Option < R >
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn set_master (& mut self , master : Master)
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn set_software (& mut self , index : usize , available_min : u64 , start_threshold : u64 , stop_threshold : u64 , boundary : u64 ,) -> Result < () , () >
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn start (& mut self , index : usize) -> Result < () , () >
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn state (& self , index : usize) -> & PcmStateOwner
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn tick (& mut self , events : Events , output : & dyn PcmOutput) -> bool
+kernel/src/audio/engine.rs :: pub (super) struct Engine < R >
+kernel/src/audio/engine.rs :: pub (super) struct Events
+kernel/src/audio/engine.rs :: pub (super) struct Master
+kernel/src/audio/engine.rs :: pub (super) trait Ring
+kernel/src/audio/engine.rs :: trait Ring :: fn read (& self , offset : usize , output : & mut [u8]) -> Result < () , () >
 kernel/src/audio/ioctl.rs :: pub (super) fn ioctl (file : & PcmFile , call : & IoctlCall < '_ >) -> Result < isize , DeviceError >
+kernel/src/audio/mixer.rs :: pub (super) const VOLUME_MAX : u32 = 100
+kernel/src/audio/mixer.rs :: pub (super) fn volume_gain (volume : u32) -> f32
+kernel/src/audio/mixer.rs :: pub (super) impl Accumulator :: const fn new () -> Self
+kernel/src/audio/mixer.rs :: pub (super) impl Accumulator :: fn add (& mut self , period : & [u8 ; PCM_PERIOD_BYTES])
+kernel/src/audio/mixer.rs :: pub (super) impl Accumulator :: fn finish (& self , gain : [f32 ; 2] , output : & mut [u8 ; PCM_PERIOD_BYTES])
+kernel/src/audio/mixer.rs :: pub (super) struct Accumulator
 kernel/src/audio/mod.rs :: pub (crate) HardwareParameters :: access : i32
 kernel/src/audio/mod.rs :: pub (crate) HardwareParameters :: buffer_frames : u64
 kernel/src/audio/mod.rs :: pub (crate) HardwareParameters :: channels : u32
@@ -732,6 +821,7 @@ kernel/src/audio/mod.rs :: pub (crate) impl PcmFile :: fn readiness_generation (
 kernel/src/audio/mod.rs :: pub (crate) impl PcmFile :: fn software_parameters (& self , parameters : SoftwareParameters ,) -> Result < () , AudioError >
 kernel/src/audio/mod.rs :: pub (crate) impl PcmFile :: fn start (& self) -> Result < () , AudioError >
 kernel/src/audio/mod.rs :: pub (crate) impl PcmFile :: fn status (& self) -> PcmStatus
+kernel/src/audio/mod.rs :: pub (crate) impl PcmFile :: fn subdevices (& self) -> (usize , usize , usize)
 kernel/src/audio/mod.rs :: pub (crate) impl PcmFile :: fn write_period (& self , bytes : & [u8]) -> Result < () , AudioError >
 kernel/src/audio/mod.rs :: pub (crate) struct HardwareParameters
 kernel/src/audio/mod.rs :: pub (crate) struct PcmFile
@@ -914,7 +1004,6 @@ kernel/src/drivers/audio_output.rs :: trait PcmCompletionObserver :: fn period_c
 kernel/src/drivers/audio_output.rs :: trait PcmCompletionObserver :: fn xrun (& self)
 kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn configure (& self) -> Result < () , PcmOutputError >
 kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn prepare (& self) -> Result < () , PcmOutputError >
-kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn release (& self) -> Result < () , PcmOutputError >
 kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn set_observer (& self , observer : Arc < dyn PcmCompletionObserver >) -> Result < () , PcmOutputError >
 kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn start (& self) -> Result < () , PcmOutputError >
 kernel/src/drivers/audio_output.rs :: trait PcmOutput :: fn stop (& self) -> Result < () , PcmOutputError >
@@ -9022,7 +9111,6 @@ kernel/src/virtio/sound/lifecycle.rs :: pub (super) fn polled_control_ack_requir
 kernel/src/virtio/sound/lifecycle.rs :: pub (super) fn unique_slot_for (completion_head : u16 , slot_count : usize , mut head_at : impl FnMut (usize) -> Option < u16 > ,) -> Option < usize >
 kernel/src/virtio/sound/lifecycle.rs :: pub (super) impl DeviceState :: fn after_configure (self) -> Option < Self >
 kernel/src/virtio/sound/lifecycle.rs :: pub (super) impl DeviceState :: fn after_prepare (self) -> Option < Self >
-kernel/src/virtio/sound/lifecycle.rs :: pub (super) impl DeviceState :: fn after_release (self) -> Option < Self >
 kernel/src/virtio/sound/lifecycle.rs :: pub (super) impl DeviceState :: fn after_start (self) -> Option < Self >
 kernel/src/virtio/sound/lifecycle.rs :: pub (super) impl DeviceState :: fn after_stop (self) -> Option < Self >
 kernel/src/virtio/sound/lifecycle.rs :: pub (super) impl DeviceState :: fn fail (& mut self) -> bool

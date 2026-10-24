@@ -1,5 +1,5 @@
+use super::codec as alsa_codec;
 use crate::{
-    alsa_codec,
     audio_readiness::project,
     audio_state::{PcmState, PcmStateOwner},
     drivers::{PCM_BUFFER_FRAMES, PCM_PERIOD_FRAMES},
@@ -245,7 +245,7 @@ fn virtio_sound_polled_control_ack_preserves_coalesced_tx_work() {
 }
 
 mod hw_refine {
-    use crate::alsa_codec::{HW_PARAMS_BYTES, refine_hardware};
+    use crate::audio::codec::{HW_PARAMS_BYTES, refine_hardware};
 
     fn u32_at(bytes: &[u8], offset: usize) -> u32 {
         u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
@@ -273,28 +273,59 @@ mod hw_refine {
 
     fn interval(bytes: &[u8], parameter: usize) -> (u32, u32, u32) {
         let offset = 260 + (parameter - 8) * 12;
-        (u32_at(bytes, offset), u32_at(bytes, offset + 4), u32_at(bytes, offset + 8))
+        (
+            u32_at(bytes, offset),
+            u32_at(bytes, offset + 4),
+            u32_at(bytes, offset + 8),
+        )
     }
 
     #[test]
     fn an_unconstrained_request_narrows_to_the_single_hardware_configuration() {
         let mut bytes = unconstrained();
         refine_hardware(&mut bytes).unwrap();
-        assert_eq!(u32_at(&bytes, 4), (1 << 0) | (1 << 3), "access: mmap-interleaved and rw-interleaved");
+        assert_eq!(
+            u32_at(&bytes, 4),
+            (1 << 0) | (1 << 3),
+            "access: mmap-interleaved and rw-interleaved"
+        );
         assert_eq!(u32_at(&bytes, 36), 1 << 14, "format: FLOAT_LE only");
         assert_eq!(u32_at(&bytes, 68), 1, "subformat: standard");
         for word in 1..8 {
             assert_eq!(u32_at(&bytes, 4 + word * 4), 0, "no other access bits");
         }
-        assert_eq!(interval(&bytes, 10).0..=interval(&bytes, 10).1, 2..=2, "channels");
-        assert_eq!((interval(&bytes, 11).0, interval(&bytes, 11).1), (48_000, 48_000));
-        assert_eq!((interval(&bytes, 13).0, interval(&bytes, 13).1), (256, 256), "period size");
-        assert_eq!((interval(&bytes, 15).0, interval(&bytes, 15).1), (4, 4), "periods");
-        assert_eq!((interval(&bytes, 17).0, interval(&bytes, 17).1), (1_024, 1_024), "buffer size");
+        assert_eq!(
+            interval(&bytes, 10).0..=interval(&bytes, 10).1,
+            2..=2,
+            "channels"
+        );
+        assert_eq!(
+            (interval(&bytes, 11).0, interval(&bytes, 11).1),
+            (48_000, 48_000)
+        );
+        assert_eq!(
+            (interval(&bytes, 13).0, interval(&bytes, 13).1),
+            (256, 256),
+            "period size"
+        );
+        assert_eq!(
+            (interval(&bytes, 15).0, interval(&bytes, 15).1),
+            (4, 4),
+            "periods"
+        );
+        assert_eq!(
+            (interval(&bytes, 17).0, interval(&bytes, 17).1),
+            (1_024, 1_024),
+            "buffer size"
+        );
         // 每个被收窄的参数都出现在 cmask 里。
         let changed = u32_at(&bytes, 516);
         for parameter in [0usize, 1, 2, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18] {
-            assert_ne!(changed & (1 << parameter), 0, "parameter {parameter} must be reported changed");
+            assert_ne!(
+                changed & (1 << parameter),
+                0,
+                "parameter {parameter} must be reported changed"
+            );
         }
     }
 
@@ -324,7 +355,10 @@ mod hw_refine {
             let offset = 260 + (parameter - 8) * 12;
             set_u32(&mut bytes, offset, value);
             set_u32(&mut bytes, offset + 4, value);
-            assert!(refine_hardware(&mut bytes).is_err(), "parameter {parameter} = {value} is unsupported");
+            assert!(
+                refine_hardware(&mut bytes).is_err(),
+                "parameter {parameter} = {value} is unsupported"
+            );
         }
         // 只要求 S16_LE：硬件只有 FLOAT_LE，掩码求交为空。
         let mut bytes = unconstrained();
@@ -332,7 +366,10 @@ mod hw_refine {
             *byte = 0;
         }
         set_u32(&mut bytes, 36, 1 << 2);
-        assert!(refine_hardware(&mut bytes).is_err(), "S16_LE alone has no common format");
+        assert!(
+            refine_hardware(&mut bytes).is_err(),
+            "S16_LE alone has no common format"
+        );
         // 只要求 S16 访问以外的方式（NONINTERLEAVED=1）也为空。
         let mut bytes = unconstrained();
         for byte in &mut bytes[4..36] {
@@ -348,7 +385,10 @@ mod hw_refine {
         set_u32(&mut bytes, 260 + 3 * 12, 8_000);
         set_u32(&mut bytes, 260 + 3 * 12 + 4, 96_000);
         refine_hardware(&mut bytes).unwrap();
-        assert_eq!((interval(&bytes, 11).0, interval(&bytes, 11).1), (48_000, 48_000));
+        assert_eq!(
+            (interval(&bytes, 11).0, interval(&bytes, 11).1),
+            (48_000, 48_000)
+        );
     }
 
     #[test]
@@ -359,16 +399,22 @@ mod hw_refine {
         let mut inverted = unconstrained();
         set_u32(&mut inverted, 260 + 3 * 12, 50_000);
         set_u32(&mut inverted, 260 + 3 * 12 + 4, 40_000);
-        assert!(refine_hardware(&mut inverted).is_err(), "min > max is empty");
+        assert!(
+            refine_hardware(&mut inverted).is_err(),
+            "min > max is empty"
+        );
     }
 }
 
 mod pcm_info {
-    use crate::alsa_codec::{PCM_INFO_BYTES, PcmInfo, encode_pcm_info};
+    use crate::audio::codec::{PCM_INFO_BYTES, PcmInfo, encode_pcm_info};
 
     fn text(bytes: &[u8], offset: usize, width: usize) -> &str {
         let field = &bytes[offset..offset + width];
-        let length = field.iter().position(|&byte| byte == 0).expect("NUL-terminated");
+        let length = field
+            .iter()
+            .position(|&byte| byte == 0)
+            .expect("NUL-terminated");
         core::str::from_utf8(&field[..length]).unwrap()
     }
 
@@ -397,7 +443,10 @@ mod pcm_info {
         assert_eq!(u32_at(&bytes, 196), 0, "dev_subclass = generic mix");
         assert_eq!(u32_at(&bytes, 200), 8, "subdevices_count");
         assert_eq!(u32_at(&bytes, 204), 5, "subdevices_avail");
-        assert!(bytes[208..].iter().all(|&byte| byte == 0), "sync and reserved stay zero");
+        assert!(
+            bytes[208..].iter().all(|&byte| byte == 0),
+            "sync and reserved stay zero"
+        );
     }
 
     #[test]

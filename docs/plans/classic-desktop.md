@@ -34,7 +34,7 @@ Status: Active
 | 位置 | 职责 |
 |---|---|
 | `drm/boot_screen.rs` | probe 后直接 scanout 第一帧：黑底 + 底部进度条；`main.rs` 在启动里程碑推进进度；首个 DRM master `SETCRTC` 时交出 scanout |
-| `audio/substream.rs` | 一张卡暴露 N 个 playback substream（同 emu10k1 这类硬件混音卡），每次 open 分配一个 |
+| `audio/engine.rs` | 一张卡暴露 N 个 playback substream（同 emu10k1 这类硬件混音卡），每次 open 分配一个 |
 | `audio/mixer.rs` | 48 kHz float 混音与 limiter，写入 VirtIO Sound |
 | `audio/control.rs` | `/dev/snd/controlC0`：`Master Playback Volume/Switch` 与每个 substream 的 `PCM Playback Volume` |
 | 各 syscall / sysfs / DRM / evdev 领域 | 补齐 Wayland 与 Wine/FEX 所需的 ABI，逐项写入 ABI 矩阵 |
@@ -129,7 +129,7 @@ Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，�
 
 ## 实施方式
 
-2026-10-24 起改为边实现边对齐规格：规格中"待核"的数值，在实现对应组件时用原版素材（`target/classic-desktop/windows2000/assets/`，
+2026-10-24 起改为边实现边对齐规格：规格中"待核"的数值，在实现对应组件时用原版素材（`.local/inputs/windows2000/assets/`，
 由 `scripts/extract_windows2000_assets.py` 提取）核对并改回规格，不再单独做一轮规格验证。
 
 ## HiDPI
@@ -164,22 +164,21 @@ Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，�
 |---|---|---|
 | 0 | **参照 spike（已验证，见阶段 0 进展）**：Alpine aarch64 上运行 Wine + FEX 与 Win32 探针 | 产出 syscall 缺口、Wayland 必需集合与运行时构建配方 |
 | 1 | **（进行中，见"阶段 1 进展"）** 设计规格与素材：`docs/design/classic-desktop/`，`assets/classic/`（字体、1x/2x 图标、光标、开机画面、壁纸） | 规格评审通过；素材尺寸和格式由校验脚本检查 |
-| 2 | **（内核侧已完成，见"阶段 2 进展"）** kernel `boot_screen` 与进度里程碑 | `verify_boot` 截图：第一帧即为 Win2000 风格的黑屏加进度条 |
-| 3 | kernel 混音（`substream` / `mixer` / `control`），删除 `audio-service`、`audio-proto` 及其决策文档 | 单元测试；多路同时播放的音频分析 gate；`amixer` 可调节音量 |
+| 2 | **（内核侧已实现，见"阶段 2 进展"）** kernel `boot_screen` 与进度里程碑 | `verify_boot` 截图：第一帧即为 Win2000 风格的黑屏加进度条 |
+| 3 | kernel 混音（`engine` / `mixer` / `control`），删除 `audio-service`、`audio-proto` 及其决策文档 | 单元测试；多路同时播放的音频分析 gate；`amixer` 可调节音量 |
 | 4 | 用户态库：`wayland-wire`、`classic-theme`、`canvas`、`typeface`、`classic-ui` | codec 单元测试；黄金截图测试（1x 和 2x）；canvas 与字形 benchmark |
-| 5 | **一次性切换**：compositor 与应用迁移 Wayland，范围见下文 | 上游客户端一致性测试、完整会话 UI runtime gate 与 `make verify` |
+| 5 | **新会话实现**：compositor 与应用使用 Wayland，范围见下文 | 上游客户端一致性测试、完整会话 UI runtime gate 与 `make verify` |
 | 6 | 按阶段 0 的清单补齐 kernel ABI，打包 `/opt/wine`；`classic-theme` 生成 Wine 前缀注册表 | 在 LiteOS 上运行 notepad、winemine、winecfg 和 ddraw/dsound 样例；Wine conformance 测试（`user32`、`gdi32`、`ddraw`、`dsound` 的 `*_test.exe`）结果与参照 Linux 一致 |
 | 7 | 红色警戒 2（用户放入 `RA2_DIR` 后）：cnc-ddraw、开始菜单 `.desktop` 条目 | 进入遭遇战且有声音（runtime gate） |
 | 后续 | `drm/virtgpu` 多 context + dmabuf + Mesa → D3D | 另立计划 |
 
-阶段 4 不影响现有系统，可以独立推进；阶段 5 一次性切换，不保留双轨。
+阶段 4 从独立基础库推进；旧图形栈已拆除，阶段 4/5 从 UART 基线实现新会话，不恢复旧实现。
 
-阶段 5 切换范围：compositor 改为 Wayland，加入 `logon`、`desktop`、`file-explorer`、`command-prompt`、
-`task-manager`、`media-player`；删除 `ui/`、`lite-runtime`、`quickjs-runtime`、`display-proto`、旧 `apps/*`、
-`terminal-session`、`seatd`、`seat-proto`、`console`，重写对应的 architecture 与 contract 文档。
+阶段 5 实现范围：新 compositor、`logon`、`desktop`、`file-explorer`、`command-prompt`、
+`task-manager`、`media-player`。旧 UI、应用、音频服务与 seat 私有协议均已移除，不作为实现参照。
 使用上游 `wayland-info` / `weston-simple-shm` 做一致性测试，UI runtime gate 覆盖开机 → 登录 → 桌面 → 打开各应用。
 
-## 阶段 0 进展（参照环境：Alpine 3.24.2 aarch64，QEMU HVF，仓库外 `~/liteos-spike/`）
+## 阶段 0 进展（参照环境：Alpine 3.24.2 aarch64，QEMU HVF，工程内 `.local/spikes/classic-desktop/`）
 
 已验证：
 
@@ -209,7 +208,7 @@ Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，�
    - PCM：`HW_REFINE`（alsa-lib 参数协商的核心，必需）、`INFO`、`TTSTAMP`、`USER_PVERSION`、`REWIND`、`RESET`。
    - 整个 `/dev/snd/controlC0`：`CARD_INFO`、`PVERSION`、`PCM_INFO`、`PCM_NEXT_DEVICE`、`PCM_PREFER_SUBDEVICE`
      （由计划中的 `audio/control.rs` 承接）。
-7. **Wine conformance 基线**（仓库外 `~/liteos-spike/out/baseline/*.tsv`，逐子测试记录退出码、执行数、失败数、跳过数）：
+7. **Wine conformance 基线**（工程内 `.local/spikes/classic-desktop/out/baseline/*.tsv`，逐子测试记录退出码、执行数、失败数、跳过数）：
    - **aarch64 原生层**（不经 FEX，直接对照内核 ABI，LiteOS 的主要比较对象）：kernel32 33 个子测试、ntdll 27 个、
      gdi32 14 个、user32 24 个。`ntdll:exception` 在参照环境本身不稳定（同条件连跑 3 次：超时 / 全过 / 182 个
      调试器断点类失败），其子进程测试块稳定全过；比较规则为子进程块必须全过、主块只允许"调试器断点"类失败或超时。
@@ -223,7 +222,7 @@ Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，�
 阶段 0 遗留：
 
 - 构建前需要补 `gettext`，否则 Wine 没有中文界面翻译。
-- 参照脚本（`~/liteos-spike/scripts/`）在阶段 6 转为仓库内的 `scripts/wine_runtime.py` 与 runtime gate。
+- 参照脚本（`.local/spikes/classic-desktop/scripts/`）在阶段 6 转为仓库内的 `scripts/wine_runtime.py` 与 runtime gate。
 
 设计待定：
 
@@ -236,7 +235,7 @@ Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，�
 
 1. 设计规格 `docs/design/classic-desktop/`：外观、开机登录、桌面外壳、交互清单、素材清单；每项标注"确定/待核"。
 2. 品牌规则：界面文案不出现"Windows"（微软商标），统一替换为"LiteOS"，交互与文案结构保持不变。
-3. Codex 生成的素材（源文件在 `assets/classic/`，prompt 存于仓库外 `~/liteos-spike/scripts/prompt-*.txt`）：
+3. Codex 生成的素材（源文件在 `assets/classic/`，prompt 存于工程内 `.local/spikes/classic-desktop/scripts/prompt-*.txt`）：
    - 图标 105 张（31 个三尺寸图标、2 个托盘图标、4 个消息框图标）。16 像素版第一次生成像是大图缩小所得、
      发灰发虚，已整体重做为逐像素绘制（平均 6 色、1 像素深色轮廓）。
    - 光标 54 张（11 个静态光标 + 两组 8 帧沙漏动画）；热点由程序核对：箭头类 (0,0)、居中类 (16,16)、
@@ -248,23 +247,23 @@ Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，�
 
 待完成：
 
-- 本地原版素材：提取 owner 为 `scripts/extract_windows2000_assets.py`，只写入 Git 忽略的 `target/`；
+- 本地原版素材：提取 owner 为 `scripts/extract_windows2000_assets.py`，只写入 Git 忽略的 `.local/inputs/`；
   已核对全部桌面图标、默认光标、三类位图和声音/字体的来源，见素材清单。尚未接入产品 rootfs，留待阶段 4/5
   的唯一素材打包入口消费，不能把素材准备算作桌面已切换。
 - 规格中"待核"项：按公开规范与原版静态资源核对，不依赖 Windows 2000 参照机；未核实项不提升置信度。
 
 ## 阶段 2 进展（内核开机画面）
 
-已完成并验证：
+已实现并验证：
 
 1. **从第一屏开始**：内核把 GPU 初始化提前到 `memory::init()` 之后（设备探测顺序改了：`virtio::bind_display` 先建立首个 GPU，
    `EarlyDisplay` 令牌带到 `bind_platform_devices` 补注册中断），随后立即把 `LBS1` 启动画面画上屏幕，并在命名空间、
    文件系统/scheduler、设备、音频四个里程碑推进进度条到 400‰。在 QEMU（HVF，1504×846）里截屏确认：画面居中、1 倍、
    进度条停在 40%；换成本地原版画面后同一套代码画出原版启动画面，进度条精确落在原版的槽里。
-2. **素材选择只有一个点**：`scripts/classic_assets.py` 决定用本地原版（`target/…/packed/`）还是仓库默认
+2. **素材选择只有一个点**：`scripts/classic_assets.py` 决定用本地原版（`.local/inputs/windows2000/packed/`）还是仓库默认
    （`assets/classic/boot-scene.lbs`）；内核构建（`LITEOS_BOOT_SCENE` 环境变量，cargo 自动跟踪）与 rootfs 构建都经它取路径。
-3. **共用解码**：新增 `boot-scene` crate（`no_std`、不分配内存），内核与 compositor 共用，8 个单元测试；内核侧 `boot_screen`
-   模块有 6 个宿主测试（假帧缓冲），compositor 侧 4 个，打包器与选择函数共 16 个 Python 测试。
+3. **共用解码**：新增 `boot-scene` crate（`no_std`、不分配内存），当前由内核消费、供未来 compositor 复用，8 个单元测试；内核侧 `boot_screen`
+   模块有 6 个宿主测试（假帧缓冲），打包器与选择函数有 Python 测试。旧 compositor 的测试随实现撤下，不计作当前覆盖。
 4. **删除被取代的旧实现**：Aurora 启动场景（`assets/bootlogo.xrgb`、`scripts/convert_bootlogo.py`、compositor 里的程序化
    背景与 logo 图层解析）整体删除，不保留第二套。
 5. **顺带根治的既有缺陷**：`arch::aarch64::mmu::virtual_to_physical` 用 `then_some` 急切求值，对内核镜像高地址在开启溢出检查的
@@ -274,11 +273,20 @@ Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，�
 
 尚未做 / 已知限制：
 
-- **compositor 阶段的进度条动画**：当前停在 400‰ 直到桌面首帧。原因是现有 compositor 的原地刷新要碰 flip/脏区机制，且它在
-  阶段 5 会按 Wayland 重写；`LBS1` 与里程碑常量已为接续预留。
-- 完整图形运行时门禁（`verify_boot` 的 UTM 路径）本机没有运行，只做了 QEMU 直启截屏验证。
+- **compositor 阶段的进度条动画**：当前停在 400‰ 直到桌面首帧。旧 compositor 已移除，新 Wayland compositor 尚待阶段 5 实现；`LBS1` 与里程碑常量已为接续预留。
+- `verify_boot` 的 UTM 路径覆盖 kernel 图形设备拓扑与 init 启动；完整桌面会话尚不存在，不能据此宣称 UI 验收通过。
 - 原版进度条是"跑马灯"还是按比例填充尚未核实（目前按比例）。
 - 两张 640×480 以外的位图（登录横幅、开始菜单侧栏）已生成并对齐尺寸，但还没有消费者。
+
+## UART 基线与阶段 3 进展
+
+旧 LiteUI、React 应用、用户态音频 mixer、旧 compositor、显示器文本 console 与 seat 私有协议均已撤下。
+init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量同步会清理已退休的系统文件并保留用户数据。
+原版静态资源、经典桌面素材、kernel 开机画面和 DRM/ALSA/输入能力继续保留。
+
+内核音频已有 8 子流 Engine、Master control 与 host 状态/codec/混音测试；持久事实见音频架构及契约。
+阶段 3 仍缺 control 事件/子设备偏好语义、多路真实输出、amixer consumer 和目标架构性能验证。
+阶段 4 的下一步是独立基础库和公开 Wayland wire 协议，新桌面尚未实现。
 
 ## 风险
 

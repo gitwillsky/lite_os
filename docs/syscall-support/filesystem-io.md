@@ -21,7 +21,7 @@
 | 26 | `inotify_init1` | Complete | `IN_NONBLOCK`/`IN_CLOEXEC`；默认每 real UID/UserNS 128 个实例、受祖先配额限制（`EMFILE`） |
 | 27 | `inotify_add_watch` | Partial | 见下“inotify”；按实例原创建者 real UID/UserNS/祖先共享 watch 配额（`ENOSPC`） |
 | 28 | `inotify_rm_watch` | Complete | 删除后投递 `IN_IGNORED` |
-| 29 | `ioctl` | Partial | TTY（含 `TCFLSH`）、socket、DRM、evdev、ALSA playback、块设备 `BLK*` 与管道/FIFO 的 `FIONREAD` |
+| 29 | `ioctl` | Partial | TTY（含 `TCFLSH`）、socket、DRM、evdev、ALSA playback/control 子集、块设备 `BLK*` 与管道/FIFO 的 `FIONREAD` |
 | 30 | `ioprio_set` | Partial | WHO_PROCESS policy storage；无 block enforcement |
 | 31 | `ioprio_get` | Partial | WHO_PROCESS policy query |
 | 32 | `flock` | Complete | BSD whole-file lock lifecycle |
@@ -167,6 +167,13 @@ poll/epoll 可用。record 没有 Linux 的 dictionary 续行，也不做 printk
 字符设备读写的范围缩减：`/dev/random`/`/dev/urandom` 写入（混入 entropy pool）返回 `EOPNOTSUPP`；
 `/dev/snd/pcmC0D0p` 的 `read`/`write` 返回 `EOPNOTSUPP`，PCM 数据只经 `SNDRV_PCM_IOCTL_WRITEI_FRAMES`
 或 mmap ring 传输；`/dev/dri/card0` 的 `write` 返回 `EOPNOTSUPP`。
+
+ALSA 卡有 8 个 playback 子流，每次 PCM open 占用首个空槽。固定 48 kHz stereo F32_LE、
+256-frame period、1024-frame buffer，INFO/HW_REFINE 按此约束报告；不声明任意采样率/格式转换。
+`/dev/snd/controlC0` 实现 PVERSION、CARD_INFO、ELEM_LIST/INFO/READ/WRITE、PCM_NEXT_DEVICE/INFO，
+只发布 Master Playback Volume/Switch。SUBSCRIBE_EVENTS 当前写回未订阅状态，不支持事件通知；
+PCM_PREFER_SUBDEVICE 当前不影响分配，语义尚未补齐。TTSTAMP、USER_PVERSION、REWIND、RESET、
+per-substream gain 与 capture 尚不支持；真实 alsa-lib/amixer/Wine consumer 仍待验证。
 
 `statx` 的时间戳精度取决于 filesystem 实际记录的内容：ext4 保存纳秒与创建时间并如实报告；其余 filesystem 的
 `Inode::set_times`/`touch_access` 以秒为单位，纳秒恒为 0、不报告 `BTIME`（Linux 对不记录创建时间的 filesystem 同样不设该位）。

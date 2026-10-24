@@ -31,7 +31,7 @@ class ApkRoutingTests(unittest.TestCase):
         cache, _, _, _ = reload_apk_modules("aarch64", "hvf")
         packages = cache.fixed_bootstrap_packages()
 
-        self.assertEqual(cache.WORK.name, "aarch64")
+        self.assertEqual(cache.SOURCE.name, "aarch64")
         self.assertEqual(cache.ALPINE_ARCH, "aarch64")
         self.assertEqual(cache.ALPINE_MIRROR, "https://mirrors.ustc.edu.cn/alpine")
         self.assertEqual(cache.ALPINE_PACKAGE_REPOSITORIES, (
@@ -42,24 +42,24 @@ class ApkRoutingTests(unittest.TestCase):
         self.assertEqual(len(packages), 3)
         self.assertEqual(
             cache.fingerprint({"packages": packages}),
-            "d61c1308c226b6307c347cce402b49eeae99a18b5d676dc09f051bf0c2f1e448",
+            "d7685b6b43bed1900c0e3472e73bd604ee00b67d07612fcb5bd46897fed7feab",
         )
 
     def test_riscv64_package_digests_remain_fixed(self) -> None:
         cache, apps_cache, _, _ = reload_apk_modules("riscv64", "tcg")
         payload = cache.bootstrap_payload()
 
-        self.assertEqual(cache.WORK.name, "riscv64")
+        self.assertEqual(cache.SOURCE.name, "riscv64")
         self.assertEqual(payload["arch"], "riscv64")
         self.assertEqual(
             cache.fingerprint({"packages": payload["packages"]}),
-            "37f41c26e23c0df31d4f1e08b42d63cf546b1ea1d81a0008a6173473cab74755",
+            "2f667920b31a3f252014c4ef75d9c2c89eb4276e4a0cf474ef0841ccaa1598ff",
         )
         self.assertEqual(
             apps_cache.fingerprint(
                 {"packages": dict(apps_cache.fixed_application_packages())}
             ),
-            "b57f1187039ac27b1c86b8f1340e4b15055e8ffc2151ad34730a4c49fa0e1a10",
+            "19be8d8ed52f4152d85bf945fbc56fd73a3749c9cf7a66ae75075c400ea98ee7",
         )
 
     def test_aarch64_application_digests_are_complete(self) -> None:
@@ -73,15 +73,15 @@ class ApkRoutingTests(unittest.TestCase):
         )
         self.assertEqual(
             apps_cache.fingerprint({"packages": dict(packages)}),
-            "537afa6785ab250e1a0503750345909feb043cf44a5bec19b17e2d31c832d679",
+            "79e6b37eabb8e23f7f8a9b7ad18fc5c3912eb80b81ea10b0b0a6993dfb6ffe4b",
         )
 
     def test_only_fixed_data_packages_accept_noarch_metadata(self) -> None:
         cache, _, _, _ = reload_apk_modules("aarch64", "hvf")
         noarch_packages = {
-            "ca-certificates-bundle-20260909-r0.apk": (
+            "ca-certificates-bundle-20261020-r0.apk": (
                 "ca-certificates-bundle",
-                "20260909-r0",
+                "20261020-r0",
             ),
             "git-init-template-2.49.1-r0.apk": ("git-init-template", "2.49.1-r0"),
             "ncurses-terminfo-base-6.5_p20250503-r0.apk": (
@@ -112,6 +112,18 @@ class ApkRoutingTests(unittest.TestCase):
                     ):
                         with self.assertRaisesRegex(RuntimeError, "arch=noarch"):
                             cache.verify_package_metadata(Path(filename), filename)
+
+    def test_application_install_queries_match_both_architecture_pins(self) -> None:
+        import re
+        fixture = (SCRIPTS / "fixtures/apk-apps/install.sh").read_text()
+        queries = re.findall(r"\$APK info -e '([^']+)'", fixture)
+        self.assertEqual({query.split("=", 1)[0] for query in queries}, {"curl", "sqlite", "git"})
+        for arch in ("aarch64", "riscv64"):
+            _, apps_cache, _, _ = reload_apk_modules(arch, "tcg")
+            packages = dict(apps_cache.fixed_application_packages())
+            for query in queries:
+                name, version = query.split("=", 1)
+                self.assertIn(f"{name}-{version}.apk", packages, f"{arch}: stale install query {query}")
 
     def test_unlisted_noarch_package_is_rejected(self) -> None:
         cache, _, _, _ = reload_apk_modules("aarch64", "hvf")

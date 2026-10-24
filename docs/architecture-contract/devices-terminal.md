@@ -45,7 +45,7 @@
 - `tty` 独占系统 console Terminal 单例、TTY/pts 设备文件与 termios/session ioctl；`fs::mem` 独占
   `null`/`zero`/`random`/`urandom`/`kmsg`。`tty::pty` 独占 PTY registry/pair；Terminal 独占
   session/foreground/termios/winsize 与创建时绑定的实际设备号。userspace terminal helper 与
-  graphical session owner 由 [LiteUI 契约](lite-runtime.md) 维护。
+  当前无用户态图形会话。
 - userspace `linux-uapi` 独占 DRM/evdev/PTY/process/poll ancillary 的 raw musl FFI；`OwnedFd`、
   `DumbBuffer`、`InputDevice`、`PtySession` 与 `SessionChild` 独占对应资源 cleanup。应用不得复制
   layout、constant、extern block 或裸 owner。
@@ -111,29 +111,18 @@
   pts，读写与唤醒源与直接打开一致；caller session 没有 controlling TTY 时返回 `ENXIO`。
 - `/dev/virtio-ports/com.redhat.spice.0` 是 mode `0600` 的 character byte stream：read/write 支持
   blocking 与 `O_NONBLOCK`，poll/epoll 只投影 adapter level readiness 与 disconnect。它不是私有
-  clipboard syscall；SPICE agent framing 完全属于 compositor userspace。compositor 必须在同一个
-  agent owner 中声明 `MONITORS_CONFIG` 与 clipboard-by-demand capability，严格解析单显示器
-  `VDAgentMonitorsConfig`，并把最终 resize 只提交到标准 DRM/KMS seam。
+  clipboard syscall；SPICE agent framing 属于用户态，当前没有 consumer。后续 agent 必须在单一 owner
+  解析 capability/消息，并把 resize 只提交到标准 DRM/KMS seam。
 - display completion、input packet 与 PTY byte readiness 统一投递 semantic event；hardirq 不执行 renderer、filesystem 或 task logic。
-- terminal userspace 只能使用标准 PTY、termios、signal、ANSI/ECMA-48；禁止私有 console syscall/protocol。桌面客户端协议（`display-proto`）是用户态进程间 seam，不进入内核 ABI。
+- terminal userspace 只能使用标准 PTY、termios、signal、ANSI/ECMA-48；禁止私有 console syscall/protocol。用户态显示协议不进入内核 ABI。
 - 动态 client/window/child/config 集合必须使用 fallible `Vec`/`String` reserve 后发布，不得恢复任意
   8-slot 上限；damage、wire frame、input batch 与 renderer row 是协议或热路径 bounded buffer，继续
   使用固定数组。poll descriptor/mapping vector 必须跨轮次复用容量，事件稳态不得新增分配。
-- graphical userspace 的 DRM master、buffer、session epoch、boot scene、renderer 与 terminal helper
-  interface 由 [LiteUI 契约](lite-runtime.md) 唯一维护；本契约不得复制其 state machine。
 - `SessionChild` 只接受固定 I/O profile 的 `SessionCommand`，并强制通过单线程
   `/bin/session-launch` 建立 parent-death、session/process-group 与同步 exec-error 契约；
-  多线程 LiteUI 不得运行 `pre_exec`，目标 stderr 统一进入标准 `/dev/console`。
-- `terminal-session` 每轮 PTY drain 必须有界，并在预算耗尽后回到 control fd；持续刷新的
-  TUI 不能饿死 LiteUI 的 ACK、resize 或键盘输入。PTY slave 关闭后的 Linux `EIO` 与空读
-  都表示 session child 正常结束，helper 必须发布 EXIT 而不是错误退出。
-- `terminal-session` control protocol 的 poll 与 frame read 必须直接消费同一 unbuffered fd queue；
-  禁止用 `StdinLock` 等预读缓冲跨 frame 取走尚未被 dispatcher 处理的 INPUT/RESIZE。否则 fd
-  readiness 已清除而命令只留在 userspace buffer，helper 会永久睡眠。
-- `terminal-session` 的 VT model 独占 DEC application-cursor mode，并把它随 UPDATE 投影给
-  LiteUI；即使没有 dirty row，模式变化也必须发布。LiteUI 在普通模式对方向键编码 CSI，在
-  application mode 编码 SS3。缺少该投影时 Codex 等 TUI 已切换输入模式，方向键仍会被解释为
-  无效序列。
+  多线程客户端不得运行 `pre_exec`，目标 stderr 统一进入标准 `/dev/console`。
+- `terminal-model` 保留 VT parser/screen 与 DEC application-cursor mode，`keyboard` 保留 CSI/SS3 编码；
+  当前没有 PTY 窗口程序或私有 terminal helper 协议。
 - PTY session 在清空继承环境后必须显式发布 `TERM=liteos`、`USER=root`、root HOME、标准
   PATH 与 `SHELL=/bin/sh`，并从 `/root` 启动；缺少用户/shell identity 或从 `/` 进行 project
   discovery 时，Claude 会停在交互初始化阶段或错误地把整个 rootfs 当作项目。
@@ -150,20 +139,10 @@
   的同步 console seam drain（RISC-V SBI DBCN、AArch64 PL011）；panic 保留无锁单字节 fail-stop 通道。全局 severity 由 logging Atomic owner
   在 format arguments 构造前判断，被过滤日志不得取得 logger/console lock。
 
-### Seat 切换
+### UART 基线
 
-- `seat-proto` 独占切换协议帧与 `Seat` 状态机；`seatd` 独占 `/run/seat.sock`、启动/释放超时与对无响应 session 的驱逐。
-  `console` 与 `compositor` 只实现各自的 `Acquire`/`Release` 动作，不得自行判断自己是否 active。
-- `Release` 的处理顺序固定：先结束在途 page flip，再关闭 evdev（解除 grab），再 `drop_master`，最后回复 `Released`。
-  乱序会让下一个 session 的 `set_master` 返回 `EBUSY` 或读不到键盘。
-- compositor 必须在 GPU 初始化后 `drop_master`，因为内核让首个打开 DRM 的 OFD 隐式成为 master；缺少该步骤文本控制台
-  作为首个座位持有者时永远 `EBUSY`。`set_crtc` 必须先于光标更新，CRTC 未 active 时光标更新返回 `EINVAL`。
-- 持有者断线时 `seatd` 立即把座位回退给 `Text`（其次另一个已注册 session）；`Release` 超过期限无回复则终止该进程，
-  由 init respawn。该回退保证显示器不会落入无人持有的黑屏。
-- `liteos.target` 由 `seatd` 读取 `/proc/cmdline`；点号参数被内核按模块参数忽略，不进入 init 环境。非法值回退文本控制台。
-- `console` 不依赖 DRM 之外的内核接口，不新增 syscall、ioctl 或 lock；终端状态由 `terminal-model` 独占，字形图集由
-  `terminal-font` 独占，键码与 PTY 字节编码由 `keyboard` 独占，`lite-runtime` 与 `console` 不得各持一份。
-- 串口 marker（`seatd: active`、`console: acquired N`、`compositor: seat released N` 等）是运行时门禁的观测面，必须整行一次写入。
+- init 只监督网络服务与 UART shell，不建立 seat socket、显示器文本 VT 或旧图形会话。
+- `keyboard`、`terminal-model` 和 `terminal-font` 是独立库；不得恢复退休的私有显示、音频或 seat 协议。
 
 ## Failure and cleanup
 
@@ -186,8 +165,7 @@
   禁止返回普通 `Device` error 后继续使用原 queue，也禁止 reset 前局部修补 free list。
 - VirtIO Console 的 duplicate/unknown head、非法 device-written length、RX ring overflow、repost/
   notify failure 必须进入同一 terminal failure，exactly once reset device 并唤醒全部 port waiter；
-  reset 后不得继续使用原 queue。异步 clipboard reply 命中已断开的 app 时只丢弃该 reply，因为
-  session teardown 已撤销 request owner，不得把正常 disconnect race 升格为 compositor failure。
+  reset 后不得继续使用原 queue。
 - GPU successor order 必须在 request 编码和 descriptor 摘取前验证；2D scanout 的
   `UNREF→CREATE→ATTACH→TRANSFER→SET_SCANOUT→FLUSH`、2D damage 的 transfer/flush 与 disable 的
   递增 slot UNREF chain 不得跳步、倒序或跨 operation。已完成 VirGL render 的 alternate target 必须把

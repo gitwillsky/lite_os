@@ -48,7 +48,15 @@ fn decode_all(scene: &Scene<'_>) -> Vec<u8> {
 fn committed_default_scene_parses_and_decodes_to_exactly_one_frame() {
     let scene = Scene::parse(DEFAULT_SCENE).expect("committed scene must be valid");
     assert_eq!(decode_all(&scene).len(), WIDTH * HEIGHT);
-    assert_eq!(scene.fill_rect(), Rect { x: 274, y: 437, width: 163, height: 8 });
+    assert_eq!(
+        scene.fill_rect(),
+        Rect {
+            x: 274,
+            y: 437,
+            width: 163,
+            height: 8
+        }
+    );
     assert_eq!(scene.fill_color(), 0x0000_299C);
 }
 
@@ -63,7 +71,11 @@ fn committed_default_scene_has_the_sunken_progress_slot_where_the_header_says() 
     let slot = scene.fill_rect();
     for y in slot.y..slot.y + slot.height {
         for x in slot.x..slot.x + slot.width {
-            assert_eq!(at(x, y), 0x00C0_C0C0, "slot interior must be empty at ({x},{y})");
+            assert_eq!(
+                at(x, y),
+                0x00C0_C0C0,
+                "slot interior must be empty at ({x},{y})"
+            );
         }
     }
 }
@@ -92,20 +104,44 @@ fn a_run_may_cross_row_boundaries() {
 #[test]
 fn malformed_inputs_are_rejected_with_the_matching_reason() {
     let good = encode(1, [274, 437, 163, 8], &solid());
-    assert_eq!(Scene::parse(&good[..10]).unwrap_err(), ParseError::Truncated);
-    assert_eq!(Scene::parse(&good[..24]).unwrap_err(), ParseError::Truncated); // 缺调色板
+    assert_eq!(
+        Scene::parse(&good[..10]).unwrap_err(),
+        ParseError::Truncated
+    );
+    assert_eq!(
+        Scene::parse(&good[..24]).unwrap_err(),
+        ParseError::Truncated
+    ); // 缺调色板
     let mut bad_magic = good.clone();
     bad_magic[0] = b'X';
     assert_eq!(Scene::parse(&bad_magic).unwrap_err(), ParseError::BadMagic);
     let mut wrong_width = good.clone();
     wrong_width[4] = 0x20;
-    assert_eq!(Scene::parse(&wrong_width).unwrap_err(), ParseError::BadHeader);
-    assert_eq!(Scene::parse(&encode(0, [274, 437, 163, 8], &[])).unwrap_err(), ParseError::BadHeader);
-    assert_eq!(Scene::parse(&encode(257, [274, 437, 163, 8], &solid())).unwrap_err(), ParseError::BadHeader);
+    assert_eq!(
+        Scene::parse(&wrong_width).unwrap_err(),
+        ParseError::BadHeader
+    );
+    assert_eq!(
+        Scene::parse(&encode(0, [274, 437, 163, 8], &[])).unwrap_err(),
+        ParseError::BadHeader
+    );
+    assert_eq!(
+        Scene::parse(&encode(257, [274, 437, 163, 8], &solid())).unwrap_err(),
+        ParseError::BadHeader
+    );
     // 槽为空或越出位图都不是合法进度槽。
-    assert_eq!(Scene::parse(&encode(1, [274, 437, 0, 8], &solid())).unwrap_err(), ParseError::BadHeader);
-    assert_eq!(Scene::parse(&encode(1, [600, 437, 163, 8], &solid())).unwrap_err(), ParseError::BadHeader);
-    assert_eq!(Scene::parse(&encode(1, [274, 475, 163, 8], &solid())).unwrap_err(), ParseError::BadHeader);
+    assert_eq!(
+        Scene::parse(&encode(1, [274, 437, 0, 8], &solid())).unwrap_err(),
+        ParseError::BadHeader
+    );
+    assert_eq!(
+        Scene::parse(&encode(1, [600, 437, 163, 8], &solid())).unwrap_err(),
+        ParseError::BadHeader
+    );
+    assert_eq!(
+        Scene::parse(&encode(1, [274, 475, 163, 8], &solid())).unwrap_err(),
+        ParseError::BadHeader
+    );
     let mut reserved = good.clone();
     reserved[10] = 1;
     assert_eq!(Scene::parse(&reserved).unwrap_err(), ParseError::BadHeader);
@@ -116,16 +152,28 @@ fn malformed_pixel_streams_are_rejected() {
     let slot = [274, 437, 163, 8];
     let mut short = solid();
     short.pop();
-    assert_eq!(Scene::parse(&encode(1, slot, &short)).unwrap_err(), ParseError::BadPixels);
+    assert_eq!(
+        Scene::parse(&encode(1, slot, &short)).unwrap_err(),
+        ParseError::BadPixels
+    );
     let mut long = solid();
     long.push((1, 0));
-    assert_eq!(Scene::parse(&encode(1, slot, &long)).unwrap_err(), ParseError::BadPixels);
+    assert_eq!(
+        Scene::parse(&encode(1, slot, &long)).unwrap_err(),
+        ParseError::BadPixels
+    );
     let mut zero_run = solid();
     zero_run[3].0 = 0;
-    assert_eq!(Scene::parse(&encode(1, slot, &zero_run)).unwrap_err(), ParseError::BadPixels);
+    assert_eq!(
+        Scene::parse(&encode(1, slot, &zero_run)).unwrap_err(),
+        ParseError::BadPixels
+    );
     let mut outside_palette = solid();
     outside_palette[7].1 = 1;
-    assert_eq!(Scene::parse(&encode(1, slot, &outside_palette)).unwrap_err(), ParseError::BadPixels);
+    assert_eq!(
+        Scene::parse(&encode(1, slot, &outside_palette)).unwrap_err(),
+        ParseError::BadPixels
+    );
     let mut odd = encode(1, slot, &solid());
     odd.push(0);
     assert_eq!(Scene::parse(&odd).unwrap_err(), ParseError::BadPixels);
@@ -133,11 +181,39 @@ fn malformed_pixel_streams_are_rejected() {
 
 #[test]
 fn layout_uses_the_largest_integer_scale_and_centers() {
-    assert_eq!(Layout::fit(640, 480), Some(Layout { scale: 1, x: 0, y: 0 }));
-    assert_eq!(Layout::fit(800, 600), Some(Layout { scale: 1, x: 80, y: 60 }));
+    assert_eq!(
+        Layout::fit(640, 480),
+        Some(Layout {
+            scale: 1,
+            x: 0,
+            y: 0
+        })
+    );
+    assert_eq!(
+        Layout::fit(800, 600),
+        Some(Layout {
+            scale: 1,
+            x: 80,
+            y: 60
+        })
+    );
     // 3008×1692：宽度允许 4 倍，高度只允许 3 倍，取较小者；两侧各留 (3008-1920)/2 = 544 与 (1692-1440)/2 = 126。
-    assert_eq!(Layout::fit(3008, 1692), Some(Layout { scale: 3, x: 544, y: 126 }));
-    assert_eq!(Layout::fit(1504, 846), Some(Layout { scale: 1, x: 432, y: 183 }));
+    assert_eq!(
+        Layout::fit(3008, 1692),
+        Some(Layout {
+            scale: 3,
+            x: 544,
+            y: 126
+        })
+    );
+    assert_eq!(
+        Layout::fit(1504, 846),
+        Some(Layout {
+            scale: 1,
+            x: 432,
+            y: 183
+        })
+    );
     assert_eq!(Layout::fit(639, 480), None);
     assert_eq!(Layout::fit(640, 479), None);
     let bounds = Layout::fit(3008, 1692).unwrap().bounds();
@@ -151,13 +227,23 @@ fn progress_grows_from_the_left_of_the_slot_and_is_monotonic() {
     assert_eq!(layout.progress_rect(&scene, 0), None);
     let half = layout.progress_rect(&scene, 500).unwrap();
     // 槽内部 (274,437) 起、163×8，放大 3 倍后起点 (544+822, 126+1311)，半满宽 163*3/2 = 244。
-    assert_eq!(half, Rect { x: 544 + 274 * 3, y: 126 + 437 * 3, width: 244, height: 24 });
+    assert_eq!(
+        half,
+        Rect {
+            x: 544 + 274 * 3,
+            y: 126 + 437 * 3,
+            width: 244,
+            height: 24
+        }
+    );
     let full = layout.progress_rect(&scene, 1000).unwrap();
     assert_eq!(full.width, 163 * 3);
     assert_eq!(layout.progress_rect(&scene, 5000), Some(full)); // 超出按满处理
     let mut previous = 0;
     for permille in 0..=1000u16 {
-        let width = layout.progress_rect(&scene, permille).map_or(0, |rect| rect.width);
+        let width = layout
+            .progress_rect(&scene, permille)
+            .map_or(0, |rect| rect.width);
         assert!(width >= previous, "progress width must never shrink");
         previous = width;
     }

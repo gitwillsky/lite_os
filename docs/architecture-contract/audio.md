@@ -2,69 +2,44 @@
 
 ## Owner 与依赖
 
-| Owner | 唯一职责 |
+| Owner | 唯一职责与调用者 |
 |---|---|
-| `kernel::virtio::sound` | VirtIO Sound queue、DMA、command/completion、IRQ edge 与 reset |
-| `kernel::audio` | PCM device、ALSA playback state、position、poll/xrun 与 per-OFD state |
-| `platform::qemu_virt` | device ID 25 discovery、IRQ route 与 adapter 装配 |
-| `fs` | `/dev/snd/pcmC0D0p` pathname 和 character OFD publication |
-| `syscall` | Linux ALSA ioctl codec、user-copy、mmap/poll dispatch 与 errno |
-| `user/linux-uapi` | ALSA、memfd、mmap 与 SCM_RIGHTS 的 typed wrapper |
-| `user/audio-proto` | AF_UNIX v1 wire、stream identity 与 memfd SPSC ring layout |
-| `user/audio-service` | device clock、stream registry、quota、mixer、limiter 与 master state |
-| `user/lite-runtime/audio` | 每进程 worker、File/media source、decoder/resampler、seek 与 Web state projection |
-| `ui/runtime` | `HTMLMediaElement` public instance、Promise/event projection 与 UA controls |
+| `virtio::sound` | 物理流 command、DMA、queue、completion 与 reset；实现 `drivers::PcmOutput` |
+| `audio::Card` | 唯一卡、adapter observer、completion counter、Engine mutex 与 readiness pipe |
+| `audio::engine` | 纯状态机；8 个子流、物理队列、Master、贡献掩码，由 Card 串行调用 |
+| `audio::mixer` | period float accumulation、声道增益与硬削波，由 Engine 调用 |
+| `audio::state` | 单个子流的 ALSA state、应用/hardware 指针、软件参数与 xrun |
+| `audio::codec` / `ioctl` | PCM Linux layout、INFO/HW_REFINE/参数/status/pointer codec 与 user-copy |
+| `audio::control` / `control_file` | control layout、Master 元素、卡信息和 PCM 枚举的 DeviceFile 操作 |
+| `audio::pcm_file` | PCM cdev open 与 OFD 的设备操作投影 |
+| `platform` / `fs` | adapter 装配 / 按已注册设备号发布 PCM 与 control 节点 |
 
-`compositor` 不得依赖 audio crate、protocol 或 service。Web app 不得直接消费 `audio-proto`；
-kernel ALSA owner 不得读取 VirtIO private queue state；VirtIO adapter 不得编解码 Linux ioctl。
+PCM/control ioctl 的唯一 caller 是已注册 DeviceFile dispatch，不经过 syscall 中的设备专用分支。
+`PcmInfo`/`CardText` 只向 codec 提供卡与子流快照；`PcmFile::subdevices` 向 INFO 提供槽位、总数和空闲数。
+内核不依赖用户态 mixer 或媒体协议。
 
-## 固定接口
+## 接口与所有权证明
 
-- kernel 只发布 `/dev/snd/pcmC0D0p` 的已登记 Linux ALSA playback 子集；未登记 request 返回精确 errno，
-  不允许 success stub。
-- userspace protocol 只有 v1，frame 不超过 4096 bytes。每个连接的 `u64` stream ID 单调且不复用；
-  `CREATE_STREAM` 是唯一携带 fd 的 frame。
-- ring 固定 8192 frames、48 kHz stereo interleaved `f32`，logical mapping 为 65,600 bytes；
-  producer/consumer index 与 generation
-  使用 acquire/release publication。任何越界 index、非法 generation 或 frame/fd 数量损坏都撤销
-  当前 stream；协议身份损坏撤销整个连接。
-- consumer 在一次消费把 available 从**高于**低水位 `LOW_WATER_FRAMES`（capacity 的一半）下穿到
-  **至或低于**该水位时发一次 `RingAvailable` 请求 producer 补齐——是**电平下穿边沿**而非「恰好满」
-  观察。恰好满边沿在并发消费下 producer 一次补迟即永久失联导致 ring 耗尽静音；下穿边沿每次排空到
-  水位都 re-arm，单次调度延迟不致饥饿。producer 侧对称地在 ring 由空转非空时发 `RingNonempty`。
-- app quota 8、session quota 32 必须在 memfd publication 前原子预留；所有失败路径回滚两级 reservation。
-- master state 只由 service 修改。普通 app 只能修改 element-local `volume`/`muted`；desktop-only
-  `lite:audio-system` 只能取得 snapshot 和请求更新，不能成为第二 owner。
+1. `Card.engine` 是物理队列、子流状态与 Master 的唯一锁；OFD operation mutex 串行化同一 OFD 的控制与提交。
+   持 Engine 锁可能调用 adapter reclaim，因此 observer 只能累加 Atomic 完成计数和断开标志，不能重入 Engine。
+   Card.process 在锁内消费事件并 tick，锁外发 readiness；缺少该顺序会形成回调持锁自等。
+2. 全局 CARD Once 只在 init 发布一次；初始化 configure/prepare 物理流后安装 observer/completion source。
+   子流不调用物理 release；`PcmOutput` 只保留 configure/prepare/start/stop/submit/writable。
+   init 后物理流持续属于卡，子流 HW_FREE/CLOSE 只回收软件状态。
+3. 每次 open 分配新 DeviceBacking 和 mmap identity，再占槽、发布 OFD；OFD 分配失败回滚槽位。
+   close/prepare/drop 清除 contributor mask，旧 completion 不得推进复用槽位的 hw_ptr。
+   backing 在 Engine 锁外销毁，旧映射可继续持有原 backing，但不能访问新 open 的音频。
 
-## Cleanup
+`Engine<Ring>` 的窄接口由 Card/PcmFile 使用，host fixture 注入假 ring/output 验证相同状态机；
+`Accumulator` 只由 Engine 消费。steady tick 使用固定栈数组与预分配 ring，不引入 period 级堆分配。
+新内核混音路径需要目标架构 benchmark 决策与多路音频分析 gate；目前尚缺这些证据，不能据 host 数学测试宣称延迟达标。
 
-- connection EOF 原子撤销该 process 的全部 stream、mapping、fd 与 app/session quota。
-- source replacement、空 `src`/`load()`、元素 unmount 和 app exit 沿同一个 close owner 回收
-  File、decoder、ring 与 stream。`URL.revokeObjectURL()` 只撤销未来解析；已加载 source 保持其
-  File owner 到上述 media lifecycle close，禁止 revoke 反向中断正在使用的媒体。
-- driver reset 先阻止新 submission，再完成或失败全部 outstanding command，最后释放 DMA；不得把旧
-  used descriptor 归入新 generation。
-- service orderly exit 先停止 ALSA device，再撤销 stream；crash 后旧 stream 不 reconnect。
-- master 设置以 500 ms coalesce 后的 temp→fsync→rename 提交；损坏文件保留诊断并使用 75%、
-  unmuted 安全默认，不能覆盖损坏现场。
+## 失败、范围与验证
 
-## 实时与性能
-
-- mixer steady period 不允许 lock、allocation、filesystem、socket framing 或等待 control thread。
-- kernel period completion 进度属于 debug severity；`audio-service` 的周期性 progress/metrics
-  只能在显式 `--diagnostic-log` 下写 console。默认运行仍必须保留 lifecycle、master state、xrun
-  与 failure，禁止用终端侧文本过滤代替 producer 侧级别控制。
-- worker block 128 frames，mixer period 256 frames，device buffer 1024 frames；steady device wake
-  不超过每秒 188 次。
-- `play()` 到首次 device submission p95 不超过 50 ms，steady guest pipeline 不超过 25 ms，
-  mix period p99 不超过 2.67 ms。
-- idle service、worker 和 device 链路不允许 periodic wake；目标 workload 必须
-  xrun=0、steady allocation=0。
-
-## Web surface
-
-公开 surface 只包含已冻结 ADR 中的 HTMLMediaElement playback 方法、属性、状态和事件。
-`playbackRate` 仅接受 `1`；rate/track/EME/remote/capture/MSE/Web Audio 不得出现 silent-success
-占位。首次有声播放的 user-activation grant 由 LiteUI input/media owner 持有，service 不复制。
-`waiting` 属于冻结的事件类型，但固定本地文件预填充链路没有可观测 starvation transition，
-正常路径不产生该事件；不得为虚构 transition 扩展协议。
+- 无卡或 backing 分配失败不得发布 OFD；槽位耗尽返回 EBUSY。
+- 子流 xrun、drop、close 与设备断开必须分别保留软件状态和在途完成的正确归属；断开不重连。
+- 未登记 ioctl 返回 ENOTTY；control ID 不存在返回 ENOENT、值非法返回 EINVAL、user-copy 失败返回 EFAULT。
+- 当前 control 事件订阅与偏好子设备语义不完整，范围见[当前架构](../architecture/audio.md)。
+  不得把写回零或忽略 hint 的行为算作完整实现；per-substream gain、capture、MIDI 和 sequencer 未开放。
+- host 测试覆盖混音数学、Engine contributor/close/underrun、PCM 与 control codec。
+  真实多路设备输出、amixer 和 Wine ALSA consumer 仍是待办；ABI 范围以矩阵为准。

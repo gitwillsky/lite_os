@@ -27,6 +27,6 @@ LiteOS 的 QEMU `virt` platform 已使用 modern VirtIO-MMIO；AArch64 UTM 路�
 - AArch64/HVF first-class path 必须覆盖 CoreAudio/WAV runtime、正确性与性能 gate。
 - RISC-V 使用同一 generic driver/userspace source 并通过 compile、architecture/static 与 artifact gate，
   但首期不声明声音 runtime 或延迟通过；不得增加 dummy device、silent-success 或 TCG 专用 engine。
-- 设备参数、queue 和 VirtIO status 不进入 ALSA、系统服务或 LiteUI 接口。
+- 设备参数、queue 和 VirtIO status 不进入 ALSA 用户态接口。
 - 初始化、completion 或 returned length 损坏必须沿 adapter 唯一 reset/failure path 完成全部 waiter。
 - capture rxq 不属于首期数据路径；规范要求的 device discovery 与 event queue 仍不得伪造或跳过。

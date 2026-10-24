@@ -7,9 +7,8 @@
 - Apple Silicon macOS 先安装 Xcode Command Line Tools（`xcode-select --install`）与 Homebrew，
   再执行 `make setup`。`scripts/host_setup.py` 是 host 工具安装的唯一 owner：用 Homebrew 安装
   `llvm`（Clang、`llvm-ar`、`llvm-ranlib`、`llvm-readelf`）、`e2fsprogs`、`qemu`、
-  `openssl@3`、`git-lfs`，PATH 缺少 `node`/`npm` 时安装 `node`；安装 rustup 并按
-  `rust-toolchain.toml` 安装固定 toolchain；按固定 SHA-256 安装 UTM v4.7.5；最后 `git lfs pull`
-  预置音乐。各步骤幂等；已存在非固定版本 UTM 时 fail-stop，不覆盖用户应用。缺少 `llvm` 会让
+  `openssl@3`；安装 rustup 并按
+  `rust-toolchain.toml` 安装固定 toolchain；按固定 SHA-256 安装 UTM v4.7.5；各步骤幂等；已存在非固定版本 UTM 时 fail-stop，不覆盖用户应用。缺少 `llvm` 会让
   musl 构建以 `Clang, LLVM archive tools, and the pinned Rust rust-lld are required` 失败。
 - Rust 版本、组件和 target 由 `rust-toolchain.toml` 固定；精确 revision 见 [规范基线](../standards-baseline.md)。
   kernel ISA baseline 由 target 定义，不使用 host `target-cpu=native`；跨 ISA 编译时 host CPU
@@ -24,8 +23,6 @@
 - musl、BusyBox、APK 和 terminal font 输入必须由脚本中的固定 URL、版本与摘要构建；musl、BusyBox 与 APK 都为所选架构生成或下载原生产物，不得静默消费另一架构 cache、系统副本或滚动 latest。
 - kernel 位于 `target/<kernel-target>/<profile>/kernel`；可重复 rootfs 基线位于 `target/rootfs/<arch>.img`，开发实例是 `fs-<arch>.img`，只由显式 reset 初始化且不能反向污染基线。musl、BusyBox、APK 与 runtime success cache 均带 architecture
   identity，不允许跨目标命中。
-- rootfs 基线从 `assets/music/` 安装预置音乐到 `/root/Music`；该资产进入 rootfs 内容指纹并在写入后
-  回读校验。`reset-rootfs` 恢复预置副本，`sync-userland` 不拥有该目录，也不会覆盖用户新增音乐。
 - rootfs 基线把同一个 BusyBox `env` inode 发布到 `/bin/env` 与 `/usr/bin/env` 并验证权限/identity，
   保证 community 中 npm/pnpm 等 `#!/usr/bin/env node` 入口安装后可执行。
 - `FS_IMAGE_SIZE_MIB` 只控制可写开发实例的最小容量，默认 8192 MiB；`run`、`run-gui` 与
@@ -37,15 +34,12 @@
   按 registry SRI 校验并固定的 cache 全局安装 Codex 与 Claude；npm package/platform
   identity、APK metadata、package database、唯一 `/usr/local/bin` 入口与真实 `--version`
   执行共同决定成功。产品 rootfs 不包含 Agent、Node/npm 或滚动 repository。
-- `sync-userland` 直接构建并离线替换图形会话拥有的 binary、React bundle、app manifest、字体和
-  presentation assets；镜像内指纹命中时 no-op。`run` 与 `run-gui` 自动执行它，保留 APK、项目和
-  用户数据。Rust 用户态以 target、工具链、sysroot、libunwind 与 link flags 隔离持久 Cargo
-  compilation cache，最终 ELF 仍按完整源码内容发布不可变 generation；源码变化只重编受影响的
-  crate，不重复构建 `std` 和未变化依赖。React bundle 按 Node/npm、`ui/` 输入与引用的 presentation
-  assets 指纹复用不可变产物。`reset-rootfs` 只用于首次初始化、系统级 rootfs 变化或显式恢复干净环境。
-- `run-gui` 默认进入显示器上的文本控制台，`LITEOS_TARGET=desktop make run-gui` 直接进入桌面；两者都能在运行时用
-  Ctrl+Alt+F1/F2 或 `seatctl text|desktop` 切换。该变量转成内核命令行 `liteos.target=`；`run-agent-development` 固定桌面。
-  `verify-runtime-boot` 的桌面门禁带 `liteos.target=desktop`，另有文本→桌面→文本的座位切换门禁。
+- `sync-userland` 离线同步 UART 基线的 init、rcS、profile、shutdown 与共享启动素材，并移除旧镜像中退休的
+  图形 binary、私有会话脚本和呈现素材；不修改 `/root`、用户安装的 APK 或项目。镜像内内容指纹命中时 no-op。
+  `run` 与 `run-gui` 自动同步；`reset-rootfs` 才从基线显式重建开发镜像。
+- Rust 验证探针以 target、工具链、sysroot、libunwind 与 link flags 隔离 Cargo compilation cache，
+  最终 ELF 按完整源码内容发布不可变 generation。
+- `run-gui` 当前只显示 kernel 启动画面，交互 shell 位于 UART；没有显示器文本控制台、桌面或 seat 切换。
 - macOS 的 `run-gui` 是唯一交互图形产品入口：要求固定 `/Applications/UTM.app` v4.7.5，生成确定
   UUID 的 UTM v4 配置，通过 UTM public scripting API import 注册，再由同一 API 创建 Metal
   display window。workflow 在 QEMU 启动前预监听 serial TCP，并把该次启动的完整 guest 输出覆盖写入
@@ -94,26 +88,29 @@
   排除后续 trap 假阳性；query mask/copyout canary 与自定义 restorer 验证 sigaction 架构布局。
   benchmark 使用生产 owner 测量 disabled/单 filter/八 filter；disabled 不锁 state、不读取 PC，
   interpreter 无分配，forward branches 保证步数不超过 validated path cost。
-- LiteUI frontend 由 host Node.js、单一 `ui/package-lock.json` 与 `ui/build.mjs` 构建；target rootfs
-  只安装 production ESM bundle、CSS、PNG assets 与固定 system runtime，不安装 Node/npm、source map、
-  dev server 或 runtime package cache。唯一 frontend build owner 是
-  `scripts/verify_busybox.py` 的 `build_ui_assets()`；`--build-ui-assets-only` 只暴露该 owner 的已校验输出，
-  不建立第二条构建路径。每次 check/build 都验证 system icon manifest、generated PUA mapping 与 checked
-  TTF SHA-256 一致；bundle cache fingerprint 同时包含 icon manifest 与 TTF。
-- Make 只负责参数校验和稳定入口；`scripts/workflow.py` 是 build、run、verify 的唯一编排 owner。
-  release 检查复用 `build_kernel`，同时生成 ELF 和 AArch64 raw Image；runtime 缓存与冷启动
-  在执行前逐段验证 Image 与当前 ELF 一致，并将实际启动产物内容纳入成功指纹。
-  只更新 ELF 的运行不能算当前实现的验证，旧 Image 必须 fail-stop。
-  推荐入口只有 `setup`、`build`、`run`、`run-gui`、`verify-fast`、`verify-runtime` 和 `verify`；其余目标仅用于
-  局部诊断或资源准备，均不得再实现独立的依赖链。workflow 按一次 DAG 顺序准备共享产物，禁止递归
-  `make` 重复声明 kernel、bootloader、musl 或 rootfs 前置条件。
-- `verify-fast` 覆盖 host/static/unit；`verify-runtime` 只构建一次后串行运行完整 runtime gates；`verify`
-  组合两者并追加 release、artifact、架构与 RISC-V secondary 门禁。runtime QEMU 必须保持串行，即使
-  外层使用 `-j4` 也不得并发多个 HVF VM：并发会让 QEMU `hvf_handle_exception` 在有效 guest MMIO
-  workload 下触发 host `isv` assertion，并把宿主调度抖动混入 guest deadline。
-- BusyBox 主组合 gate 的 90 秒是 50+ 次 UART interaction、TLS、archive、editor、并发 VFS 与
-  job-control 共用的 host liveness bound，不作为 guest 性能阈值；全部 marker/workload 必须完成。
-  trap/context/MMU 等性能只由 release ELF 确定性指令/事件计数门禁裁决，禁止用 wall-clock 代替。
+
+
+## 持久本地输入与实验
+
+`scripts/local_inputs.py` 唯一维护工程内 `.local/` 的路径；整个目录被 Git 忽略，
+不提交第三方下载、用户原版资源、私钥或实验镜像。版本、URL、摘要和配方仍由对应脚本提交。
+
+| 位置 | 内容与 owner |
+|---|---|
+| `.local/inputs/musl/<arch>/` | musl/Linux/GNU Make 归档、解包源码和 compiler-rt 固定源；`verify_musl.py` |
+| `.local/inputs/busybox/<arch>/` | BusyBox 归档与源树；`verify_busybox.py` |
+| `.local/inputs/openssl/` | OpenSSL 源码、归档与固定 CA bundle；`openssl_cache.py` |
+| `.local/inputs/alpine/<branch>/<arch>/` | 固定 APK 与上游 bootstrap 解包文件；`apk_cache.py` |
+| `.local/inputs/agents/<arch>/` | Agent 离线 npm cache 与 APK 输入；`agent_cli_cache.py` |
+| `.local/inputs/fonts/`、`host/`、`windows2000/` | 字体源、host 安装器、用户原版素材与本地覆盖包 |
+| `.local/keys/apk/<arch>/` | 本地 repository 签名身份；`apk_cache.py`，迁移时保留原 key pair |
+| `.local/tools/` | host Python 虚拟环境；不依赖 target/ 存活 |
+| `.local/spikes/<主题>/` | 实验脚本、源码、VM 与基线结果；经典桌面实验位于 `classic-desktop/` |
+
+`target/` 保留编译 cache、sysroot、构建工具产物、验证镜像、临时工作区、日志和 success stamp。
+`clean-musl` / `clean-busybox` 或删除 `target/` 只使产物重新构建，不再下载已校验固定输入，
+也不重建本地签名身份。实际构建仍逐项检查摘要、manifest 和架构；目录迁移不放宽输入验证。
+本地目录不进入架构源码扫描；仓库内有本地修改的 `vendor/smoltcp` 仍属于受版本管理的实现源码。
 
 ## 经典桌面本地素材
 
@@ -124,15 +121,15 @@
 ```bash
 source ~/.zshrc
 brew install sevenzip cabextract icoutils
-python3 -m venv target/classic-desktop/venv
-target/classic-desktop/venv/bin/pip install Pillow==13.0.0
-target/classic-desktop/venv/bin/python scripts/extract_windows2000_assets.py \
+python3 -m venv .local/tools/classic-assets
+.local/tools/classic-assets/bin/pip install Pillow==13.0.0
+.local/tools/classic-assets/bin/python scripts/extract_windows2000_assets.py \
   --iso "$HOME/Downloads/Windows 2000 Professional Service Pack 4 CHS.iso"
 python3 scripts/extract_windows2000_assets.py --check
 ```
 
 提取器只读取 ISO/PE 数据，不在宿主执行镜像内的程序。默认输出是被 Git 忽略的
-`target/classic-desktop/windows2000/assets/`；`--output` 也只能指向本仓库 `target/` 内。
+`.local/inputs/windows2000/assets/`；`--output` 也只能指向本仓库 `.local/inputs/` 内。
 已有目录不覆盖；重新提取使用新的 `--output`，核对后显式替换。
 失败会清理临时目录，完整解码与哈希检查通过后才发布最终目录。`--check` 不需要 Pillow 或外部提取工具。
 工具原始资源长度警告保存在 manifest 中；不能把完整性检查误报为画面/语义逐项验收。
@@ -227,9 +224,7 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
   platform DTB 解码用例读取 `verify_unit` 以 runtime gate 相同 machine 配置（TCG、2 CPU）经 QEMU
   `dumpdtb` 现场生成的 `target/kernel-unit/qemu-virt-{aarch64,riscv64}.dtb`（`LITEOS_<ARCH>_DTB`）。
 - `scheduler-unit`：preallocated ready heap 的 capacity/compaction/fail-stop 与 signal selection/generation 测试。
-- `user/` Cargo workspace：display protocol、compositor session/scanout、LiteUI host/render/input/scroll、
-  QuickJS runtime 与 terminal-session 的单元及 codec 测试；LiteUI bundle 用例消费
-  `build_ui_assets()` 的已校验输出，不依赖工作树残留的 `ui/dist`。
+- `user/` Cargo workspace：linux-uapi、keyboard、terminal-model 与 terminal-font 的单元测试。
 - run membership/CPU projection 由 `architecture-check` 静态围栏，wait/deferred 边界由 `kernel-unit`，完整 lifecycle 由对应 runtime smoke 覆盖；不得把这些范围虚报为 `scheduler-unit` 用例。
 - filesystem 可睡眠 owner 由静态字段/adapter contract 与真实 `TaskMutex` FIFO handoff host
   test 共同约束：两个排队 waiter 必须按 ticket 获取，handoff 期间 `try_lock` 不得插队，
@@ -297,12 +292,8 @@ StorageBudget 新锁只用于页/inode 创建、最后释放及 remount/statfs�
 critical section 仅固定整数运算，无分配/回调。生产 quota 的同类 release fixture 单独测
 `production_storage_quota_cpu_cost`（`--test storage_budget --ignored --nocapture`），其 host IRQ
 adapter 只代表无竞争计数成本，不宣称实际 local IRQ 指令/设备延迟，不新增虚假的窄时序门槛。
-LiteUI window move 的成本主体是 evdev→compositor、VirGL scanout composition/flush 与
-真实 60 Hz 显示链路，host microbenchmark 无法代表它；因此不新增失真的 blocking benchmark。静态门禁
-固定 compositor-side grab；production 状态测试固定 window-move page flip 至多一个在途、burst 只保留一个
-latest transform，并固定每个 evdev `SYN_REPORT` 的纯 cursor motion 只异步提交 VirtIO-GPU
-`MOVE_CURSOR`、slot 忙时覆盖 latest position、不触发 VirGL draw/page flip；最终延迟按 LiteUI 契约的
-AArch64+HVF 真实多窗口场景诊断。
+硬件光标静态门禁固定 cursor queue 与 latest-position 合并；当前没有用户态窗口移动路径，
+窗口交互性能验收随新 Wayland 会话实现。内核显示/GPU 门禁继续独立保留。
 
 内核显示/GPU gate（`scripts/verify_gpu.py`）是上述“宿主墙钟不作 blocking gate”原则的唯一显式例外，因为它不测量
 宿主墙钟：帧间隔取自 guest 内核单调 vblank 时钟。该时间戳由内核在 deferred display 完成路径以
@@ -414,7 +405,7 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 
 - boot、CPU topology、interrupt、timer 与基础 filesystem；
 - AArch64/HVF UTM VirGL 产品 GPU、keyboard、tablet、SPICE VirtIO Console 拓扑，以及空桌面启动链路：
-  `compositor` modeset/boot scene、AF_UNIX + SCM_RIGHTS 握手与 React desktop 首帧逐条发布 marker；
+  kernel GPU、输入、音频与 SPICE port 拓扑逐条发布 marker；当前不验证尚未实现的登录或桌面；
   首帧后继续要求固定启动的 Files 与 Terminal 各自完成连接、PTY shell 和应用首帧。gate 使用隐藏的
   disposable 一 CPU UTM 产品实例；无窗口 plain QEMU 不再承担图形通过判定，真实 11-CPU 全拓扑由
   headless SMP gate 与同一静态路径覆盖；
@@ -435,9 +426,8 @@ publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁
 - APK 应用的 TLS/HTTP、SQLite journal/lock 和 Git object/ref/worktree vertical slice；
   curl timeout 后连续 64 次 fork 分别改写 parent/child shell state，再成功跨过下一次
   fork/exec，专门约束四 CPU migration 下的 COW remote TLB completion。
-- 音频没有端到端 runtime gate：原 AArch64/HVF Music Player gate 经 UI 点击驱动，已随 UI 交互类 gate 移除（见 ADR）。
-  当前裁决只有 host/unit（audio-proto、audio-service、kernel-unit 的 ALSA 测试）与 boot/compile/static；
-  kernel ALSA PCM 与 VirtIO-Sound 的真实设备输出路径暂无 runtime 覆盖。
+- 音频当前只有 kernel-unit 的 ALSA/混音测试与 boot/compile/static 覆盖；多路真实设备输出、amixer、
+  Wine consumer 和延迟分析 gate 尚待实现，不能用 host 测试替代。
 
 `verify-runtime` 与 `verify` 共用 `verify-runtime-gates`；它是 runtime 编排的唯一 owner，并串行运行各顶层门禁。
 非图形门禁只走 headless QEMU；graphics boot 与 gpu 只走 disposable UTM VirGL，禁止同一能力
@@ -455,11 +445,9 @@ SQLite 第一阶段 `sync` 后由 host 结束 VM，再冷启动同一持久化�
 assertion。该生命周期边界不替代 guest `sync`、journal integrity 或 SQLite process-crash 门禁。
 任一子门禁失败即整体失败，不能抽样或提前发布成功。
 
-LiteUI 的 host gate 覆盖 manifest/CSS/bundle validation、display codec、layout/paint/scroll、
-terminal model、标准 Retina viewport/resize event 与 session/buffer/input 状态转换。AArch64 boot gate 证明桌面首帧，以及固定启动的 Files 与 Terminal 应用完成连接和首帧。当前没有任何驱动 UI 交互的
-runtime gate（窗口 resize、scroll、拖动，Terminal 执行命令、关闭窗口、资源回收，音频播放控件）；这类 gate 在 UI
-重构前移除（见 ADR），不得把 host 单元测试虚报为该覆盖。RISC-V secondary 只承担 compile、static/artifact、
-CPU topology boot 与 Rust std smoke。自动门禁不生成 screenshot、preview 或视觉 Golden。
+当前没有图形用户态应用或 UI 交互门禁；新 Wayland 会话按经典桌面计划实现后补齐验收。
+RISC-V secondary 只承担 compile、static/artifact、CPU topology boot 与 Rust std smoke。
+自动门禁不生成 screenshot、preview 或视觉 Golden。
 
 HTTPS origin 的 raw accept 与 TLS handshake 分属 server/connection worker owner；启动时持有
 一个不发送 ClientHello 的连接，并要求 10 个合法握手在 2 秒总 deadline 内全部完成。该自检

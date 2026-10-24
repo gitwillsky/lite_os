@@ -11,11 +11,8 @@ members = [
 exclude = [
     "vendor/smoltcp",
     "bootloader",
-    "user/console",
     "user/keyboard",
     "user/linux-uapi",
-    "user/seat-proto",
-    "user/seatd",
     "user/terminal-font",
     "user/terminal-model",
 ]

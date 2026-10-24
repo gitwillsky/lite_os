@@ -61,7 +61,11 @@ pub(crate) fn bind_display() -> Option<EarlyDisplay> {
             .and_then(|bus| bus.read_u32(0x08).ok());
         if device_id == Some(GPU) {
             let device = create_gpu(transport, base);
-            return Some(EarlyDisplay { device, base_addr: transport.base_addr, irq: transport.irq });
+            return Some(EarlyDisplay {
+                device,
+                base_addr: transport.base_addr,
+                irq: transport.irq,
+            });
         }
     }
     None

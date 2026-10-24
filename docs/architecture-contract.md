@@ -15,7 +15,6 @@
 | 设备与终端 | [devices-terminal](architecture-contract/devices-terminal.md) |
 | 音频 | [audio](architecture-contract/audio.md) |
 | 异步 I/O | [io-uring](architecture-contract/io-uring.md) |
-| 图形会话与 LiteUI | [lite-runtime](architecture-contract/lite-runtime.md) |
 | 用户态与 ABI | [userspace-abi](architecture-contract/userspace-abi.md) |
 
 ## 2. Kernel dependency contract

@@ -68,7 +68,11 @@ impl FakeScanout {
     fn new(width: u32, height: u32) -> Self {
         let pitch = width * 4;
         Self {
-            mode: DisplayMode { width, height, pitch },
+            mode: DisplayMode {
+                width,
+                height,
+                pitch,
+            },
             memory: Cell::new(vec![0xAA; (pitch * height) as usize]),
             flushes: Cell::new(Vec::new()),
             refuse_flush_from: Cell::new(None),
@@ -104,12 +108,19 @@ impl BootFramebuffer for FakeScanout {
 
     fn flush(&self, rect: DisplayRect) -> Result<(), DisplayError> {
         let mut flushes = self.flushes.take();
-        let refuse = self.refuse_flush_from.get().is_some_and(|from| flushes.len() >= from);
+        let refuse = self
+            .refuse_flush_from
+            .get()
+            .is_some_and(|from| flushes.len() >= from);
         if !refuse {
             flushes.push(rect);
         }
         self.flushes.set(flushes);
-        if refuse { Err(DisplayError::WouldBlock) } else { Ok(()) }
+        if refuse {
+            Err(DisplayError::WouldBlock)
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -138,7 +149,15 @@ fn start_clears_the_whole_screen_draws_the_centered_scene_and_flushes_it_once() 
     assert_eq!(scanout.pixel(432 + 273, 183 + 436), 0x0080_8080);
     assert_eq!(scanout.pixel(432 + 437, 183 + 445), 0x00FF_FFFF);
     assert_eq!(flush_count(&scanout), 1);
-    assert_eq!(last_flush(&scanout), DisplayRect { x: 0, y: 0, width: 1504, height: 846 });
+    assert_eq!(
+        last_flush(&scanout),
+        DisplayRect {
+            x: 0,
+            y: 0,
+            width: 1504,
+            height: 846
+        }
+    );
 }
 
 #[test]
@@ -147,14 +166,27 @@ fn milestones_only_paint_the_newly_covered_part_of_the_slot() {
     let mut screen = BootScreen::start(Some(&scanout), SCENE);
     screen.advance(Milestone::Namespaces);
     // 100‰ × 163 = 16 像素。
-    assert_eq!(last_flush(&scanout), DisplayRect { x: 432 + 274, y: 183 + 437, width: 16, height: 8 });
+    assert_eq!(
+        last_flush(&scanout),
+        DisplayRect {
+            x: 432 + 274,
+            y: 183 + 437,
+            width: 16,
+            height: 8
+        }
+    );
     assert_eq!(scanout.pixel(432 + 274 + 15, 183 + 437), 0x0000_299C);
     assert_eq!(scanout.pixel(432 + 274 + 16, 183 + 437), 0x00C0_C0C0);
     screen.advance(Milestone::Audio);
     // 400‰ × 163 = 65：只重画 16..65 这新增的 49 个像素，已画部分不再提交。
     assert_eq!(
         last_flush(&scanout),
-        DisplayRect { x: 432 + 274 + 16, y: 183 + 437, width: 49, height: 8 }
+        DisplayRect {
+            x: 432 + 274 + 16,
+            y: 183 + 437,
+            width: 49,
+            height: 8
+        }
     );
     assert_eq!(scanout.pixel(432 + 274 + 64, 183 + 444), 0x0000_299C);
     assert_eq!(scanout.pixel(432 + 274 + 65, 183 + 444), 0x00C0_C0C0);
@@ -176,12 +208,20 @@ fn large_screens_scale_by_an_integer_and_keep_the_slot_aligned() {
     let scanout = FakeScanout::new(3008, 1692);
     let mut screen = BootScreen::start(Some(&scanout), SCENE);
     // scale 3，位图左上角 (544, 126)；每个源像素是 3×3 方块。
-    assert_eq!(scanout.pixel(544 + 273 * 3 + 2, 126 + 436 * 3 + 2), 0x0080_8080);
+    assert_eq!(
+        scanout.pixel(544 + 273 * 3 + 2, 126 + 436 * 3 + 2),
+        0x0080_8080
+    );
     screen.advance(Milestone::Audio);
     // 400‰ × 163 × 3 = 195（整除后向下取整）。
     assert_eq!(
         last_flush(&scanout),
-        DisplayRect { x: 544 + 274 * 3, y: 126 + 437 * 3, width: 195, height: 24 }
+        DisplayRect {
+            x: 544 + 274 * 3,
+            y: 126 + 437 * 3,
+            width: 195,
+            height: 24
+        }
     );
 }
 
@@ -200,8 +240,18 @@ fn no_display_or_unusable_scene_is_a_silent_no_op_that_never_blocks_boot() {
     broken.advance(Milestone::Audio);
     assert_eq!(flush_count(&scanout), 0);
     let warnings = WARNINGS.with(|log| log.borrow().clone());
-    assert!(warnings.iter().any(|line| line.contains("smaller than 640x480")), "{warnings:?}");
-    assert!(warnings.iter().any(|line| line.contains("invalid scene bitmap")), "{warnings:?}");
+    assert!(
+        warnings
+            .iter()
+            .any(|line| line.contains("smaller than 640x480")),
+        "{warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|line| line.contains("invalid scene bitmap")),
+        "{warnings:?}"
+    );
 }
 
 #[test]
@@ -216,7 +266,12 @@ fn once_the_display_refuses_updates_progress_stops_for_good() {
     screen.advance(Milestone::Audio); // 已经停止，不再尝试
     assert_eq!(flush_count(&scanout), seen);
     let warnings = WARNINGS.with(|log| log.borrow().clone());
-    assert!(warnings.iter().any(|line| line.contains("progress stopped")), "{warnings:?}");
+    assert!(
+        warnings
+            .iter()
+            .any(|line| line.contains("progress stopped")),
+        "{warnings:?}"
+    );
 }
 
 /// 整帧 FNV-1a：把每个像素按 0x00RRGGBB 的四个字节（小端）依次喂入。

@@ -71,9 +71,10 @@
   build；Cargo 最终链接由 build-std 的 `compiler_builtins` 独占，不能再追加 musl builder 的外部
   compiler runtime。最终 ELF 必须动态依赖唯一 musl `libc.so`，libunwind 只允许静态进入 consumer。
 - `user/Cargo.toml` 与 `user/Cargo.lock` 是产品 Rust userspace 的唯一 workspace/依赖解析 owner；Cargo
-  直接链接 `audio-service`、`compositor`、`lite-runtime`（库）与各 app bin、`session-launch`、`terminal-session` 最终 PIE，禁止 staticlib 中间产物、手工二次
-  链接或每应用 lockfile。`linux-uapi` 独占 raw musl FFI 与 Linux layout/constant；唯一例外是
-  `quickjs-runtime` 内固定 vendored QuickJS ABI，其他位置的 `extern "C"`/`#[link]` 由 architecture-check 拒绝。
+  直接链接标准 Linux/musl PIE，禁止 staticlib 中间产物、手工二次链接或每应用 lockfile。
+  `linux-uapi` 独占 raw musl FFI 与 Linux layout/constant，其他位置的 `extern "C"`/`#[link]`
+  由 architecture-check 拒绝。当前只保留基础库与验证探针，没有产品 GUI binary。
+
 
 ## Interface
 
@@ -128,15 +129,14 @@
   `linux-uapi::{alsa,drm,input,pty,process,shared_memory,unix}` 的安全 typed interface。
   shared-memory 的 memfd creation 通过标准 libc `memfd_create` 选择目标 syscall number，
   不在通用 library 固定 asm-generic 编号；该编号在 x86 Linux host 对应另一个 syscall。
-  `audio-proto`/`display-proto` 分别独占音频/显示 wire 与 SCM_RIGHTS 帧语义，但 fd ancillary
-  mechanism 委托 `linux-uapi::unix`。raw syscall、应用私有 ABI、裸 fd/device owner 和并行兼容路径均禁止。
+  fd ancillary mechanism 委托 `linux-uapi::unix`。raw syscall、应用私有 ABI、裸 fd/device owner 和并行兼容路径均禁止。
 - 标准 `Command` spawn 的 AF_UNIX `SOCK_SEQPACKET|SOCK_CLOEXEC` socketpair 是 exec error
   publication owner；kernel 必须保留消息边界、peer-close EOF/hangup 与 `SO_TYPE=5`。只开放
   socketpair，seqpacket bind/listen/connect 仍明确返回不支持，不能在应用退回多线程不安全的 raw fork。
 - 普通 `fork` 从多线程 parent 只复制 calling Thread，child 以独立 process owner、COW AddressSpace
   与调用时的 fd/credential/signal-action snapshot 发布；parent sibling 不进入 child graph。
   child 在 exec 前只能依赖 POSIX async-signal-safe 路径，kernel 不复制用户态锁状态。
-- 多线程图形进程只能通过 `SessionChild` 的固定 `/bin/session-launch` 单轨启动 session child。
+- 多线程客户端若需要独立 PTY session，必须通过 `SessionChild` 的固定 `/bin/session-launch` 单轨启动 session child。
   owned group termination 必须在 wait 前冻结 kill errno，以 `ESRCH` 判断 group 已消失，
   不使用 host-dependent `ErrorKind::NotFound`；无论 group 是否已消失都必须回收 leader。
   parent 的标准 `Command` 不得安装 `pre_exec`；单线程 trampoline 依次设置 parent-death signal、
@@ -150,7 +150,7 @@
   edge/testing 或其他 branch 形成未固定 ABI 回退。
 - 产品 rootfs 必须把同一个 BusyBox `env` inode 发布到 `/bin/env` 与 `/usr/bin/env`；缺失后者会让
   npm/pnpm 等已成功安装的 `#!/usr/bin/env node` 入口在 exec 时错误返回 `ENOENT`。
-- 产品 login profile 与图形 Terminal 的 PTY 会话必须使用同一标准 PATH 并包含
+- 产品 login profile 必须使用标准 PATH 并包含
   `/usr/local/bin`；npm global prefix 和 Agent 开发环境发布的 command 位于该目录，任一
   owner 缺失时包已成功安装但对应交互 shell 仍会错误报告 command not found。增量用户态同步
   必须拥有 `/etc/profile`，否则旧持久镜像不会随产品契约修复。

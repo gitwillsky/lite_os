@@ -16,7 +16,7 @@
     ..  RLE：(run u8 ∈ 1..=255, index u8) 对，行主序、上到下，像素总数恰为 width*height，文件到此结束
 
 仓库内置的原创默认画面打包到 `assets/classic/boot-scene.lbs`（提交进仓库，普通构建不需要 Pillow）；
-`--original` 把本地提取的原版画面打包到被 Git 忽略的 `target/` 内，由 `scripts/classic_assets.py` 优先选用。
+`--original` 把本地提取的原版画面打包到被 Git 忽略的 `.local/inputs/` 内，由 `scripts/classic_assets.py` 优先选用。
 """
 
 from __future__ import annotations
@@ -26,11 +26,13 @@ import struct
 import sys
 from pathlib import Path
 
+from local_inputs import INPUTS
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SOURCE = ROOT / "assets/classic/bitmaps-src/boot-scene-1x.png"
 DEFAULT_OUTPUT = ROOT / "assets/classic/boot-scene.lbs"
-ORIGINAL_SOURCE = ROOT / "target/classic-desktop/windows2000/assets/bitmaps-src/boot-scene-1x.png"
-ORIGINAL_OUTPUT = ROOT / "target/classic-desktop/windows2000/packed/boot-scene.lbs"
+ORIGINAL_SOURCE = INPUTS / "windows2000/assets/bitmaps-src/boot-scene-1x.png"
+ORIGINAL_OUTPUT = INPUTS / "windows2000/packed/boot-scene.lbs"
 
 MAGIC = b"LBS1"
 WIDTH, HEIGHT = 640, 480
@@ -116,7 +118,7 @@ def unpack(data: bytes) -> tuple[int, int, list[tuple[int, int, int]]]:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument("--original", action="store_true", help="打包本地提取的原版画面到 target/")
+    parser.add_argument("--original", action="store_true", help="打包本地提取的原版画面到 .local/inputs/")
     parser.add_argument("--reduce", action="store_true", help="颜色超过 256 时显式合并为最近色（会打印合并数量）")
     args = parser.parse_args()
     source, output = (ORIGINAL_SOURCE, ORIGINAL_OUTPUT) if args.original else (DEFAULT_SOURCE, DEFAULT_OUTPUT)
