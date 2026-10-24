@@ -238,7 +238,10 @@ fn check_user_sources(root: &Path, errors: &mut Vec<String>, review_notices: &mu
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                pending.push(path);
+                // cargo 输出（含 build.rs 生成的代码）不是仓库源码。
+                if path.file_name().is_none_or(|name| name != "target") {
+                    pending.push(path);
+                }
                 continue;
             }
             let extension = path.extension().and_then(|extension| extension.to_str());

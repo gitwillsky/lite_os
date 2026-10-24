@@ -11,10 +11,16 @@ members = [
 exclude = [
     "vendor/smoltcp",
     "bootloader",
+    "user/canvas",
+    "user/classic-theme",
+    "user/classic-ui",
     "user/keyboard",
     "user/linux-uapi",
     "user/terminal-font",
     "user/terminal-model",
+    "user/typeface",
+    "user/wayland-scanner",
+    "user/wayland-wire",
 ]
 default-members = ["kernel"]
 resolver = "3"

@@ -37,11 +37,17 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
         "Cargo.toml",
         "README.md",
         "base",
+        "canvas",
+        "classic-theme",
+        "classic-ui",
         "diagnostics",
         "keyboard",
         "linux-uapi",
         "terminal-font",
         "terminal-model",
+        "typeface",
+        "wayland-scanner",
+        "wayland-wire",
     ])
     .into_iter()
     .map(str::to_owned)
@@ -61,10 +67,16 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
         ));
     }
     for required in [
+        "canvas/src/lib.rs",
+        "classic-theme/src/lib.rs",
+        "classic-ui/src/lib.rs",
         "keyboard/src/lib.rs",
         "linux-uapi/src/lib.rs",
         "terminal-font/src/lib.rs",
         "terminal-model/src/lib.rs",
+        "typeface/src/lib.rs",
+        "wayland-scanner/src/lib.rs",
+        "wayland-wire/src/lib.rs",
     ] {
         if !root.join("user").join(required).is_file() {
             errors.push(format!(
@@ -77,10 +89,16 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
 fn check_workspace(root: &Path, errors: &mut Vec<String>) {
     let user = fs::read_to_string(root.join("user/Cargo.toml")).unwrap_or_default();
     for required in [
+        "\"canvas\"",
+        "\"classic-theme\"",
+        "\"classic-ui\"",
         "\"keyboard\"",
         "\"linux-uapi\"",
         "\"terminal-font\"",
         "\"terminal-model\"",
+        "\"typeface\"",
+        "\"wayland-scanner\"",
+        "\"wayland-wire\"",
         "linux-uapi = { path = \"linux-uapi\" }",
         "unicode-width = \"=0.2.2\"",
     ] {
@@ -90,10 +108,16 @@ fn check_workspace(root: &Path, errors: &mut Vec<String>) {
     }
     let root_workspace = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
     for excluded in [
+        "\"user/canvas\"",
+        "\"user/classic-theme\"",
+        "\"user/classic-ui\"",
         "\"user/keyboard\"",
         "\"user/linux-uapi\"",
         "\"user/terminal-font\"",
         "\"user/terminal-model\"",
+        "\"user/typeface\"",
+        "\"user/wayland-scanner\"",
+        "\"user/wayland-wire\"",
     ] {
         if !root_workspace.contains(excluded) {
             errors.push(format!(

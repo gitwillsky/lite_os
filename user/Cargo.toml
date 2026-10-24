@@ -1,9 +1,15 @@
 [workspace]
 members = [
+    "canvas",
+    "classic-theme",
+    "classic-ui",
     "keyboard",
     "linux-uapi",
     "terminal-font",
     "terminal-model",
+    "typeface",
+    "wayland-scanner",
+    "wayland-wire",
 ]
 resolver = "3"
 

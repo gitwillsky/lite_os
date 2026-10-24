@@ -143,6 +143,17 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 - checked atlas SHA-256 为 `dab03e4beb2ee1b5ac689bc3a608461530ce58774557d011881f782f8a892d61`；
   terminfo 使用 ncurses `6.5` source format。
 
+### Wayland
+
+- Wayland `1.24.0`；tag commit `736d12ac67c20c60dc406dc49bb06be878501f86`；`protocol/wayland.xml` SHA-256
+  `60abb5864546288a660f3d8af0c838fc87c85bb386582da23e52cb8476e9adbf`。
+- wayland-protocols `1.45`；tag commit `0091197f5c1b1f2c131f1410e99f9c95d50646be`；`stable/xdg-shell/xdg-shell.xml` SHA-256
+  `9d9e27038ca722f159a361293f8c6cd270dab907ab52de5b8ecfbb8d6b9651c2`，`stable/viewporter/viewporter.xml` SHA-256
+  `dcb12279a03746301fe490aaed4b38a403485a925abfce2ccfceb644e104fe71`。
+- 来源：[Wayland](https://gitlab.freedesktop.org/wayland/wayland/-/tree/1.24.0)、
+  [wayland-protocols](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/tree/1.45)。
+  XML 原样放入 `user/wayland-wire/protocols/`，由 `wayland-scanner` 生成类型；wire 格式以 Wayland 文档为准。
+
 ### UTM/QEMU host display、clipboard 与 SPICE agent
 
 - QEMU `11.0.2`；tag commit `e545d8bb9d63e9dd61542b88463183314cff9482`；官方 tarball SHA-256

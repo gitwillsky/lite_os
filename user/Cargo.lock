@@ -3,6 +3,23 @@
 version = 4
 
 [[package]]
+name = "canvas"
+version = "0.1.0"
+
+[[package]]
+name = "classic-theme"
+version = "0.1.0"
+
+[[package]]
+name = "classic-ui"
+version = "0.1.0"
+dependencies = [
+ "canvas",
+ "classic-theme",
+ "typeface",
+]
+
+[[package]]
 name = "keyboard"
 version = "0.1.0"
 
@@ -22,7 +39,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "typeface"
+version = "0.1.0"
+
+[[package]]
 name = "unicode-width"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+
+[[package]]
+name = "wayland-scanner"
+version = "0.1.0"
+
+[[package]]
+name = "wayland-wire"
+version = "0.1.0"
+dependencies = [
+ "wayland-scanner",
+]

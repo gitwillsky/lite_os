@@ -69,6 +69,10 @@ pub(super) fn rust_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(
             .map_err(|error| format!("failed to read directory entry: {error}"))?
             .path();
         if path.is_dir() {
+            // cargo 输出（含 build.rs 生成的代码）不是仓库源码。
+            if path.file_name().is_some_and(|name| name == "target") {
+                continue;
+            }
             rust_files(&path, files)?;
         } else if path.extension().is_some_and(|extension| extension == "rs") {
             files.push(path);
@@ -132,4 +136,24 @@ fn module_owner(relative: &Path, source_root: &str) -> String {
         .to_string_lossy()
         .into_owned();
     first.strip_suffix(".rs").unwrap_or(&first).to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use super::rust_files;
+
+    #[test]
+    fn rust_files_skips_cargo_target_directories() {
+        let root = std::env::temp_dir().join(format!("rust-files-target-{}", std::process::id()));
+        fs::create_dir_all(root.join("crate/src")).unwrap();
+        fs::create_dir_all(root.join("target/debug/build/out")).unwrap();
+        fs::write(root.join("crate/src/lib.rs"), "").unwrap();
+        fs::write(root.join("target/debug/build/out/generated.rs"), "").unwrap();
+        let mut files = Vec::new();
+        rust_files(&root, &mut files).unwrap();
+        fs::remove_dir_all(&root).unwrap();
+        assert_eq!(files, [root.join("crate/src/lib.rs")]);
+    }
 }

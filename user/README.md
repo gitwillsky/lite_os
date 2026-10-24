@@ -10,6 +10,12 @@
 | `keyboard/` | 键盘布局与编码 | keysym、PTY 输入编码 |
 | `terminal-model/` | VT model | parser、screen、scrollback、selection |
 | `terminal-font/` | terminal atlas | 字形索引与网格尺寸 |
+| `canvas/` | CPU 2D 光栅 | 填充、斜边、渐变、抖动、XOR、alpha blit、蒙版着色（物理像素，无 unsafe） |
+| `classic-theme/` | 经典主题 | 系统颜色、窗口度量、立体边框取色、Wine 注册表；数据在 `assets/classic/theme/classic.theme` |
+| `wayland-scanner/` | 协议生成器 | Wayland 协议 XML → Rust 类型（`wayland-wire` 的 build 依赖） |
+| `wayland-wire/` | Wayland wire | 对象 ID、消息帧、参数读写与上游协议 XML 生成的接口类型；不拥有 socket |
+| `classic-ui/` | 经典控件绘制 | `Painter`：边框、按钮、复选/单选、编辑框、滚动条、菜单、窗口框架与标题栏、提示；逻辑像素 × 整数 scale |
+| `typeface/` | 字体与文本 | BDF 点阵、sfnt 轮廓与内嵌点阵、灰度光栅、中西文选择、仿粗体、CJK 换行 |
 | `diagnostics/` | cputest、memtest、cachetest | 有界 multicall diagnostics |
 
 音频混音归属 kernel ALSA；用户态无需音频服务或私有音频协议。接口与失败路径见

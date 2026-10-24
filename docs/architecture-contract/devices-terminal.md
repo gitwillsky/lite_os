@@ -142,7 +142,7 @@
 ### UART 基线
 
 - init 只监督网络服务与 UART shell，不建立 seat socket、显示器文本 VT 或旧图形会话。
-- `keyboard`、`terminal-model` 和 `terminal-font` 是独立库；不得恢复退休的私有显示、音频或 seat 协议。
+- `keyboard`、`terminal-model`、`terminal-font`、`canvas`、`classic-theme`、`classic-ui`、`typeface`、`wayland-scanner` 和 `wayland-wire` 是独立库；不得恢复退休的私有显示、音频或 seat 协议。
 
 ## Failure and cleanup
 

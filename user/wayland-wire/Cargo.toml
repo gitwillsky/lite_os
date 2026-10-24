@@ -1,0 +1,8 @@
+[package]
+name = "wayland-wire"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[build-dependencies]
+wayland-scanner = { path = "../wayland-scanner" }

@@ -44,7 +44,7 @@ Status: Active
 
 | crate | 职责 | 依赖 |
 |---|---|---|
-| `wayland-wire` | 纯 Rust Wayland wire 编解码；build 时由 vendored 协议 XML 生成服务端与客户端类型 | `linux-uapi` |
+| `wayland-wire` | 纯 Rust Wayland wire 编解码；build 时由 vendored 协议 XML 经自研 `wayland-scanner` 生成服务端与客户端共用的类型；不拥有 socket（收发和 SCM_RIGHTS 归使用方，经 `linux-uapi`） | 无（build：`wayland-scanner`） |
 | `classic-theme` | Win2000 视觉事实的唯一 owner：系统颜色、尺寸、字体名、动画时长；同时生成 Wine 前缀的 `Control Panel\Colors` / `Metrics` 注册表，保证 Win32 程序与桌面一致 | 无 |
 | `canvas` | CPU 2D 光栅：填充、立体斜边、渐变、blit、alpha 混合、裁剪 | 无 |
 | `typeface` | 字体加载、字形光栅与缓存、文本测量、CJK 换行 | `swash` |
@@ -288,7 +288,23 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
 固定上游 amixer/alsa-lib 的八路六秒无 XRUN 播放、左右增益/静音/削波 WAV 分析已通过；
 热路径的 host diagnostic benchmark 与目标 workload 分别裁决数学成本和当前实际播放能力。
 阶段 3 的持久事实见音频架构、契约、ABI 矩阵和构建验证文档；完整 ALSA/Wine 兼容性不由该探针替代。
-阶段 4 的下一步是独立基础库和公开 Wayland wire 协议，新桌面尚未实现。
+
+## 阶段 4 进展（用户态基础库）
+
+- `canvas`：填充、斜边、水平渐变、棋盘抖动、XOR 反色与点状焦点框、预乘 alpha blit（整数放大）、覆盖率蒙版着色；17 个测试。
+- `classic-theme`：主题是数据文件 `assets/classic/theme/classic.theme`（键名同 Win2000 注册表值名），编译期嵌入为默认，
+  `Theme::load` 按 用户 > 本地原版 > 默认 的搜索顺序覆盖；`DrawEdge` 取色表；`wine_registry(scale)` 生成 Wine 前缀 `.reg`；7 个测试。
+- `wayland-scanner` + `wayland-wire`：自研 XML 子集解析与代码生成；固定 Wayland 1.24.0 / wayland-protocols 1.45 的
+  `wayland`、`xdg-shell`、`viewporter`（来源与 SHA-256 见标准基线）。wire 层有 `Reader`/`Writer`/`Framer`、fd 队列、
+  4096 字节上限回滚；生成的 `Request`/`Event` 供服务端与客户端共用。其余协议在 compositor 需要时再加 XML。
+- `typeface`：自研 BDF 点阵、sfnt（cmap 4/12、glyf 含复合、EBLC/EBDT）读取与灰度光栅，1x 用文泉驿点阵 + Tahoma 11 ppem 内嵌点阵
+  （无抗锯齿），2x 及以上用轮廓；西文只取 ASCII 与 Latin-1/扩展 A/B，其余（含中文引号）走中文字体；CJK 仿粗体叠印；
+  禁则换行；16 个测试含损坏字体不 panic。未引入 `swash`。
+- `canvas`/`typeface` 的 benchmark 决策见构建验证文档（诊断，无阈值）。
+- `classic-ui` 绘制层：`Painter` 按逻辑像素 × 整数 scale 绘制边框、按钮（常态/按下/默认/焦点/禁用）、复选框与单选框、编辑框、
+  滚动条（含滑块几何 `thumb_span`、抖动轨道、按下反色）、分组框、工具提示、菜单与菜单栏、窗口外框与标题栏；18 个像素探针测试，
+  `cargo run -p classic-ui --example gallery -- <scale> <out.ppm>` 渲染 1x/2x 对照图。修复了 `canvas::bevel` 在 scale>1 下斜接方块不整块的问题。
+- 待做：`classic-ui` 的窗口/输入层（Wayland 客户端、焦点与键盘导航、助记符下划线、菜单动画与交互）、黄金截图门禁。
 
 ## 风险
 
