@@ -284,8 +284,10 @@ Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，�
 init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量同步会清理已退休的系统文件并保留用户数据。
 原版静态资源、经典桌面素材、kernel 开机画面和 DRM/ALSA/输入能力继续保留。
 
-内核音频已有 8 子流 Engine、Master control 与 host 状态/codec/混音测试；持久事实见音频架构及契约。
-阶段 3 仍缺 control 事件/子设备偏好语义、多路真实输出、amixer consumer 和目标架构性能验证。
+内核音频提供 8 子流 Engine、Master/逐流音量、control 事件与 opener TID 子设备偏好。
+固定上游 amixer/alsa-lib 的八路六秒无 XRUN 播放、左右增益/静音/削波 WAV 分析已通过；
+热路径的 host diagnostic benchmark 与目标 workload 分别裁决数学成本和当前实际播放能力。
+阶段 3 的持久事实见音频架构、契约、ABI 矩阵和构建验证文档；完整 ALSA/Wine 兼容性不由该探针替代。
 阶段 4 的下一步是独立基础库和公开 Wayland wire 协议，新桌面尚未实现。
 
 ## 风险

@@ -1,11 +1,7 @@
-//! ALSA 控制接口的纯协议层：元素表、`snd_ctl_*` 结构的编解码与主音量的读写语义。
-//!
-//! 声卡只有两个固定元素——`Master Playback Volume` 与 `Master Playback Switch`，所以元素表是常量而不是可注册
-//! 的动态集合。本文件不碰设备文件、锁或引擎：输入是字节与一个 [`Master`] 值，输出是字节与新的 [`Master`]，
-//! 因此可以在宿主上逐字节核对 Linux 7.1 的 ABI。
+//! ALSA control 元素、标准结构 codec 与每个打开句柄的事件/偏好状态。
 
 use super::codec::{read_u32, read_u64, write_u32, write_u64};
-use super::engine::Master;
+use super::engine::SUBSTREAMS;
 use super::mixer::VOLUME_MAX;
 
 /// `SNDRV_CTL_VERSION`：控制协议版本 2.0.9。
@@ -34,63 +30,104 @@ const TYPE_INTEGER: u32 = 2;
 /// `SNDRV_CTL_ELEM_ACCESS_READWRITE`。
 const ACCESS_READWRITE: u32 = 0x3;
 
-/// 元素的静态描述。
-struct Element {
-    numid: u32,
-    name: &'static [u8],
-    kind: u32,
+/// 固定 Master 两项与每个 PCM 子流的音量元素数量。
+pub(super) const ELEMENT_COUNT: usize = 2 + SUBSTREAMS;
+/// Linux `snd_ctl_event`：type、mask、64-byte elem id。
+pub(super) const EVENT_BYTES: usize = 72;
+
+/// 卡上唯一的逻辑控制身份；PCM 音量用 ALSA elem id 的 index 区分。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Element {
+    MasterVolume,
+    MasterSwitch,
+    PcmVolume(usize),
 }
 
-const ELEMENTS: [Element; 2] = [
-    Element {
-        numid: 1,
-        name: b"Master Playback Volume",
-        kind: TYPE_INTEGER,
-    },
-    Element {
-        numid: 2,
-        name: b"Master Playback Switch",
-        kind: TYPE_BOOLEAN,
-    },
-];
+impl Element {
+    /// 从枚举位置构造控制身份；越过固定元素表返回 None。
+    pub(super) fn at(index: usize) -> Option<Self> {
+        match index {
+            0 => Some(Self::MasterVolume),
+            1 => Some(Self::MasterSwitch),
+            index if index < ELEMENT_COUNT => Some(Self::PcmVolume(index - 2)),
+            _ => None,
+        }
+    }
 
-/// 控制操作的失败原因，由调用方映射成 errno。
+    fn numid(self) -> u32 {
+        match self {
+            Self::MasterVolume => 1,
+            Self::MasterSwitch => 2,
+            Self::PcmVolume(index) => index as u32 + 3,
+        }
+    }
+
+    fn name(self) -> &'static [u8] {
+        match self {
+            Self::MasterVolume => b"Master Playback Volume",
+            Self::MasterSwitch => b"Master Playback Switch",
+            Self::PcmVolume(_) => b"PCM Playback Volume",
+        }
+    }
+
+    fn kind(self) -> u32 {
+        if self == Self::MasterSwitch {
+            TYPE_BOOLEAN
+        } else {
+            TYPE_INTEGER
+        }
+    }
+}
+
+/// 控制 ID 不存在，或结构/取值非法；由 DeviceFile 映射成 ENOENT/EINVAL。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ControlError {
-    /// 没有这个元素（`ENOENT`）。
     NoSuchElement,
-    /// 值越界或字节不是合法结构（`EINVAL`）。
     Invalid,
 }
 
-fn element_by_id(bytes: &[u8]) -> Result<&'static Element, ControlError> {
+/// 解析 snd_ctl_elem_id；numid 非零时按 numid，否则按完整 ALSA 名字身份查找。
+///
+/// # Errors
+///
+/// 短结构为 Invalid；未知 ID、iface、device、subdevice、name 或 index 为 NoSuchElement。
+pub(super) fn element_by_id(bytes: &[u8]) -> Result<Element, ControlError> {
     let numid = read_u32(bytes, 0).ok_or(ControlError::Invalid)?;
     if numid != 0 {
-        return ELEMENTS
-            .iter()
-            .find(|element| element.numid == numid)
-            .ok_or(ControlError::NoSuchElement);
+        return Element::at(numid as usize - 1).ok_or(ControlError::NoSuchElement);
     }
-    // numid 为 0 时按 (iface, device, subdevice, name, index) 查找，`alsa-lib` 打开混音器时就是这样定位元素的。
+    if read_u32(bytes, 4) != Some(IFACE_MIXER)
+        || read_u32(bytes, 8) != Some(0)
+        || read_u32(bytes, 12) != Some(0)
+    {
+        return Err(ControlError::NoSuchElement);
+    }
     let name = bytes.get(16..60).ok_or(ControlError::Invalid)?;
     let length = name
         .iter()
         .position(|&byte| byte == 0)
         .unwrap_or(name.len());
-    let index = read_u32(bytes, 60).ok_or(ControlError::Invalid)?;
-    if read_u32(bytes, 4) != Some(IFACE_MIXER) || index != 0 {
-        return Err(ControlError::NoSuchElement);
-    }
-    ELEMENTS
-        .iter()
-        .find(|element| element.name == &name[..length])
+    let index = read_u32(bytes, 60).ok_or(ControlError::Invalid)? as usize;
+    (0..ELEMENT_COUNT)
+        .filter_map(Element::at)
+        .find(|element| {
+            element.name() == &name[..length]
+                && match element {
+                    Element::PcmVolume(slot) => *slot == index,
+                    _ => index == 0,
+                }
+        })
         .ok_or(ControlError::NoSuchElement)
 }
 
-fn write_id(bytes: &mut [u8], element: &Element) {
-    let _ = write_u32(bytes, 0, element.numid);
+fn write_id(bytes: &mut [u8], element: Element) {
+    bytes[..ELEM_ID_BYTES].fill(0);
+    let _ = write_u32(bytes, 0, element.numid());
     let _ = write_u32(bytes, 4, IFACE_MIXER);
-    bytes[16..16 + element.name.len()].copy_from_slice(element.name);
+    bytes[16..16 + element.name().len()].copy_from_slice(element.name());
+    if let Element::PcmVolume(index) = element {
+        let _ = write_u32(bytes, 60, index as u32);
+    }
 }
 
 /// `snd_ctl_card_info` 的文本字段。
@@ -117,90 +154,176 @@ pub(super) fn encode_card_info(text: &CardText<'_>) -> [u8; CARD_INFO_BYTES] {
     bytes
 }
 
-/// 处理 `ELEM_LIST`：把元素表从 `offset` 起的 id 写进调用方提供的数组。
+/// 枚举固定控制表；按 list.offset/space 返回 IDs，同时写回 used/count。
 ///
-/// 结构：`offset @0`、`space @4`（调用方数组可放多少个 id）、`used @8`（写出多少个）、`count @12`
-/// （元素总数）、`pids @16`（用户数组指针）。返回要写入 `pids` 的 id 序列；`list` 里的 `used`/`count` 原地更新。
+/// # Errors
+///
+/// 结构字段不可读时返回 Invalid；输出容量始终不超过固定元素数量。
 pub(super) fn list_elements(
     list: &mut [u8; ELEM_LIST_BYTES],
-) -> Result<([u8; ELEM_ID_BYTES * 2], usize), ControlError> {
+) -> Result<([u8; ELEM_ID_BYTES * ELEMENT_COUNT], usize), ControlError> {
     let offset = read_u32(list, 0).ok_or(ControlError::Invalid)? as usize;
     let space = read_u32(list, 4).ok_or(ControlError::Invalid)? as usize;
-    let mut ids = [0u8; ELEM_ID_BYTES * 2];
+    let mut ids = [0u8; ELEM_ID_BYTES * ELEMENT_COUNT];
     let mut used = 0;
-    for element in ELEMENTS.iter().skip(offset).take(space) {
+    for index in (offset..ELEMENT_COUNT).take(space) {
         write_id(
-            &mut ids[used * ELEM_ID_BYTES..(used + 1) * ELEM_ID_BYTES],
-            element,
+            &mut ids[used * ELEM_ID_BYTES..],
+            Element::at(index).unwrap(),
         );
         used += 1;
     }
     let _ = write_u32(list, 8, used as u32);
-    let _ = write_u32(list, 12, ELEMENTS.len() as u32);
+    let _ = write_u32(list, 12, ELEMENT_COUNT as u32);
     Ok((ids, used))
 }
 
-/// 处理 `ELEM_INFO`：按 id 填写元素的类型、读写权限、声道数与取值范围。
+/// 将元素的 canonical ID、类型、读写权限、双声道数与值域写回 INFO。
+///
+/// # Errors
+///
+/// 请求 ID 不存在或结构非法。
 pub(super) fn describe_element(bytes: &mut [u8; ELEM_INFO_BYTES]) -> Result<(), ControlError> {
-    let element = element_by_id(&bytes[..ELEM_ID_BYTES])?;
-    write_id(&mut bytes[..ELEM_ID_BYTES], element);
-    write_u32(bytes, 64, element.kind).ok_or(ControlError::Invalid)?;
+    let element = element_by_id(bytes)?;
+    bytes.fill(0);
+    write_id(bytes, element);
+    write_u32(bytes, 64, element.kind()).ok_or(ControlError::Invalid)?;
     write_u32(bytes, 68, ACCESS_READWRITE).ok_or(ControlError::Invalid)?;
     write_u32(bytes, 72, 2).ok_or(ControlError::Invalid)?;
-    if element.kind == TYPE_INTEGER {
-        write_u64(bytes, 80, 0).ok_or(ControlError::Invalid)?;
+    if element.kind() == TYPE_INTEGER {
         write_u64(bytes, 88, u64::from(VOLUME_MAX)).ok_or(ControlError::Invalid)?;
         write_u64(bytes, 96, 1).ok_or(ControlError::Invalid)?;
     }
     Ok(())
 }
 
-/// 处理 `ELEM_READ`：把当前值写进 `value`（偏移 72 起，每个声道一个 `long`，即 8 字节）。
+/// 把 Engine 的双声道值编码进 ELEM_READ/WRITE 的 canonical value 结构。
+///
+/// # Errors
+///
+/// 请求 ID 不存在或结构非法；调用者提供已经过领域校验的 values。
 pub(super) fn read_element(
     bytes: &mut [u8; ELEM_VALUE_BYTES],
-    master: Master,
+    values: [u32; 2],
 ) -> Result<(), ControlError> {
-    let element = element_by_id(&bytes[..ELEM_ID_BYTES])?;
-    for channel in 0..2 {
-        let value = if element.kind == TYPE_INTEGER {
-            u64::from(master.volume[channel])
-        } else {
-            u64::from(master.enabled[channel])
-        };
-        write_u64(bytes, 72 + channel * 8, value).ok_or(ControlError::Invalid)?;
+    let element = element_by_id(bytes)?;
+    write_id(bytes, element);
+    for (channel, value) in values.into_iter().enumerate() {
+        write_u64(bytes, 72 + channel * 8, u64::from(value)).ok_or(ControlError::Invalid)?;
     }
     Ok(())
 }
 
-/// 处理 `ELEM_WRITE`：校验并应用新值。
-///
-/// # Returns
-///
-/// 新的 [`Master`] 与"值是否发生变化"。Linux 约定变化时 ioctl 返回 1、未变返回 0，`alsa-lib` 靠它决定是否
-/// 发出变化通知。
+/// 解码 ELEM_WRITE；校验完整的两个声道后才把领域值交给 Engine。
 ///
 /// # Errors
 ///
-/// 元素不存在，或任一声道的值超出该元素的合法范围（音量 0..=100，开关 0/1）。
+/// ID 不存在或 volume 超过 100、switch 不是 0/1。这里不修改混音状态。
 pub(super) fn write_element(
     bytes: &[u8; ELEM_VALUE_BYTES],
-    master: Master,
-) -> Result<(Master, bool), ControlError> {
-    let element = element_by_id(&bytes[..ELEM_ID_BYTES])?;
-    let mut next = master;
-    for channel in 0..2 {
-        let value = read_u64(bytes, 72 + channel * 8).ok_or(ControlError::Invalid)?;
-        if element.kind == TYPE_INTEGER {
-            if value > u64::from(VOLUME_MAX) {
-                return Err(ControlError::Invalid);
-            }
-            next.volume[channel] = value as u32;
-        } else {
-            if value > 1 {
-                return Err(ControlError::Invalid);
-            }
-            next.enabled[channel] = value == 1;
+) -> Result<(Element, [u32; 2]), ControlError> {
+    let element = element_by_id(bytes)?;
+    let maximum = if element == Element::MasterSwitch {
+        1
+    } else {
+        VOLUME_MAX
+    };
+    let mut values = [0; 2];
+    for (channel, value) in values.iter_mut().enumerate() {
+        let input = read_u64(bytes, 72 + channel * 8).ok_or(ControlError::Invalid)?;
+        if input > u64::from(maximum) {
+            return Err(ControlError::Invalid);
+        }
+        *value = input as u32;
+    }
+    Ok((element, values))
+}
+
+/// 编码一个标准 ELEM/VALUE 事件，保留完整 canonical ID。
+pub(super) fn encode_event(element: Element) -> [u8; EVENT_BYTES] {
+    let mut bytes = [0; EVENT_BYTES];
+    let _ = write_u32(&mut bytes, 4, 1);
+    write_id(&mut bytes[8..], element);
+    bytes
+}
+
+/// 一个 control OFD 的订阅、合并事件队列与偏好子设备。
+///
+/// 队列最多包含每个固定元素一次，按首次变化 FIFO；同一元素未读前的变化合并。
+/// closed 区分 actual fput 与 backend Arc observer，避免关闭后仍影响子流选择。
+pub(super) struct ControlOpen {
+    subscribed: bool,
+    closed: bool,
+    preferred: i32,
+    pending: [Option<Element>; ELEMENT_COUNT],
+    head: usize,
+    len: usize,
+}
+
+impl ControlOpen {
+    /// 新句柄未订阅，子设备自动选择。
+    pub(super) fn new() -> Self {
+        Self {
+            subscribed: false,
+            closed: false,
+            preferred: -1,
+            pending: [None; ELEMENT_COUNT],
+            head: 0,
+            len: 0,
         }
     }
-    Ok((next, next != master))
+
+    /// 句柄是否仍属于打开阶段。
+    pub(super) fn active(&self) -> bool {
+        !self.closed
+    }
+    /// 当前订阅状态，负值 SUBSCRIBE_EVENTS 查询使用此投影。
+    pub(super) fn subscribed(&self) -> bool {
+        !self.closed && self.subscribed
+    }
+    /// 幂等订阅/取消；再次订阅不丢弃未读事件，取消时清空队列。
+    pub(super) fn subscribe(&mut self, enabled: bool) {
+        self.subscribed = enabled && !self.closed;
+        if !self.subscribed {
+            self.pending.fill(None);
+            self.head = 0;
+            self.len = 0;
+        }
+    }
+    /// 保存 Linux PCM_PREFER_SUBDEVICE 的原始 i32，选择策略在 PCM open 时裁决。
+    pub(super) fn prefer(&mut self, preferred: i32) {
+        self.preferred = preferred;
+    }
+    /// 返回仍活动句柄的偏好；关闭后的观察者不再影响 PCM open。
+    pub(super) fn preferred(&self) -> i32 {
+        if self.closed { -1 } else { self.preferred }
+    }
+    /// actual fput 撤销订阅和偏好；重复调用无副作用。
+    pub(super) fn close(&mut self) {
+        self.closed = true;
+        self.subscribe(false);
+    }
+    /// 有可读的标准事件时为 true。
+    pub(super) fn readable(&self) -> bool {
+        self.subscribed() && self.len != 0
+    }
+    /// 合并或追加事件。无订阅时不积累历史；固定元素集使队列不需分配。
+    pub(super) fn notify(&mut self, element: Element) {
+        if !self.subscribed() || self.pending.contains(&Some(element)) {
+            return;
+        }
+        let tail = (self.head + self.len) % ELEMENT_COUNT;
+        self.pending[tail] = Some(element);
+        self.len += 1;
+    }
+    /// 弹出最早的未读事件；调用者已预检用户目标内存。
+    pub(super) fn pop(&mut self) -> Option<Element> {
+        if !self.readable() {
+            return None;
+        }
+        let element = self.pending[self.head].take();
+        self.head = (self.head + 1) % ELEMENT_COUNT;
+        self.len -= 1;
+        element
+    }
 }

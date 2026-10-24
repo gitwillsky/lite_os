@@ -1,10 +1,13 @@
 //! Linux ALSA playback 子流、软件混音与 OFD lifecycle owner。
 //!
 //! 物理上只有一个 playback 流（VirtIO Sound）。本领域在它上面提供 [`SUBSTREAMS`] 个互相独立的子流：每次
-//! `open("/dev/snd/pcmC0D0p")` 占用第一个空闲子流，所有运行中的子流由 [`engine::Engine`] 混成同一个物理流。
+//! `open("/dev/snd/pcmC0D0p")` 按 control 偏好或首个空闲槽选择子流，所有运行中的子流由 [`engine::Engine`] 混成同一个物理流。
 //! 与 Linux 里带硬件混音的声卡（例如 emu10k1）的对外形态一致，因此任何 ALSA 客户端都不需要用户态混音服务。
 
-use alloc::sync::Arc;
+use alloc::{
+    sync::{Arc, Weak},
+    vec::Vec,
+};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::{Mutex, Once};
 
@@ -12,6 +15,7 @@ use crate::{
     drivers::{PcmCompletionObserver, PcmOutput, io_completion::CompletionSource},
     ipc::{Pipe, PipeDirection, PipeEnd},
     memory::{DeviceBacking, DeviceMappingSource, FrameAllocationClass, PAGE_SIZE},
+    namespace::PidIdentity,
 };
 
 mod codec;
@@ -46,6 +50,8 @@ pub(crate) struct HardwareParameters {
 /// ALSA PCM software 参数的受支持子集。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct SoftwareParameters {
+    pub(crate) timestamp_mode: u32,
+    pub(crate) timestamp_type: Option<u32>,
     pub(crate) available_min: u64,
     pub(crate) start_threshold: u64,
     pub(crate) stop_threshold: u64,
@@ -59,6 +65,7 @@ pub(crate) struct PcmStatus {
     pub(crate) application_frames: u64,
     pub(crate) hardware_frames: u64,
     pub(crate) delay_frames: i64,
+    pub(crate) timestamp_ns: u64,
 }
 
 /// 声卡在 `snd_pcm_info` / `snd_ctl_card_info` 里的短 id，以及 PCM 设备的名字。
@@ -96,12 +103,20 @@ impl EventCounters {
 /// 一块声卡：物理输出、混音引擎与等待者通知。
 struct Card {
     output: Arc<dyn PcmOutput>,
+    // OWNER: composition root 安装的调用线程 identity 投影；只在 task context、且未持音频锁时调用。
+    caller: fn() -> Option<Arc<PidIdentity>>,
+    // OWNER: control open 顺序的唯一 registry；弱引用不延长 OFD，actual fput 由 ControlOpen.closed 撤销。
+    // 锁序 registry → OFD state；不跨 registry 持引擎锁或发布 readiness。仅 open/control 操作访问，非混音热路径。
+    controls: Mutex<Vec<Weak<control_file::ControlFile>>>,
     // OWNER: 引擎状态（子流指针、在途 period 记账、主音量）的唯一入口；持锁期间会调用 `output`，所以设备回调
     // 绝不取它。缺少这条纪律，`submit_period` 内部触发的 reclaim 回调会在同一个线程上自旋等待自己。
     engine: Mutex<Engine<Arc<DeviceBacking>>>,
     events: EventCounters,
     notification_read: Arc<PipeEnd>,
     notification_write: Arc<PipeEnd>,
+    // OWNER: control 事件的独立唤醒源，避免 PCM period completion 周期性唤醒空闲 mixer consumer。
+    control_notification_read: Arc<PipeEnd>,
+    control_notification_write: Arc<PipeEnd>,
 }
 
 // OWNER: audio domain 独占发布唯一的声卡；init 之后只读。
@@ -112,11 +127,15 @@ static CARD: Once<Arc<Card>> = Once::new();
 /// # Parameters
 ///
 /// - `output`: 唯一物理 playback adapter。
+/// - `caller`: task owner 提供的实际 TID observer，用于 Linux control opener 语义。
 ///
 /// # Errors
 ///
 /// 重复初始化、物理流配置失败、observer/completion source 发布失败或内存不足。
-pub(crate) fn init(output: Arc<dyn PcmOutput>) -> Result<(), ()> {
+pub(crate) fn init(
+    output: Arc<dyn PcmOutput>,
+    caller: fn() -> Option<Arc<PidIdentity>>,
+) -> Result<(), ()> {
     if CARD.get().is_some() {
         return Err(());
     }
@@ -124,12 +143,17 @@ pub(crate) fn init(output: Arc<dyn PcmOutput>) -> Result<(), ()> {
     output.configure().map_err(|_| ())?;
     output.prepare().map_err(|_| ())?;
     let notification = Pipe::notification_pair()?;
+    let control_notification = Pipe::notification_pair()?;
     let card = Arc::try_new(Card {
         output: output.clone(),
+        caller,
+        controls: Mutex::new(Vec::new()),
         engine: Mutex::new(Engine::new()),
         events: EventCounters::default(),
         notification_read: notification.0,
         notification_write: notification.1,
+        control_notification_read: control_notification.0,
+        control_notification_write: control_notification.1,
     })
     .map_err(|_| ())?;
     let observer: Arc<dyn PcmCompletionObserver> = card.clone();
@@ -197,18 +221,37 @@ impl CompletionSource for Card {
     }
 }
 
+/// 一个 PCM OFD 的时钟选择；默认不采集 timestamp，TTSTAMP 只选择源，SW_PARAMS 决定启用。
+struct PcmClock {
+    kind: u32,
+    enabled: bool,
+}
+
+impl PcmClock {
+    fn sample(&self) -> u64 {
+        if !self.enabled {
+            0
+        } else if self.kind == 0 {
+            crate::timer::get_realtime_ns()
+        } else {
+            // 当前 timer 没有频率校正；MONOTONIC 与 MONOTONIC_RAW 使用同一 counter。
+            crate::timer::get_time_ns()
+        }
+    }
+}
+
 /// `/dev/snd/pcmC0D0p` 的单个 open-file-description：对一个子流的句柄。
 pub(crate) struct PcmFile {
     card: Arc<Card>,
     index: usize,
     // OWNER: serializes ALSA control/data transitions for one OFD.
     // Without it, concurrent HW_FREE/DROP and period submission can publish stale state.
-    operation: Mutex<()>,
+    operation: Mutex<PcmClock>,
     mmap_identity: u64,
     ring: Arc<DeviceBacking>,
 }
 
-/// 占用第一个空闲子流。
+/// 按同一 opener TID 的 control 偏好或首个空闲槽选择子流。
 ///
 /// # Returns
 ///
@@ -228,15 +271,19 @@ fn open() -> Result<Arc<PcmFile>, AudioError> {
         .ok_or(AudioError::Device)?,
     )
     .map_err(|_| AudioError::Device)?;
+    let preferred = card.preferred_subdevice();
     let index = card
         .engine
         .lock()
-        .allocate(ring.clone())
+        .allocate(ring.clone(), preferred)
         .map_err(|_| AudioError::InvalidState)?;
     let file = Arc::try_new(PcmFile {
         card,
         index,
-        operation: Mutex::new(()),
+        operation: Mutex::new(PcmClock {
+            kind: 0,
+            enabled: false,
+        }),
         mmap_identity: crate::id::next_runtime_object_id(),
         ring,
     });
@@ -283,15 +330,25 @@ impl PcmFile {
         Ok(())
     }
 
-    /// 设置 wake/start/stop/boundary software parameters。
-    pub(crate) fn software_parameters(
-        &self,
-        parameters: SoftwareParameters,
-    ) -> Result<(), AudioError> {
-        let _operation = self.operation.lock();
-        self.card
-            .engine
-            .lock()
+    /// 设置 wake/start/stop/boundary 和参考时钟 software parameters。
+    ///
+    /// # Errors
+    ///
+    /// Open/Disconnected 返回 EBADFD；已配置流的非法参数返回 EINVAL。
+    pub(crate) fn software_parameters(&self, parameters: SoftwareParameters) -> Result<(), isize> {
+        use syscall_abi::errno;
+        let mut clock = self.operation.lock();
+        let mut engine = self.card.engine.lock();
+        if matches!(
+            engine.state(self.index).state,
+            PcmState::Open | PcmState::Disconnected
+        ) {
+            return Err(errno::EBADFD);
+        }
+        if parameters.timestamp_mode > 1 || parameters.timestamp_type.is_some_and(|kind| kind > 2) {
+            return Err(errno::EINVAL);
+        }
+        engine
             .set_software(
                 self.index,
                 parameters.available_min,
@@ -299,7 +356,21 @@ impl PcmFile {
                 parameters.stop_threshold,
                 parameters.boundary,
             )
-            .map_err(|()| AudioError::InvalidState)
+            .map_err(|()| errno::EINVAL)?;
+        clock.enabled = parameters.timestamp_mode == 1;
+        if let Some(kind) = parameters.timestamp_type {
+            clock.kind = kind;
+        }
+        Ok(())
+    }
+
+    /// 选择 Linux timestamp clock；0 为 realtime，1/2 为本平台未校频的 monotonic counter。
+    fn timestamp_type(&self, kind: u32) -> Result<(), isize> {
+        if kind > 2 {
+            return Err(syscall_abi::errno::EINVAL);
+        }
+        self.operation.lock().kind = kind;
+        Ok(())
     }
 
     pub(crate) fn prepare(&self) -> Result<(), AudioError> {
@@ -375,6 +446,7 @@ impl PcmFile {
     }
 
     pub(crate) fn status(&self) -> PcmStatus {
+        let clock = self.operation.lock();
         let engine = self.card.engine.lock();
         let state = engine.state(self.index);
         PcmStatus {
@@ -382,6 +454,7 @@ impl PcmFile {
             application_frames: state.application_frames % state.boundary,
             hardware_frames: state.hardware_frames % state.boundary,
             delay_frames: state.delay() as i64,
+            timestamp_ns: clock.sample(),
         }
     }
 

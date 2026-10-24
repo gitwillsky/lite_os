@@ -1,4 +1,6 @@
 pub(crate) const SNDRV_PCM_IOCTL_PVERSION: usize = 0x8004_4100;
+pub(crate) const SNDRV_PCM_IOCTL_TTSTAMP: usize = 0x4004_4103;
+pub(crate) const SNDRV_PCM_IOCTL_USER_PVERSION: usize = 0x4004_4104;
 pub(crate) const SNDRV_PCM_IOCTL_INFO: usize = 0x8120_4101;
 pub(crate) const SNDRV_PCM_IOCTL_HW_REFINE: usize = 0xc260_4110;
 pub(crate) const SNDRV_PCM_IOCTL_HW_PARAMS: usize = 0xc260_4111;

@@ -64,7 +64,9 @@ VirtIO transport（MMIO/PCI）、virtqueue/DMA、各设备类 adapter 与设备�
 
 ## `audio`
 
-拥有 Linux ALSA playback 子流、混音、Master control、position、poll/xrun、PCM/control 设备文件及其 ioctl UAPI；只经通用 PCM output seam 使用 device adapter
+拥有 Linux ALSA playback 子流、混音、Master/PCM control、position、poll/xrun、PCM/control 设备文件及其 ioctl UAPI；
+只经通用 PCM output seam 使用 device adapter。composition root 提供实际调用 TID 的 namespace identity observer，
+audio 不直接访问 task；参考 timestamp 只消费 timer 的公共时钟投影。
 
 ## `drm`
 

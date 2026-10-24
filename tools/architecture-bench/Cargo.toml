@@ -36,6 +36,10 @@ path = "src/shared_page_statistics.rs"
 name = "realtime-signals-bench"
 path = "src/realtime_signals.rs"
 
+[[bin]]
+name = "audio-mixer-bench"
+path = "src/audio_mixer.rs"
+
 [dependencies]
 bitflags = "2.4"
 spin = { version = "0.10.0", default-features = false, features = ["mutex", "spin_mutex", "once"] }

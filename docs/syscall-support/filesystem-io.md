@@ -168,12 +168,20 @@ poll/epoll 可用。record 没有 Linux 的 dictionary 续行，也不做 printk
 `/dev/snd/pcmC0D0p` 的 `read`/`write` 返回 `EOPNOTSUPP`，PCM 数据只经 `SNDRV_PCM_IOCTL_WRITEI_FRAMES`
 或 mmap ring 传输；`/dev/dri/card0` 的 `write` 返回 `EOPNOTSUPP`。
 
-ALSA 卡有 8 个 playback 子流，每次 PCM open 占用首个空槽。固定 48 kHz stereo F32_LE、
+ALSA 卡有 8 个 playback 子流，每次 PCM open 默认占用首个空槽。固定 48 kHz stereo F32_LE、
 256-frame period、1024-frame buffer，INFO/HW_REFINE 按此约束报告；不声明任意采样率/格式转换。
 `/dev/snd/controlC0` 实现 PVERSION、CARD_INFO、ELEM_LIST/INFO/READ/WRITE、PCM_NEXT_DEVICE/INFO，
-只发布 Master Playback Volume/Switch。SUBSCRIBE_EVENTS 当前写回未订阅状态，不支持事件通知；
-PCM_PREFER_SUBDEVICE 当前不影响分配，语义尚未补齐。TTSTAMP、USER_PVERSION、REWIND、RESET、
-per-substream gain 与 capture 尚不支持；真实 alsa-lib/amixer/Wine consumer 仍待验证。
+发布 Master Playback Volume/Switch 与 index 0..7 的 PCM Playback Volume，值按平方曲线映射增益。
+SUBSCRIBE_EVENTS 支持负值查询、订阅和取消，read 返回 native 72-byte ELEM/VALUE 事件；
+同元素合并、首次变化 FIFO，read/poll/epoll 可等待，取消清空队列。未订阅 EBADFD、短缓冲 EINVAL、
+非阻塞空队列 EAGAIN。ELEM_WRITE 成功返回 0，copyout 失败不回滚已提交值或通知。
+PCM_PREFER_SUBDEVICE 按 control opener 实际 TID 和 OFD open 顺序生效，-1 自动，其他值精确选择，
+busy 或不存在的槽位返回 EBUSY；dup 共享偏好，actual fput 撤销。
+PCM 实现 USER_PVERSION 的 user-copy（当前不开放 status/control mmap，无版本相关布局状态）、
+TTSTAMP 时钟选择和启用后的 STATUS/SYNC_PTR 时钟快照，SW_PARAMS 允许 Prepared/Running 更新。
+当前仍限定整 period WRITEI/mmap pointer 增量及固定 buffer，SW_PARAMS 限 avail_min≤buffer、阈值≤boundary；
+阻塞 open 等待、RW 自动启动、REWIND、RESET、DRAIN、STATUS_EXT、trigger timestamp 与 capture 尚未支持。
+固定上游 alsa-lib 的显式启动八路播放和 amixer 已由 AArch64/HVF runtime gate 覆盖；Wine 尚未验证。
 
 `statx` 的时间戳精度取决于 filesystem 实际记录的内容：ext4 保存纳秒与创建时间并如实报告；其余 filesystem 的
 `Inode::set_times`/`touch_access` 以秒为单位，纳秒恒为 0、不报告 `BTIME`（Linux 对不记录创建时间的 filesystem 同样不设该位）。

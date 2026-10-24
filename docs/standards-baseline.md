@@ -53,6 +53,17 @@
 
 ## 实现与 consumer 基线
 
+### ALSA control 与 playback
+
+- ABI 和内核语义使用上述 Linux `v7.1` 的 `include/uapi/sound/asound.h`、
+  `sound/core/control.c`、`sound/core/pcm.c` 和 `sound/core/pcm_native.c`。
+- 上游 consumer 固定为 Alpine v3.22 AArch64 的 alsa-lib / alsa-utils `1.2.14-r0`。
+  `scripts/verify_audio.py::PACKAGES` 固定三个 APK 的 SHA-256，下载、源码头文件和解包树都位于
+  `.local/inputs/`，不提交二进制或第三方源码。
+- 源码对照：[alsa-lib v1.2.14 PCM hardware plugin](https://github.com/alsa-project/alsa-lib/blob/v1.2.14/src/pcm/pcm_hw.c)，
+  本次审阅文件 SHA-256 为 `bfd839cd9e5088e4d255e16acc4cab3daff96122d1666798a1356a2546065795`。
+  它定义 consumer 的 USER_PVERSION/TTSTAMP 握手与 SW_PARAMS/SYNC_PTR 调用顺序，不能以项目 wrapper 替代。
+
 ### Rust toolchain
 
 - `nightly-2026-10-03`；rustc commit `0abfedbc7cd4e725f126913880c95800394f7c37`；LLVM `23.1.1`。

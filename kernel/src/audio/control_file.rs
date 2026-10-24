@@ -1,17 +1,18 @@
-//! `/dev/snd/controlC0` 字符设备：声卡的 ALSA 控制接口（主音量与静音开关）。
+//! `/dev/snd/controlC0` 字符设备：声卡的 ALSA 控制接口（Master、逐流音量与事件）。
 
 use alloc::sync::Arc;
+use spin::Mutex;
 use syscall_abi::errno;
 
 use super::codec::{PCM_INFO_BYTES, PcmInfo, encode_pcm_info, read_u32};
 use super::control::{
-    CARD_INFO_BYTES, CTL_PROTOCOL_VERSION, CardText, ControlError, ELEM_INFO_BYTES,
-    ELEM_LIST_BYTES, ELEM_VALUE_BYTES, SNDRV_CTL_IOCTL_CARD_INFO, SNDRV_CTL_IOCTL_ELEM_INFO,
-    SNDRV_CTL_IOCTL_ELEM_LIST, SNDRV_CTL_IOCTL_ELEM_READ, SNDRV_CTL_IOCTL_ELEM_WRITE,
-    SNDRV_CTL_IOCTL_PCM_INFO, SNDRV_CTL_IOCTL_PCM_NEXT_DEVICE,
+    CARD_INFO_BYTES, CTL_PROTOCOL_VERSION, CardText, ControlError, ControlOpen, ELEM_INFO_BYTES,
+    ELEM_LIST_BYTES, ELEM_VALUE_BYTES, EVENT_BYTES, Element, SNDRV_CTL_IOCTL_CARD_INFO,
+    SNDRV_CTL_IOCTL_ELEM_INFO, SNDRV_CTL_IOCTL_ELEM_LIST, SNDRV_CTL_IOCTL_ELEM_READ,
+    SNDRV_CTL_IOCTL_ELEM_WRITE, SNDRV_CTL_IOCTL_PCM_INFO, SNDRV_CTL_IOCTL_PCM_NEXT_DEVICE,
     SNDRV_CTL_IOCTL_PCM_PREFER_SUBDEVICE, SNDRV_CTL_IOCTL_PVERSION,
-    SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS, describe_element, encode_card_info, list_elements,
-    read_element, write_element,
+    SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS, describe_element, element_by_id, encode_card_info,
+    encode_event, list_elements, read_element, write_element,
 };
 use super::{CARD, CARD_ID, Card, PCM_NAME, SUBSTREAMS};
 use crate::{
@@ -20,11 +21,13 @@ use crate::{
         {
             DeviceNumber,
             chardev::{
-                CharacterDriver, DeviceError, DeviceFile, IoctlCall, OpenRequest, UserMemory,
+                CharacterDriver, DeviceError, DeviceFile, DeviceWaitSources, IoctlCall,
+                OpenRequest, UserMemory, UserOutput,
             },
         },
     },
-    ipc::Pipe,
+    ipc::{Pipe, PipeDirection},
+    namespace::PidIdentity,
 };
 
 pub(super) const CONTROL_NUMBER: DeviceNumber = DeviceNumber::new(116, 0);
@@ -35,15 +38,67 @@ pub(super) struct ControlDriver;
 impl CharacterDriver for ControlDriver {
     fn open(&self, _request: &OpenRequest<'_>) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
         let card = CARD.get().cloned().ok_or(FileSystemError::IoError)?;
-        Arc::try_new(ControlFile { card })
-            .map(|file| file as Arc<dyn DeviceFile>)
-            .map_err(|_| FileSystemError::IoError)
+        let opener = (card.caller)().ok_or(FileSystemError::IoError)?;
+        let file = Arc::try_new(ControlFile {
+            card: card.clone(),
+            opener,
+            state: Mutex::new(ControlOpen::new()),
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+        let mut controls = card.controls.lock();
+        controls.retain(|entry| {
+            entry
+                .upgrade()
+                .is_some_and(|file| file.state.lock().active())
+        });
+        controls
+            .try_reserve(1)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        controls.push(Arc::downgrade(&file));
+        Ok(file)
     }
 }
 
-/// 一个打开的控制设备；没有私有状态，音量属于声卡本身。
-struct ControlFile {
+/// 每次 control open 捕获实际 TID，偏好与订阅属于该 OFD，不能按 fd 或数字 PID 缓存。
+pub(super) struct ControlFile {
     card: Arc<Card>,
+    opener: Arc<PidIdentity>,
+    // OWNER: 只串行化本 OFD 的订阅、FIFO 和偏好；不在此锁内执行 user-copy、引擎或 readiness 回调。
+    state: Mutex<ControlOpen>,
+}
+
+impl Card {
+    /// 按 Linux ctl_files 顺序，选择同一 opener TID 的第一个非 -1 偏好。
+    pub(super) fn preferred_subdevice(&self) -> i32 {
+        let Some(caller) = (self.caller)() else {
+            return -1;
+        };
+        let controls = self.controls.lock();
+        for entry in controls.iter() {
+            if let Some(file) = entry.upgrade()
+                && Arc::ptr_eq(&file.opener, &caller)
+            {
+                let preferred = file.state.lock().preferred();
+                if preferred != -1 {
+                    return preferred;
+                }
+            }
+        }
+        -1
+    }
+
+    fn notify_control(&self, element: Element) {
+        {
+            let controls = self.controls.lock();
+            for entry in controls.iter() {
+                if let Some(file) = entry.upgrade() {
+                    file.state.lock().notify(element);
+                }
+            }
+        }
+        // 回调可以重入 control poll，必须先释放 registry 与所有 OFD state 锁。
+        self.control_notification_write.signal_readiness();
+    }
 }
 
 fn control_errno(error: ControlError) -> isize {
@@ -102,8 +157,8 @@ impl ControlFile {
                 user.read(argument, &mut list).map_err(|_| errno::EFAULT)?;
                 let pointer = super::codec::read_u64(&list, 16).ok_or(errno::EFAULT)? as usize;
                 let (ids, used) = list_elements(&mut list).map_err(control_errno)?;
-                // 调用方给了 id 数组指针时才写 id；指针为 0 表示它只想要总数（`count`）。
-                if pointer != 0 && used != 0 {
+                // 只有 space=0 才是计数查询；需要输出 ID 时 NULL pids 必须返回 EFAULT。
+                if used != 0 {
                     user.write(pointer, &ids[..used * super::control::ELEM_ID_BYTES])
                         .map_err(|_| errno::EFAULT)?;
                 }
@@ -115,31 +170,38 @@ impl ControlFile {
             })
             .map(|()| 0),
             SNDRV_CTL_IOCTL_ELEM_READ => exchange::<ELEM_VALUE_BYTES>(user, argument, |bytes| {
-                let master = self.card.engine.lock().master();
-                read_element(bytes, master).map_err(control_errno)
+                let element = element_by_id(bytes).map_err(control_errno)?;
+                let values = self.card.engine.lock().control_values(element);
+                read_element(bytes, values).map_err(control_errno)
             })
             .map(|()| 0),
             SNDRV_CTL_IOCTL_ELEM_WRITE => {
-                // Linux 约定：值发生变化返回 1，没有变化返回 0。
-                let mut changed = false;
-                exchange::<ELEM_VALUE_BYTES>(user, argument, |bytes| {
-                    let mut engine = self.card.engine.lock();
-                    let (master, did_change) =
-                        write_element(bytes, engine.master()).map_err(control_errno)?;
-                    engine.set_master(master);
-                    changed = did_change;
-                    Ok(())
-                })?;
-                Ok(isize::from(changed))
+                let mut changed_element = None;
+                // Linux 的 put callback 以 bool 请求通知，但 ELEM_WRITE ioctl 成功统一返回 0。
+                let result = exchange::<ELEM_VALUE_BYTES>(user, argument, |bytes| {
+                    let (element, values) = write_element(bytes).map_err(control_errno)?;
+                    if self.card.engine.lock().set_control(element, values) {
+                        changed_element = Some(element);
+                    }
+                    read_element(bytes, values).map_err(control_errno)
+                });
+                // 与 Linux 一样，状态提交后的 copyout 失败不会回滚音量，通知也必须保留。
+                if let Some(element) = changed_element {
+                    self.card.notify_control(element);
+                }
+                result.map(|()| 0)
             }
             SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS => {
-                // 事件投递尚未实现：接受订阅请求，使 `alsa-lib` 能打开混音器；控制值被别的进程改变时本进程不会
-                // 收到通知，需要重新读取。读出的状态恒为 0（未订阅），如实反映没有事件队列。
-                if argument == 0 {
-                    return Err(errno::EFAULT);
+                let mut bytes = [0; 4];
+                user.read(argument, &mut bytes).map_err(|_| errno::EFAULT)?;
+                let subscribe = i32::from_ne_bytes(bytes);
+                if subscribe < 0 {
+                    let enabled = i32::from(self.state.lock().subscribed());
+                    user.write(argument, &enabled.to_ne_bytes())
+                        .map_err(|_| errno::EFAULT)?;
+                } else {
+                    self.state.lock().subscribe(subscribe != 0);
                 }
-                user.write(argument, &0i32.to_ne_bytes())
-                    .map_err(|_| errno::EFAULT)?;
                 Ok(0)
             }
             SNDRV_CTL_IOCTL_PCM_NEXT_DEVICE => {
@@ -174,12 +236,9 @@ impl ControlFile {
             })
             .map(|()| 0),
             SNDRV_CTL_IOCTL_PCM_PREFER_SUBDEVICE => {
-                // 偏好子设备只是提示；open 总是占用第一个空闲子流，所以只校验参数合法即可。
-                if argument == 0 {
-                    return Err(errno::EFAULT);
-                }
-                let mut bytes = [0u8; 4];
+                let mut bytes = [0; 4];
                 user.read(argument, &mut bytes).map_err(|_| errno::EFAULT)?;
+                self.state.lock().prefer(i32::from_ne_bytes(bytes));
                 Ok(0)
             }
             _ => Err(errno::ENOTTY),
@@ -188,13 +247,79 @@ impl ControlFile {
 }
 
 impl DeviceFile for ControlFile {
-    fn poll(&self, _events: i16) -> i16 {
-        // 没有事件队列，控制设备永远不就绪。
-        0
+    fn supports_write(&self) -> bool {
+        false
     }
 
-    fn prepare_wait(&self, _events: i16) -> Option<Arc<Pipe>> {
-        None
+    fn release(&self) {
+        self.state.lock().close();
+    }
+
+    fn read(&self, output: &mut dyn UserOutput, nonblocking: bool) -> Result<(), DeviceError> {
+        let mut delivered = false;
+        loop {
+            if !self.state.lock().subscribed() {
+                return Err(DeviceError::Errno(errno::EBADFD));
+            }
+            if output.remaining() < EVENT_BYTES {
+                return if delivered {
+                    Ok(())
+                } else {
+                    Err(DeviceError::Errno(errno::EINVAL))
+                };
+            }
+            if !self.state.lock().readable() {
+                if delivered {
+                    return Ok(());
+                }
+                crate::fs::chardev::wait_ready(self, 0x001, nonblocking)?;
+                continue;
+            }
+            // user-copy 可能 fault/sleep，不能跨它持有 OFD 或 Card 锁。
+            output
+                .reserve(EVENT_BYTES)
+                .map_err(|_| DeviceError::Errno(errno::EFAULT))?;
+            let event = self.state.lock().pop();
+            if let Some(element) = event {
+                output
+                    .write(&encode_event(element))
+                    .map_err(|_| DeviceError::Errno(errno::EFAULT))?;
+                delivered = true;
+            } else if delivered {
+                return Ok(());
+            } else {
+                crate::fs::chardev::wait_ready(self, 0x001, nonblocking)?;
+            }
+        }
+    }
+
+    fn poll(&self, events: i16) -> i16 {
+        if self.state.lock().readable() {
+            events & (0x001 | 0x040)
+        } else {
+            0
+        }
+    }
+
+    fn wait_sources(&self, _events: i16) -> DeviceWaitSources {
+        DeviceWaitSources::pipe(self.card.control_notification_read.pipe(), 0x001)
+    }
+
+    fn readiness_generation(&self) -> u64 {
+        self.card
+            .control_notification_read
+            .pipe()
+            .readiness_generation(PipeDirection::Read)
+    }
+
+    fn prepare_wait(&self, events: i16) -> Option<Arc<Pipe>> {
+        if self.poll(events) != 0 {
+            return None;
+        }
+        // 队列为空时旧 token 已失去语义；不排空会让阻塞 read 在 kernel 内反复立即醒来，
+        // 占住 CPU，甚至阻止同 CPU 的 writer 从 timer sleep 返回。排空后必须重查真实队列。
+        self.card.control_notification_read.drain_readiness();
+        (self.poll(events) == 0).then(|| self.card.control_notification_read.pipe())
     }
 
     fn ioctl(&self, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {

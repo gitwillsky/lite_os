@@ -7,6 +7,10 @@ import os
 import re
 import select
 import shutil
+import shlex
+import socket
+import json
+import sys
 import signal
 import subprocess
 import tempfile
@@ -101,6 +105,7 @@ def _qemu_command(
     memory: str | None = None,
     kernel_arguments: str | None = None,
     scratch_disk: Path | None = None,
+    audio_wav: Path | None = None,
 ) -> list[str]:
     runtime = qemu_runtime()
     qemu = shutil.which(runtime.binary)
@@ -169,6 +174,11 @@ def _qemu_command(
             "virtio-net-device,netdev=net0",
         ]
     )
+    if audio_wav is not None:
+        command.extend((
+            "-audiodev", "none,id=audio0,out.frequency=48000,out.channels=2,out.format=s16",
+            "-device", "virtio-sound-device,audiodev=audio0,streams=1",
+        ))
     return command
 
 
@@ -407,6 +417,20 @@ def send_triggered_interaction(
         raise TypeError("serial interaction must declare ShellCommand or TerminalInput")
 
 
+def _qmp_execute(protocol: BinaryIO, request: str, arguments: dict | None = None):
+    """执行一个 QMP 请求，忽略异步 event 并校验匹配的响应。"""
+    command = {"execute": request, "id": request}
+    if arguments is not None:
+        command["arguments"] = arguments
+    protocol.write(json.dumps(command).encode() + b"\n")
+    while True:
+        response = json.loads(protocol.readline())
+        if response.get("id") == request:
+            if "error" in response:
+                raise RuntimeError(f"QMP {request}: {response['error']}")
+            return response["return"]
+
+
 def boot(
     image: Path,
     smp: int,
@@ -419,6 +443,7 @@ def boot(
     memory: str | None = None,
     kernel_arguments: str | None = None,
     scratch_disk: Path | None = None,
+    audio_wav: Path | None = None,
 ) -> str:
     """冷启动指定镜像，按 marker 注入输入，直到全部结果出现或 fail-stop。
 
@@ -433,6 +458,7 @@ def boot(
         persistent_writes: 是否直接使用传入的一次性镜像；默认创建私有副本隔离 guest 写入。
         memory: 显式 Guest RAM；None 保留既有 runtime gate 的 QEMU 默认值。
         kernel_arguments: 经 `-append` 写入 DTB `/chosen/bootargs` 的 kernel command line。
+        audio_wav: 启用固定 VirtIO Sound playback 与 WAV 抓取；None 不添加声卡。
         scratch_disk: 作为第二块 virtio 盘（guest 内 `vdb`）附加的裸镜像；None 表示只有 root 盘。
 
     Returns:
@@ -458,7 +484,14 @@ def boot(
         memory=memory,
         kernel_arguments=kernel_arguments,
         scratch_disk=scratch_disk,
+        audio_wav=audio_wav,
     )
+    # 通过 monitor 显式开始/结束 recorder：当前 QEMU WAV backend 在 voice 未关闭时退出
+    # 不补写 RIFF 长度。暂停启动保证 recorder 先于 guest，stopcapture 保证文件完整封口。
+    qmp_socket = image.with_suffix(".qmp") if audio_wav is not None else None
+    if qmp_socket is not None:
+        command.extend(("-S", "-qmp", f"unix:{qmp_socket},server=on,wait=off"))
+        print("audio QEMU argv: " + shlex.join(command), file=sys.stderr)
     process = subprocess.Popen(
         command,
         cwd=ROOT,
@@ -480,7 +513,30 @@ def boot(
     now = time.monotonic()
     last_progress = now
     hard_deadline = now + timeout_seconds * HARD_DEADLINE_MULTIPLE
+    monitor = None
+    protocol = None
     try:
+        if qmp_socket is not None:
+            monitor = socket.socket(socket.AF_UNIX)
+            monitor.settimeout(3)
+            deadline = time.monotonic() + 3
+            while True:
+                try:
+                    monitor.connect(str(qmp_socket))
+                    break
+                except FileNotFoundError:
+                    if process.poll() is not None or time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.01)
+            protocol = monitor.makefile("rwb", buffering=0)
+            json.loads(protocol.readline())
+            _qmp_execute(protocol, "qmp_capabilities")
+            result = _qmp_execute(protocol, "human-monitor-command", {
+                "command-line": f"wavcapture {json.dumps(str(audio_wav))} audio0 48000 16 2",
+            })
+            if result.strip():
+                print(result.strip(), file=sys.stderr)
+            _qmp_execute(protocol, "cont")
         while True:
             now = time.monotonic()
             if now - last_progress >= STALL_SECONDS or now >= hard_deadline:
@@ -551,9 +607,21 @@ def boot(
             if process.poll() is not None:
                 break
     finally:
-        terminate(process)
-        if private_directory is not None:
-            private_directory.cleanup()
+        try:
+            if protocol is not None and process.poll() is None:
+                result = _qmp_execute(protocol, "human-monitor-command", {"command-line": "stopcapture 0"})
+                if result.strip():
+                    print(result.strip(), file=sys.stderr)
+                _qmp_execute(protocol, "quit")
+                process.wait(timeout=3)
+        finally:
+            if protocol is not None:
+                protocol.close()
+            if monitor is not None:
+                monitor.close()
+            terminate(process)
+            if private_directory is not None:
+                private_directory.cleanup()
 
     text = ANSI.sub("", output.decode(errors="replace"))
     missing = [marker for marker in markers if marker not in text]

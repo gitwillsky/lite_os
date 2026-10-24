@@ -38,7 +38,7 @@
 | `boot_screen` | `drivers` | 领域规则见依赖说明 |
 | `virtio` | `block`,`deferred`,`drivers`,`hal`,`memory`,`platform` | 领域规则见依赖说明 |
 | `virtio_port` | `deferred`,`drivers`,`fs`,`ipc` | 领域规则见依赖说明 |
-| `audio` | `drivers`,`fs`,`id`,`ipc`,`memory` | 领域规则见依赖说明 |
+| `audio` | `drivers`,`fs`,`id`,`ipc`,`memory`,`namespace`,`timer` | 领域规则见依赖说明 |
 | `drm` | `deferred`,`drivers`,`fallible_tree`,`fs`,`ipc`,`memory`,`socket`,`sync` | 领域规则见依赖说明 |
 | `input` | `deferred`,`drivers`,`fs`,`ipc`,`timer` | 领域规则见依赖说明 |
 | `io_uring` | `fs`,`id`,`ipc`,`memory`,`namespace`,`sync`,`timer` | 领域规则见依赖说明 |

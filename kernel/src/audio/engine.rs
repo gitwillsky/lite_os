@@ -9,6 +9,7 @@
 //! 调用方负责串行化（一个 `Mutex<Engine>`）。硬件完成事件只会被记成计数后经 [`Events`] 交给 `tick`，所以设备
 //! 回调里不需要、也不允许再取引擎的锁。
 
+use super::control::Element;
 use super::mixer::{Accumulator, VOLUME_MAX, volume_gain};
 use super::state::{PcmState, PcmStateOwner};
 use crate::drivers::{
@@ -134,6 +135,7 @@ pub(super) struct Engine<R> {
     queue: PeriodQueue,
     hardware: Hardware,
     master: Master,
+    substream_volume: [[u32; 2]; SUBSTREAMS],
 }
 
 fn each_bit(mask: u8) -> impl Iterator<Item = usize> {
@@ -146,6 +148,7 @@ impl<R: Ring> Engine<R> {
         Self {
             slots: core::array::from_fn(|_| Slot::vacant()),
             queue: PeriodQueue::default(),
+            substream_volume: [[VOLUME_MAX; 2]; SUBSTREAMS],
             hardware: Hardware::Stopped,
             master: Master {
                 volume: [VOLUME_MAX; 2],
@@ -154,13 +157,15 @@ impl<R: Ring> Engine<R> {
         }
     }
 
-    /// 占用第一个空闲子流并交给它一个环形缓冲。
+    /// 按 Linux control 偏好占用子流；-1 选择首个空闲槽，其余值只接受精确编号。
     ///
     /// # Returns
     ///
     /// 子流编号；全部占满时把 `ring` 原样退回，调用方在锁外释放它。
-    pub(super) fn allocate(&mut self, ring: R) -> Result<usize, R> {
-        let Some(index) = self.slots.iter().position(|slot| slot.ring.is_none()) else {
+    pub(super) fn allocate(&mut self, ring: R, preferred: i32) -> Result<usize, R> {
+        let Some(index) = self.slots.iter().enumerate().position(|(index, slot)| {
+            slot.ring.is_none() && (preferred == -1 || preferred == index as i32)
+        }) else {
             return Err(ring);
         };
         let slot = &mut self.slots[index];
@@ -189,12 +194,26 @@ impl<R: Ring> Engine<R> {
         &self.slots[index].state
     }
 
-    pub(super) fn master(&self) -> Master {
-        self.master
+    /// 读取唯一混音状态中的控制值，不复制 Master 或子流音量状态。
+    pub(super) fn control_values(&self, element: Element) -> [u32; 2] {
+        match element {
+            Element::MasterVolume => self.master.volume,
+            Element::MasterSwitch => self.master.enabled.map(u32::from),
+            Element::PcmVolume(index) => self.substream_volume[index],
+        }
     }
 
-    pub(super) fn set_master(&mut self, master: Master) {
-        self.master = master;
+    /// 应用 codec 已校验的值，返回是否发生真实变化，供 control 事件通知使用。
+    pub(super) fn set_control(&mut self, element: Element, values: [u32; 2]) -> bool {
+        if self.control_values(element) == values {
+            return false;
+        }
+        match element {
+            Element::MasterVolume => self.master.volume = values,
+            Element::MasterSwitch => self.master.enabled = values.map(|value| value != 0),
+            Element::PcmVolume(index) => self.substream_volume[index] = values,
+        }
+        true
     }
 
     /// 清掉子流在引擎里的全部痕迹：混音位置与在途 period 的归属。回到 Setup 或重新 prepare 之前必须调用，
@@ -358,7 +377,7 @@ impl<R: Ring> Engine<R> {
                     .as_ref()
                     .map(|ring| ring.read(offset, &mut period));
                 if read == Some(Ok(())) {
-                    accumulator.add(&period);
+                    accumulator.add(&period, self.substream_volume[index].map(volume_gain));
                     mixed |= 1 << index;
                 } else {
                     // 环形缓冲读取不应失败；失败的子流退出这个 period，而不是让混音带着垃圾数据出声。

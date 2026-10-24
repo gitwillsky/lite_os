@@ -7,9 +7,9 @@ use super::codec::{
     SNDRV_PCM_IOCTL_HW_FREE, SNDRV_PCM_IOCTL_HW_PARAMS, SNDRV_PCM_IOCTL_HW_REFINE,
     SNDRV_PCM_IOCTL_INFO, SNDRV_PCM_IOCTL_PREPARE, SNDRV_PCM_IOCTL_PVERSION, SNDRV_PCM_IOCTL_START,
     SNDRV_PCM_IOCTL_STATUS, SNDRV_PCM_IOCTL_SW_PARAMS, SNDRV_PCM_IOCTL_SYNC_PTR,
-    SNDRV_PCM_IOCTL_WRITEI_FRAMES, STATUS_BYTES, SW_PARAMS_BYTES, SYNC_PTR_BYTES, XFER_BYTES,
-    encode_pcm_info, exact_interval, exact_mask, read_u32, read_u64, refine_hardware,
-    stop_or_error, write_u32, write_u64,
+    SNDRV_PCM_IOCTL_TTSTAMP, SNDRV_PCM_IOCTL_USER_PVERSION, SNDRV_PCM_IOCTL_WRITEI_FRAMES,
+    STATUS_BYTES, SW_PARAMS_BYTES, SYNC_PTR_BYTES, XFER_BYTES, encode_pcm_info, exact_interval,
+    exact_mask, read_u32, read_u64, refine_hardware, stop_or_error, write_u32, write_u64,
 };
 use super::{
     AudioError, HardwareParameters, PCM_BUFFER_FRAMES, PCM_FRAME_BYTES, PCM_PERIOD_BYTES,
@@ -33,6 +33,10 @@ fn decode_hardware(bytes: &[u8; HW_PARAMS_BYTES]) -> Option<HardwareParameters> 
 
 fn decode_software(bytes: &[u8; SW_PARAMS_BYTES]) -> Option<SoftwareParameters> {
     Some(SoftwareParameters {
+        timestamp_mode: read_u32(bytes, 0)?,
+        timestamp_type: (read_u32(bytes, 72)? >= 0x0002_000c)
+            .then(|| read_u32(bytes, 76))
+            .flatten(),
         available_min: read_u64(bytes, 16)?,
         start_threshold: read_u64(bytes, 32)?,
         stop_threshold: read_u64(bytes, 40)?,
@@ -64,6 +68,8 @@ fn copy_status(user: &dyn UserMemory, file: &PcmFile, argument: usize) -> Result
     let status = file.status();
     let mut bytes = [0u8; STATUS_BYTES];
     write_u32(&mut bytes, 0, status.state as i32 as u32).ok_or(errno::EIO)?;
+    write_u64(&mut bytes, 24, status.timestamp_ns / 1_000_000_000).ok_or(errno::EIO)?;
+    write_u64(&mut bytes, 32, status.timestamp_ns % 1_000_000_000).ok_or(errno::EIO)?;
     write_u64(&mut bytes, 40, status.application_frames).ok_or(errno::EIO)?;
     write_u64(&mut bytes, 48, status.hardware_frames).ok_or(errno::EIO)?;
     write_u64(&mut bytes, 56, status.delay_frames as u64).ok_or(errno::EIO)?;
@@ -141,11 +147,13 @@ fn sync_pointer(user: &dyn UserMemory, file: &PcmFile, argument: usize) -> Resul
     let status = file.status();
     write_u32(&mut bytes, 8, status.state as i32 as u32).ok_or(errno::EIO)?;
     write_u64(&mut bytes, 16, status.hardware_frames).ok_or(errno::EIO)?;
+    write_u64(&mut bytes, 24, status.timestamp_ns / 1_000_000_000).ok_or(errno::EIO)?;
+    write_u64(&mut bytes, 32, status.timestamp_ns % 1_000_000_000).ok_or(errno::EIO)?;
     write_u64(&mut bytes, 72, status.application_frames).ok_or(errno::EIO)?;
     user.write(argument, &bytes).map_err(|_| errno::EFAULT)
 }
 
-/// 分发系统音频服务消费的 Linux ALSA PCM ioctl 子集。
+/// 分发标准 ALSA consumer 使用的 Linux PCM ioctl 子集。
 ///
 /// # Errors
 ///
@@ -160,6 +168,18 @@ pub(super) fn ioctl(file: &PcmFile, call: &IoctlCall<'_>) -> Result<isize, Devic
                 user.write(argument, &PCM_PROTOCOL_VERSION.to_ne_bytes())
                     .map_err(|_| errno::EFAULT)
             }
+        }
+        SNDRV_PCM_IOCTL_USER_PVERSION => {
+            // Linux 仅用此值决定 status/control mmap 的兼容布局。本实现不开放这两类 mmap，
+            // 所有版本都走 native 64-bit SYNC_PTR，因此不存在需保留的版本相关状态。
+            let mut version = [0u8; 4];
+            user.read(argument, &mut version).map_err(|_| errno::EFAULT)
+        }
+        SNDRV_PCM_IOCTL_TTSTAMP => {
+            let mut kind = [0u8; 4];
+            user.read(argument, &mut kind)
+                .map_err(|_| errno::EFAULT)
+                .and_then(|()| file.timestamp_type(u32::from_ne_bytes(kind)))
         }
         SNDRV_PCM_IOCTL_INFO => {
             if argument == 0 {
@@ -214,7 +234,7 @@ pub(super) fn ioctl(file: &PcmFile, call: &IoctlCall<'_>) -> Result<isize, Devic
                 user.read(argument, &mut bytes)
                     .map_err(|_| errno::EFAULT)
                     .and_then(|()| decode_software(&bytes).ok_or(errno::EINVAL))
-                    .and_then(|parameters| file.software_parameters(parameters).map_err(pcm_errno))
+                    .and_then(|parameters| file.software_parameters(parameters))
                     .and_then(|()| user.write(argument, &bytes).map_err(|_| errno::EFAULT))
             }
         }

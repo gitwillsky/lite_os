@@ -53,7 +53,7 @@ impl PcmStateOwner {
         stop_threshold: u64,
         boundary: u64,
     ) -> Result<(), ()> {
-        if self.state != PcmState::Setup
+        if matches!(self.state, PcmState::Open | PcmState::Disconnected)
             || available_min == 0
             || available_min > PCM_BUFFER_FRAMES as u64
             || start_threshold > boundary

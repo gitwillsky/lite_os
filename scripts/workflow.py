@@ -425,11 +425,17 @@ def verify_runtime_gates(environment: Mapping[str, str] | None = None) -> None:
         ["verify_rust_std.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_busybox.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_apk_apps.py", "--image", target_paths(environment)["rootfs"]],
+        ["verify_audio.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_gpu.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_scheduler_fairness.py", "--image", target_paths(environment)["rootfs"]],
     ]
     for script, *arguments in commands:
         run(python_script(script, *arguments), environment=environment)
+
+
+def verify_runtime_audio(environment: Mapping[str, str] | None = None) -> None:
+    """通过上游 ALSA consumer 和实际 WAV 验证八路混音。"""
+    run(python_script("verify_audio.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
 
 
 def verify_runtime_gpu(environment: Mapping[str, str] | None = None) -> None:
@@ -664,6 +670,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         "verify-runtime-gates": verify_runtime_gates,
         "verify-runtime-boot": verify_runtime_boot,
         "verify-runtime-shutdown": verify_runtime_shutdown,
+        "verify-runtime-audio": verify_runtime_audio,
         "verify-runtime-gpu": verify_runtime_gpu,
         "verify-runtime-scheduler": verify_runtime_scheduler,
         "diagnose-scheduler-latency": diagnose_scheduler_latency,

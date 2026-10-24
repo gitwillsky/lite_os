@@ -1,4 +1,4 @@
-//! `/dev/snd/pcmC0D0p` 字符设备：唯一 playback substream 的独占打开。
+//! `/dev/snd/pcmC0D0p` 字符设备：playback 子流的独占打开与设备操作。
 
 use alloc::sync::Arc;
 use syscall_abi::errno;
@@ -64,6 +64,10 @@ impl DeviceFile for PcmFile {
     }
 
     fn prepare_wait(&self, events: i16) -> Option<Arc<Pipe>> {
+        if self.poll_events(events) != 0 {
+            return None;
+        }
+        self.card.notification_read.drain_readiness();
         (self.poll_events(events) == 0).then(|| self.notification_pipe())
     }
 

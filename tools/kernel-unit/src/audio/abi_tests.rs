@@ -142,6 +142,8 @@ fn memfd_without_allow_sealing_starts_sealed() {
 #[test]
 fn alsa_ioctl_numbers_and_layout_match_linux_native_64_bit_uapi() {
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_PVERSION, 0x8004_4100);
+    assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_TTSTAMP, 0x4004_4103);
+    assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_USER_PVERSION, 0x4004_4104);
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_INFO, 0x8120_4101);
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_HW_REFINE, 0xc260_4110);
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_HW_PARAMS, 0xc260_4111);
@@ -480,4 +482,21 @@ mod pcm_info {
         assert_eq!(text(&bytes, 16, 64).len(), 63);
         assert_eq!(text(&bytes, 80, 80).len(), 79);
     }
+}
+
+#[test]
+fn software_parameters_can_change_after_prepare_and_while_running() {
+    let mut state = PcmStateOwner::new();
+    assert!(state.set_software(256, 1024, 1024, 1 << 31).is_err());
+    state.configure().unwrap();
+    state.prepare().unwrap();
+    state.set_software(512, 1 << 31, 1024, 1 << 31).unwrap();
+    state.submit_period().unwrap();
+    state.start().unwrap();
+    state.set_software(256, 1024, 1024, 1 << 31).unwrap();
+    assert_eq!(state.state, PcmState::Running);
+    assert_eq!(state.application_frames, 256);
+    assert_eq!(state.available_min, 256);
+    state.disconnect();
+    assert!(state.set_software(256, 1024, 1024, 1 << 31).is_err());
 }

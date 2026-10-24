@@ -36,7 +36,7 @@ mod mixing_tests {
     fn mix(sources: &[[u8; PCM_PERIOD_BYTES]], gain: [f32; 2]) -> [u8; PCM_PERIOD_BYTES] {
         let mut accumulator = Accumulator::new();
         for source in sources {
-            accumulator.add(source);
+            accumulator.add(source, [1.0, 1.0]);
         }
         let mut output = [0u8; PCM_PERIOD_BYTES];
         accumulator.finish(gain, &mut output);
@@ -82,6 +82,15 @@ mod mixing_tests {
     }
 
     #[test]
+    fn muting_a_finite_input_sum_that_overflowed_cannot_produce_nan() {
+        let sources = [period(f32::MAX, -f32::MAX); 2];
+        let muted = mix(&sources, [0.0, 0.0]);
+        assert!(muted.iter().all(|byte| *byte == 0));
+        let audible = mix(&sources, [1.0, 1.0]);
+        assert_eq!((sample(&audible, 0), sample(&audible, 1)), (1.0, -1.0));
+    }
+
+    #[test]
     fn non_finite_samples_are_silenced_and_cannot_poison_other_sources() {
         let hostile = period(f32::NAN, f32::INFINITY);
         let out = mix(&[hostile, period(0.25, 0.5)], [1.0, 1.0]);
@@ -118,6 +127,7 @@ mod engine_tests {
     use core::cell::RefCell;
     use std::sync::Mutex;
 
+    use super::control::Element;
     use super::engine::{Engine, Events, Master, Ring, SUBSTREAMS};
     use super::state::PcmState;
     use crate::drivers::{
@@ -276,7 +286,7 @@ mod engine_tests {
     /// 打开一个子流并走完 Open → Setup → Prepared 的前置步骤。
     fn open(engine: &mut Engine<FakeRing>, ring: &FakeRing) -> usize {
         let index = engine
-            .allocate(ring.clone())
+            .allocate(ring.clone(), -1)
             .unwrap_or_else(|_| panic!("no free substream"));
         engine.configure(index).unwrap();
         engine
@@ -322,18 +332,58 @@ mod engine_tests {
             volume: [25, 50],
             enabled: [true, false],
         };
-        engine.set_master(master);
+        engine.set_control(Element::MasterVolume, master.volume);
+        engine.set_control(Element::MasterSwitch, master.enabled.map(u32::from));
         engine.start(index).unwrap();
         assert!(engine.free_hardware(index).is_err());
         engine.drop_stream(index).unwrap();
         engine.free_hardware(index).unwrap();
         assert_eq!(engine.state(index).state, PcmState::Open);
-        assert_eq!(engine.master(), master);
+        assert_eq!(engine.control_values(Element::MasterVolume), master.volume);
+        assert_eq!(
+            engine.control_values(Element::MasterSwitch),
+            master.enabled.map(u32::from)
+        );
         assert_eq!(
             engine.available(),
             SUBSTREAMS - 1,
             "HW_FREE does not close the OFD"
         );
+    }
+
+    #[test]
+    fn preferred_substream_never_falls_back_to_a_different_slot() {
+        let mut engine = Engine::new();
+        assert_eq!(engine.allocate(FakeRing::new(), 5).ok(), Some(5));
+        assert_eq!(engine.allocate(FakeRing::new(), -1).ok(), Some(0));
+        assert!(engine.allocate(FakeRing::new(), 5).is_err());
+        assert!(engine.allocate(FakeRing::new(), SUBSTREAMS as i32).is_err());
+        assert!(engine.allocate(FakeRing::new(), -2).is_err());
+        engine.release(5);
+        assert_eq!(engine.allocate(FakeRing::new(), 5).ok(), Some(5));
+    }
+
+    #[test]
+    fn each_pcm_volume_changes_only_its_contribution_and_survives_close() {
+        let (mut engine, output, first, second) = (
+            Engine::new(),
+            FakeOutput::new(),
+            FakeRing::new(),
+            FakeRing::new(),
+        );
+        let a = open(&mut engine, &first);
+        let b = open(&mut engine, &second);
+        assert!(engine.set_control(Element::PcmVolume(a), [50, 100]));
+        assert!(!engine.set_control(Element::PcmVolume(a), [50, 100]));
+        write(&mut engine, a, &first, 0.25, 0.25, 4);
+        write(&mut engine, b, &second, 0.25, 0.25, 4);
+        engine.start(a).unwrap();
+        engine.start(b).unwrap();
+        engine.tick(NONE, &output);
+        assert_eq!(level(&output.submitted.borrow()[0]), (0.3125, 0.5));
+        engine.release(a);
+        assert_eq!(engine.allocate(FakeRing::new(), a as i32).ok(), Some(a));
+        assert_eq!(engine.control_values(Element::PcmVolume(a)), [50, 100]);
     }
 
     #[test]
@@ -485,18 +535,14 @@ mod engine_tests {
         let (mut engine, output, ring) = (Engine::new(), FakeOutput::new(), FakeRing::new());
         let a = open(&mut engine, &ring);
         write(&mut engine, a, &ring, 0.5, 0.5, 4);
-        engine.set_master(Master {
-            volume: [50, 100],
-            enabled: [true, false],
-        });
+        engine.set_control(Element::MasterVolume, [50, 100]);
+        engine.set_control(Element::MasterSwitch, [true, false].map(u32::from));
         engine.start(a).unwrap();
         engine.tick(NONE, &output);
         // 左声道 50% → 增益 0.25；右声道静音。
         assert_eq!(level(&output.submitted.borrow()[0]), (0.125, 0.0));
-        engine.set_master(Master {
-            volume: [100, 100],
-            enabled: [true, true],
-        });
+        engine.set_control(Element::MasterVolume, [100, 100]);
+        engine.set_control(Element::MasterSwitch, [true, true].map(u32::from));
         engine.tick(output.complete_one(), &output);
         assert_eq!(
             level(&output.submitted.borrow()[2]),
@@ -512,19 +558,19 @@ mod engine_tests {
         for _ in 0..SUBSTREAMS {
             indices.push(
                 engine
-                    .allocate(FakeRing::new())
+                    .allocate(FakeRing::new(), -1)
                     .unwrap_or_else(|_| panic!("free")),
             );
         }
         assert_eq!(engine.available(), 0);
         assert!(
-            engine.allocate(FakeRing::new()).is_err(),
+            engine.allocate(FakeRing::new(), -1).is_err(),
             "all substreams are busy"
         );
         assert!(engine.release(indices[3]).is_some());
         assert_eq!(engine.available(), 1);
         assert_eq!(
-            engine.allocate(FakeRing::new()).ok(),
+            engine.allocate(FakeRing::new(), -1).ok(),
             Some(indices[3]),
             "freed slot is reused"
         );
@@ -554,7 +600,7 @@ mod engine_tests {
         assert!(output.submitted.borrow().is_empty());
         // 之后新打开的子流也直接是 Disconnected，引擎不再触碰设备。
         let late = engine
-            .allocate(FakeRing::new())
+            .allocate(FakeRing::new(), -1)
             .unwrap_or_else(|_| panic!("free"));
         assert_eq!(engine.state(late).state, PcmState::Disconnected);
         assert!(!engine.tick(NONE, &output));
@@ -602,21 +648,14 @@ mod engine_tests {
 #[cfg(test)]
 mod control_tests {
     use super::control::{
-        CARD_INFO_BYTES, CTL_PROTOCOL_VERSION, CardText, ControlError, ELEM_ID_BYTES,
-        ELEM_INFO_BYTES, ELEM_LIST_BYTES, ELEM_VALUE_BYTES, SNDRV_CTL_IOCTL_CARD_INFO,
-        SNDRV_CTL_IOCTL_ELEM_INFO, SNDRV_CTL_IOCTL_ELEM_LIST, SNDRV_CTL_IOCTL_ELEM_READ,
-        SNDRV_CTL_IOCTL_ELEM_WRITE, SNDRV_CTL_IOCTL_PCM_INFO, SNDRV_CTL_IOCTL_PCM_NEXT_DEVICE,
-        SNDRV_CTL_IOCTL_PCM_PREFER_SUBDEVICE, SNDRV_CTL_IOCTL_PVERSION,
-        SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS, describe_element, encode_card_info, list_elements,
-        read_element, write_element,
+        CARD_INFO_BYTES, CTL_PROTOCOL_VERSION, CardText, ControlError, ControlOpen, ELEM_ID_BYTES,
+        ELEM_INFO_BYTES, ELEM_LIST_BYTES, ELEM_VALUE_BYTES, ELEMENT_COUNT, EVENT_BYTES, Element,
+        SNDRV_CTL_IOCTL_CARD_INFO, SNDRV_CTL_IOCTL_ELEM_INFO, SNDRV_CTL_IOCTL_ELEM_LIST,
+        SNDRV_CTL_IOCTL_ELEM_READ, SNDRV_CTL_IOCTL_ELEM_WRITE, SNDRV_CTL_IOCTL_PCM_INFO,
+        SNDRV_CTL_IOCTL_PCM_NEXT_DEVICE, SNDRV_CTL_IOCTL_PCM_PREFER_SUBDEVICE,
+        SNDRV_CTL_IOCTL_PVERSION, SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS, describe_element,
+        encode_card_info, encode_event, list_elements, read_element, write_element,
     };
-    use super::engine::Master;
-
-    const FULL: Master = Master {
-        volume: [100, 100],
-        enabled: [true, true],
-    };
-
     fn u32_at(bytes: &[u8], at: usize) -> u32 {
         u32::from_ne_bytes(bytes[at..at + 4].try_into().unwrap())
     }
@@ -700,11 +739,14 @@ mod control_tests {
     }
 
     #[test]
-    fn listing_returns_both_elements_in_order_and_honours_offset_and_space() {
+    fn listing_returns_all_controls_and_honours_offset_and_space() {
         let mut list = [0u8; ELEM_LIST_BYTES];
         put_u32(&mut list, 4, 16);
         let (ids, used) = list_elements(&mut list).unwrap();
-        assert_eq!((used, u32_at(&list, 8), u32_at(&list, 12)), (2, 2, 2));
+        assert_eq!(
+            (used, u32_at(&list, 8), u32_at(&list, 12)),
+            (ELEMENT_COUNT, ELEMENT_COUNT as u32, ELEMENT_COUNT as u32)
+        );
         assert_eq!(u32_at(&ids, 0), 1);
         assert_eq!(&ids[16..38], b"Master Playback Volume");
         assert_eq!(u32_at(&ids, ELEM_ID_BYTES), 2);
@@ -716,13 +758,13 @@ mod control_tests {
         let mut small = [0u8; ELEM_LIST_BYTES];
         put_u32(&mut small, 4, 1);
         assert_eq!(list_elements(&mut small).unwrap().1, 1);
-        assert_eq!(u32_at(&small, 12), 2);
-        // 从 offset 1 开始：只剩第二个。
+        assert_eq!(u32_at(&small, 12), ELEMENT_COUNT as u32);
+        // 从 offset 1 开始：略过第一项。
         let mut shifted = [0u8; ELEM_LIST_BYTES];
         put_u32(&mut shifted, 0, 1);
         put_u32(&mut shifted, 4, 16);
         let (ids, used) = list_elements(&mut shifted).unwrap();
-        assert_eq!((used, u32_at(&ids, 0)), (1, 2));
+        assert_eq!((used, u32_at(&ids, 0)), (ELEMENT_COUNT - 1, 2));
     }
 
     #[test]
@@ -791,43 +833,29 @@ mod control_tests {
 
     #[test]
     fn read_reports_per_channel_volume_and_switch() {
-        let master = Master {
-            volume: [30, 70],
-            enabled: [true, false],
-        };
         let mut volume = by_numid(1);
-        read_element(&mut volume, master).unwrap();
+        read_element(&mut volume, [30, 70]).unwrap();
         assert_eq!((u64_at(&volume, 72), u64_at(&volume, 80)), (30, 70));
         let mut switch = by_numid(2);
-        read_element(&mut switch, master).unwrap();
+        read_element(&mut switch, [1, 0]).unwrap();
         assert_eq!((u64_at(&switch, 72), u64_at(&switch, 80)), (1, 0));
     }
 
     #[test]
-    fn write_applies_values_and_reports_whether_anything_changed() {
+    fn write_decodes_validated_stereo_values() {
         let mut request = by_numid(1);
         put_u64(&mut request, 72, 40);
         put_u64(&mut request, 80, 60);
-        let (master, changed) = write_element(&request, FULL).unwrap();
-        assert_eq!((master.volume, changed), ([40, 60], true));
         assert_eq!(
-            master.enabled,
-            [true, true],
-            "volume writes never touch the switch"
-        );
-        let (again, changed) = write_element(&request, master).unwrap();
-        assert_eq!(
-            (again, changed),
-            (master, false),
-            "writing the same value is not a change"
+            write_element(&request).unwrap(),
+            (Element::MasterVolume, [40, 60])
         );
         let mut mute = by_numid(2);
         put_u64(&mut mute, 72, 1);
         put_u64(&mut mute, 80, 0);
-        let (muted, changed) = write_element(&mute, master).unwrap();
         assert_eq!(
-            (muted.enabled, muted.volume, changed),
-            ([true, false], [40, 60], true)
+            write_element(&mute).unwrap(),
+            (Element::MasterSwitch, [1, 0])
         );
     }
 
@@ -836,17 +864,73 @@ mod control_tests {
         let mut request = by_numid(1);
         put_u64(&mut request, 72, 50);
         put_u64(&mut request, 80, 101);
-        assert_eq!(write_element(&request, FULL), Err(ControlError::Invalid));
+        assert_eq!(write_element(&request), Err(ControlError::Invalid));
         let mut huge = by_numid(1);
         put_u64(&mut huge, 72, u64::MAX);
-        assert_eq!(write_element(&huge, FULL), Err(ControlError::Invalid));
+        assert_eq!(write_element(&huge), Err(ControlError::Invalid));
         let mut switch = by_numid(2);
         put_u64(&mut switch, 72, 1);
         put_u64(&mut switch, 80, 2);
-        assert_eq!(write_element(&switch, FULL), Err(ControlError::Invalid));
+        assert_eq!(write_element(&switch), Err(ControlError::Invalid));
         assert_eq!(
-            write_element(&by_numid(7), FULL),
+            write_element(&by_numid(99)),
             Err(ControlError::NoSuchElement)
         );
+    }
+
+    #[test]
+    fn control_events_coalesce_in_first_change_order_and_unsubscribe_discards() {
+        let mut file = ControlOpen::new();
+        file.notify(Element::MasterVolume);
+        file.subscribe(true);
+        assert!(!file.readable(), "no events from before subscription");
+        file.notify(Element::MasterSwitch);
+        file.notify(Element::MasterVolume);
+        file.notify(Element::MasterSwitch);
+        file.subscribe(true);
+        assert_eq!(file.pop(), Some(Element::MasterSwitch));
+        assert_eq!(file.pop(), Some(Element::MasterVolume));
+        assert_eq!(file.pop(), None);
+        for index in 0..ELEMENT_COUNT {
+            file.notify(Element::at(index).unwrap());
+        }
+        for index in 0..ELEMENT_COUNT {
+            assert_eq!(file.pop(), Element::at(index));
+        }
+        file.notify(Element::MasterVolume);
+        file.subscribe(false);
+        file.subscribe(true);
+        assert!(!file.readable());
+    }
+
+    #[test]
+    fn actual_close_revokes_preference_and_pending_control_events() {
+        let mut file = ControlOpen::new();
+        file.prefer(5);
+        file.subscribe(true);
+        file.notify(Element::PcmVolume(5));
+        assert_eq!(file.preferred(), 5);
+        file.close();
+        file.close();
+        file.subscribe(true);
+        file.notify(Element::MasterVolume);
+        assert!(!file.active());
+        assert!(!file.subscribed());
+        assert_eq!(file.preferred(), -1);
+        assert_eq!(file.pop(), None);
+    }
+
+    #[test]
+    fn pcm_control_name_index_and_event_id_use_the_native_layout() {
+        let mut info = [0; ELEM_INFO_BYTES];
+        info[..ELEM_ID_BYTES].copy_from_slice(&by_name(b"PCM Playback Volume", 7)[..ELEM_ID_BYTES]);
+        describe_element(&mut info).unwrap();
+        assert_eq!(u32_at(&info, 0), 10);
+        assert_eq!(u32_at(&info, 60), 7);
+        let event = encode_event(Element::PcmVolume(7));
+        assert_eq!(event.len(), EVENT_BYTES);
+        assert_eq!(u32_at(&event, 0), 0);
+        assert_eq!(u32_at(&event, 4), 1);
+        assert_eq!(&event[8..], &info[..ELEM_ID_BYTES]);
     }
 }

@@ -66,13 +66,15 @@ class WavSignal:
         frequency: float,
         start_frame: int = 0,
         frame_count: int | None = None,
+        channel: int | None = None,
     ) -> float:
-        """用双声道平均信号的正交投影测量一个固定频率。
+        """用指定声道或双声道平均信号的正交投影测量一个固定频率。
 
         Args:
             frequency: 目标频率 Hz，必须在 `(0, Nyquist)`。
             start_frame: 分析窗口的首 frame。
             frame_count: 分析 frame 数；None 使用剩余全部 frame。
+            channel: None 分析双声道平均，0/1 分析左/右声道。
 
         Returns:
             正弦振幅估计；完整周期窗口中与输入 amplitude 一致。
@@ -80,6 +82,8 @@ class WavSignal:
         Raises:
             ValueError: 频率或窗口超出信号范围。
         """
+        if channel not in (None, 0, 1):
+            raise ValueError("channel must be None, 0, or 1")
         if not 0.0 < frequency < self.sample_rate / 2:
             raise ValueError("frequency must be below Nyquist")
         if start_frame < 0 or start_frame > len(self.frames):
@@ -91,7 +95,7 @@ class WavSignal:
         sine = 0.0
         cosine = 0.0
         for index, frame in enumerate(self.frames[start_frame : start_frame + count]):
-            sample = (frame[0] + frame[1]) * 0.5
+            sample = (frame[0] + frame[1]) * 0.5 if channel is None else frame[channel]
             phase = angular * index
             sine += sample * math.sin(phase)
             cosine += sample * math.cos(phase)

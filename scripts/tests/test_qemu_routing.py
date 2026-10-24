@@ -47,6 +47,23 @@ class QemuRoutingTests(unittest.TestCase):
                 self.assertIn("file=root.img,if=none,format=raw,id=x0", command)
                 self.assertIn("file=swap.img,if=none,format=raw,id=x1", command)
 
+    @patch("qemu_gate.shutil.which", return_value="/opt/qemu")
+    def test_audio_capture_attaches_one_physical_playback_device(self, _: Mock) -> None:
+        with patch.dict(os.environ, {"ARCH": "aarch64", "ACCEL": "hvf"}, clear=True):
+            baseline = qemu_gate._qemu_command(Path("root.img"), 4)
+            capture = qemu_gate._qemu_command(Path("root.img"), 4, audio_wav=Path("output.wav"))
+        self.assertNotIn("-audiodev", baseline)
+        self.assertIn("none,id=audio0,out.frequency=48000,out.channels=2,out.format=s16", capture)
+        self.assertEqual(capture.count("virtio-sound-device,audiodev=audio0,streams=1"), 1)
+
+    def test_qmp_request_skips_events_and_rejects_command_errors(self) -> None:
+        protocol = Mock()
+        protocol.readline.side_effect = [b'{"event":"STOP"}\n', b'{"id":"quit","return":{}}\n']
+        self.assertEqual(qemu_gate._qmp_execute(protocol, "quit"), {})
+        protocol.readline.side_effect = [b'{"id":"quit","error":{"class":"GenericError"}}\n']
+        with self.assertRaisesRegex(RuntimeError, "QMP quit"):
+            qemu_gate._qmp_execute(protocol, "quit")
+
     def test_boot_consumes_markers_already_read_by_echo_pacing(self) -> None:
         read_fd, write_fd = os.pipe()
         os.write(write_fd, b"READY")

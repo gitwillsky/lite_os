@@ -139,7 +139,10 @@ fn kernel_main(context: entry::BootContext) -> ! {
     // ALSA、DRM 与 SPICE port 领域当前各只绑定首个已发现 adapter（card0/pcmC0D0p/唯一 named
     // port）；其余同类 adapter 已注册但不发布节点。
     if let Some(output) = drivers::pcm_output(0) {
-        audio::init(output).expect("ALSA PCM initialization failed");
+        audio::init(output, || {
+            task::current_task().map(|thread| thread.tid_identity())
+        })
+        .expect("ALSA PCM initialization failed");
     }
     // 最后一次内核绘制：DRM 初始化会绑定 completion work，此后 boot scanout 的同步刷新被拒绝，
     // 进度条由 compositor 从 `KERNEL_PROGRESS_PERMILLE` 接着画。

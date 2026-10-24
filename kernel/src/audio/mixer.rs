@@ -1,7 +1,7 @@
 //! 子流混音数学：把若干 period 的 F32_LE 立体声相加，施加主音量，再限幅成一个硬件 period。
 //!
 //! 只做算术，不认识子流、设备或锁，因此可以在宿主上逐值测试。内核目标是 softfloat，浮点由编译器内建函数
-//! 软件实现；一个 period 只有 512 个样本，每路混入只是一轮加法，成本可以忽略。
+//! 软件实现；host benchmark 只裁决数学实现成本，实际设备路径另由 runtime gate 验证。
 
 use crate::drivers::{PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES};
 
@@ -41,14 +41,20 @@ impl Accumulator {
     /// # Parameters
     ///
     /// - `period`: 256 帧、立体声、F32_LE 交错的原始字节。
+    /// - `gain`: 已校验的左右子流线性增益，范围 0..=1。
     ///
     /// 不是有限数的样本（NaN 与无穷）按静音处理：这些字节来自用户态，一个恶意或出错的客户端不能让
     /// 其他子流的声音随之失真。
-    pub(super) fn add(&mut self, period: &[u8; PCM_PERIOD_BYTES]) {
-        for (sum, bytes) in self.sum.iter_mut().zip(period.as_chunks::<4>().0) {
+    pub(super) fn add(&mut self, period: &[u8; PCM_PERIOD_BYTES], gain: [f32; 2]) {
+        for (index, (sum, bytes)) in self
+            .sum
+            .iter_mut()
+            .zip(period.as_chunks::<4>().0)
+            .enumerate()
+        {
             let sample = f32::from_le_bytes(*bytes);
             if sample.is_finite() {
-                *sum += sample;
+                *sum += sample * gain[index % 2];
             }
         }
     }
@@ -69,7 +75,13 @@ impl Accumulator {
             .zip(output.as_chunks_mut::<4>().0.iter_mut())
             .enumerate()
         {
-            let scaled = (*sum * gain[index % 2]).clamp(-1.0, 1.0);
+            // 合法的有限输入相加也可能溢出到 infinity；静音必须直接输出 0，避免 infinity*0 变成 NaN。
+            let channel_gain = gain[index % 2];
+            let scaled = if channel_gain == 0.0 {
+                0.0
+            } else {
+                (*sum * channel_gain).clamp(-1.0, 1.0)
+            };
             *bytes = scaled.to_le_bytes();
         }
     }

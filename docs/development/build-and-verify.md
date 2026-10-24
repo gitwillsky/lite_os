@@ -277,6 +277,11 @@ static gate 与 disassembly gate 继续负责。
 
 新增 hot path、lock、allocation、codec 或 indirection 时必须明确：加入 blocking benchmark、加入 target static/disassembly gate，或说明为何只需要 diagnostic measurement。
 whole-machine latency、boot time 与网络吞吐受宿主抖动影响，只作诊断，不作窄阈值 blocking gate。
+
+音频逐流增益使用 `cargo run --release -p architecture-bench --bin audio-mixer-bench` 诊断生产
+Accumulator 的单路/八路 period CPU 成本；host 硬件浮点不代表 kernel softfloat，故不设置 host 时间阈值。
+steady period 不分配、不查 control registry；新增乘法的真实可持续性由 AArch64/HVF 八路、六秒、
+零 XRUN 的 workload 和设备 WAV 分析裁决，不声称长时间或 Wine 游戏延迟已经达标。
 swap 的 area/slot CPU 成本以生产模块的 release host fixture 单独诊断：
 `cargo test -p kernel-unit --release --test fork_file_eof production_swap_slot_cpu_cost -- --ignored --nocapture`。
 固定 1/32 area、100,000 次预热和五个样本中位数，测 reserve/retire、clone/retire 与 statistics；
@@ -446,6 +451,16 @@ assertion。该生命周期边界不替代 guest `sync`、journal integrity 或 
 任一子门禁失败即整体失败，不能抽样或提前发布成功。
 
 当前没有图形用户态应用或 UI 交互门禁；新 Wayland 会话按经典桌面计划实现后补齐验收。
+
+`make verify-runtime-audio` 在 AArch64/HVF 上注入固定上游 amixer/alsa-lib 和 Linux UAPI fixture，
+只写私有 rootfs。它覆盖 control 订阅/事件合并、errno、opener TID、dup/actual close、精确子设备选择，
+随后用 amixer 调节 Master，并用八路不同频率的 alsa-lib consumer 显式启动播放。六阶段 WAV 分析分别
+检查单路、八路、逐流增益、Master 左右增益、单声道静音和过载硬削波；缺音轨、错误增益和静音泄漏的
+负例验证 analyzer 不会接受错误输出。时间戳通过真实 alsa-lib htimestamp 读取。
+control 另以 delayed writer 验证阻塞 read 与 poll，PCM 以超过 buffer 容量的 WRITEI 实际阻塞；
+两者都必须消费旧 notification token 后等待新的 level。该 gate 每次 cold boot，不使用成功缓存，串口与 WAV 保存在 `target/audio-runtime/`。
+录音通过 QMP 的 monitor wavcapture/stopcapture 明确封口；QEMU 当前会输出弃用提示，未来移除该命令
+需要迁移录音方式。直接终止仍持有 voice 的 WAV backend 不保证补写 RIFF 长度，不能修补文件头掩盖失败。
 RISC-V secondary 只承担 compile、static/artifact、CPU topology boot 与 Rust std smoke。
 自动门禁不生成 screenshot、preview 或视觉 Golden。
 
