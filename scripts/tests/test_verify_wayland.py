@@ -70,7 +70,7 @@ class InfoTests(unittest.TestCase):
 
 
     def test_privileged_globals_are_hidden_even_from_a_root_socket_client(self) -> None:
-        for interface in ("zwlr_layer_shell_v1", "zwlr_foreign_toplevel_manager_v1"):
+        for interface in ("zwlr_layer_shell_v1", "zwlr_foreign_toplevel_manager_v1", "wp_security_context_manager_v1"):
             with self.assertRaisesRegex(RuntimeError, "privileged globals"):
                 check_info(INFO + f"interface: '{interface}', version: 1, name: 6\n")
 

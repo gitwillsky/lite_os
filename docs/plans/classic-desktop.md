@@ -331,7 +331,10 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
 - `classic-ui` 的 xdg 窗口/输入基础层已实现：真实 shm 帧、HiDPI configure、装饰交互、单行编辑与 Tab 焦点链，
   `ui-probe` 通过库的公开接口在 guest 中验证控件、输入和窗口管理；协议探针仍独立，避免服务端与客户端共用策略掩盖错误。
   当前支持范围见 [用户态架构](../architecture/userspace-abi.md)，验证与成本决策见 [Wayland/控件验证](../development/wayland-ui-verification.md)。
-- 下一步：layer-shell 客户端与登录认证/会话权限交接，然后 `logon`、`desktop`；之后按 Wine 必需协议补齐。
+- layer-shell 客户端和标准 security-context-v1 委派已实现：会话父客户端为独立桌面连接授予 Shell 能力，
+  标准 Command 可降 uid/gid 并清除继承补充组；guest 用例验证父连接断开、子进程身份、禁止嵌套委派与图层 remap。
+  未把探针中的手工触发称为认证；仍需账户认证、补充组初始化与真正的会话应用。
+- 下一步：登录认证、补充组初始化与安全注意序列，然后 `logon`、`desktop`；之后按 Wine 必需协议补齐。
 - 待做：助记符下划线、菜单动画与交互、鼠标文本选择、剪贴板/IME，以及完整应用的视觉验收。
 
 ## 风险

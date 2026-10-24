@@ -30,6 +30,10 @@
   source endpoints 与 target，访问上界为 `unique_sources + 1`；reference 归零才从 topology
   index 精确摘除，禁止全图 retain。
 
+- `SO_ACCEPTCONN` 只由 `sys_getsockopt` 编解码；Socket::is_listening 投影实际 backend 状态。
+  AF_UNIX 在已有 endpoint state guard 内读取 Listening，IPv4 TCP 在已有 NetworkStack guard 内读取 TcpMode，UDP/RAW/packet/netlink 返回 false。
+  新 scoped getter 的 production caller 只有该 syscall 投影及下一层 façade；不增加依赖、缓存、锁对象或可修改状态。
+
 ## Interface
 
 - 地址投影区分不存在的 source 与未命名 UNIX 地址：recvmsg/recvfrom EOF 的 name 长度为零；

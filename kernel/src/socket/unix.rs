@@ -136,6 +136,11 @@ pub(crate) struct UnixSocket {
 }
 
 impl UnixSocket {
+    /// 在唯一 state guard 内观察监听状态；供 Socket 的 SO_ACCEPTCONN 投影。
+    pub(super) fn is_listening(&self) -> bool {
+        matches!(*self.state.lock(), SocketState::Listening { .. })
+    }
+
     pub(super) fn network_namespace_id(&self) -> u64 {
         self.net_namespace.id()
     }

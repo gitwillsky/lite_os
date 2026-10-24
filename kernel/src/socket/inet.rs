@@ -561,6 +561,17 @@ impl InetSocket {
             .is_ok_and(|value| value != 0)
     }
 
+    /// 读取 TCP mode 的监听状态；UDP/RAW 为 false，不另存 policy flag。
+    pub(super) fn is_listening(&self) -> Result<bool, SocketError> {
+        let _operation = self.open_operation()?;
+        if let InetEndpoint::Tcp(id) = self.endpoint {
+            let network = self.stack()?.lock()?;
+            Ok(tcp::is_listening(&network, id))
+        } else {
+            Ok(false)
+        }
+    }
+
     /// 把 TCP endpoint 转换为 passive listener。
     ///
     /// # Parameters

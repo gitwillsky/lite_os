@@ -14,12 +14,12 @@ use wayland_wire::{
 use super::{OUTPUT, id};
 use crate::wayland::Server;
 
-fn socket_path(name: &str) -> PathBuf {
+pub(super) fn socket_path(name: &str) -> PathBuf {
     std::env::temp_dir().join(format!("wl-test-{}-{name}", std::process::id()))
 }
 
 /// 一次 poll + dispatch。
-fn pump(server: &mut Server) {
+pub(super) fn pump(server: &mut Server) {
     let returned: Vec<PollEvents> = {
         let mut descriptors = server.descriptors();
         poll(&mut descriptors, Some(Duration::from_millis(200))).unwrap();
@@ -31,7 +31,11 @@ fn pump(server: &mut Server) {
     server.dispatch(&returned).unwrap();
 }
 
-fn read_frames(stream: &mut UnixStream, server: &mut Server, wanted: usize) -> Vec<AnyEvent> {
+pub(super) fn read_frames(
+    stream: &mut UnixStream,
+    server: &mut Server,
+    wanted: usize,
+) -> Vec<AnyEvent> {
     stream
         .set_read_timeout(Some(Duration::from_millis(20)))
         .unwrap();

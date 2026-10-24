@@ -45,11 +45,19 @@ impl Connection {
                 None => self.stream.write(bytes),
             };
             match result {
-                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                Ok(0) => {
+                    self.closing = true;
+                    self.client.discard_output();
+                    return Err(io::ErrorKind::WriteZero.into());
+                }
                 Ok(written) => self.client.consume_output(written),
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(false),
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
-                Err(error) => return Err(error),
+                Err(error) => {
+                    self.closing = true;
+                    self.client.discard_output();
+                    return Err(error);
+                }
             }
         }
     }
@@ -90,6 +98,7 @@ pub struct Server {
     connections: Vec<Connection>,
     next_id: u64,
     output: Output,
+    contexts: Vec<super::security::Listener>,
 }
 
 impl Server {
@@ -113,12 +122,18 @@ impl Server {
             connections: Vec::new(),
             next_id: 1,
             output,
+            contexts: Vec::new(),
         })
     }
 
     #[cfg(test)]
     pub fn connection_count(&self) -> usize {
         self.connections.len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn context_count(&self) -> usize {
+        self.contexts.len()
     }
 
     /// poll 描述符：先是监听 socket，随后每个连接一个；有未发完输出的连接额外关注可写。
@@ -133,6 +148,9 @@ impl Server {
             };
             descriptors.push(PollFd::new(connection.stream.as_fd(), events));
         }
+        for context in &self.contexts {
+            descriptors.extend(context.descriptors());
+        }
         descriptors
     }
 
@@ -142,20 +160,48 @@ impl Server {
     ///
     /// 监听 socket 的 accept 失败（单个连接的错误只会关闭该连接）。
     pub fn dispatch(&mut self, returned: &[PollEvents]) -> io::Result<()> {
-        debug_assert_eq!(returned.len(), self.connections.len() + 1);
+        let context_start = self.connections.len() + 1;
+        debug_assert_eq!(returned.len(), context_start + self.contexts.len() * 2);
+        // 先处理本轮快照中的 listener，再接收新注册项；同轮 close 的 listener 优先于 accept，避免撤销后仍接纳连接。
+        let mut accepted = Vec::new();
+        let mut index = 0;
+        self.contexts.retain(|context| {
+            let events = &returned[context_start + index * 2..context_start + index * 2 + 2];
+            index += 1;
+            if super::security::Listener::revoked(events) {
+                println!("compositor: context listener revoked");
+                return false;
+            }
+            if events[0].contains(PollEvents::READ) {
+                loop {
+                    match context.listener.accept() {
+                        Ok((stream, _)) => accepted.push(stream),
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                        Err(_) => return false,
+                    }
+                }
+            }
+            true
+        });
         let accept = returned
             .first()
             .is_some_and(|events| events.contains(PollEvents::READ));
-        for (connection, events) in self.connections.iter_mut().zip(&returned[1..]) {
+        for (connection, events) in self.connections.iter_mut().zip(&returned[1..context_start]) {
             if events.contains(PollEvents::READ)
                 || events.contains(PollEvents::HANGUP)
                 || events.contains(PollEvents::ERROR)
             {
                 connection.read();
             }
+            self.contexts
+                .extend(connection.client.take_security_contexts());
             if connection.flush().is_err() {
                 connection.closing = true;
             }
+        }
+        for stream in accepted {
+            self.add_connection(stream, Client::shell(self.output))?;
         }
         // 先发完再移除：协议错误事件必须在断开前到达客户端。
         self.connections
@@ -166,19 +212,23 @@ impl Server {
         Ok(())
     }
 
-    /// 加入一个已连接的特权客户端（compositor 自己拉起的外壳程序，经 `WAYLAND_SOCKET` 传给它）。
+    /// 加入 compositor 自己创建 socketpair 的初始 Session（logon）；委派后的桌面只能经 context accept 取得 Shell 能力。
     ///
     /// # Errors
     ///
     /// 无法把 socket 设为非阻塞。
-    pub fn add_privileged(&mut self, stream: UnixStream) -> io::Result<ClientId> {
+    pub fn add_session(&mut self, stream: UnixStream) -> io::Result<ClientId> {
+        self.add_connection(stream, Client::session(self.output))
+    }
+
+    fn add_connection(&mut self, stream: UnixStream, client: Client) -> io::Result<ClientId> {
         stream.set_nonblocking(true)?;
         let id = ClientId(self.next_id);
         self.next_id += 1;
         self.connections.push(Connection {
             id,
             stream,
-            client: Client::privileged(self.output),
+            client,
             closing: false,
         });
         Ok(id)
@@ -188,15 +238,7 @@ impl Server {
         loop {
             match self.listener.accept() {
                 Ok((stream, _)) => {
-                    stream.set_nonblocking(true)?;
-                    let id = ClientId(self.next_id);
-                    self.next_id += 1;
-                    self.connections.push(Connection {
-                        id,
-                        stream,
-                        client: Client::new(self.output),
-                        closing: false,
-                    });
+                    self.add_connection(stream, Client::new(self.output))?;
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => {}

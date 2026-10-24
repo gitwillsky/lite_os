@@ -210,3 +210,7 @@ dump 惰性生成：请求只冻结快照与游标，`recvmsg` 时按接收缓�
 **明确不支持，返回 `EOPNOTSUPP` 而不伪造成功**：一个接口的第二个 IPv4 地址、点对点 peer、`eth0:1` 式别名 label；设备创建、删除、重命名、
 改 MAC/txqlen 等其他链路属性与混杂/全组播等标志位；blackhole/prohibit/anycast/multicast 路由类型、多路径、源地址/TOS 路由、`RTAX_MTU` 等其他度量；
 邻居、规则、qdisc 等其他对象；非 dump 的 `RTM_GETADDR/GETROUTE`（含 `ip route get`）；多播订阅（bind 的 `nl_groups` 非零，`ip monitor`）；IPv6 地址族（dump 为空，修改 `EAFNOSUPPORT`）。
+
+`SOL_SOCKET/SO_ACCEPTCONN` 对照固定 Linux `net/core/sock.c::sk_getsockopt` 的 TCP_LISTEN 判定，支持四字节整数查询：仅实际处于 Listening 的 AF_UNIX/IPv4 TCP endpoint 返回 1，
+新建 stream、已 accept 的连接及无监听语义的协议返回 0；短输出长度仍沿用通用 getsockopt codec。
+会话门禁的 Linux C consumer 覆盖 UNIX/IPv4 TCP 的初始、listen、accept 与 UDP/socketpair 查询。

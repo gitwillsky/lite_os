@@ -42,7 +42,11 @@
 - `classic-ui` 已包含 Wayland xdg 窗口客户端、整数 scale shm 提交、装饰拖动/边框缩放/标题按钮、
   单行 UTF-8 编辑（选择、删除、密码掩码、水平滚动）与 Tab 焦点链；`linux-uapi` 仍独占 fd/poll/memfd 机制。
   当前限制：单输出、固定 US XKB keymap（其他布局明确 Unsupported）、无 IME/剪贴板、无鼠标定位文本光标、
-  无光标闪烁与文本组合；装饰尚无双击标题栏和系统菜单。layer-shell 客户端、菜单交互/动画和真实 logon/desktop 应用仍待实现。
+  无光标闪烁与文本组合；装饰尚无双击标题栏和系统菜单。菜单交互/动画和真实 logon/desktop 应用仍待实现。
+- classic-ui 现有 layer-shell v4+ 客户端，支持背景、panel、Overlay、双缓冲配置与 unmap/remap；Toplevel 与 Layer 共用一份帧和输入 owner。
+  Session 可用标准 security-context-v1 为桌面建立独立连接，父客户端断开后 listener 继续存活；通过标准 Command 降 uid/gid 后仍可使用继承连接。
+  这一步只完成能力委派与主身份机制，未实现密码认证、补充组初始化、会话注销/进程树终止和 Ctrl+Alt+Del 安全注意序列。
+  `org.liteos.session` 的 context 只开放桌面能力，不开放新的 context manager；公开监听连接始终为普通应用权限。
 - write/send 的 stack/heap staging 统一由 `UserInputStaging` 管理 initialized prefix，memory copyin 直接写未初始化 storage。代表样本包含两条 64 KiB socket staging 和一条 1 MiB regular staging，共 1,179,648 bytes；其 copyin 前预清零成本降为 0。
 - 普通 fork 从多线程 parent 只复制 calling Thread，child 取得独立 process owner 与 COW
   AddressSpace；这使 Node/libuv 等标准 launcher 可在 sibling Thread 存活时 fork/exec，

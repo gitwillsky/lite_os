@@ -16,6 +16,7 @@ const TCP_LINGER2: usize = 8;
 const SOL_SOCKET: usize = 1;
 const SO_REUSEADDR: usize = 2;
 const SO_TYPE: usize = 3;
+const SO_ACCEPTCONN: usize = 30;
 const SO_ERROR: usize = 4;
 const SO_BROADCAST: usize = 6;
 const SO_SNDBUF: usize = 7;
@@ -293,6 +294,14 @@ pub(crate) fn sys_getsockopt(
                 SocketType::SeqPacket => 5,
             };
             result[..4].copy_from_slice(&value.to_ne_bytes());
+            4
+        }
+        (SOL_SOCKET, SO_ACCEPTCONN) => {
+            let listening = match socket.is_listening() {
+                Ok(value) => value,
+                Err(error) => return socket_error(error),
+            };
+            result[..4].copy_from_slice(&i32::from(listening).to_ne_bytes());
             4
         }
         (SOL_SOCKET, SO_ERROR) => {

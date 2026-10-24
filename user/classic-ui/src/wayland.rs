@@ -2,13 +2,17 @@
 
 mod events;
 mod frame;
+mod layer;
+mod security;
 mod transport;
 
 use keyboard::Modifiers;
+pub use layer::{KeyboardInteractivity, Layer, LayerSettings, layer_anchor};
 use linux_uapi::{
     shared_memory::MemFd,
     unix::{PollEvents, PollFd, poll},
 };
+pub use security::{ShellConnection, ShellLease};
 use std::{
     collections::{HashMap, VecDeque},
     io,
@@ -113,12 +117,21 @@ pub enum WindowRequest {
     Minimize,
 }
 
+enum Role {
+    Toplevel {
+        xdg: ObjectId,
+        toplevel: ObjectId,
+        /// 最后一条 toplevel.configure，到配套 surface.configure 才发布为当前配置。
+        pending: Configuration,
+    },
+    Layer {
+        object: ObjectId,
+    },
+}
+
 struct Window {
-    xdg: ObjectId,
-    toplevel: ObjectId,
+    role: Role,
     configuration: Configuration,
-    /// 最后一条 toplevel.configure，在相应 surface.configure 到达后才成为当前配置。
-    pending: Configuration,
     /// 初始 configure 前不能提交；否则会违反 xdg-shell 的首次映射握手。
     configured: bool,
     /// 前一帧 callback 未到前不再提交，防止应用无限积压 shm 缓冲与渲染工作。
@@ -152,6 +165,8 @@ pub struct Display {
     repeat_delay: i32,
     pointer_device: Option<ObjectId>,
     keyboard_device: Option<ObjectId>,
+    layer_shell: Option<ObjectId>,
+    security_manager: Option<ObjectId>,
 }
 
 impl Display {
@@ -216,6 +231,28 @@ impl Display {
         let wm_base = bind(Interface::XdgWmBase, 3)?;
         let seat = bind(Interface::WlSeat, 7)?;
         let _output = bind(Interface::WlOutput, 4)?;
+        let layer_shell = if let Some((_, _, version)) = globals
+            .iter()
+            .find(|(_, name, _)| name == "zwlr_layer_shell_v1")
+        {
+            if *version < 4 {
+                return Err(io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    "classic-ui requires layer-shell v4 for OnDemand keyboard input",
+                ));
+            }
+            Some(bind(Interface::ZwlrLayerShellV1, 5)?)
+        } else {
+            None
+        };
+        let security_manager = if globals
+            .iter()
+            .any(|(_, name, _)| name == "wp_security_context_manager_v1")
+        {
+            Some(bind(Interface::WpSecurityContextManagerV1, 1)?)
+        } else {
+            None
+        };
         let mut display = Self {
             transport,
             compositor,
@@ -234,6 +271,8 @@ impl Display {
             repeat_delay: 0,
             pointer_device: None,
             keyboard_device: None,
+            layer_shell,
+            security_manager,
         };
         // 3. 两轮 sync 分别收齐 output/seat，以及由 seat 能力请求产生的 keymap，之后才允许建窗口。
         display.roundtrip()?;
@@ -307,10 +346,12 @@ impl Display {
         self.windows.insert(
             window,
             Window {
-                xdg,
-                toplevel,
+                role: Role::Toplevel {
+                    xdg,
+                    toplevel,
+                    pending: configuration,
+                },
                 configuration,
-                pending: configuration,
                 configured: false,
                 frame: None,
             },
@@ -346,11 +387,15 @@ impl Display {
     ///
     /// 窗口不存在、编码或 socket 失败。
     pub fn request(&mut self, window: WindowId, request: WindowRequest) -> io::Result<()> {
-        let toplevel = self
-            .windows
-            .get(&window)
-            .ok_or_else(|| io::Error::other("unknown window"))?
-            .toplevel;
+        let toplevel = match self.windows.get(&window).map(|window| &window.role) {
+            Some(Role::Toplevel { toplevel, .. }) => *toplevel,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "window request needs an xdg toplevel",
+                ));
+            }
+        };
         let writer = &mut self.transport.writer;
         match request {
             WindowRequest::Move { serial } => xdg_toplevel::Request::Move {
@@ -401,12 +446,21 @@ impl Display {
         }
         self.events.retain(|event| event.window != window);
         let writer = &mut self.transport.writer;
-        xdg_toplevel::Request::Destroy
-            .encode(state.toplevel, writer)
-            .map_err(io::Error::other)?;
-        xdg_surface::Request::Destroy
-            .encode(state.xdg, writer)
-            .map_err(io::Error::other)?;
+        match state.role {
+            Role::Toplevel { xdg, toplevel, .. } => {
+                xdg_toplevel::Request::Destroy
+                    .encode(toplevel, writer)
+                    .map_err(io::Error::other)?;
+                xdg_surface::Request::Destroy
+                    .encode(xdg, writer)
+                    .map_err(io::Error::other)?;
+            }
+            Role::Layer { object } => {
+                wayland_wire::protocol::zwlr_layer_surface_v1::Request::Destroy
+                    .encode(object, writer)
+                    .map_err(io::Error::other)?
+            }
+        }
         wl_surface::Request::Destroy
             .encode(window.0, writer)
             .map_err(io::Error::other)?;

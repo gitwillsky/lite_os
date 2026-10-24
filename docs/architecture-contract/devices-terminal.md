@@ -153,9 +153,14 @@
 - `Session` 独占外壳策略：Background/Bottom → 应用窗口 → Top/Overlay 的绘制与命中顺序；
   `shell_layout` 只做锚点、边距和工作区的纯几何计算。正独占区（含对应边距）只从已映射图层投影，最大化窗口随其变化重排；全屏始终使用完整输出。
   Top/Overlay 的 Exclusive 图层优先获得键盘并接收窗口快捷键；OnDemand 图层点击获得焦点，点击应用或切换窗口后释放。
-- 特权来自 compositor 创建的 socketpair，不来自 uid、环境变量或公开监听 socket。`linux-uapi::process::spawn_with_wayland_socket`
+- 会话管理能力来自 compositor 创建的 socketpair，不来自 uid、环境变量或公开监听 socket。`linux-uapi::process::spawn_with_wayland_socket`
   通过标准 `Command` stdin 装配传递连接（`WAYLAND_SOCKET=0`），不安装 pre_exec；普通监听连接即使同为 root 也不能看到或绑定外壳全局对象。
   `/bin/logon` 存在时才启动外壳；其退出被 wait 回收，连接关闭后所有图层、工作区与输入焦点随协议状态销毁，不自动重启外壳。
+- security-context-v1 只向初始 Session 连接公布。`wayland::security::Context` 独占 Pending metadata 与 fd，commit 后将 listener 唯一所有权移交 Server，
+  协议对象销毁或创建者断连都不撤销已提交 listener；只有 close_fd 的 HUP/ERROR 停止接受新连接，同轮 HUP 优先于 accept。
+  Server 给 `org.liteos.session` / `org.liteos.desktop` 且 instance 非空的 context 分配 Shell 能力：Layer/Foreign 可用，security-context 不可见，禁止嵌套委派。
+  engine/app/instance 只在已经受信任的 Session 来源内收窄能力，不用于认证 uid，也不声称提供 namespace sandbox。
+  监听 fd 经 linux-uapi 检查 AF_UNIX、SO_TYPE 和 SO_ACCEPTCONN；socket 刷新永久失败时丢弃待发 bytes/fd 并移除连接，避免断连在 poll 集合中忙循环。
 - `wayland::foreign` 独占每个 manager 的句柄及最近发送描述，`Session` 从窗口栈投影标题、app_id 与模式状态，
   不复制一份可修改的窗口状态。每次绑定独立宣告窗口；stop 只销毁 manager，已有句柄继续更新直到窗口 closed 或客户端 destroy；
   已销毁的句柄保留“已宣告”记录到窗口消失，防止同一窗口反复重新宣告。句柄操作由稳定的 `(ClientId, surface)` 路由，窗口消失后忽略。

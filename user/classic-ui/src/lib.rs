@@ -13,7 +13,10 @@ mod window;
 
 pub use decoration::{Decoration, DecorationAction};
 pub use editing::{Edit, FocusChain};
-pub use wayland::{Configuration, Display, Event, EventKind, Key, WindowId, WindowRequest};
+pub use wayland::{
+    Configuration, Display, Event, EventKind, Key, KeyboardInteractivity, Layer, LayerSettings,
+    ShellConnection, ShellLease, WindowId, WindowRequest, layer_anchor,
+};
 
 pub use controls::{ButtonState, SCROLLBAR_WIDTH, ScrollbarPart, thumb_span};
 pub use menu::MenuItemState;

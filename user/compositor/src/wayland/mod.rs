@@ -12,6 +12,7 @@ mod client;
 mod foreign;
 mod layer;
 mod seat;
+mod security;
 mod server;
 mod shm;
 mod surface;

@@ -2,7 +2,7 @@
 
 ## 入口与隔离
 
-`make verify-runtime-wayland` 由 `scripts/verify_wayland.py` 编排，在同一次 AArch64/HVF QEMU 启动中串行验证三个独立客户端阶段。
+`make verify-runtime-wayland` 由 `scripts/verify_wayland.py` 编排，在同一次 AArch64/HVF QEMU 启动中串行验证第一轮的三个独立客户端阶段，以及第二次 cold boot 的会话委派阶段。
 所有探针、上游消费者、字体和脚本仅注入 disposable 镜像，产品 rootfs 不安装它们。固定上游版本与摘要见标准基线。
 
 ## 服务端与外壳协议
@@ -41,3 +41,20 @@ buffer.release 回收资源，断开由 RAII 清理，不增加线程、锁、At
 该路径的成本为 O(帧像素数)，当前由真实窗口的重复提交、尺寸变更和已有 canvas blocking benchmark 裁决正确性与光栅基线，
 不新增宿主墙钟阈值；它尚不是高帧率动画的性能承诺。后续复用 shm 或添加动画时需以目标 workload 再作测量。
 编辑按键不复制整份文本；UTF-8 查找和 String 编辑为单行长度的 O(n)，绘制时仅密码掩码生成临时文本。
+
+## 会话委派与监听状态
+
+第二次 cold boot 用 session-probe 替换私有镜像中的 logon：初始 root 客户端绘制 Exclusive Overlay，
+在探针触发键之后注册标准 security context，并先断开父 Wayland 连接，再通过标准 Command 拉起 uid/gid 65534 的子进程。
+子进程从 /proc/self/status 核对 real/effective/saved/fs 身份均已改变且补充组为空；继承连接仍能创建背景与 panel，但不能再委派 context。
+随后由真实按键驱动 panel 高度变化、unmap、重新 configure/ack 与 remap；退出后屏幕恢复主题背景。
+这里没有密码认证，子进程身份也不是通过伪造 metadata 得到的。
+
+listener-check 使用固定 musl 头文件和 Linux getsockopt，覆盖 UNIX/IPv4 TCP 的新建、监听、accepted child 和 UDP/socketpair 的 SO_ACCEPTCONN 值。
+macOS 没有相同 SO_ACCEPTCONN getter，宿主 metadata/所有权测试从 std 创建的 typed listener 开始；原始 fd 验证和 SCM_RIGHTS 在 Linux guest 中真实执行。
+针对性宿主测试另外裁决：metadata 不可重复设置、commit 不可重复、创建者断开后 listener 独立存活、同轮 HUP 优先于 accept、
+撤销不终止既有连接，以及永久 write 错误不会留下反复刷新的 closing 连接；HUP 优先级用语义快照裁决，guest 另要求真实 HUP 产生撤销标记。
+
+新增 context 只在会话建立/撤销时分配 fd、metadata 和 listener 表项；每个 listener 在现有 poll 集合增加两个条目，
+不经过每像素、每字节或每次普通窗口 commit 的热路径。SO_ACCEPTCONN 只读取已有 owner guard，因而不新增 wall-clock benchmark 阈值；
+既有 benchmark 和实际 guest 会话工作负载承担成本回归，未声称这是完整登录或进程沙箱的验收。

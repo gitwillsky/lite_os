@@ -1,4 +1,4 @@
-use super::{Display, Event, EventKind, Key, Repeat, WindowId};
+use super::{Display, Event, EventKind, Key, Repeat, Role, WindowId};
 use keyboard::{Modifiers, character, xkb};
 use std::{
     fs::File,
@@ -71,7 +71,7 @@ impl Display {
                 self.scale = factor;
                 for (id, window) in &mut self.windows {
                     window.configuration.scale = factor;
-                    window.pending.scale = factor;
+                    if let Role::Toplevel { pending, .. } = &mut window.role { pending.scale = factor; }
                     if window.configured {
                         self.events.push_back(Event {
                             window: *id,
@@ -85,7 +85,7 @@ impl Display {
             {
                 if let Some(window) = self.windows.get_mut(&WindowId(object)) {
                     window.configuration.scale = factor;
-                    window.pending.scale = factor;
+                    if let Role::Toplevel { pending, .. } = &mut window.role { pending.scale = factor; }
                     if window.configured {
                         self.events.push_back(Event {
                             window: WindowId(object),
@@ -107,7 +107,7 @@ impl Display {
                 if let Some(window) = self
                     .windows
                     .values_mut()
-                    .find(|window| window.toplevel == object)
+                    .find(|window| matches!(window.role, Role::Toplevel { toplevel, .. } if toplevel == object))
                 {
                     let mut next = window.configuration;
                     if width > 0 {
@@ -127,7 +127,7 @@ impl Display {
                     next.resizing = states.contains(&3);
                     next.active = states.contains(&4);
                     next.pixel_size()?;
-                    window.pending = next;
+                    if let Role::Toplevel { pending, .. } = &mut window.role { *pending = next; }
                 }
             }
             AnyEvent::XdgSurface(xdg_surface::Event::Configure { serial }) => {
@@ -137,9 +137,9 @@ impl Display {
                 if let Some((id, window)) = self
                     .windows
                     .iter_mut()
-                    .find(|(_, window)| window.xdg == object)
+                    .find(|(_, window)| matches!(window.role, Role::Toplevel { xdg, .. } if xdg == object))
                 {
-                    window.configuration = window.pending;
+                    if let Role::Toplevel { pending, .. } = window.role { window.configuration = pending; }
                     window.configured = true;
                     self.events.push_back(Event {
                         window: *id,
@@ -151,10 +151,11 @@ impl Display {
                 let window = self
                     .windows
                     .iter()
-                    .find(|(_, window)| window.toplevel == object)
+                    .find(|(_, window)| matches!(window.role, Role::Toplevel { toplevel, .. } if toplevel == object))
                     .map(|(id, _)| *id);
                 self.emit(window, EventKind::Close);
             }
+            AnyEvent::ZwlrLayerSurfaceV1(event) => self.layer_event(object, event)?,
             AnyEvent::WlBuffer(wl_buffer::Event::Release) => {
                 if self.buffers.remove(&object).is_some() {
                     wl_buffer::Request::Destroy
@@ -344,10 +345,12 @@ mod tests {
                 windows: HashMap::from([(
                     window,
                     Window {
-                        xdg: id(11),
-                        toplevel: id(12),
+                        role: Role::Toplevel {
+                            xdg: id(11),
+                            toplevel: id(12),
+                            pending: configuration,
+                        },
                         configuration,
-                        pending: configuration,
                         configured: false,
                         frame: None,
                     },
@@ -362,6 +365,8 @@ mod tests {
                 repeat_delay: 500,
                 pointer_device: None,
                 keyboard_device: None,
+                layer_shell: None,
+                security_manager: None,
             },
             peer,
             window,
@@ -509,5 +514,70 @@ mod tests {
             )
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+    }
+    #[test]
+    fn layer_unmap_revokes_the_old_configuration_until_a_new_ack() {
+        use crate::{Layer, LayerSettings};
+        use wayland_wire::protocol::zwlr_layer_surface_v1 as layer;
+        let (mut display, _peer, toplevel) = display();
+        display.layer_shell = Some(id(30));
+        let window = display
+            .create_layer(
+                "test-layer",
+                LayerSettings {
+                    layer: Layer::Overlay,
+                    ..LayerSettings::default()
+                },
+            )
+            .unwrap();
+        assert!(display.configuration(window).is_none());
+        let Role::Layer { object } = display.windows[&window].role else {
+            panic!("layer role")
+        };
+        display
+            .layer_event(
+                object,
+                layer::Event::Configure {
+                    serial: 1,
+                    width: 640,
+                    height: 400,
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            display.configuration(window).unwrap().pixel_size().unwrap(),
+            (1280, 800)
+        );
+        assert!(display.ready_to_draw(window));
+        display.keyboard = Some(window);
+        display.unmap_layer(window).unwrap();
+        assert!(display.configuration(window).is_none());
+        assert!(display.keyboard_focus().is_none());
+        assert!(display.present(window, &[0]).is_err());
+        display
+            .configure_layer(window, LayerSettings::default())
+            .unwrap();
+        assert!(!display.ready_to_draw(window));
+        display
+            .layer_event(
+                object,
+                layer::Event::Configure {
+                    serial: 2,
+                    width: 640,
+                    height: 400,
+                },
+            )
+            .unwrap();
+        assert!(display.ready_to_draw(window));
+        assert!(
+            display
+                .request(window, super::super::WindowRequest::Minimize)
+                .is_err()
+        );
+        assert!(
+            display
+                .configure_layer(toplevel, LayerSettings::default())
+                .is_err()
+        );
     }
 }

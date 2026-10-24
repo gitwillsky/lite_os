@@ -61,6 +61,53 @@ pub fn peer_credentials(_socket: BorrowedFd<'_>) -> io::Result<PeerCredentials> 
     ))
 }
 
+/// 接管并验证一个 AF_UNIX SOCK_STREAM 监听描述符。
+///
+/// # Returns
+///
+/// 已验证的标准 UnixListener；所有错误都关闭传入 fd，调用方不保留第二个 owner。
+///
+/// # Errors
+///
+/// 非 UNIX、非 stream、尚未 listen，或 getsockopt 失败。非 Linux 目标明确返回 Unsupported。
+pub fn unix_listener_from_fd(fd: OwnedFd) -> io::Result<std::os::unix::net::UnixListener> {
+    let listener = std::os::unix::net::UnixListener::from(fd);
+    #[cfg(not(target_os = "linux"))]
+    {
+        drop(listener);
+        Err(io::ErrorKind::Unsupported.into())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        listener.local_addr()?;
+        let (level, kind, accepting) = (1, 3, 30);
+        for (option, expected) in [(kind, 1), (accepting, 1)] {
+            let mut value: c_int = 0;
+            let mut length = size_of::<c_int>() as u32;
+            // SAFETY: 指针覆盖完整 c_int 和 socklen_t，listener 保活 fd；只查询实际内核 socket 状态。
+            let result = unsafe {
+                raw::getsockopt(
+                    listener.as_raw_fd(),
+                    level,
+                    option,
+                    (&raw mut value).cast(),
+                    &raw mut length,
+                )
+            };
+            if result != 0 {
+                return Err(io::Error::last_os_error());
+            }
+            if length as usize != size_of::<c_int>() || value != expected {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "not a listening UNIX stream socket",
+                ));
+            }
+        }
+        Ok(listener)
+    }
+}
+
 /// Events requested from or returned by [`poll`].
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct PollEvents(i16);

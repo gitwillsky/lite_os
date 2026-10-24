@@ -159,10 +159,11 @@ impl Session {
             return Ok(());
         }
         let (server_end, client_end) = UnixStream::pair()?;
-        self.server.add_privileged(server_end)?;
+        self.server.add_session(server_end)?;
         self.shell = Some(spawn_with_wayland_socket(
             program.as_os_str(),
             client_end.into(),
+            None,
         )?);
         println!("compositor: shell started {}", program.display());
         Ok(())

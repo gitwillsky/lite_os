@@ -82,6 +82,7 @@ pub(super) enum Data {
     XdgSurface(XdgSurface),
     Toplevel(Toplevel),
     LayerSurface(LayerSurface),
+    SecurityContext(super::security::Context),
     ForeignHandle(ForeignHandle),
 }
 
@@ -100,12 +101,20 @@ const GLOBALS: [(u32, Interface, u32); 5] = [
     (5, Interface::WlSeat, 7),
 ];
 
-/// 只有特权客户端（由 compositor 经 `WAYLAND_SOCKET` 直接拉起的 `logon`、`desktop`）能看到的全局对象：
+/// 初始 Session 与通过 security-context 委派的 Shell 可见的全局对象：
 /// 桌面外壳需要它们，普通应用不能借此伪装成任务栏或枚举别人的窗口。
 const PRIVILEGED_GLOBALS: [(u32, Interface, u32); 2] = [
     (6, Interface::ZwlrLayerShellV1, 5),
     (7, Interface::ZwlrForeignToplevelManagerV1, 3),
 ];
+
+/// 连接能力只由 Server 的来源路径选择，不从 uid 或客户端 metadata 推断。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum Privilege {
+    Application,
+    Session,
+    Shell,
+}
 
 pub struct Client {
     framer: Framer,
@@ -118,8 +127,9 @@ pub struct Client {
     pub(super) requests: Vec<(ObjectId, WindowRequest)>,
     commits: u64,
     pub(super) output: Output,
-    /// 特权连接：额外公布 [`PRIVILEGED_GLOBALS`]。
-    pub(super) privileged: bool,
+    /// 来源决定 Application/Session/Shell 能力；不从 uid 或客户端提供的 metadata 推断。
+    pub(super) privilege: Privilege,
+    pub(super) security_contexts: Vec<super::security::Listener>,
     /// 外壳绑定的窗口管理器及其窗口列表（特权连接才会有）。
     pub(super) foreign: Vec<ForeignManager>,
     pub(super) foreign_requests: Vec<ForeignRequest>,
@@ -133,15 +143,19 @@ pub struct Client {
 impl Client {
     /// 普通客户端。
     pub fn new(output: Output) -> Self {
-        Self::with_privilege(output, false)
+        Self::with_privilege(output, Privilege::Application)
     }
 
-    /// 特权客户端：额外看到并可绑定 layer-shell 与 foreign-toplevel。
-    pub fn privileged(output: Output) -> Self {
-        Self::with_privilege(output, true)
+    /// 初始会话客户端：拥有外壳能力，并可通过 security-context 委派独立桌面连接。
+    pub fn session(output: Output) -> Self {
+        Self::with_privilege(output, Privilege::Session)
     }
 
-    fn with_privilege(output: Output, privileged: bool) -> Self {
+    pub(super) fn shell(output: Output) -> Self {
+        Self::with_privilege(output, Privilege::Shell)
+    }
+
+    fn with_privilege(output: Output, privilege: Privilege) -> Self {
         let display = Entry {
             interface: Interface::WlDisplay,
             version: 1,
@@ -157,7 +171,8 @@ impl Client {
             requests: Vec::new(),
             commits: 0,
             output,
-            privileged,
+            privilege,
+            security_contexts: Vec::new(),
             foreign: Vec::new(),
             foreign_requests: Vec::new(),
             cursor_requests: Vec::new(),
@@ -259,6 +274,12 @@ impl Client {
             .encode(callback, &mut self.writer);
             self.release_id(callback);
         }
+    }
+
+    /// socket 已不可写时丢弃待发字节与 fd，允许 Server 立即移除坏连接，不在 HUP 上反复尝试刷新。
+    pub(super) fn discard_output(&mut self) {
+        self.writer = Writer::new();
+        self.outgoing_fds.clear();
     }
 
     /// 本连接已处理的 `wl_surface.commit` 次数。
@@ -364,6 +385,10 @@ impl Client {
             AnyRequest::ZwlrForeignToplevelHandleV1(request) => {
                 self.foreign_handle(object, request)
             }
+            AnyRequest::WpSecurityContextManagerV1(request) => {
+                self.security_manager(object, request)
+            }
+            AnyRequest::WpSecurityContextV1(request) => self.security_context(object, request),
             // 其余对象（buffer、region、callback）只有 destroy 或没有请求，销毁由通用路径完成。
             AnyRequest::WlBuffer(wl_buffer::Request::Destroy) | AnyRequest::WlRegion(_) => Ok(()),
             other => Err(Fail::invalid_method(
@@ -397,12 +422,20 @@ impl Client {
 
     /// 本连接能看到的全局对象。
     fn globals(&self) -> Vec<(u32, Interface, u32)> {
-        let privileged = self
-            .privileged
+        let privileged = (self.privilege != Privilege::Application)
             .then_some(PRIVILEGED_GLOBALS)
             .into_iter()
             .flatten();
-        GLOBALS.into_iter().chain(privileged).collect()
+        let session = (self.privilege == Privilege::Session).then_some((
+            8,
+            Interface::WpSecurityContextManagerV1,
+            1,
+        ));
+        GLOBALS
+            .into_iter()
+            .chain(privileged)
+            .chain(session)
+            .collect()
     }
 
     fn registry(&mut self, registry: ObjectId, request: wl_registry::Request) -> Result<(), Fail> {

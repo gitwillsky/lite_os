@@ -139,7 +139,7 @@ impl Harness {
     /// 特权客户端：额外绑定 layer-shell（id 51）与 foreign-toplevel 管理器（id 52）。
     fn privileged() -> Self {
         let mut harness = Self::bound_with(Harness {
-            client: Client::privileged(OUTPUT),
+            client: Client::session(OUTPUT),
         });
         for (name, interface, version, new) in [
             (6, "zwlr_layer_shell_v1", 5, 51),
@@ -889,5 +889,6 @@ mod privilege;
 mod seat;
 #[cfg(target_os = "linux")]
 mod seat_socket;
+mod security;
 mod socket;
 mod xdg;

@@ -13,12 +13,21 @@ use std::{
 
 use crate::raw;
 
+/// 子进程的实际用户和主组；指定后标准 Command 会清空继承的补充组。
+/// 这是执行身份，不代表调用方已经通过认证；认证策略由会话应用拥有。
+#[derive(Debug, Clone, Copy)]
+pub struct Identity {
+    pub uid: u32,
+    pub gid: u32,
+}
+
 /// 以 Wayland 约定拉起特权客户端，通过标准输入传递已连接的 socket。
 ///
 /// # Parameters
 ///
 /// - `program`: 要执行的程序；继承环境，`WAYLAND_SOCKET` 设为标准输入的编号 0。
 /// - `socket`: 客户端连接；交给 `Command` 的标准 I/O 装配，返回后父进程不再持有。
+/// - `identity`: Some 时使用标准 Command 的 gid/uid 装配并清除补充组；None 继承父进程身份。
 ///
 /// # Returns
 ///
@@ -27,11 +36,19 @@ use crate::raw;
 /// # Errors
 ///
 /// 程序不存在、不可执行或标准 I/O 装配失败。
-pub fn spawn_with_wayland_socket(program: &OsStr, socket: OwnedFd) -> io::Result<Child> {
-    Command::new(program)
+pub fn spawn_with_wayland_socket(
+    program: &OsStr,
+    socket: OwnedFd,
+    identity: Option<Identity>,
+) -> io::Result<Child> {
+    let mut command = Command::new(program);
+    command
         .env("WAYLAND_SOCKET", "0")
-        .stdin(Stdio::from(socket))
-        .spawn()
+        .stdin(Stdio::from(socket));
+    if let Some(identity) = identity {
+        command.gid(identity.gid).uid(identity.uid);
+    }
+    command.spawn()
 }
 
 /// 复制 `WAYLAND_SOCKET` 指定的连接，并为原描述符与副本设置 `FD_CLOEXEC`。

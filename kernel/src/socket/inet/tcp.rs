@@ -293,6 +293,14 @@ pub(super) fn apply_bound_interface(
     Ok(())
 }
 
+/// 读取唯一 TCP mode 的监听投影，供 SO_ACCEPTCONN 查询。
+pub(super) fn is_listening(network: &NetworkStack, id: usize) -> bool {
+    network
+        .tcp_endpoints
+        .get(&id)
+        .is_some_and(|state| matches!(state.mode, TcpMode::Listening { .. }))
+}
+
 /// 读取唯一实际 handle 的 configured/negotiated MSS；listening policy 不借 frozen child。
 pub(super) fn max_segment_size(network: &NetworkStack, id: usize) -> Result<i32, SocketError> {
     let state = network

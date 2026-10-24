@@ -252,6 +252,18 @@ impl Socket {
         self.socket_type
     }
 
+    /// 投影实际 endpoint 的监听状态，供 SO_ACCEPTCONN 查询；无状态复制。
+    /// 非面向连接的协议返回 false，IPv4 owner 查询失败时保留原错误。
+    pub(crate) fn is_listening(&self) -> Result<bool, SocketError> {
+        match &self.backend {
+            SocketBackend::Unix(socket) => Ok(socket.is_listening()),
+            SocketBackend::Inet(socket) => socket.is_listening(),
+            SocketBackend::Packet(_) | SocketBackend::Kobject(_) | SocketBackend::Route(_) => {
+                Ok(false)
+            }
+        }
+    }
+
     pub(crate) fn bind(
         self: &Arc<Self>,
         address: SocketAddress,

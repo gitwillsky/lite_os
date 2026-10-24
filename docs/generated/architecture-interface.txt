@@ -5463,6 +5463,7 @@ kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn close_description
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn connect (& self , peer : InetAddress) -> Result < () , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn connection_result (& self) -> Result < () , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn disconnect (& self) -> Result < () , SocketError >
+kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn is_listening (& self) -> Result < bool , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn listen (& self , backlog : usize) -> Result < () , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn new (protocol : InetProtocol , notify : (Arc < PipeEnd > , Arc < PipeEnd >) , timeouts : Arc < SocketTimeouts > , memory : Arc < super :: SocketMemory > ,) -> Result < Arc < Self > , SocketError >
 kernel/src/socket/inet.rs :: pub (super) impl InetSocket :: fn packet_info (& self) -> bool
@@ -5758,6 +5759,7 @@ kernel/src/socket/inet/tcp.rs :: pub (super) fn bind (socket : & InetSocket , ad
 kernel/src/socket/inet/tcp.rs :: pub (super) fn connect (socket : & InetSocket , peer : InetAddress) -> Result < () , SocketError >
 kernel/src/socket/inet/tcp.rs :: pub (super) fn connection_result (socket : & InetSocket) -> Result < () , SocketError >
 kernel/src/socket/inet/tcp.rs :: pub (super) fn create_endpoint (network : & mut NetworkStack , endpoint : Weak < InetSocket > , timeouts : Arc < SocketTimeouts > ,) -> Result < usize , SocketError >
+kernel/src/socket/inet/tcp.rs :: pub (super) fn is_listening (network : & NetworkStack , id : usize) -> bool
 kernel/src/socket/inet/tcp.rs :: pub (super) fn listen (socket : & InetSocket , backlog : usize) -> Result < () , SocketError >
 kernel/src/socket/inet/tcp.rs :: pub (super) fn max_segment_size (network : & NetworkStack , id : usize) -> Result < i32 , SocketError >
 kernel/src/socket/inet/tcp.rs :: pub (super) fn peer_address (socket : & InetSocket) -> Result < InetAddress , SocketError >
@@ -5931,6 +5933,7 @@ kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn connect < F > (self : 
 kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn connection_result (& self) -> Result < () , SocketError >
 kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn disconnect (& self) -> Result < () , SocketError >
 kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn domain (& self) -> SocketDomain
+kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn is_listening (& self) -> Result < bool , SocketError >
 kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn listen (& self , backlog : usize , credentials : Option < UnixCredentials > ,) -> Result < () , SocketError >
 kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn pair (first : & Arc < Self > , second : & Arc < Self > , data : UnixConnectionData , credentials : UnixCredentials ,) -> Result < () , SocketError >
 kernel/src/socket/mod.rs :: pub (crate) impl Socket :: fn prepare_receive (& self , requested : usize , stream_max : usize ,) -> Result < ReceiveBuffer < 'static > , SocketError >
@@ -6141,6 +6144,7 @@ kernel/src/socket/unix.rs :: pub (crate) use namespace :: { UnixAddress , UnixPa
 kernel/src/socket/unix.rs :: pub (crate) use rights :: { UnixFileLimit , UnixNode , UnixPassedFile , UnixReceivedRights , UnixRights }
 kernel/src/socket/unix.rs :: pub (super) fn minimum_buffer (direction : super :: SocketIoDirection) -> usize
 kernel/src/socket/unix.rs :: pub (super) fn run_rights_collector (clock : impl Fn () -> u64 , sleep_until : impl FnMut (u64) , gate : crate :: sync :: TaskMutexWaitPreparation ,) -> !
+kernel/src/socket/unix.rs :: pub (super) impl UnixSocket :: fn is_listening (& self) -> bool
 kernel/src/socket/unix.rs :: pub (super) impl UnixSocket :: fn network_namespace_id (& self) -> u64
 kernel/src/socket/unix.rs :: pub (super) impl UnixSocket :: fn node (self : & Arc < Self >) -> UnixNode
 kernel/src/socket/unix.rs :: pub (super) impl UnixSocket :: fn node_id (& self) -> u64

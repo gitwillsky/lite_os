@@ -32,7 +32,7 @@ from verify_busybox import build_rust_user_program
 from verify_musl import cached_musl_paths, find_compiler, run
 
 ROOT = Path(__file__).resolve().parent.parent
-RECIPE_VERSION = 3
+RECIPE_VERSION = 4
 # 只注入私有 gate 镜像：上游 wayland-info 及其运行时依赖（musl 由产品提供）。
 PACKAGES = (
     ("wayland-utils-1.2.0-r0.apk", "f228b6562d731433850d7ecafd3542812d4b8e3abf62322868fc2c8adfcba501"),
@@ -139,9 +139,29 @@ def build_xkb_check(musl, tool_root: Path) -> Path:
     return binary
 
 
+def build_listener_check(musl) -> Path:
+    """构建 SO_ACCEPTCONN 的标准 C consumer，只进入会话门禁镜像。"""
+    source = FIXTURES / "listener-check.c"
+    payload = {"kind": "listener-check", "source": sha256(source), "sysroot": musl.sysroot_fingerprint,
+               "driver": sha256(ROOT / "scripts/musl_clang.py")}
+    destination = WORK / "listener-check" / fingerprint(payload)
+    if manifest_matches(destination, payload, ("listener-check",)):
+        return destination / "listener-check"
+    generation = temporary_directory(WORK / "listener-check", "build")
+    env = build_environment()
+    env.update({"LITEOS_MUSL_CLANG": str(musl.compiler), "LITEOS_MUSL_LLD": str(musl.linker),
+                "LITEOS_MUSL_COMPILER_RUNTIME": str(musl.compiler_runtime), "LITEOS_MUSL_SYSROOT": str(musl.install)})
+    try:
+        run([sys.executable, str(ROOT / "scripts/musl_clang.py"), str(source), "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-fPIE", "-pie", "-o", str(generation / "listener-check")], ROOT, env)
+        write_manifest(generation, payload)
+        publish_directory(generation, destination)
+    finally:
+        shutil.rmtree(generation, ignore_errors=True)
+    return destination / "listener-check"
+
+
 def install(image: Path, tool_root: Path, probe: Path, xkb_check: Path, shell_probe: Path, ui_probe: Path, directory: Path) -> None:
     """把上游工具、探针与启动脚本写入私有镜像；保留产品 inittab 的显示服务监督。"""
-    recover_ext4_journal(image)
     sources = []
     for path in sorted(tool_root.rglob("*")):
         relative = path.relative_to(tool_root).as_posix()
@@ -153,6 +173,12 @@ def install(image: Path, tool_root: Path, probe: Path, xkb_check: Path, shell_pr
     inittab.write_text((ROOT / "user/base/inittab").read_text() + "::once:/bin/sh /var/tmp/wayland.sh\n")
     sources += [(ROOT / "assets/fonts" / name, "/var/tmp/ui-fonts/" + name) for name in ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf")]
     sources += [(ui_probe, "/bin/ui-probe"), (shell_probe, "/bin/logon"), (probe, "/bin/wayland-probe"), (xkb_check, "/bin/xkb-check"), (script, "/var/tmp/wayland.sh"), (inittab, "/etc/inittab")]
+    install_files(image, sources, directory)
+
+
+def install_files(image: Path, sources: list[tuple[Path, str]], directory: Path) -> None:
+    """安装本门禁各次独立启动的 Wayland consumer，不修改产品基线。"""
+    recover_ext4_journal(image)
     directories = set()
     for _, destination in sources:
         parent = Path(destination).parent
@@ -174,7 +200,7 @@ def install(image: Path, tool_root: Path, probe: Path, xkb_check: Path, shell_pr
 def check_info(text: str) -> None:
     """`wayland-info` 的输出必须包含全部期望片段，缺失时指出是哪一条。"""
     missing = [pattern for pattern in EXPECTED_INFO if re.search(pattern, text) is None]
-    if "zwlr_layer_shell_v1" in text or "zwlr_foreign_toplevel_manager_v1" in text:
+    if any(interface in text for interface in ("zwlr_layer_shell_v1", "zwlr_foreign_toplevel_manager_v1", "wp_security_context_manager_v1")):
         raise RuntimeError("ordinary clients can see privileged globals")
     if missing:
         raise RuntimeError(f"wayland-info output is missing {missing}\n{text[-2500:]}")
@@ -447,6 +473,41 @@ def check_classic_ui(session) -> None:
     wait_screen(session, [((148, 158), back)], "classic-ui close cleanup")
 
 
+def check_delegated_session(session) -> None:
+    """真实 root session → 降权 desktop 连接，父客户端断开不撤销委派；图层取消映射与重映射必须重新握手。"""
+    console = session.console
+    parent, background, panel = (32, 32, 128), (32, 80, 32), (192, 192, 192)
+    console.wait_for(("session-probe: parent ready", "LISTENER_OK"))
+    wait_screen(session, [((0, 0), parent), ((1279, 799), parent)], "session parent overlay")
+    tap(session, "d")
+    console.wait_for(("session-probe: delegated after creator disconnect", "session-probe: identity uid=gid=65534 groups=empty", "session-probe: nested denied", "session-probe: desktop ready"))
+    wait_screen(session, [((0, 0), background), ((1279, 771), background), ((1279, 772), panel), ((1279, 799), panel)], "delegated desktop")
+    mark = console.mark()
+    pointer_to(session, 100, 785)
+    button(session, True)
+    button(session, False)
+    console.wait_for(("session-probe: focus true",), after=mark)
+    tap(session, "m")
+    console.wait_for(("session-probe: configure 1280x48",), after=mark)
+    wait_screen(session, [((1279, 751), background), ((1279, 752), panel)], "delegated panel resize")
+    mark = console.mark()
+    tap(session, "h")
+    console.wait_for(("session-probe: panel unmapped",), after=mark)
+    wait_screen(session, [((1279, 799), background)], "delegated panel unmap")
+    mark = console.mark()
+    pointer_to(session, 100, 100)
+    button(session, True)
+    button(session, False)
+    console.wait_for(("session-probe: focus true",), after=mark)
+    tap(session, "r")
+    console.wait_for(("session-probe: panel remap requested", "session-probe: configure 1280x48"), after=mark)
+    wait_screen(session, [((1279, 751), background), ((1279, 752), panel)], "delegated panel remap")
+    mark = console.mark()
+    tap(session, "q")
+    console.wait_for(("session-probe: desktop closed", "session-probe: finished", "compositor: context listener revoked"), after=mark)
+    wait_screen(session, [((0, 0), DESKTOP_BACKGROUND), ((1279, 799), DESKTOP_BACKGROUND)], "delegated session cleanup")
+
+
 def default_image(target: BuildTarget) -> Path:
     return ROOT / "target" / "rootfs" / f"{target.arch}.img"
 
@@ -467,12 +528,14 @@ def main() -> int:
         probe = build_rust_user_program(musl, "compositor", "wayland-probe", "wayland-probe", 1)
         shell_probe = build_rust_user_program(musl, "compositor", "shell-probe", "shell-probe", 1)
         ui_probe = build_rust_user_program(musl, "classic-ui", "ui-probe", "ui-probe", 1)
+        session_probe = build_rust_user_program(musl, "classic-ui", "session-probe", "session-probe", 1)
         tool_root, archives = tools()
         xkb_check = build_xkb_check(musl, tool_root)
+        listener_check = build_listener_check(musl)
         stamp = ROOT / "target" / "verify-gates" / "wayland-aarch64.json"
         payload = runtime_gate_payload(
             "wayland", RECIPE_VERSION,
-            (image, probe, shell_probe, ui_probe, xkb_check, *(ROOT / "assets/fonts" / name for name in ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf")), *archives, ROOT / "scripts/fixtures/wayland/xkb-check.c", ROOT / "scripts/display_gate.py", ROOT / "scripts/qemu_gate.py", Path(__file__).resolve()),
+            (image, probe, shell_probe, ui_probe, session_probe, xkb_check, listener_check, *(ROOT / "assets/fonts" / name for name in ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf")), *archives, ROOT / "scripts/fixtures/wayland/xkb-check.c", ROOT / "scripts/display_gate.py", ROOT / "scripts/qemu_gate.py", Path(__file__).resolve()),
         )
         if runtime_gate_hit(stamp, payload, (image,)):
             print("wayland verification cache hit")
@@ -511,7 +574,15 @@ def main() -> int:
                     time.sleep(0.25)
                 check_shell(session)
                 check_classic_ui(session)
-        print("wayland gate: globals, keymap, pointer/keyboard order, window drag/resize/maximize/fullscreen/minimize/Alt+Tab, composited and closed by Alt+F4; privileged shell layers, work area, foreign handles, cursor and cleanup; classic-ui controls, editing, focus, repeat and decorations")
+        with tempfile.TemporaryDirectory(prefix="liteos-session-install-") as scratch:
+            private = Path(scratch) / image.name
+            shutil.copyfile(image, private)
+            inittab = Path(scratch) / "inittab"
+            inittab.write_text((ROOT / "user/base/inittab").read_text() + "::once:/bin/listener-check\n")
+            install_files(private, [(session_probe, "/bin/logon"), (session_probe, "/bin/session-probe"), (listener_check, "/bin/listener-check"), (inittab, "/etc/inittab")], Path(scratch))
+            with display_session(private) as session:
+                check_delegated_session(session)
+        print("wayland gate: globals, keymap, pointer/keyboard order, window drag/resize/maximize/fullscreen/minimize/Alt+Tab, composited and closed by Alt+F4; privileged shell layers, work area, foreign handles, cursor and cleanup; classic-ui controls, editing, focus, repeat and decorations; delegated uid/gid, layer client unmap/remap and cleanup")
         publish_runtime_gate(stamp, payload)
     except RuntimeError as error:
         print(f"wayland verification failed: {error}", file=sys.stderr)
