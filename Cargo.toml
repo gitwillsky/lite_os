@@ -11,25 +11,13 @@ members = [
 exclude = [
     "vendor/smoltcp",
     "bootloader",
-    "user/audio-proto",
-    "user/audio-service",
-    "user/compositor",
-    "user/display-proto",
-    "user/lite-runtime",
-    "user/apps/desktop",
-    "user/apps/file-manager",
-    "user/apps/my-computer",
-    "user/apps/terminal",
-    "user/apps/music-player",
     "user/console",
     "user/keyboard",
     "user/linux-uapi",
-    "user/quickjs-runtime",
     "user/seat-proto",
     "user/seatd",
     "user/terminal-font",
     "user/terminal-model",
-    "user/terminal-session",
 ]
 default-members = ["kernel"]
 resolver = "3"

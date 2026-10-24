@@ -533,19 +533,6 @@ def regenerate_terminal_font(environment: Mapping[str, str] | None = None) -> No
     run([python, ROOT / "scripts/generate_terminal_font.py", "--verify"], environment=environment)
 
 
-def regenerate_ui_font(environment: Mapping[str, str] | None = None) -> None:
-    """生成 UI 比例字体 checked asset。"""
-    run([ROOT / "target/fontenv/bin/python", ROOT / "scripts/generate_ui_font.py"], environment=environment)
-
-
-def regenerate_icon_font(environment: Mapping[str, str] | None = None) -> None:
-    """从唯一 PUA 清单生成并立即校验自持系统图标字体。"""
-    python = ROOT / "target/fontenv/bin/python"
-    generator = ROOT / "scripts/generate_icon_font.py"
-    run([python, generator], environment=environment)
-    run([python, generator, "--verify"], environment=environment)
-
-
 def verify_host(environment: Mapping[str, str] | None = None) -> None:
     """执行 full verify 与 fast verify 共用的 host 检查。"""
     run(python_script("verify_smoltcp.py"), environment=environment)
@@ -713,8 +700,6 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         "build": build,
         "verify": verify,
         "regen-font": regenerate_terminal_font,
-        "regen-ui-font": regenerate_ui_font,
-        "regen-icon-font": regenerate_icon_font,
         "clean": clean,
         "clean-musl": clean_musl,
         "clean-busybox": clean_busybox,

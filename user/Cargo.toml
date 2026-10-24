@@ -1,24 +1,12 @@
 [workspace]
 members = [
-    "audio-proto",
-    "audio-service",
-    "compositor",
     "console",
-    "display-proto",
     "keyboard",
     "linux-uapi",
-    "lite-runtime",
-    "apps/desktop",
-    "apps/music-player",
-    "apps/file-manager",
-    "apps/my-computer",
-    "apps/terminal",
-    "quickjs-runtime",
     "seat-proto",
     "seatd",
     "terminal-font",
     "terminal-model",
-    "terminal-session",
 ]
 resolver = "3"
 
@@ -27,42 +15,12 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-display-proto = { path = "display-proto" }
-audio-proto = { path = "audio-proto" }
 linux-uapi = { path = "linux-uapi" }
-quickjs-runtime = { path = "quickjs-runtime" }
 keyboard = { path = "keyboard" }
 seat-proto = { path = "seat-proto" }
 terminal-font = { path = "terminal-font" }
 terminal-model = { path = "terminal-model" }
-cssparser = "=0.37.0"
-parley = { version = "=0.11.0", default-features = false, features = ["std"] }
-# parley 0.11 dropped its swash raster feature (fontique/harfrust are built in);
-# swash 0.2 is a direct dependency for A8 glyph rasterization from raw TTF bytes.
-swash = { version = "=0.2.5", default-features = false, features = ["std", "scale", "render"] }
-serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = "=1.0.149"
-taffy = "=0.12.2"
-symphonia = { version = "=0.6.0", default-features = false, features = ["all", "opt-simd-neon"] }
 unicode-width = "=0.2.2"
-libc = "=0.2.189"
-# Online music: signing/crypto for QQ (musicu.fcg sign) and NetEase (eapi
-# AES-128-ECB + MD5). Pure-Rust RustCrypto stack — no C/asm, builds anywhere.
-aes = "=0.8.4"
-ecb = { version = "=0.1.2", features = ["std"] }
-md-5 = "=0.10.6"
-sha1 = "=0.10.6"
-sha2 = "=0.10.9"
-hmac = "=0.12.1"
-hex = "=0.4.3"
-base64 = "=0.22.1"
-# Blocking HTTP + pure-Rust TLS (rustls/ring). ring builds on aarch64-linux-musl
-# (tested asm) and riscv64 (portable C path); certs bundled via webpki-roots
-# because the guest ships no CA bundle.
-ureq = { version = "=2.12.1", default-features = false, features = ["tls"] }
-rustls = { version = "=0.23.20", default-features = false, features = ["ring", "std", "tls12"] }
-webpki-roots = "=0.26.7"
-rustls-pki-types = "=1.10.1"
 
 [profile.dev]
 panic = "abort"
@@ -72,9 +30,3 @@ panic = "abort"
 opt-level = "s"
 lto = "fat"
 codegen-units = 1
-
-# 光栅/合成热路径 crate：opt-level "s" 会限制内联与向量化，对每帧预算不利。
-# lite-ui 在 opt3 + fat LTO 下会误编译（desktop 静默停止 commit，疑似既有 UB
-# 被激进优化触发），保持 "s"；compositor 实测安全且 p50 收益 ~5-8%。
-[profile.release.package.compositor]
-opt-level = 3

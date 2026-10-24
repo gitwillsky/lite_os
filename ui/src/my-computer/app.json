@@ -1,8 +1,0 @@
-{
-  "id": "my-computer",
-  "name": "Computer",
-  "description": "查看本机磁盘与系统信息",
-  "icon": "assets/package.png",
-  "entry": "main.js",
-  "style": "style.css"
-}

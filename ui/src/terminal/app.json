@@ -1,8 +1,0 @@
-{
-  "id": "terminal",
-  "name": "Terminal",
-  "description": "Command line",
-  "icon": "assets/terminal.png",
-  "entry": "main.js",
-  "style": "style.css"
-}

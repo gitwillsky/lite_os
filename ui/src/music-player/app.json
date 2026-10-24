@@ -1,8 +1,0 @@
-{
-  "id": "music-player",
-  "name": "Music",
-  "description": "Stream from QQ Music & NetEase, or play local files",
-  "icon": "assets/music.png",
-  "entry": "main.js",
-  "style": "style.css"
-}
