@@ -32,7 +32,7 @@ from verify_busybox import build_rust_user_program
 from verify_musl import cached_musl_paths, find_compiler, run
 
 ROOT = Path(__file__).resolve().parent.parent
-RECIPE_VERSION = 2
+RECIPE_VERSION = 3
 # 只注入私有 gate 镜像：上游 wayland-info 及其运行时依赖（musl 由产品提供）。
 PACKAGES = (
     ("wayland-utils-1.2.0-r0.apk", "f228b6562d731433850d7ecafd3542812d4b8e3abf62322868fc2c8adfcba501"),
@@ -69,6 +69,9 @@ touch /var/tmp/shell-start
 i=0
 while [ ! -f /var/tmp/shell-ready ] && [ $i -lt 60 ]; do sleep 1; i=$((i+1)); done
 /bin/wayland-probe
+i=0
+while [ ! -f /var/tmp/shell-finished ] && [ $i -lt 60 ]; do sleep 1; i=$((i+1)); done
+/bin/ui-probe
 """
 # 上游 wayland-info 对齐输出：全局对象行、shm 格式（fourcc）与 wl_output 的几何、名字和模式。
 EXPECTED_INFO = (
@@ -136,7 +139,7 @@ def build_xkb_check(musl, tool_root: Path) -> Path:
     return binary
 
 
-def install(image: Path, tool_root: Path, probe: Path, xkb_check: Path, shell_probe: Path, directory: Path) -> None:
+def install(image: Path, tool_root: Path, probe: Path, xkb_check: Path, shell_probe: Path, ui_probe: Path, directory: Path) -> None:
     """把上游工具、探针与启动脚本写入私有镜像；保留产品 inittab 的显示服务监督。"""
     recover_ext4_journal(image)
     sources = []
@@ -148,7 +151,8 @@ def install(image: Path, tool_root: Path, probe: Path, xkb_check: Path, shell_pr
     script.write_text(SCRIPT)
     inittab = directory / "inittab"
     inittab.write_text((ROOT / "user/base/inittab").read_text() + "::once:/bin/sh /var/tmp/wayland.sh\n")
-    sources += [(shell_probe, "/bin/logon"), (probe, "/bin/wayland-probe"), (xkb_check, "/bin/xkb-check"), (script, "/var/tmp/wayland.sh"), (inittab, "/etc/inittab")]
+    sources += [(ROOT / "assets/fonts" / name, "/var/tmp/ui-fonts/" + name) for name in ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf")]
+    sources += [(ui_probe, "/bin/ui-probe"), (shell_probe, "/bin/logon"), (probe, "/bin/wayland-probe"), (xkb_check, "/bin/xkb-check"), (script, "/var/tmp/wayland.sh"), (inittab, "/etc/inittab")]
     directories = set()
     for _, destination in sources:
         parent = Path(destination).parent
@@ -379,6 +383,70 @@ def check_shell(session) -> None:
     wait_screen(session, [((0, 0), DESKTOP_BACKGROUND), ((1279, 799), DESKTOP_BACKGROUND)], "shell disconnect cleanup")
 
 
+def check_classic_ui(session) -> None:
+    """classic-ui 的真实消费窗口：控件像素、文本/密码/Tab/重复键，以及装饰发出的窗口管理请求。"""
+    console, back, face, white = session.console, DESKTOP_BACKGROUND, (212, 208, 200), (255, 255, 255)
+    console.wait_for(("ui-probe: configure 360x240 scale=1", "ui-probe: frame 1"))
+    # 此次启动的第三个窗口，层叠原点 40 + 19*2 = 78。
+    wait_screen(session, [((88, 118), face), ((118, 148), white), ((77, 78), back)], "classic-ui initial controls")
+    mark = console.mark()
+    for key in ("a", "b", "c"):
+        tap(session, key)
+    console.wait_for(("ui-probe: edit 0 abc",), after=mark)
+    tap(session, "ctrl", "a")
+    tap(session, "h")
+    console.wait_for(("ui-probe: edit 0 h",), after=mark)
+    tap(session, "tab")
+    for key in ("s", "e", "c"):
+        tap(session, key)
+    console.wait_for(("ui-probe: focus 1", "ui-probe: edit 1 ***"), after=mark)
+    if "ui-probe: edit 1 sec" in console.text[mark:]:
+        raise RuntimeError("password probe leaked its raw text")
+    mark = console.mark()
+    tap(session, "shift", "tab")
+    console.wait_for(("ui-probe: focus 0",), after=mark)
+    session.qmp.execute("input-send-event", {"events": key_events(("a", True))})
+    console.wait_for_match(r"ui-probe: edit 0 ha+ repeat", after=mark)
+    session.qmp.execute("input-send-event", {"events": key_events(("a", False))})
+    tap(session, "ctrl", "a")
+    tap(session, "x")
+    tap(session, "ret")
+    console.wait_for(("ui-probe: edit 0 x", "ui-probe: accepted"), after=mark)
+    # 标题栏与边框属于库的 Decoration；应用没有硬编码 move/resize 请求。
+    pointer_to(session, 150, 88)
+    mark = console.mark()
+    button(session, True)
+    console.wait_for(("ui-probe: decoration Move",), after=mark)
+    pointer_to(session, 210, 128)
+    wait_screen(session, [((80, 80), back), ((148, 158), face), ((178, 188), white)], "classic-ui title drag")
+    button(session, False)
+    pointer_to(session, 496, 356)
+    mark = console.mark()
+    button(session, True)
+    console.wait_for(("ui-probe: decoration Resize",), after=mark)
+    pointer_to(session, 556, 416)
+    console.wait_for(("ui-probe: configure 420x300",), after=mark)
+    button(session, False)
+    wait_screen(session, [((548, 400), face), ((559, 419), back)], "classic-ui resize presented")
+    pointer_to(session, 526, 128)
+    mark = console.mark()
+    button(session, True)
+    button(session, False)
+    console.wait_for(("ui-probe: configure 1280x800",), after=mark)
+    wait_screen(session, [((10, 50), face), ((40, 70), white)], "classic-ui maximize")
+    pointer_to(session, 1248, 10)
+    mark = console.mark()
+    button(session, True)
+    button(session, False)
+    console.wait_for(("ui-probe: configure 420x300",), after=mark)
+    pointer_to(session, 546, 128)
+    mark = console.mark()
+    button(session, True)
+    button(session, False)
+    console.wait_for(("ui-probe: closed", "compositor: windows=0"), after=mark)
+    wait_screen(session, [((148, 158), back)], "classic-ui close cleanup")
+
+
 def default_image(target: BuildTarget) -> Path:
     return ROOT / "target" / "rootfs" / f"{target.arch}.img"
 
@@ -398,12 +466,13 @@ def main() -> int:
         musl = cached_musl_paths(find_compiler())
         probe = build_rust_user_program(musl, "compositor", "wayland-probe", "wayland-probe", 1)
         shell_probe = build_rust_user_program(musl, "compositor", "shell-probe", "shell-probe", 1)
+        ui_probe = build_rust_user_program(musl, "classic-ui", "ui-probe", "ui-probe", 1)
         tool_root, archives = tools()
         xkb_check = build_xkb_check(musl, tool_root)
         stamp = ROOT / "target" / "verify-gates" / "wayland-aarch64.json"
         payload = runtime_gate_payload(
             "wayland", RECIPE_VERSION,
-            (image, probe, shell_probe, xkb_check, *archives, ROOT / "scripts/fixtures/wayland/xkb-check.c", ROOT / "scripts/display_gate.py", ROOT / "scripts/qemu_gate.py", Path(__file__).resolve()),
+            (image, probe, shell_probe, ui_probe, xkb_check, *(ROOT / "assets/fonts" / name for name in ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf")), *archives, ROOT / "scripts/fixtures/wayland/xkb-check.c", ROOT / "scripts/display_gate.py", ROOT / "scripts/qemu_gate.py", Path(__file__).resolve()),
         )
         if runtime_gate_hit(stamp, payload, (image,)):
             print("wayland verification cache hit")
@@ -411,7 +480,7 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix="liteos-wayland-install-") as scratch:
             private = Path(scratch) / image.name
             shutil.copyfile(image, private)
-            install(private, tool_root, probe, xkb_check, shell_probe, Path(scratch))
+            install(private, tool_root, probe, xkb_check, shell_probe, ui_probe, Path(scratch))
             with display_session(private) as session:
                 session.console.wait_for(("WAYLAND_INFO_DONE", "wayland-probe: done", "XKB_OK"))
                 text = session.console.text
@@ -441,7 +510,8 @@ def main() -> int:
                         raise RuntimeError(f"closed window still on screen: {gone}")
                     time.sleep(0.25)
                 check_shell(session)
-        print("wayland gate: globals, keymap, pointer/keyboard order, window drag/resize/maximize/fullscreen/minimize/Alt+Tab, composited and closed by Alt+F4; privileged shell layers, work area, foreign handles, cursor and cleanup")
+                check_classic_ui(session)
+        print("wayland gate: globals, keymap, pointer/keyboard order, window drag/resize/maximize/fullscreen/minimize/Alt+Tab, composited and closed by Alt+F4; privileged shell layers, work area, foreign handles, cursor and cleanup; classic-ui controls, editing, focus, repeat and decorations")
         publish_runtime_gate(stamp, payload)
     except RuntimeError as error:
         print(f"wayland verification failed: {error}", file=sys.stderr)

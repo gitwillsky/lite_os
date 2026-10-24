@@ -8,3 +8,6 @@ publish.workspace = true
 canvas = { path = "../canvas" }
 classic-theme = { path = "../classic-theme" }
 typeface = { path = "../typeface" }
+keyboard.workspace = true
+linux-uapi.workspace = true
+wayland-wire = { path = "../wayland-wire" }

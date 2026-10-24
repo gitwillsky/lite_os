@@ -288,6 +288,7 @@ fn run() -> io::Result<()> {
             }
             AnyEvent::ZwlrForeignToplevelManagerV1(manager::Event::Finished) => {
                 println!("shell-probe: finished");
+                fs::write("/var/tmp/shell-finished", b"finished")?;
                 return Ok(());
             }
             _ => {}

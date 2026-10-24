@@ -20,7 +20,10 @@ version = "0.1.0"
 dependencies = [
  "canvas",
  "classic-theme",
+ "keyboard",
+ "linux-uapi",
  "typeface",
+ "wayland-wire",
 ]
 
 [[package]]

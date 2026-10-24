@@ -320,17 +320,8 @@ adapter 只代表无竞争计数成本，不宣称实际 local IRQ 指令/设备
 比对；内核 `boot_screen` 与 compositor 任一方的缩放、居中或进度填充规则漂移都会失败。随后注入一次平板移动与一次按键，要求
 compositor 报告各自的首个事件。它不测量时间，参考帧与比对函数由 `scripts/tests/test_verify_display.py` 约束；只在 AArch64+HVF 承担。
 
-Wayland 门禁（`scripts/verify_wayland.py`，`make verify-runtime-wayland`）在同一 QEMU 显示会话里注入固定的上游 `wayland-info` 与本仓库的 `wayland-probe`（私有镜像，产品 rootfs 不含）：`wayland-info` 必须列出 `wl_compositor`、`wl_shm`（含格式）、
-`xdg_wm_base` 与 `wl_output`（模式、scale、名字）；探针走完 xdg configure/ack、五帧 shm buffer 与 frame callback；`screendump` 里
-窗口矩形是最后一帧颜色、其外是桌面背景、位置是层叠放置的第一个窗口；收到的 keymap 由 guest 里链接上游 libxkbcommon 的 `xkb-check`
-（禁用默认 include，逐键与修饰键索引裁决）编译；注入平板移动/点击与 Shift+A，客户端必须按序收到 `wl_pointer` 的 enter/motion/button/leave
-与 `wl_keyboard` 的 modifiers/key（局部坐标按输出 scale 换算）；随后依次拖动标题栏、拖右下角缩放、最大化/还原、全屏/还原、
-最小化与 Alt+Tab 恢复，每步都由截图核对窗口的实际位置与大小；最后注入 Alt+F4，窗口必须消失、桌面恢复。
-同一次启动随后用注入 `/bin/logon` 的 `shell-probe` 走真实特权 socketpair：映射背景与任务栏，
-通过 foreign handle 最大化/最小化/激活/关闭另一个连接的窗口，验证工作区随 panel 高度变化、OnDemand 点击焦点、Exclusive 键盘阻止 Alt+F4 操作应用，以及外壳连接退出后的图层/焦点清理。公开 `wayland-info` 输出出现任一外壳全局即失败。
-硬件光标平面不进入 screendump，光标路径以 guest 实际 DRM 更新成功裁决，不宣称截图验证了 cursor plane。
-新增外壳布局与列表 codec 不引入逐像素路径、锁或共享状态：每次事件循环投影窗口/图层快照，foreign 匹配最坏为 O(manager 数 × 窗口数²)，
-未变化的 foreign 列表零输出由确定性单测裁决；沿用 canvas blocking benchmark，不新增受宿主调度影响的 wall-clock 阈值。协议状态机另有进程内测试（`user/compositor` 的 `cargo test`，含 socket、乱序/拆包/随机输入）。只在 AArch64+HVF 承担。
+Wayland 服务端、外壳协议与 classic-ui 客户端的门禁及成本决策由
+[Wayland 与经典控件验证](wayland-ui-verification.md) 维护；入口为 `make verify-runtime-wayland`。
 
 idle tick suppression 不增加 host microbenchmark：收益来自 HVF/TCG 的 whole-machine exit 次数，
 host unit loop 无法代表它。改动必须通过双 architecture compile/static gate，并以单 QEMU、完整 SMP

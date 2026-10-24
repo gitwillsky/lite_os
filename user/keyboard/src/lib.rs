@@ -5,7 +5,7 @@
 pub mod xkb;
 
 /// Latched modifier state accumulated from key press/release events.
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Modifiers {
     pub shift: bool,
     pub control: bool,

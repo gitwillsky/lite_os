@@ -295,6 +295,7 @@ fn caption_bar_gradient_separator_and_buttons() {
                     (CaptionButton::Maximize, true),
                     (CaptionButton::Close, true),
                 ],
+                None,
             );
         });
         assert_eq!(image.at(20, 20), rgb(SystemColor::ActiveTitle));
@@ -330,7 +331,7 @@ fn caption_bar_gradient_separator_and_buttons() {
 #[test]
 fn inactive_caption_uses_inactive_colors() {
     let image = render(1, |p| {
-        p.caption_bar(Rect::new(20, 20, 160, 19), "x", false, &[])
+        p.caption_bar(Rect::new(20, 20, 160, 19), "x", false, &[], None)
     });
     assert_eq!(image.at(20, 25), rgb(SystemColor::InactiveTitle));
     assert_eq!(image.at(179, 25), rgb(SystemColor::GradientInactiveTitle));
@@ -537,7 +538,13 @@ fn caption_glyph_geometry_stays_inside_the_button() {
         CaptionButton::Close,
     ] {
         let image = render(1, |p| {
-            p.caption_bar(Rect::new(20, 20, 100, 19), "", true, &[(button, true)])
+            p.caption_bar(
+                Rect::new(20, 20, 100, 19),
+                "",
+                true,
+                &[(button, true)],
+                None,
+            )
         });
         let area = Rect::new(100 - 2 - 16 + 20 - 2 + 2, 22, 16, 14);
         let black = rgb(SystemColor::ButtonText);
@@ -558,4 +565,35 @@ fn caption_glyph_geometry_stays_inside_the_button() {
 fn p_line_height() -> i32 {
     let (ascent, descent) = typeface(1).metrics();
     ascent + descent
+}
+
+#[test]
+fn password_edit_renders_the_same_as_its_mask_at_both_scales() {
+    at_both_scales(|scale| {
+        let password = crate::Edit::new("中Ab");
+        let mask = crate::Edit::new("***");
+        let hidden = render(scale, |p| {
+            p.edit(Rect::new(20, 20, 100, 23), &password, true, true);
+        });
+        let plain = render(scale, |p| {
+            p.edit(Rect::new(20, 20, 100, 23), &mask, true, false);
+        });
+        assert_eq!(hidden.pixels, plain.pixels);
+    });
+}
+
+#[test]
+fn edit_scroll_clips_text_and_restores_the_callers_clip() {
+    at_both_scales(|scale| {
+        let edit = crate::Edit::new(&"long text ".repeat(100));
+        let rect = Rect::new(20, 20, 80, 23);
+        let image = render(scale, |p| {
+            p.edit(rect, &edit, true, false);
+            p.fill(Rect::new(150, 150, 4, 4), SystemColor::WindowFrame);
+        });
+        assert_eq!(image.at(150, 150), rgb(SystemColor::WindowFrame));
+        for (x, y) in [(19, 30), (100, 30), (50, 19), (50, 43)] {
+            assert_eq!(image.at(x, y), rgb(SystemColor::Background));
+        }
+    });
 }

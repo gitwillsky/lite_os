@@ -42,6 +42,7 @@ fn main() {
             (CaptionButton::Maximize, true),
             (CaptionButton::Close, true),
         ],
+        None,
     );
     let client = Rect::new(
         content.x,
@@ -222,6 +223,7 @@ fn main() {
             (CaptionButton::Restore, false),
             (CaptionButton::Close, true),
         ],
+        None,
     );
     p.fill(
         Rect::new(

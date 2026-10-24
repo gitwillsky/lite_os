@@ -147,6 +147,14 @@
 - Wayland 外壳继承的连接经 `linux-uapi::process` 传递：发送端消费 `OwnedFd`，标准 I/O 装配失败时由 `Command` 回收；
   接收端用 `F_DUPFD_CLOEXEC` 取得独立所有权，并给原 fd 设置 CLOEXEC，不接管可能被标准输入等对象借用的 fd。
   接收不修改全局环境；之后启动普通客户端须显式 `env_remove("WAYLAND_SOCKET")`，避免它使用 exec 已关闭的继承编号。
+- `classic-ui::Display` 独占客户端 Wayland 连接、对象编号、configure、shm 与输入路由：仅在 delete_id 后复用编号，
+  xdg_toplevel.configure 先暂存，到 xdg_surface.configure 时 ack 并一次性发布；首轮 configure 前不能提交 buffer。
+  每个窗口最多一条未完成 frame callback，`ready_to_draw` 是该状态的只读投影；收到 buffer.release 后销毁该 buffer，
+  在此之前绝不修改提交的 memfd。窗口销毁撤销焦点、重复键和已排队语义事件；连接出错由应用退出/drop 一次性回收 fd。
+- `classic-ui::Decoration` 只消费语义事件，按钮命中与绘制共用 `window` 的几何事实；窗口尺寸和模式仍只来自 compositor configure。
+  `Edit` 独占文本、UTF-8 光标与选择锚点；`FocusChain` 独占控件槽位的 Tab 顺序。Painter 只读这些状态，不拥有第二份可写控件模型。
+- `keyboard::xkb` 是 modifier masks 与 US keymap 的唯一事实 owner，客户端在接收 keymap 时验证支持范围后再解释按键。
+  重复键只使用服务端 repeat_info；release、键盘 leave、能力撤销或窗口销毁清除重复，重复事件使用当前 modifiers，不延续已失焦窗口的按键。
 - APK 只接受所选 architecture repository 的固定摘要与精确 `.PKGINFO`。只有 `ca-certificates-bundle`、`git-init-template` 与 `ncurses-terminfo-base` 三个固定数据包预期 `noarch`；其余包必须精确匹配目标架构，禁止 blanket `noarch` 放宽。
 - `/etc/apk/repositories` 必须精确启用固定 Alpine stable branch 的 `main` 与 `community`；
   `main` 缺失会破坏基础包解析，`community` 缺失会让 npm 等标准拆分包不可见，禁止加入

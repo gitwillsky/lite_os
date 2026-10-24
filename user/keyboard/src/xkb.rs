@@ -242,3 +242,46 @@ fn keysym_upper(upper: u8) -> &'static str {
 
 #[cfg(test)]
 mod tests;
+
+/// 将已验证 US keymap 的 XKB modifier masks 还原为共享键盘状态。
+/// `depressed`/`latched`/`locked` 分别来自 wl_keyboard.modifiers；返回当前有效修饰键。
+pub fn modifiers_from_masks(depressed: u32, latched: u32, locked: u32) -> Modifiers {
+    let active = depressed | latched | locked;
+    Modifiers {
+        shift: active & SHIFT != 0,
+        control: active & CONTROL != 0,
+        alt: active & MOD1 != 0,
+        super_key: active & MOD4 != 0,
+        caps: active & LOCK != 0,
+    }
+}
+
+/// US keymap 中允许重复的键；修饰键和 Caps Lock 不重复。
+pub fn repeats(code: u32) -> bool {
+    code <= u32::from(MAX_EVDEV) && !MODIFIER_KEYS.iter().any(|(key, _)| u32::from(*key) == code)
+}
+
+#[cfg(test)]
+mod mask_tests {
+    use super::*;
+    #[test]
+    fn modifier_projection_roundtrips_all_supported_combinations() {
+        for bits in 0..64 {
+            let state = Modifiers {
+                shift: bits & 1 != 0,
+                control: bits & 2 != 0,
+                alt: bits & 4 != 0,
+                super_key: bits & 8 != 0,
+                caps: bits & 16 != 0,
+            };
+            let (depressed, locked) = modifier_masks(state);
+            assert_eq!(modifiers_from_masks(depressed, 0, locked), state);
+        }
+        for code in [29, 42, 54, 56, 58, 97, 100, 125, 126] {
+            assert!(!repeats(code));
+        }
+        for code in [14, 30, 103, 111] {
+            assert!(repeats(code));
+        }
+    }
+}

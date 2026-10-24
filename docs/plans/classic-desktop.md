@@ -48,7 +48,7 @@ Status: Active
 | `classic-theme` | Win2000 视觉事实的唯一 owner：系统颜色、尺寸、字体名、动画时长；同时生成 Wine 前缀的 `Control Panel\Colors` / `Metrics` 注册表，保证 Win32 程序与桌面一致 | 无 |
 | `canvas` | CPU 2D 光栅：填充、立体斜边、渐变、blit、alpha 混合、裁剪 | 无 |
 | `typeface` | 字体加载、字形光栅与缓存、文本测量、CJK 换行 | `swash` |
-| `classic-ui` | 经典控件库：Wayland 客户端窗口、客户端绘制的窗口边框、按钮、编辑框、菜单、ListView、TreeView、滚动条、属性页、对话框、焦点与键盘导航 | `wayland-wire`、`classic-theme`、`canvas`、`typeface`、`keyboard` |
+| `classic-ui` | 经典控件库：Wayland 客户端窗口、客户端绘制的窗口边框、按钮、编辑框、菜单、ListView、TreeView、滚动条、属性页、对话框、焦点与键盘导航 | `wayland-wire`、`classic-theme`、`canvas`、`typeface`、`keyboard`、`linux-uapi` |
 | `keyboard`（保留） | 键盘布局与 keysym；新增导出 XKB keymap 文本 | 无 |
 | `linux-uapi`、`terminal-model`、`terminal-font`（保留） | 不变 | — |
 
@@ -328,9 +328,11 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
   `shell-probe` 只注入运行时门禁，以背景和任务栏控制另一个客户端，验证独占区、键盘焦点、光标、句柄状态与退出清理。
   精确限制由 [当前设备架构](../architecture/devices-terminal.md) 维护。
 - 已知缺口：popup 与 positioner、`wl_data_device`、`wp_viewporter`/`zxdg_output_manager_v1`（Wine 需要）、缩小客户端 scale > 输出 scale。
-- 下一步：`classic-ui` 窗口/输入层，然后 `logon`、`desktop`；之后按 Wine 必需协议补齐。
-
-- 待做：`classic-ui` 的窗口/输入层（Wayland 客户端、焦点与键盘导航、助记符下划线、菜单动画与交互）、黄金截图门禁。
+- `classic-ui` 的 xdg 窗口/输入基础层已实现：真实 shm 帧、HiDPI configure、装饰交互、单行编辑与 Tab 焦点链，
+  `ui-probe` 通过库的公开接口在 guest 中验证控件、输入和窗口管理；协议探针仍独立，避免服务端与客户端共用策略掩盖错误。
+  当前支持范围见 [用户态架构](../architecture/userspace-abi.md)，验证与成本决策见 [Wayland/控件验证](../development/wayland-ui-verification.md)。
+- 下一步：layer-shell 客户端与登录认证/会话权限交接，然后 `logon`、`desktop`；之后按 Wine 必需协议补齐。
+- 待做：助记符下划线、菜单动画与交互、鼠标文本选择、剪贴板/IME，以及完整应用的视觉验收。
 
 ## 风险
 

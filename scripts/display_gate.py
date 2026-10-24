@@ -18,7 +18,7 @@ from pathlib import Path
 from qemu_gate import ANSI, _qemu_command, terminate
 
 ROOT = Path(__file__).resolve().parent.parent
-FATAL = ("panicked at", "[ERROR]", "compositor: error", "xkb-check: ", "wayland-probe: error", "shell-probe: error:")
+FATAL = ("panicked at", "[ERROR]", "compositor: error", "xkb-check: ", "wayland-probe: error", "shell-probe: error:", "ui-probe: error:")
 TIMEOUT_SECONDS = 90
 
 

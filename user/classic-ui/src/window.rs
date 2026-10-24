@@ -1,7 +1,10 @@
 use canvas::Rect;
 use classic_theme::{Edge, SystemColor};
 
-use crate::painter::{Ink, Painter};
+use crate::{
+    ButtonState,
+    painter::{Ink, Painter},
+};
 
 /// 窗口边框种类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -11,6 +14,18 @@ pub enum FrameKind {
     /// 对话框：`EDGE_RAISED` 外加 1 像素面色，共 3 像素。
     Fixed,
 }
+
+impl FrameKind {
+    /// 外框占用的逻辑像素宽度：可缩放窗口 4，对话框 3。
+    pub fn border(self) -> i32 {
+        match self {
+            Self::Resizable => 4,
+            Self::Fixed => 3,
+        }
+    }
+}
+
+pub(crate) const CAPTION_HEIGHT: i32 = 19;
 
 /// 标题栏按钮。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,6 +67,30 @@ const CLOSE: [&str; 7] = [
 /// 标题栏按钮的逻辑尺寸。
 const BUTTON_WIDTH: i32 = 16;
 const BUTTON_HEIGHT: i32 = 14;
+
+pub(crate) fn caption_button_rects(
+    rect: Rect,
+    buttons: &[(CaptionButton, bool)],
+) -> Vec<(CaptionButton, bool, Rect)> {
+    let mut right_edge = rect.right() - 2;
+    let mut areas = Vec::with_capacity(buttons.len());
+    for (index, (button, enabled)) in buttons.iter().enumerate().rev() {
+        if index + 1 < buttons.len()
+            && matches!(button, CaptionButton::Maximize | CaptionButton::Restore)
+        {
+            right_edge -= 2;
+        }
+        let area = Rect::new(
+            right_edge - BUTTON_WIDTH,
+            rect.y + (rect.height - 1 - BUTTON_HEIGHT) / 2,
+            BUTTON_WIDTH,
+            BUTTON_HEIGHT,
+        );
+        areas.push((*button, *enabled, area));
+        right_edge -= BUTTON_WIDTH;
+    }
+    areas
+}
 
 impl Painter<'_> {
     /// 画窗口外框并返回客户区外侧的矩形（外框以内）。
@@ -98,6 +137,7 @@ impl Painter<'_> {
         title: &str,
         active: bool,
         buttons: &[(CaptionButton, bool)],
+        pressed: Option<CaptionButton>,
     ) {
         let bar = Rect::new(rect.x, rect.y, rect.width, rect.height - 1);
         let (left, right, ink) = if active {
@@ -120,23 +160,9 @@ impl Painter<'_> {
             SystemColor::ButtonFace,
         );
 
-        let mut right_edge = bar.right() - 2;
-        let mut leftmost = right_edge;
-        for (index, (button, enabled)) in buttons.iter().enumerate().rev() {
-            // 最小化与最大化紧贴；关闭按钮与它们之间隔 2 像素。
-            if index + 1 < buttons.len()
-                && matches!(button, CaptionButton::Maximize | CaptionButton::Restore)
-            {
-                right_edge -= 2;
-            }
-            let area = Rect::new(
-                right_edge - BUTTON_WIDTH,
-                bar.y + (bar.height - BUTTON_HEIGHT) / 2,
-                BUTTON_WIDTH,
-                BUTTON_HEIGHT,
-            );
-            self.caption_button(area, *button, *enabled);
-            right_edge -= BUTTON_WIDTH;
+        let mut leftmost = bar.right() - 2;
+        for (button, enabled, area) in caption_button_rects(rect, buttons) {
+            self.caption_button(area, button, enabled, pressed == Some(button));
             leftmost = area.x;
         }
 
@@ -147,15 +173,26 @@ impl Painter<'_> {
         self.text(text_x, text_y, &shown, Ink::Color(ink), true);
     }
 
-    fn caption_button(&mut self, area: Rect, button: CaptionButton, enabled: bool) {
-        let face = self.edge(area, Edge::Raised);
-        self.fill(face, SystemColor::ButtonFace);
-        let (glyph, dx, dy): (&[&str], i32, i32) = match button {
+    fn caption_button(&mut self, area: Rect, button: CaptionButton, enabled: bool, pressed: bool) {
+        self.push_button(
+            area,
+            "",
+            ButtonState {
+                pressed: pressed && enabled,
+                disabled: !enabled,
+                ..ButtonState::default()
+            },
+        );
+        let (glyph, mut dx, mut dy): (&[&str], i32, i32) = match button {
             CaptionButton::Minimize => (&MINIMIZE, 4, 9),
             CaptionButton::Maximize => (&MAXIMIZE, 3, 2),
             CaptionButton::Restore => (&RESTORE, 3, 2),
             CaptionButton::Close => (&CLOSE, 4, 3),
         };
+        if pressed && enabled {
+            dx += 1;
+            dy += 1;
+        }
         if enabled {
             self.pixels(area.x + dx, area.y + dy, glyph, SystemColor::ButtonText);
         } else {
