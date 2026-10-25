@@ -12,8 +12,10 @@ from pathlib import Path
 from apk_apps_cache import cached_application_apks
 from build_target import target_from_environment
 from build_cache import (
+    cache_lock,
     fingerprint,
     publish_runtime_gate,
+    prune_apk_images,
     runtime_gate_hit,
     runtime_gate_payload,
     sha256,
@@ -111,7 +113,7 @@ def inject_sqlite_recovery_assets(image: Path, directory: Path) -> None:
 
 
 def install_applications(base_image: Path, directory: Path) -> Path:
-    """在 guest 中用真实 apk transaction 安装固定闭包，并缓存已安装镜像。"""
+    """在 guest 中安装固定闭包；调用者持有 `.installed.lock` 直到所有 consumer 结束。"""
     apks = cached_application_apks()
     install_script = FIXTURES / "install.sh"
     payload = runtime_gate_payload(
@@ -133,6 +135,7 @@ def install_applications(base_image: Path, directory: Path) -> Path:
     installed = WORK / f"installed-{identity}.img"
     stamp = WORK / f"installed-{identity}.json"
     if runtime_gate_hit(stamp, payload, (installed,)):
+        prune_apk_images(WORK, current=installed)
         return installed
 
     WORK.mkdir(parents=True, exist_ok=True)
@@ -183,6 +186,7 @@ def install_applications(base_image: Path, directory: Path) -> Path:
         raise RuntimeError("installed application image retains APK transport archives")
     temporary.replace(installed)
     publish_runtime_gate(stamp, payload)
+    prune_apk_images(WORK, current=installed)
     return installed
 
 
@@ -306,7 +310,12 @@ def main() -> int:
     if not base_image.is_file():
         raise RuntimeError(f"base rootfs image is missing: {base_image}")
 
-    with tempfile.TemporaryDirectory(prefix="liteos-apk-apps-") as temporary:
+    # OWNER: 架构内安装缓存由本 gate 独占；锁也覆盖后续读取与手动淘汰。
+    # PROOF: consumer 结束/异常退出后 with 释放 flock；没有锁会删除另一 gate 正在复制的源。
+    with (
+        cache_lock(WORK / ".installed.lock"),
+        tempfile.TemporaryDirectory(prefix="liteos-apk-apps-") as temporary,
+    ):
         directory = Path(temporary)
         installed = install_applications(base_image, directory)
         if args.build_only:

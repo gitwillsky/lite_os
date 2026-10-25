@@ -34,6 +34,7 @@ from build_cache import (
     publish_directory,
     publish_generation,
     publish_runtime_gate,
+    prune_rootfs_images,
     runtime_gate_hit,
     runtime_gate_payload,
     sha256,
@@ -1666,11 +1667,14 @@ def create_published_image(
             finally:
                 shutil.rmtree(temporary, ignore_errors=True)
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix=".liteos-rootfs-", dir=output.parent) as directory:
-        temporary = Path(directory) / "fs.img"
-        shutil.copyfile(cache / "fs.img", temporary)
-        temporary.replace(output)
+        # OWNER/PROOF: 同一 rootfs 锁覆盖发布、读取与淘汰，consumer 只拿独立副本。
+        # FAILURE: 若复制在锁外，另一个 builder/清理进程可在 copyfile 之前删除源镜像。
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix=".liteos-rootfs-", dir=output.parent) as directory:
+            temporary = Path(directory) / "fs.img"
+            shutil.copyfile(cache / "fs.img", temporary)
+            temporary.replace(output)
+        prune_rootfs_images(WORK, current=cache)
     return output
 
 

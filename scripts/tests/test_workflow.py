@@ -13,6 +13,15 @@ import workflow  # noqa: E402
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_cache_prune_preview_and_apply_use_only_targeted_script(self) -> None:
+        for scope, flags in (("prune-cache-preview", []), ("prune-cache", ["--apply"])):
+            with self.subTest(scope=scope), patch.object(workflow, "run") as run:
+                workflow.dispatch(scope, {"ARCH": "aarch64", "ACCEL": "hvf"})
+                run.assert_called_once()
+                command = run.call_args.args[0]
+                self.assertEqual(Path(command[1]).name, "prune_build_cache.py")
+                self.assertEqual(command[2:], flags)
+
     def test_release_check_builds_matching_boot_artifact_before_static_gates(self) -> None:
         for arch in ("aarch64", "riscv64"):
             with self.subTest(arch=arch), patch.object(workflow, "run") as run:

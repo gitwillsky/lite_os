@@ -44,6 +44,10 @@ unicode-width = "=0.2.2"
 [profile.dev]
 panic = "abort"
 
+# 宿主测试只需要可定位源码的回溯；完整变量调试仍由 dev profile 提供。
+[profile.test]
+debug = "line-tables-only"
+
 [profile.release]
 panic = "abort"
 opt-level = "s"

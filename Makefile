@@ -47,7 +47,8 @@ WORKFLOW := $(PYTHON) scripts/workflow.py
 	verify-runtime-gates verify-runtime-boot verify-runtime-shutdown verify-runtime-audio verify-runtime-gpu verify-runtime-display verify-runtime-wayland verify-runtime-desktop verify-runtime-scheduler \
 	verify-runtime-musl verify-runtime-rust-std \
 	verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-rust-std \
-	verify-busybox verify-apk-apps gdb addr2line diagnose-scheduler-latency
+	verify-busybox verify-apk-apps gdb addr2line diagnose-scheduler-latency \
+	prune-cache prune-cache-preview
 
 setup build-kernel build-bootloader build-musl build-rootfs build-rust-std \
 prepare-rootfs reset-rootfs sync-userland prepare-agent-development \
@@ -57,5 +58,6 @@ verify-riscv64-secondary verify-unit verify-architecture-benchmark \
 verify-architecture-release verify-runtime-gates verify-runtime-boot \
 verify-runtime-shutdown verify-runtime-audio verify-runtime-gpu verify-runtime-display verify-runtime-wayland verify-runtime-desktop verify-runtime-scheduler verify-runtime-musl \
 verify-runtime-rust-std verify-runtime-busybox verify-runtime-apk-apps \
-verify-musl verify-rust-std verify-busybox verify-apk-apps gdb addr2line diagnose-scheduler-latency:
+verify-musl verify-rust-std verify-busybox verify-apk-apps gdb addr2line diagnose-scheduler-latency \
+prune-cache prune-cache-preview:
 	$(WORKFLOW) $@

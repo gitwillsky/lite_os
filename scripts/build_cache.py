@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""为构建 gate 提供内容寻址 manifest、锁和原子发布原语。"""
+"""拥有构建 gate 的内容寻址 manifest、锁、原子发布与镜像保留策略。"""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -81,6 +82,88 @@ def cache_lock(path: Path) -> Iterator[None]:
             yield
         finally:
             fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _expired_images(entries: list[Path], current: Path | None) -> tuple[Path, ...]:
+    """保留当前镜像和最近一份历史；手动清理时保留最近两份。"""
+    ordered = sorted(
+        entries, key=lambda path: (path.stat().st_mtime_ns, path.name), reverse=True,
+    )
+    retained = {current} if current in entries else set()
+    for entry in ordered:
+        if len(retained) >= 2:
+            break
+        retained.add(entry)
+    return tuple(entry for entry in ordered if entry not in retained)
+
+
+def prune_rootfs_images(
+    work: Path, *, current: Path | None = None, dry_run: bool = False,
+) -> tuple[Path, ...]:
+    """淘汰架构目录内两份保留项以外的完整 rootfs 缓存。
+
+    Args:
+        work: BusyBox 的架构工作目录。调用者必须持有其 `.rootfs.lock`，
+            且缓存读取、复制到独立 output 也必须在同一锁内；否则会删除正在读取的缓存。
+        current: 本次已成功发布或命中的缓存目录；即使时间较旧也保留。
+        dry_run: 只返回待删除目录，不修改磁盘。
+
+    Returns:
+        已删除或预览中的目录；临时目录、符号链接和不完整条目不参与淘汰。
+
+    Raises:
+        OSError: 枚举或删除失败。已发布 output 不回滚，余下缓存可在下次重试。
+    """
+    directory = work / "rootfs-images"
+    if not directory.exists():
+        return ()
+    entries = [
+        path for path in directory.iterdir()
+        if re.fullmatch(r"[0-9a-f]{64}", path.name)
+        and not path.is_symlink() and path.is_dir()
+        and (path / "fs.img").is_file() and (path / CACHE_MANIFEST).is_file()
+    ]
+    expired = _expired_images(entries, current)
+    if not dry_run:
+        for path in expired:
+            shutil.rmtree(path)
+    return expired
+
+
+def prune_apk_images(
+    work: Path, *, current: Path | None = None, dry_run: bool = False,
+) -> tuple[Path, ...]:
+    """淘汰两份保留项以外的 APK 安装镜像及其成功 stamp。
+
+    Args:
+        work: APK gate 的架构工作目录。调用者持有 `.installed.lock`，覆盖安装、
+            发布及所有 consumer 的复制/读取；缺少锁会与正在运行的 gate 竞争。
+        current: 本次安装或命中的镜像路径，始终保留。
+        dry_run: 只返回待删除路径，不修改磁盘。
+
+    Returns:
+        已删除或预览中的镜像和 stamp；不匹配命名的文件与符号链接保持原样。
+
+    Raises:
+        OSError: 枚举或删除失败；剩余缓存可重试，缺失镜像不会再命中成功 stamp。
+    """
+    if not work.exists():
+        return ()
+    entries = [
+        path for path in work.glob("installed-*.img")
+        if re.fullmatch(r"installed-[0-9a-f]{64}\.img", path.name)
+        and not path.is_symlink() and path.is_file()
+        and not path.with_suffix(".json").is_symlink()
+        and path.with_suffix(".json").is_file()
+    ]
+    expired = tuple(
+        path for image in _expired_images(entries, current)
+        for path in (image, image.with_suffix(".json"))
+    )
+    if not dry_run:
+        for path in expired:
+            path.unlink()
+    return expired
 
 
 def temporary_directory(parent: Path, label: str) -> Path:

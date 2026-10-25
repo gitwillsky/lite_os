@@ -114,6 +114,25 @@
 也不重建本地签名身份。实际构建仍逐项检查摘要、manifest 和架构；目录迁移不放宽输入验证。
 本地目录不进入架构源码扫描；仓库内有本地修改的 `vendor/smoltcp` 仍属于受版本管理的实现源码。
 
+### 构建缓存空间
+
+- 日常开发保留 Rust incremental；根 workspace 与 `user/` 的 `test` profile 只生成
+  `line-tables-only` 调试信息，保留回溯文件/行号，不保留完整类型与局部变量调试信息。
+  `dev` 不覆盖，因此 `PROFILE=debug` 内核仍保留完整 GDB 调试能力；release 优化与验证基线不变。
+- `build_cache.py` 唯一拥有镜像缓存保留策略：每个架构的 BusyBox rootfs 缓存及 APK 安装镜像
+  各保留两份。构建/命中成功时保留本次使用项和最近一份历史，其余完整镜像与关联 stamp 自动删除。
+  不完整条目、临时目录和符号链接不参与淘汰；缺失历史缓存只触发按固定输入重建。
+- `.rootfs.lock` 同时保护 rootfs 缓存的发布、复制与淘汰，consumer 使用独立副本；
+  `.installed.lock` 保护 APK 安装缓存的完整 gate 生命周期，包含安装、后续读取和淘汰。
+  手动清理使用相同锁，异常退出自动释放；未完整发布的新产物不会触发淘汰。
+- `make prune-cache-preview` 只列出待删除路径与已分配空间；`make prune-cache` 在各架构内
+  保留最近两份并实际清理。不删除 Cargo 编译缓存、sysroot、`target/rootfs/` 当前基线、
+  `fs-*.img` 开发实例、UTM 配置或 `.local/` 输入与实验资料。
+- `make clean` 是完整 Cargo 清理，会删除根 `target/` 中的其他派生产物；日常释放历史镜像空间
+  使用定向清理入口。关闭 `CARGO_INCREMENTAL` 不会删除已有缓存，并会增加后续源码修改的重编译量。
+
+缓存淘汰只在构建发布阶段遍历镜像条目，不进入 kernel/userspace 热路径，无需新增运行时 benchmark。
+
 ## 经典桌面本地素材
 
 这是经典桌面设计阶段的宿主准备流程，不进入产品构建、rootfs 指纹或 runtime gate。

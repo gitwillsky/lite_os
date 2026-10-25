@@ -52,3 +52,8 @@ codegen-units = 1
 panic = "abort"
 opt-level = "s"
 debug-assertions = true
+
+# 宿主测试保留回溯行号，避免每个 fixture 携带完整类型/变量调试信息。
+# 不覆盖 dev：PROFILE=debug 的内核仍可用 GDB 检查变量。
+[profile.test]
+debug = "line-tables-only"

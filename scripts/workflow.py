@@ -663,6 +663,11 @@ def clean(environment: Mapping[str, str] | None = None) -> None:
     run(["cargo", "clean", "--manifest-path", "user/Cargo.toml"], environment=environment)
 
 
+def prune_cache(environment: Mapping[str, str] | None = None, *, apply: bool = False) -> None:
+    """预览或清理历史镜像，保留 Cargo、sysroot、当前基线与开发实例。"""
+    run(python_script("prune_build_cache.py", *(["--apply"] if apply else [])), environment=environment)
+
+
 def clean_musl(environment: Mapping[str, str] | None = None) -> None:
     """清理 musl 构建 cache。"""
     shutil.rmtree(ROOT / "target/musl-runtime", ignore_errors=True)
@@ -675,6 +680,9 @@ def clean_busybox(environment: Mapping[str, str] | None = None) -> None:
 
 def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
     """执行一个公开 workflow scope。"""
+    if scope in {"prune-cache", "prune-cache-preview"}:
+        prune_cache(environment, apply=scope == "prune-cache")
+        return
     simple = {
         "setup": setup_host,
         "build-kernel": build_kernel,
