@@ -86,6 +86,7 @@ class ApkRoutingTests(unittest.TestCase):
                 "20261020-r0",
             ),
             "git-init-template-2.49.1-r0.apk": ("git-init-template", "2.49.1-r0"),
+            "xkeyboard-config-2.43-r0.apk": ("xkeyboard-config", "2.43-r0"),
             "ncurses-terminfo-base-6.5_p20250503-r0.apk": (
                 "ncurses-terminfo-base",
                 "6.5_p20250503-r0",

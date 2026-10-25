@@ -14,6 +14,9 @@
 
 ## 已知缺口
 
+`mmap(MAP_PRIVATE)` 的 regular-file/memfd 读缺页共享 canonical 文件页；首次写入才 COW，
+之后不再反映文件更新。mprotect/fork 保持这一写隔离，truncate 撤销新 EOF 外的 clean 与 COW 页。
+
 `mremap` 搬迁转移 VMA 的全部 owner（resident 页、共享 backing、文件范围）并整体换到新地址，不复制页；旧地址的翻译由同步 fence 封闭，新地址在首次访问时按已有 owner 重新安装。
 共享匿名与共享文件映射增长出的页没有 backing，访问得到 SIGBUS，与 Linux 一致；device 映射不可增长（EFAULT）。
 源范围必须被单个 VMA 完整覆盖，否则 EFAULT；stack 的大小由 stack owner 管理，不可 remap。

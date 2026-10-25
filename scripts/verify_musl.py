@@ -84,7 +84,7 @@ COMPILER_RT_SOURCES = {
 }
 COMPILER_RT_SUPPLEMENT_SYMBOL = "__multc3"
 SOURCE_RECIPE_VERSION = 1
-SYSROOT_RECIPE_VERSION = 4
+SYSROOT_RECIPE_VERSION = 5
 SMOKE_RECIPE_VERSION = 21
 CONFIGURE_ARGUMENTS = (f"--target={TARGET.arch}", "--prefix=/usr", "--syslibdir=/lib")
 COMMON_SMOKE_LINK_ARGUMENTS = (
@@ -217,6 +217,9 @@ def obtain_linux_source() -> Path:
     SOURCE.mkdir(parents=True, exist_ok=True)
     payload = {
         "kind": "linux-uapi-source",
+        # 旧 generation 曾被 in-tree headers_install 写入 generated headers；新 source 必须干净，
+        # 否则 Kbuild 的 VPATH 会复用那些文件并跳过 O= 输出树里的 asm wrapper 生成。
+        "recipe_version": 2,
         "version": LINUX_VERSION,
         "archive_sha256": LINUX_SHA256,
         "strip_components": 1,
@@ -648,10 +651,13 @@ def build_musl(
             env,
         )
         run(make_command(jobs_override), build, env)
+        # Linux 也必须使用独立输出树；否则 headers_install 会改写共享源码，
+        # 并发 worktree 的 generated headers 会互相污染。
         run(
             [
                 str(gmake),
                 *(make_command(jobs_override)[1:]),
+                f"O={build / 'linux-headers'}",
                 f"ARCH={LINUX_HEADER_ARCH}",
                 f"INSTALL_HDR_PATH={generation / 'usr'}",
                 "headers_install",

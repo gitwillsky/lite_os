@@ -30,6 +30,15 @@
 - `FilePageRange` 独占 file mapping checked projection；`PrivateResident` 与 `SharedResident`
   独占各自逻辑映射 record/epoch，`SwappablePage` 唯一拥有用户内容页的物理 backing。
   supervisor frame 不进入该用户页 owner，仍由对应 pinned record 保活。
+- `PrivateBacking::File` 表示尚未 COW 的私有文件页：保活 canonical `SharedPage`，内存文件另持
+  唯一 `PageMappingRef` 登记真实 private alias/installed epoch；磁盘 cache 的固定页不登记 swap alias。
+  File 永不投影为 exclusive，不取得 shared writer claim；否则首个 private 写者会改坏文件内容。
+  read/execute 缺页直接以只读 leaf 映射文件页，首次 write 才沿同一 COW transaction 复制为 User。
+  这与固定 Linux `mm/memory.c` 的 `do_read_fault/do_cow_fault` 一致；提前复制会冻结只读映射，
+  Wine 的 session 对象与键盘共享状态会永远停在旧值。
+  fork 继承相同内容与 epoch，mprotect 保持 File 只读，reclaim/truncate/unmap 在 fence 后释放 alias；
+  swap revoke/unuse 经同一 mapping accessor 覆盖 File，VmSwap 不把未 COW 的 shmem 计作匿名私有页。
+  OOM/IO 先于 leaf publication 返回；COW 保活 source pin 到完整 revoke→make fence 完成，无新增锁或 unsafe。
 - `mm::shootdown::TranslationCommit` 是一次页表 mutation 的唯一 fence-policy owner；它合并 leaf transition 与页区间，其他 module 不得用 bool、cache 或直接 platform call 复制判定。
 - `arch::mmu::THREAD_TRAP_CONTEXT_RANGE` 是静态 placement fact：Sv39 声明 canonical
   high-half 且排除 signal/canonical trap/trampoline，AArch64 为 None（context 归 kernel stack）。
@@ -225,6 +234,8 @@
   capture 且 active=0/pending=true，下次必进慢路 full flush，不能因 seen 位跳过复用失效。
   scoped/full local fence 均在 active/hardware installation 前完成，不替代 mapping mutation fence。
 - shared-file writer claim 必须覆盖远端 stale writable translation 的完整生命周期：增加写权限在 PTE publication 前 acquire，收紧写权限在 remote fence 完成后 release。
+- shared-file resident 缺页恢复若 leaf 已满足访问，必须通过 `TranslationCommit::stale_fault`
+  刷新本 CPU 旧翻译后才返回 Handled；`set_flags` 在权限不变时不记录 fence，否则原指令可能反复缺页。
 - private reclaim 的独占性由真实 `PageMappingRef` 数量而非临时 Arc pin 判定。fence 后
   release replay 消费映射 reference；只有成功取得 page operation 并清空最后一个 private
   backing 才累计物理回收数。达到 target 后保留其余 record，即使 leaf 已撤销，fault 仍可重建。

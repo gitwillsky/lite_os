@@ -212,7 +212,12 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
   libexpat `2.9.0-r0`、pcre2 `10.46-r1`；AArch64 与 RISC-V64 的完整 SHA-256 由
   `scripts/apk_apps_cache.py` 唯一维护，下载后校验 `.PKGINFO` 的 name/version/arch。
   来源：[Alpine v3.22 main](https://dl-cdn.alpinelinux.org/alpine/v3.22/main/)；不跨稳定分支取包。
-- 本项目从官方 AArch64 repository 固定的闭包中，只有 `ca-certificates-bundle`、`git-init-template` 与 `ncurses-terminfo-base` 三个数据包以 `.PKGINFO arch=noarch` 发布；其余闭包必须是 `arch=aarch64`，该语义不是通用 `noarch` 豁免。
+- 本项目从官方 AArch64 repository 固定的闭包中，`ca-certificates-bundle`、`git-init-template`、
+  `ncurses-terminfo-base` 与 Wine 的 `xkeyboard-config-2.43-r0` 数据包以 `.PKGINFO arch=noarch`
+  发布；其余闭包必须是 `arch=aarch64`，该语义不是通用 `noarch` 豁免。XKB 数据来自同一
+  [Alpine v3.22 main](https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/)，SHA-256
+  `d0ba36ffc8d6b8614ec6d7ef5a2ef9edbb6f9016473ae9c077df3d0d9de38049`，
+  abuild commit `4f37a562ee62763122c3f5d5060f2ee6ba0d01ea`；固定包名例外由 `apk_cache.py` 校验。
 - OpenSSL `3.5.7`；commit `8cf17aaeb4599f8af87fefd810b5b5fee90fe69e`；tarball SHA-256 `a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8`。
 - 来源：[Alpine aarch64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/aarch64/)、[Alpine riscv64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/riscv64/)、
   [OpenSSL release](https://github.com/openssl/openssl/releases/tag/openssl-3.5.7)；

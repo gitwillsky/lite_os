@@ -2,7 +2,7 @@
 """Wine 运行时的安装清单：`prebuilt/wine/` 的压缩包加固定的 Alpine 运行时库，供开发镜像同步使用。
 
 1. 压缩包按 `prebuilt/wine/SHA256SUMS` 校验后展开到 `.local/inputs/wine/`（内容寻址，已展开则复用）。
-2. 运行时库来自固定的 Alpine 闭包（每个 APK 的 SHA-256 写在下面）；只取 `.so` 与 fontconfig 的配置，其余（可执行文件、man、头文件）丢弃。
+2. 运行时库来自固定的 Alpine 闭包（每个 APK 的 SHA-256 写在下面）；只取 `.so`、fontconfig 与 XKB 配置，其余（可执行文件、man、头文件）丢弃。
 3. 符号链接一律展开成同内容的普通文件：安装器只写普通文件，musl 按 DT_NEEDED 的 soname 找文件。
 详见 docs/development/wine-runtime.md。
 """
@@ -25,13 +25,15 @@ ROOT = Path(__file__).resolve().parent.parent
 ARCHIVE = ROOT / "prebuilt/wine/wine-11.16-aarch64-musl.tar.xz"
 CHECKSUMS = ROOT / "prebuilt/wine/SHA256SUMS"
 CACHE = INPUTS / "wine"
+# APK 展开是派生产物；每个 worktree 在自己的 target 内构建，只读共享的固定归档。
+LIBRARY_CACHE = ROOT / "target" / "wine-runtime" / ALPINE_ARCH
 INSTALL_ROOT = "/opt/wine"
 LIBRARY_DIRECTORY = "/usr/lib/liteos"
 # 展开后的开发镜像至少需要的容量（MiB）：运行时树约 750 MiB 加库与余量。
 REQUIRED_CAPACITY_MIB = 1792
 
-# Alpine v3.22 aarch64。musl 与 busybox 由系统自己提供，所以不在闭包里；xkeyboard-config 不需要：
-# winewayland 用合成器给出的自包含 keymap 文本，不读取 xkb 数据目录。
+# Alpine v3.22 aarch64。musl 与 busybox 由系统自己提供，所以不在闭包里。
+# winewayland 在监听 wl_keyboard 前必须解析默认 XKB ruleset，不能只安装共享库与 keymap。
 RUNTIME_PACKAGES: tuple[tuple[str, str], ...] = (
     ("alsa-lib-1.2.14-r0.apk", "da15717b4cc87913363bc53dff9c45d6341c84103b18352b208cd727aa8c3d70"),
     ("brotli-libs-1.1.1-r0.apk", "c4ecb26f02ab93c7e41c019c98bf024bd6d90593be308a003bc516806732500e"),
@@ -51,11 +53,12 @@ RUNTIME_PACKAGES: tuple[tuple[str, str], ...] = (
     ("nettle-3.10.2-r0.apk", "be9d47dd38b2f9649a18cd1a3096d3d131427aadfdd95dd380f7d762e6f4036a"),
     ("p11-kit-0.26.2-r0.apk", "401078e81e024616fc61b7f631baeefe33b43865c638a12be5b8e9b20d1e1f88"),
     ("wayland-libs-client-1.23.1-r3.apk", "9481b11de37951462cf26a8309e410346455f67b17f7f2d48f0d2326c522ebee"),
+    ("xkeyboard-config-2.43-r0.apk", "d0ba36ffc8d6b8614ec6d7ef5a2ef9edbb6f9016473ae9c077df3d0d9de38049"),
     ("xz-libs-5.8.4-r0.apk", "8a64b55223f29e24f934ccbc8167d535b913bf923dab5e14de7946a7c36091a7"),
     ("zlib-1.3.2-r1.apk", "2d274cb1b2a36d0e8347d802e6dea8648cab952ea5fae1989ab72e725842a2c3"),
 )
-# fontconfig 的配置目录：缺少它 fontconfig 找不到字体目录与规则，Wine 的字体回退失败。
-CONFIG_PREFIXES = ("etc/fonts/", "usr/share/fontconfig/")
+# 缺 fontconfig 配置会破坏字体回退；缺 XKB 默认 ruleset 会使 Wine 不注册键盘监听。
+CONFIG_PREFIXES = ("etc/fonts/", "usr/share/fontconfig/", "usr/share/X11/xkb/")
 
 
 def expected_archive_digest() -> str:
@@ -90,16 +93,16 @@ def unpack_runtime() -> Path:
 
 
 def extract_libraries() -> Path:
-    """展开固定 APK 闭包里的 `.so` 与 fontconfig 配置，符号链接展开为普通文件；返回展开根目录。"""
+    """展开固定 APK 闭包里的 `.so`、fontconfig 与 XKB 配置，符号链接展开为普通文件；返回展开根目录。"""
     key = sha256_of_names()
-    final = CACHE / f"libraries-{key}"
+    final = LIBRARY_CACHE / f"libraries-{key}"
     if final.is_dir():
         return final
-    CACHE.mkdir(parents=True, exist_ok=True)
-    with cache_lock(CACHE / ".lock"):
+    LIBRARY_CACHE.mkdir(parents=True, exist_ok=True)
+    with cache_lock(LIBRARY_CACHE / ".lock"):
         if final.is_dir():
             return final
-        temporary = temporary_directory(CACHE, "libraries")
+        temporary = temporary_directory(LIBRARY_CACHE, "libraries")
         for name, digest in RUNTIME_PACKAGES:
             archive = download(name, digest)
             with tarfile.open(archive, "r:gz") as tree:
@@ -144,7 +147,7 @@ def resolve_member(members: dict[str, tarfile.TarInfo], member: tarfile.TarInfo)
 
 
 def wine_userland() -> tuple[UserlandArtifact, ...]:
-    """Wine 运行时的全部安装文件：`/opt/wine` 整树、`/usr/lib/liteos` 下的依赖库与 `/etc/fonts` 配置。
+    """Wine 安装清单：`/opt/wine`、`/usr/lib/liteos` 依赖库、fontconfig 与 XKB 数据。
 
     Raises:
         RuntimeError: 目标架构没有运行时（只有 aarch64 构建了 Wine），或压缩包缺失/校验失败。

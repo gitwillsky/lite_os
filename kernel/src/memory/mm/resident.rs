@@ -5,11 +5,11 @@ use crate::memory::{
     frame_allocator::FrameTracker,
     page_table::PagePermissions,
     permissions::MapPermission,
-    shared_file::SharedFrame,
+    shared_file::{SharedFrame, SharedPage, SharedPagePin},
     swappable_page::{PageMappingRef, PagePin, SwappablePage},
 };
 
-/// Private/shared-anonymous mapping metadata; physical swap content belongs to canonical Page.
+/// Private/shared-anonymous mapping metadata; physical content belongs to its canonical owner.
 #[derive(Debug, Clone)]
 pub(super) struct PrivateResident {
     pub(super) backing: PrivateBacking,
@@ -22,11 +22,17 @@ pub(super) struct PrivateResident {
 pub(super) enum PrivateBacking {
     Pinned(Arc<FrameTracker>),
     User(PageMappingRef),
+    /// 未 COW 的文件页；保活 storage page，不能因只有一个 private alias 而原地放宽写权限。
+    File {
+        page: Arc<dyn SharedPage>,
+        mapping: Option<PageMappingRef>,
+    },
 }
 
 pub(super) enum PrivatePagePin<'a> {
     Pinned(&'a FrameTracker),
     User(PagePin<'a>),
+    Cached(&'a SharedFrame),
 }
 
 impl PrivatePagePin<'_> {
@@ -34,6 +40,24 @@ impl PrivatePagePin<'_> {
         match self {
             Self::Pinned(frame) => frame.ppn,
             Self::User(pin) => pin.ppn(),
+            Self::Cached(frame) => frame.ppn(),
+        }
+    }
+
+    pub(super) fn copy_frame(&self) -> Option<FrameTracker> {
+        match self {
+            Self::Pinned(frame) => crate::memory::frame_allocator::alloc_copy(frame.bytes()),
+            Self::User(pin) => pin.copy_frame(),
+            Self::Cached(frame) => frame.copy_frame(),
+        }
+    }
+}
+
+impl<'a> From<SharedPagePin<'a>> for PrivatePagePin<'a> {
+    fn from(pin: SharedPagePin<'a>) -> Self {
+        match pin {
+            SharedPagePin::Cached(frame) => Self::Cached(frame),
+            SharedPagePin::Swappable(pin) => Self::User(pin),
         }
     }
 }
@@ -61,11 +85,51 @@ impl PrivateResident {
         }
     }
 
+    /// 私有文件的首次 read/execute 共享内容，保留只读 leaf，直到 write fault 才 COW。
+    pub(super) fn file(page: &Arc<dyn SharedPage>, pin: &SharedPagePin<'_>) -> Self {
+        Self {
+            backing: PrivateBacking::File {
+                page: page.clone(),
+                mapping: match pin {
+                    SharedPagePin::Swappable(pin) => Some(
+                        page.swappable()
+                            .expect("memory file page owner")
+                            .mapping(pin, true),
+                    ),
+                    SharedPagePin::Cached(_) => None,
+                },
+            },
+            discardable: false,
+            dirty: false,
+        }
+    }
+
     pub(super) fn mapping(&self) -> Option<&PageMappingRef> {
         match &self.backing {
             PrivateBacking::Pinned(_) => None,
             PrivateBacking::User(mapping) => Some(mapping),
+            PrivateBacking::File { mapping, .. } => mapping.as_ref(),
         }
+    }
+
+    pub(super) fn mapping_mut(&mut self) -> Option<&mut PageMappingRef> {
+        match &mut self.backing {
+            PrivateBacking::Pinned(_) => None,
+            PrivateBacking::User(mapping) => Some(mapping),
+            PrivateBacking::File { mapping, .. } => mapping.as_mut(),
+        }
+    }
+
+    pub(super) fn mark_installed(&mut self, pin: &PrivatePagePin<'_>) {
+        if let PrivatePagePin::User(pin) = pin {
+            self.mapping_mut()
+                .expect("swappable pin must have a logical mapping")
+                .mark_installed(pin);
+        }
+    }
+
+    pub(super) fn is_file_backed(&self) -> bool {
+        matches!(self.backing, PrivateBacking::File { .. })
     }
 
     pub(super) fn is_installed(&self) -> bool {
@@ -76,31 +140,40 @@ impl PrivateResident {
         match &self.backing {
             PrivateBacking::Pinned(frame) => Arc::strong_count(frame) == 1,
             PrivateBacking::User(mapping) => mapping.private_exclusive(),
+            PrivateBacking::File { .. } => false,
         }
     }
 
     pub(super) fn pin_resident(&self) -> Result<Option<PrivatePagePin<'_>>, MemoryError> {
-        match &self.backing {
-            PrivateBacking::Pinned(frame) => Ok(Some(PrivatePagePin::Pinned(frame))),
-            PrivateBacking::User(mapping) => Ok(mapping
+        if let Some(mapping) = self.mapping() {
+            return Ok(mapping
                 .page()
                 .pin_resident()?
                 .filter(|pin| mapping.installed_on(pin))
-                .map(PrivatePagePin::User)),
+                .map(PrivatePagePin::User));
+        }
+        match &self.backing {
+            PrivateBacking::Pinned(frame) => Ok(Some(PrivatePagePin::Pinned(frame))),
+            PrivateBacking::File { page, .. } => Ok(Some(page.pin()?.into())),
+            PrivateBacking::User(_) => unreachable!("user backing must have a logical mapping"),
         }
     }
 
     pub(super) fn pinned_frame(&self) -> &Arc<FrameTracker> {
         match &self.backing {
             PrivateBacking::Pinned(frame) => frame,
-            PrivateBacking::User(_) => panic!("user frame is not pinned"),
+            PrivateBacking::User(_) | PrivateBacking::File { .. } => {
+                panic!("user frame is not pinned")
+            }
         }
     }
 
     pub(super) fn pinned_frame_mut(&mut self) -> &mut Arc<FrameTracker> {
         match &mut self.backing {
             PrivateBacking::Pinned(frame) => frame,
-            PrivateBacking::User(_) => panic!("user frame is not pinned"),
+            PrivateBacking::User(_) | PrivateBacking::File { .. } => {
+                panic!("user frame is not pinned")
+            }
         }
     }
 
@@ -112,13 +185,16 @@ impl PrivateResident {
                 .bytes_mut()[offset..offset + input.len()]
                 .copy_from_slice(input),
             PrivateBacking::User(mapping) => mapping.page().pin()?.write(offset, input),
+            PrivateBacking::File { .. } => {
+                panic!("file content requires COW before initialization")
+            }
         }
         Ok(())
     }
 
     pub(super) fn release_for_reclaim(self) -> bool {
         match self.backing {
-            PrivateBacking::Pinned(_) => false,
+            PrivateBacking::Pinned(_) | PrivateBacking::File { .. } => false,
             PrivateBacking::User(mapping) => mapping.discard(),
         }
     }
