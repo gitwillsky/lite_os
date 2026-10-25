@@ -415,6 +415,25 @@ impl Server {
         });
     }
 
+    /// 全部连接的弹出层，附带所属连接；位置相对各自根窗口 surface。
+    pub fn popups(&self) -> Vec<(ClientId, super::popup::PopupView<'_>)> {
+        self.connections
+            .iter()
+            .flat_map(|connection| {
+                connection
+                    .client
+                    .popups()
+                    .into_iter()
+                    .map(move |view| (connection.id, view))
+            })
+            .collect()
+    }
+
+    /// 点击了弹出层之外：让 `client` 的 grab 弹出层结束。
+    pub fn dismiss_grabbed_popups(&mut self, client: ClientId) {
+        self.with_client(client, |client| client.dismiss_grabbed_popups());
+    }
+
     /// 取走全部连接的光标请求。
     pub fn take_cursor_requests(&mut self) -> Vec<(ClientId, CursorRequest)> {
         let mut all = Vec::new();

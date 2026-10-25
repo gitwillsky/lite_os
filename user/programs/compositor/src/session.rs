@@ -349,6 +349,30 @@ impl Session {
     }
 
     /// 指针下最上面的 surface：Overlay、Top 层，然后是应用窗口，最后是 Bottom、Background 层。
+    /// 弹出层的命中：位置相对根窗口，最后创建的（最上面的）优先。
+    fn popup_hit(&self, point: (i32, i32)) -> Option<Hit> {
+        let scale = self.scale as i32;
+        self.server
+            .popups()
+            .into_iter()
+            .rev()
+            .find_map(|(client, popup)| {
+                let root = self.stack.placement(client, popup.client_root)?;
+                let factor = factor(self.scale, popup.scale);
+                let (x, y) = (root.x + popup.x * scale, root.y + popup.y * scale);
+                let (width, height) = (
+                    popup.content.width as i32 * factor,
+                    popup.content.height as i32 * factor,
+                );
+                ((x..x + width).contains(&point.0) && (y..y + height).contains(&point.1)).then_some(
+                    Hit {
+                        target: (client, popup.surface),
+                        origin: (x, y),
+                    },
+                )
+            })
+    }
+
     fn hit_test(&self, boxes: &[LayerBox], point: (i32, i32)) -> Option<Hit> {
         if self.secure_pending {
             return None;
@@ -368,6 +392,7 @@ impl Session {
                 })
         };
         layer_hit(&|layer| layer >= Layer::Top)
+            .or_else(|| self.popup_hit(point))
             .or_else(|| {
                 self.stack.window_at(point.0, point.1).map(|placed| Hit {
                     target: (placed.client, placed.surface),
@@ -502,6 +527,19 @@ impl Session {
                 if code == BUTTON_LEFT && !pressed && self.grab.is_some() {
                     self.end_grab()?;
                 } else if code == BUTTON_LEFT && pressed {
+                    // 点在弹出层之外：持有 grab 的弹出层结束（客户端随后销毁它们）。
+                    let point = self.input.pointer().position();
+                    if self.popup_hit(point).is_none() {
+                        let clients: Vec<ClientId> = self
+                            .server
+                            .popups()
+                            .into_iter()
+                            .map(|(client, _)| client)
+                            .collect();
+                        for client in clients {
+                            self.server.dismiss_grabbed_popups(client);
+                        }
+                    }
                     // 单击应用窗口：激活并置顶。外壳 surface 不是窗口，点击它不改变活动窗口。
                     let point = self.input.pointer().position();
                     let boxes = self.layer_boxes();
@@ -1382,11 +1420,24 @@ impl Session {
             .layers()
             .map(|(client, layer)| ((client, layer.surface), (layer.content, layer.scale)))
             .collect();
-        let window_images: HashMap<(ClientId, ObjectId), (&crate::wayland::Content, i32)> = self
+        let window_images: HashMap<
+            (ClientId, ObjectId),
+            (
+                &crate::wayland::Content,
+                i32,
+                Vec<crate::wayland::ChildView<'_>>,
+            ),
+        > = self
             .server
             .windows()
-            .map(|(client, window)| ((client, window.surface), (window.content, window.scale)))
+            .map(|(client, window)| {
+                (
+                    (client, window.surface),
+                    (window.content, window.scale, window.children),
+                )
+            })
             .collect();
+        let popup_views = self.server.popups();
         let output_scale = self.scale;
         let layer_drawable = |layer: &LayerBox| {
             let (content, scale) = layer_images.get(&(layer.client, layer.surface))?;
@@ -1407,19 +1458,57 @@ impl Session {
             .iter()
             .filter(|placed| !placed.minimized)
             .filter_map(|placed| {
-                let (content, scale) = window_images.get(&(placed.client, placed.surface))?;
-                Some(Drawable {
+                let (content, scale, children) =
+                    window_images.get(&(placed.client, placed.surface))?;
+                // 窗口本体先画，子 surface 按位置压在它上面。
+                let body = Drawable {
                     x: placed.x,
                     y: placed.y,
                     content,
                     factor: factor(output_scale, *scale),
-                })
-            });
+                };
+                let output = output_scale as i32;
+                let subsurfaces = children.iter().map(move |child| Drawable {
+                    x: placed.x + child.x * output,
+                    y: placed.y + child.y * output,
+                    content: child.content,
+                    factor: factor(output_scale, child.scale),
+                });
+                Some(std::iter::once(body).chain(subsurfaces))
+            })
+            .flatten();
+        let popups: Vec<Drawable<'_>> = popup_views
+            .iter()
+            .filter_map(|(client, popup)| {
+                let root = self.stack.placement(*client, popup.client_root)?;
+                if root.minimized {
+                    return None;
+                }
+                let output = output_scale as i32;
+                let (x, y) = (root.x + popup.x * output, root.y + popup.y * output);
+                let body = Drawable {
+                    x,
+                    y,
+                    content: popup.content,
+                    factor: factor(output_scale, popup.scale),
+                };
+                Some(
+                    std::iter::once(body).chain(popup.children.iter().map(move |child| Drawable {
+                        x: x + child.x * output,
+                        y: y + child.y * output,
+                        content: child.content,
+                        factor: factor(output_scale, child.scale),
+                    })),
+                )
+            })
+            .flatten()
+            .collect();
         let above = boxes
             .iter()
             .filter(|layer| layer.layer >= Layer::Top)
             .filter_map(layer_drawable);
-        let drawables: Vec<Drawable<'_>> = below.chain(windows).chain(above).collect();
+        let drawables: Vec<Drawable<'_>> =
+            below.chain(windows).chain(popups).chain(above).collect();
         let (theme, scale) = (&self.theme, self.scale as i32);
         let (art, switcher, menu) = (
             self.switcher_art.as_ref(),

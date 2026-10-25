@@ -33,6 +33,12 @@ pub struct Surface {
     pub cursor: bool,
     /// 已通知客户端进入输出（`wl_surface.enter`）。
     pub entered: bool,
+    /// `wp_viewport` 的裁剪与缩放；缺少它 Wine 的全屏缩放无法生效。
+    pub viewport: super::viewport::ViewportState,
+    /// 子 surface 的角色状态；有它的 surface 随父绘制。
+    pub subsurface: Option<super::subsurface::Subsurface>,
+    /// 子 surface 列表，自底向上。
+    pub children: Vec<ObjectId>,
 }
 
 impl Surface {

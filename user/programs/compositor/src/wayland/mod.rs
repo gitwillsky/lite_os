@@ -12,11 +12,14 @@ mod client;
 mod clipboard;
 mod foreign;
 mod layer;
+mod popup;
 mod seat;
 mod security;
 mod server;
 mod shm;
+mod subsurface;
 mod surface;
+mod viewport;
 mod xdg;
 
 pub use client::Client;
@@ -31,6 +34,7 @@ pub mod layer_edges {
 }
 pub use seat::CursorRequest;
 pub use server::{ClientId, Server};
+pub use subsurface::ChildView;
 pub use surface::Content;
 pub use xdg::{ToplevelState, Window, WindowRequest};
 

@@ -14,6 +14,8 @@ use super::{
 pub struct XdgSurface {
     pub surface: ObjectId,
     pub toplevel: Option<ObjectId>,
+    /// `xdg_popup` 角色对象。
+    pub popup: Option<ObjectId>,
     /// 已发出、尚未被 `ack_configure` 确认的序号，按发送顺序。
     pub outstanding: Vec<u32>,
     /// 客户端是否至少确认过一次 configure；之前 commit 带 buffer 是协议错误。
@@ -85,6 +87,8 @@ pub struct Window<'a> {
     pub content: &'a Content,
     /// `wl_surface.set_buffer_scale`：内容的物理像素与逻辑像素之比。
     pub scale: i32,
+    /// 挂在这个窗口下的子 surface，自底向上。
+    pub children: Vec<super::ChildView<'a>>,
 }
 
 impl Client {
@@ -109,9 +113,7 @@ impl Client {
                 }
                 Ok(())
             }
-            xdg_wm_base::Request::CreatePositioner { id } => {
-                self.create(id, Interface::XdgPositioner, version, Data::None)
-            }
+            xdg_wm_base::Request::CreatePositioner { id } => self.create_positioner(id, version),
             xdg_wm_base::Request::GetXdgSurface { id, surface } => {
                 let state = self.surface_mut(surface)?;
                 if state.xdg.is_some() || state.layer.is_some() || state.cursor {
@@ -124,6 +126,7 @@ impl Client {
                 let xdg = XdgSurface {
                     surface,
                     toplevel: None,
+                    popup: None,
                     outstanding: Vec::new(),
                     acked: false,
                     initial_sent: false,
@@ -137,7 +140,7 @@ impl Client {
         }
     }
 
-    fn xdg_surface_mut(&mut self, object: ObjectId) -> Result<&mut XdgSurface, Fail> {
+    pub(super) fn xdg_surface_mut(&mut self, object: ObjectId) -> Result<&mut XdgSurface, Fail> {
         match self.objects.get_mut(&object.get()) {
             Some(Entry {
                 data: Data::XdgSurface(xdg),
@@ -193,11 +196,11 @@ impl Client {
                 self.xdg_surface_mut(object)?.toplevel = Some(id);
                 Ok(())
             }
-            xdg_surface::Request::GetPopup { .. } => Err(Fail::new(
-                ObjectId::DISPLAY,
-                wayland_wire::protocol::wl_display::Error::Implementation as u32,
-                "xdg_popup is not supported yet",
-            )),
+            xdg_surface::Request::GetPopup {
+                id,
+                parent,
+                positioner,
+            } => self.get_popup(object, version, id, parent, positioner),
             xdg_surface::Request::SetWindowGeometry { width, height, .. } => {
                 if width < 0 || height < 0 {
                     return Err(Fail::new(
@@ -338,6 +341,9 @@ impl Client {
         let Some(xdg) = self.surface_mut(surface)?.xdg else {
             return Ok(());
         };
+        if self.xdg_surface_mut(xdg)?.popup.is_some() {
+            return self.popup_after_commit(xdg);
+        }
         let xdg_state = self.xdg_surface_mut(xdg)?;
         let Some(toplevel) = xdg_state.toplevel.filter(|_| !xdg_state.initial_sent) else {
             return Ok(());
@@ -442,6 +448,7 @@ impl Client {
                 app_id: &toplevel.app_id,
                 content: surface.content.as_ref()?,
                 scale: surface.scale,
+                children: self.subtree(xdg.surface),
             })
         })
     }

@@ -37,6 +37,9 @@ def managed_path(path: str) -> bool:
     """只接受同步器拥有的规范绝对路径，拒绝父目录跳转。"""
     if not path.startswith("/") or str(PurePosixPath(path)) != path or ".." in PurePosixPath(path).parts:
         return False
+    # Wine 运行时（--wine）：整棵 /opt/wine 与 fontconfig 配置由同步器拥有，缺少它旧版本的文件撤不掉。
+    if path.startswith(("/opt/wine/", "/etc/fonts/", "/usr/share/fontconfig/")):
+        return True
     if path.startswith("/usr/lib/liteos/") or (path.startswith("/etc/ld-musl-") and path.endswith(".path")):
         return True
     # 同步器拥有 user/base 下全部桌面条目的安装位置；缺少它，新增的条目装不进也撤不掉。
@@ -311,6 +314,11 @@ def main() -> int:
     """将当前目标的系统文件同步到指定开发镜像。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", type=Path, required=True)
+    parser.add_argument(
+        "--wine",
+        action="store_true",
+        help="同时安装 Wine 运行时（/opt/wine 约 770 MiB，会先把镜像扩到足够容量）",
+    )
     arguments = parser.parse_args()
     image = arguments.image.resolve()
     if not image.is_file():
@@ -321,6 +329,14 @@ def main() -> int:
     artifacts = base_userland(cached_musl_paths(compiler))
     # 同一个固定 BusyBox ELF 以标准 applet 名安装，旧开发镜像无需替换 init 或覆盖账户数据。
     artifacts += tuple(UserlandArtifact(binary, f"/bin/{name}", 0o755) for name in ACCOUNT_APPLETS)
+    if arguments.wine:
+        # 同一份清单里要么有 Wine 要么没有：不带 --wine 的同步会按指纹把已安装的 Wine 撤掉，
+        # 所以开发镜像始终用同一个选择同步。
+        from ext4_image import ensure_ext4_capacity
+        from wine_runtime import REQUIRED_CAPACITY_MIB, wine_userland
+
+        ensure_ext4_capacity(image, REQUIRED_CAPACITY_MIB)
+        artifacts += wine_userland()
     synchronize(image, artifacts)
     return 0
 

@@ -210,6 +210,27 @@ pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
 /// # Returns
 ///
 /// 成功返回零；fd、range、RLIMIT_FSIZE、空间或 I/O 错误返回负 errno。
+/// `fadvise64(fd, offset, len, advice)`：只校验参数，不改变缓存行为（advice 本来就只是提示）。
+///
+/// # Errors
+///
+/// fd 无效返回 `EBADF`，管道/FIFO/socket 返回 `ESPIPE`，advice 不在 0..=5 返回 `EINVAL`。
+pub(crate) fn sys_fadvise64(fd: usize, advice: usize) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let Some(ofd) = task.fd_get(fd) else {
+        return -errno::EBADF;
+    };
+    if !matches!(ofd.kind, OpenFileKind::Inode) {
+        return -errno::ESPIPE;
+    }
+    if advice > 5 {
+        return -errno::EINVAL;
+    }
+    0
+}
+
 pub(crate) fn sys_fallocate(fd: usize, mode: usize, offset: i64, length: i64) -> isize {
     if mode != 0 {
         return -errno::EOPNOTSUPP;

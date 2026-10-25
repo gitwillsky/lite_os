@@ -197,6 +197,7 @@ pub const SYSCALL_PIDFD_SEND_SIGNAL: usize = 424;
 pub const SYSCALL_PIDFD_GETFD: usize = 438;
 pub const SYSCALL_EXECVE: usize = 221;
 pub const SYSCALL_MMAP: usize = 222;
+pub const SYSCALL_FADVISE64: usize = 223;
 pub const SYSCALL_SWAPON: usize = 224;
 pub const SYSCALL_SWAPOFF: usize = 225;
 pub const SYSCALL_GETRANDOM: usize = 278;

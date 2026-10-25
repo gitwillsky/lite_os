@@ -209,6 +209,38 @@ impl TaskControlBlock {
         Ok(())
     }
 
+    /// `prctl(PR_SET_NAME)`：把进程名换成 `name`（至多 15 字节，遇 NUL 截断）。
+    ///
+    /// Linux 的名称属于线程；本内核的 comm 只有一份进程级 owner（`/proc/<pid>/comm` 与
+    /// `/proc/<pid>/task/<tid>/comm` 共读它），所以同一进程里最后一次设置生效。
+    ///
+    /// # Errors
+    ///
+    /// Vec backing OOM 时返回 `MemoryError::OutOfMemory`，名称不变。
+    pub(crate) fn set_comm(&self, name: &[u8]) -> Result<(), MemoryError> {
+        let length = name.iter().position(|byte| *byte == 0).unwrap_or(name.len()).min(15);
+        let mut comm = Vec::new();
+        comm.try_reserve_exact(length)
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        comm.extend_from_slice(&name[..length]);
+        let retired = core::mem::replace(&mut *self.process().comm.lock(), comm);
+        drop(retired);
+        Ok(())
+    }
+
+    /// `prctl(PR_GET_NAME)` 的 16 字节 NUL 填充名称。
+    ///
+    /// # Errors
+    ///
+    /// 快照分配失败返回 `MemoryError::OutOfMemory`。
+    pub(crate) fn comm_buffer(&self) -> Result<[u8; 16], MemoryError> {
+        let snapshot = self.process().comm_snapshot()?;
+        let mut buffer = [0u8; 16];
+        let length = snapshot.len().min(15);
+        buffer[..length].copy_from_slice(&snapshot[..length]);
+        Ok(buffer)
+    }
+
     /// get_task_mm 的真实 main ELF path；kernel/退出 Thread 无 mm，不读 sibling 或 zombie Process 的影子资源。
     pub(crate) fn process_executable(
         &self,

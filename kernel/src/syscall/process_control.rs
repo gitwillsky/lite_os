@@ -6,6 +6,8 @@ use crate::{
 const PR_SET_PDEATHSIG: u32 = 1;
 const PR_GET_PDEATHSIG: u32 = 2;
 const PR_GET_DUMPABLE: u32 = 3;
+const PR_SET_NAME: u32 = 15;
+const PR_GET_NAME: u32 = 16;
 const PR_SET_DUMPABLE: u32 = 4;
 const PR_GET_SECCOMP: u32 = 21;
 const PR_SET_SECCOMP: u32 = 22;
@@ -42,6 +44,21 @@ pub(crate) fn sys_prctl(option: usize, argument: usize, remaining: [usize; 3]) -
                 .expect("dumpability prctl requires current Thread")
                 .set_user_dumpable(argument != 0);
             0
+        }
+        PR_SET_NAME => {
+            let task = current_task().expect("prctl requires current task");
+            let mut name = [0u8; 16];
+            if task.copy_from_user(argument, &mut name).is_err() {
+                return -errno::EFAULT;
+            }
+            task.set_comm(&name).map_or(-errno::ENOMEM, |()| 0)
+        }
+        PR_GET_NAME => {
+            let task = current_task().expect("prctl requires current task");
+            match task.comm_buffer() {
+                Ok(name) => task.copy_to_user(argument, &name).map_or(-errno::EFAULT, |()| 0),
+                Err(_) => -errno::ENOMEM,
+            }
         }
         PR_GET_SECCOMP => super::seccomp::get_mode(),
         option @ (7 | 8 | 23 | 24 | 27 | 28 | 47) => current_task()

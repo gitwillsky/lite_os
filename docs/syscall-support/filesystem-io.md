@@ -36,6 +36,7 @@
 | 43 | `statfs` | Complete | mounted/pseudo filesystem 同 inode projection |
 | 44 | `fstatfs` | Complete | 所有 OFD 的真实 inode filesystem projection（pipefs/sockfs/anon_inodefs/shmem 区分） |
 | 46 | `ftruncate` | Complete | 实际 regular inode 与各 filesystem 截断策略；page cache/mapping invalidation、memfd seal；proc 更新时间且保留固定 size/control value |
+| 223 | `fadvise64` | Partial | 校验 fd 与 advice 后返回成功；不影响 page cache（提示不改变语义）；非 inode OFD 返回 `ESPIPE` |
 | 47 | `fallocate` | Partial | mode 0 space reservation |
 | 48 | `faccessat` | Partial | current credential 与已声明 flags |
 | 49 | `chdir` | Complete | opened directory publication |

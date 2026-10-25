@@ -23,7 +23,7 @@
 | 157 | `setsid` | Complete | session/process-group transaction |
 | 158 | `getgroups` | Complete | calling Thread immutable sorted group snapshot；size=0 不分配 |
 | 159 | `setgroups` | Complete | calling Thread privileged immutable group publication；逐元素错误顺序 |
-| 167 | `prctl` | Partial | parent-death signal、共享 MM dumpability 0/1、NNP/seccomp、keepcaps/securebits/bounding/ambient capability operations |
+| 167 | `prctl` | Partial | `PR_SET_NAME`/`PR_GET_NAME`（进程级 comm，与 `/proc/<pid>/comm` 同一 owner，同进程内最后一次设置生效）、parent-death signal、共享 MM dumpability 0/1、NNP/seccomp、keepcaps/securebits/bounding/ambient capability operations |
 | 172 | `getpid` | Complete | TGID |
 | 173 | `getppid` | Complete | process graph parent |
 | 174 | `getuid` | Complete | real UID |

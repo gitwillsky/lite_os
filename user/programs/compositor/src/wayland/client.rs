@@ -84,6 +84,10 @@ pub(super) enum Data {
     LayerSurface(LayerSurface),
     SecurityContext(super::security::Context),
     DataSource(super::clipboard::DataSource),
+    Viewport(super::viewport::Viewport),
+    Subsurface(ObjectId),
+    Positioner(super::popup::Positioner),
+    Popup(super::popup::Popup),
     ForeignHandle(ForeignHandle),
 }
 
@@ -94,7 +98,7 @@ pub(super) struct Entry {
 }
 
 /// 向客户端公布的全局对象：`(name, 接口, 最高版本)`。
-const GLOBALS: [(u32, Interface, u32); 8] = [
+const GLOBALS: [(u32, Interface, u32); 11] = [
     (1, Interface::WlCompositor, 6),
     (2, Interface::WlShm, 1),
     (3, Interface::XdgWmBase, 3),
@@ -107,6 +111,11 @@ const GLOBALS: [(u32, Interface, u32); 8] = [
     (9, Interface::WpCursorShapeManagerV1, 2),
     // 剪贴板：只有选择，没有拖放。
     (10, Interface::WlDataDeviceManager, 3),
+    // 视口：裁剪与缩放在提交时完成。
+    (11, Interface::WpViewporter, 1),
+    (12, Interface::WlSubcompositor, 1),
+    // 输出的逻辑位置与尺寸（物理尺寸除以 scale）；Wine 用它决定全屏窗口大小。
+    (13, Interface::ZxdgOutputManagerV1, 3),
 ];
 
 /// 初始 Session 与通过 security-context 委派的 Shell 可见的全局对象：
@@ -384,7 +393,8 @@ impl Client {
             AnyRequest::XdgWmBase(request) => self.xdg_wm_base(object, version, request),
             AnyRequest::XdgSurface(request) => self.xdg_surface(object, version, request),
             AnyRequest::XdgToplevel(request) => self.xdg_toplevel(object, request),
-            AnyRequest::XdgPositioner(_) => Ok(()),
+            AnyRequest::XdgPositioner(request) => self.positioner(object, request),
+            AnyRequest::XdgPopup(request) => self.xdg_popup(object, request),
             AnyRequest::WlSeat(request) => self.seat(object, version, request),
             AnyRequest::WlPointer(request) => self.pointer(object, request),
             AnyRequest::WlKeyboard(_) => Ok(()),
@@ -396,6 +406,14 @@ impl Client {
             AnyRequest::ZwlrForeignToplevelHandleV1(request) => {
                 self.foreign_handle(object, request)
             }
+            AnyRequest::ZxdgOutputManagerV1(request) => {
+                self.xdg_output_manager(object, version, request)
+            }
+            AnyRequest::ZxdgOutputV1(_) => Ok(()),
+            AnyRequest::WlSubcompositor(request) => self.subcompositor(object, version, request),
+            AnyRequest::WlSubsurface(request) => self.subsurface(object, request),
+            AnyRequest::WpViewporter(request) => self.viewporter(object, version, request),
+            AnyRequest::WpViewport(request) => self.viewport(object, request),
             AnyRequest::WlDataDeviceManager(request) => {
                 self.data_device_manager(object, version, request)
             }
@@ -640,6 +658,7 @@ impl Client {
         use wl_surface::Request as R;
         match request {
             R::Destroy => {
+                self.detach_subsurface(object);
                 // 未呈现的 frame callback 随 surface 一起回收，否则客户端的 id 永远无法复用。
                 let surface = self.surface_mut(object)?;
                 let orphans: Vec<ObjectId> = surface
@@ -719,6 +738,7 @@ impl Client {
     }
 
     fn commit(&mut self, object: ObjectId) -> Result<(), Fail> {
+        self.apply_child_positions(object);
         self.xdg_check_commit(object)?;
         let layer_before = self.layer_state(object);
         self.layer_check_commit(object)?;
@@ -768,6 +788,7 @@ impl Client {
                 wl_buffer::Event::Release.encode(buffer, &mut self.writer)?;
             }
         }
+        self.apply_viewport(object, choice.is_some_and(|buffer| buffer.is_some()))?;
         if choice == Some(None) {
             self.layer_unmap(object);
         } else {
@@ -778,7 +799,97 @@ impl Client {
 }
 
 impl Client {
+    /// 提交时让视口生效：换上待生效的源/目标，必要时从原始缓冲重新取样。
+    ///
+    /// `fresh` 表示本次提交带来了新缓冲（`surface.content` 就是原始像素）。
+    fn apply_viewport(&mut self, object: ObjectId, fresh: bool) -> Result<(), Fail> {
+        let surface = self.surface_mut(object)?;
+        let viewport = &mut surface.viewport;
+        let changed = viewport.pending.is_some();
+        if let Some((source, destination)) = viewport.pending.take() {
+            viewport.source = source;
+            viewport.destination = destination;
+        }
+        if !viewport.active() {
+            // 视口被取消：恢复原始缓冲。
+            if let Some(raw) = viewport.raw.take() {
+                surface.content = Some(raw);
+            }
+            return Ok(());
+        }
+        if !fresh && !changed {
+            return Ok(());
+        }
+        let base = if fresh {
+            surface.content.take()
+        } else {
+            viewport.raw.take()
+        };
+        let Some(base) = base else {
+            return Ok(());
+        };
+        let scale = surface.scale;
+        let resampled = surface.viewport.resample(&base, scale);
+        match resampled {
+            Ok(content) => {
+                surface.viewport.raw = Some(base);
+                surface.content = Some(content);
+                Ok(())
+            }
+            Err(code) => {
+                let object_id = surface.viewport.object.unwrap_or(object);
+                Err(Fail::new(
+                    object_id,
+                    code,
+                    "invalid viewport for the attached buffer",
+                ))
+            }
+        }
+    }
+
     /// `wl_output` 绑定后依次宣告几何、模式、scale、名字与 `done`；字段按绑定版本取舍。
+    fn xdg_output_manager(
+        &mut self,
+        _object: ObjectId,
+        version: u32,
+        request: wayland_wire::protocol::zxdg_output_manager_v1::Request,
+    ) -> Result<(), Fail> {
+        use wayland_wire::protocol::{
+            zxdg_output_manager_v1 as manager, zxdg_output_v1 as output_events,
+        };
+        let manager::Request::GetXdgOutput { id, .. } = request else {
+            return Ok(());
+        };
+        self.create(id, Interface::ZxdgOutputV1, version, Data::None)?;
+        let Output {
+            width,
+            height,
+            scale,
+        } = self.output;
+        let events = &mut self.writer;
+        output_events::Event::LogicalPosition { x: 0, y: 0 }.encode(id, events)?;
+        output_events::Event::LogicalSize {
+            width: width / scale.max(1),
+            height: height / scale.max(1),
+        }
+        .encode(id, events)?;
+        if version >= 2 {
+            output_events::Event::Name {
+                name: "LITEOS-1".into(),
+            }
+            .encode(id, events)?;
+            output_events::Event::Description {
+                description: "LiteOS virtual display".into(),
+            }
+            .encode(id, events)?;
+        }
+        // `done` 在 v3 起弃用，由 wl_output.done 代替。
+        if version < 3 {
+            output_events::Event::Done.encode(id, events)?;
+        }
+        Ok(())
+    }
+
     fn announce_output(&mut self, output: ObjectId, version: u32) -> Result<(), Fail> {
         let Output {
             width,

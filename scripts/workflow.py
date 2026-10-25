@@ -178,7 +178,12 @@ def sync_userland(environment: Mapping[str, str] | None = None, *, size_mib: str
     """构建 musl、准备开发镜像并增量同步系统文件。"""
     build_musl(environment)
     prepare_rootfs(environment, size_mib=size_mib)
-    run(python_script("sync_userland.py", "--image", target_paths(environment)["fs"]), environment=environment)
+    arguments = ["--image", target_paths(environment)["fs"]]
+    # 只有 AArch64 构建了 Wine 运行时；`LITEOS_WINE=0` 可以跳过它（镜像里已装的 Wine 随之被撤掉）。
+    source = os.environ if environment is None else environment
+    if target_from_environment(source).arch == "aarch64" and source.get("LITEOS_WINE", "1") != "0":
+        arguments.append("--wine")
+    run(python_script("sync_userland.py", *arguments), environment=environment)
 
 
 def build_apk_apps(environment: Mapping[str, str] | None = None) -> None:

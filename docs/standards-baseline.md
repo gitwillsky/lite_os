@@ -162,6 +162,8 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
   `bb57d91e53a79dadab7c612dab87c233393cee73673feefa7442cfbfdd9aed2f`，以及它引用 `zwp_tablet_tool_v2` 所需的
   `stable/tablet/tablet-v2.xml` SHA-256 `3ea2783210086dfddef3994fec974f46a00cf175c06efdd8ea47c3007f812a80`；XML 原样 vendored，
   compositor 只公布 cursor-shape，不公布平板全局对象，请求 `get_tablet_tool_v2` 是协议错误。
+- 同一 wayland-protocols `1.45` 提交的 `unstable/xdg-output/xdg-output-unstable-v1.xml`（v3）SHA-256
+  `363d547c3eefe8959160cac903ff90b311d4b183005557d73640d9df2cfd7f79`；XML 原样 vendored。
 - wlr-protocols commit `bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a`：`unstable/wlr-layer-shell-unstable-v1.xml`（v5）SHA-256
   `87e0b9c837aecd6977f76f3c47d73088b7159871f5d979dc1840f6cadb5e2ed8`；
   `unstable/wlr-foreign-toplevel-management-unstable-v1.xml`（v3）SHA-256
