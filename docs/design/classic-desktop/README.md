@@ -8,6 +8,7 @@
 | [appearance.md](appearance.md) | 系统颜色、尺寸度量、字体、立体边框绘制规则、HiDPI |
 | [boot-logon.md](boot-logon.md) | 开机、登录、注销、关机的画面序列与文案 |
 | [shell.md](shell.md) | 桌面、任务栏、开始菜单、托盘与系统对话框 |
+| [explorer.md](explorer.md) | 资源管理器、我的电脑、控制面板的布局、交互与范围缩减 |
 | [interaction.md](interaction.md) | 逐条验收的交互清单 |
 | [assets.md](assets.md) | 素材清单（文件名、1x/2x 尺寸、语义）与生成规则 |
 

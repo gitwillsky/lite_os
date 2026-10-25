@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Date/Time
+Name[zh_CN]=日期/时间
+Exec=/bin/control-panel datetime
+Icon=date-time
+Categories=Settings;
+Terminal=false

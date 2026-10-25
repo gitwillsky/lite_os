@@ -7,6 +7,10 @@ name = "boot-scene"
 version = "0.1.0"
 
 [[package]]
+name = "calendar"
+version = "0.1.0"
+
+[[package]]
 name = "canvas"
 version = "0.1.0"
 
@@ -39,23 +43,41 @@ dependencies = [
 ]
 
 [[package]]
+name = "control-panel"
+version = "0.1.0"
+dependencies = [
+ "calendar",
+ "canvas",
+ "classic-theme",
+ "classic-ui",
+ "typeface",
+]
+
+[[package]]
 name = "desktop"
 version = "0.1.0"
 dependencies = [
  "canvas",
  "classic-theme",
  "classic-ui",
+ "desktop-entry",
  "linux-uapi",
  "typeface",
 ]
 
 [[package]]
+name = "desktop-entry"
+version = "0.1.0"
+
+[[package]]
 name = "file-explorer"
 version = "0.1.0"
 dependencies = [
+ "calendar",
  "canvas",
  "classic-theme",
  "classic-ui",
+ "desktop-entry",
  "typeface",
 ]
 

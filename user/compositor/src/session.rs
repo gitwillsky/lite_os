@@ -6,7 +6,7 @@ use std::{
     os::{fd::AsFd, unix::net::UnixStream},
     path::Path,
     process::Child,
-    time::Instant,
+    time::{Duration, Instant},
 };
 
 use classic_theme::Theme;
@@ -18,6 +18,7 @@ use linux_uapi::{
 use wayland_wire::wire::ObjectId;
 
 use crate::{
+    boot::{self, Progress},
     compose::{self, Drawable},
     cursor::{self, CursorSet},
     desktop::{Geometry, Mode, Stack},
@@ -79,6 +80,27 @@ enum Shape {
     },
 }
 
+/// 启动画面阶段的状态：画面数据、进度，以及上一次计时与最后一次画出的值。
+struct BootScreen {
+    scene: Vec<u8>,
+    progress: Progress,
+    last_tick: Instant,
+    painted: u16,
+}
+
+/// 建立会话所需的全部已就绪部件。
+pub struct Parts {
+    pub scanout: Scanout,
+    pub input: Input,
+    pub server: Server,
+    pub theme: Theme,
+    pub scale: u32,
+    pub cursors: CursorSet,
+    pub hardware_cursor: DumbBuffer,
+    /// `LBS1` 启动画面数据。
+    pub boot_scene: Vec<u8>,
+}
+
 pub struct Session {
     scanout: Scanout,
     input: Input,
@@ -103,7 +125,7 @@ pub struct Session {
     seat: Seat,
     grab: Option<ActiveGrab>,
     /// 第一个窗口或外壳 surface 出现之前一直显示启动画面；缺少它，空桌面会盖掉内核交接的画面。
-    desktop_shown: bool,
+    boot: Option<BootScreen>,
     dirty: bool,
     commits_seen: u64,
     /// 已映射的外壳 surface 数；变化时打印一行，运行时门禁据此确认外壳已上屏。
@@ -120,23 +142,15 @@ impl Session {
     /// # Errors
     ///
     /// 缺少 `arrow` 光标，或硬件光标更新失败。
-    pub fn new(
-        scanout: Scanout,
-        input: Input,
-        server: Server,
-        theme: Theme,
-        scale: u32,
-        cursors: CursorSet,
-        hardware_cursor: DumbBuffer,
-    ) -> io::Result<Self> {
+    pub fn new(parts: Parts) -> io::Result<Self> {
         let mut session = Self {
-            scanout,
-            input,
-            server,
-            theme,
-            scale,
-            cursors,
-            hardware_cursor,
+            scanout: parts.scanout,
+            input: parts.input,
+            server: parts.server,
+            theme: parts.theme,
+            scale: parts.scale,
+            cursors: parts.cursors,
+            hardware_cursor: parts.hardware_cursor,
             shape: Shape::Default,
             last_pointer_focus: None,
             keyboard_layer: None,
@@ -146,7 +160,12 @@ impl Session {
             stack: Stack::default(),
             seat: Seat::default(),
             grab: None,
-            desktop_shown: false,
+            boot: Some(BootScreen {
+                scene: parts.boot_scene,
+                progress: Progress::new(boot::HANDOFF_PERMILLE),
+                last_tick: Instant::now(),
+                painted: boot::HANDOFF_PERMILLE,
+            }),
             dirty: false,
             commits_seen: 0,
             layers_seen: 0,
@@ -173,6 +192,44 @@ impl Session {
         )?);
         println!("compositor: shell started {}", program.display());
         Ok(())
+    }
+
+    /// 真实的启动里程碑达成：进度条的目标提高到 `permille`（不会降低）。
+    pub fn boot_milestone(&mut self, permille: u16) {
+        if let Some(boot) = &mut self.boot
+            && boot.progress.raise_target(permille)
+        {
+            println!("compositor: boot milestone {permille}");
+        }
+    }
+
+    /// 启动画面阶段每个循环做一次：推进显示值、重绘进度条，走满且外壳有内容时结束这一阶段。
+    ///
+    /// # Returns
+    ///
+    /// 仍在追赶目标时返回下一次需要的唤醒间隔（用作 poll 超时）。
+    fn step_boot(&mut self, shell_visible: bool) -> io::Result<Option<Duration>> {
+        let Some(boot) = &mut self.boot else {
+            return Ok(None);
+        };
+        let now = Instant::now();
+        let elapsed = now.duration_since(std::mem::replace(&mut boot.last_tick, now));
+        boot.progress.advance(elapsed.as_secs_f32());
+        let flip_busy = self.scanout.flip_pending();
+        if boot.progress.permille() != boot.painted && !flip_busy {
+            boot::paint(self.scanout.back(), &boot.scene, boot.progress.permille())
+                .map_err(io::Error::other)?;
+            boot.painted = boot.progress.permille();
+            self.scanout.request_flip()?;
+        } else if boot.progress.complete() && boot.painted == 1000 && !flip_busy && shell_visible {
+            // 外壳已经有内容、进度条也走满并已上屏：交给桌面合成。
+            self.boot = None;
+            self.dirty = true;
+            println!("compositor: boot complete");
+            return Ok(None);
+        }
+        let waiting = boot.progress.animating() || boot.progress.permille() != boot.painted;
+        Ok(waiting.then_some(Duration::from_millis(16)))
     }
 
     pub fn input_devices(&self) -> usize {
@@ -280,7 +337,14 @@ impl Session {
     pub fn run(mut self) -> io::Result<()> {
         let mut events = Vec::new();
         loop {
-            if self.dirty && self.desktop_shown && !self.scanout.flip_pending() {
+            let shell_visible =
+                !self.stack.windows().is_empty() || self.server.layers().next().is_some();
+            if shell_visible {
+                // 外壳第一个 surface 出现：这是启动完成的真实信号。
+                self.boot_milestone(1000);
+            }
+            let timeout = self.step_boot(shell_visible)?;
+            if self.dirty && self.boot.is_none() && !self.scanout.flip_pending() {
                 self.present()?;
                 self.dirty = false;
             }
@@ -294,7 +358,7 @@ impl Session {
                         .map(|device| PollFd::new(device.file().as_fd(), PollEvents::READ)),
                 );
                 descriptors.extend(self.server.descriptors());
-                poll(&mut descriptors, None)?;
+                poll(&mut descriptors, timeout)?;
                 let returned: Vec<PollEvents> = descriptors.iter().map(PollFd::returned).collect();
                 let ready = |events: &PollEvents| events.contains(PollEvents::READ);
                 (
@@ -517,7 +581,6 @@ impl Session {
                 );
             }
         }
-        self.desktop_shown |= !self.stack.windows().is_empty() || layer_count > 0;
         let commits = self.server.commits();
         if commits != self.commits_seen {
             self.commits_seen = commits;

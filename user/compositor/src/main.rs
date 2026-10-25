@@ -69,13 +69,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     .map_err(|error| format!("{}: {error}", socket.display()))?;
     println!("compositor: wayland ready {}", socket.display());
 
-    let mut session =
-        session::Session::new(scanout, input, server, theme, scale, cursors, hardware)?;
+    let mut session = session::Session::new(session::Parts {
+        scanout,
+        input,
+        server,
+        theme,
+        scale,
+        cursors,
+        hardware_cursor: hardware,
+        boot_scene,
+    })?;
     println!(
         "compositor: input ready devices={} scale={scale}",
         session.input_devices()
     );
+    // 里程碑：本进程初始化完成 → 外壳拉起；外壳第一个 surface 上屏后由会话推进到 100%。
+    session.boot_milestone(600);
     session.spawn_shell(Path::new(SHELL))?;
+    session.boot_milestone(800);
     Ok(session.run()?)
 }
 

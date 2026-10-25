@@ -27,7 +27,12 @@ PE_FILES = (
     "mmsys.cpl", "sysdm.cpl", "main.cpl", "timedate.cpl", "taskmgr.exe",
     "cmd.exe", "sndvol32.exe", "mydocs.dll", "moricons.dll", "comctl32.dll",
     "desk.cpl", "netplwiz.dll", "mplayer2.exe", "stobject.dll",
+    # 资源管理器的工具栏位图、文件夹/搜索/历史图标与菜单位图。
+    "browseui.dll", "shdocvw.dll",
 )
+# 只为取工具栏位图而加入的 DLL：其中个别资源可能是损坏/非标准图标，跳过并记警告，
+# 不影响上面逐图核对的核心素材。
+OPTIONAL_PE = {"browseui.dll", "shdocvw.dll"}
 # 资源号来自这份安装介质的资源目录及逐图核对，不是 shell icon 的零起始索引。
 ICONS = {
     "my-computer": ("shell32.dll", 16),
@@ -41,6 +46,10 @@ ICONS = {
     "file-app": ("shell32.dll", 3),
     "drive-hdd": ("shell32.dll", 9),
     "drive-cd": ("shell32.dll", 12),
+    "drive-floppy": ("shell32.dll", 6),
+    "drive-network": ("shell32.dll", 10),
+    "printers": ("shell32.dll", 138),
+    "file-system": ("shell32.dll", 153),
     "control-panel": ("shell32.dll", 137),
     "programs": ("shell32.dll", 20),
     "documents": ("shell32.dll", 21),
@@ -78,7 +87,13 @@ BITMAPS = {
     "boot-scene": ("ntoskrnl.exe", 1),
     "logon-banner": ("msgina.dll", 101),
     "start-banner": ("explorer.exe", 157),
+    # 资源管理器工具栏：默认（灰阶）/ 悬停（彩色）/ 禁用三条 47 帧 20×20 横条，洋红为透明色。
+    "toolbar-default": ("browseui.dll", 272),
+    "toolbar-hot": ("browseui.dll", 273),
+    "toolbar-disabled": ("browseui.dll", 276),
 }
+# 这些位图用 #FF00FF 表示透明，转 PNG 时换成 alpha 0。
+COLOR_KEYED = {"toolbar-default", "toolbar-hot", "toolbar-disabled"}
 # HIVEDEF.INF 的默认 AppEvents 配置；logoff 是独立提供的注销素材。
 SOUNDS = {
     "logon": "logon.wav", "logoff": "logoff.wav",
@@ -193,16 +208,22 @@ def extract(iso: Path, output: Path) -> dict:
         # 校验全部导出帧，包括未映射资源。wrestool 的资源长度警告不能替代实际解码检查。
         for path in resources.rglob("*"):
             if path.suffix in {".ico", ".cur", ".bmp"}:
-                if path.suffix in {".ico", ".cur"}:
-                    # 容器由资源重建，不是 PE 的原始文件；只拷贝目录引用的 payload。
-                    # 缺少此边界，wrestool 的未引用尾部可能携带进程内存，使哈希不可复现。
-                    path.write_bytes(icon_container(path.read_bytes()))
-                with Image.open(path) as image:
-                    if path.suffix == ".ico":
-                        for size in image.ico.sizes():
-                            image.ico.getimage(size).load()
-                    else:
-                        image.load()
+                try:
+                    if path.suffix in {".ico", ".cur"}:
+                        # 容器由资源重建，不是 PE 的原始文件；只拷贝目录引用的 payload。
+                        # 缺少此边界，wrestool 的未引用尾部可能携带进程内存，使哈希不可复现。
+                        path.write_bytes(icon_container(path.read_bytes()))
+                    with Image.open(path) as image:
+                        if path.suffix == ".ico":
+                            for size in image.ico.sizes():
+                                image.ico.getimage(size).load()
+                        else:
+                            image.load()
+                except (ValueError, OSError) as error:
+                    if path.parent.name not in OPTIONAL_PE:
+                        raise
+                    warnings.append(f"{path.name}: skipped ({error})")
+                    path.unlink()
 
         logical: dict[str, dict] = {kind: {} for kind in ("icons", "cursors", "bitmaps", "sounds", "fonts")}
 
@@ -247,7 +268,11 @@ def extract(iso: Path, output: Path) -> dict:
             path = resource(source, 2, number, "bmp")
             dest = bitmap_dir / f"{name}-1x.png"
             with Image.open(path) as image:
-                image.convert("RGBA").save(dest)
+                rgba = image.convert("RGBA")
+                if name in COLOR_KEYED:
+                    rgba.putdata([(0, 0, 0, 0) if px[:3] == (255, 0, 255) else px
+                                  for px in rgba.get_flattened_data()])
+                rgba.save(dest)
                 size = list(image.size)
             record("bitmaps", name, [path, dest], size=size, source=source, resource=number)
         for name, filename in SOUNDS.items():

@@ -13,11 +13,8 @@ pub enum Purpose {
     PasswordChange,
 }
 
-pub fn authenticate(
-    name: &str,
-    password: &str,
-    purpose: Purpose,
-) -> io::Result<Option<SessionUser>> {
+/// 读取并解析账户文件；`today` 是自 epoch 起的天数。
+fn load(name: &str, purpose: Purpose) -> io::Result<Option<(SessionUser, String)>> {
     let passwd = fs::read_to_string("/etc/passwd")?;
     let shadow = fs::read_to_string("/etc/shadow")?;
     let group = fs::read_to_string("/etc/group")?;
@@ -26,8 +23,15 @@ pub fn authenticate(
         .map_err(io::Error::other)?
         .as_secs()
         / 86400;
-    let account = parse(&passwd, &shadow, &group, name, today, purpose);
-    let Some((user, hash)) = account else {
+    Ok(parse(&passwd, &shadow, &group, name, today, purpose))
+}
+
+pub fn authenticate(
+    name: &str,
+    password: &str,
+    purpose: Purpose,
+) -> io::Result<Option<SessionUser>> {
+    let Some((user, hash)) = load(name, purpose)? else {
         return Ok(None);
     };
     // 空 shadow 字段表示未设密码，只接受空输入；锁定标记由 parse 拒绝，不与空字段混同。
@@ -37,6 +41,16 @@ pub fn authenticate(
         linux_uapi::credentials::verify(password, &hash)?
     };
     Ok(matched.then_some(user))
+}
+
+/// 账户存在、允许登录且 shadow 口令字段为空：登录不需要输入口令，所以不该弹出登录对话框。
+///
+/// 账户文件不可读或账户被锁定、过期时返回 `false`（照常走带对话框的路径，由认证给出明确错误）。
+pub fn passwordless(name: &str) -> bool {
+    load(name, Purpose::Login)
+        .ok()
+        .flatten()
+        .is_some_and(|(_, hash)| hash.is_empty())
 }
 
 fn parse(
@@ -186,6 +200,30 @@ mod tests {
                 .is_none()
             );
         }
+    }
+    #[test]
+    fn only_an_existing_loginable_account_with_an_empty_hash_is_passwordless() {
+        let is = |shadow: &str, name: &str| {
+            parse(PASSWD, shadow, "", name, 150, Purpose::Login)
+                .is_some_and(|(_, hash)| hash.is_empty())
+        };
+        assert!(is(&shadow("", "100", "100", ""), "alice"));
+        assert!(
+            !is(&shadow("$6$salt$hash", "100", "100", ""), "alice"),
+            "has a password"
+        );
+        assert!(
+            !is(&shadow("!", "100", "100", ""), "alice"),
+            "locked is not passwordless"
+        );
+        assert!(
+            !is(&shadow("", "100", "100", "150"), "alice"),
+            "expired accounts are not logged in silently"
+        );
+        assert!(
+            !is(&shadow("", "100", "100", ""), "nobody"),
+            "unknown accounts are not passwordless"
+        );
     }
     #[test]
     fn minimum_change_age_restricts_password_change_without_blocking_login() {

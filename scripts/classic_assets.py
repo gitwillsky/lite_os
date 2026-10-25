@@ -15,7 +15,7 @@ from local_inputs import INPUTS
 ROOT = Path(__file__).resolve().parents[1]
 ORIGINAL_BOOT_SCENE = INPUTS / "windows2000/packed/boot-scene.lbs"
 DEFAULT_BOOT_SCENE = ROOT / "assets/classic/boot-scene.lbs"
-# 原版光标带 AND/XOR 掩码，需要 compositor 的软件光标路径后才能选用；在此之前只有仓库原创光标集。
+ORIGINAL_CURSORS = INPUTS / "windows2000/packed/cursors.lcs"
 DEFAULT_CURSORS = ROOT / "assets/classic/cursors.lcs"
 
 
@@ -25,12 +25,17 @@ def boot_scene() -> Path:
 
 
 def cursors() -> Path:
-    """返回本次构建使用的 `LCS1` 光标集。"""
-    return DEFAULT_CURSORS
+    """返回本次构建使用的 `LCS1` 光标集：本地原版默认方案已打包则用它，否则用仓库默认。"""
+    return ORIGINAL_CURSORS if ORIGINAL_CURSORS.is_file() else DEFAULT_CURSORS
 
 
 def shell_bitmaps() -> tuple[Path, ...]:
-    """按名称选择 BMP V4：显式打包的本地原版优先，缺失项使用已提交默认。"""
+    """按名称选择 BMP V4：显式打包的本地原版优先，其余用已提交默认。
+
+    工具栏条与部分文件类型图标只有原版（仓库不提交），所以结果是两个目录按文件名的并集；
+    使用方对缺失的这类素材按“无图标”处理，而不是回退到另一份图。
+    """
     original = INPUTS / "windows2000/packed/ui"
-    return tuple(original / path.name if (original / path.name).is_file() else path
-                 for path in sorted((ROOT / "assets/classic/ui").glob("*.bmp")))
+    chosen = {path.name: path for path in (ROOT / "assets/classic/ui").glob("*.bmp")}
+    chosen.update({path.name: path for path in original.glob("*.bmp")})
+    return tuple(chosen[name] for name in sorted(chosen))

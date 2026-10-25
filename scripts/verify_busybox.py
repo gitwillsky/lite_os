@@ -1188,6 +1188,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(build_rust_user_program(musl, crate, binary, binary, 1), f"/bin/{binary}", 0o755)
         for crate, binary in (("compositor", "compositor"), ("logon", "logon"),
                               ("desktop", "desktop"), ("file-explorer", "file-explorer"),
+                              ("control-panel", "control-panel"),
                               ("linux-uapi", "session-launch"))
     )
     fonts = tuple(UserlandArtifact(ROOT / "assets/fonts" / name, f"/usr/share/liteos/fonts/{name}")
@@ -1203,6 +1204,8 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(cursors(), "/usr/share/liteos/cursors.lcs"),
         UserlandArtifact(ROOT / "user/base/display-service", "/etc/init.d/display-service", 0o755),
         UserlandArtifact(ROOT / "user/base/file-explorer.desktop", "/usr/share/applications/file-explorer.desktop"),
+        UserlandArtifact(ROOT / "user/base/control-system.desktop", "/usr/share/applications/control-system.desktop"),
+        UserlandArtifact(ROOT / "user/base/control-datetime.desktop", "/usr/share/applications/control-datetime.desktop"),
         *programs, *fonts, *ui,
     )
 

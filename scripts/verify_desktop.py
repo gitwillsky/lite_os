@@ -15,6 +15,14 @@ from verify_musl import cached_musl_paths, find_compiler, run
 from verify_wayland import install_files, pointer_to, button, tap, wait_screen, DESKTOP_BACKGROUND
 ROOT = Path(__file__).resolve().parents[1]
 RECIPE_VERSION = 1
+# 资源管理器第一行的选中底色（Hilight）与它在 640×480 默认窗口里的位置；
+# 实测：窗口从 (40, 40) 起，选中底色从 x=261 开始，y=178 在首行文字上缘之上、不受字形影响。
+SELECTED = (10, 36, 106)
+EXPLORER_FIRST_ROW = (262, 178)
+# 托盘音量面板（64×150，贴在任务栏上方、图标正上方）内部一点：打开时是面板底色。
+VOLUME_PANEL_SAMPLE_OPEN = ((1140, 700), (212, 208, 200))
+# 开始菜单"运行"行的中心：7 行 36 高、一道 10 高的分隔，贴在 28 高任务栏之上，行起点 3 像素边框。
+START_MENU_RUN = 800 - 28 - (7 * 36 + 10 + 6) + 3 + 3 * 36 + 18
 HASH = '$6$liteosgate$MPmkcnoQup38yUQqVGwvFD/ys0EdwXn6gehqNbbruY47MWei35CocL0OE23dNvHpj4di0WX/acm6/cp0cgsAp.'
 
 
@@ -58,6 +66,12 @@ def click(session, x: int, y: int) -> None:
     button(session, False)
 
 
+def right_click(session, x: int, y: int) -> None:
+    pointer_to(session, x, y)
+    button(session, True, 'right')
+    button(session, False, 'right')
+
+
 def type_text(session, text: str) -> None:
     for char in text:
         if char.islower() or char.isdigit(): tap(session, char)
@@ -71,7 +85,8 @@ def install(image: Path, directory: Path, volume_probe: Path) -> None:
     files = {
         '/etc/passwd': (ROOT / 'user/base/passwd').read_text() + 'alice:x:1000:100:Alice:/home/alice:/bin/sh\nbob:x:1001:100:Bob:/home/bob:/bin/sh\n',
         '/etc/group': (ROOT / 'user/base/group').read_text() + 'users:x:100:\nvideo:x:44:alice\n',
-        '/etc/shadow': (ROOT / 'user/base/shadow').read_text() + f'alice:{HASH}:1:0:99999:7:::\nbob:{HASH}:1:0:99999:7:::\n',
+        # 产品默认的 root 没有口令，开机即自动登录；本门禁要走完整的密码登录，所以给 root 设同一口令。
+        '/etc/shadow': (ROOT / 'user/base/shadow').read_text().replace('root::', f'root:{HASH}:') + f'alice:{HASH}:1:0:99999:7:::\nbob:{HASH}:1:0:99999:7:::\n',
         '/etc/inittab': (ROOT / 'user/base/inittab').read_text() + '\n::once:/bin/sh /var/tmp/check-desktop\n::once:/bin/volume-check\n',
         '/home/alice/readme.txt': 'Desktop session fixture\n',
     }
@@ -116,34 +131,43 @@ def wait_security(session) -> None:
 def check_session(session) -> None:
     console = session.console
     print('desktop gate: identity checked; testing applications and taskbar', flush=True)
-    # 图标启动实际文件浏览器；任务按钮最小化、激活同一窗口。
+    # 图标启动实际资源管理器（主目录显示为"我的文档"）；任务按钮最小化、激活同一窗口。
     click(session, 42, 43)
     click(session, 42, 43)
-    console.wait_for(('compositor: window "文件资源管理器"',))
+    console.wait_for(('compositor: window "我的文档"',))
     wait_screen(session, [((200, 200), (255, 255, 255))], 'file explorer')
-    tap(session, 'ret')
-    wait_screen(session, [((400, 145), (255, 255, 255))], 'new window keyboard focus')
-    tap(session, 'backspace')
-    wait_screen(session, [((400, 145), (10, 36, 106))], 'preview back to directory')
+    # 列表第一行的选中底色只出现在键盘事件送达之后。
+    tap(session, 'down')
+    wait_screen(session, [(EXPLORER_FIRST_ROW, SELECTED)], 'new window keyboard focus')
+    # 删除先确认；确认后条目离开列表（真实移入回收站），首行底色消失。
+    tap(session, 'delete')
+    wait_screen(session, [((360, 300), (212, 208, 200))], 'delete confirmation')
+    tap(session, 'y')
+    wait_screen(session, [(EXPLORER_FIRST_ROW, (255, 255, 255))], 'deleted item leaves the list')
     click(session, 190, 786)
     wait_screen(session, [((200, 200), DESKTOP_BACKGROUND)], 'taskbar minimize')
     click(session, 190, 786)
     wait_screen(session, [((200, 200), (255, 255, 255))], 'taskbar restore')
-    tap(session, 'ret')
-    wait_screen(session, [((400, 145), (255, 255, 255))], 'taskbar activation keyboard focus')
+    # 向上进入 /home：选择被清除，说明恢复后的窗口重新拿到键盘焦点。
     tap(session, 'backspace')
-    wait_screen(session, [((400, 145), (10, 36, 106))], 'taskbar activation preserves directory')
-    # 非 root 没有原始音频设备权限时仍可打开说明窗口，不能因此终止桌面。
-    click(session, 1160, 786)
+    wait_screen(session, [(EXPLORER_FIRST_ROW, (255, 255, 255))], 'taskbar activation keyboard focus')
+    # 非 root 没有原始音频设备权限：单击托盘喇叭弹出面板（不是窗口），Esc 关闭；右键菜单才打开完整音量窗口。
+    click(session, 1162, 786)
+    wait_screen(session, [VOLUME_PANEL_SAMPLE_OPEN], 'restricted volume popup')
+    tap(session, 'esc')
+    wait_screen(session, [(VOLUME_PANEL_SAMPLE_OPEN[0], DESKTOP_BACKGROUND)], 'volume popup closes')
+    right_click(session, 1162, 786)
+    wait_screen(session, [((1050, 774), (212, 208, 200))], 'tray context menu')
+    click(session, 1050, 774)
     console.wait_for(('compositor: window "音量控制"',))
     wait_screen(session, [((200,200),(212,208,200))], 'restricted volume window')
     tap(session, 'esc')
     wait_screen(session, [((200,200),(255,255,255))], 'restricted volume close')
     # 实际 Run 对话框启动后台进程；随后注销必须终止它。
     click(session, 25, 786)
-    wait_screen(session, [((245, 520), (212, 208, 200))], 'start menu mapped')
-    # 一个安装的程序入口之后，第 4 个固定菜单项是运行。
-    click(session, 110, 772 - (8 * 32 + 8) + 4 + 4 * 32 + 16)
+    wait_screen(session, [((180, 620), (212, 208, 200))], 'start menu mapped')
+    # 开始菜单自上而下：程序、文档、设置、运行；运行行 36 高，菜单贴在任务栏上方。
+    click(session, 110, START_MENU_RUN)
     console.wait_for(('compositor: window "运行"',))
     type_text(session, '/bin/sleep 9999')
     tap(session, 'ret')
@@ -215,6 +239,7 @@ def check_session(session) -> None:
     tap(session, 'ctrl', 'a')
     type_text(session, 'root')
     tap(session, 'tab')
+    type_text(session, 'desktop42')
     tap(session, 'ret')
     console.wait_for(('logon: unlocked',), after=mark)
     wait_screen(session, [((200, 200), (255,255,255))], 'administrator unlock preserves alice session')
@@ -237,16 +262,19 @@ def check_volume(session) -> None:
     tap(session, 'ctrl', 'a')
     type_text(session, 'root')
     tap(session, 'tab')
-    type_text(session, 'notempty')
+    type_text(session, 'wrong')
     tap(session, 'ret')
     console.wait_for(('logon: authentication rejected',), after=mark)
     tap(session, 'ret')
     time.sleep(1.1)
+    type_text(session, 'desktop42')
     tap(session, 'ret')
     console.wait_for(('logon: authenticated uid=0', 'logon: desktop ready'), after=mark)
     console.wait_for(('VOLUME_CONTROL_OK',))
     wait_screen(session, [((1000, 780), (212, 208, 200)), ((1200, 400), DESKTOP_BACKGROUND)], 'root desktop first frame')
-    click(session, 1160, 786)
+    right_click(session, 1162, 786)
+    wait_screen(session, [((1050, 774), (212, 208, 200))], 'root tray context menu')
+    click(session, 1050, 774)
     console.wait_for(('compositor: window "音量控制"',), after=mark)
     wait_screen(session, [((100, 200), (212, 208, 200))], 'volume window')
     mark = console.mark()
@@ -272,6 +300,29 @@ def check_volume(session) -> None:
     wait_security(session)
     click(session, 625, 434)
     console.wait_for(('logon: logged out',), after=mark)
+
+
+def check_passwordless(image: Path) -> None:
+    """产品默认 root 没有口令：开机直接进桌面，锁定后 Ctrl+Alt+Del 直接解锁，全程不出现登录对话框。"""
+    print('desktop gate: passwordless account skips the logon dialog', flush=True)
+    with display_session(image, sound=True) as session:
+        console = session.console
+        console.wait_for(('logon: welcome', 'logon: account has no password, skipping the logon dialog',
+                          'logon: authenticated uid=0', 'logon: desktop ready'))
+        if 'logon: secure attention Credentials' in console.text:
+            raise RuntimeError('logon dialog was shown for an account without a password')
+        wait_screen(session, [((1000, 780), (212, 208, 200)), ((1200, 400), DESKTOP_BACKGROUND)], 'passwordless desktop')
+        mark = console.mark()
+        tap(session, 'ctrl', 'alt', 'delete')
+        console.wait_for(('logon: secure attention Security',), after=mark)
+        wait_security(session)
+        click(session, 480, 434)
+        console.wait_for(('logon: locked',), after=mark)
+        mark = console.mark()
+        tap(session, 'ctrl', 'alt', 'delete')
+        console.wait_for(('logon: secure attention Unlock', 'logon: account has no password, skipping the logon dialog',
+                          'logon: unlocked'), after=mark)
+        wait_screen(session, [((1000, 780), (212, 208, 200)), ((1200, 400), DESKTOP_BACKGROUND)], 'passwordless unlock')
 
 
 def main() -> int:
@@ -309,8 +360,12 @@ def main() -> int:
                     session.qmp.execute('screendump', {'filename': str(snapshot / 'failure.ppm')})
                     (snapshot / 'console.log').write_text(session.console.text)
                     raise
+        with tempfile.TemporaryDirectory(prefix='liteos-desktop-passwordless-') as temp:
+            private = Path(temp) / 'rootfs.img'
+            shutil.copyfile(image, private)
+            check_passwordless(private)
         publish_runtime_gate(stamp, payload)
-        print('desktop gate: authentication, identity, taskbar, run, SAS, lock/unlock, password change, logout and ALSA volume/mute passed')
+        print('desktop gate: authentication, identity, taskbar, run, SAS, lock/unlock, password change, logout, ALSA volume/mute and passwordless login passed')
     except (RuntimeError, OSError) as error:
         print(f'desktop verification failed: {error}', file=sys.stderr)
         return 1

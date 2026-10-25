@@ -597,3 +597,52 @@ fn edit_scroll_clips_text_and_restores_the_callers_clip() {
         }
     });
 }
+
+#[test]
+fn bitmap_region_paints_only_the_requested_strip() {
+    let bitmap = crate::Bitmap::from_pixels(vec![0xff00_0001, 0xff00_0002, 0xff00_0003], 3, 1);
+    let mut pixels = vec![0; 3];
+    let mut painter = Painter::new(
+        Surface::new(&mut pixels, 3, 1, 3).unwrap(),
+        theme(),
+        typeface(1),
+        1,
+    );
+    bitmap.paint_region(&mut painter, 0, 0, 1, 1);
+    bitmap.paint_region(&mut painter, 2, 0, 2, 2);
+    painter.into_surface();
+    assert_eq!(pixels, [0xff00_0002, 0, 0]);
+}
+
+#[test]
+fn clipped_drawing_stays_inside_the_rectangle_and_restores_the_clip() {
+    let mut pixels = vec![0; 8 * 4];
+    let mut painter = Painter::new(
+        Surface::new(&mut pixels, 8, 4, 8).unwrap(),
+        theme(),
+        typeface(1),
+        1,
+    );
+    painter.clipped(Rect::new(2, 0, 2, 4), |p| {
+        p.fill(Rect::new(0, 0, 8, 4), SystemColor::Window)
+    });
+    painter.fill(Rect::new(6, 0, 1, 1), SystemColor::Window);
+    painter.into_surface();
+    let lit: Vec<_> = (0..8).filter(|x| pixels[*x] != 0).collect();
+    assert_eq!(lit, [2, 3, 6]);
+}
+
+#[test]
+fn bitmap_corner_color_fills_the_requested_height() {
+    let bitmap = crate::Bitmap::from_pixels(vec![0xff10_2030, 0xffff_ffff], 2, 1);
+    let mut pixels = vec![0; 2 * 3];
+    let mut painter = Painter::new(
+        Surface::new(&mut pixels, 2, 3, 2).unwrap(),
+        theme(),
+        typeface(1),
+        1,
+    );
+    bitmap.fill_with_corner(&mut painter, 0, 0, 3);
+    painter.into_surface();
+    assert!(pixels.iter().all(|p| p & 0x00ff_ffff == 0x0010_2030));
+}

@@ -278,8 +278,8 @@ def pointer_to(session, x: int, y: int) -> None:
     session.qmp.execute("input-send-event", {"events": [abs_event("x", x, 1280), abs_event("y", y, 800)]})
 
 
-def button(session, down: bool) -> None:
-    session.qmp.execute("input-send-event", {"events": [{"type": "btn", "data": {"down": down, "button": "left"}}]})
+def button(session, down: bool, name: str = "left") -> None:
+    session.qmp.execute("input-send-event", {"events": [{"type": "btn", "data": {"down": down, "button": name}}]})
 
 
 def tap_steps(*keys: str) -> list[tuple[str, bool]]:

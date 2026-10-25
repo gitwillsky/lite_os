@@ -27,7 +27,7 @@
   expiration counter 与 poll/epoll readiness；最后一个 fd/OFD 引用释放时同步撤销 timer record。
 - 产品 userspace 是按所选架构原生构建的固定 musl runtime、BusyBox `init + ash`、网络服务、Wayland compositor 与单 ELF
   `liteos-stress` diagnostics。Rust 库为 `linux-uapi`、`keyboard`、`terminal-model`、`terminal-font` `canvas`、`classic-theme`、`classic-ui`、`typeface`、`wayland-scanner` 与 `wayland-wire`，
-  归属单一 `user/` workspace 与 lockfile；产品安装 `logon`、`desktop`、`file-explorer` 与 `session-launch`，没有用户态音频服务。
+  归属单一 `user/` workspace 与 lockfile；产品安装 `logon`、`desktop`、`file-explorer`、`control-panel` 与 `session-launch`，没有用户态音频服务。
   kernel、rootfs、APK 与 cache 都携带同一个 architecture identity。
 - 标准 Rust consumer 使用官方 `aarch64-unknown-linux-musl`/`riscv64gc-unknown-linux-musl`
   target 与普通 `fn main`；builder 从固定 rust-src 构建 `std + panic_abort`，从同一源码树构建并

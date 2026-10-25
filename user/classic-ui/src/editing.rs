@@ -213,9 +213,23 @@ impl crate::Painter<'_> {
         focused: bool,
         password: bool,
     ) -> canvas::Rect {
+        self.edit_with_leading(rect, edit, focused, password, 0)
+    }
+
+    /// 同 [`Painter::edit`]，文字区左侧让出 `leading` 逻辑像素给调用者自己画的图标（如地址栏文件夹图标）。
+    pub fn edit_with_leading(
+        &mut self,
+        rect: canvas::Rect,
+        edit: &Edit,
+        focused: bool,
+        password: bool,
+        leading: i32,
+    ) -> canvas::Rect {
         use crate::Ink;
         use classic_theme::SystemColor;
-        let inner = self.edit_frame(rect, true).inset(2);
+        let mut inner = self.edit_frame(rect, true).inset(2);
+        inner.x += leading;
+        inner.width -= leading;
         let masked;
         let (text, cursor, selection) = if password {
             masked = edit.masked();

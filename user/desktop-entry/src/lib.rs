@@ -1,19 +1,36 @@
-//! 本机安装的 freedesktop Desktop Entry 子集；不把 Exec 当成 shell 程序解释。
-use std::{fs, process::Command};
-pub struct Application {
+//! freedesktop Desktop Entry 子集：读取已安装程序的名称、图标、分类与命令；不把 Exec 当成 shell 程序解释。
+use std::{fs, path::Path, process::Command};
+
+/// 一个可启动的程序条目。
+pub struct Entry {
     pub name: String,
+    /// `Icon=` 的名称（不是路径），没有时为 `None`。
+    pub icon: Option<String>,
+    categories: Vec<String>,
     arguments: Vec<String>,
 }
-impl Application {
+
+impl Entry {
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.arguments[0]);
         command.args(&self.arguments[1..]);
         command
     }
+
+    /// 命令行参数（第一个是程序）；已按 Desktop Entry 规则分词，没有经过 shell。
+    pub fn arguments(&self) -> &[String] {
+        &self.arguments
+    }
+
+    pub fn in_category(&self, category: &str) -> bool {
+        self.categories.iter().any(|c| c == category)
+    }
 }
-pub fn load() -> Vec<Application> {
+
+/// 读取目录里的全部 `.desktop` 条目，按名称排序；目录不存在或条目无效时跳过。
+pub fn load(directory: &Path) -> Vec<Entry> {
     let mut entries = Vec::new();
-    if let Ok(directory) = fs::read_dir("/usr/share/applications") {
+    if let Ok(directory) = fs::read_dir(directory) {
         for entry in directory
             .flatten()
             .filter(|e| e.path().extension().is_some_and(|s| s == "desktop"))
@@ -26,13 +43,14 @@ pub fn load() -> Vec<Application> {
         }
     }
     entries.sort_by(|a, b| a.name.cmp(&b.name));
-    entries.truncate(12);
     entries
 }
-fn parse(text: &str) -> Option<Application> {
+fn parse(text: &str) -> Option<Entry> {
     let mut in_entry = false;
     let mut name = None;
     let mut executable = None;
+    let mut icon = None;
+    let mut categories = Vec::new();
     let mut application = false;
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
@@ -48,6 +66,14 @@ fn parse(text: &str) -> Option<Application> {
         match key {
             "Name" if name.is_none() => name = Some(value.to_owned()),
             "Name[zh_CN]" => name = Some(value.to_owned()),
+            "Icon" => icon = Some(value.to_owned()),
+            "Categories" => {
+                categories = value
+                    .split(';')
+                    .filter(|c| !c.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            }
             "Type" => application = value == "Application",
             "Exec" => executable = Some(arguments(value)?),
             "Hidden" | "NoDisplay" | "Terminal" if value == "true" => return None,
@@ -61,8 +87,10 @@ fn parse(text: &str) -> Option<Application> {
     if arguments.is_empty() {
         return None;
     }
-    Some(Application {
+    Some(Entry {
         name: name?,
+        icon,
+        categories,
         arguments,
     })
 }

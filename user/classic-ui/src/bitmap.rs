@@ -1,6 +1,6 @@
 //! 安装期转换的标准 BITMAPV4HEADER 32-bit BMP；仅启动时解码，不进入每帧热路径。
 use crate::Painter;
-use canvas::Image;
+use canvas::{Color, Image, Rect};
 use std::{io, path::Path};
 
 /// 拥有预乘 ARGB 像素的系统图像；加载后可按整数 scale 重用。
@@ -59,13 +59,46 @@ impl Bitmap {
             height,
         })
     }
+    #[cfg(test)]
+    pub(crate) fn from_pixels(pixels: Vec<u32>, width: i32, height: i32) -> Self {
+        Self {
+            pixels,
+            width,
+            height,
+        }
+    }
+
     /// 按 Painter 的整数输出 scale 绘制，超出绘图区自动裁剪；坐标为逻辑像素。
     pub fn paint(&self, painter: &mut Painter<'_>, x: i32, y: i32) {
+        self.paint_region(painter, x, y, 0, self.width);
+    }
+
+    /// 用图像第一行第一个像素的颜色填充 `x, y` 起宽为图像宽、高为 `height` 的区域（竖幅图高度不足时向上补色）。
+    pub fn fill_with_corner(&self, painter: &mut Painter<'_>, x: i32, y: i32, height: i32) {
+        let pixel = self.pixels[0];
+        let color = Color::rgb((pixel >> 16) as u8, (pixel >> 8) as u8, pixel as u8);
+        let rect = Rect::new(x, y, self.width, height);
+        let physical = painter.physical(rect);
+        painter.surface.fill_rect(physical, color);
+    }
+
+    /// 只绘制 `source_x..source_x + source_width` 这一竖条（工具栏位图条按帧取用）；越界的部分不绘制。
+    pub fn paint_region(
+        &self,
+        painter: &mut Painter<'_>,
+        x: i32,
+        y: i32,
+        source_x: i32,
+        source_width: i32,
+    ) {
+        if source_x < 0 || source_width < 1 || source_x + source_width > self.width {
+            return;
+        }
         let scale = painter.scale;
         painter.surface.blit(
             Image {
-                pixels: &self.pixels,
-                width: self.width,
+                pixels: &self.pixels[source_x as usize..],
+                width: source_width,
                 height: self.height,
                 stride: self.width as usize,
             },

@@ -14,7 +14,7 @@ def pack(source: Path, destination: Path) -> None:
         for path in sorted((source / directory).glob("*.png")):
             if directory == "icons-src" and not path.stem.endswith(("-16", "-32", "-64")):
                 continue
-            if directory == "bitmaps-src" and path.stem not in ("logon-banner-1x", "start-banner-1x"):
+            if directory == "bitmaps-src" and path.stem not in ("logon-banner-1x", "start-banner-1x", "toolbar-default-1x", "toolbar-hot-1x", "toolbar-disabled-1x"):
                 continue
             image = Image.open(path).convert("RGBA")
             width, height = image.size

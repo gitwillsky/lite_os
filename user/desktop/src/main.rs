@@ -1,7 +1,8 @@
 //! 用户身份运行的桌面外壳；仅持有 logon 委派的 Shell 连接。
 mod dialogs;
 mod paint;
-mod programs;
+mod popups;
+mod start;
 mod volume;
 use classic_ui::{
     Display, Event, EventKind, KeyboardInteractivity, Layer, LayerSettings, ToplevelRequest,
@@ -16,12 +17,25 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// 任务栏高度（逻辑像素）；开始菜单贴在它上方。
+const TASKBAR_HEIGHT: i32 = 28;
+
+/// 开始菜单"程序"里的条目：已安装程序里除设置程序（属于控制面板）之外的前 12 个。
+fn installed_programs() -> Vec<desktop_entry::Entry> {
+    let mut apps = desktop_entry::load(std::path::Path::new("/usr/share/applications"));
+    apps.retain(|app| !app.in_category("Settings"));
+    apps.truncate(12);
+    apps
+}
+
 struct Desktop {
     background: WindowId,
     taskbar: WindowId,
     menu: Option<WindowId>,
-    menu_index: usize,
-    apps: Vec<programs::Application>,
+    menu_selection: start::Selection,
+    /// 当前弹出层（托盘音量面板或右键菜单）及其全屏表面；同一时刻最多一个。
+    overlay: Option<(WindowId, popups::Overlay)>,
+    apps: Vec<desktop_entry::Entry>,
     dialogs: Vec<Dialog>,
     children: Vec<Child>,
     control: UnixStream,
@@ -49,9 +63,9 @@ impl Desktop {
             "org.liteos.taskbar",
             LayerSettings {
                 layer: Layer::Top,
-                height: 28,
+                height: TASKBAR_HEIGHT as u32,
                 anchor: layer_anchor::LEFT | layer_anchor::RIGHT | layer_anchor::BOTTOM,
-                exclusive_zone: 28,
+                exclusive_zone: TASKBAR_HEIGHT,
                 keyboard: KeyboardInteractivity::OnDemand,
                 ..Default::default()
             },
@@ -61,8 +75,9 @@ impl Desktop {
             background,
             taskbar,
             menu: None,
-            menu_index: 0,
-            apps: programs::load(),
+            menu_selection: start::Selection::default(),
+            overlay: None,
+            apps: installed_programs(),
             dialogs: Vec::new(),
             children: Vec::new(),
             control,
@@ -82,7 +97,7 @@ impl Desktop {
         if let Some(menu) = self.menu.take() {
             display.destroy_window(menu)?;
         } else {
-            self.menu_index = 0;
+            self.menu_selection = start::Selection::default();
             self.menu = Some(display.create_layer(
                 "org.liteos.start",
                 LayerSettings {
@@ -115,32 +130,274 @@ impl Desktop {
             Err(error) => self.message = format!("无法启动程序: {error}"),
         }
     }
-    fn files(&mut self, path: PathBuf) {
+    /// 在资源管理器中打开位置：路径，或 `::my-computer` 这样的虚拟文件夹名。
+    fn files(&mut self, place: impl AsRef<std::ffi::OsStr>) {
         let mut command = Command::new("/bin/file-explorer");
-        command.arg(path);
+        command.arg(place);
         self.launch(command);
     }
-    fn menu_action(&mut self, display: &mut Display) -> io::Result<()> {
-        let selected = self.menu_index;
-        self.toggle_menu(display)?;
-        if let Some(app) = self.apps.get(selected) {
-            self.launch(app.command());
-            return Ok(());
+    fn screen(display: &Display, window: WindowId) -> (i32, i32) {
+        display
+            .configuration(window)
+            .map_or((1280, 800), |c| (c.width, c.height))
+    }
+
+    fn close_overlay(&mut self, display: &mut Display) -> io::Result<()> {
+        if let Some((window, overlay)) = self.overlay.take() {
+            if matches!(overlay, popups::Overlay::Volume(_)) {
+                self.volume.cancel();
+            }
+            display.destroy_window(window)?;
         }
-        match selected.saturating_sub(self.apps.len()) {
-            0 => self.files(self.home.clone()),
-            1 => self.dialog(display, Kind::Tasks)?,
-            2 => self.dialog(display, Kind::About)?,
-            3 => self.dialog(display, Kind::Run)?,
-            4 => self.control.write_all(&[2])?,
-            5 => std::process::exit(0),
-            6 => self.control.write_all(&[4])?,
+        Ok(())
+    }
+
+    fn open_overlay(&mut self, display: &mut Display, overlay: popups::Overlay) -> io::Result<()> {
+        self.close_overlay(display)?;
+        if self.menu.is_some() {
+            self.toggle_menu(display)?;
+        }
+        let window = display.create_layer(
+            "org.liteos.popup",
+            LayerSettings {
+                layer: Layer::Overlay,
+                exclusive_zone: -1,
+                keyboard: KeyboardInteractivity::Exclusive,
+                ..Default::default()
+            },
+        )?;
+        self.overlay = Some((window, overlay));
+        Ok(())
+    }
+
+    /// 在资源管理器里打开桌面图标/菜单对应的位置；回收站目录不存在时先创建。
+    fn open_place(&mut self, place: start::Place) {
+        use start::Place;
+        let trash = self.home.join(".local/share/Trash/files");
+        match place {
+            Place::Documents => self.files(self.home.clone()),
+            Place::MyComputer => self.files("::my-computer"),
+            Place::ControlPanel => self.files("::control-panel"),
+            Place::RecycleBin => match std::fs::create_dir_all(&trash) {
+                Ok(()) => self.files(trash),
+                Err(error) => self.message = error.to_string(),
+            },
+        }
+    }
+
+    fn perform(&mut self, display: &mut Display, action: popups::Action) -> io::Result<()> {
+        use popups::Action;
+        match action {
+            Action::MinimizeAll => {
+                let ids: Vec<_> = display.toplevels().map(|(id, _)| id).collect();
+                for id in ids {
+                    display.control_toplevel(id, ToplevelRequest::Minimize(true))?;
+                }
+            }
+            Action::TaskManager => self.dialog(display, Kind::Tasks)?,
+            Action::VolumeProperties => self.dialog(display, Kind::Volume)?,
+            Action::Open(place) => self.open_place(place),
+            Action::Refresh => self.apps = installed_programs(),
+            Action::Window(id, request) => display.control_toplevel(id, request)?,
+        }
+        Ok(())
+    }
+
+    /// 弹出层表面上的事件：菜单点击项执行、点击外部关闭；音量面板拖动滑块、点击静音。
+    fn overlay_event(&mut self, display: &mut Display, event: Event) -> io::Result<()> {
+        use popups::Overlay;
+        let window = event.window;
+        match event.kind {
+            EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
+                self.pointer = (window, x, y);
+                match &mut self.overlay {
+                    Some((_, Overlay::Menu(menu))) => menu.hover = menu.hit(x, y),
+                    Some((_, Overlay::Volume(panel))) => {
+                        self.volume.motion(&volume::Layout::popup(*panel), y)
+                    }
+                    None => {}
+                }
+            }
+            EventKind::Button {
+                code: 0x110,
+                pressed,
+                ..
+            } => {
+                let (_, x, y) = self.pointer;
+                match &self.overlay {
+                    Some((_, Overlay::Menu(menu))) if !pressed => {
+                        let action = menu.hit(x, y).map(|i| menu.items[i].action);
+                        self.close_overlay(display)?;
+                        if let Some(action) = action {
+                            self.perform(display, action)?;
+                        }
+                    }
+                    Some((_, Overlay::Volume(panel))) => {
+                        let panel = *panel;
+                        let inside = volume::Contains::contains(&panel, x, y);
+                        if pressed && inside {
+                            self.volume
+                                .button(&volume::Layout::popup(panel), x, y, true);
+                        } else if !pressed && !inside && !self.volume.dragging() {
+                            self.close_overlay(display)?;
+                        } else if !pressed {
+                            self.volume.cancel();
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            EventKind::Key(key) if key.pressed => {
+                if key.code == 1 {
+                    self.close_overlay(display)?;
+                } else if matches!(self.overlay, Some((_, Overlay::Volume(_)))) {
+                    self.volume.key(key.code);
+                }
+            }
+            EventKind::Close | EventKind::Focus(false) => self.close_overlay(display)?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// 右键：在任务栏/桌面的命中区域上弹出菜单。`local` 是指针在该表面内的位置。
+    fn context_menu(&mut self, display: &mut Display, window: WindowId) -> io::Result<()> {
+        let Some(c) = display.configuration(window) else {
+            return Ok(());
+        };
+        let (_, x, y) = self.pointer;
+        let hit = paint::areas(self, display, window, c).iter().position(|r| {
+            x >= f64::from(r.x)
+                && x < f64::from(r.right())
+                && y >= f64::from(r.y)
+                && y < f64::from(r.bottom())
+        });
+        let (screen, origin) = if window == self.taskbar {
+            let screen = Self::screen(display, self.background);
+            (screen, (x as i32, screen.1 - TASKBAR_HEIGHT + y as i32))
+        } else {
+            ((c.width, c.height), (x as i32, y as i32))
+        };
+        let items = if window == self.taskbar {
+            match hit {
+                Some(paint::VOLUME) => popups::tray_volume_items(),
+                Some(paint::CLOCK) => return Ok(()),
+                Some(n) if n >= paint::TASKS_FROM => {
+                    let ids = paint::task_ids(self, display, c.width);
+                    match ids
+                        .get(n - paint::TASKS_FROM)
+                        .and_then(|id| display.toplevels().find(|(t, _)| t == id))
+                    {
+                        Some((id, info)) => popups::window_items(id, info),
+                        None => return Ok(()),
+                    }
+                }
+                Some(_) => return Ok(()),
+                None => popups::taskbar_items(),
+            }
+        } else if window == self.background {
+            match hit {
+                Some(index) => {
+                    self.selected = Some(index);
+                    popups::icon_items(match index {
+                        0 => start::Place::Documents,
+                        1 => start::Place::MyComputer,
+                        _ => start::Place::RecycleBin,
+                    })
+                }
+                None => popups::desktop_items(),
+            }
+        } else {
+            return Ok(());
+        };
+        let menu = popups::ContextMenu::new(origin, items, screen);
+        self.open_overlay(display, popups::Overlay::Menu(menu))
+    }
+
+    fn open_volume_panel(&mut self, display: &mut Display, icon_center_x: i32) -> io::Result<()> {
+        self.volume = volume::Volume::open();
+        let screen = Self::screen(display, self.background);
+        let panel = popups::volume_panel(icon_center_x, screen, TASKBAR_HEIGHT);
+        self.open_overlay(display, popups::Overlay::Volume(panel))
+    }
+
+    /// 执行开始菜单的叶子动作；先关闭菜单，使弹出的窗口拿到键盘焦点。
+    fn start_action(&mut self, display: &mut Display, action: start::Action) -> io::Result<()> {
+        use start::Action;
+        self.toggle_menu(display)?;
+        match action {
+            Action::Application(index) => {
+                if let Some(app) = self.apps.get(index) {
+                    self.launch(app.command());
+                }
+            }
+            Action::Files(place) => self.open_place(place),
+            Action::Tasks => self.dialog(display, Kind::Tasks)?,
+            Action::About => self.dialog(display, Kind::About)?,
+            Action::Run => self.dialog(display, Kind::Run)?,
+            Action::Lock => self.control.write_all(&[2])?,
+            Action::Logoff => std::process::exit(0),
+            Action::Shutdown => self.control.write_all(&[4])?,
+        }
+        Ok(())
+    }
+    fn menu_geometry(&self, c: classic_ui::Configuration) -> (Vec<start::Row>, start::Geometry) {
+        let rows = start::rows(&self.apps);
+        let geometry = start::geometry(
+            &rows,
+            (c.width, c.height),
+            TASKBAR_HEIGHT,
+            Some(self.menu_selection.top),
+        );
+        (rows, geometry)
+    }
+    /// 开始菜单的键盘导航：上下在当前层移动，右进入子菜单，左退出，回车执行。
+    fn menu_key(&mut self, display: &mut Display, code: u32) -> io::Result<()> {
+        let Some(menu) = self.menu else {
+            return Ok(());
+        };
+        let Some(c) = display.configuration(menu) else {
+            return Ok(());
+        };
+        let (rows, _) = self.menu_geometry(c);
+        let selection = &mut self.menu_selection;
+        let step = |index: usize, count: usize, down: bool| {
+            if down {
+                (index + 1) % count
+            } else {
+                (index + count - 1) % count
+            }
+        };
+        match (code, selection.sub) {
+            (1 | 125 | 126, _) => self.toggle_menu(display)?,
+            (103 | 108, None) => selection.top = step(selection.top, rows.len(), code == 108),
+            (103 | 108, Some(sub)) => {
+                let count = rows[selection.top].submenu.len();
+                selection.sub = Some(step(sub, count, code == 108));
+            }
+            (106, None) if !rows[selection.top].submenu.is_empty() => selection.sub = Some(0),
+            (105, Some(_)) => selection.sub = None,
+            (28, sub) => {
+                let row = &rows[selection.top];
+                let action = match sub {
+                    Some(sub) => row.submenu[sub].action,
+                    None => row.action,
+                };
+                if let Some(action) = action {
+                    self.start_action(display, action)?;
+                } else if sub.is_none() && !row.submenu.is_empty() {
+                    selection.sub = Some(0);
+                }
+            }
             _ => {}
         }
         Ok(())
     }
     fn event(&mut self, display: &mut Display, event: Event) -> io::Result<()> {
         let window = event.window;
+        if self.overlay.as_ref().is_some_and(|(w, _)| *w == window) {
+            return self.overlay_event(display, event);
+        }
         if let Some(index) = self.dialogs.iter().position(|d| d.window == window) {
             match self.dialogs[index].event(display, event, &mut self.volume)? {
                 dialogs::Action::Close => {
@@ -167,9 +424,9 @@ impl Desktop {
                 if Some(window) == self.menu
                     && let Some(c) = display.configuration(window)
                 {
-                    let rect = paint::menu_rect(self, c);
-                    if (rect.y..rect.bottom()).contains(&(y as i32)) {
-                        self.menu_index = ((y as i32 - rect.y - 4) / 32).max(0) as usize;
+                    let (_, geometry) = self.menu_geometry(c);
+                    if let Some(selection) = start::hit(&geometry, (x as i32, y as i32)) {
+                        self.menu_selection = selection;
                     }
                 }
             }
@@ -183,6 +440,30 @@ impl Desktop {
                     Some(c) => c,
                     None => return Ok(()),
                 };
+                if Some(window) == self.menu {
+                    if !pressed {
+                        let (rows, geometry) = self.menu_geometry(c);
+                        let point = (self.pointer.1 as i32, self.pointer.2 as i32);
+                        match start::hit(&geometry, point) {
+                            Some(start::Selection { top, sub }) => {
+                                let row = &rows[top];
+                                let action = sub.map_or(row.action, |sub| row.submenu[sub].action);
+                                if let Some(action) = action {
+                                    self.start_action(display, action)?;
+                                }
+                            }
+                            None if !(geometry.panel.x..geometry.panel.right())
+                                .contains(&point.0)
+                                || !(geometry.panel.y..geometry.panel.bottom())
+                                    .contains(&point.1) =>
+                            {
+                                self.toggle_menu(display)?
+                            }
+                            None => {}
+                        }
+                    }
+                    return Ok(());
+                }
                 let hit = paint::areas(self, display, window, c).iter().position(|r| {
                     self.pointer.1 >= f64::from(r.x)
                         && self.pointer.1 < f64::from(r.right())
@@ -209,13 +490,29 @@ impl Desktop {
                                         .control_toplevel(id, ToplevelRequest::Minimize(true))?;
                                 }
                             }
-                            2 => self.files(self.home.clone()),
+                            2 => self.open_place(start::Place::Documents),
                             3 => self.task_page = self.task_page.saturating_sub(1),
                             4 => self.task_page += 1,
-                            5 => self.dialog(display, Kind::Volume)?,
+                            paint::CLOCK => {
+                                if self.clicked.is_some_and(|(previous, time)| {
+                                    previous == paint::CLOCK
+                                        && time.elapsed() < Duration::from_millis(500)
+                                }) {
+                                    let mut command = Command::new("/bin/control-panel");
+                                    command.arg("datetime");
+                                    self.launch(command);
+                                    self.clicked = None;
+                                } else {
+                                    self.clicked = Some((paint::CLOCK, Instant::now()));
+                                }
+                            }
+                            paint::VOLUME => {
+                                let center = c.width - 118;
+                                self.open_volume_panel(display, center)?
+                            }
                             n => {
                                 let ids = paint::task_ids(self, display, c.width);
-                                if let Some(id) = ids.get(n - 6) {
+                                if let Some(id) = ids.get(n - paint::TASKS_FROM) {
                                     let active = display
                                         .toplevels()
                                         .find(|(target, _)| target == id)
@@ -231,26 +528,16 @@ impl Desktop {
                                 }
                             }
                         }
-                    } else if Some(window) == self.menu {
-                        self.menu_index = index;
-                        self.menu_action(display)?;
                     } else if window == self.background {
                         self.selected = Some(index);
                         if self.clicked.is_some_and(|(previous, time)| {
                             previous == index && time.elapsed() < Duration::from_millis(500)
                         }) {
-                            let path = match index {
-                                0 => self.home.clone(),
-                                1 => PathBuf::from("/"),
-                                _ => self.home.join(".local/share/Trash/files"),
-                            };
-                            if index == 2
-                                && let Err(error) = std::fs::create_dir_all(&path)
-                            {
-                                self.message = error.to_string();
-                                return Ok(());
-                            }
-                            self.files(path);
+                            self.open_place(match index {
+                                0 => start::Place::Documents,
+                                1 => start::Place::MyComputer,
+                                _ => start::Place::RecycleBin,
+                            });
                             self.clicked = None;
                         } else {
                             self.clicked = Some((index, Instant::now()));
@@ -260,26 +547,18 @@ impl Desktop {
             }
             EventKind::Key(key) if key.pressed => {
                 if Some(window) == self.menu {
-                    let count = self.apps.len() + 7;
-                    match key.code {
-                        1 | 125 | 126 => self.toggle_menu(display)?,
-                        103 => self.menu_index = (self.menu_index + count - 1) % count,
-                        108 => self.menu_index = (self.menu_index + 1) % count,
-                        28 => self.menu_action(display)?,
-                        _ => {}
-                    }
+                    self.menu_key(display, key.code)?;
                 } else {
                     match key.code {
                         125 | 126 => self.toggle_menu(display)?,
                         1 if key.modifiers.control => self.toggle_menu(display)?,
                         19 if key.modifiers.super_key => self.dialog(display, Kind::Run)?,
                         28 if window == self.background => {
-                            let path = if self.selected == Some(1) {
-                                PathBuf::from("/")
-                            } else {
-                                self.home.clone()
-                            };
-                            self.files(path);
+                            self.open_place(match self.selected {
+                                Some(1) => start::Place::MyComputer,
+                                Some(2) => start::Place::RecycleBin,
+                                _ => start::Place::Documents,
+                            });
                         }
                         62 if key.modifiers.alt && window == self.background => {
                             self.control.write_all(&[4])?
@@ -288,6 +567,11 @@ impl Desktop {
                     }
                 }
             }
+            EventKind::Button {
+                code: 0x111,
+                pressed: false,
+                ..
+            } if Some(window) != self.menu => self.context_menu(display, window)?,
             EventKind::Close if Some(window) == self.menu => self.toggle_menu(display)?,
             _ => {}
         }
@@ -344,6 +628,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let ids: Vec<_> = [state.background, state.taskbar]
             .into_iter()
             .chain(state.menu)
+            .chain(state.overlay.as_ref().map(|(w, _)| *w))
             .chain(state.dialogs.iter().map(|d| d.window))
             .collect();
         if dirty {

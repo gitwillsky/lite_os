@@ -439,6 +439,27 @@ impl Display {
         self.transport.flush()
     }
 
+    /// 更新 toplevel 标题（任务栏与窗口列表显示它）；与客户端自绘的标题栏文字是两件事，调用者需保持一致。
+    ///
+    /// # Errors
+    ///
+    /// 窗口不存在、不是 xdg toplevel，或编码/socket 失败。
+    pub fn set_title(&mut self, window: WindowId, title: &str) -> io::Result<()> {
+        let Some(Role::Toplevel { toplevel, .. }) = self.windows.get(&window).map(|w| &w.role)
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "set_title needs an xdg toplevel",
+            ));
+        };
+        xdg_toplevel::Request::SetTitle {
+            title: title.into(),
+        }
+        .encode(*toplevel, &mut self.transport.writer)
+        .map_err(io::Error::other)?;
+        self.transport.flush()
+    }
+
     /// 销毁一个窗口，撤销输入焦点和重复键；连接里的其他窗口继续存在。
     ///
     /// # Errors

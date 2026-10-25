@@ -180,6 +180,15 @@ impl<'a> Painter<'a> {
         }
     }
 
+    /// 把 `draw` 里的所有绘制限制在逻辑矩形 `rect` 内（与当前裁剪区求交），结束后恢复。
+    pub fn clipped(&mut self, rect: Rect, draw: impl FnOnce(&mut Self)) {
+        let previous = self.surface.clip();
+        let physical = self.physical(rect);
+        self.surface.set_clip(previous.intersect(physical));
+        draw(self);
+        self.surface.set_clip(previous);
+    }
+
     pub fn into_surface(self) -> Surface<'a> {
         self.surface
     }

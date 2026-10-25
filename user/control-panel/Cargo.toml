@@ -1,0 +1,12 @@
+[package]
+name = "control-panel"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+calendar = { path = "../calendar" }
+canvas = { path = "../canvas" }
+classic-theme = { path = "../classic-theme" }
+classic-ui = { path = "../classic-ui" }
+typeface = { path = "../typeface" }

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=System
+Name[zh_CN]=系统
+Exec=/bin/control-panel system
+Icon=my-computer
+Categories=Settings;
+Terminal=false

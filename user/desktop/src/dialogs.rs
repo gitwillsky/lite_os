@@ -89,8 +89,15 @@ impl Dialog {
                     code: 0x110,
                     pressed,
                     ..
-                } => volume.button(self.pointer.0, self.pointer.1, c, *pressed),
-                EventKind::PointerMove { y, .. } => volume.motion(*y),
+                } => volume.button(
+                    &super::volume::Layout::dialog(c),
+                    self.pointer.0,
+                    self.pointer.1,
+                    *pressed,
+                ),
+                EventKind::PointerMove { y, .. } => {
+                    volume.motion(&super::volume::Layout::dialog(c), *y)
+                }
                 EventKind::PointerLeave | EventKind::Focus(false) | EventKind::Close => {
                     volume.cancel()
                 }

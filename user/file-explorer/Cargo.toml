@@ -5,6 +5,8 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+desktop-entry = { path = "../desktop-entry" }
+calendar = { path = "../calendar" }
 classic-ui = { path = "../classic-ui" }
 classic-theme = { path = "../classic-theme" }
 canvas = { path = "../canvas" }

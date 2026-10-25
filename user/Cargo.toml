@@ -1,10 +1,13 @@
 [workspace]
 members = [
+    "calendar",
     "canvas",
     "classic-theme",
     "compositor",
     "logon",
+    "control-panel",
     "desktop",
+    "desktop-entry",
     "file-explorer",
     "classic-ui",
     "keyboard",

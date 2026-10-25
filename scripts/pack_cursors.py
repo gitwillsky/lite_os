@@ -28,6 +28,8 @@ import struct
 import sys
 from pathlib import Path
 
+from local_inputs import INPUTS
+
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "assets/classic/cursors-src"
 OUTPUT = ROOT / "assets/classic/cursors.lcs"
@@ -56,15 +58,16 @@ def premultiplied(image) -> list[int]:
     return pixels
 
 
-def pack(cursors: dict[str, dict[int, list]]) -> bytes:
+def pack(cursors: dict[str, dict[int, list]], hotspots: dict[str, tuple[int, int]] = HOTSPOTS) -> bytes:
     """编码光标集。
 
     Args:
         cursors: `名称 -> {尺寸: [帧图像...]}`；每个光标两种尺寸都必须有且帧数相同，图像必须是方形的对应尺寸。
+        hotspots: `名称 -> 1x 热点`；2x 取其两倍。默认是仓库原创素材的热点。
     """
     out = bytearray(MAGIC + struct.pack("<HH", len(cursors), 0))
     for name, by_size in sorted(cursors.items()):
-        if name not in HOTSPOTS:
+        if name not in hotspots:
             raise ValueError(f"{name}: no hotspot is defined for this cursor")
         if set(by_size) != set(SIZES):
             raise ValueError(f"{name}: needs exactly the sizes {SIZES}")
@@ -74,7 +77,7 @@ def pack(cursors: dict[str, dict[int, list]]) -> bytes:
         encoded = name.encode("ascii")
         if len(encoded) > 16:
             raise ValueError(f"{name}: name is longer than 16 bytes")
-        hotspot = HOTSPOTS[name]
+        hotspot = hotspots[name]
         out += encoded.ljust(16, b"\0") + struct.pack("<HH", frames, FRAME_MS if frames > 1 else 0)
         out += struct.pack("<HHHH", *hotspot, hotspot[0] * 2, hotspot[1] * 2)
         for size in SIZES:
@@ -127,14 +130,89 @@ def load(directory: Path, open_image) -> dict[str, dict[int, list]]:
     return cursors
 
 
+# 原版 Windows 2000 默认方案（"_r" 常规白箭头系列）在安装介质 I386 里的文件名；热点取自 CUR 目录项。
+# user32.dll 里导出的同名资源的热点字段不可信（全是 10,10），所以不用它们。
+ORIGINAL_FILES = {
+    "arrow": "arrow_r", "text": "beam_r", "busy": "busy_r", "working": "wait_r", "precision": "cross_r",
+    "unavailable": "no_r", "move": "move_r", "help": "help_r",
+    "resize-nesw": "size1_r", "resize-nwse": "size2_r", "resize-ew": "size3_r", "resize-ns": "size4_r",
+}
+
+
+def decode_cursor(data: bytes):
+    """解码单图像 1/4/8 位 CUR，返回 `(32×32 RGBA 图像, (热点 x, 热点 y))`。
+
+    AND=0 取 XOR 颜色且不透明；AND=1 且 XOR 为黑是透明；AND=1 且 XOR 非黑是"反色"，
+    硬件光标无法表示，遇到即报错（默认方案的光标没有这种像素）。
+    """
+    from PIL import Image
+
+    count = struct.unpack_from("<HHH", data)[2]
+    if struct.unpack_from("<HH", data, 2) != (2, 1) and count != 1:
+        raise ValueError("not a single-image cursor")
+    width, height, _, _, hot_x, hot_y, _, offset = struct.unpack_from("<BBBBHHII", data, 6)
+    width, height = width or 256, height or 256
+    header, _, _, _, bpp, _, _, _, _, used, _ = struct.unpack_from("<IiiHHIIiiII", data, offset)
+    if bpp not in (1, 4, 8) or (width, height) != (32, 32):
+        raise ValueError(f"unsupported cursor: {width}x{height} {bpp}bpp")
+    entries = used or 1 << bpp
+    palette = [struct.unpack_from("<BBB", data, offset + header + 4 * i) for i in range(entries)]
+    base = offset + header + 4 * entries
+    xor_stride, and_stride = (width * bpp + 31) // 32 * 4, (width + 31) // 32 * 4
+    and_base = base + xor_stride * height
+    pixels = bytearray()
+    for y in range(height):
+        row = height - 1 - y
+        for x in range(width):
+            if bpp == 1:
+                index = data[base + row * xor_stride + x // 8] >> (7 - x % 8) & 1
+            elif bpp == 4:
+                byte = data[base + row * xor_stride + x // 2]
+                index = byte >> 4 if x % 2 == 0 else byte & 15
+            else:
+                index = data[base + row * xor_stride + x]
+            blue, green, red = palette[index]
+            masked = data[and_base + row * and_stride + x // 8] >> (7 - x % 8) & 1
+            if masked and (red, green, blue) != (0, 0, 0):
+                raise ValueError("cursor uses inverted pixels")
+            pixels += bytes((0, 0, 0, 0) if masked else (red, green, blue, 255))
+    return Image.frombytes("RGBA", (width, height), bytes(pixels)), (hot_x, hot_y)
+
+
+def pack_original(sources: Path) -> bytes:
+    """把安装介质的默认方案光标打包；原版只有 32 × 32，2x 是整数最近邻放大（热点同倍）。"""
+    from PIL import Image
+
+    cursors, hotspots = {}, {}
+    for name, stem in ORIGINAL_FILES.items():
+        image, hotspot = decode_cursor((sources / f"{stem}.cur").read_bytes())
+        cursors[name] = {32: [image], 64: [image.resize((64, 64), Image.NEAREST)]}
+        hotspots[name] = hotspot
+    # 默认方案没有手形光标（它在 user32 里，热点字段不可信），所以 link 沿用仓库原创的手形。
+    link = load(SOURCE, lambda path: Image.open(path))["link"]
+    cursors["link"], hotspots["link"] = link, HOTSPOTS["link"]
+    return pack(cursors, hotspots)
+
+
 def main() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--original", action="store_true", help="打包本地原版 Windows 2000 默认方案到 .local/inputs/")
+    args = parser.parse_args()
     try:
         from PIL import Image
     except ModuleNotFoundError as error:
         raise SystemExit("pack-cursors requires Pillow; normal builds consume the checked asset") from error
-    data = pack(load(SOURCE, lambda path: Image.open(path)))
-    OUTPUT.write_bytes(data)
-    print(f"{OUTPUT.relative_to(ROOT)}: {len(data)} bytes", file=sys.stderr)
+    if args.original:
+        output = INPUTS / "windows2000/packed/cursors.lcs"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        data = pack_original(INPUTS / "windows2000/assets/sources")
+    else:
+        output = OUTPUT
+        data = pack(load(SOURCE, lambda path: Image.open(path)))
+    output.write_bytes(data)
+    print(f"{output.relative_to(ROOT)}: {len(data)} bytes", file=sys.stderr)
 
 
 if __name__ == "__main__":

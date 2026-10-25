@@ -111,6 +111,27 @@ impl Logon {
             },
         )
     }
+    /// 目标账户（锁定时是会话用户，否则是默认用户名）没有口令时直接登录或解除锁定。
+    ///
+    /// # Returns
+    ///
+    /// 是否已经处理（调用者不应再显示登录对话框）。
+    fn try_without_password(
+        &mut self,
+        display: &mut Display,
+        window: WindowId,
+    ) -> io::Result<bool> {
+        if let Some(session) = &self.session {
+            self.username = Edit::new(&session.user.name);
+        }
+        if !account::passwordless(self.username.text()) {
+            return Ok(false);
+        }
+        println!("logon: account has no password, skipping the logon dialog");
+        self.password.clear_secret();
+        self.login(display, window)?;
+        Ok(true)
+    }
     fn fail(&mut self, message: &str) {
         self.return_page = if self.session.is_some() {
             Page::Unlock
@@ -330,7 +351,7 @@ impl Logon {
         match self.page {
             Page::Welcome => {
                 self.return_page = Page::Welcome;
-                self.message = "按 Ctrl-Alt-Delete 开始登录。默认用户名为 root，密码留空。也可在恢复控制台运行 passwd root 设置密码。".into();
+                self.message = "按 Ctrl-Alt-Delete 开始登录。要启用口令登录，请在终端运行 passwd root 设置密码。".into();
                 self.page = Page::Message;
             }
             Page::Credentials | Page::Unlock => match index {
@@ -406,8 +427,14 @@ impl Logon {
                 Page::Desktop => Page::Security,
                 _ => return Ok(()),
             };
-            self.secure(display, window, page)?;
             println!("logon: secure attention {page:?}");
+            // 没有设置口令的账户不需要对话框：直接登录或解除锁定。
+            if matches!(page, Page::Credentials | Page::Unlock)
+                && self.try_without_password(display, window)?
+            {
+                return Ok(());
+            }
+            self.secure(display, window, page)?;
             return Ok(());
         }
         match key.code {
@@ -497,6 +524,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut art = paint::Art::load()?;
     let mut dirty = true;
     println!("logon: welcome");
+    // 开机即登录：默认账户没有口令时不显示"按 Ctrl+Alt+Del"和登录对话框，直接进入桌面。
+    if state.try_without_password(&mut display, window)? {
+        dirty = true;
+    }
     loop {
         dirty |= state.supervise(&mut display, window)?;
         if let Some(event) = display.next_event_timeout(Duration::from_millis(100))? {

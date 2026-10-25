@@ -24,6 +24,7 @@
 | `folder-closed` / `folder-open` | `shell32.dll:4` / `shell32.dll:5` |
 | `file-generic` / `file-text` / `file-app` | `shell32.dll:1` / `152` / `3` |
 | `drive-hdd` / `drive-cd` / `control-panel` | `shell32.dll:9` / `12` / `137` |
+| `drive-floppy` / `drive-network` / `printers` / `file-system` | `shell32.dll:6` / `10` / `138` / `153` |
 | `programs` / `documents` / `settings` | `shell32.dll:20` / `21` / `22` |
 | `search` / `help` / `run` | `shell32.dll:23` / `24` / `25` |
 | `shutdown` / `logoff` / `lock` / `key` | `shell32.dll:28` / `45` / `48` / `194` |
@@ -35,8 +36,10 @@
 | `ctrl-alt-del` | `msgina.dll:109` 图标（键盘）；按原生尺寸保留，不冒充 48×48 位图 |
 | `boot-scene` | `ntoskrnl.exe:1`，640×480 **完整启动画面**，不是下方原创的中央 `boot-logo` |
 | `logon-banner` / `start-banner` | `msgina.dll:101`（413×72）/ `explorer.exe:157`（21×233） |
+| `toolbar-default` / `-hot` / `-disabled` | `browseui.dll:272` / `273` / `276`（940×20，47 帧，洋红 `#FF00FF` 为透明色，提取时转 alpha 0） |
 
 `liteos-logo` 沿用原创品牌图标。原版位图中烘焙的品牌文字不修改；动态文案始终为 LiteOS。
+仓库只提交原创默认素材；工具栏位图条与上表中新增的文件类型图标只有本地原版，`shell_bitmaps()` 取两个目录按文件名的并集，缺失时界面不画该图标。
 
 原版默认光标来源是 `user32.dll` 的 group cursor：`arrow:100`、`text:101`、`busy:102`、
 `precision:103`、`resize-ns:104`、`resize-nwse:105`、`resize-nesw:106`、`resize-ew:107`、
@@ -125,8 +128,8 @@
 ## 光标（`assets/classic/cursors-src/`）
 
 每个光标由 1 到 N 帧组成：`<名称>-32.png`（单帧）或 `<名称>-<n>-32.png`（多帧，n 从 0 起连续），以及对应的 `-64.png`
-（2x，硬件光标上限 64 × 64）。帧数、帧率与热点**随素材包提供，不是代码常量**：原版光标的箭头画在 32 × 32 画布中间、
-热点在 (10, 10)，仓库原创光标的箭头热点在 (0, 0)，同一份代码必须都能用。光标阴影由 compositor 绘制
+（2x，硬件光标上限 64 × 64）。帧数、帧率与热点**随素材包提供，不是代码常量**：原版默认方案的箭头热点在 (0, 0)、
+文本光标在 (15, 16)，各光标不同，同一份代码必须都能用。光标阴影由 compositor 绘制
 （见 [interaction.md](interaction.md) E4），素材不自带。
 
 | 名称 | 语义 | 仓库原创素材的热点（1x） |
@@ -142,8 +145,10 @@
 | `busy` | 沙漏（原创素材 8 帧、10 fps；原版 Windows 2000 默认是静态单帧） | (16, 16) |
 | `working` | 箭头加小沙漏（后台运行；同上） | (0, 0) |
 
-原版光标的 CUR 带 AND/XOR 掩码，文本光标与十字准星依赖"反色"，普通 RGBA 无法表示；这两个光标需要 compositor 的
-软件光标路径（待阶段 5 设计），硬件光标只能退化为纯黑近似。
+本地原版（`pack_cursors.py --original`）取安装介质 I386 里默认方案的 `*_r.cur`（`arrow_r`、`beam_r`、`busy_r`、`wait_r`、
+`cross_r`、`no_r`、`move_r`、`help_r`、`size1_r`..`size4_r`），热点读自这些文件的目录项；`user32.dll` 导出的同名资源的热点字段
+全是 (10, 10)，不可信，不使用。原版只有 32 × 32，2x 为整数最近邻放大。这些光标没有"反色"像素，AND/XOR 可无损转成 RGBA；
+遇到反色像素打包即失败。默认方案没有手形光标，`link` 沿用仓库原创。
 
 ## 位图（`assets/classic/bitmaps-src/`）
 
