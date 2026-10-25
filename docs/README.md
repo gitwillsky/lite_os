@@ -18,6 +18,7 @@
 - [设备与终端](architecture/devices-terminal.md)
 - [音频](architecture/audio.md)
 - [io_uring](architecture/io-uring.md)
+- [内核崩溃与蓝屏](architecture/crash-dump.md)
 - [用户态与 ABI](architecture/userspace-abi.md)
 
 ## 架构契约

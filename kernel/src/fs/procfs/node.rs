@@ -60,6 +60,7 @@ pub(super) enum ProcNode {
     Mounts,
     Partitions,
     Cmdline,
+    LastPanic,
     NetLink,
     TaskNetDir(usize, usize, ProcTaskDirectory),
     NetDev,
@@ -133,7 +134,7 @@ impl ProcNode {
         }
     }
 
-    pub(super) const GENERIC_ENTRY_COUNT: usize = 21;
+    pub(super) const GENERIC_ENTRY_COUNT: usize = 22;
     pub(super) fn generic_entries() -> [Self; Self::GENERIC_ENTRY_COUNT] {
         [
             Self::Root,
@@ -147,6 +148,7 @@ impl ProcNode {
             Self::BuddyInfo,
             Self::VmStat,
             Self::Cmdline,
+            Self::LastPanic,
             Self::Partitions,
             Self::Swaps,
             Self::SysDir,

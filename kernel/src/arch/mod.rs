@@ -102,6 +102,11 @@ pub(crate) mod interrupt {
     pub(crate) use super::selected::interrupt::{SOFTWARE_SGI, send_software_sgi};
 }
 
+/// Frame-pointer unwinding mechanism selected at compile time.
+pub(crate) mod backtrace {
+    pub(crate) use super::selected::backtrace::{frame_pointer, read_frame};
+}
+
 /// Kernel/user execution context selected at compile time.
 pub(crate) mod context {
     pub(crate) use super::selected::{

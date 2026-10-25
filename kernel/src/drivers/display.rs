@@ -178,3 +178,30 @@ pub(crate) trait BootFramebuffer {
     /// `Device`。
     fn flush(&self, rect: DisplayRect) -> Result<(), DisplayError>;
 }
+
+/// kernel panic 时直接把蓝屏送上屏幕的 fail-stop 接口。
+///
+/// 与 [`BootFramebuffer`] 不同，它在 DRM 接管之后仍然可用：adapter 持有一份专用于 panic 的
+/// scanout resource，调用者独占设备（其余 CPU 已停止），所以不需要等待 completion 也不遵守
+/// `DisplayDevice` 的异步 transaction 模型。
+pub(crate) trait PanicFramebuffer: Send + Sync {
+    /// 返回 panic scanout 的固定 XRGB8888 mode。
+    fn mode(&self) -> DisplayMode;
+
+    /// 把 `bytes` 写入 panic 帧缓冲的 `offset` 字节处，尚不通知 host。
+    ///
+    /// # Errors
+    ///
+    /// 范围越过帧缓冲返回 `InvalidRectangle`。
+    fn write(&self, offset: usize, bytes: &[u8]) -> Result<(), DisplayError>;
+
+    /// 把整个 panic 帧缓冲设为 active scanout 并同步刷新到屏幕。
+    ///
+    /// 假定其余 CPU 已停止：adapter 可以强行接管仍被其他上下文持有的命令队列锁，并丢弃
+    /// 在途 operation 的 completion。
+    ///
+    /// # Errors
+    ///
+    /// transport 或 response 异常返回 `Device`。
+    fn present(&self) -> Result<(), DisplayError>;
+}

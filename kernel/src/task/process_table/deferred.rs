@@ -133,6 +133,7 @@ pub(crate) fn dispatch_pending_deferred_work() {
             task.scheduling.policy.lock().checkpoint_runtime(now_us);
             task.charge_timer_tick(work.contains(DeferredWork::TIMER_FROM_USER));
         }
+        crate::crash::note_deferred_progress();
         wake_expired_tasks(get_time_ns());
         load_average::update(now_us);
         expire_timers(get_time_ns());

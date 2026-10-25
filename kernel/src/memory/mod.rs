@@ -85,6 +85,24 @@ unsafe extern "C" {
     pub(crate) fn __signal_trampoline();
 }
 
+/// 判断 `address` 是否落在某个 kernel stack 内。
+///
+/// kernel stack 有三类来源：任务 kernel stack 区域、boot CPU 的早期栈，以及次级 CPU 的启动栈
+/// （堆分配，位于 kernel image 内的 bss 堆或其后的 direct map RAM）。fail-stop 回溯只允许解引用满足该条件的
+/// frame pointer：损坏的 frame pointer 在 panic 路径中再次 fault 会让现场保存半途而废。
+pub(crate) fn is_kernel_stack_address(address: usize) -> bool {
+    let in_direct_map_ram = || {
+        let image_start = crate::arch::mmu::virtual_to_physical(stext as *const () as usize)?;
+        let physical = crate::arch::mmu::virtual_to_physical(address)?;
+        Some((image_start..platform::physical_memory_end()).contains(&physical))
+    };
+    (crate::arch::mmu::KERNEL_STACK_REGION_START..crate::arch::mmu::KERNEL_STACK_REGION_TOP)
+        .contains(&address)
+        || (boot_stack_bottom as *const () as usize..boot_stack_top as *const () as usize)
+            .contains(&address)
+        || in_direct_map_ram().unwrap_or(false)
+}
+
 pub(crate) fn signal_trampoline_entry() -> usize {
     SIGNAL_TRAMPOLINE
         + (__signal_trampoline as *const () as usize - strampoline as *const () as usize)
@@ -119,7 +137,11 @@ pub(crate) fn init() {
     debug!("kernel_end_addr: {:#x}", kernel_end_addr.as_usize());
     debug!("memory_end_addr: {:#x}", memory_end_addr.as_usize());
 
-    frame_allocator::init(kernel_end_addr, memory_end_addr);
+    // 崩溃记录区取走 RAM 末尾；allocator 看不到它，所以 reset 之后里面的现场不会被覆盖。
+    frame_allocator::init(
+        kernel_end_addr,
+        crate::crash::reserve_region(memory_end_addr),
+    );
     heap_allocator::enable_frame_backed_growth();
     heap_allocator::init_cpu_caches();
 

@@ -56,7 +56,9 @@ pub(crate) fn sys_prctl(option: usize, argument: usize, remaining: [usize; 3]) -
         PR_GET_NAME => {
             let task = current_task().expect("prctl requires current task");
             match task.comm_buffer() {
-                Ok(name) => task.copy_to_user(argument, &name).map_or(-errno::EFAULT, |()| 0),
+                Ok(name) => task
+                    .copy_to_user(argument, &name)
+                    .map_or(-errno::EFAULT, |()| 0),
                 Err(_) => -errno::ENOMEM,
             }
         }

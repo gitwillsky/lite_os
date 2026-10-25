@@ -28,6 +28,7 @@ mod platform;
 mod log;
 
 mod boot_screen;
+mod crash;
 mod drivers;
 mod drm;
 mod fallible_tree;
@@ -78,15 +79,20 @@ fn kernel_main(context: entry::BootContext) -> ! {
     arch::mmu::initialize_asid_allocator(cpu::count());
     deferred::initialize(cpu::count());
     task::initialize_interrupt_state();
+    crash::initialize();
     info!(
         "logical CPU topology initialized: count={}, boot={:?}",
         cpu::count(),
         cpu::boot_id()
     );
     memory::init();
+    crash::recover();
     // 显示设备提前到这里建立：GPU 初始化只需要内存与设备窗口，开机画面因此在其余设备、文件系统与 scheduler
     // 之前就上屏；GPU 中断仍等 interrupt controller 就绪后在 `bind_platform_devices` 补注册。
     let display = virtio::bind_display();
+    if let Some(display) = &display {
+        crash::register_display(display.panic_framebuffer());
+    }
     let mut boot_screen = boot_screen::BootScreen::start(
         display.as_ref().map(virtio::EarlyDisplay::framebuffer),
         BOOT_SCENE,
@@ -96,6 +102,7 @@ fn kernel_main(context: entry::BootContext) -> ! {
     if let Some(level) = parameters.log_level {
         log::apply_console_loglevel(level);
     }
+    crash::configure(parameters.panic_seconds);
     info!(
         "kernel command line: {}",
         core::str::from_utf8(platform::kernel_command_line()).unwrap_or("<non-utf8>")

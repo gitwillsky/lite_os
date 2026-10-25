@@ -218,7 +218,11 @@ impl TaskControlBlock {
     ///
     /// Vec backing OOM 时返回 `MemoryError::OutOfMemory`，名称不变。
     pub(crate) fn set_comm(&self, name: &[u8]) -> Result<(), MemoryError> {
-        let length = name.iter().position(|byte| *byte == 0).unwrap_or(name.len()).min(15);
+        let length = name
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(name.len())
+            .min(15);
         let mut comm = Vec::new();
         comm.try_reserve_exact(length)
             .map_err(|_| MemoryError::OutOfMemory)?;

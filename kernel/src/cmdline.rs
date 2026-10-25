@@ -26,6 +26,8 @@ pub(crate) struct KernelParameters {
     pub(crate) console: Option<Vec<u8>>,
     /// `loglevel=`/`quiet`/`debug` 给出的 Linux console loglevel。
     pub(crate) log_level: Option<u8>,
+    /// `panic=`：Linux 语义，0 停在蓝屏，正数为秒数后重启，负数立即重启。
+    pub(crate) panic_seconds: Option<i32>,
     /// init 的 argv（不含 argv[0]）。
     pub(crate) init_arguments: Vec<Vec<u8>>,
     /// init 的环境（`name=value`），以 `HOME=/`、`TERM=linux` 开始。
@@ -41,6 +43,8 @@ pub(crate) enum CommandLineError {
     TooManyEnvironment,
     /// `loglevel=` 的值不是十进制整数。
     InvalidLogLevel,
+    /// `panic=` 的值不是十进制整数。
+    InvalidPanicTimeout,
     /// 分配失败。
     OutOfMemory,
 }
@@ -157,7 +161,7 @@ fn forward(
 ///
 /// # Errors
 ///
-/// 转交 init 的 argv/环境超过 32 项、`loglevel=` 非法或分配失败时返回对应错误。
+/// 转交 init 的 argv/环境超过 32 项、`loglevel=`/`panic=` 非法或分配失败时返回对应错误。
 pub(crate) fn parse(line: &[u8]) -> Result<KernelParameters, CommandLineError> {
     let mut parameters = KernelParameters::default();
     for entry in INITIAL_ENVIRONMENT {
@@ -218,6 +222,14 @@ pub(crate) fn parse(line: &[u8]) -> Result<KernelParameters, CommandLineError> {
                         .ok()
                         .and_then(|level| level.parse::<u8>().ok())
                         .ok_or(CommandLineError::InvalidLogLevel)?,
+                );
+            }
+            (b"panic", Some(seconds)) => {
+                parameters.panic_seconds = Some(
+                    core::str::from_utf8(seconds)
+                        .ok()
+                        .and_then(|seconds| seconds.parse::<i32>().ok())
+                        .ok_or(CommandLineError::InvalidPanicTimeout)?,
                 );
             }
             // Linux `quiet` 等价 loglevel=4，`debug` 等价 loglevel=10。

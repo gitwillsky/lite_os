@@ -59,6 +59,8 @@ use crate::{
 fn handle_supervisor_soft_interrupt() {
     // RISC-V SSIP 必须先 clear 再完成同步 barrier；两步是唯一 trap-owned ack seam。
     arch::interrupt::clear_software();
+    // 停止请求优先于 barrier：panic 所有者不会再等待其他 CPU 的 barrier ack。
+    crate::crash::stop_if_requested();
     crate::task::complete_pending_memory_barrier();
 }
 
@@ -81,6 +83,7 @@ fn handle_claimed_interrupt(user_trap: bool) {
         crate::platform::ClaimedInterrupt::Timer(_) => {
             // 先重置 level timer source，再 EOI；反序会让 GIC 立即重投同一 PPI。
             let fired = timer::set_next_timer_interrupt();
+            crate::crash::watchdog_tick();
             deferred::raise(timer_work(user_trap, fired));
         }
         crate::platform::ClaimedInterrupt::Device(_) => {}
@@ -94,6 +97,7 @@ fn handle_claimed_interrupt(user_trap: bool) {
         // 必须先 EOI/清除 local pending edge，再读取所有 SGI request；若反序，远端在
         // completion 与 EOI 之间发布的新 generation 可能合并到旧 edge 并永久等待。
         crate::platform::complete_pending_ipi();
+        crate::crash::stop_if_requested();
         crate::task::complete_pending_memory_barrier();
     }
 }
@@ -109,6 +113,7 @@ pub(crate) fn handle_user_trap() -> ! {
         TrapEvent::TimerInterrupt => {
             // 仅重置下一次中断并发布 per-CPU deferred work，不在 hardirq 调度。
             let fired = timer::set_next_timer_interrupt();
+            crate::crash::watchdog_tick();
             deferred::raise(timer_work(true, fired));
         }
         TrapEvent::ExternalInterrupt => {
@@ -290,6 +295,7 @@ pub(crate) fn handle_kernel_trap() {
     match arch::trap::event() {
         TrapEvent::TimerInterrupt => {
             let fired = timer::set_next_timer_interrupt();
+            crate::crash::watchdog_tick();
             // kernel/user timer 使用同一 per-CPU softirq；hardirq 不扫描任务表或分配。
             deferred::raise(timer_work(false, fired));
         }

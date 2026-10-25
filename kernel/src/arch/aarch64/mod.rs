@@ -1,5 +1,6 @@
 use core::arch::global_asm;
 
+pub(crate) mod backtrace;
 mod fp_state;
 mod instruction_cache;
 pub(crate) mod interrupt;

@@ -250,6 +250,16 @@ pub(crate) struct VirtIOGpuDevice {
     // OWNER: 消费者在初始化时绑定一次的 completion deferred vector；hardirq 与 deferred
     // 续批只发布它。绑定前没有消费者，completion 留在 used ring 由绑定时的补偿发布消费。
     completion_work: Once<crate::deferred::DeferredWork>,
+    // OWNER: panic 蓝屏专用的 scanout resource 与 backing，初始化时一次建立，之后只被
+    // `PanicFramebuffer` 读写。DRM 不会触碰它的 id，所以无论 compositor 正占用哪个 resource，
+    // panic 都能整体切换到它；缺失时 DRM 接管之后 panic 无法上屏。
+    panic_screen: Once<PanicScreen>,
+}
+
+/// panic 蓝屏专用的帧缓冲。
+struct PanicScreen {
+    backing: Arc<DeviceBacking>,
+    mode: DisplayMode,
 }
 
 impl VirtIOGpuDevice {
@@ -340,6 +350,7 @@ impl VirtIOGpuDevice {
             control,
             cursor,
             completion_work: Once::new(),
+            panic_screen: Once::new(),
         };
         if features & VIRTIO_GPU_F_VIRGL != 0 {
             let capset = Self::load_virgl_capset(&adapter.device, &adapter.control)?;
@@ -356,6 +367,23 @@ impl VirtIOGpuDevice {
         )?)
         .ok()?;
         Self::initialize_scanout(&adapter.device, &adapter.control, mode, &framebuffer)?;
+        // panic 蓝屏的专用 resource：只建立、绑定 backing，不设为 scanout，直到 panic 才被呈现。
+        let panic_backing = Arc::try_new(DeviceBacking::try_allocate(
+            framebuffer_bytes.div_ceil(PAGE_SIZE),
+            FrameAllocationClass::KernelCritical,
+        )?)
+        .ok()?;
+        Self::create_attached_resource(
+            &adapter.device,
+            &adapter.control,
+            PANIC_RESOURCE_ID,
+            mode,
+            &panic_backing,
+        )?;
+        adapter.panic_screen.call_once(|| PanicScreen {
+            backing: panic_backing,
+            mode,
+        });
         let mut control = adapter.control.lock();
         control.resources = ResourceSet::with_boot(framebuffer, mode);
         control.scanout.presented(mode);

@@ -298,6 +298,36 @@ static LOGGER: IrqMutex<Logger> = IrqMutex::new(Logger::new());
 // Missing the macro-side load would evaluate filtered arguments and take LOGGER's IRQ lock.
 static LOG_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
 
+/// 把 kmsg 环最近 `count` 条 record 以 `[秒.微秒] 文本` 写入 `out`，供崩溃现场使用。
+///
+/// 强行取得 logger 锁：panic 可能发生在持锁的代码里，等锁会让现场永远写不出来。其余 CPU 已被停止
+/// 时环是静止的；若有 CPU 无响应而恰在写槽位，该条可能残缺，但长度与 sequence 都做了校验，
+/// 不会越界。
+///
+/// # Safety
+///
+/// 只能由 panic 所有者 CPU 调用。
+pub(crate) unsafe fn write_tail_for_fail_stop(out: &mut dyn fmt::Write, count: usize) {
+    // SAFETY: 调用者是 panic 所有者。
+    let logger = unsafe { LOGGER.lock_for_fail_stop() };
+    let first = logger
+        .next_sequence
+        .saturating_sub(count.min(KMSG_RECORD_CAPACITY) as u64);
+    for sequence in first..logger.next_sequence {
+        let record = &logger.records[sequence as usize % KMSG_RECORD_CAPACITY];
+        if record.sequence != sequence || usize::from(record.length) > KMSG_MESSAGE_CAPACITY {
+            continue;
+        }
+        let _ = writeln!(
+            out,
+            "[{:5}.{:06}] {}",
+            record.timestamp_us / 1_000_000,
+            record.timestamp_us % 1_000_000,
+            Lossy(&record.message[..usize::from(record.length)])
+        );
+    }
+}
+
 /// 设置全局 severity threshold。
 fn set_log_level(level: LogLevel) {
     LOG_LEVEL.store(level as u8, Ordering::Release);

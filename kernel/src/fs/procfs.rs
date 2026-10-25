@@ -445,6 +445,16 @@ impl ProcInode {
         if matches!(self.node, ProcNode::Partitions) {
             return format_partitions();
         }
+        if matches!(self.node, ProcNode::LastPanic) {
+            // 上次启动正常结束时文件为空，与 Linux pstore 无记录时的表现一致。
+            let dump = crate::crash::previous_dump().unwrap_or_default();
+            let mut contents = Vec::new();
+            contents
+                .try_reserve_exact(dump.len())
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+            contents.extend_from_slice(dump);
+            return Ok(contents);
+        }
         if matches!(self.node, ProcNode::Cmdline) {
             let line = self.source.kernel_command_line();
             let mut contents = Vec::new();
@@ -488,7 +498,11 @@ impl ProcInode {
             ProcNode::LoadAvg => format_loadavg(&snapshot),
             ProcNode::Uptime => format_uptime(&snapshot, self.source.current_time_offsets()?),
 
-            ProcNode::Mounts | ProcNode::Partitions | ProcNode::Cmdline | ProcNode::Swaps => {
+            ProcNode::Mounts
+            | ProcNode::Partitions
+            | ProcNode::Cmdline
+            | ProcNode::LastPanic
+            | ProcNode::Swaps => {
                 unreachable!(
                     "mount table, partitions and command line handled before task snapshot"
                 )
@@ -853,6 +867,7 @@ impl Inode for ProcInode {
                     (ProcNode::Partitions, InodeType::File, &b"partitions"[..]),
                     (ProcNode::Swaps, InodeType::File, &b"swaps"[..]),
                     (ProcNode::Cmdline, InodeType::File, &b"cmdline"[..]),
+                    (ProcNode::LastPanic, InodeType::File, &b"last_panic"[..]),
                     (ProcNode::NetLink, InodeType::SymLink, &b"net"[..]),
                     (ProcNode::SysDir, InodeType::Directory, &b"sys"[..]),
                     (ProcNode::SysvipcDir, InodeType::Directory, &b"sysvipc"[..]),
@@ -1148,6 +1163,7 @@ impl Inode for ProcInode {
                 b"mounts" => ProcNode::Mounts,
                 b"partitions" => ProcNode::Partitions,
                 b"cmdline" => ProcNode::Cmdline,
+                b"last_panic" => ProcNode::LastPanic,
                 b"net" => ProcNode::NetLink,
                 b"self" => ProcNode::SelfLink,
                 b"sys" => ProcNode::SysDir,

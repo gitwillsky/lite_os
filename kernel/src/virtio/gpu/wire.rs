@@ -50,6 +50,7 @@ pub(super) const CAPSET_RESPONSE_SIZE: usize = CONTROL_HEADER_SIZE + MAX_CAPSET_
 pub(super) const BOOT_RESOURCE_ID: u32 = 1;
 pub(super) const ALTERNATE_RESOURCE_ID: u32 = 2;
 pub(super) const CURSOR_RESOURCE_ID: u32 = 3;
+pub(super) const PANIC_RESOURCE_ID: u32 = 4;
 
 pub(super) fn prepare_cursor(
     request: &mut [u8],

@@ -35,6 +35,11 @@ pub(crate) struct EarlyDisplay {
 }
 
 impl EarlyDisplay {
+    /// panic 蓝屏用的帧缓冲；与 DRM 是否接管无关，随时可用。
+    pub(crate) fn panic_framebuffer(&self) -> Arc<dyn crate::drivers::PanicFramebuffer> {
+        self.device.clone()
+    }
+
     /// 启动期同步帧缓冲接口；DRM 绑定 completion work 之后它拒绝所有调用。
     pub(crate) fn framebuffer(&self) -> &dyn BootFramebuffer {
         &*self.device
