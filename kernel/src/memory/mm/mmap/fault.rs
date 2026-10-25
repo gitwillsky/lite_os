@@ -292,13 +292,16 @@ impl MemorySet {
                 resident.page.acquire_writer();
                 resident.writer = true;
             }
+            let flags: PagePermissions = permission.into();
             let mut commit = TranslationCommit::new();
-            if self.page_table.translate(vpn).is_none() {
-                self.page_table
-                    .map(vpn, pin.ppn(), permission.into(), &mut commit)?;
-            } else {
-                self.page_table
-                    .set_flags(vpn, permission.into(), &mut commit)?;
+            match self.page_table.translate(vpn) {
+                None => self.page_table.map(vpn, pin.ppn(), flags, &mut commit)?,
+                Some(entry) if entry.permissions() != flags => {
+                    self.page_table.set_flags(vpn, flags, &mut commit)?;
+                }
+                // 软件 leaf 已满足这次访问：fault 说明本 CPU 仍缓存着旧的受限 translation。
+                // set_flags 在权限不变时不记录 fence，必须显式刷新，否则 Handled 之后原指令会反复缺页或读到旧页。
+                Some(_) => commit = TranslationCommit::stale_fault(vpn.as_usize()),
             }
             commit
                 .synchronize()

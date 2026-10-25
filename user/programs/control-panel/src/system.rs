@@ -108,7 +108,14 @@ impl Page for System {
                     C::ButtonHilight,
                 );
                 p.text(page.x + 14, page.y + 76, "计算机全名：", ink, false);
-                p.text(page.x + 110, page.y + 76, &self.host, ink, false);
+                p.text_fit(
+                    page.x + 110,
+                    page.y + 76,
+                    page.width - 122,
+                    &self.host,
+                    ink,
+                    false,
+                );
             }
             2 => {
                 // 硬件页：设备管理器分组。
@@ -143,10 +150,17 @@ impl Page for System {
                 let step = p.line_height() + 4;
                 let mut y = page.y + 22;
                 for (heading, values) in &self.groups {
-                    p.text(heading_x, y, heading, ink, false);
+                    p.text_fit(
+                        heading_x,
+                        y,
+                        page.right() - heading_x - 12,
+                        heading,
+                        ink,
+                        false,
+                    );
                     y += step;
                     for value in values {
-                        p.text(value_x, y, value, ink, false);
+                        p.text_fit(value_x, y, page.right() - value_x - 12, value, ink, false);
                         y += step;
                     }
                     y += 10;

@@ -88,8 +88,9 @@ fn size_text(bytes: u64) -> String {
     format!("{} 字节", grouped(bytes))
 }
 
-/// `2026年10月25日 19:30:12`；系统没有时区数据库，按 UTC 显示。
+/// `2026年10月25日 19:30:12`，按系统本地时区显示。
 fn date_text(seconds: i64) -> String {
+    let seconds = calendar::zone::to_local(seconds);
     let date = calendar::civil_from_days(seconds.div_euclid(86400));
     let rest = seconds.rem_euclid(86400);
     format!(
@@ -268,13 +269,8 @@ fn separator(p: &mut Painter<'_>, page: Rect, y: i32) {
 /// 标签与值同一行：标签靠左，值在固定列。
 fn row(p: &mut Painter<'_>, page: Rect, y: i32, label: &str, value: &str) {
     let ink = Ink::Color(C::ButtonText);
-    p.text(page.x + 14, y, label, ink, false);
-    p.clipped(
-        Rect::new(page.x + 96, y, page.width - 108, p.line_height()),
-        |p| {
-            p.text(page.x + 96, y, value, ink, false);
-        },
-    );
+    p.text_fit(page.x + 14, y, 78, label, ink, false);
+    p.text_fit(page.x + 96, y, page.width - 108, value, ink, false);
 }
 
 /// 画一行并把 `y` 下移一个行距。
@@ -452,8 +448,15 @@ impl Page for FileProperties {
                 for (colour, label, value) in [(USED, "已用空间:", used), (FREE, "可用空间:", free)]
                 {
                     p.fill_rgb(Rect::new(page.x + 14, y + 2, 10, 10), colour);
-                    p.text(page.x + 30, y, label, ink, false);
-                    p.text(page.x + 110, y, &size_text(value), ink, false);
+                    p.text_fit(page.x + 30, y, 76, label, ink, false);
+                    p.text_fit(
+                        page.x + 110,
+                        y,
+                        page.width - 122,
+                        &size_text(value),
+                        ink,
+                        false,
+                    );
                     y += step;
                 }
                 separator(p, page, y + 2);

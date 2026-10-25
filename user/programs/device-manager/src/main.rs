@@ -399,9 +399,10 @@ impl App {
                 if hot {
                     p.fill(Rect::new(text_x - 2, y, width + 4, ROW), C::Hilight);
                 }
-                p.text(
+                p.text_fit(
                     text_x,
                     y + (ROW - p.line_height()) / 2,
+                    rows_rect.right() - text_x - 4,
                     &text,
                     Ink::Color(if hot { C::HilightText } else { C::WindowText }),
                     false,
@@ -475,7 +476,14 @@ fn paint_properties(p: &mut Painter<'_>, client: Rect, device: &Device) {
     let (dialog, ok) = modal_rects(client);
     dialog_frame(p, dialog, &format!("{} 属性", device.name));
     let ink = Ink::Color(C::ButtonText);
-    p.text(dialog.x + 16, dialog.y + 34, &device.name, ink, true);
+    p.text_fit(
+        dialog.x + 16,
+        dialog.y + 34,
+        dialog.width - 32,
+        &device.name,
+        ink,
+        true,
+    );
     p.fill(
         Rect::new(dialog.x + 16, dialog.y + 56, dialog.width - 32, 1),
         C::ButtonShadow,
@@ -483,13 +491,8 @@ fn paint_properties(p: &mut Painter<'_>, client: Rect, device: &Device) {
     let step = p.line_height() + 6;
     for (row, (label, value)) in device.details.iter().enumerate() {
         let y = dialog.y + 66 + row as i32 * step;
-        p.text(dialog.x + 16, y, &format!("{label}："), ink, false);
-        p.clipped(
-            Rect::new(dialog.x + 100, y, dialog.width - 116, step),
-            |p| {
-                p.text(dialog.x + 100, y, value, ink, false);
-            },
-        );
+        p.text_fit(dialog.x + 16, y, 80, &format!("{label}："), ink, false);
+        p.text_fit(dialog.x + 100, y, dialog.width - 116, value, ink, false);
     }
     p.text(
         dialog.x + 16,

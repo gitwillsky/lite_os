@@ -94,7 +94,14 @@ pub fn areas(s: &Logon, c: Configuration) -> Vec<Rect> {
     }
 }
 fn label(p: &mut Painter<'_>, d: Rect, x: i32, y: i32, text: &str) {
-    p.text(d.x + x, d.y + y, text, Ink::Color(C::ButtonText), false);
+    p.text_fit(
+        d.x + x,
+        d.y + y,
+        d.width - x - 12,
+        text,
+        Ink::Color(C::ButtonText),
+        false,
+    );
 }
 fn button(p: &mut Painter<'_>, s: &Logon, rect: Rect, index: usize, title: &str, default: bool) {
     p.push_button(

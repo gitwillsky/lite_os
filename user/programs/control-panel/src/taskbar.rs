@@ -80,12 +80,12 @@ impl Page for Taskbar {
         for (index, (label, checked)) in self.rows().into_iter().enumerate() {
             let row = Self::row_rect(page, index);
             p.checkbox(row.x, row.y + 4, checked, false);
-            p.label(
+            p.label_fit(
                 row.x + 22,
                 row.y + 3,
+                page.right() - (row.x + 22) - 12,
                 label,
                 Ink::Color(C::ButtonText),
-                false,
             );
         }
     }

@@ -196,11 +196,13 @@ impl Desktop {
     fn tooltip_text(&self, display: &Display, target: usize) -> Option<String> {
         match target {
             paint::CLOCK => {
-                let days = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .ok()?
-                    .as_secs() as i64
-                    / 86_400;
+                let days = calendar::zone::to_local(
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .ok()?
+                        .as_secs() as i64,
+                )
+                .div_euclid(86_400);
                 let date = calendar::civil_from_days(days);
                 let weekday = ["日", "一", "二", "三", "四", "五", "六"]
                     [calendar::weekday(days) as usize % 7];
@@ -928,6 +930,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut ready = false;
     let mut presented = std::collections::HashSet::new();
     let mut minute = 0;
+    let mut last_unix_minute = 0;
     let mut revision = 0;
     let mut pending = std::collections::HashSet::new();
     loop {
@@ -952,10 +955,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             state.sync_task_rectangles(&mut display)?;
         }
         dirty |= state.icons.poll();
-        let now = std::time::SystemTime::now()
+        let unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
-            .as_secs()
-            / 60;
+            .as_secs() as i64;
+        // 每分钟重读一次 /etc/localtime：控制面板改了时区后，长驻的外壳据此刷新时钟。
+        if unix / 60 != last_unix_minute {
+            last_unix_minute = unix / 60;
+            calendar::zone::reload();
+        }
+        let now = (calendar::zone::to_local(unix) / 60) as u64;
         let current_revision = display.toplevel_revision();
         if now != minute || revision != current_revision {
             minute = now;

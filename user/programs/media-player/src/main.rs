@@ -244,14 +244,16 @@ fn paint(p: &mut Painter<'_>, client: Rect, view: &mut View<'_>) {
     let (player, menubar, menus, pointer) = (view.player, view.menubar, view.menus, view.pointer);
     let l = layout(client);
     let ink = Ink::Color(C::ButtonText);
-    p.text(
+    let half = client.width / 2 - 12;
+    p.text_fit(
         client.x + 8,
         client.y + MENU_HEIGHT + 8,
+        half,
         &format!("位置: {}", seconds(player.position())),
         ink,
         false,
     );
-    let length = format!("长度: {}", seconds(player.frames()));
+    let length = p.fit(&format!("长度: {}", seconds(player.frames())), half);
     let width = (p.text_width(&length, false) + p.scale() - 1) / p.scale();
     p.text(
         client.right() - 8 - width,
@@ -320,9 +322,7 @@ fn paint(p: &mut Painter<'_>, client: Rect, view: &mut View<'_>) {
     for (pane, label) in [(left, text), (right, state)] {
         p.edge(pane, Edge::SunkenOuter);
         let y = pane.y + (pane.height - p.line_height()) / 2;
-        p.clipped(pane, |p| {
-            p.text(pane.x + 4, y, label, ink, false);
-        });
+        p.text_fit(pane.x + 4, y, pane.width - 8, label, ink, false);
     }
     menubar.paint(p, l.bar, menus, pointer);
 }

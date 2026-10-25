@@ -1,6 +1,6 @@
 use crate::sync::WaitResult;
 use crate::{
-    syscall::errno::{EFAULT, EINVAL, ENOMEM, EOPNOTSUPP},
+    syscall::errno::{EFAULT, EINVAL, ENOMEM, EOPNOTSUPP, EPERM},
     task::current_task,
 };
 
@@ -48,12 +48,76 @@ pub(crate) fn sys_gettimeofday(timeval: usize, timezone: usize) -> isize {
             return -EFAULT;
         }
     }
-    // 2. 当前没有 settimeofday ABI，唯一 timezone policy 为 UTC 且不使用 DST。
-    // 缺少该显式策略会迫使 syscall 伪造一份可变 timezone state。
+    // 2. settimeofday 的 timezone 参数被忽略，内核唯一 timezone policy 为 UTC 且不使用 DST；
+    // 本地时区由用户态 /etc/localtime 承担。缺少该显式策略会迫使 syscall 伪造一份可变 timezone state。
     if timezone != 0 && task.copy_to_user(timezone, &[0u8; 8]).is_err() {
         return -EFAULT;
     }
     0
+}
+
+/// 设置系统实时钟（`clock_settime`）。
+///
+/// 1. 标准 CAP_SYS_TIME 先于参数解析，缺失返回 `-EPERM`；
+/// 2. 只有 `CLOCK_REALTIME` 可设，其余 clock 返回 `-EINVAL`；
+/// 3. `tv_nsec` 越界或时间为负、早于本次启动返回 `-EINVAL`，copyin fault 返回 `-EFAULT`。
+pub(crate) fn sys_clock_settime(clock_id: i32, timespec: usize) -> isize {
+    let task = current_task().expect("clock_settime requires a current task");
+    if !task.has_initial_capability(syscall_abi::capability::Capability::SYS_TIME) {
+        return -EPERM;
+    }
+    if clock_id != CLOCK_REALTIME {
+        return -EINVAL;
+    }
+    let mut bytes = [0u8; 16];
+    if task.copy_from_user(timespec, &mut bytes).is_err() {
+        return -EFAULT;
+    }
+    let seconds = i64::from_ne_bytes(bytes[..8].try_into().unwrap());
+    let nanoseconds = i64::from_ne_bytes(bytes[8..].try_into().unwrap());
+    if seconds < 0 || !(0..1_000_000_000).contains(&nanoseconds) {
+        return -EINVAL;
+    }
+    let total = i128::from(seconds) * 1_000_000_000 + i128::from(nanoseconds);
+    match u64::try_from(total)
+        .ok()
+        .and_then(|total| crate::timer::set_realtime_ns(total).ok())
+    {
+        Some(()) => 0,
+        None => -EINVAL,
+    }
+}
+
+/// 设置系统实时钟（`settimeofday`）。
+///
+/// `timeval` 为空表示只传 timezone；Linux 对非空 timezone 只做校验与记录，这里没有可变 timezone
+/// 状态（唯一策略是 UTC，本地时区由用户态的 `/etc/localtime` 负责），所以接受并忽略。
+pub(crate) fn sys_settimeofday(timeval: usize, timezone: usize) -> isize {
+    let task = current_task().expect("settimeofday requires a current task");
+    if !task.has_initial_capability(syscall_abi::capability::Capability::SYS_TIME) {
+        return -EPERM;
+    }
+    let mut value = None;
+    if timeval != 0 {
+        let mut bytes = [0u8; 16];
+        if task.copy_from_user(timeval, &mut bytes).is_err() {
+            return -EFAULT;
+        }
+        match decode_timeval_ns(&bytes) {
+            Ok(nanoseconds) => value = Some(nanoseconds),
+            Err(error) => return error,
+        }
+    }
+    if timezone != 0 {
+        let mut bytes = [0u8; 8];
+        if task.copy_from_user(timezone, &mut bytes).is_err() {
+            return -EFAULT;
+        }
+    }
+    match value {
+        Some(nanoseconds) => crate::timer::set_realtime_ns(nanoseconds).map_or(-EINVAL, |()| 0),
+        None => 0,
+    }
 }
 
 fn decode_timeval_ns(bytes: &[u8]) -> Result<u64, isize> {

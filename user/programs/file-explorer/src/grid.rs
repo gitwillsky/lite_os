@@ -13,8 +13,8 @@ pub enum ViewMode {
 
 /// "详细信息"表头高度。
 pub const HEADER_HEIGHT: i32 = 17;
-/// "详细信息"各列宽度：名称、大小、类型、修改时间。
-pub const COLUMNS: [i32; 4] = [150, 64, 96, 126];
+/// "详细信息"各列的初始宽度：名称、大小、类型、修改时间；运行中由表头拖动改变。
+pub const INITIAL_COLUMNS: [i32; 4] = [150, 64, 96, 126];
 
 pub fn inside(rect: Rect, (x, y): (i32, i32)) -> bool {
     (rect.x..rect.right()).contains(&x) && (rect.y..rect.bottom()).contains(&y)

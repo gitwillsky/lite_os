@@ -1,6 +1,9 @@
-//! 公历日期换算：Unix 时间到年月日、星期与月历；不涉及时区，调用者决定显示 UTC 还是本地时间。
+//! 公历日期换算：Unix 时间到年月日、星期与月历，加上 [`zone`] 的本地时区与系统时钟。日期换算本身不涉及时区，
+//! 调用者先用 [`zone::to_local`] 得到本地墙钟秒再换算。
 
 extern crate liteos_runtime as _;
+pub mod zone;
+
 /// 公历日期。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Date {

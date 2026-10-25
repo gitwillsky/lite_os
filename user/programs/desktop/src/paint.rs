@@ -172,22 +172,6 @@ pub fn areas(s: &Desktop, d: &Display, id: WindowId, c: Configuration) -> Vec<Re
 fn text(p: &mut Painter<'_>, x: i32, y: i32, text: &str) {
     p.text(x, y, text, Ink::Color(C::ButtonText), false);
 }
-fn shortened(p: &Painter<'_>, text: &str, width: i32) -> String {
-    if p.text_width(text, false) <= width * p.scale() {
-        return text.into();
-    }
-    let mut result = String::new();
-    for ch in text.chars() {
-        let len = result.len();
-        result.push(ch);
-        if p.text_width(&result, false) + p.text_width("...", false) > width * p.scale() {
-            result.truncate(len);
-            break;
-        }
-    }
-    result.push_str("...");
-    result
-}
 pub fn frame(
     s: &Desktop,
     d: &Display,
@@ -223,7 +207,7 @@ pub fn frame(
                 );
             }
             art.icon(&mut p, icon.art, r.x + 22, r.y + 3);
-            let label = shortened(&p, &icon.label, r.width - 2);
+            let label = p.fit(&icon.label, r.width - 2);
             let band = Rect::new(r.x, r.y + 40, r.width, 20);
             if s.selected == Some(i) {
                 let width = (p.text_width(&label, false) + p.scale() - 1) / p.scale() + 6;
@@ -243,7 +227,7 @@ pub fn frame(
             p.text(
                 100,
                 40,
-                &shortened(&p, &s.message, c.width - 120),
+                &p.fit(&s.message, c.width - 120),
                 Ink::Color(C::HilightText),
                 false,
             );
@@ -313,7 +297,7 @@ pub fn frame(
                 let shift = i32::from(pressed);
                 art.app_icons
                     .paint(&mut p, &info.app_id, rect.x + 4 + shift, rect.y + 3 + shift);
-                let title = shortened(&p, &info.title, rect.width - 30);
+                let title = p.fit(&info.title, rect.width - 30);
                 p.text(
                     rect.x + 24 + shift,
                     rect.y + (rect.height - p.line_height()) / 2 + shift,

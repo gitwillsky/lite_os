@@ -1445,6 +1445,8 @@ def create_image(
         f"write {ROOT / 'user' / 'base' / 'group'} /etc/group",
         f"write {ROOT / 'user' / 'base' / 'shadow'} /etc/shadow",
         "set_inode_field /etc/shadow mode 0100600",
+        # 默认时区（UTC+8）；之后由控制面板改写，同步器只在缺失时补上。
+        f"write {ROOT / 'user' / 'base' / 'localtime'} /etc/localtime",
         f"write {ROOT / 'user' / 'base' / 'network-service'} /etc/init.d/network-service",
         "set_inode_field /etc/init.d/network-service mode 0100755",
         f"write {ROOT / 'user' / 'base' / 'udhcpc.script'} /usr/share/udhcpc/default.script",

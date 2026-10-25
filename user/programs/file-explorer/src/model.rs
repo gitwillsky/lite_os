@@ -342,8 +342,9 @@ pub fn size_text(bytes: u64) -> String {
 }
 
 /// 详细信息的"修改时间"列：`年-月-日 时:分`，月日不补零（简体中文 Windows 2000 的短日期风格）；
-/// 系统没有时区数据库，所以按 UTC 显示。
+/// 按系统本地时区显示（`/etc/localtime`）。
 pub fn date_text(seconds: i64) -> String {
+    let seconds = calendar::zone::to_local(seconds);
     let date = calendar::civil_from_days(seconds.div_euclid(86400));
     let rest = seconds.rem_euclid(86400);
     format!(

@@ -171,6 +171,44 @@ impl Painter<'_> {
         }
     }
 
+    /// 状态栏：在 `rect` 内排一行凹陷面板，每个面板一段文字。
+    ///
+    /// 除最后一个外，面板宽度由文字量出（文字宽 + 左右留白），最后一个占满剩余；总宽放不下时按比例缩窄，
+    /// 每段文字都截断在自己的面板内，所以语言、字体或数值位数变化都不会画出面板。
+    pub fn status_bar(&mut self, rect: Rect, panes: &[&str]) {
+        const PADDING: i32 = 16;
+        const MINIMUM: i32 = 40;
+        let wanted: Vec<i32> = panes
+            .iter()
+            .map(|text| (self.logical_ceil(self.text_width(text, false)) + PADDING).max(MINIMUM))
+            .collect();
+        let leading: i32 = wanted[..wanted.len().saturating_sub(1)].iter().sum();
+        let room = (rect.width - MINIMUM).max(0);
+        let mut x = rect.x;
+        for (index, text) in panes.iter().enumerate() {
+            let last = index + 1 == panes.len();
+            let width = if last {
+                rect.right() - x
+            } else if leading > room {
+                wanted[index] * room / leading
+            } else {
+                wanted[index]
+            };
+            let pane = Rect::new(x + 1, rect.y + 1, (width - 2).max(0), rect.height - 2);
+            self.edge(pane, Edge::SunkenOuter);
+            let y = pane.y + (pane.height - self.line_height()) / 2;
+            self.text_fit(
+                pane.x + 4,
+                y,
+                pane.width - 8,
+                text,
+                Ink::Color(SystemColor::ButtonText),
+                false,
+            );
+            x += width;
+        }
+    }
+
     /// 工具提示：`INFOBK` 底、黑色 1 像素框、四周留 2 像素。
     pub fn tooltip(&mut self, x: i32, y: i32, text: &str) -> Rect {
         let width = self.logical_ceil(self.text_width(text, false)) + 2 * 3;

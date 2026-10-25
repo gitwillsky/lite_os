@@ -12,5 +12,6 @@ path = "src/main.rs"
 liteos-runtime = { path = "../../libraries/liteos-runtime" }
 canvas = { path = "../../libraries/canvas" }
 classic-theme = { path = "../../libraries/classic-theme" }
+calendar = { path = "../../libraries/calendar" }
 classic-ui = { path = "../../libraries/classic-ui" }
 typeface = { path = "../../libraries/typeface" }

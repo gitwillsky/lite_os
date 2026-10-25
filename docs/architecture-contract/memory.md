@@ -224,6 +224,7 @@
 - Context 换代先清 seen 再发布 identity；旧 activation 的迟到 fetch_or 可跨代。该 CPU 已被
   capture 且 active=0/pending=true，下次必进慢路 full flush，不能因 seen 位跳过复用失效。
   scoped/full local fence 均在 active/hardware installation 前完成，不替代 mapping mutation fence。
+- shared-file resident 页的缺页恢复若发现 leaf 已存在且权限已满足访问，说明本 CPU 仍缓存旧的受限 translation：必须以 `TranslationCommit::stale_fault` 显式刷新，`set_flags` 在权限不变时不记录 fence，缺少它 `Handled` 后原指令会反复缺页或读到旧页。
 - shared-file writer claim 必须覆盖远端 stale writable translation 的完整生命周期：增加写权限在 PTE publication 前 acquire，收紧写权限在 remote fence 完成后 release。
 - private reclaim 的独占性由真实 `PageMappingRef` 数量而非临时 Arc pin 判定。fence 后
   release replay 消费映射 reference；只有成功取得 page operation 并清空最后一个 private

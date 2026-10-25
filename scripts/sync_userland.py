@@ -248,6 +248,12 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
                 commands += [f"write {ROOT / 'user/base/shadow'} /etc/shadow", "set_inode_field /etc/shadow mode 0100600"]
                 run_batch(image, commands, directory, "initialize-shadow", writable=True)
                 account_changed = True
+        # /etc/localtime 是用户拥有的时区设置（控制面板会改写它）：只在缺失时写入默认值，绝不覆盖。
+        with tempfile.TemporaryDirectory(prefix="liteos-localtime-") as temporary:
+            directory = Path(temporary)
+            metadata = run_batch(image, ["stat /etc/localtime"], directory, "inspect-localtime", writable=False)
+            if "Inode:" not in metadata:
+                run_batch(image, [f"write {ROOT / 'user/base/localtime'} /etc/localtime"], directory, "initialize-localtime", writable=True)
         previous = read_stamp(image)
         if previous is not None and previous.get("identity") == identity:
             print(f"userland sync cache hit: {identity[:12]}")

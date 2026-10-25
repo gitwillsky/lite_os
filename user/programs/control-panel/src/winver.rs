@@ -34,7 +34,14 @@ impl Page for Winver {
         ];
         let mut y = page.y + 24;
         for (text, bold) in lines {
-            p.text(page.x + 64, y, text, Ink::Color(C::ButtonText), bold);
+            p.text_fit(
+                page.x + 64,
+                y,
+                page.width - 76,
+                text,
+                Ink::Color(C::ButtonText),
+                bold,
+            );
             y += p.line_height() + 6;
         }
     }

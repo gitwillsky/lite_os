@@ -42,8 +42,8 @@ impl Column {
         }
     }
 
-    /// 列宽（逻辑像素）。
-    pub fn width(self) -> i32 {
+    /// 初始列宽（逻辑像素）；运行中的列宽由表头拖动决定。
+    pub fn initial_width(self) -> i32 {
         match self {
             Column::Name => 100,
             Column::Pid => 40,

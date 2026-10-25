@@ -206,7 +206,7 @@ impl Logon {
                 ready: false,
                 started: Instant::now(),
                 login_time: Command::new("/bin/date")
-                    .arg("+%Y-%m-%d %H:%M:%S UTC")
+                    .arg("+%Y-%m-%d %H:%M:%S %Z")
                     .env_remove("WAYLAND_SOCKET")
                     .output()
                     .ok()

@@ -110,9 +110,10 @@ impl Sounds {
                 if hot {
                     p.fill(Rect::new(text_x - 2, y, width + 4, ROW - 1), C::Hilight);
                 }
-                p.text(
+                p.text_fit(
                     text_x,
                     y + 1,
+                    inner.right() - text_x - 4,
                     event.name,
                     Ink::Color(if hot { C::HilightText } else { C::WindowText }),
                     false,

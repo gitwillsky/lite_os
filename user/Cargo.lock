@@ -173,6 +173,7 @@ dependencies = [
 name = "notepad"
 version = "0.1.0"
 dependencies = [
+ "calendar",
  "canvas",
  "classic-theme",
  "classic-ui",

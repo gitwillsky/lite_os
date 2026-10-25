@@ -10,6 +10,7 @@
 | 109 | `timer_getoverrun` | Complete | bounded overrun projection |
 | 110 | `timer_settime` | Complete | absolute/relative deadline |
 | 111 | `timer_delete` | Complete | owner index cleanup |
+| 112 | `clock_settime` | Partial | 仅 CLOCK_REALTIME（CAP_SYS_TIME，其余 clock EINVAL）；调整 realtime 与 monotonic 的偏移，早于本次启动的时刻 EINVAL；不写硬件 RTC；已安排的绝对 CLOCK_REALTIME 定时器/timerfd 不随跳变重算、无 CANCEL_ON_SET |
 | 113 | `clock_gettime` | Partial | realtime、monotonic、monotonic raw、realtime/monotonic coarse、boottime 与 process/thread CPU clocks |
 | 114 | `clock_getres` | Partial | 上述 supported clocks 的实际 counter/runtime 分辨率 |
 | 115 | `clock_nanosleep` | Partial | REALTIME/MONOTONIC/BOOTTIME、namespace absolute 与 host relative wait；CPU clocks EOPNOTSUPP |
@@ -27,6 +28,7 @@
 | 240 | `rt_tgsigqueueinfo` | Partial | 精确 TGID/TID、同一 DAC/queue owner；新增源码待集中验证 |
 | 139 | `rt_sigreturn` | Complete | architecture-owned frame、寄存器恢复与 syscall replay；坏 frame 强制 SIGSEGV（RV SI_KERNEL，AArch SP 地址错误码） |
 | 169 | `gettimeofday` | Complete | realtime snapshot |
+| 170 | `settimeofday` | Partial | 同 `clock_settime` 的 realtime 语义；timezone 参数只校验可读并忽略（本地时区由用户态 `/etc/localtime` 承担，内核唯一策略是 UTC）|
 
 ## 已知缺口
 

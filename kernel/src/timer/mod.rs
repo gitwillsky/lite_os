@@ -51,6 +51,28 @@ pub(crate) fn get_realtime_ns() -> u64 {
     platform::read_realtime_ns().unwrap_or(1_704_067_200u64 * NSEC_PER_SEC)
 }
 
+/// 设置 `CLOCK_REALTIME`：把 realtime 与 monotonic 之间的偏移改成使当前 realtime 等于 `realtime_ns`。
+///
+/// # Parameters
+///
+/// - `realtime_ns`: 新的 Unix epoch 纳秒值。
+///
+/// # Errors
+///
+/// 早于本次启动的 monotonic 时间（偏移会为负）返回 `Err(())`；偏移是无符号量，这样的值无法表示。
+///
+/// 已经安排的绝对 `CLOCK_REALTIME` 定时器在创建时已换算成 monotonic deadline，不随这次跳变移动
+/// （Linux 会重新求值）；该限制记录在 `docs/syscall-support/signal-time.md`。
+pub(crate) fn set_realtime_ns(realtime_ns: u64) -> Result<(), ()> {
+    assert!(
+        REALTIME_INITIALIZED.load(Ordering::Acquire),
+        "realtime clock set before RTC initialization"
+    );
+    let offset = realtime_ns.checked_sub(get_time_ns()).ok_or(())?;
+    REALTIME_OFFSET_NS.store(offset, Ordering::Relaxed);
+    Ok(())
+}
+
 /// 返回本次启动时刻对应的 Unix epoch 秒数。
 ///
 /// # Returns

@@ -13,11 +13,11 @@ use canvas::{Rect, Surface};
 use chrome::{Command, Entry, MENU_TITLES, TOOLS};
 use classic_theme::Theme;
 use classic_ui::{
-    Configuration, Decoration, DecorationAction, Display, EventKind, FrameKind, Key, Painter,
-    WindowId,
+    Configuration, CursorShape, Decoration, DecorationAction, Display, EventKind, FrameKind, Key,
+    Painter, WindowId,
 };
 use dialogs::{Confirm, Notice};
-use grid::{Grid, inside};
+use grid::{Grid, ViewMode, inside};
 use model::Location;
 use std::{
     path::{Path, PathBuf},
@@ -396,6 +396,15 @@ impl App {
 
     fn press_list(&mut self, client: Rect, point: (i32, i32)) {
         let grid = self.grid(client);
+        // 详细信息表头分隔线：开始拖动调整列宽。
+        if grid.view == ViewMode::Details
+            && self
+                .ui
+                .columns
+                .press(ui::header_bar(&grid, &self.ui.columns), point)
+        {
+            return;
+        }
         if let Some(bar) = grid.bar.filter(|bar| inside(*bar, point)) {
             let content = (grid.extent, grid.page(), grid.line());
             self.ui
@@ -434,6 +443,7 @@ impl App {
     }
 
     fn release(&mut self, client: Rect) {
+        self.ui.columns.release();
         self.ui.list_scroll.release();
         self.ui.tree_scroll.release();
         let l = ui::layout(client, &self.browser);
@@ -452,8 +462,21 @@ impl App {
         }
     }
 
+    /// 详细信息表头上（或正在拖动列宽时）应显示的光标。
+    fn header_cursor(&self, client: Rect) -> Option<CursorShape> {
+        let grid = self.grid(client);
+        (grid.view == ViewMode::Details)
+            .then(|| {
+                self.ui
+                    .columns
+                    .cursor(ui::header_bar(&grid, &self.ui.columns), self.ui.pointer)
+            })
+            .flatten()
+    }
+
     fn pointer_moved(&mut self, client: Rect) {
         let point = self.ui.pointer;
+        self.ui.columns.motion(point);
         self.ui
             .tooltip
             .hover(ui::layout(client, &self.browser).toolbar.and_then(|bar| {
@@ -898,6 +921,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
                 app.ui.pointer = (x.floor() as i32, y.floor() as i32);
                 app.pointer_moved(client);
+                if let Some(shape) = app.header_cursor(client) {
+                    display.set_cursor_shape(shape)?;
+                } else if inside(client, app.ui.pointer) {
+                    display.set_cursor_shape(CursorShape::Default)?;
+                }
             }
             EventKind::PointerLeave => {
                 app.ui.pointer = (-1, -1);

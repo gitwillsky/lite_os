@@ -248,15 +248,14 @@ impl FileDialog {
         for (rect, text) in [(r.look_in, shown.as_str()), (r.filter, self.filter_label)] {
             let box_inner = p.edge(rect, Edge::Sunken);
             p.fill(box_inner, C::Window);
-            p.clipped(box_inner, |p| {
-                p.text(
-                    box_inner.x + 3,
-                    box_inner.y + 2,
-                    text,
-                    Ink::Color(C::WindowText),
-                    false,
-                );
-            });
+            p.text_fit(
+                box_inner.x + 3,
+                box_inner.y + 2,
+                box_inner.width - 6,
+                text,
+                Ink::Color(C::WindowText),
+                false,
+            );
         }
         p.push_button(r.up, "上一级", ButtonState::default());
         // 列表。
@@ -287,9 +286,10 @@ impl FileDialog {
                 } {
                     icon.paint(p, rows.x + 2, y + 1);
                 }
-                p.text(
+                p.text_fit(
                     rows.x + 22,
                     y + (ROW - p.line_height()) / 2,
+                    rows.width - 26,
                     &entry.name,
                     Ink::Color(if hot { C::HilightText } else { C::WindowText }),
                     false,
@@ -321,11 +321,13 @@ impl FileDialog {
         );
         p.push_button(r.cancel, "取消", ButtonState::default());
         if !self.message.is_empty() {
-            p.clipped(
-                Rect::new(r.dialog.x + 6, r.message.1, r.dialog.width - 12, 20),
-                |p| {
-                    p.text(r.message.0, r.message.1, &self.message, ink, false);
-                },
+            p.text_fit(
+                r.message.0,
+                r.message.1,
+                r.dialog.right() - 12 - r.message.0,
+                &self.message,
+                ink,
+                false,
             );
         }
     }

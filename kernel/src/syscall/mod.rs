@@ -452,6 +452,8 @@ pub(crate) fn syscall(
             SYSCALL_SETHOSTNAME => sys_set_uts_name(true, args[0], args[1]),
             SYSCALL_SETDOMAINNAME => sys_set_uts_name(false, args[0], args[1]),
             SYSCALL_GETTIMEOFDAY => sys_gettimeofday(args[0], args[1]),
+            SYSCALL_SETTIMEOFDAY => timer::sys_settimeofday(args[0], args[1]),
+            SYSCALL_CLOCK_SETTIME => timer::sys_clock_settime(args[0] as i32, args[1]),
             SYSCALL_GETITIMER => sys_getitimer(args[0], args[1]),
             SYSCALL_SETITIMER => sys_setitimer(args[0], args[1], args[2]),
             SYSCALL_UMASK => sys_umask(args[0] as u32),

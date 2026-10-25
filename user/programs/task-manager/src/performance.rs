@@ -113,14 +113,16 @@ pub fn paint(p: &mut Painter<'_>, page: Rect, monitor: &Monitor, totals: Totals)
         p.group_box(group, title);
         for (row, (label, value)) in lines.iter().enumerate() {
             let line_y = group.y + 18 + row as i32 * step - 1;
-            p.text(
+            let value_width = (p.text_width(value, false) + p.scale() - 1) / p.scale();
+            // 标签只能用到值左边的空间，放不下时截断。
+            p.text_fit(
                 group.x + 10,
                 line_y,
+                group.width - 20 - value_width - 6,
                 label,
                 Ink::Color(C::ButtonText),
                 false,
             );
-            let value_width = (p.text_width(value, false) + p.scale() - 1) / p.scale();
             p.text(
                 group.right() - 10 - value_width,
                 line_y,

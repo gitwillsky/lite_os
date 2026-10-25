@@ -8,6 +8,7 @@ mod app_icons;
 mod bitmap;
 pub use app_icons::AppIcons;
 pub use bitmap::Bitmap;
+mod column_header;
 mod controls;
 mod decoration;
 mod dropdown;
@@ -24,6 +25,7 @@ mod trackbar;
 mod wayland;
 mod window;
 
+pub use column_header::ColumnHeader;
 pub use decoration::{Decoration, DecorationAction};
 pub use dropdown::{DropItem, DropMenu, Popup, title_rects};
 pub use editing::{Edit, FocusChain};

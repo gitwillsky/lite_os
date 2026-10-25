@@ -2,12 +2,12 @@
 use crate::{
     browser::Browser,
     chrome::{self, Entry, MENU_TITLES, TOOLS},
-    grid::{COLUMNS, Grid, HEADER_HEIGHT, ViewMode, inside},
+    grid::{Grid, HEADER_HEIGHT, INITIAL_COLUMNS, ViewMode, inside},
     model::{Icon, Item, date_text, size_text},
 };
 use canvas::Rect;
 use classic_theme::{Edge, SystemColor as C};
-use classic_ui::{Bitmap, Edit, Ink, MenuItemState, Painter, Scroll, Tooltip};
+use classic_ui::{Bitmap, ColumnHeader, Edit, Ink, MenuItemState, Painter, Scroll, Tooltip};
 use std::path::Path;
 
 pub const MENU_HEIGHT: i32 = 20;
@@ -142,6 +142,8 @@ pub struct Ui {
     /// Alt 按下后还没有别的按键：此时松开 Alt 才算"单独的 Alt"。
     pub alt_alone: bool,
     pub list_scroll: Scroll,
+    /// "详细信息"视图各列的宽度与表头拖动状态。
+    pub columns: ColumnHeader,
     pub tree_scroll: Scroll,
     /// 正被按住的工具栏按钮。
     pub pressed_tool: Option<usize>,
@@ -165,6 +167,7 @@ impl Ui {
             menu_focus: None,
             alt_alone: false,
             list_scroll: Scroll::default(),
+            columns: ColumnHeader::new(INITIAL_COLUMNS),
             tree_scroll: Scroll::default(),
             pressed_tool: None,
             rename: None,
@@ -658,7 +661,7 @@ fn paint_list(p: &mut Painter<'_>, scene: &Scene<'_>, l: &Layout) {
         }
     });
     if grid.view == ViewMode::Details {
-        paint_header(p, &grid);
+        paint_header(p, &grid, &ui.columns);
     }
     if let Some(bar) = grid.bar {
         p.scrollbar(
@@ -670,16 +673,26 @@ fn paint_list(p: &mut Painter<'_>, scene: &Scene<'_>, l: &Layout) {
     }
 }
 
-fn paint_header(p: &mut Painter<'_>, grid: &Grid) {
+/// "详细信息"表头条：左端对齐列表视口，高度一行；命中与绘制共用。
+pub fn header_bar(grid: &Grid, columns: &ColumnHeader) -> Rect {
+    Rect::new(
+        grid.viewport.x,
+        grid.viewport.y,
+        columns.total(),
+        HEADER_HEIGHT,
+    )
+}
+
+fn paint_header(p: &mut Painter<'_>, grid: &Grid, columns: &ColumnHeader) {
     let mut x = grid.viewport.x;
-    for (title, width) in ["名称", "大小", "类型", "修改时间"]
+    for (title, full) in ["名称", "大小", "类型", "修改时间"]
         .into_iter()
-        .zip(COLUMNS)
+        .zip(columns.cells(header_bar(grid, columns)))
     {
         let cell = Rect::new(
             x,
             grid.viewport.y,
-            width.min(grid.viewport.right() - x).max(0),
+            full.width.min(grid.viewport.right() - x).max(0),
             HEADER_HEIGHT,
         );
         if cell.width <= 0 {
@@ -687,16 +700,15 @@ fn paint_header(p: &mut Painter<'_>, grid: &Grid) {
         }
         let face = p.edge(cell, Edge::Raised);
         p.fill(face, C::ButtonFace);
-        p.clipped(cell, |p| {
-            p.text(
-                cell.x + 6,
-                cell.y + (HEADER_HEIGHT - p.line_height()) / 2,
-                title,
-                Ink::Color(C::ButtonText),
-                false,
-            );
-        });
-        x += width;
+        p.text_fit(
+            cell.x + 6,
+            cell.y + (HEADER_HEIGHT - p.line_height()) / 2,
+            cell.width - 10,
+            title,
+            Ink::Color(C::ButtonText),
+            false,
+        );
+        x += full.width;
     }
     let rest = Rect::new(
         x,
@@ -768,28 +780,35 @@ fn paint_item(
         label(p, cell.x + 22, text_y, &item.name, cell.width - 26);
         return;
     }
-    label(p, cell.x + 22, text_y, &item.name, COLUMNS[0] - 26);
+    let columns = &scene.ui.columns;
+    let (name, size_column, kind_column, date_column) = (
+        columns.width(0),
+        columns.width(1),
+        columns.width(2),
+        columns.width(3),
+    );
+    label(p, cell.x + 22, text_y, &item.name, name - 26);
     let size = item.size.map(size_text).unwrap_or_default();
     let size_width = logical(p, p.text_width(&size, false));
     let modified = item.modified.map(date_text).unwrap_or_default();
-    let columns = [
+    let cells = [
         (
-            cell.x + COLUMNS[0] + COLUMNS[1] - 8 - size_width,
+            cell.x + name + size_column - 8 - size_width,
             size,
-            COLUMNS[1],
+            size_column,
         ),
         (
-            cell.x + COLUMNS[0] + COLUMNS[1] + 6,
+            cell.x + name + size_column + 6,
             item.kind.clone(),
-            COLUMNS[2] - 8,
+            kind_column - 8,
         ),
         (
-            cell.x + COLUMNS[0] + COLUMNS[1] + COLUMNS[2] + 6,
+            cell.x + name + size_column + kind_column + 6,
             modified,
-            COLUMNS[3] - 8,
+            date_column - 8,
         ),
     ];
-    for (x, text, width) in columns {
+    for (x, text, width) in cells {
         p.text(
             x,
             text_y,

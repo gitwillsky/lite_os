@@ -143,9 +143,18 @@ impl Page for Network {
         let ink = Ink::Color(C::ButtonText);
         let row = |p: &mut Painter<'_>, group: Rect, index: i32, label: &str, value: &str| {
             let y = group.y + 22 + index * (p.line_height() + 8);
-            p.text(group.x + 14, y, label, ink, false);
-            let width = (p.text_width(value, false) + p.scale() - 1) / p.scale();
-            p.text(group.right() - 14 - width, y, value, ink, false);
+            // 值靠右、至多占一半；标签用左边剩下的空间，两者放不下都截断。
+            let value = p.fit(value, group.width / 2 - 14);
+            let width = (p.text_width(&value, false) + p.scale() - 1) / p.scale();
+            p.text_fit(
+                group.x + 14,
+                y,
+                group.width - 28 - width - 8,
+                label,
+                ink,
+                false,
+            );
+            p.text(group.right() - 14 - width, y, &value, ink, false);
         };
         if tab == 0 {
             let connected = self.address.is_some();

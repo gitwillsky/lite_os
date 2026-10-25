@@ -9,8 +9,9 @@ mod system;
 use canvas::{Rect, Surface};
 use classic_theme::{Edge, SystemColor as C, Theme};
 use classic_ui::{
-    AppIcons, ButtonState, Decoration, DecorationAction, Display, DropMenu, EventKind, FrameKind,
-    Ink, MenuBar, MenuEvent, Painter, Prompt, SCROLLBAR_WIDTH, Scroll, ToplevelId, ToplevelRequest,
+    AppIcons, ButtonState, ColumnHeader, CursorShape, Decoration, DecorationAction, Display,
+    DropMenu, EventKind, FrameKind, Ink, MenuBar, MenuEvent, Painter, Prompt, SCROLLBAR_WIDTH,
+    Scroll, ToplevelId, ToplevelRequest,
 };
 use menus::{Command as MenuCommand, Speed};
 use processes::{Column, Process, Sort};
@@ -119,6 +120,8 @@ struct App {
     menubar: MenuBar,
     modal: Option<Modal>,
     scroll: [Scroll; 2],
+    /// 进程页各列的宽度；表头分隔线可拖动调整。
+    columns: ColumnHeader,
     children: Vec<Child>,
     pointer: (i32, i32),
     pressed: Option<usize>,
@@ -128,6 +131,7 @@ struct App {
 impl App {
     fn new() -> Self {
         let mut app = Self {
+            columns: ColumnHeader::new(Column::ALL.iter().map(|column| column.initial_width())),
             tab: 0,
             selected_app: 0,
             selected_pid: None,
@@ -294,16 +298,17 @@ impl App {
     }
 
     /// 进程页表头每列的矩形。
-    fn header_cells(list: Rect) -> Vec<(Column, Rect)> {
-        let mut x = list.x + 2;
+    fn header_cells(&self, list: Rect) -> Vec<(Column, Rect)> {
         Column::ALL
             .iter()
-            .map(|column| {
-                let rect = Rect::new(x, list.y + 2, column.width(), ROW);
-                x += column.width();
-                (*column, rect)
-            })
+            .copied()
+            .zip(self.columns.cells(Self::header_bar(list)))
             .collect()
+    }
+
+    /// 进程页表头条（左端是第一列起点，高度一行）。
+    fn header_bar(list: Rect) -> Rect {
+        Rect::new(list.x + 2, list.y + 2, list.width, ROW)
     }
 
     /// 列表的行区（表头之下），有滚动条时已让出右侧。
@@ -371,8 +376,13 @@ impl App {
             self.scroll[self.tab].press(bar, true, content, point);
             return;
         }
+        // 分隔线上的按下是调整列宽，不是点击表头排序。
+        if self.tab == 1 && self.columns.press(Self::header_bar(list), point) {
+            return;
+        }
         if self.tab == 1
-            && let Some((column, _)) = Self::header_cells(list)
+            && let Some((column, _)) = self
+                .header_cells(list)
                 .into_iter()
                 .find(|(_, rect)| inside(*rect, point))
         {
@@ -407,11 +417,24 @@ impl App {
         self.scroll[self.tab].wheel(notches, ROW, count as i32 * ROW - rows.height);
     }
 
+    /// 进程页表头上应显示的光标。
+    fn header_cursor(&self, client: Rect) -> Option<CursorShape> {
+        (self.tab == 1)
+            .then(|| {
+                let list = list_rect(page_rect(client, self.tab));
+                self.columns.cursor(Self::header_bar(list), self.pointer)
+            })
+            .flatten()
+    }
+
     fn pointer_moved(&mut self, p: &Painter<'_>, display: &Display, client: Rect) {
         let point = self.pointer;
         let menus = self.menus();
         if self.menubar.motion(p, menu_rect(client), &menus, point) {
             return;
+        }
+        if self.tab == 1 {
+            self.columns.motion(point);
         }
         if self.tab != 2 {
             let list = list_rect(page_rect(client, self.tab));
@@ -542,7 +565,7 @@ impl App {
         let position = scroll.position;
         // 表头。
         let cells: Vec<(&str, Rect, bool)> = if self.tab == 1 {
-            Self::header_cells(list)
+            self.header_cells(list)
                 .into_iter()
                 .map(|(column, rect)| (column.title(), rect, column.right_aligned()))
                 .collect()
@@ -569,7 +592,8 @@ impl App {
         }
         if self.tab == 1 {
             // 当前排序列在标题右侧画一个小三角。
-            if let Some((_, cell)) = Self::header_cells(list)
+            if let Some((_, cell)) = self
+                .header_cells(list)
                 .into_iter()
                 .find(|(column, _)| *column == self.sort.column)
             {
@@ -599,7 +623,7 @@ impl App {
             if self.tab == 1 {
                 for (i, process) in self.processes.iter().enumerate().skip(first).take(visible) {
                     let y = rows.y + i as i32 * ROW - position;
-                    paint_process(p, rows, y, process, selected == i);
+                    paint_process(p, rows, y, process, selected == i, &self.columns);
                 }
             } else {
                 for (i, (_, title, minimized, icon)) in Self::tasks(display)
@@ -654,19 +678,19 @@ impl App {
                 processes::grouped(limit)
             ),
         ];
-        let widths = [100, 110, status.width - 100 - 110];
-        let mut x = status.x;
-        for (text, width) in panes.iter().zip(widths) {
-            let pane = Rect::new(x + 2, status.y + 2, width - 3, status.height - 3);
-            p.edge(pane, Edge::SunkenOuter);
-            let y = pane.y + (pane.height - p.line_height()) / 2;
-            p.text(pane.x + 4, y, text, Ink::Color(C::ButtonText), false);
-            x += width;
-        }
+        let panes: Vec<&str> = panes.iter().map(String::as_str).collect();
+        p.status_bar(status, &panes);
     }
 }
 
-fn paint_process(p: &mut Painter<'_>, rows: Rect, y: i32, process: &Process, selected: bool) {
+fn paint_process(
+    p: &mut Painter<'_>,
+    rows: Rect,
+    y: i32,
+    process: &Process,
+    selected: bool,
+    columns: &ColumnHeader,
+) {
     if selected {
         p.fill(Rect::new(rows.x, y, rows.width, ROW), C::Hilight);
     }
@@ -677,15 +701,18 @@ fn paint_process(p: &mut Painter<'_>, rows: Rect, y: i32, process: &Process, sel
     });
     let text_y = y + (ROW - p.line_height()) / 2;
     let mut x = rows.x;
-    for column in Column::ALL {
+    for (index, column) in Column::ALL.into_iter().enumerate() {
+        let width = columns.width(index);
         let text = column.text(process);
+        // 单元格内容超出列宽时截断；右对齐的数值列同样，截断后再按实际宽度靠右。
+        let text = p.fit(&text, width - 11);
         if column.right_aligned() {
-            let width = (p.text_width(&text, false) + p.scale() - 1) / p.scale();
-            p.text(x + column.width() - 6 - width, text_y, &text, ink, false);
+            let shown = (p.text_width(&text, false) + p.scale() - 1) / p.scale();
+            p.text(x + width - 6 - shown, text_y, &text, ink, false);
         } else {
             p.text(x + 5, text_y, &text, ink, false);
         }
-        x += column.width();
+        x += width;
     }
 }
 
@@ -798,6 +825,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
                     app.pointer = (x.floor() as i32, y.floor() as i32);
                     app.pointer_moved(&probe, &display, client);
+                    // 表头分隔线上（或正在拖动）显示左右箭头，客户区其余位置恢复默认光标。
+                    if let Some(shape) = app.header_cursor(client) {
+                        display.set_cursor_shape(shape)?;
+                    } else if inside(client, app.pointer) {
+                        display.set_cursor_shape(CursorShape::Default)?;
+                    }
                 }
                 EventKind::PointerLeave => app.pointer = (-1, -1),
                 EventKind::Wheel { vertical, .. } => app.wheel(&display, client, vertical),
@@ -813,6 +846,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 } => {
                     app.scroll[0].release();
                     app.scroll[1].release();
+                    app.columns.release();
                     if let Some(index) = app.pressed.take()
                         && buttons(client, app.tab)
                             .get(index)
