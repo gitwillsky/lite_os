@@ -24,6 +24,9 @@ PCM/control ioctl 的唯一 caller 是已注册 DeviceFile dispatch，不经过 
    同时拥有该 OFD 的 timestamp clock 选择与启用状态。锁序为 operation → Engine，状态快照也遵守此顺序。
    持 Engine 锁可能调用 adapter reclaim，因此 observer 只能累加 Atomic 完成计数和断开标志，不能重入 Engine。
    Card.process 在锁内消费事件并 tick，锁外发 readiness；缺少该顺序会形成回调持锁自等。
+   Engine 处理完成事件后必须先补填，再判断物理流是否空闲；TX 批量归还不等于应用欠载，提前 STOP 会打断连续 PCM。
+   预送深度为 `PCM_PERIODS - 1`，保留一段应用数据跨越整批 TX 完成；额外缩短深度会使宿主断粮，全部预送会提前耗尽应用数据。
+   缺少未来 period 的运行中子流若仍有在途贡献，不得提前混入缺口或置 Xrun；等待补充或在途耗尽后再裁决。
 2. 全局 CARD Once 只在 init 发布一次；初始化 configure/prepare 物理流后安装 observer/completion source。
    子流不调用物理 release；`PcmOutput` 只保留 configure/prepare/start/stop/submit/writable。
    init 后物理流持续属于卡，子流 HW_FREE/CLOSE 只回收软件状态。

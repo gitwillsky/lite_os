@@ -393,17 +393,40 @@ mod engine_tests {
         write(&mut engine, a, &ring, 0.25, -0.25, 4);
         engine.start(a).unwrap();
         assert!(engine.tick(NONE, &output));
-        // 队列深度被限制在 2 个 period，物理流已经启动。
-        assert_eq!(output.submitted.borrow().len(), 2);
+        // 预送时保留一段应用数据，尚未收到完成事件。
+        assert_eq!(output.submitted.borrow().len(), PCM_PERIODS - 1);
         assert_eq!(*output.phase.borrow(), Phase::Running);
         assert_eq!(level(&output.submitted.borrow()[0]), (0.25, -0.25));
         assert_eq!(engine.state(a).hardware_frames, 0, "nothing played yet");
-        // 一个 period 完成：hw_ptr 前进，并补填一个新的。
+        // 一个 period 完成：hw_ptr 前进；应用使用腾出的空间写入下一段，再补回物理队列。
         let events = output.complete_one();
         assert!(engine.tick(events, &output));
         assert_eq!(engine.state(a).hardware_frames, PERIOD);
-        assert_eq!(output.submitted.borrow().len(), 3);
+        write(&mut engine, a, &ring, 0.5, -0.5, 1);
+        engine.tick(output.complete_one(), &output);
+        assert_eq!(output.submitted.borrow().len(), PCM_PERIODS + 1);
+        assert_eq!(level(&output.submitted.borrow()[PCM_PERIODS]), (0.5, -0.5));
         assert_eq!(engine.state(a).state, PcmState::Running);
+    }
+
+    #[test]
+    fn prefetch_preserves_one_ready_period_across_batched_completions() {
+        let (mut engine, output, ring) = (Engine::new(), FakeOutput::new(), FakeRing::new());
+        let a = open(&mut engine, &ring);
+        write(&mut engine, a, &ring, 0.25, -0.25, PCM_PERIODS);
+        engine.start(a).unwrap();
+        engine.tick(NONE, &output);
+        assert_eq!(output.submitted.borrow().len(), PCM_PERIODS - 1);
+        // 整批 TX 一次归还后，保留的数据让设备继续播放；不能提前判空或停启物理流。
+        let mut events = NONE;
+        for _ in 0..PCM_PERIODS - 1 {
+            events.completed += output.complete_one().completed;
+        }
+        engine.tick(events, &output);
+        assert_eq!(output.submitted.borrow().len(), PCM_PERIODS);
+        assert_eq!(*output.queued.borrow(), 1);
+        assert_eq!(engine.state(a).state, PcmState::Running);
+        assert_eq!(*output.history.borrow(), ["start"]);
     }
 
     #[test]
@@ -425,6 +448,29 @@ mod engine_tests {
     }
 
     #[test]
+    fn joining_stream_waits_for_prefilled_audio_without_premature_xrun() {
+        let (mut engine, output) = (Engine::new(), FakeOutput::new());
+        let (first, second) = (FakeRing::new(), FakeRing::new());
+        let (a, b) = (open(&mut engine, &first), open(&mut engine, &second));
+        write(&mut engine, a, &first, 0.25, 0.25, PCM_PERIODS - 2);
+        engine.start(a).unwrap();
+        engine.tick(NONE, &output);
+        write(&mut engine, b, &second, 0.5, 0.5, PCM_PERIODS - 1);
+        engine.start(b).unwrap();
+        engine.tick(NONE, &output);
+        assert_eq!(engine.state(a).state, PcmState::Running);
+        assert_eq!(output.submitted.borrow().len(), PCM_PERIODS - 2);
+        // 第一路在设备中的数据仍有效，应用可补充下一段；随后新流加入同一个物理 period。
+        write(&mut engine, a, &first, 0.25, 0.25, 1);
+        engine.tick(NONE, &output);
+        assert_eq!(
+            level(&output.submitted.borrow()[PCM_PERIODS - 2]),
+            (0.75, 0.75)
+        );
+        assert_eq!(engine.state(a).state, PcmState::Running);
+    }
+
+    #[test]
     fn completion_credits_only_the_substreams_that_contributed() {
         let (mut engine, output) = (Engine::new(), FakeOutput::new());
         let (ring_a, ring_b) = (FakeRing::new(), FakeRing::new());
@@ -433,9 +479,11 @@ mod engine_tests {
         write(&mut engine, b, &ring_b, 0.5, 0.5, 1);
         engine.start(a).unwrap();
         engine.start(b).unwrap();
-        // 第 1 个 period 含 a+b；b 只写了一个 period，第 2 个 period 里 b 缺席，所以 b 进入 Xrun。
+        // 第 1 个 period 含 a+b；b 尚有在途数据时，不能因下一段未交付就提前报 Xrun。
         engine.tick(NONE, &output);
         assert_eq!(level(&output.submitted.borrow()[0]), (0.75, 0.75));
+        assert_eq!(engine.state(b).state, PcmState::Running);
+        engine.tick(output.complete_one(), &output);
         assert_eq!(level(&output.submitted.borrow()[1]), (0.25, 0.25));
         assert_eq!(
             engine.state(b).state,
@@ -447,19 +495,18 @@ mod engine_tests {
             PcmState::Running,
             "a is unaffected by b's underrun"
         );
-        engine.tick(output.complete_one(), &output);
         assert_eq!(engine.state(a).hardware_frames, PERIOD);
         // Xrun 之后 hw_ptr 冻结：客户端必须 prepare 重来（指针清零），不会依赖 xrun 之后的位置。
         assert_eq!(
             engine.state(b).hardware_frames,
-            0,
+            PERIOD,
             "an xrun substream's hw_ptr stays frozen"
         );
         engine.tick(output.complete_one(), &output);
         assert_eq!(engine.state(a).hardware_frames, 2 * PERIOD);
         assert_eq!(
             engine.state(b).hardware_frames,
-            0,
+            PERIOD,
             "b never advances again until it is re-prepared"
         );
     }
@@ -471,17 +518,20 @@ mod engine_tests {
         write(&mut engine, a, &ring, 0.25, 0.25, 4);
         engine.start(a).unwrap();
         engine.tick(NONE, &output);
-        assert_eq!(output.submitted.borrow().len(), 2);
-        // 在途 period 还没完成就 drop 并重新 prepare：旧 period 的完成不能推进新一轮的 hw_ptr。
+        assert_eq!(output.submitted.borrow().len(), PCM_PERIODS - 1);
+        // 1. 旧 period 还在设备里时 drop，并用同一个子流开始新一轮播放。
         engine.drop_stream(a).unwrap();
         engine.prepare(a).unwrap();
         write(&mut engine, a, &ring, 0.5, 0.5, 2);
+        engine.start(a).unwrap();
+        // 2. 逐个归还整批旧 period；空出的槽位可以补入新数据，但旧完成不能推进新一轮 hw_ptr。
+        for _ in 0..PCM_PERIODS - 1 {
+            engine.tick(output.complete_one(), &output);
+            assert_eq!(engine.state(a).hardware_frames, 0, "stale completion");
+        }
+        // 3. 新一轮自己的 period 完成后才记账。
         engine.tick(output.complete_one(), &output);
-        assert_eq!(
-            engine.state(a).hardware_frames,
-            0,
-            "stale completion must not be credited"
-        );
+        assert_eq!(engine.state(a).hardware_frames, PERIOD);
         assert_eq!(engine.state(a).application_frames, 2 * PERIOD);
     }
 
@@ -534,7 +584,7 @@ mod engine_tests {
     fn master_volume_and_mute_shape_the_mixed_output() {
         let (mut engine, output, ring) = (Engine::new(), FakeOutput::new(), FakeRing::new());
         let a = open(&mut engine, &ring);
-        write(&mut engine, a, &ring, 0.5, 0.5, 4);
+        write(&mut engine, a, &ring, 0.5, 0.5, 2);
         engine.set_control(Element::MasterVolume, [50, 100]);
         engine.set_control(Element::MasterSwitch, [true, false].map(u32::from));
         engine.start(a).unwrap();
@@ -543,6 +593,7 @@ mod engine_tests {
         assert_eq!(level(&output.submitted.borrow()[0]), (0.125, 0.0));
         engine.set_control(Element::MasterVolume, [100, 100]);
         engine.set_control(Element::MasterSwitch, [true, true].map(u32::from));
+        write(&mut engine, a, &ring, 0.5, 0.5, 2);
         engine.tick(output.complete_one(), &output);
         assert_eq!(
             level(&output.submitted.borrow()[2]),
@@ -626,7 +677,7 @@ mod engine_tests {
     }
 
     #[test]
-    fn the_queue_never_exceeds_the_lead_even_with_many_ready_substreams() {
+    fn the_queue_never_exceeds_prefetch_depth_even_with_many_ready_substreams() {
         let (mut engine, output) = (Engine::new(), FakeOutput::new());
         let rings: Vec<_> = (0..SUBSTREAMS).map(|_| FakeRing::new()).collect();
         let indices: Vec<_> = rings.iter().map(|ring| open(&mut engine, ring)).collect();
@@ -637,8 +688,8 @@ mod engine_tests {
         engine.tick(NONE, &output);
         assert_eq!(
             output.submitted.borrow().len(),
-            2,
-            "lead-bounded regardless of substream count"
+            PCM_PERIODS - 1,
+            "prefetch depth is independent of substream count"
         );
         // 8 路 0.0625 相加恰为 0.5。
         assert_eq!(level(&output.submitted.borrow()[0]), (0.5, 0.5));

@@ -19,7 +19,11 @@ UTM 只在 `Sound` 非空时启用客户端音频；空列表配合手工 QEMU �
 - PCM 固定 48 kHz、双声道、F32_LE，period 256 帧、buffer 1024 帧；支持 RW 与 mmap interleaved。
 - 卡级 `Engine` 独占物理流、子流槽位、在途 period 的 contributor mask 和 Master；物理流在卡初始化时
   configure/prepare 一次，各子流的 HW_PARAMS/PREPARE 不重配设备。
-- 应用提交或设备完成触发 tick，目标硬件队列深度为 2 个 period；完成时只推进实际贡献子流的 hw_ptr。
+- 应用提交或设备完成触发 tick，最多预送物理缓冲容量减一的 3 个 period（16 ms），保留一段应用数据跨越批量完成；
+  完成时只推进实际贡献子流的 hw_ptr。全部预送会在整批 TX 完成、写进程尚未补充时提前耗尽应用数据并报告 XRUN。
+  批量完成后先补填队列，补填后仍为空才停止并重新 prepare；否则连续播放会随每批完成反复停启物理流。
+  只预送 2 个 period 的约 10.7 ms 余量不足以覆盖 QEMU 默认 10 ms 音频消费与补充延迟，会使宿主回放断音。
+  预送时若某一路暂缺下一段、但仍有在途数据，等待该流补充；仅在它的数据真正耗尽后报告 XRUN，再让其他流继续。
 - `mixer::Accumulator` 对每路先施加左右 PCM 增益再逐样本相加，NaN/Inf 按静音处理，
   施加左右 Master 增益后硬削波到 [-1, 1]。静音分支直接输出零，即使有限样本求和已溢出，静音也不会产生 NaN。
   音量 0..100 按平方曲线映射，默认 100 且开启；没有 lookahead limiter 或持久化音量。

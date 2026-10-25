@@ -2,8 +2,7 @@
 //!
 //! 引擎独占那一个物理 playback 流，并在它之上提供 [`SUBSTREAMS`] 个互相独立的软件子流。应用只写自己子流的
 //! 环形缓冲并推进应用指针；引擎在每次"应用提交"与"硬件 period 完成"之后把所有运行中子流的下一个 period
-//! 混成一个硬件 period 提交，保持约 [`LEAD_PERIODS`] 个 period 的队列深度——延迟低，同时给每个子流留足
-//! 交付下一个 period 的时间。
+//! 混成一个硬件 period 提交，最多预送 [`LEAD_PERIODS`] 段：覆盖宿主批量消费，同时保留一段应用数据供完成后续送。
 //!
 //! 引擎是纯状态机：设备通过 [`PcmOutput`]、环形缓冲通过 [`Ring`] 传入，不持有任何锁，也不认识 OS。
 //! 调用方负责串行化（一个 `Mutex<Engine>`）。硬件完成事件只会被记成计数后经 [`Events`] 交给 `tick`，所以设备
@@ -19,15 +18,15 @@ use crate::drivers::{
 
 /// 同时可打开的 playback 子流数量，即 `snd_pcm_info.subdevices_count`。
 pub(super) const SUBSTREAMS: usize = 8;
-/// 混音器保持的硬件队列深度（period）。小于设备的 [`PCM_PERIODS`] 个槽位，留出余量吸收完成回调的抖动。
-const LEAD_PERIODS: usize = 2;
+/// 保留一段已提交的应用数据：设备可一次归还整批 TX，全送进设备会在写进程获调度前把应用判成 Xrun。
+/// 其余容量全部用于预送；额外缩短深度会使宿主消费与补充之间缺少余量，产生断音。
+const LEAD_PERIODS: usize = PCM_PERIODS - 1;
 
 const _: () = assert!(
     SUBSTREAMS <= u8::BITS as usize,
     "contributor mask is one byte"
 );
-const _: () = assert!(LEAD_PERIODS <= PCM_PERIODS);
-
+const _: () = assert!(PCM_PERIODS > 1);
 /// 子流环形缓冲的读取接口；`offset` 是缓冲内字节偏移。
 pub(super) trait Ring {
     /// 把 `output.len()` 个字节读入 `output`，范围越界时失败。
@@ -298,21 +297,21 @@ impl<R: Ring> Engine<R> {
             }
             changed = true;
         }
-        // 2. 队列排空而设备仍在 Running（设备此时已 underrun 或即将 underrun）：停下并重新 prepare，才能再提交。
-        if self.hardware == Hardware::Running && self.queue.len == 0 {
-            if Self::rearm(output).is_err() {
-                self.fail();
-                return true;
-            }
-            self.hardware = Hardware::Stopped;
-        }
-        // 3. 补填队列。
+        // 2. 先补填：设备可一次归还多个 TX，暂时没有在途 period 不代表应用断粮。
         match self.fill(output) {
             Ok(filled) => changed |= filled,
             Err(()) => {
                 self.fail();
                 return true;
             }
+        }
+        // 3. 补填后仍为空才停止并 prepare；先停止会打断设备已接收的连续 PCM，造成反复停启和卡顿。
+        if self.hardware == Hardware::Running && self.queue.len == 0 {
+            if Self::rearm(output).is_err() {
+                self.fail();
+                return true;
+            }
+            self.hardware = Hardware::Stopped;
         }
         // 4. 有在途数据而设备没在跑：启动。
         if self.hardware == Hardware::Stopped && self.queue.len > 0 {
@@ -340,7 +339,7 @@ impl<R: Ring> Engine<R> {
         output.prepare()
     }
 
-    /// 按 [`LEAD_PERIODS`] 补填硬件队列。
+    /// 按 [`LEAD_PERIODS`] 补填硬件队列，留出一段应用数据跨越整批完成。
     ///
     /// # Returns
     ///
@@ -359,6 +358,12 @@ impl<R: Ring> Engine<R> {
                 }
             }
             if ready == 0 {
+                break;
+            }
+            // 缺少未来数据的流若仍有在途 period，交付期限尚未到；先等它补充，不能提前混入缺口或报 Xrun。
+            if each_bit(running & !ready)
+                .any(|index| self.slots[index].mixed != self.slots[index].state.hardware_frames)
+            {
                 break;
             }
             // 这个 period 不含这些子流的数据：它们的时间线出现了缺口，按 ALSA 语义就是 underrun。
