@@ -1,7 +1,7 @@
 //! 显示会话主循环：输入、Wayland 连接、窗口栈、桌面外壳与整帧合成的唯一装配点。
 
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     io,
     os::{fd::AsFd, unix::net::UnixStream},
     path::Path,
@@ -154,6 +154,11 @@ pub struct Session {
     hardware_cursor: DumbBuffer,
     shape: Shape,
     last_pointer_focus: Option<(ClientId, ObjectId)>,
+    /// 当前按下的指针按钮。非空期间指针焦点固定在按下时的 surface（Wayland 的隐式抓取）：
+    /// 否则拖动 layer surface 这类“随指针移动”的界面时，指针一旦跑出 surface 就收不到后续 motion 与释放。
+    pressed_buttons: BTreeSet<u16>,
+    /// 隐式抓取的目标；所有按钮释放或目标消失时清除。
+    pointer_grab: Option<(ClientId, ObjectId)>,
     /// 点击选中的 OnDemand 外壳；与 seat 的实际焦点分开保存策略，在窗口点击或图层消失时撤销。
     keyboard_layer: Option<(ClientId, ObjectId)>,
     /// 合成器拉起的外壳进程（`logon`）；目前只检测它的退出。
@@ -219,6 +224,8 @@ impl Session {
             animation: None,
             seat: Seat::default(),
             grab: None,
+            pressed_buttons: BTreeSet::new(),
+            pointer_grab: None,
             boot: Some(BootScreen {
                 scene: parts.boot_scene,
                 progress: Progress::new(boot::HANDOFF_PERMILLE),
@@ -312,6 +319,7 @@ impl Session {
     fn layer_boxes(&self) -> Vec<LayerBox> {
         let screen = self.screen();
         let scale = self.scale as i32;
+        let work_area = self.work_area();
         let mut boxes: Vec<LayerBox> = self
             .server
             .layers()
@@ -321,7 +329,13 @@ impl Session {
                     layer.content.width as i32 * factor,
                     layer.content.height as i32 * factor,
                 );
-                let (x, y) = shell_layout::place(layer.state, size, screen, scale);
+                // layer-shell：独占区为 0 的 surface 避开其他 surface 的独占区，其余相对整个输出。
+                let area = if layer.state.exclusive_zone == 0 {
+                    work_area
+                } else {
+                    (0, 0, screen.0, screen.1)
+                };
+                let (x, y) = shell_layout::place(layer.state, size, area, scale);
                 LayerBox {
                     client,
                     surface: layer.surface,
@@ -346,6 +360,22 @@ impl Session {
             self.screen(),
             self.scale as i32,
         )
+    }
+
+    /// 隐式抓取目标当前的位置；目标是外壳 surface 或应用窗口时返回，其他（弹出层）或已消失时 `None`。
+    fn locate_target(&self, boxes: &[LayerBox], target: (ClientId, ObjectId)) -> Option<Hit> {
+        boxes
+            .iter()
+            .find(|layer| (layer.client, layer.surface) == target)
+            .map(|layer| (layer.x, layer.y))
+            .or_else(|| {
+                self.stack
+                    .windows()
+                    .iter()
+                    .find(|placed| (placed.client, placed.surface) == target)
+                    .map(|placed| (placed.x, placed.y))
+            })
+            .map(|origin| Hit { target, origin })
     }
 
     /// 指针下最上面的 surface：Overlay、Top 层，然后是应用窗口，最后是 Bottom、Background 层。
@@ -502,12 +532,31 @@ impl Session {
                 } else if self.grab.is_some() {
                     self.drag((x, y));
                 } else {
-                    let hit = self.hit_test(&self.layer_boxes(), (x, y));
+                    let boxes = self.layer_boxes();
+                    let grabbed = self
+                        .pointer_grab
+                        .and_then(|target| self.locate_target(&boxes, target));
+                    if grabbed.is_none() {
+                        self.pointer_grab = None;
+                    }
+                    let hit = grabbed.or_else(|| self.hit_test(&boxes, (x, y)));
                     self.seat
                         .update_pointer(&mut self.server, hit, (x, y), scale, time, true);
                 }
             }
             Event::Button { code, pressed } => {
+                // 在任何提前返回之前维护按钮集合，释放才不会漏掉而让抓取悬挂。
+                if pressed {
+                    if self.pressed_buttons.is_empty() {
+                        self.pointer_grab = self.seat.pointer_focus();
+                    }
+                    self.pressed_buttons.insert(code);
+                } else {
+                    self.pressed_buttons.remove(&code);
+                    if self.pressed_buttons.is_empty() {
+                        self.pointer_grab = None;
+                    }
+                }
                 // 点击别处取消 Alt+Tab 面板；窗口仍留在原来的位置。
                 if pressed && self.switcher.take().is_some() {
                     self.dirty = true;

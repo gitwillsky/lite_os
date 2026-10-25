@@ -160,7 +160,7 @@ impl App {
                 }
             }
             Command::Restore => self.browser.restore_selected(),
-            Command::Properties => self.ui.properties = self.browser.properties(),
+            Command::Properties => self.browser.show_properties(),
             Command::Open => self.browser.open_selected(),
             Command::Close => self.closing = true,
             Command::Refresh => self.browser.refresh(),
@@ -256,12 +256,6 @@ impl App {
     fn press(&mut self, p: &Painter<'_>, client: Rect) {
         let point = self.ui.pointer;
         self.ui.tooltip.dismiss();
-        if self.ui.properties.is_some() {
-            if inside(dialogs::properties_rects(client).1, point) {
-                self.ui.properties = None;
-            }
-            return;
-        }
         if self.ui.notice.is_some() {
             if inside(dialogs::notice_rects(client).1, point) {
                 self.ui.notice = None;
@@ -532,12 +526,6 @@ impl App {
     fn key(&mut self, p: &Painter<'_>, key: Key, client: Rect) {
         self.track_cues(&key);
         self.track_modifiers(&key);
-        if self.ui.properties.is_some() {
-            if matches!(key.code, code::ENTER | code::ESCAPE) {
-                self.ui.properties = None;
-            }
-            return;
-        }
         if self.ui.notice.is_some() {
             if matches!(key.code, code::ENTER | code::ESCAPE) {
                 self.ui.notice = None;
@@ -855,7 +843,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             app.run(verb, client);
         } else if app.one_shot
             && app.ui.confirm.is_none()
-            && app.ui.properties.is_none()
             && app.ui.rename.is_none()
             && app.ui.notice.is_none()
         {

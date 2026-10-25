@@ -1,6 +1,6 @@
 //! 资源管理器窗口的布局、交互状态与绘制；坐标均为逻辑像素。
 use crate::{
-    browser::{Browser, Properties},
+    browser::Browser,
     chrome::{self, Entry, MENU_TITLES, TOOLS},
     grid::{COLUMNS, Grid, HEADER_HEIGHT, ViewMode, inside},
     model::{Icon, Item, date_text, size_text},
@@ -140,8 +140,6 @@ pub struct Ui {
     pub confirm: Option<crate::dialogs::Confirm>,
     /// 等待用户确认的失败提示。
     pub notice: Option<crate::dialogs::Notice>,
-    /// 打开着的"属性"对话框。
-    pub properties: Option<Properties>,
 }
 
 impl Ui {
@@ -161,7 +159,6 @@ impl Ui {
             rename: None,
             confirm: None,
             notice: None,
-            properties: None,
         }
     }
 }
@@ -314,9 +311,6 @@ pub fn paint(p: &mut Painter<'_>, scene: &Scene<'_>, client: Rect) {
     }
     if let Some(notice) = &ui.notice {
         crate::dialogs::paint_notice(p, scene, notice, client);
-    }
-    if let Some(properties) = &ui.properties {
-        crate::dialogs::paint_properties(p, scene, properties, client);
     }
 }
 

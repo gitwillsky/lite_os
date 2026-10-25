@@ -13,11 +13,12 @@ use crate::{
 /// # Parameters
 ///
 /// - `size`: surface 内容的物理像素尺寸（客户端已按 configure 给出的大小画好）。
-/// - `screen`: 输出的物理尺寸。
+/// - `area`: 定位所在的物理矩形：独占区为 `0` 的 surface 按 layer-shell 规范避开其他 surface 的独占区，
+///   由调用者传入工作区；独占区为 `-1` 或正数的 surface 传入整个输出。
 /// - `scale`: 输出 scale；边距是逻辑像素。
 ///
-/// 同时锚定两条对边时，surface 在这两条边（扣除各自边距）之间居中；没有锚定的方向居中于整个输出。
-pub fn place(state: &LayerState, size: (i32, i32), screen: (i32, i32), scale: i32) -> (i32, i32) {
+/// 同时锚定两条对边时，surface 在这两条边（扣除各自边距）之间居中；没有锚定的方向居中于 `area`。
+pub fn place(state: &LayerState, size: (i32, i32), area: Geometry, scale: i32) -> (i32, i32) {
     let [top, right, bottom, left] = state
         .margin
         .map(|margin| i64::from(margin) * i64::from(scale));
@@ -31,11 +32,11 @@ pub fn place(state: &LayerState, size: (i32, i32), screen: (i32, i32), scale: i3
         };
         coordinate.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
     };
-    (
+    let (x, y) = (
         axis(
             state.anchor & ANCHOR_LEFT != 0,
             state.anchor & ANCHOR_RIGHT != 0,
-            screen.0,
+            area.2,
             size.0,
             left,
             right,
@@ -43,12 +44,13 @@ pub fn place(state: &LayerState, size: (i32, i32), screen: (i32, i32), scale: i3
         axis(
             state.anchor & ANCHOR_TOP != 0,
             state.anchor & ANCHOR_BOTTOM != 0,
-            screen.1,
+            area.3,
             size.1,
             top,
             bottom,
         ),
-    )
+    );
+    (x.saturating_add(area.0), y.saturating_add(area.1))
 }
 
 /// 扣除所有独占区之后的工作区（最大化窗口占据的区域）。

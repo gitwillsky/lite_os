@@ -3,6 +3,7 @@
 extern crate liteos_runtime as _;
 mod datetime;
 mod display;
+mod fileprops;
 mod network;
 mod sounds;
 mod system;
@@ -27,6 +28,10 @@ const ESCAPE_KEY: u32 = 1;
 /// 小程序页的内容：画在标签页内部，并可处理页内点击。
 pub trait Page {
     fn title(&self) -> &'static str;
+    /// 随对象变化的标题（如"foo.txt 属性"）；为 `None` 时用 [`Self::title`]。
+    fn heading_title(&self) -> Option<String> {
+        None
+    }
     /// 标签页标题，从左到右；多于一个时窗口显示标签条。
     fn tabs(&self) -> &'static [&'static str];
     /// 标题栏图标的素材名（不含 `-16.bmp`）。
@@ -127,6 +132,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("sounds") => Box::new(sounds::Sounds::new()),
         Some("taskbar") => Box::new(taskbar::Taskbar::new()),
         Some("network") => Box::new(network::Network::new()),
+        Some("properties") => Box::new(fileprops::FileProperties::from_args(
+            std::env::args().skip(2),
+        )?),
         Some("display") => Box::new(display::Background::new()),
         Some("winver") => Box::new(winver::Winver),
         other => {
@@ -142,7 +150,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         "org.liteos.control-panel.{}",
         std::env::args().nth(1).unwrap_or_default()
     );
-    let window = display.create_window(page.title(), &app_id, page.size())?;
+    let title = page
+        .heading_title()
+        .unwrap_or_else(|| page.title().to_owned());
+    let window = display.create_window(&title, &app_id, page.size())?;
     let mut decoration = Decoration::new(FrameKind::Fixed);
     decoration.load_icon(page.icon());
     let theme = Theme::classic();
@@ -239,7 +250,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 Surface::new(&mut pixels, w, h, w as usize).ok_or("invalid applet surface")?;
             let mut p = Painter::new(surface, &theme, font, c.scale);
             p.fill(Rect::new(0, 0, c.width, c.height), C::ButtonFace);
-            decoration.paint(&mut p, c, page.title());
+            decoration.paint(&mut p, c, &title);
             let inner = tab_page(&mut p, client, page.tabs(), tab);
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)

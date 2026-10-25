@@ -1,11 +1,10 @@
-//! 窗口内的模态对话框：删除确认与文件属性；画在列表之上，不是独立窗口。
+//! 窗口内的模态对话框：删除确认与错误提示；画在列表之上，不是独立窗口。
 use crate::{
-    browser::Properties,
     chrome::Command,
-    ui::{Assets, Scene, draw, fit},
+    ui::{Scene, draw, fit},
 };
 use canvas::Rect;
-use classic_theme::{Edge, SystemColor as C};
+use classic_theme::SystemColor as C;
 use classic_ui::{Bitmap, ButtonState, CaptionButton, FrameKind, Ink, Painter};
 
 /// 删除等操作的确认框；窗口内的模态覆盖层，确认前不执行 `command`。
@@ -105,89 +104,6 @@ pub fn paint_notice(p: &mut Painter<'_>, scene: &Scene<'_>, notice: &Notice, cli
         scene.assets.error.as_ref(),
         &notice.text,
     );
-    p.push_button(
-        ok,
-        "确定",
-        ButtonState {
-            default: true,
-            ..Default::default()
-        },
-    );
-}
-
-/// "属性"对话框的窗口矩形与它的"确定"按钮。
-pub fn properties_rects(client: Rect) -> (Rect, Rect) {
-    let dialog = Rect::new(
-        client.x + (client.width - 300) / 2,
-        client.y + (client.height - 300).max(0) / 2,
-        300,
-        300,
-    );
-    (
-        dialog,
-        Rect::new(dialog.right() - 85, dialog.bottom() - 34, 75, 23),
-    )
-}
-
-pub fn paint_properties(p: &mut Painter<'_>, scene: &Scene<'_>, info: &Properties, client: Rect) {
-    let (dialog, ok) = properties_rects(client);
-    let inner = p.window_frame(dialog, FrameKind::Fixed);
-    p.fill(inner, C::ButtonFace);
-    p.caption_bar(
-        Rect::new(inner.x, inner.y, inner.width, 19),
-        &format!("{} 属性", info.name),
-        None,
-        true,
-        &[(CaptionButton::Close, false)],
-        None,
-    );
-    let page = Rect::new(
-        dialog.x + 8,
-        dialog.y + 47,
-        dialog.width - 16,
-        dialog.height - 47 - 42,
-    );
-    let face = p.edge(page, Edge::Raised);
-    p.fill(face, C::ButtonFace);
-    p.tab(
-        Rect::new(
-            dialog.x + 8,
-            dialog.y + 26,
-            50,
-            page.y + 2 - (dialog.y + 26),
-        ),
-        "常规",
-        true,
-    );
-    draw(
-        Assets::icon(&scene.assets.large, info.icon),
-        p,
-        page.x + 14,
-        page.y + 14,
-    );
-    let name = fit(p, &info.name, page.width - 80);
-    p.text(
-        page.x + 60,
-        page.y + 22,
-        &name,
-        Ink::Color(C::ButtonText),
-        false,
-    );
-    p.fill(
-        Rect::new(page.x + 12, page.y + 56, page.width - 24, 2),
-        C::ButtonShadow,
-    );
-    p.fill(
-        Rect::new(page.x + 12, page.y + 58, page.width - 24, 1),
-        C::ButtonHilight,
-    );
-    let step = p.line_height() + 8;
-    for (row, (label, value)) in info.rows.iter().enumerate() {
-        let y = page.y + 70 + row as i32 * step;
-        p.text(page.x + 14, y, label, Ink::Color(C::ButtonText), false);
-        let shown = fit(p, value, page.width - 100);
-        p.text(page.x + 86, y, &shown, Ink::Color(C::ButtonText), false);
-    }
     p.push_button(
         ok,
         "确定",

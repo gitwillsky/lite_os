@@ -27,13 +27,6 @@ pub struct Clipboard {
     pub cut: bool,
 }
 
-/// "属性"对话框的内容：名称、图标与若干 `(项目, 值)` 行。
-pub struct Properties {
-    pub name: String,
-    pub icon: Icon,
-    pub rows: Vec<(&'static str, String)>,
-}
-
 pub struct Browser {
     home: PathBuf,
     pub clipboard: Option<Clipboard>,
@@ -236,48 +229,29 @@ impl Browser {
             .position(|item| item.path.as_deref() == Some(path));
     }
 
-    /// 选中项的属性；没有选择时返回 `None`。读不到元数据的项只显示名称与类型。
-    pub fn properties(&self) -> Option<Properties> {
-        use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let item = self.items.get(self.selected?)?;
-        let mut rows = vec![("类型：", item.kind.clone())];
-        if let Some(path) = &item.path {
-            let location = path
-                .parent()
-                .map_or_else(String::new, |p| p.display().to_string());
-            rows.push(("位置：", location));
-            if let Ok(metadata) = fs::metadata(path) {
-                if item.size.is_some() {
-                    rows.push((
-                        "大小：",
-                        format!(
-                            "{} ({} 字节)",
-                            crate::model::size_text(metadata.len()),
-                            metadata.len()
-                        ),
-                    ));
-                }
-                if let Some(modified) = item.modified {
-                    rows.push(("修改时间：", crate::model::date_text(modified)));
-                }
-                let mode = metadata.permissions().mode();
-                let bits: String = "rwxrwxrwx"
-                    .chars()
-                    .enumerate()
-                    .map(|(i, c)| if mode >> (8 - i) & 1 == 1 { c } else { '-' })
-                    .collect();
-                rows.push(("权限：", bits));
-                rows.push((
-                    "所有者：",
-                    format!("uid {}  gid {}", metadata.uid(), metadata.gid()),
-                ));
-            }
+    /// 为选中项打开独立的"属性"窗口（控制面板的属性页）；没有选择时什么也不做。
+    ///
+    /// 图标与类型文本由本模块的分类决定，作为参数交给属性页，避免两处各维护一份类型名。
+    pub fn show_properties(&mut self) {
+        let Some(item) = self.selected.and_then(|i| self.items.get(i)).cloned() else {
+            return;
+        };
+        let Some(path) = item.path else { return };
+        let mut command = Command::new("/bin/control-panel");
+        command
+            .arg("properties")
+            .arg(&path)
+            .arg(item.icon.file_stem())
+            .arg(&item.kind);
+        if matches!(item.icon, Icon::Disk | Icon::OpticalDisc) {
+            command.arg("drive");
         }
-        Some(Properties {
-            name: item.name.clone(),
-            icon: item.icon,
-            rows,
-        })
+        self.message = command
+            .env_remove("WAYLAND_SOCKET")
+            .spawn()
+            .map(drop)
+            .err()
+            .map(|error| format!("无法打开 {} 的属性：{error}", item.name));
     }
 
     /// 删除全部选中项；遇到第一个失败就停下并报告（已删的不回滚）。

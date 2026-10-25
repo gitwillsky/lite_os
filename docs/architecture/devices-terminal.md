@@ -85,10 +85,13 @@
   `xdg_toplevel_icon_v1`、`zwlr_data_control_manager_v1`（Wine 的可选项）；全屏缩放的等比与黑边策略尚未设计（现在窗口按视口给出的尺寸整数倍放大）。
 - 所有连接有 `wp_cursor_shape_manager_v1` v2（只支持 `wl_pointer`）：客户端按语义请求形状，compositor 用自己的光标集映射绘制；窗口边框上的调整大小箭头由 `classic-ui` 装饰按此请求。
 - Wayland 外壳支持 layer-shell v5 的背景/任务栏/覆盖层、锚点、边距、独占区与键盘交互，以及 foreign-toplevel v3 的窗口列表和控制。
-  当前限制：layer popup 不支持；layer 的定位/configure 目前相对整个输出，`exclusive_zone=0` 尚不避让其他图层的正独占区，
+  `exclusive_zone=0` 的 layer 相对工作区（输出扣除其他图层的正独占区）定位，`-1` 与正值相对整个输出，所以外壳对话框
+  （如“运行”：Top 层、锚定左下角）自然落在任务栏之上；按下指针按钮期间指针焦点固定在按下时的 surface（隐式抓取），
+  拖动随指针移动的 layer 才不会丢失 motion 与释放。
+  当前限制：layer popup 不支持；layer 的 configure 尺寸仍相对整个输出，
   多个同边 panel 尚不按独占区依次排列；foreign-toplevel 尚无 output_enter/leave 与父子窗口关系；
   硬件光标只显示放大后不超过 64×64、物理热点位于 0..63 的图像，其余回退默认箭头，不提供软件 cursor plane；
-  未实现 cursor-shape 扩展、素材忙碌光标计时动画、客户端 scale 高于输出时的缩小。
+  未实现素材忙碌光标计时动画、客户端 scale 高于输出时的缩小。
 - BusyBox init 监督网络服务、显示服务与 UART shell；compositor 接续启动画面后进入 `logon`，认证成功启动用户 `desktop`；UART 保留恢复 shell，没有显示器文本 VT。
 - GPU 开放 compositor 独占的单一 VirGL2 context、3D resource/transfer/submit、VirGL scanout/flush、2D damage flush、
   64×64 hardware cursor 与
