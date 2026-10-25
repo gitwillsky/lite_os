@@ -1,22 +1,28 @@
 [workspace]
 members = [
-    "calendar",
-    "canvas",
-    "classic-theme",
-    "compositor",
-    "logon",
-    "control-panel",
-    "desktop",
-    "desktop-entry",
-    "file-explorer",
-    "classic-ui",
-    "keyboard",
-    "linux-uapi",
-    "terminal-font",
-    "terminal-model",
-    "typeface",
-    "wayland-scanner",
-    "wayland-wire",
+    "libraries/calendar",
+    "libraries/canvas",
+    "libraries/classic-theme",
+    "programs/compositor",
+    "programs/logon",
+    "programs/control-panel",
+    "programs/desktop",
+    "libraries/desktop-entry",
+    "programs/file-explorer",
+    "libraries/classic-ui",
+    "libraries/keyboard",
+    "libraries/liteos-runtime",
+    "libraries/sndvol",
+    "programs/volume-control",
+    "programs/sound-player",
+    "libraries/sound",
+    "programs/task-manager",
+    "libraries/linux-uapi",
+    "libraries/terminal-font",
+    "libraries/terminal-model",
+    "libraries/typeface",
+    "libraries/wayland-scanner",
+    "libraries/wayland-wire",
 ]
 resolver = "3"
 
@@ -25,10 +31,10 @@ edition = "2024"
 publish = false
 
 [workspace.dependencies]
-linux-uapi = { path = "linux-uapi" }
-keyboard = { path = "keyboard" }
-terminal-font = { path = "terminal-font" }
-terminal-model = { path = "terminal-model" }
+linux-uapi = { path = "libraries/linux-uapi" }
+keyboard = { path = "libraries/keyboard" }
+terminal-font = { path = "libraries/terminal-font" }
+terminal-model = { path = "libraries/terminal-model" }
 unicode-width = "=0.2.2"
 
 [profile.dev]

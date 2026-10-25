@@ -1,0 +1,15 @@
+[package]
+name = "canvas"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["dylib", "rlib"]
+
+[dependencies]
+liteos-runtime = { path = "../liteos-runtime" }
+
+[[bench]]
+name = "raster"
+harness = false

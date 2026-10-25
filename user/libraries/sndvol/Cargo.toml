@@ -1,0 +1,18 @@
+[package]
+name = "sndvol"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["dylib", "rlib"]
+name = "sndvol"
+path = "src/lib.rs"
+
+[dependencies]
+liteos-runtime = { path = "../liteos-runtime" }
+canvas = { path = "../canvas" }
+classic-theme = { path = "../classic-theme" }
+classic-ui = { path = "../classic-ui" }
+linux-uapi = { workspace = true }
+typeface = { path = "../typeface" }

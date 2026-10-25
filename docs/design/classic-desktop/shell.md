@@ -4,6 +4,12 @@
 窗口叠放、焦点、移动与 Alt+Tab 属于 `compositor`（见 [interaction.md](interaction.md)）。
 中文文案逐字内容均为**待核**，结构与行为的置信度逐项标注。
 
+## 进程边界
+
+按 Windows 2000 的实现划分程序：外壳（`desktop`）只含桌面、任务栏、开始菜单、托盘与运行对话框；
+任务管理器（`taskmgr`）、音量控制（`sndvol`）、日期/时间与系统属性、"关于"（`control-panel`）、资源管理器（`file-explorer`）
+都是独立程序，外壳只负责启动它们。窗口列表与控制走标准 foreign-toplevel，对同一桌面的程序开放。这些程序共享 `/usr/lib/liteos/` 里的系统共享库（见用户态架构），不各自内嵌 `classic-ui` 等基础库。
+
 ## 桌面
 
 1. 背景色 `COLOR_BACKGROUND`（`#3A6EA5`），默认无壁纸；壁纸支持"居中 / 平铺 / 拉伸"三种方式（确定）。

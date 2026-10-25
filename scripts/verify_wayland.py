@@ -49,7 +49,7 @@ PACKAGES = (
 )
 FIXTURES = ROOT / "scripts/fixtures/wayland"
 WORK = ROOT / "target/wayland-runtime"
-# 与 user/compositor/src/bin/wayland-probe.rs 的常量一致。
+# 与 user/programs/compositor/src/bin/wayland-probe.rs 的常量一致。
 PROBE_SIZE = (200, 120)
 PROBE_LAST_COLOR = (0x20, 0xC0, 0xC0)
 DESKTOP_BACKGROUND = (0x3A, 0x6E, 0xA5)

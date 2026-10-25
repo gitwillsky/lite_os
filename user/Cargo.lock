@@ -9,14 +9,23 @@ version = "0.1.0"
 [[package]]
 name = "calendar"
 version = "0.1.0"
+dependencies = [
+ "liteos-runtime",
+]
 
 [[package]]
 name = "canvas"
 version = "0.1.0"
+dependencies = [
+ "liteos-runtime",
+]
 
 [[package]]
 name = "classic-theme"
 version = "0.1.0"
+dependencies = [
+ "liteos-runtime",
+]
 
 [[package]]
 name = "classic-ui"
@@ -26,6 +35,7 @@ dependencies = [
  "classic-theme",
  "keyboard",
  "linux-uapi",
+ "liteos-runtime",
  "typeface",
  "wayland-wire",
 ]
@@ -39,6 +49,7 @@ dependencies = [
  "classic-theme",
  "keyboard",
  "linux-uapi",
+ "liteos-runtime",
  "wayland-wire",
 ]
 
@@ -50,6 +61,7 @@ dependencies = [
  "canvas",
  "classic-theme",
  "classic-ui",
+ "liteos-runtime",
  "typeface",
 ]
 
@@ -62,12 +74,18 @@ dependencies = [
  "classic-ui",
  "desktop-entry",
  "linux-uapi",
+ "liteos-runtime",
+ "sndvol",
+ "sound",
  "typeface",
 ]
 
 [[package]]
 name = "desktop-entry"
 version = "0.1.0"
+dependencies = [
+ "liteos-runtime",
+]
 
 [[package]]
 name = "file-explorer"
@@ -78,15 +96,27 @@ dependencies = [
  "classic-theme",
  "classic-ui",
  "desktop-entry",
+ "liteos-runtime",
+ "sound",
  "typeface",
 ]
 
 [[package]]
 name = "keyboard"
 version = "0.1.0"
+dependencies = [
+ "liteos-runtime",
+]
 
 [[package]]
 name = "linux-uapi"
+version = "0.1.0"
+dependencies = [
+ "liteos-runtime",
+]
+
+[[package]]
+name = "liteos-runtime"
 version = "0.1.0"
 
 [[package]]
@@ -97,6 +127,46 @@ dependencies = [
  "classic-theme",
  "classic-ui",
  "linux-uapi",
+ "liteos-runtime",
+ "typeface",
+]
+
+[[package]]
+name = "sndvol"
+version = "0.1.0"
+dependencies = [
+ "canvas",
+ "classic-theme",
+ "classic-ui",
+ "linux-uapi",
+ "liteos-runtime",
+ "typeface",
+]
+
+[[package]]
+name = "sound"
+version = "0.1.0"
+dependencies = [
+ "linux-uapi",
+ "liteos-runtime",
+]
+
+[[package]]
+name = "sound-player"
+version = "0.1.0"
+dependencies = [
+ "liteos-runtime",
+ "sound",
+]
+
+[[package]]
+name = "task-manager"
+version = "0.1.0"
+dependencies = [
+ "canvas",
+ "classic-theme",
+ "classic-ui",
+ "liteos-runtime",
  "typeface",
 ]
 
@@ -114,12 +184,27 @@ dependencies = [
 [[package]]
 name = "typeface"
 version = "0.1.0"
+dependencies = [
+ "liteos-runtime",
+]
 
 [[package]]
 name = "unicode-width"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+
+[[package]]
+name = "volume-control"
+version = "0.1.0"
+dependencies = [
+ "canvas",
+ "classic-theme",
+ "classic-ui",
+ "liteos-runtime",
+ "sndvol",
+ "typeface",
+]
 
 [[package]]
 name = "wayland-scanner"
@@ -129,5 +214,6 @@ version = "0.1.0"
 name = "wayland-wire"
 version = "0.1.0"
 dependencies = [
+ "liteos-runtime",
  "wayland-scanner",
 ]

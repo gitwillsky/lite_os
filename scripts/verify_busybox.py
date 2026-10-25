@@ -22,7 +22,7 @@ from local_inputs import INPUTS
 from apk_cache import cached_apk_bootstrap
 from apk_rootfs import assemble_apk_rootfs, install_apk_crash_fixtures
 from build_target import target_from_environment
-from classic_assets import boot_scene, cursors, shell_bitmaps
+from classic_assets import boot_scene, cursors, shell_bitmaps, sounds
 from build_cache import (
     build_environment,
     build_jobs_override,
@@ -95,6 +95,24 @@ else:
     ELF_MACHINE = "RISC-V"
     RUST_USER_TARGET = "riscv64gc-unknown-linux-musl"
 RUST_USER_BUILD_STD = "std,panic_abort;llvm-libunwind"
+# 系统共享库（对应 Windows 2000 的 DLL）与动态链接它们的程序；探针、session-launch 等其余程序整体静态。
+# 运行时库承载 std，其余库与程序都链接它，所以全系统只有一份 std。Rust 没有稳定 ABI，库与程序必须由同一份
+# 工具链、同一组参数、同一个 Cargo target 一次构建，并一起安装到 `/usr/lib/liteos`。
+# 元素是 `(Cargo 包名, 库名)`，库文件名是 `lib<库名>.so`；顺序即依赖顺序。
+RUNTIME_LIBRARY = "liteos_runtime"
+SYSTEM_LIBRARIES = (
+    ("liteos-runtime", RUNTIME_LIBRARY),
+    ("canvas", "canvas"), ("classic-theme", "classic_theme"), ("typeface", "typeface"),
+    ("classic-ui", "classic_ui"), ("wayland-wire", "wayland_wire"), ("linux-uapi", "linux_uapi"),
+    ("keyboard", "keyboard"), ("calendar", "calendar"), ("desktop-entry", "desktop_entry"),
+    ("sound", "sound"), ("sndvol", "sndvol"),
+)
+SYSTEM_LIBRARY_DIRECTORY = "/usr/lib/liteos"
+SYSTEM_LIBRARY_PROGRAMS = frozenset({
+    ("compositor", "compositor"), ("logon", "logon"), ("desktop", "desktop"),
+    ("file-explorer", "file-explorer"), ("control-panel", "control-panel"),
+    ("task-manager", "taskmgr"), ("volume-control", "sndvol"), ("sound-player", "sndplay"),
+})
 RUST_USER_RUSTFLAGS = (
     "-C link-self-contained=no -C target-feature=-crt-static "
     "-C relocation-model=pic -C panic=abort "
@@ -763,7 +781,9 @@ def verify_elf(
         for line in output.splitlines()
         if "Shared library: [" in line
     }
-    if needed != set(required_libraries):
+    # 必需库必须出现；动态程序还可以依赖其他系统共享库，但不能依赖这之外的任何库。
+    allowed = set(required_libraries) | {"libc.so"} | {f"lib{name}.so" for _, name in SYSTEM_LIBRARIES}
+    if not set(required_libraries) <= needed or not needed <= allowed:
         raise RuntimeError(
             f"{identity} ELF dependencies differ: expected {sorted(required_libraries)}, got {sorted(needed)}"
         )
@@ -780,6 +800,45 @@ def verify_elf(
             raise RuntimeError(f"{identity} contains a writable executable LOAD")
         if columns[0] == "GNU_STACK" and "E" in flags:
             raise RuntimeError(f"{identity} requests an executable stack")
+
+
+def verify_user_artifact(
+    path: Path, compiler: Path, required_libraries: tuple[str, ...], identity: str, library: bool
+) -> None:
+    """程序按动态 PIE 校验；系统库按共享对象校验（没有 interpreter，也不是 PIE 入口）。"""
+    if not library:
+        verify_elf(path, compiler, required_libraries, identity)
+        return
+    prefix = str(compiler)[: -len("gcc")]
+    readelf = Path(f"{prefix}readelf")
+    if not readelf.is_file():
+        readelf = Path(shutil.which("llvm-readelf") or "/opt/homebrew/opt/llvm/bin/llvm-readelf")
+    output = run([str(readelf), "--file-header", "--program-headers", "--dynamic", "--wide", str(path)], ROOT)
+    for marker in ("ELF64", ELF_MACHINE, "DYN (", "GNU_RELRO"):
+        if marker not in output:
+            raise RuntimeError(f"{identity} shared library lacks {marker!r}")
+    needed = {
+        line.split("Shared library: [", 1)[1].split("]", 1)[0]
+        for line in output.splitlines()
+        if "Shared library: [" in line
+    }
+    allowed = set(required_libraries) | {"libc.so"} | {f"lib{name}.so" for _, name in SYSTEM_LIBRARIES}
+    if not set(required_libraries) <= needed or not needed <= allowed:
+        raise RuntimeError(f"{identity} dependencies differ: expected {sorted(required_libraries)}, got {sorted(needed)}")
+    if "TEXTREL" in output or "Requesting program interpreter" in output:
+        raise RuntimeError(f"{identity} must be a position-independent shared object")
+    for line in output.splitlines():
+        columns = line.split()
+        if len(columns) >= 8 and columns[0] == "GNU_STACK" and "E" in "".join(columns[6:-1]):
+            raise RuntimeError(f"{identity} requests an executable stack")
+
+
+def build_system_libraries(musl: MuslCachePaths) -> list[tuple[Path, str]]:
+    """构建全部系统共享库，返回 `(宿主文件, 安装文件名)`；与动态程序共享同一个 Cargo target。"""
+    return [
+        (build_rust_user_program(musl, package, name, f"system-library-{name}", 1, library=True), f"lib{name}.so")
+        for package, name in SYSTEM_LIBRARIES
+    ]
 
 
 def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
@@ -995,6 +1054,7 @@ def rust_user_cargo_target(
     rustc_version: str,
     driver_sha256: str,
     libunwind_sha256: str,
+    dynamic: bool = False,
 ) -> Path:
     """返回只绑定编译环境、不绑定源码 revision 的持久 Cargo cache。
 
@@ -1010,6 +1070,7 @@ def rust_user_cargo_target(
     """
     compilation_payload = {
         "kind": "rust-user-cargo-target",
+        "dynamic": dynamic,
         "recipe_version": RUST_USER_CARGO_CACHE_RECIPE_VERSION,
         "arch": TARGET.arch,
         "rust_target": RUST_USER_TARGET,
@@ -1030,8 +1091,18 @@ def build_rust_user_program(
     binary_name: str,
     kind: str,
     recipe_version: int,
+    *,
+    library: bool = False,
 ) -> Path:
-    """经唯一 Cargo→musl PIE 路径构建 Rust userspace 程序。"""
+    """经唯一 Cargo→musl PIE 路径构建 Rust userspace 程序或系统共享库（`SYSTEM_LIBRARIES`）。
+
+    `(crate_name, binary_name)` 属于 `SYSTEM_LIBRARY_PROGRAMS` 的程序与系统库本身用 `-C prefer-dynamic`
+    在独立的 Cargo target 里构建，彼此共享同一组共享库；其余程序整体静态。
+    """
+    dynamic = library or (crate_name, binary_name) in SYSTEM_LIBRARY_PROGRAMS
+    if library and (crate_name, binary_name) not in SYSTEM_LIBRARIES:
+        raise RuntimeError(f"{crate_name} is not a registered system library")
+    artifact = f"lib{binary_name}.so" if library else binary_name
     workspace = ROOT / "user"
     sources = tuple(sorted(workspace.rglob("*.rs")))
     cargo = shutil.which("cargo")
@@ -1048,6 +1119,7 @@ def build_rust_user_program(
     rustc_version = run([rustc, "--version"], ROOT).strip()
     payload = {
         "kind": kind,
+        "dynamic": dynamic,
         "recipe_version": recipe_version,
         "arch": TARGET.arch,
         "rust_target": RUST_USER_TARGET,
@@ -1058,7 +1130,7 @@ def build_rust_user_program(
         "build_std": RUST_USER_BUILD_STD,
         "manifest_sha256": {
             str(path.relative_to(workspace)): sha256(path)
-            for path in sorted(workspace.glob("*/Cargo.toml"))
+            for path in sorted(workspace.glob("*/*/Cargo.toml"))
         }
         | {"Cargo.toml": sha256(workspace / "Cargo.toml")},
         "lock_sha256": sha256(workspace / "Cargo.lock"),
@@ -1083,12 +1155,17 @@ def build_rust_user_program(
         rustc_version,
         str(payload["driver_sha256"]),
         str(payload["libunwind_sha256"]),
+        dynamic,
     )
     entry = WORK / "rust-user-programs" / fingerprint(payload)
-    required_libraries = ("libc.so",)
-    if manifest_matches(entry, payload, (binary_name,)):
-        verify_elf(entry / binary_name, musl.compiler, required_libraries, binary_name)
-        return entry / binary_name
+    required_libraries = (
+        (f"lib{RUNTIME_LIBRARY}.so",)
+        if dynamic and binary_name != RUNTIME_LIBRARY
+        else ("libc.so",)
+    )
+    if manifest_matches(entry, payload, (artifact,)):
+        verify_user_artifact(entry / artifact, musl.compiler, required_libraries, artifact, library)
+        return entry / artifact
     generation = generation_directory(WORK / "rust-user-program-generations", fingerprint(payload))
     env = build_environment()
     linker_variable = f"CARGO_TARGET_{RUST_USER_TARGET.upper().replace('-', '_')}_LINKER"
@@ -1104,10 +1181,14 @@ def build_rust_user_program(
             linker_variable: str(ROOT / "scripts/musl_clang.py"),
             "RUSTFLAGS": (
                 f"{RUST_USER_RUSTFLAGS} "
+                f"{'-C prefer-dynamic ' if dynamic else ''}"
                 f"-L native={libunwind.parent} -D warnings"
             ),
         }
     )
+    if dynamic:
+        # LTO 与 `prefer-dynamic` 互斥；动态程序本身很小，系统库跨 crate 优化损失可以接受。
+        env["CARGO_PROFILE_RELEASE_LTO"] = "off"
     published = False
     try:
         run(
@@ -1122,8 +1203,7 @@ def build_rust_user_program(
                 str(workspace / "Cargo.toml"),
                 "-p",
                 crate_name,
-                "--bin",
-                binary_name,
+                *(["--lib"] if library else ["--bin", binary_name]),
                 "--target",
                 RUST_USER_TARGET,
                 "--release",
@@ -1136,16 +1216,17 @@ def build_rust_user_program(
             cargo_target
             / RUST_USER_TARGET
             / "release"
-            / binary_name
+            / artifact
         )
         if not built.is_file():
-            raise RuntimeError(f"Cargo did not produce {binary_name}")
-        shutil.copy2(built, generation / binary_name)
-        verify_elf(
-            generation / binary_name,
+            raise RuntimeError(f"Cargo did not produce {artifact}")
+        shutil.copy2(built, generation / artifact)
+        verify_user_artifact(
+            generation / artifact,
             musl.compiler,
             required_libraries,
-            binary_name,
+            artifact,
+            library,
         )
         write_manifest(generation, payload)
         publish_generation(generation, entry)
@@ -1153,7 +1234,7 @@ def build_rust_user_program(
     finally:
         if not published:
             shutil.rmtree(generation, ignore_errors=True)
-    return entry / binary_name
+    return entry / artifact
 
 
 def build_drm_flip_probe(musl: MuslCachePaths) -> Path:
@@ -1188,8 +1269,8 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(build_rust_user_program(musl, crate, binary, binary, 1), f"/bin/{binary}", 0o755)
         for crate, binary in (("compositor", "compositor"), ("logon", "logon"),
                               ("desktop", "desktop"), ("file-explorer", "file-explorer"),
-                              ("control-panel", "control-panel"),
-                              ("linux-uapi", "session-launch"))
+                              ("control-panel", "control-panel"), ("task-manager", "taskmgr"), ("volume-control", "sndvol"),
+                              ("sound-player", "sndplay"), ("linux-uapi", "session-launch"))
     )
     fonts = tuple(UserlandArtifact(ROOT / "assets/fonts" / name, f"/usr/share/liteos/fonts/{name}")
                   for name in ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf"))
@@ -1206,7 +1287,11 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(ROOT / "user/base/file-explorer.desktop", "/usr/share/applications/file-explorer.desktop"),
         UserlandArtifact(ROOT / "user/base/control-system.desktop", "/usr/share/applications/control-system.desktop"),
         UserlandArtifact(ROOT / "user/base/control-datetime.desktop", "/usr/share/applications/control-datetime.desktop"),
+        *(UserlandArtifact(path, f"{SYSTEM_LIBRARY_DIRECTORY}/{name}", 0o755)
+          for path, name in build_system_libraries(musl)),
+        UserlandArtifact(ROOT / "user/base/ld-musl.path", f"/etc/{Path(TARGET.musl_loader).name.removesuffix('.so.1')}.path"),
         *programs, *fonts, *ui,
+        *(UserlandArtifact(path, f"/usr/share/liteos/sounds/{name}") for name, path in sounds()),
     )
 
 
@@ -1335,10 +1420,12 @@ def create_image(
         "mkdir /usr",
         "mkdir /usr/bin",
         "mkdir /usr/lib",
+        "mkdir /usr/lib/liteos",
         "mkdir /usr/share",
         "mkdir /usr/share/liteos",
         "mkdir /usr/share/liteos/fonts",
         "mkdir /usr/share/liteos/ui",
+        "mkdir /usr/share/liteos/sounds",
         "mkdir /usr/share/applications",
         "mkdir /home",
         "mkdir /usr/share/udhcpc",

@@ -1,0 +1,13 @@
+[package]
+name = "logon"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+liteos-runtime = { path = "../../libraries/liteos-runtime" }
+classic-ui = { path = "../../libraries/classic-ui" }
+classic-theme = { path = "../../libraries/classic-theme" }
+canvas = { path = "../../libraries/canvas" }
+typeface = { path = "../../libraries/typeface" }
+linux-uapi.workspace = true

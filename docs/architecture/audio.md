@@ -5,6 +5,8 @@
 用户态通过 Linux ALSA `/dev/snd/pcmC0D0p` 写入独立 playback 子流；`kernel::audio::engine`
 把运行中的子流混成一个物理 period，经 `drivers::PcmOutput` 交给 VirtIO Sound device ID 25。
 没有用户态混音服务、私有音频 IPC 或 Web media runtime，当前产品也没有媒体播放器。
+桌面的系统提示音由 `user/libraries/sound` 直接写同一个 PCM：登录完成、注销、清空回收站各播一段，只有本地提取了原版素材时才安装，
+设备不可用（例如非 root 账户没有 `/dev/snd` 权限）时静默跳过。
 
 ## 状态与调度
 

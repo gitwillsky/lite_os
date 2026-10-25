@@ -31,35 +31,63 @@ fn check_aarch64_el0_execution_access(root: &Path, errors: &mut Vec<String>) {
     }
 }
 
+/// `user/programs/` 下的可执行程序包；每个都有 `src/main.rs`。
+const PROGRAMS: [&str; 8] = [
+    "compositor",
+    "logon",
+    "desktop",
+    "file-explorer",
+    "control-panel",
+    "task-manager",
+    "volume-control",
+    "sound-player",
+];
+
+/// `user/libraries/` 下的库包；每个都有 `src/lib.rs`。其中带 `liteos-runtime` 依赖的会被构建成共享库。
+const LIBRARIES: [&str; 15] = [
+    "calendar",
+    "canvas",
+    "classic-theme",
+    "classic-ui",
+    "desktop-entry",
+    "keyboard",
+    "linux-uapi",
+    "liteos-runtime",
+    "sndvol",
+    "sound",
+    "terminal-font",
+    "terminal-model",
+    "typeface",
+    "wayland-scanner",
+    "wayland-wire",
+];
+
+fn names_in(root: &Path, directory: &str) -> BTreeSet<String> {
+    fs::read_dir(root.join("user").join(directory))
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter(|entry| entry.path().is_dir())
+                .map(|entry| entry.file_name().to_string_lossy().into_owned())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
-    let expected = BTreeSet::from([
+    let expected_top: BTreeSet<String> = [
         "Cargo.lock",
         "Cargo.toml",
         "README.md",
         "base",
-        "canvas",
-        "classic-theme",
-        "classic-ui",
-        "compositor",
-        "logon",
-        "desktop",
-        "desktop-entry",
-        "control-panel",
-        "calendar",
-        "file-explorer",
         "diagnostics",
-        "keyboard",
-        "linux-uapi",
-        "terminal-font",
-        "terminal-model",
-        "typeface",
-        "wayland-scanner",
-        "wayland-wire",
-    ])
+        "libraries",
+        "programs",
+    ]
     .into_iter()
     .map(str::to_owned)
     .collect();
-    let actual = fs::read_dir(root.join("user"))
+    let actual_top = fs::read_dir(root.join("user"))
         .map(|entries| {
             entries
                 .flatten()
@@ -68,86 +96,61 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
                 .collect::<BTreeSet<_>>()
         })
         .unwrap_or_default();
-    if actual != expected {
+    if actual_top != expected_top {
         errors.push(format!(
-            "user/: expected the UART baseline and retained standard libraries {expected:?}, found {actual:?}"
+            "user/: expected {expected_top:?} (programs go in programs/, libraries in libraries/), found {actual_top:?}"
         ));
     }
-    for required in [
-        "canvas/src/lib.rs",
-        "classic-theme/src/lib.rs",
-        "classic-ui/src/lib.rs",
-        "compositor/src/main.rs",
-        "logon/src/main.rs",
-        "desktop/src/main.rs",
-        "file-explorer/src/main.rs",
-        "control-panel/src/main.rs",
-        "desktop-entry/src/lib.rs",
-        "calendar/src/lib.rs",
-        "keyboard/src/lib.rs",
-        "linux-uapi/src/lib.rs",
-        "terminal-font/src/lib.rs",
-        "terminal-model/src/lib.rs",
-        "typeface/src/lib.rs",
-        "wayland-scanner/src/lib.rs",
-        "wayland-wire/src/lib.rs",
+    for (directory, expected, entry) in [
+        ("programs", PROGRAMS.as_slice(), "src/main.rs"),
+        ("libraries", LIBRARIES.as_slice(), "src/lib.rs"),
     ] {
-        if !root.join("user").join(required).is_file() {
+        let expected_names: BTreeSet<String> = expected.iter().map(|n| (*n).to_owned()).collect();
+        let actual = names_in(root, directory);
+        if actual != expected_names {
             errors.push(format!(
-                "user/{required}: required library owner is missing"
+                "user/{directory}/: expected {expected_names:?}, found {actual:?}"
             ));
+        }
+        for name in expected {
+            let base = root.join("user").join(directory).join(name);
+            if !base.join(entry).is_file() {
+                errors.push(format!("user/{directory}/{name}/{entry}: required entry is missing"));
+            }
+            if !base.join("README.md").is_file() {
+                errors.push(format!(
+                    "user/{directory}/{name}/README.md: every package states whether it is a program or a library and what it owns"
+                ));
+            }
+        }
+        if !root.join("user").join(directory).join("README.md").is_file() {
+            errors.push(format!("user/{directory}/README.md: the directory must be indexed"));
         }
     }
 }
 
 fn check_workspace(root: &Path, errors: &mut Vec<String>) {
     let user = fs::read_to_string(root.join("user/Cargo.toml")).unwrap_or_default();
-    for required in [
-        "\"canvas\"",
-        "\"classic-theme\"",
-        "\"classic-ui\"",
-        "\"compositor\"",
-        "\"logon\"",
-        "\"desktop\"",
-        "\"file-explorer\"",
-        "\"control-panel\"",
-        "\"desktop-entry\"",
-        "\"calendar\"",
-        "\"keyboard\"",
-        "\"linux-uapi\"",
-        "\"terminal-font\"",
-        "\"terminal-model\"",
-        "\"typeface\"",
-        "\"wayland-scanner\"",
-        "\"wayland-wire\"",
-        "linux-uapi = { path = \"linux-uapi\" }",
-        "unicode-width = \"=0.2.2\"",
-    ] {
-        if !user.contains(required) {
+    let members = PROGRAMS
+        .iter()
+        .map(|n| format!("\"programs/{n}\""))
+        .chain(LIBRARIES.iter().map(|n| format!("\"libraries/{n}\"")))
+        .chain([
+            "linux-uapi = { path = \"libraries/linux-uapi\" }".to_owned(),
+            "unicode-width = \"=0.2.2\"".to_owned(),
+        ]);
+    for required in members {
+        if !user.contains(&required) {
             errors.push(format!("user/Cargo.toml: missing `{required}`"));
         }
     }
     let root_workspace = fs::read_to_string(root.join("Cargo.toml")).unwrap_or_default();
-    for excluded in [
-        "\"user/canvas\"",
-        "\"user/classic-theme\"",
-        "\"user/classic-ui\"",
-        "\"user/compositor\"",
-        "\"user/logon\"",
-        "\"user/desktop\"",
-        "\"user/file-explorer\"",
-        "\"user/control-panel\"",
-        "\"user/desktop-entry\"",
-        "\"user/calendar\"",
-        "\"user/keyboard\"",
-        "\"user/linux-uapi\"",
-        "\"user/terminal-font\"",
-        "\"user/terminal-model\"",
-        "\"user/typeface\"",
-        "\"user/wayland-scanner\"",
-        "\"user/wayland-wire\"",
-    ] {
-        if !root_workspace.contains(excluded) {
+    for excluded in PROGRAMS
+        .iter()
+        .map(|n| format!("\"user/programs/{n}\""))
+        .chain(LIBRARIES.iter().map(|n| format!("\"user/libraries/{n}\"")))
+    {
+        if !root_workspace.contains(&excluded) {
             errors.push(format!(
                 "Cargo.toml: workspace exclude is missing {excluded}"
             ));
@@ -162,7 +165,7 @@ fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
         return;
     }
     for source in sources {
-        let allowed = source.starts_with(root.join("user/linux-uapi"));
+        let allowed = source.starts_with(root.join("user/libraries/linux-uapi"));
         if allowed {
             continue;
         }

@@ -1,0 +1,17 @@
+[package]
+name = "volume-control"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "sndvol"
+path = "src/main.rs"
+
+[dependencies]
+liteos-runtime = { path = "../../libraries/liteos-runtime" }
+canvas = { path = "../../libraries/canvas" }
+classic-theme = { path = "../../libraries/classic-theme" }
+classic-ui = { path = "../../libraries/classic-ui" }
+sndvol = { path = "../../libraries/sndvol" }
+typeface = { path = "../../libraries/typeface" }

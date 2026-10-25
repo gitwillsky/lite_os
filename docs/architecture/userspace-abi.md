@@ -27,8 +27,16 @@
   expiration counter 与 poll/epoll readiness；最后一个 fd/OFD 引用释放时同步撤销 timer record。
 - 产品 userspace 是按所选架构原生构建的固定 musl runtime、BusyBox `init + ash`、网络服务、Wayland compositor 与单 ELF
   `liteos-stress` diagnostics。Rust 库为 `linux-uapi`、`keyboard`、`terminal-model`、`terminal-font` `canvas`、`classic-theme`、`classic-ui`、`typeface`、`wayland-scanner` 与 `wayland-wire`，
-  归属单一 `user/` workspace 与 lockfile；产品安装 `logon`、`desktop`、`file-explorer`、`control-panel` 与 `session-launch`，没有用户态音频服务。
+  归属单一 `user/` workspace 与 lockfile；产品安装 `logon`、`desktop`、`file-explorer`、`control-panel`、`taskmgr`（任务管理器）、`sndvol`（音量控制）与 `session-launch`，没有用户态音频服务。
   kernel、rootfs、APK 与 cache 都携带同一个 architecture identity。
+- 共享库（对应 Windows 2000 的 DLL）：`user/libraries/` 里的库在目标系统上构建成 `/usr/lib/liteos/lib*.so`，动态链接器搜索路径由
+  `/etc/ld-musl-<arch>.path` 提供。`liteos-runtime`（`libliteos_runtime.so`，对应 msvcrt.dll）承载 Rust `std`，其余库与程序
+  都链接它，所以全系统只有一份标准库；`canvas`、`typeface`、`classic-theme`、`classic-ui`、`wayland-wire`、`linux-uapi`、`keyboard`、
+  `calendar`、`desktop-entry`、`sound`、`sndvol` 各自是一个共享库。`user/programs/` 里的七个程序（compositor、logon、desktop、
+  file-explorer、control-panel、taskmgr、sndvol）用 `-C prefer-dynamic` 只链接它们用到的库，NEEDED 只含 `libc.so` 与这些系统库。
+  Rust 没有稳定 ABI，所以库与程序必须由同一份工具链、同一组参数、同一个 Cargo target 一次构建并一起安装，
+  构建身份（`verify_busybox` 的 recipe）把它们绑在一起；动态构建关闭 LTO。探针与 `session-launch` 仍整体静态（rlib），
+  不依赖共享库；第三方（Wine/FEX）程序不使用这些库，只走 C ABI。
 - 标准 Rust consumer 使用官方 `aarch64-unknown-linux-musl`/`riscv64gc-unknown-linux-musl`
   target 与普通 `fn main`；builder 从固定 rust-src 构建 `std + panic_abort`，从同一源码树构建并
   静态链接 LLVM libunwind，最终动态 runtime 仍只有固定 musl。`rust-std-smoke` 只注入 disposable

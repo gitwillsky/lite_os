@@ -37,9 +37,11 @@ def managed_path(path: str) -> bool:
     """只接受同步器拥有的规范绝对路径，拒绝父目录跳转。"""
     if not path.startswith("/") or str(PurePosixPath(path)) != path or ".." in PurePosixPath(path).parts:
         return False
+    if path.startswith("/usr/lib/liteos/") or (path.startswith("/etc/ld-musl-") and path.endswith(".path")):
+        return True
     return path in {
         *RETIRED_FILES, *(f"/bin/{name}" for name in ACCOUNT_APPLETS), "/bin/shutdown", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
-        "/etc/init.d/display-service", "/etc/profile", "/bin/logon", "/bin/desktop", "/bin/file-explorer", "/bin/control-panel", "/bin/session-launch", "/usr/share/applications/file-explorer.desktop",
+        "/etc/init.d/display-service", "/etc/profile", "/bin/logon", "/bin/desktop", "/bin/file-explorer", "/bin/control-panel", "/bin/taskmgr", "/bin/sndvol", "/bin/sndplay", "/bin/session-launch", "/usr/share/applications/file-explorer.desktop",
         "/usr/share/applications/control-system.desktop", "/usr/share/applications/control-datetime.desktop",
     } or any(path.startswith(root + "/") for root in RETIRED_TREES)
 

@@ -41,7 +41,7 @@ RESULT_RE = re.compile(
 )
 ERROR_RE = re.compile(r"drm-flip-probe: error: (.+)")
 
-# Must match `MEASURED_FRAMES` in user/linux-uapi/src/bin/drm-flip-probe.rs; fewer completions
+# Must match `MEASURED_FRAMES` in user/libraries/linux-uapi/src/bin/drm-flip-probe.rs; fewer completions
 # mean the probe never produced a real steady stream.
 MEASURED_FRAMES = 600
 

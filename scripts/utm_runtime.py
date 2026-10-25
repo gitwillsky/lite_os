@@ -95,7 +95,6 @@ def _configuration(
     # Disable it explicitly so the attached virtio-tablet remains the sole
     # pointer source; otherwise SPICE diverts host motion into mouse-state
     # messages while the guest's canonical evdev tablet stays permanently idle.
-    audio_id = "audio0"
     additional = [
         "-global",
         "virtio-mmio.force-legacy=false",
@@ -130,10 +129,14 @@ def _configuration(
     if kernel_arguments:
         # 经 DTB /chosen/bootargs 进入 /proc/cmdline。
         additional.extend(("-append", f'"{kernel_arguments}"'))
+    # UTM 的 `Sound` 配置条目无法由脚本生成（UTM 拒绝启动），所以手写声卡；后端用 SPICE，
+    # 声音经 UTM 已有的 SPICE 回放通道播放。coreaudio 后端在 UTM 沙盒里会让设备 I/O 失败。
     additional.extend(
         (
+            "-audiodev",
+            "spice,id=liteos-audio",
             "-device",
-            f"virtio-sound-device,id=audio-device,audiodev={audio_id},streams=1",
+            "virtio-sound-device,id=audio-device,audiodev=liteos-audio,streams=1",
         )
     )
     serial = (

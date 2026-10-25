@@ -308,7 +308,7 @@ adapter 只代表无竞争计数成本，不宣称实际 local IRQ 指令/设备
 宿主墙钟：帧间隔取自 guest 内核单调 vblank 时钟。该时间戳由内核在 deferred display 完成路径以
 `get_time_ns()`（DTB timebase 单调计数）写入 DRM page-flip 事件（seconds/microseconds 与 sequence），与 Python
 宿主时钟、HVF 调度抖动完全无关。gate 在固定 UTM VirGL 产品实例中启动 rootfs 的私有副本，其 `/etc/inittab` 只运行
-`drm-flip-probe`（`user/linux-uapi/src/bin/drm-flip-probe.rs`；不进入产品 rootfs，不启动 compositor 与任何 UI）。
+`drm-flip-probe`（`user/libraries/linux-uapi/src/bin/drm-flip-probe.rs`；不进入产品 rootfs，不启动 compositor 与任何 UI）。
 探针走产品同一内核路径：VirGL2 能力、render target、EXECBUFFER 清屏、PAGE_FLIP。它先对清屏结果做像素读回比对
 （功能裁决），再连续翻页，丢弃 60 帧 warmup 后测量 600 次完成间隔。`dropped` 取设备 vblank sequence 间隙，严格要求
 为 0；p95/p99 按“宽但真实的绝对上限”设阈值，不在文档记录本机测量值。样本不足、读回像素不符、flip 事件与提交帧

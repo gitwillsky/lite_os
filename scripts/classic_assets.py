@@ -29,6 +29,17 @@ def cursors() -> Path:
     return ORIGINAL_CURSORS if ORIGINAL_CURSORS.is_file() else DEFAULT_CURSORS
 
 
+# 系统提示音：文件名 → 安装介质里的原文件名；原版声音只有本地提取结果，仓库不提交。
+SOUND_FILES = {"logon.wav": "logon.wav", "logoff.wav": "logoff.wav", "recycle.wav": "recycle.wav", "chord.wav": "chord.wav"}
+
+
+def sounds() -> tuple[tuple[str, Path], ...]:
+    """返回 `(安装名, 源文件)`：本地已提取原版素材时是 Windows 2000 的提示音，否则为空（界面静音）。"""
+    source = INPUTS / "windows2000/assets/sources"
+    return tuple((name, source / original) for name, original in SOUND_FILES.items()
+                 if (source / original).is_file())
+
+
 def shell_bitmaps() -> tuple[Path, ...]:
     """按名称选择 BMP V4：显式打包的本地原版优先，其余用已提交默认。
 

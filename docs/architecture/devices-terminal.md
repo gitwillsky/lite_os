@@ -52,7 +52,7 @@
   时等待统一 readiness edge 后重提，不把 controlq 的实现级串行化泄漏成 `EBUSY`。动态 mode 的
   userspace transaction 由用户态 `compositor` 拥有：它是唯一 DRM master 与 evdev 读者，接管内核启动画面，
   以硬件光标跟随输入，并作为 Wayland 服务端把客户端窗口整帧合成到 scanout（`$XDG_RUNTIME_DIR/wayland-0`；
-  `wl_seat` 有指针与键盘，特权连接有 layer-shell 与 foreign-toplevel；尚无 popup、登录或桌面程序）。键盘 keymap 由 `keyboard::xkb` 从同一张键码表生成，
+  `wl_seat` 有指针与键盘，特权连接有 layer-shell，所有连接有 foreign-toplevel（同一桌面的程序可枚举与控制窗口，与 Windows 2000 一致）；尚无 popup、登录或桌面程序）。键盘 keymap 由 `keyboard::xkb` 从同一张键码表生成，
   自包含、不依赖客户端的 xkeyboard-config。
   Legacy `CURSOR2` 把 64×64 ARGB dumb BO 通过规范要求的
   `RESOURCE_CREATE_2D`/`TRANSFER_TO_HOST_2D` 投影到 VirtIO-GPU 独立 cursorq；该 queue 的

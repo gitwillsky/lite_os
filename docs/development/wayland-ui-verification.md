@@ -17,7 +17,7 @@ Wayland 门禁（`scripts/verify_wayland.py`，`make verify-runtime-wayland`）�
 通过 foreign handle 最大化/最小化/激活/关闭另一个连接的窗口，验证工作区随 panel 高度变化、OnDemand 点击焦点、Exclusive 键盘阻止 Alt+F4 操作应用，以及外壳连接退出后的图层/焦点清理。公开 `wayland-info` 输出出现任一外壳全局即失败。
 硬件光标平面不进入 screendump，光标路径以 guest 实际 DRM 更新成功裁决，不宣称截图验证了 cursor plane。
 新增外壳布局与列表 codec 不引入逐像素路径、锁或共享状态：每次事件循环投影窗口/图层快照，foreign 匹配最坏为 O(manager 数 × 窗口数²)，
-未变化的 foreign 列表零输出由确定性单测裁决；沿用 canvas blocking benchmark，不新增受宿主调度影响的 wall-clock 阈值。协议状态机另有进程内测试（`user/compositor` 的 `cargo test`，含 socket、乱序/拆包/随机输入）。只在 AArch64+HVF 承担。
+未变化的 foreign 列表零输出由确定性单测裁决；沿用 canvas blocking benchmark，不新增受宿主调度影响的 wall-clock 阈值。协议状态机另有进程内测试（`user/programs/compositor` 的 `cargo test`，含 socket、乱序/拆包/随机输入）。只在 AArch64+HVF 承担。
 
 ## classic-ui 消费者
 

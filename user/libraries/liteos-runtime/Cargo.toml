@@ -1,0 +1,10 @@
+[package]
+name = "liteos-runtime"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+# 运行时库（对应 Windows 2000 的 msvcrt.dll）：动态构建时承载 Rust 标准库，
+# 其余系统库与程序都链接它，整个系统里只有一份 std。
+[lib]
+crate-type = ["dylib", "rlib"]

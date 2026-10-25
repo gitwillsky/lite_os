@@ -1,0 +1,13 @@
+[package]
+name = "control-panel"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+liteos-runtime = { path = "../../libraries/liteos-runtime" }
+calendar = { path = "../../libraries/calendar" }
+canvas = { path = "../../libraries/canvas" }
+classic-theme = { path = "../../libraries/classic-theme" }
+classic-ui = { path = "../../libraries/classic-ui" }
+typeface = { path = "../../libraries/typeface" }
