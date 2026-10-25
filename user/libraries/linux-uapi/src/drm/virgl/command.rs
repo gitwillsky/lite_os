@@ -229,7 +229,12 @@ impl CommandEncoder {
         self.words.extend([1, 0, surface]);
     }
 
-    /// Sets the full Gallium viewport with Y inversion for a Y0-top render target.
+    /// Sets the full Gallium viewport with a GL-style (non-negative) Y scale.
+    ///
+    /// virglrenderer-1.1.0 maps Gallium window Y directly to GL window Y and stores
+    /// `Y_0_TOP` render targets bottom-up, so NDC +1 lands on guest row 0 (the top
+    /// scanline). A negative scale makes it set `winsys_adjust_y = -1`, which mirrors
+    /// every quad vertically on screen while hardware cursor and hit testing stay put.
     pub fn set_viewport(&mut self, width: u32, height: u32) {
         let half_width = width as f32 / 2.0;
         let half_height = height as f32 / 2.0;
@@ -237,7 +242,7 @@ impl CommandEncoder {
         self.words.extend([
             0,
             half_width.to_bits(),
-            (-half_height).to_bits(),
+            half_height.to_bits(),
             0.5f32.to_bits(),
             half_width.to_bits(),
             half_height.to_bits(),
@@ -379,11 +384,11 @@ mod tests {
     }
 
     #[test]
-    fn y0_top_viewport_inverts_gallium_y_scale() {
+    fn viewport_keeps_gl_y_scale_for_virgl_y0_top_targets() {
         let mut encoder = CommandEncoder::new();
         encoder.set_viewport(3008, 1692);
 
-        assert_eq!(f32::from_bits(encoder.words()[3]), -846.0);
+        assert_eq!(f32::from_bits(encoder.words()[3]), 846.0);
         assert_eq!(f32::from_bits(encoder.words()[6]), 846.0);
     }
 }

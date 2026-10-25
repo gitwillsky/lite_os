@@ -65,22 +65,32 @@ impl VirglContext {
     }
 
     /// Creates one guest-backed 2D resource suitable for rendering and scanout.
+    ///
+    /// The resource is `Y_0_TOP`: virglrenderer-1.1.0 stores it bottom-up in host GL
+    /// (guest row 0 is the top GL row) and scans it out upright. Render into it with
+    /// [`CommandEncoder::set_viewport`], whose GL-style Y axis maps NDC +1 to guest row 0.
     pub fn create_render_target(&self, width: u32, height: u32) -> io::Result<VirglResource> {
         self.create_resource(ResourceSpec::texture(
             width,
             height,
             FORMAT_B8G8R8X8_UNORM,
             BIND_RENDER_TARGET | BIND_SAMPLER_VIEW | BIND_DISPLAY_TARGET | BIND_SCANOUT,
+            RESOURCE_Y_0_TOP,
         )?)
     }
 
     /// Creates one premultiplied BGRA texture sampled by the compositor.
+    ///
+    /// Sampled-only resources carry no `Y_0_TOP`, so guest row 0 is texture coordinate
+    /// `t = 0`. With that flag virglrenderer inverts uploads and the sampled image
+    /// would be vertically flipped relative to its quad.
     pub fn create_texture(&self, width: u32, height: u32) -> io::Result<VirglResource> {
         self.create_resource(ResourceSpec::texture(
             width,
             height,
             FORMAT_B8G8R8A8_UNORM,
             BIND_SAMPLER_VIEW | BIND_RENDER_TARGET,
+            0,
         )?)
     }
 
@@ -91,6 +101,7 @@ impl VirglContext {
             height,
             FORMAT_R8_UNORM,
             BIND_SAMPLER_VIEW,
+            0,
         )?)
     }
 
@@ -205,7 +216,7 @@ struct ResourceSpec {
 }
 
 impl ResourceSpec {
-    fn texture(width: u32, height: u32, format: u32, bind: u32) -> io::Result<Self> {
+    fn texture(width: u32, height: u32, format: u32, bind: u32, flags: u32) -> io::Result<Self> {
         let bytes_per_pixel = match format {
             FORMAT_B8G8R8A8_UNORM | FORMAT_B8G8R8X8_UNORM => 4,
             FORMAT_R8_UNORM => 1,
@@ -228,7 +239,7 @@ impl ResourceSpec {
             height,
             size,
             stride,
-            flags: RESOURCE_Y_0_TOP,
+            flags,
         })
     }
 }
