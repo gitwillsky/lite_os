@@ -18,6 +18,7 @@ members = [
     "programs/sound-player",
     "programs/media-player",
     "programs/notepad",
+    "programs/device-manager",
     "libraries/sound",
     "programs/task-manager",
     "libraries/linux-uapi",

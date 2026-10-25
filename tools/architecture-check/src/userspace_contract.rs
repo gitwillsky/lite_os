@@ -32,7 +32,7 @@ fn check_aarch64_el0_execution_access(root: &Path, errors: &mut Vec<String>) {
 }
 
 /// `user/programs/` 下的可执行程序包；每个都有 `src/main.rs`。
-const PROGRAMS: [&str; 10] = [
+const PROGRAMS: [&str; 11] = [
     "compositor",
     "logon",
     "desktop",
@@ -43,6 +43,7 @@ const PROGRAMS: [&str; 10] = [
     "sound-player",
     "media-player",
     "notepad",
+    "device-manager",
 ];
 
 /// `user/libraries/` 下的库包；每个都有 `src/lib.rs`。其中带 `liteos-runtime` 依赖的会被构建成共享库。

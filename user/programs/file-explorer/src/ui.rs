@@ -51,6 +51,9 @@ impl Assets {
             Icon::Sound,
             Icon::DisplaySettings,
             Icon::Users,
+            Icon::NetworkPlaces,
+            Icon::Network,
+            Icon::DeviceManager,
         ];
         let by_size = |size: u32| {
             icons

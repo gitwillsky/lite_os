@@ -18,6 +18,7 @@ const FRAME: i32 = 3;
 pub enum Place {
     Documents,
     MyComputer,
+    NetworkPlaces,
     RecycleBin,
     ControlPanel,
 }
@@ -29,6 +30,7 @@ pub enum Action {
     Files(Place),
     Tasks,
     Taskbar,
+    Network,
     About,
     Run,
     Lock,
@@ -37,7 +39,8 @@ pub enum Action {
 }
 
 pub struct Row {
-    pub icon: &'static str,
+    /// 素材名（含尺寸后缀，如 `folder-closed-16`），在 `Art` 里查找。
+    pub icon: String,
     pub label: String,
     /// 叶子条目的动作；带子菜单的条目为 `None`。
     pub action: Option<Action>,
@@ -46,9 +49,9 @@ pub struct Row {
     pub separator_before: bool,
 }
 
-fn leaf(icon: &'static str, label: &str, action: Action) -> Row {
+fn leaf(icon: &str, label: &str, action: Action) -> Row {
     Row {
-        icon,
+        icon: icon.into(),
         label: label.into(),
         action: Some(action),
         submenu: Vec::new(),
@@ -56,9 +59,9 @@ fn leaf(icon: &'static str, label: &str, action: Action) -> Row {
     }
 }
 
-fn parent(icon: &'static str, label: &str, submenu: Vec<Row>) -> Row {
+fn parent(icon: &str, label: &str, submenu: Vec<Row>) -> Row {
     Row {
-        icon,
+        icon: icon.into(),
         label: label.into(),
         action: None,
         submenu,
@@ -71,7 +74,11 @@ pub fn rows(apps: &[Application]) -> Vec<Row> {
     let mut programs: Vec<Row> = apps
         .iter()
         .enumerate()
-        .map(|(index, app)| leaf("file-app-16", &app.name, Action::Application(index)))
+        .map(|(index, app)| {
+            // 每个程序用自己桌面条目声明的图标；没有声明或素材缺失时 `Art` 画不出来，退回通用图标见 `Art::icon`。
+            let icon = format!("{}-16", app.icon.as_deref().unwrap_or("file-app"));
+            leaf(&icon, &app.name, Action::Application(index))
+        })
         .collect();
     let mut tasks = leaf("task-manager-16", "任务管理器", Action::Tasks);
     tasks.separator_before = !programs.is_empty();
@@ -100,6 +107,7 @@ pub fn rows(apps: &[Application]) -> Vec<Row> {
                     Action::Files(Place::ControlPanel),
                 ),
                 leaf("settings-16", "任务栏和「开始」菜单(T)...", Action::Taskbar),
+                leaf("control-panel-16", "网络和拨号连接(N)", Action::Network),
             ],
         ),
         leaf("run-32", "运行(R)...", Action::Run),
@@ -244,7 +252,12 @@ fn paint_row(
         (C::Menu, C::MenuText)
     };
     p.fill(rect, background);
-    art.icon(p, row.icon, rect.x + pad, rect.y + (rect.height - icon) / 2);
+    art.icon(
+        p,
+        &row.icon,
+        rect.x + pad,
+        rect.y + (rect.height - icon) / 2,
+    );
     let label = row.label.as_str();
     p.text(
         rect.x + pad + icon + 8,

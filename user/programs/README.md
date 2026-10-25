@@ -17,6 +17,7 @@
 | [`volume-control/`](volume-control/README.md) | 音量控制 | `/bin/sndvol` |
 | [`media-player/`](media-player/README.md) | 媒体播放机（WAV） | `/bin/mplay` |
 | [`notepad/`](notepad/README.md) | 记事本 | `/bin/notepad` |
+| [`device-manager/`](device-manager/README.md) | 设备管理器 | `/bin/devmgmt` |
 
 新增程序时：在这里建目录并写 README，加入 `user/Cargo.toml` 的 members 与根 `Cargo.toml` 的 exclude，
 在 `scripts/verify_busybox.py` 的安装清单与 `SYSTEM_LIBRARY_PROGRAMS` 登记，并更新 `architecture-check` 的 `PROGRAMS`。

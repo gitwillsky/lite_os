@@ -14,6 +14,8 @@ pub const MAX_ENTRIES: usize = 4096;
 pub enum Location {
     MyComputer,
     ControlPanel,
+    /// 网上邻居：只有本机的网络连接；系统没有网络邻居发现协议。
+    NetworkPlaces,
     Directory(PathBuf),
 }
 
@@ -35,6 +37,9 @@ pub enum Icon {
     Sound,
     DisplaySettings,
     Users,
+    NetworkPlaces,
+    Network,
+    DeviceManager,
 }
 
 impl Icon {
@@ -55,6 +60,9 @@ impl Icon {
             Icon::Sound => "sound-volume",
             Icon::DisplaySettings => "display-properties",
             Icon::Users => "users",
+            Icon::NetworkPlaces => "network-places",
+            Icon::Network => "network-connections",
+            Icon::DeviceManager => "device-manager",
         }
     }
 
@@ -66,6 +74,8 @@ impl Icon {
             Some("sound-volume") => Icon::Sound,
             Some("display-properties") => Icon::DisplaySettings,
             Some("users") => Icon::Users,
+            Some("network-connections") => Icon::Network,
+            Some("device-manager") => Icon::DeviceManager,
             _ => Icon::ControlPanel,
         }
     }
@@ -95,6 +105,7 @@ impl Location {
         match argument {
             "::my-computer" => Location::MyComputer,
             "::control-panel" => Location::ControlPanel,
+            "::network-places" => Location::NetworkPlaces,
             path => Location::Directory(PathBuf::from(path)),
         }
     }
@@ -104,6 +115,7 @@ impl Location {
         match self {
             Location::MyComputer => "我的电脑".into(),
             Location::ControlPanel => "控制面板".into(),
+            Location::NetworkPlaces => "网上邻居".into(),
             Location::Directory(path) => path.to_string_lossy().into_owned(),
         }
     }
@@ -126,6 +138,7 @@ impl Location {
         match self {
             Location::MyComputer => Icon::MyComputer,
             Location::ControlPanel => Icon::ControlPanel,
+            Location::NetworkPlaces => Icon::NetworkPlaces,
             Location::Directory(path) if path == Path::new("/") => Icon::Disk,
             Location::Directory(path) if let Some((_, icon)) = well_known(path) => icon,
             Location::Directory(_) => Icon::Folder,
@@ -135,7 +148,7 @@ impl Location {
     /// "向上"的目标：目录到其父目录，根目录到"我的电脑"，"控制面板"到"我的电脑"。
     pub fn parent(&self) -> Option<Location> {
         match self {
-            Location::MyComputer => None,
+            Location::MyComputer | Location::NetworkPlaces => None,
             Location::ControlPanel => Some(Location::MyComputer),
             Location::Directory(path) => Some(
                 path.parent()
@@ -161,6 +174,7 @@ impl Location {
                 return Ok((items, false));
             }
             Location::ControlPanel => return Ok((applets(), false)),
+            Location::NetworkPlaces => return Ok((network_places(), false)),
             Location::Directory(path) => {
                 let mut items = Vec::new();
                 for entry in fs::read_dir(path)? {
@@ -182,6 +196,20 @@ impl Location {
         });
         Ok((items, truncated))
     }
+}
+
+/// 网上邻居的内容：本机的网络连接（打开“本地连接 状态”）。
+fn network_places() -> Vec<Item> {
+    vec![Item {
+        icon: Icon::Network,
+        launch: Some(vec!["/bin/control-panel".into(), "network".into()]),
+        name: "本地连接".into(),
+        kind: "网络连接".into(),
+        size: None,
+        modified: None,
+        target: None,
+        path: None,
+    }]
 }
 
 /// 控制面板的内容：已安装的、分类为 `Settings` 的桌面条目；没有安装任何设置程序时为空。

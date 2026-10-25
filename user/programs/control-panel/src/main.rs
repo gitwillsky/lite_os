@@ -3,6 +3,7 @@
 extern crate liteos_runtime as _;
 mod datetime;
 mod display;
+mod network;
 mod sounds;
 mod system;
 mod taskbar;
@@ -125,11 +126,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("datetime") => Box::new(datetime::DateTime::now()),
         Some("sounds") => Box::new(sounds::Sounds::new()),
         Some("taskbar") => Box::new(taskbar::Taskbar::new()),
+        Some("network") => Box::new(network::Network::new()),
         Some("display") => Box::new(display::Background::new()),
         Some("winver") => Box::new(winver::Winver),
         other => {
             return Err(format!(
-                "unknown applet {other:?}; use `system`, `datetime`, `sounds`, `taskbar`, `display` or `winver`"
+                "unknown applet {other:?}; use `system`, `datetime`, `sounds`, `taskbar`, `display`, `network` or `winver`"
             )
             .into());
         }

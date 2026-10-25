@@ -819,7 +819,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut display = Display::connect()?;
     let window = display.create_window(&app.title(), "org.liteos.notepad", (520, 420))?;
     let mut decoration = Decoration::new(FrameKind::Resizable);
-    decoration.load_icon("file-text");
+    decoration.load_icon("notepad");
     let theme = Theme::classic();
     let mut font: Option<Typeface> = None;
     let mut scale = 0;

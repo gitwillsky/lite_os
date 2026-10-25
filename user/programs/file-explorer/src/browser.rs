@@ -152,6 +152,13 @@ impl Browser {
         self.items.get(self.selected?)?.path.clone()
     }
 
+    /// 选中名为 `name` 的项；没有这一项时什么也不选。
+    pub fn select_named(&mut self, name: &str) {
+        if let Some(index) = self.items.iter().position(|item| item.name == name) {
+            self.select_only(index);
+        }
+    }
+
     /// 全部选中项的序号，升序：焦点项加多选的其余项。
     pub fn selection(&self) -> Vec<usize> {
         let mut all: Vec<usize> = self.extra.iter().copied().chain(self.selected).collect();
@@ -469,12 +476,21 @@ impl Browser {
 
     fn rebuild_rows(&mut self) {
         let mut rows = Vec::new();
-        let mut pending = vec![(
-            Location::MyComputer,
-            "我的电脑".to_owned(),
-            Icon::MyComputer,
-            0,
-        )];
+        // 栈顶先弹出：后压入的“我的电脑”显示在“网上邻居”之前。
+        let mut pending = vec![
+            (
+                Location::NetworkPlaces,
+                "网上邻居".to_owned(),
+                Icon::NetworkPlaces,
+                0,
+            ),
+            (
+                Location::MyComputer,
+                "我的电脑".to_owned(),
+                Icon::MyComputer,
+                0,
+            ),
+        ];
         // 栈式前序遍历：子节点逆序压栈，弹出顺序与显示顺序一致。
         while let Some((location, label, icon, depth)) = pending.pop() {
             let children: Vec<_> = self.subfolders(&location).to_vec();

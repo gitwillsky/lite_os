@@ -28,6 +28,7 @@ exclude = [
     "user/programs/sound-player",
     "user/programs/media-player",
     "user/programs/notepad",
+    "user/programs/device-manager",
     "user/programs/file-explorer",
     "user/libraries/keyboard",
     "user/libraries/liteos-runtime",

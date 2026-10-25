@@ -102,6 +102,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "device-manager"
+version = "0.1.0"
+dependencies = [
+ "canvas",
+ "classic-theme",
+ "classic-ui",
+ "linux-uapi",
+ "liteos-runtime",
+ "typeface",
+]
+
+[[package]]
 name = "file-explorer"
 version = "0.1.0"
 dependencies = [

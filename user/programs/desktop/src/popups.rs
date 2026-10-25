@@ -17,6 +17,10 @@ pub enum Action {
     VolumeProperties,
     /// 打开桌面上第 n 个图标。
     OpenIcon(usize),
+    /// 对桌面上第 n 个图标执行资源管理器动词（删除、重命名、属性）。
+    IconVerb(usize, &'static str),
+    /// 打开“系统属性”。
+    SystemProperties,
     /// 在桌面文件夹里新建文件夹。
     NewFolder,
     /// 打开“任务栏属性”。
@@ -108,8 +112,34 @@ pub fn tray_volume_items() -> Vec<Item> {
     vec![item("调整音频属性(A)", Action::VolumeProperties)]
 }
 
-pub fn icon_items(index: usize) -> Vec<Item> {
-    vec![item("打开(O)", Action::OpenIcon(index))]
+/// 桌面图标的右键菜单：文件与文件夹有删除、重命名、属性（交给资源管理器）；“我的电脑”有属性。
+pub fn icon_items(index: usize, kind: IconKind) -> Vec<Item> {
+    let mut items = vec![item("打开(O)", Action::OpenIcon(index))];
+    let mut add = |label, action: Action, separated: bool| {
+        let mut entry = item(label, action);
+        entry.separator_before = separated;
+        items.push(entry);
+    };
+    match kind {
+        IconKind::Path => {
+            add("删除(D)", Action::IconVerb(index, "delete"), true);
+            add("重命名(M)", Action::IconVerb(index, "rename"), false);
+            add("属性(R)", Action::IconVerb(index, "properties"), true);
+        }
+        IconKind::MyComputer => add("属性(R)", Action::SystemProperties, true),
+        IconKind::Other => {}
+    }
+    items
+}
+
+/// 桌面图标的种类，决定右键菜单里有哪些项。
+#[derive(Clone, Copy)]
+pub enum IconKind {
+    /// 桌面文件夹里的真实文件或文件夹。
+    Path,
+    MyComputer,
+    /// 其余系统图标（我的文档、回收站……）。
+    Other,
 }
 
 pub fn desktop_items() -> Vec<Item> {

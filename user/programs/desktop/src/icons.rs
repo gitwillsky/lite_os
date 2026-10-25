@@ -53,6 +53,12 @@ fn system_icons() -> Vec<Icon> {
             Place::MyComputer,
         ),
         (
+            "::network-places",
+            "网上邻居",
+            "network-places-32",
+            Place::NetworkPlaces,
+        ),
+        (
             "::recycle-bin",
             "回收站",
             "recycle-bin-empty-32",

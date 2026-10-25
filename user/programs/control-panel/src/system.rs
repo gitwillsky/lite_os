@@ -1,8 +1,8 @@
 //! "系统属性"：只读的系统、计算机信息，数据来自 procfs。
-use crate::{Icons, Page};
+use crate::{Icons, Page, inside};
 use canvas::Rect;
 use classic_theme::SystemColor as C;
-use classic_ui::{Ink, Painter};
+use classic_ui::{ButtonState, Ink, Painter};
 use std::fs;
 
 pub struct System {
@@ -50,12 +50,18 @@ impl System {
     }
 }
 
+impl System {
+    fn devices_button(page: Rect) -> Rect {
+        Rect::new(page.right() - 24 - 110, page.y + 12 + 110 - 34, 110, 23)
+    }
+}
+
 impl Page for System {
     fn title(&self) -> &'static str {
         "系统属性"
     }
     fn tabs(&self) -> &'static [&'static str] {
-        &["常规"]
+        &["常规", "硬件"]
     }
     fn icon(&self) -> &'static str {
         "my-computer"
@@ -63,7 +69,33 @@ impl Page for System {
     fn size(&self) -> (i32, i32) {
         (400, 360)
     }
-    fn paint(&self, p: &mut Painter<'_>, page: Rect, _tab: usize, _now: i64, icons: &Icons) {
+    fn paint(&self, p: &mut Painter<'_>, page: Rect, tab: usize, _now: i64, icons: &Icons) {
+        if tab == 1 {
+            // 硬件页：说明加设备管理器入口。
+            let ink = Ink::Color(C::ButtonText);
+            let group = Rect::new(page.x + 12, page.y + 12, page.width - 24, 110);
+            p.group_box(group, "设备管理器");
+            p.text(
+                group.x + 14,
+                group.y + 26,
+                "设备管理器列出系统里能确认的全部硬件，",
+                ink,
+                false,
+            );
+            p.text(
+                group.x + 14,
+                group.y + 44,
+                "并显示每个设备的属性。",
+                ink,
+                false,
+            );
+            p.push_button(
+                Self::devices_button(page),
+                "设备管理器(D)",
+                ButtonState::default(),
+            );
+            return;
+        }
         if let Some(logo) = &icons.logo {
             logo.paint(p, page.x + 16, page.y + 18);
         }
@@ -82,7 +114,12 @@ impl Page for System {
             previous_heading = false;
         }
     }
-    fn click(&mut self, _page: Rect, _tab: usize, _point: (i32, i32)) -> bool {
+    fn click(&mut self, page: Rect, tab: usize, point: (i32, i32)) -> bool {
+        if tab == 1 && inside(Self::devices_button(page), point) {
+            let _ = std::process::Command::new("/bin/devmgmt")
+                .env_remove("WAYLAND_SOCKET")
+                .spawn();
+        }
         false
     }
 }

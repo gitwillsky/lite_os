@@ -30,6 +30,7 @@
 | `shutdown` / `logoff` / `lock` / `key` | `shell32.dll:28` / `45` / `48` / `194` |
 | `command-prompt` / `task-manager` / `media-player` | `cmd.exe:IDI_APPICON` / `taskmgr.exe:107` / `mplayer2.exe:110` |
 | `show-desktop` / `display-properties` / `date-time` | `explorer.exe:103` / `desk.cpl:40` / `timedate.cpl:200` |
+| `device-manager` / `network-connections` / `network-local` / `network-disconnected` / `network-places` / `notepad` | `devmgr.dll:201` / `netshell.dll:10010` / `netshell.dll:190` / `netshell.dll:195` / `shell32.dll:18` / `notepad.exe:1` |
 | `sound-volume` / `users` | `sndvol32.exe:304` / `netplwiz.dll:102` |
 | `tray-volume` / `tray-volume-muted` | `stobject.dll:230` / `231`（托盘只有 16×16 原生图） |
 | `msg-error` / `msg-warning` / `msg-info` / `msg-question` | `user32.dll:103` / `101` / `104` / `102` |

@@ -71,6 +71,10 @@ struct App {
     /// 最近一次键盘事件里的 Ctrl 与 Shift：列表点击据此决定是单选、切换还是区间选择。
     control: bool,
     shift: bool,
+    /// 命令行指定、等第一次有客户区尺寸时执行的动词。
+    verb: Option<Command>,
+    /// 动词模式：动词的对话框都结束后关闭窗口。
+    one_shot: bool,
 }
 
 impl App {
@@ -232,6 +236,7 @@ impl App {
         let location = match text.as_str() {
             "我的电脑" | "::my-computer" => Location::MyComputer,
             "控制面板" | "::control-panel" => Location::ControlPanel,
+            "网上邻居" | "::network-places" => Location::NetworkPlaces,
             _ => {
                 let path = PathBuf::from(&text);
                 Location::Directory(match &self.browser.location {
@@ -732,10 +737,47 @@ fn redraw(
     Ok(())
 }
 
+/// 命令行：`file-explorer [位置] [--select 名称] [--verb delete|rename|properties]`。
+///
+/// 桌面的右键菜单用它把"删除/重命名/属性"交给资源管理器（Windows 的外壳也是这样把动词交给 shell32）：
+/// 打开 `位置`、选中 `名称` 并立即执行动词，动词完成后窗口随之关闭。
+struct Launch {
+    location: Option<String>,
+    select: Option<String>,
+    verb: Option<Command>,
+}
+
+fn parse_launch() -> Result<Launch, String> {
+    let mut launch = Launch {
+        location: None,
+        select: None,
+        verb: None,
+    };
+    let mut args = std::env::args().skip(1);
+    while let Some(argument) = args.next() {
+        match argument.as_str() {
+            "--select" => launch.select = Some(args.next().ok_or("--select needs a name")?),
+            "--verb" => {
+                launch.verb = Some(match args.next().as_deref() {
+                    Some("delete") => Command::Delete,
+                    Some("rename") => Command::Rename,
+                    Some("properties") => Command::Properties,
+                    other => return Err(format!("unknown verb {other:?}")),
+                })
+            }
+            _ if launch.location.is_none() => launch.location = Some(argument),
+            other => return Err(format!("unexpected argument `{other}`")),
+        }
+    }
+    Ok(launch)
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let location = std::env::args()
-        .nth(1)
-        .map(|argument| Location::parse(&argument))
+    let launch = parse_launch()?;
+    let location = launch
+        .location
+        .as_deref()
+        .map(Location::parse)
         .or_else(|| {
             std::env::var("HOME")
                 .ok()
@@ -750,7 +792,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         closing: false,
         control: false,
         shift: false,
+        verb: launch.verb,
+        one_shot: launch.verb.is_some(),
     };
+    if let Some(name) = &launch.select {
+        app.browser.select_named(name);
+    }
     app.browser.show_folders = false;
     let mut display = Display::connect()?;
     let window: WindowId = display.create_window(
@@ -804,6 +851,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             None => {}
         }
         let client = App::client(&decoration, c);
+        if let Some(verb) = app.verb.take() {
+            app.run(verb, client);
+        } else if app.one_shot
+            && app.ui.confirm.is_none()
+            && app.ui.properties.is_none()
+            && app.ui.rename.is_none()
+            && app.ui.notice.is_none()
+        {
+            app.closing = true;
+        }
         if let EventKind::Configure(c) = &event.kind
             && scale != c.scale
         {

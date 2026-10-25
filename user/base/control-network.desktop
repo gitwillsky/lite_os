@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Network and Dial-up Connections
+Name[zh_CN]=网络和拨号连接
+Exec=/bin/control-panel network
+Icon=network-connections
+Categories=Settings;
+StartupWMClass=org.liteos.control-panel.network
+Terminal=false

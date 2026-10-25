@@ -29,6 +29,8 @@ PE_FILES = (
     "desk.cpl", "netplwiz.dll", "mplayer2.exe", "stobject.dll",
     # 资源管理器的工具栏位图、文件夹/搜索/历史图标与菜单位图。
     "browseui.dll", "shdocvw.dll",
+    # 设备管理器、网络连接与记事本的专用图标。
+    "devmgr.dll", "netshell.dll", "notepad.exe",
 )
 # 只为取工具栏位图而加入的 DLL：其中个别资源可能是损坏/非标准图标，跳过并记警告，
 # 不影响上面逐图核对的核心素材。
@@ -69,6 +71,12 @@ ICONS = {
     "date-time": ("timedate.cpl", 200),
     "sound-volume": ("sndvol32.exe", 304),
     "users": ("netplwiz.dll", 102),
+    "device-manager": ("devmgr.dll", 201),
+    "network-connections": ("netshell.dll", 10010),
+    "network-local": ("netshell.dll", 190),
+    "network-disconnected": ("netshell.dll", 195),
+    "network-places": ("shell32.dll", 18),
+    "notepad": ("notepad.exe", 1),
     "tray-volume": ("stobject.dll", 230),
     "tray-volume-muted": ("stobject.dll", 231),
     "ctrl-alt-del": ("msgina.dll", 109),

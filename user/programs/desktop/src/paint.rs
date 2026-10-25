@@ -20,6 +20,7 @@ impl Art {
         for name in [
             "documents-32",
             "my-computer-32",
+            "network-places-32",
             "recycle-bin-empty-32",
             "show-desktop-16",
             "documents-16",
@@ -45,7 +46,14 @@ impl Art {
             "tray-volume-muted-16",
         ] {
             let path = Path::new("/usr/share/liteos/ui").join(format!("{name}.bmp"));
-            bitmaps.insert(name.into(), Bitmap::load(&path)?);
+            // 缺少的素材（只含默认素材的构建）不阻止外壳启动：该图标退回通用图标。
+            match Bitmap::load(&path) {
+                Ok(bitmap) => {
+                    bitmaps.insert(name.into(), bitmap);
+                }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
         }
         Ok(Self {
             bitmaps,
@@ -79,8 +87,26 @@ impl Art {
     pub fn bitmap(&self, name: &str) -> Option<&Bitmap> {
         self.bitmaps.get(name)
     }
+    /// 载入桌面条目声明的程序图标（`<icon>-16.bmp`），开始菜单的程序项用；已载入或缺失的跳过。
+    pub fn register(&mut self, entries: &[desktop_entry::Entry]) {
+        for name in entries.iter().filter_map(|entry| entry.icon.as_deref()) {
+            let key = format!("{name}-16");
+            if self.bitmaps.contains_key(&key) {
+                continue;
+            }
+            let path = Path::new("/usr/share/liteos/ui").join(format!("{key}.bmp"));
+            if let Ok(bitmap) = Bitmap::load(&path) {
+                self.bitmaps.insert(key, bitmap);
+            }
+        }
+    }
+    /// 画名为 `name` 的图标；没有这张素材时退回通用应用图标，不留空位。
     pub fn icon(&self, p: &mut Painter<'_>, name: &str, x: i32, y: i32) {
-        if let Some(bitmap) = self.bitmaps.get(name) {
+        if let Some(bitmap) = self
+            .bitmaps
+            .get(name)
+            .or_else(|| self.bitmaps.get("file-app-16"))
+        {
             bitmap.paint(p, x, y);
         }
     }

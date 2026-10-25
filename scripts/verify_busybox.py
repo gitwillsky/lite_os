@@ -114,6 +114,7 @@ SYSTEM_LIBRARY_PROGRAMS = frozenset({
     ("file-explorer", "file-explorer"), ("control-panel", "control-panel"),
     ("task-manager", "taskmgr"), ("volume-control", "sndvol"), ("sound-player", "sndplay"),
     ("media-player", "mplay"), ("notepad", "notepad"),
+    ("device-manager", "devmgmt"),
 })
 RUST_USER_RUSTFLAGS = (
     "-C link-self-contained=no -C target-feature=-crt-static "
@@ -1273,7 +1274,8 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
                               ("desktop", "desktop"), ("file-explorer", "file-explorer"),
                               ("control-panel", "control-panel"), ("task-manager", "taskmgr"), ("volume-control", "sndvol"),
                               ("sound-player", "sndplay"), ("media-player", "mplay"),
-                              ("notepad", "notepad"), ("linux-uapi", "session-launch"))
+                              ("notepad", "notepad"), ("device-manager", "devmgmt"),
+                              ("linux-uapi", "session-launch"))
     )
     fonts = tuple(UserlandArtifact(ROOT / "assets/fonts" / name, f"/usr/share/liteos/fonts/{name}")
                   for name in ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf"))

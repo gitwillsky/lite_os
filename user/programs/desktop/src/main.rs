@@ -73,6 +73,8 @@ struct Desktop {
     tooltip: classic_ui::Tooltip,
     /// 正显示的提示：它的图层窗口与文字。
     tooltip_window: Option<(WindowId, String)>,
+    /// 程序列表刚重读过，需要给新条目载入图标。
+    apps_changed: bool,
 }
 
 /// 自动隐藏的任务栏收起后露出的细线高度。
@@ -124,6 +126,7 @@ impl Desktop {
             leave_at: None,
             tooltip: classic_ui::Tooltip::default(),
             tooltip_window: None,
+            apps_changed: true,
         })
     }
     /// 任务栏图层的设置：层次（总在最前）、高度与独占区（自动隐藏时收起并释放独占区）。
@@ -300,6 +303,33 @@ impl Desktop {
         Ok(())
     }
     /// 任务管理器是独立程序（Windows 2000 的 taskmgr.exe），外壳只负责启动；已在运行时再启动一个也无害。
+    fn icon_kind(&self, index: usize) -> popups::IconKind {
+        match self.icons.items.get(index).map(|icon| &icon.target) {
+            Some(icons::Target::Path(_)) => popups::IconKind::Path,
+            Some(icons::Target::Place(start::Place::MyComputer)) => popups::IconKind::MyComputer,
+            _ => popups::IconKind::Other,
+        }
+    }
+
+    /// 让资源管理器对桌面上的文件或文件夹执行动词：打开它所在的文件夹、选中它、立即执行。
+    fn icon_verb(&mut self, index: usize, verb: &str) {
+        let Some(icons::Target::Path(path)) =
+            self.icons.items.get(index).map(|icon| icon.target.clone())
+        else {
+            return;
+        };
+        let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+            return;
+        };
+        let mut command = Command::new("/bin/file-explorer");
+        command
+            .arg(parent)
+            .args(["--select"])
+            .arg(name)
+            .args(["--verb", verb]);
+        self.launch(command);
+    }
+
     /// 启动控制面板的某个小程序。
     fn control_panel(&mut self, applet: &str) {
         let mut command = Command::new("/bin/control-panel");
@@ -367,6 +397,7 @@ impl Desktop {
             Place::Documents => self.files(self.home.clone()),
             Place::MyComputer => self.files("::my-computer"),
             Place::ControlPanel => self.files("::control-panel"),
+            Place::NetworkPlaces => self.files("::network-places"),
             Place::RecycleBin => match std::fs::create_dir_all(&trash) {
                 Ok(()) => self.files(trash),
                 Err(error) => self.message = error.to_string(),
@@ -409,6 +440,8 @@ impl Desktop {
             }
             Action::TaskManager => self.launch_task_manager(),
             Action::TaskbarProperties => self.control_panel("taskbar"),
+            Action::SystemProperties => self.control_panel("system"),
+            Action::IconVerb(index, verb) => self.icon_verb(index, verb),
             Action::DisplayProperties => self.control_panel("display"),
             Action::VolumeProperties => self.launch(Command::new("/bin/sndvol")),
             Action::OpenIcon(index) => self.open_icon(index),
@@ -424,6 +457,7 @@ impl Desktop {
             }
             Action::Refresh => {
                 self.apps = installed_programs();
+                self.apps_changed = true;
                 self.icons.refresh();
             }
             Action::Window(id, request) => display.control_toplevel(id, request)?,
@@ -527,7 +561,7 @@ impl Desktop {
             match hit {
                 Some(index) => {
                     self.selected = Some(index);
-                    popups::icon_items(index)
+                    popups::icon_items(index, self.icon_kind(index))
                 }
                 None => popups::desktop_items(),
             }
@@ -558,6 +592,7 @@ impl Desktop {
             Action::Files(place) => self.open_place(place),
             Action::Tasks => self.launch_task_manager(),
             Action::Taskbar => self.control_panel("taskbar"),
+            Action::Network => self.control_panel("network"),
             Action::About => {
                 let mut command = Command::new("/bin/control-panel");
                 command.arg("winver");
@@ -886,6 +921,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         dirty |= state.volume.poll();
         dirty |= state.poll_settings(&mut display)?;
         state.tick_auto_hide(&mut display)?;
+        if std::mem::take(&mut state.apps_changed) {
+            art.register(&state.apps);
+            dirty = true;
+        }
         state.sync_tooltip(&mut display, &mut art)?;
         if dirty {
             state.sync_task_rectangles(&mut display)?;

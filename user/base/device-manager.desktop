@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Device Manager
+Name[zh_CN]=设备管理器
+Exec=/bin/devmgmt
+Icon=device-manager
+StartupWMClass=org.liteos.device-manager
+NoDisplay=true
+Terminal=false

@@ -44,7 +44,7 @@ def managed_path(path: str) -> bool:
         return True
     return path in {
         *RETIRED_FILES, *(f"/bin/{name}" for name in ACCOUNT_APPLETS), "/bin/shutdown", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
-        "/etc/init.d/display-service", "/etc/profile", "/bin/logon", "/bin/desktop", "/bin/file-explorer", "/bin/control-panel", "/bin/taskmgr", "/bin/sndvol", "/bin/sndplay", "/bin/mplay", "/bin/notepad", "/bin/session-launch",
+        "/etc/init.d/display-service", "/etc/profile", "/bin/logon", "/bin/desktop", "/bin/file-explorer", "/bin/control-panel", "/bin/taskmgr", "/bin/sndvol", "/bin/sndplay", "/bin/mplay", "/bin/notepad", "/bin/devmgmt", "/bin/session-launch",
     } or any(path.startswith(root + "/") for root in RETIRED_TREES)
 
 
