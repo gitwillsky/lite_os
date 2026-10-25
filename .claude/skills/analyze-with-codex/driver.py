@@ -52,12 +52,22 @@ ROOT = Path(__file__).resolve().parents[3]
 
 
 def run_codex(cmd: list[str], out: Path | None) -> int:
-    """跑 codex，若给了 --out 则把 stdout+stderr 完整落盘（供 Read 工具读全）。"""
+    """跑 codex，若给了 --out 则把 stdout+stderr 完整落盘（供 Read 工具读全）。
+
+    stdin 必须关闭：prompt 已在参数里，`codex exec` 在 stdin 是未关闭的管道时会一直等待额外输入，
+    后台运行就会永远卡在 "Reading additional input from stdin..." 而不开始分析。
+    """
     if out is None:
-        return subprocess.run(cmd, cwd=ROOT).returncode
+        return subprocess.run(cmd, cwd=ROOT, stdin=subprocess.DEVNULL).returncode
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("wb") as handle:
-        proc = subprocess.run(cmd, cwd=ROOT, stdout=handle, stderr=subprocess.STDOUT)
+        proc = subprocess.run(
+            cmd,
+            cwd=ROOT,
+            stdin=subprocess.DEVNULL,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+        )
     print(f"Codex 输出已完整写入 {out}（用 Read 工具读整个文件，勿用 tail）")
     return proc.returncode
 
