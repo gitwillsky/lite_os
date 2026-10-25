@@ -169,12 +169,17 @@ impl Sheet {
         close: bool,
     ) -> io::Result<Vec<abi::Event>> {
         let mut out = Vec::new();
-        if close && !self.applying() {
-            out.push(abi::Event {
-                window,
-                kind: event::CLOSE,
-                ..Default::default()
-            });
+        // 应用阶段的外部副作用已开始：X/Escape/Alt+F4 暂缓到 applied，成功后关闭，
+        // 失败保留窗口展示错误。直接丢弃会让用户的关闭请求无声失效。
+        if close {
+            match &mut self.phase {
+                Phase::Applying { close: pending, .. } => *pending = true,
+                _ => out.push(abi::Event {
+                    window,
+                    kind: event::CLOSE,
+                    ..Default::default()
+                }),
+            }
         }
         for action in actions {
             if action.kind == event::ACTIVATE && action.node == self.cancel {
