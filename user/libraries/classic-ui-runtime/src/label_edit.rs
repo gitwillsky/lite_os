@@ -35,6 +35,25 @@ impl Node {
                     self.row_height,
                 ))
             }
+        } else if let Some(outline) = self.outline.as_ref().filter(|_| table.columns.is_empty()) {
+            // 树项的编辑框与绘制/命中共用行几何，从标签起点开始。
+            let row = Rect::new(
+                geometry.rows.x - table.horizontal.position,
+                geometry.rows.y + (index as i32 - self.position.position) * self.row_height,
+                geometry.rows.width,
+                self.row_height,
+            );
+            let icon = self
+                .row_icons
+                .get(&editing.row)
+                .is_some_and(|icons| icons.0.is_some());
+            let left = outline.row(row, index, icon).label;
+            Some(Rect::new(
+                left,
+                row.y,
+                (geometry.rows.right() - left).max(0),
+                row.height,
+            ))
         } else {
             let left = if self.row_icons.contains_key(&editing.row) {
                 20

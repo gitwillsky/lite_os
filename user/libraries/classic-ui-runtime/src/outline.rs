@@ -4,7 +4,7 @@ use super::{
     widgets::{Node, Tree},
 };
 use canvas::Rect;
-use classic_theme::{Edge, SystemColor as C};
+use classic_theme::SystemColor as C;
 use classic_ui::{EventKind, Painter};
 use classic_ui_abi::{self as abi, event, widget};
 use std::{collections::BTreeMap, ffi::c_void, io, slice};
@@ -16,6 +16,33 @@ pub struct Branch {
     expanded: bool,
     children: bool,
     descendants: Vec<usize>,
+    /// 同一父节点下是否还有后续兄弟；分支竖线据此决定是否延伸到行底。
+    /// 缺少它只能逐行扫描兄弟表，或把最后一个孩子的竖线画到空处。
+    last: bool,
+    /// 是否为同一父节点下的第一个孩子；第一个根节点没有向上的分支线。
+    first: bool,
+}
+
+/// comctl32 树视图默认缩进（`uIndent`），每层一列。
+const INDENT: i32 = 19;
+/// 展开框边长；中心与本层分支线对齐。
+const BOX: i32 = 9;
+/// 图标宽度与图标后到文字标签的间距。
+const ICON: i32 = 16;
+const ICON_GAP: i32 = 3;
+/// 文字标签左右留白；高亮与焦点框覆盖整个标签。
+const LABEL_PADDING: i32 = 2;
+
+/// 一行树项的逻辑几何；绘制、命中和内容宽度共用，坐标已包含水平滚动。
+pub struct RowGeometry {
+    /// 本层分支线所在列的中心 x 与行中心 y。
+    pub center: (i32, i32),
+    /// 展开框；没有孩子时为 None。
+    pub expander: Option<Rect>,
+    /// 图标左上 x；没有图标时等于标签起点。
+    pub icon: i32,
+    /// 文字标签起点；标签宽度为文字宽度加两侧留白。
+    pub label: i32,
 }
 pub struct Outline {
     branches: Vec<Branch>,
@@ -82,33 +109,77 @@ impl Outline {
         }
         self.rebuild();
     }
-    pub fn indent(&self, row: usize) -> i32 {
-        (self.branches[self.visible[row]].depth + 1) * 18
-    }
-    fn expander(&self, rows: Rect, height: i32, position: usize, row: usize) -> Rect {
-        Rect::new(
-            rows.x + self.indent(row) - 13,
-            rows.y + (row - position) as i32 * height + (height - 9) / 2,
-            9,
-            9,
-        )
-    }
-    pub fn paint_expander(&self, p: &mut Painter<'_>, row: Rect, index: usize) {
+    /// 可见行的几何（TVS_HASLINES | TVS_LINESATROOT | TVS_HASBUTTONS）。
+    ///
+    /// `row` 是该行矩形（已减去水平滚动），`icon` 表示该行是否有图标。
+    pub fn row(&self, row: Rect, index: usize, icon: bool) -> RowGeometry {
         let branch = &self.branches[self.visible[index]];
-        if !branch.children {
-            return;
+        let column = row.x + branch.depth * INDENT;
+        let center = (column + INDENT / 2, row.y + row.height / 2);
+        let icon_x = column + INDENT;
+        RowGeometry {
+            center,
+            expander: branch.children.then(|| {
+                Rect::new(center.0 - BOX / 2, center.1 - BOX / 2, BOX, BOX)
+            }),
+            icon: icon_x,
+            label: icon_x + if icon { ICON + ICON_GAP } else { 0 },
         }
-        let rect = Rect::new(
-            row.x + self.indent(index) - 13,
-            row.y + (row.height - 9) / 2,
-            9,
-            9,
-        );
-        p.edge(rect, Edge::Sunken);
-        p.fill(Rect::new(rect.x + 2, rect.y + 4, 5, 1), C::WindowText);
-        if !branch.expanded {
-            p.fill(Rect::new(rect.x + 4, rect.y + 2, 1, 5), C::WindowText);
+    }
+    /// 标签宽度：文字逻辑宽度加两侧留白。
+    pub fn label_width(text_width: i32) -> i32 {
+        text_width + 2 * LABEL_PADDING
+    }
+    /// 文字相对标签起点的偏移。
+    pub fn text_offset() -> i32 {
+        LABEL_PADDING
+    }
+    /// 画本行的分支虚线和展开框；虚线按绝对逻辑坐标奇偶取点，跨行与滚动后保持连续。
+    pub fn paint_lines(&self, p: &mut Painter<'_>, row: Rect, index: usize, icon: bool) {
+        let geometry = self.row(row, index, icon);
+        let (cx, cy) = geometry.center;
+        let mut dots = |x0: i32, y0: i32, x1: i32, y1: i32| {
+            for y in y0..y1 {
+                for x in x0..x1 {
+                    if (x + y) % 2 == 0 {
+                        p.fill(Rect::new(x, y, 1, 1), C::GrayText);
+                    }
+                }
+            }
+        };
+        let branch = &self.branches[self.visible[index]];
+        // 本层：上半段连到父节点或前一个兄弟，有后续兄弟才延伸到行底；横线连到图标。
+        if !(branch.parent == 0 && branch.first) {
+            dots(cx, row.y, cx + 1, cy);
         }
+        if !branch.last {
+            dots(cx, cy, cx + 1, row.bottom());
+        }
+        dots(cx, cy, geometry.icon - 1, cy + 1);
+        // 祖先层：祖先还有后续兄弟时，竖线贯穿整行。
+        let mut parent = branch.parent;
+        while let Some(&ancestor) = self.indices.get(&parent) {
+            let ancestor = &self.branches[ancestor];
+            if !ancestor.last {
+                let x = row.x + ancestor.depth * INDENT + INDENT / 2;
+                dots(x, row.y, x + 1, row.bottom());
+            }
+            parent = ancestor.parent;
+        }
+        if let Some(rect) = geometry.expander {
+            p.fill(rect, C::Window);
+            p.outline(rect, C::GrayText);
+            p.fill(Rect::new(cx - 2, cy, 5, 1), C::WindowText);
+            if !branch.expanded {
+                p.fill(Rect::new(cx, cy - 2, 1, 5), C::WindowText);
+            }
+        }
+    }
+    /// 指针下的展开框所属节点；没有孩子或不在框内返回 None。
+    fn expander_hit(&self, row: Rect, index: usize, point: (i32, i32)) -> Option<u64> {
+        let rect = self.row(row, index, false).expander?;
+        (point.0 >= rect.x && point.0 < rect.right() && point.1 >= rect.y && point.1 < rect.bottom())
+            .then(|| self.branches[self.visible[index]].id)
     }
 }
 impl Node {
@@ -157,30 +228,16 @@ impl Tree {
                 if row >= outline.visible.len() {
                     return false;
                 }
-                let rect = outline.expander(
-                    Rect::new(
-                        geometry.rows.x
-                            - node.table.as_ref().expect("list model").horizontal.position,
-                        geometry.rows.y,
-                        geometry.rows.width,
-                        geometry.rows.height,
-                    ),
+                let row_rect = Rect::new(
+                    geometry.rows.x - node.table.as_ref().expect("list model").horizontal.position,
+                    geometry.rows.y
+                        + (row - node.position.position as usize) as i32 * node.row_height,
+                    geometry.rows.width,
                     node.row_height,
-                    node.position.position as usize,
-                    row,
                 );
-                if self.pointer.0 < rect.x
-                    || self.pointer.0 >= rect.right()
-                    || self.pointer.1 < rect.y
-                    || self.pointer.1 >= rect.bottom()
-                {
+                let Some(value) = outline.expander_hit(row_rect, row, self.pointer) else {
                     return false;
-                }
-                let value = outline.branches[outline.visible[row]].id;
-                let branch = &outline.branches[outline.visible[row]];
-                if !branch.children {
-                    return false;
-                }
+                };
                 self.focus = Some(id);
                 self.armed = None;
                 outline.toggle_event(window, id, value, out);
@@ -194,7 +251,9 @@ impl Tree {
                     select = Some(value);
                 }
             }
-            EventKind::Key(key) if key.pressed && matches!(key.code, 105 | 106) => {
+            // comctl32：Left 折叠或回到父项，Right 展开或进入首个孩子；
+            // 小键盘 +/- 只展开/折叠，Backspace 回到父项。
+            EventKind::Key(key) if key.pressed && matches!(key.code, 105 | 106 | 78 | 74 | 14) => {
                 let Some(index) = node
                     .selected
                     .and_then(|value| outline.indices.get(&value))
@@ -204,17 +263,16 @@ impl Tree {
                 };
                 let branch = &outline.branches[index];
                 match (key.code, branch.children, branch.expanded) {
-                    (105, true, true) | (106, true, false) => {
+                    (105 | 74, true, true) | (106 | 78, true, false) => {
                         let value = branch.id;
                         outline.toggle_event(window, id, value, out);
                     }
-                    (105, _, _) if branch.parent != 0 => select = Some(branch.parent),
+                    (105 | 14, _, _) if branch.parent != 0 => select = Some(branch.parent),
                     (106, true, true) => {
-                        select = outline
-                            .branches
-                            .iter()
-                            .find(|child| child.parent == branch.id)
-                            .map(|child| child.id)
+                        select = branch
+                            .descendants
+                            .first()
+                            .map(|child| outline.branches[*child].id)
                     }
                     _ => {}
                 }
@@ -223,6 +281,20 @@ impl Tree {
         }
         if let Some(value) = select {
             node.selected = Some(value);
+            // 键盘移动到父项/子项后保持可见，与列表方向键一致。
+            if let Some(index) = outline
+                .visible
+                .iter()
+                .position(|branch| outline.branches[*branch].id == value)
+            {
+                let page = (geometry.rows.height / node.row_height).max(1) as usize;
+                let top = node.position.position as usize;
+                if index < top {
+                    node.position.position = index as i32;
+                } else if index >= top + page {
+                    node.position.position = (index + 1 - page) as i32;
+                }
+            }
             out.push(abi::Event {
                 window,
                 node: id,
@@ -283,8 +355,21 @@ pub(super) unsafe extern "C" fn tree_rows(
                     expanded: value.state & 1 != 0,
                     children: value.state & 2 != 0,
                     descendants: Vec::new(),
+                    last: false,
+                    first: false,
                 });
                 rows.push((value.id, text(value.text)?));
+            }
+            // 每个父节点（含根层）的首尾孩子一次标记，绘制时不再扫描兄弟表。
+            let mut ends: BTreeMap<u64, (usize, usize)> = BTreeMap::new();
+            for (index, branch) in outline.branches.iter().enumerate() {
+                ends.entry(branch.parent)
+                    .and_modify(|end| end.1 = index)
+                    .or_insert((index, index));
+            }
+            for (first, last) in ends.into_values() {
+                outline.branches[first].first = true;
+                outline.branches[last].last = true;
             }
             let host = context.host_mut(window)?;
             let node = host

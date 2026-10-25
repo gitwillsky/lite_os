@@ -135,18 +135,30 @@ impl Tree {
                     self.focus == Some(id) && keyboard_focus && !disabled,
                 ),
                 widget::TABS => {
-                    let body = Rect::new(
-                        rect.x,
-                        rect.y + p.line_height() + 6,
-                        rect.width,
-                        (rect.height - p.line_height() - 6).max(0),
-                    );
-                    p.edge(body, Edge::Raised);
-                    for (child, area) in &node.tab_headers {
+                    let strip = &node.tabs;
+                    p.edge(strip.body, Edge::RaisedSoft);
+                    // 选中表头最后画：它覆盖相邻表头各 2 像素并擦除主体上边框。
+                    let pages = strip
+                        .headers
+                        .iter()
+                        .map(|(page, _)| *page)
+                        .filter(|page| node.selected != Some(*page))
+                        .chain(node.selected);
+                    for page in pages {
+                        let Some(header) = strip.header(page, node.selected) else {
+                            continue;
+                        };
+                        let selected = node.selected == Some(page);
                         p.tab(
-                            *area,
-                            self.nodes[child].text(),
-                            node.selected == Some(*child),
+                            header,
+                            strip.label(header),
+                            self.nodes[&page].text(),
+                            if disabled || !self.nodes[&page].enabled() {
+                                Ink::Disabled
+                            } else {
+                                Ink::Color(C::ButtonText)
+                            },
+                            selected && self.focus == Some(id) && keyboard_focus && !disabled,
                         );
                     }
                 }
@@ -261,6 +273,21 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                 node.row_height,
             );
             let selected = node.row_selected(*id);
+            let image = node.row_icons.get(id).and_then(|icons| icons.0.as_ref());
+            if let Some(outline) = node.outline.as_ref().filter(|_| table.columns.is_empty()) {
+                paint_tree_row(
+                    p,
+                    outline,
+                    Rect::new(row.x - table.horizontal.position, row.y, row.width, row.height),
+                    absolute,
+                    text,
+                    image,
+                    selected,
+                    focused,
+                    focused && node.selected == Some(*id),
+                );
+                continue;
+            }
             if selected {
                 p.fill(row, if focused { C::Hilight } else { C::ButtonFace });
             }
@@ -269,7 +296,6 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
             } else {
                 C::WindowText
             });
-            let image = node.row_icons.get(id).and_then(|icons| icons.0.as_ref());
             let icon_width = if image.is_some() { 20 } else { 0 };
             if let Some(image) = image {
                 let clip = if table.columns.is_empty() {
@@ -285,36 +311,16 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                 p.clipped(clip, |p| {
                     image.paint(
                         p,
-                        row.x + 3 - table.horizontal.position
-                            + node
-                                .outline
-                                .as_ref()
-                                .map_or(0, |outline| outline.indent(absolute)),
+                        row.x + 3 - table.horizontal.position,
                         row.y + (row.height - 16) / 2,
                     )
                 });
             }
             if table.columns.is_empty() {
-                let indent = node
-                    .outline
-                    .as_ref()
-                    .map_or(0, |outline| outline.indent(absolute));
-                if let Some(outline) = &node.outline {
-                    outline.paint_expander(
-                        p,
-                        Rect::new(
-                            row.x - table.horizontal.position,
-                            row.y,
-                            row.width,
-                            row.height,
-                        ),
-                        absolute,
-                    );
-                }
                 p.text_fit(
-                    row.x + 4 + indent + icon_width - table.horizontal.position,
+                    row.x + 4 + icon_width - table.horizontal.position,
                     row.y + 3,
-                    (row.width - 8 - indent - icon_width).max(0),
+                    (row.width - 8 - icon_width).max(0),
                     text,
                     ink,
                     false,
@@ -374,6 +380,48 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
             ),
             table.horizontal.pressed(),
         );
+    }
+}
+
+/// 一行树项：分支线与展开框、图标、只覆盖文字标签的选择高亮与焦点框（非整行选择）。
+/// 失焦时选择保持为按钮面色（TVS_SHOWSELALWAYS），与命中使用同一 RowGeometry。
+#[allow(clippy::too_many_arguments)]
+fn paint_tree_row(
+    p: &mut Painter<'_>,
+    outline: &super::outline::Outline,
+    row: Rect,
+    index: usize,
+    text: &str,
+    image: Option<&std::rc::Rc<classic_ui::Bitmap>>,
+    selected: bool,
+    focused: bool,
+    caret: bool,
+) {
+    use super::outline::Outline;
+    outline.paint_lines(p, row, index, image.is_some());
+    let geometry = outline.row(row, index, image.is_some());
+    if let Some(image) = image {
+        image.paint(p, geometry.icon, row.y + (row.height - 16) / 2);
+    }
+    let width = (p.text_width(text, false) + p.scale() - 1) / p.scale();
+    let label = Rect::new(geometry.label, row.y, Outline::label_width(width), row.height);
+    if selected {
+        p.fill(label, if focused { C::Hilight } else { C::ButtonFace });
+    }
+    let ink = Ink::Color(if selected && focused {
+        C::HilightText
+    } else {
+        C::WindowText
+    });
+    p.text(
+        label.x + Outline::text_offset(),
+        row.y + (row.height - p.line_height()) / 2,
+        text,
+        ink,
+        false,
+    );
+    if caret {
+        p.focus_rect(label);
     }
 }
 

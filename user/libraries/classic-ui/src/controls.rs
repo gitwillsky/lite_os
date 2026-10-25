@@ -297,44 +297,41 @@ impl Painter<'_> {
 }
 
 impl Painter<'_> {
-    /// 画一个标签头。
+    /// 画一个顶部标签表头（comctl32 非主题样式）。
     ///
-    /// `selected` 的标签头比页面高出 2 像素，下沿 `tab.bottom()` 应取页面上边框下方 2 像素以盖住它，因此没有底边、与页面连成一体；
-    /// 未选中的标签头下沿取页面上边框的上沿，保留页面的高光线。第一个选中的标签头左边必须与页面左边框同一列，
-    /// 其余选中的标签头向两侧各多出 2 像素，由调用者给出矩形。
+    /// # Parameters
     ///
-    /// 左边是外亮面内高光（与页面边框同序），上边是外高光内亮面，右是黑与暗影，三个角各缩进一像素形成圆角；文字居中于顶部 22 像素（未选中为整个矩形）。
-    pub fn tab(&mut self, tab: Rect, label: &str, selected: bool) {
+    /// - `tab`: 表头的实际绘制矩形，由调用者的标签页布局给出。选中项已向两侧各外扩 2、上抬 2，
+    ///   并向下覆盖页面主体（`Edge::RaisedSoft`）上边框的 2 行；这里先填按钮面色，即擦除该段边框，
+    ///   使选中页与页面连成一体。未选中项下沿落在页面上边框之上，页面的高光线保持可见。
+    /// - `label_area`: 文字与焦点框区域；文字居中，超宽以"..."截断并裁剪，括号助记键按提示状态加下划线。
+    /// - `ink`: 文字墨色；禁用页传 [`Ink::Disabled`]。
+    /// - `focused`: 控件拥有键盘焦点且这是选中项时，在 `label_area` 画点状焦点框。
+    ///
+    /// 左、上为单像素高光，右为外黑内暗影，两个上角各缩进一像素形成圆角；外层白线与
+    /// `Edge::RaisedSoft` 页面的外层白线同列。无错误返回。
+    pub fn tab(&mut self, tab: Rect, label_area: Rect, label: &str, ink: Ink, focused: bool) {
         use SystemColor as C;
         self.fill(tab, C::ButtonFace);
         let (right, bottom) = (tab.right(), tab.bottom());
         let side = bottom - tab.y - 2;
         for (rect, color) in [
-            // 左边两列的顺序与页面凸起边框一致（外灰内白），第一个标签的白线才与页面左边的白线同一列。
-            (Rect::new(tab.x, tab.y + 2, 1, side), C::ButtonLight),
-            (Rect::new(tab.x + 1, tab.y + 2, 1, side), C::ButtonHilight),
+            (Rect::new(tab.x, tab.y + 2, 1, side), C::ButtonHilight),
+            (Rect::new(tab.x + 1, tab.y + 1, 1, 1), C::ButtonHilight),
             (
                 Rect::new(tab.x + 2, tab.y, tab.width - 4, 1),
                 C::ButtonHilight,
             ),
-            (
-                Rect::new(tab.x + 2, tab.y + 1, tab.width - 4, 1),
-                C::ButtonLight,
-            ),
-            (Rect::new(tab.x + 1, tab.y + 1, 1, 1), C::ButtonHilight),
+            (Rect::new(right - 2, tab.y + 1, 1, 1), C::ButtonDkShadow),
             (Rect::new(right - 1, tab.y + 2, 1, side), C::ButtonDkShadow),
             (Rect::new(right - 2, tab.y + 2, 1, side), C::ButtonShadow),
-            (Rect::new(right - 2, tab.y + 1, 1, 1), C::ButtonDkShadow),
         ] {
             self.fill(rect, color);
         }
-        let text_height = if selected { 22 } else { tab.height };
-        self.text_centered(
-            Rect::new(tab.x, tab.y, tab.width, text_height),
-            label,
-            Ink::Color(C::ButtonText),
-            false,
-        );
+        self.label_centered(label_area, label, ink, false);
+        if focused {
+            self.focus_rect(label_area);
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 //! 标准控件激活、焦点与选择；领域动作只在输入分发结束后由 ABI 事件交给应用。
 use super::widgets::Tree;
+use canvas::Rect;
 use classic_ui::{EventKind, Key};
 use classic_ui_abi::{self as abi, event, state, widget};
 impl Tree {
@@ -70,18 +71,34 @@ impl Tree {
                 if let Some(id) = self.armed.filter(|id| self.nodes[id].kind == widget::EDIT) {
                     self.edit_pointer(id, probe, modifiers.shift);
                 }
+                // comctl32 在按下时切换标签页，释放时不再重复激活。
+                if let Some(id) = self.armed.filter(|id| self.nodes[id].kind == widget::TABS) {
+                    self.activate(window, id, true, modifiers, probe, &mut out);
+                }
             }
             EventKind::Button {
                 code: 0x110,
                 pressed: false,
                 ..
             } => {
-                if let Some(id) = self.armed.take().filter(|id| Some(*id) == self.hit()) {
-                    self.activate(window, id, true, modifiers, &mut out);
+                if let Some(id) = self.armed.take().filter(|id| {
+                    Some(*id) == self.hit() && self.nodes[id].kind != widget::TABS
+                }) {
+                    self.activate(window, id, true, modifiers, probe, &mut out);
                 }
             }
             EventKind::Key(key) if key.pressed => {
-                if key.code == 15
+                // 属性表约定：Ctrl+Tab / Ctrl+PgDn 下一页，加 Shift 或 Ctrl+PgUp 上一页，焦点在页内控件时同样有效。
+                if key.modifiers.control
+                    && matches!(key.code, 15 | 104 | 109)
+                    && self.cycle_tabs(
+                        window,
+                        key.code == 104 || (key.code == 15 && key.modifiers.shift),
+                        &mut out,
+                    )
+                {
+                    consumed = true;
+                } else if key.code == 15
                     && !self.focus.is_some_and(|id| {
                         self.nodes[&id].kind == widget::CANVAS
                             && self.nodes[&id].state & state::TAB_INPUT != 0
@@ -119,7 +136,7 @@ impl Tree {
                             });
                         }
                     } else if self.nodes[&id].kind == widget::TABS {
-                        consumed = matches!(key.code, 105 | 106 | 103 | 108 | 102 | 107);
+                        consumed = matches!(key.code, 105 | 106 | 102 | 107);
                         self.tabs_key(window, id, *key, &mut out);
                     } else if matches!(self.nodes[&id].kind, widget::LIST | widget::TREE)
                         && key.code == 57
@@ -130,7 +147,7 @@ impl Tree {
                         consumed = false;
                     } else if matches!(key.code, 28 | 57) {
                         consumed = self.nodes[&id].kind != widget::CANVAS;
-                        self.activate(window, id, false, modifiers, &mut out);
+                        self.activate(window, id, false, modifiers, probe, &mut out);
                     } else {
                         consumed = matches!(self.nodes[&id].kind, widget::LIST | widget::TREE)
                             && (matches!(key.code, 103 | 108 | 102 | 107 | 104 | 109 | 105 | 106)
@@ -150,7 +167,7 @@ impl Tree {
                     && self.active(*id))
                 .then_some(*id)
             }) {
-                self.activate(window, id, false, modifiers, &mut out);
+                self.activate(window, id, false, modifiers, probe, &mut out);
                 consumed = true;
             }
         }
@@ -189,10 +206,22 @@ impl Tree {
         id: u64,
         pointer: bool,
         modifiers: keyboard::Modifiers,
+        probe: &classic_ui::Painter<'_>,
         out: &mut Vec<abi::Event>,
     ) {
         let node = &self.nodes[&id];
         let kind = node.kind;
+        if kind == widget::TABS {
+            // 命中与绘制共用 TabStrip；禁用页的表头可见但不能选中。
+            let page = node
+                .tabs
+                .hit(self.pointer, node.selected)
+                .filter(|page| pointer && self.nodes[page].enabled());
+            if let Some(page) = page {
+                self.select_tab(window, id, page, out);
+            }
+            return;
+        }
         if kind == widget::RADIO {
             let (parent, group) = (node.parent, node.group);
             for other in self.nodes.values_mut().filter(|node| {
@@ -237,6 +266,29 @@ impl Tree {
                 node.position.position as usize
                     + ((self.pointer.1 - geometry.rows.y).max(0) / node.row_height) as usize
             };
+            // 树项只在图标或文字标签上命中（comctl32 TVHT_ONITEM），与绘制共用 RowGeometry；
+            // 缩进、连线和标签右侧空白不改变选择。
+            if let (Some(outline), Some((row_id, text)), true) = (
+                node.outline.as_ref(),
+                node.row_at(index),
+                node.table.as_ref().is_some_and(|table| table.columns.is_empty()),
+            ) {
+                let icon = node.row_icons.get(row_id).is_some_and(|icons| icons.0.is_some());
+                let row = Rect::new(
+                    geometry.rows.x - node.table.as_ref().expect("tree model").horizontal.position,
+                    geometry.rows.y
+                        + (index - node.position.position as usize) as i32 * node.row_height,
+                    geometry.rows.width,
+                    node.row_height,
+                );
+                let row_geometry = outline.row(row, index, icon);
+                let width = (probe.text_width(text, false) + probe.scale() - 1) / probe.scale();
+                let left = if icon { row_geometry.icon } else { row_geometry.label };
+                let right = row_geometry.label + super::outline::Outline::label_width(width);
+                if self.pointer.0 < left || self.pointer.0 >= right {
+                    return;
+                }
+            }
             if let Some(selected) = node.choose_row(index, modifiers.shift, modifiers.control, true)
             {
                 value = selected;
@@ -277,35 +329,14 @@ impl Tree {
                 return;
             }
         }
-        if kind == widget::TABS {
-            if !pointer {
-                return;
-            }
-            if let Some((page, _)) = node.tab_headers.iter().find(|(_, rect)| {
-                self.pointer.0 >= rect.x
-                    && self.pointer.0 < rect.right()
-                    && self.pointer.1 >= rect.y
-                    && self.pointer.1 < rect.bottom()
-            }) {
-                node.selected = Some(*page);
-                value = *page;
-            } else {
-                return;
-            }
-        }
         if matches!(
             kind,
-            widget::BUTTON
-                | widget::CHECKBOX
-                | widget::RADIO
-                | widget::LIST
-                | widget::TREE
-                | widget::TABS
+            widget::BUTTON | widget::CHECKBOX | widget::RADIO | widget::LIST | widget::TREE
         ) {
             out.push(abi::Event {
                 window,
                 node: id,
-                kind: if matches!(kind, widget::LIST | widget::TREE | widget::TABS) {
+                kind: if matches!(kind, widget::LIST | widget::TREE) {
                     event::SELECT
                 } else {
                     event::ACTIVATE
@@ -319,30 +350,23 @@ impl Tree {
             });
         }
     }
-    fn tabs_key(&mut self, window: u64, id: u64, key: Key, out: &mut Vec<abi::Event>) {
-        let node = &self.nodes[&id];
-        let pages: Vec<_> = node
-            .children
+    /// 可见且可用的页面，按表头顺序；隐藏与禁用页不参与键盘切换。
+    fn selectable_pages(&self, id: u64) -> Vec<u64> {
+        self.nodes[&id]
+            .tabs
+            .headers
             .iter()
-            .copied()
-            .filter(|id| self.nodes[id].visible() && self.nodes[id].enabled())
-            .collect();
-        if pages.is_empty() {
+            .map(|(page, _)| *page)
+            .filter(|page| self.nodes[page].enabled())
+            .collect()
+    }
+    /// 切换到指定页；与当前页相同时不发事件（comctl32 只在选择改变时通知）。
+    fn select_tab(&mut self, window: u64, id: u64, page: u64, out: &mut Vec<abi::Event>) {
+        let node = self.nodes.get_mut(&id).expect("tab control");
+        if node.selected == Some(page) {
             return;
         }
-        let current = node
-            .selected
-            .and_then(|id| pages.iter().position(|page| *page == id))
-            .unwrap_or(0);
-        let index = match key.code {
-            105 | 103 => (current + pages.len() - 1) % pages.len(),
-            106 | 108 => (current + 1) % pages.len(),
-            102 => 0,
-            107 => pages.len() - 1,
-            _ => return,
-        };
-        let page = pages[index];
-        self.nodes.get_mut(&id).expect("tab control").selected = Some(page);
+        node.selected = Some(page);
         out.push(abi::Event {
             window,
             node: id,
@@ -350,6 +374,56 @@ impl Tree {
             value: page,
             ..Default::default()
         });
+    }
+    /// 标签控件自身的方向键：Left/Right 逐页且到端点停止，Home/End 跳到首尾。
+    fn tabs_key(&mut self, window: u64, id: u64, key: Key, out: &mut Vec<abi::Event>) {
+        let pages = self.selectable_pages(id);
+        let Some(last) = pages.len().checked_sub(1) else {
+            return;
+        };
+        let current = self.nodes[&id]
+            .selected
+            .and_then(|selected| pages.iter().position(|page| *page == selected));
+        let index = match (key.code, current) {
+            (105, Some(current)) => current.saturating_sub(1),
+            (106, Some(current)) => (current + 1).min(last),
+            (105 | 106, None) | (102, _) => 0,
+            (107, _) => last,
+            _ => return,
+        };
+        self.select_tab(window, id, pages[index], out);
+    }
+    /// 属性表的 Ctrl+Tab 循环：优先焦点所在的标签控件，否则窗口内第一个可用标签控件。
+    /// 没有可切换的标签控件时返回 false，按键继续按普通焦点遍历处理。
+    fn cycle_tabs(&mut self, window: u64, reverse: bool, out: &mut Vec<abi::Event>) -> bool {
+        let mut ancestor = self.focus.unwrap_or(0);
+        while ancestor != 0 && self.nodes[&ancestor].kind != widget::TABS {
+            ancestor = self.nodes[&ancestor].parent;
+        }
+        let id = Some(ancestor).filter(|id| *id != 0).or_else(|| {
+            self.nodes
+                .iter()
+                .find(|(id, node)| node.kind == widget::TABS && self.active(**id))
+                .map(|(id, _)| *id)
+        });
+        let Some(id) = id.filter(|id| self.active(*id)) else {
+            return false;
+        };
+        let pages = self.selectable_pages(id);
+        if pages.len() < 2 {
+            return false;
+        }
+        let current = self.nodes[&id]
+            .selected
+            .and_then(|selected| pages.iter().position(|page| *page == selected))
+            .unwrap_or(0);
+        let index = if reverse {
+            (current + pages.len() - 1) % pages.len()
+        } else {
+            (current + 1) % pages.len()
+        };
+        self.select_tab(window, id, pages[index], out);
+        true
     }
     fn list_key(&mut self, window: u64, id: u64, key: Key, out: &mut Vec<abi::Event>) {
         let node = self.nodes.get_mut(&id).expect("focus node");

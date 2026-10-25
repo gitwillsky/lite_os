@@ -214,52 +214,41 @@ impl Tree {
                 .saturating_add(if row { rect.width } else { rect.height })
                 .saturating_add(gap);
             let intersection = intersect(rect, clip);
-            let headers = if self.nodes[&id].kind == widget::TABS {
+            let strip = (self.nodes[&id].kind == widget::TABS).then(|| {
                 let pages: Vec<_> = self.nodes[&id]
                     .children
                     .iter()
-                    .copied()
                     .filter(|page| self.nodes[page].visible())
-                    .collect();
-                let widths: Vec<_> = pages
-                    .iter()
                     .map(|page| {
-                        ((font.text_width(self.nodes[page].text(), false) + scale - 1) / scale + 20)
-                            .max(48)
+                        let text = self.nodes[page].text();
+                        (
+                            *page,
+                            ((font.text_width(text, false) + scale - 1) / scale + 20).max(48),
+                        )
                     })
                     .collect();
-                let total = widths
+                super::tab_strip::TabStrip::new(
+                    rect.inset(rule.padding),
+                    font.line_height(),
+                    &pages,
+                )
+            });
+            // 隐藏或删除的选中页失效后回到第一个可用页；禁用页保留表头但不作为默认页。
+            let fallback = strip.as_ref().and_then(|strip| {
+                strip
+                    .headers
                     .iter()
-                    .map(|width| i64::from(*width))
-                    .sum::<i64>()
-                    .max(1);
-                let mut x = rect.x;
-                let mut used = 0i64;
-                let mut result = Vec::new();
-                for (page, width) in pages.into_iter().zip(widths) {
-                    used += i64::from(width);
-                    let end = if total > i64::from(rect.width) {
-                        rect.x + (used * i64::from(rect.width) / total) as i32
-                    } else {
-                        x + width
-                    };
-                    result.push((
-                        page,
-                        Rect::new(x, rect.y, (end - x).max(0), font.line_height() + 8),
-                    ));
-                    x = end;
-                }
-                result
-            } else {
-                Vec::new()
-            };
+                    .map(|(page, _)| *page)
+                    .find(|page| self.nodes[page].enabled())
+                    .or_else(|| strip.headers.first().map(|(page, _)| *page))
+            });
             let node = self.nodes.get_mut(&id).expect("layout child");
-            if node.kind == widget::TABS {
+            if let Some(strip) = strip {
                 node.selected = node
                     .selected
-                    .filter(|selected| headers.iter().any(|(page, _)| page == selected))
-                    .or_else(|| headers.first().map(|(id, _)| *id));
-                node.tab_headers = headers;
+                    .filter(|selected| strip.headers.iter().any(|(page, _)| page == selected))
+                    .or(fallback);
+                node.tabs = strip;
             }
             node.rect = rect;
             node.clip = intersection;
@@ -272,21 +261,18 @@ impl Tree {
                 {
                     let width = (0..node.row_count())
                         .map(|index| {
-                            let text = &node.row_at(index).expect("visible row").1;
-                            (font.text_width(text, false) + scale - 1) / scale
-                                + 8
-                                + if node
-                                    .row_icons
-                                    .contains_key(&node.row_at(index).expect("visible row").0)
-                                {
-                                    20
-                                } else {
-                                    0
+                            let (id, text) = node.row_at(index).expect("visible row");
+                            let text = (font.text_width(text, false) + scale - 1) / scale;
+                            let icon = node.row_icons.get(id).is_some_and(|icons| icons.0.is_some());
+                            match &node.outline {
+                                // 树与绘制共用行几何：缩进列、图标与标签留白。
+                                Some(outline) => {
+                                    outline.row(Rect::new(0, 0, 0, 0), index, icon).label
+                                        + super::outline::Outline::label_width(text)
+                                        + 2
                                 }
-                                + node
-                                    .outline
-                                    .as_ref()
-                                    .map_or(0, |outline| outline.indent(index))
+                                None => text + 8 + if icon { 20 } else { 0 },
+                            }
                         })
                         .max()
                         .unwrap_or(0);
@@ -307,17 +293,8 @@ impl Tree {
                 inner.height = (inner.height - top).max(0);
             }
             if kind == widget::TABS {
-                inner = Rect::new(
-                    inner.x,
-                    inner.y + font.line_height() + 8,
-                    inner.width,
-                    (inner.height - font.line_height() - 8).max(0),
-                );
-            }
-            if kind == widget::TABS {
-                inner = inner.inset(2);
-                let page = selected;
-                if let Some(page) = page {
+                inner = node.tabs.page_area();
+                if let Some(page) = selected {
                     self.place_children(
                         &[page],
                         inner,

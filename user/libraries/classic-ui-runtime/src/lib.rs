@@ -16,6 +16,7 @@ mod context_api;
 mod property_sheet;
 mod range;
 mod render;
+mod tab_strip;
 mod table;
 mod text_document;
 mod text_editor;

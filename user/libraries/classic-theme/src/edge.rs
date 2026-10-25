@@ -4,6 +4,9 @@ use crate::{Rgb, SystemColor, Theme};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Edge {
     Raised,
+    /// `EDGE_RAISED | BF_SOFT`：外层高光、内层 3D 亮色，标签页主体使用；
+    /// 外层白线与标签表头的白线同列，选中表头才能与页面无缝相接。
+    RaisedSoft,
     Sunken,
     Etched,
     /// `BDR_RAISEDINNER`：只有内层的单层凸起。
@@ -31,6 +34,10 @@ impl Theme {
             Edge::Raised => EdgeColors {
                 outer: pair(ButtonLight, ButtonDkShadow),
                 inner: pair(ButtonHilight, ButtonShadow),
+            },
+            Edge::RaisedSoft => EdgeColors {
+                outer: pair(ButtonHilight, ButtonDkShadow),
+                inner: pair(ButtonLight, ButtonShadow),
             },
             Edge::Sunken => EdgeColors {
                 outer: pair(ButtonShadow, ButtonHilight),
