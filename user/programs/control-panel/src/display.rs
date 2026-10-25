@@ -2,7 +2,7 @@
 use crate::{Icons, Page, inside};
 use canvas::Rect;
 use classic_theme::{Edge, Rgb, SystemColor as C};
-use classic_ui::{Ink, Painter};
+use classic_ui::{Ink, Painter, SCROLLBAR_WIDTH, Scroll};
 use desktop_settings::Settings;
 
 /// 可选的背景色：显示名与 RGB；第一项"默认"用主题的 `Background`。
@@ -22,9 +22,13 @@ const COLORS: [(&str, Option<[u8; 3]>); 12] = [
 ];
 const ROW: i32 = 17;
 
+/// 颜色列表一次可见的行数；超过时出现滚动条。
+const VISIBLE_ROWS: i32 = 8;
+
 pub struct Background {
     settings: Settings,
     saved: Settings,
+    scroll: Scroll,
 }
 
 impl Background {
@@ -33,11 +37,40 @@ impl Background {
         Self {
             settings,
             saved: settings,
+            scroll: Scroll::default(),
         }
     }
 
+    /// 列表内部的行区域与滚动条（内容超过可见行时才有）。
+    fn view(page: Rect) -> (Rect, Rect) {
+        let inner = Self::list(page).inset(2);
+        let rows = Rect::new(
+            inner.x,
+            inner.y,
+            inner.width - SCROLLBAR_WIDTH,
+            inner.height,
+        );
+        let bar = Rect::new(
+            inner.right() - SCROLLBAR_WIDTH,
+            inner.y,
+            SCROLLBAR_WIDTH,
+            inner.height,
+        );
+        (rows, bar)
+    }
+
+    /// 内容总高、可见高（像素）。
+    fn extent() -> (i32, i32) {
+        (COLORS.len() as i32 * ROW, VISIBLE_ROWS * ROW)
+    }
+
     fn list(page: Rect) -> Rect {
-        Rect::new(page.x + 24, page.y + 150, page.width - 48, 8 * ROW + 4)
+        Rect::new(
+            page.x + 24,
+            page.y + 150,
+            page.width - 48,
+            VISIBLE_ROWS * ROW + 4,
+        )
     }
 }
 
@@ -82,12 +115,14 @@ impl Page for Background {
         let list = Self::list(page);
         let inner = p.edge(list, Edge::Sunken);
         p.fill(inner, C::Window);
-        p.clipped(inner, |p| {
+        let (rows, bar) = Self::view(page);
+        let (content, visible) = Self::extent();
+        p.clipped(rows, |p| {
             for (index, (name, color)) in COLORS.iter().enumerate() {
-                let y = inner.y + 2 + index as i32 * ROW;
+                let y = inner.y + 2 + index as i32 * ROW - self.scroll.position;
                 let hot = self.settings.background == *color;
                 if hot {
-                    p.fill(Rect::new(inner.x + 2, y, inner.width - 4, ROW), C::Hilight);
+                    p.fill(Rect::new(rows.x + 2, y, rows.width - 4, ROW), C::Hilight);
                 }
                 let swatch = color.map_or(default, |[red, green, blue]| Rgb { red, green, blue });
                 let box_rect = Rect::new(inner.x + 6, y + 2, 13, 13);
@@ -102,17 +137,41 @@ impl Page for Background {
                 );
             }
         });
+        p.scrollbar(
+            bar,
+            true,
+            (content - 1, visible, self.scroll.position),
+            self.scroll.pressed(),
+        );
     }
     fn click(&mut self, page: Rect, _tab: usize, point: (i32, i32)) -> bool {
-        let list = Self::list(page).inset(2);
-        if inside(list, point) {
-            let index = ((point.1 - list.y - 2) / ROW).max(0) as usize;
+        let (rows, bar) = Self::view(page);
+        let (content, visible) = Self::extent();
+        if inside(bar, point) {
+            self.scroll.press(bar, true, (content, visible, ROW), point);
+        } else if inside(rows, point) {
+            let index = ((point.1 - rows.y - 2 + self.scroll.position) / ROW).max(0) as usize;
             if let Some((_, color)) = COLORS.get(index) {
                 self.settings.background = *color;
                 return true;
             }
         }
         false
+    }
+    fn wheel(&mut self, page: Rect, _tab: usize, point: (i32, i32), notches: i32) {
+        let (rows, bar) = Self::view(page);
+        let (content, visible) = Self::extent();
+        if inside(rows, point) || inside(bar, point) {
+            self.scroll.wheel(notches, ROW, content - visible);
+        }
+    }
+    fn motion(&mut self, page: Rect, _tab: usize, point: (i32, i32)) {
+        let (_, bar) = Self::view(page);
+        let (content, visible) = Self::extent();
+        self.scroll.drag(bar, true, (content, visible), point);
+    }
+    fn release(&mut self) {
+        self.scroll.release();
     }
     fn dirty(&self) -> bool {
         self.settings != self.saved

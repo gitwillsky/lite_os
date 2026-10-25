@@ -41,6 +41,12 @@ pub trait Page {
     fn paint(&self, p: &mut Painter<'_>, page: Rect, tab: usize, now: i64, icons: &Icons);
     /// 第 `tab` 页内左键按下；返回是否需要重绘。
     fn click(&mut self, page: Rect, tab: usize, point: (i32, i32)) -> bool;
+    /// 滚轮：向下滚 `notches` 档（负数向上）；`point` 是指针位置，页内有多个可滚动区域时据此选择。
+    fn wheel(&mut self, _page: Rect, _tab: usize, _point: (i32, i32), _notches: i32) {}
+    /// 指针移动（拖动滚动条滑块等）。
+    fn motion(&mut self, _page: Rect, _tab: usize, _point: (i32, i32)) {}
+    /// 左键释放（结束滑块拖动）。
+    fn release(&mut self) {}
     /// 有尚未应用的修改；"应用"按钮只在这时可用。
     fn dirty(&self) -> bool {
         false
@@ -52,6 +58,7 @@ pub trait Page {
 /// 页内用到的位图；缺失时按"无图标"绘制。
 pub struct Icons {
     pub logo: Option<Bitmap>,
+    pub computer: Option<Bitmap>,
 }
 
 fn inside(rect: Rect, (x, y): (i32, i32)) -> bool {
@@ -159,6 +166,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let theme = Theme::classic();
     let icons = Icons {
         logo: Bitmap::load(Path::new("/usr/share/liteos/ui/liteos-logo-32.bmp")).ok(),
+        computer: Bitmap::load(Path::new("/usr/share/liteos/ui/my-computer-32.bmp")).ok(),
     };
     let mut font: Option<Typeface> = None;
     let mut scale = 0;
@@ -200,7 +208,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     scale = c.scale;
                 }
                 EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
-                    pointer = (x.floor() as i32, y.floor() as i32)
+                    pointer = (x.floor() as i32, y.floor() as i32);
+                    page.motion(page_rect, tab, pointer);
+                }
+                EventKind::Wheel { vertical, .. } => {
+                    page.wheel(page_rect, tab, pointer, vertical);
                 }
                 EventKind::PointerLeave => pointer = (-1, -1),
                 EventKind::Button {
@@ -208,6 +220,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     pressed: down,
                     ..
                 } => {
+                    if !down {
+                        page.release();
+                    }
                     if down {
                         pressed = buttons(client).iter().position(|r| inside(*r, pointer));
                         if let Some(index) = tab_rects(client, page.tabs().len())

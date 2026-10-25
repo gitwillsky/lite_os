@@ -408,6 +408,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 EventKind::PointerLeave => pointer = (-1, -1),
+                EventKind::Wheel { vertical, .. } => {
+                    if let Some(open_dialog) = &mut dialog {
+                        open_dialog.wheel(client, vertical);
+                    }
+                }
                 EventKind::Button {
                     code: 0x110,
                     pressed: true,
