@@ -140,6 +140,12 @@ impl MemorySet {
         ) {
             return Ok(PageFaultOutcome::BusError);
         }
+        // Linux do_read_fault 保留文件页；提前复制会让只读 MAP_PRIVATE 永久看不到后续文件写入。
+        let share_file_page = access != PageFaultAccess::Write
+            && matches!(
+                prepared_private_file,
+                Some(PrivateFaultPreparation::Cached(_))
+            );
         let mut prepared_private_frame = match preflight {
             FaultPreflight::SegmentationFault(cause) => {
                 return Ok(PageFaultOutcome::SegmentationFault(cause));
@@ -149,7 +155,10 @@ impl MemorySet {
             | FaultPreflight::SharedAnonymous
             | FaultPreflight::SharedFile
             | FaultPreflight::Private => None,
-            FaultPreflight::NeedsPrivateFrame => Some(self.allocate_private_frame()?),
+            FaultPreflight::NeedsPrivateFrame if !share_file_page => {
+                Some(self.allocate_private_frame()?)
+            }
+            FaultPreflight::NeedsPrivateFrame => None,
         };
         if prepared_private_frame.is_some() {
             let still_missing = self.areas.floor(&vpn).is_some_and(|(_, area)| {
@@ -230,17 +239,32 @@ impl MemorySet {
         }
         if area.shared_file.is_none() {
             if area.lazy_private && !area.data_frames.contains_key(&vpn) {
-                let mut frame = prepared_private_frame
-                    .take()
-                    .ok_or(MemoryError::OutOfMemory)?;
-                if let Some(backing) = &area.private_file {
-                    let prepared = prepared_private_file
-                        .as_ref()
-                        .ok_or(MemoryError::InvalidRange)?;
-                    backing.fill(vpn, &mut frame, prepared)?;
-                }
-                let ppn = frame.ppn;
-                let mut resident = PrivateResident::user(frame)?;
+                let file_pin = if share_file_page {
+                    match &prepared_private_file {
+                        Some(PrivateFaultPreparation::Cached(page)) => Some(page.pin()?),
+                        _ => unreachable!("shared private fault requires a file page"),
+                    }
+                } else {
+                    None
+                };
+                let (mut resident, ppn) = if let Some(pin) = &file_pin {
+                    let Some(PrivateFaultPreparation::Cached(page)) = &prepared_private_file else {
+                        unreachable!("pinned private fault requires a file page");
+                    };
+                    (PrivateResident::file(page, pin), pin.ppn())
+                } else {
+                    let mut frame = prepared_private_frame
+                        .take()
+                        .ok_or(MemoryError::OutOfMemory)?;
+                    if let Some(backing) = &area.private_file {
+                        let prepared = prepared_private_file
+                            .as_ref()
+                            .ok_or(MemoryError::InvalidRange)?;
+                        backing.fill(vpn, &mut frame, prepared)?;
+                    }
+                    let ppn = frame.ppn;
+                    (PrivateResident::user(frame)?, ppn)
+                };
                 let mut flags: PagePermissions = area.map_permission.into();
                 if area.private_file.is_some() && area.map_permission.contains(MapPermission::W) {
                     // 首次 read 保持只读，后续 store fault 是标记 MAP_PRIVATE dirty 的唯一入口。

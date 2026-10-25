@@ -1,3 +1,4 @@
+use super::resident::PrivatePagePin;
 use super::*;
 
 impl MemorySet {
@@ -24,12 +25,20 @@ impl MemorySet {
         let Some(resident) = area.data_frames.get_mut(&vpn) else {
             return Ok(false);
         };
-        let page = resident
-            .mapping()
-            .expect("user private content must have canonical owner")
-            .page()
-            .clone();
-        let pin = page.pin()?;
+        // 只 clone 内容 owner，不 clone PageMappingRef，避免临时引用改变 COW 独占判定。
+        let page = match &resident.backing {
+            PrivateBacking::User(mapping) => Some(mapping.page().clone()),
+            _ => None,
+        };
+        let file = match &resident.backing {
+            PrivateBacking::File { page, .. } => Some(page.clone()),
+            _ => None,
+        };
+        let pin = match (&page, &file) {
+            (Some(page), None) => PrivatePagePin::User(page.pin()?),
+            (None, Some(file)) => file.pin()?.into(),
+            _ => unreachable!("user private content must have one canonical owner"),
+        };
         if access != PageFaultAccess::Write {
             if self.page_table.translate(vpn).is_some() {
                 TranslationCommit::stale_fault(vpn.as_usize())
@@ -43,9 +52,7 @@ impl MemorySet {
                     .synchronize()
                     .expect("retained private publication fence");
             }
-            if let PrivateBacking::User(mapping) = &mut resident.backing {
-                mapping.mark_installed(&pin);
-            }
+            resident.mark_installed(&pin);
             return Ok(true);
         }
         if self
@@ -95,9 +102,7 @@ impl MemorySet {
             commit
                 .synchronize()
                 .expect("canonical private write permission fence");
-            if let PrivateBacking::User(mapping) = &mut resident.backing {
-                mapping.mark_installed(&pin);
-            }
+            resident.mark_installed(&pin);
         }
         resident.discardable = false;
         resident.dirty |= area.private_file.is_some();

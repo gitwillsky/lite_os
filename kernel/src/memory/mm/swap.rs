@@ -36,7 +36,7 @@ impl MemorySet {
                         .synchronize()
                         .expect("canonical swapoff publication fence");
                 }
-                if let PrivateBacking::User(mapping) = &mut resident.backing {
+                if let Some(mapping) = resident.mapping_mut() {
                     mapping.mark_installed(&pin);
                 }
                 Ok::<(), MemoryError>(())

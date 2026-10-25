@@ -6,4 +6,4 @@ link_app.S
 virtio-drivers/
 *.wasm
 __pycache__/
-/.local/
+/.local

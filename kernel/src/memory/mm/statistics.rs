@@ -57,7 +57,10 @@ impl MemorySet {
                             rss + usize::from(installed),
                             clean + usize::from(file_clean),
                             swap + usize::from(
-                                !installed && private_mapping && record.mapping().is_some(),
+                                !installed
+                                    && private_mapping
+                                    && !record.is_file_backed()
+                                    && record.mapping().is_some(),
                             ),
                         )
                     });

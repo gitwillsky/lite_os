@@ -96,6 +96,9 @@
 read/execute/write fault 都从原记录恢复映射；fork 对缺失 parent leaf 不执行 set_flags，
 mprotect 按实际 leaf 状态更新，并在 destructive mutation 前预留 table paths。
 MADV_FREE、clean MAP_PRIVATE 与共享 COW 的写限制由 PrivateResident 一次投影。
+MAP_PRIVATE 文件页在首次 read/execute 时直接引用 canonical 文件内容，首个 write fault 才复制；
+未 COW 页保活文件页及内存文件的真实 swap alias，不能因 private 映射数量为一而原地变为可写。
+因此未写的私有视图可观察 pwrite/MAP_SHARED 的后续修改，而 COW 后的视图保持隔离。
 COW 换页遵循 break-before-make，原表路径保留到无分配 publication 完成。
 fork 先登记空 child 再在两个 mm guard 内填充；复制文件 resident 时按已公布 EOF 过滤整页，
 child leaf/PROT_NONE slot 只来自保留的 records，关闭 truncate 等待 parent 的晚登记逃逸窗口。

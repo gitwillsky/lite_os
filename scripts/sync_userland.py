@@ -37,8 +37,8 @@ def managed_path(path: str) -> bool:
     """只接受同步器拥有的规范绝对路径，拒绝父目录跳转。"""
     if not path.startswith("/") or str(PurePosixPath(path)) != path or ".." in PurePosixPath(path).parts:
         return False
-    # Wine 运行时（--wine）：整棵 /opt/wine 与 fontconfig 配置由同步器拥有，缺少它旧版本的文件撤不掉。
-    if path.startswith(("/opt/wine/", "/etc/fonts/", "/usr/share/fontconfig/")):
+    # Wine 运行时（--wine）：运行时树、fontconfig 与 XKB 配置由同步器拥有，缺少它旧文件撤不掉。
+    if path.startswith(("/opt/wine/", "/etc/fonts/", "/usr/share/fontconfig/", "/usr/share/X11/xkb/")):
         return True
     if path.startswith("/usr/lib/liteos/") or (path.startswith("/etc/ld-musl-") and path.endswith(".path")):
         return True

@@ -25,7 +25,12 @@ Wine 的 unix 侧 `.so` 直接链接：`libasound.so.2`、`libffi.so.8`、`liblz
 `libxkbregistry.so.0`、`libxml2.so.2`、`libz.so.1`；运行时 `dlopen` 的还有 FreeType、fontconfig、GnuTLS。构建它们的参照版本（Alpine 3.24.2 aarch64）：
 `alsa-lib-1.2.15.3-r0`、`fontconfig-2.17.1-r1`、`freetype-2.14.3-r0`、`gnutls-3.8.13-r0`、`libffi-3.5.2-r1`、`libxkbcommon-1.13.1-r0`、
 `libxml2-2.13.9-r2`、`wayland-libs-client-1.25.0-r0`、`xz-libs-5.8.4-r0`、`zlib-1.3.2-r1`（musl `1.2.6-r3`）。
-**这些库尚未装进 LiteOS 的 rootfs**：需要经 `scripts/apk_cache.py` 的固定 SHA-256 机制加入（见"待办"）。
+开发镜像通过 `scripts/wine_runtime.py` 安装固定 Alpine v3.22 闭包（包名与 SHA-256 由该脚本唯一维护），
+不要求与构建 VM 的 APK revision 相同。`apk_cache.py` 同时校验包名、版本与架构。
+除共享库和 fontconfig 配置外，必须安装 `xkeyboard-config-2.43-r0` 的 `/usr/share/X11/xkb` 数据：
+Wine 11.16 的 `wayland_keyboard_init` 在注册 `wl_keyboard` listener 前调用
+`rxkb_context_parse_default_ruleset`。合成器发送自包含 keymap，仍不能替代这一步默认 ruleset 解析；
+省略它会使窗口收不到正常键盘输入。来源与固定包摘要见[规范基线](../standards-baseline.md)。
 
 ## 重新构建（仅在改版本、补丁或配置时）
 
@@ -50,8 +55,43 @@ Wine 的 unix 侧 `.so` 直接链接：`libasound.so.2`、`libffi.so.8`、`liblz
 启动需要：`WINEPREFIX`（每用户，首次运行由 `wineboot` 初始化）、`WAYLAND_DISPLAY`、`XDG_RUNTIME_DIR`、`HODLL=libwow64fex.dll`、
 `WINEDLLOVERRIDES="mscoree,mshtml="`（不带 Mono/Gecko）。
 
-## 待办（阶段 6 余下部分）
+在本 worktree 构建 AArch64 内核并同步开发镜像；构建入口与参数的唯一 owner 是
+[构建、测试与验证](build-and-verify.md)，通用入口见 [README](../../README.md#常用命令)。
 
-- 把上面的 Alpine 运行时库加入固定 APK 闭包，并把压缩包安装进镜像的构建/同步流程；
-- `scripts/wine_runtime.py` 与 runtime gate：在 LiteOS 上运行 notepad、winemine、winecfg，再对照 conformance 基线；
-- 运行时验证 `0x10000`、`0x110000` 处约 1.7 GB 的 `PROT_NONE` 低地址预留与 `tkill` + `rt_sigreturn` 的线程挂起路径。
+`sync-userland` 在 AArch64 默认传入 `--wine`；`LITEOS_WINE=0` 会撤掉同步器拥有的 Wine 文件。
+运行时库与配置展开到本 worktree 的 `target/wine-runtime/aarch64/`；固定归档仍放 `.local/inputs/`。
+同步器安装、回读并校验完整文件清单后才发布镜像内指纹；不得在 QEMU 持有镜像时同步。
+
+1. 运行 `make run-gui`，进入桌面；也可使用[桌面验证](desktop-verification.md)的 QEMU 显示拓扑。
+2. UART 恢复 shell 的初始 HOME 是 `/`，测试 root 时先设置下列环境。其他登录用户使用自己的 HOME、
+   WINEPREFIX 与 `/run/user/<uid>`。Wayland socket 是全局的 `/run/liteos/wayland-0`，不可误指向用户 runtime 目录。
+
+   ```sh
+   export HOME=/root
+   export PATH=/opt/wine/bin:$PATH
+   export WINEPREFIX=$HOME/.wine
+   export XDG_RUNTIME_DIR=/run/user/0
+   export WAYLAND_DISPLAY=/run/liteos/wayland-0
+   export HODLL=libwow64fex.dll
+   export WINEDLLOVERRIDES='mscoree,mshtml='
+   wine cmd /c echo hello
+   printf 'seed\r\n' > /var/tmp/wine-input.txt
+   wine notepad 'Z:\var\tmp\wine-input.txt'
+   wine winecfg
+   ```
+
+3. 人工验收：notepad 中 Ctrl+A 后输入新文本、Ctrl+S，关闭后从 UART 读回文件，必须与输入一致；
+   不能把发送按键或截图当作编辑成功。检查任务栏按钮的最小化/还原，切换 winecfg 标签、操作控件并正常关闭。
+   从桌面“运行”启动时，登录会话已经设置 HOME 与 Wayland 环境，可执行
+   `env HODLL=libwow64fex.dll WINEDLLOVERRIDES=mscoree,mshtml= /opt/wine/bin/wine notepad`。
+
+## 共享会话与当前验收边界
+
+Wine 的 Linux 只读 section 会选用 `MAP_PRIVATE`，并依赖 Linux 未 COW 页对文件更新的可见性，见
+[`map_file_into_view`](https://github.com/wine-mirror/wine/blob/wine-11.16/dlls/ntdll/unix/virtual.c)。
+内核必须在读缺页时保留 canonical 文件页，首次写入才 COW；首次读就复制快照会使会话对象 id 与
+键盘共享状态停在旧值。通用内存语义与 cleanup 的唯一说明见[内存契约](../architecture-contract/memory.md)。
+
+命令行与非 UI 原生探针用于验证私有文件可见性、COW、fork、mprotect、truncate、默认 XKB context、
+ruleset 解析和字符转换；最终编辑保存与控件交互仍需上述人工验收。Wine/FEX 继续消费上表中的固定归档。
+完整 Wine conformance 对照、ddraw/dsound、低地址预留和线程挂起专项仍属于阶段 6 后续范围。

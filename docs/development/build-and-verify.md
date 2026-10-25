@@ -94,6 +94,10 @@
 
 ## 持久本地输入与实验
 
+Linux UAPI source generation 保持只读；`headers_install` 的 Kbuild `O=` 输出与安装结果都在本
+worktree 的 `target/`。旧 in-tree 构建留下的 generated headers 不得被新构建复用，源码 cache
+recipe 换代后从同一固定归档解包干净 generation，避免 VPATH 跳过目标树中的 asm wrapper。
+
 `scripts/local_inputs.py` 唯一维护工程内 `.local/` 的路径；整个目录被 Git 忽略，
 不提交第三方下载、用户原版资源、私钥或实验镜像。版本、URL、摘要和配方仍由对应脚本提交。
 
@@ -383,6 +387,10 @@ runtime gate 裁决，不用失真的 host wall-clock 阈值掩盖。
 - 设备类 deferred vector 每个已发布 bit 一次函数指针调用，handler 表为只追加的 `Once` 槽位，无锁无分配。
 - mmap 的 `MappedFile` 在每次映射建立时分配一次；page fault 是一次 `dyn SharedFileMapping` 调用，进入
   page cache 或 `MemoryFile`（按 `Inode::data_backing` 在建立映射时选定）。
+- 私有文件 read/execute fault 保留 canonical 文件页，省去原来的每页私有 frame、SwappablePage
+  分配与 4KiB 复制；首次 write 沿既有 COW copy/fence 路径提交。File resident 只增加页 owner
+  与可选 swap alias 的记录，不增加锁、全局状态或逐字节间接层。沿用 translation/COW 成本门禁，
+  用实际 memfd/磁盘文件、fork、mprotect 与 truncate workload 验证，不新增墙钟阈值。
 
 inotify 的变更点不增加 benchmark：没有 watch 时每个 `notify_*` 是一次 Relaxed 原子读取；有 watch 时才做 inode
 身份查询与一次注册表查找，成本归属于被监视的对象，不在无关文件的 read/write 路径上。

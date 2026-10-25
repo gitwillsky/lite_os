@@ -327,8 +327,9 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
   `shell-probe` 只注入运行时门禁，以背景和任务栏控制另一个客户端，验证独占区、键盘焦点、光标、句柄状态与退出清理。
   精确限制由 [当前设备架构](../architecture/devices-terminal.md) 维护。
 - 阶段 6 已完成的 compositor 部分：`wl_subcompositor`、`wp_viewporter`、`zxdg_output_manager_v1`、popup 与 positioner、`wl_data_device`（文本选择）、`prctl(PR_SET_NAME/PR_GET_NAME)`、`fadvise64`；见 [当前设备架构](../architecture/devices-terminal.md)。
-  阶段 6 尚未完成：在 LiteOS 上打包并运行 `/opt/wine`（需要在参照 VM 里按阶段 0 的配方构建 Wine 11.16 + Hangover 补丁并带入 rootfs）、`scripts/wine_runtime.py` 与 runtime gate、Wine conformance 对照、
-`0x10000/0x110000` 低地址预留与 `tkill`+`rt_sigreturn` 的运行时验证。
+  阶段 6 的 Wine 打包与开发镜像安装已接入，复现入口与当前验收边界见
+  [Wine 运行时](../development/wine-runtime.md)。尚未完成最终人工 UI 验收、完整 Wine conformance 对照、
+  `0x10000/0x110000` 低地址预留与 `tkill`+`rt_sigreturn` 的专项运行时验证；不以命令行成功代表整阶段完成。
   已知缺口：缩小客户端 scale > 输出 scale、pointer constraints、全屏缩放策略。
 - `classic-ui` 的 xdg 窗口/输入基础层已实现：真实 shm 帧、HiDPI configure、装饰交互、单行编辑与 Tab 焦点链，
   `ui-probe` 通过库的公开接口在 guest 中验证控件、输入和窗口管理；协议探针仍独立，避免服务端与客户端共用策略掩盖错误。

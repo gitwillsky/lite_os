@@ -73,6 +73,7 @@ FIXED_NOARCH_PACKAGES = frozenset(
         "ca-certificates-bundle-20261020-r0.apk",
         "git-init-template-2.49.1-r0.apk",
         "ncurses-terminfo-base-6.5_p20250503-r0.apk",
+        "xkeyboard-config-2.43-r0.apk",
     }
 )
 BOOTSTRAP_RECIPE_VERSION = 3

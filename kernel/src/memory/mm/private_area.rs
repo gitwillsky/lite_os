@@ -29,7 +29,7 @@ pub(super) struct PrivateFileArea {
     source: PrivateSource,
 }
 
-/// private-file fault 在 private frame 分配前冻结的瞬时 backing snapshot。
+/// private-file fault 在可能分配 private frame 前保活的 backing；Cached 不冻结文件字节。
 pub(super) enum PrivateFaultPreparation {
     Executable,
     Cached(Arc<dyn SharedPage>),
