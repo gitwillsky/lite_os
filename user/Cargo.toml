@@ -8,6 +8,7 @@ members = [
     "programs/control-panel",
     "programs/desktop",
     "libraries/desktop-entry",
+    "libraries/desktop-settings",
     "programs/file-explorer",
     "libraries/classic-ui",
     "libraries/keyboard",

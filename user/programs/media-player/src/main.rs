@@ -3,8 +3,8 @@ extern crate liteos_runtime as _;
 use canvas::{Rect, Surface};
 use classic_theme::{Edge, Rgb, SystemColor as C, Theme};
 use classic_ui::{
-    ButtonState, Decoration, DecorationAction, Display, DropItem, DropMenu, EventKind, FrameKind,
-    Ink, Painter, Popup, Prompt, title_rects,
+    ButtonState, Decoration, DecorationAction, Display, DropItem, DropMenu, EventKind, FileDialog,
+    FileDialogEvent, FileDialogMode, FrameKind, Ink, MenuBar, MenuEvent, Painter,
 };
 use sound::{SAMPLE_RATE, Sound, Transport};
 use std::{
@@ -19,11 +19,7 @@ use typeface::Typeface;
 
 const MENU_HEIGHT: i32 = 19;
 const STATUS_HEIGHT: i32 = 20;
-const ESCAPE: u32 = 1;
-const ENTER: u32 = 28;
 const SPACE: u32 = 57;
-const UP: u32 = 103;
-const DOWN: u32 = 108;
 const SLIDER_MAX: i32 = 1000;
 const GREEN: Rgb = Rgb {
     red: 0,
@@ -72,6 +68,7 @@ fn menus(playing: bool) -> Vec<DropMenu<Command>> {
 /// 已打开的声音及其显示用的波形。
 struct Loaded {
     name: String,
+    path: PathBuf,
     sound: Arc<Sound>,
     /// 按固定列数预先算好的峰值；画图时按面板宽度取样。
     peaks: Vec<f32>,
@@ -97,6 +94,7 @@ impl Player {
                 );
                 self.loaded = Some(Loaded {
                     name,
+                    path: path.to_owned(),
                     peaks: sound.peaks(512),
                     sound: Arc::new(sound),
                 });
@@ -181,6 +179,16 @@ impl Player {
     }
 }
 
+/// 打开对话框的起始目录：当前文件所在目录，没有就是主目录。
+fn start_directory(player: &Player) -> PathBuf {
+    player
+        .loaded
+        .as_ref()
+        .and_then(|loaded| loaded.path.parent().map(Path::to_owned))
+        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
+        .unwrap_or_else(|| PathBuf::from("/"))
+}
+
 fn seconds(frames: usize) -> String {
     format!("{:.2} 秒", frames as f64 / f64::from(SAMPLE_RATE))
 }
@@ -227,33 +235,16 @@ fn layout(client: Rect) -> Layout {
 /// 绘制一帧所需的全部状态。
 struct View<'a> {
     player: &'a Player,
-    popup: &'a Option<Popup>,
+    menubar: &'a MenuBar,
     menus: &'a [DropMenu<Command>],
-    prompt: &'a Option<Prompt>,
+    dialog: &'a mut Option<FileDialog>,
     pointer: (i32, i32),
 }
 
-fn paint(p: &mut Painter<'_>, client: Rect, view: &View<'_>) {
-    let View {
-        player,
-        popup,
-        menus,
-        prompt,
-        pointer,
-    } = *view;
-    let open_menu = popup.as_ref().map(|open| open.menu);
+fn paint(p: &mut Painter<'_>, client: Rect, view: &mut View<'_>) {
+    let (player, menubar, menus, pointer) = (view.player, view.menubar, view.menus, view.pointer);
     let l = layout(client);
     let ink = Ink::Color(C::ButtonText);
-    let titles = title_rects(p, l.bar, menus);
-    for (index, (menu, rect)) in menus.iter().zip(&titles).enumerate() {
-        let hovered = inside(*rect, pointer) && open_menu.is_none();
-        p.menu_bar_item(
-            *rect,
-            menu.title,
-            hovered || open_menu == Some(index),
-            open_menu == Some(index),
-        );
-    }
     p.text(
         client.x + 8,
         client.y + MENU_HEIGHT + 8,
@@ -334,11 +325,9 @@ fn paint(p: &mut Painter<'_>, client: Rect, view: &View<'_>) {
             p.text(pane.x + 4, y, label, ink, false);
         });
     }
-    if let Some(popup) = popup {
-        popup.paint(p, &menus[popup.menu].items);
-    }
-    if let Some(prompt) = prompt {
-        prompt.paint(p, client);
+    menubar.paint(p, l.bar, menus, pointer);
+    if let Some(dialog) = view.dialog.as_mut() {
+        dialog.paint(p, client);
     }
 }
 
@@ -359,8 +348,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         player.open(Path::new(&path));
     }
     let mut title = String::new();
-    let mut popup: Option<Popup> = None;
-    let mut prompt: Option<Prompt> = None;
+    let mut menubar = MenuBar::new();
+    let mut dialog: Option<FileDialog> = None;
     let mut dragging = false;
     let mut font: Option<Typeface> = None;
     let mut scale = 0;
@@ -403,7 +392,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 font,
                 c.scale,
             );
-            let titles = title_rects(&probe, l.bar, &menu_list);
             let slider_fraction = |x: i32| {
                 let start = l.slider.x + 5;
                 (x - start) * SLIDER_MAX / (l.slider.width - 11).max(1)
@@ -413,14 +401,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 EventKind::Close => closing = true,
                 EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
                     pointer = (x.floor() as i32, y.floor() as i32);
-                    if let Some(open) = &mut popup {
-                        if let Some(index) = titles.iter().position(|r| inside(*r, pointer))
-                            && index != open.menu
-                        {
-                            *open = Popup::open(&probe, &menu_list, index, titles[index]);
-                        }
-                        open.hover = open.item_at(&menu_list[open.menu].items, pointer);
-                    } else if dragging {
+                    if let Some(open_dialog) = &mut dialog {
+                        open_dialog.motion(client, pointer);
+                    } else if !menubar.motion(&probe, l.bar, &menu_list, pointer) && dragging {
                         player.seek(slider_fraction(pointer.0));
                     }
                 }
@@ -430,23 +413,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     pressed: true,
                     ..
                 } => {
-                    if let Some(open_prompt) = &prompt {
-                        match open_prompt.press(client, pointer) {
-                            Some(true) => {
-                                player.open(&PathBuf::from(open_prompt.text()));
-                                prompt = None;
+                    if let Some(open_dialog) = &mut dialog {
+                        match open_dialog.press(client, pointer) {
+                            FileDialogEvent::Chosen(path) => {
+                                player.open(&path);
+                                dialog = None;
                             }
-                            Some(false) => prompt = None,
-                            None => {}
+                            FileDialogEvent::Cancelled => dialog = None,
+                            FileDialogEvent::Pending => {}
                         }
-                    } else if let Some(open) = popup.take() {
-                        if let Some(item) = open.item_at(&menu_list[open.menu].items, pointer) {
-                            command = Some(menu_list[open.menu].items[item].command);
-                        } else if inside(open.rect, pointer) {
-                            popup = Some(open);
-                        }
-                    } else if let Some(index) = titles.iter().position(|r| inside(*r, pointer)) {
-                        popup = Some(Popup::open(&probe, &menu_list, index, titles[index]));
+                    } else if let MenuEvent::Command(chosen) =
+                        menubar.press(&probe, l.bar, &menu_list, pointer)
+                    {
+                        command = Some(chosen);
+                    } else if menubar.active() {
+                        // 菜单消费了这次点击（打开、切换或关闭）。
                     } else if player.loaded.is_some() && inside(l.slider, pointer) {
                         dragging = true;
                         player.seek(slider_fraction(pointer.0));
@@ -462,47 +443,50 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     code: 0x110,
                     pressed: false,
                     ..
-                } => dragging = false,
-                EventKind::Key(key) if key.pressed => {
-                    if let Some(open_prompt) = &mut prompt {
-                        match open_prompt.key(key) {
-                            Some(true) => {
-                                player.open(&PathBuf::from(open_prompt.text()));
-                                prompt = None;
-                            }
-                            Some(false) => prompt = None,
-                            None => {}
-                        }
-                    } else if let Some(open) = &mut popup {
-                        let items = &menu_list[open.menu].items;
-                        match key.code {
-                            ESCAPE => popup = None,
-                            UP => open.step(items.len(), -1),
-                            DOWN => open.step(items.len(), 1),
-                            ENTER => {
-                                if let Some(index) = open.hover {
-                                    command = Some(items[index].command);
-                                    popup = None;
-                                }
-                            }
-                            _ => {}
-                        }
-                    } else if key.code == SPACE {
-                        command = Some(if player.playing() {
-                            Command::Stop
-                        } else {
-                            Command::Play
-                        });
+                } => {
+                    dragging = false;
+                    if let Some(open_dialog) = &mut dialog {
+                        open_dialog.release();
                     }
+                }
+                EventKind::Key(key) if key.pressed => {
+                    if let Some(open_dialog) = &mut dialog {
+                        match open_dialog.key(key) {
+                            FileDialogEvent::Chosen(path) => {
+                                player.open(&path);
+                                dialog = None;
+                            }
+                            FileDialogEvent::Cancelled => dialog = None,
+                            FileDialogEvent::Pending => {}
+                        }
+                    } else {
+                        match menubar.key(&probe, l.bar, &menu_list, &key) {
+                            MenuEvent::Command(chosen) => command = Some(chosen),
+                            MenuEvent::Handled => {}
+                            MenuEvent::Ignored if key.code == SPACE => {
+                                command = Some(if player.playing() {
+                                    Command::Stop
+                                } else {
+                                    Command::Play
+                                });
+                            }
+                            MenuEvent::Ignored => {}
+                        }
+                    }
+                }
+                EventKind::Key(key) => {
+                    menubar.key_released(&key);
                 }
                 _ => {}
             }
             match command {
                 Some(Command::Open) => {
-                    prompt = Some(Prompt::new(
+                    dialog = Some(FileDialog::new(
+                        FileDialogMode::Open,
                         "打开",
-                        "键入要播放的 WAV 文件的完整路径。",
-                        "文件名(N):",
+                        &start_directory(&player),
+                        "WAV 声音 (*.wav)",
+                        &["wav"],
                         "",
                     ))
                 }
@@ -536,11 +520,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             paint(
                 &mut p,
                 client,
-                &View {
+                &mut View {
                     player: &player,
-                    popup: &popup,
+                    menubar: &menubar,
                     menus: &menu_list,
-                    prompt: &prompt,
+                    dialog: &mut dialog,
                     pointer,
                 },
             );

@@ -4,8 +4,8 @@ extern crate liteos_runtime as _;
 use canvas::{Rect, Surface};
 use classic_theme::{Edge, SystemColor as C, Theme};
 use classic_ui::{
-    Decoration, DecorationAction, Display, DropItem, DropMenu, EventKind, FrameKind, Ink, Painter,
-    Popup, title_rects,
+    Decoration, DecorationAction, Display, DropItem, DropMenu, EventKind, FrameKind, Ink, MenuBar,
+    MenuEvent, Painter,
 };
 use sndvol::{Layout, Volume};
 use std::{path::Path, process::ExitCode, time::Duration};
@@ -13,9 +13,6 @@ use typeface::Typeface;
 
 const MENU_HEIGHT: i32 = 19;
 const ESCAPE: u32 = 1;
-const ENTER: u32 = 28;
-const UP: u32 = 103;
-const DOWN: u32 = 108;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Command {
@@ -36,13 +33,6 @@ fn menus() -> Vec<DropMenu<Command>> {
     ]
 }
 
-fn inside(rect: Rect, (x, y): (f64, f64)) -> bool {
-    x >= f64::from(rect.x)
-        && x < f64::from(rect.right())
-        && y >= f64::from(rect.y)
-        && y < f64::from(rect.bottom())
-}
-
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut display = Display::connect()?;
     let window = display.create_window("音量控制", "org.liteos.sndvol", (136, 330))?;
@@ -51,7 +41,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let theme = Theme::classic();
     let mut volume = Volume::open();
     let menus = menus();
-    let mut popup: Option<Popup> = None;
+    let mut menubar = MenuBar::new();
     let mut about = false;
     let mut font: Option<Typeface> = None;
     let mut scale = 0;
@@ -100,22 +90,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 font,
                 c.scale,
             );
-            let titles = title_rects(&probe, bar, &menus);
             let at = (pointer.0.floor() as i32, pointer.1.floor() as i32);
+            let mut command = None;
             match event.kind {
                 EventKind::Close => closing = true,
                 EventKind::PointerEnter { x, y } => pointer = (x, y),
                 EventKind::PointerMove { x, y } => {
                     pointer = (x, y);
                     let at = (x.floor() as i32, y.floor() as i32);
-                    if let Some(open) = &mut popup {
-                        if let Some(index) = titles.iter().position(|r| inside(*r, (x, y)))
-                            && index != open.menu
-                        {
-                            *open = Popup::open(&probe, &menus, index, titles[index]);
-                        }
-                        open.hover = open.item_at(&menus[open.menu].items, at);
-                    } else {
+                    if !menubar.motion(&probe, bar, &menus, at) {
                         volume.motion(&layout, x, y);
                     }
                 }
@@ -127,19 +110,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 } => {
                     if about {
                         about = false;
-                    } else if let Some(open) = popup.take() {
-                        if let Some(item) = open.item_at(&menus[open.menu].items, at) {
-                            match menus[open.menu].items[item].command {
-                                Command::Exit => closing = true,
-                                Command::About => about = true,
-                            }
-                        } else if inside(open.rect, pointer) {
-                            popup = Some(open);
-                        }
-                    } else if let Some(index) = titles.iter().position(|r| inside(*r, pointer)) {
-                        popup = Some(Popup::open(&probe, &menus, index, titles[index]));
                     } else {
-                        volume.button(&layout, pointer.0, pointer.1, true);
+                        match menubar.press(&probe, bar, &menus, at) {
+                            MenuEvent::Command(chosen) => command = Some(chosen),
+                            MenuEvent::Handled => {}
+                            MenuEvent::Ignored => {
+                                volume.button(&layout, pointer.0, pointer.1, true)
+                            }
+                        }
                     }
                 }
                 EventKind::Button {
@@ -150,31 +128,24 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 EventKind::Key(key) if key.pressed => {
                     if about {
                         about = false;
-                    } else if let Some(open) = &mut popup {
-                        let items = &menus[open.menu].items;
-                        match key.code {
-                            ESCAPE => popup = None,
-                            UP => open.step(items.len(), -1),
-                            DOWN => open.step(items.len(), 1),
-                            ENTER => {
-                                if let Some(index) = open.hover {
-                                    let command = items[index].command;
-                                    popup = None;
-                                    match command {
-                                        Command::Exit => closing = true,
-                                        Command::About => about = true,
-                                    }
-                                }
-                            }
-                            _ => {}
-                        }
-                    } else if key.code == ESCAPE {
-                        closing = true;
                     } else {
-                        volume.key(key.code);
+                        match menubar.key(&probe, bar, &menus, &key) {
+                            MenuEvent::Command(chosen) => command = Some(chosen),
+                            MenuEvent::Handled => {}
+                            MenuEvent::Ignored if key.code == ESCAPE => closing = true,
+                            MenuEvent::Ignored => volume.key(key.code),
+                        }
                     }
                 }
+                EventKind::Key(key) => {
+                    menubar.key_released(&key);
+                }
                 _ => {}
+            }
+            match command {
+                Some(Command::Exit) => closing = true,
+                Some(Command::About) => about = true,
+                None => {}
             }
         }
         let Some(font) = font.as_ref() else { continue };
@@ -185,21 +156,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let mut p = Painter::new(surface, &theme, font, c.scale);
             p.fill(Rect::new(0, 0, c.width, c.height), C::ButtonFace);
             decoration.paint(&mut p, c, "音量控制");
-            let titles = title_rects(&p, bar, &menus);
-            let open = popup.as_ref().map(|open| open.menu);
-            for (index, (menu, rect)) in menus.iter().zip(&titles).enumerate() {
-                let hovered = inside(*rect, pointer) && open.is_none();
-                p.menu_bar_item(
-                    *rect,
-                    menu.title,
-                    hovered || open == Some(index),
-                    open == Some(index),
-                );
-            }
             volume.paint(&mut p, &layout);
-            if let Some(open) = &popup {
-                open.paint(&mut p, &menus[open.menu].items);
-            }
+            menubar.paint(
+                &mut p,
+                bar,
+                &menus,
+                (pointer.0.floor() as i32, pointer.1.floor() as i32),
+            );
             if about {
                 let dialog = Rect::new(client.x + 10, client.y + 90, client.width - 20, 90);
                 let inner = p.edge(dialog, Edge::Raised);

@@ -105,6 +105,7 @@ SYSTEM_LIBRARIES = (
     ("canvas", "canvas"), ("classic-theme", "classic_theme"), ("typeface", "typeface"),
     ("classic-ui", "classic_ui"), ("wayland-wire", "wayland_wire"), ("linux-uapi", "linux_uapi"),
     ("keyboard", "keyboard"), ("calendar", "calendar"), ("desktop-entry", "desktop_entry"),
+    ("desktop-settings", "desktop_settings"),
     ("sound", "sound"), ("sndvol", "sndvol"),
 )
 SYSTEM_LIBRARY_DIRECTORY = "/usr/lib/liteos"

@@ -177,6 +177,7 @@ fn handle_requests_become_actions_on_the_right_window() {
     );
     let requests = harness.client.take_foreign_requests();
     let request = |client, action| ForeignRequest {
+        shell: ClientId(0),
         client: ClientId(client),
         surface: id(5),
         action,

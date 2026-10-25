@@ -19,6 +19,10 @@ pub enum Action {
     OpenIcon(usize),
     /// 在桌面文件夹里新建文件夹。
     NewFolder,
+    /// 打开“任务栏属性”。
+    TaskbarProperties,
+    /// 打开“显示属性”。
+    DisplayProperties,
     /// 清除保存的图标位置并重新排列。
     ArrangeIcons,
     /// 重新读取已安装的程序（开始菜单的内容）。
@@ -58,7 +62,13 @@ pub enum Overlay {
 pub fn taskbar_items() -> Vec<Item> {
     let mut tasks = item("任务管理器(K)", Action::TaskManager);
     tasks.separator_before = true;
-    vec![item("最小化所有窗口(M)", Action::MinimizeAll), tasks]
+    let mut properties = item("属性(R)", Action::TaskbarProperties);
+    properties.separator_before = true;
+    vec![
+        item("最小化所有窗口(M)", Action::MinimizeAll),
+        tasks,
+        properties,
+    ]
 }
 
 /// 任务按钮：窗口的系统菜单。只列当前状态下有意义的项。
@@ -105,10 +115,13 @@ pub fn icon_items(index: usize) -> Vec<Item> {
 pub fn desktop_items() -> Vec<Item> {
     let mut new_folder = item("新建文件夹(F)", Action::NewFolder);
     new_folder.separator_before = true;
+    let mut properties = item("属性(R)", Action::DisplayProperties);
+    properties.separator_before = true;
     vec![
         item("排列图标(I)", Action::ArrangeIcons),
         item("刷新(E)", Action::Refresh),
         new_folder,
+        properties,
     ]
 }
 

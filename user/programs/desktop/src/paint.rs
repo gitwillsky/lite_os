@@ -54,6 +54,28 @@ impl Art {
             scale: 0,
         })
     }
+    /// 工具提示文字所需的图层大小（逻辑像素）：字体按 `scale` 载入，尺寸与 `Painter::tooltip` 的版式一致。
+    pub fn tooltip_size(&mut self, text: &str, scale: i32) -> io::Result<(i32, i32)> {
+        self.ensure_font(scale)?;
+        let font = self.font.as_ref().expect("font was just loaded");
+        let (ascent, descent) = font.metrics();
+        let logical = |physical: i32| (physical + scale - 1) / scale;
+        Ok((
+            logical(font.measure(text, false)) + 6,
+            logical(ascent + descent) + 6,
+        ))
+    }
+    /// 载入 `scale` 倍的字体；已经是这个 scale 就不重复载入。
+    fn ensure_font(&mut self, scale: i32) -> io::Result<()> {
+        if self.scale != scale {
+            self.font = Some(
+                Typeface::load(Path::new("/usr/share/liteos/fonts"), scale as u32)
+                    .map_err(|error| io::Error::other(error.to_string()))?,
+            );
+            self.scale = scale;
+        }
+        Ok(())
+    }
     pub fn bitmap(&self, name: &str) -> Option<&Bitmap> {
         self.bitmaps.get(name)
     }
@@ -142,13 +164,7 @@ pub fn frame(
     art: &mut Art,
     minute: u64,
 ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
-    if art.scale != c.scale {
-        art.font = Some(Typeface::load(
-            Path::new("/usr/share/liteos/fonts"),
-            c.scale as u32,
-        )?);
-        art.scale = c.scale;
-    }
+    art.ensure_font(c.scale)?;
     let (w, h) = c.pixel_size()?;
     let mut pixels = vec![0; w as usize * h as usize];
     let surface = Surface::new(&mut pixels, w, h, w as usize).ok_or("invalid desktop pixels")?;
@@ -156,7 +172,13 @@ pub fn frame(
     let mut p = Painter::new(surface, &theme, art.font.as_ref().unwrap(), c.scale);
     let rects = areas(s, d, id, c);
     if id == s.background {
-        p.fill(Rect::new(0, 0, c.width, c.height), C::Background);
+        let background = s
+            .settings
+            .background
+            .map_or(theme.color(C::Background), |[red, green, blue]| {
+                classic_theme::Rgb { red, green, blue }
+            });
+        p.fill_rgb(Rect::new(0, 0, c.width, c.height), background);
         for (i, icon) in s.icons.items.iter().enumerate() {
             // 正在拖动的图标跟随指针，不画在原位。
             let mut r = rects[i];
@@ -270,14 +292,23 @@ pub fn frame(
             }
         }
         let clock = rects[CLOCK];
-        // 托盘是一个凹陷的整体：音量图标与时钟同在一个框里，之间不留空隙。
-        p.edge(Rect::new(c.width - 90, 4, 88, 22), Edge::SunkenOuter);
-        p.text_centered(
-            clock,
-            &format!("{}:{:02}", (minute / 60) % 24, minute % 60),
-            Ink::Color(C::ButtonText),
-            false,
-        );
+        // 托盘是一个凹陷的整体：音量图标与时钟同在一个框里，之间不留空隙；隐藏时钟时框收窄到只剩图标。
+        let tray = if s.settings.show_clock {
+            Rect::new(c.width - 90, 4, 88, 22)
+        } else {
+            Rect::new(c.width - 90, 4, 28, 22)
+        };
+        p.edge(tray, Edge::SunkenOuter);
+        if s.settings.show_clock {
+            p.text_centered(
+                clock,
+                &format!("{}:{:02}", (minute / 60) % 24, minute % 60),
+                Ink::Color(C::ButtonText),
+                false,
+            );
+        }
+    } else if let Some((_, text)) = s.tooltip_window.as_ref().filter(|(w, _)| *w == id) {
+        p.tooltip(0, 0, text);
     } else if let Some((_, overlay)) = s.overlay.as_ref().filter(|(w, _)| *w == id) {
         match overlay {
             popups::Overlay::Menu(menu) => menu.paint(&mut p),

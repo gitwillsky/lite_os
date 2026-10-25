@@ -9,6 +9,7 @@ pub struct Output {
 }
 
 mod client;
+mod clipboard;
 mod foreign;
 mod layer;
 mod seat;

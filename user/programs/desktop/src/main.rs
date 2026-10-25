@@ -62,7 +62,23 @@ struct Desktop {
     home: PathBuf,
     message: String,
     volume: sndvol::Volume,
+    /// 每用户桌面设置（任务栏选项、背景色）与它被读取时的修改时间；控制面板改写文件后据此重新应用。
+    settings: desktop_settings::Settings,
+    settings_stamp: Option<std::time::SystemTime>,
+    /// 自动隐藏的任务栏当前是否收起成细线；缺少它无法判断下一次指针进入要不要展开。
+    taskbar_hidden: bool,
+    /// 指针离开任务栏的时刻；经过 [`HIDE_DELAY`] 仍未回来才收起，避免掠过边缘时闪烁。
+    leave_at: Option<Instant>,
+    /// 任务栏的悬停提示状态，目标是任务栏命中区序号（时钟、音量、任务按钮）。
+    tooltip: classic_ui::Tooltip,
+    /// 正显示的提示：它的图层窗口与文字。
+    tooltip_window: Option<(WindowId, String)>,
 }
+
+/// 自动隐藏的任务栏收起后露出的细线高度。
+const HIDDEN_HEIGHT: i32 = 2;
+/// 指针离开多久后收起自动隐藏的任务栏。
+const HIDE_DELAY: Duration = Duration::from_millis(400);
 impl Desktop {
     fn create(display: &mut Display) -> io::Result<Self> {
         let background = display.create_layer(
@@ -74,17 +90,10 @@ impl Desktop {
                 ..Default::default()
             },
         )?;
-        let taskbar = display.create_layer(
-            "org.liteos.taskbar",
-            LayerSettings {
-                layer: Layer::Top,
-                height: TASKBAR_HEIGHT as u32,
-                anchor: layer_anchor::LEFT | layer_anchor::RIGHT | layer_anchor::BOTTOM,
-                exclusive_zone: TASKBAR_HEIGHT,
-                keyboard: KeyboardInteractivity::OnDemand,
-                ..Default::default()
-            },
-        )?;
+        // 任务栏从一开始就按保存的设置创建，而不是先按默认值出现再改。
+        let settings = desktop_settings::Settings::load();
+        let taskbar =
+            display.create_layer("org.liteos.taskbar", Self::taskbar_layer(&settings, false))?;
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .ok_or_else(|| io::Error::other("HOME missing"))?;
@@ -109,8 +118,163 @@ impl Desktop {
             home,
             message: String::new(),
             volume: sndvol::Volume::open(),
+            settings,
+            settings_stamp: desktop_settings::Settings::stamp(),
+            taskbar_hidden: false,
+            leave_at: None,
+            tooltip: classic_ui::Tooltip::default(),
+            tooltip_window: None,
         })
     }
+    /// 任务栏图层的设置：层次（总在最前）、高度与独占区（自动隐藏时收起并释放独占区）。
+    fn taskbar_layer(settings: &desktop_settings::Settings, hidden: bool) -> LayerSettings {
+        let height = if settings.auto_hide && hidden {
+            HIDDEN_HEIGHT
+        } else {
+            TASKBAR_HEIGHT
+        };
+        LayerSettings {
+            layer: if settings.always_on_top {
+                Layer::Top
+            } else {
+                Layer::Bottom
+            },
+            height: height as u32,
+            anchor: layer_anchor::LEFT | layer_anchor::RIGHT | layer_anchor::BOTTOM,
+            // 自动隐藏时窗口使用整个屏幕，任务栏浮在上面；否则为它保留一条。
+            exclusive_zone: if settings.auto_hide {
+                0
+            } else {
+                TASKBAR_HEIGHT
+            },
+            keyboard: KeyboardInteractivity::OnDemand,
+            ..Default::default()
+        }
+    }
+
+    /// 按当前设置重新配置任务栏图层。
+    fn apply_taskbar(&mut self, display: &mut Display) -> io::Result<()> {
+        display.configure_layer(
+            self.taskbar,
+            Self::taskbar_layer(&self.settings, self.taskbar_hidden),
+        )
+    }
+
+    /// 设置文件变了就重读并应用；返回是否需要重画。
+    fn poll_settings(&mut self, display: &mut Display) -> io::Result<bool> {
+        let stamp = desktop_settings::Settings::stamp();
+        if stamp == self.settings_stamp {
+            return Ok(false);
+        }
+        self.settings_stamp = stamp;
+        self.settings = desktop_settings::Settings::load();
+        self.taskbar_hidden = false;
+        self.leave_at = None;
+        self.apply_taskbar(display)?;
+        Ok(true)
+    }
+
+    /// 把每个任务按钮的位置告诉 compositor，最小化与还原动画用它作端点。
+    fn sync_task_rectangles(&self, display: &mut Display) -> io::Result<()> {
+        let Some(c) = display.configuration(self.taskbar) else {
+            return Ok(());
+        };
+        let rects = paint::areas(self, display, self.taskbar, c);
+        let ids = paint::task_ids(self, display, c.width);
+        for (index, id) in ids.into_iter().enumerate() {
+            if let Some(rect) = rects.get(paint::TASKS_FROM + index) {
+                display.set_toplevel_rectangle(id, self.taskbar, *rect)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// 某个任务栏命中区的提示文字；没有提示的区域为 `None`。
+    fn tooltip_text(&self, display: &Display, target: usize) -> Option<String> {
+        match target {
+            paint::CLOCK => {
+                let days = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .ok()?
+                    .as_secs() as i64
+                    / 86_400;
+                let date = calendar::civil_from_days(days);
+                let weekday = ["日", "一", "二", "三", "四", "五", "六"]
+                    [calendar::weekday(days) as usize % 7];
+                Some(format!(
+                    "{}年{}月{}日 星期{weekday}",
+                    date.year, date.month, date.day
+                ))
+            }
+            paint::VOLUME => Some(match self.volume.value {
+                Some(value) if value.muted => "音量：静音".to_owned(),
+                Some(value) => format!("音量：{}%", value.left.max(value.right)),
+                None => "音量".to_owned(),
+            }),
+            n if n >= paint::TASKS_FROM => {
+                let width = Self::screen(display, self.background).0;
+                let ids = paint::task_ids(self, display, width);
+                let (_, info) = display
+                    .toplevels()
+                    .find(|(id, _)| Some(id) == ids.get(n - paint::TASKS_FROM))?;
+                Some(info.title.clone())
+            }
+            _ => None,
+        }
+    }
+
+    /// 让提示图层与悬停状态一致：到点显示，换了目标或指针离开就撤掉。
+    fn sync_tooltip(&mut self, display: &mut Display, art: &mut paint::Art) -> io::Result<()> {
+        let wanted = self
+            .tooltip
+            .visible()
+            .and_then(|target| Some((target, self.tooltip_text(display, target)?)));
+        let current = self.tooltip_window.as_ref().map(|(_, text)| text.clone());
+        if wanted.as_ref().map(|(_, text)| text) == current.as_ref() {
+            return Ok(());
+        }
+        if let Some((window, _)) = self.tooltip_window.take() {
+            display.destroy_window(window)?;
+        }
+        let Some((_, text)) = wanted else {
+            return Ok(());
+        };
+        let (screen_width, _) = Self::screen(display, self.background);
+        let scale = display.configuration(self.taskbar).map_or(1, |c| c.scale);
+        let (width, height) = art.tooltip_size(&text, scale)?;
+        let x = (self.pointer.1 as i32).min(screen_width - width);
+        let window = display.create_layer(
+            "org.liteos.tooltip",
+            LayerSettings {
+                layer: Layer::Overlay,
+                width: width as u32,
+                height: height as u32,
+                anchor: layer_anchor::LEFT | layer_anchor::BOTTOM,
+                // 位置：左边距取指针横坐标，下边距让它落在任务栏之上。
+                margin: [0, 0, TASKBAR_HEIGHT + 4, x.max(0)],
+                exclusive_zone: -1,
+                ..Default::default()
+            },
+        )?;
+        self.tooltip_window = Some((window, text));
+        Ok(())
+    }
+
+    /// 自动隐藏：指针进入细线就展开；离开一小会儿且没有菜单或弹出层占着任务栏时收起。
+    fn tick_auto_hide(&mut self, display: &mut Display) -> io::Result<()> {
+        if !self.settings.auto_hide {
+            return Ok(());
+        }
+        if self.leave_at.is_some_and(|at| {
+            at.elapsed() >= HIDE_DELAY && self.menu.is_none() && self.overlay.is_none()
+        }) {
+            self.leave_at = None;
+            self.taskbar_hidden = true;
+            self.apply_taskbar(display)?;
+        }
+        Ok(())
+    }
+
     fn toggle_menu(&mut self, display: &mut Display) -> io::Result<()> {
         if let Some(menu) = self.menu.take() {
             display.destroy_window(menu)?;
@@ -136,6 +300,12 @@ impl Desktop {
         Ok(())
     }
     /// 任务管理器是独立程序（Windows 2000 的 taskmgr.exe），外壳只负责启动；已在运行时再启动一个也无害。
+    /// 启动控制面板的某个小程序。
+    fn control_panel(&mut self, applet: &str) {
+        let mut command = Command::new("/bin/control-panel");
+        command.arg(applet);
+        self.launch(command);
+    }
     fn launch_task_manager(&mut self) {
         self.launch(Command::new("/bin/taskmgr"));
     }
@@ -238,6 +408,8 @@ impl Desktop {
                 }
             }
             Action::TaskManager => self.launch_task_manager(),
+            Action::TaskbarProperties => self.control_panel("taskbar"),
+            Action::DisplayProperties => self.control_panel("display"),
             Action::VolumeProperties => self.launch(Command::new("/bin/sndvol")),
             Action::OpenIcon(index) => self.open_icon(index),
             Action::NewFolder => {
@@ -385,6 +557,7 @@ impl Desktop {
             }
             Action::Files(place) => self.open_place(place),
             Action::Tasks => self.launch_task_manager(),
+            Action::Taskbar => self.control_panel("taskbar"),
             Action::About => {
                 let mut command = Command::new("/bin/control-panel");
                 command.arg("winver");
@@ -455,8 +628,39 @@ impl Desktop {
     }
     fn event(&mut self, display: &mut Display, event: Event) -> io::Result<()> {
         let window = event.window;
+        if window == self.taskbar && self.settings.auto_hide {
+            match event.kind {
+                EventKind::PointerEnter { .. } => {
+                    self.leave_at = None;
+                    if self.taskbar_hidden {
+                        self.taskbar_hidden = false;
+                        self.apply_taskbar(display)?;
+                    }
+                }
+                EventKind::PointerLeave => self.leave_at = Some(Instant::now()),
+                _ => {}
+            }
+        }
         if self.overlay.as_ref().is_some_and(|(w, _)| *w == window) {
             return self.overlay_event(display, event);
+        }
+        if window == self.taskbar {
+            match event.kind {
+                EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
+                    let hit = display.configuration(window).and_then(|c| {
+                        paint::areas(self, display, window, c).iter().position(|r| {
+                            x >= f64::from(r.x)
+                                && x < f64::from(r.right())
+                                && y >= f64::from(r.y)
+                                && y < f64::from(r.bottom())
+                        })
+                    });
+                    self.tooltip.hover(hit);
+                }
+                EventKind::PointerLeave => self.tooltip.hover(None),
+                EventKind::Button { pressed: true, .. } => self.tooltip.dismiss(),
+                _ => {}
+            }
         }
         if let Some(index) = self.dialogs.iter().position(|d| d.window == window) {
             match self.dialogs[index].event(display, event)? {
@@ -680,6 +884,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             state.event(&mut display, event)?;
         }
         dirty |= state.volume.poll();
+        dirty |= state.poll_settings(&mut display)?;
+        state.tick_auto_hide(&mut display)?;
+        state.sync_tooltip(&mut display, &mut art)?;
+        if dirty {
+            state.sync_task_rectangles(&mut display)?;
+        }
         dirty |= state.icons.poll();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
@@ -712,6 +922,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .chain(state.menu)
             .chain(state.overlay.as_ref().map(|(w, _)| *w))
             .chain(state.dialogs.iter().map(|d| d.window))
+            .chain(state.tooltip_window.as_ref().map(|(w, _)| *w))
             .collect();
         if dirty {
             pending.extend(ids.iter().copied());

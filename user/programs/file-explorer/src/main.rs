@@ -38,6 +38,7 @@ const ALT_KEYS: [u32; 2] = [56, 100];
 mod code {
     pub const ESCAPE: u32 = 1;
     pub const TAB: u32 = 15;
+    pub const A: u32 = 30;
     pub const X: u32 = 45;
     pub const C: u32 = 46;
     pub const V: u32 = 47;
@@ -67,6 +68,9 @@ struct App {
     shown: Location,
     last_click: Option<(usize, Instant)>,
     closing: bool,
+    /// 最近一次键盘事件里的 Ctrl 与 Shift：列表点击据此决定是单选、切换还是区间选择。
+    control: bool,
+    shift: bool,
 }
 
 impl App {
@@ -121,6 +125,14 @@ impl App {
         let text = match command {
             Command::EmptyTrash => {
                 "确实要删除回收站中的所有项目吗？\n这些项目将被永久删除。".to_owned()
+            }
+            _ if self.browser.selection().len() > 1 => {
+                let count = self.browser.selection().len();
+                if self.browser.in_trash() {
+                    format!("确实要删除这 {count} 项吗？\n这些项目将被永久删除，无法还原。")
+                } else {
+                    format!("确实要把这 {count} 项放入回收站吗？")
+                }
             }
             _ if self.browser.in_trash() => {
                 format!("确实要删除“{name}”吗？\n该项目将被永久删除，无法还原。")
@@ -390,8 +402,16 @@ impl App {
             return;
         }
         match grid.at(point, self.ui.list_scroll.position) {
+            Some(index) if self.control => {
+                self.browser.toggle(index);
+                self.last_click = None;
+            }
+            Some(index) if self.shift => {
+                self.browser.select_range(index);
+                self.last_click = None;
+            }
             Some(index) => {
-                self.browser.selected = Some(index);
+                self.browser.select_only(index);
                 let double = self
                     .last_click
                     .is_some_and(|(last, at)| last == index && at.elapsed() < DOUBLE_CLICK);
@@ -401,8 +421,11 @@ impl App {
                     self.sync();
                 }
             }
+            // Ctrl 或 Shift 按着时点空白不丢掉已有选择，与 Windows 一致。
+            None if self.control || self.shift => {}
             None => {
                 self.browser.selected = None;
+                self.browser.extra.clear();
                 self.last_click = None;
             }
         }
@@ -456,6 +479,12 @@ impl App {
         }
     }
 
+    /// 记下 Ctrl 与 Shift 的状态；按下与释放事件都要调用。
+    fn track_modifiers(&mut self, key: &Key) {
+        self.control = key.modifiers.control;
+        self.shift = key.modifiers.shift;
+    }
+
     /// 记录 Alt/Tab 对键盘提示的影响：任何按键序列里只要出现 Alt 或 Tab 就显示下划线；
     /// Alt 之后没有其他键直接松开才进入菜单栏（见 [`Self::alt_released`]）。
     fn track_cues(&mut self, key: &Key) {
@@ -497,6 +526,7 @@ impl App {
 
     fn key(&mut self, p: &Painter<'_>, key: Key, client: Rect) {
         self.track_cues(&key);
+        self.track_modifiers(&key);
         if self.ui.properties.is_some() {
             if matches!(key.code, code::ENTER | code::ESCAPE) {
                 self.ui.properties = None;
@@ -610,6 +640,7 @@ impl App {
             code::ENTER => self.run(Command::Open, client),
             code::DELETE => self.run(Command::Delete, client),
             code::F2 => self.run(Command::Rename, client),
+            code::A if key.modifiers.control => self.browser.select_all(),
             code::C if key.modifiers.control => self.run(Command::Copy, client),
             code::X if key.modifiers.control => self.run(Command::Cut, client),
             code::V if key.modifiers.control => self.run(Command::Paste, client),
@@ -717,6 +748,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         browser: Browser::new(location),
         last_click: None,
         closing: false,
+        control: false,
+        shift: false,
     };
     app.browser.show_folders = false;
     let mut display = Display::connect()?;
@@ -818,7 +851,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 ..
             } => app.press_context(client),
             EventKind::Key(key) if key.pressed => app.key(&probe, key, client),
-            EventKind::Key(key) => app.alt_released(&key),
+            EventKind::Key(key) => {
+                app.track_modifiers(&key);
+                app.alt_released(&key);
+            }
             _ => {}
         }
         app.raise_notice();

@@ -11,4 +11,5 @@ canvas = { path = "../../libraries/canvas" }
 classic-theme = { path = "../../libraries/classic-theme" }
 classic-ui = { path = "../../libraries/classic-ui" }
 sound = { path = "../../libraries/sound" }
+desktop-settings = { path = "../../libraries/desktop-settings" }
 typeface = { path = "../../libraries/typeface" }

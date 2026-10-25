@@ -49,6 +49,34 @@ fn factor(output_scale: u32, surface_scale: i32) -> i32 {
     (output_scale as i32 / surface_scale.max(1)).max(1)
 }
 
+/// 最小化或还原时在窗口与任务按钮之间移动的矩形框（Windows 的 `DrawAnimatedRects`）。
+struct Animation {
+    from: (i32, i32, i32, i32),
+    to: (i32, i32, i32, i32),
+    start: Instant,
+}
+
+/// 动画时长。
+const ANIMATION: Duration = Duration::from_millis(200);
+
+impl Animation {
+    fn finished(&self) -> bool {
+        self.start.elapsed() >= ANIMATION
+    }
+
+    /// 当前帧的矩形：起止矩形按进度线性插值。
+    fn frame(&self) -> (i32, i32, i32, i32) {
+        let t = (self.start.elapsed().as_secs_f32() / ANIMATION.as_secs_f32()).clamp(0.0, 1.0);
+        let mix = |a: i32, b: i32| a + ((b - a) as f32 * t) as i32;
+        (
+            mix(self.from.0, self.to.0),
+            mix(self.from.1, self.to.1),
+            mix(self.from.2, self.to.2),
+            mix(self.from.3, self.to.3),
+        )
+    }
+}
+
 /// 进行中的指针抓取，以及最近一次发给客户端的缩放目标（尺寸没变就不重复发 configure）。
 struct ActiveGrab {
     grab: Grab,
@@ -141,6 +169,12 @@ pub struct Session {
     switcher_art: Option<switcher::Art>,
     /// 窗口（系统）菜单；打开期间独占指针与键盘，缺少它菜单外的点击会落到窗口上。
     window_menu: Option<WindowMenu>,
+    /// 上一次宣告剪贴板选择的键盘焦点客户端；变化时重新宣告，缺少它新聚焦的程序看不到已复制的内容。
+    selection_focus: Option<ClientId>,
+    /// 外壳用 `set_rectangle` 告知的任务按钮位置（输出物理坐标），最小化/还原动画的目标。
+    minimize_targets: HashMap<(ClientId, ObjectId), (i32, i32, i32, i32)>,
+    /// 进行中的最小化/还原动画。
+    animation: Option<Animation>,
     seat: Seat,
     grab: Option<ActiveGrab>,
     /// 第一个窗口或外壳 surface 出现之前一直显示启动画面；缺少它，空桌面会盖掉内核交接的画面。
@@ -180,6 +214,9 @@ impl Session {
             switcher: None,
             switcher_art: None,
             window_menu: None,
+            selection_focus: None,
+            minimize_targets: HashMap::new(),
+            animation: None,
             seat: Seat::default(),
             grab: None,
             boot: Some(BootScreen {
@@ -365,7 +402,15 @@ impl Session {
                 // 外壳第一个 surface 出现：这是启动完成的真实信号。
                 self.boot_milestone(1000);
             }
-            let timeout = self.step_boot(shell_visible)?;
+            let mut timeout = self.step_boot(shell_visible)?;
+            if let Some(animation) = &self.animation {
+                if animation.finished() {
+                    self.animation = None;
+                } else {
+                    timeout = Some(Duration::from_millis(16));
+                }
+                self.dirty = true;
+            }
             if self.dirty && self.boot.is_none() && !self.scanout.flip_pending() {
                 self.present()?;
                 self.dirty = false;
@@ -410,6 +455,7 @@ impl Session {
             self.sync_work_area();
             self.handle_requests()?;
             self.handle_foreign_requests();
+            self.sync_selection();
             self.sync_foreign();
             self.sync_focus();
             self.handle_cursor_requests()?;
@@ -437,6 +483,10 @@ impl Session {
                 }
             }
             Event::Button { code, pressed } => {
+                // 点击别处取消 Alt+Tab 面板；窗口仍留在原来的位置。
+                if pressed && self.switcher.take().is_some() {
+                    self.dirty = true;
+                }
                 if self.window_menu.is_some() {
                     if pressed && matches!(code, BUTTON_LEFT | BUTTON_RIGHT) {
                         self.menu_click()?;
@@ -624,11 +674,9 @@ impl Session {
             return Ok(());
         };
         match command {
-            Command::Restore if placement.minimized => {
-                self.dirty |= self.stack.raise(client, surface);
-            }
+            Command::Restore if placement.minimized => self.restore_window(client, surface),
             Command::Restore => self.set_mode(client, surface, Mode::Normal),
-            Command::Minimize => self.dirty |= self.stack.minimize(client, surface),
+            Command::Minimize => self.minimize_window(client, surface),
             Command::Maximize => self.set_mode(client, surface, Mode::Maximized),
             Command::Close => self
                 .server
@@ -738,6 +786,61 @@ impl Session {
         self.end_grab()
     }
 
+    /// 开始最小化（`minimizing`）或还原的动画：窗口矩形与任务按钮矩形之间。没有任务按钮位置时取屏幕底边中部。
+    fn animate(&mut self, client: ClientId, surface: ObjectId, minimizing: bool) {
+        let Some(placement) = self.stack.placement(client, surface).copied() else {
+            return;
+        };
+        let window = (placement.x, placement.y, placement.width, placement.height);
+        let scale = self.scale as i32;
+        let (screen_width, screen_height) = self.screen();
+        let target = self
+            .minimize_targets
+            .get(&(client, surface))
+            .copied()
+            .unwrap_or((
+                screen_width / 2 - 50 * scale,
+                screen_height - 28 * scale,
+                100 * scale,
+                28 * scale,
+            ));
+        let (from, to) = if minimizing {
+            (window, target)
+        } else {
+            (target, window)
+        };
+        self.animation = Some(Animation {
+            from,
+            to,
+            start: Instant::now(),
+        });
+        self.dirty = true;
+    }
+
+    /// 最小化窗口并播放动画。
+    fn minimize_window(&mut self, client: ClientId, surface: ObjectId) {
+        if self
+            .stack
+            .placement(client, surface)
+            .is_some_and(|placed| !placed.minimized)
+        {
+            self.animate(client, surface, true);
+        }
+        self.dirty |= self.stack.minimize(client, surface);
+    }
+
+    /// 激活窗口；它原来是最小化的就播放还原动画。
+    fn restore_window(&mut self, client: ClientId, surface: ObjectId) {
+        if self
+            .stack
+            .placement(client, surface)
+            .is_some_and(|placed| placed.minimized)
+        {
+            self.animate(client, surface, false);
+        }
+        self.dirty |= self.stack.raise(client, surface);
+    }
+
     /// 以最近使用顺序（栈顶在前）列出全部窗口并打开切换面板。
     fn open_switcher(&mut self, reverse: bool) {
         let entries = self
@@ -771,8 +874,7 @@ impl Session {
     fn commit_switcher(&mut self) {
         if let Some(switcher) = self.switcher.take() {
             let (client, surface) = switcher.target();
-            self.stack.raise(client, surface);
-            self.dirty = true;
+            self.restore_window(client, surface);
         }
     }
 
@@ -970,7 +1072,7 @@ impl Session {
                         if on { Mode::Fullscreen } else { Mode::Normal },
                     );
                 }
-                WindowRequest::Minimize => self.dirty |= self.stack.minimize(client, surface),
+                WindowRequest::Minimize => self.minimize_window(client, surface),
                 WindowRequest::ShowMenu { serial, x, y } => {
                     if self.seat.button_serial() == Some(serial) && self.window_menu.is_none() {
                         let scale = self.scale as i32;
@@ -999,9 +1101,32 @@ impl Session {
             }
             match request.action {
                 ForeignAction::Activate | ForeignAction::Minimize(false) => {
-                    self.dirty |= self.stack.raise(client, surface);
+                    self.restore_window(client, surface);
                 }
-                ForeignAction::Minimize(true) => self.dirty |= self.stack.minimize(client, surface),
+                ForeignAction::Minimize(true) => self.minimize_window(client, surface),
+                ForeignAction::Rectangle {
+                    surface: shell_surface,
+                    x,
+                    y,
+                    width,
+                    height,
+                } => {
+                    // 矩形是外壳 surface 内的逻辑坐标，换算到输出物理坐标。
+                    let scale = self.scale as i32;
+                    if let Some(layer) = self.layer_boxes().iter().find(|layer| {
+                        layer.client == request.shell && layer.surface == shell_surface
+                    }) {
+                        self.minimize_targets.insert(
+                            (client, surface),
+                            (
+                                layer.x + x * scale,
+                                layer.y + y * scale,
+                                width * scale,
+                                height * scale,
+                            ),
+                        );
+                    }
+                }
                 ForeignAction::Maximize(on) => {
                     self.set_mode(
                         client,
@@ -1229,6 +1354,16 @@ impl Session {
             .show_cursor(&self.hardware_cursor, position, image.hotspot(scale))
     }
 
+    /// 剪贴板跟随键盘焦点：处理选择请求，焦点换到新客户端时把当前选择告诉它。
+    fn sync_selection(&mut self) {
+        let focus = self.seat.keyboard_client();
+        self.server.handle_selection(focus);
+        if focus != self.selection_focus {
+            self.selection_focus = focus;
+            self.server.announce_selection(focus);
+        }
+    }
+
     /// 外壳进程退出时记录；重启策略等 `logon` 的会话设计确定后再做。
     fn check_shell(&mut self) {
         if let Some(shell) = &mut self.shell
@@ -1291,7 +1426,25 @@ impl Session {
             self.switcher.as_ref(),
             self.window_menu.as_ref(),
         );
-        let overlay = |surface: canvas::Surface<'_>| {
+        let frame = self.animation.as_ref().map(Animation::frame);
+        let overlay = |mut surface: canvas::Surface<'_>| {
+            if let Some((x, y, width, height)) = frame {
+                // 反转像素画 2 个逻辑像素宽的框：先上下两条整宽，再左右两条夹在中间。
+                let thickness = 2 * scale;
+                for strip in [
+                    canvas::Rect::new(x, y, width, thickness),
+                    canvas::Rect::new(x, y + height - thickness, width, thickness),
+                    canvas::Rect::new(x, y + thickness, thickness, height - 2 * thickness),
+                    canvas::Rect::new(
+                        x + width - thickness,
+                        y + thickness,
+                        thickness,
+                        height - 2 * thickness,
+                    ),
+                ] {
+                    surface.invert(strip);
+                }
+            }
             let Some(art) = art else { return };
             let screen = (surface.width(), surface.height());
             let mut painter = classic_ui::Painter::new(surface, theme, &art.typeface, scale);

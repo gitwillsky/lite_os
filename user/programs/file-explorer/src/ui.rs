@@ -646,7 +646,7 @@ fn paint_list(p: &mut Painter<'_>, scene: &Scene<'_>, l: &Layout) {
             {
                 continue;
             }
-            paint_item(p, scene, &grid, item, cell, browser.selected == Some(index));
+            paint_item(p, scene, &grid, item, cell, browser.is_selected(index));
             if let Some(edit) = ui
                 .rename
                 .as_ref()
@@ -826,6 +826,8 @@ fn paint_status(p: &mut Painter<'_>, scene: &Scene<'_>, status: Rect) {
             browser.items.len(),
             crate::model::MAX_ENTRIES
         )
+    } else if browser.selection().len() > 1 {
+        format!("选定 {} 个对象", browser.selection().len())
     } else if selected.is_some() {
         "选定 1 个对象".to_owned()
     } else {

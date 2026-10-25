@@ -23,7 +23,7 @@ pub struct TreeRow {
 
 /// 剪切/复制的内容；只在本进程内有效（没有跨应用剪贴板协议）。
 pub struct Clipboard {
-    pub path: PathBuf,
+    pub paths: Vec<PathBuf>,
     pub cut: bool,
 }
 
@@ -37,6 +37,8 @@ pub struct Properties {
 pub struct Browser {
     home: PathBuf,
     pub clipboard: Option<Clipboard>,
+    /// 除 `selected`（焦点项，也是区间选择的锚点）以外被选中的项；Ctrl 点击与 Shift 区间选择产生。
+    pub extra: std::collections::BTreeSet<usize>,
     /// `/proc/mounts` 文本，导航与刷新时重读。
     mounts: String,
     pub location: Location,
@@ -80,6 +82,7 @@ impl Browser {
             truncated: false,
             message: None,
             selected: None,
+            extra: std::collections::BTreeSet::new(),
             view: ViewMode::Details,
             show_toolbar: true,
             show_status_bar: true,
@@ -95,6 +98,7 @@ impl Browser {
     /// 重新读取当前位置并刷新文件夹树；选择被清除。
     fn load(&mut self) {
         self.selected = None;
+        self.extra.clear();
         match self.location.list(&self.mounts) {
             Ok((items, truncated)) => {
                 self.items = items;
@@ -146,6 +150,64 @@ impl Browser {
 
     fn selected_path(&self) -> Option<PathBuf> {
         self.items.get(self.selected?)?.path.clone()
+    }
+
+    /// 全部选中项的序号，升序：焦点项加多选的其余项。
+    pub fn selection(&self) -> Vec<usize> {
+        let mut all: Vec<usize> = self.extra.iter().copied().chain(self.selected).collect();
+        all.sort_unstable();
+        all.dedup();
+        all
+    }
+
+    pub fn is_selected(&self, index: usize) -> bool {
+        self.selected == Some(index) || self.extra.contains(&index)
+    }
+
+    /// 全部选中项的真实路径（虚拟项如"我的电脑"没有路径，被跳过）。
+    fn selected_paths(&self) -> Vec<PathBuf> {
+        self.selection()
+            .into_iter()
+            .filter_map(|i| self.items.get(i)?.path.clone())
+            .collect()
+    }
+
+    /// 只选中 `index`。
+    pub fn select_only(&mut self, index: usize) {
+        self.extra.clear();
+        self.selected = Some(index);
+    }
+
+    /// Ctrl 点击：切换 `index` 的选中状态；焦点移到它（取消选中时焦点留给剩下的某一项）。
+    pub fn toggle(&mut self, index: usize) {
+        if self.is_selected(index) {
+            self.extra.remove(&index);
+            if self.selected == Some(index) {
+                self.selected = self.extra.pop_first();
+            }
+        } else {
+            if let Some(previous) = self.selected {
+                self.extra.insert(previous);
+            }
+            self.selected = Some(index);
+        }
+    }
+
+    /// Shift 点击：从焦点项（锚点）到 `index` 的整段都选中，焦点留在锚点。
+    pub fn select_range(&mut self, index: usize) {
+        let anchor = self.selected.unwrap_or(index);
+        self.extra = (anchor.min(index)..=anchor.max(index))
+            .filter(|i| *i != anchor)
+            .collect();
+        self.selected = Some(anchor);
+    }
+
+    pub fn select_all(&mut self) {
+        if self.items.is_empty() {
+            return;
+        }
+        self.selected = Some(0);
+        self.extra = (1..self.items.len()).collect();
     }
 
     /// 重新读取当前位置，保留状态栏消息；用于文件操作之后。
@@ -211,16 +273,21 @@ impl Browser {
         })
     }
 
+    /// 删除全部选中项；遇到第一个失败就停下并报告（已删的不回滚）。
     pub fn delete_selected(&mut self) {
-        let Some(path) = self.selected_path() else {
+        let paths = self.selected_paths();
+        if paths.is_empty() {
             return;
-        };
-        let result = fileops::delete(&self.home, &path);
+        }
+        let result = paths
+            .iter()
+            .try_for_each(|path| fileops::delete(&self.home, path));
         self.finish(result);
     }
 
     pub fn copy_selected(&mut self, cut: bool) {
-        self.clipboard = self.selected_path().map(|path| Clipboard { path, cut });
+        let paths = self.selected_paths();
+        self.clipboard = (!paths.is_empty()).then_some(Clipboard { paths, cut });
     }
 
     pub fn paste(&mut self) {
@@ -228,21 +295,28 @@ impl Browser {
         else {
             return;
         };
-        let result = if clip.cut {
-            fileops::relocate(&clip.path, &dir)
-        } else {
+        // 复制保留剪贴板以便再次粘贴；剪切在粘贴后用掉。
+        if !clip.cut {
             self.clipboard = Some(Clipboard {
-                path: clip.path.clone(),
+                paths: clip.paths.clone(),
                 cut: false,
             });
-            fileops::copy(&clip.path, &dir)
-        };
-        match result {
-            Ok(path) => {
-                self.finish(Ok(()));
-                self.select_path(&path);
+        }
+        let mut last = None;
+        for path in &clip.paths {
+            let result = if clip.cut {
+                fileops::relocate(path, &dir)
+            } else {
+                fileops::copy(path, &dir)
+            };
+            match result {
+                Ok(target) => last = Some(target),
+                Err(error) => return self.finish(Err(error)),
             }
-            Err(error) => self.finish(Err(error)),
+        }
+        self.finish(Ok(()));
+        if let Some(path) = last {
+            self.select_path(&path);
         }
     }
 

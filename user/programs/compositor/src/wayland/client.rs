@@ -83,6 +83,7 @@ pub(super) enum Data {
     Toplevel(Toplevel),
     LayerSurface(LayerSurface),
     SecurityContext(super::security::Context),
+    DataSource(super::clipboard::DataSource),
     ForeignHandle(ForeignHandle),
 }
 
@@ -93,7 +94,7 @@ pub(super) struct Entry {
 }
 
 /// 向客户端公布的全局对象：`(name, 接口, 最高版本)`。
-const GLOBALS: [(u32, Interface, u32); 7] = [
+const GLOBALS: [(u32, Interface, u32); 8] = [
     (1, Interface::WlCompositor, 6),
     (2, Interface::WlShm, 1),
     (3, Interface::XdgWmBase, 3),
@@ -104,6 +105,8 @@ const GLOBALS: [(u32, Interface, u32); 7] = [
     (7, Interface::ZwlrForeignToplevelManagerV1, 3),
     // 光标形状：客户端按语义（调整大小、文字、等待…）请求，合成器用自己的光标集绘制，缩放与热点由它决定。
     (9, Interface::WpCursorShapeManagerV1, 2),
+    // 剪贴板：只有选择，没有拖放。
+    (10, Interface::WlDataDeviceManager, 3),
 ];
 
 /// 初始 Session 与通过 security-context 委派的 Shell 可见的全局对象：
@@ -136,6 +139,10 @@ pub struct Client {
     pub(super) foreign: Vec<ForeignManager>,
     pub(super) foreign_requests: Vec<ForeignRequest>,
     pub(super) cursor_requests: Vec<CursorRequest>,
+    /// 客户端最近一次 `wl_data_device.set_selection`，由 Server 裁决。
+    pub(super) selection_set: Option<super::clipboard::SelectionSet>,
+    /// 接收方对当前选择的读取请求，由 Server 转交持有者。
+    pub(super) receives: Vec<super::clipboard::ReceiveRequest>,
     /// 下一个服务端分配的对象 id（窗口句柄）。
     pub(super) next_server_object: u32,
     /// 随消息发送的描述符：`(在待发字节中的偏移, fd)`，偏移按发送顺序递增。
@@ -178,6 +185,8 @@ impl Client {
             foreign: Vec::new(),
             foreign_requests: Vec::new(),
             cursor_requests: Vec::new(),
+            selection_set: None,
+            receives: Vec::new(),
             next_server_object: SERVER_ID_BASE,
             outgoing_fds: VecDeque::new(),
         }
@@ -387,6 +396,12 @@ impl Client {
             AnyRequest::ZwlrForeignToplevelHandleV1(request) => {
                 self.foreign_handle(object, request)
             }
+            AnyRequest::WlDataDeviceManager(request) => {
+                self.data_device_manager(object, version, request)
+            }
+            AnyRequest::WlDataSource(request) => self.data_source(object, request),
+            AnyRequest::WlDataDevice(request) => self.data_device(request),
+            AnyRequest::WlDataOffer(request) => self.data_offer(request),
             AnyRequest::WpCursorShapeManagerV1(request) => {
                 self.cursor_shape_manager(object, version, request)
             }

@@ -1,5 +1,6 @@
 //! 标准 Wayland 客户端窗口。连接独占协议对象、configure、输入焦点与帧生命周期。
 
+mod clipboard;
 mod events;
 mod foreign;
 mod frame;
@@ -200,6 +201,7 @@ pub struct Display {
     layer_shell: Option<ObjectId>,
     security_manager: Option<ObjectId>,
     /// `wp_cursor_shape_manager_v1`；compositor 不提供时没有光标反馈，窗口仍可用。
+    clipboard: clipboard::Clipboard,
     cursor_shape_manager: Option<ObjectId>,
     cursor_shape_device: Option<ObjectId>,
     /// 最近一次 `wl_pointer.enter` 的序号；`set_shape` 必须带它。
@@ -294,6 +296,14 @@ impl Display {
         } else {
             None
         };
+        let data_manager = if globals
+            .iter()
+            .any(|(_, name, _)| name == "wl_data_device_manager")
+        {
+            Some(bind(Interface::WlDataDeviceManager, 3)?)
+        } else {
+            None
+        };
         let cursor_shape_manager = if globals
             .iter()
             .any(|(_, name, _)| name == "wp_cursor_shape_manager_v1")
@@ -328,6 +338,7 @@ impl Display {
             keyboard_device: None,
             layer_shell,
             security_manager,
+            clipboard: clipboard::Clipboard::with_manager(data_manager),
             cursor_shape_manager,
             cursor_shape_device: None,
             enter_serial: 0,
@@ -335,6 +346,7 @@ impl Display {
             foreign: Default::default(),
             foreign_revision: 0,
         };
+        display.bind_data_device()?;
         // 3. 两轮 sync 分别收齐 output/seat，以及由 seat 能力请求产生的 keymap，之后才允许建窗口。
         display.roundtrip()?;
         display.roundtrip()?;

@@ -64,6 +64,7 @@ dependencies = [
  "canvas",
  "classic-theme",
  "classic-ui",
+ "desktop-settings",
  "liteos-runtime",
  "sound",
  "typeface",
@@ -73,10 +74,12 @@ dependencies = [
 name = "desktop"
 version = "0.1.0"
 dependencies = [
+ "calendar",
  "canvas",
  "classic-theme",
  "classic-ui",
  "desktop-entry",
+ "desktop-settings",
  "linux-uapi",
  "liteos-runtime",
  "sndvol",
@@ -86,6 +89,13 @@ dependencies = [
 
 [[package]]
 name = "desktop-entry"
+version = "0.1.0"
+dependencies = [
+ "liteos-runtime",
+]
+
+[[package]]
+name = "desktop-settings"
 version = "0.1.0"
 dependencies = [
  "liteos-runtime",

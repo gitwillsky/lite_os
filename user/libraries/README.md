@@ -22,6 +22,7 @@
 | [`keyboard/`](keyboard/README.md) | 键盘布局与编码 | 共享库 `libkeyboard.so` |
 | [`calendar/`](calendar/README.md) | 公历日期换算 | 共享库 `libcalendar.so` |
 | [`desktop-entry/`](desktop-entry/README.md) | 桌面条目解析 | 共享库 `libdesktop_entry.so` |
+| [`desktop-settings/`](desktop-settings/README.md) | 每用户桌面设置 | 共享库 `libdesktop_settings.so` |
 | [`sound/`](sound/README.md) | 系统提示音 | 共享库 `libsound.so` |
 | [`sndvol/`](sndvol/README.md) | 音量状态与布局 | 共享库 `libsndvol.so` |
 | [`terminal-font/`](terminal-font/README.md) | 终端字体图集 | 静态库（目前没有程序使用） |

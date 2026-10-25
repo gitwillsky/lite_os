@@ -67,6 +67,32 @@ impl Display {
             .map_err(io::Error::other)?;
         self.transport.flush()
     }
+    /// 告诉 compositor 窗口 `id` 的任务按钮在外壳窗口 `window` 里的位置（逻辑像素）：
+    /// 最小化与还原动画以它为一端。
+    ///
+    /// # Errors
+    ///
+    /// `id` 不是已知窗口，或写 socket 失败。
+    pub fn set_toplevel_rectangle(
+        &mut self,
+        id: ToplevelId,
+        window: super::WindowId,
+        rect: canvas::Rect,
+    ) -> io::Result<()> {
+        if !self.foreign.contains_key(&id.0.get()) {
+            return Err(io::ErrorKind::NotFound.into());
+        }
+        handle::Request::SetRectangle {
+            surface: window.0,
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+        }
+        .encode(id.0, &mut self.transport.writer)
+        .map_err(io::Error::other)?;
+        self.transport.flush()
+    }
     pub(super) fn foreign_event(&mut self, object: ObjectId, event: &AnyEvent) -> io::Result<bool> {
         match event {
             AnyEvent::ZwlrForeignToplevelManagerV1(manager::Event::Toplevel { toplevel }) => {

@@ -10,7 +10,7 @@ use canvas::{Rect, Surface};
 use classic_theme::{Edge, SystemColor as C, Theme};
 use classic_ui::{
     AppIcons, ButtonState, Decoration, DecorationAction, Display, DropMenu, EventKind, FrameKind,
-    Ink, Painter, Popup, Prompt, SCROLLBAR_WIDTH, Scroll, ToplevelId, ToplevelRequest, title_rects,
+    Ink, MenuBar, MenuEvent, Painter, Prompt, SCROLLBAR_WIDTH, Scroll, ToplevelId, ToplevelRequest,
 };
 use menus::{Command as MenuCommand, Speed};
 use processes::{Column, Process, Sort};
@@ -116,7 +116,7 @@ struct App {
     totals: Totals,
     speed: Speed,
     next_sample: Instant,
-    popup: Option<Popup>,
+    menubar: MenuBar,
     modal: Option<Modal>,
     scroll: [Scroll; 2],
     children: Vec<Child>,
@@ -138,7 +138,7 @@ impl App {
             totals: Totals::default(),
             speed: Speed::Normal,
             next_sample: Instant::now(),
-            popup: None,
+            menubar: MenuBar::new(),
             modal: None,
             scroll: [Scroll::default(), Scroll::default()],
             children: Vec::new(),
@@ -343,22 +343,17 @@ impl App {
         }
         // 菜单：点标题打开/切换，点条目执行，点别处只关闭。
         let menus = self.menus();
-        let titles = title_rects(p, menu_rect(client), &menus);
-        if let Some(popup) = self.popup.take() {
-            if let Some(item) = popup.item_at(&menus[popup.menu].items, point) {
-                self.run(display, menus[popup.menu].items[item].command);
+        match self.menubar.press(p, menu_rect(client), &menus, point) {
+            MenuEvent::Command(command) => {
+                self.run(display, command);
                 return;
             }
-            if inside(popup.rect, point) {
-                self.popup = Some(popup);
-                return;
-            }
-        }
-        if let Some(index) = titles.iter().position(|rect| inside(*rect, point)) {
-            self.popup = Some(Popup::open(p, &menus, index, titles[index]));
-            return;
+            MenuEvent::Handled => return,
+            MenuEvent::Ignored => {}
         }
         if let Some(tab) = tab_rects(client).iter().position(|r| inside(*r, point)) {
+            // 菜单栏随标签页变化（"窗口"只在应用页），先关掉打开的菜单。
+            self.menubar.close();
             self.tab = tab;
             return;
         }
@@ -403,17 +398,9 @@ impl App {
 
     fn pointer_moved(&mut self, p: &Painter<'_>, display: &Display, client: Rect) {
         let point = self.pointer;
-        if self.popup.is_some() {
-            let menus = self.menus();
-            let titles = title_rects(p, menu_rect(client), &menus);
-            if let Some(index) = titles.iter().position(|rect| inside(*rect, point))
-                && self.popup.as_ref().is_some_and(|popup| popup.menu != index)
-            {
-                self.popup = Some(Popup::open(p, &menus, index, titles[index]));
-            }
-            if let Some(popup) = &mut self.popup {
-                popup.hover = popup.item_at(&menus[popup.menu].items, point);
-            }
+        let menus = self.menus();
+        if self.menubar.motion(p, menu_rect(client), &menus, point) {
+            return;
         }
         if self.tab != 2 {
             let list = list_rect(page_rect(client, self.tab));
@@ -425,7 +412,7 @@ impl App {
         }
     }
 
-    fn key(&mut self, display: &mut Display, key: classic_ui::Key, client: Rect) {
+    fn key(&mut self, p: &Painter<'_>, display: &mut Display, key: classic_ui::Key, client: Rect) {
         if let Some(modal) = &mut self.modal {
             let outcome = match modal {
                 Modal::NewTask(prompt) => prompt.key(key),
@@ -436,23 +423,14 @@ impl App {
             }
             return;
         }
-        if let Some(popup) = &mut self.popup {
-            let menus = menus::menu_bar(self.tab == 0, self.speed);
-            let items = &menus[popup.menu].items;
-            match key.code {
-                ESCAPE => self.popup = None,
-                UP => popup.step(items.len(), -1),
-                DOWN => popup.step(items.len(), 1),
-                ENTER => {
-                    if let Some(index) = popup.hover {
-                        let command = items[index].command;
-                        self.popup = None;
-                        self.run(display, command);
-                    }
-                }
-                _ => {}
+        let menus = self.menus();
+        match self.menubar.key(p, menu_rect(client), &menus, &key) {
+            MenuEvent::Command(command) => {
+                self.run(display, command);
+                return;
             }
-            return;
+            MenuEvent::Handled => return,
+            MenuEvent::Ignored => {}
         }
         let count = self.row_count(display);
         let index = self.selected_index();
@@ -483,18 +461,6 @@ impl App {
     }
 
     fn paint(&mut self, p: &mut Painter<'_>, display: &Display, client: Rect, icons: &AppIcons) {
-        let menus = self.menus();
-        let titles = title_rects(p, menu_rect(client), &menus);
-        let open = self.popup.as_ref().map(|popup| popup.menu);
-        for (index, (menu, rect)) in menus.iter().zip(&titles).enumerate() {
-            let hovered = inside(*rect, self.pointer) && open.is_none();
-            p.menu_bar_item(
-                *rect,
-                menu.title,
-                hovered || open == Some(index),
-                open == Some(index),
-            );
-        }
         self.paint_tabs(p, client);
         let page = page_rect(client, self.tab);
         match self.tab {
@@ -512,9 +478,9 @@ impl App {
             );
         }
         self.paint_status(p, client);
-        if let Some(popup) = &self.popup {
-            popup.paint(p, &menus[popup.menu].items);
-        }
+        let menus = self.menus();
+        self.menubar
+            .paint(p, menu_rect(client), &menus, self.pointer);
         if let Some(modal) = &self.modal {
             paint_modal(p, client, modal);
         }
@@ -864,7 +830,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     }
                 }
-                EventKind::Key(key) if key.pressed => app.key(&mut display, key, client),
+                EventKind::Key(key) if key.pressed => app.key(&probe, &mut display, key, client),
+                EventKind::Key(key) => {
+                    app.menubar.key_released(&key);
+                }
                 _ => {}
             }
         }

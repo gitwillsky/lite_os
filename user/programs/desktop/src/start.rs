@@ -28,6 +28,7 @@ pub enum Action {
     Application(usize),
     Files(Place),
     Tasks,
+    Taskbar,
     About,
     Run,
     Lock,
@@ -92,11 +93,14 @@ pub fn rows(apps: &[Application]) -> Vec<Row> {
         parent(
             "settings-32",
             "设置(S)",
-            vec![leaf(
-                "control-panel-16",
-                "控制面板(C)",
-                Action::Files(Place::ControlPanel),
-            )],
+            vec![
+                leaf(
+                    "control-panel-16",
+                    "控制面板(C)",
+                    Action::Files(Place::ControlPanel),
+                ),
+                leaf("settings-16", "任务栏和「开始」菜单(T)...", Action::Taskbar),
+            ],
         ),
         leaf("run-32", "运行(R)...", Action::Run),
         lock,

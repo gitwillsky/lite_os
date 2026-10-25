@@ -2,8 +2,10 @@
 //! 使用普通 Wayland 连接，没有外壳权限；两个小程序都是只读信息页（系统没有可写的时钟接口与时区库）。
 extern crate liteos_runtime as _;
 mod datetime;
+mod display;
 mod sounds;
 mod system;
+mod taskbar;
 mod winver;
 
 use canvas::{Rect, Surface};
@@ -33,6 +35,12 @@ pub trait Page {
     fn paint(&self, p: &mut Painter<'_>, page: Rect, tab: usize, now: i64, icons: &Icons);
     /// 第 `tab` 页内左键按下；返回是否需要重绘。
     fn click(&mut self, page: Rect, tab: usize, point: (i32, i32)) -> bool;
+    /// 有尚未应用的修改；"应用"按钮只在这时可用。
+    fn dirty(&self) -> bool {
+        false
+    }
+    /// 应用修改（"确定"与"应用"）。
+    fn apply(&mut self) {}
 }
 
 /// 页内用到的位图；缺失时按"无图标"绘制。
@@ -116,10 +124,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         Some("system") => Box::new(system::System::read()),
         Some("datetime") => Box::new(datetime::DateTime::now()),
         Some("sounds") => Box::new(sounds::Sounds::new()),
+        Some("taskbar") => Box::new(taskbar::Taskbar::new()),
+        Some("display") => Box::new(display::Background::new()),
         Some("winver") => Box::new(winver::Winver),
         other => {
             return Err(format!(
-                "unknown applet {other:?}; use `system`, `datetime`, `sounds` or `winver`"
+                "unknown applet {other:?}; use `system`, `datetime`, `sounds`, `taskbar`, `display` or `winver`"
             )
             .into());
         }
@@ -197,12 +207,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         }
                     } else if let Some(index) = pressed.take()
                         && inside(buttons(client)[index], pointer)
-                        && index < 2
                     {
-                        break;
+                        match index {
+                            // 确定：应用后关闭；取消：直接关闭；应用：留在窗口里。
+                            0 => {
+                                page.apply();
+                                break;
+                            }
+                            1 => break,
+                            _ if page.dirty() => page.apply(),
+                            _ => {}
+                        }
                     }
                 }
                 EventKind::Key(key) if key.pressed && matches!(key.code, OK_KEY | ESCAPE_KEY) => {
+                    if key.code == OK_KEY {
+                        page.apply();
+                    }
                     break;
                 }
                 _ => {}
@@ -233,7 +254,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ButtonState {
                         pressed: pressed == Some(index) && inside(*rect, pointer),
                         default: index == 0,
-                        disabled: index == 2,
+                        disabled: index == 2 && !page.dirty(),
                         ..Default::default()
                     },
                 );

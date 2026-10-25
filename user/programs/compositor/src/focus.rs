@@ -284,6 +284,11 @@ impl Seat {
         self.keyboard_focus = active;
     }
 
+    /// 键盘焦点所在的客户端。
+    pub fn keyboard_client(&self) -> Option<ClientId> {
+        self.keyboard_focus.map(|(client, _)| client)
+    }
+
     /// 记录一次由合成器模态界面（窗口菜单、键盘移动）消费的按键：只更新按键状态，不转发给任何客户端，
     /// 按下与对应的释放都被吞掉；缺少它，客户端会收到没有按下的释放事件。
     pub fn swallow_key(&mut self, code: u16, pressed: bool) {

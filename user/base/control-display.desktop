@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Display
+Name[zh_CN]=显示
+Exec=/bin/control-panel display
+Icon=display-properties
+Categories=Settings;
+StartupWMClass=org.liteos.control-panel.display
+Terminal=false

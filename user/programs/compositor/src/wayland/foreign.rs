@@ -56,11 +56,21 @@ pub enum ForeignAction {
     Fullscreen(bool),
     Activate,
     Close,
+    /// 最小化动画的目标：外壳 surface `surface` 内（逻辑像素）这个任务按钮的矩形。
+    Rectangle {
+        surface: ObjectId,
+        x: i32,
+        y: i32,
+        width: i32,
+        height: i32,
+    },
 }
 
 /// 外壳提出的、针对某个窗口的请求。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ForeignRequest {
+    /// 发出请求的外壳连接；由 Server 取走请求时填入，`Client` 不知道自己的编号。
+    pub shell: ClientId,
     pub client: ClientId,
     pub surface: ObjectId,
     pub action: ForeignAction,
@@ -145,12 +155,24 @@ impl Client {
             R::UnsetFullscreen => ForeignAction::Fullscreen(false),
             R::Activate { .. } => ForeignAction::Activate,
             R::Close => ForeignAction::Close,
-            // 最小化动画的目标矩形；本合成器没有该动画，所以不保存。
-            R::SetRectangle { .. } => return Ok(()),
+            R::SetRectangle {
+                surface: shell_surface,
+                x,
+                y,
+                width,
+                height,
+            } => ForeignAction::Rectangle {
+                surface: shell_surface,
+                x,
+                y,
+                width,
+                height,
+            },
             // 保留已告知窗口的记录；对象表删除句柄后不再更新它，也不重复宣告同一窗口。
             R::Destroy => return Ok(()),
         };
         self.foreign_requests.push(ForeignRequest {
+            shell: ClientId(0),
             client,
             surface,
             action,

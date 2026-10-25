@@ -5,8 +5,9 @@ mod document;
 use canvas::{Rect, Surface};
 use classic_theme::{Edge, SystemColor as C, Theme};
 use classic_ui::{
-    ButtonState, Decoration, DecorationAction, Display, DropItem, DropMenu, EventKind, FrameKind,
-    Ink, Key, Painter, Popup, Prompt, SCROLLBAR_WIDTH, Scroll, title_rects,
+    ButtonState, CursorShape, Decoration, DecorationAction, Display, DropItem, DropMenu, EventKind,
+    FileDialog, FileDialogEvent, FileDialogMode, FrameKind, Ink, Key, MenuBar, MenuEvent, Painter,
+    SCROLLBAR_WIDTH, Scroll,
 };
 use document::{Document, Position};
 use std::{
@@ -92,8 +93,8 @@ enum Pending {
 }
 
 enum Modal {
-    OpenPath(Prompt),
-    SavePath(Prompt, Option<Pending>),
+    OpenFile(FileDialog),
+    SaveFile(FileDialog, Option<Pending>),
     /// "文件已修改，是否保存？"
     Ask(Pending),
     Notice(String),
@@ -102,11 +103,14 @@ enum Modal {
 struct App {
     document: Document,
     path: Option<PathBuf>,
-    clipboard: String,
+    /// 要放进系统剪贴板的文本：命令只记下它，由事件循环持有 `Display` 时发出。
+    copy_out: Option<String>,
+    /// 粘贴命令已发出，等事件循环读剪贴板后插入。
+    paste_wanted: bool,
     scroll: Scroll,
     /// 横向滚动的像素偏移（逻辑像素）。
     scroll_x: i32,
-    popup: Option<Popup>,
+    menubar: MenuBar,
     modal: Option<Modal>,
     pointer: (i32, i32),
     selecting: bool,
@@ -145,10 +149,11 @@ impl App {
         Self {
             document: Document::new(),
             path: None,
-            clipboard: String::new(),
+            copy_out: None,
+            paste_wanted: false,
             scroll: Scroll::default(),
             scroll_x: 0,
-            popup: None,
+            menubar: MenuBar::new(),
             modal: None,
             pointer: (-1, -1),
             selecting: false,
@@ -215,7 +220,7 @@ impl App {
         if let Some(path) = self.path.clone() {
             return self.save_to(&path);
         }
-        self.modal = Some(Modal::SavePath(save_prompt(), then));
+        self.modal = Some(Modal::SaveFile(save_dialog(self.path.as_deref()), then));
         false
     }
 
@@ -237,10 +242,12 @@ impl App {
                 self.scroll_x = 0;
             }
             Pending::Open => {
-                self.modal = Some(Modal::OpenPath(Prompt::new(
+                self.modal = Some(Modal::OpenFile(FileDialog::new(
+                    FileDialogMode::Open,
                     "打开",
-                    "键入要打开的文本文件的完整路径。",
-                    "文件名(N):",
+                    &home(),
+                    "所有文件 (*.*)",
+                    &[],
                     "",
                 )))
             }
@@ -255,17 +262,16 @@ impl App {
             Command::Save => {
                 self.save(None);
             }
-            Command::SaveAs => self.modal = Some(Modal::SavePath(save_prompt(), None)),
+            Command::SaveAs => {
+                self.modal = Some(Modal::SaveFile(save_dialog(self.path.as_deref()), None))
+            }
             Command::Exit => self.guarded(Pending::Exit),
             Command::Cut => {
                 self.copy();
                 self.document.delete_selection();
             }
             Command::Copy => self.copy(),
-            Command::Paste => {
-                let text = self.clipboard.clone();
-                self.document.insert(&text);
-            }
+            Command::Paste => self.paste_wanted = true,
             Command::Delete => {
                 self.document.delete();
             }
@@ -282,7 +288,34 @@ impl App {
 
     fn copy(&mut self) {
         if let Some(text) = self.document.selected_text() {
-            self.clipboard = text;
+            self.copy_out = Some(text);
+        }
+    }
+
+    /// 当前的文件对话框（打开或另存为）。
+    fn file_dialog(&mut self) -> Option<&mut FileDialog> {
+        match &mut self.modal {
+            Some(Modal::OpenFile(dialog) | Modal::SaveFile(dialog, _)) => Some(dialog),
+            _ => None,
+        }
+    }
+
+    /// 处理文件对话框的结果：取消则关闭，选定则打开或保存（保存后继续被保存询问挂起的动作）。
+    fn finish_file(&mut self, event: FileDialogEvent) {
+        match event {
+            FileDialogEvent::Pending => {}
+            FileDialogEvent::Cancelled => self.modal = None,
+            FileDialogEvent::Chosen(path) => match self.modal.take() {
+                Some(Modal::OpenFile(_)) => self.load(&path),
+                Some(Modal::SaveFile(_, then)) => {
+                    if self.save_to(&path)
+                        && let Some(action) = then
+                    {
+                        self.proceed(action);
+                    }
+                }
+                _ => {}
+            },
         }
     }
 
@@ -290,23 +323,11 @@ impl App {
         let Some(modal) = self.modal.take() else {
             return;
         };
-        match (modal, accepted) {
-            (Modal::OpenPath(prompt), true) => self.load(&PathBuf::from(prompt.text())),
-            (Modal::SavePath(prompt, then), true) => {
-                let path = PathBuf::from(prompt.text());
-                if self.save_to(&path)
-                    && let Some(action) = then
-                {
-                    self.proceed(action);
-                }
-            }
-            // "是"：先保存再继续；"否"：丢弃修改直接继续。
-            (Modal::Ask(action), true) => {
-                if self.save(Some(action)) {
-                    self.proceed(action);
-                }
-            }
-            (Modal::Notice(_), _) | (_, false) => {}
+        // "是"：先保存再继续；"否"与取消在各自的点击处理里已经分别继续或放弃。
+        if let (Modal::Ask(action), true) = (modal, accepted)
+            && self.save(Some(action))
+        {
+            self.proceed(action);
         }
     }
 
@@ -381,12 +402,30 @@ impl App {
         }
     }
 
+    /// 指针在编辑区上是文字光标，在客户区的其他位置是箭头；在窗口边框上不管，那是窗口装饰的事。
+    fn cursor_shape(&self, p: &Painter<'_>, client: Rect) -> Option<CursorShape> {
+        if self.modal.is_some() || !inside(client, self.pointer) {
+            return None;
+        }
+        let (area, _) = self.areas(client, p.line_height() + 1);
+        Some(if inside(area, self.pointer) {
+            CursorShape::Text
+        } else {
+            CursorShape::Default
+        })
+    }
+
     fn press(&mut self, p: &Painter<'_>, client: Rect, shift: bool) {
         let point = self.pointer;
         let line_height = p.line_height() + 1;
+        if let Some(dialog) = self.file_dialog() {
+            let event = dialog.press(client, point);
+            self.finish_file(event);
+            return;
+        }
         if let Some(modal) = &self.modal {
             let outcome = match modal {
-                Modal::OpenPath(prompt) | Modal::SavePath(prompt, _) => prompt.press(client, point),
+                Modal::OpenFile(_) | Modal::SaveFile(..) => None,
                 Modal::Ask(_) => {
                     let (_, yes, no, cancel) = ask_rects(client);
                     if inside(yes, point) {
@@ -410,21 +449,14 @@ impl App {
             return;
         }
         let menus = menu_bar();
-        let bar = Rect::new(client.x, client.y, client.width, MENU_HEIGHT);
-        let titles = title_rects(p, bar, &menus);
-        if let Some(popup) = self.popup.take() {
-            if let Some(item) = popup.item_at(&menus[popup.menu].items, point) {
-                self.run(menus[popup.menu].items[item].command);
+        let menu_area = Rect::new(client.x, client.y, client.width, MENU_HEIGHT);
+        match self.menubar.press(p, menu_area, &menus, point) {
+            MenuEvent::Command(command) => {
+                self.run(command);
                 return;
             }
-            if inside(popup.rect, point) {
-                self.popup = Some(popup);
-                return;
-            }
-        }
-        if let Some(index) = titles.iter().position(|rect| inside(*rect, point)) {
-            self.popup = Some(Popup::open(p, &menus, index, titles[index]));
-            return;
+            MenuEvent::Handled => return,
+            MenuEvent::Ignored => {}
         }
         let (area, bar) = self.areas(client, line_height);
         if let Some(bar) = bar.filter(|bar| inside(*bar, point)) {
@@ -444,18 +476,13 @@ impl App {
     fn pointer_moved(&mut self, p: &Painter<'_>, client: Rect) {
         let point = self.pointer;
         let line_height = p.line_height() + 1;
+        if let Some(dialog) = self.file_dialog() {
+            dialog.motion(client, point);
+            return;
+        }
         let menus = menu_bar();
-        if self.popup.is_some() {
-            let bar = Rect::new(client.x, client.y, client.width, MENU_HEIGHT);
-            let titles = title_rects(p, bar, &menus);
-            if let Some(index) = titles.iter().position(|rect| inside(*rect, point))
-                && self.popup.as_ref().is_some_and(|popup| popup.menu != index)
-            {
-                self.popup = Some(Popup::open(p, &menus, index, titles[index]));
-            }
-            if let Some(popup) = &mut self.popup {
-                popup.hover = popup.item_at(&menus[popup.menu].items, point);
-            }
+        let menu_area = Rect::new(client.x, client.y, client.width, MENU_HEIGHT);
+        if self.menubar.motion(p, menu_area, &menus, point) {
             return;
         }
         let (area, bar) = self.areas(client, line_height);
@@ -474,9 +501,14 @@ impl App {
     }
 
     fn key(&mut self, p: &Painter<'_>, client: Rect, key: Key) {
+        if let Some(dialog) = self.file_dialog() {
+            let event = dialog.key(key);
+            self.finish_file(event);
+            return;
+        }
         if let Some(modal) = &mut self.modal {
             let outcome = match modal {
-                Modal::OpenPath(prompt) | Modal::SavePath(prompt, _) => prompt.key(key),
+                Modal::OpenFile(_) | Modal::SaveFile(..) => None,
                 Modal::Ask(_) => match key.letter() {
                     Some('y') => Some(true),
                     Some('n') => {
@@ -497,22 +529,14 @@ impl App {
             return;
         }
         let menus = menu_bar();
-        if let Some(popup) = &mut self.popup {
-            let items = &menus[popup.menu].items;
-            match key.code {
-                ESCAPE => self.popup = None,
-                UP => popup.step(items.len(), -1),
-                DOWN => popup.step(items.len(), 1),
-                ENTER => {
-                    if let Some(index) = popup.hover {
-                        let command = items[index].command;
-                        self.popup = None;
-                        self.run(command);
-                    }
-                }
-                _ => {}
+        let menu_area = Rect::new(client.x, client.y, client.width, MENU_HEIGHT);
+        match self.menubar.key(p, menu_area, &menus, &key) {
+            MenuEvent::Command(command) => {
+                self.run(command);
+                return;
             }
-            return;
+            MenuEvent::Handled => return,
+            MenuEvent::Ignored => {}
         }
         let line_height = p.line_height() + 1;
         let (area, _) = self.areas(client, line_height);
@@ -559,17 +583,6 @@ impl App {
         let line_height = p.line_height() + 1;
         let menus = menu_bar();
         let bar = Rect::new(client.x, client.y, client.width, MENU_HEIGHT);
-        let titles = title_rects(p, bar, &menus);
-        let open = self.popup.as_ref().map(|popup| popup.menu);
-        for (index, (menu, rect)) in menus.iter().zip(&titles).enumerate() {
-            let hovered = inside(*rect, self.pointer) && open.is_none();
-            p.menu_bar_item(
-                *rect,
-                menu.title,
-                hovered || open == Some(index),
-                open == Some(index),
-            );
-        }
         let frame = Rect::new(
             client.x,
             bar.bottom(),
@@ -635,11 +648,9 @@ impl App {
                 self.scroll.pressed(),
             );
         }
-        if let Some(popup) = &self.popup {
-            popup.paint(p, &menus[popup.menu].items);
-        }
-        match &self.modal {
-            Some(Modal::OpenPath(prompt) | Modal::SavePath(prompt, _)) => prompt.paint(p, client),
+        self.menubar.paint(p, bar, &menus, self.pointer);
+        match &mut self.modal {
+            Some(Modal::OpenFile(dialog) | Modal::SaveFile(dialog, _)) => dialog.paint(p, client),
             Some(Modal::Ask(_)) => paint_ask(p, client),
             Some(Modal::Notice(text)) => paint_notice(p, client, text),
             None => {}
@@ -654,12 +665,26 @@ fn char_prefix(line: &str, column: usize) -> usize {
         .count()
 }
 
-fn save_prompt() -> Prompt {
-    Prompt::new(
+fn home() -> PathBuf {
+    std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
+}
+
+/// "另存为"对话框：已有路径时从它所在目录与文件名开始，否则从主目录开始、名字为"无标题.txt"。
+fn save_dialog(current: Option<&Path>) -> FileDialog {
+    let directory = current
+        .and_then(Path::parent)
+        .map_or_else(home, Path::to_owned);
+    let name = current.and_then(Path::file_name).map_or_else(
+        || "无标题.txt".to_owned(),
+        |n| n.to_string_lossy().into_owned(),
+    );
+    FileDialog::new(
+        FileDialogMode::Save,
         "另存为",
-        "键入保存文件的完整路径。",
-        "文件名(N):",
-        "/root/无标题.txt",
+        &directory,
+        "文本文档 (*.txt)",
+        &[],
+        &name,
     )
 }
 
@@ -839,6 +864,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
                     app.pointer = (x.floor() as i32, y.floor() as i32);
                     app.pointer_moved(&probe, client);
+                    if let Some(shape) = app.cursor_shape(&probe, client) {
+                        display.set_cursor_shape(shape)?;
+                    }
                 }
                 EventKind::PointerLeave => app.pointer = (-1, -1),
                 EventKind::Button {
@@ -852,11 +880,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ..
                 } => {
                     app.scroll.release();
+                    if let Some(dialog) = app.file_dialog() {
+                        dialog.release();
+                    }
                     app.selecting = false;
                 }
                 EventKind::Key(key) if key.pressed => app.key(&probe, client, key),
+                EventKind::Key(key) => {
+                    app.menubar.key_released(&key);
+                }
                 _ => {}
             }
+        }
+        if let Some(text) = app.copy_out.take() {
+            display.set_clipboard(&text)?;
+        }
+        if std::mem::take(&mut app.paste_wanted)
+            && let Some(text) = display.clipboard_text()?
+        {
+            app.document.insert(&text);
+            dirty = true;
         }
         let Some(font) = font.as_ref() else { continue };
         let wanted = app.title();

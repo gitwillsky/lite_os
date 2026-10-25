@@ -39,7 +39,7 @@ impl Display {
     }
 
     pub(super) fn dispatch(&mut self, object: ObjectId, event: AnyEvent) -> io::Result<()> {
-        if self.foreign_event(object, &event)? {
+        if self.foreign_event(object, &event)? || self.clipboard_event(object, &event)? {
             return Ok(());
         }
         match event {
@@ -236,6 +236,7 @@ impl Display {
                 state,
                 ..
             }) => {
+                self.clipboard.serial = serial;
                 self.emit(
                     self.pointer,
                     EventKind::Button {
@@ -302,7 +303,10 @@ impl Display {
                     self.repeat = None;
                 }
             }
-            AnyEvent::WlKeyboard(wl_keyboard::Event::Key { key, state, .. }) => {
+            AnyEvent::WlKeyboard(wl_keyboard::Event::Key {
+                serial, key, state, ..
+            }) => {
+                self.clipboard.serial = serial;
                 let pressed = state == wl_keyboard::KeyState::Pressed;
                 self.emit(self.keyboard, EventKind::Key(self.key(key, pressed, false)));
                 if pressed && xkb::repeats(key) && self.repeat_rate > 0 {
@@ -382,6 +386,7 @@ mod tests {
                 keyboard_device: None,
                 layer_shell: None,
                 security_manager: None,
+                clipboard: Default::default(),
                 cursor_shape_manager: None,
                 cursor_shape_device: None,
                 enter_serial: 0,

@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Taskbar
+Name[zh_CN]=任务栏
+Exec=/bin/control-panel taskbar
+Icon=settings
+StartupWMClass=org.liteos.control-panel.taskbar
+NoDisplay=true
+Terminal=false

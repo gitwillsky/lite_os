@@ -99,6 +99,14 @@ pub struct Server {
     next_id: u64,
     output: Output,
     contexts: Vec<super::security::Listener>,
+    /// 当前剪贴板选择：持有者连接、它的 `wl_data_source` 与声明的类型。
+    selection: Option<Selection>,
+}
+
+struct Selection {
+    owner: ClientId,
+    source: ObjectId,
+    mimes: Vec<String>,
 }
 
 impl Server {
@@ -123,6 +131,7 @@ impl Server {
             next_id: 1,
             output,
             contexts: Vec::new(),
+            selection: None,
         })
     }
 
@@ -331,8 +340,79 @@ impl Server {
     pub fn take_foreign_requests(&mut self) -> Vec<ForeignRequest> {
         self.connections
             .iter_mut()
-            .flat_map(|connection| connection.client.take_foreign_requests())
+            .flat_map(|connection| {
+                let shell = connection.id;
+                connection
+                    .client
+                    .take_foreign_requests()
+                    .into_iter()
+                    .map(move |request| ForeignRequest { shell, ..request })
+            })
             .collect()
+    }
+
+    /// 处理剪贴板：采纳键盘焦点客户端的 `set_selection`，把读取请求转交持有者，并在持有者断开时清空选择。
+    ///
+    /// 只有键盘焦点所在的客户端能设置选择；缺少这个限制，后台程序能随时覆盖用户刚复制的内容。
+    pub fn handle_selection(&mut self, focus: Option<ClientId>) {
+        let mut changed = false;
+        let mut sets = Vec::new();
+        let mut receives = Vec::new();
+        for connection in &mut self.connections {
+            if let Some(set) = connection.client.selection_set.take() {
+                sets.push((connection.id, set));
+            }
+            receives.append(&mut connection.client.receives);
+        }
+        for (client, set) in sets {
+            if Some(client) != focus {
+                continue;
+            }
+            let old = self.selection.take();
+            let next = set.source.map(|source| Selection {
+                owner: client,
+                source,
+                mimes: set.mimes,
+            });
+            // 旧来源被替换或清空：告诉它。同一个来源重复设置不算替换。
+            if let Some(old) = old
+                && next
+                    .as_ref()
+                    .is_none_or(|n| (n.owner, n.source) != (old.owner, old.source))
+            {
+                self.with_client(old.owner, |client| client.source_cancelled(old.source));
+            }
+            self.selection = next;
+            changed = true;
+        }
+        for request in receives {
+            if let Some(selection) = &self.selection {
+                let (owner, source) = (selection.owner, selection.source);
+                self.with_client(owner, |client| {
+                    client.source_send(source, request.mime, request.fd)
+                });
+            }
+        }
+        if self
+            .selection
+            .as_ref()
+            .is_some_and(|s| !self.connections.iter().any(|c| c.id == s.owner))
+        {
+            self.selection = None;
+            changed = true;
+        }
+        if changed {
+            self.announce_selection(focus);
+        }
+    }
+
+    /// 把当前选择（或空）告诉 `client`；键盘焦点换到新客户端、选择变化时调用。
+    pub fn announce_selection(&mut self, client: Option<ClientId>) {
+        let Some(client) = client else { return };
+        let mimes = self.selection.as_ref().map(|s| s.mimes.clone());
+        self.with_client(client, |client| {
+            let _ = client.send_selection(mimes.as_deref());
+        });
     }
 
     /// 取走全部连接的光标请求。
