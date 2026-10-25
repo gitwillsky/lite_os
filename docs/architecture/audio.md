@@ -8,6 +8,10 @@
 桌面的系统提示音由 `user/libraries/sound` 直接写同一个 PCM：登录完成、注销、清空回收站各播一段，只有本地提取了原版素材时才安装，
 设备不可用（例如非 root 账户没有 `/dev/snd` 权限）时静默跳过。
 
+macOS 图形入口由 `scripts/utm_runtime.py` 通过 UTM 原生 `Sound` 配置统一装配 VirtIO Sound、
+音频后端与客户端回放；附加参数只固定 `streams=1`，不重复添加声卡或后端。
+UTM 只在 `Sound` 非空时启用客户端音频；空列表配合手工 QEMU 声卡会造成 guest 正常播放而宿主无声。
+
 ## 状态与调度
 
 - 卡提供 8 个软件 playback 子流；默认 open 占用首个空槽，也可由同一 opener TID 的 control OFD

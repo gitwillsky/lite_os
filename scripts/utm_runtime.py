@@ -129,16 +129,9 @@ def _configuration(
     if kernel_arguments:
         # 经 DTB /chosen/bootargs 进入 /proc/cmdline。
         additional.extend(("-append", f'"{kernel_arguments}"'))
-    # UTM 的 `Sound` 配置条目无法由脚本生成（UTM 拒绝启动），所以手写声卡；后端用 SPICE，
-    # 声音经 UTM 已有的 SPICE 回放通道播放。coreaudio 后端在 UTM 沙盒里会让设备 I/O 失败。
-    additional.extend(
-        (
-            "-audiodev",
-            "spice,id=liteos-audio",
-            "-device",
-            "virtio-sound-device,id=audio-device,audiodev=liteos-audio,streams=1",
-        )
-    )
+    # Sound 统一装配声卡、后端与客户端回放；列表为空时，即使手工添加 QEMU 声卡也不会出声。
+    # 原生声卡默认还包含 capture；固定单路 playback，保持当前设备契约。
+    additional.extend(("-global", "virtio-sound-device.streams=1"))
     serial = (
         [{"Mode": "Ptty", "Target": "Auto"}]
         if serial_tcp_port is None
@@ -221,7 +214,7 @@ def _configuration(
             }
         ],
         "Serial": serial,
-        "Sound": [],
+        "Sound": [{"Hardware": "virtio-sound-device"}],
     }
 
 

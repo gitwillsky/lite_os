@@ -56,6 +56,20 @@ class UtmRuntimeTests(unittest.TestCase):
         self.assertEqual(config["Serial"], [{"Mode": "Ptty", "Target": "Auto"}])
         self.assertTrue(config["Sharing"]["ClipboardSharing"])
 
+    def test_sound_configuration_enables_utm_playback_without_duplicate_devices(self) -> None:
+        for serial_port in (None, 4567):
+            with self.subTest(serial_port=serial_port):
+                config = utm_runtime._configuration(
+                    memory_mib=2048, cpu_count=1, serial_tcp_port=serial_port
+                )
+                # UTM only enables its SPICE client's audio when Sound is nonempty.
+                self.assertEqual(config["Sound"], [{"Hardware": "virtio-sound-device"}])
+                arguments = config["QEMU"]["AdditionalArguments"]
+                self.assertNotIn("-audiodev", arguments)
+                devices = [arguments[i + 1] for i, arg in enumerate(arguments) if arg == "-device"]
+                self.assertFalse(any(device.startswith("virtio-sound-device") for device in devices))
+                self.assertIn("virtio-sound-device.streams=1", arguments)
+
     def test_prepare_publishes_same_artifact_inodes_and_current_plist(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -108,10 +122,6 @@ class UtmRuntimeTests(unittest.TestCase):
         )
         arguments = config["QEMU"]["AdditionalArguments"]
         self.assertNotIn("-qmp", arguments)
-        self.assertIn(
-            "virtio-sound-device,id=audio-device,audiodev=audio0,streams=1",
-            arguments,
-        )
 
     def test_gate_restore_recovers_exact_config_and_published_inodes(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
