@@ -227,6 +227,14 @@ pub(crate) trait GraphicsDevice: DisplayDevice {
     /// queue 或 device failure 返回 `Device`。
     fn move_cursor(&self, x: u32, y: u32) -> Result<(), DisplayError>;
 
+    /// 返回 DRM 可分配的首个动态 GPU resource identity。
+    ///
+    /// # Returns
+    ///
+    /// 非零起点；更小的编号由 adapter 的启动画面、扫描驻留、光标和崩溃画面保留。
+    /// 预留边界只由 adapter 定义，DRM 不得另写一个可能与其冲突的起点。
+    fn first_dynamic_resource_id(&self) -> u32;
+
     /// 返回 adapter 初始化时固定选中的 VirGL capset。
     ///
     /// # Returns

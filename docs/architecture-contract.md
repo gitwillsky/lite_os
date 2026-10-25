@@ -198,3 +198,9 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 - 新 global、lock、Atomic、Once、cache、flag 或 unsafe 必须在领域契约记录 owner、安全证明与缺失时的具体失败。
 - scoped interface 只能用 `cargo run -p architecture-check -- --write-interface` 生成到 [generated baseline](generated/architecture-interface.txt)，禁止手工编辑。
 - 文档、单元测试、性能测试和运行时 gate 必须随契约变化同步维护；不得放宽围栏或阈值来接受实现错误。
+
+## 源码规模审查
+
+- `kernel/src/virtio/gpu.rs`：owner 为 VirtIO GPU adapter，统一持有 control/cursor queue、DMA slot 与 completion publication。
+  本次增加失败命令身份日志后超过 1000 行审查线；响应验证仍在摘除 pending 前完成，保留该原子边界，不改变阈值。
+  退出条件：新增下一项 GPU/queue 能力前，将 CommandSlots 的完整响应验证/消费状态机迁入已有 command 领域模块，避免只移动日志或复制 pending 状态。

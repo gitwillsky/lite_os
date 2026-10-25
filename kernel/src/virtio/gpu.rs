@@ -171,6 +171,21 @@ impl CommandSlots {
                 .is_none_or(|flags| flags & VIRTIO_GPU_FLAG_FENCE == 0)
             || read_u64(slot.response.as_slice(), 8) != Some(pending.command_fence)
         {
+            // 在 fail-stop 前保留被拒绝命令的 wire 身份，不能只向 DRM 返回丢失上下文的 Device。
+            error!(
+                "VirtIO GPU response mismatch: head={} opcode={:#x} context={} arg0={:#x} stage={:?} length={}/{} response={:#x} flags={:#x} fence={}/{}",
+                head,
+                read_u32(slot.request.as_slice(), 0).unwrap_or(0),
+                read_u32(slot.request.as_slice(), 16).unwrap_or(0),
+                read_u32(slot.request.as_slice(), 24).unwrap_or(0),
+                pending.stage,
+                length,
+                pending.response_length(),
+                read_u32(slot.response.as_slice(), 0).unwrap_or(0),
+                read_u32(slot.response.as_slice(), 4).unwrap_or(0),
+                read_u64(slot.response.as_slice(), 8).unwrap_or(0),
+                pending.command_fence,
+            );
             return Err(DisplayError::Device);
         }
         let payload = match pending.stage {
@@ -830,6 +845,10 @@ impl GraphicsDevice for VirtIOGpuDevice {
             .notify_queue(CURSOR_QUEUE)
             .expect("VirtIO GPU cursor doorbell failed after move publication");
         Ok(())
+    }
+
+    fn first_dynamic_resource_id(&self) -> u32 {
+        DYNAMIC_RESOURCE_START
     }
 
     fn virgl_capset_info(&self) -> Option<VirglCapsetInfo> {

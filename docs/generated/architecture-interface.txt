@@ -1151,6 +1151,7 @@ kernel/src/drivers/graphics.rs :: pub (crate) struct VirglBox
 kernel/src/drivers/graphics.rs :: pub (crate) struct VirglCapsetInfo
 kernel/src/drivers/graphics.rs :: pub (crate) trait GraphicsDevice
 kernel/src/drivers/graphics.rs :: trait GraphicsDevice :: fn copy_virgl_capset (& self , output : & mut [u8]) -> Result < usize , DisplayError >
+kernel/src/drivers/graphics.rs :: trait GraphicsDevice :: fn first_dynamic_resource_id (& self) -> u32
 kernel/src/drivers/graphics.rs :: trait GraphicsDevice :: fn move_cursor (& self , x : u32 , y : u32) -> Result < () , DisplayError >
 kernel/src/drivers/graphics.rs :: trait GraphicsDevice :: fn submit_cursor (& self , command : CursorCommand) -> Result < u64 , DisplayError >
 kernel/src/drivers/graphics.rs :: trait GraphicsDevice :: fn submit_cursor_upload (& self , identity : u64 , backing : Arc < DeviceBacking > ,) -> Result < u64 , DisplayError >
@@ -9026,8 +9027,8 @@ kernel/src/virtio/gpu/sequence_policy.rs :: pub (super) enum RuntimeStage
 kernel/src/virtio/gpu/sequence_policy.rs :: pub (super) impl RuntimeStage :: const fn allows (self , next : Self) -> bool
 kernel/src/virtio/gpu/sequence_policy.rs :: pub (super) impl RuntimeStage :: const fn validate_successor (self , next : Self) -> Result < () , SequenceOrderError >
 kernel/src/virtio/gpu/sequence_policy.rs :: pub (super) struct SequenceOrderError
-kernel/src/virtio/gpu/wire.rs :: pub (super) const ALTERNATE_RESOURCE_ID : u32 = 2
-kernel/src/virtio/gpu/wire.rs :: pub (super) const BOOT_RESOURCE_ID : u32 = 1
+kernel/src/virtio/gpu/wire.rs :: pub (super) const ALTERNATE_RESOURCE_ID : u32 = AdapterResource :: Alternate as u32
+kernel/src/virtio/gpu/wire.rs :: pub (super) const BOOT_RESOURCE_ID : u32 = AdapterResource :: Boot as u32
 kernel/src/virtio/gpu/wire.rs :: pub (super) const CAPSET_INFO_SIZE : usize = CONTROL_HEADER_SIZE + 16
 kernel/src/virtio/gpu/wire.rs :: pub (super) const CAPSET_RESPONSE_SIZE : usize = CONTROL_HEADER_SIZE + MAX_CAPSET_SIZE
 kernel/src/virtio/gpu/wire.rs :: pub (super) const CONTROL_HEADER_SIZE : usize = 24
@@ -9035,10 +9036,11 @@ kernel/src/virtio/gpu/wire.rs :: pub (super) const CONTROL_QUEUE : u32 = 0
 kernel/src/virtio/gpu/wire.rs :: pub (super) const CONTROL_REQUEST_SIZE : usize = 32 + 64 * 1024
 kernel/src/virtio/gpu/wire.rs :: pub (super) const CURSOR_QUEUE : u32 = 1
 kernel/src/virtio/gpu/wire.rs :: pub (super) const CURSOR_REQUEST_SIZE : usize = 56
-kernel/src/virtio/gpu/wire.rs :: pub (super) const CURSOR_RESOURCE_ID : u32 = 3
+kernel/src/virtio/gpu/wire.rs :: pub (super) const CURSOR_RESOURCE_ID : u32 = AdapterResource :: Cursor as u32
 kernel/src/virtio/gpu/wire.rs :: pub (super) const DISPLAY_INFO_SIZE : usize = CONTROL_HEADER_SIZE + 16 * 24
+kernel/src/virtio/gpu/wire.rs :: pub (super) const DYNAMIC_RESOURCE_START : u32 = AdapterResource :: DynamicStart as u32
 kernel/src/virtio/gpu/wire.rs :: pub (super) const MAX_CAPSET_SIZE : usize = 4096
-kernel/src/virtio/gpu/wire.rs :: pub (super) const PANIC_RESOURCE_ID : u32 = 4
+kernel/src/virtio/gpu/wire.rs :: pub (super) const PANIC_RESOURCE_ID : u32 = AdapterResource :: Panic as u32
 kernel/src/virtio/gpu/wire.rs :: pub (super) const QUEUE_SIZE : u16 = 64
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CAPSET_VIRGL : u32 = 1
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CAPSET_VIRGL2 : u32 = 2

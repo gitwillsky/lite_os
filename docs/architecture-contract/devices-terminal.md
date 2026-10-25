@@ -267,6 +267,13 @@
   lifetime pin 在接管之前完成分配；open 失败不会留下控制权。PTY master 的控制身份查询
   使用 slave Terminal 的同一实际 control owner，但 TIOCNOTTY 不适用于 master。
 
+## GPU resource identity
+
+- adapter 独占 host resource namespace 的保留前缀；启动、alternate scanout、光标与崩溃画面的角色由同一枚举分配。
+  GraphicsDevice::first_dynamic_resource_id 将边界交给 DRM，后者的动态 allocator 必须从该值开始，不能复制常量。
+  KMS framebuffer ID、GEM handle、context ID 属于各自命名空间，不得由数值相等推断与 host resource ID 相同。
+- response mismatch 在 adapter fail-stop 前记录 opcode、context、首参数、响应码、长度和 exact fence；错误记录不放宽响应验证或继续复用失败队列。
+
 ## VirGL 创建、提交与退休
 
 `drm::graphics` 拥有创建/提交事务与 GEM 资源，`graphics::retirement` 拥有 OFD 退出时的资源/上下文回收状态机；

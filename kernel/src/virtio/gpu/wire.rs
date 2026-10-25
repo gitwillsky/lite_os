@@ -45,10 +45,21 @@ pub(super) const DISPLAY_INFO_SIZE: usize = CONTROL_HEADER_SIZE + 16 * 24;
 pub(super) const CAPSET_INFO_SIZE: usize = CONTROL_HEADER_SIZE + 16;
 pub(super) const MAX_CAPSET_SIZE: usize = 4096;
 pub(super) const CAPSET_RESPONSE_SIZE: usize = CONTROL_HEADER_SIZE + MAX_CAPSET_SIZE;
-pub(super) const BOOT_RESOURCE_ID: u32 = 1;
-pub(super) const ALTERNATE_RESOURCE_ID: u32 = 2;
-pub(super) const CURSOR_RESOURCE_ID: u32 = 3;
-pub(super) const PANIC_RESOURCE_ID: u32 = 4;
+// adapter 拥有同一 resource namespace 的保留前缀；新增角色放在 DynamicStart 前，
+// 使 DRM 起点随之移动，不能与 crash/boot 等仍存活的 host resource 撞号。
+#[repr(u32)]
+enum AdapterResource {
+    Boot = 1,
+    Alternate,
+    Cursor,
+    Panic,
+    DynamicStart,
+}
+pub(super) const BOOT_RESOURCE_ID: u32 = AdapterResource::Boot as u32;
+pub(super) const ALTERNATE_RESOURCE_ID: u32 = AdapterResource::Alternate as u32;
+pub(super) const CURSOR_RESOURCE_ID: u32 = AdapterResource::Cursor as u32;
+pub(super) const PANIC_RESOURCE_ID: u32 = AdapterResource::Panic as u32;
+pub(super) const DYNAMIC_RESOURCE_START: u32 = AdapterResource::DynamicStart as u32;
 
 pub(super) fn prepare_cursor(
     request: &mut [u8],

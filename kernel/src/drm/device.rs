@@ -495,6 +495,7 @@ pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
     // completion_read 只由 DRM waiter 排空；completion_write 由 deferred completion 发布。
     let (completion_read, completion_write) = crate::ipc::Pipe::notification_pair()?;
     let mode = display.mode();
+    let resource_start = display.first_dynamic_resource_id();
     let owner = Arc::try_new(DrmDevice {
         display,
         completion_read,
@@ -513,9 +514,8 @@ pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
             next_file_identity: 1,
             framebuffer_ids: PublicationIdAllocator::new(4),
             context_ids: PublicationIdAllocator::new(1),
-            // VirtIO resource IDs 1/2 belong to scanout residency and 3 to the standard 2D
-            // hardware cursor; VirGL allocations start after those adapter-owned identities.
-            graphics_resource_ids: PublicationIdAllocator::new(4),
+            // adapter 唯一声明其保留前缀，包括仍存活的 crash framebuffer。
+            graphics_resource_ids: PublicationIdAllocator::new(resource_start),
             graphics_cleanups: FallibleMap::new(),
             graphics_retirements: FallibleMap::new(),
             master: None,
