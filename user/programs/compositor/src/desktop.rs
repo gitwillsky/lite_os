@@ -28,6 +28,20 @@ pub struct Placement {
     pub minimized: bool,
     /// 进入最大化/全屏之前的几何；还原时用它，缺少它窗口无法回到原来的位置与大小。
     pub restore: Option<Geometry>,
+    /// `set_parent` 指定的父窗口（同一连接的 `wl_surface`）。xdg-shell 规定子窗口始终在父窗口之上，
+    /// 所以父窗口被提到最上层时它的子窗口要跟着提上去。
+    pub parent: Option<ObjectId>,
+}
+
+/// 新窗口的初始位置策略（合成器自己的窗口管理策略；Wayland 客户端不能指定位置）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Initial {
+    /// 层叠：普通可调整大小的窗口。
+    Cascade,
+    /// 屏幕居中：固定尺寸的对话框类窗口（没有父窗口）。
+    Center,
+    /// 居中于父窗口（`set_parent`）；父窗口不存在时退回屏幕居中。
+    CenterOn(ObjectId),
 }
 
 /// 窗口栈，`order` 末尾是最上层。
@@ -53,7 +67,7 @@ impl Stack {
     ///
     /// # Parameters
     ///
-    /// - `mapped`: `(连接, surface, 物理宽, 物理高)`。
+    /// - `mapped`: `(连接, surface, 物理宽, 物理高, 初始位置策略)`；策略只对新出现的窗口生效，已映射的窗口不会被移动。
     /// - `screen`: 屏幕物理尺寸；窗口至少保留一个标题栏在屏内。
     /// - `scale`: 输出 scale，用来把逻辑层叠步长换成物理像素。
     ///
@@ -62,7 +76,7 @@ impl Stack {
     /// 栈是否发生任何变化（窗口增、删或尺寸变）。
     pub fn sync(
         &mut self,
-        mapped: &[(ClientId, ObjectId, i32, i32)],
+        mapped: &[(ClientId, ObjectId, i32, i32, Initial)],
         screen: (i32, i32),
         scale: i32,
     ) -> bool {
@@ -73,18 +87,52 @@ impl Stack {
                 .any(|(client, surface, ..)| *client == placed.client && *surface == placed.surface)
         });
         for placed in &mut self.order {
-            if let Some((.., width, height)) = mapped.iter().find(|(client, surface, ..)| {
+            if let Some((_, _, width, height, _)) = mapped.iter().find(|(client, surface, ..)| {
                 *client == placed.client && *surface == placed.surface
             }) {
                 (placed.width, placed.height) = (*width, *height);
             }
         }
-        for &(client, surface, width, height) in mapped {
+        for &(client, surface, width, height, initial) in mapped {
             if self
                 .order
                 .iter()
                 .any(|placed| placed.client == client && placed.surface == surface)
             {
+                continue;
+            }
+            let centered = match initial {
+                Initial::Cascade => None,
+                Initial::Center => Some((0, 0, screen.0, screen.1)),
+                Initial::CenterOn(parent) => Some(
+                    self.order
+                        .iter()
+                        .find(|placed| placed.client == client && placed.surface == parent)
+                        .map_or((0, 0, screen.0, screen.1), |placed| {
+                            (placed.x, placed.y, placed.width, placed.height)
+                        }),
+                ),
+            };
+            if let Some((x, y, w, h)) = centered {
+                // 居中后夹进屏幕：窗口比参照区大或参照区靠边时不会跑出屏幕。
+                let at = |origin: i32, extent: i32, size: i32, limit: i32| {
+                    (origin + (extent - size) / 2).clamp(0, (limit - size).max(0))
+                };
+                self.order.push(Placement {
+                    client,
+                    surface,
+                    x: at(x, w, width, screen.0),
+                    y: at(y, h, height, screen.1),
+                    width,
+                    height,
+                    mode: Mode::Normal,
+                    minimized: false,
+                    restore: None,
+                    parent: match initial {
+                        Initial::CenterOn(parent) => Some(parent),
+                        _ => None,
+                    },
+                });
                 continue;
             }
             let step = (CASCADE_ORIGIN + self.cascaded * CASCADE_STEP) * scale;
@@ -105,6 +153,7 @@ impl Stack {
                 mode: Mode::Normal,
                 minimized: false,
                 restore: None,
+                parent: None,
             });
         }
         self.order != before
@@ -140,6 +189,12 @@ impl Stack {
         }
         let placed = self.order.remove(index);
         self.order.push(placed);
+        // 子窗口（对话框）跟随父窗口留在它上面，保持原有的相对次序。
+        let (mut children, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.order)
+            .into_iter()
+            .partition(|child| child.client == client && child.parent == Some(surface));
+        self.order = rest;
+        self.order.append(&mut children);
         true
     }
 

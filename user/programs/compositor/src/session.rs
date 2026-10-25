@@ -26,7 +26,7 @@ use crate::{
     boot::{self, Progress},
     compose::{self, Drawable},
     cursor::{self, CursorSet},
-    desktop::{Geometry, Mode, Stack},
+    desktop::{Geometry, Initial, Mode, Stack},
     focus::{Hit, Seat, Shortcut, window_configure},
     input::{Event, Input},
     interaction::{Edges, Grab, Kind},
@@ -1015,7 +1015,7 @@ impl Session {
 
     /// 与客户端的已映射窗口对账；窗口增减、尺寸变化与新的 commit 都会触发重绘。
     fn sync_windows(&mut self) -> io::Result<()> {
-        let mapped: Vec<(ClientId, ObjectId, i32, i32)> = self
+        let mapped: Vec<(ClientId, ObjectId, i32, i32, Initial)> = self
             .server
             .windows()
             .map(|(client, window)| {
@@ -1025,6 +1025,11 @@ impl Session {
                     window.surface,
                     window.content.width as i32 * factor,
                     window.content.height as i32 * factor,
+                    match (window.parent, window.fixed) {
+                        (Some(parent), _) => Initial::CenterOn(parent),
+                        (None, true) => Initial::Center,
+                        (None, false) => Initial::Cascade,
+                    },
                 )
             })
             .collect();

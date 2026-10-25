@@ -1,4 +1,4 @@
-//! 窗口内的"打开""另存为"文件对话框：目录列表、上一级、文件名输入与类型过滤，路径选定后交还给调用者。
+//! "打开""另存为"文件对话框：目录列表、上一级、文件名输入与类型过滤，路径选定后交还给调用者。
 //! 对应 Windows 2000 的通用对话框（comdlg32）；只做单选，没有"查找范围"下拉的驱动器树与预览。
 
 use std::{
@@ -68,9 +68,25 @@ pub struct FileDialog {
     overwrite: Option<PathBuf>,
     folder_icon: Option<Bitmap>,
     file_icon: Option<Bitmap>,
+    /// 画在独立窗口里（窗口装饰由 `FileDialogWindow` 负责）；否则是盖在应用窗口上的模态框，自带边框与标题栏。
+    windowed: bool,
 }
 
 impl FileDialog {
+    /// 独立窗口里的对话框所需的窗口尺寸（逻辑像素，含装饰）。
+    pub const WINDOW_SIZE: (i32, i32) = (WIDTH, HEIGHT);
+
+    /// 对话框标题（独立窗口的标题栏文字）。
+    pub fn title(&self) -> &'static str {
+        self.title
+    }
+
+    /// 改为画在独立窗口里：不再自带边框与标题栏，内容铺满 `client`。
+    pub fn windowed(mut self) -> Self {
+        self.windowed = true;
+        self
+    }
+
     /// 在 `start` 目录打开对话框；`extensions` 为空表示不过滤。
     pub fn new(
         mode: FileDialogMode,
@@ -97,6 +113,7 @@ impl FileDialog {
             overwrite: None,
             folder_icon: icon("folder-closed"),
             file_icon: icon("file-generic"),
+            windowed: false,
         };
         dialog.go(start.to_owned());
         dialog
@@ -154,14 +171,22 @@ impl FileDialog {
     }
 
     /// 对话框、查找范围框、上一级按钮、列表、文件名框、主按钮、类型框、取消按钮。
-    fn rects(client: Rect) -> Rects {
-        let dialog = Rect::new(
-            client.x + (client.width - WIDTH).max(0) / 2,
-            client.y + (client.height - HEIGHT).max(0) / 3,
-            WIDTH,
-            HEIGHT,
-        );
-        let (x, y) = (dialog.x + 12, dialog.y + 30);
+    fn rects(&self, client: Rect) -> Rects {
+        // 模态框：居中偏上，顶部 30 像素是自带的边框与标题栏；独立窗口：铺满客户区，只留 8 像素上边距。
+        let (dialog, top) = if self.windowed {
+            (client, 8)
+        } else {
+            (
+                Rect::new(
+                    client.x + (client.width - WIDTH).max(0) / 2,
+                    client.y + (client.height - HEIGHT).max(0) / 3,
+                    WIDTH,
+                    HEIGHT,
+                ),
+                30,
+            )
+        };
+        let (x, y) = (dialog.x + 12, dialog.y + top);
         let list = Rect::new(x, y + 30, dialog.width - 24, 170);
         let name_y = list.bottom() + 10;
         let button_x = dialog.right() - 12 - 80;
@@ -201,17 +226,19 @@ impl FileDialog {
     }
 
     pub fn paint(&mut self, p: &mut Painter<'_>, client: Rect) {
-        let r = Self::rects(client);
-        let inner = p.window_frame(r.dialog, FrameKind::Fixed);
-        p.fill(inner, C::ButtonFace);
-        p.caption_bar(
-            Rect::new(inner.x, inner.y, inner.width, 19),
-            self.title,
-            None,
-            true,
-            &[(CaptionButton::Close, false)],
-            None,
-        );
+        let r = self.rects(client);
+        if !self.windowed {
+            let inner = p.window_frame(r.dialog, FrameKind::Fixed);
+            p.fill(inner, C::ButtonFace);
+            p.caption_bar(
+                Rect::new(inner.x, inner.y, inner.width, 19),
+                self.title,
+                None,
+                true,
+                &[(CaptionButton::Close, false)],
+                None,
+            );
+        }
         let ink = Ink::Color(C::ButtonText);
         p.label(r.dialog.x + 12, r.look_in.y + 4, "查找范围(I):", ink, false);
         let shown = self
@@ -347,7 +374,7 @@ impl FileDialog {
 
     /// 左键按下：返回对话框的结果。
     pub fn press(&mut self, client: Rect, point: (i32, i32)) -> FileDialogEvent {
-        let r = Self::rects(client);
+        let r = self.rects(client);
         let inside = |rect: Rect| {
             point.0 >= rect.x
                 && point.0 < rect.right()
@@ -398,7 +425,7 @@ impl FileDialog {
 
     /// 指针移动：拖动滚动条。
     pub fn motion(&mut self, client: Rect, point: (i32, i32)) {
-        let r = Self::rects(client);
+        let r = self.rects(client);
         let (rows, bar) = self.list_view(&r);
         if let Some(bar) = bar {
             self.scroll.drag(
@@ -416,7 +443,7 @@ impl FileDialog {
 
     /// 滚轮：向下滚 `notches` 档滚动文件列表。
     pub fn wheel(&mut self, client: Rect, notches: i32) {
-        let r = Self::rects(client);
+        let r = self.rects(client);
         let (rows, _) = self.list_view(&r);
         let content = self.entries.len() as i32 * ROW;
         self.scroll.wheel(notches, ROW, content - rows.height);

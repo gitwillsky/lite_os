@@ -13,6 +13,7 @@ mod decoration;
 mod dropdown;
 mod editing;
 mod file_dialog;
+mod file_dialog_window;
 mod menu;
 mod menubar;
 mod painter;
@@ -27,6 +28,7 @@ pub use decoration::{Decoration, DecorationAction};
 pub use dropdown::{DropItem, DropMenu, Popup, title_rects};
 pub use editing::{Edit, FocusChain};
 pub use file_dialog::{FileDialog, FileDialogEvent, FileDialogMode};
+pub use file_dialog_window::FileDialogWindow;
 pub use wayland::{
     Configuration, CursorShape, Display, Event, EventKind, Key, KeyboardInteractivity, Layer,
     LayerSettings, ShellConnection, ShellLease, Toplevel, ToplevelId, ToplevelRequest, WindowId,

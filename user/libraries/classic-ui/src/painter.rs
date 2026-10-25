@@ -140,6 +140,26 @@ impl<'a> Painter<'a> {
         self.typeface.measure(text, bold)
     }
 
+    /// 把 `text` 截到不超过 `max_width` 逻辑像素，超出时以"..."结尾；不超出则原样返回。
+    ///
+    /// 界面上任何由数据或语言决定长度的文字（文件名、窗口标题、翻译后的标签）在画之前都应先经过它或
+    /// [`Painter::text_fit`]，这样换字体、换语言都不会画出所属区域。
+    pub fn fit(&self, text: &str, max_width: i32) -> String {
+        self.truncate_to_width(text, max_width.max(0) * self.scale, false)
+    }
+
+    /// 在逻辑坐标 `(x, y)` 绘制单行文本，宽度超过 `max_width` 逻辑像素时截断成"..."结尾。
+    pub fn text_fit(&mut self, x: i32, y: i32, max_width: i32, text: &str, ink: Ink, bold: bool) {
+        let shown = self.truncate_to_width(text, max_width.max(0) * self.scale, bold);
+        self.ink_physical(self.px(x), self.px(y), &shown, ink, bold);
+    }
+
+    /// 带助记键的 [`Painter::text_fit`]。
+    pub fn label_fit(&mut self, x: i32, y: i32, max_width: i32, label: &str, ink: Ink) {
+        let shown = self.truncate_to_width(label, max_width.max(0) * self.scale, false);
+        self.label_physical(self.px(x), self.px(y), &shown, ink, false);
+    }
+
     /// 在逻辑坐标 `(x, y)`（行盒左上角）绘制单行文本，返回物理像素宽度。
     pub fn text(&mut self, x: i32, y: i32, text: &str, ink: Ink, bold: bool) -> i32 {
         self.ink_physical(self.px(x), self.px(y), text, ink, bold)
@@ -215,10 +235,11 @@ impl<'a> Painter<'a> {
     pub fn label_centered(&mut self, rect: Rect, label: &str, ink: Ink, bold: bool) {
         let physical = self.physical(rect);
         let (ascent, descent) = self.typeface.metrics();
-        let width = self.text_width(label, bold);
+        let label = self.truncate_to_width(label, physical.width, bold);
+        let width = self.text_width(&label, bold);
         let x = physical.x + (physical.width - width) / 2;
         let y = physical.y + (physical.height - (ascent + descent)) / 2;
-        self.label_physical(x, y, label, ink, bold);
+        self.label_physical(x, y, &label, ink, bold);
     }
 
     /// 用任意 RGB 在逻辑坐标 `(x, y)` 画一行文字；与 [`Painter::fill_rgb`] 一样只给性能图表这类没有系统色对应的绘制用。
@@ -231,10 +252,11 @@ impl<'a> Painter<'a> {
     pub fn text_centered(&mut self, rect: Rect, text: &str, ink: Ink, bold: bool) {
         let physical = self.physical(rect);
         let (ascent, descent) = self.typeface.metrics();
-        let width = self.text_width(text, bold);
+        let text = self.truncate_to_width(text, physical.width, bold);
+        let width = self.text_width(&text, bold);
         let x = physical.x + (physical.width - width) / 2;
         let y = physical.y + (physical.height - (ascent + descent)) / 2;
-        self.ink_physical(x, y, text, ink, bold);
+        self.ink_physical(x, y, &text, ink, bold);
     }
 
     /// 将 ASCII 点阵按逻辑像素绘制：`#` 为前景像素，其余透明；每个逻辑像素画成 `scale` × `scale`。

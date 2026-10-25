@@ -73,6 +73,12 @@ impl Art {
             logical(ascent + descent) + 6,
         ))
     }
+    /// 一段文字的逻辑像素宽度；字体按 `scale` 载入。界面尺寸由这类度量得出，而不是写死数字。
+    pub fn text_width(&mut self, text: &str, scale: i32) -> io::Result<i32> {
+        self.ensure_font(scale)?;
+        let font = self.font.as_ref().expect("font was just loaded");
+        Ok((font.measure(text, false) + scale - 1) / scale)
+    }
     /// 载入 `scale` 倍的字体；已经是这个 scale 就不重复载入。
     fn ensure_font(&mut self, scale: i32) -> io::Result<()> {
         if self.scale != scale {

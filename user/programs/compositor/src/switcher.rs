@@ -126,18 +126,7 @@ pub fn paint(p: &mut Painter<'_>, art: &Art, screen: (i32, i32), switcher: &Swit
         width - 2 * MARGIN,
         p.line_height(),
     );
-    let shown = fit(p, title, area.width * scale);
+    let shown = p.fit(title, area.width);
     p.text_centered(area, &shown, Ink::Color(C::ButtonText), false);
 }
 
-/// 把 `text` 截短到不超过 `limit` 物理像素，被截断时以省略号结尾。
-fn fit(p: &Painter<'_>, text: &str, limit: i32) -> String {
-    if p.text_width(text, false) <= limit {
-        return text.to_owned();
-    }
-    let mut shown: String = text.to_owned();
-    while !shown.is_empty() && p.text_width(&format!("{shown}..."), false) > limit {
-        shown.pop();
-    }
-    format!("{shown}...")
-}

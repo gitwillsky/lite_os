@@ -249,19 +249,6 @@ fn logical(p: &Painter<'_>, physical: i32) -> i32 {
     (physical + p.scale() - 1) / p.scale()
 }
 
-/// 截断到 `width` 逻辑像素内，必要时以省略号结尾。
-pub(crate) fn fit(p: &Painter<'_>, text: &str, width: i32) -> String {
-    if logical(p, p.text_width(text, false)) <= width {
-        return text.to_owned();
-    }
-    let mut shortened: String = text.to_owned();
-    while !shortened.is_empty() && logical(p, p.text_width(&format!("{shortened}…"), false)) > width
-    {
-        shortened.pop();
-    }
-    format!("{shortened}…")
-}
-
 pub(crate) fn draw(bitmap: Option<&Bitmap>, p: &mut Painter<'_>, x: i32, y: i32) {
     if let Some(bitmap) = bitmap {
         bitmap.paint(p, x, y);
@@ -460,7 +447,7 @@ fn paint_info(p: &mut Painter<'_>, scene: &Scene<'_>, pane: Rect) {
         p.text(
             pane.x + 12,
             pane.y + 54,
-            &fit(p, &browser.location.title(), pane.width - 20),
+            &p.fit(&browser.location.title(), pane.width - 20),
             Ink::Color(C::WindowText),
             true,
         );
@@ -488,7 +475,7 @@ fn paint_info(p: &mut Painter<'_>, scene: &Scene<'_>, pane: Rect) {
             p.text(
                 pane.x + 12,
                 pane.y + 88 + row as i32 * step,
-                &fit(p, line, pane.width - 20),
+                &p.fit(line, pane.width - 20),
                 Ink::Color(C::WindowText),
                 bold,
             );
@@ -606,7 +593,7 @@ fn paint_tree(p: &mut Painter<'_>, scene: &Scene<'_>, pane: Rect) {
                 rect.y + 1,
             );
             let text_x = indent + 14 + 20;
-            let label = fit(p, &row.label, (view.right() - text_x - 2).max(0));
+            let label = p.fit(&row.label, (view.right() - text_x - 2).max(0));
             let width = logical(p, p.text_width(&label, false));
             let text_y = rect.y + (TREE_ROW - p.line_height()) / 2;
             if current {
@@ -739,7 +726,7 @@ fn paint_item(
         _ => (None, C::WindowText),
     };
     let label = |p: &mut Painter<'_>, x: i32, y: i32, text: &str, width: i32| {
-        let text = fit(p, text, width);
+        let text = p.fit(text, width);
         let w = logical(p, p.text_width(&text, false));
         if let Some(background) = background {
             p.fill(
@@ -759,7 +746,7 @@ fn paint_item(
             cell.x + (cell.width - 32) / 2,
             cell.y + 4,
         );
-        let shown = fit(p, &item.name, cell.width - 6);
+        let shown = p.fit(&item.name, cell.width - 6);
         let width = logical(p, p.text_width(&shown, false));
         label(
             p,
@@ -806,7 +793,7 @@ fn paint_item(
         p.text(
             x,
             text_y,
-            &fit(p, &text, width),
+            &p.fit(&text, width),
             Ink::Color(C::WindowText),
             false,
         );
@@ -861,7 +848,7 @@ fn paint_status(p: &mut Painter<'_>, scene: &Scene<'_>, status: Rect) {
             p.text(
                 x,
                 inner.y + (inner.height - p.line_height()) / 2,
-                &fit(p, &text, inner.right() - x - 2),
+                &p.fit(&text, inner.right() - x - 2),
                 Ink::Color(C::ButtonText),
                 false,
             );

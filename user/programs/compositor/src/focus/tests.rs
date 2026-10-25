@@ -1,7 +1,7 @@
 use wayland_wire::wire::{Fixed, ObjectId};
 
 use super::{KeyTracker, local_position, window_configure};
-use crate::desktop::Stack;
+use crate::desktop::{Initial, Stack};
 use crate::wayland::ToplevelState;
 use crate::{desktop::Mode, wayland::ClientId};
 
@@ -71,8 +71,8 @@ fn stack_with_two() -> Stack {
     let surface = ObjectId::new(5).unwrap();
     stack.sync(
         &[
-            (ClientId(1), surface, 200, 100),
-            (ClientId(2), surface, 200, 100),
+            (ClientId(1), surface, 200, 100, Initial::Cascade),
+            (ClientId(2), surface, 200, 100, Initial::Cascade),
         ],
         SCREEN,
         1,

@@ -619,7 +619,7 @@ impl App {
                     p.text(
                         rows.x + 24,
                         text_y,
-                        &fit(p, title, rows.width - 116),
+                        &p.fit(title, rows.width - 116),
                         ink,
                         false,
                     );
@@ -740,18 +740,6 @@ fn paint_modal(p: &mut Painter<'_>, client: Rect, modal: &Modal) {
             );
         }
     }
-}
-
-fn fit(p: &Painter<'_>, text: &str, width: i32) -> String {
-    let wide = |s: &str| (p.text_width(s, false) + p.scale() - 1) / p.scale();
-    if wide(text) <= width {
-        return text.to_owned();
-    }
-    let mut shortened = text.to_owned();
-    while !shortened.is_empty() && wide(&format!("{shortened}…")) > width {
-        shortened.pop();
-    }
-    format!("{shortened}…")
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {

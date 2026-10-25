@@ -28,6 +28,12 @@ pub struct Toplevel {
     pub xdg_surface: ObjectId,
     pub title: String,
     pub app_id: String,
+    /// `set_min_size` / `set_max_size`（0 表示无限制）。两者相等且非零即“固定尺寸窗口”，
+    /// 合成器据此把对话框类窗口放在屏幕中央而不是层叠。
+    pub min_size: (i32, i32),
+    pub max_size: (i32, i32),
+    /// `set_parent` 指定的父 toplevel；子窗口居中于父窗口。
+    pub parent: Option<ObjectId>,
 }
 
 /// 客户端对窗口提出的、需要窗口管理器裁决的请求。
@@ -89,6 +95,10 @@ pub struct Window<'a> {
     pub scale: i32,
     /// 挂在这个窗口下的子 surface，自底向上。
     pub children: Vec<super::ChildView<'a>>,
+    /// 客户端声明了固定尺寸（最小等于最大且非零）：对话框类窗口。
+    pub fixed: bool,
+    /// 父窗口的 `wl_surface`（`set_parent`）；父窗口不是本连接已映射的 toplevel 时为 `None`。
+    pub parent: Option<ObjectId>,
 }
 
 impl Client {
@@ -186,6 +196,9 @@ impl Client {
                     xdg_surface: object,
                     title: String::new(),
                     app_id: String::new(),
+                    min_size: (0, 0),
+                    max_size: (0, 0),
+                    parent: None,
                 };
                 self.create(
                     id,
@@ -273,10 +286,18 @@ impl Client {
                 toplevel.app_id = app_id;
                 Ok(())
             }
-            R::SetMaxSize { width, height } | R::SetMinSize { width, height } => {
+            R::SetMaxSize { width, height } => {
                 if width < 0 || height < 0 {
                     return Err(invalid_size("size limits must not be negative"));
                 }
+                toplevel.max_size = (width, height);
+                Ok(())
+            }
+            R::SetMinSize { width, height } => {
+                if width < 0 || height < 0 {
+                    return Err(invalid_size("size limits must not be negative"));
+                }
+                toplevel.min_size = (width, height);
                 Ok(())
             }
             R::Move { serial, .. } => self.window_request(object, WindowRequest::Move { serial }),
@@ -295,8 +316,10 @@ impl Client {
             R::ShowWindowMenu { serial, x, y, .. } => {
                 self.window_request(object, WindowRequest::ShowMenu { serial, x, y })
             }
-            // 父子关系由窗口管理器阶段处理；记录请求之前无需保存。
-            R::SetParent { .. } => Ok(()),
+            R::SetParent { parent } => {
+                toplevel.parent = parent;
+                Ok(())
+            }
         }
     }
 
@@ -417,6 +440,24 @@ impl Client {
         }
     }
 
+    /// `toplevel`（`xdg_toplevel` 对象）所属窗口的 `wl_surface`。
+    fn toplevel_surface(&self, toplevel: ObjectId) -> Option<ObjectId> {
+        let Some(Entry {
+            data: Data::Toplevel(state),
+            ..
+        }) = self.objects.get(&toplevel.get())
+        else {
+            return None;
+        };
+        match self.objects.get(&state.xdg_surface.get()) {
+            Some(Entry {
+                data: Data::XdgSurface(xdg),
+                ..
+            }) => Some(xdg.surface),
+            _ => None,
+        }
+    }
+
     /// 取走自上次以来客户端提出的窗口请求；键是窗口的 `wl_surface`。
     pub fn take_requests(&mut self) -> Vec<(ObjectId, WindowRequest)> {
         std::mem::take(&mut self.requests)
@@ -449,6 +490,8 @@ impl Client {
                 content: surface.content.as_ref()?,
                 scale: surface.scale,
                 children: self.subtree(xdg.surface),
+                fixed: toplevel.min_size != (0, 0) && toplevel.min_size == toplevel.max_size,
+                parent: toplevel.parent.and_then(|parent| self.toplevel_surface(parent)),
             })
         })
     }

@@ -155,7 +155,8 @@ impl Painter<'_> {
             Edge::Etched,
         );
         if !label.is_empty() {
-            let width = self.logical_ceil(self.text_width(label, false));
+            let label = self.fit(label, rect.width - 18);
+            let width = self.logical_ceil(self.text_width(&label, false));
             self.fill(
                 Rect::new(rect.x + 8, rect.y, width + 2, self.line_height()),
                 SystemColor::ButtonFace,
@@ -163,7 +164,7 @@ impl Painter<'_> {
             self.text(
                 rect.x + 9,
                 rect.y,
-                label,
+                &label,
                 Ink::Color(SystemColor::ButtonText),
                 false,
             );

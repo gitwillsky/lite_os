@@ -1,7 +1,7 @@
 //! 窗口内的模态对话框：删除确认与错误提示；画在列表之上，不是独立窗口。
 use crate::{
     chrome::Command,
-    ui::{Scene, draw, fit},
+    ui::{Scene, draw},
 };
 use canvas::Rect;
 use classic_theme::SystemColor as C;
@@ -68,7 +68,7 @@ fn paint_message(
         p.text(
             dialog.x + 62,
             dialog.y + 38 + row as i32 * 16,
-            &fit(p, line, dialog.width - 76),
+            &p.fit(line, dialog.width - 76),
             Ink::Color(C::ButtonText),
             false,
         );

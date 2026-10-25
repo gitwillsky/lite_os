@@ -39,7 +39,12 @@ impl Painter<'_> {
             .map(|(label, shortcut)| {
                 let label = self.logical_ceil(self.text_width(label, false));
                 let shortcut = self.logical_ceil(self.text_width(shortcut, false));
-                label + if shortcut > 0 { shortcut + SHORTCUT_GAP } else { 0 }
+                label
+                    + if shortcut > 0 {
+                        shortcut + SHORTCUT_GAP
+                    } else {
+                        0
+                    }
             })
             .max()
             .unwrap_or(0);
@@ -69,7 +74,10 @@ impl Painter<'_> {
             };
             self.pixels(row.x + 6, row.y + (row.height - 7) / 2, &MENU_CHECK, color);
         }
-        self.label(row.x + 2 + 16, text_y, label, ink, false);
+        // 标签不得压到右侧的快捷键或子菜单箭头：预留 16 像素标签偏移、快捷键宽度与间隔。
+        let shortcut_width = self.logical_ceil(self.text_width(shortcut, false));
+        let reserved = 2 + 16 + 10 + if shortcut_width > 0 { shortcut_width + 12 } else { 0 };
+        self.label_fit(row.x + 2 + 16, text_y, row.width - reserved, label, ink);
         if state.has_submenu {
             let color = if state.highlighted {
                 SystemColor::HilightText

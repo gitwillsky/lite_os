@@ -161,6 +161,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .heading_title()
         .unwrap_or_else(|| page.title().to_owned());
     let window = display.create_window(&title, &app_id, page.size())?;
+    display.fix_size(window)?;
     let mut decoration = Decoration::new(FrameKind::Fixed);
     decoration.load_icon(page.icon());
     let theme = Theme::classic();

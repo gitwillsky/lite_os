@@ -196,16 +196,16 @@ impl Volume {
             self.value.is_some_and(|value| value.muted),
             self.value.is_none(),
         );
-        p.label(
+        p.label_fit(
             check_x + 20,
             check_y,
+            layout.mute_hit.right() - (check_x + 20),
             layout.mute_label,
             if self.value.is_some() {
                 Ink::Color(C::ButtonText)
             } else {
                 Ink::Disabled
             },
-            false,
         );
         if let (false, Some((x, y))) = (self.message.is_empty(), layout.message) {
             p.text(x, y, self.message, Ink::Disabled, false);
@@ -248,6 +248,14 @@ pub struct Layout {
 /// 竖向滑块条沿轨道方向两端的余量（与 `Painter::trackbar` 一致），换算轨道起点与长度时扣除。
 const BAR_MARGIN: i32 = 5;
 
+/// 托盘面板的版面常量（逻辑像素）：边距、复选框到标签的偏移、总高度。
+const POPUP_PADDING: i32 = 8;
+const POPUP_CHECK_INDENT: i32 = 8;
+const POPUP_LABEL_OFFSET: i32 = 20;
+const POPUP_HEIGHT: i32 = 150;
+const POPUP_TITLE: &str = "音量";
+const POPUP_MUTE_LABEL: &str = "静音(M)";
+
 impl Layout {
     fn vertical(bar: Rect) -> (Rect, i32, i32) {
         (bar, bar.y + BAR_MARGIN, bar.height - 2 * BAR_MARGIN - 1)
@@ -279,7 +287,21 @@ impl Layout {
         }
     }
 
-    /// 托盘弹出的 64 × 150 面板，左上角在 `panel`。
+    /// 托盘面板的尺寸（逻辑像素），由内容量出，换字体或语言后自动跟着变。
+    ///
+    /// # Parameters
+    ///
+    /// - `text_width`: 返回一段文字的逻辑像素宽度。
+    ///
+    /// 宽度取“静音一行”（左边距 + 复选框与间隔 + 标签 + 右边距）与标题行中较宽者；高度由滑块轨道与上下两行决定。
+    pub fn popup_size(mut text_width: impl FnMut(&str) -> i32) -> (i32, i32) {
+        let mute_row =
+            POPUP_CHECK_INDENT + POPUP_LABEL_OFFSET + text_width(POPUP_MUTE_LABEL) + POPUP_PADDING;
+        let title_row = 2 * POPUP_PADDING + text_width(POPUP_TITLE);
+        (mute_row.max(title_row), POPUP_HEIGHT)
+    }
+
+    /// 托盘弹出的面板，左上角在 `panel`。
     pub fn popup(panel: Rect) -> Self {
         let (bar, track_top, track_len) = Self::vertical(Rect::new(
             panel.x + (panel.width - 40) / 2,
@@ -289,7 +311,7 @@ impl Layout {
         ));
         Self {
             label: Rect::new(panel.x + 4, panel.y + 4, panel.width - 8, 16),
-            title: "音量",
+            title: POPUP_TITLE,
             title_bold: false,
             track_top,
             track_len,
@@ -298,8 +320,8 @@ impl Layout {
             balance_bar: None,
             volume_label: None,
             mute_hit: Rect::new(panel.x + 4, panel.y + 122, panel.width - 8, 22),
-            check: (panel.x + 8, panel.y + 126),
-            mute_label: "静音(M)",
+            check: (panel.x + POPUP_CHECK_INDENT, panel.y + 126),
+            mute_label: POPUP_MUTE_LABEL,
             message: None,
         }
     }

@@ -572,10 +572,27 @@ impl Desktop {
         self.open_overlay(display, popups::Overlay::Menu(menu))
     }
 
-    fn open_volume_panel(&mut self, display: &mut Display, icon_center_x: i32) -> io::Result<()> {
+    fn open_volume_panel(
+        &mut self,
+        display: &mut Display,
+        art: &mut paint::Art,
+        icon_center_x: i32,
+    ) -> io::Result<()> {
         self.volume = sndvol::Volume::open();
         let screen = Self::screen(display, self.background);
-        let panel = popups::volume_panel(icon_center_x, screen, TASKBAR_HEIGHT);
+        let scale = display.configuration(self.taskbar).map_or(1, |c| c.scale);
+        let mut measure_failed = None;
+        let size = sndvol::Layout::popup_size(|text| match art.text_width(text, scale) {
+            Ok(width) => width,
+            Err(error) => {
+                measure_failed = Some(error);
+                0
+            }
+        });
+        if let Some(error) = measure_failed {
+            return Err(error);
+        }
+        let panel = popups::volume_panel(icon_center_x, screen, TASKBAR_HEIGHT, size);
         self.open_overlay(display, popups::Overlay::Volume(panel))
     }
 
@@ -661,7 +678,12 @@ impl Desktop {
         }
         Ok(())
     }
-    fn event(&mut self, display: &mut Display, event: Event) -> io::Result<()> {
+    fn event(
+        &mut self,
+        display: &mut Display,
+        art: &mut paint::Art,
+        event: Event,
+    ) -> io::Result<()> {
         let window = event.window;
         if window == self.taskbar && self.settings.auto_hide {
             match event.kind {
@@ -833,7 +855,7 @@ impl Desktop {
                             }
                             paint::VOLUME => {
                                 let center = c.width - 76;
-                                self.open_volume_panel(display, center)?
+                                self.open_volume_panel(display, art, center)?
                             }
                             n => {
                                 let ids = paint::task_ids(self, display, c.width);
@@ -916,7 +938,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             if !matches!(event.kind, EventKind::FramePresented { .. }) {
                 dirty = true;
             }
-            state.event(&mut display, event)?;
+            state.event(&mut display, &mut art, event)?;
         }
         dirty |= state.volume.poll();
         dirty |= state.poll_settings(&mut display)?;

@@ -4,7 +4,7 @@ use canvas::{Rect, Surface};
 use classic_theme::{Edge, Rgb, SystemColor as C, Theme};
 use classic_ui::{
     ButtonState, Decoration, DecorationAction, Display, DropItem, DropMenu, EventKind, FileDialog,
-    FileDialogEvent, FileDialogMode, FrameKind, Ink, MenuBar, MenuEvent, Painter,
+    FileDialogEvent, FileDialogMode, FileDialogWindow, FrameKind, Ink, MenuBar, MenuEvent, Painter,
 };
 use sound::{SAMPLE_RATE, Sound, Transport};
 use std::{
@@ -237,7 +237,6 @@ struct View<'a> {
     player: &'a Player,
     menubar: &'a MenuBar,
     menus: &'a [DropMenu<Command>],
-    dialog: &'a mut Option<FileDialog>,
     pointer: (i32, i32),
 }
 
@@ -326,14 +325,12 @@ fn paint(p: &mut Painter<'_>, client: Rect, view: &mut View<'_>) {
         });
     }
     menubar.paint(p, l.bar, menus, pointer);
-    if let Some(dialog) = view.dialog.as_mut() {
-        dialog.paint(p, client);
-    }
 }
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut display = Display::connect()?;
     let window = display.create_window("媒体播放机", "org.liteos.media-player", (330, 290))?;
+    display.fix_size(window)?;
     let mut decoration = Decoration::new(FrameKind::Fixed);
     decoration.load_icon("media-player");
     let theme = Theme::classic();
@@ -349,7 +346,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
     let mut title = String::new();
     let mut menubar = MenuBar::new();
-    let mut dialog: Option<FileDialog> = None;
+    let mut dialog: Option<FileDialogWindow> = None;
     let mut dragging = false;
     let mut font: Option<Typeface> = None;
     let mut scale = 0;
@@ -365,6 +362,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut dirty = player.poll();
         let menu_list = menus(player.playing());
         if let Some(event) = event {
+            // 打开对话框是独立窗口：属于它的事件交给它处理，结果出来后销毁。
+            if let Some(open) = dialog.as_mut()
+                && event.window == open.window()
+            {
+                let outcome = open.event(&mut display, &event)?;
+                if let FileDialogEvent::Chosen(path) = &outcome {
+                    player.open(path);
+                }
+                if outcome != FileDialogEvent::Pending
+                    && let Some(finished) = dialog.take()
+                {
+                    finished.close(&mut display)?;
+                }
+                continue;
+            }
             if event.window != window {
                 continue;
             }
@@ -397,37 +409,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 (x - start) * SLIDER_MAX / (l.slider.width - 11).max(1)
             };
             let mut command: Option<Command> = None;
+            // 对话框打开期间主窗口不接受点击与按键（模态）。
+            if dialog.is_some()
+                && matches!(
+                    event.kind,
+                    EventKind::Button { .. } | EventKind::Key(_) | EventKind::Wheel { .. }
+                )
+            {
+                continue;
+            }
             match event.kind {
                 EventKind::Close => closing = true,
                 EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
                     pointer = (x.floor() as i32, y.floor() as i32);
-                    if let Some(open_dialog) = &mut dialog {
-                        open_dialog.motion(client, pointer);
-                    } else if !menubar.motion(&probe, l.bar, &menu_list, pointer) && dragging {
+                    if !menubar.motion(&probe, l.bar, &menu_list, pointer) && dragging {
                         player.seek(slider_fraction(pointer.0));
                     }
                 }
                 EventKind::PointerLeave => pointer = (-1, -1),
-                EventKind::Wheel { vertical, .. } => {
-                    if let Some(open_dialog) = &mut dialog {
-                        open_dialog.wheel(client, vertical);
-                    }
-                }
                 EventKind::Button {
                     code: 0x110,
                     pressed: true,
                     ..
                 } => {
-                    if let Some(open_dialog) = &mut dialog {
-                        match open_dialog.press(client, pointer) {
-                            FileDialogEvent::Chosen(path) => {
-                                player.open(&path);
-                                dialog = None;
-                            }
-                            FileDialogEvent::Cancelled => dialog = None,
-                            FileDialogEvent::Pending => {}
-                        }
-                    } else if let MenuEvent::Command(chosen) =
+                    if let MenuEvent::Command(chosen) =
                         menubar.press(&probe, l.bar, &menu_list, pointer)
                     {
                         command = Some(chosen);
@@ -450,33 +455,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ..
                 } => {
                     dragging = false;
-                    if let Some(open_dialog) = &mut dialog {
-                        open_dialog.release();
-                    }
                 }
                 EventKind::Key(key) if key.pressed => {
-                    if let Some(open_dialog) = &mut dialog {
-                        match open_dialog.key(key) {
-                            FileDialogEvent::Chosen(path) => {
-                                player.open(&path);
-                                dialog = None;
-                            }
-                            FileDialogEvent::Cancelled => dialog = None,
-                            FileDialogEvent::Pending => {}
+                    match menubar.key(&probe, l.bar, &menu_list, &key) {
+                        MenuEvent::Command(chosen) => command = Some(chosen),
+                        MenuEvent::Handled => {}
+                        MenuEvent::Ignored if key.code == SPACE => {
+                            command = Some(if player.playing() {
+                                Command::Stop
+                            } else {
+                                Command::Play
+                            });
                         }
-                    } else {
-                        match menubar.key(&probe, l.bar, &menu_list, &key) {
-                            MenuEvent::Command(chosen) => command = Some(chosen),
-                            MenuEvent::Handled => {}
-                            MenuEvent::Ignored if key.code == SPACE => {
-                                command = Some(if player.playing() {
-                                    Command::Stop
-                                } else {
-                                    Command::Play
-                                });
-                            }
-                            MenuEvent::Ignored => {}
-                        }
+                        MenuEvent::Ignored => {}
                     }
                 }
                 EventKind::Key(key) => {
@@ -486,14 +477,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             match command {
                 Some(Command::Open) => {
-                    dialog = Some(FileDialog::new(
-                        FileDialogMode::Open,
-                        "打开",
-                        &start_directory(&player),
-                        "WAV 声音 (*.wav)",
-                        &["wav"],
-                        "",
-                    ))
+                    dialog = Some(FileDialogWindow::open(
+                        &mut display,
+                        "org.liteos.media-player",
+                        window,
+                        FileDialog::new(
+                            FileDialogMode::Open,
+                            "打开",
+                            &start_directory(&player),
+                            "WAV 声音 (*.wav)",
+                            &["wav"],
+                            "",
+                        ),
+                    )?)
                 }
                 Some(Command::Exit) => closing = true,
                 Some(Command::Play) => player.play(),
@@ -529,7 +525,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     player: &player,
                     menubar: &menubar,
                     menus: &menu_list,
-                    dialog: &mut dialog,
                     pointer,
                 },
             );

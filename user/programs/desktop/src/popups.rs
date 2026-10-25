@@ -5,8 +5,6 @@ use classic_ui::{MenuItemState, Painter, Toplevel, ToplevelId, ToplevelRequest};
 const MENU_WIDTH: i32 = 176;
 const ITEM_HEIGHT: i32 = 20;
 const SEPARATOR_HEIGHT: i32 = 8;
-/// 托盘音量面板大小；位置由图标决定。
-pub const VOLUME_PANEL: (i32, i32) = (64, 150);
 
 /// 点击菜单项的结果。
 #[derive(Clone, Copy)]
@@ -234,9 +232,14 @@ impl ContextMenu {
     }
 }
 
-/// 托盘音量图标正上方的面板位置：右缘不超出屏幕，底边在任务栏之上。
-pub fn volume_panel(icon_center_x: i32, screen: (i32, i32), taskbar: i32) -> Rect {
-    let (width, height) = VOLUME_PANEL;
+/// 托盘音量图标正上方的面板位置：右缘不超出屏幕，底边在任务栏之上；`size` 是面板按内容量出的尺寸。
+pub fn volume_panel(
+    icon_center_x: i32,
+    screen: (i32, i32),
+    taskbar: i32,
+    size: (i32, i32),
+) -> Rect {
+    let (width, height) = size;
     let x = (icon_center_x - width / 2).clamp(0, (screen.0 - width).max(0));
     Rect::new(x, screen.1 - taskbar - height, width, height)
 }

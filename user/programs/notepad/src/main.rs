@@ -6,8 +6,8 @@ use canvas::{Rect, Surface};
 use classic_theme::{Edge, SystemColor as C, Theme};
 use classic_ui::{
     ButtonState, CursorShape, Decoration, DecorationAction, Display, DropItem, DropMenu, EventKind,
-    FileDialog, FileDialogEvent, FileDialogMode, FrameKind, Ink, Key, MenuBar, MenuEvent, Painter,
-    SCROLLBAR_WIDTH, Scroll,
+    FileDialog, FileDialogEvent, FileDialogMode, FileDialogWindow, FrameKind, Ink, Key, MenuBar,
+    MenuEvent, Painter, SCROLLBAR_WIDTH, Scroll,
 };
 use document::{Document, Position};
 use std::{
@@ -92,9 +92,15 @@ enum Pending {
     Exit,
 }
 
+/// 文件对话框的两个阶段：App 没有 display，只能先登记请求；主循环随后把它开成独立窗口。
+enum FileSlot {
+    Requested(Box<FileDialog>),
+    Open(Box<FileDialogWindow>),
+}
+
 enum Modal {
-    OpenFile(FileDialog),
-    SaveFile(FileDialog, Option<Pending>),
+    OpenFile(FileSlot),
+    SaveFile(FileSlot, Option<Pending>),
     /// "文件已修改，是否保存？"
     Ask(Pending),
     Notice(String),
@@ -220,7 +226,10 @@ impl App {
         if let Some(path) = self.path.clone() {
             return self.save_to(&path);
         }
-        self.modal = Some(Modal::SaveFile(save_dialog(self.path.as_deref()), then));
+        self.modal = Some(Modal::SaveFile(
+            FileSlot::Requested(Box::new(save_dialog(self.path.as_deref()))),
+            then,
+        ));
         false
     }
 
@@ -242,14 +251,16 @@ impl App {
                 self.scroll_x = 0;
             }
             Pending::Open => {
-                self.modal = Some(Modal::OpenFile(FileDialog::new(
-                    FileDialogMode::Open,
-                    "打开",
-                    &home(),
-                    "所有文件 (*.*)",
-                    &[],
-                    "",
-                )))
+                self.modal = Some(Modal::OpenFile(FileSlot::Requested(Box::new(
+                    FileDialog::new(
+                        FileDialogMode::Open,
+                        "打开",
+                        &home(),
+                        "所有文件 (*.*)",
+                        &[],
+                        "",
+                    ),
+                ))))
             }
             Pending::Exit => self.closing = true,
         }
@@ -263,7 +274,10 @@ impl App {
                 self.save(None);
             }
             Command::SaveAs => {
-                self.modal = Some(Modal::SaveFile(save_dialog(self.path.as_deref()), None))
+                self.modal = Some(Modal::SaveFile(
+                    FileSlot::Requested(Box::new(save_dialog(self.path.as_deref()))),
+                    None,
+                ))
             }
             Command::Exit => self.guarded(Pending::Exit),
             Command::Cut => {
@@ -292,30 +306,73 @@ impl App {
         }
     }
 
-    /// 当前的文件对话框（打开或另存为）。
-    fn file_dialog(&mut self) -> Option<&mut FileDialog> {
+    /// 当前是否有文件对话框（打开或另存为）；它是独立窗口，主窗口此时不接受输入。
+    fn file_modal(&self) -> bool {
+        matches!(self.modal, Some(Modal::OpenFile(_) | Modal::SaveFile(..)))
+    }
+
+    /// 已开成窗口的文件对话框。
+    fn file_window(&mut self) -> Option<&mut FileDialogWindow> {
         match &mut self.modal {
-            Some(Modal::OpenFile(dialog) | Modal::SaveFile(dialog, _)) => Some(dialog),
+            Some(
+                Modal::OpenFile(FileSlot::Open(window))
+                | Modal::SaveFile(FileSlot::Open(window), _),
+            ) => Some(window),
             _ => None,
         }
     }
 
-    /// 处理文件对话框的结果：取消则关闭，选定则打开或保存（保存后继续被保存询问挂起的动作）。
-    fn finish_file(&mut self, event: FileDialogEvent) {
-        match event {
-            FileDialogEvent::Pending => {}
-            FileDialogEvent::Cancelled => self.modal = None,
-            FileDialogEvent::Chosen(path) => match self.modal.take() {
-                Some(Modal::OpenFile(_)) => self.load(&path),
-                Some(Modal::SaveFile(_, then)) => {
-                    if self.save_to(&path)
-                        && let Some(action) = then
-                    {
-                        self.proceed(action);
-                    }
-                }
-                _ => {}
-            },
+    /// 把登记的文件对话框开成以主窗口为父的独立窗口。
+    fn open_requested(
+        &mut self,
+        display: &mut Display,
+        parent: classic_ui::WindowId,
+    ) -> std::io::Result<()> {
+        let open = |display: &mut Display, dialog| {
+            FileDialogWindow::open(display, "org.liteos.notepad", parent, dialog)
+        };
+        self.modal = match self.modal.take() {
+            Some(Modal::OpenFile(FileSlot::Requested(dialog))) => Some(Modal::OpenFile(
+                FileSlot::Open(Box::new(open(display, *dialog)?)),
+            )),
+            Some(Modal::SaveFile(FileSlot::Requested(dialog), then)) => Some(Modal::SaveFile(
+                FileSlot::Open(Box::new(open(display, *dialog)?)),
+                then,
+            )),
+            other => other,
+        };
+        Ok(())
+    }
+
+    /// 处理文件对话框的结果：选定则打开或保存（保存后继续被保存询问挂起的动作），取消只关闭。
+    ///
+    /// # Returns
+    ///
+    /// 对话框结束时交还它的窗口，由调用者销毁；仍在进行时 `None`。
+    fn finish_file(&mut self, event: FileDialogEvent) -> Option<FileDialogWindow> {
+        if event == FileDialogEvent::Pending {
+            return None;
+        }
+        let (slot, then, saving) = match self.modal.take()? {
+            Modal::OpenFile(slot) => (slot, None, false),
+            Modal::SaveFile(slot, then) => (slot, then, true),
+            other => {
+                self.modal = Some(other);
+                return None;
+            }
+        };
+        if let FileDialogEvent::Chosen(path) = &event {
+            if !saving {
+                self.load(path);
+            } else if self.save_to(path)
+                && let Some(action) = then
+            {
+                self.proceed(action);
+            }
+        }
+        match slot {
+            FileSlot::Open(window) => Some(*window),
+            FileSlot::Requested(_) => None,
         }
     }
 
@@ -418,9 +475,7 @@ impl App {
     fn press(&mut self, p: &Painter<'_>, client: Rect, shift: bool) {
         let point = self.pointer;
         let line_height = p.line_height() + 1;
-        if let Some(dialog) = self.file_dialog() {
-            let event = dialog.press(client, point);
-            self.finish_file(event);
+        if self.file_modal() {
             return;
         }
         if let Some(modal) = &self.modal {
@@ -475,8 +530,7 @@ impl App {
 
     /// 滚轮：文件对话框打开时滚动它的列表，否则滚动文档。
     fn wheel(&mut self, p: &Painter<'_>, client: Rect, notches: i32) {
-        if let Some(dialog) = self.file_dialog() {
-            dialog.wheel(client, notches);
+        if self.file_modal() {
             return;
         }
         let line_height = p.line_height() + 1;
@@ -489,8 +543,7 @@ impl App {
     fn pointer_moved(&mut self, p: &Painter<'_>, client: Rect) {
         let point = self.pointer;
         let line_height = p.line_height() + 1;
-        if let Some(dialog) = self.file_dialog() {
-            dialog.motion(client, point);
+        if self.file_modal() {
             return;
         }
         let menus = menu_bar();
@@ -514,9 +567,7 @@ impl App {
     }
 
     fn key(&mut self, p: &Painter<'_>, client: Rect, key: Key) {
-        if let Some(dialog) = self.file_dialog() {
-            let event = dialog.key(key);
-            self.finish_file(event);
+        if self.file_modal() {
             return;
         }
         if let Some(modal) = &mut self.modal {
@@ -663,7 +714,7 @@ impl App {
         }
         self.menubar.paint(p, bar, &menus, self.pointer);
         match &mut self.modal {
-            Some(Modal::OpenFile(dialog) | Modal::SaveFile(dialog, _)) => dialog.paint(p, client),
+            Some(Modal::OpenFile(_) | Modal::SaveFile(..)) => {}
             Some(Modal::Ask(_)) => paint_ask(p, client),
             Some(Modal::Notice(text)) => paint_notice(p, client, text),
             None => {}
@@ -837,14 +888,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut font: Option<Typeface> = None;
     let mut scale = 0;
     let mut title = app.title();
+    let mut force_redraw = false;
     while !app.closing {
         let event = display.next_event_timeout(Duration::from_millis(500))?;
         let Some(c) = display.configuration(window) else {
             continue;
         };
         let client = decoration.client_rect(c);
-        let mut dirty = false;
+        let mut dirty = std::mem::take(&mut force_redraw);
         if let Some(event) = event {
+            // 文件对话框是独立窗口：属于它的事件交给它，结束后销毁并重绘主窗口。
+            if let Some(file) = app.file_window()
+                && event.window == file.window()
+            {
+                let outcome = file.event(&mut display, &event)?;
+                if let Some(finished) = app.finish_file(outcome) {
+                    finished.close(&mut display)?;
+                    force_redraw = true;
+                }
+                continue;
+            }
             if event.window != window {
                 continue;
             }
@@ -894,9 +957,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     ..
                 } => {
                     app.scroll.release();
-                    if let Some(dialog) = app.file_dialog() {
-                        dialog.release();
-                    }
                     app.selecting = false;
                 }
                 EventKind::Key(key) if key.pressed => app.key(&probe, client, key),
@@ -915,6 +975,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             app.document.insert(&text);
             dirty = true;
         }
+        app.open_requested(&mut display, window)?;
         let Some(font) = font.as_ref() else { continue };
         let wanted = app.title();
         if wanted != title {

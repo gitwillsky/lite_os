@@ -36,6 +36,7 @@ fn menus() -> Vec<DropMenu<Command>> {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut display = Display::connect()?;
     let window = display.create_window("音量控制", "org.liteos.sndvol", (136, 330))?;
+    display.fix_size(window)?;
     let mut decoration = Decoration::new(FrameKind::Fixed);
     decoration.load_icon("sound-volume");
     let theme = Theme::classic();

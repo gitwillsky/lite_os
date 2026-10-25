@@ -493,6 +493,62 @@ impl Display {
     /// # Errors
     ///
     /// 窗口不存在、编码或 socket 失败。
+    /// 声明窗口是固定尺寸（最小与最大都等于当前尺寸）。合成器据此把它当作对话框：没有父窗口时放在屏幕中央，
+    /// 而不是像可调整大小的窗口那样层叠。应在首次映射前调用。
+    ///
+    /// # Errors
+    ///
+    /// 目标不是 xdg toplevel，或编码/socket 失败。
+    pub fn fix_size(&mut self, window: WindowId) -> io::Result<()> {
+        let Some(state) = self.windows.get(&window) else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unknown window",
+            ));
+        };
+        let Role::Toplevel { toplevel, .. } = &state.role else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "fix_size needs an xdg toplevel",
+            ));
+        };
+        let (toplevel, width, height) = (
+            *toplevel,
+            state.configuration.width,
+            state.configuration.height,
+        );
+        let writer = &mut self.transport.writer;
+        xdg_toplevel::Request::SetMinSize { width, height }
+            .encode(toplevel, writer)
+            .map_err(io::Error::other)?;
+        xdg_toplevel::Request::SetMaxSize { width, height }
+            .encode(toplevel, writer)
+            .map_err(io::Error::other)?;
+        self.transport.flush()
+    }
+
+    /// 把 `child` 设为 `parent` 的子窗口（`xdg_toplevel.set_parent`）：合成器把它居中在父窗口上。
+    ///
+    /// # Errors
+    ///
+    /// 任一窗口不是 xdg toplevel，或编码/socket 失败。
+    pub fn set_parent(&mut self, child: WindowId, parent: WindowId) -> io::Result<()> {
+        let role = |id: &WindowId| match self.windows.get(id).map(|window| &window.role) {
+            Some(Role::Toplevel { toplevel, .. }) => Ok(*toplevel),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "set_parent needs xdg toplevels",
+            )),
+        };
+        let (child, parent) = (role(&child)?, role(&parent)?);
+        xdg_toplevel::Request::SetParent {
+            parent: Some(parent),
+        }
+        .encode(child, &mut self.transport.writer)
+        .map_err(io::Error::other)?;
+        self.transport.flush()
+    }
+
     pub fn request(&mut self, window: WindowId, request: WindowRequest) -> io::Result<()> {
         let toplevel = match self.windows.get(&window).map(|window| &window.role) {
             Some(Role::Toplevel { toplevel, .. }) => *toplevel,
