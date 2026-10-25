@@ -357,17 +357,17 @@ mod tests {
                 edges: ResizeEdge::BottomRight
             }))
         ));
-        assert!(
-            decoration
-                .event(
-                    &button(true),
-                    Configuration {
-                        maximized: true,
-                        ..configuration
-                    }
-                )
-                .is_none()
-        );
+        // 最大化禁止发起 resize，但必须撤销旧的边框光标。
+        assert!(matches!(
+            decoration.event(
+                &button(true),
+                Configuration {
+                    maximized: true,
+                    ..configuration
+                }
+            ),
+            Some(DecorationAction::Cursor(CursorShape::Default))
+        ));
     }
     #[test]
     fn close_requires_press_and_release_on_the_same_button_and_focus_loss_cancels_it() {

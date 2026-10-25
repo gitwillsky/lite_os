@@ -119,6 +119,10 @@ pub(crate) struct SystemInfoSnapshot {
 pub(crate) struct KernelProcSource;
 
 impl ProcSource for KernelProcSource {
+    fn previous_panic(&self) -> Option<&'static [u8]> {
+        crate::crash::previous_dump()
+    }
+
     fn process_identity(
         &self,
         key: usize,

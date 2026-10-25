@@ -9,6 +9,7 @@ mod syscall {
     pub(crate) mod errno {
         pub(crate) const EINVAL: isize = 22;
         pub(crate) const EFAULT: isize = 14;
+        pub(crate) const ENOMEM: isize = 12;
     }
 }
 
@@ -55,6 +56,17 @@ mod task {
         }))
     }
     impl Task {
+        // 本夹具只验证 NNP/PDEATHSIG/dumpability；comm owner 不由此 codec seam 伪造。
+        pub(crate) fn copy_from_user(&self, _: usize, _: &mut [u8]) -> Result<(), ()> {
+            unreachable!("comm copyin outside focused prctl fixture")
+        }
+        pub(crate) fn set_comm(&self, _: &[u8]) -> Result<(), ()> {
+            unreachable!("comm mutation outside focused prctl fixture")
+        }
+        pub(crate) fn comm_buffer(&self) -> Result<[u8; 16], ()> {
+            unreachable!("comm read outside focused prctl fixture")
+        }
+
         pub(crate) fn user_dumpable(&self) -> bool {
             MM_DUMPABILITY.with(Dumpability::user_dumpable)
         }

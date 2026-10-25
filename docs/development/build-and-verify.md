@@ -299,9 +299,9 @@ static gate 与 disassembly gate 继续负责。
 新增 hot path、lock、allocation、codec 或 indirection 时必须明确：加入 blocking benchmark、加入 target static/disassembly gate，或说明为何只需要 diagnostic measurement。
 whole-machine latency、boot time 与网络吞吐受宿主抖动影响，只作诊断，不作窄阈值 blocking gate。
 
-桌面用户态库的热路径使用各 crate 的 `cargo bench -p canvas -p typeface` 诊断，不设时间阈值：整屏填充约 0.3 ms，
-标题栏渐变约 3 ns/像素，24 像素字形蒙版约 2 µs，1x 字体加载约 30 ms（BDF 解析）。结论是 CPU 光栅在目标分辨率下不是瓶颈，
-暂不引入 SIMD、字形缓存或脏矩形以外的间接层；compositor 实现后以整帧 workload 再次裁决。
+桌面用户态库使用各 crate 的 `cargo bench -p canvas -p typeface` 作诊断，不设宿主时间阈值。
+单项光栅成本不能推导整帧瓶颈；窗口交互须分别测量应用绘制、像素传输、合成与显示完成，
+以实际分辨率、多窗口和缩放 workload 比较，不能由宿主微基准直接宣称 guest FPS。
 
 音频逐流增益使用 `cargo run --release -p architecture-bench --bin audio-mixer-bench` 诊断生产
 Accumulator 的单路/八路 period CPU 成本；host 硬件浮点不代表 kernel softfloat，故不设置 host 时间阈值。
@@ -322,27 +322,10 @@ StorageBudget 新锁只用于页/inode 创建、最后释放及 remount/statfs�
 critical section 仅固定整数运算，无分配/回调。生产 quota 的同类 release fixture 单独测
 `production_storage_quota_cpu_cost`（`--test storage_budget --ignored --nocapture`），其 host IRQ
 adapter 只代表无竞争计数成本，不宣称实际 local IRQ 指令/设备延迟，不新增虚假的窄时序门槛。
-硬件光标静态门禁固定 cursor queue 与 latest-position 合并；当前没有用户态窗口移动路径，
-窗口交互性能验收随新 Wayland 会话实现。内核显示/GPU 门禁继续独立保留。
+硬件光标静态门禁固定 cursor queue 与 latest-position 合并；窗口交互与内核显示/GPU 门禁分别裁决。
 
-内核显示/GPU gate（`scripts/verify_gpu.py`）是上述“宿主墙钟不作 blocking gate”原则的唯一显式例外，因为它不测量
-宿主墙钟：帧间隔取自 guest 内核单调 vblank 时钟。该时间戳由内核在 deferred display 完成路径以
-`get_time_ns()`（DTB timebase 单调计数）写入 DRM page-flip 事件（seconds/microseconds 与 sequence），与 Python
-宿主时钟、HVF 调度抖动完全无关。gate 在固定 UTM VirGL 产品实例中启动 rootfs 的私有副本，其 `/etc/inittab` 只运行
-`drm-flip-probe`（`user/libraries/linux-uapi/src/bin/drm-flip-probe.rs`；不进入产品 rootfs，不启动 compositor 与任何 UI）。
-探针走产品同一内核路径：VirGL2 能力、render target、EXECBUFFER 清屏、PAGE_FLIP。它先对清屏结果做像素读回比对
-（功能裁决），再连续翻页，丢弃 60 帧 warmup 后测量 600 次完成间隔。`dropped` 取设备 vblank sequence 间隙，严格要求
-为 0；p95/p99 按“宽但真实的绝对上限”设阈值，不在文档记录本机测量值。样本不足、读回像素不符、flip 事件与提交帧
-不对应都使 gate 变红。此 gate 只在 AArch64+HVF 承担；RISC-V TCG 没有 VirGL 显示路径，脚本在该目标自跳过。
-统计与判定逻辑由探针内的 host 单测和 `scripts/tests/test_verify_gpu.py` 约束。
-
-显示服务门禁（`scripts/verify_display.py`，`make verify-runtime-display`）在 QEMU（virtio-gpu、键盘、平板，无窗口）冷启动产品 rootfs：
-先等 compositor 的首帧与输入就绪标记，再经 QMP `screendump` 取回 scanout，与 `LBS1` 参考解码器按同一整数缩放居中规则算出的整帧逐像素
-比对；内核 `boot_screen` 与 compositor 任一方的缩放、居中或进度填充规则漂移都会失败。随后注入一次平板移动与一次按键，要求
-compositor 报告各自的首个事件。它不测量时间，参考帧与比对函数由 `scripts/tests/test_verify_display.py` 约束；只在 AArch64+HVF 承担。
-
-Wayland 服务端、外壳协议与 classic-ui 客户端的门禁及成本决策由
-[Wayland 与经典控件验证](wayland-ui-verification.md) 维护；入口为 `make verify-runtime-wayland`。
+显示/GPU 的 guest vblank 性能门禁、画面交接及 Wayland 验证由
+[Wayland 与经典控件验证](wayland-ui-verification.md#显示性能与帧交接)维护，沿用固定阈值与完整帧对应关系。
 
 idle tick suppression 不增加 host microbenchmark：收益来自 HVF/TCG 的 whole-machine exit 次数，
 host unit loop 无法代表它。改动必须通过双 architecture compile/static gate，并以单 QEMU、完整 SMP

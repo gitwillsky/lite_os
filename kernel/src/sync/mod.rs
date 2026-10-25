@@ -168,18 +168,17 @@ impl<T: ?Sized> IrqMutex<T> {
 }
 
 impl<T: ?Sized> IrqMutex<T> {
-    /// 在 fail-stop 诊断路径中强行取得锁，即使它被已停止的 CPU 持有。
+    /// 尝试取得 IRQ-safe 锁；锁忙时立即返回，不改变既有 holder 的所有权。
     ///
-    /// # Safety
-    ///
-    /// 只能由 panic 所有者 CPU 在其余 CPU 已停止（或确认无响应）、且本 CPU 已屏蔽中断后调用。
-    /// 强行释放的锁保护的内容可能是被中断的半次更新，调用者必须容忍并自行校验。
-    pub(crate) unsafe fn lock_for_fail_stop(&self) -> spin::MutexGuard<'_, T> {
-        if self.inner.try_lock().is_none() {
-            // SAFETY: 调用者保证没有仍在运行并使用旧 guard 的执行流。
-            unsafe { self.inner.force_unlock() };
-        }
-        self.inner.lock()
+    /// # Returns
+    /// 成功返回 guard，失败恢复本地 IRQ 状态并返回 `None`；适用于不可等待的诊断路径。
+    pub(crate) fn try_lock(&self) -> Option<IrqMutexGuard<'_, T>> {
+        let irq = LocalIrqGuard::disable();
+        let lock = self.inner.try_lock()?;
+        Some(IrqMutexGuard {
+            lock: Some(lock),
+            irq: Some(irq),
+        })
     }
 }
 

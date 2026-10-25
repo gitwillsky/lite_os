@@ -12,6 +12,12 @@ raw boot/trap callback ABI 的唯一 codec；boot 只构造 typed `BootContext`�
 
 只保存无运行时依赖的常量
 
+## `crash`
+
+fail-stop 诊断策略；通过静态 arch/MMU/context façade、安全 log 快照与 typed display seam 采集现场。
+boot 装配保留区，memory 不反向依赖本领域；procfs 只经已有 source adapter 读取不可变摘要。
+IPI 停止检查位于 ack 与 memory-barrier completion 之后；watchdog 由 trap tick 检查、task deferred 消费报告进展。
+
 ## `cpu`
 
 logical `CpuId`/`CpuSet`、hardware identity 映射与 online/active lifecycle 的唯一 owner；不感知 platform，hardware identity 只在 platform/firmware 边界出现

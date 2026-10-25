@@ -10,6 +10,7 @@ version = "0.1.0"
 name = "calendar"
 version = "0.1.0"
 dependencies = [
+ "linux-uapi",
  "liteos-runtime",
 ]
 
@@ -65,6 +66,7 @@ dependencies = [
  "classic-theme",
  "classic-ui",
  "desktop-settings",
+ "linux-uapi",
  "liteos-runtime",
  "sound",
  "typeface",

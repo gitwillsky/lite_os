@@ -19,6 +19,24 @@ Wayland 门禁（`scripts/verify_wayland.py`，`make verify-runtime-wayland`）�
 新增外壳布局与列表 codec 不引入逐像素路径、锁或共享状态：每次事件循环投影窗口/图层快照，foreign 匹配最坏为 O(manager 数 × 窗口数²)，
 未变化的 foreign 列表零输出由确定性单测裁决；沿用 canvas blocking benchmark，不新增受宿主调度影响的 wall-clock 阈值。协议状态机另有进程内测试（`user/programs/compositor` 的 `cargo test`，含 socket、乱序/拆包/随机输入）。只在 AArch64+HVF 承担。
 
+## 显示性能与帧交接
+
+内核显示/GPU gate（`scripts/verify_gpu.py`）是上述“宿主墙钟不作 blocking gate”原则的唯一显式例外，因为它不测量
+宿主墙钟：帧间隔取自 guest 内核单调 vblank 时钟。该时间戳由内核在 deferred display 完成路径以
+`get_time_ns()`（DTB timebase 单调计数）写入 DRM page-flip 事件（seconds/microseconds 与 sequence），与 Python
+宿主时钟、HVF 调度抖动完全无关。gate 在固定 UTM VirGL 产品实例中启动 rootfs 的私有副本，其 `/etc/inittab` 只运行
+`drm-flip-probe`（`user/libraries/linux-uapi/src/bin/drm-flip-probe.rs`；不进入产品 rootfs，不启动 compositor 与任何 UI）。
+探针走产品同一内核路径：VirGL2 能力、render target、EXECBUFFER 清屏、PAGE_FLIP。它先对清屏结果做像素读回比对
+（功能裁决），再连续翻页，丢弃 60 帧 warmup 后测量 600 次完成间隔。`dropped` 取设备 vblank sequence 间隙，严格要求
+为 0；p95/p99 按“宽但真实的绝对上限”设阈值，不在文档记录本机测量值。样本不足、读回像素不符、flip 事件与提交帧
+不对应都使 gate 变红。此 gate 只在 AArch64+HVF 承担；RISC-V TCG 没有 VirGL 显示路径，脚本在该目标自跳过。
+统计与判定逻辑由探针内的 host 单测和 `scripts/tests/test_verify_gpu.py` 约束。
+
+显示服务门禁（`scripts/verify_display.py`，`make verify-runtime-display`）在 QEMU（virtio-gpu、键盘、平板，无窗口）冷启动产品 rootfs：
+先等 compositor 的首帧与输入就绪标记，再经 QMP `screendump` 取回 scanout，与 `LBS1` 参考解码器按同一整数缩放居中规则算出的整帧逐像素
+比对；内核 `boot_screen` 与 compositor 任一方的缩放、居中或进度填充规则漂移都会失败。随后注入一次平板移动与一次按键，要求
+compositor 报告各自的首个事件。它不测量时间，参考帧与比对函数由 `scripts/tests/test_verify_display.py` 约束；只在 AArch64+HVF 承担。
+
 ## classic-ui 消费者
 
 第三阶段 `ui-probe` 通过 `classic-ui` 的公开 API 建立 xdg 窗口，加载同一份主题和字体，画出中文标题、编辑框与默认按钮。
@@ -36,8 +54,12 @@ Wayland 门禁（`scripts/verify_wayland.py`，`make verify-runtime-wayland`）�
 ## 客户端成本决策
 
 客户端每个窗口只允许一个未完成 frame callback；应用在 ready_to_draw 为真时才渲染，避免积压整帧 CPU 工作。
-首版每帧创建一个不可变 memfd，像素转换使用固定 4096 字节 scratch，额外内存不随整帧字节数再复制一份。
+每帧创建一个不可变 memfd，经 `MemFd::write_words` 批量写入 native-endian 像素，不为整帧再分配字节数组，也不按 4096 字节拆成大量 syscall。
 buffer.release 回收资源，断开由 RAII 清理，不增加线程、锁、Atomic、全局 cache 或 raw FFI。
+合成器按 64 KiB 预算批量 `pread`（大 stride 时至少一行），保留截断文件的协议错误语义。
+`canvas::Surface::blit` 对同倍率且实际像素完全不透明的可见行直接复制；其余保留预乘 alpha 合成与整数缩放。
+该快路径不缓存不透明状态，也不信任客户端声明。成本决策采用相同工作负载的离线前后微基准及既有 canvas 基线，
+另以 SHM 的 stride/offset/末行/truncation 和 blit 现有语义测试验证等价性，不增加宿主墙钟阈值。
 该路径的成本为 O(帧像素数)，当前由真实窗口的重复提交、尺寸变更和已有 canvas blocking benchmark 裁决正确性与光栅基线，
 不新增宿主墙钟阈值；它尚不是高帧率动画的性能承诺。后续复用 shm 或添加动画时需以目标 workload 再作测量。
 编辑按键不复制整份文本；UTF-8 查找和 String 编辑为单行长度的 O(n)，绘制时仅密码掩码生成临时文本。

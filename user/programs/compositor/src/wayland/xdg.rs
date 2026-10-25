@@ -491,7 +491,9 @@ impl Client {
                 scale: surface.scale,
                 children: self.subtree(xdg.surface),
                 fixed: toplevel.min_size != (0, 0) && toplevel.min_size == toplevel.max_size,
-                parent: toplevel.parent.and_then(|parent| self.toplevel_surface(parent)),
+                parent: toplevel
+                    .parent
+                    .and_then(|parent| self.toplevel_surface(parent)),
             })
         })
     }

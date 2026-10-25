@@ -205,7 +205,11 @@ impl VirtIOGpuDevice {
             )
         };
         {
-            let mut control = control.lock();
+            let mut control = if fail_stop {
+                control.try_lock()?
+            } else {
+                control.lock()
+            };
             let request = &mut control.commands.boot_slot_mut().request;
             request[..48].fill(0);
             write_rect(request.as_mut_slice(), 24, mode)?;
@@ -215,7 +219,11 @@ impl VirtIOGpuDevice {
         execute(VIRTIO_GPU_CMD_SET_SCANOUT, 48)?;
 
         {
-            let mut control = control.lock();
+            let mut control = if fail_stop {
+                control.try_lock()?
+            } else {
+                control.lock()
+            };
             let request = &mut control.commands.boot_slot_mut().request;
             request[..56].fill(0);
             write_rect(request.as_mut_slice(), 24, mode)?;
@@ -225,7 +233,11 @@ impl VirtIOGpuDevice {
         execute(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, 56)?;
 
         {
-            let mut control = control.lock();
+            let mut control = if fail_stop {
+                control.try_lock()?
+            } else {
+                control.lock()
+            };
             let request = &mut control.commands.boot_slot_mut().request;
             request[..48].fill(0);
             write_rect(request.as_mut_slice(), 24, mode)?;
@@ -329,7 +341,11 @@ impl VirtIOGpuDevice {
         if !(CONTROL_HEADER_SIZE..=CONTROL_REQUEST_SIZE).contains(&request_length) {
             return None;
         }
-        let mut control = control.lock();
+        let mut control = if fail_stop {
+            control.try_lock()?
+        } else {
+            control.lock()
+        };
         let fence = control.next_fence;
         control.next_fence = control.next_fence.checked_add(1)?;
 
@@ -461,12 +477,8 @@ impl crate::drivers::PanicFramebuffer for VirtIOGpuDevice {
 
     fn present(&self) -> Result<(), DisplayError> {
         let screen = self.panic_screen.get().ok_or(DisplayError::Device)?;
-        // panic 所有者独占设备：其余 CPU 已停止，controlq 锁可能被已死的 holder 持有，先强行
-        // 释放，否则蓝屏永远画不出来。随后用专用 resource 取代 DRM 的 scanout 并整幅刷新。
-        if self.control.try_lock().is_none() {
-            // SAFETY: 调用者保证其余 CPU 已停止或确认无响应，没有仍在使用 guard 的执行流。
-            unsafe { self.control.force_unlock() };
-        }
+        // 停止 IPI 无响应不代表 holder 已停止；fail-stop 命令逐次 try_lock，忙则放弃蓝屏，
+        // 保留串口/崩溃记录，绝不强行解除另一个执行流的互斥所有权。
         Self::present_resource(
             &self.device,
             &self.control,

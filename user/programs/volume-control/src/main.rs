@@ -48,6 +48,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut scale = 0;
     let mut pointer: (f64, f64) = (0., 0.);
     let mut closing = false;
+    let mut dirty = true;
     while !closing {
         let event = display.next_event_timeout(Duration::from_millis(100))?;
         let Some(c) = display.configuration(window) else {
@@ -62,7 +63,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             client.height - MENU_HEIGHT,
         );
         let layout = Layout::dialog(body);
-        let mut dirty = volume.poll();
+        dirty |= volume.poll();
         if let Some(event) = event {
             if event.window != window {
                 continue;
@@ -180,6 +181,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 p.text(dialog.x + 10, dialog.y + 62, "点击任意处关闭。", ink, false);
             }
             display.present(window, &pixels)?;
+            dirty = false;
         }
     }
     display.destroy_window(window)?;

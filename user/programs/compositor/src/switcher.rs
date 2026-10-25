@@ -129,4 +129,3 @@ pub fn paint(p: &mut Painter<'_>, art: &Art, screen: (i32, i32), switcher: &Swit
     let shown = p.fit(title, area.width);
     p.text_centered(area, &shown, Ink::Color(C::ButtonText), false);
 }
-

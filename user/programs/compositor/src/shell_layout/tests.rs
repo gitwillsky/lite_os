@@ -22,24 +22,42 @@ fn state(anchor: u32, zone: i32, margin: [i32; 4]) -> LayerState {
 #[test]
 fn a_bottom_bar_sits_on_the_bottom_edge_and_a_top_bar_on_the_top() {
     let bar = state(ANCHOR_BOTTOM | ANCHOR_LEFT | ANCHOR_RIGHT, 28, [0; 4]);
-    assert_eq!(place(&bar, (1280, 28), (0, 0, SCREEN.0, SCREEN.1), 1), (0, 772));
+    assert_eq!(
+        place(&bar, (1280, 28), (0, 0, SCREEN.0, SCREEN.1), 1),
+        (0, 772)
+    );
     let top = state(ANCHOR_TOP | ANCHOR_LEFT | ANCHOR_RIGHT, 0, [0; 4]);
-    assert_eq!(place(&top, (1280, 28), (0, 0, SCREEN.0, SCREEN.1), 1), (0, 0));
+    assert_eq!(
+        place(&top, (1280, 28), (0, 0, SCREEN.0, SCREEN.1), 1),
+        (0, 0)
+    );
 }
 
 #[test]
 fn margins_are_logical_pixels_scaled_to_the_output() {
     let bar = state(ANCHOR_BOTTOM | ANCHOR_LEFT, 0, [0, 0, 4, 10]);
-    assert_eq!(place(&bar, (100, 20), (0, 0, SCREEN.0, SCREEN.1), 1), (10, 800 - 20 - 4));
-    assert_eq!(place(&bar, (200, 40), (0, 0, SCREEN.0, SCREEN.1), 2), (20, 800 - 40 - 8));
+    assert_eq!(
+        place(&bar, (100, 20), (0, 0, SCREEN.0, SCREEN.1), 1),
+        (10, 800 - 20 - 4)
+    );
+    assert_eq!(
+        place(&bar, (200, 40), (0, 0, SCREEN.0, SCREEN.1), 2),
+        (20, 800 - 40 - 8)
+    );
     let right = state(ANCHOR_TOP | ANCHOR_RIGHT, 0, [3, 7, 0, 0]);
-    assert_eq!(place(&right, (50, 50), (0, 0, SCREEN.0, SCREEN.1), 1), (1280 - 50 - 7, 3));
+    assert_eq!(
+        place(&right, (50, 50), (0, 0, SCREEN.0, SCREEN.1), 1),
+        (1280 - 50 - 7, 3)
+    );
 }
 
 #[test]
 fn unanchored_directions_center_and_opposite_anchors_center_between_the_margins() {
     let centered = state(0, 0, [0; 4]);
-    assert_eq!(place(&centered, (400, 300), (0, 0, SCREEN.0, SCREEN.1), 1), (440, 250));
+    assert_eq!(
+        place(&centered, (400, 300), (0, 0, SCREEN.0, SCREEN.1), 1),
+        (440, 250)
+    );
     let between = state(ANCHOR_LEFT | ANCHOR_RIGHT | ANCHOR_TOP, 0, [0, 100, 0, 20]);
     // 左右各留 20 与 100：可用宽度 1160，400 宽的 surface 在其中居中。
     assert_eq!(
@@ -102,5 +120,8 @@ fn client_margin_extremes_cannot_overflow_or_expand_the_work_area() {
     let top = state(ANCHOR_TOP, 20, [i32::MIN, 0, 0, 0]);
     assert_eq!(work_area([&top], SCREEN, 2), (0, 0, 1280, 800));
     let left = state(ANCHOR_LEFT, 0, [0, 0, 0, i32::MAX]);
-    assert_eq!(place(&left, (10, 10), (0, 0, SCREEN.0, SCREEN.1), 2).0, i32::MAX);
+    assert_eq!(
+        place(&left, (10, 10), (0, 0, SCREEN.0, SCREEN.1), 2).0,
+        i32::MAX
+    );
 }

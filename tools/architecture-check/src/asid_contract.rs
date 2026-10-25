@@ -138,7 +138,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         let allocator = boot
             .text
             .find("arch::mmu::initialize_asid_allocator(cpu::count());");
-        let roots = boot.text.find("memory::init();");
+        let roots = boot.text.find("memory::init(");
         if !matches!((topology, allocator, roots), (Some(t), Some(a), Some(r)) if t < a && a < r) {
             errors
                 .push("main: ASID storage must be prepared after topology and before roots".into());

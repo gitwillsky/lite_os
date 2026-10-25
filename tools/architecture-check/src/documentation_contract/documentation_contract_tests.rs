@@ -2,6 +2,35 @@ use std::collections::BTreeMap;
 
 use super::*;
 
+#[test]
+fn active_plan_can_describe_completed_steps_but_not_have_a_completed_status() {
+    for (status, rejected) in [
+        ("Status: Active", false),
+        ("Status: Complete", true),
+        ("Status: Done", true),
+        ("Status: Active\nStatus: Complete", true),
+        ("", true),
+    ] {
+        let documents = BTreeMap::from([
+            (
+                "docs/syscall-support.md".into(),
+                "1 个 Linux/riscv64 syscall".into(),
+            ),
+            (
+                "docs/plans/example.md".into(),
+                format!("{status}\n阶段一已完成，阶段二待实现。"),
+            ),
+        ]);
+        let mut errors = Vec::new();
+        check_document_ownership(&documents, 1, &mut errors);
+        assert_eq!(
+            errors.iter().any(|error| error.contains("plan documents")),
+            rejected,
+            "{status}: {errors:?}"
+        );
+    }
+}
+
 fn source(relative: &str, text: &str) -> SourceFile {
     SourceFile {
         relative: relative.to_owned(),

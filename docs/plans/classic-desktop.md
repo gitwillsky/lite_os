@@ -318,7 +318,8 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
   scale 换算）；`keyboard::xkb` 从同一张键码表生成自包含的 XKB keymap，由 guest 里上游 libxkbcommon 逐键裁决（`xkb-check`）；
   `linux-uapi::recv_fds` 支持一次收多个 fd。键盘重复由客户端按 `repeat_info`（30/s、500 ms）自己做；Caps Lock 作为 locked 状态下发。
 - 窗口交互已实现：`xdg_toplevel.move/resize`（serial 校验、抓取、屏内可达性约束、缩放最小尺寸、对边锚定）、最大化/全屏（保存还原几何、
-  configure 状态与尺寸）、最小化、窗口系统菜单（标题栏图标、右键标题栏、Alt+Space；双击图标关闭）、Alt+Tab（图标网格面板，Alt+Shift+Tab 反向，松开 Alt 激活）与 Alt+Esc；纯几何在 `interaction.rs`、窗口模式在 `desktop.rs`，各有单测；门禁逐步截图核对。
+  configure 状态与尺寸）、最小化、窗口系统菜单（标题栏图标、右键标题栏、Alt+Space；双击图标关闭）、Alt+Tab（图标网格面板，Alt+Shift+Tab 反向，松开 Alt 激活）与 Alt+Esc；纯几何在 `interaction.rs`、窗口模式在 `desktop.rs`，
+各有单测；门禁逐步截图核对。
   限制：拖动时窗口内容实时跟随（W2 默认值），尚未实现"拖动时只画 XOR 框"（W3）；
   最大化现在使用外壳独占区扣除后的工作区，全屏仍覆盖完整输出。
 - 客户端 `wl_pointer.set_cursor`、缩放方向光标、layer-shell v5 与 foreign-toplevel v3 已实现；外壳只经 compositor
@@ -326,7 +327,8 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
   `shell-probe` 只注入运行时门禁，以背景和任务栏控制另一个客户端，验证独占区、键盘焦点、光标、句柄状态与退出清理。
   精确限制由 [当前设备架构](../architecture/devices-terminal.md) 维护。
 - 阶段 6 已完成的 compositor 部分：`wl_subcompositor`、`wp_viewporter`、`zxdg_output_manager_v1`、popup 与 positioner、`wl_data_device`（文本选择）、`prctl(PR_SET_NAME/PR_GET_NAME)`、`fadvise64`；见 [当前设备架构](../architecture/devices-terminal.md)。
-  阶段 6 尚未完成：在 LiteOS 上打包并运行 `/opt/wine`（需要在参照 VM 里按阶段 0 的配方构建 Wine 11.16 + Hangover 补丁并带入 rootfs）、`scripts/wine_runtime.py` 与 runtime gate、Wine conformance 对照、`0x10000/0x110000` 低地址预留与 `tkill`+`rt_sigreturn` 的运行时验证。
+  阶段 6 尚未完成：在 LiteOS 上打包并运行 `/opt/wine`（需要在参照 VM 里按阶段 0 的配方构建 Wine 11.16 + Hangover 补丁并带入 rootfs）、`scripts/wine_runtime.py` 与 runtime gate、Wine conformance 对照、
+`0x10000/0x110000` 低地址预留与 `tkill`+`rt_sigreturn` 的运行时验证。
   已知缺口：缩小客户端 scale > 输出 scale、pointer constraints、全屏缩放策略。
 - `classic-ui` 的 xdg 窗口/输入基础层已实现：真实 shm 帧、HiDPI configure、装饰交互、单行编辑与 Tab 焦点链，
   `ui-probe` 通过库的公开接口在 guest 中验证控件、输入和窗口管理；协议探针仍独立，避免服务端与客户端共用策略掩盖错误。
@@ -341,7 +343,8 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
   状态栏、"我的电脑"磁盘列表，以及回收站/复制/剪切/重命名/新建文件夹与右键菜单；开始菜单为经典三级布局（见 [资源管理器](../design/classic-desktop/explorer.md)）。
   本地原版素材的提取表新增工具栏位图与驱动器/打印机/系统文件图标。
 - 待做：控制面板里的真实设置程序（目前为空）、资源管理器的拖放、其余系统事件声音（资源管理器的确认/错误框已播放 `chord.wav`）、
-  助记符下划线（资源管理器与窗口菜单已按 Alt/Tab 规则显示，其余程序未接）、托盘与任务栏的工具提示（资源管理器工具栏已有）、菜单动画、鼠标文本选择、剪贴板/IME，以及完整应用的视觉验收。多选、跨程序文本剪贴板、文件对话框、任务栏属性与显示属性（背景色）、任务栏工具提示、最小化动画已实现。
+  助记符下划线（资源管理器与窗口菜单已按 Alt/Tab 规则显示，其余程序未接）、托盘与任务栏的工具提示（资源管理器工具栏已有）、菜单动画、鼠标文本选择、剪贴板/IME，以及完整应用的视觉验收。多选、
+跨程序文本剪贴板、文件对话框、任务栏属性与显示属性（背景色）、任务栏工具提示、最小化动画已实现。
 
 ## 风险
 

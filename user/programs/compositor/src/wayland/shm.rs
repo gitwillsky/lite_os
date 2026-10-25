@@ -56,22 +56,75 @@ impl BufferSpec {
     /// 文件内容短于声明（客户端截断了共享内存）。
     pub fn read_pixels(&self) -> Result<Vec<u32>, Truncated> {
         let mut pixels = Vec::with_capacity(self.width * self.height);
-        let mut row = vec![0u8; self.width * 4];
-        for y in 0..self.height {
+        // 固定预算内批量 pread；大 stride 退化为单行，不分配整个客户端 pool。
+        // 最后一批只读到最后一行的有效像素，不能要求客户端额外提供尾部 padding。
+        let row_bytes = self.width * 4;
+        let rows_per_read = (64 * 1024 / self.stride).max(1).min(self.height);
+        let mut batch = vec![0u8; (rows_per_read - 1) * self.stride + row_bytes];
+        for y in (0..self.height).step_by(rows_per_read) {
+            let count = rows_per_read.min(self.height - y);
+            let len = (count - 1) * self.stride + row_bytes;
             let at = (self.offset + y * self.stride) as u64;
             self.pool
                 .file
-                .read_exact_at(&mut row, at)
+                .read_exact_at(&mut batch[..len], at)
                 .map_err(|_| Truncated)?;
-            pixels.extend(row.as_chunks::<4>().0.iter().map(|chunk| {
-                let value = u32::from_le_bytes(*chunk);
-                if self.format == Format::Xrgb8888 {
-                    value | 0xFF00_0000
-                } else {
-                    value
-                }
-            }));
+            for row in batch[..len].chunks(self.stride) {
+                pixels.extend(row[..row_bytes].as_chunks::<4>().0.iter().map(|chunk| {
+                    let value = u32::from_le_bytes(*chunk);
+                    if self.format == Format::Xrgb8888 {
+                        value | 0xFF00_0000
+                    } else {
+                        value
+                    }
+                }));
+            }
         }
         Ok(pixels)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use linux_uapi::shared_memory::MemFd;
+    use std::{io::Write, os::fd::AsFd};
+
+    #[test]
+    fn batched_reads_preserve_rows_padding_offset_and_truncation_errors() {
+        for (width, height, stride, offset) in
+            [(3, 4, 20, 16), (300, 200, 1232, 36), (3, 2, 70000, 0)]
+        {
+            let len = offset + (height - 1) * stride + width * 4;
+            let mut bytes = vec![0xa5; len];
+            let expected: Vec<u32> = (0..width * height).map(|i| 0x12300000 | i as u32).collect();
+            for y in 0..height {
+                for x in 0..width {
+                    let start = offset + y * stride + x * 4;
+                    bytes[start..start + 4].copy_from_slice(&expected[y * width + x].to_le_bytes());
+                }
+            }
+            let memory = MemFd::create("shm-read", len).unwrap();
+            File::from(memory.as_fd().try_clone_to_owned().unwrap())
+                .write_all(&bytes)
+                .unwrap();
+            let mut spec = BufferSpec {
+                pool: Pool::new(memory.as_fd().try_clone_to_owned().unwrap(), len),
+                offset,
+                width,
+                height,
+                stride,
+                format: Format::Argb8888,
+            };
+            assert_eq!(spec.read_pixels().unwrap(), expected);
+            spec.format = Format::Xrgb8888;
+            assert_eq!(
+                spec.read_pixels().unwrap(),
+                expected.iter().map(|v| v | 0xff000000).collect::<Vec<_>>()
+            );
+            let short = MemFd::create("shm-short", len - 1).unwrap();
+            spec.pool = Pool::new(short.as_fd().try_clone_to_owned().unwrap(), len);
+            assert_eq!(spec.read_pixels(), Err(Truncated));
+        }
     }
 }

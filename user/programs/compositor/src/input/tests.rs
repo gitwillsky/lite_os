@@ -25,6 +25,48 @@ fn run(decoder: &mut Decoder, pointer: &mut Pointer, events: &[(u16, u16, i32)])
 }
 
 #[test]
+fn motion_batch_keeps_the_latest_position_without_crossing_input_barriers() {
+    let motion = |x| Event::PointerMoved { x, y: x };
+    let press = Event::Button {
+        code: BTN_LEFT,
+        pressed: true,
+    };
+    let key = Event::Key {
+        code: KEY_A,
+        pressed: false,
+    };
+    let wheel = Event::Wheel {
+        vertical: 1,
+        horizontal: 0,
+    };
+    let mut events = vec![
+        motion(1),
+        motion(2),
+        press,
+        motion(3),
+        motion(4),
+        key,
+        motion(5),
+        wheel,
+        motion(6),
+        motion(7),
+    ];
+    super::coalesce_motion(&mut events);
+    assert_eq!(
+        events,
+        [
+            motion(2),
+            press,
+            motion(4),
+            key,
+            motion(5),
+            wheel,
+            motion(7)
+        ]
+    );
+}
+
+#[test]
 fn tablet_maps_the_full_range_onto_the_screen_edges() {
     let mut pointer = Pointer::new(1280, 800);
     let mut decoder = tablet();

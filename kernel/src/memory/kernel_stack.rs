@@ -79,6 +79,24 @@ impl Drop for KernelStack {
     }
 }
 
+/// 已知当前 SP 所在 task stack 的可读范围，排除 guard 与两个槽位间的空隙。
+///
+/// 只供当前 CPU 的 fail-stop 回溯使用；当前栈存活契约由执行上下文保证。
+pub(super) fn active_range(pointer: usize) -> Option<(usize, usize)> {
+    let start = crate::arch::mmu::KERNEL_STACK_REGION_START;
+    let end = crate::arch::mmu::KERNEL_STACK_REGION_TOP;
+    if !(start..end).contains(&pointer) {
+        return None;
+    }
+    let stride = KERNEL_STACK_SIZE + PAGE_SIZE;
+    let index = (end - 1 - pointer) / stride;
+    let (bottom, top) = kernel_stack_position(index);
+    let mapped_bottom = bottom + PAGE_SIZE;
+    (mapped_bottom..top)
+        .contains(&pointer)
+        .then_some((mapped_bottom, top))
+}
+
 /// 获取应用内核栈的地址范围，返回 (bottom, top)
 fn kernel_stack_position(app_id: usize) -> (usize, usize) {
     // architecture façade owns the TTBR-visible stack window. AArch64 uses the canonical TTBR1

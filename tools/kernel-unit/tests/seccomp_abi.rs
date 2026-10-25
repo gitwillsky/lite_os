@@ -61,6 +61,14 @@ pub(crate) struct TaskControlBlock {
     signal: RefCell<Option<(usize, signal_info::PendingSignal)>>,
 }
 impl TaskControlBlock {
+    // comm 的 Process owner 由实际 task/runtime 路径验证；本夹具只消费 seccomp 的 prctl 路由。
+    fn set_comm(&self, _: &[u8]) -> Result<(), ()> {
+        unreachable!("comm mutation outside seccomp policy fixture")
+    }
+    fn comm_buffer(&self) -> Result<[u8; 16], ()> {
+        unreachable!("comm read outside seccomp policy fixture")
+    }
+
     fn tid_identity(&self) -> alloc::sync::Arc<namespace::PidIdentity> {
         unreachable!("policy/codec fixture does not create notifications")
     }

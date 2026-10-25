@@ -46,6 +46,21 @@ impl<'ast> Visit<'ast> for DisplayCompletionLogVisitor {
 }
 
 impl<'ast> Visit<'ast> for PatternVisitor {
+    fn visit_expr_index(&mut self, index: &'ast syn::ExprIndex) {
+        self.visit_expr(&index.expr);
+        if let Expr::Range(range) = &*index.index {
+            // 切片范围是字节/元素边界，不是 CPU 拓扑遍历；仍检查边界表达式内的其他操作。
+            if let Some(start) = &range.start {
+                self.visit_expr(start);
+            }
+            if let Some(end) = &range.end {
+                self.visit_expr(end);
+            }
+        } else {
+            self.visit_expr(&index.index);
+        }
+    }
+
     fn visit_item_static(&mut self, item: &'ast ItemStatic) {
         if matches!(item.mutability, syn::StaticMutability::Mut(_)) {
             self.static_mut.push(item.static_token.span.start().line);
@@ -280,5 +295,25 @@ fn collect_garbage_directories(
             ));
         }
         collect_garbage_directories(&path, root, garbage, errors);
+    }
+}
+
+#[cfg(test)]
+mod range_tests {
+    use super::*;
+
+    #[test]
+    fn byte_slices_are_not_fixed_cpu_iteration() {
+        for (body, violations) in [
+            ("let header = &bytes[0..8];", 0),
+            ("for cpu in 0..8 {}", 1),
+            ("let cpus = (0..8).map(|cpu| cpu);", 1),
+            ("let slot = bytes[(0..8).count()];", 1),
+        ] {
+            let syntax = syn::parse_file(&format!("fn sample() {{ {body} }}")).unwrap();
+            let mut visitor = PatternVisitor::default();
+            visitor.visit_file(&syntax);
+            assert_eq!(visitor.dense_eight_ranges.len(), violations, "{body}");
+        }
     }
 }

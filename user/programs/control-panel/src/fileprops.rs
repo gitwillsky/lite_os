@@ -17,47 +17,10 @@ use std::{
 /// 目录统计最多访问的条目数；超过时标注为"至少"，避免在 `/` 这样的大目录上阻塞窗口。
 const WALK_LIMIT: u64 = 50_000;
 
-/// musl 的 `struct statvfs`（aarch64 与 riscv64 布局相同，字段均为 64 位）。
-#[repr(C)]
-struct StatVfs {
-    block_size: u64,
-    fragment_size: u64,
-    blocks: u64,
-    blocks_free: u64,
-    blocks_available: u64,
-    files: u64,
-    files_free: u64,
-    files_available: u64,
-    fsid: u64,
-    flags: u64,
-    name_max: u64,
-    spare: [i32; 6],
-}
-
-unsafe extern "C" {
-    fn statvfs(path: *const std::ffi::c_char, buffer: *mut StatVfs) -> i32;
-}
-
-/// 磁盘的已用/可用/总容量（字节）。
+/// 磁盘的已用/可用/总容量（字节）；读取失败时属性页显示不可用。
 fn capacity(mount: &Path) -> Option<(u64, u64, u64)> {
-    use std::os::unix::ffi::OsStrExt;
-    let path = std::ffi::CString::new(mount.as_os_str().as_bytes()).ok()?;
-    let mut buffer = std::mem::MaybeUninit::<StatVfs>::zeroed();
-    // SAFETY: `path` 是以 NUL 结尾的有效 C 字符串；`buffer` 是足够大、对齐的可写结构，系统调用只写它。
-    let status = unsafe { statvfs(path.as_ptr(), buffer.as_mut_ptr()) };
-    if status != 0 {
-        return None;
-    }
-    // SAFETY: statvfs 成功返回 0 时已完整填充该结构。
-    let stat = unsafe { buffer.assume_init() };
-    let unit = if stat.fragment_size == 0 {
-        stat.block_size
-    } else {
-        stat.fragment_size
-    };
-    let total = stat.blocks.saturating_mul(unit);
-    let free = stat.blocks_free.saturating_mul(unit);
-    Some((total.saturating_sub(free), free, total))
+    let stat = linux_uapi::filesystem::capacity(mount).ok()?;
+    Some((stat.used, stat.free, stat.total))
 }
 
 /// `1,234,567` 样式的千分位。

@@ -59,9 +59,9 @@ use crate::{
 fn handle_supervisor_soft_interrupt() {
     // RISC-V SSIP 必须先 clear 再完成同步 barrier；两步是唯一 trap-owned ack seam。
     arch::interrupt::clear_software();
-    // 停止请求优先于 barrier：panic 所有者不会再等待其他 CPU 的 barrier ack。
-    crate::crash::stop_if_requested();
     crate::task::complete_pending_memory_barrier();
+    // 先发布已到达的 barrier completion，再采集停止现场，避免其他等待者丢失确认。
+    crate::crash::stop_if_requested();
 }
 
 /// timer tick 的 deferred work；`user_trap` 表示在用户态 trap 入口响应，`fired` 是该 tick 的计划时刻。
@@ -97,8 +97,8 @@ fn handle_claimed_interrupt(user_trap: bool) {
         // 必须先 EOI/清除 local pending edge，再读取所有 SGI request；若反序，远端在
         // completion 与 EOI 之间发布的新 generation 可能合并到旧 edge 并永久等待。
         crate::platform::complete_pending_ipi();
-        crate::crash::stop_if_requested();
         crate::task::complete_pending_memory_barrier();
+        crate::crash::stop_if_requested();
     }
 }
 

@@ -10,6 +10,7 @@ use identity::ProcIdentities;
 mod link;
 mod lookup;
 mod lookup_cache;
+mod mount;
 mod networking;
 mod node;
 pub(crate) use networking::{ProcNetworkSnapshot, ProcRouteSnapshot};
@@ -67,6 +68,9 @@ pub(crate) struct ProcTaskIdentity {
 
 /// procfs 读取 kernel 状态的窄接口；状态仍由 task、memory 与 processor 唯一拥有。
 pub(crate) trait ProcSource: Send + Sync {
+    /// 上次启动留下的只读崩溃摘要；无记录时为 None，procfs 不访问诊断 owner 的实现。
+    fn previous_panic(&self) -> Option<&'static [u8]>;
+
     /// stable TGID key 的实际 graph association，只返回 PID observer；目录打开不构造完整快照。
     fn process_identity(&self, key: usize) -> Option<Arc<crate::namespace::PidIdentity>>;
     /// proc root getdents 只枚举可见 TGID；不为目录读取构造全部 process resource snapshots。
@@ -447,7 +451,7 @@ impl ProcInode {
         }
         if matches!(self.node, ProcNode::LastPanic) {
             // 上次启动正常结束时文件为空，与 Linux pstore 无记录时的表现一致。
-            let dump = crate::crash::previous_dump().unwrap_or_default();
+            let dump = self.source.previous_panic().unwrap_or_default();
             let mut contents = Vec::new();
             contents
                 .try_reserve_exact(dump.len())
@@ -1403,83 +1407,5 @@ pub(crate) struct ProcFileSystem {
     root: Arc<ProcInode>,
 }
 
-impl ProcFileSystem {
-    pub(crate) fn new(
-        source: Arc<dyn ProcSource>,
-        pid_namespace: Arc<crate::namespace::PidNamespace>,
-    ) -> Result<Arc<Self>, FileSystemError> {
-        attributes::register_entries()?;
-        let identities =
-            Arc::try_new(ProcIdentities::new()).map_err(|_| FileSystemError::OutOfMemory)?;
-        let root = ProcInode::new(
-            super::allocate_filesystem_id(),
-            source,
-            ProcNode::Root,
-            pid_namespace,
-            None,
-            None,
-            identities,
-        )?;
-        Arc::try_new(Self { root }).map_err(|_| FileSystemError::OutOfMemory)
-    }
-}
-
-impl FileSystem for ProcFileSystem {
-    fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError> {
-        Ok(self.root.clone())
-    }
-
-    fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
-        Ok(FileSystemStatistics {
-            type_name: "proc",
-            magic: 0x9fa0,
-            block_size: 4096,
-            blocks: 0,
-            blocks_free: 0,
-            blocks_available: 0,
-            files: 0,
-            files_free: 0,
-            fsid: [self.root.filesystem_id as u32, 0],
-            name_length: 255,
-            fragment_size: 4096,
-            flags: 0,
-        })
-    }
-}
-
 /// procfs 类型：不接受选项（`hidepid=`/`gid=` 尚未支持）。
 pub(super) struct ProcFileSystemType;
-
-impl super::mount::FileSystemType for ProcFileSystemType {
-    fn name(&self) -> &'static str {
-        "proc"
-    }
-
-    fn user_namespace_mount(&self) -> bool {
-        true
-    }
-
-    fn create(
-        &self,
-        request: &super::mount::MountRequest<'_>,
-    ) -> Result<super::mount::CreatedFileSystem, FileSystemError> {
-        if !super::mount_options::is_empty(request.options) {
-            return Err(FileSystemError::InvalidOperation);
-        }
-        let pid_namespace = request.environment.proc_source.current_pid_namespace();
-        let user_namespace = pid_namespace.user_namespace();
-        if !request.identity.namespace_capable(
-            &user_namespace,
-            syscall_abi::capability::Capability::SYS_ADMIN,
-        ) {
-            return Err(FileSystemError::PermissionDenied);
-        }
-        Ok(super::mount::CreatedFileSystem {
-            filesystem: ProcFileSystem::new(
-                request.environment.proc_source.clone(),
-                pid_namespace,
-            )?,
-            user_namespace,
-        })
-    }
-}

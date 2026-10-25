@@ -13,3 +13,4 @@ classic-ui = { path = "../../libraries/classic-ui" }
 sound = { path = "../../libraries/sound" }
 desktop-settings = { path = "../../libraries/desktop-settings" }
 typeface = { path = "../../libraries/typeface" }
+linux-uapi = { path = "../../libraries/linux-uapi" }

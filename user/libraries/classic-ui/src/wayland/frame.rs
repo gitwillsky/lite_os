@@ -1,10 +1,6 @@
 use super::{Display, WindowId};
 use linux_uapi::shared_memory::MemFd;
-use std::{
-    fs::File,
-    io::{self, Write},
-    os::fd::AsFd,
-};
+use std::{io, os::fd::AsFd};
 use wayland_wire::{
     protocol::{Interface, wl_shm, wl_shm_pool, wl_surface},
     wire::Writer,
@@ -43,15 +39,8 @@ impl Display {
             ));
         }
         let memory = MemFd::create("classic-ui", bytes as usize)?;
-        let mut file = File::from(memory.as_fd().try_clone_to_owned()?);
-        // 分块编码固定 scratch；避免再为整幅窗口分配第二个字节数组。
-        let mut scratch = [0u8; 4096];
-        for chunk in pixels.chunks(scratch.len() / 4) {
-            for (destination, pixel) in scratch.as_chunks_mut::<4>().0.iter_mut().zip(chunk) {
-                destination.copy_from_slice(&pixel.to_ne_bytes());
-            }
-            file.write_all(&scratch[..chunk.len() * 4])?;
-        }
+        // 与原逐像素 to_ne_bytes 相同的 wl_shm 内存布局，一次提交完整 extent。
+        memory.write_words(pixels)?;
         let pool = self.transport.allocate(Interface::WlShmPool)?;
         let buffer = self.transport.allocate(Interface::WlBuffer)?;
         let callback = self.transport.allocate(Interface::WlCallback)?;

@@ -1,12 +1,11 @@
 # LiteOS Architecture Contract
 
-本文只维护全局 module dependency、机器读取的精确 registry、source-size review 与跨领域变更规则。领域 owner、interface 和 cleanup 约束由子契约唯一维护。
-
 ## 领域契约
 
 | 领域 | 权威契约 |
 |---|---|
 | 启动与平台 | [boot-platform](architecture-contract/boot-platform.md) |
+| 崩溃诊断 | [crash](architecture-contract/crash.md) |
 | 执行 | [execution](architecture-contract/execution.md) |
 | 内存 | [memory](architecture-contract/memory.md) |
 | 进程与调度 | [process-scheduling](architecture-contract/process-scheduling.md) |
@@ -26,6 +25,7 @@
 | `arch` | `config`,`fallible_tree` | 领域规则见依赖说明 |
 | `entry` | `cpu`,`platform`,`trap` | 领域规则见依赖说明 |
 | `config` | 无 | 领域规则见依赖说明 |
+| `crash` | `arch`,`cpu`,`drivers`,`log`,`memory`,`platform`,`timer` | fail-stop 诊断，不由 memory 反向装配 |
 | `cpu` | `arch` | 领域规则见依赖说明 |
 | `hal` | `arch`,`sync` | 领域规则见依赖说明 |
 | `deferred` | `arch`,`cpu` | 领域规则见依赖说明 |
@@ -48,8 +48,8 @@
 | `file` | `fallible_tree`,`fs`,`ipc`,`memory`,`namespace`,`socket`,`sync` | 领域规则见依赖说明 |
 | `tty` | `fallible_tree`,`fs`,`hal`,`ipc`,`namespace`,`sync`,`timer` | 领域规则见依赖说明 |
 | `namespace` | `fallible_tree` | 领域规则见依赖说明 |
-| `task` | `arch`,`cpu`,`deferred`,`drivers`,`fallible_tree`,`file`,`fs`,`id`,`ipc`,`memory`,`namespace`,`platform`,`random`,`socket`,`sync`,`timer`,`tty` | 领域规则见依赖说明 |
-| `trap` | `arch`,`cpu`,`deferred`,`hal`,`memory`,`platform`,`syscall`,`task`,`timer` | 领域规则见依赖说明 |
+| `task` | `arch`,`cpu`,`crash`,`deferred`,`drivers`,`fallible_tree`,`file`,`fs`,`id`,`ipc`,`memory`,`namespace`,`platform`,`random`,`socket`,`sync`,`timer`,`tty` | 领域规则见依赖说明 |
+| `trap` | `arch`,`cpu`,`crash`,`deferred`,`hal`,`memory`,`platform`,`syscall`,`task`,`timer` | 领域规则见依赖说明 |
 | `syscall` | `file`,`fs`,`io_uring`,`ipc`,`memory`,`namespace`,`random`,`socket`,`sync`,`system`,`task`,`timer` | 领域规则见依赖说明 |
 | `random` | `drivers` | 领域规则见依赖说明 |
 | `system` | `arch`,`cpu`,`platform` | 领域规则见依赖说明 |
@@ -57,8 +57,8 @@
 | `log` | `cpu`,`deferred`,`platform`,`sync`,`timer` | 领域规则见依赖说明 |
 | `id` | 无 | 领域规则见依赖说明 |
 | `cmdline` | 无 | 领域规则见依赖说明 |
-| `lang_item` | `arch`,`cpu`,`platform` | 领域规则见依赖说明 |
-| `main` | `arch`,`audio`,`block`,`boot_screen`,`cmdline`,`config`,`cpu`,`deferred`,`drivers`,`drm`,`entry`,`fallible_tree`,`file`,`fs`,`hal`,`id`,`input`,`ipc`,`log`,`memory`,`namespace`,`platform`,`random`,`socket`,`sync`,`syscall`,`system`,`task`,`timer`,`trap`,`tty`,`virtio_port`,`virtio` | 见依赖说明 |
+| `lang_item` | `arch`,`cpu`,`crash`,`platform` | 领域规则见依赖说明 |
+| `main` | `arch`,`audio`,`block`,`boot_screen`,`cmdline`,`config`,`cpu`,`crash`,`deferred`,`drivers`,`drm`,`entry`,`fallible_tree`,`file`,`fs`,`hal`,`id`,`input`,`ipc`,`log`,`memory`,`namespace`,`platform`,`random`,`socket`,`sync`,`syscall`,`system`,`task`,`timer`,`trap`,`tty`,`virtio`,`virtio_port` | 启动装配 |
 
 同一 module 内引用不构成跨 seam 依赖。`main.rs` 可以依赖所有 kernel module，但只能做装配、启动顺序和 fail-stop 策略。正向 dependency matrix 必须无环；围栏检查 AST 与 macro token 路径（含 `$crate`、分组/别名 import），禁止 crate-root alias 绕过 owner。
 
@@ -186,7 +186,7 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 
 | Source | Reviewed max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
-| `kernel/src/fs/procfs.rs` | 1469 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
+| `kernel/src/fs/procfs.rs` | 1411 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
 | `kernel/src/fs/tmpfs.rs` | 1020 | fs | 同一 inode 的权限与通知事务 | 新增 metadata family 前拆分 |
 | `kernel/src/task/process_table/signal.rs` | 1270 | task | graph 下的生成与子进程通知事务 | 新增独立 signal producer 前拆分 |
 

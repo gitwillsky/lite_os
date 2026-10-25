@@ -352,6 +352,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut scale = 0;
     let mut pointer = (-1, -1);
     let mut closing = false;
+    let mut dirty = true;
     while !closing {
         let event = display.next_event_timeout(Duration::from_millis(100))?;
         let Some(c) = display.configuration(window) else {
@@ -359,7 +360,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         let client = decoration.client_rect(c);
         let l = layout(client);
-        let mut dirty = player.poll();
+        dirty |= player.poll();
         let menu_list = menus(player.playing());
         if let Some(event) = event {
             // 打开对话框是独立窗口：属于它的事件交给它处理，结果出来后销毁。
@@ -529,6 +530,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 },
             );
             display.present(window, &pixels)?;
+            dirty = false;
         }
     }
     player.stop();

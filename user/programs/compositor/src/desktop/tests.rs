@@ -13,7 +13,11 @@ const FULL: (i32, i32, i32, i32) = (0, 0, 1280, 800);
 #[test]
 fn new_windows_cascade_by_a_title_bar_and_land_on_top() {
     let mut stack = Stack::default();
-    let changed = stack.sync(&[(ClientId(1), surface(5), 300, 200, Initial::Cascade)], SCREEN, 1);
+    let changed = stack.sync(
+        &[(ClientId(1), surface(5), 300, 200, Initial::Cascade)],
+        SCREEN,
+        1,
+    );
     assert!(changed);
     assert_eq!((stack.windows()[0].x, stack.windows()[0].y), (40, 40));
     stack.sync(
@@ -31,7 +35,11 @@ fn new_windows_cascade_by_a_title_bar_and_land_on_top() {
 #[test]
 fn cascade_scales_with_the_output_and_wraps_before_leaving_the_screen() {
     let mut stack = Stack::default();
-    stack.sync(&[(ClientId(1), surface(5), 300, 200, Initial::Cascade)], SCREEN, 2);
+    stack.sync(
+        &[(ClientId(1), surface(5), 300, 200, Initial::Cascade)],
+        SCREEN,
+        2,
+    );
     assert_eq!(stack.windows()[0].x, 80);
     let mut stack = Stack::default();
     let mut mapped = Vec::new();
@@ -53,7 +61,11 @@ fn sync_is_idempotent_and_reports_only_real_changes() {
     assert!(stack.sync(&mapped, SCREEN, 1));
     assert!(!stack.sync(&mapped, SCREEN, 1));
     assert!(
-        stack.sync(&[(ClientId(1), surface(5), 320, 200, Initial::Cascade)], SCREEN, 1),
+        stack.sync(
+            &[(ClientId(1), surface(5), 320, 200, Initial::Cascade)],
+            SCREEN,
+            1
+        ),
         "resize is a change"
     );
     assert_eq!(stack.windows()[0].width, 320);
@@ -78,7 +90,11 @@ fn identity_is_client_and_surface_not_position_in_the_list() {
         1,
     );
     // 第一个连接断开：第二个窗口保持原位，不会被当成新窗口重新层叠。
-    stack.sync(&[(ClientId(2), surface(5), 100, 100, Initial::Cascade)], SCREEN, 1);
+    stack.sync(
+        &[(ClientId(2), surface(5), 100, 100, Initial::Cascade)],
+        SCREEN,
+        1,
+    );
     assert_eq!(stack.windows().len(), 1);
     assert_eq!(
         (stack.windows()[0].client, stack.windows()[0].x),
@@ -131,7 +147,11 @@ fn the_top_of_the_stack_is_the_active_window_and_raise_changes_it() {
     assert!(!stack.raise(ClientId(1), surface(5)), "already on top");
     assert!(!stack.raise(ClientId(9), surface(5)), "unknown window");
     // 栈顶窗口消失后，下一个窗口自动成为活动窗口。
-    stack.sync(&[(ClientId(2), surface(5), 100, 100, Initial::Cascade)], SCREEN, 1);
+    stack.sync(
+        &[(ClientId(2), surface(5), 100, 100, Initial::Cascade)],
+        SCREEN,
+        1,
+    );
     assert_eq!(stack.active(), Some((ClientId(2), surface(5))));
 }
 

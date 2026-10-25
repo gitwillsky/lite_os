@@ -439,6 +439,7 @@ fn check_software_interrupt_acknowledgement(source: &SourceFile, errors: &mut Ve
     let expected = [
         "arch::interrupt::clear_software",
         "crate::task::complete_pending_memory_barrier",
+        "crate::crash::stop_if_requested",
     ];
     if calls != expected {
         errors.push(format!(
@@ -660,6 +661,16 @@ mod tests {
             TRAP_SOURCE,
             "    crate::task::complete_pending_memory_barrier();",
             "    crate::task::complete_pending_memory_barrier();\n    task::dispatch_pending_deferred_work();",
+        );
+        assert!(errors(&sources).iter().any(|error| {
+            error.contains("supervisor software interrupt must first acknowledge SSIP")
+        }));
+        let mut sources = repository_sources();
+        mutate(
+            &mut sources,
+            TRAP_SOURCE,
+            "    crate::task::complete_pending_memory_barrier();\n    // 先发布已到达的 barrier completion，再采集停止现场，避免其他等待者丢失确认。\n    crate::crash::stop_if_requested();",
+            "    crate::crash::stop_if_requested();\n    crate::task::complete_pending_memory_barrier();",
         );
         assert!(errors(&sources).iter().any(|error| {
             error.contains("supervisor software interrupt must first acknowledge SSIP")

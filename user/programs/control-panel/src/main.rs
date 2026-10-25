@@ -180,6 +180,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut pointer = (-1, -1);
     let mut pressed: Option<usize> = None;
     let mut tab = 0;
+    // 失效属于窗口，必须跨越未完成帧保留；只有提交成功后才能清除。
+    let mut dirty = true;
     loop {
         let event = display.next_event_timeout(Duration::from_millis(500))?;
         let Some(c) = display.configuration(window) else {
@@ -187,7 +189,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         let client = decoration.client_rect(c);
         let page_rect = page_rect(client);
-        let mut dirty = event.is_none();
+        dirty |= event.is_none();
         if let Some(event) = event {
             if event.window != window {
                 continue;
@@ -289,6 +291,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 );
             }
             display.present(window, &pixels)?;
+            dirty = false;
         }
     }
     display.destroy_window(window)?;

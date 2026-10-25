@@ -879,14 +879,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut font: Option<Typeface> = None;
     let mut scale = 0;
     let mut title = app.title();
-    let mut force_redraw = false;
+    let mut dirty = true;
     while !app.closing {
         let event = display.next_event_timeout(Duration::from_millis(500))?;
         let Some(c) = display.configuration(window) else {
             continue;
         };
         let client = decoration.client_rect(c);
-        let mut dirty = std::mem::take(&mut force_redraw);
         if let Some(event) = event {
             // 文件对话框是独立窗口：属于它的事件交给它，结束后销毁并重绘主窗口。
             if let Some(file) = app.file_window()
@@ -895,7 +894,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let outcome = file.event(&mut display, &event)?;
                 if let Some(finished) = app.finish_file(outcome) {
                     finished.close(&mut display)?;
-                    force_redraw = true;
+                    dirty = true;
                 }
                 continue;
             }
@@ -982,6 +981,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             decoration.paint(&mut p, c, &title);
             app.paint(&mut p, client);
             display.present(window, &pixels)?;
+            dirty = false;
         }
     }
     display.destroy_window(window)?;

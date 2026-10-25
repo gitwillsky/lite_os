@@ -17,6 +17,7 @@ LiteOS 是架构中立的 Rust `no_std` kernel。通用代码只消费编译期�
 |---|---|
 | 启动与平台 | [boot 与 machine assembly](architecture/boot-platform.md) |
 | 执行 | [arch、entry、CPU、trap、timer、sync](architecture/execution.md) |
+| 崩溃诊断 | [现场保存、回溯与蓝屏](architecture/crash-dump.md) |
 | 内存 | [frame、page table、VMA、user-copy](architecture/memory.md) |
 | 进程 | [Process、Thread、scheduler、signal、wait](architecture/process-scheduling.md) |
 | 存储 | [VFS、OFD、ext4、page cache](architecture/filesystem-storage.md) |

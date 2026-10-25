@@ -18,6 +18,7 @@ const KERNEL_MODULES: &[&str] = &[
     "cmdline",
     "config",
     "cpu",
+    "crash",
     "deferred",
     "drivers",
     "drm",

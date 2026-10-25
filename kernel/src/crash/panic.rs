@@ -256,8 +256,7 @@ pub(crate) fn handle(info: &PanicInfo) -> ! {
     sink.commit();
 
     let _ = writeln!(sink, "kernel log tail:");
-    // SAFETY: 本 CPU 是 panic 所有者，其余 CPU 已停止或确认无响应。
-    unsafe { crate::log::write_tail_for_fail_stop(&mut sink, KMSG_TAIL_RECORDS) };
+    crate::log::write_tail_for_fail_stop(&mut sink, KMSG_TAIL_RECORDS);
     sink.commit();
 
     if let Some(display) = DISPLAY.get() {

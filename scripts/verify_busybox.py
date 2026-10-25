@@ -1631,6 +1631,7 @@ def create_published_image(
         ROOT / "user/base/group",
         ROOT / "user/base/inittab",
         ROOT / "user/base/profile",
+        ROOT / "user/base/localtime",
         ROOT / "user/diagnostics/liteos-stress.c",
         boot_scene(),
         ROOT / "user/base/network-service",

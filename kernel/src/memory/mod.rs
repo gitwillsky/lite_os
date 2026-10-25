@@ -85,22 +85,26 @@ unsafe extern "C" {
     pub(crate) fn __signal_trampoline();
 }
 
-/// 判断 `address` 是否落在某个 kernel stack 内。
+/// 返回当前 kernel SP 所在栈的精确可读范围（下界含、上界不含）。
 ///
-/// kernel stack 有三类来源：任务 kernel stack 区域、boot CPU 的早期栈，以及次级 CPU 的启动栈
-/// （堆分配，位于 kernel image 内的 bss 堆或其后的 direct map RAM）。fail-stop 回溯只允许解引用满足该条件的
-/// frame pointer：损坏的 frame pointer 在 panic 路径中再次 fault 会让现场保存半途而废。
-pub(crate) fn is_kernel_stack_address(address: usize) -> bool {
-    let in_direct_map_ram = || {
-        let image_start = crate::arch::mmu::virtual_to_physical(stext as *const () as usize)?;
-        let physical = crate::arch::mmu::virtual_to_physical(address)?;
-        Some((image_start..platform::physical_memory_end()).contains(&physical))
-    };
-    (crate::arch::mmu::KERNEL_STACK_REGION_START..crate::arch::mmu::KERNEL_STACK_REGION_TOP)
-        .contains(&address)
-        || (boot_stack_bottom as *const () as usize..boot_stack_top as *const () as usize)
-            .contains(&address)
-        || in_direct_map_ram().unwrap_or(false)
+/// # Parameters
+/// - `pointer`: 当前 CPU 从 architecture mechanism 读取的真实 SP，不接受损坏的 frame pointer。
+///
+/// # Returns
+/// task stack（排除 guard）、boot 栈或已发布 secondary startup stack；未知范围返回 `None`。
+/// 不遍历页表、不取锁，不把整段 direct-map RAM 或未分配的 stack arena 当成有效栈。
+pub(crate) fn kernel_stack_bounds(pointer: usize) -> Option<(usize, usize)> {
+    if let Some(bounds) = kernel_stack::active_range(pointer) {
+        return Some(bounds);
+    }
+    let boot = (
+        boot_stack_bottom as *const () as usize,
+        boot_stack_top as *const () as usize,
+    );
+    if (boot.0..boot.1).contains(&pointer) {
+        return Some(boot);
+    }
+    crate::arch::backtrace::startup_stack_bounds(pointer)
 }
 
 pub(crate) fn signal_trampoline_entry() -> usize {
@@ -128,7 +132,10 @@ pub(crate) fn init_allocator() {
     heap_allocator::init();
 }
 
-pub(crate) fn init() {
+/// 建立主内核页表，并把 `allocator_end` 以下未保留的 RAM 交给 frame allocator。
+///
+/// `allocator_end` 由 boot 装配排除崩溃记录等保留区；页表仍覆盖完整 platform RAM。
+pub(crate) fn init(allocator_end: PhysicalAddress) {
     let kernel_end_addr: PhysicalAddress =
         crate::arch::mmu::virtual_to_physical(ekernel as *const () as usize)
             .expect("kernel end is outside architecture direct map")
@@ -137,11 +144,7 @@ pub(crate) fn init() {
     debug!("kernel_end_addr: {:#x}", kernel_end_addr.as_usize());
     debug!("memory_end_addr: {:#x}", memory_end_addr.as_usize());
 
-    // 崩溃记录区取走 RAM 末尾；allocator 看不到它，所以 reset 之后里面的现场不会被覆盖。
-    frame_allocator::init(
-        kernel_end_addr,
-        crate::crash::reserve_region(memory_end_addr),
-    );
+    frame_allocator::init(kernel_end_addr, allocator_end);
     heap_allocator::enable_frame_backed_growth();
     heap_allocator::init_cpu_caches();
 

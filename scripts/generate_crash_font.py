@@ -63,6 +63,7 @@ def main() -> None:
         f"pub(super) const FIRST: u8 = {FIRST:#04x};",
         f"pub(super) const LAST: u8 = {LAST:#04x};",
         "",
+        "// OWNER: crash 字体独占不可变字形表，所有 CPU 只读；无可写状态或初始化同步。",
         f"pub(super) static GLYPHS: [[u8; HEIGHT]; {LAST - FIRST + 1}] = [",
     ]
     for code in range(FIRST, LAST + 1):

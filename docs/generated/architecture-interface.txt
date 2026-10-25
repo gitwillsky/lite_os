@@ -153,6 +153,9 @@ bootloader/src/uart16550.rs :: pub (crate) fn init (base : usize)
 bootloader/src/uart16550.rs :: pub (crate) impl Uart16550Map :: fn get (& self) -> & Uart16550 < u8 >
 bootloader/src/uart16550.rs :: pub (crate) static UART : Mutex < Uart16550Map >
 bootloader/src/uart16550.rs :: pub (crate) struct Uart16550Map
+kernel/src/arch/aarch64/backtrace.rs :: pub (crate) fn frame_pointer () -> usize
+kernel/src/arch/aarch64/backtrace.rs :: pub (crate) fn stack_pointer () -> usize
+kernel/src/arch/aarch64/backtrace.rs :: pub (crate) unsafe fn read_frame (frame : usize) -> (usize , usize)
 kernel/src/arch/aarch64/fp_state.rs :: pub (crate) fn reset_live ()
 kernel/src/arch/aarch64/fp_state.rs :: pub (super) unsafe fn capture_clone (context : * mut KernelContext)
 kernel/src/arch/aarch64/fp_state.rs :: pub (super) unsafe fn capture_signal (state : * mut u8)
@@ -223,6 +226,7 @@ kernel/src/arch/aarch64/mmu.rs :: pub (crate) struct KernelTrapToken
 kernel/src/arch/aarch64/mmu.rs :: pub (super) impl AddressSpaceToken :: fn activate (& self , logical_cpu : usize) -> u64
 kernel/src/arch/aarch64/mmu.rs :: pub (super) impl AddressSpaceToken :: fn from_root_page (root_page : usize , context : Arc < AddressSpaceContext >) -> Self
 kernel/src/arch/aarch64/mmu.rs :: pub (super) use crate :: arch :: address_space_id :: Context as AddressSpaceContext
+kernel/src/arch/aarch64/mod.rs :: pub (crate) mod backtrace
 kernel/src/arch/aarch64/mod.rs :: pub (crate) mod interrupt
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use fp_state :: reset_live as reset_live_floating_point
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use instruction_cache :: broadcast_instruction_cache
@@ -235,6 +239,7 @@ kernel/src/arch/aarch64/mod.rs :: pub (crate) use pte :: PagePermissions
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use signal_action :: SignalActionBytes
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use signal_frame :: { MIN_SIGNAL_STACK_SIZE , SIGNAL_FRAME_SIZE , SignalFrame , SignalStack }
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use start :: entry_address as secondary_entry
+kernel/src/arch/aarch64/mod.rs :: pub (crate) use startup :: startup_stack_bounds
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use startup :: { StartupCpu , current_logical_id , entry_identity , initialize as initialize_startup , initialize_local_execution , install_boot_logical_id as install_boot_cpu , }
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use time :: counter as time_counter
 kernel/src/arch/aarch64/mod.rs :: pub (crate) use time :: { counter_frequency , program_virtual_timer }
@@ -332,6 +337,7 @@ kernel/src/arch/aarch64/startup.rs :: pub (crate) fn entry_identity () -> usize
 kernel/src/arch/aarch64/startup.rs :: pub (crate) fn initialize (cpus : impl ExactSizeIterator < Item = StartupCpu >)
 kernel/src/arch/aarch64/startup.rs :: pub (crate) fn initialize_local_execution ()
 kernel/src/arch/aarch64/startup.rs :: pub (crate) fn install_boot_logical_id (logical_id : usize)
+kernel/src/arch/aarch64/startup.rs :: pub (crate) fn startup_stack_bounds (pointer : usize) -> Option < (usize , usize) >
 kernel/src/arch/aarch64/startup.rs :: pub (crate) impl StartupCpu :: fn new (hardware_id : usize , logical_id : usize) -> Self
 kernel/src/arch/aarch64/startup.rs :: pub (crate) static TABLE_ADDRESS : AtomicUsize
 kernel/src/arch/aarch64/startup.rs :: pub (crate) static TABLE_LENGTH : AtomicUsize
@@ -428,6 +434,7 @@ kernel/src/arch/mod.rs :: pub (crate) impl IllegalInstructionFault :: const fn a
 kernel/src/arch/mod.rs :: pub (crate) impl IllegalInstructionFault :: const fn new (address : usize) -> Self
 kernel/src/arch/mod.rs :: pub (crate) impl IllegalInstructionRetry :: const fn address (self) -> usize
 kernel/src/arch/mod.rs :: pub (crate) impl IllegalInstructionRetry :: const fn new (address : usize) -> Self
+kernel/src/arch/mod.rs :: pub (crate) mod backtrace
 kernel/src/arch/mod.rs :: pub (crate) mod context
 kernel/src/arch/mod.rs :: pub (crate) mod cpu
 kernel/src/arch/mod.rs :: pub (crate) mod instruction
@@ -439,11 +446,13 @@ kernel/src/arch/mod.rs :: pub (crate) mod user
 kernel/src/arch/mod.rs :: pub (crate) struct IllegalInstructionFault
 kernel/src/arch/mod.rs :: pub (crate) struct IllegalInstructionRetry
 kernel/src/arch/mod.rs :: pub (crate) use selected :: { before_mmio_write , read_mmio_u8 , read_mmio_u16 , read_mmio_u32 , read_mmio_u64 , secondary_entry , write_mmio_u8 , write_mmio_u16 , write_mmio_u32 , write_mmio_u64 , }
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: backtrace :: { frame_pointer , read_frame , stack_pointer }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: broadcast_instruction_cache
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: raise_software
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: { LocalInterruptState , clear_software , disable_for_fail_stop , disable_for_transfer , disable_local , disable_timer_source , enable_scheduler_interrupts , enable_timer_source , restore_local , wait_for_external_interrupt , wait_for_interrupt as wait , wait_with_local_irq_masked , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: interrupt :: { SOFTWARE_SGI , send_software_sgi }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: publish_instruction_range as publish_range
+kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: startup_stack_bounds
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: time_counter as counter
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { AUDIT_ARCH , ELF_HWCAP , ELF_MACHINE , MACHINE_NAME , SignalActionBytes , decode_private_syscall , valid_elf_flags , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { AddressSpaceKind , AddressSpaceToken , ArchitecturePageTable , ArchitecturePageTableEntry , KERNEL_STACK_REGION_START , KERNEL_STACK_REGION_TOP , KernelTrapToken , PAGE_SIZE , PagePermissions , PageTableError , SIGNAL_TRAMPOLINE_ADDRESS , THREAD_TRAP_CONTEXT_RANGE , TRAMPOLINE_ADDRESS , TRAP_CONTEXT_ADDRESS , TablePage , USER_ADDRESS_END , USER_STACK_TOP , canonicalize_virtual_address , flush_local_tlb as flush_local , flush_local_tlb_range as flush_local_range , initialize_asid_allocator , initialize_kernel_mmio , normalize_physical_address , normalize_physical_page , normalize_virtual_page , physical_range_to_virtual , physical_to_virtual , virtual_to_physical , }
@@ -452,6 +461,9 @@ kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { StartupCpu , cu
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { TrapEvent , UserTrapEntry , install_kernel_entry , kernel_exception , return_to_user , trap_event as event , user_entry , }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { acknowledge_broadcast_tlb , broadcast_tlb }
 kernel/src/arch/mod.rs :: pub (crate) use super :: selected :: { counter_frequency , program_virtual_timer }
+kernel/src/arch/riscv64/backtrace.rs :: pub (crate) fn frame_pointer () -> usize
+kernel/src/arch/riscv64/backtrace.rs :: pub (crate) fn stack_pointer () -> usize
+kernel/src/arch/riscv64/backtrace.rs :: pub (crate) unsafe fn read_frame (frame : usize) -> (usize , usize)
 kernel/src/arch/riscv64/fp_instruction.rs :: pub (crate) fn is_floating_point_instruction_at (program_counter : usize , mut copy : impl FnMut (usize , & mut [u8]) -> bool ,) -> bool
 kernel/src/arch/riscv64/instruction_cache.rs :: pub (crate) fn initialize_local ()
 kernel/src/arch/riscv64/instruction_cache.rs :: pub (crate) fn publish_local ()
@@ -516,6 +528,7 @@ kernel/src/arch/riscv64/mmu.rs :: pub (super) impl KernelTrapToken :: fn encoded
 kernel/src/arch/riscv64/mmu.rs :: pub (super) impl KernelTrapToken :: fn from_root_page (root_page : usize) -> Self
 kernel/src/arch/riscv64/mmu.rs :: pub (super) use crate :: arch :: address_space_id :: Context as AddressSpaceContext
 kernel/src/arch/riscv64/mod.rs :: pub (crate) fn reset_live_floating_point ()
+kernel/src/arch/riscv64/mod.rs :: pub (crate) mod backtrace
 kernel/src/arch/riscv64/mod.rs :: pub (crate) mod interrupt
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use instruction_cache :: publish_range as publish_instruction_range
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use io :: { before_mmio_write , read_mmio_u8 , read_mmio_u16 , read_mmio_u32 , read_mmio_u64 , write_mmio_u8 , write_mmio_u16 , write_mmio_u32 , write_mmio_u64 , }
@@ -526,6 +539,7 @@ kernel/src/arch/riscv64/mod.rs :: pub (crate) use pte :: PagePermissions
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use signal_action :: SignalActionBytes
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use signal_frame :: { MIN_SIGNAL_STACK_SIZE , SIGNAL_FRAME_SIZE , SignalFrame , SignalStack }
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use start :: entry_address as secondary_entry
+kernel/src/arch/riscv64/mod.rs :: pub (crate) use startup :: startup_stack_bounds
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use startup :: { StartupCpu , current_logical_id , entry_identity , initialize as initialize_startup , initialize_local_execution , install_boot_logical_id as install_boot_cpu , }
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use time :: counter as time_counter
 kernel/src/arch/riscv64/mod.rs :: pub (crate) use trap :: { TrapEvent , UserTrapEntry , event as trap_event , install_kernel_entry , kernel_exception , return_to_user , user_entry , }
@@ -607,6 +621,7 @@ kernel/src/arch/riscv64/startup.rs :: pub (crate) fn entry_identity () -> usize
 kernel/src/arch/riscv64/startup.rs :: pub (crate) fn initialize (cpus : impl ExactSizeIterator < Item = StartupCpu >)
 kernel/src/arch/riscv64/startup.rs :: pub (crate) fn initialize_local_execution ()
 kernel/src/arch/riscv64/startup.rs :: pub (crate) fn install_boot_logical_id (logical_id : usize)
+kernel/src/arch/riscv64/startup.rs :: pub (crate) fn startup_stack_bounds (pointer : usize) -> Option < (usize , usize) >
 kernel/src/arch/riscv64/startup.rs :: pub (crate) impl StartupCpu :: fn new (hardware_id : usize , logical_id : usize) -> Self
 kernel/src/arch/riscv64/startup.rs :: pub (crate) static TABLE_ADDRESS : AtomicUsize
 kernel/src/arch/riscv64/startup.rs :: pub (crate) static TABLE_LENGTH : AtomicUsize
@@ -957,6 +972,7 @@ kernel/src/boot_screen.rs :: pub (crate) impl BootScreen < 'a > :: fn advance (&
 kernel/src/boot_screen.rs :: pub (crate) impl BootScreen < 'a > :: fn start (framebuffer : Option < & 'a dyn BootFramebuffer > , scene : & 'static [u8] ,) -> Self
 kernel/src/boot_screen.rs :: pub (crate) struct BootScreen < 'a >
 kernel/src/cmdline.rs :: enum CommandLineError :: # [doc = " `loglevel=` 的值不是十进制整数。"] InvalidLogLevel
+kernel/src/cmdline.rs :: enum CommandLineError :: # [doc = " `panic=` 的值不是十进制整数。"] InvalidPanicTimeout
 kernel/src/cmdline.rs :: enum CommandLineError :: # [doc = " 分配失败。"] OutOfMemory
 kernel/src/cmdline.rs :: enum CommandLineError :: # [doc = " 转交 init 的 argv 超过 32 项（Linux 同样 panic）。"] TooManyArguments
 kernel/src/cmdline.rs :: enum CommandLineError :: # [doc = " 转交 init 的环境超过 32 项。"] TooManyEnvironment
@@ -965,6 +981,7 @@ kernel/src/cmdline.rs :: pub (crate) KernelParameters :: init : Option < Vec < u
 kernel/src/cmdline.rs :: pub (crate) KernelParameters :: init_arguments : Vec < Vec < u8 > >
 kernel/src/cmdline.rs :: pub (crate) KernelParameters :: init_environment : Vec < Vec < u8 > >
 kernel/src/cmdline.rs :: pub (crate) KernelParameters :: log_level : Option < u8 >
+kernel/src/cmdline.rs :: pub (crate) KernelParameters :: panic_seconds : Option < i32 >
 kernel/src/cmdline.rs :: pub (crate) KernelParameters :: read_only_root : bool
 kernel/src/cmdline.rs :: pub (crate) KernelParameters :: root : Option < Vec < u8 > >
 kernel/src/cmdline.rs :: pub (crate) KernelParameters :: root_filesystem_type : Option < Vec < u8 > >
@@ -1001,6 +1018,37 @@ kernel/src/cpu/mod.rs :: pub (crate) struct CpuId
 kernel/src/cpu/mod.rs :: pub (crate) struct CpuSet
 kernel/src/cpu/mod.rs :: pub (crate) struct CpuSetIter
 kernel/src/cpu/mod.rs :: pub (crate) struct HardwareCpuId
+kernel/src/crash/backtrace.rs :: pub (super) const MAX_FRAMES : usize = 32
+kernel/src/crash/backtrace.rs :: pub (super) fn capture (frame : usize , frames : & mut [usize ; MAX_FRAMES]) -> usize
+kernel/src/crash/bluescreen.rs :: pub (super) Report :: cpu : usize
+kernel/src/crash/bluescreen.rs :: pub (super) Report :: frames : & 'a [usize]
+kernel/src/crash/bluescreen.rs :: pub (super) Report :: info : & 'a PanicInfo < 'a >
+kernel/src/crash/bluescreen.rs :: pub (super) Report :: record_saved : bool
+kernel/src/crash/bluescreen.rs :: pub (super) Report :: uptime_seconds : u64
+kernel/src/crash/bluescreen.rs :: pub (super) fn show (display : & dyn PanicFramebuffer , report : & Report < '_ >)
+kernel/src/crash/bluescreen.rs :: pub (super) struct Report < 'a >
+kernel/src/crash/font.rs :: pub (super) const FIRST : u8 = 0x20
+kernel/src/crash/font.rs :: pub (super) const HEIGHT : usize = 16
+kernel/src/crash/font.rs :: pub (super) const LAST : u8 = 0x7e
+kernel/src/crash/font.rs :: pub (super) const WIDTH : usize = 8
+kernel/src/crash/font.rs :: pub (super) static GLYPHS : [[u8 ; HEIGHT] ; 95]
+kernel/src/crash/mod.rs :: pub (crate) fn previous_dump () -> Option < & 'static [u8] >
+kernel/src/crash/mod.rs :: pub (crate) fn recover ()
+kernel/src/crash/mod.rs :: pub (crate) use panic :: { configure , handle as handle_panic , initialize , register_display , stop_if_requested , }
+kernel/src/crash/mod.rs :: pub (crate) use record :: reserve as reserve_region
+kernel/src/crash/mod.rs :: pub (crate) use watchdog :: { check_tick as watchdog_tick , note_deferred_progress }
+kernel/src/crash/panic.rs :: pub (crate) fn configure (seconds : Option < i32 >)
+kernel/src/crash/panic.rs :: pub (crate) fn handle (info : & PanicInfo) -> !
+kernel/src/crash/panic.rs :: pub (crate) fn initialize ()
+kernel/src/crash/panic.rs :: pub (crate) fn register_display (display : Arc < dyn PanicFramebuffer >)
+kernel/src/crash/panic.rs :: pub (crate) fn stop_if_requested ()
+kernel/src/crash/record.rs :: pub (crate) fn reserve (memory_end : PhysicalAddress) -> PhysicalAddress
+kernel/src/crash/record.rs :: pub (super) fn recover () -> Option < alloc :: vec :: Vec < u8 > >
+kernel/src/crash/record.rs :: pub (super) impl Recorder :: fn commit (& mut self)
+kernel/src/crash/record.rs :: pub (super) impl Recorder :: unsafe fn begin () -> Option < Self >
+kernel/src/crash/record.rs :: pub (super) struct Recorder
+kernel/src/crash/watchdog.rs :: pub (crate) fn check_tick ()
+kernel/src/crash/watchdog.rs :: pub (crate) fn note_deferred_progress ()
 kernel/src/deferred.rs :: pub (crate) fn initialize (cpu_count : usize)
 kernel/src/deferred.rs :: pub (crate) fn raise (work : DeferredWork)
 kernel/src/deferred.rs :: pub (crate) fn register (handler : DeferredHandler) -> Result < DeferredWork , () >
@@ -1057,6 +1105,7 @@ kernel/src/drivers/display.rs :: pub (crate) struct DisplayMode
 kernel/src/drivers/display.rs :: pub (crate) struct DisplayRect
 kernel/src/drivers/display.rs :: pub (crate) trait BootFramebuffer
 kernel/src/drivers/display.rs :: pub (crate) trait DisplayDevice
+kernel/src/drivers/display.rs :: pub (crate) trait PanicFramebuffer
 kernel/src/drivers/display.rs :: trait BootFramebuffer :: fn flush (& self , rect : DisplayRect) -> Result < () , DisplayError >
 kernel/src/drivers/display.rs :: trait BootFramebuffer :: fn mode (& self) -> DisplayMode
 kernel/src/drivers/display.rs :: trait BootFramebuffer :: fn write (& self , offset : usize , bytes : & [u8]) -> Result < () , DisplayError >
@@ -1067,6 +1116,9 @@ kernel/src/drivers/display.rs :: trait DisplayDevice :: fn poll_update (& self) 
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn release_buffer (& self , identity : u64) -> Result < Option < u64 > , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_damage (& self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > , rectangles : & [DisplayRect] ,) -> Result < u64 , DisplayError >
 kernel/src/drivers/display.rs :: trait DisplayDevice :: fn submit_scanout (& self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > ,) -> Result < u64 , DisplayError >
+kernel/src/drivers/display.rs :: trait PanicFramebuffer :: fn mode (& self) -> DisplayMode
+kernel/src/drivers/display.rs :: trait PanicFramebuffer :: fn present (& self) -> Result < () , DisplayError >
+kernel/src/drivers/display.rs :: trait PanicFramebuffer :: fn write (& self , offset : usize , bytes : & [u8]) -> Result < () , DisplayError >
 kernel/src/drivers/entropy.rs :: pub (crate) trait EntropySource
 kernel/src/drivers/entropy.rs :: trait EntropySource :: fn fill (& self , bytes : & mut [MaybeUninit < u8 >]) -> Result < () , () >
 kernel/src/drivers/graphics.rs :: enum CursorCommand :: # [doc = " 切换光标资源并同时设置位置与热点；resource 0 表示隐藏。"] Update { # [doc = " Scanout 0 中的水平位置。"] x : u32 , # [doc = " Scanout 0 中的垂直位置。"] y : u32 , # [doc = " true 使用 adapter-owned 2D cursor resource；false 表示隐藏。"] visible : bool , # [doc = " Resource 内的水平热点。"] hot_x : u32 , # [doc = " Resource 内的垂直热点。"] hot_y : u32 , }
@@ -1197,7 +1249,7 @@ kernel/src/drivers/io_completion/request_owner.rs :: pub (crate) struct RequestO
 kernel/src/drivers/mod.rs :: pub (crate) mod io_completion
 kernel/src/drivers/mod.rs :: pub (crate) mod network
 kernel/src/drivers/mod.rs :: pub (crate) use audio_output :: { PCM_BUFFER_BYTES , PCM_BUFFER_FRAMES , PCM_CHANNELS , PCM_FRAME_BYTES , PCM_PERIOD_BYTES , PCM_PERIOD_FRAMES , PCM_PERIODS , PCM_RATE , PcmCompletionObserver , PcmOutput , PcmOutputError , }
-kernel/src/drivers/mod.rs :: pub (crate) use display :: { BootFramebuffer , DisplayDevice , DisplayError , DisplayMode , DisplayRect , DisplayUpdate , }
+kernel/src/drivers/mod.rs :: pub (crate) use display :: { BootFramebuffer , DisplayDevice , DisplayError , DisplayMode , DisplayRect , DisplayUpdate , PanicFramebuffer , }
 kernel/src/drivers/mod.rs :: pub (crate) use entropy :: EntropySource
 kernel/src/drivers/mod.rs :: pub (crate) use graphics :: { CursorCommand , GraphicsDevice , VirglBox , VirglCapsetInfo , VirglCommand , VirglTransferDirection , }
 kernel/src/drivers/mod.rs :: pub (crate) use input :: { InputAbsInfo , InputDevice , InputDeviceError , InputId , RawInputEvent }
@@ -2763,7 +2815,6 @@ kernel/src/fs/procfs.rs :: pub (crate) ProcTaskIdentity :: process : Arc < crate
 kernel/src/fs/procfs.rs :: pub (crate) ProcTaskIdentity :: thread : Arc < crate :: namespace :: PidIdentity >
 kernel/src/fs/procfs.rs :: pub (crate) enum ProcDirectory
 kernel/src/fs/procfs.rs :: pub (crate) enum ProcSnapshotScope
-kernel/src/fs/procfs.rs :: pub (crate) impl ProcFileSystem :: fn new (source : Arc < dyn ProcSource > , pid_namespace : Arc < crate :: namespace :: PidNamespace > ,) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/procfs.rs :: pub (crate) struct ProcFileSystem
 kernel/src/fs/procfs.rs :: pub (crate) struct ProcTaskIdentity
 kernel/src/fs/procfs.rs :: pub (crate) trait ProcSource
@@ -2779,6 +2830,7 @@ kernel/src/fs/procfs.rs :: trait ProcSource :: fn current_root (& self) -> Optio
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn current_time_offsets (& self) -> Result < crate :: namespace :: TimeOffsets , FileSystemError >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn kernel_command_line (& self) -> & [u8]
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn network_snapshot (& self , target : & crate :: socket :: NetNamespace ,) -> Result < Vec < ProcNetworkSnapshot > , FileSystemError >
+kernel/src/fs/procfs.rs :: trait ProcSource :: fn previous_panic (& self) -> Option < & 'static [u8] >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_directory (& self , tid : usize , kind : ProcDirectory ,) -> Result < Option < Arc < OpenedFile > > , FileSystemError >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_identities (& self , view : & crate :: namespace :: PidNamespace ,) -> Result < Vec < Arc < crate :: namespace :: PidIdentity > > , FileSystemError >
 kernel/src/fs/procfs.rs :: trait ProcSource :: fn process_identity (& self , key : usize) -> Option < Arc < crate :: namespace :: PidIdentity > >
@@ -2820,6 +2872,7 @@ kernel/src/fs/procfs/lookup.rs :: pub (super) fn parse_pid (name : & [u8]) -> Op
 kernel/src/fs/procfs/lookup_cache.rs :: pub (super) impl ProcLookupCache :: fn new () -> Self
 kernel/src/fs/procfs/lookup_cache.rs :: pub (super) impl ProcLookupCache :: fn remember (& self , child : & Arc < ProcInode >) -> Result < () , FileSystemError >
 kernel/src/fs/procfs/lookup_cache.rs :: pub (super) struct ProcLookupCache
+kernel/src/fs/procfs/mount.rs :: pub (crate) impl ProcFileSystem :: fn new (source : Arc < dyn ProcSource > , pid_namespace : Arc < crate :: namespace :: PidNamespace > ,) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/procfs/networking.rs :: enum NetworkTable :: Devices
 kernel/src/fs/procfs/networking.rs :: enum NetworkTable :: Routes
 kernel/src/fs/procfs/networking.rs :: pub (crate) ProcNetworkSnapshot :: name : [u8 ; 16]
@@ -2855,6 +2908,7 @@ kernel/src/fs/procfs/node.rs :: enum ProcNode :: InotifySysctlDir
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: IpcLimit (crate :: ipc :: IpcLimit)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: IpcTable (crate :: ipc :: IpcTable)
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: KernelSysctlDir
+kernel/src/fs/procfs/node.rs :: enum ProcNode :: LastPanic
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: LoadAvg
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: MemInfo
 kernel/src/fs/procfs/node.rs :: enum ProcNode :: MountLimit
@@ -4218,6 +4272,7 @@ kernel/src/log/mod.rs :: pub (crate) fn bind_publish_work (work : DeferredWork)
 kernel/src/log/mod.rs :: pub (crate) fn enabled (level : LogLevel) -> bool
 kernel/src/log/mod.rs :: pub (crate) fn init ()
 kernel/src/log/mod.rs :: pub (crate) fn publish_user_message (input : & [u8])
+kernel/src/log/mod.rs :: pub (crate) fn write_tail_for_fail_stop (out : & mut dyn fmt :: Write , count : usize)
 kernel/src/log/mod.rs :: pub (crate) impl KmsgReader :: fn open () -> Self
 kernel/src/log/mod.rs :: pub (crate) impl KmsgReader :: fn read < E > (& self , capacity : usize , emit : & mut dyn FnMut (& [u8]) -> Result < () , E > ,) -> KmsgRead < E >
 kernel/src/log/mod.rs :: pub (crate) impl KmsgReader :: fn readable (& self) -> bool
@@ -4327,6 +4382,7 @@ kernel/src/memory/kernel_stack.rs :: pub (crate) impl KernelStack :: fn get_top 
 kernel/src/memory/kernel_stack.rs :: pub (crate) impl KernelStack :: fn try_new () -> Result < Self , MemoryError >
 kernel/src/memory/kernel_stack.rs :: pub (crate) impl KernelStack :: fn user_context_address (& self) -> Option < usize >
 kernel/src/memory/kernel_stack.rs :: pub (crate) struct KernelStack
+kernel/src/memory/kernel_stack.rs :: pub (super) fn active_range (pointer : usize) -> Option < (usize , usize) >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn active (& self)
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn executable_owner (& self) -> Option < Arc < dyn super :: MappedFileOwner > >
 kernel/src/memory/mm.rs :: pub (crate) impl MemorySet :: fn has_user_vma_at_or_after (& self , address : usize) -> bool
@@ -4750,8 +4806,9 @@ kernel/src/memory/mm/vma_index_state.rs :: pub (super) impl VmaIndexState :: fn 
 kernel/src/memory/mm/vma_index_state.rs :: pub (super) struct VmaContribution
 kernel/src/memory/mm/vma_index_state.rs :: pub (super) struct VmaIndexState
 kernel/src/memory/mod.rs :: pub (crate) fn __signal_trampoline ()
-kernel/src/memory/mod.rs :: pub (crate) fn init ()
+kernel/src/memory/mod.rs :: pub (crate) fn init (allocator_end : PhysicalAddress)
 kernel/src/memory/mod.rs :: pub (crate) fn init_allocator ()
+kernel/src/memory/mod.rs :: pub (crate) fn kernel_stack_bounds (pointer : usize) -> Option < (usize , usize) >
 kernel/src/memory/mod.rs :: pub (crate) fn signal_trampoline_entry () -> usize
 kernel/src/memory/mod.rs :: pub (crate) fn strampoline ()
 kernel/src/memory/mod.rs :: pub (crate) mod swap
@@ -6368,6 +6425,7 @@ kernel/src/socket/wait_source.rs :: pub (super) impl SocketWaitSource :: fn noti
 kernel/src/sync/mod.rs :: pub (crate) fn next_readiness_generation () -> u64
 kernel/src/sync/mod.rs :: pub (crate) impl IrqMutex < T > :: const fn new (value : T) -> Self
 kernel/src/sync/mod.rs :: pub (crate) impl IrqMutex < T > :: fn lock (& self) -> IrqMutexGuard < '_ , T >
+kernel/src/sync/mod.rs :: pub (crate) impl IrqMutex < T > :: fn try_lock (& self) -> Option < IrqMutexGuard < '_ , T > >
 kernel/src/sync/mod.rs :: pub (crate) impl LocalIrqGuard :: fn disable () -> Self
 kernel/src/sync/mod.rs :: pub (crate) impl LocalIrqGuard :: fn into_transfer (mut self) -> LocalIrqTransfer
 kernel/src/sync/mod.rs :: pub (crate) struct IrqMutex < T : ? Sized >
@@ -6470,6 +6528,7 @@ kernel/src/syscall/eventfd.rs :: pub (crate) fn sys_eventfd2 (initial : u32 , fl
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_close (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_dup (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_dup3 (old : usize , new : usize , flags : u32) -> isize
+kernel/src/syscall/fs.rs :: pub (crate) fn sys_fadvise64 (fd : usize , advice : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_fallocate (fd : usize , mode : usize , offset : i64 , length : i64) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_fdatasync (fd : usize) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_fstat (fd : usize , pointer : * mut u8) -> isize
@@ -6934,10 +6993,12 @@ kernel/src/syscall/timer.rs :: pub (crate) TimeSpec :: tv_sec : i64
 kernel/src/syscall/timer.rs :: pub (crate) fn sys_clock_getres (clock_id : i32 , result : * mut TimeSpec) -> isize
 kernel/src/syscall/timer.rs :: pub (crate) fn sys_clock_gettime (clock_id : i32 , result : * mut TimeSpec) -> isize
 kernel/src/syscall/timer.rs :: pub (crate) fn sys_clock_nanosleep (clock_id : i32 , flags : i32 , req : * const TimeSpec , rem : * mut TimeSpec ,) -> isize
+kernel/src/syscall/timer.rs :: pub (crate) fn sys_clock_settime (clock_id : i32 , timespec : usize) -> isize
 kernel/src/syscall/timer.rs :: pub (crate) fn sys_getitimer (which : usize , output : usize) -> isize
 kernel/src/syscall/timer.rs :: pub (crate) fn sys_gettimeofday (timeval : usize , timezone : usize) -> isize
 kernel/src/syscall/timer.rs :: pub (crate) fn sys_nanosleep (req : * const TimeSpec , rem : * mut TimeSpec) -> isize
 kernel/src/syscall/timer.rs :: pub (crate) fn sys_setitimer (which : usize , replacement : usize , previous : usize) -> isize
+kernel/src/syscall/timer.rs :: pub (crate) fn sys_settimeofday (timeval : usize , timezone : usize) -> isize
 kernel/src/syscall/timer.rs :: pub (crate) struct TimeSpec
 kernel/src/syscall/timer.rs :: pub (crate) use posix :: *
 kernel/src/syscall/timer.rs :: pub (super) fn decode_timespec (bytes : & [u8 ; core :: mem :: size_of :: < TimeSpec > ()]) -> TimeSpec
@@ -7448,8 +7509,10 @@ kernel/src/task/model/process_exec.rs :: enum ExecError :: Image (ElfLoadError)
 kernel/src/task/model/process_exec.rs :: enum ExecError :: Interrupted
 kernel/src/task/model/process_exec.rs :: enum ExecError :: Permission
 kernel/src/task/model/process_exec.rs :: pub (crate) enum ExecError
+kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn comm_buffer (& self) -> Result < [u8 ; 16] , MemoryError >
 kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn execve_replace (& self , loaded : & LoadedExecutable , envs : & [Vec < u8 >] ,) -> Result < () , ExecError >
 kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn process_executable (& self ,) -> Result < Option < Arc < crate :: fs :: OpenedFile > > , crate :: fs :: FileSystemError >
+kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn set_comm (& self , name : & [u8]) -> Result < () , MemoryError >
 kernel/src/task/model/process_exec.rs :: pub (in crate :: task) impl TaskControlBlock :: fn credential_guard (& self) -> & TaskMutex < () >
 kernel/src/task/model/process_exec.rs :: pub (super) fn process_name (path : & [u8]) -> Result < Vec < u8 > , ElfLoadError >
 kernel/src/task/model/process_exec.rs :: pub (super) fn try_elf_arc < T > (value : T) -> Result < Arc < T > , ElfLoadError >
@@ -8615,6 +8678,7 @@ kernel/src/timer/mod.rs :: pub (crate) fn realtime_deadline_to_monotonic_ns (rea
 kernel/src/timer/mod.rs :: pub (crate) fn resume_local_idle_tick ()
 kernel/src/timer/mod.rs :: pub (crate) fn scheduler_quantum_ns () -> u64
 kernel/src/timer/mod.rs :: pub (crate) fn set_next_timer_interrupt () -> u64
+kernel/src/timer/mod.rs :: pub (crate) fn set_realtime_ns (realtime_ns : u64) -> Result < () , () >
 kernel/src/timer/mod.rs :: pub (crate) fn suspend_local_idle_tick ()
 kernel/src/timer/mod.rs :: pub (crate) fn tick_interrupted_user (fired_deadline : u64) -> bool
 kernel/src/trap/mod.rs :: pub (crate) fn handle_kernel_trap ()
@@ -8742,6 +8806,7 @@ kernel/src/tty/terminal/input_batch.rs :: pub (crate) struct TerminalInputBatch
 kernel/src/virtio/binding.rs :: pub (crate) fn bind_display () -> Option < EarlyDisplay >
 kernel/src/virtio/binding.rs :: pub (crate) fn bind_platform_devices (display : Option < & EarlyDisplay >)
 kernel/src/virtio/binding.rs :: pub (crate) impl EarlyDisplay :: fn framebuffer (& self) -> & dyn BootFramebuffer
+kernel/src/virtio/binding.rs :: pub (crate) impl EarlyDisplay :: fn panic_framebuffer (& self) -> Arc < dyn crate :: drivers :: PanicFramebuffer >
 kernel/src/virtio/binding.rs :: pub (crate) struct EarlyDisplay
 kernel/src/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
@@ -8783,11 +8848,13 @@ kernel/src/virtio/console/wire.rs :: pub (super) fn is_spice_port_name (payload 
 kernel/src/virtio/gpu.rs :: pub (crate) impl VirtIOGpuDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 kernel/src/virtio/gpu.rs :: pub (crate) impl VirtIOGpuDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 kernel/src/virtio/gpu.rs :: pub (crate) struct VirtIOGpuDevice
+kernel/src/virtio/gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn create_attached_resource (device : & VirtIODevice , control : & Mutex < ControlQueue > , id : u32 , mode : DisplayMode , framebuffer : & DeviceBacking ,) -> Option < () >
 kernel/src/virtio/gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn display_mode (device : & VirtIODevice , control : & Mutex < ControlQueue > ,) -> Option < DisplayMode >
 kernel/src/virtio/gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn flush_boot_rect (device : & VirtIODevice , control : & Mutex < ControlQueue > , mode : DisplayMode , rect : DisplayRect ,) -> Option < () >
 kernel/src/virtio/gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn initialize_scanout (device : & VirtIODevice , control : & Mutex < ControlQueue > , mode : DisplayMode , framebuffer : & DeviceBacking ,) -> Option < () >
 kernel/src/virtio/gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn load_virgl_capset (device : & VirtIODevice , control : & Mutex < ControlQueue > ,) -> Option < super :: VirglCapset >
 kernel/src/virtio/gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn parse_display_mode (response : & [u8]) -> Option < DisplayMode >
+kernel/src/virtio/gpu/boot.rs :: pub (super) impl VirtIOGpuDevice :: fn present_resource (device : & VirtIODevice , control : & Mutex < ControlQueue > , id : u32 , mode : DisplayMode , fail_stop : bool ,) -> Option < () >
 kernel/src/virtio/gpu/command.rs :: enum FlushPurpose :: Damage
 kernel/src/virtio/gpu/command.rs :: enum FlushPurpose :: Scanout
 kernel/src/virtio/gpu/command.rs :: enum GpuCommand :: Attach { resource_id : u32 , backing : Arc < DeviceBacking > , }
@@ -8950,6 +9017,7 @@ kernel/src/virtio/gpu/wire.rs :: pub (super) const CURSOR_REQUEST_SIZE : usize =
 kernel/src/virtio/gpu/wire.rs :: pub (super) const CURSOR_RESOURCE_ID : u32 = 3
 kernel/src/virtio/gpu/wire.rs :: pub (super) const DISPLAY_INFO_SIZE : usize = CONTROL_HEADER_SIZE + 16 * 24
 kernel/src/virtio/gpu/wire.rs :: pub (super) const MAX_CAPSET_SIZE : usize = 4096
+kernel/src/virtio/gpu/wire.rs :: pub (super) const PANIC_RESOURCE_ID : u32 = 4
 kernel/src/virtio/gpu/wire.rs :: pub (super) const QUEUE_SIZE : u16 = 64
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CAPSET_VIRGL : u32 = 1
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CAPSET_VIRGL2 : u32 = 2

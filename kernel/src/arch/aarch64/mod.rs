@@ -13,6 +13,7 @@ mod signal_action;
 mod signal_frame;
 mod start;
 mod startup;
+pub(crate) use startup::startup_stack_bounds;
 mod time;
 mod trap;
 mod user;

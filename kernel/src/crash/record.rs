@@ -84,7 +84,7 @@ fn header_bytes(length: usize, sum: u64) -> [u8; HEADER_SIZE] {
 ///
 /// 魔数、版本、长度与校验全部吻合时返回文本拷贝；否则 `None`。读取后记录区被作废，同一份现场
 /// 不会在下一次启动再次报告。
-pub(crate) fn recover() -> Option<alloc::vec::Vec<u8>> {
+pub(super) fn recover() -> Option<alloc::vec::Vec<u8>> {
     let region = region()?;
     // SAFETY: 保留区位于 direct map，且 boot 期没有其他写者。
     let bytes = unsafe { core::slice::from_raw_parts_mut(region.base as *mut u8, region.size) };
@@ -104,7 +104,7 @@ pub(crate) fn recover() -> Option<alloc::vec::Vec<u8>> {
 }
 
 /// panic 所有者 CPU 独占的记录写入器；内容在 [`Recorder::commit`] 之后才对下一次启动可见。
-pub(crate) struct Recorder {
+pub(super) struct Recorder {
     payload: &'static mut [u8],
     length: usize,
 }
@@ -119,7 +119,8 @@ impl Recorder {
     /// # Safety
     ///
     /// 调用者必须是 panic 所有者，且不会同时存在另一个 `Recorder`。
-    pub(crate) unsafe fn begin() -> Option<Self> {
+    // SAFETY: 唯一调用者在 panic 所有权 CAS 成功之后进入，保证没有并发 Recorder。
+    pub(super) unsafe fn begin() -> Option<Self> {
         let region = region()?;
         // SAFETY: 保留区在 direct map 内；调用者保证单写者。
         let bytes = unsafe { core::slice::from_raw_parts_mut(region.base as *mut u8, region.size) };
@@ -134,7 +135,7 @@ impl Recorder {
     ///
     /// 每个 section 写完后调用一次：后续步骤（IPI 等待、绘制蓝屏）若自身再 fault，
     /// 已经提交的部分仍能在下一次启动读回。
-    pub(crate) fn commit(&mut self) {
+    pub(super) fn commit(&mut self) {
         let sum = checksum(&self.payload[..self.length]);
         // SAFETY: header 与 payload 相邻，位于同一段保留区；payload 切片从 header 之后开始。
         let header = unsafe { self.payload.as_mut_ptr().sub(HEADER_SIZE) };

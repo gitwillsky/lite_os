@@ -200,3 +200,16 @@ pub(crate) fn initialize_local_execution() {
     };
     super::instruction_cache::initialize_local();
 }
+
+/// Return the retained startup-stack extent containing `pointer`, without locking or allocation.
+///
+/// # Returns
+/// `(bottom, top)` for a published startup stack, otherwise `None`.
+pub(crate) fn startup_stack_bounds(pointer: usize) -> Option<(usize, usize)> {
+    STARTUP_TOPOLOGY.get()?.iter().find_map(|entry| {
+        let bottom = entry.stack_top - KERNEL_STACK_SIZE;
+        (bottom..entry.stack_top)
+            .contains(&pointer)
+            .then_some((bottom, entry.stack_top))
+    })
+}

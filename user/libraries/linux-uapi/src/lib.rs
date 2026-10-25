@@ -7,12 +7,14 @@ extern crate liteos_runtime as _;
 pub mod alsa;
 pub mod credentials;
 pub mod drm;
+pub mod filesystem;
 pub mod input;
 pub mod kobject;
 pub mod process;
 pub mod pty;
 mod raw;
 pub mod shared_memory;
+pub mod time;
 pub mod unix;
 pub mod virtio_port;
 

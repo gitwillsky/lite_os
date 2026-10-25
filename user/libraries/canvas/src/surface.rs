@@ -193,6 +193,16 @@ impl<'a> Surface<'a> {
         for (left, top, row) in self.visible_rows(target) {
             let source_y = ((top - y) / scale) as usize;
             let source = &image.pixels[source_y * image.stride..][..image.width as usize];
+            // 桌面/窗口的同倍率不透明行可直接复制，避免每像素除法与 alpha 分支。
+            // 每行实际检查 alpha，不缓存或信任客户端的不透明声明。
+            if scale == 1 {
+                let start = (left - x) as usize;
+                let source = &source[start..start + row.len()];
+                if source.iter().all(|pixel| pixel >> 24 == 255) {
+                    row.copy_from_slice(source);
+                    continue;
+                }
+            }
             for (column, pixel) in row.iter_mut().enumerate() {
                 let value = source[((left + column as i32 - x) / scale) as usize];
                 match value >> 24 {

@@ -104,7 +104,8 @@ pub(crate) mod interrupt {
 
 /// Frame-pointer unwinding mechanism selected at compile time.
 pub(crate) mod backtrace {
-    pub(crate) use super::selected::backtrace::{frame_pointer, read_frame};
+    pub(crate) use super::selected::backtrace::{frame_pointer, read_frame, stack_pointer};
+    pub(crate) use super::selected::startup_stack_bounds;
 }
 
 /// Kernel/user execution context selected at compile time.

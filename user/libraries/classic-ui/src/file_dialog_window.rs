@@ -27,6 +27,8 @@ pub struct FileDialogWindow {
     font: Option<Typeface>,
     scale: i32,
     pointer: (i32, i32),
+    /// 本窗口尚未提交的失效；跨越在途 frame 保留，否则点击或 configure 会丢失重绘。
+    dirty: bool,
 }
 
 impl FileDialogWindow {
@@ -59,6 +61,7 @@ impl FileDialogWindow {
             font: None,
             scale: 0,
             pointer: (-1, -1),
+            dirty: true,
         })
     }
 
@@ -116,9 +119,8 @@ impl FileDialogWindow {
             EventKind::Key(key) if key.pressed => result = self.dialog.key(*key),
             _ => {}
         }
-        if result == FileDialogEvent::Pending
-            && !matches!(event.kind, EventKind::FramePresented { .. })
-        {
+        if result == FileDialogEvent::Pending {
+            self.dirty |= !matches!(event.kind, EventKind::FramePresented { .. });
             self.paint(display)?;
         }
         Ok(result)
@@ -128,7 +130,7 @@ impl FileDialogWindow {
         let (Some(c), Some(font)) = (display.configuration(self.window), self.font.as_ref()) else {
             return Ok(());
         };
-        if !display.ready_to_draw(self.window) {
+        if !self.dirty || !display.ready_to_draw(self.window) {
             return Ok(());
         }
         let (width, height) = c.pixel_size()?;
@@ -140,7 +142,9 @@ impl FileDialogWindow {
         let client = self.decoration.client_rect(c);
         self.decoration.paint(&mut painter, c, self.dialog.title());
         self.dialog.paint(&mut painter, client);
-        display.present(self.window, &pixels)
+        display.present(self.window, &pixels)?;
+        self.dirty = false;
+        Ok(())
     }
 
     /// 销毁窗口。

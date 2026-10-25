@@ -25,6 +25,7 @@
 
 - [全局 module、依赖与接口契约](architecture-contract.md)
 - [启动与平台契约](architecture-contract/boot-platform.md)
+- [崩溃诊断契约](architecture-contract/crash.md)
 - [执行域契约](architecture-contract/execution.md)
 - [内存契约](architecture-contract/memory.md)
 - [进程与调度契约](architecture-contract/process-scheduling.md)

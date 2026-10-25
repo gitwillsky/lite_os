@@ -762,13 +762,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut font: Option<Typeface> = None;
     let mut scale = 0;
     let mut revision = 0;
+    let mut dirty = true;
     while !app.closing {
         let event = display.next_event_timeout(Duration::from_millis(250))?;
         let Some(c) = display.configuration(window) else {
             continue;
         };
         let client = decoration.client_rect(c);
-        let mut dirty = app.tick();
+        // frame 尚在途时仍保留本轮失效，避免 configure 等到下一次采样才重画。
+        dirty |= app.tick();
         if display.toplevel_revision() != revision {
             revision = display.toplevel_revision();
             dirty = true;
@@ -863,6 +865,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             decoration.paint(&mut p, c, "任务管理器");
             app.paint(&mut p, &display, client, &icons);
             display.present(window, &pixels)?;
+            dirty = false;
         }
     }
     display.destroy_window(window)?;

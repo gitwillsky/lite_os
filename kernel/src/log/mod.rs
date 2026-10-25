@@ -300,16 +300,19 @@ static LOG_LEVEL: AtomicU8 = AtomicU8::new(LogLevel::Info as u8);
 
 /// 把 kmsg 环最近 `count` 条 record 以 `[秒.微秒] 文本` 写入 `out`，供崩溃现场使用。
 ///
-/// 强行取得 logger 锁：panic 可能发生在持锁的代码里，等锁会让现场永远写不出来。其余 CPU 已被停止
-/// 时环是静止的；若有 CPU 无响应而恰在写槽位，该条可能残缺，但长度与 sequence 都做了校验，
-/// 不会越界。
+/// 锁忙时只写明现场不可用，不等待或强行解锁；未响应停止 IPI 的 CPU 仍可能访问旧 guard。
 ///
-/// # Safety
+/// # Parameters
+/// - `out`: 接收文本的输出端。
+/// - `count`: 最多输出的条数，不超过环容量。
 ///
-/// 只能由 panic 所有者 CPU 调用。
-pub(crate) unsafe fn write_tail_for_fail_stop(out: &mut dyn fmt::Write, count: usize) {
-    // SAFETY: 调用者是 panic 所有者。
-    let logger = unsafe { LOGGER.lock_for_fail_stop() };
+/// # Returns
+/// 无返回值；输出错误按 fail-stop 的尽力而为语义忽略。
+pub(crate) fn write_tail_for_fail_stop(out: &mut dyn fmt::Write, count: usize) {
+    let Some(logger) = LOGGER.try_lock() else {
+        let _ = writeln!(out, "kernel log unavailable: logger lock is held");
+        return;
+    };
     let first = logger
         .next_sequence
         .saturating_sub(count.min(KMSG_RECORD_CAPACITY) as u64);

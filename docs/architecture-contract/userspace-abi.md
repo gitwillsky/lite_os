@@ -129,6 +129,10 @@
   `linux-uapi::{alsa,drm,input,pty,process,shared_memory,unix}` 的安全 typed interface。
   shared-memory 的 memfd creation 通过标准 libc `memfd_create` 选择目标 syscall number，
   不在通用 library 固定 asm-generic 编号；该编号在 x86 Linux host 对应另一个 syscall。
+  `linux-uapi::filesystem` 拥有 LP64 statvfs codec 与容量换算，属性页只消费 typed capacity；
+  `linux-uapi::time` 拥有 libc tm/timespec、时钟设置与本地时间拷贝，calendar 只拥有日期算法、TZif 持久化与 UI 重载策略。
+  时区锁只串行化 libc refresh 与缩写拷贝，不进入逐像素路径；UTC offset 查询不分配缩写。
+  进程环境的 TZ 重载仍限已审查的单线程 desktop/control-panel 主循环，引入后台线程前必须替换环境修改策略。
   fd ancillary mechanism 委托 `linux-uapi::unix`。raw syscall、应用私有 ABI、裸 fd/device owner 和并行兼容路径均禁止。
 - 标准 `Command` spawn 的 AF_UNIX `SOCK_SEQPACKET|SOCK_CLOEXEC` socketpair 是 exec error
   publication owner；kernel 必须保留消息边界、peer-close EOF/hangup 与 `SO_TYPE=5`。只开放
@@ -153,10 +157,14 @@
   在此之前绝不修改提交的 memfd。窗口销毁撤销焦点、重复键和已排队语义事件；连接出错由应用退出/drop 一次性回收 fd。
   Transport drop 对独占协议连接执行 shutdown，因此继承的 stdin 别名仍打开时 server 也能立即观察 EOF；不关闭外部借用的 fd。
 - `classic-ui::Decoration` 只消费语义事件，按钮命中与绘制共用 `window` 的几何事实；窗口尺寸和模式仍只来自 compositor configure。
+- 应用的待重绘失效由该窗口的事件循环持有，必须跨越在途 frame 保留；只有 `present` 成功后清除，
+  不能在每轮事件开始时重置或依赖定时采样补画。`FramePresented` 解除提交背压，本身不代替尚未消费的失效。
 - `Painter` 的有界文字 API 必须同时约束排版宽度和实际字形落笔；省略号、粗体与禁用浮雕也不能越界。段落复用 `typeface::wrap`，返回完整所需高度但只绘制指定矩形，结束后恢复调用者裁剪区。
 - `ColumnHeader` 独占逻辑列宽和拖动状态；`paint` 在真实视口与每列逻辑矩形的交集内绘制，命中只接受视口内坐标。任务管理器、资源管理器共用该边界，不截短逻辑列宽或各自补裁切。
 - 控制面板的属性页内容矩形由同一函数供绘制与输入使用，宿主统一裁剪页内绘制；列表与滚动条消费剩余高度，滚动和命中使用实际视口高度，不以固定可见行数替代。
-  `Edit` 独占文本、UTF-8 光标与选择锚点；`FocusChain` 独占控件槽位的 Tab 顺序。Painter 只读这些状态，不拥有第二份可写控件模型。
+- `MemFd::write_words` 借用已初始化、无 padding 的 u32 字节视图，校验完整 extent 后按原 native-endian 布局写入，
+  零额外整帧字节数组；视图不逃逸，像素数据不可变直到写入结束，frame 发布仍由 `Display` 独占。
+- `Edit` 独占文本、UTF-8 光标与选择锚点；`FocusChain` 独占控件槽位的 Tab 顺序。Painter 只读这些状态，不拥有第二份可写控件模型。
 - `classic-ui` 的 Window 角色为互斥的 Toplevel/Layer；只有 Toplevel 持有待确认的 xdg configure，Layer 在自己的 configure/ack 时直接发布当前几何。
   两种角色共用帧、输入和 fd 生命周期。Layer unmap 清除旧配置、重复键与排队语义事件，configure_layer 后必须等待新的 configure 才能提交。
 - `classic-ui::delegate_shell` 通过标准 security-context-v1 注册独立 listener；0600 pathname 在预连接后立即 unlink，

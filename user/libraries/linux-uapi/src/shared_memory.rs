@@ -73,6 +73,33 @@ impl MemFd {
     pub fn is_empty(&self) -> bool {
         self.len == 0
     }
+
+    /// Writes native-endian 32-bit words into the complete sealed file extent.
+    ///
+    /// # Parameters
+    /// - `words`: Initialized words whose byte length equals this memfd's length.
+    ///
+    /// # Returns
+    /// `()` after all bytes have been written at offset zero, without changing the fd position.
+    ///
+    /// # Errors
+    /// Returns `InvalidInput` on an extent mismatch, or the first fd duplication/write error.
+    pub fn write_words(&self, words: &[u32]) -> io::Result<()> {
+        use std::{fs::File, os::unix::fs::FileExt};
+        let len = std::mem::size_of_val(words);
+        if len != self.len {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "word extent does not match memfd",
+            ));
+        }
+        // SAFETY: u32 has no padding; all bytes are initialized, and the byte view
+        // borrows the immutable input only for write_all_at. u8 requires no alignment.
+        // OWNER: the caller owns frame publication; this method never retains the view.
+        // Without a typed byte view the client needs thousands of tiny encoded writes.
+        let bytes = unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), len) };
+        File::from(self.fd.try_clone()?).write_all_at(bytes, 0)
+    }
 }
 
 impl AsFd for MemFd {
@@ -193,6 +220,37 @@ mod tests {
     use std::os::fd::AsFd;
 
     use super::{MemFd, SharedMapping};
+
+    #[test]
+    fn word_write_matches_native_bytes_without_changing_fd_position() {
+        use std::{
+            fs::File,
+            io::{Seek, SeekFrom},
+            os::unix::fs::FileExt,
+        };
+        let memory = MemFd::create("word-write", 16).unwrap();
+        let mut file = File::from(memory.as_fd().try_clone_to_owned().unwrap());
+        file.seek(SeekFrom::Start(7)).unwrap();
+        let words = [0x12345678u32, 0xffaabbcc, 0, u32::MAX];
+        memory.write_words(&words).unwrap();
+        let mut actual = [0u8; 16];
+        file.read_exact_at(&mut actual, 0).unwrap();
+        assert_eq!(
+            actual.as_slice(),
+            words
+                .into_iter()
+                .flat_map(u32::to_ne_bytes)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(file.stream_position().unwrap(), 7);
+        assert_eq!(
+            memory.write_words(&words[..3]).unwrap_err().kind(),
+            std::io::ErrorKind::InvalidInput
+        );
+        let mut unchanged = [0u8; 16];
+        file.read_exact_at(&mut unchanged, 0).unwrap();
+        assert_eq!(actual, unchanged);
+    }
 
     #[test]
     fn owned_shared_mapping_preserves_bytes_for_the_memfd_lifetime() {

@@ -44,6 +44,27 @@ pub enum Event {
     },
 }
 
+/// 合并本轮输入批次内相邻的指针位置，只保留最新位置。
+///
+/// # Parameters
+/// - `events`: 已完成设备量程映射与边界钳制的语义事件；不合并原始相对位移。
+///
+/// # Returns
+/// 无返回值或错误。按钮、按键、滚轮形成顺序屏障，不被跨越或删除；原地处理，不分配。
+pub fn coalesce_motion(events: &mut Vec<Event>) {
+    events.dedup_by(|next, previous| {
+        if matches!(
+            (*next, *previous),
+            (Event::PointerMoved { .. }, Event::PointerMoved { .. })
+        ) {
+            *previous = *next;
+            true
+        } else {
+            false
+        }
+    });
+}
+
 /// 屏幕内的唯一指针位置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Pointer {

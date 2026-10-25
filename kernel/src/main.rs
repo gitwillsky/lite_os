@@ -85,7 +85,9 @@ fn kernel_main(context: entry::BootContext) -> ! {
         cpu::count(),
         cpu::boot_id()
     );
-    memory::init();
+    // boot 装配保留区策略；memory 不反向依赖 crash 领域。
+    let allocator_end = crash::reserve_region(platform::physical_memory_end().into());
+    memory::init(allocator_end);
     crash::recover();
     // 显示设备提前到这里建立：GPU 初始化只需要内存与设备窗口，开机画面因此在其余设备、文件系统与 scheduler
     // 之前就上屏；GPU 中断仍等 interrupt controller 就绪后在 `bind_platform_devices` 补注册。

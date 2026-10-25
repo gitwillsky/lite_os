@@ -18,15 +18,20 @@ pub(super) const MAX_FRAMES: usize = 32;
 ///
 /// 写入 `frames` 的返回地址个数。
 pub(super) fn capture(frame: usize, frames: &mut [usize; MAX_FRAMES]) -> usize {
+    let Some((bottom, top)) =
+        crate::memory::kernel_stack_bounds(crate::arch::backtrace::stack_pointer())
+    else {
+        return 0;
+    };
     let mut count = 0;
     let mut frame = frame;
     while count < MAX_FRAMES
         && frame >= 16
         && frame.is_multiple_of(16)
-        && crate::memory::is_kernel_stack_address(frame - 16)
-        && crate::memory::is_kernel_stack_address(frame + 15)
+        && frame - 16 >= bottom
+        && frame.checked_add(16).is_some_and(|end| end <= top)
     {
-        // SAFETY: 上面已验证 `frame - 16..frame + 16` 位于已映射的 kernel stack。
+        // SAFETY: 上面已验证 `frame - 16..frame + 16` 位于当前 SP 所属的同一个存活栈内；guard、其他 CPU 栈和未分配区域均不满足。
         let (next, address) = unsafe { crate::arch::backtrace::read_frame(frame) };
         if address == 0 {
             break;

@@ -531,13 +531,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = App::new();
     let mut font: Option<Typeface> = None;
     let mut scale = 0;
+    let mut dirty = true;
     while !app.closing {
         let event = display.next_event_timeout(Duration::from_millis(500))?;
         let Some(c) = display.configuration(window) else {
             continue;
         };
         let client = decoration.client_rect(c);
-        let mut dirty = false;
         if let Some(event) = event {
             if event.window != window {
                 continue;
@@ -604,6 +604,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             decoration.paint(&mut p, c, "设备管理器");
             app.paint(&mut p, client, &icons);
             display.present(window, &pixels)?;
+            dirty = false;
         }
     }
     display.destroy_window(window)?;

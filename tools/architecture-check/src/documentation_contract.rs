@@ -282,9 +282,9 @@ fn check_document_ownership(
         }
         if path.starts_with("docs/plans/")
             && (!text.contains("Status: Active")
-                || ["Status: Complete", "Status: Done", "已完成"]
+                || ["Status: Complete", "Status: Done"]
                     .iter()
-                    .any(|marker| text.contains(marker)))
+                    .any(|marker| text.lines().any(|line| line.trim() == *marker)))
         {
             errors.push(format!(
                 "{path}: plan documents are allowed only while explicitly Active"

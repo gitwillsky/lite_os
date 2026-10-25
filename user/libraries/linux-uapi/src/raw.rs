@@ -503,3 +503,51 @@ unsafe extern "C" {
     pub(crate) fn setgid(gid: u32) -> c_int;
     pub(crate) fn setuid(uid: u32) -> c_int;
 }
+
+/// musl LP64 local-time layout, also used by the 64-bit native host test runtime.
+#[repr(C)]
+pub(crate) struct Tm {
+    pub sec: c_int,
+    pub min: c_int,
+    pub hour: c_int,
+    pub mday: c_int,
+    pub month: c_int,
+    pub year: c_int,
+    pub weekday: c_int,
+    pub yearday: c_int,
+    pub dst: c_int,
+    pub gmtoff: i64,
+    pub zone: *const c_char,
+}
+
+#[repr(C)]
+pub(crate) struct Timespec {
+    pub seconds: i64,
+    pub nanoseconds: i64,
+}
+
+#[cfg(target_os = "linux")]
+#[repr(C)]
+pub(crate) struct StatVfs {
+    pub block_size: u64,
+    pub fragment_size: u64,
+    pub blocks: u64,
+    pub blocks_free: u64,
+    pub blocks_available: u64,
+    pub files: u64,
+    pub files_free: u64,
+    pub files_available: u64,
+    pub fsid: u64,
+    pub flags: u64,
+    pub name_max: u64,
+    pub spare: [i32; 6],
+}
+
+// SAFETY: These declarations match the LP64 libc ABI; all pointers remain private to typed wrappers.
+unsafe extern "C" {
+    pub(crate) fn localtime_r(time: *const i64, result: *mut Tm) -> *mut Tm;
+    pub(crate) fn tzset();
+    pub(crate) fn clock_settime(clock: c_int, time: *const Timespec) -> c_int;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn statvfs(path: *const c_char, buffer: *mut StatVfs) -> c_int;
+}
