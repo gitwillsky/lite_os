@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Volume Control
+Name[zh_CN]=音量控制
+Exec=/bin/sndvol
+Icon=sound-volume
+StartupWMClass=org.liteos.sndvol
+NoDisplay=true
+Terminal=false

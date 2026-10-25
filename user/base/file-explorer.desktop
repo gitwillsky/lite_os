@@ -6,3 +6,4 @@ Exec=/bin/file-explorer
 Icon=folder-closed
 Categories=System;FileTools;
 Terminal=false
+StartupWMClass=org.liteos.file-explorer

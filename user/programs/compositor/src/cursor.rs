@@ -223,3 +223,23 @@ pub fn blit_to_hardware(target: &mut DumbBuffer, edge: usize, frame: &[u32]) -> 
 
 #[cfg(test)]
 mod tests;
+
+/// `wp_cursor_shape_device_v1` 的形状到合成器光标集里的名字；没有专门图像的形状用最接近的一个。
+pub fn shape_name(shape: wayland_wire::protocol::wp_cursor_shape_device_v1::Shape) -> &'static str {
+    use wayland_wire::protocol::wp_cursor_shape_device_v1::Shape as S;
+    match shape {
+        S::Help => "help",
+        S::Pointer | S::Alias | S::Copy => "link",
+        S::Progress => "working",
+        S::Wait => "busy",
+        S::Cell | S::Crosshair => "precision",
+        S::Text | S::VerticalText => "text",
+        S::Move | S::Grab | S::Grabbing | S::AllScroll | S::AllResize => "move",
+        S::NoDrop | S::NotAllowed => "unavailable",
+        S::EResize | S::WResize | S::EwResize | S::ColResize => "resize-ew",
+        S::NResize | S::SResize | S::NsResize | S::RowResize => "resize-ns",
+        S::NeResize | S::SwResize | S::NeswResize => "resize-nesw",
+        S::NwResize | S::SeResize | S::NwseResize => "resize-nwse",
+        _ => "arrow",
+    }
+}

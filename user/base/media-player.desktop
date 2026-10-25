@@ -7,3 +7,4 @@ Icon=media-player
 MimeType=audio/x-wav;
 Categories=AudioVideo;Player;
 Terminal=false
+StartupWMClass=org.liteos.media-player

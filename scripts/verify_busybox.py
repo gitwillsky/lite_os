@@ -1286,12 +1286,9 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(boot_scene(), "/usr/share/liteos/boot-scene.lbs"),
         UserlandArtifact(cursors(), "/usr/share/liteos/cursors.lcs"),
         UserlandArtifact(ROOT / "user/base/display-service", "/etc/init.d/display-service", 0o755),
-        UserlandArtifact(ROOT / "user/base/file-explorer.desktop", "/usr/share/applications/file-explorer.desktop"),
-        UserlandArtifact(ROOT / "user/base/control-system.desktop", "/usr/share/applications/control-system.desktop"),
-        UserlandArtifact(ROOT / "user/base/control-datetime.desktop", "/usr/share/applications/control-datetime.desktop"),
-        UserlandArtifact(ROOT / "user/base/control-sound.desktop", "/usr/share/applications/control-sound.desktop"),
-        UserlandArtifact(ROOT / "user/base/notepad.desktop", "/usr/share/applications/notepad.desktop"),
-        UserlandArtifact(ROOT / "user/base/media-player.desktop", "/usr/share/applications/media-player.desktop"),
+        # 桌面条目：user/base 下的每个 .desktop 都安装；窗口图标、文件关联与控制面板入口都由它们声明。
+        *(UserlandArtifact(path, f"/usr/share/applications/{path.name}")
+          for path in sorted((ROOT / "user/base").glob("*.desktop"))),
         *(UserlandArtifact(path, f"{SYSTEM_LIBRARY_DIRECTORY}/{name}", 0o755)
           for path, name in build_system_libraries(musl)),
         UserlandArtifact(ROOT / "user/base/ld-musl.path", f"/etc/{Path(TARGET.musl_loader).name.removesuffix('.so.1')}.path"),

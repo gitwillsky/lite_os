@@ -2,11 +2,11 @@
 //!
 //! 选择状态只存在于按住 Alt 的这段时间；松开 Alt 才真正激活窗口，期间窗口栈不变。
 
-use std::{collections::HashMap, path::Path};
+use std::path::Path;
 
 use canvas::Rect;
 use classic_theme::{Edge, SystemColor as C};
-use classic_ui::{Bitmap, Ink, Painter};
+use classic_ui::{AppIcons, Ink, Painter};
 use typeface::Typeface;
 
 use wayland_wire::wire::ObjectId;
@@ -17,7 +17,6 @@ const MAX_COLUMNS: usize = 7;
 const CELL: i32 = 43;
 const MARGIN: i32 = 13;
 const TITLE_HEIGHT: i32 = 24;
-const ICON_DIRECTORY: &str = "/usr/share/liteos/ui";
 const FONT_DIRECTORY: &str = "/usr/share/liteos/fonts";
 
 /// 面板里的一个窗口。
@@ -70,7 +69,7 @@ impl Switcher {
 /// 面板用到的字体与图标；加载失败时面板不显示，切换本身照常进行。
 pub struct Art {
     pub typeface: Typeface,
-    icons: HashMap<&'static str, Bitmap>,
+    icons: AppIcons,
 }
 
 impl Art {
@@ -78,23 +77,8 @@ impl Art {
     pub fn load(scale: u32) -> std::io::Result<Self> {
         let typeface = Typeface::load(Path::new(FONT_DIRECTORY), scale)
             .map_err(|error| std::io::Error::other(error.to_string()))?;
-        let mut icons = HashMap::new();
-        for name in ["file-app-32", "folder-closed-32", "control-panel-32"] {
-            icons.insert(
-                name,
-                Bitmap::load(&Path::new(ICON_DIRECTORY).join(format!("{name}.bmp")))?,
-            );
-        }
+        let icons = AppIcons::load(32);
         Ok(Self { typeface, icons })
-    }
-}
-
-/// 窗口的程序图标名，按 `app_id` 选；未知程序用通用应用图标。
-fn icon_name(app_id: &str) -> &'static str {
-    match app_id {
-        "org.liteos.file-explorer" => "folder-closed-32",
-        "org.liteos.control-panel" => "control-panel-32",
-        _ => "file-app-32",
     }
 }
 
@@ -128,9 +112,12 @@ pub fn paint(p: &mut Painter<'_>, art: &Art, screen: (i32, i32), switcher: &Swit
             p.outline(cell.inset(1), C::WindowFrame);
             p.outline(cell.inset(2), C::WindowFrame);
         }
-        if let Some(icon) = art.icons.get(icon_name(&entry.app_id)) {
-            icon.paint(p, cell.x + (CELL - 32) / 2, cell.y + (CELL - 32) / 2);
-        }
+        art.icons.paint(
+            p,
+            &entry.app_id,
+            cell.x + (CELL - 32) / 2,
+            cell.y + (CELL - 32) / 2,
+        );
     }
     let title = &switcher.entries[switcher.selected].title;
     let area = Rect::new(

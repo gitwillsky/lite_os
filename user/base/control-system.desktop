@@ -6,3 +6,4 @@ Exec=/bin/control-panel system
 Icon=my-computer
 Categories=Settings;
 Terminal=false
+StartupWMClass=org.liteos.control-panel.system

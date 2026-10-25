@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use crate::Bitmap;
-use crate::wayland::ResizeEdge;
+use crate::wayland::{CursorShape, ResizeEdge};
 use crate::{
     CaptionButton, Configuration, EventKind, FrameKind, Painter, WindowRequest,
     window::{CAPTION_HEIGHT, caption_button_rects},
@@ -15,6 +15,8 @@ use canvas::Rect;
 pub enum DecorationAction {
     Request(WindowRequest),
     Close,
+    /// 指针移到了需要不同光标的位置（窗口边框上的调整大小箭头）；调用者交给 [`crate::Display::set_cursor_shape`]。
+    Cursor(CursorShape),
 }
 
 /// 一个窗口的装饰输入状态；保存局部指针位置和按住的标题按钮，不修改 compositor 配置。
@@ -28,6 +30,8 @@ pub struct Decoration {
     icon: Option<Bitmap>,
     /// 上一次单击标题栏图标的时刻；两次单击间隔在 [`DOUBLE_CLICK`] 内视为双击关闭窗口，缺少它双击图标只会重复弹出菜单。
     icon_click: Option<Instant>,
+    /// 已经通知过调用者的光标形状；缺少它每个指针移动事件都会重复请求同一形状。
+    shape: CursorShape,
 }
 
 impl Decoration {
@@ -39,6 +43,7 @@ impl Decoration {
             armed: None,
             icon: None,
             icon_click: None,
+            shape: CursorShape::Default,
         }
     }
 
@@ -140,12 +145,43 @@ impl Decoration {
             .map(|(button, _, _)| button)
     }
 
-    /// 消费 surface 事件并返回移动、缩放、标题按钮操作；按钮只在左键释放时激活。
+    /// 指针当前位置应显示的光标：可缩放窗口的边框上是对应方向的调整大小箭头，其余是默认箭头。
+    fn shape_at(&self, configuration: Configuration) -> CursorShape {
+        let Some(point) = self.pointer else {
+            return CursorShape::Default;
+        };
+        if self.kind != FrameKind::Resizable || configuration.maximized || configuration.fullscreen
+        {
+            return CursorShape::Default;
+        }
+        match resize_edge(configuration, point, self.kind.border()) {
+            Some(ResizeEdge::Top | ResizeEdge::Bottom) => CursorShape::NsResize,
+            Some(ResizeEdge::Left | ResizeEdge::Right) => CursorShape::EwResize,
+            Some(ResizeEdge::TopLeft | ResizeEdge::BottomRight) => CursorShape::NwseResize,
+            Some(ResizeEdge::TopRight | ResizeEdge::BottomLeft) => CursorShape::NeswResize,
+            _ => CursorShape::Default,
+        }
+    }
+
+    /// 消费 surface 事件并返回移动、缩放、标题按钮操作与光标变化；按钮只在左键释放时激活。
     pub fn event(
         &mut self,
         event: &EventKind,
         configuration: Configuration,
     ) -> Option<DecorationAction> {
+        let action = self.act(event, configuration);
+        if matches!(event, EventKind::PointerLeave) {
+            // 指针离开后 compositor 把光标复位；下次进入窗口时由 enter 之后的判定重新设置。
+            self.shape = CursorShape::Default;
+        }
+        action.or_else(|| {
+            let shape = self.shape_at(configuration);
+            (std::mem::replace(&mut self.shape, shape) != shape)
+                .then_some(DecorationAction::Cursor(shape))
+        })
+    }
+
+    fn act(&mut self, event: &EventKind, configuration: Configuration) -> Option<DecorationAction> {
         match event {
             EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
                 self.pointer = Some((x.floor() as i32, y.floor() as i32))
@@ -245,30 +281,36 @@ fn contains(rect: Rect, (x, y): (i32, i32)) -> bool {
     x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()
 }
 
+/// 角区沿边向内延伸的长度：只在 4 像素的角点上才能抓到角太难，Windows 的调整大小框角区也是这样放宽的。
+const CORNER: i32 = 16;
+
+/// 指针 `(x, y)` 在窗口边框上抓住的是哪条边或哪个角；不在边框上返回 `None`。
 fn resize_edge(
     configuration: Configuration,
     (x, y): (i32, i32),
     border: i32,
 ) -> Option<ResizeEdge> {
-    if x < 0 || y < 0 || x >= configuration.width || y >= configuration.height {
+    let (width, height) = (configuration.width, configuration.height);
+    if x < 0 || y < 0 || x >= width || y >= height {
         return None;
     }
-    let (left, right, top, bottom) = (
-        x < border,
-        x >= configuration.width - border,
-        y < border,
-        y >= configuration.height - border,
-    );
+    let (near_left, near_right) = (x < border, x >= width - border);
+    let (near_top, near_bottom) = (y < border, y >= height - border);
+    if !(near_left || near_right || near_top || near_bottom) {
+        return None;
+    }
+    // 左右边框靠近上下端、上下边框靠近左右端时算角。
+    let (left, right) = (near_left || x < CORNER, near_right || x >= width - CORNER);
+    let (top, bottom) = (near_top || y < CORNER, near_bottom || y >= height - CORNER);
     Some(match (left, right, top, bottom) {
         (true, _, true, _) => ResizeEdge::TopLeft,
         (_, true, true, _) => ResizeEdge::TopRight,
         (true, _, _, true) => ResizeEdge::BottomLeft,
         (_, true, _, true) => ResizeEdge::BottomRight,
-        (true, _, _, _) => ResizeEdge::Left,
-        (_, true, _, _) => ResizeEdge::Right,
-        (_, _, true, _) => ResizeEdge::Top,
-        (_, _, _, true) => ResizeEdge::Bottom,
-        _ => return None,
+        _ if near_left => ResizeEdge::Left,
+        _ if near_right => ResizeEdge::Right,
+        _ if near_top => ResizeEdge::Top,
+        _ => ResizeEdge::Bottom,
     })
 }
 

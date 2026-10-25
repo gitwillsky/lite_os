@@ -8,7 +8,7 @@ use std::{
 use wayland_wire::{
     protocol::{
         AnyEvent, Interface, wl_buffer, wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface,
-        xdg_surface, xdg_toplevel, xdg_wm_base,
+        wp_cursor_shape_manager_v1, xdg_surface, xdg_toplevel, xdg_wm_base,
     },
     wire::ObjectId,
 };
@@ -51,6 +51,16 @@ impl Display {
                         .encode(self.seat, &mut self.transport.writer)
                         .map_err(io::Error::other)?;
                     self.pointer_device = Some(pointer);
+                    if let Some(manager) = self.cursor_shape_manager {
+                        let device = self.transport.allocate(Interface::WpCursorShapeDeviceV1)?;
+                        wp_cursor_shape_manager_v1::Request::GetPointer {
+                            cursor_shape_device: device,
+                            pointer,
+                        }
+                        .encode(manager, &mut self.transport.writer)
+                        .map_err(io::Error::other)?;
+                        self.cursor_shape_device = Some(device);
+                    }
                 } else if capabilities & wl_seat::capability::POINTER == 0 {
                     let old = self.pointer.take();
                     self.emit(old, EventKind::PointerLeave);
@@ -184,11 +194,13 @@ impl Display {
                 }
             }
             AnyEvent::WlPointer(wl_pointer::Event::Enter {
+                serial,
                 surface,
                 surface_x,
                 surface_y,
-                ..
             }) => {
+                self.enter_serial = serial;
+                self.shape = None;
                 self.pointer = self
                     .windows
                     .contains_key(&WindowId(surface))
@@ -370,6 +382,10 @@ mod tests {
                 keyboard_device: None,
                 layer_shell: None,
                 security_manager: None,
+                cursor_shape_manager: None,
+                cursor_shape_device: None,
+                enter_serial: 0,
+                shape: None,
                 foreign: Default::default(),
                 foreign_revision: 0,
             },

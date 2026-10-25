@@ -7,3 +7,4 @@ Icon=file-text
 MimeType=text/plain;
 Categories=Utility;TextEditor;
 Terminal=false
+StartupWMClass=org.liteos.notepad

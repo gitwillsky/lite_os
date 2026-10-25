@@ -9,6 +9,8 @@ use wayland_wire::{
     wire::{Fixed, ObjectId},
 };
 
+use wayland_wire::protocol::{wp_cursor_shape_device_v1, wp_cursor_shape_manager_v1};
+
 use super::client::{Client, Data, Fail};
 
 /// 客户端对指针光标的请求（`wl_pointer.set_cursor`）。
@@ -20,6 +22,8 @@ pub struct CursorRequest {
     pub surface: Option<ObjectId>,
     /// 热点，相对 surface 左上角，逻辑像素。
     pub hotspot: (i32, i32),
+    /// `wp_cursor_shape_device_v1.set_shape` 指定的合成器自带光标名；此时没有 `surface`。
+    pub named: Option<&'static str>,
 }
 
 /// 重复按键：每秒字符数与首次重复前的延迟毫秒。由客户端自己实现重复，合成器只宣告参数。
@@ -129,11 +133,53 @@ impl Client {
                     serial,
                     surface,
                     hotspot: (hotspot_x, hotspot_y),
+                    named: None,
                 });
                 Ok(())
             }
             wl_pointer::Request::Release => Ok(()),
         }
+    }
+
+    /// `wp_cursor_shape_manager_v1`：为 `wl_pointer` 创建形状设备；平板工具没有对应的全局对象，请求它是协议错误。
+    pub(super) fn cursor_shape_manager(
+        &mut self,
+        object: ObjectId,
+        version: u32,
+        request: wp_cursor_shape_manager_v1::Request,
+    ) -> Result<(), Fail> {
+        use wp_cursor_shape_manager_v1::Request;
+        match request {
+            Request::Destroy => Ok(()),
+            Request::GetPointer {
+                cursor_shape_device,
+                ..
+            } => self.create(
+                cursor_shape_device,
+                Interface::WpCursorShapeDeviceV1,
+                version,
+                Data::None,
+            ),
+            Request::GetTabletToolV2 { .. } => Err(Fail::invalid_method(
+                object,
+                "this compositor has no tablet support".to_owned(),
+            )),
+        }
+    }
+
+    pub(super) fn cursor_shape_device(
+        &mut self,
+        request: wp_cursor_shape_device_v1::Request,
+    ) -> Result<(), Fail> {
+        if let wp_cursor_shape_device_v1::Request::SetShape { serial, shape } = request {
+            self.cursor_requests.push(CursorRequest {
+                serial,
+                surface: None,
+                hotspot: (0, 0),
+                named: Some(crate::cursor::shape_name(shape)),
+            });
+        }
+        Ok(())
     }
 
     /// 取走自上次以来客户端的光标请求。

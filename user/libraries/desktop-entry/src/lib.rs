@@ -11,6 +11,10 @@ pub struct Entry {
     arguments: Vec<String>,
     /// `MimeType=` 声明可打开的类型。
     mime_types: Vec<String>,
+    /// `StartupWMClass=`：该程序窗口的 `app_id`，任务栏、Alt+Tab 据此找到它的图标。
+    wm_class: Option<String>,
+    /// `NoDisplay=true`：不出现在程序列表里，但仍是已安装的程序（窗口图标查找要用）。
+    no_display: bool,
     /// `Exec=` 带 `%f`/`%F`/`%u`/`%U`：启动时把要打开的文件追加为最后一个参数。
     takes_file: bool,
 }
@@ -38,6 +42,11 @@ impl Entry {
         Some(command)
     }
 
+    /// 程序窗口的 `app_id`（`StartupWMClass=`）。
+    pub fn wm_class(&self) -> Option<&str> {
+        self.wm_class.as_deref()
+    }
+
     pub fn in_category(&self, category: &str) -> bool {
         self.categories.iter().any(|c| c == category)
     }
@@ -63,8 +72,23 @@ pub fn open_with(directory: &Path, file: &Path) -> Option<Command> {
         .and_then(|entry| entry.command_for(file))
 }
 
-/// 读取目录里的全部 `.desktop` 条目，按名称排序；目录不存在或条目无效时跳过。
+/// `app_id` 到 `Icon=` 名称的对照表，来自声明了 `StartupWMClass=` 与 `Icon=` 的条目（含 `NoDisplay` 的）。
+pub fn icons_by_app_id(directory: &Path) -> std::collections::HashMap<String, String> {
+    load_all(directory)
+        .into_iter()
+        .filter_map(|entry| Some((entry.wm_class?, entry.icon?)))
+        .collect()
+}
+
+/// 读取目录里的程序列表条目（不含 `NoDisplay`），按名称排序；目录不存在或条目无效时跳过。
 pub fn load(directory: &Path) -> Vec<Entry> {
+    let mut entries = load_all(directory);
+    entries.retain(|entry| !entry.no_display);
+    entries
+}
+
+/// 读取目录里的全部有效 `.desktop` 条目，包括 `NoDisplay` 的，按名称排序。
+pub fn load_all(directory: &Path) -> Vec<Entry> {
     let mut entries = Vec::new();
     if let Ok(directory) = fs::read_dir(directory) {
         for entry in directory
@@ -89,6 +113,8 @@ fn parse(text: &str) -> Option<Entry> {
     let mut categories = Vec::new();
     let mut mime_types = Vec::new();
     let mut takes_file = false;
+    let mut no_display = false;
+    let mut wm_class = None;
     let mut application = false;
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
@@ -126,7 +152,9 @@ fn parse(text: &str) -> Option<Entry> {
                     .any(|word| matches!(word, "%f" | "%F" | "%u" | "%U"));
                 executable = Some(arguments(value)?)
             }
-            "Hidden" | "NoDisplay" | "Terminal" if value == "true" => return None,
+            "NoDisplay" => no_display = value == "true",
+            "StartupWMClass" => wm_class = Some(value.to_owned()),
+            "Hidden" | "Terminal" if value == "true" => return None,
             _ => {}
         }
     }
@@ -144,6 +172,8 @@ fn parse(text: &str) -> Option<Entry> {
         arguments,
         mime_types,
         takes_file,
+        wm_class,
+        no_display,
     })
 }
 fn arguments(value: &str) -> Option<Vec<String>> {

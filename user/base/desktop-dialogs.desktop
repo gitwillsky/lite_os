@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Run
+Name[zh_CN]=运行
+Exec=/bin/desktop
+Icon=run
+StartupWMClass=org.liteos.desktop
+NoDisplay=true
+Terminal=false

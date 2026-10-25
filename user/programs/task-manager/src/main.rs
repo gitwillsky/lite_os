@@ -9,7 +9,7 @@ mod system;
 use canvas::{Rect, Surface};
 use classic_theme::{Edge, SystemColor as C, Theme};
 use classic_ui::{
-    Bitmap, ButtonState, Decoration, DecorationAction, Display, DropMenu, EventKind, FrameKind,
+    AppIcons, ButtonState, Decoration, DecorationAction, Display, DropMenu, EventKind, FrameKind,
     Ink, Painter, Popup, Prompt, SCROLLBAR_WIDTH, Scroll, ToplevelId, ToplevelRequest, title_rects,
 };
 use menus::{Command as MenuCommand, Speed};
@@ -99,14 +99,6 @@ fn list_rect(page: Rect) -> Rect {
     )
 }
 
-fn icon_for(app_id: &str) -> &'static str {
-    match app_id {
-        "org.liteos.file-explorer" => "folder-closed-16",
-        "org.liteos.control-panel" => "control-panel-16",
-        _ => "file-app-16",
-    }
-}
-
 /// 模态对话框：创建新任务与关于。
 enum Modal {
     NewTask(Prompt),
@@ -161,18 +153,11 @@ impl App {
     }
 
     /// 应用页的任务：除任务管理器自己以外的全部顶层窗口。
-    fn tasks(display: &Display) -> Vec<(ToplevelId, String, bool, &'static str)> {
+    fn tasks(display: &Display) -> Vec<(ToplevelId, String, bool, String)> {
         display
             .toplevels()
             .filter(|(_, info)| info.app_id != OWN_APP_ID)
-            .map(|(id, info)| {
-                (
-                    id,
-                    info.title.clone(),
-                    info.minimized,
-                    icon_for(&info.app_id),
-                )
-            })
+            .map(|(id, info)| (id, info.title.clone(), info.minimized, info.app_id.clone()))
             .collect()
     }
 
@@ -497,13 +482,7 @@ impl App {
         }
     }
 
-    fn paint(
-        &mut self,
-        p: &mut Painter<'_>,
-        display: &Display,
-        client: Rect,
-        icons: &HashMap<&'static str, Bitmap>,
-    ) {
+    fn paint(&mut self, p: &mut Painter<'_>, display: &Display, client: Rect, icons: &AppIcons) {
         let menus = self.menus();
         let titles = title_rects(p, menu_rect(client), &menus);
         let open = self.popup.as_ref().map(|popup| popup.menu);
@@ -574,7 +553,7 @@ impl App {
         p: &mut Painter<'_>,
         display: &Display,
         client: Rect,
-        icons: &HashMap<&'static str, Bitmap>,
+        icons: &AppIcons,
     ) {
         let list = list_rect(page_rect(client, self.tab));
         let inner = p.edge(list, Edge::Sunken);
@@ -657,9 +636,7 @@ impl App {
                     if hot {
                         p.fill(Rect::new(rows.x + 20, y, rows.width - 20, ROW), C::Hilight);
                     }
-                    if let Some(bitmap) = icons.get(icon) {
-                        bitmap.paint(p, rows.x + 3, y + 1);
-                    }
+                    icons.paint(p, icon, rows.x + 3, y + 1);
                     let ink = Ink::Color(if hot { C::HilightText } else { C::WindowText });
                     let text_y = y + (ROW - p.line_height()) / 2;
                     p.text(
@@ -806,14 +783,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut decoration = Decoration::new(FrameKind::Resizable);
     decoration.load_icon("task-manager");
     let theme = Theme::classic();
-    let icons: HashMap<&'static str, Bitmap> =
-        ["folder-closed-16", "control-panel-16", "file-app-16"]
-            .into_iter()
-            .filter_map(|name| {
-                let path = Path::new("/usr/share/liteos/ui").join(format!("{name}.bmp"));
-                Some((name, Bitmap::load(&path).ok()?))
-            })
-            .collect();
+    let icons = AppIcons::load(16);
     let mut app = App::new();
     let mut font: Option<Typeface> = None;
     let mut scale = 0;
@@ -836,6 +806,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             match decoration.event(&event.kind, c) {
                 Some(DecorationAction::Request(request)) => display.request(window, request)?,
                 Some(DecorationAction::Close) => break,
+                Some(DecorationAction::Cursor(shape)) => display.set_cursor_shape(shape)?,
                 None => {}
             }
             dirty |= !matches!(event.kind, EventKind::FramePresented { .. });

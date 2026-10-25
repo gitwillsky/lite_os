@@ -61,6 +61,7 @@ impl Dialog {
         match self.decoration.event(&event.kind, c) {
             Some(DecorationAction::Request(r)) => display.request(self.window, r)?,
             Some(DecorationAction::Close) => return Ok(Action::Close),
+            Some(DecorationAction::Cursor(shape)) => display.set_cursor_shape(shape)?,
             None => {}
         }
         match event.kind {

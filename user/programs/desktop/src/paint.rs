@@ -2,11 +2,15 @@
 use super::{Desktop, TASKBAR_HEIGHT, dialogs::Kind, popups, start};
 use canvas::{Rect, Surface};
 use classic_theme::{Edge, SystemColor as C, Theme};
-use classic_ui::{Bitmap, ButtonState, Configuration, Display, Ink, Painter, ToplevelId, WindowId};
+use classic_ui::{
+    AppIcons, Bitmap, ButtonState, Configuration, Display, Ink, Painter, ToplevelId, WindowId,
+};
 use std::{collections::HashMap, io, path::Path};
 use typeface::Typeface;
 pub struct Art {
     bitmaps: HashMap<String, Bitmap>,
+    /// 任务按钮上的程序图标，按窗口 `app_id` 取。
+    app_icons: AppIcons,
     font: Option<Typeface>,
     scale: i32,
 }
@@ -45,6 +49,7 @@ impl Art {
         }
         Ok(Self {
             bitmaps,
+            app_icons: AppIcons::load(16),
             font: None,
             scale: 0,
         })
@@ -67,14 +72,6 @@ pub const VOLUME: usize = 5;
 pub const CLOCK: usize = 6;
 pub const TASKS_FROM: usize = 7;
 
-/// 任务按钮上的程序图标，按 `app_id` 选；未知程序用通用应用图标。
-fn task_icon(app_id: &str) -> &'static str {
-    match app_id {
-        "org.liteos.file-explorer" => "folder-closed-16",
-        "org.liteos.control-panel" => "control-panel-16",
-        _ => "file-app-16",
-    }
-}
 pub fn task_ids(s: &Desktop, d: &Display, width: i32) -> Vec<ToplevelId> {
     let count = ((width - 275) / 80).max(1) as usize;
     let total = d.toplevels().count();
@@ -260,12 +257,8 @@ pub fn frame(
                 }
                 // 16×16 程序图标加左对齐标题，按下时整体下移一像素。
                 let shift = i32::from(pressed);
-                art.icon(
-                    &mut p,
-                    task_icon(&info.app_id),
-                    rect.x + 4 + shift,
-                    rect.y + 3 + shift,
-                );
+                art.app_icons
+                    .paint(&mut p, &info.app_id, rect.x + 4 + shift, rect.y + 3 + shift);
                 let title = shortened(&p, &info.title, rect.width - 30);
                 p.text(
                     rect.x + 24 + shift,

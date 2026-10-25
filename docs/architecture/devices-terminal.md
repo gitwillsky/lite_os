@@ -77,6 +77,7 @@
   由实际 owner 的 OOM、观察者、重开和重复 close 回归用例验证。
 ## Known limits
 
+- 所有连接有 `wp_cursor_shape_manager_v1` v2（只支持 `wl_pointer`）：客户端按语义请求形状，compositor 用自己的光标集映射绘制；窗口边框上的调整大小箭头由 `classic-ui` 装饰按此请求。
 - Wayland 外壳支持 layer-shell v5 的背景/任务栏/覆盖层、锚点、边距、独占区与键盘交互，以及 foreign-toplevel v3 的窗口列表和控制。
   当前限制：layer popup 不支持；layer 的定位/configure 目前相对整个输出，`exclusive_zone=0` 尚不避让其他图层的正独占区，
   多个同边 panel 尚不按独占区依次排列；foreign-toplevel 尚无 output_enter/leave 与父子窗口关系；

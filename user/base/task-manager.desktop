@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Task Manager
+Name[zh_CN]=任务管理器
+Exec=/bin/taskmgr
+Icon=task-manager
+StartupWMClass=org.liteos.task-manager
+NoDisplay=true
+Terminal=false

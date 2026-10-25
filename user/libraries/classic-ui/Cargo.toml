@@ -12,6 +12,7 @@ liteos-runtime = { path = "../liteos-runtime" }
 canvas = { path = "../canvas" }
 classic-theme = { path = "../classic-theme" }
 typeface = { path = "../typeface" }
+desktop-entry = { path = "../desktop-entry" }
 keyboard.workspace = true
 linux-uapi.workspace = true
 wayland-wire = { path = "../wayland-wire" }

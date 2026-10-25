@@ -4,7 +4,9 @@
 //! 以物理像素返回，需要排版时用 [`Painter::text_width`] 度量。
 
 extern crate liteos_runtime as _;
+mod app_icons;
 mod bitmap;
+pub use app_icons::AppIcons;
 pub use bitmap::Bitmap;
 mod controls;
 mod decoration;

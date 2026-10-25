@@ -22,11 +22,12 @@ use std::{
     time::{Duration, Instant},
 };
 use transport::Transport;
+pub use wayland_wire::protocol::wp_cursor_shape_device_v1::Shape as CursorShape;
 pub use wayland_wire::protocol::xdg_toplevel::ResizeEdge;
 use wayland_wire::{
     protocol::{
-        AnyEvent, Interface, wl_compositor, wl_display, wl_registry, wl_surface, xdg_surface,
-        xdg_toplevel, xdg_wm_base,
+        AnyEvent, Interface, wl_compositor, wl_display, wl_registry, wl_surface,
+        wp_cursor_shape_device_v1, xdg_surface, xdg_toplevel, xdg_wm_base,
     },
     wire::{DynamicNewId, ObjectId},
 };
@@ -198,6 +199,13 @@ pub struct Display {
     keyboard_device: Option<ObjectId>,
     layer_shell: Option<ObjectId>,
     security_manager: Option<ObjectId>,
+    /// `wp_cursor_shape_manager_v1`；compositor 不提供时没有光标反馈，窗口仍可用。
+    cursor_shape_manager: Option<ObjectId>,
+    cursor_shape_device: Option<ObjectId>,
+    /// 最近一次 `wl_pointer.enter` 的序号；`set_shape` 必须带它。
+    enter_serial: u32,
+    /// 当前已设置的形状；相同形状不重复发送，每次 enter 后清空（compositor 会把光标复位）。
+    shape: Option<CursorShape>,
     foreign: std::collections::BTreeMap<u32, foreign::Pending>,
     foreign_revision: u64,
 }
@@ -286,6 +294,14 @@ impl Display {
         } else {
             None
         };
+        let cursor_shape_manager = if globals
+            .iter()
+            .any(|(_, name, _)| name == "wp_cursor_shape_manager_v1")
+        {
+            Some(bind(Interface::WpCursorShapeManagerV1, 2)?)
+        } else {
+            None
+        };
         if globals
             .iter()
             .any(|(_, name, _)| name == "zwlr_foreign_toplevel_manager_v1")
@@ -312,6 +328,10 @@ impl Display {
             keyboard_device: None,
             layer_shell,
             security_manager,
+            cursor_shape_manager,
+            cursor_shape_device: None,
+            enter_serial: 0,
+            shape: None,
             foreign: Default::default(),
             foreign_revision: 0,
         };
@@ -319,6 +339,28 @@ impl Display {
         display.roundtrip()?;
         display.roundtrip()?;
         Ok(display)
+    }
+
+    /// 请求指针在本程序窗口上显示 `shape`；没有光标形状协议、指针不在窗口上或形状没变时什么也不做。
+    ///
+    /// # Errors
+    ///
+    /// 写 socket 失败。
+    pub fn set_cursor_shape(&mut self, shape: CursorShape) -> io::Result<()> {
+        let (Some(device), Some(_)) = (self.cursor_shape_device, self.pointer) else {
+            return Ok(());
+        };
+        if self.shape == Some(shape) {
+            return Ok(());
+        }
+        self.shape = Some(shape);
+        wp_cursor_shape_device_v1::Request::SetShape {
+            serial: self.enter_serial,
+            shape,
+        }
+        .encode(device, &mut self.transport.writer)
+        .map_err(io::Error::other)?;
+        self.transport.flush()
     }
 
     fn roundtrip(&mut self) -> io::Result<()> {

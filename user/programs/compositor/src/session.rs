@@ -1152,13 +1152,14 @@ impl Session {
             if !current || self.grab.is_some() {
                 continue;
             }
-            self.shape = match request.surface {
-                Some(surface) => Shape::Client {
+            self.shape = match (request.named, request.surface) {
+                (Some(name), _) => Shape::Named(name),
+                (None, Some(surface)) => Shape::Client {
                     client,
                     surface,
                     hotspot: request.hotspot,
                 },
-                None => Shape::Hidden,
+                (None, None) => Shape::Hidden,
             };
             self.apply_cursor()?;
         }

@@ -93,7 +93,7 @@ pub(super) struct Entry {
 }
 
 /// 向客户端公布的全局对象：`(name, 接口, 最高版本)`。
-const GLOBALS: [(u32, Interface, u32); 6] = [
+const GLOBALS: [(u32, Interface, u32); 7] = [
     (1, Interface::WlCompositor, 6),
     (2, Interface::WlShm, 1),
     (3, Interface::XdgWmBase, 3),
@@ -102,6 +102,8 @@ const GLOBALS: [(u32, Interface, u32); 6] = [
     // 窗口列表与控制对同一桌面上的所有程序开放：Windows 2000 的 EnumWindows 与 WM_CLOSE 也是这个语义，
     // 任务管理器之类的独立程序需要它。能改变外壳布局的 layer-shell 仍只给外壳。
     (7, Interface::ZwlrForeignToplevelManagerV1, 3),
+    // 光标形状：客户端按语义（调整大小、文字、等待…）请求，合成器用自己的光标集绘制，缩放与热点由它决定。
+    (9, Interface::WpCursorShapeManagerV1, 2),
 ];
 
 /// 初始 Session 与通过 security-context 委派的 Shell 可见的全局对象：
@@ -385,6 +387,10 @@ impl Client {
             AnyRequest::ZwlrForeignToplevelHandleV1(request) => {
                 self.foreign_handle(object, request)
             }
+            AnyRequest::WpCursorShapeManagerV1(request) => {
+                self.cursor_shape_manager(object, version, request)
+            }
+            AnyRequest::WpCursorShapeDeviceV1(request) => self.cursor_shape_device(request),
             AnyRequest::WpSecurityContextManagerV1(request) => {
                 self.security_manager(object, request)
             }

@@ -382,6 +382,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             match decoration.event(&event.kind, c) {
                 Some(DecorationAction::Request(request)) => display.request(window, request)?,
                 Some(DecorationAction::Close) => break,
+                Some(DecorationAction::Cursor(shape)) => display.set_cursor_shape(shape)?,
                 None => {}
             }
             dirty |= !matches!(event.kind, EventKind::FramePresented { .. });

@@ -125,7 +125,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
     let mut display = Display::connect()?;
-    let window = display.create_window(page.title(), "org.liteos.control-panel", page.size())?;
+    // app_id 带上小程序名：任务栏与 Alt+Tab 据此给每个小程序自己的图标。
+    let app_id = format!(
+        "org.liteos.control-panel.{}",
+        std::env::args().nth(1).unwrap_or_default()
+    );
+    let window = display.create_window(page.title(), &app_id, page.size())?;
     let mut decoration = Decoration::new(FrameKind::Fixed);
     decoration.load_icon(page.icon());
     let theme = Theme::classic();
@@ -158,6 +163,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             match decoration.event(&event.kind, c) {
                 Some(DecorationAction::Request(request)) => display.request(window, request)?,
                 Some(DecorationAction::Close) => break,
+                Some(DecorationAction::Cursor(shape)) => display.set_cursor_shape(shape)?,
                 None => {}
             }
             dirty |= !matches!(event.kind, EventKind::FramePresented { .. });

@@ -6,3 +6,4 @@ Exec=/bin/control-panel datetime
 Icon=date-time
 Categories=Settings;
 Terminal=false
+StartupWMClass=org.liteos.control-panel.datetime

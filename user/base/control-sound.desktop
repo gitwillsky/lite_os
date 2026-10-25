@@ -6,3 +6,4 @@ Exec=/bin/control-panel sounds
 Icon=sound-volume
 Categories=Settings;
 Terminal=false
+StartupWMClass=org.liteos.control-panel.sounds

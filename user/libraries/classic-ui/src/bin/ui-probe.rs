@@ -97,6 +97,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 println!("ui-probe: closed");
                 return Ok(());
             }
+            Some(DecorationAction::Cursor(shape)) => display.set_cursor_shape(shape)?,
             None => {}
         }
         match event.kind {
