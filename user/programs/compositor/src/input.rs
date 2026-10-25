@@ -11,6 +11,12 @@ const EV_ABS: u16 = 3;
 const SYN_REPORT: u16 = 0;
 const AXIS_X: u16 = 0;
 const AXIS_Y: u16 = 1;
+const REL_HWHEEL: u16 = 6;
+const REL_WHEEL: u16 = 8;
+const REL_WHEEL_HI_RES: u16 = 11;
+const REL_HWHEEL_HI_RES: u16 = 12;
+/// 滚轮一个档位的 hi-res 单位数（Linux `REL_WHEEL_HI_RES` 约定）。
+const WHEEL_NOTCH: i32 = 120;
 const BUTTON_FIRST: u16 = 0x110;
 const BUTTON_LAST: u16 = 0x117;
 
@@ -30,6 +36,11 @@ pub enum Event {
     Key {
         code: u16,
         pressed: bool,
+    },
+    /// 滚轮档位：`vertical > 0` 向下滚，`horizontal > 0` 向右滚（Wayland 轴方向，与 evdev 的垂直方向相反）。
+    Wheel {
+        vertical: i32,
+        horizontal: i32,
     },
 }
 
@@ -77,6 +88,12 @@ pub struct Decoder {
     ranges: Option<[AbsoluteRange; 2]>,
     absolute: [Option<i32>; 2],
     relative: [i32; 2],
+    /// 本帧的滚轮输入 `[垂直, 水平]`：低分辨率档位与 hi-res 单位分开记，同一设备往往两种都报，
+    /// 提交时以 hi-res 为准，否则一次滚动会被算两遍。
+    wheel_low: [i32; 2],
+    wheel_high: [i32; 2],
+    /// 尚不足一个档位的 hi-res 余量；高精度滚轮逐步累计到 120 才产生一个档位。
+    wheel_remainder: [i32; 2],
 }
 
 impl Decoder {
@@ -85,6 +102,9 @@ impl Decoder {
             ranges,
             absolute: [None; 2],
             relative: [0; 2],
+            wheel_low: [0; 2],
+            wheel_high: [0; 2],
+            wheel_remainder: [0; 2],
         }
     }
 
@@ -102,6 +122,10 @@ impl Decoder {
                 self.absolute[usize::from(code)] = Some(value)
             }
             (EV_REL, AXIS_X | AXIS_Y) => self.relative[usize::from(code)] += value,
+            (EV_REL, REL_WHEEL) => self.wheel_low[0] -= value,
+            (EV_REL, REL_HWHEEL) => self.wheel_low[1] += value,
+            (EV_REL, REL_WHEEL_HI_RES) => self.wheel_high[0] -= value,
+            (EV_REL, REL_HWHEEL_HI_RES) => self.wheel_high[1] += value,
             (EV_KEY, BUTTON_FIRST..=BUTTON_LAST) if value != 2 => out.push(Event::Button {
                 code,
                 pressed: value != 0,
@@ -124,6 +148,21 @@ impl Decoder {
             if let Some(value) = self.absolute[1].take() {
                 pointer.y = Pointer::scale(value, ranges[1], pointer.height);
             }
+        }
+        let mut notches = [0; 2];
+        for axis in 0..2 {
+            let low = std::mem::take(&mut self.wheel_low[axis]);
+            let high = std::mem::take(&mut self.wheel_high[axis]);
+            let units = if high != 0 { high } else { low * WHEEL_NOTCH };
+            self.wheel_remainder[axis] += units;
+            notches[axis] = self.wheel_remainder[axis] / WHEEL_NOTCH;
+            self.wheel_remainder[axis] %= WHEEL_NOTCH;
+        }
+        if notches != [0; 2] {
+            out.push(Event::Wheel {
+                vertical: notches[0],
+                horizontal: notches[1],
+            });
         }
         pointer.x += std::mem::take(&mut self.relative[0]);
         pointer.y += std::mem::take(&mut self.relative[1]);

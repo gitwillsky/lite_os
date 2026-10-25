@@ -258,6 +258,43 @@ impl Client {
         }
     }
 
+    /// 滚轮：`vertical`、`horizontal` 是档位数（正值向下、向右）。
+    ///
+    /// 版本 5 起先给来源（滚轮）与离散档位，再给连续值（每档 10 逻辑像素，与 libinput 一致），
+    /// 全部以一个 `frame` 结束；更早的版本只有连续值。
+    pub fn pointer_axis(&mut self, time: u32, vertical: i32, horizontal: i32) {
+        for (pointer, version) in self.objects_of(Interface::WlPointer) {
+            if version >= 5 {
+                let _ = wl_pointer::Event::AxisSource {
+                    axis_source: wl_pointer::AxisSource::Wheel,
+                }
+                .encode(pointer, &mut self.writer);
+            }
+            for (axis, notches) in [
+                (wl_pointer::Axis::VerticalScroll, vertical),
+                (wl_pointer::Axis::HorizontalScroll, horizontal),
+            ] {
+                if notches == 0 {
+                    continue;
+                }
+                if version >= 5 {
+                    let _ = wl_pointer::Event::AxisDiscrete {
+                        axis,
+                        discrete: notches,
+                    }
+                    .encode(pointer, &mut self.writer);
+                }
+                let _ = wl_pointer::Event::Axis {
+                    time,
+                    axis,
+                    value: Fixed::from_int(notches * 10),
+                }
+                .encode(pointer, &mut self.writer);
+            }
+            self.pointer_frame(pointer, version);
+        }
+    }
+
     /// 版本 5 起，一组逻辑上同时发生的指针事件以 `frame` 结束。
     fn pointer_frame(&mut self, pointer: ObjectId, version: u32) {
         if version >= 5 {

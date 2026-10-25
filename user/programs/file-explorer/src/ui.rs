@@ -18,7 +18,6 @@ const PANE_WIDTH: i32 = 190;
 const SPLITTER: i32 = 4;
 const TREE_HEADER: i32 = 18;
 const TREE_ROW: i32 = 18;
-const POPUP_WIDTH: i32 = 184;
 const ITEM_HEIGHT: i32 = 20;
 
 /// 已加载的原版图标；缺失的素材（只提交了默认素材的构建）按"无图标"绘制。
@@ -80,6 +79,8 @@ impl Assets {
 /// 弹出菜单。
 pub struct Popup {
     pub origin: (i32, i32),
+    /// 按条目内容算出的宽度（逻辑像素）；创建时为 0，由 [`Popup::measure`] 在事件处理后补上。
+    pub width: i32,
     pub entries: Vec<Entry>,
     pub hover: Option<usize>,
     /// 由哪个顶层菜单打开；工具栏与右键打开的为 `None`。
@@ -96,9 +97,19 @@ impl Popup {
         }
     }
 
+    /// 按条目标签与快捷键量出宽度；条目变化后重新调用。
+    pub fn measure(&mut self, p: &Painter<'_>) {
+        self.width = p.menu_width(self.entries.iter().filter_map(|entry| match entry {
+            Entry::Item {
+                label, shortcut, ..
+            } => Some((*label, *shortcut)),
+            Entry::Separator => None,
+        }));
+    }
+
     pub fn rect(&self) -> Rect {
         let height: i32 = self.entries.iter().map(Self::row_height).sum();
-        Rect::new(self.origin.0, self.origin.1, POPUP_WIDTH, height + 4)
+        Rect::new(self.origin.0, self.origin.1, self.width, height + 4)
     }
 
     /// 命中的可点击行。
@@ -106,7 +117,7 @@ impl Popup {
         let mut y = self.origin.1 + 2;
         for (index, entry) in self.entries.iter().enumerate() {
             let height = Self::row_height(entry);
-            let row = Rect::new(self.origin.0 + 2, y, POPUP_WIDTH - 4, height);
+            let row = Rect::new(self.origin.0 + 2, y, self.width - 4, height);
             if inside(row, point) && matches!(entry, Entry::Item { .. }) {
                 return Some(index);
             }

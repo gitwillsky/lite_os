@@ -76,14 +76,7 @@ impl Popup {
     /// 在标题矩形 `title` 的下方打开第 `menu` 个菜单。
     pub fn open<T>(p: &Painter<'_>, menus: &[DropMenu<T>], menu: usize, title: Rect) -> Self {
         let items = &menus[menu].items;
-        let widest = items
-            .iter()
-            .map(|item| {
-                let shortcut = logical_width(p, item.shortcut);
-                logical_width(p, item.label) + if shortcut > 0 { shortcut + 24 } else { 0 }
-            })
-            .max()
-            .unwrap_or(0);
+        let width = p.menu_width(items.iter().map(|item| (item.label, item.shortcut)));
         let height = 4 + items
             .iter()
             .map(|item| {
@@ -97,7 +90,7 @@ impl Popup {
             .sum::<i32>();
         Self {
             menu,
-            rect: Rect::new(title.x, title.bottom(), widest + 16 + 34, height),
+            rect: Rect::new(title.x, title.bottom(), width, height),
             hover: None,
         }
     }

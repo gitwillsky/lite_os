@@ -115,6 +115,12 @@ pub enum EventKind {
         pressed: bool,
         serial: u32,
     },
+    /// 滚轮或触摸板滚动，单位是“格”：`vertical > 0` 是向下滚（内容上移），`horizontal > 0` 是向右。
+    /// 一格对应滚轮的一个档位；连续（无档位）的来源按 10 逻辑像素折算为一格。
+    Wheel {
+        vertical: i32,
+        horizontal: i32,
+    },
     Key(Key),
     Focus(bool),
     FramePresented {
@@ -206,6 +212,10 @@ pub struct Display {
     cursor_shape_device: Option<ObjectId>,
     /// 最近一次 `wl_pointer.enter` 的序号；`set_shape` 必须带它。
     enter_serial: u32,
+    /// 自上一个 `wl_pointer.frame` 起累计的滚动：`[垂直, 水平]` 的离散档位与连续值。
+    /// 一个 frame 内可有多条 axis 事件，必须攒到 frame 才能得到语义完整的一次滚动。
+    scroll_discrete: [i32; 2],
+    scroll_continuous: [f64; 2],
     /// 当前已设置的形状；相同形状不重复发送，每次 enter 后清空（compositor 会把光标复位）。
     shape: Option<CursorShape>,
     foreign: std::collections::BTreeMap<u32, foreign::Pending>,
@@ -342,6 +352,8 @@ impl Display {
             cursor_shape_manager,
             cursor_shape_device: None,
             enter_serial: 0,
+            scroll_discrete: [0; 2],
+            scroll_continuous: [0.0; 2],
             shape: None,
             foreign: Default::default(),
             foreign_revision: 0,

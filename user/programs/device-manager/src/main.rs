@@ -266,6 +266,16 @@ impl App {
         }
     }
 
+    /// 滚轮：向下滚 `notches` 档滚动设备树。
+    fn wheel(&mut self, client: Rect, notches: i32) {
+        if self.modal.is_some() {
+            return;
+        }
+        let (rows_rect, _) = self.view(client);
+        let content = self.rows().len() as i32 * ROW;
+        self.scroll.wheel(notches, ROW, content - rows_rect.height);
+    }
+
     fn pointer_moved(&mut self, p: &Painter<'_>, client: Rect) {
         let menus = menus();
         let bar = Rect::new(client.x, client.y, client.width, MENU_HEIGHT);
@@ -563,6 +573,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 EventKind::PointerLeave => app.pointer = (-1, -1),
+                EventKind::Wheel { vertical, .. } => app.wheel(client, vertical),
                 EventKind::Button {
                     code: 0x110,
                     pressed: true,

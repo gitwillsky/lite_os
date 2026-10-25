@@ -235,6 +235,15 @@ impl Seat {
         }
     }
 
+    /// 滚轮发给当前指针焦点的客户端；没有焦点时丢弃。
+    pub fn wheel(&mut self, server: &mut Server, vertical: i32, horizontal: i32, time: u32) {
+        if let Some((client, _)) = self.pointer_focus {
+            server.with_client(client, |client| {
+                client.pointer_axis(time, vertical, horizontal)
+            });
+        }
+    }
+
     pub fn button(&mut self, server: &mut Server, code: u16, pressed: bool, time: u32) {
         if let Some((client, _)) = self.pointer_focus {
             let serial = self.next_serial();

@@ -351,7 +351,12 @@ pub fn frame(
         start::paint(&mut p, art, &rows, &g, s.menu_selection);
     } else if let Some(dialog) = s.dialogs.iter().find(|dialog| dialog.window == id) {
         p.fill(Rect::new(0, 0, c.width, c.height), C::ButtonFace);
-        dialog.decoration.paint(&mut p, c, dialog.kind.title());
+        // layer surface 没有 xdg 的 activated 状态：对话框持有键盘焦点时标题栏画成活动。
+        let active = Configuration {
+            active: d.keyboard_focus() == Some(id),
+            ..c
+        };
+        dialog.decoration.paint(&mut p, active, dialog.kind.title());
         match dialog.kind {
             Kind::Run => {
                 art.icon(&mut p, "run-32", 20, 48);

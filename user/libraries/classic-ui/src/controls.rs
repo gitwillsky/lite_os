@@ -264,15 +264,16 @@ impl Painter<'_> {
     /// 未选中的标签头下沿取页面上边框的上沿，保留页面的高光线。第一个选中的标签头左边必须与页面左边框同一列，
     /// 其余选中的标签头向两侧各多出 2 像素，由调用者给出矩形。
     ///
-    /// 左、上是高光与亮面，右是黑与暗影，三个角各缩进一像素形成圆角；文字居中于顶部 22 像素（未选中为整个矩形）。
+    /// 左边是外亮面内高光（与页面边框同序），上边是外高光内亮面，右是黑与暗影，三个角各缩进一像素形成圆角；文字居中于顶部 22 像素（未选中为整个矩形）。
     pub fn tab(&mut self, tab: Rect, label: &str, selected: bool) {
         use SystemColor as C;
         self.fill(tab, C::ButtonFace);
         let (right, bottom) = (tab.right(), tab.bottom());
         let side = bottom - tab.y - 2;
         for (rect, color) in [
-            (Rect::new(tab.x, tab.y + 2, 1, side), C::ButtonHilight),
-            (Rect::new(tab.x + 1, tab.y + 2, 1, side), C::ButtonLight),
+            // 左边两列的顺序与页面凸起边框一致（外灰内白），第一个标签的白线才与页面左边的白线同一列。
+            (Rect::new(tab.x, tab.y + 2, 1, side), C::ButtonLight),
+            (Rect::new(tab.x + 1, tab.y + 2, 1, side), C::ButtonHilight),
             (
                 Rect::new(tab.x + 2, tab.y, tab.width - 4, 1),
                 C::ButtonHilight,

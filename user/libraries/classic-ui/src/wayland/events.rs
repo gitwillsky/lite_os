@@ -246,6 +246,28 @@ impl Display {
                     },
                 );
             }
+            AnyEvent::WlPointer(wl_pointer::Event::AxisDiscrete { axis, discrete }) => {
+                self.scroll_discrete[axis as usize] += discrete;
+            }
+            AnyEvent::WlPointer(wl_pointer::Event::Axis { axis, value, .. }) => {
+                self.scroll_continuous[axis as usize] += value.to_f64();
+            }
+            AnyEvent::WlPointer(wl_pointer::Event::Frame) => {
+                // 有离散档位时以档位为准；只有连续值（触摸板）时每 10 逻辑像素折算一格。
+                let notches = |axis: usize| {
+                    if self.scroll_discrete[axis] != 0 {
+                        self.scroll_discrete[axis]
+                    } else {
+                        (self.scroll_continuous[axis] / 10.0).round() as i32
+                    }
+                };
+                let (vertical, horizontal) = (notches(0), notches(1));
+                self.scroll_discrete = [0; 2];
+                self.scroll_continuous = [0.0; 2];
+                if vertical != 0 || horizontal != 0 {
+                    self.emit(self.pointer, EventKind::Wheel { vertical, horizontal });
+                }
+            }
             AnyEvent::WlKeyboard(wl_keyboard::Event::Keymap { format, fd, size }) => {
                 if format != wl_keyboard::KeymapFormat::XkbV1 || size > 1024 * 1024 {
                     return Err(io::Error::new(

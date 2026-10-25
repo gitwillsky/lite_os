@@ -76,6 +76,17 @@ impl Scroll {
         self.position = ((offset - arrow - grab).clamp(0, free) * travel) / free;
     }
 
+    /// 滚轮：向下滚 `notches` 档（负数向上），每档 3 行（Windows 的默认滚轮行数），再夹到 `maximum`。
+    ///
+    /// # Parameters
+    ///
+    /// - `line`: 一行的像素（或行）数，与 `position` 同一单位。
+    /// - `maximum`: `position` 的上限，通常是 `content - page`。
+    pub fn wheel(&mut self, notches: i32, line: i32, maximum: i32) {
+        self.position += notches * 3 * line;
+        self.clamp(maximum);
+    }
+
     pub fn release(&mut self) {
         self.grab = None;
     }

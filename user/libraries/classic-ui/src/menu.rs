@@ -25,6 +25,27 @@ impl Painter<'_> {
         inner
     }
 
+    /// 按内容算菜单宽度（逻辑像素）：左侧勾选列与边框 20，最宽的“标签 + 间隔 + 快捷键”，右侧留白与边框 14。
+    ///
+    /// # Parameters
+    ///
+    /// - `items`: 各项的 `(标签, 快捷键)`；没有快捷键传空串。
+    pub fn menu_width<'a>(&self, items: impl IntoIterator<Item = (&'a str, &'a str)>) -> i32 {
+        const LEFT: i32 = 20;
+        const RIGHT: i32 = 14;
+        const SHORTCUT_GAP: i32 = 24;
+        let widest = items
+            .into_iter()
+            .map(|(label, shortcut)| {
+                let label = self.logical_ceil(self.text_width(label, false));
+                let shortcut = self.logical_ceil(self.text_width(shortcut, false));
+                label + if shortcut > 0 { shortcut + SHORTCUT_GAP } else { 0 }
+            })
+            .max()
+            .unwrap_or(0);
+        LEFT + widest + RIGHT
+    }
+
     /// 一行菜单项：整行高亮左右各留 2 像素；左侧 16 像素放勾选标记，快捷键右对齐。
     pub fn menu_item(&mut self, row: Rect, label: &str, shortcut: &str, state: MenuItemState) {
         let band = Rect::new(row.x + 2, row.y, row.width - 4, row.height);

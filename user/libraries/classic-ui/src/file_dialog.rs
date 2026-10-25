@@ -414,6 +414,14 @@ impl FileDialog {
         self.scroll.release();
     }
 
+    /// 滚轮：向下滚 `notches` 档滚动文件列表。
+    pub fn wheel(&mut self, client: Rect, notches: i32) {
+        let r = Self::rects(client);
+        let (rows, _) = self.list_view(&r);
+        let content = self.entries.len() as i32 * ROW;
+        self.scroll.wheel(notches, ROW, content - rows.height);
+    }
+
     /// 按键：Enter 完成、Esc 取消、上下移动选择，其余编辑文件名。
     pub fn key(&mut self, key: Key) -> FileDialogEvent {
         match key.code {

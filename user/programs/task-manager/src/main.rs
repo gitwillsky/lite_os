@@ -396,6 +396,17 @@ impl App {
         self.modal = None;
     }
 
+    /// 滚轮：向下滚 `notches` 档滚动当前标签的列表（性能页没有列表）。
+    fn wheel(&mut self, display: &Display, client: Rect, notches: i32) {
+        if self.modal.is_some() || self.tab == 2 {
+            return;
+        }
+        let list = list_rect(page_rect(client, self.tab));
+        let count = self.row_count(display);
+        let (rows, _) = self.rows_rect(list, count);
+        self.scroll[self.tab].wheel(notches, ROW, count as i32 * ROW - rows.height);
+    }
+
     fn pointer_moved(&mut self, p: &Painter<'_>, display: &Display, client: Rect) {
         let point = self.pointer;
         let menus = self.menus();
@@ -801,6 +812,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     app.pointer_moved(&probe, &display, client);
                 }
                 EventKind::PointerLeave => app.pointer = (-1, -1),
+                EventKind::Wheel { vertical, .. } => app.wheel(&display, client, vertical),
                 EventKind::Button {
                     code: 0x110,
                     pressed: true,

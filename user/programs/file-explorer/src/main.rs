@@ -180,6 +180,7 @@ impl App {
                     let rect = chrome::tool_rects(bar)[TOOLS.len() - 1];
                     self.ui.popup = Some(Popup {
                         origin: (rect.x, rect.bottom()),
+                        width: 0,
                         entries: chrome::view_entries(self.browser.view),
                         hover: None,
                         menu: None,
@@ -223,6 +224,7 @@ impl App {
         let rect = ui::menu_title_rects(p, l.menu)[index];
         self.ui.popup = Some(Popup {
             origin: (rect.x, rect.bottom()),
+            width: 0,
             entries: chrome::menu(index, &self.browser),
             hover: None,
             menu: Some(index),
@@ -343,6 +345,7 @@ impl App {
         }
         self.ui.popup = Some(Popup {
             origin: point,
+            width: 0,
             entries: chrome::context(&self.browser, hit.is_some()),
             hover: None,
             menu: None,
@@ -476,6 +479,28 @@ impl App {
                     .drag(bar, true, (content, view.height), point);
             }
         }
+    }
+
+    /// 滚轮：指针在文件夹树上滚动树，否则滚动文件列表（横向排列的视图也用垂直滚轮横向滚动）。
+    fn wheel(&mut self, client: Rect, notches: i32) {
+        if self.ui.popup.is_some() || self.ui.confirm.is_some() || self.ui.notice.is_some() {
+            return;
+        }
+        let point = self.ui.pointer;
+        if let Some(pane) = ui::layout(client, &self.browser)
+            .pane
+            .filter(|pane| self.browser.show_folders && inside(*pane, point))
+        {
+            let (view, _, content) = ui::tree_scroll_geometry(pane, self.browser.rows.len());
+            self.ui
+                .tree_scroll
+                .wheel(notches, 18, content - view.height);
+            return;
+        }
+        let grid = self.grid(client);
+        self.ui
+            .list_scroll
+            .wheel(notches, grid.line(), grid.max_scroll());
     }
 
     /// 记下 Ctrl 与 Shift 的状态；按下与释放事件都要调用。
@@ -894,12 +919,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 pressed: true,
                 ..
             } => app.press_context(client),
+            EventKind::Wheel { vertical, .. } => app.wheel(client, vertical),
             EventKind::Key(key) if key.pressed => app.key(&probe, key, client),
             EventKind::Key(key) => {
                 app.track_modifiers(&key);
                 app.alt_released(&key);
             }
             _ => {}
+        }
+        if let Some(popup) = app.ui.popup.as_mut().filter(|popup| popup.width == 0) {
+            popup.measure(&probe);
         }
         app.raise_notice();
         dirty |= !matches!(event.kind, EventKind::FramePresented { .. });

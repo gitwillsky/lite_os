@@ -473,6 +473,19 @@ impl App {
         }
     }
 
+    /// 滚轮：文件对话框打开时滚动它的列表，否则滚动文档。
+    fn wheel(&mut self, p: &Painter<'_>, client: Rect, notches: i32) {
+        if let Some(dialog) = self.file_dialog() {
+            dialog.wheel(client, notches);
+            return;
+        }
+        let line_height = p.line_height() + 1;
+        let (area, _) = self.areas(client, line_height);
+        let content = self.document.lines().len() as i32 * line_height;
+        self.scroll
+            .wheel(notches, line_height, content - area.height);
+    }
+
     fn pointer_moved(&mut self, p: &Painter<'_>, client: Rect) {
         let point = self.pointer;
         let line_height = p.line_height() + 1;
@@ -869,6 +882,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
                 EventKind::PointerLeave => app.pointer = (-1, -1),
+                EventKind::Wheel { vertical, .. } => app.wheel(&probe, client, vertical),
                 EventKind::Button {
                     code: 0x110,
                     pressed: true,

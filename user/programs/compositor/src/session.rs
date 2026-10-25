@@ -623,6 +623,16 @@ impl Session {
                     self.seat.button(&mut self.server, code, pressed, time);
                 }
             }
+            Event::Wheel {
+                vertical,
+                horizontal,
+            } => {
+                // 窗口菜单、拖动抓取期间滚轮不交给应用。
+                if self.window_menu.is_none() && self.grab.is_none() && !self.secure_pending {
+                    self.seat
+                        .wheel(&mut self.server, vertical, horizontal, time);
+                }
+            }
             Event::Key { code, pressed } => {
                 if !std::mem::replace(&mut self.saw_key, true) {
                     println!("compositor: first key event");
