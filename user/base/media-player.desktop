@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Media Player
+Name[zh_CN]=媒体播放机
+Exec=/bin/mplay %f
+Icon=media-player
+MimeType=audio/x-wav;
+Categories=AudioVideo;Player;
+Terminal=false

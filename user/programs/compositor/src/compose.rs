@@ -15,12 +15,17 @@ pub struct Drawable<'a> {
     pub factor: i32,
 }
 
-/// 把桌面与窗口画进 `target`。
+/// 把桌面与窗口画进 `target`，最后交给 `overlay` 在最上层绘制（Alt+Tab 面板）。
 ///
 /// # Returns
 ///
 /// `false` 表示缓冲尺寸与行距不能构成绘制面（不应发生，由 DRM 保证）；此时没有绘制。
-pub fn compose(target: &mut DumbBuffer, theme: &Theme, windows: &[Drawable<'_>]) -> bool {
+pub fn compose(
+    target: &mut DumbBuffer,
+    theme: &Theme,
+    windows: &[Drawable<'_>],
+    overlay: impl FnOnce(Surface<'_>),
+) -> bool {
     let (width, height, stride) = (
         target.width() as i32,
         target.height() as i32,
@@ -43,5 +48,6 @@ pub fn compose(target: &mut DumbBuffer, theme: &Theme, windows: &[Drawable<'_>])
         };
         surface.blit(image, window.x, window.y, window.factor);
     }
+    overlay(surface);
     true
 }

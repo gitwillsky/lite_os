@@ -9,6 +9,8 @@ liteos-runtime = { path = "../../libraries/liteos-runtime" }
 boot-scene = { path = "../../../boot-scene" }
 canvas = { path = "../../libraries/canvas" }
 classic-theme = { path = "../../libraries/classic-theme" }
+classic-ui = { path = "../../libraries/classic-ui" }
+typeface = { path = "../../libraries/typeface" }
 keyboard.workspace = true
 linux-uapi.workspace = true
 wayland-wire = { path = "../../libraries/wayland-wire" }

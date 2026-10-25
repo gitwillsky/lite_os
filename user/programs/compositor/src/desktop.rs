@@ -160,14 +160,6 @@ impl Stack {
         true
     }
 
-    /// Alt+Tab 的目标：最久没有被激活的窗口（栈最底层）。
-    ///
-    /// 只有一个窗口时，仅当它被最小化才有切换的意义（恢复它）；否则没有可切换的对象。
-    pub fn cycle_target(&self) -> Option<(ClientId, ObjectId)> {
-        let bottom = self.order.first()?;
-        (self.order.len() >= 2 || bottom.minimized).then_some((bottom.client, bottom.surface))
-    }
-
     /// 最小化窗口：不再绘制、不参与命中与激活。
     pub fn minimize(&mut self, client: ClientId, surface: ObjectId) -> bool {
         match self.find(client, surface) {

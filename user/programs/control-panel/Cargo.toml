@@ -10,4 +10,5 @@ calendar = { path = "../../libraries/calendar" }
 canvas = { path = "../../libraries/canvas" }
 classic-theme = { path = "../../libraries/classic-theme" }
 classic-ui = { path = "../../libraries/classic-ui" }
+sound = { path = "../../libraries/sound" }
 typeface = { path = "../../libraries/typeface" }

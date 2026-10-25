@@ -9,6 +9,10 @@ pub struct Entry {
     pub icon: Option<String>,
     categories: Vec<String>,
     arguments: Vec<String>,
+    /// `MimeType=` 声明可打开的类型。
+    mime_types: Vec<String>,
+    /// `Exec=` 带 `%f`/`%F`/`%u`/`%U`：启动时把要打开的文件追加为最后一个参数。
+    takes_file: bool,
 }
 
 impl Entry {
@@ -23,9 +27,40 @@ impl Entry {
         &self.arguments
     }
 
+    /// 用这个程序打开 `file` 的命令：声明了文件字段码的程序把文件追加为最后一个参数；
+    /// 没有声明的程序不能打开文件，返回 `None`。
+    pub fn command_for(&self, file: &Path) -> Option<Command> {
+        if !self.takes_file {
+            return None;
+        }
+        let mut command = self.command();
+        command.arg(file);
+        Some(command)
+    }
+
     pub fn in_category(&self, category: &str) -> bool {
         self.categories.iter().any(|c| c == category)
     }
+}
+
+/// 文件的 MIME 类型：按扩展名查 shared-mime-info 的一个子集；不认识的返回 `None`。
+pub fn mime_for(path: &Path) -> Option<&'static str> {
+    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match extension.as_str() {
+        "wav" => "audio/x-wav",
+        "txt" | "log" | "ini" | "cfg" | "conf" | "md" | "toml" | "json" | "sh" | "c" | "h"
+        | "rs" | "py" | "xml" | "csv" => "text/plain",
+        _ => return None,
+    })
+}
+
+/// 在 `directory` 的桌面条目里找出声明能打开 `file` 的第一个程序，返回打开它的命令。
+pub fn open_with(directory: &Path, file: &Path) -> Option<Command> {
+    let mime = mime_for(file)?;
+    load(directory)
+        .iter()
+        .find(|entry| entry.mime_types.iter().any(|m| m == mime))
+        .and_then(|entry| entry.command_for(file))
 }
 
 /// 读取目录里的全部 `.desktop` 条目，按名称排序；目录不存在或条目无效时跳过。
@@ -52,6 +87,8 @@ fn parse(text: &str) -> Option<Entry> {
     let mut executable = None;
     let mut icon = None;
     let mut categories = Vec::new();
+    let mut mime_types = Vec::new();
+    let mut takes_file = false;
     let mut application = false;
     for line in text.lines().map(str::trim) {
         if line.starts_with('[') {
@@ -75,8 +112,20 @@ fn parse(text: &str) -> Option<Entry> {
                     .map(str::to_owned)
                     .collect()
             }
+            "MimeType" => {
+                mime_types = value
+                    .split(';')
+                    .filter(|m| !m.is_empty())
+                    .map(str::to_owned)
+                    .collect()
+            }
             "Type" => application = value == "Application",
-            "Exec" => executable = Some(arguments(value)?),
+            "Exec" => {
+                takes_file = value
+                    .split_whitespace()
+                    .any(|word| matches!(word, "%f" | "%F" | "%u" | "%U"));
+                executable = Some(arguments(value)?)
+            }
             "Hidden" | "NoDisplay" | "Terminal" if value == "true" => return None,
             _ => {}
         }
@@ -93,6 +142,8 @@ fn parse(text: &str) -> Option<Entry> {
         icon,
         categories,
         arguments,
+        mime_types,
+        takes_file,
     })
 }
 fn arguments(value: &str) -> Option<Vec<String>> {

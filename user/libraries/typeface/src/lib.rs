@@ -119,12 +119,14 @@ impl Typeface {
         LATIN_PIXELS * self.scale
     }
 
-    fn outline_glyph(font: &Sfnt, character: char, pixels: u32) -> Option<Glyph> {
+    /// `bold` 为真且字体本身没有粗体时用轮廓加粗：笔画总共加粗 `pixels / 24`（FreeType 合成粗体的默认强度），advance 增加同样的量。
+    fn outline_glyph(font: &Sfnt, character: char, pixels: u32, bold: bool) -> Option<Glyph> {
         let id = font.glyph_id(character)?;
         let scale = pixels as f32 / f32::from(font.units_per_em());
-        let advance = (f32::from(font.advance_units(id)?) * scale).round() as i32;
+        let strength = if bold { pixels as f32 / 24.0 } else { 0.0 };
+        let advance = (f32::from(font.advance_units(id)?) * scale + strength).round() as i32;
         let outline = font.outline(id)?;
-        let raster = raster::rasterize(&outline, scale);
+        let raster = raster::rasterize(&outline, scale, strength / 2.0);
         Some(Glyph {
             coverage: raster.coverage,
             width: raster.width,
@@ -140,7 +142,7 @@ impl Typeface {
         let pixels = self.latin_pixels();
         let id = font.glyph_id(character)?;
         if !font.has_strike(pixels) {
-            return Self::outline_glyph(font, character, pixels);
+            return Self::outline_glyph(font, character, pixels, false);
         }
         // 字体有该字号的点阵（1x 的 11 ppem）就只用点阵：没有位图的字形（如空格）保持空白，
         // 回退到轮廓会在 1x 混入抗锯齿灰度。advance 取轮廓度量。
@@ -158,38 +160,35 @@ impl Typeface {
         })
     }
 
-    fn cjk_glyph(&self, character: char) -> Option<Glyph> {
+    /// 中文字体都没有粗体，`bold` 时按字体类型合成：
+    /// 点阵字体与 Windows GDI 对点阵字的处理一致，同一字形右移 1 像素叠印、advance 加 1；
+    /// 轮廓字体做真正的轮廓加粗（见 [`Self::outline_glyph`]）。
+    fn cjk_glyph(&self, character: char, bold: bool) -> Option<Glyph> {
         match &self.cjk {
-            Cjk::Bitmap(font) => font.glyph(character),
-            Cjk::Outline(font) => Self::outline_glyph(font, character, self.cjk_pixels()),
+            Cjk::Bitmap(font) => font
+                .glyph(character)
+                .map(|glyph| if bold { overprint(glyph, 1) } else { glyph }),
+            Cjk::Outline(font) => Self::outline_glyph(font, character, self.cjk_pixels(), bold),
         }
     }
 
     /// 取 `character` 的字形；字体里没有的字符回退到空白（保留 CJK 半宽 advance），不会失败。
     ///
-    /// 中文字体没有粗体：`bold` 时把同一字形向右偏移 `scale` 个物理像素叠印，advance 随之增加 `scale`。
-    /// 西文粗体是 `tahomabd.ttf` 的真粗体。
+    /// 西文粗体是 `tahomabd.ttf` 的真粗体；中文粗体由 [`Self::cjk_glyph`] 合成。
     pub fn glyph(&self, character: char, bold: bool) -> Glyph {
         if is_latin(character)
             && let Some(glyph) = self.latin_glyph(character, bold)
         {
             return glyph;
         }
-        let Some(glyph) = self.cjk_glyph(character) else {
-            return Glyph {
-                coverage: Vec::new(),
-                width: 0,
-                height: 0,
-                left: 0,
-                top: 0,
-                advance: (self.cjk_pixels() / 2) as i32,
-            };
-        };
-        if bold {
-            overprint(glyph, self.scale as i32)
-        } else {
-            glyph
-        }
+        self.cjk_glyph(character, bold).unwrap_or(Glyph {
+            coverage: Vec::new(),
+            width: 0,
+            height: 0,
+            left: 0,
+            top: 0,
+            advance: (self.cjk_pixels() / 2) as i32,
+        })
     }
 
     /// `(ascent, descent)` 像素，descent 为正；取中西文两者的较大值，混排行高因此稳定。
@@ -220,7 +219,7 @@ impl Typeface {
     }
 }
 
-/// 把字形向右偏移 `shift` 像素再叠一次（取覆盖率较大者），并把 advance 增加 `shift`。
+/// 点阵字体的合成粗体：把字形向右偏移 `shift` 像素再叠一次（取覆盖率较大者），并把 advance 增加 `shift`。
 fn overprint(glyph: Glyph, shift: i32) -> Glyph {
     if glyph.width == 0 {
         return Glyph {

@@ -4,6 +4,7 @@ use canvas::{Color, Image, Rect};
 use std::{io, path::Path};
 
 /// 拥有预乘 ARGB 像素的系统图像；加载后可按整数 scale 重用。
+#[derive(Debug)]
 pub struct Bitmap {
     pixels: Vec<u32>,
     width: i32,

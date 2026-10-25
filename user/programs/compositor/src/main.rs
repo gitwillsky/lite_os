@@ -11,7 +11,9 @@ mod interaction;
 mod scanout;
 mod session;
 mod shell_layout;
+mod switcher;
 mod wayland;
+mod window_menu;
 
 use std::{env, fs, path::Path, process::ExitCode};
 

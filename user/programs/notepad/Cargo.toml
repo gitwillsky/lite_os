@@ -1,0 +1,16 @@
+[package]
+name = "notepad"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "notepad"
+path = "src/main.rs"
+
+[dependencies]
+liteos-runtime = { path = "../../libraries/liteos-runtime" }
+canvas = { path = "../../libraries/canvas" }
+classic-theme = { path = "../../libraries/classic-theme" }
+classic-ui = { path = "../../libraries/classic-ui" }
+typeface = { path = "../../libraries/typeface" }

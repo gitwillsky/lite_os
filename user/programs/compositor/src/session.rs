@@ -10,6 +10,11 @@ use std::{
 };
 
 use classic_theme::Theme;
+
+use crate::{
+    switcher::{self, Switcher},
+    window_menu::{self, WindowMenu},
+};
 use linux_uapi::{
     drm::DumbBuffer,
     process::spawn_with_wayland_socket,
@@ -35,6 +40,9 @@ use crate::{
 
 /// Linux `BTN_LEFT`（`linux/input-event-codes.h`）。
 const BUTTON_LEFT: u16 = 0x110;
+const BUTTON_RIGHT: u16 = 0x111;
+/// 键盘移动/缩放窗口时方向键每次的步长，逻辑像素。
+const KEYBOARD_STEP: i32 = 8;
 
 /// 窗口内容放大到输出 scale 所需的整数倍；客户端 scale 大于输出时不缩小，按 1 处理。
 fn factor(output_scale: u32, surface_scale: i32) -> i32 {
@@ -45,6 +53,11 @@ fn factor(output_scale: u32, surface_scale: i32) -> i32 {
 struct ActiveGrab {
     grab: Grab,
     last_size: Option<(i32, i32)>,
+    /// 系统菜单"移动/大小"发起的抓取：不依赖按住按钮，由点击或 Enter 结束、Esc 取消，方向键微调。
+    /// 缺少它，从菜单选"移动"后一松手就结束，菜单命令等于无效。
+    sticky: bool,
+    /// 抓取开始时的窗口几何，Esc 取消时恢复。
+    origin: (i32, i32, i32, i32),
 }
 
 /// 一个已定位的外壳 surface（物理坐标）。
@@ -122,6 +135,12 @@ pub struct Session {
     /// SAS 后直到可信 Overlay 映射的输入屏障；缺少它会把握手期间的输入泄露给旧窗口。
     secure_pending: bool,
     stack: Stack,
+    /// 按住 Alt 期间的切换面板；松开 Alt 才激活选中窗口，缺少它 Alt+Tab 每按一次就改一次栈序，看不到目标。
+    switcher: Option<Switcher>,
+    /// 面板的字体与图标，首次打开时加载；加载失败则只切换不显示面板。
+    switcher_art: Option<switcher::Art>,
+    /// 窗口（系统）菜单；打开期间独占指针与键盘，缺少它菜单外的点击会落到窗口上。
+    window_menu: Option<WindowMenu>,
     seat: Seat,
     grab: Option<ActiveGrab>,
     /// 第一个窗口或外壳 surface 出现之前一直显示启动画面；缺少它，空桌面会盖掉内核交接的画面。
@@ -158,6 +177,9 @@ impl Session {
             logon_client: None,
             secure_pending: false,
             stack: Stack::default(),
+            switcher: None,
+            switcher_art: None,
+            window_menu: None,
             seat: Seat::default(),
             grab: None,
             boot: Some(BootScreen {
@@ -404,7 +426,9 @@ impl Session {
                 if !std::mem::replace(&mut self.saw_pointer, true) {
                     println!("compositor: first pointer event {x},{y}");
                 }
-                if self.grab.is_some() {
+                if let Some(menu) = &mut self.window_menu {
+                    self.dirty |= menu.hover_at((x, y));
+                } else if self.grab.is_some() {
                     self.drag((x, y));
                 } else {
                     let hit = self.hit_test(&self.layer_boxes(), (x, y));
@@ -413,6 +437,18 @@ impl Session {
                 }
             }
             Event::Button { code, pressed } => {
+                if self.window_menu.is_some() {
+                    if pressed && matches!(code, BUTTON_LEFT | BUTTON_RIGHT) {
+                        self.menu_click()?;
+                    }
+                    return Ok(());
+                }
+                if self.grab.as_ref().is_some_and(|active| active.sticky) {
+                    if code == BUTTON_LEFT && pressed {
+                        self.end_grab()?;
+                    }
+                    return Ok(());
+                }
                 if code == BUTTON_LEFT && !pressed && self.grab.is_some() {
                     self.end_grab()?;
                 } else if code == BUTTON_LEFT && pressed {
@@ -457,6 +493,7 @@ impl Session {
                 // SAS 只识别硬件输入；登录背景始终映射，因此使用标准 wl_keyboard 焦点与按键事件。
                 // 先撤销抓取，防止安全界面出现后旧窗口仍占有鼠标。
                 if self.seat.secure_attention(code, pressed) {
+                    self.close_menu();
                     if self.grab.is_some() {
                         self.end_grab()?;
                     }
@@ -466,6 +503,9 @@ impl Session {
                         .iter()
                         .find(|layer| Some(layer.client) == self.logon_client)
                         .map(|layer| (layer.client, layer.surface));
+                }
+                if self.modal_key(code, pressed)? {
+                    return Ok(());
                 }
                 // 键盘焦点必须先于这次按键同步：刚激活的窗口应该收到触发它之后的第一个键。
                 let exclusive = self.exclusive_keyboard(&self.layer_boxes());
@@ -493,6 +533,10 @@ impl Session {
                         exclusive.or(self.keyboard_layer)
                     },
                 );
+                // Alt 的 evdev 键码：左 56、右 100。
+                if !pressed && matches!(code, 56 | 100) {
+                    self.commit_switcher();
+                }
                 let shortcut = self.seat.key(
                     &mut self.server,
                     code,
@@ -511,6 +555,227 @@ impl Session {
         Ok(())
     }
 
+    /// 首次需要覆盖层时加载字体与图标；失败只记一行日志，覆盖层随之不显示。
+    fn ensure_art(&mut self) {
+        if self.switcher_art.is_none() {
+            match switcher::Art::load(self.scale) {
+                Ok(art) => self.switcher_art = Some(art),
+                Err(error) => println!("compositor: overlay art unavailable: {error}"),
+            }
+        }
+    }
+
+    /// 在物理坐标 `at` 打开窗口菜单，并让窗口看到指针离开。
+    fn open_menu(&mut self, placement: crate::desktop::Placement, at: (i32, i32), cues: bool) {
+        self.ensure_art();
+        self.keyboard_layer = None;
+        self.seat.begin_grab(&mut self.server);
+        self.window_menu = Some(WindowMenu::open(
+            &placement,
+            at,
+            self.screen(),
+            self.scale as i32,
+            cues,
+        ));
+        self.dirty = true;
+    }
+
+    /// 关闭窗口菜单并把指针焦点还给窗口。
+    fn close_menu(&mut self) {
+        if self.window_menu.take().is_none() {
+            return;
+        }
+        self.seat.end_grab();
+        let (scale, time) = (self.scale as i32, self.now_ms());
+        let pointer = self.input.pointer().position();
+        let boxes = self.layer_boxes();
+        let hit = self.hit_test(&boxes, pointer);
+        self.seat
+            .update_pointer(&mut self.server, hit, pointer, scale, time, false);
+        self.dirty = true;
+    }
+
+    /// 菜单打开时的一次点击：执行命中的命令，点在菜单外则关闭。
+    fn menu_click(&mut self) -> io::Result<()> {
+        let point = self.input.pointer().position();
+        let Some(menu) = &self.window_menu else {
+            return Ok(());
+        };
+        let (client, surface) = (menu.client, menu.surface);
+        match menu.click(point) {
+            Ok(command) => {
+                self.close_menu();
+                self.run_menu_command(client, surface, command)?;
+            }
+            Err(true) => {}
+            Err(false) => self.close_menu(),
+        }
+        Ok(())
+    }
+
+    fn run_menu_command(
+        &mut self,
+        client: ClientId,
+        surface: ObjectId,
+        command: window_menu::Command,
+    ) -> io::Result<()> {
+        use window_menu::Command;
+        let Some(placement) = self.stack.placement(client, surface).copied() else {
+            return Ok(());
+        };
+        match command {
+            Command::Restore if placement.minimized => {
+                self.dirty |= self.stack.raise(client, surface);
+            }
+            Command::Restore => self.set_mode(client, surface, Mode::Normal),
+            Command::Minimize => self.dirty |= self.stack.minimize(client, surface),
+            Command::Maximize => self.set_mode(client, surface, Mode::Maximized),
+            Command::Close => self
+                .server
+                .with_client(client, |client| client.close(surface)),
+            Command::Move | Command::Size => {
+                let kind = if command == Command::Move {
+                    Kind::Move
+                } else {
+                    Kind::Resize(Edges {
+                        left: false,
+                        right: true,
+                        top: false,
+                        bottom: true,
+                    })
+                };
+                let start = (placement.x, placement.y, placement.width, placement.height);
+                self.seat.begin_grab(&mut self.server);
+                self.grab = Some(ActiveGrab {
+                    grab: Grab {
+                        client,
+                        surface,
+                        kind,
+                        pointer: self.input.pointer().position(),
+                        start,
+                    },
+                    last_size: None,
+                    sticky: true,
+                    origin: start,
+                });
+                if let Kind::Resize(edges) = kind {
+                    self.shape = Shape::Named(cursor::resize_cursor_name(edges));
+                    self.apply_cursor()?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// 窗口菜单或键盘移动/缩放期间的按键：全部消费，返回是否已处理。
+    fn modal_key(&mut self, code: u16, pressed: bool) -> io::Result<bool> {
+        let sticky = self.grab.as_ref().is_some_and(|active| active.sticky);
+        if self.window_menu.is_none() && !sticky {
+            return Ok(false);
+        }
+        self.seat.swallow_key(code, pressed);
+        if !pressed {
+            return Ok(true);
+        }
+        let code = u32::from(code);
+        if let Some(menu) = &mut self.window_menu {
+            let (client, surface) = (menu.client, menu.surface);
+            match menu.key(code) {
+                None => self.dirty = true,
+                Some(command) => {
+                    self.close_menu();
+                    if let Some(command) = command {
+                        self.run_menu_command(client, surface, command)?;
+                    }
+                }
+            }
+            return Ok(true);
+        }
+        let step = KEYBOARD_STEP * self.scale as i32;
+        let (dx, dy) = match code {
+            105 => (-step, 0),
+            106 => (step, 0),
+            103 => (0, -step),
+            108 => (0, step),
+            _ => (0, 0),
+        };
+        match code {
+            28 => self.end_grab()?,
+            1 => self.cancel_grab()?,
+            _ if (dx, dy) != (0, 0) => {
+                if let Some(active) = &mut self.grab {
+                    // 位移累加到起点上，之后鼠标移动继续以它为基准。
+                    let start = &mut active.grab.start;
+                    match active.grab.kind {
+                        Kind::Move => (start.0, start.1) = (start.0 + dx, start.1 + dy),
+                        Kind::Resize(_) => (start.2, start.3) = (start.2 + dx, start.3 + dy),
+                    }
+                }
+                let pointer = self.input.pointer().position();
+                self.drag(pointer);
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+
+    /// Esc：把键盘移动/缩放的窗口恢复到抓取之前的几何后结束。
+    fn cancel_grab(&mut self) -> io::Result<()> {
+        let Some(active) = &self.grab else {
+            return Ok(());
+        };
+        let (grab, origin) = (active.grab, active.origin);
+        self.dirty |= self
+            .stack
+            .move_to(grab.client, grab.surface, origin.0, origin.1);
+        if matches!(grab.kind, Kind::Resize(_)) {
+            let size = (origin.2, origin.3);
+            self.send_configure(grab.client, grab.surface, Some(size), true);
+            if let Some(active) = &mut self.grab {
+                active.last_size = Some(size);
+            }
+        }
+        self.end_grab()
+    }
+
+    /// 以最近使用顺序（栈顶在前）列出全部窗口并打开切换面板。
+    fn open_switcher(&mut self, reverse: bool) {
+        let entries = self
+            .stack
+            .windows()
+            .iter()
+            .rev()
+            .map(|placed| {
+                let window = self.server.windows().find(|(client, window)| {
+                    *client == placed.client && window.surface == placed.surface
+                });
+                switcher::Entry {
+                    client: placed.client,
+                    surface: placed.surface,
+                    title: window
+                        .as_ref()
+                        .map_or_else(String::new, |(_, w)| w.title.to_owned()),
+                    app_id: window
+                        .as_ref()
+                        .map_or_else(String::new, |(_, w)| w.app_id.to_owned()),
+                }
+            })
+            .collect();
+        self.switcher = Switcher::open(entries, reverse);
+        if self.switcher.is_some() {
+            self.ensure_art();
+        }
+    }
+
+    /// 松开 Alt：激活选中的窗口并收起面板。
+    fn commit_switcher(&mut self) {
+        if let Some(switcher) = self.switcher.take() {
+            let (client, surface) = switcher.target();
+            self.stack.raise(client, surface);
+            self.dirty = true;
+        }
+    }
+
     fn on_shortcut(&mut self, shortcut: Shortcut) {
         if shortcut != Shortcut::None {
             self.keyboard_layer = None;
@@ -524,9 +789,21 @@ impl Session {
                     println!("compositor: close requested");
                 }
             }
-            Shortcut::CycleWindows => {
-                if let Some((client, surface)) = self.stack.cycle_target() {
-                    self.dirty |= self.stack.raise(client, surface);
+            Shortcut::CycleWindows { reverse } => {
+                if let Some(switcher) = &mut self.switcher {
+                    switcher.step(reverse);
+                } else {
+                    self.open_switcher(reverse);
+                }
+                self.dirty = true;
+            }
+            Shortcut::WindowMenu => {
+                if let Some((client, surface)) = self.stack.active()
+                    && let Some(placement) = self.stack.placement(client, surface).copied()
+                {
+                    let scale = self.scale as i32;
+                    let at = (placement.x + 3 * scale, placement.y + 22 * scale);
+                    self.open_menu(placement, at, true);
                 }
             }
             Shortcut::LowerActive => {
@@ -670,6 +947,8 @@ impl Session {
                         self.grab = Some(ActiveGrab {
                             grab,
                             last_size: None,
+                            sticky: false,
+                            origin: start,
                         });
                         if let Kind::Resize(edges) = kind {
                             self.shape = Shape::Named(cursor::resize_cursor_name(edges));
@@ -692,6 +971,16 @@ impl Session {
                     );
                 }
                 WindowRequest::Minimize => self.dirty |= self.stack.minimize(client, surface),
+                WindowRequest::ShowMenu { serial, x, y } => {
+                    if self.seat.button_serial() == Some(serial) && self.window_menu.is_none() {
+                        let scale = self.scale as i32;
+                        self.open_menu(
+                            placement,
+                            (placement.x + x * scale, placement.y + y * scale),
+                            false,
+                        );
+                    }
+                }
             }
         }
         Ok(())
@@ -995,7 +1284,24 @@ impl Session {
             .filter(|layer| layer.layer >= Layer::Top)
             .filter_map(layer_drawable);
         let drawables: Vec<Drawable<'_>> = below.chain(windows).chain(above).collect();
-        if !compose::compose(self.scanout.back(), &self.theme, &drawables) {
+        let (theme, scale) = (&self.theme, self.scale as i32);
+        let (art, switcher, menu) = (
+            self.switcher_art.as_ref(),
+            self.switcher.as_ref(),
+            self.window_menu.as_ref(),
+        );
+        let overlay = |surface: canvas::Surface<'_>| {
+            let Some(art) = art else { return };
+            let screen = (surface.width(), surface.height());
+            let mut painter = classic_ui::Painter::new(surface, theme, &art.typeface, scale);
+            if let Some(switcher) = switcher {
+                switcher::paint(&mut painter, art, screen, switcher);
+            }
+            if let Some(menu) = menu {
+                menu.paint(&mut painter);
+            }
+        };
+        if !compose::compose(self.scanout.back(), &self.theme, &drawables, overlay) {
             return Err(io::Error::other(
                 "scanout buffer cannot back a drawing surface",
             ));

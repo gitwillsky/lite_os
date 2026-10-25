@@ -7,6 +7,7 @@ use std::{
     io,
     path::Path,
     process::{Command, Stdio},
+    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     thread::{self, JoinHandle},
 };
 
@@ -16,6 +17,28 @@ pub const DIRECTORY: &str = "/usr/share/liteos/sounds";
 const MAX_RECOVERIES: u32 = 32;
 /// 预填的 period 数；与 PCM 环形缓冲的 1024 帧一致。
 const PREFILL_PERIODS: usize = 4;
+
+/// 设备固定的采样率（Hz），[`Transport::position`] 与 [`Sound::frames`] 的单位都是这个速率下的帧。
+pub const SAMPLE_RATE: u32 = RATE;
+
+/// 一次可中断播放的共享状态：播放线程每个 period 更新位置并检查停止请求，界面线程读取位置、请求停止。
+#[derive(Default)]
+pub struct Transport {
+    stop: AtomicBool,
+    position: AtomicUsize,
+}
+
+impl Transport {
+    /// 请求播放尽快停止（最多延迟一个 period）。
+    pub fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+
+    /// 已送入设备的帧数位置。
+    pub fn position(&self) -> usize {
+        self.position.load(Ordering::Relaxed)
+    }
+}
 
 /// 已解码并重采样到设备格式的音频。
 pub struct Sound {
@@ -88,6 +111,23 @@ impl Sound {
         self.frames.len()
     }
 
+    /// 把整段音频压成 `columns` 个振幅峰值（0..=1，左右声道取较大者），用于画波形。
+    pub fn peaks(&self, columns: usize) -> Vec<f32> {
+        if columns == 0 || self.frames.is_empty() {
+            return Vec::new();
+        }
+        (0..columns)
+            .map(|column| {
+                let start = column * self.frames.len() / columns;
+                let end = ((column + 1) * self.frames.len() / columns).max(start + 1);
+                self.frames[start..end.min(self.frames.len())]
+                    .iter()
+                    .flat_map(|frame| frame.iter())
+                    .fold(0.0f32, |peak, sample| peak.max(sample.abs()))
+            })
+            .collect()
+    }
+
     /// 同步播放到结束。
     ///
     /// 播放中设备欠载（`EPIPE`，宿主音频后端成批消费 period 时可能发生）时重新 prepare 并从稍早处续播，
@@ -97,15 +137,25 @@ impl Sound {
     ///
     /// 设备打不开、无权限、被占用、断开，或欠载恢复次数用尽。
     pub fn play_blocking(&self) -> io::Result<()> {
+        self.play_from(0, &Transport::default())
+    }
+
+    /// 从第 `start` 帧开始同步播放，直到结束或 `transport` 收到停止请求；`transport` 同步位置。
+    ///
+    /// # Errors
+    ///
+    /// 同 [`Self::play_blocking`]。
+    pub fn play_from(&self, start: usize, transport: &Transport) -> io::Result<()> {
         const EPIPE: i32 = 32;
         let mut pcm = PlaybackPcm::open()?;
         // 声音写完后再多送一个缓冲的静音，让最后的样本播放完毕才关闭设备。
         let end = self.frames.len().div_ceil(PERIOD_FRAMES) * PERIOD_FRAMES
             + PREFILL_PERIODS * PERIOD_FRAMES;
-        let mut position = 0;
+        let mut position = start / PERIOD_FRAMES * PERIOD_FRAMES;
+        transport.position.store(position, Ordering::Relaxed);
         let mut recoveries = 0;
         loop {
-            match self.stream(&mut pcm, &mut position, end) {
+            match self.stream(&mut pcm, &mut position, end, transport) {
                 Ok(()) => break,
                 Err(error)
                     if error.raw_os_error() == Some(EPIPE) && recoveries < MAX_RECOVERIES =>
@@ -124,17 +174,24 @@ impl Sound {
     }
 
     /// 从 `position` 开始送到 `end`（都以帧计、按 period 对齐）：prepare、预填、启动、逐 period 续写。
-    fn stream(&self, pcm: &mut PlaybackPcm, position: &mut usize, end: usize) -> io::Result<()> {
+    fn stream(
+        &self,
+        pcm: &mut PlaybackPcm,
+        position: &mut usize,
+        end: usize,
+        transport: &Transport,
+    ) -> io::Result<()> {
         pcm.prepare()?;
         for _ in 0..PREFILL_PERIODS {
             pcm.write_period(&self.period_at(*position))?;
             *position += PERIOD_FRAMES;
         }
         pcm.start()?;
-        while *position < end {
+        while *position < end && !transport.stop.load(Ordering::Relaxed) {
             pcm.wait_period()?;
             pcm.write_period(&self.period_at(*position))?;
             *position += PERIOD_FRAMES;
+            transport.position.store(*position, Ordering::Relaxed);
         }
         Ok(())
     }

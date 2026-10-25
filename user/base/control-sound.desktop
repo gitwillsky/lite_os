@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=Sounds
+Name[zh_CN]=声音和多媒体
+Exec=/bin/control-panel sounds
+Icon=sound-volume
+Categories=Settings;
+Terminal=false

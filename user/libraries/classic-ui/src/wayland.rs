@@ -76,6 +76,24 @@ pub struct Key {
     pub text: Option<char>,
 }
 
+impl Key {
+    /// 按键对应的小写 ASCII 字母，用于 Alt+字母的助记键匹配；非字母键为 `None`。
+    ///
+    /// 优先用 xkb 给出的文本；Alt 组合时可能没有文本，此时按 evdev 键码在 QWERTY 行里查找。
+    pub fn letter(&self) -> Option<char> {
+        if let Some(text) = self.text.filter(char::is_ascii_alphabetic) {
+            return Some(text.to_ascii_lowercase());
+        }
+        let (rows, first): (&str, u32) = match self.code {
+            16..=25 => ("qwertyuiop", 16),
+            30..=38 => ("asdfghjkl", 30),
+            44..=50 => ("zxcvbnm", 44),
+            _ => return None,
+        };
+        rows.chars().nth((self.code - first) as usize)
+    }
+}
+
 /// 应用看到的窗口事件；坐标为 surface 局部的逻辑像素，保留小数。
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventKind {
@@ -112,11 +130,22 @@ pub struct Event {
 /// 交给 compositor 的窗口管理请求；移动/缩放序号必须来自按钮按下事件。
 #[derive(Debug, Clone, Copy)]
 pub enum WindowRequest {
-    Move { serial: u32 },
-    Resize { serial: u32, edges: ResizeEdge },
+    Move {
+        serial: u32,
+    },
+    Resize {
+        serial: u32,
+        edges: ResizeEdge,
+    },
     Maximize(bool),
     Fullscreen(bool),
     Minimize,
+    /// 请求 compositor 在 surface 局部逻辑坐标 `(x, y)` 弹出窗口（系统）菜单；`serial` 来自触发它的按钮事件。
+    ShowMenu {
+        serial: u32,
+        x: i32,
+        y: i32,
+    },
 }
 
 enum Role {
@@ -434,6 +463,13 @@ impl Display {
                 xdg_toplevel::Request::UnsetFullscreen.encode(toplevel, writer)
             }
             WindowRequest::Minimize => xdg_toplevel::Request::SetMinimized.encode(toplevel, writer),
+            WindowRequest::ShowMenu { serial, x, y } => xdg_toplevel::Request::ShowWindowMenu {
+                seat: self.seat,
+                serial,
+                x,
+                y,
+            }
+            .encode(toplevel, writer),
         }
         .map_err(io::Error::other)?;
         self.transport.flush()

@@ -43,6 +43,12 @@ pub enum WindowRequest {
     Maximize(bool),
     Minimize,
     Fullscreen(bool),
+    /// `xdg_toplevel.show_window_menu`：`x`、`y` 是 surface 局部的逻辑坐标。
+    ShowMenu {
+        serial: u32,
+        x: i32,
+        y: i32,
+    },
 }
 
 /// `xdg_toplevel.configure` 携带的窗口状态。
@@ -283,8 +289,11 @@ impl Client {
             R::SetFullscreen { .. } => self.window_request(object, WindowRequest::Fullscreen(true)),
             R::UnsetFullscreen => self.window_request(object, WindowRequest::Fullscreen(false)),
             R::SetMinimized => self.window_request(object, WindowRequest::Minimize),
-            // 父子关系与窗口菜单由窗口管理器阶段处理；记录请求之前无需保存。
-            R::SetParent { .. } | R::ShowWindowMenu { .. } => Ok(()),
+            R::ShowWindowMenu { serial, x, y, .. } => {
+                self.window_request(object, WindowRequest::ShowMenu { serial, x, y })
+            }
+            // 父子关系由窗口管理器阶段处理；记录请求之前无需保存。
+            R::SetParent { .. } => Ok(()),
         }
     }
 

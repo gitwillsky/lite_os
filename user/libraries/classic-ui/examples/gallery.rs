@@ -36,6 +36,7 @@ fn main() {
     p.caption_bar(
         Rect::new(content.x, content.y, content.width, 19),
         "登录到 LiteOS - Log On",
+        None,
         true,
         &[
             (CaptionButton::Minimize, true),
@@ -217,6 +218,7 @@ fn main() {
     p.caption_bar(
         Rect::new(content.x, content.y, content.width, 19),
         "一个标题特别特别长的非活动窗口 Very Long Title",
+        None,
         false,
         &[
             (CaptionButton::Minimize, false),

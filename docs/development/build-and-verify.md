@@ -40,6 +40,8 @@
 - Rust 验证探针以 target、工具链、sysroot、libunwind 与 link flags 隔离 Cargo compilation cache，
   最终 ELF 按完整源码内容发布不可变 generation。
 - `run-gui` 进入 logon 与用户桌面，UART 保留恢复 shell；首次账户设置及产品会话门禁见[桌面验证](desktop-verification.md)。
+- UTM 手动删除后若残留注册，启动脚本会检查删除后的列表并停止，避免复用旧串口配置；退出并重新打开 UTM 后再运行。
+  开发磁盘 `fs-${ARCH}.img` 独立于生成的虚拟机配置包，恢复注册不需要重建或删除开发磁盘。
 - macOS 的 `run-gui` 是唯一交互图形产品入口：要求固定 `/Applications/UTM.app` v4.7.5，生成确定
   UUID 的 UTM v4 配置，通过 UTM public scripting API import 注册，再由同一 API 创建 Metal
   display window。workflow 在 QEMU 启动前预监听 serial TCP，并把该次启动的完整 guest 输出覆盖写入

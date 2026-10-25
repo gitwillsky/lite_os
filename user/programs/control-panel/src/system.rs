@@ -54,13 +54,16 @@ impl Page for System {
     fn title(&self) -> &'static str {
         "系统属性"
     }
-    fn tab(&self) -> &'static str {
-        "常规"
+    fn tabs(&self) -> &'static [&'static str] {
+        &["常规"]
+    }
+    fn icon(&self) -> &'static str {
+        "my-computer"
     }
     fn size(&self) -> (i32, i32) {
         (400, 360)
     }
-    fn paint(&self, p: &mut Painter<'_>, page: Rect, _now: i64, icons: &Icons) {
+    fn paint(&self, p: &mut Painter<'_>, page: Rect, _tab: usize, _now: i64, icons: &Icons) {
         if let Some(logo) = &icons.logo {
             logo.paint(p, page.x + 16, page.y + 18);
         }
@@ -79,7 +82,7 @@ impl Page for System {
             previous_heading = false;
         }
     }
-    fn click(&mut self, _page: Rect, _point: (i32, i32)) -> bool {
+    fn click(&mut self, _page: Rect, _tab: usize, _point: (i32, i32)) -> bool {
         false
     }
 }

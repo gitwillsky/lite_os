@@ -181,6 +181,42 @@ class UtmRuntimeTests(unittest.TestCase):
         self.assertIn("start vm", arguments[2])
         self.assertNotIn("utmctl start", arguments[2])
 
+    def test_visible_start_reports_the_underlying_qemu_error(self) -> None:
+        error = utm_runtime.subprocess.CalledProcessError(
+            1, ["osascript"], output="QEMU: serial connection refused"
+        )
+        with patch.object(utm_runtime.subprocess, "run", side_effect=error):
+            with self.assertRaisesRegex(RuntimeError, "serial connection refused"):
+                utm_runtime._start_visible()
+
+    def test_remove_rejects_a_successful_cli_exit_with_a_stale_registration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory) / "LiteOS.utm"
+            copy.mkdir()
+            with (
+                patch.object(utm_runtime.subprocess, "run"),
+                patch.object(utm_runtime, "_status", return_value="stopped"),
+                patch.object(utm_runtime, "_ctl", return_value="cannot remove LiteOS.utm"),
+                patch.object(utm_runtime, "VM_DOCUMENT_PACKAGE", copy),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "cannot remove LiteOS.utm"):
+                    utm_runtime._remove_registered()
+            self.assertTrue(copy.is_dir())
+
+    def test_remove_cleans_the_generated_copy_only_after_deregistration(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            copy = Path(directory) / "LiteOS.utm"
+            copy.mkdir()
+            with (
+                patch.object(utm_runtime.subprocess, "run"),
+                patch.object(utm_runtime, "_status", side_effect=["stopped", None]),
+                patch.object(utm_runtime, "_ctl", return_value="") as ctl,
+                patch.object(utm_runtime, "VM_DOCUMENT_PACKAGE", copy),
+            ):
+                utm_runtime._remove_registered()
+            ctl.assert_called_once_with("delete", utm_runtime.VM_UUID)
+            self.assertFalse(copy.exists())
+
     def test_registration_uses_public_import_instead_of_document_open(self) -> None:
         with (
             patch.object(utm_runtime, "_registered", side_effect=[False, True]),

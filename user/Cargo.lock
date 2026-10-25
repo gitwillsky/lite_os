@@ -47,9 +47,11 @@ dependencies = [
  "boot-scene",
  "canvas",
  "classic-theme",
+ "classic-ui",
  "keyboard",
  "linux-uapi",
  "liteos-runtime",
+ "typeface",
  "wayland-wire",
 ]
 
@@ -62,6 +64,7 @@ dependencies = [
  "classic-theme",
  "classic-ui",
  "liteos-runtime",
+ "sound",
  "typeface",
 ]
 
@@ -127,6 +130,29 @@ dependencies = [
  "classic-theme",
  "classic-ui",
  "linux-uapi",
+ "liteos-runtime",
+ "typeface",
+]
+
+[[package]]
+name = "media-player"
+version = "0.1.0"
+dependencies = [
+ "canvas",
+ "classic-theme",
+ "classic-ui",
+ "liteos-runtime",
+ "sound",
+ "typeface",
+]
+
+[[package]]
+name = "notepad"
+version = "0.1.0"
+dependencies = [
+ "canvas",
+ "classic-theme",
+ "classic-ui",
  "liteos-runtime",
  "typeface",
 ]

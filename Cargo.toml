@@ -25,6 +25,8 @@ exclude = [
     "user/libraries/sndvol",
     "user/programs/volume-control",
     "user/programs/sound-player",
+    "user/programs/media-player",
+    "user/programs/notepad",
     "user/programs/file-explorer",
     "user/libraries/keyboard",
     "user/libraries/liteos-runtime",

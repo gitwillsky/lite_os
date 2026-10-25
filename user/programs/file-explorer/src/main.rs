@@ -10,13 +10,13 @@ mod ui;
 
 use browser::Browser;
 use canvas::{Rect, Surface};
-use chrome::{Command, Entry, TOOLS};
+use chrome::{Command, Entry, MENU_TITLES, TOOLS};
 use classic_theme::Theme;
 use classic_ui::{
     Configuration, Decoration, DecorationAction, Display, EventKind, FrameKind, Key, Painter,
     WindowId,
 };
-use dialogs::Confirm;
+use dialogs::{Confirm, Notice};
 use grid::{Grid, inside};
 use model::Location;
 use std::{
@@ -32,8 +32,12 @@ const RIGHT_BUTTON: u32 = 0x111;
 const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 
 /// Linux evdev 键码。
+/// 左、右 Alt 的 evdev 键码。
+const ALT_KEYS: [u32; 2] = [56, 100];
+
 mod code {
     pub const ESCAPE: u32 = 1;
+    pub const TAB: u32 = 15;
     pub const X: u32 = 45;
     pub const C: u32 = 46;
     pub const V: u32 = 47;
@@ -124,6 +128,7 @@ impl App {
             _ => format!("确实要把“{name}”放入回收站吗？"),
         };
         self.ui.confirm = Some(Confirm { text, command });
+        let _ = sound::play(ALERT_SOUND);
     }
 
     fn run(&mut self, command: Command, client: Rect) {
@@ -168,6 +173,17 @@ impl App {
             }
         }
         self.sync();
+    }
+
+    /// 把失败原因从状态栏提升为错误提示框并响铃；框关闭前不接受其他输入，
+    /// 否则连续失败的原因会被后一次操作悄悄覆盖。
+    fn raise_notice(&mut self) {
+        if self.ui.notice.is_none()
+            && let Some(text) = self.browser.message.take()
+        {
+            self.ui.notice = Some(Notice { text });
+            let _ = sound::play(ALERT_SOUND);
+        }
     }
 
     fn answer(&mut self, yes: bool) {
@@ -222,9 +238,16 @@ impl App {
 
     fn press(&mut self, p: &Painter<'_>, client: Rect) {
         let point = self.ui.pointer;
+        self.ui.tooltip.dismiss();
         if self.ui.properties.is_some() {
             if inside(dialogs::properties_rects(client).1, point) {
                 self.ui.properties = None;
+            }
+            return;
+        }
+        if self.ui.notice.is_some() {
+            if inside(dialogs::notice_rects(client).1, point) {
+                self.ui.notice = None;
             }
             return;
         }
@@ -297,7 +320,10 @@ impl App {
     fn press_context(&mut self, client: Rect) {
         let point = self.ui.pointer;
         self.ui.popup = None;
-        if self.ui.confirm.is_some() || !inside(ui::layout(client, &self.browser).list, point) {
+        if self.ui.confirm.is_some()
+            || self.ui.notice.is_some()
+            || !inside(ui::layout(client, &self.browser).list, point)
+        {
             return;
         }
         let hit = self.grid(client).at(point, self.ui.list_scroll.position);
@@ -403,6 +429,13 @@ impl App {
 
     fn pointer_moved(&mut self, client: Rect) {
         let point = self.ui.pointer;
+        self.ui
+            .tooltip
+            .hover(ui::layout(client, &self.browser).toolbar.and_then(|bar| {
+                chrome::tool_rects(bar)
+                    .iter()
+                    .position(|rect| inside(*rect, point))
+            }));
         if let Some(popup) = &mut self.ui.popup {
             popup.hover = popup.row_at(point);
         }
@@ -423,10 +456,56 @@ impl App {
         }
     }
 
-    fn key(&mut self, key: Key, client: Rect) {
+    /// 记录 Alt/Tab 对键盘提示的影响：任何按键序列里只要出现 Alt 或 Tab 就显示下划线；
+    /// Alt 之后没有其他键直接松开才进入菜单栏（见 [`Self::alt_released`]）。
+    fn track_cues(&mut self, key: &Key) {
+        let alt = ALT_KEYS.contains(&key.code);
+        self.ui.alt_alone = alt;
+        if alt || key.code == code::TAB {
+            self.ui.cues = true;
+        }
+    }
+
+    /// 单独的 Alt 松开：进入或退出菜单栏的键盘选择（K11）。
+    fn alt_released(&mut self, key: &Key) {
+        if ALT_KEYS.contains(&key.code) && std::mem::take(&mut self.ui.alt_alone) {
+            self.ui.menu_focus = if self.ui.menu_focus.is_some() {
+                None
+            } else {
+                Some(0)
+            };
+        }
+    }
+
+    /// 菜单栏处于键盘选择状态时的按键；返回是否已处理。
+    fn menu_bar_key(&mut self, p: &Painter<'_>, key: &Key, client: Rect) -> bool {
+        let Some(index) = self.ui.menu_focus else {
+            return false;
+        };
+        let count = MENU_TITLES.len();
+        match key.code {
+            code::LEFT => self.ui.menu_focus = Some((index + count - 1) % count),
+            code::RIGHT => self.ui.menu_focus = Some((index + 1) % count),
+            code::ENTER | code::DOWN => {
+                self.ui.menu_focus = None;
+                self.open_menu(p, index, client);
+            }
+            _ => self.ui.menu_focus = None,
+        }
+        true
+    }
+
+    fn key(&mut self, p: &Painter<'_>, key: Key, client: Rect) {
+        self.track_cues(&key);
         if self.ui.properties.is_some() {
             if matches!(key.code, code::ENTER | code::ESCAPE) {
                 self.ui.properties = None;
+            }
+            return;
+        }
+        if self.ui.notice.is_some() {
+            if matches!(key.code, code::ENTER | code::ESCAPE) {
+                self.ui.notice = None;
             }
             return;
         }
@@ -485,7 +564,22 @@ impl App {
             }
             return;
         }
+        if self.menu_bar_key(p, &key, client) {
+            return;
+        }
         if key.modifiers.alt {
+            // Alt+字母：打开助记键匹配的菜单。
+            if let Some(letter) = key.letter()
+                && let Some(index) = MENU_TITLES.iter().position(|title| {
+                    title
+                        .split_once('(')
+                        .and_then(|(_, rest)| rest.chars().next())
+                        .is_some_and(|mark| mark.to_ascii_lowercase() == letter)
+                })
+            {
+                self.open_menu(p, index, client);
+                return;
+            }
             match key.code {
                 code::LEFT => self.run(Command::Back, client),
                 code::RIGHT => self.run(Command::Forward, client),
@@ -570,6 +664,43 @@ impl App {
     }
 }
 
+/// 确认框与错误提示框弹出时播放的系统声音（Windows 2000 的消息框事件都映射到它）。
+const ALERT_SOUND: &str = "chord.wav";
+
+/// 画一帧并提交：窗口装饰加资源管理器内容。
+#[allow(clippy::too_many_arguments)]
+fn redraw(
+    display: &mut Display,
+    window: WindowId,
+    c: Configuration,
+    theme: &Theme,
+    font: &Typeface,
+    decoration: &Decoration,
+    app: &mut App,
+    assets: &Assets,
+    title: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let client = App::client(decoration, c);
+    app.clamp_scrolls(client);
+    let (w, h) = c.pixel_size()?;
+    let mut pixels = vec![0; w as usize * h as usize];
+    let surface = Surface::new(&mut pixels, w, h, w as usize).ok_or("invalid explorer window")?;
+    let mut painter = Painter::new(surface, theme, font, c.scale);
+    decoration.paint(&mut painter, c, title);
+    ui::paint(
+        &mut painter,
+        &Scene {
+            browser: &app.browser,
+            ui: &app.ui,
+            assets,
+            active: c.active,
+        },
+        client,
+    );
+    display.present(window, &pixels)?;
+    Ok(())
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let location = std::env::args()
         .nth(1)
@@ -595,6 +726,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         (640, 480),
     )?;
     let mut decoration = Decoration::new(FrameKind::Resizable);
+    decoration.load_icon("folder-closed");
     let theme = Theme::classic();
     let assets = Assets::load(Path::new("/usr/share/liteos/ui"));
     let mut font: Option<Typeface> = None;
@@ -602,7 +734,30 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut title = app.browser.location.title();
     let mut dirty = true;
     while !app.closing {
-        let event = display.next_event()?;
+        let event = match app.ui.tooltip.pending() {
+            Some(wait) => display.next_event_timeout(wait)?,
+            None => Some(display.next_event()?),
+        };
+        // 超时没有事件：提示到点，只需要重画。
+        let Some(event) = event else {
+            if display.ready_to_draw(window)
+                && let Some(c) = display.configuration(window)
+                && let Some(font) = font.as_ref()
+            {
+                redraw(
+                    &mut display,
+                    window,
+                    c,
+                    &theme,
+                    font,
+                    &decoration,
+                    &mut app,
+                    &assets,
+                    &title,
+                )?;
+            }
+            continue;
+        };
         if event.window != window {
             continue;
         }
@@ -641,7 +796,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 app.ui.pointer = (x.floor() as i32, y.floor() as i32);
                 app.pointer_moved(client);
             }
-            EventKind::PointerLeave => app.ui.pointer = (-1, -1),
+            EventKind::PointerLeave => {
+                app.ui.pointer = (-1, -1);
+                app.ui.tooltip.hover(None);
+            }
             EventKind::Button {
                 code: LEFT_BUTTON,
                 pressed,
@@ -658,9 +816,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 pressed: true,
                 ..
             } => app.press_context(client),
-            EventKind::Key(key) if key.pressed => app.key(key, client),
+            EventKind::Key(key) if key.pressed => app.key(&probe, key, client),
+            EventKind::Key(key) => app.alt_released(&key),
             _ => {}
         }
+        app.raise_notice();
         dirty |= !matches!(event.kind, EventKind::FramePresented { .. });
         let current = app.browser.location.title();
         if current != title {
@@ -668,24 +828,17 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             title = current;
         }
         if dirty && display.ready_to_draw(window) {
-            app.clamp_scrolls(client);
-            let (w, h) = c.pixel_size()?;
-            let mut pixels = vec![0; w as usize * h as usize];
-            let surface =
-                Surface::new(&mut pixels, w, h, w as usize).ok_or("invalid explorer window")?;
-            let mut painter = Painter::new(surface, &theme, font, c.scale);
-            decoration.paint(&mut painter, c, &title);
-            ui::paint(
-                &mut painter,
-                &Scene {
-                    browser: &app.browser,
-                    ui: &app.ui,
-                    assets: &assets,
-                    active: c.active,
-                },
-                client,
-            );
-            display.present(window, &pixels)?;
+            redraw(
+                &mut display,
+                window,
+                c,
+                &theme,
+                font,
+                &decoration,
+                &mut app,
+                &assets,
+                &title,
+            )?;
             dirty = false;
         }
     }

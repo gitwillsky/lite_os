@@ -16,7 +16,7 @@ use std::{
         fd::AsFd,
         unix::{fs::PermissionsExt, net::UnixStream},
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, Command, ExitCode, Stdio},
     time::{Duration, Instant},
 };
@@ -217,6 +217,10 @@ impl Desktop {
                     std::fs::metadata(&path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0);
                 if executable {
                     self.launch(Command::new(path));
+                } else if let Some(command) =
+                    desktop_entry::open_with(Path::new("/usr/share/applications"), &path)
+                {
+                    self.launch(command);
                 } else {
                     self.message = format!("没有与 {} 关联的程序。", icon.label);
                 }
@@ -265,7 +269,7 @@ impl Desktop {
                 match &mut self.overlay {
                     Some((_, Overlay::Menu(menu))) => menu.hover = menu.hit(x, y),
                     Some((_, Overlay::Volume(panel))) => {
-                        self.volume.motion(&sndvol::Layout::popup(*panel), y)
+                        self.volume.motion(&sndvol::Layout::popup(*panel), x, y)
                     }
                     None => {}
                 }
@@ -589,7 +593,7 @@ impl Desktop {
                                 }
                             }
                             paint::VOLUME => {
-                                let center = c.width - 118;
+                                let center = c.width - 76;
                                 self.open_volume_panel(display, center)?
                             }
                             n => {

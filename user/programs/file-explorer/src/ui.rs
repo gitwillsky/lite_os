@@ -2,12 +2,12 @@
 use crate::{
     browser::{Browser, Properties},
     chrome::{self, Entry, MENU_TITLES, TOOLS},
-    grid::{COLUMNS, Grid, HEADER_HEIGHT, Scroll, ViewMode, inside},
+    grid::{COLUMNS, Grid, HEADER_HEIGHT, ViewMode, inside},
     model::{Icon, Item, date_text, size_text},
 };
 use canvas::Rect;
 use classic_theme::{Edge, SystemColor as C};
-use classic_ui::{Bitmap, Edit, Ink, MenuItemState, Painter};
+use classic_ui::{Bitmap, Edit, Ink, MenuItemState, Painter, Scroll, Tooltip};
 use std::path::Path;
 
 pub const MENU_HEIGHT: i32 = 20;
@@ -27,6 +27,7 @@ pub struct Assets {
     pub(crate) large: Vec<(Icon, Option<Bitmap>)>,
     folder_open: Option<Bitmap>,
     pub(crate) question: Option<Bitmap>,
+    pub(crate) error: Option<Bitmap>,
     /// 默认 / 悬停 / 禁用 三条 47 帧工具栏位图。
     toolbar: [Option<Bitmap>; 3],
 }
@@ -62,6 +63,7 @@ impl Assets {
             large: by_size(32),
             folder_open: load("folder-open-16.bmp".into()),
             question: load("msg-question-32.bmp".into()),
+            error: load("msg-error-32.bmp".into()),
             toolbar: ["default", "hot", "disabled"]
                 .map(|name| load(format!("toolbar-{name}-1x.bmp"))),
         }
@@ -117,6 +119,14 @@ pub struct Ui {
     pub popup: Option<Popup>,
     pub address: Edit,
     pub address_focus: bool,
+    /// 工具栏按钮的悬停提示，目标是 `TOOLS` 的序号。
+    pub tooltip: Tooltip,
+    /// 是否显示助记键下划线：按过 Alt 或 Tab 之后一直显示（Windows 2000 的键盘提示规则）。
+    pub cues: bool,
+    /// 键盘选中的菜单栏标题（单按 Alt 进入）。
+    pub menu_focus: Option<usize>,
+    /// Alt 按下后还没有别的按键：此时松开 Alt 才算"单独的 Alt"。
+    pub alt_alone: bool,
     pub list_scroll: Scroll,
     pub tree_scroll: Scroll,
     /// 正被按住的工具栏按钮。
@@ -125,6 +135,8 @@ pub struct Ui {
     pub rename: Option<(usize, Edit)>,
     /// 等待用户确认的危险操作。
     pub confirm: Option<crate::dialogs::Confirm>,
+    /// 等待用户确认的失败提示。
+    pub notice: Option<crate::dialogs::Notice>,
     /// 打开着的"属性"对话框。
     pub properties: Option<Properties>,
 }
@@ -136,11 +148,16 @@ impl Ui {
             popup: None,
             address: Edit::new(address),
             address_focus: false,
+            tooltip: Tooltip::default(),
+            cues: false,
+            menu_focus: None,
+            alt_alone: false,
             list_scroll: Scroll::default(),
             tree_scroll: Scroll::default(),
             pressed_tool: None,
             rename: None,
             confirm: None,
+            notice: None,
             properties: None,
         }
     }
@@ -249,6 +266,7 @@ pub struct Scene<'a> {
 
 pub fn paint(p: &mut Painter<'_>, scene: &Scene<'_>, client: Rect) {
     let Scene { browser, ui, .. } = scene;
+    p.set_cues(ui.cues);
     let l = layout(client, browser);
     p.fill(client, C::ButtonFace);
     paint_menu_bar(p, scene, &l);
@@ -277,9 +295,22 @@ pub fn paint(p: &mut Painter<'_>, scene: &Scene<'_>, client: Rect) {
     }
     if let Some(popup) = &ui.popup {
         paint_popup(p, popup);
+    } else if let (Some(index), Some(bar)) = (ui.tooltip.visible(), l.toolbar) {
+        // 提示出现在按钮正下方，收在客户区内。
+        let tip = crate::chrome::TOOLS[index].tip;
+        let button = crate::chrome::tool_rects(bar)[index];
+        let width = p.text_width(tip, false) / p.scale() + 6;
+        p.tooltip(
+            button.x.min(client.right() - width),
+            button.bottom() + 2,
+            tip,
+        );
     }
     if let Some(confirm) = &ui.confirm {
         crate::dialogs::paint_confirm(p, scene, confirm, client);
+    }
+    if let Some(notice) = &ui.notice {
+        crate::dialogs::paint_notice(p, scene, notice, client);
     }
     if let Some(properties) = &ui.properties {
         crate::dialogs::paint_properties(p, scene, properties, client);
@@ -297,7 +328,7 @@ fn paint_menu_bar(p: &mut Painter<'_>, scene: &Scene<'_>, l: &Layout) {
         p.menu_bar_item(
             rect,
             title,
-            hovered && open.is_none() || open == Some(index),
+            hovered && open.is_none() || open == Some(index) || scene.ui.menu_focus == Some(index),
             open == Some(index),
         );
     }

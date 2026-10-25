@@ -119,7 +119,7 @@ fn rasterizer_fills_axis_aligned_square_exactly() {
             point(0.0, 10.0, true),
         ]],
     };
-    let raster = rasterize(&square, 1.0);
+    let raster = rasterize(&square, 1.0, 0.0);
     assert_eq!(
         (raster.width, raster.height, raster.left, raster.top),
         (10, 10, 0, 10)
@@ -141,12 +141,14 @@ fn rasterizer_is_independent_of_winding_and_matches_triangle_area() {
             contours: vec![triangle],
         },
         1.0,
+        0.0,
     );
     let backward = rasterize(
         &Outline {
             contours: vec![reversed],
         },
         1.0,
+        0.0,
     );
     assert_eq!(forward.coverage, backward.coverage);
     assert!(
@@ -175,6 +177,7 @@ fn rasterizer_handles_quadratic_curves_and_fractional_offsets() {
             contours: vec![circle],
         },
         1.0,
+        0.0,
     );
     // 每段二次曲线取控制点在角上，面积大于圆；只验证落在合理范围并且对称。
     let total = area(&raster.coverage);
@@ -199,6 +202,7 @@ fn rasterizer_handles_quadratic_curves_and_fractional_offsets() {
             ]],
         },
         1.0,
+        0.0,
     );
     assert_eq!(shifted.width, 11);
     assert_eq!(shifted.coverage[0], 128);
@@ -219,9 +223,10 @@ fn rasterizer_accepts_contours_without_on_curve_points_and_empty_outlines() {
             contours: vec![ring],
         },
         1.0,
+        0.0,
     );
     assert!(area(&raster.coverage) > 40.0);
-    let empty = rasterize(&Outline::default(), 1.0);
+    let empty = rasterize(&Outline::default(), 1.0, 0.0);
     assert_eq!((empty.width, empty.height, empty.coverage.len()), (0, 0, 0));
 }
 
@@ -248,7 +253,7 @@ fn outlines_reproduce_simple_and_composite_glyphs() {
     let tahoma = sfnt("tahoma.ttf");
     let bar = tahoma.outline(tahoma.glyph_id('I').unwrap()).unwrap();
     assert_eq!(bar.contours.len(), 1);
-    let raster = rasterize(&bar, 22.0 / 2048.0);
+    let raster = rasterize(&bar, 22.0 / 2048.0, 0.0);
     assert!(
         (14..=17).contains(&raster.height) && raster.width <= 10,
         "{}x{}",
@@ -443,8 +448,8 @@ fn exercise(font: &Sfnt) {
             let _ = font.advance_units(id);
             let _ = font.embedded_bitmap(id, 11);
             if let Some(outline) = font.outline(id) {
-                let _ = rasterize(&outline, 0.01);
-                let _ = rasterize(&outline, 0.02);
+                let _ = rasterize(&outline, 0.01, 0.0);
+                let _ = rasterize(&outline, 0.02, 0.0);
             }
         }
     }

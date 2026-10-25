@@ -189,32 +189,41 @@ pub struct Tool {
     /// 在 47 帧位图条里的序号。
     pub frame: i32,
     pub label: &'static str,
+    /// 悬停时的工具提示。
+    pub tip: &'static str,
     pub command: Option<Command>,
     /// 此按钮前面带一道分隔。
     pub gap: bool,
 }
 
-const fn tool(frame: i32, label: &'static str, command: Option<Command>, gap: bool) -> Tool {
+const fn tool(
+    frame: i32,
+    label: &'static str,
+    tip: &'static str,
+    command: Option<Command>,
+    gap: bool,
+) -> Tool {
     Tool {
         frame,
         label,
+        tip,
         command,
         gap,
     }
 }
 
 pub const TOOLS: [Tool; 11] = [
-    tool(0, "后退", Some(Command::Back), false),
-    tool(1, "前进", Some(Command::Forward), false),
-    tool(28, "向上", Some(Command::Up), false),
-    tool(17, "搜索", None, true),
-    tool(3, "文件夹", Some(Command::ToggleFolders), false),
-    tool(26, "历史", None, false),
-    tool(43, "", None, true),
-    tool(44, "", None, false),
-    tool(10, "", Some(Command::Delete), false),
-    tool(8, "", None, false),
-    tool(20, "", Some(Command::ViewMenu), true),
+    tool(0, "后退", "后退", Some(Command::Back), false),
+    tool(1, "前进", "前进", Some(Command::Forward), false),
+    tool(28, "向上", "向上", Some(Command::Up), false),
+    tool(17, "搜索", "搜索", None, true),
+    tool(3, "文件夹", "文件夹", Some(Command::ToggleFolders), false),
+    tool(26, "历史", "历史", None, false),
+    tool(43, "", "移至", None, true),
+    tool(44, "", "复制到", None, false),
+    tool(10, "", "删除", Some(Command::Delete), false),
+    tool(8, "", "撤消", None, false),
+    tool(20, "", "查看", Some(Command::ViewMenu), true),
 ];
 
 /// 工具栏按钮宽度与分隔宽度。

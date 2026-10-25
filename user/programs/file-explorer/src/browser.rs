@@ -358,6 +358,13 @@ impl Browser {
             self.message = launched
                 .err()
                 .map(|error| format!("无法启动 {}：{error}", item.name));
+        } else if let Some(mut command) =
+            desktop_entry::open_with(Path::new("/usr/share/applications"), &path)
+        {
+            let launched = command.env_remove("WAYLAND_SOCKET").spawn().map(drop);
+            self.message = launched
+                .err()
+                .map(|error| format!("无法打开 {}：{error}", item.name));
         } else {
             self.message = Some(format!("没有与 {} 关联的程序。", item.name));
         }

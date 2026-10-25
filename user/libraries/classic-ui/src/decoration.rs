@@ -1,5 +1,8 @@
 //! 客户端装饰的命中与输入策略；几何和按钮位置与 Painter 共用同一份事实。
 
+use std::time::{Duration, Instant};
+
+use crate::Bitmap;
 use crate::wayland::ResizeEdge;
 use crate::{
     CaptionButton, Configuration, EventKind, FrameKind, Painter, WindowRequest,
@@ -21,6 +24,10 @@ pub struct Decoration {
     pointer: Option<(i32, i32)>,
     /// 按下时锁定按钮，释放仍在同一按钮才激活；缺少它会在拖入按钮后误触关闭。
     armed: Option<CaptionButton>,
+    /// 标题栏左侧的程序图标；缺少它标题栏左端留着空位，与原版不一致。
+    icon: Option<Bitmap>,
+    /// 上一次单击标题栏图标的时刻；两次单击间隔在 [`DOUBLE_CLICK`] 内视为双击关闭窗口，缺少它双击图标只会重复弹出菜单。
+    icon_click: Option<Instant>,
 }
 
 impl Decoration {
@@ -30,7 +37,17 @@ impl Decoration {
             kind,
             pointer: None,
             armed: None,
+            icon: None,
+            icon_click: None,
         }
+    }
+
+    /// 从系统界面素材目录读取 `<stem>-16.bmp` 作为标题栏左侧的程序图标。
+    ///
+    /// 素材缺失（只含默认素材的构建）或格式错误时保持无图标，不影响窗口使用。
+    pub fn load_icon(&mut self, stem: &str) {
+        let path = std::path::Path::new("/usr/share/liteos/ui").join(format!("{stem}-16.bmp"));
+        self.icon = Bitmap::load(&path).ok();
     }
 
     fn caption(&self, configuration: Configuration) -> Rect {
@@ -40,6 +57,17 @@ impl Decoration {
             border,
             (configuration.width - 2 * border).max(0),
             CAPTION_HEIGHT,
+        )
+    }
+
+    /// 标题栏左侧的 16×16 图标位（系统菜单按钮）。
+    fn icon_rect(&self, configuration: Configuration) -> Rect {
+        let caption = self.caption(configuration);
+        Rect::new(
+            caption.x + 2,
+            caption.y + (caption.height - 1 - 16) / 2,
+            16,
+            16,
         )
     }
 
@@ -95,6 +123,7 @@ impl Decoration {
             painter.caption_bar(
                 self.caption(configuration),
                 title,
+                self.icon.as_ref(),
                 configuration.active,
                 &self.buttons(configuration),
                 pressed,
@@ -127,6 +156,20 @@ impl Decoration {
             }
             EventKind::Focus(false) => self.armed = None,
             EventKind::Button {
+                code: 0x111,
+                pressed: true,
+                serial,
+            } if !configuration.fullscreen => {
+                let point = self.pointer?;
+                if contains(self.caption(configuration), point) {
+                    return Some(DecorationAction::Request(WindowRequest::ShowMenu {
+                        serial: *serial,
+                        x: point.0,
+                        y: point.1,
+                    }));
+                }
+            }
+            EventKind::Button {
                 code: 0x110,
                 pressed,
                 serial,
@@ -135,6 +178,22 @@ impl Decoration {
                     self.armed = self.button_at(configuration);
                     if self.armed.is_some() {
                         return None;
+                    }
+                    let icon = self.icon_rect(configuration);
+                    if self.pointer.is_some_and(|point| contains(icon, point)) {
+                        let double = self
+                            .icon_click
+                            .take()
+                            .is_some_and(|at| at.elapsed() < DOUBLE_CLICK);
+                        if double {
+                            return Some(DecorationAction::Close);
+                        }
+                        self.icon_click = Some(Instant::now());
+                        return Some(DecorationAction::Request(WindowRequest::ShowMenu {
+                            serial: *serial,
+                            x: icon.x,
+                            y: icon.bottom(),
+                        }));
                     }
                     if let Some(point) = self.pointer {
                         if self.kind == FrameKind::Resizable
@@ -178,6 +237,9 @@ impl Decoration {
         None
     }
 }
+
+/// 双击的最大间隔。
+const DOUBLE_CLICK: Duration = Duration::from_millis(500);
 
 fn contains(rect: Rect, (x, y): (i32, i32)) -> bool {
     x >= rect.x && x < rect.right() && y >= rect.y && y < rect.bottom()

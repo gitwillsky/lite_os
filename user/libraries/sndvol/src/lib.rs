@@ -2,16 +2,25 @@
 extern crate liteos_runtime as _;
 use canvas::Rect;
 use classic_theme::SystemColor as C;
-use classic_ui::{Configuration, Ink, Painter};
+use classic_ui::{Ink, Painter};
 use linux_uapi::alsa::control::{MasterControl, MasterVolume};
 use std::time::{Duration, Instant};
+
+/// 正在拖动的滑块。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Drag {
+    Volume,
+    Balance,
+}
 
 pub struct Volume {
     control: Option<MasterControl>,
     pub value: Option<MasterVolume>,
     pub message: &'static str,
+    /// 左右声道的偏向：-100 全偏左，+100 全偏右。两个声道相等时为 0；静音为零音量时保留上一次的值，否则拖到 0 再拖起时平衡会丢。
+    pub balance: i32,
     // 仅 slider 按下至 release/leave/focus-loss 期间有效，防止普通悬停修改 Master。
-    dragging: bool,
+    drag: Option<Drag>,
     // 外部状态最多每 100ms 采样；缺少 deadline，指针事件会把 ioctl 查询放大到输入频率。
     next_refresh: Instant,
 }
@@ -23,7 +32,8 @@ impl Volume {
                     control: Some(control),
                     value: None,
                     message: "",
-                    dragging: false,
+                    balance: 0,
+                    drag: None,
                     next_refresh: Instant::now(),
                 };
                 state.refresh();
@@ -32,7 +42,8 @@ impl Volume {
             Err(error) => Self {
                 control: None,
                 value: None,
-                dragging: false,
+                balance: 0,
+                drag: None,
                 next_refresh: Instant::now(),
                 message: if error.kind() == std::io::ErrorKind::PermissionDenied {
                     "此账户无音频设备访问权限。"
@@ -56,6 +67,15 @@ impl Volume {
                 Ok(value) => {
                     self.value = Some(value);
                     self.message = "";
+                    let (quiet, loud) = (value.left.min(value.right), value.left.max(value.right));
+                    if loud > 0 {
+                        let offset = 100 - i32::from(quiet) * 100 / i32::from(loud);
+                        self.balance = if value.right >= value.left {
+                            offset
+                        } else {
+                            -offset
+                        };
+                    }
                 }
                 Err(error) => {
                     eprintln!("desktop: ALSA Master read: {error}");
@@ -67,18 +87,31 @@ impl Volume {
         }
         before != self.value
     }
+    /// 按当前平衡把总音量 `percent` 分配到左右声道并设置静音。
     pub fn change(&mut self, percent: u8, muted: bool) {
-        if self.value.is_some_and(|value| {
-            value.left == percent && value.right == percent && value.muted == muted
-        }) {
+        let share =
+            |toward_other: i32| (i32::from(percent) * (100 - toward_other.max(0)) / 100) as u8;
+        let (left, right) = (share(self.balance), share(-self.balance));
+        if self
+            .value
+            .is_some_and(|value| value.left == left && value.right == right && value.muted == muted)
+        {
             return;
         }
         if let Some(control) = &self.control
-            && let Err(error) = control.set(percent, muted)
+            && let Err(error) = control.set_stereo(left, right, muted)
         {
             eprintln!("desktop: ALSA Master write: {error}");
         }
         self.refresh();
+    }
+
+    /// 设置平衡（-100..=100）；总音量不变。
+    pub fn set_balance(&mut self, balance: i32) {
+        if let Some(value) = self.value {
+            self.balance = balance.clamp(-100, 100);
+            self.change(value.left.max(value.right), value.muted);
+        }
     }
     pub fn key(&mut self, code: u32) {
         if let Some(value) = self.value {
@@ -92,21 +125,30 @@ impl Volume {
         }
     }
     pub fn dragging(&self) -> bool {
-        self.dragging
+        self.drag.is_some()
     }
     pub fn cancel(&mut self) {
-        self.dragging = false;
+        self.drag = None;
     }
-    /// 滑块位置对应的百分比；超出轨道时夹在 0..=100。
+    /// 音量滑块位置对应的百分比；超出轨道时夹在 0..=100。
     fn percent_at(layout: &Layout, y: f64) -> u8 {
         ((f64::from(layout.track_top + layout.track_len) - y) * 100. / f64::from(layout.track_len))
             .clamp(0., 100.) as u8
     }
-    pub fn motion(&mut self, layout: &Layout, y: f64) {
-        if self.dragging
-            && let Some(value) = self.value
-        {
-            self.change(Self::percent_at(layout, y), value.muted);
+    /// 平衡滑块位置对应的平衡值；中线附近吸附到 0。
+    fn balance_at(bar: Rect, x: f64) -> i32 {
+        let start = f64::from(bar.x + 5);
+        let span = f64::from(bar.width - 11);
+        let balance = (((x - start) / span).clamp(0., 1.) * 200. - 100.).round() as i32;
+        if balance.abs() <= 6 { 0 } else { balance }
+    }
+    pub fn motion(&mut self, layout: &Layout, x: f64, y: f64) {
+        match (self.drag, self.value, layout.balance_bar) {
+            (Some(Drag::Volume), Some(value), _) => {
+                self.change(Self::percent_at(layout, y), value.muted)
+            }
+            (Some(Drag::Balance), Some(_), Some(bar)) => self.set_balance(Self::balance_at(bar, x)),
+            _ => {}
         }
     }
     pub fn button(&mut self, layout: &Layout, x: f64, y: f64, pressed: bool) {
@@ -116,8 +158,11 @@ impl Volume {
         }
         if let Some(value) = self.value {
             if layout.slider_hit.contains(x, y) {
-                self.dragging = true;
+                self.drag = Some(Drag::Volume);
                 self.change(Self::percent_at(layout, y), value.muted);
+            } else if let Some(bar) = layout.balance_bar.filter(|bar| bar.contains(x, y)) {
+                self.drag = Some(Drag::Balance);
+                self.set_balance(Self::balance_at(bar, x));
             } else if layout.mute_hit.contains(x, y) {
                 self.change(value.left.max(value.right), !value.muted);
             }
@@ -127,20 +172,23 @@ impl Volume {
         let percent = self.value.map(|v| v.left.max(v.right));
         p.text_centered(
             layout.label,
-            &percent.map_or("音量".into(), |value| format!("音量 {value}%")),
+            layout.title,
             Ink::Color(C::ButtonText),
-            false,
+            layout.title_bold,
         );
-        let x = layout.center;
-        p.fill(
-            Rect::new(x - 2, layout.track_top, 4, layout.track_len + 1),
-            C::ButtonShadow,
-        );
-        if let Some(value) = percent {
-            let y = layout.track_top + layout.track_len - i32::from(value) * layout.track_len / 100;
-            p.fill(Rect::new(x - 10, y - 5, 20, 10), C::ButtonFace);
-            p.outline(Rect::new(x - 10, y - 5, 20, 10), C::ButtonText);
+        if let Some((label, bar)) = layout.balance_label.zip(layout.balance_bar) {
+            p.text(label.0, label.1, "平衡:", Ink::Color(C::ButtonText), false);
+            p.trackbar(bar, false, ((self.balance + 100) / 2, 100), 10);
         }
+        if let Some((x, y)) = layout.volume_label {
+            p.text(x, y, "音量:", Ink::Color(C::ButtonText), false);
+        }
+        p.trackbar(
+            layout.slider_hit,
+            true,
+            (100 - i32::from(percent.unwrap_or(0)), 100),
+            10,
+        );
         let (check_x, check_y) = layout.check;
         p.checkbox(
             check_x,
@@ -148,10 +196,10 @@ impl Volume {
             self.value.is_some_and(|value| value.muted),
             self.value.is_none(),
         );
-        p.text(
+        p.label(
             check_x + 20,
             check_y,
-            "静音",
+            layout.mute_label,
             if self.value.is_some() {
                 Ink::Color(C::ButtonText)
             } else {
@@ -181,41 +229,77 @@ impl Contains for Rect {
 /// 音量控件在某个表面里的几何：同一套状态既画在"音量控制"窗口里，也画在托盘弹出的小面板里。
 pub struct Layout {
     pub label: Rect,
-    pub center: i32,
+    pub title: &'static str,
+    pub title_bold: bool,
     pub track_top: i32,
     pub track_len: i32,
+    /// 竖向音量滑块条的矩形（兼作命中区）。
     pub slider_hit: Rect,
+    pub balance_label: Option<(i32, i32)>,
+    pub balance_bar: Option<Rect>,
+    pub volume_label: Option<(i32, i32)>,
     pub mute_hit: Rect,
-    /// 复选框左上角；"静音"文字在其右侧。
+    /// 复选框左上角；静音文字在其右侧。
     pub check: (i32, i32),
+    pub mute_label: &'static str,
     pub message: Option<(i32, i32)>,
 }
 
+/// 竖向滑块条沿轨道方向两端的余量（与 `Painter::trackbar` 一致），换算轨道起点与长度时扣除。
+const BAR_MARGIN: i32 = 5;
+
 impl Layout {
-    /// "音量控制"窗口（客户区整个 surface 宽度 `c.width`）。
-    pub fn dialog(c: Configuration) -> Self {
+    fn vertical(bar: Rect) -> (Rect, i32, i32) {
+        (bar, bar.y + BAR_MARGIN, bar.height - 2 * BAR_MARGIN - 1)
+    }
+
+    /// "音量控制"窗口：`client` 是窗口客户区（扣除标题栏与菜单栏之后），单列 Windows 2000 混音器。
+    pub fn dialog(client: Rect) -> Self {
+        let column = Rect::new(client.x + 8, client.y + 6, client.width - 16, 250);
+        let (bar, track_top, track_len) = Self::vertical(Rect::new(
+            column.x + (column.width - 40) / 2,
+            column.y + 88,
+            40,
+            130,
+        ));
         Self {
-            label: Rect::new(15, 42, c.width - 30, 25),
-            center: c.width / 2,
-            track_top: 80,
-            track_len: 120,
-            slider_hit: Rect::new(c.width / 2 - 20, 75, 40, 131),
-            mute_hit: Rect::new(20, 216, c.width - 40, 27),
-            check: (25, 220),
-            message: Some((12, 250)),
+            label: Rect::new(column.x, column.y, column.width, 20),
+            title: "音量控制",
+            title_bold: true,
+            track_top,
+            track_len,
+            slider_hit: bar,
+            balance_label: Some((column.x + 4, column.y + 28)),
+            balance_bar: Some(Rect::new(column.x + 4, column.y + 44, column.width - 8, 30)),
+            volume_label: Some((column.x + 4, column.y + 78)),
+            mute_hit: Rect::new(column.x, column.y + 224, column.width, 22),
+            check: (column.x + 4, column.y + 228),
+            mute_label: "全部静音(M)",
+            message: Some((client.x + 8, column.bottom() + 6)),
         }
     }
 
     /// 托盘弹出的 64 × 150 面板，左上角在 `panel`。
     pub fn popup(panel: Rect) -> Self {
+        let (bar, track_top, track_len) = Self::vertical(Rect::new(
+            panel.x + (panel.width - 40) / 2,
+            panel.y + 22,
+            40,
+            96,
+        ));
         Self {
-            label: Rect::new(panel.x + 4, panel.y + 6, panel.width - 8, 18),
-            center: panel.x + panel.width / 2,
-            track_top: panel.y + 32,
-            track_len: 80,
-            slider_hit: Rect::new(panel.x + panel.width / 2 - 14, panel.y + 27, 28, 91),
+            label: Rect::new(panel.x + 4, panel.y + 4, panel.width - 8, 16),
+            title: "音量",
+            title_bold: false,
+            track_top,
+            track_len,
+            slider_hit: bar,
+            balance_label: None,
+            balance_bar: None,
+            volume_label: None,
             mute_hit: Rect::new(panel.x + 4, panel.y + 122, panel.width - 8, 22),
             check: (panel.x + 8, panel.y + 126),
+            mute_label: "静音(M)",
             message: None,
         }
     }
@@ -227,15 +311,7 @@ mod tests {
 
     #[test]
     fn the_slider_maps_the_whole_track_to_zero_through_one_hundred_in_both_layouts() {
-        let dialog = Layout::dialog(Configuration {
-            width: 260,
-            height: 320,
-            scale: 1,
-            active: true,
-            maximized: false,
-            fullscreen: false,
-            resizing: false,
-        });
+        let dialog = Layout::dialog(Rect::new(3, 22, 140, 280));
         let popup = Layout::popup(Rect::new(100, 200, 64, 150));
         for layout in [&dialog, &popup] {
             assert_eq!(Volume::percent_at(layout, f64::from(layout.track_top)), 100);
@@ -248,6 +324,15 @@ mod tests {
             let middle = f64::from(layout.track_top + layout.track_len / 2);
             assert_eq!(Volume::percent_at(layout, middle), 50);
         }
+    }
+
+    #[test]
+    fn balance_maps_the_bar_ends_to_full_left_and_right_and_snaps_near_the_middle() {
+        let bar = Rect::new(10, 0, 120, 30);
+        assert_eq!(Volume::balance_at(bar, -50.), -100);
+        assert_eq!(Volume::balance_at(bar, 500.), 100);
+        let middle = f64::from(bar.x) + 5. + f64::from(bar.width - 11) / 2.;
+        assert_eq!(Volume::balance_at(bar, middle + 2.), 0);
     }
 
     #[test]

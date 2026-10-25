@@ -242,8 +242,7 @@ Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，�
      `link` (6,0)。沙漏翻转帧已重做为刚体旋转。
    - 位图 8 张：`boot-logo`、`logon-banner`、`start-banner`、`ctrl-alt-del` 的 1x/2x。
 4. 字体（`assets/fonts/`，选择依据、来源哈希与渲染规则见 `docs/design/classic-desktop/assets.md`）：1x 文泉驿点阵宋体
-   12 像素、2x 文鼎 PL 明体 CN 轮廓（已删除来源存疑的点阵表并写入修改声明）、西文 Wine Tahoma；中文粗体以 1 逻辑
-   像素叠印合成。字体必须作为独立数据文件在运行时加载。
+   12 像素、2x 文鼎 PL 明体 CN 轮廓（已删除来源存疑的点阵表并写入修改声明）、西文 Wine Tahoma；中文粗体 1x 点阵叠印、2x 轮廓加粗。字体必须作为独立数据文件在运行时加载。
 
 待完成：
 
@@ -297,7 +296,7 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
   `wayland`、`xdg-shell`、`viewporter`（来源与 SHA-256 见标准基线）。wire 层有 `Reader`/`Writer`/`Framer`、fd 队列、
   4096 字节上限回滚；生成的 `Request`/`Event` 供服务端与客户端共用。其余协议在 compositor 需要时再加 XML。
 - `typeface`：自研 BDF 点阵、sfnt（cmap 4/12、glyf 含复合、EBLC/EBDT）读取与灰度光栅，1x 用文泉驿点阵 + Tahoma 11 ppem 内嵌点阵
-  （无抗锯齿），2x 及以上用轮廓；西文只取 ASCII 与 Latin-1/扩展 A/B，其余（含中文引号）走中文字体；CJK 仿粗体叠印；
+  （无抗锯齿），2x 及以上用轮廓；西文只取 ASCII 与 Latin-1/扩展 A/B，其余（含中文引号）走中文字体；CJK 合成粗体（点阵叠印、轮廓加粗）；
   禁则换行；16 个测试含损坏字体不 panic。未引入 `swash`。
 - `canvas`/`typeface` 的 benchmark 决策见构建验证文档（诊断，无阈值）。
 - `classic-ui` 绘制层：`Painter` 按逻辑像素 × 整数 scale 绘制边框、按钮（常态/按下/默认/焦点/禁用）、复选框与单选框、编辑框、
@@ -319,8 +318,8 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
   scale 换算）；`keyboard::xkb` 从同一张键码表生成自包含的 XKB keymap，由 guest 里上游 libxkbcommon 逐键裁决（`xkb-check`）；
   `linux-uapi::recv_fds` 支持一次收多个 fd。键盘重复由客户端按 `repeat_info`（30/s、500 ms）自己做；Caps Lock 作为 locked 状态下发。
 - 窗口交互已实现：`xdg_toplevel.move/resize`（serial 校验、抓取、屏内可达性约束、缩放最小尺寸、对边锚定）、最大化/全屏（保存还原几何、
-  configure 状态与尺寸）、最小化、Alt+Tab（无面板）与 Alt+Esc；纯几何在 `interaction.rs`、窗口模式在 `desktop.rs`，各有单测；门禁逐步截图核对。
-  限制：拖动时窗口内容实时跟随（W2 默认值），尚未实现"拖动时只画 XOR 框"（W3）；Alt+Tab 没有面板与反向（W12/W13）；
+  configure 状态与尺寸）、最小化、窗口系统菜单（标题栏图标、右键标题栏、Alt+Space；双击图标关闭）、Alt+Tab（图标网格面板，Alt+Shift+Tab 反向，松开 Alt 激活）与 Alt+Esc；纯几何在 `interaction.rs`、窗口模式在 `desktop.rs`，各有单测；门禁逐步截图核对。
+  限制：拖动时窗口内容实时跟随（W2 默认值），尚未实现"拖动时只画 XOR 框"（W3）；
   最大化现在使用外壳独占区扣除后的工作区，全屏仍覆盖完整输出。
 - 客户端 `wl_pointer.set_cursor`、缩放方向光标、layer-shell v5 与 foreign-toplevel v3 已实现；外壳只经 compositor
   创建的 WAYLAND_SOCKET 连接获得特权，普通客户端看不到/不能绑定外壳全局对象。
@@ -339,8 +338,8 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
 - 资源管理器重写为 Windows 2000 外观：菜单栏、带原版 `browseui` 位图的工具栏、地址栏、信息面板/文件夹树、四种查看方式、
   状态栏、"我的电脑"磁盘列表，以及回收站/复制/剪切/重命名/新建文件夹与右键菜单；开始菜单为经典三级布局（见 [资源管理器](../design/classic-desktop/explorer.md)）。
   本地原版素材的提取表新增工具栏位图与驱动器/打印机/系统文件图标。
-- 待做：控制面板里的真实设置程序（目前为空）、资源管理器的多选与拖放、原版系统声音（没有用户态音频服务）、
-  助记符下划线、菜单动画、鼠标文本选择、剪贴板/IME，以及完整应用的视觉验收。
+- 待做：控制面板里的真实设置程序（目前为空）、资源管理器的多选与拖放、其余系统事件声音（资源管理器的确认/错误框已播放 `chord.wav`）、
+  助记符下划线（资源管理器与窗口菜单已按 Alt/Tab 规则显示，其余程序未接）、托盘与任务栏的工具提示（资源管理器工具栏已有）、菜单动画、鼠标文本选择、剪贴板/IME，以及完整应用的视觉验收。
 
 ## 风险
 

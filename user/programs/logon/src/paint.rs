@@ -22,41 +22,75 @@ impl Art {
         })
     }
 }
+/// 登录类对话框的宽度：横幅位图 `logon-banner` 是 413 像素宽，加上左右各 3 像素的窗口框正好铺满客户区；
+/// 宽于它横幅右侧会露出空白，窄于它横幅被裁掉。
+const DIALOG_WIDTH: i32 = 413 + 6;
+
 fn dialog(c: Configuration) -> Rect {
-    Rect::new((c.width - 450) / 2, (c.height - 300) / 2, 450, 300)
+    Rect::new(
+        (c.width - DIALOG_WIDTH) / 2,
+        (c.height - 300) / 2,
+        DIALOG_WIDTH,
+        300,
+    )
+}
+
+/// 贴在对话框右边距 10 像素处的一排按钮，`widths` 从左到右，间距 6；返回各按钮的 x（相对对话框）。
+fn right_aligned(widths: &[i32]) -> Vec<i32> {
+    let mut right = DIALOG_WIDTH - 10;
+    let mut xs: Vec<i32> = widths
+        .iter()
+        .rev()
+        .map(|width| {
+            right -= width;
+            let x = right;
+            right -= 6;
+            x
+        })
+        .collect();
+    xs.reverse();
+    xs
 }
 fn at(d: Rect, x: i32, y: i32, w: i32, h: i32) -> Rect {
     Rect::new(d.x + x, d.y + y, w, h)
 }
 pub fn areas(s: &Logon, c: Configuration) -> Vec<Rect> {
     let d = dialog(c);
+    let row = |y: i32, widths: &[i32]| -> Vec<Rect> {
+        right_aligned(widths)
+            .into_iter()
+            .zip(widths)
+            .map(|(x, width)| at(d, x, y, *width, 23))
+            .collect()
+    };
     match s.page {
-        Page::Credentials | Page::Unlock => vec![
-            at(d, 110, 132, 260, 23),
-            at(d, 110, 166, 260, 23),
-            at(d, 104, 218, 75, 23),
-            at(d, 185, 218, 75, 23),
-            at(d, 266, 218, 75, 23),
-            at(d, 347, 218, 94, 23),
-        ],
-        Page::Password => vec![
-            at(d, 126, 124, 285, 23),
-            at(d, 126, 158, 285, 23),
-            at(d, 126, 192, 285, 23),
-            at(d, 265, 250, 75, 23),
-            at(d, 346, 250, 75, 23),
-        ],
+        Page::Credentials | Page::Unlock => {
+            let mut areas = vec![at(d, 110, 132, 260, 23), at(d, 110, 166, 260, 23)];
+            areas.extend(row(218, &[75, 75, 75, 94]));
+            areas
+        }
+        Page::Password => {
+            let mut areas = vec![
+                at(d, 126, 124, 270, 23),
+                at(d, 126, 158, 270, 23),
+                at(d, 126, 192, 270, 23),
+            ];
+            areas.extend(row(250, &[75, 75]));
+            areas
+        }
         Page::Security => (0..6)
-            .map(|i| at(d, 20 + (i % 3) * 138, 172 + (i / 3) * 34, 130, 25))
+            .map(|i| at(d, 15 + (i % 3) * 132, 172 + (i / 3) * 34, 124, 25))
             .collect(),
-        Page::Shutdown => vec![
-            at(d, 90, 123, 280, 23),
-            at(d, 90, 151, 280, 23),
-            at(d, 90, 179, 280, 23),
-            at(d, 265, 250, 75, 23),
-            at(d, 346, 250, 75, 23),
-        ],
-        _ => vec![at(d, 350, 250, 75, 23)],
+        Page::Shutdown => {
+            let mut areas = vec![
+                at(d, 90, 123, 280, 23),
+                at(d, 90, 151, 280, 23),
+                at(d, 90, 179, 280, 23),
+            ];
+            areas.extend(row(250, &[75, 75]));
+            areas
+        }
+        _ => row(250, &[75]),
     }
 }
 fn label(p: &mut Painter<'_>, d: Rect, x: i32, y: i32, text: &str) {
@@ -113,6 +147,7 @@ pub fn frame(
     p.caption_bar(
         Rect::new(inner.x, inner.y, inner.width, 19),
         title,
+        None,
         true,
         &[],
         None,

@@ -111,13 +111,24 @@ impl MasterControl {
     ///
     /// `percent` 必须为 0..=100。两个标准 control 分别写入；后一个失败时前一个可能已生效，错误不代表事务回滚。
     pub fn set(&self, percent: u8, muted: bool) -> io::Result<()> {
-        if percent > 100 {
+        self.set_stereo(percent, percent, muted)
+    }
+
+    /// 分别设置左右声道的百分比与静音。
+    ///
+    /// # Errors
+    ///
+    /// 任一百分比超过 100 返回 `InvalidInput`；ioctl 失败原样返回。
+    pub fn set_stereo(&self, left: u8, right: u8, muted: bool) -> io::Result<()> {
+        if left > 100 || right > 100 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let volume = self.element(VOLUME, 2)?;
         let switch = self.element(SWITCH, 1)?;
-        let value = volume.minimum + (volume.maximum - volume.minimum) * i64::from(percent) / 100;
-        self.write(&volume, [value; 2])?;
+        let value = |percent: u8| {
+            volume.minimum + (volume.maximum - volume.minimum) * i64::from(percent) / 100
+        };
+        self.write(&volume, [value(left), value(right)])?;
         self.write(&switch, [i64::from(!muted); 2])
     }
 }

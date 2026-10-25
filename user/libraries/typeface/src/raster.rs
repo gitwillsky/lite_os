@@ -100,6 +100,48 @@ fn flatten(contour: &[Point], scale: f32) -> Vec<Vertex> {
     out
 }
 
+/// 把一个展平后的轮廓整体向外加粗 `distance` 像素（轮廓加粗，与 FreeType 的 `FT_Outline_Embolden` 同类）。
+///
+/// TrueType 的填充区在行进方向的右侧，所以每个顶点沿相邻两条边左法线的斜接方向外移：
+/// 外轮廓向外长、内轮廓（孔）向内收，笔画因此均匀变粗。斜接长度限制在 `distance` 的 4 倍，避免尖角刺出。
+fn embolden(contour: &mut Vec<Vertex>, distance: f32) {
+    contour.dedup_by(|a, b| a.x == b.x && a.y == b.y);
+    if contour.len() > 1
+        && contour
+            .first()
+            .zip(contour.last())
+            .is_some_and(|(a, b)| a.x == b.x && a.y == b.y)
+    {
+        contour.pop();
+    }
+    let count = contour.len();
+    if count < 3 {
+        return;
+    }
+    let normal = |from: Vertex, to: Vertex| {
+        let (dx, dy) = (to.x - from.x, to.y - from.y);
+        let length = dx.hypot(dy);
+        (-dy / length, dx / length)
+    };
+    let moved: Vec<Vertex> = (0..count)
+        .map(|index| {
+            let (previous, current, next) = (
+                contour[(index + count - 1) % count],
+                contour[index],
+                contour[(index + 1) % count],
+            );
+            let (ax, ay) = normal(previous, current);
+            let (bx, by) = normal(current, next);
+            let denominator = (1.0 + ax * bx + ay * by).max(0.25);
+            Vertex {
+                x: current.x + (ax + bx) * distance / denominator,
+                y: current.y + (ay + by) * distance / denominator,
+            }
+        })
+        .collect();
+    *contour = moved;
+}
+
 /// 面积累积缓冲：每行 `width + 2` 个单元，行内前缀和即覆盖率。
 struct Accumulator {
     cells: Vec<f32>,
@@ -193,12 +235,20 @@ pub(crate) struct Raster {
 }
 
 /// 以 `scale`（像素 / font unit）栅格化 `outline`；空轮廓返回宽高为 0 的位图。
-pub(crate) fn rasterize(outline: &Outline, scale: f32) -> Raster {
+///
+/// `embolden` 是每侧向外加粗的像素距离，0 表示不加粗。
+pub(crate) fn rasterize(outline: &Outline, scale: f32, embolden_distance: f32) -> Raster {
     let contours: Vec<Vec<Vertex>> = outline
         .contours
         .iter()
         .filter(|contour| contour.len() >= 2)
-        .map(|contour| flatten(contour, scale))
+        .map(|contour| {
+            let mut flat = flatten(contour, scale);
+            if embolden_distance > 0.0 {
+                embolden(&mut flat, embolden_distance);
+            }
+            flat
+        })
         .collect();
     let vertices = contours.iter().flatten();
     let (min_x, max_x, min_y, max_y) = vertices.fold(

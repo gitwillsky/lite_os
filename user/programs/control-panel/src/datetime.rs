@@ -82,14 +82,17 @@ impl Page for DateTime {
     fn title(&self) -> &'static str {
         "日期/时间 属性"
     }
-    fn tab(&self) -> &'static str {
-        "日期和时间"
+    fn tabs(&self) -> &'static [&'static str] {
+        &["日期和时间"]
+    }
+    fn icon(&self) -> &'static str {
+        "date-time"
     }
     fn size(&self) -> (i32, i32) {
         (400, 330)
     }
 
-    fn paint(&self, p: &mut Painter<'_>, page: Rect, now: i64, _icons: &Icons) {
+    fn paint(&self, p: &mut Painter<'_>, page: Rect, _tab: usize, now: i64, _icons: &Icons) {
         let today = civil_from_days(now.div_euclid(86400));
         // 左：日期组（月份标题、翻页、星期行与月历）。
         let (x0, y0) = Self::calendar_origin(page);
@@ -215,7 +218,7 @@ impl Page for DateTime {
         );
     }
 
-    fn click(&mut self, page: Rect, point: (i32, i32)) -> bool {
+    fn click(&mut self, page: Rect, _tab: usize, point: (i32, i32)) -> bool {
         let [previous, next] = Self::nav_buttons(page);
         if inside(previous, point) {
             self.step_month(-1);

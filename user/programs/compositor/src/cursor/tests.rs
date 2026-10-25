@@ -97,8 +97,8 @@ fn rejects_malformed_sets_without_reading_out_of_bounds() {
 
 #[test]
 fn repository_cursor_set_is_valid_and_complete() {
-    let path =
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/classic/cursors.lcs");
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../assets/classic/cursors.lcs");
     let set = CursorSet::parse(&std::fs::read(path).unwrap()).unwrap();
     for name in [
         "arrow",

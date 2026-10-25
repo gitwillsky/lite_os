@@ -32,7 +32,7 @@ fn check_aarch64_el0_execution_access(root: &Path, errors: &mut Vec<String>) {
 }
 
 /// `user/programs/` 下的可执行程序包；每个都有 `src/main.rs`。
-const PROGRAMS: [&str; 8] = [
+const PROGRAMS: [&str; 10] = [
     "compositor",
     "logon",
     "desktop",
@@ -41,6 +41,8 @@ const PROGRAMS: [&str; 8] = [
     "task-manager",
     "volume-control",
     "sound-player",
+    "media-player",
+    "notepad",
 ];
 
 /// `user/libraries/` 下的库包；每个都有 `src/lib.rs`。其中带 `liteos-runtime` 依赖的会被构建成共享库。
@@ -115,7 +117,9 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
         for name in expected {
             let base = root.join("user").join(directory).join(name);
             if !base.join(entry).is_file() {
-                errors.push(format!("user/{directory}/{name}/{entry}: required entry is missing"));
+                errors.push(format!(
+                    "user/{directory}/{name}/{entry}: required entry is missing"
+                ));
             }
             if !base.join("README.md").is_file() {
                 errors.push(format!(
@@ -123,8 +127,15 @@ fn check_user_tree(root: &Path, errors: &mut Vec<String>) {
                 ));
             }
         }
-        if !root.join("user").join(directory).join("README.md").is_file() {
-            errors.push(format!("user/{directory}/README.md: the directory must be indexed"));
+        if !root
+            .join("user")
+            .join(directory)
+            .join("README.md")
+            .is_file()
+        {
+            errors.push(format!(
+                "user/{directory}/README.md: the directory must be indexed"
+            ));
         }
     }
 }

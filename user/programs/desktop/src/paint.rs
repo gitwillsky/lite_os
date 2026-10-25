@@ -104,8 +104,8 @@ pub fn areas(s: &Desktop, d: &Display, id: WindowId, c: Configuration) -> Vec<Re
             Rect::new(99, 4, 24, 22),
             pager(d, c.width, c.width - 105),
             pager(d, c.width, c.width - 86),
-            Rect::new(c.width - 130, 4, 24, 22),
-            Rect::new(c.width - 66, 4, 62, 22),
+            Rect::new(c.width - 88, 4, 24, 22),
+            Rect::new(c.width - 62, 4, 60, 22),
         ];
         let ids = task_ids(s, d, c.width);
         let width = ((c.width - 275) / ids.len().max(1) as i32).clamp(1, 160);
@@ -239,7 +239,7 @@ pub fn frame(
             } else {
                 "tray-volume-16"
             },
-            c.width - 126,
+            rects[VOLUME].x + 4,
             7,
         );
         for (i, id) in task_ids(s, d, c.width).iter().enumerate() {
@@ -254,6 +254,10 @@ pub fn frame(
                         ..Default::default()
                     },
                 );
+                if pressed {
+                    // 活动窗口的按钮按下并带高光/按钮面棋盘格底。
+                    p.checker(rect.inset(2), C::ButtonHilight, C::ButtonFace);
+                }
                 // 16×16 程序图标加左对齐标题，按下时整体下移一像素。
                 let shift = i32::from(pressed);
                 art.icon(
@@ -273,7 +277,8 @@ pub fn frame(
             }
         }
         let clock = rects[CLOCK];
-        p.edge(clock, Edge::SunkenOuter);
+        // 托盘是一个凹陷的整体：音量图标与时钟同在一个框里，之间不留空隙。
+        p.edge(Rect::new(c.width - 90, 4, 88, 22), Edge::SunkenOuter);
         p.text_centered(
             clock,
             &format!("{}:{:02}", (minute / 60) % 24, minute % 60),

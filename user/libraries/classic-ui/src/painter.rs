@@ -15,6 +15,8 @@ pub struct Painter<'a> {
     pub(crate) theme: &'a Theme,
     pub(crate) typeface: &'a Typeface,
     pub(crate) scale: i32,
+    /// 是否画助记键下划线（Windows 2000 在按 Alt 或 Tab 之前隐藏它，见 `interaction.md` N1/N2）。
+    cues: bool,
 }
 
 pub(crate) fn to_color(rgb: Rgb) -> Color {
@@ -29,7 +31,13 @@ impl<'a> Painter<'a> {
             theme,
             typeface,
             scale: scale.max(1),
+            cues: false,
         }
+    }
+
+    /// 设置是否显示助记键下划线；默认隐藏。
+    pub fn set_cues(&mut self, visible: bool) {
+        self.cues = visible;
     }
 
     pub fn scale(&self) -> i32 {
@@ -68,6 +76,12 @@ impl<'a> Painter<'a> {
         self.surface.fill_rect(rect, color);
     }
 
+    /// 用任意 RGB 填充矩形：只给主题没有对应系统色的专用绘制（性能图表的绿色网格与曲线）使用。
+    pub fn fill_rgb(&mut self, rect: Rect, rgb: Rgb) {
+        let (rect, color) = (self.physical(rect), to_color(rgb));
+        self.surface.fill_rect(rect, color);
+    }
+
     /// 1 逻辑像素宽的单色矩形外框。
     pub fn outline(&mut self, rect: Rect, color: SystemColor) {
         let (physical, color) = (self.physical(rect), self.color(color));
@@ -92,6 +106,21 @@ impl<'a> Painter<'a> {
             ring = ring.inset(1);
         }
         ring
+    }
+
+    /// 以逻辑像素为单位的棋盘格填充：`(x + y)` 为偶数的点用 `even`，其余用 `odd`。
+    /// 用于按下状态的任务按钮与"选中的"工具栏按钮底（Windows 的 dither brush）。
+    pub fn checker(&mut self, rect: Rect, even: SystemColor, odd: SystemColor) {
+        self.fill(rect, odd);
+        let color = self.color(even);
+        for y in rect.y..rect.bottom() {
+            for x in rect.x..rect.right() {
+                if (x + y) % 2 == 0 {
+                    let cell = Rect::new(self.px(x), self.px(y), self.scale, self.scale);
+                    self.surface.fill_rect(cell, color);
+                }
+            }
+        }
     }
 
     /// 异或绘制的点状焦点框（每隔一个逻辑像素一点）。
@@ -150,6 +179,52 @@ impl<'a> Painter<'a> {
             pen += glyph.advance;
         }
         pen - x
+    }
+
+    /// 助记键字母的字符区间：标签里形如 `(F)` 的括号内单个 ASCII 字母，返回字母在 `label` 中的字节范围。
+    fn mnemonic_span(label: &str) -> Option<std::ops::Range<usize>> {
+        let open = label.rfind('(')?;
+        let bytes = label.as_bytes();
+        (bytes.get(open + 2) == Some(&b')') && bytes[open + 1].is_ascii_alphabetic())
+            .then(|| open + 1..open + 2)
+    }
+
+    /// 画一个带助记键的标签；`cues` 打开时在助记字母下画 1 逻辑像素下划线。
+    fn label_physical(&mut self, x: i32, y: i32, label: &str, ink: Ink, bold: bool) {
+        self.ink_physical(x, y, label, ink, bold);
+        let (true, Some(span)) = (self.cues, Self::mnemonic_span(label)) else {
+            return;
+        };
+        let before = self.text_width(&label[..span.start], bold);
+        let width = self.text_width(&label[span], bold);
+        let (ascent, _) = self.typeface.metrics();
+        let color = match ink {
+            Ink::Color(color) => self.color(color),
+            Ink::Disabled => self.color(SystemColor::ButtonShadow),
+        };
+        let rect = Rect::new(x + before, y + ascent + self.scale, width, self.scale);
+        self.surface.fill_rect(rect, color);
+    }
+
+    /// 在逻辑坐标 `(x, y)` 画一个带助记键的标签（菜单项、按钮名）。
+    pub fn label(&mut self, x: i32, y: i32, label: &str, ink: Ink, bold: bool) {
+        self.label_physical(self.px(x), self.px(y), label, ink, bold);
+    }
+
+    /// 在 `rect` 内居中画一个带助记键的标签。
+    pub fn label_centered(&mut self, rect: Rect, label: &str, ink: Ink, bold: bool) {
+        let physical = self.physical(rect);
+        let (ascent, descent) = self.typeface.metrics();
+        let width = self.text_width(label, bold);
+        let x = physical.x + (physical.width - width) / 2;
+        let y = physical.y + (physical.height - (ascent + descent)) / 2;
+        self.label_physical(x, y, label, ink, bold);
+    }
+
+    /// 用任意 RGB 在逻辑坐标 `(x, y)` 画一行文字；与 [`Painter::fill_rgb`] 一样只给性能图表这类没有系统色对应的绘制用。
+    pub fn text_rgb(&mut self, x: i32, y: i32, text: &str, rgb: Rgb) {
+        let color = to_color(rgb);
+        self.text_physical(self.px(x), self.px(y), text, color, false);
     }
 
     /// 在 `rect` 内水平、垂直居中绘制一行文本。

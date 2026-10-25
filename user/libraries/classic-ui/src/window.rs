@@ -1,6 +1,7 @@
 use canvas::Rect;
 use classic_theme::{Edge, SystemColor};
 
+use crate::Bitmap;
 use crate::{
     ButtonState,
     painter::{Ink, Painter},
@@ -130,11 +131,13 @@ impl Painter<'_> {
     ///
     /// # Parameters
     ///
+    /// - `icon`: 画在图标位（16×16）的程序图标；`None` 时留空。
     /// - `buttons`: 从左到右的按钮，通常是 `[最小化, 最大化|还原, 关闭]`，最后一个贴右边距 2 像素。
     pub fn caption_bar(
         &mut self,
         rect: Rect,
         title: &str,
+        icon: Option<&Bitmap>,
         active: bool,
         buttons: &[(CaptionButton, bool)],
         pressed: Option<CaptionButton>,
@@ -166,6 +169,9 @@ impl Painter<'_> {
             leftmost = area.x;
         }
 
+        if let Some(icon) = icon {
+            icon.paint(self, rect.x + 2, bar.y + (bar.height - 16) / 2);
+        }
         let text_x = rect.x + 2 + 16 + 2;
         let available = (leftmost - 2 - text_x).max(0) * self.scale;
         let shown = self.truncate_to_width(title, available, true);

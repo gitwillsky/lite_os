@@ -77,7 +77,7 @@ impl Painter<'_> {
             Ink::Color(SystemColor::ButtonText)
         };
         let content = Rect::new(body.x + offset, body.y + offset, body.width, body.height);
-        self.text_centered(content, label, ink, false);
+        self.label_centered(content, label, ink, false);
         if state.focused {
             self.focus_rect(body.inset(3));
         }
@@ -254,5 +254,46 @@ impl Painter<'_> {
                 self.pixels(glyph_x, glyph_y, glyph, SystemColor::ButtonShadow);
             }
         }
+    }
+}
+
+impl Painter<'_> {
+    /// 画一个标签头。
+    ///
+    /// `selected` 的标签头比页面高出 2 像素，下沿 `tab.bottom()` 应取页面上边框下方 2 像素以盖住它，因此没有底边、与页面连成一体；
+    /// 未选中的标签头下沿取页面上边框的上沿，保留页面的高光线。第一个选中的标签头左边必须与页面左边框同一列，
+    /// 其余选中的标签头向两侧各多出 2 像素，由调用者给出矩形。
+    ///
+    /// 左、上是高光与亮面，右是黑与暗影，三个角各缩进一像素形成圆角；文字居中于顶部 22 像素（未选中为整个矩形）。
+    pub fn tab(&mut self, tab: Rect, label: &str, selected: bool) {
+        use SystemColor as C;
+        self.fill(tab, C::ButtonFace);
+        let (right, bottom) = (tab.right(), tab.bottom());
+        let side = bottom - tab.y - 2;
+        for (rect, color) in [
+            (Rect::new(tab.x, tab.y + 2, 1, side), C::ButtonHilight),
+            (Rect::new(tab.x + 1, tab.y + 2, 1, side), C::ButtonLight),
+            (
+                Rect::new(tab.x + 2, tab.y, tab.width - 4, 1),
+                C::ButtonHilight,
+            ),
+            (
+                Rect::new(tab.x + 2, tab.y + 1, tab.width - 4, 1),
+                C::ButtonLight,
+            ),
+            (Rect::new(tab.x + 1, tab.y + 1, 1, 1), C::ButtonHilight),
+            (Rect::new(right - 1, tab.y + 2, 1, side), C::ButtonDkShadow),
+            (Rect::new(right - 2, tab.y + 2, 1, side), C::ButtonShadow),
+            (Rect::new(right - 2, tab.y + 1, 1, 1), C::ButtonDkShadow),
+        ] {
+            self.fill(rect, color);
+        }
+        let text_height = if selected { 22 } else { tab.height };
+        self.text_centered(
+            Rect::new(tab.x, tab.y, tab.width, text_height),
+            label,
+            Ink::Color(C::ButtonText),
+            false,
+        );
     }
 }

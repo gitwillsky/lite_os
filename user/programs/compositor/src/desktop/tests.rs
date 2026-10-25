@@ -250,15 +250,8 @@ fn mode_and_minimized_state_survive_sync() {
 }
 
 #[test]
-fn alt_tab_rotates_through_least_recently_used_and_alt_esc_lowers() {
+fn alt_esc_lowers_the_active_window() {
     let mut stack = Stack::default();
-    assert_eq!(stack.cycle_target(), None);
-    stack.sync(&[(ClientId(1), surface(5), 100, 100)], SCREEN, 1);
-    assert_eq!(
-        stack.cycle_target(),
-        None,
-        "one window has nothing to switch to"
-    );
     stack.sync(
         &[
             (ClientId(1), surface(5), 100, 100),
@@ -268,15 +261,6 @@ fn alt_tab_rotates_through_least_recently_used_and_alt_esc_lowers() {
         SCREEN,
         1,
     );
-    // 栈底→栈顶：1, 2, 3；Alt+Tab 激活 1，再按激活 2，再按 3。
-    let order: Vec<u64> = (0..3)
-        .map(|_| {
-            let (client, window) = stack.cycle_target().unwrap();
-            stack.raise(client, window);
-            client.0
-        })
-        .collect();
-    assert_eq!(order, [1, 2, 3]);
     // Alt+Esc：活动窗口去最底层，下一个成为活动窗口。
     let (client, window) = stack.active().unwrap();
     assert!(stack.lower(client, window));

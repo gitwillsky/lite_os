@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Notepad
+Name[zh_CN]=记事本
+Exec=/bin/notepad %f
+Icon=file-text
+MimeType=text/plain;
+Categories=Utility;TextEditor;
+Terminal=false

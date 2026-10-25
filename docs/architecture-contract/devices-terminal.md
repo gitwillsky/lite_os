@@ -148,7 +148,7 @@
   每个连接一个协议状态机，窗口栈以稳定的连接 id 为键。
 - 窗口请求：move/resize 只接受由仍按住的按钮触发、serial 匹配且窗口不是最大化/全屏的请求；抓取期间客户端看不到指针事件，
   窗口消失即结束抓取。最大化/全屏保存还原几何，取消时 configure 带还原尺寸。
-- 最小化的窗口不绘制、不命中、不是活动窗口。Alt+Tab 激活最久未用的窗口（也恢复最小化），Alt+Esc 把活动窗口放到最底层，二者吞掉按键。
+- 最小化的窗口不绘制、不命中、不是活动窗口。Alt+Tab 打开按最近使用排序的图标网格面板（最多 7 列，Alt+Shift+Tab 反向），松开 Alt 才激活选中窗口（也恢复最小化）；面板的字体与图标缺失时只切换不显示。Alt+Esc 把活动窗口放到最底层；窗口（系统）菜单由 compositor 绘制与裁决（`xdg_toplevel.show_window_menu`、Alt+Space），打开期间独占指针与键盘，“移动/大小”进入由点击或 Enter 结束、Esc 取消、方向键微调的键盘抓取，二者吞掉按键。
 - `wayland::Client` 独占角色与协议状态：cursor、xdg 与 layer 不能混用；layer 状态只在 commit 生效，空 buffer 取消映射并清除旧 configure/ack，重新映射必须重新握手。
 - `Session` 独占外壳策略：Background/Bottom → 应用窗口 → Top/Overlay 的绘制与命中顺序；
   `shell_layout` 只做锚点、边距和工作区的纯几何计算。正独占区（含对应边距）只从已映射图层投影，最大化窗口随其变化重排；全屏始终使用完整输出。

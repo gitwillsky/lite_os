@@ -48,7 +48,7 @@ impl Painter<'_> {
             };
             self.pixels(row.x + 6, row.y + (row.height - 7) / 2, &MENU_CHECK, color);
         }
-        self.text(row.x + 2 + 16, text_y, label, ink, false);
+        self.label(row.x + 2 + 16, text_y, label, ink, false);
         if state.has_submenu {
             let color = if state.highlighted {
                 SystemColor::HilightText
@@ -92,7 +92,7 @@ impl Painter<'_> {
             self.edge(rect, Edge::RaisedInner);
         }
         let shift = i32::from(open);
-        self.text_centered(
+        self.label_centered(
             Rect::new(rect.x + shift, rect.y + shift, rect.width, rect.height),
             label,
             Ink::Color(SystemColor::MenuText),

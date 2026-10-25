@@ -8,13 +8,19 @@ mod bitmap;
 pub use bitmap::Bitmap;
 mod controls;
 mod decoration;
+mod dropdown;
 mod editing;
 mod menu;
 mod painter;
+mod prompt;
+mod scroll;
+mod tooltip;
+mod trackbar;
 mod wayland;
 mod window;
 
 pub use decoration::{Decoration, DecorationAction};
+pub use dropdown::{DropItem, DropMenu, Popup, title_rects};
 pub use editing::{Edit, FocusChain};
 pub use wayland::{
     Configuration, Display, Event, EventKind, Key, KeyboardInteractivity, Layer, LayerSettings,
@@ -25,6 +31,9 @@ pub use wayland::{
 pub use controls::{ButtonState, SCROLLBAR_WIDTH, ScrollbarPart, thumb_span};
 pub use menu::MenuItemState;
 pub use painter::{Ink, Painter};
+pub use prompt::Prompt;
+pub use scroll::Scroll;
+pub use tooltip::Tooltip;
 pub use window::{CaptionButton, FrameKind};
 
 #[cfg(test)]

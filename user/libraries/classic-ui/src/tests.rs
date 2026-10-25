@@ -289,6 +289,7 @@ fn caption_bar_gradient_separator_and_buttons() {
             p.caption_bar(
                 bar,
                 "标题",
+                None,
                 true,
                 &[
                     (CaptionButton::Minimize, true),
@@ -331,7 +332,7 @@ fn caption_bar_gradient_separator_and_buttons() {
 #[test]
 fn inactive_caption_uses_inactive_colors() {
     let image = render(1, |p| {
-        p.caption_bar(Rect::new(20, 20, 160, 19), "x", false, &[], None)
+        p.caption_bar(Rect::new(20, 20, 160, 19), "x", None, false, &[], None)
     });
     assert_eq!(image.at(20, 25), rgb(SystemColor::InactiveTitle));
     assert_eq!(image.at(179, 25), rgb(SystemColor::GradientInactiveTitle));
@@ -541,6 +542,7 @@ fn caption_glyph_geometry_stays_inside_the_button() {
             p.caption_bar(
                 Rect::new(20, 20, 100, 19),
                 "",
+                None,
                 true,
                 &[(button, true)],
                 None,

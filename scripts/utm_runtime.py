@@ -303,6 +303,9 @@ def _start_visible() -> None:
         )
     except subprocess.TimeoutExpired as error:
         raise RuntimeError("UTM did not create the LiteOS display window") from error
+    except subprocess.CalledProcessError as error:
+        detail = (error.stdout or "").strip()
+        raise RuntimeError(f"UTM failed to start {VM_NAME}: {detail}") from error
 
 
 def _ensure_registered() -> None:
@@ -351,7 +354,13 @@ def _remove_registered() -> None:
                 raise RuntimeError(
                     f"UTM VM {VM_NAME!r} must be stopped before regeneration; status={status}"
                 )
-            _ctl("delete", VM_UUID)
+            result = _ctl("delete", VM_UUID)
+            # UTM 4.7.5 may report an Apple Event error while utmctl still exits zero.
+            # Retaining the old registration would reuse cached config, including a stale UART port.
+            if _registered():
+                raise RuntimeError(
+                    f"UTM did not remove managed VM {VM_UUID}; quit and reopen UTM, then retry. {result}"
+                )
             if VM_DOCUMENT_PACKAGE.exists():
                 shutil.rmtree(VM_DOCUMENT_PACKAGE)
             return

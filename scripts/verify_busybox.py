@@ -112,6 +112,7 @@ SYSTEM_LIBRARY_PROGRAMS = frozenset({
     ("compositor", "compositor"), ("logon", "logon"), ("desktop", "desktop"),
     ("file-explorer", "file-explorer"), ("control-panel", "control-panel"),
     ("task-manager", "taskmgr"), ("volume-control", "sndvol"), ("sound-player", "sndplay"),
+    ("media-player", "mplay"), ("notepad", "notepad"),
 })
 RUST_USER_RUSTFLAGS = (
     "-C link-self-contained=no -C target-feature=-crt-static "
@@ -1270,7 +1271,8 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         for crate, binary in (("compositor", "compositor"), ("logon", "logon"),
                               ("desktop", "desktop"), ("file-explorer", "file-explorer"),
                               ("control-panel", "control-panel"), ("task-manager", "taskmgr"), ("volume-control", "sndvol"),
-                              ("sound-player", "sndplay"), ("linux-uapi", "session-launch"))
+                              ("sound-player", "sndplay"), ("media-player", "mplay"),
+                              ("notepad", "notepad"), ("linux-uapi", "session-launch"))
     )
     fonts = tuple(UserlandArtifact(ROOT / "assets/fonts" / name, f"/usr/share/liteos/fonts/{name}")
                   for name in ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf"))
@@ -1287,6 +1289,9 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(ROOT / "user/base/file-explorer.desktop", "/usr/share/applications/file-explorer.desktop"),
         UserlandArtifact(ROOT / "user/base/control-system.desktop", "/usr/share/applications/control-system.desktop"),
         UserlandArtifact(ROOT / "user/base/control-datetime.desktop", "/usr/share/applications/control-datetime.desktop"),
+        UserlandArtifact(ROOT / "user/base/control-sound.desktop", "/usr/share/applications/control-sound.desktop"),
+        UserlandArtifact(ROOT / "user/base/notepad.desktop", "/usr/share/applications/notepad.desktop"),
+        UserlandArtifact(ROOT / "user/base/media-player.desktop", "/usr/share/applications/media-player.desktop"),
         *(UserlandArtifact(path, f"{SYSTEM_LIBRARY_DIRECTORY}/{name}", 0o755)
           for path, name in build_system_libraries(musl)),
         UserlandArtifact(ROOT / "user/base/ld-musl.path", f"/etc/{Path(TARGET.musl_loader).name.removesuffix('.so.1')}.path"),

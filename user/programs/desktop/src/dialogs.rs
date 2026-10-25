@@ -32,10 +32,12 @@ impl Kind {
 impl Dialog {
     pub fn new(display: &mut Display, kind: Kind) -> io::Result<Self> {
         let size = (440, 210);
+        let mut decoration = Decoration::new(FrameKind::Fixed);
+        decoration.load_icon("run");
         Ok(Self {
             window: display.create_window(kind.title(), "org.liteos.desktop", size)?,
             kind,
-            decoration: Decoration::new(FrameKind::Fixed),
+            decoration,
             edit: Edit::default(),
             pointer: (0., 0.),
             armed: None,

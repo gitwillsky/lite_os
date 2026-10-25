@@ -10,13 +10,16 @@ impl Page for Winver {
     fn title(&self) -> &'static str {
         "关于 LiteOS"
     }
-    fn tab(&self) -> &'static str {
-        "版本"
+    fn tabs(&self) -> &'static [&'static str] {
+        &["版本"]
+    }
+    fn icon(&self) -> &'static str {
+        "liteos-logo"
     }
     fn size(&self) -> (i32, i32) {
         (400, 300)
     }
-    fn paint(&self, p: &mut Painter<'_>, page: Rect, _now: i64, icons: &Icons) {
+    fn paint(&self, p: &mut Painter<'_>, page: Rect, _tab: usize, _now: i64, icons: &Icons) {
         if let Some(logo) = &icons.logo {
             logo.paint(p, page.x + 16, page.y + 18);
         }
@@ -35,7 +38,7 @@ impl Page for Winver {
             y += p.line_height() + 6;
         }
     }
-    fn click(&mut self, _page: Rect, _point: (i32, i32)) -> bool {
+    fn click(&mut self, _page: Rect, _tab: usize, _point: (i32, i32)) -> bool {
         false
     }
 }

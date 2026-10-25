@@ -80,14 +80,19 @@ pub enum Shortcut {
     None,
     /// Alt+F4：请求关闭活动窗口。
     CloseActive,
-    /// Alt+Tab：激活最久没用过的窗口（恢复最小化）。
-    CycleWindows,
+    /// Alt+Tab / Alt+Shift+Tab：在切换面板里选下一个 / 上一个窗口；松开 Alt 才激活。
+    CycleWindows {
+        reverse: bool,
+    },
     /// Alt+Esc：把活动窗口放到最底层。
     LowerActive,
+    /// Alt+Space：打开活动窗口的系统菜单。
+    WindowMenu,
 }
 
 const KEY_ESC: u32 = 1;
 const KEY_TAB: u32 = 15;
+const KEY_SPACE: u32 = 57;
 const KEY_F4: u32 = 62;
 
 /// 窗口当前应该收到的 `configure`：`(逻辑宽, 逻辑高, 状态)`。
@@ -279,6 +284,18 @@ impl Seat {
         self.keyboard_focus = active;
     }
 
+    /// 记录一次由合成器模态界面（窗口菜单、键盘移动）消费的按键：只更新按键状态，不转发给任何客户端，
+    /// 按下与对应的释放都被吞掉；缺少它，客户端会收到没有按下的释放事件。
+    pub fn swallow_key(&mut self, code: u16, pressed: bool) {
+        let code = u32::from(code);
+        self.keys.track(code, pressed);
+        if pressed {
+            self.keys.consume(code);
+        } else {
+            self.keys.take_consumed(code);
+        }
+    }
+
     /// 处理一次按键：更新状态、识别合成器快捷键，其余转发给键盘焦点。
     /// `shortcuts=false` 用于外壳独占键盘；否则 Alt+F4 等会被吞掉，登录屏收不到完整按键。
     pub fn key(
@@ -294,8 +311,11 @@ impl Seat {
         if shortcuts && pressed && self.keys.modifiers().alt {
             let shortcut = match code {
                 KEY_F4 => Shortcut::CloseActive,
-                KEY_TAB => Shortcut::CycleWindows,
+                KEY_TAB => Shortcut::CycleWindows {
+                    reverse: self.keys.modifiers().shift,
+                },
                 KEY_ESC => Shortcut::LowerActive,
+                KEY_SPACE => Shortcut::WindowMenu,
                 _ => Shortcut::None,
             };
             if shortcut != Shortcut::None {
