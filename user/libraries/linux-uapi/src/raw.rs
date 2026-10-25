@@ -17,7 +17,9 @@ pub(crate) const SCM_RIGHTS: c_int = 1;
 pub(crate) const MSG_CMSG_CLOEXEC: c_int = 0x4000_0000;
 #[cfg(target_os = "linux")]
 pub(crate) const MSG_CTRUNC: c_int = 0x8;
+#[cfg(target_os = "linux")]
 pub(crate) const PR_SET_PDEATHSIG: c_int = 1;
+#[cfg(target_os = "linux")]
 pub(crate) const ECHILD: c_int = 10;
 pub(crate) const ESRCH: c_int = 3;
 pub(crate) const SIGKILL: c_int = 9;
@@ -62,6 +64,7 @@ pub(crate) const EVIOCGABS_Y: usize = ioc(IOC_READ, b'E' as usize, 0x41, 24);
 pub(crate) const EVIOCGRAB: usize = ioc(IOC_WRITE, b'E' as usize, 0x90, 4);
 pub(crate) const TIOCGPTN: usize = 0x8004_5430;
 pub(crate) const TIOCSPTLCK: usize = 0x4004_5431;
+#[cfg(target_os = "linux")]
 pub(crate) const TIOCSCTTY: usize = 0x540e;
 pub(crate) const TIOCSWINSZ: usize = 0x5414;
 
@@ -469,9 +472,12 @@ unsafe extern "C" {
         length: *mut u32,
     ) -> c_int;
     pub(crate) fn fork() -> c_int;
+    #[cfg(target_os = "linux")]
     pub(crate) fn getppid() -> c_int;
+    #[cfg(target_os = "linux")]
     pub(crate) fn prctl(option: c_int, argument: c_int) -> c_int;
     pub(crate) fn kill(pid: c_int, signal: c_int) -> c_int;
+    #[cfg(target_os = "linux")]
     pub(crate) fn setsid() -> c_int;
 }
 

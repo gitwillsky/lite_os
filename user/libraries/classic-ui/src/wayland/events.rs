@@ -401,6 +401,8 @@ mod tests {
                 pointer: None,
                 keyboard: None,
                 modifiers: Modifiers::default(),
+                scroll_discrete: [0; 2],
+                scroll_continuous: [0.0; 2],
                 repeat: None,
                 repeat_rate: 30,
                 repeat_delay: 500,

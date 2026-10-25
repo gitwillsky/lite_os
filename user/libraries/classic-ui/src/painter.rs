@@ -151,13 +151,46 @@ impl<'a> Painter<'a> {
     /// 在逻辑坐标 `(x, y)` 绘制单行文本，宽度超过 `max_width` 逻辑像素时截断成"..."结尾。
     pub fn text_fit(&mut self, x: i32, y: i32, max_width: i32, text: &str, ink: Ink, bold: bool) {
         let shown = self.truncate_to_width(text, max_width.max(0) * self.scale, bold);
-        self.ink_physical(self.px(x), self.px(y), &shown, ink, bold);
+        self.clipped(Rect::new(x, y, max_width, self.line_height()), |p| {
+            p.ink_physical(p.px(x), p.px(y), &shown, ink, bold);
+        });
     }
 
     /// 带助记键的 [`Painter::text_fit`]。
     pub fn label_fit(&mut self, x: i32, y: i32, max_width: i32, label: &str, ink: Ink) {
         let shown = self.truncate_to_width(label, max_width.max(0) * self.scale, false);
-        self.label_physical(self.px(x), self.px(y), &shown, ink, false);
+        self.clipped(Rect::new(x, y, max_width, self.line_height()), |p| {
+            p.label_physical(p.px(x), p.px(y), &shown, ink, false);
+        });
+    }
+
+    /// 在逻辑矩形中按词与中文断行规则绘制文本，并裁剪到矩形边界。
+    ///
+    /// # Parameters
+    /// - `rect`: 排版宽度与可见区域；非正尺寸不绘制。
+    /// - `text`: 文本，换行符强制换行；复用 `typeface::wrap` 的断行规则。
+    /// - `ink`、`bold`: 文字颜色与粗体。
+    ///
+    /// # Returns
+    /// 全部行所需的逻辑高度；可能大于 `rect.height`，空矩形返回 0。无错误返回。
+    pub fn text_wrapped(&mut self, rect: Rect, text: &str, ink: Ink, bold: bool) -> i32 {
+        if rect.is_empty() {
+            return 0;
+        }
+        let lines = typeface::wrap(text, self.px(rect.width), |ch| {
+            self.typeface.glyph(ch, bold).advance
+        });
+        let line_height = self.line_height();
+        self.clipped(rect, |p| {
+            for (index, line) in lines.iter().enumerate() {
+                let y = rect.y + index as i32 * line_height;
+                if y >= rect.bottom() {
+                    break;
+                }
+                p.ink_physical(p.px(rect.x), p.px(y), &text[line.clone()], ink, bold);
+            }
+        });
+        lines.len() as i32 * line_height
     }
 
     /// 在逻辑坐标 `(x, y)`（行盒左上角）绘制单行文本，返回物理像素宽度。
@@ -239,7 +272,7 @@ impl<'a> Painter<'a> {
         let width = self.text_width(&label, bold);
         let x = physical.x + (physical.width - width) / 2;
         let y = physical.y + (physical.height - (ascent + descent)) / 2;
-        self.label_physical(x, y, &label, ink, bold);
+        self.clipped(rect, |p| p.label_physical(x, y, &label, ink, bold));
     }
 
     /// 用任意 RGB 在逻辑坐标 `(x, y)` 画一行文字；与 [`Painter::fill_rgb`] 一样只给性能图表这类没有系统色对应的绘制用。
@@ -256,7 +289,9 @@ impl<'a> Painter<'a> {
         let width = self.text_width(&text, bold);
         let x = physical.x + (physical.width - width) / 2;
         let y = physical.y + (physical.height - (ascent + descent)) / 2;
-        self.ink_physical(x, y, &text, ink, bold);
+        self.clipped(rect, |p| {
+            p.ink_physical(x, y, &text, ink, bold);
+        });
     }
 
     /// 将 ASCII 点阵按逻辑像素绘制：`#` 为前景像素，其余透明；每个逻辑像素画成 `scale` × `scale`。

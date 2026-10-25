@@ -674,30 +674,19 @@ fn paint_list(p: &mut Painter<'_>, scene: &Scene<'_>, l: &Layout) {
 }
 
 /// "详细信息"表头条：左端对齐列表视口，高度一行；命中与绘制共用。
-pub fn header_bar(grid: &Grid, columns: &ColumnHeader) -> Rect {
+pub fn header_bar(grid: &Grid) -> Rect {
     Rect::new(
         grid.viewport.x,
         grid.viewport.y,
-        columns.total(),
+        grid.viewport.width,
         HEADER_HEIGHT,
     )
 }
 
 fn paint_header(p: &mut Painter<'_>, grid: &Grid, columns: &ColumnHeader) {
-    let mut x = grid.viewport.x;
-    for (title, full) in ["名称", "大小", "类型", "修改时间"]
-        .into_iter()
-        .zip(columns.cells(header_bar(grid, columns)))
-    {
-        let cell = Rect::new(
-            x,
-            grid.viewport.y,
-            full.width.min(grid.viewport.right() - x).max(0),
-            HEADER_HEIGHT,
-        );
-        if cell.width <= 0 {
-            break;
-        }
+    let bar = header_bar(grid);
+    columns.paint(p, bar, |p, index, cell| {
+        let title = ["名称", "大小", "类型", "修改时间"][index];
         let face = p.edge(cell, Edge::Raised);
         p.fill(face, C::ButtonFace);
         p.text_fit(
@@ -708,8 +697,8 @@ fn paint_header(p: &mut Painter<'_>, grid: &Grid, columns: &ColumnHeader) {
             Ink::Color(C::ButtonText),
             false,
         );
-        x += full.width;
-    }
+    });
+    let x = bar.x + columns.total();
     let rest = Rect::new(
         x,
         grid.viewport.y,

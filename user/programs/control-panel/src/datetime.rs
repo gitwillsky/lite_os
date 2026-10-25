@@ -63,7 +63,6 @@ const ZONES: [(i32, &str, &str); 30] = [
     (720, "UTC+12", "(GMT+12:00) 惠灵顿，奥克兰，斐济"),
 ];
 const ZONE_ROW: i32 = 17;
-const ZONE_VISIBLE: i32 = 12;
 
 pub struct DateTime {
     /// 月历正在显示的年月；用户可翻页，今天的高亮只在对应月份出现。
@@ -174,14 +173,23 @@ impl DateTime {
             .find_map(|(cell, day)| inside(cell, point).then_some(day))
     }
 
-    /// 时区列表的行区域与滚动条。
-    fn zone_view(page: Rect) -> (Rect, Rect) {
+    /// 说明预留两行，页底预留反馈行；列表只消费两者之间的剩余高度。
+    fn zone_layout(page: Rect) -> (Rect, Rect, Rect) {
+        let bounds = page.inset(12);
+        let note = Rect::new(bounds.x, bounds.y, bounds.width, 32);
+        let footer = Rect::new(bounds.x, bounds.bottom() - 18, bounds.width, 18);
         let list = Rect::new(
-            page.x + 12,
-            page.y + 40,
-            page.width - 24,
-            ZONE_VISIBLE * ZONE_ROW + 4,
+            bounds.x,
+            note.bottom() + 6,
+            bounds.width,
+            (footer.y - 6 - (note.bottom() + 6)).max(0),
         );
+        (note, list, footer)
+    }
+
+    /// 绘制、点击、滚轮与拖动共用实际列表视口，不假设固定可见行数。
+    fn zone_view(page: Rect) -> (Rect, Rect) {
+        let (_, list, _) = Self::zone_layout(page);
         let inner = list.inset(2);
         (
             Rect::new(
@@ -214,6 +222,34 @@ impl DateTime {
         let index = self.year * 12 + i64::from(self.month) - 1 + i64::from(delta);
         self.year = index.div_euclid(12);
         self.month = index.rem_euclid(12) as u32 + 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn zone_layout_and_scroll_use_the_available_page_height() {
+        for height in [180, 234, 300] {
+            let page = Rect::new(10, 20, 378, height);
+            let (note, list, footer) = DateTime::zone_layout(page);
+            let (rows, bar) = DateTime::zone_view(page);
+            assert!(note.bottom() < list.y && list.bottom() < footer.y);
+            assert_eq!(list.intersect(page), list);
+            assert_eq!(footer.intersect(page), footer);
+            assert_eq!(rows.right(), bar.x);
+            assert_eq!(rows.height, list.height - 4);
+            let mut zones = DateTime::now();
+            let point = (rows.x + 2, rows.y + 1);
+            zones.wheel(page, 1, point, 100);
+            assert_eq!(
+                zones.zone_scroll.position,
+                ZONES.len() as i32 * ZONE_ROW - rows.height
+            );
+            zones.click(page, 1, (rows.x + 2, rows.bottom() - 1));
+            assert_eq!(zones.zone, Some(ZONES.len() - 1));
+        }
     }
 }
 
@@ -455,15 +491,11 @@ impl Page for DateTime {
             let (rows, bar) = Self::zone_view(page);
             let content = ZONES.len() as i32 * ZONE_ROW;
             if inside(bar, point) {
-                self.zone_scroll.press(
-                    bar,
-                    true,
-                    (content, ZONE_VISIBLE * ZONE_ROW, ZONE_ROW),
-                    point,
-                );
+                self.zone_scroll
+                    .press(bar, true, (content, rows.height, ZONE_ROW), point);
             } else if inside(rows, point) {
                 let index =
-                    ((point.1 - rows.y - 2 + self.zone_scroll.position) / ZONE_ROW).max(0) as usize;
+                    ((point.1 - rows.y + self.zone_scroll.position) / ZONE_ROW).max(0) as usize;
                 if index < ZONES.len() {
                     self.zone = Some(index);
                 }
@@ -498,7 +530,7 @@ impl Page for DateTime {
             if inside(rows, point) || inside(bar, point) {
                 let content = ZONES.len() as i32 * ZONE_ROW;
                 self.zone_scroll
-                    .wheel(notches, ZONE_ROW, content - ZONE_VISIBLE * ZONE_ROW);
+                    .wheel(notches, ZONE_ROW, content - rows.height);
             }
             return;
         }
@@ -511,10 +543,10 @@ impl Page for DateTime {
 
     fn motion(&mut self, page: Rect, tab: usize, point: (i32, i32)) {
         if tab == 1 {
-            let (_, bar) = Self::zone_view(page);
+            let (rows, bar) = Self::zone_view(page);
             let content = ZONES.len() as i32 * ZONE_ROW;
             self.zone_scroll
-                .drag(bar, true, (content, ZONE_VISIBLE * ZONE_ROW), point);
+                .drag(bar, true, (content, rows.height), point);
         }
     }
 
@@ -561,26 +593,19 @@ impl DateTime {
     /// "时区"页：说明文字与可滚动的时区列表。
     fn paint_zones(&self, p: &mut Painter<'_>, page: Rect) {
         let ink = Ink::Color(C::ButtonText);
-        p.text_fit(
-            page.x + 12,
-            page.y + 14,
-            page.width - 24,
-            "选择所在时区。系统没有时区数据库，因此只有固定偏移、不含夏令时。",
+        let (note, list, footer) = Self::zone_layout(page);
+        p.text_wrapped(
+            note,
+            "选择所在时区。以下时区使用固定的 UTC 偏移，不自动调整夏令时。",
             ink,
             false,
-        );
-        let list = Rect::new(
-            page.x + 12,
-            page.y + 40,
-            page.width - 24,
-            ZONE_VISIBLE * ZONE_ROW + 4,
         );
         let inner = p.edge(list, Edge::Sunken);
         p.fill(inner, C::Window);
         let (rows, bar) = Self::zone_view(page);
         p.clipped(rows, |p| {
             for (index, (_, _, name)) in ZONES.iter().enumerate() {
-                let y = rows.y + 2 + index as i32 * ZONE_ROW - self.zone_scroll.position;
+                let y = rows.y + index as i32 * ZONE_ROW - self.zone_scroll.position;
                 let chosen = self.zone == Some(index);
                 if chosen {
                     p.fill(
@@ -606,20 +631,24 @@ impl DateTime {
         p.scrollbar(
             bar,
             true,
-            (
-                content - 1,
-                ZONE_VISIBLE * ZONE_ROW,
-                self.zone_scroll.position,
-            ),
+            (content - 1, rows.height, self.zone_scroll.position),
             self.zone_scroll.pressed(),
         );
-        if self.zone.is_none() {
+        if !self.message.is_empty() || self.zone.is_none() {
             p.text_fit(
-                page.x + 12,
-                list.bottom() + 8,
-                page.width - 24,
-                "当前时区不在列表中（自定义偏移）。",
-                Ink::Disabled,
+                footer.x,
+                footer.y,
+                footer.width,
+                if self.message.is_empty() {
+                    "当前时区不在列表中（自定义偏移）。"
+                } else {
+                    &self.message
+                },
+                if self.message.is_empty() {
+                    Ink::Disabled
+                } else {
+                    ink
+                },
                 false,
             );
         }

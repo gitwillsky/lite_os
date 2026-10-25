@@ -355,8 +355,143 @@ fn long_titles_are_truncated_with_an_ellipsis() {
         "{shown:?} {width}"
     );
     assert_eq!(truncated("短", 60).0, "短");
-    // 连省略号都放不下时只剩省略号，不会 panic。
-    assert_eq!(truncated("标题", 1).0, "...");
+    // 省略号也必须遵守宽度预算，不能覆盖相邻控件。
+    for width in 0..30 {
+        assert!(truncated("标题", width).1 <= width);
+    }
+}
+
+#[test]
+fn bounded_text_never_paints_outside_its_rectangle() {
+    at_both_scales(|scale| {
+        let bounds = Rect::new(20, 20, 1, 12);
+        for ink in [Ink::Color(SystemColor::ButtonText), Ink::Disabled] {
+            for method in 0..4 {
+                let image = render(scale, |p| match method {
+                    0 => p.text_fit(bounds.x, bounds.y, bounds.width, "很长的文本", ink, true),
+                    1 => p.label_fit(bounds.x, bounds.y, bounds.width, "确定(O)", ink),
+                    2 => p.text_centered(bounds, "很长的文本", ink, true),
+                    _ => p.label_centered(bounds, "确定(O)", ink, false),
+                });
+                for y in 0..SIZE {
+                    for x in 0..SIZE {
+                        if !(bounds.x..bounds.right()).contains(&x)
+                            || !(bounds.y..bounds.bottom()).contains(&y)
+                        {
+                            assert_eq!(
+                                image.at(x, y),
+                                rgb(SystemColor::Background),
+                                "method={method}, scale={scale}, pixel=({x}, {y})"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
+#[test]
+fn column_header_ignores_dividers_outside_viewport() {
+    let header = crate::ColumnHeader::new([80, 180]);
+    let bar = Rect::new(10, 10, 100, 18);
+    assert_eq!(header.divider_at(bar, (90, 15)), Some(0));
+    assert_eq!(header.divider_at(bar, (270, 15)), None);
+    assert_eq!(header.cursor(bar, (270, 15)), None);
+    assert_eq!(header.column_at(bar, (100, 15)), Some(1));
+    assert_eq!(header.column_at(bar, (150, 15)), None);
+}
+
+#[test]
+fn column_header_clips_without_changing_logical_column_widths() {
+    at_both_scales(|scale| {
+        let header = crate::ColumnHeader::new([40, 180, 30]);
+        let bar = Rect::new(10, 10, 80, 18);
+        let mut drawn = Vec::new();
+        let image = render(scale, |p| {
+            header.paint(p, bar, |p, index, cell| {
+                drawn.push((index, cell.width));
+                p.fill(Rect::new(0, 0, SIZE, SIZE), SystemColor::Window);
+            });
+        });
+        assert_eq!(drawn, [(0, 40), (1, 180)]);
+        assert_eq!(header.total(), 250);
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                let inside =
+                    (bar.x..bar.right()).contains(&x) && (bar.y..bar.bottom()).contains(&y);
+                assert_eq!(
+                    image.at(x, y),
+                    rgb(if inside {
+                        SystemColor::Window
+                    } else {
+                        SystemColor::Background
+                    })
+                );
+            }
+        }
+    });
+}
+
+#[test]
+fn wrapped_text_keeps_all_lines_and_respects_the_visible_rectangle() {
+    at_both_scales(|scale| {
+        let width = typeface(scale as u32).measure("甲乙", false) / scale;
+        let line_height = render_line_height(scale);
+        let bounds = Rect::new(10, 10, width, line_height * 2);
+        let image = render(scale, |p| {
+            assert_eq!(
+                p.text_wrapped(
+                    bounds,
+                    "甲乙丙丁",
+                    Ink::Color(SystemColor::WindowText),
+                    false
+                ),
+                bounds.height
+            );
+        });
+        let expected = render(scale, |p| {
+            p.clipped(bounds, |p| {
+                p.text(10, 10, "甲乙", Ink::Color(SystemColor::WindowText), false);
+                p.text(
+                    10,
+                    10 + line_height,
+                    "丙丁",
+                    Ink::Color(SystemColor::WindowText),
+                    false,
+                );
+            });
+        });
+        assert_eq!(image.pixels, expected.pixels);
+        let short = render(scale, |p| {
+            assert_eq!(
+                p.text_wrapped(
+                    Rect::new(10, 10, width, 1),
+                    "甲乙丙丁",
+                    Ink::Disabled,
+                    false
+                ),
+                bounds.height
+            );
+            assert_eq!(
+                p.text_wrapped(Rect::new(10, 10, 0, 20), "文本", Ink::Disabled, false),
+                0
+            );
+        });
+        for y in 0..SIZE {
+            for x in 0..SIZE {
+                if y != 10 || !(10..10 + width).contains(&x) {
+                    assert_eq!(short.at(x, y), rgb(SystemColor::Background));
+                }
+            }
+        }
+    });
+}
+
+fn render_line_height(scale: i32) -> i32 {
+    let mut height = 0;
+    render(scale, |p| height = p.line_height());
+    height
 }
 
 #[test]

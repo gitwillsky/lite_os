@@ -218,6 +218,13 @@ impl Painter<'_> {
             return text.to_owned();
         }
         let ellipsis = "...";
+        // 连省略号也放不下时，只保留能完整容纳的点；零宽区域不发布文字。
+        if self.text_width(ellipsis, bold) > max_width {
+            return (1..=ellipsis.len())
+                .take_while(|length| self.text_width(&ellipsis[..*length], bold) <= max_width)
+                .last()
+                .map_or_else(String::new, |length| ellipsis[..length].to_owned());
+        }
         let budget = max_width - self.text_width(ellipsis, bold);
         let mut out = String::new();
         let mut used = 0;

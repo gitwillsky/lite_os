@@ -48,6 +48,8 @@ impl PtySession {
     /// # Errors
     ///
     /// Returns the first PTY, ioctl, fork or exec setup error.
+    /// Non-Linux child setup returns `Unsupported`: it cannot provide the Linux
+    /// controlling-terminal and parent-death contract.
     pub fn spawn(
         size: WindowSize,
         program: &OsString,
@@ -91,7 +93,9 @@ impl PtySession {
         }
         let slave = unsafe { OwnedFd::from_raw_fd(slave_raw) };
         set_window_size(master.as_fd(), size)?;
+        #[cfg(target_os = "linux")]
         let parent = std::process::id() as i32;
+        #[cfg(target_os = "linux")]
         let slave_fd = slave.as_raw_fd();
         let stdin = File::from(slave.try_clone()?);
         let stdout = File::from(slave.try_clone()?);
@@ -114,18 +118,25 @@ impl PtySession {
         // application has multiple threads. The child callback performs only raw syscalls.
         unsafe {
             command.pre_exec(move || {
-                if raw::prctl(raw::PR_SET_PDEATHSIG, raw::SIGKILL) < 0 {
-                    return Err(io::Error::last_os_error());
-                }
-                if raw::getppid() != parent {
-                    return Err(io::Error::from_raw_os_error(raw::ECHILD));
-                }
-                if raw::setsid() < 0
-                    || raw::ioctl(slave_fd, raw::TIOCSCTTY, std::ptr::null_mut()) < 0
+                #[cfg(target_os = "linux")]
                 {
-                    return Err(io::Error::last_os_error());
+                    if raw::prctl(raw::PR_SET_PDEATHSIG, raw::SIGKILL) < 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                    if raw::getppid() != parent {
+                        return Err(io::Error::from_raw_os_error(raw::ECHILD));
+                    }
+                    if raw::setsid() < 0
+                        || raw::ioctl(slave_fd, raw::TIOCSCTTY, std::ptr::null_mut()) < 0
+                    {
+                        return Err(io::Error::last_os_error());
+                    }
+                    Ok(())
                 }
-                Ok(())
+                // Linux-only symbols must not leak into the host dylib used by UI tests.
+                // Refuse setup rather than silently dropping session ownership on macOS.
+                #[cfg(not(target_os = "linux"))]
+                Err(io::ErrorKind::Unsupported.into())
             });
         }
         let child = command.spawn()?;

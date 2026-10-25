@@ -297,18 +297,10 @@ impl App {
         }
     }
 
-    /// 进程页表头每列的矩形。
-    fn header_cells(&self, list: Rect) -> Vec<(Column, Rect)> {
-        Column::ALL
-            .iter()
-            .copied()
-            .zip(self.columns.cells(Self::header_bar(list)))
-            .collect()
-    }
-
     /// 进程页表头条（左端是第一列起点，高度一行）。
     fn header_bar(list: Rect) -> Rect {
-        Rect::new(list.x + 2, list.y + 2, list.width, ROW)
+        let inner = list.inset(2);
+        Rect::new(inner.x, inner.y, inner.width, ROW)
     }
 
     /// 列表的行区（表头之下），有滚动条时已让出右侧。
@@ -381,12 +373,9 @@ impl App {
             return;
         }
         if self.tab == 1
-            && let Some((column, _)) = self
-                .header_cells(list)
-                .into_iter()
-                .find(|(_, rect)| inside(*rect, point))
+            && let Some(index) = self.columns.column_at(Self::header_bar(list), point)
         {
-            self.sort.click(column);
+            self.sort.click(Column::ALL[index]);
             self.sort.apply(&mut self.processes);
             return;
         }
@@ -563,40 +552,33 @@ impl App {
         let scroll = &mut self.scroll[self.tab];
         scroll.clamp((count as i32 * ROW - rows.height).max(0));
         let position = scroll.position;
-        // 表头。
-        let cells: Vec<(&str, Rect, bool)> = if self.tab == 1 {
-            self.header_cells(list)
-                .into_iter()
-                .map(|(column, rect)| (column.title(), rect, column.right_aligned()))
-                .collect()
+        // 表头保留完整列宽，统一由 ColumnHeader 裁剪到视口与各列。
+        let task_columns;
+        let columns = if self.tab == 1 {
+            &self.columns
         } else {
-            let status = 90;
-            vec![
-                (
-                    "任务",
-                    Rect::new(inner.x, inner.y, inner.width - status, ROW),
-                    false,
-                ),
-                (
-                    "状态",
-                    Rect::new(inner.right() - status, inner.y, status, ROW),
-                    false,
-                ),
-            ]
+            task_columns = ColumnHeader::new([inner.width - 90, 90]);
+            &task_columns
         };
-        for (title, cell, _) in &cells {
-            let face = p.edge(*cell, Edge::Raised);
+        columns.paint(p, Self::header_bar(list), |p, index, cell| {
+            let (title, sorted) = if self.tab == 1 {
+                let column = Column::ALL[index];
+                (column.title(), column == self.sort.column)
+            } else {
+                (["任务", "状态"][index], false)
+            };
+            let face = p.edge(cell, Edge::Raised);
             p.fill(face, C::ButtonFace);
             let y = cell.y + (ROW - p.line_height()) / 2;
-            p.text(cell.x + 5, y, title, Ink::Color(C::ButtonText), false);
-        }
-        if self.tab == 1 {
-            // 当前排序列在标题右侧画一个小三角。
-            if let Some((_, cell)) = self
-                .header_cells(list)
-                .into_iter()
-                .find(|(column, _)| *column == self.sort.column)
-            {
+            p.text_fit(
+                cell.x + 5,
+                y,
+                cell.width - if sorted { 20 } else { 10 },
+                title,
+                Ink::Color(C::ButtonText),
+                false,
+            );
+            if sorted {
                 let tip = cell.right() - 12;
                 let mid = cell.y + ROW / 2;
                 let rows_art: &[&str] = if self.sort.descending {
@@ -615,7 +597,7 @@ impl App {
                     }
                 }
             }
-        }
+        });
         let selected = self.selected_index();
         p.clipped(rows, |p| {
             let first = (position / ROW) as usize;

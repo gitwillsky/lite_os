@@ -1,5 +1,5 @@
 //! 控制面板小程序：`control-panel system`（系统属性）与 `control-panel datetime`（日期/时间属性）。
-//! 使用普通 Wayland 连接，没有外壳权限；两个小程序都是只读信息页（系统没有可写的时钟接口与时区库）。
+//! 使用普通 Wayland 连接，没有外壳权限；各小程序共享属性页布局、输入路由与内容区裁剪。
 extern crate liteos_runtime as _;
 mod datetime;
 mod display;
@@ -68,6 +68,17 @@ fn inside(rect: Rect, (x, y): (i32, i32)) -> bool {
 /// 标签头宽度；各页的标题都较短，统一宽度与 Windows 2000 的属性页一致。
 const TAB_WIDTH: i32 = 70;
 
+/// 属性页内容矩形是绘制与输入命中的唯一几何来源。
+fn page_rect(client: Rect) -> Rect {
+    Rect::new(
+        client.x + 6,
+        client.y + 25,
+        client.width - 12,
+        client.height - 67,
+    )
+    .inset(2)
+}
+
 /// 各标签头的矩形（未选中形态）。
 fn tab_rects(client: Rect, count: usize) -> Vec<Rect> {
     (0..count as i32)
@@ -86,12 +97,7 @@ fn tab_rects(client: Rect, count: usize) -> Vec<Rect> {
 ///
 /// 选中的标签头比页面高出 2 像素并向两侧多出 2 像素（第一个不越过页面左边框），未选中的矮 2 像素。
 fn tab_page(p: &mut Painter<'_>, client: Rect, tabs: &[&str], selected: usize) -> Rect {
-    let page = Rect::new(
-        client.x + 6,
-        client.y + 25,
-        client.width - 12,
-        client.height - 25 - 42,
-    );
+    let page = page_rect(client).inset(-2);
     let inner = p.edge(page, Edge::Raised);
     p.fill(inner, C::ButtonFace);
     let rects = tab_rects(client, tabs.len());
@@ -180,13 +186,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             continue;
         };
         let client = decoration.client_rect(c);
-        let page_rect = Rect::new(
-            client.x + 6,
-            client.y + 25,
-            client.width - 12,
-            client.height - 67,
-        )
-        .inset(2);
+        let page_rect = page_rect(client);
         let mut dirty = event.is_none();
         if let Some(event) = event {
             if event.window != window {
@@ -271,7 +271,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let now = SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map_or(0, |d| d.as_secs() as i64);
-            page.paint(&mut p, inner, tab, now, &icons);
+            p.clipped(inner, |p| page.paint(p, inner, tab, now, &icons));
             for (index, (rect, label)) in buttons(client)
                 .iter()
                 .zip(["确定", "取消", "应用(A)"])

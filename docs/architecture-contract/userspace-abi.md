@@ -153,6 +153,9 @@
   在此之前绝不修改提交的 memfd。窗口销毁撤销焦点、重复键和已排队语义事件；连接出错由应用退出/drop 一次性回收 fd。
   Transport drop 对独占协议连接执行 shutdown，因此继承的 stdin 别名仍打开时 server 也能立即观察 EOF；不关闭外部借用的 fd。
 - `classic-ui::Decoration` 只消费语义事件，按钮命中与绘制共用 `window` 的几何事实；窗口尺寸和模式仍只来自 compositor configure。
+- `Painter` 的有界文字 API 必须同时约束排版宽度和实际字形落笔；省略号、粗体与禁用浮雕也不能越界。段落复用 `typeface::wrap`，返回完整所需高度但只绘制指定矩形，结束后恢复调用者裁剪区。
+- `ColumnHeader` 独占逻辑列宽和拖动状态；`paint` 在真实视口与每列逻辑矩形的交集内绘制，命中只接受视口内坐标。任务管理器、资源管理器共用该边界，不截短逻辑列宽或各自补裁切。
+- 控制面板的属性页内容矩形由同一函数供绘制与输入使用，宿主统一裁剪页内绘制；列表与滚动条消费剩余高度，滚动和命中使用实际视口高度，不以固定可见行数替代。
   `Edit` 独占文本、UTF-8 光标与选择锚点；`FocusChain` 独占控件槽位的 Tab 顺序。Painter 只读这些状态，不拥有第二份可写控件模型。
 - `classic-ui` 的 Window 角色为互斥的 Toplevel/Layer；只有 Toplevel 持有待确认的 xdg configure，Layer 在自己的 configure/ack 时直接发布当前几何。
   两种角色共用帧、输入和 fd 生命周期。Layer unmap 清除旧配置、重复键与排队语义事件，configure_layer 后必须等待新的 configure 才能提交。

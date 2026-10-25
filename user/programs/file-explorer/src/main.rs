@@ -397,12 +397,7 @@ impl App {
     fn press_list(&mut self, client: Rect, point: (i32, i32)) {
         let grid = self.grid(client);
         // 详细信息表头分隔线：开始拖动调整列宽。
-        if grid.view == ViewMode::Details
-            && self
-                .ui
-                .columns
-                .press(ui::header_bar(&grid, &self.ui.columns), point)
-        {
+        if grid.view == ViewMode::Details && self.ui.columns.press(ui::header_bar(&grid), point) {
             return;
         }
         if let Some(bar) = grid.bar.filter(|bar| inside(*bar, point)) {
@@ -469,7 +464,7 @@ impl App {
             .then(|| {
                 self.ui
                     .columns
-                    .cursor(ui::header_bar(&grid, &self.ui.columns), self.ui.pointer)
+                    .cursor(ui::header_bar(&grid), self.ui.pointer)
             })
             .flatten()
     }
