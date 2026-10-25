@@ -99,6 +99,8 @@ pub struct Window<'a> {
     pub fixed: bool,
     /// 父窗口的 `wl_surface`（`set_parent`）；父窗口不是本连接已映射的 toplevel 时为 `None`。
     pub parent: Option<ObjectId>,
+    /// 标准 xdg-dialog 的提示，仅父窗口有效时生效；输入筛选仍必须由客户端实施。
+    pub modal: bool,
 }
 
 impl Client {
@@ -247,6 +249,34 @@ impl Client {
         request: xdg_toplevel::Request,
     ) -> Result<(), Fail> {
         use xdg_toplevel::Request as R;
+        if let R::SetParent {
+            parent: Some(parent),
+        } = &request
+        {
+            let mut ancestor = Some(*parent);
+            while let Some(id) = ancestor {
+                if id == object {
+                    return Err(Fail::new(
+                        object,
+                        xdg_toplevel::Error::InvalidParent as u32,
+                        "parent cycle",
+                    ));
+                }
+                ancestor = match self.objects.get(&id.get()) {
+                    Some(Entry {
+                        data: Data::Toplevel(parent),
+                        ..
+                    }) => parent.parent,
+                    _ => return Err(Fail::invalid_object("parent is not an xdg_toplevel")),
+                };
+            }
+        }
+        let parent_mapped = match &request {
+            R::SetParent {parent: Some(parent)} => self.toplevel_surface(*parent).is_some_and(|surface| {
+                matches!(self.objects.get(&surface.get()), Some(Entry {data: Data::Surface(state), ..}) if state.content.is_some())
+            }),
+            _ => false,
+        };
         let invalid_size = |message: &str| {
             Fail::new(
                 object,
@@ -264,6 +294,8 @@ impl Client {
         match request {
             R::Destroy => {
                 let xdg_surface = toplevel.xdg_surface;
+                let old_surface = self.xdg_surface_mut(xdg_surface)?.surface;
+                self.xdg_unmap(old_surface);
                 // 角色销毁后窗口取消映射，必须重新走一遍 configure/ack 才能再次映射。
                 let surface = {
                     let xdg = self.xdg_surface_mut(xdg_surface)?;
@@ -273,6 +305,7 @@ impl Client {
                     xdg.outstanding.clear();
                     xdg.surface
                 };
+                self.inert_dialogs(object);
                 if let Ok(surface) = self.surface_mut(surface) {
                     surface.content = None;
                 }
@@ -317,7 +350,7 @@ impl Client {
                 self.window_request(object, WindowRequest::ShowMenu { serial, x, y })
             }
             R::SetParent { parent } => {
-                toplevel.parent = parent;
+                toplevel.parent = if parent_mapped { parent } else { None };
                 Ok(())
             }
         }
@@ -465,7 +498,7 @@ impl Client {
 
     /// 全部已映射的顶层窗口：有 `xdg_toplevel` 角色且当前有内容。
     pub fn windows(&self) -> impl Iterator<Item = Window<'_>> {
-        self.objects.values().filter_map(move |entry| {
+        self.objects.iter().filter_map(move |(identity, entry)| {
             let Data::Toplevel(toplevel) = &entry.data else {
                 return None;
             };
@@ -494,7 +527,37 @@ impl Client {
                 parent: toplevel
                     .parent
                     .and_then(|parent| self.toplevel_surface(parent)),
+                modal: toplevel.parent.is_some()
+                    && self.dialog_modal(ObjectId::new(*identity).expect("existing object")),
             })
         })
+    }
+}
+
+impl Client {
+    /// xdg-shell 在 unmap 时将孩子交给原父窗口；对象 ID 后续复用也不能恢复旧关系。
+    pub(super) fn xdg_unmap(&mut self, surface: ObjectId) {
+        let owner = self
+            .objects
+            .iter()
+            .find_map(|(id, entry)| match &entry.data {
+                Data::Toplevel(top)
+                    if self.toplevel_surface(ObjectId::new(*id).expect("existing object"))
+                        == Some(surface) =>
+                {
+                    Some((ObjectId::new(*id).expect("existing object"), top.parent))
+                }
+                _ => None,
+            });
+        let Some((owner, parent)) = owner else {
+            return;
+        };
+        for entry in self.objects.values_mut() {
+            if let Data::Toplevel(top) = &mut entry.data {
+                if top.parent == Some(owner) {
+                    top.parent = parent;
+                }
+            }
+        }
     }
 }

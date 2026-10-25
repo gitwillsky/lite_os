@@ -2,7 +2,7 @@
 
 use linux_uapi::{
     process::wayland_socket_from_env,
-    unix::{recv_fds, send_fd},
+    unix::{PollEvents, PollFd, poll, recv_fds, send_fd},
 };
 use std::{
     collections::{HashMap, VecDeque},
@@ -27,7 +27,19 @@ pub(super) struct Transport {
     interfaces: HashMap<u32, Interface>,
     next_id: u32,
     reusable: VecDeque<u32>,
+    // 只有带 FD 或遭遇背压的片段进入队列；普通请求直接从 Writer 非阻塞发送。
+    // 每个 FD 由其 Packet 独占保活，只在首次成功 sendmsg 后释放，部分写绝不重复发送 SCM_RIGHTS。
+    outgoing: VecDeque<Packet>,
 }
+
+struct Packet {
+    bytes: Vec<u8>,
+    position: usize,
+    fd: Option<OwnedFd>,
+}
+const OUTPUT_LIMIT: usize = 1 << 20;
+const OUTPUT_FD_LIMIT: usize = 64;
+const WRITE_BUDGET: usize = 65536;
 
 impl Transport {
     pub fn connect() -> io::Result<Self> {
@@ -48,11 +60,12 @@ impl Transport {
                 UnixStream::connect(path)?
             }
         };
-        Ok(Self::new(stream))
+        Self::new(stream)
     }
 
-    pub(super) fn new(stream: UnixStream) -> Self {
-        Self {
+    pub(super) fn new(stream: UnixStream) -> io::Result<Self> {
+        stream.set_nonblocking(true)?;
+        Ok(Self {
             stream,
             writer: Writer::new(),
             framer: Framer::new(),
@@ -60,7 +73,8 @@ impl Transport {
             interfaces: HashMap::from([(1, Interface::WlDisplay)]),
             next_id: 2,
             reusable: VecDeque::new(),
-        }
+            outgoing: VecDeque::new(),
+        })
     }
 
     pub fn retire_server_object(&mut self, object: ObjectId) {
@@ -88,20 +102,110 @@ impl Transport {
         Ok(ObjectId::new(raw).expect("allocated client id is nonzero"))
     }
 
-    pub fn flush(&mut self) -> io::Result<()> {
-        self.stream.write_all(self.writer.bytes())?;
-        let length = self.writer.bytes().len();
-        self.writer.consume(length, 0);
+    pub fn wants_write(&self) -> bool {
+        !self.outgoing.is_empty() || !self.writer.bytes().is_empty()
+    }
+    fn capacity(&self, additional: usize, fd: bool) -> io::Result<()> {
+        let bytes = self
+            .outgoing
+            .iter()
+            .map(|packet| packet.bytes.len() - packet.position)
+            .sum::<usize>()
+            + self.writer.bytes().len();
+        let fds = self
+            .outgoing
+            .iter()
+            .filter(|packet| packet.fd.is_some())
+            .count();
+        if bytes.saturating_add(additional) > OUTPUT_LIMIT
+            || fds + usize::from(fd) > OUTPUT_FD_LIMIT
+        {
+            // 队列满是连接错误，不返回可重试 WouldBlock；上层不能重放已经编码的 commit/对象创建。
+            return Err(io::Error::new(
+                io::ErrorKind::OutOfMemory,
+                "Wayland output queue limit reached",
+            ));
+        }
         Ok(())
     }
-
-    pub fn send_fd(&mut self, bytes: &[u8], fd: BorrowedFd<'_>) -> io::Result<()> {
-        self.flush()?;
-        let sent = send_fd(self.stream.as_fd(), bytes, fd)?;
-        if sent == 0 {
-            return Err(io::ErrorKind::WriteZero.into());
+    /// 尽量发送，背压保留尾部，由统一 poll 关注可写；不在 UI 线程等待 socket 空间。
+    pub fn flush(&mut self) -> io::Result<()> {
+        self.capacity(0, false)?;
+        let mut budget = WRITE_BUDGET;
+        while let Some(packet) = self.outgoing.front_mut() {
+            let end = packet.bytes.len().min(packet.position + budget);
+            let bytes = &packet.bytes[packet.position..end];
+            let result = match &packet.fd {
+                Some(fd) => send_fd(self.stream.as_fd(), bytes, fd.as_fd()),
+                None => self.stream.write(bytes),
+            };
+            match result {
+                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                Ok(count) => {
+                    packet.fd.take();
+                    packet.position += count;
+                    budget -= count;
+                    if packet.position == packet.bytes.len() {
+                        self.outgoing.pop_front();
+                    }
+                    if budget == 0 {
+                        return Ok(());
+                    }
+                }
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => return Ok(()),
+                Err(error) => return Err(error),
+            }
         }
-        self.stream.write_all(&bytes[sent..])
+        while !self.writer.bytes().is_empty() {
+            let end = self.writer.bytes().len().min(budget);
+            match self.stream.write(&self.writer.bytes()[..end]) {
+                Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
+                Ok(count) => {
+                    self.writer.consume(count, 0);
+                    budget -= count;
+                    if budget == 0 {
+                        break;
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(())
+    }
+    pub fn send_fd(&mut self, bytes: &[u8], fd: BorrowedFd<'_>) -> io::Result<()> {
+        if bytes.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "SCM_RIGHTS requires stream data",
+            ));
+        }
+        self.flush()?;
+        self.capacity(bytes.len(), true)?;
+        let fd = fd.try_clone_to_owned()?;
+        if !self.writer.bytes().is_empty() {
+            let previous = self.writer.bytes().to_vec();
+            self.writer.consume(previous.len(), 0);
+            self.outgoing.push_back(Packet {
+                bytes: previous,
+                position: 0,
+                fd: None,
+            });
+        }
+        self.outgoing.push_back(Packet {
+            bytes: bytes.to_vec(),
+            position: 0,
+            fd: Some(fd),
+        });
+        self.flush()
     }
 
     pub fn buffered_event(&mut self) -> io::Result<Option<(ObjectId, AnyEvent)>> {
@@ -137,7 +241,18 @@ impl Transport {
 
     pub fn read(&mut self) -> io::Result<()> {
         let mut bytes = [0; 4096];
-        let (count, fds) = recv_fds(self.stream.as_fd(), &mut bytes)?;
+        let (count, fds) = match recv_fds(self.stream.as_fd(), &mut bytes) {
+            Ok(result) => result,
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                ) =>
+            {
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         if count == 0 {
             return Err(io::ErrorKind::UnexpectedEof.into());
         }
@@ -150,12 +265,28 @@ impl Transport {
     }
 
     pub fn blocking_event(&mut self) -> io::Result<(ObjectId, AnyEvent)> {
-        self.flush()?;
         loop {
+            self.flush()?;
             if let Some(event) = self.buffered_event()? {
                 return Ok(event);
             }
-            self.read()?;
+            let interest = if self.wants_write() {
+                PollEvents::READ | PollEvents::WRITE
+            } else {
+                PollEvents::READ
+            };
+            let mut source = [PollFd::new(self.stream.as_fd(), interest)];
+            match poll(&mut source, None) {
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+                Ok(_) => {}
+            }
+            if source[0]
+                .returned()
+                .contains(PollEvents::READ | PollEvents::ERROR | PollEvents::HANGUP)
+            {
+                self.read()?;
+            }
         }
     }
 }

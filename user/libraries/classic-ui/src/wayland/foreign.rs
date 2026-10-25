@@ -11,7 +11,7 @@ use wayland_wire::{
 
 /// 本连接中服务端拥有的顶层窗口句柄。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ToplevelId(ObjectId);
+pub struct ToplevelId(ObjectId, u64);
 /// 已由 done 确认的任务栏信息；只通过协议事件更新。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Toplevel {
@@ -23,6 +23,7 @@ pub struct Toplevel {
     pub fullscreen: bool,
 }
 pub(super) struct Pending {
+    generation: u64,
     current: Option<Toplevel>,
     next: Toplevel,
 }
@@ -38,10 +39,12 @@ impl Display {
     /// 当前完整的顶层窗口快照；迭代器不含尚未 done 或已经 closed 的对象。
     pub fn toplevels(&self) -> impl Iterator<Item = (ToplevelId, &Toplevel)> {
         self.foreign.iter().filter_map(|(id, state)| {
-            state
-                .current
-                .as_ref()
-                .map(|current| (ToplevelId(ObjectId::new(*id).unwrap()), current))
+            state.current.as_ref().map(|current| {
+                (
+                    ToplevelId(ObjectId::new(*id).unwrap(), state.generation),
+                    current,
+                )
+            })
         })
     }
     /// 窗口列表的发布版本；桌面据此合并重绘，不为每条属性消息分配事件。
@@ -51,7 +54,11 @@ impl Display {
     /// 向 `id` 发送 `action`；Ok 只表示请求已发送，实际状态仍等待后续 done。
     /// 无效或已关闭的句柄返回 NotFound，编码/socket 失败返回对应错误。
     pub fn control_toplevel(&mut self, id: ToplevelId, action: ToplevelRequest) -> io::Result<()> {
-        if !self.foreign.contains_key(&id.0.get()) {
+        if !self
+            .foreign
+            .get(&id.0.get())
+            .is_some_and(|state| state.generation == id.1)
+        {
             return Err(io::ErrorKind::NotFound.into());
         }
         let request = match action {
@@ -79,7 +86,11 @@ impl Display {
         window: super::WindowId,
         rect: canvas::Rect,
     ) -> io::Result<()> {
-        if !self.foreign.contains_key(&id.0.get()) {
+        if !self
+            .foreign
+            .get(&id.0.get())
+            .is_some_and(|state| state.generation == id.1)
+        {
             return Err(io::ErrorKind::NotFound.into());
         }
         handle::Request::SetRectangle {
@@ -93,6 +104,14 @@ impl Display {
         .map_err(io::Error::other)?;
         self.transport.flush()
     }
+    fn foreign_changed(&mut self) {
+        if let Some(window) = self.windows.keys().copied().next() {
+            self.events.push_back(super::Event {
+                window,
+                kind: super::EventKind::ToplevelsChanged,
+            });
+        }
+    }
     pub(super) fn foreign_event(&mut self, object: ObjectId, event: &AnyEvent) -> io::Result<bool> {
         match event {
             AnyEvent::ZwlrForeignToplevelManagerV1(manager::Event::Toplevel { toplevel }) => {
@@ -101,6 +120,7 @@ impl Display {
                 self.foreign.insert(
                     toplevel.get(),
                     Pending {
+                        generation: self.foreign_revision,
                         current: None,
                         next: Toplevel::default(),
                     },
@@ -133,10 +153,12 @@ impl Display {
                     handle::Event::Done => {
                         state.current = Some(state.next.clone());
                         self.foreign_revision += 1;
+                        self.foreign_changed();
                     }
                     handle::Event::Closed => {
                         self.foreign.remove(&object.get());
                         self.foreign_revision += 1;
+                        self.foreign_changed();
                         self.transport.retire_server_object(object);
                         handle::Request::Destroy
                             .encode(object, &mut self.transport.writer)

@@ -1,9 +1,8 @@
 # control-panel
 
-- **类型**：程序（可执行文件）
-- **作用**：控制面板小程序
-- **产物 / 安装位置**：`/bin/control-panel <system|datetime|sounds|display|taskbar|winver>`
-- **对应的 Windows 2000 组件**：*.cpl 小程序与 winver.exe
-- **依赖**：classic-ui、classic-theme、canvas、typeface、calendar、sound
+类型：程序，产物 `/bin/control-panel <system|datetime|sounds|display|taskbar|network|properties|winver>`。
 
-系统属性、日期/时间属性与"关于"是只读信息页；"声音和多媒体"有"声音"（事件列表与试听）与"音频"（播放设备与音量控制入口）两页。"显示"（背景色）与"任务栏"（总在最前、自动隐藏、显示时钟）写入每用户的 `desktop.conf`（库 `desktop-settings`），桌面外壳按修改时间发现并立即应用。设置程序通过 `Categories=Settings` 的桌面条目出现在控制面板里。
+各小程序提供业务数据、控件声明、验证和后台应用闭包；共享 PropertySheet 拥有标签页、OK/Cancel/Apply 与错误定位。
+文件统计、网络采样、设置持久化和时钟/时区修改均在后台执行。
+显示与任务栏只合并自身拥有的设置字段；desktop-settings 以标准文件锁保护读改写并原子发布。
+依赖 liteos-ui、calendar、desktop-settings 和 linux-uapi，不含标准控件绘制或像素提交。

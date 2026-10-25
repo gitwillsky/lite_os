@@ -40,15 +40,15 @@ impl Scroll {
         let arrow = SCROLLBAR_WIDTH.min(length / 2);
         let track = (length - 2 * arrow).max(0);
         if offset < arrow {
-            self.position -= line;
+            self.position = self.position.saturating_sub(line);
         } else if offset >= length - arrow {
-            self.position += line;
+            self.position = self.position.saturating_add(line);
         } else if let Some((thumb, size)) = thumb_span(track, content - 1, page, self.position) {
             let along = offset - arrow;
             if along < thumb {
-                self.position -= page;
+                self.position = self.position.saturating_sub(page);
             } else if along >= thumb + size {
-                self.position += page;
+                self.position = self.position.saturating_add(page);
             } else {
                 self.grab = Some(along - thumb);
             }
@@ -73,7 +73,8 @@ impl Scroll {
         };
         let free = (track - size).max(1);
         let travel = (content - page).max(0);
-        self.position = ((offset - arrow - grab).clamp(0, free) * travel) / free;
+        self.position = (i64::from((offset - arrow - grab).clamp(0, free)) * i64::from(travel)
+            / i64::from(free)) as i32;
     }
 
     /// 滚轮：向下滚 `notches` 档（负数向上），每档 3 行（Windows 的默认滚轮行数），再夹到 `maximum`。
@@ -83,7 +84,8 @@ impl Scroll {
     /// - `line`: 一行的像素（或行）数，与 `position` 同一单位。
     /// - `maximum`: `position` 的上限，通常是 `content - page`。
     pub fn wheel(&mut self, notches: i32, line: i32, maximum: i32) {
-        self.position += notches * 3 * line;
+        self.position = (i64::from(self.position) + i64::from(notches) * 3 * i64::from(line))
+            .clamp(0, i64::from(maximum.max(0))) as i32;
         self.clamp(maximum);
     }
 

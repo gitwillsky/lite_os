@@ -87,10 +87,16 @@ impl Stack {
                 .any(|(client, surface, ..)| *client == placed.client && *surface == placed.surface)
         });
         for placed in &mut self.order {
-            if let Some((_, _, width, height, _)) = mapped.iter().find(|(client, surface, ..)| {
-                *client == placed.client && *surface == placed.surface
-            }) {
+            if let Some((_, _, width, height, initial)) =
+                mapped.iter().find(|(client, surface, ..)| {
+                    *client == placed.client && *surface == placed.surface
+                })
+            {
                 (placed.width, placed.height) = (*width, *height);
+                placed.parent = match initial {
+                    Initial::CenterOn(parent) => Some(*parent),
+                    _ => None,
+                };
             }
         }
         for &(client, surface, width, height, initial) in mapped {

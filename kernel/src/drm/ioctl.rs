@@ -206,6 +206,7 @@ pub(super) fn drm_errno(error: DrmError) -> isize {
     match error {
         DrmError::Invalid => errno::EINVAL,
         DrmError::NotFound => errno::ENOENT,
+        DrmError::AlreadyExists => errno::EEXIST,
         DrmError::OutOfMemory => errno::ENOMEM,
         DrmError::NoSpace => errno::ENOSPC,
         DrmError::Busy => errno::EBUSY,

@@ -10,6 +10,7 @@ pub struct Output {
 
 mod client;
 mod clipboard;
+mod dialog;
 mod foreign;
 mod layer;
 mod popup;

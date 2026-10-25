@@ -7,6 +7,7 @@ use std::{
     fs::File,
     io::{self, Read, Write},
     os::{fd::AsFd, unix::net::UnixStream},
+    sync::Arc,
     time::Duration,
 };
 
@@ -35,12 +36,55 @@ pub(super) struct Clipboard {
     /// 当前选择对应的 offer；`None` 表示选择为空。
     selection: Option<ObjectId>,
     /// 本进程提供的来源与内容；被别人替换（`cancelled`）后清空。
-    own: Option<(ObjectId, String)>,
+    own: Option<(ObjectId, Arc<str>)>,
+    outgoing: Vec<Transfer>,
     /// 最近一次键盘或按钮事件的序号；`set_selection` 必须带它。
     pub(super) serial: u32,
 }
 
+struct Transfer {
+    file: File,
+    text: Arc<str>,
+    offset: usize,
+}
+
 impl Clipboard {
+    pub(super) fn write_sources(&self) -> impl Iterator<Item = linux_uapi::unix::PollFd<'_>> {
+        self.outgoing.iter().map(|transfer| {
+            linux_uapi::unix::PollFd::new(
+                transfer.file.as_fd(),
+                linux_uapi::unix::PollEvents::WRITE,
+            )
+        })
+    }
+    pub(super) fn progress_writes(&mut self) {
+        // 每轮每个传输最多写 64 KiB，来源最多 8 个；慢消费者不创建线程，也不阻塞协议循环。
+        self.outgoing.retain_mut(|transfer| {
+            if transfer.offset == transfer.text.len() {
+                return false;
+            }
+            let end = transfer.text.len().min(transfer.offset + 65536);
+            match transfer
+                .file
+                .write(&transfer.text.as_bytes()[transfer.offset..end])
+            {
+                Ok(0) => false,
+                Ok(bytes) => {
+                    transfer.offset += bytes;
+                    transfer.offset != transfer.text.len()
+                }
+                Err(error)
+                    if matches!(
+                        error.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::Interrupted
+                    ) =>
+                {
+                    true
+                }
+                Err(_) => false,
+            }
+        });
+    }
     /// 绑定了管理器、还没有设备和选择的初始状态。
     pub(super) fn with_manager(manager: Option<ObjectId>) -> Self {
         Self {
@@ -73,6 +117,12 @@ impl Display {
     ///
     /// 写 socket 失败。
     pub fn set_clipboard(&mut self, text: &str) -> io::Result<()> {
+        if text.len() > MAX_TEXT as usize {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "clipboard text exceeds 1 MiB",
+            ));
+        }
         let (Some(manager), Some(device)) = (self.clipboard.manager, self.clipboard.device) else {
             return Ok(());
         };
@@ -99,8 +149,49 @@ impl Display {
         }
         .encode(device, writer)
         .map_err(io::Error::other)?;
-        self.clipboard.own = Some((source, text.to_owned()));
+        self.clipboard.own = Some((source, Arc::from(text)));
         self.transport.flush()
+    }
+
+    /// 请求纯文本传输，返回非阻塞读端；无文本 offer 返回 None。
+    ///
+    /// 调用者在 EOF 前累积数据，并自行限制容量、超时与取消；Drop 读端取消传输。
+    /// 管道创建、fd 发送或队列满返回错误；不在这里等待对端。
+    pub fn receive_clipboard(&mut self) -> io::Result<Option<UnixStream>> {
+        let (reader, writer_end) = UnixStream::pair()?;
+        reader.set_nonblocking(true)?;
+        if let Some((_, text)) = &self.clipboard.own {
+            if self.clipboard.outgoing.len() >= 8 {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            writer_end.set_nonblocking(true)?;
+            self.clipboard.outgoing.push(Transfer {
+                file: File::from(std::os::fd::OwnedFd::from(writer_end)),
+                text: text.clone(),
+                offset: 0,
+            });
+            return Ok(Some(reader));
+        }
+        let Some(offer) = self.clipboard.selection else {
+            return Ok(None);
+        };
+        let Some(mime) = self.clipboard.offers.get(&offer.get()).and_then(|mimes| {
+            TEXT_TYPES
+                .iter()
+                .find(|wanted| mimes.iter().any(|mime| mime == *wanted))
+        }) else {
+            return Ok(None);
+        };
+        let mut request = Writer::new();
+        wl_data_offer::Request::Receive {
+            mime_type: (*mime).to_owned(),
+            fd: writer_end.try_clone()?.into(),
+        }
+        .encode(offer, &mut request)
+        .map_err(io::Error::other)?;
+        self.transport
+            .send_fd(request.bytes(), writer_end.as_fd())?;
+        Ok(Some(reader))
     }
 
     /// 读出剪贴板里的文本；没有文本、对方没有响应或超时返回 `Ok(None)`。
@@ -110,7 +201,7 @@ impl Display {
     /// 建立管道或写 socket 失败。
     pub fn clipboard_text(&mut self) -> io::Result<Option<String>> {
         if let Some((_, text)) = &self.clipboard.own {
-            return Ok(Some(text.clone()));
+            return Ok(Some(text.to_string()));
         }
         let Some(offer) = self.clipboard.selection else {
             return Ok(None);
@@ -180,11 +271,15 @@ impl Display {
                     && *source == object
                 {
                     let text = text.clone();
-                    let mut file = File::from(fd.try_clone()?);
-                    // 在线程里写：对方读得慢时不能卡住本程序的界面。
-                    std::thread::spawn(move || {
-                        let _ = file.write_all(text.as_bytes());
-                    });
+                    if self.clipboard.outgoing.len() < 8 {
+                        let file = File::from(fd.try_clone()?);
+                        linux_uapi::unix::set_nonblocking(file.as_fd(), true)?;
+                        self.clipboard.outgoing.push(Transfer {
+                            file,
+                            text,
+                            offset: 0,
+                        });
+                    }
                 }
             }
             AnyEvent::WlDataSource(wl_data_source::Event::Cancelled) => {

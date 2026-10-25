@@ -20,6 +20,12 @@
 - 来源：[固定源码](https://github.com/riscv-non-isa/riscv-elf-psabi-doc/tree/e03d44ae2f0e1144f9498c2896b5ae25b0449398)。
 - 它定义 RV64 ABI、ELF、relocation、dynamic linking、TLS 与 calling convention；不定义 Linux syscall convention。
 
+### AArch64 进程内调用约定
+
+- 公开 UI SDK 的稳定边界采用 AAPCS64 `2025Q1` 的 LP64 数据布局与 C 调用约定。
+- 来源：[Arm abi-aa 2025Q1 / AAPCS64](https://github.com/ARM-software/abi-aa/blob/2025Q1/aapcs64/aapcs64.rst)。
+- Rust 的 repr(C)/extern C 负责表达该目标 ABI，不承诺 Rust ABI 稳定；RV64 边界沿用上述固定 psABI 的 LP64D。
+
 ### RISC-V Privileged Architecture
 
 - 官方发布包 `v20260120`；Machine ISA 与 Supervisor ISA 均为 `1.13`。
@@ -164,6 +170,8 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
   compositor 只公布 cursor-shape，不公布平板全局对象，请求 `get_tablet_tool_v2` 是协议错误。
 - 同一 wayland-protocols `1.45` 提交的 `unstable/xdg-output/xdg-output-unstable-v1.xml`（v3）SHA-256
   `363d547c3eefe8959160cac903ff90b311d4b183005557d73640d9df2cfd7f79`；XML 原样 vendored。
+- 同一 wayland-protocols `1.45` 提交的 `staging/xdg-dialog/xdg-dialog-v1.xml`（v1）SHA-256
+  `2822956bdf13d51848ff4b5e29c509028c1204c6e06262ee926b001f43a42dbb`；XML 原样 vendored。客户端自行筛选父窗口输入，合成器消费模态提示辅助焦点策略。
 - wlr-protocols commit `bf4fc79abc359eea5a0edec0ac6d4a2b2955f82a`：`unstable/wlr-layer-shell-unstable-v1.xml`（v5）SHA-256
   `87e0b9c837aecd6977f76f3c47d73088b7159871f5d979dc1840f6cadb5e2ed8`；
   `unstable/wlr-foreign-toplevel-management-unstable-v1.xml`（v3）SHA-256
@@ -174,7 +182,8 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 - 运行时一致性消费者：Alpine v3.22 的 `wayland-utils-1.2.0-r0`（`wayland-info`）、`wayland-libs-client-1.23.1-r3`、
   `libffi-3.4.8-r0`、`libdrm-2.4.124-r0`、`libpciaccess-0.18.1-r0`，以及裁决 keymap 的 `libxkbcommon-1.8.1-r2`（含 `-dev` 头文件）、
   `libxml2-2.13.9-r1`、`zlib-1.3.2-r1`、`xz-libs-5.8.4-r0`，SHA-256 固定在 `scripts/verify_wayland.py`。keymap 文本格式取自 libxkbcommon 的 `XKB_KEYMAP_FORMAT_TEXT_V1`。
-  XML 原样放入 `user/libraries/wayland-wire/protocols/`，由 `wayland-scanner` 生成类型；wire 格式以 Wayland 文档为准。
+  XML 原样放入 `user/libraries/wayland-wire/protocols/`，由 `wayland-scanner` 生成类型；wire 格式以 [Wayland wire 规范](https://wayland.freedesktop.org/docs/book/Protocol.html#wire-format)为准。
+  消息头长度为 16-bit、参数四字节对齐；单次读写缓冲大小不能作为协议消息上限，字符串不允许内部 NUL。
 
 ### UTM/QEMU host display、clipboard 与 SPICE agent
 
@@ -321,3 +330,26 @@ USER1000ms与非进展ACK、无route+IFDOWN探测预算、持续零窗口应答�
 字段受actual transport/NET guard独占；沿用实际每slot clock/完整poll200ns benchmark门禁。
 ACK 准入上界是发送 high-water `send_seq_no`，与可回退的重传游标 `remote_last_seq` 分离；未发送的数据、SYN 与 FIN 不能被确认。keepalive 遇 route 失败时消耗一次 probe count，并安排后续 deadline，不伪造成功的 wire 发送。
 zero-window 使用有界原生 timer；通用 PMTU/fragment 与其他未声明 TCP 扩展不支持。
+
+### VirGL 合成
+
+- 命令编码固定到 virglrenderer `virglrenderer-1.1.0`；继续使用 VirGL2 capset、标准 VirtIO-GPU DRM UAPI。
+  上游 [virglrenderer](https://gitlab.freedesktop.org/virgl/virglrenderer/-/tree/virglrenderer-1.1.0)，
+  [固定源码镜像](https://chromium.googlesource.com/chromiumos/third_party/virglrenderer/+/refs/tags/virglrenderer-1.1.0)。
+  `virgl_protocol.h` SHA-256：`359d7b64e515e170f38c3cf9ab8c7b28a2a38b51e8959a21ecd2ae985b992709`。
+  `p_defines.h` SHA-256：`29b02c15399768ab74054e711f6633c407cf5f952f591c046e7542b82e54a008`。
+- 顶点/片段程序采用 [Mesa TGSI](https://docs.mesa3d.org/gallium/tgsi.html) 的 POSITION、GENERIC、2D sampler 与 TEX 语义。
+  预乘 OVER 与 INVERT 逻辑操作由同一固定命令编码实现，不新增 Wayland 私有绘图消息。
+
+### TZif 与 Rust 时区解析
+
+- TZif 固定规范：RFC 8536（2019-02）；当前采用的解析器支持 v1/v2/v3，不声明 v4。
+- 一手来源：[RFC 8536](https://www.rfc-editor.org/rfc/rfc8536)、[tz-rs 0.7.3 源码](https://docs.rs/crate/tz-rs/0.7.3/source/)。
+- tz-rs 固定 crate `0.7.3`，MSRV 1.85，MIT/Apache-2.0；crate SHA-256：
+  `4fc6c929ffa10fb34f4a3c7e9a73620a83ef2e85e47f9ec3381b8289e6762f42`，由 Cargo.lock 固定。
+- 时区数据继续使用标准 `/etc/localtime`；源码依赖不打包 IANA 数据库，也不引入私有时区文件。
+
+### freedesktop Trash
+
+- Trash Specification `1.0`，发布日期 `2014-01-02`；[固定版本](https://specifications.freedesktop.org/trash/1.0/)。
+- home trash 的 files/info 对应关系、URL 原生字节编码、当地 YYYY-MM-DDThh:mm:ss 删除时间和先 O_EXCL 创建信息文件以该版为准。

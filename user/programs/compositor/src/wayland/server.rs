@@ -146,21 +146,21 @@ impl Server {
     }
 
     /// poll 描述符：先是监听 socket，随后每个连接一个；有未发完输出的连接额外关注可写。
-    pub fn descriptors(&self) -> Vec<PollFd> {
-        let mut descriptors = vec![PollFd::new(self.listener.as_fd(), PollEvents::READ)];
-        for connection in &self.connections {
-            let wants_write = !connection.client.output().0.is_empty();
-            let events = if wants_write {
-                PollEvents::READ | PollEvents::WRITE
-            } else {
-                PollEvents::READ
-            };
-            descriptors.push(PollFd::new(connection.stream.as_fd(), events));
-        }
-        for context in &self.contexts {
-            descriptors.extend(context.descriptors());
-        }
-        descriptors
+    pub fn descriptors(&self) -> impl Iterator<Item = PollFd<'_>> {
+        std::iter::once(PollFd::new(self.listener.as_fd(), PollEvents::READ))
+            .chain(self.connections.iter().map(|connection| {
+                let events = if connection.client.output().0.is_empty() {
+                    PollEvents::READ
+                } else {
+                    PollEvents::READ | PollEvents::WRITE
+                };
+                PollFd::new(connection.stream.as_fd(), events)
+            }))
+            .chain(
+                self.contexts
+                    .iter()
+                    .flat_map(|context| context.descriptors()),
+            )
     }
 
     /// 处理一次 poll 的结果：`returned` 与 [`Server::descriptors`] 的顺序和数量一致。

@@ -1,51 +1,94 @@
-//! 本地时区与系统时钟：读取走 libc（`localtime_r`，因此 `/etc/localtime` 的 TZif 文件对所有程序生效），
-//! 写入时区就是原子改写同一个文件，写入时钟是标准的 `clock_settime(CLOCK_REALTIME)`。
-//!
-//! 所有需要“本地时间”的界面（任务栏时钟、日期/时间属性、文件时间戳）都经过 [`to_local`]，不各自假设 UTC。
-
+//! 按标准 TZif 文件解析本地时区；不修改进程 TZ 环境，支持 UI 与后台线程同时查询/重载。
 use std::{
-    fs, io,
-    sync::atomic::{AtomicBool, Ordering},
+    fs,
+    io::{self, Write},
+    sync::{OnceLock, RwLock},
 };
-
+use tz::TimeZone;
 const LOCALTIME_PATH: &str = "/etc/localtime";
-
-/// `unix`（自 epoch 起的 UTC 秒）处的本地时区偏移（秒，东为正）；读取失败按 UTC。
+// OWNER: calendar 独占进程内已解析时区；锁内只查询或替换不可变 TZif 模型，不执行文件 I/O。
+// PROOF: 重载先在锁外完整解析，再一次替换；读者不会观察半份转换表，也不借用 libc 全局指针。
+// FAILURE: 若在后台线程存在时切换环境变量，会违反 std::env::set_var 的线程安全前置条件。
+static TIMEZONE: OnceLock<RwLock<TimeZone>> = OnceLock::new();
+fn timezone() -> &'static RwLock<TimeZone> {
+    TIMEZONE.get_or_init(|| RwLock::new(read_timezone().unwrap_or_else(|_| TimeZone::utc())))
+}
+fn read_timezone() -> io::Result<TimeZone> {
+    let bytes = fs::read(LOCALTIME_PATH)?;
+    TimeZone::from_tz_data(&bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))
+}
+/// 查询 UTC 秒处东向偏移；未安装时区或超出解析范围时按 UTC。
 pub fn local_offset(unix: i64) -> i64 {
-    linux_uapi::time::utc_offset(unix).unwrap_or(0)
+    timezone()
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .find_local_time_type(unix)
+        .map_or(0, |kind| i64::from(kind.ut_offset()))
 }
-
-/// UTC 秒换成“本地墙钟秒”（可直接交给 [`crate::civil_from_days`] 得到本地日期）。
+/// UTC 秒换成本地墙钟秒。
 pub fn to_local(unix: i64) -> i64 {
-    unix + local_offset(unix)
+    unix.saturating_add(local_offset(unix))
 }
-
-/// 本地墙钟秒换回 UTC 秒；固定偏移时区下精确，有夏令时的时区在重叠小时取先出现的那次。
+/// 本地墙钟秒换回 UTC；重叠小时选择较早的时刻，不存在的墙钟由 [`from_local_checked`] 报错。
 pub fn from_local(local: i64) -> i64 {
-    local - local_offset(local - local_offset(local))
+    from_local_checked(local).unwrap_or_else(|_| local.saturating_sub(local_offset(local)))
 }
-
-/// `unix` 处的时区缩写（如 `CST`）。
+/// 精确解析本地墙钟；无法表示或处于夏令时跳过区间时返回 InvalidInput。
+pub fn from_local_checked(local: i64) -> io::Result<i64> {
+    let date = crate::civil_from_days(local.div_euclid(86400));
+    let year = i32::try_from(date.year)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "year out of range"))?;
+    let seconds = local.rem_euclid(86400);
+    let zone = timezone().read().unwrap_or_else(|error| error.into_inner());
+    let mut values = [None; 4];
+    let found = tz::DateTime::find_n(
+        &mut values,
+        year,
+        date.month as u8,
+        date.day as u8,
+        (seconds / 3600) as u8,
+        (seconds % 3600 / 60) as u8,
+        (seconds % 60) as u8,
+        0,
+        zone.as_ref(),
+    )
+    .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+    if !found.is_exhaustive() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "ambiguous timezone exceeds supported candidates",
+        ));
+    }
+    found
+        .data()
+        .iter()
+        .flatten()
+        .filter_map(|kind| match kind {
+            tz::datetime::FoundDateTimeKind::Normal(value) => Some(value.unix_time()),
+            _ => None,
+        })
+        .min()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "local time does not exist"))
+}
+/// 查询 UTC 秒处的时区缩写；超出范围返回空字符串。
 pub fn abbreviation(unix: i64) -> String {
-    linux_uapi::time::local_time(unix).map_or_else(|_| String::new(), |time| time.abbreviation)
+    timezone()
+        .read()
+        .unwrap_or_else(|error| error.into_inner())
+        .find_local_time_type(unix)
+        .map_or_else(
+            |_| String::new(),
+            |kind| kind.time_zone_designation().to_owned(),
+        )
 }
-
-/// 让本进程重新读取 `/etc/localtime`。
-///
-/// musl 的 `tzset` 只在 `TZ` 字符串变化时重读文件；交替设置两个等价写法（`:` 前缀表示“这是文件路径”）
-/// 就能强制重读，长驻进程（桌面外壳）在时区被改写后据此刷新。
-pub fn reload() {
-    // OWNER: 本模块单线程 UI 重载拥有 TZ 的等价路径切换；缺少切换 musl 会复用旧文件内容。
-    static ALTERNATE: AtomicBool = AtomicBool::new(false);
-    let value = if ALTERNATE.fetch_xor(true, Ordering::Relaxed) {
-        format!(":{LOCALTIME_PATH}")
-    } else {
-        LOCALTIME_PATH.to_owned()
-    };
-    // SAFETY: 唯一调用者为 desktop/control-panel 的单线程主循环，无并发环境访问。
-    // 后续引入进程内后台线程时必须先替换这条进程环境重载策略。
-    unsafe { std::env::set_var("TZ", value) };
-    linux_uapi::time::refresh_timezone();
+/// 重新读取 `/etc/localtime`；损坏或读取错误保留原模型，返回具体错误，不修改环境变量。
+pub fn reload() -> io::Result<()> {
+    let replacement = read_timezone()?;
+    *timezone()
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = replacement;
+    Ok(())
 }
 
 /// 把 `/etc/localtime` 原子改写成固定偏移（无夏令时）的 TZif v1 文件。
@@ -71,10 +114,42 @@ pub fn write_fixed(offset: i32, abbreviation: &str) -> io::Result<()> {
     bytes.extend_from_slice(&[0, 0]);
     bytes.extend_from_slice(abbreviation.as_bytes());
     bytes.push(0);
-    let temporary = format!("{LOCALTIME_PATH}.new");
-    fs::write(&temporary, &bytes)?;
-    fs::rename(&temporary, LOCALTIME_PATH)?;
-    reload();
+    let replacement = TimeZone::from_tz_data(&bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
+    let mut temporary = None;
+    for index in 0..128 {
+        let path = format!("{LOCALTIME_PATH}.{}.{}.new", std::process::id(), index);
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => {
+                temporary = Some((path, file));
+                break;
+            }
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    let (path, mut file) = temporary.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "timezone temporary files exhausted",
+        )
+    })?;
+    let result = (|| {
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        fs::rename(&path, LOCALTIME_PATH)
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&path);
+    }
+    result?;
+    *timezone()
+        .write()
+        .unwrap_or_else(|error| error.into_inner()) = replacement;
     Ok(())
 }
 

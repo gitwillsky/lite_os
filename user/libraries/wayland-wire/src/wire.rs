@@ -5,8 +5,9 @@ use std::{
     os::fd::{OwnedFd, RawFd},
 };
 
-/// Wayland 单条消息的最大字节数（含 8 字节头），与 libwayland 的缓冲区一致。
-pub const MAX_MESSAGE_SIZE: usize = 4096;
+/// Wire 头的 16-bit 长度字段可表达的最大四字节对齐消息（含八字节头）。
+/// socket 单次读写的缓冲大小不限制消息大小，Framer 负责跨 read 重组。
+pub const MAX_MESSAGE_SIZE: usize = (u16::MAX as usize) & !3;
 pub const HEADER_SIZE: usize = 8;
 
 /// 非零对象 ID；0 在 wire 上表示"无对象"，用 `Option<ObjectId>` 表达。
@@ -80,6 +81,8 @@ pub enum DecodeError {
 pub enum EncodeError {
     /// 消息超过 [`MAX_MESSAGE_SIZE`]；已写入的部分被回滚。
     TooLarge,
+    /// 字符串包含协议禁止的内部 NUL；整条消息被回滚。
+    InvalidString,
 }
 
 macro_rules! display_error {
@@ -104,7 +107,8 @@ display_error!(DecodeError {
 });
 
 display_error!(EncodeError {
-    Self::TooLarge => "message exceeds the 4096 byte limit",
+    Self::TooLarge => "message exceeds the Wayland wire size limit",
+    Self::InvalidString => "string contains an interior NUL",
 });
 
 /// 消息体的顺序读取器。
@@ -168,7 +172,7 @@ impl<'a> Reader<'a> {
         let padded_length = padded(length);
         let bytes = self.take(padded_length)?;
         let (text, terminator) = bytes[..length].split_at(length - 1);
-        if terminator != [0] {
+        if terminator != [0] || text.contains(&0) {
             return Err(DecodeError::InvalidString);
         }
         String::from_utf8(text.to_vec())
@@ -213,6 +217,9 @@ pub struct Writer {
     fds: Vec<RawFd>,
     message_start: usize,
     fds_start: usize,
+    // OWNER: 参数写入不返回错误，由 end 原子完成或回滚整条消息（包括 fd）。
+    // 缺少此状态时，字符串验证失败会留下参数不完整但头合法的消息。
+    error: Option<EncodeError>,
 }
 
 impl Writer {
@@ -242,6 +249,7 @@ impl Writer {
     pub fn begin(&mut self, object: ObjectId, opcode: u16) {
         self.message_start = self.bytes.len();
         self.fds_start = self.fds.len();
+        self.error = None;
         self.bytes.extend_from_slice(&object.get().to_le_bytes());
         self.bytes
             .extend_from_slice(&u32::from(opcode).to_le_bytes());
@@ -250,10 +258,14 @@ impl Writer {
     /// 结束当前消息并回填头里的大小；超过上限时回滚整条消息。
     pub fn end(&mut self) -> Result<(), EncodeError> {
         let size = self.bytes.len() - self.message_start;
-        if size > MAX_MESSAGE_SIZE {
+        if let Some(error) = self
+            .error
+            .take()
+            .or_else(|| (size > MAX_MESSAGE_SIZE).then_some(EncodeError::TooLarge))
+        {
             self.bytes.truncate(self.message_start);
             self.fds.truncate(self.fds_start);
-            return Err(EncodeError::TooLarge);
+            return Err(error);
         }
         let header = &mut self.bytes[self.message_start + 4..self.message_start + 8];
         let opcode = u32::from_le_bytes(header.try_into().unwrap());
@@ -281,6 +293,14 @@ impl Writer {
         let Some(text) = value else {
             return self.uint(0);
         };
+        if text.as_bytes().contains(&0) {
+            self.error = Some(EncodeError::InvalidString);
+            return;
+        }
+        if text.len() > MAX_MESSAGE_SIZE - HEADER_SIZE - 5 {
+            self.error = Some(EncodeError::TooLarge);
+            return;
+        }
         self.uint(text.len() as u32 + 1);
         self.bytes.extend_from_slice(text.as_bytes());
         self.bytes
@@ -288,6 +308,10 @@ impl Writer {
     }
 
     pub fn array(&mut self, value: &[u8]) {
+        if value.len() > MAX_MESSAGE_SIZE - HEADER_SIZE - 4 {
+            self.error = Some(EncodeError::TooLarge);
+            return;
+        }
         self.uint(value.len() as u32);
         self.bytes.extend_from_slice(value);
         self.bytes

@@ -25,8 +25,15 @@
 | [`desktop-settings/`](desktop-settings/README.md) | 每用户桌面设置 | 共享库 `libdesktop_settings.so` |
 | [`sound/`](sound/README.md) | 系统提示音 | 共享库 `libsound.so` |
 | [`sndvol/`](sndvol/README.md) | 音量状态与布局 | 共享库 `libsndvol.so` |
-| [`terminal-font/`](terminal-font/README.md) | 终端字体图集 | 静态库（目前没有程序使用） |
-| [`terminal-model/`](terminal-model/README.md) | 终端模型 | 静态库（目前没有程序使用） |
+| [`terminal-font/`](terminal-font/README.md) | 终端字体图集 | 终端/共享 UI 的内部依赖 |
+| [`terminal-model/`](terminal-model/README.md) | 终端模型 | 终端程序的内部依赖 |
 
-新增共享库时：在这里建目录与 README，加 `liteos-runtime` 依赖与 `extern crate`，登记到 `user/Cargo.toml`、根 `Cargo.toml`、
-`scripts/verify_busybox.py` 的 `SYSTEM_LIBRARIES` 与 `architecture-check` 的 `LIBRARIES`。
+新增库需登记 workspace、根 workspace exclude、目录索引与 architecture-check 的目录清单。
+系统内部 Rust dylib 才依赖 liteos-runtime 并登记 SYSTEM_LIBRARIES；公开 SDK cdylib 静态纳入 Rust/std，
+以版本化目标 C ABI 提供边界，不借系统 Rust metadata 承诺兼容。
+
+| 新增 SDK 层 | Owner | 产物 |
+|---|---|---|
+| [classic-ui-abi](classic-ui-abi/README.md) | 稳定布局与函数表声明 | no_std 源码依赖 |
+| [classic-ui-runtime](classic-ui-runtime/README.md) | 一份共享控件实现 | libliteos_ui.so.1 |
+| [liteos-ui](liteos-ui/README.md) | 安全 Rust API 与异步适配 | 应用源码 SDK |

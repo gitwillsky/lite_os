@@ -219,6 +219,18 @@ def prepare_agent_development(environment: Mapping[str, str] | None = None) -> N
     )
 
 
+def prepare_rust_development(environment: Mapping[str, str] | None = None) -> None:
+    """为已有开发镜像安装固定原生 Rust/Cargo；应用项目沿用标准 Cargo 工作流。"""
+    source = os.environ if environment is None else environment
+    if target_from_environment(source).arch != "aarch64":
+        raise RuntimeError("native Rust development currently supports only ARCH=aarch64")
+    build_kernel(environment)
+    build_bootloader(environment)
+    sync_userland(environment)
+    run(python_script("rust_development.py", "--image", target_paths(environment)["fs"],
+                      "--size-mib", source.get("FS_IMAGE_SIZE_MIB", "8192")), environment=environment)
+
+
 def _qemu_smp(source: Mapping[str, str]) -> str:
     """解析显式 QEMU_SMP，否则保留 Make 的宿主物理核策略。"""
     return source.get("QEMU_SMP") or str(default_guest_cpu_count())
@@ -695,6 +707,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         "reset-rootfs": reset_rootfs,
         "sync-userland": sync_userland,
         "prepare-agent-development": prepare_agent_development,
+        "prepare-rust-development": prepare_rust_development,
         "verify-unit": verify_unit,
         "verify-architecture-benchmark": verify_architecture_benchmark,
         "verify-architecture-release": verify_architecture_release,

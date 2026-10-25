@@ -1,12 +1,8 @@
-//! "系统属性"：只读的系统、计算机信息，数据来自 procfs。
-use crate::{Icons, Page, inside};
-use canvas::Rect;
-use classic_theme::SystemColor as C;
-use classic_ui::{ButtonState, Ink, Painter};
+//! 系统信息在后台读取；三页仅声明标准控件和设备管理器启动动作。
+use crate::{Page, child, group, image, label, pair};
+use liteos_ui::{Event, EventKind, Layout, PropertySheet, Widget, WidgetKind as Kind};
 use std::fs;
-
-/// "系统属性"的数据：常规页按 Windows 2000 的“标题 + 缩进值”分组，网络标识页用主机名。
-pub struct System {
+pub struct Data {
     groups: Vec<(&'static str, Vec<String>)>,
     host: String,
 }
@@ -33,7 +29,7 @@ fn grouped(value: u64) -> String {
     out
 }
 
-impl System {
+impl Data {
     pub fn read() -> Self {
         let release = fs::read_to_string("/proc/sys/kernel/osrelease")
             .map(|v| v.trim().to_owned())
@@ -65,115 +61,57 @@ impl System {
     }
 }
 
+pub struct System {
+    _controls: Vec<Widget>,
+    devices: Widget,
+}
 impl System {
-    fn devices_button(page: Rect) -> Rect {
-        Rect::new(page.right() - 24 - 110, page.y + 12 + 110 - 34, 110, 23)
+    pub fn build(sheet: &PropertySheet, data: Data) -> liteos_ui::Result<Self> {
+        let general = sheet.page("常规")?;
+        let mut controls = vec![image(&general, "liteos-logo")?];
+        for (heading, values) in data.groups {
+            let section = group(&general, heading)?;
+            for value in values {
+                controls.push(label(&section, &value)?);
+            }
+            controls.push(section);
+        }
+        let network = sheet.page("网络标识")?;
+        controls.push(image(&network, "my-computer")?);
+        controls.push(label(
+            &network,
+            "LiteOS 使用以下信息在网络上标识您的计算机。",
+        )?);
+        let (a, b) = pair(&network, "计算机全名：", &data.host)?;
+        controls.extend([a, b]);
+        let hardware = sheet.page("硬件")?;
+        let section = group(&hardware, "设备管理器")?;
+        controls.push(label(
+            &section,
+            "设备管理器列出系统里能确认的硬件，并显示每个设备的属性。",
+        )?);
+        let devices = child(
+            &section,
+            Kind::Button,
+            "设备管理器(D)",
+            Layout {
+                width: 140,
+                height: 26,
+                ..Default::default()
+            },
+        )?;
+        controls.extend([general, network, hardware, section]);
+        Ok(Self {
+            _controls: controls,
+            devices,
+        })
     }
 }
-
 impl Page for System {
-    fn title(&self) -> &'static str {
-        "系统属性"
-    }
-    fn tabs(&self) -> &'static [&'static str] {
-        &["常规", "网络标识", "硬件"]
-    }
-    fn icon(&self) -> &'static str {
-        "my-computer"
-    }
-    fn size(&self) -> (i32, i32) {
-        (400, 420)
-    }
-    fn paint(&self, p: &mut Painter<'_>, page: Rect, tab: usize, _now: i64, icons: &Icons) {
-        let ink = Ink::Color(C::ButtonText);
-        match tab {
-            1 => {
-                // 网络标识：说明文字、计算机全名。
-                if let Some(computer) = &icons.computer {
-                    computer.paint(p, page.x + 14, page.y + 14);
-                }
-                p.text(
-                    page.x + 64,
-                    page.y + 18,
-                    "LiteOS 使用以下信息在网络上标识您的计算机。",
-                    ink,
-                    false,
-                );
-                p.fill(
-                    Rect::new(page.x + 14, page.y + 58, page.width - 28, 1),
-                    C::ButtonShadow,
-                );
-                p.fill(
-                    Rect::new(page.x + 14, page.y + 59, page.width - 28, 1),
-                    C::ButtonHilight,
-                );
-                p.text(page.x + 14, page.y + 76, "计算机全名：", ink, false);
-                p.text_fit(
-                    page.x + 110,
-                    page.y + 76,
-                    page.width - 122,
-                    &self.host,
-                    ink,
-                    false,
-                );
-            }
-            2 => {
-                // 硬件页：设备管理器分组。
-                let group = Rect::new(page.x + 12, page.y + 12, page.width - 24, 110);
-                p.group_box(group, "设备管理器");
-                p.text(
-                    group.x + 14,
-                    group.y + 26,
-                    "设备管理器列出系统里能确认的全部硬件，",
-                    ink,
-                    false,
-                );
-                p.text(
-                    group.x + 14,
-                    group.y + 44,
-                    "并显示每个设备的属性。",
-                    ink,
-                    false,
-                );
-                p.push_button(
-                    Self::devices_button(page),
-                    "设备管理器(D)",
-                    ButtonState::default(),
-                );
-            }
-            _ => {
-                // 常规：左侧产品图标，右侧按组排列的标题与缩进值（Windows 2000 的版面）。
-                if let Some(logo) = &icons.logo {
-                    logo.paint(p, page.x + 20, page.y + 22);
-                }
-                let (heading_x, value_x) = (page.x + 100, page.x + 120);
-                let step = p.line_height() + 4;
-                let mut y = page.y + 22;
-                for (heading, values) in &self.groups {
-                    p.text_fit(
-                        heading_x,
-                        y,
-                        page.right() - heading_x - 12,
-                        heading,
-                        ink,
-                        false,
-                    );
-                    y += step;
-                    for value in values {
-                        p.text_fit(value_x, y, page.right() - value_x - 12, value, ink, false);
-                        y += step;
-                    }
-                    y += 10;
-                }
-            }
-        }
-    }
-    fn click(&mut self, page: Rect, tab: usize, point: (i32, i32)) -> bool {
-        if tab == 2 && inside(Self::devices_button(page), point) {
-            let _ = std::process::Command::new("/bin/devmgmt")
-                .env_remove("WAYLAND_SOCKET")
-                .spawn();
-        }
-        false
+    fn event(&mut self, event: &Event) -> liteos_ui::Result<Option<Vec<String>>> {
+        Ok(
+            (event.node == self.devices.id() && matches!(event.kind, EventKind::Activate { .. }))
+                .then(|| vec!["/bin/devmgmt".into()]),
+        )
     }
 }

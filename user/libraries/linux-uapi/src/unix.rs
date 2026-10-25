@@ -12,6 +12,35 @@ use std::os::fd::FromRawFd;
 
 use crate::raw;
 
+/// 设置已有 Linux OFD 的非阻塞状态，不改变访问模式；别名共享这一状态。
+///
+/// fd 借用在调用期间有效；fcntl 失败返回原 errno，非 Linux host 明确不支持。
+#[cfg(target_os = "linux")]
+pub fn set_nonblocking(fd: BorrowedFd<'_>, enabled: bool) -> io::Result<()> {
+    const F_GETFL: c_int = 3;
+    const F_SETFL: c_int = 4;
+    // SAFETY: fcntl 的这两个命令只消费整数，不访问用户指针；fd 的 owner 仍存活。
+    let flags = unsafe { raw::fcntl(fd.as_raw_fd(), F_GETFL, 0) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let updated = if enabled {
+        flags | raw::O_NONBLOCK
+    } else {
+        flags & !raw::O_NONBLOCK
+    };
+    if unsafe { raw::fcntl(fd.as_raw_fd(), F_SETFL, updated) } < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+/// 非 Linux host 不提供 Linux OFD flag 修改。
+#[cfg(not(target_os = "linux"))]
+pub fn set_nonblocking(_fd: BorrowedFd<'_>, _enabled: bool) -> io::Result<()> {
+    Err(io::ErrorKind::Unsupported.into())
+}
+
 /// Linux `SO_PEERCRED` identity for a connected Unix socket.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(C)]
@@ -135,43 +164,133 @@ impl std::ops::BitOr for PollEvents {
 /// One non-owning descriptor in a synchronous [`poll`] operation.
 ///
 /// The descriptor owner must remain alive until the enclosing [`poll`] call returns.
-pub struct PollFd {
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+pub struct PollFd<'fd> {
     raw: raw::PollFd,
+    descriptor: std::marker::PhantomData<BorrowedFd<'fd>>,
 }
 
-impl PollFd {
-    pub fn new(fd: BorrowedFd<'_>, events: PollEvents) -> Self {
+impl<'fd> PollFd<'fd> {
+    pub fn new(fd: BorrowedFd<'fd>, events: PollEvents) -> Self {
         Self {
             raw: raw::PollFd {
                 fd: fd.as_raw_fd(),
                 events: events.0,
                 returned: 0,
             },
+            descriptor: std::marker::PhantomData,
         }
     }
 
     pub fn returned(&self) -> PollEvents {
         PollEvents(self.raw.returned)
     }
+
+    /// 开始新一轮等待前清空旧 readiness；不修改 fd 或 interest。
+    pub fn clear_readiness(&mut self) {
+        self.raw.returned = 0;
+    }
+
+    /// 将同一 fd/interest 的批量 poll 结果写回原槽位，不转移或延长描述符借用。
+    ///
+    /// fd 或 interest 不匹配返回 InvalidInput，避免把另一个源的 readiness 误投递。
+    pub fn copy_readiness(&mut self, source: &PollFd<'_>) -> io::Result<()> {
+        if self.raw.fd != source.raw.fd || self.raw.events != source.raw.events {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "poll source mismatch",
+            ));
+        }
+        self.raw.returned = source.raw.returned;
+        Ok(())
+    }
 }
 
 /// Waits for readiness without hiding `EINTR` from the caller.
-pub fn poll(descriptors: &mut [PollFd], timeout: Option<Duration>) -> io::Result<usize> {
-    let timeout = match timeout {
-        None => -1,
-        Some(duration) => i32::try_from(duration.as_millis()).unwrap_or(i32::MAX),
-    };
-    let result = unsafe {
-        raw::poll(
-            descriptors.as_mut_ptr().cast::<raw::PollFd>(),
-            descriptors.len(),
-            timeout,
-        )
-    };
+pub fn poll(descriptors: &mut [PollFd<'_>], timeout: Option<Duration>) -> io::Result<usize> {
+    poll_raw(descriptors.as_mut_ptr().cast(), descriptors.len(), timeout)
+}
+fn poll_raw(
+    descriptors: *mut raw::PollFd,
+    count: usize,
+    timeout: Option<Duration>,
+) -> io::Result<usize> {
+    let timeout = timeout.map_or(-1, |duration| {
+        duration
+            .as_millis()
+            .saturating_add(u128::from(duration.subsec_nanos() % 1_000_000 != 0))
+            .min(i32::MAX as u128) as i32
+    });
+    // SAFETY: 仅 poll/PollSet::wait 调用，指针指向本轮独占的 count 个 repr(C) 项；
+    // PollFd 的借用或 PollSet 的生命周期证明 fd 存活，系统调用不会保留该数组。
+    let result = unsafe { raw::poll(descriptors, count, timeout) };
     if result < 0 {
         Err(io::Error::last_os_error())
     } else {
         Ok(result as usize)
+    }
+}
+
+/// 可复用的 poll 存储；自身不拥有、也不能轮询任何 FD，必须每轮重新建立有效借用。
+#[derive(Default)]
+pub struct PollBuffer {
+    slots: Vec<raw::PollFd>,
+}
+impl PollBuffer {
+    /// 清除上轮 FD 数字并保留容量，返回本轮借用集合。
+    pub fn prepare(&mut self) -> PollSet<'_> {
+        self.slots.clear();
+        PollSet {
+            buffer: self,
+            descriptors: std::marker::PhantomData,
+        }
+    }
+}
+/// 一轮 FD 借用；加入的描述符 owner 必须活到集合最后使用结束，析构保留容量并清除旧编号。
+pub struct PollSet<'fd> {
+    buffer: &'fd mut PollBuffer,
+    descriptors: std::marker::PhantomData<BorrowedFd<'fd>>,
+}
+impl<'fd> PollSet<'fd> {
+    /// 加入一个有效借用的源，返回稳定的本轮索引。
+    pub fn push(&mut self, descriptor: PollFd<'fd>) -> usize {
+        let index = self.buffer.slots.len();
+        self.buffer.slots.push(descriptor.raw);
+        index
+    }
+    /// 批量加入源；顺序与迭代器一致。
+    pub fn extend(&mut self, sources: impl IntoIterator<Item = PollFd<'fd>>) {
+        for source in sources {
+            self.push(source);
+        }
+    }
+    /// 借用本轮完整切片以组合上层等待；不能通过它延长任何 FD owner 的生命周期。
+    pub fn sources(&mut self) -> &mut [PollFd<'fd>] {
+        // SAFETY: PollFd repr(transparent) 包装同一 raw 布局；每个 slot 只由 push 的有效 'fd 借用创建。
+        // buffer 在此期间被独占；切片不拥有 FD，集合析构清空旧数字，下一轮不能轮询过期 slot。
+        unsafe {
+            std::slice::from_raw_parts_mut(
+                self.buffer.slots.as_mut_ptr().cast(),
+                self.buffer.slots.len(),
+            )
+        }
+    }
+    /// 等待本轮全部源，保留 EINTR 供上层重新计算 deadline。
+    pub fn wait(&mut self, timeout: Option<Duration>) -> io::Result<usize> {
+        poll(self.sources(), timeout)
+    }
+    /// 查询本轮某个源的结果；未知索引返回 None。
+    pub fn returned(&self, index: usize) -> Option<PollEvents> {
+        self.buffer
+            .slots
+            .get(index)
+            .map(|slot| PollEvents(slot.returned))
+    }
+}
+impl Drop for PollSet<'_> {
+    fn drop(&mut self) {
+        self.buffer.slots.clear();
     }
 }
 

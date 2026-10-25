@@ -52,7 +52,9 @@ impl Painter<'_> {
             put(self, along, THUMB_ACROSS + 3, 3, 1, C::ButtonShadow);
         }
         // 滑块。
-        let centre = start + position.clamp(0, maximum.max(1)) * (end - start) / maximum.max(1);
+        let centre = start
+            + (i64::from(position.clamp(0, maximum.max(1))) * i64::from(end - start)
+                / i64::from(maximum.max(1))) as i32;
         let half = THUMB_ALONG / 2;
         for step in 0..THUMB_ALONG {
             let along = centre - half + step;

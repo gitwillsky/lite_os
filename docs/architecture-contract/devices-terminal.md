@@ -44,8 +44,8 @@
   具体设备种类。
 - `tty` 独占系统 console Terminal 单例、TTY/pts 设备文件与 termios/session ioctl；`fs::mem` 独占
   `null`/`zero`/`random`/`urandom`/`kmsg`。`tty::pty` 独占 PTY registry/pair；Terminal 独占
-  session/foreground/termios/winsize 与创建时绑定的实际设备号。userspace terminal helper 与
-  当前无用户态图形会话。
+  session/foreground/termios/winsize 与创建时绑定的实际设备号。用户态终端只消费标准 PTY，
+  图形窗口由共享 UI 运行库拥有。
 - userspace `linux-uapi` 独占 DRM/evdev/PTY/process/poll ancillary 的 raw musl FFI；`OwnedFd`、
   `DumbBuffer`、`InputDevice`、`PtySession` 与 `SessionChild` 独占对应资源 cleanup。应用不得复制
   layout、constant、extern block 或裸 owner。
@@ -120,12 +120,13 @@
   使用固定数组。poll descriptor/mapping vector 必须跨轮次复用容量，事件稳态不得新增分配。
 - `SessionChild` 只接受固定 I/O profile 的 `SessionCommand`，并强制通过单线程
   `/bin/session-launch` 建立 parent-death、session/process-group 与同步 exec-error 契约；
-  多线程客户端不得运行 `pre_exec`，目标 stderr 统一进入标准 `/dev/console`。
-- `terminal-model` 保留 VT parser/screen 与 DEC application-cursor mode，`keyboard` 保留 CSI/SS3 编码；
-  当前没有 PTY 窗口程序或私有 terminal helper 协议。
-- PTY session 在清空继承环境后必须显式发布 `TERM=liteos`、`USER=root`、root HOME、标准
-  PATH 与 `SHELL=/bin/sh`，并从 `/root` 启动；缺少用户/shell identity 或从 `/` 进行 project
-  discovery 时，Claude 会停在交互初始化阶段或错误地把整个 rootfs 当作项目。
+  多线程客户端不得运行 `pre_exec`。图形监督进程的 stderr 进入 `/dev/console`；PTY 模式由 launcher
+  在 setsid 后执行 TIOCSCTTY，目标 stdin/stdout/stderr 均指向 slave，独立 CLOEXEC fd 只承担 exec-status。
+- `terminal-model` 独占 VT parser/screen、选择与有效颜色投影，`keyboard` 独占 CSI/SS3 与已提交 Unicode 的输入编码。
+  `/bin/terminal` 使用共享 SDK Canvas 与标准 PTY，没有私有 terminal helper 协议。
+- PTY 会话继承已认证账户的环境与凭据；显式提供 `TERM=linux`、`SHELL=/bin/sh`，优先使用当前
+  HOME、USER、PATH，仅缺失时采用系统默认值。工作目录是账户 HOME，不能强制切回 root。
+  `SessionCommand` 拥有环境覆盖项与工作目录，spawn 失败时不留下半个会话。
 - 新建 console/PTY 的 Linux sane termios 必须发布 `VSTART=^Q`、`VSTOP=^S` 与 `VSUSP=^Z`；
   control chars 留为 NUL 会让进入 raw mode 的交互式 CLI 观察到非标准 TTY 初态。
 - Console write 是同步且非阻塞的 output drain seam；Terminal transaction 的唯一锁序是
@@ -265,3 +266,22 @@
 - 设备 OpenRequest 保留原始 status flags；PTS 的 O_NOCTTY 禁止自动接管。文件壳和 slave
   lifetime pin 在接管之前完成分配；open 失败不会留下控制权。PTY master 的控制身份查询
   使用 slave Terminal 的同一实际 control owner，但 TIOCNOTTY 不适用于 master。
+
+## VirGL 创建、提交与退休
+
+`drm::graphics` 拥有创建/提交事务与 GEM 资源，`graphics::retirement` 拥有 OFD 退出时的资源/上下文回收状态机；
+`device` 只在唯一 completion owner 下选择并提交下一步，不新增 adapter 或第二份生命周期状态。
+
+- DrmFile.context_creation 的 task mutex 只串行化 context 创建，不持有 spin lock 等待 host。
+  CTX_CREATE 被队列接受后发布 context，后续操作由同一 controlq 排序；重复初始化按固定 Linux 返回 EEXIST。
+- PreparedVirglResource 在 identity 预留后立即接管回滚；backing、Arc、map/cleanup node 全部在 host create 前准备。
+  每个已接受命令先记录 exact fence 再开始可中断等待；EINTR/OOM/copyout fault 将已创建资源交给同一退休队列，不能提前回收 resource ID。
+- VirglAccess 在 exec/transfer 验证与 fence 发布之间保活资源；fence 水位取 max，避免并发提交逆序登记使最后使用水位倒退。
+  直接从已复制的 UAPI handle 字节生成 pins，不再分配第二份 decoded handle 数组。
+- GEM_CLOSE 消费创建阶段预留的节点，无分配移除 handle 后异步退休；活动 framebuffer/提交 pin 独立保活资源，最后引用退出且最后 fence 完成才发 RESOURCE_UNREF。
+  CardFile::ioctl 的成功/错误共同出口在临时 pins 退出后推进退休；关闭 OFD 与设备 completion 使用相同队列。
+  VirglLifecycle 同锁拥有最后 fence 与未使用的退休节点，节点留在资源内时不反向引用该资源；退休时才接管 Arc，避免自环。
+  context destroy 等待该 context 的所有退休资源完成；已发布 ID 不复用，未发布 ID 只在 UNREF completion 后回收。
+- completion 将回收 AVL node 移出锁域，backing/Arc/节点均在 device state guard 外析构；回收阶段不分配。
+- Benchmark 决策：提交 pins 替代原 decoded 数组，context task mutex 只在创建阶段使用；本轮按用户要求不执行性能验证，未声明成本数值。
+  这些契约尚不代表已支持 DRM PRIME/dma-buf；跨进程资源和 context attachment 的完整寿命仍待独立实现。

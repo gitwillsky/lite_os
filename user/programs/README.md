@@ -21,3 +21,5 @@
 
 新增程序时：在这里建目录并写 README，加入 `user/Cargo.toml` 的 members 与根 `Cargo.toml` 的 exclude，
 在 `scripts/verify_busybox.py` 的安装清单与 `SYSTEM_LIBRARY_PROGRAMS` 登记，并更新 `architecture-check` 的 `PROGRAMS`。
+
+[terminal](terminal/README.md) 是使用同一共享 SDK、VT 模型和标准 PTY 的终端应用。

@@ -1,51 +1,26 @@
-//! "关于 LiteOS"：对应 Windows 2000 的 winver.exe，只有产品与版本信息。
-use crate::{Icons, Page};
-use canvas::Rect;
-use classic_theme::SystemColor as C;
-use classic_ui::{Ink, Painter};
-
-pub struct Winver;
-
-impl Page for Winver {
-    fn title(&self) -> &'static str {
-        "关于 LiteOS"
-    }
-    fn tabs(&self) -> &'static [&'static str] {
-        &["版本"]
-    }
-    fn icon(&self) -> &'static str {
-        "liteos-logo"
-    }
-    fn size(&self) -> (i32, i32) {
-        (400, 300)
-    }
-    fn paint(&self, p: &mut Painter<'_>, page: Rect, _tab: usize, _now: i64, icons: &Icons) {
-        if let Some(logo) = &icons.logo {
-            logo.paint(p, page.x + 16, page.y + 18);
+//! 产品信息由共享标签和图标控件排版。
+use crate::{Page, image, label};
+use liteos_ui::{PropertySheet, Widget};
+pub struct Winver {
+    _controls: Vec<Widget>,
+}
+impl Winver {
+    pub fn build(sheet: &PropertySheet) -> liteos_ui::Result<Self> {
+        let page = sheet.page("版本")?;
+        let mut controls = vec![image(&page, "liteos-logo")?];
+        for text in [
+            "LiteOS 2000 Professional",
+            "基于 LiteOS 技术",
+            "本机账户认证、独立用户会话与 Wayland 窗口。",
+            "按 Ctrl+Alt+Delete 进入安全界面。",
+            "版权所有 © LiteOS 贡献者",
+        ] {
+            controls.push(label(&page, text)?);
         }
-        let lines = [
-            ("LiteOS 2000 Professional", true),
-            ("基于 LiteOS 技术", false),
-            ("", false),
-            ("本机账户认证、独立用户会话与 Wayland 窗口。", false),
-            ("按 Ctrl+Alt+Delete 进入安全界面。", false),
-            ("", false),
-            ("版权所有 © LiteOS 贡献者", false),
-        ];
-        let mut y = page.y + 24;
-        for (text, bold) in lines {
-            p.text_fit(
-                page.x + 64,
-                y,
-                page.width - 76,
-                text,
-                Ink::Color(C::ButtonText),
-                bold,
-            );
-            y += p.line_height() + 6;
-        }
-    }
-    fn click(&mut self, _page: Rect, _tab: usize, _point: (i32, i32)) -> bool {
-        false
+        controls.push(page);
+        Ok(Self {
+            _controls: controls,
+        })
     }
 }
+impl Page for Winver {}

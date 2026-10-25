@@ -120,11 +120,11 @@ impl Session {
             self.window_menu.as_ref(),
         );
         let frame = self.animation.as_ref().map(Animation::frame);
-        let overlay = |mut surface: canvas::Surface<'_>| {
-            if let Some((x, y, width, height)) = frame {
-                // 反转像素画 2 个逻辑像素宽的框：先上下两条整宽，再左右两条夹在中间。
+        let inversions: Vec<_> = frame
+            .into_iter()
+            .flat_map(|(x, y, width, height)| {
                 let thickness = 2 * scale;
-                for strip in [
+                [
                     canvas::Rect::new(x, y, width, thickness),
                     canvas::Rect::new(x, y + height - thickness, width, thickness),
                     canvas::Rect::new(x, y + thickness, thickness, height - 2 * thickness),
@@ -134,10 +134,11 @@ impl Session {
                         thickness,
                         height - 2 * thickness,
                     ),
-                ] {
-                    surface.invert(strip);
-                }
-            }
+                ]
+            })
+            .collect();
+        let has_overlay = art.is_some() && (switcher.is_some() || menu.is_some());
+        let overlay = |surface: canvas::Surface<'_>| {
             let Some(art) = art else { return };
             let screen = (surface.width(), surface.height());
             let mut painter = classic_ui::Painter::new(surface, theme, &art.typeface, scale);
@@ -148,11 +149,8 @@ impl Session {
                 menu.paint(&mut painter);
             }
         };
-        if !compose::compose(self.scanout.back(), &self.theme, &drawables, overlay) {
-            return Err(io::Error::other(
-                "scanout buffer cannot back a drawing surface",
-            ));
-        }
+        self.scanout
+            .compose(&self.theme, &drawables, &inversions, has_overlay, overlay)?;
         self.scanout.request_flip()
     }
 }

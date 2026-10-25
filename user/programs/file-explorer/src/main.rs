@@ -1,989 +1,751 @@
-//! 资源管理器：浏览文件夹、"我的电脑"与"控制面板"；使用普通 Wayland 连接，没有外壳权限。
-extern crate liteos_runtime as _;
+//! 资源管理器：标准控件承担交互，文件/导航领域只处理路径、快照与后台副作用。
 mod browser;
 mod chrome;
-mod dialogs;
 mod fileops;
-mod grid;
 mod model;
-mod ui;
-
-use browser::Browser;
-use canvas::{Rect, Surface};
-use chrome::{Command, Entry, MENU_TITLES, TOOLS};
-use classic_theme::Theme;
-use classic_ui::{
-    Configuration, CursorShape, Decoration, DecorationAction, Display, EventKind, FrameKind, Key,
-    Painter, WindowId,
+mod view;
+use browser::{Browser, Clipboard, Visit};
+use chrome::{Availability, Command};
+use liteos_ui::{
+    Application, Background, ControlFlow, Dialogs, EditCommand, EventKind, MessageButtons,
+    MessageResult, WindowOptions, state,
 };
-use dialogs::{Confirm, Notice};
-use grid::{Grid, ViewMode, inside};
-use model::Location;
+use model::{Item, Location};
 use std::{
+    cell::{Cell, RefCell},
+    ffi::OsString,
     path::{Path, PathBuf},
-    process::ExitCode,
-    time::{Duration, Instant},
+    process::{Child, ExitCode},
+    rc::Rc,
+    task::Waker,
+    time::Duration,
 };
-use typeface::Typeface;
-use ui::{Assets, Popup, Scene, Ui};
-
-const LEFT_BUTTON: u32 = 0x110;
-const RIGHT_BUTTON: u32 = 0x111;
-const DOUBLE_CLICK: Duration = Duration::from_millis(500);
-
-/// Linux evdev 键码。
-/// 左、右 Alt 的 evdev 键码。
-const ALT_KEYS: [u32; 2] = [56, 100];
-
-mod code {
-    pub const ESCAPE: u32 = 1;
-    pub const TAB: u32 = 15;
-    pub const A: u32 = 30;
-    pub const X: u32 = 45;
-    pub const C: u32 = 46;
-    pub const V: u32 = 47;
-    pub const Y: u32 = 21;
-    pub const N: u32 = 49;
-    pub const F2: u32 = 60;
-    pub const DELETE: u32 = 111;
-    pub const BACKSPACE: u32 = 14;
-    pub const ENTER: u32 = 28;
-    pub const L: u32 = 38;
-    pub const F4: u32 = 62;
-    pub const F5: u32 = 63;
-    pub const HOME: u32 = 102;
-    pub const UP: u32 = 103;
-    pub const PAGE_UP: u32 = 104;
-    pub const LEFT: u32 = 105;
-    pub const RIGHT: u32 = 106;
-    pub const END: u32 = 107;
-    pub const DOWN: u32 = 108;
-    pub const PAGE_DOWN: u32 = 109;
+use view::View;
+type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
+#[derive(Default)]
+struct Launches {
+    children: Vec<Child>,
+    wake: Option<Waker>,
 }
-
-struct App {
-    browser: Browser,
-    ui: Ui,
-    /// 界面上次同步时显示的位置；与 `browser.location` 不同说明刚导航过。
-    shown: Location,
-    last_click: Option<(usize, Instant)>,
-    closing: bool,
-    /// 最近一次键盘事件里的 Ctrl 与 Shift：列表点击据此决定是单选、切换还是区间选择。
-    control: bool,
-    shift: bool,
-    /// 命令行指定、等第一次有客户区尺寸时执行的动词。
-    verb: Option<Command>,
-    /// 动词模式：动词的对话框都结束后关闭窗口。
+struct Session {
+    view: View,
+    browser: RefCell<Browser>,
+    home: PathBuf,
+    background: Background,
+    dialogs: Dialogs,
+    busy: Cell<bool>,
+    closing: Cell<bool>,
     one_shot: bool,
+    launches: Rc<RefCell<Launches>>,
 }
-
-impl App {
-    fn client(decoration: &Decoration, c: Configuration) -> Rect {
-        decoration.client_rect(c)
+enum Action {
+    Command(Command),
+    Go(Location, Visit, bool),
+    Expand(u64),
+    Rename(u64, String),
+    Context(bool),
+}
+impl Session {
+    fn availability(&self) -> liteos_ui::Result<Availability> {
+        let browser = self.browser.borrow();
+        Ok(Availability {
+            selected: !self.view.list.selected_rows()?.is_empty(),
+            editable: matches!(browser.location, Location::Directory(_)),
+            paste: browser.clipboard.is_some(),
+            trash: matches!(&browser.location,Location::Directory(path)if fileops::in_trash(&self.home,path)),
+            toolbar: self.view.toolbar.state()? & state::HIDDEN == 0,
+            status: self.view.status.state()? & state::HIDDEN == 0,
+            folders: self.view.folders.state()? & state::HIDDEN == 0,
+            style: self.view.list.list_style()?,
+            busy: self.busy.get(),
+        })
     }
-
-    fn grid(&self, client: Rect) -> Grid {
-        let l = ui::layout(client, &self.browser);
-        Grid::new(self.browser.view, l.list_inner, self.browser.items.len())
+    fn menus(&self) -> liteos_ui::Result<()> {
+        let availability = self.availability()?;
+        self.view.menus(&self.browser.borrow(), &availability)
     }
-
-    /// 导航后让地址栏、滚动位置与标题回到新位置。
-    fn sync(&mut self) {
-        if self.shown != self.browser.location {
-            self.shown = self.browser.location.clone();
-            self.ui.address = classic_ui::Edit::new(&self.browser.location.address());
-            self.ui.list_scroll.position = 0;
-            self.ui.address_focus = false;
-            self.ui.rename = None;
-            if let Some(row) = self.browser.tree_index(&self.shown) {
-                self.ui.tree_scroll.position = (row as i32 * 18 - 36).max(0);
+    fn status(&self) -> liteos_ui::Result<()> {
+        let browser = self.browser.borrow();
+        let selected = self.view.list.selected_rows()?.len();
+        self.view.status.set_text(&format!(
+            "{} 项\t选中 {} 项{}",
+            browser.items.len(),
+            selected,
+            if browser.truncated {
+                "；目录过大，仅显示前 4096 项"
+            } else {
+                ""
             }
+        ))
+    }
+    fn selected(&self) -> liteos_ui::Result<Option<Item>> {
+        let id = self.view.list.selection()?;
+        Ok(id.and_then(|id| self.browser.borrow().item(id).cloned()))
+    }
+    fn selected_paths(&self) -> liteos_ui::Result<Vec<PathBuf>> {
+        let ids = self.view.list.selected_rows()?;
+        let browser = self.browser.borrow();
+        Ok(ids
+            .into_iter()
+            .filter_map(|id| browser.item(id)?.path.clone())
+            .collect())
+    }
+    fn record(&self, child: Child) {
+        let wake = {
+            let mut launches = self.launches.borrow_mut();
+            launches.children.push(child);
+            launches.wake.take()
+        };
+        if let Some(wake) = wake {
+            wake.wake();
         }
     }
-
-    fn start_rename(&mut self) {
-        if let Some(index) = self.browser.selected
-            && let Some(item) = self.browser.items.get(index)
+    async fn navigate(&self, location: Location, visit: Visit, focus: bool) -> Result<()> {
+        self.view.status.set_text("正在读取…")?;
+        let home = self.home.clone();
+        let listing = self
+            .background
+            .run(move || browser::read(location, &home))?
+            .await?;
         {
-            self.ui.rename = Some((index, classic_ui::Edit::new(&item.name)));
+            let mut browser = self.browser.borrow_mut();
+            browser.publish(listing, visit);
+            self.view.rows(&browser)?;
+            self.view.tree(&browser)?;
+            self.view.address.set_text(&browser.location.address())?;
+            self.view.window.set_title(&browser.location.title())?;
         }
-    }
-
-    /// 提交原地改名；名称非法时留在编辑状态，错误显示在状态栏。
-    fn commit_rename(&mut self) {
-        if let Some((_, edit)) = &self.ui.rename
-            && self.browser.rename_selected(edit.text())
-        {
-            self.ui.rename = None;
+        if focus {
+            self.view.list.focus()?;
         }
+        self.status()?;
+        Ok(())
     }
-
-    /// 删除类操作先问用户：放入回收站、永久删除、清空回收站的措辞不同。
-    fn ask(&mut self, command: Command) {
-        let name = self
+    async fn refresh(&self) -> Result<()> {
+        let location = self.browser.borrow().location.clone();
+        self.navigate(location, Visit::Refresh, false).await
+    }
+    fn select_path(&self, path: &Path) -> liteos_ui::Result<Option<u64>> {
+        let id = self
             .browser
-            .selected
-            .and_then(|i| self.browser.items.get(i))
-            .map(|item| item.name.clone())
-            .unwrap_or_default();
-        let text = match command {
-            Command::EmptyTrash => {
-                "确实要删除回收站中的所有项目吗？\n这些项目将被永久删除。".to_owned()
+            .borrow()
+            .items
+            .iter()
+            .find_map(|(id, item)| (item.path.as_deref() == Some(path)).then_some(*id));
+        self.view.list.select(id)?;
+        Ok(id)
+    }
+    async fn expand(&self, id: u64) -> Result<()> {
+        let location = self
+            .browser
+            .borrow()
+            .catalogue
+            .nodes
+            .get(&id)
+            .map(|node| node.location.clone());
+        if let Some(location) = location {
+            let branch = self
+                .background
+                .run(move || browser::read_branch(location))?
+                .await?;
+            let mut browser = self.browser.borrow_mut();
+            browser.catalogue.update(branch);
+            self.view.tree(&browser)?;
+        }
+        Ok(())
+    }
+    async fn rename(&self, row: u64, name: String) -> Result<()> {
+        let item = self
+            .browser
+            .borrow()
+            .item(row)
+            .cloned()
+            .ok_or("项目已不存在")?;
+        let Some(path) = item.path else {
+            return Ok(());
+        };
+        if item.name == name {
+            self.view.list.finish_label_edit(true)?;
+            if self.one_shot {
+                self.closing.set(true);
             }
-            _ if self.browser.selection().len() > 1 => {
-                let count = self.browser.selection().len();
-                if self.browser.in_trash() {
-                    format!("确实要删除这 {count} 项吗？\n这些项目将被永久删除，无法还原。")
+            return Ok(());
+        }
+        let result = self
+            .background
+            .run(move || fileops::rename(&path, &name))?
+            .await;
+        match result {
+            Ok(target) => {
+                self.view.list.finish_label_edit(true)?;
+                self.refresh().await?;
+                self.select_path(&target)?;
+                if self.one_shot {
+                    self.closing.set(true);
+                }
+                Ok(())
+            }
+            Err(error) => {
+                self.view.list.finish_label_edit(false)?;
+                Err(error.into())
+            }
+        }
+    }
+    async fn delete(&self, empty: bool) -> Result<()> {
+        let paths = self.selected_paths()?;
+        if paths.is_empty() && !empty {
+            return Ok(());
+        }
+        let trash = self.availability()?.trash;
+        let message = if empty {
+            "确实要清空回收站吗？这些项目将被永久删除。".to_owned()
+        } else if trash {
+            format!("确实要永久删除选中的 {} 项吗？", paths.len())
+        } else {
+            format!("确实要把选中的 {} 项放入回收站吗？", paths.len())
+        };
+        if self
+            .dialogs
+            .message(
+                &self.view.window,
+                "确认删除",
+                &message,
+                MessageButtons::YesNo,
+            )?
+            .await?
+            != MessageResult::Yes
+        {
+            return Ok(());
+        }
+        let home = self.home.clone();
+        self.view.status.set_text("正在删除…")?;
+        let result = self
+            .background
+            .run(move || {
+                if empty {
+                    fileops::empty_trash(&home).map(drop)
                 } else {
-                    format!("确实要把这 {count} 项放入回收站吗？")
+                    paths
+                        .iter()
+                        .try_for_each(|path| fileops::delete(&home, path))
                 }
-            }
-            _ if self.browser.in_trash() => {
-                format!("确实要删除“{name}”吗？\n该项目将被永久删除，无法还原。")
-            }
-            _ => format!("确实要把“{name}”放入回收站吗？"),
+            })?
+            .await;
+        self.refresh().await?;
+        result?;
+        Ok(())
+    }
+    async fn paste(&self) -> Result<()> {
+        let (clipboard, location) = {
+            let browser = self.browser.borrow();
+            (browser.clipboard.clone(), browser.location.clone())
         };
-        self.ui.confirm = Some(Confirm { text, command });
-        let _ = sound::play(ALERT_SOUND);
-    }
-
-    fn run(&mut self, command: Command, client: Rect) {
-        match command {
-            Command::Delete | Command::EmptyTrash => return self.ask(command),
-            Command::Cut => self.browser.copy_selected(true),
-            Command::Copy => self.browser.copy_selected(false),
-            Command::Paste => self.browser.paste(),
-            Command::Rename => self.start_rename(),
-            Command::NewFolder => {
-                if self.browser.new_folder().is_some() {
-                    self.start_rename();
-                }
-            }
-            Command::Restore => self.browser.restore_selected(),
-            Command::Properties => self.browser.show_properties(),
-            Command::Open => self.browser.open_selected(),
-            Command::Close => self.closing = true,
-            Command::Refresh => self.browser.refresh(),
-            Command::Back => self.browser.back(),
-            Command::Forward => self.browser.forward(),
-            Command::Up => self.browser.up(),
-            Command::ToggleToolbar => self.browser.show_toolbar ^= true,
-            Command::ToggleStatusBar => self.browser.show_status_bar ^= true,
-            Command::ToggleFolders => self.browser.show_folders ^= true,
-            Command::SetView(view) => {
-                self.browser.view = view;
-                self.ui.list_scroll.position = 0;
-            }
-            Command::ViewMenu => {
-                let l = ui::layout(client, &self.browser);
-                if let Some(bar) = l.toolbar {
-                    let rect = chrome::tool_rects(bar)[TOOLS.len() - 1];
-                    self.ui.popup = Some(Popup {
-                        origin: (rect.x, rect.bottom()),
-                        width: 0,
-                        entries: chrome::view_entries(self.browser.view),
-                        hover: None,
-                        menu: None,
-                        from_toolbar: true,
-                    });
-                }
-            }
-        }
-        self.sync();
-    }
-
-    /// 把失败原因从状态栏提升为错误提示框并响铃；框关闭前不接受其他输入，
-    /// 否则连续失败的原因会被后一次操作悄悄覆盖。
-    fn raise_notice(&mut self) {
-        if self.ui.notice.is_none()
-            && let Some(text) = self.browser.message.take()
-        {
-            self.ui.notice = Some(Notice { text });
-            let _ = sound::play(ALERT_SOUND);
-        }
-    }
-
-    fn answer(&mut self, yes: bool) {
-        let Some(confirm) = self.ui.confirm.take() else {
-            return;
+        let (Some(clipboard), Location::Directory(directory)) = (clipboard, location) else {
+            return Ok(());
         };
-        if yes {
-            match confirm.command {
-                Command::EmptyTrash => {
-                    self.browser.empty_trash();
-                    let _ = sound::play("recycle.wav");
+        self.view.status.set_text("正在复制或移动…")?;
+        let cut = clipboard.cut;
+        let (result, remaining, last) = self
+            .background
+            .run(move || {
+                let mut last = None;
+                for (index, path) in clipboard.paths.iter().enumerate() {
+                    let result = if clipboard.cut {
+                        fileops::relocate(path, &directory)
+                    } else {
+                        fileops::copy(path, &directory)
+                    };
+                    match result {
+                        Ok(target) => last = Some(target),
+                        Err(error) => return (Err(error), clipboard.paths[index..].to_vec(), last),
+                    }
                 }
-                _ => self.browser.delete_selected(),
-            }
-        }
-        self.sync();
-    }
-
-    fn open_menu(&mut self, p: &Painter<'_>, index: usize, client: Rect) {
-        let l = ui::layout(client, &self.browser);
-        let rect = ui::menu_title_rects(p, l.menu)[index];
-        self.ui.popup = Some(Popup {
-            origin: (rect.x, rect.bottom()),
-            width: 0,
-            entries: chrome::menu(index, &self.browser),
-            hover: None,
-            menu: Some(index),
-            from_toolbar: false,
-        });
-    }
-
-    /// 地址栏回车：绝对路径、相对当前目录的路径或虚拟文件夹名。
-    fn go_to_address(&mut self) {
-        let text = self.ui.address.text().trim().to_owned();
-        let location = match text.as_str() {
-            "我的电脑" | "::my-computer" => Location::MyComputer,
-            "控制面板" | "::control-panel" => Location::ControlPanel,
-            "网上邻居" | "::network-places" => Location::NetworkPlaces,
-            _ => {
-                let path = PathBuf::from(&text);
-                Location::Directory(match &self.browser.location {
-                    Location::Directory(current) if !path.is_absolute() => current.join(path),
-                    _ => path,
-                })
-            }
-        };
-        if matches!(&location, Location::Directory(p) if !p.is_dir()) {
-            self.browser.message = Some(format!("找不到 “{text}”。请检查名称是否正确，然后重试。"));
-            return;
-        }
-        self.browser.go(location);
-        self.sync();
-    }
-
-    fn press(&mut self, p: &Painter<'_>, client: Rect) {
-        let point = self.ui.pointer;
-        self.ui.tooltip.dismiss();
-        if self.ui.notice.is_some() {
-            if inside(dialogs::notice_rects(client).1, point) {
-                self.ui.notice = None;
-            }
-            return;
-        }
-        if self.ui.confirm.is_some() {
-            let (_, yes, no) = dialogs::confirm_rects(client);
-            if inside(yes, point) {
-                self.answer(true);
-            } else if inside(no, point) {
-                self.answer(false);
-            }
-            return;
-        }
-        if self.ui.rename.is_some() {
-            self.commit_rename();
-            if self.ui.rename.is_some() {
-                return;
-            }
-        }
-        let l = ui::layout(client, &self.browser);
-        if let Some(popup) = self.ui.popup.take() {
-            if let Some(Entry::Item {
-                command: Some(command),
-                ..
-            }) = popup.row_at(point).and_then(|row| popup.entries.get(row))
-            {
-                let command = *command;
-                self.run(command, client);
-                return;
-            }
-            // 点在其他顶层菜单标题上则切换到它；点在别处只关闭菜单。
-            if inside(popup.rect(), point) {
-                return;
-            }
-            if let Some(index) = ui::menu_title_rects(p, l.menu)
-                .iter()
-                .position(|r| inside(*r, point))
-            {
-                if popup.menu != Some(index) {
-                    self.open_menu(p, index, client);
-                }
-                return;
-            }
-            if l.toolbar.is_none_or(|bar| !inside(bar, point)) {
-                return;
-            }
-        }
-        self.ui.address_focus = inside(l.combo, point);
-        if let Some(index) = ui::menu_title_rects(p, l.menu)
-            .iter()
-            .position(|r| inside(*r, point))
-        {
-            self.open_menu(p, index, client);
-        } else if let Some(bar) = l.toolbar.filter(|bar| inside(*bar, point)) {
-            self.ui.pressed_tool = chrome::tool_rects(bar)
-                .iter()
-                .position(|r| inside(*r, point))
-                .filter(|&i| chrome::tool_enabled(&TOOLS[i], &self.browser));
-        } else if inside(l.go, point) {
-            self.ui.pressed_tool = Some(usize::MAX);
-        } else if let Some(pane) = l.pane.filter(|pane| inside(*pane, point)) {
-            if self.browser.show_folders {
-                self.press_tree(pane, point);
-            }
-        } else if inside(l.list, point) {
-            self.press_list(client, point);
-        }
-    }
-
-    /// 右键：在项目上先选中再弹出项目菜单，在空白处弹出列表菜单。
-    fn press_context(&mut self, client: Rect) {
-        let point = self.ui.pointer;
-        self.ui.popup = None;
-        if self.ui.confirm.is_some()
-            || self.ui.notice.is_some()
-            || !inside(ui::layout(client, &self.browser).list, point)
-        {
-            return;
-        }
-        let hit = self.grid(client).at(point, self.ui.list_scroll.position);
-        if hit.is_some() {
-            self.browser.selected = hit;
-        }
-        self.ui.popup = Some(Popup {
-            origin: point,
-            width: 0,
-            entries: chrome::context(&self.browser, hit.is_some()),
-            hover: None,
-            menu: None,
-            from_toolbar: false,
-        });
-    }
-
-    fn press_tree(&mut self, pane: Rect, point: (i32, i32)) {
-        if inside(ui::tree_close_rect(pane), point) {
-            self.browser.show_folders = false;
-            return;
-        }
-        let (view, bar, content) = ui::tree_scroll_geometry(pane, self.browser.rows.len());
-        if let Some(bar) = bar.filter(|bar| inside(*bar, point)) {
-            self.ui
-                .tree_scroll
-                .press(bar, true, (content, view.height, 18), point);
-            return;
-        }
-        let scroll = self.ui.tree_scroll.position;
-        let hit = self
-            .browser
-            .rows
-            .iter()
-            .enumerate()
-            .find_map(|(index, row)| {
-                let rect = ui::tree_row_rect(view, index, scroll);
-                inside(view, point)
-                    .then_some(())
-                    .filter(|_| inside(rect, point))
-                    .map(|_| {
-                        (
-                            row.location.clone(),
-                            row.expandable,
-                            inside(ui::expander_rect(rect, row.depth).inset(-2), point),
-                        )
-                    })
+                (Ok(()), Vec::new(), last)
+            })?
+            .await;
+        if cut {
+            self.browser.borrow_mut().clipboard = (!remaining.is_empty()).then_some(Clipboard {
+                paths: remaining,
+                cut: true,
             });
-        if let Some((location, expandable, on_expander)) = hit {
-            if expandable && on_expander {
-                self.browser.toggle_expanded(&location);
-            } else {
-                self.browser.go(location);
-                self.sync();
-            }
         }
+        self.refresh().await?;
+        if let Some(path) = last {
+            self.select_path(&path)?;
+        }
+        result?;
+        Ok(())
     }
-
-    fn press_list(&mut self, client: Rect, point: (i32, i32)) {
-        let grid = self.grid(client);
-        // 详细信息表头分隔线：开始拖动调整列宽。
-        if grid.view == ViewMode::Details && self.ui.columns.press(ui::header_bar(&grid), point) {
-            return;
+    async fn command(&self, command: Command) -> Result<()> {
+        if let Some(style) = command.style() {
+            self.view.list.set_list_style(style, true)?;
+            return Ok(());
         }
-        if let Some(bar) = grid.bar.filter(|bar| inside(*bar, point)) {
-            let content = (grid.extent, grid.page(), grid.line());
-            self.ui
-                .list_scroll
-                .press(bar, grid.vertical(), content, point);
-            return;
-        }
-        match grid.at(point, self.ui.list_scroll.position) {
-            Some(index) if self.control => {
-                self.browser.toggle(index);
-                self.last_click = None;
-            }
-            Some(index) if self.shift => {
-                self.browser.select_range(index);
-                self.last_click = None;
-            }
-            Some(index) => {
-                self.browser.select_only(index);
-                let double = self
-                    .last_click
-                    .is_some_and(|(last, at)| last == index && at.elapsed() < DOUBLE_CLICK);
-                self.last_click = (!double).then(|| (index, Instant::now()));
-                if double {
-                    self.browser.open_selected();
-                    self.sync();
+        match command {
+            Command::Open => {
+                if let Some(item) = self.selected()? {
+                    if let Some(target) = item.target {
+                        self.navigate(target, Visit::Push, true).await?;
+                    } else {
+                        let child = self.background.run(move || browser::open(item))?.await?;
+                        self.record(child);
+                    }
                 }
             }
-            // Ctrl 或 Shift 按着时点空白不丢掉已有选择，与 Windows 一致。
-            None if self.control || self.shift => {}
-            None => {
-                self.browser.selected = None;
-                self.browser.extra.clear();
-                self.last_click = None;
-            }
-        }
-    }
-
-    fn release(&mut self, client: Rect) {
-        self.ui.columns.release();
-        self.ui.list_scroll.release();
-        self.ui.tree_scroll.release();
-        let l = ui::layout(client, &self.browser);
-        let point = self.ui.pointer;
-        match self.ui.pressed_tool.take() {
-            Some(usize::MAX) if inside(l.go, point) => self.go_to_address(),
-            Some(index) if index < TOOLS.len() => {
-                let hit = l
-                    .toolbar
-                    .is_some_and(|bar| inside(chrome::tool_rects(bar)[index], point));
-                if let (true, Some(command)) = (hit, TOOLS[index].command) {
-                    self.run(command, client);
+            Command::Properties => {
+                if let Some(item) = self.selected()? {
+                    let child = self
+                        .background
+                        .run(move || browser::properties(item))?
+                        .await?;
+                    self.record(child);
                 }
             }
-            _ => {}
-        }
-    }
-
-    /// 详细信息表头上（或正在拖动列宽时）应显示的光标。
-    fn header_cursor(&self, client: Rect) -> Option<CursorShape> {
-        let grid = self.grid(client);
-        (grid.view == ViewMode::Details)
-            .then(|| {
-                self.ui
-                    .columns
-                    .cursor(ui::header_bar(&grid), self.ui.pointer)
-            })
-            .flatten()
-    }
-
-    fn pointer_moved(&mut self, client: Rect) {
-        let point = self.ui.pointer;
-        self.ui.columns.motion(point);
-        self.ui
-            .tooltip
-            .hover(ui::layout(client, &self.browser).toolbar.and_then(|bar| {
-                chrome::tool_rects(bar)
-                    .iter()
-                    .position(|rect| inside(*rect, point))
-            }));
-        if let Some(popup) = &mut self.ui.popup {
-            popup.hover = popup.row_at(point);
-        }
-        let l = ui::layout(client, &self.browser);
-        let grid = self.grid(client);
-        if let Some(bar) = grid.bar {
-            self.ui
-                .list_scroll
-                .drag(bar, grid.vertical(), (grid.extent, grid.page()), point);
-        }
-        if let Some(pane) = l.pane.filter(|_| self.browser.show_folders) {
-            let (view, bar, content) = ui::tree_scroll_geometry(pane, self.browser.rows.len());
-            if let Some(bar) = bar {
-                self.ui
-                    .tree_scroll
-                    .drag(bar, true, (content, view.height), point);
+            Command::Close => self.closing.set(true),
+            Command::Cut | Command::Copy => {
+                let paths = self.selected_paths()?;
+                self.browser.borrow_mut().clipboard = (!paths.is_empty()).then_some(Clipboard {
+                    paths,
+                    cut: command == Command::Cut,
+                });
             }
-        }
-    }
-
-    /// 滚轮：指针在文件夹树上滚动树，否则滚动文件列表（横向排列的视图也用垂直滚轮横向滚动）。
-    fn wheel(&mut self, client: Rect, notches: i32) {
-        if self.ui.popup.is_some() || self.ui.confirm.is_some() || self.ui.notice.is_some() {
-            return;
-        }
-        let point = self.ui.pointer;
-        if let Some(pane) = ui::layout(client, &self.browser)
-            .pane
-            .filter(|pane| self.browser.show_folders && inside(*pane, point))
-        {
-            let (view, _, content) = ui::tree_scroll_geometry(pane, self.browser.rows.len());
-            self.ui
-                .tree_scroll
-                .wheel(notches, 18, content - view.height);
-            return;
-        }
-        let grid = self.grid(client);
-        self.ui
-            .list_scroll
-            .wheel(notches, grid.line(), grid.max_scroll());
-    }
-
-    /// 记下 Ctrl 与 Shift 的状态；按下与释放事件都要调用。
-    fn track_modifiers(&mut self, key: &Key) {
-        self.control = key.modifiers.control;
-        self.shift = key.modifiers.shift;
-    }
-
-    /// 记录 Alt/Tab 对键盘提示的影响：任何按键序列里只要出现 Alt 或 Tab 就显示下划线；
-    /// Alt 之后没有其他键直接松开才进入菜单栏（见 [`Self::alt_released`]）。
-    fn track_cues(&mut self, key: &Key) {
-        let alt = ALT_KEYS.contains(&key.code);
-        self.ui.alt_alone = alt;
-        if alt || key.code == code::TAB {
-            self.ui.cues = true;
-        }
-    }
-
-    /// 单独的 Alt 松开：进入或退出菜单栏的键盘选择（K11）。
-    fn alt_released(&mut self, key: &Key) {
-        if ALT_KEYS.contains(&key.code) && std::mem::take(&mut self.ui.alt_alone) {
-            self.ui.menu_focus = if self.ui.menu_focus.is_some() {
-                None
-            } else {
-                Some(0)
-            };
-        }
-    }
-
-    /// 菜单栏处于键盘选择状态时的按键；返回是否已处理。
-    fn menu_bar_key(&mut self, p: &Painter<'_>, key: &Key, client: Rect) -> bool {
-        let Some(index) = self.ui.menu_focus else {
-            return false;
-        };
-        let count = MENU_TITLES.len();
-        match key.code {
-            code::LEFT => self.ui.menu_focus = Some((index + count - 1) % count),
-            code::RIGHT => self.ui.menu_focus = Some((index + 1) % count),
-            code::ENTER | code::DOWN => {
-                self.ui.menu_focus = None;
-                self.open_menu(p, index, client);
+            Command::Paste => self.paste().await?,
+            Command::Delete => self.delete(false).await?,
+            Command::EmptyTrash => self.delete(true).await?,
+            Command::Restore => {
+                let paths = self.selected_paths()?;
+                let home = self.home.clone();
+                let result = self
+                    .background
+                    .run(move || {
+                        paths
+                            .iter()
+                            .try_for_each(|path| fileops::restore(&home, path).map(drop))
+                    })?
+                    .await;
+                self.refresh().await?;
+                result?;
             }
-            _ => self.ui.menu_focus = None,
-        }
-        true
-    }
-
-    fn key(&mut self, p: &Painter<'_>, key: Key, client: Rect) {
-        self.track_cues(&key);
-        self.track_modifiers(&key);
-        if self.ui.notice.is_some() {
-            if matches!(key.code, code::ENTER | code::ESCAPE) {
-                self.ui.notice = None;
-            }
-            return;
-        }
-        if self.ui.confirm.is_some() {
-            match key.code {
-                code::Y | code::ENTER => self.answer(true),
-                code::N | code::ESCAPE => self.answer(false),
-                _ => {}
-            }
-            return;
-        }
-        if let Some((_, edit)) = &mut self.ui.rename {
-            match key.code {
-                code::ENTER => self.commit_rename(),
-                code::ESCAPE => self.ui.rename = None,
-                _ => {
-                    edit.key(key);
-                }
-            }
-            return;
-        }
-        if let Some(popup) = &mut self.ui.popup {
-            match key.code {
-                code::ESCAPE => self.ui.popup = None,
-                code::UP | code::DOWN => {
-                    let step: isize = if key.code == code::UP { -1 } else { 1 };
-                    let count = popup.entries.len() as isize;
-                    let mut at = popup
-                        .hover
-                        .map_or(if step > 0 { -1 } else { count }, |h| h as isize);
-                    for _ in 0..count {
-                        at = (at + step).rem_euclid(count);
-                        if matches!(
-                            popup.entries[at as usize],
-                            Entry::Item {
-                                command: Some(_),
-                                ..
-                            }
-                        ) {
-                            popup.hover = Some(at as usize);
-                            break;
+            Command::Rename => {
+                if let Some(item) = self.selected()? {
+                    if item.path.is_some() {
+                        if let Some(row) = self.view.list.selection()? {
+                            self.view.list.edit_label(row, &item.name)?;
                         }
                     }
                 }
-                code::ENTER => {
-                    let command = popup.hover.and_then(|h| match popup.entries[h] {
-                        Entry::Item { command, .. } => command,
-                        Entry::Separator => None,
-                    });
-                    self.ui.popup = None;
-                    if let Some(command) = command {
-                        self.run(command, client);
+            }
+            Command::NewFolder => {
+                let location = self.browser.borrow().location.clone();
+                if let Location::Directory(directory) = location {
+                    let path = self
+                        .background
+                        .run(move || fileops::new_folder(&directory))?
+                        .await?;
+                    self.refresh().await?;
+                    if let Some(id) = self.select_path(&path)? {
+                        let name = path.file_name().unwrap_or_default().to_string_lossy();
+                        self.view.list.edit_label(id, &name)?;
                     }
                 }
-                _ => {}
             }
-            return;
-        }
-        if self.menu_bar_key(p, &key, client) {
-            return;
-        }
-        if key.modifiers.alt {
-            // Alt+字母：打开助记键匹配的菜单。
-            if let Some(letter) = key.letter()
-                && let Some(index) = MENU_TITLES.iter().position(|title| {
-                    title
-                        .split_once('(')
-                        .and_then(|(_, rest)| rest.chars().next())
-                        .is_some_and(|mark| mark.to_ascii_lowercase() == letter)
-                })
-            {
-                self.open_menu(p, index, client);
-                return;
+            Command::SelectAll => {
+                let ids = self
+                    .browser
+                    .borrow()
+                    .items
+                    .iter()
+                    .map(|(id, _)| *id)
+                    .collect::<Vec<_>>();
+                self.view.list.select_rows(&ids)?;
+                self.status()?;
             }
-            match key.code {
-                code::LEFT => self.run(Command::Back, client),
-                code::RIGHT => self.run(Command::Forward, client),
-                code::UP => self.run(Command::Up, client),
-                code::ENTER => self.run(Command::Properties, client),
-                _ => {}
+            Command::ToggleToolbar | Command::ToggleStatus | Command::ToggleFolders => {
+                let widget = match command {
+                    Command::ToggleToolbar => &self.view.toolbar,
+                    Command::ToggleStatus => &self.view.status,
+                    _ => &self.view.folders,
+                };
+                widget.set_state(widget.state()? ^ state::HIDDEN)?;
             }
-            return;
-        }
-        if self.ui.address_focus {
-            match key.code {
-                code::ENTER => self.go_to_address(),
-                code::ESCAPE => {
-                    self.ui.address = classic_ui::Edit::new(&self.browser.location.address());
-                    self.ui.address_focus = false;
-                }
-                _ => {
-                    self.ui.address.key(key);
+            Command::Refresh => self.refresh().await?,
+            Command::Back | Command::Forward => {
+                let target =
+                    self.browser
+                        .borrow()
+                        .history(if command == Command::Back { -1 } else { 1 });
+                if let Some((cursor, location)) = target {
+                    self.navigate(location, Visit::History(cursor), true)
+                        .await?;
                 }
             }
-            return;
-        }
-        match key.code {
-            code::F4 => self.ui.address_focus = true,
-            code::L if key.modifiers.control => self.ui.address_focus = true,
-            code::F5 => self.run(Command::Refresh, client),
-            code::BACKSPACE => self.run(Command::Up, client),
-            code::ENTER => self.run(Command::Open, client),
-            code::DELETE => self.run(Command::Delete, client),
-            code::F2 => self.run(Command::Rename, client),
-            code::A if key.modifiers.control => self.browser.select_all(),
-            code::C if key.modifiers.control => self.run(Command::Copy, client),
-            code::X if key.modifiers.control => self.run(Command::Cut, client),
-            code::V if key.modifiers.control => self.run(Command::Paste, client),
-            _ => self.select_by_key(key, client),
-        }
-    }
-
-    /// 方向键、翻页键与首字母查找；改变选择后滚动到可见。
-    fn select_by_key(&mut self, key: Key, client: Rect) {
-        let count = self.browser.items.len();
-        if count == 0 {
-            return;
-        }
-        let grid = self.grid(client);
-        let current = self.browser.selected;
-        let page_rows = (grid.page() / grid.line()).max(1);
-        let target = match (key.code, current) {
-            (code::HOME, _) => Some(0),
-            (code::END, _) => Some(count - 1),
-            (
-                code::UP | code::DOWN | code::LEFT | code::RIGHT | code::PAGE_UP | code::PAGE_DOWN,
-                None,
-            ) => Some(0),
-            (code::UP, Some(i)) => Some(grid.step(i, 0, -1)),
-            (code::DOWN, Some(i)) => Some(grid.step(i, 0, 1)),
-            (code::LEFT, Some(i)) => Some(grid.step(i, -1, 0)),
-            (code::RIGHT, Some(i)) => Some(grid.step(i, 1, 0)),
-            (code::PAGE_UP, Some(i)) => Some(grid.step(i, 0, -page_rows)),
-            (code::PAGE_DOWN, Some(i)) => Some(grid.step(i, 0, page_rows)),
-            _ => key.text.and_then(|typed| {
-                let typed = typed.to_lowercase().next()?;
-                let start = current.map_or(0, |i| i + 1);
-                (0..count)
-                    .map(|offset| (start + offset) % count)
-                    .find(|&i| self.browser.items[i].name.to_lowercase().starts_with(typed))
-            }),
-        };
-        if let Some(index) = target {
-            self.browser.selected = Some(index);
-            self.ui.list_scroll.position = grid.reveal(index, self.ui.list_scroll.position);
-        }
-    }
-
-    /// 绘制前把滚动位置夹在内容范围内（窗口缩小、项目变少都可能让旧位置越界）。
-    fn clamp_scrolls(&mut self, client: Rect) {
-        let grid = self.grid(client);
-        self.ui.list_scroll.clamp(grid.max_scroll());
-        if let Some(pane) = ui::layout(client, &self.browser).pane {
-            let (view, _, content) = ui::tree_scroll_geometry(pane, self.browser.rows.len());
-            self.ui.tree_scroll.clamp(content - view.height);
-        }
-    }
-}
-
-/// 确认框与错误提示框弹出时播放的系统声音（Windows 2000 的消息框事件都映射到它）。
-const ALERT_SOUND: &str = "chord.wav";
-
-/// 画一帧并提交：窗口装饰加资源管理器内容。
-#[allow(clippy::too_many_arguments)]
-fn redraw(
-    display: &mut Display,
-    window: WindowId,
-    c: Configuration,
-    theme: &Theme,
-    font: &Typeface,
-    decoration: &Decoration,
-    app: &mut App,
-    assets: &Assets,
-    title: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let client = App::client(decoration, c);
-    app.clamp_scrolls(client);
-    let (w, h) = c.pixel_size()?;
-    let mut pixels = vec![0; w as usize * h as usize];
-    let surface = Surface::new(&mut pixels, w, h, w as usize).ok_or("invalid explorer window")?;
-    let mut painter = Painter::new(surface, theme, font, c.scale);
-    decoration.paint(&mut painter, c, title);
-    ui::paint(
-        &mut painter,
-        &Scene {
-            browser: &app.browser,
-            ui: &app.ui,
-            assets,
-            active: c.active,
-        },
-        client,
-    );
-    display.present(window, &pixels)?;
-    Ok(())
-}
-
-/// 命令行：`file-explorer [位置] [--select 名称] [--verb delete|rename|properties]`。
-///
-/// 桌面的右键菜单用它把"删除/重命名/属性"交给资源管理器（Windows 的外壳也是这样把动词交给 shell32）：
-/// 打开 `位置`、选中 `名称` 并立即执行动词，动词完成后窗口随之关闭。
-struct Launch {
-    location: Option<String>,
-    select: Option<String>,
-    verb: Option<Command>,
-}
-
-fn parse_launch() -> Result<Launch, String> {
-    let mut launch = Launch {
-        location: None,
-        select: None,
-        verb: None,
-    };
-    let mut args = std::env::args().skip(1);
-    while let Some(argument) = args.next() {
-        match argument.as_str() {
-            "--select" => launch.select = Some(args.next().ok_or("--select needs a name")?),
-            "--verb" => {
-                launch.verb = Some(match args.next().as_deref() {
-                    Some("delete") => Command::Delete,
-                    Some("rename") => Command::Rename,
-                    Some("properties") => Command::Properties,
-                    other => return Err(format!("unknown verb {other:?}")),
-                })
-            }
-            _ if launch.location.is_none() => launch.location = Some(argument),
-            other => return Err(format!("unexpected argument `{other}`")),
-        }
-    }
-    Ok(launch)
-}
-
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let launch = parse_launch()?;
-    let location = launch
-        .location
-        .as_deref()
-        .map(Location::parse)
-        .or_else(|| {
-            std::env::var("HOME")
-                .ok()
-                .map(|home| Location::Directory(home.into()))
-        })
-        .unwrap_or_else(|| Location::Directory("/".into()));
-    let mut app = App {
-        ui: Ui::new(&location.address()),
-        shown: location.clone(),
-        browser: Browser::new(location),
-        last_click: None,
-        closing: false,
-        control: false,
-        shift: false,
-        verb: launch.verb,
-        one_shot: launch.verb.is_some(),
-    };
-    if let Some(name) = &launch.select {
-        app.browser.select_named(name);
-    }
-    app.browser.show_folders = false;
-    let mut display = Display::connect()?;
-    let window: WindowId = display.create_window(
-        &app.browser.location.title(),
-        "org.liteos.file-explorer",
-        (640, 480),
-    )?;
-    let mut decoration = Decoration::new(FrameKind::Resizable);
-    decoration.load_icon("folder-closed");
-    let theme = Theme::classic();
-    let assets = Assets::load(Path::new("/usr/share/liteos/ui"));
-    let mut font: Option<Typeface> = None;
-    let mut scale = 0;
-    let mut title = app.browser.location.title();
-    let mut dirty = true;
-    while !app.closing {
-        let event = match app.ui.tooltip.pending() {
-            Some(wait) => display.next_event_timeout(wait)?,
-            None => Some(display.next_event()?),
-        };
-        // 超时没有事件：提示到点，只需要重画。
-        let Some(event) = event else {
-            if display.ready_to_draw(window)
-                && let Some(c) = display.configuration(window)
-                && let Some(font) = font.as_ref()
-            {
-                redraw(
-                    &mut display,
-                    window,
-                    c,
-                    &theme,
-                    font,
-                    &decoration,
-                    &mut app,
-                    &assets,
-                    &title,
-                )?;
-            }
-            continue;
-        };
-        if event.window != window {
-            continue;
-        }
-        let Some(c) = display.configuration(window) else {
-            continue;
-        };
-        match decoration.event(&event.kind, c) {
-            Some(DecorationAction::Request(request)) => display.request(window, request)?,
-            Some(DecorationAction::Close) => break,
-            Some(DecorationAction::Cursor(shape)) => display.set_cursor_shape(shape)?,
-            None => {}
-        }
-        let client = App::client(&decoration, c);
-        if let Some(verb) = app.verb.take() {
-            app.run(verb, client);
-        } else if app.one_shot
-            && app.ui.confirm.is_none()
-            && app.ui.rename.is_none()
-            && app.ui.notice.is_none()
-        {
-            app.closing = true;
-        }
-        if let EventKind::Configure(c) = &event.kind
-            && scale != c.scale
-        {
-            font = Some(Typeface::load(
-                Path::new("/usr/share/liteos/fonts"),
-                c.scale as u32,
-            )?);
-            scale = c.scale;
-        }
-        let Some(font) = font.as_ref() else {
-            continue;
-        };
-        // 命中测试需要字体度量（菜单标题宽度），所以用一个不落笔的 Painter。
-        let mut scratch = [0u32; 1];
-        let probe = Painter::new(
-            Surface::new(&mut scratch, 1, 1, 1).ok_or("probe surface")?,
-            &theme,
-            font,
-            c.scale,
-        );
-        match event.kind {
-            EventKind::Close => break,
-            EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
-                app.ui.pointer = (x.floor() as i32, y.floor() as i32);
-                app.pointer_moved(client);
-                if let Some(shape) = app.header_cursor(client) {
-                    display.set_cursor_shape(shape)?;
-                } else if inside(client, app.ui.pointer) {
-                    display.set_cursor_shape(CursorShape::Default)?;
+            Command::Up => {
+                let target = self.browser.borrow().location.parent();
+                if let Some(location) = target {
+                    self.navigate(location, Visit::Push, true).await?;
                 }
             }
-            EventKind::PointerLeave => {
-                app.ui.pointer = (-1, -1);
-                app.ui.tooltip.hover(None);
+            Command::Address => {
+                let text = self.view.address.text()?;
+                let location = {
+                    let browser = self.browser.borrow();
+                    if text == browser.location.address() {
+                        return Ok(());
+                    }
+                    match text.as_str() {
+                        "我的电脑" | "::my-computer" => Location::MyComputer,
+                        "控制面板" | "::control-panel" => Location::ControlPanel,
+                        "网上邻居" | "::network-places" => Location::NetworkPlaces,
+                        _ => {
+                            let path = PathBuf::from(text);
+                            if path.is_relative() {
+                                if let Location::Directory(current) = &browser.location {
+                                    Location::Directory(current.join(path))
+                                } else {
+                                    Location::Directory(self.home.join(path))
+                                }
+                            } else {
+                                Location::Directory(path)
+                            }
+                        }
+                    }
+                };
+                self.navigate(location, Visit::Push, true).await?;
             }
-            EventKind::Button {
-                code: LEFT_BUTTON,
-                pressed,
-                ..
-            } => {
-                if pressed {
-                    app.press(&probe, client);
-                } else {
-                    app.release(client);
+            Command::ViewMenu => {
+                let items = chrome::views(self.view.list.list_style()?);
+                if let Some(command) = self
+                    .dialogs
+                    .menu(&self.view.window, &items)?
+                    .await?
+                    .and_then(Command::from_id)
+                {
+                    if let Some(style) = command.style() {
+                        self.view.list.set_list_style(style, true)?;
+                    }
                 }
             }
-            EventKind::Button {
-                code: RIGHT_BUTTON,
-                pressed: true,
-                ..
-            } => app.press_context(client),
-            EventKind::Wheel { vertical, .. } => app.wheel(client, vertical),
-            EventKind::Key(key) if key.pressed => app.key(&probe, key, client),
-            EventKind::Key(key) => {
-                app.track_modifiers(&key);
-                app.alt_released(&key);
+            Command::About => {
+                self.dialogs
+                    .message(
+                        &self.view.window,
+                        "关于 LiteOS 资源管理器",
+                        "LiteOS 资源管理器\n浏览文件夹、我的电脑、控制面板与回收站。",
+                        MessageButtons::Ok,
+                    )?
+                    .await?;
             }
             _ => {}
         }
-        if let Some(popup) = app.ui.popup.as_mut().filter(|popup| popup.width == 0) {
-            popup.measure(&probe);
-        }
-        app.raise_notice();
-        dirty |= !matches!(event.kind, EventKind::FramePresented { .. });
-        let current = app.browser.location.title();
-        if current != title {
-            display.set_title(window, &current)?;
-            title = current;
-        }
-        if dirty && display.ready_to_draw(window) {
-            redraw(
-                &mut display,
-                window,
-                c,
-                &theme,
-                font,
-                &decoration,
-                &mut app,
-                &assets,
-                &title,
-            )?;
-            dirty = false;
+        Ok(())
+    }
+    async fn execute(&self, action: Action) -> Result<()> {
+        match action {
+            Action::Command(command) => self.command(command).await,
+            Action::Go(location, visit, focus) => self.navigate(location, visit, focus).await,
+            Action::Expand(id) => self.expand(id).await,
+            Action::Rename(id, name) => self.rename(id, name).await,
+            Action::Context(on_item) => {
+                let items = chrome::context(&self.availability()?, on_item);
+                if let Some(command) = self
+                    .dialogs
+                    .menu(&self.view.window, &items)?
+                    .await?
+                    .and_then(Command::from_id)
+                {
+                    self.command(command).await?;
+                }
+                Ok(())
+            }
         }
     }
-    display.destroy_window(window)?;
+    async fn report(&self, error: impl std::fmt::Display) {
+        let message = error.to_string();
+        let _ = self.view.status.set_text(&message);
+        if let Ok(dialog) = self.dialogs.message(
+            &self.view.window,
+            "资源管理器",
+            &message,
+            MessageButtons::Ok,
+        ) {
+            let _ = dialog.await;
+        }
+    }
+}
+/// 一个业务事务占用期，UI 仍处理输入和合成；关闭请求等已开始的文件副作用完成后异步兑现。
+struct Busy(Rc<Session>);
+impl Drop for Busy {
+    fn drop(&mut self) {
+        self.0.busy.set(false);
+        if self.0.closing.get() {
+            let _ = self.0.view.window.close();
+        } else {
+            let _ = self.0.menus();
+        }
+    }
+}
+struct Launch {
+    location: Location,
+    select: Option<OsString>,
+    verb: Option<Command>,
+}
+fn parse_launch(home: &Path) -> Result<Launch> {
+    let mut location = None;
+    let mut select = None;
+    let mut verb = None;
+    let mut args = std::env::args_os().skip(1);
+    while let Some(argument) = args.next() {
+        if argument == "--select" {
+            select = Some(args.next().ok_or("--select needs a name")?);
+        } else if argument == "--verb" {
+            verb = Some(
+                match args.next().as_deref().and_then(|value| value.to_str()) {
+                    Some("delete") => Command::Delete,
+                    Some("rename") => Command::Rename,
+                    Some("properties") => Command::Properties,
+                    _ => return Err("unknown --verb".into()),
+                },
+            );
+        } else if location.is_none() {
+            location = Some(match argument.to_str() {
+                Some(value) if value.starts_with("::") => Location::parse(value),
+                _ => Location::Directory(argument.into()),
+            });
+        } else {
+            return Err("unexpected argument".into());
+        }
+    }
+    Ok(Launch {
+        location: location.unwrap_or_else(|| Location::Directory(home.to_owned())),
+        select,
+        verb,
+    })
+}
+fn run() -> Result<()> {
+    let home = std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
+    let launch = parse_launch(&home)?;
+    let mut app = Application::new()?;
+    let window = app.window(WindowOptions::new(
+        &launch.location.title(),
+        "org.liteos.file-explorer",
+        760,
+        500,
+    ))?;
+    let view = View::new(window.clone())?;
+    let background = app.background()?;
+    let launches = Rc::new(RefCell::new(Launches::default()));
+    let session = Rc::new(Session {
+        view,
+        browser: RefCell::new(Browser::new(&home, launch.location.clone())),
+        home,
+        background,
+        dialogs: app.dialogs(),
+        busy: Cell::new(true),
+        closing: Cell::new(false),
+        one_shot: launch.verb.is_some(),
+        launches: launches.clone(),
+    });
+    session.menus()?;
+    let mut tasks = Vec::new();
+    let guard = Busy(session.clone());
+    let startup = app.spawn_local(&window, async move {
+        let result = async {
+            guard
+                .0
+                .navigate(launch.location, Visit::Refresh, true)
+                .await?;
+            if let Some(name) = launch.select {
+                let id = guard
+                    .0
+                    .browser
+                    .borrow()
+                    .items
+                    .iter()
+                    .find_map(|(id, item)| {
+                        ((item.path.as_ref().and_then(|path| path.file_name())
+                            == Some(name.as_os_str()))
+                            || item.name == name.to_string_lossy())
+                        .then_some(*id)
+                    });
+                guard.0.view.list.select(id)?;
+            }
+            if let Some(verb) = launch.verb {
+                guard.0.command(verb).await?;
+                if verb != Command::Rename {
+                    guard.0.closing.set(true);
+                }
+            }
+            Ok::<(), Box<dyn std::error::Error>>(())
+        }
+        .await;
+        if let Err(error) = result {
+            guard.0.report(error).await;
+        }
+    })?;
+    let _reaper = {
+        let clock = app.clock();
+        app.spawn_local(&window, async move {
+            loop {
+                std::future::poll_fn(|cx| {
+                    let mut launches = launches.borrow_mut();
+                    if launches.children.is_empty() {
+                        launches.wake = Some(cx.waker().clone());
+                        std::task::Poll::Pending
+                    } else {
+                        std::task::Poll::Ready(())
+                    }
+                })
+                .await;
+                launches
+                    .borrow_mut()
+                    .children
+                    .retain_mut(|child| matches!(child.try_wait(), Ok(None)));
+                let Ok(wait) = clock.sleep(Duration::from_secs(1)) else {
+                    break;
+                };
+                wait.await;
+            }
+        })?
+    };
+    app.run(|app, event| {
+        tasks.retain(|task: &liteos_ui::Task<()>| !task.is_finished());
+        if event.window != window.id() {
+            return Ok(ControlFlow::Continue);
+        }
+        if matches!(event.kind, EventKind::Close) {
+            if session.busy.get() {
+                session.closing.set(true);
+                session.view.status.set_text("等待文件操作完成后关闭…")?;
+                return Ok(ControlFlow::PreventDefault);
+            }
+            return Ok(ControlFlow::Continue);
+        }
+        if matches!(event.kind, EventKind::Dismiss)
+            && event.node == session.view.list.id()
+            && session.one_shot
+        {
+            window.close()?;
+            return Ok(ControlFlow::Continue);
+        }
+        let mut action = None;
+        match event.kind {
+            EventKind::Select { row } if event.node == session.view.folders.id() => {
+                if let Some(location) = session
+                    .browser
+                    .borrow()
+                    .catalogue
+                    .nodes
+                    .get(&row)
+                    .map(|node| node.location.clone())
+                {
+                    if location != session.browser.borrow().location {
+                        action = Some(Action::Go(location, Visit::Push, false));
+                    }
+                }
+            }
+            EventKind::Expand {
+                row,
+                expanded: true,
+            } if event.node == session.view.folders.id() => action = Some(Action::Expand(row)),
+            EventKind::Select { .. } if event.node == session.view.list.id() => {
+                session.status()?;
+                session.menus()?;
+            }
+            EventKind::Column { column } if event.node == session.view.list.id() => {
+                let mut browser = session.browser.borrow_mut();
+                browser.sort = if browser.sort.0 == column {
+                    (column, !browser.sort.1)
+                } else {
+                    (column, column == 2 || column == 4)
+                };
+                browser.sort_items();
+                session.view.rows(&browser)?;
+            }
+            EventKind::LabelEdited { row } if event.node == session.view.list.id() => {
+                action = Some(Action::Rename(row, session.view.list.text()?))
+            }
+            EventKind::Activate { value } => {
+                let command = if event.node == session.view.menu.id() {
+                    Command::from_id(value)
+                } else if event.node == session.view.list.id() {
+                    Some(Command::Open)
+                } else if event.node == session.view.go.id() {
+                    Some(Command::Address)
+                } else {
+                    session.view.tools.iter().find_map(|(command, button)| {
+                        (button.id() == event.node).then_some(*command)
+                    })
+                };
+                action = command.map(Action::Command);
+            }
+            EventKind::Button {
+                code: 0x111,
+                pressed: true,
+                ..
+            } if event.node == session.view.list.id() => {
+                let target = session.view.list.pointed_row()?;
+                if let Some(id) = target {
+                    if !session.view.list.selected_rows()?.contains(&id) {
+                        session.view.list.select(Some(id))?;
+                    }
+                }
+                action = Some(Action::Context(target.is_some()));
+            }
+            EventKind::Key {
+                code,
+                pressed: true,
+                modifiers,
+                handled: false,
+                ..
+            } => {
+                let ctrl = modifiers & 2 != 0;
+                let alt = modifiers & 4 != 0;
+                if (ctrl && code == 38) || code == 62 {
+                    session.view.address.focus()?;
+                    session.view.address.edit(EditCommand::SelectAll)?;
+                } else {
+                    let command = match (code, ctrl, alt) {
+                        (28, _, true) => Some(Command::Properties),
+                        (28, false, false) if event.node == session.view.address.id() => {
+                            Some(Command::Address)
+                        }
+                        (105, false, true) => Some(Command::Back),
+                        (106, false, true) => Some(Command::Forward),
+                        (14, false, false) => Some(Command::Up),
+                        (60, false, false) => Some(Command::Rename),
+                        (63, false, false) => Some(Command::Refresh),
+                        (111, false, false) => Some(Command::Delete),
+                        (45, true, _) => Some(Command::Cut),
+                        (46, true, _) => Some(Command::Copy),
+                        (47, true, _) => Some(Command::Paste),
+                        _ => None,
+                    };
+                    action = command.map(Action::Command);
+                }
+            }
+            _ => {}
+        }
+        if let Some(action) = action {
+            if !session.busy.replace(true) {
+                session.menus()?;
+                let guard = Busy(session.clone());
+                tasks.push(app.spawn_local(&window, async move {
+                    if let Err(error) = guard.0.execute(action).await {
+                        guard.0.report(error).await;
+                    }
+                })?);
+            }
+        }
+        Ok(ControlFlow::Continue)
+    })?;
+    drop(startup);
     Ok(())
 }
-
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("file-explorer: error: {error}");
+            eprintln!("file-explorer: {error}");
             ExitCode::FAILURE
         }
     }

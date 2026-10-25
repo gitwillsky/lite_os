@@ -10,8 +10,5 @@ path = "src/main.rs"
 
 [dependencies]
 liteos-runtime = { path = "../../libraries/liteos-runtime" }
-canvas = { path = "../../libraries/canvas" }
-classic-theme = { path = "../../libraries/classic-theme" }
-classic-ui = { path = "../../libraries/classic-ui" }
+liteos-ui = { path = "../../libraries/liteos-ui" }
 sndvol = { path = "../../libraries/sndvol" }
-typeface = { path = "../../libraries/typeface" }

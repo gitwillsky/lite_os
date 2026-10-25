@@ -20,6 +20,7 @@
 - [io_uring](architecture/io-uring.md)
 - [内核崩溃与蓝屏](architecture/crash-dump.md)
 - [用户态与 ABI](architecture/userspace-abi.md)
+- [用户态 UI 运行库与 Rust SDK](architecture/ui-framework.md)
 
 ## 架构契约
 
@@ -35,6 +36,7 @@
 - [音频契约](architecture-contract/audio.md)
 - [io_uring 契约](architecture-contract/io-uring.md)
 - [用户态与 ABI 契约](architecture-contract/userspace-abi.md)
+- [UI 框架与 SDK 契约](architecture-contract/ui-framework.md)
 
 ## Linux 64-bit 用户态 ABI
 
@@ -52,6 +54,8 @@
 
 - [固定规范与上游来源](standards-baseline.md)
 - [构建、测试与验证](development/build-and-verify.md)
+- [性能验证范围与成本契约](development/performance-coverage.md)
+- [Rust UI SDK 与本机开发](development/ui-sdk.md)
 - [Wine 运行时：构建、打包与安装](development/wine-runtime.md)
 - [Wayland 与经典控件验证](development/wayland-ui-verification.md)
 - [本机登录与桌面验证](development/desktop-verification.md)
@@ -70,8 +74,8 @@
 ## 进行中的计划
 
 - [经典桌面与 Win32 运行时](plans/classic-desktop.md)
-- [SDK、二进制兼容与系统内开发（待确认）](plans/classic-ui-sdk.md)
-- [经典桌面应用框架（待确认）](plans/classic-ui-framework.md)
+- [SDK、二进制兼容与系统内开发（实施中）](plans/classic-ui-sdk.md)
+- [经典桌面应用框架（实施中）](plans/classic-ui-framework.md)
 
 ## 设计决策与术语
 

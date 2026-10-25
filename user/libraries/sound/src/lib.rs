@@ -147,6 +147,9 @@ impl Sound {
     /// 同 [`Self::play_blocking`]。
     pub fn play_from(&self, start: usize, transport: &Transport) -> io::Result<()> {
         const EPIPE: i32 = 32;
+        if transport.stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         let mut pcm = PlaybackPcm::open()?;
         // 声音写完后再多送一个缓冲的静音，让最后的样本播放完毕才关闭设备。
         let end = self.frames.len().div_ceil(PERIOD_FRAMES) * PERIOD_FRAMES
@@ -181,10 +184,19 @@ impl Sound {
         end: usize,
         transport: &Transport,
     ) -> io::Result<()> {
+        if transport.stop.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         pcm.prepare()?;
         for _ in 0..PREFILL_PERIODS {
+            if transport.stop.load(Ordering::Relaxed) {
+                return Ok(());
+            }
             pcm.write_period(&self.period_at(*position))?;
             *position += PERIOD_FRAMES;
+        }
+        if transport.stop.load(Ordering::Relaxed) {
+            return Ok(());
         }
         pcm.start()?;
         while *position < end && !transport.stop.load(Ordering::Relaxed) {

@@ -164,7 +164,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     );
                 }
             }
-            EventKind::FramePresented { .. } => {
+            EventKind::FrameReady { .. } => {
                 frames += 1;
                 println!("ui-probe: frame {frames}");
             }

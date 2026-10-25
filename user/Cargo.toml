@@ -1,5 +1,8 @@
 [workspace]
 members = [
+    "libraries/classic-ui-abi",
+    "libraries/classic-ui-runtime",
+    "libraries/liteos-ui",
     "libraries/calendar",
     "libraries/canvas",
     "libraries/classic-theme",
@@ -15,6 +18,7 @@ members = [
     "libraries/liteos-runtime",
     "libraries/sndvol",
     "programs/volume-control",
+    "programs/terminal",
     "programs/sound-player",
     "programs/media-player",
     "programs/notepad",

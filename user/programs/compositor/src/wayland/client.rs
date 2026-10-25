@@ -88,6 +88,7 @@ pub(super) enum Data {
     Subsurface(ObjectId),
     Positioner(super::popup::Positioner),
     Popup(super::popup::Popup),
+    Dialog(super::dialog::Dialog),
     ForeignHandle(ForeignHandle),
 }
 
@@ -98,7 +99,7 @@ pub(super) struct Entry {
 }
 
 /// 向客户端公布的全局对象：`(name, 接口, 最高版本)`。
-const GLOBALS: [(u32, Interface, u32); 11] = [
+const GLOBALS: [(u32, Interface, u32); 12] = [
     (1, Interface::WlCompositor, 6),
     (2, Interface::WlShm, 1),
     (3, Interface::XdgWmBase, 3),
@@ -116,6 +117,7 @@ const GLOBALS: [(u32, Interface, u32); 11] = [
     (12, Interface::WlSubcompositor, 1),
     // 输出的逻辑位置与尺寸（物理尺寸除以 scale）；Wine 用它决定全屏窗口大小。
     (13, Interface::ZxdgOutputManagerV1, 3),
+    (14, Interface::XdgWmDialogV1, 1),
 ];
 
 /// 初始 Session 与通过 security-context 委派的 Shell 可见的全局对象：
@@ -393,6 +395,8 @@ impl Client {
             AnyRequest::XdgWmBase(request) => self.xdg_wm_base(object, version, request),
             AnyRequest::XdgSurface(request) => self.xdg_surface(object, version, request),
             AnyRequest::XdgToplevel(request) => self.xdg_toplevel(object, request),
+            AnyRequest::XdgWmDialogV1(request) => self.dialog_manager(object, version, request),
+            AnyRequest::XdgDialogV1(request) => self.dialog(object, request),
             AnyRequest::XdgPositioner(request) => self.positioner(object, request),
             AnyRequest::XdgPopup(request) => self.xdg_popup(object, request),
             AnyRequest::WlSeat(request) => self.seat(object, version, request),
@@ -771,11 +775,7 @@ impl Client {
                         "buffer extends past the end of its file",
                     )
                 })?;
-                let content = Content {
-                    width: spec.width,
-                    height: spec.height,
-                    pixels,
-                };
+                let content = Content::new(spec.width, spec.height, pixels);
                 let first_content = {
                     let surface = self.surface_mut(object)?;
                     surface.content = Some(content);
@@ -790,6 +790,7 @@ impl Client {
         }
         self.apply_viewport(object, choice.is_some_and(|buffer| buffer.is_some()))?;
         if choice == Some(None) {
+            self.xdg_unmap(object);
             self.layer_unmap(object);
         } else {
             self.layer_after_commit(object, layer_before)?;

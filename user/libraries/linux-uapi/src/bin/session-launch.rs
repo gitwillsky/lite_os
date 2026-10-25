@@ -38,17 +38,21 @@ fn main() {
     } else {
         None
     };
+    let pty = separator.as_deref() == Some(OsStr::new("--pty"));
+    if pty {
+        separator = arguments.next();
+    }
     if separator.as_deref() != Some(OsStr::new("--")) {
         usage();
     }
     let program = arguments.next().unwrap_or_else(|| usage());
     let target_arguments: Vec<OsString> = arguments.collect();
-    exec_session_child(parent, &program, &target_arguments, user);
+    exec_session_child(parent, &program, &target_arguments, user, pty);
 }
 
 fn usage() -> ! {
     eprintln!(
-        "usage: session-launch <parent-pid> [--user uid gid groups] -- <program> [argument ...]"
+        "usage: session-launch <parent-pid> [--user uid gid groups] [--pty] -- <program> [argument ...]"
     );
     std::process::exit(127);
 }

@@ -100,6 +100,9 @@ struct DrmDeviceState {
     // OWNER: 每个 context 创建时预分配 cleanup node；OFD Drop 只移动现有 AVL nodes，
     // 因而即使进程在 OOM/abort 路径退出也不会遗留 host VirGL resource/context。
     graphics_cleanups: FallibleMap<u32, graphics::VirglCleanup>,
+    // OWNER: 接管正常 GEM_CLOSE 或创建失败后需要 UNREF 的 resource；预分配节点保证清理阶段不分配。
+    // context cleanup 必须等待同 context 的 orphan UNREF 完成，否则会先销毁仍被清理命令使用的 context。
+    graphics_retirements: FallibleMap<u32, graphics::VirglRetirement>,
     // OWNER: primary-node master identity 与 KMS object namespace 同属 device state；若放在
     // syscall 或 OFD flag，多个 open 会同时通过 modeset permission check。
     master: Option<u64>,
@@ -167,6 +170,9 @@ struct DrmDevice {
 pub(crate) struct DrmFile {
     device: Arc<DrmDevice>,
     file_identity: u64,
+    // OWNER: 只串行化本 OFD 的一次性 context 创建，允许等待 host fence，不持有 spin guard。
+    // FAILURE: 缺失时两个 CTX_CREATE 可同时通过“尚未初始化”检查，后发布者覆盖并泄漏前一个 context。
+    context_creation: crate::sync::TaskMutex<()>,
     // OWNER: 每个 OFD 的 handle namespace 与 handle allocator 在同一锁内发布；若放到 device
     // global，两个独立 open 会错误地互相获得或销毁 buffer access。
     state: Mutex<DrmFileState>,
@@ -182,6 +188,8 @@ pub(crate) enum DrmError {
     Invalid,
     /// 当前 OFD namespace 中没有目标 handle。
     NotFound,
+    /// 当前 OFD 已发布过不可重复创建的 context。
+    AlreadyExists,
     /// physical extent、Arc control block 或 map node 分配失败。
     OutOfMemory,
     /// monotonic identity 或 handle 空间耗尽。

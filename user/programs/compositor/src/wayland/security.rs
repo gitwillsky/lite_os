@@ -23,7 +23,7 @@ pub(super) struct Listener {
 }
 
 impl Listener {
-    pub fn descriptors(&self) -> [PollFd; 2] {
+    pub fn descriptors(&self) -> [PollFd<'_>; 2] {
         [
             PollFd::new(self.listener.as_fd(), PollEvents::READ),
             PollFd::new(self.close.as_fd(), PollEvents::EMPTY),

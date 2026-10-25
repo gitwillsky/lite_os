@@ -124,6 +124,28 @@ pub fn terminal_bytes(
     if state.apply(code, value) || !pressed {
         return None;
     }
+    terminal_input(
+        code,
+        pressed,
+        *state,
+        character(code as u16, *state),
+        application_cursor_keys,
+    )
+}
+
+/// 将已提交的 Wayland/XKB Unicode 文本和物理功能键编码为终端输入。
+/// 修饰状态由输入服务提供，不再次按键帽推算字符；释放事件及无文本键返回 None。
+/// DECCKM 仅影响导航转义序列，不改变提交文字的 UTF-8。
+pub fn terminal_input(
+    code: u32,
+    pressed: bool,
+    state: Modifiers,
+    text: Option<char>,
+    application_cursor_keys: bool,
+) -> Option<Vec<u8>> {
+    if !pressed {
+        return None;
+    }
     let special: Option<&[u8]> = match code {
         1 => Some(b"\x1b"),
         14 => Some(b"\x7f"),
@@ -168,19 +190,22 @@ pub fn terminal_bytes(
     if let Some(bytes) = special {
         return Some(bytes.to_vec());
     }
-    // 共享 keymap 出字符（含 shift/caps），终端再叠加 control/alt 的 PTY 转义。
-    let mut character = character(code as u16, *state)? as u8;
-    if state.control {
-        character = character
-            .to_ascii_lowercase()
-            .wrapping_sub(b'a')
-            .wrapping_add(1);
-    }
-    let mut bytes = Vec::with_capacity(2);
+    let character = text?;
+    let mut bytes = Vec::with_capacity(5);
     if state.alt {
         bytes.push(0x1b);
     }
-    bytes.push(character);
+    if state.control && character.is_ascii() {
+        let value = character.to_ascii_uppercase() as u8;
+        bytes.push(match value {
+            b' ' | b'@' | b'2' => 0,
+            b'A'..=b'Z' | b'['..=b'_' => value & 0x1f,
+            b'?' | b'8' => 0x7f,
+            _ => value,
+        });
+    } else {
+        bytes.extend_from_slice(character.encode_utf8(&mut [0; 4]).as_bytes());
+    }
     Some(bytes)
 }
 

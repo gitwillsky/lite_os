@@ -42,7 +42,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let mut scanout =
         scanout::Scanout::open(DRM_DEVICE).map_err(|error| format!("{DRM_DEVICE}: {error}"))?;
-    boot::paint(scanout.back(), &boot_scene, boot::HANDOFF_PERMILLE)?;
+    scanout.paint_boot(&boot_scene, boot::HANDOFF_PERMILLE)?;
     scanout.show_first()?;
     println!(
         "compositor: first frame presented {}x{}",

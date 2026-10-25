@@ -10,3 +10,4 @@ crate-type = ["dylib", "rlib"]
 [dependencies]
 liteos-runtime = { path = "../liteos-runtime" }
 linux-uapi = { path = "../linux-uapi" }
+tz-rs = "=0.7.3"

@@ -27,7 +27,7 @@ pub struct Decoration {
     /// 按下时锁定按钮，释放仍在同一按钮才激活；缺少它会在拖入按钮后误触关闭。
     armed: Option<CaptionButton>,
     /// 标题栏左侧的程序图标；缺少它标题栏左端留着空位，与原版不一致。
-    icon: Option<Bitmap>,
+    icon: Option<std::rc::Rc<Bitmap>>,
     /// 上一次单击标题栏图标的时刻；两次单击间隔在 [`DOUBLE_CLICK`] 内视为双击关闭窗口，缺少它双击图标只会重复弹出菜单。
     icon_click: Option<Instant>,
     /// 已经通知过调用者的光标形状；缺少它每个指针移动事件都会重复请求同一形状。
@@ -47,12 +47,15 @@ impl Decoration {
         }
     }
 
-    /// 从系统界面素材目录读取 `<stem>-16.bmp` 作为标题栏左侧的程序图标。
-    ///
-    /// 素材缺失（只含默认素材的构建）或格式错误时保持无图标，不影响窗口使用。
+    /// 为尚未迁移共享运行库的外壳 layer 对话框读取标题图标；普通 SDK 窗口使用 Resources 的 Rc。
     pub fn load_icon(&mut self, stem: &str) {
         let path = std::path::Path::new("/usr/share/liteos/ui").join(format!("{stem}-16.bmp"));
-        self.icon = Bitmap::load(&path).ok();
+        self.icon = Bitmap::load(&path).ok().map(std::rc::Rc::new);
+    }
+
+    /// 设置资源上下文提供的共享图标；替换时只释放本装饰的引用。
+    pub fn set_icon(&mut self, icon: Option<std::rc::Rc<Bitmap>>) {
+        self.icon = icon;
     }
 
     fn caption(&self, configuration: Configuration) -> Rect {
@@ -110,6 +113,12 @@ impl Decoration {
         )
     }
 
+    /// 当前实际画成按下状态的标题按钮；仅供窗口绘制 owner 比较输入前后视觉变化。
+    pub(crate) fn pressed_button(&self, configuration: Configuration) -> Option<CaptionButton> {
+        self.armed
+            .filter(|button| self.button_at(configuration) == Some(*button))
+    }
+
     /// 绘制外框、标题栏和按钮；返回客户区。configuration 来自已确认的服务端配置。
     pub fn paint(
         &self,
@@ -122,13 +131,11 @@ impl Decoration {
                 Rect::new(0, 0, configuration.width, configuration.height),
                 self.kind,
             );
-            let pressed = self
-                .armed
-                .filter(|button| self.button_at(configuration) == Some(*button));
+            let pressed = self.pressed_button(configuration);
             painter.caption_bar(
                 self.caption(configuration),
                 title,
-                self.icon.as_ref(),
+                self.icon.as_deref(),
                 configuration.active,
                 &self.buttons(configuration),
                 pressed,

@@ -1,20 +1,12 @@
-//! 文件、文件夹与磁盘的"属性"：对应 Windows 2000 shell32 属性表的"常规"页。
-//!
-//! 由资源管理器以 `control-panel properties <路径> <图标名> <类型> [drive]` 启动，是独立的顶层窗口，
-//! 所以可以拖动、用标题栏按钮关闭，也不会被资源管理器的重绘覆盖。"只读"是唯一可写的属性（chmod）；
-//! "隐藏"在 Linux 上由文件名的前导点决定，改它等于重命名，所以只显示、不可改。
-use crate::{Icons, Page};
-use canvas::Rect;
-use classic_theme::{Edge, Rgb, SystemColor as C};
-use classic_ui::{Bitmap, Ink, Painter};
+//! 属性数据在后台读取/统计，界面使用标准标签、复选框和共享属性表应用阶段。
+use crate::{Apply, Page, child, image, label, pair};
+use liteos_ui::{Draw, Event, Layout, PropertySheet, Rect, Widget, WidgetKind as Kind, state};
 use std::{
     fs,
     os::unix::fs::{MetadataExt, PermissionsExt},
     path::{Path, PathBuf},
     time::UNIX_EPOCH,
 };
-
-/// 目录统计最多访问的条目数；超过时标注为"至少"，避免在 `/` 这样的大目录上阻塞窗口。
 const WALK_LIMIT: u64 = 50_000;
 
 /// 磁盘的已用/可用/总容量（字节）；读取失败时属性页显示不可用。
@@ -129,13 +121,12 @@ enum Body {
     Drive(Drive),
 }
 
-pub struct FileProperties {
+pub struct Data {
     path: PathBuf,
     name: String,
-    icon: Option<Bitmap>,
+    icon: String,
     body: Body,
     readonly: bool,
-    readonly_at_open: bool,
 }
 
 /// 挂载点对应的文件系统类型，取自 `/proc/mounts`。
@@ -153,17 +144,20 @@ fn filesystem_of(mount: &Path) -> String {
         .unwrap_or_default()
 }
 
-impl FileProperties {
-    /// 从命令行参数建立：`<路径> <图标名> <类型> [drive]`。
-    pub fn from_args(mut args: impl Iterator<Item = String>) -> Result<Self, String> {
+impl Data {
+    pub fn read(mut args: impl Iterator<Item = std::ffi::OsString>) -> Result<Self, String> {
         let path = PathBuf::from(args.next().ok_or("missing path")?);
-        let icon_stem = args.next().ok_or("missing icon")?;
-        let kind = args.next().ok_or("missing type")?;
-        let drive = args.next().as_deref() == Some("drive");
-        let icon = Bitmap::load(Path::new(&format!(
-            "/usr/share/liteos/ui/{icon_stem}-32.bmp"
-        )))
-        .ok();
+        let icon_stem = args
+            .next()
+            .ok_or("missing icon")?
+            .into_string()
+            .map_err(|_| "invalid icon")?;
+        let kind = args
+            .next()
+            .ok_or("missing type")?
+            .to_string_lossy()
+            .into_owned();
+        let drive = args.next().is_some_and(|argument| argument == "drive");
         let metadata =
             fs::metadata(&path).map_err(|error| format!("{}: {error}", path.display()))?;
         let readonly = metadata.permissions().mode() & 0o200 == 0;
@@ -205,271 +199,172 @@ impl FileProperties {
         Ok(Self {
             path,
             name,
-            icon,
+            icon: icon_stem,
             body,
             readonly,
-            readonly_at_open: readonly,
         })
     }
-
-    fn checkbox_rect(page: Rect) -> Rect {
-        Rect::new(page.x + 80, page.y + 292, 13, 13)
-    }
 }
 
-/// 在 `y` 处画一条凹陷的分隔线（Windows 2000 属性页的分组线）。
-fn separator(p: &mut Painter<'_>, page: Rect, y: i32) {
-    p.fill(
-        Rect::new(page.x + 12, y, page.width - 24, 1),
-        C::ButtonShadow,
-    );
-    p.fill(
-        Rect::new(page.x + 12, y + 1, page.width - 24, 1),
-        C::ButtonHilight,
-    );
+pub struct FileProperties {
+    _controls: Vec<Widget>,
+    path: PathBuf,
+    readonly: Option<Widget>,
+    saved: bool,
+    pie: Option<(Widget, u64, u64)>,
 }
-
-/// 标签与值同一行：标签靠左，值在固定列。
-fn row(p: &mut Painter<'_>, page: Rect, y: i32, label: &str, value: &str) {
-    let ink = Ink::Color(C::ButtonText);
-    p.text_fit(page.x + 14, y, 78, label, ink, false);
-    p.text_fit(page.x + 96, y, page.width - 108, value, ink, false);
-}
-
-/// 画一行并把 `y` 下移一个行距。
-fn line(p: &mut Painter<'_>, page: Rect, y: &mut i32, step: i32, label: &str, value: &str) {
-    row(p, page, *y, label, value);
-    *y += step;
-}
-
-/// 图标与名称框：左侧 32×32 图标，右侧凹陷的只读文本框。
-fn heading(p: &mut Painter<'_>, page: Rect, icon: Option<&Bitmap>, name: &str) {
-    if let Some(icon) = icon {
-        icon.paint(p, page.x + 14, page.y + 14);
-    }
-    let field = Rect::new(page.x + 68, page.y + 20, page.width - 84, 21);
-    let inner = p.edge(field, Edge::Sunken);
-    p.fill(inner, C::Window);
-    p.clipped(inner, |p| {
-        p.text(
-            inner.x + 3,
-            inner.y + 2,
-            name,
-            Ink::Color(C::WindowText),
-            false,
-        );
-    });
-}
-
-const USED: Rgb = Rgb {
-    red: 0,
-    green: 0,
-    blue: 255,
-};
-const USED_SIDE: Rgb = Rgb {
-    red: 0,
-    green: 0,
-    blue: 128,
-};
-const FREE: Rgb = Rgb {
-    red: 255,
-    green: 0,
-    blue: 255,
-};
-const FREE_SIDE: Rgb = Rgb {
-    red: 128,
-    green: 0,
-    blue: 128,
-};
-
-/// 画带厚度的容量饼图：已用空间蓝色、可用空间洋红，与 Windows 2000 一致。
-fn pie(p: &mut Painter<'_>, center: (i32, i32), used_share: f64) {
-    const RX: f64 = 56.0;
-    const RY: f64 = 28.0;
-    const DEPTH: i32 = 10;
-    // 已用扇区从 3 点钟方向起逆时针扫过 `used_share` 圈。
-    let colour = |x: i32, y: i32, side: bool| {
-        let (dx, dy) = (f64::from(x - center.0) / RX, f64::from(y - center.1) / RY);
-        let turn = (-dy).atan2(dx).rem_euclid(std::f64::consts::TAU) / std::f64::consts::TAU;
-        let used = used_share >= 1.0 || turn < used_share;
-        match (used, side) {
-            (true, false) => USED,
-            (true, true) => USED_SIDE,
-            (false, false) => FREE,
-            (false, true) => FREE_SIDE,
-        }
-    };
-    for layer in (0..=DEPTH).rev() {
-        for y in -(RY as i32)..=(RY as i32) {
-            let span = (RX * (1.0 - (f64::from(y) / RY).powi(2)).max(0.0).sqrt()) as i32;
-            for x in -span..=span {
-                let at = (center.0 + x, center.1 + y);
-                p.fill_rgb(
-                    Rect::new(at.0, at.1 + layer, 1, 1),
-                    colour(at.0, at.1, layer != 0),
-                );
-            }
-        }
-    }
-}
-
-impl Page for FileProperties {
-    fn title(&self) -> &'static str {
-        // 标题随对象变化，由 `heading_title` 提供；这里给出窗口创建时的占位。
-        "属性"
-    }
-    fn heading_title(&self) -> Option<String> {
-        Some(match &self.body {
-            Body::Drive(drive) => format!("{} 属性", drive.kind),
-            Body::Entry(_) => format!("{} 属性", self.name),
-        })
-    }
-    fn tabs(&self) -> &'static [&'static str] {
-        &["常规"]
-    }
-    fn icon(&self) -> &'static str {
-        "my-computer"
-    }
-    fn size(&self) -> (i32, i32) {
-        (368, 424)
-    }
-    fn paint(&self, p: &mut Painter<'_>, page: Rect, _tab: usize, _now: i64, _icons: &Icons) {
-        let ink = Ink::Color(C::ButtonText);
-        heading(p, page, self.icon.as_ref(), &self.name);
-        separator(p, page, page.y + 56);
-        match &self.body {
+impl FileProperties {
+    pub fn build(sheet: &PropertySheet, data: Data) -> liteos_ui::Result<Self> {
+        sheet.window().set_title(&format!("{} 属性", data.name))?;
+        let page = sheet.page("常规")?;
+        let mut controls = vec![image(&page, &data.icon)?, label(&page, &data.name)?];
+        let mut readonly = None;
+        let mut pie = None;
+        let mut field = |title: &str, text: &str| -> liteos_ui::Result<()> {
+            let (a, b) = pair(&page, title, text)?;
+            controls.extend([a, b]);
+            Ok(())
+        };
+        match data.body {
             Body::Entry(entry) => {
-                let step = p.line_height() + 6;
-                let mut y = page.y + 68;
-                line(p, page, &mut y, step, "类型:", &entry.kind);
-                line(p, page, &mut y, step, "位置:", &entry.location);
-                let cut = entry.contents.is_some_and(|(_, _, cut)| cut);
-                let at_least = if cut { "至少 " } else { "" };
-                line(
-                    p,
-                    page,
-                    &mut y,
-                    step,
-                    "大小:",
-                    &format!("{at_least}{}", size_text(entry.size)),
-                );
-                line(
-                    p,
-                    page,
-                    &mut y,
-                    step,
-                    "占用空间:",
-                    &format!("{at_least}{}", size_text(entry.on_disk)),
-                );
+                field("类型：", &entry.kind)?;
+                field("位置：", &entry.location)?;
+                let prefix = if entry.contents.is_some_and(|(_, _, cut)| cut) {
+                    "至少 "
+                } else {
+                    ""
+                };
+                field("大小：", &format!("{prefix}{}", size_text(entry.size)))?;
+                field(
+                    "占用空间：",
+                    &format!("{prefix}{}", size_text(entry.on_disk)),
+                )?;
                 if let Some((files, folders, _)) = entry.contents {
-                    line(
-                        p,
-                        page,
-                        &mut y,
-                        step,
-                        "包含:",
-                        &format!("{files} 个文件，{folders} 个文件夹"),
-                    );
+                    field("包含：", &format!("{files} 个文件，{folders} 个文件夹"))?;
                 }
-                separator(p, page, y + 2);
-                y += 14;
-                for (label, time) in [
-                    ("创建时间:", entry.created),
-                    ("修改时间:", entry.modified),
-                    ("访问时间:", entry.accessed),
+                for (title, time) in [
+                    ("创建时间：", entry.created),
+                    ("修改时间：", entry.modified),
+                    ("访问时间：", entry.accessed),
                 ] {
-                    line(
-                        p,
-                        page,
-                        &mut y,
-                        step,
-                        label,
-                        &time.map(date_text).unwrap_or_default(),
-                    );
+                    field(title, &time.map(date_text).unwrap_or_default())?;
                 }
-                separator(p, page, y + 2);
-                p.text(page.x + 14, page.y + 292, "属性:", ink, false);
-                let box_rect = Self::checkbox_rect(page);
-                p.checkbox(box_rect.x, box_rect.y, self.readonly, false);
-                p.text(box_rect.x + 20, box_rect.y - 2, "只读(R)", ink, false);
-                p.checkbox(box_rect.x + 100, box_rect.y, entry.hidden, true);
-                p.text(
-                    box_rect.x + 120,
-                    box_rect.y - 2,
-                    "隐藏(H)",
-                    Ink::Disabled,
-                    false,
-                );
+                let option = child(&page, Kind::CheckBox, "只读(R)", Layout::default())?;
+                option.set_state(if data.readonly { state::CHECKED } else { 0 })?;
+                readonly = Some(option);
+                let hidden = child(&page, Kind::CheckBox, "隐藏(H)", Layout::default())?;
+                hidden
+                    .set_state(state::DISABLED | if entry.hidden { state::CHECKED } else { 0 })?;
+                controls.push(hidden);
             }
             Body::Drive(drive) => {
-                let step = p.line_height() + 6;
-                row(p, page, page.y + 68, "类型:", &drive.kind);
-                row(p, page, page.y + 68 + step, "文件系统:", &drive.filesystem);
-                separator(p, page, page.y + 68 + 2 * step + 2);
-                let (used, free, total) = drive.capacity.unwrap_or_default();
-                let mut y = page.y + 68 + 2 * step + 16;
-                for (colour, label, value) in [(USED, "已用空间:", used), (FREE, "可用空间:", free)]
-                {
-                    p.fill_rgb(Rect::new(page.x + 14, y + 2, 10, 10), colour);
-                    p.text_fit(page.x + 30, y, 76, label, ink, false);
-                    p.text_fit(
-                        page.x + 110,
-                        y,
-                        page.width - 122,
-                        &size_text(value),
-                        ink,
-                        false,
-                    );
-                    y += step;
-                }
-                separator(p, page, y + 2);
-                row(p, page, y + 14, "容量:", &size_text(total));
-                let share = if total == 0 {
-                    0.0
+                field("类型：", &drive.kind)?;
+                field("文件系统：", &drive.filesystem)?;
+                if let Some((used, free, total)) = drive.capacity {
+                    field("已用空间：", &size_text(used))?;
+                    field("可用空间：", &size_text(free))?;
+                    field("容量：", &size_text(total))?;
+                    let canvas = child(
+                        &page,
+                        Kind::Canvas,
+                        "",
+                        Layout {
+                            height: 110,
+                            ..Default::default()
+                        },
+                    )?;
+                    pie = Some((canvas, used, total));
                 } else {
-                    used as f64 / total as f64
-                };
-                let center = (page.x + page.width / 2, y + 14 + step + 60);
-                pie(p, center, share);
-                p.text_centered(
-                    Rect::new(page.x, center.1 + 46, page.width, p.line_height() + 4),
-                    &format!("驱动器 {}", self.path.display()),
-                    ink,
-                    false,
-                );
+                    field("容量：", "无法读取磁盘容量")?;
+                }
+                controls.push(label(&page, &format!("驱动器 {}", data.path.display()))?);
             }
         }
-    }
-    fn click(&mut self, page: Rect, _tab: usize, (x, y): (i32, i32)) -> bool {
-        let rect = Self::checkbox_rect(page);
-        let hit =
-            (rect.x..rect.x + 70).contains(&x) && (rect.y - 2..rect.bottom() + 2).contains(&y);
-        if hit && matches!(self.body, Body::Entry(_)) {
-            self.readonly = !self.readonly;
-            return true;
-        }
-        false
-    }
-    fn dirty(&self) -> bool {
-        self.readonly != self.readonly_at_open
-    }
-    fn apply(&mut self) {
-        if !self.dirty() {
-            return;
-        }
-        let Ok(metadata) = fs::metadata(&self.path) else {
-            return;
+        controls.push(page);
+        let view = Self {
+            _controls: controls,
+            path: data.path,
+            readonly,
+            saved: data.readonly,
+            pie,
         };
-        let mut permissions = metadata.permissions();
-        let mode = permissions.mode();
-        // Windows 的"只读"对应去掉所有写位，取消则恢复属主写位。
-        permissions.set_mode(if self.readonly {
-            mode & !0o222
-        } else {
-            mode | 0o200
-        });
-        if fs::set_permissions(&self.path, permissions).is_ok() {
-            self.readonly_at_open = self.readonly;
+        view.preview()?;
+        Ok(view)
+    }
+    fn value(&self) -> liteos_ui::Result<bool> {
+        self.readonly.as_ref().map_or(Ok(self.saved), |control| {
+            control.state().map(|value| value & state::CHECKED != 0)
+        })
+    }
+    fn preview(&self) -> liteos_ui::Result<()> {
+        let Some((canvas, used, total)) = &self.pie else {
+            return Ok(());
+        };
+        let area = canvas.geometry()?;
+        if area.width <= 0 || area.height <= 0 {
+            return Ok(());
         }
+        let share = if *total == 0 {
+            0.0
+        } else {
+            *used as f64 / *total as f64
+        };
+        let rx = area.width.min(150) / 2;
+        let ry = (area.height - 14).min(70) / 2;
+        let center = (area.width / 2, area.height / 2);
+        let mut commands = Vec::new();
+        for y in -ry..=ry {
+            let span = (f64::from(rx)
+                * (1.0 - f64::from(y * y) / f64::from((ry * ry).max(1)))
+                    .max(0.0)
+                    .sqrt()) as i32;
+            for x in -span..=span {
+                let angle = (f64::from(y) / f64::from(ry.max(1)))
+                    .atan2(f64::from(x) / f64::from(rx.max(1)))
+                    .rem_euclid(std::f64::consts::TAU);
+                let color = if angle < std::f64::consts::TAU * share {
+                    0x0000ff
+                } else {
+                    0xff00ff
+                };
+                commands.push(Draw {
+                    kind: 1,
+                    rect: Rect::new(center.0 + x, center.1 + y, 1, 1),
+                    color,
+                    bold: false,
+                    text: "",
+                });
+            }
+        }
+        canvas.set_drawing(&commands)
+    }
+}
+impl Page for FileProperties {
+    fn event(&mut self, _event: &Event) -> liteos_ui::Result<Option<Vec<String>>> {
+        self.preview()?;
+        Ok(None)
+    }
+    fn dirty(&self) -> liteos_ui::Result<bool> {
+        Ok(self.value()? != self.saved)
+    }
+    fn apply(&self) -> liteos_ui::Result<Apply> {
+        let readonly = self.value()?;
+        let path = self.path.clone();
+        Ok(Box::new(move || {
+            let mut permissions = fs::metadata(&path)
+                .map_err(|error| error.to_string())?
+                .permissions();
+            let mode = permissions.mode();
+            permissions.set_mode(if readonly {
+                mode & !0o222
+            } else {
+                mode | 0o200
+            });
+            fs::set_permissions(&path, permissions).map_err(|error| error.to_string())
+        }))
+    }
+    fn committed(&mut self) -> liteos_ui::Result<()> {
+        self.saved = self.value()?;
+        Ok(())
     }
 }

@@ -935,10 +935,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut pending = std::collections::HashSet::new();
     loop {
         if let Some(event) = display.next_event_timeout(Duration::from_millis(100))? {
-            if matches!(event.kind, EventKind::FramePresented { .. }) {
+            if matches!(event.kind, EventKind::FrameReady { .. }) {
                 presented.insert(event.window);
             }
-            if !matches!(event.kind, EventKind::FramePresented { .. }) {
+            if !matches!(
+                event.kind,
+                EventKind::FrameReady { .. } | EventKind::BufferAvailable
+            ) {
                 dirty = true;
             }
             state.event(&mut display, &mut art, event)?;
@@ -961,7 +964,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // 每分钟重读一次 /etc/localtime：控制面板改了时区后，长驻的外壳据此刷新时钟。
         if unix / 60 != last_unix_minute {
             last_unix_minute = unix / 60;
-            calendar::zone::reload();
+            if let Err(error) = calendar::zone::reload() {
+                eprintln!("desktop: timezone reload failed: {error}");
+            }
         }
         let now = (calendar::zone::to_local(unix) / 60) as u64;
         let current_revision = display.toplevel_revision();

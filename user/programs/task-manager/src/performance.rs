@@ -1,202 +1,203 @@
-//! "性能"标签页：CPU 与内存的数字表加历史曲线，以及各项总数（Windows 2000 的布局）。
+//! 性能页只提供采样数值与历史曲线；文字、行列、裁剪由共享控件实现。
 use crate::{
+    child,
     processes::grouped,
     system::{HISTORY, Monitor, Totals},
 };
-use canvas::Rect;
-use classic_theme::{Edge, Rgb, SystemColor as C};
-use classic_ui::{Ink, Painter};
+use liteos_ui::{Draw, Layout, Rect, Widget, WidgetKind as Kind, state};
 use std::collections::VecDeque;
-
-const GREEN: Rgb = Rgb {
-    red: 0,
-    green: 255,
-    blue: 0,
-};
-const GRID: Rgb = Rgb {
-    red: 0,
-    green: 128,
-    blue: 0,
-};
-const BLACK: Rgb = Rgb {
-    red: 0,
-    green: 0,
-    blue: 0,
-};
-const GRAPH_HEIGHT: i32 = 84;
-/// 网格线间距与曲线每个采样的水平步长。
-const GRID_STEP: i32 = 12;
-const SAMPLE_STEP: i32 = 3;
-
-/// 一组"标题加若干（名称，值）行"：左上角位置、组标题、各行。
-type Block<'a> = (i32, i32, &'a str, Vec<(&'a str, String)>);
-
-/// 画整个性能页；`page` 是标签页内部矩形。
-pub fn paint(p: &mut Painter<'_>, page: Rect, monitor: &Monitor, totals: Totals) {
-    let meter_width = 76;
-    let history_x = page.x + 8 + meter_width + 8;
-    let history_width = page.right() - 8 - history_x;
-    let (used, _) = monitor.memory.commit();
-    let rows = [
-        (
-            "CPU 使用",
-            "CPU 使用记录",
-            format!("{} %", monitor.cpu_percent),
-            u32::from(monitor.cpu_percent),
-            &monitor.cpu_history,
-        ),
-        (
-            "内存使用",
-            "内存使用记录",
-            format!("{}K", grouped(used)),
-            monitor.memory_history.back().map_or(0, |v| u32::from(*v)),
-            &monitor.memory_history,
-        ),
-    ];
-    for (index, (meter_title, history_title, text, percent, history)) in rows.iter().enumerate() {
-        let y = page.y + 8 + index as i32 * (GRAPH_HEIGHT + 6);
-        let meter = Rect::new(page.x + 8, y, meter_width, GRAPH_HEIGHT);
-        p.group_box(meter, meter_title);
-        paint_meter(p, meter, text, *percent);
-        let graph = Rect::new(history_x, y, history_width, GRAPH_HEIGHT);
-        p.group_box(graph, history_title);
-        paint_history(p, graph, history);
-    }
-
-    let top = page.y + 8 + 2 * (GRAPH_HEIGHT + 6);
-    let width = (page.width - 24) / 2;
-    let (left, right) = (page.x + 8, page.x + 16 + width);
-    let step = p.line_height() + 3;
-    let height = |lines: i32| 18 + lines * step;
-    let physical = &monitor.memory;
-    let (commit_used, commit_limit) = monitor.memory.commit();
-    let blocks: [Block; 4] = [
-        (
-            left,
-            top,
-            "总数",
-            vec![
-                ("句柄数", grouped(totals.handles)),
-                ("线程数", grouped(totals.threads)),
-                ("进程数", grouped(totals.processes)),
-            ],
-        ),
-        (
-            left,
-            top + height(3) + 6,
-            "物理内存(K)",
-            vec![
-                ("总共", grouped(physical.total)),
-                ("可用数", grouped(physical.available)),
-                ("系统缓存", grouped(physical.cached)),
-            ],
-        ),
-        (
-            right,
-            top,
-            "认可用量(K)",
-            vec![
-                ("总数", grouped(commit_used)),
-                ("限制", grouped(commit_limit)),
-                ("峰值", grouped(monitor.commit_peak)),
-            ],
-        ),
-        (
-            right,
-            top + height(3) + 6,
-            "内核内存(K)",
-            vec![("总数", grouped(physical.slab))],
-        ),
-    ];
-    for (x, y, title, lines) in blocks {
-        let group = Rect::new(x, y, width, height(lines.len() as i32));
-        p.group_box(group, title);
-        for (row, (label, value)) in lines.iter().enumerate() {
-            let line_y = group.y + 18 + row as i32 * step - 1;
-            let value_width = (p.text_width(value, false) + p.scale() - 1) / p.scale();
-            // 标签只能用到值左边的空间，放不下时截断。
-            p.text_fit(
-                group.x + 10,
-                line_y,
-                group.width - 20 - value_width - 6,
-                label,
-                Ink::Color(C::ButtonText),
-                false,
-            );
-            p.text(
-                group.right() - 10 - value_width,
-                line_y,
-                value,
-                Ink::Color(C::ButtonText),
-                false,
-            );
+pub struct View {
+    cpu: Widget,
+    memory: Widget,
+    cpu_history: Widget,
+    memory_history: Widget,
+    totals: Widget,
+    physical: Widget,
+    commit: Widget,
+    kernel: Widget,
+    _labels: Vec<Widget>,
+}
+fn metric(
+    page: &Widget,
+    title: &str,
+    history: &str,
+) -> liteos_ui::Result<(Widget, Widget, Vec<Widget>)> {
+    let row = child(
+        page,
+        Kind::Row,
+        "",
+        Layout {
+            height: 100,
+            gap: 8,
+            ..Default::default()
+        },
+    )?;
+    let numbers = child(
+        &row,
+        Kind::Column,
+        "",
+        Layout {
+            width: 110,
+            gap: 4,
+            ..Default::default()
+        },
+    )?;
+    let caption = child(&numbers, Kind::Label, title, Layout::default())?;
+    let value = child(
+        &numbers,
+        Kind::Label,
+        "",
+        Layout {
+            grow: 1,
+            ..Default::default()
+        },
+    )?;
+    let chart = child(
+        &row,
+        Kind::Column,
+        "",
+        Layout {
+            grow: 1,
+            gap: 4,
+            ..Default::default()
+        },
+    )?;
+    let chart_caption = child(&chart, Kind::Label, history, Layout::default())?;
+    let canvas = child(
+        &chart,
+        Kind::Canvas,
+        "",
+        Layout {
+            grow: 1,
+            ..Default::default()
+        },
+    )?;
+    Ok((value, canvas, vec![caption, chart_caption]))
+}
+impl View {
+    pub fn new(page: &Widget) -> liteos_ui::Result<Self> {
+        let (cpu, cpu_history, mut labels) = metric(page, "CPU 使用", "CPU 使用记录")?;
+        let (memory, memory_history, more) = metric(page, "内存使用", "内存使用记录")?;
+        labels.extend(more);
+        let row = child(
+            page,
+            Kind::Row,
+            "",
+            Layout {
+                grow: 1,
+                gap: 12,
+                ..Default::default()
+            },
+        )?;
+        let left = child(
+            &row,
+            Kind::Column,
+            "",
+            Layout {
+                grow: 1,
+                gap: 8,
+                ..Default::default()
+            },
+        )?;
+        let right = child(
+            &row,
+            Kind::Column,
+            "",
+            Layout {
+                grow: 1,
+                gap: 8,
+                ..Default::default()
+            },
+        )?;
+        let totals = child(&left, Kind::Label, "", Layout::default())?;
+        let physical = child(&left, Kind::Label, "", Layout::default())?;
+        let commit = child(&right, Kind::Label, "", Layout::default())?;
+        let kernel = child(&right, Kind::Label, "", Layout::default())?;
+        for label in [&totals, &physical, &commit, &kernel] {
+            label.set_state(state::WRAP)?;
         }
+        Ok(Self {
+            cpu,
+            memory,
+            cpu_history,
+            memory_history,
+            totals,
+            physical,
+            commit,
+            kernel,
+            _labels: labels,
+        })
+    }
+    pub fn update(&self, monitor: &Monitor, totals: Totals) -> liteos_ui::Result<()> {
+        let (used, limit) = monitor.memory.commit();
+        self.cpu.set_text(&format!("{} %", monitor.cpu_percent))?;
+        self.memory.set_text(&format!("{} K", grouped(used)))?;
+        self.totals.set_text(&format!(
+            "总数\n句柄数  {}\n线程数  {}\n进程数  {}",
+            grouped(totals.handles),
+            grouped(totals.threads),
+            grouped(totals.processes)
+        ))?;
+        self.physical.set_text(&format!(
+            "物理内存(K)\n总共  {}\n可用数  {}\n系统缓存  {}",
+            grouped(monitor.memory.total),
+            grouped(monitor.memory.available),
+            grouped(monitor.memory.cached)
+        ))?;
+        self.commit.set_text(&format!(
+            "认可用量(K)\n总数  {}\n限制  {}\n峰值  {}",
+            grouped(used),
+            grouped(limit),
+            grouped(monitor.commit_peak)
+        ))?;
+        self.kernel.set_text(&format!(
+            "内核内存(K)\n总数  {}",
+            grouped(monitor.memory.slab)
+        ))?;
+        self.charts(monitor)
+    }
+    pub fn charts(&self, monitor: &Monitor) -> liteos_ui::Result<()> {
+        history(&self.cpu_history, &monitor.cpu_history)?;
+        history(&self.memory_history, &monitor.memory_history)
     }
 }
-
-/// 组框内的黑底凹陷面板；返回其内部矩形。
-fn panel(p: &mut Painter<'_>, group: Rect) -> Rect {
-    let outer = Rect::new(
-        group.x + 8,
-        group.y + 18,
-        group.width - 16,
-        group.height - 26,
-    );
-    let inner = p.edge(outer, Edge::Sunken);
-    p.fill_rgb(inner, BLACK);
-    inner
-}
-
-/// 竖向分段数字表：下方是 `NN %` 数字，上方是自下而上点亮的绿色格子。
-fn paint_meter(p: &mut Painter<'_>, group: Rect, text: &str, percent: u32) {
-    let inner = panel(p, group);
-    let digits = p.line_height() + 4;
-    let bar = Rect::new(
-        inner.x + 8,
-        inner.y + 4,
-        inner.width - 16,
-        inner.height - digits - 6,
-    );
-    // 每格 3 像素高、间隔 1 像素；点亮的格数与百分比成正比。
-    let cells = bar.height / 4;
-    let lit = (cells * percent.min(100) as i32 + 50) / 100;
-    for cell in 0..cells {
-        let y = bar.bottom() - (cell + 1) * 4;
-        let rgb = if cell < lit { GREEN } else { GRID };
-        p.fill_rgb(Rect::new(bar.x, y, bar.width, 3), rgb);
+fn history(widget: &Widget, samples: &VecDeque<u8>) -> liteos_ui::Result<()> {
+    let bounds = widget.geometry()?;
+    if bounds.width <= 0 || bounds.height <= 0 {
+        return Ok(());
     }
-    let width = (p.text_width(text, false) + p.scale() - 1) / p.scale();
-    p.text_rgb(
-        inner.x + (inner.width - width) / 2,
-        inner.bottom() - digits + 2,
-        text,
-        GREEN,
-    );
-}
-
-/// 历史曲线：暗绿网格，绿色折线从右向左滚动。
-fn paint_history(p: &mut Painter<'_>, group: Rect, history: &VecDeque<u8>) {
-    let inner = panel(p, group);
-    let mut y = inner.bottom() - GRID_STEP;
-    while y > inner.y {
-        p.fill_rgb(Rect::new(inner.x, y, inner.width, 1), GRID);
-        y -= GRID_STEP;
+    let mut commands = vec![Draw {
+        kind: 1,
+        rect: Rect::new(0, 0, bounds.width, bounds.height),
+        color: 0,
+        bold: false,
+        text: "",
+    }];
+    let mut fill = |rect, color| {
+        commands.push(Draw {
+            kind: 1,
+            rect,
+            color,
+            bold: false,
+            text: "",
+        })
+    };
+    for x in (0..bounds.width).step_by(12) {
+        fill(Rect::new(x, 0, 1, bounds.height), 0x008000);
     }
-    let mut x = inner.x + GRID_STEP;
-    while x < inner.right() {
-        p.fill_rgb(Rect::new(x, inner.y, 1, inner.height), GRID);
-        x += GRID_STEP;
+    for y in (0..bounds.height).step_by(12) {
+        fill(Rect::new(0, y, bounds.width, 1), 0x008000);
     }
-    let level = |value: u8| inner.bottom() - 1 - i32::from(value) * (inner.height - 1) / 100;
-    let visible = ((inner.width / SAMPLE_STEP) as usize)
+    let visible = ((bounds.width / 3) as usize)
         .min(HISTORY)
-        .min(history.len());
-    let mut previous: Option<i32> = None;
-    for (index, value) in history.iter().skip(history.len() - visible).enumerate() {
-        let x = inner.right() - (visible - index) as i32 * SAMPLE_STEP;
-        let y = level(*value);
-        let (low, high) = previous.map_or((y, y), |before| (y.min(before), y.max(before)));
-        p.fill_rgb(Rect::new(x, low, SAMPLE_STEP, high - low + 1), GREEN);
+        .min(samples.len());
+    let mut previous = None;
+    for (index, value) in samples.iter().skip(samples.len() - visible).enumerate() {
+        let x = bounds.width - (visible - index) as i32 * 3;
+        let y = bounds.height - 1 - i32::from(*value) * (bounds.height - 1) / 100;
+        let (low, high) = previous.map_or((y, y), |before: i32| (before.min(y), before.max(y)));
+        fill(Rect::new(x, low, 3, high - low + 1), 0x00ff00);
         previous = Some(y);
     }
+    widget.set_drawing(&commands)
 }

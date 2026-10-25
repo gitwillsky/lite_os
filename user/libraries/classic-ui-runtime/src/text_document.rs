@@ -1,4 +1,4 @@
-//! 记事本的文本模型：按行保存，光标与选区以（行，字符列）表示；不含任何绘制。
+//! 多行编辑控件的文本模型：按行保存，光标与选区以（行，字符列）表示；不含任何绘制。
 
 /// 光标或选区端点：（行，字符列）。
 pub type Position = (usize, usize);
@@ -24,13 +24,6 @@ fn byte_at(line: &str, column: usize) -> usize {
 }
 
 impl Document {
-    pub fn new() -> Self {
-        Self {
-            lines: vec![String::new()],
-            ..Self::default()
-        }
-    }
-
     /// 以 `text` 为内容；换行统一按 `\n`（`\r\n` 的 `\r` 被丢弃）。
     pub fn from_text(text: &str) -> Self {
         let mut lines: Vec<String> = text
@@ -112,8 +105,10 @@ impl Document {
 
     pub fn move_left(&mut self, extend: bool) {
         let (row, column) = self.cursor;
-        if !extend && let Some((start, _)) = self.selection() {
-            return self.set_cursor(start, false);
+        if !extend {
+            if let Some((start, _)) = self.selection() {
+                return self.set_cursor(start, false);
+            }
         }
         let target = if column > 0 {
             (row, column - 1)
@@ -127,8 +122,10 @@ impl Document {
 
     pub fn move_right(&mut self, extend: bool) {
         let (row, column) = self.cursor;
-        if !extend && let Some((_, end)) = self.selection() {
-            return self.set_cursor(end, false);
+        if !extend {
+            if let Some((_, end)) = self.selection() {
+                return self.set_cursor(end, false);
+            }
         }
         let target = if column < char_count(&self.lines[row]) {
             (row, column + 1)

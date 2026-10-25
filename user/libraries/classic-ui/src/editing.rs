@@ -53,6 +53,16 @@ impl Edit {
         self.anchor.min(self.cursor)..self.anchor.max(self.cursor)
     }
 
+    /// 将光标移到 UTF-8 字节边界，extend 保留选择锚点；非法位置保持原状，返回是否改变。
+    pub fn select_position(&mut self, position: usize, extend: bool) -> bool {
+        if position > self.text.len() || !self.text.is_char_boundary(position) {
+            return false;
+        }
+        let before = (self.cursor, self.anchor);
+        self.move_to(position, extend);
+        before != (self.cursor, self.anchor)
+    }
+
     fn move_to(&mut self, position: usize, selecting: bool) {
         self.cursor = position;
         if !selecting {
@@ -225,9 +235,57 @@ impl crate::Painter<'_> {
         password: bool,
         leading: i32,
     ) -> canvas::Rect {
+        self.paint_edit(rect, edit, focused, password, leading, true)
+    }
+    /// 绘制启用/禁用的标准编辑控件；禁用时无选择或光标，文字与背景使用系统禁用颜色。
+    pub fn edit_enabled(
+        &mut self,
+        rect: canvas::Rect,
+        edit: &Edit,
+        focused: bool,
+        password: bool,
+        enabled: bool,
+    ) -> canvas::Rect {
+        self.paint_edit(rect, edit, focused && enabled, password, 0, enabled)
+    }
+    /// 以相同滚动与字符度量命中单行文字，返回原文的合法 UTF-8 字节边界，无错误返回。
+    pub fn edit_hit(&self, rect: canvas::Rect, edit: &Edit, password: bool, x: i32) -> usize {
+        let inner = rect.inset(4);
+        let caret = if password {
+            edit.text()[..edit.cursor()].chars().count() as i32 * self.text_width("*", false)
+        } else {
+            self.text_width(&edit.text()[..edit.cursor()], false)
+        };
+        let shift = self.logical_ceil((caret + self.scale - self.px(inner.width)).max(0));
+        let target = self.px(x - inner.x + shift);
+        let mut pen = 0;
+        for (index, character) in edit.text().char_indices() {
+            let mut bytes = [0; 4];
+            let text = if password {
+                "*"
+            } else {
+                character.encode_utf8(&mut bytes)
+            };
+            let advance = self.text_width(text, false);
+            if target < pen + advance / 2 {
+                return index;
+            }
+            pen += advance;
+        }
+        edit.text().len()
+    }
+    fn paint_edit(
+        &mut self,
+        rect: canvas::Rect,
+        edit: &Edit,
+        focused: bool,
+        password: bool,
+        leading: i32,
+        enabled: bool,
+    ) -> canvas::Rect {
         use crate::Ink;
         use classic_theme::SystemColor;
-        let mut inner = self.edit_frame(rect, true).inset(2);
+        let mut inner = self.edit_frame(rect, enabled).inset(2);
         inner.x += leading;
         inner.width -= leading;
         let masked;
@@ -251,7 +309,17 @@ impl crate::Painter<'_> {
         let previous = self.surface.clip();
         self.surface
             .set_clip(previous.intersect(self.physical(inner)));
-        self.text(x, y, text, Ink::Color(SystemColor::WindowText), false);
+        self.text(
+            x,
+            y,
+            text,
+            if enabled {
+                Ink::Color(SystemColor::WindowText)
+            } else {
+                Ink::Disabled
+            },
+            false,
+        );
         if focused && !selection.is_empty() {
             let left = self.text_width(&text[..selection.start], false);
             let right = self.text_width(&text[..selection.end], false);
@@ -335,5 +403,17 @@ mod tests {
         assert_eq!(chain.current(), None);
         assert_eq!(FocusChain::new(&[]).advance(true), None);
         assert!(!chain.focus(5));
+    }
+}
+
+impl Edit {
+    /// 用纯文本替换当前选择，过滤单行编辑不接受的控制字符。
+    /// 返回内容是否变化；光标与选择仍保持在 UTF-8 边界，无错误返回。
+    pub fn insert_text(&mut self, text: &str) -> bool {
+        let text: String = text
+            .chars()
+            .filter(|character| !character.is_control())
+            .collect();
+        self.replace_selection(&text)
     }
 }

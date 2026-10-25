@@ -71,6 +71,8 @@ impl Display {
         settings: LayerSettings,
     ) -> io::Result<WindowId> {
         settings.validate()?;
+        // new_id、surface、output、layer 四个固定参数占 16 字节；先验证再分配协议对象。
+        super::validate_wire_text(namespace, 16)?;
         let shell = self.layer_shell.ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::PermissionDenied,
@@ -107,6 +109,7 @@ impl Display {
                 role: Role::Layer { object },
                 configuration,
                 configured: false,
+                mapped: false,
                 frame: None,
             },
         );

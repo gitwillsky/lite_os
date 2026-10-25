@@ -1,4 +1,4 @@
-//! 唯一的 DRM master：两块 XRGB8888 dumb buffer 的双缓冲与 page flip。
+//! 唯一的 DRM master：选中的 CPU/GPU 后端独占一对扫描目标与 page flip。
 
 use std::io;
 
@@ -7,6 +7,25 @@ use linux_uapi::drm::{DrmDevice, DumbBuffer, Topology};
 struct Target {
     buffer: DumbBuffer,
     framebuffer: u32,
+    device: DrmDevice,
+}
+impl Drop for Target {
+    fn drop(&mut self) {
+        // 构造失败与正常退出都先移除 KMS 引用，再由字段析构释放 GEM。
+        let _ = self.device.remove_framebuffer(self.framebuffer);
+    }
+}
+enum Backend {
+    Cpu([Target; 2]),
+    Gpu(crate::compose::gpu::Gpu),
+}
+impl Backend {
+    fn framebuffer(&self, back: usize) -> u32 {
+        match self {
+            Self::Cpu(targets) => targets[back].framebuffer,
+            Self::Gpu(gpu) => gpu.framebuffer(back),
+        }
+    }
 }
 
 /// 单一 connector/CRTC 的显示输出。
@@ -15,7 +34,7 @@ struct Target {
 pub struct Scanout {
     device: DrmDevice,
     topology: Topology,
-    targets: [Target; 2],
+    backend: Backend,
     back: usize,
     /// 在途 flip 的序号；同一时刻至多一个 flip，缺少这条约束会让第二次 `PAGE_FLIP` 被内核以 `EBUSY` 拒绝。
     pending: Option<u64>,
@@ -36,22 +55,35 @@ impl Scanout {
             u32::from(topology.mode.width()),
             u32::from(topology.mode.height()),
         );
-        let mut targets = Vec::with_capacity(2);
-        for _ in 0..2 {
-            let buffer = device.create_dumb(width, height)?;
-            let framebuffer = device.add_framebuffer(&buffer, 24)?;
-            targets.push(Target {
-                buffer,
-                framebuffer,
-            });
-        }
-        let targets: [Target; 2] = targets
-            .try_into()
-            .map_err(|_| io::Error::other("two targets"))?;
+        // 1. 先协商能力，再分配唯一后端。Unsupported 之外的错误必须向上传播。
+        // 2. 启动画面也消费所选后端的像素存储，不能因此永久保留另一对全屏目标。
+        let backend = match device.validate_virgl2() {
+            Ok(()) => Backend::Gpu(crate::compose::gpu::Gpu::new(&device, width, height)?),
+            Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+                let target = || -> io::Result<Target> {
+                    let buffer = device.create_dumb(width, height)?;
+                    let framebuffer = device.add_framebuffer(&buffer, 24)?;
+                    Ok(Target {
+                        buffer,
+                        framebuffer,
+                        device: device.clone(),
+                    })
+                };
+                Backend::Cpu([target()?, target()?])
+            }
+            Err(error) => return Err(error),
+        };
+        println!(
+            "compositor: composition backend={}",
+            match &backend {
+                Backend::Cpu(_) => "CPU",
+                Backend::Gpu(_) => "VirGL2",
+            }
+        );
         Ok(Self {
             device,
             topology,
-            targets,
+            backend,
             back: 0,
             pending: None,
             sequence: 0,
@@ -59,16 +91,25 @@ impl Scanout {
     }
 
     pub fn width(&self) -> usize {
-        self.targets[0].buffer.width()
+        usize::from(self.topology.mode.width())
     }
 
     pub fn height(&self) -> usize {
-        self.targets[0].buffer.height()
+        usize::from(self.topology.mode.height())
     }
 
-    /// 当前可绘制的后缓冲。
-    pub fn back(&mut self) -> &mut DumbBuffer {
-        &mut self.targets[self.back].buffer
+    /// 在可写后缓冲绘制启动画面；flip 在途返回 WouldBlock，画面或设备错误直接传播。
+    pub fn paint_boot(&mut self, scene: &[u8], permille: u16) -> io::Result<()> {
+        if self.pending.is_some() {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        match &mut self.backend {
+            Backend::Cpu(targets) => {
+                crate::boot::paint(&mut targets[self.back].buffer, scene, permille)
+                    .map_err(io::Error::other)
+            }
+            Backend::Gpu(gpu) => gpu.paint_boot(self.back, scene, permille),
+        }
     }
 
     /// 首次把后缓冲设为 CRTC 的扫描对象（modeset），并交换前后缓冲。
@@ -78,7 +119,7 @@ impl Scanout {
     /// 内核拒绝 modeset。
     pub fn show_first(&mut self) -> io::Result<()> {
         self.device
-            .set_crtc(&self.topology, self.targets[self.back].framebuffer)?;
+            .set_crtc(&self.topology, self.backend.framebuffer(self.back))?;
         self.back ^= 1;
         Ok(())
     }
@@ -100,7 +141,7 @@ impl Scanout {
         self.sequence += 1;
         self.device.page_flip(
             &self.topology,
-            self.targets[self.back].framebuffer,
+            self.backend.framebuffer(self.back),
             self.sequence,
         )?;
         self.pending = Some(self.sequence);
@@ -123,7 +164,42 @@ impl Scanout {
             ));
         }
         self.pending = None;
+        if let Backend::Gpu(gpu) = &mut self.backend {
+            gpu.complete();
+        }
         self.back ^= 1;
+        Ok(())
+    }
+
+    /// 按设备能力选择一次后端；CPU/GPU 消费同一标准 Wayland 内容、几何与叠加顺序。
+    /// 已有 flip 时拒绝覆盖 back；渲染/提交失败直接返回错误。
+    pub fn compose(
+        &mut self,
+        theme: &classic_theme::Theme,
+        windows: &[crate::compose::Drawable<'_>],
+        inversions: &[canvas::Rect],
+        has_overlay: bool,
+        overlay: impl FnOnce(canvas::Surface<'_>),
+    ) -> io::Result<()> {
+        if self.pending.is_some() {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        match &mut self.backend {
+            Backend::Gpu(gpu) => {
+                gpu.render(self.back, theme, windows, inversions, has_overlay, overlay)?
+            }
+            Backend::Cpu(targets) => {
+                if !crate::compose::compose(
+                    &mut targets[self.back].buffer,
+                    theme,
+                    windows,
+                    inversions,
+                    overlay,
+                ) {
+                    return Err(io::Error::other("invalid scanout drawing surface"));
+                }
+            }
+        }
         Ok(())
     }
 

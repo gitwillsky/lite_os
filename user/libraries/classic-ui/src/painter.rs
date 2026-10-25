@@ -6,6 +6,8 @@ use typeface::Typeface;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ink {
     Color(SystemColor),
+    /// 专用画布的明确 RGB，仍复用相同的文字布局与裁剪路径。
+    Rgb(Rgb),
     Disabled,
 }
 
@@ -164,6 +166,19 @@ impl<'a> Painter<'a> {
         });
     }
 
+    /// 返回给定逻辑宽度下完整文本所需的高度，与 text_wrapped 共用断行规则。
+    /// 非正宽度返回零；无错误返回。
+    pub fn wrapped_height(&self, width: i32, text: &str, bold: bool) -> i32 {
+        if width <= 0 {
+            return 0;
+        }
+        let count = typeface::wrap(text, self.px(width), |ch| {
+            self.typeface.glyph(ch, bold).advance
+        })
+        .len();
+        (count as i32).saturating_mul(self.line_height())
+    }
+
     /// 在逻辑矩形中按词与中文断行规则绘制文本，并裁剪到矩形边界。
     ///
     /// # Parameters
@@ -193,6 +208,37 @@ impl<'a> Painter<'a> {
         lines.len() as i32 * line_height
     }
 
+    /// 用系统等宽字体绘制 8×16 逻辑像素网格文字；宽字符占两格。
+    /// font 为资源上下文拥有的 atlas，未知字符显示其替代字形；矩形外全部裁剪，无错误返回。
+    pub fn monospace(
+        &mut self,
+        rect: Rect,
+        text: &str,
+        font: &terminal_font::TerminalFont,
+        rgb: Rgb,
+        bold: bool,
+    ) {
+        use unicode_width::UnicodeWidthChar;
+        self.clipped(rect, |p| {
+            let mut x = rect.x;
+            for character in text.chars() {
+                let columns = character.width().unwrap_or(1).clamp(1, 2) as i32;
+                if x >= rect.right() {
+                    break;
+                }
+                let mask = Mask {
+                    coverage: font.bitmap(font.glyph(character), bold),
+                    width: columns * 16,
+                    height: terminal_font::CELL_HEIGHT as i32,
+                    stride: terminal_font::BITMAP_WIDTH,
+                };
+                let target = p.physical(Rect::new(x, rect.y, columns * 8, 16));
+                p.surface.draw_mask_scaled(mask, target, to_color(rgb));
+                x += columns * 8;
+            }
+        });
+    }
+
     /// 在逻辑坐标 `(x, y)`（行盒左上角）绘制单行文本，返回物理像素宽度。
     pub fn text(&mut self, x: i32, y: i32, text: &str, ink: Ink, bold: bool) -> i32 {
         self.ink_physical(self.px(x), self.px(y), text, ink, bold)
@@ -201,6 +247,7 @@ impl<'a> Painter<'a> {
     /// 禁用样式是浮雕：先在 (+1, +1) 逻辑像素用高光色，再原位用阴影色。
     fn ink_physical(&mut self, x: i32, y: i32, text: &str, ink: Ink, bold: bool) -> i32 {
         match ink {
+            Ink::Rgb(rgb) => self.text_physical(x, y, text, to_color(rgb), bold),
             Ink::Color(color) => {
                 let color = self.color(color);
                 self.text_physical(x, y, text, color, bold)
@@ -252,6 +299,7 @@ impl<'a> Painter<'a> {
         let width = self.text_width(&label[span], bold);
         let (ascent, _) = self.typeface.metrics();
         let color = match ink {
+            Ink::Rgb(rgb) => to_color(rgb),
             Ink::Color(color) => self.color(color),
             Ink::Disabled => self.color(SystemColor::ButtonShadow),
         };

@@ -54,8 +54,9 @@
   以硬件光标跟随输入，并作为 Wayland 服务端把客户端窗口整帧合成到 scanout（`$XDG_RUNTIME_DIR/wayland-0`；
   `wl_seat` 有指针与键盘，特权连接有 layer-shell，所有连接有 foreign-toplevel）。键盘 keymap 由 `keyboard::xkb` 从同一张键码表生成，
   自包含、不依赖客户端的 xkeyboard-config。
-  当前桌面使用 `wl_shm`、CPU 合成与两块 DRM dumb buffer；底层已有 VirGL2 texture/shader/submit/scanout，
-  但桌面合成器尚未使用它，也尚未公布 linux-dmabuf。`damage`/`damage_buffer` 当前以整帧重绘保守覆盖，
+  桌面继续使用 `wl_shm`；具备 VirGL2 的设备使用纹理合成与两块 GPU render target，纯 2D 设备使用 CPU/dumb buffer。
+  Content 独占不可变提交的纹理，Scanout 将在途引用保活到 page-flip 完成；尚未公布 linux-dmabuf。
+  GPU 路径已接入代码，尚未执行画面/性能验收。`damage`/`damage_buffer` 当前以整帧重绘保守覆盖，
   不代表已经实现局部更新或 GPU 客户端零拷贝。
   Legacy `CURSOR2` 把 64×64 ARGB dumb BO 通过规范要求的
   `RESOURCE_CREATE_2D`/`TRANSFER_TO_HOST_2D` 投影到 VirtIO-GPU 独立 cursorq；该 queue 的

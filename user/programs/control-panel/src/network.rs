@@ -1,11 +1,7 @@
-//! "本地连接 状态"：连接状态、收发字节与 TCP/IP 地址；只读，地址由 DHCP（network-service）分配。
-use crate::{Icons, Page};
-use canvas::Rect;
-use classic_theme::SystemColor as C;
-use classic_ui::{Ink, Painter};
-use std::{fs, process::Command};
-
-/// 启动时读到的地址信息；DHCP 租约变化后重新打开本窗口才会刷新。
+//! 网络信息和周期采样在有界后台池读取，界面只更新标准标签。
+use crate::{Activity, Page, group, label, pair};
+use liteos_ui::{Background, Clock, PropertySheet, Widget};
+use std::{fs, process::Command, time::Duration};
 struct Address {
     ip: String,
     mask: String,
@@ -13,7 +9,7 @@ struct Address {
     dns: String,
 }
 
-pub struct Network {
+pub struct Data {
     interface: Option<String>,
     address: Option<Address>,
 }
@@ -93,8 +89,8 @@ fn dns() -> Option<String> {
     (!servers.is_empty()).then(|| servers.join(", "))
 }
 
-impl Network {
-    pub fn new() -> Self {
+impl Data {
+    pub fn read() -> Self {
         let interface = counters().map(|(name, ..)| name);
         let address = interface.as_deref().and_then(|name| {
             let (ip, mask) = ip_and_mask(name)?;
@@ -122,104 +118,78 @@ fn bytes_text(value: u64) -> String {
     text
 }
 
-impl Page for Network {
-    fn title(&self) -> &'static str {
-        "本地连接 状态"
-    }
-    fn tabs(&self) -> &'static [&'static str] {
-        &["常规", "支持"]
-    }
-    fn icon(&self) -> &'static str {
-        if self.address.is_some() {
-            "network-local"
-        } else {
-            "network-disconnected"
-        }
-    }
-    fn size(&self) -> (i32, i32) {
-        (360, 380)
-    }
-    fn paint(&self, p: &mut Painter<'_>, page: Rect, tab: usize, _now: i64, _icons: &Icons) {
-        let ink = Ink::Color(C::ButtonText);
-        let row = |p: &mut Painter<'_>, group: Rect, index: i32, label: &str, value: &str| {
-            let y = group.y + 22 + index * (p.line_height() + 8);
-            // 值靠右、至多占一半；标签用左边剩下的空间，两者放不下都截断。
-            let value = p.fit(value, group.width / 2 - 14);
-            let width = (p.text_width(&value, false) + p.scale() - 1) / p.scale();
-            p.text_fit(
-                group.x + 14,
-                y,
-                group.width - 28 - width - 8,
-                label,
-                ink,
-                false,
-            );
-            p.text(group.right() - 14 - width, y, &value, ink, false);
-        };
-        if tab == 0 {
-            let connected = self.address.is_some();
-            let group = Rect::new(page.x + 12, page.y + 12, page.width - 24, 70);
-            p.group_box(group, "连接");
-            row(
-                p,
-                group,
-                0,
+pub struct Network {
+    _controls: Vec<Widget>,
+    received: Widget,
+    sent: Widget,
+}
+impl Network {
+    pub fn build(sheet: &PropertySheet, data: Data) -> liteos_ui::Result<Self> {
+        let general = sheet.page("常规")?;
+        let connection = group(&general, "连接")?;
+        let mut controls = Vec::new();
+        for (title, text) in [
+            (
                 "状态：",
-                if connected { "已连接" } else { "已断开" },
-            );
-            row(
-                p,
-                group,
-                1,
-                "接口：",
-                self.interface.as_deref().unwrap_or("无"),
-            );
-            let (received, sent) = counters().map_or((0, 0), |(_, rx, tx)| (rx, tx));
-            let group = Rect::new(page.x + 12, page.y + 96, page.width - 24, 88);
-            p.group_box(group, "活动");
-            row(p, group, 0, "发送：", &format!("{} 字节", bytes_text(sent)));
-            row(
-                p,
-                group,
-                1,
-                "接收：",
-                &format!("{} 字节", bytes_text(received)),
-            );
-        } else {
-            let group = Rect::new(page.x + 12, page.y + 12, page.width - 24, 160);
-            p.group_box(group, "连接状态");
-            let none = String::from("—");
-            let address = self.address.as_ref();
-            row(p, group, 0, "地址类型：", "DHCP 分配");
-            row(p, group, 1, "IP 地址：", address.map_or(&none, |a| &a.ip));
-            row(
-                p,
-                group,
-                2,
-                "子网掩码：",
-                address.map_or(&none, |a| &a.mask),
-            );
-            row(
-                p,
-                group,
-                3,
-                "默认网关：",
-                address
-                    .filter(|a| !a.gateway.is_empty())
-                    .map_or(&none, |a| &a.gateway),
-            );
-            row(
-                p,
-                group,
-                4,
-                "DNS 服务器：",
-                address
-                    .filter(|a| !a.dns.is_empty())
-                    .map_or(&none, |a| &a.dns),
-            );
+                if data.address.is_some() {
+                    "已连接"
+                } else {
+                    "已断开"
+                },
+            ),
+            ("接口：", data.interface.as_deref().unwrap_or("无")),
+        ] {
+            let (a, b) = pair(&connection, title, text)?;
+            controls.extend([a, b]);
         }
+        let activity = group(&general, "活动")?;
+        let (a, sent) = pair(&activity, "发送：", "正在读取…")?;
+        controls.push(a);
+        let (a, received) = pair(&activity, "接收：", "正在读取…")?;
+        controls.push(a);
+        let support = sheet.page("支持")?;
+        let section = group(&support, "连接状态")?;
+        let address = data.address.as_ref();
+        for (title, text) in [
+            ("地址类型：", "DHCP 分配"),
+            ("IP 地址：", address.map_or("—", |a| &a.ip)),
+            ("子网掩码：", address.map_or("—", |a| &a.mask)),
+            ("默认网关：", address.map_or("—", |a| &a.gateway)),
+            ("DNS 服务器：", address.map_or("—", |a| &a.dns)),
+        ] {
+            let (a, b) = pair(&section, title, text)?;
+            controls.extend([a, b]);
+        }
+        controls.push(label(&support, "地址由 network-service 配置。")?);
+        controls.extend([general, connection, activity, support, section]);
+        Ok(Self {
+            _controls: controls,
+            received,
+            sent,
+        })
     }
-    fn click(&mut self, _page: Rect, _tab: usize, _point: (i32, i32)) -> bool {
-        false
+}
+impl Page for Network {
+    fn activity(&self, background: Background, clock: Clock) -> Option<Activity> {
+        let (received, sent) = (self.received.clone(), self.sent.clone());
+        Some(Box::pin(async move {
+            loop {
+                let Ok(work) = background.run(counters) else {
+                    break;
+                };
+                let (rx, tx) = work.await.map_or((0, 0), |(_, rx, tx)| (rx, tx));
+                if received
+                    .set_text(&format!("{} 字节", bytes_text(rx)))
+                    .is_err()
+                    || sent.set_text(&format!("{} 字节", bytes_text(tx))).is_err()
+                {
+                    break;
+                }
+                let Ok(wait) = clock.sleep(Duration::from_millis(500)) else {
+                    break;
+                };
+                wait.await;
+            }
+        }))
     }
 }

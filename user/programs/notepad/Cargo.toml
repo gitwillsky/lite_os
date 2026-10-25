@@ -9,9 +9,5 @@ name = "notepad"
 path = "src/main.rs"
 
 [dependencies]
-liteos-runtime = { path = "../../libraries/liteos-runtime" }
-canvas = { path = "../../libraries/canvas" }
-classic-theme = { path = "../../libraries/classic-theme" }
+liteos-ui = { path = "../../libraries/liteos-ui" }
 calendar = { path = "../../libraries/calendar" }
-classic-ui = { path = "../../libraries/classic-ui" }
-typeface = { path = "../../libraries/typeface" }

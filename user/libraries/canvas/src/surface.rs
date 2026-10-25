@@ -214,6 +214,32 @@ impl<'a> Surface<'a> {
         }
     }
 
+    /// 将覆盖率蒙版缩放到目标矩形并着色，不分配临时像素。
+    /// 非正尺寸或源缓冲布局错误时不绘制；裁剪与其他 Surface 操作一致。
+    pub fn draw_mask_scaled(&mut self, mask: Mask<'_>, rect: Rect, color: Color) {
+        if rect.is_empty()
+            || mask.width <= 0
+            || mask.height <= 0
+            || !fits(mask.coverage.len(), mask.width, mask.height, mask.stride)
+        {
+            return;
+        }
+        for (left, top, row) in self.visible_rows(rect) {
+            let sy = (i64::from(top - rect.y) * i64::from(mask.height) / i64::from(rect.height))
+                as usize;
+            for (column, pixel) in row.iter_mut().enumerate() {
+                let sx = ((i64::from(left - rect.x) + column as i64) * i64::from(mask.width)
+                    / i64::from(rect.width)) as usize;
+                let coverage = u32::from(mask.coverage[sy * mask.stride + sx]);
+                match coverage {
+                    0 => {}
+                    255 if color.alpha() == 255 => *pixel = color.0,
+                    _ => *pixel = over(scale_color(color, coverage), *pixel),
+                }
+            }
+        }
+    }
+
     /// 用 `color`（不透明或预乘）按覆盖率蒙版着色，左上角放在 `(x, y)`。
     pub fn draw_mask(&mut self, mask: Mask<'_>, x: i32, y: i32, color: Color) {
         if !fits(mask.coverage.len(), mask.width, mask.height, mask.stride) {

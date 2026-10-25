@@ -1123,8 +1123,6 @@ kernel/src/drivers/entropy.rs :: pub (crate) trait EntropySource
 kernel/src/drivers/entropy.rs :: trait EntropySource :: fn fill (& self , bytes : & mut [MaybeUninit < u8 >]) -> Result < () , () >
 kernel/src/drivers/graphics.rs :: enum CursorCommand :: # [doc = " 切换光标资源并同时设置位置与热点；resource 0 表示隐藏。"] Update { # [doc = " Scanout 0 中的水平位置。"] x : u32 , # [doc = " Scanout 0 中的垂直位置。"] y : u32 , # [doc = " true 使用 adapter-owned 2D cursor resource；false 表示隐藏。"] visible : bool , # [doc = " Resource 内的水平热点。"] hot_x : u32 , # [doc = " Resource 内的垂直热点。"] hot_y : u32 , }
 kernel/src/drivers/graphics.rs :: enum CursorCommand :: # [doc = " 只移动当前光标，不重新读取像素。"] Move { # [doc = " Scanout 0 中的水平位置。"] x : u32 , # [doc = " Scanout 0 中的垂直位置。"] y : u32 , # [doc = " 当前 cursor resource 是否可见。QEMU 10 的 MOVE 路径仍以 resource_id"] # [doc = " 控制 host pointer 可见性；缺失该状态会让每次移动都隐藏刚更新的光标。"] visible : bool , }
-kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 从 context 可见对象集合删除 resource。"] ContextDetachResource { # [doc = " 已创建的 context identity。"] context_id : u32 , # [doc = " 已 attach 的 resource identity。"] resource_id : u32 , }
-kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 从 resource 解绑 guest backing。"] ResourceDetachBacking { # [doc = " 已创建且已绑定 backing 的 resource identity。"] resource_id : u32 , }
 kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 创建一个 VirGL context。"] ContextCreate { # [doc = " 非零、device-wide unique context identity。"] context_id : u32 , # [doc = " `VIRTIO_GPU_CONTEXT_INIT_CAPSET_ID_MASK` 编码后的 capset 初始化值。"] context_init : u32 , # [doc = " 最多 64 bytes 的诊断名称。"] name : & 'a [u8] , }
 kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 创建一个 VirGL pipe resource。"] ResourceCreate3d { # [doc = " 非零、device-wide unique resource identity。"] resource_id : u32 , # [doc = " Gallium pipe texture target。"] target : u32 , # [doc = " VirGL format identity。"] format : u32 , # [doc = " Gallium/VirGL bind flags。"] bind : u32 , # [doc = " Base-level pixel width。"] width : u32 , # [doc = " Base-level pixel height。"] height : u32 , # [doc = " Base-level pixel depth。"] depth : u32 , # [doc = " Array layer count。"] array_size : u32 , # [doc = " Highest mip level。"] last_level : u32 , # [doc = " Sample count。"] samples : u32 , # [doc = " Protocol resource flags。"] flags : u32 , }
 kernel/src/drivers/graphics.rs :: enum VirglCommand :: # [doc = " 发布 resource 已完成渲染的矩形。"] Flush { # [doc = " 已创建的 GPU resource identity。"] resource_id : u32 , # [doc = " scanout 坐标系中的非空矩形。"] rectangle : DisplayRect , }
@@ -1320,6 +1318,7 @@ kernel/src/drm/card_file.rs :: pub (super) const CARD_PATH : & [u8] = b"dri/card
 kernel/src/drm/card_file.rs :: pub (super) struct CardDriver
 kernel/src/drm/device.rs :: pub (crate) fn init (display : Arc < dyn GraphicsDevice >) -> Result < () , () >
 kernel/src/drm/device.rs :: pub (crate) impl DrmFile :: fn remove_framebuffer (& self , id : u32) -> Result < FramebufferRemoval , DrmError >
+kernel/src/drm/device.rs :: pub (super) fn advance_graphics_cleanup (device : & DrmDevice , completion : & mut CompletionState)
 kernel/src/drm/device.rs :: pub (super) fn display_error (error : DisplayError) -> DrmError
 kernel/src/drm/device.rs :: pub (super) fn open () -> Result < Arc < DrmFile > , () >
 kernel/src/drm/device.rs :: pub (super) impl DrmFile :: fn submit_damage (& self , completion : & mut CompletionState , framebuffer_id : u32 , rectangles : & [DisplayRect] ,) -> Result < DrmWait , DrmError >
@@ -1341,8 +1340,6 @@ kernel/src/drm/event.rs :: pub (super) impl EventQueue :: fn len (& self) -> usi
 kernel/src/drm/event.rs :: pub (super) impl EventQueue :: fn new () -> Self
 kernel/src/drm/event.rs :: pub (super) impl EventQueue :: fn push (& mut self , event : DrmEvent)
 kernel/src/drm/event.rs :: pub (super) struct EventQueue
-kernel/src/drm/graphics.rs :: enum VirglCleanupAction :: Context { context_id : u32 }
-kernel/src/drm/graphics.rs :: enum VirglCleanupAction :: Resource { handle : u32 , resource_id : u32 }
 kernel/src/drm/graphics.rs :: pub (crate) VirglResourceCreate :: array_size : u32
 kernel/src/drm/graphics.rs :: pub (crate) VirglResourceCreate :: bind : u32
 kernel/src/drm/graphics.rs :: pub (crate) VirglResourceCreate :: depth : u32
@@ -1370,52 +1367,68 @@ kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn prepare_legacy_virg
 kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn prepare_virgl_close (& self , handle : u32 ,) -> Result < PreparedVirglClose < '_ > , DrmError >
 kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn prepare_virgl_context (& self , capset_id : u32 , name : & [u8] ,) -> Result < PreparedVirglContext < '_ > , DrmError >
 kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn prepare_virgl_resource (& self , create : VirglResourceCreate ,) -> Result < PreparedVirglResource < '_ > , DrmError >
-kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn record_virgl_fence (& self , handles : & [u32] , fence : u64) -> Result < () , DrmError >
 kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn submit_virgl (& self , command : VirglCommand < '_ > ,) -> Result < DrmSubmission , DrmError >
 kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn supports_virgl_context_init (& self) -> bool
 kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn transfer_command (& self , transfer : VirglTransfer ,) -> Result < VirglCommand < 'static > , DrmError >
 kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn upload_cursor (& self , handle : u32) -> Result < DrmSubmission , DrmError >
-kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn validate_exec_resources (& self , handles : & [u32]) -> Result < u32 , DrmError >
 kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn virgl_capset_info (& self) -> Result < VirglCapsetInfo , DrmError >
 kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn virgl_resource_info (& self , handle : u32) -> Result < VirglResourceInfo , DrmError >
 kernel/src/drm/graphics.rs :: pub (crate) impl DrmFile :: fn virgl_wait (& self , handle : u32) -> Result < Option < DrmWait > , DrmError >
 kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglClose < '_ > :: fn publish (mut self)
-kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglClose < '_ > :: fn unref_command (& self) -> VirglCommand < 'static >
-kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglClose < '_ > :: fn wait (& self) -> Option < DrmWait >
 kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglContext < '_ > :: fn command (& self) -> VirglCommand < '_ >
 kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglContext < '_ > :: fn publish (mut self)
-kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglResource < '_ > :: const fn identities (& self) -> (u32 , u32)
 kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglResource < '_ > :: fn attach_command (& self) -> VirglCommand < 'static >
 kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglResource < '_ > :: fn context_attach_command (& self) -> VirglCommand < 'static >
 kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglResource < '_ > :: fn create_command (& self) -> VirglCommand < 'static >
 kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglResource < '_ > :: fn info (& self) -> VirglResourceInfo
 kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglResource < '_ > :: fn publish (mut self)
+kernel/src/drm/graphics.rs :: pub (crate) impl PreparedVirglResource < '_ > :: fn record_submission (& mut self , fence : u64)
 kernel/src/drm/graphics.rs :: pub (crate) struct PreparedVirglClose < 'file >
 kernel/src/drm/graphics.rs :: pub (crate) struct PreparedVirglContext < 'file >
 kernel/src/drm/graphics.rs :: pub (crate) struct PreparedVirglResource < 'file >
 kernel/src/drm/graphics.rs :: pub (crate) struct VirglResourceCreate
 kernel/src/drm/graphics.rs :: pub (crate) struct VirglResourceInfo
 kernel/src/drm/graphics.rs :: pub (crate) struct VirglTransfer
+kernel/src/drm/graphics.rs :: pub (super) VirglAccess :: context_id : u32
 kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: backing : Arc < DeviceBacking >
 kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: height : u32
-kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: last_fence : Mutex < u64 >
+kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: lifecycle : Mutex < VirglLifecycle >
 kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: resource_id : u32
 kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: size : usize
 kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: stride : u32
 kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: target : u32
 kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: width : u32
 kernel/src/drm/graphics.rs :: pub (super) VirglContext :: id : u32
-kernel/src/drm/graphics.rs :: pub (super) enum VirglCleanupAction
+kernel/src/drm/graphics.rs :: pub (super) VirglLifecycle :: fence : u64
+kernel/src/drm/graphics.rs :: pub (super) VirglRetirement :: buffer : Option < Arc < VirglBuffer > >
+kernel/src/drm/graphics.rs :: pub (super) VirglRetirement :: context_id : u32
+kernel/src/drm/graphics.rs :: pub (super) VirglRetirement :: in_flight : Option < u64 >
+kernel/src/drm/graphics.rs :: pub (super) VirglRetirement :: reservation : Option < UnpublishedId < u32 > >
+kernel/src/drm/graphics.rs :: pub (super) impl DrmFile :: fn access_virgl_resources (& self , handles : impl ExactSizeIterator < Item = u32 > ,) -> Result < VirglAccess , DrmError >
 kernel/src/drm/graphics.rs :: pub (super) impl DrmFile :: fn cursor_resource (& self , handle : u32) -> Result < Arc < DumbBuffer > , DrmError >
-kernel/src/drm/graphics.rs :: pub (super) impl VirglCleanup :: fn complete (& mut self , fence : u64) -> bool
-kernel/src/drm/graphics.rs :: pub (super) impl VirglCleanup :: fn next_action (& self , completed : u64) -> Option < VirglCleanupAction >
-kernel/src/drm/graphics.rs :: pub (super) impl VirglCleanup :: fn owns_fence (& self , fence : u64) -> bool
-kernel/src/drm/graphics.rs :: pub (super) impl VirglCleanup :: fn record_submission (& mut self , action : VirglCleanupAction , fence : u64)
-kernel/src/drm/graphics.rs :: pub (super) impl VirglCleanupAction :: const fn command (self) -> VirglCommand < 'static >
+kernel/src/drm/graphics.rs :: pub (super) impl DrmFile :: fn progress_retirements (& self)
+kernel/src/drm/graphics.rs :: pub (super) impl VirglAccess :: fn record (& self , fence : u64)
 kernel/src/drm/graphics.rs :: pub (super) impl VirglContext :: fn into_cleanup (mut self , buffers : FallibleMap < u32 , Arc < VirglBuffer > > ,) -> VacantEntry < u32 , VirglCleanup >
+kernel/src/drm/graphics.rs :: pub (super) struct VirglAccess
 kernel/src/drm/graphics.rs :: pub (super) struct VirglBuffer
-kernel/src/drm/graphics.rs :: pub (super) struct VirglCleanup
 kernel/src/drm/graphics.rs :: pub (super) struct VirglContext
+kernel/src/drm/graphics.rs :: pub (super) struct VirglLifecycle
+kernel/src/drm/graphics.rs :: pub (super) struct VirglRetirement
+kernel/src/drm/graphics.rs :: pub (super) use retirement :: { VirglCleanup , VirglCleanupAction , VirglCleanupCompletion }
+kernel/src/drm/graphics/retirement.rs :: enum VirglCleanupAction :: Context { context_id : u32 }
+kernel/src/drm/graphics/retirement.rs :: enum VirglCleanupAction :: Resource { handle : u32 , resource_id : u32 }
+kernel/src/drm/graphics/retirement.rs :: enum VirglCleanupCompletion :: Context
+kernel/src/drm/graphics/retirement.rs :: enum VirglCleanupCompletion :: Resource (VacantEntry < u32 , Arc < VirglBuffer > >)
+kernel/src/drm/graphics/retirement.rs :: pub (in crate :: drm) enum VirglCleanupAction
+kernel/src/drm/graphics/retirement.rs :: pub (in crate :: drm) enum VirglCleanupCompletion
+kernel/src/drm/graphics/retirement.rs :: pub (in crate :: drm) impl VirglCleanup :: fn complete (& mut self , fence : u64) -> Option < VirglCleanupCompletion >
+kernel/src/drm/graphics/retirement.rs :: pub (in crate :: drm) impl VirglCleanup :: fn next_action (& self , completed : u64) -> Option < VirglCleanupAction >
+kernel/src/drm/graphics/retirement.rs :: pub (in crate :: drm) impl VirglCleanup :: fn owns_fence (& self , fence : u64) -> bool
+kernel/src/drm/graphics/retirement.rs :: pub (in crate :: drm) impl VirglCleanup :: fn record_submission (& mut self , action : VirglCleanupAction , fence : u64)
+kernel/src/drm/graphics/retirement.rs :: pub (in crate :: drm) impl VirglCleanupAction :: const fn command (self) -> VirglCommand < 'static >
+kernel/src/drm/graphics/retirement.rs :: pub (in crate :: drm) struct VirglCleanup
+kernel/src/drm/graphics/retirement.rs :: pub (super) VirglCleanup :: buffers : FallibleMap < u32 , Arc < VirglBuffer > >
+kernel/src/drm/graphics/retirement.rs :: pub (super) impl VirglCleanup :: fn new (context_id : u32) -> Self
 kernel/src/drm/ioctl.rs :: pub (super) fn drm_errno (error : DrmError) -> isize
 kernel/src/drm/ioctl.rs :: pub (super) fn ioctl (file : & Arc < DrmFile > , call : & IoctlCall < '_ >) -> Result < isize , DeviceError >
 kernel/src/drm/ioctl/publication.rs :: pub (super) fn add_framebuffer (user : & dyn UserMemory , file : & DrmFile , argument : usize ,) -> Result < () , isize >
@@ -1443,6 +1456,7 @@ kernel/src/drm/mod.rs :: enum DrmError :: # [doc = " monotonic identity 或 hand
 kernel/src/drm/mod.rs :: enum DrmError :: # [doc = " physical extent、Arc control block 或 map node 分配失败。"] OutOfMemory
 kernel/src/drm/mod.rs :: enum DrmError :: # [doc = " 当前 OFD namespace 中没有目标 handle。"] NotFound
 kernel/src/drm/mod.rs :: enum DrmError :: # [doc = " 当前 OFD 不是 KMS master，或无权重新取得 master。"] Permission
+kernel/src/drm/mod.rs :: enum DrmError :: # [doc = " 当前 OFD 已发布过不可重复创建的 context。"] AlreadyExists
 kernel/src/drm/mod.rs :: enum DrmSubmission :: # [doc = " adapter 正由另一 transaction 占用；caller 必须等待 readiness 后重新提交。"] Retry (DrmRetry)
 kernel/src/drm/mod.rs :: enum DrmSubmission :: # [doc = " operation 已发布；caller 必须等待其 exact fence。"] Wait (DrmWait)
 kernel/src/drm/mod.rs :: enum FramebufferRemoval :: # [doc = " object 已从 device namespace 删除。"] Removed
@@ -4670,8 +4684,10 @@ kernel/src/memory/mm/private_reclaim.rs :: pub (super) impl MemorySet :: fn allo
 kernel/src/memory/mm/private_reclaim.rs :: pub (super) impl MemorySet :: fn next_private_resident_from (& self , cursor : VirtualPageNumber ,) -> Option < (VirtualPageNumber , VirtualPageNumber) >
 kernel/src/memory/mm/private_reclaim.rs :: pub (super) impl MemorySet :: fn reclaim_clean_private_pages (& mut self , request : ReclaimRequest) -> ReclaimResult
 kernel/src/memory/mm/process.rs :: pub (crate) impl MemorySet :: fn process_arguments (& mut self) -> Result < Vec < u8 > , UserAccessError >
+kernel/src/memory/mm/resident.rs :: enum PrivateBacking :: # [doc = " 未 COW 的文件页；保活 storage page，不能因只有一个 private alias 而原地放宽写权限。"] File { page : Arc < dyn SharedPage > , mapping : Option < PageMappingRef > , }
 kernel/src/memory/mm/resident.rs :: enum PrivateBacking :: Pinned (Arc < FrameTracker >)
 kernel/src/memory/mm/resident.rs :: enum PrivateBacking :: User (PageMappingRef)
+kernel/src/memory/mm/resident.rs :: enum PrivatePagePin :: Cached (& 'a SharedFrame)
 kernel/src/memory/mm/resident.rs :: enum PrivatePagePin :: Pinned (& 'a FrameTracker)
 kernel/src/memory/mm/resident.rs :: enum PrivatePagePin :: User (PagePin < 'a >)
 kernel/src/memory/mm/resident.rs :: pub (super) PrivateResident :: backing : PrivateBacking
@@ -4679,11 +4695,16 @@ kernel/src/memory/mm/resident.rs :: pub (super) PrivateResident :: dirty : bool
 kernel/src/memory/mm/resident.rs :: pub (super) PrivateResident :: discardable : bool
 kernel/src/memory/mm/resident.rs :: pub (super) enum PrivateBacking
 kernel/src/memory/mm/resident.rs :: pub (super) enum PrivatePagePin < 'a >
+kernel/src/memory/mm/resident.rs :: pub (super) impl PrivatePagePin < '_ > :: fn copy_frame (& self) -> Option < FrameTracker >
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivatePagePin < '_ > :: fn ppn (& self) -> crate :: memory :: PhysicalPageNumber
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn exclusive (& self) -> bool
+kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn file (page : & Arc < dyn SharedPage > , pin : & SharedPagePin < '_ >) -> Self
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn initialize (& mut self , offset : usize , input : & [u8]) -> Result < () , MemoryError >
+kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn is_file_backed (& self) -> bool
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn is_installed (& self) -> bool
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn mapping (& self) -> Option < & PageMappingRef >
+kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn mapping_mut (& mut self) -> Option < & mut PageMappingRef >
+kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn mark_installed (& mut self , pin : & PrivatePagePin < '_ >)
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn permissions (& self , permission : MapPermission , private_file : bool ,) -> PagePermissions
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn pin_resident (& self) -> Result < Option < PrivatePagePin < '_ > > , MemoryError >
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn pinned (frame : Arc < FrameTracker >) -> Self
@@ -9024,7 +9045,6 @@ kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CAPSET_VIRGL2 : u3
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE : u32 = 0x0202
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_CTX_CREATE : u32 = 0x0200
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_CTX_DESTROY : u32 = 0x0201
-kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE : u32 = 0x0203
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_GET_CAPSET : u32 = 0x0109
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_GET_CAPSET_INFO : u32 = 0x0108
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_GET_DISPLAY_INFO : u32 = 0x0100
@@ -9032,7 +9052,6 @@ kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_MOVE_CURSOR : 
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING : u32 = 0x0106
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_CREATE_2D : u32 = 0x0101
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_CREATE_3D : u32 = 0x0204
-kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING : u32 = 0x0107
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_FLUSH : u32 = 0x0104
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_RESOURCE_UNREF : u32 = 0x0102
 kernel/src/virtio/gpu/wire.rs :: pub (super) const VIRTIO_GPU_CMD_SET_SCANOUT : u32 = 0x0103

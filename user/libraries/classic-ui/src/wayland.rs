@@ -11,10 +11,7 @@ mod transport;
 
 use keyboard::Modifiers;
 pub use layer::{KeyboardInteractivity, Layer, LayerSettings, layer_anchor};
-use linux_uapi::{
-    shared_memory::MemFd,
-    unix::{PollEvents, PollFd, poll},
-};
+use linux_uapi::unix::{PollEvents, PollFd};
 pub use security::{ShellConnection, ShellLease};
 use std::{
     collections::{HashMap, VecDeque},
@@ -32,6 +29,22 @@ use wayland_wire::{
     },
     wire::{DynamicNewId, ObjectId},
 };
+
+// 在创建对象或排队其他请求之前验证动态文本，失败不留下半套窗口角色。
+// 固定参数字节数由对应请求 XML 决定；字符串长度包含终止 NUL 与四字节对齐。
+fn validate_wire_text(text: &str, other_arguments: usize) -> io::Result<()> {
+    let maximum = wayland_wire::wire::MAX_MESSAGE_SIZE
+        - wayland_wire::wire::HEADER_SIZE
+        - 5
+        - other_arguments;
+    if text.len() > maximum || text.as_bytes().contains(&0) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "invalid Wayland string",
+        ));
+    }
+    Ok(())
+}
 
 /// 本连接中的窗口标识；只能交给创建它的 [`Display`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -123,9 +136,14 @@ pub enum EventKind {
     },
     Key(Key),
     Focus(bool),
-    FramePresented {
+    /// 合成器提示可以准备下一帧；时间基准未指定，不表示实际呈现完成。
+    FrameReady {
         time: u32,
     },
+    /// 一个提交缓冲可重新写入；不表示内容变化，不应单独触发重绘。
+    BufferAvailable,
+    /// foreign-toplevel 的完整 done/closed 更新；连接级事件借一个存活窗口携带。
+    ToplevelsChanged,
 }
 
 /// 一个窗口的语义事件。
@@ -173,6 +191,8 @@ struct Window {
     configuration: Configuration,
     /// 初始 configure 前不能提交；否则会违反 xdg-shell 的首次映射握手。
     configured: bool,
+    /// 本连接已提交首个 buffer；只在成功提交后置位，供 parent 的标准映射约束使用。
+    mapped: bool,
     /// 前一帧 callback 未到前不再提交，防止应用无限积压 shm 缓冲与渲染工作。
     frame: Option<ObjectId>,
 }
@@ -194,7 +214,7 @@ pub struct Display {
     seat: ObjectId,
     scale: i32,
     windows: HashMap<WindowId, Window>,
-    buffers: HashMap<ObjectId, MemFd>,
+    buffers: HashMap<ObjectId, frame::Buffer>,
     events: VecDeque<Event>,
     pointer: Option<WindowId>,
     keyboard: Option<WindowId>,
@@ -206,8 +226,15 @@ pub struct Display {
     keyboard_device: Option<ObjectId>,
     layer_shell: Option<ObjectId>,
     security_manager: Option<ObjectId>,
+    dialog_manager: Option<ObjectId>,
+    /// 协议附属对象随窗口释放；不缓存合成器的模态状态。
+    dialogs: HashMap<WindowId, ObjectId>,
+    /// 父窗口首次提交前暂存关系；缺少延迟，xdg-shell 会按标准将未映射 parent 当作 null。
+    pending_parents: HashMap<WindowId, WindowId>,
     /// `wp_cursor_shape_manager_v1`；compositor 不提供时没有光标反馈，窗口仍可用。
     clipboard: clipboard::Clipboard,
+    // 每轮重新借用 FD，复用底层容量；缺失会在每次指针/帧事件等待时分配描述符数组。
+    poll_buffer: linux_uapi::unix::PollBuffer,
     cursor_shape_manager: Option<ObjectId>,
     cursor_shape_device: Option<ObjectId>,
     /// 最近一次 `wl_pointer.enter` 的序号；`set_shape` 必须带它。
@@ -328,6 +355,14 @@ impl Display {
         {
             bind(Interface::ZwlrForeignToplevelManagerV1, 3)?;
         }
+        let dialog_manager = if globals
+            .iter()
+            .any(|(_, name, _)| name == "xdg_wm_dialog_v1")
+        {
+            Some(bind(Interface::XdgWmDialogV1, 1)?)
+        } else {
+            None
+        };
         let mut display = Self {
             transport,
             compositor,
@@ -348,7 +383,11 @@ impl Display {
             keyboard_device: None,
             layer_shell,
             security_manager,
+            dialog_manager,
+            dialogs: HashMap::new(),
+            pending_parents: HashMap::new(),
             clipboard: clipboard::Clipboard::with_manager(data_manager),
+            poll_buffer: Default::default(),
             cursor_shape_manager,
             cursor_shape_device: None,
             enter_serial: 0,
@@ -363,6 +402,11 @@ impl Display {
         display.roundtrip()?;
         display.roundtrip()?;
         Ok(display)
+    }
+
+    /// 当前协议修饰状态的只读快照；调用者不能再次按物理键折叠，以免产生第二份状态。
+    pub fn keyboard_modifiers(&self) -> Modifiers {
+        self.modifiers
     }
 
     /// 请求指针在本程序窗口上显示 `shape`；没有光标形状协议、指针不在窗口上或形状没变时什么也不做。
@@ -413,6 +457,8 @@ impl Display {
         app_id: &str,
         size: (i32, i32),
     ) -> io::Result<WindowId> {
+        validate_wire_text(title, 0)?;
+        validate_wire_text(app_id, 0)?;
         let configuration = Configuration {
             width: size.0,
             height: size.1,
@@ -460,6 +506,7 @@ impl Display {
                 },
                 configuration,
                 configured: false,
+                mapped: false,
                 frame: None,
             },
         );
@@ -485,7 +532,8 @@ impl Display {
     pub fn ready_to_draw(&self, window: WindowId) -> bool {
         self.windows
             .get(&window)
-            .is_some_and(|window| window.configured && window.frame.is_none())
+            .is_some_and(|state| state.configured && state.frame.is_none())
+            && self.buffer_available(window)
     }
 
     /// 发出窗口管理请求；不直接修改配置，等待 compositor 的后续 Configure。
@@ -540,12 +588,66 @@ impl Display {
                 "set_parent needs xdg toplevels",
             )),
         };
-        let (child, parent) = (role(&child)?, role(&parent)?);
-        xdg_toplevel::Request::SetParent {
-            parent: Some(parent),
+        let (child_object, parent_object) = (role(&child)?, role(&parent)?);
+        if child == parent {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "window cannot parent itself",
+            ));
         }
-        .encode(child, &mut self.transport.writer)
+        if !self.windows[&parent].mapped {
+            self.pending_parents.insert(child, parent);
+            return Ok(());
+        }
+        self.pending_parents.remove(&child);
+        xdg_toplevel::Request::SetParent {
+            parent: Some(parent_object),
+        }
+        .encode(child_object, &mut self.transport.writer)
         .map_err(io::Error::other)?;
+        self.transport.flush()
+    }
+
+    /// 提供标准 xdg-dialog 模态提示；客户端仍须自己筛选父窗口交互。
+    /// 服务端未公布可选扩展时只省略提示；窗口类型、编码或 socket 错误返回 Err。
+    pub fn set_modal(&mut self, window: WindowId, modal: bool) -> io::Result<()> {
+        use wayland_wire::protocol::{xdg_dialog_v1 as dialog, xdg_wm_dialog_v1 as manager};
+        let toplevel = match self.windows.get(&window).map(|window| &window.role) {
+            Some(Role::Toplevel { toplevel, .. }) => *toplevel,
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "dialog needs xdg_toplevel",
+                ));
+            }
+        };
+        let Some(manager) = self.dialog_manager else {
+            return Ok(());
+        };
+        if !modal && !self.dialogs.contains_key(&window) {
+            return Ok(());
+        }
+        let object = if let Some(object) = self.dialogs.get(&window) {
+            *object
+        } else {
+            let object = self.transport.allocate(Interface::XdgDialogV1)?;
+            manager::Request::GetXdgDialog {
+                id: object,
+                toplevel,
+            }
+            .encode(manager, &mut self.transport.writer)
+            .map_err(io::Error::other)?;
+            self.dialogs.insert(window, object);
+            object
+        };
+        let request = if modal {
+            dialog::Request::SetModal
+        } else {
+            dialog::Request::UnsetModal
+        };
+        request
+            .encode(object, &mut self.transport.writer)
+            .map_err(io::Error::other)?;
         self.transport.flush()
     }
 
@@ -603,6 +705,7 @@ impl Display {
     ///
     /// 窗口不存在、不是 xdg toplevel，或编码/socket 失败。
     pub fn set_title(&mut self, window: WindowId, title: &str) -> io::Result<()> {
+        validate_wire_text(title, 0)?;
         let Some(Role::Toplevel { toplevel, .. }) = self.windows.get(&window).map(|w| &w.role)
         else {
             return Err(io::Error::new(
@@ -618,12 +721,32 @@ impl Display {
         self.transport.flush()
     }
 
+    /// 更新标准 xdg_toplevel app_id；非顶层窗口、编码或连接失败返回错误。
+    pub fn set_app_id(&mut self, window: WindowId, app_id: &str) -> io::Result<()> {
+        validate_wire_text(app_id, 0)?;
+        let Some(Role::Toplevel { toplevel, .. }) =
+            self.windows.get(&window).map(|window| &window.role)
+        else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "set_app_id needs an xdg toplevel",
+            ));
+        };
+        xdg_toplevel::Request::SetAppId {
+            app_id: app_id.into(),
+        }
+        .encode(*toplevel, &mut self.transport.writer)
+        .map_err(io::Error::other)?;
+        self.transport.flush()
+    }
+
     /// 销毁一个窗口，撤销输入焦点和重复键；连接里的其他窗口继续存在。
     ///
     /// # Errors
     ///
     /// 窗口不存在或 socket/编码失败。
     pub fn destroy_window(&mut self, window: WindowId) -> io::Result<()> {
+        self.retire_idle_buffers(window)?;
         let state = self
             .windows
             .remove(&window)
@@ -636,7 +759,14 @@ impl Display {
             self.repeat = None;
         }
         self.events.retain(|event| event.window != window);
+        self.pending_parents
+            .retain(|child, parent| *child != window && *parent != window);
         let writer = &mut self.transport.writer;
+        if let Some(dialog) = self.dialogs.remove(&window) {
+            wayland_wire::protocol::xdg_dialog_v1::Request::Destroy
+                .encode(dialog, writer)
+                .map_err(io::Error::other)?;
+        }
         match state.role {
             Role::Toplevel { xdg, toplevel, .. } => {
                 xdg_toplevel::Request::Destroy
@@ -664,18 +794,54 @@ impl Display {
     ///
     /// 对端断开、协议、keymap 或 socket 失败。应用应退出并释放 Display，不在坏连接上继续请求。
     pub fn next_event(&mut self) -> io::Result<Event> {
-        self.wait_event(None)?
+        self.wait_event(None, &mut [])?
             .ok_or_else(|| io::Error::other("unbounded wait timed out"))
     }
 
     /// 等待至多 `timeout`，便于会话回收子进程、桌面刷新时钟；超时返回 None。
     /// 协议与连接错误仍返回 Err；重复键与真实输入沿用同一事件队列。
     pub fn next_event_timeout(&mut self, timeout: Duration) -> io::Result<Option<Event>> {
-        self.wait_event(Some(Instant::now() + timeout))
+        self.wait_event(Some(Instant::now() + timeout), &mut [])
     }
 
-    fn wait_event(&mut self, deadline: Option<Instant>) -> io::Result<Option<Event>> {
+    /// 等待协议事件、外部唤醒或超时；唤醒 fd 的内容由调用方消费。
+    ///
+    /// `timeout=None` 无限等待；唤醒或超时返回 None，连接/协议失败返回错误。
+    /// 本方法仍是连接唯一的读取 owner，不另建后台 Wayland reader。
+    pub fn next_event_with_wake(
+        &mut self,
+        timeout: Option<Duration>,
+        wake: std::os::fd::BorrowedFd<'_>,
+    ) -> io::Result<Option<Event>> {
+        self.wait_event(
+            timeout.map(|value| Instant::now() + value),
+            &mut [PollFd::new(wake, PollEvents::READ)],
+        )
+    }
+
+    /// 将外部 FD readiness 与协议、重复键及 deadline 放入同一次等待。
+    ///
+    /// 返回 None 表示超时或外部源就绪；调用方读取 sources.returned()，本连接不消费其数据。
+    /// fd 的类型借用保证 poll 期间 owner 存活；连接/协议失败返回错误。
+    pub fn next_event_with_sources(
+        &mut self,
+        timeout: Option<Duration>,
+        sources: &mut [PollFd<'_>],
+    ) -> io::Result<Option<Event>> {
+        self.wait_event(timeout.map(|value| Instant::now() + value), sources)
+    }
+
+    fn wait_event(
+        &mut self,
+        deadline: Option<Instant>,
+        external: &mut [PollFd<'_>],
+    ) -> io::Result<Option<Event>> {
+        let external_count = external.len();
+        for source in external.iter_mut() {
+            source.clear_readiness();
+        }
         loop {
+            self.clipboard.progress_writes();
             if let Some(event) = self.events.pop_front() {
                 return Ok(Some(event));
             }
@@ -700,11 +866,20 @@ impl Display {
                 wake.saturating_duration_since(now)
                     .max(Duration::from_millis(1))
             });
-            let mut descriptors = [PollFd::new(self.transport.stream.as_fd(), PollEvents::READ)];
-            match poll(&mut descriptors, timeout) {
+            let mut descriptors = self.poll_buffer.prepare();
+            let interest = if self.transport.wants_write() {
+                PollEvents::READ | PollEvents::WRITE
+            } else {
+                PollEvents::READ
+            };
+            descriptors.push(PollFd::new(self.transport.stream.as_fd(), interest));
+            descriptors.extend(external.iter().copied());
+            descriptors.extend(self.clipboard.write_sources());
+            match descriptors.wait(timeout) {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error),
                 Ok(0) => {
+                    drop(descriptors);
                     // 先 poll/read 真正的 release/leave，再生成重复；阻塞操作结束时 socket 可能已有旧键释放。
                     let now = Instant::now();
                     if deadline.is_some_and(|deadline| now >= deadline) {
@@ -722,7 +897,31 @@ impl Display {
                         }));
                     }
                 }
-                Ok(_) => self.transport.read()?,
+                Ok(_) => {
+                    for (target, source) in external
+                        .iter_mut()
+                        .zip(&descriptors.sources()[1..1 + external_count])
+                    {
+                        target.copy_readiness(source)?;
+                    }
+                    let socket_events = descriptors.returned(0).expect("Wayland source");
+                    let socket_ready = socket_events
+                        .contains(PollEvents::READ | PollEvents::ERROR | PollEvents::HANGUP);
+                    let write_ready = socket_events.contains(PollEvents::WRITE);
+                    let external_ready = descriptors.sources()[1..1 + external_count]
+                        .iter()
+                        .any(|source| source.returned() != PollEvents::EMPTY);
+                    drop(descriptors);
+                    if socket_ready {
+                        self.transport.read()?;
+                    }
+                    if write_ready {
+                        self.transport.flush()?;
+                    }
+                    if external_ready {
+                        return Ok(None);
+                    }
+                }
             }
         }
     }

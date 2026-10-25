@@ -1,4 +1,8 @@
+mod retirement;
+pub(super) use retirement::{VirglCleanup, VirglCleanupAction, VirglCleanupCompletion};
+
 use alloc::sync::Arc;
+use alloc::vec::Vec;
 use spin::Mutex;
 
 use crate::{
@@ -81,96 +85,6 @@ impl VirglContext {
     }
 }
 
-/// DRM OFD 关闭后由 device completion owner 串行推进的 VirGL 回收队列。
-pub(super) struct VirglCleanup {
-    context_id: u32,
-    buffers: FallibleMap<u32, Arc<VirglBuffer>>,
-    in_flight: Option<(u64, VirglCleanupAction)>,
-}
-
-/// 一次 OFD 回收中当前可提交的标准 VirtIO-GPU operation。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum VirglCleanupAction {
-    Resource { handle: u32, resource_id: u32 },
-    Context { context_id: u32 },
-}
-
-impl VirglCleanupAction {
-    /// 降低为不包含 kernel owner 的标准 adapter command。
-    pub(super) const fn command(self) -> VirglCommand<'static> {
-        match self {
-            Self::Resource { resource_id, .. } => VirglCommand::ResourceUnref { resource_id },
-            Self::Context { context_id } => VirglCommand::ContextDestroy { context_id },
-        }
-    }
-}
-
-impl VirglCleanup {
-    fn new(context_id: u32) -> Self {
-        Self {
-            context_id,
-            buffers: FallibleMap::new(),
-            in_flight: None,
-        }
-    }
-
-    /// 在 adapter 空闲时选择一个 fence 已完成的 resource，全部释放后销毁 context。
-    pub(super) fn next_action(&self, completed: u64) -> Option<VirglCleanupAction> {
-        if self.in_flight.is_some() {
-            return None;
-        }
-        if let Some((&handle, buffer)) = self
-            .buffers
-            .iter()
-            .find(|(_, buffer)| *buffer.last_fence.lock() <= completed)
-        {
-            return Some(VirglCleanupAction::Resource {
-                handle,
-                resource_id: buffer.resource_id,
-            });
-        }
-        self.buffers
-            .is_empty()
-            .then_some(VirglCleanupAction::Context {
-                context_id: self.context_id,
-            })
-    }
-
-    /// 记录已由 adapter 接受的唯一回收 operation 与 exact fence。
-    pub(super) fn record_submission(&mut self, action: VirglCleanupAction, fence: u64) {
-        assert!(self.in_flight.replace((fence, action)).is_none());
-    }
-
-    /// 判断 completion fence 是否属于本 cleanup queue 的当前 operation。
-    pub(super) fn owns_fence(&self, fence: u64) -> bool {
-        self.in_flight
-            .is_some_and(|(expected, _)| expected == fence)
-    }
-
-    /// 消费 exact completion；返回 true 表示 context 已销毁且队列可删除。
-    pub(super) fn complete(&mut self, fence: u64) -> bool {
-        let Some((expected, action)) = self.in_flight else {
-            return false;
-        };
-        if expected != fence {
-            return false;
-        }
-        self.in_flight = None;
-        match action {
-            VirglCleanupAction::Resource { handle, .. } => {
-                self.buffers
-                    .remove(&handle)
-                    .expect("submitted VirGL cleanup resource disappeared");
-                false
-            }
-            VirglCleanupAction::Context { .. } => {
-                assert!(self.buffers.is_empty());
-                true
-            }
-        }
-    }
-}
-
 pub(super) struct VirglBuffer {
     pub(super) resource_id: u32,
     pub(super) size: usize,
@@ -179,12 +93,43 @@ pub(super) struct VirglBuffer {
     pub(super) width: u32,
     pub(super) height: u32,
     pub(super) backing: Arc<DeviceBacking>,
-    pub(super) last_fence: Mutex<u64>,
+    // OWNER: fence 与尚未使用的退休节点同锁；节点仅在 buffer=None 时保存在资源内，避免 Arc 自环。
+    // 节点在 create 前预分配，使正常 GEM_CLOSE 无分配，OOM 不会阻断已发布资源的回收。
+    pub(super) lifecycle: Mutex<VirglLifecycle>,
+}
+
+pub(super) struct VirglLifecycle {
+    pub(super) fence: u64,
+    retirement: Option<VacantEntry<u32, VirglRetirement>>,
+}
+
+/// 正常关闭或创建失败后的回收事务；预分配节点保活 backing。未发布 ID 只在 UNREF 完成后回收。
+pub(super) struct VirglRetirement {
+    pub(super) context_id: u32,
+    pub(super) buffer: Option<Arc<VirglBuffer>>,
+    pub(super) reservation: Option<UnpublishedId<u32>>,
+    pub(super) in_flight: Option<u64>,
+}
+
+/// 一次提交从 handle 验证到 fence 发布期间的资源强引用；不能只验证 ID 后丢掉 ownership。
+pub(super) struct VirglAccess {
+    pub(super) context_id: u32,
+    buffers: Vec<Arc<VirglBuffer>>,
+}
+impl VirglAccess {
+    /// host 接受命令后发布 fence；并发提交可能逆序登记，不能降低最后使用水位。
+    pub(super) fn record(&self, fence: u64) {
+        for buffer in &self.buffers {
+            let mut lifecycle = buffer.lifecycle.lock();
+            lifecycle.fence = lifecycle.fence.max(fence);
+        }
+    }
 }
 
 /// 尚未发布、但已预留 device context identity 的 transaction。
 pub(crate) struct PreparedVirglContext<'file> {
     file: &'file DrmFile,
+    _admission: crate::sync::TaskMutexGuard<'file, ()>,
     reservation: Option<UnpublishedId<u32>>,
     id: u32,
     capset_id: u32,
@@ -207,7 +152,7 @@ impl PreparedVirglContext<'_> {
         }
     }
 
-    /// 在 CTX_CREATE fence 完成后无失败发布 file context。
+    /// 在 CTX_CREATE 已被 host 队列接受后发布 context；后续命令经同一队列排序，退出交给 completion 回收。
     pub(crate) fn publish(mut self) {
         let reservation = self
             .reservation
@@ -251,41 +196,34 @@ pub(crate) struct PreparedVirglResource<'file> {
     create: VirglResourceCreate,
     buffer: Option<Arc<VirglBuffer>>,
     entry: Option<VacantEntry<u32, Arc<VirglBuffer>>>,
+    // OWNER: None 表示 host 尚未接受 create；首次提交后只能在 UNREF completion 后回收 resource ID。
+    // 缺失时 EINTR/OOM/copyout fault 会提前复用仍被 host 使用的 identity 或释放 DMA backing。
+    submitted: bool,
+    cleanup: Option<VacantEntry<u32, VirglRetirement>>,
 }
 
-/// 已从 file handle namespace 摘除、等待完成 host 销毁的 VirGL resource。
-///
-/// transaction 失败时 `Drop` 使用原 AVL node 无分配恢复 handle；成功时
-/// `publish` 消费 backing。缺少该事务会让并发 exec 在 unref 后继续引用 resource，
-/// 或让任一 host failure 永久丢失仍存活的 GEM object。
+/// 已从 handle namespace 摘除的 resource；publish 后由 exact-fence 回收队列独占。
+/// 未发布时 Drop 用原 AVL node 无分配恢复 handle，不对 host 提交 UNREF。
 pub(crate) struct PreparedVirglClose<'file> {
     file: &'file DrmFile,
     entry: Option<VacantEntry<u32, Arc<VirglBuffer>>>,
-    resource_id: u32,
-    last_fence: u64,
 }
-
 impl PreparedVirglClose<'_> {
-    pub(crate) fn wait(&self) -> Option<DrmWait> {
-        (self.last_fence != 0).then(|| DrmWait {
-            device: self.file.device.clone(),
-            fence: self.last_fence,
-        })
-    }
-
-    pub(crate) fn unref_command(&self) -> VirglCommand<'static> {
-        VirglCommand::ResourceUnref {
-            resource_id: self.resource_id,
-        }
-    }
-
+    /// 原子退休 handle；异步 UNREF 完成前保活 backing，不把可中断 wait 放在销毁命令之后。
     pub(crate) fn publish(mut self) {
-        drop(
-            self.entry
-                .take()
-                .expect("VirGL close lost resource entry")
-                .into_value(),
-        );
+        let buffer = self
+            .entry
+            .take()
+            .expect("VirGL close lost handle entry")
+            .into_value();
+        let mut cleanup = buffer
+            .lifecycle
+            .lock()
+            .retirement
+            .take()
+            .expect("published resource lost retirement node");
+        cleanup.value_mut().buffer = Some(buffer);
+        self.file.retire_virgl_resource(cleanup);
     }
 }
 
@@ -298,6 +236,16 @@ impl Drop for PreparedVirglClose<'_> {
 }
 
 impl PreparedVirglResource<'_> {
+    /// host 接受命令后、开始可中断等待前记录 exact fence；不得在等待成功后才登记。
+    pub(crate) fn record_submission(&mut self, fence: u64) {
+        self.submitted = true;
+        self.buffer
+            .as_ref()
+            .expect("prepared resource missing buffer")
+            .lifecycle
+            .lock()
+            .fence = fence;
+    }
     /// 返回 host resource create operation。
     pub(crate) fn create_command(&self) -> VirglCommand<'static> {
         VirglCommand::ResourceCreate3d {
@@ -356,7 +304,14 @@ impl PreparedVirglResource<'_> {
             .take()
             .expect("VirGL resource reservation missing");
         let entry = self.entry.take().expect("VirGL map node missing");
-        self.buffer.take().expect("VirGL buffer missing");
+        let buffer = self.buffer.take().expect("VirGL buffer missing");
+        let mut cleanup = self
+            .cleanup
+            .take()
+            .expect("published resource lost retirement node");
+        drop(cleanup.value_mut().buffer.take());
+        buffer.lifecycle.lock().retirement = Some(cleanup);
+        drop(buffer);
         self.file.state.lock().graphics_buffers.commit_vacant(entry);
         self.file.state.lock().handle_ids.publish(handle);
         self.file
@@ -366,11 +321,6 @@ impl PreparedVirglResource<'_> {
             .graphics_resource_ids
             .publish(resource);
     }
-
-    /// 返回 host rollback 所需 context/resource identities。
-    pub(crate) const fn identities(&self) -> (u32, u32) {
-        (self.context_id, self.resource_id)
-    }
 }
 
 impl Drop for PreparedVirglResource<'_> {
@@ -379,12 +329,23 @@ impl Drop for PreparedVirglResource<'_> {
             self.file.state.lock().handle_ids.rollback(handle);
         }
         if let Some(resource) = self.resource.take() {
-            self.file
-                .device
-                .state
-                .lock()
-                .graphics_resource_ids
-                .rollback(resource);
+            if self.submitted {
+                let mut cleanup = self
+                    .cleanup
+                    .take()
+                    .expect("submitted resource lost cleanup node");
+                cleanup.value_mut().reservation = Some(resource);
+                drop(self.entry.take());
+                drop(self.buffer.take());
+                self.file.retire_virgl_resource(cleanup);
+            } else {
+                self.file
+                    .device
+                    .state
+                    .lock()
+                    .graphics_resource_ids
+                    .rollback(resource);
+            }
         }
     }
 }
@@ -552,7 +513,11 @@ impl DrmFile {
         {
             return Err(DrmError::Invalid);
         }
-        self.prepare_context(capset_id, name)
+        let admission = self
+            .context_creation
+            .lock()
+            .map_err(|_| DrmError::OutOfMemory)?;
+        self.prepare_context(capset_id, name, admission)
     }
 
     /// 按 Linux virtio-gpu legacy 语义准备首个 3D resource 的惰性 context。
@@ -564,6 +529,10 @@ impl DrmFile {
         &self,
     ) -> Result<Option<PreparedVirglContext<'_>>, DrmError> {
         self.virgl_capset_info()?;
+        let admission = self
+            .context_creation
+            .lock()
+            .map_err(|_| DrmError::OutOfMemory)?;
         let state = self.state.lock();
         if state.context.is_some() {
             return Ok(None);
@@ -572,14 +541,18 @@ impl DrmFile {
             return Err(DrmError::Invalid);
         }
         drop(state);
-        self.prepare_context(0, &[]).map(Some)
+        self.prepare_context(0, &[], admission).map(Some)
     }
 
-    fn prepare_context(
-        &self,
+    fn prepare_context<'file>(
+        &'file self,
         capset_id: u32,
         name: &[u8],
-    ) -> Result<PreparedVirglContext<'_>, DrmError> {
+        admission: crate::sync::TaskMutexGuard<'file, ()>,
+    ) -> Result<PreparedVirglContext<'file>, DrmError> {
+        if self.state.lock().context.is_some() {
+            return Err(DrmError::AlreadyExists);
+        }
         let reservation = self
             .device
             .state
@@ -599,6 +572,7 @@ impl DrmFile {
         encoded_name[..name.len()].copy_from_slice(name);
         Ok(PreparedVirglContext {
             file: self,
+            _admission: admission,
             reservation: Some(reservation),
             id,
             capset_id,
@@ -656,6 +630,22 @@ impl DrmFile {
         };
         let handle_id = handle.id();
         let resource_id = resource.id();
+        // 1. identity 预留后立即交给现有 RAII transaction。
+        // 2. 后续 backing/Arc/map node 任一分配失败，Drop 无分配回收两个 identity。
+        // 不得在建立 transaction 前使用 ?，否则 OOM 会永久烧掉未发布的 handle/resource ID。
+        let mut prepared = PreparedVirglResource {
+            file: self,
+            handle: Some(handle),
+            resource: Some(resource),
+            handle_id,
+            resource_id,
+            context_id,
+            create,
+            buffer: None,
+            entry: None,
+            submitted: false,
+            cleanup: None,
+        };
         let size = usize::try_from(create.size).map_err(|_| DrmError::Invalid)?;
         let pages = size.div_ceil(PAGE_SIZE);
         let backing = Arc::try_new(
@@ -671,22 +661,30 @@ impl DrmFile {
             width: create.width,
             height: create.height,
             backing,
-            last_fence: Mutex::new(0),
+            lifecycle: Mutex::new(VirglLifecycle {
+                fence: 0,
+                retirement: None,
+            }),
         })
         .map_err(|_| DrmError::OutOfMemory)?;
-        let entry = FallibleMap::try_prepare(handle_id, buffer.clone())
-            .map_err(|_| DrmError::OutOfMemory)?;
-        Ok(PreparedVirglResource {
-            file: self,
-            handle: Some(handle),
-            resource: Some(resource),
-            handle_id,
-            resource_id,
-            context_id,
-            create,
-            buffer: Some(buffer),
-            entry: Some(entry),
-        })
+        prepared.buffer = Some(buffer.clone());
+        prepared.entry = Some(
+            FallibleMap::try_prepare(handle_id, buffer.clone())
+                .map_err(|_| DrmError::OutOfMemory)?,
+        );
+        prepared.cleanup = Some(
+            FallibleMap::try_prepare(
+                resource_id,
+                VirglRetirement {
+                    context_id,
+                    buffer: Some(buffer),
+                    reservation: None,
+                    in_flight: None,
+                },
+            )
+            .map_err(|_| DrmError::OutOfMemory)?,
+        );
+        Ok(prepared)
     }
 
     /// 提交一个已验证 ownership 的 VirGL operation。
@@ -751,37 +749,45 @@ impl DrmFile {
     ///
     /// # Returns
     ///
-    /// 可等待最后 fence 并提交标准 RESOURCE_UNREF 的回滚事务。
+    /// 可原子退休 handle、按最后 fence 异步提交 RESOURCE_UNREF 的回滚事务。
     ///
     /// # Errors
     ///
-    /// handle 不存在或仍被 KMS framebuffer 引用。
+    /// handle/context 不存在；KMS/提交引用由退休队列保活，不阻止关闭 handle。
     pub(crate) fn prepare_virgl_close(
         &self,
         handle: u32,
     ) -> Result<PreparedVirglClose<'_>, DrmError> {
         let mut state = self.state.lock();
         state.context.as_ref().ok_or(DrmError::Invalid)?;
-        let buffer = state
-            .graphics_buffers
-            .get(&handle)
-            .ok_or(DrmError::NotFound)?;
-        if Arc::strong_count(buffer) != 1 {
-            return Err(DrmError::Busy);
-        }
-        let resource_id = buffer.resource_id;
-        let last_fence = *buffer.last_fence.lock();
         let entry = state
             .graphics_buffers
             .take_entry(&handle)
-            .expect("checked VirGL handle disappeared");
+            .ok_or(DrmError::NotFound)?;
         drop(state);
         Ok(PreparedVirglClose {
             file: self,
             entry: Some(entry),
-            resource_id,
-            last_fence,
         })
+    }
+
+    fn retire_virgl_resource(&self, cleanup: VacantEntry<u32, VirglRetirement>) {
+        self.device
+            .state
+            .lock()
+            .graphics_retirements
+            .commit_vacant(cleanup);
+        let mut completion = self.device.completion.lock();
+        super::device::advance_graphics_cleanup(&self.device, &mut completion);
+    }
+
+    /// ioctl 的所有临时资源 pin 退出后推进退休；失败的 framebuffer publication 也必须经过此出口。
+    pub(super) fn progress_retirements(&self) {
+        if self.device.state.lock().graphics_retirements.is_empty() {
+            return;
+        }
+        let mut completion = self.device.completion.lock();
+        super::device::advance_graphics_cleanup(&self.device, &mut completion);
     }
 
     /// 返回一个 VirGL GEM handle 的 page-aligned mmap fake offset。
@@ -886,40 +892,43 @@ impl DrmFile {
         })
     }
 
-    /// 验证 execbuffer resource set 并返回 file context identity。
-    pub(crate) fn validate_exec_resources(&self, handles: &[u32]) -> Result<u32, DrmError> {
+    /// 验证并保活 exec/transfer resource set，直到调用方发布已接受命令的 fence。
+    /// 数组存储先在 spin lock 外预留；无效 handle 或 OOM 不提交 host 命令。
+    pub(super) fn access_virgl_resources(
+        &self,
+        handles: impl ExactSizeIterator<Item = u32>,
+    ) -> Result<VirglAccess, DrmError> {
+        let mut buffers = Vec::new();
+        buffers
+            .try_reserve_exact(handles.len())
+            .map_err(|_| DrmError::OutOfMemory)?;
         let state = self.state.lock();
         let context = state.context.as_ref().ok_or(DrmError::Invalid)?;
         for handle in handles {
-            if *handle == 0 || !state.graphics_buffers.contains_key(handle) {
-                return Err(DrmError::NotFound);
-            }
+            buffers.push(
+                state
+                    .graphics_buffers
+                    .get(&handle)
+                    .ok_or(DrmError::NotFound)?
+                    .clone(),
+            );
         }
-        Ok(context.id)
-    }
-
-    /// 把一次已提交 fence 原子发布给所有引用的 GEM resource。
-    pub(crate) fn record_virgl_fence(&self, handles: &[u32], fence: u64) -> Result<(), DrmError> {
-        let state = self.state.lock();
-        for handle in handles {
-            let buffer = state
-                .graphics_buffers
-                .get(handle)
-                .ok_or(DrmError::NotFound)?;
-            *buffer.last_fence.lock() = fence;
-        }
-        Ok(())
+        Ok(VirglAccess {
+            context_id: context.id,
+            buffers,
+        })
     }
 
     /// 返回 handle 最近一次 exec/transfer fence 的 wait token。
     pub(crate) fn virgl_wait(&self, handle: u32) -> Result<Option<DrmWait>, DrmError> {
         let state = self.state.lock();
-        let fence = *state
+        let fence = state
             .graphics_buffers
             .get(&handle)
             .ok_or(DrmError::NotFound)?
-            .last_fence
-            .lock();
+            .lifecycle
+            .lock()
+            .fence;
         Ok((fence != 0).then(|| DrmWait {
             device: self.device.clone(),
             fence,

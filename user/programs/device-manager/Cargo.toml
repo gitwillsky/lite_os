@@ -9,9 +9,5 @@ name = "devmgmt"
 path = "src/main.rs"
 
 [dependencies]
-liteos-runtime = { path = "../../libraries/liteos-runtime" }
-canvas = { path = "../../libraries/canvas" }
-classic-theme = { path = "../../libraries/classic-theme" }
-classic-ui = { path = "../../libraries/classic-ui" }
-typeface = { path = "../../libraries/typeface" }
+liteos-ui = { path = "../../libraries/liteos-ui" }
 linux-uapi.workspace = true

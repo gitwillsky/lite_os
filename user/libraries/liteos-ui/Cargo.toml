@@ -1,0 +1,8 @@
+[package]
+name = "liteos-ui"
+version = "1.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+classic-ui-abi = { path = "../classic-ui-abi" }

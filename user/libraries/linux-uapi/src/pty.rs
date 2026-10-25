@@ -6,11 +6,12 @@ use std::{
     fs::File,
     io::{self, Read, Write},
     os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd},
-    os::unix::process::CommandExt,
-    process::{Child, Command, Stdio},
 };
 
-use crate::raw;
+use crate::{
+    process::{SessionChild, SessionCommand, SessionIo},
+    raw,
+};
 
 const SESSION_PATH: &str = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
 const SESSION_HOME: &str = "/root";
@@ -27,7 +28,7 @@ pub struct WindowSize {
 
 pub struct PtySession {
     master: File,
-    child: Child,
+    child: SessionChild,
 }
 
 impl PtySession {
@@ -93,53 +94,30 @@ impl PtySession {
         }
         let slave = unsafe { OwnedFd::from_raw_fd(slave_raw) };
         set_window_size(master.as_fd(), size)?;
-        #[cfg(target_os = "linux")]
-        let parent = std::process::id() as i32;
-        #[cfg(target_os = "linux")]
-        let slave_fd = slave.as_raw_fd();
-        let stdin = File::from(slave.try_clone()?);
-        let stdout = File::from(slave.try_clone()?);
-        let stderr = File::from(slave);
-        let mut command = Command::new(program);
-        command
-            .args(arguments)
-            .env_clear()
-            .env("TERM", "liteos")
-            .env("HOME", SESSION_HOME)
-            .env("SHELL", SESSION_SHELL)
-            .env("USER", SESSION_USER)
-            .env("PATH", SESSION_PATH)
-            .envs(environment.iter().map(|(key, value)| (key, value)))
-            .current_dir(SESSION_HOME)
-            .stdin(Stdio::from(stdin))
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr));
-        // `Command` owns the fork/exec boundary, so spawning remains valid when a future
-        // application has multiple threads. The child callback performs only raw syscalls.
-        unsafe {
-            command.pre_exec(move || {
-                #[cfg(target_os = "linux")]
-                {
-                    if raw::prctl(raw::PR_SET_PDEATHSIG, raw::SIGKILL) < 0 {
-                        return Err(io::Error::last_os_error());
-                    }
-                    if raw::getppid() != parent {
-                        return Err(io::Error::from_raw_os_error(raw::ECHILD));
-                    }
-                    if raw::setsid() < 0
-                        || raw::ioctl(slave_fd, raw::TIOCSCTTY, std::ptr::null_mut()) < 0
-                    {
-                        return Err(io::Error::last_os_error());
-                    }
-                    Ok(())
-                }
-                // Linux-only symbols must not leak into the host dylib used by UI tests.
-                // Refuse setup rather than silently dropping session ownership on macOS.
-                #[cfg(not(target_os = "linux"))]
-                Err(io::ErrorKind::Unsupported.into())
-            });
-        }
-        let child = command.spawn()?;
+        let home = std::env::var_os("HOME").unwrap_or_else(|| SESSION_HOME.into());
+        let mut values = vec![
+            ("TERM".into(), "linux".into()),
+            ("HOME".into(), home.clone()),
+            ("SHELL".into(), SESSION_SHELL.into()),
+            (
+                "USER".into(),
+                std::env::var_os("USER").unwrap_or_else(|| SESSION_USER.into()),
+            ),
+            (
+                "PATH".into(),
+                std::env::var_os("PATH").unwrap_or_else(|| SESSION_PATH.into()),
+            ),
+        ];
+        values.extend_from_slice(environment);
+        let child = SessionChild::spawn(
+            SessionCommand::new(
+                program.clone(),
+                arguments.to_vec(),
+                SessionIo::Pty { slave },
+            )
+            .environment(values)
+            .directory(home.into()),
+        )?;
         Ok(Self {
             master: File::from(master),
             child,
@@ -168,13 +146,7 @@ impl PtySession {
     }
 
     pub fn terminate(&mut self) -> io::Result<()> {
-        let signal = unsafe { raw::kill(-(self.child.id() as i32), raw::SIGKILL) };
-        let wait = self.child.wait().map(|_| ());
-        if signal < 0 {
-            Err(io::Error::last_os_error())
-        } else {
-            wait
-        }
+        self.child.terminate()
     }
 }
 

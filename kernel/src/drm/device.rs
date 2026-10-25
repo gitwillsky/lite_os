@@ -343,16 +343,61 @@ impl Drop for DrmFile {
     }
 }
 
-fn advance_graphics_cleanup(device: &DrmDevice, completion: &mut CompletionState) {
+pub(super) fn advance_graphics_cleanup(device: &DrmDevice, completion: &mut CompletionState) {
+    let retirement = {
+        let state = device.state.lock();
+        state
+            .graphics_retirements
+            .iter()
+            .find_map(|(&id, retirement)| {
+                let buffer = retirement
+                    .buffer
+                    .as_ref()
+                    .expect("queued retirement lost buffer");
+                (retirement.in_flight.is_none()
+                    && Arc::strong_count(buffer) == 1
+                    && buffer.lifecycle.lock().fence <= completion.timeline.completed())
+                .then_some(id)
+            })
+    };
+    if let Some(resource_id) = retirement {
+        let fence = match device
+            .display
+            .submit_virgl(crate::drivers::VirglCommand::ResourceUnref { resource_id })
+        {
+            Ok(fence) => fence,
+            Err(DisplayError::WouldBlock) => return,
+            Err(error) => panic!("VirGL resource retirement failed: {error:?}"),
+        };
+        completion
+            .timeline
+            .submit(fence)
+            .expect("retirement cleanup exceeded completion timeline");
+        device
+            .state
+            .lock()
+            .graphics_retirements
+            .get_mut(&resource_id)
+            .expect("selected retirement disappeared")
+            .in_flight = Some(fence);
+        return;
+    }
     let selected = {
         let state = device.state.lock();
         state
             .graphics_cleanups
             .iter()
             .find_map(|(&context, cleanup)| {
-                cleanup
-                    .next_action(completion.timeline.completed())
-                    .map(|action| (context, action))
+                let action = cleanup.next_action(completion.timeline.completed())?;
+                if matches!(action, super::graphics::VirglCleanupAction::Context { .. })
+                    && state
+                        .graphics_retirements
+                        .iter()
+                        .any(|(_, retirement)| retirement.context_id == context)
+                {
+                    return None;
+                }
+                Some((context, action))
             })
     };
     let Some((context, action)) = selected else {
@@ -377,25 +422,53 @@ fn advance_graphics_cleanup(device: &DrmDevice, completion: &mut CompletionState
 }
 
 fn complete_graphics_cleanup(device: &DrmDevice, fence: u64) {
-    let mut state = device.state.lock();
-    let context = state
-        .graphics_cleanups
-        .iter()
-        .find_map(|(&context, cleanup)| cleanup.owns_fence(fence).then_some(context));
-    let Some(context) = context else {
-        return;
+    let retirement = {
+        let mut state = device.state.lock();
+        let id = state
+            .graphics_retirements
+            .iter()
+            .find_map(|(&id, retirement)| (retirement.in_flight == Some(fence)).then_some(id));
+        id.and_then(|id| state.graphics_retirements.take_entry(&id))
     };
-    let finished = state
-        .graphics_cleanups
-        .get_mut(&context)
-        .expect("matched VirGL cleanup disappeared")
-        .complete(fence);
-    if finished {
-        state
-            .graphics_cleanups
-            .remove(&context)
-            .expect("completed VirGL cleanup disappeared");
+    if let Some(mut retirement) = retirement {
+        if let Some(reservation) = retirement.value_mut().reservation.take() {
+            device
+                .state
+                .lock()
+                .graphics_resource_ids
+                .rollback(reservation);
+        }
+        // 释放 backing 在 device state 锁外；host exact UNREF fence 已完成。
+        drop(retirement);
+        return;
     }
+    let (resource, context) = {
+        let mut state = device.state.lock();
+        let context = state
+            .graphics_cleanups
+            .iter()
+            .find_map(|(&context, cleanup)| cleanup.owns_fence(fence).then_some(context));
+        let Some(context) = context else {
+            return;
+        };
+        match state
+            .graphics_cleanups
+            .get_mut(&context)
+            .expect("matched VirGL cleanup disappeared")
+            .complete(fence)
+        {
+            Some(super::graphics::VirglCleanupCompletion::Resource(resource)) => {
+                (Some(resource), None)
+            }
+            Some(super::graphics::VirglCleanupCompletion::Context) => {
+                (None, state.graphics_cleanups.take_entry(&context))
+            }
+            None => (None, None),
+        }
+    };
+    // AVL node、Arc 和 backing 均在 device state guard 外释放，避免持锁进入物理页回收。
+    drop(resource);
+    drop(context);
 }
 
 // OWNER: DRM module 唯一拥有 primary KMS device；devfs/OFD 后续只持该 owner 的 Arc 投影。
@@ -444,6 +517,7 @@ pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
             // hardware cursor; VirGL allocations start after those adapter-owned identities.
             graphics_resource_ids: PublicationIdAllocator::new(4),
             graphics_cleanups: FallibleMap::new(),
+            graphics_retirements: FallibleMap::new(),
             master: None,
             mode,
             framebuffers: FallibleMap::new(),
@@ -484,6 +558,7 @@ pub(super) fn open() -> Result<Arc<DrmFile>, ()> {
     let file = Arc::try_new(DrmFile {
         device,
         file_identity,
+        context_creation: crate::sync::TaskMutex::new(()),
         state: Mutex::new(DrmFileState {
             handle_ids: PublicationIdAllocator::new(1),
             buffers: FallibleMap::new(),

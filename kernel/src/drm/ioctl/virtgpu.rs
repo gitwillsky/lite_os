@@ -127,7 +127,7 @@ pub(super) fn context_init(
     let prepared = file
         .prepare_virgl_context(capset_id.ok_or(errno::EINVAL)?, &name)
         .map_err(drm_errno)?;
-    submit_and_wait(file, prepared.command())?;
+    submit_only(file, prepared.command())?;
     prepared.publish();
     Ok(())
 }
@@ -142,10 +142,10 @@ pub(super) fn resource_create(
         return Err(errno::EINVAL);
     }
     if let Some(context) = file.prepare_legacy_virgl_context().map_err(drm_errno)? {
-        submit_and_wait(file, context.command())?;
+        submit_only(file, context.command())?;
         context.publish();
     }
-    let prepared = file
+    let mut prepared = file
         .prepare_virgl_resource(VirglResourceCreate {
             target: read_u32(&bytes, 0)?,
             format: read_u32(&bytes, 4)?,
@@ -160,25 +160,16 @@ pub(super) fn resource_create(
             size: read_u64(&bytes, 48)?,
         })
         .map_err(drm_errno)?;
-    submit_and_wait(file, prepared.create_command())?;
-    submit_and_wait(file, prepared.attach_command())?;
-    submit_and_wait(file, prepared.context_attach_command())?;
+    let command = prepared.create_command();
+    submit_resource(file, &mut prepared, command)?;
+    let command = prepared.attach_command();
+    submit_resource(file, &mut prepared, command)?;
+    let command = prepared.context_attach_command();
+    submit_resource(file, &mut prepared, command)?;
     let info = prepared.info();
     write_u32(&mut bytes, 40, info.handle)?;
     write_u32(&mut bytes, 44, info.resource_id)?;
-    if let Err(error) = copy_out(user, argument, &bytes) {
-        let (context_id, resource_id) = prepared.identities();
-        let _ = submit_and_wait(
-            file,
-            VirglCommand::ContextDetachResource {
-                context_id,
-                resource_id,
-            },
-        );
-        let _ = submit_and_wait(file, VirglCommand::ResourceDetachBacking { resource_id });
-        let _ = submit_and_wait(file, VirglCommand::ResourceUnref { resource_id });
-        return Err(error);
-    }
+    copy_out(user, argument, &bytes)?;
     prepared.publish();
     Ok(())
 }
@@ -214,6 +205,9 @@ pub(super) fn transfer(
 ) -> Result<(), isize> {
     let bytes = copy_in::<44>(user, argument)?;
     let handle = read_u32(&bytes, 0)?;
+    let access = file
+        .access_virgl_resources(core::iter::once(handle))
+        .map_err(drm_errno)?;
     let command = file
         .transfer_command(crate::drm::VirglTransfer {
             handle,
@@ -233,7 +227,8 @@ pub(super) fn transfer(
         })
         .map_err(drm_errno)?;
     let fence = submit_only(file, command)?;
-    file.record_virgl_fence(&[handle], fence).map_err(drm_errno)
+    access.record(fence);
+    Ok(())
 }
 
 pub(super) fn execbuffer(
@@ -274,22 +269,24 @@ pub(super) fn execbuffer(
         )
         .map_err(|_| errno::EFAULT)?;
     }
-    let mut decoded = Vec::new();
-    decoded
-        .try_reserve_exact(count)
-        .map_err(|_| errno::ENOMEM)?;
-    for bytes in handles.as_chunks::<4>().0 {
-        decoded.push(u32::from_ne_bytes(*bytes));
-    }
-    let context_id = file.validate_exec_resources(&decoded).map_err(drm_errno)?;
+    let access = file
+        .access_virgl_resources(
+            handles
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|bytes| u32::from_ne_bytes(*bytes)),
+        )
+        .map_err(drm_errno)?;
     let fence = submit_only(
         file,
         VirglCommand::Submit3d {
-            context_id,
+            context_id: access.context_id,
             commands: &commands,
         },
     )?;
-    file.record_virgl_fence(&decoded, fence).map_err(drm_errno)
+    access.record(fence);
+    Ok(())
 }
 
 pub(super) fn wait(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
@@ -323,19 +320,21 @@ pub(super) fn gem_close(
     let prepared = file
         .prepare_virgl_close(read_u32(&bytes, 0)?)
         .map_err(drm_errno)?;
-    if let Some(wait) = prepared.wait() {
-        wait_scanout(wait)?;
-    }
-    submit_and_wait(file, prepared.unref_command())?;
     prepared.publish();
     Ok(())
 }
 
-fn submit_and_wait(file: &DrmFile, command: VirglCommand<'_>) -> Result<u64, isize> {
+fn submit_resource(
+    file: &DrmFile,
+    prepared: &mut crate::drm::graphics::PreparedVirglResource<'_>,
+    command: VirglCommand<'_>,
+) -> Result<u64, isize> {
     loop {
         match file.submit_virgl(command.clone()).map_err(drm_errno)? {
             DrmSubmission::Wait(wait) => {
                 let fence = wait.fence();
+                // 即使紧接着的等待被信号/OOM 中断，prepared Drop 也保活并异步清理已接受的 resource。
+                prepared.record_submission(fence);
                 wait_scanout(wait)?;
                 return Ok(fence);
             }

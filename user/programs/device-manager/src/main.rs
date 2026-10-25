@@ -1,621 +1,238 @@
-//! 设备管理器（`devmgmt`）：按类别列出系统里的硬件并查看属性，对应 Windows 2000 的 devmgmt.msc。
-extern crate liteos_runtime as _;
+//! 设备管理器：业务层枚举硬件，共享控件运行库负责树、菜单、属性页与窗口交互。
 mod devices;
-
-use canvas::{Rect, Surface};
-use classic_theme::{Edge, SystemColor as C, Theme};
-use classic_ui::{
-    Bitmap, ButtonState, CursorShape, Decoration, DecorationAction, Display, DropItem, DropMenu,
-    EventKind, FrameKind, Ink, Key, MenuBar, MenuEvent, Painter, SCROLLBAR_WIDTH, Scroll,
+use devices::Category;
+use liteos_ui::{
+    Application, ControlFlow, EventKind, Menu, MenuItem, PropertySheet, TreeRow, Widget,
+    WidgetKind as Kind, WidgetSpec, WindowOptions,
 };
-use devices::{Category, Device};
-use std::{
-    path::Path,
-    process::ExitCode,
-    time::{Duration, Instant},
-};
-use typeface::Typeface;
-
+use std::{cell::RefCell, collections::BTreeMap, process::ExitCode, rc::Rc};
 const APP_ID: &str = "org.liteos.device-manager";
-const MENU_HEIGHT: i32 = 19;
-const ROW: i32 = 18;
-const INDENT: i32 = 18;
-const DOUBLE_CLICK: Duration = Duration::from_millis(500);
-const ENTER: u32 = 28;
-const ESCAPE: u32 = 1;
-const UP: u32 = 103;
-const DOWN: u32 = 108;
-const LEFT: u32 = 105;
-const RIGHT: u32 = 106;
-const F5: u32 = 63;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Command {
-    Properties,
-    Refresh,
-    Exit,
-    About,
-}
-
-fn menus() -> Vec<DropMenu<Command>> {
-    vec![
-        DropMenu {
-            title: "操作(A)",
-            items: vec![
-                DropItem::new("属性(R)", "", Command::Properties),
-                DropItem::new("刷新(F)", "F5", Command::Refresh).separated(),
-                DropItem::new("退出(X)", "", Command::Exit).separated(),
-            ],
-        },
-        DropMenu {
-            title: "查看(V)",
-            items: vec![DropItem::new("刷新(R)", "F5", Command::Refresh)],
-        },
-        DropMenu {
-            title: "帮助(H)",
-            items: vec![DropItem::new("关于设备管理器(A)", "", Command::About)],
-        },
-    ]
-}
-
-/// 树里的一行。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Row {
-    Computer,
-    Category(usize),
-    Device(usize, usize),
-}
-
-enum Modal {
-    Properties(usize, usize),
-    About,
-}
-
-struct App {
+#[derive(Default)]
+struct Inventory {
     computer: String,
     categories: Vec<Category>,
-    /// 与 `categories` 对应：该类别是否展开。刷新后保持用户已展开/折叠的状态。
-    expanded: Vec<bool>,
-    selected: usize,
-    scroll: Scroll,
-    menubar: MenuBar,
-    modal: Option<Modal>,
-    last_click: Option<(usize, Instant)>,
-    pointer: (i32, i32),
-    closing: bool,
+    identities: BTreeMap<String, u64>,
+    next: u64,
+    devices: BTreeMap<u64, (usize, usize)>,
 }
-
-/// 树里用的 16×16 图标；素材缺失时不画。
-struct Icons {
-    computer: Option<Bitmap>,
-    category: Option<Bitmap>,
-    device: Option<Bitmap>,
-}
-
-impl Icons {
-    fn load() -> Self {
-        let load = |name: &str| {
-            Bitmap::load(&Path::new("/usr/share/liteos/ui").join(format!("{name}-16.bmp"))).ok()
-        };
-        Self {
-            computer: load("my-computer"),
-            category: load("device-manager"),
-            device: load("device-manager"),
-        }
-    }
-}
-
-fn inside(rect: Rect, (x, y): (i32, i32)) -> bool {
-    (rect.x..rect.right()).contains(&x) && (rect.y..rect.bottom()).contains(&y)
-}
-
-impl App {
-    fn new() -> Self {
-        let computer = std::fs::read_to_string("/proc/sys/kernel/hostname")
-            .map(|name| name.trim().to_uppercase())
-            .unwrap_or_else(|_| "LITEOS".into());
-        let categories = devices::scan();
-        Self {
-            computer,
-            expanded: vec![true; categories.len()],
-            categories,
-            selected: 0,
-            scroll: Scroll::default(),
-            menubar: MenuBar::new(),
-            modal: None,
-            last_click: None,
-            pointer: (-1, -1),
-            closing: false,
-        }
-    }
-
-    fn refresh(&mut self) {
-        let names: Vec<(&str, bool)> = self
-            .categories
-            .iter()
-            .zip(&self.expanded)
-            .map(|(category, open)| (category.name, *open))
-            .collect();
-        self.categories = devices::scan();
-        self.expanded = self
-            .categories
-            .iter()
-            .map(|category| {
-                names
-                    .iter()
-                    .find(|(name, _)| *name == category.name)
-                    .is_none_or(|(_, open)| *open)
-            })
-            .collect();
-        self.selected = self.selected.min(self.rows().len() - 1);
-    }
-
-    /// 当前可见的行：电脑名、各类别，以及展开类别下的设备。
-    fn rows(&self) -> Vec<Row> {
-        let mut rows = vec![Row::Computer];
-        for (index, category) in self.categories.iter().enumerate() {
-            rows.push(Row::Category(index));
-            if self.expanded[index] {
-                rows.extend((0..category.devices.len()).map(|device| Row::Device(index, device)));
+impl Inventory {
+    fn publish(
+        &mut self,
+        computer: String,
+        categories: Vec<Category>,
+        tree: &Widget,
+    ) -> liteos_ui::Result<()> {
+        self.computer = computer;
+        self.categories = categories;
+        self.devices.clear();
+        let mut identities = BTreeMap::new();
+        let mut values = vec![(1, 0, self.computer.clone())];
+        for (category_index, category) in self.categories.iter().enumerate() {
+            let key = format!("category:{}", category.name);
+            let category_id = self.identities.get(&key).copied().unwrap_or_else(|| {
+                self.next += 1;
+                self.next + 1
+            });
+            identities.insert(key, category_id);
+            values.push((category_id, 1, category.name.to_owned()));
+            for (device_index, device) in category.devices.iter().enumerate() {
+                let key = format!("device:{}:{}:{device_index}", category.name, device.name);
+                let id = self.identities.get(&key).copied().unwrap_or_else(|| {
+                    self.next += 1;
+                    self.next + 1
+                });
+                identities.insert(key, id);
+                values.push((id, category_id, device.name.clone()));
+                self.devices.insert(id, (category_index, device_index));
             }
         }
-        rows
-    }
-
-    fn device(&self, category: usize, device: usize) -> &Device {
-        &self.categories[category].devices[device]
-    }
-
-    fn tree_area(client: Rect) -> Rect {
-        Rect::new(
-            client.x,
-            client.y + MENU_HEIGHT,
-            client.width,
-            client.height - MENU_HEIGHT,
+        self.identities = identities;
+        tree.set_tree_rows(
+            &values
+                .iter()
+                .map(|(id, parent, text)| TreeRow {
+                    id: *id,
+                    parent: *parent,
+                    text,
+                    expanded: true,
+                    has_children: false,
+                })
+                .collect::<Vec<_>>(),
         )
-        .inset(2)
     }
-
-    /// 树视图的行区与（内容超出时的）滚动条。
-    fn view(&self, client: Rect) -> (Rect, Option<Rect>) {
-        let area = Self::tree_area(client).inset(1);
-        if self.rows().len() as i32 * ROW > area.height {
-            (
-                Rect::new(area.x, area.y, area.width - SCROLLBAR_WIDTH, area.height),
-                Some(Rect::new(
-                    area.right() - SCROLLBAR_WIDTH,
-                    area.y,
-                    SCROLLBAR_WIDTH,
-                    area.height,
-                )),
-            )
-        } else {
-            (area, None)
+}
+fn child(parent: &Widget, kind: Kind, text: &str, grow: u32) -> liteos_ui::Result<Widget> {
+    let mut spec = WidgetSpec::new(kind, text);
+    spec.layout.grow = grow;
+    parent.child(spec)
+}
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let mut app = Application::new()?;
+    let window = app.window(WindowOptions::new("设备管理器", APP_ID, 610, 460))?;
+    let mut spec = WidgetSpec::new(Kind::Column, "");
+    spec.layout.grow = 1;
+    let root = window.widget(spec)?;
+    let menu = child(&root, Kind::MenuBar, "", 0)?;
+    menu.set_menus(&[
+        Menu {
+            title: "操作(A)",
+            items: &[
+                MenuItem {
+                    id: 1,
+                    label: "属性(R)",
+                    shortcut: "Enter",
+                    state: 0,
+                },
+                MenuItem {
+                    id: 2,
+                    label: "刷新(F)",
+                    shortcut: "F5",
+                    state: 4,
+                },
+                MenuItem {
+                    id: 3,
+                    label: "退出(X)",
+                    shortcut: "",
+                    state: 4,
+                },
+            ],
+        },
+        Menu {
+            title: "查看(V)",
+            items: &[MenuItem {
+                id: 2,
+                label: "刷新(R)",
+                shortcut: "F5",
+                state: 0,
+            }],
+        },
+        Menu {
+            title: "帮助(H)",
+            items: &[MenuItem {
+                id: 4,
+                label: "关于设备管理器(A)",
+                shortcut: "",
+                state: 0,
+            }],
+        },
+    ])?;
+    let tree = child(&root, Kind::Tree, "", 1)?;
+    let status = child(&root, Kind::Status, "正在扫描设备…", 0)?;
+    let inventory = Rc::new(RefCell::new(Inventory::default()));
+    let background = app.background()?;
+    let mut scan = None;
+    let mut properties: Option<(PropertySheet, Vec<Widget>)> = None;
+    // 首次扫描也走后台；UI 不同步枚举设备和 /proc、/sys、/dev。
+    let mut request_refresh = true;
+    app.run(|app, event| {
+        if let Some((sheet, _)) = &properties {
+            if event.window == sheet.window().id() {
+                match event.kind {
+                    EventKind::Validate { token } => sheet.validated(token, Ok(()))?,
+                    EventKind::Apply { token } => sheet.applied(token, Ok(()))?,
+                    _ => {}
+                }
+                return Ok(ControlFlow::Continue);
+            }
         }
-    }
-
-    fn run(&mut self, command: Command) {
+        let command = match event.kind {
+            EventKind::Activate { value } if event.node == menu.id() => value,
+            EventKind::Activate { .. } if event.node == tree.id() => 1,
+            EventKind::Key {
+                code: 63,
+                pressed: true,
+                handled: false,
+                ..
+            } => 2,
+            _ => 0,
+        };
         match command {
-            Command::Properties => {
-                if let Some(&Row::Device(category, device)) = self.rows().get(self.selected) {
-                    self.modal = Some(Modal::Properties(category, device));
+            1 => {
+                let selected = tree.selection()?;
+                let inventory = inventory.borrow();
+                if let Some(&(category, device)) =
+                    selected.and_then(|id| inventory.devices.get(&id))
+                {
+                    let device = &inventory.categories[category].devices[device];
+                    let sheet = PropertySheet::new(
+                        app,
+                        Some(&window),
+                        &format!("{} 属性", device.name),
+                        440,
+                        340,
+                    )?;
+                    let page = sheet.page("常规")?;
+                    let title = child(&page, Kind::Label, &device.name, 0)?;
+                    let details = child(&page, Kind::List, "", 1)?;
+                    let rows: Vec<_> = device
+                        .details
+                        .iter()
+                        .enumerate()
+                        .map(|(index, (name, value))| {
+                            (index as u64 + 1, format!("{name}：{value}"))
+                        })
+                        .collect();
+                    details.set_rows(
+                        &rows
+                            .iter()
+                            .map(|(id, text)| (*id, text.as_str()))
+                            .collect::<Vec<_>>(),
+                    )?;
+                    let state = child(&page, Kind::Label, "这个设备运转正常。", 0)?;
+                    properties = Some((sheet, vec![page, title, details, state]));
                 }
             }
-            Command::Refresh => self.refresh(),
-            Command::Exit => self.closing = true,
-            Command::About => self.modal = Some(Modal::About),
-        }
-    }
-
-    /// 切换选中行所在类别的展开状态（对类别行）；返回是否切换了。
-    fn toggle(&mut self, row: Row) -> bool {
-        if let Row::Category(index) = row {
-            self.expanded[index] ^= true;
-            return true;
-        }
-        false
-    }
-
-    fn press(&mut self, p: &Painter<'_>, client: Rect) {
-        let point = self.pointer;
-        if self.modal.is_some() {
-            if inside(modal_rects(client).1, point) {
-                self.modal = None;
+            2 => request_refresh = true,
+            3 => return Ok(ControlFlow::Exit),
+            4 => {
+                let sheet = PropertySheet::new(app, Some(&window), "关于设备管理器", 360, 210)?;
+                let page = sheet.page("设备管理器")?;
+                let text = child(
+                    &page,
+                    Kind::Label,
+                    "LiteOS 设备管理器\n查看系统设备及其属性。",
+                    1,
+                )?;
+                text.set_state(liteos_ui::state::WRAP)?;
+                properties = Some((sheet, vec![page, text]));
             }
-            return;
-        }
-        let menus = menus();
-        let bar = Rect::new(client.x, client.y, client.width, MENU_HEIGHT);
-        match self.menubar.press(p, bar, &menus, point) {
-            MenuEvent::Command(command) => return self.run(command),
-            MenuEvent::Handled => return,
-            MenuEvent::Ignored => {}
-        }
-        let (rows_rect, scrollbar) = self.view(client);
-        if let Some(scrollbar) = scrollbar.filter(|bar| inside(*bar, point)) {
-            let content = (self.rows().len() as i32 * ROW, rows_rect.height, ROW);
-            self.scroll.press(scrollbar, true, content, point);
-            return;
-        }
-        if !inside(rows_rect, point) {
-            return;
-        }
-        let index = ((point.1 - rows_rect.y + self.scroll.position) / ROW).max(0) as usize;
-        let rows = self.rows();
-        let Some(&row) = rows.get(index) else { return };
-        self.selected = index;
-        // 类别行的 +/- 方框：单击即切换。
-        if let Row::Category(_) = row
-            && point.0 < rows_rect.x + INDENT + 12
-            && self.toggle(row)
-        {
-            self.last_click = None;
-            return;
-        }
-        let double = self
-            .last_click
-            .is_some_and(|(last, at)| last == index && at.elapsed() < DOUBLE_CLICK);
-        self.last_click = (!double).then(|| (index, Instant::now()));
-        if double {
-            match row {
-                Row::Device(..) => self.run(Command::Properties),
-                _ => {
-                    self.toggle(row);
-                }
-            }
-        }
-    }
-
-    /// 滚轮：向下滚 `notches` 档滚动设备树。
-    fn wheel(&mut self, client: Rect, notches: i32) {
-        if self.modal.is_some() {
-            return;
-        }
-        let (rows_rect, _) = self.view(client);
-        let content = self.rows().len() as i32 * ROW;
-        self.scroll.wheel(notches, ROW, content - rows_rect.height);
-    }
-
-    fn pointer_moved(&mut self, p: &Painter<'_>, client: Rect) {
-        let menus = menus();
-        let bar = Rect::new(client.x, client.y, client.width, MENU_HEIGHT);
-        if self.menubar.motion(p, bar, &menus, self.pointer) {
-            return;
-        }
-        let (rows_rect, scrollbar) = self.view(client);
-        if let Some(scrollbar) = scrollbar {
-            self.scroll.drag(
-                scrollbar,
-                true,
-                (self.rows().len() as i32 * ROW, rows_rect.height),
-                self.pointer,
-            );
-        }
-    }
-
-    fn key(&mut self, p: &Painter<'_>, client: Rect, key: Key) {
-        if self.modal.is_some() {
-            if matches!(key.code, ENTER | ESCAPE) {
-                self.modal = None;
-            }
-            return;
-        }
-        let menus = menus();
-        let bar = Rect::new(client.x, client.y, client.width, MENU_HEIGHT);
-        match self.menubar.key(p, bar, &menus, &key) {
-            MenuEvent::Command(command) => return self.run(command),
-            MenuEvent::Handled => return,
-            MenuEvent::Ignored => {}
-        }
-        let rows = self.rows();
-        let count = rows.len();
-        let row = rows[self.selected.min(count - 1)];
-        match key.code {
-            UP => self.selected = self.selected.saturating_sub(1),
-            DOWN => self.selected = (self.selected + 1).min(count - 1),
-            RIGHT => {
-                if let Row::Category(index) = row {
-                    self.expanded[index] = true;
-                }
-            }
-            LEFT => {
-                if let Row::Category(index) = row {
-                    self.expanded[index] = false;
-                }
-            }
-            ENTER => match row {
-                Row::Device(..) => self.run(Command::Properties),
-                _ => {
-                    self.toggle(row);
-                }
-            },
-            F5 => self.refresh(),
             _ => {}
         }
-        self.selected = self.selected.min(self.rows().len() - 1);
-        // 选中行保持可见。
-        let (rows_rect, _) = self.view(client);
-        let top = self.selected as i32 * ROW;
-        if top < self.scroll.position {
-            self.scroll.position = top;
-        } else if top + ROW > self.scroll.position + rows_rect.height {
-            self.scroll.position = top + ROW - rows_rect.height;
-        }
-    }
-
-    fn paint(&mut self, p: &mut Painter<'_>, client: Rect, icons: &Icons) {
-        let menus = menus();
-        let bar = Rect::new(client.x, client.y, client.width, MENU_HEIGHT);
-        let frame = Self::tree_area(client);
-        let inner = p.edge(frame, Edge::Sunken);
-        p.fill(inner, C::Window);
-        let (rows_rect, scrollbar) = self.view(client);
-        let rows = self.rows();
-        let content = rows.len() as i32 * ROW;
-        self.scroll.clamp((content - rows_rect.height).max(0));
-        let position = self.scroll.position;
-        let first = (position / ROW) as usize;
-        p.clipped(rows_rect, |p| {
-            for (index, row) in rows
-                .iter()
-                .enumerate()
-                .skip(first)
-                .take((rows_rect.height / ROW + 2) as usize)
-            {
-                let y = rows_rect.y + index as i32 * ROW - position;
-                let (level, text, icon) = match *row {
-                    Row::Computer => (0, self.computer.clone(), &icons.computer),
-                    Row::Category(category) => (
-                        1,
-                        self.categories[category].name.to_owned(),
-                        &icons.category,
-                    ),
-                    Row::Device(category, device) => {
-                        (2, self.device(category, device).name.clone(), &icons.device)
-                    }
+        if request_refresh {
+            request_refresh = false;
+            // 替换 Task 撤销旧结果投递；已经开始的只读扫描自行清理，不阻塞 UI。
+            scan.take();
+            let work = background.run(|| {
+                let computer = std::fs::read_to_string("/proc/sys/kernel/hostname")
+                    .map(|name| name.trim().to_uppercase())
+                    .unwrap_or_else(|_| "LITEOS".into());
+                (computer, devices::scan())
+            })?;
+            let inventory = inventory.clone();
+            let tree = tree.clone();
+            let status = status.clone();
+            status.set_text("正在扫描设备…")?;
+            scan = Some(app.spawn_local(&window, async move {
+                let (computer, categories) = work.await;
+                let result = inventory.borrow_mut().publish(computer, categories, &tree);
+                let message = match result {
+                    Ok(()) => format!("{} 个设备", inventory.borrow().devices.len()),
+                    Err(error) => error.to_string(),
                 };
-                let x = rows_rect.x + 2 + level * INDENT;
-                if let Row::Category(category) = *row {
-                    // +/- 方框。
-                    let boxed = Rect::new(x, y + (ROW - 9) / 2, 9, 9);
-                    p.fill(boxed, C::Window);
-                    p.outline(boxed, C::ButtonShadow);
-                    p.fill(Rect::new(boxed.x + 2, boxed.y + 4, 5, 1), C::WindowText);
-                    if !self.expanded[category] {
-                        p.fill(Rect::new(boxed.x + 4, boxed.y + 2, 1, 5), C::WindowText);
-                    }
-                }
-                let icon_x = x + if matches!(row, Row::Category(_)) {
-                    14
-                } else {
-                    0
-                };
-                if let Some(icon) = icon {
-                    icon.paint(p, icon_x, y + 1);
-                }
-                let text_x = icon_x + 20;
-                let hot = index == self.selected;
-                let width = (p.text_width(&text, false) + p.scale() - 1) / p.scale();
-                if hot {
-                    p.fill(Rect::new(text_x - 2, y, width + 4, ROW), C::Hilight);
-                }
-                p.text_fit(
-                    text_x,
-                    y + (ROW - p.line_height()) / 2,
-                    rows_rect.right() - text_x - 4,
-                    &text,
-                    Ink::Color(if hot { C::HilightText } else { C::WindowText }),
-                    false,
-                );
-            }
-        });
-        if let Some(scrollbar) = scrollbar {
-            p.scrollbar(
-                scrollbar,
-                true,
-                (content - 1, rows_rect.height, position),
-                self.scroll.pressed(),
-            );
+                let _ = status.set_text(&message);
+            })?);
         }
-        self.menubar.paint(p, bar, &menus, self.pointer);
-        match &self.modal {
-            Some(Modal::Properties(category, device)) => {
-                let device = self.device(*category, *device);
-                paint_properties(p, client, device);
-            }
-            Some(Modal::About) => paint_about(p, client),
-            None => {}
-        }
-    }
-}
-
-/// 模态对话框与它的确定按钮，居中于 `client`。
-fn modal_rects(client: Rect) -> (Rect, Rect) {
-    let dialog = Rect::new(
-        client.x + (client.width - 330) / 2,
-        client.y + (client.height - 260).max(0) / 3,
-        330,
-        260,
-    );
-    (
-        dialog,
-        Rect::new(
-            dialog.x + (dialog.width - 75) / 2,
-            dialog.bottom() - 34,
-            75,
-            23,
-        ),
-    )
-}
-
-fn dialog_frame(p: &mut Painter<'_>, dialog: Rect, title: &str) {
-    let inner = p.window_frame(dialog, FrameKind::Fixed);
-    p.fill(inner, C::ButtonFace);
-    p.caption_bar(
-        Rect::new(inner.x, inner.y, inner.width, 19),
-        title,
-        None,
-        true,
-        &[],
-        None,
-    );
-}
-
-fn ok_button(p: &mut Painter<'_>, rect: Rect) {
-    p.push_button(
-        rect,
-        "确定",
-        ButtonState {
-            default: true,
-            ..Default::default()
-        },
-    );
-}
-
-fn paint_properties(p: &mut Painter<'_>, client: Rect, device: &Device) {
-    let (dialog, ok) = modal_rects(client);
-    dialog_frame(p, dialog, &format!("{} 属性", device.name));
-    let ink = Ink::Color(C::ButtonText);
-    p.text_fit(
-        dialog.x + 16,
-        dialog.y + 34,
-        dialog.width - 32,
-        &device.name,
-        ink,
-        true,
-    );
-    p.fill(
-        Rect::new(dialog.x + 16, dialog.y + 56, dialog.width - 32, 1),
-        C::ButtonShadow,
-    );
-    let step = p.line_height() + 6;
-    for (row, (label, value)) in device.details.iter().enumerate() {
-        let y = dialog.y + 66 + row as i32 * step;
-        p.text_fit(dialog.x + 16, y, 80, &format!("{label}："), ink, false);
-        p.text_fit(dialog.x + 100, y, dialog.width - 116, value, ink, false);
-    }
-    p.text(
-        dialog.x + 16,
-        ok.y - 24,
-        "设备状态：这个设备工作正常。",
-        ink,
-        false,
-    );
-    ok_button(p, ok);
-}
-
-fn paint_about(p: &mut Painter<'_>, client: Rect) {
-    let (dialog, ok) = modal_rects(client);
-    let dialog = Rect::new(dialog.x, dialog.y, dialog.width, 110);
-    let ok = Rect::new(ok.x, dialog.bottom() - 34, ok.width, ok.height);
-    dialog_frame(p, dialog, "关于设备管理器");
-    let ink = Ink::Color(C::ButtonText);
-    p.text(dialog.x + 20, dialog.y + 34, "LiteOS 设备管理器", ink, true);
-    p.text(
-        dialog.x + 20,
-        dialog.y + 54,
-        "按类别列出系统里能确认的硬件。",
-        ink,
-        false,
-    );
-    ok_button(p, ok);
-}
-
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut display = Display::connect()?;
-    let window = display.create_window("设备管理器", APP_ID, (440, 400))?;
-    let mut decoration = Decoration::new(FrameKind::Resizable);
-    decoration.load_icon("device-manager");
-    let theme = Theme::classic();
-    let icons = Icons::load();
-    let mut app = App::new();
-    let mut font: Option<Typeface> = None;
-    let mut scale = 0;
-    let mut dirty = true;
-    while !app.closing {
-        let event = display.next_event_timeout(Duration::from_millis(500))?;
-        let Some(c) = display.configuration(window) else {
-            continue;
-        };
-        let client = decoration.client_rect(c);
-        if let Some(event) = event {
-            if event.window != window {
-                continue;
-            }
-            match decoration.event(&event.kind, c) {
-                Some(DecorationAction::Request(request)) => display.request(window, request)?,
-                Some(DecorationAction::Close) => break,
-                Some(DecorationAction::Cursor(shape)) => display.set_cursor_shape(shape)?,
-                None => {}
-            }
-            dirty |= !matches!(event.kind, EventKind::FramePresented { .. });
-            if let EventKind::Configure(c) = &event.kind
-                && scale != c.scale
-            {
-                font = Some(Typeface::load(
-                    Path::new("/usr/share/liteos/fonts"),
-                    c.scale as u32,
-                )?);
-                scale = c.scale;
-            }
-            let Some(font) = font.as_ref() else { continue };
-            let mut scratch = [0u32; 1];
-            let probe = Painter::new(
-                Surface::new(&mut scratch, 1, 1, 1).ok_or("probe surface")?,
-                &theme,
-                font,
-                c.scale,
-            );
-            match event.kind {
-                EventKind::Close => break,
-                EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
-                    app.pointer = (x.floor() as i32, y.floor() as i32);
-                    app.pointer_moved(&probe, client);
-                    if inside(client, app.pointer) {
-                        display.set_cursor_shape(CursorShape::Default)?;
-                    }
-                }
-                EventKind::PointerLeave => app.pointer = (-1, -1),
-                EventKind::Wheel { vertical, .. } => app.wheel(client, vertical),
-                EventKind::Button {
-                    code: 0x110,
-                    pressed: true,
-                    ..
-                } => app.press(&probe, client),
-                EventKind::Button {
-                    code: 0x110,
-                    pressed: false,
-                    ..
-                } => app.scroll.release(),
-                EventKind::Key(key) if key.pressed => app.key(&probe, client, key),
-                EventKind::Key(key) => {
-                    app.menubar.key_released(&key);
-                }
-                _ => {}
-            }
-        }
-        let Some(font) = font.as_ref() else { continue };
-        if dirty && display.ready_to_draw(window) {
-            let (w, h) = c.pixel_size()?;
-            let mut pixels = vec![0; w as usize * h as usize];
-            let surface = Surface::new(&mut pixels, w, h, w as usize).ok_or("invalid surface")?;
-            let mut p = Painter::new(surface, &theme, font, c.scale);
-            p.fill(Rect::new(0, 0, c.width, c.height), C::ButtonFace);
-            decoration.paint(&mut p, c, "设备管理器");
-            app.paint(&mut p, client, &icons);
-            display.present(window, &pixels)?;
-            dirty = false;
-        }
-    }
-    display.destroy_window(window)?;
+        Ok(ControlFlow::Continue)
+    })?;
+    drop(scan);
     Ok(())
 }
-
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
-            eprintln!("devmgmt: error: {error}");
+            eprintln!("devmgmt: {error}");
             ExitCode::FAILURE
         }
     }

@@ -72,8 +72,9 @@
   compiler runtime。最终 ELF 必须动态依赖唯一 musl `libc.so`，libunwind 只允许静态进入 consumer。
 - `user/Cargo.toml` 与 `user/Cargo.lock` 是产品 Rust userspace 的唯一 workspace/依赖解析 owner；Cargo
   直接链接标准 Linux/musl PIE，禁止 staticlib 中间产物、手工二次链接或每应用 lockfile。
-  `linux-uapi` 独占 raw musl FFI 与 Linux layout/constant，其他位置的 `extern "C"`/`#[link]`
-  由 architecture-check 拒绝。当前只保留基础库与验证探针，没有产品 GUI binary。
+  `linux-uapi` 独占 raw musl FFI 与 Linux layout/constant；公开 UI SDK 的固定 ABI seam
+  仅允许导入 liteos_ui_get_api，具体约束见 [UI 框架契约](ui-framework.md)。
+  系统 GUI 正逐步迁移到共享控件运行库，尚未全部解除内部 Rust dylib 的构建集合约束。
 
 
 ## Interface
@@ -129,10 +130,10 @@
   `linux-uapi::{alsa,drm,input,pty,process,shared_memory,unix}` 的安全 typed interface。
   shared-memory 的 memfd creation 通过标准 libc `memfd_create` 选择目标 syscall number，
   不在通用 library 固定 asm-generic 编号；该编号在 x86 Linux host 对应另一个 syscall。
-  `linux-uapi::filesystem` 拥有 LP64 statvfs codec 与容量换算，属性页只消费 typed capacity；
-  `linux-uapi::time` 拥有 libc tm/timespec、时钟设置与本地时间拷贝，calendar 只拥有日期算法、TZif 持久化与 UI 重载策略。
-  时区锁只串行化 libc refresh 与缩写拷贝，不进入逐像素路径；UTC offset 查询不分配缩写。
-  进程环境的 TZ 重载仍限已审查的单线程 desktop/control-panel 主循环，引入后台线程前必须替换环境修改策略。
+  `linux-uapi::filesystem` 拥有 LP64 statvfs codec、容量换算与标准 renameat2(RENAME_NOREPLACE)；
+  属性页只消费 typed capacity，资源管理器的改名/移动/还原用原子不覆盖接口，不能用 exists+rename 模拟；
+  `linux-uapi::time` 只拥有 timespec 与时钟设置；calendar 拥有 TZif 解析、日期投影、持久化和重载。
+  已解析时区由读写锁保活，重载不修改进程环境，支持 UI 与后台线程同时查询；TZif 支持范围见 UI 架构。
   fd ancillary mechanism 委托 `linux-uapi::unix`。raw syscall、应用私有 ABI、裸 fd/device owner 和并行兼容路径均禁止。
 - 标准 `Command` spawn 的 AF_UNIX `SOCK_SEQPACKET|SOCK_CLOEXEC` socketpair 是 exec error
   publication owner；kernel 必须保留消息边界、peer-close EOF/hangup 与 `SO_TYPE=5`。只开放
@@ -144,7 +145,9 @@
   owned group termination 必须在 wait 前冻结 kill errno，以 `ESRCH` 判断 group 已消失，
   不使用 host-dependent `ErrorKind::NotFound`；无论 group 是否已消失都必须回收 leader。
   parent 的标准 `Command` 不得安装 `pre_exec`；单线程 trampoline 依次设置 parent-death signal、
-  复检 parent identity、`setsid` 并同 PID `exec`。parent 独占 exec-status 读端，trampoline
+  复检 parent identity、`setsid`，PTY 模式再执行 `TIOCSCTTY`，最后同 PID `exec`。
+  PTY 目标 stderr 接 slave，其他 profile 接 console，均与 exec-status 分离。
+  parent 独占 exec-status 读端，trampoline
   独占 CLOEXEC 写端；固定 frame 发布所有确定性 setup/exec 错误，空 EOF 表示没有这类已发布错误，
   不虚报异步致死与成功 exec 后立即退出可区分。错误、非空截断或非法 frame 必须 kill/wait 回收；
   禁止普通 spawn、raw fork 或重试兼容路径。

@@ -58,7 +58,7 @@ fn parent() -> io::Result<()> {
             EventKind::Configure(_) if display.ready_to_draw(window) => {
                 solid(&mut display, window, PARENT)?
             }
-            EventKind::FramePresented { .. } => println!("session-probe: parent ready"),
+            EventKind::FrameReady { .. } => println!("session-probe: parent ready"),
             EventKind::Key(key) if key.pressed && key.code == 32 => break, // D：探针的交接触发，不是认证结果。
             _ => {}
         }
@@ -148,7 +148,7 @@ fn desktop() -> io::Result<()> {
                     configuration.width, configuration.height
                 );
             }
-            EventKind::FramePresented { .. } => {
+            EventKind::FrameReady { .. } => {
                 presented.insert(event.window);
                 if presented.len() == 2 {
                     println!("session-probe: desktop ready");

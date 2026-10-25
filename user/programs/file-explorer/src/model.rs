@@ -134,17 +134,6 @@ impl Location {
         }
     }
 
-    pub fn icon(&self) -> Icon {
-        match self {
-            Location::MyComputer => Icon::MyComputer,
-            Location::ControlPanel => Icon::ControlPanel,
-            Location::NetworkPlaces => Icon::NetworkPlaces,
-            Location::Directory(path) if path == Path::new("/") => Icon::Disk,
-            Location::Directory(path) if let Some((_, icon)) = well_known(path) => icon,
-            Location::Directory(_) => Icon::Folder,
-        }
-    }
-
     /// "向上"的目标：目录到其父目录，根目录到"我的电脑"，"控制面板"到"我的电脑"。
     pub fn parent(&self) -> Option<Location> {
         match self {

@@ -8,6 +8,38 @@ pub struct Content {
     pub height: usize,
     /// 预乘 `0xAARRGGBB`，行优先、无行距。
     pub pixels: Vec<u32>,
+    /// 提交内容不可变，首次 GPU 使用后拥有纹理；只有 Content 析构且在途帧完成才关闭 GEM。
+    texture: std::cell::OnceCell<std::rc::Rc<linux_uapi::drm::VirglResource>>,
+}
+impl Content {
+    pub(crate) fn new(width: usize, height: usize, pixels: Vec<u32>) -> Self {
+        Self {
+            width,
+            height,
+            pixels,
+            texture: std::cell::OnceCell::new(),
+        }
+    }
+    pub(crate) fn texture(
+        &self,
+        context: &linux_uapi::drm::VirglContext,
+    ) -> std::io::Result<std::rc::Rc<linux_uapi::drm::VirglResource>> {
+        if let Some(texture) = self.texture.get() {
+            return Ok(texture.clone());
+        }
+        let mut resource = context.create_texture(self.width as u32, self.height as u32)?;
+        for y in 0..self.height {
+            resource
+                .row_mut(y)
+                .copy_from_slice(&self.pixels[y * self.width..(y + 1) * self.width]);
+        }
+        resource.transfer_to_host(0, 0, self.width as u32, self.height as u32)?;
+        let resource = std::rc::Rc::new(resource);
+        // OWNER: 单线程 Content 的 OnceCell；失败不发布半个纹理，下次绘制可重试资源准备。
+        // FAILURE: 不保留纹理会在每次窗口移动时重新上传全窗口像素，抵消 GPU 合成收益。
+        let _ = self.texture.set(resource.clone());
+        Ok(resource)
+    }
 }
 
 /// `attach` 的结果：`Some(None)` 表示显式 attach 了空 buffer（取消映射）。

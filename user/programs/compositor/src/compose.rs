@@ -5,6 +5,7 @@ use classic_theme::{SystemColor, Theme};
 use linux_uapi::drm::DumbBuffer;
 
 use crate::wayland::Content;
+pub(crate) mod gpu;
 
 /// 一个待绘制的 surface：左上角物理坐标、内容与放大倍数。
 pub struct Drawable<'a> {
@@ -24,6 +25,7 @@ pub fn compose(
     target: &mut DumbBuffer,
     theme: &Theme,
     windows: &[Drawable<'_>],
+    inversions: &[Rect],
     overlay: impl FnOnce(Surface<'_>),
 ) -> bool {
     let (width, height, stride) = (
@@ -47,6 +49,9 @@ pub fn compose(
             stride: window.content.width,
         };
         surface.blit(image, window.x, window.y, window.factor);
+    }
+    for rect in inversions {
+        surface.invert(*rect);
     }
     overlay(surface);
     true

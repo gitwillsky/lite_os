@@ -170,11 +170,7 @@ impl Display {
             }
             AnyEvent::ZwlrLayerSurfaceV1(event) => self.layer_event(object, event)?,
             AnyEvent::WlBuffer(wl_buffer::Event::Release) => {
-                if self.buffers.remove(&object).is_some() {
-                    wl_buffer::Request::Destroy
-                        .encode(object, &mut self.transport.writer)
-                        .map_err(io::Error::other)?;
-                }
+                self.release_buffer(object)?;
             }
             AnyEvent::WlCallback(wayland_wire::protocol::wl_callback::Event::Done {
                 callback_data,
@@ -187,7 +183,7 @@ impl Display {
                     window.frame = None;
                     self.events.push_back(Event {
                         window: *id,
-                        kind: EventKind::FramePresented {
+                        kind: EventKind::FrameReady {
                             time: callback_data,
                         },
                     });

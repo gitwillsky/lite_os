@@ -1,11 +1,9 @@
-//! 菜单栏、下拉菜单与工具栏的内容定义；绘制见 `ui`。
-use crate::{browser::Browser, grid::ViewMode};
-use canvas::Rect;
-
-/// 菜单或工具栏按钮触发的操作。
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+//! 资源管理器的业务命令与菜单数据；无绘制、命中或控件交互状态。
+use liteos_ui::{ListStyle, MenuItem};
+#[derive(Clone, Copy, PartialEq, Eq)]
+#[repr(u64)]
 pub enum Command {
-    Open,
+    Open = 1,
     Close,
     Cut,
     Copy,
@@ -16,282 +14,212 @@ pub enum Command {
     Restore,
     EmptyTrash,
     Properties,
+    SelectAll,
+    ToggleToolbar,
+    ToggleStatus,
+    ToggleFolders,
     Refresh,
     Back,
     Forward,
     Up,
-    ToggleToolbar,
-    ToggleStatusBar,
-    ToggleFolders,
-    SetView(ViewMode),
-    /// 弹出"查看"方式菜单。
+    LargeIcons,
+    SmallIcons,
+    List,
+    Details,
     ViewMenu,
+    Address,
+    About,
 }
-
-pub enum Entry {
-    Item {
-        label: &'static str,
-        shortcut: &'static str,
-        /// `None` 表示在当前状态下不可用（以灰色显示）。
-        command: Option<Command>,
-        checked: bool,
-    },
-    Separator,
+impl Command {
+    pub fn from_id(id: u64) -> Option<Self> {
+        Some(match id {
+            1 => Self::Open,
+            2 => Self::Close,
+            3 => Self::Cut,
+            4 => Self::Copy,
+            5 => Self::Paste,
+            6 => Self::Delete,
+            7 => Self::Rename,
+            8 => Self::NewFolder,
+            9 => Self::Restore,
+            10 => Self::EmptyTrash,
+            11 => Self::Properties,
+            12 => Self::SelectAll,
+            13 => Self::ToggleToolbar,
+            14 => Self::ToggleStatus,
+            15 => Self::ToggleFolders,
+            16 => Self::Refresh,
+            17 => Self::Back,
+            18 => Self::Forward,
+            19 => Self::Up,
+            20 => Self::LargeIcons,
+            21 => Self::SmallIcons,
+            22 => Self::List,
+            23 => Self::Details,
+            24 => Self::ViewMenu,
+            25 => Self::Address,
+            26 => Self::About,
+            _ => return None,
+        })
+    }
+    pub fn style(self) -> Option<ListStyle> {
+        match self {
+            Self::LargeIcons => Some(ListStyle::LargeIcons),
+            Self::SmallIcons => Some(ListStyle::SmallIcons),
+            Self::List => Some(ListStyle::List),
+            Self::Details => Some(ListStyle::Details),
+            _ => None,
+        }
+    }
 }
-
-pub const MENU_TITLES: [&str; 6] = [
-    "文件(F)",
-    "编辑(E)",
-    "查看(V)",
-    "收藏(A)",
-    "工具(T)",
-    "帮助(H)",
-];
-
-fn item(label: &'static str, shortcut: &'static str, command: Option<Command>) -> Entry {
-    Entry::Item {
+pub struct Availability {
+    pub selected: bool,
+    pub editable: bool,
+    pub paste: bool,
+    pub trash: bool,
+    pub toolbar: bool,
+    pub status: bool,
+    pub folders: bool,
+    pub style: ListStyle,
+    pub busy: bool,
+}
+fn item(
+    command: Command,
+    label: &'static str,
+    shortcut: &'static str,
+    enabled: bool,
+) -> MenuItem<'static> {
+    MenuItem {
+        id: command as u64,
         label,
         shortcut,
-        command,
-        checked: false,
+        state: u32::from(!enabled),
     }
 }
-
-fn checked(label: &'static str, command: Command, on: bool) -> Entry {
-    Entry::Item {
-        label,
-        shortcut: "",
-        command: Some(command),
-        checked: on,
-    }
+fn separated(mut item: MenuItem<'static>) -> MenuItem<'static> {
+    item.state |= 4;
+    item
 }
-
-/// 查看方式的四个单选项，工具栏"查看"与"查看"菜单共用。
-pub fn view_entries(current: ViewMode) -> Vec<Entry> {
+pub fn views(style: ListStyle) -> Vec<MenuItem<'static>> {
     [
-        ("大图标(G)", ViewMode::LargeIcons),
-        ("小图标(M)", ViewMode::SmallIcons),
-        ("列表(L)", ViewMode::List),
-        ("详细资料(D)", ViewMode::Details),
+        (Command::LargeIcons, "大图标(G)", ListStyle::LargeIcons),
+        (Command::SmallIcons, "小图标(M)", ListStyle::SmallIcons),
+        (Command::List, "列表(L)", ListStyle::List),
+        (Command::Details, "详细资料(D)", ListStyle::Details),
     ]
     .into_iter()
-    .map(|(label, mode)| checked(label, Command::SetView(mode), mode == current))
+    .map(|(command, title, value)| MenuItem {
+        id: command as u64,
+        label: title,
+        shortcut: "",
+        state: if style == value { 2 } else { 0 },
+    })
     .collect()
 }
-
-/// 第 `index` 个顶层菜单的条目。没有对应功能的项保持灰色，与资源管理器在无选择时的外观一致。
-pub fn menu(index: usize, browser: &Browser) -> Vec<Entry> {
-    let selected = browser.selected.is_some();
-    let editable = browser.can_modify();
-    let when = |condition: bool, command| condition.then_some(command);
-    match index {
-        0 => {
-            let mut entries = vec![
-                item("打开(O)", "", when(selected, Command::Open)),
-                item("新建文件夹(F)", "", when(editable, Command::NewFolder)),
-                Entry::Separator,
-            ];
-            if browser.in_trash() {
-                entries.push(item("还原(R)", "", when(selected, Command::Restore)));
-                entries.push(item("清空回收站(B)", "", Some(Command::EmptyTrash)));
-            }
-            entries.push(item(
-                "删除(D)",
-                "Del",
-                when(selected && editable, Command::Delete),
-            ));
-            entries.push(item(
-                "重命名(M)",
-                "F2",
-                when(selected && editable, Command::Rename),
-            ));
-            entries.push(item(
-                "属性(R)",
-                "Alt+Enter",
-                when(selected, Command::Properties),
-            ));
-            entries.push(Entry::Separator);
-            entries.push(item("关闭(C)", "", Some(Command::Close)));
-            entries
-        }
-        1 => vec![
-            item(
-                "剪切(T)",
-                "Ctrl+X",
-                when(selected && editable, Command::Cut),
-            ),
-            item("复制(C)", "Ctrl+C", when(selected, Command::Copy)),
-            item(
-                "粘贴(P)",
-                "Ctrl+V",
-                when(editable && browser.clipboard.is_some(), Command::Paste),
-            ),
-        ],
-        2 => {
-            let mut entries = vec![
-                checked("工具栏(T)", Command::ToggleToolbar, browser.show_toolbar),
-                checked(
-                    "状态栏(B)",
-                    Command::ToggleStatusBar,
-                    browser.show_status_bar,
-                ),
-                checked("文件夹(O)", Command::ToggleFolders, browser.show_folders),
-                Entry::Separator,
-            ];
-            entries.extend(view_entries(browser.view));
-            entries.push(Entry::Separator);
-            entries.push(item("刷新(R)", "F5", Some(Command::Refresh)));
-            entries
-        }
-        3 => vec![item("(空)", "", None)],
-        4 => vec![item("文件夹选项(O)...", "", None)],
-        _ => vec![item("关于 LiteOS 资源管理器(A)", "", None)],
+pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<MenuItem<'static>>)> {
+    let enabled = !state.busy;
+    let selected = state.selected && enabled;
+    let modify = state.editable && enabled;
+    let mut file = vec![
+        item(Command::Open, "打开(O)", "Enter", selected),
+        item(Command::NewFolder, "新建文件夹(F)", "", modify),
+    ];
+    if state.trash {
+        file.push(separated(item(Command::Restore, "还原(R)", "", selected)));
+        file.push(item(Command::EmptyTrash, "清空回收站(B)", "", enabled));
     }
-}
-
-/// 右键菜单：在项目上是打开与编辑类操作，在空白处是粘贴与新建。
-pub fn context(browser: &Browser, on_item: bool) -> Vec<Entry> {
-    let editable = browser.can_modify();
-    let when = |condition: bool, command| condition.then_some(command);
-    if on_item {
-        let mut entries = vec![item("打开(O)", "", Some(Command::Open))];
-        if browser.in_trash() {
-            entries.push(item("还原(E)", "", Some(Command::Restore)));
-        }
-        entries.extend([
-            Entry::Separator,
-            item("剪切(T)", "", when(editable, Command::Cut)),
-            item("复制(C)", "", Some(Command::Copy)),
-            Entry::Separator,
-            item("删除(D)", "", when(editable, Command::Delete)),
-            item("重命名(M)", "", when(editable, Command::Rename)),
-            Entry::Separator,
-            item("属性(R)", "", Some(Command::Properties)),
-        ]);
-        entries
-    } else {
-        vec![
-            item(
-                "粘贴(P)",
+    file.extend([
+        separated(item(Command::Delete, "删除(D)", "Del", selected && modify)),
+        item(Command::Rename, "重命名(M)", "F2", selected && modify),
+        item(Command::Properties, "属性(R)", "Alt+Enter", selected),
+        separated(item(Command::Close, "关闭(C)", "", true)),
+    ]);
+    let edit = vec![
+        item(Command::Cut, "剪切(T)", "Ctrl+X", selected && modify),
+        item(Command::Copy, "复制(C)", "Ctrl+C", selected),
+        item(Command::Paste, "粘贴(P)", "Ctrl+V", modify && state.paste),
+        separated(item(Command::SelectAll, "全部选中(A)", "Ctrl+A", enabled)),
+    ];
+    let mut view = vec![
+        MenuItem {
+            id: Command::ToggleToolbar as u64,
+            label: "工具栏(T)",
+            shortcut: "",
+            state: if state.toolbar { 2 } else { 0 },
+        },
+        MenuItem {
+            id: Command::ToggleStatus as u64,
+            label: "状态栏(B)",
+            shortcut: "",
+            state: if state.status { 2 } else { 0 },
+        },
+        MenuItem {
+            id: Command::ToggleFolders as u64,
+            label: "文件夹(O)",
+            shortcut: "",
+            state: if state.folders { 2 } else { 0 },
+        },
+    ];
+    let mut styles = views(state.style);
+    if let Some(first) = styles.first_mut() {
+        first.state |= 4;
+    }
+    view.extend(styles);
+    view.push(separated(item(Command::Refresh, "刷新(R)", "F5", enabled)));
+    vec![
+        ("文件(F)", file),
+        ("编辑(E)", edit),
+        ("查看(V)", view),
+        (
+            "收藏(A)",
+            vec![MenuItem {
+                id: 1000,
+                label: "(空)",
+                shortcut: "",
+                state: 1,
+            }],
+        ),
+        (
+            "工具(T)",
+            vec![MenuItem {
+                id: 1001,
+                label: "文件夹选项(O)...",
+                shortcut: "",
+                state: 1,
+            }],
+        ),
+        (
+            "帮助(H)",
+            vec![item(
+                Command::About,
+                "关于 LiteOS 资源管理器(A)",
                 "",
-                when(editable && browser.clipboard.is_some(), Command::Paste),
-            ),
-            Entry::Separator,
-            item("新建文件夹(F)", "", when(editable, Command::NewFolder)),
-            Entry::Separator,
-            item("刷新(R)", "", Some(Command::Refresh)),
-        ]
-    }
+                enabled,
+            )],
+        ),
+    ]
 }
-
-/// 工具栏按钮。
-pub struct Tool {
-    /// 在 47 帧位图条里的序号。
-    pub frame: i32,
-    pub label: &'static str,
-    /// 悬停时的工具提示。
-    pub tip: &'static str,
-    pub command: Option<Command>,
-    /// 此按钮前面带一道分隔。
-    pub gap: bool,
-}
-
-const fn tool(
-    frame: i32,
-    label: &'static str,
-    tip: &'static str,
-    command: Option<Command>,
-    gap: bool,
-) -> Tool {
-    Tool {
-        frame,
-        label,
-        tip,
-        command,
-        gap,
-    }
-}
-
-pub const TOOLS: [Tool; 11] = [
-    tool(0, "后退", "后退", Some(Command::Back), false),
-    tool(1, "前进", "前进", Some(Command::Forward), false),
-    tool(28, "向上", "向上", Some(Command::Up), false),
-    tool(17, "搜索", "搜索", None, true),
-    tool(3, "文件夹", "文件夹", Some(Command::ToggleFolders), false),
-    tool(26, "历史", "历史", None, false),
-    tool(43, "", "移至", None, true),
-    tool(44, "", "复制到", None, false),
-    tool(10, "", "删除", Some(Command::Delete), false),
-    tool(8, "", "撤消", None, false),
-    tool(20, "", "查看", Some(Command::ViewMenu), true),
-];
-
-/// 工具栏按钮宽度与分隔宽度。
-const LABELLED_WIDTH: i32 = 54;
-const PLAIN_WIDTH: i32 = 26;
-const GAP: i32 = 8;
-
-/// 各按钮在工具栏矩形内的位置。
-pub fn tool_rects(bar: Rect) -> [Rect; TOOLS.len()] {
-    let mut x = bar.x + 6;
-    TOOLS.each_ref().map(|tool| {
-        if tool.gap {
-            x += GAP;
+pub fn context(state: &Availability, on_item: bool) -> Vec<MenuItem<'static>> {
+    let mut items = Vec::new();
+    if on_item {
+        items.extend([
+            item(Command::Open, "打开(O)", "", true),
+            separated(item(Command::Cut, "剪切(T)", "", state.editable)),
+            item(Command::Copy, "复制(C)", "", true),
+            item(Command::Delete, "删除(D)", "", state.editable),
+            item(Command::Rename, "重命名(M)", "", state.editable),
+            separated(item(Command::Properties, "属性(R)", "", true)),
+        ]);
+        if state.trash {
+            items.push(item(Command::Restore, "还原(R)", "", true));
         }
-        let width = if tool.label.is_empty() {
-            PLAIN_WIDTH
-        } else {
-            LABELLED_WIDTH
-        };
-        let rect = Rect::new(x, bar.y + 2, width, bar.height - 4);
-        x += width;
-        rect
-    })
-}
-
-/// 按钮是否可用；`Folders` 与 `ViewMenu` 随时可用，导航按钮取决于历史。
-pub fn tool_enabled(tool: &Tool, browser: &Browser) -> bool {
-    match tool.command {
-        Some(Command::Back) => browser.can_back(),
-        Some(Command::Forward) => browser.can_forward(),
-        Some(Command::Up) => browser.location.parent().is_some(),
-        Some(Command::Delete) => browser.selected.is_some() && browser.can_modify(),
-        command => command.is_some(),
+    } else {
+        items.extend([
+            item(Command::Paste, "粘贴(P)", "", state.editable && state.paste),
+            item(Command::NewFolder, "新建文件夹(F)", "", state.editable),
+            separated(item(Command::Refresh, "刷新(R)", "", true)),
+            item(Command::ViewMenu, "查看(V)", "", true),
+        ]);
     }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::model::Location;
-
-    #[test]
-    fn tool_frames_stay_inside_the_47_frame_strip() {
-        assert!(TOOLS.iter().all(|t| (0..47).contains(&t.frame)));
-    }
-
-    #[test]
-    fn toolbar_buttons_do_not_overlap_and_separators_widen_the_gap() {
-        let rects = tool_rects(Rect::new(0, 0, 600, 44));
-        for pair in rects.windows(2) {
-            assert!(pair[0].right() <= pair[1].x);
-        }
-        assert_eq!(rects[3].x - rects[2].right(), GAP);
-        assert_eq!(rects[1].x - rects[0].right(), 0);
-    }
-
-    #[test]
-    fn navigation_buttons_follow_history_and_open_follows_selection() {
-        let browser = Browser::new(Location::MyComputer);
-        assert!(!tool_enabled(&TOOLS[0], &browser), "nothing to go back to");
-        assert!(
-            !tool_enabled(&TOOLS[2], &browser),
-            "my computer has no parent"
-        );
-        assert!(tool_enabled(&TOOLS[4], &browser));
-        let Entry::Item { command, .. } = &menu(0, &browser)[0] else {
-            unreachable!()
-        };
-        assert!(command.is_none(), "open is unavailable without a selection");
-    }
+    items
 }

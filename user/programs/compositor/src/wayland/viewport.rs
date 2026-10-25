@@ -79,11 +79,7 @@ impl ViewportState {
                 pixels.push(base.pixels[row + source_x.min(base.width - 1)]);
             }
         }
-        Ok(Content {
-            width,
-            height,
-            pixels,
-        })
+        Ok(Content::new(width, height, pixels))
     }
 }
 

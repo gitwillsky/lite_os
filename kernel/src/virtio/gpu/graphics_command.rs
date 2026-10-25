@@ -5,9 +5,8 @@ use super::{
     sequence_policy::RuntimeStage,
     wire::{
         CONTROL_REQUEST_SIZE, VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, VIRTIO_GPU_CMD_CTX_CREATE,
-        VIRTIO_GPU_CMD_CTX_DESTROY, VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE,
-        VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, VIRTIO_GPU_CMD_RESOURCE_CREATE_3D,
-        VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
+        VIRTIO_GPU_CMD_CTX_DESTROY, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
+        VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
         VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT, VIRTIO_GPU_CMD_SUBMIT_3D,
         VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D, prepare_attach,
         prepare_flush, prepare_set_scanout, prepare_unref, write_u32, write_u64,
@@ -97,23 +96,12 @@ pub(super) fn prepare(
             let length = prepare_attach(request, resource_id, &backing)?;
             (VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, length)
         }
-        VirglCommand::ResourceDetachBacking { resource_id } => {
-            resource_header(request, resource_id)?;
-            (VIRTIO_GPU_CMD_RESOURCE_DETACH_BACKING, 32)
-        }
         VirglCommand::ContextAttachResource {
             context_id,
             resource_id,
         } => {
             context_resource(request, context_id, resource_id)?;
             (VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, 32)
-        }
-        VirglCommand::ContextDetachResource {
-            context_id,
-            resource_id,
-        } => {
-            context_resource(request, context_id, resource_id)?;
-            (VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE, 32)
         }
         VirglCommand::Submit3d {
             context_id,
@@ -209,14 +197,6 @@ fn context_header(request: &mut [u8], context_id: u32, length: usize) -> Result<
     }
     clear(request, length)?;
     write_u32(request, 16, context_id).ok_or(DisplayError::Device)
-}
-
-fn resource_header(request: &mut [u8], resource_id: u32) -> Result<(), DisplayError> {
-    if resource_id == 0 {
-        return Err(DisplayError::Device);
-    }
-    clear(request, 32)?;
-    write_u32(request, 24, resource_id).ok_or(DisplayError::Device)
 }
 
 fn context_resource(

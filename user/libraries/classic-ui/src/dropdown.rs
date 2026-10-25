@@ -8,22 +8,26 @@ const ITEM_HEIGHT: i32 = 20;
 const SEPARATOR_HEIGHT: i32 = 8;
 
 /// 下拉菜单的一个条目。
-pub struct DropItem<T> {
-    pub label: &'static str,
-    pub shortcut: &'static str,
+#[derive(PartialEq, Eq)]
+pub struct DropItem<T, S = &'static str> {
+    pub label: S,
+    pub shortcut: S,
     pub command: T,
     pub checked: bool,
+    /// 禁用条目保留可见外观，但不参与键盘导航或命令激活。
+    pub disabled: bool,
     /// 此条目上方带分隔线。
     pub separator_before: bool,
 }
 
-impl<T> DropItem<T> {
-    pub fn new(label: &'static str, shortcut: &'static str, command: T) -> Self {
+impl<T, S: AsRef<str>> DropItem<T, S> {
+    pub fn new(label: S, shortcut: S, command: T) -> Self {
         Self {
             label,
             shortcut,
             command,
             checked: false,
+            disabled: false,
             separator_before: false,
         }
     }
@@ -42,9 +46,10 @@ impl<T> DropItem<T> {
 }
 
 /// 一个顶层菜单：标题与条目。
-pub struct DropMenu<T> {
-    pub title: &'static str,
-    pub items: Vec<DropItem<T>>,
+#[derive(PartialEq, Eq)]
+pub struct DropMenu<T, S = &'static str> {
+    pub title: S,
+    pub items: Vec<DropItem<T, S>>,
 }
 
 fn logical_width(p: &Painter<'_>, text: &str) -> i32 {
@@ -52,12 +57,16 @@ fn logical_width(p: &Painter<'_>, text: &str) -> i32 {
 }
 
 /// 菜单栏各标题的矩形，沿 `bar` 从左到右。
-pub fn title_rects<T>(p: &Painter<'_>, bar: Rect, menus: &[DropMenu<T>]) -> Vec<Rect> {
+pub fn title_rects<T, S: AsRef<str>>(
+    p: &Painter<'_>,
+    bar: Rect,
+    menus: &[DropMenu<T, S>],
+) -> Vec<Rect> {
     let mut x = bar.x + 2;
     menus
         .iter()
         .map(|menu| {
-            let width = logical_width(p, menu.title) + 16;
+            let width = logical_width(p, menu.title.as_ref()) + 16;
             let rect = Rect::new(x, bar.y, width, bar.height);
             x += width;
             rect
@@ -74,9 +83,18 @@ pub struct Popup {
 
 impl Popup {
     /// 在标题矩形 `title` 的下方打开第 `menu` 个菜单。
-    pub fn open<T>(p: &Painter<'_>, menus: &[DropMenu<T>], menu: usize, title: Rect) -> Self {
+    pub fn open<T, S: AsRef<str>>(
+        p: &Painter<'_>,
+        menus: &[DropMenu<T, S>],
+        menu: usize,
+        title: Rect,
+    ) -> Self {
         let items = &menus[menu].items;
-        let width = p.menu_width(items.iter().map(|item| (item.label, item.shortcut)));
+        let width = p.menu_width(
+            items
+                .iter()
+                .map(|item| (item.label.as_ref(), item.shortcut.as_ref())),
+        );
         let height = 4 + items
             .iter()
             .map(|item| {
@@ -96,7 +114,7 @@ impl Popup {
     }
 
     /// 各条目的行矩形（不含分隔线）。
-    fn rows<T>(&self, items: &[DropItem<T>]) -> Vec<Rect> {
+    fn rows<T, S: AsRef<str>>(&self, items: &[DropItem<T, S>]) -> Vec<Rect> {
         let mut y = self.rect.y + 2;
         items
             .iter()
@@ -112,22 +130,37 @@ impl Popup {
     }
 
     /// 点在哪个条目上。
-    pub fn item_at<T>(&self, items: &[DropItem<T>], point: (i32, i32)) -> Option<usize> {
+    pub fn item_at<T, S: AsRef<str>>(
+        &self,
+        items: &[DropItem<T, S>],
+        point: (i32, i32),
+    ) -> Option<usize> {
         self.rows(items).iter().position(|row| {
             point.0 >= row.x && point.0 < row.right() && point.1 >= row.y && point.1 < row.bottom()
         })
     }
 
     /// 方向键移动高亮；`step` 为 +1 或 -1，首尾相接。
-    pub fn step(&mut self, count: usize, step: isize) {
-        let count = count as isize;
-        let start = self
+    pub fn step<T, S: AsRef<str>>(&mut self, items: &[DropItem<T, S>], step: isize) {
+        if items.is_empty() {
+            self.hover = None;
+            return;
+        }
+        let count = items.len() as isize;
+        let mut position = self
             .hover
-            .map_or(if step > 0 { -1 } else { count }, |h| h as isize);
-        self.hover = Some((start + step).rem_euclid(count) as usize);
+            .map_or(if step > 0 { -1 } else { count }, |index| index as isize);
+        for _ in 0..items.len() {
+            position = (position + step).rem_euclid(count);
+            if !items[position as usize].disabled {
+                self.hover = Some(position as usize);
+                return;
+            }
+        }
+        self.hover = None;
     }
 
-    pub fn paint<T>(&self, p: &mut Painter<'_>, items: &[DropItem<T>]) {
+    pub fn paint<T, S: AsRef<str>>(&self, p: &mut Painter<'_>, items: &[DropItem<T, S>]) {
         let inner = p.menu_popup(self.rect);
         for (index, (item, row)) in items.iter().zip(self.rows(items)).enumerate() {
             if item.separator_before {
@@ -140,11 +173,12 @@ impl Popup {
             }
             p.menu_item(
                 row,
-                item.label,
-                item.shortcut,
+                item.label.as_ref(),
+                item.shortcut.as_ref(),
                 MenuItemState {
                     highlighted: self.hover == Some(index),
                     checked: item.checked,
+                    disabled: item.disabled,
                     ..Default::default()
                 },
             );

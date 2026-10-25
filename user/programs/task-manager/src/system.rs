@@ -52,6 +52,7 @@ pub struct Totals {
     pub processes: u64,
 }
 
+#[derive(Clone)]
 pub struct Monitor {
     /// 上一次的（忙碌，总计）时钟滴答。
     previous: Option<(u64, u64)>,

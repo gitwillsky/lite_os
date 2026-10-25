@@ -1,117 +1,128 @@
-//! "任务栏属性"：总在最前、自动隐藏、显示时钟；写入每用户桌面设置，桌面外壳发现后立即应用。
-use crate::{Icons, Page, inside};
-use canvas::Rect;
-use classic_theme::{Edge, SystemColor as C};
-use classic_ui::{Ink, Painter};
+//! 任务栏设置草稿由标准复选框持有；应用时只合并本页拥有的字段。
+use crate::{Apply, Page, child};
 use desktop_settings::Settings;
-
+use liteos_ui::{Draw, Event, Layout, PropertySheet, Rect, Widget, WidgetKind as Kind, state};
 pub struct Taskbar {
-    settings: Settings,
-    saved: Settings,
+    _page: Widget,
+    preview: Widget,
+    options: [Widget; 3],
+    saved: [bool; 3],
 }
-
 impl Taskbar {
-    pub fn new() -> Self {
-        let settings = Settings::load();
-        Self {
-            settings,
-            saved: settings,
+    pub fn build(sheet: &PropertySheet, settings: Settings) -> liteos_ui::Result<Self> {
+        let page = sheet.page("任务栏选项")?;
+        let preview = child(
+            &page,
+            Kind::Canvas,
+            "",
+            Layout {
+                height: 90,
+                ..Default::default()
+            },
+        )?;
+        let labels = ["总在最前(T)", "自动隐藏(U)", "显示时钟(C)"];
+        let saved = [
+            settings.always_on_top,
+            settings.auto_hide,
+            settings.show_clock,
+        ];
+        let mut options = Vec::new();
+        for (label, checked) in labels.into_iter().zip(saved) {
+            let option = child(&page, Kind::CheckBox, label, Layout::default())?;
+            option.set_state(if checked { state::CHECKED } else { 0 })?;
+            options.push(option);
         }
+        let view = Self {
+            _page: page,
+            preview,
+            options: options.try_into().ok().expect("three taskbar settings"),
+            saved,
+        };
+        view.preview()?;
+        Ok(view)
     }
-
-    /// 三个选项的行：标签、选项当前值。
-    fn rows(&self) -> [(&'static str, bool); 3] {
-        [
-            ("总在最前(T)", self.settings.always_on_top),
-            ("自动隐藏(U)", self.settings.auto_hide),
-            ("显示时钟(C)", self.settings.show_clock),
-        ]
+    fn values(&self) -> liteos_ui::Result<[bool; 3]> {
+        Ok([
+            self.options[0].state()? & state::CHECKED != 0,
+            self.options[1].state()? & state::CHECKED != 0,
+            self.options[2].state()? & state::CHECKED != 0,
+        ])
     }
-
-    fn row_rect(page: Rect, index: usize) -> Rect {
-        Rect::new(
-            page.x + 24,
-            page.y + 100 + index as i32 * 26,
-            page.width - 48,
-            22,
-        )
+    fn preview(&self) -> liteos_ui::Result<()> {
+        let area = self.preview.geometry()?;
+        if area.width <= 0 || area.height <= 0 {
+            return Ok(());
+        }
+        let [top, hide, clock] = self.values()?;
+        let bar = if hide { 2 } else { 16 };
+        let mut commands = vec![
+            Draw {
+                kind: 1,
+                rect: Rect::new(0, 0, area.width, area.height),
+                color: self.preview.color(liteos_ui::ColorRole::Desktop)?,
+                bold: false,
+                text: "",
+            },
+            Draw {
+                kind: 1,
+                rect: Rect::new(0, area.height - bar, area.width, bar),
+                color: 0xd4d0c8,
+                bold: false,
+                text: "",
+            },
+        ];
+        if !hide {
+            commands.push(Draw {
+                kind: 3,
+                rect: Rect::new(2, area.height - 18, 60, 18),
+                color: 0,
+                bold: false,
+                text: "开始",
+            });
+        }
+        if clock && !hide {
+            commands.push(Draw {
+                kind: 3,
+                rect: Rect::new(area.width - 55, area.height - 18, 55, 18),
+                color: 0,
+                bold: false,
+                text: "12:00",
+            });
+        }
+        if !top {
+            commands.push(Draw {
+                kind: 1,
+                rect: Rect::new(30, 20, (area.width - 60).max(0), area.height - 22),
+                color: 0xd4d0c8,
+                bold: false,
+                text: "",
+            });
+        }
+        self.preview.set_drawing(&commands)
     }
 }
-
 impl Page for Taskbar {
-    fn title(&self) -> &'static str {
-        "任务栏属性"
+    fn event(&mut self, _event: &Event) -> liteos_ui::Result<Option<Vec<String>>> {
+        self.preview()?;
+        Ok(None)
     }
-    fn tabs(&self) -> &'static [&'static str] {
-        &["任务栏选项"]
+    fn dirty(&self) -> liteos_ui::Result<bool> {
+        Ok(self.values()? != self.saved)
     }
-    fn icon(&self) -> &'static str {
-        "settings"
+    fn apply(&self) -> liteos_ui::Result<Apply> {
+        let [top, hide, clock] = self.values()?;
+        Ok(Box::new(move || {
+            Settings::update(|settings| {
+                settings.always_on_top = top;
+                settings.auto_hide = hide;
+                settings.show_clock = clock;
+            })
+            .map(drop)
+            .map_err(|error| error.to_string())
+        }))
     }
-    fn size(&self) -> (i32, i32) {
-        (400, 300)
-    }
-    fn paint(&self, p: &mut Painter<'_>, page: Rect, _tab: usize, _now: i64, _icons: &Icons) {
-        // 预览：一块小桌面，底边是任务栏（自动隐藏时只有一条细线，不在最前时被一个窗口盖住）。
-        let preview = Rect::new(page.x + 24, page.y + 16, page.width - 48, 70);
-        let inner = p.edge(preview, Edge::Sunken);
-        let background = p.theme().color(C::Background);
-        p.fill_rgb(inner, background);
-        let bar_height = if self.settings.auto_hide { 2 } else { 12 };
-        let bar = Rect::new(
-            inner.x,
-            inner.bottom() - bar_height,
-            inner.width,
-            bar_height,
-        );
-        p.fill(bar, C::ButtonFace);
-        p.fill(Rect::new(bar.x, bar.y, bar.width, 1), C::ButtonHilight);
-        // 不在最前：再画一个窗口，下半部分压在任务栏上。
-        if !self.settings.always_on_top {
-            let window = Rect::new(
-                inner.x + 30,
-                inner.y + 20,
-                inner.width - 60,
-                inner.height - 26,
-            );
-            p.fill(window, C::ButtonFace);
-            p.outline(window, C::WindowFrame);
-        }
-        for (index, (label, checked)) in self.rows().into_iter().enumerate() {
-            let row = Self::row_rect(page, index);
-            p.checkbox(row.x, row.y + 4, checked, false);
-            p.label_fit(
-                row.x + 22,
-                row.y + 3,
-                page.right() - (row.x + 22) - 12,
-                label,
-                Ink::Color(C::ButtonText),
-            );
-        }
-    }
-    fn click(&mut self, page: Rect, _tab: usize, point: (i32, i32)) -> bool {
-        for index in 0..3 {
-            if inside(Self::row_rect(page, index), point) {
-                match index {
-                    0 => self.settings.always_on_top ^= true,
-                    1 => self.settings.auto_hide ^= true,
-                    _ => self.settings.show_clock ^= true,
-                }
-                return true;
-            }
-        }
-        false
-    }
-    fn dirty(&self) -> bool {
-        self.settings != self.saved
-    }
-    fn apply(&mut self) {
-        if self.dirty() {
-            // 保存失败时保持"有未应用修改"的状态，用户可以再点应用；错误打到 stderr 供排查。
-            match self.settings.save() {
-                Ok(()) => self.saved = self.settings,
-                Err(error) => eprintln!("control-panel: cannot save desktop settings: {error}"),
-            }
-        }
+    fn committed(&mut self) -> liteos_ui::Result<()> {
+        self.saved = self.values()?;
+        Ok(())
     }
 }

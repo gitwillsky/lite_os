@@ -110,7 +110,10 @@ impl DeviceFile for CardFile {
     }
 
     fn ioctl(&self, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {
-        ioctl::ioctl(&self.0, call)
+        let result = ioctl::ioctl(&self.0, call);
+        // operation 的临时 Arc 已全部退出；成功和错误都重新推进等待最后引用的 UNREF。
+        self.0.progress_retirements();
+        result
     }
 
     /// dumb/GEM mapping：必须 `MAP_SHARED`、不可执行；可写映射要求 fd 可写。

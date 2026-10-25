@@ -118,23 +118,11 @@ pub(crate) enum VirglCommand<'a> {
         /// 覆盖 resource storage 的 DMA-stable scatter/gather owner。
         backing: Arc<DeviceBacking>,
     },
-    /// 从 resource 解绑 guest backing。
-    ResourceDetachBacking {
-        /// 已创建且已绑定 backing 的 resource identity。
-        resource_id: u32,
-    },
     /// 把 resource 加入 context 可见对象集合。
     ContextAttachResource {
         /// 已创建的 context identity。
         context_id: u32,
         /// 已创建的 resource identity。
-        resource_id: u32,
-    },
-    /// 从 context 可见对象集合删除 resource。
-    ContextDetachResource {
-        /// 已创建的 context identity。
-        context_id: u32,
-        /// 已 attach 的 resource identity。
         resource_id: u32,
     },
     /// 提交一段 exact VirGL command stream。

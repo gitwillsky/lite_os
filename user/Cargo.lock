@@ -12,6 +12,7 @@ version = "0.1.0"
 dependencies = [
  "linux-uapi",
  "liteos-runtime",
+ "tz-rs",
 ]
 
 [[package]]
@@ -38,8 +39,29 @@ dependencies = [
  "keyboard",
  "linux-uapi",
  "liteos-runtime",
+ "terminal-font",
  "typeface",
+ "unicode-width",
  "wayland-wire",
+]
+
+[[package]]
+name = "classic-ui-abi"
+version = "1.0.0"
+
+[[package]]
+name = "classic-ui-runtime"
+version = "1.0.0"
+dependencies = [
+ "calendar",
+ "canvas",
+ "classic-theme",
+ "classic-ui",
+ "classic-ui-abi",
+ "keyboard",
+ "linux-uapi",
+ "terminal-font",
+ "typeface",
 ]
 
 [[package]]
@@ -62,14 +84,9 @@ name = "control-panel"
 version = "0.1.0"
 dependencies = [
  "calendar",
- "canvas",
- "classic-theme",
- "classic-ui",
  "desktop-settings",
  "linux-uapi",
- "liteos-runtime",
- "sound",
- "typeface",
+ "liteos-ui",
 ]
 
 [[package]]
@@ -107,12 +124,8 @@ dependencies = [
 name = "device-manager"
 version = "0.1.0"
 dependencies = [
- "canvas",
- "classic-theme",
- "classic-ui",
  "linux-uapi",
- "liteos-runtime",
- "typeface",
+ "liteos-ui",
 ]
 
 [[package]]
@@ -120,13 +133,9 @@ name = "file-explorer"
 version = "0.1.0"
 dependencies = [
  "calendar",
- "canvas",
- "classic-theme",
- "classic-ui",
  "desktop-entry",
- "liteos-runtime",
- "sound",
- "typeface",
+ "linux-uapi",
+ "liteos-ui",
 ]
 
 [[package]]
@@ -148,6 +157,13 @@ name = "liteos-runtime"
 version = "0.1.0"
 
 [[package]]
+name = "liteos-ui"
+version = "1.0.0"
+dependencies = [
+ "classic-ui-abi",
+]
+
+[[package]]
 name = "logon"
 version = "0.1.0"
 dependencies = [
@@ -163,12 +179,8 @@ dependencies = [
 name = "media-player"
 version = "0.1.0"
 dependencies = [
- "canvas",
- "classic-theme",
- "classic-ui",
- "liteos-runtime",
+ "liteos-ui",
  "sound",
- "typeface",
 ]
 
 [[package]]
@@ -176,11 +188,7 @@ name = "notepad"
 version = "0.1.0"
 dependencies = [
  "calendar",
- "canvas",
- "classic-theme",
- "classic-ui",
- "liteos-runtime",
- "typeface",
+ "liteos-ui",
 ]
 
 [[package]]
@@ -215,11 +223,17 @@ dependencies = [
 name = "task-manager"
 version = "0.1.0"
 dependencies = [
- "canvas",
- "classic-theme",
- "classic-ui",
- "liteos-runtime",
- "typeface",
+ "liteos-ui",
+]
+
+[[package]]
+name = "terminal"
+version = "0.1.0"
+dependencies = [
+ "keyboard",
+ "linux-uapi",
+ "liteos-ui",
+ "terminal-model",
 ]
 
 [[package]]
@@ -241,6 +255,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tz-rs"
+version = "0.7.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4fc6c929ffa10fb34f4a3c7e9a73620a83ef2e85e47f9ec3381b8289e6762f42"
+
+[[package]]
 name = "unicode-width"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -250,12 +270,9 @@ checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
 name = "volume-control"
 version = "0.1.0"
 dependencies = [
- "canvas",
- "classic-theme",
- "classic-ui",
  "liteos-runtime",
+ "liteos-ui",
  "sndvol",
- "typeface",
 ]
 
 [[package]]

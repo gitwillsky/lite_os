@@ -356,6 +356,7 @@ pub(crate) struct InputAbsInfo {
 }
 
 #[repr(C)]
+#[derive(Clone, Copy)]
 pub(crate) struct PollFd {
     pub fd: c_int,
     pub events: i16,
@@ -436,6 +437,14 @@ const _: () = assert!(size_of::<SockAddrNl>() == 12);
 const _: () = assert!(DRM_IOCTL_DROP_MASTER == 0x0000_641f);
 
 unsafe extern "C" {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn renameat2(
+        old_directory: c_int,
+        old_path: *const c_char,
+        new_directory: c_int,
+        new_path: *const c_char,
+        flags: u32,
+    ) -> c_int;
     // musl/POSIX `open` 是 variadic；`mode` 只在 `O_CREAT`/`O_TMPFILE` 时读取，当前调用者都不创建文件。
     pub(crate) fn open(path: *const c_char, flags: c_int, ...) -> c_int;
     pub(crate) fn ioctl(fd: c_int, request: usize, argument: *mut c_void) -> c_int;
@@ -504,22 +513,6 @@ unsafe extern "C" {
     pub(crate) fn setuid(uid: u32) -> c_int;
 }
 
-/// musl LP64 local-time layout, also used by the 64-bit native host test runtime.
-#[repr(C)]
-pub(crate) struct Tm {
-    pub sec: c_int,
-    pub min: c_int,
-    pub hour: c_int,
-    pub mday: c_int,
-    pub month: c_int,
-    pub year: c_int,
-    pub weekday: c_int,
-    pub yearday: c_int,
-    pub dst: c_int,
-    pub gmtoff: i64,
-    pub zone: *const c_char,
-}
-
 #[repr(C)]
 pub(crate) struct Timespec {
     pub seconds: i64,
@@ -545,8 +538,6 @@ pub(crate) struct StatVfs {
 
 // SAFETY: These declarations match the LP64 libc ABI; all pointers remain private to typed wrappers.
 unsafe extern "C" {
-    pub(crate) fn localtime_r(time: *const i64, result: *mut Tm) -> *mut Tm;
-    pub(crate) fn tzset();
     pub(crate) fn clock_settime(clock: c_int, time: *const Timespec) -> c_int;
     #[cfg(target_os = "linux")]
     pub(crate) fn statvfs(path: *const c_char, buffer: *mut StatVfs) -> c_int;

@@ -32,7 +32,7 @@ fn check_aarch64_el0_execution_access(root: &Path, errors: &mut Vec<String>) {
 }
 
 /// `user/programs/` 下的可执行程序包；每个都有 `src/main.rs`。
-const PROGRAMS: [&str; 11] = [
+const PROGRAMS: [&str; 12] = [
     "compositor",
     "logon",
     "desktop",
@@ -40,6 +40,7 @@ const PROGRAMS: [&str; 11] = [
     "control-panel",
     "task-manager",
     "volume-control",
+    "terminal",
     "sound-player",
     "media-player",
     "notepad",
@@ -47,11 +48,14 @@ const PROGRAMS: [&str; 11] = [
 ];
 
 /// `user/libraries/` 下的库包；每个都有 `src/lib.rs`。其中带 `liteos-runtime` 依赖的会被构建成共享库。
-const LIBRARIES: [&str; 16] = [
+const LIBRARIES: [&str; 19] = [
     "calendar",
     "canvas",
     "classic-theme",
     "classic-ui",
+    "classic-ui-abi",
+    "classic-ui-runtime",
+    "liteos-ui",
     "desktop-entry",
     "desktop-settings",
     "keyboard",
@@ -178,7 +182,48 @@ fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
         return;
     }
     for source in sources {
-        let allowed = source.starts_with(root.join("user/libraries/linux-uapi"));
+        // 精确列出的 SDK seam 只拥有进程内稳定 ABI，不能导入 libc/设备符号。
+        // Linux 原始 FFI 仍只属于 linux-uapi，不对整个 UI 目录开放例外。
+        let sdk_abi = [
+            "user/libraries/classic-ui-abi/src/lib.rs",
+            "user/libraries/classic-ui-runtime/src/lib.rs",
+            "user/libraries/classic-ui-runtime/src/context_api.rs",
+            "user/libraries/classic-ui-runtime/src/window_api.rs",
+            "user/libraries/classic-ui-runtime/src/widget_api.rs",
+            "user/libraries/classic-ui-runtime/src/dialog_api.rs",
+            "user/libraries/classic-ui-runtime/src/toplevel.rs",
+            "user/libraries/classic-ui-runtime/src/outline.rs",
+            "user/libraries/classic-ui-runtime/src/list_view.rs",
+            "user/libraries/classic-ui-runtime/src/label_edit.rs",
+            "user/libraries/liteos-ui/src/connection.rs",
+        ]
+        .iter()
+        .any(|path| source == root.join(path));
+        if sdk_abi {
+            let text = fs::read_to_string(&source).unwrap_or_default();
+            if let Ok(file) = syn::parse_file(&text) {
+                for item in file.items {
+                    if let syn::Item::ForeignMod(block) = item {
+                        let sdk_binding =
+                            source == root.join("user/libraries/liteos-ui/src/connection.rs");
+                        if !sdk_binding
+                            || block.items.len() != 1
+                            || !matches!(
+                                block.items.first(), Some(syn::ForeignItem::Fn(function)) if function.sig.ident == "liteos_ui_get_api"
+                            )
+                        {
+                            errors.push(format!("{}: UI ABI may import only liteos_ui_get_api; OS/device FFI belongs to linux-uapi", source.display()));
+                        }
+                    }
+                }
+            } else {
+                errors.push(format!(
+                    "{}: UI ABI seam must parse as Rust",
+                    source.display()
+                ));
+            }
+        }
+        let allowed = source.starts_with(root.join("user/libraries/linux-uapi")) || sdk_abi;
         if allowed {
             continue;
         }

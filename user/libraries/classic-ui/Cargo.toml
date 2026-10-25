@@ -16,3 +16,5 @@ desktop-entry = { path = "../desktop-entry" }
 keyboard.workspace = true
 linux-uapi.workspace = true
 wayland-wire = { path = "../wayland-wire" }
+terminal-font.workspace = true
+unicode-width.workspace = true

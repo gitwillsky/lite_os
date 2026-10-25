@@ -101,6 +101,7 @@ RUST_USER_BUILD_STD = "std,panic_abort;llvm-libunwind"
 # 工具链、同一组参数、同一个 Cargo target 一次构建，并一起安装到 `/usr/lib/liteos`。
 # 元素是 `(Cargo 包名, 库名)`，库文件名是 `lib<库名>.so`；顺序即依赖顺序。
 RUNTIME_LIBRARY = "liteos_runtime"
+UI_RUNTIME = ("classic-ui-runtime", "liteos_ui")
 SYSTEM_LIBRARIES = (
     ("liteos-runtime", RUNTIME_LIBRARY),
     ("canvas", "canvas"), ("classic-theme", "classic_theme"), ("typeface", "typeface"),
@@ -108,15 +109,14 @@ SYSTEM_LIBRARIES = (
     ("keyboard", "keyboard"), ("calendar", "calendar"), ("desktop-entry", "desktop_entry"),
     ("desktop-settings", "desktop_settings"),
     ("sound", "sound"), ("sndvol", "sndvol"),
+    UI_RUNTIME,
 )
 SYSTEM_LIBRARY_DIRECTORY = "/usr/lib/liteos"
 SYSTEM_LIBRARY_PROGRAMS = frozenset({
     ("compositor", "compositor"), ("logon", "logon"), ("desktop", "desktop"),
-    ("file-explorer", "file-explorer"), ("control-panel", "control-panel"),
-    ("task-manager", "taskmgr"), ("volume-control", "sndvol"), ("sound-player", "sndplay"),
-    ("media-player", "mplay"), ("notepad", "notepad"),
-    ("device-manager", "devmgmt"),
+    ("sound-player", "sndplay"),
 })
+STABLE_UI_PROGRAMS = frozenset({("file-explorer", "file-explorer"), ("control-panel", "control-panel"), ("notepad", "notepad"), ("device-manager", "devmgmt"), ("volume-control", "sndvol"), ("terminal", "terminal"), ("task-manager", "taskmgr"), ("media-player", "mplay")})
 RUST_USER_RUSTFLAGS = (
     "-C link-self-contained=no -C target-feature=-crt-static "
     "-C relocation-model=pic -C panic=abort "
@@ -786,7 +786,10 @@ def verify_elf(
         if "Shared library: [" in line
     }
     # 必需库必须出现；动态程序还可以依赖其他系统共享库，但不能依赖这之外的任何库。
-    allowed = set(required_libraries) | {"libc.so"} | {f"lib{name}.so" for _, name in SYSTEM_LIBRARIES}
+    # SDK 应用只依赖稳定运行库和 musl；不能悄悄重新引入系统 Rust metadata 边界。
+    allowed = set(required_libraries)
+    if "libliteos_ui.so.1" not in required_libraries:
+        allowed |= {"libc.so"} | {f"lib{name}.so" for _, name in SYSTEM_LIBRARIES}
     if not set(required_libraries) <= needed or not needed <= allowed:
         raise RuntimeError(
             f"{identity} ELF dependencies differ: expected {sorted(required_libraries)}, got {sorted(needed)}"
@@ -826,7 +829,9 @@ def verify_user_artifact(
         for line in output.splitlines()
         if "Shared library: [" in line
     }
-    allowed = set(required_libraries) | {"libc.so"} | {f"lib{name}.so" for _, name in SYSTEM_LIBRARIES}
+    allowed = set(required_libraries)
+    if identity != f"lib{UI_RUNTIME[1]}.so":
+        allowed |= {"libc.so"} | {f"lib{name}.so" for _, name in SYSTEM_LIBRARIES}
     if not set(required_libraries) <= needed or not needed <= allowed:
         raise RuntimeError(f"{identity} dependencies differ: expected {sorted(required_libraries)}, got {sorted(needed)}")
     if "TEXTREL" in output or "Requesting program interpreter" in output:
@@ -839,10 +844,13 @@ def verify_user_artifact(
 
 def build_system_libraries(musl: MuslCachePaths) -> list[tuple[Path, str]]:
     """构建全部系统共享库，返回 `(宿主文件, 安装文件名)`；与动态程序共享同一个 Cargo target。"""
-    return [
+    libraries = [
         (build_rust_user_program(musl, package, name, f"system-library-{name}", 1, library=True), f"lib{name}.so")
         for package, name in SYSTEM_LIBRARIES
     ]
+    # SDK 链接名与运行时 SONAME 同时安装；旧进程保留旧 inode，新进程解析 ABI 主版本。
+    ui = next(path for path, name in libraries if name == "libliteos_ui.so")
+    return [*libraries, (ui, "libliteos_ui.so.1")]
 
 
 def build_dynamic_probe(musl: MuslCachePaths) -> tuple[Path, Path]:
@@ -1100,10 +1108,14 @@ def build_rust_user_program(
 ) -> Path:
     """经唯一 Cargo→musl PIE 路径构建 Rust userspace 程序或系统共享库（`SYSTEM_LIBRARIES`）。
 
-    `(crate_name, binary_name)` 属于 `SYSTEM_LIBRARY_PROGRAMS` 的程序与系统库本身用 `-C prefer-dynamic`
-    在独立的 Cargo target 里构建，彼此共享同一组共享库；其余程序整体静态。
+    内部 Rust dylib 消费者用 prefer-dynamic；稳定 UI 运行库和 SDK 应用静态纳入自己的 Rust/std，
+    仅通过 libliteos_ui.so.1 与 musl 交互。所有产物仍由同一发布/ELF 校验路径安装。
     """
-    dynamic = library or (crate_name, binary_name) in SYSTEM_LIBRARY_PROGRAMS
+    # 稳定 UI 边界必须静态纳入自身 Rust/std，不能让 SDK 间接依赖系统 Rust dylib metadata。
+    stable_ui = library and (crate_name, binary_name) == UI_RUNTIME
+    sdk_consumer = not library and (crate_name, binary_name) in STABLE_UI_PROGRAMS
+    ui_library = build_rust_user_program(musl, *UI_RUNTIME, "system-library-liteos_ui", 1, library=True) if sdk_consumer else None
+    dynamic = (library and not stable_ui) or (crate_name, binary_name) in SYSTEM_LIBRARY_PROGRAMS
     if library and (crate_name, binary_name) not in SYSTEM_LIBRARIES:
         raise RuntimeError(f"{crate_name} is not a registered system library")
     artifact = f"lib{binary_name}.so" if library else binary_name
@@ -1124,6 +1136,7 @@ def build_rust_user_program(
     payload = {
         "kind": kind,
         "dynamic": dynamic,
+        "ui_runtime_sha256": sha256(ui_library) if ui_library else None,
         "recipe_version": recipe_version,
         "arch": TARGET.arch,
         "rust_target": RUST_USER_TARGET,
@@ -1162,7 +1175,7 @@ def build_rust_user_program(
         dynamic,
     )
     entry = WORK / "rust-user-programs" / fingerprint(payload)
-    required_libraries = (
+    required_libraries = ("libc.so", "libliteos_ui.so.1") if sdk_consumer else (
         (f"lib{RUNTIME_LIBRARY}.so",)
         if dynamic and binary_name != RUNTIME_LIBRARY
         else ("libc.so",)
@@ -1186,7 +1199,8 @@ def build_rust_user_program(
             "RUSTFLAGS": (
                 f"{RUST_USER_RUSTFLAGS} "
                 f"{'-C prefer-dynamic ' if dynamic else ''}"
-                f"-L native={libunwind.parent} -D warnings"
+                f"-L native={libunwind.parent} "
+                f"{'-L native=' + str(ui_library.parent) + ' ' if ui_library else ''}-D warnings"
             ),
         }
     )
@@ -1269,6 +1283,8 @@ class UserlandArtifact:
 
 def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
     """构建产品系统文件的唯一安装清单；构建与开发镜像同步共同消费。"""
+    from ui_sdk import sdk_files
+
     programs = tuple(
         UserlandArtifact(build_rust_user_program(musl, crate, binary, binary, 1), f"/bin/{binary}", 0o755)
         for crate, binary in (("compositor", "compositor"), ("logon", "logon"),
@@ -1276,7 +1292,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
                               ("control-panel", "control-panel"), ("task-manager", "taskmgr"), ("volume-control", "sndvol"),
                               ("sound-player", "sndplay"), ("media-player", "mplay"),
                               ("notepad", "notepad"), ("device-manager", "devmgmt"),
-                              ("linux-uapi", "session-launch"))
+                              ("linux-uapi", "session-launch"), ("terminal", "terminal"))
     )
     fonts = tuple(UserlandArtifact(ROOT / "assets/fonts" / name, f"/usr/share/liteos/fonts/{name}")
                   for name in ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf"))
@@ -1289,6 +1305,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(ROOT / "user/base/profile", "/etc/profile"),
         UserlandArtifact(boot_scene(), "/usr/share/liteos/boot-scene.lbs"),
         UserlandArtifact(cursors(), "/usr/share/liteos/cursors.lcs"),
+        UserlandArtifact(ROOT / "assets/fonts/liteos-terminal.a8", "/usr/share/liteos/liteos-terminal.a8"),
         UserlandArtifact(ROOT / "user/base/display-service", "/etc/init.d/display-service", 0o755),
         # 桌面条目：user/base 下的每个 .desktop 都安装；窗口图标、文件关联与控制面板入口都由它们声明。
         *(UserlandArtifact(path, f"/usr/share/applications/{path.name}")
@@ -1297,6 +1314,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
           for path, name in build_system_libraries(musl)),
         UserlandArtifact(ROOT / "user/base/ld-musl.path", f"/etc/{Path(TARGET.musl_loader).name.removesuffix('.so.1')}.path"),
         *programs, *fonts, *ui,
+        *(UserlandArtifact(path, destination, mode) for path, destination, mode in sdk_files()),
         *(UserlandArtifact(path, f"/usr/share/liteos/sounds/{name}") for name, path in sounds()),
     )
 

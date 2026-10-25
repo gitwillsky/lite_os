@@ -5,12 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
-liteos-runtime = { path = "../../libraries/liteos-runtime" }
+liteos-ui = { path = "../../libraries/liteos-ui" }
 calendar = { path = "../../libraries/calendar" }
-canvas = { path = "../../libraries/canvas" }
-classic-theme = { path = "../../libraries/classic-theme" }
-classic-ui = { path = "../../libraries/classic-ui" }
-sound = { path = "../../libraries/sound" }
 desktop-settings = { path = "../../libraries/desktop-settings" }
-typeface = { path = "../../libraries/typeface" }
-linux-uapi = { path = "../../libraries/linux-uapi" }
+linux-uapi.workspace = true

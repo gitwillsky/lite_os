@@ -1,6 +1,11 @@
 //! 每用户的桌面设置文件：`$HOME/.config/liteos/desktop.conf`。
 extern crate liteos_runtime as _;
-use std::{fs, io, path::PathBuf, time::SystemTime};
+use std::{
+    fs,
+    io::{self, Write},
+    path::PathBuf,
+    time::SystemTime,
+};
 
 /// 桌面设置；`Default` 是 Windows 2000 的出厂值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -68,10 +73,30 @@ impl Settings {
     ///
     /// 没有 `HOME`、目录不可写等 I/O 错误。
     pub fn save(&self) -> io::Result<()> {
+        Self::update(|settings| *settings = *self).map(drop)
+    }
+    /// 在标准 flock 保护下重读并更新当前文件，原子发布；闭包只修改所属领域的字段。
+    /// 错误保留旧文件，锁随 OFD 析构释放；本操作必须在后台执行。
+    pub fn update(change: impl FnOnce(&mut Self)) -> io::Result<Self> {
         let path = Self::path().ok_or_else(|| io::Error::other("HOME missing"))?;
-        if let Some(directory) = path.parent() {
-            fs::create_dir_all(directory)?;
-        }
+        let directory = path
+            .parent()
+            .ok_or_else(|| io::Error::other("settings directory missing"))?;
+        fs::create_dir_all(directory)?;
+        let lock = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .write(true)
+            .open(directory.join("desktop.conf.lock"))?;
+        // OWNER: flock 关联此 OFD，串行化跨进程读改写；无锁会丢失同时应用的显示/任务栏设置。
+        // PROOF: I/O、闭包和原子 rename 都在文件锁期间完成，任意错误/退出由 File Drop 解锁。
+        lock.lock()?;
+        let mut settings = Self::load();
+        change(&mut settings);
+        settings.publish(&path)?;
+        Ok(settings)
+    }
+    fn publish(&self, path: &std::path::Path) -> io::Result<()> {
         let flag = |value: bool| u8::from(value);
         let mut text = format!(
             "taskbar.always_on_top={}\ntaskbar.auto_hide={}\ntaskbar.show_clock={}\n",
@@ -84,7 +109,37 @@ impl Settings {
                 "background.color=#{red:02x}{green:02x}{blue:02x}\n"
             ));
         }
-        fs::write(path, text)
+        let mut temporary = None;
+        for index in 0..128 {
+            let candidate = path.with_extension(format!("{}.{}.new", std::process::id(), index));
+            match fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&candidate)
+            {
+                Ok(file) => {
+                    temporary = Some((candidate, file));
+                    break;
+                }
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        let (temporary, mut file) = temporary.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "settings temporary files exhausted",
+            )
+        })?;
+        let result = (|| {
+            file.write_all(text.as_bytes())?;
+            file.sync_all()?;
+            fs::rename(&temporary, path)
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(temporary);
+        }
+        result
     }
 
     /// 设置文件的修改时间；桌面据此发现控制面板改了设置。文件不存在为 `None`。

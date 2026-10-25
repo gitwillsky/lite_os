@@ -184,6 +184,8 @@ pub enum SessionIo {
     Piped,
     /// 消费 Wayland stdin 与双向监督 stdout socket；stderr 为控制台，不与 exec-status 混用。
     Wayland { socket: OwnedFd, control: OwnedFd },
+    /// PTY slave 作为标准输入/输出/错误，launcher 在 setsid 后取得 controlling terminal。
+    Pty { slave: OwnedFd },
 }
 
 /// A checked command that can only be launched through the session trampoline.
@@ -192,6 +194,8 @@ pub struct SessionCommand {
     arguments: Vec<OsString>,
     io: SessionIo,
     user: Option<SessionUser>,
+    environment: Vec<(OsString, OsString)>,
+    directory: Option<std::path::PathBuf>,
 }
 
 impl SessionCommand {
@@ -212,7 +216,19 @@ impl SessionCommand {
             arguments,
             io,
             user: None,
+            environment: Vec::new(),
+            directory: None,
         }
+    }
+    /// 设置目标进程的环境覆盖项；输入属于命令，spawn 失败时一并释放。
+    pub fn environment(mut self, values: Vec<(OsString, OsString)>) -> Self {
+        self.environment = values;
+        self
+    }
+    /// 设置目标工作目录；不存在或无权限时 spawn 返回错误。
+    pub fn directory(mut self, path: std::path::PathBuf) -> Self {
+        self.directory = Some(path);
+        self
     }
 }
 
@@ -260,7 +276,8 @@ impl SessionChild {
         let mut launch = Command::new(SESSION_LAUNCHER);
         launch
             .arg(std::process::id().to_string())
-            .stderr(Stdio::piped());
+            .stderr(Stdio::piped())
+            .env_remove("WAYLAND_SOCKET");
         if let Some(user) = command.user {
             launch
                 .env_clear()
@@ -287,11 +304,23 @@ impl SessionChild {
                         .join(","),
                 );
         }
+        launch.envs(command.environment);
+        if let Some(path) = command.directory {
+            launch.current_dir(path);
+        }
+        if matches!(&command.io, SessionIo::Pty { .. }) {
+            launch.arg("--pty");
+        }
         launch
             .arg("--")
             .arg(&command.program)
             .args(&command.arguments);
         match command.io {
+            SessionIo::Pty { slave } => {
+                launch
+                    .stdin(Stdio::from(slave.try_clone()?))
+                    .stdout(Stdio::from(slave));
+            }
             SessionIo::Background => {
                 launch.stdin(Stdio::null()).stdout(Stdio::null());
             }
@@ -407,7 +436,8 @@ impl SessionChild {
 /// - `expected_parent`: Parent identity captured before the trampoline spawn.
 /// - `program`: Target executable path.
 /// - `arguments`: Target arguments after `argv[0]`.
-/// - `user`: 可选的 uid/gid 与完整补充组；console 打开后、parent-death 设置前降权。
+/// - `user`: 可选的 uid/gid 与完整补充组；输出装配后、parent-death 设置前降权。
+/// - `pty`: stdin 是 slave，setsid 后以 TIOCSCTTY 绑定；stderr 同样连接该 slave。
 ///
 /// # Returns
 ///
@@ -419,6 +449,7 @@ pub fn exec_session_child(
     program: &OsStr,
     arguments: &[OsString],
     user: Option<(Identity, Vec<u32>)>,
+    pty: bool,
 ) -> ! {
     let mut publication = match std::io::stderr().as_fd().try_clone_to_owned() {
         Ok(file) => std::fs::File::from(file),
@@ -427,11 +458,21 @@ pub fn exec_session_child(
             std::process::exit(127);
         }
     };
-    let console = match std::fs::OpenOptions::new().write(true).open("/dev/console") {
-        Ok(console) => console,
-        Err(error) => report_exec_failure(&mut publication, 4, error),
+    // 1. publication 是独占 CLOEXEC 副本；目标 stderr 替换后仍可向父进程报告 setup 错误。
+    // 2. PTY 不打开特权 console，因而普通用户终端也能启动。
+    let console = if pty {
+        None
+    } else {
+        Some(
+            match std::fs::OpenOptions::new().write(true).open("/dev/console") {
+                Ok(console) => console,
+                Err(error) => report_exec_failure(&mut publication, 4, error),
+            },
+        )
     };
-    if unsafe { raw::dup2(console.as_raw_fd(), 2) } < 0 {
+    let diagnostics = console.as_ref().map_or(0, AsRawFd::as_raw_fd);
+    // SAFETY: fd 0 由 SessionIo::Pty 装配，或 console 仍在作用域内；dup2 不借用用户内存。
+    if unsafe { raw::dup2(diagnostics, 2) } < 0 {
         report_exec_failure(&mut publication, 5, io::Error::last_os_error());
     }
     if let Some((identity, groups)) = user {
@@ -439,6 +480,13 @@ pub fn exec_session_child(
     }
     // 先降权再设置 parent-death：setuid 会清除此前设置的信号，顺序反过来会留下孤儿 desktop。
     enter_session(&mut publication, expected_parent);
+    #[cfg(target_os = "linux")]
+    if pty {
+        // SAFETY: 此处位于单线程 launcher、setsid 成功之后；stdin 是未带入其他 session 的 PTY slave。
+        if unsafe { raw::ioctl(0, raw::TIOCSCTTY, std::ptr::null_mut()) } < 0 {
+            report_exec_failure(&mut publication, 7, io::Error::last_os_error());
+        }
+    }
     let error = Command::new(program).args(arguments).exec();
     report_exec_failure(&mut publication, 6, error);
 }
@@ -520,7 +568,7 @@ fn read_exec_status(status: &mut impl Read) -> io::Result<()> {
     }
     if publication.len() != EXEC_STATUS_ERROR_LEN
         || publication[..EXEC_STATUS_HEADER.len()] != EXEC_STATUS_HEADER
-        || !(1..=6).contains(&publication[5])
+        || !(1..=7).contains(&publication[5])
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,

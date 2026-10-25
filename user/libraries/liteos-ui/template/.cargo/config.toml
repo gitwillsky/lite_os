@@ -1,0 +1,2 @@
+[build]
+rustflags = ["-C", "target-feature=-crt-static", "-C", "link-self-contained=no", "-L", "native=/usr/lib/liteos"]

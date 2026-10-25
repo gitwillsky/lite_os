@@ -13,12 +13,14 @@ mod controls;
 mod decoration;
 mod dropdown;
 mod editing;
-mod file_dialog;
-mod file_dialog_window;
 mod menu;
 mod menubar;
 mod painter;
 mod prompt;
+mod resources;
+mod window_host;
+pub use resources::Resources;
+pub use window_host::{HostEvent, WindowHost};
 mod scroll;
 mod tooltip;
 mod trackbar;
@@ -29,8 +31,6 @@ pub use column_header::ColumnHeader;
 pub use decoration::{Decoration, DecorationAction};
 pub use dropdown::{DropItem, DropMenu, Popup, title_rects};
 pub use editing::{Edit, FocusChain};
-pub use file_dialog::{FileDialog, FileDialogEvent, FileDialogMode};
-pub use file_dialog_window::FileDialogWindow;
 pub use wayland::{
     Configuration, CursorShape, Display, Event, EventKind, Key, KeyboardInteractivity, Layer,
     LayerSettings, ShellConnection, ShellLease, Toplevel, ToplevelId, ToplevelRequest, WindowId,
@@ -39,7 +39,7 @@ pub use wayland::{
 
 pub use controls::{ButtonState, SCROLLBAR_WIDTH, ScrollbarPart, thumb_span};
 pub use menu::MenuItemState;
-pub use menubar::{MenuBar, MenuEvent};
+pub use menubar::{MenuBar, MenuEvent, MenuVisual};
 pub use painter::{Ink, Painter};
 pub use prompt::Prompt;
 pub use scroll::Scroll;

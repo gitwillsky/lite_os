@@ -79,10 +79,11 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 | `kernel/src/platform/qemu_virt/aarch64/gicv3.rs :: GicV3.handlers` | `FallibleMap < InterruptVector , Arc < dyn InterruptHandler > >` |
 | `kernel/src/tty/pty.rs :: PtyRegistry.slots` | `FallibleMap < u32 , Weak < PtyPair > >` |
 | `kernel/src/drm/mod.rs :: DrmDeviceState.graphics_cleanups` | `FallibleMap < u32 , graphics :: VirglCleanup >` |
+| `kernel/src/drm/mod.rs :: DrmDeviceState.graphics_retirements` | `FallibleMap < u32 , graphics :: VirglRetirement >` |
 | `kernel/src/drm/mod.rs :: DrmDeviceState.framebuffers` | `FallibleMap < u32 , Framebuffer >` |
 | `kernel/src/drm/mod.rs :: DrmFileState.buffers` | `FallibleMap < u32 , Arc < DumbBuffer > >` |
 | `kernel/src/drm/mod.rs :: DrmFileState.graphics_buffers` | `FallibleMap < u32 , Arc < graphics :: VirglBuffer > >` |
-| `kernel/src/drm/graphics.rs :: VirglCleanup.buffers` | `FallibleMap < u32 , Arc < VirglBuffer > >` |
+| `kernel/src/drm/graphics/retirement.rs :: VirglCleanup.buffers` | `FallibleMap < u32 , Arc < VirglBuffer > >` |
 | `kernel/src/drm/publication_order.rs :: PublicationIdAllocator.reusable` | `FallibleMap < T , () >` |
 | `kernel/src/drivers/io_completion/request_owner.rs :: RequestOwner.capacity_waiters` | `FallibleMap < u64 , Arc < CapacityWait > >` |
 | `kernel/src/file/epoll.rs :: EpollState.interests` | `FallibleMap < InterestKey , Interest >` |

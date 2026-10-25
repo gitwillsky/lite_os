@@ -1,7 +1,37 @@
 //! 启动画面：复现内核 `boot_screen` 的最后一帧，使接管 scanout 时画面不跳动。
 
 use boot_scene::{KERNEL_PROGRESS_PERMILLE, Layout, ParseError, Scene, WIDTH};
-use linux_uapi::drm::DumbBuffer;
+use linux_uapi::drm::{DumbBuffer, VirglResource};
+
+/// 启动画面使用的 CPU 可写像素行；同一画面直接写入选中后端的扫描资源。
+/// 两种后端都保证行宽、行数与 row_mut 一致，不额外分配全屏过渡缓冲。
+pub(crate) trait BootSurface {
+    fn width(&self) -> usize;
+    fn height(&self) -> usize;
+    fn row_mut(&mut self, row: usize) -> &mut [u32];
+}
+impl BootSurface for DumbBuffer {
+    fn width(&self) -> usize {
+        self.width()
+    }
+    fn height(&self) -> usize {
+        self.height()
+    }
+    fn row_mut(&mut self, row: usize) -> &mut [u32] {
+        self.row_mut(row)
+    }
+}
+impl BootSurface for VirglResource {
+    fn width(&self) -> usize {
+        self.width_usize()
+    }
+    fn height(&self) -> usize {
+        self.height_usize()
+    }
+    fn row_mut(&mut self, row: usize) -> &mut [u32] {
+        self.row_mut(row)
+    }
+}
 
 /// 启动画面绘制失败。
 #[derive(Debug)]
@@ -32,7 +62,11 @@ impl std::error::Error for BootError {}
 /// # Errors
 ///
 /// 位图格式非法或屏幕太小。
-pub fn paint(target: &mut DumbBuffer, bytes: &[u8], permille: u16) -> Result<(), BootError> {
+pub(crate) fn paint(
+    target: &mut impl BootSurface,
+    bytes: &[u8],
+    permille: u16,
+) -> Result<(), BootError> {
     let scene = Scene::parse(bytes).map_err(BootError::Scene)?;
     let layout = Layout::fit(target.width(), target.height()).ok_or(BootError::ScreenTooSmall)?;
     for row in 0..target.height() {

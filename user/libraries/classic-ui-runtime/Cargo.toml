@@ -1,0 +1,20 @@
+[package]
+name = "classic-ui-runtime"
+version = "1.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[lib]
+name = "liteos_ui"
+crate-type = ["cdylib"]
+
+[dependencies]
+classic-ui-abi = { path = "../classic-ui-abi" }
+classic-ui = { path = "../classic-ui" }
+canvas = { path = "../canvas" }
+classic-theme = { path = "../classic-theme" }
+typeface = { path = "../typeface" }
+linux-uapi.workspace = true
+terminal-font.workspace = true
+calendar = { path = "../calendar" }
+keyboard.workspace = true

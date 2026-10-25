@@ -1,121 +1,246 @@
-//! 文件操作：回收站、复制、移动、重命名、新建文件夹。回收站遵循 freedesktop Trash 规范的 `files/` + `info/` 布局。
+//! 文件操作：失败只清理本次创建的条目，命名冲突由原子创建/移动裁决。
+use linux_uapi::filesystem::rename_noreplace;
 use std::{
-    fs, io,
+    ffi::{OsStr, OsString},
+    fs::{self, File, OpenOptions},
+    io::{self, Write},
+    os::unix::{
+        ffi::{OsStrExt, OsStringExt},
+        fs::DirBuilderExt,
+    },
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// 回收站的 `files` 目录；`$HOME` 下 `.local/share/Trash/files`。
+/// 当前用户的 home trash；只支持同一文件系统，跨卷失败保留源条目。
 pub fn trash_files(home: &Path) -> PathBuf {
-    home.join(".local/share/Trash/files")
+    trash_root(home).join("files")
 }
-
+fn trash_root(home: &Path) -> PathBuf {
+    std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .unwrap_or_else(|| home.join(".local/share"))
+        .join("Trash")
+}
 fn trash_info(home: &Path) -> PathBuf {
-    home.join(".local/share/Trash/info")
+    trash_root(home).join("info")
 }
-
-/// 在 `dir` 里找一个不冲突的名字：`name` 已存在时依次尝试 `name (2)`、`name (3)` ……
-fn free_name(dir: &Path, name: &str) -> PathBuf {
-    let candidate = dir.join(name);
-    if fs::symlink_metadata(&candidate).is_err() {
-        return candidate;
-    }
-    let (stem, extension) = split_extension(name);
-    (2..)
-        .map(|n| dir.join(format!("{stem} ({n}){extension}")))
-        .find(|path| fs::symlink_metadata(path).is_err())
-        .expect("an unbounded counter always finds a free name")
+fn info_path(home: &Path, path: &Path) -> io::Result<PathBuf> {
+    let mut name = file_name(path)?.to_os_string();
+    name.push(".trashinfo");
+    Ok(trash_info(home).join(name))
 }
-
-/// 名称拆成主干与扩展名（含点）；隐藏文件 `.profile` 与无扩展名文件的扩展名为空。
-fn split_extension(name: &str) -> (&str, &str) {
-    match name.rfind('.') {
-        Some(0) | None => (name, ""),
-        Some(dot) => name.split_at(dot),
-    }
-}
-
-fn file_name(path: &Path) -> io::Result<&str> {
+fn file_name(path: &Path) -> io::Result<&OsStr> {
     path.file_name()
-        .and_then(|n| n.to_str())
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "路径没有可用的名称"))
 }
-
-/// 路径是否位于回收站内。
-pub fn in_trash(home: &Path, path: &Path) -> bool {
-    path.starts_with(trash_files(home))
+fn numbered(name: &OsStr, number: u64) -> OsString {
+    if number == 1 {
+        return name.to_owned();
+    }
+    suffixed(name, &format!(" ({number})"))
+}
+fn suffixed(name: &OsStr, suffix: &str) -> OsString {
+    let bytes = name.as_bytes();
+    let split = bytes
+        .iter()
+        .rposition(|byte| *byte == b'.')
+        .filter(|index| *index != 0)
+        .unwrap_or(bytes.len());
+    let mut name = OsString::from_vec(bytes[..split].to_vec());
+    name.push(suffix);
+    name.push(OsStr::from_bytes(&bytes[split..]));
+    name
+}
+fn absent(path: &Path) -> io::Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(false),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(true),
+        Err(error) => Err(error),
+    }
+}
+fn free_name(dir: &Path, name: &OsStr) -> io::Result<PathBuf> {
+    for number in 1..=u64::MAX {
+        let candidate = dir.join(numbered(name, number));
+        if absent(&candidate)? {
+            return Ok(candidate);
+        }
+    }
+    Err(io::Error::other("文件名序号耗尽"))
 }
 
-/// 把条目移入回收站并写下原路径（用于还原）。回收站里的条目则永久删除。
-///
-/// # Errors
-///
-/// 重命名、写信息文件或删除失败；失败时不会留下半个信息文件。
+/// 路径是否位于 home trash；调用方传入资源管理器已规范化的所在目录。
+pub fn in_trash(home: &Path, path: &Path) -> bool {
+    let files = trash_files(home);
+    path.starts_with(&files) || fs::canonicalize(&files).is_ok_and(|files| path.starts_with(files))
+}
+fn encode_path(path: &Path) -> String {
+    let mut encoded = String::new();
+    for byte in path.as_os_str().as_bytes() {
+        if byte.is_ascii_alphanumeric() || b"/-_.!~*'()".contains(byte) {
+            encoded.push(*byte as char);
+        } else {
+            use std::fmt::Write;
+            let _ = write!(encoded, "%{byte:02X}");
+        }
+    }
+    encoded
+}
+fn decode_path(value: &str) -> io::Result<PathBuf> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        let byte = if bytes[index] == b'%' {
+            let hex = bytes
+                .get(index + 1..index + 3)
+                .and_then(|hex| std::str::from_utf8(hex).ok())
+                .and_then(|hex| u8::from_str_radix(hex, 16).ok())
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "回收站路径编码损坏"))?;
+            index += 3;
+            hex
+        } else {
+            let byte = bytes[index];
+            index += 1;
+            byte
+        };
+        if byte == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "回收站路径包含 NUL",
+            ));
+        }
+        decoded.push(byte);
+    }
+    let path = PathBuf::from(OsString::from_vec(decoded));
+    if !path.is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "home trash 路径必须是绝对路径",
+        ));
+    }
+    Ok(path)
+}
+
+/// 将条目移入 home trash；信息按 Trash 1.0 写入，已在回收站内的条目永久删除。
+/// 原生名称以 URL 字节编码记录，先独占创建信息文件，再原子移动且禁止覆盖。
+/// I/O 或跨卷失败保留源条目并删除本次信息文件；不会覆盖其他进程的同名条目。
 pub fn delete(home: &Path, path: &Path) -> io::Result<()> {
     if in_trash(home, path) {
         return purge(home, path);
     }
     let files = trash_files(home);
-    fs::create_dir_all(&files)?;
-    fs::create_dir_all(trash_info(home))?;
-    let target = free_name(&files, file_name(path)?);
-    let info = trash_info(home).join(format!("{}.trashinfo", file_name(&target)?));
+    let mut builder = fs::DirBuilder::new();
+    builder.recursive(true).mode(0o700);
+    builder.create(&files)?;
+    builder.create(trash_info(home))?;
     let original =
         fs::canonicalize(path.parent().unwrap_or(Path::new("/")))?.join(file_name(path)?);
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
-    fs::write(
-        &info,
-        format!(
-            "[Trash Info]\nPath={}\nDeletionDate={seconds}\n",
-            original.display()
-        ),
-    )?;
-    if let Err(error) = fs::rename(path, &target) {
-        let _ = fs::remove_file(&info);
-        return Err(error);
+        .map_err(io::Error::other)?
+        .as_secs();
+    let seconds = i64::try_from(seconds).map_err(|_| io::Error::other("系统时间超出日期范围"))?;
+    let local = calendar::zone::to_local(seconds);
+    let date = calendar::civil_from_days(local.div_euclid(86_400));
+    let day = local.rem_euclid(86_400);
+    let contents = format!(
+        "[Trash Info]\nPath={}\nDeletionDate={:04}-{:02}-{:02}T{:02}:{:02}:{:02}\n",
+        encode_path(&original),
+        date.year,
+        date.month,
+        date.day,
+        day / 3600,
+        day / 60 % 60,
+        day % 60
+    );
+    for number in 1..=u64::MAX {
+        let target = files.join(numbered(file_name(path)?, number));
+        if !absent(&target)? {
+            continue;
+        }
+        let info = info_path(home, &target)?;
+        let mut output = match OpenOptions::new().write(true).create_new(true).open(&info) {
+            Ok(output) => output,
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        };
+        let result = output
+            .write_all(contents.as_bytes())
+            .and_then(|()| output.sync_all())
+            .and_then(|()| rename_noreplace(path, &target));
+        drop(output);
+        match result {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                fs::remove_file(&info)?;
+                if error.kind() != io::ErrorKind::AlreadyExists {
+                    return Err(error);
+                }
+            }
+        }
+    }
+    Err(io::Error::other("回收站文件名序号耗尽"))
+}
+fn erase(path: &Path) -> io::Result<()> {
+    if fs::symlink_metadata(path)?.is_dir() {
+        fs::remove_dir_all(path)
+    } else {
+        fs::remove_file(path)
+    }
+}
+fn purge(home: &Path, path: &Path) -> io::Result<()> {
+    // 内部子项删除不能删除根条目的 .trashinfo，也不能把同名内部文件当作根条目。
+    let info = path
+        .parent()
+        .filter(|parent| {
+            *parent == trash_files(home)
+                || fs::canonicalize(trash_files(home)).is_ok_and(|files| *parent == files)
+        })
+        .map(|_| info_path(home, path))
+        .transpose()?;
+    erase(path)?;
+    if let Some(info) = info {
+        match fs::remove_file(info) {
+            Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error),
+            _ => {}
+        }
     }
     Ok(())
 }
-
-/// 永久删除回收站里的一个条目及其信息文件。
-fn purge(home: &Path, path: &Path) -> io::Result<()> {
-    let info = trash_info(home).join(format!("{}.trashinfo", file_name(path)?));
-    if fs::symlink_metadata(path)?.is_dir() {
-        fs::remove_dir_all(path)?;
-    } else {
-        fs::remove_file(path)?;
-    }
-    match fs::remove_file(info) {
-        Err(error) if error.kind() != io::ErrorKind::NotFound => Err(error),
-        _ => Ok(()),
-    }
-}
-
-/// 把回收站里的条目放回原位置；原位置已有同名项时改用不冲突的名字。
-///
-/// # Errors
-///
-/// 信息文件缺失/损坏，或移动失败。
+/// 将 home trash 根条目还原到原位置，冲突时选择新名称。
+/// 信息缺失/编码损坏或移动失败返回错误；原子移动从不覆盖已有目标。
 pub fn restore(home: &Path, path: &Path) -> io::Result<PathBuf> {
-    let info = trash_info(home).join(format!("{}.trashinfo", file_name(path)?));
+    let files = fs::canonicalize(trash_files(home))?;
+    let parent = fs::canonicalize(path.parent().unwrap_or(Path::new("/")))?;
+    if parent != files {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "只能还原回收站根条目",
+        ));
+    }
+    let info = info_path(home, path)?;
     let text = fs::read_to_string(&info)?;
+    if text.lines().next() != Some("[Trash Info]") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "回收站信息文件损坏",
+        ));
+    }
     let original = text
         .lines()
+        .skip(1)
         .find_map(|line| line.strip_prefix("Path="))
-        .map(PathBuf::from)
-        .filter(|p| p.is_absolute())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "回收站信息文件损坏"))?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "回收站缺少原路径"))?;
+    let original = decode_path(original)?;
     let parent = original.parent().unwrap_or(Path::new("/"));
     fs::create_dir_all(parent)?;
-    let target = free_name(parent, file_name(&original)?);
-    fs::rename(path, &target)?;
+    let target = move_unique(path, parent, file_name(&original)?)?;
     fs::remove_file(info)?;
     Ok(target)
 }
-
-/// 清空回收站，返回删除的条目数。
+/// 清空 home trash，返回已删除根条目数；任何 I/O 错误立即返回。
 pub fn empty_trash(home: &Path) -> io::Result<usize> {
     let mut count = 0;
     match fs::read_dir(trash_files(home)) {
@@ -130,118 +255,123 @@ pub fn empty_trash(home: &Path) -> io::Result<usize> {
     }
     Ok(count)
 }
-
 fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
     let metadata = fs::symlink_metadata(from)?;
     if metadata.file_type().is_symlink() {
-        std::os::unix::fs::symlink(fs::read_link(from)?, to)
-    } else if metadata.is_dir() {
-        // 目标已先创建；把自己复制进自己会无限递归，必须拒绝。
+        return std::os::unix::fs::symlink(fs::read_link(from)?, to);
+    }
+    let result = if metadata.is_dir() {
         fs::create_dir(to)?;
-        for entry in fs::read_dir(from)? {
-            let entry = entry?;
-            let child = to.join(entry.file_name());
-            if child == from {
-                continue;
+        (|| {
+            for entry in fs::read_dir(from)? {
+                let entry = entry?;
+                copy_tree(&entry.path(), &to.join(entry.file_name()))?;
             }
-            copy_tree(&entry.path(), &child)?;
-        }
-        Ok(())
+            fs::set_permissions(to, metadata.permissions())
+        })()
+    } else if metadata.is_file() {
+        let mut input = File::open(from)?;
+        let mut output = OpenOptions::new().write(true).create_new(true).open(to)?;
+        io::copy(&mut input, &mut output)
+            .and_then(|_| output.set_permissions(metadata.permissions()))
     } else {
-        fs::copy(from, to).map(drop)
-    }
-}
-
-/// 复制到目录 `into`，重名时改名为"X 的副本"；返回新路径。
-///
-/// # Errors
-///
-/// 目标位于源目录内部（会无限递归），或任何 I/O 失败；失败时已复制的部分被删除。
-pub fn copy(from: &Path, into: &Path) -> io::Result<PathBuf> {
-    if fs::symlink_metadata(from)?.is_dir() && into.starts_with(from) {
         return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "不能把文件夹复制到它自己里面",
+            io::ErrorKind::Unsupported,
+            "只能复制普通文件、目录和符号链接",
         ));
-    }
-    let name = file_name(from)?;
-    let direct = into.join(name);
-    let target = if fs::symlink_metadata(&direct).is_err() {
-        direct
-    } else {
-        let (stem, extension) = split_extension(name);
-        free_name(into, &format!("{stem} 的副本{extension}"))
     };
-    if let Err(error) = copy_tree(from, &target) {
-        let _ = fs::remove_dir_all(&target).or_else(|_| fs::remove_file(&target));
-        return Err(error);
+    // 只在原子创建成功后进入这里；创建失败直接返回，绝不清理竞争进程已有的条目。
+    if result.is_err() {
+        let _ = erase(to);
     }
-    Ok(target)
+    result
 }
-
-/// 移动到目录 `into`（剪切后粘贴）；同名时改名为不冲突的名字。
-///
-/// # Errors
-///
-/// 目标位于源目录内部，或重命名失败（跨文件系统时先复制再删除源）。
-pub fn relocate(from: &Path, into: &Path) -> io::Result<PathBuf> {
-    if fs::symlink_metadata(from)?.is_dir() && into.starts_with(from) {
+fn destination(from: &Path, into: &Path) -> io::Result<PathBuf> {
+    let into = fs::canonicalize(into)?;
+    if fs::symlink_metadata(from)?.is_dir() && into.starts_with(fs::canonicalize(from)?) {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "不能把文件夹移动到它自己里面",
+            "不能把文件夹复制或移动到它自己里面",
         ));
     }
-    if from.parent() == Some(into) {
+    Ok(into)
+}
+/// 复制到目录，重名时使用“的副本”名称；拒绝规范化后位于源目录内的目标。
+/// 原子创建避免覆盖；失败只清理本次创建的部分，不删除其他进程的条目。
+pub fn copy(from: &Path, into: &Path) -> io::Result<PathBuf> {
+    let directory = destination(from, into)?;
+    let name = file_name(from)?;
+    let direct = directory.join(name);
+    let name = if absent(&direct)? {
+        name.to_owned()
+    } else {
+        suffixed(name, " 的副本")
+    };
+    loop {
+        let target = free_name(&directory, &name)?;
+        match copy_tree(from, &target) {
+            Ok(()) => return Ok(target),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+fn move_unique(from: &Path, into: &Path, name: &OsStr) -> io::Result<PathBuf> {
+    loop {
+        let target = free_name(into, name)?;
+        match rename_noreplace(from, &target) {
+            Ok(()) => return Ok(target),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
+/// 移动到目录，规范化目录防止递归，原子移动禁止覆盖。
+/// 跨文件系统时先复制再删除源；删除源失败保留已复制目标并报告错误。
+pub fn relocate(from: &Path, into: &Path) -> io::Result<PathBuf> {
+    let directory = destination(from, into)?;
+    if from
+        .parent()
+        .is_some_and(|parent| fs::canonicalize(parent).is_ok_and(|parent| parent == directory))
+    {
         return Ok(from.to_owned());
     }
-    let target = free_name(into, file_name(from)?);
-    match fs::rename(from, &target) {
-        Ok(()) => Ok(target),
+    match move_unique(from, &directory, file_name(from)?) {
+        Ok(target) => Ok(target),
         Err(error) if error.raw_os_error() == Some(18) => {
-            let copied = copy_tree(from, &target).and_then(|()| {
-                if fs::symlink_metadata(from)?.is_dir() {
-                    fs::remove_dir_all(from)
-                } else {
-                    fs::remove_file(from)
-                }
-            });
-            copied.map(|()| target)
+            let target = copy(from, &directory)?;
+            erase(from)?;
+            Ok(target)
         }
         Err(error) => Err(error),
     }
 }
-
-/// 在同一目录里改名。名称不能为空、含 `/` 或 NUL，且不能覆盖已有项。
-///
-/// # Errors
-///
-/// 名称非法、目标已存在或重命名失败。
+/// 在同目录改名；名称不能空、含 / 或 NUL，也不能是 . 或 ..。
+/// 目标已存在返回 AlreadyExists，其他失败返回 I/O 错误；不覆盖竞争创建的文件。
 pub fn rename(path: &Path, new_name: &str) -> io::Result<PathBuf> {
     if new_name.is_empty() || new_name.contains(['/', '\0']) || matches!(new_name, "." | "..") {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            "文件名不能为空，也不能包含 / 字符",
+            "文件名不能为空，也不能包含 / 或 NUL",
         ));
     }
     let target = path.with_file_name(new_name);
     if target == path {
         return Ok(target);
     }
-    if fs::symlink_metadata(&target).is_ok() {
-        return Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "已存在同名的文件或文件夹",
-        ));
-    }
-    fs::rename(path, &target)?;
+    rename_noreplace(path, &target)?;
     Ok(target)
 }
-
-/// 在 `dir` 里新建"新建文件夹"（重名时加序号）。
+/// 在目录里原子创建“新建文件夹”，同名时增加序号；I/O 失败返回错误。
 pub fn new_folder(dir: &Path) -> io::Result<PathBuf> {
-    let target = free_name(dir, "新建文件夹");
-    fs::create_dir(&target)?;
-    Ok(target)
+    loop {
+        let target = free_name(dir, OsStr::new("新建文件夹"))?;
+        match fs::create_dir(&target) {
+            Ok(()) => return Ok(target),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 #[cfg(test)]
