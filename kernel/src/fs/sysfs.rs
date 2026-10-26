@@ -8,16 +8,19 @@ use super::{
 const SYSFS_MAGIC: u64 = 0x6265_6572;
 
 use super::sysfs_block::{self, BlockSysNode, Parent, Place};
+use super::sysfs_net::{self, NetSysNode, NetView};
 
 #[derive(Clone, Copy)]
 enum SysNode {
     Root,
-    /// `/sys/class`：只有 `block`。
+    /// `/sys/class`：`block` 与 `net`。
     ClassRoot,
     /// `/sys/dev`：只有 `block`。
     DevRoot,
     /// 块设备子树（见 `sysfs_block`）。
     Block(BlockSysNode),
+    /// 网络接口子树（见 `sysfs_net`）。
+    Net(NetSysNode),
     Devices,
     System,
     CpuRoot,
@@ -40,6 +43,7 @@ impl SysNode {
             Self::ClassRoot => 8,
             Self::DevRoot => 9,
             Self::Block(node) => node.inode(),
+            Self::Net(node) => node.inode(),
             Self::Devices => 2,
             Self::System => 3,
             Self::CpuRoot => 4,
@@ -61,6 +65,7 @@ impl SysNode {
             | Self::CpuRoot
             | Self::Cpu(_) => InodeType::Directory,
             Self::Block(node) => node.kind(),
+            Self::Net(node) => node.kind(),
             Self::CpuSet(_) | Self::CpuOnline(_) => InodeType::File,
         }
     }
@@ -69,6 +74,8 @@ impl SysNode {
 struct SysInode {
     filesystem_id: usize,
     cpu_count: usize,
+    /// 挂载时捕获的网络视图；每个 inode 共享同一份（弱引用 NET + 快照来源）。
+    network: NetView,
     node: SysNode,
 }
 
@@ -76,11 +83,13 @@ impl SysInode {
     fn new(
         filesystem_id: usize,
         cpu_count: usize,
+        network: NetView,
         node: SysNode,
     ) -> Result<Arc<Self>, FileSystemError> {
         Arc::try_new(Self {
             filesystem_id,
             cpu_count,
+            network,
             node,
         })
         .map_err(|_| FileSystemError::OutOfMemory)
@@ -137,6 +146,7 @@ impl SysInode {
                 Ok(bytes)
             }
             SysNode::Block(node) => sysfs_block::contents(node),
+            SysNode::Net(node) => sysfs_net::contents(&self.network, node),
             _ => Err(FileSystemError::IsDirectory),
         }
     }
@@ -158,6 +168,10 @@ impl SysInode {
                 Parent::Root => SysNode::Root,
                 Parent::DevRoot => SysNode::DevRoot,
                 Parent::Block(parent) => SysNode::Block(parent),
+            },
+            SysNode::Net(node) => match sysfs_net::parent(node) {
+                sysfs_net::Parent::ClassRoot => SysNode::ClassRoot,
+                sysfs_net::Parent::Net(parent) => SysNode::Net(parent),
             },
             SysNode::Devices => SysNode::Root,
             SysNode::System => SysNode::Devices,
@@ -183,6 +197,8 @@ impl SysInode {
             SysNode::ClassRoot if name == b"block" => {
                 Ok(SysNode::Block(BlockSysNode::Listing(Place::ClassBlock)))
             }
+            SysNode::ClassRoot if name == b"net" => Ok(SysNode::Net(NetSysNode::Listing)),
+            SysNode::Net(node) => sysfs_net::lookup(&self.network, node, name).map(SysNode::Net),
             SysNode::DevRoot if name == b"block" => {
                 Ok(SysNode::Block(BlockSysNode::Listing(Place::DevBlock)))
             }
@@ -335,10 +351,18 @@ impl Inode for SysInode {
                 );
                 emit!(SysNode::DevRoot, b"dev");
             }
-            SysNode::ClassRoot => emit!(
-                SysNode::Block(BlockSysNode::Listing(Place::ClassBlock)),
-                b"block"
-            ),
+            SysNode::ClassRoot => {
+                emit!(
+                    SysNode::Block(BlockSysNode::Listing(Place::ClassBlock)),
+                    b"block"
+                );
+                emit!(SysNode::Net(NetSysNode::Listing), b"net");
+            }
+            SysNode::Net(node) => {
+                for (child, name) in sysfs_net::children(&self.network, node)? {
+                    emit!(SysNode::Net(child), &name);
+                }
+            }
             SysNode::DevRoot => emit!(
                 SysNode::Block(BlockSysNode::Listing(Place::DevBlock)),
                 b"block"
@@ -377,6 +401,7 @@ impl Inode for SysInode {
         Ok(Self::new(
             self.filesystem_id,
             self.cpu_count,
+            self.network.clone(),
             self.child(name)?,
         )?)
     }
@@ -416,13 +441,19 @@ impl SysFileSystem {
     /// # Parameters
     ///
     /// - `cpu_count`: composition root 从 CpuTopology 取得的非零 logical CPU 数。
+    /// - `network`: 挂载者的网络视图，`/sys/class/net` 投影它的接口。
     ///
     /// # Returns
     ///
-    /// 独立 sysfs instance；不复制任何可变 online/hotplug 状态。
-    pub(crate) fn new(cpu_count: usize) -> Result<Arc<Self>, FileSystemError> {
+    /// 独立 sysfs instance；不复制任何可变 online/hotplug 或接口状态。
+    pub(super) fn new(cpu_count: usize, network: NetView) -> Result<Arc<Self>, FileSystemError> {
         assert_ne!(cpu_count, 0, "sysfs requires non-empty CPU topology");
-        let root = SysInode::new(super::allocate_filesystem_id(), cpu_count, SysNode::Root)?;
+        let root = SysInode::new(
+            super::allocate_filesystem_id(),
+            cpu_count,
+            network,
+            SysNode::Root,
+        )?;
         Arc::try_new(Self { root }).map_err(|_| FileSystemError::OutOfMemory)
     }
 }
@@ -466,7 +497,10 @@ impl super::mount::FileSystemType for SysFileSystemType {
             return Err(FileSystemError::InvalidOperation);
         }
         Ok(super::mount::CreatedFileSystem {
-            filesystem: SysFileSystem::new(request.environment.cpu_count)?,
+            filesystem: SysFileSystem::new(
+                request.environment.cpu_count,
+                NetView::new(request.environment.net_links.clone())?,
+            )?,
             user_namespace: request.identity.user_namespace(),
         })
     }

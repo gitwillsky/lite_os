@@ -68,9 +68,12 @@ fn walker_stays_in_the_current_stack_and_stops_at_corrupt_links() {
     let foreign_frame = foreign.as_ptr() as usize + 16;
     assert_eq!(production::capture(foreign_frame, &mut out), 0);
 
-    arena[1].next = base + 16;
+    // capture 只按地址读取 arena，编译器看不到这次读；volatile 写入保证修改真正落到被检查的内存。
+    // SAFETY: 目标是本函数独占的 arena 元素，地址有效且对齐。
+    unsafe { core::ptr::write_volatile(&raw mut arena[1].next, base + 16) };
     assert_eq!(production::capture(base + 16, &mut out), 1);
-    arena[1].next = usize::MAX - 15;
+    // SAFETY: 同上。
+    unsafe { core::ptr::write_volatile(&raw mut arena[1].next, usize::MAX - 15) };
     assert_eq!(production::capture(base + 16, &mut out), 1);
     assert_eq!(production::capture(base, &mut out), 0);
     assert_eq!(production::capture(base + 17, &mut out), 0);

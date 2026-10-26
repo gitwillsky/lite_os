@@ -123,7 +123,7 @@ impl Display {
     }
 }
 impl Page for Display {
-    fn event(&mut self, _event: &Event) -> liteos_ui::Result<Option<Vec<String>>> {
+    fn event(&mut self, _event: &Event) -> liteos_ui::Result<Option<crate::Response>> {
         self.preview()?;
         Ok(None)
     }

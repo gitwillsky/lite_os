@@ -86,6 +86,15 @@ impl Session {
                 .collect(),
             sort: browser.sort.0,
             history: browser.journal(),
+            connection: self
+                .view
+                .list
+                .selection()?
+                .and_then(|id| browser.item(id))
+                .and_then(|item| match &item.details {
+                    model::Details::Connection { enabled, .. } => Some(*enabled),
+                    _ => None,
+                }),
         })
     }
     fn menus(&self) -> liteos_ui::Result<()> {
@@ -120,6 +129,44 @@ impl Session {
         if let Some(wake) = wake {
             wake.wake();
         }
+    }
+    /// 选中的网络连接：（接口名，是否启用）。
+    fn connection(&self) -> liteos_ui::Result<Option<(String, bool)>> {
+        Ok(self.selected()?.and_then(|item| match item.details {
+            model::Details::Connection {
+                interface, enabled, ..
+            } => Some((interface, enabled)),
+            _ => None,
+        }))
+    }
+    /// 启用或禁用连接，等 network-service 把接口切到目标状态（最多 3 秒）后刷新列表。
+    async fn set_connection(&self, interface: String, enabled: bool) -> Result<()> {
+        self.view.status.set_text(if enabled {
+            "正在启用…\t\t"
+        } else {
+            "正在禁用…\t\t"
+        })?;
+        self.background
+            .run(move || {
+                network_config::set_enabled(&interface, enabled)?;
+                let flags = || {
+                    std::fs::read_to_string(format!("/sys/class/net/{interface}/flags"))
+                        .ok()
+                        .and_then(|text| {
+                            u32::from_str_radix(text.trim().trim_start_matches("0x"), 16).ok()
+                        })
+                        .unwrap_or(0)
+                };
+                for _ in 0..30 {
+                    if (flags() & 1 != 0) == enabled {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(100));
+                }
+                Ok::<(), std::io::Error>(())
+            })?
+            .await?;
+        self.refresh().await
     }
     fn launch(&self, program: &str, arguments: &[&str]) -> Result<()> {
         let child = std::process::Command::new(program)
@@ -436,6 +483,26 @@ impl Session {
             Command::Do(action) => action,
         };
         match action {
+            Action::Open if self.connection()?.is_some_and(|(_, enabled)| !enabled) => {
+                // 已禁用连接的默认动词是“启用”。
+                let (interface, _) = self.connection()?.expect("connection");
+                self.set_connection(interface, true).await?;
+            }
+            Action::Enable | Action::Disable => {
+                if let Some((interface, _)) = self.connection()? {
+                    self.set_connection(interface, action == Action::Enable)
+                        .await?;
+                }
+            }
+            Action::Status => {
+                if let Some((interface, _)) = self.connection()? {
+                    self.launch("/bin/control-panel", &["network", &interface])?;
+                }
+            }
+            Action::Properties if self.connection()?.is_some() => {
+                let (interface, _) = self.connection()?.expect("connection");
+                self.launch("/bin/control-panel", &["connection", &interface])?;
+            }
             Action::Open => {
                 if let Some(item) = self.selected()? {
                     if let Some(target) = item.target {

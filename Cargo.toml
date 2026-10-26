@@ -23,6 +23,7 @@ exclude = [
     "user/programs/desktop",
     "user/libraries/desktop-entry",
     "user/libraries/desktop-settings",
+    "user/libraries/network-config",
     "user/programs/control-panel",
     "user/libraries/calendar",
     "user/libraries/sound",

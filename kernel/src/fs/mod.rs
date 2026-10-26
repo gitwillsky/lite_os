@@ -59,6 +59,7 @@ mod procfs;
 mod storage_budget;
 mod sysfs;
 mod sysfs_block;
+mod sysfs_net;
 mod tmpfs;
 mod vfs;
 
@@ -96,6 +97,7 @@ pub(crate) use procfs::{
     ProcIoSnapshot, ProcNetworkSnapshot, ProcProcessSnapshot, ProcRouteSnapshot, ProcSnapshot,
     ProcSnapshotScope, ProcSource, ProcTaskIdentity, ProcThreadSnapshot,
 };
+pub(crate) use sysfs_net::{NetLinkSnapshot, NetLinkSource};
 use storage_budget::StorageBudget;
 pub(crate) use syscall_abi::open::{
     O_ACCMODE, O_APPEND, O_CLOEXEC, O_NOCTTY, O_NOFOLLOW, O_NONBLOCK, O_PATH, O_RDONLY, O_RDWR,

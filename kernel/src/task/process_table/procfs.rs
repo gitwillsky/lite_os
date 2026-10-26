@@ -924,3 +924,35 @@ pub(crate) fn system_info_snapshot() -> SystemInfoSnapshot {
         load_milli: PROCESS_TABLE.load_average.values(),
     }
 }
+
+impl crate::fs::NetLinkSource for KernelProcSource {
+    fn current_net_namespace(
+        &self,
+    ) -> Result<alloc::sync::Arc<crate::socket::NetNamespace>, crate::fs::FileSystemError> {
+        <Self as crate::fs::ProcSource>::current_net_namespace(self)
+    }
+
+    fn link_snapshot(
+        &self,
+        target: &crate::socket::NetNamespace,
+    ) -> Result<alloc::vec::Vec<crate::fs::NetLinkSnapshot>, crate::fs::FileSystemError> {
+        let interfaces = crate::socket::interface_snapshots(target).map_err(|error| match error {
+            crate::socket::SocketError::NoMemory => crate::fs::FileSystemError::OutOfMemory,
+            _ => crate::fs::FileSystemError::IoError,
+        })?;
+        let mut rows = alloc::vec::Vec::new();
+        rows.try_reserve_exact(interfaces.len())
+            .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
+        rows.extend(interfaces.into_iter().map(|snapshot| crate::fs::NetLinkSnapshot {
+            index: snapshot.index,
+            name: snapshot.name,
+            loopback: snapshot.loopback,
+            flags: snapshot.flags(),
+            mtu: snapshot.mtu,
+            mac: snapshot.mac,
+            up: snapshot.up,
+            driver: snapshot.driver,
+        }));
+        Ok(rows)
+    }
+}

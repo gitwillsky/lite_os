@@ -66,9 +66,13 @@ pub enum Action {
     Search,
     History,
     Address,
+    /// 网络连接的启用、禁用与状态（netshell 菜单 11010/11012）。
+    Enable,
+    Disable,
+    Status,
 }
 
-const ACTIONS: [Action; 57] = [
+const ACTIONS: [Action; 60] = [
     Action::Open,
     Action::Close,
     Action::Cut,
@@ -126,6 +130,9 @@ const ACTIONS: [Action; 57] = [
     Action::Search,
     Action::History,
     Action::Address,
+    Action::Enable,
+    Action::Disable,
+    Action::Status,
 ];
 
 /// 菜单与工具栏命令：无参数动作、按某列排列图标、跳到历史记录第 n 项。
@@ -197,6 +204,31 @@ pub struct Availability {
     pub sort: Field,
     /// “转到”菜单末尾的历史记录：（历史下标，标题），当前位置带勾选。
     pub history: Vec<(usize, String, bool)>,
+    /// 选中项是网络连接时为它是否启用。
+    pub connection: Option<bool>,
+}
+
+/// 网络连接的动词（netshell 菜单 11012 启用中 / 11010 已禁用）：启用中的默认动词是“状态”，已禁用的是“启用”。
+/// 局域网连接不能删除；系统没有 .lnk 快捷方式与连接名存储，创建快捷方式与重命名保留原位并禁用。
+fn connection_verbs(b: &mut Builder, enabled: bool, idle: bool) {
+    let state = |default: bool| match (idle, default) {
+        (false, _) => DISABLED,
+        (true, true) => DEFAULT,
+        (true, false) => 0,
+    };
+    if enabled {
+        b.push(Action::Disable as u64, "禁用(B)", "", state(false));
+        b.push(Action::Status as u64, "状态(U)", "", state(true));
+    } else {
+        b.push(Action::Enable as u64, "启用(A)", "", state(true));
+        b.action(Action::Status, "状态(U)", "", false);
+    }
+    b.separator();
+    b.action(Action::CreateShortcut, "创建快捷方式(S)", "", false);
+    b.action(Action::Delete, "删除(D)", "", false);
+    b.action(Action::Rename, "重命名(M)", "", false);
+    b.separator();
+    b.action(Action::Properties, "属性(R)", "", idle);
 }
 
 const DISABLED: u32 = 1;
@@ -342,7 +374,9 @@ pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<Entry>)> {
     let selected = state.selected && enabled;
     let modify = state.editable && enabled;
     let mut file = Builder::new(HEADER);
-    if state.selected {
+    if let Some(connected) = state.connection {
+        connection_verbs(&mut file, connected, enabled);
+    } else if state.selected {
         file.push(
             Action::Open as u64,
             "打开(O)",
@@ -372,15 +406,17 @@ pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<Entry>)> {
         );
         file.separator();
     }
-    file.action(Action::CreateShortcut, "创建快捷方式(S)", "", false);
-    file.action(Action::Delete, "删除(D)", "", selected && modify);
-    file.action(
-        Action::Rename,
-        "重命名(M)",
-        "",
-        selected && modify && !state.trash,
-    );
-    file.action(Action::Properties, "属性(R)", "", selected);
+    if state.connection.is_none() {
+        file.action(Action::CreateShortcut, "创建快捷方式(S)", "", false);
+        file.action(Action::Delete, "删除(D)", "", selected && modify);
+        file.action(
+            Action::Rename,
+            "重命名(M)",
+            "",
+            selected && modify && !state.trash,
+        );
+        file.action(Action::Properties, "属性(R)", "", selected);
+    }
     file.separator();
     file.action(Action::Close, "关闭(C)", "", true);
 
@@ -497,7 +533,9 @@ pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<Entry>)> {
 /// 右键菜单：项目上按 shell32 210（回收站项为还原/剪切/删除/属性），空白处按 shell32 215 与 220。
 pub fn context(state: &Availability, on_item: bool) -> Vec<Entry> {
     let mut b = Builder::new(HEADER + 600);
-    if on_item && state.trash {
+    if let Some(enabled) = state.connection.filter(|_| on_item) {
+        connection_verbs(&mut b, enabled, true);
+    } else if on_item && state.trash {
         b.action(Action::Restore, "还原(E)", "", true);
         b.separator();
         b.action(Action::Cut, "剪切(T)", "", state.editable);

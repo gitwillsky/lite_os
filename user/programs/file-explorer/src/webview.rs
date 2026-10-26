@@ -103,7 +103,7 @@ fn describe(parts: &mut Vec<Part>, item: &Item) {
                 });
             }
         }
-        Details::Connection { status, device } => {
+        Details::Connection { status, device, .. } => {
             parts.push(Part::Text {
                 margin: 0,
                 text: item.kind.clone(),

@@ -57,8 +57,11 @@
 桌面图标右键：文件与文件夹有打开、删除、重命名、属性——后三项由桌面启动 `file-explorer <文件夹> --select <名称> --verb <delete|rename|properties>`，资源管理器打开所在文件夹、选中它并立即走自己的确认框、
 原地改名或属性对话框，结束后窗口自动关闭；“我的电脑”有属性（系统属性）。
 设备管理器 `/bin/devmgmt`：控制面板“系统→硬件”的按钮启动，按类别列出能从 `/proc/stat`、`/sys/block`、`/dev/dri`、`/dev/snd`、`/dev/input`（evdev 设备名）、`/proc/net/dev` 确认的硬件，双击看属性；内核没有统一的设备枚举，所以不全。只读。
-网络：控制面板“网络和拨号连接”与开始菜单“设置”里同名项打开“本地连接 状态”：连接状态、收发字节（实时）、DHCP 分配的 IP、掩码、网关与 DNS（`ip`/`ifconfig`、`/proc/net/route`、`/etc/resolv.conf`）；只读，
-地址只由 network-service 的 DHCP 分配，没有静态地址设置；桌面与资源管理器文件夹树里有“网上邻居”（`::network-places`），里面只有“本地连接”（打开状态窗口），没有邻居发现；断开时状态窗口用断开图标；
+网络：控制面板、开始菜单“设置”与“网上邻居”属性打开“网络和拨号连接”文件夹，按 `/sys/class/net` 列出“本地连接”。
+  右键为 netshell 的禁用/启用、状态、属性；双击打开“本地连接 状态”（只有“关闭”，内含“属性”“禁用”）。
+  “本地连接 属性”（确定/取消）列出 Internet 协议 (TCP/IP)，其“属性”打开 TCP/IP 对话框：自动获得或指定 IP、掩码、网关与 DNS。
+  设置写入 `/etc/network/interfaces`（interfaces(5) 子集），network-service 重新配置：DHCP 由受监督的 udhcpc 完成，
+  静态地址用 ifconfig/route，DNS 写 `/etc/resolv.conf`，禁用即去掉 auto 并关闭接口。重命名、快捷方式与“高级”TCP/IP 设置禁用。
 网络与设备管理器、记事本使用从原版 `netshell.dll`/`devmgr.dll`/`notepad.exe` 提取的专用图标（仅本地素材，缺失时退回通用图标）。
 开始菜单程序项的图标来自各桌面条目的 `Icon=`，缺素材时退回通用图标。
 文件关联：桌面条目的 `MimeType=` 与 `Exec` 的 `%f` 决定谁打开文件，扩展名到类型的映射在 `desktop-entry`；`.wav` 交给媒体播放机 `/bin/mplay`，常见文本扩展名交给记事本 `/bin/notepad`，资源管理器与桌面图标共用这套查找。

@@ -48,7 +48,7 @@ const PROGRAMS: [&str; 12] = [
 ];
 
 /// `user/libraries/` 下的库包；每个都有 `src/lib.rs`。其中带 `liteos-runtime` 依赖的会被构建成共享库。
-const LIBRARIES: [&str; 19] = [
+const LIBRARIES: [&str; 20] = [
     "calendar",
     "canvas",
     "classic-theme",
@@ -61,6 +61,7 @@ const LIBRARIES: [&str; 19] = [
     "keyboard",
     "linux-uapi",
     "liteos-runtime",
+    "network-config",
     "sndvol",
     "sound",
     "terminal-font",

@@ -120,9 +120,9 @@ impl Sounds {
     }
 }
 impl Page for Sounds {
-    fn event(&mut self, event: &Event) -> liteos_ui::Result<Option<Vec<String>>> {
+    fn event(&mut self, event: &Event) -> liteos_ui::Result<Option<crate::Response>> {
         if event.node == self.volume.id() && matches!(event.kind, EventKind::Activate { .. }) {
-            return Ok(Some(vec!["/bin/sndvol".into()]));
+            return Ok(Some(crate::Response::Launch(vec!["/bin/sndvol".into()])));
         }
         let selected = self.list.selection()?.unwrap_or(1).saturating_sub(1) as usize;
         let Some(sound) = EVENTS.get(selected) else {
@@ -134,10 +134,10 @@ impl Page for Sounds {
         if matches!(event.kind, EventKind::Activate { .. })
             && (event.node == self.preview.id() || event.node == self.list.id())
         {
-            return Ok(Some(vec![
+            return Ok(Some(crate::Response::Launch(vec![
                 "/bin/sndplay".into(),
                 format!("{SOUND_DIRECTORY}/{}", sound.file),
-            ]));
+            ])));
         }
         Ok(None)
     }

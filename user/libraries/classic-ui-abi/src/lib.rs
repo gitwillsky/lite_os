@@ -408,7 +408,8 @@ pub struct Api {
     pub dialog_result: unsafe extern "C" fn(*mut c_void, u64, *mut u8, usize, *mut usize) -> i32,
     pub menus: unsafe extern "C" fn(*mut c_void, u64, u64, *const Menu, usize) -> i32,
     pub columns: unsafe extern "C" fn(*mut c_void, u64, u64, *const Column, usize) -> i32,
-    pub sheet: unsafe extern "C" fn(*mut c_void, u64, Text, i32, i32, *mut Sheet) -> i32,
+    /// 属性表；最后一个整数为 [`sheet_style`] 标志位。
+    pub sheet: unsafe extern "C" fn(*mut c_void, u64, Text, i32, i32, u32, *mut Sheet) -> i32,
     pub sheet_dirty: unsafe extern "C" fn(*mut c_void, u64, u32) -> i32,
     pub sheet_validated: unsafe extern "C" fn(*mut c_void, u64, u64, u32, u64, u64, Text) -> i32,
     pub sheet_applied: unsafe extern "C" fn(*mut c_void, u64, u64, u32, Text) -> i32,
@@ -491,6 +492,14 @@ pub struct Api {
     /// Column/Row 背景：rgb 为 0xRRGGBB，`NO_COLOR` 不填底色；bitmap 为系统界面位图名，空串不画；
     /// 位图不缩放、不平铺地画在左上角（CSS `background: color url() no-repeat`）。
     pub background: unsafe extern "C" fn(*mut c_void, u64, u64, u32, Text) -> i32,
+}
+
+/// [`Api::sheet`] 的样式（Win32 PropertySheet 的标准样式）。
+pub mod sheet_style {
+    /// PSH_NOAPPLYNOW：不显示“应用”按钮。
+    pub const NO_APPLY: u32 = 1;
+    /// PSM_CANCELTOCLOSE：只有“关闭”按钮（状态类对话框，没有可提交的修改）。
+    pub const CLOSE_ONLY: u32 = 2;
 }
 
 /// [`Api::list_style`] 的标志位。

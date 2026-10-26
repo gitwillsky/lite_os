@@ -102,7 +102,7 @@ impl Taskbar {
     }
 }
 impl Page for Taskbar {
-    fn event(&mut self, _event: &Event) -> liteos_ui::Result<Option<Vec<String>>> {
+    fn event(&mut self, _event: &Event) -> liteos_ui::Result<Option<crate::Response>> {
         self.preview()?;
         Ok(None)
     }

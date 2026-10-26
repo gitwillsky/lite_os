@@ -11,7 +11,7 @@ pub use message_box::{MessageBoxFuture, MessageButtons, MessageResult};
 mod property_sheet;
 pub use file_dialog::{FileDialogFuture, FileDialogMode, FileFilter};
 pub use property_sheet::{
-    ApplyToken, PropertySheet, ValidatePage, ValidationError, ValidationToken,
+    ApplyToken, PropertySheet, SheetStyle, ValidatePage, ValidationError, ValidationToken,
 };
 mod connection;
 mod events;

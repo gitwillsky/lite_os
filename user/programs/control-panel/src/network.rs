@@ -1,113 +1,95 @@
-//! 网络信息和周期采样在有界后台池读取，界面只更新标准标签。
-use crate::{Activity, Page, group, label, pair};
-use liteos_ui::{Background, Clock, PropertySheet, Widget};
-use std::{fs, process::Command, time::Duration};
-struct Address {
-    ip: String,
-    mask: String,
-    gateway: String,
-    dns: String,
-}
+//! “本地连接 状态”：按 Windows 2000 netshell 对话框 1801（常规页）还原。
+//! 连接状态取 sysfs 与 network-service，活动计数在有界后台池按 `/proc/net/dev` 周期采样；
+//! “属性”打开“本地连接 属性”，“禁用”写回接口配置并让 network-service 重新配置后关闭本窗口。
+use crate::{Activity, Page, Response, child, group};
+use liteos_ui::{
+    Background, Clock, Event, EventKind, Layout, PropertySheet, Widget, WidgetKind as Kind, state,
+};
+use std::{fs, time::Duration};
 
-pub struct Data {
-    interface: Option<String>,
-    address: Option<Address>,
-}
-
-/// `/proc/net/dev` 里的接口 `wanted`（缺省为第一个非回环接口）及它的（收到字节，发出字节）。
-fn counters(wanted: Option<&str>) -> Option<(String, u64, u64)> {
+/// 接口 `name` 的（收到字节，发出字节，收到错误，发出错误），取自 `/proc/net/dev`。
+fn counters(name: &str) -> Option<[u64; 4]> {
     let text = fs::read_to_string("/proc/net/dev").ok()?;
     text.lines().skip(2).find_map(|line| {
-        let (name, rest) = line.split_once(':')?;
-        let name = name.trim();
-        if name == "lo" || wanted.is_some_and(|wanted| wanted != name) {
+        let (interface, rest) = line.split_once(':')?;
+        if interface.trim() != name {
             return None;
         }
         let fields: Vec<u64> = rest
             .split_whitespace()
             .filter_map(|value| value.parse().ok())
             .collect();
-        Some((name.to_owned(), *fields.first()?, *fields.get(8)?))
+        Some([
+            *fields.first()?,
+            *fields.get(8)?,
+            *fields.get(2)?,
+            *fields.get(10)?,
+        ])
     })
 }
 
-/// 接口 `name` 的 IPv4 地址与掩码：先问 `ip`，没有再问 `ifconfig`。
-fn ip_and_mask(name: &str) -> Option<(String, String)> {
-    if let Ok(output) = Command::new("/bin/ip")
-        .args(["-4", "-o", "addr", "show", name])
-        .output()
-    {
-        let text = String::from_utf8_lossy(&output.stdout).into_owned();
-        if let Some(cidr) = text.split_whitespace().skip_while(|w| *w != "inet").nth(1) {
-            let (ip, prefix) = cidr.split_once('/')?;
-            let prefix: u32 = prefix.parse().ok()?;
-            let mask = u32::MAX.checked_shl(32 - prefix).unwrap_or(0);
-            return Some((ip.to_owned(), mask_text(mask)));
-        }
-    }
-    let output = Command::new("/bin/ifconfig").arg(name).output().ok()?;
-    let text = String::from_utf8_lossy(&output.stdout).into_owned();
-    let after = |key: &str| {
-        text.split(key)
-            .nth(1)?
-            .split_whitespace()
-            .next()
-            .map(|value| value.trim_start_matches("addr:").to_owned())
-    };
-    Some((
-        after("inet addr:").or_else(|| after("inet "))?,
-        after("Mask:").or_else(|| after("netmask "))?,
-    ))
+/// 连接已建立的秒数：network-service 按当前配置启用接口的时刻到现在（/proc 的进程启动时刻与 uptime）。
+fn connected_seconds() -> Option<u64> {
+    let pid = fs::read_to_string("/run/network-service.pid").ok()?;
+    let stat = fs::read_to_string(format!("/proc/{}/stat", pid.trim())).ok()?;
+    let rest = &stat[stat.rfind(')')? + 2..];
+    // stat 第 22 个字段（`)` 之后第 20 个）是启动时刻，单位为时钟滴答（USER_HZ = 100）。
+    let start: u64 = rest.split_whitespace().nth(19)?.parse().ok()?;
+    let uptime: f64 = fs::read_to_string("/proc/uptime")
+        .ok()?
+        .split_whitespace()
+        .next()?
+        .parse()
+        .ok()?;
+    Some((uptime as u64).saturating_sub(start / 100))
 }
 
-fn mask_text(mask: u32) -> String {
-    let [a, b, c, d] = mask.to_be_bytes();
-    format!("{a}.{b}.{c}.{d}")
+/// 以太网接口在 sysfs 中的属性。
+pub fn attribute(interface: &str, file: &str) -> String {
+    fs::read_to_string(format!("/sys/class/net/{interface}/{file}")).unwrap_or_default()
 }
 
-/// `/proc/net/route` 里接口 `name` 的默认网关（小端十六进制）。
-fn gateway(name: &str) -> Option<String> {
-    let text = fs::read_to_string("/proc/net/route").ok()?;
-    text.lines().skip(1).find_map(|line| {
-        let fields: Vec<&str> = line.split_whitespace().collect();
-        if fields.first() != Some(&name) || fields.get(1) != Some(&"00000000") {
-            return None;
-        }
-        let value = u32::from_str_radix(fields.get(2)?, 16).ok()?;
-        let [a, b, c, d] = value.to_le_bytes();
-        Some(format!("{a}.{b}.{c}.{d}"))
-    })
+/// 第一个以太网（ARPHRD_ETHER）接口名。
+pub fn first_ethernet() -> Option<String> {
+    fs::read_dir("/sys/class/net")
+        .ok()?
+        .flatten()
+        .find_map(|entry| {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            (attribute(&name, "type").trim() == "1").then_some(name)
+        })
 }
 
-fn dns() -> Option<String> {
-    let text = fs::read_to_string("/etc/resolv.conf").ok()?;
-    let servers: Vec<&str> = text
-        .lines()
-        .filter_map(|line| line.strip_prefix("nameserver"))
-        .map(str::trim)
-        .collect();
-    (!servers.is_empty()).then(|| servers.join(", "))
+pub struct Data {
+    interface: String,
+    enabled: bool,
+    carrier: bool,
 }
 
 impl Data {
-    /// 读取接口 `interface` 的状态；`None` 取第一个非回环接口。
-    pub fn read(interface: Option<String>) -> Self {
-        let interface = counters(interface.as_deref()).map(|(name, ..)| name);
-        let address = interface.as_deref().and_then(|name| {
-            let (ip, mask) = ip_and_mask(name)?;
-            Some(Address {
-                ip,
-                mask,
-                gateway: gateway(name).unwrap_or_default(),
-                dns: dns().unwrap_or_default(),
-            })
-        });
-        Self { interface, address }
+    /// 读取接口 `interface`（缺省为第一个以太网接口）的状态。
+    pub fn read(interface: Option<String>) -> Result<Self, String> {
+        let interface = interface.or_else(first_ethernet).ok_or("没有网络连接")?;
+        let flags = u32::from_str_radix(
+            attribute(&interface, "flags")
+                .trim()
+                .trim_start_matches("0x"),
+            16,
+        )
+        .unwrap_or(0);
+        let config =
+            network_config::Config::load(std::path::Path::new(network_config::CONFIG_PATH))
+                .map_err(|error| error.to_string())?;
+        Ok(Self {
+            enabled: config.interface(&interface).enabled && flags & 1 != 0,
+            carrier: attribute(&interface, "carrier").trim() == "1",
+            interface,
+        })
     }
 }
 
-/// 带千分位的字节数。
-fn bytes_text(value: u64) -> String {
+/// 带千分位的整数（简体中文区域设置）。
+fn grouped(value: u64) -> String {
     let digits = value.to_string();
     let mut text = String::new();
     for (index, ch) in digits.chars().enumerate() {
@@ -119,75 +101,168 @@ fn bytes_text(value: u64) -> String {
     text
 }
 
+fn label(parent: &Widget, text: &str, layout: Layout) -> liteos_ui::Result<Widget> {
+    child(parent, Kind::Label, text, layout)
+}
+
+fn width(width: i32) -> Layout {
+    Layout {
+        width,
+        ..Default::default()
+    }
+}
+
+fn grow() -> Layout {
+    Layout {
+        grow: 1,
+        ..Default::default()
+    }
+}
+
 pub struct Network {
     _controls: Vec<Widget>,
-    interface: Option<String>,
-    received: Widget,
-    sent: Widget,
+    interface: String,
+    duration: Widget,
+    bytes: [Widget; 2],
+    errors: [Widget; 2],
+    properties: Widget,
+    disable: Widget,
 }
+
 impl Network {
     pub fn build(sheet: &PropertySheet, data: Data) -> liteos_ui::Result<Self> {
         let general = sheet.page("常规")?;
-        let connection = group(&general, "连接")?;
         let mut controls = Vec::new();
-        for (title, text) in [
-            (
-                "状态：",
-                if data.address.is_some() {
-                    "已连接"
-                } else {
-                    "已断开"
-                },
-            ),
-            ("接口：", data.interface.as_deref().unwrap_or("无")),
+        // “连接”分组：状态、持续时间、速度（netshell 1040–1050）。
+        let connection = group(&general, "连接")?;
+        let status = if !data.enabled {
+            "禁用"
+        } else if data.carrier {
+            "已连接上"
+        } else {
+            "网络电缆被拔出"
+        };
+        let mut duration = None;
+        // 网络设备不报告链路速率（Linux 的 speed 属性在 virtio 上同样未知）。
+        for (title, value) in [
+            ("状态:", status),
+            ("持续时间:", "00:00:00"),
+            ("速度:", "未知"),
         ] {
-            let (a, b) = pair(&connection, title, text)?;
-            controls.extend([a, b]);
+            let row = child(&connection, Kind::Row, "", Layout::default())?;
+            controls.push(label(&row, title, width(84))?);
+            let value = label(&row, value, grow())?;
+            if title == "持续时间:" {
+                duration = Some(value.clone());
+            }
+            controls.extend([row, value]);
         }
+        // “活动”分组：“发送 ◆ 收到”表头，下面是字节与错误计数（左列发送，右列收到）。
         let activity = group(&general, "活动")?;
-        let (a, sent) = pair(&activity, "发送：", "正在读取…")?;
-        controls.push(a);
-        let (a, received) = pair(&activity, "接收：", "正在读取…")?;
-        controls.push(a);
-        let support = sheet.page("支持")?;
-        let section = group(&support, "连接状态")?;
-        let address = data.address.as_ref();
-        for (title, text) in [
-            ("地址类型：", "DHCP 分配"),
-            ("IP 地址：", address.map_or("—", |a| &a.ip)),
-            ("子网掩码：", address.map_or("—", |a| &a.mask)),
-            ("默认网关：", address.map_or("—", |a| &a.gateway)),
-            ("DNS 服务器：", address.map_or("—", |a| &a.dns)),
-        ] {
-            let (a, b) = pair(&section, title, text)?;
-            controls.extend([a, b]);
+        let header = child(&activity, Kind::Row, "", Layout::default())?;
+        controls.push(label(&header, "", width(60))?);
+        let sent = label(&header, "发送", grow())?;
+        sent.set_state(state::ALIGN_RIGHT)?;
+        let icon = child(
+            &header,
+            Kind::Image,
+            "network-local",
+            Layout {
+                width: 32,
+                height: 32,
+                ..Default::default()
+            },
+        )?;
+        let received = label(&header, "收到", grow())?;
+        controls.extend([header, sent, icon, received]);
+        let mut counters = Vec::new();
+        for title in ["字节:", "错误:"] {
+            let line = child(&activity, Kind::Row, "", Layout::default())?;
+            controls.push(label(&line, title, width(60))?);
+            let sent = label(&line, "0", grow())?;
+            sent.set_state(state::ALIGN_RIGHT)?;
+            controls.push(label(&line, "", width(32))?);
+            let received = label(&line, "0", grow())?;
+            controls.push(line);
+            counters.push([sent, received]);
         }
-        controls.push(label(&support, "地址由 network-service 配置。")?);
-        controls.extend([general, connection, activity, support, section]);
+        let buttons = child(&general, Kind::Row, "", Layout::default())?;
+        let size = Layout {
+            width: 75,
+            height: 21,
+            ..Default::default()
+        };
+        let properties = child(&buttons, Kind::Button, "属性(P)", size)?;
+        let disable = child(&buttons, Kind::Button, "禁用(D)", size)?;
+        if !data.enabled {
+            disable.set_state(state::DISABLED)?;
+        }
+        controls.extend([general, connection, activity, buttons]);
+        let [bytes, errors] = <[[Widget; 2]; 2]>::try_from(counters)
+            .ok()
+            .expect("two counter rows");
         Ok(Self {
             _controls: controls,
             interface: data.interface,
-            received,
-            sent,
+            duration: duration.expect("duration row"),
+            bytes,
+            errors,
+            properties,
+            disable,
         })
     }
 }
+
 impl Page for Network {
+    fn event(&mut self, event: &Event) -> liteos_ui::Result<Option<Response>> {
+        if !matches!(event.kind, EventKind::Activate { .. }) {
+            return Ok(None);
+        }
+        if event.node == self.properties.id() {
+            return Ok(Some(Response::Launch(vec![
+                "/bin/control-panel".into(),
+                "connection".into(),
+                self.interface.clone(),
+            ])));
+        }
+        if event.node == self.disable.id() {
+            // “禁用”：去掉接口的 auto 并让 network-service 关闭它，然后关闭状态窗口（与 Windows 2000 相同）。
+            network_config::set_enabled(&self.interface, false)
+                .map_err(|error| liteos_ui::Error::invalid(format!("无法禁用连接：{error}")))?;
+            return Ok(Some(Response::Close));
+        }
+        Ok(None)
+    }
+
     fn activity(&self, background: Background, clock: Clock) -> Option<Activity> {
-        let (received, sent) = (self.received.clone(), self.sent.clone());
+        let (duration, bytes, errors) = (
+            self.duration.clone(),
+            self.bytes.clone(),
+            self.errors.clone(),
+        );
         let interface = self.interface.clone();
         Some(Box::pin(async move {
             loop {
                 let name = interface.clone();
-                let Ok(work) = background.run(move || counters(name.as_deref())) else {
+                let Ok(work) = background.run(move || (counters(&name), connected_seconds()))
+                else {
                     break;
                 };
-                let (rx, tx) = work.await.map_or((0, 0), |(_, rx, tx)| (rx, tx));
-                if received
-                    .set_text(&format!("{} 字节", bytes_text(rx)))
-                    .is_err()
-                    || sent.set_text(&format!("{} 字节", bytes_text(tx))).is_err()
-                {
+                let (counts, seconds) = work.await;
+                let [received, sent, received_errors, sent_errors] = counts.unwrap_or([0; 4]);
+                let seconds = seconds.unwrap_or(0);
+                let text = format!(
+                    "{:02}:{:02}:{:02}",
+                    seconds / 3600,
+                    seconds / 60 % 60,
+                    seconds % 60
+                );
+                let updated = duration.set_text(&text).is_ok()
+                    && bytes[0].set_text(&grouped(sent)).is_ok()
+                    && bytes[1].set_text(&grouped(received)).is_ok()
+                    && errors[0].set_text(&grouped(sent_errors)).is_ok()
+                    && errors[1].set_text(&grouped(received_errors)).is_ok();
+                if !updated {
                     break;
                 }
                 let Ok(wait) = clock.sleep(Duration::from_millis(500)) else {

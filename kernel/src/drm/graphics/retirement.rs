@@ -79,9 +79,7 @@ impl VirglCleanup {
 
     /// 消费 exact completion，将回收节点交给调用者在 device 锁外析构。
     pub(in crate::drm) fn complete(&mut self, fence: u64) -> Option<VirglCleanupCompletion> {
-        let Some((expected, action)) = self.in_flight else {
-            return None;
-        };
+        let (expected, action) = self.in_flight?;
         if expected != fence {
             return None;
         }

@@ -12,6 +12,7 @@ members = [
     "programs/desktop",
     "libraries/desktop-entry",
     "libraries/desktop-settings",
+    "libraries/network-config",
     "programs/file-explorer",
     "libraries/classic-ui",
     "libraries/keyboard",

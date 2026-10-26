@@ -21,6 +21,8 @@ pub(crate) struct MountEnvironment {
     pub(crate) proc_source: Arc<dyn ProcSource>,
     /// sysfs 投影的逻辑 CPU 数。
     pub(crate) cpu_count: usize,
+    /// sysfs `/sys/class/net` 投影的接口来源。
+    pub(crate) net_links: Arc<dyn super::NetLinkSource>,
 }
 
 // OWNER: 根挂载时安装一次的挂载环境，供之后的 `mount(2)` 使用；缺失时 proc/sysfs/ext4 无法创建

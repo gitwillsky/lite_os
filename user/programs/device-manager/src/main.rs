@@ -164,8 +164,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         app,
                         Some(&window),
                         &format!("{} 属性", device.name),
-                        440,
-                        340,
+                        (440, 340),
+                        liteos_ui::SheetStyle::Standard,
                     )?;
                     let page = sheet.page("常规")?;
                     let title = child(&page, Kind::Label, &device.name, 0)?;
@@ -191,7 +191,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             2 => request_refresh = true,
             3 => return Ok(ControlFlow::Exit),
             4 => {
-                let sheet = PropertySheet::new(app, Some(&window), "关于设备管理器", 360, 210)?;
+                let sheet = PropertySheet::new(
+                    app,
+                    Some(&window),
+                    "关于设备管理器",
+                    (360, 210),
+                    liteos_ui::SheetStyle::Standard,
+                )?;
                 let page = sheet.page("设备管理器")?;
                 let text = child(
                     &page,

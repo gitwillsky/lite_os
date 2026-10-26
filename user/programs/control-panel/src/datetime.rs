@@ -559,7 +559,7 @@ fn paint_clock(clock: &Widget, time: [u32; 3]) -> liteos_ui::Result<()> {
 }
 
 impl Page for DateTime {
-    fn event(&mut self, event: &Event) -> liteos_ui::Result<Option<Vec<String>>> {
+    fn event(&mut self, event: &Event) -> liteos_ui::Result<Option<crate::Response>> {
         let node = event.node;
         let field = self.time.iter().position(|field| field.id() == node);
         match event.kind {

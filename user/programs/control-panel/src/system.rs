@@ -108,10 +108,10 @@ impl System {
     }
 }
 impl Page for System {
-    fn event(&mut self, event: &Event) -> liteos_ui::Result<Option<Vec<String>>> {
+    fn event(&mut self, event: &Event) -> liteos_ui::Result<Option<crate::Response>> {
         Ok(
             (event.node == self.devices.id() && matches!(event.kind, EventKind::Activate { .. }))
-                .then(|| vec!["/bin/devmgmt".into()]),
+                .then(|| crate::Response::Launch(vec!["/bin/devmgmt".into()])),
         )
     }
 }

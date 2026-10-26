@@ -254,6 +254,15 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
             metadata = run_batch(image, ["stat /etc/localtime"], directory, "inspect-localtime", writable=False)
             if "Inode:" not in metadata:
                 run_batch(image, [f"write {ROOT / 'user/base/localtime'} /etc/localtime"], directory, "initialize-localtime", writable=True)
+        # /etc/network/interfaces 同样是用户拥有的网络设置（“Internet 协议 (TCP/IP) 属性”改写它）：只在缺失时写入默认值。
+        with tempfile.TemporaryDirectory(prefix="liteos-interfaces-") as temporary:
+            directory = Path(temporary)
+            metadata = run_batch(image, ["stat /etc/network/interfaces"], directory, "inspect-interfaces", writable=False)
+            if "Inode:" not in metadata:
+                directory_metadata = run_batch(image, ["stat /etc/network"], directory, "inspect-network-directory", writable=False)
+                commands = [] if "Inode:" in directory_metadata else ["mkdir /etc/network"]
+                commands.append(f"write {ROOT / 'user/base/interfaces'} /etc/network/interfaces")
+                run_batch(image, commands, directory, "initialize-interfaces", writable=True)
         previous = read_stamp(image)
         if previous is not None and previous.get("identity") == identity:
             print(f"userland sync cache hit: {identity[:12]}")

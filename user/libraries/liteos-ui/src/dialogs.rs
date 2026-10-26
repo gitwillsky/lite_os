@@ -33,6 +33,27 @@ impl Dialogs {
             .borrow_mut()
             .subscribe(window.id(), None, &window.inner.scope)
     }
+    /// 在异步流程中创建模态属性表（如“本地连接 属性”里的“Internet 协议 (TCP/IP) 属性”），返回属性表与它的事件流。
+    /// 验证、应用与关闭事件经事件流到达，应用按 [`crate::PropertySheet::validated`]/[`crate::PropertySheet::applied`] 回应。
+    pub fn property_sheet(
+        &self,
+        parent: &Window,
+        title: &str,
+        size: (i32, i32),
+        style: crate::SheetStyle,
+    ) -> Result<(crate::PropertySheet, crate::EventStream)> {
+        self.check(parent)?;
+        let sheet = crate::PropertySheet::create(
+            &self.connection,
+            &self.windows,
+            Some(parent),
+            title,
+            size,
+            style,
+        )?;
+        let events = self.events(sheet.window())?;
+        Ok((sheet, events))
+    }
     /// 在异步任务中创建应用自己的对话框窗口（Win32 `DialogBox` 的对应物），返回窗口与它的事件流。
     ///
     /// `options.parent` 必须属于本应用；模态由 `options.modal` 决定。窗口在最后一个 owner 析构时关闭，

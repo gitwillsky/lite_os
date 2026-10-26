@@ -162,6 +162,11 @@ poll/epoll。read 逐条在 copy 前出队，copy fault 为 EFAULT 且当前记�
 `size`（512 字节扇区）、`ro`、`removable`、`uevent`，分区另有 `partition`、`start`，供 lsblk、blkid、mdev 枚举。
 分区的 `uevent` 含 `PARTUUID=`。`/sys/dev/block/MAJ:MIN` 是与 `/sys/class/block/<name>` 内容相同的目录而不是符号链接（sysfs 没有符号链接节点）。
 
+网络接口枚举：`/sys/class/net/<接口>` 投影挂载者网络命名空间的实际接口表（挂载时捕获，Linux 语义），属性
+`ifindex`、`type`（1/772）、`flags`（十六进制 `IFF_*`，与 `SIOCGIFFLAGS` 同源）、`mtu`、`address`、`operstate`、`carrier`、
+`uevent`（`INTERFACE=`/`IFINDEX=`），有驱动的接口另有 `device/uevent`（`DRIVER=virtio_net`）。范围缩减：接口与 `device`
+是目录而不是符号链接；`carrier` 跟随管理状态（设备 seam 不报告物理链路），接口关闭时读取为 `EINVAL`。
+
 管道与 FIFO：`FIONREAD` 返回未读字节数；`F_GETPIPE_SZ` 返回环容量（缺省 64 KiB），`F_SETPIPE_SZ` 按 2 的幂次
 页数取整（最小 4 KiB、最大 1 MiB，超过为 `EPERM`），未读数据装不进新容量为 `EBUSY`，扩容立即唤醒阻塞的写者。
 

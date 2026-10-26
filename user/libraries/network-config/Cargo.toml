@@ -1,0 +1,8 @@
+[package]
+name = "network-config"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+linux-uapi = { path = "../linux-uapi" }

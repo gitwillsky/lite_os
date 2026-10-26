@@ -48,7 +48,8 @@ pub(super) fn add(
     tree.insert(parent, value, text)
 }
 impl Sheet {
-    pub fn new() -> io::Result<Self> {
+    /// `style` 为 [`abi::sheet_style`]：NO_APPLY 隐藏“应用”；CLOSE_ONLY 只保留一个“关闭”按钮（取消的语义）。
+    pub fn new(style: u32) -> io::Result<Self> {
         let mut tree = Tree::new();
         let root = add(
             &mut tree,
@@ -110,10 +111,25 @@ impl Sheet {
             height: 23,
             ..Default::default()
         };
+        let close_only = style & abi::sheet_style::CLOSE_ONLY != 0;
         let ok = add(&mut tree, buttons, widget::BUTTON, "确定", button_layout)?;
-        let cancel = add(&mut tree, buttons, widget::BUTTON, "取消", button_layout)?;
+        let cancel = add(
+            &mut tree,
+            buttons,
+            widget::BUTTON,
+            if close_only { "关闭" } else { "取消" },
+            button_layout,
+        )?;
         let apply = add(&mut tree, buttons, widget::BUTTON, "应用(A)", button_layout)?;
-        tree.nodes.get_mut(&ok).expect("default button").state |= state::DEFAULT;
+        let default = if close_only { cancel } else { ok };
+        tree.nodes.get_mut(&default).expect("default button").state |= state::DEFAULT;
+        // 隐藏的内置按钮仍是同一组节点，只是不参与布局与命中。
+        if close_only {
+            tree.nodes.get_mut(&ok).expect("ok button").state |= state::HIDDEN;
+        }
+        if close_only || style & abi::sheet_style::NO_APPLY != 0 {
+            tree.nodes.get_mut(&apply).expect("apply button").state |= state::HIDDEN;
+        }
         let mut sheet = Self {
             tree,
             pages,
@@ -354,8 +370,9 @@ impl Context {
         title: &str,
         width: i32,
         height: i32,
+        style: u32,
     ) -> io::Result<(u64, u64)> {
-        let sheet = Sheet::new()?;
+        let sheet = Sheet::new(style)?;
         let pages = sheet.pages;
         let app = if parent == 0 {
             "org.liteos.properties".into()

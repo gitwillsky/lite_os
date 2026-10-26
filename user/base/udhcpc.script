@@ -22,7 +22,12 @@ case "$1" in
         if [ -n "$domain" ]; then
             printf 'search %s\n' "$domain" >> "$resolv_conf"
         fi
-        for server in $dns; do
+        # /etc/network/interfaces 为该接口指定了 dns-nameservers（“使用下面的 DNS 服务器地址”）时覆盖租约 DNS。
+        configured=$(awk -v name="$interface" '
+            $1 == "iface" { current = $2 }
+            current == name && $1 == "dns-nameservers" { for (i = 2; i <= NF; i++) print $i }
+        ' /etc/network/interfaces 2>/dev/null)
+        for server in ${configured:-$dns}; do
             printf 'nameserver %s\n' "$server" >> "$resolv_conf"
         done
         mv "$resolv_conf" /etc/resolv.conf

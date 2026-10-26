@@ -1276,6 +1276,7 @@ kernel/src/drivers/network.rs :: pub (crate) struct NetworkStatistics
 kernel/src/drivers/network.rs :: pub (crate) struct NetworkTransmit
 kernel/src/drivers/network.rs :: pub (crate) trait NetworkDevice
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn cancel_transmit (& self , reservation : u16)
+kernel/src/drivers/network.rs :: trait NetworkDevice :: fn driver (& self) -> & 'static str
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn finish_receive_batch (& self) -> Result < () , NetworkError >
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn mac_address (& self) -> [u8 ; 6]
 kernel/src/drivers/network.rs :: trait NetworkDevice :: fn poll_completions (& self , budget : usize) -> Result < NetworkCompletion , NetworkError >
@@ -2650,6 +2651,7 @@ kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateM
 kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcCredentialSnapshot , ProcDirectory , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcRouteSnapshot , ProcSnapshot , ProcSnapshotScope , ProcSource , ProcTaskIdentity , ProcThreadSnapshot , }
 kernel/src/fs/mod.rs :: pub (crate) use swap :: { SwapSource , prepare_swap_storage }
 kernel/src/fs/mod.rs :: pub (crate) use syscall_abi :: open :: { O_ACCMODE , O_APPEND , O_CLOEXEC , O_NOCTTY , O_NOFOLLOW , O_NONBLOCK , O_PATH , O_RDONLY , O_RDWR , O_WRONLY , }
+kernel/src/fs/mod.rs :: pub (crate) use sysfs_net :: { NetLinkSnapshot , NetLinkSource }
 kernel/src/fs/mod.rs :: pub (crate) use vfs :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , ContentWrite , LockHolder , LookupOrigin , MountFlags , MountNamespace , MountPropagation , MountTableKind , OpenedFile , PreparedAdvisoryLock , PreparedLockAttempt , PreparedRecordLock , ReadAccess , RecordLockMode , RecordLockOwner , RecordLockRange , UnmountMode , mount_limit , set_mount_limit , vfs , }
 kernel/src/fs/mod.rs :: pub (crate) use write_access :: { InodeAccessLease , InodeWriteAccess }
 kernel/src/fs/mod.rs :: pub (crate) use xattr :: { XattrChange , XattrError }
@@ -2661,6 +2663,7 @@ kernel/src/fs/mod.rs :: trait FileSystem :: fn statistics (& self) -> Result < F
 kernel/src/fs/mount.rs :: pub (crate) CreatedFileSystem :: filesystem : Arc < dyn FileSystem >
 kernel/src/fs/mount.rs :: pub (crate) CreatedFileSystem :: user_namespace : Arc < crate :: namespace :: UserNamespace >
 kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: cpu_count : usize
+kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: net_links : Arc < dyn super :: NetLinkSource >
 kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: proc_source : Arc < dyn ProcSource >
 kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: threads : KernelThreadSupport
 kernel/src/fs/mount.rs :: pub (crate) MountRequest :: device : Option < DeviceNumber >
@@ -3144,8 +3147,8 @@ kernel/src/fs/swap/file_lease.rs :: pub (in crate :: fs) SwapFileLayout :: size_
 kernel/src/fs/swap/file_lease.rs :: pub (in crate :: fs) impl SwapExtent :: fn physical_page (extents : & [Self] , page : usize) -> Option < usize >
 kernel/src/fs/swap/file_lease.rs :: trait SwapFileLease :: fn activate (& self) -> Result < SwapFileLayout , FileSystemError >
 kernel/src/fs/swap/file_lease.rs :: trait SwapFileLease :: fn close (& self)
-kernel/src/fs/sysfs.rs :: pub (crate) impl SysFileSystem :: fn new (cpu_count : usize) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/sysfs.rs :: pub (crate) struct SysFileSystem
+kernel/src/fs/sysfs.rs :: pub (super) impl SysFileSystem :: fn new (cpu_count : usize , network : NetView) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/sysfs.rs :: pub (super) struct SysFileSystemType
 kernel/src/fs/sysfs_block.rs :: enum Attr :: Dev
 kernel/src/fs/sysfs_block.rs :: enum Attr :: Partition
@@ -3174,6 +3177,44 @@ kernel/src/fs/sysfs_block.rs :: pub (super) fn lookup (node : BlockSysNode , nam
 kernel/src/fs/sysfs_block.rs :: pub (super) fn parent (node : BlockSysNode) -> Result < Parent , FileSystemError >
 kernel/src/fs/sysfs_block.rs :: pub (super) impl BlockSysNode :: fn inode (self) -> u64
 kernel/src/fs/sysfs_block.rs :: pub (super) impl BlockSysNode :: fn kind (self) -> InodeType
+kernel/src/fs/sysfs_net.rs :: enum Attr :: Address
+kernel/src/fs/sysfs_net.rs :: enum Attr :: Carrier
+kernel/src/fs/sysfs_net.rs :: enum Attr :: Flags
+kernel/src/fs/sysfs_net.rs :: enum Attr :: Ifindex
+kernel/src/fs/sysfs_net.rs :: enum Attr :: Mtu
+kernel/src/fs/sysfs_net.rs :: enum Attr :: Operstate
+kernel/src/fs/sysfs_net.rs :: enum Attr :: Type
+kernel/src/fs/sysfs_net.rs :: enum Attr :: Uevent
+kernel/src/fs/sysfs_net.rs :: enum NetSysNode :: # [doc = " `/sys/class/net/<接口>/device`。"] Device (u32)
+kernel/src/fs/sysfs_net.rs :: enum NetSysNode :: # [doc = " `/sys/class/net`。"] Listing
+kernel/src/fs/sysfs_net.rs :: enum NetSysNode :: # [doc = " `device/uevent`。"] DeviceUevent (u32)
+kernel/src/fs/sysfs_net.rs :: enum NetSysNode :: Attr (u32 , Attr)
+kernel/src/fs/sysfs_net.rs :: enum NetSysNode :: Entry (u32)
+kernel/src/fs/sysfs_net.rs :: enum Parent :: ClassRoot
+kernel/src/fs/sysfs_net.rs :: enum Parent :: Net (NetSysNode)
+kernel/src/fs/sysfs_net.rs :: pub (crate) NetLinkSnapshot :: driver : Option < & 'static str >
+kernel/src/fs/sysfs_net.rs :: pub (crate) NetLinkSnapshot :: flags : u16
+kernel/src/fs/sysfs_net.rs :: pub (crate) NetLinkSnapshot :: index : u32
+kernel/src/fs/sysfs_net.rs :: pub (crate) NetLinkSnapshot :: loopback : bool
+kernel/src/fs/sysfs_net.rs :: pub (crate) NetLinkSnapshot :: mac : [u8 ; 6]
+kernel/src/fs/sysfs_net.rs :: pub (crate) NetLinkSnapshot :: mtu : i32
+kernel/src/fs/sysfs_net.rs :: pub (crate) NetLinkSnapshot :: name : [u8 ; 16]
+kernel/src/fs/sysfs_net.rs :: pub (crate) NetLinkSnapshot :: up : bool
+kernel/src/fs/sysfs_net.rs :: pub (crate) struct NetLinkSnapshot
+kernel/src/fs/sysfs_net.rs :: pub (crate) trait NetLinkSource
+kernel/src/fs/sysfs_net.rs :: pub (super) enum Attr
+kernel/src/fs/sysfs_net.rs :: pub (super) enum NetSysNode
+kernel/src/fs/sysfs_net.rs :: pub (super) enum Parent
+kernel/src/fs/sysfs_net.rs :: pub (super) fn children (view : & NetView , node : NetSysNode ,) -> Result < Vec < (NetSysNode , Vec < u8 >) > , FileSystemError >
+kernel/src/fs/sysfs_net.rs :: pub (super) fn contents (view : & NetView , node : NetSysNode) -> Result < Vec < u8 > , FileSystemError >
+kernel/src/fs/sysfs_net.rs :: pub (super) fn lookup (view : & NetView , node : NetSysNode , name : & [u8] ,) -> Result < NetSysNode , FileSystemError >
+kernel/src/fs/sysfs_net.rs :: pub (super) fn parent (node : NetSysNode) -> Parent
+kernel/src/fs/sysfs_net.rs :: pub (super) impl NetSysNode :: fn inode (self) -> u64
+kernel/src/fs/sysfs_net.rs :: pub (super) impl NetSysNode :: fn kind (self) -> InodeType
+kernel/src/fs/sysfs_net.rs :: pub (super) impl NetView :: fn new (source : Arc < dyn NetLinkSource >) -> Result < Self , FileSystemError >
+kernel/src/fs/sysfs_net.rs :: pub (super) struct NetView
+kernel/src/fs/sysfs_net.rs :: trait NetLinkSource :: fn current_net_namespace (& self) -> Result < Arc < crate :: socket :: NetNamespace > , FileSystemError >
+kernel/src/fs/sysfs_net.rs :: trait NetLinkSource :: fn link_snapshot (& self , target : & crate :: socket :: NetNamespace ,) -> Result < Vec < NetLinkSnapshot > , FileSystemError >
 kernel/src/fs/tmpfs.rs :: pub (crate) struct TmpFileSystem
 kernel/src/fs/tmpfs.rs :: pub (crate) struct TmpInode
 kernel/src/fs/tmpfs.rs :: pub (super) struct TmpFileSystemType
@@ -5555,6 +5596,7 @@ kernel/src/socket/inet.rs :: pub (super) struct InetSocket
 kernel/src/socket/inet.rs :: pub (super) use self :: protocol_owner :: NetworkStackOwner
 kernel/src/socket/inet/configuration.rs :: pub (crate) InterfaceSnapshot :: address : Option < Ipv4Addr >
 kernel/src/socket/inet/configuration.rs :: pub (crate) InterfaceSnapshot :: broadcast : Ipv4Addr
+kernel/src/socket/inet/configuration.rs :: pub (crate) InterfaceSnapshot :: driver : Option < & 'static str >
 kernel/src/socket/inet/configuration.rs :: pub (crate) InterfaceSnapshot :: index : u32
 kernel/src/socket/inet/configuration.rs :: pub (crate) InterfaceSnapshot :: loopback : bool
 kernel/src/socket/inet/configuration.rs :: pub (crate) InterfaceSnapshot :: mac : [u8 ; 6]
@@ -5593,6 +5635,7 @@ kernel/src/socket/inet/device.rs :: enum ProtocolTxToken :: Loopback (LoopbackTx
 kernel/src/socket/inet/device.rs :: pub (super) enum ProtocolDevice
 kernel/src/socket/inet/device.rs :: pub (super) enum ProtocolRxToken < 'a >
 kernel/src/socket/inet/device.rs :: pub (super) enum ProtocolTxToken < 'a >
+kernel/src/socket/inet/device.rs :: pub (super) impl EthernetDevice :: fn driver (& self) -> & 'static str
 kernel/src/socket/inet/device.rs :: pub (super) impl EthernetDevice :: fn finish_receive_batch (& self) -> Result < () , NetworkError >
 kernel/src/socket/inet/device.rs :: pub (super) impl EthernetDevice :: fn mac_address (& self) -> [u8 ; 6]
 kernel/src/socket/inet/device.rs :: pub (super) impl EthernetDevice :: fn network_device (& self) -> Arc < dyn NetworkDevice >
@@ -5602,6 +5645,7 @@ kernel/src/socket/inet/device.rs :: pub (super) impl EthernetDevice :: fn statis
 kernel/src/socket/inet/device.rs :: pub (super) impl EthernetDevice :: fn take_error (& self) -> Option < NetworkError >
 kernel/src/socket/inet/device.rs :: pub (super) impl EthernetDevice :: fn take_ingress_reset (& self) -> Option < TcpReset >
 kernel/src/socket/inet/device.rs :: pub (super) impl ProtocolDevice :: fn configure_mtu (& mut self , mtu : i32) -> Result < () , crate :: socket :: SocketError >
+kernel/src/socket/inet/device.rs :: pub (super) impl ProtocolDevice :: fn driver (& self) -> Option < & 'static str >
 kernel/src/socket/inet/device.rs :: pub (super) impl ProtocolDevice :: fn finish_receive_batch (& self) -> Result < () , NetworkError >
 kernel/src/socket/inet/device.rs :: pub (super) impl ProtocolDevice :: fn ip_mtu (& self) -> usize
 kernel/src/socket/inet/device.rs :: pub (super) impl ProtocolDevice :: fn mac_address (& self) -> [u8 ; 6]

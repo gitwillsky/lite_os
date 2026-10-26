@@ -110,6 +110,9 @@ pub(crate) trait NetworkDevice: Send + Sync {
     /// 六字节 unicast Ethernet address。
     fn mac_address(&self) -> [u8; 6];
 
+    /// 驱动名：Linux sysfs `/sys/class/net/<if>/device/uevent` 的 `DRIVER=` 值（如 `virtio_net`）。
+    fn driver(&self) -> &'static str;
+
     /// 非阻塞取出一个完整 Ethernet frame。
     ///
     /// # Parameters
@@ -223,6 +226,10 @@ mod tests {
     impl NetworkDevice for InjectedDevice {
         fn mac_address(&self) -> [u8; 6] {
             [0; 6]
+        }
+
+        fn driver(&self) -> &'static str {
+            "injected"
         }
 
         fn receive(&self, _frame: &mut [u8]) -> Result<usize, NetworkError> {

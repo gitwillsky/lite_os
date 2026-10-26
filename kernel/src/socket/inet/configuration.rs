@@ -23,6 +23,8 @@ pub(crate) struct InterfaceSnapshot {
     pub(crate) prefix_length: u8,
     pub(crate) broadcast: Ipv4Addr,
     pub(crate) up: bool,
+    /// 底层设备的驱动名；loopback 为 None。
+    pub(crate) driver: Option<&'static str>,
 }
 impl InterfaceSnapshot {
     /// `SIOCGIFFLAGS` 与 rtnetlink `ifi_flags` 共用的 `IFF_*`，保证两条路径报告同一份状态。
@@ -54,6 +56,7 @@ impl InterfaceSnapshot {
             prefix_length: interface.state.prefix_length,
             broadcast: interface.state.broadcast,
             up: interface.state.up,
+            driver: interface.device.driver(),
         }
     }
 }

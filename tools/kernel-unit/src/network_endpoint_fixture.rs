@@ -57,6 +57,9 @@ pub(crate) mod drivers {
         fn mac_address(&self) -> [u8; 6] {
             [2, 0, 0, 0, 0, 1]
         }
+        fn driver(&self) -> &'static str {
+            "fixture"
+        }
         fn receive(&self, output: &mut [u8]) -> Result<usize, network::NetworkError> {
             let Some(frame) = WIRE.lock().unwrap().0.pop_front() else {
                 return Err(network::NetworkError::WouldBlock);
@@ -119,6 +122,9 @@ pub(crate) mod drivers {
     impl network::NetworkDevice for WireDevice {
         fn mac_address(&self) -> [u8; 6] {
             [2, 0, 0, 0, 0, 1]
+        }
+        fn driver(&self) -> &'static str {
+            "fixture"
         }
         fn receive(&self, output: &mut [u8]) -> Result<usize, network::NetworkError> {
             if self

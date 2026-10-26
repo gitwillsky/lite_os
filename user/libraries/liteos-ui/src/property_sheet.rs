@@ -21,22 +21,46 @@ pub trait ValidatePage {
     fn validate(&self) -> std::result::Result<(), ValidationError>;
 }
 /// 通用属性表，提供页面、OK/Cancel/Apply、校验阶段与错误焦点；不拥有应用的持久设置。
+/// 属性表底部按钮。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum SheetStyle {
+    /// 确定、取消、应用。
+    Standard = 0,
+    /// 确定、取消（PSH_NOAPPLYNOW）。
+    NoApply = abi::sheet_style::NO_APPLY,
+    /// 只有“关闭”（PSM_CANCELTOCLOSE，状态类对话框）。
+    CloseOnly = abi::sheet_style::CLOSE_ONLY,
+}
+
 pub struct PropertySheet {
     window: Window,
     pages: Widget,
 }
 impl PropertySheet {
-    /// 创建固定尺寸属性表；parent 可为空，创建或资源错误返回 Err。
+    /// 创建固定尺寸属性表；parent 可为空，创建或资源错误返回 Err。`style` 选择底部按钮（Win32 PropertySheet 样式）。
     pub fn new(
         app: &mut Application,
         parent: Option<&Window>,
         title: &str,
-        width: i32,
-        height: i32,
+        size: (i32, i32),
+        style: SheetStyle,
+    ) -> Result<Self> {
+        Self::create(&app.connection, &app.windows, parent, title, size, style)
+    }
+
+    /// `Application` 与 [`crate::Dialogs::property_sheet`] 共用的创建路径：校验父窗口、建立运行库内置树并登记窗口。
+    pub(crate) fn create(
+        connection: &Rc<crate::connection::Connection>,
+        windows: &std::cell::RefCell<std::collections::BTreeMap<u64, crate::WeakWindow>>,
+        parent: Option<&Window>,
+        title: &str,
+        (width, height): (i32, i32),
+        style: SheetStyle,
     ) -> Result<Self> {
         if let Some(parent) = parent {
             parent.inner.check()?;
-            if !Rc::ptr_eq(&app.connection, &parent.inner.connection) {
+            if !Rc::ptr_eq(connection, &parent.inner.connection) {
                 return Err(Error {
                     code: abi::INVALID,
                     message: "parent belongs to another application".into(),
@@ -45,20 +69,19 @@ impl PropertySheet {
         }
         let mut handles = abi::Sheet::default();
         // SAFETY: 所有输入和输出在调用中有效，父窗口生命周期已验证；运行库原子发布完整树。
-        app.connection.check(unsafe {
-            (app.connection.api.sheet)(
-                app.connection.context.as_ptr(),
+        connection.check(unsafe {
+            (connection.api.sheet)(
+                connection.context.as_ptr(),
                 parent.map_or(0, Window::id),
                 text(title),
                 width,
                 height,
+                style as u32,
                 &mut handles,
             )
         })?;
-        let window = Window::adopt(app.connection.clone(), handles.window, parent);
-        app.windows
-            .borrow_mut()
-            .insert(window.id(), window.downgrade());
+        let window = Window::adopt(connection.clone(), handles.window, parent);
+        windows.borrow_mut().insert(window.id(), window.downgrade());
         let pages = Widget::adopt(window.inner.clone(), handles.pages);
         Ok(Self { window, pages })
     }

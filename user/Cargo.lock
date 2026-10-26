@@ -88,6 +88,7 @@ dependencies = [
  "desktop-settings",
  "linux-uapi",
  "liteos-ui",
+ "network-config",
 ]
 
 [[package]]
@@ -137,6 +138,7 @@ dependencies = [
  "desktop-entry",
  "linux-uapi",
  "liteos-ui",
+ "network-config",
 ]
 
 [[package]]
@@ -182,6 +184,13 @@ version = "0.1.0"
 dependencies = [
  "liteos-ui",
  "sound",
+]
+
+[[package]]
+name = "network-config"
+version = "0.1.0"
+dependencies = [
+ "linux-uapi",
 ]
 
 [[package]]

@@ -1307,6 +1307,8 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(cursors(), "/usr/share/liteos/cursors.lcs"),
         UserlandArtifact(ROOT / "assets/fonts/liteos-terminal.a8", "/usr/share/liteos/liteos-terminal.a8"),
         UserlandArtifact(ROOT / "user/base/display-service", "/etc/init.d/display-service", 0o755),
+        UserlandArtifact(ROOT / "user/base/network-service", "/etc/init.d/network-service", 0o755),
+        UserlandArtifact(ROOT / "user/base/udhcpc.script", "/usr/share/udhcpc/default.script", 0o755),
         # 桌面条目：user/base 下的每个 .desktop 都安装；窗口图标、文件关联与控制面板入口都由它们声明。
         *(UserlandArtifact(path, f"/usr/share/applications/{path.name}")
           for path in sorted((ROOT / "user/base").glob("*.desktop"))),
@@ -1453,6 +1455,7 @@ def create_image(
         "mkdir /usr/share/applications",
         "mkdir /home",
         "mkdir /usr/share/udhcpc",
+        "mkdir /etc/network",
         "mkdir /var",
         "mkdir /var/cache",
         "mkdir /var/empty",
@@ -1465,10 +1468,8 @@ def create_image(
         "set_inode_field /etc/shadow mode 0100600",
         # 默认时区（UTC+8）；之后由控制面板改写，同步器只在缺失时补上。
         f"write {ROOT / 'user' / 'base' / 'localtime'} /etc/localtime",
-        f"write {ROOT / 'user' / 'base' / 'network-service'} /etc/init.d/network-service",
-        "set_inode_field /etc/init.d/network-service mode 0100755",
-        f"write {ROOT / 'user' / 'base' / 'udhcpc.script'} /usr/share/udhcpc/default.script",
-        "set_inode_field /usr/share/udhcpc/default.script mode 0100755",
+        # 默认网络配置（eth0 DHCP）；之后由控制面板改写，同步器只在缺失时补上。
+        f"write {ROOT / 'user' / 'base' / 'interfaces'} /etc/network/interfaces",
         f"write {openssl.binary} /bin/openssl",
         "set_inode_field /bin/openssl mode 0100755",
         f"write {musl.install / 'usr/lib/libc.so'} /usr/lib/libc.so",
@@ -1655,6 +1656,7 @@ def create_published_image(
         ROOT / "user/base/network-service",
         ROOT / "user/base/shutdown",
         ROOT / "user/base/udhcpc.script",
+        ROOT / "user/base/interfaces",
         ROOT / "create_fs.py",
         Path(__file__).resolve(),
         ROOT / "scripts/apk_cache.py",
@@ -1765,6 +1767,8 @@ def main() -> int:
                 ROOT / "user/base/network-service",
                 ROOT / "user/base/shutdown",
                 ROOT / "user/base/udhcpc.script",
+                ROOT / "user/base/interfaces",
+        ROOT / "user/base/interfaces",
                 ROOT / "create_fs.py",
                 Path(__file__).resolve(),
                 ROOT / "scripts/https_gate.py",

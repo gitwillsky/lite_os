@@ -294,6 +294,12 @@ eth0/首设备或在读时从当前 Task 重解析。route formatter 消费 capt
 route_snapshot，不从接口配置重建路由。冷读取的 Vec/proc text 分配均 fallible，无新增 global
 或锁；实际 open-pin/weak gone/native layout 与名称/drop 计数回归覆盖该生命周期。
 
+sysfs `/sys/class/net` 由 `sysfs_net` 投影：`NetLinkSource`（task 层 `KernelProcSource` 实现，经
+`MountEnvironment::net_links` 注入）提供挂载者 NET 与实际接口快照，`NetView` 在 mount 时只弱引用该 NET，
+NET 销毁后列表为空；每次 lookup/read 重新取快照，以 ifindex 为节点身份，无缓存、global 或锁。
+`InterfaceSnapshot::driver` 来自 `NetworkDevice::driver`（loopback 无驱动），`device/uevent` 输出 `DRIVER=`；
+`flags` 复用 `InterfaceSnapshot::flags`，与 `SIOCGIFFLAGS`、rtnetlink 同源。`SysFileSystem::new` 只由 sysfs 类型调用。
+
 Unlink/rename 提交后先释放 namespace guard 与临时 victim inode pin，再归还实际 path。
 只有 Dentry final Drop 调用 evict_if_unlinked；page-cache registry 不接受 caller 自报 holder
 数量。已有 FD/mmap 保留真实 path/cache owner，dirty 内容不会被提前丢弃；最后持有者释放

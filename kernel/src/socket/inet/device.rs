@@ -52,6 +52,13 @@ impl ProtocolDevice {
             Self::Loopback(_) => [0; 6],
         }
     }
+    /// 底层驱动名；loopback 是协议栈内部设备，没有驱动（Linux 的 lo 也没有 `device`）。
+    pub(super) fn driver(&self) -> Option<&'static str> {
+        match self {
+            Self::Ethernet(device) => Some(device.driver()),
+            Self::Loopback(_) => None,
+        }
+    }
     pub(super) fn statistics(&self) -> NetworkStatistics {
         match self {
             Self::Ethernet(device) => device.statistics(),
@@ -226,6 +233,10 @@ impl EthernetDevice {
 
     pub(super) fn mac_address(&self) -> [u8; 6] {
         self.device.mac_address()
+    }
+
+    pub(super) fn driver(&self) -> &'static str {
+        self.device.driver()
     }
 
     pub(super) fn statistics(&self) -> NetworkStatistics {

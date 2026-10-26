@@ -1,0 +1,7 @@
+# LiteOS 网络接口配置（interfaces(5) 子集：auto、iface inet dhcp|static|loopback、address、netmask、
+# gateway、dns-nameservers）。network-service 按它配置接口；控制面板“Internet 协议 (TCP/IP) 属性”改写它。
+auto lo
+iface lo inet loopback
+
+auto eth0
+iface eth0 inet dhcp

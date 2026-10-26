@@ -8,4 +8,5 @@ publish.workspace = true
 liteos-ui = { path = "../../libraries/liteos-ui" }
 calendar = { path = "../../libraries/calendar" }
 desktop-settings = { path = "../../libraries/desktop-settings" }
+network-config = { path = "../../libraries/network-config" }
 linux-uapi.workspace = true

@@ -194,6 +194,11 @@ impl NetworkDevice for VirtIONetworkDevice {
         self.mac
     }
 
+    fn driver(&self) -> &'static str {
+        // Linux drivers/net/virtio_net.c 的 driver 名。
+        "virtio_net"
+    }
+
     fn receive(&self, frame: &mut [u8]) -> Result<usize, NetworkError> {
         let mut queues = self.queues.lock();
         if queues.failed {

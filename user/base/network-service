@@ -1,12 +1,88 @@
 #!/bin/sh
 
-# @description BusyBox init 唯一监督的 DHCP service entry；进程本身保持前台运行。
+# @description BusyBox init 唯一监督的网络服务：按 /etc/network/interfaces（interfaces(5) 子集）配置每个以太网接口。
 # 1. 服务输出写入单一诊断文件；否则后台续租日志会破坏交互 console 的当前命令行。
 exec >/run/network-service.log 2>&1
-# 2. 保持前台 udhcpc 作为本进程，使 init 能观察退出并执行唯一 respawn policy。
-rm -f /run/udhcpc.eth0.pid
-exec /bin/udhcpc \
-    -f \
-    -i eth0 \
-    -p /run/udhcpc.eth0.pid \
-    -s /usr/share/udhcpc/default.script
+# 2. 记录本进程号：控制面板改写配置后向它发 TERM，init 按唯一 respawn policy 以新配置重启本服务。
+echo $$ > /run/network-service.pid
+CONFIG=/etc/network/interfaces
+children=
+
+# 3. 停止时结束各接口的 udhcpc 与等待进程，再退出交给 init 重启。
+stop() {
+    for pid in $children; do
+        kill "$pid" 2>/dev/null
+    done
+    wait
+    exit 0
+}
+trap stop TERM INT HUP
+
+# 4. 每个 iface 一行：名字、是否 auto、方法、address、netmask、gateway、逗号分隔的 dns-nameservers（缺省为 -）。
+stanzas=$(awk '
+    $1 == "auto" { for (i = 2; i <= NF; i++) auto[$i] = 1 }
+    $1 == "iface" { name = $2; method[name] = $4; order[++count] = name }
+    name != "" && $1 == "address" { address[name] = $2 }
+    name != "" && $1 == "netmask" { netmask[name] = $2 }
+    name != "" && $1 == "gateway" { gateway[name] = $2 }
+    name != "" && $1 == "dns-nameservers" {
+        servers = $2
+        for (i = 3; i <= NF; i++) servers = servers "," $i
+        dns[name] = servers
+    }
+    END {
+        for (i = 1; i <= count; i++) {
+            k = order[i]
+            printf "%s %d %s %s %s %s %s\n", k, auto[k] ? 1 : 0, method[k],
+                address[k] ? address[k] : "-", netmask[k] ? netmask[k] : "-",
+                gateway[k] ? gateway[k] : "-", dns[k] ? dns[k] : "-"
+        }
+    }
+' "$CONFIG" 2>/dev/null)
+
+# 5. 枚举 sysfs 中的以太网接口（ARPHRD_ETHER）；配置里没有的接口按 Windows 默认：启用、DHCP。
+static_dns=
+for path in /sys/class/net/*; do
+    name=${path##*/}
+    [ "$(cat "$path/type" 2>/dev/null)" = 1 ] || continue
+    line=$(printf '%s\n' "$stanzas" | awk -v name="$name" '$1 == name')
+    set -- ${line:-$name 1 dhcp - - - -}
+    enabled=$2 method=$3 address=$4 netmask=$5 gateway=$6 dns=$7
+    route del default dev "$name" 2>/dev/null || true
+    if [ "$enabled" != 1 ]; then
+        # 禁用的连接：清除地址并关闭接口。
+        ifconfig "$name" 0.0.0.0 down
+        continue
+    fi
+    case "$method" in
+        static)
+            ifconfig "$name" "$address" up
+            [ "$netmask" = - ] || ifconfig "$name" netmask "$netmask"
+            [ "$gateway" = - ] || route add default gw "$gateway" dev "$name"
+            [ "$dns" = - ] || static_dns="$static_dns $(echo "$dns" | sed 's/,/ /g')"
+            ;;
+        *)
+            # DHCP：前台 udhcpc 由本服务监督；租约 DNS 与配置覆盖的 DNS 由默认脚本处理。
+            rm -f "/run/udhcpc.$name.pid"
+            udhcpc -f -i "$name" -p "/run/udhcpc.$name.pid" -s /usr/share/udhcpc/default.script &
+            children="$children $!"
+            ;;
+    esac
+done
+
+# 6. 静态配置的 DNS 写入 resolv.conf（先写临时文件再改名，读者不会看到半份内容）。
+if [ -n "$static_dns" ]; then
+    resolv_conf="/run/resolv.conf.$$"
+    : > "$resolv_conf"
+    for server in $static_dns; do
+        printf 'nameserver %s\n' "$server" >> "$resolv_conf"
+    done
+    mv "$resolv_conf" /etc/resolv.conf
+fi
+
+# 7. 没有 DHCP 子进程时也保持运行，使 TERM 重启语义一致；任一子进程全部退出后服务退出并由 init 重启。
+if [ -z "$children" ]; then
+    sleep 2147483647 &
+    children=$!
+fi
+wait
