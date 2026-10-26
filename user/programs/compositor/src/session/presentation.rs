@@ -116,7 +116,9 @@ impl Session {
             .animation
             .as_ref()
             .zip(self.switcher_art.as_ref())
-            .and_then(|(animation, art)| caption_content(animation, art, &self.theme, self.scale as i32));
+            .and_then(|(animation, art)| {
+                caption_content(animation, art, &self.theme, self.scale as i32)
+            });
         let caption_drawable = caption.as_ref().map(|(x, y, content)| Drawable {
             x: *x,
             y: *y,

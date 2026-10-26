@@ -71,7 +71,9 @@ impl Tree {
             } else {
                 Ink::Color(C::ButtonText)
             };
-            if matches!(node.kind, widget::COLUMN | widget::ROW) && node.state & state::CLIENT_EDGE != 0 {
+            if matches!(node.kind, widget::COLUMN | widget::ROW)
+                && node.state & state::CLIENT_EDGE != 0
+            {
                 p.edge(rect, Edge::Sunken);
             }
             if let Some((color, image)) = &node.background {
@@ -197,6 +199,12 @@ impl Tree {
                         ));
                     }
                 }
+                widget::EDIT if node.state & state::BORDERLESS != 0 => p.edit_borderless(
+                    rect,
+                    node.edit.as_ref().expect("edit node"),
+                    self.focus == Some(id) && keyboard_focus,
+                    !disabled,
+                ),
                 widget::EDIT => {
                     p.edit_enabled(
                         rect,
@@ -288,6 +296,7 @@ impl Tree {
                         toolbar.paint(p, disabled);
                     }
                 }
+                widget::UPDOWN => node.paint_updown(p, disabled),
                 widget::SCROLLBAR => {
                     p.scrollbar(
                         rect,
@@ -390,7 +399,12 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
         // 最后一列右侧到表头右缘画一个空白表头格（comctl32 表头的填充区），不露出控件背景。
         let end = geometry.shifted_header.x + table.header.total();
         if end < geometry.header.right() {
-            let filler = Rect::new(end, geometry.header.y, geometry.header.right() - end, geometry.header.height);
+            let filler = Rect::new(
+                end,
+                geometry.header.y,
+                geometry.header.right() - end,
+                geometry.header.height,
+            );
             p.clipped(geometry.header, |p| p.list_header_cell(filler, "", false));
         }
     }

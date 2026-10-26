@@ -236,8 +236,25 @@ impl crate::Painter<'_> {
         password: bool,
         margins: (i32, i32),
     ) -> canvas::Rect {
-        self.paint_edit(rect, edit, focused, password, margins, true)
+        self.paint_edit(rect, edit, focused, password, Some(margins), true)
     }
+    /// 无边框的单行编辑框（没有 WS_BORDER，如时间框里的时、分、秒字段）：文字贴着控件矩形；
+    /// 命中用 [`Painter::edit_hit_borderless`]。
+    pub fn edit_borderless(
+        &mut self,
+        rect: canvas::Rect,
+        edit: &Edit,
+        focused: bool,
+        enabled: bool,
+    ) {
+        self.paint_edit(rect, edit, focused && enabled, false, None, enabled);
+    }
+
+    /// 无边框编辑框的命中，与 [`Painter::edit_borderless`] 共用文字区几何。
+    pub fn edit_hit_borderless(&self, rect: canvas::Rect, edit: &Edit, x: i32) -> usize {
+        self.hit_text(edit_text_area(rect, (0, 0), false), edit, false, x)
+    }
+
     /// 绘制启用/禁用的标准编辑控件；禁用时无选择或光标，文字与背景使用系统禁用颜色。
     pub fn edit_enabled(
         &mut self,
@@ -247,7 +264,14 @@ impl crate::Painter<'_> {
         password: bool,
         enabled: bool,
     ) -> canvas::Rect {
-        self.paint_edit(rect, edit, focused && enabled, password, (0, 0), enabled)
+        self.paint_edit(
+            rect,
+            edit,
+            focused && enabled,
+            password,
+            Some((0, 0)),
+            enabled,
+        )
     }
     /// 以相同滚动与字符度量命中单行文字，返回原文的合法 UTF-8 字节边界，无错误返回。
     pub fn edit_hit(&self, rect: canvas::Rect, edit: &Edit, password: bool, x: i32) -> usize {
@@ -263,7 +287,10 @@ impl crate::Painter<'_> {
         x: i32,
         margins: (i32, i32),
     ) -> usize {
-        let inner = edit_text_area(rect, margins);
+        self.hit_text(edit_text_area(rect, margins, true), edit, password, x)
+    }
+
+    fn hit_text(&self, inner: canvas::Rect, edit: &Edit, password: bool, x: i32) -> usize {
         let caret = if password {
             edit.text()[..edit.cursor()].chars().count() as i32 * self.text_width("*", false)
         } else {
@@ -293,13 +320,26 @@ impl crate::Painter<'_> {
         edit: &Edit,
         focused: bool,
         password: bool,
-        margins: (i32, i32),
+        // 有边框时为文字区左右边距；None 为无边框编辑框。
+        frame: Option<(i32, i32)>,
         enabled: bool,
     ) -> canvas::Rect {
+        let framed = frame.is_some();
         use crate::Ink;
         use classic_theme::SystemColor;
-        self.edit_frame(rect, enabled);
-        let inner = edit_text_area(rect, margins);
+        if framed {
+            self.edit_frame(rect, enabled);
+        } else {
+            self.fill(
+                rect,
+                if enabled {
+                    classic_theme::SystemColor::Window
+                } else {
+                    classic_theme::SystemColor::ButtonFace
+                },
+            );
+        }
+        let inner = edit_text_area(rect, frame.unwrap_or((0, 0)), framed);
         let masked;
         let (text, cursor, selection) = if password {
             masked = edit.masked();
@@ -380,10 +420,14 @@ impl Edit {
     }
 }
 
-/// 单行编辑框的文字区：凹陷边框（2）与内边距（2）以内，再让出左右边距。
+/// 单行编辑框的文字区：有边框时在凹陷边框（2）与内边距（2）以内，无边框时贴着控件矩形；再让出左右边距。
 /// 绘制与命中共用，光标落点与文字位置一致。
-fn edit_text_area(rect: canvas::Rect, (leading, trailing): (i32, i32)) -> canvas::Rect {
-    let inner = rect.inset(4);
+fn edit_text_area(
+    rect: canvas::Rect,
+    (leading, trailing): (i32, i32),
+    framed: bool,
+) -> canvas::Rect {
+    let inner = rect.inset(if framed { 4 } else { 0 });
     canvas::Rect::new(
         inner.x + leading,
         inner.y,

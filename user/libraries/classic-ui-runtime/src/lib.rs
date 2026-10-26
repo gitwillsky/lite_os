@@ -24,6 +24,7 @@ mod text_document;
 mod text_editor;
 mod toolbar;
 mod toplevel;
+mod updown;
 mod widgets;
 use context_api::{
     arm, clipboard_get, clipboard_set, color, create, destroy, error_text, step, unwatch, watch,

@@ -7,6 +7,7 @@ mod sounds;
 mod system;
 mod taskbar;
 mod winver;
+mod zones;
 use liteos_ui::{
     Application, Background, Clock, ControlFlow, Event, EventKind, Layout, MessageButtons,
     PropertySheet, ValidationError, Widget, WidgetKind as Kind, WidgetSpec,
@@ -152,7 +153,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let name = std::env::args().nth(1).ok_or("missing applet")?;
     let (title, width, height) = match name.as_str() {
         "system" => ("系统属性", 420, 470),
-        "datetime" => ("日期/时间 属性", 540, 450),
+        // 对话框 252×146 DLU 的页面加属性表的标签页、按钮与边框。
+        "datetime" => ("日期/时间 属性", 410, 330),
         "sounds" => ("声音和多媒体 属性", 440, 470),
         "taskbar" => ("任务栏属性", 420, 340),
         "display" => ("显示 属性", 420, 450),

@@ -205,6 +205,8 @@ pub enum WidgetKind {
     /// 可编辑下拉组合框：项目用 [`Widget::set_tree_rows`]/[`Widget::set_row_icons`] 设置，
     /// 选择发出 Select，收起时 Enter 发出 Activate。
     Combo,
+    /// 微调钮：值用 [`Widget::set_range`]，按下或按住时发出 Changed。
+    UpDown,
 }
 /// 系统字体用途，对应主题 `[Fonts]` 中的逻辑字体。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

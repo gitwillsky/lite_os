@@ -36,7 +36,7 @@ impl Tree {
             return (out, true, true);
         }
         let menu_repaint = menu_repaint || toolbar_repaint || combo_repaint;
-        if self.calendar_input(window, input, probe, &mut out) {
+        if self.calendar_input(window, input, &mut out) {
             return (out, true, true);
         }
         if self.editor_input(window, input, probe, modifiers.shift, &mut out) {
@@ -48,6 +48,9 @@ impl Tree {
         if self.table_input(window, input, &mut out) {
             return (out, true, true);
         }
+        if self.updown_input(window, input, &mut out) {
+            return (out, true, true);
+        }
         if self.range_input(window, input, &mut out) {
             return (out, true, true);
         }
@@ -55,9 +58,10 @@ impl Tree {
         match input {
             EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
                 self.pointer = (x.floor() as i32, y.floor() as i32);
-                if let Some(id) = self.armed.filter(|id| {
-                    self.active(*id) && matches!(self.nodes[id].kind, widget::EDIT | widget::COMBO)
-                }) {
+                if let Some(id) = self
+                    .armed
+                    .filter(|id| self.active(*id) && self.nodes[id].text_editable())
+                {
                     self.edit_pointer(id, probe, true);
                     consumed = true;
                 }
@@ -76,10 +80,7 @@ impl Tree {
                 if self.armed.is_some() {
                     self.focus = self.armed;
                 }
-                if let Some(id) = self
-                    .armed
-                    .filter(|id| matches!(self.nodes[id].kind, widget::EDIT | widget::COMBO))
-                {
+                if let Some(id) = self.armed.filter(|id| self.nodes[id].text_editable()) {
                     self.edit_pointer(id, probe, modifiers.shift);
                 }
                 // comctl32 在按下时切换标签页，释放时不再重复激活。
@@ -124,7 +125,7 @@ impl Tree {
                         .get(id)
                         .is_some_and(|node| node.focusable() && self.active(*id))
                 }) {
-                    if matches!(self.nodes[&id].kind, widget::EDIT | widget::COMBO) {
+                    if self.nodes[&id].text_editable() {
                         let edit = self
                             .nodes
                             .get_mut(&id)
@@ -210,13 +211,17 @@ impl Tree {
         } else {
             (0, 0)
         };
-        let position = probe.edit_hit_with_margins(
-            node.rect,
-            edit,
-            node.state & state::PASSWORD != 0,
-            self.pointer.0,
-            margins,
-        );
+        let position = if node.kind == widget::EDIT && node.state & state::BORDERLESS != 0 {
+            probe.edit_hit_borderless(node.rect, edit, self.pointer.0)
+        } else {
+            probe.edit_hit_with_margins(
+                node.rect,
+                edit,
+                node.state & state::PASSWORD != 0,
+                self.pointer.0,
+                margins,
+            )
+        };
         edit.select_position(position, extend);
     }
     fn activate(

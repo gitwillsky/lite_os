@@ -337,7 +337,7 @@ impl Context {
             incoming
         };
         let now = std::time::Instant::now();
-        for host in self.windows.values_mut() {
+        for (window, host) in &mut self.windows {
             let due = host
                 .controls()
                 .ok()
@@ -352,6 +352,12 @@ impl Context {
             if due && tree.animate(now) {
                 host.frame.invalidate();
             }
+            // 微调钮按住时的自动重复会产生应用事件，与其他定时状态共用同一截止时刻。
+            let mut repeated = Vec::new();
+            if due && tree.repeat_updowns(*window, now, &mut repeated) {
+                host.frame.invalidate();
+            }
+            self.events.extend(repeated);
         }
         // 粘贴并发上限为 8；固定栈存储收集超时编号，释放迭代借用后再撤销。
         let mut expired = [0; 8];

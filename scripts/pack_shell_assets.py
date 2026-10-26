@@ -11,7 +11,7 @@ BITMAPS = {
     "toolbar-default-1x", "toolbar-hot-1x", "toolbar-disabled-1x",
     "ie-toolbar-default-1x", "ie-toolbar-hot-1x", "ie-toolbar-disabled-1x",
     "go-default-1x", "go-hot-1x", "brand-22-1x", "brand-26-1x", "brand-38-1x",
-    "webview-left-1x", "webview-line-1x",
+    "webview-left-1x", "webview-line-1x", "worldmap-1x",
 }
 
 

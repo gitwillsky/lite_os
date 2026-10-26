@@ -31,7 +31,10 @@ impl RangeState {
 }
 impl Node {
     pub fn set_range(&mut self, value: abi::Range) -> io::Result<()> {
-        if !matches!(self.kind, widget::SLIDER | widget::SCROLLBAR) {
+        if !matches!(
+            self.kind,
+            widget::SLIDER | widget::SCROLLBAR | widget::UPDOWN
+        ) {
             return Err(invalid("not a range control"));
         }
         let span = i64::from(value.maximum) - i64::from(value.minimum);
@@ -46,7 +49,7 @@ impl Node {
         self.range = RangeState {
             minimum: value.minimum,
             maximum: value.maximum,
-            page: if self.kind == widget::SLIDER {
+            page: if matches!(self.kind, widget::SLIDER | widget::UPDOWN) {
                 1
             } else {
                 value.page
@@ -59,7 +62,10 @@ impl Node {
         Ok(())
     }
     pub fn range_value(&self) -> io::Result<abi::Range> {
-        if !matches!(self.kind, widget::SLIDER | widget::SCROLLBAR) {
+        if !matches!(
+            self.kind,
+            widget::SLIDER | widget::SCROLLBAR | widget::UPDOWN
+        ) {
             return Err(invalid("not a range control"));
         }
         Ok(abi::Range {

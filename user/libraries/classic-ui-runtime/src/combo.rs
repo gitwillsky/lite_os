@@ -4,7 +4,7 @@ use super::widgets::{Node, Tree};
 use canvas::Rect;
 use classic_theme::{Edge, SystemColor as C};
 use classic_ui::{EventKind, Ink, Painter, SCROLLBAR_WIDTH};
-use classic_ui_abi::{self as abi, event, widget};
+use classic_ui_abi::{self as abi, event, state, widget};
 
 /// 下拉按钮宽度与滚动条一致（SM_CXVSCROLL）。
 const BUTTON: i32 = SCROLLBAR_WIDTH;
@@ -82,11 +82,53 @@ impl Node {
         Some(id)
     }
 
+    fn dropdown_list(&self) -> bool {
+        self.state & state::DROPDOWN_LIST != 0
+    }
+
     pub fn paint_combo(&self, p: &mut Painter<'_>, focused: bool, enabled: bool) {
         let Some(edit) = self.edit.as_ref() else {
             return;
         };
-        if enabled {
+        if self.dropdown_list() {
+            // 下拉列表：凹陷白框内显示选中项；有焦点时文字区为选择色并带焦点框（USER32 CBS_DROPDOWNLIST）。
+            let inner = p.edge(self.rect, Edge::Sunken);
+            p.fill(inner, if enabled { C::Window } else { C::ButtonFace });
+            let leading = if self
+                .selected
+                .and_then(|id| self.row_icons.get(&id))
+                .is_some()
+            {
+                LEADING
+            } else {
+                0
+            };
+            let field = Rect::new(
+                inner.x + 1 + leading,
+                inner.y + 1,
+                (inner.width - BUTTON - 2 - leading).max(0),
+                (inner.height - 2).max(0),
+            );
+            if focused && enabled {
+                p.fill(field, C::Hilight);
+                p.focus_rect(field);
+            }
+            let ink = if !enabled {
+                Ink::Disabled
+            } else if focused {
+                Ink::Color(C::HilightText)
+            } else {
+                Ink::Color(C::WindowText)
+            };
+            p.text_fit(
+                field.x + 2,
+                field.y + (field.height - p.line_height()) / 2,
+                (field.width - 4).max(0),
+                edit.text(),
+                ink,
+                false,
+            );
+        } else if enabled {
             p.edit_with_margins(self.rect, edit, focused, false, Self::combo_margins());
         } else {
             p.edit_enabled(self.rect, edit, false, false, false);
@@ -226,7 +268,14 @@ impl Tree {
                     .find(|(id, node)| {
                         node.kind == widget::COMBO
                             && self.active(**id)
-                            && contains(node.combo_button(), pointer)
+                            && contains(
+                                if node.dropdown_list() {
+                                    node.rect
+                                } else {
+                                    node.combo_button()
+                                },
+                                pointer,
+                            )
                     })
                     .map(|(id, _)| *id);
                 let Some(id) = target else {
@@ -306,6 +355,33 @@ impl Tree {
                 if toggle {
                     let combo = node.combo.as_mut().expect("combo");
                     combo.open = !is_open && count > 0;
+                    return (true, true);
+                }
+                if !is_open && node.dropdown_list() {
+                    // 收起的下拉列表：方向键、Home/End 直接换选项并通知应用。
+                    let current = node.selected.and_then(|value| {
+                        (0..count)
+                            .find(|index| node.row_at(*index).is_some_and(|row| row.0 == value))
+                    });
+                    let index = match (key.code, current) {
+                        (103 | 105, Some(index)) => index.saturating_sub(1),
+                        (108 | 106, Some(index)) => (index + 1).min(count.saturating_sub(1)),
+                        (102, _) | (103 | 105 | 108 | 106, None) => 0,
+                        (107, _) => count.saturating_sub(1),
+                        _ => return (false, false),
+                    };
+                    if count > 0
+                        && Some(index) != current
+                        && let Some(value) = node.combo_choose(index)
+                    {
+                        out.push(abi::Event {
+                            window,
+                            node: id,
+                            kind: event::SELECT,
+                            value,
+                            ..Default::default()
+                        });
+                    }
                     return (true, true);
                 }
                 if !is_open {

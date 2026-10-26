@@ -115,8 +115,7 @@ impl Gpu {
             self.targets[back].resource.width(),
             self.targets[back].resource.height(),
         );
-        let mut quads =
-            Vec::with_capacity(windows.len() + usize::from(has_overlay));
+        let mut quads = Vec::with_capacity(windows.len() + usize::from(has_overlay));
         let screen = Rect::new(0, 0, width as i32, height as i32);
         for window in windows {
             let rect = Rect::new(

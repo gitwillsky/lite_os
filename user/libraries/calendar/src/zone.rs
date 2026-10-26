@@ -91,29 +91,41 @@ pub fn reload() -> io::Result<()> {
     Ok(())
 }
 
-/// 把 `/etc/localtime` 原子改写成固定偏移（无夏令时）的 TZif v1 文件。
+/// 把 `/etc/localtime` 原子改写成 TZif v2 文件：一个本地时间类型（标准时间）加可选的 POSIX TZ 尾部规则。
 ///
 /// # Parameters
 ///
-/// - `offset`: 东为正的偏移秒数。
-/// - `abbreviation`: 时区缩写（字母、数字、`+`、`-`）。
+/// - `offset`: 标准时间东为正的偏移秒数。
+/// - `abbreviation`: 标准时间缩写（字母、数字、`+`、`-`）。
+/// - `rule`: RFC 8536 尾部的 POSIX TZ 字符串（含夏令时切换规则）；None 表示固定偏移。
+///   没有转换记录时，读取方对所有时刻使用该规则。
 ///
 /// # Errors
 ///
-/// 没有权限或文件系统错误。
-pub fn write_fixed(offset: i32, abbreviation: &str) -> io::Result<()> {
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"TZif\0");
-    bytes.extend_from_slice(&[0; 15]);
-    let chars = abbreviation.len() as u32 + 1;
-    // 计数顺序：isutc、isstd、leap、transitions、types、abbreviation 字符数。
-    for count in [0u32, 0, 0, 0, 1, chars] {
-        bytes.extend_from_slice(&count.to_be_bytes());
-    }
-    bytes.extend_from_slice(&offset.to_be_bytes());
-    bytes.extend_from_slice(&[0, 0]);
-    bytes.extend_from_slice(abbreviation.as_bytes());
-    bytes.push(0);
+/// 规则无法解析（InvalidInput）、没有权限或文件系统错误。
+pub fn write_zone(offset: i32, abbreviation: &str, rule: Option<&str>) -> io::Result<()> {
+    // v1 与 v2 数据块内容相同：零转换、一个类型；v2 块之后是换行包围的 POSIX 规则。
+    let block = |version: u8| {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"TZif");
+        bytes.push(version);
+        bytes.extend_from_slice(&[0; 15]);
+        let chars = abbreviation.len() as u32 + 1;
+        // 计数顺序：isutc、isstd、leap、transitions、types、abbreviation 字符数。
+        for count in [0u32, 0, 0, 0, 1, chars] {
+            bytes.extend_from_slice(&count.to_be_bytes());
+        }
+        bytes.extend_from_slice(&offset.to_be_bytes());
+        bytes.extend_from_slice(&[0, 0]);
+        bytes.extend_from_slice(abbreviation.as_bytes());
+        bytes.push(0);
+        bytes
+    };
+    let mut bytes = block(b'2');
+    bytes.extend_from_slice(&block(b'2'));
+    bytes.push(b'\n');
+    bytes.extend_from_slice(rule.unwrap_or("").as_bytes());
+    bytes.push(b'\n');
     let replacement = TimeZone::from_tz_data(&bytes)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error.to_string()))?;
     let mut temporary = None;

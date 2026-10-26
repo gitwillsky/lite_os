@@ -474,8 +474,10 @@ impl Session {
             let mut timeout = self.step_boot(shell_visible)?;
             if let Some(animation) = &self.animation {
                 if animation.finished() {
-                    if let Some((client, surface)) =
-                        self.animation.take().and_then(|animation| animation.restore)
+                    if let Some((client, surface)) = self
+                        .animation
+                        .take()
+                        .and_then(|animation| animation.restore)
                     {
                         self.stack.raise(client, surface);
                     }

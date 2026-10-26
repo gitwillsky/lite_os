@@ -45,6 +45,8 @@ pub struct Node {
     pub status_parts: Vec<i32>,
     /// 容器背景：底色与左上角不平铺的位图（CSS `background: color url() no-repeat`）；None 透明。
     pub background: Option<(Option<classic_theme::Rgb>, Option<Rc<classic_ui::Bitmap>>)>,
+    /// 微调钮的按住状态。
+    pub updown: Option<super::updown::UpDown>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -58,7 +60,7 @@ pub struct Command {
 
 impl Node {
     pub fn new(parent: u64, mut spec: abi::Widget, text: String) -> io::Result<Self> {
-        if !(widget::COLUMN..=widget::COMBO).contains(&spec.kind) {
+        if !(widget::COLUMN..=widget::UPDOWN).contains(&spec.kind) {
             return Err(invalid("unknown widget kind"));
         }
         if spec.kind == widget::POPUP_MENU {
@@ -110,6 +112,7 @@ impl Node {
             font: None,
             status_parts: Vec::new(),
             background: None,
+            updown: None,
         })
     }
     pub fn text(&self) -> &str {
@@ -196,7 +199,8 @@ pub fn validate_state(value: u32) -> io::Result<()> {
             | state::TAB_INPUT
             | state::ALIGN_RIGHT
             | state::CLIENT_EDGE
-            | state::BORDERLESS)
+            | state::BORDERLESS
+            | state::DROPDOWN_LIST)
         != 0
     {
         return Err(invalid("unknown widget state"));
@@ -392,14 +396,26 @@ impl Tree {
             .iter()
             .rev()
             .find_map(|id| self.hit_node(*id))
-            .or_else(|| node.focusable().then_some(id))
+            .or_else(|| {
+                // 微调钮可点击但不是 Tab 停靠点（msctls_updown32 没有 WS_TABSTOP）。
+                let clickable = node.kind == widget::UPDOWN && node.enabled() && node.visible();
+                (node.focusable() || clickable).then_some(id)
+            })
     }
 }
 
 impl Node {
+    /// 是否接受文字输入与光标：编辑框，以及非下拉列表式的组合框。
+    pub fn text_editable(&self) -> bool {
+        self.kind == widget::EDIT
+            || (self.kind == widget::COMBO && self.state & state::DROPDOWN_LIST == 0)
+    }
+
     /// 布局内边距：layout.padding 加上 CLIENT_EDGE 的 2 像素边框。
     pub fn inset(&self) -> i32 {
-        let edge = if matches!(self.kind, widget::COLUMN | widget::ROW) && self.state & state::CLIENT_EDGE != 0 {
+        let edge = if matches!(self.kind, widget::COLUMN | widget::ROW)
+            && self.state & state::CLIENT_EDGE != 0
+        {
             classic_theme::EDGE_WIDTH
         } else {
             0

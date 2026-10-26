@@ -184,16 +184,10 @@ impl Scanout {
             return Err(io::ErrorKind::WouldBlock.into());
         }
         match &mut self.backend {
-            Backend::Gpu(gpu) => {
-                gpu.render(self.back, theme, windows, has_overlay, overlay)?
-            }
+            Backend::Gpu(gpu) => gpu.render(self.back, theme, windows, has_overlay, overlay)?,
             Backend::Cpu(targets) => {
-                if !crate::compose::compose(
-                    &mut targets[self.back].buffer,
-                    theme,
-                    windows,
-                    overlay,
-                ) {
+                if !crate::compose::compose(&mut targets[self.back].buffer, theme, windows, overlay)
+                {
                     return Err(io::Error::other("invalid scanout drawing surface"));
                 }
             }

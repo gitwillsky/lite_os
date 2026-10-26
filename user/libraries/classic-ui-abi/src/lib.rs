@@ -128,6 +128,8 @@ pub mod widget {
     pub const LINK: u32 = 23;
     /// ComboBoxEx（可编辑下拉）：项目用 tree_rows/row_icons 设置，选择发出 SELECT，收起时 Enter 发出 ACTIVATE。
     pub const COMBO: u32 = 24;
+    /// 微调钮（msctls_updown32，UDS_WRAP）：值用 range 接口，按下/按住步进时发出 CHANGED。
+    pub const UPDOWN: u32 = 25;
 }
 /// 控件状态位；HIDDEN 不参与布局、命中和焦点。
 pub mod state {
@@ -145,6 +147,8 @@ pub mod state {
     pub const CLIENT_EDGE: u32 = 256;
     /// 列表不画自身的凹陷边框（放进已有 CLIENT_EDGE 的容器时，如资源管理器的 Web 视图）。
     pub const BORDERLESS: u32 = 512;
+    /// 组合框为下拉列表（CBS_DROPDOWNLIST）：不可编辑，点击任意处展开，收起时方向键直接换选项。
+    pub const DROPDOWN_LIST: u32 = 1024;
 }
 /// 运行库产生的事件标签，未知标签由 SDK 跳过。
 pub mod event {

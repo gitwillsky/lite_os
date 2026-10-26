@@ -114,6 +114,8 @@ BITMAPS = {
     "brand-22": ("browseui.dll", 306),
     "brand-26": ("browseui.dll", 305),
     "brand-38": ("browseui.dll", 304),
+    # “日期/时间 属性”时区页的世界地图（356×184，8 位调色板）。
+    "worldmap": ("timedate.cpl", 50),
 }
 # 这些位图用 #FF00FF 表示透明，转 PNG 时换成 alpha 0。
 COLOR_KEYED = {

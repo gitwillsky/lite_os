@@ -199,7 +199,11 @@ impl Tree {
                     .toolbar
                     .as_ref()
                     .and_then(|toolbar| toolbar.deadline(now));
-                rebar.into_iter().chain(menu).chain(tip).min()
+                let repeat = node
+                    .updown
+                    .as_ref()
+                    .and_then(super::updown::UpDown::deadline);
+                rebar.into_iter().chain(menu).chain(tip).chain(repeat).min()
             })
             .min()
     }

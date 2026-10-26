@@ -136,7 +136,6 @@ impl CommandEncoder {
         self.words.extend([0xf << 27; 8]);
     }
 
-
     /// Creates disabled depth/stencil/alpha testing.
     pub fn create_depth_stencil_alpha(&mut self, handle: u32) {
         self.header(CREATE_OBJECT, ObjectKind::DepthStencilAlpha, 5);
