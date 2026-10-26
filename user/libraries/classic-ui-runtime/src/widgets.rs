@@ -4,6 +4,12 @@ use classic_ui::{Edit, Scroll};
 use classic_ui_abi::{self as abi, state, widget};
 use std::{collections::BTreeMap, io, rc::Rc};
 
+/// 一行的（小图标, 大图标）；列表/树与大图标视图分别取用，均可缺省。
+pub type RowIcons = (
+    Option<Rc<classic_ui::Bitmap>>,
+    Option<Rc<classic_ui::Bitmap>>,
+);
+
 pub struct Node {
     pub parent: u64,
     pub children: Vec<u64>,
@@ -18,13 +24,7 @@ pub struct Node {
     pub label_edit: Option<super::label_edit::LabelEdit>,
     pub editor: Option<super::text_editor::TextEditor>,
     pub image: Option<Rc<classic_ui::Bitmap>>,
-    pub row_icons: BTreeMap<
-        u64,
-        (
-            Option<Rc<classic_ui::Bitmap>>,
-            Option<Rc<classic_ui::Bitmap>>,
-        ),
-    >,
+    pub row_icons: BTreeMap<u64, RowIcons>,
     pub calendar: Option<super::calendar_control::Calendar>,
     pub rows: Vec<(u64, String)>,
     pub selected: Option<u64>,
@@ -156,7 +156,8 @@ pub fn validate_state(value: u32) -> io::Result<()> {
             | state::WRAP
             | state::PASSWORD
             | state::DEFAULT
-            | state::TAB_INPUT)
+            | state::TAB_INPUT
+            | state::ALIGN_RIGHT)
         != 0
     {
         return Err(invalid("unknown widget state"));

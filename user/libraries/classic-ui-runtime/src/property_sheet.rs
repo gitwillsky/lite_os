@@ -362,7 +362,7 @@ impl Context {
         } else {
             self.host(parent)?.app_id.clone()
         };
-        let id = self.window(title, &app, width, height, true, parent, parent != 0)?;
+        let id = self.window(title, &app, (width, height), true, parent, parent != 0)?;
         self.host_mut(id)?.body = WindowBody::Sheet(sheet);
         Ok((id, pages))
     }
@@ -374,25 +374,25 @@ impl Context {
     }
     pub fn publish(&mut self, event: Option<abi::Event>) {
         if let Some(event) = event {
-            if matches!(event.kind, event::CHANGED | event::SELECT | event::ACTIVATE) {
-                if let Some(host) = self.windows.get_mut(&event.window) {
-                    if let WindowBody::Sheet(sheet) = &mut host.body {
-                        // 内部异步粘贴与普通输入共享属性表动作路径，否则 Apply 不会启用。
-                        if let Ok(actions) = sheet.actions(event.window, vec![event], false) {
-                            self.events.extend(actions);
-                        }
-                        return;
+            if matches!(event.kind, event::CHANGED | event::SELECT | event::ACTIVATE)
+                && let Some(host) = self.windows.get_mut(&event.window)
+            {
+                if let WindowBody::Sheet(sheet) = &mut host.body {
+                    // 内部异步粘贴与普通输入共享属性表动作路径，否则 Apply 不会启用。
+                    if let Ok(actions) = sheet.actions(event.window, vec![event], false) {
+                        self.events.extend(actions);
                     }
-                    if let WindowBody::Dialog(dialog) = &mut host.body {
-                        let action = dialog.actions(
-                            event.window,
-                            vec![event],
-                            &classic_ui::EventKind::Focus(true),
-                            false,
-                        );
-                        self.file_action(event.window, action);
-                        return;
-                    }
+                    return;
+                }
+                if let WindowBody::Dialog(dialog) = &mut host.body {
+                    let action = dialog.actions(
+                        event.window,
+                        vec![event],
+                        &classic_ui::EventKind::Focus(true),
+                        false,
+                    );
+                    self.file_action(event.window, action);
+                    return;
                 }
             }
             self.events.push_back(event);

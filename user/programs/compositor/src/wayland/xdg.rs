@@ -553,10 +553,10 @@ impl Client {
             return;
         };
         for entry in self.objects.values_mut() {
-            if let Data::Toplevel(top) = &mut entry.data {
-                if top.parent == Some(owner) {
-                    top.parent = parent;
-                }
+            if let Data::Toplevel(top) = &mut entry.data
+                && top.parent == Some(owner)
+            {
+                top.parent = parent;
             }
         }
     }

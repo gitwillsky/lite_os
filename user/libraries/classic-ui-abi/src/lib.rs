@@ -131,6 +131,8 @@ pub mod state {
     pub const DEFAULT: u32 = 32;
     /// 自绘控件接收 Tab 字符而不进行焦点遍历；终端必须将它交给 PTY 完成命令补全。
     pub const TAB_INPUT: u32 = 64;
+    /// 单行标签在布局矩形内右对齐（统计数值列）；超宽时与左对齐一样截断。
+    pub const ALIGN_RIGHT: u32 = 128;
 }
 /// 运行库产生的事件标签，未知标签由 SDK 跳过。
 pub mod event {

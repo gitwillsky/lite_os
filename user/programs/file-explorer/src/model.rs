@@ -384,7 +384,10 @@ mod tests {
         };
         let home = Location::Directory(PathBuf::from(&home));
         assert_eq!(home.title(), "我的文档");
-        assert_eq!(home.icon(), Icon::MyDocuments);
+        assert_eq!(
+            well_known(Path::new(&home.address())).map(|(_, icon)| icon),
+            Some(Icon::MyDocuments)
+        );
         let trash =
             Location::Directory(PathBuf::from(home.address()).join(".local/share/Trash/files"));
         assert_eq!(trash.title(), "回收站");

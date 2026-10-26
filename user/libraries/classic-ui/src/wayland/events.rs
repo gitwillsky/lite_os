@@ -373,7 +373,7 @@ mod tests {
         let window = WindowId(id(10));
         (
             Display {
-                transport: Transport::new(stream),
+                transport: Transport::new(stream).unwrap(),
                 compositor: id(2),
                 shm: id(3),
                 wm_base: id(4),
@@ -389,6 +389,7 @@ mod tests {
                         },
                         configuration,
                         configured: false,
+                        mapped: false,
                         frame: None,
                     },
                 )]),
@@ -406,6 +407,10 @@ mod tests {
                 keyboard_device: None,
                 layer_shell: None,
                 security_manager: None,
+                dialog_manager: None,
+                dialogs: HashMap::new(),
+                pending_parents: HashMap::new(),
+                poll_buffer: Default::default(),
                 clipboard: Default::default(),
                 cursor_shape_manager: None,
                 cursor_shape_device: None,

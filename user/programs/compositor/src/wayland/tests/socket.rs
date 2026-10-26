@@ -21,7 +21,7 @@ pub(super) fn socket_path(name: &str) -> PathBuf {
 /// 一次 poll + dispatch。
 pub(super) fn pump(server: &mut Server) {
     let returned: Vec<PollEvents> = {
-        let mut descriptors = server.descriptors();
+        let mut descriptors: Vec<_> = server.descriptors().collect();
         poll(&mut descriptors, Some(Duration::from_millis(200))).unwrap();
         descriptors
             .iter()

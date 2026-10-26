@@ -122,6 +122,9 @@ pub struct EventStream {
 }
 impl EventStream {
     /// 等待下一次事件；Drop 此 Future 取消本次等待，Drop EventStream 撤销订阅。
+    ///
+    /// 返回 Future 而非 Option，无法实现 `Iterator`；名称是已发布 SDK 的源码接口，改名会破坏既有应用。
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> NextEvent<'_> {
         NextEvent { stream: self }
     }

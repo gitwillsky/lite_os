@@ -19,7 +19,8 @@ pub(super) unsafe extern "C" fn window(
         invoke(pointer, |context| {
             let title = text(title)?;
             let app = text(app)?;
-            let id = context.window(&title, &app, w, h, flags & 1 != 0, parent, flags & 2 != 0)?;
+            let id =
+                context.window(&title, &app, (w, h), flags & 1 != 0, parent, flags & 2 != 0)?;
             output.write(id);
             Ok(())
         })

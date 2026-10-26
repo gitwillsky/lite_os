@@ -304,18 +304,17 @@ impl Tree {
                 let Some(gesture) = table.gesture.take() else {
                     return false;
                 };
-                if let Gesture::Column(index) = gesture {
-                    if contains(geometry.header, point)
-                        && table.header.column_at(geometry.shifted_header, point) == Some(index)
-                    {
-                        out.push(abi::Event {
-                            window,
-                            node: id,
-                            kind: event::COLUMN,
-                            value: table.columns[index].0,
-                            ..Default::default()
-                        });
-                    }
+                if let Gesture::Column(index) = gesture
+                    && contains(geometry.header, point)
+                    && table.header.column_at(geometry.shifted_header, point) == Some(index)
+                {
+                    out.push(abi::Event {
+                        window,
+                        node: id,
+                        kind: event::COLUMN,
+                        value: table.columns[index].0,
+                        ..Default::default()
+                    });
                 }
                 table.header.release();
                 table.horizontal.release();

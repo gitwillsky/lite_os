@@ -74,30 +74,31 @@ impl Session {
     }
     async fn save(&self, choose: bool) -> Result<bool, Box<dyn std::error::Error>> {
         let current = self.state.borrow().path.clone();
-        let path = if choose || current.is_none() {
-            let name = current
-                .as_ref()
-                .and_then(|path| path.file_name())
-                .map_or_else(|| "无标题.txt".into(), |name| name.to_string_lossy());
-            let Some(path) = self
-                .dialogs
-                .file_filtered(
-                    &self.window,
-                    FileDialogMode::Save,
-                    &self.directory(),
-                    &name,
-                    liteos_ui::FileFilter {
-                        label: "文本文档 (*.txt)",
-                        extensions: &["txt"],
-                    },
-                )?
-                .await?
-            else {
-                return Ok(false);
-            };
-            path
-        } else {
-            current.expect("saved file path")
+        let path = match current {
+            Some(path) if !choose => path,
+            current => {
+                let name = current
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .map_or_else(|| "无标题.txt".into(), |name| name.to_string_lossy());
+                let Some(path) = self
+                    .dialogs
+                    .file_filtered(
+                        &self.window,
+                        FileDialogMode::Save,
+                        &self.directory(),
+                        &name,
+                        liteos_ui::FileFilter {
+                            label: "文本文档 (*.txt)",
+                            extensions: &["txt"],
+                        },
+                    )?
+                    .await?
+                else {
+                    return Ok(false);
+                };
+                path
+            }
         };
         let text = self.editor.text()?;
         let revision = self.state.borrow().revision;
@@ -432,15 +433,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             12 => Some(Command::About),
             _ => None,
         };
-        if let Some(command) = command {
-            if !session.busy.replace(true) {
-                let guard = Busy(session.clone());
-                task = Some(app.spawn_local(&window, async move {
-                    if let Err(error) = guard.0.execute(command).await {
-                        guard.0.report(&error).await;
-                    }
-                })?);
-            }
+        if let Some(command) = command
+            && !session.busy.replace(true)
+        {
+            let guard = Busy(session.clone());
+            task = Some(app.spawn_local(&window, async move {
+                if let Err(error) = guard.0.execute(command).await {
+                    guard.0.report(&error).await;
+                }
+            })?);
         }
         Ok(if id == 5 {
             ControlFlow::PreventDefault

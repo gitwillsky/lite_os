@@ -105,10 +105,8 @@ impl Document {
 
     pub fn move_left(&mut self, extend: bool) {
         let (row, column) = self.cursor;
-        if !extend {
-            if let Some((start, _)) = self.selection() {
-                return self.set_cursor(start, false);
-            }
+        if !extend && let Some((start, _)) = self.selection() {
+            return self.set_cursor(start, false);
         }
         let target = if column > 0 {
             (row, column - 1)
@@ -122,10 +120,8 @@ impl Document {
 
     pub fn move_right(&mut self, extend: bool) {
         let (row, column) = self.cursor;
-        if !extend {
-            if let Some((_, end)) = self.selection() {
-                return self.set_cursor(end, false);
-            }
+        if !extend && let Some((_, end)) = self.selection() {
+            return self.set_cursor(end, false);
         }
         let target = if column < char_count(&self.lines[row]) {
             (row, column + 1)

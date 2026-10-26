@@ -67,10 +67,10 @@ impl Client {
     }
     pub(super) fn inert_dialogs(&mut self, toplevel: ObjectId) {
         for entry in self.objects.values_mut() {
-            if let Data::Dialog(dialog) = &mut entry.data {
-                if dialog.toplevel == Some(toplevel) {
-                    dialog.toplevel = None;
-                }
+            if let Data::Dialog(dialog) = &mut entry.data
+                && dialog.toplevel == Some(toplevel)
+            {
+                dialog.toplevel = None;
             }
         }
     }

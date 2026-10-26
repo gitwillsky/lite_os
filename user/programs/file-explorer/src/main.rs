@@ -327,12 +327,11 @@ impl Session {
                 result?;
             }
             Command::Rename => {
-                if let Some(item) = self.selected()? {
-                    if item.path.is_some() {
-                        if let Some(row) = self.view.list.selection()? {
-                            self.view.list.edit_label(row, &item.name)?;
-                        }
-                    }
+                if let Some(item) = self.selected()?
+                    && item.path.is_some()
+                    && let Some(row) = self.view.list.selection()?
+                {
+                    self.view.list.edit_label(row, &item.name)?;
                 }
             }
             Command::NewFolder => {
@@ -419,10 +418,9 @@ impl Session {
                     .menu(&self.view.window, &items)?
                     .await?
                     .and_then(Command::from_id)
+                    && let Some(style) = command.style()
                 {
-                    if let Some(style) = command.style() {
-                        self.view.list.set_list_style(style, true)?;
-                    }
+                    self.view.list.set_list_style(style, true)?;
                 }
             }
             Command::About => {
@@ -637,10 +635,9 @@ fn run() -> Result<()> {
                     .nodes
                     .get(&row)
                     .map(|node| node.location.clone())
+                    && location != session.browser.borrow().location
                 {
-                    if location != session.browser.borrow().location {
-                        action = Some(Action::Go(location, Visit::Push, false));
-                    }
+                    action = Some(Action::Go(location, Visit::Push, false));
                 }
             }
             EventKind::Expand {
@@ -684,10 +681,10 @@ fn run() -> Result<()> {
                 ..
             } if event.node == session.view.list.id() => {
                 let target = session.view.list.pointed_row()?;
-                if let Some(id) = target {
-                    if !session.view.list.selected_rows()?.contains(&id) {
-                        session.view.list.select(Some(id))?;
-                    }
+                if let Some(id) = target
+                    && !session.view.list.selected_rows()?.contains(&id)
+                {
+                    session.view.list.select(Some(id))?;
                 }
                 action = Some(Action::Context(target.is_some()));
             }
@@ -725,16 +722,16 @@ fn run() -> Result<()> {
             }
             _ => {}
         }
-        if let Some(action) = action {
-            if !session.busy.replace(true) {
-                session.menus()?;
-                let guard = Busy(session.clone());
-                tasks.push(app.spawn_local(&window, async move {
-                    if let Err(error) = guard.0.execute(action).await {
-                        guard.0.report(error).await;
-                    }
-                })?);
-            }
+        if let Some(action) = action
+            && !session.busy.replace(true)
+        {
+            session.menus()?;
+            let guard = Busy(session.clone());
+            tasks.push(app.spawn_local(&window, async move {
+                if let Err(error) = guard.0.execute(action).await {
+                    guard.0.report(error).await;
+                }
+            })?);
         }
         Ok(ControlFlow::Continue)
     })?;

@@ -273,10 +273,11 @@ mod tests {
 
     #[test]
     fn the_volume_panel_sits_above_the_taskbar_inside_the_screen() {
-        let panel = volume_panel(1200, (1280, 800), 28);
+        const SIZE: (i32, i32) = (80, 150);
+        let panel = volume_panel(1200, (1280, 800), 28, SIZE);
         assert_eq!(panel.bottom(), 800 - 28);
         assert!(panel.right() <= 1280);
-        assert_eq!(volume_panel(2000, (1280, 800), 28).right(), 1280);
-        assert_eq!(volume_panel(-5, (1280, 800), 28).x, 0);
+        assert_eq!(volume_panel(2000, (1280, 800), 28, SIZE).right(), 1280);
+        assert_eq!(volume_panel(-5, (1280, 800), 28, SIZE).x, 0);
     }
 }

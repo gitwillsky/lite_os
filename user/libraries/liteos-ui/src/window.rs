@@ -287,7 +287,8 @@ pub enum EditCommand<'a> {
     Insert(&'a str),
 }
 /// 一个自绘命令，坐标相对 Canvas 客户区；文本在 set_drawing 返回前复制。
-/// kind=1 填充、2 边框、3 普通文字、4 换行文字、5 系统等宽文字（8×16 逻辑像素，宽字符两格）。
+/// kind=1 填充、2 边框、3 普通文字、4 换行文字、5 系统等宽文字（8×16 逻辑像素，宽字符两格）、
+/// 6 在矩形内水平垂直居中的单行文字（超宽截断）。
 pub struct Draw<'a> {
     pub kind: u32,
     pub rect: Rect,

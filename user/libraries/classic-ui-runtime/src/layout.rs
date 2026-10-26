@@ -16,7 +16,7 @@ impl Tree {
             node.clip = Rect::new(0, 0, 0, 0);
         }
         let roots = self.roots();
-        self.place_children(&roots, bounds, bounds, false, 0, font, scale);
+        self.place_children(&roots, bounds, bounds, false, 0, font);
         if !self
             .focus
             .is_some_and(|id| self.active(id) && self.nodes[&id].focusable())
@@ -115,8 +115,8 @@ impl Tree {
         row: bool,
         gap: i32,
         font: &Painter<'_>,
-        scale: i32,
     ) {
+        let scale = font.scale();
         let visible: Vec<_> = children
             .iter()
             .filter(|id| self.nodes[id].state & state::HIDDEN == 0)
@@ -263,7 +263,10 @@ impl Tree {
                         .map(|index| {
                             let (id, text) = node.row_at(index).expect("visible row");
                             let text = (font.text_width(text, false) + scale - 1) / scale;
-                            let icon = node.row_icons.get(id).is_some_and(|icons| icons.0.is_some());
+                            let icon = node
+                                .row_icons
+                                .get(id)
+                                .is_some_and(|icons| icons.0.is_some());
                             match &node.outline {
                                 // 树与绘制共用行几何：缩进列、图标与标签留白。
                                 Some(outline) => {
@@ -302,7 +305,6 @@ impl Tree {
                         false,
                         rule.gap,
                         font,
-                        scale,
                     );
                 }
             } else {
@@ -313,7 +315,6 @@ impl Tree {
                     kind == widget::ROW,
                     rule.gap,
                     font,
-                    scale,
                 );
             }
         }

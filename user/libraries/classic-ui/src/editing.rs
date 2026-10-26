@@ -356,6 +356,18 @@ impl crate::Painter<'_> {
     }
 }
 
+impl Edit {
+    /// 用纯文本替换当前选择，过滤单行编辑不接受的控制字符。
+    /// 返回内容是否变化；光标与选择仍保持在 UTF-8 边界，无错误返回。
+    pub fn insert_text(&mut self, text: &str) -> bool {
+        let text: String = text
+            .chars()
+            .filter(|character| !character.is_control())
+            .collect();
+        self.replace_selection(&text)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -403,17 +415,5 @@ mod tests {
         assert_eq!(chain.current(), None);
         assert_eq!(FocusChain::new(&[]).advance(true), None);
         assert!(!chain.focus(5));
-    }
-}
-
-impl Edit {
-    /// 用纯文本替换当前选择，过滤单行编辑不接受的控制字符。
-    /// 返回内容是否变化；光标与选择仍保持在 UTF-8 边界，无错误返回。
-    pub fn insert_text(&mut self, text: &str) -> bool {
-        let text: String = text
-            .chars()
-            .filter(|character| !character.is_control())
-            .collect();
-        self.replace_selection(&text)
     }
 }

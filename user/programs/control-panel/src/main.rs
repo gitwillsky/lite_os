@@ -248,10 +248,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 drop(page_borrow);
                 tasks.push(app.spawn_local(&window, async move {
                     let mut result = work.await;
-                    if result.is_ok() {
-                        if let Some(page) = model.borrow_mut().as_mut() {
-                            result = page.committed().map_err(|error| error.to_string());
-                        }
+                    if result.is_ok()
+                        && let Some(page) = model.borrow_mut().as_mut()
+                    {
+                        result = page.committed().map_err(|error| error.to_string());
                     }
                     let _ = sheet.applied(token, result);
                 })?);

@@ -119,9 +119,9 @@ impl Outline {
         let icon_x = column + INDENT;
         RowGeometry {
             center,
-            expander: branch.children.then(|| {
-                Rect::new(center.0 - BOX / 2, center.1 - BOX / 2, BOX, BOX)
-            }),
+            expander: branch
+                .children
+                .then(|| Rect::new(center.0 - BOX / 2, center.1 - BOX / 2, BOX, BOX)),
             icon: icon_x,
             label: icon_x + if icon { ICON + ICON_GAP } else { 0 },
         }
@@ -178,8 +178,11 @@ impl Outline {
     /// 指针下的展开框所属节点；没有孩子或不在框内返回 None。
     fn expander_hit(&self, row: Rect, index: usize, point: (i32, i32)) -> Option<u64> {
         let rect = self.row(row, index, false).expander?;
-        (point.0 >= rect.x && point.0 < rect.right() && point.1 >= rect.y && point.1 < rect.bottom())
-            .then(|| self.branches[self.visible[index]].id)
+        (point.0 >= rect.x
+            && point.0 < rect.right()
+            && point.1 >= rect.y
+            && point.1 < rect.bottom())
+        .then(|| self.branches[self.visible[index]].id)
     }
 }
 impl Node {

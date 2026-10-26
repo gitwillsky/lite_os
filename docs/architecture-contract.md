@@ -158,7 +158,6 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 | `kernel/src/task/process_table/signal/job_control.rs :: JobNotification.waiters` | `FallibleMap < usize , Arc < TaskControlBlock > >` |
 | `kernel/src/task/process_table/wait_registry/batch.rs :: ClaimedBatch.entries` | `FallibleMap < WaitIndexKey , Arc < WaitRegistration > >` |
 | `kernel/src/task/process_table/wait_registry/shard.rs :: WaitShard.index` | `FallibleMap < WaitIndexKey , Arc < WaitRegistration > >` |
-
 | `kernel/src/ipc/ids.rs :: IpcIds.keys` | `FallibleMap < i32 , u16 >` |
 | `kernel/src/ipc/ids.rs :: IpcIds.objects` | `FallibleMap < u16 , Arc < T > >` |
 | `kernel/src/ipc/message_queue.rs :: QueueState.messages` | `FallibleMap < u64 , Arc < Message > >` |
@@ -190,6 +189,7 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 | `kernel/src/fs/procfs.rs` | 1411 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
 | `kernel/src/fs/tmpfs.rs` | 1020 | fs | 同一 inode 的权限与通知事务 | 新增 metadata family 前拆分 |
 | `kernel/src/task/process_table/signal.rs` | 1270 | task | graph 下的生成与子进程通知事务 | 新增独立 signal producer 前拆分 |
+| `kernel/src/virtio/gpu.rs` | 1007 | virtio | queue、DMA slot 与 completion 同一 owner；响应验证先于摘除 pending | 新增 GPU/queue 能力前，将 CommandSlots 响应验证/消费状态机迁入 command 模块，不复制 pending 状态 |
 
 ## Change contract
 
@@ -198,9 +198,3 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 - 新 global、lock、Atomic、Once、cache、flag 或 unsafe 必须在领域契约记录 owner、安全证明与缺失时的具体失败。
 - scoped interface 只能用 `cargo run -p architecture-check -- --write-interface` 生成到 [generated baseline](generated/architecture-interface.txt)，禁止手工编辑。
 - 文档、单元测试、性能测试和运行时 gate 必须随契约变化同步维护；不得放宽围栏或阈值来接受实现错误。
-
-## 源码规模审查
-
-- `kernel/src/virtio/gpu.rs`：owner 为 VirtIO GPU adapter，统一持有 control/cursor queue、DMA slot 与 completion publication。
-  本次增加失败命令身份日志后超过 1000 行审查线；响应验证仍在摘除 pending 前完成，保留该原子边界，不改变阈值。
-  退出条件：新增下一项 GPU/queue 能力前，将 CommandSlots 的完整响应验证/消费状态机迁入已有 command 领域模块，避免只移动日志或复制 pending 状态。

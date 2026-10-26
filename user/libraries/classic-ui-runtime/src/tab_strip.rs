@@ -106,7 +106,10 @@ impl TabStrip {
     /// 指针下的页面；选中表头覆盖相邻表头各 2 像素，所以先测选中项。
     pub fn hit(&self, point: (i32, i32), selected: Option<u64>) -> Option<u64> {
         let inside = |rect: Rect| {
-            point.0 >= rect.x && point.0 < rect.right() && point.1 >= rect.y && point.1 < rect.bottom()
+            point.0 >= rect.x
+                && point.0 < rect.right()
+                && point.1 >= rect.y
+                && point.1 < rect.bottom()
         };
         selected
             .and_then(|page| self.header(page, selected))

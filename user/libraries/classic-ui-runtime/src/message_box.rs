@@ -81,7 +81,7 @@ impl Context {
             .expect("default button")
             .state |= state::DEFAULT;
         let app_id = self.host(parent)?.app_id.clone();
-        let window = self.window(title, &app_id, 400, 200, true, parent, true)?;
+        let window = self.window(title, &app_id, (400, 200), true, parent, true)?;
         self.host_mut(window)?.body = super::context::WindowBody::Widgets(tree);
         handles.window = window;
         Ok(handles)

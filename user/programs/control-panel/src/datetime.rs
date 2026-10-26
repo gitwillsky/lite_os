@@ -331,18 +331,16 @@ impl Page for DateTime {
                 self.time_changed.set(true);
             }
         }
-        if matches!(event.kind, EventKind::Activate { .. }) {
-            if let Some((_, index, delta)) = self
+        if matches!(event.kind, EventKind::Activate { .. })
+            && let Some((_, index, delta)) = self
                 .steps
                 .iter()
                 .find(|(button, _, _)| button.id() == event.node)
-            {
-                let maximum = if *index == 0 { 24 } else { 60 };
-                let value = self.time[*index].text()?.parse::<i32>().unwrap_or(0);
-                self.time[*index]
-                    .set_text(&format!("{:02}", (value + delta).rem_euclid(maximum)))?;
-                self.time_changed.set(true);
-            }
+        {
+            let maximum = if *index == 0 { 24 } else { 60 };
+            let value = self.time[*index].text()?.parse::<i32>().unwrap_or(0);
+            self.time[*index].set_text(&format!("{:02}", (value + delta).rem_euclid(maximum)))?;
+            self.time_changed.set(true);
         }
         if let Ok(time) = self.times() {
             paint_clock(&self.clock, time)?;

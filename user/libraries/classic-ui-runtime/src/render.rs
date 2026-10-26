@@ -25,17 +25,15 @@ impl Tree {
             .menubar
             .and_then(|id| self.nodes.get(&id))
             .filter(|node| node.visible() && !node.clip.is_empty())
+            && let Some(menu) = &node.menu
         {
-            if let Some(menu) = &node.menu {
-                menu.state.paint(p, node.rect, &menu.entries, self.pointer);
-            }
+            menu.state.paint(p, node.rect, &menu.entries, self.pointer);
         }
-        if let Some(node) = self.popup.and_then(|id| self.nodes.get(&id)) {
-            if let Some(menu) = &node.menu {
-                if menu.state.active() {
-                    menu.state.paint(p, node.rect, &menu.entries, self.pointer);
-                }
-            }
+        if let Some(node) = self.popup.and_then(|id| self.nodes.get(&id))
+            && let Some(menu) = &node.menu
+            && menu.state.active()
+        {
+            menu.state.paint(p, node.rect, &menu.entries, self.pointer);
         }
     }
     fn paint_node(
@@ -68,17 +66,24 @@ impl Tree {
                         disabled,
                         default: node.state & state::DEFAULT != 0,
                         focused: self.focus == Some(id) && keyboard_focus && !disabled,
-                        ..Default::default()
                     },
                 ),
                 widget::LABEL => {
                     if node.state & state::WRAP != 0 {
                         p.text_wrapped(rect, node.text(), ink, false);
                     } else {
+                        // 右对齐与左对齐共用截断规则：先按矩形宽度截断，再把实际文字宽度贴到右边。
+                        let x = if node.state & state::ALIGN_RIGHT != 0 {
+                            let shown = p.fit(node.text(), rect.width);
+                            let width = (p.text_width(&shown, false) + p.scale() - 1) / p.scale();
+                            rect.x + (rect.width - width).max(0)
+                        } else {
+                            rect.x
+                        };
                         p.label_fit(
-                            rect.x,
+                            x,
                             rect.y + (rect.height - p.line_height()) / 2,
-                            rect.width,
+                            rect.right() - x,
                             node.text(),
                             ink,
                         );
@@ -92,15 +97,19 @@ impl Tree {
                     } else {
                         p.checkbox(rect.x, y, checked, disabled);
                     }
-                    p.label_fit(
-                        rect.x + 18,
-                        rect.y + (rect.height - p.line_height()) / 2,
-                        (rect.width - 18).max(0),
-                        node.text(),
-                        ink,
-                    );
+                    let text_y = rect.y + (rect.height - p.line_height()) / 2;
+                    let available = (rect.width - 18).max(0);
+                    p.label_fit(rect.x + 18, text_y, available, node.text(), ink);
+                    // Win32 BS_CHECKBOX/BS_RADIOBUTTON 只框文字，外扩 1 像素；不框整个控件。
                     if self.focus == Some(id) && keyboard_focus && !disabled {
-                        p.focus_rect(rect.inset(1));
+                        let shown = p.fit(node.text(), available);
+                        let width = (p.text_width(&shown, false) + p.scale() - 1) / p.scale();
+                        p.focus_rect(Rect::new(
+                            rect.x + 17,
+                            text_y - 1,
+                            (width + 2).min(available + 1),
+                            p.line_height() + 2,
+                        ));
                     }
                 }
                 widget::EDIT => {
@@ -223,6 +232,7 @@ impl Tree {
                             4 => {
                                 p.text_wrapped(r, &command.text, Ink::Rgb(rgb), command.bold);
                             }
+                            6 => p.text_centered(r, &command.text, Ink::Rgb(rgb), command.bold),
                             _ => {}
                         }
                     }
@@ -233,12 +243,11 @@ impl Tree {
                 .label_edit
                 .as_ref()
                 .is_some_and(|editing| !editing.pending)
+                && let (Some(area), Some(edit)) = (node.label_rect(), node.edit.as_ref())
             {
-                if let (Some(area), Some(edit)) = (node.label_rect(), node.edit.as_ref()) {
-                    p.clipped(node.list_geometry().rows, |p| {
-                        p.edit(area, edit, self.focus == Some(id) && keyboard_focus, false);
-                    });
-                }
+                p.clipped(node.list_geometry().rows, |p| {
+                    p.edit(area, edit, self.focus == Some(id) && keyboard_focus, false);
+                });
             }
             for child in &node.children {
                 self.paint_node(*child, p, keyboard_focus, disabled, mono);
@@ -278,7 +287,12 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                 paint_tree_row(
                     p,
                     outline,
-                    Rect::new(row.x - table.horizontal.position, row.y, row.width, row.height),
+                    Rect::new(
+                        row.x - table.horizontal.position,
+                        row.y,
+                        row.width,
+                        row.height,
+                    ),
                     absolute,
                     text,
                     image,
@@ -355,6 +369,10 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                     x += width;
                 }
             }
+            // 焦点项的点状框与大/小图标视图一致；树项在 paint_tree_row 中框标签。
+            if focused && node.selected == Some(*id) {
+                p.focus_rect(row);
+            }
         }
     });
     if !geometry.vertical.is_empty() {
@@ -404,7 +422,12 @@ fn paint_tree_row(
         image.paint(p, geometry.icon, row.y + (row.height - 16) / 2);
     }
     let width = (p.text_width(text, false) + p.scale() - 1) / p.scale();
-    let label = Rect::new(geometry.label, row.y, Outline::label_width(width), row.height);
+    let label = Rect::new(
+        geometry.label,
+        row.y,
+        Outline::label_width(width),
+        row.height,
+    );
     if selected {
         p.fill(label, if focused { C::Hilight } else { C::ButtonFace });
     }

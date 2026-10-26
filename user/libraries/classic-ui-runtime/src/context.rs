@@ -92,8 +92,7 @@ impl Context {
         &mut self,
         title: &str,
         app_id: &str,
-        width: i32,
-        height: i32,
+        size: (i32, i32),
         fixed: bool,
         parent: u64,
         modal: bool,
@@ -115,7 +114,7 @@ impl Context {
             .next
             .checked_add(1)
             .ok_or_else(|| invalid("window identities exhausted"))?;
-        let protocol = self.display.create_window(title, app_id, (width, height))?;
+        let protocol = self.display.create_window(title, app_id, size)?;
         let setup = (|| {
             if let Some(parent) = parent {
                 self.display.set_parent(protocol, parent)?;
@@ -180,7 +179,7 @@ impl Context {
         }
         let app_id = self.host(parent)?.app_id.clone();
         let mut model = FileDialog::new(mode, directory.to_owned(), name, filter)?;
-        let id = self.window(title, &app_id, 480, 370, false, parent, true)?;
+        let id = self.window(title, &app_id, (480, 370), false, parent, true)?;
         let action = model.initial(id);
         self.host_mut(id)?.body = WindowBody::Dialog(model);
         self.file_action(id, action);
@@ -201,13 +200,13 @@ impl Context {
             }
             Action::Request(request) => {
                 let result = self.files.as_ref().expect("file worker").submit(request);
-                if let Err(error) = result {
-                    if let Some(host) = self.windows.get_mut(&id) {
-                        if let WindowBody::Dialog(dialog) = &mut host.body {
-                            dialog.failed(error);
-                        }
-                        host.frame.invalidate();
+                if let Err(error) = result
+                    && let Some(host) = self.windows.get_mut(&id)
+                {
+                    if let WindowBody::Dialog(dialog) = &mut host.body {
+                        dialog.failed(error);
                     }
+                    host.frame.invalidate();
                 }
             }
         }
@@ -732,27 +731,23 @@ fn layout_record(
     resources: &mut Resources,
 ) -> io::Result<()> {
     let protocol = host.frame.window();
-    if let Some(configuration) = display.configuration(protocol) {
-        if let Some(bounds) = host.frame.client_rect(&display) {
-            let tree = match &mut host.body {
-                WindowBody::Widgets(tree) => Some(tree),
-                WindowBody::Sheet(sheet) => Some(&mut sheet.tree),
-                WindowBody::Dialog(dialog) => Some(&mut dialog.tree),
-            };
-            if let Some(tree) = tree.filter(|tree| {
-                tree.layout_dirty || tree.layout_bounds != Some((bounds, configuration.scale))
-            }) {
-                let font = resources.font(configuration.scale)?;
-                let mut scratch = [0; 1];
-                let surface = canvas::Surface::new(&mut scratch, 1, 1, 1).expect("probe surface");
-                let probe = classic_ui::Painter::new(
-                    surface,
-                    resources.theme(),
-                    &font,
-                    configuration.scale,
-                );
-                tree.layout(bounds, &probe);
-            }
+    if let Some(configuration) = display.configuration(protocol)
+        && let Some(bounds) = host.frame.client_rect(display)
+    {
+        let tree = match &mut host.body {
+            WindowBody::Widgets(tree) => Some(tree),
+            WindowBody::Sheet(sheet) => Some(&mut sheet.tree),
+            WindowBody::Dialog(dialog) => Some(&mut dialog.tree),
+        };
+        if let Some(tree) = tree.filter(|tree| {
+            tree.layout_dirty || tree.layout_bounds != Some((bounds, configuration.scale))
+        }) {
+            let font = resources.font(configuration.scale)?;
+            let mut scratch = [0; 1];
+            let surface = canvas::Surface::new(&mut scratch, 1, 1, 1).expect("probe surface");
+            let probe =
+                classic_ui::Painter::new(surface, resources.theme(), &font, configuration.scale);
+            tree.layout(bounds, &probe);
         }
     }
     Ok(())

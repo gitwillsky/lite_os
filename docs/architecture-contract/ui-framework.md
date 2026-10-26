@@ -89,6 +89,12 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   MenuVisual 仅复制影响像素的无分配投影，便于共享运行库判断是否重绘，不增加第二份可写状态。
 - Calendar 持有选定日期和当前查看月份，两者意义不同；所有日期必须属于公历 1..9999 年的合法月份。
   分组框、标签头和内容区由同一布局定义；隐藏页不参与表头命中，删除选定页后清除旧选择。
+- TabStrip 是标签页几何的唯一 owner，随布局写入 Node；绘制、命中和页面排版只消费它，不另算偏移。
+  选中表头覆盖相邻表头与主体上边框，命中先测选中项。Painter::tab 只画调用者给出的矩形。
+- Outline 的 RowGeometry 是树项缩进、展开框、图标与标签位置的唯一来源。Branch.first/last 在发布树数据时一次标记，
+  缺少它们绘制分支线须逐行扫描兄弟表（最多百万行）或把末项竖线画到空处；树数据替换时随 Outline 整体重建。
+- Sheet 的 Applying 阶段持有暂缓关闭位；关闭请求不丢弃，applied 成功后才发 CLOSE，失败保留窗口。
+- GPU 方向约定由 linux-uapi 的 VirGL owner 固定：Y_0_TOP 只用于扫描目标，viewport 不取负 Y 比例。
 - Window/Widget/dialog 的 ABI 编解码分别位于 window_api、widget_api、dialog_api；context_api 拥有等待和 FD 入口。
   这些模块只解释进程内公开 ABI，不引入 libc/设备 FFI；唯一可见动态符号仍是 liteos_ui_get_api。
 - desktop-settings 通过标准 flock 串行化跨进程读改写，UI 必须在后台调用；各属性页仅修改自己拥有的字段。

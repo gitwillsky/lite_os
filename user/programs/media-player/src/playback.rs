@@ -78,10 +78,10 @@ impl Player {
         if let Some(wake) = self.changed.take() {
             wake.wake();
         }
-        if self.idle() {
-            if let Some(wake) = self.stopped.take() {
-                wake.wake();
-            }
+        if self.idle()
+            && let Some(wake) = self.stopped.take()
+        {
+            wake.wake();
         }
     }
     pub fn frames(&self) -> usize {
@@ -139,10 +139,10 @@ impl Player {
         let playing = self.playing();
         self.stop();
         self.cursor = position;
-        if let Phase::Draining { resume, .. } = &mut self.phase {
-            if playing {
-                *resume = Some(position);
-            }
+        if let Phase::Draining { resume, .. } = &mut self.phase
+            && playing
+        {
+            *resume = Some(position);
         }
         self.changed();
     }

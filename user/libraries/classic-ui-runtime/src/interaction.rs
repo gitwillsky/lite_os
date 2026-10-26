@@ -81,9 +81,11 @@ impl Tree {
                 pressed: false,
                 ..
             } => {
-                if let Some(id) = self.armed.take().filter(|id| {
-                    Some(*id) == self.hit() && self.nodes[id].kind != widget::TABS
-                }) {
+                if let Some(id) = self
+                    .armed
+                    .take()
+                    .filter(|id| Some(*id) == self.hit() && self.nodes[id].kind != widget::TABS)
+                {
                     self.activate(window, id, true, modifiers, probe, &mut out);
                 }
             }
@@ -150,7 +152,7 @@ impl Tree {
                         self.activate(window, id, false, modifiers, probe, &mut out);
                     } else {
                         consumed = matches!(self.nodes[&id].kind, widget::LIST | widget::TREE)
-                            && (matches!(key.code, 103 | 108 | 102 | 107 | 104 | 109 | 105 | 106)
+                            && (matches!(key.code, 102..=109)
                                 || (key.modifiers.control && key.code == 30));
                         self.list_key(window, id, *key, &mut out);
                     }
@@ -160,16 +162,15 @@ impl Tree {
         }
         if out.is_empty()
             && matches!(input,EventKind::Key(key) if key.pressed && key.code==28 && !key.modifiers.control && !key.modifiers.alt)
-        {
-            if let Some(id) = self.nodes.iter().find_map(|(id, node)| {
+            && let Some(id) = self.nodes.iter().find_map(|(id, node)| {
                 (node.kind == widget::BUTTON
                     && node.state & state::DEFAULT != 0
                     && self.active(*id))
                 .then_some(*id)
-            }) {
-                self.activate(window, id, false, modifiers, probe, &mut out);
-                consumed = true;
-            }
+            })
+        {
+            self.activate(window, id, false, modifiers, probe, &mut out);
+            consumed = true;
         }
         self.layout_dirty |= out.iter().any(|event| {
             self.nodes.get(&event.node).is_some_and(|node| {
@@ -271,9 +272,14 @@ impl Tree {
             if let (Some(outline), Some((row_id, text)), true) = (
                 node.outline.as_ref(),
                 node.row_at(index),
-                node.table.as_ref().is_some_and(|table| table.columns.is_empty()),
+                node.table
+                    .as_ref()
+                    .is_some_and(|table| table.columns.is_empty()),
             ) {
-                let icon = node.row_icons.get(row_id).is_some_and(|icons| icons.0.is_some());
+                let icon = node
+                    .row_icons
+                    .get(row_id)
+                    .is_some_and(|icons| icons.0.is_some());
                 let row = Rect::new(
                     geometry.rows.x - node.table.as_ref().expect("tree model").horizontal.position,
                     geometry.rows.y
@@ -283,7 +289,11 @@ impl Tree {
                 );
                 let row_geometry = outline.row(row, index, icon);
                 let width = (probe.text_width(text, false) + probe.scale() - 1) / probe.scale();
-                let left = if icon { row_geometry.icon } else { row_geometry.label };
+                let left = if icon {
+                    row_geometry.icon
+                } else {
+                    row_geometry.label
+                };
                 let right = row_geometry.label + super::outline::Outline::label_width(width);
                 if self.pointer.0 < left || self.pointer.0 >= right {
                     return;

@@ -49,8 +49,36 @@ const UP: [&str; 4] = ["...#...", "..###..", ".#####.", "#######"];
 const DOWN: [&str; 4] = ["#######", ".#####.", "..###..", "...#..."];
 const LEFT: [&str; 7] = ["...#", "..##", ".###", "####", ".###", "..##", "...#"];
 const RIGHT: [&str; 7] = ["#...", "##..", "###.", "####", "###.", "##..", "#..."];
-const CHECK: [&str; 6] = [
-    "......#", ".....##", "#...##.", "##.##..", ".###...", "..#....",
+/// DrawFrameControl(DFCS_BUTTONRADIO) 的 12×12 圆圈：S 外圈左上暗影、H 外圈右下高光、
+/// K 内圈左上黑、L 内圈右下亮面、`.` 内部底色；由 Windows 2000 Marlett 字形 j/l 及其中心对称得到。
+const RADIO: [&str; 12] = [
+    "    SSSS    ",
+    "  SSKKKKSS  ",
+    " SKK....KKH ",
+    " SK......LH ",
+    "SK........LH",
+    "SK........LH",
+    "SK........LH",
+    "SK........LH",
+    " SK......LH ",
+    " SLL....LLH ",
+    "  HHLLLLHH  ",
+    "    HHHH    ",
+];
+/// Marlett 字形 i：选中圆点，与 [`RADIO`] 同一网格。
+const RADIO_DOT: [&str; 8] = [
+    "            ",
+    "            ",
+    "            ",
+    "            ",
+    "     ##     ",
+    "    ####    ",
+    "    ####    ",
+    "     ##     ",
+];
+/// DrawFrameControl(DFCS_BUTTONCHECK) 的勾：7 列、每列 3 像素高的竖条，位于框内 (3, 3)。
+pub(crate) const CHECK: [&str; 7] = [
+    "......#", ".....##", "#...###", "##.###.", "#####..", ".###...", "..#....",
 ];
 
 impl Painter<'_> {
@@ -61,10 +89,16 @@ impl Painter<'_> {
             body = rect.inset(1);
         }
         let offset = if state.pressed {
-            // 按下：外圈黑、内圈阴影，内容向右下偏移 1 像素。
-            self.outline(body, SystemColor::WindowFrame);
-            self.outline(body.inset(1), SystemColor::ButtonShadow);
-            self.fill(body.inset(2), SystemColor::ButtonFace);
+            // 按下：外圈黑、内圈阴影，内容向右下偏移 1 像素。默认按钮的黑框就是这圈外框，
+            // 不能再叠一圈黑色。
+            let shadow = if state.default {
+                body
+            } else {
+                self.outline(body, SystemColor::WindowFrame);
+                body.inset(1)
+            };
+            self.outline(shadow, SystemColor::ButtonShadow);
+            self.fill(shadow.inset(1), SystemColor::ButtonFace);
             1
         } else {
             let face = self.edge(body, Edge::Raised);
@@ -101,35 +135,41 @@ impl Painter<'_> {
             } else {
                 SystemColor::WindowText
             };
-            self.pixels(x + 3, y + 4, &CHECK, ink);
+            self.pixels(x + 3, y + 3, &CHECK, ink);
         }
     }
 
-    /// 13 × 13 的单选框：圆形的凹陷边框。
+    /// 13 × 13 单元内的单选框，与 Windows 2000 `DrawFrameControl(DFCS_BUTTONRADIO)` 一致。
+    ///
+    /// 原版用 Marlett 字形 j/k/l/m/n/i 以 13 像素、不抗锯齿分层绘制：外圈左上暗影、右下高光，
+    /// 内圈左上黑、右下亮面，内部窗口底色（禁用为按钮面色），选中时中心 4×4 圆点。
+    /// 圆占单元的第 1..12 列、第 0..11 行，与字形在 GDI 单元中的位置相同。无错误返回。
     pub fn radio(&mut self, x: i32, y: i32, selected: bool, disabled: bool) {
-        for row in 0..13 {
-            for column in 0..13 {
-                let (dx, dy) = (column - 6, row - 6);
-                let distance = dx * dx + dy * dy;
-                let upper_left = dx + dy < 0;
-                let color = match distance {
-                    ..=20 if distance <= 5 && selected => {
-                        if disabled {
-                            SystemColor::GrayText
-                        } else {
-                            SystemColor::WindowText
-                        }
-                    }
-                    ..=20 if disabled => SystemColor::ButtonFace,
-                    ..=20 => SystemColor::Window,
-                    21..=30 if upper_left => SystemColor::ButtonDkShadow,
-                    21..=30 => SystemColor::ButtonLight,
-                    31..=40 if upper_left => SystemColor::ButtonShadow,
-                    31..=40 => SystemColor::ButtonHilight,
+        use SystemColor as C;
+        for (row, line) in RADIO.iter().enumerate() {
+            for (column, mark) in line.bytes().enumerate() {
+                let color = match mark {
+                    b'S' => C::ButtonShadow,
+                    b'H' => C::ButtonHilight,
+                    b'K' => C::ButtonDkShadow,
+                    b'L' => C::ButtonLight,
+                    b'.' if disabled => C::ButtonFace,
+                    b'.' => C::Window,
                     _ => continue,
                 };
-                self.fill(Rect::new(x + column, y + row, 1, 1), color);
+                self.fill(
+                    Rect::new(x + 1 + column as i32, y + row as i32, 1, 1),
+                    color,
+                );
             }
+        }
+        if selected {
+            let ink = if disabled {
+                C::ButtonShadow
+            } else {
+                C::WindowText
+            };
+            self.pixels(x + 1, y, &RADIO_DOT, ink);
         }
     }
 
@@ -341,7 +381,12 @@ impl Painter<'_> {
     pub fn list_header_cell(&mut self, rect: Rect, title: &str, sort: Option<bool>, pressed: bool) {
         self.clipped(rect, |p| {
             p.fill(rect, SystemColor::ButtonFace);
-            p.edge(rect, if pressed { Edge::Sunken } else { Edge::Raised });
+            // comctl32 表头：常态 EDGE_RAISED|BF_SOFT，按下为 BDR_RAISEDOUTER|BF_FLAT 的阴影色平框。
+            if pressed {
+                p.outline(rect, SystemColor::ButtonShadow);
+            } else {
+                p.edge(rect, Edge::RaisedSoft);
+            }
             let offset = i32::from(pressed);
             let reserve = if sort.is_some() { 14 } else { 0 };
             p.text_fit(

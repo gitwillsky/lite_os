@@ -309,14 +309,14 @@ mod tests {
         let inherited = stream.try_clone().unwrap();
         peer.set_read_timeout(Some(std::time::Duration::from_millis(20)))
             .unwrap();
-        drop(Transport::new(stream));
+        drop(Transport::new(stream).unwrap());
         assert_eq!(peer.read(&mut [0u8]).unwrap(), 0);
         drop(inherited);
     }
     #[test]
     fn ids_are_reused_only_after_delete_id_and_split_events_are_preserved() {
         let (stream, mut server) = UnixStream::pair().unwrap();
-        let mut transport = Transport::new(stream);
+        let mut transport = Transport::new(stream).unwrap();
         let first = transport.allocate(Interface::WlCallback).unwrap();
         let second = transport.allocate(Interface::WlCallback).unwrap();
         let mut bytes = Writer::new();

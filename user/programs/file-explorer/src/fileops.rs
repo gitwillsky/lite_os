@@ -466,8 +466,9 @@ mod tests {
 
     #[test]
     fn extension_splitting_keeps_dotfiles_whole() {
-        assert_eq!(split_extension("a.tar.gz"), ("a.tar", ".gz"));
-        assert_eq!(split_extension(".profile"), (".profile", ""));
-        assert_eq!(split_extension("noext"), ("noext", ""));
+        let named = |name: &str| suffixed(OsStr::new(name), " (2)");
+        assert_eq!(named("a.tar.gz"), "a.tar (2).gz");
+        assert_eq!(named(".profile"), ".profile (2)");
+        assert_eq!(named("noext"), "noext (2)");
     }
 }

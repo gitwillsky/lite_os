@@ -185,11 +185,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
             let mut model = timer_model.borrow_mut();
-            if model.poll() {
-                if let Err(error) = timer_controls.refresh(&model) {
-                    eprintln!("sndvol: {error}");
-                    break;
-                }
+            if model.poll()
+                && let Err(error) = timer_controls.refresh(&model)
+            {
+                eprintln!("sndvol: {error}");
+                break;
             }
         }
     })?;
@@ -207,10 +207,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                         | EventKind::Close
                         | EventKind::Key { pressed: true, .. }
                 )
+                && let Some((w, _)) = about_window.take()
             {
-                if let Some((w, _)) = about_window.take() {
-                    w.close()?;
-                }
+                w.close()?;
             }
             return Ok(ControlFlow::Continue);
         }
@@ -234,10 +233,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 let mut model = model.borrow_mut();
                 if event.node == controls.balance.id() {
                     model.set_balance(value as i32);
-                } else if event.node == controls.volume.id() {
-                    if let Some(v) = model.value {
-                        model.change((100 - value).clamp(0, 100) as u8, v.muted);
-                    }
+                } else if event.node == controls.volume.id()
+                    && let Some(v) = model.value
+                {
+                    model.change((100 - value).clamp(0, 100) as u8, v.muted);
                 }
                 controls.refresh(&model)?;
             }

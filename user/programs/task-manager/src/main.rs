@@ -542,10 +542,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     _ => {}
                 }
-                if close {
-                    if let Some(dialog) = dialog.take() {
-                        dialog.window().close()?;
-                    }
+                if close && let Some(dialog) = dialog.take() {
+                    dialog.window().close()?;
                 }
             }
             return Ok(ControlFlow::Continue);
@@ -607,32 +605,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         if end {
             if view.applications_page()? {
-                if let Some(task) = state.borrow().selected_task(&view)? {
-                    if let Err(error) = task.request(ToplevelRequest::Close) {
-                        view.status.set_text(&error.to_string())?;
-                    }
-                }
-            } else if view.tabs.selection()? == Some(view.pages[1].id()) {
-                if let Some(id) = view.processes.selection()? {
-                    let pid = id.saturating_sub(1) as u32;
-                    let work = app.blocking(move || processes::terminate(pid))?;
-                    let status = view.status.clone();
-                    let refresh = refresh.clone();
-                    operation = Some(app.spawn_local(&window, async move {
-                        if !work.await {
-                            let _ = status.set_text("无法结束进程；检查权限或进程是否仍存在。");
-                        }
-                        refresh.request();
-                    })?);
-                }
-            }
-        }
-        if switch {
-            if let Some(task) = state.borrow().selected_task(&view)? {
-                if let Err(error) = task.request(ToplevelRequest::Activate) {
+                if let Some(task) = state.borrow().selected_task(&view)?
+                    && let Err(error) = task.request(ToplevelRequest::Close)
+                {
                     view.status.set_text(&error.to_string())?;
                 }
+            } else if view.tabs.selection()? == Some(view.pages[1].id())
+                && let Some(id) = view.processes.selection()?
+            {
+                let pid = id.saturating_sub(1) as u32;
+                let work = app.blocking(move || processes::terminate(pid))?;
+                let status = view.status.clone();
+                let refresh = refresh.clone();
+                operation = Some(app.spawn_local(&window, async move {
+                    if !work.await {
+                        let _ = status.set_text("无法结束进程；检查权限或进程是否仍存在。");
+                    }
+                    refresh.request();
+                })?);
             }
+        }
+        if switch
+            && let Some(task) = state.borrow().selected_task(&view)?
+            && let Err(error) = task.request(ToplevelRequest::Activate)
+        {
+            view.status.set_text(&error.to_string())?;
         }
         match command {
             Some(Command::Exit) => return Ok(ControlFlow::Exit),

@@ -12,9 +12,6 @@ pub struct MenuItemState {
     pub has_submenu: bool,
 }
 
-const MENU_CHECK: [&str; 7] = [
-    "......#", ".....##", "#...##.", "##.##..", ".###...", "..#....", ".......",
-];
 const SUBMENU_ARROW: [&str; 7] = ["#...", "##..", "###.", "####", "###.", "##..", "#..."];
 
 impl Painter<'_> {
@@ -60,10 +57,11 @@ impl Painter<'_> {
             (SystemColor::Menu, SystemColor::MenuText)
         };
         self.fill(band, background);
-        let ink = if state.disabled && !state.highlighted {
-            Ink::Disabled
-        } else {
-            Ink::Color(text)
+        // 禁用项：常态为浮雕灰字；高亮时 Win2000 在选择色底上画 GrayText，而不是可用项的 HilightText。
+        let ink = match (state.disabled, state.highlighted) {
+            (true, false) => Ink::Disabled,
+            (true, true) => Ink::Color(SystemColor::GrayText),
+            _ => Ink::Color(text),
         };
         let text_y = row.y + (row.height - self.line_height()) / 2;
         if state.checked {
@@ -72,7 +70,12 @@ impl Painter<'_> {
             } else {
                 SystemColor::MenuText
             };
-            self.pixels(row.x + 6, row.y + (row.height - 7) / 2, &MENU_CHECK, color);
+            self.pixels(
+                row.x + 6,
+                row.y + (row.height - 7) / 2,
+                &crate::controls::CHECK,
+                color,
+            );
         }
         // 标签不得压到右侧的快捷键或子菜单箭头：预留 16 像素标签偏移、快捷键宽度与间隔。
         let shortcut_width = self.logical_ceil(self.text_width(shortcut, false));

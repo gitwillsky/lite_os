@@ -102,21 +102,19 @@ pub fn paint(widget: &Widget, model: &Model, focused: bool) -> liteos_ui::Result
             text: glyph,
         });
     }
-    if focused {
-        if let Some((column, row)) = model.cursor() {
-            commands.push(Draw {
-                kind: 2,
-                rect: Rect {
-                    x: column as i32 * WIDTH,
-                    y: row as i32 * HEIGHT,
-                    width: WIDTH,
-                    height: HEIGHT,
-                },
-                color: model.default_colors().0,
-                bold: false,
-                text: "",
-            });
-        }
+    if focused && let Some((column, row)) = model.cursor() {
+        commands.push(Draw {
+            kind: 2,
+            rect: Rect {
+                x: column as i32 * WIDTH,
+                y: row as i32 * HEIGHT,
+                width: WIDTH,
+                height: HEIGHT,
+            },
+            color: model.default_colors().0,
+            bold: false,
+            text: "",
+        });
     }
     widget.set_drawing(&commands)
 }

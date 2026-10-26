@@ -190,7 +190,7 @@ fn committed_listener_survives_its_creator_and_hangup_precedes_accept() {
     drop(lease);
     // 单元测试直接给出同轮语义快照；macOS poll(events=0) 不报告 Linux 的无条件 HUP。
     // guest 门禁另外要求真实 close_fd HUP 触发 Server 撤销。
-    let mut returned = vec![linux_uapi::unix::PollEvents::EMPTY; server.descriptors().len()];
+    let mut returned = vec![linux_uapi::unix::PollEvents::EMPTY; server.descriptors().count()];
     returned[2] = linux_uapi::unix::PollEvents::READ;
     returned[3] = linux_uapi::unix::PollEvents::HANGUP;
     server.dispatch(&returned).unwrap();

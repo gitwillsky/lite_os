@@ -549,35 +549,35 @@ impl FileDialog {
                 self.overwrite = None;
                 self.status("");
             }
-            if action.node == self.list && matches!(action.kind, event::SELECT | event::ACTIVATE) {
-                if let Some(entry) = action
+            if action.node == self.list
+                && matches!(action.kind, event::SELECT | event::ACTIVATE)
+                && let Some(entry) = action
                     .value
                     .checked_sub(1)
                     .and_then(|index| self.entries.get(index as usize))
-                {
-                    if !entry.directory {
-                        *self
-                            .tree
-                            .nodes
-                            .get_mut(&self.name)
-                            .expect("name")
-                            .edit
-                            .as_mut()
-                            .expect("edit") = Edit::new(&entry.name.to_string_lossy());
-                        self.overwrite = None;
-                        self.status("");
-                    }
-                    if action.kind == event::ACTIVATE {
-                        let entry = &self.entries[action.value as usize - 1];
-                        return self
-                            .request(window, Work::Inspect(self.directory.join(&entry.name)));
-                    }
+            {
+                if !entry.directory {
+                    *self
+                        .tree
+                        .nodes
+                        .get_mut(&self.name)
+                        .expect("name")
+                        .edit
+                        .as_mut()
+                        .expect("edit") = Edit::new(&entry.name.to_string_lossy());
+                    self.overwrite = None;
+                    self.status("");
+                }
+                if action.kind == event::ACTIVATE {
+                    let entry = &self.entries[action.value as usize - 1];
+                    return self.request(window, Work::Inspect(self.directory.join(&entry.name)));
                 }
             }
-            if action.kind == event::ACTIVATE && action.node == self.up {
-                if let Some(parent) = self.directory.parent() {
-                    return self.list_request(window, parent.to_owned());
-                }
+            if action.kind == event::ACTIVATE
+                && action.node == self.up
+                && let Some(parent) = self.directory.parent()
+            {
+                return self.list_request(window, parent.to_owned());
             }
             if action.kind == event::ACTIVATE && action.node == self.primary {
                 let name = self.tree.nodes[&self.name].text().trim();

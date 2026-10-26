@@ -19,7 +19,7 @@ impl Context {
         if !key.pressed
             || !key.modifiers.control
             || key.modifiers.alt
-            || !matches!(key.code, 45 | 46 | 47)
+            || !matches!(key.code, 45..=47)
         {
             return Ok(false);
         }
@@ -166,17 +166,17 @@ impl Context {
                 self.watches.remove(&id);
                 match result {
                     Ok(text) => {
-                        if let Err(error) = self.change_edit(paste.window, paste.node, 4, &text) {
-                            if self.windows.contains_key(&paste.window) {
-                                self.error = error.to_string();
-                                self.publish(Some(abi::Event {
-                                    window: paste.window,
-                                    node: paste.node,
-                                    kind: event::CLIPBOARD_ERROR,
-                                    code: 4,
-                                    ..Default::default()
-                                }));
-                            }
+                        if let Err(error) = self.change_edit(paste.window, paste.node, 4, &text)
+                            && self.windows.contains_key(&paste.window)
+                        {
+                            self.error = error.to_string();
+                            self.publish(Some(abi::Event {
+                                window: paste.window,
+                                node: paste.node,
+                                kind: event::CLIPBOARD_ERROR,
+                                code: 4,
+                                ..Default::default()
+                            }));
                         }
                     }
                     Err(code) => self.publish(Some(abi::Event {

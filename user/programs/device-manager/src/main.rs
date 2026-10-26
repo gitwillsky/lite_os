@@ -126,15 +126,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     // 首次扫描也走后台；UI 不同步枚举设备和 /proc、/sys、/dev。
     let mut request_refresh = true;
     app.run(|app, event| {
-        if let Some((sheet, _)) = &properties {
-            if event.window == sheet.window().id() {
-                match event.kind {
-                    EventKind::Validate { token } => sheet.validated(token, Ok(()))?,
-                    EventKind::Apply { token } => sheet.applied(token, Ok(()))?,
-                    _ => {}
-                }
-                return Ok(ControlFlow::Continue);
+        if let Some((sheet, _)) = &properties
+            && event.window == sheet.window().id()
+        {
+            match event.kind {
+                EventKind::Validate { token } => sheet.validated(token, Ok(()))?,
+                EventKind::Apply { token } => sheet.applied(token, Ok(()))?,
+                _ => {}
             }
+            return Ok(ControlFlow::Continue);
         }
         let command = match event.kind {
             EventKind::Activate { value } if event.node == menu.id() => value,
