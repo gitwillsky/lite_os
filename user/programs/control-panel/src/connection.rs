@@ -14,10 +14,6 @@ use std::{cell::RefCell, net::Ipv4Addr, path::Path, rc::Rc};
 /// 组件描述（nettcpip.inf 的 MS_TCPIP.HelpText）。
 const TCPIP_HELP: &str = "TCP/IP 是默认的广域网协议。它提供跨越多种互联网络的通讯。";
 
-fn io(error: std::io::Error) -> liteos_ui::Error {
-    liteos_ui::Error::invalid(error.to_string())
-}
-
 /// 后台读取的连接属性；界面构建不再执行配置文件与 sysfs I/O。
 pub struct Data {
     saved: Interface,

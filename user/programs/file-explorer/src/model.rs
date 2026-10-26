@@ -51,6 +51,7 @@ pub enum Icon {
     EntireNetwork,
     Network,
     LocalConnection,
+    DisabledConnection,
     DisconnectedConnection,
     DeviceManager,
 }
@@ -78,6 +79,7 @@ impl Icon {
             Icon::EntireNetwork => "entire-network",
             Icon::Network => "network-connections",
             Icon::LocalConnection => "network-local",
+            Icon::DisabledConnection => "network-disabled",
             Icon::DisconnectedConnection => "network-disconnected",
             Icon::DeviceManager => "device-manager",
         }
@@ -522,7 +524,7 @@ fn connections() -> Vec<Item> {
         .map(|(index, link)| {
             let enabled = link.state != network_config::LinkState::Disabled;
             let (status, icon) = match link.state {
-                network_config::LinkState::Disabled => ("禁用", Icon::DisconnectedConnection),
+                network_config::LinkState::Disabled => ("禁用", Icon::DisabledConnection),
                 network_config::LinkState::Disconnected => {
                     ("网络电缆被拔出", Icon::DisconnectedConnection)
                 }

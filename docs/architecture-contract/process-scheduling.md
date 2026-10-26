@@ -265,6 +265,13 @@
   封闭的 constructor/rollback/exit/exec 均在 table/handle guard 外退休 old owner；外部 TCB
   observer 不延长 fd lifetime。procFD/FDSize 读取原 leader live handle，无表时 None/0。
   proc statistics 的 comm guard 必须在可能等待 table TaskMutex 前释放。
+- ThreadContext 独占固定 16 字节 NUL 填充的 Linux comm，名称锁保护 PR_SET_NAME 与跨 CPU proc 读取；
+  fork/clone 都从 calling Thread 按值继承并建立独立 owner。Process.leader_comm 只保活原 leader 同一 Arc，
+  leader 退出不丢失名称，也不保活 TCB/mm/stack。exec 在 commit 替换 survivor 名称并重指别名。
+  读别名先 clone Arc 再释放外层锁，随后复制固定数组；不嵌套两层名称锁，不在 spin guard 内分配输出。
+  PR_GET_NAME、task/comm、task/stat、task/status 取目标 Thread 名称；顶层 /proc/<tgid> 取 leader 名称，
+  不能把后台线程名称覆盖为应用名称。PR_SET_NAME 不分配，不引入 ENOMEM；proc 文本快照保留既有 OOM 路径。
+  Benchmark 决策：命名为固定 16 字节冷路径，clone 增加一个名称 owner 的有界分配；不改变调度/切换热路径。
 - 独立 Process 的 fork/VM/FS/FILES/VFORK 组合共用唯一 constructor 与 graph publication；
   VFORK 仅决定 caller 完成等待，资源共享分别按标准 bits 选择。VM 且非 VFORK 的
   child 清除 alternate stack；VFORK 保留。禁止另建 namespace-only clone/旧 fork publication。

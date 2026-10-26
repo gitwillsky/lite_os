@@ -5,27 +5,23 @@ use super::*;
 impl Session {
     /// 开始最小化（`minimizing`）或还原的动画：窗口矩形与任务按钮矩形之间。没有任务按钮位置时取屏幕底边中部。
     pub(super) fn animate(&mut self, client: ClientId, surface: ObjectId, minimizing: bool) {
-        self.ensure_art();
         let Some(placement) = self.stack.placement(client, surface).copied() else {
             return;
         };
         let scale = self.scale as i32;
-        // 起止矩形是窗口的标题栏：可缩放边框以内、标题栏高（含分隔线）。
-        let metrics = &self.theme.window;
-        let frame = metrics.size_frame() * scale;
-        let window = (
-            placement.x + frame,
-            placement.y + frame,
-            (placement.width - 2 * frame).max(scale),
-            metrics.caption_total_height() * scale,
-        );
-        let (title, app_id) = self
-            .server
-            .windows()
-            .find(|(owner, window)| *owner == client && window.surface == surface)
-            .map_or_else(Default::default, |(_, window)| {
-                (window.title.to_owned(), window.app_id.to_owned())
-            });
+        let window = (placement.x, placement.y, placement.width, placement.height);
+        // 已有还原被其他窗口操作打断时先完成它；同一窗口反向操作从当前画面继续，避免位置跳回端点。
+        let previous = self.animation.take();
+        let current = previous
+            .as_ref()
+            .filter(|animation| animation.client == client && animation.surface == surface)
+            .map(Animation::frame);
+        if let Some(animation) =
+            previous.filter(|animation| animation.client != client || animation.surface != surface)
+            && animation.restoring
+        {
+            self.stack.raise(animation.client, animation.surface);
+        }
         let (screen_width, screen_height) = self.screen();
         let target = self
             .minimize_targets
@@ -43,35 +39,43 @@ impl Session {
             (target, window)
         };
         self.animation = Some(Animation {
-            from,
+            client,
+            surface,
+            from: current.unwrap_or(from),
             to,
             start: Instant::now(),
-            title,
-            app_id,
-            restore: (!minimizing).then_some((client, surface)),
+            restoring: !minimizing,
         });
         self.dirty = true;
     }
 
     /// 最小化窗口并播放动画。
     pub(super) fn minimize_window(&mut self, client: ClientId, surface: ObjectId) {
-        if self
-            .stack
-            .placement(client, surface)
-            .is_some_and(|placed| !placed.minimized)
-        {
+        if self.stack.placement(client, surface).is_some_and(|placed| {
+            !placed.minimized
+                || self.animation.as_ref().is_some_and(|animation| {
+                    animation.client == client
+                        && animation.surface == surface
+                        && animation.restoring
+                })
+        }) {
             self.animate(client, surface, true);
         }
         self.dirty |= self.stack.minimize(client, surface);
     }
 
-    /// 激活窗口；它原来是最小化的就先播放还原动画，动画结束时才显示并提升窗口。
+    /// 激活窗口；最小化窗口先显示整窗还原动画，结束时提升输入栈；重复激活不重启动画。
     pub(super) fn restore_window(&mut self, client: ClientId, surface: ObjectId) {
         if self
             .stack
             .placement(client, surface)
             .is_some_and(|placed| placed.minimized)
         {
+            if self.animation.as_ref().is_some_and(|animation| {
+                animation.client == client && animation.surface == surface && animation.restoring
+            }) {
+                return;
+            }
             self.animate(client, surface, false);
             return;
         }

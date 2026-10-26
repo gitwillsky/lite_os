@@ -45,12 +45,12 @@ impl Session {
         let output_scale = self.scale;
         let layer_drawable = |layer: &LayerBox| {
             let (content, scale) = layer_images.get(&(layer.client, layer.surface))?;
-            Some(Drawable {
-                x: layer.x,
-                y: layer.y,
+            Some(Drawable::surface(
+                layer.x,
+                layer.y,
                 content,
-                factor: factor(output_scale, *scale),
-            })
+                factor(output_scale, *scale),
+            ))
         };
         let below = boxes
             .iter()
@@ -60,23 +60,26 @@ impl Session {
             .stack
             .windows()
             .iter()
-            .filter(|placed| !placed.minimized)
+            .filter(|placed| {
+                !placed.minimized
+                    && !self.animation.as_ref().is_some_and(|animation| {
+                        animation.client == placed.client && animation.surface == placed.surface
+                    })
+            })
             .filter_map(|placed| {
                 let (content, scale, children) =
                     window_images.get(&(placed.client, placed.surface))?;
                 // 窗口本体先画，子 surface 按位置压在它上面。
-                let body = Drawable {
-                    x: placed.x,
-                    y: placed.y,
-                    content,
-                    factor: factor(output_scale, *scale),
-                };
+                let body =
+                    Drawable::surface(placed.x, placed.y, content, factor(output_scale, *scale));
                 let output = output_scale as i32;
-                let subsurfaces = children.iter().map(move |child| Drawable {
-                    x: placed.x + child.x * output,
-                    y: placed.y + child.y * output,
-                    content: child.content,
-                    factor: factor(output_scale, child.scale),
+                let subsurfaces = children.iter().map(move |child| {
+                    Drawable::surface(
+                        placed.x + child.x * output,
+                        placed.y + child.y * output,
+                        child.content,
+                        factor(output_scale, child.scale),
+                    )
                 });
                 Some(std::iter::once(body).chain(subsurfaces))
             })
@@ -90,18 +93,16 @@ impl Session {
                 }
                 let output = output_scale as i32;
                 let (x, y) = (root.x + popup.x * output, root.y + popup.y * output);
-                let body = Drawable {
-                    x,
-                    y,
-                    content: popup.content,
-                    factor: factor(output_scale, popup.scale),
-                };
+                let body =
+                    Drawable::surface(x, y, popup.content, factor(output_scale, popup.scale));
                 Some(
-                    std::iter::once(body).chain(popup.children.iter().map(move |child| Drawable {
-                        x: x + child.x * output,
-                        y: y + child.y * output,
-                        content: child.content,
-                        factor: factor(output_scale, child.scale),
+                    std::iter::once(body).chain(popup.children.iter().map(move |child| {
+                        Drawable::surface(
+                            x + child.x * output,
+                            y + child.y * output,
+                            child.content,
+                            factor(output_scale, child.scale),
+                        )
                     })),
                 )
             })
@@ -111,25 +112,40 @@ impl Session {
             .iter()
             .filter(|layer| layer.layer >= Layer::Top)
             .filter_map(layer_drawable);
-        // 最小化/还原的飞行标题栏：每帧按插值矩形光栅成一小块内容，与窗口内容走同一合成路径（盖在最上层）。
-        let caption = self
+        // 整窗与子 surface 消费同一个变换。借用已提交内容，GPU 重用其纹理；不复制窗口像素。
+        let animated: Vec<Drawable<'_>> = self
             .animation
             .as_ref()
-            .zip(self.switcher_art.as_ref())
-            .and_then(|(animation, art)| {
-                caption_content(animation, art, &self.theme, self.scale as i32)
-            });
-        let caption_drawable = caption.as_ref().map(|(x, y, content)| Drawable {
-            x: *x,
-            y: *y,
-            content,
-            factor: 1,
-        });
+            .and_then(|animation| {
+                let placed = self.stack.placement(animation.client, animation.surface)?;
+                let (content, scale, children) =
+                    window_images.get(&(animation.client, animation.surface))?;
+                let body =
+                    Drawable::surface(placed.x, placed.y, content, factor(output_scale, *scale));
+                let source = body.rect;
+                let (x, y, width, height) = animation.frame();
+                let target = canvas::Rect::new(x, y, width, height);
+                let output = output_scale as i32;
+                Some(
+                    std::iter::once(body)
+                        .chain(children.iter().map(|child| {
+                            Drawable::surface(
+                                placed.x + child.x * output,
+                                placed.y + child.y * output,
+                                child.content,
+                                factor(output_scale, child.scale),
+                            )
+                        }))
+                        .map(|drawable| drawable.transformed(source, target))
+                        .collect(),
+                )
+            })
+            .unwrap_or_default();
         let drawables: Vec<Drawable<'_>> = below
             .chain(windows)
+            .chain(animated)
             .chain(popups)
             .chain(above)
-            .chain(caption_drawable)
             .collect();
         let (theme, scale) = (&self.theme, self.scale as i32);
         let (art, switcher, menu) = (
@@ -153,42 +169,4 @@ impl Session {
             .compose(&self.theme, &drawables, has_overlay, overlay)?;
         self.scanout.request_flip()
     }
-}
-
-/// 按动画当前帧的物理矩形光栅一条活动标题栏（渐变、16 像素图标、粗体标题；不画标题按钮）。
-/// 返回左上角物理坐标与内容；矩形退化时没有内容。
-fn caption_content(
-    animation: &Animation,
-    art: &switcher::Art,
-    theme: &classic_theme::Theme,
-    scale: i32,
-) -> Option<(i32, i32, crate::wayland::Content)> {
-    let (x, y, width, height) = animation.frame();
-    // 按逻辑像素取整，物理尺寸为其整数倍，标题栏几何与窗口一致。
-    let (logical_width, logical_height) = (width / scale, height / scale);
-    if logical_width < 1 || logical_height < 1 {
-        return None;
-    }
-    let (physical_width, physical_height) = (logical_width * scale, logical_height * scale);
-    let mut pixels = vec![0; (physical_width * physical_height) as usize];
-    let surface = canvas::Surface::new(
-        &mut pixels,
-        physical_width,
-        physical_height,
-        physical_width as usize,
-    )?;
-    let mut painter = classic_ui::Painter::new(surface, theme, &art.fonts, scale);
-    painter.caption_bar(
-        canvas::Rect::new(0, 0, logical_width, logical_height),
-        &animation.title,
-        art.small_icon(&animation.app_id),
-        true,
-        &[],
-        None,
-    );
-    Some((
-        x,
-        y,
-        crate::wayland::Content::new(physical_width as usize, physical_height as usize, pixels),
-    ))
 }

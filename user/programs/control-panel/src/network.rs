@@ -137,7 +137,11 @@ impl Network {
         let icon = child(
             &header,
             Kind::Image,
-            "network-local",
+            match data.0.state {
+                network_config::LinkState::Connected => "network-local",
+                network_config::LinkState::Disabled => "network-disabled",
+                network_config::LinkState::Disconnected => "network-disconnected",
+            },
             Layout {
                 width: 32,
                 height: 32,

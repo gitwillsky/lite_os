@@ -50,7 +50,8 @@
   User namespace 的 SYS_PTRACE。get_robust_list 对 zombie/退出 leader 返回已清除的零 registration，
   查询时 pin 原 leader 的实际 credential/MM handles，随后 exec 重指 aliases 不改变已选目标。
   原 leader 退出后 Process proc state 为 Z、memory/FDSize 零；live worker 的 proc 使用自身
-  mm/files，页统计只扫描 common mm 一次。原 leader scheduling Arc 只供 proc 读取，不留 TCB。
+  mm/files，页统计只扫描 common mm 一次。
+  每个 Thread 独立持有 Linux comm，Process 仅保留 leader 名称的同一只读别名，后台线程命名不会改变应用在进程列表中的名称。原 leader scheduling Arc 只供 proc 读取，不留 TCB。
   唯一 survivor exec 在同一 graph transaction 取得 TGID、迁移 creator-child 索引且不生成
   父死亡事件，沿用原 leader birthdate；robust 先按旧 TID 清理，旧 clearTid 只在旧 mm 释放。
 - `ProcessorTopology` 拥有 per-CPU current、runqueue、mailbox 与 load projection。远端 runnable 只经 logical target mailbox 和 platform IPI 交付。

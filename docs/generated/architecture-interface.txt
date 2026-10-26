@@ -3007,6 +3007,7 @@ kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_comm (process :
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_stat (process : & ProcProcessSnapshot , offsets : crate :: namespace :: TimeOffsets , pid_view : & crate :: namespace :: PidNamespace ,) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_statm (process : & ProcProcessSnapshot ,) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_process_status (process : & ProcProcessSnapshot , viewer : & crate :: namespace :: UserNamespace , pid_view : & crate :: namespace :: PidNamespace ,) -> Result < Vec < u8 > , FileSystemError >
+kernel/src/fs/procfs/process.rs :: pub (super) fn format_thread_comm (thread : & ProcThreadSnapshot) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_thread_stat (process : & ProcProcessSnapshot , thread : & ProcThreadSnapshot , offsets : crate :: namespace :: TimeOffsets , pid_view : & crate :: namespace :: PidNamespace ,) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_thread_statm (process : & ProcProcessSnapshot , thread : & ProcThreadSnapshot ,) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/procfs/process.rs :: pub (super) fn format_thread_status (process : & ProcProcessSnapshot , thread : & ProcThreadSnapshot , viewer : & crate :: namespace :: UserNamespace , pid_view : & crate :: namespace :: PidNamespace ,) -> Result < Vec < u8 > , FileSystemError >
@@ -3075,6 +3076,7 @@ kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: swap_total_pages
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: total_pages : usize
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: total_tasks : usize
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: uptime_us : u64
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcThreadSnapshot :: comm : [u8 ; 16]
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcThreadSnapshot :: credentials : ProcCredentialSnapshot
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcThreadSnapshot :: fd_size : usize
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcThreadSnapshot :: has_mm : bool
@@ -3093,6 +3095,7 @@ kernel/src/fs/procfs/snapshot.rs :: pub (crate) struct ProcIoSnapshot
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) struct ProcProcessSnapshot
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) struct ProcSnapshot
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) struct ProcThreadSnapshot
+kernel/src/fs/procfs/snapshot.rs :: pub (super) impl ProcThreadSnapshot :: fn comm (& self) -> & [u8]
 kernel/src/fs/procfs/sysctl_limit.rs :: pub (super) fn write (target : & Arc < UserNamespace > , resource : UserResource , input : & mut dyn UserInput , offset : u64 , caller : & NamespaceAuthority ,) -> Result < () , DeviceError >
 kernel/src/fs/procfs/sysctl_limit.rs :: pub (super) fn write_signed_vector (input : & mut dyn UserInput , offset : u64 , publish : impl FnOnce (& [Option < i32 > ; 4]) -> Result < () , DeviceError > ,) -> Result < () , DeviceError >
 kernel/src/fs/procfs/sysctl_limit.rs :: pub (super) fn write_unsigned_long (input : & mut dyn UserInput , offset : u64 , publish : impl FnOnce (u64) -> Result < () , DeviceError > ,) -> Result < () , DeviceError >
@@ -7575,12 +7578,12 @@ kernel/src/task/model/process_exec.rs :: enum ExecError :: Image (ElfLoadError)
 kernel/src/task/model/process_exec.rs :: enum ExecError :: Interrupted
 kernel/src/task/model/process_exec.rs :: enum ExecError :: Permission
 kernel/src/task/model/process_exec.rs :: pub (crate) enum ExecError
-kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn comm_buffer (& self) -> Result < [u8 ; 16] , MemoryError >
+kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn comm_buffer (& self) -> [u8 ; 16]
 kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn execve_replace (& self , loaded : & LoadedExecutable , envs : & [Vec < u8 >] ,) -> Result < () , ExecError >
 kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn process_executable (& self ,) -> Result < Option < Arc < crate :: fs :: OpenedFile > > , crate :: fs :: FileSystemError >
-kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn set_comm (& self , name : & [u8]) -> Result < () , MemoryError >
+kernel/src/task/model/process_exec.rs :: pub (crate) impl TaskControlBlock :: fn set_comm (& self , name : & [u8])
 kernel/src/task/model/process_exec.rs :: pub (in crate :: task) impl TaskControlBlock :: fn credential_guard (& self) -> & TaskMutex < () >
-kernel/src/task/model/process_exec.rs :: pub (super) fn process_name (path : & [u8]) -> Result < Vec < u8 > , ElfLoadError >
+kernel/src/task/model/process_exec.rs :: pub (super) fn process_name (path : & [u8]) -> [u8 ; 16]
 kernel/src/task/model/process_exec.rs :: pub (super) fn try_elf_arc < T > (value : T) -> Result < Arc < T > , ElfLoadError >
 kernel/src/task/model/process_exec.rs :: pub (super) impl super :: Process :: fn comm_snapshot (& self) -> Result < Vec < u8 > , MemoryError >
 kernel/src/task/model/process_exit.rs :: pub (in crate :: task) impl TaskControlBlock :: fn prepare_user_exit_memory (& self) -> UserExitMemory

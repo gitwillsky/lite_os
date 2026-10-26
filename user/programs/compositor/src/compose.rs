@@ -7,13 +7,47 @@ use linux_uapi::drm::DumbBuffer;
 use crate::wayland::Content;
 pub(crate) mod gpu;
 
-/// 一个待绘制的 surface：左上角物理坐标、内容与放大倍数。
+/// 一个已提交 surface 在输出上的物理目标矩形；CPU/GPU 消费同一几何。
 pub struct Drawable<'a> {
-    pub x: i32,
-    pub y: i32,
+    pub rect: Rect,
     pub content: &'a Content,
-    /// 内容相对其自身 scale 放大到输出 scale 所需的整数倍数。
-    pub factor: i32,
+}
+impl<'a> Drawable<'a> {
+    pub fn surface(x: i32, y: i32, content: &'a Content, factor: i32) -> Self {
+        Self {
+            rect: Rect::new(
+                x,
+                y,
+                (content.width as i32).saturating_mul(factor),
+                (content.height as i32).saturating_mul(factor),
+            ),
+            content,
+        }
+    }
+    /// 把本项从整个窗口的 source 坐标系映射到目标矩形；窗口与所有子 surface 共用同一变换。
+    pub fn transformed(mut self, source: Rect, target: Rect) -> Self {
+        let map = |value: i32, origin: i32, extent: i32, dest: i32, size: i32| {
+            dest + ((i64::from(value) - i64::from(origin)) * i64::from(size) / i64::from(extent))
+                as i32
+        };
+        let rect = self.rect;
+        let left = map(rect.x, source.x, source.width, target.x, target.width);
+        let top = map(rect.y, source.y, source.height, target.y, target.height);
+        self.rect = Rect::new(
+            left,
+            top,
+            (map(rect.right(), source.x, source.width, target.x, target.width) - left).max(0),
+            (map(
+                rect.bottom(),
+                source.y,
+                source.height,
+                target.y,
+                target.height,
+            ) - top)
+                .max(0),
+        );
+        self
+    }
 }
 
 /// 把桌面与窗口画进 `target`，最后交给 `overlay` 在最上层绘制（Alt+Tab 面板）。
@@ -47,7 +81,7 @@ pub fn compose(
             height: window.content.height as i32,
             stride: window.content.width,
         };
-        surface.blit(image, window.x, window.y, window.factor);
+        surface.blit_scaled(image, window.rect);
     }
     overlay(surface);
     true

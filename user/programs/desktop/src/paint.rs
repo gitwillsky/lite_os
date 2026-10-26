@@ -42,8 +42,8 @@ impl Art {
             "help-16",
             "my-documents-16",
             "control-panel-16",
-            "network-local-16",
-            "network-disconnected-16",
+            "tray-network-16",
+            "tray-network-disconnected-16",
             "tray-volume-16",
             "tray-volume-muted-16",
         ] {
@@ -321,9 +321,9 @@ pub fn frame(
             art.icon(
                 &mut p,
                 if link.state == network_config::LinkState::Connected {
-                    "network-local-16"
+                    "tray-network-16"
                 } else {
-                    "network-disconnected-16"
+                    "tray-network-disconnected-16"
                 },
                 rects[NETWORK].x + 4,
                 7,

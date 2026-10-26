@@ -54,7 +54,7 @@
 | 最大化与关闭按钮间距 | 2 | 最小化与最大化按钮紧贴 | 确定 |
 | `SM_CYSMCAPTION` | 16 | 工具窗口标题栏（`SmCaptionHeight`=15 + 1） | 待核 |
 | `SM_CYMENU` | 19 | 菜单栏高（`MenuHeight`=18 + 1） | 确定 |
-| 菜单项高度 | 字体高 + 6，最少 17 | 下拉菜单项 | 待核 |
+| 菜单项高度 | 菜单字体行高 + 4 | 普通弹出菜单项 | USER32 / Wine 11.16 |
 | `SM_CXVSCROLL` / `SM_CYHSCROLL` | 16 | 滚动条宽 | 确定 |
 | `SM_CXICON` | 32 | 大图标 | 确定 |
 | `SM_CXSMICON` | 16 | 小图标 | 确定 |
@@ -120,10 +120,13 @@ Win32 `DrawEdge` 一致（确定，可在 Wine `uitools.c` 中核对）。
 ## 菜单
 
 1. 下拉菜单外框 `EDGE_RAISED`，背景 `MENU`，无阴影（Windows 2000 没有菜单阴影，确定）。
-2. 选中项背景 `HIGHLIGHT`、文字 `HIGHLIGHTTEXT`，整行高亮，左右各留 2 像素。
+2. 选中项背景 `HIGHLIGHT`、文字 `HIGHLIGHTTEXT`，填满内容行；外框到内容区的三像素留白由菜单几何统一提供。
 3. 勾选标记与单选圆点在左侧 16 像素宽的区域；子菜单箭头在右侧。
-4. 分隔线为 `EDGE_ETCHED` 的水平线，上下各留 3 像素。
-5. 快捷键文字右对齐，与菜单项文字之间至少 16 像素。
+4. 分隔线为 `EDGE_ETCHED` 的水平线，占用 `MenuHeight / 2` 行高，蚀刻线位于其垂直中部。
+5. 快捷键文字右对齐，与菜单项文字之间预留 12 像素。
+
+弹出菜单的外框、项高和分隔线以固定 [Wine 11.16 USER32 菜单实现](https://github.com/wine-mirror/wine/blob/wine-11.16/dlls/win32u/menu.c)
+的 `calc_menu_item_size`、`calc_popup_menu_size`、`draw_menu_item` 为参照；外壳右键菜单与应用菜单使用同一度量和绘制入口。
 
 ## 滚动条
 

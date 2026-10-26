@@ -118,12 +118,7 @@ impl Gpu {
         let mut quads = Vec::with_capacity(windows.len() + usize::from(has_overlay));
         let screen = Rect::new(0, 0, width as i32, height as i32);
         for window in windows {
-            let rect = Rect::new(
-                window.x,
-                window.y,
-                (window.content.width as i32).saturating_mul(window.factor),
-                (window.content.height as i32).saturating_mul(window.factor),
-            );
+            let rect = window.rect;
             if rect.intersect(screen).is_empty() {
                 continue;
             }

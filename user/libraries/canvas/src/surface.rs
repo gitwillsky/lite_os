@@ -225,6 +225,42 @@ impl<'a> Surface<'a> {
         }
     }
 
+    /// 将预乘 ARGB 图像最近邻缩放到任意目标矩形；源布局无效或目标为空时不绘制。
+    /// 裁剪后直接采样原图，不分配中间像素；整数等比放大复用 blit 的不透明行复制路径。
+    pub fn blit_scaled(&mut self, image: Image<'_>, rect: Rect) {
+        if rect.is_empty()
+            || image.width <= 0
+            || image.height <= 0
+            || !fits(image.pixels.len(), image.width, image.height, image.stride)
+        {
+            return;
+        }
+        let scale = rect.width / image.width;
+        if scale > 0
+            && rect.width % image.width == 0
+            && image.height.checked_mul(scale) == Some(rect.height)
+        {
+            self.blit(image, rect.x, rect.y, scale);
+            return;
+        }
+        for (left, top, row) in self.visible_rows(rect) {
+            let sy = ((i64::from(top) - i64::from(rect.y)) * i64::from(image.height)
+                / i64::from(rect.height)) as usize;
+            let source = &image.pixels[sy * image.stride..][..image.width as usize];
+            for (column, pixel) in row.iter_mut().enumerate() {
+                let sx = ((i64::from(left) - i64::from(rect.x) + column as i64)
+                    * i64::from(image.width)
+                    / i64::from(rect.width)) as usize;
+                let value = source[sx];
+                match value >> 24 {
+                    0 => {}
+                    255 => *pixel = value,
+                    _ => *pixel = over(value, *pixel),
+                }
+            }
+        }
+    }
+
     /// 将覆盖率蒙版缩放到目标矩形并着色，不分配临时像素。
     /// 非正尺寸或源缓冲布局错误时不绘制；裁剪与其他 Surface 操作一致。
     pub fn draw_mask_scaled(&mut self, mask: Mask<'_>, rect: Rect, color: Color) {

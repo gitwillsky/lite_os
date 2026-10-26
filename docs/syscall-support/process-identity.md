@@ -23,7 +23,7 @@
 | 157 | `setsid` | Complete | session/process-group transaction |
 | 158 | `getgroups` | Complete | calling Thread immutable sorted group snapshot；size=0 不分配 |
 | 159 | `setgroups` | Complete | calling Thread privileged immutable group publication；逐元素错误顺序 |
-| 167 | `prctl` | Partial | `PR_SET_NAME`/`PR_GET_NAME`（进程级 comm，与 `/proc/<pid>/comm` 同一 owner，同进程内最后一次设置生效）、parent-death signal、共享 MM dumpability 0/1、NNP/seccomp、keepcaps/securebits/bounding/ambient capability operations |
+| 167 | `prctl` | Partial | `PR_SET_NAME`/`PR_GET_NAME`（calling Thread 独立 comm）、parent-death signal、共享 MM dumpability 0/1、NNP/seccomp、keepcaps/securebits/bounding/ambient capability operations |
 | 172 | `getpid` | Complete | TGID |
 | 173 | `getppid` | Complete | process graph parent |
 | 174 | `getuid` | Complete | real UID |
@@ -121,3 +121,6 @@ CLONE_NEWNET源码已接clone/clone3/unshare/setns：创建独立实际protocol/
 /proc/*/ns/net、NS_GET_NSTYPE/USERNS及PIDFD_GET_NET_NAMESPACE共享同一实际对象；setns
 要求calling和target owning UserNS的SYS_ADMIN，旧socket/proc fd捕获域保持。标准guest及
 actual factory/OOM/quota/pin/loopback回归已写，集中阶段执行；完整容器网络扩展不在本轮新增范围。
+
+`PR_SET_NAME`/`PR_GET_NAME` 的名称最长 15 字节并以 NUL 填充；`/proc/<tgid>/task/<tid>` 的 comm、stat、status
+读取指定线程的名称，顶层 `/proc/<tgid>` 读取 leader 名称。fork/clone 按值继承 caller 名称，exec 更新 survivor 并重指 leader 别名。

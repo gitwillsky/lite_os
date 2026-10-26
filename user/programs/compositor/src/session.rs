@@ -55,16 +55,15 @@ fn factor(output_scale: u32, surface_scale: i32) -> i32 {
     (output_scale as i32 / surface_scale.max(1)).max(1)
 }
 
-/// 最小化或还原时在窗口标题栏与任务按钮之间飞行的标题栏（Windows 2000 `DrawAnimatedRects(IDANI_CAPTION)`）。
+/// 最小化/还原的整窗几何变换；只标识现有已提交 surface，不光栅第二份标题栏或复制客户区。
 struct Animation {
+    client: ClientId,
+    surface: ObjectId,
     from: (i32, i32, i32, i32),
     to: (i32, i32, i32, i32),
     start: Instant,
-    /// 飞行标题栏上的窗口标题与程序（取图标）。
-    title: String,
-    app_id: String,
-    /// 还原动画结束后才提升并显示的窗口；缺少它窗口会在动画途中就出现，与飞行标题栏叠在一起。
-    restore: Option<(ClientId, ObjectId)>,
+    /// 还原结束才把窗口提升回输入栈；动画中的 surface 只参与合成，不抢占输入。
+    restoring: bool,
 }
 
 /// 动画时长。
@@ -75,10 +74,11 @@ impl Animation {
         self.start.elapsed() >= ANIMATION
     }
 
-    /// 当前帧的矩形：起止矩形按进度线性插值。
+    /// 当前帧的矩形：时间进度以 smoothstep 缓入缓出，同一帧所有 surface 使用同一个插值结果。
     fn frame(&self) -> (i32, i32, i32, i32) {
         let t = (self.start.elapsed().as_secs_f32() / ANIMATION.as_secs_f32()).clamp(0.0, 1.0);
-        let mix = |a: i32, b: i32| a + ((b - a) as f32 * t) as i32;
+        let t = t * t * (3.0 - 2.0 * t);
+        let mix = |a: i32, b: i32| a + ((i64::from(b) - i64::from(a)) as f32 * t).round() as i32;
         (
             mix(self.from.0, self.to.0),
             mix(self.from.1, self.to.1),
@@ -471,19 +471,19 @@ impl Session {
                 // 外壳第一个 surface 出现：这是启动完成的真实信号。
                 self.boot_milestone(1000);
             }
-            let mut timeout = self.step_boot(shell_visible)?;
+            let timeout = self.step_boot(shell_visible)?;
             if let Some(animation) = &self.animation {
                 if animation.finished() {
                     if let Some((client, surface)) = self
                         .animation
                         .take()
-                        .and_then(|animation| animation.restore)
+                        .filter(|animation| animation.restoring)
+                        .map(|animation| (animation.client, animation.surface))
                     {
                         self.stack.raise(client, surface);
                     }
-                } else {
-                    timeout = Some(Duration::from_millis(16));
                 }
+                // 每次 DRM flip 完成后合成下一帧，不再叠加 16 ms 定时等待。
                 self.dirty = true;
             }
             if self.dirty && self.boot.is_none() && !self.scanout.flip_pending() {
@@ -725,6 +725,14 @@ impl Session {
         let commits = self.server.commits();
         if commits != self.commits_seen {
             self.commits_seen = commits;
+            self.dirty = true;
+        }
+        if self.animation.as_ref().is_some_and(|animation| {
+            self.stack
+                .placement(animation.client, animation.surface)
+                .is_none()
+        }) {
+            self.animation = None;
             self.dirty = true;
         }
         // 抓取的窗口消失了（被关闭、客户端断开）：抓取随之结束。

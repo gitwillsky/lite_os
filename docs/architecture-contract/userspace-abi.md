@@ -159,7 +159,7 @@
   每个窗口最多一条未完成 frame callback，`ready_to_draw` 是该状态的只读投影；收到 buffer.release 后销毁该 buffer，
   在此之前绝不修改提交的 memfd。窗口销毁撤销焦点、重复键和已排队语义事件；连接出错由应用退出/drop 一次性回收 fd。
   Transport drop 对独占协议连接执行 shutdown，因此继承的 stdin 别名仍打开时 server 也能立即观察 EOF；不关闭外部借用的 fd。
-- `classic-ui::Decoration` 只消费语义事件，按钮命中与绘制共用 `window` 的几何事实；窗口尺寸和模式仍只来自 compositor configure。
+- `classic-ui::Decoration` 只消费语义事件，按钮命中与绘制共用 `window` 的几何事实；窗口模式来自 compositor configure；普通固定窗口可按内容选择首选尺寸并更新标准 min/max 约束，当前尺寸仍由 Display 唯一持有。
 - 应用的待重绘失效由该窗口的事件循环持有，必须跨越在途 frame 保留；只有 `present` 成功后清除，
   不能在每轮事件开始时重置或依赖定时采样补画。`FramePresented` 解除提交背压，本身不代替尚未消费的失效。
 - `Painter` 的有界文字 API 必须同时约束排版宽度和实际字形落笔；省略号、粗体与禁用浮雕也不能越界。段落复用 `typeface::wrap`，返回完整所需高度但只绘制指定矩形，结束后恢复调用者裁剪区。
