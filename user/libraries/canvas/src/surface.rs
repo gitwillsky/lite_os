@@ -57,6 +57,17 @@ impl<'a> Surface<'a> {
         self.height
     }
 
+    /// 以更短的借用期重新借出同一缓冲，保留当前裁剪；返回值存活期间原 Surface 不可用。
+    pub fn reborrow(&mut self) -> Surface<'_> {
+        Surface {
+            pixels: self.pixels,
+            width: self.width,
+            height: self.height,
+            stride: self.stride,
+            clip: self.clip,
+        }
+    }
+
     pub fn clip(&self) -> Rect {
         self.clip
     }

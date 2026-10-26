@@ -2,8 +2,9 @@
 Type=Application
 Name=Network and Dial-up Connections
 Name[zh_CN]=网络和拨号连接
-Exec=/bin/control-panel network
+Comment[zh_CN]=连接到其他计算机、网络以及 Internet
+Exec=/bin/file-explorer ::network-connections
 Icon=network-connections
 Categories=Settings;
-StartupWMClass=org.liteos.control-panel.network
+StartupWMClass=org.liteos.file-explorer
 Terminal=false

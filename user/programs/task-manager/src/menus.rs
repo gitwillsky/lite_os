@@ -74,6 +74,7 @@ pub fn install(widget: &Widget, applications: bool, speed: Speed) -> liteos_ui::
         label,
         shortcut,
         state,
+        parent: 0,
     };
     let file = [
         item("新任务(运行)(N)...", "", Command::NewTask, 0),

@@ -126,6 +126,13 @@ impl Outline {
             label: icon_x + if icon { ICON + ICON_GAP } else { 0 },
         }
     }
+    /// 第 `index` 个可见行的层级（根为 0）。
+    pub fn depth(&self, index: usize) -> i32 {
+        self.visible
+            .get(index)
+            .map_or(0, |branch| self.branches[*branch].depth)
+    }
+
     /// 标签宽度：文字逻辑宽度加两侧留白。
     pub fn label_width(text_width: i32) -> i32 {
         text_width + 2 * LABEL_PADDING
@@ -396,7 +403,9 @@ pub(super) unsafe extern "C" fn tree_rows(
                 .retain(|id, _| outline.indices.contains_key(id));
             node.rows = rows;
             node.outline = Some(outline);
-            node.clamp_list();
+            if node.table.is_some() {
+                node.clamp_list();
+            }
             host.frame.invalidate();
             Ok(())
         })

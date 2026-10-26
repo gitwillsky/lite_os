@@ -2,10 +2,6 @@
 use canvas::Rect;
 use classic_ui::{MenuItemState, Painter, Toplevel, ToplevelId, ToplevelRequest};
 
-const MENU_WIDTH: i32 = 176;
-const ITEM_HEIGHT: i32 = 20;
-const SEPARATOR_HEIGHT: i32 = 8;
-
 /// 点击菜单项的结果。
 #[derive(Clone, Copy)]
 pub enum Action {
@@ -19,6 +15,8 @@ pub enum Action {
     IconVerb(usize, &'static str),
     /// 打开“系统属性”。
     SystemProperties,
+    /// 在资源管理器中打开外壳位置。
+    OpenPlace(crate::start::Place),
     /// 在桌面文件夹里新建文件夹。
     NewFolder,
     /// 打开“任务栏属性”。
@@ -37,6 +35,8 @@ pub struct Item {
     pub shortcut: &'static str,
     pub action: Action,
     pub separator_before: bool,
+    /// 默认项（双击图标等价的命令），粗体显示。
+    pub default: bool,
 }
 
 fn item(label: &'static str, action: Action) -> Item {
@@ -45,6 +45,7 @@ fn item(label: &'static str, action: Action) -> Item {
         shortcut: "",
         action,
         separator_before: false,
+        default: false,
     }
 }
 
@@ -52,6 +53,15 @@ pub struct ContextMenu {
     pub rect: Rect,
     pub items: Vec<Item>,
     pub hover: Option<usize>,
+    size: MenuSize,
+}
+
+/// 菜单尺寸：由共享 `classic_ui::MenuMetrics` 按主题与菜单字体算出，外壳不另设常量。
+#[derive(Clone, Copy)]
+pub struct MenuSize {
+    pub width: i32,
+    pub item_height: i32,
+    pub separator_height: i32,
 }
 
 pub enum Overlay {
@@ -110,9 +120,12 @@ pub fn tray_volume_items() -> Vec<Item> {
     vec![item("调整音频属性(A)", Action::VolumeProperties)]
 }
 
-/// 桌面图标的右键菜单：文件与文件夹有删除、重命名、属性（交给资源管理器）；“我的电脑”有属性。
+/// 桌面图标的右键菜单：文件与文件夹有删除、重命名、属性（交给资源管理器）；“我的电脑”的属性是系统属性，
+/// “网上邻居”的属性是“网络和拨号连接”文件夹（与 Windows 2000 相同）。
 pub fn icon_items(index: usize, kind: IconKind) -> Vec<Item> {
-    let mut items = vec![item("打开(O)", Action::OpenIcon(index))];
+    let mut open = item("打开(O)", Action::OpenIcon(index));
+    open.default = true;
+    let mut items = vec![open];
     let mut add = |label, action: Action, separated: bool| {
         let mut entry = item(label, action);
         entry.separator_before = separated;
@@ -125,6 +138,11 @@ pub fn icon_items(index: usize, kind: IconKind) -> Vec<Item> {
             add("属性(R)", Action::IconVerb(index, "properties"), true);
         }
         IconKind::MyComputer => add("属性(R)", Action::SystemProperties, true),
+        IconKind::NetworkPlaces => add(
+            "属性(R)",
+            Action::OpenPlace(crate::start::Place::NetworkConnections),
+            true,
+        ),
         IconKind::Other => {}
     }
     items
@@ -136,6 +154,7 @@ pub enum IconKind {
     /// 桌面文件夹里的真实文件或文件夹。
     Path,
     MyComputer,
+    NetworkPlaces,
     /// 其余系统图标（我的文档、回收站……）。
     Other,
 }
@@ -153,21 +172,23 @@ pub fn desktop_items() -> Vec<Item> {
     ]
 }
 
-fn row_height(item: &Item) -> i32 {
-    ITEM_HEIGHT
-        + if item.separator_before {
-            SEPARATOR_HEIGHT
-        } else {
-            0
-        }
-}
-
 impl ContextMenu {
     /// 把菜单放在 `origin`（指针位置）：右侧或下方放不下时翻转到指针另一侧，并保证完整落在屏幕内。
-    pub fn new(origin: (i32, i32), items: Vec<Item>, screen: (i32, i32)) -> Self {
-        let height = items.iter().map(row_height).sum::<i32>() + 4;
-        let x = if origin.0 + MENU_WIDTH > screen.0 {
-            origin.0 - MENU_WIDTH
+    pub fn new(origin: (i32, i32), items: Vec<Item>, screen: (i32, i32), size: MenuSize) -> Self {
+        let height = items
+            .iter()
+            .map(|item| {
+                size.item_height
+                    + if item.separator_before {
+                        size.separator_height
+                    } else {
+                        0
+                    }
+            })
+            .sum::<i32>()
+            + 4;
+        let x = if origin.0 + size.width > screen.0 {
+            origin.0 - size.width
         } else {
             origin.0
         };
@@ -177,9 +198,10 @@ impl ContextMenu {
             origin.1
         };
         Self {
-            rect: Rect::new(x.max(0), y.max(0), MENU_WIDTH, height),
+            rect: Rect::new(x.max(0), y.max(0), size.width, height),
             items,
             hover: None,
+            size,
         }
     }
 
@@ -190,10 +212,15 @@ impl ContextMenu {
             .iter()
             .map(|item| {
                 if item.separator_before {
-                    y += SEPARATOR_HEIGHT;
+                    y += self.size.separator_height;
                 }
-                let row = Rect::new(self.rect.x + 2, y, self.rect.width - 4, ITEM_HEIGHT);
-                y += ITEM_HEIGHT;
+                let row = Rect::new(
+                    self.rect.x + 2,
+                    y,
+                    self.rect.width - 4,
+                    self.size.item_height,
+                );
+                y += self.size.item_height;
                 row
             })
             .collect()
@@ -214,9 +241,9 @@ impl ContextMenu {
             if item.separator_before {
                 p.menu_separator(Rect::new(
                     self.rect.x + 2,
-                    row.y - SEPARATOR_HEIGHT,
+                    row.y - self.size.separator_height,
                     self.rect.width - 4,
-                    SEPARATOR_HEIGHT,
+                    self.size.separator_height,
                 ));
             }
             p.menu_item(
@@ -225,6 +252,7 @@ impl ContextMenu {
                 item.shortcut,
                 MenuItemState {
                     highlighted: self.hover == Some(index),
+                    default: item.default,
                     ..Default::default()
                 },
             );
@@ -248,24 +276,30 @@ pub fn volume_panel(
 mod tests {
     use super::*;
 
+    const SIZE: MenuSize = MenuSize {
+        width: 176,
+        item_height: 18,
+        separator_height: 9,
+    };
+
     #[test]
     fn menus_flip_instead_of_leaving_the_screen() {
         let screen = (800, 600);
-        let normal = ContextMenu::new((100, 100), taskbar_items(), screen);
+        let normal = ContextMenu::new((100, 100), taskbar_items(), screen, SIZE);
         assert_eq!((normal.rect.x, normal.rect.y), (100, 100));
-        let corner = ContextMenu::new((790, 590), taskbar_items(), screen);
+        let corner = ContextMenu::new((790, 590), taskbar_items(), screen, SIZE);
         assert_eq!(corner.rect.right(), 790);
         assert_eq!(corner.rect.bottom(), 590);
-        let top_left = ContextMenu::new((0, 0), desktop_items(), screen);
+        let top_left = ContextMenu::new((0, 0), desktop_items(), screen, SIZE);
         assert_eq!((top_left.rect.x, top_left.rect.y), (0, 0));
     }
 
     #[test]
     fn rows_follow_separators_and_hit_testing_ignores_them() {
-        let menu = ContextMenu::new((10, 10), taskbar_items(), (800, 600));
+        let menu = ContextMenu::new((10, 10), taskbar_items(), (800, 600), SIZE);
         let rows = menu.rows();
         assert_eq!(rows[0].y, 12);
-        assert_eq!(rows[1].y - rows[0].bottom(), SEPARATOR_HEIGHT);
+        assert_eq!(rows[1].y - rows[0].bottom(), SIZE.separator_height);
         assert_eq!(menu.hit(20., f64::from(rows[1].y + 3)), Some(1));
         assert_eq!(menu.hit(20., f64::from(rows[0].bottom() + 2)), None);
         assert_eq!(menu.rect.bottom(), rows[1].bottom() + 2);

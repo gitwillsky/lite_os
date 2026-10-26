@@ -2,6 +2,7 @@
 Type=Application
 Name=Display
 Name[zh_CN]=显示
+Comment[zh_CN]=自定义桌面显示和屏幕保护程序
 Exec=/bin/control-panel display
 Icon=display-properties
 Categories=Settings;

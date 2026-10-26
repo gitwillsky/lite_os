@@ -29,11 +29,26 @@ impl Tree {
         {
             menu.state.paint(p, node.rect, &menu.entries, self.pointer);
         }
+        // 打开的组合框下拉列表覆盖在全部控件之上（菜单之前，菜单打开时列表已关闭）。
+        for node in self.nodes.values() {
+            if node.combo.as_ref().is_some_and(|combo| combo.open) {
+                node.paint_combo_list(p);
+            }
+        }
         if let Some(node) = self.popup.and_then(|id| self.nodes.get(&id))
             && let Some(menu) = &node.menu
             && menu.state.active()
         {
             menu.state.paint(p, node.rect, &menu.entries, self.pointer);
+        }
+        // 工具提示画在最上层。
+        if let Some((bounds, _)) = self.layout_bounds {
+            let now = std::time::Instant::now();
+            for node in self.nodes.values().filter(|node| node.visible()) {
+                if let Some(toolbar) = &node.toolbar {
+                    toolbar.paint_tip(p, self.pointer, bounds, now);
+                }
+            }
         }
     }
     fn paint_node(
@@ -56,6 +71,14 @@ impl Tree {
             } else {
                 Ink::Color(C::ButtonText)
             };
+            if let Some((color, image)) = &node.background {
+                if let Some(color) = color {
+                    p.fill_rgb(rect, *color);
+                }
+                if let Some(image) = image {
+                    image.paint(p, rect.x, rect.y);
+                }
+            }
             match node.kind {
                 widget::BUTTON => p.push_button(
                     rect,
@@ -68,6 +91,63 @@ impl Tree {
                         focused: self.focus == Some(id) && keyboard_focus && !disabled,
                     },
                 ),
+                widget::LINK => {
+                    let anchor = p.theme().anchors.link;
+                    let focused = self.focus == Some(id) && keyboard_focus && !disabled;
+                    let draw = |p: &mut Painter<'_>| {
+                        let shown = p.fit(node.text(), rect.width);
+                        let width = (p.text_width(&shown, false) + p.scale() - 1) / p.scale();
+                        let y = rect.y + (rect.height - p.line_height()) / 2;
+                        let ink = if disabled {
+                            Ink::Disabled
+                        } else {
+                            Ink::Rgb(anchor)
+                        };
+                        p.text(rect.x, y, &shown, ink, false);
+                        // IE 链接下划线：基线下方 1 像素。
+                        let underline = y + p.ascent() + 1;
+                        if !disabled {
+                            p.fill_rgb(Rect::new(rect.x, underline, width, 1), anchor);
+                        }
+                        if focused {
+                            p.focus_rect(Rect::new(
+                                rect.x - 1,
+                                y - 1,
+                                width + 2,
+                                p.line_height() + 2,
+                            ));
+                        }
+                    };
+                    match node.logical_font(&p.theme().fonts) {
+                        Some(logical) => {
+                            let face = p.fonts().custom(&logical);
+                            p.with_font(&face, draw);
+                        }
+                        None => draw(p),
+                    }
+                }
+                widget::COMBO => node.paint_combo(
+                    p,
+                    self.focus == Some(id) && keyboard_focus && !disabled,
+                    !disabled,
+                ),
+                widget::LABEL if node.font.is_some() => {
+                    let logical = node.logical_font(&p.theme().fonts).expect("label font");
+                    let face = p.fonts().custom(&logical);
+                    p.with_font(&face, |p| {
+                        if node.state & state::WRAP != 0 {
+                            p.text_wrapped(rect, node.text(), ink, false);
+                        } else {
+                            p.label_fit(
+                                rect.x,
+                                rect.y + (rect.height - p.line_height()) / 2,
+                                rect.width,
+                                node.text(),
+                                ink,
+                            );
+                        }
+                    });
+                }
                 widget::LABEL => {
                     if node.state & state::WRAP != 0 {
                         p.text_wrapped(rect, node.text(), ink, false);
@@ -128,7 +208,16 @@ impl Tree {
                 ),
                 widget::IMAGE => {
                     if let Some(image) = &node.image {
-                        image.paint(p, rect.x, rect.y);
+                        if image.width() < rect.width && image.height() == rect.height {
+                            image.paint_stretched(p, rect.x, rect.y, rect.width);
+                        } else {
+                            image.paint(p, rect.x, rect.y);
+                        }
+                    }
+                }
+                widget::REBAR => {
+                    if let Some(rebar) = &node.rebar {
+                        rebar.paint(p, rect);
                     }
                 }
                 widget::GROUP => p.group_box(rect, node.text()),
@@ -137,7 +226,25 @@ impl Tree {
                     p,
                     self.focus == Some(id) && keyboard_focus && !disabled,
                 ),
-                widget::STATUS => p.status_bar(rect, &node.text().split('\t').collect::<Vec<_>>()),
+                widget::STATUS => {
+                    let panes: Vec<&str> = node.text().split('\t').collect();
+                    let icons: Vec<_> = (1..=panes.len() as u64)
+                        .map(|pane| {
+                            node.row_icons
+                                .get(&pane)
+                                .and_then(|icons| icons.0.as_deref())
+                        })
+                        .collect();
+                    p.status_bar(
+                        rect,
+                        &panes,
+                        classic_ui::StatusLayout {
+                            parts: &node.status_parts,
+                            icons: &icons,
+                            grip: self.grip_rect() == Some(node.grip_area()),
+                        },
+                    );
+                }
                 widget::LIST | widget::TREE => paint_list(
                     node,
                     p,
@@ -169,6 +276,11 @@ impl Tree {
                             },
                             selected && self.focus == Some(id) && keyboard_focus && !disabled,
                         );
+                    }
+                }
+                widget::TOOLBAR => {
+                    if let Some(toolbar) = &node.toolbar {
+                        toolbar.paint(p, disabled);
                     }
                 }
                 widget::SCROLLBAR => {

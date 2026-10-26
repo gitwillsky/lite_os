@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 
 from apk_cache import SOURCE, download
+from classic_assets import fonts as classic_fonts
 from build_cache import (
     build_environment, cache_lock, fingerprint, manifest_matches, sha256, publish_directory, publish_runtime_gate, runtime_gate_hit,
     runtime_gate_payload, temporary_directory, write_manifest,
@@ -171,7 +172,7 @@ def install(image: Path, tool_root: Path, probe: Path, xkb_check: Path, shell_pr
     script.write_text(SCRIPT)
     inittab = directory / "inittab"
     inittab.write_text((ROOT / "user/base/inittab").read_text() + "::once:/bin/sh /var/tmp/wayland.sh\n")
-    sources += [(ROOT / "assets/fonts" / name, "/var/tmp/ui-fonts/" + name) for name in ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf")]
+    sources += [(path, "/var/tmp/ui-fonts/" + path.name) for path in classic_fonts()]
     sources += [(ui_probe, "/bin/ui-probe"), (shell_probe, "/bin/logon"), (probe, "/bin/wayland-probe"), (xkb_check, "/bin/xkb-check"), (script, "/var/tmp/wayland.sh"), (inittab, "/etc/inittab")]
     install_files(image, sources, directory)
 
@@ -535,7 +536,7 @@ def main() -> int:
         stamp = ROOT / "target" / "verify-gates" / "wayland-aarch64.json"
         payload = runtime_gate_payload(
             "wayland", RECIPE_VERSION,
-            (image, probe, shell_probe, ui_probe, session_probe, xkb_check, listener_check, *(ROOT / "assets/fonts" / name for name in ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf")), *archives, ROOT / "scripts/fixtures/wayland/xkb-check.c", ROOT / "scripts/display_gate.py", ROOT / "scripts/qemu_gate.py", Path(__file__).resolve()),
+            (image, probe, shell_probe, ui_probe, session_probe, xkb_check, listener_check, *classic_fonts(), *archives, ROOT / "scripts/fixtures/wayland/xkb-check.c", ROOT / "scripts/display_gate.py", ROOT / "scripts/qemu_gate.py", Path(__file__).resolve()),
         )
         if runtime_gate_hit(stamp, payload, (image,)):
             print("wayland verification cache hit")

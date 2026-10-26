@@ -1,7 +1,12 @@
 use canvas::Rect;
+
+use crate::Bitmap;
 use classic_theme::{Edge, SystemColor};
 
-use crate::painter::{Ink, Painter};
+use crate::{
+    FontRole,
+    painter::{Ink, Painter},
+};
 
 /// 按钮的瞬时状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -215,42 +220,100 @@ impl Painter<'_> {
     ///
     /// 除最后一个外，面板宽度由文字量出（文字宽 + 左右留白），最后一个占满剩余；总宽放不下时按比例缩窄，
     /// 每段文字都截断在自己的面板内，所以语言、字体或数值位数变化都不会画出面板。
-    pub fn status_bar(&mut self, rect: Rect, panes: &[&str]) {
+    pub fn status_bar(&mut self, rect: Rect, panes: &[&str], layout: StatusLayout<'_>) {
+        self.with_role(FontRole::Status, |p| {
+            p.status_bar_in_font(rect, panes, layout)
+        })
+    }
+
+    /// 各分格宽度：有 `parts` 时按 SB_SETPARTS（正数固定宽，-1 占满剩余）；否则按文字宽度，最后一格占满。
+    fn status_widths(&self, width: i32, panes: &[&str], parts: &[i32]) -> Vec<i32> {
         const PADDING: i32 = 16;
         const MINIMUM: i32 = 40;
+        if !parts.is_empty() {
+            let fixed: i32 = parts.iter().filter(|part| **part > 0).sum();
+            let stretch = (width - fixed).max(0);
+            return parts
+                .iter()
+                .map(|part| if *part > 0 { *part } else { stretch })
+                .collect();
+        }
         let wanted: Vec<i32> = panes
             .iter()
             .map(|text| (self.logical_ceil(self.text_width(text, false)) + PADDING).max(MINIMUM))
             .collect();
         let leading: i32 = wanted[..wanted.len().saturating_sub(1)].iter().sum();
-        let room = (rect.width - MINIMUM).max(0);
+        let room = (width - MINIMUM).max(0);
+        let mut used = 0;
+        wanted
+            .iter()
+            .enumerate()
+            .map(|(index, wanted)| {
+                let width = if index + 1 == panes.len() {
+                    width - used
+                } else if leading > room {
+                    wanted * room / leading
+                } else {
+                    *wanted
+                };
+                used += width;
+                width
+            })
+            .collect()
+    }
+
+    fn status_bar_in_font(&mut self, rect: Rect, panes: &[&str], layout: StatusLayout<'_>) {
+        // 尺寸手柄占据右下角一个滚动条宽度，分格不伸进去（comctl32 SBARS_SIZEGRIP）。
+        let grip = if layout.grip { SCROLLBAR_WIDTH } else { 0 };
+        let widths = self.status_widths(rect.width - grip, panes, layout.parts);
         let mut x = rect.x;
-        for (index, text) in panes.iter().enumerate() {
-            let last = index + 1 == panes.len();
-            let width = if last {
-                rect.right() - x
-            } else if leading > room {
-                wanted[index] * room / leading
-            } else {
-                wanted[index]
-            };
+        for (index, (text, width)) in panes.iter().zip(widths).enumerate() {
             let pane = Rect::new(x + 1, rect.y + 1, (width - 2).max(0), rect.height - 2);
             self.edge(pane, Edge::SunkenOuter);
+            let mut left = pane.x + 4;
+            if let Some(icon) = layout.icons.get(index).copied().flatten() {
+                icon.paint(self, pane.x + 2, pane.y + (pane.height - icon.height()) / 2);
+                left = pane.x + 2 + icon.width() + 2;
+            }
             let y = pane.y + (pane.height - self.line_height()) / 2;
             self.text_fit(
-                pane.x + 4,
+                left,
                 y,
-                pane.width - 8,
+                pane.right() - 4 - left,
                 text,
                 Ink::Color(SystemColor::ButtonText),
                 false,
             );
             x += width;
         }
+        if layout.grip {
+            self.size_grip(rect);
+        }
+    }
+
+    /// 状态栏右下角的尺寸手柄：三组 45° 斜线，每组两条阴影线加一条高光线（comctl32 的 Marlett “o”）。
+    fn size_grip(&mut self, rect: Rect) {
+        let (x, y) = (rect.right() - 2, rect.bottom() - 2);
+        let diagonal = |p: &mut Self, length: i32, color| {
+            for step in 0..=length {
+                p.fill(Rect::new(x - length + step, y - step, 1, 1), color);
+            }
+        };
+        for offset in (1..11).step_by(4) {
+            diagonal(self, offset, SystemColor::ButtonShadow);
+            diagonal(self, offset + 1, SystemColor::ButtonShadow);
+        }
+        for offset in (3..13).step_by(4) {
+            diagonal(self, offset, SystemColor::ButtonHilight);
+        }
     }
 
     /// 工具提示：`INFOBK` 底、黑色 1 像素框、四周留 2 像素。
     pub fn tooltip(&mut self, x: i32, y: i32, text: &str) -> Rect {
+        self.with_role(FontRole::Status, |p| p.tooltip_in_font(x, y, text))
+    }
+
+    fn tooltip_in_font(&mut self, x: i32, y: i32, text: &str) -> Rect {
         let width = self.logical_ceil(self.text_width(text, false)) + 2 * 3;
         let rect = Rect::new(x, y, width, self.line_height() + 2 * 3);
         self.fill(rect, SystemColor::InfoWindow);
@@ -409,4 +472,13 @@ impl Painter<'_> {
             }
         });
     }
+}
+
+/// 状态栏的分格与装饰：`parts` 为 SB_SETPARTS 式宽度（空则按文字），`icons` 为各格左侧图标（SB_SETICON），
+/// `grip` 画右下角尺寸手柄。
+#[derive(Clone, Copy, Default)]
+pub struct StatusLayout<'a> {
+    pub parts: &'a [i32],
+    pub icons: &'a [Option<&'a Bitmap>],
+    pub grip: bool,
 }

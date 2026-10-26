@@ -123,6 +123,60 @@ fn decode_path(value: &str) -> io::Result<PathBuf> {
     Ok(path)
 }
 
+/// 回收站根条目的 Trash 1.0 信息：原路径与删除时刻。
+pub struct TrashInfo {
+    pub original: PathBuf,
+    /// 删除时刻（Unix 秒）；`DeletionDate` 缺失或格式不符时为 `None`，不影响还原。
+    pub deleted: Option<i64>,
+}
+
+/// 读取回收站根条目 `path` 的信息文件。
+///
+/// # Errors
+///
+/// 信息文件不可读、缺少 `[Trash Info]` 头或 `Path=`，或路径编码损坏。
+pub fn trash_info_of(home: &Path, path: &Path) -> io::Result<TrashInfo> {
+    let text = fs::read_to_string(info_path(home, path)?)?;
+    if text.lines().next() != Some("[Trash Info]") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "回收站信息文件损坏",
+        ));
+    }
+    let value = |key: &str| text.lines().skip(1).find_map(|line| line.strip_prefix(key));
+    let original = value("Path=")
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "回收站缺少原路径"))?;
+    Ok(TrashInfo {
+        original: decode_path(original)?,
+        deleted: value("DeletionDate=").and_then(deletion_date),
+    })
+}
+
+/// Trash 1.0 的 `DeletionDate`（本地时间 `YYYY-MM-DDThh:mm:ss`）换成 Unix 秒。
+fn deletion_date(value: &str) -> Option<i64> {
+    let (date, time) = value.split_once('T')?;
+    let mut date = date.splitn(3, '-').map(str::parse::<i64>);
+    let (year, month, day) = (date.next()?.ok()?, date.next()?.ok()?, date.next()?.ok()?);
+    let mut time = time.splitn(3, ':').map(str::parse::<i64>);
+    let (hour, minute, second) = (time.next()?.ok()?, time.next()?.ok()?, time.next()?.ok()?);
+    if !(1..=12).contains(&month)
+        || !(1..=i64::from(calendar::days_in_month(year, month as u32))).contains(&day)
+        || !(0..24).contains(&hour)
+        || !(0..60).contains(&minute)
+        || !(0..=60).contains(&second)
+    {
+        return None;
+    }
+    let days = calendar::days_from_civil(calendar::Date {
+        year,
+        month: month as u32,
+        day: day as u32,
+    });
+    Some(calendar::zone::from_local(
+        days * 86_400 + hour * 3600 + minute * 60 + second,
+    ))
+}
+
 /// 将条目移入 home trash；信息按 Trash 1.0 写入，已在回收站内的条目永久删除。
 /// 原生名称以 URL 字节编码记录，先独占创建信息文件，再原子移动且禁止覆盖。
 /// I/O 或跨卷失败保留源条目并删除本次信息文件；不会覆盖其他进程的同名条目。
@@ -220,24 +274,11 @@ pub fn restore(home: &Path, path: &Path) -> io::Result<PathBuf> {
             "只能还原回收站根条目",
         ));
     }
-    let info = info_path(home, path)?;
-    let text = fs::read_to_string(&info)?;
-    if text.lines().next() != Some("[Trash Info]") {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "回收站信息文件损坏",
-        ));
-    }
-    let original = text
-        .lines()
-        .skip(1)
-        .find_map(|line| line.strip_prefix("Path="))
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "回收站缺少原路径"))?;
-    let original = decode_path(original)?;
+    let original = trash_info_of(home, path)?.original;
     let parent = original.parent().unwrap_or(Path::new("/"));
     fs::create_dir_all(parent)?;
     let target = move_unique(path, parent, file_name(&original)?)?;
-    fs::remove_file(info)?;
+    fs::remove_file(info_path(home, path)?)?;
     Ok(target)
 }
 /// 清空 home trash，返回已删除根条目数；任何 I/O 错误立即返回。
@@ -363,6 +404,21 @@ pub fn rename(path: &Path, new_name: &str) -> io::Result<PathBuf> {
     Ok(target)
 }
 /// 在目录里原子创建“新建文件夹”，同名时增加序号；I/O 失败返回错误。
+/// 在 `dir` 中独占创建空文件 `name`（重名时按“name (2)”编号），对应外壳“新建 → 文本文档”。
+pub fn new_file(dir: &Path, name: &str) -> io::Result<PathBuf> {
+    loop {
+        let target = free_name(dir, OsStr::new(name))?;
+        match OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&target)
+        {
+            Ok(_) => return Ok(target),
+            Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    }
+}
 pub fn new_folder(dir: &Path) -> io::Result<PathBuf> {
     loop {
         let target = free_name(dir, OsStr::new("新建文件夹"))?;

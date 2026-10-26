@@ -170,6 +170,9 @@ impl Tree {
             return CursorShape::Default;
         };
         let node = &self.nodes[&id];
+        if node.kind == widget::LINK {
+            return CursorShape::Pointer;
+        }
         if matches!(node.kind, widget::EDIT | widget::TEXT_EDITOR)
             || node
                 .label_edit

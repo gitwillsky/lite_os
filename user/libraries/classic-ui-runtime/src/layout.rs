@@ -27,8 +27,24 @@ impl Tree {
     }
     fn natural(&self, id: u64, available_width: i32, font: &Painter<'_>, scale: i32) -> (i32, i32) {
         let node = &self.nodes[&id];
-        let line = font.line_height();
-        let width = (font.text_width(node.text(), false) + scale - 1) / scale + 12;
+        // 标签/链接可指定派生字体：度量必须与绘制使用同一份解析结果。
+        let custom = node
+            .logical_font(&font.theme().fonts)
+            .map(|logical| font.fonts().custom(&logical));
+        let line = custom.as_ref().map_or_else(
+            || font.line_height(),
+            |face| {
+                let (ascent, descent) = face.metrics();
+                (ascent + descent + scale - 1) / scale
+            },
+        );
+        let measure = |text: &str| {
+            custom.as_ref().map_or_else(
+                || font.text_width(text, false),
+                |face| face.measure(text, false),
+            )
+        };
+        let width = (measure(node.text()) + scale - 1) / scale + 12;
         let children: Vec<_> = node
             .children
             .iter()
@@ -70,18 +86,46 @@ impl Tree {
                 } else {
                     available_width
                 };
+                let inner = (width - node.layout.padding * 2).max(0);
+                let height = match &custom {
+                    Some(face) => {
+                        typeface::wrap(node.text(), inner * scale, |ch| {
+                            face.glyph(ch, false).advance
+                        })
+                        .len() as i32
+                            * line
+                    }
+                    None => font.wrapped_height(inner, node.text(), false),
+                };
+                (width, height)
+            }
+            widget::LINK => (width - 12, line),
+            widget::COMBO => (160, line + 10),
+            widget::LIST | widget::TREE | widget::TEXT_EDITOR | widget::CANVAS => (160, 100),
+            widget::TABS => (160, 120),
+            widget::TOOLBAR => node
+                .toolbar
+                .as_ref()
+                .map_or((0, line), |toolbar| toolbar.natural(font)),
+            widget::IMAGE => node
+                .image
+                .as_ref()
+                .map_or((32, 32), |image| (image.width(), image.height())),
+            widget::REBAR => {
+                let (left, _, right, _) = super::rebar::Rebar::content_inset();
+                // 与带区布局一致：隐藏的带区（如关闭的地址栏）不占行。
+                let sizes: Vec<_> = children
+                    .iter()
+                    .filter(|id| self.nodes[*id].visible())
+                    .map(|id| self.natural(*id, available_width, font, scale))
+                    .collect();
                 (
-                    width,
-                    font.wrapped_height(
-                        (width - node.layout.padding * 2).max(0),
-                        node.text(),
-                        false,
+                    sizes.iter().map(|size| size.0).max().unwrap_or(0) + left + right,
+                    super::rebar::Rebar::height(
+                        &sizes.iter().map(|size| size.1).collect::<Vec<_>>(),
                     ),
                 )
             }
-            widget::LIST | widget::TREE | widget::TEXT_EDITOR | widget::CANVAS => (160, 100),
-            widget::TABS => (160, 120),
-            widget::IMAGE => (32, 32),
             widget::CALENDAR => (224, (line + 7) * 8),
             widget::MENU_BAR => (width, line + 4),
             _ => (width, line + 10),
@@ -286,6 +330,9 @@ impl Tree {
             if let Some(editor) = &mut node.editor {
                 editor.layout(rect, font);
             }
+            if let Some(toolbar) = &mut node.toolbar {
+                toolbar.layout(rect, font);
+            }
             let kind = node.kind;
             let nested = node.children.clone();
             let selected = node.selected;
@@ -294,6 +341,34 @@ impl Tree {
                 let top = font.line_height() + 8;
                 inner.y += top;
                 inner.height = (inner.height - top).max(0);
+            }
+            if kind == widget::REBAR {
+                let bands: Vec<u64> = nested
+                    .iter()
+                    .copied()
+                    .filter(|band| self.nodes[band].visible())
+                    .collect();
+                let heights: Vec<i32> = bands
+                    .iter()
+                    .map(|band| self.natural(*band, rect.width, font, scale).1)
+                    .collect();
+                let areas = self
+                    .nodes
+                    .get_mut(&id)
+                    .and_then(|node| node.rebar.as_mut())
+                    .map(|rebar| rebar.layout(rect, &heights))
+                    .unwrap_or_default();
+                for (band, area) in bands.into_iter().zip(areas) {
+                    self.place_children(
+                        &[band],
+                        area,
+                        intersect(area, intersection),
+                        false,
+                        0,
+                        font,
+                    );
+                }
+                continue;
             }
             if kind == widget::TABS {
                 inner = node.tabs.page_area();

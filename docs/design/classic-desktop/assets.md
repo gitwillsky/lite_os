@@ -38,9 +38,14 @@
 | `boot-scene` | `ntoskrnl.exe:1`，640×480 **完整启动画面**，不是下方原创的中央 `boot-logo` |
 | `logon-banner` / `start-banner` | `msgina.dll:101`（413×72）/ `explorer.exe:157`（21×233） |
 | `toolbar-default` / `-hot` / `-disabled` | `browseui.dll:272` / `273` / `276`（940×20，47 帧，洋红 `#FF00FF` 为透明色，提取时转 alpha 0） |
+| `ie-toolbar-default` / `-hot` / `-disabled` | `browseui.dll:261` / `262` / `265`（320×20，16 帧；后退 0、前进 1、搜索 5、历史 12） |
+| `go-default` / `go-hot` | `browseui.dll:290` / `291`（地址栏“转到”箭头，单帧） |
+| `brand-22` / `brand-26` / `brand-38` | `browseui.dll:306` / `305` / `304`（品牌 logo，正方形帧竖排，首帧静止，其余为忙碌动画） |
+| `webview-left` / `webview-line` | `webvw.dll` 类型 23 `WVLEFT.BMP`（127×56 水印）/ `WVLINE.GIF`（152×2 分隔线） |
+| `entire-network` / `desktop` | `shell32.dll:14`（整个网络）/ `shell32.dll:35`（桌面） |
 
 `liteos-logo` 沿用原创品牌图标。原版位图中烘焙的品牌文字不修改；动态文案始终为 LiteOS。
-仓库只提交原创默认素材；工具栏位图条与上表中新增的文件类型图标只有本地原版，`shell_bitmaps()` 取两个目录按文件名的并集，缺失时界面不画该图标。
+仓库只提交原创默认素材；工具栏位图条、品牌 logo、Web 视图位图与上表中新增的外壳图标只有本地原版，`shell_bitmaps()` 取两个目录按文件名的并集，缺失时界面不画该图标。
 
 原版默认光标来源是 `user32.dll` 的 group cursor：`arrow:100`、`text:101`、`busy:102`、
 `precision:103`、`resize-ns:104`、`resize-nwse:105`、`resize-nesw:106`、`resize-ew:107`、
@@ -163,11 +168,13 @@
 
 ## 字体（`assets/fonts/`）
 
-| 用途 | 倍率 | 文件 | 许可证文件 | 置信度 |
+映射表 `fontmap.ini` 与下列字体一起安装到 `/usr/share/liteos/fonts`；本地原版同名文件优先并加入 `simsun.ttc`。
+
+| 用途 | 字号 | 文件 | 许可证文件 | 置信度 |
 |---|---|---|---|---|
-| 中文界面字体（宋体替代） | 1x | `wenquanyi_9pt.bdf`：文泉驿点阵宋体 12 像素点阵，30503 字 | `WenQuanYi-LICENSE`（GPL-2.0 + 字体嵌入例外） | 确定 |
-| 中文界面字体（宋体替代） | 2x 及以上 | `ar-pl-uming-cn.ttf`：文鼎 PL 明体 CN 轮廓，24232 个码位 | `ARPHICPL.TXT`（Arphic Public License，原样保留） | 确定 |
-| 西文界面字体（Tahoma 替代） | 全部 | `tahoma.ttf`、`tahomabd.ttf`（Wine 11.16 由 `tahoma.sfd`、`tahomabd.sfd` 构建） | `Wine-Tahoma-LICENSE`（LGPL-2.1+） | 确定 |
+| 宋体的可分发替代（12 像素点阵） | 12 ppem | `wenquanyi_9pt.bdf`：文泉驿点阵宋体 12 像素点阵，30503 字 | `WenQuanYi-LICENSE`（GPL-2.0 + 字体嵌入例外） | 确定 |
+| 宋体的可分发替代（轮廓） | 其余 ppem | `ar-pl-uming-cn.ttf`：文鼎 PL 明体 CN 轮廓，24232 个码位 | `ARPHICPL.TXT`（Arphic Public License，原样保留） | 确定 |
+| Tahoma 的可分发替代 | 全部 | `tahoma.ttf`、`tahomabd.ttf`（Wine 11.16 由 `tahoma.sfd`、`tahomabd.sfd` 构建） | `Wine-Tahoma-LICENSE`（LGPL-2.1+） | 确定 |
 | 等宽字体（开机文本、命令提示符） | 全部 | 现有 `terminal-font`，整数放大 | 仓库已有 | 确定 |
 
 来源（均为上游原始包，不含发行版补丁）：
@@ -184,18 +191,25 @@
 LiteOS 不分发它们；1x 改用来源清楚的文泉驿点阵。
 
 选择依据（2026-10-24 对比渲染，脚本在工程内 `.local/spikes/classic-desktop/scripts/font-compare.py`）：
+文泉驿点阵宋体最接近宋体 9 磅的点阵观感；文鼎 PL 明体 CN 轮廓比文鼎 PL 宋体 GB 更干净。
 
-1. 1x：文泉驿点阵宋体最接近宋体 9 磅的点阵观感；文鼎 PL 宋体 GB（`gbsn00lp`）在 12 像素下笔画粗细不均、字形歪斜，淘汰。
-2. 2x：文鼎 PL 明体 CN 轮廓比文鼎 PL 宋体 GB 更干净。
-3. 中文字体自带的拉丁字母明显不如 Tahoma，界面中的拉丁字母、数字与符号一律由 Tahoma 渲染。
+字体映射与渲染按 Windows 2000 GDI（实现见 `typeface::FontCatalog`）：
 
-渲染规则：
-
-1. 1x 关闭抗锯齿，只输出 0/255 覆盖率；2x 及以上开启灰度抗锯齿。
-2. 中文字体没有粗体，按字体类型合成：1x 点阵与 Windows GDI 对点阵字的做法一致，同一字形右移 1 像素叠印；
-   2x 及以上对轮廓做真正的轮廓加粗（每个顶点沿斜接方向外移，笔画总共加粗 `字号 / 24` 像素，advance 同量增加），
-   因此没有重影。拉丁字母的粗体直接用 `tahomabd.ttf`。
-3. 字体必须作为独立数据文件随系统分发并在运行时加载，不得用 `include_bytes!` 等方式编入程序二进制：
+1. 界面文字只使用主题 `[Fonts]` 中的逻辑字体（标题/小标题/菜单/状态栏/消息/图标字体，字体名、磅值、粗细），
+   默认值是简中 Win2000 的宋体 9 磅（标题粗体）。代码中不写字体文件或字号。
+2. 字体目录扫描得到按 `name` 表家族名（中英文、TTC 各成员）索引的字体表；`fontmap.ini` 的 `[FontSubstitutes]`
+   在字体名未安装时替换，`[SystemLink]` 是缺字回退链。原版 `simsun.ttc` 缺失时，宋体经链接由文泉驿点阵
+   （12 像素）与文鼎明体（轮廓）提供；原版存在时它们只补缺字。
+3. ppem = 磅值 × 96 × 倍率 / 72；字体有该 ppem 的点阵（BDF 像素尺寸相等，或 EBLC/EBDT 索引格式 1–5、图像格式 1/2/5）
+   即用点阵，否则用轮廓。度量取首个可用字体的 OS/2 winAscent/winDescent（宋体 9 磅为 10+2）。
+4. 轮廓按“平滑屏幕字体边缘”（主题 `FontSmoothing`，Win2000 默认 0）输出单色或灰度。字体没有粗体成员时合成粗体：
+   点阵右移 1 像素叠印，轮廓沿斜接方向加粗 `ppem / 24` 像素。
+5. 带 `fpgm`/`prep`/`cvt` 的 TrueType 字体按 TrueType 指令集执行 hinting（`typeface::hinting`，语义对齐 FreeType v35、
+   GETINFO 报告 35）：每字体执行一次 fpgm，每 ppem 执行 prep，每字形加四个幻影点执行字形指令，复合字形逐组件 hinting；
+   距离与插值使用 16.16 定点和字体单位坐标。单色输出用 TrueType 扫描转换：像素中心规则 + 字体 SCANCTRL/SCANTYPE 指定的
+   丢点控制（左/下侧补点、两侧已亮不补、1/5 排除残桩）。程序出错时退回未 hinting 的轮廓。
+   对照（2026-10-26，宋体 12 像素与 Tahoma 8/10 磅可见 ASCII）：多数字形与 FreeType v35 单色逐像素一致，其余差 1–2 像素。
+6. 字体必须作为独立数据文件随系统分发并在运行时加载，不得用 `include_bytes!` 等方式编入程序二进制：
    GPL 字体嵌入例外只覆盖"文档"，不明确覆盖程序。字体源码（BDF、SFD）与许可证随字体文件一起分发。
 
 ## 声音（`assets/classic/sounds-src/`）

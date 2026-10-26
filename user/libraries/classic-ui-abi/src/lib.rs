@@ -120,6 +120,14 @@ pub mod widget {
     pub const GROUP: u32 = 18;
     pub const CALENDAR: u32 = 19;
     pub const POPUP_MENU: u32 = 20;
+    /// comctl32 平面工具栏：位图条按钮、分隔、下拉箭头与选择性文字。
+    pub const TOOLBAR: u32 = 21;
+    /// comctl32 ReBar：子控件为带区行，带把手、带区边线与品牌 logo。
+    pub const REBAR: u32 = 22;
+    /// 超链接文字：IE 链接色与下划线，手形光标，Tab 可聚焦，激活发出 ACTIVATE。
+    pub const LINK: u32 = 23;
+    /// ComboBoxEx（可编辑下拉）：项目用 tree_rows/row_icons 设置，选择发出 SELECT，收起时 Enter 发出 ACTIVATE。
+    pub const COMBO: u32 = 24;
 }
 /// 控件状态位；HIDDEN 不参与布局、命中和焦点。
 pub mod state {
@@ -156,6 +164,8 @@ pub mod event {
     pub const DISMISS: u32 = 18;
     pub const LABEL_EDITED: u32 = 19;
     pub const EXPAND: u32 = 20;
+    /// 工具栏下拉箭头按下（TBN_DROPDOWN）：value 为按钮标识，x/y/width/height 为按钮在窗口客户区的逻辑矩形。
+    pub const DROPDOWN: u32 = 21;
 }
 
 /// 事件中的 value 用于选择行标识；text 是一个已提交 Unicode scalar，0 表示没有文本。
@@ -253,6 +263,35 @@ pub struct RowIcon {
     pub name: Text,
 }
 
+/// 工具栏按钮的样式位（comctl32 BTNS_*）。
+pub mod toolbar {
+    pub const SEPARATOR: u32 = 1;
+    /// 分体下拉：按钮右侧独立的箭头部分。
+    pub const DROPDOWN: u32 = 2;
+    /// 整体下拉：整个按钮按下即弹出菜单。
+    pub const WHOLE_DROPDOWN: u32 = 4;
+    /// 复选按钮：选中时显示按下与抖动底。
+    pub const CHECK: u32 = 8;
+    /// 选择性文字：文字显示在图像右侧（TBSTYLE_LIST + BTNS_SHOWTEXT）。
+    pub const SHOW_TEXT: u32 = 16;
+    /// 状态位。
+    pub const DISABLED: u32 = 1;
+    pub const CHECKED: u32 = 2;
+}
+
+/// 一个工具栏按钮。`strip` 为位图条名，运行库读取 `<strip>-default-1x`、`-hot-1x`、`-disabled-1x` 三条，
+/// 每帧宽度等于位图高度，`frame` 为帧序号；文字与位图名在调用期间复制。
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ToolbarItem {
+    pub id: u64,
+    pub strip: Text,
+    pub frame: u32,
+    pub text: Text,
+    pub style: u32,
+    pub state: u32,
+}
+
 /// 滚动条/滑块范围；maximum 包含端点，page/step 至少为 1，vertical 只能为 0 或 1。
 #[repr(C)]
 #[derive(Clone, Copy, Debug)]
@@ -277,7 +316,9 @@ impl Default for Range {
     }
 }
 
-/// 菜单条目，id 非零；state bit0=禁用，bit1=勾选，bit2=上方分隔线。
+/// 菜单条目，id 在同一菜单内唯一且非零；state bit0=禁用，bit1=勾选，bit2=上方分隔线，bit3=默认项（粗体）。
+/// `parent` 为 0 表示菜单的直接条目，否则是同一菜单中排在前面的父条目 id：
+/// 有子条目的条目是级联子菜单，只展开、不产生命令；嵌套最多 `MENU_DEPTH` 层。
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct MenuItem {
@@ -285,7 +326,10 @@ pub struct MenuItem {
     pub label: Text,
     pub shortcut: Text,
     pub state: u32,
+    pub parent: u64,
 }
+/// 菜单（含顶层下拉菜单）的最大嵌套层数。
+pub const MENU_DEPTH: usize = 4;
 /// 顶层菜单；条目和所有文本仅在 set_menus 调用期间借用。
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -408,8 +452,8 @@ pub struct Api {
     /// 由同一控件几何返回指针当前命中的稳定行 ID，零表示空白。
     pub pointed_row: unsafe extern "C" fn(*mut c_void, u64, u64, *mut u64) -> i32,
 
-    /// 在当前指针处显示 PopupMenu；位置由同一 Tree 的输入状态拥有。
-    pub popup: unsafe extern "C" fn(*mut c_void, u64, u64) -> i32,
+    /// 显示 PopupMenu：anchored 为 0 时在当前指针处，为 1 时左上角放在客户区逻辑坐标 (x, y)（工具栏下拉）。
+    pub popup: unsafe extern "C" fn(*mut c_void, u64, u64, i32, i32, u32) -> i32,
     /// 列表原地重命名：action=0 开始，1 接受，2 恢复编辑；开始时复制 text，结果可通过 read_text 查询。
     pub edit_label: unsafe extern "C" fn(*mut c_void, u64, u64, u64, u32, Text) -> i32,
     /// 读取列表查看方式，不复制为应用可写状态。
@@ -426,4 +470,21 @@ pub struct Api {
         *const FileFilter,
         *mut u64,
     ) -> i32,
+    /// 设置工具栏按钮；标识非零且唯一，分隔项的标识也须唯一。
+    pub toolbar_items:
+        unsafe extern "C" fn(*mut c_void, u64, u64, *const ToolbarItem, usize) -> i32,
+    /// ReBar 品牌 logo 的忙碌动画：1 播放，0 回到静止首帧。
+    pub rebar_busy: unsafe extern "C" fn(*mut c_void, u64, u64, u32) -> i32,
+    /// 标签/链接字体：role 为系统字体用途 0 标题、1 小标题、2 菜单、3 状态栏、4 消息、5 图标；
+    /// points、weight 为 0 时沿用该用途字体的值（Web 视图标题为 菜单, 14, 700）。
+    pub set_font: unsafe extern "C" fn(*mut c_void, u64, u64, u32, u32, u32) -> i32,
+    /// 状态栏分格（SB_SETPARTS）：每格宽度为正数固定宽，至多一格为 -1 占满剩余；空数组恢复按文字分格。
+    /// 各格文字仍由 text 以制表符分隔，格图标用 row_icons（标识为从 1 起的格序号）。
+    pub status_parts: unsafe extern "C" fn(*mut c_void, u64, u64, *const i32, usize) -> i32,
+    /// Column/Row 背景：rgb 为 0xRRGGBB，`NO_COLOR` 不填底色；bitmap 为系统界面位图名，空串不画；
+    /// 位图不缩放、不平铺地画在左上角（CSS `background: color url() no-repeat`）。
+    pub background: unsafe extern "C" fn(*mut c_void, u64, u64, u32, Text) -> i32,
 }
+
+/// [`Api::background`] 中表示不填底色的值。
+pub const NO_COLOR: u32 = u32::MAX;

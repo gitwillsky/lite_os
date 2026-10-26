@@ -2,7 +2,7 @@
 //!
 //! 所有读取都带边界检查，格式错误的字体只会让对应字形缺失，不会 panic。
 
-use std::ops::Range;
+use std::{ops::Range, sync::Arc};
 
 use crate::{FontError, Glyph};
 
@@ -56,21 +56,33 @@ pub(crate) struct Outline {
     pub contours: Vec<Vec<Point>>,
 }
 
-/// 已解析表目录的字体；持有整个文件的字节。
+/// 已解析表目录的字体；与同一 TTC 集合的其他成员共享整个文件的字节。
 pub struct Sfnt {
-    data: Vec<u8>,
+    data: Arc<[u8]>,
+    /// `name` 表 nameID 1（Windows 平台）的全部家族名，含中英文；字体映射按它匹配逻辑字体名。
+    families: Vec<String>,
+    /// OS/2 fsSelection 的粗体位；GDI 只在逻辑字体要求粗体而成员不是粗体时合成。
+    bold: bool,
     units_per_em: u16,
     long_loca: bool,
     glyph_count: u16,
     metric_count: u16,
     ascent: i16,
     descent: i16,
+    /// OS/2 usWinAscent / usWinDescent；GDI 以它们决定 tmAscent/tmDescent，缺少 OS/2 时用 hhea。
+    win_ascent: u16,
+    win_descent: u16,
     cmap: Option<(Range<usize>, u16)>,
     loca: Range<usize>,
     glyf: Range<usize>,
     hmtx: Range<usize>,
     eblc: Range<usize>,
     ebdt: Range<usize>,
+    fpgm: Range<usize>,
+    prep: Range<usize>,
+    cvt: Range<usize>,
+    /// maxp：maxStorage、maxFunctionDefs、maxStackElements、maxTwilightPoints。
+    limits: [usize; 4],
 }
 
 fn table(bytes: Bytes<'_>, directory: usize, count: usize, tag: &[u8; 4]) -> Option<Range<usize>> {
@@ -91,15 +103,39 @@ impl Sfnt {
     ///
     /// 不是 TrueType 轮廓的 sfnt，或缺少 `head`/`hhea`/`maxp`/`cmap`，或字段越界。
     pub fn parse(data: Vec<u8>) -> Result<Self, FontError> {
+        Self::parse_at(Arc::from(data), 0)
+    }
+
+    /// 解析单个字体或 TTC 集合的全部成员；成员共享文件字节，表偏移均相对文件起点。
+    ///
+    /// # Errors
+    ///
+    /// 集合头越界，或任一成员按 [`Sfnt::parse`] 的规则无效。
+    pub fn parse_collection(data: Vec<u8>) -> Result<Vec<Self>, FontError> {
+        let data: Arc<[u8]> = Arc::from(data);
         let bytes = Bytes(&data);
-        let version = bytes.u32(0).ok_or(FontError::Truncated)?;
+        if bytes.u32(0) != Some(0x7474_6366) {
+            return Ok(vec![Self::parse_at(data, 0)?]);
+        }
+        let count = bytes.u32(8).ok_or(FontError::Truncated)? as usize;
+        (0..count)
+            .map(|index| {
+                let offset = bytes.u32(12 + index * 4).ok_or(FontError::Truncated)? as usize;
+                Self::parse_at(data.clone(), offset)
+            })
+            .collect()
+    }
+
+    fn parse_at(data: Arc<[u8]>, start: usize) -> Result<Self, FontError> {
+        let bytes = Bytes(&data);
+        let version = bytes.u32(start).ok_or(FontError::Truncated)?;
         if !matches!(version, 0x0001_0000 | 0x7472_7565) {
             return Err(FontError::Unsupported(
                 "only TrueType outlines (sfnt version 1.0) are supported",
             ));
         }
-        let count = bytes.u16(4).ok_or(FontError::Truncated)? as usize;
-        let find = |tag: &[u8; 4]| table(bytes, 12, count, tag);
+        let count = bytes.u16(start + 4).ok_or(FontError::Truncated)? as usize;
+        let find = |tag: &[u8; 4]| table(bytes, start + 12, count, tag);
         let required = |tag: &[u8; 4]| {
             find(tag).ok_or(FontError::MissingTable(
                 String::from_utf8_lossy(tag).into_owned(),
@@ -120,7 +156,28 @@ impl Sfnt {
         if units_per_em == 0 {
             return Err(FontError::Unsupported("unitsPerEm is zero"));
         }
+        let families = find(b"name").map_or_else(Vec::new, |name| family_names(Bytes(&data[name])));
+        let bold = find(b"OS/2")
+            .and_then(|os2| Bytes(&data[os2]).u16(62))
+            .map_or_else(
+                || field(&head, 44).is_ok_and(|style| style & 1 != 0),
+                |selection| selection & 0x20 != 0,
+            );
+        let hhea_ascent = field(&hhea, 4)? as i16;
+        let hhea_descent = field(&hhea, 6)? as i16;
+        let (win_ascent, win_descent) = find(b"OS/2")
+            .and_then(|os2| {
+                Some((
+                    Bytes(&data[os2.clone()]).u16(74)?,
+                    Bytes(&data[os2]).u16(76)?,
+                ))
+            })
+            .unwrap_or((hhea_ascent.max(0) as u16, hhea_descent.unsigned_abs()));
         Ok(Self {
+            families,
+            bold,
+            win_ascent,
+            win_descent,
             long_loca: field(&head, 50)? != 0,
             glyph_count: field(&maxp, 4)?,
             metric_count: field(&hhea, 34)?,
@@ -133,6 +190,10 @@ impl Sfnt {
             hmtx: find(b"hmtx").unwrap_or_default(),
             eblc: find(b"EBLC").unwrap_or_default(),
             ebdt: find(b"EBDT").unwrap_or_default(),
+            fpgm: find(b"fpgm").unwrap_or_default(),
+            prep: find(b"prep").unwrap_or_default(),
+            cvt: find(b"cvt ").unwrap_or_default(),
+            limits: [18, 20, 24, 16].map(|offset| field(&maxp, offset).map_or(0, usize::from)),
             units_per_em,
             data,
         })
@@ -142,6 +203,16 @@ impl Sfnt {
         Bytes(&self.data[range.clone()])
     }
 
+    /// 家族名（中英文）；字体映射按不区分大小写的完整名称匹配。
+    pub fn families(&self) -> &[String] {
+        &self.families
+    }
+
+    /// 字体成员本身是否为粗体。
+    pub fn is_bold(&self) -> bool {
+        self.bold
+    }
+
     pub fn units_per_em(&self) -> u16 {
         self.units_per_em
     }
@@ -149,6 +220,11 @@ impl Sfnt {
     /// `(ascent, descent)`，font unit；descent 为负。
     pub fn vertical_metrics(&self) -> (i16, i16) {
         (self.ascent, self.descent)
+    }
+
+    /// GDI 文本度量使用的 (winAscent, winDescent)，单位 font unit，descent 为正。
+    pub fn windows_metrics(&self) -> (u16, u16) {
+        (self.win_ascent, self.win_descent)
     }
 
     /// 码位对应的 glyph id；未收录返回 `None`（`.notdef` 不算收录）。
@@ -224,50 +300,15 @@ impl Sfnt {
         if contours >= 0 {
             return append_simple(data, contours as usize, matrix, outline);
         }
-        let mut offset = 10;
-        loop {
-            let flags = data.u16(offset)?;
-            let component = data.u16(offset + 2)?;
-            offset += 4;
-            let (dx, dy) = if flags & 1 != 0 {
-                let pair = (data.i16(offset)? as f32, data.i16(offset + 2)? as f32);
-                offset += 4;
-                pair
-            } else {
-                let pair = (
-                    data.u8(offset)? as i8 as f32,
-                    data.u8(offset + 1)? as i8 as f32,
-                );
-                offset += 2;
-                pair
-            };
-            // 点对齐的复合（ARGS_ARE_XY_VALUES 未置位）需要先算出父字形的点，不支持。
-            if flags & 2 == 0 {
+        let (components, _) = parse_composite(data)?;
+        for component in components {
+            // 点对齐的复合（ARGS_ARE_XY_VALUES 未置位）需要先算出父字形的点，只在 hinting 路径中支持。
+            if component.flags & 2 == 0 {
                 return None;
             }
-            let f2dot14 = |at: usize| data.i16(at).map(|value| f32::from(value) / 16384.0);
-            let local = if flags & 0x08 != 0 {
-                let scale = f2dot14(offset)?;
-                offset += 2;
-                [scale, 0.0, 0.0, scale]
-            } else if flags & 0x40 != 0 {
-                let (x, y) = (f2dot14(offset)?, f2dot14(offset + 2)?);
-                offset += 4;
-                [x, 0.0, 0.0, y]
-            } else if flags & 0x80 != 0 {
-                let values = [
-                    f2dot14(offset)?,
-                    f2dot14(offset + 2)?,
-                    f2dot14(offset + 4)?,
-                    f2dot14(offset + 6)?,
-                ];
-                offset += 8;
-                values
-            } else {
-                [1.0, 0.0, 0.0, 1.0]
-            };
+            let (dx, dy) = (component.arguments.0 as f32, component.arguments.1 as f32);
             let [a, b, c, d, e, f] = matrix;
-            let [la, lb, lc, ld] = local;
+            let [la, lb, lc, ld] = component.matrix;
             // 子字形先应用 local 再平移 (dx, dy)，最后应用父矩阵。
             let combined = [
                 a * la + c * lb,
@@ -277,10 +318,65 @@ impl Sfnt {
                 a * dx + c * dy + e,
                 b * dx + d * dy + f,
             ];
-            self.append_outline(component, combined, depth + 1, budget, outline)?;
-            if flags & 0x20 == 0 {
-                return Some(());
-            }
+            self.append_outline(component.glyph, combined, depth + 1, budget, outline)?;
+        }
+        Some(())
+    }
+
+    /// hinting 用的原始字形；数据损坏返回 None。
+    pub(crate) fn glyph_source(&self, glyph: u16) -> Option<GlyphSource> {
+        if glyph >= self.glyph_count {
+            return None;
+        }
+        let Some(data) = self.glyph_data(glyph) else {
+            return Some(GlyphSource::Empty);
+        };
+        let contours = data.i16(0)?;
+        let x_min = i32::from(data.i16(2)?);
+        if contours >= 0 {
+            return Some(GlyphSource::Simple {
+                glyph: parse_simple(data, contours as usize)?,
+                x_min,
+            });
+        }
+        let (components, instructions) = parse_composite(data)?;
+        Some(GlyphSource::Composite {
+            components,
+            instructions,
+            x_min,
+        })
+    }
+
+    /// 左侧距（字体单位）。
+    pub(crate) fn left_side_bearing(&self, glyph: u16) -> Option<i16> {
+        let hmtx = self.bytes(&self.hmtx);
+        let long = usize::from(self.metric_count);
+        let index = usize::from(glyph);
+        if index < long {
+            hmtx.i16(index * 4 + 2)
+        } else {
+            hmtx.i16(long * 4 + (index - long) * 2)
+        }
+    }
+
+    /// 字体是否带有 hinting 程序（fpgm/prep/cvt 任一存在）。
+    pub(crate) fn hinted(&self) -> bool {
+        !self.fpgm.is_empty() || !self.prep.is_empty() || !self.cvt.is_empty()
+    }
+
+    /// hinting 的字体级数据。
+    pub(crate) fn hint_tables(&self) -> HintTables<'_> {
+        let cvt = self.bytes(&self.cvt);
+        HintTables {
+            fpgm: &self.data[self.fpgm.clone()],
+            prep: &self.data[self.prep.clone()],
+            cvt: (0..self.cvt.len() / 2)
+                .map(|index| cvt.i16(index * 2).unwrap_or(0))
+                .collect(),
+            max_storage: self.limits[0],
+            max_function_defs: self.limits[1],
+            max_stack: self.limits[2],
+            max_twilight: self.limits[3],
         }
     }
 
@@ -313,20 +409,147 @@ impl Sfnt {
                     continue;
                 }
                 let subtable = array + eblc.u32(entry + 4)? as usize;
-                // 内嵌点阵字形只支持 index format 1（4 字节偏移数组）。
-                if eblc.u16(subtable)? != 1 {
-                    return None;
-                }
-                let image_format = eblc.u16(subtable + 2)?;
-                let base = eblc.u32(subtable + 4)? as usize;
-                let slot = subtable + 8 + (glyph - first) as usize * 4;
-                let (start, end) = (eblc.u32(slot)? as usize, eblc.u32(slot + 4)? as usize);
-                let image = ebdt.slice(base.checked_add(start)?..base.checked_add(end)?)?;
-                return decode_small_metrics(image, image_format);
+                return self.strike_glyph(eblc, ebdt, subtable, first, glyph);
             }
         }
         None
     }
+}
+
+impl Sfnt {
+    /// 解码一个 EBLC 索引子表中的字形（OpenType EBLC 索引格式 1–5，EBDT 图像格式 1、2、5）。
+    ///
+    /// 格式 2/5 的索引子表给出统一图像尺寸与大度量，图像本身只有位连续的像素（图像格式 5）；
+    /// SimSun 的 12–18 ppem 点阵即为这种组合。不支持的组合返回 None，调用者退回轮廓。
+    fn strike_glyph(
+        &self,
+        eblc: Bytes<'_>,
+        ebdt: Bytes<'_>,
+        subtable: usize,
+        first: u16,
+        glyph: u16,
+    ) -> Option<Glyph> {
+        let index_format = eblc.u16(subtable)?;
+        let image_format = eblc.u16(subtable + 2)?;
+        let base = eblc.u32(subtable + 4)? as usize;
+        let position = usize::from(glyph - first);
+        let (range, metrics) = match index_format {
+            1 => {
+                let slot = subtable + 8 + position * 4;
+                (eblc.u32(slot)? as usize..eblc.u32(slot + 4)? as usize, None)
+            }
+            3 => {
+                let slot = subtable + 8 + position * 2;
+                (
+                    usize::from(eblc.u16(slot)?)..usize::from(eblc.u16(slot + 2)?),
+                    None,
+                )
+            }
+            2 | 5 => {
+                let size = eblc.u32(subtable + 8)? as usize;
+                let metrics = big_metrics(eblc.slice(subtable + 12..subtable + 20)?)?;
+                let index = if index_format == 2 {
+                    position
+                } else {
+                    let count = eblc.u32(subtable + 20)? as usize;
+                    (0..count).find(|k| eblc.u16(subtable + 24 + k * 2) == Some(glyph))?
+                };
+                let start = index.checked_mul(size)?;
+                (start..start.checked_add(size)?, Some(metrics))
+            }
+            4 => {
+                let count = eblc.u32(subtable + 8)? as usize;
+                let pair = (0..count).find(|k| eblc.u16(subtable + 12 + k * 4) == Some(glyph))?;
+                let at = subtable + 12 + pair * 4 + 2;
+                (
+                    usize::from(eblc.u16(at)?)..usize::from(eblc.u16(at + 4)?),
+                    None,
+                )
+            }
+            _ => return None,
+        };
+        let image = ebdt.slice(base.checked_add(range.start)?..base.checked_add(range.end)?)?;
+        match (image_format, metrics) {
+            (5, Some((width, height, left, top, advance))) => {
+                decode_bits(image.0, width, height, false).map(|coverage| Glyph {
+                    coverage,
+                    width,
+                    height,
+                    left,
+                    top,
+                    advance,
+                })
+            }
+            (1 | 2, _) => decode_small_metrics(image, image_format),
+            _ => None,
+        }
+    }
+}
+
+/// `name` 表中 Windows 平台（3）、Unicode 编码的 nameID 1，去重保序。
+fn family_names(name: Bytes<'_>) -> Vec<String> {
+    let (Some(count), Some(storage)) = (name.u16(2), name.u16(4)) else {
+        return Vec::new();
+    };
+    let mut families = Vec::new();
+    for index in 0..usize::from(count) {
+        let record = 6 + index * 12;
+        let fields = (0..6)
+            .map(|k| name.u16(record + k * 2))
+            .collect::<Option<Vec<_>>>();
+        let Some([platform, encoding, _, id, length, offset]) =
+            fields.as_deref().and_then(|f| <[u16; 6]>::try_from(f).ok())
+        else {
+            continue;
+        };
+        if platform != 3 || !matches!(encoding, 0 | 1) || id != 1 {
+            continue;
+        }
+        let start = usize::from(storage) + usize::from(offset);
+        let Some(raw) = name.slice(start..start + usize::from(length)) else {
+            continue;
+        };
+        let units: Vec<u16> = raw
+            .0
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|pair| u16::from_be_bytes(*pair))
+            .collect();
+        let family = String::from_utf16_lossy(&units);
+        if !family.is_empty() && !families.contains(&family) {
+            families.push(family);
+        }
+    }
+    families
+}
+
+/// EBLC/EBDT 大度量的水平部分：(宽, 高, 左侧距, 上侧距, 前进量)。
+fn big_metrics(bytes: Bytes<'_>) -> Option<(i32, i32, i32, i32, i32)> {
+    Some((
+        i32::from(bytes.u8(1)?),
+        i32::from(bytes.u8(0)?),
+        i32::from(bytes.u8(2)? as i8),
+        i32::from(bytes.u8(3)? as i8),
+        i32::from(bytes.u8(4)?),
+    ))
+}
+
+/// 1 位/像素位图转覆盖率；`byte_aligned` 为真时每行按字节对齐（图像格式 1），否则位连续。
+fn decode_bits(bits: &[u8], width: i32, height: i32, byte_aligned: bool) -> Option<Vec<u8>> {
+    let mut coverage = vec![0u8; (width * height) as usize];
+    for row in 0..height {
+        for column in 0..width {
+            let bit_index = if byte_aligned {
+                row as usize * (width as usize).div_ceil(8) * 8 + column as usize
+            } else {
+                (row * width + column) as usize
+            };
+            let set = bits.get(bit_index / 8)? >> (7 - bit_index % 8) & 1 != 0;
+            coverage[(row * width + column) as usize] = if set { 255 } else { 0 };
+        }
+    }
+    Some(coverage)
 }
 
 /// EBDT image format 1（字节对齐）与 2（位连续）：5 字节小度量后接 1 位/像素的位图。
@@ -337,19 +560,7 @@ fn decode_small_metrics(image: Bytes<'_>, format: u16) -> Option<Glyph> {
         i32::from(image.u8(3)? as i8),
         i32::from(image.u8(4)?),
     );
-    let bits = image.0.get(5..)?;
-    let mut coverage = vec![0u8; (width * height) as usize];
-    for row in 0..height {
-        for column in 0..width {
-            let bit_index = match format {
-                1 => row as usize * (width as usize).div_ceil(8) * 8 + column as usize,
-                2 => (row * width + column) as usize,
-                _ => return None,
-            };
-            let set = bits.get(bit_index / 8)? >> (7 - bit_index % 8) & 1 != 0;
-            coverage[(row * width + column) as usize] = if set { 255 } else { 0 };
-        }
-    }
+    let coverage = decode_bits(image.0.get(5..)?, width, height, format == 1)?;
     Some(Glyph {
         coverage,
         width,
@@ -360,22 +571,35 @@ fn decode_small_metrics(image: Bytes<'_>, format: u16) -> Option<Glyph> {
     })
 }
 
-fn append_simple(
-    data: Bytes<'_>,
-    contours: usize,
-    matrix: [f32; 6],
-    outline: &mut Outline,
-) -> Option<()> {
+/// 简单字形的原始数据：每个轮廓的末点序号、字体单位坐标与 on-curve 标志、字形指令。
+pub(crate) struct SimpleGlyph {
+    pub ends: Vec<usize>,
+    pub points: Vec<(i32, i32, bool)>,
+    pub instructions: Vec<u8>,
+}
+
+/// 解析 `glyf` 简单字形；数据越界或末点序号不递增返回 None。
+fn parse_simple(data: Bytes<'_>, contours: usize) -> Option<SimpleGlyph> {
     if contours == 0 {
-        return Some(());
+        return Some(SimpleGlyph {
+            ends: Vec::new(),
+            points: Vec::new(),
+            instructions: Vec::new(),
+        });
     }
     let mut ends = Vec::with_capacity(contours);
     for index in 0..contours {
-        ends.push(data.u16(10 + index * 2)? as usize);
+        let end = data.u16(10 + index * 2)? as usize;
+        if ends.last().is_some_and(|previous| end < *previous) {
+            return None;
+        }
+        ends.push(end);
     }
     let point_count = ends.last()? + 1;
-    let instructions = data.u16(10 + contours * 2)? as usize;
-    let mut cursor = 12 + contours * 2 + instructions;
+    let length = data.u16(10 + contours * 2)? as usize;
+    let start = 12 + contours * 2;
+    let instructions = data.0.get(start..start + length)?.to_vec();
+    let mut cursor = start + length;
     let mut flags = Vec::with_capacity(point_count);
     while flags.len() < point_count {
         let flag = data.u8(cursor)?;
@@ -409,19 +633,33 @@ fn append_simple(
     };
     let xs = coordinates(2, 16)?;
     let ys = coordinates(4, 32)?;
+    Some(SimpleGlyph {
+        ends,
+        points: (0..point_count)
+            .map(|index| (xs[index], ys[index], flags[index] & 1 != 0))
+            .collect(),
+        instructions,
+    })
+}
+
+fn append_simple(
+    data: Bytes<'_>,
+    contours: usize,
+    matrix: [f32; 6],
+    outline: &mut Outline,
+) -> Option<()> {
+    let glyph = parse_simple(data, contours)?;
     let [a, b, c, d, e, f] = matrix;
     let mut start = 0;
-    for end in ends {
-        if end < start || end >= point_count {
-            return None;
-        }
-        let contour = (start..=end)
-            .map(|index| {
-                let (x, y) = (xs[index] as f32, ys[index] as f32);
+    for end in glyph.ends {
+        let contour = glyph.points[start..=end]
+            .iter()
+            .map(|&(x, y, on_curve)| {
+                let (x, y) = (x as f32, y as f32);
                 Point {
                     x: a * x + c * y + e,
                     y: b * x + d * y + f,
-                    on_curve: flags[index] & 1 != 0,
+                    on_curve,
                 }
             })
             .collect();
@@ -429,6 +667,114 @@ fn append_simple(
         start = end + 1;
     }
     Some(())
+}
+
+/// 复合字形的一个组件：子字形、标志、两个参数（偏移或匹配点号）与 2×2 变换。
+pub(crate) struct Component {
+    pub glyph: u16,
+    pub flags: u16,
+    pub arguments: (i32, i32),
+    pub matrix: [f32; 4],
+}
+
+/// 复合字形的组件。返回值的第二项是 WE_HAVE_INSTRUCTIONS 时的复合字形指令。
+fn parse_composite(data: Bytes<'_>) -> Option<(Vec<Component>, Vec<u8>)> {
+    let mut components = Vec::new();
+    let mut offset = 10;
+    loop {
+        let flags = data.u16(offset)?;
+        let glyph = data.u16(offset + 2)?;
+        offset += 4;
+        let signed = flags & 2 != 0;
+        let arguments = if flags & 1 != 0 {
+            let pair = if signed {
+                (
+                    i32::from(data.i16(offset)?),
+                    i32::from(data.i16(offset + 2)?),
+                )
+            } else {
+                (
+                    i32::from(data.u16(offset)?),
+                    i32::from(data.u16(offset + 2)?),
+                )
+            };
+            offset += 4;
+            pair
+        } else {
+            let pair = if signed {
+                (
+                    i32::from(data.u8(offset)? as i8),
+                    i32::from(data.u8(offset + 1)? as i8),
+                )
+            } else {
+                (i32::from(data.u8(offset)?), i32::from(data.u8(offset + 1)?))
+            };
+            offset += 2;
+            pair
+        };
+        let f2dot14 = |at: usize| data.i16(at).map(|value| f32::from(value) / 16384.0);
+        let matrix = if flags & 0x08 != 0 {
+            let scale = f2dot14(offset)?;
+            offset += 2;
+            [scale, 0.0, 0.0, scale]
+        } else if flags & 0x40 != 0 {
+            let (x, y) = (f2dot14(offset)?, f2dot14(offset + 2)?);
+            offset += 4;
+            [x, 0.0, 0.0, y]
+        } else if flags & 0x80 != 0 {
+            let values = [
+                f2dot14(offset)?,
+                f2dot14(offset + 2)?,
+                f2dot14(offset + 4)?,
+                f2dot14(offset + 6)?,
+            ];
+            offset += 8;
+            values
+        } else {
+            [1.0, 0.0, 0.0, 1.0]
+        };
+        components.push(Component {
+            glyph,
+            flags,
+            arguments,
+            matrix,
+        });
+        if flags & 0x20 == 0 {
+            break;
+        }
+    }
+    let instructions = if components.last()?.flags & 0x100 != 0 {
+        let length = data.u16(offset)? as usize;
+        data.0.get(offset + 2..offset + 2 + length)?.to_vec()
+    } else {
+        Vec::new()
+    };
+    Some((components, instructions))
+}
+
+/// 一个字形的原始数据，供 hinting 解释器使用；`x_min` 用于放置幻影点。
+pub(crate) enum GlyphSource {
+    Empty,
+    Simple {
+        glyph: SimpleGlyph,
+        x_min: i32,
+    },
+    Composite {
+        components: Vec<Component>,
+        instructions: Vec<u8>,
+        x_min: i32,
+    },
+}
+
+/// hinting 所需的字体级数据与 maxp 限额。
+pub(crate) struct HintTables<'a> {
+    pub fpgm: &'a [u8],
+    pub prep: &'a [u8],
+    pub cvt: Vec<i16>,
+    pub max_storage: usize,
+    pub max_function_defs: usize,
+    pub max_stack: usize,
+    pub max_twilight: usize,
 }
 
 /// 选 Unicode cmap：优先 (3,10) format 12，其次 (3,1)/(0,x) format 4。

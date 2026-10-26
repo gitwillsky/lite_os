@@ -22,7 +22,7 @@ from local_inputs import INPUTS
 from apk_cache import cached_apk_bootstrap
 from apk_rootfs import assemble_apk_rootfs, install_apk_crash_fixtures
 from build_target import target_from_environment
-from classic_assets import boot_scene, cursors, shell_bitmaps, sounds
+from classic_assets import boot_scene, cursors, fonts as classic_fonts, shell_bitmaps, sounds
 from build_cache import (
     build_environment,
     build_jobs_override,
@@ -1294,8 +1294,8 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
                               ("notepad", "notepad"), ("device-manager", "devmgmt"),
                               ("linux-uapi", "session-launch"), ("terminal", "terminal"))
     )
-    fonts = tuple(UserlandArtifact(ROOT / "assets/fonts" / name, f"/usr/share/liteos/fonts/{name}")
-                  for name in ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf"))
+    fonts = tuple(UserlandArtifact(path, f"/usr/share/liteos/fonts/{path.name}")
+                  for path in classic_fonts())
     ui = tuple(UserlandArtifact(path, f"/usr/share/liteos/ui/{path.name}")
                for path in shell_bitmaps())
     return (

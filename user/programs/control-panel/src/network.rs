@@ -14,13 +14,13 @@ pub struct Data {
     address: Option<Address>,
 }
 
-/// `/proc/net/dev` 里第一个非回环接口及它的（收到字节，发出字节）。
-fn counters() -> Option<(String, u64, u64)> {
+/// `/proc/net/dev` 里的接口 `wanted`（缺省为第一个非回环接口）及它的（收到字节，发出字节）。
+fn counters(wanted: Option<&str>) -> Option<(String, u64, u64)> {
     let text = fs::read_to_string("/proc/net/dev").ok()?;
     text.lines().skip(2).find_map(|line| {
         let (name, rest) = line.split_once(':')?;
         let name = name.trim();
-        if name == "lo" {
+        if name == "lo" || wanted.is_some_and(|wanted| wanted != name) {
             return None;
         }
         let fields: Vec<u64> = rest
@@ -90,8 +90,9 @@ fn dns() -> Option<String> {
 }
 
 impl Data {
-    pub fn read() -> Self {
-        let interface = counters().map(|(name, ..)| name);
+    /// 读取接口 `interface` 的状态；`None` 取第一个非回环接口。
+    pub fn read(interface: Option<String>) -> Self {
+        let interface = counters(interface.as_deref()).map(|(name, ..)| name);
         let address = interface.as_deref().and_then(|name| {
             let (ip, mask) = ip_and_mask(name)?;
             Some(Address {
@@ -120,6 +121,7 @@ fn bytes_text(value: u64) -> String {
 
 pub struct Network {
     _controls: Vec<Widget>,
+    interface: Option<String>,
     received: Widget,
     sent: Widget,
 }
@@ -164,6 +166,7 @@ impl Network {
         controls.extend([general, connection, activity, support, section]);
         Ok(Self {
             _controls: controls,
+            interface: data.interface,
             received,
             sent,
         })
@@ -172,9 +175,11 @@ impl Network {
 impl Page for Network {
     fn activity(&self, background: Background, clock: Clock) -> Option<Activity> {
         let (received, sent) = (self.received.clone(), self.sent.clone());
+        let interface = self.interface.clone();
         Some(Box::pin(async move {
             loop {
-                let Ok(work) = background.run(counters) else {
+                let name = interface.clone();
+                let Ok(work) = background.run(move || counters(name.as_deref())) else {
                     break;
                 };
                 let (rx, tx) = work.await.map_or((0, 0), |(_, rx, tx)| (rx, tx));

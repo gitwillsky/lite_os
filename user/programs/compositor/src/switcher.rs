@@ -2,12 +2,9 @@
 //!
 //! 选择状态只存在于按住 Alt 的这段时间；松开 Alt 才真正激活窗口，期间窗口栈不变。
 
-use std::path::Path;
-
 use canvas::Rect;
 use classic_theme::{Edge, SystemColor as C};
 use classic_ui::{AppIcons, Ink, Painter};
-use typeface::Typeface;
 
 use wayland_wire::wire::ObjectId;
 
@@ -17,7 +14,6 @@ const MAX_COLUMNS: usize = 7;
 const CELL: i32 = 43;
 const MARGIN: i32 = 13;
 const TITLE_HEIGHT: i32 = 24;
-const FONT_DIRECTORY: &str = "/usr/share/liteos/fonts";
 
 /// 面板里的一个窗口。
 pub struct Entry {
@@ -68,17 +64,17 @@ impl Switcher {
 
 /// 面板用到的字体与图标；加载失败时面板不显示，切换本身照常进行。
 pub struct Art {
-    pub typeface: Typeface,
+    /// 按系统主题解析的字体；叠加层与应用使用同一份字体设置。
+    pub fonts: std::rc::Rc<classic_ui::Fonts>,
     icons: AppIcons,
 }
 
 impl Art {
     /// 读取输出 `scale` 对应的字体与 32×32 程序图标。
     pub fn load(scale: u32) -> std::io::Result<Self> {
-        let typeface = Typeface::load(Path::new(FONT_DIRECTORY), scale)
-            .map_err(|error| std::io::Error::other(error.to_string()))?;
+        let fonts = classic_ui::Resources::system()?.fonts(scale as i32)?;
         let icons = AppIcons::load(32);
-        Ok(Self { typeface, icons })
+        Ok(Self { fonts, icons })
     }
 }
 

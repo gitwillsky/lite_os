@@ -1,18 +1,18 @@
 //! 桌面、任务栏、开始菜单的经典绘制与共享命中几何。
 use super::{Desktop, TASKBAR_HEIGHT, dialogs::Kind, popups, start};
 use canvas::{Rect, Surface};
-use classic_theme::{Edge, SystemColor as C, Theme};
+use classic_theme::{Edge, SystemColor as C};
 use classic_ui::{
-    AppIcons, Bitmap, ButtonState, Configuration, Display, Ink, Painter, ToplevelId, WindowId,
+    AppIcons, Bitmap, ButtonState, Configuration, Display, FontRole, Ink, Painter, Resources,
+    ToplevelId, WindowId,
 };
 use std::{collections::HashMap, io, path::Path};
-use typeface::Typeface;
 pub struct Art {
     bitmaps: HashMap<String, Bitmap>,
     /// 任务按钮上的程序图标，按窗口 `app_id` 取。
     app_icons: AppIcons,
-    font: Option<Typeface>,
-    scale: i32,
+    /// 系统主题与按主题解析的字体；外壳与应用读取同一份设置。
+    resources: Resources,
 }
 impl Art {
     pub fn load() -> io::Result<Self> {
@@ -58,14 +58,13 @@ impl Art {
         Ok(Self {
             bitmaps,
             app_icons: AppIcons::load(16),
-            font: None,
-            scale: 0,
+            resources: Resources::system()?,
         })
     }
-    /// 工具提示文字所需的图层大小（逻辑像素）：字体按 `scale` 载入，尺寸与 `Painter::tooltip` 的版式一致。
+    /// 工具提示文字所需的图层大小（逻辑像素）：用状态栏字体度量，与 `Painter::tooltip` 的版式一致。
     pub fn tooltip_size(&mut self, text: &str, scale: i32) -> io::Result<(i32, i32)> {
-        self.ensure_font(scale)?;
-        let font = self.font.as_ref().expect("font was just loaded");
+        let fonts = self.resources.fonts(scale)?;
+        let font = fonts.role(FontRole::Status);
         let (ascent, descent) = font.metrics();
         let logical = |physical: i32| (physical + scale - 1) / scale;
         Ok((
@@ -73,22 +72,28 @@ impl Art {
             logical(ascent + descent) + 6,
         ))
     }
-    /// 一段文字的逻辑像素宽度；字体按 `scale` 载入。界面尺寸由这类度量得出，而不是写死数字。
+    /// 一段文字按消息字体的逻辑像素宽度。界面尺寸由这类度量得出，而不是写死数字。
     pub fn text_width(&mut self, text: &str, scale: i32) -> io::Result<i32> {
-        self.ensure_font(scale)?;
-        let font = self.font.as_ref().expect("font was just loaded");
-        Ok((font.measure(text, false) + scale - 1) / scale)
+        let fonts = self.resources.fonts(scale)?;
+        Ok((fonts.role(FontRole::Message).measure(text, false) + scale - 1) / scale)
     }
-    /// 载入 `scale` 倍的字体；已经是这个 scale 就不重复载入。
-    fn ensure_font(&mut self, scale: i32) -> io::Result<()> {
-        if self.scale != scale {
-            self.font = Some(
-                Typeface::load(Path::new("/usr/share/liteos/fonts"), scale as u32)
-                    .map_err(|error| io::Error::other(error.to_string()))?,
-            );
-            self.scale = scale;
-        }
-        Ok(())
+    /// 右键菜单尺寸：共享 `MenuMetrics` 按系统主题与菜单字体计算。
+    pub fn menu_size(
+        &mut self,
+        items: &[popups::Item],
+        scale: i32,
+    ) -> io::Result<popups::MenuSize> {
+        let fonts = self.resources.fonts(scale)?;
+        let metrics = classic_ui::MenuMetrics::new(self.resources.theme(), &fonts, scale);
+        Ok(popups::MenuSize {
+            width: metrics.width(
+                items
+                    .iter()
+                    .map(|item| (item.label, item.shortcut, item.default)),
+            ),
+            item_height: metrics.item_height(),
+            separator_height: metrics.separator_height(),
+        })
     }
     pub fn bitmap(&self, name: &str) -> Option<&Bitmap> {
         self.bitmaps.get(name)
@@ -180,12 +185,12 @@ pub fn frame(
     art: &mut Art,
     minute: u64,
 ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
-    art.ensure_font(c.scale)?;
+    let fonts = art.resources.fonts(c.scale)?;
     let (w, h) = c.pixel_size()?;
     let mut pixels = vec![0; w as usize * h as usize];
     let surface = Surface::new(&mut pixels, w, h, w as usize).ok_or("invalid desktop pixels")?;
-    let theme = Theme::classic();
-    let mut p = Painter::new(surface, &theme, art.font.as_ref().unwrap(), c.scale);
+    let theme = art.resources.theme().clone();
+    let mut p = Painter::new(surface, &theme, &fonts, c.scale);
     let rects = areas(s, d, id, c);
     if id == s.background {
         let background = s
@@ -207,21 +212,25 @@ pub fn frame(
                 );
             }
             art.icon(&mut p, icon.art, r.x + 22, r.y + 3);
-            let label = p.fit(&icon.label, r.width - 2);
-            let band = Rect::new(r.x, r.y + 40, r.width, 20);
-            if s.selected == Some(i) {
-                let width = (p.text_width(&label, false) + p.scale() - 1) / p.scale() + 6;
-                p.fill(
-                    Rect::new(
-                        r.x + (r.width - width) / 2,
-                        band.y,
-                        width.min(r.width),
-                        band.height,
-                    ),
-                    C::Hilight,
-                );
-            }
-            p.text_centered(band, &label, Ink::Color(C::HilightText), false);
+            let selected = s.selected == Some(i);
+            // 图标标题使用主题的图标字体（IconFont），截断、高亮宽度与绘制都按同一字体。
+            p.with_role(FontRole::Icon, |p| {
+                let label = p.fit(&icon.label, r.width - 2);
+                let band = Rect::new(r.x, r.y + 40, r.width, 20);
+                if selected {
+                    let width = (p.text_width(&label, false) + p.scale() - 1) / p.scale() + 6;
+                    p.fill(
+                        Rect::new(
+                            r.x + (r.width - width) / 2,
+                            band.y,
+                            width.min(r.width),
+                            band.height,
+                        ),
+                        C::Hilight,
+                    );
+                }
+                p.text_centered(band, &label, Ink::Color(C::HilightText), false);
+            });
         }
         if !s.message.is_empty() {
             p.text(

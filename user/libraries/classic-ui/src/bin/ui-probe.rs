@@ -3,12 +3,13 @@
 
 use canvas::{Rect, Surface};
 use classic_theme::{SystemColor, Theme};
+use classic_ui::Fonts;
 use classic_ui::{
     ButtonState, Configuration, Decoration, DecorationAction, Display, Edit, EventKind, FocusChain,
     FrameKind, Ink, Painter,
 };
 use std::{io, path::Path, process::ExitCode};
-use typeface::Typeface;
+use typeface::FontCatalog;
 
 const TITLE: &str = "经典控件 - Classic UI";
 const EDITS: [Rect; 2] = [Rect::new(20, 60, 220, 23), Rect::new(20, 105, 220, 23)];
@@ -20,7 +21,7 @@ fn paint(
     edits: &[Edit; 2],
     focus: &FocusChain,
     theme: &Theme,
-    font: &Typeface,
+    font: &Fonts,
     keyboard_focus: bool,
 ) -> io::Result<Vec<u32>> {
     let (width, height) = configuration.pixel_size()?;
@@ -103,10 +104,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         match event.kind {
             EventKind::Configure(configuration) => {
                 if font_scale != configuration.scale {
-                    font = Some(Typeface::load(
-                        Path::new("/var/tmp/ui-fonts"),
+                    let catalog =
+                        std::rc::Rc::new(FontCatalog::load(Path::new("/var/tmp/ui-fonts"))?);
+                    font = Some(Fonts::new(
+                        catalog,
+                        &theme.fonts,
                         configuration.scale as u32,
-                    )?);
+                    ));
                     font_scale = configuration.scale;
                 }
                 dirty = true;

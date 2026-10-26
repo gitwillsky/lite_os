@@ -1,7 +1,11 @@
 use canvas::Rect;
 use classic_theme::{Edge, SystemColor};
 
-use crate::painter::{Ink, Painter};
+use crate::{
+    FontRole, Fonts,
+    painter::{Ink, Painter},
+};
+use classic_theme::Theme;
 
 /// 菜单项的状态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -10,6 +14,68 @@ pub struct MenuItemState {
     pub disabled: bool,
     pub checked: bool,
     pub has_submenu: bool,
+    /// 默认项（MFS_DEFAULT）：标签用粗体。
+    pub default: bool,
+}
+
+/// 下拉/上下文菜单的度量，全部由主题的 `MenuHeight` 与菜单字体推导；下拉菜单与外壳菜单共用，
+/// 外壳可以在创建弹出表面之前算出尺寸。
+pub struct MenuMetrics<'a> {
+    fonts: &'a Fonts,
+    scale: i32,
+    menu_height: i32,
+}
+
+impl<'a> MenuMetrics<'a> {
+    pub fn new(theme: &Theme, fonts: &'a Fonts, scale: i32) -> Self {
+        Self {
+            fonts,
+            scale: scale.max(1),
+            menu_height: theme.window.menu_height,
+        }
+    }
+
+    fn logical(&self, physical: i32) -> i32 {
+        (physical + self.scale - 1) / self.scale
+    }
+
+    /// USER32 `MENU_CalcItemSize`：菜单字体行高 + 6 与 `SM_CYMENU - 1`（即 `MenuHeight`）的较大者。
+    pub fn item_height(&self) -> i32 {
+        let (ascent, descent) = self.fonts.role(FontRole::Menu).metrics();
+        (self.logical(ascent + descent) + 6).max(self.menu_height)
+    }
+
+    /// 分隔条高：`MenuHeight / 2`。
+    pub fn separator_height(&self) -> i32 {
+        self.menu_height / 2
+    }
+
+    /// 按内容算菜单宽度（逻辑像素）：左侧勾选列与边框 20，最宽的“标签 + 间隔 + 快捷键”，右侧留白与边框 14。
+    ///
+    /// # Parameters
+    ///
+    /// - `items`: 各项的 `(标签, 快捷键, 是否默认项)`；没有快捷键传空串，默认项按粗体度量。
+    pub fn width<'b>(&self, items: impl IntoIterator<Item = (&'b str, &'b str, bool)>) -> i32 {
+        const LEFT: i32 = 20;
+        const RIGHT: i32 = 14;
+        const SHORTCUT_GAP: i32 = 24;
+        let font = self.fonts.role(FontRole::Menu);
+        let widest = items
+            .into_iter()
+            .map(|(label, shortcut, bold)| {
+                let label = self.logical(font.measure(label, bold));
+                let shortcut = self.logical(font.measure(shortcut, false));
+                label
+                    + if shortcut > 0 {
+                        shortcut + SHORTCUT_GAP
+                    } else {
+                        0
+                    }
+            })
+            .max()
+            .unwrap_or(0);
+        LEFT + widest + RIGHT
+    }
 }
 
 const SUBMENU_ARROW: [&str; 7] = ["#...", "##..", "###.", "####", "###.", "##..", "#..."];
@@ -22,34 +88,19 @@ impl Painter<'_> {
         inner
     }
 
-    /// 按内容算菜单宽度（逻辑像素）：左侧勾选列与边框 20，最宽的“标签 + 间隔 + 快捷键”，右侧留白与边框 14。
-    ///
-    /// # Parameters
-    ///
-    /// - `items`: 各项的 `(标签, 快捷键)`；没有快捷键传空串。
-    pub fn menu_width<'a>(&self, items: impl IntoIterator<Item = (&'a str, &'a str)>) -> i32 {
-        const LEFT: i32 = 20;
-        const RIGHT: i32 = 14;
-        const SHORTCUT_GAP: i32 = 24;
-        let widest = items
-            .into_iter()
-            .map(|(label, shortcut)| {
-                let label = self.logical_ceil(self.text_width(label, false));
-                let shortcut = self.logical_ceil(self.text_width(shortcut, false));
-                label
-                    + if shortcut > 0 {
-                        shortcut + SHORTCUT_GAP
-                    } else {
-                        0
-                    }
-            })
-            .max()
-            .unwrap_or(0);
-        LEFT + widest + RIGHT
+    /// 按内容算菜单宽度（逻辑像素），规则见 [`MenuMetrics::width`]。
+    pub fn menu_width<'a>(&self, items: impl IntoIterator<Item = (&'a str, &'a str, bool)>) -> i32 {
+        MenuMetrics::new(self.theme, self.fonts, self.scale).width(items)
     }
 
     /// 一行菜单项：整行高亮左右各留 2 像素；左侧 16 像素放勾选标记，快捷键右对齐。
     pub fn menu_item(&mut self, row: Rect, label: &str, shortcut: &str, state: MenuItemState) {
+        self.with_role(FontRole::Menu, |p| {
+            p.menu_item_in_font(row, label, shortcut, state)
+        })
+    }
+
+    fn menu_item_in_font(&mut self, row: Rect, label: &str, shortcut: &str, state: MenuItemState) {
         let band = Rect::new(row.x + 2, row.y, row.width - 4, row.height);
         let (background, text) = if state.highlighted {
             (SystemColor::Hilight, SystemColor::HilightText)
@@ -87,7 +138,11 @@ impl Painter<'_> {
             } else {
                 0
             };
-        self.label_fit(row.x + 2 + 16, text_y, row.width - reserved, label, ink);
+        if state.default {
+            self.label_fit_bold(row.x + 2 + 16, text_y, row.width - reserved, label, ink);
+        } else {
+            self.label_fit(row.x + 2 + 16, text_y, row.width - reserved, label, ink);
+        }
         if state.has_submenu {
             let color = if state.highlighted {
                 SystemColor::HilightText
@@ -112,18 +167,24 @@ impl Painter<'_> {
         }
     }
 
-    /// 菜单分隔线：蚀刻水平线，上下各留 3 像素；返回占用的行高。
+    /// 菜单分隔线：在 `row` 内垂直居中的 2 像素蚀刻水平线；返回占用的行高。
     pub fn menu_separator(&mut self, row: Rect) -> i32 {
         self.fill(row, SystemColor::Menu);
         self.edge(
-            Rect::new(row.x + 2, row.y + 3, row.width - 4, 2),
+            Rect::new(row.x + 2, row.y + (row.height - 2) / 2, row.width - 4, 2),
             Edge::Etched,
         );
-        8
+        row.height
     }
 
     /// 菜单栏顶层项：悬停单层凸起、按下单层凹陷。
     pub fn menu_bar_item(&mut self, rect: Rect, label: &str, hovered: bool, open: bool) {
+        self.with_role(FontRole::Menu, |p| {
+            p.menu_bar_item_in_font(rect, label, hovered, open)
+        })
+    }
+
+    fn menu_bar_item_in_font(&mut self, rect: Rect, label: &str, hovered: bool, open: bool) {
         self.fill(rect, SystemColor::Menu);
         if open {
             self.edge(rect, Edge::SunkenOuter);

@@ -2,6 +2,7 @@
 Type=Application
 Name=System
 Name[zh_CN]=系统
+Comment[zh_CN]=提供系统信息并更改环境设置
 Exec=/bin/control-panel system
 Icon=my-computer
 Categories=Settings;

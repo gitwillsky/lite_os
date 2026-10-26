@@ -39,8 +39,9 @@ use std::{
 pub use tasks::{AbortHandle, Cancelled, Clock, Sleep, Task};
 pub use toplevel::{Toplevel, ToplevelRequest};
 pub use window::{
-    ColorRole, Column, ColumnAlignment, Draw, EditCommand, Icon, ListStyle, Menu, MenuItem,
-    RowIcon, TreeRow, WeakWindow, Widget, WidgetKind, WidgetSpec, Window, WindowOptions,
+    ColorRole, Column, ColumnAlignment, Draw, EditCommand, FontRole, Icon, ListStyle, Menu,
+    MenuItem, RowIcon, ToolbarButton, ToolbarKind, TreeRow, WeakWindow, Widget, WidgetKind,
+    WidgetSpec, Window, WindowOptions,
 };
 
 /// 按应用业务处理的语义事件；不公开 Rust/FFI 对象。
@@ -109,6 +110,11 @@ pub enum EventKind {
     Apply {
         token: ApplyToken,
     },
+    /// 工具栏下拉箭头按下：`button` 为按钮标识，`rect` 为按钮在窗口客户区的逻辑矩形，菜单应放在其下方。
+    Dropdown {
+        button: u64,
+        rect: Rect,
+    },
 }
 /// 带稳定窗口与控件标识的事件，未知 ABI 事件自动跳过。
 #[derive(Clone, Debug)]
@@ -127,6 +133,10 @@ impl Event {
                 token: ApplyToken(event.value),
             },
             event::CLIPBOARD_ERROR => EventKind::ClipboardError { reason: event.code },
+            event::DROPDOWN => EventKind::Dropdown {
+                button: event.value,
+                rect: Rect::new(event.x as i32, event.y as i32, event.width, event.height),
+            },
             event::COLUMN => EventKind::Column {
                 column: event.value,
             },

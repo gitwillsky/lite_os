@@ -1,24 +1,24 @@
 //! 登录界面的几何与绘制；输入命中与按钮绘制读取同一组区域。
 use super::{Logon, Page};
 use canvas::{Rect, Surface};
-use classic_theme::{SystemColor as C, Theme};
-use classic_ui::{Bitmap, ButtonState, Configuration, FrameKind, Ink, Painter};
+use classic_theme::SystemColor as C;
+use classic_ui::{
+    Bitmap, ButtonState, Configuration, FontRole, FrameKind, Ink, Painter, Resources,
+};
 use std::{io, path::Path};
-use typeface::Typeface;
 
 pub struct Art {
     banner: Bitmap,
     keyboard: Bitmap,
-    font: Option<Typeface>,
-    scale: i32,
+    /// 系统主题与按主题解析的字体；登录界面与桌面读取同一份设置。
+    resources: Resources,
 }
 impl Art {
     pub fn load() -> io::Result<Self> {
         Ok(Self {
             banner: Bitmap::load(Path::new("/usr/share/liteos/ui/logon-banner-1x.bmp"))?,
             keyboard: Bitmap::load(Path::new("/usr/share/liteos/ui/ctrl-alt-del-32.bmp"))?,
-            font: None,
-            scale: 0,
+            resources: Resources::system()?,
         })
     }
 }
@@ -120,18 +120,12 @@ pub fn frame(
     c: Configuration,
     art: &mut Art,
 ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
-    if art.scale != c.scale {
-        art.font = Some(Typeface::load(
-            Path::new("/usr/share/liteos/fonts"),
-            c.scale as u32,
-        )?);
-        art.scale = c.scale;
-    }
+    let fonts = art.resources.fonts(c.scale)?;
     let (w, h) = c.pixel_size()?;
     let mut pixels = vec![0; w as usize * h as usize];
     let surface = Surface::new(&mut pixels, w, h, w as usize).ok_or("invalid logon pixels")?;
-    let theme = Theme::classic();
-    let mut p = Painter::new(surface, &theme, art.font.as_ref().unwrap(), c.scale);
+    let theme = art.resources.theme().clone();
+    let mut p = Painter::new(surface, &theme, &fonts, c.scale);
     p.fill(Rect::new(0, 0, c.width, c.height), C::Background);
     if s.page == Page::Desktop {
         return Ok(pixels);
@@ -252,7 +246,9 @@ pub fn frame(
         }
         Page::Message => {
             for (i, line) in typeface::wrap(&s.message, 390 * c.scale, |ch| {
-                art.font.as_ref().unwrap().measure(&ch.to_string(), false)
+                fonts
+                    .role(FontRole::Message)
+                    .measure(&ch.to_string(), false)
             })
             .iter()
             .enumerate()

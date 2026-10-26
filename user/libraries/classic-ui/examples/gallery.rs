@@ -5,10 +5,11 @@ use std::{fs, io::Write, path::Path};
 
 use canvas::{Rect, Surface};
 use classic_theme::{SystemColor, Theme};
+use classic_ui::Fonts;
 use classic_ui::{
     ButtonState, CaptionButton, FrameKind, Ink, MenuItemState, Painter, ScrollbarPart,
 };
-use typeface::Typeface;
+use typeface::FontCatalog;
 
 const WIDTH: i32 = 420;
 const HEIGHT: i32 = 330;
@@ -22,7 +23,11 @@ fn main() {
     let output = arguments.next().unwrap_or_else(|| "gallery.ppm".into());
     let theme = Theme::classic();
     let fonts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/fonts");
-    let typeface = Typeface::load(&fonts, scale as u32).unwrap();
+    let typeface = Fonts::new(
+        std::rc::Rc::new(FontCatalog::load(&fonts).unwrap()),
+        &theme.fonts,
+        scale as u32,
+    );
     let (width, height) = ((WIDTH * scale) as usize, (HEIGHT * scale) as usize);
     let mut pixels = vec![0u32; width * height];
     let surface = Surface::new(&mut pixels, width as i32, height as i32, width).unwrap();

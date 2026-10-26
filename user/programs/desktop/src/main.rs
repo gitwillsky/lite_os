@@ -155,6 +155,9 @@ impl Desktop {
         match self.icons.items.get(index).map(|icon| &icon.target) {
             Some(icons::Target::Path(_)) => popups::IconKind::Path,
             Some(icons::Target::Place(start::Place::MyComputer)) => popups::IconKind::MyComputer,
+            Some(icons::Target::Place(start::Place::NetworkPlaces)) => {
+                popups::IconKind::NetworkPlaces
+            }
             _ => popups::IconKind::Other,
         }
     }
@@ -246,6 +249,7 @@ impl Desktop {
             Place::MyComputer => self.files("::my-computer"),
             Place::ControlPanel => self.files("::control-panel"),
             Place::NetworkPlaces => self.files("::network-places"),
+            Place::NetworkConnections => self.files("::network-connections"),
             Place::RecycleBin => match std::fs::create_dir_all(&trash) {
                 Ok(()) => self.files(trash),
                 Err(error) => self.message = error.to_string(),
@@ -289,6 +293,7 @@ impl Desktop {
             Action::TaskManager => self.launch_task_manager(),
             Action::TaskbarProperties => self.control_panel("taskbar"),
             Action::SystemProperties => self.control_panel("system"),
+            Action::OpenPlace(place) => self.open_place(place),
             Action::IconVerb(index, verb) => self.icon_verb(index, verb),
             Action::DisplayProperties => self.control_panel("display"),
             Action::VolumeProperties => self.launch(Command::new("/bin/sndvol")),
@@ -371,7 +376,12 @@ impl Desktop {
     }
 
     /// 右键：在任务栏/桌面的命中区域上弹出菜单。`local` 是指针在该表面内的位置。
-    fn context_menu(&mut self, display: &mut Display, window: WindowId) -> io::Result<()> {
+    fn context_menu(
+        &mut self,
+        display: &mut Display,
+        art: &mut paint::Art,
+        window: WindowId,
+    ) -> io::Result<()> {
         let Some(c) = display.configuration(window) else {
             return Ok(());
         };
@@ -416,7 +426,8 @@ impl Desktop {
         } else {
             return Ok(());
         };
-        let menu = popups::ContextMenu::new(origin, items, screen);
+        let size = art.menu_size(&items, c.scale)?;
+        let menu = popups::ContextMenu::new(origin, items, screen, size);
         self.open_overlay(display, popups::Overlay::Menu(menu))
     }
 
@@ -457,7 +468,6 @@ impl Desktop {
             Action::Files(place) => self.open_place(place),
             Action::Tasks => self.launch_task_manager(),
             Action::Taskbar => self.control_panel("taskbar"),
-            Action::Network => self.control_panel("network"),
             Action::About => {
                 let mut command = Command::new("/bin/control-panel");
                 command.arg("winver");
@@ -761,7 +771,7 @@ impl Desktop {
                 code: 0x111,
                 pressed: false,
                 ..
-            } if Some(window) != self.menu => self.context_menu(display, window)?,
+            } if Some(window) != self.menu => self.context_menu(display, art, window)?,
             EventKind::Close if Some(window) == self.menu => self.toggle_menu(display)?,
             _ => {}
         }

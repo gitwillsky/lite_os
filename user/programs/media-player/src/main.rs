@@ -158,12 +158,14 @@ impl View {
                 label: "打开(O)...",
                 shortcut: "",
                 state: if player.loading { 1 } else { 0 },
+                parent: 0,
             },
             MenuItem {
                 id: 2,
                 label: "退出(X)",
                 shortcut: "",
                 state: 4,
+                parent: 0,
             },
         ];
         let action = [MenuItem {
@@ -175,12 +177,14 @@ impl View {
             },
             shortcut: "空格",
             state: if available { 0 } else { 1 },
+            parent: 0,
         }];
         let help = [MenuItem {
             id: 5,
             label: "关于媒体播放机(A)",
             shortcut: "",
             state: 0,
+            parent: 0,
         }];
         self.menu.set_menus(&[
             Menu {

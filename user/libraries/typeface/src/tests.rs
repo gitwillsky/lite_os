@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use crate::raster::rasterize;
 use crate::sfnt::{Outline, Point};
-use crate::{BdfFont, FontError, Glyph, Sfnt, Typeface, overprint, wrap};
+use crate::{BdfFont, FontCatalog, Glyph, LogicalFont, Sfnt, Typeface, overprint, wrap};
 
 fn fonts() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/fonts")
@@ -279,31 +279,31 @@ fn uming_covers_cjk_through_format_12() {
     assert!(uming.glyph_id('\u{1F600}').is_none());
 }
 
+fn song(points: u16, scale: u32, smoothing: bool) -> Typeface {
+    FontCatalog::load(&fonts()).unwrap().resolve(
+        &LogicalFont {
+            face: "宋体".into(),
+            points,
+            weight: 400,
+        },
+        scale,
+        smoothing,
+    )
+}
+
 #[test]
-fn typeface_at_1x_uses_bitmaps_and_selects_fonts_per_character() {
-    let face = Typeface::load(&fonts(), 1).unwrap();
-    let latin = face.glyph('A', false);
-    let tahoma = sfnt("tahoma.ttf");
-    let strike = tahoma
-        .embedded_bitmap(tahoma.glyph_id('A').unwrap(), 11)
-        .unwrap();
-    assert_eq!(latin, strike);
+fn song_9pt_at_1x_resolves_through_system_link_to_bitmaps() {
+    // 仓库默认目录没有原版宋体：fontmap.ini 的 SystemLink 链把宋体映射到可分发字体。
+    let face = song(9, 1, false);
+    assert_eq!(face.ppem(), 12);
     assert_eq!(face.glyph('中', false).advance, 12);
-    // 全角标点必须来自中文字体，保持 12 像素宽，而不是 Tahoma 的窄引号。
     assert_eq!(face.glyph('“', false).advance, 12);
-    assert_eq!(face.measure("A中", false), strike.advance + 12);
     let (ascent, descent) = face.metrics();
     assert!(
         ascent >= 9 && descent >= 1 && ascent + descent <= 16,
         "{ascent}+{descent}"
     );
-    // 1x 不得出现抗锯齿灰度：空格等没有点阵的字形保持空白。
-    let space = face.glyph(' ', false);
-    assert!(
-        space.coverage.is_empty() && (3..=4).contains(&space.advance),
-        "{space:?}"
-    );
-    for character in "Hello World 123 LiteOS".chars() {
+    for character in "Hello World 123 LiteOS 中文".chars() {
         assert!(
             face.glyph(character, false)
                 .coverage
@@ -312,29 +312,23 @@ fn typeface_at_1x_uses_bitmaps_and_selects_fonts_per_character() {
             "{character}"
         );
     }
-    // 字体里没有的字符退化为半宽空白，而不是失败。
+    // 链中都没有的字符退化为半个 em 宽的空白，而不是失败。
     let missing = face.glyph('\u{0378}', false);
     assert_eq!((missing.width, missing.advance), (0, 6));
 }
 
 #[test]
-fn typeface_at_2x_uses_antialiased_outlines() {
-    let face = Typeface::load(&fonts(), 2).unwrap();
-    let glyph = face.glyph('中', false);
-    assert_eq!(glyph.advance, 24);
+fn outline_rendering_follows_the_font_smoothing_setting() {
+    let smooth = song(9, 2, true);
+    assert_eq!(smooth.ppem(), 24);
+    let glyph = smooth.glyph('中', false);
     assert!(
         glyph.coverage.iter().any(|&v| v != 0 && v != 255),
         "expected anti-aliased edges"
     );
-    let latin = face.glyph('A', true);
-    assert!(latin.coverage.iter().any(|&v| v != 0 && v != 255));
-    assert!(latin.advance >= 12 && latin.advance <= 24);
-    assert_eq!(
-        Typeface::load(&fonts(), 0)
-            .err()
-            .map(|e| matches!(e, FontError::Unsupported(_))),
-        Some(true)
-    );
+    let mono = song(9, 2, false).glyph('中', false);
+    assert!(mono.coverage.iter().all(|&v| v == 0 || v == 255));
+    assert!(mono.coverage.contains(&255));
 }
 
 #[test]

@@ -118,7 +118,11 @@ enum Data {
 fn load(name: &str, args: Vec<std::ffi::OsString>) -> Result<Data, String> {
     Ok(match name {
         "system" => Data::System(system::Data::read()),
-        "network" => Data::Network(network::Data::read()),
+        "network" => Data::Network(network::Data::read(
+            args.into_iter()
+                .next()
+                .map(|name| name.to_string_lossy().into_owned()),
+        )),
         "properties" => Data::Properties(fileprops::Data::read(args.into_iter())?),
         "sounds" => Data::Sounds(std::path::Path::new("/dev/snd/pcmC0D0p").exists()),
         "display" | "taskbar" => Data::Settings(desktop_settings::Settings::load()),

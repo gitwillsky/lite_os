@@ -33,6 +33,21 @@ impl Dialogs {
             .borrow_mut()
             .subscribe(window.id(), None, &window.inner.scope)
     }
+    /// 在异步任务中创建应用自己的对话框窗口（Win32 `DialogBox` 的对应物），返回窗口与它的事件流。
+    ///
+    /// `options.parent` 必须属于本应用；模态由 `options.modal` 决定。窗口在最后一个 owner 析构时关闭，
+    /// 事件流在 Drop 时撤销订阅。连接失败或父窗口无效返回 Err。
+    pub fn window(
+        &self,
+        options: crate::WindowOptions<'_>,
+    ) -> Result<(Window, crate::EventStream)> {
+        if let Some(parent) = options.parent {
+            self.check(parent)?;
+        }
+        let window = Window::new(self.connection.clone(), options)?;
+        let events = self.events(&window)?;
+        Ok((window, events))
+    }
     /// 打开共享消息框；父窗口关闭、Escape 或标题栏关闭返回 Cancel。
     pub fn message(
         &self,

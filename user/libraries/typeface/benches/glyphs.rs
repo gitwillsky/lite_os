@@ -2,13 +2,21 @@
 
 use std::{hint::black_box, path::Path, time::Instant};
 
-use typeface::Typeface;
+use typeface::{FontCatalog, LogicalFont};
 
 fn main() {
     let fonts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/fonts");
     for scale in [1, 2] {
         let start = Instant::now();
-        let face = Typeface::load(&fonts, scale).unwrap();
+        let face = FontCatalog::load(&fonts).unwrap().resolve(
+            &LogicalFont {
+                face: "宋体".into(),
+                points: 9,
+                weight: 400,
+            },
+            scale,
+            scale > 1,
+        );
         println!(
             "typeface diagnostic: load scale={scale} {:.1} ms",
             start.elapsed().as_secs_f64() * 1000.0

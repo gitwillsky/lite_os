@@ -16,6 +16,25 @@ pub struct PopupMenuFuture {
 impl Dialogs {
     /// 在父窗口当前指针处打开共享菜单；与菜单栏共用交互，不创建第二个 Wayland reader。
     pub fn menu(&self, parent: &Window, items: &[MenuItem<'_>]) -> Result<PopupMenuFuture> {
+        self.open_menu(parent, items, None)
+    }
+
+    /// 把菜单左上角放在父窗口客户区逻辑坐标 `at`（如工具栏下拉按钮的左下角）。
+    pub fn menu_at(
+        &self,
+        parent: &Window,
+        items: &[MenuItem<'_>],
+        at: (i32, i32),
+    ) -> Result<PopupMenuFuture> {
+        self.open_menu(parent, items, Some(at))
+    }
+
+    fn open_menu(
+        &self,
+        parent: &Window,
+        items: &[MenuItem<'_>],
+        at: Option<(i32, i32)>,
+    ) -> Result<PopupMenuFuture> {
         self.check(parent)?;
         if items.is_empty() {
             return Err(crate::Error::invalid("context menu is empty"));
@@ -27,9 +46,17 @@ impl Dialogs {
             Some(widget.id()),
             widget.scope(),
         )?;
+        let (x, y) = at.unwrap_or((0, 0));
         // SAFETY: 句柄和连接均属于本 UI 线程；运行库已经复制菜单，不保留 Rust 对象。
         self.connection.check(unsafe {
-            (self.connection.api.popup)(self.connection.context.as_ptr(), parent.id(), widget.id())
+            (self.connection.api.popup)(
+                self.connection.context.as_ptr(),
+                parent.id(),
+                widget.id(),
+                x,
+                y,
+                u32::from(at.is_some()),
+            )
         })?;
         Ok(PopupMenuFuture {
             widget: Some(widget),

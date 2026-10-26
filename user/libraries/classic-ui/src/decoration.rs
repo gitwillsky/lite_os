@@ -32,6 +32,8 @@ pub struct Decoration {
     icon_click: Option<Instant>,
     /// 已经通知过调用者的光标形状；缺少它每个指针移动事件都会重复请求同一形状。
     shape: CursorShape,
+    /// 客户区内容（状态栏）登记的尺寸手柄矩形，surface 局部坐标；缺少它手柄只是图案，拖动不能缩放窗口。
+    grip: Option<Rect>,
 }
 
 impl Decoration {
@@ -44,7 +46,22 @@ impl Decoration {
             icon: None,
             icon_click: None,
             shape: CursorShape::Default,
+            grip: None,
         }
+    }
+
+    /// 当前配置下客户区能否显示并使用尺寸手柄：可缩放、未最大化、未全屏（与 USER32 隐藏手柄的条件一致）。
+    pub fn size_grip_allowed(&self, configuration: Configuration) -> bool {
+        self.kind == FrameKind::Resizable && !configuration.maximized && !configuration.fullscreen
+    }
+
+    /// 登记客户区的尺寸手柄；按下它发起右下角缩放，悬停显示斜向箭头。
+    pub fn set_size_grip(&mut self, grip: Option<Rect>) {
+        self.grip = grip;
+    }
+
+    fn on_grip(&self, configuration: Configuration, point: (i32, i32)) -> bool {
+        self.size_grip_allowed(configuration) && self.grip.is_some_and(|grip| contains(grip, point))
     }
 
     /// 为尚未迁移共享运行库的外壳 layer 对话框读取标题图标；普通 SDK 窗口使用 Resources 的 Rc。
@@ -157,9 +174,11 @@ impl Decoration {
         let Some(point) = self.pointer else {
             return CursorShape::Default;
         };
-        if self.kind != FrameKind::Resizable || configuration.maximized || configuration.fullscreen
-        {
+        if !self.size_grip_allowed(configuration) {
             return CursorShape::Default;
+        }
+        if self.on_grip(configuration, point) {
+            return CursorShape::NwseResize;
         }
         match resize_edge(configuration, point, self.kind.border()) {
             Some(ResizeEdge::Top | ResizeEdge::Bottom) => CursorShape::NsResize,
@@ -239,6 +258,12 @@ impl Decoration {
                         }));
                     }
                     if let Some(point) = self.pointer {
+                        if self.on_grip(configuration, point) {
+                            return Some(DecorationAction::Request(WindowRequest::Resize {
+                                serial: *serial,
+                                edges: ResizeEdge::BottomRight,
+                            }));
+                        }
                         if self.kind == FrameKind::Resizable
                             && !configuration.maximized
                             && let Some(edges) =

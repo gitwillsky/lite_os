@@ -31,6 +31,8 @@ PE_FILES = (
     "browseui.dll", "shdocvw.dll",
     # 设备管理器、网络连接与记事本的专用图标。
     "devmgr.dll", "netshell.dll", "notepad.exe",
+    # 文件夹 Web 视图的模板、样式与左侧水印/分隔线（类型 23 资源）。
+    "webvw.dll",
 )
 # 只为取工具栏位图而加入的 DLL：其中个别资源可能是损坏/非标准图标，跳过并记警告，
 # 不影响上面逐图核对的核心素材。
@@ -76,6 +78,8 @@ ICONS = {
     "network-local": ("netshell.dll", 190),
     "network-disconnected": ("netshell.dll", 195),
     "network-places": ("shell32.dll", 18),
+    "entire-network": ("shell32.dll", 14),
+    "desktop": ("shell32.dll", 35),
     "notepad": ("notepad.exe", 1),
     "tray-volume": ("stobject.dll", 230),
     "tray-volume-muted": ("stobject.dll", 231),
@@ -99,9 +103,25 @@ BITMAPS = {
     "toolbar-default": ("browseui.dll", 272),
     "toolbar-hot": ("browseui.dll", 273),
     "toolbar-disabled": ("browseui.dll", 276),
+    # IE 按钮条（后退、前进、停止、刷新、主页、搜索、收藏……历史 12），16 帧 20×20，冷/热/禁用。
+    "ie-toolbar-default": ("browseui.dll", 261),
+    "ie-toolbar-hot": ("browseui.dll", 262),
+    "ie-toolbar-disabled": ("browseui.dll", 265),
+    # 地址栏“转到”的绿色箭头，冷/热。
+    "go-default": ("browseui.dll", 290),
+    "go-hot": ("browseui.dll", 291),
+    # ReBar 右端的动画 logo：帧竖排，首帧为静止画面；22/26/38 像素随带区高度选择。
+    "brand-22": ("browseui.dll", 306),
+    "brand-26": ("browseui.dll", 305),
+    "brand-38": ("browseui.dll", 304),
 }
 # 这些位图用 #FF00FF 表示透明，转 PNG 时换成 alpha 0。
-COLOR_KEYED = {"toolbar-default", "toolbar-hot", "toolbar-disabled"}
+COLOR_KEYED = {
+    "toolbar-default", "toolbar-hot", "toolbar-disabled",
+    "ie-toolbar-default", "ie-toolbar-hot", "ie-toolbar-disabled", "go-default", "go-hot",
+}
+# webvw.dll 类型 23 资源：Web 视图左侧水印与标题下的分隔线，按 CSS 原样使用。
+WEBVIEW = {"webview-left": "WVLEFT.BMP", "webview-line": "WVLINE.GIF"}
 # HIVEDEF.INF 的默认 AppEvents 配置；logoff 是独立提供的注销素材。
 SOUNDS = {
     "logon": "logon.wav", "logoff": "logoff.wav",
@@ -213,6 +233,12 @@ def extract(iso: Path, output: Path) -> dict:
                 )
                 if process.stderr:
                     warnings.append(process.stderr.strip().replace(str(base), "<work>"))
+        # HTML 模板与图片是自定义类型 23，wrestool 只能按原始字节导出。
+        subprocess.run(
+            ["wrestool", "-x", "--raw", "-t23", "-o", str(resources / "webvw.dll"),
+             str(expanded / "webvw.dll")],
+            check=True, capture_output=True, text=True,
+        )
         # 校验全部导出帧，包括未映射资源。wrestool 的资源长度警告不能替代实际解码检查。
         for path in resources.rglob("*"):
             if path.suffix in {".ico", ".cur", ".bmp"}:
@@ -283,6 +309,15 @@ def extract(iso: Path, output: Path) -> dict:
                 rgba.save(dest)
                 size = list(image.size)
             record("bitmaps", name, [path, dest], size=size, source=source, resource=number)
+        for name, resource_name in WEBVIEW.items():
+            path = resources / "webvw.dll" / f"webvw.dll_23_{resource_name}_2052"
+            if not path.is_file():
+                raise ValueError(f"missing CHS resource: {path.name}")
+            dest = bitmap_dir / f"{name}-1x.png"
+            with Image.open(path) as image:
+                image.convert("RGBA").save(dest)
+                size = list(image.size)
+            record("bitmaps", name, [path, dest], size=size, source="webvw.dll", resource=resource_name)
         for name, filename in SOUNDS.items():
             path = expanded / filename
             with wave.open(str(path)) as sound:

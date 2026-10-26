@@ -20,6 +20,12 @@ pub struct BdfFont {
     bitmaps: Vec<u8>,
     ascent: i32,
     descent: i32,
+    /// `FAMILY_NAME` 属性；字体映射按它匹配逻辑字体名。
+    family: String,
+    /// `PIXEL_SIZE` 属性（缺省为 ascent + descent）；点阵只在 ppem 与之相等时使用。
+    pixel_size: u32,
+    /// `WEIGHT_NAME` 为 Bold 时为真。
+    bold: bool,
 }
 
 fn invalid(line: usize, message: &str) -> FontError {
@@ -46,6 +52,7 @@ impl BdfFont {
     /// 字形缺少 `BBX`/`BITMAP`、位图行长度或十六进制非法，或没有任何字形。
     pub fn parse(text: &str) -> Result<Self, FontError> {
         let (mut ascent, mut descent) = (None, None);
+        let (mut family, mut pixel_size, mut bold) = (String::new(), None, false);
         let mut bounding = None;
         let mut entries: Vec<Entry> = Vec::new();
         let mut bitmaps = Vec::new();
@@ -82,6 +89,9 @@ impl BdfFont {
                 .split_once(char::is_whitespace)
                 .unwrap_or((content, ""));
             match keyword {
+                "FAMILY_NAME" => family = rest.trim().trim_matches('"').to_owned(),
+                "PIXEL_SIZE" => pixel_size = Some(numbers::<1>(rest, line)?[0]),
+                "WEIGHT_NAME" => bold = rest.trim().trim_matches('"').eq_ignore_ascii_case("bold"),
                 "FONT_ASCENT" => ascent = Some(numbers::<1>(rest, line)?[0]),
                 "FONT_DESCENT" => descent = Some(numbers::<1>(rest, line)?[0]),
                 "FONTBOUNDINGBOX" => bounding = Some(numbers::<4>(rest, line)?),
@@ -154,12 +164,32 @@ impl BdfFont {
         entries.sort_by_key(|entry| entry.code);
         let bounding =
             bounding.ok_or_else(|| FontError::Bdf("missing FONTBOUNDINGBOX".to_owned()))?;
+        let ascent = ascent.unwrap_or(bounding[1] + bounding[3]);
+        let descent = descent.unwrap_or(-bounding[3]);
         Ok(Self {
-            ascent: ascent.unwrap_or(bounding[1] + bounding[3]),
-            descent: descent.unwrap_or(-bounding[3]),
+            ascent,
+            descent,
             entries,
             bitmaps,
+            family,
+            pixel_size: pixel_size.unwrap_or(ascent + descent).max(1) as u32,
+            bold,
         })
+    }
+
+    /// 家族名（`FAMILY_NAME`）。
+    pub fn family(&self) -> &str {
+        &self.family
+    }
+
+    /// 点阵的像素尺寸。
+    pub fn pixel_size(&self) -> u32 {
+        self.pixel_size
+    }
+
+    /// 是否为粗体点阵。
+    pub fn is_bold(&self) -> bool {
+        self.bold
     }
 
     pub fn ascent(&self) -> i32 {

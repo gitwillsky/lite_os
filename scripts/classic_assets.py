@@ -50,3 +50,19 @@ def shell_bitmaps() -> tuple[Path, ...]:
     chosen = {path.name: path for path in (ROOT / "assets/classic/ui").glob("*.bmp")}
     chosen.update({path.name: path for path in original.glob("*.bmp")})
     return tuple(chosen[name] for name in sorted(chosen))
+
+
+# 系统字体目录的内容：仓库提交的可分发字体与映射表；本地已提取原版时同名文件被原版替换，并加入宋体。
+DEFAULT_FONTS = ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf", "fontmap.ini")
+ORIGINAL_FONTS = ("simsun.ttc", "tahoma.ttf", "tahomabd.ttf")
+
+
+def fonts() -> tuple[Path, ...]:
+    """按文件名返回 `/usr/share/liteos/fonts` 的内容：原版优先，其余用仓库默认。
+
+    字体名到文件的映射由运行时扫描与 `fontmap.ini` 决定，这里只选择安装哪些文件。
+    """
+    chosen = {name: ROOT / "assets/fonts" / name for name in DEFAULT_FONTS}
+    source = INPUTS / "windows2000/assets/sources"
+    chosen.update({name: source / name for name in ORIGINAL_FONTS if (source / name).is_file()})
+    return tuple(chosen[name] for name in sorted(chosen))

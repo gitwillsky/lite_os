@@ -1,6 +1,6 @@
 use std::fmt::Write;
 
-use crate::{SystemColor, Theme};
+use crate::{LogicalFont, SystemColor, Theme};
 
 /// 96 DPI 下 1 逻辑像素对应 15 twips；Win32 把 WindowMetrics 存成负的 twips，与 DPI 无关。
 const TWIPS_PER_PIXEL: i32 = 15;
@@ -30,9 +30,39 @@ impl Theme {
         for (key, pixels) in self.window.entries() {
             let _ = writeln!(out, "\"{key}\"=\"{}\"", -pixels * TWIPS_PER_PIXEL);
         }
+        for (key, font) in self.fonts.entries() {
+            let _ = writeln!(out, "\"{key}\"=hex:{}", logfont(font, scale));
+        }
         let _ = writeln!(out, "\"AppliedDPI\"=dword:{:08x}", 96 * scale);
+        out.push_str("\n[HKEY_CURRENT_USER\\Control Panel\\Desktop]\n");
+        let _ = writeln!(
+            out,
+            "\"FontSmoothing\"=\"{}\"",
+            if self.fonts.smoothing { 2 } else { 0 }
+        );
         out.push_str("\n[HKEY_CURRENT_CONFIG\\Software\\Fonts]\n");
         let _ = writeln!(out, "\"LogPixels\"=dword:{:08x}", 96 * scale);
         out
     }
+}
+
+/// 注册表 REG_BINARY 形式的 LOGFONTW（92 字节）：高度为 AppliedDPI 下的负像素值，字符集 GB2312，
+/// 字体名截断到 31 个 UTF-16 单元并以 NUL 结尾。
+fn logfont(font: &LogicalFont, scale: u32) -> String {
+    const GB2312_CHARSET: u8 = 134;
+    let mut bytes = Vec::with_capacity(92);
+    bytes.extend_from_slice(&(-(font.ppem(scale) as i32)).to_le_bytes());
+    bytes.extend_from_slice(&[0; 12]);
+    bytes.extend_from_slice(&i32::from(font.weight).to_le_bytes());
+    bytes.extend_from_slice(&[0, 0, 0, GB2312_CHARSET, 0, 0, 0, 0]);
+    let mut name: Vec<u16> = font.face.encode_utf16().take(31).collect();
+    name.resize(32, 0);
+    for unit in name {
+        bytes.extend_from_slice(&unit.to_le_bytes());
+    }
+    bytes
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<Vec<_>>()
+        .join(",")
 }

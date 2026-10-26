@@ -141,7 +141,7 @@ impl Session {
         let overlay = |surface: canvas::Surface<'_>| {
             let Some(art) = art else { return };
             let screen = (surface.width(), surface.height());
-            let mut painter = classic_ui::Painter::new(surface, theme, &art.typeface, scale);
+            let mut painter = classic_ui::Painter::new(surface, theme, &art.fonts, scale);
             if let Some(switcher) = switcher {
                 switcher::paint(&mut painter, art, screen, switcher);
             }

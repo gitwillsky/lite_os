@@ -1,6 +1,7 @@
 //! 版本化共享控件运行库。Rust 私有对象只在本库分配/释放，SDK 仅持有不透明句柄。
 mod calendar_control;
 mod clipboard;
+mod combo;
 mod context;
 mod file_dialog;
 mod interaction;
@@ -15,11 +16,13 @@ use outline::tree_rows;
 mod context_api;
 mod property_sheet;
 mod range;
+mod rebar;
 mod render;
 mod tab_strip;
 mod table;
 mod text_document;
 mod text_editor;
+mod toolbar;
 mod toplevel;
 mod widgets;
 use context_api::{
@@ -163,6 +166,11 @@ static API: Api = Api {
     read_list_style: list_view::read_style,
     focus: list_view::focus,
     file_dialog_filtered,
+    toolbar_items: widget_api::toolbar_items,
+    rebar_busy: widget_api::rebar_busy,
+    set_font: widget_api::set_font,
+    status_parts: widget_api::status_parts,
+    background: widget_api::background,
 };
 
 /// 查询 ABI 主版本。返回进程存活期间有效的只读函数表；不支持的主版本返回空指针。
@@ -195,7 +203,21 @@ unsafe extern "C" fn edit_command(
     }
 }
 
-unsafe extern "C" fn popup(pointer: *mut c_void, window: u64, id: u64) -> i32 {
+unsafe extern "C" fn popup(
+    pointer: *mut c_void,
+    window: u64,
+    id: u64,
+    x: i32,
+    y: i32,
+    anchored: u32,
+) -> i32 {
+    if anchored > 1 {
+        return abi::INVALID;
+    }
     // SAFETY: context 独占；菜单消费自己的复制数据，不保留应用指针。
-    unsafe { invoke(pointer, |context| context.popup(window, id)) }
+    unsafe {
+        invoke(pointer, |context| {
+            context.popup(window, id, (anchored == 1).then_some((x, y)))
+        })
+    }
 }

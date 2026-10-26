@@ -5,6 +5,14 @@ from pathlib import Path
 import struct
 
 ROOT = Path(__file__).resolve().parents[1]
+# 安装到系统界面目录的位图；原版独有的条目在仓库默认素材中缺失时，界面按缺图退化。
+BITMAPS = {
+    "logon-banner-1x", "start-banner-1x",
+    "toolbar-default-1x", "toolbar-hot-1x", "toolbar-disabled-1x",
+    "ie-toolbar-default-1x", "ie-toolbar-hot-1x", "ie-toolbar-disabled-1x",
+    "go-default-1x", "go-hot-1x", "brand-22-1x", "brand-26-1x", "brand-38-1x",
+    "webview-left-1x", "webview-line-1x",
+}
 
 
 def pack(source: Path, destination: Path) -> None:
@@ -14,7 +22,7 @@ def pack(source: Path, destination: Path) -> None:
         for path in sorted((source / directory).glob("*.png")):
             if directory == "icons-src" and not path.stem.endswith(("-16", "-32", "-64")):
                 continue
-            if directory == "bitmaps-src" and path.stem not in ("logon-banner-1x", "start-banner-1x", "toolbar-default-1x", "toolbar-hot-1x", "toolbar-disabled-1x"):
+            if directory == "bitmaps-src" and path.stem not in BITMAPS:
                 continue
             image = Image.open(path).convert("RGBA")
             width, height = image.size

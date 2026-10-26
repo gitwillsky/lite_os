@@ -2,6 +2,8 @@ use canvas::{Color, Mask, Rect, Surface};
 use classic_theme::{Edge, Rgb, SystemColor, Theme};
 use typeface::Typeface;
 
+use crate::{FontRole, Fonts};
+
 /// 文字墨色：普通颜色，或浮雕式禁用样式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Ink {
@@ -15,6 +17,9 @@ pub enum Ink {
 pub struct Painter<'a> {
     pub(crate) surface: Surface<'a>,
     pub(crate) theme: &'a Theme,
+    /// 当前 scale 的系统字体集合。
+    pub(crate) fonts: &'a Fonts,
+    /// 正在使用的字体；默认是消息字体，`with_role`/`with_font` 期间临时替换。
     pub(crate) typeface: &'a Typeface,
     pub(crate) scale: i32,
     /// 是否画助记键下划线（Windows 2000 在按 Alt 或 Tab 之前隐藏它，见 `interaction.md` N1/N2）。
@@ -26,15 +31,58 @@ pub(crate) fn to_color(rgb: Rgb) -> Color {
 }
 
 impl<'a> Painter<'a> {
-    /// `scale` 小于 1 时按 1 处理。
-    pub fn new(surface: Surface<'a>, theme: &'a Theme, typeface: &'a Typeface, scale: i32) -> Self {
+    /// 以消息字体为默认字体；`scale` 小于 1 时按 1 处理。
+    pub fn new(surface: Surface<'a>, theme: &'a Theme, fonts: &'a Fonts, scale: i32) -> Self {
         Self {
             surface,
             theme,
-            typeface,
+            fonts,
+            typeface: fonts.role(FontRole::Message),
             scale: scale.max(1),
             cues: false,
         }
+    }
+
+    /// 本绘制器使用的系统字体集合。
+    /// 按 ASCII 点阵画一个小字形（`#` 为前景），用于下拉箭头等控件标记；坐标为逻辑像素。
+    pub fn glyph(&mut self, x: i32, y: i32, rows: &[&str], color: SystemColor) {
+        self.pixels(x, y, rows, color);
+    }
+
+    /// 用某个系统字体量出的逻辑宽度（向上取整）；用于在绘制前按该字体布局。
+    pub fn measure_role(&self, role: FontRole, text: &str, bold: bool) -> i32 {
+        self.logical_ceil(self.fonts.role(role).measure(text, bold))
+    }
+
+    /// 本绘制器使用的系统字体集合。
+    pub fn fonts(&self) -> &'a Fonts {
+        self.fonts
+    }
+
+    /// 在 `draw` 期间改用某个系统字体（标题栏、菜单、状态栏、图标标题）；度量与绘制都随之切换。
+    pub fn with_role<R>(&mut self, role: FontRole, draw: impl FnOnce(&mut Self) -> R) -> R {
+        let previous = self.typeface;
+        self.typeface = self.fonts.role(role);
+        let result = draw(self);
+        self.typeface = previous;
+        result
+    }
+
+    /// 在 `draw` 期间改用任意已解析字体（例如由 [`Fonts::custom`] 得到的派生样式）。
+    pub fn with_font<'c, R>(
+        &'c mut self,
+        font: &'c Typeface,
+        draw: impl FnOnce(&mut Painter<'c>) -> R,
+    ) -> R {
+        let mut painter = Painter {
+            surface: self.surface.reborrow(),
+            theme: self.theme,
+            fonts: self.fonts,
+            typeface: font,
+            scale: self.scale,
+            cues: self.cues,
+        };
+        draw(&mut painter)
     }
 
     /// 设置是否显示助记键下划线；默认隐藏。
@@ -131,6 +179,11 @@ impl<'a> Painter<'a> {
         self.surface.invert_dotted_frame(physical, self.scale);
     }
 
+    /// 当前字体基线到行盒顶部的距离（逻辑像素向上取整）；下划线等装饰据此定位。
+    pub fn ascent(&self) -> i32 {
+        self.logical_ceil(self.typeface.metrics().0)
+    }
+
     /// 文字行盒的高度（逻辑像素向上取整）。
     pub fn line_height(&self) -> i32 {
         let (ascent, descent) = self.typeface.metrics();
@@ -160,9 +213,26 @@ impl<'a> Painter<'a> {
 
     /// 带助记键的 [`Painter::text_fit`]。
     pub fn label_fit(&mut self, x: i32, y: i32, max_width: i32, label: &str, ink: Ink) {
-        let shown = self.truncate_to_width(label, max_width.max(0) * self.scale, false);
+        self.label_fit_weighted(x, y, max_width, label, ink, false);
+    }
+
+    /// [`Painter::label_fit`] 的粗体版本（菜单默认项）。
+    pub fn label_fit_bold(&mut self, x: i32, y: i32, max_width: i32, label: &str, ink: Ink) {
+        self.label_fit_weighted(x, y, max_width, label, ink, true);
+    }
+
+    fn label_fit_weighted(
+        &mut self,
+        x: i32,
+        y: i32,
+        max_width: i32,
+        label: &str,
+        ink: Ink,
+        bold: bool,
+    ) {
+        let shown = self.truncate_to_width(label, max_width.max(0) * self.scale, bold);
         self.clipped(Rect::new(x, y, max_width, self.line_height()), |p| {
-            p.label_physical(p.px(x), p.px(y), &shown, ink, false);
+            p.label_physical(p.px(x), p.px(y), &shown, ink, bold);
         });
     }
 

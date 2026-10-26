@@ -4,9 +4,6 @@ use canvas::Rect;
 
 use crate::{MenuItemState, Painter};
 
-const ITEM_HEIGHT: i32 = 20;
-const SEPARATOR_HEIGHT: i32 = 8;
-
 /// 下拉菜单的一个条目。
 #[derive(PartialEq, Eq)]
 pub struct DropItem<T, S = &'static str> {
@@ -18,6 +15,10 @@ pub struct DropItem<T, S = &'static str> {
     pub disabled: bool,
     /// 此条目上方带分隔线。
     pub separator_before: bool,
+    /// 默认项（双击等价的命令），标签粗体显示。
+    pub default: bool,
+    /// 级联子菜单的条目；非空时本条目只打开子菜单，不产生命令。
+    pub children: Vec<DropItem<T, S>>,
 }
 
 impl<T, S: AsRef<str>> DropItem<T, S> {
@@ -29,7 +30,14 @@ impl<T, S: AsRef<str>> DropItem<T, S> {
             checked: false,
             disabled: false,
             separator_before: false,
+            default: false,
+            children: Vec::new(),
         }
+    }
+
+    /// 是否为级联子菜单的父条目。
+    pub fn has_submenu(&self) -> bool {
+        !self.children.is_empty()
     }
 
     /// 在条目上方加分隔线。
@@ -53,7 +61,7 @@ pub struct DropMenu<T, S = &'static str> {
 }
 
 fn logical_width(p: &Painter<'_>, text: &str) -> i32 {
-    (p.text_width(text, false) + p.scale() - 1) / p.scale()
+    p.measure_role(crate::FontRole::Menu, text, false)
 }
 
 /// 菜单栏各标题的矩形，沿 `bar` 从左到右。
@@ -74,14 +82,45 @@ pub fn title_rects<T, S: AsRef<str>>(
         .collect()
 }
 
-/// 一个打开的下拉菜单。
+/// 一个打开的下拉菜单或级联子菜单。
 pub struct Popup {
     pub menu: usize,
+    /// 从顶层菜单条目到本子菜单父条目的索引路径；顶层下拉菜单为空。
+    pub trail: Vec<usize>,
     pub rect: Rect,
     pub hover: Option<usize>,
+    /// 打开时由菜单字体与主题度量算出的项高与分隔条高；行几何、命中与绘制共用。
+    item_height: i32,
+    separator_height: i32,
+}
+
+/// 项高与分隔条高，规则见 [`crate::MenuMetrics`]。
+fn item_metrics(p: &Painter<'_>) -> (i32, i32) {
+    let metrics = crate::MenuMetrics::new(p.theme(), p.fonts(), p.scale());
+    (metrics.item_height(), metrics.separator_height())
+}
+
+/// 由索引路径取子菜单条目；路径失效（菜单已被替换）时为空。
+pub fn submenu_items<'a, T, S>(
+    items: &'a [DropItem<T, S>],
+    trail: &[usize],
+) -> &'a [DropItem<T, S>] {
+    trail
+        .iter()
+        .try_fold(items, |items, index| {
+            Some(items.get(*index)?.children.as_slice())
+        })
+        .unwrap_or(&[])
 }
 
 impl Popup {
+    /// 本弹出层的条目。
+    pub fn items<'a, T, S>(&self, menus: &'a [DropMenu<T, S>]) -> &'a [DropItem<T, S>] {
+        menus
+            .get(self.menu)
+            .map_or(&[], |menu| submenu_items(&menu.items, &self.trail))
+    }
+
     /// 在标题矩形 `title` 的下方打开第 `menu` 个菜单。
     pub fn open<T, S: AsRef<str>>(
         p: &Painter<'_>,
@@ -89,18 +128,60 @@ impl Popup {
         menu: usize,
         title: Rect,
     ) -> Self {
-        let items = &menus[menu].items;
+        let mut popup = Self::sized(p, &menus[menu].items, menu, Vec::new());
+        popup.rect.x = title.x;
+        popup.rect.y = title.bottom();
+        popup
+    }
+
+    /// 打开 `parent` 第 `index` 项的级联子菜单：与父条目顶端对齐、压住父菜单右边框 3 像素；
+    /// 右侧超出 `bounds` 时翻到父菜单左侧，下方超出时上移（USER32 的子菜单定位）。
+    pub fn submenu<T, S: AsRef<str>>(
+        p: &Painter<'_>,
+        menus: &[DropMenu<T, S>],
+        parent: &Popup,
+        index: usize,
+        bounds: Option<Rect>,
+    ) -> Self {
+        let mut trail = parent.trail.clone();
+        trail.push(index);
+        let items = submenu_items(&menus[parent.menu].items, &trail);
+        let mut popup = Self::sized(p, items, parent.menu, trail);
+        let row = parent.rows(parent.items(menus))[index];
+        popup.rect.x = parent.rect.right() - 3;
+        popup.rect.y = row.y - 2;
+        if let Some(bounds) = bounds {
+            if popup.rect.right() > bounds.right() {
+                popup.rect.x = parent.rect.x - popup.rect.width + 3;
+            }
+            popup.rect.x = popup.rect.x.max(bounds.x);
+            popup.rect.y = popup
+                .rect
+                .y
+                .min(bounds.bottom() - popup.rect.height)
+                .max(bounds.y);
+        }
+        popup
+    }
+
+    fn sized<T, S: AsRef<str>>(
+        p: &Painter<'_>,
+        items: &[DropItem<T, S>],
+        menu: usize,
+        trail: Vec<usize>,
+    ) -> Self {
         let width = p.menu_width(
             items
                 .iter()
-                .map(|item| (item.label.as_ref(), item.shortcut.as_ref())),
+                .map(|item| (item.label.as_ref(), item.shortcut.as_ref(), item.default)),
         );
+        let (item_height, separator_height) = item_metrics(p);
         let height = 4 + items
             .iter()
             .map(|item| {
-                ITEM_HEIGHT
+                item_height
                     + if item.separator_before {
-                        SEPARATOR_HEIGHT
+                        separator_height
                     } else {
                         0
                     }
@@ -108,22 +189,25 @@ impl Popup {
             .sum::<i32>();
         Self {
             menu,
-            rect: Rect::new(title.x, title.bottom(), width, height),
+            trail,
+            rect: Rect::new(0, 0, width, height),
             hover: None,
+            item_height,
+            separator_height,
         }
     }
 
     /// 各条目的行矩形（不含分隔线）。
-    fn rows<T, S: AsRef<str>>(&self, items: &[DropItem<T, S>]) -> Vec<Rect> {
+    pub fn rows<T, S: AsRef<str>>(&self, items: &[DropItem<T, S>]) -> Vec<Rect> {
         let mut y = self.rect.y + 2;
         items
             .iter()
             .map(|item| {
                 if item.separator_before {
-                    y += SEPARATOR_HEIGHT;
+                    y += self.separator_height;
                 }
-                let row = Rect::new(self.rect.x + 2, y, self.rect.width - 4, ITEM_HEIGHT);
-                y += ITEM_HEIGHT;
+                let row = Rect::new(self.rect.x + 2, y, self.rect.width - 4, self.item_height);
+                y += self.item_height;
                 row
             })
             .collect()
@@ -166,9 +250,9 @@ impl Popup {
             if item.separator_before {
                 p.menu_separator(Rect::new(
                     inner.x,
-                    row.y - SEPARATOR_HEIGHT,
+                    row.y - self.separator_height,
                     inner.width,
-                    SEPARATOR_HEIGHT,
+                    self.separator_height,
                 ));
             }
             p.menu_item(
@@ -179,7 +263,8 @@ impl Popup {
                     highlighted: self.hover == Some(index),
                     checked: item.checked,
                     disabled: item.disabled,
-                    ..Default::default()
+                    has_submenu: item.has_submenu(),
+                    default: item.default,
                 },
             );
         }

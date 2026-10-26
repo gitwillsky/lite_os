@@ -174,9 +174,11 @@ impl Painter<'_> {
         }
         let text_x = rect.x + 2 + 16 + 2;
         let available = (leftmost - 2 - text_x).max(0) * self.scale;
-        let shown = self.truncate_to_width(title, available, true);
-        let text_y = bar.y + (bar.height - self.line_height()) / 2;
-        self.text(text_x, text_y, &shown, Ink::Color(ink), true);
+        self.with_role(crate::FontRole::Caption, |p| {
+            let shown = p.truncate_to_width(title, available, true);
+            let text_y = bar.y + (bar.height - p.line_height()) / 2;
+            p.text(text_x, text_y, &shown, Ink::Color(ink), true);
+        });
     }
 
     fn caption_button(&mut self, area: Rect, button: CaptionButton, enabled: bool, pressed: bool) {

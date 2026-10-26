@@ -196,7 +196,53 @@ pub enum WidgetKind {
     Group,
     Calendar,
     PopupMenu,
+    /// 平面位图工具栏；按钮通过 [`Widget::set_toolbar`] 设置。
+    Toolbar,
+    /// 带区容器：每个子控件一行，带把手、边线与品牌 logo；忙碌动画用 [`Widget::set_busy`]。
+    Rebar,
+    /// 超链接文字：激活发出 [`crate::EventKind::Activate`]。
+    Link,
+    /// 可编辑下拉组合框：项目用 [`Widget::set_tree_rows`]/[`Widget::set_row_icons`] 设置，
+    /// 选择发出 Select，收起时 Enter 发出 Activate。
+    Combo,
 }
+/// 系统字体用途，对应主题 `[Fonts]` 中的逻辑字体。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FontRole {
+    Caption = 0,
+    SmallCaption = 1,
+    Menu = 2,
+    Status = 3,
+    Message = 4,
+    Icon = 5,
+}
+
+/// 工具栏按钮的种类（comctl32 BTNS_*）。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ToolbarKind {
+    Button,
+    /// 复选按钮：每次单击切换选中状态。
+    Check,
+    /// 分体下拉：右侧箭头按下时发出 [`crate::EventKind::Dropdown`]。
+    Dropdown,
+    /// 整体下拉：整个按钮按下即发出 Dropdown。
+    WholeDropdown,
+    Separator,
+}
+
+/// 一个工具栏按钮。`strip` 是系统位图条名（如 `toolbar`、`ie-toolbar`），`frame` 为帧序号。
+pub struct ToolbarButton<'a> {
+    pub id: u64,
+    pub kind: ToolbarKind,
+    pub strip: &'a str,
+    pub frame: u32,
+    pub text: &'a str,
+    /// 选择性文字：在图像右侧显示文字。
+    pub show_text: bool,
+    pub enabled: bool,
+    pub checked: bool,
+}
+
 /// 控件规格；文本在创建时复制，group 只用于同父节点下的 radio 互斥。
 pub struct WidgetSpec<'a> {
     pub kind: WidgetKind,
@@ -312,12 +358,16 @@ pub struct Column<'a> {
     pub width: i32,
     pub sort: u32,
 }
-/// 菜单条目，state 采用 disabled=1、checked=2、separator_before=4。
+/// 菜单条目，state 采用 disabled=1、checked=2、separator_before=4、default=8（粗体默认项）。
+///
+/// `parent` 为 0 是菜单的直接条目；否则是排在前面的父条目 id，父条目因此成为级联子菜单
+/// （只展开、不产生 Activate），嵌套最多 [`abi::MENU_DEPTH`] 层。
 pub struct MenuItem<'a> {
     pub id: u64,
     pub label: &'a str,
     pub shortcut: &'a str,
     pub state: u32,
+    pub parent: u64,
 }
 /// 菜单栏规格，内容在 set_menus 调用期间借用。
 pub struct Menu<'a> {
@@ -464,6 +514,7 @@ impl Widget {
                         label: text(item.label),
                         shortcut: text(item.shortcut),
                         state: item.state,
+                        parent: item.parent,
                     })
                     .collect()
             })
@@ -526,6 +577,83 @@ impl Widget {
         self.call(|c, w, id| {
             // SAFETY: 数组与引用的原始字符串在同步调用内存活，运行库复制后返回。
             unsafe { (c.api.rows)(c.context.as_ptr(), w, id, rows.as_ptr(), rows.len()) }
+        })
+    }
+    /// 标签/链接改用某个系统字体用途派生的字体；`points`、`weight` 为 None 时沿用该用途的值。
+    pub fn set_font(&self, role: FontRole, points: Option<u16>, weight: Option<u16>) -> Result<()> {
+        self.call(|c, w, id| {
+            // SAFETY: 句柄有效，参数为整数，运行库验证范围后保存描述。
+            unsafe {
+                (c.api.set_font)(
+                    c.context.as_ptr(),
+                    w,
+                    id,
+                    role as u32,
+                    u32::from(points.unwrap_or(0)),
+                    u32::from(weight.unwrap_or(0)),
+                )
+            }
+        })
+    }
+    /// 状态栏分格宽度：正数固定宽，至多一格 `-1` 占满剩余；空切片恢复按文字分格。
+    /// 格图标用 [`Widget::set_row_icons`]，`RowIcon.id` 为从 1 起的格序号。
+    pub fn set_status_parts(&self, parts: &[i32]) -> Result<()> {
+        self.call(|c, w, id| {
+            // SAFETY: 宽度数组在同步调用期间存活，运行库校验后复制。
+            unsafe { (c.api.status_parts)(c.context.as_ptr(), w, id, parts.as_ptr(), parts.len()) }
+        })
+    }
+    /// Column/Row 背景：`rgb`（0xRRGGBB）填底，`bitmap`（系统界面位图名）不缩放、不平铺地画在左上角。
+    pub fn set_background(&self, rgb: Option<u32>, bitmap: Option<&str>) -> Result<()> {
+        let name = text(bitmap.unwrap_or(""));
+        self.call(|c, w, id| {
+            // SAFETY: 名称在同步调用期间有效，运行库复制后加载位图。
+            unsafe {
+                (c.api.background)(
+                    c.context.as_ptr(),
+                    w,
+                    id,
+                    rgb.unwrap_or(abi::NO_COLOR),
+                    name,
+                )
+            }
+        })
+    }
+    /// ReBar 品牌 logo 的忙碌动画：导航或读取期间开启，完成后关闭。
+    pub fn set_busy(&self, busy: bool) -> Result<()> {
+        self.call(|c, w, id| {
+            // SAFETY: 句柄有效，参数为整数，调用不保留任何借用。
+            unsafe { (c.api.rebar_busy)(c.context.as_ptr(), w, id, u32::from(busy)) }
+        })
+    }
+    /// 原子替换工具栏按钮；悬停、按下、复选切换与下拉锚点由共享运行库持有。
+    pub fn set_toolbar(&self, buttons: &[ToolbarButton<'_>]) -> Result<()> {
+        use abi::toolbar as style;
+        let items: Vec<_> = buttons
+            .iter()
+            .map(|button| abi::ToolbarItem {
+                id: button.id,
+                strip: text(button.strip),
+                frame: button.frame,
+                text: text(button.text),
+                style: match button.kind {
+                    ToolbarKind::Button => 0,
+                    ToolbarKind::Check => style::CHECK,
+                    ToolbarKind::Dropdown => style::DROPDOWN,
+                    ToolbarKind::WholeDropdown => style::WHOLE_DROPDOWN,
+                    ToolbarKind::Separator => style::SEPARATOR,
+                } | if button.show_text {
+                    style::SHOW_TEXT
+                } else {
+                    0
+                },
+                state: if button.enabled { 0 } else { style::DISABLED }
+                    | if button.checked { style::CHECKED } else { 0 },
+            })
+            .collect();
+        self.call(|c, w, id| {
+            // SAFETY: 数组与文本仅借用本次同步调用；运行库验证后复制，失败不发布部分数据。
+            unsafe { (c.api.toolbar_items)(c.context.as_ptr(), w, id, items.as_ptr(), items.len()) }
         })
     }
     /// 原子替换树视图数据，展开、选择、命中和滚动由共享运行库持有。

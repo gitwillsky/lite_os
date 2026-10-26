@@ -17,6 +17,7 @@ pub enum ParseErrorKind {
     KeyOutsideSection,
     InvalidColor(String),
     InvalidMetric(String),
+    InvalidFont(String),
 }
 
 impl fmt::Display for ParseError {
@@ -31,6 +32,9 @@ impl fmt::Display for ParseError {
                 write!(f, "invalid color `{value}`, expected `R G B`")
             }
             ParseErrorKind::InvalidMetric(value) => write!(f, "invalid metric `{value}`"),
+            ParseErrorKind::InvalidFont(value) => {
+                write!(f, "invalid font `{value}`, expected `face,points,weight`")
+            }
         }
     }
 }
@@ -42,6 +46,29 @@ enum Section {
     Colors,
     WindowMetrics,
     Shell,
+    Fonts,
+    InternetExplorer,
+}
+
+/// `face,points,weight`：字体名非空，磅值 1..=72，粗细 1..=1000（LOGFONT 的 lfWeight）。
+fn parse_font(value: &str) -> Option<crate::LogicalFont> {
+    let mut parts = value.rsplitn(3, ',').map(str::trim);
+    let weight = parts
+        .next()?
+        .parse::<u16>()
+        .ok()
+        .filter(|w| (1..=1000).contains(w))?;
+    let points = parts
+        .next()?
+        .parse::<u16>()
+        .ok()
+        .filter(|p| (1..=72).contains(p))?;
+    let face = parts.next().filter(|face| !face.is_empty())?;
+    Some(crate::LogicalFont {
+        face: face.to_owned(),
+        points,
+        weight,
+    })
 }
 
 fn parse_color(value: &str) -> Option<Rgb> {
@@ -73,6 +100,8 @@ pub(crate) fn overlay(mut theme: Theme, text: &str) -> Result<Theme, ParseError>
                 "Colors" => Section::Colors,
                 "WindowMetrics" => Section::WindowMetrics,
                 "Shell" => Section::Shell,
+                "Fonts" => Section::Fonts,
+                "Internet Explorer" => Section::InternetExplorer,
                 other => return Err(error(ParseErrorKind::UnknownSection(other.to_owned()))),
             });
             continue;
@@ -88,6 +117,28 @@ pub(crate) fn overlay(mut theme: Theme, text: &str) -> Result<Theme, ParseError>
                 let color = SystemColor::from_name(key).ok_or_else(unknown)?;
                 theme.colors[color as usize] = parse_color(value)
                     .ok_or_else(|| error(ParseErrorKind::InvalidColor(value.to_owned())))?;
+            }
+            Section::InternetExplorer => {
+                let slot = match key {
+                    "Anchor Color" => &mut theme.anchors.link,
+                    "Anchor Color Visited" => &mut theme.anchors.visited,
+                    _ => return Err(unknown()),
+                };
+                // IE 注册表值为 "R,G,B"；与 [Colors] 一样也接受空格分隔。
+                *slot = parse_color(&value.replace(',', " "))
+                    .ok_or_else(|| error(ParseErrorKind::InvalidColor(value.to_owned())))?;
+            }
+            Section::Fonts if key == "FontSmoothing" => {
+                // 注册表 FontSmoothing 为 "0" 关闭、"2" 开启。
+                theme.fonts.smoothing = match value {
+                    "0" => false,
+                    "2" => true,
+                    _ => return Err(error(ParseErrorKind::InvalidFont(value.to_owned()))),
+                };
+            }
+            Section::Fonts => {
+                *theme.fonts.slot(key).ok_or_else(unknown)? = parse_font(value)
+                    .ok_or_else(|| error(ParseErrorKind::InvalidFont(value.to_owned())))?;
             }
             Section::WindowMetrics | Section::Shell => {
                 let slot = match section {

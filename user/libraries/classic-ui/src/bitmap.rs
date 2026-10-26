@@ -12,6 +12,16 @@ pub struct Bitmap {
 }
 impl Bitmap {
     /// 读取有界的 top-down 32 位 BMP；错误格式、截断或尺寸超过 2048 返回 InvalidData。
+    /// 位图宽度（逻辑像素）。
+    pub fn width(&self) -> i32 {
+        self.width
+    }
+
+    /// 位图高度（逻辑像素）；工具栏位图条的帧宽等于它。
+    pub fn height(&self) -> i32 {
+        self.height
+    }
+
     pub fn load(path: &Path) -> io::Result<Self> {
         Self::decode(&std::fs::read(path)?)
     }
@@ -81,6 +91,44 @@ impl Bitmap {
         let rect = Rect::new(x, y, self.width, height);
         let physical = painter.physical(rect);
         painter.surface.fill_rect(physical, color);
+    }
+
+    /// 只绘制 `source_y..source_y + source_height` 这一横条（帧竖排的动画位图按帧取用）；越界不绘制。
+    pub fn paint_rows(
+        &self,
+        painter: &mut Painter<'_>,
+        x: i32,
+        y: i32,
+        source_y: i32,
+        source_height: i32,
+    ) {
+        if source_y < 0 || source_height < 1 || source_y + source_height > self.height {
+            return;
+        }
+        let scale = painter.scale;
+        let start = source_y as usize * self.width as usize;
+        painter.surface.blit(
+            Image {
+                pixels: &self.pixels[start..],
+                width: self.width,
+                height: source_height,
+                stride: self.width as usize,
+            },
+            x * scale,
+            y * scale,
+            scale,
+        );
+    }
+
+    /// 横向按最近邻拉伸到 `width` 逻辑像素（CSS `width: 100%` 的图片，如 Web 视图分隔线）。
+    pub fn paint_stretched(&self, painter: &mut Painter<'_>, x: i32, y: i32, width: i32) {
+        if self.width < 1 || width < 1 {
+            return;
+        }
+        for column in 0..width {
+            let source = (i64::from(column) * i64::from(self.width) / i64::from(width)) as i32;
+            self.paint_region(painter, x + column - source, y, source, 1);
+        }
     }
 
     /// 只绘制 `source_x..source_x + source_width` 这一竖条（工具栏位图条按帧取用）；越界的部分不绘制。

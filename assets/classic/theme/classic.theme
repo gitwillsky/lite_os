@@ -1,6 +1,7 @@
 ; LiteOS 经典主题（Windows 2000 "Windows 标准"配色方案）。
 ; 颜色键名与 Control Panel\Colors、度量键名与 Control Panel\Desktop\WindowMetrics 的注册表值名一致，
 ; 因此同一份数据既驱动桌面，也生成 Wine 前缀注册表。颜色为 "R G B"，度量为 96 DPI 下的逻辑像素。
+; 字体与 WindowMetrics 的 LOGFONT 值同名，值为“字体名,磅值,粗细”（400 常规、700 粗体）。
 
 [Colors]
 Scrollbar=212 208 200
@@ -50,3 +51,18 @@ TaskbarHeight=28
 TaskbarButtonHeight=22
 TaskbarButtonMaxWidth=160
 TaskbarButtonGap=2
+
+[Fonts]
+; 简体中文 Windows 2000 默认：宋体 9 磅，标题粗体；平滑屏幕字体边缘默认关闭。
+CaptionFont=宋体,9,700
+SmCaptionFont=宋体,9,700
+MenuFont=宋体,9,400
+StatusFont=宋体,9,400
+MessageFont=宋体,9,400
+IconFont=宋体,9,400
+FontSmoothing=0
+
+[Internet Explorer]
+; Web 视图（文件夹左侧面板）的链接颜色，与 IE Settings 的同名值一致。
+Anchor Color=0,0,255
+Anchor Color Visited=128,0,128

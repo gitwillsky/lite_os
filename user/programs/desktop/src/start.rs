@@ -21,6 +21,7 @@ pub enum Place {
     NetworkPlaces,
     RecycleBin,
     ControlPanel,
+    NetworkConnections,
 }
 
 /// 点击一个叶子条目的结果。
@@ -30,7 +31,6 @@ pub enum Action {
     Files(Place),
     Tasks,
     Taskbar,
-    Network,
     About,
     Run,
     Lock,
@@ -107,7 +107,11 @@ pub fn rows(apps: &[Application]) -> Vec<Row> {
                     Action::Files(Place::ControlPanel),
                 ),
                 leaf("settings-16", "任务栏和「开始」菜单(T)...", Action::Taskbar),
-                leaf("control-panel-16", "网络和拨号连接(N)", Action::Network),
+                leaf(
+                    "network-connections-16",
+                    "网络和拨号连接(N)",
+                    Action::Files(Place::NetworkConnections),
+                ),
             ],
         ),
         leaf("run-32", "运行(R)...", Action::Run),

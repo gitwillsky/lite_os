@@ -110,3 +110,26 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   BootSurface 仅为启动位图投影 CPU/GPU 目标的可写像素行，不拥有协议或第二份像素存储。
   GPU boot transfer、合成与 page flip 均使用同一对资源；目标 Drop 先移除 FBO，再释放 GEM。
   Benchmark 决策：本轮按用户要求不运行性能验证；代码删除两块冗余全屏缓冲，不据此宣称帧率提升数值。
+
+## comctl32 控件、级联菜单与状态栏
+
+- MenuBar 唯一持有弹出层栈、等待展开的子菜单（含预先算好的几何）与客户区边界；子菜单路径由条目索引表示，
+  菜单数据替换即整体关闭。缺少 pending 只能悬停即开或丢失延时；缺少 bounds 子菜单会越出窗口。嵌套上限
+  `MENU_DEPTH` 由 ABI 声明，运行库静态断言与共享状态机一致，并在复制菜单时校验父条目先于子条目。
+- MenuItem 追加 `parent` 字段、state bit3 为默认项；产品处于开发期，按用户决定不保留旧布局。新增 ABI 槽位
+  status_parts、background 追加到表尾。
+- Toolbar 持有按钮矩形、悬停/按下与工具提示计时；同一组按钮刷新状态时保留交互，按钮组变化才复位。
+  Tree.animated 记录上次推进定时状态的时刻，使提示只在越过显示时刻时重绘一次；缺少它会每次唤醒都重绘。
+- 尺寸手柄：Tree.size_grip 由窗口 owner 每次布局写入（可缩放且未最大化/全屏），状态栏只画；Decoration.grip
+  是同一矩形的命中副本，由 layout_record 在同一入口刷新，按下发起 xdg_toplevel.resize(BottomRight)。
+- Node.status_parts 与 Node.background 只保存复制后的分格宽度、底色和共享位图引用；位图由资源上下文保活。
+- 应用自建对话框经 Dialogs::window 登记到同一窗口表与订阅 owner，窗口与事件流的 Drop 撤销登记。
+- Benchmark 决策：新增定时状态只在存在截止时刻时参与等待，菜单/提示的命中与绘制为常数级；本轮按用户要求不运行性能测试。
+
+## 字体目录与缓存
+
+- typeface::FontCatalog 拥有扫描到的字体成员与 `fontmap.ini` 映射；Resources 每进程加载一次并共享，主题重载清空。
+- OutlineFace 独占每个成员的 fpgm 结果；Typeface 独占本字号各成员的 prep 结果（按成员地址索引，chain 中的 Rc 保活）
+  与已光栅化字形（上限 4096，满即清空）。缺少这些缓存会在每个字形重复执行字体程序；None 记录失败，避免反复执行。
+- classic_ui::Fonts 拥有六个系统字体用途与最多 16 个应用派生逻辑字体（`set_font`）；Painter 只借用，不复制。
+- 字节码解释器只在给定指令流上执行，越界、栈错误与步数上限使本次程序失败并退回未 hinting 轮廓，从不 panic。

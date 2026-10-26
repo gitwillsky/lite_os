@@ -142,12 +142,84 @@ impl WindowMetrics {
     }
 }
 
-/// 完整主题：系统颜色与度量。
+pub use typeface::LogicalFont;
+
+/// 系统字体：与 `Control Panel\Desktop\WindowMetrics` 的 LOGFONT 值同名，加上 `FontSmoothing`。
+/// 界面文字一律经这些逻辑字体解析，代码中不指定字体名或字号。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemFonts {
+    pub caption: LogicalFont,
+    pub small_caption: LogicalFont,
+    pub menu: LogicalFont,
+    pub status: LogicalFont,
+    pub message: LogicalFont,
+    pub icon: LogicalFont,
+    /// “平滑屏幕字体边缘”；关闭时轮廓字形为单色。
+    pub smoothing: bool,
+}
+
+impl Default for SystemFonts {
+    /// 空白值只用于叠加主题文件之前；内置主题文件给出全部键。
+    fn default() -> Self {
+        let blank = LogicalFont {
+            face: String::new(),
+            points: 9,
+            weight: 400,
+        };
+        Self {
+            caption: blank.clone(),
+            small_caption: blank.clone(),
+            menu: blank.clone(),
+            status: blank.clone(),
+            message: blank.clone(),
+            icon: blank,
+            smoothing: false,
+        }
+    }
+}
+
+impl SystemFonts {
+    /// 键名到字段；`FontSmoothing` 不是逻辑字体，由解析器单独处理。
+    pub(crate) fn slot(&mut self, key: &str) -> Option<&mut LogicalFont> {
+        Some(match key {
+            "CaptionFont" => &mut self.caption,
+            "SmCaptionFont" => &mut self.small_caption,
+            "MenuFont" => &mut self.menu,
+            "StatusFont" => &mut self.status,
+            "MessageFont" => &mut self.message,
+            "IconFont" => &mut self.icon,
+            _ => return None,
+        })
+    }
+
+    /// 全部逻辑字体及其注册表值名。
+    pub fn entries(&self) -> [(&'static str, &LogicalFont); 6] {
+        [
+            ("CaptionFont", &self.caption),
+            ("SmCaptionFont", &self.small_caption),
+            ("MenuFont", &self.menu),
+            ("StatusFont", &self.status),
+            ("MessageFont", &self.message),
+            ("IconFont", &self.icon),
+        ]
+    }
+}
+
+/// Web 视图链接颜色：与 IE `Settings` 的 `Anchor Color`/`Anchor Color Visited` 同名。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct AnchorColors {
+    pub link: Rgb,
+    pub visited: Rgb,
+}
+
+/// 完整主题：系统颜色、度量与字体。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Theme {
     colors: [Rgb; SystemColor::ALL.len()],
     pub window: WindowMetrics,
     pub shell: ShellMetrics,
+    pub fonts: SystemFonts,
+    pub anchors: AnchorColors,
 }
 
 const DEFAULT_THEME: &str = include_str!("../../../../assets/classic/theme/classic.theme");
@@ -177,6 +249,8 @@ impl Theme {
             colors: [Rgb::default(); SystemColor::ALL.len()],
             window: WindowMetrics::default(),
             shell: ShellMetrics::default(),
+            fonts: SystemFonts::default(),
+            anchors: AnchorColors::default(),
         };
         // 数据文件随二进制嵌入，单元测试保证它完整且合法，所以这里的失败只可能是构建产物损坏。
         blank

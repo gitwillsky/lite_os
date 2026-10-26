@@ -44,6 +44,18 @@ impl WindowHost {
     pub fn invalidate(&mut self) {
         self.dirty = true;
     }
+    /// 当前配置下能否使用状态栏尺寸手柄；没有 configure 时为 false。
+    pub fn size_grip_allowed(&self, display: &Display) -> bool {
+        display
+            .configuration(self.window)
+            .is_some_and(|configuration| self.decoration.size_grip_allowed(configuration))
+    }
+
+    /// 登记客户区内容的尺寸手柄矩形（surface 局部坐标），交给装饰统一处理缩放命中。
+    pub fn set_size_grip(&mut self, grip: Option<Rect>) {
+        self.decoration.set_size_grip(grip);
+    }
+
     /// 返回当前配置下的客户区；没有 configure 时返回 None。
     pub fn client_rect(&self, display: &Display) -> Option<Rect> {
         display
@@ -92,7 +104,7 @@ impl WindowHost {
             return Ok(false);
         };
         let (width, height) = configuration.pixel_size()?;
-        let font = resources.font(configuration.scale)?;
+        let font = resources.fonts(configuration.scale)?;
         self.pixels.resize(width as usize * height as usize, 0);
         let surface = Surface::new(&mut self.pixels, width, height, width as usize)
             .ok_or_else(|| io::Error::other("invalid window drawing surface"))?;

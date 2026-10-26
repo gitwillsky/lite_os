@@ -237,7 +237,11 @@ pub(crate) struct Raster {
 /// 以 `scale`（像素 / font unit）栅格化 `outline`；空轮廓返回宽高为 0 的位图。
 ///
 /// `embolden` 是每侧向外加粗的像素距离，0 表示不加粗。
-pub(crate) fn rasterize(outline: &Outline, scale: f32, embolden_distance: f32) -> Raster {
+/// 展平（可选加粗）后的轮廓折线与像素包围盒 (left, bottom, width, height)。
+type Prepared = (Vec<Vec<Vertex>>, i32, i32, i32, i32);
+
+/// 展平轮廓并求像素包围盒；空轮廓返回 None。
+fn prepare(outline: &Outline, scale: f32, embolden_distance: f32) -> Option<Prepared> {
     let contours: Vec<Vec<Vertex>> = outline
         .contours
         .iter()
@@ -250,8 +254,7 @@ pub(crate) fn rasterize(outline: &Outline, scale: f32, embolden_distance: f32) -
             flat
         })
         .collect();
-    let vertices = contours.iter().flatten();
-    let (min_x, max_x, min_y, max_y) = vertices.fold(
+    let (min_x, max_x, min_y, max_y) = contours.iter().flatten().fold(
         (f32::MAX, f32::MIN, f32::MAX, f32::MIN),
         |(min_x, max_x, min_y, max_y), v| {
             (
@@ -263,17 +266,241 @@ pub(crate) fn rasterize(outline: &Outline, scale: f32, embolden_distance: f32) -
         },
     );
     if min_x > max_x {
-        return Raster {
-            coverage: Vec::new(),
-            width: 0,
-            height: 0,
-            left: 0,
-            top: 0,
-        };
+        return None;
     }
     let (left, right) = (min_x.floor() as i32, max_x.ceil() as i32);
     let (bottom, top) = (min_y.floor() as i32, max_y.ceil() as i32);
-    let (width, height) = ((right - left).max(1), (top - bottom).max(1));
+    Some((
+        contours,
+        left,
+        bottom,
+        (right - left).max(1),
+        (top - bottom).max(1),
+    ))
+}
+
+fn empty() -> Raster {
+    Raster {
+        coverage: Vec::new(),
+        width: 0,
+        height: 0,
+        left: 0,
+        top: 0,
+    }
+}
+
+/// 扫描线与轮廓的一个交点：位置、环绕方向与所在线段（轮廓号，线段号）。
+#[derive(Clone, Copy)]
+struct Crossing {
+    position: f32,
+    winding: i32,
+    segment: (usize, usize),
+}
+
+/// 单色扫描转换的丢点控制（TrueType SCANTYPE）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Dropout {
+    Off,
+    /// 规则 3/5：补点，包括残桩。
+    Stubs,
+    /// 规则 4/6：补点，但排除残桩。
+    NoStubs,
+}
+
+/// 一条扫描线与轮廓的全部交点，按位置排序。
+/// `along_y` 为真时扫描水平线 y = `line`，否则扫描竖线 x = `line`；端点按半开区间计入，避免重复计数。
+fn crossings(contours: &[Vec<Vertex>], line: f32, along_y: bool) -> Vec<Crossing> {
+    let mut out = Vec::new();
+    for (contour_index, contour) in contours.iter().enumerate() {
+        for index in 0..contour.len() {
+            let (a, b) = (contour[index], contour[(index + 1) % contour.len()]);
+            let (a0, a1, b0, b1) = if along_y {
+                (a.y, a.x, b.y, b.x)
+            } else {
+                (a.x, a.y, b.x, b.y)
+            };
+            if a0 == b0 {
+                continue;
+            }
+            let (low, high, winding) = if a0 < b0 { (a0, b0, 1) } else { (b0, a0, -1) };
+            if line < low || line >= high {
+                continue;
+            }
+            out.push(Crossing {
+                position: a1 + (line - a0) * (b1 - a1) / (b0 - a0),
+                winding,
+                segment: (contour_index, index),
+            });
+        }
+    }
+    out.sort_by(|left, right| left.position.total_cmp(&right.position));
+    out
+}
+
+/// 非零环绕规则下的填充区间：(进入交点, 离开交点)。
+fn spans(crossings: &[Crossing]) -> Vec<(Crossing, Crossing)> {
+    let mut out = Vec::new();
+    let mut winding = 0;
+    let mut start = None;
+    for &crossing in crossings {
+        let before = winding;
+        winding += crossing.winding;
+        if before == 0 && winding != 0 {
+            start = Some(crossing);
+        } else if before != 0
+            && winding == 0
+            && let Some(entry) = start
+        {
+            out.push((entry, crossing));
+        }
+    }
+    out
+}
+
+/// 区间两端的线段沿轮廓经过一个折返点相连，且折返点落在本像素带 [line - 0.5, line + 0.5) 内：
+/// 这是轮廓极值处的残桩（ftraster 的 stub 判定），排除残桩的丢点规则不为它补点。
+fn stub(
+    contours: &[Vec<Vertex>],
+    entry: Crossing,
+    exit: Crossing,
+    line: f32,
+    along_y: bool,
+) -> bool {
+    if entry.segment.0 != exit.segment.0 {
+        return false;
+    }
+    let contour = &contours[entry.segment.0];
+    let count = contour.len();
+    let coordinate = |vertex: Vertex| if along_y { vertex.y } else { vertex.x };
+    let walk = |from: usize, to: usize| {
+        // 从 from 线段的终点走到 to 线段的起点，途经的顶点都必须在扫描线同一侧。
+        let mut index = (from + 1) % count;
+        let mut extreme: Option<f32> = None;
+        let mut side = 0.0f32;
+        for _ in 0..count {
+            let value = coordinate(contour[index]) - line;
+            if side == 0.0 {
+                side = value.signum();
+            } else if value.signum() != side && value != 0.0 {
+                return None;
+            }
+            extreme = Some(extreme.map_or(value, |current: f32| {
+                if value.abs() > current.abs() {
+                    value
+                } else {
+                    current
+                }
+            }));
+            if index == to {
+                return extreme;
+            }
+            index = (index + 1) % count;
+        }
+        None
+    };
+    let (a, b) = (entry.segment.1, exit.segment.1);
+    [walk(a, b), walk(b, a)]
+        .into_iter()
+        .flatten()
+        .any(|extreme| extreme.abs() < 0.5)
+}
+
+/// TrueType 单色扫描转换：像素中心在轮廓内即点亮（规则 1）；开启丢点控制时在横竖两个方向补点：
+/// 区间内没有任何像素中心时点亮区间左侧（纵向为下方）的像素，两侧相邻像素任一已亮则不补。
+/// 规则与 FreeType ftraster（v35 单色）逐像素一致，而不是对灰度覆盖率取阈值（后者会让一像素宽的斜笔画随机断开）。
+pub(crate) fn rasterize_mono(
+    outline: &Outline,
+    scale: f32,
+    embolden_distance: f32,
+    dropout: Dropout,
+) -> Raster {
+    let Some((contours, left, bottom, width, height)) = prepare(outline, scale, embolden_distance)
+    else {
+        return empty();
+    };
+    let top = bottom + height;
+    let mut coverage = vec![0u8; (width * height) as usize];
+    let lit = |coverage: &[u8], column: i32, row: i32| {
+        (0..width).contains(&column)
+            && (0..height).contains(&row)
+            && coverage[(row * width + column) as usize] != 0
+    };
+    let set = |coverage: &mut [u8], column: i32, row: i32| {
+        if (0..width).contains(&column) && (0..height).contains(&row) {
+            coverage[(row * width + column) as usize] = 255;
+        }
+    };
+    // 1. 规则 1：像素中心落在 [进入, 离开] 闭区间内即点亮；没有覆盖任何中心的区间记为丢点候选。
+    let mut candidates = Vec::new();
+    for row in 0..height {
+        let center = top as f32 - row as f32 - 0.5;
+        for (entry, exit) in spans(&crossings(&contours, center, true)) {
+            let (start, end) = (entry.position, exit.position);
+            let first = (start - 0.5 - left as f32).ceil() as i32;
+            let last = (end - 0.5 - left as f32).floor() as i32;
+            if first <= last {
+                for column in first..=last {
+                    set(&mut coverage, column, row);
+                }
+            } else if dropout == Dropout::Stubs
+                || (dropout == Dropout::NoStubs && !stub(&contours, entry, exit, center, true))
+            {
+                // 区间夹在 first - 1 与 first 两个像素中心之间：候选为左侧像素，另一侧用于邻居检查。
+                candidates.push((first - 1, first, row, true));
+            }
+        }
+    }
+    if dropout != Dropout::Off {
+        for column in 0..width {
+            let center = left as f32 + column as f32 + 0.5;
+            for (entry, exit) in spans(&crossings(&contours, center, false)) {
+                let (start, end) = (entry.position, exit.position);
+                let first = (start - 0.5 - bottom as f32).ceil() as i32;
+                let last = (end - 0.5 - bottom as f32).floor() as i32;
+                if first > last
+                    && (dropout == Dropout::Stubs || !stub(&contours, entry, exit, center, false))
+                {
+                    candidates.push((height - first, height - 1 - first, column, false));
+                }
+            }
+        }
+    }
+    // 2. 丢点补点（ftraster）：两侧相邻像素任一已点亮时不补；选中的像素在包围盒外时改用另一侧。
+    for (chosen, other, line, horizontal) in candidates {
+        let at = |index: i32| {
+            if horizontal {
+                (index, line)
+            } else {
+                (line, index)
+            }
+        };
+        let (chosen_at, other_at) = (at(chosen), at(other));
+        if lit(&coverage, chosen_at.0, chosen_at.1) || lit(&coverage, other_at.0, other_at.1) {
+            continue;
+        }
+        let limit = if horizontal { width } else { height };
+        let target = if (0..limit).contains(&chosen) {
+            chosen_at
+        } else {
+            other_at
+        };
+        set(&mut coverage, target.0, target.1);
+    }
+    Raster {
+        coverage,
+        width,
+        height,
+        left,
+        top,
+    }
+}
+
+pub(crate) fn rasterize(outline: &Outline, scale: f32, embolden_distance: f32) -> Raster {
+    let Some((contours, left, bottom, width, height)) = prepare(outline, scale, embolden_distance)
+    else {
+        return empty();
+    };
+    let top = bottom + height;
     let stride = width as usize + 2;
     let mut accumulator = Accumulator {
         cells: vec![0.0; stride * height as usize],

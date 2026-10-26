@@ -2,6 +2,7 @@
 Type=Application
 Name=Date/Time
 Name[zh_CN]=日期/时间
+Comment[zh_CN]=请为您的计算机设置日期、时间和时区信息
 Exec=/bin/control-panel datetime
 Icon=date-time
 Categories=Settings;

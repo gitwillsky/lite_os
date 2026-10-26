@@ -13,6 +13,8 @@ mod controls;
 mod decoration;
 mod dropdown;
 mod editing;
+mod fonts;
+pub use fonts::{FontRole, Fonts};
 mod menu;
 mod menubar;
 mod painter;
@@ -37,9 +39,9 @@ pub use wayland::{
     WindowRequest, layer_anchor,
 };
 
-pub use controls::{ButtonState, SCROLLBAR_WIDTH, ScrollbarPart, thumb_span};
-pub use menu::MenuItemState;
-pub use menubar::{MenuBar, MenuEvent, MenuVisual};
+pub use controls::{ButtonState, SCROLLBAR_WIDTH, ScrollbarPart, StatusLayout, thumb_span};
+pub use menu::{MenuItemState, MenuMetrics};
+pub use menubar::{MENU_DEPTH, MenuBar, MenuEvent, MenuVisual};
 pub use painter::{Ink, Painter};
 pub use prompt::Prompt;
 pub use scroll::Scroll;

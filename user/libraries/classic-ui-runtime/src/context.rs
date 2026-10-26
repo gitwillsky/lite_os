@@ -284,6 +284,14 @@ impl Context {
         if let Some(event) = self.events.pop_front() {
             return Ok(Some(event));
         }
+        let now = std::time::Instant::now();
+        // ReBar 品牌动画与子菜单展开延时的截止时刻也参与等待：没有定时状态时不额外唤醒。
+        let animation = self
+            .windows
+            .values()
+            .filter_map(|host| host.controls().ok()?.animation_deadline())
+            .min()
+            .map(|deadline| deadline.saturating_duration_since(now));
         let timeout = timeout
             .into_iter()
             .chain(self.pastes.values().map(|paste| {
@@ -291,6 +299,7 @@ impl Context {
                     .deadline
                     .saturating_duration_since(std::time::Instant::now())
             }))
+            .chain(animation)
             .min();
         self.ready.clear();
         let incoming = {
@@ -327,6 +336,23 @@ impl Context {
             }
             incoming
         };
+        let now = std::time::Instant::now();
+        for host in self.windows.values_mut() {
+            let due = host
+                .controls()
+                .ok()
+                .and_then(Tree::animation_deadline)
+                .is_some_and(|deadline| deadline <= now);
+            // 动画只改变像素，不经 controls_mut（它会使布局失效、迫使整窗重新排版）。
+            let tree = match &mut host.body {
+                WindowBody::Widgets(tree) => tree,
+                WindowBody::Sheet(sheet) => &mut sheet.tree,
+                WindowBody::Dialog(dialog) => &mut dialog.tree,
+            };
+            if due && tree.animate(now) {
+                host.frame.invalidate();
+            }
+        }
         // 粘贴并发上限为 8；固定栈存储收集超时编号，释放迭代借用后再撤销。
         let mut expired = [0; 8];
         let mut expired_count = 0;
@@ -422,7 +448,7 @@ impl Context {
                         .display
                         .configuration(input.window)
                         .expect("configured input");
-                    let font = self.resources.font(configuration.scale)?;
+                    let font = self.resources.fonts(configuration.scale)?;
                     let mut scratch = [0; 1];
                     let surface =
                         canvas::Surface::new(&mut scratch, 1, 1, 1).expect("one pixel surface");
@@ -451,7 +477,7 @@ impl Context {
                         .display
                         .configuration(input.window)
                         .expect("configured sheet");
-                    let font = self.resources.font(configuration.scale)?;
+                    let font = self.resources.fonts(configuration.scale)?;
                     let mut scratch = [0; 1];
                     let surface =
                         canvas::Surface::new(&mut scratch, 1, 1, 1).expect("one pixel surface");
@@ -487,7 +513,7 @@ impl Context {
                         .display
                         .configuration(input.window)
                         .expect("configured dialog");
-                    let font = self.resources.font(configuration.scale)?;
+                    let font = self.resources.fonts(configuration.scale)?;
                     let mut scratch = [0; 1];
                     let probe = classic_ui::Painter::new(
                         canvas::Surface::new(&mut scratch, 1, 1, 1).expect("probe surface"),
@@ -645,7 +671,7 @@ impl Context {
     ) -> io::Result<()> {
         let protocol = self.host(window)?.frame.window();
         let scale = self.display.configuration(protocol).map_or(1, |c| c.scale);
-        let font = self.resources.font(scale)?;
+        let font = self.resources.fonts(scale)?;
         let mut scratch = [0; 1];
         let probe = classic_ui::Painter::new(
             canvas::Surface::new(&mut scratch, 1, 1, 1).expect("probe surface"),
@@ -711,6 +737,10 @@ impl Context {
 }
 
 impl Context {
+    /// 系统界面位图（工具栏位图条等），由资源上下文缓存。
+    pub(super) fn ui_bitmap(&mut self, name: &str) -> Option<std::rc::Rc<classic_ui::Bitmap>> {
+        self.resources.bitmap(name)
+    }
     pub(super) fn icon_asset(
         &mut self,
         name: &str,
@@ -742,13 +772,22 @@ fn layout_record(
         if let Some(tree) = tree.filter(|tree| {
             tree.layout_dirty || tree.layout_bounds != Some((bounds, configuration.scale))
         }) {
-            let font = resources.font(configuration.scale)?;
+            let font = resources.fonts(configuration.scale)?;
             let mut scratch = [0; 1];
             let surface = canvas::Surface::new(&mut scratch, 1, 1, 1).expect("probe surface");
             let probe =
                 classic_ui::Painter::new(surface, resources.theme(), &font, configuration.scale);
             tree.layout(bounds, &probe);
         }
+        let allowed = host.frame.size_grip_allowed(display);
+        let tree = match &mut host.body {
+            WindowBody::Widgets(tree) => tree,
+            WindowBody::Sheet(sheet) => &mut sheet.tree,
+            WindowBody::Dialog(dialog) => &mut dialog.tree,
+        };
+        tree.size_grip = allowed;
+        let grip = tree.grip_rect();
+        host.frame.set_size_grip(grip);
     }
     Ok(())
 }
@@ -790,14 +829,20 @@ impl Context {
 }
 
 impl Context {
-    pub(super) fn popup(&mut self, window: u64, id: u64) -> io::Result<()> {
+    /// `anchor` 为 None 时在当前指针处打开，否则左上角放在客户区逻辑坐标（工具栏下拉按钮下方）。
+    pub(super) fn popup(
+        &mut self,
+        window: u64,
+        id: u64,
+        anchor: Option<(i32, i32)>,
+    ) -> io::Result<()> {
         self.layout(window)?;
         let protocol = self.host(window)?.frame.window();
         let configuration = self
             .display
             .configuration(protocol)
             .ok_or_else(|| invalid("window is not configured"))?;
-        let font = self.resources.font(configuration.scale)?;
+        let font = self.resources.fonts(configuration.scale)?;
         let mut scratch = [0; 1];
         let probe = classic_ui::Painter::new(
             canvas::Surface::new(&mut scratch, 1, 1, 1).expect("probe surface"),
@@ -811,7 +856,7 @@ impl Context {
             .client_rect(&self.display)
             .expect("configured window");
         let tree = host.controls_mut()?;
-        let point = tree.pointer;
+        let point = anchor.unwrap_or(tree.pointer);
         let menu = tree
             .nodes
             .get_mut(&id)

@@ -107,6 +107,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 label: "退出(X)",
                 shortcut: "",
                 state: 0,
+                parent: 0,
             }],
         },
         Menu {
@@ -116,6 +117,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 label: "关于音量控制(A)",
                 shortcut: "",
                 state: 0,
+                parent: 0,
             }],
         },
     ])?;

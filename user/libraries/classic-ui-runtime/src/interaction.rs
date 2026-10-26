@@ -27,6 +27,15 @@ impl Tree {
         if menu_handled {
             return (out, true, menu_repaint);
         }
+        let (combo_handled, combo_repaint) = self.combo_input(window, input, &mut out);
+        if combo_handled {
+            return (out, true, combo_repaint);
+        }
+        let (toolbar_handled, toolbar_repaint) = self.toolbar_input(window, input, &mut out);
+        if toolbar_handled {
+            return (out, true, true);
+        }
+        let menu_repaint = menu_repaint || toolbar_repaint || combo_repaint;
         if self.calendar_input(window, input, probe, &mut out) {
             return (out, true, true);
         }
@@ -46,10 +55,9 @@ impl Tree {
         match input {
             EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
                 self.pointer = (x.floor() as i32, y.floor() as i32);
-                if let Some(id) = self
-                    .armed
-                    .filter(|id| self.active(*id) && self.nodes[id].kind == widget::EDIT)
-                {
+                if let Some(id) = self.armed.filter(|id| {
+                    self.active(*id) && matches!(self.nodes[id].kind, widget::EDIT | widget::COMBO)
+                }) {
                     self.edit_pointer(id, probe, true);
                     consumed = true;
                 }
@@ -68,7 +76,10 @@ impl Tree {
                 if self.armed.is_some() {
                     self.focus = self.armed;
                 }
-                if let Some(id) = self.armed.filter(|id| self.nodes[id].kind == widget::EDIT) {
+                if let Some(id) = self
+                    .armed
+                    .filter(|id| matches!(self.nodes[id].kind, widget::EDIT | widget::COMBO))
+                {
                     self.edit_pointer(id, probe, modifiers.shift);
                 }
                 // comctl32 在按下时切换标签页，释放时不再重复激活。
@@ -113,7 +124,7 @@ impl Tree {
                         .get(id)
                         .is_some_and(|node| node.focusable() && self.active(*id))
                 }) {
-                    if self.nodes[&id].kind == widget::EDIT {
+                    if matches!(self.nodes[&id].kind, widget::EDIT | widget::COMBO) {
                         let edit = self
                             .nodes
                             .get_mut(&id)
@@ -175,7 +186,8 @@ impl Tree {
         self.layout_dirty |= out.iter().any(|event| {
             self.nodes.get(&event.node).is_some_and(|node| {
                 (event.kind == event::SELECT && node.kind == widget::TABS)
-                    || (event.kind == event::CHANGED && node.kind == widget::EDIT)
+                    || (event.kind == event::CHANGED
+                        && matches!(node.kind, widget::EDIT | widget::COMBO))
             })
         });
         let after = (
@@ -193,11 +205,17 @@ impl Tree {
     fn edit_pointer(&mut self, id: u64, probe: &classic_ui::Painter<'_>, extend: bool) {
         let node = self.nodes.get_mut(&id).expect("edit target");
         let edit = node.edit.as_mut().expect("edit control");
-        let position = probe.edit_hit(
+        let margins = if node.kind == widget::COMBO {
+            super::widgets::Node::combo_margins()
+        } else {
+            (0, 0)
+        };
+        let position = probe.edit_hit_with_margins(
             node.rect,
             edit,
             node.state & state::PASSWORD != 0,
             self.pointer.0,
+            margins,
         );
         edit.select_position(position, extend);
     }
@@ -341,7 +359,12 @@ impl Tree {
         }
         if matches!(
             kind,
-            widget::BUTTON | widget::CHECKBOX | widget::RADIO | widget::LIST | widget::TREE
+            widget::BUTTON
+                | widget::CHECKBOX
+                | widget::RADIO
+                | widget::LIST
+                | widget::TREE
+                | widget::LINK
         ) {
             out.push(abi::Event {
                 window,

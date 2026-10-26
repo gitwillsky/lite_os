@@ -7,6 +7,8 @@ pub struct Entry {
     pub name: String,
     /// `Icon=` 的名称（不是路径），没有时为 `None`。
     pub icon: Option<String>,
+    /// `Comment=`（`Comment[zh_CN]` 优先）：控制面板“备注”列与 Web 视图说明。
+    pub comment: Option<String>,
     categories: Vec<String>,
     arguments: Vec<String>,
     /// `MimeType=` 声明可打开的类型。
@@ -108,6 +110,7 @@ pub fn load_all(directory: &Path) -> Vec<Entry> {
 fn parse(text: &str) -> Option<Entry> {
     let mut in_entry = false;
     let mut name = None;
+    let mut comment = None;
     let mut executable = None;
     let mut icon = None;
     let mut categories = Vec::new();
@@ -130,6 +133,8 @@ fn parse(text: &str) -> Option<Entry> {
         match key {
             "Name" if name.is_none() => name = Some(value.to_owned()),
             "Name[zh_CN]" => name = Some(value.to_owned()),
+            "Comment" if comment.is_none() => comment = Some(value.to_owned()),
+            "Comment[zh_CN]" => comment = Some(value.to_owned()),
             "Icon" => icon = Some(value.to_owned()),
             "Categories" => {
                 categories = value
@@ -168,6 +173,7 @@ fn parse(text: &str) -> Option<Entry> {
     Some(Entry {
         name: name?,
         icon,
+        comment,
         categories,
         arguments,
         mime_types,

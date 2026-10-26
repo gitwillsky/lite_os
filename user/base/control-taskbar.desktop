@@ -1,9 +1,11 @@
 [Desktop Entry]
 Type=Application
 Name=Taskbar
-Name[zh_CN]=任务栏
+Name[zh_CN]=任务栏和「开始」菜单
+Comment[zh_CN]=自定义列出了可用程序和文件的“开始菜单”，包含用于打开程序的按钮和时钟的任务栏
 Exec=/bin/control-panel taskbar
 Icon=settings
 StartupWMClass=org.liteos.control-panel.taskbar
 NoDisplay=true
 Terminal=false
+Categories=Settings;

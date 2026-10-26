@@ -3,7 +3,6 @@ use std::sync::OnceLock;
 
 use canvas::{Rect, Surface};
 use classic_theme::{Edge, SystemColor, Theme};
-use typeface::Typeface;
 
 use crate::{
     ButtonState, CaptionButton, FrameKind, Ink, MenuItemState, Painter, ScrollbarPart, thumb_span,
@@ -16,14 +15,23 @@ fn theme() -> &'static Theme {
     THEME.get_or_init(Theme::classic)
 }
 
-fn typeface(scale: u32) -> &'static Typeface {
-    static FACES: [OnceLock<Typeface>; 2] = [OnceLock::new(), OnceLock::new()];
-    FACES[scale as usize - 1].get_or_init(|| {
-        Typeface::load(
-            &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/fonts"),
-            scale,
-        )
-        .unwrap()
+/// 测试线程各自持有的系统字体（`Fonts` 内部是 `Rc`，不能跨线程共享）；泄漏为 `'static` 便于借给 Painter。
+fn typeface(scale: u32) -> &'static crate::Fonts {
+    thread_local! {
+        static FONTS: [std::cell::OnceCell<&'static crate::Fonts>; 2] = Default::default();
+    }
+    FONTS.with(|fonts| {
+        *fonts[scale as usize - 1].get_or_init(|| {
+            let catalog = typeface::FontCatalog::load(
+                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/fonts"),
+            )
+            .unwrap();
+            Box::leak(Box::new(crate::Fonts::new(
+                std::rc::Rc::new(catalog),
+                &theme().fonts,
+                scale,
+            )))
+        })
     })
 }
 
@@ -436,7 +444,10 @@ fn column_header_clips_without_changing_logical_column_widths() {
 #[test]
 fn wrapped_text_keeps_all_lines_and_respects_the_visible_rectangle() {
     at_both_scales(|scale| {
-        let width = typeface(scale as u32).measure("甲乙", false) / scale;
+        let width = typeface(scale as u32)
+            .role(crate::FontRole::Message)
+            .measure("甲乙", false)
+            / scale;
         let line_height = render_line_height(scale);
         let bounds = Rect::new(10, 10, width, line_height * 2);
         let image = render(scale, |p| {
@@ -601,7 +612,9 @@ fn tooltip_group_box_and_menus_use_theme_colors() {
 }
 
 fn tooltip_height(scale: i32) -> i32 {
-    let (ascent, descent) = typeface(scale as u32).metrics();
+    let (ascent, descent) = typeface(scale as u32)
+        .role(crate::FontRole::Message)
+        .metrics();
     (ascent + descent + scale - 1) / scale + 6
 }
 
@@ -700,7 +713,7 @@ fn caption_glyph_geometry_stays_inside_the_button() {
 }
 
 fn p_line_height() -> i32 {
-    let (ascent, descent) = typeface(1).metrics();
+    let (ascent, descent) = typeface(1).role(crate::FontRole::Message).metrics();
     ascent + descent
 }
 

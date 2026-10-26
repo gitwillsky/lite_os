@@ -1,7 +1,7 @@
 //! 文件浏览的领域数据：目录快照、路径身份、导航历史和文件夹目录；不保存控件选择、展开或滚动。
 use crate::{
     fileops,
-    model::{Icon, Item, Location},
+    model::{Field, Icon, Item, Location},
 };
 use std::{
     collections::{BTreeMap, HashMap},
@@ -22,6 +22,8 @@ pub struct Listing {
     pub location: Location,
     pub items: Vec<Item>,
     pub truncated: bool,
+    /// 真实目录所在文件系统的可用空间（状态栏“可用磁盘空间”）。
+    pub free: Option<u64>,
     pub branches: Vec<Branch>,
 }
 fn folders(location: &Location, mounts: &str) -> io::Result<Vec<Folder>> {
@@ -54,6 +56,12 @@ pub fn read(mut location: Location, home: &Path) -> io::Result<Listing> {
     }
     let mounts = fs::read_to_string("/proc/mounts").unwrap_or_default();
     let (items, truncated) = location.list(&mounts)?;
+    let free = match &location {
+        Location::Directory(path) => linux_uapi::filesystem::capacity(path)
+            .ok()
+            .map(|capacity| capacity.free),
+        _ => None,
+    };
     let mut places = Vec::new();
     let mut parent = Some(location.clone());
     // Tree 的深度上限只限制目录侧栏；深层真实路径仍可在主列表和地址栏浏览。
@@ -65,9 +73,6 @@ pub fn read(mut location: Location, home: &Path) -> io::Result<Listing> {
         }
     }
     places.reverse();
-    if places.first() != Some(&Location::MyComputer) {
-        places.insert(0, Location::MyComputer);
-    }
     let mut branches = Vec::new();
     for place in places {
         let entries = if place == location {
@@ -97,6 +102,7 @@ pub fn read(mut location: Location, home: &Path) -> io::Result<Listing> {
         location,
         items,
         truncated,
+        free,
         branches,
     })
 }
@@ -167,35 +173,21 @@ pub struct Catalogue {
     next: u64,
 }
 impl Catalogue {
-    pub fn new(home: &Path) -> Self {
+    pub fn new() -> Self {
         let mut catalogue = Self {
             nodes: BTreeMap::new(),
             indices: HashMap::new(),
             next: 1,
         };
-        for (location, name, icon) in [
-            (Location::MyComputer, "我的电脑", Icon::MyComputer),
-            (Location::NetworkPlaces, "网上邻居", Icon::NetworkPlaces),
-            (
-                Location::Directory(home.to_owned()),
-                "我的文档",
-                Icon::MyDocuments,
-            ),
-            (
-                Location::Directory(fileops::trash_files(home)),
-                "回收站",
-                Icon::RecycleBin,
-            ),
-        ] {
-            catalogue.register(
-                0,
-                Folder {
-                    location,
-                    name: name.into(),
-                    icon,
-                },
-            );
-        }
+        // 文件夹树与地址下拉的根是“桌面”；其下的系统文件夹随第一次读取桌面分支注册。
+        catalogue.register(
+            0,
+            Folder {
+                location: Location::Desktop,
+                name: "桌面".into(),
+                icon: Icon::Desktop,
+            },
+        );
         catalogue
     }
     fn register(&mut self, parent: u64, folder: Folder) -> Option<u64> {
@@ -289,6 +281,15 @@ impl Catalogue {
                 .children = Some(children);
         }
     }
+    /// 节点自身及其全部祖先的标识，由近到远。
+    pub fn ancestors(&self, mut id: u64) -> Vec<u64> {
+        let mut chain = Vec::new();
+        while let Some(node) = self.nodes.get(&id) {
+            chain.push(id);
+            id = node.parent;
+        }
+        chain
+    }
     pub fn id(&self, location: &Location) -> Option<u64> {
         self.nodes
             .iter()
@@ -299,23 +300,26 @@ pub struct Browser {
     pub location: Location,
     pub items: Vec<(u64, Item)>,
     pub truncated: bool,
+    pub free: Option<u64>,
     pub catalogue: Catalogue,
     pub clipboard: Option<Clipboard>,
-    pub sort: (u64, bool),
+    /// 排序列与是否降序；切换位置时若新位置没有该列则回到按名称升序。
+    pub sort: (Field, bool),
     history: Vec<Location>,
     pub cursor: usize,
     next: u64,
 }
 impl Browser {
-    pub fn new(home: &Path, location: Location) -> Self {
+    pub fn new(location: Location) -> Self {
         Self {
             history: vec![location.clone()],
             location,
             items: Vec::new(),
             truncated: false,
-            catalogue: Catalogue::new(home),
+            free: None,
+            catalogue: Catalogue::new(),
             clipboard: None,
-            sort: (1, false),
+            sort: (Field::Name, false),
             cursor: 0,
             next: 1,
         }
@@ -333,6 +337,7 @@ impl Browser {
         let old_location = self.location.clone();
         self.location = listing.location;
         self.truncated = listing.truncated;
+        self.free = listing.free;
         self.history[self.cursor] = self.location.clone();
         let key = |location: &Location, item: &Item| {
             item.path.clone().map(ItemKey::Path).unwrap_or_else(|| {
@@ -364,6 +369,14 @@ impl Browser {
         for branch in listing.branches {
             self.catalogue.update(branch);
         }
+        if !self
+            .location
+            .columns()
+            .iter()
+            .any(|(field, ..)| *field == self.sort.0)
+        {
+            self.sort = (Field::Name, false);
+        }
         self.sort_items();
     }
     pub fn sort_items(&mut self) {
@@ -373,12 +386,7 @@ impl Browser {
                 .is_some()
                 .cmp(&a.target.is_some())
                 .then_with(|| {
-                    let order = match column {
-                        2 => a.size.cmp(&b.size),
-                        3 => a.kind.cmp(&b.kind),
-                        4 => a.modified.cmp(&b.modified),
-                        _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                    };
+                    let order = a.compare(b, column);
                     if descending { order.reverse() } else { order }
                 })
                 .then_with(|| a.name.cmp(&b.name))
@@ -389,6 +397,27 @@ impl Browser {
             .iter()
             .find(|(row, _)| *row == id)
             .map(|(_, item)| item)
+    }
+    /// 旅行日志：（下标，标题），后退方向由近到远（`step` 为 -1）或前进方向由近到远（+1）。
+    pub fn travel(&self, step: isize) -> Vec<(usize, String)> {
+        let mut entries = Vec::new();
+        let mut index = self.cursor as isize + step;
+        while let Some(location) = usize::try_from(index)
+            .ok()
+            .and_then(|index| self.history.get(index))
+        {
+            entries.push((index as usize, location.title()));
+            index += step;
+        }
+        entries
+    }
+    /// 全部历史位置：（下标，标题，是否当前）。
+    pub fn journal(&self) -> Vec<(usize, String, bool)> {
+        self.history
+            .iter()
+            .enumerate()
+            .map(|(index, location)| (index, location.title(), index == self.cursor))
+            .collect()
     }
     pub fn history(&self, offset: isize) -> Option<(usize, Location)> {
         let index = self.cursor.checked_add_signed(offset)?;

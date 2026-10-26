@@ -36,6 +36,15 @@ pub struct Node {
     pub menu: Option<super::menu::MenuModel>,
     pub table: Option<super::table::Table>,
     pub outline: Option<super::outline::Outline>,
+    pub toolbar: Option<super::toolbar::Toolbar>,
+    pub rebar: Option<super::rebar::Rebar>,
+    pub combo: Option<super::combo::Combo>,
+    /// 应用指定的字体：(用途, 磅值, 粗细)，0 表示沿用用途字体；None 用默认消息字体。
+    pub font: Option<(classic_ui::FontRole, u16, u16)>,
+    /// 状态栏分格宽度（SB_SETPARTS 式，-1 占满剩余）；空表示按文字宽度分格。
+    pub status_parts: Vec<i32>,
+    /// 容器背景：底色与左上角不平铺的位图（CSS `background: color url() no-repeat`）；None 透明。
+    pub background: Option<(Option<classic_theme::Rgb>, Option<Rc<classic_ui::Bitmap>>)>,
 }
 
 #[derive(PartialEq, Eq)]
@@ -49,7 +58,7 @@ pub struct Command {
 
 impl Node {
     pub fn new(parent: u64, mut spec: abi::Widget, text: String) -> io::Result<Self> {
-        if !(widget::COLUMN..=widget::POPUP_MENU).contains(&spec.kind) {
+        if !(widget::COLUMN..=widget::COMBO).contains(&spec.kind) {
             return Err(invalid("unknown widget kind"));
         }
         if spec.kind == widget::POPUP_MENU {
@@ -72,10 +81,13 @@ impl Node {
             layout: spec.layout,
             rect: Rect::new(0, 0, 0, 0),
             clip: Rect::new(0, 0, 0, 0),
-            edit: (spec.kind == widget::EDIT).then(|| Edit::new(&text)),
+            edit: matches!(spec.kind, widget::EDIT | widget::COMBO).then(|| Edit::new(&text)),
             editor: (spec.kind == widget::TEXT_EDITOR)
                 .then(|| super::text_editor::TextEditor::new(&text)),
-            text: if matches!(spec.kind, widget::EDIT | widget::TEXT_EDITOR) {
+            text: if matches!(
+                spec.kind,
+                widget::EDIT | widget::TEXT_EDITOR | widget::COMBO
+            ) {
                 String::new()
             } else {
                 text
@@ -90,7 +102,14 @@ impl Node {
             menu: matches!(spec.kind, widget::MENU_BAR | widget::POPUP_MENU)
                 .then(super::menu::MenuModel::new),
             table: matches!(spec.kind, widget::LIST | widget::TREE).then(super::table::Table::new),
-            outline: (spec.kind == widget::TREE).then(super::outline::Outline::new),
+            outline: matches!(spec.kind, widget::TREE | widget::COMBO)
+                .then(super::outline::Outline::new),
+            toolbar: (spec.kind == widget::TOOLBAR).then(Default::default),
+            rebar: None,
+            combo: (spec.kind == widget::COMBO).then(Default::default),
+            font: None,
+            status_parts: Vec::new(),
+            background: None,
         })
     }
     pub fn text(&self) -> &str {
@@ -109,6 +128,8 @@ impl Node {
                 self.kind,
                 widget::BUTTON
                     | widget::EDIT
+                    | widget::COMBO
+                    | widget::LINK
                     | widget::TEXT_EDITOR
                     | widget::CALENDAR
                     | widget::CHECKBOX
@@ -121,6 +142,22 @@ impl Node {
                     | widget::CANVAS
             )
     }
+    /// 应用为标签/链接指定的逻辑字体（由系统用途字体派生）；未指定返回 None。
+    pub fn logical_font(
+        &self,
+        system: &classic_theme::SystemFonts,
+    ) -> Option<classic_theme::LogicalFont> {
+        let (role, points, weight) = self.font?;
+        let mut font = classic_ui::Fonts::logical(system, role).clone();
+        if points != 0 {
+            font.points = points;
+        }
+        if weight != 0 {
+            font.weight = weight;
+        }
+        Some(font)
+    }
+
     pub fn contains(&self, x: i32, y: i32) -> bool {
         self.visible()
             && self.enabled()
@@ -177,6 +214,10 @@ pub struct Tree {
     /// Tree 独占布局失效；内容/规则或 configure 改变才重新排版，普通指针移动复用现有几何。
     pub layout_dirty: bool,
     pub layout_bounds: Option<(Rect, i32)>,
+    /// 窗口当前允许尺寸手柄（可缩放且未最大化/全屏）；由窗口 owner 每次布局时写入，缺少它手柄会在最大化时仍显示。
+    pub size_grip: bool,
+    /// 上一次推进定时状态的时刻；工具提示据此只在越过显示时刻的那一次请求重绘。
+    pub animated: std::time::Instant,
 }
 impl Tree {
     pub fn new() -> Self {
@@ -191,6 +232,8 @@ impl Tree {
             pointer: (-1, -1),
             layout_dirty: true,
             layout_bounds: None,
+            size_grip: false,
+            animated: std::time::Instant::now(),
         }
     }
     pub fn insert(&mut self, parent: u64, spec: abi::Widget, text: String) -> io::Result<u64> {
@@ -215,7 +258,7 @@ impl Tree {
             && !self.nodes.get(&parent).is_some_and(|p| {
                 matches!(
                     p.kind,
-                    widget::COLUMN | widget::ROW | widget::TABS | widget::GROUP
+                    widget::COLUMN | widget::ROW | widget::TABS | widget::GROUP | widget::REBAR
                 )
             })
         {
@@ -348,5 +391,38 @@ impl Tree {
             .rev()
             .find_map(|id| self.hit_node(*id))
             .or_else(|| node.focusable().then_some(id))
+    }
+}
+
+impl Node {
+    /// 状态栏右下角尺寸手柄的区域：一个滚动条宽、与状态栏同高。
+    pub fn grip_area(&self) -> Rect {
+        let width = classic_ui::SCROLLBAR_WIDTH;
+        Rect::new(
+            self.rect.right() - width,
+            self.rect.y,
+            width,
+            self.rect.height,
+        )
+    }
+}
+
+impl Tree {
+    /// 尺寸手柄矩形：窗口允许时，位于客户区右下角的可见状态栏的手柄区域。
+    pub fn grip_rect(&self) -> Option<Rect> {
+        let (bounds, _) = self.layout_bounds?;
+        if !self.size_grip {
+            return None;
+        }
+        self.nodes
+            .values()
+            .find(|node| {
+                node.kind == widget::STATUS
+                    && node.visible()
+                    && !node.clip.is_empty()
+                    && node.rect.right() == bounds.right()
+                    && node.rect.bottom() == bounds.bottom()
+            })
+            .map(Node::grip_area)
     }
 }

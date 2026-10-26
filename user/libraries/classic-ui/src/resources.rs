@@ -6,13 +6,17 @@ use std::{
     path::{Path, PathBuf},
     rc::Rc,
 };
-use typeface::Typeface;
+use typeface::FontCatalog;
+
+use crate::Fonts;
 
 /// 一个 UI 上下文的主题和字体 owner；不修改进程环境，不跨线程共享。
 pub struct Resources {
     theme: Theme,
     font_directory: PathBuf,
-    fonts: BTreeMap<i32, Rc<Typeface>>,
+    /// 字体目录只在首次绘制时扫描一次；主题重载不需要重新读取字体文件。
+    catalog: Option<Rc<FontCatalog>>,
+    fonts: BTreeMap<i32, Rc<Fonts>>,
     generation: u64,
     terminal: Option<Rc<terminal_font::TerminalFont>>,
     icons: Option<crate::AppIcons>,
@@ -26,6 +30,7 @@ impl Resources {
             theme: Theme::load(&[Path::new("/etc/liteos/theme.theme")])
                 .map_err(|error| io::Error::other(error.to_string()))?,
             font_directory: PathBuf::from("/usr/share/liteos/fonts"),
+            catalog: None,
             fonts: BTreeMap::new(),
             generation: 1,
             terminal: None,
@@ -42,8 +47,18 @@ impl Resources {
     }
     /// 读取系统界面图标，允许 16/32 逻辑像素与安全素材名；缺失返回 None，缓存最多 128 项。
     pub fn icon(&mut self, stem: &str, size: i32) -> Option<Rc<crate::Bitmap>> {
-        if !matches!(size, 16 | 32)
-            || stem.is_empty()
+        if !matches!(size, 16 | 32) {
+            return None;
+        }
+        self.image(stem, size)
+    }
+    /// 读取整张系统界面位图（如工具栏位图条 `toolbar-hot-1x`）；名称规则与缓存同 [`Resources::icon`]。
+    pub fn bitmap(&mut self, name: &str) -> Option<Rc<crate::Bitmap>> {
+        self.image(name, 0)
+    }
+    /// `size` 为 0 时读取 `<stem>.bmp`，否则 `<stem>-<size>.bmp`。
+    fn image(&mut self, stem: &str, size: i32) -> Option<Rc<crate::Bitmap>> {
+        if stem.is_empty()
             || stem.len() > 96
             || !stem
                 .bytes()
@@ -55,9 +70,11 @@ impl Resources {
         if let Some(image) = self.images.get(&key) {
             return image.clone();
         }
-        let image = crate::Bitmap::load(
-            &Path::new("/usr/share/liteos/ui").join(format!("{stem}-{size}.bmp")),
-        )
+        let image = crate::Bitmap::load(&Path::new("/usr/share/liteos/ui").join(if size == 0 {
+            format!("{stem}.bmp")
+        } else {
+            format!("{stem}-{size}.bmp")
+        }))
         .ok()
         .map(Rc::new);
         // OWNER: context 缓存资源读取（包括缺失结果）；活跃控件的 Rc 不受逐出影响。
@@ -107,30 +124,40 @@ impl Resources {
             .ok_or_else(|| io::Error::other("resource generations exhausted"))?;
         self.theme = theme;
         self.generation = generation;
+        // 系统字体属于主题：重载后按新主题重新解析，字体目录本身保持。
+        self.fonts.clear();
         Ok(())
     }
-    /// 取得整数 scale 对应字体；scale 非正或字体资源失败返回错误。
-    pub fn font(&mut self, scale: i32) -> io::Result<Rc<Typeface>> {
+    /// 取得整数 scale 下按主题解析的系统字体；scale 非正或字体目录不可用返回错误。
+    pub fn fonts(&mut self, scale: i32) -> io::Result<Rc<Fonts>> {
         if scale <= 0 {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "invalid font scale",
             ));
         }
-        if let Some(font) = self.fonts.get(&scale) {
-            return Ok(font.clone());
+        if let Some(fonts) = self.fonts.get(&scale) {
+            return Ok(fonts.clone());
         }
-        let font = Rc::new(
-            Typeface::load(&self.font_directory, scale as u32)
-                .map_err(|error| io::Error::other(error.to_string()))?,
-        );
+        let catalog = match &self.catalog {
+            Some(catalog) => catalog.clone(),
+            None => {
+                let catalog = Rc::new(
+                    FontCatalog::load(&self.font_directory)
+                        .map_err(|error| io::Error::other(error.to_string()))?,
+                );
+                self.catalog = Some(catalog.clone());
+                catalog
+            }
+        };
+        let fonts = Rc::new(Fonts::new(catalog, &self.theme.fonts, scale as u32));
         // OWNER: 资源上下文独占四个 scale 的缓存，Rc 保活当前绘制借用。
         // PROOF: 逐出只释放缓存引用；重绘不在持借用期间递归进入另一次绘制。
-        // FAILURE: 不缓存会在每次绘制读取/解析字体；不限制条数会随输出缩放历史持续占用内存。
+        // FAILURE: 不缓存会在每次绘制重新解析映射链；不限制条数会随输出缩放历史持续占用内存。
         if self.fonts.len() == 4 {
             self.fonts.pop_first();
         }
-        self.fonts.insert(scale, font.clone());
-        Ok(font)
+        self.fonts.insert(scale, fonts.clone());
+        Ok(fonts)
     }
 }

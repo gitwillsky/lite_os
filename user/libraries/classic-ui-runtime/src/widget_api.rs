@@ -1,7 +1,9 @@
 //! 控件数据与状态的稳定 ABI 入口；内部对象不跨边界。
+use super::toolbar::{Button, Toolbar};
 use super::{
     Context, Text, abi, calendar_control, copy_text, invalid, invoke, text, text_editor, widgets,
 };
+use classic_ui_abi::toolbar as toolbar_style;
 use std::{ffi::c_void, io, slice};
 pub(super) unsafe extern "C" fn widget(
     pointer: *mut c_void,
@@ -18,15 +20,30 @@ pub(super) unsafe extern "C" fn widget(
         invoke(pointer, |context| {
             let spec = spec.read();
             let value = text(spec.text)?;
+            // Image：宽 16/32 取同名图标，其余按名称取整张界面位图（Web 视图水印、分隔线等）。
             let image = if spec.kind == abi::widget::IMAGE {
-                context.icon_asset(&value, 0, if spec.layout.width == 16 { 16 } else { 32 })
+                match spec.layout.width {
+                    16 | 32 => context.icon_asset(&value, 0, spec.layout.width),
+                    -1 if !value.ends_with("-1x") => context.icon_asset(&value, 0, 32),
+                    _ => context.ui_bitmap(&value),
+                }
             } else {
                 None
             };
+            let rebar = (spec.kind == abi::widget::REBAR).then(|| {
+                super::rebar::Rebar::new(
+                    ["brand-22-1x", "brand-26-1x", "brand-38-1x"]
+                        .into_iter()
+                        .filter_map(|name| context.ui_bitmap(name))
+                        .collect(),
+                )
+            });
             let host = context.host_mut(window)?;
             let tree = host.controls_mut()?;
             let id = tree.insert(parent, spec, value)?;
-            tree.nodes.get_mut(&id).expect("inserted widget").image = image;
+            let node = tree.nodes.get_mut(&id).expect("inserted widget");
+            node.image = image;
+            node.rebar = rebar;
             host.frame.invalidate();
             output.write(id);
             Ok(())
@@ -384,9 +401,13 @@ pub(super) unsafe extern "C" fn menus(
                 } else {
                     slice::from_raw_parts(value.items, value.count)
                 };
-                let mut copied = Vec::with_capacity(items.len());
+                let mut copied: Vec<classic_ui::DropItem<u64, String>> =
+                    Vec::with_capacity(items.len());
+                // 条目 id → 在嵌套条目中的索引路径；父条目必须排在子条目之前。
+                let mut paths: std::collections::HashMap<u64, Vec<usize>> =
+                    std::collections::HashMap::new();
                 for item in items {
-                    if item.id == 0 || item.state & !7 != 0 {
+                    if item.id == 0 || item.state & !15 != 0 || paths.contains_key(&item.id) {
                         return Err(invalid("invalid menu item"));
                     }
                     let mut copied_item =
@@ -394,7 +415,24 @@ pub(super) unsafe extern "C" fn menus(
                     copied_item.disabled = item.state & 1 != 0;
                     copied_item.checked = item.state & 2 != 0;
                     copied_item.separator_before = item.state & 4 != 0;
-                    copied.push(copied_item);
+                    copied_item.default = item.state & 8 != 0;
+                    let mut path = if item.parent == 0 {
+                        Vec::new()
+                    } else {
+                        paths
+                            .get(&item.parent)
+                            .cloned()
+                            .ok_or_else(|| invalid("menu item parent must precede it"))?
+                    };
+                    if path.len() >= abi::MENU_DEPTH {
+                        return Err(invalid("menu nesting too deep"));
+                    }
+                    let siblings = path
+                        .iter()
+                        .fold(&mut copied, |items, index| &mut items[*index].children);
+                    path.push(siblings.len());
+                    siblings.push(copied_item);
+                    paths.insert(item.id, path);
                 }
                 entries.push(classic_ui::DropMenu {
                     title: text(value.title)?,
@@ -539,7 +577,7 @@ pub(super) unsafe extern "C" fn selection(
                 .get(&id)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown widget"))?;
             let selected = match node.kind {
-                abi::widget::LIST | abi::widget::TREE => node.selected,
+                abi::widget::LIST | abi::widget::TREE | abi::widget::COMBO => node.selected,
                 abi::widget::TABS => node
                     .selected
                     .filter(|id| node.children.contains(id))
@@ -573,7 +611,7 @@ pub(super) unsafe extern "C" fn select(
                 .get_mut(&id)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown widget"))?;
             let valid = match node.kind {
-                abi::widget::LIST | abi::widget::TREE => {
+                abi::widget::LIST | abi::widget::TREE | abi::widget::COMBO => {
                     value == 0 || node.rows.iter().any(|(id, _)| *id == value)
                 }
                 abi::widget::TABS => node.children.contains(&value),
@@ -674,11 +712,14 @@ pub(super) unsafe extern "C" fn row_icons(
                 .nodes
                 .get(&id)
                 .ok_or_else(|| invalid("unknown widget"))?;
-            if !matches!(node.kind, abi::widget::LIST | abi::widget::TREE) {
-                return Err(invalid("not a list/tree"));
-            }
-            let identities: std::collections::BTreeSet<_> =
-                node.rows.iter().map(|row| row.0).collect();
+            // 状态栏的“行”是从 1 起的分格序号（SB_SETICON）。
+            let identities: std::collections::BTreeSet<_> = match node.kind {
+                abi::widget::LIST | abi::widget::TREE | abi::widget::COMBO => {
+                    node.rows.iter().map(|row| row.0).collect()
+                }
+                abi::widget::STATUS => (1..=node.text().split('\t').count() as u64).collect(),
+                _ => return Err(invalid("not a list/tree/combo/status")),
+            };
             let mut copied = Vec::with_capacity(count);
             let mut seen = std::collections::BTreeSet::new();
             for value in values {
@@ -730,6 +771,222 @@ pub(super) unsafe extern "C" fn read_state(
                     .ok_or_else(|| invalid("unknown widget"))?
                     .state,
             );
+            Ok(())
+        })
+    }
+}
+
+pub(super) unsafe extern "C" fn set_font(
+    pointer: *mut c_void,
+    window: u64,
+    id: u64,
+    role: u32,
+    points: u32,
+    weight: u32,
+) -> i32 {
+    use classic_ui::FontRole;
+    let role = match role {
+        0 => FontRole::Caption,
+        1 => FontRole::SmallCaption,
+        2 => FontRole::Menu,
+        3 => FontRole::Status,
+        4 => FontRole::Message,
+        5 => FontRole::Icon,
+        _ => return abi::INVALID,
+    };
+    if points > 72 || weight > 1000 {
+        return abi::INVALID;
+    }
+    // SAFETY: 只修改本 context 中指定标签/链接的字体描述，字体在绘制时由资源上下文解析。
+    unsafe {
+        invoke(pointer, |context| {
+            let host = context.host_mut(window)?;
+            let node = host
+                .controls_mut()?
+                .nodes
+                .get_mut(&id)
+                .filter(|node| matches!(node.kind, abi::widget::LABEL | abi::widget::LINK))
+                .ok_or_else(|| invalid("not a label or link"))?;
+            node.font = Some((role, points as u16, weight as u16));
+            host.frame.invalidate();
+            Ok(())
+        })
+    }
+}
+
+pub(super) unsafe extern "C" fn status_parts(
+    pointer: *mut c_void,
+    window: u64,
+    id: u64,
+    values: *const i32,
+    count: usize,
+) -> i32 {
+    if count > 256 || (count != 0 && values.is_null()) {
+        return abi::INVALID;
+    }
+    // SAFETY: 宽度数组只在调用期间借用，校验后复制到状态栏节点。
+    unsafe {
+        invoke(pointer, |context| {
+            let parts = if count == 0 {
+                Vec::new()
+            } else {
+                slice::from_raw_parts(values, count).to_vec()
+            };
+            if parts
+                .iter()
+                .any(|part| *part != -1 && !(1..=32768).contains(part))
+                || parts.iter().filter(|part| **part == -1).count() > 1
+            {
+                return Err(invalid("invalid status parts"));
+            }
+            let host = context.host_mut(window)?;
+            let node = host
+                .controls_mut()?
+                .nodes
+                .get_mut(&id)
+                .filter(|node| node.kind == abi::widget::STATUS)
+                .ok_or_else(|| invalid("not a status bar"))?;
+            node.status_parts = parts;
+            host.frame.invalidate();
+            Ok(())
+        })
+    }
+}
+
+pub(super) unsafe extern "C" fn background(
+    pointer: *mut c_void,
+    window: u64,
+    id: u64,
+    rgb: u32,
+    bitmap: abi::Text,
+) -> i32 {
+    if rgb != abi::NO_COLOR && rgb > 0xFF_FFFF {
+        return abi::INVALID;
+    }
+    // SAFETY: 位图名在调用期间借用并复制；位图由资源上下文加载并共享。
+    unsafe {
+        invoke(pointer, |context| {
+            let name = text(bitmap)?;
+            let image = if name.is_empty() {
+                None
+            } else {
+                Some(
+                    context
+                        .ui_bitmap(&name)
+                        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown bitmap"))?,
+                )
+            };
+            let color = (rgb != abi::NO_COLOR).then_some(classic_theme::Rgb {
+                red: (rgb >> 16) as u8,
+                green: (rgb >> 8) as u8,
+                blue: rgb as u8,
+            });
+            let host = context.host_mut(window)?;
+            let node = host
+                .controls_mut()?
+                .nodes
+                .get_mut(&id)
+                .filter(|node| matches!(node.kind, abi::widget::COLUMN | abi::widget::ROW))
+                .ok_or_else(|| invalid("not a column or row"))?;
+            node.background = (color.is_some() || image.is_some()).then_some((color, image));
+            host.frame.invalidate();
+            Ok(())
+        })
+    }
+}
+
+pub(super) unsafe extern "C" fn toolbar_items(
+    pointer: *mut c_void,
+    window: u64,
+    id: u64,
+    values: *const abi::ToolbarItem,
+    count: usize,
+) -> i32 {
+    if count > 256 || (count != 0 && values.is_null()) {
+        return abi::INVALID;
+    }
+    // SAFETY: 输入数组与字符串只在调用期间借用；先校验并复制全部按钮，再原子替换模型。
+    unsafe {
+        invoke(pointer, |context| {
+            let values = if count == 0 {
+                &[]
+            } else {
+                slice::from_raw_parts(values, count)
+            };
+            let mut seen = std::collections::BTreeSet::new();
+            let mut copied = Vec::with_capacity(count);
+            for value in values {
+                let known = toolbar_style::SEPARATOR
+                    | toolbar_style::DROPDOWN
+                    | toolbar_style::WHOLE_DROPDOWN
+                    | toolbar_style::CHECK
+                    | toolbar_style::SHOW_TEXT;
+                if value.id == 0
+                    || !seen.insert(value.id)
+                    || value.style & !known != 0
+                    || value.state & !(toolbar_style::DISABLED | toolbar_style::CHECKED) != 0
+                    || value.frame > 4096
+                {
+                    return Err(invalid("invalid toolbar button"));
+                }
+                copied.push((
+                    value.id,
+                    text(value.strip)?,
+                    value.frame,
+                    text(value.text)?,
+                    value.style,
+                    value.state,
+                ));
+            }
+            let buttons: Vec<Button> = copied
+                .into_iter()
+                .map(|(id, strip, frame, label, style, state)| {
+                    let strips = if strip.is_empty() {
+                        [None, None, None]
+                    } else {
+                        ["default", "hot", "disabled"]
+                            .map(|variant| context.ui_bitmap(&format!("{strip}-{variant}-1x")))
+                    };
+                    Button::new(id, strips, frame as i32, label, style, state)
+                })
+                .collect();
+            let host = context.host_mut(window)?;
+            let node = host
+                .controls_mut()?
+                .nodes
+                .get_mut(&id)
+                .filter(|node| node.kind == abi::widget::TOOLBAR)
+                .ok_or_else(|| invalid("not a toolbar"))?;
+            node.toolbar
+                .get_or_insert_with(Toolbar::default)
+                .set_buttons(buttons);
+            host.frame.invalidate();
+            Ok(())
+        })
+    }
+}
+
+pub(super) unsafe extern "C" fn rebar_busy(
+    pointer: *mut c_void,
+    window: u64,
+    id: u64,
+    busy: u32,
+) -> i32 {
+    if busy > 1 {
+        return abi::INVALID;
+    }
+    // SAFETY: 只修改本 context 中指定 ReBar 的动画状态，不保留调用者指针。
+    unsafe {
+        invoke(pointer, |context| {
+            let host = context.host_mut(window)?;
+            let rebar = host
+                .controls_mut()?
+                .nodes
+                .get_mut(&id)
+                .and_then(|node| node.rebar.as_mut())
+                .ok_or_else(|| invalid("not a rebar"))?;
+            rebar.set_busy(busy != 0);
+            host.frame.invalidate();
             Ok(())
         })
     }

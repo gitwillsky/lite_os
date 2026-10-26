@@ -2,6 +2,9 @@
 use super::widgets::Tree;
 use classic_ui::{DropMenu, EventKind, MenuBar, MenuEvent, Painter};
 use classic_ui_abi::{self as abi, event};
+
+// 运行库按 ABI 承诺的嵌套层数校验菜单，共享菜单状态机按同一上限展开子菜单。
+const _: () = assert!(abi::MENU_DEPTH == classic_ui::MENU_DEPTH);
 pub struct MenuModel {
     pub entries: Vec<DropMenu<u64, String>>,
     pub state: MenuBar,
@@ -35,8 +38,12 @@ impl Tree {
         let Some(id) = popup.or_else(|| self.menubar.filter(|id| self.active(*id))) else {
             return (false, false);
         };
+        let bounds = self.layout_bounds.map(|(bounds, _)| bounds);
         let node = self.nodes.get_mut(&id).expect("menu node");
         let menu = node.menu.as_mut().expect("menu model");
+        if let Some(bounds) = bounds {
+            menu.state.set_bounds(bounds);
+        }
         let before = menu.state.visual();
         let was_active = menu.state.active();
         let result = match input {
@@ -85,8 +92,15 @@ impl Tree {
                 ..Default::default()
             });
         }
+        let closed = popup.is_some() && was_active && !menu.state.active();
+        if closed {
+            // 工具栏下拉按钮在菜单打开期间保持按下外观，菜单关闭时一并恢复。
+            for node in self.nodes.values_mut() {
+                node.release_toolbar();
+            }
+        }
         match result {
-            MenuEvent::Ignored => (false, repaint),
+            MenuEvent::Ignored => (false, repaint || closed),
             MenuEvent::Handled => {
                 self.armed = None;
                 (true, repaint)

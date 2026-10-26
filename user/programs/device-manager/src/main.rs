@@ -83,18 +83,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     label: "属性(R)",
                     shortcut: "Enter",
                     state: 0,
+                    parent: 0,
                 },
                 MenuItem {
                     id: 2,
                     label: "刷新(F)",
                     shortcut: "F5",
                     state: 4,
+                    parent: 0,
                 },
                 MenuItem {
                     id: 3,
                     label: "退出(X)",
                     shortcut: "",
                     state: 4,
+                    parent: 0,
                 },
             ],
         },
@@ -105,6 +108,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 label: "刷新(R)",
                 shortcut: "F5",
                 state: 0,
+                parent: 0,
             }],
         },
         Menu {
@@ -114,6 +118,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 label: "关于设备管理器(A)",
                 shortcut: "",
                 state: 0,
+                parent: 0,
             }],
         },
     ])?;
