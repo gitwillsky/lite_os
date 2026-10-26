@@ -77,7 +77,7 @@ impl From<EncodeError> for Fail {
 pub(super) enum Data {
     None,
     Pool(Rc<Pool>),
-    Buffer(BufferSpec),
+    Buffer(Rc<BufferSpec>),
     Surface(Surface),
     XdgSurface(XdgSurface),
     Toplevel(Toplevel),
@@ -623,7 +623,12 @@ impl Client {
                     stride,
                     format,
                 };
-                self.create(id, Interface::WlBuffer, version, Data::Buffer(spec))
+                self.create(
+                    id,
+                    Interface::WlBuffer,
+                    version,
+                    Data::Buffer(Rc::new(spec)),
+                )
             }
             wl_shm_pool::Request::Resize { size } => {
                 match usize::try_from(size) {
@@ -684,22 +689,22 @@ impl Client {
                         "attach offset must be zero",
                     ));
                 }
-                if let Some(buffer) = buffer {
-                    let is_buffer = matches!(
-                        self.objects.get(&buffer.get()),
+                let attachment = buffer
+                    .map(|buffer| match self.objects.get(&buffer.get()) {
                         Some(Entry {
-                            data: Data::Buffer(_),
+                            data: Data::Buffer(spec),
                             ..
-                        })
-                    );
-                    if !is_buffer {
-                        return Err(Fail::invalid_object(format!(
+                        }) => Ok(super::surface::Attachment {
+                            object: buffer,
+                            buffer: spec.clone(),
+                        }),
+                        _ => Err(Fail::invalid_object(format!(
                             "object {} is not a wl_buffer",
                             buffer.get()
-                        )));
-                    }
-                }
-                self.surface_mut(object)?.pending.buffer = Some(buffer);
+                        ))),
+                    })
+                    .transpose()?;
+                self.surface_mut(object)?.pending.buffer = Some(attachment);
                 Ok(())
             }
             R::Frame { callback } => {
@@ -729,6 +734,7 @@ impl Client {
                         "invalid buffer transform",
                     ));
                 }
+                self.surface_mut(object)?.pending.transform = Some(transform);
                 Ok(())
             }
             R::Commit => self.commit(object),
@@ -749,25 +755,21 @@ impl Client {
         self.commits += 1;
         let surface = self.surface_mut(object)?;
         let choice = surface.pending.buffer.take();
+        let unmapping = matches!(choice, Some(None));
         let callbacks = std::mem::take(&mut surface.pending.frame_callbacks);
         if let Some(scale) = surface.pending.scale.take() {
             surface.scale = scale;
+        }
+        if let Some(transform) = surface.pending.transform.take() {
+            surface.transform = transform;
         }
         surface.queued_callbacks.extend(callbacks);
         match choice {
             None => {}
             Some(None) => self.surface_mut(object)?.content = None,
-            Some(Some(buffer)) => {
-                let Some(Entry {
-                    data: Data::Buffer(spec),
-                    ..
-                }) = self.objects.get(&buffer.get())
-                else {
-                    return Err(Fail::invalid_object(format!(
-                        "buffer {} was destroyed before commit",
-                        buffer.get()
-                    )));
-                };
+            Some(Some(attachment)) => {
+                let buffer = attachment.object;
+                let spec = &attachment.buffer;
                 let pixels = spec.read_pixels().map_err(|_| {
                     Fail::new(
                         buffer,
@@ -785,11 +787,15 @@ impl Client {
                     self.enter_outputs(object)?;
                 }
                 // 内容已复制，buffer 立即可复用。
-                wl_buffer::Event::Release.encode(buffer, &mut self.writer)?;
+                // 已 attach 的 buffer 即使销毁也仍拥有快照输入，但不能向销毁后复用的对象编号发送 release。
+                if matches!(self.objects.get(&buffer.get()), Some(Entry { data: Data::Buffer(live), .. }) if Rc::ptr_eq(live, spec))
+                {
+                    wl_buffer::Event::Release.encode(buffer, &mut self.writer)?;
+                }
             }
         }
-        self.apply_viewport(object, choice.is_some_and(|buffer| buffer.is_some()))?;
-        if choice == Some(None) {
+        self.apply_viewport(object)?;
+        if unmapping {
             self.xdg_unmap(object);
             self.layer_unmap(object);
         } else {
@@ -800,52 +806,35 @@ impl Client {
 }
 
 impl Client {
-    /// 提交时让视口生效：换上待生效的源/目标，必要时从原始缓冲重新取样。
-    ///
-    /// `fresh` 表示本次提交带来了新缓冲（`surface.content` 就是原始像素）。
-    fn apply_viewport(&mut self, object: ObjectId, fresh: bool) -> Result<(), Fail> {
+    /// 提交几何只更新采样元数据；不会恢复旧 buffer，也不会因取消 viewport 重新上传纹理。
+    fn apply_viewport(&mut self, object: ObjectId) -> Result<(), Fail> {
         let surface = self.surface_mut(object)?;
-        let viewport = &mut surface.viewport;
-        let changed = viewport.pending.is_some();
-        if let Some((source, destination)) = viewport.pending.take() {
-            viewport.source = source;
-            viewport.destination = destination;
+        if let Some((source, destination)) = surface.viewport.pending.take() {
+            surface.viewport.source = source;
+            surface.viewport.destination = destination;
         }
-        if !viewport.active() {
-            // 视口被取消：恢复原始缓冲。
-            if let Some(raw) = viewport.raw.take() {
-                surface.content = Some(raw);
-            }
-            return Ok(());
+        let viewport = surface.viewport.object.unwrap_or(object);
+        surface.viewport.validate_size().map_err(|code| {
+            Fail::new(viewport, code, "fractional source size needs a destination")
+        })?;
+        if let Some(content) = &mut surface.content {
+            let (size, source) = surface
+                .viewport
+                .mapping(content, surface.scale, surface.transform)
+                .map_err(|error| match error {
+                    super::viewport::GeometryError::BufferSize => Fail::new(
+                        object,
+                        wl_surface::Error::InvalidSize as u32,
+                        "buffer dimensions are not a multiple of buffer scale",
+                    ),
+                    super::viewport::GeometryError::Viewport(code) => {
+                        Fail::new(viewport, code, "invalid viewport for the attached buffer")
+                    }
+                })?;
+            content.size = size;
+            content.source = source;
         }
-        if !fresh && !changed {
-            return Ok(());
-        }
-        let base = if fresh {
-            surface.content.take()
-        } else {
-            viewport.raw.take()
-        };
-        let Some(base) = base else {
-            return Ok(());
-        };
-        let scale = surface.scale;
-        let resampled = surface.viewport.resample(&base, scale);
-        match resampled {
-            Ok(content) => {
-                surface.viewport.raw = Some(base);
-                surface.content = Some(content);
-                Ok(())
-            }
-            Err(code) => {
-                let object_id = surface.viewport.object.unwrap_or(object);
-                Err(Fail::new(
-                    object_id,
-                    code,
-                    "invalid viewport for the attached buffer",
-                ))
-            }
-        }
+        Ok(())
     }
 
     /// `wl_output` 绑定后依次宣告几何、模式、scale、名字与 `done`；字段按绑定版本取舍。

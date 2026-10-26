@@ -13,14 +13,10 @@ pub struct Drawable<'a> {
     pub content: &'a Content,
 }
 impl<'a> Drawable<'a> {
-    pub fn surface(x: i32, y: i32, content: &'a Content, factor: i32) -> Self {
+    pub fn surface(x: i32, y: i32, content: &'a Content, output_scale: i32) -> Self {
+        let (width, height) = content.output_size(output_scale);
         Self {
-            rect: Rect::new(
-                x,
-                y,
-                (content.width as i32).saturating_mul(factor),
-                (content.height as i32).saturating_mul(factor),
-            ),
+            rect: Rect::new(x, y, width, height),
             content,
         }
     }
@@ -76,12 +72,12 @@ pub fn compose(
     );
     for window in windows {
         let image = Image {
-            pixels: &window.content.pixels,
+            pixels: window.content.pixels(),
             width: window.content.width as i32,
             height: window.content.height as i32,
             stride: window.content.width,
         };
-        surface.blit_scaled(image, window.rect);
+        surface.blit_sampled(image, window.rect, window.content.source);
     }
     overlay(surface);
     true

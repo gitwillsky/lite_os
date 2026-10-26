@@ -261,6 +261,38 @@ impl<'a> Surface<'a> {
         }
     }
 
+    /// 按仿射源坐标采样预乘 ARGB 图像到 rect；源布局无效或目标为空时不绘制。
+    /// 使用最近邻与像素中心，源坐标夹到图像边界，裁剪后直接写目标，不分配中间图像。
+    pub fn blit_sampled(&mut self, image: Image<'_>, rect: Rect, source: crate::ImageSource) {
+        if rect.is_empty()
+            || image.width <= 0
+            || image.height <= 0
+            || !fits(image.pixels.len(), image.width, image.height, image.stride)
+        {
+            return;
+        }
+        if source == crate::ImageSource::full(image.width, image.height) {
+            self.blit_scaled(image, rect);
+            return;
+        }
+        for (left, top, row) in self.visible_rows(rect) {
+            let v = (f64::from(top) - f64::from(rect.y) + 0.5) / f64::from(rect.height);
+            for (column, pixel) in row.iter_mut().enumerate() {
+                let u = (f64::from(left) - f64::from(rect.x) + column as f64 + 0.5)
+                    / f64::from(rect.width);
+                let (x, y) = source.point(u, v);
+                let x = (x.floor() as i64).clamp(0, i64::from(image.width) - 1) as usize;
+                let y = (y.floor() as i64).clamp(0, i64::from(image.height) - 1) as usize;
+                let value = image.pixels[y * image.stride + x];
+                match value >> 24 {
+                    0 => {}
+                    255 => *pixel = value,
+                    _ => *pixel = over(value, *pixel),
+                }
+            }
+        }
+    }
+
     /// 将覆盖率蒙版缩放到目标矩形并着色，不分配临时像素。
     /// 非正尺寸或源缓冲布局错误时不绘制；裁剪与其他 Surface 操作一致。
     pub fn draw_mask_scaled(&mut self, mask: Mask<'_>, rect: Rect, color: Color) {

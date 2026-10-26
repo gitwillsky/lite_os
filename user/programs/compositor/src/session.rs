@@ -50,11 +50,6 @@ const BUTTON_RIGHT: u16 = 0x111;
 /// 键盘移动/缩放窗口时方向键每次的步长，逻辑像素。
 const KEYBOARD_STEP: i32 = 8;
 
-/// 窗口内容放大到输出 scale 所需的整数倍；客户端 scale 大于输出时不缩小，按 1 处理。
-fn factor(output_scale: u32, surface_scale: i32) -> i32 {
-    (output_scale as i32 / surface_scale.max(1)).max(1)
-}
-
 /// 最小化/还原的整窗几何变换；只标识现有已提交 surface，不光栅第二份标题栏或复制客户区。
 struct Animation {
     client: ClientId,
@@ -335,11 +330,7 @@ impl Session {
             .server
             .layers()
             .map(|(client, layer)| {
-                let factor = factor(self.scale, layer.scale);
-                let size = (
-                    layer.content.width as i32 * factor,
-                    layer.content.height as i32 * factor,
-                );
+                let size = layer.content.output_size(scale);
                 // layer-shell：独占区为 0 的 surface 避开其他 surface 的独占区，其余相对整个输出。
                 let area = if layer.state.exclusive_zone == 0 {
                     work_area
@@ -399,12 +390,8 @@ impl Session {
             .rev()
             .find_map(|(client, popup)| {
                 let root = self.stack.placement(client, popup.client_root)?;
-                let factor = factor(self.scale, popup.scale);
                 let (x, y) = (root.x + popup.x * scale, root.y + popup.y * scale);
-                let (width, height) = (
-                    popup.content.width as i32 * factor,
-                    popup.content.height as i32 * factor,
-                );
+                let (width, height) = popup.content.output_size(scale);
                 ((x..x + width).contains(&point.0) && (y..y + height).contains(&point.1)).then_some(
                     Hit {
                         target: (client, popup.surface),
@@ -652,12 +639,11 @@ impl Session {
             .server
             .windows()
             .map(|(client, window)| {
-                let factor = factor(self.scale, window.scale);
                 (
                     client,
                     window.surface,
-                    window.content.width as i32 * factor,
-                    window.content.height as i32 * factor,
+                    window.content.output_size(self.scale as i32).0,
+                    window.content.output_size(self.scale as i32).1,
                     match (window.parent, window.fixed) {
                         (Some(parent), _) => Initial::CenterOn(parent),
                         (None, true) => Initial::Center,

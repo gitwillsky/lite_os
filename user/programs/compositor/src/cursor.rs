@@ -205,20 +205,7 @@ pub fn blit_scaled(
 ///
 /// 缓冲不是 64 × 64。
 pub fn blit_to_hardware(target: &mut DumbBuffer, edge: usize, frame: &[u32]) -> io::Result<()> {
-    if target.width() != HARDWARE_EDGE || target.height() != HARDWARE_EDGE || edge > HARDWARE_EDGE {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            "hardware cursor buffer must be 64x64",
-        ));
-    }
-    for row in 0..HARDWARE_EDGE {
-        let line = target.row_mut(row);
-        line.fill(0);
-        if row < edge {
-            line[..edge].copy_from_slice(&frame[row * edge..(row + 1) * edge]);
-        }
-    }
-    Ok(())
+    blit_scaled(target, frame, edge, edge, 1)
 }
 
 #[cfg(test)]

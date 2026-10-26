@@ -44,12 +44,12 @@ impl Session {
         let popup_views = self.server.popups();
         let output_scale = self.scale;
         let layer_drawable = |layer: &LayerBox| {
-            let (content, scale) = layer_images.get(&(layer.client, layer.surface))?;
+            let (content, _) = layer_images.get(&(layer.client, layer.surface))?;
             Some(Drawable::surface(
                 layer.x,
                 layer.y,
                 content,
-                factor(output_scale, *scale),
+                output_scale as i32,
             ))
         };
         let below = boxes
@@ -67,18 +67,16 @@ impl Session {
                     })
             })
             .filter_map(|placed| {
-                let (content, scale, children) =
-                    window_images.get(&(placed.client, placed.surface))?;
+                let (content, _, children) = window_images.get(&(placed.client, placed.surface))?;
                 // 窗口本体先画，子 surface 按位置压在它上面。
-                let body =
-                    Drawable::surface(placed.x, placed.y, content, factor(output_scale, *scale));
+                let body = Drawable::surface(placed.x, placed.y, content, output_scale as i32);
                 let output = output_scale as i32;
                 let subsurfaces = children.iter().map(move |child| {
                     Drawable::surface(
                         placed.x + child.x * output,
                         placed.y + child.y * output,
                         child.content,
-                        factor(output_scale, child.scale),
+                        output_scale as i32,
                     )
                 });
                 Some(std::iter::once(body).chain(subsurfaces))
@@ -93,15 +91,14 @@ impl Session {
                 }
                 let output = output_scale as i32;
                 let (x, y) = (root.x + popup.x * output, root.y + popup.y * output);
-                let body =
-                    Drawable::surface(x, y, popup.content, factor(output_scale, popup.scale));
+                let body = Drawable::surface(x, y, popup.content, output_scale as i32);
                 Some(
                     std::iter::once(body).chain(popup.children.iter().map(move |child| {
                         Drawable::surface(
                             x + child.x * output,
                             y + child.y * output,
                             child.content,
-                            factor(output_scale, child.scale),
+                            output_scale as i32,
                         )
                     })),
                 )
@@ -118,10 +115,9 @@ impl Session {
             .as_ref()
             .and_then(|animation| {
                 let placed = self.stack.placement(animation.client, animation.surface)?;
-                let (content, scale, children) =
+                let (content, _, children) =
                     window_images.get(&(animation.client, animation.surface))?;
-                let body =
-                    Drawable::surface(placed.x, placed.y, content, factor(output_scale, *scale));
+                let body = Drawable::surface(placed.x, placed.y, content, output_scale as i32);
                 let source = body.rect;
                 let (x, y, width, height) = animation.frame();
                 let target = canvas::Rect::new(x, y, width, height);
@@ -133,7 +129,7 @@ impl Session {
                                 placed.x + child.x * output,
                                 placed.y + child.y * output,
                                 child.content,
-                                factor(output_scale, child.scale),
+                                output_scale as i32,
                             )
                         }))
                         .map(|drawable| drawable.transformed(source, target))

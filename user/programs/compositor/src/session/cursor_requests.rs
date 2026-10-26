@@ -52,30 +52,39 @@ impl Session {
             } => match self.server.cursor_image(client, surface) {
                 // 无 buffer 的光标 surface 不可见；后续 commit 再更新硬件图像。
                 None => return self.scanout.hide_cursor(position),
-                Some((content, surface_scale)) => {
-                    let factor = factor(scale, surface_scale) as usize;
+                Some((content, _)) => {
+                    let (width, height) = content.output_size(scale as i32);
                     let hot = (
                         hotspot.0.checked_mul(scale as i32),
                         hotspot.1.checked_mul(scale as i32),
                     );
-                    if content.width * factor <= cursor::HARDWARE_EDGE
-                        && content.height * factor <= cursor::HARDWARE_EDGE
+                    if width <= cursor::HARDWARE_EDGE as i32
+                        && height <= cursor::HARDWARE_EDGE as i32
                         && matches!(hot, (Some(x), Some(y)) if (0..64).contains(&x) && (0..64).contains(&y))
                     {
-                        cursor::blit_scaled(
-                            &mut self.hardware_cursor,
-                            &content.pixels,
-                            content.width,
-                            content.height,
-                            factor,
-                        )?;
+                        let edge = cursor::HARDWARE_EDGE as i32;
+                        let stride = self.hardware_cursor.stride();
+                        self.hardware_cursor.pixels_mut().fill(0);
+                        let mut target = canvas::Surface::new(
+                            self.hardware_cursor.pixels_mut(),
+                            edge,
+                            edge,
+                            stride,
+                        )
+                        .expect("hardware cursor geometry");
+                        target.blit_sampled(
+                            canvas::Image {
+                                pixels: content.pixels(),
+                                width: content.width as i32,
+                                height: content.height as i32,
+                                stride: content.width,
+                            },
+                            canvas::Rect::new(0, 0, width, height),
+                            content.source,
+                        );
                         let hot = (hot.0.unwrap() as u32, hot.1.unwrap() as u32);
                         self.scanout
                             .show_cursor(&self.hardware_cursor, position, hot)?;
-                        println!(
-                            "compositor: client cursor {}x{} hotspot {},{}",
-                            content.width, content.height, hot.0, hot.1
-                        );
                         return Ok(());
                     }
                     // 硬件光标最大 64×64；更大的图像退回默认光标。

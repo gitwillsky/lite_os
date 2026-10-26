@@ -1,8 +1,5 @@
-//! `wp_viewporter`：surface 的源矩形裁剪与目标尺寸缩放。
-//!
-//! 合成器不在绘制时缩放：提交时把缓冲裁剪、最近邻缩放成"目标尺寸 × buffer scale"的内容，
-//! 之后仍走整数倍放大的合成路径。原始内容保存在 [`ViewportState::raw`]，所以只改视口不换 buffer 的
-//! 提交（Wine 全屏缩放的常见做法）也能重新取样。
+//! wp_viewporter 的标准采样元数据：先反解 buffer transform/scale，再解释逻辑源矩形与目标尺寸。
+//! 不复制或重采样提交像素；CPU/GPU 使用同一仿射源坐标，视口改变可以复用原纹理。
 
 use wayland_wire::{
     protocol::{Interface, wp_viewport, wp_viewporter},
@@ -27,14 +24,18 @@ pub type Params = (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>);
 pub struct ViewportState {
     /// 绑定的 `wp_viewport` 对象；同一 surface 只允许一个。
     pub object: Option<ObjectId>,
-    /// 已生效的源矩形 `(x, y, 宽, 高)`，缓冲像素；`None` 表示整个缓冲。
+    /// 已生效的逻辑源矩形（buffer transform/scale 之后的坐标）；None 为整个内容。
     pub source: Option<(f64, f64, f64, f64)>,
     /// 已生效的目标尺寸（surface 局部逻辑像素）；`None` 表示用源尺寸。
     pub destination: Option<(i32, i32)>,
     /// 下次 commit 要换上的值；外层 `Some` 表示有改动。
     pub pending: Option<Params>,
-    /// 视口生效时保存的原始缓冲内容。
-    pub raw: Option<Content>,
+}
+
+/// 协议错误归属：裸缓冲尺寸属于 wl_surface，裁剪错误属于 wp_viewport。
+pub(super) enum GeometryError {
+    BufferSize,
+    Viewport(u32),
 }
 
 impl ViewportState {
@@ -48,38 +49,78 @@ impl ViewportState {
         self.pending.get_or_insert(current)
     }
 
-    /// 取样出提交内容：把 `base` 的源矩形最近邻缩放成 `scale` 倍的目标尺寸。
-    ///
-    /// # Errors
-    ///
-    /// 源矩形越出缓冲，或没有目标尺寸且源尺寸不是整数，返回协议错误码（`out_of_buffer`/`bad_size`）。
-    pub fn resample(&self, base: &Content, scale: i32) -> Result<Content, u32> {
-        let (sx, sy, sw, sh) =
-            self.source
-                .unwrap_or((0.0, 0.0, base.width as f64, base.height as f64));
-        if sx + sw > base.width as f64 + 1e-6 || sy + sh > base.height as f64 + 1e-6 {
-            return Err(wp_viewport::Error::OutOfBuffer as u32);
-        }
-        let (dw, dh) = match self.destination {
-            Some(size) => size,
-            None if sw.fract() == 0.0 && sh.fract() == 0.0 => (sw as i32, sh as i32),
-            None => return Err(wp_viewport::Error::BadSize as u32),
-        };
-        let scale = scale.max(1) as usize;
-        let (width, height) = (dw.max(1) as usize * scale, dh.max(1) as usize * scale);
-        let mut pixels = Vec::new();
-        if pixels.try_reserve_exact(width * height).is_err() {
+    /// 只校验不依赖 buffer 的尺寸规则；空 buffer 也不能提交分数源尺寸而不指定目标。
+    pub fn validate_size(&self) -> Result<(), u32> {
+        if self.destination.is_none()
+            && self
+                .source
+                .is_some_and(|(_, _, width, height)| width.fract() != 0.0 || height.fract() != 0.0)
+        {
             return Err(wp_viewport::Error::BadSize as u32);
         }
-        for y in 0..height {
-            let source_y = (sy + (y as f64 + 0.5) * sh / height as f64) as usize;
-            let row = source_y.min(base.height - 1) * base.width;
-            for x in 0..width {
-                let source_x = (sx + (x as f64 + 0.5) * sw / width as f64) as usize;
-                pixels.push(base.pixels[row + source_x.min(base.width - 1)]);
-            }
+        Ok(())
+    }
+
+    /// 将已提交参数转换成逻辑尺寸与原始像素的仿射采样边界。
+    /// 裸 buffer 不是 scale 的整数倍返回 BufferSize；越界源或分数源尺寸返回对应 viewport 错误。
+    pub fn mapping(
+        &self,
+        base: &Content,
+        scale: i32,
+        transform: i32,
+    ) -> Result<((i32, i32), canvas::ImageSource), GeometryError> {
+        self.validate_size().map_err(GeometryError::Viewport)?;
+        let (width, height) = if transform & 1 != 0 {
+            (base.height, base.width)
+        } else {
+            (base.width, base.height)
+        };
+        if !self.active()
+            && (!width.is_multiple_of(scale as usize) || !height.is_multiple_of(scale as usize))
+        {
+            return Err(GeometryError::BufferSize);
         }
-        Ok(Content::new(width, height, pixels))
+        let (sx, sy, sw, sh) = self.source.unwrap_or((
+            0.0,
+            0.0,
+            width as f64 / f64::from(scale),
+            height as f64 / f64::from(scale),
+        ));
+        if (sx + sw) * f64::from(scale) > width as f64
+            || (sy + sh) * f64::from(scale) > height as f64
+        {
+            return Err(GeometryError::Viewport(
+                wp_viewport::Error::OutOfBuffer as u32,
+            ));
+        }
+        let size = self.destination.unwrap_or((sw as i32, sh as i32));
+        // set_buffer_transform 描述客户端已施加的变换；从显示点反查原 buffer 要按该正向变换取样。
+        let point = |x: f64, y: f64| {
+            let (u, v) = (
+                x * f64::from(scale) / width as f64,
+                y * f64::from(scale) / height as f64,
+            );
+            let (u, v) = match transform {
+                0 => (u, v),
+                1 => (v, 1.0 - u),
+                2 => (1.0 - u, 1.0 - v),
+                3 => (1.0 - v, u),
+                4 => (1.0 - u, v),
+                5 => (v, u),
+                6 => (u, 1.0 - v),
+                7 => (1.0 - v, 1.0 - u),
+                _ => unreachable!("validated buffer transform"),
+            };
+            (u * base.width as f64, v * base.height as f64)
+        };
+        Ok((
+            size,
+            canvas::ImageSource {
+                origin: point(sx, sy),
+                right: point(sx + sw, sy),
+                bottom: point(sx, sy + sh),
+            },
+        ))
     }
 }
 

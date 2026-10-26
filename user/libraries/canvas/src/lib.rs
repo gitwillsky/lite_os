@@ -7,7 +7,9 @@
 extern crate liteos_runtime as _;
 mod color;
 mod geometry;
+mod sampling;
 mod surface;
+pub use sampling::ImageSource;
 
 pub use color::Color;
 pub use geometry::Rect;

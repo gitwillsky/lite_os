@@ -33,6 +33,7 @@ impl Drop for Target {
 struct Quad {
     texture: Rc<VirglResource>,
     rect: Rect,
+    source: canvas::ImageSource,
 }
 /// 一条 DRM OFD 上的 GPU 合成资源；不接收应用协议，不保存第二份 surface 内容表。
 pub(crate) struct Gpu {
@@ -125,6 +126,7 @@ impl Gpu {
             quads.push(Quad {
                 texture: window.content.texture(&self.context)?,
                 rect,
+                source: window.content.source,
             });
         }
         if has_overlay {
@@ -137,6 +139,7 @@ impl Gpu {
             quads.push(Quad {
                 texture: content.texture(&self.context)?,
                 rect: screen,
+                source: content.source,
             });
         }
         let bytes = quads
@@ -158,11 +161,14 @@ impl Gpu {
         for quad in &quads {
             let visible = quad.rect.intersect(screen);
             let vertex = |x: i32, y: i32| {
+                let u = f64::from(x - quad.rect.x) / f64::from(quad.rect.width);
+                let v = f64::from(y - quad.rect.y) / f64::from(quad.rect.height);
+                let (u, v) = quad.source.point(u, v);
                 [
                     2.0 * x as f32 / width as f32 - 1.0,
                     1.0 - 2.0 * y as f32 / height as f32,
-                    (x - quad.rect.x) as f32 / quad.rect.width as f32,
-                    (y - quad.rect.y) as f32 / quad.rect.height as f32,
+                    (u / f64::from(quad.texture.width())) as f32,
+                    (v / f64::from(quad.texture.height())) as f32,
                 ]
             };
             for (x, y) in [
