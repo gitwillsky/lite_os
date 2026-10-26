@@ -31,6 +31,7 @@ use context_api::{
 };
 mod window_api;
 use window_api::{app_id, close, title, window};
+mod image_api;
 mod widget_api;
 use widget_api::{
     columns, date, draw, geometry, menus, range, read_date, read_range, read_state, read_text,
@@ -172,6 +173,7 @@ static API: Api = Api {
     set_font: widget_api::set_font,
     status_parts: widget_api::status_parts,
     background: widget_api::background,
+    image_palette: image_api::palette,
 };
 
 /// 查询 ABI 主版本。返回进程存活期间有效的只读函数表；不支持的主版本返回空指针。

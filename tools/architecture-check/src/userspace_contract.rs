@@ -191,6 +191,7 @@ fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
             "user/libraries/classic-ui-runtime/src/context_api.rs",
             "user/libraries/classic-ui-runtime/src/window_api.rs",
             "user/libraries/classic-ui-runtime/src/widget_api.rs",
+            "user/libraries/classic-ui-runtime/src/image_api.rs",
             "user/libraries/classic-ui-runtime/src/dialog_api.rs",
             "user/libraries/classic-ui-runtime/src/toplevel.rs",
             "user/libraries/classic-ui-runtime/src/outline.rs",

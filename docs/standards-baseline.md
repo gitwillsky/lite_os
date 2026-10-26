@@ -137,7 +137,9 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 ### 桌面程序入口与系统图像
 
 - Desktop Entry Specification `1.5`；当前程序启动只实现 [Exec 规则](https://specifications.freedesktop.org/desktop-entry/1.5/exec-variables.html) 的明确子集，未支持项不作为完整兼容性声明。
-- 系统图像固定为 [BITMAPV4HEADER](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-bitmapv4header) 的 108-byte header、top-down、32-bit BI_BITFIELDS、显式 RGBA masks 与 sRGB；不使用 BI_RGB 保留字节承载 alpha。
+- 系统图像固定为 [BITMAPV4HEADER](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-bitmapv4header) 的 108-byte header、top-down 与 sRGB：32-bit BI_BITFIELDS 使用显式 RGBA masks；
+  8-bit BI_RGB 使用 [RGBQUAD](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-rgbquad) 调色板与四字节行对齐，下标不经 RGB 转换。
+  BI_RGB 的保留字节不承载 alpha。
 - 本机认证与组初始化的实现依据为上述固定 musl 的 `include/crypt.h`、`src/crypt/crypt_r.c`、`src/passwd/getgrouplist.c`、`src/misc/initgroups.c`；账户写入依据固定 BusyBox `loginutils/passwd.c` 与 `libbb/update_passwd.c`。
 
 ### Terminal

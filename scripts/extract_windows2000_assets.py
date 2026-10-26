@@ -122,6 +122,8 @@ COLOR_KEYED = {
     "toolbar-default", "toolbar-hot", "toolbar-disabled",
     "ie-toolbar-default", "ie-toolbar-hot", "ie-toolbar-disabled", "go-default", "go-hot",
 }
+# 保留原始调色板下标的位图：时区地图按注册表 Time Zones 的 MapID 在运行时着色。
+INDEXED = {"worldmap"}
 # webvw.dll 类型 23 资源：Web 视图左侧水印与标题下的分隔线，按 CSS 原样使用。
 WEBVIEW = {"webview-left": "WVLEFT.BMP", "webview-line": "WVLINE.GIF"}
 # HIVEDEF.INF 的默认 AppEvents 配置；logoff 是独立提供的注销素材。
@@ -304,7 +306,12 @@ def extract(iso: Path, output: Path) -> dict:
             path = resource(source, 2, number, "bmp")
             dest = bitmap_dir / f"{name}-1x.png"
             with Image.open(path) as image:
-                rgba = image.convert("RGBA")
+                if name in INDEXED:
+                    if image.mode != "P":
+                        raise ValueError(f"indexed bitmap lost its palette: {path}")
+                    rgba = image.copy()
+                else:
+                    rgba = image.convert("RGBA")
                 if name in COLOR_KEYED:
                     rgba.putdata([(0, 0, 0, 0) if px[:3] == (255, 0, 255) else px
                                   for px in rgba.get_flattened_data()])

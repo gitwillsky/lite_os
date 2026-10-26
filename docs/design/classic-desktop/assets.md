@@ -7,8 +7,8 @@
 
 用户已选择保留 LiteOS 界面文案、优先使用自己的原版图像、声音和字体。提取 owner 是
 `scripts/extract_windows2000_assets.py`，输出仅位于 Git 忽略的 `.local/inputs/windows2000/assets/`。
-仓库中的原创素材和替代字体保留。当前产物是经过校验的素材目录，**尚未接入产品 rootfs**；
-后续经典桌面在唯一素材打包入口选择来源，不引入第二套渲染实现。操作见
+仓库中的原创素材和替代字体保留。`classic_assets` 统一选择本地原版优先的输入，启动素材与 rootfs 安装消费同一选择；
+提取目录经 manifest 校验后显式打包。操作见
 [构建与验证](../../development/build-and-verify.md#经典桌面本地素材)。
 
 原版输入是用户提供的 `Windows 2000 Professional Service Pack 4 CHS.iso`，402626560 字节，SHA256：
@@ -41,11 +41,16 @@
 | `ie-toolbar-default` / `-hot` / `-disabled` | `browseui.dll:261` / `262` / `265`（320×20，16 帧；后退 0、前进 1、搜索 5、历史 12） |
 | `go-default` / `go-hot` | `browseui.dll:290` / `291`（地址栏“转到”箭头，单帧） |
 | `brand-22` / `brand-26` / `brand-38` | `browseui.dll:306` / `305` / `304`（品牌 logo，正方形帧竖排，首帧静止，其余为忙碌动画） |
+| `worldmap` | `timedate.cpl:50`（356×184 下标图）；时区区域来自 `HIVESFT.INF` 的 `Time Zones\MapID` |
 | `webview-left` / `webview-line` | `webvw.dll` 类型 23 `WVLEFT.BMP`（127×56 水印）/ `WVLINE.GIF`（152×2 分隔线） |
 | `entire-network` / `desktop` | `shell32.dll:14`（整个网络）/ `shell32.dll:35`（桌面） |
 
 `liteos-logo` 沿用原创品牌图标。原版位图中烘焙的品牌文字不修改；动态文案始终为 LiteOS。
 仓库只提交原创默认素材；工具栏位图条、品牌 logo、Web 视图位图与上表中新增的外壳图标只有本地原版，`shell_bitmaps()` 取两个目录按文件名的并集，缺失时界面不画该图标。
+
+地图提取与打包保留原始 8-bit 调色板下标，使用标准 top-down BMP V4（BI_RGB、RGBQUAD 调色板）；
+其他系统图像沿用 32-bit BI_BITFIELDS RGBA。共享 Bitmap 解码并保留不可变下标，Image 控件更换调色板时生成像素，
+不逐帧重着色。控制面板只提供蓝海绿陆及选中时区加亮的颜色表；颜色是用户选择，不声称还原原版运行时调色板。
 
 原版默认光标来源是 `user32.dll` 的 group cursor：`arrow:100`、`text:101`、`busy:102`、
 `precision:103`、`resize-ns:104`、`resize-nwse:105`、`resize-nesw:106`、`resize-ew:107`、
@@ -196,7 +201,7 @@ LiteOS 不分发它们；1x 改用来源清楚的文泉驿点阵。
 字体映射按 Windows 2000 GDI（实现见 `typeface::FontCatalog`），渲染按第 4 条以清晰为先：
 
 1. 界面文字只使用主题 `[Fonts]` 中的逻辑字体（标题/小标题/菜单/状态栏/消息/图标字体，字体名、磅值、粗细），
-   默认值是简中 Win2000 的宋体 9 磅（标题粗体）。代码中不写字体文件或字号。
+   默认 Tahoma 9 磅（标题粗体），中文依次回退宋体与可分发替代。代码中不写字体文件或字号。
 2. 字体目录扫描得到按 `name` 表家族名（中英文、TTC 各成员）索引的字体表；`fontmap.ini` 的 `[FontSubstitutes]`
    在字体名未安装时替换，`[SystemLink]` 是缺字回退链。原版 `simsun.ttc` 缺失时，宋体经链接由文泉驿点阵
    （12 像素）与文鼎明体（轮廓）提供；原版存在时它们只补缺字。

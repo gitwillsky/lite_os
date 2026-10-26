@@ -130,6 +130,29 @@ fn saved_zone() -> Option<(usize, bool)> {
         .map(|index| (index, daylight))
 }
 
+/// 地图的业务配色：原版 MapID 保留区域身份，蓝海绿陆为用户选择的视觉策略。
+/// 同一时区的海陆两类区域分别加亮；缺少当前时区时只显示底图。
+fn map_palette(selected: Option<usize>) -> [u32; 256] {
+    let mut palette = [0x5596c7; 256];
+    for zone in &ZONES {
+        if let Some(land) = zone.map_regions[1] {
+            palette[usize::from(land)] = 0x82ad69;
+        }
+    }
+    if let Some(index) = selected {
+        for (region, color) in ZONES[index]
+            .map_regions
+            .into_iter()
+            .zip([0x91cef3, 0xd0df79])
+        {
+            if let Some(region) = region {
+                palette[usize::from(region)] = color;
+            }
+        }
+    }
+    palette
+}
+
 pub struct DateTime {
     _controls: Vec<Widget>,
     page: Widget,
@@ -143,6 +166,7 @@ pub struct DateTime {
     /// 微调钮与上下方向键作用的时间字段（最后点击或输入的字段；默认小时）。
     active: Cell<usize>,
     zones: Widget,
+    map: Widget,
     daylight: Widget,
     saved_zone: Option<(usize, bool)>,
     date_changed: Rc<Cell<bool>>,
@@ -351,7 +375,6 @@ impl DateTime {
             zones_page,
             map_row,
             map_left,
-            map,
             map_right,
         ]);
         let page = Self {
@@ -366,6 +389,7 @@ impl DateTime {
             time_spin,
             active: Cell::new(0),
             zones,
+            map,
             daylight,
             saved_zone,
             date_changed: Rc::new(Cell::new(false)),
@@ -390,7 +414,9 @@ impl DateTime {
         if zone.is_none_or(|(_, daylight)| daylight) && has_rule {
             flags |= state::CHECKED;
         }
-        self.daylight.set_state(flags)
+        self.daylight.set_state(flags)?;
+        self.map
+            .set_image_palette(&map_palette(zone.map(|(index, _)| index)))
     }
 
     fn selected_zone(&self) -> liteos_ui::Result<Option<(usize, bool)>> {

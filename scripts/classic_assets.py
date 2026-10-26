@@ -3,7 +3,7 @@
 这是唯一的选择点。内核构建（编入启动画面）与 rootfs 构建（放入 compositor 读取的数据文件）都从这里取路径，
 不各自判断来源，所以同一份构建不会出现内核用一份、compositor 用另一份的情况。
 原版素材由 `scripts/extract_windows2000_assets.py` 提取、`scripts/pack_boot_scene.py --original` 打包，
-只存在于被 Git 忽略的 `target/` 内。
+只存在于被 Git 忽略的 `.local/inputs/windows2000/` 内。
 """
 
 from __future__ import annotations

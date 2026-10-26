@@ -492,6 +492,9 @@ pub struct Api {
     /// Column/Row 背景：rgb 为 0xRRGGBB，`NO_COLOR` 不填底色；bitmap 为系统界面位图名，空串不画；
     /// 位图不缩放、不平铺地画在左上角（CSS `background: color url() no-repeat`）。
     pub background: unsafe extern "C" fn(*mut c_void, u64, u64, u32, Text) -> i32,
+    /// Image 的 256 项 0xRRGGBB 调色板：同步复制输入，按位图保留的原始下标着色。
+    /// 非 Image、非下标图像、数量不等于 256 或颜色越界返回 INVALID，旧图像不变；缺图时保持空白。
+    pub image_palette: unsafe extern "C" fn(*mut c_void, u64, u64, *const u32, usize) -> i32,
 }
 
 /// [`Api::sheet`] 的样式（Win32 PropertySheet 的标准样式）。

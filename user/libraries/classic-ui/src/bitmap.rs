@@ -1,7 +1,7 @@
-//! 安装期转换的标准 BITMAPV4HEADER 32-bit BMP；仅启动时解码，不进入每帧热路径。
+//! 安装期转换的标准 BITMAPV4HEADER BMP（32-bit RGBA / 8-bit 调色板）；仅启动时解码，不进入每帧热路径。
 use crate::Painter;
 use canvas::{Color, Image, Rect};
-use std::{io, path::Path};
+use std::{io, path::Path, rc::Rc};
 
 /// 拥有预乘 ARGB 像素的系统图像；加载后可按整数 scale 重用。
 #[derive(Debug)]
@@ -9,9 +9,11 @@ pub struct Bitmap {
     pixels: Vec<u32>,
     width: i32,
     height: i32,
+    // OWNER: 8 位 BMP 的不可变原始下标，由重着色结果共享；颜色改变不改变区域身份。
+    // 缺少它只能从 RGB 反推下标，相同调色板颜色的不同区域会被错误合并。
+    indices: Option<Rc<[u8]>>,
 }
 impl Bitmap {
-    /// 读取有界的 top-down 32 位 BMP；错误格式、截断或尺寸超过 2048 返回 InvalidData。
     /// 位图宽度（逻辑像素）。
     pub fn width(&self) -> i32 {
         self.width
@@ -22,6 +24,7 @@ impl Bitmap {
         self.height
     }
 
+    /// 读取有界的 top-down V4 BMP；RGBA 或调色板以外的格式、截断或尺寸超过 2048 返回 InvalidData。
     pub fn load(path: &Path) -> io::Result<Self> {
         Self::decode(&std::fs::read(path)?)
     }
@@ -35,47 +38,111 @@ impl Bitmap {
             word(18) as i32,
             (word(22) as i32).checked_neg().ok_or_else(invalid)?,
         );
-        if word(10) != 122
-            || word(14) != 108
-            || word(26) != 0x0020_0001
-            || word(30) != 3
-            || word(54) != 0x00ff0000
-            || word(58) != 0x0000ff00
-            || word(62) != 0x000000ff
-            || word(66) != 0xff000000
+        if word(14) != 108
             || word(70) != 0x73524742
             || !(1..=2048).contains(&width)
             || !(1..=2048).contains(&height)
         {
             return Err(invalid());
         }
-        if bytes.len() != 122 + width as usize * height as usize * 4 {
-            return Err(invalid());
-        }
-        let pixels = bytes[122..]
-            .as_chunks::<4>()
-            .0
-            .iter()
-            .map(|p| {
-                let a = u32::from(p[3]);
-                a << 24
-                    | (u32::from(p[2]) * a / 255) << 16
-                    | (u32::from(p[1]) * a / 255) << 8
-                    | (u32::from(p[0]) * a / 255)
-            })
-            .collect();
+        let offset = word(10) as usize;
+        let (pixels, indices) = match (word(26), word(30)) {
+            (0x0020_0001, 3) => {
+                if offset != 122
+                    || word(54) != 0x00ff0000
+                    || word(58) != 0x0000ff00
+                    || word(62) != 0x000000ff
+                    || word(66) != 0xff000000
+                    || bytes.len() != offset + width as usize * height as usize * 4
+                {
+                    return Err(invalid());
+                }
+                let pixels = bytes[offset..]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|p| {
+                        let a = u32::from(p[3]);
+                        a << 24
+                            | (u32::from(p[2]) * a / 255) << 16
+                            | (u32::from(p[1]) * a / 255) << 8
+                            | (u32::from(p[0]) * a / 255)
+                    })
+                    .collect();
+                (pixels, None)
+            }
+            (0x0008_0001, 0) => {
+                let colors = match word(46) {
+                    0 => 256,
+                    count @ 1..=256 => count as usize,
+                    _ => return Err(invalid()),
+                };
+                let stride = (width as usize).next_multiple_of(4);
+                if offset != 122 + colors * 4 || bytes.len() != offset + stride * height as usize {
+                    return Err(invalid());
+                }
+                let palette: Vec<_> = bytes[122..offset]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|p| {
+                        0xff000000 | u32::from(p[2]) << 16 | u32::from(p[1]) << 8 | u32::from(p[0])
+                    })
+                    .collect();
+                let mut indices = Vec::with_capacity(width as usize * height as usize);
+                for row in bytes[offset..].chunks_exact(stride) {
+                    indices.extend_from_slice(&row[..width as usize]);
+                }
+                if indices.iter().any(|index| usize::from(*index) >= colors) {
+                    return Err(invalid());
+                }
+                let pixels = indices
+                    .iter()
+                    .map(|index| palette[usize::from(*index)])
+                    .collect();
+                (pixels, Some(Rc::from(indices.into_boxed_slice())))
+            }
+            _ => return Err(invalid()),
+        };
         Ok(Self {
             pixels,
             width,
             height,
+            indices,
         })
     }
+
+    /// 按原始 8-bit 下标生成着色后的不可变位图，保留尺寸与下标；不修改共享源图像。
+    /// palette 为 256 个 0xRRGGBB 项；非调色板图像或颜色含高位数据返回 InvalidInput。
+    pub fn with_palette(&self, palette: &[u32; 256]) -> io::Result<Self> {
+        let indices = self.indices.as_ref().ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidInput, "bitmap has no indexed palette")
+        })?;
+        if palette.iter().any(|color| color & 0xff000000 != 0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "palette colors must be RGB",
+            ));
+        }
+        let pixels = indices
+            .iter()
+            .map(|index| 0xff000000 | palette[usize::from(*index)])
+            .collect();
+        Ok(Self {
+            pixels,
+            width: self.width,
+            height: self.height,
+            indices: Some(indices.clone()),
+        })
+    }
+
     #[cfg(test)]
     pub(crate) fn from_pixels(pixels: Vec<u32>, width: i32, height: i32) -> Self {
         Self {
             pixels,
             width,
             height,
+            indices: None,
         }
     }
 

@@ -9,11 +9,13 @@
 
 from __future__ import annotations
 
+import configparser
 import io
 import os
 import shutil
 import stat
 import tarfile
+from xml.etree import ElementTree as ET
 from pathlib import Path
 
 from apk_cache import ALPINE_ARCH, download
@@ -146,6 +148,36 @@ def resolve_member(members: dict[str, tarfile.TarInfo], member: tarfile.TarInfo)
     return None
 
 
+def _fontconfig() -> Path:
+    """由原生字体映射生成标准 Fontconfig 配置；两种运行时共享目录和家族回退顺序。
+
+    产物位于 worktree 的 target 中。别名追加候选，不覆盖用户实际安装的同名字体；
+    未登记系统字体目录时，Wine 的 Fontconfig 扫描不会发现 LiteOS 的中文字体。
+    """
+    mapping = configparser.ConfigParser(interpolation=None)
+    mapping.optionxform = str
+    with (ROOT / "assets/fonts/fontmap.ini").open(encoding="utf-8") as stream:
+        mapping.read_file(stream)
+    root = ET.Element("fontconfig")
+    ET.SubElement(root, "dir").text = "/usr/share/liteos/fonts"
+    for section in ("FontSubstitutes", "SystemLink"):
+        for family, linked in mapping.items(section):
+            alias = ET.SubElement(root, "alias", binding="same")
+            ET.SubElement(alias, "family").text = family
+            accept = ET.SubElement(alias, "accept")
+            for name in linked.split(","):
+                ET.SubElement(accept, "family").text = name.strip()
+    ET.indent(root)
+    data = ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<!DOCTYPE fontconfig SYSTEM "urn:fontconfig:fonts.dtd">\n'
+            + ET.tostring(root, encoding="unicode") + "\n")
+    path = LIBRARY_CACHE / "99-liteos-ui.conf"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not path.is_file() or path.read_text(encoding="utf-8") != data:
+        path.write_text(data, encoding="utf-8")
+    return path
+
+
 def wine_userland() -> tuple[UserlandArtifact, ...]:
     """Wine 安装清单：`/opt/wine`、`/usr/lib/liteos` 依赖库、fontconfig 与 XKB 数据。
 
@@ -169,6 +201,7 @@ def wine_userland() -> tuple[UserlandArtifact, ...]:
             artifacts.append(UserlandArtifact(path, f"{LIBRARY_DIRECTORY}/{path.name}", 0o755))
         else:
             artifacts.append(UserlandArtifact(path, f"/{relative}", 0o644))
+    artifacts.append(UserlandArtifact(_fontconfig(), "/etc/fonts/conf.d/99-liteos-ui.conf", 0o644))
     names = [artifact.destination for artifact in artifacts]
     if len(names) != len(set(names)):
         raise RuntimeError("duplicate Wine runtime destinations")

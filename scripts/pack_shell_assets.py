@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""将桌面 PNG 导出为标准 BITMAPV4HEADER 32 位 top-down BMP；普通构建只安装已提交产物。"""
+"""将桌面 PNG 导出为标准 BITMAPV4HEADER top-down BMP（RGBA 或 8 位调色板）；普通构建只安装已提交产物。"""
 import argparse
 from pathlib import Path
 import struct
@@ -24,15 +24,32 @@ def pack(source: Path, destination: Path) -> None:
                 continue
             if directory == "bitmaps-src" and path.stem not in BITMAPS:
                 continue
-            image = Image.open(path).convert("RGBA")
-            width, height = image.size
-            pixels = image.tobytes("raw", "BGRA")
-            header = struct.pack("<2sIHHI", b"BM", 122 + len(pixels), 0, 0, 122)
-            header += struct.pack("<IiiHHIIiiII", 108, width, -height, 1, 32, 3, len(pixels), 0, 0, 0, 0)
-            # V4 的显式 RGBA masks 与 sRGB，避免把 BI_RGB 的保留高字节私自解释为 alpha。
-            header += struct.pack("<IIIII", 0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000, 0x73524742)
-            header += bytes(48)
-            (destination / (path.stem + ".bmp")).write_bytes(header + pixels)
+            with Image.open(path) as source_image:
+                width, height = source_image.size
+                indexed = source_image.mode == "P" and "transparency" not in source_image.info
+                palette = b""
+                if indexed:
+                    # RGBQUAD 第四字节是保留位，必须为零；每行补齐四字节，不改变区域下标。
+                    colors = source_image.getpalette("RGB")
+                    colors = colors + [0] * (768 - len(colors))
+                    palette = b"".join(bytes((colors[i + 2], colors[i + 1], colors[i], 0))
+                                       for i in range(0, 768, 3))
+                    indices = source_image.tobytes()
+                    padding = bytes((-width) % 4)
+                    pixels = b"".join(indices[y * width:(y + 1) * width] + padding for y in range(height))
+                    bits, compression, masks, used = 8, 0, (0, 0, 0, 0), 256
+                else:
+                    pixels = source_image.convert("RGBA").tobytes("raw", "BGRA")
+                    bits, compression = 32, 3
+                    masks, used = (0x00ff0000, 0x0000ff00, 0x000000ff, 0xff000000), 0
+                offset = 122 + len(palette)
+                header = struct.pack("<2sIHHI", b"BM", offset + len(pixels), 0, 0, offset)
+                header += struct.pack("<IiiHHIIiiII", 108, width, -height, 1, bits,
+                                      compression, len(pixels), 0, 0, used, 0)
+                header += struct.pack("<IIIII", *masks, 0x73524742)
+                header += bytes(48)
+                (destination / (path.stem + ".bmp")).write_bytes(header + palette + pixels)
+
 
 
 if __name__ == "__main__":

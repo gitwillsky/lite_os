@@ -22,11 +22,7 @@ pub(super) unsafe extern "C" fn widget(
             let value = text(spec.text)?;
             // Image：宽 16/32 取同名图标，其余按名称取整张界面位图（Web 视图水印、分隔线等）。
             let image = if spec.kind == abi::widget::IMAGE {
-                match spec.layout.width {
-                    16 | 32 => context.icon_asset(&value, 0, spec.layout.width),
-                    -1 if !value.ends_with("-1x") => context.icon_asset(&value, 0, 32),
-                    _ => context.ui_bitmap(&value),
-                }
+                super::image_api::resource(context, &value, spec.layout.width)
             } else {
                 None
             };
@@ -82,8 +78,9 @@ pub(super) unsafe extern "C" fn set_text(
                 .nodes
                 .get(&id)
                 .filter(|node| node.kind == abi::widget::IMAGE)
-                .map(|node| if node.layout.width == 16 { 16 } else { 32 });
-            let image = image_size.and_then(|size| context.icon_asset(&value, 0, size));
+                .map(|node| node.layout.width);
+            let image =
+                image_size.and_then(|width| super::image_api::resource(context, &value, width));
             let host = context.host_mut(window)?;
             let node = host
                 .controls_mut()?

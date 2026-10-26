@@ -53,13 +53,13 @@ TaskbarButtonMaxWidth=160
 TaskbarButtonGap=2
 
 [Fonts]
-; 简体中文 Windows 2000 默认：宋体 9 磅，标题粗体；平滑屏幕字体边缘默认关闭。
-CaptionFont=宋体,9,700
-SmCaptionFont=宋体,9,700
-MenuFont=宋体,9,400
-StatusFont=宋体,9,400
-MessageFont=宋体,9,400
-IconFont=宋体,9,400
+; 系统界面默认 Tahoma 9 磅，中文经 fontmap.ini 回退宋体；标题粗体，开启灰度平滑。
+CaptionFont=Tahoma,9,700
+SmCaptionFont=Tahoma,9,700
+MenuFont=Tahoma,9,400
+StatusFont=Tahoma,9,400
+MessageFont=Tahoma,9,400
+IconFont=Tahoma,9,400
 FontSmoothing=2
 
 [Internet Explorer]

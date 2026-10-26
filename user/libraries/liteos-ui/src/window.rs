@@ -495,6 +495,16 @@ impl Widget {
             unsafe { (c.api.layout)(c.context.as_ptr(), w, id, value) }
         })
     }
+    /// 用 256 个 0xRRGGBB 颜色替换 Image 的调色板；尺寸和区域下标保持不变。
+    /// 非 Image、非下标位图或颜色越界返回错误且旧图像不变；未安装的可选图像保持空白。
+    pub fn set_image_palette(&self, palette: &[u32; 256]) -> Result<()> {
+        self.call(|c, w, id| {
+            // SAFETY: call 保活句柄，定长数组在同步调用中有效；运行库不保留输入指针。
+            unsafe {
+                (c.api.image_palette)(c.context.as_ptr(), w, id, palette.as_ptr(), palette.len())
+            }
+        })
+    }
     /// 设置滚动条/滑块范围；非法范围或错误控件类型返回错误。
     pub fn set_range(&self, value: abi::Range) -> Result<()> {
         self.call(|c, w, id| {

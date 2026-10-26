@@ -95,7 +95,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   缺少它们绘制分支线须逐行扫描兄弟表（最多百万行）或把末项竖线画到空处；树数据替换时随 Outline 整体重建。
 - Sheet 的 Applying 阶段持有暂缓关闭位；关闭请求不丢弃，applied 成功后才发 CLOSE，失败保留窗口。
 - GPU 方向约定由 linux-uapi 的 VirGL owner 固定：Y_0_TOP 只用于扫描目标，viewport 不取负 Y 比例。
-- Window/Widget/dialog 的 ABI 编解码分别位于 window_api、widget_api、dialog_api；context_api 拥有等待和 FD 入口。
+- Window/Widget/dialog 的 ABI 编解码分别位于 window_api、widget_api、dialog_api；image_api 拥有 Image 的资源选择和调色板入口，context_api 拥有等待和 FD 入口。
   这些模块只解释进程内公开 ABI，不引入 libc/设备 FFI；唯一可见动态符号仍是 liteos_ui_get_api。
 - desktop-settings 通过标准 flock 串行化跨进程读改写，UI 必须在后台调用；各属性页仅修改自己拥有的字段。
   发布采用同目录 create_new 临时文件、sync 和 rename；正常错误清理临时文件，锁随 OFD 析构释放。
@@ -130,9 +130,19 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - 应用自建对话框经 Dialogs::window 登记到同一窗口表与订阅 owner，窗口与事件流的 Drop 撤销登记。
 - Benchmark 决策：新增定时状态只在存在截止时刻时参与等待，菜单/提示的命中与绘制为常数级；本轮按用户要求不运行性能测试。
 
+## 下标位图与调色板
+
+- Bitmap 解码标准 top-down BMP V4：32-bit BI_BITFIELDS RGBA 或 8-bit BI_RGB + RGBQUAD；尺寸、调色板边界与下标均校验。
+  解码输出持有预乘 ARGB，8-bit 输入另以 Rc 保活不可变下标；重着色结果共享下标，不修改资源缓存内的源图。
+- Image 创建和换图共用 image_api::resource。新增 image_palette 只追加 ABI 表尾；输入为 256 项 0xRRGGBB，
+  同步读取并生成像素，验证失败不替换节点图像。未安装的可选素材保持空白，其他控件或非下标图像返回错误。
+- Benchmark 决策：解码只在资源加载时发生，调色板转换只在选择改变时执行 O(像素数) 分配，常规绘制仍消费原有像素路径；
+  没有新增逐帧扫描或同步。本轮按用户要求不运行性能测试。
+
 ## 字体目录与缓存
 
 - typeface::FontCatalog 拥有扫描到的字体成员与 `fontmap.ini` 映射；Resources 每进程加载一次并共享，主题重载清空。
+  Wine 安装器从同一映射生成标准 Fontconfig 别名与系统字体目录配置，不维护另一份字体回退清单。
 - OutlineFace 独占每个成员的 fpgm 结果；Typeface 独占本字号各成员的 prep 结果（按成员地址索引，chain 中的 Rc 保活）
   与已光栅化字形（上限 4096，满即清空）。缺少这些缓存会在每个字形重复执行字体程序；None 记录失败，避免反复执行。
 - classic_ui::Fonts 拥有六个系统字体用途与最多 16 个应用派生逻辑字体（`set_font`）；Painter 只借用，不复制。
