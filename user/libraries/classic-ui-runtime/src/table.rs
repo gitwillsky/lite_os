@@ -16,7 +16,6 @@ pub struct Table {
     pub columns: Vec<(u64, String)>,
     pub header: ColumnHeader,
     pub horizontal: Scroll,
-    pub sort: Option<(u64, bool)>,
     pub gesture: Option<Gesture>,
     pub content_width: i32,
     pub mode: u32,
@@ -25,6 +24,10 @@ pub struct Table {
     pub anchor: Option<u64>,
     pub alignments: BTreeMap<u64, u32>,
     pub last_click: Option<(u64, std::time::Instant)>,
+    /// 图标/列表视图的条目格子：（大图标格子，小图标与列表的条目宽度）；布局时由主题图标间距与最宽标签算出。
+    pub cells: ((i32, i32), i32),
+    /// LVS_EX_FULLROWSELECT：详细资料视图整行高亮；默认只高亮首列标签。
+    pub full_row: bool,
 }
 impl Table {
     pub fn extent(&self) -> i32 {
@@ -39,7 +42,6 @@ impl Table {
             columns: Vec::new(),
             header: ColumnHeader::new([]),
             horizontal: Scroll::default(),
-            sort: None,
             gesture: None,
             content_width: 0,
             mode: 0,
@@ -48,6 +50,8 @@ impl Table {
             anchor: None,
             alignments: BTreeMap::new(),
             last_click: None,
+            cells: ((75, 75), 200),
+            full_row: false,
         }
     }
 }
@@ -65,10 +69,15 @@ fn contains(r: Rect, p: (i32, i32)) -> bool {
 }
 impl Node {
     pub fn list_geometry(&self) -> Geometry {
-        let inner = self.rect.inset(2);
+        let inner = self.rect.inset(self.list_edge());
         let table = self.table.as_ref().expect("list model");
         if table.mode != 0 {
-            let mut grid = ItemGrid::new(table.mode, inner, self.row_height, self.row_count());
+            let cell = if table.mode == 1 {
+                table.cells.0
+            } else {
+                (table.cells.1, self.row_height)
+            };
+            let mut grid = ItemGrid::new(table.mode, inner, cell, self.row_count());
             let overflow = grid.extent > grid.page();
             let vertical = if overflow && grid.vertical() {
                 Rect::new(
@@ -97,7 +106,7 @@ impl Node {
                 } else {
                     viewport.height = (viewport.height - SCROLLBAR_WIDTH).max(0);
                 }
-                grid = ItemGrid::new(table.mode, viewport, self.row_height, self.row_count());
+                grid = ItemGrid::new(table.mode, viewport, cell, self.row_count());
             }
             return Geometry {
                 header: Rect::new(0, 0, 0, 0),

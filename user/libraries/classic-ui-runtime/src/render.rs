@@ -71,12 +71,17 @@ impl Tree {
             } else {
                 Ink::Color(C::ButtonText)
             };
+            if matches!(node.kind, widget::COLUMN | widget::ROW) && node.state & state::CLIENT_EDGE != 0 {
+                p.edge(rect, Edge::Sunken);
+            }
             if let Some((color, image)) = &node.background {
+                // 背景在客户区边框以内。
+                let area = rect.inset(node.inset() - node.layout.padding);
                 if let Some(color) = color {
-                    p.fill_rgb(rect, *color);
+                    p.fill_rgb(area, *color);
                 }
                 if let Some(image) = image {
-                    image.paint(p, rect.x, rect.y);
+                    image.paint(p, area.x, area.y);
                 }
             }
             match node.kind {
@@ -368,7 +373,11 @@ impl Tree {
     }
 }
 fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
-    let inner = p.edge(node.rect, Edge::Sunken);
+    let inner = if node.list_edge() == 0 {
+        node.rect
+    } else {
+        p.edge(node.rect, Edge::Sunken)
+    };
     p.fill(inner, C::Window);
     let geometry = node.list_geometry();
     let table = node.table.as_ref().expect("list model");
@@ -377,7 +386,13 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
         return;
     }
     if !geometry.header.is_empty() {
-        p.clipped(geometry.header,|p|table.header.paint(p,geometry.shifted_header,|p,index,rect|p.list_header_cell(rect,&table.columns[index].1,table.sort.filter(|(id,_)|*id==table.columns[index].0).map(|(_,ascending)|ascending),matches!(table.gesture,Some(super::table::Gesture::Column(column)) if column==index)))) ;
+        p.clipped(geometry.header,|p|table.header.paint(p,geometry.shifted_header,|p,index,rect|p.list_header_cell(rect,&table.columns[index].1,matches!(table.gesture,Some(super::table::Gesture::Column(column)) if column==index)))) ;
+        // 最后一列右侧到表头右缘画一个空白表头格（comctl32 表头的填充区），不露出控件背景。
+        let end = geometry.shifted_header.x + table.header.total();
+        if end < geometry.header.right() {
+            let filler = Rect::new(end, geometry.header.y, geometry.header.right() - end, geometry.header.height);
+            p.clipped(geometry.header, |p| p.list_header_cell(filler, "", false));
+        }
     }
     p.clipped(geometry.rows, |p| {
         let count =
@@ -414,39 +429,34 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                 );
                 continue;
             }
-            if selected {
+            // comctl32 默认只高亮首列标签（图标与高亮色混合）；LVS_EX_FULLROWSELECT 时整行高亮。
+            let caret = focused && node.selected == Some(*id);
+            // 没有列的单列列表按列表框（LISTBOX）整行高亮。
+            let full_row = table.full_row || table.columns.is_empty();
+            if selected && full_row {
                 p.fill(row, if focused { C::Hilight } else { C::ButtonFace });
             }
-            let ink = Ink::Color(if selected && focused {
+            let look = classic_ui::ItemLook {
+                selected: selected && !full_row,
+                active: focused,
+                focused: caret && !full_row,
+                text: C::WindowText,
+            };
+            let ink = Ink::Color(if selected && focused && full_row {
                 C::HilightText
             } else {
                 C::WindowText
             });
-            let icon_width = if image.is_some() { 20 } else { 0 };
-            if let Some(image) = image {
-                let clip = if table.columns.is_empty() {
-                    row
-                } else {
-                    Rect::new(
-                        row.x - table.horizontal.position,
-                        row.y,
-                        table.header.width(0),
-                        row.height,
-                    )
-                };
-                p.clipped(clip, |p| {
-                    image.paint(
-                        p,
-                        row.x + 3 - table.horizontal.position,
-                        row.y + (row.height - 16) / 2,
-                    )
-                });
-            }
             if table.columns.is_empty() {
+                let x = row.x - table.horizontal.position;
+                if let Some(image) = image {
+                    image.paint(p, x + 3, row.y + (row.height - 16) / 2);
+                }
+                let leading = if image.is_some() { 20 } else { 0 };
                 p.text_fit(
-                    row.x + 4 + icon_width - table.horizontal.position,
+                    x + 4 + leading,
                     row.y + 3,
-                    (row.width - 8 - icon_width).max(0),
+                    (row.width - 8 - leading).max(0),
                     text,
                     ink,
                     false,
@@ -455,8 +465,30 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                 let mut x = row.x - table.horizontal.position;
                 for (column, text) in text.split('\t').take(table.columns.len()).enumerate() {
                     let width = table.header.width(column);
-                    p.clipped(Rect::new(x, row.y, width, row.height), |p| {
-                        let leading = if column == 0 { icon_width } else { 0 };
+                    let cell = Rect::new(x, row.y, width, row.height);
+                    if column == 0 && !full_row {
+                        p.clipped(cell, |p| {
+                            p.small_icon_item(
+                                Rect::new(cell.x + 1, cell.y, cell.width - 1, cell.height),
+                                image.map(|image| &**image),
+                                text,
+                                look,
+                            );
+                        });
+                        x += width;
+                        continue;
+                    }
+                    p.clipped(cell, |p| {
+                        let leading = if column == 0 && image.is_some() {
+                            20
+                        } else {
+                            0
+                        };
+                        if column == 0
+                            && let Some(image) = image
+                        {
+                            image.paint(p, cell.x + 3, cell.y + (cell.height - 16) / 2);
+                        }
                         let available = (width - 8 - leading).max(0);
                         let shown = p.fit(text, available);
                         let text_width = (p.text_width(&shown, false) + p.scale() - 1) / p.scale();
@@ -481,8 +513,7 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                     x += width;
                 }
             }
-            // 焦点项的点状框与大/小图标视图一致；树项在 paint_tree_row 中框标签。
-            if focused && node.selected == Some(*id) {
+            if caret && full_row {
                 p.focus_rect(row);
             }
         }
@@ -560,57 +591,53 @@ fn paint_tree_row(
     }
 }
 
+/// 图标/列表视图的一个条目：大图标按 LVS_ICON，小图标与列表按图标加标签（共享的 comctl32 列表项绘制）。
+fn paint_grid_item(
+    node: &Node,
+    p: &mut Painter<'_>,
+    focused: bool,
+    grid: super::item_grid::ItemGrid,
+    index: usize,
+    id: u64,
+    text: &str,
+) {
+    let cell = grid.cell(index, node.position.position);
+    let look = classic_ui::ItemLook {
+        selected: node.row_selected(id),
+        active: focused,
+        focused: focused && node.selected == Some(id),
+        text: C::WindowText,
+    };
+    let icons = node.row_icons.get(&id);
+    let text = text.split('\t').next().unwrap_or("");
+    if grid.mode == 1 {
+        let icon = icons.and_then(|icons| icons.1.as_deref());
+        p.large_icon_item(cell, icon, text, look);
+    } else {
+        let icon = icons.and_then(|icons| icons.0.as_deref());
+        p.small_icon_item(cell, icon, text, look);
+    }
+}
+
 fn paint_grid(node: &Node, p: &mut Painter<'_>, focused: bool, grid: super::item_grid::ItemGrid) {
     p.clipped(grid.viewport, |p| {
+        let caret = node.selected.filter(|_| focused);
+        let mut deferred = None;
         for index in grid.visible(node.position.position) {
             let Some((id, text)) = node.row_at(index) else {
                 continue;
             };
-            let cell = grid.cell(index, node.position.position);
-            let selected = node.row_selected(*id);
-            let ink = Ink::Color(if selected && focused {
-                C::HilightText
-            } else {
-                C::WindowText
-            });
-            if selected {
-                p.fill(cell, if focused { C::Hilight } else { C::ButtonFace });
+            // 焦点项的大图标标签显示全文并可盖住下方条目，因此最后画。
+            if grid.mode == 1 && caret == Some(*id) {
+                deferred = Some(index);
+                continue;
             }
-            let image = node.row_icons.get(id).and_then(|icons| {
-                if grid.mode == 1 {
-                    icons.1.as_ref()
-                } else {
-                    icons.0.as_ref()
-                }
-            });
-            let text = text.split('\t').next().unwrap_or("");
-            if grid.mode == 1 {
-                if let Some(image) = image {
-                    image.paint(p, cell.x + (cell.width - 32) / 2, cell.y + 2);
-                }
-                p.text_wrapped(
-                    Rect::new(cell.x + 3, cell.y + 36, cell.width - 6, cell.height - 36),
-                    text,
-                    ink,
-                    false,
-                );
-            } else {
-                if let Some(image) = image {
-                    image.paint(p, cell.x + 2, cell.y + (cell.height - 16) / 2);
-                }
-                let leading = if image.is_some() { 22 } else { 4 };
-                p.text_fit(
-                    cell.x + leading,
-                    cell.y + 3,
-                    (cell.width - leading - 4).max(0),
-                    text,
-                    ink,
-                    false,
-                );
-            }
-            if focused && node.selected == Some(*id) {
-                p.focus_rect(cell.inset(1));
-            }
+            paint_grid_item(node, p, focused, grid, index, *id, text);
+        }
+        if let Some(index) = deferred
+            && let Some((id, text)) = node.row_at(index)
+        {
+            paint_grid_item(node, p, focused, grid, index, *id, text);
         }
     });
     let geometry = node.list_geometry();

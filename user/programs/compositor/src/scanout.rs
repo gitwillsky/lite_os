@@ -177,7 +177,6 @@ impl Scanout {
         &mut self,
         theme: &classic_theme::Theme,
         windows: &[crate::compose::Drawable<'_>],
-        inversions: &[canvas::Rect],
         has_overlay: bool,
         overlay: impl FnOnce(canvas::Surface<'_>),
     ) -> io::Result<()> {
@@ -186,14 +185,13 @@ impl Scanout {
         }
         match &mut self.backend {
             Backend::Gpu(gpu) => {
-                gpu.render(self.back, theme, windows, inversions, has_overlay, overlay)?
+                gpu.render(self.back, theme, windows, has_overlay, overlay)?
             }
             Backend::Cpu(targets) => {
                 if !crate::compose::compose(
                     &mut targets[self.back].buffer,
                     theme,
                     windows,
-                    inversions,
                     overlay,
                 ) {
                     return Err(io::Error::other("invalid scanout drawing surface"));

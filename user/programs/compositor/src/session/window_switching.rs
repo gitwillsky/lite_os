@@ -5,11 +5,27 @@ use super::*;
 impl Session {
     /// 开始最小化（`minimizing`）或还原的动画：窗口矩形与任务按钮矩形之间。没有任务按钮位置时取屏幕底边中部。
     pub(super) fn animate(&mut self, client: ClientId, surface: ObjectId, minimizing: bool) {
+        self.ensure_art();
         let Some(placement) = self.stack.placement(client, surface).copied() else {
             return;
         };
-        let window = (placement.x, placement.y, placement.width, placement.height);
         let scale = self.scale as i32;
+        // 起止矩形是窗口的标题栏：可缩放边框以内、标题栏高（含分隔线）。
+        let metrics = &self.theme.window;
+        let frame = metrics.size_frame() * scale;
+        let window = (
+            placement.x + frame,
+            placement.y + frame,
+            (placement.width - 2 * frame).max(scale),
+            metrics.caption_total_height() * scale,
+        );
+        let (title, app_id) = self
+            .server
+            .windows()
+            .find(|(owner, window)| *owner == client && window.surface == surface)
+            .map_or_else(Default::default, |(_, window)| {
+                (window.title.to_owned(), window.app_id.to_owned())
+            });
         let (screen_width, screen_height) = self.screen();
         let target = self
             .minimize_targets
@@ -30,6 +46,9 @@ impl Session {
             from,
             to,
             start: Instant::now(),
+            title,
+            app_id,
+            restore: (!minimizing).then_some((client, surface)),
         });
         self.dirty = true;
     }
@@ -46,7 +65,7 @@ impl Session {
         self.dirty |= self.stack.minimize(client, surface);
     }
 
-    /// 激活窗口；它原来是最小化的就播放还原动画。
+    /// 激活窗口；它原来是最小化的就先播放还原动画，动画结束时才显示并提升窗口。
     pub(super) fn restore_window(&mut self, client: ClientId, surface: ObjectId) {
         if self
             .stack
@@ -54,6 +73,7 @@ impl Session {
             .is_some_and(|placed| placed.minimized)
         {
             self.animate(client, surface, false);
+            return;
         }
         self.dirty |= self.stack.raise(client, surface);
     }

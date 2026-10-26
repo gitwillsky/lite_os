@@ -102,7 +102,7 @@ fn flatten(contour: &[Point], scale: f32) -> Vec<Vertex> {
 
 /// 把一个展平后的轮廓整体向外加粗 `distance` 像素（轮廓加粗，与 FreeType 的 `FT_Outline_Embolden` 同类）。
 ///
-/// TrueType 的填充区在行进方向的右侧，所以每个顶点沿相邻两条边左法线的斜接方向外移：
+/// TrueType 外轮廓顺时针、填充区在行进方向右侧，所以每个顶点沿相邻两条边右法线 `(dy, -dx)` 的斜接方向外移：
 /// 外轮廓向外长、内轮廓（孔）向内收，笔画因此均匀变粗。斜接长度限制在 `distance` 的 4 倍，避免尖角刺出。
 fn embolden(contour: &mut Vec<Vertex>, distance: f32) {
     contour.dedup_by(|a, b| a.x == b.x && a.y == b.y);
@@ -121,7 +121,7 @@ fn embolden(contour: &mut Vec<Vertex>, distance: f32) {
     let normal = |from: Vertex, to: Vertex| {
         let (dx, dy) = (to.x - from.x, to.y - from.y);
         let length = dx.hypot(dy);
-        (-dy / length, dx / length)
+        (dy / length, -dx / length)
     };
     let moved: Vec<Vertex> = (0..count)
         .map(|index| {

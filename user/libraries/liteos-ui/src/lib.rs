@@ -39,8 +39,8 @@ use std::{
 pub use tasks::{AbortHandle, Cancelled, Clock, Sleep, Task};
 pub use toplevel::{Toplevel, ToplevelRequest};
 pub use window::{
-    ColorRole, Column, ColumnAlignment, Draw, EditCommand, FontRole, Icon, ListStyle, Menu,
-    MenuItem, RowIcon, ToolbarButton, ToolbarKind, TreeRow, WeakWindow, Widget, WidgetKind,
+    ColorRole, Column, ColumnAlignment, Draw, EditCommand, FontRole, Icon, ListOptions, ListStyle,
+    Menu, MenuItem, RowIcon, ToolbarButton, ToolbarKind, TreeRow, WeakWindow, Widget, WidgetKind,
     WidgetSpec, Window, WindowOptions,
 };
 

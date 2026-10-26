@@ -46,9 +46,24 @@ impl Rebar {
         )
     }
 
-    /// 由带区内容高度得到总高：顶部分隔线 + 各行（内容 + 上下内边距）+ 行间边线。
-    pub fn height(contents: &[i32]) -> i32 {
-        let rows: i32 = contents.iter().map(|height| height + 2 * BAND_PAD).sum();
+    /// 第 `index` 行的高度：内容加上下内边距；第一行至少容纳最小的品牌 logo（品牌带区与菜单栏同行，
+    /// comctl32 按行内最高的带区定行高）。
+    fn row_height(&self, index: usize, content: i32) -> i32 {
+        let height = content + 2 * BAND_PAD;
+        let brand = self.brands.iter().map(|brand| brand.width()).min();
+        match brand {
+            Some(brand) if index == 0 => height.max(brand),
+            _ => height,
+        }
+    }
+
+    /// 由带区内容高度得到总高：顶部分隔线 + 各行 + 行间边线。
+    pub fn height(&self, contents: &[i32]) -> i32 {
+        let rows: i32 = contents
+            .iter()
+            .enumerate()
+            .map(|(index, height)| self.row_height(index, *height))
+            .sum();
         DIVIDER + rows + DIVIDER * (contents.len() as i32 - 1).max(0)
     }
 
@@ -68,12 +83,14 @@ impl Rebar {
         self.rows.clear();
         let mut areas = Vec::with_capacity(contents.len());
         for (index, content) in contents.iter().enumerate() {
-            let row = Rect::new(rect.x, y, rect.width, content + 2 * BAND_PAD);
+            let row = Rect::new(rect.x, y, rect.width, self.row_height(index, *content));
+            // 行比内容高时内容垂直居中（菜单栏在品牌 logo 撑高的第一行中居中）。
+            let inner = (row.height - top - bottom).max(0);
             let mut area = Rect::new(
                 row.x + left,
-                row.y + top,
+                row.y + top + (inner - content).max(0) / 2,
                 (row.width - left - right).max(0),
-                (row.height - top - bottom).max(0),
+                (*content).min(inner),
             );
             if index == 0 {
                 self.brand = self.brand_size(row.height).map(|size| {

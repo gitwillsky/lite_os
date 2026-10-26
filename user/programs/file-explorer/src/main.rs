@@ -43,6 +43,8 @@ struct Session {
     // OWNER: 本窗口独占每个位置最后使用的查看方式（Windows 2000“记住每个文件夹的视图设置”）。
     // FAILURE: 缺少它切换位置后总回到默认大图标，用户为某个文件夹选的详细资料等方式会丢失。
     views: RefCell<HashMap<Location, ListStyle>>,
+    /// 是否已经显示过一个位置；之前列表的查看方式只是控件初始值，不能当作上次的选择记录。
+    shown: Cell<bool>,
 }
 /// 一次占用窗口的业务事务。
 enum Job {
@@ -140,9 +142,13 @@ impl Session {
         let listing = result?;
         {
             let mut browser = self.browser.borrow_mut();
-            let previous = browser.location.clone();
-            let style = self.view.list.list_style()?;
-            self.views.borrow_mut().insert(previous, style);
+            // 只记录已经显示过的位置；首次读取前列表还是控件初始样式，不是用户的选择。
+            if self.shown.replace(true) {
+                let style = self.view.list.list_style()?;
+                self.views
+                    .borrow_mut()
+                    .insert(browser.location.clone(), style);
+            }
             browser.publish(listing, visit);
             // Windows 2000 文件夹的默认查看方式是大图标；访问过的位置沿用上次的方式。
             let style = self
@@ -151,7 +157,7 @@ impl Session {
                 .get(&browser.location)
                 .copied()
                 .unwrap_or(ListStyle::LargeIcons);
-            self.view.list.set_list_style(style, true)?;
+            self.view.list.set_list_style(style, view::MULTIPLE)?;
             self.view.rows(&browser)?;
             self.view.tree(&browser)?;
             self.view.window.set_title(&browser.location.title())?;
@@ -404,7 +410,7 @@ impl Session {
     }
     async fn command(&self, command: Command) -> Result<()> {
         if let Some(style) = command.style() {
-            self.view.list.set_list_style(style, true)?;
+            self.view.list.set_list_style(style, view::MULTIPLE)?;
             return Ok(());
         }
         let action = match command {
@@ -699,6 +705,7 @@ fn run() -> Result<()> {
         one_shot: launch.verb.is_some(),
         launches: launches.clone(),
         views: RefCell::new(HashMap::new()),
+        shown: Cell::new(false),
     });
     session.menus()?;
     let mut tasks = Vec::new();

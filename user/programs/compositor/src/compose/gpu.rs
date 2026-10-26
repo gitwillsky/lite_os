@@ -11,7 +11,6 @@ const VERTEX: u32 = 1;
 const FRAGMENT: u32 = 2;
 const ELEMENTS: u32 = 3;
 const OVER: u32 = 4;
-const INVERT: u32 = 5;
 const DEPTH: u32 = 6;
 const RASTER: u32 = 7;
 const SAMPLER: u32 = 8;
@@ -34,13 +33,11 @@ impl Drop for Target {
 struct Quad {
     texture: Rc<VirglResource>,
     rect: Rect,
-    invert: bool,
 }
 /// 一条 DRM OFD 上的 GPU 合成资源；不接收应用协议，不保存第二份 surface 内容表。
 pub(crate) struct Gpu {
     context: VirglContext,
     targets: [Target; 2],
-    white: Rc<VirglResource>,
     // OWNER: 当前一帧独占引用集合。只有 DRM flip 完成后清除，Content 提前销毁也不会释放在途纹理。
     // FAILURE: 没有这些引用时，客户端重绘/退出可能在 host 取样前关闭 GEM；不能靠对象 ID 缓存保活。
     retained: Vec<Rc<VirglResource>>,
@@ -59,9 +56,6 @@ impl Gpu {
             })
         };
         let targets = [target()?, target()?];
-        let mut white = context.create_texture(1, 1)?;
-        white.row_mut(0)[0] = 0xffffffff;
-        white.transfer_to_host(0, 0, 1, 1)?;
         let mut commands = CommandEncoder::new();
         commands.create_shader(VERTEX, ShaderStage::Vertex, VERTEX_SOURCE);
         commands.create_shader(FRAGMENT, ShaderStage::Fragment, FRAGMENT_SOURCE);
@@ -71,7 +65,7 @@ impl Gpu {
         commands.create_textured_vertex_elements(ELEMENTS);
         commands.bind_object(ObjectKind::VertexElements, ELEMENTS);
         commands.create_premultiplied_blend(OVER);
-        commands.create_invert_blend(INVERT);
+        commands.bind_object(ObjectKind::Blend, OVER);
         commands.create_depth_stencil_alpha(DEPTH);
         commands.bind_object(ObjectKind::DepthStencilAlpha, DEPTH);
         commands.create_rasterizer(RASTER);
@@ -82,11 +76,10 @@ impl Gpu {
             SamplerWrap::ClampToEdge,
             SamplerWrap::ClampToEdge,
         );
-        context.exec(commands.words(), &[&white])?;
+        context.exec(commands.words(), &[])?;
         Ok(Self {
             context,
             targets,
-            white: Rc::new(white),
             retained: Vec::new(),
         })
     }
@@ -115,7 +108,6 @@ impl Gpu {
         back: usize,
         theme: &Theme,
         windows: &[Drawable<'_>],
-        inversions: &[Rect],
         has_overlay: bool,
         overlay: impl FnOnce(Surface<'_>),
     ) -> io::Result<()> {
@@ -124,7 +116,7 @@ impl Gpu {
             self.targets[back].resource.height(),
         );
         let mut quads =
-            Vec::with_capacity(windows.len() + inversions.len() + usize::from(has_overlay));
+            Vec::with_capacity(windows.len() + usize::from(has_overlay));
         let screen = Rect::new(0, 0, width as i32, height as i32);
         for window in windows {
             let rect = Rect::new(
@@ -139,17 +131,7 @@ impl Gpu {
             quads.push(Quad {
                 texture: window.content.texture(&self.context)?,
                 rect,
-                invert: false,
             });
-        }
-        for rect in inversions {
-            if !rect.intersect(screen).is_empty() {
-                quads.push(Quad {
-                    texture: self.white.clone(),
-                    rect: *rect,
-                    invert: true,
-                });
-            }
         }
         if has_overlay {
             // 合成器自身的菜单/切换面板也作为透明纹理取样，不退回整屏 CPU 合成。
@@ -161,7 +143,6 @@ impl Gpu {
             quads.push(Quad {
                 texture: content.texture(&self.context)?,
                 rect: screen,
-                invert: false,
             });
         }
         let bytes = quads
@@ -222,7 +203,6 @@ impl Gpu {
             1.,
         ]);
         for (index, quad) in quads.iter().enumerate() {
-            commands.bind_object(ObjectKind::Blend, if quad.invert { INVERT } else { OVER });
             commands.create_sampler_view(VIEW, quad.texture.resource_id(), quad.texture.format());
             commands.set_texture(VIEW, SAMPLER);
             commands.draw_triangles(index as u32 * 6, 6);

@@ -124,8 +124,8 @@ impl Face {
         })
     }
 
-    /// 轮廓字形：字体带 hinting 程序时先执行 TrueType 指令，失败则用未 hinting 的轮廓；
-    /// 平滑关闭时阈值化为单色。`size` 是该字体在本 ppem 的 prep 结果。
+    /// 轮廓字形：给出 `size`（该字体在本 ppem 的 prep 结果）时先执行 TrueType 指令，失败或未给出则用未 hinting 的轮廓；
+    /// 平滑关闭时按单色扫描转换，开启时为灰度覆盖率。
     fn outline(
         &self,
         character: char,
@@ -147,7 +147,9 @@ impl Face {
         // 平滑关闭时按 TrueType 单色扫描转换（像素中心 + 字体指定的丢点控制），否则灰度覆盖率。
         let draw = |outline: &crate::sfnt::Outline, scale: f32, dropout: raster::Dropout| {
             if smoothing {
-                raster::rasterize(outline, scale, strength / 2.0)
+                // 合成粗体的外扩已超过加深量，不再叠加。
+                let darkening = if synthesize { 0.0 } else { STEM_DARKENING };
+                raster::rasterize(outline, scale, strength / 2.0 + darkening)
             } else {
                 raster::rasterize_mono(outline, scale, strength / 2.0, dropout)
             }
@@ -368,6 +370,11 @@ pub struct Typeface {
     glyphs: RefCell<HashMap<(char, bool), Glyph>>,
 }
 
+/// 灰度平滑的笔画加深（每侧像素）：宋体等发丝笔画在 24 ppem 只有约 0.5 像素厚，灰度下会变成半灰而发虚；
+/// 每侧外扩 0.25 像素使细笔画接近 1 像素实色（与 FreeType/macOS 的 stem darkening 同类），粗笔画只略加深。
+/// 平滑时仍执行 hinting：横竖笔画先对齐像素网格，加深后核心为实色。
+const STEM_DARKENING: f32 = 0.25;
+
 /// 字形缓存上限；常见界面文字远少于此。
 const GLYPH_CACHE_LIMIT: usize = 4096;
 
@@ -408,6 +415,8 @@ impl Typeface {
             if let Some(glyph) = face.bitmap(character, self.ppem, synthesize) {
                 return glyph;
             }
+            // 平滑开启时仍先 hinting：横竖笔画对齐像素网格后保持实色，只有斜笔画与边缘是灰度；
+            // 不 hinting 时 1 像素笔画跨两行像素被平均成灰色而发虚。不读 gasp 的禁灰区间（清晰度优先，见 assets.md）。
             let size = self.size(face);
             let size = size
                 .as_ref()

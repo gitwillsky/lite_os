@@ -10,13 +10,10 @@ pub struct ItemGrid {
     pub count: usize,
 }
 impl ItemGrid {
-    pub fn new(mode: u32, viewport: Rect, line: i32, count: usize) -> Self {
-        let width = if mode == 1 { 96 } else { 200 };
-        let height = if mode == 1 {
-            36 + 2 * line
-        } else {
-            line.max(20)
-        };
+    /// `cell` 是一个条目格子的逻辑尺寸：大图标为图标间距（IconSpacing × IconVerticalSpacing），
+    /// 小图标与列表为最宽条目宽度 × 行高；由布局按主题与字体算出。
+    pub fn new(mode: u32, viewport: Rect, cell: (i32, i32), count: usize) -> Self {
+        let (width, height) = (cell.0.max(1), cell.1.max(1));
         let rows = (viewport.height / height).max(1);
         let columns = (viewport.width / width).max(1);
         let extent = if mode == 3 {

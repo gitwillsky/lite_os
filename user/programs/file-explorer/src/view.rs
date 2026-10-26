@@ -18,6 +18,11 @@ use std::{cell::RefCell, path::Path};
 const PANEL_WIDTH: i32 = 200;
 /// 状态栏分格：文字格占满剩余，大小格与区域格固定宽（browseui 的 STATUS_PANE_SIZE / STATUS_PANE_ZONE）。
 const STATUS_PARTS: [i32; 3] = [-1, 90, 150];
+/// 资源管理器的列表：多选，详细资料只高亮名称标签（Windows 2000 资源管理器不开整行选择）。
+pub const MULTIPLE: liteos_ui::ListOptions = liteos_ui::ListOptions {
+    multiple: true,
+    full_row_select: false,
+};
 /// 区域格（Internet 安全区域）的文字与图标：本机文件夹都属于“我的电脑”区域。
 const ZONE: &str = "我的电脑";
 
@@ -186,6 +191,8 @@ impl View {
                 ..Default::default()
             },
         )?;
+        // Web 视图与列表共用外壳视图窗口的凹陷边框（WS_EX_CLIENTEDGE），列表本身不带边框。
+        content.set_state(state::CLIENT_EDGE)?;
         // Web 视图面板：白底，左上角 wvleft.bmp 水印（WEBVIEW.CSS `#Panel`）。
         let panel = stack(
             &content,
@@ -262,7 +269,8 @@ impl View {
                 ..Default::default()
             },
         )?;
-        list.set_list_style(liteos_ui::ListStyle::Details, true)?;
+        list.set_list_style(liteos_ui::ListStyle::LargeIcons, MULTIPLE)?;
+        list.set_state(state::BORDERLESS)?;
         let status = child(&root, Kind::Status, "\t\t", Layout::default())?;
         status.set_status_parts(&STATUS_PARTS)?;
         Ok(Self {
@@ -317,7 +325,6 @@ impl View {
     }
 
     pub fn rows(&self, browser: &Browser) -> liteos_ui::Result<()> {
-        let (column, descending) = browser.sort;
         let columns = browser.location.columns();
         self.list.set_columns(
             &columns
@@ -326,11 +333,6 @@ impl View {
                     id: *field as u64,
                     title,
                     width: *width,
-                    sort: if column == *field {
-                        if descending { 2 } else { 1 }
-                    } else {
-                        0
-                    },
                 })
                 .collect::<Vec<_>>(),
         )?;

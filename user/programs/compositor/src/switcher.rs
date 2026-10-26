@@ -67,14 +67,24 @@ pub struct Art {
     /// 按系统主题解析的字体；叠加层与应用使用同一份字体设置。
     pub fonts: std::rc::Rc<classic_ui::Fonts>,
     icons: AppIcons,
+    /// 16×16 程序图标：最小化/还原动画的飞行标题栏用。
+    small_icons: AppIcons,
 }
 
 impl Art {
-    /// 读取输出 `scale` 对应的字体与 32×32 程序图标。
+    /// 读取输出 `scale` 对应的字体与 32×32、16×16 程序图标。
     pub fn load(scale: u32) -> std::io::Result<Self> {
         let fonts = classic_ui::Resources::system()?.fonts(scale as i32)?;
-        let icons = AppIcons::load(32);
-        Ok(Self { fonts, icons })
+        Ok(Self {
+            fonts,
+            icons: AppIcons::load(32),
+            small_icons: AppIcons::load(16),
+        })
+    }
+
+    /// 程序的 16×16 图标。
+    pub fn small_icon(&self, app_id: &str) -> Option<&classic_ui::Bitmap> {
+        self.small_icons.get(app_id)
     }
 }
 

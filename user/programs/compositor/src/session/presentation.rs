@@ -111,32 +111,30 @@ impl Session {
             .iter()
             .filter(|layer| layer.layer >= Layer::Top)
             .filter_map(layer_drawable);
-        let drawables: Vec<Drawable<'_>> =
-            below.chain(windows).chain(popups).chain(above).collect();
+        // 最小化/还原的飞行标题栏：每帧按插值矩形光栅成一小块内容，与窗口内容走同一合成路径（盖在最上层）。
+        let caption = self
+            .animation
+            .as_ref()
+            .zip(self.switcher_art.as_ref())
+            .and_then(|(animation, art)| caption_content(animation, art, &self.theme, self.scale as i32));
+        let caption_drawable = caption.as_ref().map(|(x, y, content)| Drawable {
+            x: *x,
+            y: *y,
+            content,
+            factor: 1,
+        });
+        let drawables: Vec<Drawable<'_>> = below
+            .chain(windows)
+            .chain(popups)
+            .chain(above)
+            .chain(caption_drawable)
+            .collect();
         let (theme, scale) = (&self.theme, self.scale as i32);
         let (art, switcher, menu) = (
             self.switcher_art.as_ref(),
             self.switcher.as_ref(),
             self.window_menu.as_ref(),
         );
-        let frame = self.animation.as_ref().map(Animation::frame);
-        let inversions: Vec<_> = frame
-            .into_iter()
-            .flat_map(|(x, y, width, height)| {
-                let thickness = 2 * scale;
-                [
-                    canvas::Rect::new(x, y, width, thickness),
-                    canvas::Rect::new(x, y + height - thickness, width, thickness),
-                    canvas::Rect::new(x, y + thickness, thickness, height - 2 * thickness),
-                    canvas::Rect::new(
-                        x + width - thickness,
-                        y + thickness,
-                        thickness,
-                        height - 2 * thickness,
-                    ),
-                ]
-            })
-            .collect();
         let has_overlay = art.is_some() && (switcher.is_some() || menu.is_some());
         let overlay = |surface: canvas::Surface<'_>| {
             let Some(art) = art else { return };
@@ -150,7 +148,45 @@ impl Session {
             }
         };
         self.scanout
-            .compose(&self.theme, &drawables, &inversions, has_overlay, overlay)?;
+            .compose(&self.theme, &drawables, has_overlay, overlay)?;
         self.scanout.request_flip()
     }
+}
+
+/// 按动画当前帧的物理矩形光栅一条活动标题栏（渐变、16 像素图标、粗体标题；不画标题按钮）。
+/// 返回左上角物理坐标与内容；矩形退化时没有内容。
+fn caption_content(
+    animation: &Animation,
+    art: &switcher::Art,
+    theme: &classic_theme::Theme,
+    scale: i32,
+) -> Option<(i32, i32, crate::wayland::Content)> {
+    let (x, y, width, height) = animation.frame();
+    // 按逻辑像素取整，物理尺寸为其整数倍，标题栏几何与窗口一致。
+    let (logical_width, logical_height) = (width / scale, height / scale);
+    if logical_width < 1 || logical_height < 1 {
+        return None;
+    }
+    let (physical_width, physical_height) = (logical_width * scale, logical_height * scale);
+    let mut pixels = vec![0; (physical_width * physical_height) as usize];
+    let surface = canvas::Surface::new(
+        &mut pixels,
+        physical_width,
+        physical_height,
+        physical_width as usize,
+    )?;
+    let mut painter = classic_ui::Painter::new(surface, theme, &art.fonts, scale);
+    painter.caption_bar(
+        canvas::Rect::new(0, 0, logical_width, logical_height),
+        &animation.title,
+        art.small_icon(&animation.app_id),
+        true,
+        &[],
+        None,
+    );
+    Some((
+        x,
+        y,
+        crate::wayland::Content::new(physical_width as usize, physical_height as usize, pixels),
+    ))
 }

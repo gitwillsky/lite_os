@@ -40,6 +40,8 @@ impl Theme {
             "\"FontSmoothing\"=\"{}\"",
             if self.fonts.smoothing { 2 } else { 0 }
         );
+        // 1 为标准灰度平滑（2 是 ClearType）；与原生应用的灰度渲染一致。
+        let _ = writeln!(out, "\"FontSmoothingType\"=dword:00000001");
         out.push_str("\n[HKEY_CURRENT_CONFIG\\Software\\Fonts]\n");
         let _ = writeln!(out, "\"LogPixels\"=dword:{:08x}", 96 * scale);
         out

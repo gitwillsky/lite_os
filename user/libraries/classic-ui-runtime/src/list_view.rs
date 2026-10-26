@@ -7,11 +7,12 @@ pub(super) unsafe extern "C" fn style(
     window: u64,
     id: u64,
     mode: u32,
-    multiple: u32,
+    flags: u32,
 ) -> i32 {
-    if mode > 3 || multiple > 1 {
+    if mode > 3 || flags & !(abi::list::MULTIPLE | abi::list::FULL_ROW) != 0 {
         return abi::INVALID;
     }
+    let multiple = u32::from(flags & abi::list::MULTIPLE != 0);
     // SAFETY: 仅访问当前 context 的合法列表，标志以整数验证。
     unsafe {
         invoke(pointer, |context| {
@@ -29,6 +30,7 @@ pub(super) unsafe extern "C" fn style(
                 table.horizontal.position = 0;
                 table.last_click = None;
             }
+            table.full_row = flags & abi::list::FULL_ROW != 0;
             if table.multiple != (multiple != 0) {
                 table.multiple = multiple != 0;
                 table.selection.clear();

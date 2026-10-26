@@ -339,7 +339,7 @@ zero-window 使用有界原生 timer；通用 PMTU/fragment 与其他未声明 T
   `virgl_protocol.h` SHA-256：`359d7b64e515e170f38c3cf9ab8c7b28a2a38b51e8959a21ecd2ae985b992709`。
   `p_defines.h` SHA-256：`29b02c15399768ab74054e711f6633c407cf5f952f591c046e7542b82e54a008`。
 - 顶点/片段程序采用 [Mesa TGSI](https://docs.mesa3d.org/gallium/tgsi.html) 的 POSITION、GENERIC、2D sampler 与 TEX 语义。
-  预乘 OVER 与 INVERT 逻辑操作由同一固定命令编码实现，不新增 Wayland 私有绘图消息。
+  预乘 OVER 混合由固定命令编码实现，不新增 Wayland 私有绘图消息。
 
 ### TZif 与 Rust 时区解析
 

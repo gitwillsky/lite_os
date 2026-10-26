@@ -194,7 +194,9 @@ pub fn validate_state(value: u32) -> io::Result<()> {
             | state::PASSWORD
             | state::DEFAULT
             | state::TAB_INPUT
-            | state::ALIGN_RIGHT)
+            | state::ALIGN_RIGHT
+            | state::CLIENT_EDGE
+            | state::BORDERLESS)
         != 0
     {
         return Err(invalid("unknown widget state"));
@@ -395,6 +397,25 @@ impl Tree {
 }
 
 impl Node {
+    /// 布局内边距：layout.padding 加上 CLIENT_EDGE 的 2 像素边框。
+    pub fn inset(&self) -> i32 {
+        let edge = if matches!(self.kind, widget::COLUMN | widget::ROW) && self.state & state::CLIENT_EDGE != 0 {
+            classic_theme::EDGE_WIDTH
+        } else {
+            0
+        };
+        self.layout.padding + edge
+    }
+
+    /// 列表的边框宽度：默认凹陷 2 像素，BORDERLESS 为 0；绘制与几何共用。
+    pub fn list_edge(&self) -> i32 {
+        if self.state & state::BORDERLESS != 0 {
+            0
+        } else {
+            classic_theme::EDGE_WIDTH
+        }
+    }
+
     /// 状态栏右下角尺寸手柄的区域：一个滚动条宽、与状态栏同高。
     pub fn grip_area(&self) -> Rect {
         let width = classic_ui::SCROLLBAR_WIDTH;

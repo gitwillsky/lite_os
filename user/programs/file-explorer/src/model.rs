@@ -209,6 +209,16 @@ impl Item {
         }
     }
 
+    /// 排序时的分组，任何排序列都先按它分组：驱动器、文件夹（含系统文件夹）、文件
+    /// （Windows 2000“我的电脑”磁盘在前、控制面板在后，目录中文件夹在前）。
+    pub fn group(&self) -> u8 {
+        match (&self.details, &self.target) {
+            (Details::Drive(_), _) => 0,
+            (_, Some(_)) => 1,
+            _ => 2,
+        }
+    }
+
     /// 详细资料中 `field` 列的文字。
     pub fn cell(&self, field: Field) -> String {
         match (field, &self.details) {

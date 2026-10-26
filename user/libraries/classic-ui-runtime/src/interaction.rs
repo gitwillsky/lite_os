@@ -277,10 +277,35 @@ impl Tree {
                 return;
             }
             let index = if let Some(grid) = geometry.grid {
-                let Some(index) = grid.at(self.pointer, node.position.position) else {
-                    return;
-                };
-                index
+                // 图标视图只在图标或标签上命中（comctl32 LVHT_ONITEMICON/LABEL）；格子空白与无条目处
+                // 按单击背景处理：清除选择。行数作为越界下标交给 choose_row 走同一清除路径。
+                let miss = node.row_count();
+                grid.at(self.pointer, node.position.position)
+                    .filter(|index| {
+                        grid.mode != 1
+                            || node.row_at(*index).is_some_and(|(row, text)| {
+                                let cell = grid.cell(*index, node.position.position);
+                                let size = node
+                                    .row_icons
+                                    .get(row)
+                                    .and_then(|icons| icons.1.as_ref())
+                                    .map_or(32, |icon| icon.height());
+                                let icon = Rect::new(
+                                    cell.x + (cell.width - size) / 2,
+                                    cell.y + 4,
+                                    size,
+                                    size,
+                                );
+                                let text = text.split('\t').next().unwrap_or("");
+                                let full = node.selected == Some(*row);
+                                let label = probe.icon_label(cell, size, text, full).rect;
+                                [icon, label].iter().any(|rect| {
+                                    (rect.x..rect.right()).contains(&self.pointer.0)
+                                        && (rect.y..rect.bottom()).contains(&self.pointer.1)
+                                })
+                            })
+                    })
+                    .unwrap_or(miss)
             } else {
                 node.position.position as usize
                     + ((self.pointer.1 - geometry.rows.y).max(0) / node.row_height) as usize

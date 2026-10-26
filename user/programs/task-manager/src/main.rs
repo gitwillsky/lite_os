@@ -75,18 +75,24 @@ impl View {
                 ..Default::default()
             },
         )?;
+        // Windows 2000 任务管理器的两张列表都是整行选择（LVS_EX_FULLROWSELECT）。
+        applications.set_list_style(
+            liteos_ui::ListStyle::Details,
+            liteos_ui::ListOptions {
+                multiple: false,
+                full_row_select: true,
+            },
+        )?;
         applications.set_columns(&[
             liteos_ui::Column {
                 id: 1,
                 title: "任务",
                 width: 330,
-                sort: 0,
             },
             liteos_ui::Column {
                 id: 2,
                 title: "状态",
                 width: 120,
-                sort: 0,
             },
         ])?;
         let actions = child(
@@ -123,6 +129,14 @@ impl View {
                 ..Default::default()
             },
         )?;
+        // Windows 2000 任务管理器的两张列表都是整行选择（LVS_EX_FULLROWSELECT）。
+        processes.set_list_style(
+            liteos_ui::ListStyle::Details,
+            liteos_ui::ListOptions {
+                multiple: false,
+                full_row_select: true,
+            },
+        )?;
         let process_actions = child(
             &pages[1],
             Kind::Row,
@@ -148,10 +162,10 @@ impl View {
             new_task,
             end_process,
         };
-        result.columns(Sort::default())?;
+        result.columns()?;
         Ok(result)
     }
-    fn columns(&self, sort: Sort) -> liteos_ui::Result<()> {
+    fn columns(&self) -> liteos_ui::Result<()> {
         let columns: Vec<_> = Column::ALL
             .iter()
             .enumerate()
@@ -159,11 +173,6 @@ impl View {
                 id: id as u64 + 1,
                 title: column.title(),
                 width: column.initial_width(),
-                sort: if *column == sort.column {
-                    if sort.descending { 2 } else { 1 }
-                } else {
-                    0
-                },
             })
             .collect();
         self.processes.set_columns(&columns)?;
@@ -563,7 +572,6 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     state.sort.click(*column);
                     let sort = state.sort;
                     sort.apply(&mut state.rows);
-                    view.columns(sort)?;
                     view.processes(&state.rows)?;
                 }
             }

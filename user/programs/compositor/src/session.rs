@@ -55,15 +55,20 @@ fn factor(output_scale: u32, surface_scale: i32) -> i32 {
     (output_scale as i32 / surface_scale.max(1)).max(1)
 }
 
-/// 最小化或还原时在窗口与任务按钮之间移动的矩形框（Windows 的 `DrawAnimatedRects`）。
+/// 最小化或还原时在窗口标题栏与任务按钮之间飞行的标题栏（Windows 2000 `DrawAnimatedRects(IDANI_CAPTION)`）。
 struct Animation {
     from: (i32, i32, i32, i32),
     to: (i32, i32, i32, i32),
     start: Instant,
+    /// 飞行标题栏上的窗口标题与程序（取图标）。
+    title: String,
+    app_id: String,
+    /// 还原动画结束后才提升并显示的窗口；缺少它窗口会在动画途中就出现，与飞行标题栏叠在一起。
+    restore: Option<(ClientId, ObjectId)>,
 }
 
 /// 动画时长。
-const ANIMATION: Duration = Duration::from_millis(200);
+const ANIMATION: Duration = Duration::from_millis(150);
 
 impl Animation {
     fn finished(&self) -> bool {
@@ -469,7 +474,11 @@ impl Session {
             let mut timeout = self.step_boot(shell_visible)?;
             if let Some(animation) = &self.animation {
                 if animation.finished() {
-                    self.animation = None;
+                    if let Some((client, surface)) =
+                        self.animation.take().and_then(|animation| animation.restore)
+                    {
+                        self.stack.raise(client, surface);
+                    }
                 } else {
                     timeout = Some(Duration::from_millis(16));
                 }

@@ -441,7 +441,7 @@ impl Painter<'_> {
 impl Painter<'_> {
     /// 绘制列表表头单元格；标题与排序标记共用单元格裁剪，不能覆盖相邻列。
     /// sort 为 Some(true) 表示升序；尺寸非正时不绘制，无错误返回。
-    pub fn list_header_cell(&mut self, rect: Rect, title: &str, sort: Option<bool>, pressed: bool) {
+    pub fn list_header_cell(&mut self, rect: Rect, title: &str, pressed: bool) {
         self.clipped(rect, |p| {
             p.fill(rect, SystemColor::ButtonFace);
             // comctl32 表头：常态 EDGE_RAISED|BF_SOFT，按下为 BDR_RAISEDOUTER|BF_FLAT 的阴影色平框。
@@ -451,25 +451,14 @@ impl Painter<'_> {
                 p.edge(rect, Edge::RaisedSoft);
             }
             let offset = i32::from(pressed);
-            let reserve = if sort.is_some() { 14 } else { 0 };
             p.text_fit(
                 rect.x + 4 + offset,
                 rect.y + (rect.height - p.line_height()) / 2 + offset,
-                (rect.width - 8 - reserve).max(0),
+                (rect.width - 8).max(0),
                 title,
                 Ink::Color(SystemColor::ButtonText),
                 false,
             );
-            if let Some(ascending) = sort {
-                let x = rect.right() - 11;
-                let y = rect.y + (rect.height - 3) / 2;
-                let glyph = if ascending {
-                    ["..#..", ".###.", "#####"]
-                } else {
-                    ["#####", ".###.", "..#.."]
-                };
-                p.pixels(x, y, &glyph, SystemColor::ButtonText);
-            }
         });
     }
 }

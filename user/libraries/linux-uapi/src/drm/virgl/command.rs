@@ -136,13 +136,6 @@ impl CommandEncoder {
         self.words.extend([0xf << 27; 8]);
     }
 
-    /// 创建 Gallium INVERT 逻辑操作，只反转 RGB 写掩码，用于系统窗口轮廓。
-    /// 编码固定到 virglrenderer-1.1.0 的 BLEND_S0_LOGICOP_ENABLE 和 PIPE_LOGICOP_INVERT=5。
-    pub fn create_invert_blend(&mut self, handle: u32) {
-        self.header(CREATE_OBJECT, ObjectKind::Blend, 11);
-        self.words.extend([handle, 1 << 1, 5]);
-        self.words.extend([0x7 << 27; 8]);
-    }
 
     /// Creates disabled depth/stencil/alpha testing.
     pub fn create_depth_stencil_alpha(&mut self, handle: u32) {

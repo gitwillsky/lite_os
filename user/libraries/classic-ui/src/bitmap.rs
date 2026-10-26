@@ -84,6 +84,24 @@ impl Bitmap {
         self.paint_region(painter, x, y, 0, self.width);
     }
 
+    /// 选中项的图像（comctl32 ILD_BLEND50）：先画图像，再在不透明像素上按逻辑像素棋盘格叠 `color`。
+    pub fn paint_blended(
+        &self,
+        painter: &mut Painter<'_>,
+        x: i32,
+        y: i32,
+        color: classic_theme::SystemColor,
+    ) {
+        self.paint(painter, x, y);
+        for row in 0..self.height {
+            for column in (row % 2..self.width).step_by(2) {
+                if self.pixels[(row * self.width + column) as usize] >> 24 >= 0x80 {
+                    painter.fill(Rect::new(x + column, y + row, 1, 1), color);
+                }
+            }
+        }
+    }
+
     /// 用图像第一行第一个像素的颜色填充 `x, y` 起宽为图像宽、高为 `height` 的区域（竖幅图高度不足时向上补色）。
     pub fn fill_with_corner(&self, painter: &mut Painter<'_>, x: i32, y: i32, height: i32) {
         let pixel = self.pixels[0];

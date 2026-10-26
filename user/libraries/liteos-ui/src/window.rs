@@ -315,6 +315,14 @@ pub enum ListStyle {
     SmallIcons,
     List,
 }
+/// 列表的选择策略。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ListOptions {
+    /// 允许多选（Ctrl/Shift 与框选由运行库处理）。
+    pub multiple: bool,
+    /// 详细资料视图整行高亮（comctl32 LVS_EX_FULLROWSELECT）；默认只高亮首列标签。
+    pub full_row_select: bool,
+}
 /// 列正文的对齐方式。
 #[derive(Clone, Copy)]
 #[repr(u32)]
@@ -351,12 +359,11 @@ pub struct TreeRow<'a> {
     /// 子节点尚未载入时也显示展开入口；Expand 事件由业务异步提供子节点数据。
     pub has_children: bool,
 }
-/// 列表列；相同 id 的用户列宽在后续数据更新中保留。sort=0/1/2 对应无标记/升序/降序。
+/// 列表列；相同 id 的用户列宽在后续数据更新中保留。排序由应用负责，Windows 2000 的表头不画排序标记。
 pub struct Column<'a> {
     pub id: u64,
     pub title: &'a str,
     pub width: i32,
-    pub sort: u32,
 }
 /// 菜单条目，state 采用 disabled=1、checked=2、separator_before=4、default=8（粗体默认项）。
 ///
@@ -557,7 +564,6 @@ impl Widget {
                 id: column.id,
                 title: text(column.title),
                 width: column.width,
-                sort: column.sort,
             })
             .collect();
         self.call(|c, w, id| {
@@ -724,13 +730,18 @@ impl Widget {
             unsafe { (c.api.row_icons)(c.context.as_ptr(), w, id, icons.as_ptr(), icons.len()) }
         })
     }
-    /// 设置列表显示方式与多选策略；视图切换重置滚动，多选由共享运行库管理。
-    pub fn set_list_style(&self, style: ListStyle, multiple: bool) -> Result<()> {
+    /// 设置列表显示方式与选择策略；视图切换重置滚动，多选由共享运行库管理。
+    pub fn set_list_style(&self, style: ListStyle, options: ListOptions) -> Result<()> {
+        let mut flags = 0;
+        if options.multiple {
+            flags |= abi::list::MULTIPLE;
+        }
+        if options.full_row_select {
+            flags |= abi::list::FULL_ROW;
+        }
         self.call(|c, w, id| {
-            // SAFETY: 枚举映射公开整数标签，运行库验证控件。
-            unsafe {
-                (c.api.list_style)(c.context.as_ptr(), w, id, style as u32, u32::from(multiple))
-            }
+            // SAFETY: 枚举映射公开整数标签，运行库验证控件与标志位。
+            unsafe { (c.api.list_style)(c.context.as_ptr(), w, id, style as u32, flags) }
         })
     }
     /// 查询实际选择集合，与键盘焦点条目分开；不在应用维护多选镜像。

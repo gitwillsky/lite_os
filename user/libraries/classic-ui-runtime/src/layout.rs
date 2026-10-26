@@ -121,16 +121,16 @@ impl Tree {
                     .collect();
                 (
                     sizes.iter().map(|size| size.0).max().unwrap_or(0) + left + right,
-                    super::rebar::Rebar::height(
-                        &sizes.iter().map(|size| size.1).collect::<Vec<_>>(),
-                    ),
+                    node.rebar.as_ref().map_or(0, |rebar| {
+                        rebar.height(&sizes.iter().map(|size| size.1).collect::<Vec<_>>())
+                    }),
                 )
             }
             widget::CALENDAR => (224, (line + 7) * 8),
             widget::MENU_BAR => (width, line + 4),
             _ => (width, line + 10),
         };
-        let padding = node.layout.padding.saturating_mul(2);
+        let padding = node.inset().saturating_mul(2);
         let top = if node.kind == widget::GROUP {
             line + 8
         } else {
@@ -297,6 +297,24 @@ impl Tree {
             node.rect = rect;
             node.clip = intersection;
             node.row_height = font.line_height() + 6;
+            if node.kind == widget::LIST {
+                // 小图标/列表的条目宽度取最宽标签 + 图标与内边距（comctl32 按最宽项排列），大图标取主题图标间距。
+                let widest = (0..node.row_count())
+                    .filter_map(|index| node.row_at(index))
+                    .map(|(_, text)| {
+                        let label = text.split('\t').next().unwrap_or("");
+                        (font.text_width(label, false) + scale - 1) / scale
+                    })
+                    .max()
+                    .unwrap_or(0);
+                let metrics = &font.theme().window;
+                if let Some(table) = node.table.as_mut() {
+                    table.cells = (
+                        (metrics.icon_spacing, metrics.icon_vertical_spacing),
+                        (widest + 2 + 16 + 2 + 4 + 12).min(rect.width.max(1)),
+                    );
+                }
+            }
             if matches!(node.kind, widget::LIST | widget::TREE) {
                 if node
                     .table
@@ -336,7 +354,7 @@ impl Tree {
             let kind = node.kind;
             let nested = node.children.clone();
             let selected = node.selected;
-            let mut inner = rect.inset(rule.padding);
+            let mut inner = rect.inset(node.inset());
             if kind == widget::GROUP {
                 let top = font.line_height() + 8;
                 inner.y += top;

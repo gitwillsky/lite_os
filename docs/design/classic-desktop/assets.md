@@ -193,7 +193,7 @@ LiteOS 不分发它们；1x 改用来源清楚的文泉驿点阵。
 选择依据（2026-10-24 对比渲染，脚本在工程内 `.local/spikes/classic-desktop/scripts/font-compare.py`）：
 文泉驿点阵宋体最接近宋体 9 磅的点阵观感；文鼎 PL 明体 CN 轮廓比文鼎 PL 宋体 GB 更干净。
 
-字体映射与渲染按 Windows 2000 GDI（实现见 `typeface::FontCatalog`）：
+字体映射按 Windows 2000 GDI（实现见 `typeface::FontCatalog`），渲染按第 4 条以清晰为先：
 
 1. 界面文字只使用主题 `[Fonts]` 中的逻辑字体（标题/小标题/菜单/状态栏/消息/图标字体，字体名、磅值、粗细），
    默认值是简中 Win2000 的宋体 9 磅（标题粗体）。代码中不写字体文件或字号。
@@ -202,9 +202,12 @@ LiteOS 不分发它们；1x 改用来源清楚的文泉驿点阵。
    （12 像素）与文鼎明体（轮廓）提供；原版存在时它们只补缺字。
 3. ppem = 磅值 × 96 × 倍率 / 72；字体有该 ppem 的点阵（BDF 像素尺寸相等，或 EBLC/EBDT 索引格式 1–5、图像格式 1/2/5）
    即用点阵，否则用轮廓。度量取首个可用字体的 OS/2 winAscent/winDescent（宋体 9 磅为 10+2）。
-4. 轮廓按“平滑屏幕字体边缘”（主题 `FontSmoothing`，Win2000 默认 0）输出单色或灰度。字体没有粗体成员时合成粗体：
-   点阵右移 1 像素叠印，轮廓沿斜接方向加粗 `ppem / 24` 像素。
-5. 带 `fpgm`/`prep`/`cvt` 的 TrueType 字体按 TrueType 指令集执行 hinting（`typeface::hinting`，语义对齐 FreeType v35、
+4. 字体渲染以高分屏与现代屏幕上的清晰为目标，不逐像素追随 Win2000（用户决定，2026-10-26）：主题 `FontSmoothing`
+   默认 2（开启）。开启时，没有匹配点阵的字号一律输出未 hinting 的灰度轮廓，不受 gasp 表禁灰区间限制
+   （宋体 gasp 规定 9–24 ppem 不灰度，scale 2 的 9 磅正是 24 ppem）；匹配的点阵（1x 宋体 12–18 像素）仍优先。
+   Wine 注册表同步导出 `FontSmoothing`=2 与 `FontSmoothingType`=1（灰度）。关闭时按下条 hinting 与单色扫描转换。
+   字体没有粗体成员时合成粗体：点阵右移 1 像素叠印，轮廓沿斜接方向加粗 `ppem / 24` 像素。
+5. 平滑关闭时，带 `fpgm`/`prep`/`cvt` 的 TrueType 字体按 TrueType 指令集执行 hinting（`typeface::hinting`，语义对齐 FreeType v35、
    GETINFO 报告 35）：每字体执行一次 fpgm，每 ppem 执行 prep，每字形加四个幻影点执行字形指令，复合字形逐组件 hinting；
    距离与插值使用 16.16 定点和字体单位坐标。单色输出用 TrueType 扫描转换：像素中心规则 + 字体 SCANCTRL/SCANTYPE 指定的
    丢点控制（左/下侧补点、两侧已亮不补、1/5 排除残桩）。程序出错时退回未 hinting 的轮廓。

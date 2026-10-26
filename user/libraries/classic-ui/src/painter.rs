@@ -236,6 +236,16 @@ impl<'a> Painter<'a> {
         });
     }
 
+    /// 按 `typeface::wrap` 的词与中文断行规则把 `text` 断成不超过 `width` 逻辑像素的行（字节范围）。
+    pub fn wrap_lines(&self, width: i32, text: &str) -> Vec<std::ops::Range<usize>> {
+        if width <= 0 {
+            return Vec::new();
+        }
+        typeface::wrap(text, self.px(width), |ch| {
+            self.typeface.glyph(ch, false).advance
+        })
+    }
+
     /// 返回给定逻辑宽度下完整文本所需的高度，与 text_wrapped 共用断行规则。
     /// 非正宽度返回零；无错误返回。
     pub fn wrapped_height(&self, width: i32, text: &str, bold: bool) -> i32 {

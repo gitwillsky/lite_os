@@ -9,8 +9,7 @@ use std::{
     time::SystemTime,
 };
 
-/// 网格单元（含图标与标题）与第一个单元的左上角，逻辑像素。
-const CELL: (i32, i32) = (75, 78);
+/// 第一个网格单元的左上角，逻辑像素；单元尺寸是主题的图标间距（IconSpacing × IconVerticalSpacing）。
 const ORIGIN: (i32, i32) = (6, 12);
 /// 未保存位置的图标按列自上而下排；每列最多这么多行（对应 768 像素高的屏幕）。
 const AUTO_ROWS: i32 = 8;
@@ -35,6 +34,8 @@ pub struct Icon {
 
 pub struct Icons {
     pub items: Vec<Icon>,
+    /// 网格单元尺寸：主题的图标间距，与资源管理器大图标视图共用同一度量。
+    cell: (i32, i32),
     /// 与 `items` 一一对应的网格位置 `(列, 行)`。
     cells: Vec<(i32, i32)>,
     saved: HashMap<String, (i32, i32)>,
@@ -102,7 +103,7 @@ fn parse_layout(text: &str) -> HashMap<String, (i32, i32)> {
 
 impl Icons {
     /// 读取桌面文件夹（不存在则创建）与保存的位置。
-    pub fn load(home: &Path) -> Self {
+    pub fn load(home: &Path, cell: (i32, i32)) -> Self {
         let directory = home.join("Desktop");
         let _ = fs::create_dir_all(&directory);
         let layout_file = home.join(".config/liteos/desktop-icons");
@@ -110,6 +111,7 @@ impl Icons {
             .map(|text| parse_layout(&text))
             .unwrap_or_default();
         let mut icons = Self {
+            cell: (cell.0.max(1), cell.1.max(1)),
             items: Vec::new(),
             cells: Vec::new(),
             saved,
@@ -194,10 +196,10 @@ impl Icons {
     pub fn rect(&self, index: usize) -> Rect {
         let (column, row) = self.cells[index];
         Rect::new(
-            ORIGIN.0 + column * CELL.0,
-            ORIGIN.1 + row * CELL.1,
-            CELL.0 - 1,
-            CELL.1 - 6,
+            ORIGIN.0 + column * self.cell.0,
+            ORIGIN.1 + row * self.cell.1,
+            self.cell.0,
+            self.cell.1,
         )
     }
 
@@ -212,11 +214,11 @@ impl Icons {
         center: (i32, i32),
         screen: (i32, i32),
     ) -> io::Result<()> {
-        let columns = ((screen.0 - ORIGIN.0) / CELL.0).max(1);
-        let rows = ((screen.1 - 28 - ORIGIN.1) / CELL.1).max(1);
+        let columns = ((screen.0 - ORIGIN.0) / self.cell.0).max(1);
+        let rows = ((screen.1 - 28 - ORIGIN.1) / self.cell.1).max(1);
         let wanted = (
-            ((center.0 - ORIGIN.0) / CELL.0).clamp(0, columns - 1),
-            ((center.1 - ORIGIN.1) / CELL.1).clamp(0, rows - 1),
+            ((center.0 - ORIGIN.0) / self.cell.0).clamp(0, columns - 1),
+            ((center.1 - ORIGIN.1) / self.cell.1).clamp(0, rows - 1),
         );
         let free = |cell: &(i32, i32)| {
             !self

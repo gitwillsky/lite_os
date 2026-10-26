@@ -382,9 +382,8 @@ impl Browser {
     pub fn sort_items(&mut self) {
         let (column, descending) = self.sort;
         self.items.sort_by(|(_, a), (_, b)| {
-            b.target
-                .is_some()
-                .cmp(&a.target.is_some())
+            a.group()
+                .cmp(&b.group())
                 .then_with(|| {
                     let order = a.compare(b, column);
                     if descending { order.reverse() } else { order }

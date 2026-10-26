@@ -79,7 +79,7 @@ struct Desktop {
 }
 
 impl Desktop {
-    fn create(display: &mut Display) -> io::Result<Self> {
+    fn create(display: &mut Display, icon_cell: (i32, i32)) -> io::Result<Self> {
         let background = display.create_layer(
             "org.liteos.desktop",
             LayerSettings {
@@ -110,7 +110,7 @@ impl Desktop {
             pointer: (background, 0., 0.),
             armed: None,
             selected: None,
-            icons: icons::Icons::load(&home),
+            icons: icons::Icons::load(&home, icon_cell),
             drag: None,
             clicked: None,
             task_page: 0,
@@ -780,8 +780,8 @@ impl Desktop {
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut display = Display::connect()?;
-    let mut state = Desktop::create(&mut display)?;
     let mut art = paint::Art::load()?;
+    let mut state = Desktop::create(&mut display, art.icon_cell())?;
     let mut dirty = true;
     let mut ready = false;
     let mut presented = std::collections::HashSet::new();

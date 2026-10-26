@@ -25,7 +25,6 @@ pub fn compose(
     target: &mut DumbBuffer,
     theme: &Theme,
     windows: &[Drawable<'_>],
-    inversions: &[Rect],
     overlay: impl FnOnce(Surface<'_>),
 ) -> bool {
     let (width, height, stride) = (
@@ -49,9 +48,6 @@ pub fn compose(
             stride: window.content.width,
         };
         surface.blit(image, window.x, window.y, window.factor);
-    }
-    for rect in inversions {
-        surface.invert(*rect);
     }
     overlay(surface);
     true

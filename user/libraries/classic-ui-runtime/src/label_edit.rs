@@ -21,7 +21,8 @@ impl Node {
         if let Some(grid) = geometry.grid {
             let cell = grid.cell(index, self.position.position);
             if grid.mode == 1 {
-                Some(Rect::new(cell.x, cell.y + 34, cell.width, 26))
+                // 与大图标标签同一起点（图标距顶 4 + 32 + 间距 2），编辑框边框向外让 2 像素。
+                Some(Rect::new(cell.x, cell.y + 36, cell.width, 26))
             } else {
                 let left = if self.row_icons.contains_key(&editing.row) {
                     20

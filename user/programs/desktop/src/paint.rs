@@ -112,6 +112,12 @@ impl Art {
         }
     }
     /// 画名为 `name` 的图标；没有这张素材时退回通用应用图标，不留空位。
+    /// 桌面图标网格单元：主题的图标间距。
+    pub fn icon_cell(&self) -> (i32, i32) {
+        let metrics = &self.resources.theme().window;
+        (metrics.icon_spacing, metrics.icon_vertical_spacing)
+    }
+
     pub fn icon(&self, p: &mut Painter<'_>, name: &str, x: i32, y: i32) {
         if let Some(bitmap) = self
             .bitmaps
@@ -211,25 +217,22 @@ pub fn frame(
                     r.height,
                 );
             }
-            art.icon(&mut p, icon.art, r.x + 22, r.y + 3);
+            // 图标与标题按 comctl32 大图标项绘制（与资源管理器共用）：标题用主题的图标字体，
+            // 选中时图标与高亮色混合、只高亮标题框；桌面拥有焦点时选中项带焦点框。
             let selected = s.selected == Some(i);
-            // 图标标题使用主题的图标字体（IconFont），截断、高亮宽度与绘制都按同一字体。
+            let bitmap = art.bitmap(icon.art);
             p.with_role(FontRole::Icon, |p| {
-                let label = p.fit(&icon.label, r.width - 2);
-                let band = Rect::new(r.x, r.y + 40, r.width, 20);
-                if selected {
-                    let width = (p.text_width(&label, false) + p.scale() - 1) / p.scale() + 6;
-                    p.fill(
-                        Rect::new(
-                            r.x + (r.width - width) / 2,
-                            band.y,
-                            width.min(r.width),
-                            band.height,
-                        ),
-                        C::Hilight,
-                    );
-                }
-                p.text_centered(band, &label, Ink::Color(C::HilightText), false);
+                p.large_icon_item(
+                    r,
+                    bitmap,
+                    &icon.label,
+                    classic_ui::ItemLook {
+                        selected,
+                        active: true,
+                        focused: selected,
+                        text: C::HilightText,
+                    },
+                );
             });
         }
         if !s.message.is_empty() {

@@ -141,6 +141,10 @@ pub mod state {
     pub const TAB_INPUT: u32 = 64;
     /// 单行标签在布局矩形内右对齐（统计数值列）；超宽时与左对齐一样截断。
     pub const ALIGN_RIGHT: u32 = 128;
+    /// Column/Row 带凹陷客户区边框（WS_EX_CLIENTEDGE），子控件内缩 2 像素。
+    pub const CLIENT_EDGE: u32 = 256;
+    /// 列表不画自身的凹陷边框（放进已有 CLIENT_EDGE 的容器时，如资源管理器的 Web 视图）。
+    pub const BORDERLESS: u32 = 512;
 }
 /// 运行库产生的事件标签，未知标签由 SDK 跳过。
 pub mod event {
@@ -346,7 +350,6 @@ pub struct Column {
     pub id: u64,
     pub title: Text,
     pub width: i32,
-    pub sort: u32,
 }
 
 /// 属性表的窗口与页面容器标识，其余内置按钮仅由运行库拥有。
@@ -441,7 +444,7 @@ pub struct Api {
     pub color: unsafe extern "C" fn(*mut c_void, u32, *mut u32) -> i32,
     /// 更新标准 xdg_toplevel app_id 与对应程序图标。
     pub app_id: unsafe extern "C" fn(*mut c_void, u64, Text) -> i32,
-    /// mode=0 详细、1 大图标、2 小图标、3 列表；multiple 为 0/1。
+    /// mode=0 详细、1 大图标、2 小图标、3 列表；flags 为 [`list`] 标志位（多选、整行选择）。
     pub list_style: unsafe extern "C" fn(*mut c_void, u64, u64, u32, u32) -> i32,
     /// 实际多选集合，以元素数协商输出容量；单选返回零或一个条目。
     pub read_selection:
@@ -484,6 +487,14 @@ pub struct Api {
     /// Column/Row 背景：rgb 为 0xRRGGBB，`NO_COLOR` 不填底色；bitmap 为系统界面位图名，空串不画；
     /// 位图不缩放、不平铺地画在左上角（CSS `background: color url() no-repeat`）。
     pub background: unsafe extern "C" fn(*mut c_void, u64, u64, u32, Text) -> i32,
+}
+
+/// [`Api::list_style`] 的标志位。
+pub mod list {
+    /// 允许多选。
+    pub const MULTIPLE: u32 = 1;
+    /// LVS_EX_FULLROWSELECT：详细资料视图整行高亮；未设置时只高亮首列标签。
+    pub const FULL_ROW: u32 = 2;
 }
 
 /// [`Api::background`] 中表示不填底色的值。

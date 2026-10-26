@@ -480,21 +480,13 @@ pub(super) unsafe extern "C" fn columns(
             };
             let mut identities = std::collections::BTreeSet::new();
             let mut copied = Vec::new();
-            let mut sort = None;
             for column in values {
                 if column.id == 0
                     || !identities.insert(column.id)
                     || column.width < 24
                     || column.width > 32768
-                    || column.sort > 2
                 {
                     return Err(invalid("invalid list column"));
-                }
-                if column.sort != 0 {
-                    if sort.is_some() {
-                        return Err(invalid("multiple sorted columns"));
-                    }
-                    sort = Some((column.id, column.sort == 1));
                 }
                 copied.push((column.id, text(column.title)?, column.width));
             }
@@ -520,7 +512,6 @@ pub(super) unsafe extern "C" fn columns(
                 .map(|(id, title, _)| (id, title))
                 .collect();
             table.header = classic_ui::ColumnHeader::new(widths);
-            table.sort = sort;
             table.gesture = None;
             node.clamp_list();
             host.frame.invalidate();

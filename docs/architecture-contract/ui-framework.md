@@ -122,6 +122,8 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   Tree.animated 记录上次推进定时状态的时刻，使提示只在越过显示时刻时重绘一次；缺少它会每次唤醒都重绘。
 - 尺寸手柄：Tree.size_grip 由窗口 owner 每次布局写入（可缩放且未最大化/全屏），状态栏只画；Decoration.grip
   是同一矩形的命中副本，由 layout_record 在同一入口刷新，按下发起 xdg_toplevel.resize(BottomRight)。
+- Table.cells 是图标/列表视图条目格子的唯一来源（布局时由主题图标间距与最宽标签写入），绘制、命中与重命名框共用；
+  Table.full_row 只由 list_style 标志位设置。list_style 的第二个参数由布尔多选改为标志位（多选、整行选择）。
 - Node.status_parts 与 Node.background 只保存复制后的分格宽度、底色和共享位图引用；位图由资源上下文保活。
 - 应用自建对话框经 Dialogs::window 登记到同一窗口表与订阅 owner，窗口与事件流的 Drop 撤销登记。
 - Benchmark 决策：新增定时状态只在存在截止时刻时参与等待，菜单/提示的命中与绘制为常数级；本轮按用户要求不运行性能测试。

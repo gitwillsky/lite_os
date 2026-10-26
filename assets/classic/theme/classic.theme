@@ -60,7 +60,7 @@ MenuFont=宋体,9,400
 StatusFont=宋体,9,400
 MessageFont=宋体,9,400
 IconFont=宋体,9,400
-FontSmoothing=0
+FontSmoothing=2
 
 [Internet Explorer]
 ; Web 视图（文件夹左侧面板）的链接颜色，与 IE Settings 的同名值一致。
