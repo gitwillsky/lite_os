@@ -27,6 +27,8 @@ pub struct MenuMetrics<'a> {
 }
 
 impl<'a> MenuMetrics<'a> {
+    /// USER32 弹出菜单内容距外框三像素；下拉菜单与外壳右键菜单共用。
+    pub const MARGIN: i32 = 3;
     pub fn new(theme: &Theme, fonts: &'a Fonts, scale: i32) -> Self {
         Self {
             fonts,
@@ -39,10 +41,10 @@ impl<'a> MenuMetrics<'a> {
         (physical + self.scale - 1) / self.scale
     }
 
-    /// USER32 `MENU_CalcItemSize`：菜单字体行高 + 6 与 `SM_CYMENU - 1`（即 `MenuHeight`）的较大者。
+    /// USER32 普通弹出菜单项：菜单字体行高 + 4；菜单栏的 MenuHeight 不决定弹出菜单项高。
     pub fn item_height(&self) -> i32 {
         let (ascent, descent) = self.fonts.role(FontRole::Menu).metrics();
-        (self.logical(ascent + descent) + 6).max(self.menu_height)
+        self.logical(ascent + descent) + 4
     }
 
     /// 分隔条高：`MenuHeight / 2`。
@@ -50,15 +52,15 @@ impl<'a> MenuMetrics<'a> {
         self.menu_height / 2
     }
 
-    /// 按内容算菜单宽度（逻辑像素）：左侧勾选列与边框 20，最宽的“标签 + 间隔 + 快捷键”，右侧留白与边框 14。
+    /// 按内容算菜单宽度（逻辑像素）：左侧勾选列与边框 20，最宽的“标签 + 间隔 + 快捷键”，右侧留白与边框 13。
     ///
     /// # Parameters
     ///
     /// - `items`: 各项的 `(标签, 快捷键, 是否默认项)`；没有快捷键传空串，默认项按粗体度量。
     pub fn width<'b>(&self, items: impl IntoIterator<Item = (&'b str, &'b str, bool)>) -> i32 {
         const LEFT: i32 = 20;
-        const RIGHT: i32 = 14;
-        const SHORTCUT_GAP: i32 = 24;
+        const RIGHT: i32 = 13;
+        const SHORTCUT_GAP: i32 = 12;
         let font = self.fonts.role(FontRole::Menu);
         let widest = items
             .into_iter()
@@ -93,7 +95,7 @@ impl Painter<'_> {
         MenuMetrics::new(self.theme, self.fonts, self.scale).width(items)
     }
 
-    /// 一行菜单项：整行高亮左右各留 2 像素；左侧 16 像素放勾选标记，快捷键右对齐。
+    /// 一行菜单项：高亮填满内容行，外框留白由弹出菜单几何统一提供；勾选列后为标签，快捷键右对齐。
     pub fn menu_item(&mut self, row: Rect, label: &str, shortcut: &str, state: MenuItemState) {
         self.with_role(FontRole::Menu, |p| {
             p.menu_item_in_font(row, label, shortcut, state)
@@ -101,13 +103,12 @@ impl Painter<'_> {
     }
 
     fn menu_item_in_font(&mut self, row: Rect, label: &str, shortcut: &str, state: MenuItemState) {
-        let band = Rect::new(row.x + 2, row.y, row.width - 4, row.height);
         let (background, text) = if state.highlighted {
             (SystemColor::Hilight, SystemColor::HilightText)
         } else {
             (SystemColor::Menu, SystemColor::MenuText)
         };
-        self.fill(band, background);
+        self.fill(row, background);
         // 禁用项：常态为浮雕灰字；高亮时 Win2000 在选择色底上画 GrayText，而不是可用项的 HilightText。
         let ink = match (state.disabled, state.highlighted) {
             (true, false) => Ink::Disabled,
@@ -128,10 +129,9 @@ impl Painter<'_> {
                 color,
             );
         }
-        // 标签不得压到右侧的快捷键或子菜单箭头：预留 16 像素标签偏移、快捷键宽度与间隔。
+        // 标签不得压到右侧的快捷键或子菜单箭头：预留 17 像素标签偏移、快捷键宽度与间隔。
         let shortcut_width = self.logical_ceil(self.text_width(shortcut, false));
-        let reserved = 2
-            + 16
+        let reserved = 17
             + 10
             + if shortcut_width > 0 {
                 shortcut_width + 12
@@ -139,9 +139,9 @@ impl Painter<'_> {
                 0
             };
         if state.default {
-            self.label_fit_bold(row.x + 2 + 16, text_y, row.width - reserved, label, ink);
+            self.label_fit_bold(row.x + 17, text_y, row.width - reserved, label, ink);
         } else {
-            self.label_fit(row.x + 2 + 16, text_y, row.width - reserved, label, ink);
+            self.label_fit(row.x + 17, text_y, row.width - reserved, label, ink);
         }
         if state.has_submenu {
             let color = if state.highlighted {
@@ -171,7 +171,7 @@ impl Painter<'_> {
     pub fn menu_separator(&mut self, row: Rect) -> i32 {
         self.fill(row, SystemColor::Menu);
         self.edge(
-            Rect::new(row.x + 2, row.y + (row.height - 2) / 2, row.width - 4, 2),
+            Rect::new(row.x + 1, row.y + row.height / 2, row.width - 2, 2),
             Edge::Etched,
         );
         row.height

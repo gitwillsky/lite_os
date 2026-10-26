@@ -28,7 +28,8 @@ use node::{ProcNode, ProcTaskDirectory, ProcThreadDirectory};
 use partitions::format_partitions;
 use process::{
     format_io, format_process_comm, format_process_stat, format_process_statm,
-    format_process_status, format_thread_stat, format_thread_statm, format_thread_status,
+    format_process_status, format_thread_comm, format_thread_stat, format_thread_statm,
+    format_thread_status,
 };
 pub(crate) use snapshot::{
     ProcCpuSnapshot, ProcCredentialSnapshot, ProcFileDescriptorSnapshot, ProcIoSnapshot,
@@ -542,8 +543,7 @@ impl ProcInode {
             }
             ProcNode::ThreadComm(tgid, tid) => {
                 let process = find_process(&snapshot, tgid)?;
-                let _ = find_thread(process, tid)?;
-                format_process_comm(process)
+                format_thread_comm(find_thread(process, tid)?)
             }
             ProcNode::ThreadStatm(tgid, tid) => {
                 let process = find_process(&snapshot, tgid)?;

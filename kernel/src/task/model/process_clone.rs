@@ -96,7 +96,8 @@ impl TaskControlBlock {
             *self.thread().alternate_signal_stack.lock()
         };
         let start_time_us = get_time_us();
-        let comm = self.process().comm_snapshot()?;
+        let comm =
+            Arc::try_new(Mutex::new(self.comm_buffer())).map_err(|_| MemoryError::OutOfMemory)?;
         let thread_io =
             Arc::try_new(IoAccounting::default()).map_err(|_| MemoryError::OutOfMemory)?;
         let leader_credentials =
@@ -105,7 +106,7 @@ impl TaskControlBlock {
             .map_err(|_| MemoryError::OutOfMemory)?;
         let process = Arc::try_new(Process {
             tgid: pid,
-            comm: Mutex::new(comm),
+            leader_comm: Mutex::new(comm.clone()),
             start_time_us,
             leader_mm: Mutex::new(mm.clone()),
             leader_scheduler: Mutex::new(scheduling.clone()),
@@ -155,6 +156,7 @@ impl TaskControlBlock {
             kind: TaskKind::User {
                 process,
                 thread: ThreadContext {
+                    comm,
                     mm,
                     user_context,
                     kernel_trap_handler: self.thread().kernel_trap_handler,

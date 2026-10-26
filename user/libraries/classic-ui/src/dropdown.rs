@@ -176,17 +176,18 @@ impl Popup {
                 .map(|item| (item.label.as_ref(), item.shortcut.as_ref(), item.default)),
         );
         let (item_height, separator_height) = item_metrics(p);
-        let height = 4 + items
-            .iter()
-            .map(|item| {
-                item_height
-                    + if item.separator_before {
-                        separator_height
-                    } else {
-                        0
-                    }
-            })
-            .sum::<i32>();
+        let height = 2 * crate::MenuMetrics::MARGIN
+            + items
+                .iter()
+                .map(|item| {
+                    item_height
+                        + if item.separator_before {
+                            separator_height
+                        } else {
+                            0
+                        }
+                })
+                .sum::<i32>();
         Self {
             menu,
             trail,
@@ -199,14 +200,19 @@ impl Popup {
 
     /// 各条目的行矩形（不含分隔线）。
     pub fn rows<T, S: AsRef<str>>(&self, items: &[DropItem<T, S>]) -> Vec<Rect> {
-        let mut y = self.rect.y + 2;
+        let mut y = self.rect.y + crate::MenuMetrics::MARGIN;
         items
             .iter()
             .map(|item| {
                 if item.separator_before {
                     y += self.separator_height;
                 }
-                let row = Rect::new(self.rect.x + 2, y, self.rect.width - 4, self.item_height);
+                let row = Rect::new(
+                    self.rect.x + crate::MenuMetrics::MARGIN,
+                    y,
+                    self.rect.width - 2 * crate::MenuMetrics::MARGIN,
+                    self.item_height,
+                );
                 y += self.item_height;
                 row
             })

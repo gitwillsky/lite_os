@@ -28,6 +28,68 @@ impl Bitmap {
     pub fn load(path: &Path) -> io::Result<Self> {
         Self::decode(&std::fs::read(path)?)
     }
+    /// 加载指定逻辑尺寸的系统图标：先用同尺寸原图，再选较大原图，最后选较小原图。
+    /// `directory/stem` 指定系统素材目录与安全逻辑名，`size` 只接受 16/32/64。
+    /// 缺少同尺寸时仅在加载阶段最近邻缩放，保留像素画边缘；不生成伪造的原始素材文件。
+    /// 非法名字/尺寸返回 InvalidInput，全部缺失返回 NotFound，原图损坏与读取失败原样返回。
+    pub fn load_icon(directory: &Path, stem: &str, size: i32) -> io::Result<Self> {
+        if !matches!(size, 16 | 32 | 64)
+            || stem.is_empty()
+            || stem.len() > 96
+            || !stem
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "invalid icon resource",
+            ));
+        }
+        let candidates = match size {
+            16 => [16, 32, 64],
+            32 => [32, 64, 16],
+            _ => [64, 32, 16],
+        };
+        for candidate in candidates {
+            let image = match Self::load(&directory.join(format!("{stem}-{candidate}.bmp"))) {
+                Ok(image) => image,
+                Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                Err(error) => return Err(error),
+            };
+            if image.width == size && image.height == size {
+                return Ok(image);
+            }
+            let positions: Vec<usize> = (0..size)
+                .flat_map(|y| {
+                    let width = image.width;
+                    let row = (y * image.height / size) * width;
+                    (0..size).map(move |x| (row + x * width / size) as usize)
+                })
+                .collect();
+            return Ok(Self {
+                pixels: positions
+                    .iter()
+                    .map(|position| image.pixels[*position])
+                    .collect(),
+                indices: image.indices.map(|indices| {
+                    Rc::from(
+                        positions
+                            .iter()
+                            .map(|position| indices[*position])
+                            .collect::<Vec<_>>()
+                            .into_boxed_slice(),
+                    )
+                }),
+                width: size,
+                height: size,
+            });
+        }
+        Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "icon resource is not installed",
+        ))
+    }
+
     fn decode(bytes: &[u8]) -> io::Result<Self> {
         let invalid = || io::Error::new(io::ErrorKind::InvalidData, "invalid shell BMP");
         if bytes.len() < 122 || &bytes[..2] != b"BM" {

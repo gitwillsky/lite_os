@@ -34,16 +34,15 @@ pub(super) fn try_elf_arc<T>(value: T) -> Result<Arc<T>, ElfLoadError> {
     Arc::try_new(value).map_err(|_| ElfLoadError::OutOfMemory)
 }
 
-pub(super) fn process_name(path: &[u8]) -> Result<Vec<u8>, ElfLoadError> {
+pub(super) fn process_name(path: &[u8]) -> [u8; 16] {
     let name = path
         .rsplit(|byte| *byte == b'/')
         .find(|component| !component.is_empty())
         .unwrap_or(path);
-    let mut comm = Vec::new();
-    comm.try_reserve_exact(name.len().min(15))
-        .map_err(|_| ElfLoadError::OutOfMemory)?;
-    comm.extend_from_slice(&name[..name.len().min(15)]);
-    Ok(comm)
+    let mut comm = [0; 16];
+    let length = name.len().min(15);
+    comm[..length].copy_from_slice(&name[..length]);
+    comm
 }
 
 impl TaskControlBlock {
@@ -105,7 +104,7 @@ impl TaskControlBlock {
         new_address_space.set_dumpable(false);
         let prepared_context =
             new_address_space.prepare_context_rebind(&self.thread().user_context, TRAP_CONTEXT)?;
-        let new_comm = process_name(loaded.execfn())?;
+        let new_comm = process_name(loaded.execfn());
 
         preparation.terminate_siblings(self)?;
         // de_thread 后复制实时 files/sighand；不能恢复早期 snapshot，遗漏 sibling 最后修改。
@@ -150,7 +149,11 @@ impl TaskControlBlock {
         if let Some(prepared) = prepared_context {
             prepared.apply(&self.thread().user_context);
         }
-        let retired_comm = core::mem::replace(&mut *self.process().comm.lock(), new_comm);
+        *self.thread().comm.lock() = new_comm;
+        let retired_comm = core::mem::replace(
+            &mut *self.process().leader_comm.lock(),
+            self.thread().comm.clone(),
+        );
         drop(retired_comm);
         self.commit_file_table_unshare(detached_files);
         let retired_files_alias = core::mem::replace(
@@ -209,40 +212,21 @@ impl TaskControlBlock {
         Ok(())
     }
 
-    /// `prctl(PR_SET_NAME)`：把进程名换成 `name`（至多 15 字节，遇 NUL 截断）。
-    ///
-    /// Linux 的名称属于线程；本内核的 comm 只有一份进程级 owner（`/proc/<pid>/comm` 与
-    /// `/proc/<pid>/task/<tid>/comm` 共读它），所以同一进程里最后一次设置生效。
-    ///
-    /// # Errors
-    ///
-    /// Vec backing OOM 时返回 `MemoryError::OutOfMemory`，名称不变。
-    pub(crate) fn set_comm(&self, name: &[u8]) -> Result<(), MemoryError> {
+    /// `prctl(PR_SET_NAME)`：仅替换 calling Thread 的 comm，遇 NUL 或 15 字节截断，不分配。
+    pub(crate) fn set_comm(&self, name: &[u8]) {
         let length = name
             .iter()
             .position(|byte| *byte == 0)
             .unwrap_or(name.len())
             .min(15);
-        let mut comm = Vec::new();
-        comm.try_reserve_exact(length)
-            .map_err(|_| MemoryError::OutOfMemory)?;
-        comm.extend_from_slice(&name[..length]);
-        let retired = core::mem::replace(&mut *self.process().comm.lock(), comm);
-        drop(retired);
-        Ok(())
+        let mut comm = [0; 16];
+        comm[..length].copy_from_slice(&name[..length]);
+        *self.thread().comm.lock() = comm;
     }
 
-    /// `prctl(PR_GET_NAME)` 的 16 字节 NUL 填充名称。
-    ///
-    /// # Errors
-    ///
-    /// 快照分配失败返回 `MemoryError::OutOfMemory`。
-    pub(crate) fn comm_buffer(&self) -> Result<[u8; 16], MemoryError> {
-        let snapshot = self.process().comm_snapshot()?;
-        let mut buffer = [0u8; 16];
-        let length = snapshot.len().min(15);
-        buffer[..length].copy_from_slice(&snapshot[..length]);
-        Ok(buffer)
+    /// `prctl(PR_GET_NAME)` 的 calling Thread 名称，固定 16 字节并以 NUL 填充。
+    pub(crate) fn comm_buffer(&self) -> [u8; 16] {
+        *self.thread().comm.lock()
     }
 
     /// get_task_mm 的真实 main ELF path；kernel/退出 Thread 无 mm，不读 sibling 或 zombie Process 的影子资源。
@@ -257,25 +241,20 @@ impl TaskControlBlock {
 }
 
 impl super::Process {
-    /// 冻结同一 comm owner 的字节；预留和失败 Drop 在 spin guard 外，不缓存第二份名称。
-    ///
-    /// # Errors
-    ///
-    /// Vec backing OOM 时返回 MemoryError::OutOfMemory，Process 名称不改变。
+    /// 冻结 leader 的名称别名；释放名称锁后才分配输出，不 pin leader 执行资源。
+    /// 输出分配失败返回 OutOfMemory，不改变名称。
     pub(super) fn comm_snapshot(&self) -> Result<Vec<u8>, MemoryError> {
+        let owner = self.leader_comm.lock().clone();
+        let comm = *owner.lock();
+        let length = comm
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(comm.len());
         let mut snapshot = Vec::new();
-        loop {
-            let needed = self.comm.lock().len();
-            snapshot
-                .try_reserve_exact(needed)
-                .map_err(|_| MemoryError::OutOfMemory)?;
-            let comm = self.comm.lock();
-            if comm.len() > snapshot.capacity() {
-                drop(comm);
-                continue;
-            }
-            snapshot.extend_from_slice(&comm);
-            return Ok(snapshot);
-        }
+        snapshot
+            .try_reserve_exact(length)
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        snapshot.extend_from_slice(&comm[..length]);
+        Ok(snapshot)
     }
 }

@@ -9,7 +9,7 @@ mod task_access;
 
 /// Process owner 向 task façade 发布的 procfs 统计快照。
 pub(in crate::task) struct ProcessStatistics {
-    /// Process 共享 comm。
+    /// 原 leader 的 comm；exec 后为 survivor 名称，其他线程重命名不影响。
     pub(in crate::task) comm: Vec<u8>,
     /// Process 创建时的 monotonic 微秒时间。
     pub(in crate::task) start_time_us: u64,

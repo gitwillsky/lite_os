@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+network-config = { path = "../../libraries/network-config" }
 liteos-runtime = { path = "../../libraries/liteos-runtime" }
 sndvol = { path = "../../libraries/sndvol" }
 sound = { path = "../../libraries/sound" }

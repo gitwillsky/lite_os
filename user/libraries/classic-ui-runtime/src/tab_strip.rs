@@ -20,6 +20,23 @@ pub struct TabStrip {
 }
 
 impl TabStrip {
+    /// 页面自然尺寸加同一套表头与边框，所有可见页取最大值以免切页时改变窗口大小。
+    pub fn outer_size(line: i32, page: (i32, i32), headers: i32) -> (i32, i32) {
+        (
+            (page.0 + 2 * BODY_BORDER).max(headers + 2 * SELECTED_OFFSET),
+            page.1 + 2 * BODY_BORDER + Self::header_height(line),
+        )
+    }
+
+    /// 测量页面时扣除实际主体边框；与 page_area 使用相同宽度。
+    pub fn page_width(width: i32) -> i32 {
+        (width - 2 * BODY_BORDER).max(0)
+    }
+
+    fn header_height(line: i32) -> i32 {
+        line + SELECTED_OFFSET + 2 * VERTICAL_PADDING
+    }
+
     /// 按 comctl32 规则排列表头。
     ///
     /// # Parameters
@@ -31,7 +48,7 @@ impl TabStrip {
     /// 表头从 `rect.x + 2` 开始，选中项外扩后与页面左边框同列；总宽超出时按自然宽度比例压缩，
     /// 文字由绘制时截断。这是没有多行表头/滚动箭头的已知范围缩减。
     pub fn new(rect: Rect, line: i32, pages: &[(u64, i32)]) -> Self {
-        let height = line + SELECTED_OFFSET + 2 * VERTICAL_PADDING;
+        let height = Self::header_height(line);
         let body = Rect::new(
             rect.x,
             rect.y + height,

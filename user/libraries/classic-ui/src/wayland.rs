@@ -8,6 +8,7 @@ pub use foreign::{Toplevel, ToplevelId, ToplevelRequest};
 mod layer;
 mod security;
 mod transport;
+mod window_size;
 
 use keyboard::Modifiers;
 pub use layer::{KeyboardInteractivity, Layer, LayerSettings, layer_anchor};
@@ -541,40 +542,6 @@ impl Display {
     /// # Errors
     ///
     /// 窗口不存在、编码或 socket 失败。
-    /// 声明窗口是固定尺寸（最小与最大都等于当前尺寸）。合成器据此把它当作对话框：没有父窗口时放在屏幕中央，
-    /// 而不是像可调整大小的窗口那样层叠。应在首次映射前调用。
-    ///
-    /// # Errors
-    ///
-    /// 目标不是 xdg toplevel，或编码/socket 失败。
-    pub fn fix_size(&mut self, window: WindowId) -> io::Result<()> {
-        let Some(state) = self.windows.get(&window) else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "unknown window",
-            ));
-        };
-        let Role::Toplevel { toplevel, .. } = &state.role else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "fix_size needs an xdg toplevel",
-            ));
-        };
-        let (toplevel, width, height) = (
-            *toplevel,
-            state.configuration.width,
-            state.configuration.height,
-        );
-        let writer = &mut self.transport.writer;
-        xdg_toplevel::Request::SetMinSize { width, height }
-            .encode(toplevel, writer)
-            .map_err(io::Error::other)?;
-        xdg_toplevel::Request::SetMaxSize { width, height }
-            .encode(toplevel, writer)
-            .map_err(io::Error::other)?;
-        self.transport.flush()
-    }
-
     /// 把 `child` 设为 `parent` 的子窗口（`xdg_toplevel.set_parent`）：合成器把它居中在父窗口上。
     ///
     /// # Errors

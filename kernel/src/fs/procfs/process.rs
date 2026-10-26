@@ -62,6 +62,7 @@ pub(super) fn format_process_stat(
     format_task_stat(
         process,
         TaskStatFields {
+            comm: &process.comm,
             pid: process.pid.number_in(pid_view) as usize,
             has_mm: process.has_mm,
             state: process.state,
@@ -95,6 +96,7 @@ pub(super) fn format_thread_stat(
     format_task_stat(
         process,
         TaskStatFields {
+            comm: thread.comm(),
             pid: thread.tid.number_in(pid_view) as usize,
             has_mm: thread.has_mm,
             state: thread.state,
@@ -109,7 +111,8 @@ pub(super) fn format_thread_stat(
     )
 }
 
-struct TaskStatFields {
+struct TaskStatFields<'a> {
+    comm: &'a [u8],
     pid: usize,
     has_mm: bool,
     state: u8,
@@ -122,12 +125,12 @@ struct TaskStatFields {
 
 fn format_task_stat(
     process: &ProcProcessSnapshot,
-    task: TaskStatFields,
+    task: TaskStatFields<'_>,
     offsets: crate::namespace::TimeOffsets,
     pid_view: &crate::namespace::PidNamespace,
 ) -> Result<Vec<u8>, FileSystemError> {
     let comm = Sanitized {
-        bytes: &process.comm,
+        bytes: task.comm,
         forbidden: b"()\n",
     };
     let virtual_size = if task.has_mm {
@@ -235,6 +238,17 @@ pub(super) fn format_process_comm(
     ))
 }
 
+/// 将目标 Thread 的独立 comm 编码为带尾随换行的文本；分配错误原样返回。
+pub(super) fn format_thread_comm(thread: &ProcThreadSnapshot) -> Result<Vec<u8>, FileSystemError> {
+    proc_text(format_args!(
+        "{}\n",
+        Sanitized {
+            bytes: thread.comm(),
+            forbidden: b"\n"
+        }
+    ))
+}
+
 /// 将 Process owner 状态编码为已声明的 Linux status 字段。
 ///
 /// # Parameters
@@ -252,6 +266,7 @@ pub(super) fn format_process_status(
     format_task_status(
         process,
         TaskStatusFields {
+            comm: &process.comm,
             pid: &process.pid,
             state: process.state,
             credentials: &process.credentials,
@@ -282,6 +297,7 @@ pub(super) fn format_thread_status(
     format_task_status(
         process,
         TaskStatusFields {
+            comm: thread.comm(),
             pid: &thread.tid,
             state: thread.state,
             credentials: &thread.credentials,
@@ -294,6 +310,7 @@ pub(super) fn format_thread_status(
 }
 
 struct TaskStatusFields<'a> {
+    comm: &'a [u8],
     pid: &'a crate::namespace::PidIdentity,
     state: u8,
     credentials: &'a ProcCredentialSnapshot,
@@ -307,6 +324,7 @@ fn format_task_status(
     pid_view: &crate::namespace::PidNamespace,
 ) -> Result<Vec<u8>, FileSystemError> {
     let TaskStatusFields {
+        comm,
         pid,
         state,
         credentials,
@@ -314,7 +332,7 @@ fn format_task_status(
         fd_size,
     } = task;
     let comm = Sanitized {
-        bytes: &process.comm,
+        bytes: comm,
         forbidden: b"\t\n",
     };
     let state_name = match state {

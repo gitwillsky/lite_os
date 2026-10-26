@@ -660,6 +660,7 @@ fn process_snapshot(
             let (start_time_us, nice, priority, runtime_us) =
                 thread.thread_statistics(active_now_us);
             thread_snapshots.push(ProcThreadSnapshot {
+                comm: thread.comm_buffer(),
                 tid: thread.tid_identity(),
                 credentials: thread.credential_snapshot(),
                 has_mm: thread.has_mm(),
@@ -707,7 +708,11 @@ fn process_snapshot(
             .iter()
             .any(|thread| thread.tid.key() == pid.key())
         {
+            let mut comm = [0; 16];
+            let length = statistics.comm.len().min(15);
+            comm[..length].copy_from_slice(&statistics.comm[..length]);
             thread_snapshots.push(ProcThreadSnapshot {
+                comm,
                 tid: pid.clone(),
                 credentials: credentials.clone(),
                 has_mm: statistics.has_mm,
@@ -850,7 +855,11 @@ fn kernel_snapshot(
     threads
         .try_reserve_exact(1)
         .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
+    let mut thread_comm = [0; 16];
+    let length = comm.len().min(15);
+    thread_comm[..length].copy_from_slice(&comm[..length]);
     threads.push(ProcThreadSnapshot {
+        comm: thread_comm,
         tid: task.tid_identity(),
         has_mm: false,
         fd_size: 0,
@@ -936,23 +945,28 @@ impl crate::fs::NetLinkSource for KernelProcSource {
         &self,
         target: &crate::socket::NetNamespace,
     ) -> Result<alloc::vec::Vec<crate::fs::NetLinkSnapshot>, crate::fs::FileSystemError> {
-        let interfaces = crate::socket::interface_snapshots(target).map_err(|error| match error {
-            crate::socket::SocketError::NoMemory => crate::fs::FileSystemError::OutOfMemory,
-            _ => crate::fs::FileSystemError::IoError,
-        })?;
+        let interfaces =
+            crate::socket::interface_snapshots(target).map_err(|error| match error {
+                crate::socket::SocketError::NoMemory => crate::fs::FileSystemError::OutOfMemory,
+                _ => crate::fs::FileSystemError::IoError,
+            })?;
         let mut rows = alloc::vec::Vec::new();
         rows.try_reserve_exact(interfaces.len())
             .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
-        rows.extend(interfaces.into_iter().map(|snapshot| crate::fs::NetLinkSnapshot {
-            index: snapshot.index,
-            name: snapshot.name,
-            loopback: snapshot.loopback,
-            flags: snapshot.flags(),
-            mtu: snapshot.mtu,
-            mac: snapshot.mac,
-            up: snapshot.up,
-            driver: snapshot.driver,
-        }));
+        rows.extend(
+            interfaces
+                .into_iter()
+                .map(|snapshot| crate::fs::NetLinkSnapshot {
+                    index: snapshot.index,
+                    name: snapshot.name,
+                    loopback: snapshot.loopback,
+                    flags: snapshot.flags(),
+                    mtu: snapshot.mtu,
+                    mac: snapshot.mac,
+                    up: snapshot.up,
+                    driver: snapshot.driver,
+                }),
+        );
         Ok(rows)
     }
 }

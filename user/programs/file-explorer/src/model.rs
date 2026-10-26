@@ -470,7 +470,7 @@ impl Location {
             }
             Location::EntireNetwork => return Ok((Vec::new(), false)),
             Location::NetworkConnections => {
-                return Ok((connections(Path::new("/sys/class/net")), false));
+                return Ok((connections(), false));
             }
             Location::Directory(path) => {
                 let trash = self.is_recycle_bin();
@@ -514,64 +514,37 @@ impl Location {
 
 /// 网络和拨号连接：每个以太网类接口一项，按接口序号命名“本地连接”“本地连接 2”……（netshell 16022）。
 /// 状态取管理状态与载波（netshell 1047/1048/1050），设备名取 `device/uevent` 的驱动名，打开即“本地连接 状态”。
-fn connections(root: &Path) -> Vec<Item> {
-    let read = |name: &str, file: &str| {
-        fs::read_to_string(root.join(name).join(file))
-            .map(|text| text.trim().to_owned())
-            .unwrap_or_default()
-    };
-    let mut interfaces: Vec<(u64, String)> = fs::read_dir(root)
-        .into_iter()
-        .flatten()
-        .filter_map(|entry| {
-            let name = entry.ok()?.file_name().to_string_lossy().into_owned();
-            // ARPHRD_ETHER；回环（772）等其他链路类型不是“本地连接”。
-            (read(&name, "type") == "1")
-                .then(|| (read(&name, "ifindex").parse().unwrap_or(u64::MAX), name))
-        })
-        .collect();
-    interfaces.sort();
-    // 启用状态的 owner 是接口配置；配置不可读时按 Windows 默认（启用）显示。
-    let config =
-        network_config::Config::load(Path::new(network_config::CONFIG_PATH)).unwrap_or_default();
-    interfaces
+fn connections() -> Vec<Item> {
+    network_config::ethernet_links()
+        .unwrap_or_default()
         .into_iter()
         .enumerate()
-        .map(|(index, (_, interface))| {
-            let flags = u32::from_str_radix(read(&interface, "flags").trim_start_matches("0x"), 16)
-                .unwrap_or(0);
-            let enabled = config.interface(&interface).enabled && flags & 1 != 0;
-            let (status, icon) = if !enabled {
-                ("禁用", Icon::DisconnectedConnection)
-            } else if read(&interface, "carrier") != "1" {
-                ("网络电缆被拔出", Icon::DisconnectedConnection)
-            } else {
-                ("已启用", Icon::LocalConnection)
+        .map(|(index, link)| {
+            let enabled = link.state != network_config::LinkState::Disabled;
+            let (status, icon) = match link.state {
+                network_config::LinkState::Disabled => ("禁用", Icon::DisconnectedConnection),
+                network_config::LinkState::Disconnected => {
+                    ("网络电缆被拔出", Icon::DisconnectedConnection)
+                }
+                network_config::LinkState::Connected => ("已启用", Icon::LocalConnection),
             };
-            // 设备名取 `device/uevent` 的 DRIVER=（Linux 与 LiteOS sysfs 都提供）；没有设备目录时用接口名。
-            let device = read(&interface, "device/uevent")
-                .lines()
-                .find_map(|line| line.strip_prefix("DRIVER=").map(str::to_owned))
-                .filter(|driver| !driver.is_empty())
-                .unwrap_or_else(|| interface.clone());
             let name = if index == 0 {
                 "本地连接".to_owned()
             } else {
                 format!("本地连接 {}", index + 1)
             };
             Item {
-                // 双击：启用的连接打开“状态”，禁用的连接由资源管理器启用（netshell 的默认动词）。
                 launch: enabled.then(|| {
                     vec![
                         "/bin/control-panel".into(),
                         "network".into(),
-                        interface.clone(),
+                        link.interface.clone(),
                     ]
                 }),
                 details: Details::Connection {
                     status: status.into(),
-                    device,
-                    interface,
+                    device: link.driver,
+                    interface: link.interface,
                     enabled,
                 },
                 ..Item::new(name, icon, "LAN")

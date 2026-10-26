@@ -42,6 +42,8 @@ impl Art {
             "help-16",
             "my-documents-16",
             "control-panel-16",
+            "network-local-16",
+            "network-disconnected-16",
             "tray-volume-16",
             "tray-volume-muted-16",
         ] {
@@ -128,17 +130,49 @@ impl Art {
         }
     }
 }
-/// 任务按钮放不下、需要翻页的窗口数；翻页按钮只在这时出现，平时不占位。
-pub fn needs_paging(d: &Display, width: i32) -> bool {
-    d.toplevels().count() > ((width - 275) / 80).max(1) as usize
-}
-/// 任务栏命中区域序号：0 开始、1-2 快速启动、3-4 翻页、5 音量、6 时钟，其后是任务按钮。
+/// 任务栏命中区域序号：0 开始、1-2 快速启动、3-4 翻页、5 音量、6 时钟、7 网络，其后是任务按钮。
 pub const VOLUME: usize = 5;
 pub const CLOCK: usize = 6;
-pub const TASKS_FROM: usize = 7;
+pub const NETWORK: usize = 7;
+pub const TASKS_FROM: usize = 8;
 
+/// 通知区、翻页和任务按钮的共同几何；图标出现/消失与隐藏时钟时不保留空槽，不重叠。
+struct TaskbarLayout {
+    tray: Rect,
+    volume: Rect,
+    clock: Rect,
+    network: Rect,
+    tasks: Rect,
+    pagers: [Rect; 2],
+}
+fn taskbar_layout(s: &Desktop, d: &Display, width: i32) -> TaskbarLayout {
+    let network_width = if s.network.current().is_some() { 24 } else { 0 };
+    let clock_width = if s.settings.show_clock { 60 } else { 0 };
+    let tray_width = 4 + network_width + 24 + clock_width;
+    let tray = Rect::new((width - 2 - tray_width).max(0), 4, tray_width, 22);
+    let network = Rect::new(tray.x + 2, 4, network_width, 22);
+    let volume = Rect::new(network.right(), 4, 24, 22);
+    let clock = Rect::new(volume.right(), 4, clock_width, 22);
+    let mut tasks = Rect::new(134, 4, (tray.x - 4 - 134).max(0), 22);
+    let mut pagers = [Rect::new(0, 0, 0, 0); 2];
+    if d.toplevels().count() > (tasks.width / 80).max(1) as usize && tasks.width >= 40 {
+        tasks.width -= 40;
+        pagers = [
+            Rect::new(tasks.right(), 4, 18, 22),
+            Rect::new(tasks.right() + 20, 4, 18, 22),
+        ];
+    }
+    TaskbarLayout {
+        tray,
+        volume,
+        clock,
+        network,
+        tasks,
+        pagers,
+    }
+}
 pub fn task_ids(s: &Desktop, d: &Display, width: i32) -> Vec<ToplevelId> {
-    let count = ((width - 275) / 80).max(1) as usize;
+    let count = (taskbar_layout(s, d, width).tasks.width / 80).max(1) as usize;
     let total = d.toplevels().count();
     let page = s.task_page.min(total.saturating_sub(1) / count);
     d.toplevels()
@@ -147,34 +181,28 @@ pub fn task_ids(s: &Desktop, d: &Display, width: i32) -> Vec<ToplevelId> {
         .map(|(id, _)| id)
         .collect()
 }
-/// 翻页按钮的命中矩形；不需要翻页时为空矩形（永远不会被命中）。
-fn pager(d: &Display, width: i32, x: i32) -> Rect {
-    if needs_paging(d, width) {
-        Rect::new(x, 4, 18, 22)
-    } else {
-        Rect::new(0, 0, 0, 0)
-    }
-}
 pub fn areas(s: &Desktop, d: &Display, id: WindowId, c: Configuration) -> Vec<Rect> {
     if id == s.background {
         return (0..s.icons.items.len()).map(|i| s.icons.rect(i)).collect();
     }
     if id == s.taskbar {
+        let layout = taskbar_layout(s, d, c.width);
         let mut result = vec![
             Rect::new(2, 3, 60, 23),
             Rect::new(72, 4, 24, 22),
             Rect::new(99, 4, 24, 22),
-            pager(d, c.width, c.width - 105),
-            pager(d, c.width, c.width - 86),
-            Rect::new(c.width - 88, 4, 24, 22),
-            Rect::new(c.width - 62, 4, 60, 22),
+            layout.pagers[0],
+            layout.pagers[1],
+            layout.volume,
+            layout.clock,
+            layout.network,
         ];
         let ids = task_ids(s, d, c.width);
-        let width = ((c.width - 275) / ids.len().max(1) as i32).clamp(1, 160);
+        let width = (layout.tasks.width / ids.len().max(1) as i32).clamp(0, 160);
         result.extend(
-            ids.iter()
-                .enumerate()
-                .map(|(i, _)| Rect::new(134 + i as i32 * width, 4, width - 3, 22)),
+            ids.iter().enumerate().map(|(i, _)| {
+                Rect::new(layout.tasks.x + i as i32 * width, 4, (width - 3).max(0), 22)
+            }),
         );
         return result;
     }
@@ -274,7 +302,7 @@ pub fn frame(
         for (i, name) in ["show-desktop-16", "documents-16"].iter().enumerate() {
             art.icon(&mut p, name, rects[i + 1].x + 4, 7);
         }
-        if needs_paging(d, c.width) {
+        if !rects[3].is_empty() {
             for (i, title) in ["‹", "›"].iter().enumerate() {
                 p.push_button(rects[i + 3], title, ButtonState::default());
             }
@@ -289,6 +317,18 @@ pub fn frame(
             rects[VOLUME].x + 4,
             7,
         );
+        if let Some(link) = s.network.current() {
+            art.icon(
+                &mut p,
+                if link.state == network_config::LinkState::Connected {
+                    "network-local-16"
+                } else {
+                    "network-disconnected-16"
+                },
+                rects[NETWORK].x + 4,
+                7,
+            );
+        }
         for (i, id) in task_ids(s, d, c.width).iter().enumerate() {
             if let Some((_, info)) = d.toplevels().find(|(target, _)| target == id) {
                 let rect = rects[i + TASKS_FROM];
@@ -320,12 +360,8 @@ pub fn frame(
             }
         }
         let clock = rects[CLOCK];
-        // 托盘是一个凹陷的整体：音量图标与时钟同在一个框里，之间不留空隙；隐藏时钟时框收窄到只剩图标。
-        let tray = if s.settings.show_clock {
-            Rect::new(c.width - 90, 4, 88, 22)
-        } else {
-            Rect::new(c.width - 90, 4, 28, 22)
-        };
+        // 通知区框与图标、时钟的命中使用同一个版式。
+        let tray = taskbar_layout(s, d, c.width).tray;
         p.edge(tray, Edge::SunkenOuter);
         if s.settings.show_clock {
             p.text_centered(

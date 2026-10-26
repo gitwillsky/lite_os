@@ -2,6 +2,7 @@
 extern crate liteos_runtime as _;
 mod dialogs;
 mod icons;
+mod network;
 mod paint;
 mod popups;
 mod start;
@@ -63,6 +64,7 @@ struct Desktop {
     home: PathBuf,
     message: String,
     volume: sndvol::Volume,
+    network: network::Network,
     /// 每用户桌面设置（任务栏选项、背景色）与它被读取时的修改时间；控制面板改写文件后据此重新应用。
     settings: desktop_settings::Settings,
     settings_stamp: Option<std::time::SystemTime>,
@@ -117,6 +119,7 @@ impl Desktop {
             home,
             message: String::new(),
             volume: sndvol::Volume::open(),
+            network: network::Network::new()?,
             settings,
             settings_stamp: desktop_settings::Settings::stamp(),
             taskbar_hidden: false,
@@ -401,6 +404,7 @@ impl Desktop {
         let items = if window == self.taskbar {
             match hit {
                 Some(paint::VOLUME) => popups::tray_volume_items(),
+                Some(paint::NETWORK) => return Ok(()),
                 Some(paint::CLOCK) => return Ok(()),
                 Some(n) if n >= paint::TASKS_FROM => {
                     let ids = paint::task_ids(self, display, c.width);
@@ -711,8 +715,17 @@ impl Desktop {
                                     self.clicked = Some((paint::CLOCK, Instant::now()));
                                 }
                             }
+                            paint::NETWORK => {
+                                if let Some(link) = self.network.current() {
+                                    let interface = link.interface.clone();
+                                    let mut command = Command::new("/bin/control-panel");
+                                    command.args(["network", &interface]);
+                                    self.launch(command);
+                                }
+                            }
                             paint::VOLUME => {
-                                let center = c.width - 76;
+                                let rect = paint::areas(self, display, window, c)[paint::VOLUME];
+                                let center = rect.x + rect.width / 2;
                                 self.open_volume_panel(display, art, center)?
                             }
                             n => {
@@ -803,6 +816,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             state.event(&mut display, &mut art, event)?;
         }
         dirty |= state.volume.poll();
+        dirty |= state.network.poll();
         dirty |= state.poll_settings(&mut display)?;
         state.tick_auto_hide(&mut display)?;
         if std::mem::take(&mut state.apps_changed) {

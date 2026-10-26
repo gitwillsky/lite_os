@@ -15,6 +15,8 @@ pub(crate) struct ProcCredentialSnapshot {
 
 #[derive(Clone)]
 pub(crate) struct ProcThreadSnapshot {
+    /// 此线程的独立 Linux comm，固定 16 字节 NUL 填充。
+    pub(crate) comm: [u8; 16],
     pub(crate) tid: Arc<crate::namespace::PidIdentity>,
     pub(crate) has_mm: bool,
     pub(crate) fd_size: usize,
@@ -26,6 +28,16 @@ pub(crate) struct ProcThreadSnapshot {
     pub(crate) start_time_us: u64,
     pub(crate) last_cpu: usize,
     pub(crate) io: ProcIoSnapshot,
+}
+
+impl ProcThreadSnapshot {
+    pub(super) fn comm(&self) -> &[u8] {
+        &self.comm[..self
+            .comm
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(self.comm.len())]
+    }
 }
 
 /// procfs adapter 使用的 Linux task I/O counters。

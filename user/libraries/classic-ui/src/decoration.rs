@@ -50,6 +50,10 @@ impl Decoration {
         }
     }
 
+    pub(crate) fn fixed(&self) -> bool {
+        self.kind == FrameKind::Fixed
+    }
+
     /// 当前配置下客户区能否显示并使用尺寸手柄：可缩放、未最大化、未全屏（与 USER32 隐藏手柄的条件一致）。
     pub fn size_grip_allowed(&self, configuration: Configuration) -> bool {
         self.kind == FrameKind::Resizable && !configuration.maximized && !configuration.fullscreen

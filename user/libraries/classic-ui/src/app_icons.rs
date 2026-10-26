@@ -22,7 +22,7 @@ impl AppIcons {
     pub fn load(size: u32) -> Self {
         let directory = Path::new(UI_DIRECTORY);
         let load = |name: &str| {
-            Bitmap::load(&directory.join(format!("{name}-{size}.bmp")))
+            Bitmap::load_icon(directory, name, size as i32)
                 .ok()
                 .map(Rc::new)
         };

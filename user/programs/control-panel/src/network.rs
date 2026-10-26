@@ -44,47 +44,20 @@ fn connected_seconds() -> Option<u64> {
     Some((uptime as u64).saturating_sub(start / 100))
 }
 
-/// 以太网接口在 sysfs 中的属性。
-pub fn attribute(interface: &str, file: &str) -> String {
-    fs::read_to_string(format!("/sys/class/net/{interface}/{file}")).unwrap_or_default()
-}
-
-/// 第一个以太网（ARPHRD_ETHER）接口名。
-pub fn first_ethernet() -> Option<String> {
-    fs::read_dir("/sys/class/net")
-        .ok()?
-        .flatten()
-        .find_map(|entry| {
-            let name = entry.file_name().to_string_lossy().into_owned();
-            (attribute(&name, "type").trim() == "1").then_some(name)
-        })
-}
-
-pub struct Data {
-    interface: String,
-    enabled: bool,
-    carrier: bool,
-}
-
+pub struct Data(network_config::Link);
 impl Data {
-    /// 读取接口 `interface`（缺省为第一个以太网接口）的状态。
+    /// 从共享链路快照选择指定接口，缺省为第一个以太网接口；读取失败保留诊断。
     pub fn read(interface: Option<String>) -> Result<Self, String> {
-        let interface = interface.or_else(first_ethernet).ok_or("没有网络连接")?;
-        let flags = u32::from_str_radix(
-            attribute(&interface, "flags")
-                .trim()
-                .trim_start_matches("0x"),
-            16,
-        )
-        .unwrap_or(0);
-        let config =
-            network_config::Config::load(std::path::Path::new(network_config::CONFIG_PATH))
-                .map_err(|error| error.to_string())?;
-        Ok(Self {
-            enabled: config.interface(&interface).enabled && flags & 1 != 0,
-            carrier: attribute(&interface, "carrier").trim() == "1",
-            interface,
-        })
+        network_config::ethernet_links()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|link| {
+                interface
+                    .as_ref()
+                    .is_none_or(|name| name == &link.interface)
+            })
+            .map(Self)
+            .ok_or_else(|| "没有网络连接".into())
     }
 }
 
@@ -135,12 +108,10 @@ impl Network {
         let mut controls = Vec::new();
         // “连接”分组：状态、持续时间、速度（netshell 1040–1050）。
         let connection = group(&general, "连接")?;
-        let status = if !data.enabled {
-            "禁用"
-        } else if data.carrier {
-            "已连接上"
-        } else {
-            "网络电缆被拔出"
+        let status = match data.0.state {
+            network_config::LinkState::Disabled => "禁用",
+            network_config::LinkState::Connected => "已连接上",
+            network_config::LinkState::Disconnected => "网络电缆被拔出",
         };
         let mut duration = None;
         // 网络设备不报告链路速率（Linux 的 speed 属性在 virtio 上同样未知）。
@@ -194,7 +165,7 @@ impl Network {
         };
         let properties = child(&buttons, Kind::Button, "属性(P)", size)?;
         let disable = child(&buttons, Kind::Button, "禁用(D)", size)?;
-        if !data.enabled {
+        if data.0.state == network_config::LinkState::Disabled {
             disable.set_state(state::DISABLED)?;
         }
         controls.extend([general, connection, activity, buttons]);
@@ -203,7 +174,7 @@ impl Network {
             .expect("two counter rows");
         Ok(Self {
             _controls: controls,
-            interface: data.interface,
+            interface: data.0.interface,
             duration: duration.expect("duration row"),
             bytes,
             errors,

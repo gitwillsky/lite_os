@@ -630,7 +630,7 @@ impl Context {
         };
         for host in self.windows.values_mut() {
             let protocol = host.frame.window();
-            layout_record(host, &self.display, &mut self.resources)?;
+            layout_record(host, &mut self.display, &mut self.resources)?;
             let body = &mut host.body;
             host.frame.paint(
                 &mut self.display,
@@ -763,7 +763,7 @@ impl Context {
 
 fn layout_record(
     host: &mut WindowRecord,
-    display: &Display,
+    display: &mut Display,
     resources: &mut Resources,
 ) -> io::Result<()> {
     let protocol = host.frame.window();
@@ -783,6 +783,9 @@ fn layout_record(
             let surface = canvas::Surface::new(&mut scratch, 1, 1, 1).expect("probe surface");
             let probe =
                 classic_ui::Painter::new(surface, resources.theme(), &font, configuration.scale);
+            let preferred = tree.preferred_size(bounds.width, &probe);
+            host.frame.fit_content(display, preferred.1)?;
+            let bounds = host.frame.client_rect(display).expect("configured window");
             tree.layout(bounds, &probe);
         }
         let allowed = host.frame.size_grip_allowed(display);
@@ -803,7 +806,7 @@ impl Context {
             .windows
             .get_mut(&window)
             .ok_or_else(|| invalid("unknown window"))?;
-        layout_record(host, &self.display, &mut self.resources)
+        layout_record(host, &mut self.display, &mut self.resources)
     }
     pub(super) fn color(&self, role: u32) -> io::Result<u32> {
         use classic_theme::SystemColor as C;

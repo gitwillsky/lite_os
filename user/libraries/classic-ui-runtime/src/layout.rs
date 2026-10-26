@@ -25,6 +25,16 @@ impl Tree {
             self.focus_next(false);
         }
     }
+    /// 按当前字体与可用宽度量出整棵可见树的首选尺寸；窗口与实际排版消费同一自然尺寸规则。
+    pub(super) fn preferred_size(&self, width: i32, font: &Painter<'_>) -> (i32, i32) {
+        self.roots()
+            .into_iter()
+            .filter(|id| self.nodes[id].visible())
+            .map(|id| self.natural(id, width, font, font.scale()))
+            .fold((0, 0), |size, child| {
+                (size.0.max(child.0), size.1.saturating_add(child.1))
+            })
+    }
     fn natural(&self, id: u64, available_width: i32, font: &Painter<'_>, scale: i32) -> (i32, i32) {
         let node = &self.nodes[&id];
         // 标签/链接可指定派生字体：度量必须与绘制使用同一份解析结果。
@@ -99,10 +109,29 @@ impl Tree {
                 };
                 (width, height)
             }
-            widget::LINK => (width - 12, line),
+            // 静态文字只占字体行盒；按钮/编辑框的留白不能隐式加在每个标签上。
+            widget::LABEL | widget::LINK => (width - 12, line),
             widget::COMBO => (160, line + 10),
             widget::LIST | widget::TREE | widget::TEXT_EDITOR | widget::CANVAS => (160, 100),
-            widget::TABS => (160, 120),
+            widget::TABS => {
+                let page_width = super::tab_strip::TabStrip::page_width(
+                    (available_width - node.layout.padding * 2).max(0),
+                );
+                let page = children
+                    .iter()
+                    .map(|id| self.natural(*id, page_width, font, scale))
+                    .fold((0, 0), |size, child| {
+                        (size.0.max(child.0), size.1.max(child.1))
+                    });
+                let headers = children
+                    .iter()
+                    .map(|id| {
+                        ((font.text_width(self.nodes[id].text(), false) + scale - 1) / scale + 20)
+                            .max(48)
+                    })
+                    .sum();
+                super::tab_strip::TabStrip::outer_size(line, page, headers)
+            }
             widget::TOOLBAR => node
                 .toolbar
                 .as_ref()

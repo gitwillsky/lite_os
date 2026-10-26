@@ -3,6 +3,9 @@
 //! 支持的语法：`auto <接口>...`、`iface <接口> inet dhcp|static|loopback|manual`，以及 static/dhcp 节下的
 //! `address`、`netmask`、`gateway` 与 resolvconf 约定的 `dns-nameservers`。不认识的节内选项原样保留，
 //! 写回时不丢失。配置里没有的以太网接口按 Windows 默认处理：启用、自动获得 IP 与 DNS。
+mod links;
+pub use links::{Link, LinkState, ethernet_links};
+
 use std::{
     fs,
     io::{self, Write},

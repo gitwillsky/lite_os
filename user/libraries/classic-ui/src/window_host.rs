@@ -62,6 +62,26 @@ impl WindowHost {
             .configuration(self.window)
             .map(|configuration| self.decoration.client_rect(configuration))
     }
+    /// 固定对话框保持声明宽度，按该宽度下的内容高度扩展；外框/标题栏由当前装饰几何补齐。
+    /// 可缩放窗口保持用户尺寸，过长的单行标签继续按控件契约截断。
+    /// 返回是否扩大并失效；Display 的协议或尺寸错误原样返回。
+    pub fn fit_content(&mut self, display: &mut Display, height: i32) -> io::Result<bool> {
+        if !self.decoration.fixed() {
+            return Ok(false);
+        }
+        let Some(configuration) = display.configuration(self.window) else {
+            return Ok(false);
+        };
+        let client = self.decoration.client_rect(configuration);
+        let outer = (
+            configuration.width,
+            configuration.height + (height - client.height).max(0),
+        );
+        let grown = display.grow_fixed_size(self.window, outer)?;
+        self.dirty |= grown;
+        Ok(grown)
+    }
+
     /// 处理标准装饰与失效；不属于本窗口的事件被忽略，协议失败返回错误。
     pub fn event(&mut self, display: &mut Display, event: &Event) -> io::Result<HostEvent> {
         if event.window != self.window {

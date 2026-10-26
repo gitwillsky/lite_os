@@ -3,7 +3,7 @@
 //! 草稿是 `/etc/network/interfaces` 中该接口的配置；“确定”后原子写回并让 network-service 重新配置接口。
 //! 组件列表只有 Internet 协议 (TCP/IP)：系统没有 Microsoft 网络客户端、文件和打印机共享等组件，安装/卸载与
 //! 网卡“配置”没有对应后端而禁用；“高级”TCP/IP 设置（多地址、WINS、IP 筛选）同样禁用。
-use crate::{Activity, Apply, Page, Response, child, group, ip_address::IpAddress, network};
+use crate::{Activity, Apply, Page, Response, child, group, ip_address::IpAddress};
 use liteos_ui::{
     Dialogs, Event, EventKind, Layout, PropertySheet, SheetStyle, ValidationError, Widget,
     WidgetKind as Kind, state,
@@ -18,6 +18,32 @@ fn io(error: std::io::Error) -> liteos_ui::Error {
     liteos_ui::Error::invalid(error.to_string())
 }
 
+/// 后台读取的连接属性；界面构建不再执行配置文件与 sysfs I/O。
+pub struct Data {
+    saved: Interface,
+    driver: String,
+}
+impl Data {
+    pub fn read(interface: Option<String>) -> Result<Self, String> {
+        let link = network_config::ethernet_links()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|link| {
+                interface
+                    .as_ref()
+                    .is_none_or(|name| name == &link.interface)
+            })
+            .ok_or("没有网络连接")?;
+        let saved = Config::load(Path::new(CONFIG_PATH))
+            .map_err(|error| error.to_string())?
+            .interface(&link.interface);
+        Ok(Self {
+            saved,
+            driver: link.driver,
+        })
+    }
+}
+
 pub struct Connection {
     _controls: Vec<Widget>,
     components: Widget,
@@ -30,14 +56,8 @@ pub struct Connection {
 }
 
 impl Connection {
-    pub fn build(
-        sheet: &PropertySheet,
-        interface: String,
-        dialogs: Dialogs,
-    ) -> liteos_ui::Result<Self> {
-        let saved = Config::load(Path::new(CONFIG_PATH))
-            .map_err(io)?
-            .interface(&interface);
+    pub fn build(sheet: &PropertySheet, data: Data, dialogs: Dialogs) -> liteos_ui::Result<Self> {
+        let Data { saved, driver } = data;
         let page = sheet.page("常规")?;
         let mut controls = Vec::new();
         controls.push(child(&page, Kind::Label, "连接时使用:", Layout::default())?);
@@ -54,10 +74,6 @@ impl Connection {
             },
         )?;
         adapter.set_state(state::CLIENT_EDGE)?;
-        let driver = network::attribute(&interface, "device/uevent")
-            .lines()
-            .find_map(|line| line.strip_prefix("DRIVER=").map(str::to_owned))
-            .unwrap_or_else(|| interface.clone());
         controls.push(child(
             &adapter,
             Kind::Image,
@@ -127,14 +143,14 @@ impl Connection {
             Layout::default(),
         )?;
         description.set_state(state::WRAP)?;
-        // 系统托盘没有连接图标。
+        // 当前通知区域汇总显示网络状态，单接口开关尚未提供。
         let tray = child(
             &page,
             Kind::CheckBox,
             "连接后在任务栏中显示图标(W)",
             Layout::default(),
         )?;
-        tray.set_state(state::DISABLED)?;
+        tray.set_state(state::DISABLED | state::CHECKED)?;
         controls.extend([
             adapter,
             configure_row,

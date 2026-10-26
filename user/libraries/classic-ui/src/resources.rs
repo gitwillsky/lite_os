@@ -70,11 +70,12 @@ impl Resources {
         if let Some(image) = self.images.get(&key) {
             return image.clone();
         }
-        let image = crate::Bitmap::load(&Path::new("/usr/share/liteos/ui").join(if size == 0 {
-            format!("{stem}.bmp")
+        let directory = Path::new("/usr/share/liteos/ui");
+        let image = if size == 0 {
+            crate::Bitmap::load(&directory.join(format!("{stem}.bmp")))
         } else {
-            format!("{stem}-{size}.bmp")
-        }))
+            crate::Bitmap::load_icon(directory, stem, size)
+        }
         .ok()
         .map(Rc::new);
         // OWNER: context 缓存资源读取（包括缺失结果）；活跃控件的 Rc 不受逐出影响。

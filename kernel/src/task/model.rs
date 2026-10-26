@@ -158,6 +158,10 @@ pub(crate) enum StopResume {
 }
 #[derive(Debug)]
 struct ThreadContext {
+    // OWNER: 此 Thread 独占 16 字节 Linux comm；clone 拷贝 caller 的值，不共享 sibling 的可变名称。
+    // Process 只保留 leader 的同一 Arc，退出保留名称而不 pin TCB/mm；exec 重指 survivor。
+    // FAILURE: 进程级可变名称会被 pthread_setname_np 覆盖，使 /proc 把后台 worker 当成应用名称。
+    comm: Arc<Mutex<[u8; 16]>>,
     // OWNER: binding 先于 TaskControlBlock.execution 中的 kernel stack backing 析构；正常退出/
     // rollback 还会显式 retire，字段顺序保证兜底 drop 也先销毁裸 pointer wrapper，再解除
     // AArch64 kernel-stack mapping。
@@ -217,8 +221,9 @@ struct ParentDeathState {
 /// Process 级资源 owner；graph 保留至 reap，各 Thread 的可退休 handle 仍决定实际资源 lifetime。
 pub(in crate::task) struct Process {
     tgid: ProcessId,
-    // OWNER: Process 独占 Linux comm 与进程创建时刻；fork 创建新时刻，exec 原子替换 comm。
-    comm: Mutex<Vec<u8>>,
+    // OWNER: 只别名原 leader 的同一 comm owner；读取先 clone Arc 再释放外锁，不嵌套名称锁。
+    // 原 leader 退出仍保留 16 字节名称；exec 将只读别名重指 survivor，不复制可变状态。
+    leader_comm: Mutex<Arc<Mutex<[u8; 16]>>>,
     start_time_us: u64,
     // OWNER: 只别名原 leader 的同一 mm handle；exit 后 None 不保活 VMA，exec retarget caller。
     leader_mm: Mutex<MmHandle>,
@@ -522,9 +527,10 @@ impl TaskControlBlock {
         let signal_handlers =
             ProcessSignalState::try_default_handlers().map_err(|_| ElfLoadError::OutOfMemory)?;
         let signal_mask = try_elf_arc(Mutex::new(0))?;
+        let comm = try_elf_arc(Mutex::new(process_name(loaded.execfn())))?;
         let process = try_elf_arc(Process {
             tgid: pid,
-            comm: Mutex::new(process_name(loaded.execfn())?),
+            leader_comm: Mutex::new(comm.clone()),
             start_time_us,
             leader_mm: Mutex::new(mm.clone()),
             leader_scheduler: Mutex::new(scheduling.clone()),
@@ -548,6 +554,7 @@ impl TaskControlBlock {
             kind: TaskKind::User {
                 process,
                 thread: ThreadContext {
+                    comm,
                     mm,
                     user_context,
                     kernel_trap_handler,
@@ -616,6 +623,8 @@ impl TaskControlBlock {
         if parameters.stack & 0xf != 0 {
             return Err(MemoryError::InvalidRange);
         }
+        let comm =
+            Arc::try_new(Mutex::new(self.comm_buffer())).map_err(|_| MemoryError::OutOfMemory)?;
         let inherited_credentials = self.thread().credentials.lock().clone();
         let credentials = Arc::try_new(Mutex::new(inherited_credentials))
             .map_err(|_| MemoryError::OutOfMemory)?;
@@ -667,6 +676,7 @@ impl TaskControlBlock {
             kind: TaskKind::User {
                 process: self.process().clone(),
                 thread: ThreadContext {
+                    comm,
                     mm,
                     user_context,
                     kernel_trap_handler: self.thread().kernel_trap_handler,

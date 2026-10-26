@@ -186,7 +186,7 @@ impl ContextMenu {
                     }
             })
             .sum::<i32>()
-            + 4;
+            + 2 * classic_ui::MenuMetrics::MARGIN;
         let x = if origin.0 + size.width > screen.0 {
             origin.0 - size.width
         } else {
@@ -207,7 +207,7 @@ impl ContextMenu {
 
     /// 各项的行矩形（含分隔线占位的项，矩形只覆盖项本身）。
     pub fn rows(&self) -> Vec<Rect> {
-        let mut y = self.rect.y + 2;
+        let mut y = self.rect.y + classic_ui::MenuMetrics::MARGIN;
         self.items
             .iter()
             .map(|item| {
@@ -215,9 +215,9 @@ impl ContextMenu {
                     y += self.size.separator_height;
                 }
                 let row = Rect::new(
-                    self.rect.x + 2,
+                    self.rect.x + classic_ui::MenuMetrics::MARGIN,
                     y,
-                    self.rect.width - 4,
+                    self.rect.width - 2 * classic_ui::MenuMetrics::MARGIN,
                     self.size.item_height,
                 );
                 y += self.size.item_height;
@@ -240,9 +240,9 @@ impl ContextMenu {
         for (index, (item, row)) in self.items.iter().zip(self.rows()).enumerate() {
             if item.separator_before {
                 p.menu_separator(Rect::new(
-                    self.rect.x + 2,
+                    self.rect.x + classic_ui::MenuMetrics::MARGIN,
                     row.y - self.size.separator_height,
-                    self.rect.width - 4,
+                    self.rect.width - 2 * classic_ui::MenuMetrics::MARGIN,
                     self.size.separator_height,
                 ));
             }

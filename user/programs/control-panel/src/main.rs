@@ -122,7 +122,7 @@ fn pair(parent: &Widget, title: &str, text: &str) -> liteos_ui::Result<(Widget, 
 enum Data {
     System(system::Data),
     Network(network::Data),
-    Connection(String),
+    Connection(connection::Data),
     Properties(fileprops::Data),
     Settings(desktop_settings::Settings),
     Sounds(bool),
@@ -136,13 +136,11 @@ fn load(name: &str, args: Vec<std::ffi::OsString>) -> Result<Data, String> {
                 .next()
                 .map(|name| name.to_string_lossy().into_owned()),
         )?),
-        "connection" => Data::Connection(
+        "connection" => Data::Connection(connection::Data::read(
             args.into_iter()
                 .next()
-                .map(|name| name.to_string_lossy().into_owned())
-                .or_else(network::first_ethernet)
-                .ok_or("没有网络连接")?,
-        ),
+                .map(|name| name.to_string_lossy().into_owned()),
+        )?),
         "properties" => Data::Properties(fileprops::Data::read(args.into_iter())?),
         "sounds" => Data::Sounds(std::path::Path::new("/dev/snd/pcmC0D0p").exists()),
         "display" | "taskbar" => Data::Settings(desktop_settings::Settings::load()),
@@ -156,11 +154,9 @@ fn build(
     dialogs: &liteos_ui::Dialogs,
 ) -> liteos_ui::Result<Box<dyn Page>> {
     Ok(match (name, data) {
-        ("connection", Data::Connection(interface)) => Box::new(connection::Connection::build(
-            sheet,
-            interface,
-            dialogs.clone(),
-        )?),
+        ("connection", Data::Connection(data)) => {
+            Box::new(connection::Connection::build(sheet, data, dialogs.clone())?)
+        }
         ("system", Data::System(data)) => Box::new(system::System::build(sheet, data)?),
         ("network", Data::Network(data)) => Box::new(network::Network::build(sheet, data)?),
         ("properties", Data::Properties(data)) => {
