@@ -14,12 +14,14 @@ mod dialog;
 mod foreign;
 mod layer;
 mod popup;
+mod region;
 mod seat;
 mod security;
 mod server;
 mod shm;
 mod subsurface;
 mod surface;
+mod surface_commit;
 mod viewport;
 mod xdg;
 

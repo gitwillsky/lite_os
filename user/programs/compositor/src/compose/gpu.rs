@@ -6,7 +6,7 @@ use linux_uapi::drm::{
     CommandEncoder, DrmDevice, ObjectKind, SamplerFilter, SamplerWrap, ShaderStage, VirglContext,
     VirglResource,
 };
-use std::{io, rc::Rc};
+use std::{collections::BTreeMap, io, rc::Rc};
 const VERTEX: u32 = 1;
 const FRAGMENT: u32 = 2;
 const ELEMENTS: u32 = 3;
@@ -14,7 +14,8 @@ const OVER: u32 = 4;
 const DEPTH: u32 = 6;
 const RASTER: u32 = 7;
 const SAMPLER: u32 = 8;
-const VIEW: u32 = 9;
+// VirGL 对象句柄与 GEM resource ID 不是同一命名空间；11 起避开固定 shader/state/FBO 句柄。
+const FIRST_VIEW: u32 = 11;
 const TARGET: u32 = 10;
 const VERTEX_SOURCE: &str = "VERT\nDCL IN[0]\nDCL IN[1]\nDCL OUT[0], POSITION\nDCL OUT[1], GENERIC[0]\nMOV OUT[0], IN[0]\nMOV OUT[1], IN[1]\nEND\n";
 const FRAGMENT_SOURCE: &str = "FRAG\nDCL IN[0], GENERIC[0], LINEAR\nDCL OUT[0], COLOR\nDCL SAMP[0]\nDCL SVIEW[0], 2D, FLOAT\nTEX OUT[0], IN[0], SAMP[0], 2D\nEND\n";
@@ -35,13 +36,22 @@ struct Quad {
     rect: Rect,
     source: canvas::ImageSource,
 }
+#[derive(Clone)]
+struct TextureView {
+    object: u32,
+    texture: Rc<VirglResource>,
+}
 /// 一条 DRM OFD 上的 GPU 合成资源；不接收应用协议，不保存第二份 surface 内容表。
 pub(crate) struct Gpu {
     context: VirglContext,
     targets: [Target; 2],
-    // OWNER: 当前一帧独占引用集合。只有 DRM flip 完成后清除，Content 提前销毁也不会释放在途纹理。
-    // FAILURE: 没有这些引用时，客户端重绘/退出可能在 host 取样前关闭 GEM；不能靠对象 ID 缓存保活。
-    retained: Vec<Rc<VirglResource>>,
+    // OWNER: GPU context 独占采样视图和纹理引用，键为仍被 Rc 保活的真实 GEM resource ID。
+    // 只在上帧 flip 完成后的下一次 render 淘汰旧项；既保活在途纹理，也避免每帧创建/销毁同一视图。
+    // 缺少资源引用会在客户端退出时悬空，直接把 GEM ID 当对象句柄会撞到 shader/state/FBO。
+    views: BTreeMap<u32, TextureView>,
+    next_view: u32,
+    /// 已经按命令顺序销毁的空闲对象句柄；与活跃 views 互斥，避免场景缩小后永久丢失句柄。
+    free_views: Vec<u32>,
 }
 impl Gpu {
     pub(crate) fn new(device: &DrmDevice, width: u32, height: u32) -> io::Result<Self> {
@@ -81,14 +91,13 @@ impl Gpu {
         Ok(Self {
             context,
             targets,
-            retained: Vec::new(),
+            views: BTreeMap::new(),
+            next_view: FIRST_VIEW,
+            free_views: Vec::new(),
         })
     }
     pub(crate) fn framebuffer(&self, back: usize) -> u32 {
         self.targets[back].framebuffer
-    }
-    pub(crate) fn complete(&mut self) {
-        self.retained.clear();
     }
     /// 直接把启动画面写入 GPU 扫描目标的 guest backing，并用标准 transfer 发布。
     /// 调用方保证该 back 没有 flip 在途；不创建第二对 CPU framebuffer。
@@ -102,7 +111,7 @@ impl Gpu {
         crate::boot::paint(target, scene, permille).map_err(io::Error::other)?;
         target.transfer_to_host(0, 0, target.width(), target.height())
     }
-    /// 合成一帧，保活纹理到 complete；调用方保证没有上一帧 flip 在途。
+    /// 合成一帧，纹理由采样视图保活到后续 render 淘汰；调用方保证没有上一帧 flip 在途。
     /// 主机声明支持 VirGL2 后发生的错误直接返回，不悄悄切换到另一条显示路径。
     pub(crate) fn render(
         &mut self,
@@ -202,22 +211,54 @@ impl Gpu {
             f32::from(background.blue) / 255.,
             1.,
         ]);
-        for (index, quad) in quads.iter().enumerate() {
-            commands.create_sampler_view(VIEW, quad.texture.resource_id(), quad.texture.format());
-            commands.set_texture(VIEW, SAMPLER);
-            commands.draw_triangles(index as u32 * 6, 6);
-            commands.destroy_object(ObjectKind::SamplerView, VIEW);
-        }
-        commands.destroy_object(ObjectKind::Surface, TARGET);
-        let mut seen = std::collections::BTreeSet::new();
-        let mut resources = vec![&target.resource, &*vertices];
-        for quad in &quads {
-            if seen.insert(quad.texture.resource_id()) {
-                resources.push(quad.texture.as_ref());
+        let used: std::collections::BTreeSet<_> = quads
+            .iter()
+            .map(|quad| quad.texture.resource_id())
+            .collect();
+        let mut available = self.free_views.clone();
+        for (resource, view) in &self.views {
+            if !used.contains(resource) {
+                commands.destroy_object(ObjectKind::SamplerView, view.object);
+                available.push(view.object);
             }
         }
+        let mut views: BTreeMap<u32, TextureView> = BTreeMap::new();
+        let mut next_view = self.next_view;
+        for (index, quad) in quads.iter().enumerate() {
+            let resource = quad.texture.resource_id();
+            if let std::collections::btree_map::Entry::Vacant(slot) = views.entry(resource) {
+                let view = match self.views.get(&resource) {
+                    Some(view) => view.clone(),
+                    None => {
+                        let object = match available.pop() {
+                            Some(object) => object,
+                            None => {
+                                let object = next_view;
+                                next_view = next_view.checked_add(1).ok_or_else(|| {
+                                    io::Error::other("VirGL sampler view handles exhausted")
+                                })?;
+                                object
+                            }
+                        };
+                        commands.create_sampler_view(object, resource, quad.texture.format());
+                        TextureView {
+                            object,
+                            texture: quad.texture.clone(),
+                        }
+                    }
+                };
+                slot.insert(view);
+            }
+            commands.set_texture(views[&resource].object, SAMPLER);
+            commands.draw_triangles(index as u32 * 6, 6);
+        }
+        commands.destroy_object(ObjectKind::Surface, TARGET);
+        let mut resources = vec![&target.resource, &*vertices];
+        resources.extend(views.values().map(|view| view.texture.as_ref()));
         self.context.exec(commands.words(), &resources)?;
-        self.retained = quads.into_iter().map(|quad| quad.texture).collect();
+        self.views = views;
+        self.next_view = next_view;
+        self.free_views = available;
         Ok(())
     }
 }

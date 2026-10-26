@@ -20,7 +20,7 @@ use super::{
     layer::LayerSurface,
     seat::CursorRequest,
     shm::{BufferSpec, Pool},
-    surface::{Content, Surface},
+    surface::Surface,
     xdg::{Toplevel, WindowRequest, XdgSurface},
 };
 
@@ -78,6 +78,7 @@ pub(super) enum Data {
     None,
     Pool(Rc<Pool>),
     Buffer(Rc<BufferSpec>),
+    Region(Rc<super::region::Region>),
     Surface(Surface),
     XdgSurface(XdgSurface),
     Toplevel(Toplevel),
@@ -141,7 +142,7 @@ pub struct Client {
     /// 下一个 `xdg_surface.configure` 序号；每个连接独立。
     pub(super) next_serial: u32,
     pub(super) requests: Vec<(ObjectId, WindowRequest)>,
-    commits: u64,
+    pub(super) commits: u64,
     pub(super) output: Output,
     /// 来源决定 Application/Session/Shell 能力；不从 uid 或客户端提供的 metadata 推断。
     pub(super) privilege: Privilege,
@@ -150,6 +151,8 @@ pub struct Client {
     pub(super) foreign: Vec<ForeignManager>,
     pub(super) foreign_requests: Vec<ForeignRequest>,
     pub(super) cursor_requests: Vec<CursorRequest>,
+    /// 本连接已投递且尚未 leave 的 enter 序号；用于修改 cursor role 前拒绝过期请求，不拥有全局焦点。
+    pub(super) pointer_enter_serial: Option<u32>,
     /// 客户端最近一次 `wl_data_device.set_selection`，由 Server 裁决。
     pub(super) selection_set: Option<super::clipboard::SelectionSet>,
     /// 接收方对当前选择的读取请求，由 Server 转交持有者。
@@ -196,6 +199,7 @@ impl Client {
             foreign: Vec::new(),
             foreign_requests: Vec::new(),
             cursor_requests: Vec::new(),
+            pointer_enter_serial: None,
             selection_set: None,
             receives: Vec::new(),
             next_server_object: SERVER_ID_BASE,
@@ -277,13 +281,13 @@ impl Client {
         self.writer.consume(bytes, 0);
     }
 
-    /// 本帧已呈现：向所有已提交的 `wl_surface.frame` 发 `done(time_ms)` 并回收这些 callback。
+    /// 本帧已呈现：仅向本次显示提交登记的 `wl_surface.frame` 发 `done(time_ms)` 并回收这些 callback。
     pub fn finish_frame(&mut self, time_ms: u32) {
         let callbacks: Vec<ObjectId> = self
             .objects
             .values_mut()
             .filter_map(|entry| match &mut entry.data {
-                Data::Surface(surface) => Some(std::mem::take(&mut surface.queued_callbacks)),
+                Data::Surface(surface) => Some(std::mem::take(&mut surface.in_flight_callbacks)),
                 _ => None,
             })
             .flatten()
@@ -311,14 +315,15 @@ impl Client {
 
     /// 全部已映射 surface 的当前内容（不论角色）。
     #[cfg(test)]
-    pub fn contents(&self) -> impl Iterator<Item = (ObjectId, &Content)> {
+    pub fn contents(&self) -> impl Iterator<Item = (ObjectId, &super::Content)> {
         self.objects
             .iter()
             .filter_map(|(id, entry)| match &entry.data {
-                Data::Surface(Surface {
-                    content: Some(content),
-                    ..
-                }) => Some((ObjectId::new(*id)?, content)),
+                Data::Surface(surface) => surface
+                    .current
+                    .content
+                    .as_ref()
+                    .map(|content| (ObjectId::new(*id).expect("live surface id"), content)),
                 _ => None,
             })
     }
@@ -432,8 +437,9 @@ impl Client {
                 self.security_manager(object, request)
             }
             AnyRequest::WpSecurityContextV1(request) => self.security_context(object, request),
-            // 其余对象（buffer、region、callback）只有 destroy 或没有请求，销毁由通用路径完成。
-            AnyRequest::WlBuffer(wl_buffer::Request::Destroy) | AnyRequest::WlRegion(_) => Ok(()),
+            // buffer 只有 destroy；region 运算由区域 owner 处理，销毁统一回收编号。
+            AnyRequest::WlBuffer(wl_buffer::Request::Destroy) => Ok(()),
+            AnyRequest::WlRegion(request) => self.region(object, request),
             other => Err(Fail::invalid_method(
                 object,
                 format!("unsupported request {other:?}"),
@@ -522,7 +528,7 @@ impl Client {
                     id,
                     Interface::WlSurface,
                     version,
-                    Data::Surface(Surface::new()),
+                    Data::Surface(Surface::new(id)),
                 )?;
                 // 版本 6 起由服务端告知首选 buffer scale；客户端据此直接按输出 scale 渲染。
                 if version >= 6 {
@@ -533,9 +539,12 @@ impl Client {
                 }
                 Ok(())
             }
-            wl_compositor::Request::CreateRegion { id } => {
-                self.create(id, Interface::WlRegion, 1, Data::None)
-            }
+            wl_compositor::Request::CreateRegion { id } => self.create(
+                id,
+                Interface::WlRegion,
+                1,
+                Data::Region(Rc::new(super::region::Region::default())),
+            ),
         }
     }
 
@@ -667,6 +676,8 @@ impl Client {
         use wl_surface::Request as R;
         match request {
             R::Destroy => {
+                self.commits += 1;
+                self.orphan_children(object);
                 self.detach_subsurface(object);
                 // 未呈现的 frame callback 随 surface 一起回收，否则客户端的 id 永远无法复用。
                 let surface = self.surface_mut(object)?;
@@ -675,6 +686,14 @@ impl Client {
                     .frame_callbacks
                     .drain(..)
                     .chain(surface.queued_callbacks.drain(..))
+                    .chain(surface.in_flight_callbacks.drain(..))
+                    .chain(
+                        surface
+                            .cached
+                            .take()
+                            .into_iter()
+                            .flat_map(|commit| commit.callbacks),
+                    )
                     .collect();
                 for callback in orphans {
                     self.release_id(callback);
@@ -704,7 +723,11 @@ impl Client {
                         ))),
                     })
                     .transpose()?;
-                self.surface_mut(object)?.pending.buffer = Some(attachment);
+                let state = self.surface_mut(object)?;
+                state.pending.buffer = Some(attachment);
+                if version < 5 {
+                    state.pending.offset = Some((x, y));
+                }
                 Ok(())
             }
             R::Frame { callback } => {
@@ -737,106 +760,27 @@ impl Client {
                 self.surface_mut(object)?.pending.transform = Some(transform);
                 Ok(())
             }
+            R::Offset { x, y } => {
+                self.surface_mut(object)?.pending.offset = Some((x, y));
+                Ok(())
+            }
+            R::SetInputRegion { region } => {
+                let region = self.region_snapshot(region)?;
+                self.surface_mut(object)?.pending.input_region = Some(region);
+                Ok(())
+            }
+            R::SetOpaqueRegion { region } => {
+                self.region_snapshot(region)?;
+                Ok(())
+            }
             R::Commit => self.commit(object),
             // 损伤区域只用于局部重绘；本合成器每次整屏重画，所以这些请求无需记录。
-            R::Damage { .. }
-            | R::DamageBuffer { .. }
-            | R::SetOpaqueRegion { .. }
-            | R::SetInputRegion { .. }
-            | R::Offset { .. } => Ok(()),
+            R::Damage { .. } | R::DamageBuffer { .. } => Ok(()),
         }
-    }
-
-    fn commit(&mut self, object: ObjectId) -> Result<(), Fail> {
-        self.apply_child_positions(object);
-        self.xdg_check_commit(object)?;
-        let layer_before = self.layer_state(object);
-        self.layer_check_commit(object)?;
-        self.commits += 1;
-        let surface = self.surface_mut(object)?;
-        let choice = surface.pending.buffer.take();
-        let unmapping = matches!(choice, Some(None));
-        let callbacks = std::mem::take(&mut surface.pending.frame_callbacks);
-        if let Some(scale) = surface.pending.scale.take() {
-            surface.scale = scale;
-        }
-        if let Some(transform) = surface.pending.transform.take() {
-            surface.transform = transform;
-        }
-        surface.queued_callbacks.extend(callbacks);
-        match choice {
-            None => {}
-            Some(None) => self.surface_mut(object)?.content = None,
-            Some(Some(attachment)) => {
-                let buffer = attachment.object;
-                let spec = &attachment.buffer;
-                let pixels = spec.read_pixels().map_err(|_| {
-                    Fail::new(
-                        buffer,
-                        wl_shm::Error::InvalidFd as u32,
-                        "buffer extends past the end of its file",
-                    )
-                })?;
-                let content = Content::new(spec.width, spec.height, pixels);
-                let first_content = {
-                    let surface = self.surface_mut(object)?;
-                    surface.content = Some(content);
-                    !std::mem::replace(&mut surface.entered, true)
-                };
-                if first_content {
-                    self.enter_outputs(object)?;
-                }
-                // 内容已复制，buffer 立即可复用。
-                // 已 attach 的 buffer 即使销毁也仍拥有快照输入，但不能向销毁后复用的对象编号发送 release。
-                if matches!(self.objects.get(&buffer.get()), Some(Entry { data: Data::Buffer(live), .. }) if Rc::ptr_eq(live, spec))
-                {
-                    wl_buffer::Event::Release.encode(buffer, &mut self.writer)?;
-                }
-            }
-        }
-        self.apply_viewport(object)?;
-        if unmapping {
-            self.xdg_unmap(object);
-            self.layer_unmap(object);
-        } else {
-            self.layer_after_commit(object, layer_before)?;
-        }
-        self.xdg_after_commit(object)
     }
 }
 
 impl Client {
-    /// 提交几何只更新采样元数据；不会恢复旧 buffer，也不会因取消 viewport 重新上传纹理。
-    fn apply_viewport(&mut self, object: ObjectId) -> Result<(), Fail> {
-        let surface = self.surface_mut(object)?;
-        if let Some((source, destination)) = surface.viewport.pending.take() {
-            surface.viewport.source = source;
-            surface.viewport.destination = destination;
-        }
-        let viewport = surface.viewport.object.unwrap_or(object);
-        surface.viewport.validate_size().map_err(|code| {
-            Fail::new(viewport, code, "fractional source size needs a destination")
-        })?;
-        if let Some(content) = &mut surface.content {
-            let (size, source) = surface
-                .viewport
-                .mapping(content, surface.scale, surface.transform)
-                .map_err(|error| match error {
-                    super::viewport::GeometryError::BufferSize => Fail::new(
-                        object,
-                        wl_surface::Error::InvalidSize as u32,
-                        "buffer dimensions are not a multiple of buffer scale",
-                    ),
-                    super::viewport::GeometryError::Viewport(code) => {
-                        Fail::new(viewport, code, "invalid viewport for the attached buffer")
-                    }
-                })?;
-            content.size = size;
-            content.source = source;
-        }
-        Ok(())
-    }
-
     /// `wl_output` 绑定后依次宣告几何、模式、scale、名字与 `done`；字段按绑定版本取舍。
     fn xdg_output_manager(
         &mut self,
@@ -925,7 +869,7 @@ impl Client {
     }
 
     /// surface 第一次有内容时告诉客户端它位于哪些输出上；缺少它，客户端不知道自己的有效 scale。
-    fn enter_outputs(&mut self, surface: ObjectId) -> Result<(), Fail> {
+    pub(super) fn enter_outputs(&mut self, surface: ObjectId) -> Result<(), Fail> {
         let outputs: Vec<ObjectId> = self
             .objects
             .iter()

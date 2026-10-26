@@ -13,11 +13,7 @@ use wayland_wire::{
     wire::ObjectId,
 };
 
-use super::{
-    Content,
-    client::{Client, Data, Entry, Fail},
-    subsurface::ChildView,
-};
+use super::client::{Client, Data, Entry, Fail};
 
 /// positioner 累积的参数。
 #[derive(Clone, Copy, Default)]
@@ -114,14 +110,11 @@ pub struct Popup {
 }
 
 /// 一个待绘制与命中的弹出层：位置相对**根窗口**的 surface（已沿父链累加）。
-pub struct PopupView<'a> {
+pub struct PopupView {
     pub client_root: ObjectId,
     pub surface: ObjectId,
     pub x: i32,
     pub y: i32,
-    pub content: &'a Content,
-    pub scale: i32,
-    pub children: Vec<ChildView<'a>>,
 }
 
 /// 父链深度上限：弹出层嵌套不会这么深，防止客户端造环让遍历不终止。
@@ -279,7 +272,7 @@ impl Client {
                     state.outstanding.clear();
                     let surface = state.surface;
                     if let Ok(surface) = self.surface_mut(surface) {
-                        surface.content = None;
+                        surface.current.content = None;
                     }
                 }
                 Ok(())
@@ -353,7 +346,7 @@ impl Client {
     }
 
     /// 本连接所有已映射弹出层，位置沿父链累加到根窗口 surface。
-    pub fn popups(&self) -> Vec<PopupView<'_>> {
+    pub fn popups(&self) -> Vec<PopupView> {
         self.objects
             .values()
             .filter_map(|entry| {
@@ -374,16 +367,13 @@ impl Client {
                 else {
                     return None;
                 };
-                let content = surface.content.as_ref()?;
+                surface.current.content.as_ref()?;
                 let (root, offset) = self.popup_root(popup)?;
                 Some(PopupView {
                     client_root: root,
                     surface: xdg.surface,
                     x: offset.0 + popup.position.0,
                     y: offset.1 + popup.position.1,
-                    content,
-                    scale: surface.scale,
-                    children: self.subtree(xdg.surface),
                 })
             })
             .collect()

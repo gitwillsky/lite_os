@@ -72,6 +72,15 @@ pub(super) unsafe extern "C" fn set_text(
     unsafe {
         invoke(pointer, |context| {
             let value = text(value)?;
+            let current = context
+                .host(window)?
+                .controls()?
+                .nodes
+                .get(&id)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown widget"))?;
+            if current.editor.is_none() && current.text() == value {
+                return Ok(());
+            }
             let image_size = context
                 .host(window)?
                 .controls()?
@@ -87,9 +96,6 @@ pub(super) unsafe extern "C" fn set_text(
                 .nodes
                 .get_mut(&id)
                 .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown widget"))?;
-            if node.editor.is_none() && node.text() == value {
-                return Ok(());
-            }
             if image_size.is_some() {
                 node.image = image;
             }

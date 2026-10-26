@@ -416,7 +416,7 @@ impl Server {
     }
 
     /// 全部连接的弹出层，附带所属连接；位置相对各自根窗口 surface。
-    pub fn popups(&self) -> Vec<(ClientId, super::popup::PopupView<'_>)> {
+    pub fn popups(&self) -> Vec<(ClientId, super::popup::PopupView)> {
         self.connections
             .iter()
             .flat_map(|connection| {
@@ -450,8 +450,39 @@ impl Server {
         all
     }
 
-    /// 某个连接的光标 surface 的当前图像与 buffer scale。
-    pub fn cursor_image(&self, client: ClientId, surface: ObjectId) -> Option<(&Content, i32)> {
+    /// 已提交 surface 树的可见像素引用；只有合成与命中需要遍历，窗口元数据查询不分配子树。
+    pub fn subtree(&self, client: ClientId, surface: ObjectId) -> Vec<super::ChildView<'_>> {
+        self.connections
+            .iter()
+            .find(|connection| connection.id == client)
+            .map_or_else(Vec::new, |connection| connection.client.subtree(surface))
+    }
+
+    /// 指针命中使用当前提交的 input region，不能将点击交给只是矩形重叠的窗口。
+    pub fn accepts_input(&self, client: ClientId, surface: ObjectId, x: f64, y: f64) -> bool {
+        self.connections
+            .iter()
+            .find(|connection| connection.id == client)
+            .is_some_and(|connection| connection.client.accepts_input(surface, x, y))
+    }
+
+    pub fn root_surface(&self, client: ClientId, surface: ObjectId) -> Option<ObjectId> {
+        self.connections
+            .iter()
+            .find(|connection| connection.id == client)?
+            .client
+            .root_surface(surface)
+    }
+
+    /// 本次提交包含的 surface 回调进入在途集合，之后才提交的 callback 留待下一次显示。
+    pub fn stage_frame(&mut self, surfaces: &[(ClientId, ObjectId)]) {
+        for (owner, surface) in surfaces {
+            self.with_client(*owner, |client| client.stage_surface_frame(*surface));
+        }
+    }
+
+    /// 某个连接的光标 surface 的当前已提交图像与采样几何。
+    pub fn cursor_image(&self, client: ClientId, surface: ObjectId) -> Option<&Content> {
         self.connections
             .iter()
             .find(|connection| connection.id == client)?

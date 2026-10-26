@@ -19,130 +19,81 @@ impl Session {
     /// 输出绘制或 DRM page flip 请求失败。
     pub(super) fn present(&mut self) -> io::Result<()> {
         let boxes = self.layer_boxes();
-        let layer_images: HashMap<(ClientId, ObjectId), (&crate::wayland::Content, i32)> = self
-            .server
-            .layers()
-            .map(|(client, layer)| ((client, layer.surface), (layer.content, layer.scale)))
-            .collect();
-        let window_images: HashMap<
-            (ClientId, ObjectId),
-            (
-                &crate::wayland::Content,
-                i32,
-                Vec<crate::wayland::ChildView<'_>>,
-            ),
-        > = self
-            .server
-            .windows()
-            .map(|(client, window)| {
-                (
-                    (client, window.surface),
-                    (window.content, window.scale, window.children),
-                )
-            })
-            .collect();
         let popup_views = self.server.popups();
-        let output_scale = self.scale;
-        let layer_drawable = |layer: &LayerBox| {
-            let (content, _) = layer_images.get(&(layer.client, layer.surface))?;
-            Some(Drawable::surface(
-                layer.x,
-                layer.y,
-                content,
-                output_scale as i32,
-            ))
-        };
-        let below = boxes
-            .iter()
-            .filter(|layer| layer.layer < Layer::Top)
-            .filter_map(layer_drawable);
-        let windows = self
-            .stack
-            .windows()
-            .iter()
-            .filter(|placed| {
-                !placed.minimized
-                    && !self.animation.as_ref().is_some_and(|animation| {
-                        animation.client == placed.client && animation.surface == placed.surface
-                    })
-            })
-            .filter_map(|placed| {
-                let (content, _, children) = window_images.get(&(placed.client, placed.surface))?;
-                // 窗口本体先画，子 surface 按位置压在它上面。
-                let body = Drawable::surface(placed.x, placed.y, content, output_scale as i32);
-                let output = output_scale as i32;
-                let subsurfaces = children.iter().map(move |child| {
-                    Drawable::surface(
-                        placed.x + child.x * output,
-                        placed.y + child.y * output,
-                        child.content,
-                        output_scale as i32,
-                    )
-                });
-                Some(std::iter::once(body).chain(subsurfaces))
-            })
-            .flatten();
-        let popups: Vec<Drawable<'_>> = popup_views
-            .iter()
-            .filter_map(|(client, popup)| {
-                let root = self.stack.placement(*client, popup.client_root)?;
-                if root.minimized {
-                    return None;
+        let server = &self.server;
+        let output = self.scale as i32;
+        let screen = canvas::Rect::new(
+            0,
+            0,
+            self.scanout.width() as i32,
+            self.scanout.height() as i32,
+        );
+        let mut drawables = Vec::new();
+        let mut visible = Vec::new();
+        let mut append = |client, surface, x: i32, y: i32, transform: Option<canvas::Rect>| {
+            let tree = server.subtree(client, surface);
+            let Some(root) = tree.iter().find(|leaf| leaf.surface == surface) else {
+                return;
+            };
+            let source = Drawable::surface(x, y, root.content, output).rect;
+            for leaf in tree {
+                let mut drawable = Drawable::surface(
+                    x.saturating_add(leaf.x.saturating_mul(output)),
+                    y.saturating_add(leaf.y.saturating_mul(output)),
+                    leaf.content,
+                    output,
+                );
+                if let Some(target) = transform {
+                    drawable = drawable.transformed(source, target);
                 }
-                let output = output_scale as i32;
-                let (x, y) = (root.x + popup.x * output, root.y + popup.y * output);
-                let body = Drawable::surface(x, y, popup.content, output_scale as i32);
-                Some(
-                    std::iter::once(body).chain(popup.children.iter().map(move |child| {
-                        Drawable::surface(
-                            x + child.x * output,
-                            y + child.y * output,
-                            child.content,
-                            output_scale as i32,
-                        )
-                    })),
-                )
-            })
-            .flatten()
-            .collect();
-        let above = boxes
-            .iter()
-            .filter(|layer| layer.layer >= Layer::Top)
-            .filter_map(layer_drawable);
-        // 整窗与子 surface 消费同一个变换。借用已提交内容，GPU 重用其纹理；不复制窗口像素。
-        let animated: Vec<Drawable<'_>> = self
-            .animation
-            .as_ref()
-            .and_then(|animation| {
-                let placed = self.stack.placement(animation.client, animation.surface)?;
-                let (content, _, children) =
-                    window_images.get(&(animation.client, animation.surface))?;
-                let body = Drawable::surface(placed.x, placed.y, content, output_scale as i32);
-                let source = body.rect;
-                let (x, y, width, height) = animation.frame();
-                let target = canvas::Rect::new(x, y, width, height);
-                let output = output_scale as i32;
-                Some(
-                    std::iter::once(body)
-                        .chain(children.iter().map(|child| {
-                            Drawable::surface(
-                                placed.x + child.x * output,
-                                placed.y + child.y * output,
-                                child.content,
-                                output_scale as i32,
-                            )
-                        }))
-                        .map(|drawable| drawable.transformed(source, target))
-                        .collect(),
-                )
-            })
-            .unwrap_or_default();
-        let drawables: Vec<Drawable<'_>> = below
-            .chain(windows)
-            .chain(animated)
-            .chain(popups)
-            .chain(above)
-            .collect();
+                if drawable.rect.intersect(screen).is_empty() {
+                    continue;
+                }
+                drawables.push(drawable);
+                visible.push((client, leaf.surface));
+            }
+        };
+        for layer in boxes.iter().filter(|layer| layer.layer < Layer::Top) {
+            append(layer.client, layer.surface, layer.x, layer.y, None);
+        }
+        for placed in self.stack.windows().iter().filter(|placed| {
+            !placed.minimized
+                && !self.animation.as_ref().is_some_and(|animation| {
+                    animation.client == placed.client && animation.surface == placed.surface
+                })
+        }) {
+            append(placed.client, placed.surface, placed.x, placed.y, None);
+        }
+        if let Some(animation) = &self.animation
+            && let Some(placed) = self.stack.placement(animation.client, animation.surface)
+        {
+            let (x, y, width, height) = animation.frame();
+            append(
+                placed.client,
+                placed.surface,
+                placed.x,
+                placed.y,
+                Some(canvas::Rect::new(x, y, width, height)),
+            );
+        }
+        for (client, popup) in &popup_views {
+            if let Some(root) = self
+                .stack
+                .placement(*client, popup.client_root)
+                .filter(|root| !root.minimized)
+            {
+                append(
+                    *client,
+                    popup.surface,
+                    root.x.saturating_add(popup.x.saturating_mul(output)),
+                    root.y.saturating_add(popup.y.saturating_mul(output)),
+                    None,
+                );
+            }
+        }
+        for layer in boxes.iter().filter(|layer| layer.layer >= Layer::Top) {
+            append(layer.client, layer.surface, layer.x, layer.y, None);
+        }
         let (theme, scale) = (&self.theme, self.scale as i32);
         let (art, switcher, menu) = (
             self.switcher_art.as_ref(),
@@ -163,6 +114,15 @@ impl Session {
         };
         self.scanout
             .compose(&self.theme, &drawables, has_overlay, overlay)?;
+        // 硬件光标不在场景四边形中；实际上传的客户端光标仍参与同一显示节拍，避免动画光标等待 frame 永久停住。
+        if self.applied_client_cursor.is_some()
+            && let Shape::Client {
+                client, surface, ..
+            } = self.shape
+        {
+            visible.push((client, surface));
+        }
+        self.server.stage_frame(&visible);
         self.scanout.request_flip()
     }
 }

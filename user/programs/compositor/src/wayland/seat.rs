@@ -22,6 +22,8 @@ pub struct CursorRequest {
     pub surface: Option<ObjectId>,
     /// 热点，相对 surface 左上角，逻辑像素。
     pub hotspot: (i32, i32),
+    /// set_cursor 时该 surface 的累计 buffer offset；后续 offset 应从热点中扣除增量。
+    pub offset_origin: (i64, i64),
     /// `wp_cursor_shape_device_v1.set_shape` 指定的合成器自带光标名；此时没有 `surface`。
     pub named: Option<&'static str>,
 }
@@ -118,9 +120,16 @@ impl Client {
                 hotspot_x,
                 hotspot_y,
             } => {
+                if self.pointer_enter_serial != Some(serial) {
+                    return Ok(());
+                }
+                let offset_origin = match surface {
+                    Some(surface) => self.surface_mut(surface)?.current.offset,
+                    None => (0, 0),
+                };
                 if let Some(surface) = surface {
                     let state = self.surface_mut(surface)?;
-                    if state.xdg.is_some() || state.layer.is_some() {
+                    if state.xdg.is_some() || state.layer.is_some() || state.subsurface_role {
                         return Err(Fail::new(
                             object,
                             wl_pointer::Error::Role as u32,
@@ -133,6 +142,7 @@ impl Client {
                     serial,
                     surface,
                     hotspot: (hotspot_x, hotspot_y),
+                    offset_origin,
                     named: None,
                 });
                 Ok(())
@@ -176,6 +186,7 @@ impl Client {
                 serial,
                 surface: None,
                 hotspot: (0, 0),
+                offset_origin: (0, 0),
                 named: Some(crate::cursor::shape_name(shape)),
             });
         }
@@ -187,13 +198,13 @@ impl Client {
         std::mem::take(&mut self.cursor_requests)
     }
 
-    /// 光标 surface 当前提交的图像（预乘 ARGB）及其 buffer scale。
-    pub fn cursor_image(&self, surface: ObjectId) -> Option<(&super::Content, i32)> {
+    /// 光标 surface 当前提交的图像与采样几何。
+    pub fn cursor_image(&self, surface: ObjectId) -> Option<&super::Content> {
         match self.objects.get(&surface.get()) {
             Some(super::client::Entry {
                 data: Data::Surface(state),
                 ..
-            }) => Some((state.content.as_ref()?, state.scale)),
+            }) => state.current.content.as_ref(),
             _ => None,
         }
     }
@@ -208,6 +219,7 @@ impl Client {
 
     /// 指针进入 `surface`，坐标是 surface 局部的逻辑像素。
     pub fn pointer_enter(&mut self, serial: u32, surface: ObjectId, x: Fixed, y: Fixed) {
+        self.pointer_enter_serial = Some(serial);
         for (pointer, version) in self.objects_of(Interface::WlPointer) {
             let _ = wl_pointer::Event::Enter {
                 serial,
@@ -221,6 +233,7 @@ impl Client {
     }
 
     pub fn pointer_leave(&mut self, serial: u32, surface: ObjectId) {
+        self.pointer_enter_serial = None;
         for (pointer, version) in self.objects_of(Interface::WlPointer) {
             let _ = wl_pointer::Event::Leave { serial, surface }.encode(pointer, &mut self.writer);
             self.pointer_frame(pointer, version);

@@ -2,6 +2,7 @@
 
 mod cursor_requests;
 mod foreign;
+mod hit_testing;
 mod presentation;
 mod seat_input;
 mod window_menu_commands;
@@ -103,8 +104,6 @@ struct LayerBox {
     keyboard: KeyboardInteractivity,
     x: i32,
     y: i32,
-    width: i32,
-    height: i32,
 }
 
 /// 可信来源仅提升安全覆盖层；背景必须让之后加入的用户桌面正常覆盖。
@@ -124,6 +123,7 @@ enum Shape {
         client: ClientId,
         surface: ObjectId,
         hotspot: (i32, i32),
+        offset_origin: (i64, i64),
     },
 }
 
@@ -159,6 +159,8 @@ pub struct Session {
     /// 硬件光标的图像缓冲；释放它会撤掉光标图像，所以要在整个会话期间持有。
     hardware_cursor: DumbBuffer,
     shape: Shape,
+    /// 成功上传的客户端光标像素与热点；不可变引用避免场景 dirty 时反复上传同一图像。
+    applied_client_cursor: Option<(crate::wayland::Content, (u32, u32))>,
     last_pointer_focus: Option<(ClientId, ObjectId)>,
     /// 当前按下的指针按钮。非空期间指针焦点固定在按下时的 surface（Wayland 的隐式抓取）：
     /// 否则拖动 layer surface 这类“随指针移动”的界面时，指针一旦跑出 surface 就收不到后续 motion 与释放。
@@ -216,6 +218,7 @@ impl Session {
             cursors: parts.cursors,
             hardware_cursor: parts.hardware_cursor,
             shape: Shape::Default,
+            applied_client_cursor: None,
             last_pointer_focus: None,
             keyboard_layer: None,
             shell: None,
@@ -345,8 +348,6 @@ impl Session {
                     keyboard: layer.state.keyboard,
                     x,
                     y,
-                    width: size.0,
-                    height: size.1,
                 }
             })
             .collect();
@@ -362,72 +363,6 @@ impl Session {
             self.screen(),
             self.scale as i32,
         )
-    }
-
-    /// 隐式抓取目标当前的位置；目标是外壳 surface 或应用窗口时返回，其他（弹出层）或已消失时 `None`。
-    fn locate_target(&self, boxes: &[LayerBox], target: (ClientId, ObjectId)) -> Option<Hit> {
-        boxes
-            .iter()
-            .find(|layer| (layer.client, layer.surface) == target)
-            .map(|layer| (layer.x, layer.y))
-            .or_else(|| {
-                self.stack
-                    .windows()
-                    .iter()
-                    .find(|placed| (placed.client, placed.surface) == target)
-                    .map(|placed| (placed.x, placed.y))
-            })
-            .map(|origin| Hit { target, origin })
-    }
-
-    /// 指针下最上面的 surface：Overlay、Top 层，然后是应用窗口，最后是 Bottom、Background 层。
-    /// 弹出层的命中：位置相对根窗口，最后创建的（最上面的）优先。
-    fn popup_hit(&self, point: (i32, i32)) -> Option<Hit> {
-        let scale = self.scale as i32;
-        self.server
-            .popups()
-            .into_iter()
-            .rev()
-            .find_map(|(client, popup)| {
-                let root = self.stack.placement(client, popup.client_root)?;
-                let (x, y) = (root.x + popup.x * scale, root.y + popup.y * scale);
-                let (width, height) = popup.content.output_size(scale);
-                ((x..x + width).contains(&point.0) && (y..y + height).contains(&point.1)).then_some(
-                    Hit {
-                        target: (client, popup.surface),
-                        origin: (x, y),
-                    },
-                )
-            })
-    }
-
-    fn hit_test(&self, boxes: &[LayerBox], point: (i32, i32)) -> Option<Hit> {
-        if self.secure_pending {
-            return None;
-        }
-        let layer_hit = |wanted: &dyn Fn(Layer) -> bool| {
-            boxes
-                .iter()
-                .rev()
-                .filter(|layer| wanted(layer.layer))
-                .find(|layer| {
-                    (layer.x..layer.x + layer.width).contains(&point.0)
-                        && (layer.y..layer.y + layer.height).contains(&point.1)
-                })
-                .map(|layer| Hit {
-                    target: (layer.client, layer.surface),
-                    origin: (layer.x, layer.y),
-                })
-        };
-        layer_hit(&|layer| layer >= Layer::Top)
-            .or_else(|| self.popup_hit(point))
-            .or_else(|| {
-                self.stack.window_at(point.0, point.1).map(|placed| Hit {
-                    target: (placed.client, placed.surface),
-                    origin: (placed.x, placed.y),
-                })
-            })
-            .or_else(|| layer_hit(&|layer| layer < Layer::Top))
     }
 
     /// 独占键盘的外壳 surface（登录屏）：只有 Top 与 Overlay 层有效，层级最高者优先。
@@ -784,6 +719,11 @@ impl Session {
                 WindowRequest::Move { serial } | WindowRequest::Resize { serial, .. } => {
                     // 只接受由仍按住的按钮触发的请求，且窗口不能是最大化/全屏，也不能已有抓取。
                     let valid = self.seat.button_serial() == Some(serial)
+                        && self
+                            .seat
+                            .pointer_focus()
+                            .and_then(|target| self.root_target(target))
+                            == Some((client, surface))
                         && placement.mode == Mode::Normal
                         && self.grab.is_none();
                     let kind = match request {

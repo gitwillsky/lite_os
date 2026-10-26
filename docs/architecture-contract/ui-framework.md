@@ -54,7 +54,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - terminal 的 VT 模型、输入队列和控件只在 UI 线程使用。队列上限 1 MiB；读端每轮最多消费 64 KiB，防止持续输出饿死输入。
   PTY 使用现有 SessionChild launcher，正常关闭在后台终止完整进程组并回收，异常退出仍执行兜底清理。
 
-- GPU Content 的 OnceCell 只在 compositor 线程发布一份纹理，输入像素发布后不可变；每帧资源由 Scanout 引用到 flip 完成。
+- GPU Content 的 OnceCell 只在 compositor 线程发布一份纹理，输入像素发布后不可变；每帧资源由 GPU 的采样视图引用到 flip 完成后的下一次 render。
   无这份生命周期约束，客户端替换内容或退出可能提前关闭 host 正在取样的 GEM。没有按窗口 ID 维护的第二份纹理表。
   顶点缓冲按两个输出槽复用，覆盖前必须无 flip 在途；标准 EXECBUFFER/transfer 与 KMS 的 fence 顺序由 DRM owner 保证。
   GPU 热路径的测量项是首次上传、移动时合成/提交与 flip 完成；本轮依用户要求不执行性能或 UI 测试。
@@ -146,7 +146,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   重复还原不重置计时，窗口销毁取消动画。没有每帧复制像素、重新排版标题或建立动画专用纹理。
 - Drawable 的 rect 是 CPU/GPU 共同使用的物理目标矩形；整窗和所有子 surface 从同一个根矩形映射，不能独立插值。
   GPU 借用 Content 的现有纹理，只改变顶点；CPU 的 blit_scaled 原地最近邻采样，整数等比尺寸保留既有快速复制路径。
-  DRM flip 在途仍禁止覆盖 back，纹理由 retained 保活到完成；不改变标准 Wayland commit/damage/frame/release 语义。
+  DRM flip 在途仍禁止覆盖 back，纹理由 GPU 采样视图保活到完成；不改变标准 Wayland commit/damage/frame/release 语义。
 - 动画跟随 DRM flip 完成产生下一帧，不叠加固定 16 ms 轮询；动画放在普通窗口之上、系统外壳上层之下，不能遮盖安全覆盖层。
 - Benchmark 决策：去除动画每帧标题光栅/像素 Vec 分配/纹理上传，GPU 增量为每个 surface 的矩形和顶点变换；
   CPU 的任意缩放只扫描可见目标像素，不分配中间图像。本轮按用户要求不执行测试或性能测量，流畅度由用户验收。
@@ -177,3 +177,30 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   与已光栅化字形（上限 4096，满即清空）。缺少这些缓存会在每个字形重复执行字体程序；None 记录失败，避免反复执行。
 - classic_ui::Fonts 拥有六个系统字体用途与最多 16 个应用派生逻辑字体（`set_font`）；Painter 只借用，不复制。
 - 字节码解释器只在给定指令流上执行，越界、栈错误与步数上限使本次程序失败并退回未 hinting 轮廓，从不 panic。
+
+## Wayland 提交、采样与输入
+
+- Surface 独占 pending/current/cached。State 冻结 transform、scale、viewport、输入区域、内容偏移与子树顺序；
+  Committed 同时保存 frame 回调和父提交冻结的孩子位置。surface_commit 是唯一提交/发布 owner，xdg/layer 只处理角色语义。
+  wl_subsurface 的 sync/desync 即时生效并继承祖先模式；同步缓存以不可变 Rc 像素合并，不复制正在显示的整张图。
+  Committed.unmapping 保留最后一次显式 null attach 的请求含义；没有内容不等于撤销映射，普通初始无 attach 提交必须发送角色 configure。
+  layer_check_commit 只验证 pending，layer_after_commit 才发布角色 current 并与旧状态比较；否则首次协商或尺寸重协商会丢失。
+- Attachment 持有 attach 时真实 BufferSpec 的 Rc；wl_buffer 对象销毁不使引用悬空，release 只发送给仍关联同一 Rc 的活对象。
+  完整 SHM 快照完成后即允许 release；失败返回截断文件或 no_memory，不以空图像替代。
+- Pixels 独占不可变像素及 OnceCell GPU 纹理，Content 只拥有共享像素引用与投影元数据；viewport 不再保存另一份 raw 内容。
+  null attach 使内容为空，取消 viewport 不能恢复旧缓冲。CPU/GPU 共用 ImageSource 三点仿射坐标与逻辑尺寸，
+  按 transform、scale、viewport 顺序解释参数；裸 buffer 尺寸错误归属 wl_surface，viewport 源越界错误归属 wp_viewport。
+- Subsurface.children 只索引存活关联，State.order 唯一拥有提交后的绘制顺序。创建、位置、堆叠在父提交后可见；
+  销毁关联立即取消映射，保留永久角色，父销毁断开引用，编号重用不能复活关系。
+  深度预算包含祖先和已有后代；超预算以标准 no_memory 失败，不能在绘制时悄悄漏掉深层节点。
+- Region 以 COW 不可变快照实现复制语义；每对象最多 4096 条加减操作，超限标准 no_memory，防止绕过对象数量限制耗尽内存。
+  hit_testing 按提交树逆序和输入 region 命中，空洞穿透；实际 leaf 收指针，根窗口收键盘/激活，隐式抓取保留 leaf 坐标原点。
+- queued_callbacks 等待显示提交，in_flight_callbacks 只属于已送交 Scanout 的帧；finish_frame 不能消费 flip 在途期间新提交的回调。
+  presentation 显式登记可见树和实际呈现的客户端硬件光标，隐藏 surface 不提前获得下一帧许可。
+- GPU.views 以仍由 Rc 保活的真实资源编号为键；VirGL 对象句柄从固定状态句柄之后独立分配，销毁命令先于句柄复用。
+  上一帧 flip 完成后才能淘汰视图/覆盖顶点，exec 成功后才发布新缓存。没有逐四边形重复资源表或每帧重复创建采样视图。
+- Session 的 applied_client_cursor 只保存成功上传的不可变图像引用及物理热点；同图像/热点跳过上传，形状切换或隐藏清空，
+  位置仍独立更新。set_cursor 校验本连接最近 enter 序号后才分配角色，后续 offset 从设置时热点扣除累计增量。
+- Benchmark 决策：移除 viewport 全图重采样、窗口元数据查询的子树分配、逐帧采样视图创建与未变化光标上传；
+  CPU 仿射路径只扫描可见目标像素，不分配中间图像。相同 set_text 不使布局失效。
+  本轮不执行性能/UI 测量，不声明已提高多少帧率；客户端仍走 wl_shm，damage/opaque 当前只是可忽略的提示。

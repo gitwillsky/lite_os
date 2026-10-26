@@ -314,15 +314,6 @@ impl Stack {
             .iter()
             .find(|placed| placed.client == client && placed.surface == surface)
     }
-
-    /// 最上层可见窗口里包含 `(x, y)` 的那个。
-    pub fn window_at(&self, x: i32, y: i32) -> Option<&Placement> {
-        self.order.iter().rev().find(|placed| {
-            !placed.minimized
-                && (placed.x..placed.x + placed.width).contains(&x)
-                && (placed.y..placed.y + placed.height).contains(&y)
-        })
-    }
 }
 
 #[cfg(test)]

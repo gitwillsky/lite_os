@@ -164,9 +164,6 @@ impl Scanout {
             ));
         }
         self.pending = None;
-        if let Backend::Gpu(gpu) = &mut self.backend {
-            gpu.complete();
-        }
         self.back ^= 1;
         Ok(())
     }

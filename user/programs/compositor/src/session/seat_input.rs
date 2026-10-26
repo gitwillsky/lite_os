@@ -78,27 +78,26 @@ impl Session {
                     let point = self.input.pointer().position();
                     let boxes = self.layer_boxes();
                     let hit = self.hit_test(&boxes, point);
+                    let root = hit.and_then(|hit| self.root_target(hit.target));
                     if !self.secure_pending {
-                        self.keyboard_layer = hit
-                            .and_then(|hit| {
+                        self.keyboard_layer = root
+                            .and_then(|root| {
                                 boxes
                                     .iter()
-                                    .find(|layer| (layer.client, layer.surface) == hit.target)
+                                    .find(|layer| (layer.client, layer.surface) == root)
                             })
                             .filter(|layer| layer.keyboard == KeyboardInteractivity::OnDemand)
                             .map(|layer| (layer.client, layer.surface));
                     }
-                    let covered = hit.is_some_and(|hit| {
+                    let covered = root.is_some_and(|root| {
                         boxes.iter().any(|layer| {
-                            (layer.client, layer.surface) == hit.target && layer.layer >= Layer::Top
+                            (layer.client, layer.surface) == root && layer.layer >= Layer::Top
                         })
                     });
                     if !self.secure_pending
                         && !covered
-                        && let Some(target) = self
-                            .stack
-                            .window_at(point.0, point.1)
-                            .map(|placed| (placed.client, placed.surface))
+                        && let Some(target) =
+                            root.filter(|target| self.stack.placement(target.0, target.1).is_some())
                         && self.stack.raise(target.0, target.1)
                     {
                         self.dirty = true;

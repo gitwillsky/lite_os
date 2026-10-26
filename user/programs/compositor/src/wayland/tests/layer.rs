@@ -576,6 +576,15 @@ fn layer_and_cursor_roles_cannot_become_xdg_windows() {
                 .unwrap()
         })
         .unwrap();
+    // set_cursor 只有携带当前 enter 序号才生效；先给连接真实的指针焦点，再验证角色排斥。
+    harness.create_surface(6);
+    harness.client.pointer_enter(
+        1,
+        id(6),
+        wayland_wire::wire::Fixed::from_int(0),
+        wayland_wire::wire::Fixed::from_int(0),
+    );
+    harness.events(&[(61, Interface::WlPointer)]);
     harness
         .send(|w| {
             wl_pointer::Request::SetCursor {

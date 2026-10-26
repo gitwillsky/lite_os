@@ -84,3 +84,14 @@ macOS 没有相同 SO_ACCEPTCONN getter，宿主 metadata/所有权测试从 std
 产品 `logon` 退出会让 compositor 交由 init 重建。机制探针在协议 owner drop/shutdown 后保持监督进程存活，
 因此仍验证真实 EOF 清理、创建者断开后的委派与普通 UI 客户端，不依赖探针退出绕过产品监督策略。
 完整的账户、桌面与音量 UI 由 [产品桌面门禁](desktop-verification.md) 裁决。
+
+## 提交与合成审查的验证边界
+
+本轮定向构建覆盖 compositor 与实际产品 userland 的发布入口，不以编译成功替代协议/画面验收。
+实现审查阶段未执行 UI、性能和运行时测试；后续启动挂起修复仅执行既有 layer 协议组的 15 个用例，
+覆盖首次 configure、尺寸重新协商和显式 null attach 后重新握手。初始无 attach 提交不能当作 unmap，
+否则 logon、桌面背景和任务栏均等不到 configure，启动画面会停在外壳启动里程碑。
+后续验收需覆盖 buffer transform 八种方向、buffer/output scale 不同、
+viewport 裁剪及取消与 null/fresh attach 同时提交、同步/异步子树的位置和父上下堆叠、输入 region 空洞，
+以及 flip 在途期间继续 commit 时 frame callback 不提前完成。硬件动画光标需同时检查热点 offset 与回调推进。
+性能观察分开记录首次纹理上传、已提交窗口拖动、缩放/还原与场景纹理替换；GPU 合成不能代表客户端已支持 dma-buf/EGL。

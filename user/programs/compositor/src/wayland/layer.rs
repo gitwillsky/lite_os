@@ -92,7 +92,6 @@ pub struct LayerView<'a> {
     pub namespace: &'a str,
     pub state: &'a LayerState,
     pub content: &'a Content,
-    pub scale: i32,
 }
 
 /// 按锚点与边距算出要告诉客户端的逻辑尺寸；`output` 是输出的逻辑尺寸。
@@ -176,7 +175,7 @@ impl Client {
                 "wl_surface already has a role",
             ));
         }
-        if state.content.is_some() || state.pending.buffer.is_some() {
+        if state.current.content.is_some() || state.pending.buffer.is_some() {
             return Err(Fail::new(
                 object,
                 shell::Error::AlreadyConstructed as u32,
@@ -284,7 +283,7 @@ impl Client {
                 // 窗口随角色一起消失；wl_surface 本身可能已先被销毁。
                 if let Ok(surface) = self.surface_mut(surface) {
                     surface.layer = None;
-                    surface.content = None;
+                    surface.current.content = None;
                 }
             }
             R::SetLayer { layer } => {
@@ -303,7 +302,7 @@ impl Client {
         Ok(())
     }
 
-    /// commit 之前：校验 pending 状态并让它生效；缓冲区必须在首次 configure 被确认之后才能附着。
+    /// commit 之前只校验 pending；角色状态随 surface 发布，缓冲必须在首次 configure 被确认之后才能附着。
     pub(super) fn layer_check_commit(&mut self, surface: ObjectId) -> Result<(), Fail> {
         let state = self.surface_mut(surface)?;
         let (Some(layer_id), has_buffer) =
@@ -339,7 +338,6 @@ impl Client {
                 "buffer attached before the first configure was acknowledged",
             ));
         }
-        layer.current = pending;
         Ok(())
     }
 
@@ -357,6 +355,8 @@ impl Client {
             self.output.height / self.output.scale.max(1),
         );
         let layer = self.layer_surface_mut(layer_id)?;
+        // 唯一发布点在此；提前覆盖 current 会丢失旧尺寸，导致后续 configure 判断永远不变。
+        layer.current = layer.pending;
         let changed = previous.is_some_and(|previous| {
             configure_size(&previous, output) != configure_size(&layer.current, output)
         });
@@ -409,8 +409,7 @@ impl Client {
                 surface: layer.surface,
                 namespace: &layer.namespace,
                 state: &layer.current,
-                content: surface.content.as_ref()?,
-                scale: surface.scale,
+                content: surface.current.content.as_ref()?,
             })
         })
     }

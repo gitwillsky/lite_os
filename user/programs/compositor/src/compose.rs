@@ -15,6 +15,12 @@ pub struct Drawable<'a> {
 impl<'a> Drawable<'a> {
     pub fn surface(x: i32, y: i32, content: &'a Content, output_scale: i32) -> Self {
         let (width, height) = content.output_size(output_scale);
+        let position = |origin: i32, offset: i64| {
+            i64::from(origin)
+                .saturating_add(offset.saturating_mul(i64::from(output_scale)))
+                .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+        };
+        let (x, y) = (position(x, content.offset.0), position(y, content.offset.1));
         Self {
             rect: Rect::new(x, y, width, height),
             content,

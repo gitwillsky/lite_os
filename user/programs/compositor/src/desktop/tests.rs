@@ -103,24 +103,6 @@ fn identity_is_client_and_surface_not_position_in_the_list() {
 }
 
 #[test]
-fn hit_testing_prefers_the_topmost_window() {
-    let mut stack = Stack::default();
-    stack.sync(
-        &[
-            (ClientId(1), surface(5), 300, 200, Initial::Cascade),
-            (ClientId(2), surface(5), 300, 200, Initial::Cascade),
-        ],
-        SCREEN,
-        1,
-    );
-    assert_eq!(stack.window_at(100, 100).unwrap().client, ClientId(2));
-    assert_eq!(stack.window_at(45, 45).unwrap().client, ClientId(1));
-    assert!(stack.window_at(5, 5).is_none());
-    assert!(stack.window_at(359, 100).is_none());
-    assert_eq!(stack.window_at(358, 258).unwrap().client, ClientId(2));
-}
-
-#[test]
 fn the_top_of_the_stack_is_the_active_window_and_raise_changes_it() {
     let mut stack = Stack::default();
     assert_eq!(stack.active(), None);
@@ -221,7 +203,7 @@ fn maximized_windows_cannot_be_moved_and_normal_ones_can() {
 }
 
 #[test]
-fn minimized_windows_are_invisible_to_hit_testing_and_activation() {
+fn minimized_windows_are_skipped_by_activation() {
     let mut stack = two_windows();
     assert!(stack.minimize(ClientId(2), surface(5)));
     assert!(
@@ -229,15 +211,10 @@ fn minimized_windows_are_invisible_to_hit_testing_and_activation() {
         "already minimized"
     );
     assert_eq!(stack.active(), Some((ClientId(1), surface(5))));
-    assert_eq!(
-        stack.window_at(100, 100).unwrap().client,
-        ClientId(1),
-        "the window below is hit instead"
-    );
+    assert!(stack.placement(ClientId(2), surface(5)).unwrap().minimized);
     // 全部最小化后没有活动窗口。
     stack.minimize(ClientId(1), surface(5));
     assert_eq!(stack.active(), None);
-    assert!(stack.window_at(100, 100).is_none());
     // 激活会恢复最小化并提到最上层，即使它本来就在栈顶。
     assert!(stack.raise(ClientId(2), surface(5)));
     assert_eq!(stack.active(), Some((ClientId(2), surface(5))));

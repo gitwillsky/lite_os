@@ -91,10 +91,6 @@ pub struct Window<'a> {
     pub title: &'a str,
     pub app_id: &'a str,
     pub content: &'a Content,
-    /// `wl_surface.set_buffer_scale`：内容的物理像素与逻辑像素之比。
-    pub scale: i32,
-    /// 挂在这个窗口下的子 surface，自底向上。
-    pub children: Vec<super::ChildView<'a>>,
     /// 客户端声明了固定尺寸（最小等于最大且非零）：对话框类窗口。
     pub fixed: bool,
     /// 父窗口的 `wl_surface`（`set_parent`）；父窗口不是本连接已映射的 toplevel 时为 `None`。
@@ -182,7 +178,7 @@ impl Client {
                 // 窗口随 xdg_surface 一起消失；wl_surface 本身可能已先被销毁。
                 if let Ok(surface) = self.surface_mut(surface) {
                     surface.xdg = None;
-                    surface.content = None;
+                    surface.current.content = None;
                 }
                 Ok(())
             }
@@ -273,7 +269,7 @@ impl Client {
         }
         let parent_mapped = match &request {
             R::SetParent {parent: Some(parent)} => self.toplevel_surface(*parent).is_some_and(|surface| {
-                matches!(self.objects.get(&surface.get()), Some(Entry {data: Data::Surface(state), ..}) if state.content.is_some())
+                matches!(self.objects.get(&surface.get()), Some(Entry {data: Data::Surface(state), ..}) if state.current.content.is_some())
             }),
             _ => false,
         };
@@ -307,7 +303,7 @@ impl Client {
                 };
                 self.inert_dialogs(object);
                 if let Ok(surface) = self.surface_mut(surface) {
-                    surface.content = None;
+                    surface.current.content = None;
                 }
                 Ok(())
             }
@@ -520,9 +516,7 @@ impl Client {
                 surface: xdg.surface,
                 title: &toplevel.title,
                 app_id: &toplevel.app_id,
-                content: surface.content.as_ref()?,
-                scale: surface.scale,
-                children: self.subtree(xdg.surface),
+                content: surface.current.content.as_ref()?,
                 fixed: toplevel.min_size != (0, 0) && toplevel.min_size == toplevel.max_size,
                 parent: toplevel
                     .parent

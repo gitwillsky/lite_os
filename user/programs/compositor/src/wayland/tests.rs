@@ -532,10 +532,11 @@ fn commit_copies_pixels_releases_the_buffer_and_fires_frame_callbacks() {
     let (surface, content) = harness.client.contents().next().unwrap();
     assert_eq!((surface, content.width, content.height), (id(5), 2, 2));
     assert_eq!(
-        content.pixels,
+        content.pixels(),
         [0x80_10_20_30, 0x00_11_22_33, 0xFF_AA_BB_CC, 0x40_01_02_03]
     );
 
+    harness.client.stage_surface_frame(id(5));
     harness.client.finish_frame(1234);
     let events = harness.events(&[(12, Interface::WlCallback)]);
     assert!(matches!(
@@ -582,7 +583,7 @@ fn xrgb_buffers_are_forced_opaque_and_stride_padding_is_skipped() {
         .unwrap();
     let (_, content) = harness.client.contents().next().unwrap();
     assert_eq!(
-        content.pixels,
+        content.pixels(),
         [0xFF00_0010, 0xFF00_0011, 0xFF00_0020, 0xFF00_0021]
     );
 }

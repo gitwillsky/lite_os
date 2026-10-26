@@ -44,23 +44,35 @@ pub struct BufferSpec {
     pub format: Format,
 }
 
-/// 读取 buffer 内容失败：文件比声明的短（被客户端截断）。
+/// 读取 buffer 内容失败：文件截断或无法分配快照。
 #[derive(Debug, PartialEq, Eq)]
-pub struct Truncated;
+pub enum ReadError {
+    Truncated,
+    NoMemory,
+}
+use ReadError::Truncated;
 
 impl BufferSpec {
     /// 把整个 buffer 复制成预乘 `0xAARRGGBB` 像素；`Xrgb8888` 强制不透明。
     ///
     /// # Errors
     ///
-    /// 文件内容短于声明（客户端截断了共享内存）。
-    pub fn read_pixels(&self) -> Result<Vec<u32>, Truncated> {
-        let mut pixels = Vec::with_capacity(self.width * self.height);
+    /// 文件内容短于声明（客户端截断了共享内存），或无法分配快照。
+    pub fn read_pixels(&self) -> Result<Vec<u32>, ReadError> {
+        let mut pixels = Vec::new();
+        pixels
+            .try_reserve_exact(self.width * self.height)
+            .map_err(|_| ReadError::NoMemory)?;
         // 固定预算内批量 pread；大 stride 退化为单行，不分配整个客户端 pool。
         // 最后一批只读到最后一行的有效像素，不能要求客户端额外提供尾部 padding。
         let row_bytes = self.width * 4;
         let rows_per_read = (64 * 1024 / self.stride).max(1).min(self.height);
-        let mut batch = vec![0u8; (rows_per_read - 1) * self.stride + row_bytes];
+        let length = (rows_per_read - 1) * self.stride + row_bytes;
+        let mut batch = Vec::new();
+        batch
+            .try_reserve_exact(length)
+            .map_err(|_| ReadError::NoMemory)?;
+        batch.resize(length, 0);
         for y in (0..self.height).step_by(rows_per_read) {
             let count = rows_per_read.min(self.height - y);
             let len = (count - 1) * self.stride + row_bytes;

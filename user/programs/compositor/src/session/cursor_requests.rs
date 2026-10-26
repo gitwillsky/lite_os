@@ -27,6 +27,7 @@ impl Session {
                     client,
                     surface,
                     hotspot: request.hotspot,
+                    offset_origin: request.offset_origin,
                 },
                 (None, None) => Shape::Hidden,
             };
@@ -44,54 +45,79 @@ impl Session {
         let position = self.input.pointer().position();
         let scale = self.scale;
         match self.shape {
-            Shape::Hidden => return self.scanout.hide_cursor(position),
+            Shape::Hidden => {
+                self.applied_client_cursor = None;
+                return self.scanout.hide_cursor(position);
+            }
             Shape::Client {
                 client,
                 surface,
                 hotspot,
-            } => match self.server.cursor_image(client, surface) {
-                // 无 buffer 的光标 surface 不可见；后续 commit 再更新硬件图像。
-                None => return self.scanout.hide_cursor(position),
-                Some((content, _)) => {
-                    let (width, height) = content.output_size(scale as i32);
-                    let hot = (
-                        hotspot.0.checked_mul(scale as i32),
-                        hotspot.1.checked_mul(scale as i32),
-                    );
-                    if width <= cursor::HARDWARE_EDGE as i32
-                        && height <= cursor::HARDWARE_EDGE as i32
-                        && matches!(hot, (Some(x), Some(y)) if (0..64).contains(&x) && (0..64).contains(&y))
-                    {
-                        let edge = cursor::HARDWARE_EDGE as i32;
-                        let stride = self.hardware_cursor.stride();
-                        self.hardware_cursor.pixels_mut().fill(0);
-                        let mut target = canvas::Surface::new(
-                            self.hardware_cursor.pixels_mut(),
-                            edge,
-                            edge,
-                            stride,
-                        )
-                        .expect("hardware cursor geometry");
-                        target.blit_sampled(
-                            canvas::Image {
-                                pixels: content.pixels(),
-                                width: content.width as i32,
-                                height: content.height as i32,
-                                stride: content.width,
-                            },
-                            canvas::Rect::new(0, 0, width, height),
-                            content.source,
-                        );
-                        let hot = (hot.0.unwrap() as u32, hot.1.unwrap() as u32);
-                        self.scanout
-                            .show_cursor(&self.hardware_cursor, position, hot)?;
-                        return Ok(());
+                offset_origin,
+            } => {
+                match self.server.cursor_image(client, surface) {
+                    // 无 buffer 的光标 surface 不可见；后续 commit 再更新硬件图像。
+                    None => {
+                        self.applied_client_cursor = None;
+                        return self.scanout.hide_cursor(position);
                     }
-                    // 硬件光标最大 64×64；更大的图像退回默认光标。
+                    Some(content) => {
+                        let (width, height) = content.output_size(scale as i32);
+                        let physical = |hot: i32, offset: i64, origin: i64| {
+                            i64::from(hot)
+                                .checked_sub(offset.checked_sub(origin)?)?
+                                .checked_mul(i64::from(scale))
+                                .and_then(|value| i32::try_from(value).ok())
+                        };
+                        let hot = (
+                            physical(hotspot.0, content.offset.0, offset_origin.0),
+                            physical(hotspot.1, content.offset.1, offset_origin.1),
+                        );
+                        if width <= cursor::HARDWARE_EDGE as i32
+                            && height <= cursor::HARDWARE_EDGE as i32
+                            && matches!(hot, (Some(x), Some(y)) if (0..64).contains(&x) && (0..64).contains(&y))
+                        {
+                            let physical_hot = (hot.0.unwrap() as u32, hot.1.unwrap() as u32);
+                            if self.applied_client_cursor.as_ref().is_some_and(
+                                |(image, previous)| {
+                                    *previous == physical_hot && image.same_image(content)
+                                },
+                            ) {
+                                return Ok(());
+                            }
+                            let edge = cursor::HARDWARE_EDGE as i32;
+                            let stride = self.hardware_cursor.stride();
+                            self.hardware_cursor.pixels_mut().fill(0);
+                            let mut target = canvas::Surface::new(
+                                self.hardware_cursor.pixels_mut(),
+                                edge,
+                                edge,
+                                stride,
+                            )
+                            .expect("hardware cursor geometry");
+                            target.blit_sampled(
+                                canvas::Image {
+                                    pixels: content.pixels(),
+                                    width: content.width as i32,
+                                    height: content.height as i32,
+                                    stride: content.width,
+                                },
+                                canvas::Rect::new(0, 0, width, height),
+                                content.source,
+                            );
+                            let hot = (hot.0.unwrap() as u32, hot.1.unwrap() as u32);
+                            self.scanout
+                                .show_cursor(&self.hardware_cursor, position, hot)?;
+                            self.applied_client_cursor = Some((content.clone(), hot));
+                            return Ok(());
+                        }
+                        // 硬件光标最大 64×64；更大的图像退回默认光标。
+                    }
                 }
-            },
+            }
             Shape::Default | Shape::Named(_) => {}
         }
+        self.applied_client_cursor = None;
         let name = match self.shape {
             Shape::Named(name) => name,
             _ => "arrow",

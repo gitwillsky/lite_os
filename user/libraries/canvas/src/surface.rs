@@ -226,7 +226,7 @@ impl<'a> Surface<'a> {
     }
 
     /// 将预乘 ARGB 图像最近邻缩放到任意目标矩形；源布局无效或目标为空时不绘制。
-    /// 裁剪后直接采样原图，不分配中间像素；整数等比放大复用 blit 的不透明行复制路径。
+    /// 使用目标像素中心取最近邻，与 GPU 的纹理采样一致；整数等比放大复用不透明行复制路径。
     pub fn blit_scaled(&mut self, image: Image<'_>, rect: Rect) {
         if rect.is_empty()
             || image.width <= 0
@@ -244,13 +244,13 @@ impl<'a> Surface<'a> {
             return;
         }
         for (left, top, row) in self.visible_rows(rect) {
-            let sy = ((i64::from(top) - i64::from(rect.y)) * i64::from(image.height)
-                / i64::from(rect.height)) as usize;
+            let sy = (((i64::from(top) - i64::from(rect.y)) * 2 + 1) * i64::from(image.height)
+                / (i64::from(rect.height) * 2)) as usize;
             let source = &image.pixels[sy * image.stride..][..image.width as usize];
             for (column, pixel) in row.iter_mut().enumerate() {
-                let sx = ((i64::from(left) - i64::from(rect.x) + column as i64)
+                let sx = (((i64::from(left) - i64::from(rect.x) + column as i64) * 2 + 1)
                     * i64::from(image.width)
-                    / i64::from(rect.width)) as usize;
+                    / (i64::from(rect.width) * 2)) as usize;
                 let value = source[sx];
                 match value >> 24 {
                     0 => {}
@@ -277,10 +277,17 @@ impl<'a> Surface<'a> {
         }
         for (left, top, row) in self.visible_rows(rect) {
             let v = (f64::from(top) - f64::from(rect.y) + 0.5) / f64::from(rect.height);
+            let u = (f64::from(left) - f64::from(rect.x) + 0.5) / f64::from(rect.width);
+            let (first_x, first_y) = source.point(u, v);
+            let step = (
+                (source.right.0 - source.origin.0) / f64::from(rect.width),
+                (source.right.1 - source.origin.1) / f64::from(rect.width),
+            );
             for (column, pixel) in row.iter_mut().enumerate() {
-                let u = (f64::from(left) - f64::from(rect.x) + column as f64 + 0.5)
-                    / f64::from(rect.width);
-                let (x, y) = source.point(u, v);
+                let (x, y) = (
+                    first_x + column as f64 * step.0,
+                    first_y + column as f64 * step.1,
+                );
                 let x = (x.floor() as i64).clamp(0, i64::from(image.width) - 1) as usize;
                 let y = (y.floor() as i64).clamp(0, i64::from(image.height) - 1) as usize;
                 let value = image.pixels[y * image.stride + x];

@@ -102,7 +102,7 @@ fn the_first_commit_configures_and_an_acknowledged_window_maps() {
         (windows[0].title, windows[0].app_id, windows[0].surface),
         ("登录到 LiteOS", "logon", id(5))
     );
-    assert_eq!((windows[0].content.width, windows[0].scale), (2, 1));
+    assert_eq!((windows[0].content.width, windows[0].content.size), (2, (2, 2)));
 }
 
 #[test]

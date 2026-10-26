@@ -24,10 +24,6 @@ pub type Params = (Option<(f64, f64, f64, f64)>, Option<(i32, i32)>);
 pub struct ViewportState {
     /// 绑定的 `wp_viewport` 对象；同一 surface 只允许一个。
     pub object: Option<ObjectId>,
-    /// 已生效的逻辑源矩形（buffer transform/scale 之后的坐标）；None 为整个内容。
-    pub source: Option<(f64, f64, f64, f64)>,
-    /// 已生效的目标尺寸（surface 局部逻辑像素）；`None` 表示用源尺寸。
-    pub destination: Option<(i32, i32)>,
     /// 下次 commit 要换上的值；外层 `Some` 表示有改动。
     pub pending: Option<Params>,
 }
@@ -39,21 +35,11 @@ pub(super) enum GeometryError {
 }
 
 impl ViewportState {
-    /// 视口是否在起作用。
-    pub fn active(&self) -> bool {
-        self.source.is_some() || self.destination.is_some()
-    }
-
-    fn pending_mut(&mut self) -> &mut Params {
-        let current = (self.source, self.destination);
-        self.pending.get_or_insert(current)
-    }
-
     /// 只校验不依赖 buffer 的尺寸规则；空 buffer 也不能提交分数源尺寸而不指定目标。
-    pub fn validate_size(&self) -> Result<(), u32> {
-        if self.destination.is_none()
-            && self
-                .source
+    pub fn validate_size(params: Params) -> Result<(), u32> {
+        if params.1.is_none()
+            && params
+                .0
                 .is_some_and(|(_, _, width, height)| width.fract() != 0.0 || height.fract() != 0.0)
         {
             return Err(wp_viewport::Error::BadSize as u32);
@@ -64,23 +50,24 @@ impl ViewportState {
     /// 将已提交参数转换成逻辑尺寸与原始像素的仿射采样边界。
     /// 裸 buffer 不是 scale 的整数倍返回 BufferSize；越界源或分数源尺寸返回对应 viewport 错误。
     pub fn mapping(
-        &self,
+        params: Params,
         base: &Content,
         scale: i32,
         transform: i32,
     ) -> Result<((i32, i32), canvas::ImageSource), GeometryError> {
-        self.validate_size().map_err(GeometryError::Viewport)?;
+        Self::validate_size(params).map_err(GeometryError::Viewport)?;
         let (width, height) = if transform & 1 != 0 {
             (base.height, base.width)
         } else {
             (base.width, base.height)
         };
-        if !self.active()
+        if params.0.is_none()
+            && params.1.is_none()
             && (!width.is_multiple_of(scale as usize) || !height.is_multiple_of(scale as usize))
         {
             return Err(GeometryError::BufferSize);
         }
-        let (sx, sy, sw, sh) = self.source.unwrap_or((
+        let (sx, sy, sw, sh) = params.0.unwrap_or((
             0.0,
             0.0,
             width as f64 / f64::from(scale),
@@ -93,7 +80,19 @@ impl ViewportState {
                 wp_viewport::Error::OutOfBuffer as u32,
             ));
         }
-        let size = self.destination.unwrap_or((sw as i32, sh as i32));
+        let size = params.1.unwrap_or((sw as i32, sh as i32));
+        // 完整、未旋转的源保持精确单位坐标，让常规整数缩放复用 CPU 行复制快路径。
+        if transform == 0
+            && sx == 0.0
+            && sy == 0.0
+            && sw * f64::from(scale) == base.width as f64
+            && sh * f64::from(scale) == base.height as f64
+        {
+            return Ok((
+                size,
+                canvas::ImageSource::full(base.width as i32, base.height as i32),
+            ));
+        }
         // set_buffer_transform 描述客户端已施加的变换；从显示点反查原 buffer 要按该正向变换取样。
         let point = |x: f64, y: f64| {
             let (u, v) = (
@@ -173,7 +172,7 @@ impl Client {
             {
                 // 销毁视口等于取消源与目标，下次 commit 生效。
                 surface.viewport.object = None;
-                *surface.viewport.pending_mut() = (None, None);
+                *surface.pending_viewport() = (None, None);
             }
             return Ok(());
         }
@@ -194,7 +193,7 @@ impl Client {
                 message.to_owned(),
             )
         };
-        let pending = self.surface_mut(surface)?.viewport.pending_mut();
+        let pending = self.surface_mut(surface)?.pending_viewport();
         match request {
             wp_viewport::Request::SetSource {
                 x,
