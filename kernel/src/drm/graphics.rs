@@ -108,6 +108,10 @@ pub(super) struct VirglLifecycle {
     pub(super) fence: u64,
     // OWNER: 弱缓存保证重复 PRIME 导出返回同一 dma-buf 身份，不能反向保活 fd 或形成资源/OFD 环。
     pub(super) exported: alloc::sync::Weak<super::prime::DmaBuf>,
+    // Linux `obj->dma_buf` 自首次 PRIME 导出起保留到最后一个 handle 关闭，fdinfo 据此判定共享；
+    // 本资源只能经 dma-buf 进入其他 OFD，故置位后对任何持有 handle 的客户端都等价成立。
+    // 缺失时导出 fd 关闭、两端 handle 仍在的资源会被报告为私有，客户端相加便重复计数。
+    pub(super) shared: bool,
 }
 
 /// 正常关闭或创建失败后的回收事务；预分配节点保活 backing。未发布 ID 只在 UNREF 完成后回收。
@@ -696,6 +700,7 @@ impl DrmFile {
             lifecycle: Mutex::new(VirglLifecycle {
                 fence: 0,
                 exported: alloc::sync::Weak::new(),
+                shared: false,
             }),
         })
         .map_err(|_| DrmError::OutOfMemory)?;

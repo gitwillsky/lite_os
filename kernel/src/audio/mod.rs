@@ -14,7 +14,9 @@ use spin::{Mutex, Once};
 use crate::{
     drivers::{PcmCompletionObserver, PcmOutput, io_completion::CompletionSource},
     ipc::{Pipe, PipeDirection, PipeEnd},
-    memory::{DeviceBacking, DeviceMappingSource, FrameAllocationClass, PAGE_SIZE},
+    memory::{
+        DeviceBacking, DeviceMappingSource, DevicePageAccounting, FrameAllocationClass, PAGE_SIZE,
+    },
     namespace::PidIdentity,
 };
 
@@ -472,9 +474,11 @@ impl PcmFile {
         if offset != 0 || length != PCM_BUFFER_FRAMES * PCM_FRAME_BYTES {
             return Err(AudioError::InvalidState);
         }
+        // virtio-snd 的 SNDRV_DMA_TYPE_VMALLOC ring 经 remap_vmalloc_range 插入普通页，计入 RSS。
         Ok(DeviceMappingSource::new(
             self.mmap_identity,
             self.ring.clone(),
+            DevicePageAccounting::InsertedPages,
         ))
     }
 

@@ -7,7 +7,7 @@ use super::ring::Ring;
 use crate::{
     fs::chardev::{DeviceError, DeviceFile, DeviceWaitSources, MapRequest},
     ipc::Pipe,
-    memory::{DeviceMappingSource, PAGE_SIZE},
+    memory::{DeviceMappingSource, DevicePageAccounting, PAGE_SIZE},
 };
 
 const POLLIN: i16 = 0x001;
@@ -81,6 +81,11 @@ impl DeviceFile for Ring {
         if length == 0 || length > backing.pages() * PAGE_SIZE {
             return Err(DeviceError::Errno(errno::EINVAL));
         }
-        Ok(DeviceMappingSource::new(identity, backing))
+        // Linux io_region_mmap 使用 vm_insert_pages，ring 页计入 RSS。
+        Ok(DeviceMappingSource::new(
+            identity,
+            backing,
+            DevicePageAccounting::InsertedPages,
+        ))
     }
 }

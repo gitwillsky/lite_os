@@ -104,9 +104,9 @@ RUST_USER_BUILD_STD = "std,panic_abort;llvm-libunwind"
 RUNTIME_LIBRARY = "liteos_runtime"
 UI_RUNTIME = ("classic-ui-runtime", "liteos_ui")
 SYSTEM_LIBRARIES = (
-    ("liteos-runtime", RUNTIME_LIBRARY),
+    ("liteos-runtime", RUNTIME_LIBRARY), ("linux-uapi", "linux_uapi"),
     ("canvas", "canvas"), ("classic-theme", "classic_theme"), ("typeface", "typeface"),
-    ("classic-ui", "classic_ui"), ("wayland-wire", "wayland_wire"), ("linux-uapi", "linux_uapi"),
+    ("classic-ui", "classic_ui"), ("wayland-wire", "wayland_wire"),
     ("keyboard", "keyboard"), ("calendar", "calendar"), ("desktop-entry", "desktop_entry"),
     ("desktop-settings", "desktop_settings"),
     ("sound", "sound"), ("sndvol", "sndvol"),

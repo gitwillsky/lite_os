@@ -56,9 +56,12 @@ pub(crate) struct Outline {
     pub contours: Vec<Vec<Point>>,
 }
 
+/// 字体文件字节的共享来源：目录扫描用只读文件映射，测试可直接给内存缓冲。
+type FontBytes = Arc<dyn AsRef<[u8]> + Send + Sync>;
+
 /// 已解析表目录的字体；与同一 TTC 集合的其他成员共享整个文件的字节。
 pub struct Sfnt {
-    data: Arc<[u8]>,
+    data: FontBytes,
     /// `name` 表 nameID 1（Windows 平台）的全部家族名，含中英文；字体映射按它匹配逻辑字体名。
     families: Vec<String>,
     /// OS/2 fsSelection 的粗体位；GDI 只在逻辑字体要求粗体而成员不是粗体时合成。
@@ -102,8 +105,8 @@ impl Sfnt {
     /// # Errors
     ///
     /// 不是 TrueType 轮廓的 sfnt，或缺少 `head`/`hhea`/`maxp`/`cmap`，或字段越界。
-    pub fn parse(data: Vec<u8>) -> Result<Self, FontError> {
-        Self::parse_at(Arc::from(data), 0)
+    pub fn parse(data: impl AsRef<[u8]> + Send + Sync + 'static) -> Result<Self, FontError> {
+        Self::parse_at(Arc::new(data), 0)
     }
 
     /// 解析单个字体或 TTC 集合的全部成员；成员共享文件字节，表偏移均相对文件起点。
@@ -111,9 +114,11 @@ impl Sfnt {
     /// # Errors
     ///
     /// 集合头越界，或任一成员按 [`Sfnt::parse`] 的规则无效。
-    pub fn parse_collection(data: Vec<u8>) -> Result<Vec<Self>, FontError> {
-        let data: Arc<[u8]> = Arc::from(data);
-        let bytes = Bytes(&data);
+    pub fn parse_collection(
+        data: impl AsRef<[u8]> + Send + Sync + 'static,
+    ) -> Result<Vec<Self>, FontError> {
+        let data: FontBytes = Arc::new(data);
+        let bytes = Bytes((*data).as_ref());
         if bytes.u32(0) != Some(0x7474_6366) {
             return Ok(vec![Self::parse_at(data, 0)?]);
         }
@@ -126,8 +131,14 @@ impl Sfnt {
             .collect()
     }
 
-    fn parse_at(data: Arc<[u8]>, start: usize) -> Result<Self, FontError> {
-        let bytes = Bytes(&data);
+    /// 整个字体文件的字节；表范围均相对文件起点。
+    fn file(&self) -> &[u8] {
+        (*self.data).as_ref()
+    }
+
+    fn parse_at(data: FontBytes, start: usize) -> Result<Self, FontError> {
+        let file = (*data).as_ref();
+        let bytes = Bytes(file);
         let version = bytes.u32(start).ok_or(FontError::Truncated)?;
         if !matches!(version, 0x0001_0000 | 0x7472_7565) {
             return Err(FontError::Unsupported(
@@ -147,7 +158,7 @@ impl Sfnt {
             required(b"cmap")?,
         );
         let field = |range: &Range<usize>, offset| {
-            Bytes(&data[range.clone()])
+            Bytes(&file[range.clone()])
                 .u16(offset)
                 .ok_or(FontError::Truncated)
         };
@@ -155,9 +166,9 @@ impl Sfnt {
         if units_per_em == 0 {
             return Err(FontError::Unsupported("unitsPerEm is zero"));
         }
-        let families = find(b"name").map_or_else(Vec::new, |name| family_names(Bytes(&data[name])));
+        let families = find(b"name").map_or_else(Vec::new, |name| family_names(Bytes(&file[name])));
         let bold = find(b"OS/2")
-            .and_then(|os2| Bytes(&data[os2]).u16(62))
+            .and_then(|os2| Bytes(&file[os2]).u16(62))
             .map_or_else(
                 || field(&head, 44).is_ok_and(|style| style & 1 != 0),
                 |selection| selection & 0x20 != 0,
@@ -167,8 +178,8 @@ impl Sfnt {
         let (win_ascent, win_descent) = find(b"OS/2")
             .and_then(|os2| {
                 Some((
-                    Bytes(&data[os2.clone()]).u16(74)?,
-                    Bytes(&data[os2]).u16(76)?,
+                    Bytes(&file[os2.clone()]).u16(74)?,
+                    Bytes(&file[os2]).u16(76)?,
                 ))
             })
             .unwrap_or_else(|| (hhea_ascent.max(0) as u16, hhea_descent.unsigned_abs()));
@@ -182,7 +193,7 @@ impl Sfnt {
             metric_count: field(&hhea, 34)?,
             ascent: field(&hhea, 4)? as i16,
             descent: field(&hhea, 6)? as i16,
-            cmap: pick_cmap(Bytes(&data[cmap.clone()]))
+            cmap: pick_cmap(Bytes(&file[cmap.clone()]))
                 .map(|(offset, format)| (cmap.start + offset..cmap.end, format)),
             loca: find(b"loca").unwrap_or_default(),
             glyf: find(b"glyf").unwrap_or_default(),
@@ -199,7 +210,7 @@ impl Sfnt {
     }
 
     fn bytes(&self, range: &Range<usize>) -> Bytes<'_> {
-        Bytes(&self.data[range.clone()])
+        Bytes(&self.file()[range.clone()])
     }
 
     /// 家族名（中英文）；字体映射按不区分大小写的完整名称匹配。
@@ -367,8 +378,8 @@ impl Sfnt {
     pub(crate) fn hint_tables(&self) -> HintTables<'_> {
         let cvt = self.bytes(&self.cvt);
         HintTables {
-            fpgm: &self.data[self.fpgm.clone()],
-            prep: &self.data[self.prep.clone()],
+            fpgm: &self.file()[self.fpgm.clone()],
+            prep: &self.file()[self.prep.clone()],
             cvt: (0..self.cvt.len() / 2)
                 .map(|index| cvt.i16(index * 2).unwrap_or(0))
                 .collect(),

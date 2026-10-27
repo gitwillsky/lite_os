@@ -288,6 +288,10 @@ mod memory {
         // 本 fixture 不建立 device VMA；这些 seam 若意外命中即失败。
         #[derive(Debug, Clone)]
         struct DeviceArea;
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        enum DevicePageAccounting {
+            InsertedPages,
+        }
         impl DeviceArea {
             fn partition(
                 _: Option<Self>,

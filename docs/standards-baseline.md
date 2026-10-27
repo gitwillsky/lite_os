@@ -360,6 +360,9 @@ zero-window 使用有界原生 timer；通用 PMTU/fragment 与其他未声明 T
   SHA-256 `ef39de11196083a41e865737f71e89a9ce3d61b94d2dbbed9b156cd89d6bb97f`。服务端公布 v4 子集，不声明后续版本。
 - PRIME、DMA_BUF_IOCTL_SYNC、virtgpu resource_create/transfer 对照本文件固定 Linux 的 drm_prime.c、virtgpu_prime.c、virtgpu_ioctl.c；
   CTX_DETACH_RESOURCE 使用已固定 VirtIO-GPU 规范。未实现的 sync_file/syncobj 不公布。
+- GPU 客户端统计遵循同一固定 Linux 的 `Documentation/gpu/drm-usage-stats.rst` 与 `drivers/gpu/drm/drm_file.c`：
+  OFD client identity 去重，系统内存使用 `memory` region；共享判定对照 `include/drm/drm_gem.h` 的
+  `drm_gem_object_is_shared_for_memory_stats`；未测量的执行时间不发布为 `drm-engine-*`。
 - [Mesa 25.1.9](https://archive.mesa3d.org/mesa-25.1.9.tar.xz)、[libdrm 2.4.124](https://dri.freedesktop.org/libdrm/libdrm-2.4.124.tar.xz) 为标准客户端实现依据。
   AArch64 运行库使用 Alpine v3.22 的固定 APK，完整包名与 SHA-256 在 `scripts/mesa-runtime-packages.json`，
   清单 SHA-256 `391bb2a2a239aee3954d79e43b9e10585fbd946e2658ea4ee456c9b36cd410aa`；只安装种子库的实际 DT_NEEDED 闭包。

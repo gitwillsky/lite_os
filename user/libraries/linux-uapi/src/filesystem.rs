@@ -1,6 +1,6 @@
-//! Typed filesystem capacity queries absent from std.
+//! Typed filesystem capacity queries and read-only file mappings absent from std.
 
-use std::{io, path::Path};
+use std::{fs::File, io, os::fd::AsRawFd, path::Path, ptr::NonNull};
 
 /// Atomically moves `from` to `to` without replacing an existing destination.
 ///
@@ -82,5 +82,85 @@ pub fn capacity(path: &Path) -> io::Result<Capacity> {
     {
         let _ = path;
         Err(io::ErrorKind::Unsupported.into())
+    }
+}
+
+/// An owned read-only `MAP_PRIVATE` view of a whole file.
+///
+/// Pages are faulted in from the page cache on first access, so processes mapping the same
+/// file share physical pages and only touched pages count toward their RSS.
+pub struct ReadOnlyMapping {
+    address: NonNull<u8>,
+    len: usize,
+}
+
+impl ReadOnlyMapping {
+    /// Maps the complete current contents of `path` read-only.
+    ///
+    /// # Returns
+    /// A mapping of the file length at open time; an empty file yields an empty view without mmap.
+    ///
+    /// # Errors
+    /// Returns the open/stat/mmap error, or OutOfMemory when the file does not fit the address space.
+    ///
+    /// # Safety
+    /// The file must not be modified or truncated while the mapping lives: writes would change
+    /// bytes behind the returned `&[u8]`, and truncation turns later reads into SIGBUS.
+    /// Replace such files with rename, which leaves existing mappings on the old inode.
+    pub unsafe fn open(path: &Path) -> io::Result<Self> {
+        let file = File::open(path)?;
+        let len = usize::try_from(file.metadata()?.len())
+            .map_err(|_| io::Error::from(io::ErrorKind::OutOfMemory))?;
+        if len == 0 {
+            return Ok(Self {
+                address: NonNull::dangling(),
+                len,
+            });
+        }
+        // SAFETY: fd is open for reading for the call; the kernel picks the address, and the
+        // mapping keeps its own file reference after `file` closes.
+        let address = unsafe {
+            crate::raw::mmap(
+                std::ptr::null_mut(),
+                len,
+                crate::raw::PROT_READ,
+                crate::raw::MAP_PRIVATE,
+                file.as_raw_fd(),
+                0,
+            )
+        };
+        if address as isize == -1 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(Self {
+            address: NonNull::new(address.cast())
+                .ok_or_else(|| io::Error::new(io::ErrorKind::OutOfMemory, "mmap returned null"))?,
+            len,
+        })
+    }
+}
+
+impl AsRef<[u8]> for ReadOnlyMapping {
+    fn as_ref(&self) -> &[u8] {
+        // SAFETY: `len` readable bytes stay mapped until Drop (or the view is empty and dangling);
+        // the `open` contract forbids concurrent modification of the backing file.
+        unsafe { std::slice::from_raw_parts(self.address.as_ptr(), self.len) }
+    }
+}
+
+// SAFETY: the mapping is never written through, so sharing or moving the owner across threads
+// only creates shared reads of immutable bytes.
+unsafe impl Send for ReadOnlyMapping {}
+// SAFETY: see Send; `&ReadOnlyMapping` exposes nothing but `&[u8]`.
+unsafe impl Sync for ReadOnlyMapping {}
+
+impl Drop for ReadOnlyMapping {
+    fn drop(&mut self) {
+        if self.len == 0 {
+            return;
+        }
+        // SAFETY: address/len are exactly the live mapping created by `open`; no borrow outlives self.
+        let result = unsafe { crate::raw::munmap(self.address.as_ptr().cast(), self.len) };
+        debug_assert_eq!(result, 0, "munmap failed for owned read-only mapping");
     }
 }

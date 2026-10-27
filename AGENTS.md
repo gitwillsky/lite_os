@@ -43,6 +43,9 @@
 
 ## Rust 测试布局
 
+- 测试按失败风险准入，不以数量、行数或覆盖率作为产出目标。简单展示/格式映射、直接委托和未修改逻辑不默认新增测试；不得仅为改了文件而补测试。
+- 新测试必须保护具体的边界、状态转换、资源寿命、错误清理或协议契约，优先扩展已有 production-path fixture；禁止复制实现、仅比较测试自造数据或大段样板验证显而易见的行为。
+- Review 必须判断新增测试能防住什么真实失败、现有门禁是否已覆盖、验证成本是否与风险相称；删去无新增保护的测试。恒定断言由 Clippy 与 architecture-check 拦截，语义价值由 Review 判断，不能宣称静态规则能自动裁决一切测试价值。
 - 单元测试使用模块末尾的 `#[cfg(test)] mod tests`（也可声明独立测试文件）；测试模块之后不再添加生产条目。
 - 集成测试放在 `tests/`，guest ABI/设备验收使用现有 runtime fixture；不在生产控制流中加入诊断采样或测试入口。
 - 所有第一方 crate 继承 workspace Clippy lint；`items_after_test_module` 为 deny，不用 allow/expect 绕过。

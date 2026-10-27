@@ -194,6 +194,7 @@ fn key(name: &str) -> String {
 
 impl FontCatalog {
     /// 扫描 `directory` 中的 `.ttf`、`.ttc` 与 `.bdf`，读取同目录的 `fontmap.ini`（可缺省）。
+    /// 轮廓字体以只读映射持有：catalog 生存期内这些文件不得原地修改或截断，更新须以 rename 替换。
     ///
     /// # Errors
     ///
@@ -215,7 +216,12 @@ impl FontCatalog {
                 .map(|value| value.to_string_lossy().to_lowercase());
             match extension.as_deref() {
                 Some("ttf" | "ttc") => {
-                    let data = fs::read(&path).map_err(|error| io(&path, error))?;
+                    // 轮廓字体按需从页缓存取页、多进程共享；整文件读入会让每个图形进程各复制一份
+                    // （SimSun 约 10 MiB）。
+                    // SAFETY: 字体目录是安装的系统资源，只以 rename 整体替换、从不原地改写或截断，
+                    // 见 `load` 的文档约定。
+                    let data = unsafe { linux_uapi::filesystem::ReadOnlyMapping::open(&path) }
+                        .map_err(|error| io(&path, error))?;
                     if let Ok(members) = Sfnt::parse_collection(data) {
                         faces.extend(members.into_iter().map(|font| {
                             Rc::new(Face::Outline(Box::new(OutlineFace {

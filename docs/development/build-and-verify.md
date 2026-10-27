@@ -4,6 +4,11 @@
 
 ## Rust 源码与测试布局
 
+测试按失败风险准入：简单展示、格式映射、直接委托和未修改逻辑不默认新增测试。
+Review 必须核对新增测试保护的具体边界/状态转换/资源寿命/错误清理/协议契约，以及已有门禁是否重复覆盖；
+不以测试数量、行数或覆盖率作为目标，不接受复制实现、仅比较自造常量或大段样板验证显然行为。
+Clippy 与 architecture-check 只静态拒绝可确定的恒定断言；测试的业务价值必须结合生产改动 Review。
+
 单元测试置于所属模块末尾的 `#[cfg(test)] mod tests`，可用 `mod tests;` 指向独立文件；
 集成测试使用 Cargo `tests/`，guest 验收使用原有 runtime fixture。测试模块之后不得添加生产条目。
 root/user workspace 与独立 bootloader 启用 Clippy `items_after_test_module = deny`；
@@ -317,7 +322,7 @@ exit/exec fixture 的 worker 将 clear-child-tid 指向 ET_EXEC 的非零初始�
 SYS_exit，主线程不 join 而立即重试 exec；新映像必须保持该变量不被旧退出清零。
 host token 回归不能代替该双架构 SMP runtime 验证。
 
-新增行为先补正常、边界、错误、回滚和并发状态转换用例；重构必须保持同一契约。测试不得复制 production algorithm 来制造自洽结果。
+按改动的实际失败风险选择正常、边界、错误、回滚和并发状态转换验证，优先扩展已有 fixture；重构必须保持同一契约。测试不得复制 production algorithm 来制造自洽结果。
 
 ## 性能测试
 

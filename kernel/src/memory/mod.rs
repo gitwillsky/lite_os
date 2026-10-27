@@ -44,7 +44,7 @@ pub(crate) use heap_allocator::statistics as heap_statistics;
 pub(crate) use kernel_stack::KernelStack;
 pub(crate) use mm::SharedMemoryBacking;
 pub(crate) use mm::{
-    DeviceMappingSource, ElfLoadError, FileMappingError, FileMappingSource, FutexAccessError,
+    DeviceMappingSource, DevicePageAccounting, ElfLoadError, FileMappingError, FileMappingSource, FutexAccessError,
     FutexKey, InitialStack, InitialStackCredentials, MappingPlacement, MappingResourceLimits,
     MemoryAdvice, MemoryError, MemorySet, PageFaultAccess, PageFaultOutcome, RemapError,
     RemapPlacement, RemapRequest, SegmentationCause, UserAccessError, UserAtomicU32,

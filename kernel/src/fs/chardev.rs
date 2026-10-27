@@ -11,6 +11,8 @@ use spin::Mutex;
 use syscall_abi::errno;
 
 use super::{AccessIdentity, DeviceNumber, FileSystemError};
+/// fdinfo 所属 proc mount 的 PID 视图，由文件系统传入；设备不反查调用者或持有第二份视图。
+pub(crate) use crate::namespace::PidNamespace as FileInformationView;
 use crate::{
     ipc::{Pipe, PipeDirection, PipeWaitCondition},
     memory::DeviceMappingSource,
@@ -226,7 +228,7 @@ pub(crate) trait DeviceFile: Send + Sync + core::any::Any {
     /// 默认无额外字段；formatter OOM 返回 fmt::Error，设备不保存另一份 live 状态。
     fn write_file_information(
         &self,
-        _view: &crate::namespace::PidNamespace,
+        _view: &FileInformationView,
         _output: &mut dyn core::fmt::Write,
     ) -> core::fmt::Result {
         Ok(())

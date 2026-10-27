@@ -128,7 +128,7 @@ pub(super) fn ioctl(file: &Arc<DrmFile>, call: &IoctlCall<'_>) -> Result<isize, 
 }
 
 fn version(user: &dyn UserMemory, argument: usize) -> Result<(), isize> {
-    const NAME: &[u8] = b"virtio_gpu";
+    const NAME: &[u8] = super::DRIVER_NAME.as_bytes();
     const DATE: &[u8] = b"20260714";
     const DESCRIPTION: &[u8] = b"LiteOS VirtIO GPU";
     let mut bytes = copy_in::<64>(user, argument)?;

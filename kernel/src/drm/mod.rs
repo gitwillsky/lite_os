@@ -6,10 +6,13 @@ use crate::{
     drivers::{CursorCommand, DisplayMode, GraphicsDevice},
     fallible_tree::FallibleMap,
     ipc::{Pipe, PipeEnd},
-    memory::{DeviceBacking, DeviceMappingSource, FrameAllocationClass, PAGE_SIZE},
+    memory::{
+        DeviceBacking, DeviceMappingSource, DevicePageAccounting, FrameAllocationClass, PAGE_SIZE,
+    },
 };
 
 const DUMB_OFFSET_SHIFT: u32 = 32;
+const DRIVER_NAME: &str = "virtio_gpu";
 pub(crate) const VIRGL_COMMAND_MAX: usize = 64 * 1024;
 
 mod event;
@@ -572,9 +575,11 @@ impl DrmFile {
             if length > buffer.size {
                 return Err(DrmError::Invalid);
             }
+            // Linux virtio-gpu GEM 使用 drm_gem_shmem `VM_PFNMAP`，映射不计入 RSS。
             return Ok(DeviceMappingSource::new(
                 buffer.identity,
                 buffer.backing.clone(),
+                DevicePageAccounting::PfnMap,
             ));
         }
         let buffer = self
@@ -590,6 +595,7 @@ impl DrmFile {
         let mut source = DeviceMappingSource::new(
             (1u64 << 63) | u64::from(buffer.resource_id),
             buffer.backing.clone(),
+            DevicePageAccounting::PfnMap,
         );
         source.retain_object(prime::DmaBuf::from_buffer(
             &self.device,

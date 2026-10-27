@@ -1424,6 +1424,7 @@ kernel/src/drm/graphics.rs :: pub (super) VirglBuffer :: width : u32
 kernel/src/drm/graphics.rs :: pub (super) VirglContext :: id : u32
 kernel/src/drm/graphics.rs :: pub (super) VirglLifecycle :: exported : alloc :: sync :: Weak < super :: prime :: DmaBuf >
 kernel/src/drm/graphics.rs :: pub (super) VirglLifecycle :: fence : u64
+kernel/src/drm/graphics.rs :: pub (super) VirglLifecycle :: shared : bool
 kernel/src/drm/graphics.rs :: pub (super) VirglRetirement :: buffer : Option < Arc < VirglBuffer > >
 kernel/src/drm/graphics.rs :: pub (super) VirglRetirement :: in_flight : Option < u64 >
 kernel/src/drm/graphics.rs :: pub (super) VirglRetirement :: reservation : Option < UnpublishedId < u32 > >
@@ -1964,6 +1965,7 @@ kernel/src/fs/chardev.rs :: pub (crate) trait PositionedFile
 kernel/src/fs/chardev.rs :: pub (crate) trait UserInput
 kernel/src/fs/chardev.rs :: pub (crate) trait UserMemory
 kernel/src/fs/chardev.rs :: pub (crate) trait UserOutput
+kernel/src/fs/chardev.rs :: pub (crate) use crate :: namespace :: PidNamespace as FileInformationView
 kernel/src/fs/chardev.rs :: trait CharacterDriver :: fn open (& self , request : & OpenRequest < '_ >) -> Result < Arc < dyn DeviceFile > , FileSystemError >
 kernel/src/fs/chardev.rs :: trait DeviceFile :: fn anonymous_name (& self) -> & 'static [u8]
 kernel/src/fs/chardev.rs :: trait DeviceFile :: fn backing_pipe (& self) -> Option < Arc < Pipe > >
@@ -1983,7 +1985,7 @@ kernel/src/fs/chardev.rs :: trait DeviceFile :: fn supports_read (& self) -> boo
 kernel/src/fs/chardev.rs :: trait DeviceFile :: fn supports_write (& self) -> bool
 kernel/src/fs/chardev.rs :: trait DeviceFile :: fn wait_sources (& self , _events : i16) -> DeviceWaitSources
 kernel/src/fs/chardev.rs :: trait DeviceFile :: fn write (& self , _input : & mut dyn UserInput , _nonblocking : bool) -> Result < () , DeviceError >
-kernel/src/fs/chardev.rs :: trait DeviceFile :: fn write_file_information (& self , _view : & crate :: namespace :: PidNamespace , _output : & mut dyn core :: fmt :: Write ,) -> core :: fmt :: Result
+kernel/src/fs/chardev.rs :: trait DeviceFile :: fn write_file_information (& self , _view : & FileInformationView , _output : & mut dyn core :: fmt :: Write ,) -> core :: fmt :: Result
 kernel/src/fs/chardev.rs :: trait PositionedFile :: fn read_at (& self , output : & mut dyn UserOutput , offset : u64) -> Result < () , DeviceError >
 kernel/src/fs/chardev.rs :: trait PositionedFile :: fn seek (& self , current : u64 , offset : i64 , whence : u32) -> Result < u64 , DeviceError >
 kernel/src/fs/chardev.rs :: trait PositionedFile :: fn write_at (& self , input : & mut dyn UserInput , offset : u64 , writer : & crate :: namespace :: NamespaceAuthority ,) -> Result < () , DeviceError >
@@ -4541,12 +4543,12 @@ kernel/src/memory/mm.rs :: pub (crate) use background_reclaim :: reclaim_address
 kernel/src/memory/mm.rs :: pub (crate) use mmap :: { RemapError , RemapPlacement , RemapRequest }
 kernel/src/memory/mm.rs :: pub (crate) use shared_area :: AnonymousSharedBacking as SharedMemoryBacking
 kernel/src/memory/mm.rs :: pub (crate) use statistics :: UserPageStatistics
-kernel/src/memory/mm.rs :: pub (crate) use { error :: { ElfLoadError , MemoryError , UserAccessError } , fault_preflight :: { FaultAccess as PageFaultAccess , SegmentationCause } , futex_atomic :: { UserAtomicU32 , UserAtomicU32Op } , futex_key :: { FutexAccessError , FutexKey } , initial_stack :: { InitialStack , InitialStackCredentials } , mapping_request :: { DeviceMappingSource , FileMappingError , FileMappingSource , MappingPlacement , MappingResourceLimits , MemoryAdvice , UserMappingRequest , UserMappingSource , } , mmap :: PageFaultOutcome , user_access :: UserFaultLimits , }
+kernel/src/memory/mm.rs :: pub (crate) use { error :: { ElfLoadError , MemoryError , UserAccessError } , fault_preflight :: { FaultAccess as PageFaultAccess , SegmentationCause } , futex_atomic :: { UserAtomicU32 , UserAtomicU32Op } , futex_key :: { FutexAccessError , FutexKey } , initial_stack :: { InitialStack , InitialStackCredentials } , mapping_request :: { DeviceMappingSource , DevicePageAccounting , FileMappingError , FileMappingSource , MappingPlacement , MappingResourceLimits , MemoryAdvice , UserMappingRequest , UserMappingSource , } , mmap :: PageFaultOutcome , user_access :: UserFaultLimits , }
 kernel/src/memory/mm.rs :: pub (super) mod shootdown
 kernel/src/memory/mm/area.rs :: enum MapType :: Framed
 kernel/src/memory/mm/area.rs :: enum MapType :: KernelMapped
+kernel/src/memory/mm/area.rs :: enum VmaKind :: # [doc = " 等价 Linux `VM_PFNMAP` 的 VMA 级记账属性；split/fork 随 kind 复制。放在 kind 内不扩大 MapArea。"] Device (DevicePageAccounting)
 kernel/src/memory/mm/area.rs :: enum VmaKind :: Anonymous
-kernel/src/memory/mm/area.rs :: enum VmaKind :: Device
 kernel/src/memory/mm/area.rs :: enum VmaKind :: Elf
 kernel/src/memory/mm/area.rs :: enum VmaKind :: File
 kernel/src/memory/mm/area.rs :: enum VmaKind :: Stack
@@ -4706,6 +4708,8 @@ kernel/src/memory/mm/initial_stack.rs :: pub (crate) struct InitialStackCredenti
 kernel/src/memory/mm/initial_stack.rs :: pub (super) impl ElfAuxInfo :: fn new (phdr : usize , phent : usize , phnum : usize , entry : usize , base : usize) -> Self
 kernel/src/memory/mm/initial_stack.rs :: pub (super) impl MemorySet :: fn build_initial_stack (& mut self , stack_top : usize , input : InitialStack < '_ > , aux : ElfAuxInfo , stack_limit : u64 ,) -> Result < usize , ElfLoadError >
 kernel/src/memory/mm/initial_stack.rs :: pub (super) struct ElfAuxInfo
+kernel/src/memory/mm/mapping_request.rs :: enum DevicePageAccounting :: # [doc = " `VM_PFNMAP` 特殊 PTE（DRM GEM shmem 的 `vmf_insert_pfn`）：不计入 statm resident/shared。"] PfnMap
+kernel/src/memory/mm/mapping_request.rs :: enum DevicePageAccounting :: # [doc = " `vm_insert_page(s)` 插入的普通页（ALSA vmalloc ring、io_uring region）：计入 `MM_FILEPAGES`。"] InsertedPages
 kernel/src/memory/mm/mapping_request.rs :: enum FileMappingError :: Invalid
 kernel/src/memory/mm/mapping_request.rs :: enum FileMappingError :: Overflow
 kernel/src/memory/mm/mapping_request.rs :: enum MappingPlacement :: Fixed
@@ -4728,11 +4732,12 @@ kernel/src/memory/mm/mapping_request.rs :: pub (crate) UserMappingRequest :: len
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) UserMappingRequest :: permission : crate :: memory :: MapPermission
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) UserMappingRequest :: placement : MappingPlacement
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) UserMappingRequest :: source : UserMappingSource
+kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum DevicePageAccounting
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum FileMappingError
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum MappingPlacement
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum MemoryAdvice
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum UserMappingSource
-kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn new (identity : u64 , backing : Arc < DeviceBacking >) -> Self
+kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn new (identity : u64 , backing : Arc < DeviceBacking > , accounting : DevicePageAccounting ,) -> Self
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn retain_file (& mut self , file : Arc < dyn crate :: memory :: MappedFileOwner > ,) -> Result < () , alloc :: alloc :: AllocError >
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn retain_object (& mut self , object : Arc < dyn crate :: memory :: MappedFileOwner >)
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl FileMappingSource :: fn new (mapping : Arc < dyn SharedFileMapping > , offset : u64 , length : usize ,) -> Result < Self , FileMappingError >
@@ -4741,6 +4746,7 @@ kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct DeviceMappingSourc
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct FileMappingSource
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct MappingResourceLimits
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct UserMappingRequest
+kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: accounting : DevicePageAccounting
 kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: backing : Arc < DeviceBacking >
 kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: identity : u64
 kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: owner : Option < Arc < dyn crate :: memory :: MappedFileOwner > >
@@ -4973,7 +4979,7 @@ kernel/src/memory/mod.rs :: pub (crate) use frame_allocator :: { FrameAllocation
 kernel/src/memory/mod.rs :: pub (crate) use heap_allocator :: statistics as heap_statistics
 kernel/src/memory/mod.rs :: pub (crate) use kernel_stack :: KernelStack
 kernel/src/memory/mod.rs :: pub (crate) use mm :: SharedMemoryBacking
-kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , ElfLoadError , FileMappingError , FileMappingSource , FutexAccessError , FutexKey , InitialStack , InitialStackCredentials , MappingPlacement , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , RemapError , RemapPlacement , RemapRequest , SegmentationCause , UserAccessError , UserAtomicU32 , UserAtomicU32Op , UserFaultLimits , UserMappingRequest , UserMappingSource , UserPageStatistics , reclaim_address_space , }
+kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , DevicePageAccounting , ElfLoadError , FileMappingError , FileMappingSource , FutexAccessError , FutexKey , InitialStack , InitialStackCredentials , MappingPlacement , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , RemapError , RemapPlacement , RemapRequest , SegmentationCause , UserAccessError , UserAtomicU32 , UserAtomicU32Op , UserFaultLimits , UserMappingRequest , UserMappingSource , UserPageStatistics , reclaim_address_space , }
 kernel/src/memory/mod.rs :: pub (crate) use permissions :: MapPermission
 kernel/src/memory/mod.rs :: pub (crate) use pressure :: run_background_reclaim
 kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { MappedFileOwner , MemoryMappingOwner , MemoryReclaimer , ReclaimRequest , ReclaimResult , SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedPage , SharedPagePin , complete_memory_mapping_owner_initialization , invalidate_shared_file , reclaim_pages , reclaim_statistics , register_memory_mapping_owner , register_memory_reclaimer , revoke_shared_file_writers , }

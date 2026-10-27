@@ -6,6 +6,51 @@ use syn::{
 
 use super::repository_source::rust_files;
 
+#[derive(Default)]
+struct ConstantAssertions {
+    violations: Vec<usize>,
+}
+impl<'ast> Visit<'ast> for ConstantAssertions {
+    fn visit_item_fn(&mut self, function: &'ast syn::ItemFn) {
+        if function
+            .attrs
+            .iter()
+            .any(|attribute| attribute.path().is_ident("test"))
+        {
+            syn::visit::visit_block(self, &function.block);
+        }
+    }
+
+    fn visit_macro(&mut self, assertion: &'ast syn::Macro) {
+        let Some(name) = assertion
+            .path
+            .segments
+            .last()
+            .map(|segment| segment.ident.to_string())
+        else {
+            return;
+        };
+        if !matches!(name.as_str(), "assert" | "assert_eq" | "assert_ne") {
+            return;
+        }
+        let Ok(arguments) =
+            assertion.parse_body_with(Punctuated::<syn::Expr, Comma>::parse_terminated)
+        else {
+            return;
+        };
+        let count = if name == "assert" { 1 } else { 2 };
+        // 只拒绝直接字面量断言；ABI 常量、size_of 和生产调用都保留，由 Review 判断语义价值。
+        if arguments.len() >= count
+            && arguments
+                .iter()
+                .take(count)
+                .all(|expr| matches!(expr, syn::Expr::Lit(_)))
+        {
+            self.violations.push(assertion.span().start().line);
+        }
+    }
+}
+
 fn requires_test(meta: &Meta) -> bool {
     match meta {
         Meta::Path(path) => path.is_ident("test"),
@@ -120,6 +165,11 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
         };
         let mut layout = Layout::default();
         layout.visit_file(&file);
+        let mut assertions = ConstantAssertions::default();
+        assertions.visit_file(&file);
+        for line in assertions.violations {
+            errors.push(format!("{}:{line}: test assertion compares only literals; exercise a production contract or remove the redundant test", path.strip_prefix(root).expect("source below root").display()));
+        }
         for line in layout.violations {
             errors.push(format!("{}:{line}: production item follows a #[cfg(test)] module; move the test modules to the end (clippy::items_after_test_module)", path.strip_prefix(root).expect("source below root").display()));
         }
@@ -129,6 +179,19 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn constant_assertion_gate_rejects_literals_without_rejecting_abi_or_runtime_checks() {
+        let mut assertions = ConstantAssertions::default();
+        assertions.visit_file(&syn::parse_file(r#"
+            const TEXT: &str = "assert!(true)";
+            #[cfg(test)] mod tests {
+                #[test] fn redundant() { assert!(true); assert_eq!(1, 1); assert_ne!(1, 2); }
+                #[test] fn useful() { assert_eq!(SYSCALL_NUMBER, 117); assert_eq!(size_of::<Layout>(), 64); assert_eq!(production(), 1); }
+            }
+        "#).unwrap());
+        assert_eq!(assertions.violations.len(), 3);
+    }
 
     fn violations(source: &str) -> Vec<usize> {
         let mut layout = Layout::default();

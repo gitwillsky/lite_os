@@ -1,5 +1,5 @@
 //! 进程列表：读取 `/proc`；读取过程中消失的进程被跳过。CPU 占比用两次采样之间的滴答增量计算。
-use crate::system::{Monitor, TICKS_PER_SECOND};
+use crate::system::{Monitor, TICKS_PER_SECOND, memory_text};
 use std::{collections::HashMap, fs, process::Command};
 
 pub struct Process {
@@ -49,7 +49,7 @@ impl Column {
             Column::Pid => 40,
             Column::Cpu => 34,
             Column::CpuTime => 66,
-            Column::Memory => 78,
+            Column::Memory => 96,
         }
     }
 
@@ -204,11 +204,6 @@ pub fn cpu_time_text(ticks: u64) -> String {
         seconds / 60 % 60,
         seconds % 60
     )
-}
-
-/// 千分位加 `K`，如 `12,345 K`（Windows 2000 的内存列格式）。
-pub fn memory_text(kib: u64) -> String {
-    format!("{} K", grouped(kib))
 }
 
 /// 带千分位的整数。

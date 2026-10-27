@@ -28,6 +28,15 @@ pub(crate) enum FileMappingError {
     Overflow,
 }
 
+/// 设备 mmap 在 Linux mm counter 中的记账方式；由设备按其对应 Linux 驱动的 mmap 路径声明。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DevicePageAccounting {
+    /// `VM_PFNMAP` 特殊 PTE（DRM GEM shmem 的 `vmf_insert_pfn`）：不计入 statm resident/shared。
+    PfnMap,
+    /// `vm_insert_page(s)` 插入的普通页（ALSA vmalloc ring、io_uring region）：计入 `MM_FILEPAGES`。
+    InsertedPages,
+}
+
 /// device-backed mmap 在 DRM 与 memory seam 之间传递的不可变 backing view。
 #[derive(Debug, Clone)]
 pub(crate) struct DeviceMappingSource {
@@ -35,6 +44,7 @@ pub(crate) struct DeviceMappingSource {
     pub(super) backing: Arc<DeviceBacking>,
     pub(super) page_offset: usize,
     pub(super) owner: Option<Arc<dyn crate::memory::MappedFileOwner>>,
+    pub(super) accounting: DevicePageAccounting,
 }
 
 /// 一份 VMA lease 同时保活实际 OFD 与独立设备对象；只在两者不同的映射准备阶段分配。
@@ -53,16 +63,22 @@ impl DeviceMappingSource {
     ///
     /// - `identity`: 在 backing 释放后仍不复用的共享 futex identity。
     /// - `backing`: 完整 scatter/gather 物理页集合的共享生命周期 owner。
+    /// - `accounting`: 对应 Linux mmap 路径的 RSS 记账方式。
     ///
     /// # Returns
     ///
     /// page offset 为零的 mapping source。
-    pub(crate) fn new(identity: u64, backing: Arc<DeviceBacking>) -> Self {
+    pub(crate) fn new(
+        identity: u64,
+        backing: Arc<DeviceBacking>,
+        accounting: DevicePageAccounting,
+    ) -> Self {
         Self {
             identity,
             backing,
             page_offset: 0,
             owner: None,
+            accounting,
         }
     }
 

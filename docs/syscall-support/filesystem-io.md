@@ -201,6 +201,7 @@ TTSTAMP 时钟选择和启用后的 STATUS/SYNC_PTR 时钟快照，SW_PARAMS 允
 不做 reflink/服务端拷贝；跨 filesystem 复制按普通读写完成，与 Linux 5.19 之后的回退行为一致。
 
 DRM ioctl 子集包含标准 PRIME_HANDLE_TO_FD / FD_TO_HANDLE、DRM_CAP_PRIME 与 renderD128（禁止 KMS/master）。
+DRM fdinfo 发布标准 driver/client-id 与 total/shared/resident 系统内存缓冲统计；不提供未被 VirtIO 协议测量的宿主 GPU 执行时间、专用显存容量或占用。
 dma-buf FD 支持 DMA_BUF_IOCTL_SYNC、poll、标准 size seek 和 offset=0 的共享非 executable mmap；
 当前只共享同一 VirtIO-GPU 的 VirGL GEM，不支持跨设备、blob 或显式 sync_file/syncobj。
 FD 事务和导出者关闭后的寿命见设备契约，Wayland 格式/布局范围见 UI 契约。

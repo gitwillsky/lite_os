@@ -203,6 +203,8 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 ## 字体目录与缓存
 
 - typeface::FontCatalog 拥有扫描到的字体成员与 `fontmap.ini` 映射；Resources 每进程加载一次并共享，主题重载清空。
+  轮廓字体经 linux-uapi `ReadOnlyMapping` 只读 `MAP_PRIVATE` 映射，同一 TTC 成员共享一份映射；页按需载入并跨进程共享页缓存，
+  不再每进程整文件读入。字体文件只以 rename 替换，不得原地改写或截断（映射的 unsafe 前置条件）。
   Wine 安装器从同一映射生成标准 Fontconfig 别名与系统字体目录配置，不维护另一份字体回退清单。
 - OutlineFace 独占每个成员的 fpgm 结果；Typeface 独占本字号各成员的 prep 结果（按成员地址索引，chain 中的 Rc 保活）
   与已光栅化字形（上限 4096，满即清空）。缺少这些缓存会在每个字形重复执行字体程序；None 记录失败，避免反复执行。

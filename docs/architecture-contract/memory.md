@@ -296,6 +296,9 @@
   文件 I/O 与 mmap 不得返回可跨迁移的裸 frame reference。`UserPageStatistics` 从同一 record
   epoch 投影 RSS，VmSwap 只计 private anonymous stale entry，排除 shmem；物理 page-in
   不替其他 alias 增加 RSS。task/procfs 只消费此 projection，不重新构造 residency 判定。
+  device VMA 的 RSS 由设备 mmap 声明的 `DevicePageAccounting` 决定，存于 `VmaKind::Device`，split/fork 随 kind 复制：
+  `PfnMap` 等价 Linux `VM_PFNMAP` 特殊 PTE（DRM GEM/dumb/dma-buf 的 `vmf_insert_pfn`），不计入 statm resident/shared；
+  `InsertedPages` 等价 `vm_insert_page(s)`（ALSA vmalloc ring、io_uring region），整段计入 resident 与 shared（`MM_FILEPAGES`）。
   Resident 的唯一 CachedSlot capability 以 RAII 发放/归还 SwapCached 页计数，临时 Slot/
   PagePin clone 不计数；无独立 backing map/flag。全局 Atomic 仅给 O(1) vmstat 近似投影，
   不承担内容 ordering、不扫描页面。构造只在 frame/IO 成功后的同锁 Resident 提交，退休

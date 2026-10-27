@@ -22,6 +22,27 @@ impl Speed {
     }
 }
 
+/// 当前标签页；决定菜单栏是否出现“窗口”菜单与“CPU 使用记录”子菜单。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Page {
+    Applications,
+    Processes,
+    Performance,
+    Gpu,
+}
+
+/// 性能页 CPU 使用记录的排布（Windows 2000 “查看 > CPU 使用记录”）。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum CpuGraph {
+    /// 全部 CPU 合计画在一张图里。
+    All,
+    /// 每个逻辑 CPU 一张图。
+    PerCpu,
+}
+
+/// “CPU 使用记录”级联父项的菜单标识；它只展开子菜单，不对应命令。
+const CPU_HISTORY: u64 = 14;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum Command {
     NewTask,
@@ -32,6 +53,7 @@ pub enum Command {
     Maximize,
     BringToFront,
     About,
+    SetCpuGraph(CpuGraph),
 }
 
 impl Command {
@@ -48,6 +70,8 @@ impl Command {
             Self::Maximize => 9,
             Self::BringToFront => 10,
             Self::About => 11,
+            Self::SetCpuGraph(CpuGraph::All) => 12,
+            Self::SetCpuGraph(CpuGraph::PerCpu) => 13,
         }
     }
     pub fn decode(code: u64) -> Option<Self> {
@@ -63,12 +87,19 @@ impl Command {
             9 => Self::Maximize,
             10 => Self::BringToFront,
             11 => Self::About,
+            12 => Self::SetCpuGraph(CpuGraph::All),
+            13 => Self::SetCpuGraph(CpuGraph::PerCpu),
             _ => return None,
         })
     }
 }
 /// 菜单数据属于应用，绘制、Alt 助记符、键盘遍历与命中属于共享运行库。
-pub fn install(widget: &Widget, applications: bool, speed: Speed) -> liteos_ui::Result<()> {
+pub fn install(
+    widget: &Widget,
+    page: Page,
+    speed: Speed,
+    graph: CpuGraph,
+) -> liteos_ui::Result<()> {
     let item = |label, shortcut, command: Command, state| MenuItem {
         id: command.code(),
         label,
@@ -76,37 +107,67 @@ pub fn install(widget: &Widget, applications: bool, speed: Speed) -> liteos_ui::
         state,
         parent: 0,
     };
+    let checked = |on| if on { 2 } else { 0 };
     let file = [
         item("新任务(运行)(N)...", "", Command::NewTask, 0),
         item("退出任务管理器(X)", "", Command::Exit, 4),
     ];
-    let view = [
+    let mut view = vec![
         item("立即刷新(R)", "F5", Command::Refresh, 0),
         item(
             "更新速度：高(H)",
             "",
             Command::SetSpeed(Speed::High),
-            4 | if speed == Speed::High { 2 } else { 0 },
+            4 | checked(speed == Speed::High),
         ),
         item(
             "更新速度：正常(N)",
             "",
             Command::SetSpeed(Speed::Normal),
-            if speed == Speed::Normal { 2 } else { 0 },
+            checked(speed == Speed::Normal),
         ),
         item(
             "更新速度：低(L)",
             "",
             Command::SetSpeed(Speed::Low),
-            if speed == Speed::Low { 2 } else { 0 },
+            checked(speed == Speed::Low),
         ),
         item(
             "更新速度：已暂停(P)",
             "",
             Command::SetSpeed(Speed::Paused),
-            if speed == Speed::Paused { 2 } else { 0 },
+            checked(speed == Speed::Paused),
         ),
     ];
+    if page == Page::Performance {
+        view.extend([
+            MenuItem {
+                id: CPU_HISTORY,
+                label: "CPU 使用记录(C)",
+                shortcut: "",
+                state: 4,
+                parent: 0,
+            },
+            MenuItem {
+                parent: CPU_HISTORY,
+                ..item(
+                    "所有 CPU 使用一个图表(O)",
+                    "",
+                    Command::SetCpuGraph(CpuGraph::All),
+                    checked(graph == CpuGraph::All),
+                )
+            },
+            MenuItem {
+                parent: CPU_HISTORY,
+                ..item(
+                    "每个 CPU 使用一个图表(P)",
+                    "",
+                    Command::SetCpuGraph(CpuGraph::PerCpu),
+                    checked(graph == CpuGraph::PerCpu),
+                )
+            },
+        ]);
+    }
     let windows = [
         item("最小化(M)", "", Command::Minimize, 0),
         item("最大化(X)", "", Command::Maximize, 0),
@@ -123,7 +184,7 @@ pub fn install(widget: &Widget, applications: bool, speed: Speed) -> liteos_ui::
             items: &view,
         },
     ];
-    if applications {
+    if page == Page::Applications {
         menus.push(Menu {
             title: "窗口(W)",
             items: &windows,

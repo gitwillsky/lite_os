@@ -6,6 +6,7 @@
 //! one result line for `scripts/verify_gpu.py`; timestamps come from the kernel's monotonic event
 //! clock, so host scheduling jitter does not enter the measurement.
 
+mod fdinfo;
 mod sharing;
 
 use std::{io, process::ExitCode};
@@ -132,6 +133,11 @@ fn verify_readback(graphics: &VirglContext, target: &mut Target) -> Result<(), S
 }
 
 fn run() -> Result<String, String> {
+    step("fdinfo", fdinfo::verify())?;
+    // fdinfo 仅依赖 dumb-buffer，用独立阶段在无 VirGL 的设备上验证统计，不跳过完整 GPU 门禁。
+    if std::env::args().nth(1).as_deref() == Some("--fdinfo-only") {
+        return Ok("drm-flip-probe: fdinfo phase complete".into());
+    }
     sharing::verify()?;
     let device = step("open /dev/dri/card0", DrmDevice::open("/dev/dri/card0"))?;
     let topology = step("query topology", device.query_topology())?;

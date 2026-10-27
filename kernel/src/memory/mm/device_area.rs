@@ -79,7 +79,7 @@ impl MapArea {
         source: DeviceMappingSource,
     ) -> Self {
         let mut area = Self::new(start_va, end_va, MapType::Framed, permissions);
-        area.kind = VmaKind::Device;
+        area.kind = VmaKind::Device(source.accounting);
         area.device = Some(DeviceArea {
             identity: source.identity,
             backing: source.backing,

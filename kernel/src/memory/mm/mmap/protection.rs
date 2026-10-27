@@ -29,7 +29,7 @@ impl MemorySet {
                         | VmaKind::Stack
                         | VmaKind::Elf
                         | VmaKind::File
-                        | VmaKind::Device
+                        | VmaKind::Device(_)
                 ) || area.device.is_some() && permission.contains(MapPermission::X)
                 {
                     return Err(MemoryError::PermissionDenied);

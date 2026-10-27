@@ -3,8 +3,9 @@
 //! 下方四个分组以“名称 + 右对齐数值”列出统计。
 use crate::{
     child,
+    menus::CpuGraph,
     processes::grouped,
-    system::{HISTORY, Monitor, Totals},
+    system::{HISTORY, Monitor, Totals, memory_text},
 };
 use liteos_ui::{Draw, Layout, Rect, Widget, WidgetKind as Kind, state};
 use std::collections::VecDeque;
@@ -15,6 +16,11 @@ const DIM: u32 = 0x008000;
 const LIT: u32 = 0x00ff00;
 /// 统计行高度（逻辑像素），与单行标签的文字行盒一致。
 const STAT_ROW: i32 = 16;
+/// 网格间距与每个采样的水平步长；网格每次采样左移一步，与曲线同步滚动。
+const GRID: i32 = 12;
+const STEP: i32 = 3;
+/// 每个 CPU 一张图时图与图之间的间隙。
+const GAP: i32 = 4;
 
 pub struct View {
     cpu_meter: Widget,
@@ -69,7 +75,7 @@ fn metric(
         padding: 6,
         ..Default::default()
     };
-    let usage = group(&row, title, Layout { width: 76, ..boxed })?;
+    let usage = group(&row, title, Layout { width: 96, ..boxed })?;
     let record = group(&row, history, Layout { grow: 1, ..boxed })?;
     let meter = canvas(&usage)?;
     let chart = canvas(&record)?;
@@ -77,8 +83,8 @@ fn metric(
     Ok((meter, chart))
 }
 
-/// 一个统计分组：每行名称左对齐、数值右对齐；返回各行的数值标签。
-fn stats<const N: usize>(
+/// 一个统计分组：每行名称左对齐、数值右对齐；返回各行的数值标签。性能页与 GPU 页共用。
+pub(crate) fn stats<const N: usize>(
     parent: &Widget,
     title: &str,
     names: [&str; N],
@@ -159,17 +165,17 @@ impl View {
         )?;
         let physical = stats(
             &left,
-            "物理内存 (K)",
+            "物理内存",
             ["总数", "可用数", "系统缓存"],
             &mut containers,
         )?;
         let commit = stats(
             &right,
-            "认可用量 (K)",
+            "认可用量",
             ["总数", "限制", "峰值"],
             &mut containers,
         )?;
-        let kernel = stats(&right, "内核内存 (K)", ["总数"], &mut containers)?;
+        let kernel = stats(&right, "内核内存", ["总数"], &mut containers)?;
         containers.push(row);
         Ok(Self {
             cpu_meter,
@@ -184,19 +190,29 @@ impl View {
         })
     }
 
-    pub fn update(&self, monitor: &Monitor, totals: Totals) -> liteos_ui::Result<()> {
+    pub fn update(
+        &self,
+        monitor: &Monitor,
+        totals: Totals,
+        graph: CpuGraph,
+    ) -> liteos_ui::Result<()> {
         let (used, limit) = monitor.memory.commit();
-        let set = |widgets: &[Widget], values: &[u64]| {
+        let set = |widgets: &[Widget], values: &[u64], text: fn(u64) -> String| {
             widgets
                 .iter()
                 .zip(values)
-                .try_for_each(|(widget, value)| widget.set_text(&grouped(*value)))
+                .try_for_each(|(widget, value)| widget.set_text(&text(*value)))
         };
         set(
             &self.totals,
             &[totals.handles, totals.threads, totals.processes],
+            grouped,
         )?;
-        set(&self.commit, &[used, limit, monitor.commit_peak])?;
+        set(
+            &self.commit,
+            &[used, limit, monitor.commit_peak],
+            memory_text,
+        )?;
         set(
             &self.physical,
             &[
@@ -204,13 +220,14 @@ impl View {
                 monitor.memory.available,
                 monitor.memory.cached,
             ],
+            memory_text,
         )?;
-        set(&self.kernel, &[monitor.memory.slab])?;
-        self.charts(monitor)
+        set(&self.kernel, &[monitor.memory.slab], memory_text)?;
+        self.charts(monitor, graph)
     }
 
     /// 仪表与曲线依赖控件几何，采样或 configure 后都按同一份监视数据重画。
-    pub fn charts(&self, monitor: &Monitor) -> liteos_ui::Result<()> {
+    pub fn charts(&self, monitor: &Monitor, graph: CpuGraph) -> liteos_ui::Result<()> {
         let (used, limit) = monitor.memory.commit();
         meter(
             &self.cpu_meter,
@@ -218,9 +235,13 @@ impl View {
             &format!("{} %", monitor.cpu_percent),
         )?;
         let percent = (used.saturating_mul(100) / limit.max(1)).min(100) as u8;
-        meter(&self.memory_meter, percent, &format!("{used}K"))?;
-        history(&self.cpu_history, &monitor.cpu_history)?;
-        history(&self.memory_history, &monitor.memory_history)
+        meter(&self.memory_meter, percent, &memory_text(used))?;
+        cpu_history(&self.cpu_history, monitor, graph)?;
+        history(
+            &self.memory_history,
+            &monitor.memory_history,
+            monitor.samples,
+        )
     }
 }
 
@@ -268,28 +289,99 @@ fn meter(widget: &Widget, percent: u8, reading: &str) -> liteos_ui::Result<()> {
     widget.set_drawing(&commands)
 }
 
-fn history(widget: &Widget, samples: &VecDeque<u8>) -> liteos_ui::Result<()> {
+fn history(widget: &Widget, samples: &VecDeque<u8>, count: u64) -> liteos_ui::Result<()> {
     let bounds = widget.geometry()?;
     if bounds.width <= 0 || bounds.height <= 0 {
         return Ok(());
     }
-    let mut commands = vec![fill(Rect::new(0, 0, bounds.width, bounds.height), BLACK)];
-    for x in (0..bounds.width).step_by(12) {
-        commands.push(fill(Rect::new(x, 0, 1, bounds.height), DIM));
+    let mut commands = Vec::new();
+    chart(
+        &mut commands,
+        Rect::new(0, 0, bounds.width, bounds.height),
+        samples,
+        count,
+    );
+    widget.set_drawing(&commands)
+}
+
+fn cpu_history(widget: &Widget, monitor: &Monitor, graph: CpuGraph) -> liteos_ui::Result<()> {
+    let bounds = widget.geometry()?;
+    if bounds.width <= 0 || bounds.height <= 0 {
+        return Ok(());
     }
-    for y in (0..bounds.height).step_by(12) {
-        commands.push(fill(Rect::new(0, y, bounds.width, 1), DIM));
+    let mut commands = Vec::new();
+    let count = monitor.cpus.len();
+    if graph == CpuGraph::All || count <= 1 {
+        chart(
+            &mut commands,
+            Rect::new(0, 0, bounds.width, bounds.height),
+            &monitor.cpu_history,
+            monitor.samples,
+        );
+        return widget.set_drawing(&commands);
     }
-    let visible = ((bounds.width / 3) as usize)
+    // 1. 列数取使每张图较短边最大的排布：宽而矮的区域并排一行（Windows 2000），核多再折行。
+    // 2. 按整数比例切分，间隙只在图之间，末列/末行贴齐边缘，不留不均匀的余量。
+    let columns = (1..=count)
+        .max_by_key(|&columns| {
+            let rows = count.div_ceil(columns) as i32;
+            let columns = columns as i32;
+            let width = (bounds.width - (columns - 1) * GAP) / columns;
+            let height = (bounds.height - (rows - 1) * GAP) / rows;
+            // 同分时取较少的列，较宽的图能显示更长的历史。
+            (width.min(height), -columns)
+        })
+        .unwrap_or(1);
+    let rows = count.div_ceil(columns);
+    let span = |index: usize, parts: usize, length: i32| {
+        let (index, parts) = (index as i32, parts as i32);
+        let start = index * (length + GAP) / parts;
+        (start, (index + 1) * (length + GAP) / parts - GAP - start)
+    };
+    for (index, cpu) in monitor.cpus.iter().enumerate() {
+        let (x, width) = span(index % columns, columns, bounds.width);
+        let (y, height) = span(index / columns, rows, bounds.height);
+        chart(
+            &mut commands,
+            Rect::new(x, y, width, height),
+            &cpu.history,
+            monitor.samples,
+        );
+    }
+    widget.set_drawing(&commands)
+}
+
+/// 一张使用记录图：黑底暗绿网格，最新采样贴右边缘；网格随采样计数左移，与数据一起滚动。
+fn chart(commands: &mut Vec<Draw<'_>>, bounds: Rect, samples: &VecDeque<u8>, count: u64) {
+    if bounds.width <= 0 || bounds.height <= 0 {
+        return;
+    }
+    commands.push(fill(bounds, BLACK));
+    let phase = (count % (GRID / STEP) as u64) as i32 * STEP;
+    for x in ((GRID - phase) % GRID..bounds.width).step_by(GRID as usize) {
+        commands.push(fill(
+            Rect::new(bounds.x + x, bounds.y, 1, bounds.height),
+            DIM,
+        ));
+    }
+    for y in (0..bounds.height).step_by(GRID as usize) {
+        commands.push(fill(
+            Rect::new(bounds.x, bounds.y + y, bounds.width, 1),
+            DIM,
+        ));
+    }
+    let visible = ((bounds.width / STEP) as usize)
         .min(HISTORY)
         .min(samples.len());
     let mut previous = None;
     for (index, value) in samples.iter().skip(samples.len() - visible).enumerate() {
-        let x = bounds.width - (visible - index) as i32 * 3;
+        let x = bounds.width - (visible - index) as i32 * STEP;
         let y = bounds.height - 1 - i32::from(*value) * (bounds.height - 1) / 100;
         let (low, high) = previous.map_or((y, y), |before: i32| (before.min(y), before.max(y)));
-        commands.push(fill(Rect::new(x, low, 3, high - low + 1), LIT));
+        commands.push(fill(
+            Rect::new(bounds.x + x, bounds.y + low, STEP, high - low + 1),
+            LIT,
+        ));
         previous = Some(y);
     }
-    widget.set_drawing(&commands)
 }

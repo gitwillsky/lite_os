@@ -1,4 +1,5 @@
 //! 任务管理器只拥有进程/采样业务，标签页、表头、列表、菜单和对话框交互由共享 SDK 提供。
+mod gpu;
 mod menus;
 mod performance;
 mod processes;
@@ -8,7 +9,7 @@ use liteos_ui::{
     Application, ControlFlow, EventKind, Layout, Task, Toplevel, ToplevelRequest, Widget,
     WidgetKind as Kind, WidgetSpec, Window, WindowOptions, state,
 };
-use menus::{Command, Speed};
+use menus::{Command, CpuGraph, Page, Speed};
 use processes::{Column, Process, Sort};
 use sampling::{Refresh, Sampler};
 use std::{
@@ -26,10 +27,11 @@ fn child(parent: &Widget, kind: Kind, text: &str, layout: Layout) -> liteos_ui::
 struct View {
     menu: Widget,
     tabs: Widget,
-    pages: [Widget; 3],
+    pages: [Widget; 4],
     applications: Widget,
     processes: Widget,
     performance: performance::View,
+    gpu: gpu::View,
     status: Widget,
     end_task: Widget,
     switch: Widget,
@@ -65,7 +67,12 @@ impl View {
                 },
             )
         };
-        let pages = [page("应用程序")?, page("进程")?, page("性能")?];
+        let pages = [
+            page("应用程序")?,
+            page("进程")?,
+            page("性能")?,
+            page("GPU")?,
+        ];
         let applications = child(
             &pages[0],
             Kind::List,
@@ -148,6 +155,7 @@ impl View {
         )?;
         let end_process = button(&process_actions, "结束进程(E)")?;
         let performance = performance::View::new(&pages[2])?;
+        let gpu = gpu::View::new(&pages[3])?;
         let status = child(&root, Kind::Status, "", Layout::default())?;
         let result = Self {
             menu,
@@ -156,6 +164,7 @@ impl View {
             applications,
             processes,
             performance,
+            gpu,
             status,
             end_task,
             switch,
@@ -242,16 +251,30 @@ impl View {
         }
         Ok(())
     }
-    fn applications_page(&self) -> liteos_ui::Result<bool> {
-        Ok(self.tabs.selection()? == Some(self.pages[0].id()))
+    fn page(&self) -> liteos_ui::Result<Page> {
+        let selected = self.tabs.selection()?;
+        let index = self
+            .pages
+            .iter()
+            .position(|page| Some(page.id()) == selected);
+        Ok(match index {
+            Some(1) => Page::Processes,
+            Some(2) => Page::Performance,
+            Some(3) => Page::Gpu,
+            _ => Page::Applications,
+        })
     }
 }
 struct State {
     rows: Vec<Process>,
     sort: Sort,
     speed: Speed,
+    graph: CpuGraph,
     // 只读采样快照用于 resize 后重新投影曲线；canonical 采样历史由后台 Sampler 独占。
     monitor: Monitor,
+    // 只读 GPU 快照用于点击列标题后按新顺序重排，不等待下一次采样。
+    gpu: gpu::Snapshot,
+    gpu_sort: gpu::Sort,
     children: Vec<Child>,
     applications: Vec<Toplevel>,
 }
@@ -261,6 +284,7 @@ impl State {
         view: &View,
         monitor: &Monitor,
         mut rows: Vec<Process>,
+        gpu: &gpu::Snapshot,
     ) -> liteos_ui::Result<()> {
         self.sort.apply(&mut rows);
         let totals = Totals {
@@ -269,17 +293,19 @@ impl State {
             processes: rows.len() as u64,
         };
         view.processes(&rows)?;
-        view.performance.update(monitor, totals)?;
+        view.performance.update(monitor, totals, self.graph)?;
+        view.gpu.update(gpu, self.gpu_sort)?;
         let (used, limit) = monitor.memory.commit();
         view.status.set_text(&format!(
-            "进程数：{}\tCPU 使用：{}%\t认可用量：{}K / {}K",
+            "进程数：{}\tCPU 使用：{}%\t认可用量：{} / {}",
             rows.len(),
             monitor.cpu_percent,
-            processes::grouped(used),
-            processes::grouped(limit)
+            system::memory_text(used),
+            system::memory_text(limit)
         ))?;
         self.rows = rows;
         self.monitor = monitor.clone();
+        self.gpu = gpu.clone();
         self.children
             .retain_mut(|child| child.try_wait().ok().flatten().is_none());
         Ok(())
@@ -426,12 +452,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         rows: Vec::new(),
         sort: Sort::default(),
         speed: Speed::Normal,
+        // Windows 2000 在多处理器上默认每个 CPU 一张图。
+        graph: CpuGraph::PerCpu,
         monitor: Monitor::new(),
+        gpu: gpu::Snapshot::default(),
+        gpu_sort: gpu::Sort::default(),
         children: Vec::new(),
         applications: Vec::new(),
     }));
     state.borrow_mut().refresh_applications(&app, &view)?;
-    menus::install(&view.menu, true, Speed::Normal)?;
+    menus::install(
+        &view.menu,
+        Page::Applications,
+        Speed::Normal,
+        CpuGraph::PerCpu,
+    )?;
     let refresh = Rc::new(Refresh::default());
     let background = app.background()?;
     let clock = app.clock();
@@ -452,11 +487,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             };
             let (next, rows) = work.await;
             sampler = next;
-            if let Err(error) =
-                sample_state
-                    .borrow_mut()
-                    .publish(&sample_view, &sampler.monitor, rows)
-            {
+            if let Err(error) = sample_state.borrow_mut().publish(
+                &sample_view,
+                &sampler.monitor,
+                rows,
+                &sampler.gpu,
+            ) {
                 eprintln!("taskmgr: {error}");
                 break;
             }
@@ -562,10 +598,21 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let mut switch = false;
         match event.kind {
             EventKind::Select { .. } if event.node == view.tabs.id() => {
-                menus::install(&view.menu, view.applications_page()?, state.borrow().speed)?;
-                view.performance.charts(&state.borrow().monitor)?;
+                let state = state.borrow();
+                menus::install(&view.menu, view.page()?, state.speed, state.graph)?;
+                view.performance.charts(&state.monitor, state.graph)?;
             }
-            EventKind::Configure { .. } => view.performance.charts(&state.borrow().monitor)?,
+            EventKind::Configure { .. } => {
+                let state = state.borrow();
+                view.performance.charts(&state.monitor, state.graph)?
+            }
+            EventKind::Column { column } if event.node == view.gpu.clients().id() => {
+                if let Some(column) = gpu::Column::ALL.get(column.saturating_sub(1) as usize) {
+                    let mut state = state.borrow_mut();
+                    state.gpu_sort.click(*column);
+                    view.gpu.update(&state.gpu, state.gpu_sort)?;
+                }
+            }
             EventKind::Column { column } if event.node == view.processes.id() => {
                 if let Some(column) = Column::ALL.get(column.saturating_sub(1) as usize) {
                     let mut state = state.borrow_mut();
@@ -612,13 +659,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             _ => {}
         }
         if end {
-            if view.applications_page()? {
+            if view.page()? == Page::Applications {
                 if let Some(task) = state.borrow().selected_task(&view)?
                     && let Err(error) = task.request(ToplevelRequest::Close)
                 {
                     view.status.set_text(&error.to_string())?;
                 }
-            } else if view.tabs.selection()? == Some(view.pages[1].id())
+            } else if view.page()? == Page::Processes
                 && let Some(id) = view.processes.selection()?
             {
                 let pid = id.saturating_sub(1) as u32;
@@ -650,8 +697,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             Some(Command::Refresh) => refresh.request(),
             Some(Command::SetSpeed(speed)) => {
                 state.borrow_mut().speed = speed;
-                menus::install(&view.menu, view.applications_page()?, speed)?;
+                menus::install(&view.menu, view.page()?, speed, state.borrow().graph)?;
                 refresh.request();
+            }
+            Some(Command::SetCpuGraph(graph)) => {
+                let mut state = state.borrow_mut();
+                state.graph = graph;
+                menus::install(&view.menu, view.page()?, state.speed, graph)?;
+                view.performance.charts(&state.monitor, graph)?;
             }
             Some(command @ (Command::Minimize | Command::Maximize | Command::BringToFront)) => {
                 if let Some(task) = state.borrow().selected_task(&view)? {

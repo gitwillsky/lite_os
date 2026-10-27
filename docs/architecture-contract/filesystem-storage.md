@@ -27,6 +27,7 @@
   fget_raw 只供 native path/属性/dup/F_GETFL 操作，不绕过 I/O、ioctl、pidfs fops 或 SCM owner。
   O_PATH 忽略其他 access/create/status bits，保留 DIRECTORY/NOFOLLOW/CLOEXEC 的原生含义。
   fdinfo 在单一 table guard 内捕获实际 OFD/CLOEXEC，position/status/format 在表锁外完成；
+  `chardev::FileInformationView` 仅命名该 proc mount 的 PID 视图类型，使设备 fops 不必依赖 namespace 实现路径；
   FS codec 输出实际 mount/inode，设备仅写其真实 fops 字段。PIDFS Pid/NSpid 采用 proc mount
   的 PID namespace 和不可变 ladder，reap 后为 -1，无关 view 为 0。全部 anonymous path 也借真实 pseudo internal mount 输出稳定 mnt_id；
 

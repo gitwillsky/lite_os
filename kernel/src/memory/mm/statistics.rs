@@ -69,12 +69,15 @@ impl MemorySet {
                 } else {
                     0
                 };
-                let device_pages =
-                    if area.device.is_some() && MapArea::has_leaf_permission(area.map_permission) {
-                        pages
-                    } else {
-                        0
-                    };
+                // Linux 只为 `vm_insert_page(s)` 的普通页增加 MM_FILEPAGES；PFNMAP 特殊 PTE 不进 RSS。
+                let device_pages = if area.kind
+                    == VmaKind::Device(DevicePageAccounting::InsertedPages)
+                    && MapArea::has_leaf_permission(area.map_permission)
+                {
+                    pages
+                } else {
+                    0
+                };
                 let data_pages = if matches!(area.kind, VmaKind::Stack)
                     || area.map_permission.contains(MapPermission::W)
                         && area.shared_anonymous.is_none()

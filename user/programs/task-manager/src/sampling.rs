@@ -1,5 +1,6 @@
 //! 系统采样只在后台执行；UI 线程保存只读结果，刷新请求与单调期限唤醒同一个 Future。
 use crate::{
+    gpu,
     processes::{self, Process},
     system::Monitor,
 };
@@ -15,18 +16,21 @@ use std::{
 };
 pub struct Sampler {
     pub monitor: Monitor,
+    pub gpu: gpu::Snapshot,
     previous: HashMap<u32, u64>,
 }
 impl Sampler {
     pub fn new() -> Self {
         Self {
             monitor: Monitor::new(),
+            gpu: gpu::Snapshot::default(),
             previous: HashMap::new(),
         }
     }
     pub fn sample(mut self) -> (Self, Vec<Process>) {
         self.monitor.sample();
         let rows = processes::list(&self.previous, &self.monitor);
+        self.gpu = gpu::Snapshot::read(&rows);
         self.previous = rows.iter().map(|row| (row.pid, row.cpu_ticks)).collect();
         (self, rows)
     }

@@ -7,6 +7,8 @@ pub(crate) const O_CLOEXEC: c_int = 0x80000;
 pub(crate) const PROT_READ: c_int = 1;
 pub(crate) const PROT_WRITE: c_int = 2;
 pub(crate) const MAP_SHARED: c_int = 1;
+// Linux 与 Darwin 取值相同。
+pub(crate) const MAP_PRIVATE: c_int = 2;
 pub(crate) const POLLIN: i16 = 1;
 pub(crate) const POLLOUT: i16 = 4;
 pub(crate) const POLLERR: i16 = 8;

@@ -35,6 +35,14 @@ pub(super) fn verify() -> Result<(), String> {
     if self_handle != resource.handle() {
         return Err("self import allocated a second GEM handle".into());
     }
+    let (_, producer_memory, producer_shared) =
+        step("producer fdinfo", super::fdinfo::read(producer.as_fd()))?;
+    if producer_memory != 4 {
+        return Err("self import changed page-aligned GPU memory accounting".into());
+    }
+    if producer_shared != producer_memory {
+        return Err("exported GEM is not reported as drm-shared-memory".into());
+    }
     let consumer = step("consumer open", DrmDevice::open("/dev/dri/renderD128"))?;
     let imported_graphics = step(
         "consumer context",
@@ -51,13 +59,38 @@ pub(super) fn verify() -> Result<(), String> {
     if imported.handle() != alias.handle() || imported.resource_id() != resource.resource_id() {
         return Err("PRIME did not preserve resource/handle identity".into());
     }
+    let (_, consumer_memory, consumer_shared) =
+        step("consumer fdinfo", super::fdinfo::read(consumer.as_fd()))?;
+    if consumer_memory != producer_memory {
+        return Err("repeated PRIME import double-counted shared GPU memory".into());
+    }
+    if consumer_shared != consumer_memory {
+        return Err("imported GEM is not reported as drm-shared-memory".into());
+    }
     // The exported fd/consumer must retain the GEM object, not the producer's whole DRM file.
     drop(resource);
+    if step(
+        "producer close fdinfo",
+        super::fdinfo::read(producer.as_fd()),
+    )?
+    .1 != 0
+    {
+        return Err("closed producer handle remains in GPU memory accounting".into());
+    }
     drop(graphics);
     drop(producer);
     drop(imported);
     drop(fd);
     drop(duplicate);
+    // Linux keeps `obj->dma_buf` until the last handle closes, so the consumer stays shared.
+    if step(
+        "consumer fdinfo after export close",
+        super::fdinfo::read(consumer.as_fd()),
+    )?
+    .2 != producer_memory
+    {
+        return Err("closing the dma-buf fd made a PRIME GEM private".into());
+    }
     // No producer wait: the consumer transfer itself must obey the shared implicit reservation.
     step(
         "consumer transfer after exporter close",

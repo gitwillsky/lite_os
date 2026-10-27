@@ -68,7 +68,8 @@ pub(crate) use {
     futex_key::{FutexAccessError, FutexKey},
     initial_stack::{InitialStack, InitialStackCredentials},
     mapping_request::{
-        DeviceMappingSource, FileMappingError, FileMappingSource, MappingPlacement,
+        DeviceMappingSource, DevicePageAccounting, FileMappingError, FileMappingSource,
+        MappingPlacement,
         MappingResourceLimits, MemoryAdvice, UserMappingRequest, UserMappingSource,
     },
     mmap::PageFaultOutcome,

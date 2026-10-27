@@ -45,6 +45,39 @@ impl CharacterDriver for CardDriver {
 struct CardFile(Arc<DrmFile>);
 
 impl DeviceFile for CardFile {
+    fn write_file_information(
+        &self,
+        _view: &chardev::FileInformationView,
+        output: &mut dyn core::fmt::Write,
+    ) -> core::fmt::Result {
+        // 1. 在唯一 GEM namespace owner 下捕获数值；同一 OFD 的 dup/fork 共用 client-id。
+        // 2. 自身重复 PRIME import 已归一到原 handle，每个 buffer 在此客户端只计一次。
+        // 3. 共享按 Linux `drm_gem_object_is_shared_for_memory_stats`：PRIME 导出过的 VirGL 资源；
+        //    dumb buffer 不可导出，恒为私有。lifecycle 锁序与 `virgl_wait` 相同，位于 OFD 锁之内。
+        // 4. 锁外格式化，避免 formatter 分配期间占用 handle publication lock。
+        let (bytes, shared) = {
+            let state = self.0.state.lock();
+            let mut bytes: usize = state.buffers.values().map(|buffer| buffer.size).sum();
+            let mut shared = 0;
+            for buffer in state.graphics_buffers.values() {
+                bytes += buffer.size;
+                if buffer.lifecycle.lock().shared {
+                    shared += buffer.size;
+                }
+            }
+            (bytes, shared)
+        };
+        write!(
+            output,
+            "drm-driver:\t{}\ndrm-client-id:\t{}\ndrm-total-memory:\t{} KiB\ndrm-shared-memory:\t{} KiB\ndrm-resident-memory:\t{} KiB\n",
+            super::DRIVER_NAME,
+            self.0.file_identity,
+            bytes / 1024,
+            shared / 1024,
+            bytes / 1024
+        )
+    }
+
     /// 读出可容纳的完整 32-byte DRM events。按 Linux `drm_read`，队首 event 放不下时返回零，
     /// 绝不拆分 ABI 记录。
     fn read(&self, output: &mut dyn UserOutput, nonblocking: bool) -> Result<(), DeviceError> {
