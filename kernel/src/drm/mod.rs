@@ -587,10 +587,15 @@ impl DrmFile {
         if length > buffer.size {
             return Err(DrmError::Invalid);
         }
-        Ok(DeviceMappingSource::new(
+        let mut source = DeviceMappingSource::new(
             (1u64 << 63) | u64::from(buffer.resource_id),
             buffer.backing.clone(),
-        ))
+        );
+        source.retain_object(prime::DmaBuf::from_buffer(
+            &self.device,
+            buffer.buffer.clone(),
+        )?);
+        Ok(source)
     }
 
     /// 准备 device-wide legacy framebuffer object，不提前发布 ID。

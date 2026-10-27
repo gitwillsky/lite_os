@@ -13,8 +13,7 @@ Status: Active
 实施进度：版本化函数表、共享库构建/安装、安全 Rust 句柄与异步适配、SDK 源码与 Cargo 示例已接入。
 七个普通系统应用与终端已迁移到共同 SDK，系统内部与外部应用使用同一控件实现。
 固定原生 Rust/Cargo 安装入口已实现；guest 内完整开发闭环、旧 ELF 升级验收和源码调试仍未完成。
-服务端 GPU 合成已有代码接入，标准 GPU 客户端缓冲仍未实现；当前使用方式见 [SDK 开发](../development/ui-sdk.md)。
-本轮按用户要求不执行测试或 GUI 验收，不以 host 编译检查代替这些验收。
+服务端 GPU 合成与标准 dma-buf/EGL 客户端缓冲已接入；实际范围见[Wayland 验证](../development/wayland-ui-verification.md)，当前使用方式见 [SDK 开发](../development/ui-sdk.md)。
 
 ## Windows 给出的经验
 

@@ -140,7 +140,9 @@ pub(crate) fn sys_mmap(
             );
             match file.mmap(offset as u64, length, request) {
                 Ok(mut source) => {
-                    source.retain_file(ofd.clone());
+                    if source.retain_file(ofd.clone()).is_err() {
+                        return -errno::ENOMEM;
+                    }
                     UserMappingSource::Device(source)
                 }
                 Err(error) => return super::device::device_error(error),

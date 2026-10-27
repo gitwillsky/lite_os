@@ -900,4 +900,5 @@ mod seat;
 mod seat_socket;
 mod security;
 mod socket;
+mod surface_tree;
 mod xdg;

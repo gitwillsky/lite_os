@@ -1546,6 +1546,7 @@ kernel/src/drm/mode.rs :: pub (crate) impl DrmFile :: fn requested_mode (& self 
 kernel/src/drm/mode.rs :: pub (super) fn cvt_mode (mode : DisplayMode) -> DrmMode
 kernel/src/drm/prime.rs :: pub (super) DmaBuf :: device : Arc < DrmDevice >
 kernel/src/drm/prime.rs :: pub (super) impl DmaBuf :: fn buffer (& self) -> & Arc < VirglBuffer >
+kernel/src/drm/prime.rs :: pub (super) impl DmaBuf :: fn from_buffer (device : & Arc < DrmDevice > , buffer : Arc < VirglBuffer > ,) -> Result < Arc < Self > , DrmError >
 kernel/src/drm/prime.rs :: pub (super) impl DrmFile :: fn export_prime (& self , handle : u32) -> Result < Arc < DmaBuf > , DrmError >
 kernel/src/drm/prime.rs :: pub (super) struct DmaBuf
 kernel/src/drm/publication.rs :: pub (crate) impl PreparedDumbBuffer < 'file > :: fn complete < E > (self , copyout : impl FnOnce (DumbBufferInfo) -> Result < () , E > ,) -> Result < () , E >
@@ -4714,7 +4715,8 @@ kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum MappingPlacement
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum MemoryAdvice
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum UserMappingSource
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn new (identity : u64 , backing : Arc < DeviceBacking >) -> Self
-kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn retain_file (& mut self , owner : Arc < dyn crate :: memory :: MappedFileOwner >)
+kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn retain_file (& mut self , file : Arc < dyn crate :: memory :: MappedFileOwner > ,) -> Result < () , alloc :: alloc :: AllocError >
+kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn retain_object (& mut self , object : Arc < dyn crate :: memory :: MappedFileOwner >)
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl FileMappingSource :: fn new (mapping : Arc < dyn SharedFileMapping > , offset : u64 , length : usize ,) -> Result < Self , FileMappingError >
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl MappingResourceLimits :: const fn new (address_space : u64 , data : u64) -> Self
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct DeviceMappingSource

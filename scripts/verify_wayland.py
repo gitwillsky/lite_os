@@ -201,7 +201,7 @@ def install_files(image: Path, sources: list[tuple[Path, str]], directory: Path)
 def check_info(text: str) -> None:
     """`wayland-info` 的输出必须包含全部期望片段，缺失时指出是哪一条。"""
     missing = [pattern for pattern in EXPECTED_INFO if re.search(pattern, text) is None]
-    if any(interface in text for interface in ("zwlr_layer_shell_v1", "zwlr_foreign_toplevel_manager_v1", "wp_security_context_manager_v1")):
+    if any(interface in text for interface in ("zwlr_layer_shell_v1", "wp_security_context_manager_v1")):
         raise RuntimeError("ordinary clients can see privileged globals")
     if missing:
         raise RuntimeError(f"wayland-info output is missing {missing}\n{text[-2500:]}")
@@ -366,7 +366,7 @@ def check_shell(session) -> None:
 
     # 1. 客户端光标必须成功经过 DRM 更新；screendump 不包含硬件 cursor plane。
     pointer_to(session, 50, 785)
-    console.wait_for(("shell-probe: cursor requested", "compositor: client cursor 8x8 hotspot 2,3"))
+    console.wait_for(("shell-probe: cursor requested", "shell-probe: cursor presented"))
     # 2. 任务栏的 foreign handle 操作另一个客户端；最大化避开 28px panel。
     mark = click(50, "shell-probe: action 0")
     console.wait_for(("wayland-probe: resized 1280x772",), after=mark)

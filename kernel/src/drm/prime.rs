@@ -22,25 +22,43 @@ impl DrmFile {
             .get(&handle)
             .map(|entry| entry.buffer.clone())
             .ok_or(DrmError::NotFound)?;
+        DmaBuf::from_buffer(&self.device, buffer)
+    }
+}
+impl core::fmt::Debug for DmaBuf {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("DmaBuf")
+            .field("resource_id", &self.buffer().resource_id)
+            .finish_non_exhaustive()
+    }
+}
+impl crate::memory::MappedFileOwner for DmaBuf {}
+impl DmaBuf {
+    // GEM VMA 与 PRIME FD 共用资源 lease；最后释放者主动推进 UNREF，不依赖后续无关 GPU 活动。
+    pub(super) fn from_buffer(
+        device: &Arc<DrmDevice>,
+        buffer: Arc<VirglBuffer>,
+    ) -> Result<Arc<Self>, DrmError> {
         if let Some(file) = buffer.lifecycle.lock().exported.upgrade() {
             return Ok(file);
         }
-        let candidate = Arc::try_new(DmaBuf {
-            device: self.device.clone(),
+        let candidate = Arc::try_new(Self {
+            device: device.clone(),
             buffer: Some(buffer.clone()),
             description: spin::Mutex::new(None),
         })
         .map_err(|_| DrmError::OutOfMemory)?;
         let mut lifecycle = buffer.lifecycle.lock();
         if let Some(file) = lifecycle.exported.upgrade() {
+            // candidate Drop 会取得 completion 并检查资源 fence，不能持有 lifecycle 锁析构它。
+            drop(lifecycle);
             return Ok(file);
         }
         lifecycle.exported = Arc::downgrade(&candidate);
         drop(lifecycle);
         Ok(candidate)
     }
-}
-impl DmaBuf {
     pub(super) fn buffer(&self) -> &Arc<VirglBuffer> {
         self.buffer.as_ref().expect("live dma-buf lost GEM")
     }

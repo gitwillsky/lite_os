@@ -19,6 +19,9 @@ RECIPE_VERSION = 1
 # 实测：窗口从 (40, 40) 起，选中底色从 x=261 开始，y=178 在首行文字上缘之上、不受字形影响。
 SELECTED = (10, 36, 106)
 EXPLORER_FIRST_ROW = (262, 178)
+# 登录框按 413px 横幅加两侧 3px 外框居中；边框采样不能继续使用旧的 450px 宽度。
+LOGON_LEFT = (1280 - (413 + 6)) // 2
+LOGON_TOP = (800 - 300) // 2
 # 托盘音量面板（64×150，贴在任务栏上方、图标正上方）内部一点：打开时是面板底色。
 VOLUME_PANEL_SAMPLE_OPEN = ((1140, 700), (212, 208, 200))
 # 开始菜单"运行"行的中心：7 行 36 高、一道 10 高的分隔，贴在 28 高任务栏之上，行起点 3 像素边框。
@@ -104,7 +107,7 @@ def login(session) -> None:
     console = session.console
     print('desktop gate: welcome and authentication', flush=True)
     console.wait_for(('logon: welcome',))
-    wait_screen(session, [((0, 0), DESKTOP_BACKGROUND), ((416, 251), (255, 255, 255))], 'welcome')
+    wait_screen(session, [((0, 0), DESKTOP_BACKGROUND), ((LOGON_LEFT + 1, LOGON_TOP + 1), (255, 255, 255))], 'welcome')
     tap(session, 'ctrl', 'alt', 'delete')
     console.wait_for(('logon: secure attention Credentials',))
     click(session, 600, 395)
@@ -125,7 +128,7 @@ def login(session) -> None:
 
 def wait_security(session) -> None:
     # SAS 的进程日志早于 layer commit/scanout；屏障期间输入会被正确吞掉，必须等真正的安全页再点击。
-    wait_screen(session, [((200, 200), DESKTOP_BACKGROUND), ((436, 423), (255, 255, 255))], 'secure page presented')
+    wait_screen(session, [((200, 200), DESKTOP_BACKGROUND), ((LOGON_LEFT + 16, LOGON_TOP + 173), (255, 255, 255))], 'secure page presented')
 
 
 def check_session(session) -> None:

@@ -11,6 +11,59 @@ mod memory {
     use alloc::{sync::Arc, vec::Vec};
     use std::sync::Mutex;
 
+    pub(crate) const PAGE_SIZE: usize = 4096;
+    #[derive(Debug)]
+    pub(crate) struct DeviceBacking;
+    pub(crate) trait MappedFileOwner:
+        core::any::Any + Send + Sync + core::fmt::Debug
+    {
+    }
+    pub(crate) trait SharedFileMapping {}
+    #[derive(Clone)]
+    pub(crate) struct SharedMemoryMappingSource;
+    pub(crate) struct MapPermission;
+
+    mod file_page_range {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../kernel/src/memory/mm/file_page_range.rs"
+        ));
+    }
+    use file_page_range::{FilePageRange, FilePageRangeError};
+    mod mapping_request {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../kernel/src/memory/mm/mapping_request.rs"
+        ));
+    }
+
+    #[derive(Debug)]
+    struct Lease;
+    impl MappedFileOwner for Lease {}
+
+    #[test]
+    fn device_mapping_keeps_gem_object_independently_of_file_and_handle() {
+        let object = Arc::new(Lease);
+        let file = Arc::new(Lease);
+        let object_weak = Arc::downgrade(&object);
+        let file_weak = Arc::downgrade(&file);
+        let mut source = mapping_request::DeviceMappingSource::new(1, Arc::new(DeviceBacking));
+        source.retain_object(object.clone());
+        source.retain_file(file.clone()).unwrap();
+        let descendant = source.clone();
+        drop(object);
+        drop(file);
+        drop(source);
+        assert!(
+            object_weak.upgrade().is_some(),
+            "GEM_CLOSE retired a mapped object"
+        );
+        assert!(file_weak.upgrade().is_some(), "mapping lost its actual OFD");
+        drop(descendant);
+        assert!(object_weak.upgrade().is_none());
+        assert!(file_weak.upgrade().is_none());
+    }
+
     fn fixture_index<K: Ord, V, const N: usize>(entries: [(K, V); N]) -> FallibleMap<K, V> {
         let mut index = FallibleMap::new();
         for (key, value) in entries {

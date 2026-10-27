@@ -280,8 +280,12 @@
 `graphics::retirement` 分别退休 attachment、context 与设备级资源。`drm::prime` 拥有 dma-buf backend；
 `device` 只在唯一 completion owner 下推进标准 VirtIO 命令。
 
-- VirglBuffer 与导出 DrmFile 无关；dma-buf、KMS、attachment 和提交 pins 分别保活它，禁止 dma-buf 反向持有 OFD/context。
+- VirglBuffer 与导出 DrmFile 无关；dma-buf、KMS、GEM VMA、attachment 和提交 pins 分别保活它，禁止 dma-buf 反向持有 OFD/context。
   VirglLifecycle 的 mutex 只保护最后 fence 和导出 backend 的 Weak；后者保证重复导出同一 dma-buf identity，且不形成自环。
+  DeviceMappingSource 独立持有实际 OFD 与映射对象；DeviceArea 的 split/fork 克隆同一 lease，TLB 退休完成后才释放。
+  GEM VMA 与 PRIME 共用 DmaBuf 资源 owner，最后映射释放后主动推进退休，不依赖下一次无关 GPU 提交。
+  只有组合独立设备对象与 OFD 的 mmap 准备阶段分配一次 lease；OOM 返回 ENOMEM 且不修改页表，unmap/fork 不新增 lease 分配。
+  GEM_CLOSE 只撤销 handle/context attachment，不能提前 UNREF 仍有 VMA 的资源；仅保留物理 backing 不满足此契约。
 - 每个 VirglAttachment 在 host attach 前预分配退休节点；接受命令立即记录 exact fence。
   close/失败/中断先移除 file-local handle，最后 pin 退出后等待 fence，发送 CTX_DETACH_RESOURCE；
   context 只等待自己的 detach，不等待其他进程仍持有的资源。全局退休观察者是最后一个 Arc 且 fence 完成后才 RESOURCE_UNREF。
@@ -299,7 +303,7 @@
 - capset 按实际版本分别读取，不把最高版本 payload 当作 v0。virtio_gpu DRM version=0.0，不宣称未实现的 sync_file FD。
   非 blob legacy transfer 的 stride/layer_stride 必须为零；resource_create 的 size/stride 分别为 Linux u32 字段。
 - completion 将退休节点移出锁域再析构；回收不分配。已发布 resource ID 不复用，未发布 ID 等 UNREF completion 后回收。
-- Benchmark 决策：新增 reservation 成本属于共享资源同步的必要契约；沿用无界面 GPU 门禁检查真实清屏读回、PRIME 寿命与 page-flip 节拍，
+- Benchmark 决策：新增 reservation 成本属于共享资源同步的必要契约；沿用 GPU 门禁检查真实清屏读回、PRIME 寿命、上游 Wayland EGL 消费与 page-flip 节拍，
   不以 host 墙钟推断 GPU 性能。具体结果只由实际运行记录声明。
 
 当前只在同一设备共享 VirGL GEM；不宣称跨设备 PRIME、blob、sync_file/syncobj、Vulkan 或全部 OpenGL resource transfer 语义。

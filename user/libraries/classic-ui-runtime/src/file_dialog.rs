@@ -490,10 +490,7 @@ impl FileDialog {
         let current = ids.last().copied();
         let icon: Option<Rc<classic_ui::Bitmap>> = resources.icon("folder-closed", 16);
         let node = self.tree.nodes.get_mut(&self.location).expect("location");
-        node.row_icons = ids
-            .iter()
-            .map(|id| (*id, (icon.clone(), None)))
-            .collect();
+        node.row_icons = ids.iter().map(|id| (*id, (icon.clone(), None))).collect();
         node.edit = Some(Edit::new(rows.last().map_or("", |row| row.1.as_str())));
         node.rows = rows;
         node.outline = Some(Outline::list(&ids, true));
@@ -504,7 +501,15 @@ impl FileDialog {
     }
     fn busy(&mut self, value: bool) {
         self.busy = value;
-        for id in [self.up, self.bar, self.list, self.name, self.primary, self.location, self.types] {
+        for id in [
+            self.up,
+            self.bar,
+            self.list,
+            self.name,
+            self.primary,
+            self.location,
+            self.types,
+        ] {
             let node = self.tree.nodes.get_mut(&id).expect("dialog control");
             if value {
                 node.state |= state::DISABLED;

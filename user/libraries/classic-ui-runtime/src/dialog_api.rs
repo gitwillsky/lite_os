@@ -118,13 +118,15 @@ pub(super) unsafe extern "C" fn sheet(
     style: u32,
     output: *mut abi::Sheet,
 ) -> i32 {
-    if output.is_null() || style & !(abi::sheet_style::NO_APPLY | abi::sheet_style::CLOSE_ONLY) != 0 {
+    if output.is_null() || style & !(abi::sheet_style::NO_APPLY | abi::sheet_style::CLOSE_ONLY) != 0
+    {
         return abi::INVALID;
     }
     // SAFETY: 输出独占，标题在返回前复制，内置树完全建立后发布句柄。
     unsafe {
         invoke(pointer, |context| {
-            let (window, pages) = context.property_sheet(parent, &text(title)?, width, height, style)?;
+            let (window, pages) =
+                context.property_sheet(parent, &text(title)?, width, height, style)?;
             output.write(abi::Sheet { window, pages });
             Ok(())
         })

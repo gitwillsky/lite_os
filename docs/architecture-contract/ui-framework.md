@@ -38,7 +38,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - Task/窗口关闭后，Future 在 UI 线程释放；FD interest、定时器与接收端通过各自 RAII owner 撤销。
   在途 clipboard 传输和协议缓冲不依赖已释放的回调 userdata。
 - 协议断开向应用返回错误；库不调用 process::exit。Application 析构取消任务、关闭窗口，再释放连接。
-- 新热路径的测量项为缓冲复用、任务调度/唤醒、布局与可见行绘制；本轮按用户要求不运行测试或性能测试。
+- 新热路径的测量项为缓冲复用、任务调度/唤醒、布局与可见行绘制；验证入口与范围见[Wayland 验证](../development/wayland-ui-verification.md)。
   编译成功不能替代生命周期、二进制兼容或图形验收。
 
 ## 布局、对话框与终端
@@ -50,18 +50,20 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - xdg-dialog 对象独占 compositor 的模态提示，toplevel 销毁后附属对象 inert；对象编号复用不得恢复旧关联。
   客户端 Context 拥有 UI 父子生命周期与输入筛选，不把可选的 compositor 策略当成应用安全保证。
 - 等宽 atlas 只在需要该文字角色时加载一份，Rc 保活绘制借用；缺少缓存会在终端输出时反复读入约 9 MiB 字体。
-  蒙版缩放只遍历裁剪范围且不分配；本轮不执行性能测试，实际缩放成本尚待测量。
+  蒙版缩放只遍历裁剪范围且不分配；独立缩放成本尚未测量；不由整体 canvas 基线推断。
 - terminal 的 VT 模型、输入队列和控件只在 UI 线程使用。队列上限 1 MiB；读端每轮最多消费 64 KiB，防止持续输出饿死输入。
   PTY 使用现有 SessionChild launcher，正常关闭在后台终止完整进程组并回收，异常退出仍执行兜底清理。
 
 - GPU Content 的 OnceCell 只在 compositor 线程发布一份纹理，输入像素发布后不可变；GPU.frame_contents 独立持有本帧全部 Content 到 flip 完成后的下一次 render，不能用单个采样视图代替多个 wl_buffer 使用期。
   无这份生命周期约束，客户端替换内容或退出可能提前关闭 host 正在取样的 GEM。没有按窗口 ID 维护的第二份纹理表。
   顶点缓冲按两个输出槽复用，覆盖前必须无 flip 在途；标准 EXECBUFFER/transfer 与 KMS 的 fence 顺序由 DRM owner 保证。
-  GPU 热路径的测量项是首次上传、移动时合成/提交与 flip 完成；本轮依用户要求不执行性能或 UI 测试。
+  GPU 热路径的测量项是首次上传、移动时合成/提交与 flip 完成；显示节拍与第三方 EGL 路径由 GPU gate 验证，交互由 Wayland/桌面 gate 验证。
 
 - 程序图标按 context 首次使用时读取，窗口装饰持有 Rc，不重复解码同一条目的像素；缺失时使用既有通用图标。
 - foreign-toplevel 的 title/app_id/state 只由 Display 的 done/closed 更新。SDK token 与协议对象代际一起校验，
   不复制协议状态或把可复用 wire id 当作长期应用标识。列表选择由运行库保存，应用按需读取稳定条目标识。
+  同一桌面的普通应用可使用标准 foreign-toplevel，任务管理器依赖该能力；layer-shell 只授予 Session/Shell，
+  security-context manager 只授予 Session。公开 socket 的 root 身份也不能获得后两者。
 - 媒体播放器只在 Running/Draining/Idle 之间转换；后台 PCM 完成前不启动下一次播放，连续 seek 只保留最新目标。
   窗口关闭先请求停止再异步等待完成；取消 Future 的 Drop 只发送停止请求，不在 UI 线程 join。
 - Canvas 的 TAB_INPUT 明确请求原始 Tab（终端补全）；未设置时由框架执行焦点遍历，不在应用另维护一份修饰键状态。
@@ -109,7 +111,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - Scanout::Backend 只持有一种输出后端；back/pending/sequence 由 Scanout 唯一拥有。
   BootSurface 仅为启动位图投影 CPU/GPU 目标的可写像素行，不拥有协议或第二份像素存储。
   GPU boot transfer、合成与 page flip 均使用同一对资源；目标 Drop 先移除 FBO，再释放 GEM。
-  Benchmark 决策：本轮按用户要求不运行性能验证；代码删除两块冗余全屏缓冲，不据此宣称帧率提升数值。
+  Benchmark 决策：沿用 canvas 与 GPU gate；删除两块冗余全屏缓冲，不据此宣称帧率提升数值。
 
 ## comctl32 控件、级联菜单与状态栏
 
@@ -128,7 +130,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   定时推进返回的 CHANGED 由 Context 收集后入应用事件队列。CalWnd 的 Calendar 只持有选定日期，显示月份即该日期所在月。
 - Node.status_parts 与 Node.background 只保存复制后的分格宽度、底色和共享位图引用；位图由资源上下文保活。
 - 应用自建对话框经 Dialogs::window 登记到同一窗口表与订阅 owner，窗口与事件流的 Drop 撤销登记。
-- Benchmark 决策：新增定时状态只在存在截止时刻时参与等待，菜单/提示的命中与绘制为常数级；本轮按用户要求不运行性能测试。
+- Benchmark 决策：新增定时状态只在存在截止时刻时参与等待，菜单/提示的命中与绘制为常数级；沿用现有 canvas/GPU 基线，不新增该操作的 wall-clock 阈值。
 
 ## 下标位图与调色板
 
@@ -137,7 +139,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - Image 创建和换图共用 image_api::resource。新增 image_palette 只追加 ABI 表尾；输入为 256 项 0xRRGGBB，
   同步读取并生成像素，验证失败不替换节点图像。未安装的可选素材保持空白，其他控件或非下标图像返回错误。
 - Benchmark 决策：解码只在资源加载时发生，调色板转换只在选择改变时执行 O(像素数) 分配，常规绘制仍消费原有像素路径；
-  没有新增逐帧扫描或同步。本轮按用户要求不运行性能测试。
+  没有新增逐帧扫描或同步。沿用现有 canvas/GPU 基线，不新增该操作的 wall-clock 阈值。
 
 ## 窗口动画与合成几何
 
@@ -149,7 +151,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   DRM flip 在途仍禁止覆盖 back，纹理由 GPU 采样视图保活到完成；不改变标准 Wayland commit/damage/frame/release 语义。
 - 动画跟随 DRM flip 完成产生下一帧，不叠加固定 16 ms 轮询；动画放在普通窗口之上、系统外壳上层之下，不能遮盖安全覆盖层。
 - Benchmark 决策：去除动画每帧标题光栅/像素 Vec 分配/纹理上传，GPU 增量为每个 surface 的矩形和顶点变换；
-  CPU 的任意缩放只扫描可见目标像素，不分配中间图像。本轮按用户要求不执行测试或性能测量，流畅度由用户验收。
+  CPU 的任意缩放只扫描可见目标像素，不分配中间图像。整窗交互由既有门禁验证，动画主观流畅度及独立成本仍由目标 workload 验收。
 
 ## 内容尺寸、菜单与通知区域
 
@@ -167,7 +169,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   UI 只非阻塞取结果；Drop 断开停止通道并 join，不遗留后台线程。读取失败不继续宣称上次链路已连接。
 - 桌面通知区、时钟、音量、网络、翻页按钮与任务按钮由同一 TaskbarLayout 给出绘制/命中几何；隐藏时钟或没有接口时收回对应槽位。
 - Benchmark 决策：图标重采样只在资源加载时分配，内容测量只在布局失效时执行，网络文件 I/O 全部在后台；无新增逐帧全树扫描。
-  本轮按用户要求不新增或执行测试/benchmark，UI 效果由用户验收。
+  功能由现有 host/Wayland/桌面门禁裁决；逐项样式仍由用户验收。
 
 ## 字体目录与缓存
 
@@ -203,7 +205,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   位置仍独立更新。set_cursor 校验本连接最近 enter 序号后才分配角色，后续 offset 从设置时热点扣除累计增量。
 - Benchmark 决策：移除 viewport 全图重采样、窗口元数据查询的子树分配、逐帧采样视图创建与未变化光标上传；
   CPU 仿射路径只扫描可见目标像素，不分配中间图像。相同 set_text 不使布局失效。
-  本轮不执行性能/UI 测量，不声明已提高多少帧率；原生控件仍走 wl_shm，damage/opaque 当前只是可忽略的提示。
+  验证范围见[Wayland 验证](../development/wayland-ui-verification.md)，不声明已提高多少帧率；原生控件仍走 wl_shm，damage/opaque 当前只是可忽略的提示。
 
 ## linux-dmabuf / EGL 客户端
 

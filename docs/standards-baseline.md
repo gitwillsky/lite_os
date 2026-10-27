@@ -355,6 +355,10 @@ zero-window 使用有界原生 timer；通用 PMTU/fragment 与其他未声明 T
   清单 SHA-256 `391bb2a2a239aee3954d79e43b9e10585fbd946e2658ea4ee456c9b36cd410aa`；只安装种子库的实际 DT_NEEDED 闭包。
 - 无界面消费者为上游 mesa-utils 9.0.0-r6 的 eglinfo，APK SHA-256
   `2c7a962c677b81c1338becd983da947b23f7ebcfde00ff00361cada5703d93af`，要求实际创建 VirGL GLES context。
+- Wayland EGL consumer 为 Weston 14.0.2 的 [simple-egl](https://gitlab.freedesktop.org/wayland/weston/-/blob/14.0.2/clients/simple-egl.c)，
+  Alpine weston-clients-14.0.2-r1 APK SHA-256 `6abf86b9d6ac0677931a942acd9207c910fb25a2f3ec11ca29cc8e50adf4eb72`；
+  wayland-libs-cursor-1.23.1-r3 APK SHA-256 `c12e4c90ea1fa95d51c940d407405685ff25100bd63efabb71cd3dc067e070f6`。
+  两者仅注入私有门禁镜像；不透明和 alpha 窗口均使用未修改的上游客户端。
   EGL 图像语义参考 [EGL_EXT_image_dma_buf_import](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import.txt)
   和 [modifier 扩展](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import_modifiers.txt)；不引入 LiteOS 私有 EGL ABI。
 

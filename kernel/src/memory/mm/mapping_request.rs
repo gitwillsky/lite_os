@@ -37,6 +37,15 @@ pub(crate) struct DeviceMappingSource {
     pub(super) owner: Option<Arc<dyn crate::memory::MappedFileOwner>>,
 }
 
+/// 一份 VMA lease 同时保活实际 OFD 与独立设备对象；只在两者不同的映射准备阶段分配。
+/// split/fork 只 clone 外层 Arc，退休完成后一起释放，避免扩大每个 MapArea 或在 unmap 时分配。
+#[derive(Debug)]
+struct DeviceMappingLease {
+    _file: Arc<dyn crate::memory::MappedFileOwner>,
+    _object: Arc<dyn crate::memory::MappedFileOwner>,
+}
+impl crate::memory::MappedFileOwner for DeviceMappingLease {}
+
 impl DeviceMappingSource {
     /// 构造从 backing 首页开始的 device mapping source。
     ///
@@ -57,10 +66,41 @@ impl DeviceMappingSource {
         }
     }
 
-    /// mmap ABI 已获得实际 OFD；kernel-only backing template 无需制造 dummy owner。
-    pub(crate) fn retain_file(&mut self, owner: Arc<dyn crate::memory::MappedFileOwner>) {
-        assert!(self.owner.is_none(), "device mapping file owner replaced");
-        self.owner = Some(owner);
+    /// mmap ABI 安装实际 OFD；若已有独立对象 owner，则组合成同一份 VMA lease。
+    ///
+    /// # Parameters
+    ///
+    /// - `file`: 实际 mmap 描述符的 OFD；调用者只能在 source 发布前安装一次。
+    ///
+    /// # Errors
+    ///
+    /// 组合 lease 分配失败返回 AllocError；原 source 不变，尚未修改页表。
+    pub(crate) fn retain_file(
+        &mut self,
+        file: Arc<dyn crate::memory::MappedFileOwner>,
+    ) -> Result<(), alloc::alloc::AllocError> {
+        self.owner = Some(match &self.owner {
+            Some(object) => Arc::try_new(DeviceMappingLease {
+                _file: file,
+                _object: object.clone(),
+            })?,
+            None => file,
+        });
+        Ok(())
+    }
+
+    /// 保活映射的设备对象；GEM_CLOSE 可撤销 handle，但不能提前销毁仍有 VMA 的宿主资源。
+    ///
+    /// # Parameters
+    ///
+    /// - `object`: 独立于实际 OFD 的 backend 对象 owner；split/fork 与 TLB 退休共用此引用。
+    ///
+    /// # Panics
+    ///
+    /// 同一 source 重复安装对象 owner 表示设备 adapter 违反唯一所有权契约。
+    pub(crate) fn retain_object(&mut self, object: Arc<dyn crate::memory::MappedFileOwner>) {
+        assert!(self.owner.is_none(), "device mapping object owner replaced");
+        self.owner = Some(object);
     }
 }
 

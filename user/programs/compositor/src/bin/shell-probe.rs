@@ -121,7 +121,8 @@ fn run() -> io::Result<()> {
         Ok(())
     })()
     .map_err(io::Error::other)?;
-    connection.draw_solid(shm, cursor, (8, 8), CURSOR, 1, None)?;
+    let cursor_frame = connection.new_object(Interface::WlCallback);
+    connection.draw_solid(shm, cursor, (8, 8), CURSOR, 1, Some(cursor_frame))?;
     let mut configured = 0;
     let mut pending_frames = std::collections::HashMap::new();
     let mut target = None;
@@ -157,6 +158,10 @@ fn run() -> io::Result<()> {
                 pending_frames.insert(frame, (width, height));
             }
             AnyEvent::WlCallback(_) => {
+                if object == cursor_frame {
+                    // 只有实际上传并参加呈现的硬件光标才推进 callback，不能把 set_cursor 请求当成功。
+                    println!("shell-probe: cursor presented");
+                }
                 if let Some((width, height)) = pending_frames.remove(&object) {
                     configured += 1;
                     println!("shell-probe: configured {width}x{height}");

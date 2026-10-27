@@ -14,7 +14,8 @@ Wayland 门禁（`scripts/verify_wayland.py`，`make verify-runtime-wayland`）�
 与 `wl_keyboard` 的 modifiers/key（局部坐标按输出 scale 换算）；随后依次拖动标题栏、拖右下角缩放、最大化/还原、全屏/还原、
 最小化与 Alt+Tab 恢复，每步都由截图核对窗口的实际位置与大小；最后注入 Alt+F4，窗口必须消失、桌面恢复。
 同一次启动随后用注入 `/bin/logon` 的 `shell-probe` 走真实特权 socketpair：映射背景与任务栏，
-通过 foreign handle 最大化/最小化/激活/关闭另一个连接的窗口，验证工作区随 panel 高度变化、OnDemand 点击焦点、Exclusive 键盘阻止 Alt+F4 操作应用，以及外壳连接退出后的图层/焦点清理。公开 `wayland-info` 输出出现任一外壳全局即失败。
+通过 foreign handle 最大化/最小化/激活/关闭另一个连接的窗口，验证工作区随 panel 高度变化、OnDemand 点击焦点、Exclusive 键盘阻止 Alt+F4 操作应用，以及外壳连接退出后的图层/焦点清理。
+公开 `wayland-info` 不得出现 layer-shell 或 security-context manager；foreign-toplevel 向普通桌面应用开放，任务管理器依赖该协议。
 硬件光标平面不进入 screendump，光标路径以 guest 实际 DRM 更新成功裁决，不宣称截图验证了 cursor plane。
 新增外壳布局与列表 codec 不引入逐像素路径、锁或共享状态：每次事件循环投影窗口/图层快照，foreign 匹配最坏为 O(manager 数 × 窗口数²)，
 未变化的 foreign 列表零输出由确定性单测裁决；沿用 canvas blocking benchmark，不新增受宿主调度影响的 wall-clock 阈值。协议状态机另有进程内测试（`user/programs/compositor` 的 `cargo test`，含 socket、乱序/拆包/随机输入）。只在 AArch64+HVF 承担。
@@ -24,8 +25,9 @@ Wayland 门禁（`scripts/verify_wayland.py`，`make verify-runtime-wayland`）�
 内核显示/GPU gate（`scripts/verify_gpu.py`）是上述“宿主墙钟不作 blocking gate”原则的唯一显式例外，因为它不测量
 宿主墙钟：帧间隔取自 guest 内核单调 vblank 时钟。该时间戳由内核在 deferred display 完成路径以
 `get_time_ns()`（DTB timebase 单调计数）写入 DRM page-flip 事件（seconds/microseconds 与 sequence），与 Python
-宿主时钟、HVF 调度抖动完全无关。gate 在固定 UTM VirGL 产品实例中启动 rootfs 的私有副本，其 `/etc/inittab` 只运行无界面 EGL/PRIME/flip 探针，先以固定上游 `eglinfo -B -p gbm -a gles` 创建 VirGL GLES context，再运行
-`drm-flip-probe`（`user/libraries/linux-uapi/src/bin/drm-flip-probe/main.rs`；不进入产品 rootfs，不启动 compositor 与任何 UI）。
+宿主时钟、HVF 调度抖动完全无关。gate 在固定 UTM VirGL 产品实例中启动 rootfs 的私有副本，先以固定上游 `eglinfo -B -p gbm -a gles` 创建 VirGL GLES context，再运行
+`drm-flip-probe`（`user/libraries/linux-uapi/src/bin/drm-flip-probe/main.rs`；只安装在私有镜像）。
+随后通过真实 display-service 启动 compositor，并运行上游 Weston simple-egl；它会实际创建窗口和共享 GPU 缓冲。
 探针走产品同一内核路径：VirGL2 能力、render target、EXECBUFFER 清屏、PAGE_FLIP。它先对清屏结果做像素读回比对
 （功能裁决），再连续翻页，丢弃 60 帧 warmup 后测量 600 次完成间隔。`dropped` 取设备 vblank sequence 间隙，严格要求
 为 0；p95/p99 按“宽但真实的绝对上限”设阈值，不在文档记录本机测量值。样本不足、读回像素不符、flip 事件与提交帧
@@ -85,18 +87,28 @@ macOS 没有相同 SO_ACCEPTCONN getter，宿主 metadata/所有权测试从 std
 因此仍验证真实 EOF 清理、创建者断开后的委派与普通 UI 客户端，不依赖探针退出绕过产品监督策略。
 完整的账户、桌面与音量 UI 由 [产品桌面门禁](desktop-verification.md) 裁决。
 
-## 提交与合成审查的验证边界
+## 提交、共享缓冲与验证范围
 
-本轮定向构建覆盖 compositor 与实际产品 userland 的发布入口，不以编译成功替代协议/画面验收。
-实现审查阶段未执行 UI、性能和运行时测试；后续启动挂起修复仅执行既有 layer 协议组的 15 个用例，
-覆盖首次 configure、尺寸重新协商和显式 null attach 后重新握手。初始无 attach 提交不能当作 unmap，
-否则 logon、桌面背景和任务栏均等不到 configure，启动画面会停在外壳启动里程碑。
-后续验收需覆盖 buffer transform 八种方向、buffer/output scale 不同、
-viewport 裁剪及取消与 null/fresh attach 同时提交、同步/异步子树的位置和父上下堆叠、输入 region 空洞，
-以及 flip 在途期间继续 commit 时 frame callback 不提前完成。硬件动画光标需同时检查热点 offset 与回调推进。
-性能观察分开记录首次纹理上传、已提交窗口拖动、缩放/还原与场景纹理替换；GPU 合成与客户端 dma-buf/EGL 分开验证；原生控件仍使用 SHM。
+| 范围 | 实际裁决入口 | 证明边界 |
+|---|---|---|
+| surface 状态机 | compositor host 测试 | 初始 configure、显式 null attach、sync/desync 子树、输入 region、在途 callback 与角色错误 |
+| CPU 仿射采样 | viewport 的真实 Canvas 测试 | 八种 buffer transform、buffer scale、分数源裁剪；保留同一像素 owner |
+| dma-buf 参数 | dmabuf 协议测试 | 重复/缺失平面、非法尺寸、真实 FD 越界、可表示但平台不支持的布局，错误与 failed 路由不同 |
+| 内核共享寿命 | GPU 私有镜像探针 | self/repeated import、ARGB/XRGB 同 handle 视图、生产者 context/OFD 和全部 dma-buf FD 关闭后消费者仍能等待隐式 fence、读回正确像素 |
+| GEM VMA lease | mapping_retirement host 测试 | 映射保活设备对象与实际 OFD；最后 descendant 释放，退休路径保持先撤销、TLB fence、再析构 |
+| 不可变 feedback | memory-file guest fixture 与 host seals 测试 | WRITE/FUTURE_WRITE、EBUSY 原子失败、新旧共享写映射、mprotect、拆分/fork、私有 COW |
+| 第三方 EGL | GPU 私有镜像中的未修改 Mesa/Weston | GBM GLES renderer 必须为 VirGL；Wayland 不透明和 alpha 两种窗口均实际 create_immed，至少三次 buffer.release，正常客户端退出 |
+| 显示节拍 | GPU 探针既有 600 帧 gate | 像素读回、exact flip sequence、零 dropped，沿用原 p95/p99 阈值 |
+| SHM 与桌面交互 | 本页 Wayland gate、[桌面 gate](desktop-verification.md) | 真实冷启动、截图与输入；不以 EGL 路径通过替代 SHM 回归 |
 
-客户端共享缓冲门禁复用 `scripts/verify_gpu.py` 私有镜像，不启动 compositor 或窗口。
-先要求上游 EGL renderer 为 VirGL；PRIME 探针检查 self/repeated import、ARGB/XRGB 同 handle 视图、
-导出 context/进程侧 owner 关闭和全部 dma-buf FD 关闭后，消费者仍能等待隐式 fence 并读回正确像素。
-随后执行既有 600 帧 page-flip 门禁，阈值不变。产品 UTM 需已退出，门禁完成恢复原配置；UI 效果由用户验收。
+GPU 串口完整记录在 `target/logs/gpu-gate-serial.log`，构建和门禁输入由内容指纹绑定；
+出现 Mesa rejected submission 或 kernel panic 立即失败。UTM 产品实例必须已停止，门禁结束恢复原配置，修改仅发生在私有镜像。
+
+CPU 输出和 GPU 合成共用标准提交元数据；CPU 八种方向的像素结果不冒充 GPU 每种方向的端到端截图。
+硬件光标不进入 scanout 截图，光标热点/动画仍需单独显示观察；1x 的 guest 交互不代表 2x 的整套 UI 验收。
+原生控件仍使用 wl_shm；当前 dma-buf 平台只支持同设备、单平面 ARGB/XRGB、offset=0、紧密 stride、隐式 modifier。
+不支持的有效布局按标准导入失败处理，不能伪装成 FD 越界，也不公布未实现的 LINEAR/scanout tranche。
+完整 OpenGL/Vulkan、跨设备 PRIME、blob 与 sync_file/syncobj 不在通过声明内。
+
+性能基线仍运行 canvas 与既有 GPU gate。尚未分别测得首次上传、已提交窗口拖动、缩放/还原和纹理替换的前后成本，
+因此不宣称某个优化提高了多少帧率。SDK 的 guest 内编译、旧 ELF 升级和源码调试由 [SDK 开发](ui-sdk.md) 独立记录。

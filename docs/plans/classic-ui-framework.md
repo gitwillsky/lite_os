@@ -13,7 +13,7 @@ Status: Active
 文件对话框提供共同类型筛选；后台 I/O、时区模型与设置文件的跨进程更新已收敛到各自 owner。
 VirGL2 服务端合成已接入，纹理随不可变 Content 保活；移动只更新几何，Scanout 只分配选中后端的一对输出目标。
 标准 GPU 客户端缓冲已接入代码，支持边界与资源/同步 owner 见 UI/设备契约；本机开发闭环、旧 ELF 升级和源码调试见 SDK 计划。
-当前事实由[框架架构](../architecture/ui-framework.md)维护；本轮不执行测试/GUI 验收，编译检查不等同于运行验收。
+当前事实由[框架架构](../architecture/ui-framework.md)维护；协议、共享缓冲、运行时和性能的实际验证范围见[验证记录](../development/wayland-ui-verification.md)。
 
 ## 实施前的重复逻辑
 
@@ -124,7 +124,7 @@ xdg_toplevel.set_parent 只建立父子关系，不单独作为模态策略；�
 3. 已接入 linux-dmabuf v4、DRM PRIME/dma-buf、render node 和共享资源隐式 fence。
    GEM 资源独立于导出 OFD/context，attachment 先 detach、context 独立销毁；重复/self-import 合并 handle。
    上游 Mesa 25.1.9 提供 EGL/GBM/Wayland 客户端；当前限定同设备单平面 ARGB/XRGB 隐式 modifier。
-   无界面标准消费者、共享寿命与显示节拍分别验收；完整 OpenGL/Vulkan 及更多格式仍不能由此推断。
+   标准 EGL/Wayland 消费者、共享寿命与显示节拍分别验收；完整 OpenGL/Vulkan 及更多格式仍不能由此推断。
 4. CPU 局部合成需覆盖旧/新窗口区域、遮挡、scale 和双缓冲历史；不能只在当前 back buffer 擦一个矩形。
 
 Wayland 规定应用与合成器的缓冲交互，不规定某种控件库或 CPU/GPU 绘制算法。
@@ -147,7 +147,7 @@ GPU 方案的验收应分别记录上传、合成、提交与显示完成；保�
 
 每阶段完成后迁移下一批，不保留两套产品运行时，不先批量改造所有应用。
 回归聚焦实际生产契约和故障模式，不为简单脚本或薄包装机械增加测试；阶段完成时再跑相关范围。
-按上述顺序实施；本轮依用户要求不维护测试用例、不执行测试，未验证能力不声明已通过验收。
+尚未完成的开发闭环与二进制升级仍在 SDK 计划维护；验证记录区分 host、guest、图像和性能，不能相互替代。
 
 ## 一手参考
 
