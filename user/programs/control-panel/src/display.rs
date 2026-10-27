@@ -7,7 +7,7 @@ use liteos_ui::{
     TreeRow, Widget, WidgetKind as Kind, Window, state,
 };
 use std::{
-    cell::RefCell,
+    cell::{Cell, RefCell},
     path::{Path, PathBuf},
     rc::Rc,
 };
@@ -94,6 +94,9 @@ struct Preview {
     choices: Choices,
     style: Widget,
     color: Widget,
+    // OWNER: UI 线程共享最后成功发布的逻辑尺寸；浏览任务与页面事件使用同一份记录。
+    // 焦点切换也会收到 Configure；若不区分尺寸变化，错误弹窗的开关会反复重试同一次失败绘制。
+    painted_size: Rc<Cell<Option<(i32, i32)>>>,
 }
 
 impl Preview {
@@ -148,7 +151,9 @@ impl Preview {
             draw(1, Rect::new(x + 48, 99, 44, 8), 0x808080, ""),
             draw(1, Rect::new(x + 35, 107, 70, 6), 0xd4d0c8, ""),
         ]);
-        self.canvas.set_drawing(&commands)
+        self.canvas.set_drawing(&commands)?;
+        self.painted_size.set(Some((area.width, area.height)));
+        Ok(())
     }
 }
 
@@ -317,6 +322,7 @@ impl Display {
             choices,
             style,
             color,
+            painted_size: Rc::new(Cell::new(None)),
         };
         preview.draw()?;
         Ok(Self {
@@ -392,7 +398,23 @@ impl Page for Display {
             ));
             return Ok(Some(Response::Task(task)));
         }
-        self.preview.draw()?;
+        let resized = if matches!(event.kind, EventKind::Configure { .. }) {
+            let area = self.preview.canvas.geometry()?;
+            self.preview.painted_size.get() != Some((area.width, area.height))
+        } else {
+            false
+        };
+        if resized
+            || matches!(event.kind, EventKind::Select { .. })
+                && [
+                    self.preview.choices.list.id(),
+                    self.preview.style.id(),
+                    self.preview.color.id(),
+                ]
+                .contains(&event.node)
+        {
+            self.preview.draw()?;
+        }
         Ok(None)
     }
     fn dirty(&self) -> liteos_ui::Result<bool> {

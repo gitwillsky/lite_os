@@ -20,6 +20,8 @@ pub use list_item::{IconLabel, ItemLook};
 mod menu;
 mod menubar;
 mod painter;
+mod picture;
+pub use picture::PictureLoader;
 mod prompt;
 mod resources;
 mod window_host;

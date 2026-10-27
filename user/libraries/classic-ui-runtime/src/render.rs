@@ -2,16 +2,15 @@
 use super::widgets::{Node, Tree};
 use canvas::Rect;
 use classic_theme::{Edge, Rgb, SystemColor as C};
-use classic_ui::{Bitmap, ButtonState, Ink, Painter, WallpaperStyle};
+use classic_ui::{ButtonState, Ink, Painter, PictureLoader, WallpaperStyle};
 use classic_ui_abi::{state, widget};
-use std::{collections::HashMap, rc::Rc};
 
 /// 一次重绘中 Canvas 命令共用的资源，由 Context 在绘制前按命令需要一次准备好。
 pub struct CanvasAssets<'a> {
     /// 等宽文字命令（kind 5）的系统终端字体。
     pub mono: Option<&'a terminal_font::TerminalFont>,
-    /// 墙纸预览命令（kind 7）引用的图片；解码失败为 None，只画背景。
-    pub pictures: &'a HashMap<String, Option<Rc<Bitmap>>>,
+    /// 墙纸预览命令（kind 7）的异步加载器；等待或失败时只画背景。
+    pub pictures: &'a PictureLoader,
     /// 屏幕逻辑尺寸；预览按 `命令矩形宽 / 屏幕宽` 缩小居中与平铺的原图。
     pub screen: Option<(i32, i32)>,
 }
@@ -367,7 +366,9 @@ impl Tree {
                             6 => p.text_centered(r, &command.text, Ink::Rgb(rgb), command.bold),
                             // 墙纸预览：r 代表整个屏幕，text 为图片路径，color 为显示方式（0 居中、1 平铺、2 拉伸）。
                             7 => {
-                                if let Some(Some(image)) = canvas.pictures.get(&command.text) {
+                                if let Some(image) =
+                                    canvas.pictures.get(std::path::Path::new(&command.text))
+                                {
                                     let style = match command.color {
                                         1 => WallpaperStyle::Tile,
                                         2 => WallpaperStyle::Stretch,

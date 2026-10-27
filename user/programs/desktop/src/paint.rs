@@ -3,8 +3,8 @@ use super::{Desktop, TASKBAR_HEIGHT, dialogs::Kind, popups, start};
 use canvas::{Rect, Surface};
 use classic_theme::{Edge, SystemColor as C};
 use classic_ui::{
-    AppIcons, Bitmap, ButtonState, Configuration, Display, FontRole, Ink, Painter, Resources,
-    ToplevelId, WindowId,
+    AppIcons, Bitmap, ButtonState, Configuration, Display, FontRole, Ink, Painter, PictureLoader,
+    Resources, ToplevelId, WindowId,
 };
 use std::{
     collections::HashMap,
@@ -30,9 +30,9 @@ pub struct Art {
     app_icons: AppIcons,
     /// 系统主题与按主题解析的字体；外壳与应用读取同一份设置。
     resources: Resources,
-    // OWNER: 墙纸只在路径变化时解码；解码失败记为 None，不在每帧重试读盘。缺少该缓存时
-    // 每次重画都要重新解码整张图片，拖动图标会卡顿。
-    wallpaper: Option<(PathBuf, Option<Bitmap>)>,
+    pictures: PictureLoader,
+    // OWNER: 记录合成背景所用的路径；路径变化或新图片就绪都必须清除 backdrop，避免显示旧墙纸。
+    wallpaper: Option<PathBuf>,
     // OWNER: 合成后的背景层；没有它每帧都要重新缩放/平铺整张墙纸。
     backdrop: Option<Backdrop>,
 }
@@ -77,9 +77,37 @@ impl Art {
             entry_bitmaps: HashMap::new(),
             app_icons: AppIcons::load(16),
             resources: Resources::system()?,
+            pictures: PictureLoader::default(),
             wallpaper: None,
             backdrop: None,
         })
+    }
+
+    /// 返回应加入桌面事件等待的图片完成通知；尚未请求图片时为空，不读取该 FD。
+    pub fn picture_notification(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        self.pictures.notification()
+    }
+
+    /// 推进当前墙纸的异步加载。
+    ///
+    /// # 参数
+    /// - `path`：当前设置的墙纸路径；None 表示仅使用背景色。
+    ///
+    /// # 返回值
+    /// 返回 true 表示背景需重绘。
+    ///
+    /// # 错误
+    /// 线程或通知通道失败时返回错误；文件/解码错误由加载器记录并保持纯背景色。
+    pub fn update_wallpaper(&mut self, path: Option<&Path>) -> io::Result<bool> {
+        let selected = self.wallpaper.as_deref() != path;
+        let loaded = self.pictures.update(path.map(Path::to_path_buf))?;
+        if selected {
+            self.wallpaper = path.map(Path::to_path_buf);
+        }
+        if selected || loaded {
+            self.backdrop = None;
+        }
+        Ok(selected || loaded)
     }
 
     /// 返回与当前设置和图层配置一致的背景层像素（物理像素，行宽为图层宽）。
@@ -95,17 +123,6 @@ impl Art {
             || theme.color(C::Background),
             |[red, green, blue]| classic_theme::Rgb { red, green, blue },
         );
-        if self.wallpaper.as_ref().map(|(path, _)| path) != settings.wallpaper.as_ref() {
-            self.wallpaper = settings.wallpaper.clone().map(|path| {
-                let image = Bitmap::load_picture(&path)
-                    .inspect_err(|error| {
-                        eprintln!("desktop: wallpaper {}: {error}", path.display())
-                    })
-                    .ok();
-                (path, image)
-            });
-            self.backdrop = None;
-        }
         let (w, h) = c.pixel_size()?;
         let key = (w, h, c.scale, color, settings.wallpaper_style);
         if self
@@ -120,7 +137,11 @@ impl Art {
             let mut p = Painter::new(surface, &theme, &fonts, c.scale);
             let screen = Rect::new(0, 0, c.width, c.height);
             p.fill_rgb(screen, color);
-            if let Some((_, Some(image))) = &self.wallpaper {
+            if let Some(image) = self
+                .wallpaper
+                .as_deref()
+                .and_then(|path| self.pictures.get(path))
+            {
                 let style = match settings.wallpaper_style {
                     desktop_settings::WallpaperStyle::Center => classic_ui::WallpaperStyle::Center,
                     desktop_settings::WallpaperStyle::Tile => classic_ui::WallpaperStyle::Tile,

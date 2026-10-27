@@ -1,10 +1,10 @@
-//! 系统 BITMAPV4HEADER BMP 与应用 PNG；仅图标加载时解码，不进入每帧热路径。
+//! 系统图标与用户图片的有界解码；用户图片由 PictureLoader 在后台加载，不进入每帧绘制路径。
 use crate::Painter;
 use canvas::{Color, Image, Rect};
 use std::{
     io::{self, Read},
     path::Path,
-    rc::Rc,
+    sync::Arc,
 };
 
 /// 拥有预乘 ARGB 像素的系统图像；加载后可按整数 scale 重用。
@@ -15,7 +15,8 @@ pub struct Bitmap {
     height: i32,
     // OWNER: 8 位 BMP 的不可变原始下标，由重着色结果共享；颜色改变不改变区域身份。
     // 缺少它只能从 RGB 反推下标，相同调色板颜色的不同区域会被错误合并。
-    indices: Option<Rc<[u8]>>,
+    // Arc 只共享不可变下标，使独占 Bitmap 可安全从解码线程转移到 UI，无 unsafe Send。
+    indices: Option<Arc<[u8]>>,
 }
 impl Bitmap {
     /// 整张位图的预乘 ARGB 视图。
@@ -48,7 +49,7 @@ impl Bitmap {
     /// 读取用户图片（如桌面墙纸）：单边不超过 16384、像素总数不超过 1600 万、文件不超过 64 MiB。
     ///
     /// 格式与错误同 [`Bitmap::load`]；上限保证 2 GiB 内存的系统解码一张照片不会耗尽内存。
-    pub fn load_picture(path: &Path) -> io::Result<Self> {
+    pub(crate) fn load_picture(path: &Path) -> io::Result<Self> {
         Self::load_limited(path, Limits::PICTURE)
     }
 
@@ -196,7 +197,7 @@ impl Bitmap {
                 .map(|position| self.pixels[*position])
                 .collect(),
             indices: self.indices.map(|indices| {
-                Rc::from(
+                Arc::from(
                     positions
                         .iter()
                         .map(|position| indices[*position])
@@ -410,7 +411,7 @@ impl Bitmap {
             pixels,
             width: width as i32,
             height: height as i32,
-            indices: indices.map(|indices| Rc::from(indices.into_boxed_slice())),
+            indices: indices.map(|indices| Arc::from(indices.into_boxed_slice())),
         })
     }
 

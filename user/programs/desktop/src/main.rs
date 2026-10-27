@@ -800,7 +800,14 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 Duration::ZERO
             };
-            let Some(event) = display.next_event_timeout(timeout)? else {
+            let event = {
+                use linux_uapi::unix::{PollEvents, PollFd};
+                let mut source = art
+                    .picture_notification()
+                    .map(|fd| PollFd::new(fd, PollEvents::READ));
+                display.next_event_with_sources(Some(timeout), source.as_mut_slice())?
+            };
+            let Some(event) = event else {
                 break;
             };
             if matches!(event.kind, EventKind::FrameReady { .. }) {
@@ -828,6 +835,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         dirty |= state.volume.poll();
         dirty |= state.network.poll();
         dirty |= state.poll_settings(&mut display)?;
+        if art.update_wallpaper(state.settings.wallpaper.as_deref())? {
+            pending.insert(state.background);
+        }
         state.tick_auto_hide(&mut display)?;
         if application_poll.elapsed() >= Duration::from_secs(1) {
             application_poll = Instant::now();

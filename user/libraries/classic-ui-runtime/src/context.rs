@@ -1,6 +1,6 @@
 //! UI context 独占 Display、窗口、字体资源和等待；不调用应用代码，不持跨 ABI 借用。
 use super::widgets::{Tree, invalid};
-use classic_ui::{Display, EventKind, FrameKind, Resources, WindowHost};
+use classic_ui::{Display, EventKind, FrameKind, PictureLoader, Resources, WindowHost};
 use classic_ui_abi::{self as abi, event};
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -59,9 +59,8 @@ pub struct Context {
     pub error: String,
     pub(super) events: VecDeque<abi::Event>,
     resources: Resources,
-    // OWNER: Canvas 墙纸预览（kind 7）引用的已解码图片，按路径缓存，绘制前剔除不再引用的项。
-    // 缺失时每次重画都要重新读盘解码整张图片。
-    pictures: std::collections::HashMap<String, Option<std::rc::Rc<classic_ui::Bitmap>>>,
+    // OWNER: Canvas 图片引用交给共享加载器；paint 只收结果，不能同步读取/解码用户图片。
+    pictures: PictureLoader,
     files: Option<super::file_dialog::FileWorker>,
     // 本轮 FD/结果容量由 context 复用，PollSet 的有效借用结束后才改变 watch 集合。
     poll_buffer: linux_uapi::unix::PollBuffer,
@@ -81,7 +80,7 @@ impl Context {
             error: String::new(),
             events: VecDeque::new(),
             resources: Resources::system()?,
-            pictures: std::collections::HashMap::new(),
+            pictures: PictureLoader::default(),
             files: None,
             poll_buffer: Default::default(),
             ready: Vec::new(),
@@ -320,6 +319,10 @@ impl Context {
                     _ => PollEvents::READ | PollEvents::WRITE,
                 };
                 sources.push(PollFd::new(watch.fd.as_fd(), interest));
+            }
+            // 内部图片通知放在应用 watch 之后，不占用/伪造应用 FD_READY 编号。
+            if let Some(fd) = self.pictures.notification() {
+                sources.push(PollFd::new(fd, PollEvents::READ));
             }
             let incoming = self
                 .display
@@ -616,8 +619,9 @@ impl Context {
                 self.events.push_back(event);
             }
             self.file_action(id, file_action);
-            self.paint()?;
         }
+        // 外部图片 FD 唤醒时可能没有 Wayland 事件，也必须接收结果并提交失效的 Canvas。
+        self.paint()?;
         Ok(self.events.pop_front())
     }
     fn paint(&mut self) -> io::Result<()> {
@@ -633,23 +637,25 @@ impl Context {
         } else {
             None
         };
-        let referenced: std::collections::HashSet<String> = self
+        let referenced = self
             .windows
             .values()
             .filter_map(|host| host.controls().ok())
             .flat_map(|tree| tree.nodes.values())
             .flat_map(|node| node.drawing.iter())
             .filter(|command| command.kind == 7 && !command.text.is_empty())
-            .map(|command| command.text.clone())
-            .collect();
-        self.pictures.retain(|path, _| referenced.contains(path));
-        for path in referenced {
-            self.pictures.entry(path).or_insert_with_key(|path| {
-                classic_ui::Bitmap::load_picture(std::path::Path::new(path))
-                    .inspect_err(|error| eprintln!("liteos-ui: picture {path}: {error}"))
-                    .ok()
-                    .map(std::rc::Rc::new)
-            });
+            .map(|command| std::path::PathBuf::from(&command.text));
+        if self.pictures.update(referenced)? {
+            // 完成只改变 Canvas 像素；不经 controls_mut 使布局失效，也不向应用发虚假 Configure。
+            for host in self.windows.values_mut() {
+                if host.controls().is_ok_and(|tree| {
+                    tree.nodes
+                        .values()
+                        .any(|node| node.drawing.iter().any(|command| command.kind == 7))
+                }) {
+                    host.frame.invalidate();
+                }
+            }
         }
         let canvas = super::render::CanvasAssets {
             mono: mono.as_deref(),

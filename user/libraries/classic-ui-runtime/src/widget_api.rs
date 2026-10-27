@@ -284,7 +284,7 @@ pub(super) unsafe extern "C" fn draw(
             };
             let mut drawing = Vec::with_capacity(count);
             for command in values {
-                if !(1..=6).contains(&command.kind)
+                if !(1..=7).contains(&command.kind)
                     || command.rect.width < 0
                     || command.rect.height < 0
                     || [
