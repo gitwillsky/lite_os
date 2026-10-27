@@ -63,7 +63,7 @@ pub(crate) use shared_file::{
 };
 pub(crate) use shared_memory::{SharedMemoryMappingSource, SharedMemoryVma};
 pub(crate) use swappable_page::{SwappablePage, cached_pages as swap_cached_pages};
-pub(crate) use vmstat::{PageStateSnapshot, snapshot as page_state_snapshot};
+pub(crate) use vmstat::snapshot as page_state_snapshot;
 // SAFETY: every symbol is defined by the fixed kernel linker script; callers use them only as
 // section boundary addresses and never dereference them as Rust values.
 unsafe extern "C" {
