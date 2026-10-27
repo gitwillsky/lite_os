@@ -13,7 +13,7 @@ use std::{
 pub enum WindowBody {
     Widgets(Tree),
     Sheet(super::property_sheet::Sheet),
-    Dialog(super::file_dialog::FileDialog),
+    Dialog(Box<super::file_dialog::FileDialog>),
 }
 pub struct WindowRecord {
     pub title: String,
@@ -179,9 +179,10 @@ impl Context {
         }
         let app_id = self.host(parent)?.app_id.clone();
         let mut model = FileDialog::new(mode, directory.to_owned(), name, filter)?;
-        let id = self.window(title, &app_id, (480, 370), false, parent, true)?;
+        model.decorate(&mut self.resources);
+        let id = self.window(title, &app_id, (540, 370), false, parent, true)?;
         let action = model.initial(id);
-        self.host_mut(id)?.body = WindowBody::Dialog(model);
+        self.host_mut(id)?.body = WindowBody::Dialog(Box::new(model));
         self.file_action(id, action);
         Ok(id)
     }
@@ -227,7 +228,7 @@ impl Context {
             let WindowBody::Dialog(dialog) = &mut host.body else {
                 continue;
             };
-            let action = dialog.apply(completion);
+            let action = dialog.apply(completion, &mut self.resources);
             host.frame.invalidate();
             self.file_action(id, action);
         }

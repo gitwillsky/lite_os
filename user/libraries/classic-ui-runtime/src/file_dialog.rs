@@ -1,6 +1,6 @@
 //! 通用文件对话框：共享控件持有交互，专属有界 worker 执行目录扫描与路径检查。
-use super::{property_sheet::add, widgets::Tree};
-use classic_ui::{Edit, EventKind};
+use super::{outline::Outline, property_sheet::add, toolbar::Button, widgets::Tree};
+use classic_ui::{Edit, EventKind, Resources};
 use classic_ui_abi::{self as abi, event, state, widget};
 use std::{
     ffi::OsString,
@@ -8,10 +8,18 @@ use std::{
     io::{self, Read, Write},
     os::unix::net::UnixStream,
     path::PathBuf,
+    rc::Rc,
     sync::mpsc::{self, Receiver, SyncSender},
     thread,
 };
 const MAX_ENTRIES: usize = 4096;
+/// comdlg32 的按钮与单行控件尺寸（75×23 逻辑像素）。
+const BUTTON_WIDTH: i32 = 75;
+const ROW_HEIGHT: i32 = 23;
+/// “文件类型”下拉的第二项（所有文件）标识；第一项为调用方给出的筛选。
+const ALL_FILES: u64 = 2;
+/// `toolbar` 位图条中“向上一级”的帧序号（与 file-explorer 的“向上”相同）。
+const UP_FRAME: i32 = 28;
 pub struct Filter {
     label: String,
     extensions: Vec<String>,
@@ -182,14 +190,19 @@ pub struct FileDialog {
     directory: PathBuf,
     entries: Vec<Entry>,
     location: u64,
+    /// 位置下拉的祖先链（从根到当前目录），下拉项标识为序号 + 1；缺失则无法由选择项换算目标目录。
+    places: Vec<PathBuf>,
     up: u64,
+    /// 左侧位置栏（桌面/我的文档/我的电脑）；标识为序号 + 1，缺失则无法由选择项换算目标目录。
+    bar: u64,
+    shortcuts: Vec<PathBuf>,
     list: u64,
     name: u64,
     primary: u64,
     cancel: u64,
     message: u64,
     filter: Option<Filter>,
-    all_files: Option<u64>,
+    types: u64,
     sequence: u64,
     busy: bool,
     overwrite: Option<PathBuf>,
@@ -202,58 +215,111 @@ impl FileDialog {
         filter: Option<Filter>,
     ) -> io::Result<Self> {
         let mut tree = Tree::new();
-        let root = add(
+        let frame = add(
             &mut tree,
             0,
             widget::COLUMN,
             "",
             abi::Layout {
                 grow: 1,
-                padding: 10,
-                gap: 8,
+                padding: 8,
+                gap: 6,
                 ..Default::default()
             },
         )?;
-        let header = add(
+        let main = add(
             &mut tree,
-            root,
+            frame,
             widget::ROW,
             "",
             abi::Layout {
-                height: 26,
-                gap: 8,
+                grow: 1,
+                gap: 6,
                 ..Default::default()
             },
         )?;
-        add(
+        let bar = add(
             &mut tree,
-            header,
-            widget::LABEL,
-            "查找范围：",
+            main,
+            widget::LIST,
+            "",
             abi::Layout {
-                width: 80,
+                width: 84,
                 ..Default::default()
             },
         )?;
+        {
+            let node = tree.nodes.get_mut(&bar).expect("places bar");
+            node.state |= state::CLIENT_EDGE;
+            node.table.as_mut().expect("list model").mode = 1;
+        }
+        let root = add(
+            &mut tree,
+            main,
+            widget::COLUMN,
+            "",
+            abi::Layout {
+                grow: 1,
+                gap: 6,
+                ..Default::default()
+            },
+        )?;
+        let row = |tree: &mut Tree| {
+            add(
+                tree,
+                root,
+                widget::ROW,
+                "",
+                abi::Layout {
+                    height: ROW_HEIGHT,
+                    gap: 6,
+                    ..Default::default()
+                },
+            )
+        };
+        let label = |tree: &mut Tree, row: u64, text: &str| {
+            add(
+                tree,
+                row,
+                widget::LABEL,
+                text,
+                abi::Layout {
+                    width: 84,
+                    ..Default::default()
+                },
+            )
+        };
+        let button = |tree: &mut Tree, row: u64, text: &str| {
+            add(
+                tree,
+                row,
+                widget::BUTTON,
+                text,
+                abi::Layout {
+                    width: BUTTON_WIDTH,
+                    ..Default::default()
+                },
+            )
+        };
+        let header = row(&mut tree)?;
+        label(&mut tree, header, "查找范围(I):")?;
         let location = add(
             &mut tree,
             header,
-            widget::LABEL,
+            widget::COMBO,
             "",
             abi::Layout {
                 grow: 1,
                 ..Default::default()
             },
         )?;
+        tree.nodes.get_mut(&location).expect("location").state |= state::DROPDOWN_LIST;
         let up = add(
             &mut tree,
             header,
-            widget::BUTTON,
-            "上一级",
-            abi::Layout {
-                width: 80,
-                ..Default::default()
-            },
+            widget::TOOLBAR,
+            "",
+            abi::Layout::default(),
         )?;
         let list = add(
             &mut tree,
@@ -266,30 +332,17 @@ impl FileDialog {
                 ..Default::default()
             },
         )?;
-        let row = add(
-            &mut tree,
-            root,
-            widget::ROW,
-            "",
-            abi::Layout {
-                height: 26,
-                gap: 8,
-                ..Default::default()
-            },
-        )?;
-        add(
-            &mut tree,
-            row,
-            widget::LABEL,
-            "文件名：",
-            abi::Layout {
-                width: 80,
-                ..Default::default()
-            },
-        )?;
+        {
+            // Win2000 打开对话框默认“列表”视图（图标 + 名称纵向排列、按列折行）。
+            let node = tree.nodes.get_mut(&list).expect("file list");
+            node.state |= state::CLIENT_EDGE;
+            node.table.as_mut().expect("list model").mode = 3;
+        }
+        let row_name = row(&mut tree)?;
+        label(&mut tree, row_name, "文件名(N):")?;
         let name = add(
             &mut tree,
-            row,
+            row_name,
             widget::EDIT,
             name,
             abi::Layout {
@@ -297,90 +350,60 @@ impl FileDialog {
                 ..Default::default()
             },
         )?;
-        let primary = add(
+        let primary = button(
             &mut tree,
-            row,
-            widget::BUTTON,
-            if mode == 0 { "打开" } else { "保存" },
-            abi::Layout {
-                width: 80,
-                ..Default::default()
-            },
+            row_name,
+            if mode == 0 { "打开(O)" } else { "保存(S)" },
         )?;
         tree.nodes.get_mut(&primary).expect("primary button").state = state::DEFAULT;
-        let row = add(
+        let row_type = row(&mut tree)?;
+        label(&mut tree, row_type, "文件类型(T):")?;
+        let types = add(
             &mut tree,
-            root,
-            widget::ROW,
+            row_type,
+            widget::COMBO,
             "",
-            abi::Layout {
-                height: 26,
-                gap: 8,
-                ..Default::default()
-            },
-        )?;
-        add(
-            &mut tree,
-            row,
-            widget::LABEL,
-            "文件类型：",
-            abi::Layout {
-                width: 80,
-                ..Default::default()
-            },
-        )?;
-        add(
-            &mut tree,
-            row,
-            widget::LABEL,
-            filter
-                .as_ref()
-                .map_or("所有文件", |filter| filter.label.as_str()),
             abi::Layout {
                 grow: 1,
                 ..Default::default()
             },
         )?;
-        // 此勾选状态由 Tree 独占，切换时重新扫描并使旧序号结果失效。
-        // 没有筛选的对话框不创建此控件，也不维护一份镜像布尔状态。
-        let all_files = if filter
-            .as_ref()
-            .is_some_and(|filter| !filter.extensions.is_empty())
-        {
-            Some(add(
-                &mut tree,
-                row,
-                widget::CHECKBOX,
-                "所有文件",
-                abi::Layout {
-                    width: 100,
-                    ..Default::default()
-                },
-            )?)
-        } else {
-            None
-        };
-        let cancel = add(
-            &mut tree,
-            row,
-            widget::BUTTON,
-            "取消",
-            abi::Layout {
-                width: 80,
-                ..Default::default()
-            },
-        )?;
+        tree.nodes.get_mut(&types).expect("file type").state |= state::DROPDOWN_LIST;
+        // 类型下拉由 Tree 独占选择状态：第 1 项为调用方筛选，第 2 项为所有文件；
+        // 没有扩展名筛选时只有“所有文件”一项，不维护镜像布尔值。
+        let cancel = button(&mut tree, row_type, "取消")?;
         let message = add(
             &mut tree,
             root,
             widget::LABEL,
             "",
             abi::Layout {
-                height: 36,
+                height: 32,
                 ..Default::default()
             },
         )?;
         tree.nodes.get_mut(&message).expect("message").state = state::WRAP;
+        {
+            let filtered = filter
+                .as_ref()
+                .is_some_and(|filter| !filter.extensions.is_empty());
+            let label = filter
+                .as_ref()
+                .filter(|_| filtered)
+                .map_or("所有文件 (*.*)", |filter| filter.label.as_str());
+            let node = tree.nodes.get_mut(&types).expect("file type");
+            node.rows = if filtered {
+                vec![(1, label.to_owned()), (ALL_FILES, "所有文件 (*.*)".into())]
+            } else {
+                vec![(1, label.to_owned())]
+            };
+            node.outline = Some(Outline::list(
+                &node.rows.iter().map(|row| row.0).collect::<Vec<_>>(),
+                false,
+            ));
+            node.selected = Some(1);
+            node.edit = Some(Edit::new(label));
+        }
         Ok(Self {
             tree,
             outcome: None,
@@ -388,34 +411,101 @@ impl FileDialog {
             directory,
             entries: Vec::new(),
             location,
+            places: Vec::new(),
             up,
+            bar,
+            shortcuts: Vec::new(),
             list,
             name,
             primary,
             cancel,
             message,
             filter,
-            all_files,
+            types,
             sequence: 0,
             busy: false,
             overwrite: None,
         })
+    }
+    /// 装配依赖系统素材的部分：向上工具栏按钮与左侧位置栏；窗口创建后调用一次。
+    pub fn decorate(&mut self, resources: &mut Resources) {
+        let strips = ["default", "hot", "disabled"]
+            .map(|variant| resources.bitmap(&format!("toolbar-{variant}-1x")));
+        self.tree
+            .nodes
+            .get_mut(&self.up)
+            .expect("up toolbar")
+            .toolbar
+            .get_or_insert_with(Default::default)
+            .set_buttons(vec![Button::new(
+                1,
+                strips,
+                UP_FRAME,
+                "上一级".into(),
+                0,
+                0,
+            )]);
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let mut places = Vec::new();
+        if let Some(home) = &home {
+            places.push(("桌面", "desktop", home.join("Desktop")));
+            places.push(("我的文档", "my-documents", home.clone()));
+        }
+        places.push(("我的电脑", "my-computer", PathBuf::from("/")));
+        let node = self.tree.nodes.get_mut(&self.bar).expect("places bar");
+        node.rows = places
+            .iter()
+            .enumerate()
+            .map(|(index, place)| (index as u64 + 1, place.0.to_owned()))
+            .collect();
+        node.row_icons = places
+            .iter()
+            .enumerate()
+            .map(|(index, place)| {
+                (
+                    index as u64 + 1,
+                    (resources.icon(place.1, 16), resources.icon(place.1, 32)),
+                )
+            })
+            .collect();
+        self.shortcuts = places.into_iter().map(|place| place.2).collect();
+    }
+    /// 位置下拉显示从根到当前目录的祖先链并选中当前目录（Win2000 “查找范围”）。
+    fn show_location(&mut self, resources: &mut Resources) {
+        self.places = self.directory.ancestors().map(PathBuf::from).collect();
+        self.places.reverse();
+        let rows: Vec<(u64, String)> = self
+            .places
+            .iter()
+            .enumerate()
+            .map(|(index, place)| {
+                let name = place.file_name().map_or_else(
+                    || place.display().to_string(),
+                    |name| name.to_string_lossy().into_owned(),
+                );
+                (index as u64 + 1, name)
+            })
+            .collect();
+        let ids: Vec<u64> = rows.iter().map(|row| row.0).collect();
+        let current = ids.last().copied();
+        let icon: Option<Rc<classic_ui::Bitmap>> = resources.icon("folder-closed", 16);
+        let node = self.tree.nodes.get_mut(&self.location).expect("location");
+        node.row_icons = ids
+            .iter()
+            .map(|id| (*id, (icon.clone(), None)))
+            .collect();
+        node.edit = Some(Edit::new(rows.last().map_or("", |row| row.1.as_str())));
+        node.rows = rows;
+        node.outline = Some(Outline::list(&ids, true));
+        node.selected = current;
     }
     fn status(&mut self, text: impl Into<String>) {
         self.tree.nodes.get_mut(&self.message).expect("status").text = text.into();
     }
     fn busy(&mut self, value: bool) {
         self.busy = value;
-        for id in [self.up, self.list, self.name, self.primary] {
+        for id in [self.up, self.bar, self.list, self.name, self.primary, self.location, self.types] {
             let node = self.tree.nodes.get_mut(&id).expect("dialog control");
-            if value {
-                node.state |= state::DISABLED;
-            } else {
-                node.state &= !state::DISABLED;
-            }
-        }
-        if let Some(id) = self.all_files {
-            let node = self.tree.nodes.get_mut(&id).expect("file filter toggle");
             if value {
                 node.state |= state::DISABLED;
             } else {
@@ -438,9 +528,7 @@ impl FileDialog {
         self.list_request(window, self.directory.clone())
     }
     fn list_request(&mut self, window: u64, path: PathBuf) -> Action {
-        let all_files = self
-            .all_files
-            .is_some_and(|id| self.tree.nodes[&id].state & state::CHECKED != 0);
+        let all_files = self.tree.nodes[&self.types].selected == Some(ALL_FILES);
         let extensions = if all_files {
             Vec::new()
         } else {
@@ -454,7 +542,7 @@ impl FileDialog {
         self.busy(false);
         self.status(error.to_string());
     }
-    pub fn apply(&mut self, completion: Completion) -> Action {
+    pub fn apply(&mut self, completion: Completion, resources: &mut Resources) -> Action {
         if self.outcome.is_some() || completion.sequence != self.sequence {
             return Action::Pending;
         }
@@ -464,25 +552,29 @@ impl FileDialog {
             Ok(Reply::Listing(directory, entries, truncated)) => {
                 self.entries = entries;
                 self.directory = directory;
-                self.tree
-                    .nodes
-                    .get_mut(&self.location)
-                    .expect("location")
-                    .text = self.directory.display().to_string();
+                self.show_location(resources);
+                let folder = (
+                    resources.icon("folder-closed", 16),
+                    resources.icon("folder-closed", 32),
+                );
+                let file = (
+                    resources.icon("file-generic", 16),
+                    resources.icon("file-generic", 32),
+                );
                 let list = self.tree.nodes.get_mut(&self.list).expect("file list");
                 list.rows = self
                     .entries
                     .iter()
                     .enumerate()
+                    .map(|(index, entry)| (index as u64 + 1, entry.name.to_string_lossy().into()))
+                    .collect();
+                list.row_icons = self
+                    .entries
+                    .iter()
+                    .enumerate()
                     .map(|(index, entry)| {
-                        (
-                            index as u64 + 1,
-                            format!(
-                                "{}{}",
-                                if entry.directory { "▸ " } else { "" },
-                                entry.name.to_string_lossy()
-                            ),
-                        )
+                        let (small, large) = if entry.directory { &folder } else { &file };
+                        (index as u64 + 1, (small.clone(), large.clone()))
                     })
                     .collect();
                 list.selected = None;
@@ -542,8 +634,29 @@ impl FileDialog {
             return Action::Pending;
         }
         for action in actions {
-            if Some(action.node) == self.all_files && action.kind == event::CHANGED {
+            if action.node == self.bar
+                && action.kind == event::SELECT
+                && let Some(place) = action
+                    .value
+                    .checked_sub(1)
+                    .and_then(|index| self.shortcuts.get(index as usize))
+            {
+                let place = place.clone();
+                return self.list_request(window, place);
+            }
+            if action.node == self.types && action.kind == event::SELECT {
                 return self.list_request(window, self.directory.clone());
+            }
+            if action.node == self.location
+                && action.kind == event::SELECT
+                && let Some(place) = action
+                    .value
+                    .checked_sub(1)
+                    .and_then(|index| self.places.get(index as usize))
+                && *place != self.directory
+            {
+                let place = place.clone();
+                return self.list_request(window, place);
             }
             if action.kind == event::CHANGED && action.node == self.name {
                 self.overwrite = None;

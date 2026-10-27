@@ -57,6 +57,31 @@ impl Outline {
             visible: Vec::new(),
         }
     }
+    /// 为对话框的下拉框构造全部展开的一维层次：`nested` 时每项是前一项的孩子（路径祖先链），
+    /// 否则全部为根（平铺选项）。缺少它则下拉框 `visible` 为空，列表没有任何行。
+    pub fn list(ids: &[u64], nested: bool) -> Self {
+        let mut outline = Self::new();
+        for (index, id) in ids.iter().enumerate() {
+            let chained = nested && index > 0;
+            outline.indices.insert(*id, index);
+            outline.branches.push(Branch {
+                id: *id,
+                parent: if chained { ids[index - 1] } else { 0 },
+                depth: if chained { index as i32 } else { 0 },
+                expanded: true,
+                children: nested && index + 1 < ids.len(),
+                descendants: if nested && index + 1 < ids.len() {
+                    vec![index + 1]
+                } else {
+                    Vec::new()
+                },
+                last: if nested { true } else { index + 1 == ids.len() },
+                first: if nested { true } else { index == 0 },
+            });
+        }
+        outline.rebuild();
+        outline
+    }
     fn rebuild(&mut self) {
         self.visible.clear();
         let mut pending: Vec<_> = self
