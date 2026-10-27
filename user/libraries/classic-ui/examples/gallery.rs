@@ -22,7 +22,7 @@ fn main() {
         .unwrap_or(1);
     let output = arguments.next().unwrap_or_else(|| "gallery.ppm".into());
     let theme = Theme::classic();
-    let fonts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/fonts");
+    let fonts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/classic/fonts");
     let typeface = Fonts::new(
         std::rc::Rc::new(FontCatalog::load(&fonts).unwrap()),
         &theme.fonts,

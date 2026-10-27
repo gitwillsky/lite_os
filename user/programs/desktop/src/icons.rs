@@ -46,7 +46,12 @@ pub struct Icons {
 
 fn system_icons() -> Vec<Icon> {
     [
-        ("::documents", "我的文档", "documents-32", Place::Documents),
+        (
+            "::documents",
+            "我的文档",
+            "my-documents-32",
+            Place::Documents,
+        ),
         (
             "::computer",
             "我的电脑",

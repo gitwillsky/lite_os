@@ -156,7 +156,7 @@ def _fontconfig() -> Path:
     """
     mapping = configparser.ConfigParser(interpolation=None)
     mapping.optionxform = str
-    with (ROOT / "assets/fonts/fontmap.ini").open(encoding="utf-8") as stream:
+    with (ROOT / "assets/classic/fonts/fontmap.ini").open(encoding="utf-8") as stream:
         mapping.read_file(stream)
     root = ET.Element("fontconfig")
     ET.SubElement(root, "dir").text = "/usr/share/liteos/fonts"

@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import struct
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pack_cursors import FRAME_MS, SIZES, load, pack, unpack  # noqa: E402
+from pack_cursors import FRAME_MS, SIZES, pack as encode, unpack  # noqa: E402
 
 
 class FakeImage:
@@ -30,12 +29,16 @@ def cursor(frames: int = 1, rgba=(255, 0, 0, 255)) -> dict[int, list]:
     return {size: [FakeImage(size, rgba) for _ in range(frames)] for size in SIZES}
 
 
+def pack(cursors):
+    return encode(cursors, {"arrow": (0, 0), "busy": (16, 16), "link": (10, 10)})
+
+
 class CursorSetTests(unittest.TestCase):
     def test_round_trip_keeps_frames_hotspots_and_sizes(self) -> None:
         decoded = unpack(pack({"arrow": cursor(), "busy": cursor(frames=3), "link": cursor()}))
         self.assertEqual(sorted(decoded), ["arrow", "busy", "link"])
         self.assertEqual(decoded["arrow"]["hotspot"], {32: (0, 0), 64: (0, 0)})
-        self.assertEqual(decoded["link"]["hotspot"], {32: (6, 0), 64: (12, 0)})
+        self.assertEqual(decoded["link"]["hotspot"], {32: (10, 10), 64: (20, 20)})
         self.assertEqual(decoded["busy"]["hotspot"][64], (32, 32))
         self.assertEqual((decoded["busy"]["frames"], decoded["busy"]["frame_ms"]), (3, FRAME_MS))
         self.assertEqual((decoded["arrow"]["frames"], decoded["arrow"]["frame_ms"]), (1, 0))
@@ -71,27 +74,18 @@ class CursorSetTests(unittest.TestCase):
         with self.assertRaises(struct.error):
             unpack(data[:-4])
 
-    def test_load_orders_frames_and_requires_contiguous_numbers(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for name in ("busy-0-32", "busy-1-32", "busy-0-64", "busy-1-64", "arrow-32", "arrow-64", "resize-ns-32", "resize-ns-64"):
-                (root / f"{name}.png").write_bytes(name.encode())
-            cursors = load(root, lambda path: path.stem)
-            self.assertEqual(cursors["busy"][32], ["busy-0-32", "busy-1-32"])
-            self.assertEqual(cursors["arrow"][64], ["arrow-64"])
-            self.assertIn("resize-ns", cursors)
-            (root / "busy-3-32.png").write_bytes(b"")
-            with self.assertRaisesRegex(ValueError, "contiguously"):
-                load(root, lambda path: path.stem)
-
-    def test_repository_cursor_set_is_current(self) -> None:
-        try:
-            from PIL import Image
-        except ModuleNotFoundError:
-            self.skipTest("Pillow is only needed to regenerate the checked asset")
-        from pack_cursors import OUTPUT, SOURCE
-
-        self.assertEqual(OUTPUT.read_bytes(), pack(load(SOURCE, Image.open)))
+    def test_repository_set_has_original_hotspots_and_integer_scaling(self) -> None:
+        from classic_assets import cursors
+        decoded = unpack(cursors().read_bytes())
+        self.assertEqual(decoded["text"]["hotspot"], {32: (15, 16), 64: (30, 32)})
+        self.assertEqual(decoded["link"]["hotspot"], {32: (10, 10), 64: (20, 20)})
+        for name, cursor in decoded.items():
+            self.assertEqual(cursor["frames"], 1, name)
+            original = cursor["pixels"][32]
+            scaled = cursor["pixels"][64]
+            for y in range(64):
+                for x in range(64):
+                    self.assertEqual(scaled[y * 64 + x], original[y // 2 * 32 + x // 2], name)
 
 
 if __name__ == "__main__":

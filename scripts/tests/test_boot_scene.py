@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pack_boot_scene import EXACT_COLORS, HEIGHT, WIDTH, pack, reduce_colors, unpack  # noqa: E402
+from pack_boot_scene import HEIGHT, WIDTH, pack, unpack  # noqa: E402
 
 
 class FakeImage:
@@ -45,26 +45,6 @@ class BootSceneFormatTests(unittest.TestCase):
         image = scene(lambda x, y: (x % 256, (x // 256) % 256, y % 2) if y == 0 else (1, 1, 1))
         with self.assertRaisesRegex(ValueError, "limit is 256"):
             pack(image)
-
-    def test_reduce_is_explicit_keeps_exact_colors_and_merges_the_rest_to_nearest(self) -> None:
-        # 抗锯齿渐变带 300 个相近色 + 必须保留的槽边框色：reduce 后总数不超限，且槽边框色逐值不变。
-        def pixel(x: int, y: int) -> tuple[int, int, int]:
-            if y == 0:
-                return (x % 300 // 2 + 1, 0, x % 2)
-            return {1: (128, 128, 128), 2: (255, 255, 255), 3: (192, 192, 192)}.get(y % 4, (0, 41, 156))
-
-        image = scene(pixel)
-        with self.assertRaisesRegex(ValueError, "--reduce"):
-            pack(image)
-        _, _, decoded = unpack(pack(image, reduce=True))
-        self.assertLessEqual(len(set(decoded)), 256)
-        for y in (1, 2, 3, 4):
-            self.assertEqual(decoded[y * WIDTH], pixel(0, y))
-        self.assertTrue(all(c in set(decoded) for c in EXACT_COLORS if c in set(image.pixels)))
-
-    def test_reduce_is_a_no_op_when_the_image_already_fits(self) -> None:
-        pixels = [(10, 20, 30)] * 8
-        self.assertIs(reduce_colors(pixels), pixels)
 
     def test_wrong_size_is_rejected(self) -> None:
         with self.assertRaisesRegex(ValueError, "must be 640x480"):

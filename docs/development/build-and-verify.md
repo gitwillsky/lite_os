@@ -138,31 +138,31 @@ recipe 换代后从同一固定归档解包干净 generation，避免 VPATH 跳�
 
 缓存淘汰只在构建发布阶段遍历镜像条目，不进入 kernel/userspace 热路径，无需新增运行时 benchmark。
 
-## 经典桌面本地素材
+## 经典桌面素材导入
 
-这是经典桌面设计阶段的宿主准备流程，不进入产品构建、rootfs 指纹或 runtime gate。
-素材语义、原版来源及映射由[素材清单](../design/classic-desktop/assets.md#本地原版素材)拥有。
-先加载 shell 环境，安装离线提取工具，并准备独立 Python 环境：
+普通构建只消费受 Git 管理的 `assets/classic/`，不读取 `.local/` 的素材覆盖；clone 后资源完整可用。
+`scripts/classic_assets.py` 校验产品 manifest、全部字节摘要与清单完整性；缺失或损坏立即失败。
+来源、格式和消费者由[资源清单](../design/classic-desktop/assets.md)拥有。
+
+只有更新素材时需要宿主离线工具和本地 ISO：
 
 ```bash
 source ~/.zshrc
 brew install sevenzip cabextract icoutils
 python3 -m venv .local/tools/classic-assets
 .local/tools/classic-assets/bin/pip install Pillow==13.0.0
-.local/tools/classic-assets/bin/python scripts/extract_windows2000_assets.py \
-  --iso "$HOME/Downloads/Windows 2000 Professional Service Pack 4 CHS.iso"
+.local/tools/classic-assets/bin/python scripts/extract_windows2000_assets.py
 python3 scripts/extract_windows2000_assets.py --check
 ```
 
-提取器只读取 ISO/PE 数据，不在宿主执行镜像内的程序。默认输出是被 Git 忽略的
-`.local/inputs/windows2000/assets/`；`--output` 也只能指向本仓库 `.local/inputs/` 内。
-已有目录不覆盖；重新提取使用新的 `--output`，核对后显式替换。
-失败会清理临时目录，完整解码与哈希检查通过后才发布最终目录。`--check` 不需要 Pillow 或外部提取工具。
-工具原始资源长度警告保存在 manifest 中；不能把完整性检查误报为画面/语义逐项验收。
+ISO 默认位于 `.local/inputs/windows2000/Windows 2000 Professional Service Pack 4 CHS.iso`。
+导入器只读取 ISO/PE 数据，将完整提取结果保留在 `.local/inputs/windows2000/assets/`，
+只转换并发布产品依赖到 `assets/classic/`，同步删除旧素材。提取配方改变时使用新的 `--output` 目录。
+提交生成的产品文件与 manifest；不提交 ISO、DLL、中间 PNG 或无引用的资源。
+`--check` 无需 ISO、Pillow 和外部提取工具。普通构建和开发镜像同步安装完全相同的清单，资源内容进入各自指纹。
 
-此流程只增加宿主离线工具，没有新增 kernel/userspace 热路径、锁、分配或 codec，故不新增 benchmark。
-验证包括独立提取的 manifest 一致性、全部原生图像帧解码、文件损坏/路径越界/悬空引用测试，
-不依赖 Windows 2000 参照机；产品完整门禁仍是 `make verify`。
+没有新增 kernel/userspace 热路径、锁、分配或 codec，故不新增 benchmark；验证覆盖资源完整性、
+缺失与损坏拒绝、原版字体 collection/点阵和光标热点/缩放，产品门禁仍为 `make verify`。
 
 ## 推荐入口
 

@@ -1,50 +1,23 @@
 #!/usr/bin/env python3
-"""把 `assets/classic/cursors-src/` 的光标 PNG 打包成 compositor 读取的 `LCS1` 光标集。
+"""将 ISO 默认 CUR 方案编码成受版本管理的 LCS1 预乘 ARGB 光标包。
 
-硬件光标上限 64×64，所以每个光标按 1x（32）与 2x（64）各存一份。帧数、帧间隔与热点随素材包提供，
-compositor 不内置任何光标常量；换成别的素材包只需重新打包。像素是**预乘** alpha 的 `0xAARRGGBB`
-（小端 u32），与 DRM `ARGB8888` 硬件光标直接一致。
+只在导入阶段转换：1x 保留原图，2x 最近邻放大，热点读取 CUR 目录。
+普通构建与 compositor 只消费这一份光标包。
 
-格式（小端）：
-    0   4  magic `LCS1`
-    4   2  count   光标个数
-    6   2  保留，必须为 0
-    8   每个光标依次：
-        16  name   NUL 补齐的 ASCII 名
-        2   frames 帧数（>=1）
-        2   frame_ms 帧间隔毫秒，单帧为 0
-        4   hotspot 1x：x、y（u16）
-        4   hotspot 2x：x、y（u16）
-        4*32*32*frames   1x 各帧像素
-        4*64*64*frames   2x 各帧像素
-
-仓库内置的原创光标打包到 `assets/classic/cursors.lcs`（提交进库，普通构建不需要 Pillow）。
+LCS1 小端布局：magic[4]、count u16、reserved u16；每项依次为 name[16]、frames u16、
+frame_ms u16、1x/2x 热点各 (x u16, y u16)，随后为 32×32 和 64×64 的全部帧 ARGB u32 像素。
+默认 CUR 方案只有静态帧，frame_ms 为零；不使用替代沙漏动画。
 """
 
 from __future__ import annotations
 
-import re
 import struct
-import sys
 from pathlib import Path
 
-from local_inputs import INPUTS
-
-ROOT = Path(__file__).resolve().parents[1]
-SOURCE = ROOT / "assets/classic/cursors-src"
-OUTPUT = ROOT / "assets/classic/cursors.lcs"
 
 MAGIC = b"LCS1"
 SIZES = (32, 64)
-# 仓库原创素材的 1x 热点（见 docs/design/classic-desktop/assets.md）；2x 为其两倍。
-HOTSPOTS = {
-    "arrow": (0, 0), "help": (0, 0), "working": (0, 0), "link": (6, 0),
-    "text": (16, 16), "precision": (16, 16), "unavailable": (16, 16), "move": (16, 16), "busy": (16, 16),
-    "resize-ns": (16, 16), "resize-ew": (16, 16), "resize-nwse": (16, 16), "resize-nesw": (16, 16),
-}
-# 多帧光标的帧间隔：原创沙漏 8 帧、10 fps。
 FRAME_MS = 100
-NAME_PATTERN = re.compile(r"^(?P<name>[a-z]+(?:-[a-z]+)*?)(?:-(?P<frame>\d+))?-(?P<size>32|64)\.png$")
 
 
 def premultiplied(image) -> list[int]:
@@ -58,12 +31,12 @@ def premultiplied(image) -> list[int]:
     return pixels
 
 
-def pack(cursors: dict[str, dict[int, list]], hotspots: dict[str, tuple[int, int]] = HOTSPOTS) -> bytes:
+def pack(cursors: dict[str, dict[int, list]], hotspots: dict[str, tuple[int, int]]) -> bytes:
     """编码光标集。
 
     Args:
         cursors: `名称 -> {尺寸: [帧图像...]}`；每个光标两种尺寸都必须有且帧数相同，图像必须是方形的对应尺寸。
-        hotspots: `名称 -> 1x 热点`；2x 取其两倍。默认是仓库原创素材的热点。
+        hotspots: `名称 -> 1x 热点`；2x 取其两倍。必须由原版 CUR 提供。
     """
     out = bytearray(MAGIC + struct.pack("<HH", len(cursors), 0))
     for name, by_size in sorted(cursors.items()):
@@ -111,28 +84,10 @@ def unpack(data: bytes) -> dict[str, dict]:
     return result
 
 
-def load(directory: Path, open_image) -> dict[str, dict[int, list]]:
-    """读取 `<名称>[-<帧>]-<尺寸>.png`，按帧号排序。"""
-    frames: dict[str, dict[int, dict[int, object]]] = {}
-    for path in sorted(directory.glob("*.png")):
-        match = NAME_PATTERN.match(path.name)
-        if not match:
-            raise ValueError(f"unrecognised cursor file name: {path.name}")
-        frame = int(match["frame"] or 0)
-        frames.setdefault(match["name"], {}).setdefault(int(match["size"]), {})[frame] = open_image(path)
-    cursors = {}
-    for name, by_size in frames.items():
-        cursors[name] = {}
-        for size, by_frame in by_size.items():
-            if sorted(by_frame) != list(range(len(by_frame))):
-                raise ValueError(f"{name}: {size}px frames are not numbered contiguously from 0")
-            cursors[name][size] = [by_frame[index] for index in range(len(by_frame))]
-    return cursors
-
 
 # 原版 Windows 2000 默认方案（"_r" 常规白箭头系列）在安装介质 I386 里的文件名；热点取自 CUR 目录项。
-# user32.dll 里导出的同名资源的热点字段不可信（全是 10,10），所以不用它们。
-ORIGINAL_FILES = {
+# 安装文件的默认方案与 user32.dll 的同名资源不同，不能拿 DLL 的热点覆盖默认方案。
+CURSOR_FILES = {
     "arrow": "arrow_r", "text": "beam_r", "busy": "busy_r", "working": "wait_r", "precision": "cross_r",
     "unavailable": "no_r", "move": "move_r", "help": "help_r",
     "resize-nesw": "size1_r", "resize-nwse": "size2_r", "resize-ew": "size3_r", "resize-ns": "size4_r",
@@ -147,8 +102,7 @@ def decode_cursor(data: bytes):
     """
     from PIL import Image
 
-    count = struct.unpack_from("<HHH", data)[2]
-    if struct.unpack_from("<HH", data, 2) != (2, 1) and count != 1:
+    if struct.unpack_from("<HHH", data) != (0, 2, 1):
         raise ValueError("not a single-image cursor")
     width, height, _, _, hot_x, hot_y, _, offset = struct.unpack_from("<BBBBHHII", data, 6)
     width, height = width or 256, height or 256
@@ -179,41 +133,29 @@ def decode_cursor(data: bytes):
     return Image.frombytes("RGBA", (width, height), bytes(pixels)), (hot_x, hot_y)
 
 
-def pack_original(sources: Path) -> bytes:
-    """把安装介质的默认方案光标打包；原版只有 32 × 32，2x 是整数最近邻放大（热点同倍）。"""
+def pack_sources(sources: Path, link: Path) -> bytes:
+    """打包安装介质的默认方案，2x 最近邻放大并同步缩放热点。
+
+    Args:
+        sources: ISO 安装文件解压目录，包含默认方案的 CUR 文件。
+        link: user32.dll:114 导出的原始手形 CUR。
+
+    Returns:
+        可由 compositor 直接解码的 LCS1 字节。
+
+    Raises:
+        OSError: 原版 CUR 缺失或不可读取。
+        ValueError: CUR 格式不支持，或 AND/XOR 含硬件光标不能表达的反色像素。
+    """
     from PIL import Image
 
     cursors, hotspots = {}, {}
-    for name, stem in ORIGINAL_FILES.items():
+    for name, stem in CURSOR_FILES.items():
         image, hotspot = decode_cursor((sources / f"{stem}.cur").read_bytes())
         cursors[name] = {32: [image], 64: [image.resize((64, 64), Image.NEAREST)]}
         hotspots[name] = hotspot
-    # 默认方案没有手形光标（它在 user32 里，热点字段不可信），所以 link 沿用仓库原创的手形。
-    link = load(SOURCE, lambda path: Image.open(path))["link"]
-    cursors["link"], hotspots["link"] = link, HOTSPOTS["link"]
+    # 手形来自 user32.dll:114；沿用原始 CUR 热点，不再混入原创光标。
+    image, hotspot = decode_cursor(link.read_bytes())
+    cursors["link"] = {32: [image], 64: [image.resize((64, 64), Image.NEAREST)]}
+    hotspots["link"] = hotspot
     return pack(cursors, hotspots)
-
-
-def main() -> None:
-    import argparse
-
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--original", action="store_true", help="打包本地原版 Windows 2000 默认方案到 .local/inputs/")
-    args = parser.parse_args()
-    try:
-        from PIL import Image
-    except ModuleNotFoundError as error:
-        raise SystemExit("pack-cursors requires Pillow; normal builds consume the checked asset") from error
-    if args.original:
-        output = INPUTS / "windows2000/packed/cursors.lcs"
-        output.parent.mkdir(parents=True, exist_ok=True)
-        data = pack_original(INPUTS / "windows2000/assets/sources")
-    else:
-        output = OUTPUT
-        data = pack(load(SOURCE, lambda path: Image.open(path)))
-    output.write_bytes(data)
-    print(f"{output.relative_to(ROOT)}: {len(data)} bytes", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()

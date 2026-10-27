@@ -23,7 +23,7 @@ fn typeface(scale: u32) -> &'static crate::Fonts {
     FONTS.with(|fonts| {
         *fonts[scale as usize - 1].get_or_init(|| {
             let catalog = typeface::FontCatalog::load(
-                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/fonts"),
+                &Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/classic/fonts"),
             )
             .unwrap();
             Box::leak(Box::new(crate::Fonts::new(

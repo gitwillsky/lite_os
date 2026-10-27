@@ -5,7 +5,7 @@ use std::{hint::black_box, path::Path, time::Instant};
 use typeface::{FontCatalog, LogicalFont};
 
 fn main() {
-    let fonts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/fonts");
+    let fonts = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/classic/fonts");
     for scale in [1, 2] {
         let start = Instant::now();
         let face = FontCatalog::load(&fonts).unwrap().resolve(

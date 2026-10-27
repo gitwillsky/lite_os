@@ -27,7 +27,7 @@ Wine 的 unix 侧 `.so` 直接链接：`libasound.so.2`、`libffi.so.8`、`liblz
 `libxml2-2.13.9-r2`、`wayland-libs-client-1.25.0-r0`、`xz-libs-5.8.4-r0`、`zlib-1.3.2-r1`（musl `1.2.6-r3`）。
 开发镜像通过 `scripts/wine_runtime.py` 安装固定 Alpine v3.22 闭包（包名与 SHA-256 由该脚本唯一维护），
 不要求与构建 VM 的 APK revision 相同。`apk_cache.py` 同时校验包名、版本与架构。
-安装器从 `assets/fonts/fontmap.ini` 生成 `/etc/fonts/conf.d/99-liteos-ui.conf`，将原生与 Wine 共用的
+安装器从 `assets/classic/fonts/fontmap.ini` 生成 `/etc/fonts/conf.d/99-liteos-ui.conf`，将原生与 Wine 共用的
 `/usr/share/liteos/fonts` 纳入 Fontconfig 扫描，并追加相同的字体家族回退候选；不覆盖应用自选字体或用户的 Wine 注册表。
 除共享库和 fontconfig 配置外，必须安装 `xkeyboard-config-2.43-r0` 的 `/usr/share/X11/xkb` 数据：
 Wine 11.16 的 `wayland_keyboard_init` 在注册 `wl_keyboard` listener 前调用

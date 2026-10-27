@@ -1,28 +1,26 @@
 #!/usr/bin/env python3
 """将桌面 PNG 导出为标准 BITMAPV4HEADER top-down BMP（RGBA 或 8 位调色板）；普通构建只安装已提交产物。"""
-import argparse
 from pathlib import Path
 import struct
 
-ROOT = Path(__file__).resolve().parents[1]
-# 安装到系统界面目录的位图；原版独有的条目在仓库默认素材中缺失时，界面按缺图退化。
-BITMAPS = {
-    "logon-banner-1x", "start-banner-1x",
-    "toolbar-default-1x", "toolbar-hot-1x", "toolbar-disabled-1x",
-    "ie-toolbar-default-1x", "ie-toolbar-hot-1x", "ie-toolbar-disabled-1x",
-    "go-default-1x", "go-hot-1x", "brand-22-1x", "brand-26-1x", "brand-38-1x",
-    "webview-left-1x", "webview-line-1x", "worldmap-1x",
-}
 
+def pack(source: Path, destination: Path, names: set[str]) -> None:
+    """转换导入器声明的 PNG，不发布未引用资源。
 
-def pack(source: Path, destination: Path) -> None:
+    Args:
+        source: ISO 提取目录，包含 icons-src 与 bitmaps-src。
+        destination: 本次发布的临时 ui 目录。
+        names: 产品依赖的文件 stem，不含扩展名。
+
+    Raises:
+        OSError: 必需源图不可读或产物不可写。
+        ValueError: 图像格式不可转换。
+    """
     from PIL import Image
     destination.mkdir(parents=True, exist_ok=True)
     for directory in ("icons-src", "bitmaps-src"):
         for path in sorted((source / directory).glob("*.png")):
-            if directory == "icons-src" and not path.stem.endswith(("-16", "-32", "-64")):
-                continue
-            if directory == "bitmaps-src" and path.stem not in BITMAPS:
+            if path.stem not in names:
                 continue
             with Image.open(path) as source_image:
                 width, height = source_image.size
@@ -49,13 +47,3 @@ def pack(source: Path, destination: Path) -> None:
                 header += struct.pack("<IIIII", *masks, 0x73524742)
                 header += bytes(48)
                 (destination / (path.stem + ".bmp")).write_bytes(header + palette + pixels)
-
-
-
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--original", action="store_true")
-    args = parser.parse_args()
-    source = ROOT / (".local/inputs/windows2000/assets" if args.original else "assets/classic")
-    destination = ROOT / (".local/inputs/windows2000/packed/ui" if args.original else "assets/classic/ui")
-    pack(source, destination)

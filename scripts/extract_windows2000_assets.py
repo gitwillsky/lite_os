@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""从用户的 Windows 2000 简中 ISO 提取本地参照素材；不执行 PE，不修改产品 rootfs。
+"""从 Windows 2000 简中 ISO 导入产品素材；不执行 PE，不修改运行中的 rootfs。
 
 1. 7zz 读取 ISO，cabextract 展开安装文件，wrestool 重建资源容器。
 2. 保留 ICO/CUR/ANI、字体与 WAV 原始字节；另输出有来源记录的 PNG。
-3. manifest 最后写入；--check 校验完整目录，不把半成品当成可用素材。
+3. 只发布产品依赖的运行时文件到 assets/classic；manifest 记录 ISO、资源号与逐文件摘要。
 """
 
 from __future__ import annotations
@@ -39,32 +39,26 @@ PE_FILES = (
 OPTIONAL_PE = {"browseui.dll", "shdocvw.dll"}
 # 资源号来自这份安装介质的资源目录及逐图核对，不是 shell icon 的零起始索引。
 ICONS = {
+    "windows-logo": ("user32.dll", 105),
     "my-computer": ("shell32.dll", 16),
     "my-documents": ("mydocs.dll", 100),
     "recycle-bin-empty": ("shell32.dll", 32),
-    "recycle-bin-full": ("shell32.dll", 33),
     "folder-closed": ("shell32.dll", 4),
-    "folder-open": ("shell32.dll", 5),
     "file-generic": ("shell32.dll", 1),
     "file-text": ("shell32.dll", 152),
     "file-app": ("shell32.dll", 3),
     "drive-hdd": ("shell32.dll", 9),
     "drive-cd": ("shell32.dll", 12),
-    "drive-floppy": ("shell32.dll", 6),
-    "drive-network": ("shell32.dll", 10),
-    "printers": ("shell32.dll", 138),
     "file-system": ("shell32.dll", 153),
     "control-panel": ("shell32.dll", 137),
     "programs": ("shell32.dll", 20),
     "documents": ("shell32.dll", 21),
     "settings": ("shell32.dll", 22),
-    "search": ("shell32.dll", 23),
     "help": ("shell32.dll", 24),
     "run": ("shell32.dll", 25),
     "shutdown": ("shell32.dll", 28),
     "logoff": ("shell32.dll", 45),
     "lock": ("shell32.dll", 48),
-    "key": ("shell32.dll", 194),
     "command-prompt": ("cmd.exe", "IDI_APPICON"),
     "task-manager": ("taskmgr.exe", 107),
     "media-player": ("mplayer2.exe", 110),
@@ -87,11 +81,14 @@ ICONS = {
     "tray-volume": ("stobject.dll", 230),
     "tray-volume-muted": ("stobject.dll", 231),
     "ctrl-alt-del": ("msgina.dll", 109),
-    "msg-error": ("user32.dll", 103),
-    "msg-warning": ("user32.dll", 101),
-    "msg-info": ("user32.dll", 104),
-    "msg-question": ("user32.dll", 102),
 }
+# 资源管理器和应用图标同时用于 16/32 像素；这些外壳专用图标只发布调用者需要的尺寸。
+ICON_SIZES = {
+    "programs": (32,), "documents": (32,), "help": (16,),
+    "shutdown": (32,), "logoff": (32,), "lock": (32,),
+    "show-desktop": (16,), "ctrl-alt-del": (32,),
+}
+
 CURSORS = {
     "arrow": 100, "text": 101, "busy": 102, "precision": 103,
     "resize-ns": 104, "resize-nwse": 105, "resize-nesw": 106,
@@ -132,8 +129,7 @@ WEBVIEW = {"webview-left": "WVLEFT.BMP", "webview-line": "WVLINE.GIF"}
 # HIVEDEF.INF 的默认 AppEvents 配置；logoff 是独立提供的注销素材。
 SOUNDS = {
     "logon": "logon.wav", "logoff": "logoff.wav",
-    "critical": "chord.wav", "exclamation": "chord.wav",
-    "asterisk": "chord.wav", "question": "chord.wav",
+    "chord": "chord.wav", "recycle": "recycle.wav",
 }
 
 
@@ -285,7 +281,7 @@ def extract(iso: Path, output: Path) -> dict:
             with Image.open(path) as image:
                 sizes = image.ico.sizes()
                 native, paths = [], [path]
-                for size in (16, 32, 64):
+                for size in ICON_SIZES.get(name, (16, 32)):
                     if (size, size) not in sizes:
                         continue
                     dest = icon_dir / f"{name}-{size}.png"
@@ -348,7 +344,6 @@ def extract(iso: Path, output: Path) -> dict:
         manifest = {
             "version": 1, "iso": {"name": iso.name, "bytes": iso.stat().st_size, "sha256": digest(iso)},
             "language": 2052, "ui_brand": "LiteOS", "files": files, "logical": logical,
-            "unmapped": ["liteos-logo (keep original LiteOS branding)"],
             "warnings": warnings,
             "limitations": ["not installed into product rootfs", "native resolutions only; no invented 2x assets",
                             "CUR AND/XOR masks and ANI timing retained in original containers"],
@@ -362,22 +357,120 @@ def extract(iso: Path, output: Path) -> dict:
     return manifest
 
 
+def publish(directory: Path) -> dict:
+    """把校验后的提取结果转换为唯一产品资源集。
+
+    Args:
+        directory: `.local/inputs/` 内完整提取目录，保留原始 PE 与全部导出资源。
+
+    Returns:
+        已发布产品 manifest；每项标明 ISO 内来源和转换方式。
+
+    Raises:
+        OSError: 提取产物缺失、不可读或产品目录不可写。
+        ValueError: manifest、图像或光标不能无损转换为产品格式。
+    """
+    from PIL import Image
+    from pack_boot_scene import pack as pack_boot
+    from pack_cursors import CURSOR_FILES, pack_sources
+    from pack_shell_assets import pack as pack_shell
+    import classic_assets
+
+    source = check(directory)
+    icons = source["logical"]["icons"]
+    if set(icons) != set(ICONS) or any(
+        (icons[name]["source"], icons[name]["resource"]) != origin
+        or icons[name]["png_sizes"] != [size for size in ICON_SIZES.get(name, (16, 32))
+                                       if [size, size] in icons[name]["native_sizes"]]
+        for name, origin in ICONS.items()
+    ):
+        raise ValueError("extraction recipe changed; re-extract into a new --output directory")
+    # 1. 所有转换先在临时目录完成；失败时保留当前受版本管理的资源。
+    with tempfile.TemporaryDirectory(prefix=".publish-", dir=directory.parent) as work:
+        result = Path(work)
+        files = {}
+
+        def record(path: Path, group: str, origin: dict) -> None:
+            files[str(path.relative_to(result))] = {
+                "group": group, "bytes": path.stat().st_size, "sha256": digest(path), "origin": origin,
+            }
+
+        names = {Path(path).stem for group in ("icons", "bitmaps")
+                 for name, item in source["logical"][group].items() if name != "boot-scene"
+                 for path in item["paths"] if path.endswith(".png")}
+        pack_shell(directory, result / "ui", names)
+        for group in ("icons", "bitmaps"):
+            for name, item in source["logical"][group].items():
+                for image in item["paths"]:
+                    path = result / "ui" / (Path(image).stem + ".bmp")
+                    if image.endswith(".png") and path.is_file():
+                        record(path, "ui", {"source": item["source"], "resource": item["resource"],
+                                            "language": 2052, "conversion": "BMP V4; native dimensions"})
+        # 2. 启动画面、光标、字体和声音由同一份 ISO 提供，不保留原创或替代来源。
+        with Image.open(directory / "bitmaps-src/boot-scene-1x.png") as image:
+            (result / "boot-scene.lbs").write_bytes(pack_boot(image))
+        record(result / "boot-scene.lbs", "boot", {"source": "ntoskrnl.exe", "resource": 1, "conversion": "LBS1 lossless RLE"})
+        link = directory / source["logical"]["cursors"]["link"]["paths"][0]
+        (result / "cursors.lcs").write_bytes(pack_sources(directory / "sources", link))
+        record(result / "cursors.lcs", "cursors", {
+            "sources": [stem + ".cur" for stem in CURSOR_FILES.values()] + ["user32.dll:114"],
+            "conversion": "LCS1 premultiplied ARGB; 2x nearest-neighbor; CUR hotspots",
+        })
+        for group in ("fonts", "sounds"):
+            (result / group).mkdir()
+            for item in source["logical"][group].values():
+                original = directory / item["paths"][0]
+                path = result / group / original.name
+                shutil.copyfile(original, path)
+                record(path, group, {"source": original.name, "conversion": "original bytes"})
+        mapping = result / "fonts/fontmap.ini"
+        mapping.write_text("; 原版字体目录；仅保留逻辑字体别名与 Tahoma 的中文 FontLink。\n"
+                           "[FontSubstitutes]\nMS Shell Dlg=Tahoma\nMS Shell Dlg 2=Tahoma\n"
+                           "SimSun=宋体\nNSimSun=新宋体\n\n[SystemLink]\nTahoma=宋体\n")
+        record(mapping, "fonts", {"source": "LiteOS font mapping configuration"})
+        manifest = {"version": 1, "iso": source["iso"], "language": 2052,
+                    "tools": source["tools"], "files": dict(sorted(files.items()))}
+        # 3. 清除旧源图与旧产品文件，只留下 manifest 声明的运行时文件和主题配置。
+        destination = classic_assets.DIRECTORY
+        for path in destination.iterdir():
+            if path.name == "theme":
+                continue
+            if path.is_dir():
+                shutil.rmtree(path)
+            else:
+                path.unlink()
+        shutil.copytree(result, destination, dirs_exist_ok=True)
+        (destination / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
+    classic_assets.check()
+    return manifest
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--iso", type=Path, help="用户提供的 Windows 2000 简中 ISO")
-    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help="必须位于被 Git 忽略的 .local/inputs/ 下")
-    parser.add_argument("--check", action="store_true", help="只校验已有提取结果")
+    parser.add_argument("--iso", type=Path, default=INPUTS / "windows2000/Windows 2000 Professional Service Pack 4 CHS.iso",
+                        help=".local/inputs/ 下的原版 ISO；普通构建不需要它")
+    parser.add_argument("--output", type=Path, default=DEFAULT_OUTPUT, help=".local/inputs/ 下的原始提取目录")
+    parser.add_argument("--check", action="store_true", help="只校验 Git 中的产品资源，不依赖本机 ISO 或提取目录")
     args = parser.parse_args()
-    output = args.output.expanduser().resolve()
-    if not output.is_relative_to(INPUTS.resolve()):
-        parser.error("original assets must stay inside this repository's ignored .local/inputs/ directory")
-    if not args.check and args.iso is None:
-        parser.error("--iso is required for extraction")
     try:
-        manifest = check(output) if args.check else extract(args.iso.expanduser().resolve(), output)
+        if args.check:
+            from classic_assets import check as check_product
+            manifest = check_product()
+        else:
+            output = args.output.expanduser().resolve()
+            iso = args.iso.expanduser().resolve()
+            if not output.is_relative_to(INPUTS.resolve()) or not iso.is_relative_to(INPUTS.resolve()):
+                parser.error("ISO and intermediate extraction must stay inside .local/inputs/")
+            if output.exists():
+                extracted = check(output)
+                if extracted["iso"]["sha256"] != digest(iso):
+                    raise ValueError("ISO does not match the existing extraction")
+            else:
+                extract(iso, output)
+            manifest = publish(output)
     except (OSError, ValueError, RuntimeError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"{error}\n")
-    print(f"verified {len(manifest['files'])} files: {output / 'manifest.json'}")
+    print(f"verified {len(manifest['files'])} product assets: {ROOT / 'assets/classic/manifest.json'}")
 
 
 if __name__ == "__main__":

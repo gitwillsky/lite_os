@@ -1,68 +1,67 @@
-"""经典桌面素材的来源选择：本地原版优先，缺失时用仓库提交的原创默认。
-
-这是唯一的选择点。内核构建（编入启动画面）与 rootfs 构建（放入 compositor 读取的数据文件）都从这里取路径，
-不各自判断来源，所以同一份构建不会出现内核用一份、compositor 用另一份的情况。
-原版素材由 `scripts/extract_windows2000_assets.py` 提取、`scripts/pack_boot_scene.py --original` 打包，
-只存在于被 Git 忽略的 `.local/inputs/windows2000/` 内。
-"""
-
+"""经典桌面产品资源清单：只消费 Git 中的 ISO 提取产物，缺失或损坏立即失败。"""
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
-from local_inputs import INPUTS
-
 ROOT = Path(__file__).resolve().parents[1]
-ORIGINAL_BOOT_SCENE = INPUTS / "windows2000/packed/boot-scene.lbs"
-DEFAULT_BOOT_SCENE = ROOT / "assets/classic/boot-scene.lbs"
-ORIGINAL_CURSORS = INPUTS / "windows2000/packed/cursors.lcs"
-DEFAULT_CURSORS = ROOT / "assets/classic/cursors.lcs"
+DIRECTORY = ROOT / "assets/classic"
+
+
+def check() -> dict:
+    """校验受版本管理的产品资源及完整清单。
+
+    Returns:
+        包含 ISO 身份、每项来源和内容摘要的 manifest。
+
+    Raises:
+        OSError: manifest 或任何必需资源缺失、不可读取。
+        ValueError: 路径越界、资源损坏或目录中有未登记的冗余文件。
+    """
+    manifest = json.loads((DIRECTORY / "manifest.json").read_text())
+    for name, info in manifest["files"].items():
+        path = (DIRECTORY / name).resolve()
+        if not path.is_relative_to(DIRECTORY.resolve()):
+            raise ValueError(f"asset path escapes product directory: {name}")
+        data = path.read_bytes()
+        if len(data) != info["bytes"] or hashlib.sha256(data).hexdigest() != info["sha256"]:
+            raise ValueError(f"asset integrity mismatch: {name}")
+    actual = {str(path.relative_to(DIRECTORY)) for path in DIRECTORY.rglob("*") if path.is_file()}
+    expected = set(manifest["files"]) | {"manifest.json", "theme/classic.theme"}
+    if actual != expected:
+        raise ValueError(f"unregistered or missing product assets: {sorted(actual ^ expected)}")
+    return manifest
+
+
+def _files(group: str) -> tuple[Path, ...]:
+    """返回已校验的安装组；组为空时报错，防止缺图或静音构建静默通过。"""
+    paths = tuple(DIRECTORY / name for name, info in check()["files"].items() if info["group"] == group)
+    if not paths:
+        raise ValueError(f"empty product asset group: {group}")
+    return paths
 
 
 def boot_scene() -> Path:
-    """返回本次构建使用的 `LBS1` 启动画面：本地原版已打包则用它，否则用仓库默认。"""
-    return ORIGINAL_BOOT_SCENE if ORIGINAL_BOOT_SCENE.is_file() else DEFAULT_BOOT_SCENE
+    """返回 Git 中唯一的 LBS1 启动画面；资源缺失或损坏时失败。"""
+    return _files("boot")[0]
 
 
 def cursors() -> Path:
-    """返回本次构建使用的 `LCS1` 光标集：本地原版默认方案已打包则用它，否则用仓库默认。"""
-    return ORIGINAL_CURSORS if ORIGINAL_CURSORS.is_file() else DEFAULT_CURSORS
-
-
-# 系统提示音：文件名 → 安装介质里的原文件名；原版声音只有本地提取结果，仓库不提交。
-SOUND_FILES = {"logon.wav": "logon.wav", "logoff.wav": "logoff.wav", "recycle.wav": "recycle.wav", "chord.wav": "chord.wav"}
+    """返回 Git 中唯一的 LCS1 默认光标包；资源缺失或损坏时失败。"""
+    return _files("cursors")[0]
 
 
 def sounds() -> tuple[tuple[str, Path], ...]:
-    """返回 `(安装名, 源文件)`：本地已提取原版素材时是 Windows 2000 的提示音，否则为空（界面静音）。"""
-    source = INPUTS / "windows2000/assets/sources"
-    return tuple((name, source / original) for name, original in SOUND_FILES.items()
-                 if (source / original).is_file())
+    """返回必需提示音的 `(安装名, 源文件)`；资源缺失或损坏时失败。"""
+    return tuple((path.name, path) for path in _files("sounds"))
 
 
 def shell_bitmaps() -> tuple[Path, ...]:
-    """按名称选择 BMP V4：显式打包的本地原版优先，其余用已提交默认。
-
-    工具栏条与部分文件类型图标只有原版（仓库不提交），所以结果是两个目录按文件名的并集；
-    使用方对缺失的这类素材按“无图标”处理，而不是回退到另一份图。
-    """
-    original = INPUTS / "windows2000/packed/ui"
-    chosen = {path.name: path for path in (ROOT / "assets/classic/ui").glob("*.bmp")}
-    chosen.update({path.name: path for path in original.glob("*.bmp")})
-    return tuple(chosen[name] for name in sorted(chosen))
-
-
-# 系统字体目录的内容：仓库提交的可分发字体与映射表；本地已提取原版时同名文件被原版替换，并加入宋体。
-DEFAULT_FONTS = ("wenquanyi_9pt.bdf", "ar-pl-uming-cn.ttf", "tahoma.ttf", "tahomabd.ttf", "fontmap.ini")
-ORIGINAL_FONTS = ("simsun.ttc", "tahoma.ttf", "tahomabd.ttf")
+    """返回必需的原生尺寸 BMP；不合并本地目录，不使用替代素材。"""
+    return _files("ui")
 
 
 def fonts() -> tuple[Path, ...]:
-    """按文件名返回 `/usr/share/liteos/fonts` 的内容：原版优先，其余用仓库默认。
-
-    字体名到文件的映射由运行时扫描与 `fontmap.ini` 决定，这里只选择安装哪些文件。
-    """
-    chosen = {name: ROOT / "assets/fonts" / name for name in DEFAULT_FONTS}
-    source = INPUTS / "windows2000/assets/sources"
-    chosen.update({name: source / name for name in ORIGINAL_FONTS if (source / name).is_file()})
-    return tuple(chosen[name] for name in sorted(chosen))
+    """返回原版字体与字体映射配置；资源缺失或损坏时失败。"""
+    return _files("fonts")

@@ -1,0 +1,1055 @@
+{
+  "version": 1,
+  "iso": {
+    "name": "Windows 2000 Professional Service Pack 4 CHS.iso",
+    "bytes": 402626560,
+    "sha256": "a8e8d656bd147700c8c73e2ef0a47de7832b6c430d442f539f731db180ea8cb0"
+  },
+  "language": 2052,
+  "tools": {
+    "7zz": "7-Zip (z) 26.02 (arm64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-06-25",
+    "cabextract": "cabextract version 1.11",
+    "wrestool": "wrestool (icoutils) 0.32.3"
+  },
+  "files": {
+    "boot-scene.lbs": {
+      "group": "boot",
+      "bytes": 30638,
+      "sha256": "89494df1cf4a481fdd94f5e9d9c4a19a1447e3cfbc00f5bc813ef6b5bd8f5dd2",
+      "origin": {
+        "source": "ntoskrnl.exe",
+        "resource": 1,
+        "conversion": "LBS1 lossless RLE"
+      }
+    },
+    "cursors.lcs": {
+      "group": "cursors",
+      "bytes": 266612,
+      "sha256": "8ff72e65918f80c124c58fe887851ae1193669107e2fea2e22256d24a1cc42fc",
+      "origin": {
+        "sources": [
+          "arrow_r.cur",
+          "beam_r.cur",
+          "busy_r.cur",
+          "wait_r.cur",
+          "cross_r.cur",
+          "no_r.cur",
+          "move_r.cur",
+          "help_r.cur",
+          "size1_r.cur",
+          "size2_r.cur",
+          "size3_r.cur",
+          "size4_r.cur",
+          "user32.dll:114"
+        ],
+        "conversion": "LCS1 premultiplied ARGB; 2x nearest-neighbor; CUR hotspots"
+      }
+    },
+    "fonts/fontmap.ini": {
+      "group": "fonts",
+      "bytes": 203,
+      "sha256": "30fa82e2779a1456862f2d4e13aadf5797e07afac1a37b2148b2257c37366228",
+      "origin": {
+        "source": "LiteOS font mapping configuration"
+      }
+    },
+    "fonts/simsun.ttc": {
+      "group": "fonts",
+      "bytes": 10500352,
+      "sha256": "85da7abbf41b104b947eb76d6dd46551d008650234bcf1e21d4323ab7746470c",
+      "origin": {
+        "source": "simsun.ttc",
+        "conversion": "original bytes"
+      }
+    },
+    "fonts/tahoma.ttf": {
+      "group": "fonts",
+      "bytes": 265528,
+      "sha256": "6c699c428b608679c7ade6d9c0ff76664a1b59274c394cf0aba0ee2c33f89848",
+      "origin": {
+        "source": "tahoma.ttf",
+        "conversion": "original bytes"
+      }
+    },
+    "fonts/tahomabd.ttf": {
+      "group": "fonts",
+      "bytes": 260472,
+      "sha256": "1a3b71ee77aeaa9bfcb8b9d3393d2c57519136b6d552fe1a13cd488c7cfc7de4",
+      "origin": {
+        "source": "tahomabd.ttf",
+        "conversion": "original bytes"
+      }
+    },
+    "sounds/chord.wav": {
+      "group": "sounds",
+      "bytes": 97016,
+      "sha256": "ee94302491c85b010d55c48058142420ec356467b88ec43131fc0d0b0600c259",
+      "origin": {
+        "source": "chord.wav",
+        "conversion": "original bytes"
+      }
+    },
+    "sounds/logoff.wav": {
+      "group": "sounds",
+      "bytes": 344108,
+      "sha256": "0339f398777e4d2bafc5456b75a29d41047bb8b0d437786777ad9937b9465e88",
+      "origin": {
+        "source": "logoff.wav",
+        "conversion": "original bytes"
+      }
+    },
+    "sounds/logon.wav": {
+      "group": "sounds",
+      "bytes": 486188,
+      "sha256": "fa15f2b4cb3b45b38f315b2f68051676c6c21a88259a2660a0fe35343de60e26",
+      "origin": {
+        "source": "logon.wav",
+        "conversion": "original bytes"
+      }
+    },
+    "sounds/recycle.wav": {
+      "group": "sounds",
+      "bytes": 25434,
+      "sha256": "94b978244f9184b6792271c48fb3372dcc35f11c3d826c663c5973336acae010",
+      "origin": {
+        "source": "recycle.wav",
+        "conversion": "original bytes"
+      }
+    },
+    "ui/brand-22-1x.bmp": {
+      "group": "ui",
+      "bytes": 79498,
+      "sha256": "76cd282e541133a116446667d284b3ebb58e153922d8ed4da63baba49b7e274d",
+      "origin": {
+        "source": "browseui.dll",
+        "resource": 306,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/brand-26-1x.bmp": {
+      "group": "ui",
+      "bytes": 110986,
+      "sha256": "5dcf9f43677399c8891e4bf7fb3c1feebc1a512a527845f41c6f3b263a9102ba",
+      "origin": {
+        "source": "browseui.dll",
+        "resource": 305,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/brand-38-1x.bmp": {
+      "group": "ui",
+      "bytes": 236938,
+      "sha256": "76bd32be3d2b2ff130c4febe7890c647a38a9feb1a758403c7b71f5543370b9d",
+      "origin": {
+        "source": "browseui.dll",
+        "resource": 304,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/command-prompt-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "76e2e156d2e3a4caa468fa421af4188360096b499b9799e83779b7301abe9fbf",
+      "origin": {
+        "source": "cmd.exe",
+        "resource": "IDI_APPICON",
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/command-prompt-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "f9177b1d3e572787b619fa2c32256f352280d4a7d9a5a40ac8dbd10bf47634f4",
+      "origin": {
+        "source": "cmd.exe",
+        "resource": "IDI_APPICON",
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/control-panel-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "8bbe4b754563964366fe701793789f1645a1650e998c67fedf4b0952f9281816",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 137,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/control-panel-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "a0f59ef1ada39b15601e5544676f9cf31f17ad2af03683d924c4476ccf3d0282",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 137,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/ctrl-alt-del-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "f06c393ef473ddccfbb9416d7bec6975b361f5b044ace0441c49dcdfaa016928",
+      "origin": {
+        "source": "msgina.dll",
+        "resource": 109,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/date-time-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "af0b474b9f9e67a163201a346599113b24738c50157598f8ecc09aaa230ddc7b",
+      "origin": {
+        "source": "timedate.cpl",
+        "resource": 200,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/date-time-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "8bf1c2354ce8b100911254d49e53dbe40681a2fb003f05584b9883ef3323d5c2",
+      "origin": {
+        "source": "timedate.cpl",
+        "resource": 200,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/desktop-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "93c76c68b558fca73c6e1935dbaee6a2af6c07d844450891ab1432fdd5195f28",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 35,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/desktop-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "f9e89179a71ed4c0daaf72e3d5e49e7d98bd1e53ef2418ff71f6b0cfccd639f6",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 35,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/device-manager-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "8d7558d5e843bf719372f0bcef71b267b4cd28670c193d136ffb9226a56e17ce",
+      "origin": {
+        "source": "devmgr.dll",
+        "resource": 201,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/device-manager-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "ad46bbd763ffa661bf0dd5175dd52272755befaba231020283d9b5da78717636",
+      "origin": {
+        "source": "devmgr.dll",
+        "resource": 201,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/display-properties-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "ba2fbff5ba5dc3401d14f4fec9e27cf3157c4724e0aeb8233df353e0f9b5315c",
+      "origin": {
+        "source": "desk.cpl",
+        "resource": 40,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/display-properties-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "37cc02723d555309e0b8ee489a7b9e13c42d6f60a588847b967ae01fcc24747c",
+      "origin": {
+        "source": "desk.cpl",
+        "resource": 40,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/documents-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "77891b41916634adfd8ecd98923025c5b3c4b4ca0aa173a6995ce218f7f29517",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 21,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/drive-cd-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "e13035fce2dbee65109444effc2dceaac11f47a1a225e5e235148267ecd54aef",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 12,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/drive-cd-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "61f58f088ed5cf7acb8c2e25f39b2d0a44478ffc9fdd5283fd10f831399ee2d9",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 12,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/drive-hdd-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "29a8b1f37242cf9b8cdca497022d271aeb246e795bbb633e44faa3410cc33e28",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 9,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/drive-hdd-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "a2d8239b391e3b20b75068f82ceb77aecba266a575fe37e6ef14ab3cdc7ac372",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 9,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/entire-network-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "e6914271eb6a03d02a3c3db68d92c3aab90f01f379dfe348413b9a96260428dd",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 14,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/entire-network-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "eb971f323db8200d43dce47b04030ab9c3051fda74222694761e4080b8a40e89",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 14,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-app-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "a639c70b354a9aeb8be3242cb6afd50d651a534e5f0cb564c0cc2608eecbe35d",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 3,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-app-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "556fa8732f26c31853015b8c756ed17ee5845c4350b6f3cc60ec083830cc09d3",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 3,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-generic-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "5a373014d18fc892fa302060d600e9565f3974c1e531b1f7fc6fe1c9fbe12343",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 1,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-generic-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "f92649f63b826f9638b4200092362549b9bb9fba2173f299a2966146a2405076",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 1,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-system-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "dd8403451e7f09e11b1f0a13f98e6e82fa2aa6232f529b8ff8179f850a000795",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 153,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-system-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "9472e0cdd25d2a1a3b6993403aaa8f6d2107deab0e3e33f8096669d3ebad5186",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 153,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-text-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "30e4744343723bc2264885939d21c838ae85b5c436cbba2fae5bee6d7e13d796",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 152,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-text-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "88742bc3c60bf31f9d7cde161c74a9876b98ad99873b12282bcc4f32089d9918",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 152,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/folder-closed-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "21768c48f0fef59654d4d09481b1ffabf58cbbdc30ee5bc2d2dc48f9b064dcf9",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 4,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/folder-closed-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "5bbe96f4d6b0e36e489b0f1fcceccdf7779d4e5a6afe9364536f4e96abd554bd",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 4,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/go-default-1x.bmp": {
+      "group": "ui",
+      "bytes": 1274,
+      "sha256": "d8e1acc83e7184a3258270584c53bc2f802dc41e1b4aca31223bf302ed94c5b7",
+      "origin": {
+        "source": "browseui.dll",
+        "resource": 290,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/go-hot-1x.bmp": {
+      "group": "ui",
+      "bytes": 1274,
+      "sha256": "30daffa5ff149319ede3bd526ec3562ef85e11704ab12d3f433b5c9298c48fa6",
+      "origin": {
+        "source": "browseui.dll",
+        "resource": 291,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/help-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "d78a5262cea727a65413bf2aced35c95d6e72d4bcd35e14ad806e9b583883f03",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 24,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/ie-toolbar-default-1x.bmp": {
+      "group": "ui",
+      "bytes": 25722,
+      "sha256": "5c705837a8a0791d40302d87779c0e238c9e4f76d7180d29ca0dae277bce1ce8",
+      "origin": {
+        "source": "browseui.dll",
+        "resource": 261,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/ie-toolbar-disabled-1x.bmp": {
+      "group": "ui",
+      "bytes": 25722,
+      "sha256": "993376e9a9fee9d306f11859646d5e815bb87914b236c017b0e0dad35b28c9e3",
+      "origin": {
+        "source": "browseui.dll",
+        "resource": 265,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/ie-toolbar-hot-1x.bmp": {
+      "group": "ui",
+      "bytes": 25722,
+      "sha256": "b6ba17c7f9a78aa47df0d2945bb272ffadc046fb323ed9fca336a3e29a1888e1",
+      "origin": {
+        "source": "browseui.dll",
+        "resource": 262,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/lock-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "a64a4dc155e2f2646c165b30bfd65d91cba0c497b09d35fba0362255816c13e7",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 48,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/logoff-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "dd784cc5e78d3383d3de4210c2bbe5355070c86a64ad92c7a56474a99887be41",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 45,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/logon-banner-1x.bmp": {
+      "group": "ui",
+      "bytes": 119066,
+      "sha256": "c53b7766b71e8fe3e4d5e63df98f504701ab72f466b944e04a59dec49222a26d",
+      "origin": {
+        "source": "msgina.dll",
+        "resource": 101,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/media-player-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "023e428447f82c5cadc7e20cc9bb2647834850e445d1fe1e3c7377fcbd0bfd49",
+      "origin": {
+        "source": "mplayer2.exe",
+        "resource": 110,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/media-player-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "e5a59ef4e6c00bc1f3ca82a076c7c4e24e35417c7ceb4b5c6443221a92ffccdb",
+      "origin": {
+        "source": "mplayer2.exe",
+        "resource": 110,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/my-computer-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "a2b66f2a220a42d61819f6c049a3b165c7462ee6336700b19714d6baa4440efa",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 16,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/my-computer-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "8f4839dc9c0ee9f8f8c1395cc6264399c95cc113b0b08a3701be4ffaba318bb2",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 16,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/my-documents-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "bfdeee8db6ae48758eb17fb9378970e8de82e29cd4552fbe8c3cf76630291e6d",
+      "origin": {
+        "source": "mydocs.dll",
+        "resource": 100,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/my-documents-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "9276ce7319bf547acd2dd30d44623da073305fdeba3f73d8df0eb05f9cbc21e0",
+      "origin": {
+        "source": "mydocs.dll",
+        "resource": 100,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/network-connections-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "0689539f669df6ad209ea4bda5a870bba08fe3eb483ff4465698c2f6e4c07071",
+      "origin": {
+        "source": "netshell.dll",
+        "resource": 10010,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/network-connections-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "82937a422032ddf20622011d306ae73fe9e9dd5022dd27538ce3e7375cd493c0",
+      "origin": {
+        "source": "netshell.dll",
+        "resource": 10010,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/network-disabled-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "dd3f06c9aa28dc1cd7d31a437af771d192d820860952fc12c0d9f6feab7883a5",
+      "origin": {
+        "source": "netshell.dll",
+        "resource": 121,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/network-disconnected-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "150589a19e83e5e733e0300fc9509095ac7e38ffc696fe8f67115ed768b61b53",
+      "origin": {
+        "source": "netshell.dll",
+        "resource": 123,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/network-local-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "09a048867ea4e44c9d37b8d57e7a0559fedbc31f35a369b769960290c0c0f0df",
+      "origin": {
+        "source": "netshell.dll",
+        "resource": 122,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/network-places-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "ddd9678a8b166998c7aad39d7c99e534dec01fad5c2d508c0d5517b52595ddee",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 18,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/network-places-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "a4034480c17934521e004edd5351874c841793ec70eb0f20b2545b9431037784",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 18,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/notepad-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "cca0e740671e8eb110508faf59388ed1588ab0f9cf5b21ef2436ad2294665f1f",
+      "origin": {
+        "source": "notepad.exe",
+        "resource": 1,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/notepad-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "9f32926b9e6ecb3d0bfa9e2cd8d108681ce6e16ebdf72d8a2ff6499c961265bf",
+      "origin": {
+        "source": "notepad.exe",
+        "resource": 1,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/programs-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "a2d8261b513bc0f33bb238eab6ee54c21bc19de590b5af63d1e52c537d6884e1",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 20,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/recycle-bin-empty-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "be8d94b6a3a91eedfe758974cc93f7eed9db8941bbf4eafbe47ce5b18739e3da",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 32,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/recycle-bin-empty-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "3840ae0da4c348cfbeb3aaa5281e48c147df564e732ada84b31cd8db26387a53",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 32,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/run-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "5ee2591403ae4dd2f0010c861582a9e0167fdbd295c3d6f3459afa8c4f3dbe92",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 25,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/run-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "25694f561837a6f901b93240f6f6db7c6a66b735f11ec32c5641c93a99ef1fbc",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 25,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/settings-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "f0cba13d7508c16e6ac3960fa5b8e137ff26de1cee224a6d6233228d4db48c3a",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 22,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/settings-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "4796a4d8a60999df9c094e2079bf98e156edfb2dd4b4fe80ef31bc4b629c9bf1",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 22,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/show-desktop-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "93c76c68b558fca73c6e1935dbaee6a2af6c07d844450891ab1432fdd5195f28",
+      "origin": {
+        "source": "explorer.exe",
+        "resource": 103,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/shutdown-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "698349950bd3840563983270324379224c4393565c7744ff34f9798b301c72a0",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 28,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/sound-volume-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "85fffe741afd1279e2db9627e50dea9f79778372d52db5065905d863ff2ccbe2",
+      "origin": {
+        "source": "sndvol32.exe",
+        "resource": 304,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/sound-volume-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "118ad80e4caeeb911361ee352e8ee2d49886b0fdf1159c1476c676f49dc3daa5",
+      "origin": {
+        "source": "sndvol32.exe",
+        "resource": 304,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/start-banner-1x.bmp": {
+      "group": "ui",
+      "bytes": 19694,
+      "sha256": "7353d2d3644284a5c5f29a1179a09ff8a2f4b083e968a23efd61be3939356239",
+      "origin": {
+        "source": "explorer.exe",
+        "resource": 157,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/task-manager-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "3be5369c7b4646ceff8ee4abf3101eab9e97d7fb1c7ac3a50e1fe6d3a7d571f2",
+      "origin": {
+        "source": "taskmgr.exe",
+        "resource": 107,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/task-manager-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "501627dca40c79acfaeeceb12a0c3d946af71075fb95632978d031715bc16752",
+      "origin": {
+        "source": "taskmgr.exe",
+        "resource": 107,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/toolbar-default-1x.bmp": {
+      "group": "ui",
+      "bytes": 75322,
+      "sha256": "bbffa6333b68459e3802123539ef268582d431b60f00b3e2cbf2cbc56efdc60a",
+      "origin": {
+        "source": "browseui.dll",
+        "resource": 272,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/toolbar-disabled-1x.bmp": {
+      "group": "ui",
+      "bytes": 75322,
+      "sha256": "25f042035539075372b7336af194563792140a1fd7ea906b130ea1d843c673f3",
+      "origin": {
+        "source": "browseui.dll",
+        "resource": 276,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/toolbar-hot-1x.bmp": {
+      "group": "ui",
+      "bytes": 75322,
+      "sha256": "e56dda205afa52b458dafffc23b9118597e69e4146d315513355353fb54e0856",
+      "origin": {
+        "source": "browseui.dll",
+        "resource": 273,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/tray-network-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "abd99d7a884409d877eedec27c22e28cb7ea93387763e5145340b3a8ae3f7940",
+      "origin": {
+        "source": "netshell.dll",
+        "resource": 190,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/tray-network-disconnected-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "a67cf3452f731ea1bcf35b775174dc0d09d47b6318695faca6acb387703cf988",
+      "origin": {
+        "source": "netshell.dll",
+        "resource": 195,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/tray-volume-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "85fffe741afd1279e2db9627e50dea9f79778372d52db5065905d863ff2ccbe2",
+      "origin": {
+        "source": "stobject.dll",
+        "resource": 230,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/tray-volume-muted-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "1d396fd0a1611eb34bc6637d5ab7749c9ccd603e8a59ca3dd8e48d5fe32863f4",
+      "origin": {
+        "source": "stobject.dll",
+        "resource": 231,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/users-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "46425988f6016567f432e23f3ac973a691918a88b83012d08f8dc8e3f7a640c7",
+      "origin": {
+        "source": "netplwiz.dll",
+        "resource": 102,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/users-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "ed7f03932c59cbb10aee600983f00eead9f3b5bb87aa8bb2824e0d43e0e55895",
+      "origin": {
+        "source": "netplwiz.dll",
+        "resource": 102,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/webview-left-1x.bmp": {
+      "group": "ui",
+      "bytes": 28570,
+      "sha256": "ae059b320cfa031556db254102b1e21d2931f32890772e8f6c9ac88fdc13ea07",
+      "origin": {
+        "source": "webvw.dll",
+        "resource": "WVLEFT.BMP",
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/webview-line-1x.bmp": {
+      "group": "ui",
+      "bytes": 1338,
+      "sha256": "353d358f0a937b90681e1aa68e1c9a4ca4e0b666d061b014c6344d75d2c380bc",
+      "origin": {
+        "source": "webvw.dll",
+        "resource": "WVLINE.GIF",
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/windows-logo-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "03609560d66e23cd8437abc0f631f3d86357bfe53565583be58f92cd489e8550",
+      "origin": {
+        "source": "user32.dll",
+        "resource": 105,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/windows-logo-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "14c97e7dd874eb4cd56a75f96fd6c41478c785c535c70ac064bc60d915ec3068",
+      "origin": {
+        "source": "user32.dll",
+        "resource": 105,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/worldmap-1x.bmp": {
+      "group": "ui",
+      "bytes": 66650,
+      "sha256": "089f7bbc2b26371afaad449954a425199bb86189ae9be85a36f75394b77e12bc",
+      "origin": {
+        "source": "timedate.cpl",
+        "resource": 50,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    }
+  }
+}

@@ -19,11 +19,12 @@ impl Art {
         let mut bitmaps = HashMap::new();
         for name in [
             "documents-32",
+            "my-documents-32",
             "my-computer-32",
             "network-places-32",
             "recycle-bin-empty-32",
             "show-desktop-16",
-            "documents-16",
+            "my-documents-16",
             "start-banner-1x",
             "run-32",
             "programs-32",
@@ -37,10 +38,9 @@ impl Art {
             "file-generic-32",
             "file-text-32",
             "file-app-32",
-            "liteos-logo-16",
+            "windows-logo-16",
             "task-manager-16",
             "help-16",
-            "my-documents-16",
             "control-panel-16",
             "tray-network-16",
             "tray-network-disconnected-16",
@@ -48,14 +48,7 @@ impl Art {
             "tray-volume-muted-16",
         ] {
             let path = Path::new("/usr/share/liteos/ui").join(format!("{name}.bmp"));
-            // 缺少的素材（只含默认素材的构建）不阻止外壳启动：该图标退回通用图标。
-            match Bitmap::load(&path) {
-                Ok(bitmap) => {
-                    bitmaps.insert(name.into(), bitmap);
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-                Err(error) => return Err(error),
-            }
+            bitmaps.insert(name.into(), Bitmap::load(&path)?);
         }
         Ok(Self {
             bitmaps,
@@ -288,7 +281,7 @@ pub fn frame(
         let shift = i32::from(start);
         art.icon(
             &mut p,
-            "liteos-logo-16",
+            "windows-logo-16",
             rects[0].x + 5 + shift,
             rects[0].y + 4 + shift,
         );
@@ -299,7 +292,7 @@ pub fn frame(
             Ink::Color(C::ButtonText),
             true,
         );
-        for (i, name) in ["show-desktop-16", "documents-16"].iter().enumerate() {
+        for (i, name) in ["show-desktop-16", "my-documents-16"].iter().enumerate() {
             art.icon(&mut p, name, rects[i + 1].x + 4, 7);
         }
         if !rects[3].is_empty() {

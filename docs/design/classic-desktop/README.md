@@ -14,15 +14,14 @@
 
 ## 资料来源
 
-仓库保存原创素材与可分发的替代字体；用户提供的原版素材仅提取到 Git 忽略的 `target/`，
-不提交到仓库。规格依据以下资料整理：
+仓库保存产品实际使用的 ISO 原版资源；ISO 与提取中间文件仅存于 `.local/`。普通构建不依赖本地覆盖，详见 [assets.md](assets.md)。
 
 1. Microsoft Learn 的 Win32 文档：`GetSysColor`、`GetSystemMetrics`、`SystemParametersInfo`、`DrawEdge`、
    `DrawFrameControl`、`NONCLIENTMETRICS` 等 API 的语义与默认值说明。
 2. Wine `user32`/`comctl32`（LGPL）作为行为参照实现：只对照语义与数值，不复制代码。
    阶段 0 已记录的结果用于 Win32 程序、协议与 ABI 验证。
 3. 用户提供的 Windows 2000 简中 SP4 安装介质与静态资源。
-   素材来源与映射见 [assets.md](assets.md)，操作见[构建与验证](../../development/build-and-verify.md#经典桌面本地素材)。
+   素材来源与映射见 [assets.md](assets.md)，操作见[构建与验证](../../development/build-and-verify.md#经典桌面素材导入)。
 
 ## 置信度
 
@@ -40,7 +39,7 @@
 |---|---|
 | Microsoft Windows 2000 Professional | LiteOS 2000 Professional |
 | Built on NT Technology | 基于 LiteOS 技术 |
-| Windows 旗帜 logo | LiteOS 自绘 logo（见 [assets.md](assets.md)） |
+| Windows 旗帜 logo | 保留 ISO 原版图像（见 [assets.md](assets.md)） |
 | 版权所有 © 1985-1999 Microsoft Corp. | 版权所有 © LiteOS 贡献者 |
 | 文案中的"Windows"（如"关闭 Windows"、"登录到 Windows"、"Windows 安全"） | "LiteOS"（"关闭 LiteOS"、"登录到 LiteOS"、"LiteOS 安全"） |
 

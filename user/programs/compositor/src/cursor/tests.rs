@@ -118,9 +118,11 @@ fn repository_cursor_set_is_valid_and_complete() {
         assert!(set.get(name).is_some(), "{name}");
     }
     let busy = set.get("busy").unwrap();
-    assert_eq!(busy.frame(1, 8).1, busy.frame(1, 0).1, "8 frames wrap");
-    assert_ne!(busy.frame(1, 1).1, busy.frame(1, 0).1);
-    assert_eq!(set.get("link").unwrap().hotspot(1), (6, 0));
+    // ISO 的默认 CUR 方案是静态沙漏；不再混入原创的八帧动画。
+    assert_eq!(busy.frames, 1);
+    assert_eq!(busy.frame(1, 1).1, busy.frame(1, 0).1);
+    assert_eq!(set.get("link").unwrap().hotspot(1), (10, 10));
+    assert_eq!(set.get("text").unwrap().hotspot(1), (15, 16));
     // 箭头至少有不透明像素，且热点落在画布内。
     let arrow = set.get("arrow").unwrap();
     assert!(arrow.frame(1, 0).1.iter().any(|&pixel| pixel >> 24 == 0xFF));

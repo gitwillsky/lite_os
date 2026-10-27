@@ -8,7 +8,7 @@ Status: Active
 ## 目标与验收
 
 1. 从 kernel 第一帧到桌面，开机、登录、桌面的外观与交互 100% 还原简体中文 Windows 2000
-   Professional（仓库保留原创素材；用户自备原版素材仅放在 Git 忽略的本地目录）。
+   Professional（产品使用的原版资源纳入 Git；ISO 与提取中间文件放在 .local）。
 2. 支持 HiDPI：在 3008×1692 等高分辨率输出上按整数 scale 渲染，几何、文字、图标、光标都清晰。
 3. 用户态 GUI 全部自研；对外只暴露公开标准（Wayland、ALSA、evdev、freedesktop Desktop Entry），
    删除 LiteUI 与所有私有用户态协议。
@@ -118,7 +118,7 @@ Wine 的必需集合在阶段 0 用 `WAYLAND_DEBUG` 确认后定稿。
 
 Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，不引入进程内插件：
 
-1. **数据层（现在做）**：主题、素材包、字符串表在运行时按"用户 > 本地原版 > 仓库默认"的顺序查找，换样式不重新编译。
+1. **数据层（现在做）**：主题由系统配置与用户设置驱动，产品素材只从受 Git 管理的 ISO 资源集安装，换样式不重新编译。
    对应 Win2000 的资源 DLL（`shell32.dll` 图标、`msgina.dll` 位图）。`classic-theme` 的颜色、尺寸做成运行时加载的数据文件，
    而不是编进二进制；素材按逻辑名取，不感知来源。
 2. **进程层（现在做）**：`logon`、`desktop`、控制面板小程序、屏保都是独立程序，靠配置路径和标准协议对接，换二进制即可替换。
@@ -235,20 +235,10 @@ Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，�
 
 1. 设计规格 `docs/design/classic-desktop/`：外观、开机登录、桌面外壳、交互清单、素材清单；每项标注"确定/待核"。
 2. 品牌规则：界面文案不出现"Windows"（微软商标），统一替换为"LiteOS"，交互与文案结构保持不变。
-3. Codex 生成的素材（源文件在 `assets/classic/`，prompt 存于工程内 `.local/spikes/classic-desktop/scripts/prompt-*.txt`）：
-   - 图标 105 张（31 个三尺寸图标、2 个托盘图标、4 个消息框图标）。16 像素版第一次生成像是大图缩小所得、
-     发灰发虚，已整体重做为逐像素绘制（平均 6 色、1 像素深色轮廓）。
-   - 光标 54 张（11 个静态光标 + 两组 8 帧沙漏动画）；热点由程序核对：箭头类 (0,0)、居中类 (16,16)、
-     `link` (6,0)。沙漏翻转帧已重做为刚体旋转。
-   - 位图 8 张：`boot-logo`、`logon-banner`、`start-banner`、`ctrl-alt-del` 的 1x/2x。
-4. 字体（`assets/fonts/`，选择依据、来源哈希与渲染规则见 `docs/design/classic-desktop/assets.md`）：1x 文泉驿点阵宋体
-   12 像素、2x 文鼎 PL 明体 CN 轮廓（已删除来源存疑的点阵表并写入修改声明）、西文 Wine Tahoma；中文粗体 1x 点阵叠印、2x 轮廓加粗。字体必须作为独立数据文件在运行时加载。
+3. 产品素材已统一为 ISO 原版来源；运行时产物与来源 manifest 纳入 Git，构建与同步使用同一清单，见[资源清单](../design/classic-desktop/assets.md)。
 
 待完成：
 
-- 本地原版素材：提取 owner 为 `scripts/extract_windows2000_assets.py`，只写入 Git 忽略的 `.local/inputs/`；
-  已核对全部桌面图标、默认光标、三类位图和声音/字体的来源，见素材清单。尚未接入产品 rootfs，留待阶段 4/5
-  的唯一素材打包入口消费，不能把素材准备算作桌面已切换。
 - 规格中"待核"项：按公开规范与原版静态资源核对，不依赖 Windows 2000 参照机；未核实项不提升置信度。
 
 ## 阶段 2 进展（内核开机画面）
@@ -259,8 +249,9 @@ Win2000 的 DLL 同时承担四种需求，这里分别用不同机制满足，�
    `EarlyDisplay` 令牌带到 `bind_platform_devices` 补注册中断），随后立即把 `LBS1` 启动画面画上屏幕，并在命名空间、
    文件系统/scheduler、设备、音频四个里程碑推进进度条到 400‰。在 QEMU（HVF，1504×846）里截屏确认：画面居中、1 倍、
    进度条停在 40%；换成本地原版画面后同一套代码画出原版启动画面，进度条精确落在原版的槽里。
-2. **素材选择只有一个点**：`scripts/classic_assets.py` 决定用本地原版（`.local/inputs/windows2000/packed/`）还是仓库默认
-   （`assets/classic/boot-scene.lbs`）；内核构建（`LITEOS_BOOT_SCENE` 环境变量，cargo 自动跟踪）与 rootfs 构建都经它取路径。
+2. **唯一产品资源集**：`scripts/classic_assets.py` 校验并返回 `assets/classic/` 的受版本管理资源；
+   内核构建（`LITEOS_BOOT_SCENE` 环境变量，cargo 自动跟踪）与 rootfs 构建都消费同一文件，不读取本地原版覆盖。
+
 3. **共用解码**：新增 `boot-scene` crate（`no_std`、不分配内存），当前由内核消费、供未来 compositor 复用，8 个单元测试；内核侧 `boot_screen`
    模块有 6 个宿主测试（假帧缓冲），打包器与选择函数有 Python 测试。旧 compositor 的测试随实现撤下，不计作当前覆盖。
 4. **删除被取代的旧实现**：Aurora 启动场景（`assets/bootlogo.xrgb`、`scripts/convert_bootlogo.py`、compositor 里的程序化
@@ -307,7 +298,7 @@ init 只监督网络和 UART shell，rootfs 不再构建或安装旧 UI，增量
 
 - `/bin/compositor` 由 `display-service` 经 init 监督（无 `/dev/dri/card0` 时安静待命）。第一版用 **CPU 合成到 dumb buffer**
   （不上 VirGL）：唯一 DRM master、双缓冲、接管内核启动画面（首帧与内核逐像素一致）、读取全部 evdev 设备、
-  硬件光标（`LCS1` 光标集，`scripts/pack_cursors.py` 打包，仓库原创默认已提交）。HiDPI scale = 逻辑高度不低于 768 的最大整数。
+  硬件光标（`LCS1` 光标集，`scripts/pack_cursors.py` 打包，ISO 默认方案产物已纳入 Git）。HiDPI scale = 逻辑高度不低于 768 的最大整数。
 - `make verify-runtime-display`：首帧逐像素比对 + 注入指针/按键。
 - Wayland 服务端已实现：`wl_display`/`wl_registry`/`wl_callback`、`wl_compositor` v6（`preferred_buffer_scale`、`enter`）、
   `wl_shm`（argb/xrgb8888，`pread` 读取）、`xdg_wm_base` v3 toplevel（initial configure、ack 校验、错误码）、`wl_output` v4；

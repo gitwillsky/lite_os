@@ -65,7 +65,7 @@
 
 - [经典桌面外观与交互规格（简体中文 Windows 2000 风格）](design/classic-desktop/README.md)
 - [经典桌面外观与字体](design/classic-desktop/appearance.md)
-- [经典桌面素材与本地原版映射](design/classic-desktop/assets.md)
+- [经典桌面原版资源与导入](design/classic-desktop/assets.md)
 - [经典桌面开机与登录](design/classic-desktop/boot-logon.md)
 - [经典桌面资源管理器](design/classic-desktop/explorer.md)
 - [经典桌面交互验收](design/classic-desktop/interaction.md)

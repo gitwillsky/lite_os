@@ -171,6 +171,13 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - Benchmark 决策：图标重采样只在资源加载时分配，内容测量只在布局失效时执行，网络文件 I/O 全部在后台；无新增逐帧全树扫描。
   功能由现有 host/Wayland/桌面门禁裁决；逐项样式仍由用户验收。
 
+## 产品资源
+
+- `scripts/extract_windows2000_assets.py` 拥有 ISO 提取与产品转换；ISO、PE 和中间文件只在 `.local/`。
+- `assets/classic/manifest.json` 拥有产品资源身份；`scripts/classic_assets.py` 验证并返回唯一安装清单，
+  kernel、rootfs 与开发镜像同步均消费受 Git 管理的文件。缺失、损坏和未登记文件必须失败，不读取本地覆盖。
+- 只发布实际消费者需要的原生尺寸和格式；新增资源必须在导入器登记 ISO 来源，不引入原创或替代资源回退。
+
 ## 字体目录与缓存
 
 - typeface::FontCatalog 拥有扫描到的字体成员与 `fontmap.ini` 映射；Resources 每进程加载一次并共享，主题重载清空。

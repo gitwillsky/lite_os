@@ -5,7 +5,7 @@ use crate::sfnt::{Outline, Point};
 use crate::{BdfFont, FontCatalog, Glyph, LogicalFont, Sfnt, Typeface, overprint, wrap};
 
 fn fonts() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/fonts")
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/classic/fonts")
 }
 
 fn sfnt(name: &str) -> Sfnt {
@@ -92,21 +92,6 @@ fn bdf_rejects_malformed_input() {
         &SMALL_BDF.replace("FONTBOUNDINGBOX 8 10 0 -2\n", "")
     ));
     assert!(broken("FONTBOUNDINGBOX 1 1 0 0\nBBX 1 1 0 0\n"));
-}
-
-#[test]
-fn wenquanyi_covers_ui_characters() {
-    let font = BdfFont::parse(&std::fs::read_to_string(fonts().join("wenquanyi_9pt.bdf")).unwrap())
-        .unwrap();
-    for character in "中文登录到 LiteOS，。".chars().filter(|c| *c != ' ') {
-        let glyph = font
-            .glyph(character)
-            .unwrap_or_else(|| panic!("missing {character}"));
-        assert!(glyph.advance > 0, "{character}");
-    }
-    let ink = font.glyph('中').unwrap();
-    assert_eq!(ink.advance, 12);
-    assert!(ink.coverage.contains(&255) && ink.height <= 12);
 }
 
 #[test]
@@ -231,21 +216,16 @@ fn rasterizer_accepts_contours_without_on_curve_points_and_empty_outlines() {
 }
 
 #[test]
-fn tahoma_cmap_metrics_and_embedded_bitmaps() {
+fn original_tahoma_cmap_metrics_and_outlines() {
     let tahoma = sfnt("tahoma.ttf");
     assert_eq!(tahoma.units_per_em(), 2048);
     let a = tahoma.glyph_id('A').unwrap();
     assert!(tahoma.glyph_id('中').is_none());
     assert!(tahoma.advance_units(a).unwrap() > 0);
-    let strike = tahoma.embedded_bitmap(a, 11).unwrap();
-    assert!(
-        strike.width > 0
-            && strike.advance > 0
-            && strike.coverage.iter().all(|&v| v == 0 || v == 255)
-    );
-    assert!(strike.coverage.contains(&255));
-    assert!(tahoma.embedded_bitmap(a, 22).is_none());
-    assert!(tahoma.has_strike(11) && !tahoma.has_strike(22));
+    // 原版 Tahoma 没有 Wine 替代字体的 11 ppem 内嵌点阵；西文走原版轮廓与 hinting。
+    assert!(!tahoma.has_strike(11));
+    assert!(tahoma.embedded_bitmap(a, 11).is_none());
+    assert!(!tahoma.outline(a).unwrap().contours.is_empty());
 }
 
 #[test]
@@ -267,16 +247,31 @@ fn outlines_reproduce_simple_and_composite_glyphs() {
 }
 
 #[test]
-fn uming_covers_cjk_through_format_12() {
-    let uming = sfnt("ar-pl-uming-cn.ttf");
+fn simsun_collection_preserves_faces_cjk_and_native_strikes() {
+    let faces = Sfnt::parse_collection(std::fs::read(fonts().join("simsun.ttc")).unwrap()).unwrap();
+    assert_eq!(faces.len(), 2);
+    let simsun = &faces[0];
+    for ppem in [12, 13, 14, 15, 16, 18] {
+        assert!(simsun.has_strike(ppem), "missing strike {ppem}");
+        let glyph = simsun
+            .embedded_bitmap(simsun.glyph_id('中').unwrap(), ppem)
+            .unwrap();
+        assert!(glyph.coverage.contains(&255));
+        assert!(
+            glyph
+                .coverage
+                .iter()
+                .all(|&value| value == 0 || value == 255)
+        );
+    }
     for character in "中文登录到关机取消确定".chars() {
-        let id = uming
+        let id = simsun
             .glyph_id(character)
             .unwrap_or_else(|| panic!("missing {character}"));
-        let outline = uming.outline(id).unwrap();
+        let outline = simsun.outline(id).unwrap();
         assert!(!outline.contours.is_empty(), "{character}");
     }
-    assert!(uming.glyph_id('\u{1F600}').is_none());
+    assert!(simsun.glyph_id('\u{1F600}').is_none());
 }
 
 fn song(points: u16, scale: u32, smoothing: bool) -> Typeface {
@@ -292,8 +287,8 @@ fn song(points: u16, scale: u32, smoothing: bool) -> Typeface {
 }
 
 #[test]
-fn song_9pt_at_1x_resolves_through_system_link_to_bitmaps() {
-    // 仓库默认目录没有原版宋体：fontmap.ini 的 SystemLink 链把宋体映射到可分发字体。
+fn original_song_9pt_at_1x_uses_embedded_bitmaps() {
+    // 原版宋体的 12 ppem 点阵直接用于 1x；不再依赖可分发替代字体。
     let face = song(9, 1, false);
     assert_eq!(face.ppem(), 12);
     assert_eq!(face.glyph('中', false).advance, 12);

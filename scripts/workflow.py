@@ -109,7 +109,7 @@ def build_kernel(environment: Mapping[str, str] | None = None) -> None:
     run(
         ["cargo", "build", "--target", target.kernel_triple, *cargo_profile],
         cwd=ROOT / "kernel",
-        # 启动画面随内核编入；用哪份素材由 classic_assets 唯一决定，cargo 会跟踪该环境变量与文件内容。
+        # 启动画面随内核编入；受 Git 管理的素材由 classic_assets 校验，cargo 会跟踪该环境变量与文件内容。
         environment=_env_with(environment, LITEOS_BOOT_SCENE=str(boot_scene())),
     )
     run(python_script("verify_artifacts.py", "--build-boot-artifact", "--profile", profile), environment=environment)

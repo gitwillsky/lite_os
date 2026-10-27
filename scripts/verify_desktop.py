@@ -52,14 +52,15 @@ def build_volume_probe(musl) -> Path:
 
 
 def icon_sample() -> tuple[tuple[int, int], tuple[int, int, int]]:
-    # 直接读取标准 BMP 的一个不透明像素，适配默认/本地素材，并独立验证桌面没有被登录背景遮住。
-    path = next(path for path in shell_bitmaps() if path.name == 'documents-32.bmp')
+    # 直接读取标准 BMP 的一个不透明像素，采样受版本管理的原版图标，并独立验证桌面没有被登录背景遮住。
+    path = next(path for path in shell_bitmaps() if path.name == 'my-documents-32.bmp')
     data = path.read_bytes()
     offset = int.from_bytes(data[10:14], 'little')
     for index in range(32 * 32):
         blue, green, red, alpha = data[offset + index * 4:offset + index * 4 + 4]
         if alpha == 255 and (red, green, blue) != DESKTOP_BACKGROUND:
-            return ((28 + index % 32, 15 + index // 32), (red, green, blue))
+            # Icons::ORIGIN=(6,12)，75px 单元中 32px 图标居中，large_icon_item 顶边留 4px。
+            return ((6 + (75 - 32) // 2 + index % 32, 12 + 4 + index // 32), (red, green, blue))
     raise RuntimeError('documents icon has no visible opaque sample')
 
 

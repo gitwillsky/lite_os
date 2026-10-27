@@ -7,7 +7,7 @@ pub struct Winver {
 impl Winver {
     pub fn build(sheet: &PropertySheet) -> liteos_ui::Result<Self> {
         let page = sheet.page("版本")?;
-        let mut controls = vec![image(&page, "liteos-logo")?];
+        let mut controls = vec![image(&page, "windows-logo")?];
         for text in [
             "LiteOS 2000 Professional",
             "基于 LiteOS 技术",

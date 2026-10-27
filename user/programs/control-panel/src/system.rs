@@ -68,7 +68,7 @@ pub struct System {
 impl System {
     pub fn build(sheet: &PropertySheet, data: Data) -> liteos_ui::Result<Self> {
         let general = sheet.page("常规")?;
-        let mut controls = vec![image(&general, "liteos-logo")?];
+        let mut controls = vec![image(&general, "windows-logo")?];
         for (heading, values) in data.groups {
             let section = group(&general, heading)?;
             for value in values {
