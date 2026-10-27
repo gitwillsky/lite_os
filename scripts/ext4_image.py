@@ -53,6 +53,21 @@ def find_debugfs() -> Path:
     raise RuntimeError("debugfs from e2fsprogs is required")
 
 
+def debugfs_path(path: str | Path) -> str:
+    """把路径编码为 debugfs 命令参数。
+
+    debugfs 按空白拆分参数、双引号内保留原样；Windows 2000 墙纸等安装名含空格，裸拼接会把
+    `Blue Lace 16.bmp` 拆成三个参数。debugfs 没有引号转义，含双引号或换行的路径直接拒绝。
+
+    Raises:
+        ValueError: 路径含双引号或换行。
+    """
+    text = str(path)
+    if '"' in text or "\n" in text:
+        raise ValueError(f"path cannot be expressed as a debugfs argument: {text!r}")
+    return f'"{text}"'
+
+
 def find_e2fsck() -> Path:
     """返回可执行 e2fsck；优先 make setup 安装的 Homebrew e2fsprogs，其次 PATH/system；均不存在时 fail-stop。"""
     candidates = (

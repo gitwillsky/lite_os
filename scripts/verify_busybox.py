@@ -22,7 +22,9 @@ from local_inputs import INPUTS
 from apk_cache import cached_apk_bootstrap
 from apk_rootfs import assemble_apk_rootfs, install_apk_crash_fixtures
 from build_target import target_from_environment
-from classic_assets import boot_scene, cursors, fonts as classic_fonts, shell_bitmaps, sounds
+from classic_assets import (
+    boot_scene, cursors, fonts as classic_fonts, shell_bitmaps, sounds, wallpapers as classic_wallpapers,
+)
 from build_cache import (
     build_environment,
     build_jobs_override,
@@ -43,7 +45,7 @@ from build_cache import (
 )
 from qemu_gate import SHELL_PROMPT, boot, cpu_topology_markers, guest_inittab, power_cut, ShellCommand, TerminalInput
 from openssl_cache import OpenSslPaths, build_openssl
-from ext4_image import MKE2FS_CONFIG, find_debugfs, find_mke2fs
+from ext4_image import MKE2FS_CONFIG, debugfs_path, find_debugfs, find_mke2fs
 from tls_gate import install_runtime_tls_identity, start_https_gate
 from verify_musl import (
     MuslCachePaths,
@@ -1300,6 +1302,9 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
                   for path in classic_fonts())
     ui = tuple(UserlandArtifact(path, f"/usr/share/liteos/ui/{path.name}")
                for path in shell_bitmaps())
+    # Windows 2000 把墙纸装在 %windir%；LiteOS 的系统墙纸目录保留原安装名，显示属性按文件名列出。
+    wallpapers = tuple(UserlandArtifact(path, f"/usr/share/liteos/wallpapers/{path.name}")
+                       for path in classic_wallpapers())
     return (
         UserlandArtifact(ROOT / "user/base/shutdown", "/bin/shutdown", 0o755),
         UserlandArtifact(ROOT / "user/base/rcS", "/etc/init.d/rcS", 0o755),
@@ -1317,7 +1322,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         *(UserlandArtifact(path, f"{SYSTEM_LIBRARY_DIRECTORY}/{name}", 0o755)
           for path, name in build_system_libraries(musl)),
         UserlandArtifact(ROOT / "user/base/ld-musl.path", f"/etc/{Path(TARGET.musl_loader).name.removesuffix('.so.1')}.path"),
-        *programs, *fonts, *ui, *mesa_userland(),
+        *programs, *fonts, *ui, *wallpapers, *mesa_userland(),
         *(UserlandArtifact(path, destination, mode) for path, destination, mode in sdk_files()),
         *(UserlandArtifact(path, f"/usr/share/liteos/sounds/{name}") for name, path in sounds()),
     )
@@ -1494,12 +1499,12 @@ def create_image(
     # 安装清单同时决定目录树：SDK/Mesa 等新增嵌套路径不能依赖另一份手写 mkdir 列表。
     existing_directories = {command.removeprefix("mkdir ") for command in commands if command.startswith("mkdir ")}
     artifact_directories = {str(parent) for artifact in userland for parent in Path(artifact.destination).parents if str(parent) != "/"}
-    commands.extend(f"mkdir {folder}" for folder in sorted(artifact_directories - existing_directories, key=lambda path: (path.count("/"), path)))
+    commands.extend(f"mkdir {debugfs_path(folder)}" for folder in sorted(artifact_directories - existing_directories, key=lambda path: (path.count("/"), path)))
     # 启动配置与共享开机素材只有 base_userland 一份安装清单。
     for artifact in userland:
-        commands.append(f"write {artifact.source} {artifact.destination}")
+        commands.append(f"write {debugfs_path(artifact.source)} {debugfs_path(artifact.destination)}")
         commands.append(
-            f"set_inode_field {artifact.destination} mode 0100{artifact.mode:o}"
+            f"set_inode_field {debugfs_path(artifact.destination)} mode 0100{artifact.mode:o}"
         )
     commands.extend(f"ln /bin/init /bin/{applet}" for applet in BUSYBOX_LINKS)
     # npm/pnpm use `#!/usr/bin/env node`; without the standard env location apk installs succeed
@@ -1590,7 +1595,7 @@ def create_image(
     with tempfile.TemporaryDirectory(prefix="liteos-base-readback-") as directory:
         for index, artifact in enumerate(userland):
             observed = Path(directory) / str(index)
-            run([str(find_debugfs()), "-R", f"dump -p {artifact.destination} {observed}", str(image)], ROOT)
+            run([str(find_debugfs()), "-R", f"dump -p {debugfs_path(artifact.destination)} {observed}", str(image)], ROOT)
             if not observed.is_file() or sha256(observed) != sha256(artifact.source):
                 raise RuntimeError(f"BusyBox rootfs system file differs: {artifact.destination}")
             if observed.stat().st_mode & 0o777 != artifact.mode:

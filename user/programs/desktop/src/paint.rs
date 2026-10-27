@@ -6,7 +6,22 @@ use classic_ui::{
     AppIcons, Bitmap, ButtonState, Configuration, Display, FontRole, Ink, Painter, Resources,
     ToplevelId, WindowId,
 };
-use std::{collections::HashMap, io, path::Path};
+use std::{
+    collections::HashMap,
+    io,
+    path::{Path, PathBuf},
+};
+/// 桌面背景层（背景色 + 墙纸）按图层尺寸合成后的像素；`key` 任一项变化才重建。
+struct Backdrop {
+    key: (
+        i32,
+        i32,
+        i32,
+        classic_theme::Rgb,
+        desktop_settings::WallpaperStyle,
+    ),
+    pixels: Vec<u32>,
+}
 pub struct Art {
     bitmaps: HashMap<String, Bitmap>,
     /// 当前应用/桌面条目拥有的图标；清单刷新时整体重建，卸载后不保留失效图像。
@@ -15,6 +30,11 @@ pub struct Art {
     app_icons: AppIcons,
     /// 系统主题与按主题解析的字体；外壳与应用读取同一份设置。
     resources: Resources,
+    // OWNER: 墙纸只在路径变化时解码；解码失败记为 None，不在每帧重试读盘。缺少该缓存时
+    // 每次重画都要重新解码整张图片，拖动图标会卡顿。
+    wallpaper: Option<(PathBuf, Option<Bitmap>)>,
+    // OWNER: 合成后的背景层；没有它每帧都要重新缩放/平铺整张墙纸。
+    backdrop: Option<Backdrop>,
 }
 impl Art {
     pub fn load() -> io::Result<Self> {
@@ -57,7 +77,68 @@ impl Art {
             entry_bitmaps: HashMap::new(),
             app_icons: AppIcons::load(16),
             resources: Resources::system()?,
+            wallpaper: None,
+            backdrop: None,
         })
+    }
+
+    /// 返回与当前设置和图层配置一致的背景层像素（物理像素，行宽为图层宽）。
+    ///
+    /// 墙纸文件缺失或损坏时只画背景色，与 Windows 2000 找不到墙纸文件时一致。
+    fn backdrop(
+        &mut self,
+        settings: &desktop_settings::Settings,
+        c: Configuration,
+    ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
+        let theme = self.resources.theme().clone();
+        let color = settings.background.map_or_else(
+            || theme.color(C::Background),
+            |[red, green, blue]| classic_theme::Rgb { red, green, blue },
+        );
+        if self.wallpaper.as_ref().map(|(path, _)| path) != settings.wallpaper.as_ref() {
+            self.wallpaper = settings.wallpaper.clone().map(|path| {
+                let image = Bitmap::load_picture(&path)
+                    .inspect_err(|error| {
+                        eprintln!("desktop: wallpaper {}: {error}", path.display())
+                    })
+                    .ok();
+                (path, image)
+            });
+            self.backdrop = None;
+        }
+        let (w, h) = c.pixel_size()?;
+        let key = (w, h, c.scale, color, settings.wallpaper_style);
+        if self
+            .backdrop
+            .as_ref()
+            .is_none_or(|backdrop| backdrop.key != key)
+        {
+            let mut pixels = vec![0; w as usize * h as usize];
+            let fonts = self.resources.fonts(c.scale)?;
+            let surface =
+                Surface::new(&mut pixels, w, h, w as usize).ok_or("invalid desktop pixels")?;
+            let mut p = Painter::new(surface, &theme, &fonts, c.scale);
+            let screen = Rect::new(0, 0, c.width, c.height);
+            p.fill_rgb(screen, color);
+            if let Some((_, Some(image))) = &self.wallpaper {
+                let style = match settings.wallpaper_style {
+                    desktop_settings::WallpaperStyle::Center => classic_ui::WallpaperStyle::Center,
+                    desktop_settings::WallpaperStyle::Tile => classic_ui::WallpaperStyle::Tile,
+                    desktop_settings::WallpaperStyle::Stretch => {
+                        classic_ui::WallpaperStyle::Stretch
+                    }
+                };
+                image.paint_wallpaper(&mut p, screen, style, (c.width, c.width));
+            }
+            p.into_surface();
+            self.backdrop = Some(Backdrop { key, pixels });
+        }
+        Ok(self
+            .backdrop
+            .as_ref()
+            .expect("backdrop built")
+            .pixels
+            .clone())
     }
     /// 工具提示文字所需的图层大小（逻辑像素）：用状态栏字体度量，与 `Painter::tooltip` 的版式一致。
     pub fn tooltip_size(&mut self, text: &str, scale: i32) -> io::Result<(i32, i32)> {
@@ -224,19 +305,18 @@ pub fn frame(
     art: &mut Art,
     minute: u64,
 ) -> Result<Vec<u32>, Box<dyn std::error::Error>> {
-    let fonts = art.resources.fonts(c.scale)?;
     let (w, h) = c.pixel_size()?;
-    let mut pixels = vec![0; w as usize * h as usize];
+    let mut pixels = if id == s.background {
+        art.backdrop(&s.settings, c)?
+    } else {
+        vec![0; w as usize * h as usize]
+    };
+    let fonts = art.resources.fonts(c.scale)?;
     let surface = Surface::new(&mut pixels, w, h, w as usize).ok_or("invalid desktop pixels")?;
     let theme = art.resources.theme().clone();
     let mut p = Painter::new(surface, &theme, &fonts, c.scale);
     let rects = areas(s, d, id, c);
     if id == s.background {
-        let background = s.settings.background.map_or_else(
-            || theme.color(C::Background),
-            |[red, green, blue]| classic_theme::Rgb { red, green, blue },
-        );
-        p.fill_rgb(Rect::new(0, 0, c.width, c.height), background);
         for (i, icon) in s.icons.items.iter().enumerate() {
             // 正在拖动的图标跟随指针，不画在原位。
             let mut r = rects[i];

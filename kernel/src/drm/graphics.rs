@@ -689,7 +689,7 @@ impl DrmFile {
                 FrameAllocationClass::Reclaimable,
                 DeviceMemoryKind::GemShmem,
             )
-                .ok_or(DrmError::OutOfMemory)?,
+            .ok_or(DrmError::OutOfMemory)?,
         )
         .map_err(|_| DrmError::OutOfMemory)?;
         let buffer = Arc::try_new(VirglBuffer {

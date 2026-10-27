@@ -134,7 +134,14 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 
 ## 下标位图与调色板
 
-- Bitmap 解码标准 top-down BMP V4：32-bit BI_BITFIELDS RGBA 或 8-bit BI_RGB + RGBQUAD；尺寸、调色板边界与下标均校验。
+- Bitmap 唯一解码入口按签名识别 PNG、Windows DIB 与 JPEG；DIB 覆盖 CORE/INFO/V2–V5 头，1/4/8/16/24/32 位与
+  BI_RGB、BI_RLE4/8、BI_BITFIELDS/ALPHABITFIELDS。只有位域声明 alpha 才用 alpha；RLE 跳过像素保持透明；
+  未压缩调色板图保留下标供重新着色；越界调色板下标按 GDI 显示为黑色。JPEG 固定 zune-jpeg 0.5.15，输出 RGB。
+  `load` 用于界面图像（单边 2048、输入 32 MiB）；`load_picture` 用于用户图片（单边 16384、2^24 像素、输入 64 MiB），
+  上限在分配像素前检查。
+- `classic-ui::wallpaper` 是 Windows 2000 墙纸合成（居中/平铺/拉伸，最近邻）的唯一实现；桌面外壳与显示属性预览共用。
+  Canvas 绘制命令 kind 7 为墙纸预览：矩形代表整个屏幕，text 为图片路径，color 为显示方式；运行库按
+  `wl_output` 当前模式换算的屏幕逻辑尺寸缩小居中/平铺原图。Context 按路径缓存预览图片，绘制前剔除不再引用的项。
   解码输出持有预乘 ARGB，8-bit 输入另以 Rc 保活不可变下标；重着色结果共享下标，不修改资源缓存内的源图。
 - Image 创建和换图共用 image_api::resource。新增 image_palette 只追加 ABI 表尾；输入为 256 项 0xRRGGBB，
   同步读取并生成像素，验证失败不替换节点图像。未安装的可选素材保持空白，其他控件或非下标图像返回错误。

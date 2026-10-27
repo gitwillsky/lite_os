@@ -7,8 +7,28 @@ use std::{
     time::SystemTime,
 };
 
+/// 墙纸显示方式；对应 `HKCU\Control Panel\Desktop` 的 TileWallpaper=1（平铺）、
+/// WallpaperStyle=2（拉伸），其余为居中。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WallpaperStyle {
+    #[default]
+    Center,
+    Tile,
+    Stretch,
+}
+
+impl WallpaperStyle {
+    fn key(self) -> &'static str {
+        match self {
+            Self::Center => "center",
+            Self::Tile => "tile",
+            Self::Stretch => "stretch",
+        }
+    }
+}
+
 /// 桌面设置；`Default` 是 Windows 2000 的出厂值。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Settings {
     /// 任务栏总在最前：关闭后窗口可以盖住任务栏。
     pub always_on_top: bool,
@@ -17,6 +37,9 @@ pub struct Settings {
     pub show_clock: bool,
     /// 桌面背景色；`None` 用主题的 `Background`。
     pub background: Option<[u8; 3]>,
+    /// 墙纸图片的绝对路径；`None` 即“(无)”。路径必须是不含换行的 UTF-8，否则不写入文件。
+    pub wallpaper: Option<PathBuf>,
+    pub wallpaper_style: WallpaperStyle,
 }
 
 impl Default for Settings {
@@ -26,6 +49,8 @@ impl Default for Settings {
             auto_hide: false,
             show_clock: true,
             background: None,
+            wallpaper: None,
+            wallpaper_style: WallpaperStyle::Center,
         }
     }
 }
@@ -61,6 +86,17 @@ impl Settings {
                 "taskbar.auto_hide" => settings.auto_hide = flag().unwrap_or(false),
                 "taskbar.show_clock" => settings.show_clock = flag().unwrap_or(true),
                 "background.color" => settings.background = parse_color(value.trim()),
+                "background.wallpaper" => {
+                    let path = PathBuf::from(value.trim());
+                    settings.wallpaper = path.is_absolute().then_some(path);
+                }
+                "background.wallpaper_style" => {
+                    settings.wallpaper_style = match value.trim() {
+                        "tile" => WallpaperStyle::Tile,
+                        "stretch" => WallpaperStyle::Stretch,
+                        _ => WallpaperStyle::Center,
+                    }
+                }
                 _ => {}
             }
         }
@@ -73,7 +109,7 @@ impl Settings {
     ///
     /// 没有 `HOME`、目录不可写等 I/O 错误。
     pub fn save(&self) -> io::Result<()> {
-        Self::update(|settings| *settings = *self).map(drop)
+        Self::update(|settings| *settings = self.clone()).map(drop)
     }
     /// 在标准 flock 保护下重读并更新当前文件，原子发布；闭包只修改所属领域的字段。
     /// 错误保留旧文件，锁随 OFD 析构释放；本操作必须在后台执行。
@@ -109,6 +145,18 @@ impl Settings {
                 "background.color=#{red:02x}{green:02x}{blue:02x}\n"
             ));
         }
+        if let Some(path) = self
+            .wallpaper
+            .as_deref()
+            .and_then(|path| path.to_str())
+            .filter(|path| !path.contains('\n'))
+        {
+            text.push_str(&format!("background.wallpaper={path}\n"));
+        }
+        text.push_str(&format!(
+            "background.wallpaper_style={}\n",
+            self.wallpaper_style.key()
+        ));
         let mut temporary = None;
         for index in 0..128 {
             let candidate = path.with_extension(format!("{}.{}.new", std::process::id(), index));

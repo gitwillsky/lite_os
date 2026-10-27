@@ -62,6 +62,11 @@ def shell_bitmaps() -> tuple[Path, ...]:
     return _files("ui")
 
 
+def wallpapers() -> tuple[Path, ...]:
+    """返回原版桌面墙纸 BMP，文件名即 Windows 2000 安装名；资源缺失或损坏时失败。"""
+    return _files("wallpapers")
+
+
 def fonts() -> tuple[Path, ...]:
     """返回原版字体与字体映射配置；资源缺失或损坏时失败。"""
     return _files("fonts")

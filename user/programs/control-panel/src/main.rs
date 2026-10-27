@@ -162,7 +162,9 @@ fn build(
         ("properties", Data::Properties(data)) => {
             Box::new(fileprops::FileProperties::build(sheet, data)?)
         }
-        ("display", Data::Settings(data)) => Box::new(display::Display::build(sheet, data)?),
+        ("display", Data::Settings(data)) => {
+            Box::new(display::Display::build(sheet, data, dialogs.clone())?)
+        }
         ("taskbar", Data::Settings(data)) => Box::new(taskbar::Taskbar::build(sheet, data)?),
         ("datetime", _) => Box::new(datetime::DateTime::build(sheet)?),
         ("sounds", Data::Sounds(available)) => Box::new(sounds::Sounds::build(sheet, available)?),

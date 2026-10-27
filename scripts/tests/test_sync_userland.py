@@ -33,10 +33,10 @@ class UserlandSyncTests(unittest.TestCase):
                 "/usr", "/usr/lib", "/usr/lib/lite-runtime", "/usr/share", "/usr/share/liteos",
                 "/usr/share/liteos/apps", "/usr/share/liteos/apps/terminal", "/root", "/root/project",
             )]
-            commands.extend(f"write {source} {path}" for path in (
+            commands.extend(f'write {source} "{path}"' for path in (
                 "/bin/audio-service", "/bin/desktop", "/etc/init.d/graphical-session",
                 "/usr/lib/lite-runtime/runtime.js", "/usr/share/liteos/apps/terminal/main.js",
-                "/root/project/keep.txt",
+                "/usr/share/liteos/apps/terminal/old name.js", "/root/project/keep.txt",
             ))
             commands.append("symlink /usr/share/liteos/user-link /root/project")
             sync_userland.run_batch(image, commands, directory, "fixture", writable=True)
@@ -44,9 +44,13 @@ class UserlandSyncTests(unittest.TestCase):
             config.write_text("::respawn:-/bin/sh\n")
             scene = directory / "boot-scene.lbs"
             scene.write_bytes(b"LBS1 retained fixture")
+            # Windows 2000 墙纸安装名含空格；debugfs 参数必须整体传递。
+            wallpaper = directory / "Blue Lace 16.bmp"
+            wallpaper.write_bytes(b"BM wallpaper fixture")
             artifacts = (
                 UserlandArtifact(config, "/etc/inittab"),
                 UserlandArtifact(scene, "/usr/share/liteos/boot-scene.lbs"),
+                UserlandArtifact(wallpaper, "/usr/share/liteos/wallpapers/Blue Lace 16.bmp"),
             )
             # 回读失败不能发布成功 stamp；下一次必须能完成修复。
             with patch.object(sync_userland, "verify_artifacts", side_effect=RuntimeError("readback failed")):
@@ -61,6 +65,7 @@ class UserlandSyncTests(unittest.TestCase):
             ):
                 self.assertNotIn("Inode:", run_debugfs(image, f"stat {removed}"), removed)
             self.assertIn("old product", run_debugfs(image, "cat /root/project/keep.txt"))
+            self.assertIn("BM wallpaper fixture", run_debugfs(image, 'cat "/usr/share/liteos/wallpapers/Blue Lace 16.bmp"'))
             self.assertIn(config.read_text().strip(), run_debugfs(image, "cat /etc/inittab"))
             self.assertIn("root::", run_debugfs(image, "cat /etc/shadow"))
             self.assertIn("0600", run_debugfs(image, "stat /etc/shadow"))

@@ -479,13 +479,12 @@ impl DrmFile {
 
         // 2. backing 与 Arc/node 全部在 handle publication 前分配；任一失败由 RAII 回收
         //    extent，file namespace 中不存在半初始化 GEM object。
-        let backing =
-            DeviceBacking::try_allocate(
-                size / PAGE_SIZE,
-                FrameAllocationClass::Reclaimable,
-                DeviceMemoryKind::GemShmem,
-            )
-            .ok_or(DrmError::OutOfMemory)?;
+        let backing = DeviceBacking::try_allocate(
+            size / PAGE_SIZE,
+            FrameAllocationClass::Reclaimable,
+            DeviceMemoryKind::GemShmem,
+        )
+        .ok_or(DrmError::OutOfMemory)?;
         let backing = Arc::try_new(backing).map_err(|_| DrmError::OutOfMemory)?;
         let buffer = Arc::try_new(DumbBuffer {
             identity: identity.identity,

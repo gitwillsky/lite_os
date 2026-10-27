@@ -1059,6 +1059,116 @@
         "language": 2052,
         "conversion": "BMP V4; native dimensions"
       }
+    },
+    "wallpapers/Blue Lace 16.bmp": {
+      "group": "wallpapers",
+      "bytes": 1272,
+      "sha256": "8be9bc020b6d6204ceab602f140f7489daa6175ff773fc8092791e608a435a88",
+      "origin": {
+        "source": "blulac16.bmp",
+        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
+        "conversion": "original bytes"
+      }
+    },
+    "wallpapers/Coffee Bean.bmp": {
+      "group": "wallpapers",
+      "bytes": 17062,
+      "sha256": "53d4299d2eb54d94328f461b02b4a6d37bc6ac1fc27354003e934ba07975436c",
+      "origin": {
+        "source": "coffeebn.bmp",
+        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
+        "conversion": "original bytes"
+      }
+    },
+    "wallpapers/FeatherTexture.bmp": {
+      "group": "wallpapers",
+      "bytes": 16730,
+      "sha256": "36ba3a54bd8751767d827568060d533fb6b7337c3006df815c17aa0bb5a677e6",
+      "origin": {
+        "source": "feather.bmp",
+        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
+        "conversion": "original bytes"
+      }
+    },
+    "wallpapers/Gone Fishing.bmp": {
+      "group": "wallpapers",
+      "bytes": 17336,
+      "sha256": "c35dc33d874e46380c45583c6f255f33ec1d10c50d3e3c8518d936c03da75254",
+      "origin": {
+        "source": "gonefish.bmp",
+        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
+        "conversion": "original bytes"
+      }
+    },
+    "wallpapers/Greenstone.bmp": {
+      "group": "wallpapers",
+      "bytes": 26582,
+      "sha256": "649e7ab53a1742a0d10fc6d9f718973727bca6c1b5e92dab5da9371698faa3b9",
+      "origin": {
+        "source": "grnstone.bmp",
+        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
+        "conversion": "original bytes"
+      }
+    },
+    "wallpapers/Prairie Wind.bmp": {
+      "group": "wallpapers",
+      "bytes": 65954,
+      "sha256": "cf2f0e25c50fa0692642b7b16b5f454b969ba020c23f0eae5e2a2a26445304f2",
+      "origin": {
+        "source": "prairie.bmp",
+        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
+        "conversion": "original bytes"
+      }
+    },
+    "wallpapers/Rhododendron.bmp": {
+      "group": "wallpapers",
+      "bytes": 17362,
+      "sha256": "e205441082f90467cfdd972e91e7efb17b5c481bd8150efa575e59a4d25efde9",
+      "origin": {
+        "source": "rhody.bmp",
+        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
+        "conversion": "original bytes"
+      }
+    },
+    "wallpapers/River Sumida.bmp": {
+      "group": "wallpapers",
+      "bytes": 26680,
+      "sha256": "dd9b65ab2a4e087ed4688665f05aa5c6920821eb8c2b2e89d794f768f2f8be7d",
+      "origin": {
+        "source": "rvrsumid.bmp",
+        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
+        "conversion": "original bytes"
+      }
+    },
+    "wallpapers/Santa Fe Stucco.bmp": {
+      "group": "wallpapers",
+      "bytes": 65832,
+      "sha256": "6307d54f53affe07880cff3f478318893ec7b75276e239d3eb8875c3d8344655",
+      "origin": {
+        "source": "santafe.bmp",
+        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
+        "conversion": "original bytes"
+      }
+    },
+    "wallpapers/Soap Bubbles.bmp": {
+      "group": "wallpapers",
+      "bytes": 65978,
+      "sha256": "70a04ea568f9b06ab4111a68bc2c0c4ef81903adef4846a9ed65d086d6ae8ee2",
+      "origin": {
+        "source": "bubbles.bmp",
+        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
+        "conversion": "original bytes"
+      }
+    },
+    "wallpapers/Zapotec.bmp": {
+      "group": "wallpapers",
+      "bytes": 9522,
+      "sha256": "678f6deb824cf400a065169148a5f1b08e0568bbd56d81fb65cbfad3ca938686",
+      "origin": {
+        "source": "zapotec.bmp",
+        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
+        "conversion": "original bytes"
+      }
     }
   }
 }

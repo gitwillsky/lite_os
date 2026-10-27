@@ -14,7 +14,7 @@ from pathlib import Path, PurePosixPath
 
 from build_cache import fingerprint, sha256
 from build_target import target_from_environment
-from ext4_image import find_debugfs, recover_ext4_journal
+from ext4_image import debugfs_path, find_debugfs, recover_ext4_journal
 from verify_busybox import ACCOUNT_APPLETS, UserlandArtifact, base_userland, build_busybox, obtain_source
 from verify_musl import cached_musl_paths, find_compiler
 
@@ -68,10 +68,10 @@ def retired_commands(image: Path, retained: set[str], directory: Path) -> list[s
     Raises:
         RuntimeError: debugfs 执行失败或目录项无法安全解析。
     """
-    commands = [f"rm {path}" for path in RETIRED_FILES if path not in retained]
+    commands = [f"rm {debugfs_path(path)}" for path in RETIRED_FILES if path not in retained]
 
     def visit(path: str) -> None:
-        listing = run_batch(image, [f"ls -p {path}"], directory, "list-retired", writable=False)
+        listing = run_batch(image, [f"ls -p {debugfs_path(path)}"], directory, "list-retired", writable=False)
         for line in listing.splitlines():
             if not line.startswith("/") or ": File not found" in line:
                 continue
@@ -87,14 +87,14 @@ def retired_commands(image: Path, retained: set[str], directory: Path) -> list[s
             if stat.S_ISDIR(int(fields[2], 8)):
                 visit(child)
                 if not any(item.startswith(child + "/") for item in retained):
-                    commands.append(f"rmdir {child}")
+                    commands.append(f"rmdir {debugfs_path(child)}")
             elif child not in retained and child != STAMP_PATH:
-                commands.append(f"rm {child}")
+                commands.append(f"rm {debugfs_path(child)}")
 
     for path in RETIRED_TREES:
         visit(path)
         if not any(item.startswith(path + "/") for item in retained):
-            commands.append(f"rmdir {path}")
+            commands.append(f"rmdir {debugfs_path(path)}")
     return commands
 
 
@@ -202,7 +202,7 @@ def verify_artifacts(
     output.mkdir()
     commands = []
     for index, artifact in enumerate(artifacts):
-        commands.append(f"dump -p {artifact.destination} {output / str(index)}")
+        commands.append(f"dump -p {debugfs_path(artifact.destination)} {output / str(index)}")
     run_batch(image, commands, directory, "verify-userland", writable=False)
     for index, artifact in enumerate(artifacts):
         observed = output / str(index)
@@ -291,14 +291,15 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
             directory = Path(temporary)
             retired = retired_commands(image, current_paths, directory)
             commands = [f"rm {STAMP_PATH}", *retired]
-            commands.extend(f"mkdir {path}" for path in parent_directories(artifacts))
-            commands.extend(f"rm {path}" for path in stale_paths)
+            commands.extend(f"mkdir {debugfs_path(path)}" for path in parent_directories(artifacts))
+            commands.extend(f"rm {debugfs_path(path)}" for path in stale_paths)
             for artifact in artifacts:
+                destination = debugfs_path(artifact.destination)
                 commands.extend(
                     (
-                        f"rm {artifact.destination}",
-                        f"write {artifact.source} {artifact.destination}",
-                        f"set_inode_field {artifact.destination} mode 0100{artifact.mode:o}",
+                        f"rm {destination}",
+                        f"write {debugfs_path(artifact.source)} {destination}",
+                        f"set_inode_field {destination} mode 0100{artifact.mode:o}",
                     )
                 )
             run_batch(image, commands, directory, "write-userland", writable=True)

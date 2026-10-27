@@ -59,6 +59,9 @@ pub struct Context {
     pub error: String,
     pub(super) events: VecDeque<abi::Event>,
     resources: Resources,
+    // OWNER: Canvas 墙纸预览（kind 7）引用的已解码图片，按路径缓存，绘制前剔除不再引用的项。
+    // 缺失时每次重画都要重新读盘解码整张图片。
+    pictures: std::collections::HashMap<String, Option<std::rc::Rc<classic_ui::Bitmap>>>,
     files: Option<super::file_dialog::FileWorker>,
     // 本轮 FD/结果容量由 context 复用，PollSet 的有效借用结束后才改变 watch 集合。
     poll_buffer: linux_uapi::unix::PollBuffer,
@@ -78,6 +81,7 @@ impl Context {
             error: String::new(),
             events: VecDeque::new(),
             resources: Resources::system()?,
+            pictures: std::collections::HashMap::new(),
             files: None,
             poll_buffer: Default::default(),
             ready: Vec::new(),
@@ -629,6 +633,29 @@ impl Context {
         } else {
             None
         };
+        let referenced: std::collections::HashSet<String> = self
+            .windows
+            .values()
+            .filter_map(|host| host.controls().ok())
+            .flat_map(|tree| tree.nodes.values())
+            .flat_map(|node| node.drawing.iter())
+            .filter(|command| command.kind == 7 && !command.text.is_empty())
+            .map(|command| command.text.clone())
+            .collect();
+        self.pictures.retain(|path, _| referenced.contains(path));
+        for path in referenced {
+            self.pictures.entry(path).or_insert_with_key(|path| {
+                classic_ui::Bitmap::load_picture(std::path::Path::new(path))
+                    .inspect_err(|error| eprintln!("liteos-ui: picture {path}: {error}"))
+                    .ok()
+                    .map(std::rc::Rc::new)
+            });
+        }
+        let canvas = super::render::CanvasAssets {
+            mono: mono.as_deref(),
+            pictures: &self.pictures,
+            screen: self.display.screen_size(),
+        };
         for host in self.windows.values_mut() {
             let protocol = host.frame.window();
             layout_record(host, &mut self.display, &mut self.resources)?;
@@ -643,20 +670,20 @@ impl Context {
                             tree.paint(
                                 painter,
                                 display.keyboard_focus() == Some(protocol),
-                                mono.as_deref(),
+                                &canvas,
                             );
                         }
                         WindowBody::Sheet(sheet) => {
                             sheet.tree.paint(
                                 painter,
                                 display.keyboard_focus() == Some(protocol),
-                                mono.as_deref(),
+                                &canvas,
                             );
                         }
                         WindowBody::Dialog(dialog) => dialog.tree.paint(
                             painter,
                             display.keyboard_focus() == Some(protocol),
-                            mono.as_deref(),
+                            &canvas,
                         ),
                     }
                     Ok(())

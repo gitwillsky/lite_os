@@ -1,7 +1,7 @@
 # desktop-settings
 
 - **类型**：库
-- **作用**：每用户的桌面设置：任务栏选项与桌面背景色
+- **作用**：每用户的桌面设置：任务栏选项、桌面背景色与墙纸
 - **产物 / 安装位置**：共享库 `libdesktop_settings.so`
 - **对应的 Windows 2000 组件**：注册表 `HKCU\Control Panel\Desktop` 与任务栏设置
 - **依赖**：liteos-runtime

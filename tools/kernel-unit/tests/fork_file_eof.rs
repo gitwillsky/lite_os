@@ -218,10 +218,8 @@ mod memory {
                 Revoke,
             }
             pub(crate) struct TranslationCommit {
-                retired: crate::fallible_tree::FallibleMap<
-                    usize,
-                    crate::memory::page_table::TableFrame,
-                >,
+                retired:
+                    crate::fallible_tree::FallibleMap<usize, crate::memory::page_table::TableFrame>,
             }
             impl Drop for TranslationCommit {
                 fn drop(&mut self) {

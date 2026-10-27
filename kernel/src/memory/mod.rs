@@ -56,9 +56,9 @@ pub(crate) use permissions::MapPermission;
 pub(crate) use pressure::run_background_reclaim;
 pub(crate) use shared_file::{
     MappedFileOwner, MemoryMappingOwner, MemoryReclaimer, PageMapCount, ReclaimRequest,
-    ReclaimResult, SharedFileError, SharedFileId, SharedFileMapping, SharedFrame, SharedPage, SharedPagePin,
-    complete_memory_mapping_owner_initialization, invalidate_shared_file, reclaim_pages,
-    reclaim_statistics, register_memory_mapping_owner, register_memory_reclaimer,
+    ReclaimResult, SharedFileError, SharedFileId, SharedFileMapping, SharedFrame, SharedPage,
+    SharedPagePin, complete_memory_mapping_owner_initialization, invalidate_shared_file,
+    reclaim_pages, reclaim_statistics, register_memory_mapping_owner, register_memory_reclaimer,
     revoke_shared_file_writers,
 };
 pub(crate) use shared_memory::{SharedMemoryMappingSource, SharedMemoryVma};

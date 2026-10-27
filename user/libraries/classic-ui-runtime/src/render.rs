@@ -2,15 +2,21 @@
 use super::widgets::{Node, Tree};
 use canvas::Rect;
 use classic_theme::{Edge, Rgb, SystemColor as C};
-use classic_ui::{ButtonState, Ink, Painter};
+use classic_ui::{Bitmap, ButtonState, Ink, Painter, WallpaperStyle};
 use classic_ui_abi::{state, widget};
+use std::{collections::HashMap, rc::Rc};
+
+/// 一次重绘中 Canvas 命令共用的资源，由 Context 在绘制前按命令需要一次准备好。
+pub struct CanvasAssets<'a> {
+    /// 等宽文字命令（kind 5）的系统终端字体。
+    pub mono: Option<&'a terminal_font::TerminalFont>,
+    /// 墙纸预览命令（kind 7）引用的图片；解码失败为 None，只画背景。
+    pub pictures: &'a HashMap<String, Option<Rc<Bitmap>>>,
+    /// 屏幕逻辑尺寸；预览按 `命令矩形宽 / 屏幕宽` 缩小居中与平铺的原图。
+    pub screen: Option<(i32, i32)>,
+}
 impl Tree {
-    pub fn paint(
-        &self,
-        p: &mut Painter<'_>,
-        keyboard_focus: bool,
-        mono: Option<&terminal_font::TerminalFont>,
-    ) {
+    pub fn paint(&self, p: &mut Painter<'_>, keyboard_focus: bool, canvas: &CanvasAssets<'_>) {
         if let Some(menu) = self
             .menubar
             .and_then(|id| self.nodes.get(&id))
@@ -19,7 +25,7 @@ impl Tree {
             p.set_cues(menu.state.cues_visible());
         }
         for id in self.roots() {
-            self.paint_node(id, p, keyboard_focus, false, mono);
+            self.paint_node(id, p, keyboard_focus, false, canvas);
         }
         if let Some(node) = self
             .menubar
@@ -57,7 +63,7 @@ impl Tree {
         p: &mut Painter<'_>,
         keyboard_focus: bool,
         inherited_disabled: bool,
-        mono: Option<&terminal_font::TerminalFont>,
+        canvas: &CanvasAssets<'_>,
     ) {
         let node = &self.nodes[&id];
         if !node.visible() || node.clip.is_empty() {
@@ -351,7 +357,7 @@ impl Tree {
                                 p.text(r.x, r.y, &command.text, Ink::Rgb(rgb), command.bold);
                             }),
                             5 => {
-                                if let Some(font) = mono {
+                                if let Some(font) = canvas.mono {
                                     p.monospace(r, &command.text, font, rgb, command.bold);
                                 }
                             }
@@ -359,6 +365,18 @@ impl Tree {
                                 p.text_wrapped(r, &command.text, Ink::Rgb(rgb), command.bold);
                             }
                             6 => p.text_centered(r, &command.text, Ink::Rgb(rgb), command.bold),
+                            // 墙纸预览：r 代表整个屏幕，text 为图片路径，color 为显示方式（0 居中、1 平铺、2 拉伸）。
+                            7 => {
+                                if let Some(Some(image)) = canvas.pictures.get(&command.text) {
+                                    let style = match command.color {
+                                        1 => WallpaperStyle::Tile,
+                                        2 => WallpaperStyle::Stretch,
+                                        _ => WallpaperStyle::Center,
+                                    };
+                                    let screen = canvas.screen.map_or(r.width, |(width, _)| width);
+                                    image.paint_wallpaper(p, r, style, (r.width, screen));
+                                }
+                            }
                             _ => {}
                         }
                     }
@@ -376,7 +394,7 @@ impl Tree {
                 });
             }
             for child in &node.children {
-                self.paint_node(*child, p, keyboard_focus, disabled, mono);
+                self.paint_node(*child, p, keyboard_focus, disabled, canvas);
             }
         });
     }

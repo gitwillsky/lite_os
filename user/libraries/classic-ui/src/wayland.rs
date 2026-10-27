@@ -214,6 +214,8 @@ pub struct Display {
     wm_base: ObjectId,
     seat: ObjectId,
     scale: i32,
+    /// wl_output 当前模式（flags 含 current）的物理尺寸；缺失时无法按屏幕比例缩放预览。
+    output_mode: Option<(i32, i32)>,
     windows: HashMap<WindowId, Window>,
     buffers: HashMap<ObjectId, frame::Buffer>,
     events: VecDeque<Event>,
@@ -251,6 +253,12 @@ pub struct Display {
 }
 
 impl Display {
+    /// 屏幕的逻辑尺寸：wl_output 当前模式按输出 scale 换算；输出尚未公布模式时为 None。
+    pub fn screen_size(&self) -> Option<(i32, i32)> {
+        self.output_mode
+            .map(|(width, height)| (width / self.scale.max(1), height / self.scale.max(1)))
+    }
+
     /// 按 WAYLAND_SOCKET 或 WAYLAND_DISPLAY/XDG_RUNTIME_DIR 连接，并绑定窗口与输入协议。
     ///
     /// # Errors
@@ -371,6 +379,7 @@ impl Display {
             wm_base,
             seat,
             scale: 1,
+            output_mode: None,
             windows: HashMap::new(),
             buffers: HashMap::new(),
             events: VecDeque::new(),

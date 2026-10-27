@@ -789,6 +789,46 @@ fn bitmap_region_paints_only_the_requested_strip() {
 }
 
 #[test]
+fn wallpaper_center_clips_tile_starts_at_origin_and_preview_scales_both() {
+    use crate::WallpaperStyle;
+    // 3×1 原图：A B C。屏幕 4×2 只在 x=1..3 显示（clip 到 screen），检查三种方式与预览比例。
+    let (a, b, c) = (0xff00_000a, 0xff00_000b, 0xff00_000c);
+    let bitmap = crate::Bitmap::from_pixels(vec![a, b, c], 3, 1);
+    let paint = |style, screen: Rect, ratio| {
+        let mut pixels = vec![0; 6 * 2];
+        let mut painter = Painter::new(
+            Surface::new(&mut pixels, 6, 2, 6).unwrap(),
+            theme(),
+            typeface(1),
+            1,
+        );
+        bitmap.paint_wallpaper(&mut painter, screen, style, ratio);
+        painter.into_surface();
+        pixels
+    };
+    let screen = Rect::new(1, 0, 4, 2);
+    // 居中：(4-3)/2=0 → 列 1..4，行 (2-1)/2=0；屏幕外的列 5 与 0 不被写。
+    assert_eq!(
+        paint(WallpaperStyle::Center, screen, (4, 4)),
+        [0, a, b, c, 0, 0, 0, 0, 0, 0, 0, 0]
+    );
+    // 平铺：从屏幕左上角起重复，第二块被屏幕右边界裁掉。
+    assert_eq!(
+        paint(WallpaperStyle::Tile, screen, (4, 4)),
+        [0, a, b, c, a, 0, 0, a, b, c, a, 0]
+    );
+    // 预览把 8 像素宽的屏幕画成 4 像素：原图同比缩为 1 像素宽（按像素中心取到 B）并重复。
+    assert_eq!(
+        &paint(WallpaperStyle::Tile, screen, (4, 8))[..6],
+        [0, b, b, b, b, 0]
+    );
+    assert_eq!(
+        paint(WallpaperStyle::Stretch, screen, (4, 4))[1..5],
+        [a, b, b, c]
+    );
+}
+
+#[test]
 fn clipped_drawing_stays_inside_the_rectangle_and_restores_the_clip() {
     let mut pixels = vec![0; 8 * 4];
     let mut painter = Painter::new(

@@ -127,6 +127,9 @@ COLOR_KEYED = {
 INDEXED = {"worldmap"}
 # webvw.dll 类型 23 资源：Web 视图左侧水印与标题下的分隔线，按 CSS 原样使用。
 WEBVIEW = {"webview-left": "WVLEFT.BMP", "webview-line": "WVLINE.GIF"}
+# 桌面墙纸由附件组件 INF 安装：[DeskpaperCopyFilesSys] 列出复制到 %windir% 的 BMP，
+# [Strings] 给出安装后的长文件名；只认这一节，不枚举 I386 里其他用途的位图。
+WALLPAPER_INF = ("accessor.inf", "DeskpaperCopyFilesSys")
 # HIVEDEF.INF 的默认 AppEvents 配置；logoff 是独立提供的注销素材。
 SOUNDS = {
     "logon": "logon.wav", "logoff": "logoff.wav",
@@ -176,6 +179,38 @@ def best_icon_frame(ico, size: int):
     return ico.frame(max(candidates, key=lambda i: ico.entry[i].bpp))
 
 
+def inf_sections(text: str) -> dict[str, list[str]]:
+    """按 Windows INF 语法拆节；节名不区分大小写，去掉注释与空行。"""
+    sections: dict[str, list[str]] = {}
+    lines: list[str] | None = None
+    for raw in text.splitlines():
+        line = raw.split(";", 1)[0].strip()
+        if line.startswith("[") and line.endswith("]"):
+            lines = sections.setdefault(line[1:-1].strip().lower(), [])
+        elif line and lines is not None:
+            lines.append(line)
+    return sections
+
+
+def wallpapers(text: str) -> dict[str, str]:
+    """返回 `{安装长文件名: 介质短文件名}`；%字符串% 缺失或重名时抛出 ValueError。"""
+    sections = inf_sections(text)
+    strings = {}
+    for line in sections.get("strings", ()):
+        key, _, value = line.partition("=")
+        strings[key.strip().lower()] = value.strip().strip('"')
+    result = {}
+    for line in sections.get(WALLPAPER_INF[1].lower(), ()):
+        target, _, source = (part.strip() for part in line.partition(","))
+        name = strings.get(target.strip("%").lower()) if target.startswith("%") else target
+        if not name or not source or name in result:
+            raise ValueError(f"invalid wallpaper entry in {WALLPAPER_INF[0]}: {line}")
+        result[name] = source.lower()
+    if not result:
+        raise ValueError(f"{WALLPAPER_INF[0]} lists no wallpapers")
+    return result
+
+
 def check(directory: Path) -> dict:
     """校验 manifest 中每个文件及逻辑引用；缺失、越界或哈希不符时失败。"""
     manifest = json.loads((directory / "manifest.json").read_text())
@@ -219,6 +254,13 @@ def extract(iso: Path, output: Path) -> dict:
                             if p.name in wanted or p.suffix in {".WA_", ".CU_", ".AN_"})
         for path in containers:
             run("cabextract", "-q", "-L", "-d", expanded, path)
+        # 先展开组件 INF，再按其中的墙纸节只展开被安装的 BMP。
+        run("cabextract", "-q", "-L", "-d", expanded, i386 / (WALLPAPER_INF[0].upper()[:-1] + "_"))
+        # INF 是带 BOM 的 UTF-16LE（Unicode INF）或简中 ANSI 代码页 936。
+        data = (expanded / WALLPAPER_INF[0]).read_bytes()
+        deskpaper = wallpapers(data.decode("utf-16") if data.startswith(b"\xff\xfe") else data.decode("gb18030"))
+        for short in deskpaper.values():
+            run("cabextract", "-q", "-L", "-d", expanded, i386 / (short.upper()[:-1] + "_"))
         for name in ("HIVEDEF.INF", "TXTSETUP.SIF"):
             shutil.copyfile(i386 / name, expanded / name.lower())
         missing = [name for name in PE_FILES if not (expanded / name).is_file()]
@@ -263,7 +305,7 @@ def extract(iso: Path, output: Path) -> dict:
                     warnings.append(f"{path.name}: skipped ({error})")
                     path.unlink()
 
-        logical: dict[str, dict] = {kind: {} for kind in ("icons", "cursors", "bitmaps", "sounds", "fonts")}
+        logical: dict[str, dict] = {kind: {} for kind in ("icons", "cursors", "bitmaps", "sounds", "fonts", "wallpapers")}
 
         def resource(source: str, kind: int, number: int | str, suffix: str) -> Path:
             # 这里只接受简中资源，不把其他语言悄悄当成简中参照。
@@ -338,6 +380,13 @@ def extract(iso: Path, output: Path) -> dict:
             if path.read_bytes()[:4] not in (b"ttcf", b"\0\1\0\0", b"OTTO"):
                 raise ValueError(f"invalid font signature: {name}")
             record("fonts", name, [path])
+        record("wallpapers", WALLPAPER_INF[0], [expanded / WALLPAPER_INF[0]], section=WALLPAPER_INF[1])
+        for name, short in deskpaper.items():
+            path = expanded / short
+            with Image.open(path) as image:
+                image.load()
+                size = list(image.size)
+            record("wallpapers", name, [path], file=short, size=size)
         files = {}
         for path in sorted(result.rglob("*")):
             if path.is_file():
@@ -374,6 +423,8 @@ def publish(directory: Path) -> dict:
     source = check(directory)
     if set(source["logical"].get("fonts", ())) != set(FONTS):
         raise ValueError("font extraction recipe changed; re-extract into a new --output directory")
+    if WALLPAPER_INF[0] not in source["logical"].get("wallpapers", {}):
+        raise ValueError("wallpaper extraction recipe changed; re-extract into a new --output directory")
     from PIL import Image
     from pack_boot_scene import pack as pack_boot
     from pack_cursors import CURSOR_FILES, pack_sources
@@ -426,6 +477,16 @@ def publish(directory: Path) -> dict:
                 path = result / group / original.name
                 shutil.copyfile(original, path)
                 record(path, group, {"source": original.name, "conversion": "original bytes"})
+        # 墙纸保留原始 BMP 字节，安装名取 INF [Strings]，与 Windows 2000 的 %windir% 一致。
+        (result / "wallpapers").mkdir()
+        for name, item in source["logical"]["wallpapers"].items():
+            if name == WALLPAPER_INF[0]:
+                continue
+            original = directory / item["paths"][0]
+            path = result / "wallpapers" / name
+            shutil.copyfile(original, path)
+            record(path, "wallpapers", {"source": item["file"], "inf": f"{WALLPAPER_INF[0]} [{WALLPAPER_INF[1]}]",
+                                        "conversion": "original bytes"})
         mapping = result / "fonts/fontmap.ini"
         mapping.write_text("; 原版字体目录；仅保留逻辑字体别名与 Tahoma 的中文 FontLink。\n"
                            "[FontSubstitutes]\nMS Shell Dlg=Tahoma\nMS Shell Dlg 2=Tahoma\n"

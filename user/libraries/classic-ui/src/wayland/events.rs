@@ -80,6 +80,15 @@ impl Display {
                     self.modifiers = Modifiers::default();
                 }
             }
+            // wl_output.mode 的 flags bit 0 = current；只记录当前模式，忽略其余可选模式。
+            AnyEvent::WlOutput(wl_output::Event::Mode {
+                flags,
+                width,
+                height,
+                ..
+            }) if flags & 1 != 0 && width > 0 && height > 0 => {
+                self.output_mode = Some((width, height));
+            }
             AnyEvent::WlOutput(wl_output::Event::Scale { factor }) if factor > 0 => {
                 self.scale = factor;
                 for (id, window) in &mut self.windows {
@@ -379,6 +388,7 @@ mod tests {
                 wm_base: id(4),
                 seat: id(5),
                 scale: 2,
+                output_mode: None,
                 windows: HashMap::from([(
                     window,
                     Window {

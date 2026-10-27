@@ -19,6 +19,8 @@ wayland-wire = { path = "../wayland-wire" }
 terminal-font.workspace = true
 unicode-width.workspace = true
 png = "=0.18.0"
+zune-jpeg = { version = "=0.5.15", default-features = false, features = ["std"] }
+zune-core = { version = "=0.5.1", default-features = false, features = ["std"] }
 
 [lints]
 workspace = true

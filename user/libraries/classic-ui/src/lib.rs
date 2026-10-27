@@ -28,6 +28,8 @@ pub use window_host::{HostEvent, WindowHost};
 mod scroll;
 mod tooltip;
 mod trackbar;
+mod wallpaper;
+pub use wallpaper::WallpaperStyle;
 mod wayland;
 mod window;
 
