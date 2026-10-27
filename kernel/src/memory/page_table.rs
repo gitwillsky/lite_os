@@ -6,18 +6,31 @@ use crate::{
         address::{PhysicalPageNumber, VirtualPageNumber},
         frame_allocator::{self, FrameTracker},
         mm::shootdown::{TranslationCommit, TranslationTransition},
+        vmstat::{self, PageState},
     },
 };
 
 pub(crate) use crate::arch::mmu::{PagePermissions, PageTableError};
 
-impl TablePage for FrameTracker {
+/// 页表页的唯一 owner；存活期间计入 `PageTables`（Linux `NR_PAGETABLE`），含 fence 前的退休页。
+#[derive(Debug)]
+pub(in crate::memory) struct TableFrame(FrameTracker);
+
+impl TablePage for TableFrame {
     fn allocate() -> Option<Self> {
-        frame_allocator::alloc()
+        let frame = frame_allocator::alloc()?;
+        vmstat::add(PageState::PageTables, 1);
+        Some(Self(frame))
     }
 
     fn physical_page(&self) -> usize {
-        self.ppn.as_usize()
+        self.0.ppn.as_usize()
+    }
+}
+
+impl Drop for TableFrame {
+    fn drop(&mut self) {
+        vmstat::sub(PageState::PageTables, 1);
     }
 }
 
@@ -34,7 +47,7 @@ impl PageTableEntry {
     }
 }
 
-pub(crate) struct PageTable(ArchitecturePageTable<FrameTracker>);
+pub(crate) struct PageTable(ArchitecturePageTable<TableFrame>);
 
 impl core::fmt::Debug for PageTable {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {

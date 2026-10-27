@@ -52,7 +52,7 @@
 
 use crate::{
     fallible_tree::{FallibleMap, VacantEntry},
-    memory::FrameTracker,
+    memory::page_table::TableFrame,
 };
 
 const PAGE_SIZE: usize = 4096;
@@ -90,7 +90,7 @@ pub(in crate::memory) struct TranslationCommit {
     instruction_end_physical_page: usize,
     // OWNER: detached table frames remain alive until every required hardware walker fence
     // completes. Dropping them at PTE clear would let a stale parent PTE walk reused memory.
-    retired_table_pages: FallibleMap<usize, FrameTracker>,
+    retired_table_pages: FallibleMap<usize, TableFrame>,
 }
 
 impl TranslationCommit {
@@ -177,7 +177,7 @@ impl TranslationCommit {
     /// 把 architecture 已摘除的空 table owners 保活到 revoke fence 完成。
     pub(in crate::memory) fn retain_table_pages(
         &mut self,
-        pages: impl IntoIterator<Item = VacantEntry<usize, FrameTracker>>,
+        pages: impl IntoIterator<Item = VacantEntry<usize, TableFrame>>,
     ) {
         for page in pages {
             self.retired_table_pages.commit_vacant(page);

@@ -57,6 +57,11 @@ impl IdAllocator {
         }
     }
 
+    /// 当前已签发且尚未回收的 ID 数。
+    pub(crate) fn live(&self) -> usize {
+        self.current - self.initial - self.recycled.len()
+    }
+
     pub(crate) fn dealloc(&mut self, id: usize) {
         assert!((self.initial..self.current).contains(&id));
         debug_assert!(

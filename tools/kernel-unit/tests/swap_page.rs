@@ -102,6 +102,7 @@ mod memory {
         pub(crate) use crate::storage::{SwapError, SwapSlot, reserve};
     }
     pub(crate) mod swappable_page;
+    pub(crate) mod vmstat;
     mod tests {
         use super::swappable_page::{PageMappingRef, SwappablePage};
         use crate::{FRAME_OOM, REVOKE, WRITE_HOOK, memory, storage};

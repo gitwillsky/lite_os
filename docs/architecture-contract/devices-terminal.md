@@ -285,7 +285,8 @@
 - VirglBuffer 与导出 DrmFile 无关；dma-buf、KMS、GEM VMA、attachment 和提交 pins 分别保活它，禁止 dma-buf 反向持有 OFD/context。
   VirglLifecycle 的 mutex 只保护最后 fence 和导出 backend 的 Weak；后者保证重复导出同一 dma-buf identity，且不形成自环。
   DeviceMappingSource 独立持有实际 OFD 与映射对象；DeviceArea 的 split/fork 克隆同一 lease，TLB 退休完成后才释放。
-  GEM、dumb 与 dma-buf mmap 声明 `DevicePageAccounting::PfnMap`，对照 Linux `drm_gem_shmem_object_mmap` 的 `VM_PFNMAP`，不计入进程 RSS。
+  GEM 与 dumb backing 以 `DeviceMemoryKind::GemShmem` 分配：对照 Linux drm_gem_shmem，页计入 meminfo `Shmem`；
+  `drm_gem_shmem_object_mmap` 的 `VM_PFNMAP` 映射不计进程 RSS 与 `Mapped`。
   GEM VMA 与 PRIME 共用 DmaBuf 资源 owner，最后映射释放后主动推进退休，不依赖下一次无关 GPU 提交。
   只有组合独立设备对象与 OFD 的 mmap 准备阶段分配一次 lease；OOM 返回 ENOMEM 且不修改页表，unmap/fork 不新增 lease 分配。
   GEM_CLOSE 只撤销 handle/context attachment，不能提前 UNREF 仍有 VMA 的资源；仅保留物理 backing 不满足此契约。

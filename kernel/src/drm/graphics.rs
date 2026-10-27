@@ -10,7 +10,7 @@ use spin::Mutex;
 use crate::{
     drivers::{VirglBox, VirglCapsetInfo, VirglCommand, VirglTransferDirection},
     fallible_tree::{FallibleMap, VacantEntry},
-    memory::{DeviceBacking, FrameAllocationClass, PAGE_SIZE},
+    memory::{DeviceBacking, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE},
 };
 
 use super::{
@@ -684,7 +684,11 @@ impl DrmFile {
         let pages = requested.max(1).div_ceil(PAGE_SIZE);
         let size = pages.checked_mul(PAGE_SIZE).ok_or(DrmError::Invalid)?;
         let backing = Arc::try_new(
-            DeviceBacking::try_allocate(pages, FrameAllocationClass::Reclaimable)
+            DeviceBacking::try_allocate(
+                pages,
+                FrameAllocationClass::Reclaimable,
+                DeviceMemoryKind::GemShmem,
+            )
                 .ok_or(DrmError::OutOfMemory)?,
         )
         .map_err(|_| DrmError::OutOfMemory)?;

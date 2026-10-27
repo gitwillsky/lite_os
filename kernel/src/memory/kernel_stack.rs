@@ -79,6 +79,13 @@ impl Drop for KernelStack {
     }
 }
 
+/// 当前全部 task kernel stack 的映射字节数（Linux `KernelStack`），不含 guard page。
+///
+/// handle 只在映射成功后才由 `KernelStack` 持有；映射失败的短暂 handle 在同一事务内归还。
+pub(crate) fn kernel_stack_bytes() -> usize {
+    KERNEL_STACK_HANDLE_ALLOCATOR.lock().live() * KERNEL_STACK_SIZE
+}
+
 /// 已知当前 SP 所在 task stack 的可读范围，排除 guard 与两个槽位间的空隙。
 ///
 /// 只供当前 CPU 的 fail-stop 回溯使用；当前栈存活契约由执行上下文保证。

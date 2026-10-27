@@ -1,6 +1,10 @@
 use crate::{fallible_tree::FallibleMap, sync::TaskMutexWaitPreparation};
 use alloc::sync::{Arc, Weak};
-use core::{fmt::Debug, ptr};
+use core::{
+    fmt::Debug,
+    ptr,
+    sync::atomic::{AtomicUsize, Ordering},
+};
 use spin::{Mutex, Once};
 
 use super::{
@@ -8,7 +12,31 @@ use super::{
     config::PAGE_SIZE,
     frame_allocator,
     swappable_page::{PagePin, SwappablePage},
+    vmstat::{self, PageState},
 };
+
+/// 磁盘页缓存页的 Linux mapcount：首次被映射时计入 `Mapped`，最后一个映射解除时扣除。
+///
+/// 只由 MM 的文件页映射记录（`FilePageMapping`）增减；缺失时同一页被多个进程映射会在
+/// `Mapped` 中重复计数，或未映射页残留在统计里。
+#[derive(Debug, Default)]
+pub(crate) struct PageMapCount(AtomicUsize);
+
+impl PageMapCount {
+    pub(in crate::memory) fn map(&self) {
+        if self.0.fetch_add(1, Ordering::Relaxed) == 0 {
+            vmstat::add(PageState::FileMapped, 1);
+        }
+    }
+
+    pub(in crate::memory) fn unmap(&self) {
+        let previous = self.0.fetch_sub(1, Ordering::Relaxed);
+        debug_assert_ne!(previous, 0, "file page unmapped twice");
+        if previous == 1 {
+            vmstat::sub(PageState::FileMapped, 1);
+        }
+    }
+}
 
 /// 跨 fs/memory seam 标识一个 mounted filesystem inode。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -123,6 +151,10 @@ pub(crate) trait SharedPage: Send + Sync + Debug {
     }
     fn acquire_writer(&self);
     fn release_writer(&self);
+    /// 磁盘页缓存页的 mapcount；内存文件页的映射由 SwappablePage 引用计数，返回 None。
+    fn map_count(&self) -> Option<&PageMapCount> {
+        None
+    }
 }
 
 /// Shared page physical access lifetime; disk cache borrows its fixed frame, tmpfs holds PageOp.

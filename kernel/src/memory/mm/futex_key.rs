@@ -104,8 +104,7 @@ impl MemorySet {
             });
         }
         if let Some(device) = &area.device {
-            let offset = device
-                .page_offset
+            let offset = (device.page_offset as usize)
                 .checked_add(page_delta)
                 .and_then(|page| page.checked_mul(config::PAGE_SIZE))
                 .and_then(|base| base.checked_add(page_offset))

@@ -89,7 +89,7 @@ impl MemorySet {
                 {
                     return Ok(());
                 }
-                let page = resident.page.clone();
+                let page = resident.page.page().clone();
                 let pin = page.pin()?;
                 if MapArea::has_leaf_permission(permission) {
                     page_table.reserve(vpn)?;

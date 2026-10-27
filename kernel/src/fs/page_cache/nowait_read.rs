@@ -74,6 +74,7 @@ impl PageFill {
             frame,
             state: core::sync::atomic::AtomicUsize::new(0),
             writer_retired: file.writer_retired.clone(),
+            mapped: crate::memory::PageMapCount::default(),
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
         let available = usize::try_from(size - offset)

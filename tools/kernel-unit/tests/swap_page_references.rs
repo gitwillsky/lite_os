@@ -5,20 +5,25 @@ use references::MappingState;
 
 #[test]
 fn one_of_two_aliases_page_in_does_not_charge_the_other_rss() {
+    // installed_count 是 AnonPages/Mapped 的 Linux mapcount：换出提交即归零，逐个重装才恢复。
     let mut state = MappingState::default();
     let mut first = state.installed(true, state.epoch());
     let second = state.inherit(&first);
     assert!(!state.private_exclusive(&first));
+    assert_eq!(state.installed_count(), 2);
     let snapshot = state.snapshot();
     assert_eq!(snapshot.total(), 2);
     assert!(state.commit_swap(snapshot, 2));
     assert_eq!(state.stale(), 2);
+    assert_eq!(state.installed_count(), 0);
     state.mark_installed(&mut first, state.epoch());
     assert!(state.is_installed(&first));
     assert!(!state.is_installed(&second));
     assert_eq!(state.stale(), 1);
+    assert_eq!(state.installed_count(), 1);
     state.release(second);
     assert_eq!(state.stale(), 0);
+    assert_eq!(state.installed_count(), 1);
     assert!(state.private_exclusive(&first));
     state.release(first);
     assert_eq!(state.snapshot().total(), 0);

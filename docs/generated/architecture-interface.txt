@@ -3102,6 +3102,7 @@ kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: threads :
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: tracer : Option < Arc < crate :: namespace :: PidIdentity > >
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: tty_number : u32
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcProcessSnapshot :: virtual_pages : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: anon_mapped_pages : usize
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: background_reclaim_reclaimed_pages : u64
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: background_reclaim_scanned_pages : u64
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: boot_epoch_seconds : u64
@@ -3112,14 +3113,18 @@ kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: direct_reclaim_a
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: direct_reclaim_reclaimed_pages : u64
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: direct_reclaim_scanned_pages : u64
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: dirty_pages : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: file_mapped_pages : usize
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: free_pages : usize
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: heap_pages : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: kernel_stack_bytes : usize
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: last_pid : usize
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: load_milli : [u64 ; 3]
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: page_table_pages : usize
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: processes : Vec < ProcProcessSnapshot >
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: processes_created : u64
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: reclaimable_cached_pages : usize
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: runnable_tasks : usize
+kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: shmem_pages : usize
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: swap_cached_pages : usize
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: swap_free_pages : usize
 kernel/src/fs/procfs/snapshot.rs :: pub (crate) ProcSnapshot :: swap_total_pages : usize
@@ -3770,6 +3775,7 @@ kernel/src/id.rs :: pub (crate) fn next_runtime_object_id () -> u64
 kernel/src/id.rs :: pub (crate) impl IdAllocator :: const fn new (initial_id : usize) -> Self
 kernel/src/id.rs :: pub (crate) impl IdAllocator :: fn alloc (& mut self) -> Result < usize , () >
 kernel/src/id.rs :: pub (crate) impl IdAllocator :: fn dealloc (& mut self , id : usize)
+kernel/src/id.rs :: pub (crate) impl IdAllocator :: fn live (& self) -> usize
 kernel/src/id.rs :: pub (crate) struct IdAllocator
 kernel/src/input/client_queue.rs :: enum InputClock :: Boottime
 kernel/src/input/client_queue.rs :: enum InputClock :: Monotonic
@@ -4449,15 +4455,22 @@ kernel/src/memory/config.rs :: pub (crate) const TRAMPOLINE : usize = crate :: a
 kernel/src/memory/config.rs :: pub (crate) const TRAP_CONTEXT : usize = crate :: arch :: mmu :: TRAP_CONTEXT_ADDRESS
 kernel/src/memory/config.rs :: pub (crate) const USER_STACK_SIZE : usize = 8 * 1024 * 1024
 kernel/src/memory/config.rs :: pub (crate) use crate :: arch :: mmu :: { PAGE_SIZE , USER_ADDRESS_END , USER_STACK_TOP }
+kernel/src/memory/device_backing.rs :: enum DeviceMemoryKind :: # [doc = " `vm_insert_page(s)` 插入用户 VMA 的驱动页（ALSA vmalloc ring、io_uring region）："] # [doc = " 映射计入进程 RSS 与 `Mapped`。"] InsertedPages
+kernel/src/memory/device_backing.rs :: enum DeviceMemoryKind :: # [doc = " 只供驱动/DMA 使用、不映射给用户的内部页（virtio-gpu 内核扫描缓冲）。"] Driver
+kernel/src/memory/device_backing.rs :: enum DeviceMemoryKind :: # [doc = " 对应 Linux drm_gem_shmem：页计入 `Shmem`；用户映射是 `VM_PFNMAP`，不计 RSS 与 `Mapped`。"] GemShmem
+kernel/src/memory/device_backing.rs :: pub (crate) enum DeviceMemoryKind
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn atomic_u32 (& self , offset : usize) -> Option < & AtomicU32 >
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn extent (& self , index : usize) -> Option < (PhysicalPageNumber , usize) >
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn extent_count (& self) -> usize
+kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn kind (& self) -> DeviceMemoryKind
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn page (& self , index : usize) -> Option < PhysicalPageNumber >
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn pages (& self) -> usize
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn read (& self , offset : usize , output : & mut [u8]) -> Result < () , () >
-kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn try_allocate (pages : usize , class : FrameAllocationClass) -> Option < Self >
+kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn try_allocate (pages : usize , class : FrameAllocationClass , kind : DeviceMemoryKind ,) -> Option < Self >
 kernel/src/memory/device_backing.rs :: pub (crate) impl DeviceBacking :: fn write (& self , offset : usize , input : & [u8]) -> Result < () , () >
 kernel/src/memory/device_backing.rs :: pub (crate) struct DeviceBacking
+kernel/src/memory/device_backing.rs :: pub (in crate :: memory) impl DeviceBacking :: fn map_pages (& self , pages : Range < usize >)
+kernel/src/memory/device_backing.rs :: pub (in crate :: memory) impl DeviceBacking :: fn unmap_pages (& self , pages : Range < usize >)
 kernel/src/memory/executable.rs :: enum ElfKind :: Executable
 kernel/src/memory/executable.rs :: enum ElfKind :: SharedObject
 kernel/src/memory/executable.rs :: enum ExecutableParseError :: # [doc = " ELF header、program header 或 PT_INTERP 不满足当前 architecture loader contract。"] InvalidElf
@@ -4521,6 +4534,7 @@ kernel/src/memory/heap_allocator.rs :: pub (crate) fn init_cpu_caches ()
 kernel/src/memory/heap_allocator.rs :: pub (crate) fn statistics () -> HeapStatistics
 kernel/src/memory/heap_allocator.rs :: pub (crate) struct HeapStatistics
 kernel/src/memory/heap_allocator.rs :: pub (crate) struct KernelAllocator
+kernel/src/memory/kernel_stack.rs :: pub (crate) fn kernel_stack_bytes () -> usize
 kernel/src/memory/kernel_stack.rs :: pub (crate) impl KernelStack :: fn get_top (& self) -> usize
 kernel/src/memory/kernel_stack.rs :: pub (crate) impl KernelStack :: fn try_new () -> Result < Self , MemoryError >
 kernel/src/memory/kernel_stack.rs :: pub (crate) impl KernelStack :: fn user_context_address (& self) -> Option < usize >
@@ -4543,12 +4557,12 @@ kernel/src/memory/mm.rs :: pub (crate) use background_reclaim :: reclaim_address
 kernel/src/memory/mm.rs :: pub (crate) use mmap :: { RemapError , RemapPlacement , RemapRequest }
 kernel/src/memory/mm.rs :: pub (crate) use shared_area :: AnonymousSharedBacking as SharedMemoryBacking
 kernel/src/memory/mm.rs :: pub (crate) use statistics :: UserPageStatistics
-kernel/src/memory/mm.rs :: pub (crate) use { error :: { ElfLoadError , MemoryError , UserAccessError } , fault_preflight :: { FaultAccess as PageFaultAccess , SegmentationCause } , futex_atomic :: { UserAtomicU32 , UserAtomicU32Op } , futex_key :: { FutexAccessError , FutexKey } , initial_stack :: { InitialStack , InitialStackCredentials } , mapping_request :: { DeviceMappingSource , DevicePageAccounting , FileMappingError , FileMappingSource , MappingPlacement , MappingResourceLimits , MemoryAdvice , UserMappingRequest , UserMappingSource , } , mmap :: PageFaultOutcome , user_access :: UserFaultLimits , }
+kernel/src/memory/mm.rs :: pub (crate) use { error :: { ElfLoadError , MemoryError , UserAccessError } , fault_preflight :: { FaultAccess as PageFaultAccess , SegmentationCause } , futex_atomic :: { UserAtomicU32 , UserAtomicU32Op } , futex_key :: { FutexAccessError , FutexKey } , initial_stack :: { InitialStack , InitialStackCredentials } , mapping_request :: { DeviceMappingSource , FileMappingError , FileMappingSource , MappingPlacement , MappingResourceLimits , MemoryAdvice , UserMappingRequest , UserMappingSource , } , mmap :: PageFaultOutcome , user_access :: UserFaultLimits , }
 kernel/src/memory/mm.rs :: pub (super) mod shootdown
 kernel/src/memory/mm/area.rs :: enum MapType :: Framed
 kernel/src/memory/mm/area.rs :: enum MapType :: KernelMapped
-kernel/src/memory/mm/area.rs :: enum VmaKind :: # [doc = " 等价 Linux `VM_PFNMAP` 的 VMA 级记账属性；split/fork 随 kind 复制。放在 kind 内不扩大 MapArea。"] Device (DevicePageAccounting)
 kernel/src/memory/mm/area.rs :: enum VmaKind :: Anonymous
+kernel/src/memory/mm/area.rs :: enum VmaKind :: Device
 kernel/src/memory/mm/area.rs :: enum VmaKind :: Elf
 kernel/src/memory/mm/area.rs :: enum VmaKind :: File
 kernel/src/memory/mm/area.rs :: enum VmaKind :: Stack
@@ -4603,8 +4617,9 @@ kernel/src/memory/mm/device_area.rs :: pub (in crate :: memory :: mm) impl MapAr
 kernel/src/memory/mm/device_area.rs :: pub (super) DeviceArea :: backing : Arc < DeviceBacking >
 kernel/src/memory/mm/device_area.rs :: pub (super) DeviceArea :: identity : u64
 kernel/src/memory/mm/device_area.rs :: pub (super) DeviceArea :: owner : Option < Arc < dyn crate :: memory :: MappedFileOwner > >
-kernel/src/memory/mm/device_area.rs :: pub (super) DeviceArea :: page_offset : usize
-kernel/src/memory/mm/device_area.rs :: pub (super) impl DeviceArea :: fn partition (area : Option < Self > , original_start : VirtualPageNumber , start : VirtualPageNumber , end : VirtualPageNumber ,) -> (Option < Self > , Option < Self > , Option < Self >)
+kernel/src/memory/mm/device_area.rs :: pub (super) DeviceArea :: page_offset : u32
+kernel/src/memory/mm/device_area.rs :: pub (super) impl DeviceArea :: fn inserts_pages (& self) -> bool
+kernel/src/memory/mm/device_area.rs :: pub (super) impl DeviceArea :: fn partition (area : Option < Self > , original : Range < VirtualPageNumber > , start : VirtualPageNumber , end : VirtualPageNumber ,) -> (Option < Self > , Option < Self > , Option < Self >)
 kernel/src/memory/mm/device_area.rs :: pub (super) impl MapArea :: fn map_device_area (& self , page_table : & mut PageTable , commit : & mut TranslationCommit ,) -> Result < () , MemoryError >
 kernel/src/memory/mm/device_area.rs :: pub (super) impl MapArea :: fn protect_device_area (& self , page_table : & mut PageTable , range : Range < VirtualPageNumber > , permission : MapPermission , commit : & mut TranslationCommit ,) -> Result < () , MemoryError >
 kernel/src/memory/mm/device_area.rs :: pub (super) impl MapArea :: fn try_clone_device_into (& self , page_table : & mut PageTable , commit : & mut TranslationCommit ,) -> Result < Self , MemoryError >
@@ -4708,8 +4723,6 @@ kernel/src/memory/mm/initial_stack.rs :: pub (crate) struct InitialStackCredenti
 kernel/src/memory/mm/initial_stack.rs :: pub (super) impl ElfAuxInfo :: fn new (phdr : usize , phent : usize , phnum : usize , entry : usize , base : usize) -> Self
 kernel/src/memory/mm/initial_stack.rs :: pub (super) impl MemorySet :: fn build_initial_stack (& mut self , stack_top : usize , input : InitialStack < '_ > , aux : ElfAuxInfo , stack_limit : u64 ,) -> Result < usize , ElfLoadError >
 kernel/src/memory/mm/initial_stack.rs :: pub (super) struct ElfAuxInfo
-kernel/src/memory/mm/mapping_request.rs :: enum DevicePageAccounting :: # [doc = " `VM_PFNMAP` 特殊 PTE（DRM GEM shmem 的 `vmf_insert_pfn`）：不计入 statm resident/shared。"] PfnMap
-kernel/src/memory/mm/mapping_request.rs :: enum DevicePageAccounting :: # [doc = " `vm_insert_page(s)` 插入的普通页（ALSA vmalloc ring、io_uring region）：计入 `MM_FILEPAGES`。"] InsertedPages
 kernel/src/memory/mm/mapping_request.rs :: enum FileMappingError :: Invalid
 kernel/src/memory/mm/mapping_request.rs :: enum FileMappingError :: Overflow
 kernel/src/memory/mm/mapping_request.rs :: enum MappingPlacement :: Fixed
@@ -4732,12 +4745,11 @@ kernel/src/memory/mm/mapping_request.rs :: pub (crate) UserMappingRequest :: len
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) UserMappingRequest :: permission : crate :: memory :: MapPermission
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) UserMappingRequest :: placement : MappingPlacement
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) UserMappingRequest :: source : UserMappingSource
-kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum DevicePageAccounting
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum FileMappingError
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum MappingPlacement
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum MemoryAdvice
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) enum UserMappingSource
-kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn new (identity : u64 , backing : Arc < DeviceBacking > , accounting : DevicePageAccounting ,) -> Self
+kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn new (identity : u64 , backing : Arc < DeviceBacking >) -> Self
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn retain_file (& mut self , file : Arc < dyn crate :: memory :: MappedFileOwner > ,) -> Result < () , alloc :: alloc :: AllocError >
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl DeviceMappingSource :: fn retain_object (& mut self , object : Arc < dyn crate :: memory :: MappedFileOwner >)
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) impl FileMappingSource :: fn new (mapping : Arc < dyn SharedFileMapping > , offset : u64 , length : usize ,) -> Result < Self , FileMappingError >
@@ -4746,7 +4758,6 @@ kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct DeviceMappingSourc
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct FileMappingSource
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct MappingResourceLimits
 kernel/src/memory/mm/mapping_request.rs :: pub (crate) struct UserMappingRequest
-kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: accounting : DevicePageAccounting
 kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: backing : Arc < DeviceBacking >
 kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: identity : u64
 kernel/src/memory/mm/mapping_request.rs :: pub (super) DeviceMappingSource :: owner : Option < Arc < dyn crate :: memory :: MappedFileOwner > >
@@ -4819,7 +4830,7 @@ kernel/src/memory/mm/private_reclaim.rs :: pub (super) impl MemorySet :: fn allo
 kernel/src/memory/mm/private_reclaim.rs :: pub (super) impl MemorySet :: fn next_private_resident_from (& self , cursor : VirtualPageNumber ,) -> Option < (VirtualPageNumber , VirtualPageNumber) >
 kernel/src/memory/mm/private_reclaim.rs :: pub (super) impl MemorySet :: fn reclaim_clean_private_pages (& mut self , request : ReclaimRequest) -> ReclaimResult
 kernel/src/memory/mm/process.rs :: pub (crate) impl MemorySet :: fn process_arguments (& mut self) -> Result < Vec < u8 > , UserAccessError >
-kernel/src/memory/mm/resident.rs :: enum PrivateBacking :: # [doc = " 未 COW 的文件页；保活 storage page，不能因只有一个 private alias 而原地放宽写权限。"] File { page : Arc < dyn SharedPage > , mapping : Option < PageMappingRef > , }
+kernel/src/memory/mm/resident.rs :: enum PrivateBacking :: # [doc = " 未 COW 的文件页；保活 storage page，不能因只有一个 private alias 而原地放宽写权限。"] File { page : FilePageMapping , mapping : Option < PageMappingRef > , }
 kernel/src/memory/mm/resident.rs :: enum PrivateBacking :: Pinned (Arc < FrameTracker >)
 kernel/src/memory/mm/resident.rs :: enum PrivateBacking :: User (PageMappingRef)
 kernel/src/memory/mm/resident.rs :: enum PrivatePagePin :: Cached (& 'a SharedFrame)
@@ -4830,6 +4841,8 @@ kernel/src/memory/mm/resident.rs :: pub (super) PrivateResident :: dirty : bool
 kernel/src/memory/mm/resident.rs :: pub (super) PrivateResident :: discardable : bool
 kernel/src/memory/mm/resident.rs :: pub (super) enum PrivateBacking
 kernel/src/memory/mm/resident.rs :: pub (super) enum PrivatePagePin < 'a >
+kernel/src/memory/mm/resident.rs :: pub (super) impl FilePageMapping :: fn new (page : & Arc < dyn SharedPage >) -> Self
+kernel/src/memory/mm/resident.rs :: pub (super) impl FilePageMapping :: fn page (& self) -> & Arc < dyn SharedPage >
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivatePagePin < '_ > :: fn copy_frame (& self) -> Option < FrameTracker >
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivatePagePin < '_ > :: fn ppn (& self) -> crate :: memory :: PhysicalPageNumber
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn exclusive (& self) -> bool
@@ -4848,6 +4861,7 @@ kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn pinne
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn release_for_reclaim (self) -> bool
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn shared (page : & Arc < SwappablePage > , pin : & PagePin < '_ > , private : bool) -> Self
 kernel/src/memory/mm/resident.rs :: pub (super) impl PrivateResident :: fn user (frame : FrameTracker) -> Result < Self , MemoryError >
+kernel/src/memory/mm/resident.rs :: pub (super) struct FilePageMapping
 kernel/src/memory/mm/resident.rs :: pub (super) struct PrivateResident
 kernel/src/memory/mm/retire.rs :: pub (crate) impl MemorySet :: fn prepare_area_retirement (& mut self , start_vpn : VirtualPageNumber ,) -> PreparedAreaRetirement
 kernel/src/memory/mm/retire.rs :: pub (crate) impl MemorySet :: fn remove_area_with_start_vpn (& mut self , start_vpn : VirtualPageNumber)
@@ -4870,7 +4884,7 @@ kernel/src/memory/mm/shared_area.rs :: pub (super) SharedFileArea :: mapping : A
 kernel/src/memory/mm/shared_area.rs :: pub (super) SharedFileArea :: pages : FilePageRange
 kernel/src/memory/mm/shared_area.rs :: pub (super) SharedFileArea :: resident : FallibleMap < VirtualPageNumber , SharedResident >
 kernel/src/memory/mm/shared_area.rs :: pub (super) SharedResident :: mapping : Option < crate :: memory :: swappable_page :: PageMappingRef >
-kernel/src/memory/mm/shared_area.rs :: pub (super) SharedResident :: page : Arc < dyn SharedPage >
+kernel/src/memory/mm/shared_area.rs :: pub (super) SharedResident :: page : super :: resident :: FilePageMapping
 kernel/src/memory/mm/shared_area.rs :: pub (super) SharedResident :: writer : bool
 kernel/src/memory/mm/shared_area.rs :: pub (super) impl AnonymousSharedBacking :: fn page (self : & Arc < Self > , index : usize) -> Result < Arc < SwappablePage > , MemoryError >
 kernel/src/memory/mm/shared_area.rs :: pub (super) impl MapArea :: fn anonymous_mergeable (& self , right : & Self) -> bool
@@ -4907,7 +4921,7 @@ kernel/src/memory/mm/shootdown.rs :: pub (in crate :: memory) impl TranslationCo
 kernel/src/memory/mm/shootdown.rs :: pub (in crate :: memory) impl TranslationCommit :: fn record (& mut self , page : usize , transition : TranslationTransition)
 kernel/src/memory/mm/shootdown.rs :: pub (in crate :: memory) impl TranslationCommit :: fn record_instruction_publication (& mut self , first_physical_page : usize , page_count : usize ,)
 kernel/src/memory/mm/shootdown.rs :: pub (in crate :: memory) impl TranslationCommit :: fn record_range (& mut self , first_page : usize , page_count : usize , transition : TranslationTransition ,)
-kernel/src/memory/mm/shootdown.rs :: pub (in crate :: memory) impl TranslationCommit :: fn retain_table_pages (& mut self , pages : impl IntoIterator < Item = VacantEntry < usize , FrameTracker > > ,)
+kernel/src/memory/mm/shootdown.rs :: pub (in crate :: memory) impl TranslationCommit :: fn retain_table_pages (& mut self , pages : impl IntoIterator < Item = VacantEntry < usize , TableFrame > > ,)
 kernel/src/memory/mm/shootdown.rs :: pub (in crate :: memory) struct TranslationCommit
 kernel/src/memory/mm/shootdown.rs :: pub (super) FencePlan :: local_fences : usize
 kernel/src/memory/mm/shootdown.rs :: pub (super) FencePlan :: local_instruction_fence : bool
@@ -4973,18 +4987,19 @@ kernel/src/memory/mod.rs :: pub (crate) static KERNEL_SPACE : Once < Mutex < Mem
 kernel/src/memory/mod.rs :: pub (crate) use address :: { PhysicalAddress , PhysicalPageNumber , VirtualAddress }
 kernel/src/memory/mod.rs :: pub (crate) use config :: *
 kernel/src/memory/mod.rs :: pub (crate) use crate :: config :: KERNEL_STACK_SIZE
-kernel/src/memory/mod.rs :: pub (crate) use device_backing :: DeviceBacking
+kernel/src/memory/mod.rs :: pub (crate) use device_backing :: { DeviceBacking , DeviceMemoryKind }
 kernel/src/memory/mod.rs :: pub (crate) use executable :: { ExecutableImage , ExecutableParseError , ExecutableSource , parse_interpreter_elf , parse_main_elf , }
 kernel/src/memory/mod.rs :: pub (crate) use frame_allocator :: { FrameAllocationClass , FrameTracker , alloc_contiguous , statistics as frame_statistics , }
 kernel/src/memory/mod.rs :: pub (crate) use heap_allocator :: statistics as heap_statistics
-kernel/src/memory/mod.rs :: pub (crate) use kernel_stack :: KernelStack
+kernel/src/memory/mod.rs :: pub (crate) use kernel_stack :: { KernelStack , kernel_stack_bytes }
 kernel/src/memory/mod.rs :: pub (crate) use mm :: SharedMemoryBacking
-kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , DevicePageAccounting , ElfLoadError , FileMappingError , FileMappingSource , FutexAccessError , FutexKey , InitialStack , InitialStackCredentials , MappingPlacement , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , RemapError , RemapPlacement , RemapRequest , SegmentationCause , UserAccessError , UserAtomicU32 , UserAtomicU32Op , UserFaultLimits , UserMappingRequest , UserMappingSource , UserPageStatistics , reclaim_address_space , }
+kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , ElfLoadError , FileMappingError , FileMappingSource , FutexAccessError , FutexKey , InitialStack , InitialStackCredentials , MappingPlacement , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , RemapError , RemapPlacement , RemapRequest , SegmentationCause , UserAccessError , UserAtomicU32 , UserAtomicU32Op , UserFaultLimits , UserMappingRequest , UserMappingSource , UserPageStatistics , reclaim_address_space , }
 kernel/src/memory/mod.rs :: pub (crate) use permissions :: MapPermission
 kernel/src/memory/mod.rs :: pub (crate) use pressure :: run_background_reclaim
-kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { MappedFileOwner , MemoryMappingOwner , MemoryReclaimer , ReclaimRequest , ReclaimResult , SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedPage , SharedPagePin , complete_memory_mapping_owner_initialization , invalidate_shared_file , reclaim_pages , reclaim_statistics , register_memory_mapping_owner , register_memory_reclaimer , revoke_shared_file_writers , }
+kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { MappedFileOwner , MemoryMappingOwner , MemoryReclaimer , PageMapCount , ReclaimRequest , ReclaimResult , SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedPage , SharedPagePin , complete_memory_mapping_owner_initialization , invalidate_shared_file , reclaim_pages , reclaim_statistics , register_memory_mapping_owner , register_memory_reclaimer , revoke_shared_file_writers , }
 kernel/src/memory/mod.rs :: pub (crate) use shared_memory :: { SharedMemoryMappingSource , SharedMemoryVma }
 kernel/src/memory/mod.rs :: pub (crate) use swappable_page :: { SwappablePage , cached_pages as swap_cached_pages }
+kernel/src/memory/mod.rs :: pub (crate) use vmstat :: { PageStateSnapshot , snapshot as page_state_snapshot }
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn activate_kernel (& self)
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn kernel_trap_token (& self) -> crate :: arch :: mmu :: KernelTrapToken
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn new (kind : AddressSpaceKind) -> Self
@@ -5003,6 +5018,7 @@ kernel/src/memory/page_table.rs :: pub (in crate :: memory) impl PageTable :: fn
 kernel/src/memory/page_table.rs :: pub (in crate :: memory) impl PageTable :: fn revoke_leaf (& mut self , vpn : VirtualPageNumber , commit : & mut TranslationCommit ,) -> Result < () , PageTableError >
 kernel/src/memory/page_table.rs :: pub (in crate :: memory) impl PageTable :: fn set_flags (& mut self , vpn : VirtualPageNumber , permissions : PagePermissions , commit : & mut TranslationCommit ,) -> Result < () , PageTableError >
 kernel/src/memory/page_table.rs :: pub (in crate :: memory) impl PageTable :: fn unmap (& mut self , vpn : VirtualPageNumber , commit : & mut TranslationCommit ,) -> Result < () , PageTableError >
+kernel/src/memory/page_table.rs :: pub (in crate :: memory) struct TableFrame
 kernel/src/memory/pressure.rs :: pub (crate) fn run_background_reclaim (now : fn () -> u64 , mut sleep_until : impl FnMut (u64)) -> !
 kernel/src/memory/retire.rs :: pub (super) ReclaimReleaseDecision :: reclaimed : bool
 kernel/src/memory/retire.rs :: pub (super) ReclaimReleaseDecision :: release : bool
@@ -5049,6 +5065,7 @@ kernel/src/memory/shared_file.rs :: pub (crate) impl SharedFrame :: fn write (& 
 kernel/src/memory/shared_file.rs :: pub (crate) impl SharedFrame :: fn zero_from (& self , offset : usize)
 kernel/src/memory/shared_file.rs :: pub (crate) impl SharedPagePin < '_ > :: fn ppn (& self) -> PhysicalPageNumber
 kernel/src/memory/shared_file.rs :: pub (crate) impl SharedPagePin < '_ > :: fn read (& self , offset : usize , output : & mut [u8])
+kernel/src/memory/shared_file.rs :: pub (crate) struct PageMapCount
 kernel/src/memory/shared_file.rs :: pub (crate) struct ReclaimRequest
 kernel/src/memory/shared_file.rs :: pub (crate) struct ReclaimResult
 kernel/src/memory/shared_file.rs :: pub (crate) struct ReclaimStatistics
@@ -5063,6 +5080,8 @@ kernel/src/memory/shared_file.rs :: pub (crate) trait SharedPage
 kernel/src/memory/shared_file.rs :: pub (in crate :: memory) fn reclaim_background_pages (limit : usize) -> ReclaimResult
 kernel/src/memory/shared_file.rs :: pub (in crate :: memory) fn restore_swapped_pages < E : From < SharedFileError > > (identity : SharedFileId , wait : & mut TaskMutexWaitPreparation , check : & mut impl FnMut () -> Result < () , E > ,) -> Result < () , E >
 kernel/src/memory/shared_file.rs :: pub (in crate :: memory) fn revoke_swappable_page (page : & SwappablePage , ppn : PhysicalPageNumber ,) -> Option < usize >
+kernel/src/memory/shared_file.rs :: pub (in crate :: memory) impl PageMapCount :: fn map (& self)
+kernel/src/memory/shared_file.rs :: pub (in crate :: memory) impl PageMapCount :: fn unmap (& self)
 kernel/src/memory/shared_file.rs :: pub (in crate :: memory) impl ReclaimRequest :: fn limit_scans (& mut self , limit : usize)
 kernel/src/memory/shared_file.rs :: pub (in crate :: memory) impl ReclaimResult :: const fn reclaimed_pages (self) -> usize
 kernel/src/memory/shared_file.rs :: pub (in crate :: memory) impl ReclaimResult :: const fn scanned_pages (self) -> usize
@@ -5080,6 +5099,7 @@ kernel/src/memory/shared_file.rs :: trait SharedFileMapping :: fn size (& self) 
 kernel/src/memory/shared_file.rs :: trait SharedFileMapping :: fn sync_range (& self , offset : u64 , length : u64) -> Result < () , SharedFileError >
 kernel/src/memory/shared_file.rs :: trait SharedFileMapping :: fn writable (& self) -> bool
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn acquire_writer (& self)
+kernel/src/memory/shared_file.rs :: trait SharedPage :: fn map_count (& self) -> Option < & PageMapCount >
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn pin (& self) -> Result < SharedPagePin < '_ > , SharedFileError >
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn release_writer (& self)
 kernel/src/memory/shared_file.rs :: trait SharedPage :: fn swappable (& self) -> Option < & Arc < SwappablePage > >
@@ -5176,6 +5196,7 @@ kernel/src/memory/swappable_page/references.rs :: pub (super) impl MappingState 
 kernel/src/memory/swappable_page/references.rs :: pub (super) impl MappingState :: fn epoch (& self) -> u64
 kernel/src/memory/swappable_page/references.rs :: pub (super) impl MappingState :: fn inherit (& mut self , parent : & MappingReference) -> MappingReference
 kernel/src/memory/swappable_page/references.rs :: pub (super) impl MappingState :: fn installed (& mut self , private : bool , epoch : u64) -> MappingReference
+kernel/src/memory/swappable_page/references.rs :: pub (super) impl MappingState :: fn installed_count (& self) -> usize
 kernel/src/memory/swappable_page/references.rs :: pub (super) impl MappingState :: fn is_installed (& self , reference : & MappingReference) -> bool
 kernel/src/memory/swappable_page/references.rs :: pub (super) impl MappingState :: fn mark_installed (& mut self , reference : & mut MappingReference , epoch : u64)
 kernel/src/memory/swappable_page/references.rs :: pub (super) impl MappingState :: fn private_exclusive (& self , reference : & MappingReference) -> bool
@@ -5193,6 +5214,20 @@ kernel/src/memory/swappable_page/swapcache.rs :: pub (super) impl CachedSlot :: 
 kernel/src/memory/swappable_page/swapcache.rs :: pub (super) impl CachedSlot :: fn identity (& self) -> SharedFileId
 kernel/src/memory/swappable_page/swapcache.rs :: pub (super) impl CachedSlot :: fn new (slot : swap :: SwapSlot) -> Self
 kernel/src/memory/swappable_page/swapcache.rs :: pub (super) struct CachedSlot
+kernel/src/memory/vmstat.rs :: enum PageState :: # [doc = " `NR_ANON_MAPPED`：至少被一个映射安装的私有匿名页，每个物理页只计一次。"] AnonMapped
+kernel/src/memory/vmstat.rs :: enum PageState :: # [doc = " `NR_FILE_MAPPED`：至少被一个映射安装的文件、shmem 与 `vm_insert_page` 驱动页。"] FileMapped
+kernel/src/memory/vmstat.rs :: enum PageState :: # [doc = " `NR_PAGETABLE`：页表页。"] PageTables
+kernel/src/memory/vmstat.rs :: enum PageState :: # [doc = " `NR_SHMEM`：驻留的 tmpfs、memfd、SysV/共享匿名页与 GEM shmem 页。"] Shmem
+kernel/src/memory/vmstat.rs :: pub (crate) PageStateSnapshot :: anon_mapped : usize
+kernel/src/memory/vmstat.rs :: pub (crate) PageStateSnapshot :: file_mapped : usize
+kernel/src/memory/vmstat.rs :: pub (crate) PageStateSnapshot :: page_tables : usize
+kernel/src/memory/vmstat.rs :: pub (crate) PageStateSnapshot :: shmem : usize
+kernel/src/memory/vmstat.rs :: pub (crate) fn snapshot () -> PageStateSnapshot
+kernel/src/memory/vmstat.rs :: pub (crate) struct PageStateSnapshot
+kernel/src/memory/vmstat.rs :: pub (in crate :: memory) enum PageState
+kernel/src/memory/vmstat.rs :: pub (in crate :: memory) fn add (item : PageState , pages : usize)
+kernel/src/memory/vmstat.rs :: pub (in crate :: memory) fn sub (item : PageState , pages : usize)
+kernel/src/memory/vmstat.rs :: pub (in crate :: memory) fn transition (item : PageState , before : bool , after : bool)
 kernel/src/namespace/id_map.rs :: pub (crate) MapExtent :: count : u32
 kernel/src/namespace/id_map.rs :: pub (crate) MapExtent :: first : u32
 kernel/src/namespace/id_map.rs :: pub (crate) MapExtent :: lower_first : u32

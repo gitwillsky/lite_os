@@ -15,7 +15,7 @@ use super::abi::{
 };
 use crate::{
     ipc::{Pipe, PipeEnd, PipeWaitCondition},
-    memory::{DeviceBacking, FrameAllocationClass, PAGE_SIZE},
+    memory::{DeviceBacking, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE},
     sync::{TaskMutex, WaitResult},
 };
 
@@ -123,9 +123,11 @@ impl Unit {
 }
 
 fn allocate_zeroed(bytes: usize) -> Result<Arc<DeviceBacking>, RingError> {
+    // Linux io_region_mmap 用 vm_insert_pages 映射 ring 页。
     let backing = DeviceBacking::try_allocate(
         bytes.div_ceil(PAGE_SIZE).max(1),
         FrameAllocationClass::Reclaimable,
+        DeviceMemoryKind::InsertedPages,
     )
     .ok_or(RingError::OutOfMemory)?;
     // 帧可能含旧内核数据；映射给用户态前必须清零，否则 ring 页泄露其他对象的残留字节。

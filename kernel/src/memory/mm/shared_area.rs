@@ -200,7 +200,7 @@ impl SharedAnonymousArea {
 #[derive(Debug)]
 pub(super) struct SharedResident {
     /// 文件页缓存提供的共享物理页。
-    pub(super) page: Arc<dyn SharedPage>,
+    pub(super) page: super::resident::FilePageMapping,
     /// 当前 resident 是否持有 writer claim。
     pub(super) writer: bool,
     /// Memory-backed pages retain their own logical swap-entry epoch; disk cache stays resident.
@@ -235,7 +235,7 @@ impl SharedResident {
             page.acquire_writer();
         }
         Self {
-            page: page.clone(),
+            page: super::resident::FilePageMapping::new(page),
             writer,
             mapping,
         }

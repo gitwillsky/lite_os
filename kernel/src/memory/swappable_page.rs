@@ -15,6 +15,7 @@ use core::fmt;
 use spin::Mutex;
 
 use super::shared_memory::{SharedPageResidency, SharedPageStatistics};
+use super::vmstat::{self, PageState};
 use super::{SharedFileError, SharedFileId, SharedFrame, address::PhysicalPageNumber, swap};
 use crate::sync::{TaskMutex, TaskMutexGuard};
 use references::{MappingReference, MappingState};
@@ -51,6 +52,8 @@ struct State {
     // OWNER: indexed shared page 的唯一统计 membership；没有额外 resident/swapped 标记。
     // 独立 ledger Arc 不保活 backing，避免 backing→page→backing 环。
     shared_statistics: Option<Arc<SharedPageStatistics>>,
+    /// 匿名/COW 私有页为 true；tmpfs、memfd 与 SysV/共享匿名页为 false（Linux shmem）。
+    private_origin: bool,
 }
 
 impl Drop for State {
@@ -58,10 +61,47 @@ impl Drop for State {
         if let Some(statistics) = &self.shared_statistics {
             statistics.retire(self.backing.residency());
         }
+        self.account(self.usage(), (false, false));
     }
 }
 
 impl State {
+    /// 新建驻留页并计入全局页状态；Drop 对称扣除，创建事务中途失败也不漂移。
+    fn new(frame: Arc<SharedFrame>, private_origin: bool) -> Self {
+        let state = Self {
+            backing: Backing::Resident { frame, slot: None },
+            mappings: MappingState::default(),
+            shared_statistics: None,
+            private_origin,
+        };
+        state.account((false, false), state.usage());
+        state
+    }
+
+    /// 本页对全局页状态的贡献：（驻留，至少一个映射已安装到当前物理页）。
+    fn usage(&self) -> (bool, bool) {
+        let resident = matches!(self.backing, Backing::Resident { .. });
+        (resident, resident && self.mappings.installed_count() > 0)
+    }
+
+    /// 按 Linux 页类别提交一次贡献变化：私有页只进 `AnonPages`；shmem 驻留进 `Shmem`、映射进 `Mapped`。
+    fn account(&self, (was_resident, was_mapped): (bool, bool), (resident, mapped): (bool, bool)) {
+        if self.private_origin {
+            vmstat::transition(PageState::AnonMapped, was_mapped, mapped);
+        } else {
+            vmstat::transition(PageState::Shmem, was_resident, resident);
+            vmstat::transition(PageState::FileMapped, was_mapped, mapped);
+        }
+    }
+
+    /// 在同一 PageState 锁内执行映射或 backing 变更，并按前后贡献提交全局页状态。
+    fn update<R>(&mut self, change: impl FnOnce(&mut Self) -> R) -> R {
+        let before = self.usage();
+        let result = change(self);
+        self.account(before, self.usage());
+        result
+    }
+
     /// 唯一 physical backing replacement；计数与 actual backing 在同一 PageState 事务提交。
     /// 被移出的 frame/slot 仍由调用者在锁外析构。
     fn replace_backing(&mut self, next: Backing) -> Backing {
@@ -84,7 +124,6 @@ impl State {
 
 /// 匿名、COW 或内存文件页的单份物理内容；临时 Arc 不参与 COW 计数。
 pub(crate) struct SwappablePage {
-    private_origin: bool,
     /// 真实 anonymous shared backing 的 Weak；不形成 backing→pages→backing 循环。
     shared_owner: Option<Weak<dyn SharedMemorySwapOwner>>,
     // OWNER: blocking IO/physical byte access/迁移由此锁串行。迁移只能 try-MM，
@@ -98,7 +137,6 @@ impl fmt::Debug for SwappablePage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("SwappablePage")
-            .field("private_origin", &self.private_origin)
             .finish_non_exhaustive()
     }
 }
@@ -136,14 +174,9 @@ impl SwappablePage {
     ) -> Result<Arc<Self>, SharedFileError> {
         let frame = Arc::try_new(frame).map_err(|_| SharedFileError::OutOfMemory)?;
         let page = Arc::try_new(Self {
-            private_origin,
             shared_owner,
             operation: TaskMutex::new(()),
-            state: Mutex::new(State {
-                backing: Backing::Resident { frame, slot: None },
-                mappings: MappingState::default(),
-                shared_statistics: None,
-            }),
+            state: Mutex::new(State::new(frame, private_origin)),
         })
         .map_err(|_| SharedFileError::OutOfMemory)?;
         registry::register(&page)?;
@@ -194,9 +227,11 @@ impl SwappablePage {
         let frame = Arc::try_new(frame).map_err(|_| SharedFileError::OutOfMemory)?;
         let (retired, epoch) = {
             let mut state = self.state.lock();
-            let retired = state.replace_backing(Backing::Resident {
-                frame: frame.clone(),
-                slot: Some(CachedSlot::new(slot)),
+            let retired = state.update(|state| {
+                state.replace_backing(Backing::Resident {
+                    frame: frame.clone(),
+                    slot: Some(CachedSlot::new(slot)),
+                })
             });
             let unused = state.release_unused_slot();
             ((retired, unused), state.mappings.epoch())
@@ -239,7 +274,10 @@ impl SwappablePage {
             core::ptr::eq(self.as_ref(), pin.page),
             "page pin belongs to another page"
         );
-        let reference = self.state.lock().mappings.installed(private, pin.epoch);
+        let reference = self
+            .state
+            .lock()
+            .update(|state| state.mappings.installed(private, pin.epoch));
         PageMappingRef {
             page: self.clone(),
             reference: Some(reference),
@@ -302,10 +340,16 @@ impl SwappablePage {
         let retired = {
             let mut state = self.state.lock();
             // IO 期间 reference Drop/fork publication 会使证据失效；同锁验证与物理发布。
-            if !state.mappings.commit_swap(snapshot, fenced) {
+            let committed = state.update(|state| {
+                state
+                    .mappings
+                    .commit_swap(snapshot, fenced)
+                    .then(|| state.replace_backing(Backing::Swapped(slot)))
+            });
+            let Some(retired) = committed else {
                 return false;
-            }
-            state.replace_backing(Backing::Swapped(slot))
+            };
+            retired
         };
         drop(retired);
         drop(frame);
@@ -364,15 +408,14 @@ impl PageMappingRef {
         };
         let (retired, unused_slot) = {
             let mut state = self.page.state.lock();
-            state
-                .mappings
-                .release(self.reference.take().expect("live reference"));
-            let unused_slot = state.release_unused_slot();
-            let retired = if self.page.private_origin && state.mappings.snapshot().total() == 0 {
-                Some(state.replace_backing(Backing::Discarded))
-            } else {
-                None
-            };
+            let reference = self.reference.take().expect("live reference");
+            let (retired, unused_slot) = state.update(|state| {
+                state.mappings.release(reference);
+                let unused_slot = state.release_unused_slot();
+                let retired = (state.private_origin && state.mappings.snapshot().total() == 0)
+                    .then(|| state.replace_backing(Backing::Discarded));
+                (retired, unused_slot)
+            });
             (retired, unused_slot)
         };
         let reclaimed = matches!(retired, Some(Backing::Resident { .. }));
@@ -391,11 +434,9 @@ impl PageMappingRef {
             .is_installed(self.reference.as_ref().expect("live reference"))
     }
     pub(in crate::memory) fn private_exclusive(&self) -> bool {
-        self.page.private_origin
-            && self
-                .page
-                .state
-                .lock()
+        let state = self.page.state.lock();
+        state.private_origin
+            && state
                 .mappings
                 .private_exclusive(self.reference.as_ref().expect("live reference"))
     }
@@ -415,9 +456,8 @@ impl PageMappingRef {
         assert!(self.matches(pin.page), "page pin belongs to another page");
         let retired = {
             let mut state = self.page.state.lock();
-            state
-                .mappings
-                .mark_installed(self.reference.as_mut().expect("live reference"), pin.epoch);
+            let reference = self.reference.as_mut().expect("live reference");
+            state.update(|state| state.mappings.mark_installed(reference, pin.epoch));
             state.release_unused_slot()
         };
         drop(retired);
@@ -429,12 +469,12 @@ impl PageMappingRef {
 
 impl Clone for PageMappingRef {
     fn clone(&self) -> Self {
+        let parent = self.reference.as_ref().expect("live reference");
         let reference = self
             .page
             .state
             .lock()
-            .mappings
-            .inherit(self.reference.as_ref().expect("live reference"));
+            .update(|state| state.mappings.inherit(parent));
         Self {
             page: self.page.clone(),
             reference: Some(reference),
@@ -449,7 +489,7 @@ impl Drop for PageMappingRef {
         };
         let retired = {
             let mut state = self.page.state.lock();
-            state.mappings.release(reference);
+            state.update(|state| state.mappings.release(reference));
             state.release_unused_slot()
         };
         drop(retired);

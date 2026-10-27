@@ -36,6 +36,10 @@ ext4 已有定期 journal/page-cache 写回线程；它不提供通用脏页压�
   page-in 缓存一份 Resident 与未恢复 alias 所需的唯一 retained slot，全部 alias 恢复后释放；
   `/proc/meminfo` 的 SwapCached 按唯一 Resident+retained slot capability 计数，提供近似
   vmstat 快照；`/proc/PID/status` 的 VmSwap 只计 private anonymous，排除 shared anonymous/tmpfs。
+  `/proc/meminfo` 的 AnonPages、Mapped、Shmem、KernelStack、PageTables 按 Linux 7.1 `fs/proc/meminfo.c`
+  的 NR_ANON_MAPPED/NR_FILE_MAPPED/NR_SHMEM/NR_KERNEL_STACK_KB/NR_PAGETABLE 语义精确投影；物理页按 mapcount
+  只计一次。Cached 与 Linux NR_FILE_PAGES 一致包含 Shmem（含 GEM shmem）。KernelStack 只含 task stack，
+  启动期每 CPU 的 boot stack 不经 KernelStack 分配，不计入。Active/Inactive/Writeback 仍报告 0。
 
 - ext4 swapfile 使用4KiB固定profile、非稀疏 allocated extents（含 unwritten），先撤共享 writer、
   排空 cache/journal，再直接 extent I/O。O_RDWR 来源阻 readonly/remount,ro，opened pin umount；

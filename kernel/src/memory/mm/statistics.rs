@@ -70,10 +70,8 @@ impl MemorySet {
                     0
                 };
                 // Linux 只为 `vm_insert_page(s)` 的普通页增加 MM_FILEPAGES；PFNMAP 特殊 PTE 不进 RSS。
-                let device_pages = if area.kind
-                    == VmaKind::Device(DevicePageAccounting::InsertedPages)
-                    && MapArea::has_leaf_permission(area.map_permission)
-                {
+                // mprotect(PROT_NONE) 只改写 PTE、不 zap，所以这些页仍计入。
+                let device_pages = if area.device.as_ref().is_some_and(DeviceArea::inserts_pages) {
                     pages
                 } else {
                     0

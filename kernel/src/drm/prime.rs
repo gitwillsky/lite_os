@@ -2,7 +2,7 @@
 use super::{DrmDevice, DrmError, DrmFile, DrmWait, graphics::VirglBuffer};
 use crate::{
     fs::chardev::{DeviceError, DeviceFile, DeviceWaitSources, IoctlCall, MapRequest},
-    memory::{DeviceMappingSource, DevicePageAccounting},
+    memory::DeviceMappingSource,
 };
 use alloc::sync::Arc;
 use syscall_abi::errno;
@@ -124,11 +124,9 @@ impl DeviceFile for DmaBuf {
         if request.writable && !request.fd_writable {
             return Err(DeviceError::Errno(errno::EACCES));
         }
-        // drm_gem_dmabuf_mmap 转到同一 GEM shmem `VM_PFNMAP` 路径。
         Ok(DeviceMappingSource::new(
             (1u64 << 63) | u64::from(self.buffer().resource_id),
             self.buffer().backing.clone(),
-            DevicePageAccounting::PfnMap,
         ))
     }
     fn ioctl(&self, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {

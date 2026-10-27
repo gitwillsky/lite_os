@@ -334,7 +334,7 @@ impl MemorySet {
             Err(SharedFileError::Io) => return Err(MemoryError::Io),
         };
         if let Some(resident) = shared.resident.get_mut(&vpn) {
-            let page = resident.page.clone();
+            let page = resident.page.page().clone();
             let pin = page.pin()?;
             let writer = permission.contains(MapPermission::W);
             if writer && !resident.writer {

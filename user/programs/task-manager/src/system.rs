@@ -6,15 +6,24 @@ pub const HISTORY: usize = 120;
 /// `/proc/stat` 的时钟频率（内核 `CLOCK_TICKS_PER_SECOND`）。
 pub const TICKS_PER_SECOND: u64 = 100;
 
-/// `/proc/meminfo` 里性能页用到的字段，单位 KiB。
+/// `/proc/meminfo` 里性能页用到的字段，单位 KiB；语义同 Linux 7.1 `fs/proc/meminfo.c`。
 #[derive(Clone, Copy, Default)]
 pub struct Memory {
     pub total: u64,
     pub available: u64,
+    /// 含 Shmem 的 Linux Cached。
     pub cached: u64,
     pub swap_total: u64,
     pub swap_free: u64,
     pub slab: u64,
+    /// 至少被映射一次的私有匿名页，物理页只计一次。
+    pub anon: u64,
+    /// 至少被映射一次的文件、shmem 与驱动插入页。
+    pub mapped: u64,
+    /// tmpfs、memfd、SysV/共享匿名与 GPU（GEM shmem）缓冲。
+    pub shmem: u64,
+    pub kernel_stack: u64,
+    pub page_tables: u64,
 }
 
 impl Memory {
@@ -33,7 +42,17 @@ impl Memory {
             swap_total: field("SwapTotal"),
             swap_free: field("SwapFree"),
             slab: field("Slab"),
+            anon: field("AnonPages"),
+            mapped: field("Mapped"),
+            shmem: field("Shmem"),
+            kernel_stack: field("KernelStack"),
+            page_tables: field("PageTables"),
         }
+    }
+
+    /// 内核自身占用：内核堆（Slab）、task 内核栈与页表。
+    pub fn kernel(&self) -> u64 {
+        self.slab + self.kernel_stack + self.page_tables
     }
 
     /// 已认可内存与上限：已用物理内存加已用交换空间，上限是物理内存加交换空间（Windows 的"认可用量"）。

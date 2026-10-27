@@ -4,7 +4,7 @@ use spin::Mutex;
 
 use crate::fallible_tree::FallibleMap;
 use crate::memory::{
-    MemoryReclaimer, PAGE_SIZE, ReclaimRequest, ReclaimResult, SharedFileError, SharedFileId,
+    MemoryReclaimer, PAGE_SIZE, PageMapCount, ReclaimRequest, ReclaimResult, SharedFileError, SharedFileId,
     SharedFileMapping, SharedFrame, SharedPage, SharedPagePin, invalidate_shared_file,
     register_memory_reclaimer,
 };
@@ -63,6 +63,7 @@ pub(super) struct CachedPage {
     // 拆成两个 Atomic 会让 writeback 的 writer==0 / clear-dirty 间隙吞掉并发 writer publication。
     state: AtomicUsize,
     writer_retired: Arc<TaskEvent>,
+    mapped: PageMapCount,
 }
 
 impl core::fmt::Debug for CachedPage {
@@ -113,6 +114,10 @@ impl Drop for CachedPage {
 impl SharedPage for CachedPage {
     fn pin(&self) -> Result<SharedPagePin<'_>, SharedFileError> {
         Ok(SharedPagePin::Cached(&self.frame))
+    }
+
+    fn map_count(&self) -> Option<&PageMapCount> {
+        Some(&self.mapped)
     }
 
     fn acquire_writer(&self) {
@@ -227,6 +232,7 @@ impl CachedFile {
             frame,
             state: AtomicUsize::new(0),
             writer_retired: self.writer_retired.clone(),
+            mapped: PageMapCount::default(),
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
         let mut pages = self.pages.lock();

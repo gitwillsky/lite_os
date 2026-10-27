@@ -112,6 +112,12 @@ pub(crate) struct ProcSnapshot {
     pub(crate) dirty_pages: usize,
     pub(crate) reclaimable_cached_pages: usize,
     pub(crate) heap_pages: usize,
+    /// Linux NR_ANON_MAPPED / NR_FILE_MAPPED / NR_SHMEM / NR_PAGETABLE 全局页状态，单位为页。
+    pub(crate) anon_mapped_pages: usize,
+    pub(crate) file_mapped_pages: usize,
+    pub(crate) shmem_pages: usize,
+    pub(crate) page_table_pages: usize,
+    pub(crate) kernel_stack_bytes: usize,
     pub(crate) swap_total_pages: usize,
     pub(crate) swap_free_pages: usize,
     pub(crate) swap_cached_pages: usize,

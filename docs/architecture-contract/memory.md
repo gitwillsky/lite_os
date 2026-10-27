@@ -296,9 +296,20 @@
   文件 I/O 与 mmap 不得返回可跨迁移的裸 frame reference。`UserPageStatistics` 从同一 record
   epoch 投影 RSS，VmSwap 只计 private anonymous stale entry，排除 shmem；物理 page-in
   不替其他 alias 增加 RSS。task/procfs 只消费此 projection，不重新构造 residency 判定。
-  device VMA 的 RSS 由设备 mmap 声明的 `DevicePageAccounting` 决定，存于 `VmaKind::Device`，split/fork 随 kind 复制：
-  `PfnMap` 等价 Linux `VM_PFNMAP` 特殊 PTE（DRM GEM/dumb/dma-buf 的 `vmf_insert_pfn`），不计入 statm resident/shared；
-  `InsertedPages` 等价 `vm_insert_page(s)`（ALSA vmalloc ring、io_uring region），整段计入 resident 与 shared（`MM_FILEPAGES`）。
+  `DeviceBacking` 的唯一分配者声明 `DeviceMemoryKind`：`GemShmem` 对应 drm_gem_shmem，页计入 `Shmem`，
+  用户映射是 `VM_PFNMAP`，不计 RSS/`Mapped`；`InsertedPages` 对应 `vm_insert_page(s)`（ALSA vmalloc ring、
+  io_uring region），整段计入 statm resident 与 shared（`MM_FILEPAGES`，PROT_NONE 不 zap 仍计入），并按页维护
+  mapcount 计入 `Mapped`；`Driver` 是不映射给用户的驱动内部页。
+- `memory::vmstat` 是 Linux `global_node_page_state` 的唯一投影，每项只在页 owner 的精确边沿增减：
+  1. `AnonPages`/`Mapped`/`Shmem`：`SwappablePage` 在同一 PageState 锁内比较变更前后的（驻留，mapcount>0），
+     mapcount 为 `MappingState` 的 total−stale；私有来源计 `AnonPages`，其余（tmpfs/memfd/SysV/共享匿名）
+     驻留计 `Shmem`、映射计 `Mapped`。创建与 State Drop 对称，失败的创建事务不漂移。
+  2. 磁盘页缓存页由 `PageMapCount` 计 mapcount；`SharedResident` 与私有文件页的 `FilePageMapping` 令牌在
+     建立、fork 复制、释放时对称增减。device 视图 `DeviceArea` 以构造/clone/Drop 维护 InsertedPages 逐页
+     mapcount；VMA 拆分先建新视图再释放旧视图，覆盖不变的页不经过零。
+  3. `PageTables` 由 `TableFrame` 分配与 Drop 增减，含等待 fence 的退休页表；`KernelStack` 由 stack handle
+     分配器的存活数投影，不另设计数。
+  计数为 Relaxed 原子：只在页状态边沿各一次 RMW，没有新锁或分配，属于既有慢路径的常数成本，不新增 benchmark。
   Resident 的唯一 CachedSlot capability 以 RAII 发放/归还 SwapCached 页计数，临时 Slot/
   PagePin clone 不计数；无独立 backing map/flag。全局 Atomic 仅给 O(1) vmstat 近似投影，
   不承担内容 ordering、不扫描页面。构造只在 frame/IO 成功后的同锁 Resident 提交，退休

@@ -47,11 +47,7 @@ mod memory {
         let file = Arc::new(Lease);
         let object_weak = Arc::downgrade(&object);
         let file_weak = Arc::downgrade(&file);
-        let mut source = mapping_request::DeviceMappingSource::new(
-            1,
-            Arc::new(DeviceBacking),
-            mapping_request::DevicePageAccounting::PfnMap,
-        );
+        let mut source = mapping_request::DeviceMappingSource::new(1, Arc::new(DeviceBacking));
         source.retain_object(object.clone());
         source.retain_file(file.clone()).unwrap();
         let descendant = source.clone();

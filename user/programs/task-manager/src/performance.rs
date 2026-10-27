@@ -31,10 +31,10 @@ pub struct View {
     totals: [Widget; 3],
     /// 总数、限制、峰值。
     commit: [Widget; 3],
-    /// 总数、可用数、系统缓存。
-    physical: [Widget; 3],
-    /// 总数；内核只发布 Slab，没有分页/未分页拆分，不显示无数据的行。
-    kernel: [Widget; 1],
+    /// 总数、可用数、系统缓存，以及 Linux 页类别：匿名页、共享内存、文件映射。
+    physical: [Widget; 6],
+    /// 总数与组成：内核堆、页表、内核栈。Linux 没有分页/未分页池之分，不显示这两行。
+    kernel: [Widget; 4],
     _containers: Vec<Widget>,
 }
 
@@ -166,7 +166,14 @@ impl View {
         let physical = stats(
             &left,
             "物理内存",
-            ["总数", "可用数", "系统缓存"],
+            [
+                "总数",
+                "可用数",
+                "系统缓存",
+                "匿名页",
+                "共享内存",
+                "文件映射",
+            ],
             &mut containers,
         )?;
         let commit = stats(
@@ -175,7 +182,12 @@ impl View {
             ["总数", "限制", "峰值"],
             &mut containers,
         )?;
-        let kernel = stats(&right, "内核内存", ["总数"], &mut containers)?;
+        let kernel = stats(
+            &right,
+            "内核内存",
+            ["总数", "内核堆", "页表", "内核栈"],
+            &mut containers,
+        )?;
         containers.push(row);
         Ok(Self {
             cpu_meter,
@@ -213,16 +225,29 @@ impl View {
             &[used, limit, monitor.commit_peak],
             memory_text,
         )?;
+        let memory = &monitor.memory;
         set(
             &self.physical,
             &[
-                monitor.memory.total,
-                monitor.memory.available,
-                monitor.memory.cached,
+                memory.total,
+                memory.available,
+                memory.cached,
+                memory.anon,
+                memory.shmem,
+                memory.mapped,
             ],
             memory_text,
         )?;
-        set(&self.kernel, &[monitor.memory.slab], memory_text)?;
+        set(
+            &self.kernel,
+            &[
+                memory.kernel(),
+                memory.slab,
+                memory.page_tables,
+                memory.kernel_stack,
+            ],
+            memory_text,
+        )?;
         self.charts(monitor, graph)
     }
 

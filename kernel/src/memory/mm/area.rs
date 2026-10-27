@@ -15,8 +15,7 @@ pub(super) enum VmaKind {
     Stack,
     Elf,
     File,
-    /// 等价 Linux `VM_PFNMAP` 的 VMA 级记账属性；split/fork 随 kind 复制。放在 kind 内不扩大 MapArea。
-    Device(DevicePageAccounting),
+    Device,
 }
 
 /// 单个 VMA 的范围、backing 与 resident frame owner。
@@ -387,7 +386,7 @@ impl MapArea {
     ) -> (Option<Self>, Self, Option<Self>) {
         debug_assert!(matches!(
             self.kind,
-            VmaKind::Anonymous | VmaKind::Stack | VmaKind::Elf | VmaKind::File | VmaKind::Device(_)
+            VmaKind::Anonymous | VmaKind::Stack | VmaKind::Elf | VmaKind::File | VmaKind::Device
         ));
         debug_assert!(self.vpn_range.start <= start && end <= self.vpn_range.end);
         let original_start = self.vpn_range.start;
@@ -403,7 +402,7 @@ impl MapArea {
             end,
         );
         let (left_device, middle_device, right_device) =
-            DeviceArea::partition(self.device, original_start, start, end);
+            DeviceArea::partition(self.device, original_start..original_end, start, end);
         let kind = self.kind;
         let build = |range: Range<VirtualPageNumber>,
                      data_frames,

@@ -118,6 +118,10 @@ impl MappingState {
     pub(super) fn stale(&self) -> usize {
         self.stale
     }
+    /// 已安装到当前物理页的映射数，即 Linux mapcount；换出提交后归零。
+    pub(super) fn installed_count(&self) -> usize {
+        self.total - self.stale
+    }
     pub(super) fn is_installed(&self, reference: &MappingReference) -> bool {
         reference.installed_epoch == self.epoch
     }

@@ -119,7 +119,7 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 | `kernel/src/memory/mm/shared_area.rs :: AnonymousSharedPages.frames` | `FallibleMap < usize , Arc < SwappablePage > >` |
 | `kernel/src/ipc/shared_memory_creator.rs :: SharedMemoryCreatorList.state` | `Mutex < Option < FallibleMap < CreatorKey , CreatorRegistration > > >` |
 | `kernel/src/memory/mm/shared_area.rs :: SharedFileArea.resident` | `FallibleMap < VirtualPageNumber , SharedResident >` |
-| `kernel/src/memory/mm/shootdown.rs :: TranslationCommit.retired_table_pages` | `FallibleMap < usize , FrameTracker >` |
+| `kernel/src/memory/mm/shootdown.rs :: TranslationCommit.retired_table_pages` | `FallibleMap < usize , TableFrame >` |
 | `kernel/src/socket/inet.rs :: NetworkStack.endpoints` | `FallibleMap < SocketHandle , EndpointState >` |
 | `kernel/src/socket/inet.rs :: NetworkStack.raw_endpoints` | `FallibleMap < SocketHandle , raw :: RawEndpointState >` |
 | `kernel/src/socket/inet.rs :: NetworkStack.tcp_endpoints` | `FallibleMap < usize , TcpEndpointState >` |

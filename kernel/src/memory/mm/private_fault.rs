@@ -34,7 +34,7 @@ impl MemorySet {
             _ => None,
         };
         let file = match &resident.backing {
-            PrivateBacking::File { page, .. } => Some(page.clone()),
+            PrivateBacking::File { page, .. } => Some(page.page().clone()),
             _ => None,
         };
         let pin = match (&page, &file) {

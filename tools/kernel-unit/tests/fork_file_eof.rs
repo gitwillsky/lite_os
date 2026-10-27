@@ -84,6 +84,7 @@ mod memory {
     pub(crate) use mm::SharedMemoryBacking;
     pub(crate) use shared_memory::{SharedMemoryMappingSource, SharedMemoryVma};
     mod swappable_page;
+    mod vmstat;
     pub(crate) use address::PhysicalPageNumber;
     pub(crate) use config::PAGE_SIZE;
     pub(crate) use shared_file::{
@@ -219,7 +220,7 @@ mod memory {
             pub(crate) struct TranslationCommit {
                 retired: crate::fallible_tree::FallibleMap<
                     usize,
-                    crate::memory::frame_allocator::FrameTracker,
+                    crate::memory::page_table::TableFrame,
                 >,
             }
             impl Drop for TranslationCommit {
@@ -252,12 +253,12 @@ mod memory {
                 ) {
                 }
                 pub(crate) fn record_instruction_publication(&mut self, _: usize, _: usize) {}
-                pub(crate) fn retain_table_pages(
+                pub(in crate::memory) fn retain_table_pages(
                     &mut self,
                     pages: impl IntoIterator<
                         Item = crate::fallible_tree::VacantEntry<
                             usize,
-                            crate::memory::frame_allocator::FrameTracker,
+                            crate::memory::page_table::TableFrame,
                         >,
                     >,
                 ) {
@@ -288,18 +289,17 @@ mod memory {
         // 本 fixture 不建立 device VMA；这些 seam 若意外命中即失败。
         #[derive(Debug, Clone)]
         struct DeviceArea;
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        enum DevicePageAccounting {
-            InsertedPages,
-        }
         impl DeviceArea {
             fn partition(
                 _: Option<Self>,
-                _: VirtualPageNumber,
+                _: Range<VirtualPageNumber>,
                 _: VirtualPageNumber,
                 _: VirtualPageNumber,
             ) -> (Option<Self>, Option<Self>, Option<Self>) {
                 (None, None, None)
+            }
+            fn inserts_pages(&self) -> bool {
+                panic!("device VMA outside fixture")
             }
         }
         impl MapArea {

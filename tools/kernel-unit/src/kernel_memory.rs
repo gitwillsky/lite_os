@@ -59,6 +59,11 @@ pub(crate) fn alloc_contiguous(pages: usize, _class: FrameAllocationClass) -> Op
     })
 }
 
+// shootdown 只保活退休的页表页；本 fixture 不验证 PageTables 计数。
+pub(crate) mod page_table {
+    pub(crate) type TableFrame = super::FrameTracker;
+}
+
 #[path = "../../../kernel/src/memory/mm/shootdown.rs"]
 #[allow(dead_code)]
 pub(crate) mod shootdown;

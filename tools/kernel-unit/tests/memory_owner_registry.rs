@@ -119,6 +119,7 @@ mod memory {
         }
     }
     pub(crate) mod shared_file;
+    mod vmstat;
 
     pub(crate) fn background_reclaim() {
         let _ = shared_file::reclaim_background_pages(1);

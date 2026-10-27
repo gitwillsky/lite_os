@@ -9,6 +9,47 @@ use crate::memory::{
     swappable_page::{PageMappingRef, PagePin, SwappablePage},
 };
 
+/// 一个 MM 映射记录对文件页的持有；磁盘页缓存页据此维护 Linux mapcount（`Mapped`）。
+///
+/// 建立、fork 复制与释放严格对称。内存文件页的映射由 `PageMappingRef` 计数，其
+/// `SharedPage::map_count` 为 None。只需要内容 owner 时用 `page()` 克隆 Arc，不能 clone 本令牌。
+#[derive(Debug)]
+pub(super) struct FilePageMapping(Arc<dyn SharedPage>);
+
+impl FilePageMapping {
+    pub(super) fn new(page: &Arc<dyn SharedPage>) -> Self {
+        if let Some(count) = page.map_count() {
+            count.map();
+        }
+        Self(page.clone())
+    }
+
+    pub(super) fn page(&self) -> &Arc<dyn SharedPage> {
+        &self.0
+    }
+}
+
+impl core::ops::Deref for FilePageMapping {
+    type Target = dyn SharedPage;
+    fn deref(&self) -> &Self::Target {
+        &*self.0
+    }
+}
+
+impl Clone for FilePageMapping {
+    fn clone(&self) -> Self {
+        Self::new(&self.0)
+    }
+}
+
+impl Drop for FilePageMapping {
+    fn drop(&mut self) {
+        if let Some(count) = self.0.map_count() {
+            count.unmap();
+        }
+    }
+}
+
 /// Private/shared-anonymous mapping metadata; physical content belongs to its canonical owner.
 #[derive(Debug, Clone)]
 pub(super) struct PrivateResident {
@@ -24,7 +65,7 @@ pub(super) enum PrivateBacking {
     User(PageMappingRef),
     /// 未 COW 的文件页；保活 storage page，不能因只有一个 private alias 而原地放宽写权限。
     File {
-        page: Arc<dyn SharedPage>,
+        page: FilePageMapping,
         mapping: Option<PageMappingRef>,
     },
 }
@@ -89,7 +130,7 @@ impl PrivateResident {
     pub(super) fn file(page: &Arc<dyn SharedPage>, pin: &SharedPagePin<'_>) -> Self {
         Self {
             backing: PrivateBacking::File {
-                page: page.clone(),
+                page: FilePageMapping::new(page),
                 mapping: match pin {
                     SharedPagePin::Swappable(pin) => Some(
                         page.swappable()

@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use spin::{Mutex, Once};
 
-use crate::memory::{DeviceBacking, FrameAllocationClass, PAGE_SIZE};
+use crate::memory::{DeviceBacking, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE};
 
 use super::{
     VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,
@@ -254,6 +254,7 @@ impl VirtIOGpuDevice {
         let framebuffer = Arc::try_new(DeviceBacking::try_allocate(
             framebuffer_bytes.div_ceil(PAGE_SIZE),
             FrameAllocationClass::KernelCritical,
+            DeviceMemoryKind::Driver,
         )?)
         .ok()?;
         Self::initialize_scanout(&adapter.device, &adapter.control, mode, &framebuffer)?;
@@ -261,6 +262,7 @@ impl VirtIOGpuDevice {
         let panic_backing = Arc::try_new(DeviceBacking::try_allocate(
             framebuffer_bytes.div_ceil(PAGE_SIZE),
             FrameAllocationClass::KernelCritical,
+            DeviceMemoryKind::Driver,
         )?)
         .ok()?;
         Self::create_attached_resource(

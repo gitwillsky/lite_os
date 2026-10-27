@@ -89,6 +89,7 @@ mod memory {
     #[path = "shared_memory/statistics.rs"]
     mod shared_memory;
     mod swappable_page;
+    mod vmstat;
     pub(crate) use address::PhysicalPageNumber;
     pub(crate) use config::PAGE_SIZE;
     pub(crate) use shared_file::SharedFrame;

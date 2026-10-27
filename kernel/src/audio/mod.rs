@@ -15,7 +15,7 @@ use crate::{
     drivers::{PcmCompletionObserver, PcmOutput, io_completion::CompletionSource},
     ipc::{Pipe, PipeDirection, PipeEnd},
     memory::{
-        DeviceBacking, DeviceMappingSource, DevicePageAccounting, FrameAllocationClass, PAGE_SIZE,
+        DeviceBacking, DeviceMappingSource, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE,
     },
     namespace::PidIdentity,
 };
@@ -266,9 +266,11 @@ fn open() -> Result<Arc<PcmFile>, AudioError> {
     let card = CARD.get().cloned().ok_or(AudioError::Device)?;
     // 每次 open 分配全新的环形缓冲与 mmap identity：旧 OFD 留下的映射不能和新子流的缓冲别名。
     let ring = Arc::try_new(
+        // virtio-snd 的 SNDRV_DMA_TYPE_VMALLOC ring 经 remap_vmalloc_range 插入普通页。
         DeviceBacking::try_allocate(
             (PCM_BUFFER_FRAMES * PCM_FRAME_BYTES).div_ceil(PAGE_SIZE),
             FrameAllocationClass::Reclaimable,
+            DeviceMemoryKind::InsertedPages,
         )
         .ok_or(AudioError::Device)?,
     )
@@ -474,11 +476,9 @@ impl PcmFile {
         if offset != 0 || length != PCM_BUFFER_FRAMES * PCM_FRAME_BYTES {
             return Err(AudioError::InvalidState);
         }
-        // virtio-snd 的 SNDRV_DMA_TYPE_VMALLOC ring 经 remap_vmalloc_range 插入普通页，计入 RSS。
         Ok(DeviceMappingSource::new(
             self.mmap_identity,
             self.ring.clone(),
-            DevicePageAccounting::InsertedPages,
         ))
     }
 

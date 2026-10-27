@@ -20,6 +20,7 @@ mod shared_file;
 mod shared_memory;
 pub(crate) mod swap;
 mod swappable_page;
+mod vmstat;
 
 // OWNER: memory subsystem reserves one minimum buddy growth extent from single-frame consumers.
 // Without this low watermark, a user fault can consume the final frame before the kernel records
@@ -33,7 +34,7 @@ const KERNEL_PROGRESS_RESERVE_PAGES: usize = 16;
 pub(crate) use crate::config::KERNEL_STACK_SIZE;
 pub(crate) use address::{PhysicalAddress, PhysicalPageNumber, VirtualAddress};
 pub(crate) use config::*;
-pub(crate) use device_backing::DeviceBacking;
+pub(crate) use device_backing::{DeviceBacking, DeviceMemoryKind};
 pub(crate) use executable::{
     ExecutableImage, ExecutableParseError, ExecutableSource, parse_interpreter_elf, parse_main_elf,
 };
@@ -41,10 +42,10 @@ pub(crate) use frame_allocator::{
     FrameAllocationClass, FrameTracker, alloc_contiguous, statistics as frame_statistics,
 };
 pub(crate) use heap_allocator::statistics as heap_statistics;
-pub(crate) use kernel_stack::KernelStack;
+pub(crate) use kernel_stack::{KernelStack, kernel_stack_bytes};
 pub(crate) use mm::SharedMemoryBacking;
 pub(crate) use mm::{
-    DeviceMappingSource, DevicePageAccounting, ElfLoadError, FileMappingError, FileMappingSource, FutexAccessError,
+    DeviceMappingSource, ElfLoadError, FileMappingError, FileMappingSource, FutexAccessError,
     FutexKey, InitialStack, InitialStackCredentials, MappingPlacement, MappingResourceLimits,
     MemoryAdvice, MemoryError, MemorySet, PageFaultAccess, PageFaultOutcome, RemapError,
     RemapPlacement, RemapRequest, SegmentationCause, UserAccessError, UserAtomicU32,
@@ -54,14 +55,15 @@ pub(crate) use mm::{
 pub(crate) use permissions::MapPermission;
 pub(crate) use pressure::run_background_reclaim;
 pub(crate) use shared_file::{
-    MappedFileOwner, MemoryMappingOwner, MemoryReclaimer, ReclaimRequest, ReclaimResult,
-    SharedFileError, SharedFileId, SharedFileMapping, SharedFrame, SharedPage, SharedPagePin,
+    MappedFileOwner, MemoryMappingOwner, MemoryReclaimer, PageMapCount, ReclaimRequest,
+    ReclaimResult, SharedFileError, SharedFileId, SharedFileMapping, SharedFrame, SharedPage, SharedPagePin,
     complete_memory_mapping_owner_initialization, invalidate_shared_file, reclaim_pages,
     reclaim_statistics, register_memory_mapping_owner, register_memory_reclaimer,
     revoke_shared_file_writers,
 };
 pub(crate) use shared_memory::{SharedMemoryMappingSource, SharedMemoryVma};
 pub(crate) use swappable_page::{SwappablePage, cached_pages as swap_cached_pages};
+pub(crate) use vmstat::{PageStateSnapshot, snapshot as page_state_snapshot};
 // SAFETY: every symbol is defined by the fixed kernel linker script; callers use them only as
 // section boundary addresses and never dereference them as Rust values.
 unsafe extern "C" {

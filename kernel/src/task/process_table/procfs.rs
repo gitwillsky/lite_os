@@ -773,6 +773,7 @@ fn process_snapshot(
     let heap = crate::memory::heap_statistics();
     let reclaim = reclaim_statistics();
     let cache = page_cache_statistics();
+    let page_state = crate::memory::page_state_snapshot();
     let load_milli = PROCESS_TABLE.load_average.values();
     let cpu_runtime =
         cpu_runtime_snapshot().map_err(|()| crate::fs::FileSystemError::OutOfMemory)?;
@@ -800,6 +801,11 @@ fn process_snapshot(
         dirty_pages: cache.dirty_pages,
         reclaimable_cached_pages: cache.reclaimable_pages,
         heap_pages: heap.resident_pages,
+        anon_mapped_pages: page_state.anon_mapped,
+        file_mapped_pages: page_state.file_mapped,
+        shmem_pages: page_state.shmem,
+        page_table_pages: page_state.page_tables,
+        kernel_stack_bytes: crate::memory::kernel_stack_bytes(),
         swap_total_pages,
         swap_free_pages,
         swap_cached_pages: crate::memory::swap_cached_pages(),

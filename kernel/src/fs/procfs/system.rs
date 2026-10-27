@@ -54,17 +54,24 @@ pub(super) fn format_meminfo(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileSys
         .free_pages
         .saturating_add(snapshot.reclaimable_cached_pages)
         .min(snapshot.total_pages);
+    // Linux Cached 来自 NR_FILE_PAGES，含 shmem（tmpfs/memfd/SysV/GEM shmem）页；磁盘页缓存另计。
+    let cached_pages = snapshot.cached_pages + snapshot.shmem_pages;
     proc_text(format_args!(
-        "MemTotal:       {} kB\nMemFree:        {} kB\nMemAvailable:   {} kB\nBuffers:        0 kB\nCached:         {} kB\nSwapCached:     {} kB\nActive:         0 kB\nInactive:       0 kB\nSwapTotal:      {} kB\nSwapFree:       {} kB\nDirty:          {} kB\nWriteback:      0 kB\nAnonPages:      0 kB\nMapped:         0 kB\nShmem:          0 kB\nSlab:           {} kB\n",
+        "MemTotal:       {} kB\nMemFree:        {} kB\nMemAvailable:   {} kB\nBuffers:        0 kB\nCached:         {} kB\nSwapCached:     {} kB\nActive:         0 kB\nInactive:       0 kB\nSwapTotal:      {} kB\nSwapFree:       {} kB\nDirty:          {} kB\nWriteback:      0 kB\nAnonPages:      {} kB\nMapped:         {} kB\nShmem:          {} kB\nSlab:           {} kB\nKernelStack:    {} kB\nPageTables:     {} kB\n",
         snapshot.total_pages * 4,
         snapshot.free_pages * 4,
         available_pages * 4,
-        snapshot.cached_pages * 4,
+        cached_pages * 4,
         snapshot.swap_cached_pages * 4,
         snapshot.swap_total_pages * 4,
         snapshot.swap_free_pages * 4,
         snapshot.dirty_pages * 4,
+        snapshot.anon_mapped_pages * 4,
+        snapshot.file_mapped_pages * 4,
+        snapshot.shmem_pages * 4,
         snapshot.heap_pages * 4,
+        snapshot.kernel_stack_bytes / 1024,
+        snapshot.page_table_pages * 4,
     ))
 }
 

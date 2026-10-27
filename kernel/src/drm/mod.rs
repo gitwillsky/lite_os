@@ -7,7 +7,7 @@ use crate::{
     fallible_tree::FallibleMap,
     ipc::{Pipe, PipeEnd},
     memory::{
-        DeviceBacking, DeviceMappingSource, DevicePageAccounting, FrameAllocationClass, PAGE_SIZE,
+        DeviceBacking, DeviceMappingSource, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE,
     },
 };
 
@@ -480,8 +480,12 @@ impl DrmFile {
         // 2. backing 与 Arc/node 全部在 handle publication 前分配；任一失败由 RAII 回收
         //    extent，file namespace 中不存在半初始化 GEM object。
         let backing =
-            DeviceBacking::try_allocate(size / PAGE_SIZE, FrameAllocationClass::Reclaimable)
-                .ok_or(DrmError::OutOfMemory)?;
+            DeviceBacking::try_allocate(
+                size / PAGE_SIZE,
+                FrameAllocationClass::Reclaimable,
+                DeviceMemoryKind::GemShmem,
+            )
+            .ok_or(DrmError::OutOfMemory)?;
         let backing = Arc::try_new(backing).map_err(|_| DrmError::OutOfMemory)?;
         let buffer = Arc::try_new(DumbBuffer {
             identity: identity.identity,
@@ -575,11 +579,9 @@ impl DrmFile {
             if length > buffer.size {
                 return Err(DrmError::Invalid);
             }
-            // Linux virtio-gpu GEM 使用 drm_gem_shmem `VM_PFNMAP`，映射不计入 RSS。
             return Ok(DeviceMappingSource::new(
                 buffer.identity,
                 buffer.backing.clone(),
-                DevicePageAccounting::PfnMap,
             ));
         }
         let buffer = self
@@ -595,7 +597,6 @@ impl DrmFile {
         let mut source = DeviceMappingSource::new(
             (1u64 << 63) | u64::from(buffer.resource_id),
             buffer.backing.clone(),
-            DevicePageAccounting::PfnMap,
         );
         source.retain_object(prime::DmaBuf::from_buffer(
             &self.device,
