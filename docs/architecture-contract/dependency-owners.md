@@ -181,3 +181,7 @@ module 树保持扁平，目录结构就是 module 路径，全项目没有 `#[p
 host 夹具把内核文件编译进测试 crate 时，rustc 把被包含的文件当作 mod-rs 文件，到它所在目录找子模块，与标准布局不同。
 内核布局不为此让步：`tools/kernel-view/` 为被夹具包含且带子模块的内核文件生成只含符号链接的“平铺视图”，
 夹具改为包含视图里的文件；`scripts/kernel_fixture_view.py --write` 生成，`make verify-unit` 校验。
+
+DRM PRIME 的共享资源、context attachment 与退休均由 drm 拥有；syscall 只经 DeviceFile/UserMemory 发布 FD，
+不编解码 DRM 结构。DeviceFile 的可选弱 OFD identity 允许重复导出复用真实 open file description，不反向强引用。
+fs::GraphicsSysfsSource 只接收 DRM 装配的只读实际设备 identity；sysfs 不依赖 graphics driver 或解析 VirtIO 寄存器。

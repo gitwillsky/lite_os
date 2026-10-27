@@ -90,6 +90,14 @@ impl Scanout {
         })
     }
 
+    /// 当前 GPU context 的共享引用；CPU 后端不提供 dma-buf 导入能力。
+    pub fn gpu_context(&self) -> Option<linux_uapi::drm::VirglContext> {
+        match &self.backend {
+            Backend::Gpu(gpu) => Some(gpu.context()),
+            Backend::Cpu(_) => None,
+        }
+    }
+
     pub fn width(&self) -> usize {
         usize::from(self.topology.mode.width())
     }
@@ -183,8 +191,12 @@ impl Scanout {
         match &mut self.backend {
             Backend::Gpu(gpu) => gpu.render(self.back, theme, windows, has_overlay, overlay)?,
             Backend::Cpu(targets) => {
-                if !crate::compose::compose(&mut targets[self.back].buffer, theme, windows, overlay)
-                {
+                if !crate::compose::compose(
+                    &mut targets[self.back].buffer,
+                    theme,
+                    windows,
+                    overlay,
+                )? {
                     return Err(io::Error::other("invalid scanout drawing surface"));
                 }
             }

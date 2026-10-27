@@ -58,8 +58,8 @@ fn rejects_named_fifo_hup_suppression_with_existing_writer() {
 fn rejects_seal_race_outside_write_sequence() {
     reject(
         "kernel/src/fs/memory_file.rs",
-        "let _sequence = self\n            .write_sequence\n            .lock()\n            .map_err(|_| FileSystemError::OutOfMemory)?;\n        self.state()?.seals.add(seals)",
-        "let _sequence = ();\n        self.state()?.seals.add(seals)",
+        "let _sequence = self\n            .write_sequence\n            .lock()\n            .map_err(|_| FileSystemError::OutOfMemory)?;\n        let mut state = self.state()?",
+        "let _sequence = ();\n        let mut state = self.state()?",
         "seal rejection/data failure",
     );
 }
@@ -88,5 +88,15 @@ fn rejects_private_anon_fsnotify() {
         "!inode.allows_notifications()",
         "false",
         "non-private inode",
+    );
+}
+
+#[test]
+fn rejects_write_seal_publication_before_mapping_admission_check() {
+    reject(
+        "kernel/src/fs/memory_file.rs",
+        "candidate.add(seals).map_err(seal_error)?;",
+        "candidate.add(seals).map_err(seal_error)?; state.seals = candidate;",
+        "seal rejection/data failure",
     );
 }

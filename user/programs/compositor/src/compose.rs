@@ -62,14 +62,14 @@ pub fn compose(
     theme: &Theme,
     windows: &[Drawable<'_>],
     overlay: impl FnOnce(Surface<'_>),
-) -> bool {
+) -> std::io::Result<bool> {
     let (width, height, stride) = (
         target.width() as i32,
         target.height() as i32,
         target.stride(),
     );
     let Some(mut surface) = Surface::new(target.pixels_mut(), width, height, stride) else {
-        return false;
+        return Ok(false);
     };
     let background = theme.color(SystemColor::Background);
     surface.fill_rect(
@@ -78,7 +78,7 @@ pub fn compose(
     );
     for window in windows {
         let image = Image {
-            pixels: window.content.pixels(),
+            pixels: window.content.pixels()?,
             width: window.content.width as i32,
             height: window.content.height as i32,
             stride: window.content.width,
@@ -86,5 +86,5 @@ pub fn compose(
         surface.blit_sampled(image, window.rect, window.content.source);
     }
     overlay(surface);
-    true
+    Ok(true)
 }

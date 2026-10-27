@@ -273,7 +273,14 @@ fn registry_advertises_the_implemented_globals() {
             (2, "wl_shm".to_owned(), 1),
             (3, "xdg_wm_base".to_owned(), 3),
             (4, "wl_output".to_owned(), 4),
-            (5, "wl_seat".to_owned(), 7)
+            (5, "wl_seat".to_owned(), 7),
+            (7, "zwlr_foreign_toplevel_manager_v1".to_owned(), 3),
+            (9, "wp_cursor_shape_manager_v1".to_owned(), 2),
+            (10, "wl_data_device_manager".to_owned(), 3),
+            (11, "wp_viewporter".to_owned(), 1),
+            (12, "wl_subcompositor".to_owned(), 1),
+            (13, "zxdg_output_manager_v1".to_owned(), 3),
+            (14, "xdg_wm_dialog_v1".to_owned(), 1),
         ]
     );
 }
@@ -532,7 +539,7 @@ fn commit_copies_pixels_releases_the_buffer_and_fires_frame_callbacks() {
     let (surface, content) = harness.client.contents().next().unwrap();
     assert_eq!((surface, content.width, content.height), (id(5), 2, 2));
     assert_eq!(
-        content.pixels(),
+        content.pixels().unwrap(),
         [0x80_10_20_30, 0x00_11_22_33, 0xFF_AA_BB_CC, 0x40_01_02_03]
     );
 
@@ -583,7 +590,7 @@ fn xrgb_buffers_are_forced_opaque_and_stride_padding_is_skipped() {
         .unwrap();
     let (_, content) = harness.client.contents().next().unwrap();
     assert_eq!(
-        content.pixels(),
+        content.pixels().unwrap(),
         [0xFF00_0010, 0xFF00_0011, 0xFF00_0020, 0xFF00_0021]
     );
 }
@@ -883,6 +890,7 @@ fn fd_floods_and_random_garbage_never_panic() {
     }
 }
 
+mod dmabuf;
 mod foreign;
 mod layer;
 mod output;

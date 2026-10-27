@@ -6,10 +6,23 @@ use wayland_wire::wire::ObjectId;
 
 /// 不可变像素与其 GPU 纹理由同一 owner 持有；视口改动只复制采样元数据。
 struct Pixels {
-    pixels: Vec<u32>,
+    origin: PixelOrigin,
     // OWNER: 同一组不可变像素共享一个纹理缓存；视口/同步提交的快照不会重复上传同一内容。
     // 在途帧仍由 GPU 采样视图引用保活；缺少共享 owner 会使缓存提交复制全窗口像素。
     texture: OnceCell<Rc<linux_uapi::drm::VirglResource>>,
+}
+
+enum PixelOrigin {
+    Shm(Vec<u32>),
+    Dma {
+        usage: Rc<super::dmabuf::BufferUse>,
+        readback: OnceCell<Vec<u32>>,
+    },
+}
+/// wl_buffer 的真实来源；两种标准缓冲共用 attach/commit，不建立第二条 surface 状态机。
+pub(super) enum Buffer {
+    Shm(super::shm::BufferSpec),
+    Dma(super::dmabuf::DmaBuffer),
 }
 
 /// 已提交内容的不可变像素引用与 surface 采样投影；Clone 不复制像素或建立第二份纹理。
@@ -31,13 +44,60 @@ impl Content {
             source: ImageSource::full(width as i32, height as i32),
             offset: (0, 0),
             pixels: Rc::new(Pixels {
-                pixels,
+                origin: PixelOrigin::Shm(pixels),
                 texture: OnceCell::new(),
             }),
         }
     }
-    pub(crate) fn pixels(&self) -> &[u32] {
-        &self.pixels.pixels
+    pub(super) fn from_dma(
+        usage: Rc<super::dmabuf::BufferUse>,
+        texture: Rc<linux_uapi::drm::VirglResource>,
+    ) -> Self {
+        let (width, height) = (texture.width() as usize, texture.height() as usize);
+        Self {
+            width,
+            height,
+            size: (width as i32, height as i32),
+            source: ImageSource::full(width as i32, height as i32),
+            offset: (0, 0),
+            pixels: Rc::new(Pixels {
+                origin: PixelOrigin::Dma {
+                    usage,
+                    readback: OnceCell::new(),
+                },
+                texture: OnceCell::from(texture),
+            }),
+        }
+    }
+    pub(super) fn y_inverted(&self) -> bool {
+        matches!(&self.pixels.origin, PixelOrigin::Dma { usage, .. } if matches!(usage.buffer.as_ref(), Buffer::Dma(buffer) if buffer.y_invert))
+    }
+    /// CPU 消费者按需读回（例如硬件光标）；GPU 场景只借用 texture，不进入此路径。
+    pub(crate) fn pixels(&self) -> std::io::Result<&[u32]> {
+        match &self.pixels.origin {
+            PixelOrigin::Shm(pixels) => Ok(pixels),
+            PixelOrigin::Dma { readback, .. } => {
+                if readback.get().is_none() {
+                    let resource = self
+                        .pixels
+                        .texture
+                        .get()
+                        .expect("dma content has imported texture");
+                    resource.wait()?;
+                    resource.transfer_from_host(0, 0, resource.width(), resource.height())?;
+                    resource.wait()?;
+                    let mut pixels = Vec::new();
+                    pixels
+                        .try_reserve_exact(self.width * self.height)
+                        .map_err(std::io::Error::other)?;
+                    for row in 0..self.height {
+                        pixels.extend_from_slice(resource.row(row));
+                    }
+                    let _ = readback.set(pixels);
+                }
+                Ok(readback.get().expect("readback published"))
+            }
+        }
     }
     pub(crate) fn same_image(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.pixels, &other.pixels)
@@ -61,7 +121,7 @@ impl Content {
         for y in 0..self.height {
             resource
                 .row_mut(y)
-                .copy_from_slice(&self.pixels()[y * self.width..(y + 1) * self.width]);
+                .copy_from_slice(&self.pixels()?[y * self.width..(y + 1) * self.width]);
         }
         resource.transfer_to_host(0, 0, self.width as u32, self.height as u32)?;
         let resource = Rc::new(resource);
@@ -74,7 +134,7 @@ impl Content {
 #[derive(Clone)]
 pub(super) struct Attachment {
     pub object: ObjectId,
-    pub buffer: Rc<super::shm::BufferSpec>,
+    pub buffer: Rc<Buffer>,
 }
 
 /// `attach` 的结果：`Some(None)` 表示显式 attach 了空 buffer（取消映射）。

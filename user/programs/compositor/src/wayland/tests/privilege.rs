@@ -58,7 +58,8 @@ fn privileged_clients_see_layer_shell_and_foreign_toplevel() {
     });
     assert!(globals.contains(&"zwlr_layer_shell_v1".to_owned()));
     assert!(globals.contains(&"zwlr_foreign_toplevel_manager_v1".to_owned()));
-    assert_eq!(globals.len(), 8);
+    assert!(globals.contains(&"wp_security_context_manager_v1".to_owned()));
+    assert_eq!(globals.len(), 14);
 }
 
 #[test]
@@ -81,5 +82,5 @@ fn a_delegated_shell_has_shell_globals_but_cannot_delegate_again() {
     assert!(globals.contains(&"zwlr_layer_shell_v1".to_owned()));
     assert!(globals.contains(&"zwlr_foreign_toplevel_manager_v1".to_owned()));
     assert!(!globals.contains(&"wp_security_context_manager_v1".to_owned()));
-    assert_eq!(globals.len(), 7);
+    assert_eq!(globals.len(), 13);
 }

@@ -28,11 +28,13 @@ fn fault(_: UserFault) -> DeviceError {
     DeviceError::Errno(errno::EFAULT)
 }
 
-pub(super) struct CardDriver;
+pub(super) struct CardDriver {
+    pub(super) render: bool,
+}
 
 impl CharacterDriver for CardDriver {
     fn open(&self, _request: &OpenRequest<'_>) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
-        let file = super::device::open().map_err(|()| FileSystemError::OutOfMemory)?;
+        let file = super::device::open(self.render).map_err(|()| FileSystemError::OutOfMemory)?;
         Arc::try_new(CardFile(file))
             .map(|file| file as Arc<dyn DeviceFile>)
             .map_err(|_| FileSystemError::OutOfMemory)

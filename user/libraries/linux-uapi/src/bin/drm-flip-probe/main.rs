@@ -6,6 +6,8 @@
 //! one result line for `scripts/verify_gpu.py`; timestamps come from the kernel's monotonic event
 //! clock, so host scheduling jitter does not enter the measurement.
 
+mod sharing;
+
 use std::{io, process::ExitCode};
 
 use linux_uapi::drm::{CommandEncoder, DrmDevice, ObjectKind, VirglContext, VirglResource};
@@ -87,7 +89,11 @@ struct Target {
 }
 
 fn step<T>(name: &str, result: io::Result<T>) -> Result<T, String> {
-    result.map_err(|error| format!("{name}: {error}"))
+    result.map_err(|error| {
+        let error = format!("{name}: {error}");
+        eprintln!("drm-flip-probe: error: {error}");
+        error
+    })
 }
 
 fn clear_commands(target: &VirglResource, color: [f32; 4]) -> CommandEncoder {
@@ -126,6 +132,7 @@ fn verify_readback(graphics: &VirglContext, target: &mut Target) -> Result<(), S
 }
 
 fn run() -> Result<String, String> {
+    sharing::verify()?;
     let device = step("open /dev/dri/card0", DrmDevice::open("/dev/dri/card0"))?;
     let topology = step("query topology", device.query_topology())?;
     let (width, height) = (

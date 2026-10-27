@@ -20,6 +20,7 @@ mod card_file;
 pub(crate) mod device;
 mod graphics;
 mod ioctl;
+mod prime;
 pub(crate) use graphics::VirglResourceCreate;
 pub(crate) use graphics::VirglTransfer;
 mod master;
@@ -103,6 +104,8 @@ struct DrmDeviceState {
     // OWNER: 接管正常 GEM_CLOSE 或创建失败后需要 UNREF 的 resource；预分配节点保证清理阶段不分配。
     // context cleanup 必须等待同 context 的 orphan UNREF 完成，否则会先销毁仍被清理命令使用的 context。
     graphics_retirements: FallibleMap<u32, graphics::VirglRetirement>,
+    // OWNER: context 关联的退休与资源 UNREF 分离；节点由 handle 创建时预分配，close/退出不分配。
+    graphics_detachments: FallibleMap<(u32, u32), graphics::AttachmentRetirement>,
     // OWNER: primary-node master identity 与 KMS object namespace 同属 device state；若放在
     // syscall 或 OFD flag，多个 open 会同时通过 modeset permission check。
     master: Option<u64>,
@@ -147,7 +150,7 @@ struct DrmFileState {
     // OWNER: context 与 graphics_buffers 属于同一 OFD；缺失同锁 ownership 会让 EXECBUFFER
     // 在 close/context teardown 间向已销毁的 host context 提交。
     context: Option<graphics::VirglContext>,
-    graphics_buffers: FallibleMap<u32, Arc<graphics::VirglBuffer>>,
+    graphics_buffers: FallibleMap<u32, Arc<graphics::VirglAttachment>>,
     // Linux 允许曾经的 master 在无当前 master 时重新取得 ownership；缺失该历史位会让
     // root-less display server 在 DROP_MASTER 后永久无法恢复。
     was_master: bool,
@@ -170,7 +173,9 @@ struct DrmDevice {
 pub(crate) struct DrmFile {
     device: Arc<DrmDevice>,
     file_identity: u64,
-    // OWNER: 只串行化本 OFD 的一次性 context 创建，允许等待 host fence，不持有 spin guard。
+    // OWNER: render node 只提供渲染/PRIME，不参与 primary master 或 KMS。
+    render_node: bool,
+    // OWNER: 串行化本 OFD 的 context 创建、PRIME 导入和 GEM 关闭，允许等待 host fence，不持有 spin guard。
     // FAILURE: 缺失时两个 CTX_CREATE 可同时通过“尚未初始化”检查，后发布者覆盖并泄漏前一个 context。
     context_creation: crate::sync::TaskMutex<()>,
     // OWNER: 每个 OFD 的 handle namespace 与 handle allocator 在同一锁内发布；若放到 device
@@ -200,6 +205,8 @@ pub(crate) enum DrmError {
     Device,
     /// 当前 OFD 不是 KMS master，或无权重新取得 master。
     Permission,
+    /// 等待资源保留锁被可交付 signal 中断。
+    Interrupted,
 }
 
 /// RMFB transaction 的无分配进度结果。
@@ -614,7 +621,7 @@ impl DrmFile {
             if let Some(buffer) = state.buffers.get(&handle).cloned() {
                 FramebufferBacking::Dumb(buffer)
             } else if let Some(buffer) = state.graphics_buffers.get(&handle).cloned() {
-                FramebufferBacking::Virgl(buffer)
+                FramebufferBacking::Virgl(buffer.buffer.clone())
             } else {
                 return Err(DrmError::NotFound);
             }

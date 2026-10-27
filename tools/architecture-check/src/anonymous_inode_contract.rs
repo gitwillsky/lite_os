@@ -159,8 +159,16 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         )
         || !ordered(
             sealing,
-            &["write_sequence", "self.state()?.seals.add(seals)"],
+            &[
+                "write_sequence",
+                "let mut state = self.state()?",
+                "candidate.add(seals)",
+                "writable_mappings.load",
+                "state.seals = candidate",
+            ],
         )
+        || sealing.matches("state.seals = candidate").count() != 1
+        || !sealing.contains("writable_mappings.load(Ordering::Acquire) != 0")
     {
         errors.push("anonymous-inode: seal rejection/data failure must precede metadata commit and all guards must retire before MM invalidation".into());
     }

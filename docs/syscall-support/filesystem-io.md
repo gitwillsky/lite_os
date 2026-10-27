@@ -199,3 +199,12 @@ TTSTAMP 时钟选择和启用后的 STATUS/SYNC_PTR 时钟快照，SW_PARAMS 允
 
 `copy_file_range` 与 `sendfile` 共用同一条 regular-file 数据路径（逐页读写、同文件重叠 EINVAL、RLIMIT_FSIZE），数据经内核缓冲复制，
 不做 reflink/服务端拷贝；跨 filesystem 复制按普通读写完成，与 Linux 5.19 之后的回退行为一致。
+
+DRM ioctl 子集包含标准 PRIME_HANDLE_TO_FD / FD_TO_HANDLE、DRM_CAP_PRIME 与 renderD128（禁止 KMS/master）。
+dma-buf FD 支持 DMA_BUF_IOCTL_SYNC、poll、标准 size seek 和 offset=0 的共享非 executable mmap；
+当前只共享同一 VirtIO-GPU 的 VirGL GEM，不支持跨设备、blob 或显式 sync_file/syncobj。
+FD 事务和导出者关闭后的寿命见设备契约，Wayland 格式/布局范围见 UI 契约。
+
+memfd 支持 F_SEAL_WRITE / F_SEAL_FUTURE_WRITE：共享写映射竞争返回 EBUSY，失败不部分添加 seal；
+写封印后的新共享写 mmap 返回 EPERM，新共享只读 mmap 不再具有 mprotect 写权限，已有 future-write lease 保留。
+私有 COW、fork/split/close 的 lease 寿命由同一 MemoryFile owner 裁决。

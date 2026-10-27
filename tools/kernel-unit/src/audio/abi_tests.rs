@@ -127,7 +127,11 @@ fn seals_gate_growth_shrink_and_are_append_only() {
         seals.check_write(4096, 4097),
         Err(SealError::PermissionDenied)
     );
-    assert_eq!(seals.add(F_SEAL_WRITE), Err(SealError::InvalidOperation));
+    seals.add(F_SEAL_WRITE).unwrap();
+    assert_eq!(
+        seals.check_write(4096, 4096),
+        Err(SealError::PermissionDenied)
+    );
     seals.add(F_SEAL_SEAL).unwrap();
     assert_eq!(seals.add(F_SEAL_GROW), Err(SealError::PermissionDenied));
 }

@@ -252,9 +252,8 @@ pub(super) fn contents(view: &NetView, node: NetSysNode) -> Result<Vec<u8>, File
         )),
         Attr::Carrier if link.up => try_format_bytes(format_args!("1\n")),
         Attr::Carrier => Err(FileSystemError::InvalidOperation),
-        Attr::Uevent => try_format_bytes(format_args!(
-            "INTERFACE={name}\nIFINDEX={}\n",
-            link.index
-        )),
+        Attr::Uevent => {
+            try_format_bytes(format_args!("INTERFACE={name}\nIFINDEX={}\n", link.index))
+        }
     }
 }

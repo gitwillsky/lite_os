@@ -55,9 +55,10 @@
   `wl_seat` 有指针与键盘，特权连接有 layer-shell，所有连接有 foreign-toplevel）。键盘 keymap 由 `keyboard::xkb` 从同一张键码表生成，
   自包含、不依赖客户端的 xkeyboard-config。
   桌面继续使用 `wl_shm`；具备 VirGL2 的设备使用纹理合成与两块 GPU render target，纯 2D 设备使用 CPU/dumb buffer。
-  Content 独占不可变提交的纹理，Scanout 将在途引用保活到 page-flip 完成；尚未公布 linux-dmabuf。
+  Content 持有 SHM 快照或 dma-buf 使用期；GPU 在途帧将协议引用保活到 page-flip 完成。
+  VirGL2 初始化成功才公布 linux-dmabuf v4，ARGB/XRGB 单平面隐式 modifier 直接 PRIME 导入，无 CPU 像素副本。
   GPU 路径已接入代码，尚未执行画面/性能验收。`damage`/`damage_buffer` 当前以整帧重绘保守覆盖，
-  不代表已经实现局部更新或 GPU 客户端零拷贝。
+  不代表已经实现局部更新或完整 OpenGL 兼容。
   Legacy `CURSOR2` 把 64×64 ARGB dumb BO 通过规范要求的
   `RESOURCE_CREATE_2D`/`TRANSFER_TO_HOST_2D` 投影到 VirtIO-GPU 独立 cursorq；该 queue 的
   completion 水位与 controlq fence 分离。纯 position update 异步发布，slot 忙时只保留尚未发布的最新
@@ -81,8 +82,8 @@
   由实际 owner 的 OOM、观察者、重开和重复 close 回归用例验证。
 ## Known limits
 
-- 为 Wine（winewayland）补齐的协议：`wl_subcompositor` v1（子 surface 随根窗口绘制；位置在父提交时生效，`set_sync`/`set_desync` 不单独缓存内容——已记录的简化）、
-  `wp_viewporter` v1（提交时按源矩形裁剪、最近邻缩放成目标尺寸×buffer scale，原始缓冲保存以便只改视口的提交重新取样）、
+- 为 Wine（winewayland）补齐的协议：`wl_subcompositor` v1（同步缓存随父提交原子应用，位置与堆叠属于父状态）、
+  `wp_viewporter` v1（逻辑尺寸与仿射采样元数据，CPU/GPU 直接取样，不预先生成缩放副本）、
   `zxdg_output_manager_v1` v3（逻辑尺寸=物理尺寸/scale）、`xdg_popup` 与 `xdg_positioner`（位置由锚点矩形、锚点、重力与偏移计算，相对父 surface 左上角，
   不使用窗口几何、不做 `constraint_adjustment` 越界调整；`grab` 的弹出层在点击外部时收到 `popup_done`）。
   未实现：`zwp_pointer_constraints_v1`、`zwp_relative_pointer_manager_v1`、`zwp_text_input_manager_v3`、`wp_fractional_scale_manager_v1`、
@@ -95,11 +96,12 @@
   当前限制：layer popup 不支持；layer 的 configure 尺寸仍相对整个输出，
   多个同边 panel 尚不按独占区依次排列；foreign-toplevel 尚无 output_enter/leave 与父子窗口关系；
   硬件光标只显示放大后不超过 64×64、物理热点位于 0..63 的图像，其余回退默认箭头，不提供软件 cursor plane；
-  未实现素材忙碌光标计时动画、客户端 scale 高于输出时的缩小。
+  未实现素材忙碌光标计时动画。
 - BusyBox init 监督网络服务、显示服务与 UART shell；compositor 接续启动画面后进入 `logon`，认证成功启动用户 `desktop`；UART 保留恢复 shell，没有显示器文本 VT。
-- GPU 开放 compositor 独占的单一 VirGL2 context、3D resource/transfer/submit、VirGL scanout/flush、2D damage flush、
+- GPU 通过 renderD128 开放每 OFD VirGL2 context、PRIME 导入/导出和隐式 fence；compositor 独占 primary/KMS。
+  支持 3D resource/transfer/submit、VirGL scanout/flush、2D damage flush、
   64×64 hardware cursor 与
-  单 connector mode change；Vulkan、多 client 3D context、DRM atomic/auth/lease、完整 evdev
+  单 connector mode change；Vulkan、跨设备 PRIME、显式 sync_file/syncobj、DRM atomic/auth/lease、完整 evdev
   output/multitouch 和设备热拔插尚未开放。
 - VirtIO Console 只开放一个固定 SPICE agent named port，不提供 guest console、任意动态 port、PCI
   bridge/hotplug 或多显示器管理。

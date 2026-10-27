@@ -2,7 +2,15 @@ mod command;
 
 pub use command::{CommandEncoder, ObjectKind, SamplerFilter, SamplerWrap, ShaderStage};
 
-use std::{ffi::CString, io, mem::size_of};
+use std::{
+    cell::RefCell,
+    collections::BTreeMap,
+    ffi::CString,
+    io,
+    mem::size_of,
+    os::fd::BorrowedFd,
+    rc::{Rc, Weak},
+};
 
 use crate::raw;
 
@@ -56,9 +64,31 @@ impl VirglCapabilities {
 pub struct VirglContext {
     device: DrmDevice,
     capabilities: VirglCapabilities,
+    // OWNER: 同 context 的 PRIME 导入共享一个 handle owner；Weak 不保活已释放客户端缓冲。
+    imports: Rc<RefCell<BTreeMap<u32, Weak<GemOwner>>>>,
 }
 
 impl VirglContext {
+    fn own_handle(&self, handle: GemHandle) -> Rc<GemOwner> {
+        let mut imports = self.imports.borrow_mut();
+        if let Some(owner) = imports.get(&handle.get()).and_then(Weak::upgrade) {
+            return owner;
+        }
+        imports.retain(|_, owner| owner.strong_count() != 0);
+        let owner = Rc::new(GemOwner {
+            device: self.device.clone(),
+            handle,
+        });
+        imports.insert(handle.get(), Rc::downgrade(&owner));
+        owner
+    }
+
+    /// 返回实际 DRM 设备的 Linux dev_t，供 linux-dmabuf 标准 feedback；metadata 失败返回 io::Error。
+    pub fn device_number(&self) -> io::Result<u64> {
+        use std::os::unix::fs::MetadataExt;
+        Ok(self.device.file.metadata()?.rdev())
+    }
+
     /// Returns the host capabilities used to create this context.
     pub fn capabilities(&self) -> &VirglCapabilities {
         &self.capabilities
@@ -132,7 +162,8 @@ impl VirglContext {
             depth: 1,
             array_size: 1,
             flags: spec.flags,
-            size: u64::from(spec.size),
+            size: spec.size,
+            stride: spec.stride,
             ..raw::VirtGpuResourceCreate::default()
         };
         self.device.ioctl(
@@ -141,6 +172,7 @@ impl VirglContext {
         )?;
         let handle = GemHandle::new(create.bo_handle)
             .ok_or_else(|| invalid_data("VirtIO-GPU returned GEM handle zero"))?;
+        let owner = self.own_handle(handle);
         if create.resource_handle == 0 {
             return Err(invalid_data("VirtIO-GPU returned resource handle zero"));
         }
@@ -151,7 +183,7 @@ impl VirglContext {
         self.device
             .ioctl(raw::DRM_IOCTL_VIRTGPU_RESOURCE_INFO, (&raw mut info).cast())?;
         if info.resource_handle != create.resource_handle
-            || info.size != spec.size
+            || info.size < spec.size
             || info.blob_memory != 0
         {
             return Err(invalid_data(
@@ -160,6 +192,7 @@ impl VirglContext {
         }
         let mapping = self.device.map_virgl(handle, spec.size as usize)?;
         Ok(VirglResource {
+            _owner: owner,
             device: self.device.clone(),
             handle,
             resource_id: create.resource_handle,
@@ -169,6 +202,56 @@ impl VirglContext {
             height: spec.height,
             stride: spec.stride,
         })
+    }
+
+    /// 将标准 PRIME dma-buf 导入当前 context，作为直接采样纹理，不执行 CPU 拷贝或 transfer 上传。
+    /// width/height/stride/format 是 linux-dmabuf 声明；当前支持紧密排列 B8G8R8A8/X8、offset 0 和隐式 modifier。
+    /// 返回带共享 GEM owner 的视图；同一 fd 可以建立不同 ARGB/XRGB 视图。导入/几何/映射失败返回 io::Error。
+    pub fn import_texture(
+        &self,
+        fd: BorrowedFd<'_>,
+        width: u32,
+        height: u32,
+        stride: u32,
+        format: u32,
+    ) -> io::Result<Rc<VirglResource>> {
+        if width == 0
+            || height == 0
+            || width.checked_mul(4) != Some(stride)
+            || !matches!(format, FORMAT_B8G8R8A8_UNORM | FORMAT_B8G8R8X8_UNORM)
+        {
+            return Err(invalid_input("unsupported dma-buf layout"));
+        }
+        let handle = self.device.import_dma_buf(fd)?;
+        let owner = self.own_handle(handle);
+        let prepare = || -> io::Result<VirglResource> {
+            let mut info = raw::VirtGpuResourceInfo {
+                bo_handle: handle.get(),
+                ..Default::default()
+            };
+            self.device
+                .ioctl(raw::DRM_IOCTL_VIRTGPU_RESOURCE_INFO, (&raw mut info).cast())?;
+            if stride
+                .checked_mul(height)
+                .is_none_or(|size| size > info.size)
+                || info.resource_handle == 0
+                || info.blob_memory != 0
+            {
+                return Err(invalid_input("dma-buf does not cover the declared texture"));
+            }
+            Ok(VirglResource {
+                _owner: owner,
+                device: self.device.clone(),
+                handle,
+                resource_id: info.resource_handle,
+                mapping: self.device.map_virgl(handle, info.size as usize)?,
+                width,
+                height,
+                stride,
+                format,
+            })
+        };
+        prepare().map(Rc::new)
     }
 
     /// Submits one 4-byte-aligned VirGL command stream asynchronously.
@@ -246,6 +329,8 @@ impl ResourceSpec {
 
 /// One guest-backed VirGL resource and its stable GEM mapping.
 pub struct VirglResource {
+    // OWNER: 同一 file-local GEM handle 只有一个关闭 owner；布局/格式各自属于 texture view。
+    _owner: Rc<GemOwner>,
     device: DrmDevice,
     handle: GemHandle,
     resource_id: u32,
@@ -256,7 +341,11 @@ pub struct VirglResource {
     stride: u32,
 }
 
-impl Drop for VirglResource {
+struct GemOwner {
+    device: DrmDevice,
+    handle: GemHandle,
+}
+impl Drop for GemOwner {
     fn drop(&mut self) {
         let mut close = raw::DrmGemClose {
             handle: self.handle.get(),
@@ -381,11 +470,8 @@ impl VirglResource {
                 depth: 1,
             },
             offset,
-            stride: self.stride,
-            layer_stride: self
-                .stride
-                .checked_mul(self.height)
-                .ok_or_else(|| invalid_input("VirGL layer stride overflow"))?,
+            stride: 0,
+            layer_stride: 0,
             ..raw::VirtGpuTransfer3d::default()
         };
         self.device.ioctl(
@@ -411,11 +497,8 @@ impl VirglResource {
                 depth: 1,
             },
             offset,
-            stride: self.stride,
-            layer_stride: self
-                .stride
-                .checked_mul(self.height)
-                .ok_or_else(|| invalid_input("VirGL layer stride overflow"))?,
+            stride: 0,
+            layer_stride: 0,
             ..raw::VirtGpuTransfer3d::default()
         };
         self.device.ioctl(
@@ -541,6 +624,7 @@ impl DrmDevice {
             capabilities: VirglCapabilities {
                 bytes: capabilities.into(),
             },
+            imports: Rc::new(RefCell::new(BTreeMap::new())),
         })
     }
 

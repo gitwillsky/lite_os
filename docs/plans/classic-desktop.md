@@ -38,7 +38,7 @@ Status: Active
 | `audio/mixer.rs` | 48 kHz float 混音与 limiter，写入 VirtIO Sound |
 | `audio/control.rs` | `/dev/snd/controlC0`：`Master Playback Volume/Switch` 与每个 substream 的 `PCM Playback Volume` |
 | 各 syscall / sysfs / DRM / evdev 领域 | 补齐 Wayland 与 Wine/FEX 所需的 ABI，逐项写入 ABI 矩阵 |
-| `drm/virtgpu/`（后续） | Linux `DRM_IOCTL_VIRTGPU_*` 多 context 与 dmabuf，作为 D3D 的前提 |
+| `linux-uapi::drm` | Linux `DRM_IOCTL_VIRTGPU_*` 多 context 与 PRIME 已接入；D3D 仍需独立验证 |
 
 ### 用户态库
 
@@ -110,7 +110,7 @@ kernel boot_screen ─► BusyBox init ─► rcS
 | `zwlr_layer_shell_v1` | 桌面层、任务栏、登录屏 | 仅特权客户端 |
 | `zwlr_foreign_toplevel_management_v1` | 任务栏按钮、激活、最小化、关闭 | 仅 desktop |
 | `zwp_pointer_constraints_v1`、`zwp_relative_pointer_v1`（后续） | 游戏锁定鼠标 | Wine 游戏 |
-| `zwp_linux_dmabuf_v1`（后续） | GPU buffer | Wine D3D |
+| `zwp_linux_dmabuf_v1` v4 | 单平面 ARGB/XRGB 隐式 modifier | 标准 Mesa EGL 客户端；Wine D3D 未验收 |
 
 Wine 的必需集合在阶段 0 用 `WAYLAND_DEBUG` 确认后定稿。
 

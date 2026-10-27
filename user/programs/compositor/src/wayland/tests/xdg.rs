@@ -102,7 +102,10 @@ fn the_first_commit_configures_and_an_acknowledged_window_maps() {
         (windows[0].title, windows[0].app_id, windows[0].surface),
         ("登录到 LiteOS", "logon", id(5))
     );
-    assert_eq!((windows[0].content.width, windows[0].content.size), (2, (2, 2)));
+    assert_eq!(
+        (windows[0].content.width, windows[0].content.size),
+        (2, (2, 2))
+    );
 }
 
 #[test]
@@ -231,7 +234,7 @@ fn role_misuse_is_reported_with_the_documented_codes() {
 }
 
 #[test]
-fn popups_are_refused_with_a_clear_error() {
+fn popup_with_incomplete_positioner_is_a_protocol_error() {
     let mut harness = Harness::bound();
     window(&mut harness);
     harness
@@ -254,8 +257,8 @@ fn popups_are_refused_with_a_clear_error() {
             })
             .is_err()
     );
-    let message = harness.expect_error(wl_display::Error::Implementation as u32);
-    assert!(message.contains("popup"), "{message}");
+    let message = harness.expect_error(xdg_wm_base::Error::InvalidPositioner as u32);
+    assert!(message.contains("positioner"), "{message}");
 }
 
 #[test]

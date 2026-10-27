@@ -298,11 +298,11 @@ mod tests {
     fn rows_follow_separators_and_hit_testing_ignores_them() {
         let menu = ContextMenu::new((10, 10), taskbar_items(), (800, 600), SIZE);
         let rows = menu.rows();
-        assert_eq!(rows[0].y, 12);
+        assert_eq!(rows[0].y, 13);
         assert_eq!(rows[1].y - rows[0].bottom(), SIZE.separator_height);
         assert_eq!(menu.hit(20., f64::from(rows[1].y + 3)), Some(1));
         assert_eq!(menu.hit(20., f64::from(rows[0].bottom() + 2)), None);
-        assert_eq!(menu.rect.bottom(), rows[1].bottom() + 2);
+        assert_eq!(menu.rect.bottom(), rows.last().unwrap().bottom() + 3);
     }
 
     #[test]

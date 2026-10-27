@@ -20,7 +20,7 @@ use super::{
     layer::LayerSurface,
     seat::CursorRequest,
     shm::{BufferSpec, Pool},
-    surface::Surface,
+    surface::{Buffer, Surface},
     xdg::{Toplevel, WindowRequest, XdgSurface},
 };
 
@@ -77,7 +77,8 @@ impl From<EncodeError> for Fail {
 pub(super) enum Data {
     None,
     Pool(Rc<Pool>),
-    Buffer(Rc<BufferSpec>),
+    Buffer(Rc<Buffer>),
+    DmaParams(super::dmabuf::Params),
     Region(Rc<super::region::Region>),
     Surface(Surface),
     XdgSurface(XdgSurface),
@@ -139,6 +140,8 @@ pub struct Client {
     pub(super) objects: HashMap<u32, Entry>,
     pub(super) writer: Writer,
     dead: bool,
+    pub(super) gpu: Option<linux_uapi::drm::VirglContext>,
+    pub(super) buffer_releases: super::dmabuf::Releases,
     /// 下一个 `xdg_surface.configure` 序号；每个连接独立。
     pub(super) next_serial: u32,
     pub(super) requests: Vec<(ObjectId, WindowRequest)>,
@@ -190,6 +193,8 @@ impl Client {
             objects: HashMap::from([(ObjectId::DISPLAY.get(), display)]),
             writer: Writer::new(),
             dead: false,
+            gpu: None,
+            buffer_releases: Rc::new(std::cell::RefCell::new(Vec::new())),
             next_serial: 1,
             requests: Vec::new(),
             commits: 0,
@@ -396,6 +401,11 @@ impl Client {
             AnyRequest::WlShm(request) => self.shm(version, request),
             AnyRequest::WlShmPool(request) => self.pool(object, request),
             AnyRequest::WlOutput(_) => Ok(()),
+            AnyRequest::ZwpLinuxDmabufV1(request) => self.dmabuf(object, version, request),
+            AnyRequest::ZwpLinuxBufferParamsV1(request) => {
+                self.dma_params(object, version, request)
+            }
+            AnyRequest::ZwpLinuxDmabufFeedbackV1(_) => Ok(()),
             AnyRequest::WlSurface(request) => self.surface(object, version, request),
             AnyRequest::XdgWmBase(request) => self.xdg_wm_base(object, version, request),
             AnyRequest::XdgSurface(request) => self.xdg_surface(object, version, request),
@@ -484,6 +494,11 @@ impl Client {
             .into_iter()
             .chain(privileged)
             .chain(session)
+            .chain(
+                self.gpu
+                    .is_some()
+                    .then_some((15, Interface::ZwpLinuxDmabufV1, 4)),
+            )
             .collect()
     }
 
@@ -503,6 +518,9 @@ impl Client {
             )));
         }
         self.create(id.id, interface, id.version, Data::None)?;
+        if interface == Interface::ZwpLinuxDmabufV1 {
+            self.announce_dmabuf(id.id, id.version)?;
+        }
         if interface == Interface::WlShm {
             for format in [wl_shm::Format::Argb8888, wl_shm::Format::Xrgb8888] {
                 wl_shm::Event::Format { format }.encode(id.id, &mut self.writer)?;
@@ -636,7 +654,7 @@ impl Client {
                     id,
                     Interface::WlBuffer,
                     version,
-                    Data::Buffer(Rc::new(spec)),
+                    Data::Buffer(Rc::new(Buffer::Shm(spec))),
                 )
             }
             wl_shm_pool::Request::Resize { size } => {

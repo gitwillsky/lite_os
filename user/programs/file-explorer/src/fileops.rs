@@ -439,7 +439,7 @@ mod tests {
             std::env::temp_dir().join(format!("file-explorer-ops-{name}-{}", std::process::id()));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("home")).unwrap();
-        root
+        fs::canonicalize(root).unwrap()
     }
 
     #[test]

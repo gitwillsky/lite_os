@@ -73,6 +73,16 @@ pub(crate) trait UserMemory {
         &self,
         namespace: crate::namespace::NamespaceReference,
     ) -> Result<isize, DeviceError>;
+    /// 取得调用者 fd 的真实设备 backend；非设备/无效 fd 返回 EBADF/EINVAL，不按路径或编号猜测身份。
+    fn device_file(&self, fd: i32) -> Result<Arc<dyn DeviceFile>, DeviceError>;
+    /// 预留 fd、构造匿名 OFD，再向 fd_address 写入 i32 编号并原子发布；copyout 失败撤销 reservation。
+    /// flags 使用 Linux O_ACCMODE/O_CLOEXEC；返回已发布的 fd。
+    fn install_device(
+        &self,
+        file: Arc<dyn DeviceFile>,
+        flags: u32,
+        fd_address: usize,
+    ) -> Result<i32, DeviceError>;
     /// 从用户地址 `address` 读取 `bytes.len()` 字节。
     fn read(&self, address: usize, bytes: &mut [u8]) -> Result<(), UserFault>;
     /// 向用户地址 `address` 写入 `bytes`。
@@ -165,6 +175,14 @@ pub(crate) trait DeviceFile: Send + Sync + core::any::Any {
     /// 匿名打开的 proc fd diagnostic label；不承担文件身份、操作分派或路径查找。
     fn anonymous_name(&self) -> &'static [u8] {
         b"anon_inode:[device]"
+    }
+
+    /// dma-buf 这类匿名 file 的弱 OFD 身份缓存；重复导出必须 dup 同一 file，不能重新创建打开描述。
+    /// 弱引用不延长 fput 或形成 file/backend 环；实际 OFD 类型与 fd publication 仍只由 syscall/file 层解释。
+    fn shared_description(
+        &self,
+    ) -> Option<&Mutex<Option<alloc::sync::Weak<dyn core::any::Any + Send + Sync>>>> {
+        None
     }
 
     /// per-open storage 操作的唯一投影；普通不可定位设备保持 None。

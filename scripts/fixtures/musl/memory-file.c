@@ -95,6 +95,54 @@ static void memfd_semantics(void)
 	CHECK(23, close(fd) == 0);
 }
 
+/* Linux memfd write seals: real mmap capabilities, split/fork leases and private COW. */
+static void write_seal_semantics(void)
+{
+    int fd = memfd_create("write-seals", MFD_ALLOW_SEALING);
+    CHECK(100, fd >= 0 && ftruncate(fd, 2 * PAGE) == 0);
+    char *map = mmap(NULL, 2 * PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+    char *old_read = mmap(NULL, PAGE, PROT_READ, MAP_SHARED, fd, 0);
+    char *private = mmap(NULL, PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
+    CHECK(101, map != MAP_FAILED && old_read != MAP_FAILED && private != MAP_FAILED);
+    map[0] = 'M';
+    CHECK(102, fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE) == -1 && errno == EBUSY);
+    CHECK(103, !(fcntl(fd, F_GET_SEALS) & F_SEAL_WRITE));
+    CHECK(104, fcntl(fd, F_ADD_SEALS, F_SEAL_FUTURE_WRITE) == 0);
+    CHECK(105, pwrite(fd, "x", 1, 0) == -1 && errno == EPERM);
+    CHECK(106, mmap(NULL, PAGE, PROT_WRITE, MAP_SHARED, fd, 0) == MAP_FAILED && errno == EPERM);
+    CHECK(107, mprotect(old_read, PAGE, PROT_READ | PROT_WRITE) == 0);
+    old_read[0] = 'A';
+    char *new_read = mmap(NULL, PAGE, PROT_READ, MAP_SHARED, fd, 0);
+    CHECK(108, new_read != MAP_FAILED && new_read[0] == 'A');
+    CHECK(109, mprotect(new_read, PAGE, PROT_WRITE) == -1 && errno == EACCES);
+    int ready[2], finish[2];
+    CHECK(110, pipe(ready) == 0 && pipe(finish) == 0);
+    pid_t child = fork();
+    CHECK(111, child >= 0);
+    if (!child) {
+        char byte = 'R';
+        close(ready[0]); close(finish[1]);
+        CHECK(112, write(ready[1], &byte, 1) == 1 && read(finish[0], &byte, 1) == 1);
+        _exit(0);
+    }
+    close(ready[1]); close(finish[0]);
+    char byte;
+    CHECK(113, read(ready[0], &byte, 1) == 1);
+    CHECK(114, munmap(map, PAGE) == 0);
+    CHECK(115, fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE) == -1 && errno == EBUSY);
+    CHECK(116, munmap(map + PAGE, PAGE) == 0 && munmap(old_read, PAGE) == 0);
+    CHECK(117, fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE) == -1 && errno == EBUSY);
+    CHECK(118, write(finish[1], "X", 1) == 1);
+    int status;
+    CHECK(119, waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    CHECK(120, fcntl(fd, F_ADD_SEALS, F_SEAL_WRITE) == 0);
+    private[0] = 'P';
+    CHECK(121, pread(fd, &byte, 1, 0) == 1 && byte == 'A');
+    CHECK(122, mmap(NULL, PAGE, PROT_WRITE, MAP_SHARED, fd, 0) == MAP_FAILED && errno == EPERM);
+    CHECK(123, munmap(private, PAGE) == 0 && munmap(new_read, PAGE) == 0);
+    close(ready[0]); close(finish[1]); close(fd);
+}
+
 static void tmpfs_semantics(void)
 {
 	char buffer[8];
@@ -164,6 +212,7 @@ static void quota_semantics(void)
 int main(void)
 {
 	memfd_semantics();
+	write_seal_semantics();
 	tmpfs_semantics();
 	quota_semantics();
 	puts("LITEOS_MEMFILE_42");

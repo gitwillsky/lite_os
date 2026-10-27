@@ -18,7 +18,9 @@ mod wire;
 use wire::*;
 mod boot;
 mod command;
-use command::{GpuCommand, PendingCommand, PreparedCommand};
+use command::{
+    CommandPayload, CommandSlots, CompletedCommand, GpuCommand, PendingCommand, PreparedCommand,
+};
 mod damage;
 mod graphics_command;
 use damage::DamageTransition;
@@ -79,137 +81,6 @@ impl CursorQueue {
     }
 }
 
-struct CommandSlot {
-    request: DmaBuffer<CONTROL_REQUEST_SIZE>,
-    response: DmaBuffer<CAPSET_RESPONSE_SIZE>,
-    pending: Option<PendingCommand>,
-}
-
-struct CommandSlots {
-    slots: Vec<CommandSlot>,
-}
-
-enum CommandPayload {
-    None,
-    DisplayInfo(DisplayMode),
-}
-
-struct CompletedCommand {
-    pending: PendingCommand,
-    payload: CommandPayload,
-}
-
-impl CompletedCommand {
-    fn into_parts(self) -> (PendingCommand, CommandPayload) {
-        (self.pending, self.payload)
-    }
-}
-
-impl CommandSlots {
-    fn try_new() -> Option<Self> {
-        let mut slots = Vec::new();
-        slots.try_reserve_exact(CONTROL_COMMAND_CAPACITY).ok()?;
-        for _ in 0..CONTROL_COMMAND_CAPACITY {
-            slots.push(CommandSlot {
-                request: DmaBuffer::try_zeroed().ok()?,
-                response: DmaBuffer::try_zeroed().ok()?,
-                pending: None,
-            });
-        }
-        Some(Self { slots })
-    }
-
-    fn idle_index(&self) -> Option<usize> {
-        self.slots.iter().position(|slot| slot.pending.is_none())
-    }
-
-    fn has_pending(&self) -> bool {
-        self.slots.iter().any(|slot| slot.pending.is_some())
-    }
-
-    fn has_non_render_pending(&self) -> bool {
-        self.slots.iter().any(|slot| {
-            slot.pending.as_ref().is_some_and(|pending| {
-                !matches!(
-                    pending.stage,
-                    sequence_policy::RuntimeStage::Virgl
-                        | sequence_policy::RuntimeStage::VirglSetScanout
-                        | sequence_policy::RuntimeStage::VirglFlush
-                )
-            })
-        })
-    }
-
-    fn idle_pair(&self) -> Option<[usize; 2]> {
-        let mut idle = self
-            .slots
-            .iter()
-            .enumerate()
-            .filter_map(|(index, slot)| slot.pending.is_none().then_some(index));
-        Some([idle.next()?, idle.next()?])
-    }
-
-    fn request_mut(&mut self, index: usize) -> &mut DmaBuffer<CONTROL_REQUEST_SIZE> {
-        assert!(self.slots[index].pending.is_none());
-        &mut self.slots[index].request
-    }
-
-    fn complete(&mut self, head: u16, length: usize) -> Result<CompletedCommand, DisplayError> {
-        let slot = self
-            .slots
-            .iter_mut()
-            .find(|slot| {
-                slot.pending
-                    .as_ref()
-                    .is_some_and(|pending| pending.head == head)
-            })
-            .ok_or(DisplayError::Device)?;
-        let pending = slot.pending.as_ref().ok_or(DisplayError::Device)?;
-        if length != pending.response_length()
-            || read_u32(slot.response.as_slice(), 0) != Some(pending.stage.expected_response())
-            || read_u32(slot.response.as_slice(), 4)
-                .is_none_or(|flags| flags & VIRTIO_GPU_FLAG_FENCE == 0)
-            || read_u64(slot.response.as_slice(), 8) != Some(pending.command_fence)
-        {
-            // 在 fail-stop 前保留被拒绝命令的 wire 身份，不能只向 DRM 返回丢失上下文的 Device。
-            error!(
-                "VirtIO GPU response mismatch: head={} opcode={:#x} context={} arg0={:#x} stage={:?} length={}/{} response={:#x} flags={:#x} fence={}/{}",
-                head,
-                read_u32(slot.request.as_slice(), 0).unwrap_or(0),
-                read_u32(slot.request.as_slice(), 16).unwrap_or(0),
-                read_u32(slot.request.as_slice(), 24).unwrap_or(0),
-                pending.stage,
-                length,
-                pending.response_length(),
-                read_u32(slot.response.as_slice(), 0).unwrap_or(0),
-                read_u32(slot.response.as_slice(), 4).unwrap_or(0),
-                read_u64(slot.response.as_slice(), 8).unwrap_or(0),
-                pending.command_fence,
-            );
-            return Err(DisplayError::Device);
-        }
-        let payload = match pending.stage {
-            sequence_policy::RuntimeStage::DisplayInfo => CommandPayload::DisplayInfo(
-                VirtIOGpuDevice::parse_display_mode(slot.response.as_slice())
-                    .ok_or(DisplayError::Device)?,
-            ),
-            _ => CommandPayload::None,
-        };
-        let pending = slot.pending.take().ok_or(DisplayError::Device)?;
-        Ok(CompletedCommand { pending, payload })
-    }
-
-    fn boot_slot_mut(&mut self) -> &mut CommandSlot {
-        assert!(!self.has_pending());
-        &mut self.slots[0]
-    }
-
-    fn boot_response(&self) -> &DmaBuffer<CAPSET_RESPONSE_SIZE> {
-        assert!(!self.has_pending());
-        &self.slots[0].response
-    }
-}
-
 struct ControlQueue {
     queue: VirtQueue,
     // OWNER: invalid controlq completion permanently closes publication until reset.
@@ -248,12 +119,14 @@ struct ControlQueue {
 
 struct VirglCapset {
     info: VirglCapsetInfo,
-    bytes: [u8; MAX_CAPSET_SIZE],
+    // OWNER: 启动期按实际版本分别取回，不把 max-version 的 bytes 冒充 Mesa 请求的 version 0。
+    versions: Vec<Vec<u8>>,
 }
 
 /// VirtIO-GPU 2D single-scanout adapter。
 pub(crate) struct VirtIOGpuDevice {
     device: VirtIODevice,
+    platform_identity: (u64, u32),
     context_init: bool,
     // OWNER: adapter 在 device ready 后永久持有 controlq DMA backing；hardirq 只确认
     // MMIO 并发布 deferred bit，controlq completion 只在 user-return/idle safe point 获取
@@ -359,8 +232,10 @@ impl VirtIOGpuDevice {
         });
         let status = device.get_status().ok()?;
         device.set_status(status | VIRTIO_CONFIG_S_DRIVER_OK).ok()?;
+        let platform_identity = (base_addr as u64, device.mmio_vendor_id()?);
         let adapter = Self {
             device,
+            platform_identity,
             context_init: features & VIRTIO_GPU_F_CONTEXT_INIT != 0,
             control,
             cursor,
@@ -811,6 +686,9 @@ impl DisplayDevice for VirtIOGpuDevice {
 }
 
 impl GraphicsDevice for VirtIOGpuDevice {
+    fn platform_identity(&self) -> Option<(u64, u32)> {
+        Some(self.platform_identity)
+    }
     fn submit_cursor_upload(
         &self,
         identity: u64,
@@ -863,13 +741,18 @@ impl GraphicsDevice for VirtIOGpuDevice {
         self.context_init
     }
 
-    fn copy_virgl_capset(&self, output: &mut [u8]) -> Result<usize, DisplayError> {
+    fn copy_virgl_capset(&self, version: u32, output: &mut [u8]) -> Result<usize, DisplayError> {
         let control = self.control.lock();
         let capset = control.capset.as_ref().ok_or(DisplayError::Device)?;
         let destination = output
             .get_mut(..capset.info.size)
             .ok_or(DisplayError::Device)?;
-        destination.copy_from_slice(&capset.bytes[..capset.info.size]);
+        destination.copy_from_slice(
+            capset
+                .versions
+                .get(version as usize)
+                .ok_or(DisplayError::Device)?,
+        );
         Ok(capset.info.size)
     }
 

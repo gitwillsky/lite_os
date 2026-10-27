@@ -1,7 +1,7 @@
 //! wl_surface 提交事务：读取缓冲一次，冻结元数据，同步子 surface 等父提交后原子发布。
 use super::{
     client::{Client, Data, Entry, Fail},
-    surface::{Committed, Content},
+    surface::{Buffer, Committed, Content},
     viewport::{GeometryError, ViewportState},
 };
 use std::{collections::BTreeMap, rc::Rc};
@@ -72,24 +72,31 @@ impl Client {
             }
             Some(Some(attachment)) => {
                 commit.unmapping = false;
-                let spec = &attachment.buffer;
-                let pixels = spec.read_pixels().map_err(|error| match error {
-                    super::shm::ReadError::Truncated => Fail::new(
+                if let Buffer::Dma(dma) = attachment.buffer.as_ref() {
+                    commit.state.content = Some(dma.content(
                         attachment.object,
-                        wl_shm::Error::InvalidFd as u32,
-                        "buffer extends past the end of its file",
-                    ),
-                    super::shm::ReadError::NoMemory => Fail::new(
-                        ObjectId::DISPLAY,
-                        wayland_wire::protocol::wl_display::Error::NoMemory as u32,
-                        "cannot allocate shared memory snapshot",
-                    ),
-                })?;
-                commit.state.content = Some(Content::new(spec.width, spec.height, pixels));
-                // 复制完成后即可 release；但已销毁/复用的对象编号不能收到旧缓冲的事件。
-                if matches!(self.objects.get(&attachment.object.get()), Some(Entry { data: Data::Buffer(live), .. }) if Rc::ptr_eq(live, spec))
-                {
-                    wl_buffer::Event::Release.encode(attachment.object, &mut self.writer)?;
+                        attachment.buffer.clone(),
+                        &self.buffer_releases,
+                    ));
+                } else if let Buffer::Shm(spec) = attachment.buffer.as_ref() {
+                    let pixels = spec.read_pixels().map_err(|error| match error {
+                        super::shm::ReadError::Truncated => Fail::new(
+                            attachment.object,
+                            wl_shm::Error::InvalidFd as u32,
+                            "buffer extends past the end of its file",
+                        ),
+                        super::shm::ReadError::NoMemory => Fail::new(
+                            ObjectId::DISPLAY,
+                            wayland_wire::protocol::wl_display::Error::NoMemory as u32,
+                            "cannot allocate shared memory snapshot",
+                        ),
+                    })?;
+                    commit.state.content = Some(Content::new(spec.width, spec.height, pixels));
+                    // 复制完成后即可 release；但已销毁/复用的对象编号不能收到旧缓冲的事件。
+                    if matches!(self.objects.get(&attachment.object.get()), Some(Entry { data: Data::Buffer(live), .. }) if Rc::ptr_eq(live, &attachment.buffer))
+                    {
+                        wl_buffer::Event::Release.encode(attachment.object, &mut self.writer)?;
+                    }
                 }
             }
         }

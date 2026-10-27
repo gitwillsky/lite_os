@@ -606,6 +606,7 @@ mod fs {
         NoSpace,
         IoError,
         PermissionDenied,
+        Busy,
     }
     mod storage_budget;
     use storage_budget::StorageBudget;
@@ -662,3 +663,39 @@ mod fs {
 
 #[path = "../src/interruptible_event_target.rs"]
 mod interruptible_event_target;
+
+#[test]
+fn write_seal_waits_for_the_last_shared_mapping_lease() {
+    let quota = fs::QuotaFile::new_with_sealing(2, true);
+    let writable = quota.file.mapping(true, true, false).unwrap();
+    let fork_alias = writable.clone();
+    assert_eq!(quota.file.add_seals(8), Err(fs::FileSystemError::Busy));
+    assert_eq!(quota.file.seals().unwrap() & 8, 0);
+    drop(writable);
+    assert_eq!(quota.file.add_seals(8), Err(fs::FileSystemError::Busy));
+    drop(fork_alias);
+    let private = quota.file.mapping(false, true, true).unwrap();
+    quota.file.add_seals(8).unwrap();
+    assert!(private.may_write());
+    assert_eq!(
+        quota.file.mapping(true, true, true).unwrap_err(),
+        fs::FileSystemError::PermissionDenied
+    );
+    assert!(!quota.file.mapping(true, true, false).unwrap().may_write());
+}
+
+#[test]
+fn future_write_seal_preserves_existing_admission_and_blocks_new_writers() {
+    let quota = fs::QuotaFile::new_with_sealing(2, true);
+    let existing = quota.file.mapping(true, true, true).unwrap();
+    quota.file.add_seals(16).unwrap();
+    assert!(existing.may_write());
+    assert_eq!(
+        quota.file.mapping(true, true, true).unwrap_err(),
+        fs::FileSystemError::PermissionDenied
+    );
+    let read_only = quota.file.mapping(true, true, false).unwrap();
+    assert!(!read_only.may_write());
+    drop(existing);
+    quota.file.add_seals(8).unwrap();
+}

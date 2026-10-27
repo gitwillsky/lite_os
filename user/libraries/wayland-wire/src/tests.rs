@@ -314,7 +314,7 @@ fn framer_rejects_unsynchronisable_headers() {
         (header(0, 8, 0), FrameError::ZeroObject),
         (header(1, 4, 0), FrameError::InvalidSize(4)),
         (header(1, 10, 0), FrameError::InvalidSize(10)),
-        (header(1, 4100, 0), FrameError::InvalidSize(4100)),
+        (header(1, 65535, 0), FrameError::InvalidSize(65535)),
     ] {
         let mut framer = Framer::new();
         framer.push(&bytes);
@@ -323,6 +323,12 @@ fn framer_rejects_unsynchronisable_headers() {
     let mut waiting = Framer::new();
     waiting.push(&header(1, 12, 0));
     assert_eq!(waiting.next_frame().unwrap(), None);
+    // Wire size is 16-bit; a valid message may cross 4 KiB and arrive in fragments.
+    let mut large = Framer::new();
+    large.push(&header(1, 4100, 0));
+    assert_eq!(large.next_frame().unwrap(), None);
+    large.push(&vec![0; 4092]);
+    assert_eq!(large.next_frame().unwrap().unwrap().body.len(), 4092);
 }
 
 #[test]

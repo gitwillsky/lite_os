@@ -343,6 +343,21 @@ zero-window 使用有界原生 timer；通用 PMTU/fragment 与其他未声明 T
 - 顶点/片段程序采用 [Mesa TGSI](https://docs.mesa3d.org/gallium/tgsi.html) 的 POSITION、GENERIC、2D sampler 与 TEX 语义。
   预乘 OVER 混合由固定命令编码实现，不新增 Wayland 私有绘图消息。
 
+### 客户端 dma-buf / EGL
+
+- linux-dmabuf XML 固定 wayland-protocols 1.45：
+  [上游 XML](https://gitlab.freedesktop.org/wayland/wayland-protocols/-/blob/1.45/stable/linux-dmabuf/linux-dmabuf-v1.xml)，
+  SHA-256 `ef39de11196083a41e865737f71e89a9ce3d61b94d2dbbed9b156cd89d6bb97f`。服务端公布 v4 子集，不声明后续版本。
+- PRIME、DMA_BUF_IOCTL_SYNC、virtgpu resource_create/transfer 对照本文件固定 Linux 的 drm_prime.c、virtgpu_prime.c、virtgpu_ioctl.c；
+  CTX_DETACH_RESOURCE 使用已固定 VirtIO-GPU 规范。未实现的 sync_file/syncobj 不公布。
+- [Mesa 25.1.9](https://archive.mesa3d.org/mesa-25.1.9.tar.xz)、[libdrm 2.4.124](https://dri.freedesktop.org/libdrm/libdrm-2.4.124.tar.xz) 为标准客户端实现依据。
+  AArch64 运行库使用 Alpine v3.22 的固定 APK，完整包名与 SHA-256 在 `scripts/mesa-runtime-packages.json`，
+  清单 SHA-256 `391bb2a2a239aee3954d79e43b9e10585fbd946e2658ea4ee456c9b36cd410aa`；只安装种子库的实际 DT_NEEDED 闭包。
+- 无界面消费者为上游 mesa-utils 9.0.0-r6 的 eglinfo，APK SHA-256
+  `2c7a962c677b81c1338becd983da947b23f7ebcfde00ff00361cada5703d93af`，要求实际创建 VirGL GLES context。
+  EGL 图像语义参考 [EGL_EXT_image_dma_buf_import](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import.txt)
+  和 [modifier 扩展](https://registry.khronos.org/EGL/extensions/EXT/EGL_EXT_image_dma_buf_import_modifiers.txt)；不引入 LiteOS 私有 EGL ABI。
+
 ### TZif 与 Rust 时区解析
 
 - TZif 固定规范：RFC 8536（2019-02）；当前采用的解析器支持 v1/v2/v3，不声明 v4。

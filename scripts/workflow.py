@@ -402,7 +402,12 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
             **dtb_fixtures,
         ),
     )
-    run(["cargo", "test", "--manifest-path", "user/Cargo.toml", "--workspace"], environment=environment)
+    # 用户应用通过稳定 cdylib ABI 调用真实运行库；先发布宿主库，再给链接器与 loader 同一搜索路径。
+    # 只执行 cargo test 不会因 #[link] 自动构建另一个 package 的 cdylib，干净 checkout 会缺少 -lliteos_ui。
+    run(["cargo", "build", "--manifest-path", "user/Cargo.toml", "-p", "classic-ui-runtime"], environment=_env_with(environment, CARGO_PROFILE_DEV_PANIC="unwind"))
+    host_libraries = str(ROOT / "user/target/debug")
+    user_environment = _env_with(environment, LIBRARY_PATH=host_libraries, DYLD_LIBRARY_PATH=host_libraries, LD_LIBRARY_PATH=host_libraries)
+    run(["cargo", "test", "--manifest-path", "user/Cargo.toml", "--workspace"], environment=user_environment)
     # 门禁脚本自身的判定逻辑与固定值（APK digest、gate 阈值、cache 身份）由这些测试守住；
     # 缺少这一步它们会在无人运行时悄悄过期。
     run(
@@ -459,7 +464,7 @@ def verify_runtime_audio(environment: Mapping[str, str] | None = None) -> None:
 
 
 def verify_runtime_gpu(environment: Mapping[str, str] | None = None) -> None:
-    """执行不依赖 UI 的内核显示/GPU gate，不隐式重建 rootfs。"""
+    """验证 PRIME/翻页与上游 Wayland EGL 客户端，不隐式重建 rootfs。"""
     run(python_script("verify_gpu.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
 
 

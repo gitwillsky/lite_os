@@ -743,14 +743,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn dates_follow_the_proleptic_gregorian_calendar() {
-        assert_eq!(date_text(0), "1970-1-1 0:00");
-        assert_eq!(
-            date_text(951_782_400 + 3600 * 13 + 60 * 5),
-            "2000-2-29 13:05"
-        );
-        assert_eq!(date_text(-86_400), "1969-12-31 0:00");
-        assert_eq!(date_text(4_102_444_800 - 1), "2099-12-31 23:59");
+    fn dates_follow_the_proleptic_gregorian_calendar_in_the_system_timezone() {
+        // Fixture timestamps are local wall-clock values; do not assume the test host uses UTC.
+        for (wall, expected) in [
+            (0, "1970-1-1 0:00"),
+            (951_782_400 + 3600 * 13 + 60 * 5, "2000-2-29 13:05"),
+            (-86_400, "1969-12-31 0:00"),
+            (4_102_444_800 - 1, "2099-12-31 23:59"),
+        ] {
+            assert_eq!(
+                date_text(calendar::zone::from_local_checked(wall).unwrap()),
+                expected
+            );
+        }
     }
 
     #[test]

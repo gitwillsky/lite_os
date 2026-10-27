@@ -32,6 +32,9 @@ class VerifyGpuTests(unittest.TestCase):
     def test_parse_reads_the_probe_result_line(self) -> None:
         serial = (
             "boot noise\n"
+            "OpenGL ES profile renderer: virgl\n"
+            "EGL_WAYLAND_SHARING_READY\n"
+            "drm-flip-probe: prime=ok exporter-close=ok implicit-sync=ok aliases=ok\n"
             "drm-flip-probe: mode=3008x1692 readback=ok frames=600 dropped=0 "
             "p50_us=12539 p95_us=14017 p99_us=14723\n"
             "drm-flip-probe: done\n"

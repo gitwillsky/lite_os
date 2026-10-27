@@ -1,5 +1,6 @@
 //! Typed DRM dumb-buffer and modesetting resources.
 
+mod prime;
 mod shared;
 mod virgl;
 

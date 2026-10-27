@@ -598,12 +598,12 @@ fn tooltip_group_box_and_menus_use_theme_colors() {
         );
         assert_eq!(image.at(10, 10), rgb(SystemColor::WindowFrame));
         assert_eq!(image.at(12, 12), rgb(SystemColor::InfoWindow));
-        // 菜单：EDGE_RAISED；高亮行左右各留 2 像素。
+        // 菜单：EDGE_RAISED；menu_item 填满传入内容行，外侧留白由弹出布局提供。
         assert_eq!(image.at(60, 40), rgb(SystemColor::ButtonLight));
-        assert_eq!(image.at(62, 14), rgb(SystemColor::Menu));
+        assert_eq!(image.at(62, 14), rgb(SystemColor::Hilight));
         assert_eq!(image.at(64, 14), rgb(SystemColor::Hilight));
         assert_eq!(image.at(155, 14), rgb(SystemColor::Hilight));
-        assert_eq!(image.at(156, 14), rgb(SystemColor::Menu));
+        assert_eq!(image.at(156, 14), rgb(SystemColor::Hilight));
         assert_eq!(image.at(150, 34), rgb(SystemColor::Menu));
         // 菜单栏：悬停凸起，打开时凹陷。
         assert_eq!(image.at(10, 100), rgb(SystemColor::ButtonHilight));
@@ -619,7 +619,7 @@ fn tooltip_height(scale: i32) -> i32 {
 }
 
 #[test]
-fn disabled_menu_item_is_embossed_and_highlight_overrides_it() {
+fn disabled_menu_item_is_embossed_and_highlight_uses_gray_text() {
     let image = render(1, |p| {
         p.menu_item(
             Rect::new(10, 10, 100, 18),
@@ -650,7 +650,8 @@ fn disabled_menu_item_is_embossed_and_highlight_overrides_it() {
     assert!(
         count(SystemColor::ButtonShadow, 10) > 10 && count(SystemColor::ButtonHilight, 10) > 10
     );
-    assert!(count(SystemColor::HilightText, 40) > 10);
+    assert!(count(SystemColor::GrayText, 40) > 10);
+    assert_eq!(count(SystemColor::HilightText, 40), 0);
 }
 
 #[test]

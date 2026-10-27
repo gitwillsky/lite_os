@@ -21,6 +21,8 @@ const F_SEAL_SEAL: i32 = 0x0001;
 const F_SEAL_SHRINK: i32 = 0x0002;
 #[cfg(target_os = "linux")]
 const F_SEAL_GROW: i32 = 0x0004;
+#[cfg(target_os = "linux")]
+const F_SEAL_WRITE: i32 = 0x0008;
 
 /// A sized anonymous shared-memory file.
 pub struct MemFd {
@@ -34,34 +36,48 @@ impl MemFd {
     /// `F_SEAL_GROW|F_SEAL_SHRINK|F_SEAL_SEAL` fixes the ring extent while
     /// intentionally preserving writable mappings for producer and consumer.
     pub fn create(name: &str, len: usize) -> io::Result<Self> {
+        let memory = Self::allocate(name, len)?;
+        #[cfg(target_os = "linux")]
+        memory.seal(F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL)?;
+        Ok(memory)
+    }
+
+    /// 在发布前一次填充协议表；Linux 同时封印内容与尺寸，不再允许 write 或共享写映射。
+    ///
+    /// `name` 和 `bytes` 只在本次创建中借用；空输入、fd、写入或 sealing 失败返回 io::Error。
+    pub fn from_bytes(name: &str, bytes: &[u8]) -> io::Result<Self> {
+        use std::{fs::File, os::unix::fs::FileExt};
+        let memory = Self::allocate(name, bytes.len())?;
+        File::from(memory.fd.try_clone()?).write_all_at(bytes, 0)?;
+        #[cfg(target_os = "linux")]
+        memory.seal(F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_WRITE | F_SEAL_SEAL)?;
+        Ok(memory)
+    }
+
+    fn allocate(name: &str, len: usize) -> io::Result<Self> {
         if len == 0 || i64::try_from(len).is_err() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "shared mapping length must fit off_t",
             ));
         }
-        let name = CString::new(name).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "memfd name contains an interior NUL",
-            )
-        })?;
+        let name = CString::new(name)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "memfd name contains NUL"))?;
         let fd = create_owned_fd(&name)?;
+        // SAFETY: 新 owned file 尚未发布，长度已校验为有效 off_t，不保留任何用户指针。
         if unsafe { raw::ftruncate(fd.as_raw_fd(), len as i64) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        #[cfg(target_os = "linux")]
-        if unsafe {
-            raw::fcntl(
-                fd.as_raw_fd(),
-                F_ADD_SEALS,
-                F_SEAL_GROW | F_SEAL_SHRINK | F_SEAL_SEAL,
-            )
-        } != 0
-        {
+        Ok(Self { fd, len })
+    }
+
+    #[cfg(target_os = "linux")]
+    fn seal(&self, seals: i32) -> io::Result<()> {
+        // SAFETY: 标准 fcntl F_ADD_SEALS，参数是整数 mask，不传指针。
+        if unsafe { raw::fcntl(self.fd.as_raw_fd(), F_ADD_SEALS, seals) } != 0 {
             return Err(io::Error::last_os_error());
         }
-        Ok(Self { fd, len })
+        Ok(())
     }
 
     /// Returns the immutable mapping extent.

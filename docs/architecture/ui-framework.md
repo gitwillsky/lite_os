@@ -128,7 +128,10 @@ frame callback 在实际提交显示时从排队队列移入在途队列，flip 
 GPU 的采样视图按真实资源缓存，淘汰只发生在上帧 flip 完成之后；对象句柄与 GEM resource ID 使用各自命名空间。
 
 这些是服务端合成路径的代码实现，当前发布构建不能替代协议、GPU 画面或性能验收。
-客户端仍以 wl_shm 提交 CPU 光栅图像；尚未发布 linux-dmabuf、DRM PRIME 导入或 EGL 客户端共享缓冲能力。
+原生控件仍用 wl_shm；标准 EGL 客户端可使用上游 Mesa 25.1.9 的 Wayland/GBM 与 linux-dmabuf v4。
+ARGB8888/XRGB8888、offset=0、stride=width×4、隐式 modifier 是当前导入范围；不公布 LINEAR/scanout tranche。
+共享纹理直接取样；仅 CPU 消费者（如硬件光标）才同步读回，buffer.release 等所有当前/在途使用结束。
+运行库只安装固定 SHA-256 的真实 ELF 依赖闭包及 VirtIO driver，不通过软件 renderer 掩盖初始化失败。
 当前忽略 damage/opaque 提示并整帧重画；SHM attach 仍读取完整缓冲，这些是后续增量渲染与零拷贝方向的性能边界。
 
 ## 时区与后台线程

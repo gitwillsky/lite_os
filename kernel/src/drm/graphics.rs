@@ -1,4 +1,6 @@
+mod attachment;
 mod retirement;
+pub(super) use attachment::{AttachmentRetirement, VirglAttachment};
 pub(super) use retirement::{VirglCleanup, VirglCleanupAction, VirglCleanupCompletion};
 
 use alloc::sync::Arc;
@@ -17,7 +19,6 @@ use super::{
 };
 
 const PIPE_BUFFER: u32 = 0;
-const PIPE_TEXTURE_2D: u32 = 2;
 const FORMAT_B8G8R8A8_UNORM: u32 = 1;
 const FORMAT_B8G8R8X8_UNORM: u32 = 2;
 const FORMAT_R8_UNORM: u32 = 64;
@@ -36,6 +37,7 @@ pub(crate) struct VirglResourceCreate {
     pub(crate) samples: u32,
     pub(crate) flags: u32,
     pub(crate) size: u64,
+    pub(crate) stride: u32,
 }
 
 /// 一个 file-private VirGL GEM/resource 的稳定 UAPI metadata。
@@ -71,16 +73,17 @@ pub(super) struct VirglContext {
 }
 
 impl VirglContext {
-    /// 把 OFD-owned resource map 移入创建 context 时预分配的 cleanup node。
+    /// 归还 OFD 的 attachment handles，并取出创建时预分配的 context cleanup node。
     pub(super) fn into_cleanup(
         mut self,
-        buffers: FallibleMap<u32, Arc<VirglBuffer>>,
+        buffers: FallibleMap<u32, Arc<VirglAttachment>>,
     ) -> VacantEntry<u32, VirglCleanup> {
-        let mut cleanup = self
+        let cleanup = self
             .cleanup
             .take()
             .expect("published VirGL context lost cleanup node");
-        cleanup.value_mut().buffers = buffers;
+        // 最后一个 handle/pin 析构把预分配 detach 节点转交设备；共享资源本身留在全局退休表。
+        drop(buffers);
         cleanup
     }
 }
@@ -96,16 +99,19 @@ pub(super) struct VirglBuffer {
     // OWNER: fence 与尚未使用的退休节点同锁；节点仅在 buffer=None 时保存在资源内，避免 Arc 自环。
     // 节点在 create 前预分配，使正常 GEM_CLOSE 无分配，OOM 不会阻断已发布资源的回收。
     pub(super) lifecycle: Mutex<VirglLifecycle>,
+    // OWNER: 等价 dma_resv 的提交保留锁；跨 context 的隐式 wait、queue publication 与 fence 记录不可被插入。
+    // 多资源提交按 resource_id 排序并去重获取，防止 ABBA；只用 task mutex，不持 spin guard 睡眠。
+    pub(super) reservation: crate::sync::TaskMutex<()>,
 }
 
 pub(super) struct VirglLifecycle {
     pub(super) fence: u64,
-    retirement: Option<VacantEntry<u32, VirglRetirement>>,
+    // OWNER: 弱缓存保证重复 PRIME 导出返回同一 dma-buf 身份，不能反向保活 fd 或形成资源/OFD 环。
+    pub(super) exported: alloc::sync::Weak<super::prime::DmaBuf>,
 }
 
 /// 正常关闭或创建失败后的回收事务；预分配节点保活 backing。未发布 ID 只在 UNREF 完成后回收。
 pub(super) struct VirglRetirement {
-    pub(super) context_id: u32,
     pub(super) buffer: Option<Arc<VirglBuffer>>,
     pub(super) reservation: Option<UnpublishedId<u32>>,
     pub(super) in_flight: Option<u64>,
@@ -114,9 +120,35 @@ pub(super) struct VirglRetirement {
 /// 一次提交从 handle 验证到 fence 发布期间的资源强引用；不能只验证 ID 后丢掉 ownership。
 pub(super) struct VirglAccess {
     pub(super) context_id: u32,
-    buffers: Vec<Arc<VirglBuffer>>,
+    buffers: Vec<Arc<VirglAttachment>>,
 }
 impl VirglAccess {
+    pub(super) fn reserve(&self) -> Result<Vec<crate::sync::TaskMutexGuard<'_, ()>>, DrmError> {
+        let mut guards = Vec::new();
+        guards
+            .try_reserve_exact(self.buffers.len())
+            .map_err(|_| DrmError::OutOfMemory)?;
+        for buffer in &self.buffers {
+            guards.push(
+                buffer
+                    .reservation
+                    .lock_killable()
+                    .map_err(|error| match error {
+                        crate::sync::TaskMutexLockError::OutOfMemory => DrmError::OutOfMemory,
+                        crate::sync::TaskMutexLockError::Interrupted => DrmError::Interrupted,
+                    })?,
+            );
+        }
+        Ok(guards)
+    }
+    pub(super) fn last_fence(&self) -> u64 {
+        self.buffers
+            .iter()
+            .map(|buffer| buffer.lifecycle.lock().fence)
+            .max()
+            .unwrap_or(0)
+    }
+
     /// host 接受命令后发布 fence；并发提交可能逆序登记，不能降低最后使用水位。
     pub(super) fn record(&self, fence: u64) {
         for buffer in &self.buffers {
@@ -195,7 +227,8 @@ pub(crate) struct PreparedVirglResource<'file> {
     context_id: u32,
     create: VirglResourceCreate,
     buffer: Option<Arc<VirglBuffer>>,
-    entry: Option<VacantEntry<u32, Arc<VirglBuffer>>>,
+    entry: Option<VacantEntry<u32, Arc<VirglAttachment>>>,
+    attaching: bool,
     // OWNER: None 表示 host 尚未接受 create；首次提交后只能在 UNREF completion 后回收 resource ID。
     // 缺失时 EINTR/OOM/copyout fault 会提前复用仍被 host 使用的 identity 或释放 DMA backing。
     submitted: bool,
@@ -206,24 +239,15 @@ pub(crate) struct PreparedVirglResource<'file> {
 /// 未发布时 Drop 用原 AVL node 无分配恢复 handle，不对 host 提交 UNREF。
 pub(crate) struct PreparedVirglClose<'file> {
     file: &'file DrmFile,
-    entry: Option<VacantEntry<u32, Arc<VirglBuffer>>>,
+    _admission: crate::sync::TaskMutexGuard<'file, ()>,
+    entry: Option<VacantEntry<u32, Arc<VirglAttachment>>>,
 }
 impl PreparedVirglClose<'_> {
     /// 原子退休 handle；异步 UNREF 完成前保活 backing，不把可中断 wait 放在销毁命令之后。
     pub(crate) fn publish(mut self) {
-        let buffer = self
-            .entry
-            .take()
-            .expect("VirGL close lost handle entry")
-            .into_value();
-        let mut cleanup = buffer
-            .lifecycle
-            .lock()
-            .retirement
-            .take()
-            .expect("published resource lost retirement node");
-        cleanup.value_mut().buffer = Some(buffer);
-        self.file.retire_virgl_resource(cleanup);
+        // 最后一个提交 pin 退出才可 detach；attachment Drop 无分配排队并推进 exact-fence 退休。
+        drop(self.entry.take());
+        self.file.progress_retirements();
     }
 }
 
@@ -239,6 +263,13 @@ impl PreparedVirglResource<'_> {
     /// host 接受命令后、开始可中断等待前记录 exact fence；不得在等待成功后才登记。
     pub(crate) fn record_submission(&mut self, fence: u64) {
         self.submitted = true;
+        if self.attaching {
+            self.entry
+                .as_ref()
+                .expect("prepared attachment missing")
+                .value()
+                .arm(fence);
+        }
         self.buffer
             .as_ref()
             .expect("prepared resource missing buffer")
@@ -277,7 +308,8 @@ impl PreparedVirglResource<'_> {
     }
 
     /// 返回 context/resource ownership attach operation。
-    pub(crate) fn context_attach_command(&self) -> VirglCommand<'static> {
+    pub(crate) fn context_attach_command(&mut self) -> VirglCommand<'static> {
+        self.attaching = true;
         VirglCommand::ContextAttachResource {
             context_id: self.context_id,
             resource_id: self.resource_id,
@@ -305,12 +337,17 @@ impl PreparedVirglResource<'_> {
             .expect("VirGL resource reservation missing");
         let entry = self.entry.take().expect("VirGL map node missing");
         let buffer = self.buffer.take().expect("VirGL buffer missing");
-        let mut cleanup = self
+        let cleanup = self
             .cleanup
             .take()
             .expect("published resource lost retirement node");
-        drop(cleanup.value_mut().buffer.take());
-        buffer.lifecycle.lock().retirement = Some(cleanup);
+        // 全局表的唯一强引用是退休观察 pin；所有 handle、dma-buf、KMS 和提交引用退出且 fence 完成才 UNREF。
+        self.file
+            .device
+            .state
+            .lock()
+            .graphics_retirements
+            .commit_vacant(cleanup);
         drop(buffer);
         self.file.state.lock().graphics_buffers.commit_vacant(entry);
         self.file.state.lock().handle_ids.publish(handle);
@@ -358,42 +395,34 @@ fn reservation_error(error: ReservationError) -> DrmError {
 }
 
 fn virgl_resource_stride(create: VirglResourceCreate) -> Result<u32, DrmError> {
+    // Linux virtgpu 将图像形状交给 host renderer；guest backing 的 size 是独立的 shmem extent。
+    // 不能因 BGRA 合成器只用 2D/level0 就拒绝 Mesa 的 vertex/depth/mipmap/array 资源。
     if create.size > u64::from(u32::MAX)
-        || create.depth != 1
-        || create.array_size != 1
-        || create.last_level != 0
-        || create.samples != 0
+        || create.target > 8
+        || create.format == 0
+        || create.format >= 512
+        || create.width == 0
+        || create.height == 0
+        || create.depth == 0
+        || create.last_level > 31
+        || (create.array_size == 0 && create.target != PIPE_BUFFER)
+        || !matches!(create.samples, 0 | 1 | 2 | 4 | 8 | 16)
     {
         return Err(DrmError::Invalid);
     }
     if create.target == PIPE_BUFFER {
-        if create.format != FORMAT_R8_UNORM
-            || create.height != 1
-            || u64::from(create.width) > create.size
-        {
-            return Err(DrmError::Invalid);
-        }
         return Ok(1);
     }
-    if create.target != PIPE_TEXTURE_2D {
-        return Err(DrmError::Invalid);
+    if create.stride != 0 {
+        return Ok(create.stride);
     }
-    let bytes_per_pixel = match create.format {
+    let bytes = match create.format {
         FORMAT_B8G8R8A8_UNORM | FORMAT_B8G8R8X8_UNORM => 4,
         FORMAT_R8_UNORM => 1,
-        _ => return Err(DrmError::Invalid),
+        // 未给 stride 的其他 host-only format 不猜 CPU 布局；encoded GPU transfer 仍由 renderer 解释。
+        _ => return Ok(0),
     };
-    let stride = create
-        .width
-        .checked_mul(bytes_per_pixel)
-        .ok_or(DrmError::Invalid)?;
-    let minimum = u64::from(stride)
-        .checked_mul(u64::from(create.height))
-        .ok_or(DrmError::Invalid)?;
-    if create.size < minimum {
-        return Err(DrmError::Invalid);
-    }
-    Ok(stride)
+    create.width.checked_mul(bytes).ok_or(DrmError::Invalid)
 }
 
 impl DrmFile {
@@ -476,10 +505,14 @@ impl DrmFile {
     }
 
     /// 复制 immutable VirGL capset bytes。
-    pub(crate) fn copy_virgl_capset(&self, output: &mut [u8]) -> Result<usize, DrmError> {
+    pub(crate) fn copy_virgl_capset(
+        &self,
+        version: u32,
+        output: &mut [u8],
+    ) -> Result<usize, DrmError> {
         self.device
             .display
-            .copy_virgl_capset(output)
+            .copy_virgl_capset(version, output)
             .map_err(super::device::display_error)
     }
 
@@ -529,6 +562,10 @@ impl DrmFile {
         &self,
     ) -> Result<Option<PreparedVirglContext<'_>>, DrmError> {
         self.virgl_capset_info()?;
+        // 已发布 context 在 OFD 存活期间不会撤销；常规 exec 不再获取只用于首次发布的 task mutex。
+        if self.state.lock().context.is_some() {
+            return Ok(None);
+        }
         let admission = self
             .context_creation
             .lock()
@@ -599,14 +636,6 @@ impl DrmFile {
         &self,
         create: VirglResourceCreate,
     ) -> Result<PreparedVirglResource<'_>, DrmError> {
-        if create.width == 0
-            || create.height == 0
-            || create.depth == 0
-            || create.array_size == 0
-            || create.size == 0
-        {
-            return Err(DrmError::Invalid);
-        }
         let stride = virgl_resource_stride(create)?;
         let context_id = self
             .state
@@ -643,11 +672,13 @@ impl DrmFile {
             create,
             buffer: None,
             entry: None,
+            attaching: false,
             submitted: false,
             cleanup: None,
         };
-        let size = usize::try_from(create.size).map_err(|_| DrmError::Invalid)?;
-        let pages = size.div_ceil(PAGE_SIZE);
+        let requested = usize::try_from(create.size).map_err(|_| DrmError::Invalid)?;
+        let pages = requested.max(1).div_ceil(PAGE_SIZE);
+        let size = pages.checked_mul(PAGE_SIZE).ok_or(DrmError::Invalid)?;
         let backing = Arc::try_new(
             DeviceBacking::try_allocate(pages, FrameAllocationClass::Reclaimable)
                 .ok_or(DrmError::OutOfMemory)?,
@@ -661,22 +692,25 @@ impl DrmFile {
             width: create.width,
             height: create.height,
             backing,
+            reservation: crate::sync::TaskMutex::new(()),
             lifecycle: Mutex::new(VirglLifecycle {
                 fence: 0,
-                retirement: None,
+                exported: alloc::sync::Weak::new(),
             }),
         })
         .map_err(|_| DrmError::OutOfMemory)?;
         prepared.buffer = Some(buffer.clone());
         prepared.entry = Some(
-            FallibleMap::try_prepare(handle_id, buffer.clone())
-                .map_err(|_| DrmError::OutOfMemory)?,
+            FallibleMap::try_prepare(
+                handle_id,
+                VirglAttachment::prepare(&self.device, context_id, buffer.clone())?,
+            )
+            .map_err(|_| DrmError::OutOfMemory)?,
         );
         prepared.cleanup = Some(
             FallibleMap::try_prepare(
                 resource_id,
                 VirglRetirement {
-                    context_id,
                     buffer: Some(buffer),
                     reservation: None,
                     in_flight: None,
@@ -758,6 +792,10 @@ impl DrmFile {
         &self,
         handle: u32,
     ) -> Result<PreparedVirglClose<'_>, DrmError> {
+        let admission = self
+            .context_creation
+            .lock()
+            .map_err(|_| DrmError::OutOfMemory)?;
         let mut state = self.state.lock();
         state.context.as_ref().ok_or(DrmError::Invalid)?;
         let entry = state
@@ -767,6 +805,7 @@ impl DrmFile {
         drop(state);
         Ok(PreparedVirglClose {
             file: self,
+            _admission: admission,
             entry: Some(entry),
         })
     }
@@ -783,9 +822,6 @@ impl DrmFile {
 
     /// ioctl 的所有临时资源 pin 退出后推进退休；失败的 framebuffer publication 也必须经过此出口。
     pub(super) fn progress_retirements(&self) {
-        if self.device.state.lock().graphics_retirements.is_empty() {
-            return;
-        }
         let mut completion = self.device.completion.lock();
         super::device::advance_graphics_cleanup(&self.device, &mut completion);
     }
@@ -844,25 +880,29 @@ impl DrmFile {
                 && region.height == 1
                 && region.depth == 1
                 && offset == region.x
-                && (stride == 0 || stride == 1)
-                && (layer_stride == 0 || layer_stride == buffer.width))
+                && stride == 0
+                && layer_stride == 0)
                 .then(|| u64::from(offset).checked_add(u64::from(region.width)))
                 .flatten()
         } else {
             let bytes_per_pixel = buffer.stride / buffer.width;
+            if bytes_per_pixel == 0 {
+                return Err(DrmError::Invalid);
+            }
             let expected_offset = region
                 .y
                 .checked_mul(buffer.stride)
                 .and_then(|row| row.checked_add(region.x.checked_mul(bytes_per_pixel)?));
-            let expected_layer_stride = buffer.stride.checked_mul(buffer.height);
             if region.z == 0
                 && region.depth == 1
-                && stride == buffer.stride
-                && Some(layer_stride) == expected_layer_stride
+                && stride == 0
+                && layer_stride == 0
                 && Some(offset) == expected_offset
             {
                 u64::from(offset)
-                    .checked_add(u64::from(region.height.saturating_sub(1)) * u64::from(stride))
+                    .checked_add(
+                        u64::from(region.height.saturating_sub(1)) * u64::from(buffer.stride),
+                    )
                     .and_then(|start| {
                         start.checked_add(u64::from(region.width) * u64::from(bytes_per_pixel))
                     })
@@ -913,6 +953,8 @@ impl DrmFile {
                     .clone(),
             );
         }
+        buffers.sort_unstable_by_key(|buffer| buffer.resource_id);
+        buffers.dedup_by_key(|buffer| buffer.resource_id);
         Ok(VirglAccess {
             context_id: context.id,
             buffers,

@@ -191,8 +191,18 @@ fn handle_requests_become_actions_on_the_right_window() {
             request(3, ForeignAction::Maximize(true)),
             request(3, ForeignAction::Fullscreen(false)),
             request(2, ForeignAction::Close),
+            request(
+                2,
+                ForeignAction::Rectangle {
+                    surface: id(5),
+                    x: 0,
+                    y: 0,
+                    width: 1,
+                    height: 1
+                }
+            ),
         ],
-        "set_rectangle is accepted and ignored"
+        "set_rectangle must reach the window owner for minimize geometry"
     );
 }
 

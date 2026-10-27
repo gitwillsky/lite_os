@@ -2,8 +2,8 @@ use alloc::vec::Vec;
 
 use crate::{
     drm::{
-        DrmFile, DrmSubmission, VIRGL_COMMAND_MAX, VirglBox, VirglCommand, VirglResourceCreate,
-        VirglTransferDirection,
+        DrmFile, DrmSubmission, DrmWait, VIRGL_COMMAND_MAX, VirglBox, VirglCommand,
+        VirglResourceCreate, VirglTransferDirection,
     },
     fs::chardev::UserMemory,
 };
@@ -66,7 +66,7 @@ pub(super) fn get_caps(
 ) -> Result<(), isize> {
     let bytes = copy_in::<24>(user, argument)?;
     let capset = file.virgl_capset_info().map_err(drm_errno)?;
-    if read_u32(&bytes, 0)? != capset.id || read_u32(&bytes, 4)? != capset.version {
+    if read_u32(&bytes, 0)? != capset.id || read_u32(&bytes, 4)? > capset.version {
         return Err(errno::EINVAL);
     }
     let requested = usize::try_from(read_u32(&bytes, 16)?).map_err(|_| errno::EINVAL)?;
@@ -75,7 +75,7 @@ pub(super) fn get_caps(
         .try_reserve_exact(capset.size)
         .map_err(|_| errno::ENOMEM)?;
     capabilities.resize(capset.size, 0);
-    file.copy_virgl_capset(&mut capabilities)
+    file.copy_virgl_capset(read_u32(&bytes, 4)?, &mut capabilities)
         .map_err(drm_errno)?;
     let count = requested.min(capabilities.len());
     if count != 0 {
@@ -157,7 +157,8 @@ pub(super) fn resource_create(
             last_level: read_u32(&bytes, 28)?,
             samples: read_u32(&bytes, 32)?,
             flags: read_u32(&bytes, 36)?,
-            size: read_u64(&bytes, 48)?,
+            size: u64::from(read_u32(&bytes, 48)?),
+            stride: read_u32(&bytes, 52)?,
         })
         .map_err(drm_errno)?;
     let command = prepared.create_command();
@@ -208,6 +209,11 @@ pub(super) fn transfer(
     let access = file
         .access_virgl_resources(core::iter::once(handle))
         .map_err(drm_errno)?;
+    let _reservations = access.reserve().map_err(drm_errno)?;
+    wait_scanout(DrmWait {
+        device: file.device.clone(),
+        fence: access.last_fence(),
+    })?;
     let command = file
         .transfer_command(crate::drm::VirglTransfer {
             handle,
@@ -245,13 +251,8 @@ pub(super) fn execbuffer(
         || size > VIRGL_COMMAND_MAX
         || !size.is_multiple_of(4)
         || count > MAX_EXEC_RESOURCES
-        || read_u32(&bytes, 28)? != u32::MAX
-        || read_u32(&bytes, 32)? != 0
-        || read_u32(&bytes, 36)? != 0
         || read_u32(&bytes, 40)? != 0
         || read_u32(&bytes, 44)? != 0
-        || read_u64(&bytes, 48)? != 0
-        || read_u64(&bytes, 56)? != 0
     {
         return Err(errno::EINVAL);
     }
@@ -269,6 +270,12 @@ pub(super) fn execbuffer(
         )
         .map_err(|_| errno::EFAULT)?;
     }
+    // Linux 在首个 EXECBUFFER 也惰性创建 context；Mesa 初始化可以先发无 BO 的 capability 命令。
+    // fence_fd/ring_idx 只有对应 flag 才有效；零 syncobj 数量时不解释 stride/pointer。
+    if let Some(context) = file.prepare_legacy_virgl_context().map_err(drm_errno)? {
+        submit_only(file, context.command())?;
+        context.publish();
+    }
     let access = file
         .access_virgl_resources(
             handles
@@ -278,6 +285,11 @@ pub(super) fn execbuffer(
                 .map(|bytes| u32::from_ne_bytes(*bytes)),
         )
         .map_err(drm_errno)?;
+    let _reservations = access.reserve().map_err(drm_errno)?;
+    wait_scanout(DrmWait {
+        device: file.device.clone(),
+        fence: access.last_fence(),
+    })?;
     let fence = submit_only(
         file,
         VirglCommand::Submit3d {
@@ -343,7 +355,7 @@ fn submit_resource(
     }
 }
 
-fn submit_only(file: &DrmFile, command: VirglCommand<'_>) -> Result<u64, isize> {
+pub(super) fn submit_only(file: &DrmFile, command: VirglCommand<'_>) -> Result<u64, isize> {
     loop {
         match file.submit_virgl(command.clone()).map_err(drm_errno)? {
             DrmSubmission::Wait(wait) => return Ok(wait.fence()),

@@ -7,7 +7,7 @@ impl DrmFile {
     ///
     /// device master identity 与本 OFD 相同时返回 true。
     pub(crate) fn is_master(&self) -> bool {
-        self.device.state.lock().master == Some(self.file_identity)
+        !self.render_node && self.device.state.lock().master == Some(self.file_identity)
     }
 
     /// 按 Linux primary-node 语义取得 KMS master。
@@ -24,7 +24,7 @@ impl DrmFile {
     ///
     /// 已有其他 master 返回 Busy；既非 privileged 也未曾为 master 返回 Permission。
     pub(crate) fn set_master(&self, privileged: bool) -> Result<(), DrmError> {
-        if !privileged && !self.state.lock().was_master {
+        if self.render_node || (!privileged && !self.state.lock().was_master) {
             return Err(DrmError::Permission);
         }
         let mut device = self.device.state.lock();
@@ -52,7 +52,7 @@ impl DrmFile {
     ///
     /// caller 无权操作返回 Permission；当前 OFD 不是 master 返回 Invalid。
     pub(crate) fn drop_master(&self, privileged: bool) -> Result<(), DrmError> {
-        if !privileged && !self.state.lock().was_master {
+        if self.render_node || (!privileged && !self.state.lock().was_master) {
             return Err(DrmError::Permission);
         }
         let mut device = self.device.state.lock();

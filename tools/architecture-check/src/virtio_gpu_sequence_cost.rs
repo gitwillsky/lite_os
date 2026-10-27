@@ -40,17 +40,22 @@ fn bounded_multi_command_owner(sources: &[SourceFile]) -> bool {
         .find(|source| source.relative == "kernel/src/virtio/gpu.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
+    let commands = sources
+        .iter()
+        .find(|source| source.relative == "kernel/src/virtio/gpu/command.rs")
+        .map(|source| source.text.as_str())
+        .unwrap_or_default();
     let timeline = sources
         .iter()
         .find(|source| source.relative == "kernel/src/drm/fence_timeline.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     adapter.contains("const CONTROL_COMMAND_CAPACITY: usize = QUEUE_SIZE as usize / 2;")
-        && adapter.contains("struct CommandSlot")
+        && commands.contains("struct CommandSlot")
         && adapter.contains("commands: CommandSlots")
-        && adapter.contains("pending: Option<PendingCommand>")
-        && adapter.contains("pending.head == head")
-        && adapter.contains("fn has_non_render_pending")
+        && commands.contains("pending: Option<PendingCommand>")
+        && commands.contains("pending.head == head")
+        && commands.contains("fn has_non_render_pending")
         && !adapter.contains("control.pending")
         && timeline.contains("struct FenceTimeline")
         && timeline.contains("while self.count != 0 && self.entries[self.head].complete")

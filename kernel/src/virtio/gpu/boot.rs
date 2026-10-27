@@ -67,29 +67,41 @@ impl VirtIOGpuDevice {
                 selected = Some(candidate);
             }
         }
-        let (id, version, size) = selected?;
-        {
-            let mut control = control.lock();
-            let request = &mut control.commands.boot_slot_mut().request;
-            request[..32].fill(0);
-            write_u32(request.as_mut_slice(), 24, id)?;
-            write_u32(request.as_mut_slice(), 28, version)?;
+        let (id, maximum, size) = selected?;
+        // 固定 VirGL ABI 覆盖版本 0..2；更高版本需要升级规范和 consumer 审计后才能发布。
+        let maximum = maximum.min(2);
+        let mut versions = alloc::vec::Vec::new();
+        versions.try_reserve_exact(maximum as usize + 1).ok()?;
+        for version in 0..=maximum {
+            {
+                let mut control = control.lock();
+                let request = &mut control.commands.boot_slot_mut().request;
+                request[..32].fill(0);
+                write_u32(request.as_mut_slice(), 24, id)?;
+                write_u32(request.as_mut_slice(), 28, version)?;
+            }
+            Self::execute_boot(
+                device,
+                control,
+                VIRTIO_GPU_CMD_GET_CAPSET,
+                32,
+                VIRTIO_GPU_RESP_OK_CAPSET,
+                CONTROL_HEADER_SIZE.checked_add(size)?,
+            )?;
+            let mut bytes = alloc::vec::Vec::new();
+            bytes.try_reserve_exact(size).ok()?;
+            bytes.extend_from_slice(
+                &control.lock().commands.boot_response()[CONTROL_HEADER_SIZE..][..size],
+            );
+            versions.push(bytes);
         }
-        Self::execute_boot(
-            device,
-            control,
-            VIRTIO_GPU_CMD_GET_CAPSET,
-            32,
-            VIRTIO_GPU_RESP_OK_CAPSET,
-            CONTROL_HEADER_SIZE.checked_add(size)?,
-        )?;
-        let control = control.lock();
-        let mut bytes = [0; MAX_CAPSET_SIZE];
-        bytes[..size]
-            .copy_from_slice(&control.commands.boot_response()[CONTROL_HEADER_SIZE..][..size]);
         Some(super::VirglCapset {
-            info: crate::drivers::VirglCapsetInfo { id, version, size },
-            bytes,
+            info: crate::drivers::VirglCapsetInfo {
+                id,
+                version: maximum,
+                size,
+            },
+            versions,
         })
     }
 

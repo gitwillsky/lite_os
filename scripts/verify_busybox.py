@@ -81,9 +81,10 @@ BINARY_RECIPE_VERSION = 7
 # 完整 fingerprint directory 原子发布为不可变 generation。
 # FAILURE: 缺少该 cache 会让 ext4 创建时间在每次 build 改写 fs.img，即使执行输入未变也会
 # 使全部下游 APK install/runtime gate 失效。
-ROOTFS_RECIPE_VERSION = 16
-# APK assembly 同时保留安装树与已签名 base package；固定 512 MiB 容量为安装事务预留空间。
-ROOTFS_SIZE_MIB = 512
+ROOTFS_RECIPE_VERSION = 17
+# APK assembly 同时保留已安装文件、压缩包及 APK 的原子替换临时文件。
+# 容量按真实发布输入推导；固定最小值只覆盖小型 rootfs，不能限制新增运行库。
+ROOTFS_MIN_SIZE_MIB = 512
 RUST_USER_CARGO_CACHE_RECIPE_VERSION = 1
 if TARGET.arch == "aarch64":
     BUSYBOX_ARCH = "arm64"
@@ -1284,6 +1285,7 @@ class UserlandArtifact:
 def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
     """构建产品系统文件的唯一安装清单；构建与开发镜像同步共同消费。"""
     from ui_sdk import sdk_files
+    from mesa_runtime import mesa_userland
 
     programs = tuple(
         UserlandArtifact(build_rust_user_program(musl, crate, binary, binary, 1), f"/bin/{binary}", 0o755)
@@ -1315,7 +1317,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         *(UserlandArtifact(path, f"{SYSTEM_LIBRARY_DIRECTORY}/{name}", 0o755)
           for path, name in build_system_libraries(musl)),
         UserlandArtifact(ROOT / "user/base/ld-musl.path", f"/etc/{Path(TARGET.musl_loader).name.removesuffix('.so.1')}.path"),
-        *programs, *fonts, *ui,
+        *programs, *fonts, *ui, *mesa_userland(),
         *(UserlandArtifact(path, destination, mode) for path, destination, mode in sdk_files()),
         *(UserlandArtifact(path, f"/usr/share/liteos/sounds/{name}") for name, path in sounds()),
     )
@@ -1411,6 +1413,14 @@ def create_image(
     image: Path,
 ) -> Path:
     """构造 BusyBox、唯一 musl runtime、标准 loader symlink 与固定 inittab。"""
+    userland = base_userland(musl)
+    stress_tools = build_stress_tools(musl)
+    payload_bytes = sum(artifact.source.stat().st_size for artifact in userland)
+    payload_bytes += sum(path.stat().st_size for path in (binary, openssl.binary, stress_tools))
+    payload_bytes += sum(path.stat().st_size for path in (musl.install / "usr").rglob("*") if path.is_file())
+    # 1. 现有树与压缩包同时存在；2. apk 在原文件旁创建替换文件；3. 另留元数据和块对齐空间。
+    # 三份未压缩输入是保守上界，64 MiB 对齐保持 sparse image，避免依赖压缩率而在安装中 ENOSPC。
+    size_mib = max(ROOTFS_MIN_SIZE_MIB, ((3 * payload_bytes + 64 * 1024 * 1024 + (64 * 1024 * 1024 - 1)) // (64 * 1024 * 1024)) * 64)
     run(
         [
             sys.executable,
@@ -1419,14 +1429,12 @@ def create_image(
             "--file",
             str(image),
             "--size",
-            str(ROOTFS_SIZE_MIB),
+            str(size_mib),
             "--init",
             str(binary),
         ],
         ROOT,
     )
-    userland = base_userland(musl)
-    stress_tools = build_stress_tools(musl)
     bootstrap = cached_apk_bootstrap()
     commands = [
         "mkdir /etc",
@@ -1483,6 +1491,10 @@ def create_image(
         f"symlink {TARGET.musl_loader} /usr/lib/libc.so",
         *musl_development_commands(musl.install),
     ]
+    # 安装清单同时决定目录树：SDK/Mesa 等新增嵌套路径不能依赖另一份手写 mkdir 列表。
+    existing_directories = {command.removeprefix("mkdir ") for command in commands if command.startswith("mkdir ")}
+    artifact_directories = {str(parent) for artifact in userland for parent in Path(artifact.destination).parents if str(parent) != "/"}
+    commands.extend(f"mkdir {folder}" for folder in sorted(artifact_directories - existing_directories, key=lambda path: (path.count("/"), path)))
     # 启动配置与共享开机素材只有 base_userland 一份安装清单。
     for artifact in userland:
         commands.append(f"write {artifact.source} {artifact.destination}")

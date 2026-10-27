@@ -433,6 +433,9 @@ def assemble_apk_rootfs(
         timeout_seconds=60,
         forbidden_markers=forbidden_markers,
         persistent_writes=True,
+        # 装配使用产品同一 RAM contract；省略 -m 会偷偷落到 QEMU 默认的 128 MiB。
+        # Mesa 等大运行库安装仍受真实内存容量约束，不能依赖宿主或放宽产品内存上限。
+        memory=os.environ.get("QEMU_MEMORY", "2G"),
     )
     _verify_package_ownership(image, debugfs, application_packages)
     return image

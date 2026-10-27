@@ -24,8 +24,8 @@ Wayland 门禁（`scripts/verify_wayland.py`，`make verify-runtime-wayland`）�
 内核显示/GPU gate（`scripts/verify_gpu.py`）是上述“宿主墙钟不作 blocking gate”原则的唯一显式例外，因为它不测量
 宿主墙钟：帧间隔取自 guest 内核单调 vblank 时钟。该时间戳由内核在 deferred display 完成路径以
 `get_time_ns()`（DTB timebase 单调计数）写入 DRM page-flip 事件（seconds/microseconds 与 sequence），与 Python
-宿主时钟、HVF 调度抖动完全无关。gate 在固定 UTM VirGL 产品实例中启动 rootfs 的私有副本，其 `/etc/inittab` 只运行
-`drm-flip-probe`（`user/libraries/linux-uapi/src/bin/drm-flip-probe.rs`；不进入产品 rootfs，不启动 compositor 与任何 UI）。
+宿主时钟、HVF 调度抖动完全无关。gate 在固定 UTM VirGL 产品实例中启动 rootfs 的私有副本，其 `/etc/inittab` 只运行无界面 EGL/PRIME/flip 探针，先以固定上游 `eglinfo -B -p gbm -a gles` 创建 VirGL GLES context，再运行
+`drm-flip-probe`（`user/libraries/linux-uapi/src/bin/drm-flip-probe/main.rs`；不进入产品 rootfs，不启动 compositor 与任何 UI）。
 探针走产品同一内核路径：VirGL2 能力、render target、EXECBUFFER 清屏、PAGE_FLIP。它先对清屏结果做像素读回比对
 （功能裁决），再连续翻页，丢弃 60 帧 warmup 后测量 600 次完成间隔。`dropped` 取设备 vblank sequence 间隙，严格要求
 为 0；p95/p99 按“宽但真实的绝对上限”设阈值，不在文档记录本机测量值。样本不足、读回像素不符、flip 事件与提交帧
@@ -94,4 +94,9 @@ macOS 没有相同 SO_ACCEPTCONN getter，宿主 metadata/所有权测试从 std
 后续验收需覆盖 buffer transform 八种方向、buffer/output scale 不同、
 viewport 裁剪及取消与 null/fresh attach 同时提交、同步/异步子树的位置和父上下堆叠、输入 region 空洞，
 以及 flip 在途期间继续 commit 时 frame callback 不提前完成。硬件动画光标需同时检查热点 offset 与回调推进。
-性能观察分开记录首次纹理上传、已提交窗口拖动、缩放/还原与场景纹理替换；GPU 合成不能代表客户端已支持 dma-buf/EGL。
+性能观察分开记录首次纹理上传、已提交窗口拖动、缩放/还原与场景纹理替换；GPU 合成与客户端 dma-buf/EGL 分开验证；原生控件仍使用 SHM。
+
+客户端共享缓冲门禁复用 `scripts/verify_gpu.py` 私有镜像，不启动 compositor 或窗口。
+先要求上游 EGL renderer 为 VirGL；PRIME 探针检查 self/repeated import、ARGB/XRGB 同 handle 视图、
+导出 context/进程侧 owner 关闭和全部 dma-buf FD 关闭后，消费者仍能等待隐式 fence 并读回正确像素。
+随后执行既有 600 帧 page-flip 门禁，阈值不变。产品 UTM 需已退出，门禁完成恢复原配置；UI 效果由用户验收。

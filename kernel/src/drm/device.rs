@@ -43,7 +43,7 @@ impl DrmFile {
                 return Err(DrmError::NotFound);
             }
         }
-        if completion.pending.is_some() {
+        if completion.pending.is_some() || completion.reset_after_owner.is_some() {
             return Ok(FramebufferRemoval::Retry(DrmRetry {
                 device: self.device.clone(),
                 generation: completion.adapter_generation,
@@ -124,7 +124,7 @@ impl DrmFile {
         framebuffer_id: u32,
         event: Option<PendingEvent>,
     ) -> Result<DrmWait, DrmError> {
-        if completion.pending.is_some() {
+        if completion.pending.is_some() || completion.reset_after_owner.is_some() {
             return Err(DrmError::Busy);
         }
         let (backing, owner) = {
@@ -184,7 +184,7 @@ impl DrmFile {
         framebuffer_id: u32,
         rectangles: &[DisplayRect],
     ) -> Result<DrmWait, DrmError> {
-        if completion.pending.is_some() {
+        if completion.pending.is_some() || completion.reset_after_owner.is_some() {
             return Err(DrmError::Busy);
         }
         let (mode, backing, owner) = {
@@ -247,7 +247,7 @@ impl DrmFile {
         &self,
         completion: &mut CompletionState,
     ) -> Result<DrmWait, DrmError> {
-        if completion.pending.is_some() {
+        if completion.pending.is_some() || completion.reset_after_owner.is_some() {
             return Err(DrmError::Busy);
         }
         let fence = self
@@ -290,11 +290,15 @@ impl Drop for DrmFile {
             let pending_release_on_owned = completion.pending.as_ref().is_some_and(|pending| {
                 matches!(&pending.operation, PendingOperation::Release { owner } if *owner == identity)
             });
-            if pending_owned_scanout || pending_damage_on_owned || pending_release_on_owned {
+            if pending_owned_scanout
+                || pending_damage_on_owned
+                || pending_release_on_owned
+                || owned_active
+            {
+                // OWNER: 既有 reset intent 跨过 adapter backpressure；close 不能等待或把 Busy 当设备故障。
+                // 新 master 必须等 reset 完成，避免旧 OFD 的迟到 disable 覆盖新 scanout。
                 completion.reset_after_owner = Some(identity);
-            } else if completion.pending.is_none() && owned_active {
-                self.submit_disable(&mut completion)
-                    .expect("closing DRM OFD failed to disable scanout");
+                advance_scanout_reset(&self.device, &mut completion);
             }
             if owned_active {
                 // close 后 object ID 立即离开可查询 namespace；hardware 可能仍显示旧
@@ -343,7 +347,64 @@ impl Drop for DrmFile {
     }
 }
 
+fn advance_scanout_reset(device: &DrmDevice, completion: &mut CompletionState) {
+    if completion.reset_after_owner.is_none() || completion.pending.is_some() {
+        return;
+    }
+    let fence = match device.display.disable_scanout() {
+        Ok(fence) => fence,
+        Err(DisplayError::WouldBlock) => return,
+        Err(error) => panic!("closed DRM OFD scanout reset failed: {error:?}"),
+    };
+    completion
+        .timeline
+        .submit(fence)
+        .expect("close reset exceeded completion timeline");
+    completion.pending = Some(PendingDisplay {
+        fence,
+        operation: PendingOperation::Disable,
+    });
+    completion.reset_after_owner = None;
+}
+
 pub(super) fn advance_graphics_cleanup(device: &DrmDevice, completion: &mut CompletionState) {
+    advance_scanout_reset(device, completion);
+    // reset 排在资源 detach/UNREF 前；否则关闭 primary 后 host 仍可能扫描已释放资源。
+    if completion.reset_after_owner.is_some() {
+        return;
+    }
+    let detachment = {
+        let state = device.state.lock();
+        state.graphics_detachments.iter().find_map(|(&key, entry)| {
+            (entry.in_flight.is_none() && entry.wait_fence <= completion.timeline.completed())
+                .then_some((key, entry.context_id, entry.resource_id))
+        })
+    };
+    if let Some((key, context_id, resource_id)) = detachment {
+        let fence =
+            match device
+                .display
+                .submit_virgl(crate::drivers::VirglCommand::ContextDetachResource {
+                    context_id,
+                    resource_id,
+                }) {
+                Ok(fence) => fence,
+                Err(DisplayError::WouldBlock) => return,
+                Err(error) => panic!("VirGL detach failed: {error:?}"),
+            };
+        completion
+            .timeline
+            .submit(fence)
+            .expect("detach exceeded completion timeline");
+        device
+            .state
+            .lock()
+            .graphics_detachments
+            .get_mut(&key)
+            .expect("selected detach disappeared")
+            .in_flight = Some(fence);
+        return;
+    }
     let retirement = {
         let state = device.state.lock();
         state
@@ -391,7 +452,7 @@ pub(super) fn advance_graphics_cleanup(device: &DrmDevice, completion: &mut Comp
                 let action = cleanup.next_action(completion.timeline.completed())?;
                 if matches!(action, super::graphics::VirglCleanupAction::Context { .. })
                     && state
-                        .graphics_retirements
+                        .graphics_detachments
                         .iter()
                         .any(|(_, retirement)| retirement.context_id == context)
                 {
@@ -422,6 +483,18 @@ pub(super) fn advance_graphics_cleanup(device: &DrmDevice, completion: &mut Comp
 }
 
 fn complete_graphics_cleanup(device: &DrmDevice, fence: u64) {
+    let detached = {
+        let mut state = device.state.lock();
+        let key = state
+            .graphics_detachments
+            .iter()
+            .find_map(|(&key, entry)| (entry.in_flight == Some(fence)).then_some(key));
+        key.and_then(|key| state.graphics_detachments.take_entry(&key))
+    };
+    if let Some(detached) = detached {
+        drop(detached);
+        return;
+    }
     let retirement = {
         let mut state = device.state.lock();
         let id = state
@@ -442,7 +515,7 @@ fn complete_graphics_cleanup(device: &DrmDevice, fence: u64) {
         drop(retirement);
         return;
     }
-    let (resource, context) = {
+    let context = {
         let mut state = device.state.lock();
         let context = state
             .graphics_cleanups
@@ -457,23 +530,25 @@ fn complete_graphics_cleanup(device: &DrmDevice, fence: u64) {
             .expect("matched VirGL cleanup disappeared")
             .complete(fence)
         {
-            Some(super::graphics::VirglCleanupCompletion::Resource(resource)) => {
-                (Some(resource), None)
-            }
             Some(super::graphics::VirglCleanupCompletion::Context) => {
-                (None, state.graphics_cleanups.take_entry(&context))
+                state.graphics_cleanups.take_entry(&context)
             }
-            None => (None, None),
+            None => None,
         }
     };
     // AVL node、Arc 和 backing 均在 device state guard 外释放，避免持锁进入物理页回收。
-    drop(resource);
     drop(context);
 }
 
 // OWNER: DRM module 唯一拥有 primary KMS device；devfs/OFD 后续只持该 owner 的 Arc 投影。
 // 缺失单例会让多个 card0 实例竞争同一 hardware scanout 与 completion queue。
 static PRIMARY_DRM: Once<Arc<DrmDevice>> = Once::new();
+
+impl crate::fs::GraphicsSysfsSource for DrmDevice {
+    fn identity(&self) -> Option<(u64, u32)> {
+        self.display.platform_identity()
+    }
+}
 
 /// 从通用 display seam 与统一 wait notification Pipe 初始化 primary DRM owner。
 ///
@@ -518,6 +593,7 @@ pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
             graphics_resource_ids: PublicationIdAllocator::new(resource_start),
             graphics_cleanups: FallibleMap::new(),
             graphics_retirements: FallibleMap::new(),
+            graphics_detachments: FallibleMap::new(),
             master: None,
             mode,
             framebuffers: FallibleMap::new(),
@@ -525,9 +601,10 @@ pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
     })
     .map_err(|_| ())?;
     let display = owner.display.clone();
+    crate::fs::register_graphics_sysfs(owner.clone()).map_err(|_| ())?;
     PRIMARY_DRM.call_once(|| owner);
     display.bind_completion_work(crate::deferred::register(display_work)?);
-    let driver = Arc::try_new(super::card_file::CardDriver).map_err(|_| ())?;
+    let driver = Arc::try_new(super::card_file::CardDriver { render: false }).map_err(|_| ())?;
     crate::fs::chardev::register_driver(super::card_file::CARD_NUMBER, 1, driver)
         .map_err(|_| ())?;
     crate::fs::devnode::register_node(
@@ -535,7 +612,15 @@ pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
         super::card_file::CARD_NUMBER,
         0o666,
     )
-    .map_err(|_| ())
+    .map_err(|_| ())?;
+    let render = crate::fs::DeviceNumber::new(226, 128);
+    crate::fs::chardev::register_driver(
+        render,
+        1,
+        Arc::try_new(super::card_file::CardDriver { render: true }).map_err(|_| ())?,
+    )
+    .map_err(|_| ())?;
+    crate::fs::devnode::register_node(b"dri/renderD128", render, 0o666).map_err(|_| ())
 }
 
 /// 打开 primary DRM card 的新 OFD backend。
@@ -547,7 +632,7 @@ pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
 /// # Errors
 ///
 /// primary DRM 未初始化或 control block OOM 返回 unit error。
-pub(super) fn open() -> Result<Arc<DrmFile>, ()> {
+pub(super) fn open(render_node: bool) -> Result<Arc<DrmFile>, ()> {
     let device = PRIMARY_DRM.get().cloned().ok_or(())?;
     let file_identity = {
         let mut state = device.state.lock();
@@ -558,6 +643,7 @@ pub(super) fn open() -> Result<Arc<DrmFile>, ()> {
     let file = Arc::try_new(DrmFile {
         device,
         file_identity,
+        render_node,
         context_creation: crate::sync::TaskMutex::new(()),
         state: Mutex::new(DrmFileState {
             handle_ids: PublicationIdAllocator::new(1),
@@ -570,7 +656,7 @@ pub(super) fn open() -> Result<Arc<DrmFile>, ()> {
     })
     .map_err(|_| ())?;
     let mut state = file.device.state.lock();
-    if state.master.is_none() {
+    if !render_node && state.master.is_none() {
         state.master = Some(file_identity);
         file.state.lock().was_master = true;
     }
@@ -700,21 +786,6 @@ fn dispatch_display_work(timestamp_ns: u64) {
         PendingOperation::Damage { .. } => {}
         PendingOperation::Release { .. } => {}
         PendingOperation::Disable => state.active = None,
-    }
-    if reset_after_close {
-        state.reset_after_owner = None;
-        let reset_fence = drm
-            .display
-            .disable_scanout()
-            .expect("closed DRM OFD failed to queue scanout disable");
-        state
-            .timeline
-            .submit(reset_fence)
-            .expect("published close reset fence exceeded completion timeline");
-        state.pending = Some(PendingDisplay {
-            fence: reset_fence,
-            operation: PendingOperation::Disable,
-        });
     }
     advance_graphics_cleanup(drm, &mut state);
     drop(state);

@@ -62,10 +62,10 @@ pub(crate) struct TaskControlBlock {
 }
 impl TaskControlBlock {
     // comm 的 Process owner 由实际 task/runtime 路径验证；本夹具只消费 seccomp 的 prctl 路由。
-    fn set_comm(&self, _: &[u8]) -> Result<(), ()> {
+    fn set_comm(&self, _: &[u8]) {
         unreachable!("comm mutation outside seccomp policy fixture")
     }
-    fn comm_buffer(&self) -> Result<[u8; 16], ()> {
+    fn comm_buffer(&self) -> [u8; 16] {
         unreachable!("comm read outside seccomp policy fixture")
     }
 

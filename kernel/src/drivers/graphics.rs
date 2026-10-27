@@ -125,6 +125,13 @@ pub(crate) enum VirglCommand<'a> {
         /// 已创建的 resource identity。
         resource_id: u32,
     },
+    /// 解除一个 context 对共享资源的引用；资源全局寿命独立于此关联。
+    ContextDetachResource {
+        /// 已创建的 context identity。
+        context_id: u32,
+        /// 已附着的资源 identity。
+        resource_id: u32,
+    },
     /// 提交一段 exact VirGL command stream。
     Submit3d {
         /// 接收 command stream 的 context identity。
@@ -174,6 +181,10 @@ pub(crate) enum VirglCommand<'a> {
 
 /// 同时拥有 scanout 与 VirGL controlq 的唯一 graphics adapter seam。
 pub(crate) trait GraphicsDevice: DisplayDevice {
+    /// 返回 adapter 实际 MMIO 地址及 VirtIO vendor，供标准 sysfs 设备身份投影；其他 transport 不伪造平台事实。
+    fn platform_identity(&self) -> Option<(u64, u32)> {
+        None
+    }
     /// 把一个 64x64 ARGB dumb buffer 上传到规范要求的 2D cursor resource。
     ///
     /// # Parameters
@@ -263,7 +274,7 @@ pub(crate) trait GraphicsDevice: DisplayDevice {
     /// # Errors
     ///
     /// output 小于 capset size 或 adapter 不支持 VirGL 时返回 `Device`。
-    fn copy_virgl_capset(&self, output: &mut [u8]) -> Result<usize, DisplayError>;
+    fn copy_virgl_capset(&self, version: u32, output: &mut [u8]) -> Result<usize, DisplayError>;
 
     /// 向唯一 controlq 异步提交一条标准 VirGL operation。
     ///

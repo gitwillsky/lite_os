@@ -82,7 +82,8 @@ impl ViewportState {
         }
         let size = params.1.unwrap_or((sw as i32, sh as i32));
         // 完整、未旋转的源保持精确单位坐标，让常规整数缩放复用 CPU 行复制快路径。
-        if transform == 0
+        if !base.y_inverted()
+            && transform == 0
             && sx == 0.0
             && sy == 0.0
             && sw * f64::from(scale) == base.width as f64
@@ -110,7 +111,10 @@ impl ViewportState {
                 7 => (1.0 - v, 1.0 - u),
                 _ => unreachable!("validated buffer transform"),
             };
-            (u * base.width as f64, v * base.height as f64)
+            (
+                u * base.width as f64,
+                (if base.y_inverted() { 1.0 - v } else { v }) * base.height as f64,
+            )
         };
         Ok((
             size,
@@ -223,5 +227,81 @@ impl Client {
             wp_viewport::Request::Destroy => unreachable!("handled above"),
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use canvas::{Image, Rect, Surface};
+
+    #[test]
+    fn all_buffer_transforms_sample_the_original_pixels() {
+        let base = Content::new(2, 3, (1..=6).map(|n| 0xff000000 | n).collect());
+        let expected = [
+            [1, 2, 3, 4, 5, 6],
+            [5, 3, 1, 6, 4, 2],
+            [6, 5, 4, 3, 2, 1],
+            [2, 4, 6, 1, 3, 5],
+            [2, 1, 4, 3, 6, 5],
+            [1, 3, 5, 2, 4, 6],
+            [5, 6, 3, 4, 1, 2],
+            [6, 4, 2, 5, 3, 1],
+        ];
+        for (transform, expected) in expected.into_iter().enumerate() {
+            let Ok(((width, height), source)) =
+                ViewportState::mapping((None, None), &base, 1, transform as i32)
+            else {
+                panic!("valid transform");
+            };
+            let mut pixels = [0; 6];
+            Surface::new(&mut pixels, width, height, width as usize)
+                .unwrap()
+                .blit_sampled(
+                    Image {
+                        pixels: base.pixels().unwrap(),
+                        width: 2,
+                        height: 3,
+                        stride: 2,
+                    },
+                    Rect::new(0, 0, width, height),
+                    source,
+                );
+            assert_eq!(
+                pixels.map(|n| n & 0xffffff),
+                expected,
+                "transform {transform}"
+            );
+        }
+    }
+
+    #[test]
+    fn scale_and_fractional_viewport_crop_use_one_affine_source() {
+        let base = Content::new(6, 4, (1..=24).map(|n| 0xff000000 | n).collect());
+        let original = base.pixels().unwrap().as_ptr();
+        let Ok(((width, height), source)) =
+            ViewportState::mapping((Some((0.5, 0.0, 1.0, 1.0)), Some((1, 1))), &base, 2, 0)
+        else {
+            panic!("valid crop");
+        };
+        let mut pixel = [0];
+        Surface::new(&mut pixel, width, height, 1)
+            .unwrap()
+            .blit_sampled(
+                Image {
+                    pixels: base.pixels().unwrap(),
+                    width: 6,
+                    height: 4,
+                    stride: 6,
+                },
+                Rect::new(0, 0, width, height),
+                source,
+            );
+        assert_eq!(pixel[0] & 0xffffff, 9);
+        assert_eq!(base.pixels().unwrap().as_ptr(), original);
+        let Ok((size, _)) = ViewportState::mapping((None, None), &base, 2, 0) else {
+            panic!("valid scale");
+        };
+        assert_eq!(size, (3, 2));
     }
 }

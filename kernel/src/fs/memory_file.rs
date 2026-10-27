@@ -6,7 +6,7 @@
 //! 引用时随 `Arc` 释放，并立即归还配额。
 
 use alloc::sync::Arc;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use super::{FileSystemError, StorageBudget};
 use crate::memory::{
@@ -108,6 +108,10 @@ pub(crate) struct MemoryFile {
     // OWNER: 文件长度、页映射与 seal 的权威状态。TaskMutex：页分配可能进入 direct reclaim 并
     // 等待 I/O，持 spin lock 睡眠会让同 CPU 的另一个 owner 永久自旋。
     state: TaskMutex<State>,
+    // OWNER: 实际共享可写 mmap 的 admission lease；只在 state guard 内递增/检查，最后 view Drop 原子归还。
+    // split/fork 共享同一 Arc lease，直到最后一个 VMA 消失；Drop 不能分配 waiter 或在 MM 退休中睡眠。
+    // 缺失此计数会让 F_SEAL_WRITE 在已有/潜在 writable alias 存在时错误成功。
+    writable_mappings: AtomicUsize,
     // 文件长度的无锁只读投影，只在持有 `state` 时由 mutation 更新；权威仍是 `state`。
     // `Inode::size` 不能失败也不能睡眠，缺失该投影只能在锁获取失败时回答错误的长度。
     published_length: AtomicU64,
@@ -166,6 +170,7 @@ impl MemoryFile {
                 seals: Seals::new(allow_sealing),
                 reclaim_cursor: 0,
             }),
+            writable_mappings: AtomicUsize::new(0),
             published_length: AtomicU64::new(0),
             times: super::inode_times::InodeTimes::new()?,
         })
@@ -238,7 +243,14 @@ impl MemoryFile {
             .write_sequence
             .lock()
             .map_err(|_| FileSystemError::OutOfMemory)?;
-        self.state()?.seals.add(seals).map_err(seal_error)
+        let mut state = self.state()?;
+        let mut candidate = state.seals;
+        candidate.add(seals).map_err(seal_error)?;
+        if seals & seals::F_SEAL_WRITE != 0 && self.writable_mappings.load(Ordering::Acquire) != 0 {
+            return Err(FileSystemError::Busy);
+        }
+        state.seals = candidate;
+        Ok(candidate.bits())
     }
 
     /// 读取；洞读为零，EOF 返回零字节。
@@ -335,7 +347,7 @@ impl MemoryFile {
             .ok_or(FileSystemError::InvalidOperation)?;
         let mut state = self.state()?;
         let current = state.pages.len();
-        state.seals.check_write(current, end).map_err(seal_error)?;
+        state.seals.check_growth(current, end).map_err(seal_error)?;
         let result = state
             .pages
             .allocate_range(offset, length, || self.allocate_page())
@@ -349,11 +361,42 @@ impl MemoryFile {
         result
     }
 
-    /// 建立 mmap 视图；映射持有存储本身，因此可以比 inode 存活更久。
-    pub(crate) fn mapping(self: &Arc<Self>) -> Result<Arc<dyn SharedFileMapping>, FileSystemError> {
-        Arc::try_new(MemoryMapping(self.clone()))
-            .map(|mapping| mapping as Arc<dyn SharedFileMapping>)
-            .map_err(|_| FileSystemError::OutOfMemory)
+    /// 建立 mmap 视图并原子取得共享写入 admission；私有 COW 不受写入 seal 影响。
+    ///
+    /// `shared` 区分共享与私有映射，`may_write` 是 fd 的写权限，`write` 是本次 PROT_WRITE。
+    /// 新共享写映射被 seal 拒绝时返回 EPERM；只读映射仍允许，但不能再通过 mprotect 获得写权限。
+    pub(crate) fn mapping(
+        self: &Arc<Self>,
+        shared: bool,
+        may_write: bool,
+        write: bool,
+    ) -> Result<Arc<dyn SharedFileMapping>, FileSystemError> {
+        let mut mapping = Arc::try_new(MemoryMapping {
+            file: self.clone(),
+            write: MappingWrite::Private,
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+        if shared {
+            let state = self.state()?;
+            let allowed = !state.seals.blocks_new_writes();
+            if write && !allowed {
+                return Err(FileSystemError::PermissionDenied);
+            }
+            let mode = if may_write && allowed {
+                self.writable_mappings
+                    .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                        count.checked_add(1)
+                    })
+                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                MappingWrite::SharedWritable
+            } else {
+                MappingWrite::SharedReadOnly
+            };
+            Arc::get_mut(&mut mapping)
+                .expect("unpublished mapping must be unique")
+                .write = mode;
+        }
+        Ok(mapping as Arc<dyn SharedFileMapping>)
     }
 }
 
@@ -435,7 +478,25 @@ impl MemoryReclaimer for MemoryFile {
 }
 
 /// 一个 [`MemoryFile`] 的 mmap 视图。
-struct MemoryMapping(Arc<MemoryFile>);
+enum MappingWrite {
+    Private,
+    SharedReadOnly,
+    SharedWritable,
+}
+struct MemoryMapping {
+    file: Arc<MemoryFile>,
+    write: MappingWrite,
+}
+impl Drop for MemoryMapping {
+    fn drop(&mut self) {
+        if matches!(self.write, MappingWrite::SharedWritable) {
+            assert!(
+                self.file.writable_mappings.fetch_sub(1, Ordering::AcqRel) != 0,
+                "mapping lease underflow"
+            );
+        }
+    }
+}
 
 impl core::fmt::Debug for MemoryMapping {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -446,21 +507,24 @@ impl core::fmt::Debug for MemoryMapping {
 }
 
 impl SharedFileMapping for MemoryMapping {
+    fn may_write(&self) -> bool {
+        !matches!(self.write, MappingWrite::SharedReadOnly)
+    }
     fn id(&self) -> SharedFileId {
-        self.0.id
+        self.file.id
     }
 
     fn size(&self) -> u64 {
-        self.0.size()
+        self.file.size()
     }
 
     fn page(&self, index: u64) -> Result<Arc<dyn SharedPage>, SharedFileError> {
         let mut state = self
-            .0
+            .file
             .state
             .lock()
             .map_err(|_| SharedFileError::OutOfMemory)?;
-        match state.pages.page(index, || self.0.allocate_page()) {
+        match state.pages.page(index, || self.file.allocate_page()) {
             None => Err(SharedFileError::BeyondEof),
             Some(Ok(page)) => Ok(page as Arc<dyn SharedPage>),
             // 配额耗尽时 mmap 访问以 SIGBUS 报告，与 Linux tmpfs 超出 `size=` 的行为一致。

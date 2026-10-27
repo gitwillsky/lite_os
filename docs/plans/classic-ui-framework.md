@@ -12,7 +12,7 @@ Status: Active
 列表的四种视图、多选、树展开、原地重命名、文字裁剪和交互失效由运行库拥有，应用只保留业务状态与副作用。
 文件对话框提供共同类型筛选；后台 I/O、时区模型与设置文件的跨进程更新已收敛到各自 owner。
 VirGL2 服务端合成已接入，纹理随不可变 Content 保活；移动只更新几何，Scanout 只分配选中后端的一对输出目标。
-待完成：标准 GPU 客户端缓冲及其下层资源/同步 owner；本机开发闭环、旧 ELF 升级和源码调试见 SDK 计划。
+标准 GPU 客户端缓冲已接入代码，支持边界与资源/同步 owner 见 UI/设备契约；本机开发闭环、旧 ELF 升级和源码调试见 SDK 计划。
 当前事实由[框架架构](../architecture/ui-framework.md)维护；本轮不执行测试/GUI 验收，编译检查不等同于运行验收。
 
 ## 实施前的重复逻辑
@@ -121,13 +121,10 @@ xdg_toplevel.set_parent 只建立父子关系，不单独作为模态策略；�
 1. 应用运行时与业务代码不选择合成器后端；CPU/GPU 使用相同的标准 surface、commit、damage 和同步语义。
 2. 优先评估现有 VirGL2 做服务端 GPU 合成：继续接收标准 wl_shm，提交内容持有纹理，移动只更新几何。
    Content/已提交缓冲拥有资源生命周期，不在 Session 另建一份需要手动同步的可写内容表。
-3. GPU 客户端直接共享缓冲时补齐标准 linux-dmabuf、DRM PRIME/dma-buf 和相应同步能力；当前尚未实现。
-   已对照固定 Linux 的 drm_prime.c / virtgpu_prime.c：共享资源寿命必须独立于导出 OFD，
-   不能用 dma-buf 强引用整个导出 DrmFile，以免双向导入形成循环；重复/self-import 必须得到同一 file-local handle。
-   当前已补齐创建失败/中断后的异步退休、GEM_CLOSE 延迟回收和提交 pins；VirglCleanup 仍随 OFD 统一清理剩余资源，
-   尚不能直接复用于 PRIME；需继续将 GEM 资源、context attachment 和最后引用回收分离，
-   再接入标准 FD 发布/导入事务、隐式 fence、linux-dmabuf 的格式/修饰符协商与 buffer.release。
-   EGL/GBM/Mesa 接入另按真实 UAPI 需求核对，不能由现有 VirGL clear/submit 就推断外部 GPU 应用已兼容。
+3. 已接入 linux-dmabuf v4、DRM PRIME/dma-buf、render node 和共享资源隐式 fence。
+   GEM 资源独立于导出 OFD/context，attachment 先 detach、context 独立销毁；重复/self-import 合并 handle。
+   上游 Mesa 25.1.9 提供 EGL/GBM/Wayland 客户端；当前限定同设备单平面 ARGB/XRGB 隐式 modifier。
+   无界面标准消费者、共享寿命与显示节拍分别验收；完整 OpenGL/Vulkan 及更多格式仍不能由此推断。
 4. CPU 局部合成需覆盖旧/新窗口区域、遮挡、scale 和双缓冲历史；不能只在当前 back buffer 擦一个矩形。
 
 Wayland 规定应用与合成器的缓冲交互，不规定某种控件库或 CPU/GPU 绘制算法。

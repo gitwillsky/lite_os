@@ -69,6 +69,53 @@ impl UserMemory for TaskUserMemory<'_> {
         Ok(reservation.publish(ofd) as isize)
     }
 
+    fn device_file(&self, fd: i32) -> Result<alloc::sync::Arc<dyn DeviceFile>, DeviceError> {
+        let fd = usize::try_from(fd).map_err(|_| DeviceError::Errno(syscall_abi::errno::EBADF))?;
+        let file = self
+            .0
+            .fd_get(fd)
+            .ok_or(DeviceError::Errno(syscall_abi::errno::EBADF))?;
+        match &file.kind {
+            crate::file::OpenFileKind::Device(device) => Ok(device.clone()),
+            _ => Err(DeviceError::Errno(syscall_abi::errno::EINVAL)),
+        }
+    }
+    fn install_device(
+        &self,
+        file: alloc::sync::Arc<dyn DeviceFile>,
+        flags: u32,
+        fd_address: usize,
+    ) -> Result<i32, DeviceError> {
+        let reservation = self
+            .0
+            .fd_prepare_open(flags & crate::fs::O_CLOEXEC != 0)
+            .map_err(|error| DeviceError::Errno(-super::file_descriptor_error(error)))?;
+        let prepared =
+            crate::file::PreparedDeviceDescription::try_new(file.anonymous_name(), flags)
+                .map_err(|error| DeviceError::Errno(-super::fs::filesystem_error(error)))?;
+        let number = i32::try_from(reservation.descriptors()[0])
+            .map_err(|_| DeviceError::Errno(syscall_abi::errno::EMFILE))?;
+        let candidate = prepared.finish(file.clone());
+        let description = if let Some(cache) = file.shared_description() {
+            let mut cache = cache.lock();
+            if let Some(existing) = cache.as_ref().and_then(alloc::sync::Weak::upgrade) {
+                existing
+                    .downcast::<OpenFileDescription>()
+                    .map_err(|_| DeviceError::Errno(syscall_abi::errno::EINVAL))?
+            } else {
+                let erased: alloc::sync::Arc<dyn core::any::Any + Send + Sync> = candidate.clone();
+                *cache = Some(alloc::sync::Arc::downgrade(&erased));
+                candidate
+            }
+        } else {
+            candidate
+        };
+        self.write(fd_address, &number.to_ne_bytes())
+            .map_err(|_| DeviceError::Errno(syscall_abi::errno::EFAULT))?;
+        reservation.publish(description);
+        Ok(number)
+    }
+
     fn read(&self, address: usize, bytes: &mut [u8]) -> Result<(), UserFault> {
         if address == 0 {
             return Err(UserFault);

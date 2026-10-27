@@ -5,11 +5,12 @@ use super::{
     sequence_policy::RuntimeStage,
     wire::{
         CONTROL_REQUEST_SIZE, VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, VIRTIO_GPU_CMD_CTX_CREATE,
-        VIRTIO_GPU_CMD_CTX_DESTROY, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
-        VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
-        VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT, VIRTIO_GPU_CMD_SUBMIT_3D,
-        VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D, prepare_attach,
-        prepare_flush, prepare_set_scanout, prepare_unref, write_u32, write_u64,
+        VIRTIO_GPU_CMD_CTX_DESTROY, VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE,
+        VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, VIRTIO_GPU_CMD_RESOURCE_CREATE_3D,
+        VIRTIO_GPU_CMD_RESOURCE_FLUSH, VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
+        VIRTIO_GPU_CMD_SUBMIT_3D, VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D,
+        VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D, prepare_attach, prepare_flush, prepare_set_scanout,
+        prepare_unref, write_u32, write_u64,
     },
 };
 
@@ -65,7 +66,12 @@ pub(super) fn prepare(
             samples,
             flags,
         } => {
-            if resource_id == 0 || width == 0 || height == 0 || depth == 0 || array_size == 0 {
+            if resource_id == 0
+                || width == 0
+                || height == 0
+                || depth == 0
+                || (array_size == 0 && target != 0)
+            {
                 return Err(DisplayError::InvalidRectangle);
             }
             clear(request, 72)?;
@@ -102,6 +108,13 @@ pub(super) fn prepare(
         } => {
             context_resource(request, context_id, resource_id)?;
             (VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, 32)
+        }
+        VirglCommand::ContextDetachResource {
+            context_id,
+            resource_id,
+        } => {
+            context_resource(request, context_id, resource_id)?;
+            (VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE, 32)
         }
         VirglCommand::Submit3d {
             context_id,

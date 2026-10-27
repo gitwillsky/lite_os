@@ -56,6 +56,13 @@ enum Transport {
 }
 
 impl VirtIODevice {
+    /// MMIO identification 寄存器的实际 vendor；PCI transport 不使用 MMIO 布局。
+    pub(in crate::virtio) fn mmio_vendor_id(&self) -> Option<u32> {
+        match &self.transport {
+            Transport::Mmio(bus) => bus.read_u32(0x00c).ok(),
+            Transport::Pci(_) => None,
+        }
+    }
     /// 创建并识别一个 VirtIO MMIO 设备。
     ///
     /// # Parameters

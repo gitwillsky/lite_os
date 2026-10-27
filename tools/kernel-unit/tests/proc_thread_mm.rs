@@ -66,6 +66,7 @@ mod fs {
                 };
                 let worker = ProcThreadSnapshot {
                     tid,
+                    comm: *b"a ()\nb\0\0\0\0\0\0\0\0\0\0",
                     has_mm: true,
                     fd_size: 64,
                     credentials: credentials.clone(),

@@ -13,6 +13,7 @@ use super::sysfs_net::{self, NetSysNode, NetView};
 #[derive(Clone, Copy)]
 enum SysNode {
     Root,
+    Drm(super::sysfs_drm::Node),
     /// `/sys/class`：`block` 与 `net`。
     ClassRoot,
     /// `/sys/dev`：只有 `block`。
@@ -40,6 +41,7 @@ impl SysNode {
     fn inode(self) -> u64 {
         match self {
             Self::Root => 1,
+            Self::Drm(node) => node.inode(),
             Self::ClassRoot => 8,
             Self::DevRoot => 9,
             Self::Block(node) => node.inode(),
@@ -64,6 +66,7 @@ impl SysNode {
             | Self::System
             | Self::CpuRoot
             | Self::Cpu(_) => InodeType::Directory,
+            Self::Drm(node) => node.kind(),
             Self::Block(node) => node.kind(),
             Self::Net(node) => node.kind(),
             Self::CpuSet(_) | Self::CpuOnline(_) => InodeType::File,
@@ -145,6 +148,7 @@ impl SysInode {
                 bytes.extend_from_slice(b"1\n");
                 Ok(bytes)
             }
+            SysNode::Drm(node) => super::sysfs_drm::contents(node),
             SysNode::Block(node) => sysfs_block::contents(node),
             SysNode::Net(node) => sysfs_net::contents(&self.network, node),
             _ => Err(FileSystemError::IsDirectory),
@@ -162,6 +166,13 @@ impl SysInode {
     fn child(&self, name: &[u8]) -> Result<SysNode, FileSystemError> {
         let parent = match self.node {
             SysNode::Root => SysNode::Root,
+            SysNode::Drm(node) => match super::sysfs_drm::parent(node) {
+                super::sysfs_drm::Parent::Root => SysNode::Root,
+                super::sysfs_drm::Parent::Class => SysNode::ClassRoot,
+                super::sysfs_drm::Parent::Dev => SysNode::DevRoot,
+                super::sysfs_drm::Parent::Devices => SysNode::Devices,
+                super::sysfs_drm::Parent::Node(node) => SysNode::Drm(node),
+            },
             SysNode::ClassRoot | SysNode::DevRoot => SysNode::Root,
             SysNode::Block(node) => match sysfs_block::parent(node)? {
                 Parent::ClassRoot => SysNode::ClassRoot,
@@ -188,6 +199,13 @@ impl SysInode {
             return Ok(parent);
         }
         match self.node {
+            SysNode::Drm(node) => super::sysfs_drm::lookup(node, name).map(SysNode::Drm),
+            SysNode::Root if name == b"bus" => Ok(SysNode::Drm(super::sysfs_drm::Node::Bus)),
+            SysNode::ClassRoot if name == b"drm" => Ok(SysNode::Drm(super::sysfs_drm::Node::Class)),
+            SysNode::DevRoot if name == b"char" => Ok(SysNode::Drm(super::sysfs_drm::Node::Char)),
+            SysNode::Devices if name == b"platform" => {
+                Ok(SysNode::Drm(super::sysfs_drm::Node::Platform))
+            }
             SysNode::Root if name == b"devices" => Ok(SysNode::Devices),
             SysNode::Root if name == b"class" => Ok(SysNode::ClassRoot),
             SysNode::Root if name == b"dev" => Ok(SysNode::DevRoot),
@@ -243,7 +261,9 @@ impl Inode for SysInode {
             filesystem: self.filesystem_id as u64,
             inode: self.node.inode(),
             kind,
-            mode: if kind == InodeType::Directory {
+            mode: if kind == InodeType::SymLink {
+                0o120777
+            } else if kind == InodeType::Directory {
                 0o040555
             } else {
                 0o100444
@@ -264,6 +284,13 @@ impl Inode for SysInode {
             fine_times: Default::default(),
             device: None,
         })
+    }
+
+    fn read_link(&self) -> Result<Vec<u8>, FileSystemError> {
+        match self.node {
+            SysNode::Drm(node) => super::sysfs_drm::read_link(node),
+            _ => Err(FileSystemError::InvalidOperation),
+        }
     }
 
     fn inode_type(&self) -> InodeType {
@@ -342,7 +369,13 @@ impl Inode for SysInode {
         emit!(self.node, b".");
         emit!(parent, b"..");
         match self.node {
+            SysNode::Drm(node) => {
+                for (child, name) in super::sysfs_drm::children(node)? {
+                    emit!(SysNode::Drm(child), &name);
+                }
+            }
             SysNode::Root => {
+                emit!(SysNode::Drm(super::sysfs_drm::Node::Bus), b"bus");
                 emit!(SysNode::Devices, b"devices");
                 emit!(SysNode::ClassRoot, b"class");
                 emit!(
@@ -352,6 +385,7 @@ impl Inode for SysInode {
                 emit!(SysNode::DevRoot, b"dev");
             }
             SysNode::ClassRoot => {
+                emit!(SysNode::Drm(super::sysfs_drm::Node::Class), b"drm");
                 emit!(
                     SysNode::Block(BlockSysNode::Listing(Place::ClassBlock)),
                     b"block"
@@ -363,16 +397,22 @@ impl Inode for SysInode {
                     emit!(SysNode::Net(child), &name);
                 }
             }
-            SysNode::DevRoot => emit!(
-                SysNode::Block(BlockSysNode::Listing(Place::DevBlock)),
-                b"block"
-            ),
+            SysNode::DevRoot => {
+                emit!(SysNode::Drm(super::sysfs_drm::Node::Char), b"char");
+                emit!(
+                    SysNode::Block(BlockSysNode::Listing(Place::DevBlock)),
+                    b"block"
+                );
+            }
             SysNode::Block(node) => {
                 for (child, name) in sysfs_block::children(node)? {
                     emit!(SysNode::Block(child), &name);
                 }
             }
-            SysNode::Devices => emit!(SysNode::System, b"system"),
+            SysNode::Devices => {
+                emit!(SysNode::Drm(super::sysfs_drm::Node::Platform), b"platform");
+                emit!(SysNode::System, b"system");
+            }
             SysNode::System => emit!(SysNode::CpuRoot, b"cpu"),
             SysNode::CpuRoot => {
                 emit!(SysNode::CpuSet(CpuSet::Possible), b"possible");

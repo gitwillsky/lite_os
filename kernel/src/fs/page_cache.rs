@@ -365,13 +365,15 @@ pub(crate) fn mapping(
     inode: Arc<dyn Inode>,
     owner: Option<Arc<dyn crate::memory::MappedFileOwner>>,
     may_write: bool,
+    shared: bool,
+    write: bool,
 ) -> Result<Arc<dyn SharedFileMapping>, FileSystemError> {
     if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
         return Err(FileSystemError::InvalidOperation);
     }
     let inner: Arc<dyn SharedFileMapping> = match inode.data_backing() {
         DataBacking::PageCache => cached_file(inode)?.ok_or(FileSystemError::InvalidOperation)?,
-        DataBacking::Memory(file) => file.mapping()?,
+        DataBacking::Memory(file) => file.mapping(shared, may_write, write)?,
         DataBacking::Snapshot => return Err(FileSystemError::InvalidOperation),
     };
     Arc::try_new(MappedFile {
@@ -404,7 +406,7 @@ impl SharedFileMapping for MappedFile {
         self.inner.writable()
     }
     fn may_write(&self) -> bool {
-        self.may_write
+        self.may_write && self.inner.may_write()
     }
     fn id(&self) -> SharedFileId {
         self.inner.id()

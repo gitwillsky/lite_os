@@ -22,7 +22,7 @@
 - filesystem 只通过 block seam 使用 driver，通过 shared-page seam 使用 memory，通过 unified backend façade 接入 pipe/socket/device。
 - `memfd_create` 只发布 anonymous regular OFD；`MFD_ALLOW_SEALING`、`F_ADD_SEALS`、
   `F_GET_SEALS`、`ftruncate` 与 `MAP_SHARED` 沿既有 fd/inode seam 工作（内容在 `MemoryFile`，经
-  `Inode::data_backing` 分派，不经 page cache），不注册 pathname 或引入私有 shared-memory ABI。当前 seal 子集为 `SEAL|SHRINK|GROW`，未支持的 write/hugetlb
+  `Inode::data_backing` 分派，不经 page cache），不注册 pathname 或引入私有 shared-memory ABI。当前 seal 支持 `SEAL|SHRINK|GROW|WRITE|FUTURE_WRITE`（写映射 lease 见文件系统存储契约），未支持的 hugetlb
   语义明确返回错误。F_ADD_SEALS 先判 Memory backing，再判 OFD writable，最后校验 mask；RO memfd 的零/未知 mask 均 EPERM。add_seals 与 truncate/write 共用 write_sequence；truncate 先 check seal，再 prepare metadata guard、执行可失败 pages
   mutation，成功后无失败提交 killpriv。所有 pages/metadata guards 在 MM invalidation 前释放；seal/OOM/I/O 拒绝不清 set-ID、不改 size/time。
 - `openat(O_CREAT)` 的 final lookup 与 create 必须在同一个 VFS namespace mutation transaction

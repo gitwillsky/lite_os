@@ -54,7 +54,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - terminal 的 VT 模型、输入队列和控件只在 UI 线程使用。队列上限 1 MiB；读端每轮最多消费 64 KiB，防止持续输出饿死输入。
   PTY 使用现有 SessionChild launcher，正常关闭在后台终止完整进程组并回收，异常退出仍执行兜底清理。
 
-- GPU Content 的 OnceCell 只在 compositor 线程发布一份纹理，输入像素发布后不可变；每帧资源由 GPU 的采样视图引用到 flip 完成后的下一次 render。
+- GPU Content 的 OnceCell 只在 compositor 线程发布一份纹理，输入像素发布后不可变；GPU.frame_contents 独立持有本帧全部 Content 到 flip 完成后的下一次 render，不能用单个采样视图代替多个 wl_buffer 使用期。
   无这份生命周期约束，客户端替换内容或退出可能提前关闭 host 正在取样的 GEM。没有按窗口 ID 维护的第二份纹理表。
   顶点缓冲按两个输出槽复用，覆盖前必须无 flip 在途；标准 EXECBUFFER/transfer 与 KMS 的 fence 顺序由 DRM owner 保证。
   GPU 热路径的测量项是首次上传、移动时合成/提交与 flip 完成；本轮依用户要求不执行性能或 UI 测试。
@@ -185,9 +185,9 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   wl_subsurface 的 sync/desync 即时生效并继承祖先模式；同步缓存以不可变 Rc 像素合并，不复制正在显示的整张图。
   Committed.unmapping 保留最后一次显式 null attach 的请求含义；没有内容不等于撤销映射，普通初始无 attach 提交必须发送角色 configure。
   layer_check_commit 只验证 pending，layer_after_commit 才发布角色 current 并与旧状态比较；否则首次协商或尺寸重协商会丢失。
-- Attachment 持有 attach 时真实 BufferSpec 的 Rc；wl_buffer 对象销毁不使引用悬空，release 只发送给仍关联同一 Rc 的活对象。
+- Attachment 持有 attach 时真实 Buffer（SHM 或 dma-buf）的 Rc；wl_buffer 对象销毁不使引用悬空，release 只发送给仍关联同一 Rc 的活对象。
   完整 SHM 快照完成后即允许 release；失败返回截断文件或 no_memory，不以空图像替代。
-- Pixels 独占不可变像素及 OnceCell GPU 纹理，Content 只拥有共享像素引用与投影元数据；viewport 不再保存另一份 raw 内容。
+- Pixels 拥有 SHM 快照或 dma-buf BufferUse 与 OnceCell GPU 纹理，Content 只拥有共享像素引用与投影元数据；viewport 不再保存另一份 raw 内容。
   null attach 使内容为空，取消 viewport 不能恢复旧缓冲。CPU/GPU 共用 ImageSource 三点仿射坐标与逻辑尺寸，
   按 transform、scale、viewport 顺序解释参数；裸 buffer 尺寸错误归属 wl_surface，viewport 源越界错误归属 wp_viewport。
 - Subsurface.children 只索引存活关联，State.order 唯一拥有提交后的绘制顺序。创建、位置、堆叠在父提交后可见；
@@ -197,10 +197,22 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   hit_testing 按提交树逆序和输入 region 命中，空洞穿透；实际 leaf 收指针，根窗口收键盘/激活，隐式抓取保留 leaf 坐标原点。
 - queued_callbacks 等待显示提交，in_flight_callbacks 只属于已送交 Scanout 的帧；finish_frame 不能消费 flip 在途期间新提交的回调。
   presentation 显式登记可见树和实际呈现的客户端硬件光标，隐藏 surface 不提前获得下一帧许可。
-- GPU.views 以仍由 Rc 保活的真实资源编号为键；VirGL 对象句柄从固定状态句柄之后独立分配，销毁命令先于句柄复用。
+- GPU.views 以真实资源编号与采样格式为键；VirGL 对象句柄从固定状态句柄之后独立分配，销毁命令先于句柄复用。
   上一帧 flip 完成后才能淘汰视图/覆盖顶点，exec 成功后才发布新缓存。没有逐四边形重复资源表或每帧重复创建采样视图。
 - Session 的 applied_client_cursor 只保存成功上传的不可变图像引用及物理热点；同图像/热点跳过上传，形状切换或隐藏清空，
   位置仍独立更新。set_cursor 校验本连接最近 enter 序号后才分配角色，后续 offset 从设置时热点扣除累计增量。
 - Benchmark 决策：移除 viewport 全图重采样、窗口元数据查询的子树分配、逐帧采样视图创建与未变化光标上传；
   CPU 仿射路径只扫描可见目标像素，不分配中间图像。相同 set_text 不使布局失效。
-  本轮不执行性能/UI 测量，不声明已提高多少帧率；客户端仍走 wl_shm，damage/opaque 当前只是可忽略的提示。
+  本轮不执行性能/UI 测量，不声明已提高多少帧率；原生控件仍走 wl_shm，damage/opaque 当前只是可忽略的提示。
+
+## linux-dmabuf / EGL 客户端
+
+- Server 只在真实 VirGL context 可用时公布 zwp_linux_dmabuf_v1 v4；协议由固定 XML 生成，禁止私有消息。
+  params 唯一拥有收到的 FD，校验平面数、使用一次、尺寸、格式、modifier、offset/stride，再调用 linux-uapi PRIME importer。
+  async create 导入失败发送 failed；create_immed 导入失败发送 invalid_wl_buffer。错误路径释放全部 FD 与未发布资源。
+- feedback 表使用内容与尺寸均封印的 memfd（F_SEAL_WRITE/GROW/SHRINK/SEAL），发送前填充一次，排队 FD 后不保留写入 owner；main_device 是实际 DRM dev_t，单 tranche 只声明 ARGB/XRGB 隐式 modifier，无 scanout flag。
+- BufferUse 跨越 current/cached/in-flight Content，DmaBuffer 只持 Weak；最后使用退出排队 release，发送前核对对象 identity 和当前使用期。
+  同一缓冲多次提交、wl_buffer 销毁或编号重用都不能提前 release。GPU.frame_contents 保活协议使用期，sampler view 只拥有 GPU 资源。
+- linux-uapi 的 GemOwner 唯一 GEM_CLOSE；每 context 弱 handle 表合并重复/self-import，允许同一 handle 的 ARGB/XRGB 视图共存。
+  导入不执行 CPU copy/upload；Y_INVERT 参与通用仿射源坐标。CPU readback 只在确有 CPU 消费时按提交缓存，不复制普通 GPU 合成。
+- Mesa/GBM/EGL 属于上游客户端运行时，不替换 Rust 控件 ABI，不表示现有 classic-ui 控件已经迁移 GPU 光栅。

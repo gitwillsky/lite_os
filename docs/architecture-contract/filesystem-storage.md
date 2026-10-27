@@ -416,3 +416,17 @@ io_uring 的 reactor 线程多路复用全部挂起请求，不能睡眠，所�
 VFS 初始化即创建唯一 initial MountNamespace，
 先于 mount-retire/ext4-writeback 等 kernel worker 的 nsproxy 捕获。Namespace identity 保持不变，真实 root forest 在 root mount 事务内一次安装。
 安装前 root lookup 返回 NotFound，不能用假 root 或替换 membership。Root 安装失败不发表森林，未安装 root 的 owner 直接释放预置 retirement token。
+
+## memfd 写入封印
+
+MemoryFile 的 state 独占 seals，write_sequence 串行化 write/append/truncate 与 F_ADD_SEALS。
+F_SEAL_WRITE 在同一 state guard 内检查共享写映射 admission，存在任何 lease 时返回 EBUSY 且不发布 seal；
+F_SEAL_FUTURE_WRITE 保留旧 lease 的写入和 mprotect 能力，阻止 write/pwrite 及新共享写映射。
+新共享只读映射在写封印后清除 VM_MAYWRITE 语义，后续 mprotect 返回 EACCES；新共享 PROT_WRITE 返回 EPERM。
+私有 COW 不持共享写 admission，不受内容写封印影响；增长/缩小仍由相应尺寸 seal 独立裁决。
+
+writable_mappings 是 MemoryFile 唯一的 AtomicUsize lease count；递增与 seal 检查共用 state guard，
+递减由最后一个 MemoryMapping Arc Drop 原子执行，因此 MM 退休不分配 waiter、不睡眠。映射 split/fork 共享 lease，
+最后一个实际 VMA/退休引用退出才归还；不能把单个页的 writable PTE 数量当作潜在可写 VMA 数量。
+MappedFile 的 may_write 同时裁决 fd 权限和实际 backing admission，不保留第二份 seal 状态。
+失败 mmap、范围校验、安装或分配都通过候选 Arc Drop 回滚；新增开销仅在 mmap/最终 unmap，不进入每像素路径。

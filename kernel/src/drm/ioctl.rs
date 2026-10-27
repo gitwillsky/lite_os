@@ -13,6 +13,7 @@ use crate::{
     sync::WaitResult,
 };
 
+mod prime;
 mod publication;
 mod virtgpu;
 
@@ -32,6 +33,8 @@ const DRM_IOCTL_VERSION: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x00, 64);
 const DRM_IOCTL_GET_CAP: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x0c, 16);
 const DRM_IOCTL_SET_MASTER: usize = drm_ioc(0, 0x1e, 0);
 const DRM_IOCTL_DROP_MASTER: usize = drm_ioc(0, 0x1f, 0);
+const DRM_IOCTL_PRIME_HANDLE_TO_FD: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x2d, 12);
+const DRM_IOCTL_PRIME_FD_TO_HANDLE: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x2e, 12);
 const DRM_IOCTL_GEM_CLOSE: usize = drm_ioc(IOC_WRITE, 0x09, 8);
 const DRM_IOCTL_MODE_GETRESOURCES: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xa0, 64);
 const DRM_IOCTL_MODE_GETCRTC: usize = drm_ioc(IOC_READ | IOC_WRITE, 0xa1, 104);
@@ -76,11 +79,19 @@ const DRM_IOCTL_VIRTGPU_CONTEXT_INIT: usize = drm_ioc(IOC_READ | IOC_WRITE, 0x4b
 /// pointer、object ID 或未支持 request 返回对应 errno。
 pub(super) fn ioctl(file: &Arc<DrmFile>, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {
     let (user, argument) = (call.user, call.argument);
+    if file.render_node
+        && ((call.request & 0xff) >= 0xa0
+            || matches!(call.request, DRM_IOCTL_SET_MASTER | DRM_IOCTL_DROP_MASTER))
+    {
+        return Err(DeviceError::Errno(errno::EACCES));
+    }
     let result = match call.request {
         DRM_IOCTL_VERSION => version(user, argument),
-        DRM_IOCTL_GET_CAP => get_cap(user, argument),
+        DRM_IOCTL_GET_CAP => get_cap(user, file, argument),
         DRM_IOCTL_SET_MASTER => file.set_master(call.privileged).map_err(drm_errno),
         DRM_IOCTL_DROP_MASTER => file.drop_master(call.privileged).map_err(drm_errno),
+        DRM_IOCTL_PRIME_HANDLE_TO_FD => prime::handle_to_fd(user, file, argument),
+        DRM_IOCTL_PRIME_FD_TO_HANDLE => prime::fd_to_handle(user, file, argument),
         DRM_IOCTL_GEM_CLOSE => virtgpu::gem_close(user, file, argument),
         DRM_IOCTL_MODE_GETRESOURCES => resources(user, file, argument),
         DRM_IOCTL_MODE_GETCRTC => crtc(user, file, argument),
@@ -117,7 +128,7 @@ pub(super) fn ioctl(file: &Arc<DrmFile>, call: &IoctlCall<'_>) -> Result<isize, 
 }
 
 fn version(user: &dyn UserMemory, argument: usize) -> Result<(), isize> {
-    const NAME: &[u8] = b"liteos";
+    const NAME: &[u8] = b"virtio_gpu";
     const DATE: &[u8] = b"20260714";
     const DESCRIPTION: &[u8] = b"LiteOS VirtIO GPU";
     let mut bytes = copy_in::<64>(user, argument)?;
@@ -132,7 +143,7 @@ fn version(user: &dyn UserMemory, argument: usize) -> Result<(), isize> {
     copy_string(user, date_pointer, date_length, DATE)?;
     copy_string(user, description_pointer, description_length, DESCRIPTION)?;
     bytes.fill(0);
-    write_u32(&mut bytes, 0, 1)?;
+    write_u32(&mut bytes, 0, 0)?;
     write_u64(&mut bytes, 16, NAME.len() as u64)?;
     write_u64(&mut bytes, 24, name_pointer)?;
     write_u64(&mut bytes, 32, DATE.len() as u64)?;
@@ -142,16 +153,23 @@ fn version(user: &dyn UserMemory, argument: usize) -> Result<(), isize> {
     copy_out(user, argument, &bytes)
 }
 
-fn get_cap(user: &dyn UserMemory, argument: usize) -> Result<(), isize> {
+fn get_cap(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
     let mut bytes = copy_in::<16>(user, argument)?;
     let value = match read_u64(&bytes, 0)? {
         1 => 1,
         2 => 1,
         3 => 24,
         4 => 1,
+        5 => {
+            if file.virgl_capset_info().is_ok() {
+                3
+            } else {
+                0
+            }
+        }
         6 => 1,
         0x12 => 1,
-        5 | 7 | 8 | 9 | 0x10 | 0x11 | 0x13 | 0x14 | 0x15 => 0,
+        7 | 8 | 9 | 0x10 | 0x11 | 0x13 | 0x14 | 0x15 => 0,
         _ => return Err(errno::EINVAL),
     };
     write_u64(&mut bytes, 8, value)?;
@@ -212,6 +230,7 @@ pub(super) fn drm_errno(error: DrmError) -> isize {
         DrmError::Busy => errno::EBUSY,
         DrmError::Device => errno::EIO,
         DrmError::Permission => errno::EACCES,
+        DrmError::Interrupted => errno::EINTR,
     }
 }
 
@@ -461,7 +480,7 @@ fn dirty_framebuffer(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> 
     }
 }
 
-fn wait_scanout(wait: DrmWait) -> Result<(), isize> {
+pub(super) fn wait_scanout(wait: DrmWait) -> Result<(), isize> {
     loop {
         let Some(pipe) = wait.prepare_to_block() else {
             return Ok(());

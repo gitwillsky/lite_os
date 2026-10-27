@@ -97,7 +97,7 @@ impl Session {
                             .expect("hardware cursor geometry");
                             target.blit_sampled(
                                 canvas::Image {
-                                    pixels: content.pixels(),
+                                    pixels: content.pixels()?,
                                     width: content.width as i32,
                                     height: content.height as i32,
                                     stride: content.width,

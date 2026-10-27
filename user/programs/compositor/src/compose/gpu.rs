@@ -48,7 +48,10 @@ pub(crate) struct Gpu {
     // OWNER: GPU context 独占采样视图和纹理引用，键为仍被 Rc 保活的真实 GEM resource ID。
     // 只在上帧 flip 完成后的下一次 render 淘汰旧项；既保活在途纹理，也避免每帧创建/销毁同一视图。
     // 缺少资源引用会在客户端退出时悬空，直接把 GEM ID 当对象句柄会撞到 shader/state/FBO。
-    views: BTreeMap<u32, TextureView>,
+    views: BTreeMap<(u32, u32), TextureView>,
+    // OWNER: 每帧所有实际 drawable 的协议使用期 pin；仅保活纹理不能证明 aliased wl_buffer 已停止读取。
+    // 在上一帧 flip 完成后的 render 成功后替换，不复制像素，也不与 sampler cache 的资源寿命混用。
+    frame_contents: Vec<crate::wayland::Content>,
     next_view: u32,
     /// 已经按命令顺序销毁的空闲对象句柄；与活跃 views 互斥，避免场景缩小后永久丢失句柄。
     free_views: Vec<u32>,
@@ -92,9 +95,13 @@ impl Gpu {
             context,
             targets,
             views: BTreeMap::new(),
+            frame_contents: Vec::new(),
             next_view: FIRST_VIEW,
             free_views: Vec::new(),
         })
+    }
+    pub(crate) fn context(&self) -> VirglContext {
+        self.context.clone()
     }
     pub(crate) fn framebuffer(&self, back: usize) -> u32 {
         self.targets[back].framebuffer
@@ -213,7 +220,7 @@ impl Gpu {
         ]);
         let used: std::collections::BTreeSet<_> = quads
             .iter()
-            .map(|quad| quad.texture.resource_id())
+            .map(|quad| (quad.texture.resource_id(), quad.texture.format()))
             .collect();
         let mut available = self.free_views.clone();
         for (resource, view) in &self.views {
@@ -222,10 +229,10 @@ impl Gpu {
                 available.push(view.object);
             }
         }
-        let mut views: BTreeMap<u32, TextureView> = BTreeMap::new();
+        let mut views: BTreeMap<(u32, u32), TextureView> = BTreeMap::new();
         let mut next_view = self.next_view;
         for (index, quad) in quads.iter().enumerate() {
-            let resource = quad.texture.resource_id();
+            let resource = (quad.texture.resource_id(), quad.texture.format());
             if let std::collections::btree_map::Entry::Vacant(slot) = views.entry(resource) {
                 let view = match self.views.get(&resource) {
                     Some(view) => view.clone(),
@@ -240,7 +247,7 @@ impl Gpu {
                                 object
                             }
                         };
-                        commands.create_sampler_view(object, resource, quad.texture.format());
+                        commands.create_sampler_view(object, resource.0, quad.texture.format());
                         TextureView {
                             object,
                             texture: quad.texture.clone(),
@@ -256,6 +263,11 @@ impl Gpu {
         let mut resources = vec![&target.resource, &*vertices];
         resources.extend(views.values().map(|view| view.texture.as_ref()));
         self.context.exec(commands.words(), &resources)?;
+        self.frame_contents = windows
+            .iter()
+            .filter(|window| !window.rect.intersect(screen).is_empty())
+            .map(|window| window.content.clone())
+            .collect();
         self.views = views;
         self.next_view = next_view;
         self.free_views = available;

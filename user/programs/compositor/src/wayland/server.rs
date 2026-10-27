@@ -35,6 +35,7 @@ struct Connection {
 impl Connection {
     /// 把待发输出尽量写入 socket；返回是否已全部发完。带描述符的段用 `SCM_RIGHTS` 一并发送。
     fn flush(&mut self) -> io::Result<bool> {
+        self.client.flush_buffer_releases();
         loop {
             let (bytes, fd) = self.client.output();
             if bytes.is_empty() {
@@ -101,6 +102,7 @@ pub struct Server {
     contexts: Vec<super::security::Listener>,
     /// 当前剪贴板选择：持有者连接、它的 `wl_data_source` 与声明的类型。
     selection: Option<Selection>,
+    gpu: Option<linux_uapi::drm::VirglContext>,
 }
 
 struct Selection {
@@ -132,7 +134,13 @@ impl Server {
             output,
             contexts: Vec::new(),
             selection: None,
+            gpu: None,
         })
+    }
+
+    /// 连接建立前注入合成器已初始化的唯一 GPU context；CPU 后端不发布 linux-dmabuf。
+    pub fn set_gpu_context(&mut self, context: Option<linux_uapi::drm::VirglContext>) {
+        self.gpu = context;
     }
 
     #[cfg(test)]
@@ -230,8 +238,9 @@ impl Server {
         self.add_connection(stream, Client::session(self.output))
     }
 
-    fn add_connection(&mut self, stream: UnixStream, client: Client) -> io::Result<ClientId> {
+    fn add_connection(&mut self, stream: UnixStream, mut client: Client) -> io::Result<ClientId> {
         stream.set_nonblocking(true)?;
+        client.gpu = self.gpu.clone();
         let id = ClientId(self.next_id);
         self.next_id += 1;
         self.connections.push(Connection {

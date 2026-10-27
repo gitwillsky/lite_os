@@ -274,21 +274,38 @@
   KMS framebuffer ID、GEM handle、context ID 属于各自命名空间，不得由数值相等推断与 host resource ID 相同。
 - response mismatch 在 adapter fail-stop 前记录 opcode、context、首参数、响应码、长度和 exact fence；错误记录不放宽响应验证或继续复用失败队列。
 
-## VirGL 创建、提交与退休
+## VirGL、PRIME 与隐式同步
 
-`drm::graphics` 拥有创建/提交事务与 GEM 资源，`graphics::retirement` 拥有 OFD 退出时的资源/上下文回收状态机；
-`device` 只在唯一 completion owner 下选择并提交下一步，不新增 adapter 或第二份生命周期状态。
+`drm::graphics` 拥有资源及提交事务；`graphics::attachment` 拥有 file/context attachment，
+`graphics::retirement` 分别退休 attachment、context 与设备级资源。`drm::prime` 拥有 dma-buf backend；
+`device` 只在唯一 completion owner 下推进标准 VirtIO 命令。
 
-- DrmFile.context_creation 的 task mutex 只串行化 context 创建，不持有 spin lock 等待 host。
-  CTX_CREATE 被队列接受后发布 context，后续操作由同一 controlq 排序；重复初始化按固定 Linux 返回 EEXIST。
-- PreparedVirglResource 在 identity 预留后立即接管回滚；backing、Arc、map/cleanup node 全部在 host create 前准备。
-  每个已接受命令先记录 exact fence 再开始可中断等待；EINTR/OOM/copyout fault 将已创建资源交给同一退休队列，不能提前回收 resource ID。
-- VirglAccess 在 exec/transfer 验证与 fence 发布之间保活资源；fence 水位取 max，避免并发提交逆序登记使最后使用水位倒退。
-  直接从已复制的 UAPI handle 字节生成 pins，不再分配第二份 decoded handle 数组。
-- GEM_CLOSE 消费创建阶段预留的节点，无分配移除 handle 后异步退休；活动 framebuffer/提交 pin 独立保活资源，最后引用退出且最后 fence 完成才发 RESOURCE_UNREF。
-  CardFile::ioctl 的成功/错误共同出口在临时 pins 退出后推进退休；关闭 OFD 与设备 completion 使用相同队列。
-  VirglLifecycle 同锁拥有最后 fence 与未使用的退休节点，节点留在资源内时不反向引用该资源；退休时才接管 Arc，避免自环。
-  context destroy 等待该 context 的所有退休资源完成；已发布 ID 不复用，未发布 ID 只在 UNREF completion 后回收。
-- completion 将回收 AVL node 移出锁域，backing/Arc/节点均在 device state guard 外析构；回收阶段不分配。
-- Benchmark 决策：提交 pins 替代原 decoded 数组，context task mutex 只在创建阶段使用；本轮按用户要求不执行性能验证，未声明成本数值。
-  这些契约尚不代表已支持 DRM PRIME/dma-buf；跨进程资源和 context attachment 的完整寿命仍待独立实现。
+- VirglBuffer 与导出 DrmFile 无关；dma-buf、KMS、attachment 和提交 pins 分别保活它，禁止 dma-buf 反向持有 OFD/context。
+  VirglLifecycle 的 mutex 只保护最后 fence 和导出 backend 的 Weak；后者保证重复导出同一 dma-buf identity，且不形成自环。
+- 每个 VirglAttachment 在 host attach 前预分配退休节点；接受命令立即记录 exact fence。
+  close/失败/中断先移除 file-local handle，最后 pin 退出后等待 fence，发送 CTX_DETACH_RESOURCE；
+  context 只等待自己的 detach，不等待其他进程仍持有的资源。全局退休观察者是最后一个 Arc 且 fence 完成后才 RESOURCE_UNREF。
+- context_creation task mutex 串行化 context 创建、PRIME import 与 GEM_CLOSE 的 handle 发布，等待 host 时不持有 spin lock。
+  重复/self-import 返回原 handle，不增 GEM handle 引用计数；未发布 handle 的 copyout/分配/等待失败统一回滚。
+- 每资源 reservation task mutex 在 exec/transfer 的等待、提交与 fence 记录间独占；多资源按设备 resource ID 排序获取，
+  可中断等待返回 EINTR。缺少此边界会让跨 context 消费者在生产者登记 fence 前读取旧数据。
+  VirglAccess 去重并保活真实 attachment，最后 fence 只取 max；独立资源不共享这把锁。
+- dma-buf 支持标准 PRIME FD、DMA_BUF_IOCTL_SYNC、poll 与共享 backing mmap（当前 offset=0）。
+  BEGIN_SYNC 等待同一 reservation/fence；END_SYNC 使用当前一致性 DMA backing。poll generation 来自资源 fence，不能被其他资源 completion 制造 ET 边沿。
+  DeviceFile 可提供弱 OFD identity；syscall 负责 reserve FD、复用实际 OFD、copyout 后发布，CLOEXEC 属于 FD。
+  候选 OFD 在锁外创建；缓存只持 Weak，关闭最后 FD 不形成 OFD/backend 环。
+- renderD128 不取得 DRM master，禁止 KMS 与 SET/DROP_MASTER；primary 继续独占扫描输出。
+  fs::GraphicsSysfsSource 由 DRM 注入只读实际 MMIO identity，sysfs 仅投影 card/render、设备号与 subsystem/uevent，fs 不依赖 driver。
+- capset 按实际版本分别读取，不把最高版本 payload 当作 v0。virtio_gpu DRM version=0.0，不宣称未实现的 sync_file FD。
+  非 blob legacy transfer 的 stride/layer_stride 必须为零；resource_create 的 size/stride 分别为 Linux u32 字段。
+- completion 将退休节点移出锁域再析构；回收不分配。已发布 resource ID 不复用，未发布 ID 等 UNREF completion 后回收。
+- Benchmark 决策：新增 reservation 成本属于共享资源同步的必要契约；沿用无界面 GPU 门禁检查真实清屏读回、PRIME 寿命与 page-flip 节拍，
+  不以 host 墙钟推断 GPU 性能。具体结果只由实际运行记录声明。
+
+当前只在同一设备共享 VirGL GEM；不宣称跨设备 PRIME、blob、sync_file/syncobj、Vulkan 或全部 OpenGL resource transfer 语义。
+
+primary OFD 关闭的 reset_after_owner 由同一 completion owner 保留到 disable 被 adapter 接受；
+WouldBlock 不清除 intent、不 panic，新 master 在此期间不能提交新 scanout。
+render/adapter/display completion 都先推进 reset，再推进 detach/UNREF，避免迟到的 disable 覆盖新所有者或扫描已释放资源。
+首个合法 EXECBUFFER 与 RESOURCE_CREATE 一样可惰性发布 context；已发布 context 在 OFD 存活期间不可撤销，热路径不重复取得创建 task mutex。
+未置位的 fence/ring 字段及零数量 syncobj 的 stride/pointer 按固定 Linux 语义忽略，不要求客户端写入私有 sentinel。

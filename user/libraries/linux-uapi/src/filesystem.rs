@@ -4,25 +4,31 @@ use std::{io, path::Path};
 
 /// Atomically moves `from` to `to` without replacing an existing destination.
 ///
-/// Uses Linux renameat2(RENAME_NOREPLACE), including for directories and symlinks.
+/// Uses Linux renameat2(RENAME_NOREPLACE), or Darwin renamex_np(RENAME_EXCL) for native host validation.
+/// Both operations atomically cover directories and symlinks.
 /// Returns AlreadyExists when the destination exists, the native errno on other
-/// failures, InvalidInput for an interior NUL, or Unsupported off Linux. A failed
+/// failures, InvalidInput for an interior NUL, or Unsupported on other platforms. A failed
 /// call leaves both directory entries unchanged.
 pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     {
         use std::{ffi::CString, os::unix::ffi::OsStrExt};
         let from = CString::new(from.as_os_str().as_bytes())
             .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
         let to = CString::new(to.as_os_str().as_bytes())
             .map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        #[cfg(target_os = "linux")]
         // SAFETY: both paths are live NUL-terminated native byte strings; no pointer is retained.
-        if unsafe { crate::raw::renameat2(-100, from.as_ptr(), -100, to.as_ptr(), 1) } != 0 {
+        let result = unsafe { crate::raw::renameat2(-100, from.as_ptr(), -100, to.as_ptr(), 1) };
+        #[cfg(target_os = "macos")]
+        // SAFETY: Darwin sys/stdio.h defines RENAME_EXCL=4; native strings remain live for the call.
+        let result = unsafe { crate::raw::renamex_np(from.as_ptr(), to.as_ptr(), 4) };
+        if result != 0 {
             return Err(io::Error::last_os_error());
         }
         Ok(())
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         let _ = (from, to);
         Err(io::ErrorKind::Unsupported.into())

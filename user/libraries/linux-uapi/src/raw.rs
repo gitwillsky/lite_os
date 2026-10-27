@@ -231,7 +231,8 @@ pub(crate) struct VirtGpuResourceCreate {
     pub flags: u32,
     pub bo_handle: u32,
     pub resource_handle: u32,
-    pub size: u64,
+    pub size: u32,
+    pub stride: u32,
 }
 
 #[repr(C)]
@@ -437,6 +438,9 @@ const _: () = assert!(size_of::<SockAddrNl>() == 12);
 const _: () = assert!(DRM_IOCTL_DROP_MASTER == 0x0000_641f);
 
 unsafe extern "C" {
+    #[cfg(target_os = "macos")]
+    pub(crate) fn renamex_np(old_path: *const c_char, new_path: *const c_char, flags: u32)
+    -> c_int;
     #[cfg(target_os = "linux")]
     pub(crate) fn renameat2(
         old_directory: c_int,

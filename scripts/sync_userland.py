@@ -40,6 +40,8 @@ def managed_path(path: str) -> bool:
     # Wine 运行时（--wine）：运行时树、fontconfig 与 XKB 配置由同步器拥有，缺少它旧文件撤不掉。
     if path.startswith(("/opt/wine/", "/etc/fonts/", "/usr/share/fontconfig/", "/usr/share/X11/xkb/")):
         return True
+    if path in ("/usr/lib/dri/virtio_gpu_dri.so", "/usr/lib/gbm/dri_gbm.so"):
+        return True
     if path.startswith("/usr/lib/liteos/") or (path.startswith("/etc/ld-musl-") and path.endswith(".path")):
         return True
     # 同步器拥有 user/base 下全部桌面条目的安装位置；缺少它，新增的条目装不进也撤不掉。
@@ -223,6 +225,14 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
     Raises:
         RuntimeError: 镜像正在使用、journal 恢复或任一文件写入/回读失败。
     """
+    # Mesa 与 Wine 可消费同一上游库；相同安装字节只有一份 manifest，版本冲突必须报错而非覆盖。
+    installed = {}
+    for artifact in artifacts:
+        previous = installed.get(artifact.destination)
+        if previous is not None and (previous.mode != artifact.mode or sha256(previous.source) != sha256(artifact.source)):
+            raise RuntimeError(f"conflicting runtime owners: {artifact.destination}")
+        installed.setdefault(artifact.destination, artifact)
+    artifacts = tuple(installed.values())
     for artifact in artifacts:
         if not managed_path(artifact.destination):
             raise RuntimeError(f"userland artifact escaped managed paths: {artifact.destination}")

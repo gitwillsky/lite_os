@@ -208,7 +208,8 @@ impl Session {
     /// # Errors
     ///
     /// 缺少 `arrow` 光标，或硬件光标更新失败。
-    pub fn new(parts: Parts) -> io::Result<Self> {
+    pub fn new(mut parts: Parts) -> io::Result<Self> {
+        parts.server.set_gpu_context(parts.scanout.gpu_context());
         let mut session = Self {
             scanout: parts.scanout,
             input: parts.input,

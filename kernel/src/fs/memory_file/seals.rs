@@ -5,12 +5,12 @@ pub(super) const F_SEAL_SHRINK: u32 = 0x0002;
 pub(super) const F_SEAL_GROW: u32 = 0x0004;
 pub(super) const F_SEAL_WRITE: u32 = 0x0008;
 pub(super) const F_SEAL_FUTURE_WRITE: u32 = 0x0010;
-const SUPPORTED_SEALS: u32 = F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW;
-const KNOWN_SEALS: u32 = SUPPORTED_SEALS | F_SEAL_WRITE | F_SEAL_FUTURE_WRITE;
+const KNOWN_SEALS: u32 =
+    F_SEAL_SEAL | F_SEAL_SHRINK | F_SEAL_GROW | F_SEAL_WRITE | F_SEAL_FUTURE_WRITE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum SealError {
-    /// 请求了未知或尚未实现的 seal。
+    /// 请求了未知的 seal。
     InvalidOperation,
     /// 已被 seal 禁止。
     PermissionDenied,
@@ -43,10 +43,10 @@ impl Seals {
     ///
     /// # Errors
     ///
-    /// 未知 seal 或要求 `F_SEAL_WRITE`/`F_SEAL_FUTURE_WRITE`（尚未实现）返回 `InvalidOperation`；
+    /// 未知 seal 返回 `InvalidOperation`；可写映射的准入检查由 MemoryFile owner 完成，
     /// 已带 `F_SEAL_SEAL` 返回 `PermissionDenied`。
     pub(super) fn add(&mut self, seals: u32) -> Result<u32, SealError> {
-        if seals & !KNOWN_SEALS != 0 || seals & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0 {
+        if seals & !KNOWN_SEALS != 0 {
             return Err(SealError::InvalidOperation);
         }
         if self.0 & F_SEAL_SEAL != 0 {
@@ -56,8 +56,20 @@ impl Seals {
         Ok(self.0)
     }
 
-    /// 写入 `[.., end)` 范围是否允许：`F_SEAL_GROW` 禁止超过当前长度。
+    /// 写入 `[.., end)`：WRITE/FUTURE_WRITE 禁止写，GROW 禁止超过当前长度。
     pub(super) fn check_write(self, length: u64, end: u64) -> Result<(), SealError> {
+        if self.blocks_new_writes() {
+            return Err(SealError::PermissionDenied);
+        }
+        self.check_growth(length, end)
+    }
+
+    pub(super) fn blocks_new_writes(self) -> bool {
+        self.0 & (F_SEAL_WRITE | F_SEAL_FUTURE_WRITE) != 0
+    }
+
+    /// Allocation may populate holes without changing bytes; only growth needs a size-seal check.
+    pub(super) fn check_growth(self, length: u64, end: u64) -> Result<(), SealError> {
         if self.0 & F_SEAL_GROW != 0 && end > length {
             return Err(SealError::PermissionDenied);
         }

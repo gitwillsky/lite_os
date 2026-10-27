@@ -82,8 +82,8 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 | `kernel/src/drm/mod.rs :: DrmDeviceState.graphics_retirements` | `FallibleMap < u32 , graphics :: VirglRetirement >` |
 | `kernel/src/drm/mod.rs :: DrmDeviceState.framebuffers` | `FallibleMap < u32 , Framebuffer >` |
 | `kernel/src/drm/mod.rs :: DrmFileState.buffers` | `FallibleMap < u32 , Arc < DumbBuffer > >` |
-| `kernel/src/drm/mod.rs :: DrmFileState.graphics_buffers` | `FallibleMap < u32 , Arc < graphics :: VirglBuffer > >` |
-| `kernel/src/drm/graphics/retirement.rs :: VirglCleanup.buffers` | `FallibleMap < u32 , Arc < VirglBuffer > >` |
+| `kernel/src/drm/mod.rs :: DrmFileState.graphics_buffers` | `FallibleMap < u32 , Arc < graphics :: VirglAttachment > >` |
+| `kernel/src/drm/mod.rs :: DrmDeviceState.graphics_detachments` | `FallibleMap < (u32 , u32) , graphics :: AttachmentRetirement >` |
 | `kernel/src/drm/publication_order.rs :: PublicationIdAllocator.reusable` | `FallibleMap < T , () >` |
 | `kernel/src/drivers/io_completion/request_owner.rs :: RequestOwner.capacity_waiters` | `FallibleMap < u64 , Arc < CapacityWait > >` |
 | `kernel/src/file/epoll.rs :: EpollState.interests` | `FallibleMap < InterestKey , Interest >` |
@@ -189,7 +189,6 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 | `kernel/src/fs/procfs.rs` | 1411 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
 | `kernel/src/fs/tmpfs.rs` | 1020 | fs | 同一 inode 的权限与通知事务 | 新增 metadata family 前拆分 |
 | `kernel/src/task/process_table/signal.rs` | 1270 | task | graph 下的生成与子进程通知事务 | 新增独立 signal producer 前拆分 |
-| `kernel/src/virtio/gpu.rs` | 1007 | virtio | queue、DMA slot 与 completion 同一 owner；响应验证先于摘除 pending | 新增 GPU/queue 能力前，将 CommandSlots 响应验证/消费状态机迁入 command 模块，不复制 pending 状态 |
 
 ## Change contract
 

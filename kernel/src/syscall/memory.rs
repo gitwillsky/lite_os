@@ -171,13 +171,16 @@ pub(crate) fn sys_mmap(
                 return -errno::ETXTBSY;
             }
             ofd.opened_ref().touch_access();
-            let mapping =
-                match crate::fs::mapping(inode.clone(), Some(ofd.clone()), access_mode != O_RDONLY)
-                {
-                    Ok(mapping) => mapping,
-                    Err(crate::fs::FileSystemError::OutOfMemory) => return -errno::ENOMEM,
-                    Err(_) => return -errno::EIO,
-                };
+            let mapping = match crate::fs::mapping(
+                inode.clone(),
+                Some(ofd.clone()),
+                access_mode != O_RDONLY,
+                sharing == MAP_SHARED,
+                permission.contains(MapPermission::W),
+            ) {
+                Ok(mapping) => mapping,
+                Err(error) => return super::fs::filesystem_error(error),
+            };
             let source = match FileMappingSource::new(mapping, offset as u64, length) {
                 Ok(source) => source,
                 Err(FileMappingError::Invalid) => return -errno::EINVAL,

@@ -23,6 +23,7 @@ def boot_graphics(
     timeout_seconds: float = 180.0,
     kernel_arguments: str | None = None,
     interactions: tuple[tuple[str, bytes], ...] = (),
+    serial_log: Path | None = None,
 ) -> str:
     """Cold-boot the sole UTM VirGL path until all markers are visible; return the serial text.
 
@@ -30,6 +31,9 @@ def boot_graphics(
     Each `(marker, data)` in `interactions` is typed into the serial shell once, the first time
     `marker` appears in the output, in order.
     """
+    if serial_log is not None:
+        serial_log.parent.mkdir(parents=True, exist_ok=True)
+        serial_log.write_bytes(b"")
     runtime = start_gate(kernel=kernel, rootfs=image, kernel_arguments=kernel_arguments)
     pending = list(interactions)
     output = bytearray()
@@ -43,8 +47,11 @@ def boot_graphics(
             if not chunk:
                 break
             output.extend(chunk)
+            if serial_log is not None:
+                with serial_log.open("ab") as stream:
+                    stream.write(chunk)
             text = ANSI.sub("", output.decode(errors="replace"))
-            if "panicked at" in text or "[ERROR]" in text:
+            if "panicked at" in text or "KERNEL PANIC" in text or "[ERROR]" in text:
                 raise RuntimeError(
                     "UTM graphics gate reached a fatal path"
                     f"\n--- output tail ---\n{_tail(text)}"
