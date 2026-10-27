@@ -14,3 +14,6 @@ typeface = { path = "../../libraries/typeface" }
 keyboard.workspace = true
 linux-uapi.workspace = true
 wayland-wire = { path = "../../libraries/wayland-wire" }
+
+[lints]
+workspace = true

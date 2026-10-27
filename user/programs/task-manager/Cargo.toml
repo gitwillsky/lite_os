@@ -10,3 +10,6 @@ path = "src/main.rs"
 
 [dependencies]
 liteos-ui = {path = "../../libraries/liteos-ui"}
+
+[lints]
+workspace = true

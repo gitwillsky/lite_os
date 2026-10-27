@@ -319,6 +319,16 @@ impl Server {
         all
     }
 
+    /// 查询连接新绑定键盘的协议初始化需求；不发送消息、不改变全局焦点。
+    ///
+    /// `id` 是连接身份；连接已断开或所有键盘已 enter 时返回 false。
+    pub fn keyboard_needs_enter(&self, id: ClientId) -> bool {
+        self.connections
+            .iter()
+            .find(|connection| connection.id == id)
+            .is_some_and(|connection| connection.client.keyboard_needs_enter())
+    }
+
     /// 对连接 `id` 的 `Client` 执行动作（发送 configure/close）并立刻尝试发出输出；连接已断开则忽略。
     pub fn with_client(&mut self, id: ClientId, action: impl FnOnce(&mut Client)) {
         if let Some(connection) = self

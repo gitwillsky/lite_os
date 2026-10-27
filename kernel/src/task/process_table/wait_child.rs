@@ -5,6 +5,8 @@ pub(super) enum ChildStatusKind {
     Exited,
     Stopped,
     Continued,
+    TracedStop,
+    TracedExit,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,12 +30,13 @@ pub(super) fn take_child_waiters(
     core::mem::take(&mut node.child_waiters)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub(crate) struct ChildExit {
     pub(crate) pid: usize,
     pub(crate) status: i32,
-    kind: ChildStatusKind,
-    claimant: usize,
+    pub(super) kind: ChildStatusKind,
+    pub(super) claimant: usize,
+    pub(super) trace: Option<super::ptrace::TraceClaim>,
 }
 
 /// wait4 在 task layer 的精确结果分类。
@@ -58,6 +61,7 @@ pub(crate) enum ChildWaitClass {
 pub(crate) struct ChildWaitFilter {
     pub(crate) class: ChildWaitClass,
     pub(crate) creator_only: bool,
+    pub(crate) ptrace_stops: bool,
 }
 
 impl ChildWaitFilter {
@@ -79,7 +83,7 @@ pub(crate) enum ChildWaitSelector {
     Pid(Arc<crate::namespace::PidIdentity>),
 }
 #[derive(Clone, Copy)]
-enum ResolvedChildSelector {
+pub(super) enum ResolvedChildSelector {
     All,
     Process(usize),
     Group(usize),
@@ -126,7 +130,18 @@ fn find_waitable_child(
     include_continued: bool,
     filter: ChildWaitFilter,
 ) -> Result<Option<ChildExit>, WaitChildError> {
-    let mut has_child = false;
+    let (mut has_child, traced) = super::ptrace::find_event(
+        graph,
+        parent,
+        claimant,
+        selector,
+        include_exited,
+        filter.ptrace_stops,
+        filter.creator_only,
+    );
+    if traced.is_some() {
+        return Ok(traced);
+    }
     let mut selected = None;
     let mut cursor = 0;
     loop {
@@ -161,6 +176,11 @@ fn find_waitable_child(
             }
             continue;
         }
+        // real parent 仍拥有 child，但必须等 tracer 消费最终 exit，不能提前返回 ECHILD。
+        if graph.tracees.contains_key(&pid) {
+            has_child = true;
+            continue;
+        }
         // 已完成退出的 zombie 不能再产生 stop/continue；native WEXITED 缺失时不计作可等待 child。
         if !include_exited
             && matches!(
@@ -181,6 +201,7 @@ fn find_waitable_child(
                 status: status.wait_status(),
                 kind: ChildStatusKind::Exited,
                 claimant,
+                trace: None,
             });
             break;
         }
@@ -190,6 +211,7 @@ fn find_waitable_child(
                 status: ((signal as i32) << 8) | 0x7f,
                 kind: ChildStatusKind::Stopped,
                 claimant,
+                trace: None,
             });
             break;
         }
@@ -199,6 +221,7 @@ fn find_waitable_child(
                 status: 0xffff,
                 kind: ChildStatusKind::Continued,
                 claimant,
+                trace: None,
             });
             break;
         }
@@ -354,6 +377,12 @@ fn wait_selected_child(
 pub(crate) fn child_status_info(record: &ChildExit) -> (u32, u32, i32, i32) {
     let task = current_task().expect("child info requires current waiter");
     let graph = PROCESS_TABLE.graph.lock();
+    if matches!(
+        record.kind,
+        ChildStatusKind::TracedStop | ChildStatusKind::TracedExit
+    ) {
+        return super::ptrace::status_info(record, &task);
+    }
     let node = graph
         .nodes
         .get(&record.pid)
@@ -373,6 +402,7 @@ pub(crate) fn child_status_info(record: &ChildExit) -> (u32, u32, i32, i32) {
         }
         ChildStatusKind::Stopped => (5, (record.status >> 8) & 0xff),
         ChildStatusKind::Continued => (6, syscall_abi::signal::SIGCONT as i32),
+        ChildStatusKind::TracedStop | ChildStatusKind::TracedExit => unreachable!(),
     };
     (pid, uid, code, status)
 }
@@ -394,6 +424,12 @@ fn absorb_reaped_usage(graph: &ProcessGraph, child: usize, parent: Option<usize>
 ///
 /// Active claim pin 保证 child Node 尚未 reap；必须在 `consume_child_status` 之前读取。
 pub(crate) fn child_resource_usage(record: &ChildExit) -> crate::task::ResourceUsage {
+    if matches!(
+        record.kind,
+        ChildStatusKind::TracedStop | ChildStatusKind::TracedExit
+    ) {
+        return crate::task::ResourceUsage::default();
+    }
     PROCESS_TABLE
         .graph
         .lock()
@@ -410,6 +446,18 @@ pub(crate) fn child_status_pid(record: &ChildExit) -> usize {
         .expect("child status requires current waiter")
         .pid_namespace();
     let graph = PROCESS_TABLE.graph.lock();
+    if matches!(
+        record.kind,
+        ChildStatusKind::TracedStop | ChildStatusKind::TracedExit
+    ) {
+        return record
+            .trace
+            .as_ref()
+            .expect("trace event snapshot")
+            .pid
+            .identity()
+            .number_in(&namespace) as usize;
+    }
     graph
         .nodes
         .get(&record.pid)

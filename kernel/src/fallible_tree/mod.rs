@@ -39,8 +39,6 @@ use alloc::boxed::Box;
 use core::{borrow::Borrow, cmp::Ordering, fmt, mem::MaybeUninit, ops::Index, ptr::NonNull};
 
 mod iter;
-#[cfg(test)]
-mod test_support;
 mod topology;
 // Iter 已是 iter/iter_from/iter_after 的返回类型；具名 re-export 供领域枚举组合，无新增状态/分配。
 pub(crate) use iter::Iter;
@@ -738,3 +736,5 @@ impl<'a, K, V> IntoIterator for &'a FallibleMap<K, V> {
         self.iter()
     }
 }
+#[cfg(test)]
+mod test_support;

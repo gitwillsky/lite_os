@@ -8,3 +8,6 @@ publish = false
 proc-macro2 = { version = "=1.0.95", features = ["span-locations"] }
 quote = "=1.0.40"
 syn = { version = "=2.0.101", features = ["full", "parsing", "visit"] }
+
+[lints]
+workspace = true

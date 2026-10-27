@@ -143,6 +143,9 @@ pub(super) fn continue_process_locked(
         panic!("continued process stopped being live");
     };
     for thread in threads.values() {
+        if super::super::ptrace::is_stopped(graph, thread.tid()) {
+            continue;
+        }
         crate::task::processor::continue_stopped_task(thread.clone());
     }
     event.and_then(|event| {

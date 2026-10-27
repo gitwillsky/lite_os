@@ -76,6 +76,11 @@ impl From<EncodeError> for Fail {
 
 pub(super) enum Data {
     None,
+    /// 本 wl_keyboard 是否已收到 enter；这是对象的 wire 状态，不是全局键盘焦点。
+    /// 新绑定对象必须先取得 enter/modifiers，否则 Wine 会丢弃没有 focused HWND 的按键。
+    Keyboard {
+        entered: bool,
+    },
     Pool(Rc<Pool>),
     Buffer(Rc<Buffer>),
     DmaParams(super::dmabuf::Params),

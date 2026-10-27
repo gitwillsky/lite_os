@@ -558,7 +558,7 @@ fn connections() -> Vec<Item> {
 /// 控制面板的内容：已安装的、分类为 `Settings` 的桌面条目；没有安装任何设置程序时为空。
 /// 启动资源管理器某个 `::` 位置的条目是外壳文件夹（如“网络和拨号连接”），在当前窗口中打开。
 fn applets() -> Vec<Item> {
-    desktop_entry::load(Path::new("/usr/share/applications"))
+    desktop_entry::installed()
         .into_iter()
         .filter(|entry| entry.in_category("Settings"))
         .map(|entry| {

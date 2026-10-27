@@ -14,8 +14,6 @@ mod deferred_context_contract;
 mod dependency_contract;
 mod documentation_contract;
 mod epoll_cost;
-#[cfg(test)]
-mod epoll_cost_tests;
 mod ext4_mapping_cost;
 mod ext4_xattr_inode_contract;
 mod fallible_collections_contract;
@@ -67,11 +65,10 @@ mod socket_optmem_contract;
 mod source_pattern_contract;
 mod source_proof_contract;
 mod source_size;
-#[cfg(test)]
-mod source_size_tests;
 mod tcp_mss_contract;
 mod tcp_timer_contract;
 mod terminal_contract;
+mod test_layout_contract;
 mod thread_mm_contract;
 mod timer_transaction_cost;
 mod translation_fence_contract;
@@ -80,8 +77,6 @@ mod unix_connect_contract;
 mod user_context_cost;
 mod userspace_contract;
 mod vfs_opened_cost;
-#[cfg(test)]
-mod vfs_opened_cost_tests;
 mod virtio_blk_completion_contract;
 mod virtio_blk_cost;
 mod virtio_dma_cost;
@@ -118,6 +113,7 @@ fn main() -> ExitCode {
     let root = repository_root();
     let mut errors = Vec::new();
     let mut review_notices = Vec::new();
+    test_layout_contract::check(&root, &mut errors);
     let sources = match load_sources(&root) {
         Ok(sources) => sources,
         Err(error) => {
@@ -228,3 +224,9 @@ fn main() -> ExitCode {
 fn normalized(tokens: impl ToTokens) -> String {
     tokens.into_token_stream().to_string()
 }
+#[cfg(test)]
+mod epoll_cost_tests;
+#[cfg(test)]
+mod source_size_tests;
+#[cfg(test)]
+mod vfs_opened_cost_tests;

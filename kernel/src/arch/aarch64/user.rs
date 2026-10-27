@@ -158,6 +158,7 @@ impl UserContext {
             self.pc,
             self.pstate,
         );
+        frame.set_fault_context(self.fault_address, self.fault_syndrome);
         // SAFETY: frame is 16-byte aligned and uniquely owned; helper writes exactly the FPSIMD
         // body, temporarily opens FPEN, and closes it before returning to Rust.
         unsafe { fp_state::capture_signal(frame.fpsimd_state_mut_ptr()) };
@@ -184,7 +185,7 @@ impl UserContext {
         let decoded = frame.decode(USER_ADDRESS_END)?;
         // SAFETY: decode proved one complete, aligned FPSIMD record and rejected malformed trailing
         // state; frame remains immutable/live while assembly restores the calling CPU's vector file.
-        unsafe { fp_state::restore_signal(frame.fpsimd_state_ptr()) };
+        unsafe { fp_state::restore_signal(frame.fpsimd_state_ptr(&decoded)) };
         self.x = decoded.registers;
         self.sp = decoded.stack_pointer;
         self.pc = decoded.program_counter;

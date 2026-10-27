@@ -478,6 +478,11 @@ def verify_runtime_desktop(environment: Mapping[str, str] | None = None) -> None
     run(python_script("verify_desktop.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
 
 
+def verify_runtime_wine(environment: Mapping[str, str] | None = None) -> None:
+    """在私有盘验证每用户 Wine 安装、桌面启动、i386 保存和冷启动。"""
+    run(python_script("verify_wine.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
+
+
 def verify_runtime_wayland(environment: Mapping[str, str] | None = None) -> None:
     """用上游 wayland-info 与窗口探针验证 Wayland 服务端；不隐式重建 rootfs。"""
     run(python_script("verify_wayland.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
@@ -571,6 +576,10 @@ def verify_host(environment: Mapping[str, str] | None = None) -> None:
             "clippy",
             "-p",
             "architecture-check",
+            "-p",
+            "boot-scene",
+            "-p",
+            "syscall-abi",
             "-p",
             "architecture-bench",
             "-p",
@@ -724,6 +733,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         "verify-runtime-display": verify_runtime_display,
         "verify-runtime-wayland": verify_runtime_wayland,
         "verify-runtime-desktop": verify_runtime_desktop,
+        "verify-runtime-wine": verify_runtime_wine,
         "verify-runtime-scheduler": verify_runtime_scheduler,
         "diagnose-scheduler-latency": diagnose_scheduler_latency,
         "verify-runtime-musl": verify_runtime_musl,

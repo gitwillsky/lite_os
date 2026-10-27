@@ -2,6 +2,19 @@
 
 本文件唯一维护开发环境、构建入口、缓存规则和质量门禁。文档只定义可重复的输入、覆盖与成功条件，不记录某次执行日期、输出或实测数值。
 
+## Rust 源码与测试布局
+
+单元测试置于所属模块末尾的 `#[cfg(test)] mod tests`，可用 `mod tests;` 指向独立文件；
+集成测试使用 Cargo `tests/`，guest 验收使用原有 runtime fixture。测试模块之后不得添加生产条目。
+root/user workspace 与独立 bootloader 启用 Clippy `items_after_test_module = deny`；
+host gate 以 `--all-targets` 检查 ABI/support/tool crate，避免只编译 lib 而漏过测试模块。
+architecture-check 同时解析全部第一方 Rust 源码的模块结构，覆盖未在当前 target/test 配置中编译的代码；
+第三方 vendor、Git/隐藏目录和 Cargo 产物不属于第一方源码输入。不提供文件白名单或 lint suppression。
+
+kernel/compositor 的启动画面接管测试直接执行两侧生产 renderer，在两档产品分辨率逐像素比较当前
+Git 素材；不复制第三份 renderer，也不依赖已删除生成器的历史 hash。DTB 节点名变异测试先按
+compatible 找到实际设备，再等长改名，避免测试输入本身绑定某一 QEMU 版本的节点标签。
+
 ## 环境
 
 - Apple Silicon macOS 先安装 Xcode Command Line Tools（`xcode-select --install`）与 Homebrew，
@@ -77,6 +90,10 @@
   无效 ancillary 指针与只读 msghdr 的故障顺序直接调用标准 syscall，避免 libc 的预复制或写回先崩溃。
   未屏蔽 SIG_IGN 的 generation 直接使用 rt_sigqueueinfo，避免 musl sigqueue 的临时屏蔽改变条件。
   `CLONE_THREAD` fixture 使用现有 musl 汇编 trampoline，仅执行 syscall，不加入 pthread 列表。
+- ptrace consumer 使用固定 Linux 头文件与真实 libc wrapper，覆盖自愿/外部逐 Thread 附加、NT_PRSTATUS
+  前缀与特权状态拒绝、RX/PROT_NONE COW、raw PEEK copyout 故障、signal 抑制/替换、WNOWAIT、exec stop、
+  外部 tracer 与 real-parent exit、tracer exit 自动分离、dumpability/SYS_PTRACE 拒绝与 sibling 继续运行。
+  它属于 musl 的双架构 SMP1/SMP2 cold-boot gate；Wine debugger 观察不能替代该原生 ABI 回归。
 - seccomp regression 直接执行生产 BPF verifier/security owner，覆盖 scratch 路径初始化、
   signed action precedence、newest DATA、全部 seccomp_data words、OOM 不发布与 6554-program
   小栈析构；musl 双架构 1/2 CPU gate 覆盖 unprivileged NNP 授权、fork/thread/exec 继承、
@@ -333,6 +350,10 @@ host token 回归不能代替该双架构 SMP runtime 验证。
   curl timeout 后连续 64 次 fork 分别改写 parent/child shell state，再成功跨过下一次
   fork/exec，专门约束四 CPU migration 下的 COW remote TLB completion。
 - 音频的真实设备、amixer 和并发流门禁见下文；Wine consumer 与延迟分析不能用 host 测试替代。
+
+可单独执行 `make verify-runtime-wine`（AArch64/HVF）：在私有盘安装固定 Wine/FEX，
+由 Windows ShellLink 生成桌面入口，双击启动明确的 i386 Notepad，编辑保存并在新 QEMU 进程中冷启动回读。
+日志与截图保存在 `target/wine-runtime/acceptance/`；它不纳入跨架构的默认门禁，详情见 [Wine 运行时](wine-runtime.md)。
 
 `verify-runtime` 与 `verify` 共用 `verify-runtime-gates`；它是 runtime 编排的唯一 owner，并串行运行各顶层门禁。
 非图形门禁只走 headless QEMU；graphics boot 与 gpu 只走 disposable UTM VirGL，禁止同一能力

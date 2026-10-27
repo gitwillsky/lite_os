@@ -20,6 +20,7 @@ mod poll;
 mod process;
 mod process_context;
 mod process_control;
+mod ptrace;
 mod random;
 mod reboot;
 mod resource_limit;
@@ -517,6 +518,7 @@ pub(crate) fn syscall(
             SYSCALL_SECCOMP => seccomp::sys_seccomp(args[0] as u32, args[1] as u32, args[2]),
             SYSCALL_MEMFD_CREATE => sys_memfd_create(args[0], args[1] as u32),
             SYSCALL_MEMBARRIER => sys_membarrier(args[0], args[1], args[2]),
+            SYSCALL_PTRACE => ptrace::sys_ptrace(args[0], args[1] as i32, args[2], args[3]),
             SYSCALL_WAIT4 => sys_wait4(
                 args[0] as i32 as isize,
                 args[1] as *mut i32,

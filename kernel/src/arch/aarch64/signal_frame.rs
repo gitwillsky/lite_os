@@ -18,6 +18,8 @@ const PC_OFFSET: usize = SP_OFFSET + 8;
 const PSTATE_OFFSET: usize = PC_OFFSET + 8;
 const RESERVED_OFFSET: usize = SIGCONTEXT_OFFSET + 288;
 const RESERVED_SIZE: usize = 4096;
+const ESR_MAGIC: u32 = 0x4553_5201;
+const ESR_SIZE: usize = 16;
 const FPSIMD_MAGIC: u32 = 0x4650_8001;
 const FPSIMD_SIZE: u32 = 528;
 const FPSIMD_STATE_OFFSET: usize = RESERVED_OFFSET + 8;
@@ -75,6 +77,8 @@ impl SignalStack {
 
 /// 已完成全部 structural validation 的 arm64 integer signal state。
 pub(super) struct DecodedSignalFrame {
+    /// validator 找到的唯一 FPSIMD payload 位置；ESR record 可以出现在它之前。
+    pub(super) fpsimd_state_offset: usize,
     pub(super) registers: [usize; 31],
     pub(super) stack_pointer: usize,
     pub(super) program_counter: usize,
@@ -159,6 +163,23 @@ impl SignalFrame {
         frame
     }
 
+    /// 写入本 Thread 最后投递的内存异常；Linux ESR record 仅供诊断，sigreturn 不恢复它。
+    ///
+    /// # Parameters
+    /// - `address`: signal owner 保存的 fault 地址。
+    /// - `syndrome`: 已按 EL0 边界清理的 ESR；零表示从未投递内存异常，不输出 ESR record。
+    ///
+    /// # Returns
+    /// 无返回值；在新建 frame 的 FPSIMD record 后写入诊断记录。
+    pub(super) fn set_fault_context(&mut self, address: usize, syndrome: u64) {
+        put_u64(&mut self.bytes, SIGCONTEXT_OFFSET, address as u64);
+        if syndrome != 0 {
+            put_u32(&mut self.bytes, TERMINATOR_OFFSET, ESR_MAGIC);
+            put_u32(&mut self.bytes, TERMINATOR_OFFSET + 4, ESR_SIZE as u32);
+            put_u64(&mut self.bytes, TERMINATOR_OFFSET + 8, syndrome);
+        }
+    }
+
     /// 构造供 user-copy 填充的零 frame。
     ///
     /// # Returns
@@ -191,8 +212,16 @@ impl SignalFrame {
     }
 
     /// 返回经 validation 后唯一 FPSIMD payload 的 restore address。
-    pub(super) fn fpsimd_state_ptr(&self) -> *const u8 {
-        self.bytes.as_ptr().wrapping_add(FPSIMD_STATE_OFFSET)
+    ///
+    /// # Parameters
+    /// - `decoded`: 从本 frame 完整验证得到的结果。
+    ///
+    /// # Returns
+    /// FPSR/FPCR/vregs payload 的只读指针；vregs 位于该地址加八，按 16 bytes 对齐。
+    pub(super) fn fpsimd_state_ptr(&self, decoded: &DecodedSignalFrame) -> *const u8 {
+        self.bytes
+            .as_ptr()
+            .wrapping_add(decoded.fpsimd_state_offset)
     }
 
     /// 完整验证 ucontext prefix、FPSIMD chain 与 terminator 后解码 integer state。
@@ -208,12 +237,13 @@ impl SignalFrame {
         &self,
         user_address_end: usize,
     ) -> Result<DecodedSignalFrame, InvalidSignalFrame> {
-        self.validate_context_chain()?;
+        let fpsimd_state_offset = self.validate_context_chain()?;
         let mut registers = [0usize; 31];
         for (index, register) in registers.iter_mut().enumerate() {
             *register = get_u64(&self.bytes, REGS_OFFSET + index * 8) as usize;
         }
         let decoded = DecodedSignalFrame {
+            fpsimd_state_offset,
             registers,
             stack_pointer: get_u64(&self.bytes, SP_OFFSET) as usize,
             program_counter: get_u64(&self.bytes, PC_OFFSET) as usize,
@@ -238,31 +268,33 @@ impl SignalFrame {
         Ok(decoded)
     }
 
-    fn validate_context_chain(&self) -> Result<(), InvalidSignalFrame> {
+    fn validate_context_chain(&self) -> Result<usize, InvalidSignalFrame> {
         let reserved = &self.bytes[RESERVED_OFFSET..RESERVED_OFFSET + RESERVED_SIZE];
         let mut offset = 0usize;
-        let mut found_fpsimd = false;
+        let mut found_fpsimd = None;
         loop {
             let header = checked_range(offset, 8, reserved.len())?;
             let magic = get_u32(reserved, header.start);
             let size = get_u32(reserved, header.start + 4) as usize;
             if magic == 0 || size == 0 {
-                if magic != 0 || size != 0 || !found_fpsimd {
+                if magic != 0 || size != 0 || found_fpsimd.is_none() {
                     return Err(InvalidSignalFrame);
                 }
                 if reserved[header.end..].iter().any(|byte| *byte != 0) {
                     return Err(InvalidSignalFrame);
                 }
-                return Ok(());
+                return Ok(RESERVED_OFFSET + found_fpsimd.unwrap() + 8);
             }
             if offset & 0xf != 0 || size < 8 || size & 0xf != 0 {
                 return Err(InvalidSignalFrame);
             }
             checked_range(offset, size, reserved.len())?;
             match magic {
-                FPSIMD_MAGIC if size == FPSIMD_SIZE as usize && !found_fpsimd => {
-                    found_fpsimd = true;
+                FPSIMD_MAGIC if size == FPSIMD_SIZE as usize && found_fpsimd.is_none() => {
+                    found_fpsimd = Some(offset);
                 }
+                // Linux parse_user_sigframe 只跳过 ESR diagnostic record，不信任或恢复用户改写的 ESR。
+                ESR_MAGIC => {}
                 _ => return Err(InvalidSignalFrame),
             }
             offset = offset.checked_add(size).ok_or(InvalidSignalFrame)?;
@@ -349,6 +381,41 @@ mod tests {
         assert_eq!(get_u32(frame.as_bytes(), RESERVED_OFFSET), FPSIMD_MAGIC);
         assert_eq!(get_u32(frame.as_bytes(), RESERVED_OFFSET + 4), 528);
         assert_eq!(get_u64(frame.as_bytes(), TERMINATOR_OFFSET), 0);
+    }
+
+    #[test]
+    fn fault_context_exports_linux_esr_without_restoring_diagnostic_metadata() {
+        let mut frame = frame();
+        frame.set_fault_context(0x12345, 0x9200_0061);
+        assert_eq!(get_u64(&frame.bytes, SIGCONTEXT_OFFSET), 0x12345);
+        assert_eq!(get_u32(&frame.bytes, TERMINATOR_OFFSET), ESR_MAGIC);
+        assert_eq!(get_u32(&frame.bytes, TERMINATOR_OFFSET + 4), 16);
+        assert_eq!(get_u64(&frame.bytes, TERMINATOR_OFFSET + 8), 0x9200_0061);
+        assert_eq!(get_u64(&frame.bytes, TERMINATOR_OFFSET + 16), 0);
+        assert_eq!(frame.decode(1 << 38).unwrap().program_counter, 0x4000);
+        put_u64(&mut frame.bytes, TERMINATOR_OFFSET + 8, u64::MAX);
+        assert_eq!(frame.decode(1 << 38).unwrap().program_counter, 0x4000);
+    }
+
+    #[test]
+    fn esr_before_fpsimd_restores_the_actual_validated_record() {
+        let mut frame = frame();
+        frame.bytes.copy_within(
+            RESERVED_OFFSET..TERMINATOR_OFFSET,
+            RESERVED_OFFSET + ESR_SIZE,
+        );
+        put_u32(&mut frame.bytes, RESERVED_OFFSET, ESR_MAGIC);
+        put_u32(&mut frame.bytes, RESERVED_OFFSET + 4, ESR_SIZE as u32);
+        put_u64(&mut frame.bytes, RESERVED_OFFSET + 8, 0x9200_0021);
+        let decoded = frame.decode(1 << 38).unwrap();
+        assert_eq!(decoded.fpsimd_state_offset, FPSIMD_STATE_OFFSET + ESR_SIZE);
+        assert_eq!(
+            frame.fpsimd_state_ptr(&decoded),
+            frame
+                .bytes
+                .as_ptr()
+                .wrapping_add(FPSIMD_STATE_OFFSET + ESR_SIZE)
+        );
     }
 
     #[test]

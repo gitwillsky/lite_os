@@ -7,9 +7,6 @@ use syn::{
 
 use super::{SourceFile, normalized};
 
-#[cfg(test)]
-mod ready_contract_tests;
-
 const READY_TRANSITION_CONSUMER: &str = "consume_ready_projection_parts";
 const READY_RETIREMENT_CONSUMER: &str = "consume_ready_projection_cpu";
 const READY_MEMBERSHIP_PATH: &str = "kernel/src/task/processor/ready_membership.rs";
@@ -482,3 +479,6 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     check_projection_consumers(sources, errors);
     check_transition_shapes(sources, errors);
 }
+
+#[cfg(test)]
+mod ready_contract_tests;

@@ -118,3 +118,55 @@ fn stopping_does_not_resolve_before_a_handler_pending_at_continue() {
     state.clear();
     assert!(state.take_block().is_none());
 }
+
+#[test]
+fn trace_stop_rewinds_once_and_keeps_handler_decision_until_continue() {
+    use syscall_restart::RestartResolution;
+    let mut state = SyscallRestartState::default();
+    state.arm(record(SyscallRestartPolicy::WithRestartHandler));
+    let shown = state.prepare_trace().unwrap();
+    assert_eq!(
+        shown.syscall_pc,
+        record(SyscallRestartPolicy::WithRestartHandler).syscall_pc
+    );
+    assert!(
+        state.prepare_trace().is_none(),
+        "a second stop must preserve tracer's register changes"
+    );
+    match state.resolve_signal(Some(0)) {
+        Some(RestartResolution::Traced {
+            instruction,
+            replay_number,
+        }) => {
+            assert_eq!(instruction, shown.syscall_pc);
+            assert_eq!(
+                replay_number, None,
+                "a handler without SA_RESTART restores EINTR"
+            );
+        }
+        _ => panic!("rewound context must not become a full register replay"),
+    }
+    assert!(state.resolve_signal(None).is_none());
+}
+
+#[test]
+fn trace_restart_block_selects_native_restart_without_overwriting_debugger_arguments() {
+    use syscall_restart::RestartResolution;
+    let mut state = SyscallRestartState::default();
+    state.set_block(SyscallRestartBlock::Sleep {
+        deadline: 42,
+        remaining: 0,
+    });
+    state.arm(record(SyscallRestartPolicy::RestartBlock));
+    assert!(state.prepare_trace().is_some());
+    assert!(matches!(
+        state.resolve_signal(None),
+        Some(RestartResolution::Traced {
+            replay_number: Some(128),
+            ..
+        })
+    ));
+    state.clear();
+    assert!(state.prepare_trace().is_none());
+    assert!(state.take_block().is_none());
+}

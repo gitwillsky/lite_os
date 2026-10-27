@@ -265,10 +265,13 @@ impl Seat {
         exclusive: Option<Target>,
     ) {
         let active = exclusive.or_else(|| stack.active());
-        if active == self.keyboard_focus {
+        let changed = active != self.keyboard_focus;
+        // 1. logical focus 未变也要检查新对象；Wine 在解析 XKB 后才绑定键盘，可能晚于窗口取得焦点。
+        if !changed && !active.is_some_and(|(client, _)| server.keyboard_needs_enter(client)) {
             return;
         }
-        if let Some((client, surface)) = self.keyboard_focus {
+        // 2. 只有真正换焦点才发送旧对象 leave；新绑定不能使已有对象重新 enter。
+        if changed && let Some((client, surface)) = self.keyboard_focus {
             let serial = self.next_serial();
             // 窗口可能刚被最小化或移除；还存在时通知它失去激活，并保留它的最大化等状态。
             let (width, height, state) =
@@ -285,7 +288,10 @@ impl Seat {
             let (width, height, state) =
                 window_configure(stack, (client, surface), scale, None, false);
             server.with_client(client, |client| {
-                client.configure(surface, width, height, state);
+                // 3. 新对象先 enter，再同步当前 pressed keys/modifiers；按键只投递给已 enter 对象。
+                if changed {
+                    client.configure(surface, width, height, state);
+                }
                 client.keyboard_enter(serial, surface, &pressed);
                 client.keyboard_modifiers(serial, depressed, locked);
             });

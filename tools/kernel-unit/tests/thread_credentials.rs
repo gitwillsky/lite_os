@@ -156,6 +156,11 @@ mod task {
         CURRENT.with(|current| *current.borrow_mut() = Some(task.clone()));
     }
     pub(crate) mod process_table {
+        pub(crate) mod ptrace {
+            pub(crate) fn restrict_exec(_: &super::super::TaskControlBlock) -> bool {
+                false
+            }
+        }
         // Graph membership is an explicit fixture seam; actual single-thread check runs in guest.
         pub(crate) fn is_single_threaded(_: &super::TaskControlBlock) -> bool {
             true

@@ -48,8 +48,6 @@ mod allocation_metadata;
 mod async_read;
 mod block_io;
 mod checksum;
-#[cfg(test)]
-mod cost_test_support;
 mod directory;
 mod directory_block;
 mod directory_cursor;
@@ -71,26 +69,8 @@ mod orphan;
 mod storage_mutation;
 mod xattr;
 mod xattr_inode;
-#[cfg(test)]
-pub(crate) use cost_test_support::{
-    TestMappedInode, arm_test_orphan_drop, clear_test_metadata_cache,
-    fail_next_test_metadata_owner, release_test_orphan_drop, reset_test_allocation_attempts,
-    reset_test_stage_capacity, reset_test_write_costs, set_test_stage_capacity,
-    test_allocation_attempts, test_mount_allocation_state, test_orphan_drop_admitted,
-    test_read_logical_block, test_read_metadata, test_stage_metadata, test_write_costs,
-    wait_test_orphan_drop_admission, with_test_mutation_lock,
-};
-#[cfg(test)]
-use cost_test_support::{
-    fail_test_metadata_owner, record_test_allocation_attempt,
-    record_test_allocation_materialization, record_test_allocation_metadata_bytes,
-    record_test_home_write, record_test_journal_write, record_test_transaction,
-    test_orphan_drop_admission, test_stage_capacity,
-};
 use directory_cursor::{DirectoryCursor, RecordPosition};
 use dirhash::HashSignedness;
-#[cfg(test)]
-pub(crate) use filesystem::test_run_writeback_daemon;
 use inode::Ext4Inode;
 use journal::{BlockKind, Journal, JournalOwner, MutationGuard};
 use metadata_cache::MetadataBlockCache;
@@ -667,3 +647,23 @@ impl Ext4FileSystem {
         }
     }
 }
+#[cfg(test)]
+mod cost_test_support;
+#[cfg(test)]
+pub(crate) use cost_test_support::{
+    TestMappedInode, arm_test_orphan_drop, clear_test_metadata_cache,
+    fail_next_test_metadata_owner, release_test_orphan_drop, reset_test_allocation_attempts,
+    reset_test_stage_capacity, reset_test_write_costs, set_test_stage_capacity,
+    test_allocation_attempts, test_mount_allocation_state, test_orphan_drop_admitted,
+    test_read_logical_block, test_read_metadata, test_stage_metadata, test_write_costs,
+    wait_test_orphan_drop_admission, with_test_mutation_lock,
+};
+#[cfg(test)]
+use cost_test_support::{
+    fail_test_metadata_owner, record_test_allocation_attempt,
+    record_test_allocation_materialization, record_test_allocation_metadata_bytes,
+    record_test_home_write, record_test_journal_write, record_test_transaction,
+    test_orphan_drop_admission, test_stage_capacity,
+};
+#[cfg(test)]
+pub(crate) use filesystem::test_run_writeback_daemon;

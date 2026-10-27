@@ -429,7 +429,10 @@ fn exit_current(requested: ProcessExitStatus) -> ! {
 /// 最后一个真实 Thread retirement 完成后的唯一 process-exit publication。
 /// cleanup 期间 child 保持 Retiring；parent 的 wait/pending 与 autoreap 在这里同锁决定，
 /// 避免父进程在 clear-child-tid/vfork completion 前 reap，或漏掉较早摘图但较晚清理的 sibling。
-fn complete_process_exit(pid: usize) {
+pub(super) fn complete_process_exit(pid: usize) {
+    if super::ptrace::defer_process_exit(pid) {
+        return;
+    }
     let (waiters, wake, source, retired) = {
         let (mut records, mut graph) = super::signal::lock_child_notifications(
             pid,
@@ -641,7 +644,10 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
                         // real parent 换成另一个 process：native orphan 一律成为普通 SIGCHLD child。
                         node.exit_signal = syscall_abi::signal::SIGCHLD as u8;
                         let child_status = match node.state {
-                            ProcessState::Exited(_, ExitRetirement::Retiring) => None,
+                            ProcessState::Exited(
+                                _,
+                                ExitRetirement::Retiring | ExitRetirement::Traced,
+                            ) => None,
                             ProcessState::Exited(status, _) => Some(status),
                             _ => None,
                         };
@@ -785,6 +791,7 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
         source.record_exit(thread_status.wait_status());
     }
     drop(retired_thread_index);
+    super::ptrace::thread_exited(&task, thread_status.wait_status());
     let process_completed = thread_retirement.complete();
     if let Some(source) = thread_pidfd_notification {
         source.notify();

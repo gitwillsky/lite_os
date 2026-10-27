@@ -8,6 +8,7 @@
 | 94 | `exit_group` | Complete | group status 唯一提交与 sibling 退出 |
 | 95 | `waitid` | Partial | native ALL/PID/PGID/PIDFD、exit/stop/continue、NOWAIT/NOHANG/clone class；复用唯一 claim，消费先于 copyout；rusage 为 child 含其已回收后代的使用量 |
 | 96 | `set_tid_address` | Complete | calling Thread clear-child-tid |
+| 117 | `ptrace` | Partial | TRACEME/ATTACH、逐线程 signal stop、wait4/waitid/`__WALL`/WNOWAIT、CONT/DETACH/KILL、PEEK/POKE text/data、GET/SETREGSET NT_PRSTATUS、GET/SETSIGINFO；REALCREDS/UserNS、exec 与 tracer/tracee exit cleanup |
 | 97 | `unshare` | Partial | 零、CLONE_FS/CLONE_FILES/CLONE_NEWUSER/CLONE_NEWUTS/CLONE_NEWNS/CLONE_NEWTIME；全部锁外准备、复合 OOM 保留、calling Thread 脱离；NEWTIME 只改 for_children |
 | 144 | `setgid` | Partial | 当前 credential model 的标准 permission 范围 |
 | 146 | `setuid` | Partial | 当前 credential model 的标准 permission 范围 |
@@ -124,3 +125,10 @@ actual factory/OOM/quota/pin/loopback回归已写，集中阶段执行；完整�
 
 `PR_SET_NAME`/`PR_GET_NAME` 的名称最长 15 字节并以 NUL 填充；`/proc/<tgid>/task/<tid>` 的 comm、stat、status
 读取指定线程的名称，顶层 `/proc/<tgid>` 读取 leader 名称。fork/clone 按值继承 caller 名称，exec 更新 survivor 并重指 leader 别名。
+
+`ptrace` 的 AArch64 NT_PRSTATUS 为 272 字节，RV64 为 256 字节；iovec 按实际 regset 长度裁剪 word 对齐前缀，过大的 iov_len 不访问有效寄存器之外的保护页，
+拒绝特权 register image。raw PEEK syscall 把 word 写到 data；libc 的返回值转换不属于 kernel ABI。
+private RX/PROT_NONE 可由 debugger 访问并维持 COW 与原权限；共享 mapping 只开放实际可读/写范围，
+不开放设备强制访问。未实现 SEIZE/INTERRUPT/LISTEN、SYSCALL/SINGLESTEP、options/events、自动跟踪 clone、
+硬件断点和 FP/vector/TLS regset；不声明完整 GDB 或多线程 group-stop 调试兼容。未开放 request 返回 EIO，
+坏 iovec/register image 为 EINVAL，未附加/未停止目标为 ESRCH，attach 授权/重复/同组拒绝为 EPERM。

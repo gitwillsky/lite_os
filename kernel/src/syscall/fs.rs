@@ -181,8 +181,13 @@ pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
         return -errno::EBADF;
     }
     if size > task.file_size_limit() {
-        send_kernel_thread_signal(task.tgid(), task.tid(), syscall_abi::signal::SIGXFSZ)
-            .expect("current ftruncate caller must exist");
+        send_kernel_thread_signal(
+            task.tgid(),
+            task.tid(),
+            syscall_abi::signal::SIGXFSZ,
+            crate::task::PendingSignal::kernel(),
+        )
+        .expect("current ftruncate caller must exist");
         return -errno::EFBIG;
     }
     // backend kind 只选择 I/O 操作；proc 的 regular inode 也可使用已绑定的 DeviceFile。
@@ -264,8 +269,13 @@ pub(crate) fn sys_fallocate(fd: usize, mode: usize, offset: i64, length: i64) ->
         return -errno::ENODEV;
     }
     if end > task.file_size_limit() {
-        send_kernel_thread_signal(task.tgid(), task.tid(), syscall_abi::signal::SIGXFSZ)
-            .expect("current fallocate caller must exist");
+        send_kernel_thread_signal(
+            task.tgid(),
+            task.tid(),
+            syscall_abi::signal::SIGXFSZ,
+            crate::task::PendingSignal::kernel(),
+        )
+        .expect("current fallocate caller must exist");
         return -errno::EFBIG;
     }
     let result = crate::fs::allocate(

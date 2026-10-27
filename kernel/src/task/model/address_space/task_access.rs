@@ -1,6 +1,9 @@
 use super::*;
 use core::sync::atomic::Ordering;
 
+// io_uring worker 可持有已退出 Thread 的 observer；fallible user-copy 必须先取得实际 mmget。
+// 退休后返回 Fault，不能把仍可 upgrade 的 TCB Arc 当成 MM 存活证明，否则后台 completion 会 panic。
+
 impl TaskControlBlock {
     pub(in crate::task) fn register_private_memory_barrier(&self) {
         self.address_space()
@@ -19,7 +22,8 @@ impl TaskControlBlock {
         user_address: usize,
         destination: &mut [u8],
     ) -> Result<(), UserAccessError> {
-        self.address_space()
+        self.mm_snapshot()
+            .ok_or(UserAccessError::Fault)?
             .copy_from_user(user_address, destination, self.user_fault_limits())
     }
 
@@ -29,11 +33,9 @@ impl TaskControlBlock {
         user_address: usize,
         destination: &mut [core::mem::MaybeUninit<u8>],
     ) -> Result<(), UserAccessError> {
-        self.address_space().copy_from_user_uninit(
-            user_address,
-            destination,
-            self.user_fault_limits(),
-        )
+        self.mm_snapshot()
+            .ok_or(UserAccessError::Fault)?
+            .copy_from_user_uninit(user_address, destination, self.user_fault_limits())
     }
 
     pub(crate) fn copy_instruction_halfword(
@@ -41,11 +43,9 @@ impl TaskControlBlock {
         user_address: usize,
         destination: &mut [u8; 2],
     ) -> Result<(), UserAccessError> {
-        self.address_space().copy_instruction_halfword(
-            user_address,
-            destination,
-            self.user_fault_limits(),
-        )
+        self.mm_snapshot()
+            .ok_or(UserAccessError::Fault)?
+            .copy_instruction_halfword(user_address, destination, self.user_fault_limits())
     }
 
     pub(crate) fn copy_to_user(
@@ -53,7 +53,8 @@ impl TaskControlBlock {
         user_address: usize,
         source: &[u8],
     ) -> Result<(), UserAccessError> {
-        self.address_space()
+        self.mm_snapshot()
+            .ok_or(UserAccessError::Fault)?
             .copy_to_user(user_address, source, self.user_fault_limits())
     }
 
@@ -62,8 +63,11 @@ impl TaskControlBlock {
         user_address: usize,
         length: usize,
     ) -> Result<(), UserAccessError> {
-        self.address_space()
-            .zero_user(user_address, length, self.user_fault_limits())
+        self.mm_snapshot().ok_or(UserAccessError::Fault)?.zero_user(
+            user_address,
+            length,
+            self.user_fault_limits(),
+        )
     }
 
     pub(crate) fn validate_user_write(
@@ -71,7 +75,8 @@ impl TaskControlBlock {
         user_address: usize,
         length: usize,
     ) -> Result<(), UserAccessError> {
-        self.address_space()
+        self.mm_snapshot()
+            .ok_or(UserAccessError::Fault)?
             .validate_user_write(user_address, length, self.user_fault_limits())
     }
 
@@ -91,7 +96,8 @@ impl TaskControlBlock {
         user_address: usize,
         max_len: usize,
     ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
-        self.address_space()
+        self.mm_snapshot()
+            .ok_or(UserAccessError::Fault)?
             .copy_user_c_string(user_address, max_len, self.user_fault_limits())
     }
 
@@ -185,5 +191,32 @@ impl super::Process {
                 .with_process_files(|files| files.slot_capacity())
                 .unwrap_or(0),
         })
+    }
+}
+
+impl TaskControlBlock {
+    /// 目标已授权的 debugger word 访问，MM 锁和 canonical fault/COW 全由原 owner 执行。
+    ///
+    /// # Parameters
+    /// - `address`: 目标虚拟地址。
+    /// - `bytes`: 八字节 kernel staging。
+    /// - `write`: true 写入、false 读取。
+    ///
+    /// # Returns
+    /// 完整复制成功。
+    ///
+    /// # Errors
+    /// MM 退休、waiter OOM、地址或 backing 失败。
+    pub(in crate::task) fn ptrace_word(
+        &self,
+        address: usize,
+        bytes: &mut [u8; 8],
+        write: bool,
+    ) -> Result<(), UserAccessError> {
+        let mm = self.mm_snapshot().ok_or(UserAccessError::Fault)?;
+        mm.memory_set
+            .lock()
+            .map_err(|_| UserAccessError::OutOfMemory)?
+            .ptrace_word(address, bytes, write, self.user_fault_limits())
     }
 }

@@ -9,3 +9,6 @@ liteos-ui = { path = "../../libraries/liteos-ui" }
 linux-uapi.workspace = true
 keyboard.workspace = true
 terminal-model.workspace = true
+
+[lints]
+workspace = true

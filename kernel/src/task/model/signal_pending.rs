@@ -274,11 +274,6 @@ pub(super) struct TakenSignal {
     record: Option<Box<SignalRecord>>,
 }
 impl TakenSignal {
-    pub(super) fn is_timer(&self) -> bool {
-        self.record
-            .as_ref()
-            .is_some_and(|record| matches!(record.source, SignalRecordSource::Timer(_)))
-    }
     /// 释放 pending guards 后消费：先归还预留 Box，再执行真实 timer lifetime/sequence 验证。
     /// coordinator 返回 false 时丢弃旧通知；普通节点直接退款并返回首个 siginfo。
     pub(super) fn resolve(
@@ -356,6 +351,22 @@ impl PendingSignals {
             self.fallback[signal] = SignalFallback::from_info(info);
         }
         self.bits |= bit;
+    }
+    /// 首个真实来源保留不可丢失的 delivery consequence；不创建平行 pending mask。
+    pub(super) fn requires_delivery(&self, mut mask: u64) -> bool {
+        mask &= self.bits;
+        while mask != 0 {
+            let index = mask.trailing_zeros() as usize;
+            mask &= mask - 1;
+            let info = self.records[index]
+                .head
+                .as_ref()
+                .map_or_else(|| self.fallback[index + 1].info(), |record| record.info);
+            if info.requires_delivery() {
+                return true;
+            }
+        }
+        false
     }
     pub(super) fn take(&mut self, mask: u64) -> Option<TakenSignal> {
         let available = self.bits & mask;

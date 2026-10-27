@@ -7,9 +7,6 @@ use std::{
 use syn::parse_file;
 
 use super::{SourceFile, abi_contract::syscall_entries};
-
-#[cfg(test)]
-mod documentation_contract_tests;
 mod interface;
 
 const ENTRY_DOCUMENTS: &[&str] = &[
@@ -396,3 +393,6 @@ pub(super) fn check(
     check_syscall_documentation(&documents, &syscalls, errors);
     interface::check(root, sources, write_interface, errors);
 }
+
+#[cfg(test)]
+mod documentation_contract_tests;

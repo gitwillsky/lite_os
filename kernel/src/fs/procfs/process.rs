@@ -62,6 +62,7 @@ pub(super) fn format_process_stat(
     format_task_stat(
         process,
         TaskStatFields {
+            tracer: process.tracer.as_deref(),
             comm: &process.comm,
             pid: process.pid.number_in(pid_view) as usize,
             has_mm: process.has_mm,
@@ -96,6 +97,7 @@ pub(super) fn format_thread_stat(
     format_task_stat(
         process,
         TaskStatFields {
+            tracer: thread.tracer.as_deref(),
             comm: thread.comm(),
             pid: thread.tid.number_in(pid_view) as usize,
             has_mm: thread.has_mm,
@@ -112,6 +114,7 @@ pub(super) fn format_thread_stat(
 }
 
 struct TaskStatFields<'a> {
+    tracer: Option<&'a crate::namespace::PidIdentity>,
     comm: &'a [u8],
     pid: usize,
     has_mm: bool,
@@ -147,7 +150,11 @@ fn format_task_stat(
         "{} ({}) {} {} {} {} {} {} {} 0 0 0 0 {} 0 0 0 {} {} {} 0 {} {} {} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 {}\n",
         task.pid,
         comm,
-        task.state as char,
+        if task.state == b'T' && task.tracer.is_some() {
+            't'
+        } else {
+            task.state as char
+        },
         process
             .ppid
             .as_ref()
@@ -266,6 +273,7 @@ pub(super) fn format_process_status(
     format_task_status(
         process,
         TaskStatusFields {
+            tracer: process.tracer.as_deref(),
             comm: &process.comm,
             pid: &process.pid,
             state: process.state,
@@ -297,6 +305,7 @@ pub(super) fn format_thread_status(
     format_task_status(
         process,
         TaskStatusFields {
+            tracer: thread.tracer.as_deref(),
             comm: thread.comm(),
             pid: &thread.tid,
             state: thread.state,
@@ -310,6 +319,7 @@ pub(super) fn format_thread_status(
 }
 
 struct TaskStatusFields<'a> {
+    tracer: Option<&'a crate::namespace::PidIdentity>,
     comm: &'a [u8],
     pid: &'a crate::namespace::PidIdentity,
     state: u8,
@@ -324,6 +334,7 @@ fn format_task_status(
     pid_view: &crate::namespace::PidNamespace,
 ) -> Result<Vec<u8>, FileSystemError> {
     let TaskStatusFields {
+        tracer,
         comm,
         pid,
         state,
@@ -335,9 +346,15 @@ fn format_task_status(
         bytes: comm,
         forbidden: b"\t\n",
     };
+    let state = if state == b'T' && tracer.is_some() {
+        b't'
+    } else {
+        state
+    };
     let state_name = match state {
         b'R' => "running",
         b'T' => "stopped",
+        b't' => "tracing stop",
         b'Z' => "zombie",
         b'D' => "disk sleep",
         b'I' => "idle",
@@ -346,11 +363,12 @@ fn format_task_status(
     let mut output = ProcText::new();
     write!(
         output,
-        "Name:\t{comm}\nState:\t{} ({state_name})\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\nTracerPid:\t0\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t{}\nGroups:\t",
+        "Name:\t{comm}\nState:\t{} ({state_name})\nTgid:\t{}\nNgid:\t0\nPid:\t{}\nPPid:\t{}\nTracerPid:\t{}\nUid:\t{}\t{}\t{}\t{}\nGid:\t{}\t{}\t{}\t{}\nFDSize:\t{}\nGroups:\t",
         state as char,
         process.pid.number_in(pid_view),
         pid.number_in(pid_view),
         process.ppid.as_ref().map_or(0, |parent| parent.number_in(pid_view)),
+        tracer.map_or(0, |tracer| tracer.number_in(pid_view)),
         viewer.display_id(true, credentials.uids[0]),
         viewer.display_id(true, credentials.uids[1]),
         viewer.display_id(true, credentials.uids[2]),

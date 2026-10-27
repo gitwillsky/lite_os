@@ -221,7 +221,12 @@ pub(in crate::task::process_table) fn prepare_parent_signal_wake(
         };
         threads
             .values()
-            .find(|thread| thread.accepts_process_signal(signal))
+            .find(|thread| {
+                thread.accepts_process_signal(
+                    signal,
+                    super::super::ptrace::thread_traced(graph, thread.tid()),
+                )
+            })
             .cloned()
     });
     ParentSignalWake { parent, eligible }

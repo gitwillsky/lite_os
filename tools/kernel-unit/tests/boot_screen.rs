@@ -274,32 +274,52 @@ fn once_the_display_refuses_updates_progress_stops_for_good() {
     );
 }
 
-/// 整帧 FNV-1a：把每个像素按 0x00RRGGBB 的四个字节（小端）依次喂入。
-fn frame_hash(scanout: &FakeScanout) -> u64 {
-    let width = scanout.mode.width as usize;
-    let height = scanout.mode.height as usize;
-    let mut hash = 0xCBF2_9CE4_8422_2325u64;
-    for y in 0..height {
-        for x in 0..width {
-            for byte in scanout.pixel(x, y).to_le_bytes() {
-                hash = (hash ^ u64::from(byte)).wrapping_mul(0x0000_0100_0000_01B3);
-            }
-        }
+// 直接执行两侧的生产 renderer；没有失去 owner 的第三份像素算法或素材 hash。
+#[path = "../../../user/programs/compositor/src/boot/paint.rs"]
+mod compositor_boot;
+
+struct HandoffSurface {
+    width: usize,
+    pixels: Vec<u32>,
+}
+impl compositor_boot::BootSurface for HandoffSurface {
+    fn width(&self) -> usize {
+        self.width
     }
-    hash
+    fn height(&self) -> usize {
+        self.pixels.len() / self.width
+    }
+    fn row_mut(&mut self, row: usize) -> &mut [u32] {
+        &mut self.pixels[row * self.width..(row + 1) * self.width]
+    }
 }
 
-/// 基准值由 `scripts/tests/test_boot_scene_handoff.py` 的独立 Python 实现按契约算出；compositor 的测试断言同样的值，
-/// 三方一致才说明内核到 compositor 的接管逐像素连续。任何一方的缩放、居中或填充规则漂移，这里立刻失败。
+/// 当前受 Git 管理的 ISO 素材在 kernel → compositor 交接时必须逐像素相同。
 #[test]
-fn full_frame_matches_the_contract_hash_shared_with_the_compositor() {
-    for (width, height, expected) in [
-        (1504, 846, 0xaf73_2633_392f_568e_u64),
-        (3008, 1692, 0xbd09_5a70_f144_ef5a_u64),
-    ] {
+fn kernel_to_compositor_handoff_preserves_every_pixel_at_both_product_scales() {
+    for (width, height) in [(1504, 846), (3008, 1692)] {
         let scanout = FakeScanout::new(width, height);
         let mut screen = BootScreen::start(Some(&scanout), SCENE);
         screen.advance(Milestone::Audio);
-        assert_eq!(frame_hash(&scanout), expected, "{width}x{height}");
+        let mut handoff = HandoffSurface {
+            width: width as usize,
+            pixels: vec![0xdeadbeef; width as usize * height as usize],
+        };
+        compositor_boot::paint(&mut handoff, SCENE, boot_scene::KERNEL_PROGRESS_PERMILLE).unwrap();
+        for (index, (bytes, pixel)) in scanout
+            .memory
+            .take()
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(&handoff.pixels)
+            .enumerate()
+        {
+            assert_eq!(
+                u32::from_le_bytes(*bytes),
+                *pixel,
+                "{width}x{height} pixel {index}"
+            );
+        }
     }
 }

@@ -119,12 +119,7 @@ pub fn open(item: Item) -> io::Result<Child> {
         let path = item
             .path
             .ok_or_else(|| io::Error::other("项目没有可打开的路径"))?;
-        if item.icon == Icon::Application {
-            Command::new(path)
-        } else {
-            desktop_entry::open_with(Path::new("/usr/share/applications"), &path)
-                .ok_or_else(|| io::Error::other(format!("没有与 {} 关联的程序", item.name)))?
-        }
+        desktop_entry::open(&path)?
     };
     command.env_remove("WAYLAND_SOCKET").spawn()
 }

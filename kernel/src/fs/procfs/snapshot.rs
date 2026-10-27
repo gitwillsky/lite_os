@@ -15,6 +15,8 @@ pub(crate) struct ProcCredentialSnapshot {
 
 #[derive(Clone)]
 pub(crate) struct ProcThreadSnapshot {
+    /// graph 捕获的真实 tracer identity；不持 TCB/MM，reader 按 proc mount view 投影。
+    pub(crate) tracer: Option<Arc<crate::namespace::PidIdentity>>,
     /// 此线程的独立 Linux comm，固定 16 字节 NUL 填充。
     pub(crate) comm: [u8; 16],
     pub(crate) tid: Arc<crate::namespace::PidIdentity>,
@@ -53,6 +55,8 @@ pub(crate) struct ProcIoSnapshot {
 
 #[derive(Clone)]
 pub(crate) struct ProcProcessSnapshot {
+    /// leader 的真实 tracer identity，来自同一进程快照 producer。
+    pub(crate) tracer: Option<Arc<crate::namespace::PidIdentity>>,
     /// 来源 execution kind 的只读投影，用于 PF_KTHREAD/Kthread，不能由 mm absence 推断。
     pub(crate) kernel_thread: bool,
     pub(crate) pid: Arc<crate::namespace::PidIdentity>,

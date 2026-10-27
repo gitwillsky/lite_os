@@ -52,6 +52,9 @@ pub(crate) enum SyscallRestartBlock {
 pub(super) struct SyscallRestartState {
     instruction: Option<SyscallRestart>,
     block: Option<SyscallRestartBlock>,
+    // OWNER: 同一 restart record 已向 tracer 展示重绕后的 PC/参数；不是第二份 replay。
+    // 缺少此状态会在 CONT 时覆盖 debugger 修改的 PC 或 syscall arguments。
+    trace_rewound: bool,
 }
 impl SyscallRestartState {
     pub(super) fn arm(&mut self, instruction: SyscallRestart) {
@@ -75,7 +78,44 @@ impl SyscallRestartState {
             .take()
             .and_then(|instruction| instruction.resolve(handler_flags))
     }
+    /// 在真实 ptrace-stop 前展示 Linux 重绕后的 context；连续 stop 不覆盖 tracer 已改的寄存器。
+    pub(super) fn prepare_trace(&mut self) -> Option<SyscallRestart> {
+        if self.trace_rewound {
+            return None;
+        }
+        let instruction = self.instruction?;
+        self.trace_rewound = true;
+        Some(instruction)
+    }
+
+    /// 使用唯一 policy 决定 replay，traced context 已被 debugger 观察/修改，必须保留它的输入。
+    pub(super) fn resolve_signal(
+        &mut self,
+        handler_flags: Option<usize>,
+    ) -> Option<RestartResolution> {
+        let original = self.instruction;
+        let traced = core::mem::take(&mut self.trace_rewound);
+        let replay = self.resolve(handler_flags);
+        if traced {
+            original.map(|original| RestartResolution::Traced {
+                instruction: original.syscall_pc,
+                replay_number: replay.map(|record| record.syscall_id),
+            })
+        } else {
+            replay.map(RestartResolution::Replay)
+        }
+    }
+
     pub(super) fn clear(&mut self) {
         *self = Self::default();
     }
+}
+
+/// signal owner 对唯一 restart record 的最终决议；tracer context 不能再次整组覆盖。
+pub(super) enum RestartResolution {
+    Replay(SyscallRestart),
+    Traced {
+        instruction: usize,
+        replay_number: Option<usize>,
+    },
 }

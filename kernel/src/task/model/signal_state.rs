@@ -95,10 +95,21 @@ use crate::arch::context::{SIGNAL_FRAME_SIZE, SignalFrame, SignalStack as ArchSi
 
 impl TaskControlBlock {
     fn apply_syscall_restart(&self, context: &mut UserContext, handler_flags: Option<usize>) {
-        let Some(restart) = self.thread().syscall_restart.lock().resolve(handler_flags) else {
-            return;
-        };
-        context.restart_syscall(restart.syscall_id, restart.args, restart.syscall_pc);
+        match self
+            .thread()
+            .syscall_restart
+            .lock()
+            .resolve_signal(handler_flags)
+        {
+            Some(super::syscall_restart::RestartResolution::Replay(restart)) => {
+                context.restart_syscall(restart.syscall_id, restart.args, restart.syscall_pc)
+            }
+            Some(super::syscall_restart::RestartResolution::Traced {
+                instruction,
+                replay_number,
+            }) => context.finish_ptrace_restart(instruction, replay_number),
+            None => {}
+        }
     }
 
     /// 在 trap return 前选择 pending signal，并委托编译期 arch codec 构造 frame。
@@ -115,40 +126,27 @@ impl TaskControlBlock {
         const SA_NODEFER: usize = 0x4000_0000;
         loop {
             let selection_mask = *self.thread().signal_mask.lock();
-            let selected = {
-                self.process()
-                    .signal_state
-                    .lock()
-                    .with_handlers(|handlers, shared_pending| {
-                        let mut pending = self.thread().pending_signals.lock();
-                        pending
-                            .take(!selection_mask)
-                            .or_else(|| shared_pending.take(!selection_mask))
-                            .map(|selected| {
-                                let action = (!selected.is_timer())
-                                    .then(|| handlers.select(selected.signal));
-                                (selected, action)
-                            })
-                    })
-                    .flatten()
-            };
-            let Some((selected, action)) = selected else {
+            let selected = self.take_pending_signal(!selection_mask);
+            let Some((signal, signal_info, queue)) = selected else {
                 self.thread()
                     .user_context
                     .with(|context| self.apply_syscall_restart(context, None));
                 return Ok(SignalDelivery::None);
             };
-            let Some((signal, signal_info)) =
-                selected.resolve(super::super::process_table::timer_queue::deliver_posix_signal)
-            else {
+            let Some((signal, signal_info)) = super::super::process_table::ptrace::intercept_signal(
+                self,
+                signal,
+                signal_info,
+                queue,
+            ) else {
                 continue;
             };
-            let Some(action) = action.or_else(|| {
-                self.process()
-                    .signal_state
-                    .lock()
-                    .with_handlers(|handlers, _| handlers.select(signal))
-            }) else {
+            let Some(action) = self
+                .process()
+                .signal_state
+                .lock()
+                .with_handlers(|handlers, _| handlers.select(signal))
+            else {
                 continue;
             };
             if signal_is_ignored(signal, action) {

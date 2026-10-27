@@ -26,7 +26,7 @@ pub enum Target {
 pub struct Icon {
     pub label: String,
     /// 32 × 32 位图的名称（不含扩展名）。
-    pub art: &'static str,
+    pub art: String,
     pub target: Target,
     /// 持久化位置时的键：系统图标是固定名，其余是文件名。
     key: String,
@@ -74,7 +74,7 @@ fn system_icons() -> Vec<Icon> {
     .into_iter()
     .map(|(key, label, art, place)| Icon {
         label: label.into(),
-        art,
+        art: art.into(),
         target: Target::Place(place),
         key: key.into(),
     })
@@ -152,6 +152,13 @@ impl Icons {
             .flatten()
             .flatten()
             .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
+            // Wine 的 Windows ShellLink 仍归 Windows 所有；同目录已有导出的标准入口时只显示后者。
+            .filter(|e| {
+                !(e.path()
+                    .extension()
+                    .is_some_and(|extension| extension == "lnk")
+                    && e.path().with_extension("desktop").is_file())
+            })
             .take(MAX_ENTRIES)
             .map(|e| {
                 let path = e.path();
@@ -167,9 +174,22 @@ impl Icons {
                 .then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase()))
         });
         for (directory, name, path) in entries {
+            let entry = (path
+                .extension()
+                .is_some_and(|extension| extension == "desktop"))
+            .then(|| desktop_entry::read(&path).ok())
+            .flatten();
             items.push(Icon {
-                art: art_for(&path, directory),
-                label: name.clone(),
+                art: entry
+                    .as_ref()
+                    .and_then(|entry| entry.icon.as_ref())
+                    .map_or_else(
+                        || art_for(&path, directory).to_owned(),
+                        |icon| format!("{icon}-32"),
+                    ),
+                label: entry
+                    .as_ref()
+                    .map_or_else(|| name.clone(), |entry| entry.name.clone()),
                 target: Target::Path(path),
                 key: name,
             });
@@ -282,5 +302,30 @@ impl Icons {
         }
         self.refresh();
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wine_shell_link_and_exported_entry_have_one_desktop_icon() {
+        let root = std::env::temp_dir().join(format!("liteos-desktop-wine-{}", std::process::id()));
+        let desktop = root.join("Desktop");
+        fs::create_dir_all(&desktop).unwrap();
+        fs::write(desktop.join("Example.lnk"), b"Windows ShellLink").unwrap();
+        let entry = desktop.join("Example.desktop");
+        fs::write(&entry, "[Desktop Entry]\nType=Application\nName=Installed Example\nExec=wine example.exe\nIcon=example.0\n").unwrap();
+        let mut icons = Icons::load(&root, (75, 75));
+        assert_eq!(icons.items.len(), 5);
+        assert_eq!(icons.items[4].label, "Installed Example");
+        assert_eq!(icons.items[4].art, "example.0-32");
+        assert_eq!(icons.items[4].target, Target::Path(entry.clone()));
+        fs::remove_file(entry).unwrap();
+        icons.refresh();
+        assert_eq!(icons.items.len(), 5);
+        assert_eq!(icons.items[4].label, "Example.lnk");
+        fs::remove_dir_all(root).unwrap();
     }
 }

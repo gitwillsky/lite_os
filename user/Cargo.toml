@@ -58,3 +58,6 @@ panic = "abort"
 opt-level = "s"
 lto = "fat"
 codegen-units = 1
+
+[workspace.lints.clippy]
+items_after_test_module = "deny"

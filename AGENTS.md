@@ -17,7 +17,8 @@
 - 功能与问题修复先追到共同 owner，并检查其他调用方是否存在同类问题；布局、文字溢出、裁剪等共性问题在共享控件或绘制层统一修复，再适配各窗口，不只修改单个界面。
 - 禁止双轨实现、兼容入口、补丁式 hack、面条控制流及无领域含义的 `common/utils/helpers/misc/manager/base/shared/core` module。
 
-- 本工程产生的持久下载、上游源码、ISO、提取中间文件、离线包、密钥和实验环境统一放在工程内的 `.local/`，该目录必须被 Git 忽略，禁止暂存或提交其中内容。产品代码依赖的 ISO 提取资源必须放在受 Git 管理的 `assets/classic/`，由唯一导入器与 manifest 管理；禁止本地覆盖、替代素材双轨及无引用产物。
+- 本工程产生的持久下载、上游源码、ISO、提取中间文件、离线包、密钥和实验环境统一放在工程内的 `.local/`，该目录必须被 Git 忽略，禁止暂存或提交其中内容。
+  产品代码依赖的 ISO 提取资源必须放在受 Git 管理的 `assets/classic/`，由唯一导入器与 manifest 管理；禁止本地覆盖、替代素材双轨及无引用产物。
 
 ## 权威资料与路由
 
@@ -39,6 +40,13 @@
 - 下层不得依赖上层。每个复合状态只有一个 owner；禁止复制状态并人工同步。默认 private；扩大 scoped interface 必须更新 contract 并说明调用者。
 - 禁止私有 ABI。新增 unsafe、global、lock、Atomic、Once、cache 或 flag 必须记录安全/所有权证明与缺失时的失败后果。
 - 新能力与问题修复必须对照固定的一手规范和成熟 kernel 语义。范围缩减必须在 ABI 矩阵或当前架构限制中精确记录，不能以“能跑”代替正确语义。
+
+## Rust 测试布局
+
+- 单元测试使用模块末尾的 `#[cfg(test)] mod tests`（也可声明独立测试文件）；测试模块之后不再添加生产条目。
+- 集成测试放在 `tests/`，guest ABI/设备验收使用现有 runtime fixture；不在生产控制流中加入诊断采样或测试入口。
+- 所有第一方 crate 继承 workspace Clippy lint；`items_after_test_module` 为 deny，不用 allow/expect 绕过。
+  裸机/条件编译源码同时由 architecture-check 的 Rust AST 检查覆盖，`make verify` 必须执行。
 
 ## 修改与验证
 

@@ -7,6 +7,7 @@ impl MemorySet {
         &mut self,
         address: usize,
         access: PageFaultAccess,
+        force: bool,
     ) -> Result<bool, MemoryError> {
         let vpn = VirtualAddress::from(address).floor();
         let Some((_, area)) = self.areas.floor_mut(&vpn) else {
@@ -14,7 +15,9 @@ impl MemorySet {
         };
         if vpn >= area.vpn_range.end
             || !area.map_permission.contains(MapPermission::U)
-            || access == PageFaultAccess::Write && !area.map_permission.contains(MapPermission::W)
+            || !force
+                && access == PageFaultAccess::Write
+                && !area.map_permission.contains(MapPermission::W)
             || area.shared_anonymous.is_some()
             || area.shared_file.is_some()
             || area.device.is_some()
@@ -44,7 +47,7 @@ impl MemorySet {
                 TranslationCommit::stale_fault(vpn.as_usize())
                     .synchronize()
                     .expect("retained private read fence");
-            } else {
+            } else if MapArea::has_leaf_permission(area.map_permission) {
                 let flags = resident.permissions(area.map_permission, area.private_file.is_some());
                 let mut commit = TranslationCommit::new();
                 self.page_table.map(vpn, pin.ppn(), flags, &mut commit)?;
@@ -66,7 +69,8 @@ impl MemorySet {
             return Ok(true);
         }
         let mapped = self.page_table.translate(vpn).is_some();
-        if !mapped {
+        let install = MapArea::has_leaf_permission(area.map_permission);
+        if !mapped && install {
             self.page_table.reserve(vpn)?;
         }
         if !resident.exclusive() {
@@ -83,9 +87,11 @@ impl MemorySet {
                     .expect("all-CPU fence before canonical COW replacement");
             }
             let mut publish = TranslationCommit::new();
-            self.page_table
-                .map(vpn, ppn, area.map_permission.into(), &mut publish)
-                .expect("reserved canonical COW publication");
+            if install {
+                self.page_table
+                    .map(vpn, ppn, area.map_permission.into(), &mut publish)
+                    .expect("reserved canonical COW publication");
+            }
             publish
                 .synchronize()
                 .expect("canonical COW publication fence");
@@ -95,7 +101,7 @@ impl MemorySet {
             if mapped {
                 self.page_table
                     .set_flags(vpn, area.map_permission.into(), &mut commit)?;
-            } else {
+            } else if install {
                 self.page_table
                     .map(vpn, pin.ppn(), area.map_permission.into(), &mut commit)?;
             }

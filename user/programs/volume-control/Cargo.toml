@@ -12,3 +12,6 @@ path = "src/main.rs"
 liteos-runtime = { path = "../../libraries/liteos-runtime" }
 liteos-ui = { path = "../../libraries/liteos-ui" }
 sndvol = { path = "../../libraries/sndvol" }
+
+[lints]
+workspace = true

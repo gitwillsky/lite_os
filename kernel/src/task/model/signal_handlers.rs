@@ -173,7 +173,7 @@ impl TaskControlBlock {
     /// signalfd 与 sigwait 共用真实 dequeue；失效 timer 在 owner 内跳过。
     pub(crate) fn read_signal_notification(&self, mask: u64) -> Option<[u8; 128]> {
         self.take_pending_signal(mask)
-            .map(|(signal, info)| info.encode_signalfd(signal))
+            .map(|(signal, info, _)| info.encode_signalfd(signal))
     }
 }
 
@@ -301,6 +301,7 @@ impl TaskControlBlock {
         threads: impl Iterator<Item = &'a Arc<TaskControlBlock>>,
         signal: usize,
         replacement: Option<SignalAction>,
+        traced: bool,
     ) -> Result<(SignalAction, RetiredSignals), ()> {
         self.process()
             .signal_state
@@ -312,7 +313,7 @@ impl TaskControlBlock {
                     action.mask = normalize_signal_mask(action.mask);
                     action.flags &= crate::arch::user::SignalActionBytes::supported_flags();
                     handlers.replace(signal, action);
-                    if signal_is_ignored(signal, action) {
+                    if !traced && signal_is_ignored(signal, action) {
                         let bit = 1u64 << (signal - 1);
                         retired.append(pending.discard(bit));
                         for thread in threads {

@@ -34,9 +34,18 @@
   `ADD`，不得读写 metadata pointer 或 `CONTEXTIDR_EL1`。`TPIDR_EL0` 是唯一 thread
   pointer owner，user restore 把未开放的 `TPIDRRO_EL0` 固定为零。
 
+- `arch::trap::UserFault` 是同一次内存异常的不可变快照；通用 trap 只消费地址并转交 architecture context，
+  不解释 ESR。只有真正投递 signal 的 fault 才更新 Thread UserContext 的最后 fault address/syndrome，
+  resolved lazy fault 不覆盖它；AArch64 过滤 kernel 地址的 syndrome 后编码标准 ESR record，sigreturn 不恢复该诊断数据。
+  两个字段由原 UserContext 独占、随 clone 继承、exec 清零；没有 CPU-local/global 副本或新锁。
+  AArch64 UserContext 由 320 增至 336 bytes，既有 assembly 字段 offset 与固定 kernel-stack placement 不变。
+- 成本决策：异常 snapshot 使用现有 ESR/FAR 读取，不给 syscall/IRQ 增加 CSR 读取、分配或全寄存器复制；
+  只在实际投递 fault 与 signal frame capture 时保存两个 word/一个 16-byte record。沿用现有 trap/static gate，
+  以实际未对齐读写、signal metadata、sigreturn 和 Wine/FEX 样本验证，不新增该 cold path 的 wall-clock 阈值。
+
 ## Interface
 
-- generic callers 只能使用 typed `BootContext`、`UserContext`、`KernelContext`、`TrapEvent`、`CpuId`、`CpuSet` 与 semantic MMU permissions。
+- generic callers 只能使用 typed `BootContext`、`UserContext`、`KernelContext`、`TrapEvent`、`UserFault`、`CpuId`、`CpuSet` 与 semantic MMU permissions。
 - `trap` 只做事件投递和 user-return orchestration；不得读取 CSR、计算 interrupt-controller context 或拥有 syscall state。
 - steady user return/trampoline 不得执行 `fence.i` 或 full `sfence.vma`；instruction publication 属于 executable mapping transaction，translation reuse 属于 ASID generation owner。换代后首次 activation 的 full local fence 只由该 owner 的 pending consequence 触发。
 - syscall trap 只通过窄 transaction 读取 `a7/a0..a5/sepc`、写 completion `a0`，并在最终

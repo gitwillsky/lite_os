@@ -660,6 +660,7 @@ fn process_snapshot(
             let (start_time_us, nice, priority, runtime_us) =
                 thread.thread_statistics(active_now_us);
             thread_snapshots.push(ProcThreadSnapshot {
+                tracer: super::ptrace::tracer_identity(thread.tid()),
                 comm: thread.comm_buffer(),
                 tid: thread.tid_identity(),
                 credentials: thread.credential_snapshot(),
@@ -712,6 +713,7 @@ fn process_snapshot(
             let length = statistics.comm.len().min(15);
             comm[..length].copy_from_slice(&statistics.comm[..length]);
             thread_snapshots.push(ProcThreadSnapshot {
+                tracer: super::ptrace::tracer_identity(pid.key()),
                 comm,
                 tid: pid.clone(),
                 credentials: credentials.clone(),
@@ -729,6 +731,7 @@ fn process_snapshot(
         thread_snapshots.sort_unstable_by_key(|thread| thread.tid.number_in(view));
         let (tty_number, terminal_process_group) = process.terminal_proc_identity(view);
         processes.push(ProcProcessSnapshot {
+            tracer: super::ptrace::tracer_identity(pid.key()),
             kernel_thread: false,
             pid,
             ppid,
@@ -859,6 +862,7 @@ fn kernel_snapshot(
     let length = comm.len().min(15);
     thread_comm[..length].copy_from_slice(&comm[..length]);
     threads.push(ProcThreadSnapshot {
+        tracer: None,
         comm: thread_comm,
         tid: task.tid_identity(),
         has_mm: false,
@@ -873,6 +877,7 @@ fn kernel_snapshot(
         io: ProcIoSnapshot::default(),
     });
     Ok(ProcProcessSnapshot {
+        tracer: None,
         kernel_thread: true,
         pid: task.tgid_identity().clone(),
         ppid: None,

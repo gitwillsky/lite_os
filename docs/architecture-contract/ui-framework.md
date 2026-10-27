@@ -171,6 +171,22 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - Benchmark 决策：图标重采样只在资源加载时分配，内容测量只在布局失效时执行，网络文件 I/O 全部在后台；无新增逐帧全树扫描。
   功能由现有 host/Wayland/桌面门禁裁决；逐项样式仍由用户验收。
 
+## 应用条目与安装集成
+
+- `desktop-entry` 独占 Desktop Entry 解析、XDG 应用目录优先级和文件启动选择；desktop 与 file-explorer 共用。
+  用户目录先于系统目录，递归条目以相对路径中的 `/` 替换为 `-` 得到 ID；Hidden 用户条目遮蔽系统同 ID 条目。
+  Exec 按 string 与命令行两层转义解码，不经过 shell；Path 是应用工作目录。NoDisplay 不进入菜单，仍可用于 MIME 关联和窗口图标。
+- `/bin/wine` 只装配当前账户的 `~/.wine`、FEX 和标准 XDG 环境，exec 固定上游运行时。
+  Wine 安装器/注册表/IShellLink/menubuilder 拥有应用安装与快捷方式事实；外壳不复制一份安装数据库。
+- `classic-ui::Bitmap::application_icon` 拥有应用图标加载：绝对 PNG/BMP、XDG hicolor 的 NxN/apps PNG、pixmaps PNG 与经典系统 BMP。
+  PNG 固定 png 0.18.0，输入不超过 32 MiB，图像不超过 2048×2048，解码预算 32 MiB；加载后转预乘 ARGB 并复用 Bitmap 的缩放和绘制。
+  当前只支持此 PNG 查找子集，不声明完整主题继承、SVG 或 XPM 支持。
+- desktop 每秒重读已安装条目，桌面目录变化时重读快捷方式并重建当前图标集合；卸载后不保留旧动态图标像素。
+  Windows `.lnk` 与同名导出 `.desktop` 并存时只展示标准入口，原 ShellLink 仍由 Windows 拥有。
+  NoDisplay/Hidden 等语义只由 desktop-entry 解释；开始菜单不得静默截断为固定程序数。
+- 成本决策：PNG 解码与目录扫描只在加载/清单刷新发生，不进入逐像素或逐帧合成；不新增失真的渲染 benchmark。
+  以有界解码回归、标准条目样本和真实 Wine 安装/启动验证消费链。
+
 ## 产品资源
 
 - `scripts/extract_windows2000_assets.py` 拥有 ISO 提取与产品转换；ISO、PE 和中间文件只在 `.local/`。
@@ -213,6 +229,14 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - Benchmark 决策：移除 viewport 全图重采样、窗口元数据查询的子树分配、逐帧采样视图创建与未变化光标上传；
   CPU 仿射路径只扫描可见目标像素，不分配中间图像。相同 set_text 不使布局失效。
   验证范围见[Wayland 验证](../development/wayland-ui-verification.md)，不声明已提高多少帧率；原生控件仍走 wl_shm，damage/opaque 当前只是可忽略的提示。
+
+## 键盘对象与迟绑定
+
+- Seat 唯一拥有 logical keyboard focus、pressed keys 与 modifiers；Client 的每个 wl_keyboard 只保存是否已投递 enter 的 wire 状态。
+  新资源先取得 keymap/repeat_info；即使 logical focus 未变化，也必须由 Seat 用当前真实状态补发 enter/modifiers。
+  已 enter 的旧资源不能重复 enter，尚未 enter 的资源不接收按键；release 删除资源，surface 先销毁时只清理 wire 状态、不发送失效引用。
+- `Server::keyboard_needs_enter` 只读检查资源状态，不 flush socket、不维护另一份焦点或按键表；正常焦点改变仍先 leave 再 enter。
+  成本决策：无新锁、缓存或逐帧分配，查询为现有连接/对象表的有界只读遍历；沿用控件/Wayland 门禁，以 wire 顺序、迟绑定和 Wine 输入验证，不另设 wall-clock 阈值。
 
 ## linux-dmabuf / EGL 客户端
 

@@ -33,6 +33,8 @@ pub const ILL_ILLOPC: i32 = 1;
 pub const ILL_ILLTRP: i32 = 4;
 /// `SIGTRAP`：breakpoint。
 pub const TRAP_BRKPT: i32 = 1;
+/// `SIGBUS`：访问地址不满足指令的对齐要求。
+pub const BUS_ADRALN: i32 = 1;
 /// `SIGBUS`：不存在的物理地址或越过 backing object 末尾。
 pub const BUS_ADRERR: i32 = 2;
 /// `SIGSEGV`：地址未被任何 mapping 覆盖。

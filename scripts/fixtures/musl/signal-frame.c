@@ -414,8 +414,73 @@ static int verify_posix_timer_notifications(void)
     return 0;
 }
 
+#if defined(__aarch64__)
+/* 子进程独占探针状态；handler 只校验本次指令的地址/方向，然后越过该指令返回。 */
+static uintptr_t alignment_address;
+static volatile sig_atomic_t alignment_seen;
+static int alignment_write;
+
+static void catch_alignment(int signal, siginfo_t *info, void *context)
+{
+    ucontext_t *saved = context;
+    if (signal != SIGBUS || info->si_code != BUS_ADRALN
+        || (uintptr_t)info->si_addr != alignment_address
+        || saved->uc_mcontext.fault_address != alignment_address) _exit(91);
+    unsigned char *record = (unsigned char *)saved->uc_mcontext.__reserved;
+    unsigned char *end = record + sizeof(saved->uc_mcontext.__reserved);
+    uint64_t esr = 0;
+    while (record + 8 <= end) {
+        uint32_t header[2]; memcpy(header, record, sizeof header);
+        if (!header[0] || !header[1]) break;
+        if (header[1] < 16 || header[1] % 16 || header[1] > (size_t)(end - record)) _exit(92);
+        if (header[0] == 0x45535201 && header[1] == 16) memcpy(&esr, record + 8, sizeof esr);
+        record += header[1];
+    }
+    if ((esr >> 26) != 0x24 || (esr & 63) != 0x21
+        || ((esr >> 6) & 1) != (unsigned)alignment_write) _exit(93);
+    alignment_seen++;
+    saved->uc_mcontext.pc += 4;
+}
+
+static int verify_alignment_fault(void)
+{
+    for (int write = 0; write < 2; write++) {
+        pid_t child = fork();
+        if (child == 0) {
+            uint64_t bytes[4] __attribute__((aligned(16))) = { 0 };
+            /* 跨过 16-byte atomicity granule；LSE2 可能允许粒度内的未对齐 acquire/release。 */
+            alignment_address = (uintptr_t)bytes + 13;
+            alignment_write = write;
+            struct sigaction action = { .sa_sigaction = catch_alignment, .sa_flags = SA_SIGINFO };
+            if (sigaction(SIGBUS, &action, 0) || sigaction(SIGSEGV, &action, 0)) _exit(94);
+            uint64_t value = 42;
+            /* 1. 同一条指令在对齐地址正常执行；2. 未对齐地址必须获得标准 SIGBUS/ESR；3. handler 可恢复。 */
+            if (write) {
+                __asm__ volatile("stlr %0, [%1]" :: "r"(value), "r"(bytes) : "memory");
+                __asm__ volatile("stlr %0, [%1]" :: "r"(value), "r"(alignment_address) : "memory");
+            } else {
+                __asm__ volatile("ldar %0, [%1]" : "=r"(value) : "r"(bytes) : "memory");
+                __asm__ volatile("ldar %0, [%1]" : "=r"(value) : "r"(alignment_address) : "memory");
+            }
+            _exit(alignment_seen == 1 ? 0 : 95);
+        }
+        int status;
+        if (child < 0 || waitpid(child, &status, 0) != child) return 1;
+        if (!WIFEXITED(status) || WEXITSTATUS(status)) {
+            dprintf(1, "signal-alignment: write=%d status=%#x\n", write, status);
+            return 1;
+        }
+    }
+    dprintf(1, "signal-alignment: read/write SIGBUS, ESR and sigreturn passed\n");
+    return 0;
+}
+#endif
+
 int verify_signal_frame_errors(void)
 {
+#if defined(__aarch64__)
+    if (verify_alignment_fault()) return 9;
+#endif
     int realtime = verify_realtime_queue();
     if (realtime) { dprintf(1, "signal-realtime: step=%d\n", realtime); return 6; }
     int ordinary = verify_ordinary_signal_accounting();

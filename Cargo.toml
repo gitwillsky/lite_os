@@ -62,3 +62,6 @@ debug-assertions = true
 # 不覆盖 dev：PROFILE=debug 的内核仍可用 GDB 检查变量。
 [profile.test]
 debug = "line-tables-only"
+
+[workspace.lints.clippy]
+items_after_test_module = "deny"

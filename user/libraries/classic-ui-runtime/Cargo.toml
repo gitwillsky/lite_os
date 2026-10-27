@@ -18,3 +18,6 @@ linux-uapi.workspace = true
 terminal-font.workspace = true
 calendar = { path = "../calendar" }
 keyboard.workspace = true
+
+[lints]
+workspace = true

@@ -248,6 +248,18 @@ mod memory {
             Handled,
         }
         impl MemorySet {
+            fn handle_page_fault_access(
+                &mut self,
+                address: usize,
+                access: PageFaultAccess,
+                limits: UserFaultLimits,
+                force: bool,
+            ) -> Result<PageFaultOutcome, MemoryError> {
+                if self.handle_private_resident_fault(address, access, force)? {
+                    return Ok(PageFaultOutcome::Handled);
+                }
+                self.handle_page_fault_with_limits(address, access, limits)
+            }
             // 测试边界：替换 VMA/文件 fault-source 装配；分配、self reclaim、resident
             // fault、user-copy 与页表均执行生产代码，不在此复制回收/范围排除策略。
             fn handle_page_fault_with_limits(
@@ -256,7 +268,7 @@ mod memory {
                 access: PageFaultAccess,
                 _: UserFaultLimits,
             ) -> Result<PageFaultOutcome, MemoryError> {
-                if self.handle_private_resident_fault(address, access)? {
+                if self.handle_private_resident_fault(address, access, false)? {
                     return Ok(PageFaultOutcome::Handled);
                 }
                 let vpn = VirtualAddress::from(address).floor();
@@ -378,7 +390,7 @@ mod memory {
                     let old = resident(&memory).pin_resident().unwrap().unwrap().ppn();
                     assert!(
                         memory
-                            .handle_private_resident_fault(ADDRESS, access)
+                            .handle_private_resident_fault(ADDRESS, access, false)
                             .unwrap()
                     );
                     let leaf = memory
@@ -403,7 +415,7 @@ mod memory {
                 let old = resident(&memory).pin_resident().unwrap().unwrap().ppn();
                 assert!(
                     memory
-                        .handle_private_resident_fault(ADDRESS, PageFaultAccess::Write)
+                        .handle_private_resident_fault(ADDRESS, PageFaultAccess::Write, false)
                         .unwrap()
                 );
                 assert_eq!(
@@ -423,7 +435,8 @@ mod memory {
             let (mut memory, _peer) = memory(true, true, true, true);
             let old = resident(&memory).pin_resident().unwrap().unwrap().ppn();
             crate::REJECT_ALLOCATION.with(|reject| reject.set(true));
-            let result = memory.handle_private_resident_fault(ADDRESS, PageFaultAccess::Write);
+            let result =
+                memory.handle_private_resident_fault(ADDRESS, PageFaultAccess::Write, false);
             crate::REJECT_ALLOCATION.with(|reject| reject.set(false));
             assert!(matches!(result, Err(MemoryError::OutOfMemory)));
             assert_eq!(
@@ -443,7 +456,8 @@ mod memory {
             let (mut memory, peer) = memory(true, false, true, true);
             let old = resident(&memory).pin_resident().unwrap().unwrap().ppn();
             crate::REJECT_AFTER_REVOKE.with(|reject| reject.set(true));
-            let result = memory.handle_private_resident_fault(ADDRESS, PageFaultAccess::Write);
+            let result =
+                memory.handle_private_resident_fault(ADDRESS, PageFaultAccess::Write, false);
             let allocation_was_rejected = super::frame_allocator::alloc().is_none();
             crate::REJECT_ALLOCATION.with(|reject| reject.set(false));
             crate::REJECT_AFTER_REVOKE.with(|reject| reject.set(false));

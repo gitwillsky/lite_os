@@ -94,6 +94,7 @@ pub(in crate::task) use scheduling::{
 pub(crate) use scheduling::{Sched, SchedulingEntity, WaitMembership};
 pub(super) use seccomp::{RetiredSecurity, ThreadSecurityOwner, ValidatedFilter};
 pub(crate) use seccomp::{SeccompDecision, SeccompError};
+pub(in crate::task) use signal_dequeue::SignalQueue;
 use signal_handlers::ProcessSignalState;
 pub(crate) use signal_handlers::SignalAction;
 pub(in crate::task) use signal_handlers::{ChildSignalKind, ChildSignalPublication};
@@ -184,6 +185,9 @@ struct ThreadContext {
     pending_signals: Mutex<PendingSignals>,
     // OWNER: sigsuspend 临时 mask 对应的原 mask；signal frame 必须恢复它而非临时值。
     suspend_restore_mask: Mutex<Option<u64>>,
+    // OWNER: tracer 唯一提交给本 Thread 已暂停 signal frame 的一次性结果；resume 后立即消费。
+    // 不重新进入 pending queue，避免被同一 tracer 再次截获；不保留 relation 副本。
+    ptrace_resume: Mutex<Option<(usize, PendingSignal)>>,
     // OWNER: ThreadContext 独占一次 interrupted syscall 到 signal-frame 构造之间的 replay record。
     // 若把它放到 Process/trap 全局状态，另一 Thread 可能重放错误的 syscall instruction 或把内部结果泄漏给用户态。
     syscall_restart: Mutex<SyscallRestartState>,
@@ -567,6 +571,7 @@ impl TaskControlBlock {
                     signal_mask,
                     pending_signals: Mutex::new(PendingSignals::new()),
                     suspend_restore_mask: Mutex::new(None),
+                    ptrace_resume: Mutex::new(None),
                     syscall_restart: Mutex::new(SyscallRestartState::default()),
                     parent_death: Mutex::new(ParentDeathState::default()),
                     security: ThreadSecurityOwner::default(),
@@ -689,6 +694,7 @@ impl TaskControlBlock {
                     signal_mask,
                     pending_signals: Mutex::new(PendingSignals::new()),
                     suspend_restore_mask: Mutex::new(None),
+                    ptrace_resume: Mutex::new(None),
                     syscall_restart: Mutex::new(SyscallRestartState::default()),
                     parent_death: Mutex::new(ParentDeathState::default()),
                     // security 只在 graph 原子 publication 时继承真实 creator 的最新状态。
@@ -885,65 +891,16 @@ impl TaskControlBlock {
     /// # Returns
     ///
     /// 未屏蔽且 disposition 不忽略时返回 true。
-    pub(super) fn accepts_process_signal(&self, signal: usize) -> bool {
+    pub(super) fn accepts_process_signal(&self, signal: usize, traced: bool) -> bool {
         let mask = self.thread().signal_mask.lock();
         self.process()
             .signal_state
             .lock()
             .with_handlers(|handlers, _| {
                 *mask & (1u64 << (signal - 1)) == 0
-                    && !signal_is_ignored(signal, handlers.action(signal))
+                    && (traced || !signal_is_ignored(signal, handlers.action(signal)))
             })
             .unwrap_or(false)
-    }
-
-    /// 查询当前 Thread 是否有未屏蔽 pending signal。
-    ///
-    /// # Returns
-    ///
-    /// 至少一个 signal 可在 trap return 交付时返回 true。
-    pub(super) fn has_deliverable_signal(&self) -> bool {
-        self.with_deliverable_signal(|| ()).is_some()
-    }
-
-    /// 持有 mask/pending 锁复查 signal，并在其仍可交付时执行一次操作。
-    ///
-    /// # Parameters
-    ///
-    /// - `action`: 必须与 wait owner lock 配合的短临界区，不得阻塞或调度。
-    ///
-    /// # Returns
-    ///
-    /// signal 仍可交付时返回 action 结果，否则返回 None。
-    pub(super) fn with_deliverable_signal<T>(&self, action: impl FnOnce() -> T) -> Option<T> {
-        self.with_deliverable_signal_policy(false, action)
-    }
-    pub(super) fn has_fatal_signal(&self) -> bool {
-        self.with_deliverable_signal_policy(true, || ()).is_some()
-    }
-    pub(super) fn with_deliverable_signal_policy<T>(
-        &self,
-        fatal_only: bool,
-        action: impl FnOnce() -> T,
-    ) -> Option<T> {
-        if self.is_kernel_thread() {
-            return None;
-        }
-        let mask = self.thread().signal_mask.lock();
-        self.process()
-            .signal_state
-            .lock()
-            .with_handlers(|handlers, shared_pending| {
-                let pending = self.thread().pending_signals.lock();
-                let available = (pending.bits | shared_pending.bits) & !*mask;
-                let available = if fatal_only {
-                    available & (1u64 << (syscall_abi::signal::SIGKILL - 1))
-                } else {
-                    available
-                };
-                (handlers.caught_set(available) != 0).then(action)
-            })
-            .flatten()
     }
 
     /// 登记一次已转换为 userspace `EINTR` 的可重启 syscall。

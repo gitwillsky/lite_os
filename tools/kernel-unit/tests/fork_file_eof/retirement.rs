@@ -133,7 +133,7 @@ fn one_alias_fault_accounts_its_own_rss_and_discarding_stale_sibling_unpins_swap
             parent_mm
                 .handle_private_resident_fault(
                     vpn.as_usize() * config::PAGE_SIZE,
-                    PageFaultAccess::Read
+                    PageFaultAccess::Read, false
                 )
                 .unwrap()
         );

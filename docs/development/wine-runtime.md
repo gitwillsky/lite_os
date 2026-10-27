@@ -54,8 +54,10 @@ Wine 11.16 的 `wayland_keyboard_init` 在注册 `wl_keyboard` listener 前调�
 ## 安装到 rootfs
 
 压缩包展开后顶层目录是 `wine-rt/`，其内容整体安装到 rootfs 的 `/opt/wine`（`bin/`、`lib/wine/{aarch64-unix,aarch64-windows,i386-windows}`、`share/wine/`）。
-启动需要：`WINEPREFIX`（每用户，首次运行由 `wineboot` 初始化）、`WAYLAND_DISPLAY`、`XDG_RUNTIME_DIR`、`HODLL=libwow64fex.dll`、
-`WINEDLLOVERRIDES="mscoree,mshtml="`（不带 Mono/Gecko）。
+统一公开启动入口为 `/bin/wine`。它根据当前登录账户设置唯一的 `$HOME/.wine`，选择 FEX 并启用
+Wine 的 XDG 桌面集成，再 exec `/opt/wine/bin/wine`；普通应用和安装器不再自行拼装 Wine 环境。
+安装器默认使用 `C:\Program Files`（32 位安装器也可能使用 `Program Files (x86)`），实际均位于
+`$HOME/.wine/drive_c/`；其他账户拥有独立环境。
 
 在本 worktree 构建 AArch64 内核并同步开发镜像；构建入口与参数的唯一 owner 是
 [构建、测试与验证](build-and-verify.md)，通用入口见 [README](../../README.md#常用命令)。
@@ -64,28 +66,21 @@ Wine 11.16 的 `wayland_keyboard_init` 在注册 `wl_keyboard` listener 前调�
 运行时库与配置展开到本 worktree 的 `target/wine-runtime/aarch64/`；固定归档仍放 `.local/inputs/`。
 同步器安装、回读并校验完整文件清单后才发布镜像内指纹；不得在 QEMU 持有镜像时同步。
 
-1. 运行 `make run-gui`，进入桌面；也可使用[桌面验证](desktop-verification.md)的 QEMU 显示拓扑。
-2. UART 恢复 shell 的初始 HOME 是 `/`，测试 root 时先设置下列环境。其他登录用户使用自己的 HOME、
-   WINEPREFIX 与 `/run/user/<uid>`。Wayland socket 是全局的 `/run/liteos/wayland-0`，不可误指向用户 runtime 目录。
+1. 在“我的电脑 → 控制面板 → 添加/删除程序”统一安装、卸载 Windows 应用。
+   该入口运行 Wine 的标准 `appwiz.cpl`，直接使用 Windows 注册表的安装记录，不建立 LiteOS 应用数据库。
+   也可以在资源管理器双击 `.exe` / `.msi`；MSI 关联到 `wine msiexec /i`，参数不经过 shell。
+2. 安装时保留创建桌面快捷方式的选项。Wine `winemenubuilder` 把 Windows `.lnk` 导出为
+   `~/Desktop/*.desktop`、`$XDG_DATA_HOME/applications/` 中的条目与 `icons/hicolor/*/apps/*.png`。
+   桌面自动刷新并使用条目名称、图标、工作目录和 Exec；双击即可启动。开始菜单合并用户和系统程序。
+3. 普通用户在图形登录会话内启动。UART 初始 HOME 为 `/`，需先 `export HOME=/root` 并设置
+   `XDG_RUNTIME_DIR=/run/user/0`；启动器会拒绝把环境误建到根目录。例：`wine notepad`。
+4. 人工验收必须使用明确的 i386 PE：编辑、Ctrl+S、关闭后读取文件，核对真实保存内容；
+   再验证任务栏最小化/还原、Alt+Tab 与冷启动后的快捷方式。安装样本位于 `scripts/fixtures/wine/`。
+   `make verify-runtime-wine` 在私有 AArch64/HVF 镜像执行安装、桌面启动、编辑保存及冷启动，不修改开发盘。
+   首次初始化 phase 按 [Wine 11.16 run_wineboot](https://github.com/wine-mirror/wine/blob/wine-11.16/dlls/ntdll/unix/env.c) 的 5 分钟上限等待；窗口与输入仍使用显示门禁的默认预算。
 
-   ```sh
-   export HOME=/root
-   export PATH=/opt/wine/bin:$PATH
-   export WINEPREFIX=$HOME/.wine
-   export XDG_RUNTIME_DIR=/run/user/0
-   export WAYLAND_DISPLAY=/run/liteos/wayland-0
-   export HODLL=libwow64fex.dll
-   export WINEDLLOVERRIDES='mscoree,mshtml='
-   wine cmd /c echo hello
-   printf 'seed\r\n' > /var/tmp/wine-input.txt
-   wine notepad 'Z:\var\tmp\wine-input.txt'
-   wine winecfg
-   ```
-
-3. 人工验收：notepad 中 Ctrl+A 后输入新文本、Ctrl+S，关闭后从 UART 读回文件，必须与输入一致；
-   不能把发送按键或截图当作编辑成功。检查任务栏按钮的最小化/还原，切换 winecfg 标签、操作控件并正常关闭。
-   从桌面“运行”启动时，登录会话已经设置 HOME 与 Wayland 环境，可执行
-   `env HODLL=libwow64fex.dll WINEDLLOVERRIDES=mscoree,mshtml= /opt/wine/bin/wine notepad`。
+不承诺安装器被强制限制在 Program Files；标准安装器仍可让用户选择目录。
+没有创建快捷方式的便携程序不会凭扫描 EXE 自动注册；用户可通过其安装器或标准 Windows 快捷方式创建入口。
 
 ## 共享会话与当前验收边界
 

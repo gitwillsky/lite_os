@@ -187,9 +187,40 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("exec: drain completion must follow MM cleanup and PONR failure preserve pending SIGKILL".into());
     }
+    let access = source(
+        sources,
+        "kernel/src/task/model/address_space/task_access.rs",
+    );
+    for name in [
+        "copy_from_user",
+        "copy_from_user_uninit",
+        "copy_instruction_halfword",
+        "copy_to_user",
+        "zero_user",
+        "validate_user_write",
+        "copy_user_c_string",
+    ] {
+        let body = access.syntax.items.iter().find_map(|item| {
+            let Item::Impl(item) = item else {
+                return None;
+            };
+            item.items.iter().find_map(|item| {
+                let syn::ImplItem::Fn(method) = item else {
+                    return None;
+                };
+                (method.sig.ident == name).then(|| method.block.to_token_stream().to_string())
+            })
+        });
+        if body.is_none_or(|body| {
+            body.contains(". address_space (")
+                || !body.contains(". mm_snapshot () . ok_or (UserAccessError :: Fault) ?")
+        }) {
+            errors.push(format!("{name}: fallible user-copy must acquire actual mmget and return Fault after Thread MM retirement"));
+        }
+    }
     let stages = [
         "self.cleanup_robust_list();",
-        "mark_process_exec(self, exec_pid_link)",
+        "mark_process_exec(self, exec_pid_link, exec_trace_link)",
         "self.replace_address_space(new_address_space)",
         "release_exec_mm(",
         "complete_vfork_exec(self.tid())",
@@ -235,6 +266,15 @@ mod tests {
         let mut errors = Vec::new();
         super::check(&sources, &mut errors);
         assert!(errors.is_empty(), "{errors:#?}");
+    }
+    #[test]
+    fn rejects_tcb_observer_used_as_live_mm_proof() {
+        reject(
+            "kernel/src/task/model/address_space/task_access.rs",
+            "self.mm_snapshot()\n            .ok_or(UserAccessError::Fault)?",
+            "self.address_space()",
+            "fallible user-copy",
+        );
     }
     #[test]
     fn rejects_kernel_actor_accessing_user_process() {

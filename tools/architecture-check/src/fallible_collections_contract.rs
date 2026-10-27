@@ -11,9 +11,6 @@ use syn::{
 
 use super::{SourceFile, normalized};
 
-#[cfg(test)]
-mod fallible_collections_contract_tests;
-
 #[derive(Default)]
 struct PathNameVisitor {
     names: BTreeMap<String, BTreeSet<usize>>,
@@ -509,3 +506,6 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
         ));
     }
 }
+
+#[cfg(test)]
+mod fallible_collections_contract_tests;

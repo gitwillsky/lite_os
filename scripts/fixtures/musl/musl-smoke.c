@@ -61,6 +61,7 @@ int verify_thread_live_image(pid_t expected_pid);
 int verify_seccomp(void);
 int verify_seccomp_exec_image(void);
 int verify_signal_frame_errors(void);
+int verify_ptrace(void);
 int verify_memory_pressure(void);
 int verify_address_space_rollover(void);
 int verify_mapping_placement(void);
@@ -169,6 +170,8 @@ int verify_clone_parent_exec_image(pid_t child, int release);
 static int run_smoke(int argc, char **argv, char **envp)
 {
     if (argc == 2 && argv && argv[1] && strcmp(argv[1], "clone-exit-image") == 0) return 31;
+    if (argc == 2 && argv && argv[1] && strcmp(argv[1], "ptrace-exec-image") == 0)
+        return 0;
     if (argc == 4 && argv && argv[1] && strcmp(argv[1], "clone-parent-exec-image") == 0)
         return verify_clone_parent_exec_image((pid_t)strtol(argv[2], 0, 10), (int)strtol(argv[3], 0, 10));
 	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "asid-smoke") == 0) return verify_address_space_rollover();
@@ -324,6 +327,7 @@ static int run_smoke(int argc, char **argv, char **envp)
 	}
 	static const char seccomp_done[] = "LiteOS musl seccomp ok\n";
 	write(1, seccomp_done, sizeof seccomp_done - 1);
+	if (verify_ptrace() != 0) return 19;
 	if (verify_signal_frame_errors() != 0) {
 		static const char failed[] = "LiteOS musl bad signal frame failed\n";
 		write(2, failed, sizeof failed - 1);

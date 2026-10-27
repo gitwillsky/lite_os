@@ -58,7 +58,7 @@ fn early_revoked_alias_waiting_for_page_operation_does_not_deadlock_later_busy_m
                 memory
                     .handle_private_resident_fault(
                         vpn.as_usize() * config::PAGE_SIZE,
-                        PageFaultAccess::Read,
+                        PageFaultAccess::Read, false,
                     )
                     .unwrap(),
             )

@@ -70,7 +70,9 @@ pub(super) fn rust_files(directory: &Path, files: &mut Vec<PathBuf>) -> Result<(
             .path();
         if path.is_dir() {
             // cargo 输出（含 build.rs 生成的代码）不是仓库源码。
-            if path.file_name().is_some_and(|name| name == "target") {
+            if path.file_name().is_some_and(|name| {
+                name == "target" || name == "vendor" || name.to_string_lossy().starts_with('.')
+            }) {
                 continue;
             }
             rust_files(&path, files)?;

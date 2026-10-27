@@ -200,6 +200,7 @@ fn publish_child(
             pdeath_next: None,
             pdeath_cursor: 0,
             child_events: ChildEvents::default(),
+            ptracees: FallibleMap::new(),
             child_waiters: FallibleMap::new(),
             child_wait_claim: None,
         },

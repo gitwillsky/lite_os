@@ -169,6 +169,7 @@ impl TaskControlBlock {
                     signal_mask,
                     pending_signals: Mutex::new(PendingSignals::new()),
                     suspend_restore_mask: Mutex::new(None),
+                    ptrace_resume: Mutex::new(None),
                     syscall_restart: Mutex::new(SyscallRestartState::default()),
                     parent_death: Mutex::new(ParentDeathState::default()),
                     // security 只在 graph 原子 publication 时继承真实 creator 的最新状态。

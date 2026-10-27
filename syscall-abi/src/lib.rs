@@ -8,9 +8,11 @@ pub mod errno;
 pub mod file_capability;
 pub mod ipc;
 pub mod open;
+pub mod ptrace;
 pub mod seccomp;
 pub mod signal;
 
+pub const SYSCALL_PTRACE: usize = 117;
 pub const SYSCALL_SETXATTR: usize = 5;
 pub const SYSCALL_LSETXATTR: usize = 6;
 pub const SYSCALL_FSETXATTR: usize = 7;
@@ -218,6 +220,19 @@ pub const SYSCALL_ACCEPT4: usize = 242;
 pub const SYSCALL_RISCV_HWPROBE: usize = 258;
 pub const SYSCALL_RENAMEAT2: usize = 276;
 
+pub const SYSCALL_MSGGET: usize = 186;
+pub const SYSCALL_MSGCTL: usize = 187;
+pub const SYSCALL_MSGRCV: usize = 188;
+pub const SYSCALL_MSGSND: usize = 189;
+pub const SYSCALL_SEMGET: usize = 190;
+pub const SYSCALL_SEMCTL: usize = 191;
+pub const SYSCALL_SEMTIMEDOP: usize = 192;
+pub const SYSCALL_SEMOP: usize = 193;
+pub const SYSCALL_SHMGET: usize = 194;
+pub const SYSCALL_SHMCTL: usize = 195;
+pub const SYSCALL_SHMAT: usize = 196;
+pub const SYSCALL_SHMDT: usize = 197;
+
 #[cfg(test)]
 mod tests {
     use super::{SYSCALL_MEMFD_CREATE, SYSCALL_RENAMEAT};
@@ -232,16 +247,3 @@ mod tests {
         assert_eq!(SYSCALL_MEMFD_CREATE, 279);
     }
 }
-
-pub const SYSCALL_MSGGET: usize = 186;
-pub const SYSCALL_MSGCTL: usize = 187;
-pub const SYSCALL_MSGRCV: usize = 188;
-pub const SYSCALL_MSGSND: usize = 189;
-pub const SYSCALL_SEMGET: usize = 190;
-pub const SYSCALL_SEMCTL: usize = 191;
-pub const SYSCALL_SEMTIMEDOP: usize = 192;
-pub const SYSCALL_SEMOP: usize = 193;
-pub const SYSCALL_SHMGET: usize = 194;
-pub const SYSCALL_SHMCTL: usize = 195;
-pub const SYSCALL_SHMAT: usize = 196;
-pub const SYSCALL_SHMDT: usize = 197;

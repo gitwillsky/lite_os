@@ -13,3 +13,6 @@ liteos-runtime = { path = "../liteos-runtime" }
 [[bench]]
 name = "raster"
 harness = false
+
+[lints]
+workspace = true

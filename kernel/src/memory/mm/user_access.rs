@@ -404,3 +404,99 @@ impl MemorySet {
         Err(UserAccessError::Unterminated)
     }
 }
+
+impl MemorySet {
+    /// debugger 通过 canonical page 访问 private VMA，写入使用同一 fault/COW owner。
+    ///
+    /// # Parameters
+    /// - `address`: 目标用户地址。
+    /// - `bytes`: word 的 kernel staging。
+    /// - `write`: true 写入 staging，false 读取。
+    /// - `limits`: 目标的 fault resource limits。
+    ///
+    /// # Returns
+    /// 全部字节已复制；VMA/PTE 权限保持不变。
+    ///
+    /// # Errors
+    /// 未映射、设备、权限、backing fault 或资源不足返回 UserAccessError。
+    pub(crate) fn ptrace_word(
+        &mut self,
+        address: usize,
+        bytes: &mut [u8; 8],
+        write: bool,
+        limits: UserFaultLimits,
+    ) -> Result<(), UserAccessError> {
+        let end = Self::checked_user_end(address, bytes.len())?;
+        let mut current = address;
+        while current < end {
+            let vpn = VirtualAddress::from(current).floor();
+            let (_, area) = self
+                .areas
+                .floor(&vpn)
+                .filter(|(_, area)| vpn < area.vpn_range.end)
+                .ok_or(UserAccessError::Fault)?;
+            if area.device.is_some() {
+                return Err(UserAccessError::Fault);
+            }
+            let private = area.shared_anonymous.is_none() && area.shared_file.is_none();
+            let count = (config::PAGE_SIZE - current % config::PAGE_SIZE).min(end - current);
+            let offset = current - address;
+            let ppn = if !private {
+                if write {
+                    self.copy_to_user(current, &bytes[offset..offset + count], limits)?;
+                } else {
+                    self.copy_from_user(current, &mut bytes[offset..offset + count], limits)?;
+                }
+                self.page_table
+                    .translate(vpn)
+                    .ok_or(UserAccessError::Fault)?
+                    .ppn()
+            } else {
+                let access = if write {
+                    PageFaultAccess::Write
+                } else {
+                    PageFaultAccess::Read
+                };
+                match self.handle_page_fault_access(current, access, limits, true) {
+                    Ok(PageFaultOutcome::Handled) => {}
+                    Err(MemoryError::OutOfMemory) => return Err(UserAccessError::OutOfMemory),
+                    _ => return Err(UserAccessError::Fault),
+                }
+                let (_, area) = self.areas.floor(&vpn).ok_or(UserAccessError::Fault)?;
+                let resident = area.data_frames.get(&vpn).ok_or(UserAccessError::Fault)?;
+                let pin = resident
+                    .pin_resident()
+                    .map_err(|_| UserAccessError::OutOfMemory)?
+                    .ok_or(UserAccessError::Fault)?;
+                let page_offset = current % config::PAGE_SIZE;
+                // SAFETY: MM guard 排除 reclaim/remap，canonical pin 保活页；write 已完成真实 COW，
+                // 两个范围均在单页/八字节 staging 内。没有暴露或临时提升用户 PTE 权限。
+                unsafe {
+                    if write {
+                        core::ptr::copy_nonoverlapping(
+                            bytes.as_ptr().add(offset),
+                            pin.ppn().as_page_mut_ptr().add(page_offset),
+                            count,
+                        );
+                    } else {
+                        core::ptr::copy_nonoverlapping(
+                            pin.ppn().as_page_ptr().add(page_offset),
+                            bytes.as_mut_ptr().add(offset),
+                            count,
+                        );
+                    }
+                }
+                pin.ppn()
+            };
+            if write {
+                let mut commit = TranslationCommit::new();
+                commit.record_instruction_publication(ppn.as_usize(), 1);
+                commit
+                    .synchronize()
+                    .expect("ptrace instruction write publication");
+            }
+            current += count;
+        }
+        Ok(())
+    }
+}

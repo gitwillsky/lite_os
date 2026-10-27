@@ -11,3 +11,6 @@ path = "src/main.rs"
 [dependencies]
 liteos-runtime = { path = "../../libraries/liteos-runtime" }
 sound = { path = "../../libraries/sound" }
+
+[lints]
+workspace = true

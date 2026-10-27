@@ -1,6 +1,19 @@
 use super::*;
 
 impl TaskControlBlock {
+    /// 将实际投递的内存 fault 快照交给本 Thread 的 architecture context owner。
+    ///
+    /// # Parameters
+    /// - `fault`: 同一次 trap 的不可变架构快照；不回读可能被迁移覆盖的 CPU 寄存器。
+    ///
+    /// # Returns
+    /// 无返回值；由 architecture context 保存所需 metadata。
+    pub(crate) fn record_user_fault(&self, fault: crate::arch::trap::UserFault) {
+        self.thread()
+            .user_context
+            .with(|context| context.record_user_fault(fault));
+    }
+
     /// 取得当前 Thread 的 context-switch 保存区锁。
     ///
     /// # Returns
@@ -101,5 +114,76 @@ impl TaskControlBlock {
         self.thread()
             .user_context
             .with(|context| context.stack_pointer())
+    }
+}
+
+impl TaskControlBlock {
+    /// 在 graph 已证明目标处于 ptrace-stop 的短事务中编解码寄存器。
+    ///
+    /// # Parameters
+    /// - `note`: Linux ELF regset note。
+    /// - `bytes`: kernel staging，不能是用户内存。
+    /// - `write`: true 写入经 architecture validator 校验的状态；false 读取。
+    ///
+    /// # Returns
+    /// 实际 transfer 字节数。
+    ///
+    /// # Errors
+    /// 不支持的 note 或无效 register image 返回 Io/Invalid。
+    pub(in crate::task) fn ptrace_registers(
+        &self,
+        note: usize,
+        bytes: &mut [u8],
+        write: bool,
+    ) -> Result<usize, super::super::PtraceError> {
+        if note != syscall_abi::ptrace::NT_PRSTATUS {
+            return Err(super::super::PtraceError::Io);
+        }
+        self.thread()
+            .user_context
+            .with(|context| context.ptrace_registers(note, bytes, write))
+            .map_err(|()| super::super::PtraceError::Invalid)
+    }
+
+    /// ATTACH 的不可屏蔽 SIGSTOP 在 relation publication 同一 graph 事务进入真实 pending。
+    /// 不分配 RT record，避免建立 relation 后 OOM 导致附加永久等待。
+    pub(in crate::task) fn queue_ptrace_signal(&self, signal: usize) {
+        self.thread().pending_signals.lock().queue(
+            signal,
+            PendingSignal::kernel(),
+            &mut PreparedSignalRecord::default(),
+        );
+    }
+}
+
+impl TaskControlBlock {
+    /// tracer 在 graph 保护的 stopped relation 内移交一次性 signal-delivery 决定。
+    pub(in crate::task) fn set_ptrace_resume(&self, signal: usize, info: PendingSignal) {
+        assert!(
+            self.thread()
+                .ptrace_resume
+                .lock()
+                .replace((signal, info))
+                .is_none()
+        );
+    }
+    /// 恢复的 signal frame 消费唯一移交；tracer exit/SIGKILL 不伪造新的决定。
+    pub(in crate::task) fn take_ptrace_resume(&self) -> Option<(usize, PendingSignal)> {
+        self.thread().ptrace_resume.lock().take()
+    }
+}
+
+impl TaskControlBlock {
+    /// ptrace-stop 在信号 handler 选择之前展示真实 syscall restart PC 与参数。
+    ///
+    /// # Returns
+    /// 无返回值；同一次 restart 最多重绕一次，CONT 后尊重 debugger 的寄存器改动。
+    pub(in crate::task) fn prepare_ptrace_restart(&self) {
+        let restart = self.thread().syscall_restart.lock().prepare_trace();
+        if let Some(restart) = restart {
+            self.thread().user_context.with(|context| {
+                context.restart_syscall(restart.syscall_id, restart.args, restart.syscall_pc)
+            });
+        }
     }
 }

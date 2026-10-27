@@ -10,16 +10,24 @@ use super::*;
 /// # Returns
 ///
 /// 无失败/分配；两个 Thread 索引和 creator-child relation 在同一 graph guard 下重发布。
-pub(in crate::task) fn mark_process_exec(task: &TaskControlBlock, link: Option<PidLinkSlot>) {
-    let retired = {
+pub(in crate::task) fn mark_process_exec(
+    task: &TaskControlBlock,
+    link: Option<PidLinkSlot>,
+    trace_link: Option<Arc<PidRegistration>>,
+) {
+    let (retired, trace_retirement) = {
         let mut graph = PROCESS_TABLE.graph.lock();
-        commit_exec_identity(&mut graph, task, link)
+        let old_tid = task.tid();
+        let retired = commit_exec_identity(&mut graph, task, link);
+        let trace_retirement = super::ptrace::promote_exec(&mut graph, task, old_tid, trace_link);
+        (retired, trace_retirement)
     };
     if let Some((_, _, source)) = &retired
         && let Some(source) = source.upgrade()
     {
         source.notify();
     }
+    drop(trace_retirement);
     drop(retired);
 }
 

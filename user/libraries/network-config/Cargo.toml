@@ -6,3 +6,6 @@ publish.workspace = true
 
 [dependencies]
 linux-uapi = { path = "../linux-uapi" }
+
+[lints]
+workspace = true

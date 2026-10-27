@@ -48,6 +48,15 @@ const _: () = {
 };
 
 impl UserContext {
+    /// RISC-V rt_sigframe 不含 ESR/fault_address metadata；地址已由标准 siginfo 保存。
+    ///
+    /// # Parameters
+    /// - `_fault`: 同一次用户异常的快照；本 backend 不额外保存它。
+    ///
+    /// # Returns
+    /// 无返回值；不改变 RISC-V user context。
+    pub(crate) fn record_user_fault(&mut self, _fault: super::trap::UserFault) {}
+
     /// 设置用户栈指针。
     ///
     /// # Parameters
@@ -156,6 +165,76 @@ pub(crate) fn inspect_illegal_instruction(
             } else {
                 Err(IllegalInstructionFault::new(address))
             }
+        }
+    }
+}
+
+impl UserContext {
+    /// 编解码 Linux RV64 NT_PRSTATUS 的 pc、x1..x31；不暴露 supervisor CSR。
+    ///
+    /// # Parameters
+    /// - `note`: 标准 ELF note，当前支持 NT_PRSTATUS。
+    /// - `bytes`: 八字节倍数的 kernel staging，允许前缀。
+    /// - `write`: true 写入，false 读取。
+    ///
+    /// # Returns
+    /// 实际传输字节数，不超过 256。
+    ///
+    /// # Errors
+    /// 未实现 note 或非 word 长度返回 Err。
+    pub(crate) fn ptrace_registers(
+        &mut self,
+        note: usize,
+        bytes: &mut [u8],
+        write: bool,
+    ) -> Result<usize, ()> {
+        if note != syscall_abi::ptrace::NT_PRSTATUS || !bytes.len().is_multiple_of(8) {
+            return Err(());
+        }
+        let length = bytes.len().min(256);
+        let mut words = self.x;
+        words[0] = self.sepc;
+        for (word, chunk) in words.iter_mut().zip(bytes[..length].as_chunks_mut::<8>().0) {
+            if write {
+                *word = usize::from_ne_bytes(*chunk);
+            } else {
+                chunk.copy_from_slice(&word.to_ne_bytes());
+            }
+        }
+        if write {
+            self.sepc = words[0];
+            self.x[1..].copy_from_slice(&words[1..]);
+        }
+        Ok(length)
+    }
+}
+
+impl UserContext {
+    /// 完成 tracer 已观察的 restart；PC 被 debugger 修改时不再覆盖它。
+    ///
+    /// # Parameters
+    /// - `instruction`: 原 syscall 指令 PC。
+    /// - `replay_number`: None 恢复 EINTR；Some 保留 tracer 参数，仅 restart-block 选择原生入口。
+    ///
+    /// # Returns
+    /// 无返回值；仅当前 PC 仍在原指令时完成正常的 restart/handler 决议。
+    pub(crate) fn finish_ptrace_restart(
+        &mut self,
+        instruction: usize,
+        replay_number: Option<usize>,
+    ) {
+        if self.sepc != instruction {
+            return;
+        }
+        match replay_number {
+            None => {
+                self.sepc += 4;
+                self.x[10] = (-syscall_abi::errno::EINTR) as usize;
+            }
+            Some(syscall_abi::SYSCALL_RESTART_SYSCALL) => {
+                self.x[17] = syscall_abi::SYSCALL_RESTART_SYSCALL
+            }
+            Some(_) => {}
         }
     }
 }

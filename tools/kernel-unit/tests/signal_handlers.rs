@@ -132,8 +132,11 @@ mod task {
             pub(in crate::task) fn set_mask(&self, mask: u64) {
                 *self.thread.signal_mask.lock() = mask;
             }
-            pub(in crate::task) fn accepts_process_signal(&self, signal: usize) -> bool {
+            pub(in crate::task) fn accepts_process_signal(&self, signal: usize, _: bool) -> bool {
                 *self.thread.signal_mask.lock() & (1 << (signal - 1)) == 0
+            }
+            pub(in crate::task) fn tid(&self) -> usize {
+                self.tgid()
             }
             pub(in crate::task) fn tgid(&self) -> usize {
                 self.process.tgid
@@ -194,15 +197,45 @@ mod task {
                         mask,
                         restorer: 0x4321,
                     }),
+                    false,
                 )
                 .unwrap()
                 .0
             }
             fn get(&self, signal: usize) -> SignalAction {
-                self.signal_action_for_threads(core::iter::empty(), signal, None)
+                self.signal_action_for_threads(core::iter::empty(), signal, None, false)
                     .unwrap()
                     .0
             }
+        }
+
+        #[test]
+        fn traced_ignored_signal_keeps_a_delivery_event_without_forcing_init_disposition() {
+            let task = TaskControlBlock::new();
+            task.action(28, 1, 0, 0);
+            let (queued, retired) = task
+                .queue_signal(
+                    core::iter::empty(),
+                    28,
+                    true,
+                    PendingSignal::default(),
+                    &mut PreparedSignalRecord::default(),
+                )
+                .unwrap();
+            drop(retired);
+            assert!(queued);
+            let selected = {
+                let mut pending = task.thread().pending_signals.lock();
+                assert!(pending.requires_delivery(1 << 27));
+                pending.take(1 << 27).unwrap()
+            };
+            let (signal, info) = selected.resolve(|_, _| false).unwrap();
+            assert_eq!(signal, 28);
+            assert!(
+                !info.is_forced(),
+                "ptrace provenance is not authority to bypass init's SIGKILL protection"
+            );
+            assert_eq!(task.get(28).handler, 1);
         }
 
         #[test]
@@ -227,6 +260,7 @@ mod task {
                 .queue_signal(
                     core::iter::empty(),
                     10,
+                    false,
                     PendingSignal::default(),
                     &mut PreparedSignalRecord::default(),
                 )
@@ -240,6 +274,7 @@ mod task {
                 .queue_process_signal(
                     core::iter::empty(),
                     12,
+                    false,
                     PendingSignal::default(),
                     &mut PreparedSignalRecord::default(),
                 )
@@ -273,6 +308,7 @@ mod task {
                 .queue_signal(
                     core::iter::empty(),
                     35,
+                    false,
                     PendingSignal::timer(99, 0, 81),
                     &mut timer_record,
                 )
@@ -287,7 +323,7 @@ mod task {
             );
             assert!(valid.has_record());
             reader
-                .queue_signal(core::iter::empty(), 35, info, &mut valid)
+                .queue_signal(core::iter::empty(), 35, false, info, &mut valid)
                 .unwrap();
             let record = reader.read_signal_notification(1 << 34).unwrap();
             assert_eq!(&record[..4], &35u32.to_ne_bytes());
@@ -307,6 +343,7 @@ mod task {
                     .queue_signal(
                         core::iter::empty(),
                         10,
+                        false,
                         PendingSignal::default(),
                         &mut PreparedSignalRecord::default()
                     )
@@ -318,6 +355,7 @@ mod task {
                     .queue_process_signal(
                         core::iter::empty(),
                         17,
+                        false,
                         PendingSignal::default(),
                         &mut PreparedSignalRecord::default()
                     )
@@ -329,6 +367,7 @@ mod task {
                 task.queue_signal(
                     core::iter::empty(),
                     10,
+                    false,
                     PendingSignal::default(),
                     &mut PreparedSignalRecord::default()
                 )
@@ -339,6 +378,7 @@ mod task {
                 task.queue_process_signal(
                     core::iter::empty(),
                     17,
+                    false,
                     PendingSignal::default(),
                     &mut PreparedSignalRecord::default()
                 )
@@ -383,6 +423,7 @@ mod task {
                     .queue_leader_process_signal(
                         core::iter::once(&worker),
                         10,
+                        false,
                         PendingSignal::default(),
                         &mut PreparedSignalRecord::default()
                     )
@@ -397,6 +438,7 @@ mod task {
                     .queue_leader_process_signal(
                         core::iter::once(&worker),
                         10,
+                        false,
                         PendingSignal::default(),
                         &mut PreparedSignalRecord::default()
                     )
@@ -449,6 +491,7 @@ mod task {
                     .queue_signal(
                         core::iter::empty(),
                         10,
+                        false,
                         PendingSignal::default(),
                         &mut PreparedSignalRecord::default()
                     )
@@ -460,6 +503,7 @@ mod task {
                 task.queue_signal(
                     core::iter::empty(),
                     10,
+                    false,
                     PendingSignal::default(),
                     &mut PreparedSignalRecord::default()
                 )
@@ -556,6 +600,7 @@ mod task {
                     handler: 1,
                     ..SignalAction::default()
                 }),
+                false,
             )
             .unwrap();
             // Only a scheduler wake is delayed. The publication token has no operation that queues.
@@ -584,7 +629,7 @@ mod task {
                 .publish_child_signal(info, ChildSignalKind::Exit, 10, &mut prepared)
                 .unwrap();
             assert!(clone.queued && !clone.autoreap);
-            let (signal, info) = task.take_pending_signal(u64::MAX).unwrap();
+            let (signal, info, _) = task.take_pending_signal(u64::MAX).unwrap();
             assert_eq!(signal, 10);
             assert_eq!(
                 i32::from_ne_bytes(info.encode(10)[24..28].try_into().unwrap()),
@@ -705,7 +750,7 @@ mod task {
             child.retire_signal_handlers();
             assert!(
                 observer
-                    .signal_action_for_threads(core::iter::empty(), 10, None)
+                    .signal_action_for_threads(core::iter::empty(), 10, None, false)
                     .is_err()
             );
             assert!(weak.upgrade().is_some());
@@ -766,6 +811,7 @@ mod task {
                         mask: u64::MAX,
                         ..SignalAction::default()
                     }),
+                    false,
                 )
                 .unwrap();
             }
@@ -824,6 +870,11 @@ mod task {
         }
     }
     mod process_table {
+        mod ptrace {
+            pub(super) fn thread_traced(_: &super::ProcessGraph, _: usize) -> bool {
+                false
+            }
+        }
         pub(in crate::task) mod timer_queue {
             pub(in crate::task) fn deliver_posix_signal(
                 _: super::super::model::signal_pending::TimerSignalDelivery,

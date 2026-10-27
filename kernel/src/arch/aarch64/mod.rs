@@ -51,8 +51,8 @@ pub(crate) use startup::{
 pub(crate) use time::counter as time_counter;
 pub(crate) use time::{counter_frequency, program_virtual_timer};
 pub(crate) use trap::{
-    TrapEvent, UserTrapEntry, event as trap_event, install_kernel_entry, kernel_exception,
-    return_to_user, user_entry,
+    TrapEvent, UserFault, UserTrapEntry, event as trap_event, install_kernel_entry,
+    kernel_exception, return_to_user, user_entry,
 };
 pub(crate) use user::{
     AUDIT_ARCH, ELF_HWCAP, ELF_MACHINE, MACHINE_NAME, SyscallCompletion, decode_private_syscall,

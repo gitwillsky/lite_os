@@ -8,3 +8,6 @@ publish.workspace = true
 # 其余系统库与程序都链接它，整个系统里只有一份 std。
 [lib]
 crate-type = ["dylib", "rlib"]
+
+[lints]
+workspace = true

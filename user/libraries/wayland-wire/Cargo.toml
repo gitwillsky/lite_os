@@ -12,3 +12,6 @@ crate-type = ["dylib", "rlib"]
 
 [dependencies]
 liteos-runtime = { path = "../liteos-runtime" }
+
+[lints]
+workspace = true

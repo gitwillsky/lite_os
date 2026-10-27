@@ -11,6 +11,7 @@ impl MemorySet {
         &self,
         vpn: VirtualPageNumber,
         access: PageFaultAccess,
+        force: bool,
     ) -> Result<FaultPreflight, MemoryError> {
         let Some((_, area)) = self.areas.floor(&vpn) else {
             return preflight_fault(
@@ -25,10 +26,14 @@ impl MemorySet {
             );
         };
         let contains = vpn < area.vpn_range.end;
+        let force_private = force
+            && area.device.is_none()
+            && area.shared_anonymous.is_none()
+            && area.shared_file.is_none();
         let permissions = FaultPermissions::new(
             area.map_permission.contains(MapPermission::U),
-            area.map_permission.contains(MapPermission::R),
-            area.map_permission.contains(MapPermission::W),
+            force_private || area.map_permission.contains(MapPermission::R),
+            force_private || area.map_permission.contains(MapPermission::W),
             area.map_permission.contains(MapPermission::X),
         );
         preflight_fault(
@@ -122,9 +127,22 @@ impl MemorySet {
         access: PageFaultAccess,
         limits: UserFaultLimits,
     ) -> Result<PageFaultOutcome, MemoryError> {
+        self.handle_page_fault_access(address, access, limits, false)
+    }
+
+    // force 只放宽 private VMA admission；PTE 始终使用原 map_permission，避免 sibling 获得写权限。
+    pub(in crate::memory::mm) fn handle_page_fault_access(
+        &mut self,
+        address: usize,
+        access: PageFaultAccess,
+        limits: UserFaultLimits,
+        force: bool,
+    ) -> Result<PageFaultOutcome, MemoryError> {
         let vpn = VirtualAddress::from(address).floor();
-        self.grow_stack_for_fault(address, limits.stack, limits.address_space)?;
-        let preflight = self.classify_page_fault(vpn, access)?;
+        if !force {
+            self.grow_stack_for_fault(address, limits.stack, limits.address_space)?;
+        }
+        let preflight = self.classify_page_fault(vpn, access, force)?;
         let prepared_private_file = if preflight == FaultPreflight::NeedsPrivateFrame {
             let (_, area) = self.areas.floor(&vpn).ok_or(MemoryError::InvalidRange)?;
             area.private_file
@@ -265,6 +283,9 @@ impl MemorySet {
                     let ppn = frame.ppn;
                     (PrivateResident::user(frame)?, ppn)
                 };
+                if access == PageFaultAccess::Write {
+                    resident.dirty |= area.private_file.is_some();
+                }
                 let mut flags: PagePermissions = area.map_permission.into();
                 if area.private_file.is_some() && area.map_permission.contains(MapPermission::W) {
                     // 首次 read 保持只读，后续 store fault 是标记 MAP_PRIVATE dirty 的唯一入口。
@@ -279,7 +300,9 @@ impl MemorySet {
                     .try_prepare_vacant(vpn, resident)
                     .map_err(|_| MemoryError::OutOfMemory)?;
                 let mut commit = TranslationCommit::new();
-                self.page_table.map(vpn, ppn, flags, &mut commit)?;
+                if MapArea::has_leaf_permission(area.map_permission) {
+                    self.page_table.map(vpn, ppn, flags, &mut commit)?;
+                }
                 area.data_frames.commit_vacant(resident);
                 commit
                     .synchronize()
@@ -288,11 +311,13 @@ impl MemorySet {
             }
             // 回收达到 target 后可保留 resident 而撤销 PTE；read/execute/write
             // 都从同一 owner 重建，并保持 COW、MADV_FREE 与 private-file dirty 语义。
-            return Ok(if self.handle_private_resident_fault(address, access)? {
-                PageFaultOutcome::Handled
-            } else {
-                PageFaultOutcome::SegmentationFault(SegmentationCause::AccessDenied)
-            });
+            return Ok(
+                if self.handle_private_resident_fault(address, access, force)? {
+                    PageFaultOutcome::Handled
+                } else {
+                    PageFaultOutcome::SegmentationFault(SegmentationCause::AccessDenied)
+                },
+            );
         }
         let shared = area.shared_file.as_mut().unwrap();
         let permission = shared.leaf_permission(area.map_permission);

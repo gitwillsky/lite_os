@@ -165,9 +165,14 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         .text
         .split_whitespace()
         .collect();
-    if !signal.contains("ifletSome(kernel)=graph.kernel_threads.get(&tid)")
-        || !signal.contains("expected_tgid.is_some_and(|tgid|tgid!=tid)")
-        || !signal.contains(".may_signal_thread(kernel)")
+    let thread_signal: String = source(sources, "kernel/src/task/process_table/signal/thread.rs")
+        .unwrap()
+        .text
+        .split_whitespace()
+        .collect();
+    if !thread_signal.contains("ifletSome(kernel)=graph.kernel_threads.get(&tid)")
+        || !thread_signal.contains("expected_tgid.is_some_and(|tgid|tgid!=tid)")
+        || !thread_signal.contains(".may_signal_thread(kernel)")
         || !signal.contains("graph.kernel_threads.contains_key(&pid)")
         || !signal.contains("graph.kernel_threads.iter_after(&after)")
         || !signal.contains("ifletSome(kernel)=graph.kernel_threads.get(&tgid)")

@@ -17,7 +17,6 @@
 | 用户态与 ABI | [userspace-abi](architecture-contract/userspace-abi.md) |
 
 ## 2. Kernel dependency contract
-
 领域依赖理由见 [依赖说明](architecture-contract/dependency-owners.md)。
 
 | Module | 允许依赖（机器读取） | 说明 |
@@ -142,6 +141,8 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 | `kernel/src/task/process_table/process_retirement.rs :: RetiredProcesses.parents` | `FallibleMap < usize , () >` |
 | `kernel/src/task/process_table/process_retirement.rs :: RetiredProcesses.creators` | `FallibleMap < usize , () >` |
 | `kernel/src/task/process_table/process_retirement.rs :: RetiredProcesses.groups` | `FallibleMap < usize , () >` |
+| `kernel/src/task/process_table.rs :: ProcessGraph.tracees` | `FallibleMap < usize , ptrace :: Tracee >` |
+| `kernel/src/task/process_table.rs :: ProcessNode.ptracees` | `FallibleMap < usize , () >` |
 | `kernel/src/task/process_table.rs :: ProcessGraph.nodes` | `FallibleMap < usize , ProcessNode >` |
 | `kernel/src/task/process_table.rs :: ProcessGraph.groups` | `FallibleMap < usize , ProcessGroupIndex >` |
 | `kernel/src/task/process_table.rs :: ProcessGraph.kernel_threads` | `FallibleMap < usize , Arc < TaskControlBlock > >` |
@@ -188,7 +189,7 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 |---|---:|---|---|---|
 | `kernel/src/fs/procfs.rs` | 1411 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
 | `kernel/src/fs/tmpfs.rs` | 1020 | fs | 同一 inode 的权限与通知事务 | 新增 metadata family 前拆分 |
-| `kernel/src/task/process_table/signal.rs` | 1270 | task | graph 下的生成与子进程通知事务 | 新增独立 signal producer 前拆分 |
+| `kernel/src/task/process_table/signal.rs` | 1007 | task | graph 下的生成与子进程通知事务 | 新增独立 signal producer 前拆分 |
 
 ## Change contract
 

@@ -208,9 +208,6 @@ pub fn blit_to_hardware(target: &mut DumbBuffer, edge: usize, frame: &[u32]) -> 
     blit_scaled(target, frame, edge, edge, 1)
 }
 
-#[cfg(test)]
-mod tests;
-
 /// `wp_cursor_shape_device_v1` 的形状到合成器光标集里的名字；没有专门图像的形状用最接近的一个。
 pub fn shape_name(shape: wayland_wire::protocol::wp_cursor_shape_device_v1::Shape) -> &'static str {
     use wayland_wire::protocol::wp_cursor_shape_device_v1::Shape as S;
@@ -230,3 +227,6 @@ pub fn shape_name(shape: wayland_wire::protocol::wp_cursor_shape_device_v1::Shap
         _ => "arrow",
     }
 }
+
+#[cfg(test)]
+mod tests;

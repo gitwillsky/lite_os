@@ -180,6 +180,11 @@ mod task {
         fn take_child_waiters(node: &mut ProcessNode) -> FallibleMap<usize, Arc<TaskControlBlock>> {
             core::mem::take(&mut node.child_waiters)
         }
+        mod ptrace {
+            pub(super) fn finish_claim(_: super::wait_child::ChildExit, _: bool) {
+                unreachable!("retirement fixture has no tracer relation");
+            }
+        }
         mod wait_child {
             use super::*;
             #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,6 +192,8 @@ mod task {
                 Exited,
                 Stopped,
                 Continued,
+                TracedStop,
+                TracedExit,
             }
             #[derive(Debug, Clone, Copy, PartialEq, Eq)]
             pub(in crate::task::process_table) struct ChildWaitClaim {

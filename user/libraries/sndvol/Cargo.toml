@@ -16,3 +16,6 @@ classic-theme = { path = "../classic-theme" }
 classic-ui = { path = "../classic-ui" }
 linux-uapi = { workspace = true }
 typeface = { path = "../typeface" }
+
+[lints]
+workspace = true

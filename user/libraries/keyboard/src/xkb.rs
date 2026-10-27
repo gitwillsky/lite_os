@@ -240,9 +240,6 @@ fn keysym_upper(upper: u8) -> &'static str {
     &NAMES[index..=index]
 }
 
-#[cfg(test)]
-mod tests;
-
 /// 将已验证 US keymap 的 XKB modifier masks 还原为共享键盘状态。
 /// `depressed`/`latched`/`locked` 分别来自 wl_keyboard.modifiers；返回当前有效修饰键。
 pub fn modifiers_from_masks(depressed: u32, latched: u32, locked: u32) -> Modifiers {
@@ -260,6 +257,9 @@ pub fn modifiers_from_masks(depressed: u32, latched: u32, locked: u32) -> Modifi
 pub fn repeats(code: u32) -> bool {
     code <= u32::from(MAX_EVDEV) && !MODIFIER_KEYS.iter().any(|(key, _)| u32::from(*key) == code)
 }
+
+#[cfg(test)]
+mod tests;
 
 #[cfg(test)]
 mod mask_tests {

@@ -5,7 +5,7 @@
 
 use std::{env, fs, panic};
 
-use dtb_walker::{Dtb, HeaderError};
+use dtb_walker::{Dtb, DtbObj, HeaderError, Property, Str, WalkOperation};
 
 use crate::qemu_virt::{aarch64, riscv64, virtio_mmio::VirtioMmioTransport};
 
@@ -77,13 +77,25 @@ fn riscv64_qemu_virt_dtb_decodes_every_boot_fact() {
 #[test]
 fn riscv64_device_identity_does_not_depend_on_node_names() {
     let mut bytes = fixture("LITEOS_RISCV64_DTB");
-    // 固定 QEMU virt 的 PLIC 节点名只用于变异 fixture；生产 decoder 只能按 compatible 识别。
-    // 替换名与原名必须等长（见 `replace_all`）。
-    replace_all(
-        &mut bytes,
-        b"interrupt-controller@c000000",
-        b"unrelated-nodename-x@c000000",
-    );
+    // 1. fixture 的节点名不是设备身份；先用固定 compatible 找到实际 PLIC 节点。
+    let mut name = None;
+    dtb(&bytes).walk(|context, object| {
+        if let DtbObj::Property(Property::Compatible(values)) = object
+            && values
+                .into_iter()
+                .any(|value| value == Str::from("sifive,plic-1.0.0"))
+        {
+            assert!(
+                name.replace(context.name().as_bytes().to_vec()).is_none(),
+                "fixture has one PLIC"
+            );
+        }
+        WalkOperation::StepInto
+    });
+    let name = name.expect("fixture must contain PLIC compatible");
+    // 2. 等长改名保持 DTB 结构与 compatible 不变；decoder 必须继续识别同一个设备。
+    let replacement = vec![b'x'; name.len()];
+    replace_all(&mut bytes, &name, &replacement);
     replace_all(&mut bytes, b"serial@10000000", b"tty000@10000000");
     replace_all(&mut bytes, b"virtio_mmio@", b"transport-x@");
     replace_all(&mut bytes, b"rtc@101000", b"clk@101000");

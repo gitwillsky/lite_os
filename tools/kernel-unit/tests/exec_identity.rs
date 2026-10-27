@@ -171,6 +171,17 @@ mod task {
             pub(super) fn interrupt_waiting_task(_: &super::TaskControlBlock) {}
         }
         mod exec_drain;
+        mod ptrace {
+            pub(super) fn promote_exec(
+                _: &mut super::ProcessGraph,
+                _: &super::TaskControlBlock,
+                _: usize,
+                link: Option<alloc::sync::Arc<super::PidRegistration>>,
+            ) -> Option<Box<()>> {
+                assert!(link.is_none());
+                None
+            }
+        }
         mod exec_identity;
         #[cfg(test)]
         mod tests {
@@ -420,6 +431,7 @@ mod task {
                     exec_identity::mark_process_exec(
                         &worker_owner,
                         Some(PidLinkSlot::try_new().unwrap()),
+                        None,
                     );
                     done_tx.send(()).unwrap();
                 });
@@ -446,6 +458,7 @@ mod task {
                     exec_identity::mark_process_exec(
                         &worker_owner,
                         Some(PidLinkSlot::try_new().unwrap()),
+                        None,
                     );
                     drop(claim);
                     done_tx.send(()).unwrap();
@@ -507,7 +520,7 @@ mod task {
                     None
                 };
                 crate::FAIL_NEXT.set(true);
-                exec_identity::mark_process_exec(&task, link);
+                exec_identity::mark_process_exec(&task, link, None);
                 assert!(crate::FAIL_NEXT.replace(false));
                 assert_eq!(old_source.0.load(Ordering::Acquire), 1);
                 assert!(
@@ -557,7 +570,7 @@ mod task {
                     None
                 };
                 crate::FAIL_NEXT.set(true);
-                exec_identity::mark_process_exec(&task, link);
+                exec_identity::mark_process_exec(&task, link, None);
                 assert!(crate::FAIL_NEXT.replace(false));
                 let graph = PROCESS_TABLE.graph.lock();
                 assert_eq!(task.tid(), 11);

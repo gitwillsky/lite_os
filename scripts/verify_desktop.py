@@ -10,20 +10,26 @@ import time
 from build_cache import build_environment, fingerprint, manifest_matches, publish_directory, publish_runtime_gate, runtime_gate_hit, runtime_gate_payload, sha256, temporary_directory, write_manifest
 from build_target import acceleration_from_environment, target_from_environment
 from display_gate import display_session
+from ext4_image import run_debugfs
 from classic_assets import shell_bitmaps
 from verify_musl import cached_musl_paths, find_compiler, run
 from verify_wayland import install_files, pointer_to, button, tap, wait_screen, DESKTOP_BACKGROUND
 ROOT = Path(__file__).resolve().parents[1]
 RECIPE_VERSION = 1
-# 资源管理器第一行的选中底色（Hilight）与它在 640×480 默认窗口里的位置；
-# 实测：窗口从 (40, 40) 起，选中底色从 x=261 开始，y=178 在首行文字上缘之上、不受字形影响。
+# 默认 LargeIcons 视图：窗口 (40,40)、Web 面板 200px；首个 cell 标签中心 x=286。
+# y=190 在标签背景内、字形上方，检查标签本身，不再采样旧 Details 视图的图标区域。
 SELECTED = (10, 36, 106)
-EXPLORER_FIRST_ROW = (262, 178)
+EXPLORER_FIRST_LABEL = (286, 190)
 # 登录框按 413px 横幅加两侧 3px 外框居中；边框采样不能继续使用旧的 450px 宽度。
 LOGON_LEFT = (1280 - (413 + 6)) // 2
 LOGON_TOP = (800 - 300) // 2
-# 托盘音量面板（64×150，贴在任务栏上方、图标正上方）内部一点：打开时是面板底色。
-VOLUME_PANEL_SAMPLE_OPEN = ((1140, 700), (212, 208, 200))
+# taskbar_layout 从右侧保留 4px、60px 时钟和 24px 音量单元，取音量单元中心。
+TRAY_VOLUME_X = 1280 - 4 - 60 - 12
+# 面板 64×150，菜单在指针左上翻转；分别取面板左内边与菜单行右内边。
+VOLUME_PANEL_SAMPLE_OPEN = ((TRAY_VOLUME_X - 32 + 4, 700), (212, 208, 200))
+TRAY_CONTEXT_ITEM = (TRAY_VOLUME_X - 8, 774)
+# 共享 SDK 音量窗口固定 180×390、默认居中；取底部空白，避开文字与滑块。
+VOLUME_WINDOW_SAMPLE = (720, 580)
 # 开始菜单"运行"行的中心：7 行 36 高、一道 10 高的分隔，贴在 28 高任务栏之上，行起点 3 像素边框。
 START_MENU_RUN = 800 - 28 - (7 * 36 + 10 + 6) + 3 + 3 * 36 + 18
 HASH = '$6$liteosgate$MPmkcnoQup38yUQqVGwvFD/ys0EdwXn6gehqNbbruY47MWei35CocL0OE23dNvHpj4di0WX/acm6/cp0cgsAp.'
@@ -51,17 +57,16 @@ def build_volume_probe(musl) -> Path:
     return destination/'volume-check'
 
 
-def icon_sample() -> tuple[tuple[int, int], tuple[int, int, int]]:
+def icon_sample(name: str, origin: tuple[int, int], background: tuple[int, int, int]) -> tuple[tuple[int, int], tuple[int, int, int]]:
     # 直接读取标准 BMP 的一个不透明像素，采样受版本管理的原版图标，并独立验证桌面没有被登录背景遮住。
-    path = next(path for path in shell_bitmaps() if path.name == 'my-documents-32.bmp')
+    path = next(path for path in shell_bitmaps() if path.name == name)
     data = path.read_bytes()
     offset = int.from_bytes(data[10:14], 'little')
     for index in range(32 * 32):
         blue, green, red, alpha = data[offset + index * 4:offset + index * 4 + 4]
-        if alpha == 255 and (red, green, blue) != DESKTOP_BACKGROUND:
-            # Icons::ORIGIN=(6,12)，75px 单元中 32px 图标居中，large_icon_item 顶边留 4px。
-            return ((6 + (75 - 32) // 2 + index % 32, 12 + 4 + index // 32), (red, green, blue))
-    raise RuntimeError('documents icon has no visible opaque sample')
+        if alpha == 255 and (red, green, blue) != background:
+            return ((origin[0] + index % 32, origin[1] + index // 32), (red, green, blue))
+    raise RuntimeError(f'{name} has no opaque sample distinct from its background')
 
 
 def click(session, x: int, y: int) -> None:
@@ -102,6 +107,11 @@ def install(image: Path, directory: Path, volume_probe: Path) -> None:
     sources.append((ROOT / 'scripts/fixtures/desktop/check-session.sh', '/var/tmp/check-desktop'))
     sources.append((volume_probe, '/bin/volume-check'))
     install_files(image, sources, directory)
+    # debugfs 新建目录/文件默认归 root；私有 fixture 的 home 必须符合实际 alice 账户的所有权。
+    # 否则非 root 的删除/回收站测试只会得到 EACCES，根本没有验证文件操作。
+    for path in ("/home/alice", "/home/alice/readme.txt"):
+        run_debugfs(image, f"set_inode_field {path} uid 1000", writable=True)
+        run_debugfs(image, f"set_inode_field {path} gid 100", writable=True)
 
 
 def login(session) -> None:
@@ -124,7 +134,7 @@ def login(session) -> None:
     type_text(session, 'desktop42')
     tap(session, 'ret')
     console.wait_for(('logon: authenticated uid=1000', 'logon: desktop ready', 'DESKTOP_IDENTITY_OK'))
-    wait_screen(session, [icon_sample(), ((1200, 400), DESKTOP_BACKGROUND), ((1000, 780), (212, 208, 200))], 'desktop first frame')
+    wait_screen(session, [icon_sample("my-documents-32.bmp", (6 + (75 - 32) // 2, 12 + 4), DESKTOP_BACKGROUND), ((1200, 400), DESKTOP_BACKGROUND), ((1000, 780), (212, 208, 200))], 'desktop first frame')
 
 
 def wait_security(session) -> None:
@@ -139,40 +149,45 @@ def check_session(session) -> None:
     click(session, 42, 43)
     click(session, 42, 43)
     console.wait_for(('compositor: window "我的文档"',))
-    wait_screen(session, [((200, 200), (255, 255, 255))], 'file explorer')
-    # 列表第一行的选中底色只出现在键盘事件送达之后。
+    wait_screen(session, [((200, 200), (255, 255, 255)), (EXPLORER_FIRST_LABEL, (255, 255, 255))], 'file explorer before keyboard selection')
+    # 首个图标的标签选中底色只出现在键盘事件送达之后。
     tap(session, 'down')
-    wait_screen(session, [(EXPLORER_FIRST_ROW, SELECTED)], 'new window keyboard focus')
+    wait_screen(session, [(EXPLORER_FIRST_LABEL, SELECTED)], 'new window keyboard focus')
     # 删除先确认；确认后条目离开列表（真实移入回收站），首行底色消失。
     tap(session, 'delete')
     wait_screen(session, [((360, 300), (212, 208, 200))], 'delete confirmation')
-    tap(session, 'y')
-    wait_screen(session, [(EXPLORER_FIRST_ROW, (255, 255, 255))], 'deleted item leaves the list')
+    # 共享 MessageBox 的首项是 DEFAULT；用 Enter 验证默认按钮激活，而非旧私有对话框的裸 Y 绑定。
+    tap(session, 'ret')
+    wait_screen(session, [(EXPLORER_FIRST_LABEL, (255, 255, 255))], 'deleted item leaves the list')
     click(session, 190, 786)
     wait_screen(session, [((200, 200), DESKTOP_BACKGROUND)], 'taskbar minimize')
     click(session, 190, 786)
     wait_screen(session, [((200, 200), (255, 255, 255))], 'taskbar restore')
-    # 向上进入 /home：选择被清除，说明恢复后的窗口重新拿到键盘焦点。
+    # 原目录删除后已空；返回上级并选中首项，只有导航和选择都成功才会出现标签高亮。
     tap(session, 'backspace')
-    wait_screen(session, [(EXPLORER_FIRST_ROW, (255, 255, 255))], 'taskbar activation keyboard focus')
+    # 我的文档的 shell parent 是桌面；等回收站图标真正 commit，不能把 Down 发送给尚未替换的空列表。
+    wait_screen(session, [icon_sample("recycle-bin-empty-32.bmp", (270, 155), (255, 255, 255))], 'shell parent navigation committed')
+    tap(session, 'down')
+    wait_screen(session, [(EXPLORER_FIRST_LABEL, SELECTED)], 'taskbar activation navigation and keyboard focus')
     # 非 root 没有原始音频设备权限：单击托盘喇叭弹出面板（不是窗口），Esc 关闭；右键菜单才打开完整音量窗口。
-    click(session, 1162, 786)
+    click(session, TRAY_VOLUME_X, 786)
     wait_screen(session, [VOLUME_PANEL_SAMPLE_OPEN], 'restricted volume popup')
     tap(session, 'esc')
     wait_screen(session, [(VOLUME_PANEL_SAMPLE_OPEN[0], DESKTOP_BACKGROUND)], 'volume popup closes')
-    right_click(session, 1162, 786)
-    wait_screen(session, [((1050, 774), (212, 208, 200))], 'tray context menu')
-    click(session, 1050, 774)
+    right_click(session, TRAY_VOLUME_X, 786)
+    wait_screen(session, [(TRAY_CONTEXT_ITEM, (212, 208, 200))], 'tray context menu')
+    click(session, *TRAY_CONTEXT_ITEM)
     console.wait_for(('compositor: window "音量控制"',))
-    wait_screen(session, [((200,200),(212,208,200))], 'restricted volume window')
+    wait_screen(session, [(VOLUME_WINDOW_SAMPLE, (212,208,200))], 'restricted volume window')
     tap(session, 'esc')
-    wait_screen(session, [((200,200),(255,255,255))], 'restricted volume close')
+    wait_screen(session, [(VOLUME_WINDOW_SAMPLE, DESKTOP_BACKGROUND)], 'restricted volume close')
     # 实际 Run 对话框启动后台进程；随后注销必须终止它。
     click(session, 25, 786)
     wait_screen(session, [((180, 620), (212, 208, 200))], 'start menu mapped')
     # 开始菜单自上而下：程序、文档、设置、运行；运行行 36 高，菜单贴在任务栏上方。
     click(session, 110, START_MENU_RUN)
-    console.wait_for(('compositor: window "运行"',))
+    console.wait_for(('compositor: layer "org.liteos.run" Top',))
+    wait_screen(session, [((100, 650), (255, 255, 255)), ((200, 700), (212, 208, 200))], 'run dialog presented')
     type_text(session, '/bin/sleep 9999')
     tap(session, 'ret')
     console.wait_for(('DESKTOP_CHILD_RUNNING',))
@@ -276,26 +291,28 @@ def check_volume(session) -> None:
     console.wait_for(('logon: authenticated uid=0', 'logon: desktop ready'), after=mark)
     console.wait_for(('VOLUME_CONTROL_OK',))
     wait_screen(session, [((1000, 780), (212, 208, 200)), ((1200, 400), DESKTOP_BACKGROUND)], 'root desktop first frame')
-    right_click(session, 1162, 786)
-    wait_screen(session, [((1050, 774), (212, 208, 200))], 'root tray context menu')
-    click(session, 1050, 774)
+    right_click(session, TRAY_VOLUME_X, 786)
+    wait_screen(session, [(TRAY_CONTEXT_ITEM, (212, 208, 200))], 'root tray context menu')
+    click(session, *TRAY_CONTEXT_ITEM)
     console.wait_for(('compositor: window "音量控制"',), after=mark)
-    wait_screen(session, [((100, 200), (212, 208, 200))], 'volume window')
+    wait_screen(session, [(VOLUME_WINDOW_SAMPLE, (212, 208, 200))], 'volume window')
     mark = console.mark()
     width, _, pixels = session.screendump()
     visible = [(index % width,index // width) for index,pixel in enumerate(pixels)
-               if pixel != DESKTOP_BACKGROUND and 90 <= index % width < 700 and index // width < 740]
+               if pixel != DESKTOP_BACKGROUND and 90 <= index % width < 1200 and index // width < 740]
     left = min(point[0] for point in visible)
     top = min(point[1] for point in visible)
     right = max(point[0] for point in visible)
     bottom = max(point[1] for point in visible)
-    if (right-left+1,bottom-top+1) != (260,320):
-        raise RuntimeError(f'volume frame is not 260x320: {(left,top,right,bottom)}')
-    pointer_to(session, left+130, top+80)
-    button(session, True)
-    pointer_to(session, left+130, top+140)
-    button(session, False)
+    if (right-left+1,bottom-top+1) != (180,390):
+        raise RuntimeError(f'volume frame is not 180x390: {(left,top,right,bottom)}')
+    # 原始旧窗口的 drag 像素已不属于 SDK 控件；聚焦实际纵向 slider，Home 后十个 5% 步进精确到 50%。
+    click(session, left+90, top+200)
+    tap(session, 'home')
+    for _ in range(10):
+        tap(session, 'down')
     console.wait_for(('VOLUME_UI_50',), after=mark)
+    tap(session, 'tab')
     tap(session, 'spc')
     console.wait_for(('VOLUME_UI_MUTED',), after=mark)
     mark = console.mark()

@@ -13,3 +13,6 @@ liteos-runtime = { path = "../liteos-runtime" }
 [[bench]]
 name = "glyphs"
 harness = false
+
+[lints]
+workspace = true

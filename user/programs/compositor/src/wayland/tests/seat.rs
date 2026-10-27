@@ -185,6 +185,7 @@ fn drain(harness: &mut Harness) -> (Vec<u8>, Vec<bool>) {
 fn the_keymap_fd_travels_with_its_own_message_segment() {
     let mut harness = Harness::bound();
     bind_seat(&mut harness, 7);
+    harness.create_surface(5);
     harness
         .send(|w| {
             wl_seat::Request::GetKeyboard { id: id(KEYBOARD) }
@@ -192,7 +193,9 @@ fn the_keymap_fd_travels_with_its_own_message_segment() {
                 .unwrap()
         })
         .unwrap();
-    // 先排队一条普通事件，再请求第二个键盘：fd 不在偏移 0。
+    // 先建立标准 enter/modifiers，再排队普通 key；第二个 keymap 的 fd 不在偏移 0。
+    harness.client.keyboard_enter(1, id(5), &[]);
+    harness.client.keyboard_modifiers(1, 0, 0);
     harness.client.keyboard_key(1, 1, 30, true);
     harness
         .send(|w| {
@@ -261,4 +264,77 @@ fn keyboard_focus_events_carry_the_pressed_keys_and_modifiers() {
         events[3].event,
         AnyEvent::WlKeyboard(wl_keyboard::Event::Leave { serial: 6, .. })
     ));
+}
+
+#[test]
+fn a_late_keyboard_gets_its_own_enter_before_keys_without_reentering_existing_objects() {
+    let mut harness = Harness::bound();
+    bind_seat(&mut harness, 7);
+    harness.create_surface(5);
+    // 焦点先于键盘绑定：当时没有资源可以接收 enter。
+    harness.client.keyboard_enter(1, id(5), &[29]);
+    harness
+        .send(|w| {
+            wl_seat::Request::GetKeyboard { id: id(KEYBOARD) }
+                .encode(id(SEAT), w)
+                .unwrap()
+        })
+        .unwrap();
+    drain(&mut harness);
+    harness.client.keyboard_key(2, 77, 30, true);
+    harness.client.keyboard_modifiers(2, 1, 0);
+    assert!(
+        harness.events(&OBJECTS).is_empty(),
+        "unentered resource cannot receive keys/modifiers"
+    );
+    harness.client.keyboard_enter(3, id(5), &[29]);
+    harness.client.keyboard_modifiers(3, 1, 0);
+    let events = harness.events(&OBJECTS);
+    assert_eq!(events.len(), 2);
+    assert!(
+        matches!(&events[0].event, AnyEvent::WlKeyboard(wl_keyboard::Event::Enter { keys, .. }) if keys == &[29, 0, 0, 0])
+    );
+    assert!(matches!(
+        events[1].event,
+        AnyEvent::WlKeyboard(wl_keyboard::Event::Modifiers {
+            mods_depressed: 1,
+            ..
+        })
+    ));
+    harness
+        .send(|w| {
+            wl_seat::Request::GetKeyboard { id: id(45) }
+                .encode(id(SEAT), w)
+                .unwrap()
+        })
+        .unwrap();
+    drain(&mut harness);
+    harness.client.keyboard_enter(4, id(5), &[29]);
+    harness.client.keyboard_modifiers(4, 1, 0);
+    let mut objects = OBJECTS.to_vec();
+    objects.push((45, Interface::WlKeyboard));
+    let events = harness.events(&objects);
+    let entered: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            matches!(
+                event.event,
+                AnyEvent::WlKeyboard(wl_keyboard::Event::Enter { .. })
+            )
+        })
+        .map(|event| event.object)
+        .collect();
+    assert_eq!(entered, [45]);
+    harness.client.keyboard_leave(5, id(5));
+    harness.events(&objects);
+    harness
+        .send(|w| {
+            wl_keyboard::Request::Release
+                .encode(id(KEYBOARD), w)
+                .unwrap()
+        })
+        .unwrap();
+    harness
+        .send(|w| wl_keyboard::Request::Release.encode(id(45), w).unwrap())
+        .unwrap();
 }

@@ -17,3 +17,6 @@ classic-theme = { path = "../../libraries/classic-theme" }
 canvas = { path = "../../libraries/canvas" }
 typeface = { path = "../../libraries/typeface" }
 linux-uapi.workspace = true
+
+[lints]
+workspace = true

@@ -10,3 +10,6 @@ desktop-entry = { path = "../../libraries/desktop-entry" }
 calendar = { path = "../../libraries/calendar" }
 linux-uapi = { path = "../../libraries/linux-uapi" }
 network-config = { path = "../../libraries/network-config" }
+
+[lints]
+workspace = true

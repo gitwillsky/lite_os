@@ -5,6 +5,37 @@ use super::{
     user_context::{KERNEL_STACK_CONTEXT_OFFSET, UserContext, is_kernel_stack_user_context},
 };
 
+/// 一次 EL0 内存异常的架构快照；raw ESR 只在本 backend 内解释。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UserFault {
+    address: usize,
+    syndrome: u64,
+}
+
+impl UserFault {
+    /// 投影通用 memory/signal owner 所需的地址。
+    ///
+    /// # Returns
+    /// 同一次用户异常的 fault 地址。
+    pub(crate) fn address(self) -> usize {
+        self.address
+    }
+
+    /// 返回 Linux 允许暴露给 EL0 的 ESR；kernel 地址只保留访问方向与 translation fault。
+    pub(super) fn signal_syndrome(self) -> u64 {
+        if self.address < super::mmu::USER_ADDRESS_END {
+            self.syndrome
+        } else {
+            let access = if (self.syndrome >> 26) & 0x3f == 0x24 {
+                (1 << 8) | (1 << 6)
+            } else {
+                0
+            };
+            (self.syndrome & ((0x3f << 26) | (1 << 25) | access)) | 4
+        }
+    }
+}
+
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UserTrapEntry(usize);
@@ -37,11 +68,12 @@ pub(crate) enum TrapEvent {
     IllegalInstruction,
     Breakpoint,
     UserEnvironmentCall,
-    InstructionPageFault { address: usize },
-    LoadPageFault { address: usize },
-    StorePageFault { address: usize },
-    LoadAccessFault { address: usize },
-    StoreAccessFault { address: usize },
+    InstructionPageFault { fault: UserFault },
+    LoadPageFault { fault: UserFault },
+    StorePageFault { fault: UserFault },
+    LoadAccessFault { fault: UserFault },
+    StoreAccessFault { fault: UserFault },
+    AlignmentFault { fault: UserFault },
     UnsupportedException { address: usize },
 }
 
@@ -71,21 +103,28 @@ pub(crate) fn event() -> TrapEvent {
         asm!("mrs {value}, far_el1", value = out(reg) address, options(nomem, nostack, preserves_flags));
     }
     let class = (esr >> 26) & 0x3f;
+    let fault = UserFault {
+        address,
+        syndrome: esr,
+    };
     match class {
         // SVE/SME are intentionally absent from the user context ABI and HWCAP. A CPU can still
         // recognize a feature-probe instruction and report its access-trap EC instead of Unknown;
         // route both forms through forced SIGILL so libc/crypto probes can recover normally.
         0x00 | 0x19 | 0x1d => TrapEvent::IllegalInstruction,
         0x15 => TrapEvent::UserEnvironmentCall,
-        0x20 | 0x21 => TrapEvent::InstructionPageFault { address },
+        0x20 | 0x21 => TrapEvent::InstructionPageFault { fault },
         0x24 | 0x25 => {
             let fault_status = esr & 0x3f;
+            if fault_status == 0x21 {
+                return TrapEvent::AlignmentFault { fault };
+            }
             let page_fault = matches!(fault_status, 4..=7 | 9..=11 | 13..=15);
             match (page_fault, esr & (1 << 6) != 0) {
-                (true, true) => TrapEvent::StorePageFault { address },
-                (true, false) => TrapEvent::LoadPageFault { address },
-                (false, true) => TrapEvent::StoreAccessFault { address },
-                (false, false) => TrapEvent::LoadAccessFault { address },
+                (true, true) => TrapEvent::StorePageFault { fault },
+                (true, false) => TrapEvent::LoadPageFault { fault },
+                (false, true) => TrapEvent::StoreAccessFault { fault },
+                (false, false) => TrapEvent::LoadAccessFault { fault },
             }
         }
         0x3c => TrapEvent::Breakpoint,

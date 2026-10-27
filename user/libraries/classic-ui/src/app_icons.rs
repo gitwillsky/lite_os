@@ -1,11 +1,9 @@
 //! 按窗口的 `app_id` 取程序图标：任务栏按钮、任务管理器列表与 Alt+Tab 面板共用。
 
-use std::{collections::HashMap, path::Path, rc::Rc};
+use std::{collections::HashMap, rc::Rc};
 
 use crate::{Bitmap, Painter};
 
-const APPLICATIONS: &str = "/usr/share/applications";
-const UI_DIRECTORY: &str = "/usr/share/liteos/ui";
 /// 没有登记图标的程序用的通用应用图标。
 const GENERIC: &str = "file-app";
 
@@ -16,17 +14,16 @@ pub struct AppIcons {
 }
 
 impl AppIcons {
-    /// 读取已安装桌面条目里 `StartupWMClass=` 与 `Icon=` 对应的 `<icon>-<size>.bmp`，以及通用图标。
+    /// 读取已安装桌面条目里 `StartupWMClass=` 与 `Icon=` 对应的 XDG PNG / 系统 BMP，以及通用图标。
     ///
     /// 缺失或损坏的图标不报错，该程序退回通用图标，通用图标也缺失则不画。
     pub fn load(size: u32) -> Self {
-        let directory = Path::new(UI_DIRECTORY);
         let load = |name: &str| {
-            Bitmap::load_icon(directory, name, size as i32)
+            Bitmap::application_icon(name, size as i32)
                 .ok()
                 .map(Rc::new)
         };
-        let by_app_id = desktop_entry::icons_by_app_id(Path::new(APPLICATIONS))
+        let by_app_id = desktop_entry::icons_by_app_id()
             .into_iter()
             .filter_map(|(app_id, icon)| Some((app_id, load(&icon)?)))
             .collect();

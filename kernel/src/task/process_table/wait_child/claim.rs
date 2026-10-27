@@ -18,6 +18,13 @@ fn wake_rechecking_waiters(mut waiters: FallibleMap<usize, Arc<TaskControlBlock>
 ///
 /// 无返回值；claim 不匹配表示 wait transaction 被重复结束并 fail-stop。
 pub(crate) fn release_child_status(record: ChildExit) {
+    if matches!(
+        record.kind,
+        ChildStatusKind::TracedStop | ChildStatusKind::TracedExit
+    ) {
+        super::super::ptrace::finish_claim(record, false);
+        return;
+    }
     let (waiters, retired) = {
         let mut graph = PROCESS_TABLE.graph.lock();
         let parent = {
@@ -64,6 +71,13 @@ pub(crate) fn release_child_status(record: ChildExit) {
 ///
 /// 无返回值；record 变化表示 process graph 不变量损坏。
 pub(crate) fn consume_child_status(record: ChildExit) {
+    if matches!(
+        record.kind,
+        ChildStatusKind::TracedStop | ChildStatusKind::TracedExit
+    ) {
+        super::super::ptrace::finish_claim(record, true);
+        return;
+    }
     let (waiters, retired) = {
         let mut graph = PROCESS_TABLE.graph.lock();
         let parent = {
@@ -87,6 +101,7 @@ pub(crate) fn consume_child_status(record: ChildExit) {
                 ChildStatusKind::Stopped => {
                     assert!(node.child_events.stopped.take().is_some());
                 }
+                ChildStatusKind::TracedStop | ChildStatusKind::TracedExit => unreachable!(),
                 ChildStatusKind::Continued => {
                     assert!(core::mem::take(&mut node.child_events.continued));
                 }

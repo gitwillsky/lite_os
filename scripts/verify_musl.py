@@ -85,7 +85,7 @@ COMPILER_RT_SOURCES = {
 COMPILER_RT_SUPPLEMENT_SYMBOL = "__multc3"
 SOURCE_RECIPE_VERSION = 1
 SYSROOT_RECIPE_VERSION = 5
-SMOKE_RECIPE_VERSION = 21
+SMOKE_RECIPE_VERSION = 22
 CONFIGURE_ARGUMENTS = (f"--target={TARGET.arch}", "--prefix=/usr", "--syslibdir=/lib")
 COMMON_SMOKE_LINK_ARGUMENTS = (
     "-static",
@@ -737,6 +737,7 @@ def smoke_payload(install: Path, compiler: Path, sysroot_fingerprint: str) -> di
         "thread_exec_sha256": sha256(ROOT / "scripts/fixtures/musl/thread-exec.c"),
         "seccomp_sha256": sha256(ROOT / "scripts/fixtures/musl/seccomp.c"),
         "seccomp_notification_sha256": sha256(ROOT / "scripts/fixtures/musl/seccomp_notification.c"),
+        "ptrace_sha256": sha256(ROOT / "scripts/fixtures/musl/ptrace.c"),
         "signal_frame_sha256": sha256(ROOT / "scripts/fixtures/musl/signal-frame.c"),
         "swap_sha256": sha256(ROOT / "scripts/fixtures/musl/swap.c"),
         "address_space_sha256": sha256(ROOT / "scripts/fixtures/musl/address-space.c"),
@@ -811,6 +812,7 @@ def link_smoke(
                 str(ROOT / "scripts/fixtures/musl/seccomp.c"),
                 str(ROOT / "scripts/fixtures/musl/seccomp_notification.c"),
                 str(ROOT / "scripts/fixtures/musl/signal-frame.c"),
+                str(ROOT / "scripts/fixtures/musl/ptrace.c"),
                 str(ROOT / "scripts/fixtures/musl/address-space.c"),
                 str(ROOT / "scripts/fixtures/musl/memory-pressure.c"),
                 str(ROOT / "scripts/fixtures/musl/resource-usage.c"),

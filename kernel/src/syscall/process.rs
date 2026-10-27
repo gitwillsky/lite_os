@@ -473,6 +473,7 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: u32, rusage: *mut
                 crate::task::ChildWaitClass::Ordinary
             },
             creator_only: options & WNOTHREAD != 0,
+            ptrace_stops: true,
         },
     ) {
         Ok(Some(record)) => record,
@@ -569,6 +570,7 @@ pub(crate) fn sys_waitid(
                 crate::task::ChildWaitClass::Ordinary
             },
             creator_only: options & NOTHREAD != 0,
+            ptrace_stops: options & STOPPED != 0,
         },
     );
     let mut info = [0u8; 28];

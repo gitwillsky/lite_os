@@ -11,3 +11,6 @@ crate-type = ["dylib", "rlib"]
 liteos-runtime = { path = "../liteos-runtime" }
 linux-uapi = { path = "../linux-uapi" }
 tz-rs = "=0.7.3"
+
+[lints]
+workspace = true

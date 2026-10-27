@@ -48,7 +48,7 @@ def managed_path(path: str) -> bool:
     if path.startswith("/usr/share/applications/") and path.endswith(".desktop"):
         return True
     return path in {
-        *RETIRED_FILES, *(f"/bin/{name}" for name in ACCOUNT_APPLETS), "/bin/shutdown", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
+        *RETIRED_FILES, *(f"/bin/{name}" for name in ACCOUNT_APPLETS), "/bin/shutdown", "/bin/wine", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
         "/etc/init.d/display-service", "/etc/init.d/network-service", "/usr/share/udhcpc/default.script",
         "/etc/profile", "/bin/logon", "/bin/desktop", "/bin/file-explorer", "/bin/control-panel", "/bin/taskmgr", "/bin/sndvol", "/bin/sndplay", "/bin/mplay", "/bin/notepad", "/bin/devmgmt", "/bin/session-launch",
     } or any(path.startswith(root + "/") for root in RETIRED_TREES)

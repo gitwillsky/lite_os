@@ -9,6 +9,8 @@ use classic_ui::{
 use std::{collections::HashMap, io, path::Path};
 pub struct Art {
     bitmaps: HashMap<String, Bitmap>,
+    /// 当前应用/桌面条目拥有的图标；清单刷新时整体重建，卸载后不保留失效图像。
+    entry_bitmaps: HashMap<String, Bitmap>,
     /// 任务按钮上的程序图标，按窗口 `app_id` 取。
     app_icons: AppIcons,
     /// 系统主题与按主题解析的字体；外壳与应用读取同一份设置。
@@ -52,6 +54,7 @@ impl Art {
         }
         Ok(Self {
             bitmaps,
+            entry_bitmaps: HashMap::new(),
             app_icons: AppIcons::load(16),
             resources: Resources::system()?,
         })
@@ -91,20 +94,30 @@ impl Art {
         })
     }
     pub fn bitmap(&self, name: &str) -> Option<&Bitmap> {
-        self.bitmaps.get(name)
+        self.entry_bitmaps
+            .get(name)
+            .or_else(|| self.bitmaps.get(name))
     }
-    /// 载入桌面条目声明的程序图标（`<icon>-16.bmp`），开始菜单的程序项用；已载入或缺失的跳过。
-    pub fn register(&mut self, entries: &[desktop_entry::Entry]) {
-        for name in entries.iter().filter_map(|entry| entry.icon.as_deref()) {
-            let key = format!("{name}-16");
-            if self.bitmaps.contains_key(&key) {
+    /// 当前安装条目与桌面快捷方式共用图标加载入口；刷新时移除已卸载条目的像素。
+    pub fn register(&mut self, entries: &[desktop_entry::Entry], icons: &[super::icons::Icon]) {
+        self.entry_bitmaps.clear();
+        let applications = entries
+            .iter()
+            .filter_map(|entry| entry.icon.as_deref())
+            .flat_map(|name| [(name, 16), (name, 32)]);
+        let desktop = icons
+            .iter()
+            .filter_map(|icon| icon.art.strip_suffix("-32").map(|name| (name, 32)));
+        for (name, size) in applications.chain(desktop) {
+            let key = format!("{name}-{size}");
+            if self.bitmaps.contains_key(&key) || self.entry_bitmaps.contains_key(&key) {
                 continue;
             }
-            let path = Path::new("/usr/share/liteos/ui").join(format!("{key}.bmp"));
-            if let Ok(bitmap) = Bitmap::load(&path) {
-                self.bitmaps.insert(key, bitmap);
+            if let Ok(bitmap) = Bitmap::application_icon(name, size) {
+                self.entry_bitmaps.insert(key, bitmap);
             }
         }
+        self.app_icons = AppIcons::load(16);
     }
     /// 画名为 `name` 的图标；没有这张素材时退回通用应用图标，不留空位。
     /// 桌面图标网格单元：主题的图标间距。
@@ -115,8 +128,7 @@ impl Art {
 
     pub fn icon(&self, p: &mut Painter<'_>, name: &str, x: i32, y: i32) {
         if let Some(bitmap) = self
-            .bitmaps
-            .get(name)
+            .bitmap(name)
             .or_else(|| self.bitmaps.get("file-app-16"))
         {
             bitmap.paint(p, x, y);
@@ -241,7 +253,7 @@ pub fn frame(
             // 图标与标题按 comctl32 大图标项绘制（与资源管理器共用）：标题用主题的图标字体，
             // 选中时图标与高亮色混合、只高亮标题框；桌面拥有焦点时选中项带焦点框。
             let selected = s.selected == Some(i);
-            let bitmap = art.bitmap(icon.art);
+            let bitmap = art.bitmap(&icon.art).or_else(|| art.bitmap("file-app-32"));
             p.with_role(FontRole::Icon, |p| {
                 p.large_icon_item(
                     r,

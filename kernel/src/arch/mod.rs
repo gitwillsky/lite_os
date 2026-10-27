@@ -152,8 +152,8 @@ pub(crate) mod mmu {
 /// Trap entry, decoding and return mechanism selected at compile time.
 pub(crate) mod trap {
     pub(crate) use super::selected::{
-        TrapEvent, UserTrapEntry, install_kernel_entry, kernel_exception, return_to_user,
-        trap_event as event, user_entry,
+        TrapEvent, UserFault, UserTrapEntry, install_kernel_entry, kernel_exception,
+        return_to_user, trap_event as event, user_entry,
     };
 }
 

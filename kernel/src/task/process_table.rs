@@ -39,6 +39,8 @@ mod policy;
 mod process_exit;
 mod process_group;
 mod process_retirement;
+pub(in crate::task) mod ptrace;
+pub(crate) use ptrace::{PtraceError, PtraceRequest, ptrace_attach, ptrace_request, ptrace_target};
 mod procfs;
 mod resource_limit;
 mod seccomp;
@@ -121,6 +123,8 @@ enum ExitRetirement {
     /// 所有执行体已摘除，但实际 Thread retirement 仍持 MM/vfork 清理 obligation。
     Retiring,
     Waitable,
+    /// 实际 retirement 已完成，leader exit 尚须先交给 tracer，再通知/回收 real parent。
+    Traced,
     AfterClaim,
 }
 
@@ -183,11 +187,17 @@ struct ProcessNode {
     pdeath_next: Option<usize>,
     pdeath_cursor: usize,
     child_events: ChildEvents,
+    // OWNER: 此 tracer group 的受跟踪 TID membership；状态只归 graph.tracees。
+    // wait/exit 不得因系统其他 debugger 的目标数量而扫描整个 tracee registry。
+    ptracees: FallibleMap<usize, ()>,
     child_waiters: FallibleMap<usize, Arc<TaskControlBlock>>,
     child_wait_claim: Option<wait_child::ChildWaitClaim>,
 }
 
 struct ProcessGraph {
+    // OWNER: graph 独占逐 Thread tracer relation、停止与 wait claim；不保活目标 TCB/MM。
+    // 缺少独立 relation 会把 ptrace-stop 错当整个进程的 job-control stop。
+    tracees: FallibleMap<usize, ptrace::Tracee>,
     next_pid: usize,
     processes_created: u64,
     nodes: FallibleMap<usize, ProcessNode>,
@@ -244,6 +254,7 @@ impl ProcessTable {
     const fn new() -> Self {
         Self {
             graph: IrqMutex::new(ProcessGraph {
+                tracees: FallibleMap::new(),
                 next_pid: INIT_PID + 1,
                 processes_created: 1,
                 nodes: FallibleMap::new(),
@@ -331,6 +342,7 @@ impl ProcessTable {
                 pdeath_next: None,
                 pdeath_cursor: 0,
                 child_events: ChildEvents::default(),
+                ptracees: FallibleMap::new(),
                 child_waiters: FallibleMap::new(),
                 child_wait_claim: None,
             },
@@ -568,8 +580,8 @@ pub(crate) fn wait_for_signal(
 ) -> Result<(usize, PendingSignal), SignalWaitError> {
     let task = current_task().expect("signal wait requires current task");
     loop {
-        if let Some(signal) = task.take_pending_signal(mask) {
-            return Ok(signal);
+        if let Some((signal, info, _)) = task.take_pending_signal(mask) {
+            return Ok((signal, info));
         }
         let ticket = WAIT_REGISTRY.allocate_ticket();
         let prepared = ticket.prepare_signal(mask, deadline, task.clone());

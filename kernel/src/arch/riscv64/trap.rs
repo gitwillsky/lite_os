@@ -10,6 +10,22 @@ use riscv::{
 use super::mmu::AddressSpaceToken;
 
 /// User trampoline 跳转目标的 opaque architecture entry。
+/// 一次用户内存异常的架构快照；RISC-V signal ABI 只暴露 fault 地址。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct UserFault {
+    address: usize,
+}
+
+impl UserFault {
+    /// 投影通用 memory/signal owner 所需的地址。
+    ///
+    /// # Returns
+    /// 同一次用户异常的 fault 地址。
+    pub(crate) fn address(self) -> usize {
+        self.address
+    }
+}
+
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct UserTrapEntry(usize);
@@ -48,11 +64,12 @@ pub(crate) enum TrapEvent {
     IllegalInstruction,
     Breakpoint,
     UserEnvironmentCall,
-    InstructionPageFault { address: usize },
-    LoadPageFault { address: usize },
-    StorePageFault { address: usize },
-    LoadAccessFault { address: usize },
-    StoreAccessFault { address: usize },
+    InstructionPageFault { fault: UserFault },
+    LoadPageFault { fault: UserFault },
+    StorePageFault { fault: UserFault },
+    LoadAccessFault { fault: UserFault },
+    StoreAccessFault { fault: UserFault },
+    AlignmentFault { fault: UserFault },
     UnsupportedException { address: usize },
 }
 
@@ -67,6 +84,7 @@ pub(crate) struct KernelException {
 pub(crate) fn event() -> TrapEvent {
     let cause = scause::read().cause();
     let address = stval::read();
+    let fault = UserFault { address };
     match cause {
         Trap::Interrupt(code) => match Interrupt::from_number(code) {
             Ok(Interrupt::SupervisorTimer) => TrapEvent::TimerInterrupt,
@@ -78,11 +96,14 @@ pub(crate) fn event() -> TrapEvent {
             Ok(Exception::IllegalInstruction) => TrapEvent::IllegalInstruction,
             Ok(Exception::Breakpoint) => TrapEvent::Breakpoint,
             Ok(Exception::UserEnvCall) => TrapEvent::UserEnvironmentCall,
-            Ok(Exception::InstructionPageFault) => TrapEvent::InstructionPageFault { address },
-            Ok(Exception::LoadPageFault) => TrapEvent::LoadPageFault { address },
-            Ok(Exception::StorePageFault) => TrapEvent::StorePageFault { address },
-            Ok(Exception::LoadFault) => TrapEvent::LoadAccessFault { address },
-            Ok(Exception::StoreFault) => TrapEvent::StoreAccessFault { address },
+            Ok(Exception::InstructionPageFault) => TrapEvent::InstructionPageFault { fault },
+            Ok(Exception::LoadPageFault) => TrapEvent::LoadPageFault { fault },
+            Ok(Exception::StorePageFault) => TrapEvent::StorePageFault { fault },
+            Ok(Exception::LoadMisaligned) | Ok(Exception::StoreMisaligned) => {
+                TrapEvent::AlignmentFault { fault }
+            }
+            Ok(Exception::LoadFault) => TrapEvent::LoadAccessFault { fault },
+            Ok(Exception::StoreFault) => TrapEvent::StoreAccessFault { fault },
             Ok(_) | Err(_) => TrapEvent::UnsupportedException { address },
         },
     }

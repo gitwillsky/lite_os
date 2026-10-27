@@ -58,7 +58,12 @@ impl Client {
                 self.create(id, Interface::WlPointer, version, Data::None)
             }
             wl_seat::Request::GetKeyboard { id } => {
-                self.create(id, Interface::WlKeyboard, version, Data::None)?;
+                self.create(
+                    id,
+                    Interface::WlKeyboard,
+                    version,
+                    Data::Keyboard { entered: false },
+                )?;
                 self.send_keymap(id, version)
             }
             wl_seat::Request::GetTouch { .. } => Err(Fail::new(
@@ -315,10 +320,28 @@ impl Client {
         }
     }
 
-    /// 键盘获得焦点；`pressed` 是此刻按住的键（evdev 码）。
+    /// 是否存在尚未取得 enter 的键盘对象；不分配，也不保存另一份全局焦点。
+    pub fn keyboard_needs_enter(&self) -> bool {
+        self.objects
+            .values()
+            .any(|entry| matches!(entry.data, Data::Keyboard { entered: false }))
+    }
+
+    /// 键盘获得焦点；`pressed` 是此刻按住的键（evdev 码）。只初始化尚未 enter 的对象。
     pub fn keyboard_enter(&mut self, serial: u32, surface: ObjectId, pressed: &[u32]) {
         let keys: Vec<u8> = pressed.iter().flat_map(|key| key.to_ne_bytes()).collect();
         for (keyboard, _) in self.objects_of(Interface::WlKeyboard) {
+            let entry = self
+                .objects
+                .get_mut(&keyboard.get())
+                .expect("keyboard resource");
+            let Data::Keyboard { entered } = &mut entry.data else {
+                unreachable!("keyboard state")
+            };
+            if *entered {
+                continue;
+            }
+            *entered = true;
             let _ = wl_keyboard::Event::Enter {
                 serial,
                 surface,
@@ -329,7 +352,26 @@ impl Client {
     }
 
     pub fn keyboard_leave(&mut self, serial: u32, surface: ObjectId) {
+        // surface 可能已被客户端销毁：仍清理每个键盘的 entered 状态，但不能发送已失效的对象引用。
+        let live = self
+            .objects
+            .get(&surface.get())
+            .is_some_and(|entry| matches!(entry.data, Data::Surface(_)));
         for (keyboard, _) in self.objects_of(Interface::WlKeyboard) {
+            let entry = self
+                .objects
+                .get_mut(&keyboard.get())
+                .expect("keyboard resource");
+            let Data::Keyboard { entered } = &mut entry.data else {
+                unreachable!("keyboard state")
+            };
+            if !*entered {
+                continue;
+            }
+            *entered = false;
+            if !live {
+                continue;
+            }
             let _ =
                 wl_keyboard::Event::Leave { serial, surface }.encode(keyboard, &mut self.writer);
         }
@@ -343,6 +385,13 @@ impl Client {
             wl_keyboard::KeyState::Released
         };
         for (keyboard, _) in self.objects_of(Interface::WlKeyboard) {
+            if !self
+                .objects
+                .get(&keyboard.get())
+                .is_some_and(|entry| matches!(entry.data, Data::Keyboard { entered: true }))
+            {
+                continue;
+            }
             let _ = wl_keyboard::Event::Key {
                 serial,
                 time,
@@ -355,6 +404,13 @@ impl Client {
 
     pub fn keyboard_modifiers(&mut self, serial: u32, depressed: u32, locked: u32) {
         for (keyboard, _) in self.objects_of(Interface::WlKeyboard) {
+            if !self
+                .objects
+                .get(&keyboard.get())
+                .is_some_and(|entry| matches!(entry.data, Data::Keyboard { entered: true }))
+            {
+                continue;
+            }
             let _ = wl_keyboard::Event::Modifiers {
                 serial,
                 mods_depressed: depressed,

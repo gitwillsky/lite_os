@@ -271,6 +271,18 @@ impl TaskControlBlock {
             }
     }
 
+    /// Linux cap_ptrace_traceme：parent 的 permitted 子集或目标 UserNS 的 SYS_PTRACE。
+    /// 自愿跟踪不复用 ATTACH 的 UID/dumpability 检查。
+    pub(in crate::task) fn may_trace_me(&self, target: &TaskControlBlock) -> bool {
+        let caller = self.credential_snapshot();
+        let target = target.credential_snapshot();
+        (Arc::ptr_eq(&caller.user_namespace, &target.user_namespace)
+            && target.capabilities.sets.permitted & !caller.capabilities.sets.permitted == 0)
+            || self
+                .namespace_authority()
+                .capable(&target.user_namespace, Capability::SYS_PTRACE)
+    }
+
     /// native REALCREDS ptrace credential policy；READ/ATTACH 调用方串行化目标的完整 exec commit。
     pub(in crate::task) fn may_inspect_thread_real(&self, target: &TaskControlBlock) -> bool {
         let credentials = target.credential_snapshot();
@@ -477,7 +489,8 @@ impl TaskControlBlock {
         gid: u32,
         file: Option<syscall_abi::file_capability::FileCapabilityData>,
     ) -> Result<PreparedExecCredentials, super::capabilities::CapabilityError> {
-        let nnp = self.no_new_privileges();
+        let nnp =
+            self.no_new_privileges() || super::super::process_table::ptrace::restrict_exec(self);
         self.thread()
             .credentials
             .lock()

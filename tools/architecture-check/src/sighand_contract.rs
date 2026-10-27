@@ -165,7 +165,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("signal-queue: graph removal and SIG_IGN must retire actual records independently of observer pins".into());
     }
-    let signal = source(sources, "kernel/src/task/process_table/signal.rs");
+    let signal = source(
+        sources,
+        "kernel/src/task/process_table/signal/disposition.rs",
+    );
     // 顶层 free function 的 graph → timer choreography；动态退休必须在 graph 外。
     if !matches!((signal.text.find("drop(graph);\n    if result.is_ok()"), signal.text.find("result.map(|(action, retired)|")),
         (Some(unlock), Some(retire)) if unlock < retire)
@@ -369,22 +372,26 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors.push("sighand: native clone exit signal, parent exec epoch, orphan/exec reset and wait class must belong to the actual relation".into());
     }
     let delivery = source(sources, DELIVERY);
-    if !delivery.text.contains("handlers.select(signal)")
-        || !delivery.text.contains("(!selected.is_timer())")
-        || !delivery
-            .text
-            .contains(".then(|| handlers.select(selected.signal))")
-        || delivery.text.contains("SA_RESETHAND")
-        || delivery.text.contains("state.actions")
-    {
-        errors.push("sighand: one-shot reset belongs to locked selection before user-copy".into());
+    let dequeue = source(sources, "kernel/src/task/model/signal_dequeue.rs");
+    let stages = [
+        "self.take_pending_signal(!selection_mask)",
+        "ptrace::intercept_signal",
+        "handlers.select(signal)",
+        "self.copy_to_user(frame_address",
+    ];
+    let mut previous = 0;
+    for stage in stages {
+        match delivery.text.find(stage) {
+            Some(position) if position >= previous => previous = position,
+            _ => errors.push(format!("sighand: dequeue, tracer decision, locked one-shot selection and frame copy must preserve order: {stage}")),
+        }
     }
-    if !matches!((delivery.text.find("selected.resolve("), delivery.text.find("handlers.select(signal)")),
-        (Some(resolve), Some(select)) if resolve < select)
+    if delivery.text.contains("SA_RESETHAND")
+        || delivery.text.contains("state.actions")
+        || !dequeue.text.contains("selected.resolve(")
+        || !dequeue.text.contains("let (selected, queue) = selected?;")
     {
-        errors.push(
-            "sighand: stale timer notification must resolve before one-shot action reset".into(),
-        );
+        errors.push("sighand: timer validation belongs to canonical dequeue; one-shot reset belongs to locked handler selection".into());
     }
     for fact in [
         "self.actions[signal].handler = 0",

@@ -14,11 +14,8 @@ use classic_ui::{
 use dialogs::{Dialog, Kind};
 use std::{
     io::{self, Read, Write},
-    os::{
-        fd::AsFd,
-        unix::{fs::PermissionsExt, net::UnixStream},
-    },
-    path::{Path, PathBuf},
+    os::{fd::AsFd, unix::net::UnixStream},
+    path::PathBuf,
     process::{Child, Command, ExitCode, Stdio},
     time::{Duration, Instant},
 };
@@ -26,11 +23,10 @@ use std::{
 /// 任务栏高度（逻辑像素）；开始菜单贴在它上方。
 const TASKBAR_HEIGHT: i32 = 28;
 
-/// 开始菜单"程序"里的条目：已安装程序里除设置程序（属于控制面板）之外的前 12 个。
+/// 开始菜单“程序”使用用户与系统安装条目；设置程序只在控制面板出现。
 fn installed_programs() -> Vec<desktop_entry::Entry> {
-    let mut apps = desktop_entry::load(std::path::Path::new("/usr/share/applications"));
+    let mut apps = desktop_entry::installed();
     apps.retain(|app| !app.in_category("Settings"));
-    apps.truncate(12);
     apps
 }
 
@@ -268,19 +264,10 @@ impl Desktop {
         match icon.target.clone() {
             icons::Target::Place(place) => self.open_place(place),
             icons::Target::Path(path) if path.is_dir() => self.files(path),
-            icons::Target::Path(path) => {
-                let executable =
-                    std::fs::metadata(&path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0);
-                if executable {
-                    self.launch(Command::new(path));
-                } else if let Some(command) =
-                    desktop_entry::open_with(Path::new("/usr/share/applications"), &path)
-                {
-                    self.launch(command);
-                } else {
-                    self.message = format!("没有与 {} 关联的程序。", icon.label);
-                }
-            }
+            icons::Target::Path(path) => match desktop_entry::open(&path) {
+                Ok(command) => self.launch(command),
+                Err(error) => self.message = format!("无法打开 {}: {error}", icon.label),
+            },
         }
     }
 
@@ -801,6 +788,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut minute = 0;
     let mut last_unix_minute = 0;
     let mut revision = 0;
+    // 外部安装器会写入 XDG 应用目录；每秒刷新一次，避免每个输入事件都扫描完整应用树。
+    let mut application_poll = Instant::now();
     let mut pending = std::collections::HashSet::new();
     loop {
         if let Some(event) = display.next_event_timeout(Duration::from_millis(100))? {
@@ -819,15 +808,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         dirty |= state.network.poll();
         dirty |= state.poll_settings(&mut display)?;
         state.tick_auto_hide(&mut display)?;
+        if application_poll.elapsed() >= Duration::from_secs(1) {
+            application_poll = Instant::now();
+            let apps = installed_programs();
+            if apps != state.apps {
+                state.apps = apps;
+                state.apps_changed = true;
+            }
+        }
+        if state.icons.poll() {
+            state.apps_changed = true;
+        }
         if std::mem::take(&mut state.apps_changed) {
-            art.register(&state.apps);
+            art.register(&state.apps, &state.icons.items);
             dirty = true;
         }
         state.sync_tooltip(&mut display, &mut art)?;
         if dirty {
             state.sync_task_rectangles(&mut display)?;
         }
-        dirty |= state.icons.poll();
         let unix = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)?
             .as_secs() as i64;

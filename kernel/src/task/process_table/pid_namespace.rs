@@ -101,6 +101,7 @@ pub(super) fn shutdown(
             super::wait_child::ChildWaitFilter {
                 class: super::wait_child::ChildWaitClass::All,
                 creator_only: false,
+                ptrace_stops: true,
             },
         ) {
             Ok(Some(record)) => {

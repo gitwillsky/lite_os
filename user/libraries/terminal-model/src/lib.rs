@@ -9,8 +9,6 @@ mod selection;
 pub use selection::{CellPosition, SelectionProjection};
 mod style;
 mod viewport;
-#[cfg(test)]
-mod wide_tests;
 
 use cursor::CursorStyle;
 use reflow::{History, allocate_grid, free_grid, resize_screen};
@@ -505,3 +503,5 @@ impl Drop for ResizeCandidate {
         );
     }
 }
+#[cfg(test)]
+mod wide_tests;

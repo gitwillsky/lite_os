@@ -11,3 +11,6 @@ path = "src/main.rs"
 [dependencies]
 liteos-ui = { path = "../../libraries/liteos-ui" }
 sound = { path = "../../libraries/sound" }
+
+[lints]
+workspace = true

@@ -92,6 +92,7 @@ impl TaskControlBlock {
         } else {
             None
         };
+        let exec_trace_link = super::super::process_table::ptrace::prepare_exec_link(self)?;
         let (new_memory_set, user_sp, entry_point) = loaded.build_address_space(
             envs,
             credentials.stack_credentials(),
@@ -120,7 +121,7 @@ impl TaskControlBlock {
         // Linux exec 在旧 mm 仍可访问时完成 robust owner-death publication，并清除
         // per-Thread registration；否则相同 VA 在新映像中会被误当成旧 robust list。
         self.cleanup_robust_list();
-        super::super::process_table::mark_process_exec(self, exec_pid_link);
+        super::super::process_table::mark_process_exec(self, exec_pid_link, exec_trace_link);
         // POSIX timers 不跨 exec 保留；在旧映像仍唯一运行、且提交已不可失败时清理，
         // 否则新程序会收到由旧 handler/value 创建的异步 signal。
         crate::task::remove_posix_timers_for_exec(self.tgid());
@@ -209,6 +210,7 @@ impl TaskControlBlock {
         // vfork parent 只能在完整 exec commit 且 RISC-V child 临时 trap VMA 已删除后恢复；
         // AArch64 context 随独立 KernelStack 保活。提前唤醒会让共享旧 mm 的 detach 顺序失效。
         super::super::process_table::vfork::complete_vfork_exec(self.tid());
+        super::super::process_table::ptrace::exec_completed(self);
         Ok(())
     }
 

@@ -6,3 +6,6 @@ publish.workspace = true
 
 [dependencies]
 classic-ui-abi = { path = "../classic-ui-abi" }
+
+[lints]
+workspace = true

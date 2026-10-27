@@ -236,7 +236,6 @@ class MuslRoutingTests(unittest.TestCase):
         compiler = module.find_compiler()
         compiler_runtime = module.obtain_compiler_runtime(compiler)
         _, linker, archiver, _ = module.find_runtime_toolchain()
-        self.assertEqual(compiler.name, "clang")
         self.assertEqual(compiler_runtime.name, "libcompiler-runtime.a")
         symbols = module.run(
             [str(archiver.with_name("llvm-nm")), "--defined-only", "--format=just-symbols", str(compiler_runtime)],

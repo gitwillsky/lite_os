@@ -38,6 +38,8 @@ enum SignalPayload {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum SignalForce {
     None,
+    // 信号产生时目标已被跟踪：即使 disposition 为 IGN 也必须唤醒到 signal-delivery stop。
+    Ptrace,
     Namespace,
     Synchronous,
 }
@@ -80,6 +82,11 @@ impl Default for PendingSignal {
 }
 
 impl PendingSignal {
+    /// tracer 的标准 SIGCHLD/CLD_TRAPPED，PID/UID 已投影到 tracer namespace。
+    pub(crate) fn ptrace_stopped(pid: u32, uid: u32, signal: usize) -> Self {
+        Self::identity(4, pid as usize, signal as i32).with_identity(pid, uid, false)
+    }
+
     fn identity(code: i32, pid: usize, status: i32) -> Self {
         Self {
             code,
@@ -398,8 +405,17 @@ impl PendingSignal {
                 && matches!(self.payload, SignalPayload::Identity { .. })
     }
 
-    pub(super) fn is_forced(self) -> bool {
+    pub(super) fn for_ptrace(mut self, traced: bool) -> Self {
+        if traced {
+            self.force = self.force.max(SignalForce::Ptrace);
+        }
+        self
+    }
+    pub(super) fn requires_delivery(self) -> bool {
         self.force != SignalForce::None
+    }
+    pub(super) fn is_forced(self) -> bool {
+        self.force >= SignalForce::Namespace
     }
     pub(super) fn bypasses_init(self, signal: usize) -> bool {
         self.force == SignalForce::Synchronous

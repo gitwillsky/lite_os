@@ -14,6 +14,11 @@
 - io_uring 的 ABI（`include/uapi/linux/io_uring.h`）与语义（`io_uring/*.c`）取自同一固定源码树；本地以 `linux-7.1.tar.xz` 的 SHA-256 校验后解包，不另设来源。
 - 该固定源码树定义共享 syscall number、architecture UAPI layout/flags、return 与 Linux errno。POSIX 和 libc wrapper 不能替代该层；本基线不声明未经固定一手 revision 的 Arm ABI 或 architecture 版本号。
 
+ptrace 的 request、access policy、stop/wait、exec/exit 与 regset 布局取自同一固定 Linux revision 的
+[`kernel/ptrace.c`](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/ptrace.c)、
+`kernel/signal.c`、`kernel/exit.c`、`security/commoncap.c`、`arch/arm64/kernel/ptrace.c` 与
+`arch/riscv/kernel/ptrace.c`；musl `src/linux/ptrace.c` 只负责 raw PEEK 的 libc 返回值转换。
+
 ### RISC-V ELF psABI
 
 - `1.1` pre-release；tag `draft-20260701-e03d44ae2f0e1144f9498c2896b5ae25b0449398`；commit `e03d44ae2f0e1144f9498c2896b5ae25b0449398`。
@@ -136,6 +141,9 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 
 ### 桌面程序入口与系统图像
 
+- [XDG Base Directory Specification `0.8`](https://specifications.freedesktop.org/basedir-spec/0.8/)；
+  [Icon Theme Specification `0.13`](https://specifications.freedesktop.org/icon-theme/0.13/)（当前实现 hicolor PNG 子集）。
+- PNG 解码库 `png=0.18.0`，精确依赖与摘要由 `user/Cargo.lock` 固定。
 - Desktop Entry Specification `1.5`；当前程序启动只实现 [Exec 规则](https://specifications.freedesktop.org/desktop-entry/1.5/exec-variables.html) 的明确子集，未支持项不作为完整兼容性声明。
 - 系统图像固定为 [BITMAPV4HEADER](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-bitmapv4header) 的 108-byte header、top-down 与 sRGB：32-bit BI_BITFIELDS 使用显式 RGBA masks；
   8-bit BI_RGB 使用 [RGBQUAD](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-rgbquad) 调色板与四字节行对齐，下标不经 RGB 转换。

@@ -275,16 +275,8 @@ pub(crate) mod memory_file {
 #[path = "../../../kernel/src/fs/inotify/queue.rs"]
 pub(crate) mod inotify_queue;
 
-#[cfg(test)]
-#[path = "tests/inotify_queue.rs"]
-mod inotify_queue_tests;
-
 #[path = "../../../kernel/src/fs/ext4_identity.rs"]
 pub(crate) mod ext4_identity;
-
-#[cfg(test)]
-#[path = "tests/ext4_identity.rs"]
-mod ext4_identity_tests;
 
 #[path = "../../../kernel/src/fs/mount_options.rs"]
 pub(crate) mod mount_options;
@@ -294,10 +286,6 @@ pub(crate) mod tmpfs_options;
 
 #[path = "../../../kernel/src/fs/tmpfs/directory.rs"]
 pub(crate) mod tmpfs_directory;
-
-#[cfg(test)]
-#[path = "tests/tmpfs.rs"]
-mod tmpfs_tests;
 
 #[path = "../../../tools/kernel-view/fs/ext4/ext4/ext4.rs"]
 pub(crate) mod ext4;
@@ -331,3 +319,15 @@ pub(crate) mod inode_times;
 #[path = "../../../kernel/src/fs/write_access.rs"]
 mod write_access;
 pub(crate) use write_access::{InodeAccessLease, InodeWriteAccess};
+
+#[cfg(test)]
+#[path = "tests/inotify_queue.rs"]
+mod inotify_queue_tests;
+
+#[cfg(test)]
+#[path = "tests/ext4_identity.rs"]
+mod ext4_identity_tests;
+
+#[cfg(test)]
+#[path = "tests/tmpfs.rs"]
+mod tmpfs_tests;

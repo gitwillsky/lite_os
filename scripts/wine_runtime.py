@@ -201,6 +201,10 @@ def wine_userland() -> tuple[UserlandArtifact, ...]:
             artifacts.append(UserlandArtifact(path, f"{LIBRARY_DIRECTORY}/{path.name}", 0o755))
         else:
             artifacts.append(UserlandArtifact(path, f"/{relative}", 0o644))
+    # 应用安装与生成的快捷方式共用 /bin/wine，按登录用户选择唯一前缀。
+    artifacts.append(UserlandArtifact(ROOT / "user/base/wine/wine", "/bin/wine", 0o755))
+    artifacts.extend(UserlandArtifact(path, f"/usr/share/applications/{path.name}")
+                     for path in sorted((ROOT / "user/base/wine").glob("*.desktop")))
     artifacts.append(UserlandArtifact(_fontconfig(), "/etc/fonts/conf.d/99-liteos-ui.conf", 0o644))
     names = [artifact.destination for artifact in artifacts]
     if len(names) != len(set(names)):

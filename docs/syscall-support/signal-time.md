@@ -52,9 +52,12 @@ disposition/pending 与 autoreap 保持原事务，父/creator/reaper 改边则�
 投影且绑定原 identity。相关 producer/guest/benchmark 覆盖见运行时回归文档，普通 pending
 与 timer 共用 signal 的 ucounts/合并交互使用同一预算 owner。
 
-AArch64 `rt_sigframe` 固定为 4688 bytes，只接受一个 528-byte `FPSIMD_MAGIC`
-record 和 null terminator；SVE/SME、ESR、extra context 及动态扩展 frame 尚未开放。
-`rt_sigreturn` 只允许恢复 NZCV，拒绝 DAIF、PAN 等未由用户 ABI owner 管理的 PSTATE 位，
+AArch64 `rt_sigframe` 固定为 4688 bytes，包含一个 528-byte `FPSIMD_MAGIC` record、
+最后一次实际投递内存异常的可选标准 `ESR_MAGIC` record 和 null terminator。ESR 只供诊断，
+`rt_sigreturn` 跳过该记录且不恢复用户写入的 ESR；SVE/SME、extra context 及动态扩展 frame 尚未开放。
+AArch64 data alignment fault（DFSC `0x21`）与 RISC-V load/store misaligned fault 投递 `SIGBUS/BUS_ADRALN`，
+保留真实 fault 地址；普通权限/未映射错误仍分别为 `SIGSEGV/SEGV_ACCERR` 与 `SEGV_MAPERR`。
+`rt_sigreturn` 只允许恢复 NZCV、BTYPE 与 SSBS，拒绝 DAIF、PAN 等未由用户 ABI owner 管理的 PSTATE 位，
 并要求 PC 位于用户地址空间且 4-byte 对齐。
 
 计时 futex 与相对 nanosleep/clock_nanosleep 已接标准 restart-block；无 handler 的 stop/continue 保留原期限，捕获 handler 始终 EINTR，rt_sigreturn 清理 block。绝对 clock_nanosleep 使用 ERESTARTNOHAND，STOP 不提前消费重放记录；

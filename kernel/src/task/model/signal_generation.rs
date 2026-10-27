@@ -32,12 +32,14 @@ impl TaskControlBlock {
         &self,
         threads: impl Iterator<Item = &'a Arc<TaskControlBlock>>,
         signal: usize,
+        traced: bool,
         info: PendingSignal,
         prepared: &mut PreparedSignalRecord,
     ) -> Result<(bool, RetiredSignals), ()> {
         if signal == 0 || signal > 64 {
             return Err(());
         }
+        let info = info.for_ptrace(traced);
         let mask = self.thread().signal_mask.lock();
         self.process()
             .signal_state
@@ -48,13 +50,15 @@ impl TaskControlBlock {
                 for thread in threads {
                     retired.append(thread.thread().pending_signals.lock().discard(conflicting));
                 }
-                if handlers.ignores_generation(
-                    signal,
-                    *mask,
-                    self.is_namespace_init(),
-                    self.tgid() == 1,
-                    info.is_forced(),
-                ) {
+                if (!traced || signal == syscall_abi::signal::SIGKILL)
+                    && handlers.ignores_generation(
+                        signal,
+                        *mask,
+                        self.is_namespace_init(),
+                        self.tgid() == 1,
+                        info.is_forced(),
+                    )
+                {
                     return Ok((false, retired));
                 }
                 if prepared.unavailable_for(signal, info) {
@@ -91,10 +95,18 @@ impl TaskControlBlock {
         &self,
         threads: impl Iterator<Item = &'a Arc<TaskControlBlock>>,
         signal: usize,
+        traced: bool,
         info: PendingSignal,
         prepared: &mut PreparedSignalRecord,
     ) -> Result<(bool, RetiredSignals), ()> {
-        self.queue_process_signal_mask(&self.thread().signal_mask, threads, signal, info, prepared)
+        self.queue_process_signal_mask(
+            &self.thread().signal_mask,
+            threads,
+            signal,
+            traced,
+            info,
+            prepared,
+        )
     }
 
     /// PIDTYPE_TGID/PGID 从原 leader 的实际 mask 生成；leader zombie 不借某个 worker 的 mask。
@@ -102,11 +114,12 @@ impl TaskControlBlock {
         &self,
         threads: impl Iterator<Item = &'a Arc<TaskControlBlock>>,
         signal: usize,
+        traced: bool,
         info: PendingSignal,
         prepared: &mut PreparedSignalRecord,
     ) -> Result<(bool, RetiredSignals), ()> {
         let mask = self.process().leader_signal_mask.lock().clone();
-        self.queue_process_signal_mask(&mask, threads, signal, info, prepared)
+        self.queue_process_signal_mask(&mask, threads, signal, traced, info, prepared)
     }
 
     fn queue_process_signal_mask<'a>(
@@ -114,12 +127,14 @@ impl TaskControlBlock {
         recipient_mask: &spin::Mutex<u64>,
         threads: impl Iterator<Item = &'a Arc<TaskControlBlock>>,
         signal: usize,
+        traced: bool,
         info: PendingSignal,
         prepared: &mut PreparedSignalRecord,
     ) -> Result<(bool, RetiredSignals), ()> {
         if signal == 0 || signal > 64 {
             return Err(());
         }
+        let info = info.for_ptrace(traced);
         let mask = recipient_mask.lock();
         self.process()
             .signal_state
@@ -130,13 +145,15 @@ impl TaskControlBlock {
                 for thread in threads {
                     retired.append(thread.thread().pending_signals.lock().discard(conflicting));
                 }
-                if handlers.ignores_generation(
-                    signal,
-                    *mask,
-                    self.is_namespace_init(),
-                    self.tgid() == 1,
-                    info.is_forced(),
-                ) {
+                if (!traced || signal == syscall_abi::signal::SIGKILL)
+                    && handlers.ignores_generation(
+                        signal,
+                        *mask,
+                        self.is_namespace_init(),
+                        self.tgid() == 1,
+                        info.is_forced(),
+                    )
+                {
                     return Ok((false, retired));
                 }
                 if prepared.unavailable_for(signal, info) {

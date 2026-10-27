@@ -199,6 +199,7 @@ pub(in crate::task) fn complete_pending_handoff() {
         return;
     };
     if finish_deschedule_transition(&task) {
+        super::ptrace::complete_stop(&task);
         super::complete_process_stop(task.tgid());
     }
     drop(task);

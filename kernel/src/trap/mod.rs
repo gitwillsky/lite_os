@@ -41,12 +41,16 @@
 use core::panic;
 
 use syscall_abi::signal::{
-    BUS_ADRERR, ILL_ILLOPC, ILL_ILLTRP, SEGV_ACCERR, SEGV_MAPERR, SIGBUS, SIGILL, SIGKILL, SIGSEGV,
-    SIGTRAP, TRAP_BRKPT,
+    BUS_ADRALN, BUS_ADRERR, ILL_ILLOPC, ILL_ILLTRP, SEGV_ACCERR, SEGV_MAPERR, SIGBUS, SIGILL,
+    SIGKILL, SIGSEGV, SIGTRAP, TRAP_BRKPT,
 };
 
 use crate::{
-    arch::{self, context::SyscallCompletion, trap::TrapEvent},
+    arch::{
+        self,
+        context::SyscallCompletion,
+        trap::{TrapEvent, UserFault},
+    },
     deferred::{self, DeferredWork},
     memory::TRAMPOLINE,
     memory::{MemoryError, PageFaultAccess, PageFaultOutcome, SegmentationCause},
@@ -167,18 +171,22 @@ pub(crate) fn handle_user_trap() -> ! {
                 panic!("user syscall without a current task");
             }
         }
-        TrapEvent::InstructionPageFault { address } => {
-            handle_user_page_fault(address, PageFaultAccess::Execute);
+        TrapEvent::InstructionPageFault { fault } => {
+            handle_user_page_fault(fault, PageFaultAccess::Execute);
         }
-        TrapEvent::StorePageFault { address } => {
-            handle_user_page_fault(address, PageFaultAccess::Write);
+        TrapEvent::StorePageFault { fault } => {
+            handle_user_page_fault(fault, PageFaultAccess::Write);
         }
-        TrapEvent::LoadPageFault { address } => {
-            handle_user_page_fault(address, PageFaultAccess::Read);
+        TrapEvent::LoadPageFault { fault } => {
+            handle_user_page_fault(fault, PageFaultAccess::Read);
         }
-        TrapEvent::LoadAccessFault { address } | TrapEvent::StoreAccessFault { address } => {
+        TrapEvent::LoadAccessFault { fault } | TrapEvent::StoreAccessFault { fault } => {
             let current = task::current_task().expect("user access fault without a task");
-            force_synchronous_fault(&current, SIGSEGV, SEGV_ACCERR, address);
+            force_memory_fault(&current, SIGSEGV, SEGV_ACCERR, fault);
+        }
+        TrapEvent::AlignmentFault { fault } => {
+            let current = task::current_task().expect("user alignment fault without a task");
+            force_memory_fault(&current, SIGBUS, BUS_ADRALN, fault);
         }
         TrapEvent::UnsupportedException { address } => {
             let current = task::current_task().expect("user exception without a task");
@@ -227,13 +235,25 @@ fn force_synchronous_fault(
         .expect("synchronous fault delivery must accept a valid current task");
 }
 
-fn handle_user_page_fault(address: usize, access: PageFaultAccess) {
+/// 只有实际投递的内存异常更新 Thread 的 fault metadata；已恢复的 lazy fault 不覆盖它。
+fn force_memory_fault(
+    current: &task::TaskControlBlock,
+    signal: usize,
+    code: i32,
+    fault: UserFault,
+) {
+    current.record_user_fault(fault);
+    force_synchronous_fault(current, signal, code, fault.address());
+}
+
+fn handle_user_page_fault(fault: UserFault, access: PageFaultAccess) {
+    let address = fault.address();
     let current = task::current_task().expect("user page fault without a task");
     match current.handle_page_fault(address, access) {
         Ok(PageFaultOutcome::Handled) => {}
         // file mapping 越过 EOF 与 backing I/O 失败均是 Linux `VM_FAULT_SIGBUS`。
         Ok(PageFaultOutcome::BusError) | Err(MemoryError::Io) => {
-            force_synchronous_fault(&current, SIGBUS, BUS_ADRERR, address);
+            force_memory_fault(&current, SIGBUS, BUS_ADRERR, fault);
         }
         // 物理页耗尽不是 address violation；缺少该分支会把真实 OOM 伪装为可捕获的 SIGSEGV，
         // 让 userspace 无法区分坏指针与无 swap 系统的 memory-pressure termination。
@@ -244,10 +264,10 @@ fn handle_user_page_fault(address: usize, access: PageFaultAccess) {
             exit_current_group_by_signal(SIGKILL);
         }
         Ok(PageFaultOutcome::SegmentationFault(SegmentationCause::AccessDenied)) => {
-            force_synchronous_fault(&current, SIGSEGV, SEGV_ACCERR, address);
+            force_memory_fault(&current, SIGSEGV, SEGV_ACCERR, fault);
         }
         Ok(PageFaultOutcome::SegmentationFault(SegmentationCause::Unmapped)) | Err(_) => {
-            force_synchronous_fault(&current, SIGSEGV, SEGV_MAPERR, address);
+            force_memory_fault(&current, SIGSEGV, SEGV_MAPERR, fault);
         }
     }
 }

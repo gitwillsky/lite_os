@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=添加/删除程序
+Comment=在当前用户的 Windows 环境中安装或卸载应用程序
+Exec=/bin/wine uninstaller
+Icon=control-panel
+Categories=Settings;
+StartupWMClass=uninstaller.exe

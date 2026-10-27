@@ -18,3 +18,7 @@ linux-uapi.workspace = true
 wayland-wire = { path = "../wayland-wire" }
 terminal-font.workspace = true
 unicode-width.workspace = true
+png = "=0.18.0"
+
+[lints]
+workspace = true

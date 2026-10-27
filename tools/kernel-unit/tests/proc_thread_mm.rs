@@ -65,6 +65,7 @@ mod fs {
                     capabilities: syscall_abi::capability::CapabilitySnapshot::default(),
                 };
                 let worker = ProcThreadSnapshot {
+                    tracer: None,
                     tid,
                     comm: *b"a ()\nb\0\0\0\0\0\0\0\0\0\0",
                     has_mm: true,
@@ -80,6 +81,7 @@ mod fs {
                 };
                 (
                     ProcProcessSnapshot {
+                        tracer: None,
                         kernel_thread: false,
                         pid: pid.clone(),
                         has_mm: false,
@@ -146,6 +148,34 @@ mod fs {
                 assert!(worker.contains("Gid:\t4\t5\t6\t8\n"));
                 assert!(worker.contains("VmSize:\t124 kB\nVmRSS:\t68 kB\nVmSwap:\t16 kB\n"));
                 assert!(worker.contains("Tgid:\t1\nNgid:\t0\nPid:\t2\n"));
+            }
+            #[test]
+            fn tracing_status_uses_the_captured_identity_in_the_mount_pid_view() {
+                let (mut process, _registrations) = process_snapshot();
+                process.threads[0].tracer = Some(process.pid.clone());
+                process.threads[0].state = b'T';
+                let view = process.pid.namespace();
+                let status = string(
+                    process::format_thread_status(
+                        &process,
+                        &process.threads[0],
+                        &crate::namespace::initial_user(),
+                        &view,
+                    )
+                    .unwrap(),
+                );
+                assert!(status.contains("State:\tt (tracing stop)\n"));
+                assert!(status.contains("TracerPid:\t1\n"));
+                let stat = string(
+                    process::format_thread_stat(
+                        &process,
+                        &process.threads[0],
+                        crate::namespace::TimeOffsets::ZERO,
+                        &view,
+                    )
+                    .unwrap(),
+                );
+                assert_eq!(fields(&stat)[0], "t");
             }
             #[test]
             fn actual_pid_ladder_projects_mount_view_parent_and_namespace_columns() {

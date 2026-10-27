@@ -14,11 +14,11 @@ use write::write_descriptor;
 ///
 /// # Returns
 ///
-/// ready 返回 Ok；signal interruption 返回 `-EINTR`。
+/// ready 返回 Ok；signal interruption 返回内部 ERESTARTSYS，由 signal/ptrace 决定重启或 EINTR。
 fn block_on_pipe(pipe: &Arc<Pipe>, condition: PipeWaitCondition) -> Result<(), isize> {
     match pipe.wait(condition, None) {
         WaitResult::Woken => Ok(()),
-        WaitResult::Interrupted => Err(-errno::EINTR),
+        WaitResult::Interrupted => Err(crate::syscall::INTERNAL_RESTART_SYS),
         WaitResult::TimedOut => panic!("pipe I/O wait cannot time out"),
         WaitResult::OutOfMemory => Err(-errno::ENOMEM),
     }
