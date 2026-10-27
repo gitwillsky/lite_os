@@ -44,7 +44,9 @@ pub(crate) fn _print_fmt(args: core::fmt::Arguments) {
 pub(crate) fn write_bytes(bytes: &[u8]) -> Result<(), FirmwareError> {
     let mut writer = CONSOLE.lock();
     let pushed = writer.push(bytes);
-    pushed.and(writer.flush())
+    // 前一批失败也要冲出剩余尾部；不能让错误短路而把缓冲留给下一次 tty write。
+    let flushed = writer.flush();
+    pushed.and(flushed)
 }
 
 struct ConsoleWriter {
@@ -83,7 +85,9 @@ impl ConsoleWriter {
             self.length += count;
             bytes = &bytes[count..];
             if self.length == CONSOLE_BATCH_BYTES {
-                result = result.and(self.flush());
+                // 每批都必须复位 length；错误短路 flush 会让满缓冲的下一轮 count=0，永远不能推进。
+                let flushed = self.flush();
+                result = result.and(flushed);
             }
         }
         result

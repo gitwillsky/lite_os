@@ -37,34 +37,6 @@ pub enum CaptionButton {
     Close,
 }
 
-const MINIMIZE: [&str; 2] = ["######", "######"];
-const MAXIMIZE: [&str; 9] = [
-    "#########",
-    "#########",
-    "#.......#",
-    "#.......#",
-    "#.......#",
-    "#.......#",
-    "#.......#",
-    "#.......#",
-    "#########",
-];
-const RESTORE: [&str; 10] = [
-    "..#######.",
-    "..#######.",
-    "..#.....#.",
-    "#######.#.",
-    "#######.#.",
-    "#.....###.",
-    "#.....#...",
-    "#.....#...",
-    "#######...",
-    "..........",
-];
-const CLOSE: [&str; 7] = [
-    "##....##", ".##..##.", "..####..", "...##...", "..####..", ".##..##.", "##....##",
-];
-
 /// 标题栏按钮的逻辑尺寸。
 const BUTTON_WIDTH: i32 = 16;
 const BUTTON_HEIGHT: i32 = 14;
@@ -191,27 +163,28 @@ impl Painter<'_> {
                 ..ButtonState::default()
             },
         );
-        let (glyph, mut dx, mut dy): (&[&str], i32, i32) = match button {
-            CaptionButton::Minimize => (&MINIMIZE, 4, 9),
-            CaptionButton::Maximize => (&MAXIMIZE, 3, 2),
-            CaptionButton::Restore => (&RESTORE, 3, 2),
-            CaptionButton::Close => (&CLOSE, 4, 3),
+        // 原版 Marlett 的 Windows Symbol cmap 使用 U+F000 私用区；不能用正文字体的 ASCII 替代。
+        let glyph = match button {
+            CaptionButton::Minimize => "\u{f030}",
+            CaptionButton::Maximize => "\u{f031}",
+            CaptionButton::Restore => "\u{f032}",
+            CaptionButton::Close => "\u{f072}",
         };
-        if pressed && enabled {
-            dx += 1;
-            dy += 1;
-        }
-        if enabled {
-            self.pixels(area.x + dx, area.y + dy, glyph, SystemColor::ButtonText);
-        } else {
-            self.pixels(
-                area.x + dx + 1,
-                area.y + dy + 1,
+        let offset = i32::from(pressed && enabled);
+        let area = Rect::new(area.x + offset, area.y + offset, area.width, area.height);
+        let font = self.fonts.caption_symbols();
+        self.with_font(font, |p| {
+            p.text_centered(
+                area,
                 glyph,
-                SystemColor::ButtonHilight,
-            );
-            self.pixels(area.x + dx, area.y + dy, glyph, SystemColor::ButtonShadow);
-        }
+                if enabled {
+                    Ink::Color(SystemColor::ButtonText)
+                } else {
+                    Ink::Disabled
+                },
+                false,
+            )
+        });
     }
 
     /// 超出 `max_width`（物理像素）时截断并追加"..."。

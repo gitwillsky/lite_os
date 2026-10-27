@@ -271,6 +271,42 @@ def check_session(session) -> None:
     wait_screen(session, [((200, 200), DESKTOP_BACKGROUND), ((1279, 790), DESKTOP_BACKGROUND)], 'logout clears desktop')
 
 
+def check_volume_popup_drag(session) -> None:
+    """真实托盘滑块：边缘抓取不跳位，连续 motion 与移出控件保持隐式抓取。"""
+    click(session, TRAY_VOLUME_X, 786)
+    wait_screen(session, [VOLUME_PANEL_SAMPLE_OPEN], 'root volume popup')
+    width, _, pixels = session.screendump()
+    xs = [x for x in range(1100, 1279) if pixels[700 * width + x] != DESKTOP_BACKGROUND]
+    left, right = min(xs), max(xs)
+    top = min(y for y in range(500, 772) if pixels[y * width + left] != DESKTOP_BACKGROUND)
+    bar_x = left + (right - left + 1 - 40) // 2
+
+    def thumb_top() -> int:
+        width, _, pixels = session.screendump()
+        return min(y for y in range(top + 22, top + 118)
+                   if pixels[y * width + bar_x] == (255, 255, 255))
+
+    def wait_thumb(expected: int) -> None:
+        deadline = time.monotonic() + 10
+        while thumb_top() != expected:
+            if time.monotonic() >= deadline:
+                raise RuntimeError(f'volume thumb did not reach {expected}')
+            time.sleep(0.02)
+
+    before = thumb_top()
+    pointer_to(session, bar_x + 10, before + 9)
+    button(session, True)
+    for delta in range(1, 21):
+        pointer_to(session, bar_x + 10, before + 9 + delta)
+    wait_thumb(before + 20)
+    # 按住移出滑块矩形，再回到原来的轴坐标；grab offset 必须保持，不能转成绝对定位。
+    pointer_to(session, bar_x - 30, before + 9)
+    wait_thumb(before)
+    button(session, False)
+    tap(session, 'esc')
+    wait_screen(session, [(VOLUME_PANEL_SAMPLE_OPEN[0], DESKTOP_BACKGROUND)], 'root popup closes')
+
+
 def check_volume(session) -> None:
     console = session.console
     print('desktop gate: root audio control UI and ALSA readback', flush=True)
@@ -291,6 +327,7 @@ def check_volume(session) -> None:
     console.wait_for(('logon: authenticated uid=0', 'logon: desktop ready'), after=mark)
     console.wait_for(('VOLUME_CONTROL_OK',))
     wait_screen(session, [((1000, 780), (212, 208, 200)), ((1200, 400), DESKTOP_BACKGROUND)], 'root desktop first frame')
+    check_volume_popup_drag(session)
     right_click(session, TRAY_VOLUME_X, 786)
     wait_screen(session, [(TRAY_CONTEXT_ITEM, (212, 208, 200))], 'root tray context menu')
     click(session, *TRAY_CONTEXT_ITEM)

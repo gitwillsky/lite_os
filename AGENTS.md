@@ -47,6 +47,8 @@
 - 集成测试放在 `tests/`，guest ABI/设备验收使用现有 runtime fixture；不在生产控制流中加入诊断采样或测试入口。
 - 所有第一方 crate 继承 workspace Clippy lint；`items_after_test_module` 为 deny，不用 allow/expect 绕过。
   裸机/条件编译源码同时由 architecture-check 的 Rust AST 检查覆盖，`make verify` 必须执行。
+- root/user workspace 与独立 bootloader 使用同一 Clippy 严格策略，具体规则与门禁覆盖见 `docs/development/build-and-verify.md`。
+  新告警先修复实际问题；必须保留的例外使用最窄的 `expect(..., reason = "...")`，说明所有权或成本依据，禁止批量 allow。
 
 ## 修改与验证
 

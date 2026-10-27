@@ -792,11 +792,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut application_poll = Instant::now();
     let mut pending = std::collections::HashSet::new();
     loop {
-        if let Some(event) = display.next_event_timeout(Duration::from_millis(100))? {
+        // 1. 同批已到达的输入先按顺序交付，再绘制最终状态；逐事件重画全屏会让滑块追赶旧坐标。
+        // 2. 每轮至多处理 64 项，持续输入时仍给绘制、外部状态和会话回收执行机会。
+        for index in 0..64 {
+            let timeout = if index == 0 {
+                Duration::from_millis(100)
+            } else {
+                Duration::ZERO
+            };
+            let Some(event) = display.next_event_timeout(timeout)? else {
+                break;
+            };
             if matches!(event.kind, EventKind::FrameReady { .. }) {
                 presented.insert(event.window);
             }
-            if !matches!(
+            // 弹出层的 hover/滑块移动只改变该层；重画背景和任务栏会产生无关的全屏分配与提交。
+            if state
+                .overlay
+                .as_ref()
+                .is_some_and(|(id, _)| *id == event.window)
+                && matches!(
+                    event.kind,
+                    EventKind::PointerEnter { .. } | EventKind::PointerMove { .. }
+                )
+            {
+                pending.insert(event.window);
+            } else if !matches!(
                 event.kind,
                 EventKind::FrameReady { .. } | EventKind::BufferAvailable
             ) {

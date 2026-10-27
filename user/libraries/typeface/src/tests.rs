@@ -229,6 +229,18 @@ fn original_tahoma_cmap_metrics_and_outlines() {
 }
 
 #[test]
+fn original_marlett_symbol_cmap_exposes_caption_glyphs_without_text_fallback() {
+    let font = sfnt("marlett.ttf");
+    for symbol in ['\u{f030}', '\u{f031}', '\u{f032}', '\u{f072}'] {
+        let id = font
+            .glyph_id(symbol)
+            .expect("original Marlett caption symbol");
+        assert!(!font.outline(id).unwrap().contours.is_empty());
+    }
+    assert!(font.glyph_id('中').is_none());
+}
+
+#[test]
 fn outlines_reproduce_simple_and_composite_glyphs() {
     let tahoma = sfnt("tahoma.ttf");
     let bar = tahoma.outline(tahoma.glyph_id('I').unwrap()).unwrap();

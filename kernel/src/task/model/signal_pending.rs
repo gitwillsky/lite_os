@@ -382,7 +382,7 @@ impl PendingSignals {
             signal,
             info: record
                 .as_ref()
-                .map_or(self.fallback[signal].info(), |record| record.info),
+                .map_or_else(|| self.fallback[signal].info(), |record| record.info),
             record,
         })
     }

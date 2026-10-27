@@ -53,6 +53,15 @@
         "source": "LiteOS font mapping configuration"
       }
     },
+    "fonts/marlett.ttf": {
+      "group": "fonts",
+      "bytes": 24480,
+      "sha256": "1504b439057bfcf9374ac99d63f8a5fa4e903adbd44d3c2e8261277055470cce",
+      "origin": {
+        "source": "marlett.ttf",
+        "conversion": "original bytes"
+      }
+    },
     "fonts/simsun.ttc": {
       "group": "fonts",
       "bytes": 10500352,

@@ -76,7 +76,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         || !udp.contains("metadata.local_spec_address")
         || !udp.contains("metadata.interface_index")
         || !udp.contains("metadata.interface_index=Some(*interface_index)")
-        || !udp.contains("requested_source.map(ipv4).or(route_address.map(ipv4))")
+        || !udp.contains("requested_source.map(ipv4).or_else(||route_address.map(ipv4))")
         || !raw.contains("socket.receive_metadata()")
         || !raw.contains("specific_address:from_ip(metadata.local_spec_address")
         || !raw.contains(".set_local_address(")
@@ -216,6 +216,12 @@ mod tests {
             "metadata.local_spec_address",
             "metadata.local_address",
             "queued ingress metadata",
+        );
+        reject(
+            "kernel/src/socket/inet/udp.rs",
+            "requested_source\n                    .map(ipv4)\n                    .or_else(|| route_address.map(ipv4))",
+            "route_address.map(ipv4).or_else(|| requested_source.map(ipv4))",
+            "single-request source/oif",
         );
     }
 }

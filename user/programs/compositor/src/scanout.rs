@@ -15,6 +15,10 @@ impl Drop for Target {
         let _ = self.device.remove_framebuffer(self.framebuffer);
     }
 }
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Scanout 一生只持有一个后端；为单个对象节约 208 字节而新增堆分配和间接访问没有收益"
+)]
 enum Backend {
     Cpu([Target; 2]),
     Gpu(crate::compose::gpu::Gpu),

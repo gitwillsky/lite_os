@@ -67,12 +67,14 @@ impl ViewportState {
         {
             return Err(GeometryError::BufferSize);
         }
-        let (sx, sy, sw, sh) = params.0.unwrap_or((
-            0.0,
-            0.0,
-            width as f64 / f64::from(scale),
-            height as f64 / f64::from(scale),
-        ));
+        let (sx, sy, sw, sh) = params.0.unwrap_or_else(|| {
+            (
+                0.0,
+                0.0,
+                width as f64 / f64::from(scale),
+                height as f64 / f64::from(scale),
+            )
+        });
         if (sx + sw) * f64::from(scale) > width as f64
             || (sy + sh) * f64::from(scale) > height as f64
         {

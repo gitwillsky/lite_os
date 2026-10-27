@@ -495,7 +495,11 @@ impl Location {
                         }
                         item.target = None;
                         item.details = Details::Trashed {
-                            original: info.original.parent().unwrap_or(Path::new("/")).into(),
+                            original: info
+                                .original
+                                .parent()
+                                .unwrap_or_else(|| Path::new("/"))
+                                .into(),
                             deleted: info.deleted,
                         };
                     }

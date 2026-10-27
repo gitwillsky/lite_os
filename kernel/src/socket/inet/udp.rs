@@ -367,9 +367,11 @@ pub(super) fn send(
                 .addr;
             // cmsg明确给出0源地址时清除本次request的bound source，实际binding保持。
             let local = if packet_info.is_some() {
-                requested_source.map(ipv4).or(route_address.map(ipv4))
+                requested_source
+                    .map(ipv4)
+                    .or_else(|| route_address.map(ipv4))
             } else {
-                bound_source.or(route_address.map(ipv4))
+                bound_source.or_else(|| route_address.map(ipv4))
             };
             let socket = core::mem::replace(
                 network.sockets.get_mut::<udp::Socket<'static>>(handle),

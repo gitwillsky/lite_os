@@ -232,12 +232,10 @@ pub fn frame(
     let mut p = Painter::new(surface, &theme, &fonts, c.scale);
     let rects = areas(s, d, id, c);
     if id == s.background {
-        let background = s
-            .settings
-            .background
-            .map_or(theme.color(C::Background), |[red, green, blue]| {
-                classic_theme::Rgb { red, green, blue }
-            });
+        let background = s.settings.background.map_or_else(
+            || theme.color(C::Background),
+            |[red, green, blue]| classic_theme::Rgb { red, green, blue },
+        );
         p.fill_rgb(Rect::new(0, 0, c.width, c.height), background);
         for (i, icon) in s.icons.items.iter().enumerate() {
             // 正在拖动的图标跟随指针，不画在原位。
@@ -258,7 +256,7 @@ pub fn frame(
                 p.large_icon_item(
                     r,
                     bitmap,
-                    &icon.label,
+                    Some(&icon.label),
                     classic_ui::ItemLook {
                         selected,
                         active: true,

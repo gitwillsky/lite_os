@@ -227,7 +227,7 @@ impl Config {
     ///
     /// 没有权限或文件系统错误。
     pub fn store(&self, path: &Path) -> io::Result<()> {
-        let directory = path.parent().unwrap_or(Path::new("/"));
+        let directory = path.parent().unwrap_or_else(|| Path::new("/"));
         fs::create_dir_all(directory)?;
         let temporary = directory.join(format!(".interfaces.{}.new", std::process::id()));
         let result = (|| {

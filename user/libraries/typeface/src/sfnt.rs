@@ -137,9 +137,8 @@ impl Sfnt {
         let count = bytes.u16(start + 4).ok_or(FontError::Truncated)? as usize;
         let find = |tag: &[u8; 4]| table(bytes, start + 12, count, tag);
         let required = |tag: &[u8; 4]| {
-            find(tag).ok_or(FontError::MissingTable(
-                String::from_utf8_lossy(tag).into_owned(),
-            ))
+            find(tag)
+                .ok_or_else(|| FontError::MissingTable(String::from_utf8_lossy(tag).into_owned()))
         };
         let (head, hhea, maxp, cmap) = (
             required(b"head")?,
@@ -172,7 +171,7 @@ impl Sfnt {
                     Bytes(&data[os2]).u16(76)?,
                 ))
             })
-            .unwrap_or((hhea_ascent.max(0) as u16, hhea_descent.unsigned_abs()));
+            .unwrap_or_else(|| (hhea_ascent.max(0) as u16, hhea_descent.unsigned_abs()));
         Ok(Self {
             families,
             bold,
@@ -777,7 +776,8 @@ pub(crate) struct HintTables<'a> {
     pub max_twilight: usize,
 }
 
-/// 选 Unicode cmap：优先 (3,10) format 12，其次 (3,1)/(0,x) format 4。
+/// 优先 Unicode cmap；只有缺少 Unicode 时才使用 Windows Symbol (3,0) format 4。
+/// Symbol cmap 保留原始 PUA 码位，不把普通文本静默映射成符号（Marlett 由控件明确请求 U+F0xx）。
 fn pick_cmap(cmap: Bytes<'_>) -> Option<(usize, u16)> {
     let count = cmap.u16(2)? as usize;
     let mut best: Option<(u32, usize, u16)> = None;
@@ -791,6 +791,7 @@ fn pick_cmap(cmap: Bytes<'_>) -> Option<(usize, u16)> {
             (0, 4, 12) => 2,
             (3, 1, 4) => 1,
             (0, 3, 4) => 1,
+            (3, 0, 4) => 0,
             _ => continue,
         };
         if best.is_none_or(|(current, _, _)| rank > current) {

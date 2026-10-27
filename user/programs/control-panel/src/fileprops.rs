@@ -189,7 +189,7 @@ impl Data {
                 size,
                 on_disk,
                 contents,
-                created: seconds(metadata.created()).or(Some(metadata.ctime())),
+                created: seconds(metadata.created()).or_else(|| Some(metadata.ctime())),
                 modified: seconds(metadata.modified()),
                 accessed: seconds(metadata.accessed()),
                 hidden: name.starts_with('.'),

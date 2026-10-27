@@ -11,6 +11,14 @@ host gate 以 `--all-targets` 检查 ABI/support/tool crate，避免只编译 li
 architecture-check 同时解析全部第一方 Rust 源码的模块结构，覆盖未在当前 target/test 配置中编译的代码；
 第三方 vendor、Git/隐藏目录和 Cargo 产物不属于第一方源码输入。不提供文件白名单或 lint suppression。
 
+Clippy 策略由 root/user workspace 与独立 bootloader 的 Cargo lint 表持有：`all = deny`（组优先级 -1），
+另启用 `as_ptr_cast_mut`、`dbg_macro`、`debug_assert_with_mut_call`、`fallible_impl_from`、`lossy_float_literal`、
+`or_fun_call`、`rc_mutex`、`todo`、`unchecked_time_subtraction`、`unimplemented` 的 deny。
+host gate 对 root 与 user workspace 的测试/二进制执行 `--all-targets -- -D warnings`，检查两边的 rustfmt；
+kernel 另按目标架构检查，RISC-V bootloader 以自身 target 检查。`pedantic`/`restriction`/`nursery` 按规则逐项选择，
+不整体开启后再批量关闭。必要例外只允许最小 item 上带具体成本/所有权理由的 `expect`；未命中的 expect 也会失败。
+应用 lint 建议必须保留错误清理与副作用顺序；必须执行的 flush 等操作先独立执行，再合并 Result，不让惰性调用短路清理。
+
 kernel/compositor 的启动画面接管测试直接执行两侧生产 renderer，在两档产品分辨率逐像素比较当前
 Git 素材；不复制第三份 renderer，也不依赖已删除生成器的历史 hash。DTB 节点名变异测试先按
 compatible 找到实际设备，再等长改名，避免测试输入本身绑定某一 QEMU 版本的节点标签。

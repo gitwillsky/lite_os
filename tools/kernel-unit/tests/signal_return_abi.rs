@@ -111,51 +111,53 @@ mod task {
             Ok(())
         }
         pub fn copy_from_user(&self, _: usize, _: &mut [u8]) -> Result<(), ()> {
-            unimplemented!()
+            unreachable!("copy_from_user is outside the signal-return ABI fixture contract")
         }
         pub fn copy_to_user(&self, _: usize, _: &[u8]) -> Result<(), ()> {
-            unimplemented!()
+            unreachable!("copy_to_user is outside the signal-return ABI fixture contract")
         }
         pub fn signal_action(&self, _: usize, _: Option<SignalAction>) -> Result<SignalAction, ()> {
-            unimplemented!()
+            unreachable!("signal_action is outside the signal-return ABI fixture contract")
         }
         pub fn signal_mask(&self, _: usize, _: Option<u64>) -> Result<u64, ()> {
-            unimplemented!()
+            unreachable!("signal_mask is outside the signal-return ABI fixture contract")
         }
         pub fn signal_stack(
             &self,
             _: Option<SignalStack>,
         ) -> Result<SignalStack, SignalStackError> {
-            unimplemented!()
+            unreachable!("signal_stack is outside the signal-return ABI fixture contract")
         }
         pub fn begin_signal_suspend(&self, _: u64) {
-            unimplemented!()
+            unreachable!("begin_signal_suspend is outside the signal-return ABI fixture contract")
         }
         pub fn pending_signal_set(&self) -> u64 {
-            unimplemented!()
+            unreachable!("pending_signal_set is outside the signal-return ABI fixture contract")
         }
         pub fn caught_signal_set(&self, _: u64) -> u64 {
-            unimplemented!()
+            unreachable!("caught_signal_set is outside the signal-return ABI fixture contract")
         }
         pub fn restore_temporary_signal_mask(&self) -> Option<u64> {
-            unimplemented!()
+            unreachable!(
+                "restore_temporary_signal_mask is outside the signal-return ABI fixture contract"
+            )
         }
     }
     pub(crate) fn send_process_signal(_: i32, _: usize) -> Result<(), SignalSendError> {
-        unimplemented!()
+        unreachable!("send_process_signal is outside the signal-return ABI fixture contract")
     }
     pub(crate) fn send_thread_signal(_: usize, _: usize, _: usize) -> Result<(), SignalSendError> {
-        unimplemented!()
+        unreachable!("send_thread_signal is outside the signal-return ABI fixture contract")
     }
     pub(crate) fn send_tid_signal(_: usize, _: usize) -> Result<(), SignalSendError> {
-        unimplemented!()
+        unreachable!("send_tid_signal is outside the signal-return ABI fixture contract")
     }
     pub(crate) fn send_queued_process_signal(
         _: i32,
         _: usize,
         _: PendingSignal,
     ) -> Result<(), SignalSendError> {
-        unimplemented!()
+        unreachable!("send_queued_process_signal is outside the signal-return ABI fixture contract")
     }
     pub(crate) fn send_queued_thread_signal(
         _: i32,
@@ -163,16 +165,16 @@ mod task {
         _: usize,
         _: PendingSignal,
     ) -> Result<(), SignalSendError> {
-        unimplemented!()
+        unreachable!("send_queued_thread_signal is outside the signal-return ABI fixture contract")
     }
     pub(crate) fn wait_for_signal(
         _: u64,
         _: Option<u64>,
     ) -> Result<(usize, PendingSignal), SignalWaitError> {
-        unimplemented!()
+        unreachable!("wait_for_signal is outside the signal-return ABI fixture contract")
     }
     pub(crate) fn wait_for_signal_delivery(_: u64) -> crate::sync::WaitResult {
-        unimplemented!()
+        unreachable!("wait_for_signal_delivery is outside the signal-return ABI fixture contract")
     }
 }
 
@@ -189,13 +191,13 @@ pub(crate) mod timer {
         pub tv_nsec: i64,
     }
     pub(crate) fn decode_timespec(_: &[u8]) -> TimeSpec {
-        unimplemented!()
+        unreachable!("decode_timespec is outside the signal-return ABI fixture contract")
     }
     pub(crate) fn timespec_ns(_: TimeSpec) -> Result<u64, isize> {
-        unimplemented!()
+        unreachable!("timespec_ns is outside the signal-return ABI fixture contract")
     }
     pub(crate) fn get_time_ns() -> u64 {
-        unimplemented!()
+        unreachable!("get_time_ns is outside the signal-return ABI fixture contract")
     }
 }
 

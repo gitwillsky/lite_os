@@ -144,6 +144,8 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 - [XDG Base Directory Specification `0.8`](https://specifications.freedesktop.org/basedir-spec/0.8/)；
   [Icon Theme Specification `0.13`](https://specifications.freedesktop.org/icon-theme/0.13/)（当前实现 hicolor PNG 子集）。
 - PNG 解码库 `png=0.18.0`，精确依赖与摘要由 `user/Cargo.lock` 固定。
+- 字体 cmap 按 [OpenType 1.9.1 cmap](https://learn.microsoft.com/en-us/typography/opentype/spec/cmap)：
+  优先 Unicode format 4/12；原版 Marlett 采用 Windows Symbol (platform 3, encoding 0) format 4 的原始私用码位。
 - Desktop Entry Specification `1.5`；当前程序启动只实现 [Exec 规则](https://specifications.freedesktop.org/desktop-entry/1.5/exec-variables.html) 的明确子集，未支持项不作为完整兼容性声明。
 - 系统图像固定为 [BITMAPV4HEADER](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-bitmapv4header) 的 108-byte header、top-down 与 sRGB：32-bit BI_BITFIELDS 使用显式 RGBA masks；
   8-bit BI_RGB 使用 [RGBQUAD](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-rgbquad) 调色板与四字节行对齐，下标不经 RGB 转换。

@@ -155,6 +155,12 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 
 ## 内容尺寸、菜单与通知区域
 
+- Trackbar 独占轨道与滑块绘制几何；SDK Slider 的 Scroll 位置和 sndvol 的 ALSA 快照共用 TrackbarDrag，
+  抓取只保存初始指针/数值，按住滑块边缘不跳位，释放/失焦清除。绘制终点与输入映射不得分开计算。
+- LabelEdit 独占原地编辑草稿；编辑期间该行只画图标，由编辑框取代原标签，pending/取消后恢复普通绘制。
+- 桌面每轮按顺序处理至多 64 项输入后提交最终状态；弹出层的指针移动只失效该层，不重画背景/任务栏。
+  成本决策：几何和抓取无堆分配、没有新增定时器；移除无关全屏绘制，沿用 canvas 与桌面交互门禁，不宣称实测帧率。
+
 - Label 的自然高度只取实际字体行盒，Button/Edit 等交互控件才加自己的留白。Tabs 的首选尺寸取全部可见页的最大内容尺寸，
   加 TabStrip 拥有的表头/边框；测量、排版、绘制和命中使用同一几何，不能用固定的占位高度代替。
 - WindowHost 为固定对话框保持声明宽度，按该宽度测量内容高度并在必要时扩大；不改变用户可缩放窗口的尺寸。
@@ -200,10 +206,14 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   Wine 安装器从同一映射生成标准 Fontconfig 别名与系统字体目录配置，不维护另一份字体回退清单。
 - OutlineFace 独占每个成员的 fpgm 结果；Typeface 独占本字号各成员的 prep 结果（按成员地址索引，chain 中的 Rc 保活）
   与已光栅化字形（上限 4096，满即清空）。缺少这些缓存会在每个字形重复执行字体程序；None 记录失败，避免反复执行。
-- classic_ui::Fonts 拥有六个系统字体用途与最多 16 个应用派生逻辑字体（`set_font`）；Painter 只借用，不复制。
+- classic_ui::Fonts 拥有六个系统字体用途、每个 scale 的原版 Marlett 标题按钮字体与最多 16 个应用派生逻辑字体（`set_font`）；Painter 只借用，不复制。
+  sfnt 优先 Unicode cmap；仅缺少 Unicode 时采用 Windows Symbol format 4，保持原始 PUA 码位。
 - 字节码解释器只在给定指令流上执行，越界、栈错误与步数上限使本次程序失败并退回未 hinting 轮廓，从不 panic。
 
 ## Wayland 提交、采样与输入
+
+- 协议对象 Data 仅在 surface 创建时分配其独占 Box，避免每个 keyboard/region 等对象携带 768 字节的 surface payload。
+  commit/frame 路径不为该变更新增分配；对象销毁沿用现有 owner 与 buffer release 路径，协议测试覆盖生命周期。
 
 - Surface 独占 pending/current/cached。State 冻结 transform、scale、viewport、输入区域、内容偏移与子树顺序；
   Committed 同时保存 frame 回调和父提交冻结的孩子位置。surface_commit 是唯一提交/发布 owner，xdg/layer 只处理角色语义。

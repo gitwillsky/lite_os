@@ -216,7 +216,7 @@ impl Bitmap {
                 a << 24
                     | (u32::from(r) * a / 255) << 16
                     | (u32::from(g) * a / 255) << 8
-                    | u32::from(b) * a / 255
+                    | (u32::from(b) * a / 255)
             })
             .collect();
         Ok(Self {

@@ -48,6 +48,7 @@ pub use painter::{Ink, Painter};
 pub use prompt::Prompt;
 pub use scroll::Scroll;
 pub use tooltip::Tooltip;
+pub use trackbar::{Trackbar, TrackbarDrag};
 pub use window::{CaptionButton, FrameKind};
 
 #[cfg(test)]

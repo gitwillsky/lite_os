@@ -148,7 +148,7 @@ impl Client {
         }
         // 只在发送前写一次；排队 FD 后不保留写入 owner，符合格式表发布后不得修改的协议契约。
         let memory = linux_uapi::shared_memory::MemFd::from_bytes("dmabuf-formats", &table)
-            .map_err(|error| Fail::new(object, 3, &format!("dma-buf feedback table: {error}")))?;
+            .map_err(|error| Fail::new(object, 3, format!("dma-buf feedback table: {error}")))?;
         let fd = memory
             .as_fd()
             .try_clone_to_owned()

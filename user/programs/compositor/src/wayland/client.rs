@@ -85,7 +85,8 @@ pub(super) enum Data {
     Buffer(Rc<Buffer>),
     DmaParams(super::dmabuf::Params),
     Region(Rc<super::region::Region>),
-    Surface(Surface),
+    /// Surface 独占自身状态；只在创建时分配一次，避免每个非 surface 协议对象也占用完整 surface 大小。
+    Surface(Box<Surface>),
     XdgSurface(XdgSurface),
     Toplevel(Toplevel),
     LayerSurface(LayerSurface),
@@ -551,7 +552,7 @@ impl Client {
                     id,
                     Interface::WlSurface,
                     version,
-                    Data::Surface(Surface::new(id)),
+                    Data::Surface(Box::new(Surface::new(id))),
                 )?;
                 // 版本 6 起由服务端告知首选 buffer scale；客户端据此直接按输出 scale 渲染。
                 if version >= 6 {

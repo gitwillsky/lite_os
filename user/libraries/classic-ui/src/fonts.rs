@@ -1,4 +1,4 @@
-//! 一个 scale 下解析好的系统字体集合；字体名、磅值与粗细全部来自主题的 `[Fonts]`。
+//! 一个 scale 下解析好的系统字体集合；正文字体来自主题的 `[Fonts]`，标题按钮使用原版 Marlett 符号。
 use classic_theme::{LogicalFont, SystemFonts};
 use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use typeface::{FontCatalog, Typeface};
@@ -26,6 +26,8 @@ pub struct Fonts {
     status: Typeface,
     message: Typeface,
     icon: Typeface,
+    /// 标题按钮符号每个 scale 直接光栅化原版轮廓，不放大低分辨率手绘点阵。
+    caption_symbols: Typeface,
     catalog: Rc<FontCatalog>,
     scale: u32,
     smoothing: bool,
@@ -45,11 +47,24 @@ impl Fonts {
             status: resolve(&system.status),
             message: resolve(&system.message),
             icon: resolve(&system.icon),
+            caption_symbols: catalog.resolve(
+                &LogicalFont {
+                    face: "Marlett".into(),
+                    points: 9,
+                    weight: 400,
+                },
+                scale,
+                false,
+            ),
             smoothing: system.smoothing,
             catalog,
             scale,
             custom: RefCell::new(BTreeMap::new()),
         }
+    }
+
+    pub(crate) fn caption_symbols(&self) -> &Typeface {
+        &self.caption_symbols
     }
 
     /// 某个用途的系统字体。

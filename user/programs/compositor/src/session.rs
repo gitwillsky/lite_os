@@ -396,15 +396,14 @@ impl Session {
             }
             let timeout = self.step_boot(shell_visible)?;
             if let Some(animation) = &self.animation {
-                if animation.finished() {
-                    if let Some((client, surface)) = self
+                if animation.finished()
+                    && let Some((client, surface)) = self
                         .animation
                         .take()
                         .filter(|animation| animation.restoring)
                         .map(|animation| (animation.client, animation.surface))
-                    {
-                        self.stack.raise(client, surface);
-                    }
+                {
+                    self.stack.raise(client, surface);
                 }
                 // 每次 DRM flip 完成后合成下一帧，不再叠加 16 ms 定时等待。
                 self.dirty = true;

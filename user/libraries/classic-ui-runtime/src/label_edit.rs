@@ -12,6 +12,13 @@ pub struct LabelEdit {
     pub pending: bool,
 }
 impl Node {
+    /// 查询 `row` 的原标签是否由活动编辑器取代；提交待确认时恢复正常标签。
+    pub fn editing_label(&self, row: u64) -> bool {
+        self.label_edit
+            .as_ref()
+            .is_some_and(|editing| editing.row == row && !editing.pending)
+    }
+
     pub fn label_rect(&self) -> Option<Rect> {
         let editing = self.label_edit.as_ref()?;
         let index = (0..self.row_count())

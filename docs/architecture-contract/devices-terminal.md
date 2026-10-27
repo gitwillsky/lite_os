@@ -32,6 +32,8 @@
   写完整段（aarch64/riscv64 各自的 `CONSOLE`）；逐字节输出会让 tty 数据插进一条内核日志的中间，
   日志行被撕裂，依赖串口提示符的 runtime gate 在多核下概率性失败。单次写入至多 512 字节，所以
   锁内的本地中断屏蔽时间与一条内核日志同量级；原语不得记录日志，否则会重入同一把 `IrqMutex`。
+  RISC-V 批量 console 即使先前写失败也必须继续 flush 完整批次与尾部，并返回首个错误；
+  flush 复位批量长度，错误短路会令满缓冲无法推进。host 故障注入直接执行同一生产 console owner。
   Benchmark 决策：不新增 benchmark。每次 tty write 只多一次无竞争取锁，被其后逐字节的 UART MMIO
   轮询淹没；riscv64 的 SBI 调用数反而从逐字节降为 `ceil(n/256)`，日志批量成本由既有 `log_cost` 围栏继续约束。
   块设备 seam 属于 `block`，`fs` 不依赖 `drivers`。

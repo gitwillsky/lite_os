@@ -2,15 +2,14 @@
 extern crate liteos_runtime as _;
 use canvas::Rect;
 use classic_theme::SystemColor as C;
-use classic_ui::{Ink, Painter};
+use classic_ui::{Ink, Painter, Trackbar, TrackbarDrag};
 use linux_uapi::alsa::control::{MasterControl, MasterVolume};
 use std::time::{Duration, Instant};
 
 /// 正在拖动的滑块。
-#[derive(Clone, Copy, PartialEq, Eq)]
 enum Drag {
-    Volume,
-    Balance,
+    Volume(TrackbarDrag),
+    Balance(TrackbarDrag),
 }
 
 pub struct Volume {
@@ -130,24 +129,16 @@ impl Volume {
     pub fn cancel(&mut self) {
         self.drag = None;
     }
-    /// 音量滑块位置对应的百分比；超出轨道时夹在 0..=100。
-    fn percent_at(layout: &Layout, y: f64) -> u8 {
-        ((f64::from(layout.track_top + layout.track_len) - y) * 100. / f64::from(layout.track_len))
-            .clamp(0., 100.) as u8
-    }
-    /// 平衡滑块位置对应的平衡值；中线附近吸附到 0。
-    fn balance_at(bar: Rect, x: f64) -> i32 {
-        let start = f64::from(bar.x + 5);
-        let span = f64::from(bar.width - 11);
-        let balance = (((x - start) / span).clamp(0., 1.) * 200. - 100.).round() as i32;
-        if balance.abs() <= 6 { 0 } else { balance }
-    }
     pub fn motion(&mut self, layout: &Layout, x: f64, y: f64) {
-        match (self.drag, self.value, layout.balance_bar) {
-            (Some(Drag::Volume), Some(value), _) => {
-                self.change(Self::percent_at(layout, y), value.muted)
+        match (&self.drag, self.value, layout.balance_bar) {
+            (Some(Drag::Volume(grab)), Some(value), _) => {
+                let position = grab.position(Trackbar::new(layout.slider_hit, true), 100, (x, y));
+                self.change((100 - position) as u8, value.muted)
             }
-            (Some(Drag::Balance), Some(_), Some(bar)) => self.set_balance(Self::balance_at(bar, x)),
+            (Some(Drag::Balance(grab)), Some(_), Some(bar)) => {
+                let balance = grab.position(Trackbar::new(bar, false), 200, (x, y)) - 100;
+                self.set_balance(if balance.abs() <= 6 { 0 } else { balance });
+            }
             _ => {}
         }
     }
@@ -158,11 +149,19 @@ impl Volume {
         }
         if let Some(value) = self.value {
             if layout.slider_hit.contains(x, y) {
-                self.drag = Some(Drag::Volume);
-                self.change(Self::percent_at(layout, y), value.muted);
+                self.drag = Some(Drag::Volume(Trackbar::new(layout.slider_hit, true).press(
+                    100 - i32::from(value.left.max(value.right)),
+                    100,
+                    (x, y),
+                )));
+                self.motion(layout, x, y);
             } else if let Some(bar) = layout.balance_bar.filter(|bar| bar.contains(x, y)) {
-                self.drag = Some(Drag::Balance);
-                self.set_balance(Self::balance_at(bar, x));
+                self.drag = Some(Drag::Balance(Trackbar::new(bar, false).press(
+                    self.balance + 100,
+                    200,
+                    (x, y),
+                )));
+                self.motion(layout, x, y);
             } else if layout.mute_hit.contains(x, y) {
                 self.change(value.left.max(value.right), !value.muted);
             }
@@ -178,7 +177,7 @@ impl Volume {
         );
         if let Some((label, bar)) = layout.balance_label.zip(layout.balance_bar) {
             p.text(label.0, label.1, "平衡:", Ink::Color(C::ButtonText), false);
-            p.trackbar(bar, false, ((self.balance + 100) / 2, 100), 10);
+            p.trackbar(bar, false, (self.balance + 100, 200), 10);
         }
         if let Some((x, y)) = layout.volume_label {
             p.text(x, y, "音量:", Ink::Color(C::ButtonText), false);
@@ -231,8 +230,6 @@ pub struct Layout {
     pub label: Rect,
     pub title: &'static str,
     pub title_bold: bool,
-    pub track_top: i32,
-    pub track_len: i32,
     /// 竖向音量滑块条的矩形（兼作命中区）。
     pub slider_hit: Rect,
     pub balance_label: Option<(i32, i32)>,
@@ -245,9 +242,6 @@ pub struct Layout {
     pub message: Option<(i32, i32)>,
 }
 
-/// 竖向滑块条沿轨道方向两端的余量（与 `Painter::trackbar` 一致），换算轨道起点与长度时扣除。
-const BAR_MARGIN: i32 = 5;
-
 /// 托盘面板的版面常量（逻辑像素）：边距、复选框到标签的偏移、总高度。
 const POPUP_PADDING: i32 = 8;
 const POPUP_CHECK_INDENT: i32 = 8;
@@ -257,25 +251,14 @@ const POPUP_TITLE: &str = "音量";
 const POPUP_MUTE_LABEL: &str = "静音(M)";
 
 impl Layout {
-    fn vertical(bar: Rect) -> (Rect, i32, i32) {
-        (bar, bar.y + BAR_MARGIN, bar.height - 2 * BAR_MARGIN - 1)
-    }
-
     /// "音量控制"窗口：`client` 是窗口客户区（扣除标题栏与菜单栏之后），单列 Windows 2000 混音器。
     pub fn dialog(client: Rect) -> Self {
         let column = Rect::new(client.x + 8, client.y + 6, client.width - 16, 250);
-        let (bar, track_top, track_len) = Self::vertical(Rect::new(
-            column.x + (column.width - 40) / 2,
-            column.y + 88,
-            40,
-            130,
-        ));
+        let bar = Rect::new(column.x + (column.width - 40) / 2, column.y + 88, 40, 130);
         Self {
             label: Rect::new(column.x, column.y, column.width, 20),
             title: "音量控制",
             title_bold: true,
-            track_top,
-            track_len,
             slider_hit: bar,
             balance_label: Some((column.x + 4, column.y + 28)),
             balance_bar: Some(Rect::new(column.x + 4, column.y + 44, column.width - 8, 30)),
@@ -303,18 +286,11 @@ impl Layout {
 
     /// 托盘弹出的面板，左上角在 `panel`。
     pub fn popup(panel: Rect) -> Self {
-        let (bar, track_top, track_len) = Self::vertical(Rect::new(
-            panel.x + (panel.width - 40) / 2,
-            panel.y + 22,
-            40,
-            96,
-        ));
+        let bar = Rect::new(panel.x + (panel.width - 40) / 2, panel.y + 22, 40, 96);
         Self {
             label: Rect::new(panel.x + 4, panel.y + 4, panel.width - 8, 16),
             title: POPUP_TITLE,
             title_bold: false,
-            track_top,
-            track_len,
             slider_hit: bar,
             balance_label: None,
             balance_bar: None,
@@ -336,25 +312,18 @@ mod tests {
         let dialog = Layout::dialog(Rect::new(3, 22, 140, 280));
         let popup = Layout::popup(Rect::new(100, 200, 64, 150));
         for layout in [&dialog, &popup] {
-            assert_eq!(Volume::percent_at(layout, f64::from(layout.track_top)), 100);
-            assert_eq!(
-                Volume::percent_at(layout, f64::from(layout.track_top + layout.track_len)),
-                0
-            );
-            assert_eq!(Volume::percent_at(layout, -50.), 100);
-            assert_eq!(Volume::percent_at(layout, 5000.), 0);
-            let middle = f64::from(layout.track_top + layout.track_len / 2);
-            assert_eq!(Volume::percent_at(layout, middle), 50);
+            let bar = Trackbar::new(layout.slider_hit, true);
+            let x = f64::from(layout.slider_hit.right() - 1);
+            for (y, expected) in [
+                (f64::from(layout.slider_hit.y + 5), 0),
+                (f64::from(layout.slider_hit.bottom() - 6), 100),
+                (-50., 0),
+                (5000., 100),
+            ] {
+                let grab = bar.press(50, 100, (x, y));
+                assert_eq!(grab.position(bar, 100, (x, y)), expected);
+            }
         }
-    }
-
-    #[test]
-    fn balance_maps_the_bar_ends_to_full_left_and_right_and_snaps_near_the_middle() {
-        let bar = Rect::new(10, 0, 120, 30);
-        assert_eq!(Volume::balance_at(bar, -50.), -100);
-        assert_eq!(Volume::balance_at(bar, 500.), 100);
-        let middle = f64::from(bar.x) + 5. + f64::from(bar.width - 11) / 2.;
-        assert_eq!(Volume::balance_at(bar, middle + 2.), 0);
     }
 
     #[test]

@@ -121,12 +121,10 @@ impl View {
     }
     fn update(&self, player: &Player) -> liteos_ui::Result<()> {
         let available = player.loaded.is_some() && !player.loading && !player.closing;
-        let title = player
-            .loaded
-            .as_ref()
-            .map_or("媒体播放机".into(), |loaded| {
-                format!("{} - 媒体播放机", loaded.name)
-            });
+        let title = player.loaded.as_ref().map_or_else(
+            || "媒体播放机".into(),
+            |loaded| format!("{} - 媒体播放机", loaded.name),
+        );
         self.window.set_title(&title)?;
         self.position.set_text(&format!(
             "位置：{}\t长度：{}",

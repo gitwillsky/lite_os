@@ -1,6 +1,6 @@
 //! 数值控件的唯一值 owner 为 Scroll.position；范围配置不复制当前值。
 use super::widgets::{Node, Tree, invalid};
-use classic_ui::EventKind;
+use classic_ui::{EventKind, Trackbar};
 use classic_ui_abi::{self as abi, event, widget};
 use std::io;
 pub struct RangeState {
@@ -10,6 +10,7 @@ pub struct RangeState {
     pub step: i32,
     pub vertical: bool,
 }
+
 impl Default for RangeState {
     fn default() -> Self {
         Self {
@@ -77,19 +78,6 @@ impl Node {
             vertical: u32::from(self.range.vertical),
         })
     }
-    fn move_slider(&mut self, point: (i32, i32)) {
-        let (offset, length) = if self.range.vertical {
-            (point.1 - self.rect.y - 5, self.rect.height - 10)
-        } else {
-            (point.0 - self.rect.x - 5, self.rect.width - 10)
-        };
-        self.position.position = if length <= 0 {
-            0
-        } else {
-            (i64::from(offset.clamp(0, length)) * i64::from(self.range.limit()) / i64::from(length))
-                as i32
-        };
-    }
 }
 impl Tree {
     pub fn range_input(
@@ -137,7 +125,11 @@ impl Tree {
                 self.armed = Some(id);
                 self.focus = Some(id);
                 if node.kind == widget::SLIDER {
-                    node.move_slider(pointer);
+                    node.position.press_slider(
+                        Trackbar::new(node.rect, node.range.vertical),
+                        node.range.limit(),
+                        (f64::from(pointer.0), f64::from(pointer.1)),
+                    );
                 } else {
                     node.position.press(
                         node.rect,
@@ -150,7 +142,11 @@ impl Tree {
             EventKind::PointerEnter { .. } | EventKind::PointerMove { .. } => {
                 self.pointer = pointer;
                 if node.kind == widget::SLIDER {
-                    node.move_slider(pointer);
+                    node.position.drag_slider(
+                        Trackbar::new(node.rect, node.range.vertical),
+                        node.range.limit(),
+                        (f64::from(pointer.0), f64::from(pointer.1)),
+                    );
                 } else {
                     node.position.drag(
                         node.rect,
@@ -200,5 +196,103 @@ impl Tree {
             });
         }
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use canvas::Rect;
+
+    fn slider(vertical: bool) -> (Tree, u64) {
+        let mut tree = Tree::new();
+        let id = tree
+            .insert(
+                0,
+                abi::Widget {
+                    kind: widget::SLIDER,
+                    state: 0,
+                    group: 0,
+                    layout: Default::default(),
+                    text: abi::Text {
+                        data: std::ptr::null(),
+                        len: 0,
+                    },
+                },
+                String::new(),
+            )
+            .unwrap();
+        let node = tree.nodes.get_mut(&id).unwrap();
+        node.rect = Rect::new(
+            10,
+            20,
+            if vertical { 30 } else { 111 },
+            if vertical { 111 } else { 30 },
+        );
+        node.clip = node.rect;
+        node.set_range(abi::Range {
+            minimum: 0,
+            maximum: 100,
+            value: 50,
+            page: 1,
+            step: 1,
+            vertical: u32::from(vertical),
+        })
+        .unwrap();
+        (tree, id)
+    }
+
+    fn press(tree: &mut Tree, point: (i32, i32)) {
+        tree.pointer = point;
+        assert!(tree.range_input(
+            1,
+            &EventKind::Button {
+                code: 0x110,
+                pressed: true,
+                serial: 1
+            },
+            &mut Vec::new()
+        ));
+    }
+
+    #[test]
+    fn slider_reaches_the_drawn_track_endpoint() {
+        for vertical in [false, true] {
+            let (mut tree, id) = slider(vertical);
+            // 实际绘制终点为 rect.end - 6；输入不能另减 10，使最后一个像素只能得到 99。
+            press(&mut tree, if vertical { (20, 125) } else { (115, 30) });
+            assert_eq!(tree.nodes[&id].range_value().unwrap().value, 100);
+        }
+    }
+
+    #[test]
+    fn grabbing_the_thumb_edge_preserves_its_position_and_capture_ends_on_release() {
+        for vertical in [false, true] {
+            let (mut tree, id) = slider(vertical);
+            let point = if vertical { (20, 79) } else { (69, 30) };
+            press(&mut tree, point);
+            assert_eq!(tree.nodes[&id].range_value().unwrap().value, 50);
+            let moved = if vertical { (20., 99.) } else { (89., 30.) };
+            tree.range_input(
+                1,
+                &EventKind::PointerMove {
+                    x: moved.0,
+                    y: moved.1,
+                },
+                &mut Vec::new(),
+            );
+            assert_eq!(tree.nodes[&id].range_value().unwrap().value, 70);
+            tree.range_input(
+                1,
+                &EventKind::Button {
+                    code: 0x110,
+                    pressed: false,
+                    serial: 2,
+                },
+                &mut Vec::new(),
+            );
+            tree.range_input(1, &EventKind::PointerMove { x: 5., y: 5. }, &mut Vec::new());
+            assert_eq!(tree.nodes[&id].range_value().unwrap().value, 70);
+        }
     }
 }

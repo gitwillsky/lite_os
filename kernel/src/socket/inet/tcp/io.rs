@@ -253,7 +253,7 @@ pub(in crate::socket::inet) fn poll_state(socket: &InetSocket) -> SocketPollStat
     network
         .tcp_endpoints
         .get(&endpoint_id(socket))
-        .map_or(SocketPollState::error(), |state| {
+        .map_or_else(SocketPollState::error, |state| {
             state.poll_state(&network.sockets)
         })
 }
@@ -276,7 +276,7 @@ pub(in crate::socket::inet) fn try_poll_state(socket: &InetSocket) -> Option<Soc
     let readiness = network
         .tcp_endpoints
         .get(&endpoint_id(socket))
-        .map_or(SocketPollState::error(), |state| {
+        .map_or_else(SocketPollState::error, |state| {
             state.poll_state(&network.sockets)
         });
     Some(readiness)

@@ -39,8 +39,8 @@ class UtmRuntimeTests(unittest.TestCase):
                 {
                     "Hardware": "virtio-gpu-gl-device",
                     "DynamicResolution": True,
-                    "UpscalingFilter": "Linear",
-                    "DownscalingFilter": "Linear",
+                    "UpscalingFilter": "Nearest",
+                    "DownscalingFilter": "Nearest",
                     "NativeResolution": True,
                 }
             ],

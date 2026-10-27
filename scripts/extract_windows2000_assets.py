@@ -22,6 +22,7 @@ from local_inputs import INPUTS
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = INPUTS / "windows2000/assets"
+FONTS = ("simsun.ttc", "tahoma.ttf", "tahomabd.ttf", "marlett.ttf")
 PE_FILES = (
     "shell32.dll", "explorer.exe", "msgina.dll", "ntoskrnl.exe", "user32.dll",
     "mmsys.cpl", "sysdm.cpl", "main.cpl", "timedate.cpl", "taskmgr.exe",
@@ -213,7 +214,7 @@ def extract(iso: Path, output: Path) -> dict:
         expanded = result / "sources"
         expanded.mkdir()
         wanted = {n.upper()[:-1] + "_" for n in PE_FILES}
-        wanted.update({"SIMSUN.TT_", "TAHOMA.TT_", "TAHOMABD.TT_"})
+        wanted.update(name.upper()[:-1] + "_" for name in FONTS)
         containers = sorted(p for p in i386.iterdir()
                             if p.name in wanted or p.suffix in {".WA_", ".CU_", ".AN_"})
         for path in containers:
@@ -332,7 +333,7 @@ def extract(iso: Path, output: Path) -> dict:
                 record("sounds", name, [path], rate=sound.getframerate(),
                        channels=sound.getnchannels(), sample_bits=sound.getsampwidth() * 8,
                        frames=sound.getnframes())
-        for name in ("simsun.ttc", "tahoma.ttf", "tahomabd.ttf"):
+        for name in FONTS:
             path = expanded / name
             if path.read_bytes()[:4] not in (b"ttcf", b"\0\1\0\0", b"OTTO"):
                 raise ValueError(f"invalid font signature: {name}")
@@ -370,13 +371,15 @@ def publish(directory: Path) -> dict:
         OSError: 提取产物缺失、不可读或产品目录不可写。
         ValueError: manifest、图像或光标不能无损转换为产品格式。
     """
+    source = check(directory)
+    if set(source["logical"].get("fonts", ())) != set(FONTS):
+        raise ValueError("font extraction recipe changed; re-extract into a new --output directory")
     from PIL import Image
     from pack_boot_scene import pack as pack_boot
     from pack_cursors import CURSOR_FILES, pack_sources
     from pack_shell_assets import pack as pack_shell
     import classic_assets
 
-    source = check(directory)
     icons = source["logical"]["icons"]
     if set(icons) != set(ICONS) or any(
         (icons[name]["source"], icons[name]["resource"]) != origin

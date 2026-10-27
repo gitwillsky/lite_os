@@ -83,7 +83,7 @@ impl Parser<'_> {
         let length = self
             .rest()
             .find(|c: char| !(c.is_alphanumeric() || matches!(c, '_' | '-' | ':' | '.')))
-            .unwrap_or(self.rest().len());
+            .unwrap_or_else(|| self.rest().len());
         if length == 0 {
             return Err(self.error("expected a name"));
         }

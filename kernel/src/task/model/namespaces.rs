@@ -687,11 +687,13 @@ impl TaskControlBlock {
         if !caller.may_inspect_thread(self) {
             return Err(DeviceError::Errno(errno::EACCES));
         }
-        namespace.ok_or(DeviceError::Errno(if selector.is_some() {
-            errno::ESRCH
-        } else {
-            errno::EOPNOTSUPP
-        }))
+        namespace.ok_or_else(|| {
+            DeviceError::Errno(if selector.is_some() {
+                errno::ESRCH
+            } else {
+                errno::EOPNOTSUPP
+            })
+        })
     }
     pub(super) fn retire_namespaces(&self) {
         let retired = self.thread().fs_namespaces.lock().membership.take();

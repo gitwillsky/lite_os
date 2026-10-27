@@ -85,9 +85,10 @@ impl Ext4Inode {
                 block
             }
             Mapping::Hole { left } => {
-                let goal = left.map_or(tree.default_goal(), |left| {
-                    left.physical + u64::from(file_block - left.logical)
-                });
+                let goal = left.map_or_else(
+                    || tree.default_goal(),
+                    |left| left.physical + u64::from(file_block - left.logical),
+                );
                 let block = self.fs.allocate_block(goal, contents, kind)?;
                 tree.insert(Extent {
                     logical: file_block,

@@ -19,4 +19,15 @@ spin = "0.10.0"
 uart16550 = "0.0.1"
 
 [lints.clippy]
+all = { level = "deny", priority = -1 }
 items_after_test_module = "deny"
+as_ptr_cast_mut = "deny"
+dbg_macro = "deny"
+debug_assert_with_mut_call = "deny"
+fallible_impl_from = "deny"
+lossy_float_literal = "deny"
+or_fun_call = "deny"
+rc_mutex = "deny"
+todo = "deny"
+unchecked_time_subtraction = "deny"
+unimplemented = "deny"

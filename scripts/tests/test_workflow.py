@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -13,6 +14,42 @@ import workflow  # noqa: E402
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_first_party_workspaces_share_and_inherit_the_strict_clippy_policy(self) -> None:
+        root = tomllib.loads((ROOT / "Cargo.toml").read_text())
+        policy = root["workspace"]["lints"]["clippy"]
+        self.assertEqual(policy["all"], {"level": "deny", "priority": -1})
+        required = ("items_after_test_module", "as_ptr_cast_mut", "dbg_macro", "debug_assert_with_mut_call",
+                    "fallible_impl_from", "lossy_float_literal", "or_fun_call", "rc_mutex", "todo",
+                    "unchecked_time_subtraction", "unimplemented")
+        for lint in required:
+            self.assertEqual(policy[lint], "deny")
+        for base in (ROOT, ROOT / "user"):
+            workspace = tomllib.loads((base / "Cargo.toml").read_text())["workspace"]
+            self.assertEqual(workspace["lints"]["clippy"], policy)
+            for member in workspace["members"]:
+                manifest = tomllib.loads((base / member / "Cargo.toml").read_text())
+                self.assertTrue(manifest["lints"]["workspace"], member)
+        bootloader = tomllib.loads((ROOT / "bootloader/Cargo.toml").read_text())
+        self.assertEqual(bootloader["lints"]["clippy"], policy)
+
+    def test_host_gate_covers_user_and_root_test_targets_and_all_formatters(self) -> None:
+        with (patch.object(workflow, "run") as run,
+              patch.object(workflow, "verify_unit"),
+              patch.object(workflow, "verify_architecture_benchmark")):
+            workflow.verify_host({"ARCH": "aarch64", "ACCEL": "hvf"})
+        commands = [call.args[0] for call in run.call_args_list]
+        for manifest in ("user/Cargo.toml", "bootloader/Cargo.toml"):
+            self.assertTrue(any(command[:2] == ["cargo", "fmt"] and manifest in command
+                                and "--check" in command for command in commands), manifest)
+        checks = [command for command in commands if command[:2] == ["cargo", "clippy"]]
+        user = next(command for command in checks if "user/Cargo.toml" in command)
+        self.assertIn("--workspace", user)
+        self.assertIn("--all-targets", user)
+        self.assertTrue(any("--manifest-path" not in command and "--all-targets" in command
+                            for command in checks))
+        for command in checks:
+            self.assertEqual(command[-3:], ["--", "-D", "warnings"])
+
     def test_cache_prune_preview_and_apply_use_only_targeted_script(self) -> None:
         for scope, flags in (("prune-cache-preview", []), ("prune-cache", ["--apply"])):
             with self.subTest(scope=scope), patch.object(workflow, "run") as run:

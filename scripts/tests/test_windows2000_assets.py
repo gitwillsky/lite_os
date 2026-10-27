@@ -7,13 +7,21 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from extract_windows2000_assets import best_icon_frame, check, digest, icon_container  # noqa: E402
+from extract_windows2000_assets import publish as publish_product  # noqa: E402
 
 
 class Windows2000AssetIntegrityTests(unittest.TestCase):
+    def test_stale_font_extraction_cannot_remove_required_caption_symbols(self) -> None:
+        stale = {"logical": {"fonts": dict.fromkeys(("simsun.ttc", "tahoma.ttf", "tahomabd.ttf"))}}
+        with patch("extract_windows2000_assets.check", return_value=stale):
+            with self.assertRaisesRegex(ValueError, "font extraction recipe changed"):
+                publish_product(Path("unused-stale-extraction"))
+
     def setUp(self) -> None:
         self.work = tempfile.TemporaryDirectory()
         self.addCleanup(self.work.cleanup)

@@ -713,6 +713,29 @@ fn caption_glyph_geometry_stays_inside_the_button() {
     }
 }
 
+#[test]
+fn hidpi_caption_symbol_is_rasterized_at_physical_size() {
+    let draw = |p: &mut Painter<'_>| {
+        p.caption_bar(
+            Rect::new(20, 20, 100, 19),
+            "",
+            None,
+            true,
+            &[(CaptionButton::Close, true)],
+            None,
+        )
+    };
+    let one = render(1, draw);
+    let two = render(2, draw);
+    let black = rgb(SystemColor::ButtonText);
+    // 比较字形墨色，不让渐变底的更细采样冒充高 DPI 字形。旧手绘点阵的所有 2×2 块完全相同。
+    assert!((22 * 2..36 * 2).any(|y| (102 * 2..118 * 2).any(|x| {
+        let actual = two.pixels[(y * SIZE * 2 + x) as usize] & 0xffffff == black;
+        let doubled = one.at(x / 2, y / 2) == black;
+        actual != doubled
+    })));
+}
+
 fn p_line_height() -> i32 {
     let (ascent, descent) = typeface(1).role(crate::FontRole::Message).metrics();
     ascent + descent

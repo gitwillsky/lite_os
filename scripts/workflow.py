@@ -570,6 +570,9 @@ def verify_host(environment: Mapping[str, str] | None = None) -> None:
     """执行 full verify 与 fast verify 共用的 host 检查。"""
     run(python_script("verify_smoltcp.py"), environment=environment)
     run(["cargo", "fmt", "--all", "--", "--check"], environment=environment)
+    run(["cargo", "fmt", "--manifest-path", "bootloader/Cargo.toml", "--all", "--", "--check"], environment=environment)
+    run(["cargo", "fmt", "--manifest-path", "user/Cargo.toml", "--all", "--", "--check"], environment=environment)
+    run(["cargo", "clippy", "--manifest-path", "user/Cargo.toml", "--workspace", "--all-targets", "--", "-D", "warnings"], environment=environment)
     run(
         [
             "cargo",

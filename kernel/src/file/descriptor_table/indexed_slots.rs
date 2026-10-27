@@ -284,7 +284,7 @@ impl<T> IndexedSlots<T> {
         let fd = self
             .free
             .first_free(self.root.as_deref(), minimum, self.logical_len)
-            .unwrap_or(self.logical_len.max(minimum));
+            .unwrap_or_else(|| self.logical_len.max(minimum));
         if fd >= limit {
             return Err(SlotInsertError::Limit);
         }
@@ -319,7 +319,7 @@ impl<T> IndexedSlots<T> {
         let second = self
             .free
             .first_free(self.root.as_deref(), first + 1, self.logical_len)
-            .unwrap_or(self.logical_len.max(first + 1));
+            .unwrap_or_else(|| self.logical_len.max(first + 1));
         if second >= limit {
             return Err(SlotInsertError::Limit);
         }

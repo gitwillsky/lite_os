@@ -79,7 +79,7 @@ impl OpenedFile {
     pub(crate) fn mount_flags(&self) -> MountFlags {
         self.mount
             .as_ref()
-            .map_or(MountFlags::default(), |view| view.flags())
+            .map_or_else(MountFlags::default, |view| view.flags())
     }
     /// fdinfo 与 `statx` 使用实际 vfsmount 的稳定 identity，包括所有内部 pseudo 路径。
     pub(crate) fn mount_id(&self) -> u64 {

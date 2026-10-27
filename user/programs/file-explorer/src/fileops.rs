@@ -190,7 +190,7 @@ pub fn delete(home: &Path, path: &Path) -> io::Result<()> {
     builder.create(&files)?;
     builder.create(trash_info(home))?;
     let original =
-        fs::canonicalize(path.parent().unwrap_or(Path::new("/")))?.join(file_name(path)?);
+        fs::canonicalize(path.parent().unwrap_or_else(|| Path::new("/")))?.join(file_name(path)?);
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(io::Error::other)?
@@ -267,7 +267,7 @@ fn purge(home: &Path, path: &Path) -> io::Result<()> {
 /// 信息缺失/编码损坏或移动失败返回错误；原子移动从不覆盖已有目标。
 pub fn restore(home: &Path, path: &Path) -> io::Result<PathBuf> {
     let files = fs::canonicalize(trash_files(home))?;
-    let parent = fs::canonicalize(path.parent().unwrap_or(Path::new("/")))?;
+    let parent = fs::canonicalize(path.parent().unwrap_or_else(|| Path::new("/")))?;
     if parent != files {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -275,7 +275,7 @@ pub fn restore(home: &Path, path: &Path) -> io::Result<PathBuf> {
         ));
     }
     let original = trash_info_of(home, path)?.original;
-    let parent = original.parent().unwrap_or(Path::new("/"));
+    let parent = original.parent().unwrap_or_else(|| Path::new("/"));
     fs::create_dir_all(parent)?;
     let target = move_unique(path, parent, file_name(&original)?)?;
     fs::remove_file(info_path(home, path)?)?;

@@ -518,8 +518,8 @@ impl Tree {
             })
             .unwrap_or(0);
         let geometry = node.list_geometry();
-        let page = geometry.grid.map_or(
-            (geometry.rows.height / node.row_height).max(1) as usize,
+        let page = geometry.grid.map_or_else(
+            || (geometry.rows.height / node.row_height).max(1) as usize,
             |grid| {
                 let rows = (grid.viewport.height / grid.height).max(1);
                 let columns = (grid.viewport.width / grid.width).max(1);

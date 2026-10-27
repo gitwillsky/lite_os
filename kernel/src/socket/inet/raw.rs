@@ -259,7 +259,7 @@ pub(super) fn send(
             .local_address()
             .map(from_ip)
     }
-    .or(network.source_address(route))
+    .or_else(|| network.source_address(route))
     .ok_or(SocketError::NetworkUnreachable)?;
     if route.kind == super::route::Ipv4RouteKind::Broadcast && !options.broadcast {
         return Err(SocketError::PermissionDenied);

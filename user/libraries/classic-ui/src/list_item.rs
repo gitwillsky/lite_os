@@ -90,12 +90,13 @@ impl Painter<'_> {
         }
     }
 
-    /// 画一个大图标项；返回标签矩形（供命中与原地重命名）。
+    /// 画一个大图标项；`text=None` 时只画图标，原地编辑器独占标签区域。
+    /// 返回标签矩形（供命中与原地重命名）；没有标签时返回空矩形。
     pub fn large_icon_item(
         &mut self,
         cell: Rect,
         icon: Option<&Bitmap>,
-        text: &str,
+        text: Option<&str>,
         look: ItemLook,
     ) -> Rect {
         let size = icon.map_or(32, Bitmap::height);
@@ -105,6 +106,9 @@ impl Painter<'_> {
             cell.x + (cell.width - size) / 2,
             cell.y + ICON_TOP,
         );
+        let Some(text) = text else {
+            return Rect::new(cell.x, cell.y, 0, 0);
+        };
         let label = self.icon_label(cell, size, text, look.focused);
         let (background, ink) = look.colors();
         if let Some(background) = background {
@@ -131,12 +135,12 @@ impl Painter<'_> {
     }
 
     /// 画一个小图标项（小图标、列表视图，或详细资料的首列）：16 像素图标在左，标签框紧贴文字、
-    /// 不超过 `cell` 右边；返回标签矩形。
+    /// 不超过 `cell` 右边；`text=None` 时只画图标，返回空矩形，否则返回标签矩形。
     pub fn small_icon_item(
         &mut self,
         cell: Rect,
         icon: Option<&Bitmap>,
-        text: &str,
+        text: Option<&str>,
         look: ItemLook,
     ) -> Rect {
         let leading = if let Some(icon) = icon {
@@ -149,6 +153,9 @@ impl Painter<'_> {
             IMAGE_PADDING + icon.width() + IMAGE_PADDING
         } else {
             0
+        };
+        let Some(text) = text else {
+            return Rect::new(cell.x, cell.y, 0, 0);
         };
         let available = (cell.width - leading).max(0);
         let shown = self.fit(text, available - 2 * LABEL_PADDING);

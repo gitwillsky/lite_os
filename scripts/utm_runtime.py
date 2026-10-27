@@ -198,8 +198,10 @@ def _configuration(
             {
                 "Hardware": "virtio-gpu-gl-device",
                 "DynamicResolution": True,
-                "UpscalingFilter": "Linear",
-                "DownscalingFilter": "Linear",
+                # Pixel artwork and the separate SPICE cursor texture must retain
+                # hard edges; linear sampling mixes transparent/black/white pixels.
+                "UpscalingFilter": "Nearest",
+                "DownscalingFilter": "Nearest",
                 "NativeResolution": True,
             }
         ],

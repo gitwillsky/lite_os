@@ -416,6 +416,7 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
             .enumerate()
         {
             let (id, text) = node.row_at(absolute).expect("visible row");
+            let editing = node.editing_label(*id);
             let row = Rect::new(
                 geometry.rows.x,
                 geometry.rows.y + index as i32 * node.row_height,
@@ -435,7 +436,7 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                         row.height,
                     ),
                     absolute,
-                    text,
+                    (!editing).then_some(text.as_str()),
                     image,
                     selected,
                     focused,
@@ -467,14 +468,16 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                     image.paint(p, x + 3, row.y + (row.height - 16) / 2);
                 }
                 let leading = if image.is_some() { 20 } else { 0 };
-                p.text_fit(
-                    x + 4 + leading,
-                    row.y + 3,
-                    (row.width - 8 - leading).max(0),
-                    text,
-                    ink,
-                    false,
-                );
+                if !editing {
+                    p.text_fit(
+                        x + 4 + leading,
+                        row.y + 3,
+                        (row.width - 8 - leading).max(0),
+                        text,
+                        ink,
+                        false,
+                    );
+                }
             } else {
                 let mut x = row.x - table.horizontal.position;
                 for (column, text) in text.split('\t').take(table.columns.len()).enumerate() {
@@ -485,7 +488,7 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                             p.small_icon_item(
                                 Rect::new(cell.x + 1, cell.y, cell.width - 1, cell.height),
                                 image.map(|image| &**image),
-                                text,
+                                (!editing).then_some(text),
                                 look,
                             );
                         });
@@ -502,6 +505,9 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                             && let Some(image) = image
                         {
                             image.paint(p, cell.x + 3, cell.y + (cell.height - 16) / 2);
+                        }
+                        if column == 0 && editing {
+                            return;
                         }
                         let available = (width - 8 - leading).max(0);
                         let shown = p.fit(text, available);
@@ -566,7 +572,7 @@ fn paint_tree_row(
     outline: &super::outline::Outline,
     row: Rect,
     index: usize,
-    text: &str,
+    text: Option<&str>,
     image: Option<&std::rc::Rc<classic_ui::Bitmap>>,
     selected: bool,
     focused: bool,
@@ -578,6 +584,7 @@ fn paint_tree_row(
     if let Some(image) = image {
         image.paint(p, geometry.icon, row.y + (row.height - 16) / 2);
     }
+    let Some(text) = text else { return };
     let width = (p.text_width(text, false) + p.scale() - 1) / p.scale();
     let label = Rect::new(
         geometry.label,
@@ -623,7 +630,7 @@ fn paint_grid_item(
         text: C::WindowText,
     };
     let icons = node.row_icons.get(&id);
-    let text = text.split('\t').next().unwrap_or("");
+    let text = (!node.editing_label(id)).then(|| text.split('\t').next().unwrap_or(""));
     if grid.mode == 1 {
         let icon = icons.and_then(|icons| icons.1.as_deref());
         p.large_icon_item(cell, icon, text, look);
@@ -669,3 +676,6 @@ fn paint_grid(node: &Node, p: &mut Painter<'_>, focused: bool, grid: super::item
         );
     }
 }
+
+#[cfg(test)]
+mod tests;

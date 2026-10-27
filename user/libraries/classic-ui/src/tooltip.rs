@@ -42,7 +42,12 @@ impl Tooltip {
     /// 距离提示出现还需要等待多久；没有等待中的提示时为 `None`。事件循环据此设置超时。
     pub fn pending(&self) -> Option<Duration> {
         let since = self.since?;
-        (self.target.is_some() && !self.dismissed && since.elapsed() < DELAY)
-            .then(|| DELAY - since.elapsed())
+        if self.target.is_none() || self.dismissed {
+            return None;
+        }
+        // 只采样一次时钟；两次 elapsed 之间越过 DELAY 会令原先的 Duration 减法 panic。
+        DELAY
+            .checked_sub(since.elapsed())
+            .filter(|remaining| !remaining.is_zero())
     }
 }

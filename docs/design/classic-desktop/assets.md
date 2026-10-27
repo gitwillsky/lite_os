@@ -94,9 +94,11 @@ Windows 2000 Professional SP4 简中 ISO。ISO、原始 PE、全部导出资源�
   默认方案全部为静态帧；LCS1/硬件 ARGB 光标不能表达背景反色，导入遇到反色像素即失败，不静默改变掩码语义。
   其他方案和 ANI 没有消费者，留在 `.local/`，不进入产品资源。
 - `sounds/`：`logon.wav`、`logoff.wav`、`chord.wav`、`recycle.wav`，保持 ISO 的原始 PCM 字节与参数。
-- `fonts/`：原始 `simsun.ttc`、`tahoma.ttf`、`tahomabd.ttf` 与唯一的 `fontmap.ini` 配置。
+- `fonts/`：原始 `simsun.ttc`、`tahoma.ttf`、`tahomabd.ttf`、`marlett.ttf` 与唯一的 `fontmap.ini` 配置。
   SimSun/NSimSun 两个 face 和 12/13/14/15/16/18 ppem 内嵌点阵全部保留。Tahoma 中文经标准 FontLink 进入宋体；
   不再安装文泉驿、UMing 或 Wine Tahoma。`fontmap.ini` 是 LiteOS 配置，不冒充 ISO 文件。
+  标题按钮从 Marlett 的 Windows Symbol cmap 读取 U+F030/F031/F032/F072，按物理字号重新 hinting，
+  不再手画最小化、最大化、还原和关闭的低分辨率点阵；普通文本不自动转换到符号私用区。
 
 字体 ppem = 磅值 × 96 × scale / 72；匹配原生点阵时用点阵，否则渲染原版轮廓并执行 hinting。
 主题的灰度平滑策略保持不变；9pt 在 scale=2 时为 24ppem，宋体没有这个字号的点阵，因此使用原版轮廓，

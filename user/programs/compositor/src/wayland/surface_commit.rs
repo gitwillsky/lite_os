@@ -149,10 +149,9 @@ impl Client {
         for (child, position) in commit.positions {
             if let Ok(child) = self.surface_mut(child)
                 && let Some(sub) = &mut child.subsurface
+                && sub.parent == Some(object)
             {
-                if sub.parent == Some(object) {
-                    sub.position = position;
-                }
+                sub.position = position;
             }
         }
         self.commits += 1;

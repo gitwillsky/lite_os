@@ -152,7 +152,7 @@ fn interface_name(snapshot: &InterfaceSnapshot) -> &[u8] {
         .name
         .iter()
         .position(|byte| *byte == 0)
-        .unwrap_or(snapshot.name.len().min(15));
+        .unwrap_or_else(|| snapshot.name.len().min(15));
     &snapshot.name[..end.min(15)]
 }
 

@@ -433,7 +433,9 @@ mod tests {
         display.repeat = Some(Repeat {
             window,
             code: 28,
-            next: Instant::now() - Duration::from_millis(1),
+            next: Instant::now()
+                .checked_sub(Duration::from_millis(1))
+                .expect("test clock supports a previous millisecond"),
         });
         let mut writer = Writer::new();
         wl_keyboard::Event::Key {

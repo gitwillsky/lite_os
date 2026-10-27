@@ -229,12 +229,11 @@ impl Tree {
         let geometry = node.list_geometry();
         let rows = geometry
             .grid
-            .map_or(node.row_count() as i32, |grid| grid.extent);
-        let page = geometry
-            .grid
-            .map_or((geometry.rows.height / node.row_height).max(1), |grid| {
-                grid.page()
-            });
+            .map_or_else(|| node.row_count() as i32, |grid| grid.extent);
+        let page = geometry.grid.map_or_else(
+            || (geometry.rows.height / node.row_height).max(1),
+            |grid| grid.page(),
+        );
         let step = geometry
             .grid
             .map_or(1, |grid| if grid.vertical() { grid.height } else { 16 });
@@ -378,9 +377,10 @@ impl Node {
         self.table
             .as_ref()
             .filter(|table| table.multiple)
-            .map_or(self.selected == Some(id), |table| {
-                table.selection.contains(&id)
-            })
+            .map_or_else(
+                || self.selected == Some(id),
+                |table| table.selection.contains(&id),
+            )
     }
     pub fn choose_row(
         &mut self,
