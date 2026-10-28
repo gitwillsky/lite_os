@@ -68,6 +68,8 @@ static int report;
 static uint64_t slow_unique;
 /* 第二个挂载的守护进程协商 WRITEBACK_CACHE。 */
 static int writeback_mode;
+/* 控制阶段分别协商/不协商 ABORT_ERROR，核对实际 errno 与后台预算。 */
+static int control_mode;
 
 static uint64_t node_of(uint64_t parent, const char *name)
 {
@@ -191,8 +193,11 @@ static void serve(void)
 	nodes[1] = (struct node){ .used = 1, .mode = S_IFDIR | 0755 };
 	for (;;) {
 		ssize_t length = read(device, request, sizeof request);
-		if (length < 0 && errno == ENODEV)
+		if (length < 0 && (errno == ENODEV || errno == ECONNABORTED)) {
+			if (control_mode && errno != (control_mode == 2 ? ECONNABORTED : ENODEV))
+				_exit(95);
 			_exit(0);
+		}
 		if (length < (ssize_t)sizeof(struct fuse_in_header))
 			_exit(93);
 		struct fuse_in_header *in = (void *)request;
@@ -207,7 +212,10 @@ static void serve(void)
 				.max_readahead = init->max_readahead,
 				.flags = FUSE_ASYNC_READ | FUSE_BIG_WRITES | FUSE_MAX_PAGES |
 					 FUSE_DO_READDIRPLUS | FUSE_PARALLEL_DIROPS | FUSE_AUTO_INVAL_DATA |
-					 FUSE_INIT_EXT | (writeback_mode ? FUSE_WRITEBACK_CACHE : 0),
+					 FUSE_INIT_EXT | (writeback_mode ? FUSE_WRITEBACK_CACHE : 0) |
+					 (control_mode == 2 ? FUSE_ABORT_ERROR : 0),
+				.max_background = control_mode ? 7 : 0,
+				.congestion_threshold = control_mode ? 5 : 0,
 				.max_write = MAX_WRITE,
 				.max_pages = MAX_WRITE / 4096,
 				.time_gran = 1,
@@ -238,6 +246,7 @@ static void serve(void)
 				break;
 			}
 			if (strcmp(name, "slow") == 0) {
+				write(report, "S", 1);
 				slow_unique = in->unique; /* 等 INTERRUPT 再回复 */
 				break;
 			}
@@ -658,6 +667,81 @@ static void direct_phase(void)
 	CHECK(161, umount("/tmp/fuse-dio") == 0 && close(events) == 0);
 }
 
+static long control_waiting(const char *path)
+{
+	char number[32];
+	int fd = open(path, O_RDONLY);
+	CHECK(170, fd >= 0);
+	ssize_t length = read(fd, number, sizeof number - 1);
+	CHECK(171, length > 0 && close(fd) == 0);
+	number[length] = 0;
+	return strtol(number, NULL, 10);
+}
+
+/* 对真实控制 fd 调参、积压/放行 RELEASE，再 abort 在途 LOOKUP；旧 fd 不延长挂载可见性。 */
+static void control_phase(int mode)
+{
+	char waiting[256], maximum[256], threshold[256], abort_path[256], directory[128];
+	char number[16];
+	static char data[8192];
+	struct stat info;
+	struct statfs filesystem;
+	int events;
+	writeback_mode = 0;
+	control_mode = mode;
+	pid_t daemon = start("/tmp/fuse-control", &events);
+	CHECK(172, stat("/tmp/fuse-control", &info) == 0);
+	snprintf(directory, sizeof directory, "/sys/fs/fuse/connections/%llu", (unsigned long long)info.st_dev);
+	snprintf(waiting, sizeof waiting, "%s/waiting", directory);
+	snprintf(maximum, sizeof maximum, "%s/max_background", directory);
+	snprintf(threshold, sizeof threshold, "%s/congestion_threshold", directory);
+	snprintf(abort_path, sizeof abort_path, "%s/abort", directory);
+	CHECK(173, statfs(directory, &filesystem) == 0 && filesystem.f_type == 0x65735543);
+	CHECK(174, stat(directory, &info) == 0 && (info.st_mode & 0777) == 0500);
+	int limit = open(maximum, O_RDWR | O_TRUNC);
+	CHECK(175, limit >= 0 && read(limit, number, sizeof number) == 2 && memcmp(number, "7\n", 2) == 0);
+	CHECK(176, lseek(limit, 0, SEEK_SET) == 0 && write(limit, "0", 1) == 1 && write(limit, "0", 1) == 1);
+	int fd = open("/tmp/fuse-control/file", O_CREAT | O_RDWR, 0644);
+	CHECK(177, fd >= 0 && control_waiting(waiting) == 0);
+	CHECK(178, close(fd) == 0 && control_waiting(waiting) == 1);
+	CHECK(179, write(limit, "2", 1) == 1 && stat("/tmp/fuse-control/missing", &info) == -1 && errno == ENOENT);
+	CHECK(180, control_waiting(waiting) == 0);
+	CHECK(181, pwrite(limit, "3", 1, 1) == -1 && errno == EINVAL);
+	CHECK(182, pwrite(limit, "65536", 5, 0) == -1 && errno == EINVAL);
+	CHECK(183, pwrite(limit, "0x3\n", 4, 0) == 4);
+	int congestion = open(threshold, O_WRONLY | O_TRUNC);
+	CHECK(184, congestion >= 0 && write(congestion, "0", 1) == 1 && close(congestion) == 0);
+	fd = open("/tmp/fuse-control/data", O_CREAT | O_RDWR, 0644);
+	CHECK(185, fd >= 0 && write(fd, data, sizeof data) == sizeof data);
+	(void)drain(events, 'R');
+	CHECK(186, pread(fd, data, sizeof data, 0) == sizeof data && drain(events, 'R') == 0 && close(fd) == 0);
+	fd = open(waiting, O_RDONLY);
+	CHECK(187, fd >= 0 && pread(fd, number, 1, 0) == -1 && errno == ESPIPE);
+	CHECK(188, lseek(fd, 0, SEEK_SET) == -1 && errno == ESPIPE && close(fd) == 0);
+	CHECK(199, stat("/tmp/fuse-control/missing", &info) == -1 && errno == ENOENT && control_waiting(waiting) == 0);
+	pid_t caller = fork();
+	CHECK(189, caller >= 0);
+	if (caller == 0) {
+		int result = stat("/tmp/fuse-control/slow", &info);
+		CHECK(190, result == -1 && errno == ECONNABORTED);
+		_exit(0);
+	}
+	int sent = 0;
+	for (int attempt = 0; attempt < 2000 && !(sent = drain(events, 'S')); attempt++)
+		usleep(1000);
+	CHECK(191, sent && control_waiting(waiting) > 0);
+	int abort_fd = open(abort_path, O_WRONLY);
+	CHECK(192, abort_fd >= 0 && write(abort_fd, "1", 1) == 1);
+	int status;
+	CHECK(193, waitpid(caller, &status, 0) == caller && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	CHECK(194, waitpid(daemon, &status, 0) == daemon && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	fd = open(waiting, O_RDONLY);
+	CHECK(195, fd >= 0 && control_waiting(waiting) == 0 && umount("/tmp/fuse-control") == 0);
+	CHECK(196, read(fd, number, sizeof number) == 0 && pwrite(limit, "4", 1, 0) == 1 && write(abort_fd, "1", 1) == 1);
+	CHECK(197, stat(directory, &info) == -1 && errno == ENOENT);
+	CHECK(198, close(fd) == 0 && close(limit) == 0 && close(abort_fd) == 0 && close(events) == 0);
+}
+
 int main(void)
 {
 	static unsigned char buffer[FILE_BYTES];
@@ -828,6 +912,8 @@ int main(void)
 	CHECK(104, !mounts_contains("fuse.probe"));
 	writeback_phase();
 	direct_phase();
+	control_phase(1);
+	control_phase(2);
 	puts("LITEOS_FUSE_42");
 	return 0;
 }

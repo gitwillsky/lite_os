@@ -556,6 +556,9 @@ impl Inode for FuseInode {
 
     /// 协商的预读窗口（Linux `ra_pages = min(bdi, max_readahead / PAGE_SIZE)`），不超过单请求页数。
     fn readahead_pages(&self) -> usize {
+        if self.mount.connection.congested() {
+            return 1;
+        }
         self.negotiated().map_or(1, |negotiated| {
             (negotiated.max_readahead / crate::memory::PAGE_SIZE as u32)
                 .min(negotiated.max_pages)

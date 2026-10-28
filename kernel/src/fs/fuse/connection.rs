@@ -29,6 +29,11 @@ use crate::{
     sync::{TaskEvent, WaitResult},
 };
 
+mod background;
+mod device_io;
+use background::{Background, Waiting};
+pub(super) use background::{Limit, unprivileged_limit};
+
 /// 内核声明支持、守护进程可选择启用的 INIT 能力（Linux `fuse_new_init` 的子集）。
 const SUPPORTED: u64 = fuse::ASYNC_READ
     | fuse::BIG_WRITES
@@ -58,6 +63,9 @@ const POLLWRNORM: i16 = 0x100;
 /// INIT 回复协商出的连接参数。
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Negotiated {
+    /// INIT 非零时覆盖默认后台预算；协议 7.13 起有效。
+    max_background: u16,
+    congestion_threshold: u16,
     /// 守护进程的协议次版本。
     pub(super) minor: u32,
     /// 双方都支持的 INIT flags。
@@ -103,8 +111,8 @@ impl Negotiated {
         };
         let max_readahead = field(4) as u32;
         let mut flags = field(4);
-        let _max_background = field(2);
-        let _congestion_threshold = field(2);
+        let max_background = field(2) as u16;
+        let congestion_threshold = field(2) as u16;
         let max_write = field(4) as u32;
         let _time_gran = field(4);
         let max_pages = field(2) as u32;
@@ -115,6 +123,8 @@ impl Negotiated {
         }
         let flags = flags & SUPPORTED;
         Ok(Self {
+            max_background,
+            congestion_threshold,
             minor,
             flags,
             // Linux：协议次版本 >= 5 才有 max_write，且至少一页。
@@ -165,6 +175,11 @@ enum Phase {
 
 /// 一个请求；消息在构造时定稿，守护进程读取时无锁复制。
 pub(super) struct Request {
+    // OWNER: 后台请求占用连接预算；前台调用不能因 RELEASE 积压而被错误限流。
+    background: bool,
+    // OWNER: 仅实际发送或等待 INIT 的请求计入 waiting，预留而未发送的 RELEASE 不计。
+    // 令牌随最后请求引用归还计数，避免错误/中断/abort 路径逐处分支扣减而泄漏。
+    waiting: Option<Waiting>,
     unique: u64,
     opcode: u32,
     message: Vec<u8>,
@@ -178,9 +193,16 @@ pub(super) struct Request {
 }
 
 impl Request {
-    fn finish(&self, result: Result<Vec<u8>, FileSystemError>) {
-        *self.phase.lock() = Phase::Done(result);
+    /// 首次完成返回 true；晚到的读/回复错误不能覆盖已完成或已被 caller 消费的结果。
+    fn finish(&self, result: Result<Vec<u8>, FileSystemError>) -> bool {
+        let mut phase = self.phase.lock();
+        if matches!(*phase, Phase::Done(_) | Phase::Taken) {
+            return false;
+        }
+        *phase = Phase::Done(result);
+        drop(phase);
         self.done.signal();
+        true
     }
 
     fn take(&self) -> Option<Result<Vec<u8>, FileSystemError>> {
@@ -242,6 +264,7 @@ enum Link {
 }
 
 struct Queue {
+    background: Background,
     link: Link,
     initialized: bool,
     /// INIT 失败（Linux `conn_error`）：此后请求返回 `ECONNREFUSED`。
@@ -249,7 +272,8 @@ struct Queue {
     /// 守护进程不支持中断（INTERRUPT 回复 `ENOSYS`）。
     no_interrupt: bool,
     pending: VecDeque<Arc<Request>>,
-    /// `pending` 中为后台请求预留的空位数；不变量：`capacity - len >= reserved`。
+    /// 后台预留数；pending 空位至少为 reserved + deferred 数，deferred 空位至少为 reserved。
+    /// 这让 RELEASE Drop 和预算 promotion 都只移动预留项，不在完成路径分配。
     reserved: usize,
     interrupts: VecDeque<Arc<Request>>,
     forgets: VecDeque<(u64, u64)>,
@@ -261,6 +285,8 @@ struct Queue {
 
 /// 一个 FUSE 挂载与其守护进程之间的连接。
 pub(super) struct Connection {
+    // OWNER: waiting 的唯一计数；请求令牌只持该 atomic，不反向持有 Connection，避免队列引用环。
+    waiting: Arc<AtomicUsize>,
     queue: Mutex<Queue>,
     // OWNER: 守护进程 poll/read 的唤醒源；入队、中断、FORGET 与中止发布 readiness。
     readiness: (Arc<PipeEnd>, Arc<PipeEnd>),
@@ -297,6 +323,7 @@ impl Connection {
         let pair = || Pipe::notification_pair().map_err(|_| FileSystemError::OutOfMemory);
         let connection = Arc::try_new(Self {
             queue: Mutex::new(Queue {
+                background: Background::new(),
                 link: Link::Connected,
                 initialized: false,
                 failed: false,
@@ -310,6 +337,7 @@ impl Connection {
                 processing: Vec::new(),
             }),
             readiness: pair()?,
+            waiting: Arc::try_new(AtomicUsize::new(0)).map_err(|_| FileSystemError::OutOfMemory)?,
             initialized: pair()?,
             negotiated: Once::new(),
             next_unique: AtomicU64::new(0),
@@ -328,13 +356,19 @@ impl Connection {
             .u32(SUPPORTED as u32)
             .u32((SUPPORTED >> 32) as u32)
             .finish();
-        let request = connection.request(
+        let mut request = connection.request(
             fuse::INIT,
             0,
             &[&body],
             ReplyShape::up_to(fuse::INIT_OUT_SIZE),
         )?;
-        connection.enqueue(request, 0)?;
+        Arc::get_mut(&mut request)
+            .expect("INIT is unpublished")
+            .background = true;
+        Arc::get_mut(&mut request)
+            .expect("INIT is unpublished")
+            .waiting = Some(Waiting::new(&connection.waiting));
+        connection.enqueue_background(request)?;
         Ok(connection)
     }
 
@@ -379,6 +413,8 @@ impl Connection {
         let unique = self.next_unique.fetch_add(2, Ordering::Relaxed) + 2;
         let message = protocol::request(opcode, unique, nodeid, self.caller(), arguments)?;
         Arc::try_new(Request {
+            background: false,
+            waiting: None,
             unique,
             opcode,
             message,
@@ -390,12 +426,12 @@ impl Connection {
         .map_err(|_| FileSystemError::OutOfMemory)
     }
 
-    fn enqueue(&self, request: Arc<Request>, extra_reserve: usize) -> Result<(), FileSystemError> {
+    fn enqueue(&self, request: Arc<Request>) -> Result<(), FileSystemError> {
         let mut queue = self.queue.lock();
         if let Some(error) = queue.refusal() {
             return Err(error);
         }
-        let needed = queue.reserved + extra_reserve + 1;
+        let needed = queue.reserved + queue.background.pending.len() + 1;
         queue
             .pending
             .try_reserve(needed)
@@ -448,9 +484,13 @@ impl Connection {
         arguments: &[&[u8]],
         reply: ReplyShape,
     ) -> Result<Vec<u8>, FileSystemError> {
+        let waiting = Waiting::new(&self.waiting);
         self.wait_initialized()?;
-        let request = self.request(opcode, nodeid, arguments, reply)?;
-        self.enqueue(request.clone(), 0)?;
+        let mut request = self.request(opcode, nodeid, arguments, reply)?;
+        Arc::get_mut(&mut request)
+            .expect("request is unpublished")
+            .waiting = Some(waiting);
+        self.enqueue(request.clone())?;
         self.wait_answer(&request)
     }
 
@@ -528,10 +568,19 @@ impl Connection {
         nodeid: u64,
         arguments: &[&[u8]],
     ) -> Result<Reserved, FileSystemError> {
-        let request = self.request(opcode, nodeid, arguments, ReplyShape::EMPTY)?;
+        let mut request = self.request(opcode, nodeid, arguments, ReplyShape::EMPTY)?;
+        Arc::get_mut(&mut request)
+            .expect("reserved request is unpublished")
+            .background = true;
         let mut queue = self.queue.lock();
         let needed = queue.reserved + 1;
+        let pending_needed = needed + queue.background.pending.len();
         queue
+            .pending
+            .try_reserve(pending_needed)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        queue
+            .background
             .pending
             .try_reserve(needed)
             .map_err(|_| FileSystemError::OutOfMemory)?;
@@ -544,13 +593,20 @@ impl Connection {
     }
 
     fn release_slot(&self, request: Option<Arc<Request>>) {
+        let request = request.map(|mut request| {
+            Arc::get_mut(&mut request)
+                .expect("reserved request is unpublished")
+                .waiting = Some(Waiting::new(&self.waiting));
+            request
+        });
         let mut queue = self.queue.lock();
         queue.reserved -= 1;
         let Some(request) = request.filter(|_| queue.link == Link::Connected) else {
             return;
         };
         // 预留保证容量，push 不会分配。
-        queue.pending.push_back(request);
+        queue.background.pending.push_back(request);
+        queue.promote_background();
         drop(queue);
         self.readiness.1.signal_readiness();
     }
@@ -593,68 +649,62 @@ impl Connection {
 
     /// 设备文件最后一次释放：结束它读走、尚未回复的请求；最后一个设备关闭即中止连接。
     pub(super) fn detach_device(&self, device: u64) {
-        let ended = {
-            let mut queue = self.queue.lock();
-            let mut ended = Vec::new();
-            if ended.try_reserve(queue.processing.len()).is_ok() {
-                queue.processing.retain(|request| {
-                    let owned =
-                        matches!(*request.phase.lock(), Phase::Sent { device: owner } if owner == device);
-                    if owned {
-                        ended.push(request.clone());
-                    }
-                    !owned
-                });
-            }
-            ended
-        };
-        for request in ended {
-            request.finish(Err(FileSystemError::Errno(errno::ECONNABORTED as u16)));
+        loop {
+            let request = {
+                let mut queue = self.queue.lock();
+                let index = queue.processing.iter().position(|request| matches!(*request.phase.lock(), Phase::Sent { device: owner } if owner == device));
+                index.map(|index| queue.processing.swap_remove(index))
+            };
+            let Some(request) = request else {
+                break;
+            };
+            self.finish(
+                &request,
+                Err(FileSystemError::Errno(errno::ECONNABORTED as u16)),
+            );
         }
         if self.devices.fetch_sub(1, Ordering::AcqRel) == 1 {
             self.abort(false);
         }
     }
 
-    /// 中止连接：此后的请求立即失败，未完成请求以 `ECONNABORTED`（协商了 ABORT_ERROR 或主动中止）
-    /// 或 `ENOTCONN` 结束，守护进程 read 返回 `ENODEV`/`ECONNABORTED`。
+    /// 中止连接；`explicit` 表示 fusectl abort。已入队请求一律 ECONNABORTED，新请求为 ENOTCONN。
+    /// 设备 read 仅在主动中止且协商 ABORT_ERROR 时为 ECONNABORTED，否则 ENODEV。
     pub(super) fn abort(&self, explicit: bool) {
-        let (pending, processing, error) = {
+        let (pending, background, processing) = {
             let mut queue = self.queue.lock();
             if queue.link != Link::Connected {
                 return;
             }
-            queue.link = if explicit {
+            let abort_error = self
+                .negotiated
+                .get()
+                .is_some_and(|negotiated| negotiated.has(fuse::ABORT_ERROR));
+            queue.link = if explicit && abort_error {
                 Link::Aborted
             } else {
                 Link::Detached
             };
-            let abort_error = explicit
-                || self
-                    .negotiated
-                    .get()
-                    .is_some_and(|negotiated| negotiated.has(fuse::ABORT_ERROR));
             queue.interrupts.clear();
             queue.forgets.clear();
+            queue.background.active = 0;
             (
                 core::mem::take(&mut queue.pending),
+                core::mem::take(&mut queue.background.pending),
                 core::mem::take(&mut queue.processing),
-                if abort_error {
-                    errno::ECONNABORTED
-                } else {
-                    errno::ENOTCONN
-                },
             )
         };
-        for request in pending.into_iter().chain(processing) {
-            request.finish(Err(FileSystemError::Errno(error as u16)));
+        for request in pending.into_iter().chain(background).chain(processing) {
+            self.finish(
+                &request,
+                Err(FileSystemError::Errno(errno::ECONNABORTED as u16)),
+            );
         }
         self.readiness.1.signal_readiness();
         self.initialized.1.signal_readiness();
     }
 
-    fn finish_init(&self, result: Result<&[u8], FileSystemError>) {
-        let negotiated = result.and_then(Negotiated::parse);
+    fn finish_init(&self, negotiated: Result<Negotiated, FileSystemError>) {
         if let Ok(negotiated) = negotiated {
             self.negotiated.call_once(|| negotiated);
         }
@@ -662,266 +712,19 @@ impl Connection {
             let mut queue = self.queue.lock();
             queue.initialized = true;
             queue.failed = negotiated.is_err();
+            if let Ok(negotiated) = negotiated {
+                queue.background.negotiate(
+                    negotiated,
+                    (self.requester)().is_some_and(|requester| {
+                        requester
+                            .identity
+                            .has_capability(syscall_abi::capability::Capability::SYS_ADMIN)
+                    }),
+                );
+            }
+            queue.promote_background();
         }
         self.initialized.1.signal_readiness();
-    }
-
-    /// 守护进程 read（Linux `fuse_dev_do_read`）：中断优先，其次按配额交替 FORGET 与普通请求。
-    pub(super) fn read(
-        &self,
-        device: u64,
-        output: &mut dyn UserOutput,
-        nonblocking: bool,
-        wait: impl Fn() -> Result<(), DeviceError>,
-    ) -> Result<(), DeviceError> {
-        let max_write = self
-            .negotiated
-            .get()
-            .map_or(0, |negotiated| negotiated.max_write as usize);
-        if output.remaining() < fuse::MIN_READ_BUFFER.max(fuse::IN_HEADER_SIZE + 40 + max_write) {
-            return Err(DeviceError::Errno(errno::EINVAL));
-        }
-        loop {
-            let mut queue = self.queue.lock();
-            match queue.link {
-                Link::Connected => {}
-                Link::Detached => return Err(DeviceError::Errno(errno::ENODEV)),
-                Link::Aborted => return Err(DeviceError::Errno(errno::ECONNABORTED)),
-            }
-            if let Some(request) = queue.interrupts.pop_front() {
-                drop(queue);
-                return self.write_interrupt(&request, output);
-            }
-            if !queue.forgets.is_empty() {
-                let take_forget = queue.pending.is_empty() || {
-                    queue.forget_batch -= 1;
-                    queue.forget_batch >= 0
-                };
-                if take_forget {
-                    return self.write_forgets(queue, output);
-                }
-                if queue.forget_batch <= -8 {
-                    queue.forget_batch = FORGET_BATCH;
-                }
-            }
-            let Some(request) = queue.pending.pop_front() else {
-                drop(queue);
-                if nonblocking {
-                    return Err(DeviceError::WouldBlock);
-                }
-                wait()?;
-                continue;
-            };
-            if request.message.len() > output.remaining() {
-                drop(queue);
-                request.finish(Err(FileSystemError::IoError));
-                continue;
-            }
-            if queue.processing.try_reserve(1).is_err() {
-                // 刚弹出一个元素，push_front 不会分配。
-                queue.pending.push_front(request);
-                return Err(DeviceError::Errno(errno::ENOMEM));
-            }
-            *request.phase.lock() = Phase::Sent { device };
-            queue.processing.push(request.clone());
-            drop(queue);
-            if output.write(&request.message).is_err() {
-                self.take_processing(request.unique, device);
-                request.finish(Err(FileSystemError::IoError));
-                return Err(DeviceError::Errno(errno::EFAULT));
-            }
-            if request.interrupted.load(Ordering::Acquire) {
-                self.queue_interrupt(&request);
-            }
-            return Ok(());
-        }
-    }
-
-    fn write_interrupt(
-        &self,
-        request: &Request,
-        output: &mut dyn UserOutput,
-    ) -> Result<(), DeviceError> {
-        const LENGTH: usize = fuse::IN_HEADER_SIZE + 8;
-        let header = protocol::header(
-            LENGTH as u32,
-            fuse::INTERRUPT,
-            request.unique | 1,
-            0,
-            Caller::default(),
-        );
-        output.write(&header).map_err(fault)?;
-        output.write(&request.unique.to_ne_bytes()).map_err(fault)
-    }
-
-    fn write_forgets(
-        &self,
-        mut queue: spin::MutexGuard<'_, Queue>,
-        output: &mut dyn UserOutput,
-    ) -> Result<(), DeviceError> {
-        let unique = self.next_unique.fetch_add(2, Ordering::Relaxed) + 2;
-        let batch = self
-            .negotiated
-            .get()
-            .is_some_and(|negotiated| negotiated.minor >= 16)
-            && queue.forgets.len() > 1;
-        if !batch {
-            let (nodeid, lookups) = queue.forgets.pop_front().expect("forget pending");
-            drop(queue);
-            let header = protocol::header(
-                (fuse::IN_HEADER_SIZE + 8) as u32,
-                fuse::FORGET,
-                unique,
-                nodeid,
-                Caller::default(),
-            );
-            output.write(&header).map_err(fault)?;
-            return output.write(&lookups.to_ne_bytes()).map_err(fault);
-        }
-        let room = (output.remaining() - fuse::IN_HEADER_SIZE - 8) / 16;
-        let count = queue.forgets.len().min(room);
-        let mut entries = [(0u64, 0u64); 32];
-        let count = count.min(entries.len());
-        for entry in &mut entries[..count] {
-            *entry = queue.forgets.pop_front().expect("counted forget");
-        }
-        drop(queue);
-        let header = protocol::header(
-            (fuse::IN_HEADER_SIZE + 8 + count * 16) as u32,
-            fuse::BATCH_FORGET,
-            unique,
-            0,
-            Caller::default(),
-        );
-        output.write(&header).map_err(fault)?;
-        output
-            .write(&Fields::<8>::new().u32(count as u32).finish())
-            .map_err(fault)?;
-        for (nodeid, lookups) in &entries[..count] {
-            output
-                .write(&Fields::<16>::new().u64(*nodeid).u64(*lookups).finish())
-                .map_err(fault)?;
-        }
-        Ok(())
-    }
-
-    fn take_processing(&self, unique: u64, device: u64) -> Option<Arc<Request>> {
-        let mut queue = self.queue.lock();
-        let index = queue.processing.iter().position(|request| {
-            request.unique == unique
-                && matches!(*request.phase.lock(), Phase::Sent { device: owner } if owner == device)
-        })?;
-        let request = queue.processing.swap_remove(index);
-        if request.interrupted.load(Ordering::Acquire)
-            && let Some(index) = queue
-                .interrupts
-                .iter()
-                .position(|queued| Arc::ptr_eq(queued, &request))
-        {
-            queue.interrupts.remove(index);
-        }
-        Some(request)
-    }
-
-    /// 守护进程 write（Linux `fuse_dev_do_write`）：回复、中断回复或通知。
-    ///
-    /// `notify` 处理 unique 为零的通知消息（错误字段是通知码，负载已复制）。
-    pub(super) fn write(
-        &self,
-        device: u64,
-        input: &mut dyn UserInput,
-        notify: impl FnOnce(i32, &[u8]) -> Result<(), FileSystemError>,
-    ) -> Result<(), DeviceError> {
-        let length = input.remaining();
-        if length < fuse::OUT_HEADER_SIZE {
-            return Err(DeviceError::Errno(errno::EINVAL));
-        }
-        let mut header = [0u8; fuse::OUT_HEADER_SIZE];
-        input.copy(&mut header).map_err(fault)?;
-        let mut reader = Reader::new(&header);
-        let declared = reader.u32().unwrap() as usize;
-        let error = reader.u32().unwrap() as i32;
-        let unique = reader.u64().unwrap();
-        if declared != length {
-            return Err(DeviceError::Errno(errno::EINVAL));
-        }
-        let payload_length = length - fuse::OUT_HEADER_SIZE;
-        if unique == 0 {
-            let payload = copy_payload(input, payload_length)?;
-            notify(error, &payload[fuse::OUT_HEADER_SIZE..]).map_err(device_error)?;
-            input.consume(length);
-            return Ok(());
-        }
-        if !(-511..=0).contains(&error) {
-            return Err(DeviceError::Errno(errno::EINVAL));
-        }
-        if unique & 1 != 0 {
-            let request = {
-                let queue = self.queue.lock();
-                queue
-                    .processing
-                    .iter()
-                    .find(|request| {
-                        request.unique == unique & !1
-                            && matches!(*request.phase.lock(), Phase::Sent { device: owner } if owner == device)
-                    })
-                    .cloned()
-            }
-            .ok_or(DeviceError::Errno(errno::ENOENT))?;
-            if payload_length != 0 {
-                return Err(DeviceError::Errno(errno::EINVAL));
-            }
-            match -(error as isize) {
-                errno::ENOSYS => self.queue.lock().no_interrupt = true,
-                errno::EAGAIN => self.queue_interrupt(&request),
-                _ => {}
-            }
-            input.consume(length);
-            return Ok(());
-        }
-        let request = self
-            .take_processing(unique, device)
-            .ok_or(DeviceError::Errno(errno::ENOENT))?;
-        let result = if error != 0 {
-            if payload_length != 0 {
-                Err(errno::EINVAL)
-            } else {
-                Ok(Err(protocol::reply_error((-error) as u16)))
-            }
-        } else if payload_length > request.reply.size
-            || payload_length < request.reply.size && !request.reply.variable
-        {
-            Err(errno::EINVAL)
-        } else {
-            match copy_payload(input, payload_length) {
-                Ok(mut payload) => {
-                    payload.drain(..fuse::OUT_HEADER_SIZE);
-                    Ok(Ok(payload))
-                }
-                Err(DeviceError::Errno(errno::ENOMEM)) => Ok(Err(FileSystemError::OutOfMemory)),
-                Err(error) => {
-                    request.finish(Err(FileSystemError::IoError));
-                    return Err(error);
-                }
-            }
-        };
-        match result {
-            Ok(reply) => {
-                if request.opcode == fuse::INIT {
-                    self.finish_init(reply.as_deref().map_err(|error| *error));
-                }
-                request.finish(reply);
-                input.consume(length);
-                Ok(())
-            }
-            Err(code) => {
-                if request.opcode == fuse::INIT {
-                    self.finish_init(Err(FileSystemError::IoError));
-                }
-                request.finish(Err(FileSystemError::IoError));
-                Err(DeviceError::Errno(code))
-            }
-        }
     }
 
     /// 守护进程可读（有请求）、总可写；连接断开报告 POLLERR（Linux `fuse_dev_poll`）。
@@ -955,8 +758,7 @@ impl Queue {
                 Some(FileSystemError::Errno(errno::ECONNREFUSED as u16))
             }
             Link::Connected => None,
-            Link::Detached => Some(FileSystemError::Errno(errno::ENOTCONN as u16)),
-            Link::Aborted => Some(FileSystemError::Errno(errno::ECONNABORTED as u16)),
+            Link::Detached | Link::Aborted => Some(FileSystemError::Errno(errno::ENOTCONN as u16)),
         }
     }
 }

@@ -65,8 +65,7 @@
 
 ### Persistent FallibleMap registry
 
-下表是生产 kernel 中全部持久 `FallibleMap` 字段与 static 的精确集合。checker 对 location 与完整类型双向比对；新增、删除、换型或遗漏登记都必须先完成 owner/interface review。函数局部 transaction scratch 不属于持久 owner，不在此登记。
-AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-contract/ordered-storage.md)。
+持久 `FallibleMap` 字段/static 的精确集合；checker 双向比对 location/完整类型，新增/删改/遗漏须 owner/interface review；局部 scratch 不登记。[AVL 与审查规则](architecture-contract/ordered-storage.md)。
 
 | Location | Type |
 |---|---|
@@ -109,6 +108,7 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 | `kernel/src/fs/ext4/journal.rs :: ActiveTransaction.freed` | `FallibleMap < u64 , u64 >` |
 | `kernel/src/fs/ext4/journal.rs :: RunningTransaction.freed` | `FallibleMap < u64 , u64 >` |
 | `kernel/src/fs/page_cache/registry.rs :: static FILES` | `Once < Mutex < FallibleMap < SharedFileId , Arc < CachedFile > > > >` |
+| `kernel/src/fs/fuse/control.rs :: Registry.mounts` | `FallibleMap < usize , Weak < Mount > >` |
 | `kernel/src/fs/fuse/filesystem.rs :: Mount.nodes` | `Mutex < FallibleMap < u64 , Weak < FuseInode > > >` |
 | `kernel/src/fs/fuse/inode.rs :: FuseInode.entries` | `Mutex < FallibleMap < Vec < u8 > , CachedEntry > >` |
 | `kernel/src/fs/page_cache/reclaim.rs :: CachedPages.entries` | `FallibleMap < u64 , Arc < CachedPage > >` |

@@ -1992,8 +1992,10 @@ kernel/src/fs/chardev.rs :: trait DeviceFile :: fn supports_write (& self) -> bo
 kernel/src/fs/chardev.rs :: trait DeviceFile :: fn wait_sources (& self , _events : i16) -> DeviceWaitSources
 kernel/src/fs/chardev.rs :: trait DeviceFile :: fn write (& self , _input : & mut dyn UserInput , _nonblocking : bool) -> Result < () , DeviceError >
 kernel/src/fs/chardev.rs :: trait DeviceFile :: fn write_file_information (& self , _view : & FileInformationView , _output : & mut dyn core :: fmt :: Write ,) -> core :: fmt :: Result
+kernel/src/fs/chardev.rs :: trait PositionedFile :: fn advances_write_position (& self) -> bool
 kernel/src/fs/chardev.rs :: trait PositionedFile :: fn read_at (& self , output : & mut dyn UserOutput , offset : u64) -> Result < () , DeviceError >
 kernel/src/fs/chardev.rs :: trait PositionedFile :: fn seek (& self , current : u64 , offset : i64 , whence : u32) -> Result < u64 , DeviceError >
+kernel/src/fs/chardev.rs :: trait PositionedFile :: fn supports_positioned_io (& self) -> bool
 kernel/src/fs/chardev.rs :: trait PositionedFile :: fn write_at (& self , input : & mut dyn UserInput , offset : u64 , writer : & crate :: namespace :: NamespaceAuthority ,) -> Result < () , DeviceError >
 kernel/src/fs/chardev.rs :: trait UserInput :: fn consume (& mut self , count : usize)
 kernel/src/fs/chardev.rs :: trait UserInput :: fn copy (& self , bytes : & mut [u8]) -> Result < () , UserFault >
@@ -2397,12 +2399,10 @@ kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn mount (& s
 kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn negotiated (& self) -> Option < & Negotiated >
 kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn new (requester : CurrentRequester , pid_namespace : Arc < PidNamespace > , max_read : u32 ,) -> Result < Arc < Self > , FileSystemError >
 kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn poll (& self , events : i16) -> i16
-kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn read (& self , device : u64 , output : & mut dyn UserOutput , nonblocking : bool , wait : impl Fn () -> Result < () , DeviceError > ,) -> Result < () , DeviceError >
 kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn readiness_pipe (& self) -> Arc < Pipe >
 kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn reserve (self : & Arc < Self > , opcode : u32 , nodeid : u64 , arguments : & [& [u8]] ,) -> Result < Reserved , FileSystemError >
 kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn reserve_forgets (& self , count : usize) -> Result < () , FileSystemError >
 kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn unreserve_forgets (& self , count : usize)
-kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn write (& self , device : u64 , input : & mut dyn UserInput , notify : impl FnOnce (i32 , & [u8]) -> Result < () , FileSystemError > ,) -> Result < () , DeviceError >
 kernel/src/fs/fuse/connection.rs :: pub (super) impl Negotiated :: const fn has (& self , flag : u64) -> bool
 kernel/src/fs/fuse/connection.rs :: pub (super) impl Negotiated :: fn write_chunk (& self) -> usize
 kernel/src/fs/fuse/connection.rs :: pub (super) impl ReplyShape :: const fn fixed (size : usize) -> Self
@@ -2415,6 +2415,30 @@ kernel/src/fs/fuse/connection.rs :: pub (super) struct Negotiated
 kernel/src/fs/fuse/connection.rs :: pub (super) struct ReplyShape
 kernel/src/fs/fuse/connection.rs :: pub (super) struct Request
 kernel/src/fs/fuse/connection.rs :: pub (super) struct Reserved
+kernel/src/fs/fuse/connection.rs :: pub (super) use background :: { Limit , unprivileged_limit }
+kernel/src/fs/fuse/connection/background.rs :: enum Limit :: Congestion
+kernel/src/fs/fuse/connection/background.rs :: enum Limit :: Maximum
+kernel/src/fs/fuse/connection/background.rs :: pub (in crate :: fs :: fuse) enum Limit
+kernel/src/fs/fuse/connection/background.rs :: pub (in crate :: fs :: fuse) fn unprivileged_limit () -> u16
+kernel/src/fs/fuse/connection/background.rs :: pub (in crate :: fs :: fuse) impl Connection :: fn congested (& self) -> bool
+kernel/src/fs/fuse/connection/background.rs :: pub (in crate :: fs :: fuse) impl Connection :: fn limit (& self , limit : Limit) -> u16
+kernel/src/fs/fuse/connection/background.rs :: pub (in crate :: fs :: fuse) impl Connection :: fn set_limit (& self , limit : Limit , value : u16)
+kernel/src/fs/fuse/connection/background.rs :: pub (in crate :: fs :: fuse) impl Connection :: fn waiting (& self) -> usize
+kernel/src/fs/fuse/connection/background.rs :: pub (super) Background :: active : usize
+kernel/src/fs/fuse/connection/background.rs :: pub (super) Background :: pending : VecDeque < Arc < Request > >
+kernel/src/fs/fuse/connection/background.rs :: pub (super) impl Background :: fn negotiate (& mut self , parameters : Negotiated , privileged : bool)
+kernel/src/fs/fuse/connection/background.rs :: pub (super) impl Background :: fn new () -> Self
+kernel/src/fs/fuse/connection/background.rs :: pub (super) impl Connection :: fn enqueue_background (& self , request : Arc < Request >) -> Result < () , FileSystemError >
+kernel/src/fs/fuse/connection/background.rs :: pub (super) impl Connection :: fn finish (& self , request : & Request , result : Result < Vec < u8 > , FileSystemError >)
+kernel/src/fs/fuse/connection/background.rs :: pub (super) impl Queue :: fn promote_background (& mut self)
+kernel/src/fs/fuse/connection/background.rs :: pub (super) impl Waiting :: fn new (counter : & Arc < AtomicUsize >) -> Self
+kernel/src/fs/fuse/connection/background.rs :: pub (super) struct Background
+kernel/src/fs/fuse/connection/background.rs :: pub (super) struct Waiting
+kernel/src/fs/fuse/connection/device_io.rs :: pub (in crate :: fs :: fuse) impl Connection :: fn read (& self , device : u64 , output : & mut dyn UserOutput , nonblocking : bool , wait : impl Fn () -> Result < () , DeviceError > ,) -> Result < () , DeviceError >
+kernel/src/fs/fuse/connection/device_io.rs :: pub (in crate :: fs :: fuse) impl Connection :: fn write (& self , device : u64 , input : & mut dyn UserInput , notify : impl FnOnce (i32 , & [u8]) -> Result < () , FileSystemError > ,) -> Result < () , DeviceError >
+kernel/src/fs/fuse/control.rs :: pub (super) fn register (mount : & Arc < Mount >) -> Result < () , FileSystemError >
+kernel/src/fs/fuse/control.rs :: pub (super) fn unregister (id : usize)
+kernel/src/fs/fuse/control.rs :: pub (super) struct ControlFileSystemType
 kernel/src/fs/fuse/device.rs :: pub (super) fn register () -> Result < () , FileSystemError >
 kernel/src/fs/fuse/device.rs :: pub (super) impl FuseDevice :: fn bind (& self , connection : & Arc < Connection >) -> Result < () , FileSystemError >
 kernel/src/fs/fuse/device.rs :: pub (super) impl FuseDevice :: fn from_file (file : & dyn DeviceFile) -> Option < & Self >

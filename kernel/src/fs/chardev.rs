@@ -141,6 +141,14 @@ pub(crate) struct MapRequest {
 /// 具有标准 file position 的 per-open 操作；OFD 独占 position，backend 不复制 offset。
 /// proc 绑定 f_cred 与 namespace owner 后使用此协议，不能用当前 reader 身份重新打开。
 pub(crate) trait PositionedFile: Send + Sync {
+    /// 是否允许 pread/pwrite；nonseekable 文件仍用 OFD position 执行顺序 I/O，不能复制 offset。
+    fn supports_positioned_io(&self) -> bool {
+        true
+    }
+    /// 顺序 write 成功后是否推进 OFD position；fusectl 的控制写不修改 ppos，缺省文件按字节推进。
+    fn advances_write_position(&self) -> bool {
+        true
+    }
     fn read_at(&self, output: &mut dyn UserOutput, offset: u64) -> Result<(), DeviceError>;
     fn write_at(
         &self,

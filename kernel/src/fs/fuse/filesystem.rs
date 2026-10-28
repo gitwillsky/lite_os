@@ -136,6 +136,13 @@ struct FuseFileSystem {
     root: Arc<FuseInode>,
 }
 
+impl Drop for FuseFileSystem {
+    fn drop(&mut self) {
+        super::control::unregister(self.mount.filesystem_id);
+        self.mount.connection.abort(false);
+    }
+}
+
 impl FileSystem for FuseFileSystem {
     fn superblock(&self) -> SuperblockFacts {
         SuperblockFacts {
@@ -226,6 +233,7 @@ impl FileSystem for FuseFileSystem {
 
     /// 卸载（Linux `fuse_sb_destroy` → `fuse_abort_conn`）：守护进程 read 返回 `ENODEV` 后退出。
     fn shutdown(&self) -> Result<(), FileSystemError> {
+        super::control::unregister(self.mount.filesystem_id);
         self.mount.connection.abort(false);
         self.root.clear_entries();
         Ok(())
@@ -282,6 +290,7 @@ impl FileSystemType for FuseFileSystemType {
         connection.attach_mount(&mount);
         let filesystem = Arc::try_new(FuseFileSystem { mount, root })
             .map_err(|_| FileSystemError::OutOfMemory)?;
+        super::control::register(&filesystem.mount)?;
         Ok(CreatedFileSystem {
             filesystem,
             user_namespace: request.identity.user_namespace(),

@@ -13,6 +13,9 @@ use super::sysfs_net::{self, NetSysNode, NetView};
 #[derive(Clone, Copy)]
 enum SysNode {
     Root,
+    Fs,
+    Fuse,
+    FuseConnections,
     Drm(super::sysfs_drm::Node),
     /// `/sys/class`：`block` 与 `net`。
     ClassRoot,
@@ -41,6 +44,9 @@ impl SysNode {
     fn inode(self) -> u64 {
         match self {
             Self::Root => 1,
+            Self::Fs => 10,
+            Self::Fuse => 11,
+            Self::FuseConnections => 12,
             Self::Drm(node) => node.inode(),
             Self::ClassRoot => 8,
             Self::DevRoot => 9,
@@ -60,6 +66,9 @@ impl SysNode {
     fn kind(self) -> InodeType {
         match self {
             Self::Root
+            | Self::Fs
+            | Self::Fuse
+            | Self::FuseConnections
             | Self::ClassRoot
             | Self::DevRoot
             | Self::Devices
@@ -166,6 +175,9 @@ impl SysInode {
     fn child(&self, name: &[u8]) -> Result<SysNode, FileSystemError> {
         let parent = match self.node {
             SysNode::Root => SysNode::Root,
+            SysNode::Fs => SysNode::Root,
+            SysNode::Fuse => SysNode::Fs,
+            SysNode::FuseConnections => SysNode::Fuse,
             SysNode::Drm(node) => match super::sysfs_drm::parent(node) {
                 super::sysfs_drm::Parent::Root => SysNode::Root,
                 super::sysfs_drm::Parent::Class => SysNode::ClassRoot,
@@ -207,6 +219,9 @@ impl SysInode {
                 Ok(SysNode::Drm(super::sysfs_drm::Node::Platform))
             }
             SysNode::Root if name == b"devices" => Ok(SysNode::Devices),
+            SysNode::Root if name == b"fs" => Ok(SysNode::Fs),
+            SysNode::Fs if name == b"fuse" => Ok(SysNode::Fuse),
+            SysNode::Fuse if name == b"connections" => Ok(SysNode::FuseConnections),
             SysNode::Root if name == b"class" => Ok(SysNode::ClassRoot),
             SysNode::Root if name == b"dev" => Ok(SysNode::DevRoot),
             SysNode::Root if name == b"block" => {
@@ -375,6 +390,7 @@ impl Inode for SysInode {
                 }
             }
             SysNode::Root => {
+                emit!(SysNode::Fs, b"fs");
                 emit!(SysNode::Drm(super::sysfs_drm::Node::Bus), b"bus");
                 emit!(SysNode::Devices, b"devices");
                 emit!(SysNode::ClassRoot, b"class");
@@ -414,6 +430,9 @@ impl Inode for SysInode {
                 emit!(SysNode::System, b"system");
             }
             SysNode::System => emit!(SysNode::CpuRoot, b"cpu"),
+            SysNode::Fs => emit!(SysNode::Fuse, b"fuse"),
+            SysNode::Fuse => emit!(SysNode::FuseConnections, b"connections"),
+            SysNode::FuseConnections => {}
             SysNode::CpuRoot => {
                 emit!(SysNode::CpuSet(CpuSet::Possible), b"possible");
                 emit!(SysNode::CpuSet(CpuSet::Present), b"present");

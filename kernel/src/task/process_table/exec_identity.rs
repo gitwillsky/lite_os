@@ -101,10 +101,7 @@ fn commit_exec_identity(
     }
     let (retired_identity, registration) = promoted.expect("nonleader identity promoted");
     let retired_registration = core::mem::replace(&mut index.value_mut().pid, registration);
-    let retired_source = core::mem::replace(
-        &mut index.value_mut().pidfd_source,
-        alloc::sync::Weak::new(),
-    );
+    let retired_source = core::mem::take(&mut index.value_mut().pidfd_source);
     index.set_key(tgid);
     graph.threads.commit_vacant(index);
     Some((retired_identity, retired_registration, retired_source))

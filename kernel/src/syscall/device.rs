@@ -276,7 +276,9 @@ pub(super) fn write_device(
             .with_position(|offset| {
                 let result = file.write_at(&mut input, *offset, &writer);
                 let completed = input.cursor.completed();
-                *offset += completed as u64;
+                if file.advances_write_position() {
+                    *offset += completed as u64;
+                }
                 progress_or(completed, result)
             })
             .unwrap_or_else(super::fs::position_error);
@@ -298,6 +300,9 @@ pub(super) fn read_positioned_file(
     total_length: usize,
     offset: u64,
 ) -> isize {
+    if !file.supports_positioned_io() {
+        return -syscall_abi::errno::ESPIPE;
+    }
     let mut output = TaskUserOutput {
         task,
         cursor: UserIoCursor::new(vectors),
@@ -313,6 +318,9 @@ pub(super) fn write_positioned_file(
     total_length: usize,
     offset: u64,
 ) -> isize {
+    if !file.supports_positioned_io() {
+        return -syscall_abi::errno::ESPIPE;
+    }
     let mut input = TaskUserInput {
         task,
         cursor: UserIoCursor::new(vectors),

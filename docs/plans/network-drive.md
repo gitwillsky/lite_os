@@ -44,8 +44,10 @@ Status: Active
      positioned I/O、sendfile/copy 与 io_uring worker；短读不修改 EOF，分块写错误保留已提交前缀。
      混合缓存写先撤销共享/未 COW 私有映射、写回并作废相关页；未协商 DIRECT_IO_ALLOW_MMAP，
      MAP_SHARED 返回 ENODEV，MAP_PRIVATE 保留已有 COW。guest 探针已扩展，按用户要求不运行。
-   - 阶段 1 剩余：
-     `/sys/fs/fuse/connections`、FUSE over io_uring、passthrough；探针随各项扩展。
+   - 已实现、运行验证待执行：标准 fusectl 挂载到 /sys/fs/fuse/connections，提供实际连接目录与
+     waiting/abort/max_background/congestion_threshold；请求令牌、真实后台预算、INIT 协商与拥塞预读相接。
+     已更新 guest 探针，覆盖预算暂停/放行、在途 abort/新请求 errno、卸载后旧 fd 与两种 ABORT_ERROR 协商。
+   - 阶段 1 剩余：FUSE over io_uring、passthrough；探针随各项扩展。
    - `/dev/fuse`（10:229）：每次 open 一个连接；read 取请求、write 回复、poll；守护进程关闭 fd 即中止连接，
      未完成请求返回 ENOTCONN。
    - `mount -t fuse[.subtype]`：`fd=`、`rootmode=`、`user_id=`、`group_id=`、`default_permissions`、

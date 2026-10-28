@@ -12,8 +12,8 @@
   `/dev/fuse` 的 `FuseDevice` 只持连接绑定与设备标识。连接持 `Weak<Mount>` 处理通知，不形成环。
 - **请求生命周期**：INIT 在挂载时入队，其余请求在一次性 latch 上等 INIT；守护进程读取后请求移入
   读取设备的 processing，回复只接受同一设备写回。等待依次为可中断（被打断即标记并补发 INTERRUPT）、
-  仅 SIGKILL（仍在队列中则撤回返回 EINTR）、不可中断。最后一个设备关闭或卸载中止连接：未完成请求以
-  ENOTCONN（协商 ABORT_ERROR 时 ECONNABORTED）结束，守护进程 read 得 ENODEV。
+  仅 SIGKILL（仍在队列中则撤回返回 EINTR）、不可中断。最后一个设备关闭或卸载中止连接：已入队请求以
+  ECONNABORTED 结束，之后的新请求 ENOTCONN；设备 read 为 ENODEV，仅显式 abort 且协商 ABORT_ERROR 时为 ECONNABORTED。
 - **不能失败的路径**：RELEASE 在 OPEN 前构造并占用 pending 预留槽，FORGET 在查找前预留 forgets 槽；Drop
   只消费预留，不分配。READDIRPLUS 按一页回复的最大项数预留，未用部分退还；守护进程为每个非 `.`/`..`
   项计了一次查找，即使 visitor 中途停止也全部接管。查找回复建 inode 失败时立即 FORGET 该次查找。
@@ -106,3 +106,24 @@
 性能：请求按单页最多 256 页（1 MiB）分块；名字与属性缓存使每个路径分量在超时内不再往返。新增连接、
 队列与 codec 都在 FUSE 自己的请求路径上，不进入既有文件系统热路径；`superblock()` 让 mount table 去掉
 一次 statfs 调用。请求往返成本由阶段 6 的 Samba 运行时门禁在真实网络负载下测量。
+
+## fusectl 与后台预算
+
+- `control::REGISTRY` 只拥有 filesystem ID → Weak<Mount> 与唯一 fusectl superblock，不复制连接事实。
+  `filesystem` 在完整建立后登记，shutdown/Drop 幂等撤销；静态索引锁不跨 backend/user-copy，也不在锁内升级 Weak。
+  `sysfs` 提供只读空挂载点 `/sys/fs/fuse/connections`，init 经标准 mount(2) 挂载 `fusectl`（magic 0x65735543）。
+- 目录名取实际 st_dev；目录 0500，waiting 0400、abort 0200、两个参数 0600，UID/GID 均取挂载 user_id/group_id。
+  卸载后旧 fd 的 read 返回 EOF（waiting 已捕获的分段尾部仍可读），写返回原 count，不复活已移除连接。
+- waiting 由每次实际请求的 RAII 令牌计数，包括 INIT 前等待；未发送 RELEASE 预留与无回复 FORGET 不计数。
+  原子仅是诊断投影，Relaxed 不承担同步；令牌持独立 Arc<AtomicUsize>，不能反向持 Connection 形成队列环。
+- `Connection.queue.background` 独占 deferred 请求、活动预算与两个阈值；活动数包括 pending/processing 的后台请求。
+  默认 12/9，INIT 7.13 起接受非零协商值；非特权上限沿固定 Linux 默认 RAM/8192/392（封顶 65535），
+  未实现可写的 fuse module 参数。设置 max_background=0 可暂停后台发出，前台请求不受后台预算限制。
+  RELEASE 与 INIT 经同一 promotion；reserve 同时预留 deferred 与最终 pending 槽，完成、Drop、abort 不分配。
+  所有完成路径只归还一次预算，读/回复复制失败的 INIT 也发布失败 latch；设备关闭逐个摘除，无 OOM 遗留请求。
+- congestion_threshold 达到时停止额外预读，仅保留 demand 页；当前缓存写回为同步路径，没有私设另一套异步限流。
+  预算写只允许 ppos=0，接受 Linux base-0 无符号数与可选末尾换行；u64 溢出 ERANGE、超可设范围 EINVAL。
+  `PositionedFile` 由 syscall/device 消费 nonseekable 与 write-position 规则：waiting/abort 禁止 pread/pwrite/lseek，
+  控制写不推进唯一 OFD position，参数 fd 支持重新定位；没有 backend offset 副本。
+- Benchmark 决策：每个实际请求新增一次原子计入/归还，不新增请求分配；后台操作复用 queue 锁、两队列容量预留。
+  fusectl 索引、数字渲染与控制快照仅在冷路径分配/加锁。按用户要求只做静态检查，不运行 benchmark 或调整阈值。

@@ -8,18 +8,20 @@
 use super::FileSystemError;
 
 mod connection;
+mod control;
 mod device;
 mod filesystem;
 mod inode;
 mod options;
 mod protocol;
 
-/// 登记 `/dev/fuse` 与 `fuse` 文件系统类型。
+/// 登记 `/dev/fuse` 与 `fuse`/`fusectl` 文件系统类型。
 ///
 /// # Errors
 ///
 /// 设备号或类型名已登记返回 `AlreadyExists`；分配失败返回 `OutOfMemory`。
 pub(super) fn register() -> Result<(), FileSystemError> {
     device::register()?;
-    super::register_filesystem(&filesystem::FuseFileSystemType)
+    super::register_filesystem(&filesystem::FuseFileSystemType)?;
+    super::register_filesystem(&control::ControlFileSystemType)
 }

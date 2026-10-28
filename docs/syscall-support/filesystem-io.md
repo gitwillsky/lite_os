@@ -196,7 +196,7 @@ TTSTAMP 时钟选择和启用后的 STATUS/SYNC_PTR 时钟快照，SW_PARAMS 允
 
 FUSE（协议 7.45）：`/dev/fuse`（10:229，0666）每次 open 一个端点，挂载 `fd=` 或 `FUSE_DEV_IOC_CLONE` 绑定连接；
 未绑定端点读写 `EPERM`，读缓冲小于 `max(8192, 80 + max_write)` 为 `EINVAL`，回复须写回读走请求的端点，最后一个端点关闭
-即中止连接（请求 `ENOTCONN`，协商 `ABORT_ERROR` 时 `ECONNABORTED`）。选项 `fd`/`rootmode`/`user_id`/`group_id` 必填，另有
+即中止连接（已入队请求 `ECONNABORTED`，新请求 `ENOTCONN`）。选项 `fd`/`rootmode`/`user_id`/`group_id` 必填，另有
 `default_permissions`、`allow_other`、`max_read`、`subtype`，`/proc/mounts` 显示 `fuse.<subtype>`。INIT 协商 ASYNC_READ、
 BIG_WRITES、AUTO_INVAL_DATA、WRITEBACK_CACHE（写进页缓存，close 与最后句柄释放时写回）、MAX_PAGES（单请求 1 MiB）、DO_READDIRPLUS/READDIRPLUS_AUTO、PARALLEL_DIROPS、ABORT_ERROR、
 INIT_EXT；页缓存未命中按协商的 `max_readahead`（≤128 KiB）一次 READ 预读；次版本低于 12 的守护进程
@@ -210,9 +210,13 @@ FOPEN_DIRECT_IO 按 per-open fh 绕过内容页缓存，覆盖 vector/positioned
 混合缓存先写回脏页，直接写前撤销范围 cache aliases（保留 private COW），并发 pin 无法逐出返回 EBUSY。
 MAP_PRIVATE 使用既有 cache/COW；未协商 DIRECT_IO_ALLOW_MMAP，MAP_SHARED（含只读）返回 ENODEV，
 MAP_FIXED 失败保留旧 VMA。新增 direct guest 探针已编写，运行验证待执行。
+标准 `fusectl` 由 init 挂载到 `/sys/fs/fuse/connections`；目录按实际 st_dev 枚举并随卸载移除，权限归挂载 UID/GID。
+支持 waiting、abort、max_background、congestion_threshold：统计实际请求，后台预算参与 INIT 协商与调参，拥塞停止额外预读。
+控制文件按 Linux 保留分段 waiting 快照、nonseekable 与控制写不推进 ppos；卸载后旧 fd 读 EOF/写成功不复活连接。
+设备 read 在显式 abort 且协商 ABORT_ERROR 时返回 ECONNABORTED，否则 ENODEV；新请求始终 ENOTCONN。
+新增 fusectl guest 探针已编写，运行验证待执行；非特权预算上限用固定 Linux 默认 RAM 公式，未提供可写 module 参数。
 范围缩减：
-- 尚未实现（网络驱动器计划阶段 1 进行中）：`/sys/fs/fuse/connections`、
-  FUSE over io_uring、passthrough。一般 INVAL_INODE/打开作废仍保留被映射页到映射解除；直接写会撤销相关 cache aliases。
+- 尚未实现（网络驱动器计划阶段 1 进行中）：FUSE over io_uring、passthrough。一般 INVAL_INODE/打开作废仍保留被映射页到映射解除；直接写会撤销相关 cache aliases。
 - `O_CREAT` 用 CREATE 原子创建打开（守护进程不支持时回退 MKNOD+OPEN）。每次关闭 fd 发 FLUSH（`close(2)` 返回其错误），
   最后一个引用发 RELEASE。
 - 不转发 POSIX/flock 锁（锁在本地 VFS 生效）、ioctl、poll、lseek、copy_file_range、tmpfile、statx。
