@@ -24,6 +24,7 @@
 | [`desktop-entry/`](desktop-entry/README.md) | 桌面条目解析 | 共享库 `libdesktop_entry.so` |
 | [`desktop-settings/`](desktop-settings/README.md) | 每用户桌面设置 | 共享库 `libdesktop_settings.so` |
 | [`network-drive/`](network-drive/README.md) | 每用户网络驱动器记录、凭据与挂载生命周期 | 程序的内部依赖 |
+| [`mpv-client/`](mpv-client/README.md) | libmpv 客户端：属性、命令、事件、软件渲染 | 媒体播放机的内部依赖 |
 | [`sound/`](sound/README.md) | 系统提示音 | 共享库 `libsound.so` |
 | [`sndvol/`](sndvol/README.md) | 音量状态与布局 | 共享库 `libsndvol.so` |
 | [`terminal-font/`](terminal-font/README.md) | 终端字体图集 | 终端/共享 UI 的内部依赖 |

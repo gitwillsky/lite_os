@@ -50,6 +50,18 @@ pub(super) unsafe extern "C" fn title(pointer: *mut c_void, id: u64, value: Text
     }
 }
 
+pub(super) unsafe extern "C" fn fullscreen(pointer: *mut c_void, window: u64, on: u32) -> i32 {
+    // SAFETY: invoke 独占 context；只编码一条标准 xdg_toplevel 全屏请求，不保留任何调用者内存。
+    unsafe {
+        invoke(pointer, |context| {
+            let protocol = context.host(window)?.frame.window();
+            context
+                .display
+                .request(protocol, classic_ui::WindowRequest::Fullscreen(on != 0))
+        })
+    }
+}
+
 pub(super) unsafe extern "C" fn app_id(pointer: *mut c_void, window: u64, value: Text) -> i32 {
     // SAFETY: 文本按调用借用，编码标准 xdg_toplevel 请求并更新本窗口的业务身份。
     unsafe { invoke(pointer, |context| context.app_id(window, &text(value)?)) }

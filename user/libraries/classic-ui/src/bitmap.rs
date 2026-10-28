@@ -478,8 +478,9 @@ impl Bitmap {
         })
     }
 
-    #[cfg(test)]
-    pub(crate) fn from_pixels(pixels: Vec<u32>, width: i32, height: i32) -> Self {
+    /// 由已预乘的 ARGB 像素建立位图；`pixels.len()` 必须等于 `width * height`。
+    pub fn from_pixels(pixels: Vec<u32>, width: i32, height: i32) -> Self {
+        debug_assert_eq!(pixels.len(), width as usize * height as usize);
         Self {
             pixels,
             width,
@@ -491,6 +492,22 @@ impl Bitmap {
     /// 按 Painter 的整数输出 scale 绘制，超出绘图区自动裁剪；坐标为逻辑像素。
     pub fn paint(&self, painter: &mut Painter<'_>, x: i32, y: i32) {
         self.paint_region(painter, x, y, 0, self.width);
+    }
+
+    /// 以设备像素 1:1 绘制（不乘 Painter 的整数 scale），`x`/`y` 为逻辑坐标；视频帧已按设备分辨率生成。
+    pub fn paint_physical(&self, painter: &mut Painter<'_>, x: i32, y: i32) {
+        let scale = painter.scale;
+        painter.surface.blit(
+            Image {
+                pixels: &self.pixels,
+                width: self.width,
+                height: self.height,
+                stride: self.width as usize,
+            },
+            x * scale,
+            y * scale,
+            1,
+        );
     }
 
     /// 选中项的图像（comctl32 ILD_BLEND50）：先画图像，再在不透明像素上按逻辑像素棋盘格叠 `color`。
@@ -812,50 +829,6 @@ mod tests {
         bytes.extend(extra);
         bytes.extend(data);
         bytes
-    }
-
-    #[test]
-    fn windows_2000_wallpapers_decode_bottom_up_palettes_like_gdi() {
-        // 参照值由独立的 Pillow 解码同一原版文件得到：(x, y) 处 0xRRGGBB 与全图 RGB 分量和。
-        let directory =
-            Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../assets/classic/wallpapers");
-        for (name, size, samples, total) in [
-            ("Blue Lace 16.bmp", 48, [0x000080; 5], 398_163u64),
-            (
-                "Soap Bubbles.bmp",
-                256,
-                [0x293184, 0x31318c, 0x31318c, 0x31398c, 0x101073],
-                10_874_642,
-            ),
-        ] {
-            let bitmap = Bitmap::load_picture(&directory.join(name)).unwrap();
-            assert_eq!((bitmap.width, bitmap.height), (size, size), "{name}");
-            let points = [
-                (0, 0),
-                (size - 1, 0),
-                (0, size - 1),
-                (size - 1, size - 1),
-                (size / 2, size / 3),
-            ];
-            for ((x, y), expected) in points.into_iter().zip(samples) {
-                assert_eq!(
-                    bitmap.pixels[(y * size + x) as usize],
-                    0xff00_0000 | expected,
-                    "{name} ({x},{y})"
-                );
-            }
-            let sum: u64 = bitmap
-                .pixels
-                .iter()
-                .map(|pixel| {
-                    u64::from(pixel >> 16 & 0xff)
-                        + u64::from(pixel >> 8 & 0xff)
-                        + u64::from(pixel & 0xff)
-                })
-                .sum();
-            assert_eq!(sum, total, "{name}");
-            assert!(bitmap.indices.is_some(), "{name} keeps palette indices");
-        }
     }
 
     #[test]

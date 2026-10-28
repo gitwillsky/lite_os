@@ -47,3 +47,54 @@ pub(super) unsafe extern "C" fn palette(
         })
     }
 }
+
+/// 一帧最大边长；与 Bitmap 解码上限同量级，避免一次调用要求分配无界内存。
+const FRAME_SIDE: u32 = 16384;
+
+pub(super) unsafe extern "C" fn canvas_frame(
+    pointer: *mut c_void,
+    window: u64,
+    id: u64,
+    width: u32,
+    height: u32,
+    pixels: *const u32,
+    count: usize,
+) -> i32 {
+    let clear = width == 0 && height == 0;
+    if !clear
+        && (width == 0
+            || height == 0
+            || width > FRAME_SIDE
+            || height > FRAME_SIDE
+            || pixels.is_null()
+            || count != width as usize * height as usize)
+    {
+        return abi::INVALID;
+    }
+    // SAFETY: Api 输入契约保证 pixels 在本次调用中指向 count 个 u32；先校验尺寸与非空，
+    // 复制完成前不替换旧帧，调用返回后运行库不再引用调用者内存。
+    unsafe {
+        invoke(pointer, |context| {
+            let frame = (!clear).then(|| {
+                // 源高字节来自 mpv 的 bgr0 填充，补成不透明预乘 ARGB。
+                let copied = slice::from_raw_parts(pixels, count)
+                    .iter()
+                    .map(|pixel| pixel | 0xff00_0000)
+                    .collect();
+                Rc::new(Bitmap::from_pixels(copied, width as i32, height as i32))
+            });
+            let host = context.host_mut(window)?;
+            let node = host
+                .controls_mut()?
+                .nodes
+                .get_mut(&id)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown widget"))?;
+            if node.kind != abi::widget::CANVAS {
+                return Err(invalid("frame requires a Canvas widget"));
+            }
+            node.frame = frame;
+            host.frame.invalidate();
+            Ok(())
+        })
+    }
+}

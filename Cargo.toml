@@ -40,6 +40,7 @@ exclude = [
     "user/libraries/keyboard",
     "user/libraries/liteos-runtime",
     "user/libraries/linux-uapi",
+    "user/libraries/mpv-client",
     "user/libraries/terminal-font",
     "user/libraries/terminal-model",
     "user/libraries/typeface",

@@ -7,6 +7,7 @@ extern crate liteos_runtime as _;
 pub mod alsa;
 pub mod credentials;
 pub mod drm;
+pub mod dynamic_library;
 pub mod filesystem;
 pub mod input;
 pub mod kobject;

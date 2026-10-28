@@ -2,9 +2,9 @@
 Type=Application
 Name=Media Player
 Name[zh_CN]=媒体播放机
-Exec=/bin/mplay %f
+Exec=/bin/mplay %F
 Icon=media-player
-MimeType=audio/x-wav;
+MimeType=video/mp4;video/x-matroska;video/webm;video/x-msvideo;video/quicktime;video/x-ms-wmv;video/x-flv;video/mpeg;video/mp2t;video/3gpp;video/ogg;audio/mpeg;audio/flac;audio/x-wav;audio/ogg;audio/opus;audio/mp4;audio/aac;audio/x-ms-wma;audio/x-matroska;application/vnd.apple.mpegurl;audio/x-mpegurl;
 Categories=AudioVideo;Player;
 Terminal=false
 StartupWMClass=org.liteos.media-player

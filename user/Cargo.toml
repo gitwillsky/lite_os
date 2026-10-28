@@ -29,6 +29,7 @@ members = [
     "libraries/sound",
     "programs/task-manager",
     "libraries/linux-uapi",
+    "libraries/mpv-client",
     "libraries/terminal-font",
     "libraries/terminal-model",
     "libraries/typeface",
@@ -76,6 +77,7 @@ unchecked_time_subtraction = "deny"
 unimplemented = "deny"
 
 [patch.crates-io]
+fuser = { path = "../vendor/fuser" }
 smb = { path = "../vendor/smb" }
 smb-fscc = { path = "../vendor/smb-fscc" }
 smb-dtyp = { path = "../vendor/smb-dtyp" }

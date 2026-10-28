@@ -1115,114 +1115,112 @@
         "conversion": "BMP V4; native dimensions"
       }
     },
-    "wallpapers/Blue Lace 16.bmp": {
+    "wallpapers/云上都市.jpg": {
       "group": "wallpapers",
-      "bytes": 1272,
-      "sha256": "8be9bc020b6d6204ceab602f140f7489daa6175ff773fc8092791e608a435a88",
+      "bytes": 512474,
+      "sha256": "79214ed6a15a73c7326745d9c30b9855a238ccc82b8a8a848d9b8bad49a71d6b",
       "origin": {
-        "source": "blulac16.bmp",
-        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
-        "conversion": "original bytes"
+        "source": "LiteOS original artwork generated with Codex",
+        "conversion": "JPEG, 1920x1080"
       }
     },
-    "wallpapers/Coffee Bean.bmp": {
+    "wallpapers/夏日道口.jpg": {
       "group": "wallpapers",
-      "bytes": 17062,
-      "sha256": "53d4299d2eb54d94328f461b02b4a6d37bc6ac1fc27354003e934ba07975436c",
+      "bytes": 491931,
+      "sha256": "f3de14870e9c58835127b889ceadb00cd2eb2a3b7d3dde8981028c1c934de7e3",
       "origin": {
-        "source": "coffeebn.bmp",
-        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
-        "conversion": "original bytes"
+        "source": "LiteOS original artwork generated with Codex",
+        "conversion": "JPEG, 1920x1080"
       }
     },
-    "wallpapers/FeatherTexture.bmp": {
+    "wallpapers/夕阳教室.jpg": {
       "group": "wallpapers",
-      "bytes": 16730,
-      "sha256": "36ba3a54bd8751767d827568060d533fb6b7337c3006df815c17aa0bb5a677e6",
+      "bytes": 346584,
+      "sha256": "bff224ab6065ffc226942135b667cc4e9d041df3fca80c0b749c6381e2b9d560",
       "origin": {
-        "source": "feather.bmp",
-        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
-        "conversion": "original bytes"
+        "source": "LiteOS original artwork generated with Codex",
+        "conversion": "JPEG, 1920x1080"
       }
     },
-    "wallpapers/Gone Fishing.bmp": {
+    "wallpapers/天空群岛.jpg": {
       "group": "wallpapers",
-      "bytes": 17336,
-      "sha256": "c35dc33d874e46380c45583c6f255f33ec1d10c50d3e3c8518d936c03da75254",
+      "bytes": 517521,
+      "sha256": "d2f6d4d003080538dbf3e8792c6d06732f4f15163bab01125c027dd802aa157e",
       "origin": {
-        "source": "gonefish.bmp",
-        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
-        "conversion": "original bytes"
+        "source": "LiteOS original artwork generated with Codex",
+        "conversion": "JPEG, 1920x1080"
       }
     },
-    "wallpapers/Greenstone.bmp": {
+    "wallpapers/星空湖畔.jpg": {
       "group": "wallpapers",
-      "bytes": 26582,
-      "sha256": "649e7ab53a1742a0d10fc6d9f718973727bca6c1b5e92dab5da9371698faa3b9",
+      "bytes": 471028,
+      "sha256": "3733f6c6f2f8cbc0c028ae738c48512b0841936e4be1113031ed001a09c9bac8",
       "origin": {
-        "source": "grnstone.bmp",
-        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
-        "conversion": "original bytes"
+        "source": "LiteOS original artwork generated with Codex",
+        "conversion": "JPEG, 1920x1080"
       }
     },
-    "wallpapers/Prairie Wind.bmp": {
+    "wallpapers/森林神社.jpg": {
       "group": "wallpapers",
-      "bytes": 65954,
-      "sha256": "cf2f0e25c50fa0692642b7b16b5f454b969ba020c23f0eae5e2a2a26445304f2",
+      "bytes": 585381,
+      "sha256": "5a44a2a23c7a34637d50bba81947a2fb62011fd0391498170cc20523af4b3ac9",
       "origin": {
-        "source": "prairie.bmp",
-        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
-        "conversion": "original bytes"
+        "source": "LiteOS original artwork generated with Codex",
+        "conversion": "JPEG, 1920x1080"
       }
     },
-    "wallpapers/Rhododendron.bmp": {
+    "wallpapers/樱花坡道.jpg": {
       "group": "wallpapers",
-      "bytes": 17362,
-      "sha256": "e205441082f90467cfdd972e91e7efb17b5c481bd8150efa575e59a4d25efde9",
+      "bytes": 604625,
+      "sha256": "717ac6112fbb288c6e0df2d048609ccd7a3b8bd8e0e1c1e822115a2eee507f6f",
       "origin": {
-        "source": "rhody.bmp",
-        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
-        "conversion": "original bytes"
+        "source": "LiteOS original artwork generated with Codex",
+        "conversion": "JPEG, 1920x1080"
       }
     },
-    "wallpapers/River Sumida.bmp": {
+    "wallpapers/花田山坡.jpg": {
       "group": "wallpapers",
-      "bytes": 26680,
-      "sha256": "dd9b65ab2a4e087ed4688665f05aa5c6920821eb8c2b2e89d794f768f2f8be7d",
+      "bytes": 511309,
+      "sha256": "98786be1ab4e1fea0a23e25efa5b4ee28806b135765e1df1b077309e61dc7ab8",
       "origin": {
-        "source": "rvrsumid.bmp",
-        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
-        "conversion": "original bytes"
+        "source": "LiteOS original artwork generated with Codex",
+        "conversion": "JPEG, 1920x1080"
       }
     },
-    "wallpapers/Santa Fe Stucco.bmp": {
+    "wallpapers/雨夜霓虹.jpg": {
       "group": "wallpapers",
-      "bytes": 65832,
-      "sha256": "6307d54f53affe07880cff3f478318893ec7b75276e239d3eb8875c3d8344655",
+      "bytes": 578876,
+      "sha256": "b025972eb101a2a4bf990d430284bf6dc995d7066f2232d3d7d487dcef574f9d",
       "origin": {
-        "source": "santafe.bmp",
-        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
-        "conversion": "original bytes"
+        "source": "LiteOS original artwork generated with Codex",
+        "conversion": "JPEG, 1920x1080"
       }
     },
-    "wallpapers/Soap Bubbles.bmp": {
+    "wallpapers/雨天咖啡馆.jpg": {
       "group": "wallpapers",
-      "bytes": 65978,
-      "sha256": "70a04ea568f9b06ab4111a68bc2c0c4ef81903adef4846a9ed65d086d6ae8ee2",
+      "bytes": 517240,
+      "sha256": "9261652ef3beb9bd12f09ba783eb111dbe194110bcb426c93cc915d0cfa7d2f1",
       "origin": {
-        "source": "bubbles.bmp",
-        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
-        "conversion": "original bytes"
+        "source": "LiteOS original artwork generated with Codex",
+        "conversion": "JPEG, 1920x1080"
       }
     },
-    "wallpapers/Zapotec.bmp": {
+    "wallpapers/雪夜小镇.jpg": {
       "group": "wallpapers",
-      "bytes": 9522,
-      "sha256": "678f6deb824cf400a065169148a5f1b08e0568bbd56d81fb65cbfad3ca938686",
+      "bytes": 573810,
+      "sha256": "2544115b79785a95232c48f94cf5ce16d1a853f9e54ed5fd967aa47e1d783a9e",
       "origin": {
-        "source": "zapotec.bmp",
-        "inf": "accessor.inf [DeskpaperCopyFilesSys]",
-        "conversion": "original bytes"
+        "source": "LiteOS original artwork generated with Codex",
+        "conversion": "JPEG, 1920x1080"
+      }
+    },
+    "wallpapers/黄昏天台.jpg": {
+      "group": "wallpapers",
+      "bytes": 383854,
+      "sha256": "81bb6273f623e6f7326449a67e6f39d238e81a1921a4a8a07b44b6a851c2a635",
+      "origin": {
+        "source": "LiteOS original artwork generated with Codex",
+        "conversion": "JPEG, 1920x1080"
       }
     }
   }

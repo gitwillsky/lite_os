@@ -164,6 +164,12 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - Benchmark 决策：后台解码沿用原来的输入/尺寸上限；队列不积压大图，跨线程转移像素不复制。
   引用收集沿用原 Canvas 扫描，新增 socket 通知与 Arc 下标克隆只在加载/重着色时发生；常规绘制仍借用已有像素。
   调色板转换只在选择改变时执行 O(像素数) 分配。沿用现有 canvas/GPU 基线，不新增 wall-clock 阈值。
+- Canvas 媒体帧与窗口全屏是追加到 ABI 表尾的两个入口。`canvas_frame(window, id, width, height, pixels, count)` 同步复制
+  `width×height` 个设备像素（高字节被忽略并补成不透明）为 Canvas 独占的 `Rc<Bitmap>`，以 1:1 绘在显示列表之下；
+  非 Canvas、边长为 0 或超过 16384、`count` 不等于 `width*height` 返回 INVALID 且旧帧不变，`(0,0)` 清除。
+  帧尺寸由应用按 `geometry × scale` 给出，运行库不缩放；缺少该入口时视频播放器只能经显示列表逐矩形填充，帧率不可接受。
+  `fullscreen(window, on)` 只编码标准 `xdg_toplevel.set_fullscreen/unset_fullscreen`，结果由 Configure 事件通知。
+  Benchmark 决策：每帧一次 O(像素数) 复制与一次 blit，与窗口重绘同量级；沿用现有 canvas 基线，不新增阈值。
 
 ## 窗口动画与合成几何
 

@@ -1,403 +1,461 @@
-//! 媒体播放机：共享菜单、按钮、滑块、文件对话框与异步任务；仅波形属于应用自绘。
-mod playback;
+//! 媒体播放机：Windows 2000 外观的 libmpv 播放器；界面全部是共享控件，视频帧经 Canvas 媒体帧显示。
+mod dialogs;
+mod engine;
+mod view;
+
+use engine::{Changes, Engine};
 use liteos_ui::{
-    Application, ControlFlow, Draw, EventKind, FileDialogMode, Layout, Menu, MenuItem, Range, Rect,
-    Task, Widget, WidgetKind as Kind, WidgetSpec, Window, WindowOptions, state,
+    Application, ControlFlow, Dialogs, EventKind, FileDialogMode, FileFilter, MessageButtons, Task,
+    WindowOptions,
 };
-use playback::{Loaded, Player};
-use sound::SAMPLE_RATE;
-use std::{cell::RefCell, path::PathBuf, process::ExitCode, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    io::Read,
+    os::{fd::OwnedFd, unix::net::UnixStream},
+    path::PathBuf,
+    process::ExitCode,
+    rc::Rc,
+    time::{Duration, Instant},
+};
+use view::{Action, View};
+
 const APP_ID: &str = "org.liteos.media-player";
-struct View {
-    window: Window,
-    menu: Widget,
-    wave: Widget,
-    position: Widget,
-    slider: Widget,
-    play: Widget,
-    stop: Widget,
-    rewind: Widget,
-    status: Widget,
+/// 文件对话框的“媒体文件”筛选：IINA/mpv 常见的视频与音频容器；用户仍可切换“所有文件”。
+const MEDIA: &[&str] = &[
+    "mp4", "m4v", "mkv", "webm", "avi", "mov", "wmv", "flv", "mpg", "mpeg", "ts", "m2ts", "3gp",
+    "ogv", "rmvb", "mp3", "flac", "wav", "ogg", "oga", "opus", "m4a", "aac", "wma", "ape", "ac3",
+    "dts", "mka", "m3u", "m3u8", "pls",
+];
+const SUBTITLES: &[&str] = &["srt", "ass", "ssa", "sub", "vtt", "idx", "sup"];
+/// 两次按下视频区间隔不超过它就是双击（切换全屏）。
+const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+
+/// 窗口、控件与引擎的共同 owner；任务句柄必须保留到完成，Drop 会取消任务。
+struct Shell {
+    window: liteos_ui::Window,
+    view: View,
+    engine: RefCell<Engine>,
+    tasks: RefCell<Vec<Task<()>>>,
+    last_click: Cell<Option<Instant>>,
 }
-fn child(parent: &Widget, kind: Kind, text: &str, layout: Layout) -> liteos_ui::Result<Widget> {
-    let mut spec = WidgetSpec::new(kind, text);
-    spec.layout = layout;
-    parent.child(spec)
-}
-impl View {
-    fn new(window: &Window) -> liteos_ui::Result<Self> {
-        let mut spec = WidgetSpec::new(Kind::Column, "");
-        spec.layout.grow = 1;
-        let root = window.widget(spec)?;
-        let menu = child(&root, Kind::MenuBar, "", Layout::default())?;
-        let body = child(
-            &root,
-            Kind::Column,
-            "",
-            Layout {
-                grow: 1,
-                padding: 8,
-                gap: 8,
-                ..Default::default()
-            },
-        )?;
-        let wave = child(
-            &body,
-            Kind::Canvas,
-            "",
-            Layout {
-                grow: 1,
-                min_height: 60,
-                ..Default::default()
-            },
-        )?;
-        let position = child(
-            &body,
-            Kind::Label,
-            "",
-            Layout {
-                height: 24,
-                ..Default::default()
-            },
-        )?;
-        let slider = child(
-            &body,
-            Kind::Slider,
-            "",
-            Layout {
-                height: 25,
-                ..Default::default()
-            },
-        )?;
-        let actions = child(
-            &body,
-            Kind::Row,
-            "",
-            Layout {
-                height: 27,
-                gap: 8,
-                ..Default::default()
-            },
-        )?;
-        let rewind = child(
-            &actions,
-            Kind::Button,
-            "回到开头",
-            Layout {
-                grow: 1,
-                ..Default::default()
-            },
-        )?;
-        let play = child(
-            &actions,
-            Kind::Button,
-            "播放(P)",
-            Layout {
-                grow: 1,
-                ..Default::default()
-            },
-        )?;
-        let stop = child(
-            &actions,
-            Kind::Button,
-            "停止(S)",
-            Layout {
-                grow: 1,
-                ..Default::default()
-            },
-        )?;
-        let status = child(&root, Kind::Status, "", Layout::default())?;
-        Ok(Self {
-            window: window.clone(),
-            menu,
-            wave,
-            position,
-            slider,
-            play,
-            stop,
-            rewind,
-            status,
-        })
-    }
-    fn update(&self, player: &Player) -> liteos_ui::Result<()> {
-        let available = player.loaded.is_some() && !player.loading && !player.closing;
-        let title = player.loaded.as_ref().map_or_else(
-            || "媒体播放机".into(),
-            |loaded| format!("{} - 媒体播放机", loaded.name),
-        );
-        self.window.set_title(&title)?;
-        self.position.set_text(&format!(
-            "位置：{}\t长度：{}",
-            seconds(player.position()),
-            seconds(player.frames())
-        ))?;
-        self.slider
-            .set_state(if available { 0 } else { state::DISABLED })?;
-        self.slider.set_range(Range {
-            minimum: 0,
-            maximum: 1000,
-            value: ((player.position() as u128 * 1000) / (player.frames().max(1) as u128)) as i32,
-            page: 1,
-            step: 10,
-            vertical: 0,
-        })?;
-        self.play.set_state(if available && !player.playing() {
-            0
-        } else {
-            state::DISABLED
-        })?;
-        self.stop
-            .set_state(if player.playing() { 0 } else { state::DISABLED })?;
-        self.rewind
-            .set_state(if available { 0 } else { state::DISABLED })?;
-        let open = [
-            MenuItem {
-                id: 1,
-                label: "打开(O)...",
-                shortcut: "",
-                state: if player.loading { 1 } else { 0 },
-                parent: 0,
-            },
-            MenuItem {
-                id: 2,
-                label: "退出(X)",
-                shortcut: "",
-                state: 4,
-                parent: 0,
-            },
-        ];
-        let action = [MenuItem {
-            id: if player.playing() { 4 } else { 3 },
-            label: if player.playing() {
-                "停止(S)"
-            } else {
-                "播放(P)"
-            },
-            shortcut: "空格",
-            state: if available { 0 } else { 1 },
-            parent: 0,
-        }];
-        let help = [MenuItem {
-            id: 5,
-            label: "关于媒体播放机(A)",
-            shortcut: "",
-            state: 0,
-            parent: 0,
-        }];
-        self.menu.set_menus(&[
-            Menu {
-                title: "文件(F)",
-                items: &open,
-            },
-            Menu {
-                title: "播放(P)",
-                items: &action,
-            },
-            Menu {
-                title: "帮助(H)",
-                items: &help,
-            },
-        ])?;
-        self.status.set_text(&player.message)?;
-        self.waveform(player)
-    }
-    fn waveform(&self, player: &Player) -> liteos_ui::Result<()> {
-        let area = self.wave.geometry()?;
-        if area.width <= 0 || area.height <= 0 {
-            return Ok(());
+
+impl Shell {
+    fn sync(&self, changes: Changes) {
+        let mut engine = self.engine.borrow_mut();
+        if let Err(error) = self.view.apply(&mut engine, changes) {
+            eprintln!("mplay: {error}");
         }
-        let mut commands = vec![Draw {
-            kind: 1,
-            rect: Rect::new(0, 0, area.width, area.height),
-            color: 0,
-            bold: false,
-            text: "",
-        }];
-        let center = area.height / 2;
-        commands.push(Draw {
-            kind: 1,
-            rect: Rect::new(0, center, area.width, 1),
-            color: 0x008000,
-            bold: false,
-            text: "",
-        });
-        if let Some(loaded) = &player.loaded {
-            if !loaded.peaks.is_empty() {
-                for x in 0..area.width {
-                    let index = x as usize * loaded.peaks.len() / area.width as usize;
-                    let peak =
-                        (loaded.peaks[index].clamp(0., 1.) * (center - 2).max(0) as f32) as i32;
-                    commands.push(Draw {
-                        kind: 1,
-                        rect: Rect::new(x, center - peak, 1, peak * 2 + 1),
-                        color: 0x00ff00,
-                        bold: false,
-                        text: "",
-                    });
+    }
+
+    fn keep(&self, task: Task<()>) {
+        let mut tasks = self.tasks.borrow_mut();
+        tasks.retain(|task| !task.is_finished());
+        tasks.push(task);
+    }
+
+    fn home(&self) -> PathBuf {
+        std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from)
+    }
+}
+
+/// 读空唤醒 socket；之后由 `Engine::pump` 取走全部事件。
+fn drain(reader: &UnixStream) {
+    let mut buffer = [0u8; 64];
+    let mut reader = reader;
+    while matches!(reader.read(&mut buffer), Ok(count) if count > 0) {}
+}
+
+fn choose(
+    app: &mut Application,
+    shell: &Rc<Shell>,
+    label: &'static str,
+    extensions: &'static [&'static str],
+    apply: impl FnOnce(&mut Engine, &str) + 'static,
+) -> liteos_ui::Result<()> {
+    let chooser = app.file_dialog_filtered(
+        &shell.window,
+        FileDialogMode::Open,
+        &shell.home(),
+        "",
+        FileFilter { label, extensions },
+    )?;
+    let target = shell.clone();
+    let task = app.spawn_local(&shell.window, async move {
+        if let Ok(Some(path)) = chooser.await {
+            match path.to_str() {
+                Some(path) => apply(&mut target.engine.borrow_mut(), path),
+                None => {
+                    target.engine.borrow_mut().state.message =
+                        "路径不是有效的 UTF-8，无法打开".into()
                 }
             }
-            let x = (player.position() as u128 * (area.width - 1) as u128
-                / player.frames().max(1) as u128) as i32;
-            commands.push(Draw {
-                kind: 1,
-                rect: Rect::new(x, 0, 1, area.height),
-                color: 0xffffff,
-                bold: false,
-                text: "",
+            target.sync(Changes {
+                controls: true,
+                ..Default::default()
             });
         }
-        self.wave.set_drawing(&commands)
-    }
+    })?;
+    shell.keep(task);
+    Ok(())
 }
-fn seconds(frames: usize) -> String {
-    format!("{:.2} 秒", frames as f64 / f64::from(SAMPLE_RATE))
+
+fn info_rows(engine: &Engine) -> Vec<(String, String)> {
+    let size = |value: String| {
+        value.parse::<f64>().map_or_else(
+            |_| value.clone(),
+            |bytes| format!("{:.1} MiB", bytes / 1_048_576.),
+        )
+    };
+    let pair = |engine: &Engine, name: &str| engine.text(name).filter(|text| !text.is_empty());
+    let mut rows = Vec::new();
+    let mut add = |label: &str, value: Option<String>| {
+        if let Some(value) = value {
+            rows.push((label.to_owned(), value));
+        }
+    };
+    add("文件", pair(engine, "path"));
+    add("格式", pair(engine, "file-format"));
+    add("大小", pair(engine, "file-size").map(size));
+    add("时长", Some(engine::clock(engine.state.duration)));
+    add("标题", pair(engine, "metadata/by-key/title"));
+    add("艺术家", pair(engine, "metadata/by-key/artist"));
+    add("专辑", pair(engine, "metadata/by-key/album"));
+    add("视频编码", pair(engine, "video-codec"));
+    add(
+        "分辨率",
+        pair(engine, "video-params/w")
+            .zip(pair(engine, "video-params/h"))
+            .map(|(width, height)| format!("{width}×{height}")),
+    );
+    add(
+        "帧率",
+        pair(engine, "container-fps").map(|fps| format!("{fps} fps")),
+    );
+    add("音频编码", pair(engine, "audio-codec"));
+    add(
+        "采样率",
+        pair(engine, "audio-params/samplerate").map(|rate| format!("{rate} Hz")),
+    );
+    add(
+        "声道",
+        pair(engine, "audio-params/channel-count").map(|count| count.to_string()),
+    );
+    rows
 }
-fn directory(player: &Player) -> PathBuf {
-    player
-        .loaded
-        .as_ref()
-        .and_then(|loaded| loaded.path.parent().map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .unwrap_or_else(|| PathBuf::from("/"))
-}
-fn run() -> Result<(), Box<dyn std::error::Error>> {
-    let mut app = Application::new()?;
-    let window = app.window(WindowOptions::new("媒体播放机", APP_ID, 370, 310))?;
-    let view = Rc::new(View::new(&window)?);
-    let player = Rc::new(RefCell::new(Player::new()));
-    let background = app.background()?;
-    let clock = app.clock();
-    let refresh_view = view.clone();
-    let refresh_player = player.clone();
-    let _refresh = app.spawn_local(&window, async move {
-        loop {
-            let seen = refresh_player.borrow().revision();
-            if let Err(error) = refresh_view.update(&refresh_player.borrow()) {
-                eprintln!("mplay: {error}");
-                break;
+
+fn perform(
+    app: &mut Application,
+    shell: &Rc<Shell>,
+    action: Action,
+) -> liteos_ui::Result<ControlFlow> {
+    let dialogs: Dialogs = app.dialogs();
+    let mut refresh = Changes {
+        controls: true,
+        ..Default::default()
+    };
+    match action {
+        Action::Exit => return Ok(ControlFlow::Exit),
+        Action::Open => choose(app, shell, "媒体文件", MEDIA, |engine, path| {
+            engine.open(path, false);
+        })?,
+        Action::AddToPlaylist => choose(app, shell, "媒体文件", MEDIA, |engine, path| {
+            engine.open(path, true);
+        })?,
+        Action::AddSubtitle => choose(app, shell, "字幕文件", SUBTITLES, |engine, path| {
+            engine.run(&["sub-add", path, "select"]);
+        })?,
+        Action::OpenUrl => {
+            let target = shell.clone();
+            let task = app.spawn_local(&shell.window, async move {
+                match dialogs::open_url(&dialogs, &target.window).await {
+                    Ok(Some(url)) => {
+                        target.engine.borrow_mut().open(&url, false);
+                    }
+                    Ok(None) => {}
+                    Err(error) => target.engine.borrow_mut().state.message = error.to_string(),
+                }
+                target.sync(Changes {
+                    controls: true,
+                    ..Default::default()
+                });
+            })?;
+            shell.keep(task);
+        }
+        Action::Info => {
+            let rows = info_rows(&shell.engine.borrow());
+            let target = shell.clone();
+            let task = app.spawn_local(&shell.window, async move {
+                if let Err(error) = dialogs::media_info(&dialogs, &target.window, &rows).await {
+                    eprintln!("mplay: {error}");
+                }
+            })?;
+            shell.keep(task);
+        }
+        Action::About => {
+            let target = shell.clone();
+            let task = app.spawn_local(&shell.window, async move {
+                let message = "LiteOS 媒体播放机\n\n播放引擎：mpv（libmpv）与 FFmpeg，支持常见视频、音频、字幕与网络流。";
+                if let Ok(box_) = dialogs.message(&target.window, "关于媒体播放机", message, MessageButtons::Ok) {
+                    let _ = box_.await;
+                }
+            })?;
+            shell.keep(task);
+        }
+        Action::Fullscreen => {
+            let on = !shell.view.fullscreen.get();
+            shell.view.set_fullscreen(on)?;
+            refresh.menus = true;
+        }
+        Action::TogglePlaylist => {
+            shell.view.show_side(!shell.view.side_visible.get())?;
+            refresh.menus = true;
+            refresh.frame = true;
+        }
+        Action::FastScaling => {
+            let on = !shell.view.fast_scaling.get();
+            if shell
+                .engine
+                .borrow_mut()
+                .set("sw-fast", if on { "yes" } else { "no" })
+            {
+                shell.view.fast_scaling.set(on);
             }
-            if let Err(error) = Player::wait_changed(&refresh_player, &clock, seen).await {
-                eprintln!("mplay: {error}");
-                break;
+            refresh.menus = true;
+        }
+        Action::Pause => shell.engine.borrow_mut().toggle_pause(),
+        Action::Stop | Action::CloseFile => {
+            shell.engine.borrow_mut().run(&["stop"]);
+        }
+        Action::Previous => {
+            shell.engine.borrow_mut().run(&["playlist-prev"]);
+        }
+        Action::Next => {
+            shell.engine.borrow_mut().run(&["playlist-next"]);
+        }
+        Action::Seek(seconds) => shell.engine.borrow_mut().seek_relative(seconds),
+        Action::FrameBack => {
+            shell.engine.borrow_mut().run(&["frame-back-step"]);
+        }
+        Action::FrameStep => {
+            shell.engine.borrow_mut().run(&["frame-step"]);
+        }
+        Action::PreviousChapter => {
+            shell.engine.borrow_mut().run(&["add", "chapter", "-1"]);
+        }
+        Action::NextChapter => {
+            shell.engine.borrow_mut().run(&["add", "chapter", "1"]);
+        }
+        Action::Speed(speed) => shell.engine.borrow_mut().set_speed(speed),
+        Action::SpeedBy(factor) => {
+            let mut engine = shell.engine.borrow_mut();
+            let speed = engine.state.speed * factor;
+            engine.set_speed(speed);
+        }
+        Action::LoopAb => {
+            shell.engine.borrow_mut().run(&["ab-loop"]);
+        }
+        Action::Repeat(repeat) => shell.engine.borrow_mut().set_repeat(repeat),
+        Action::Aspect(ratio) => {
+            shell
+                .engine
+                .borrow_mut()
+                .set("video-aspect-override", ratio);
+            refresh.frame = true;
+        }
+        Action::Rotate(degrees) => {
+            shell
+                .engine
+                .borrow_mut()
+                .set("video-rotate", &degrees.to_string());
+            refresh.frame = true;
+        }
+        Action::Track(kind, id) => shell.engine.borrow_mut().select_track(kind, id),
+        Action::VolumeStep(delta) => shell.engine.borrow_mut().adjust_volume(delta),
+        Action::Mute => {
+            shell.engine.borrow_mut().run(&["cycle", "mute"]);
+        }
+        Action::AudioDelay(delta) => {
+            shell
+                .engine
+                .borrow_mut()
+                .run(&["add", "audio-delay", &delta.to_string()]);
+        }
+        Action::SubtitleDelay(delta) => {
+            shell
+                .engine
+                .borrow_mut()
+                .run(&["add", "sub-delay", &delta.to_string()]);
+        }
+        Action::SubtitleScale(delta) => {
+            shell
+                .engine
+                .borrow_mut()
+                .run(&["add", "sub-scale", &delta.to_string()]);
+        }
+        Action::Screenshot => {
+            let mut engine = shell.engine.borrow_mut();
+            if engine.run(&["screenshot"]) {
+                engine.state.message = "截图已保存到“图片”文件夹".into();
             }
         }
-    })?;
-    let mut load: Option<Task<()>> = None;
-    if let Some(path) = std::env::args_os().nth(1) {
-        player.borrow_mut().begin_load();
-        let work = background.run(move || Loaded::load(path.into()))?;
-        let target = player.clone();
-        load = Some(app.spawn_local(&window, async move {
-            let result = work.await;
-            target.borrow_mut().loaded(result);
-        })?);
     }
-    let mut audio: Option<Task<()>> = None;
-    let mut close: Option<Task<()>> = None;
+    shell.sync(refresh);
+    Ok(ControlFlow::Continue)
+}
+
+/// 键盘快捷键（Linux evdev 键码）；Shift 把 5 秒跳转放大到 1 分钟。
+fn key_action(code: u32, modifiers: u32) -> Option<Action> {
+    let shift = modifiers & 1 != 0;
+    let ctrl = modifiers & 2 != 0;
+    Some(match code {
+        57 => Action::Pause,
+        105 => Action::Seek(if shift { -60. } else { -5. }),
+        106 => Action::Seek(if shift { 60. } else { 5. }),
+        103 => Action::VolumeStep(5.),
+        108 => Action::VolumeStep(-5.),
+        50 => Action::Mute,
+        33 | 87 => Action::Fullscreen,
+        51 => Action::FrameBack,
+        52 => Action::FrameStep,
+        49 => Action::Next,
+        25 => Action::Previous,
+        26 => Action::SpeedBy(0.8),
+        27 => Action::SpeedBy(1.25),
+        43 => Action::Speed(1.),
+        24 if ctrl => Action::Open,
+        _ => return None,
+    })
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let mut app = Application::new()?;
+    let window = app.window(WindowOptions::new("媒体播放机", APP_ID, 720, 520))?;
+    let view = View::new(&window)?;
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".into());
+    let (engine, reader) = match Engine::create(&format!("{home}/Pictures")) {
+        Ok(value) => value,
+        Err(error) => {
+            // 缺少 libmpv（如 riscv64）或其依赖时给出原因，而不是静默退出。
+            let dialogs = app.dialogs();
+            let target = window.clone();
+            let message = format!("无法载入播放引擎 libmpv：{error}");
+            let _task = app.spawn_local(&window, async move {
+                if let Ok(box_) =
+                    dialogs.message(&target, "媒体播放机", &message, MessageButtons::Ok)
+                {
+                    let _ = box_.await;
+                }
+                let _ = target.close();
+            })?;
+            app.run(|_, _| Ok(ControlFlow::Continue))?;
+            return Err(error.into());
+        }
+    };
+    let shell = Rc::new(Shell {
+        window: window.clone(),
+        view,
+        engine: RefCell::new(engine),
+        tasks: RefCell::new(Vec::new()),
+        last_click: Cell::new(None),
+    });
+    let mut wake = app.watch(OwnedFd::from(reader.try_clone()?))?;
+    let pump = shell.clone();
+    let _pump = app.spawn_local(&window, async move {
+        while wake.readable().await.is_ok() {
+            drain(&reader);
+            let changes = pump.engine.borrow_mut().pump();
+            pump.sync(changes);
+        }
+    })?;
+    shell.sync(Changes::ALL);
+    let mut arguments = std::env::args().skip(1);
+    if let Some(first) = arguments.next() {
+        let mut engine = shell.engine.borrow_mut();
+        engine.open(&first, false);
+        for path in arguments {
+            engine.open(&path, true);
+        }
+    }
     app.run(|app, event| {
         if event.window != window.id() {
             return Ok(ControlFlow::Continue);
         }
-        if player.borrow().closing {
-            return Ok(ControlFlow::PreventDefault);
-        }
-        let mut action = None;
-        match event.kind {
-            EventKind::Close => action = Some(2),
-            EventKind::Configure { .. } => view.waveform(&player.borrow())?,
-            EventKind::Activate { value } if event.node == view.menu.id() => action = Some(value),
-            EventKind::Activate { .. } if event.node == view.play.id() => action = Some(3),
-            EventKind::Activate { .. } if event.node == view.stop.id() => action = Some(4),
-            EventKind::Activate { .. } if event.node == view.rewind.id() => {
-                player.borrow_mut().seek(0)
+        let view = &shell.view;
+        let action = match event.kind {
+            EventKind::Close => Some(Action::Exit),
+            EventKind::Configure { scale, .. } => {
+                view.scale.set(scale);
+                shell.sync(Changes {
+                    frame: true,
+                    ..Default::default()
+                });
+                None
             }
-            EventKind::Changed { value } if event.node == view.slider.id() => {
-                player.borrow_mut().seek(value)
+            EventKind::Activate { value } if event.node == view.menu.id() => Action::decode(value),
+            EventKind::Activate { value } if event.node == view.list.id() => {
+                shell
+                    .engine
+                    .borrow_mut()
+                    .play_index(value.saturating_sub(1) as usize);
+                None
+            }
+            EventKind::Activate { .. } if event.node == view.play.id() => Some(Action::Pause),
+            EventKind::Activate { .. } if event.node == view.stop.id() => Some(Action::Stop),
+            EventKind::Activate { .. } if event.node == view.previous.id() => {
+                Some(Action::Previous)
+            }
+            EventKind::Activate { .. } if event.node == view.next.id() => Some(Action::Next),
+            EventKind::Changed { value } if event.node == view.seek.id() => {
+                shell.engine.borrow_mut().seek_permille(value);
+                None
+            }
+            EventKind::Changed { value } if event.node == view.volume.id() => {
+                shell.engine.borrow_mut().set("volume", &value.to_string());
+                None
+            }
+            EventKind::Button {
+                code: 0x110,
+                pressed: true,
+                ..
+            } if event.node == view.video.id() => {
+                let now = Instant::now();
+                let double = shell
+                    .last_click
+                    .get()
+                    .is_some_and(|at| now.duration_since(at) <= DOUBLE_CLICK);
+                shell.last_click.set((!double).then_some(now));
+                Some(if double {
+                    Action::Fullscreen
+                } else {
+                    Action::Pause
+                })
+            }
+            EventKind::Wheel { vertical, .. } if event.node == view.video.id() => {
+                Some(Action::VolumeStep(if vertical < 0 { 5. } else { -5. }))
             }
             EventKind::Key {
-                code: 57,
+                code: 1,
                 pressed: true,
                 handled: false,
                 ..
-            } => action = Some(if player.borrow().playing() { 4 } else { 3 }),
+            } if view.fullscreen.get() => Some(Action::Fullscreen),
             EventKind::Key {
-                code: 24,
+                code,
                 pressed: true,
                 modifiers,
                 handled: false,
                 ..
-            } if modifiers & 2 != 0 => action = Some(1),
-            _ => {}
-        }
+            } => key_action(code, modifiers),
+            _ => None,
+        };
         match action {
-            Some(1) if !player.borrow().loading => {
-                let chooser = app.file_dialog_filtered(
-                    &window,
-                    FileDialogMode::Open,
-                    &directory(&player.borrow()),
-                    "",
-                    liteos_ui::FileFilter {
-                        label: "Wave 音频 (*.wav)",
-                        extensions: &["wav"],
-                    },
-                )?;
-                let player = player.clone();
-                let background = background.clone();
-                load = Some(app.spawn_local(&window, async move {
-                    match chooser.await {
-                        Ok(Some(path)) => {
-                            player.borrow_mut().begin_load();
-                            match background.run(move || Loaded::load(path)) {
-                                Ok(work) => {
-                                    let result = work.await;
-                                    player.borrow_mut().loaded(result);
-                                }
-                                Err(error) => player
-                                    .borrow_mut()
-                                    .loaded(Err(std::io::Error::other(error.to_string()))),
-                            }
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            let mut player = player.borrow_mut();
-                            player.message = error.to_string();
-                            player.changed();
-                        }
-                    }
-                })?);
-            }
-            Some(2) => {
-                player.borrow_mut().closing = true;
-                let target = player.clone();
-                let window = window.clone();
-                close = Some(app.spawn(async move {
-                    Player::shutdown(&target).await;
-                    let _ = window.close();
-                })?);
-                return Ok(ControlFlow::PreventDefault);
-            }
-            Some(3) => {
-                let job = player.borrow_mut().play();
-                if let Some(job) = job {
-                    audio = Some(app.spawn_local(
-                        &window,
-                        playback::drive(player.clone(), background.clone(), job),
-                    )?);
-                }
-            }
-            Some(4) => player.borrow_mut().stop(),
-            Some(5) => {
-                let mut player = player.borrow_mut();
-                player.message = "LiteOS 媒体播放机：播放 16 位 PCM WAV 文件。".into();
-                player.changed();
-            }
-            _ => {}
+            Some(action) => perform(app, &shell, action),
+            None => Ok(ControlFlow::Continue),
         }
-        Ok(ControlFlow::Continue)
     })?;
-    drop((load, audio, close));
     Ok(())
 }
+
 fn main() -> ExitCode {
     match run() {
         Ok(()) => ExitCode::SUCCESS,

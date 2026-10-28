@@ -49,7 +49,7 @@ const PROGRAMS: [&str; 13] = [
 ];
 
 /// `user/libraries/` 下的库包；每个都有 `src/lib.rs`。其中带 `liteos-runtime` 依赖的会被构建成共享库。
-const LIBRARIES: [&str; 21] = [
+const LIBRARIES: [&str; 22] = [
     "calendar",
     "canvas",
     "classic-theme",
@@ -62,6 +62,7 @@ const LIBRARIES: [&str; 21] = [
     "keyboard",
     "linux-uapi",
     "liteos-runtime",
+    "mpv-client",
     "network-config",
     "network-drive",
     "sndvol",
@@ -178,6 +179,30 @@ fn check_workspace(root: &Path, errors: &mut Vec<String>) {
     }
 }
 
+/// 上游 C 库的绑定 crate：符号经 linux-uapi 的 `dlopen` 解析，源码里只允许 `extern "C" fn` 类型与回调，
+/// 不得有符号导入块或 `#[link]`；缺少这条界线，第三方库绑定只能挤进 linux-uapi，混淆 OS 接口与应用库。
+const UPSTREAM_BINDINGS: [&str; 1] = ["user/libraries/mpv-client"];
+
+/// 源码里是否含符号导入块（`extern "C" { .. }`），含嵌套模块。
+#[derive(Default)]
+struct ForeignImports(bool);
+
+impl<'ast> syn::visit::Visit<'ast> for ForeignImports {
+    fn visit_item_foreign_mod(&mut self, _: &'ast syn::ItemForeignMod) {
+        self.0 = true;
+    }
+}
+
+/// 解析失败视为含导入，让围栏在无法证明时失败。
+fn imports_symbols(text: &str) -> bool {
+    let Ok(file) = syn::parse_file(text) else {
+        return true;
+    };
+    let mut imports = ForeignImports::default();
+    syn::visit::Visit::visit_file(&mut imports, &file);
+    imports.0 || text.contains("#[link(")
+}
+
 fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
     let mut sources = Vec::new();
     if let Err(error) = rust_files(&root.join("user"), &mut sources) {
@@ -232,6 +257,18 @@ fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
             continue;
         }
         let text = fs::read_to_string(&source).unwrap_or_default();
+        if UPSTREAM_BINDINGS
+            .iter()
+            .any(|binding| source.starts_with(root.join(binding)))
+        {
+            if imports_symbols(&text) {
+                errors.push(format!(
+                    "{}: upstream binding may declare fn-pointer types and callbacks only; symbol imports belong to linux-uapi::dynamic_library",
+                    source.display()
+                ));
+            }
+            continue;
+        }
         if text.contains("extern \"C\"") || text.contains("#[link(") {
             errors.push(format!(
                 "{}: raw FFI belongs only to linux-uapi",
@@ -333,6 +370,21 @@ fn check_assets(root: &Path, errors: &mut Vec<String>) {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn upstream_bindings_may_use_fn_pointer_types_but_not_symbol_imports() {
+        assert!(!super::imports_symbols(
+            "type Callback = Option<extern \"C\" fn(*mut u8)>; extern \"C\" fn wake(_: *mut u8) {}"
+        ));
+        assert!(super::imports_symbols(
+            "unsafe extern \"C\" { fn mpv_create() -> *mut u8; }"
+        ));
+        assert!(super::imports_symbols(
+            "mod inner { extern \"C\" { fn f(); } }"
+        ));
+        assert!(super::imports_symbols("#[link(name = \"mpv\")] fn f() {}"));
+        assert!(super::imports_symbols("not rust ("));
+    }
+
     #[test]
     fn repository_exposes_standard_aarch64_execution_controls_to_el0() {
         let root = super::super::repository_root();

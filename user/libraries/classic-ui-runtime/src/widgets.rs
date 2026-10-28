@@ -25,6 +25,8 @@ pub struct Node {
     pub editor: Option<super::text_editor::TextEditor>,
     pub image: Option<Rc<classic_ui::Bitmap>>,
     pub row_icons: BTreeMap<u64, RowIcons>,
+    /// Canvas 的媒体帧（设备像素）；缺失时只绘显示列表。
+    pub frame: Option<Rc<classic_ui::Bitmap>>,
     pub calendar: Option<super::calendar_control::Calendar>,
     pub rows: Vec<(u64, String)>,
     pub selected: Option<u64>,
@@ -75,6 +77,7 @@ impl Node {
             label_edit: None,
             image: None,
             row_icons: BTreeMap::new(),
+            frame: None,
             calendar: (spec.kind == widget::CALENDAR).then(super::calendar_control::Calendar::new),
             children: Vec::new(),
             kind: spec.kind,

@@ -155,6 +155,13 @@ impl Window {
         // SAFETY: 连接与文本在调用中有效，本 API 不执行应用回调。
         c.check(unsafe { (c.api.title)(c.context.as_ptr(), self.id(), text(title)) })
     }
+    /// 请求进入或退出全屏（标准 xdg_toplevel）；实际尺寸由随后的 Configure 事件给出。
+    pub fn set_fullscreen(&self, on: bool) -> Result<()> {
+        self.inner.check()?;
+        let c = &self.inner.connection;
+        // SAFETY: 连接在调用中有效，参数为标量。
+        c.check(unsafe { (c.api.fullscreen)(c.context.as_ptr(), self.id(), u32::from(on)) })
+    }
     /// 更新标准桌面应用标识与程序图标；非法句柄或协议失败返回错误。
     pub fn set_app_id(&self, value: &str) -> Result<()> {
         self.inner.check()?;
@@ -888,6 +895,16 @@ impl Widget {
             unsafe { (c.api.color)(c.context.as_ptr(), role as u32, &mut color) }
         })?;
         Ok(color)
+    }
+    /// 替换 Canvas 的媒体帧：`width`×`height` 个设备像素的 0x00RRGGBB（行优先），运行库复制后 1:1 绘在显示列表之下。
+    /// 帧尺寸应等于 [`Widget::geometry`] 的逻辑矩形乘以窗口 scale；`(0, 0, &[])` 清除帧。
+    pub fn set_frame(&self, width: u32, height: u32, pixels: &[u32]) -> Result<()> {
+        self.call(|c, w, id| {
+            // SAFETY: 像素切片在同步调用内有效，运行库只读并复制。
+            unsafe {
+                (c.api.canvas_frame)(c.context.as_ptr(), w, id, width, height, pixels.as_ptr(), pixels.len())
+            }
+        })
     }
     /// 原子替换 Canvas 显示列表；不会把 Rust Painter 或像素分配器跨库传递。
     pub fn set_drawing(&self, values: &[Draw<'_>]) -> Result<()> {

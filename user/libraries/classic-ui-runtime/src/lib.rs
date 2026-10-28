@@ -174,6 +174,8 @@ static API: Api = Api {
     status_parts: widget_api::status_parts,
     background: widget_api::background,
     image_palette: image_api::palette,
+    canvas_frame: image_api::canvas_frame,
+    fullscreen: window_api::fullscreen,
 };
 
 /// 查询 ABI 主版本。返回进程存活期间有效的只读函数表；不支持的主版本返回空指针。

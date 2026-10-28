@@ -1291,6 +1291,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
     """构建产品系统文件的唯一安装清单；构建与开发镜像同步共同消费。"""
     from ui_sdk import sdk_files
     from mesa_runtime import mesa_userland
+    from mpv_runtime import mpv_userland
     from fuse_runtime import fuse_userland
 
     program_targets = tuple(
@@ -1316,7 +1317,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
                   for path in classic_fonts())
     ui = tuple(UserlandArtifact(path, f"/usr/share/liteos/ui/{path.name}")
                for path in shell_bitmaps())
-    # Windows 2000 把墙纸装在 %windir%；LiteOS 的系统墙纸目录保留原安装名，显示属性按文件名列出。
+    # 系统墙纸目录由 Git 持有的原创壁纸组成，显示属性按文件名列出。
     wallpapers = tuple(UserlandArtifact(path, f"/usr/share/liteos/wallpapers/{path.name}")
                        for path in classic_wallpapers())
     return (
@@ -1335,8 +1336,9 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
           for path in sorted((ROOT / "user/base").glob("*.desktop"))),
         *(UserlandArtifact(path, f"{SYSTEM_LIBRARY_DIRECTORY}/{name}", 0o755)
           for path, name in libraries),
+        UserlandArtifact(ROOT / "user/base/fonts.conf", "/etc/fonts/fonts.conf"),
         UserlandArtifact(ROOT / "user/base/ld-musl.path", f"/etc/{Path(TARGET.musl_loader).name.removesuffix('.so.1')}.path"),
-        *programs, *fonts, *ui, *wallpapers, *mesa_userland(), *fuse_userland(),
+        *programs, *fonts, *ui, *wallpapers, *mesa_userland(), *mpv_userland(), *fuse_userland(),
         *(UserlandArtifact(path, destination, mode) for path, destination, mode in sdk_files()),
         *(UserlandArtifact(path, f"/usr/share/liteos/sounds/{name}") for name, path in sounds()),
     )

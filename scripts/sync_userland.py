@@ -40,6 +40,9 @@ def managed_path(path: str) -> bool:
     # Wine 运行时（--wine）：运行时树、fontconfig 与 XKB 配置由同步器拥有，缺少它旧文件撤不掉。
     if path.startswith(("/opt/wine/", "/etc/fonts/", "/usr/share/fontconfig/", "/usr/share/X11/xkb/")):
         return True
+    # libmpv 运行时的 alsa-lib 配置树（scripts/mpv_runtime.py）：缺少它，升级后残留的旧配置撤不掉。
+    if path.startswith("/usr/share/alsa/"):
+        return True
     if path in ("/usr/lib/dri/virtio_gpu_dri.so", "/usr/lib/gbm/dri_gbm.so"):
         return True
     if path.startswith("/usr/lib/liteos/") or (path.startswith("/etc/ld-musl-") and path.endswith(".path")):

@@ -802,8 +802,6 @@ checksum = "e6d5a32815ae3f33302d95fdcb2ce17862f8c65363dcfd29360480ba1001fc9c"
 [[package]]
 name = "fuser"
 version = "0.17.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "80a5eca878900c2e39e9e52fd797954b7fc39eeefc8558257114bfea6a698fcf"
 dependencies = [
  "bitflags 2.13.2",
  "libc",
@@ -1388,7 +1386,7 @@ name = "media-player"
 version = "0.1.0"
 dependencies = [
  "liteos-ui",
- "sound",
+ "mpv-client",
 ]
 
 [[package]]
@@ -1456,6 +1454,14 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 1.0.109",
+]
+
+[[package]]
+name = "mpv-client"
+version = "0.1.0"
+dependencies = [
+ "linux-uapi",
+ "liteos-runtime",
 ]
 
 [[package]]

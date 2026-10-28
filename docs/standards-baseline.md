@@ -370,6 +370,9 @@ zero-window 使用有界原生 timer；通用 PMTU/fragment 与其他未声明 T
 - [Mesa 25.1.9](https://archive.mesa3d.org/mesa-25.1.9.tar.xz)、[libdrm 2.4.124](https://dri.freedesktop.org/libdrm/libdrm-2.4.124.tar.xz) 为标准客户端实现依据。
   AArch64 运行库使用 Alpine v3.22 的固定 APK，完整包名与 SHA-256 在 `scripts/mesa-runtime-packages.json`，
   清单 SHA-256 `391bb2a2a239aee3954d79e43b9e10585fbd946e2658ea4ee456c9b36cd410aa`；只安装种子库的实际 DT_NEEDED 闭包。
+- 媒体播放机的解码与播放引擎为 [mpv 0.40.0](https://github.com/mpv-player/mpv/tree/v0.40.0) 的 libmpv 客户端 API（`client.h`、`render.h`，
+  `MPV_RENDER_API_TYPE_SW`）与 Alpine v3.22 的 FFmpeg；AArch64 运行库用固定 APK，包名与 SHA-256 在 `scripts/mpv-runtime-packages.json`，
+  清单 SHA-256 `6d9233849fda19df66b7582cd6b3fefbf4aaa46e2d525570ad2f07c4373b2c66`；只安装 `libmpv.so.2` 的实际 DT_NEEDED 闭包（已由 Mesa 运行时安装的 soname 不重复），并附 alsa-lib 的 `/usr/share/alsa` 配置树。
 - 无界面消费者为上游 mesa-utils 9.0.0-r6 的 eglinfo，APK SHA-256
   `2c7a962c677b81c1338becd983da947b23f7ebcfde00ff00361cada5703d93af`，要求实际创建 VirGL GLES context。
 - Wayland EGL consumer 为 Weston 14.0.2 的 [simple-egl](https://gitlab.freedesktop.org/wayland/weston/-/blob/14.0.2/clients/simple-egl.c)，
@@ -404,7 +407,9 @@ zero-window 使用有界原生 timer；通用 PMTU/fragment 与其他未声明 T
   修改后的唯一生产源在 `vendor/`，每包 `UPSTREAM.sha256.json` 记录原文件摘要，`LITEOS.md` 记录修改。
   EOF/长度、结构化 I/O 错误、回复边界、断线清理、FILETIME 溢出、rename 计算字段与 feature 裁剪在该 owner 修复。
   `user/Cargo.toml` patch 与 `Cargo.lock` 固定唯一来源及 RustCrypto/SSPI 依赖，不保留 registry 副本编译路径。
-- FUSE consumer 为 `fuser 0.17.0`，固定到 `user/Cargo.lock`；Linux 使用标准纯 Rust 挂载路径。
+- FUSE consumer 为 `fuser 0.17.0`，由 `user/Cargo.toml` patch 与 `user/Cargo.lock` 固定到
+  `vendor/fuser/` 唯一生产源；原文件摘要与修改分别见该目录的 `UPSTREAM.sha256.json` 和 `LITEOS.md`。
+  Linux 使用标准纯 Rust 挂载路径。
   helper 为 Alpine v3.22 `fuse3-3.16.2-r1.apk`，aarch64 SHA-256
   `cb77007fa83b6e75a6da20aecab37c79a62f3aee25958eba7b3b382bf8bcc099`，riscv64 SHA-256
   `080203debb4f1751bcd44f8588abd9670343d40441b12ddc656e21d110a0e1bd`。

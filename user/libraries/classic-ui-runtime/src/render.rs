@@ -329,6 +329,9 @@ impl Tree {
                     }
                 }
                 widget::CANVAS => {
+                    if let Some(frame) = &node.frame {
+                        p.clipped(rect, |p| frame.paint_physical(p, rect.x, rect.y));
+                    }
                     for command in &node.drawing {
                         let r = Rect::new(
                             rect.x.saturating_add(command.rect.x),

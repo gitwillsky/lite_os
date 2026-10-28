@@ -82,6 +82,13 @@
   上游 helper 的提取与 setuid 权限属于 `scripts/fuse_runtime.py`/`base_userland`；普通用户认证不经过 root 服务。
   完整边界见 [网络驱动器](../architecture/network-drives.md)。
 
+- 媒体播放：`mpv-client` 独占对上游 libmpv 的函数表签名、事件解码与软件渲染上下文，`linux-uapi::dynamic_library` 独占 `dlopen`（符号导入只在 linux-uapi，`mpv-client` 只声明函数指针类型与回调）；
+  mpv 的唤醒/帧更新回调只向一个非阻塞 socket 写字节，所有 mpv 调用与渲染都在播放器 UI 线程。`media-player` 的 `Engine` 独占
+  播放状态镜像，`View` 独占控件；视频帧经 Canvas `canvas_frame` 显示，没有私有显示协议。libmpv/FFmpeg 的 APK 提取与闭包由
+  `scripts/mpv_runtime.py`/`apk_elf_closure.py` 拥有（AArch64；其他 target 不安装，播放器启动时报告缺库）。
+  `dlopen` 的 unsafe 契约：符号只在 `Library` 存活期间有效，`Mpv` 以字段顺序保证先释放渲染上下文与核心、最后卸载库；
+  缺少它，卸载后的回调会跳进已解除映射的代码。
+
 ## Interface
 
 - 未接入 number 返回 `ENOSYS`；不得建立私有 number、错号转发、silent flag ignore 或 userspace compatibility shim。

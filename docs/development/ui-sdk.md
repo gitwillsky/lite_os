@@ -28,6 +28,7 @@ SDK 的 path dependency 不依赖网络，可直接 cargo build --offline；其�
 registry 或 vendor 规则准备，没有专用项目生成命令或第二个安装器。
 实际代码以普通 Rust API 创建 Window 和 Widget；字体、像素缓冲、帧 callback、协议编码由运行库提供。
 Image 可通过 `set_image_palette(&[u32; 256])` 更换下标位图的 RGB 调色板；重着色、共享资源与绘制由运行库处理。
+Canvas 可通过 `set_frame(width, height, &[u32])` 显示应用生成的设备像素帧（视频、预览），窗口可用 `set_fullscreen(bool)` 请求全屏。
 
 外部交叉开发也消费相同 SDK 源码和目标运行库，将项目 Cargo 配置中的 native library search path
 指向目标 sysroot；链接器与标准库必须属于所选 Linux/musl target，不能混用 macOS 产物。
