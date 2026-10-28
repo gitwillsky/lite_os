@@ -73,12 +73,6 @@
 - [经典桌面交互验收](design/classic-desktop/interaction.md)
 - [经典桌面外壳](design/classic-desktop/shell.md)
 
-## 进行中的计划
-
-- [经典桌面与 Win32 运行时](plans/classic-desktop.md)
-- [SDK、二进制兼容与系统内开发（实施中）](plans/classic-ui-sdk.md)
-- [经典桌面应用框架（实施中）](plans/classic-ui-framework.md)
-
 ## 设计决策与术语
 
 - [首个声音里程碑只支持播放](decisions/audio-output-scope.md)

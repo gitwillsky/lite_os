@@ -14,13 +14,13 @@ from pathlib import Path, PurePosixPath
 
 from build_cache import fingerprint, sha256
 from build_target import target_from_environment
-from ext4_image import debugfs_path, find_debugfs, recover_ext4_journal
+from ext4_image import debugfs_path, find_debugfs, recover_ext4_journal, verify_root_owned_files
 from verify_busybox import ACCOUNT_APPLETS, UserlandArtifact, base_userland, build_busybox, obtain_source
 from verify_musl import cached_musl_paths, find_compiler
 
 ROOT = Path(__file__).resolve().parent.parent
 STAMP_PATH = "/usr/share/liteos/.userland-sync.json"
-RECIPE_VERSION = 3
+RECIPE_VERSION = 4
 
 
 # 仅用于离线撤销旧镜像中已退休的产品文件，不参与构建或启动。
@@ -197,19 +197,18 @@ def verify_artifacts(
     artifacts: tuple[UserlandArtifact, ...],
     directory: Path,
 ) -> None:
-    """从镜像回读所有文件并校验 bytes 与 executable mode。"""
+    """回读所有文件校验 bytes，并直接校验镜像 inode 的类型、完整权限与 root owner。"""
     output = directory / "readback"
     output.mkdir()
     commands = []
     for index, artifact in enumerate(artifacts):
-        commands.append(f"dump -p {debugfs_path(artifact.destination)} {output / str(index)}")
+        commands.append(f"dump {debugfs_path(artifact.destination)} {output / str(index)}")
     run_batch(image, commands, directory, "verify-userland", writable=False)
     for index, artifact in enumerate(artifacts):
         observed = output / str(index)
         if not observed.is_file() or sha256(observed) != sha256(artifact.source):
             raise RuntimeError(f"userland sync verification failed: {artifact.destination}")
-        if stat.S_IMODE(observed.stat().st_mode) != artifact.mode:
-            raise RuntimeError(f"userland mode verification failed: {artifact.destination}")
+    verify_root_owned_files(image, tuple((artifact.destination, artifact.mode) for artifact in artifacts))
 
 
 def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:

@@ -45,7 +45,7 @@ from build_cache import (
 )
 from qemu_gate import SHELL_PROMPT, boot, cpu_topology_markers, guest_inittab, power_cut, ShellCommand, TerminalInput
 from openssl_cache import OpenSslPaths, build_openssl
-from ext4_image import MKE2FS_CONFIG, debugfs_path, find_debugfs, find_mke2fs
+from ext4_image import MKE2FS_CONFIG, debugfs_path, find_debugfs, find_mke2fs, verify_root_owned_files
 from tls_gate import install_runtime_tls_identity, start_https_gate
 from verify_musl import (
     MuslCachePaths,
@@ -1602,11 +1602,10 @@ def create_image(
     with tempfile.TemporaryDirectory(prefix="liteos-base-readback-") as directory:
         for index, artifact in enumerate(userland):
             observed = Path(directory) / str(index)
-            run([str(find_debugfs()), "-R", f"dump -p {debugfs_path(artifact.destination)} {observed}", str(image)], ROOT)
+            run([str(find_debugfs()), "-R", f"dump {debugfs_path(artifact.destination)} {observed}", str(image)], ROOT)
             if not observed.is_file() or sha256(observed) != sha256(artifact.source):
                 raise RuntimeError(f"BusyBox rootfs system file differs: {artifact.destination}")
-            if observed.stat().st_mode & 0o7777 != artifact.mode:
-                raise RuntimeError(f"BusyBox rootfs system mode differs: {artifact.destination}")
+    verify_root_owned_files(image, tuple((artifact.destination, artifact.mode) for artifact in userland))
     ca_bundle = run([str(find_debugfs()), "-R", "stat /etc/ssl/cert.pem", str(image)], ROOT)
     ca_store = run(
         [str(find_debugfs()), "-R", "stat /etc/ssl/certs/ca-certificates.crt", str(image)],

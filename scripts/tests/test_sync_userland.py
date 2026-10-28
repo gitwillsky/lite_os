@@ -51,6 +51,8 @@ class UserlandSyncTests(unittest.TestCase):
                 UserlandArtifact(config, "/etc/inittab"),
                 UserlandArtifact(scene, "/usr/share/liteos/boot-scene.lbs"),
                 UserlandArtifact(wallpaper, "/usr/share/liteos/wallpapers/Blue Lace 16.bmp"),
+                # 宿主源文件没有 setuid；只能以镜像 inode 裁决，dump -p 会丢失该位。
+                UserlandArtifact(source, "/bin/fusermount3", 0o4755),
             )
             # 回读失败不能发布成功 stamp；下一次必须能完成修复。
             with patch.object(sync_userland, "verify_artifacts", side_effect=RuntimeError("readback failed")):

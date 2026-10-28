@@ -63,3 +63,18 @@ Image 可通过 `set_image_palette(&[u32; 256])` 更换下标位图的 RGB 调�
 Ctrl+Shift+C 复制选区，Ctrl+Shift+V 异步粘贴；滚轮浏览已有历史。窗口尺寸变化先准备模型存储，再提交 PTY 尺寸并发布模型。
 终端使用 `TERM=linux`，运行 ncurses 应用时应通过现有 APK 安装对应的 `ncurses-terminfo-base`。
 该入口与共享控件迁移已接入代码和安装清单，尚未进行 GUI 或 guest 运行验收。
+
+## 验收边界
+
+下列项目仍未完成验收；安装入口、共享 ABI 或内核机制存在，不代表整条开发链路已经可用。
+
+| 范围 | 当前状态 | 成功条件 |
+|---|---|---|
+| 独立构建 | SDK 源码、示例与共享库已交付 | 两个受支持的 Rust 工具链独立构建应用，连接同一运行库，不依赖系统 Rust dylib 或宿主绝对路径 |
+| 兼容升级 | ABI v1 已接入，旧 ELF 升级尚未验收 | 保留真正的旧 ELF，不重编；兼容更新运行库及资源后重启，验证控件修复、未知事件、异步取消和资源释放 |
+| 本机开发 | 固定 AArch64 工具链安装入口已实现 | 普通账户在 guest 创建、编译、链接、运行、修改并增量构建项目，重启后再运行，全程不导入宿主编译产物 |
+| Cargo 依赖 | 完整依赖构建链尚未验收 | 在 guest 完成普通 crate、build.rs、proc-macro、离线依赖与一项实际原生依赖的构建及项目级 build/run/test、错误定位 |
+| 源码调试 | ptrace 子集已实现，完整调试器兼容尚未实现或验收 | 对照原生调试器需求补齐标准 ABI，实际验证断点、单步、变量和多线程停止/恢复 |
+
+ptrace 的准确支持项、错误与缺口由 [ABI 矩阵](../syscall-support/process-identity.md)拥有，不能以宿主内核 GDB 工作流替代 guest 内应用调试。
+共享控件、对话框与终端的 GUI 行为按[Wayland 验证](wayland-ui-verification.md)和[桌面验证](desktop-verification.md)分别裁决。

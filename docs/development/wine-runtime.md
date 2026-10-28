@@ -3,6 +3,7 @@
 LiteOS 用上游 Wine 11.16 运行 Win32 程序，x86 部分由 Hangover 的 `libwow64fex.dll`（FEX 的 WoW64 DLL）模拟。
 **日常不需要重新构建**：`prebuilt/wine/` 里是已构建好的运行时压缩包，安装到 rootfs 的 `/opt/wine`。只有升级 Wine、
 改补丁或配置时才需要按下文重建并替换压缩包。
+Wine/FEX 当前仅交付 AArch64 运行时，不据此声明 RISC-V64 可运行 Win32 程序。
 
 ## 产物与来源
 
@@ -44,7 +45,7 @@ Wine 11.16 的 `wayland_keyboard_init` 在注册 `wl_keyboard` listener 前调�
    只启用 Wayland 显示与 ALSA 声音，关闭 X11、PulseAudio、OpenGL、Vulkan 等），安装到 `/opt/wine`。末尾打印 `BUILD_DONE`。
 3. 运行 `sh package-wine.sh`：裁剪出运行时树（去掉头文件、静态库、man、开发工具与 PE 的调试信息）并打成 `.tar.xz`，打印哈希。
 4. 把压缩包取回 `prebuilt/wine/`，更新 `SHA256SUMS` 与本文的表，`git lfs` 会处理它。
-5. 构建 Wine 自带的 conformance 测试（`make -C build dlls/<名>/tests`）与基线记录见 `docs/plans/classic-desktop.md` 阶段 0。
+5. Wine 自带的 conformance 测试按 `make -C build dlls/<名>/tests` 构建；对照范围与裁决规则见下文。
 
 构建时的注意事项：
 - 缺 `gettext` 时 Wine 没有中文界面翻译，所以已加入依赖列表。
@@ -91,4 +92,21 @@ Wine 的 Linux 只读 section 会选用 `MAP_PRIVATE`，并依赖 Linux 未 COW 
 
 命令行与非 UI 原生探针用于验证私有文件可见性、COW、fork、mprotect、truncate、默认 XKB context、
 ruleset 解析和字符转换；最终编辑保存与控件交互仍需上述人工验收。Wine/FEX 继续消费上表中的固定归档。
-完整 Wine conformance 对照、ddraw/dsound、低地址预留和线程挂起专项仍属于阶段 6 后续范围。
+完整 Wine conformance 对照、ddraw/dsound、低地址预留和线程挂起专项尚未完成，不能由命令行探针成功推断。
+
+## Conformance 对照与游戏验收
+
+| 范围 | 当前边界 | 验收要求 |
+|---|---|---|
+| 原生与 i386 conformance | 参照 Alpine 的阶段结果不等于 LiteOS 结果 | 分开记录 AArch64 原生与 FEX i386 的 kernel32、ntdll、user32、gdi32、ddraw、dsound 子测试；比较退出码、失败、跳过与超时 |
+| 低地址与线程挂起 | Wine/FEX 的专项运行时验证尚未完成 | 验证 0x10000、0x110000 低地址的大段 PROT_NONE 预留，以及 tkill 与 rt_sigreturn 的停止/恢复路径 |
+| 红色警戒 2 | 已准备 cnc-ddraw 归档；游戏部署、启动入口及验收尚未完成 | 用户提供游戏文件后部署兼容层与标准 Desktop Entry，实际进入遭遇战并有声音，验证退出与再次启动 |
+| D3D | 当前 Wine 配方关闭 OpenGL/Vulkan | 标准 dma-buf/EGL 路径不代表 Wine D3D 可用；改变 Wine 配方后另行验证 |
+
+参照基线的本地位置为 `.local/spikes/classic-desktop/out/baseline/*.tsv`，不随 clone 交付；
+缺失时须用相同固定运行时重建，历史说明可从 Git 追溯。旧计划记录的以下干扰须重新复核，不能直接豁免 LiteOS 的新增失败：
+
+- 原生 ntdll:exception 的调试器断点块不稳定，子进程块单独裁决；不能将任意新增失败或超时归入这一例外。
+- FEX i386 的部分 loader、sync 与进程退出测试在参照环境也会挂起；ntdll:wow64 另有 xtajit 假设差异。
+- headless 环境缺少输入设备或 GL，会导致 user32:input 与部分 ddraw 用例失败、跳过或挂起；
+  对照必须记录实际设备条件，不能以跳过替代输入、声音和游戏验收。

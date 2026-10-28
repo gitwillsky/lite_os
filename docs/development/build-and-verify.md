@@ -393,7 +393,8 @@ SQLite 第一阶段 `sync` 后由 host 结束 VM，再冷启动同一持久化�
 assertion。该生命周期边界不替代 guest `sync`、journal integrity 或 SQLite process-crash 门禁。
 任一子门禁失败即整体失败，不能抽样或提前发布成功。
 
-当前图形门禁覆盖 compositor、Wayland 探针与外壳协议；真实登录、桌面应用与完整 UI 会话验收仍按经典桌面计划补齐。
+当前图形门禁的覆盖与边界分别见 [Wayland 验证](wayland-ui-verification.md)和[产品桌面验证](desktop-verification.md)；
+本机开发、旧 ELF 升级与应用调试的待验收范围见 [SDK 开发](ui-sdk.md#验收边界)。
 
 `make verify-runtime-audio` 在 AArch64/HVF 上注入固定上游 amixer/alsa-lib 和 Linux UAPI fixture，
 只写私有 rootfs。它覆盖 control 订阅/事件合并、errno、opener TID、dup/actual close、精确子设备选择，

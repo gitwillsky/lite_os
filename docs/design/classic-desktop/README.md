@@ -2,6 +2,7 @@
 
 本目录是 LiteOS 经典桌面**外观与交互**的唯一验收标准。实现（`classic-theme`、`classic-ui`、`compositor`、
 `logon`、`desktop` 及各应用）只引用这里的数值与行为，不另行发明；发现不一致时先改规格再改实现。
+规格中的目标与“待核”项不表示已经实现或验收；当前产品范围与未覆盖交互见[桌面验证](../../development/desktop-verification.md)。
 
 | 文档 | 内容 |
 |---|---|
@@ -19,7 +20,7 @@
 1. Microsoft Learn 的 Win32 文档：`GetSysColor`、`GetSystemMetrics`、`SystemParametersInfo`、`DrawEdge`、
    `DrawFrameControl`、`NONCLIENTMETRICS` 等 API 的语义与默认值说明。
 2. Wine `user32`/`comctl32`（LGPL）作为行为参照实现：只对照语义与数值，不复制代码。
-   阶段 0 已记录的结果用于 Win32 程序、协议与 ABI 验证。
+   Win32 程序与 ABI 的对照范围见 [Wine 验证边界](../../development/wine-runtime.md#conformance-对照与游戏验收)。
 3. 用户提供的 Windows 2000 简中 SP4 安装介质与静态资源。
    素材来源与映射见 [assets.md](assets.md)，操作见[构建与验证](../../development/build-and-verify.md#经典桌面素材导入)。
 

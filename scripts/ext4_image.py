@@ -3,9 +3,13 @@
 
 from __future__ import annotations
 
+import os
+import re
 import shutil
 import struct
 import subprocess
+import tempfile
+from collections.abc import Sequence
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -199,3 +203,45 @@ def run_debugfs(image: Path, request: str, *, writable: bool = False) -> str:
         tail = "\n".join(result.stdout.splitlines()[-40:])
         raise RuntimeError(f"debugfs request failed: {request}\n{tail}")
     return result.stdout
+
+
+def verify_root_owned_files(image: Path, files: Sequence[tuple[str, int]]) -> None:
+    """直接校验 ext 镜像中系统文件的 inode，不借用宿主导出文件的权限。
+
+    Args:
+        image: 调用方独占的离线 ext 镜像；本函数只读。
+        files: 按顺序给出的镜像绝对路径与预期 Unix 权限位（含 setuid/setgid/sticky）。
+
+    Returns:
+        全部条目都是 root:root 普通文件且权限完整匹配时返回。
+
+    Raises:
+        RuntimeError: debugfs 失败、inode 元数据缺失或类型、权限、owner 不匹配。
+        ValueError: 路径无法编码为 debugfs 参数。
+    """
+    # 1. 同一批次直接读取镜像 inode。dump -p 的 mode_xlate 只复制 rwx，
+    #    若检查导出文件，会把正确的 04755 误报为 0755，还会依赖宿主 chown 权限。
+    with tempfile.NamedTemporaryFile("w", prefix="liteos-inode-stat-", suffix=".debugfs") as script:
+        script.write("\n".join(f"stat {debugfs_path(path)}" for path, _ in files) + "\n")
+        script.flush()
+        result = subprocess.run(
+            [str(find_debugfs()), "-f", script.name, str(image)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env={**os.environ, "LC_ALL": "C"},
+        )
+    headers = re.findall(r"^Inode:\s+\d+\s+Type:\s+(\S+)\s+Mode:\s+([0-7]+)\b", result.stdout, re.MULTILINE)
+    owners = re.findall(r"^User:\s+(\d+)\s+Group:\s+(\d+)\b", result.stdout, re.MULTILINE)
+    # 2. debugfs 对缺失路径也可能以零退出；条目数不完整时禁止按位置配对后宣告成功。
+    if result.returncode != 0 or len(headers) != len(files) or len(owners) != len(files):
+        tail = "\n".join(result.stdout.splitlines()[-60:])
+        raise RuntimeError(f"ext inode metadata readback failed: {image}\n{tail}")
+    for (path, expected_mode), (kind, raw_mode), (uid, gid) in zip(files, headers, owners, strict=True):
+        actual_mode = int(raw_mode, 8)
+        if kind != "regular" or actual_mode != expected_mode or int(uid) != 0 or int(gid) != 0:
+            raise RuntimeError(
+                f"ext inode verification failed: {path}: "
+                f"expected regular root:root {expected_mode:04o}, "
+                f"observed {kind} {uid}:{gid} {actual_mode:04o}"
+            )

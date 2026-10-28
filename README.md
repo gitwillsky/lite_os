@@ -96,8 +96,8 @@ make run-gui   # 在 UTM 窗口中显示内核启动画面，shell 位于串口
 
 ## 当前实现边界
 
-旧图形用户态和用户态音频服务已拆除。当前 init 监督网络服务和 UART shell，显示器保留内核启动画面；
-不提供登录、桌面应用、显示器文本 VT 或 seat 切换。kernel DRM/evdev、ALSA 混音和经典桌面素材保留。
+图形栈使用公开 Wayland/ALSA 协议，产品会话为 display-service → compositor → logon → 用户 desktop；
+普通应用使用共享 UI 运行库与 Rust SDK。旧图形栈、用户态音频服务、显示器文本 VT 与 seat 私有协议已移除，恢复入口为 UART shell。
 
-新图形栈按[经典桌面与 Win32 运行时计划](docs/plans/classic-desktop.md)使用公开 Wayland/ALSA 协议实现。
-音频尚缺多路真实输出和 amixer consumer 验证；新桌面尚未实现，不能把构建或内核门禁通过视作桌面验收。
+当前能力与限制分别由[桌面验证](docs/development/desktop-verification.md)、[UI 框架](docs/architecture/ui-framework.md)和
+[Wine 运行时](docs/development/wine-runtime.md)维护；构建和静态检查通过不能替代图形交互、兼容性或游戏验收。

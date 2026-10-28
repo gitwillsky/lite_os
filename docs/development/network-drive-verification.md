@@ -12,7 +12,8 @@
 
 固定版本、摘要与协议来源见 [规范基线](../standards-baseline.md)；所有下载、源码与验收身份放在 `.local/`。
 `make build` 通过现有 userspace 编译路径与唯一 `base_userland` 清单发布程序/helper，开发镜像同步消费同一清单。
-安装器用 regular-file 类型与完整 Unix 权限位组合，readback 包含 setuid 位；不能以普通 0755 代替 helper。
+安装器用 regular-file 类型与完整 Unix 权限位组合；新建 rootfs 与开发镜像同步共用镜像 inode 校验，检查类型、root:root 与含 setuid 的完整权限。
+文件内容单独 dump 后比较摘要，不以宿主导出文件的权限裁决镜像权限；debugfs 的 dump -p 会丢失特殊权限位，不能以普通 0755 代替 helper。
 
 ## 产品入口
 
