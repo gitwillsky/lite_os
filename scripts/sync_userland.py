@@ -37,7 +37,7 @@ def managed_path(path: str) -> bool:
     """只接受同步器拥有的规范绝对路径，拒绝父目录跳转。"""
     if not path.startswith("/") or str(PurePosixPath(path)) != path or ".." in PurePosixPath(path).parts:
         return False
-    # Wine 运行时（--wine）：运行时树、fontconfig 与 XKB 配置由同步器拥有，缺少它旧文件撤不掉。
+    # 系统 Fontconfig 与 Wine/XKB 运行时由同步器拥有，缺少目录授权时无法撤销退休文件。
     if path.startswith(("/opt/wine/", "/etc/fonts/", "/usr/share/fontconfig/", "/usr/share/X11/xkb/")):
         return True
     # libmpv 运行时的 alsa-lib 配置树（scripts/mpv_runtime.py）：缺少它，升级后残留的旧配置撤不掉。
@@ -49,6 +49,8 @@ def managed_path(path: str) -> bool:
         return True
     # 同步器拥有 user/base 下全部桌面条目的安装位置；缺少它，新增的条目装不进也撤不掉。
     if path.startswith("/usr/share/applications/") and path.endswith(".desktop"):
+        return True
+    if path == "/usr/share/mime/packages/liteos.xml" or path.startswith("/usr/share/icons/hicolor/"):
         return True
     return path in {
         *RETIRED_FILES, *(f"/bin/{name}" for name in ACCOUNT_APPLETS), "/bin/shutdown", "/bin/wine", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",

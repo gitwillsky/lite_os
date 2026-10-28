@@ -1,5 +1,5 @@
 //! 标准 FUSE 操作翻译；节点和打开句柄分别计数，目录 offset 绑定本次 opendir 的快照。
-use crate::remote::{State, errno, read_attributes, timestamp};
+use crate::remote::{DirectoryEntry, DirectorySnapshot, State, errno, read_attributes, timestamp};
 use fuser::*;
 use smb::{
     CreateDisposition, CreateOptions, FileAccessMask, FileAttributes, FileBasicInformation,
@@ -9,10 +9,12 @@ use smb::{
 use std::{
     ffi::OsStr,
     sync::Mutex,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
-const TTL: Duration = Duration::ZERO;
+// 内核独占标准 FUSE 名字/属性缓存，最多 1 秒；零 TTL 会让每次 stat 都重新 OPEN/QUERY_INFO/CLOSE。
+// 本地修改由内核作废相应缓存；外部修改在此有界窗口后重新读取，不维护第二份持久属性缓存。
+const TTL: Duration = Duration::from_secs(1);
 pub(crate) struct SmbFilesystem {
     pub(crate) state: Mutex<State>,
     pub(crate) ready: std::sync::mpsc::SyncSender<()>,
@@ -93,7 +95,7 @@ impl Filesystem for SmbFilesystem {
             .set_max_readahead(65536)
             .map_err(|_| std::io::ErrorKind::Unsupported)?;
         config
-            .add_capabilities(InitFlags::FUSE_AUTO_INVAL_DATA)
+            .add_capabilities(InitFlags::FUSE_AUTO_INVAL_DATA | InitFlags::FUSE_DO_READDIRPLUS)
             .map_err(|_| std::io::ErrorKind::Unsupported)?;
         self.ready.send(()).map_err(std::io::Error::other)?;
         Ok(())
@@ -362,7 +364,7 @@ impl Filesystem for SmbFilesystem {
             Err(e) => reply.error(e),
         }
     }
-    fn opendir(&self, _req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
+    fn opendir(&self, req: &Request, ino: INodeNo, _flags: OpenFlags, reply: ReplyOpen) {
         let result = self.call(|state| {
             let path = state.path(ino)?;
             let mut args =
@@ -370,10 +372,17 @@ impl Filesystem for SmbFilesystem {
             args.options = CreateOptions::new().with_directory_file(true);
             let remote = state.open(&path, &args)?;
             let directory = remote.0.as_dir().ok_or(Errno::ENOTDIR)?;
-            let mut entries = vec![(ino, FileType::Directory, ".".into())];
+            let mut entries = vec![DirectoryEntry {
+                attr: remote.attr(ino, req.uid(), req.gid())?,
+                name: ".".into(),
+            }];
             let parent_path = path.rsplit_once('\\').map_or("", |(parent, _)| parent);
             let parent = state.node(parent_path.to_owned())?;
-            entries.push((parent, FileType::Directory, "..".into()));
+            entries.push(DirectoryEntry {
+                attr: state.metadata(parent, req.uid(), req.gid())?,
+                name: "..".into(),
+            });
+            let valid_until = Instant::now() + TTL;
             for item in directory
                 .query::<FileDirectoryInformation>("*")
                 .map_err(errno)?
@@ -385,17 +394,46 @@ impl Filesystem for SmbFilesystem {
                 }
                 let child = state.child(ino, OsStr::new(&name))?;
                 let child_ino = state.node(child)?;
-                entries.push((
-                    child_ino,
-                    if item.file_attributes.directory() {
-                        FileType::Directory
-                    } else {
-                        FileType::RegularFile
-                    },
+                let directory = item.file_attributes.directory();
+                entries.push(DirectoryEntry {
                     name,
-                ));
+                    attr: FileAttr {
+                        ino: child_ino,
+                        size: item.end_of_file,
+                        blocks: item.allocation_size.div_ceil(512),
+                        atime: item.last_access_time.into(),
+                        mtime: item.last_write_time.into(),
+                        ctime: item.change_time.into(),
+                        crtime: item.creation_time.into(),
+                        kind: if directory {
+                            FileType::Directory
+                        } else {
+                            FileType::RegularFile
+                        },
+                        perm: if directory || !item.file_attributes.readonly() {
+                            0o700
+                        } else {
+                            0o500
+                        },
+                        // SMB 的目录记录没有 POSIX nlink，投影为 1；GETATTR 仍查询服务器实际链接数。
+                        nlink: 1,
+                        uid: req.uid(),
+                        gid: req.gid(),
+                        rdev: 0,
+                        blksize: 65536,
+                        flags: 0,
+                    },
+                });
             }
-            state.install(ino, remote, Some(entries), false)
+            state.install(
+                ino,
+                remote,
+                Some(DirectorySnapshot {
+                    entries,
+                    valid_until,
+                }),
+                false,
+            )
         });
         match result {
             Ok(fh) => reply.opened(FileHandle(fh), FopenFlags::empty()),
@@ -417,8 +455,13 @@ impl Filesystem for SmbFilesystem {
                 .as_ref()
                 .ok_or(Errno::ENOTDIR)?;
             let offset = usize::try_from(offset).map_err(|_| Errno::EINVAL)?;
-            for (index, (ino, kind, name)) in entries.iter().enumerate().skip(offset) {
-                if reply.add(*ino, index as u64 + 1, *kind, name) {
+            for (index, entry) in entries.entries.iter().enumerate().skip(offset) {
+                if reply.add(
+                    entry.attr.ino,
+                    index as u64 + 1,
+                    entry.attr.kind,
+                    &entry.name,
+                ) {
                     break;
                 }
             }
@@ -427,6 +470,71 @@ impl Filesystem for SmbFilesystem {
         match result {
             Ok(()) => reply.ok(),
             Err(e) => reply.error(e),
+        }
+    }
+    fn readdirplus(
+        &self,
+        _req: &Request,
+        ino: INodeNo,
+        fh: FileHandle,
+        offset: u64,
+        mut reply: ReplyDirectoryPlus,
+    ) {
+        let result = self.call(|state| {
+            let opened = state
+                .files
+                .get(&fh.0)
+                .filter(|file| file.ino == ino)
+                .ok_or(Errno::ESTALE)?;
+            let snapshot = opened.entries.as_ref().ok_or(Errno::ENOTDIR)?;
+            let begin = usize::try_from(offset)
+                .map_err(|_| Errno::EINVAL)?
+                .min(snapshot.entries.len());
+            let ttl = snapshot
+                .valid_until
+                .saturating_duration_since(Instant::now());
+            let nodes = &mut state.nodes;
+            let mut end = begin;
+            let result = (|| {
+                for (index, entry) in snapshot.entries.iter().enumerate().skip(begin) {
+                    let lookup = !matches!(entry.name.as_str(), "." | "..");
+                    let node = nodes.get_mut(&entry.attr.ino).ok_or(Errno::ESTALE)?;
+                    let next = if lookup {
+                        node.lookups.checked_add(1).ok_or(Errno::EOVERFLOW)?
+                    } else {
+                        node.lookups
+                    };
+                    if reply.add(
+                        entry.attr.ino,
+                        index as u64 + 1,
+                        &entry.name,
+                        &ttl,
+                        &entry.attr,
+                        Generation(1),
+                    ) {
+                        break;
+                    }
+                    // 只为实际进入回复的非点目录项发布 lookup；满缓冲区中的候选项没有获得引用。
+                    node.lookups = next;
+                    end = index + 1;
+                }
+                Ok(())
+            })();
+            if result.is_err() {
+                // 整个回复会被 errno 替代，撤销此前为本回复取得的所有引用。
+                for entry in &snapshot.entries[begin..end] {
+                    if !matches!(entry.name.as_str(), "." | "..")
+                        && let Some(node) = nodes.get_mut(&entry.attr.ino)
+                    {
+                        node.lookups -= 1;
+                    }
+                }
+            }
+            result
+        });
+        match result {
+            Ok(()) => reply.ok(),
+            Err(error) => reply.error(error),
         }
     }
     fn releasedir(

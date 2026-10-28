@@ -787,10 +787,13 @@ impl Context {
         kind: u32,
         size: i32,
     ) -> Option<std::rc::Rc<classic_ui::Bitmap>> {
-        if kind == 0 {
-            self.resources.icon(name, size)
-        } else {
-            self.resources.application_icon_size(name, size)
+        match kind {
+            0 => self.resources.icon(name, size),
+            1 => self.resources.application_icon_size(name, size),
+            2 => classic_ui::Bitmap::application_icon(name, size)
+                .ok()
+                .map(std::rc::Rc::new),
+            _ => None,
         }
     }
 }

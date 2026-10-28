@@ -18,6 +18,9 @@
   由固定上游及 RustCrypto/SSPI 依赖实现。禁用匿名无签名访问；要求加密时连接不支持的服务器直接失败。
   唯一依赖源与修改记录见 [规范基线](../standards-baseline.md)。
 - `smbfs::State` 独占会话、路径节点、lookup 引用与远程文件句柄。FUSE 目录 offset 绑定一次 opendir 的快照；
+  标准 READDIRPLUS 直接复用 QUERY_DIRECTORY 的属性，只有进入回复的非点目录项增加 lookup，失败整包撤销。
+  内核名字/属性缓存最多 1 秒，目录快照不会延长已过期的属性；外部变更在窗口后重新查询。
+  SMB 目录记录不含 nlink，批量回复投影为 1，GETATTR 仍读取服务器实际值。
   rename 同步移动节点路径，unlink 保留已打开句柄至 release，FORGET 与 release 共同决定节点回收。
   文件读按 SMB 请求边界合并，不能将单包边界误报为 FUSE 的 EOF；EOF 与长度均由服务器事实决定。
 - 传输/完整性失败关闭本代连接并撤销句柄；旧 fh 返回 ESTALE，后续路径操作才重新认证。

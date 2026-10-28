@@ -401,6 +401,7 @@ mod tests {
                         configured: false,
                         mapped: false,
                         frame: None,
+                        history: Default::default(),
                     },
                 )]),
                 buffers: HashMap::new(),

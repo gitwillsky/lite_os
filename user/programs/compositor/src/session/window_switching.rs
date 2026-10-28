@@ -10,18 +10,6 @@ impl Session {
         };
         let scale = self.scale as i32;
         let window = (placement.x, placement.y, placement.width, placement.height);
-        // 已有还原被其他窗口操作打断时先完成它；同一窗口反向操作从当前画面继续，避免位置跳回端点。
-        let previous = self.animation.take();
-        let current = previous
-            .as_ref()
-            .filter(|animation| animation.client == client && animation.surface == surface)
-            .map(Animation::frame);
-        if let Some(animation) =
-            previous.filter(|animation| animation.client != client || animation.surface != surface)
-            && animation.restoring
-        {
-            self.stack.raise(animation.client, animation.surface);
-        }
         let (screen_width, screen_height) = self.screen();
         let target = self
             .minimize_targets
@@ -38,13 +26,38 @@ impl Session {
         } else {
             (target, window)
         };
+        self.start_animation(client, surface, from, to, !minimizing);
+    }
+
+    /// 播放整窗几何过渡：已有还原被其他窗口操作打断时先完成它；同一窗口反向操作从当前画面继续，避免位置跳回端点。
+    ///
+    /// `restoring` 为真时动画结束才把窗口提升回输入栈（最小化还原）；最大化/还原模式切换传假。
+    pub(super) fn start_animation(
+        &mut self,
+        client: ClientId,
+        surface: ObjectId,
+        from: (i32, i32, i32, i32),
+        to: (i32, i32, i32, i32),
+        restoring: bool,
+    ) {
+        let previous = self.animation.take();
+        let current = previous
+            .as_ref()
+            .filter(|animation| animation.client == client && animation.surface == surface)
+            .map(Animation::frame);
+        if let Some(animation) =
+            previous.filter(|animation| animation.client != client || animation.surface != surface)
+            && animation.restoring
+        {
+            self.stack.raise(animation.client, animation.surface);
+        }
         self.animation = Some(Animation {
             client,
             surface,
             from: current.unwrap_or(from),
             to,
             start: Instant::now(),
-            restoring: !minimizing,
+            restoring,
         });
         self.dirty = true;
     }

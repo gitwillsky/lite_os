@@ -33,6 +33,20 @@ Canvas 可通过 `set_frame(width, height, &[u32])` 显示应用生成的设备�
 外部交叉开发也消费相同 SDK 源码和目标运行库，将项目 Cargo 配置中的 native library search path
 指向目标 sysroot；链接器与标准库必须属于所选 Linux/musl target，不能混用 macOS 产物。
 
+## 文件关联与图标安装
+
+应用将 `.desktop` 放到 XDG data 目录的 `applications/`，用 `Exec` 文件字段码、`MimeType` 和 `Icon` 声明启动能力。
+新增扩展名、类型描述和文档图标放在 `mime/packages/<应用名>.xml`（Shared MIME-info）；图标 PNG 分别安装到
+`icons/hicolor/<尺寸>x<尺寸>/apps/` 和 `mimetypes/`。系统与 `~/.local/share` 使用同一注册机制，刷新后读取新增或卸载结果。
+默认程序由“打开方式 → 始终使用此程序”写入用户 `mimeapps.list`，不改应用安装文件。
+
+存量经典图标由 `extract_windows2000_assets.py` 从 ISO 提取；原版缺失时使用 ImageGen 生成透明源图并保留 prompt，
+源图留在 `.local/inputs/`，用以下入口裁剪、导出 16/32/64 PNG 与产品摘要；正常构建只安装 Git 中的产物：
+
+```sh
+.local/tools/classic-assets/bin/python scripts/file_type_icons.py --input .local/inputs/file-icons/video-modern.png --name file-video-modern --prompt .local/inputs/file-icons/video-modern-prompt.txt
+```
+
 ## 异步与关闭
 
 - `Application::spawn_local` 接收非 Send Future，返回可 await 的 `Task<T>`；保留 Task owner，Drop 即请求取消。

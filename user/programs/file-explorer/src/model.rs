@@ -35,9 +35,7 @@ pub enum Icon {
     MyComputer,
     Folder,
     File,
-    Text,
     Application,
-    System,
     Disk,
     OpticalDisc,
     NetworkDrive,
@@ -65,9 +63,7 @@ impl Icon {
             Icon::MyComputer => "my-computer",
             Icon::Folder => "folder-closed",
             Icon::File => "file-generic",
-            Icon::Text => "file-text",
             Icon::Application => "file-app",
-            Icon::System => "file-system",
             Icon::Disk => "drive-hdd",
             Icon::NetworkDrive => "drive-network",
             Icon::OfflineDrive => "drive-network-offline",
@@ -190,6 +186,8 @@ pub struct Item {
     pub drive: Option<char>,
     pub name: String,
     pub icon: Icon,
+    /// 默认文件处理器的 Icon=；没有关联时使用系统通用图标。
+    pub application_icon: Option<String>,
     /// “类型”列文本，如“文件夹”“文本文档”。
     pub kind: String,
     /// 普通文件的字节数；文件夹与虚拟条目没有大小。
@@ -210,6 +208,7 @@ impl Item {
             drive: None,
             name: name.into(),
             icon,
+            application_icon: None,
             kind: kind.into(),
             size: None,
             modified: None,
@@ -411,6 +410,7 @@ impl Location {
     ///
     /// `mounts` 是 `/proc/mounts` 的文本，只有“我的电脑”用它列出磁盘。
     pub fn list(&self, mounts: &str) -> io::Result<(Vec<Item>, bool)> {
+        let associations = desktop_entry::Associations::load();
         let mut truncated = false;
         let mut items = match self {
             Location::Desktop => {
@@ -453,7 +453,13 @@ impl Location {
                     .flatten()
                     .filter_map(Result::ok)
                     .take(MAX_ENTRIES)
-                    .map(|entry| describe(&entry.path(), entry.file_name().to_string_lossy()))
+                    .map(|entry| {
+                        describe(
+                            &entry.path(),
+                            entry.file_name().to_string_lossy(),
+                            &associations,
+                        )
+                    })
                     .collect();
                 files.sort_by(|a, b| {
                     b.target
@@ -492,7 +498,11 @@ impl Location {
                         truncated = true;
                         break;
                     }
-                    let mut item = describe(&entry.path(), entry.file_name().to_string_lossy());
+                    let mut item = describe(
+                        &entry.path(),
+                        entry.file_name().to_string_lossy(),
+                        &associations,
+                    );
                     if trash
                         && let Some(home) = &home
                         && let Ok(info) = fileops::trash_info_of(home, &entry.path())
@@ -680,7 +690,11 @@ fn network_drives() -> io::Result<Vec<Item>> {
 }
 
 /// 描述一个文件系统条目；元数据读取失败时按普通文件处理，不让单个坏条目挡住整个目录。
-fn describe(path: &Path, name: impl Into<String>) -> Item {
+fn describe(
+    path: &Path,
+    name: impl Into<String>,
+    associations: &desktop_entry::Associations,
+) -> Item {
     let metadata = fs::metadata(path).ok();
     let directory = metadata.as_ref().is_some_and(fs::Metadata::is_dir);
     let executable = metadata
@@ -690,22 +704,21 @@ fn describe(path: &Path, name: impl Into<String>) -> Item {
         .extension()
         .map(|e| e.to_string_lossy().to_lowercase())
         .unwrap_or_default();
-    let (icon, kind) = if directory {
+    let (icon, mut kind) = if directory {
         (Icon::Folder, "文件夹".to_owned())
     } else if executable && extension.is_empty() {
         (Icon::Application, "应用程序".to_owned())
     } else {
-        match extension.as_str() {
-            "txt" | "log" | "md" | "conf" | "cfg" | "ini" | "rs" | "c" | "h" | "py" | "sh"
-            | "toml" => (Icon::Text, "文本文档".to_owned()),
-            "so" | "ko" | "a" | "o" | "dll" | "sys" => {
-                (Icon::System, format!("{} 文件", extension.to_uppercase()))
-            }
-            "" => (Icon::File, "文件".to_owned()),
-            other => (Icon::File, format!("{} 文件", other.to_uppercase())),
-        }
+        (Icon::File, associations.type_name(path))
     };
+    if !directory && associations.mime_for(path).is_some() {
+        kind = associations.type_name(path);
+    }
     Item {
+        application_icon: (!directory)
+            .then(|| associations.icon_for(path))
+            .flatten()
+            .map(str::to_owned),
         size: (!directory).then(|| metadata.as_ref().map_or(0, fs::Metadata::len)),
         modified: metadata
             .as_ref()

@@ -10,6 +10,7 @@ pub struct Output {
 
 mod client;
 mod clipboard;
+mod damage;
 mod dialog;
 mod dmabuf;
 mod foreign;

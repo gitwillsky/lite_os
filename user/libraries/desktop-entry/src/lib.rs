@@ -1,8 +1,12 @@
 //! freedesktop Desktop Entry 子集：读取已安装程序的名称、图标、分类与命令；不把 Exec 当成 shell 程序解释。
 extern crate liteos_runtime as _;
+mod associations;
+mod mime;
+pub use associations::Associations;
 use std::{
     collections::{HashMap, HashSet},
-    fs, io,
+    fs,
+    io::{self, Read},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::Command,
@@ -11,6 +15,9 @@ use std::{
 /// 一个可启动的程序条目。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
+    id: String,
+    /// 安装目录的 XDG 优先级；较低层 mimeapps.list 不能修改高优先级同 ID 条目的关联。
+    data_rank: usize,
     pub name: String,
     /// `Icon=` 的主题名称或绝对图像路径，没有时为 `None`。
     pub icon: Option<String>,
@@ -31,6 +38,11 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// 返回 XDG desktop file ID，供默认应用配置引用；单独解析的快捷方式没有安装 ID。
+    pub fn id(&self) -> &str {
+        &self.id
+    }
+
     /// 返回尚未启动的命令，应用 Exec 参数与 Path 工作目录；参数不经过 shell。
     pub fn command(&self) -> Command {
         let mut command = Command::new(&self.arguments[0]);
@@ -67,40 +79,6 @@ impl Entry {
     }
 }
 
-/// 文件的 MIME 类型：按扩展名查 shared-mime-info 的一个子集；不认识的返回 `None`。
-pub fn mime_for(path: &Path) -> Option<&'static str> {
-    let extension = path.extension()?.to_str()?.to_ascii_lowercase();
-    Some(match extension.as_str() {
-        "wav" => "audio/x-wav",
-        "mp4" | "m4v" => "video/mp4",
-        "mkv" => "video/x-matroska",
-        "webm" => "video/webm",
-        "avi" => "video/x-msvideo",
-        "mov" => "video/quicktime",
-        "wmv" => "video/x-ms-wmv",
-        "flv" => "video/x-flv",
-        "mpg" | "mpeg" => "video/mpeg",
-        "ts" | "m2ts" => "video/mp2t",
-        "3gp" => "video/3gpp",
-        "ogv" => "video/ogg",
-        "mp3" => "audio/mpeg",
-        "flac" => "audio/flac",
-        "ogg" | "oga" => "audio/ogg",
-        "opus" => "audio/opus",
-        "m4a" => "audio/mp4",
-        "aac" => "audio/aac",
-        "wma" => "audio/x-ms-wma",
-        "mka" => "audio/x-matroska",
-        "m3u8" => "application/vnd.apple.mpegurl",
-        "m3u" => "audio/x-mpegurl",
-        "exe" => "application/x-ms-dos-executable",
-        "msi" => "application/x-msi",
-        "txt" | "log" | "ini" | "cfg" | "conf" | "md" | "toml" | "json" | "sh" | "c" | "h"
-        | "rs" | "py" | "xml" | "csv" => "text/plain",
-        _ => return None,
-    })
-}
-
 /// 按 XDG Base Directory 顺序返回用户与系统数据目录。
 ///
 /// 用户目录优先，忽略非绝对 XDG 路径；未设置时使用规范默认值。返回值不要求目录已经存在。
@@ -132,7 +110,8 @@ pub fn read(path: &Path) -> io::Result<Entry> {
 
 /// 为文件或应用快捷方式建立启动命令；不执行 shell。
 ///
-/// `file` 指定绝对或相对文件路径；快捷方式优先于 Unix 可执行位，其次为原生可执行文件和已安装 MIME 处理器。
+/// `file` 指定绝对或相对文件路径；快捷方式直接启动，原生程序须同时具有执行位与 ELF/shebang 文件头，
+/// 其余按统一 MIME 关联选择应用。网络文件的执行位不能代替文件格式。
 /// 返回尚未启动的 Command。文件不可读、无效快捷方式或没有关联程序时返回错误。
 pub fn open(file: &Path) -> io::Result<Command> {
     if file
@@ -141,19 +120,22 @@ pub fn open(file: &Path) -> io::Result<Command> {
     {
         return Ok(read(file)?.command());
     }
-    if fs::metadata(file)?.permissions().mode() & 0o111 != 0
-        && !file.extension().is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("exe") || extension.eq_ignore_ascii_case("msi")
-        })
-    {
-        return Ok(Command::new(file));
+    let metadata = fs::metadata(file)?;
+    if metadata.is_file() && metadata.permissions().mode() & 0o111 != 0 {
+        let mut header = [0; 4];
+        match fs::File::open(file)?.read_exact(&mut header) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::UnexpectedEof => {}
+            Err(error) => return Err(error),
+        }
+        if header.starts_with(b"\x7fELF") || header.starts_with(b"#!") {
+            return Ok(Command::new(file));
+        }
     }
-    let mime = mime_for(file).ok_or_else(|| io::Error::other("没有关联的程序"))?;
-    installed_in(&data_directories())
-        .iter()
-        .find(|entry| entry.mime_types.iter().any(|value| value == mime))
+    Associations::load()
+        .default_for(file)
         .and_then(|entry| entry.command_for(file))
-        .ok_or_else(|| io::Error::other("没有关联的程序"))
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Unsupported, "没有关联的程序，请选择打开方式"))
 }
 
 /// 返回全部已安装且可显示的应用；用户同 ID 条目覆盖系统条目，Hidden 条目也遮蔽系统副本。
@@ -193,7 +175,7 @@ fn desktop_files(directory: &Path) -> Vec<PathBuf> {
 fn installed_in(directories: &[PathBuf]) -> Vec<Entry> {
     let mut seen = HashSet::new();
     let mut entries = Vec::new();
-    for directory in directories {
+    for (data_rank, directory) in directories.iter().enumerate() {
         let directory = directory.join("applications");
         for path in desktop_files(&directory) {
             let id = path
@@ -202,9 +184,11 @@ fn installed_in(directories: &[PathBuf]) -> Vec<Entry> {
                 .to_string_lossy()
                 .replace('/', "-");
             // 先登记 ID 再解析：用户 Hidden 或无效条目不能使被覆盖的系统条目重新出现。
-            if seen.insert(id)
-                && let Ok(entry) = read(&path)
+            if seen.insert(id.clone())
+                && let Ok(mut entry) = read(&path)
             {
+                entry.id = id;
+                entry.data_rank = data_rank;
                 entries.push(entry);
             }
         }
@@ -285,6 +269,8 @@ fn parse(text: &str) -> Option<Entry> {
         return None;
     }
     Some(Entry {
+        id: String::new(),
+        data_rank: 0,
         name: name?,
         icon,
         comment,

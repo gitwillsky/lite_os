@@ -31,6 +31,12 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 ## 事件、等待与退出
 
 - wl_surface.frame 与 wl_buffer.release 独立；buffer 忙时不覆盖，在途失效只在提交成功后消费。
+- `Display` 的每窗口 `History` 独占上一次提交的画面、最近 3 次提交的损伤与对应规格（像素尺寸、scale）；
+  `present` 逐行比较新画面得出损伤（相隔 ≤8 行的变化合并成条带，超过 16 条合并为外接矩形），以 `damage_buffer` 声明。
+  每块缓冲记录自己持有第几次提交；复用时补写其后各次与本次的损伤，从未写入、规格变化或落后超出历史则整幅写。
+  画面不变且已按同一规格映射时只发 frame + commit、不 attach，configure 的 ack 仍随 commit 生效。
+  Layer unmap 清空历史，否则重新映射时会只 commit 不 attach。所有调用 `present` 的程序（经 `WindowHost` 或直接调用）共用这一路径，
+  失效粒度仍是整窗光栅，只有共享内存写入、合成器读取与纹理上传按损伤缩小。
 - 外部 PollFd 带 fd owner 的类型借用；批量等待后只投影 readiness，不延长其他描述符的生命周期。
   PollBuffer 只持有不可自行轮询的 raw 存储；每轮 PollSet 重新建立有效借用，析构清空旧编号并保留容量。
   唯一切片转换位于 linux-uapi，依据 repr(transparent) 与 push 借用前置条件；不建立 static FD 或从旧轮次复活编号。
@@ -57,7 +63,9 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - terminal 的 VT 模型、输入队列和控件只在 UI 线程使用。队列上限 1 MiB；读端每轮最多消费 64 KiB，防止持续输出饿死输入。
   PTY 使用现有 SessionChild launcher，正常关闭在后台终止完整进程组并回收，异常退出仍执行兜底清理。
 
-- GPU Content 的 OnceCell 只在 compositor 线程发布一份纹理，输入像素发布后不可变；GPU.frame_contents 独立持有本帧全部 Content 到 flip 完成后的下一次 render，不能用单个采样视图代替多个 wl_buffer 使用期。
+- GPU Content 的 OnceCell 只在 compositor 线程发布一份纹理；SHM 像素写时复制，只有 surface 唯一持有时才被下一次提交原地更新。
+  GPU.frame_contents 只持有本帧 dma-buf Content 到 flip 完成后的下一次 render，不能用单个采样视图代替多个 wl_buffer 使用期；
+  SHM 已在 commit 读取后 release，若也被 pin，引用计数恒大于 1，每次提交都会整幅重读并重建纹理。
   无这份生命周期约束，客户端替换内容或退出可能提前关闭 host 正在取样的 GEM。没有按窗口 ID 维护的第二份纹理表。
   顶点缓冲按两个输出槽复用，覆盖前必须无 flip 在途；标准 EXECBUFFER/transfer 与 KMS 的 fence 顺序由 DRM owner 保证。
   GPU 热路径的测量项是首次上传、移动时合成/提交与 flip 完成；显示节拍与第三方 EGL 路径由 GPU gate 验证，交互由 Wayland/桌面 gate 验证。
@@ -67,8 +75,11 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   不复制协议状态或把可复用 wire id 当作长期应用标识。列表选择由运行库保存，应用按需读取稳定条目标识。
   同一桌面的普通应用可使用标准 foreign-toplevel，任务管理器依赖该能力；layer-shell 只授予 Session/Shell，
   security-context manager 只授予 Session。公开 socket 的 root 身份也不能获得后两者。
-- 媒体播放器只在 Running/Draining/Idle 之间转换；后台 PCM 完成前不启动下一次播放，连续 seek 只保留最新目标。
-  窗口关闭先请求停止再异步等待完成；取消 Future 的 Drop 只发送停止请求，不在 UI 线程 join。
+- 媒体播放状态由 libmpv 拥有，Engine 只镜像观察事件；播放/暂停命令在后端切换真实状态，不按迟到的 UI 快照重写。
+  `mpv-client::render` 独占 render context，callback 只投递 Update，渲染线程不等待普通 client API 或 UI。
+  关闭先撤销 client callback，再 Stop/join 渲染 owner（撤销 render callback、释放 context），最后销毁 core 与动态库。
+  软件帧的唯一 Vec 在请求/回复间转移并复用；Canvas 复制后才允许下一次渲染，空闲绘图命令不能留在新帧之上。
+  Benchmark 决策：新增消息队列交接与单一渲染线程，没有新增帧副本；调度与延迟成本留待实测，不声明吞吐改善。
 - Canvas 的 TAB_INPUT 明确请求原始 Tab（终端补全）；未设置时由框架执行焦点遍历，不在应用另维护一份修饰键状态。
 - 公共 setter 在相同标题、文本、菜单或显示列表时不提交新绘制；菜单数据不变时保留正在进行的键盘/指针交互。
 - Canvas 入口按已定义的 kind 1～7 校验并原子发布整批命令；kind 7 的墙纸预览与 SDK、renderer 使用同一契约。
@@ -174,6 +185,8 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 ## 窗口动画与合成几何
 
 - Session 的 Animation 只拥有目标窗口标识、起止矩形、开始时间与是否还原；实际像素与纹理仍由已提交 Content 拥有。
+  最小化/还原与最大化/全屏/还原模式切换共用同一过渡：模式切换立即改窗口栈几何并发 configure，画面从旧矩形缩放到新矩形，
+  客户端提交新尺寸后继续按插值矩形缩放；否则旧尺寸缓冲会先跳到新位置、等新缓冲才撑满。
   还原期间窗口留在 minimized 输入状态，合成单独投影整窗；结束再 raise。切换目标先完成已有还原，同目标反向从当前矩形继续，
   重复还原不重置计时，窗口销毁取消动画。没有每帧复制像素、重新排版标题或建立动画专用纹理。
 - Drawable 的 rect 是 CPU/GPU 共同使用的物理目标矩形；整窗和所有子 surface 从同一个根矩形映射，不能独立插值。
@@ -210,14 +223,23 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 ## 应用条目与安装集成
 
 - `desktop-entry` 独占 Desktop Entry 解析、XDG 应用目录优先级和文件启动选择；desktop 与 file-explorer 共用。
+  类型来自 XDG `mime/packages/*.xml`，支持名称 glob 的权重/大小写、别名、继承、本地化名称和文件图标；
+  当前不实现内容 magic 或编译 MIME cache。一次目录读取共用安装/关联快照，不逐文件扫描注册目录或读取远端内容。
+  `mimeapps.list` 按标准 config/data 与 desktop 优先级处理 Default/Added/Removed；缺失或卸载的处理器被跳过。
+  “打开方式”只列可接收文件的已安装条目，临时选择不改配置；设置默认在用户配置锁内合并后原子发布。
+  原生执行需执行位与 ELF/shebang 文件头同时成立，不能把 SMB 投影的执行位当成文件格式。
   用户目录先于系统目录，递归条目以相对路径中的 `/` 替换为 `-` 得到 ID；Hidden 用户条目遮蔽系统同 ID 条目。
   Exec 按 string 与命令行两层转义解码，不经过 shell；Path 是应用工作目录。NoDisplay 不进入菜单，仍可用于 MIME 关联和窗口图标。
 - `/bin/wine` 只装配当前账户的 `~/.wine`、FEX 和标准 XDG 环境，exec 固定上游运行时。
   Wine 安装器/注册表/IShellLink/menubuilder 拥有应用安装与快捷方式事实；外壳不复制一份安装数据库。
 - `classic-ui::Bitmap::application_icon` 拥有应用图标加载：绝对 PNG/BMP、XDG hicolor 的 NxN/apps PNG、pixmaps PNG 与经典系统 BMP。
+  文件类型图标沿用同一加载器的 `NxN/mimetypes` 上下文；原版资源由 ISO 导入器发布，生成素材由 `file_type_icons.py` 转换并登记摘要。
+  行图标来源区分系统资源、应用 app_id 和主题名/绝对路径（RowIcon kind 0/1/2）；不得把 MIME 图标名送入 app_id 查找。
+  主题图片只在一次批量发布内去重，不跨刷新持有缺失结果，新安装图标无需重启运行库。
   PNG 固定 png 0.18.0，输入不超过 32 MiB，图像不超过 2048×2048，解码预算 32 MiB；加载后转预乘 ARGB 并复用 Bitmap 的缩放和绘制。
   当前只支持此 PNG 查找子集，不声明完整主题继承、SVG 或 XPM 支持。
 - desktop 每秒重读已安装条目，桌面目录变化时重读快捷方式并重建当前图标集合；卸载后不保留旧动态图标像素。
+  注册应用变化时同时刷新普通文件的关联图标；类型数据与手工默认值更新可通过刷新重新读取。
   Windows `.lnk` 与同名导出 `.desktop` 并存时只展示标准入口，原 ShellLink 仍由 Windows 拥有。
   NoDisplay/Hidden 等语义只由 desktop-entry 解释；开始菜单不得静默截断为固定程序数。
 - 成本决策：PNG 解码与目录扫描只在加载/清单刷新发生，不进入逐像素或逐帧合成；不新增失真的渲染 benchmark。
@@ -253,8 +275,15 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   Committed.unmapping 保留最后一次显式 null attach 的请求含义；没有内容不等于撤销映射，普通初始无 attach 提交必须发送角色 configure。
   layer_check_commit 只验证 pending，layer_after_commit 才发布角色 current 并与旧状态比较；否则首次协商或尺寸重协商会丢失。
 - Attachment 持有 attach 时真实 Buffer（SHM 或 dma-buf）的 Rc；wl_buffer 对象销毁不使引用悬空，release 只发送给仍关联同一 Rc 的活对象。
-  完整 SHM 快照完成后即允许 release；失败返回截断文件或 no_memory，不以空图像替代。
-- Pixels 拥有 SHM 快照或 dma-buf BufferUse 与 OnceCell GPU 纹理，Content 只拥有共享像素引用与投影元数据；viewport 不再保存另一份 raw 内容。
+  SHM 读取完成后即允许 release；失败返回截断文件或 no_memory（含 GPU 纹理建立/上传失败），不以空图像替代。
+- damage 只在 Pending 中按 surface/buffer 坐标累计，每个坐标系最多 16 个矩形，超出合并为外接矩形；commit 时换算为 buffer 像素，
+  surface 损伤遇到 transform 或 viewport 退化为整幅。同尺寸且唯一持有的上一份内容只重读这些矩形，其余（首次、尺寸变化、
+  被缓存提交或在用光标共享）整幅读取新快照；损伤之外沿用上一次提交，这是 Wayland 允许的语义。
+  非同步提交先放开 current 的像素引用再读取，保证唯一持有；同步提交的 current 仍显示旧图，因此走写时复制。
+- Pixels 是 CPU 后端 SHM 的内存像素、GPU 后端 SHM 的纹理（像素只在其 guest backing），或 dma-buf BufferUse 与导入纹理；
+  Content 只拥有共享像素引用与投影元数据；viewport 不再保存另一份 raw 内容。GPU 后端的 SHM 不保留 CPU 副本，硬件光标按需从 backing 复制。
+  原地写 backing 前等待该资源上一次 transfer/exec 完成，避免旧帧混入新像素；已排队采样由主机命令顺序保证读到旧纹理。
+  `VirglResource` 经 `&self` 只做拷贝式 read_row/write_row，不借出指向 backing 的引用，类型非 Send/Sync，故共享 Rc 的纹理可安全更新。
   null attach 使内容为空，取消 viewport 不能恢复旧缓冲。CPU/GPU 共用 ImageSource 三点仿射坐标与逻辑尺寸，
   按 transform、scale、viewport 顺序解释参数；裸 buffer 尺寸错误归属 wl_surface，viewport 源越界错误归属 wp_viewport。
 - Subsurface.children 只索引存活关联，State.order 唯一拥有提交后的绘制顺序。创建、位置、堆叠在父提交后可见；
@@ -264,13 +293,18 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   hit_testing 按提交树逆序和输入 region 命中，空洞穿透；实际 leaf 收指针，根窗口收键盘/激活，隐式抓取保留 leaf 坐标原点。
 - queued_callbacks 等待显示提交，in_flight_callbacks 只属于已送交 Scanout 的帧；finish_frame 不能消费 flip 在途期间新提交的回调。
   presentation 显式登记可见树和实际呈现的客户端硬件光标，隐藏 surface 不提前获得下一帧许可。
+- GPU.overlay 独占合成器叠加层（切换面板、窗口菜单）的整屏画布与纹理，首次需要时建立一次；每帧先清上一帧画过的矩形，
+  只在面板/菜单的物理矩形内光栅（Surface 裁剪保证不越界），上传新旧矩形的并集，四边形只覆盖并采样新矩形。
+  缺少它每帧要分配整屏像素、新建并整屏上传纹理。CPU 后端直接画进扫描缓冲，不经此画布。
 - GPU.views 以真实资源编号与采样格式为键；VirGL 对象句柄从固定状态句柄之后独立分配，销毁命令先于句柄复用。
   上一帧 flip 完成后才能淘汰视图/覆盖顶点，exec 成功后才发布新缓存。没有逐四边形重复资源表或每帧重复创建采样视图。
 - Session 的 applied_client_cursor 只保存成功上传的不可变图像引用及物理热点；同图像/热点跳过上传，形状切换或隐藏清空，
   位置仍独立更新。set_cursor 校验本连接最近 enter 序号后才分配角色，后续 offset 从设置时热点扣除累计增量。
 - Benchmark 决策：移除 viewport 全图重采样、窗口元数据查询的子树分配、逐帧采样视图创建与未变化光标上传；
   CPU 仿射路径只扫描可见目标像素，不分配中间图像。相同 set_text 不使布局失效。
-  验证范围见[Wayland 验证](../development/wayland-ui-verification.md)，不声明已提高多少帧率；原生控件仍走 wl_shm，damage/opaque 当前只是可忽略的提示。
+  SHM 提交的成本从“整幅 pread + 整幅 CPU 副本 + 新建纹理 + 整幅上传”降为 O(损伤像素)，复用纹理与采样视图；
+  由 shm 子矩形读取与损伤/写时复制单元测试守护语义，不新增宿主墙钟阈值。
+  验证范围见[Wayland 验证](../development/wayland-ui-verification.md)，不声明已提高多少帧率；原生控件仍走 wl_shm，opaque 当前只是可忽略的提示。
 
 ## 键盘对象与迟绑定
 

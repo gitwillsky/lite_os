@@ -596,6 +596,52 @@ fn xrgb_buffers_are_forced_opaque_and_stride_padding_is_skipped() {
 }
 
 #[test]
+fn shm_commits_reread_only_damage_and_never_rewrite_a_held_snapshot() {
+    let mut harness = Harness::bound();
+    harness.create_surface(5);
+    let bytes =
+        |pixels: [u32; 4]| -> Vec<u8> { pixels.iter().flat_map(|p| p.to_le_bytes()).collect() };
+    let commit = |harness: &mut Harness, pixels: [u32; 4], damage: Option<(i32, i32)>| {
+        harness
+            .create_buffer(&bytes(pixels), 2, 2, 8, wl_shm::Format::Argb8888)
+            .unwrap();
+        harness
+            .send(|w| {
+                wl_surface::Request::Attach {
+                    buffer: Some(id(11)),
+                    x: 0,
+                    y: 0,
+                }
+                .encode(id(5), w)
+                .unwrap();
+                if let Some((x, y)) = damage {
+                    wl_surface::Request::DamageBuffer {
+                        x,
+                        y,
+                        width: 1,
+                        height: 1,
+                    }
+                    .encode(id(5), w)
+                    .unwrap();
+                }
+                wl_surface::Request::Commit.encode(id(5), w).unwrap();
+                wl_buffer::Request::Destroy.encode(id(11), w).unwrap();
+                wl_shm_pool::Request::Destroy.encode(id(10), w).unwrap();
+            })
+            .unwrap();
+        harness.client.contents().next().unwrap().1.clone()
+    };
+    commit(&mut harness, [1, 2, 3, 4], None);
+    // 第二个 buffer 每个像素都不同，但只声明了 (1, 0) 损伤：损伤之外沿用上一次提交。
+    let held = commit(&mut harness, [5, 6, 7, 8], Some((1, 0)));
+    assert_eq!(held.pixels().unwrap(), [1, 6, 3, 4]);
+    // 外部仍持有上一份快照（如在用光标）时，新提交另建快照，不能原地改写持有者看到的像素。
+    let next = commit(&mut harness, [9, 10, 11, 12], Some((0, 1)));
+    assert_eq!(held.pixels().unwrap(), [1, 6, 3, 4]);
+    assert_eq!(next.pixels().unwrap()[2], 11);
+}
+
+#[test]
 fn attaching_nothing_unmaps_and_destroying_a_surface_recycles_its_callbacks() {
     let mut harness = Harness::bound();
     harness.create_surface(5);

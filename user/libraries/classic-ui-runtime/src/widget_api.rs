@@ -717,20 +717,22 @@ pub(super) unsafe extern "C" fn row_icons(
             let mut copied = Vec::with_capacity(count);
             let mut seen = std::collections::BTreeSet::new();
             for value in values {
-                if !identities.contains(&value.id) || value.kind > 1 || !seen.insert(value.id) {
+                if !identities.contains(&value.id) || value.kind > 2 || !seen.insert(value.id) {
                     return Err(invalid("invalid row icon"));
                 }
                 copied.push((value.id, value.kind, text(value.name)?));
             }
             let mut icons = std::collections::BTreeMap::new();
+            // 一次批量发布内共用相同源图；不持久缓存主题路径，刷新可立即发现新安装或替换的图标。
+            let mut assets = std::collections::BTreeMap::new();
+            let mut asset = |kind, name: &str, size| {
+                assets
+                    .entry((kind, name.to_owned(), size))
+                    .or_insert_with(|| context.icon_asset(name, kind, size))
+                    .clone()
+            };
             for (id, kind, name) in copied {
-                icons.insert(
-                    id,
-                    (
-                        context.icon_asset(&name, kind, 16),
-                        context.icon_asset(&name, kind, 32),
-                    ),
-                );
+                icons.insert(id, (asset(kind, &name, 16), asset(kind, &name, 32)));
             }
             let host = context.host_mut(window)?;
             host.controls_mut()?

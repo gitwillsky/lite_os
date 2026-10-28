@@ -132,7 +132,14 @@ pub fn icon_items(index: usize, kind: IconKind) -> Vec<Item> {
         items.push(entry);
     };
     match kind {
-        IconKind::Path => {
+        IconKind::Path | IconKind::File => {
+            if matches!(kind, IconKind::File) {
+                add(
+                    "打开方式(H)...",
+                    Action::IconVerb(index, "open-with"),
+                    false,
+                );
+            }
             add("删除(D)", Action::IconVerb(index, "delete"), true);
             add("重命名(M)", Action::IconVerb(index, "rename"), false);
             add("属性(R)", Action::IconVerb(index, "properties"), true);
@@ -151,6 +158,7 @@ pub fn icon_items(index: usize, kind: IconKind) -> Vec<Item> {
 /// 桌面图标的种类，决定右键菜单里有哪些项。
 #[derive(Clone, Copy)]
 pub enum IconKind {
+    File,
     /// 桌面文件夹里的真实文件或文件夹。
     Path,
     MyComputer,

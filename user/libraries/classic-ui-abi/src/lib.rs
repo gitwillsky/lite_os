@@ -263,7 +263,7 @@ impl Default for Date {
         }
     }
 }
-/// 列表行图标；kind=0 系统素材名、1 已安装 desktop entry 的 app_id。
+/// 列表行图标；kind=0 系统素材名、1 已安装 desktop entry 的 app_id、2 主题图标名/绝对图像路径。
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct RowIcon {
@@ -498,7 +498,8 @@ pub struct Api {
     pub image_palette: unsafe extern "C" fn(*mut c_void, u64, u64, *const u32, usize) -> i32,
     /// Canvas 的媒体帧：`width`×`height` 个设备像素的 0x00RRGGBB（高字节被忽略），同步复制后以 1:1 绘在显示列表之下。
     /// 非 Canvas、尺寸非正、超过 16384×16384 或 `count != width * height` 返回 INVALID，旧帧不变；尺寸为 0 清除帧。
-    pub canvas_frame: unsafe extern "C" fn(*mut c_void, u64, u64, u32, u32, *const u32, usize) -> i32,
+    pub canvas_frame:
+        unsafe extern "C" fn(*mut c_void, u64, u64, u32, u32, *const u32, usize) -> i32,
     /// 请求本窗口进入（非 0）或退出（0）标准 xdg_toplevel 全屏；结果以 Configure 事件通知，非法窗口返回 NOT_FOUND。
     pub fullscreen: unsafe extern "C" fn(*mut c_void, u64, u32) -> i32,
 }

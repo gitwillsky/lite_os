@@ -66,6 +66,7 @@ pub(crate) struct Param {
 type Callback = Option<extern "C" fn(*mut c_void)>;
 
 /// Resolved entry points; valid while the [`Library`] they came from stays open.
+#[derive(Clone, Copy)]
 pub(crate) struct Api {
     pub create: unsafe extern "C" fn() -> *mut Handle,
     pub initialize: unsafe extern "C" fn(*mut Handle) -> c_int,

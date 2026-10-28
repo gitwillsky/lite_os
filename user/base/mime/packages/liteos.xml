@@ -1,0 +1,250 @@
+<?xml version='1.0' encoding='utf-8'?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="text/plain">
+    <comment xml:lang="zh_CN">文本文档</comment>
+    <icon name="file-text" />
+    <glob pattern="*.txt" />
+    <glob pattern="*.log" />
+    <glob pattern="*.ini" />
+    <glob pattern="*.cfg" />
+    <glob pattern="*.conf" />
+    <glob pattern="README" />
+    <glob pattern="LICENSE" />
+    <glob pattern="Makefile" />
+  </mime-type>
+  <mime-type type="text/html">
+    <comment xml:lang="zh_CN">HTML 文档</comment>
+    <icon name="file-text" />
+    <glob pattern="*.html" />
+    <glob pattern="*.htm" />
+    <sub-class-of type="text/plain" />
+  </mime-type>
+  <mime-type type="application/pdf">
+    <comment xml:lang="zh_CN">PDF 文档</comment>
+    <icon name="file-generic" />
+    <glob pattern="*.pdf" />
+  </mime-type>
+  <mime-type type="application/x-ms-dos-executable">
+    <comment xml:lang="zh_CN">Windows 应用程序</comment>
+    <icon name="file-app" />
+    <glob pattern="*.exe" />
+  </mime-type>
+  <mime-type type="application/x-msi">
+    <comment xml:lang="zh_CN">Windows Installer 程序包</comment>
+    <icon name="file-system" />
+    <glob pattern="*.msi" />
+  </mime-type>
+  <mime-type type="image/png">
+    <comment xml:lang="zh_CN">PNG 图像</comment>
+    <icon name="file-image" />
+    <glob pattern="*.png" />
+  </mime-type>
+  <mime-type type="image/jpeg">
+    <comment xml:lang="zh_CN">JPEG 图像</comment>
+    <icon name="file-image" />
+    <glob pattern="*.jpg" />
+    <glob pattern="*.jpeg" />
+  </mime-type>
+  <mime-type type="image/bmp">
+    <comment xml:lang="zh_CN">位图图像</comment>
+    <icon name="file-image" />
+    <glob pattern="*.bmp" />
+  </mime-type>
+  <mime-type type="image/gif">
+    <comment xml:lang="zh_CN">GIF 图像</comment>
+    <icon name="file-image" />
+    <glob pattern="*.gif" />
+  </mime-type>
+  <mime-type type="video/mp4">
+    <comment xml:lang="zh_CN">MPEG-4 视频</comment>
+    <icon name="file-video-modern" />
+    <glob pattern="*.mp4" />
+    <glob pattern="*.m4v" />
+  </mime-type>
+  <mime-type type="video/x-matroska">
+    <comment xml:lang="zh_CN">Matroska 视频</comment>
+    <icon name="file-video-modern" />
+    <glob pattern="*.mkv" />
+  </mime-type>
+  <mime-type type="video/webm">
+    <comment xml:lang="zh_CN">WebM 视频</comment>
+    <icon name="file-video-modern" />
+    <glob pattern="*.webm" />
+  </mime-type>
+  <mime-type type="video/x-msvideo">
+    <comment xml:lang="zh_CN">视频剪辑</comment>
+    <icon name="file-video" />
+    <glob pattern="*.avi" />
+  </mime-type>
+  <mime-type type="video/quicktime">
+    <comment xml:lang="zh_CN">QuickTime 视频</comment>
+    <icon name="file-video" />
+    <glob pattern="*.mov" />
+  </mime-type>
+  <mime-type type="video/x-ms-wmv">
+    <comment xml:lang="zh_CN">Windows Media 视频</comment>
+    <icon name="file-video" />
+    <glob pattern="*.wmv" />
+  </mime-type>
+  <mime-type type="video/x-flv">
+    <comment xml:lang="zh_CN">Flash 视频</comment>
+    <icon name="file-video" />
+    <glob pattern="*.flv" />
+  </mime-type>
+  <mime-type type="video/mpeg">
+    <comment xml:lang="zh_CN">MPEG 视频</comment>
+    <icon name="file-video" />
+    <glob pattern="*.mpg" />
+    <glob pattern="*.mpeg" />
+  </mime-type>
+  <mime-type type="video/mp2t">
+    <comment xml:lang="zh_CN">MPEG 传输流</comment>
+    <icon name="file-video" />
+    <glob pattern="*.ts" />
+    <glob pattern="*.m2ts" />
+  </mime-type>
+  <mime-type type="video/3gpp">
+    <comment xml:lang="zh_CN">3GPP 视频</comment>
+    <icon name="file-video" />
+    <glob pattern="*.3gp" />
+  </mime-type>
+  <mime-type type="video/ogg">
+    <comment xml:lang="zh_CN">Ogg 视频</comment>
+    <icon name="file-video-modern" />
+    <glob pattern="*.ogv" />
+  </mime-type>
+  <mime-type type="audio/mpeg">
+    <comment xml:lang="zh_CN">MP3 音频</comment>
+    <icon name="file-audio" />
+    <glob pattern="*.mp3" />
+  </mime-type>
+  <mime-type type="audio/flac">
+    <comment xml:lang="zh_CN">FLAC 无损音频</comment>
+    <icon name="file-audio" />
+    <glob pattern="*.flac" />
+  </mime-type>
+  <mime-type type="audio/x-wav">
+    <comment xml:lang="zh_CN">波形声音</comment>
+    <icon name="file-audio" />
+    <glob pattern="*.wav" />
+  </mime-type>
+  <mime-type type="audio/ogg">
+    <comment xml:lang="zh_CN">Ogg 音频</comment>
+    <icon name="file-audio" />
+    <glob pattern="*.ogg" />
+    <glob pattern="*.oga" />
+  </mime-type>
+  <mime-type type="audio/opus">
+    <comment xml:lang="zh_CN">Opus 音频</comment>
+    <icon name="file-audio" />
+    <glob pattern="*.opus" />
+  </mime-type>
+  <mime-type type="audio/mp4">
+    <comment xml:lang="zh_CN">MPEG-4 音频</comment>
+    <icon name="file-audio" />
+    <glob pattern="*.m4a" />
+  </mime-type>
+  <mime-type type="audio/aac">
+    <comment xml:lang="zh_CN">AAC 音频</comment>
+    <icon name="file-audio" />
+    <glob pattern="*.aac" />
+  </mime-type>
+  <mime-type type="audio/x-ms-wma">
+    <comment xml:lang="zh_CN">Windows Media 音频</comment>
+    <icon name="file-audio" />
+    <glob pattern="*.wma" />
+  </mime-type>
+  <mime-type type="audio/x-matroska">
+    <comment xml:lang="zh_CN">Matroska 音频</comment>
+    <icon name="file-audio" />
+    <glob pattern="*.mka" />
+  </mime-type>
+  <mime-type type="audio/midi">
+    <comment xml:lang="zh_CN">MIDI 序列</comment>
+    <icon name="file-midi" />
+    <glob pattern="*.mid" />
+    <glob pattern="*.midi" />
+  </mime-type>
+  <mime-type type="application/vnd.apple.mpegurl">
+    <comment xml:lang="zh_CN">媒体播放列表</comment>
+    <icon name="file-media" />
+    <glob pattern="*.m3u8" />
+  </mime-type>
+  <mime-type type="audio/x-mpegurl">
+    <comment xml:lang="zh_CN">媒体播放列表</comment>
+    <icon name="file-media" />
+    <glob pattern="*.m3u" />
+    <glob pattern="*.pls" />
+  </mime-type>
+  <mime-type type="application/x-sharedlib">
+    <comment xml:lang="zh_CN">系统库文件</comment>
+    <icon name="file-system" />
+    <glob pattern="*.so" />
+    <glob pattern="*.so.*" />
+    <glob pattern="*.dll" />
+    <glob pattern="*.sys" />
+    <glob pattern="*.ko" />
+    <glob pattern="*.a" />
+    <glob pattern="*.o" />
+  </mime-type>
+  <mime-type type="application/json">
+    <comment xml:lang="zh_CN">JSON 文档</comment>
+    <icon name="file-text" />
+    <sub-class-of type="text/plain" />
+    <glob pattern="*.json" />
+  </mime-type>
+  <mime-type type="application/xml">
+    <comment xml:lang="zh_CN">XML 文档</comment>
+    <icon name="file-text" />
+    <sub-class-of type="text/plain" />
+    <glob pattern="*.xml" />
+  </mime-type>
+  <mime-type type="text/csv">
+    <comment xml:lang="zh_CN">CSV 文档</comment>
+    <icon name="file-text" />
+    <sub-class-of type="text/plain" />
+    <glob pattern="*.csv" />
+  </mime-type>
+  <mime-type type="text/markdown">
+    <comment xml:lang="zh_CN">Markdown 文档</comment>
+    <icon name="file-text" />
+    <sub-class-of type="text/plain" />
+    <glob pattern="*.md" />
+  </mime-type>
+  <mime-type type="application/toml">
+    <comment xml:lang="zh_CN">TOML 文档</comment>
+    <icon name="file-text" />
+    <sub-class-of type="text/plain" />
+    <glob pattern="*.toml" />
+  </mime-type>
+  <mime-type type="text/x-python">
+    <comment xml:lang="zh_CN">Python 源文件</comment>
+    <icon name="file-text" />
+    <sub-class-of type="text/plain" />
+    <glob pattern="*.py" />
+  </mime-type>
+  <mime-type type="text/x-csrc">
+    <comment xml:lang="zh_CN">C 源文件</comment>
+    <icon name="file-text" />
+    <sub-class-of type="text/plain" />
+    <glob pattern="*.c" />
+  </mime-type>
+  <mime-type type="text/x-chdr">
+    <comment xml:lang="zh_CN">C 头文件</comment>
+    <icon name="file-text" />
+    <sub-class-of type="text/plain" />
+    <glob pattern="*.h" />
+  </mime-type>
+  <mime-type type="text/rust">
+    <comment xml:lang="zh_CN">Rust 源文件</comment>
+    <icon name="file-text" />
+    <sub-class-of type="text/plain" />
+    <glob pattern="*.rs" />
+  </mime-type>
+  <mime-type type="application/x-shellscript">
+    <comment xml:lang="zh_CN">Shell 脚本</comment>
+    <icon name="file-text" />
+    <sub-class-of type="text/plain" />
+    <glob pattern="*.sh" />
+  </mime-type>
+</mime-info>

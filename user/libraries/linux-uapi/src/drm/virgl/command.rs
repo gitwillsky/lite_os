@@ -8,6 +8,7 @@ const SET_FRAMEBUFFER: u32 = 5;
 const SET_VERTEX_BUFFERS: u32 = 6;
 const CLEAR: u32 = 7;
 const DRAW_VBO: u32 = 8;
+const RESOURCE_INLINE_WRITE: u32 = 9;
 const SET_SAMPLER_VIEWS: u32 = 10;
 const SET_CONSTANT_BUFFER: u32 = 12;
 const BIND_SAMPLER_STATES: u32 = 18;
@@ -298,6 +299,55 @@ impl CommandEncoder {
         ]);
     }
 
+    /// Writes pixels into a resource region through the command stream (`RESOURCE_INLINE_WRITE`).
+    ///
+    /// The host applies the write in command order, so draws submitted earlier still sample the
+    /// old texels and later draws see the new ones; unlike a guest-backing transfer, nothing can
+    /// observe the source while it is being rewritten, so no fence wait is required.
+    ///
+    /// # Parameters
+    ///
+    /// - `resource`: Destination VirtIO-GPU resource ID.
+    /// - `x`, `y`, `width`, `height`: Destination rectangle in texels.
+    /// - `pixels`: Exactly `width * height` B8G8R8A8 texels, row-major without padding.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `pixels` does not match the rectangle or the packet exceeds the 16-bit
+    /// command length; callers split large regions by rows.
+    pub fn inline_write(
+        &mut self,
+        resource: u32,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        pixels: &[u32],
+    ) {
+        assert_eq!(pixels.len(), width as usize * height as usize);
+        let length = 11 + pixels.len();
+        assert!(
+            length <= usize::from(u16::MAX),
+            "inline write exceeds one packet"
+        );
+        let stride = width * 4;
+        self.header_raw(RESOURCE_INLINE_WRITE, 0, length as u32);
+        self.words.extend([
+            resource,
+            0,
+            0,
+            stride,
+            stride * height,
+            x,
+            y,
+            0,
+            width,
+            height,
+            1,
+        ]);
+        self.words.extend_from_slice(pixels);
+    }
+
     fn header(&mut self, command: u32, object: ObjectKind, length: u32) {
         self.header_raw(command, object as u32, length);
     }
@@ -316,6 +366,31 @@ impl Default for CommandEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_write_packet_matches_virgl_protocol_layout() {
+        let mut encoder = CommandEncoder::new();
+        encoder.inline_write(29, 3, 4, 2, 1, &[0xff00_0001, 0xff00_0002]);
+        assert_eq!(
+            encoder.words(),
+            &[
+                9 | (13 << 16),
+                29,
+                0,
+                0,
+                8,
+                8,
+                3,
+                4,
+                0,
+                2,
+                1,
+                1,
+                0xff00_0001,
+                0xff00_0002
+            ]
+        );
+    }
 
     #[test]
     fn surface_packet_matches_virgl_protocol_layout() {

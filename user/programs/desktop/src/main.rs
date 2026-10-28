@@ -163,6 +163,7 @@ impl Desktop {
     /// 任务管理器是独立程序（Windows 2000 的 taskmgr.exe），外壳只负责启动；已在运行时再启动一个也无害。
     fn icon_kind(&self, index: usize) -> popups::IconKind {
         match self.icons.items.get(index).map(|icon| &icon.target) {
+            Some(icons::Target::Path(path)) if path.is_file() => popups::IconKind::File,
             Some(icons::Target::Path(_)) => popups::IconKind::Path,
             Some(icons::Target::Place(start::Place::MyComputer)) => popups::IconKind::MyComputer,
             Some(icons::Target::Place(start::Place::NetworkPlaces)) => {
@@ -277,6 +278,9 @@ impl Desktop {
             icons::Target::Path(path) if path.is_dir() => self.files(path),
             icons::Target::Path(path) => match desktop_entry::open(&path) {
                 Ok(command) => self.launch(command),
+                Err(error) if error.kind() == io::ErrorKind::Unsupported => {
+                    self.icon_verb(index, "open-with")
+                }
                 Err(error) => self.message = format!("无法打开 {}: {error}", icon.label),
             },
         }
@@ -855,6 +859,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let apps = installed_programs();
             if apps != state.apps {
                 state.apps = apps;
+                state.icons.refresh();
                 state.apps_changed = true;
             }
         }

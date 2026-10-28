@@ -145,13 +145,6 @@ impl VirglAccess {
         }
         Ok(guards)
     }
-    pub(super) fn last_fence(&self) -> u64 {
-        self.buffers
-            .iter()
-            .map(|buffer| buffer.lifecycle.lock().fence)
-            .max()
-            .unwrap_or(0)
-    }
 
     /// host 接受命令后发布 fence；并发提交可能逆序登记，不能降低最后使用水位。
     pub(super) fn record(&self, fence: u64) {

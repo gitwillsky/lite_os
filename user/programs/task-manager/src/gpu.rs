@@ -211,7 +211,6 @@ pub struct View {
     totals: [Widget; 2],
     clients: Widget,
     group: Widget,
-    note: Widget,
     _containers: Vec<Widget>,
 }
 
@@ -289,21 +288,11 @@ impl View {
                     .set_column_alignment(index as u64 + 1, liteos_ui::ColumnAlignment::Right)?;
             }
         }
-        let note = child(
-            page,
-            Kind::Label,
-            "缓冲位于系统内存；共享缓冲计入每个使用它的客户端，不能相加。",
-            Layout {
-                height: 20,
-                ..Default::default()
-            },
-        )?;
         Ok(Self {
             device,
             totals,
             clients,
             group,
-            note,
             _containers: containers,
         })
     }
@@ -340,14 +329,13 @@ impl View {
         });
         self.totals[0].set_text(&rows.len().to_string())?;
         self.totals[1].set_text(&private.map(memory_text).unwrap_or_default())?;
-        // 未采到缓冲统计时隐藏整组及其说明，避免空表头与缺失指标占位。
+        // 未采到缓冲统计时隐藏整组，避免空表头与缺失指标占位。
         let visibility = if rows.is_empty() {
             liteos_ui::state::HIDDEN
         } else {
             0
         };
         self.group.set_state(visibility)?;
-        self.note.set_state(visibility)?;
         sort.apply(&mut rows);
         let text: Vec<_> = rows
             .iter()

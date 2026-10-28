@@ -4,18 +4,21 @@ use canvas::ImageSource;
 use std::{cell::OnceCell, rc::Rc};
 use wayland_wire::wire::ObjectId;
 
-/// 不可变像素与其 GPU 纹理由同一 owner 持有；视口改动只复制采样元数据。
-struct Pixels {
-    origin: PixelOrigin,
-    // OWNER: 同一组不可变像素共享一个纹理缓存；视口/同步提交的快照不会重复上传同一内容。
-    // 在途帧仍由 GPU 采样视图引用保活；缺少共享 owner 会使缓存提交复制全窗口像素。
-    texture: OnceCell<Rc<linux_uapi::drm::VirglResource>>,
-}
-
-enum PixelOrigin {
-    Shm(Vec<u32>),
+/// 已提交像素：CPU 后端保存在内存，GPU 后端只在纹理中；视口改动只复制采样元数据。
+// OWNER: 纹理随像素由同一 Rc 共享；视口/同步提交的快照不会重复上传同一内容。
+// 在途帧仍由 GPU 采样视图引用保活；缺少共享 owner 会使缓存提交复制全窗口像素。
+enum Pixels {
+    /// CPU 后端的 SHM 内容。
+    Memory(Vec<u32>),
+    /// GPU 后端的 SHM 内容：像素只在纹理中，不再保留第二份 CPU 副本。
+    /// `readback` 是 CPU 消费者（硬件光标）的按需拷贝；原地更新后必须清空，否则读到旧像素。
+    Texture {
+        texture: Rc<linux_uapi::drm::VirglResource>,
+        readback: OnceCell<Vec<u32>>,
+    },
     Dma {
         usage: Rc<super::dmabuf::BufferUse>,
+        texture: Rc<linux_uapi::drm::VirglResource>,
         readback: OnceCell<Vec<u32>>,
     },
 }
@@ -25,7 +28,11 @@ pub(super) enum Buffer {
     Dma(super::dmabuf::DmaBuffer),
 }
 
-/// 已提交内容的不可变像素引用与 surface 采样投影；Clone 不复制像素或建立第二份纹理。
+/// 已提交内容的像素引用与 surface 采样投影；Clone 不复制像素或建立第二份纹理。
+///
+/// 像素是写时复制：只有唯一持有者（surface 自身）才会被下一次 SHM 提交原地更新；
+/// 任何其他持有者（同步子 surface 的缓存、在用光标）都让下一次提交另建快照，
+/// 因此持有者看到的始终是它取得时的内容。
 #[derive(Clone)]
 pub struct Content {
     pub width: usize,
@@ -36,17 +43,18 @@ pub struct Content {
     pub offset: (i64, i64),
 }
 impl Content {
+    #[cfg(test)]
     pub(crate) fn new(width: usize, height: usize, pixels: Vec<u32>) -> Self {
+        Self::with(width, height, Pixels::Memory(pixels))
+    }
+    fn with(width: usize, height: usize, pixels: Pixels) -> Self {
         Self {
             width,
             height,
             size: (width as i32, height as i32),
             source: ImageSource::full(width as i32, height as i32),
             offset: (0, 0),
-            pixels: Rc::new(Pixels {
-                origin: PixelOrigin::Shm(pixels),
-                texture: OnceCell::new(),
-            }),
+            pixels: Rc::new(pixels),
         }
     }
     pub(super) fn from_dma(
@@ -54,50 +62,152 @@ impl Content {
         texture: Rc<linux_uapi::drm::VirglResource>,
     ) -> Self {
         let (width, height) = (texture.width() as usize, texture.height() as usize);
-        Self {
+        Self::with(
             width,
             height,
-            size: (width as i32, height as i32),
-            source: ImageSource::full(width as i32, height as i32),
-            offset: (0, 0),
-            pixels: Rc::new(Pixels {
-                origin: PixelOrigin::Dma {
-                    usage,
-                    readback: OnceCell::new(),
-                },
-                texture: OnceCell::from(texture),
-            }),
+            Pixels::Dma {
+                usage,
+                texture,
+                readback: OnceCell::new(),
+            },
+        )
+    }
+    /// SHM 提交：可原地更新的上一份内容只重读 `damage`，否则整幅读取成新快照。
+    ///
+    /// # Parameters
+    ///
+    /// - `previous`: 本 surface 上一份已提交内容。
+    /// - `damage`: 本次提交的 buffer 像素损伤，已裁剪到 buffer 内。
+    /// - `gpu`: GPU 合成时直接写入纹理；`None` 时保存 CPU 像素。
+    ///
+    /// # Errors
+    ///
+    /// 客户端截断了共享内存、无法分配，或纹理建立/上传失败。
+    pub(super) fn from_shm(
+        previous: Option<Self>,
+        spec: &super::shm::BufferSpec,
+        damage: &[canvas::Rect],
+        gpu: Option<&linux_uapi::drm::VirglContext>,
+    ) -> Result<Self, super::shm::ReadError> {
+        use super::shm::ReadError::Upload;
+        if let Some(mut content) = previous
+            && content.update(spec, damage, gpu)?
+        {
+            return Ok(content);
         }
+        let (width, height) = (spec.width, spec.height);
+        let pixels = match gpu {
+            None => {
+                let mut pixels = Vec::new();
+                pixels
+                    .try_reserve_exact(width * height)
+                    .map_err(|_| super::shm::ReadError::NoMemory)?;
+                spec.read_rect(spec.bounds(), |_, row| pixels.extend_from_slice(row))?;
+                Pixels::Memory(pixels)
+            }
+            Some(gpu) => {
+                let texture = gpu
+                    .create_texture(width as u32, height as u32)
+                    .map_err(|_| Upload)?;
+                spec.read_rect(spec.bounds(), |y, row| texture.write_row(y, 0, row))?;
+                texture
+                    .transfer_to_host(0, 0, width as u32, height as u32)
+                    .map_err(|_| Upload)?;
+                Pixels::Texture {
+                    texture: Rc::new(texture),
+                    readback: OnceCell::new(),
+                }
+            }
+        };
+        Ok(Self::with(width, height, pixels))
+    }
+    /// 尺寸与存储方式相同且没有其他持有者时，原地重读损伤矩形；返回是否已更新。
+    fn update(
+        &mut self,
+        spec: &super::shm::BufferSpec,
+        damage: &[canvas::Rect],
+        gpu: Option<&linux_uapi::drm::VirglContext>,
+    ) -> Result<bool, super::shm::ReadError> {
+        use super::shm::ReadError::Upload;
+        if (self.width, self.height) != (spec.width, spec.height) {
+            return Ok(false);
+        }
+        let width = self.width;
+        let Some(pixels) = Rc::get_mut(&mut self.pixels) else {
+            return Ok(false);
+        };
+        match (pixels, gpu) {
+            (Pixels::Memory(memory), None) => {
+                for rect in damage {
+                    let x = rect.x as usize;
+                    spec.read_rect(*rect, |y, row| {
+                        memory[y * width + x..][..row.len()].copy_from_slice(row);
+                    })?;
+                }
+            }
+            (Pixels::Texture { texture, readback }, Some(gpu)) => {
+                *readback = OnceCell::new();
+                // 纹理可能仍被在途帧引用；write_texture 按资源状态选择 transfer 或命令流内联写入，不等待 fence。
+                let mut rows = Vec::new();
+                for rect in damage {
+                    rows.clear();
+                    rows.try_reserve_exact(rect.width as usize * rect.height as usize)
+                        .map_err(|_| super::shm::ReadError::NoMemory)?;
+                    spec.read_rect(*rect, |_, row| rows.extend_from_slice(row))?;
+                    gpu.write_texture(
+                        texture,
+                        rect.x as u32,
+                        rect.y as u32,
+                        rect.width as u32,
+                        rect.height as u32,
+                        &rows,
+                    )
+                    .map_err(|_| Upload)?;
+                }
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
     }
     pub(super) fn y_inverted(&self) -> bool {
-        matches!(&self.pixels.origin, PixelOrigin::Dma { usage, .. } if matches!(usage.buffer.as_ref(), Buffer::Dma(buffer) if buffer.y_invert))
+        matches!(self.pixels.as_ref(), Pixels::Dma { usage, .. } if matches!(usage.buffer.as_ref(), Buffer::Dma(buffer) if buffer.y_invert))
+    }
+    /// 是否引用客户端 dma-buf；这类内容在帧显示完成前必须保持协议使用期，不能提前 release。
+    pub(crate) fn is_dma(&self) -> bool {
+        matches!(self.pixels.as_ref(), Pixels::Dma { .. })
+    }
+    /// GPU 合成采样的纹理；CPU 后端的内容没有纹理。
+    pub(crate) fn texture(&self) -> Option<&Rc<linux_uapi::drm::VirglResource>> {
+        match self.pixels.as_ref() {
+            Pixels::Memory(_) => None,
+            Pixels::Texture { texture, .. } | Pixels::Dma { texture, .. } => Some(texture),
+        }
     }
     /// CPU 消费者按需读回（例如硬件光标）；GPU 场景只借用 texture，不进入此路径。
     pub(crate) fn pixels(&self) -> std::io::Result<&[u32]> {
-        match &self.pixels.origin {
-            PixelOrigin::Shm(pixels) => Ok(pixels),
-            PixelOrigin::Dma { readback, .. } => {
-                if readback.get().is_none() {
-                    let resource = self
-                        .pixels
-                        .texture
-                        .get()
-                        .expect("dma content has imported texture");
-                    resource.wait()?;
-                    resource.transfer_from_host(0, 0, resource.width(), resource.height())?;
-                    resource.wait()?;
-                    let mut pixels = Vec::new();
-                    pixels
-                        .try_reserve_exact(self.width * self.height)
-                        .map_err(std::io::Error::other)?;
-                    for row in 0..self.height {
-                        pixels.extend_from_slice(resource.row(row));
-                    }
-                    let _ = readback.set(pixels);
-                }
-                Ok(readback.get().expect("readback published"))
+        let (texture, readback) = match self.pixels.as_ref() {
+            Pixels::Memory(pixels) => return Ok(pixels),
+            Pixels::Texture { texture, readback }
+            | Pixels::Dma {
+                texture, readback, ..
+            } => (texture, readback),
+        };
+        if readback.get().is_none() {
+            // 内联写入只到达主机纹理，guest backing 可能落后；与 dma-buf 一样先从主机读回。
+            texture.wait()?;
+            texture.transfer_from_host(0, 0, texture.width(), texture.height())?;
+            texture.wait()?;
+            let mut pixels = Vec::new();
+            pixels
+                .try_reserve_exact(self.width * self.height)
+                .map_err(std::io::Error::other)?;
+            pixels.resize(self.width * self.height, 0);
+            for (row, line) in pixels.chunks_exact_mut(self.width).enumerate() {
+                texture.read_row(row, 0, line);
             }
+            let _ = readback.set(pixels);
         }
+        Ok(readback.get().expect("readback published"))
     }
     pub(crate) fn same_image(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.pixels, &other.pixels)
@@ -109,24 +219,6 @@ impl Content {
             self.size.0.saturating_mul(scale),
             self.size.1.saturating_mul(scale),
         )
-    }
-    pub(crate) fn texture(
-        &self,
-        context: &linux_uapi::drm::VirglContext,
-    ) -> std::io::Result<Rc<linux_uapi::drm::VirglResource>> {
-        if let Some(texture) = self.pixels.texture.get() {
-            return Ok(texture.clone());
-        }
-        let mut resource = context.create_texture(self.width as u32, self.height as u32)?;
-        for y in 0..self.height {
-            resource
-                .row_mut(y)
-                .copy_from_slice(&self.pixels()?[y * self.width..(y + 1) * self.width]);
-        }
-        resource.transfer_to_host(0, 0, self.width as u32, self.height as u32)?;
-        let resource = Rc::new(resource);
-        let _ = self.pixels.texture.set(resource.clone());
-        Ok(resource)
     }
 }
 
@@ -147,6 +239,7 @@ pub struct Pending {
     pub order: Option<Vec<ObjectId>>,
     pub input_region: Option<Option<Rc<super::region::Region>>>,
     pub offset: Option<(i32, i32)>,
+    pub damage: super::damage::Damage,
 }
 
 /// wl_surface 一次提交的完整状态；缓存提交与当前显示状态共享不可变像素，元数据各自属于那次提交。

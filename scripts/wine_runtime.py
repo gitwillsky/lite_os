@@ -59,8 +59,9 @@ RUNTIME_PACKAGES: tuple[tuple[str, str], ...] = (
     ("xz-libs-5.8.4-r0.apk", "8a64b55223f29e24f934ccbc8167d535b913bf923dab5e14de7946a7c36091a7"),
     ("zlib-1.3.2-r1.apk", "2d274cb1b2a36d0e8347d802e6dea8648cab952ea5fae1989ab72e725842a2c3"),
 )
-# 缺 fontconfig 配置会破坏字体回退；缺 XKB 默认 ruleset 会使 Wine 不注册键盘监听。
-CONFIG_PREFIXES = ("etc/fonts/", "usr/share/fontconfig/", "usr/share/X11/xkb/")
+# Fontconfig 主配置由 base_userland 拥有；Wine 只追加配置片段，不能重新发布上游 fonts.conf。
+# 缺 fontconfig 配置片段会破坏字体回退；缺 XKB 默认 ruleset 会使 Wine 不注册键盘监听。
+CONFIG_PREFIXES = ("etc/fonts/conf.d/", "usr/share/fontconfig/", "usr/share/X11/xkb/")
 
 
 def expected_archive_digest() -> str:
@@ -96,7 +97,7 @@ def unpack_runtime() -> Path:
 
 def extract_libraries() -> Path:
     """展开固定 APK 闭包里的 `.so`、fontconfig 与 XKB 配置，符号链接展开为普通文件；返回展开根目录。"""
-    key = sha256_of_names()
+    key = _library_cache_key()
     final = LIBRARY_CACHE / f"libraries-{key}"
     if final.is_dir():
         return final
@@ -128,11 +129,11 @@ def extract_libraries() -> Path:
     return final
 
 
-def sha256_of_names() -> str:
-    """闭包身份：全部包名与摘要的指纹，用作展开缓存的键。"""
+def _library_cache_key() -> str:
+    """固定 APK 与提取范围共同标识缓存，避免范围收缩后继续发布旧缓存中的文件。"""
     import hashlib
 
-    return hashlib.sha256(repr(RUNTIME_PACKAGES).encode()).hexdigest()[:16]
+    return hashlib.sha256(repr((RUNTIME_PACKAGES, CONFIG_PREFIXES)).encode()).hexdigest()[:16]
 
 
 def resolve_member(members: dict[str, tarfile.TarInfo], member: tarfile.TarInfo) -> tarfile.TarInfo | None:

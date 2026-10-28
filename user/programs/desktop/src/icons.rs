@@ -88,7 +88,6 @@ fn art_for(path: &Path, directory: bool) -> &'static str {
     }
     let executable = fs::metadata(path).is_ok_and(|m| m.permissions().mode() & 0o111 != 0);
     match path.extension().and_then(|e| e.to_str()) {
-        Some("txt" | "log" | "md" | "conf" | "ini") => "file-text-32",
         None if executable => "file-app-32",
         _ => "file-generic-32",
     }
@@ -146,6 +145,7 @@ impl Icons {
     /// 重新读取桌面文件夹并重新分配位置：保存过且仍空闲的用保存位置，其余按列顺序填空格。
     pub fn refresh(&mut self) {
         self.stamp = self.modified();
+        let associations = desktop_entry::Associations::load();
         let mut items = system_icons();
         let mut entries: Vec<(bool, String, PathBuf)> = fs::read_dir(&self.directory)
             .into_iter()
@@ -182,7 +182,8 @@ impl Icons {
             items.push(Icon {
                 art: entry
                     .as_ref()
-                    .and_then(|entry| entry.icon.as_ref())
+                    .and_then(|entry| entry.icon.as_deref())
+                    .or_else(|| (!directory).then(|| associations.icon_for(&path)).flatten())
                     .map_or_else(
                         || art_for(&path, directory).to_owned(),
                         |icon| format!("{icon}-32"),

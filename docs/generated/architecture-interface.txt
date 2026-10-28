@@ -1431,7 +1431,6 @@ kernel/src/drm/graphics.rs :: pub (super) VirglRetirement :: reservation : Optio
 kernel/src/drm/graphics.rs :: pub (super) impl DrmFile :: fn access_virgl_resources (& self , handles : impl ExactSizeIterator < Item = u32 > ,) -> Result < VirglAccess , DrmError >
 kernel/src/drm/graphics.rs :: pub (super) impl DrmFile :: fn cursor_resource (& self , handle : u32) -> Result < Arc < DumbBuffer > , DrmError >
 kernel/src/drm/graphics.rs :: pub (super) impl DrmFile :: fn progress_retirements (& self)
-kernel/src/drm/graphics.rs :: pub (super) impl VirglAccess :: fn last_fence (& self) -> u64
 kernel/src/drm/graphics.rs :: pub (super) impl VirglAccess :: fn record (& self , fence : u64)
 kernel/src/drm/graphics.rs :: pub (super) impl VirglAccess :: fn reserve (& self) -> Result < Vec < crate :: sync :: TaskMutexGuard < '_ , () > > , DrmError >
 kernel/src/drm/graphics.rs :: pub (super) impl VirglContext :: fn into_cleanup (mut self , buffers : FallibleMap < u32 , Arc < VirglAttachment > > ,) -> VacantEntry < u32 , VirglCleanup >

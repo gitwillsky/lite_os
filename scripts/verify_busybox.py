@@ -1293,6 +1293,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
     from mesa_runtime import mesa_userland
     from mpv_runtime import mpv_userland
     from fuse_runtime import fuse_userland
+    from file_type_icons import userland as file_type_icons
 
     program_targets = tuple(
         _RustUserTarget(crate, binary, binary, 1)
@@ -1337,8 +1338,9 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         *(UserlandArtifact(path, f"{SYSTEM_LIBRARY_DIRECTORY}/{name}", 0o755)
           for path, name in libraries),
         UserlandArtifact(ROOT / "user/base/fonts.conf", "/etc/fonts/fonts.conf"),
+        UserlandArtifact(ROOT / "user/base/mime/packages/liteos.xml", "/usr/share/mime/packages/liteos.xml"),
         UserlandArtifact(ROOT / "user/base/ld-musl.path", f"/etc/{Path(TARGET.musl_loader).name.removesuffix('.so.1')}.path"),
-        *programs, *fonts, *ui, *wallpapers, *mesa_userland(), *mpv_userland(), *fuse_userland(),
+        *programs, *fonts, *ui, *wallpapers, *mesa_userland(), *mpv_userland(), *fuse_userland(), *file_type_icons(),
         *(UserlandArtifact(path, destination, mode) for path, destination, mode in sdk_files()),
         *(UserlandArtifact(path, f"/usr/share/liteos/sounds/{name}") for name, path in sounds()),
     )

@@ -186,14 +186,14 @@ impl Scanout {
         &mut self,
         theme: &classic_theme::Theme,
         windows: &[crate::compose::Drawable<'_>],
-        has_overlay: bool,
+        overlay_bounds: Option<canvas::Rect>,
         overlay: impl FnOnce(canvas::Surface<'_>),
     ) -> io::Result<()> {
         if self.pending.is_some() {
             return Err(io::ErrorKind::WouldBlock.into());
         }
         match &mut self.backend {
-            Backend::Gpu(gpu) => gpu.render(self.back, theme, windows, has_overlay, overlay)?,
+            Backend::Gpu(gpu) => gpu.render(self.back, theme, windows, overlay_bounds, overlay)?,
             Backend::Cpu(targets) => {
                 if !crate::compose::compose(
                     &mut targets[self.back].buffer,

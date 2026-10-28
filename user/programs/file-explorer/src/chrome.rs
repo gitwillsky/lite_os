@@ -70,9 +70,10 @@ pub enum Action {
     Enable,
     Disable,
     Status,
+    OpenWith,
 }
 
-const ACTIONS: [Action; 60] = [
+const ACTIONS: [Action; 61] = [
     Action::Open,
     Action::Close,
     Action::Cut,
@@ -133,6 +134,7 @@ const ACTIONS: [Action; 60] = [
     Action::Enable,
     Action::Disable,
     Action::Status,
+    Action::OpenWith,
 ];
 
 /// 菜单与工具栏命令：无参数动作、按某列排列图标、跳到历史记录第 n 项。
@@ -182,6 +184,7 @@ impl Command {
 /// 构造菜单时需要的窗口状态。
 pub struct Availability {
     pub selected: bool,
+    pub file_selected: bool,
     /// 当前位置是可写的真实目录。
     pub editable: bool,
     pub paste: bool,
@@ -383,6 +386,9 @@ pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<Entry>)> {
             "",
             if enabled { DEFAULT } else { DISABLED },
         );
+        if state.file_selected && !state.trash {
+            file.action(Action::OpenWith, "打开方式(H)...", "", enabled);
+        }
         if state.trash {
             file.action(Action::Restore, "还原(E)", "", selected);
         } else {
@@ -550,6 +556,10 @@ pub fn context(state: &Availability, on_item: bool) -> Vec<Entry> {
         b.action(Action::Properties, "属性(R)", "", true);
     } else if on_item {
         b.push(Action::Open as u64, "打开(O)", "", DEFAULT);
+        if state.file_selected {
+            // 弹出菜单本身由 busy 事务持有；文件动作不能据此禁用自己。
+            b.action(Action::OpenWith, "打开方式(H)...", "", true);
+        }
         b.separator();
         b.submenu("发送到(N)", true, |b| {
             b.action(Action::SendToDesktop, "桌面快捷方式", "", false);

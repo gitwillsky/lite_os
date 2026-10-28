@@ -97,7 +97,9 @@ pub(super) fn verify() -> Result<(), String> {
         alias.transfer_from_host(0, 0, 16, 16),
     )?;
     step("consumer wait", alias.wait())?;
-    let color = alias.row(0)[0];
+    let mut color = [0];
+    alias.read_row(0, 0, &mut color);
+    let [color] = color;
     for (shift, expected) in [(16, 64u8), (8, 128), (0, 191)] {
         if ((color >> shift) as u8).abs_diff(expected) > 2 {
             return Err(format!("PRIME readback after close: {color:#010x}"));

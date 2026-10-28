@@ -1,15 +1,17 @@
 //! Client for the upstream libmpv: properties, commands, events and the software render API.
 //!
 //! The shared object is opened at run time ([`linux_uapi::dynamic_library`]); nothing links against it.
-//! mpv calls the wakeup and render-update callbacks from its own threads. They only write one byte to a
-//! non-blocking socket, which the caller waits on and then drains with [`Mpv::poll`] and [`Mpv::render_ready`].
+//! The control callback wakes the UI through a non-blocking socket; render callbacks feed a dedicated
+//! render thread, which services render updates independently of synchronous control calls.
 
 extern crate liteos_runtime as _;
 
 mod ffi;
+mod render;
 
-use ffi::{Api, EventRecord, Handle, Param, RenderContext};
+use ffi::{Api, EventRecord, Handle};
 use linux_uapi::dynamic_library::Library;
+use render::Renderer;
 use std::{
     ffi::{CStr, CString, c_char, c_void},
     io::{self, Write},
@@ -102,7 +104,7 @@ extern "C" fn wake(context: *mut c_void) {
 pub struct Mpv {
     api: Api,
     handle: *mut Handle,
-    render: *mut RenderContext,
+    render: Option<Renderer>,
     wake: Box<Wake>,
     // Dropped last: every pointer above is only valid while the object stays mapped.
     _library: Library,
@@ -148,6 +150,7 @@ impl Mpv {
         let (reader, writer) = UnixStream::pair()?;
         reader.set_nonblocking(true)?;
         writer.set_nonblocking(true)?;
+        let render_writer = writer.try_clone()?;
         // SAFETY: mpv_create has no preconditions; a null result means the core could not be allocated.
         let handle = unsafe { (api.create)() };
         if handle.is_null() {
@@ -156,7 +159,7 @@ impl Mpv {
         let mut player = Self {
             api,
             handle,
-            render: ptr::null_mut(),
+            render: None,
             wake: Box::new(Wake { writer }),
             _library: library,
         };
@@ -165,34 +168,12 @@ impl Mpv {
         }
         // SAFETY: handle is live and not yet initialised.
         check(&player.api, unsafe { (player.api.initialize)(handle) })?;
-        player.create_render_context()?;
+        // SAFETY: player 在 Renderer 停止并 join 后才销毁 handle 和 library。
+        player.render = Some(unsafe { Renderer::start(api, handle, render_writer)? });
+        let data = ptr::addr_of!(*player.wake).cast_mut().cast::<c_void>();
+        // SAFETY: Wake 地址稳定，Drop 在释放它之前先撤销 callback。
+        unsafe { (api.set_wakeup_callback)(handle, Some(wake), data) };
         Ok((player, reader))
-    }
-
-    fn create_render_context(&mut self) -> io::Result<()> {
-        let mut params = [
-            Param {
-                kind: ffi::PARAM_API_TYPE,
-                data: c"sw".as_ptr().cast_mut().cast(),
-            },
-            Param {
-                kind: ffi::PARAM_INVALID,
-                data: ptr::null_mut(),
-            },
-        ];
-        let mut context = ptr::null_mut();
-        // SAFETY: params is a zero-terminated array valid for the call; the handle is initialised.
-        check(&self.api, unsafe {
-            (self.api.render_create)(&mut context, self.handle, params.as_mut_ptr())
-        })?;
-        self.render = context;
-        let data = ptr::addr_of!(*self.wake).cast_mut().cast::<c_void>();
-        // SAFETY: both callbacks only touch `Wake`, which lives until `Drop` unregisters them.
-        unsafe {
-            (self.api.set_wakeup_callback)(self.handle, Some(wake), data);
-            (self.api.render_set_update_callback)(self.render, Some(wake), data);
-        }
-        Ok(())
     }
 
     /// Sets an option before initialisation or a property afterwards (`set_property_string` semantics).
@@ -379,68 +360,29 @@ impl Mpv {
 
     /// Whether mpv has a new video frame that [`Mpv::render`] should draw.
     pub fn render_ready(&self) -> bool {
-        // SAFETY: the render context is live for the lifetime of `self`.
-        unsafe { (self.api.render_update)(self.render) & ffi::UPDATE_FRAME != 0 }
+        self.render.as_ref().is_some_and(Renderer::ready)
     }
 
-    /// Renders the current frame, with subtitles and OSD, into `pixels` (`width * height`, row-major,
-    /// bytes B,G,R,0 per pixel so the `u32` is `0x00RRGGBB`).
+    /// Renders the current frame on its dedicated render thread and returns the reused BGR0 buffer.
+    /// The buffer remains borrowed until the caller finishes copying it into its UI surface.
     ///
     /// # Errors
-    /// `InvalidInput` when the buffer length is not `width * height` or a side is zero; otherwise mpv's error.
-    pub fn render(&self, width: u32, height: u32, pixels: &mut [u32]) -> io::Result<()> {
-        if width == 0 || height == 0 || pixels.len() != width as usize * height as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "frame buffer does not match its size",
-            ));
-        }
-        let mut size = [
-            i32::try_from(width).map_err(io::Error::other)?,
-            i32::try_from(height).map_err(io::Error::other)?,
-        ];
-        let mut stride = width as usize * 4;
-        let mut params = [
-            Param {
-                kind: ffi::PARAM_SW_SIZE,
-                data: size.as_mut_ptr().cast(),
-            },
-            Param {
-                kind: ffi::PARAM_SW_FORMAT,
-                data: c"bgr0".as_ptr().cast_mut().cast(),
-            },
-            Param {
-                kind: ffi::PARAM_SW_STRIDE,
-                data: ptr::addr_of_mut!(stride).cast(),
-            },
-            Param {
-                kind: ffi::PARAM_SW_POINTER,
-                data: pixels.as_mut_ptr().cast(),
-            },
-            Param {
-                kind: ffi::PARAM_INVALID,
-                data: ptr::null_mut(),
-            },
-        ];
-        // SAFETY: the buffer holds `stride * height` writable bytes and every param outlives the call.
-        check(&self.api, unsafe {
-            (self.api.render_render)(self.render, params.as_mut_ptr())
-        })?;
-        Ok(())
+    /// Invalid dimensions, a stopped render thread, or an upstream rendering failure.
+    pub fn render(&mut self, width: u32, height: u32) -> io::Result<&[u32]> {
+        self.render
+            .as_mut()
+            .ok_or_else(|| io::Error::other("mpv renderer is unavailable"))?
+            .render(width, height)
     }
 }
 
 impl Drop for Mpv {
     fn drop(&mut self) {
-        // SAFETY: callbacks are cleared first so no mpv thread touches `wake` afterwards; the render context
-        // must be freed before the core, and the core before the library is unmapped.
-        unsafe {
-            (self.api.set_wakeup_callback)(self.handle, None, ptr::null_mut());
-            if !self.render.is_null() {
-                (self.api.render_set_update_callback)(self.render, None, ptr::null_mut());
-                (self.api.render_free)(self.render);
-            }
-            (self.api.terminate_destroy)(self.handle);
-        }
+        // SAFETY: Wake remains live until callback removal completes.
+        unsafe { (self.api.set_wakeup_callback)(self.handle, None, ptr::null_mut()) };
+        // The render context and its callback must be gone before the core or shared object.
+        drop(self.render.take());
+        // SAFETY: no render thread or callback can use the handle after the join above.
+        unsafe { (self.api.terminate_destroy)(self.handle) };
     }
 }

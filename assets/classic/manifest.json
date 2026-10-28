@@ -444,6 +444,28 @@
         "conversion": "BMP V4; native dimensions"
       }
     },
+    "ui/file-audio-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "866dc11871e9622eafdf7e722a09a1b8bc98cac75ede86b0e9625385c6dc5690",
+      "origin": {
+        "source": "mplay32.exe",
+        "resource": 12,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-audio-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "e590336f0a59f4f1cb1d7c2368fffcf805e30ad7bf0321a4af26977477f5a3fb",
+      "origin": {
+        "source": "mplay32.exe",
+        "resource": 12,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
     "ui/file-generic-16.bmp": {
       "group": "ui",
       "bytes": 1146,
@@ -462,6 +484,72 @@
       "origin": {
         "source": "shell32.dll",
         "resource": 1,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-image-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "76b388d927b9bc4bc0f77aae604a328a86231a1e62e074b559c811bd571ab63a",
+      "origin": {
+        "source": "mspaint.exe",
+        "resource": 3,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-image-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "982f10cfbf48575850c89e99cf11411211776fe6a3c384089c24aab27f2186da",
+      "origin": {
+        "source": "mspaint.exe",
+        "resource": 3,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-media-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "48c67b22f4e271d9f1f8b798ac320f7bfb0c45c910f1a9fadcb443ee61aa0c0c",
+      "origin": {
+        "source": "mplay32.exe",
+        "resource": 11,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-media-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "b27a353dd376970321565ce8813cc4402031a64648d8df69b2f48f95145bf16f",
+      "origin": {
+        "source": "mplay32.exe",
+        "resource": 11,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-midi-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "259d6f9e762e1c8fa8c5e0e17e6259aaf7e1f1ef767dc55d9e6e100057ae113c",
+      "origin": {
+        "source": "mplay32.exe",
+        "resource": 15,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-midi-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "f0dba6361c59669ad4970a503f3ad4c67229fcd6a3d42c5cfead0f14e5a10c13",
+      "origin": {
+        "source": "mplay32.exe",
+        "resource": 15,
         "language": 2052,
         "conversion": "BMP V4; native dimensions"
       }
@@ -506,6 +594,28 @@
       "origin": {
         "source": "shell32.dll",
         "resource": 152,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-video-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "0baa8cb97a5d9dd7da8eb88c16c93f52b560d67b05f84e6c1dc16933c51522b1",
+      "origin": {
+        "source": "mplay32.exe",
+        "resource": 13,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/file-video-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "087aa810b78c27720a0500378c8f63f4cce8957929eed529cce81ba681eaef50",
+      "origin": {
+        "source": "mplay32.exe",
+        "resource": 13,
         "language": 2052,
         "conversion": "BMP V4; native dimensions"
       }

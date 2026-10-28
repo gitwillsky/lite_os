@@ -366,7 +366,10 @@ impl View {
                 .iter()
                 .map(|(id, item)| RowIcon {
                     id: *id,
-                    source: liteos_ui::Icon::Resource(item.icon.file_stem()),
+                    source: item.application_icon.as_deref().map_or_else(
+                        || liteos_ui::Icon::Resource(item.icon.file_stem()),
+                        liteos_ui::Icon::Theme,
+                    ),
                 })
                 .collect::<Vec<_>>(),
         )?;

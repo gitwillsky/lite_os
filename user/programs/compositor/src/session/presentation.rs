@@ -100,10 +100,32 @@ impl Session {
             self.switcher.as_ref(),
             self.window_menu.as_ref(),
         );
-        let has_overlay = art.is_some() && (switcher.is_some() || menu.is_some());
-        let overlay = |surface: canvas::Surface<'_>| {
-            let Some(art) = art else { return };
+        let screen_size = (screen.width, screen.height);
+        // 叠加层只占面板/菜单的矩形；GPU 只上传并绘制这一块，不为它准备整屏纹理。
+        let overlay_bounds = art.and_then(|_| {
+            [
+                switcher.map(|switcher| switcher::bounds(screen_size, scale, switcher)),
+                menu.map(window_menu::WindowMenu::rect),
+            ]
+            .into_iter()
+            .flatten()
+            .reduce(|a, b| {
+                let (x, y) = (a.x.min(b.x), a.y.min(b.y));
+                canvas::Rect::new(
+                    x,
+                    y,
+                    a.right().max(b.right()) - x,
+                    a.bottom().max(b.bottom()) - y,
+                )
+            })
+            .map(|bounds| bounds.intersect(screen))
+        });
+        let overlay = |mut surface: canvas::Surface<'_>| {
+            let (Some(art), Some(bounds)) = (art, overlay_bounds) else {
+                return;
+            };
             let screen = (surface.width(), surface.height());
+            surface.set_clip(bounds);
             let mut painter = classic_ui::Painter::new(surface, theme, &art.fonts, scale);
             if let Some(switcher) = switcher {
                 switcher::paint(&mut painter, art, screen, switcher);
@@ -113,7 +135,7 @@ impl Session {
             }
         };
         self.scanout
-            .compose(&self.theme, &drawables, has_overlay, overlay)?;
+            .compose(&self.theme, &drawables, overlay_bounds, overlay)?;
         // 硬件光标不在场景四边形中；实际上传的客户端光标仍参与同一显示节拍，避免动画光标等待 frame 永久停住。
         if self.applied_client_cursor.is_some()
             && let Shape::Client {

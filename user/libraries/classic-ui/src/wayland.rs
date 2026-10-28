@@ -196,6 +196,8 @@ struct Window {
     mapped: bool,
     /// 前一帧 callback 未到前不再提交，防止应用无限积压 shm 缓冲与渲染工作。
     frame: Option<ObjectId>,
+    /// 最近提交的损伤；复用缓冲按它补写落后的画面，缺失时只能每帧整幅写入共享内存。
+    history: frame::History,
 }
 
 struct Repeat {
@@ -518,6 +520,7 @@ impl Display {
                 configured: false,
                 mapped: false,
                 frame: None,
+                history: Default::default(),
             },
         );
         self.transport.flush()?;

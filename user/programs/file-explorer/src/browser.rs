@@ -27,6 +27,23 @@ pub struct Listing {
     pub branches: Vec<Branch>,
 }
 fn folders(location: &Location, mounts: &str) -> io::Result<Vec<Folder>> {
+    if let Location::Directory(path) = location {
+        // 侧栏只需要目录，不为祖先目录中的每个文件读取大小/时间或扫描文件关联。
+        let mut result = Vec::new();
+        for entry in fs::read_dir(path)?.take(crate::model::MAX_ENTRIES) {
+            let entry = entry?;
+            let kind = entry.file_type()?;
+            if kind.is_dir() || (kind.is_symlink() && entry.path().is_dir()) {
+                result.push(Folder {
+                    location: Location::Directory(entry.path()),
+                    name: entry.file_name().to_string_lossy().into_owned(),
+                    icon: Icon::Folder,
+                });
+            }
+        }
+        result.sort_by_key(|folder| folder.name.to_lowercase());
+        return Ok(result);
+    }
     Ok(location
         .list(mounts)?
         .0

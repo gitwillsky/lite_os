@@ -2,7 +2,7 @@ use alloc::vec::Vec;
 
 use crate::{
     drm::{
-        DrmFile, DrmSubmission, DrmWait, VIRGL_COMMAND_MAX, VirglBox, VirglCommand,
+        DrmFile, DrmSubmission, VIRGL_COMMAND_MAX, VirglBox, VirglCommand,
         VirglResourceCreate, VirglTransferDirection,
     },
     fs::chardev::UserMemory,
@@ -209,11 +209,9 @@ pub(super) fn transfer(
     let access = file
         .access_virgl_resources(core::iter::once(handle))
         .map_err(drm_errno)?;
+    // Linux virtio-gpu 只锁 reservation 并登记新 fence，不在 CPU 上等旧 fence：
+    // 主机按控制队列顺序执行，先提交的生产者命令必然先于本命令生效。
     let _reservations = access.reserve().map_err(drm_errno)?;
-    wait_scanout(DrmWait {
-        device: file.device.clone(),
-        fence: access.last_fence(),
-    })?;
     let command = file
         .transfer_command(crate::drm::VirglTransfer {
             handle,
@@ -285,11 +283,8 @@ pub(super) fn execbuffer(
                 .map(|bytes| u32::from_ne_bytes(*bytes)),
         )
         .map_err(drm_errno)?;
+    // 同 transfer：顺序由主机控制队列保证；CPU 等待会把每次提交量化到主机 fence 通知周期。
     let _reservations = access.reserve().map_err(drm_errno)?;
-    wait_scanout(DrmWait {
-        device: file.device.clone(),
-        fence: access.last_fence(),
-    })?;
     let fence = submit_only(
         file,
         VirglCommand::Submit3d {

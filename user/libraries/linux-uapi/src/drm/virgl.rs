@@ -45,6 +45,8 @@ pub const BIND_DISPLAY_TARGET: u32 = 1 << 8;
 pub const BIND_SCANOUT: u32 = 1 << 14;
 /// Resource 以浏览器/scanout 的 top-left origin 解释 Y 坐标。
 pub const RESOURCE_Y_0_TOP: u32 = 1;
+/// 单次 `EXECBUFFER` 命令流的字节上限，与 LiteOS 内核 `VIRGL_COMMAND_MAX` 一致。
+const EXEC_COMMAND_MAX: usize = 64 * 1024;
 
 /// Immutable host capability bytes for the selected VirGL2 context ABI.
 #[derive(Clone)]
@@ -254,6 +256,69 @@ impl VirglContext {
         prepare().map(Rc::new)
     }
 
+    /// Writes a texel rectangle into a sampled texture without waiting on its fences.
+    ///
+    /// 1. An idle texture (its last fence completed) takes the pixels through guest backing and
+    ///    `TRANSFER_TO_HOST`, which suits large regions.
+    /// 2. A texture still referenced by a pending command may have a transfer reading its backing,
+    ///    so the pixels go inline through the command stream (`RESOURCE_INLINE_WRITE`), split into
+    ///    submissions within the kernel command-stream limit. The host applies them in order: earlier draws keep the
+    ///    old texels, later draws see the new ones. This mirrors Mesa virgl's busy-resource upload.
+    ///
+    /// # Parameters
+    ///
+    /// - `texture`: A 4-byte-per-texel texture created on this context.
+    /// - `x`, `y`, `width`, `height`: Destination rectangle inside `texture`.
+    /// - `pixels`: Exactly `width * height` texels, row-major without padding.
+    ///
+    /// # Errors
+    ///
+    /// Returns `InvalidInput` for a mismatched or out-of-bounds rectangle, or the first ioctl error.
+    pub fn write_texture(
+        &self,
+        texture: &VirglResource,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        pixels: &[u32],
+    ) -> io::Result<()> {
+        let fits = x.checked_add(width).is_some_and(|end| end <= texture.width)
+            && y.checked_add(height)
+                .is_some_and(|end| end <= texture.height);
+        if !fits || pixels.len() != width as usize * height as usize {
+            return Err(invalid_input("texture write rectangle is invalid"));
+        }
+        if width == 0 || height == 0 {
+            return Ok(());
+        }
+        let row = width as usize;
+        if texture.is_ready()? {
+            for (index, line) in pixels.chunks_exact(row).enumerate() {
+                texture.write_row(y as usize + index, x as usize, line);
+            }
+            return texture.transfer_to_host(x, y, width, height);
+        }
+        // 每个命令包 11 个参数字加 1 个头字；一次提交装下尽可能多的整行。
+        let rows = (EXEC_COMMAND_MAX / 4 - 12) / row;
+        if rows == 0 {
+            return Err(invalid_input("texture row exceeds one command submission"));
+        }
+        for (index, band) in pixels.chunks(rows * row).enumerate() {
+            let mut commands = CommandEncoder::new();
+            commands.inline_write(
+                texture.resource_id,
+                x,
+                y + (index * rows) as u32,
+                width,
+                (band.len() / row) as u32,
+                band,
+            );
+            self.exec(commands.words(), &[texture])?;
+        }
+        Ok(())
+    }
+
     /// Submits one 4-byte-aligned VirGL command stream asynchronously.
     pub fn exec(&self, commands: &[u32], resources: &[&VirglResource]) -> io::Result<()> {
         if commands.is_empty() {
@@ -438,19 +503,67 @@ impl VirglResource {
         }
     }
 
-    /// Returns one immutable XRGB8888 row.
-    pub fn row(&self, row: usize) -> &[u32] {
-        assert!(row < self.height as usize);
+    /// Copies one XRGB8888 row segment out of guest backing.
+    ///
+    /// # Parameters
+    ///
+    /// - `row`: Scanline index below [`Self::height`].
+    /// - `x`: First pixel; `x + target.len()` must not exceed [`Self::width`].
+    /// - `target`: Receives the pixels.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the segment lies outside the resource.
+    pub fn read_row(&self, row: usize, x: usize, target: &mut [u32]) {
+        let start = self.row_offset(row, x, target.len());
+        // SAFETY: `row_offset` bounds the segment inside the live mapping. `&self` APIs only
+        // copy through raw pointers and never lend references into backing, and the type is
+        // neither Send nor Sync, so no concurrent writer can alias this read.
         unsafe {
-            std::slice::from_raw_parts(
-                self.mapping
-                    .pointer
-                    .as_ptr()
-                    .add(row * self.stride as usize)
-                    .cast(),
-                self.width as usize,
-            )
+            std::ptr::copy_nonoverlapping(
+                self.mapping.pointer.as_ptr().add(start).cast::<u32>(),
+                target.as_mut_ptr(),
+                target.len(),
+            );
         }
+    }
+
+    /// Copies one XRGB8888 row segment into guest backing for a later [`Self::transfer_to_host`].
+    ///
+    /// Shared texture owners (sampler views kept for in-flight frames) can update backing
+    /// without exclusive access; callers order the write after prior host transfers with
+    /// [`Self::wait`].
+    ///
+    /// # Parameters
+    ///
+    /// - `row`: Scanline index below [`Self::height`].
+    /// - `x`: First pixel; `x + pixels.len()` must not exceed [`Self::width`].
+    /// - `pixels`: Source pixels.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the segment lies outside the resource.
+    pub fn write_row(&self, row: usize, x: usize, pixels: &[u32]) {
+        let start = self.row_offset(row, x, pixels.len());
+        // SAFETY: bounds as in `read_row`. No `&self` API lends a reference into backing and
+        // `&mut self` borrows exclude this call, so no Rust reference observes the mutation;
+        // the type is neither Send nor Sync, so writes cannot race another thread.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                pixels.as_ptr(),
+                self.mapping.pointer.as_ptr().add(start).cast::<u32>(),
+                pixels.len(),
+            );
+        }
+    }
+
+    fn row_offset(&self, row: usize, x: usize, len: usize) -> usize {
+        assert!(row < self.height as usize);
+        assert!(
+            x.checked_add(len)
+                .is_some_and(|end| end <= self.width as usize)
+        );
+        row * self.stride as usize + x * 4
     }
 
     /// Uploads a guest-backed rectangle to the host resource asynchronously.

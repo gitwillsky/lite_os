@@ -8,7 +8,7 @@ use smb::{
 use std::{
     collections::BTreeMap,
     ffi::OsStr,
-    time::{Duration, SystemTime},
+    time::{Duration, Instant, SystemTime},
 };
 
 type Result<T> = std::result::Result<T, Errno>;
@@ -70,7 +70,16 @@ pub(crate) struct Opened {
     pub(crate) remote: Remote,
     /// 实际 OPEN 的写入权限；MAXIMAL_ACCESS 只是 ACL 上限，误向只读句柄 FLUSH 会让 close 被服务器拒绝。
     pub(crate) writable: bool,
-    pub(crate) entries: Option<Vec<(INodeNo, FileType, String)>>,
+    pub(crate) entries: Option<DirectorySnapshot>,
+}
+pub(crate) struct DirectoryEntry {
+    pub(crate) attr: FileAttr,
+    pub(crate) name: String,
+}
+pub(crate) struct DirectorySnapshot {
+    pub(crate) entries: Vec<DirectoryEntry>,
+    /// QUERY_DIRECTORY 的属性只在该期限内有效；旧目录句柄不能重新延长远端属性的有效期。
+    pub(crate) valid_until: Instant,
 }
 pub(crate) struct State {
     client: Option<Client>,
@@ -260,7 +269,7 @@ impl State {
         &mut self,
         ino: INodeNo,
         remote: Remote,
-        entries: Option<Vec<(INodeNo, FileType, String)>>,
+        entries: Option<DirectorySnapshot>,
         writable: bool,
     ) -> Result<u64> {
         let id = self.next_file;
@@ -288,10 +297,9 @@ impl State {
                 || node.lookups != 0
                 || self.files.values().any(|file| {
                     file.ino == *ino
-                        || file
-                            .entries
-                            .as_ref()
-                            .is_some_and(|entries| entries.iter().any(|(entry, _, _)| entry == ino))
+                        || file.entries.as_ref().is_some_and(|snapshot| {
+                            snapshot.entries.iter().any(|entry| entry.attr.ino == *ino)
+                        })
                 })
         });
     }

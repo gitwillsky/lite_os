@@ -177,8 +177,8 @@
 - `Painter` 的有界文字 API 必须同时约束排版宽度和实际字形落笔；省略号、粗体与禁用浮雕也不能越界。段落复用 `typeface::wrap`，返回完整所需高度但只绘制指定矩形，结束后恢复调用者裁剪区。
 - `ColumnHeader` 独占逻辑列宽和拖动状态；`paint` 在真实视口与每列逻辑矩形的交集内绘制，命中只接受视口内坐标。任务管理器、资源管理器共用该边界，不截短逻辑列宽或各自补裁切。
 - 控制面板的属性页内容矩形由同一函数供绘制与输入使用，宿主统一裁剪页内绘制；列表与滚动条消费剩余高度，滚动和命中使用实际视口高度，不以固定可见行数替代。
-- `MemFd::write_words` 借用已初始化、无 padding 的 u32 字节视图，校验完整 extent 后按原 native-endian 布局写入，
-  零额外整帧字节数组；视图不逃逸，像素数据不可变直到写入结束，frame 发布仍由 `Display` 独占。
+- `MemFd::write_segments` 借用已初始化、无 padding 的 u32 字节视图，先校验全部段都在 extent 内再按原 native-endian 布局写入，
+  零额外整帧字节数组；所有段共用一次 fd 复制，视图不逃逸，像素数据不可变直到写入结束，frame 发布仍由 `Display` 独占。
 - `Edit` 独占文本、UTF-8 光标与选择锚点；`FocusChain` 独占控件槽位的 Tab 顺序。Painter 只读这些状态，不拥有第二份可写控件模型。
 - `classic-ui` 的 Window 角色为互斥的 Toplevel/Layer；只有 Toplevel 持有待确认的 xdg configure，Layer 在自己的 configure/ack 时直接发布当前几何。
   两种角色共用帧、输入和 fd 生命周期。Layer unmap 清除旧配置、重复键与排队语义事件，configure_layer 后必须等待新的 configure 才能提交。

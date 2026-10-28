@@ -395,18 +395,32 @@ fn chart(commands: &mut Vec<Draw<'_>>, bounds: Rect, samples: &VecDeque<u8>, cou
             DIM,
         ));
     }
-    let visible = ((bounds.width / STEP) as usize)
+    let visible = (((bounds.width - 1) / STEP + 1) as usize)
         .min(HISTORY)
         .min(samples.len());
-    let mut previous = None;
+    // 1. 每个采样对应一个数据点，最新点落在右边缘最后一列，相邻点相隔 STEP 列。
+    // 2. 相邻点之间逐列线性插值成 1 像素粗的折线；每列竖向覆盖上一列到本列的高度，陡坡不断线。
+    let point = |index: usize, value: u8| {
+        let x = bounds.width - 1 - (visible - 1 - index) as i32 * STEP;
+        (x, bounds.height - 1 - i32::from(value) * (bounds.height - 1) / 100)
+    };
+    let mut previous: Option<(i32, i32)> = None;
     for (index, value) in samples.iter().skip(samples.len() - visible).enumerate() {
-        let x = bounds.width - (visible - index) as i32 * STEP;
-        let y = bounds.height - 1 - i32::from(*value) * (bounds.height - 1) / 100;
-        let (low, high) = previous.map_or((y, y), |before: i32| (before.min(y), before.max(y)));
-        commands.push(fill(
-            Rect::new(bounds.x + x, bounds.y + low, STEP, high - low + 1),
-            LIT,
-        ));
-        previous = Some(y);
+        let (x1, y1) = point(index, *value);
+        let (x0, y0) = previous.unwrap_or((x1, y1));
+        let mut last = y0;
+        for x in (x0 + 1).max(0)..=x1 {
+            let y = y0 + (y1 - y0) * (x - x0) / (x1 - x0).max(1);
+            let (low, high) = (last.min(y), last.max(y));
+            commands.push(fill(
+                Rect::new(bounds.x + x, bounds.y + low, 1, high - low + 1),
+                LIT,
+            ));
+            last = y;
+        }
+        if previous.is_none() {
+            commands.push(fill(Rect::new(bounds.x + x1.max(0), bounds.y + y1, 1, 1), LIT));
+        }
+        previous = Some((x1, y1));
     }
 }

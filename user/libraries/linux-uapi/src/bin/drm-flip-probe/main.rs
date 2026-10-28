@@ -122,7 +122,9 @@ fn verify_readback(graphics: &VirglContext, target: &mut Target) -> Result<(), S
             .transfer_from_host(0, 0, READBACK_EDGE, READBACK_EDGE),
     )?;
     step("readback transfer wait", target.resource.wait())?;
-    let pixel = target.resource.row(0)[0];
+    let mut pixel = [0];
+    target.resource.read_row(0, 0, &mut pixel);
+    let [pixel] = pixel;
     if matches_color(pixel, READBACK_COLOR) {
         Ok(())
     } else {

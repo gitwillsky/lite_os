@@ -55,10 +55,10 @@
   `wl_seat` 有指针与键盘，特权连接有 layer-shell，所有连接有 foreign-toplevel）。键盘 keymap 由 `keyboard::xkb` 从同一张键码表生成，
   自包含、不依赖客户端的 xkeyboard-config。
   桌面继续使用 `wl_shm`；具备 VirGL2 的设备使用纹理合成与两块 GPU render target，纯 2D 设备使用 CPU/dumb buffer。
-  Content 持有 SHM 快照或 dma-buf 使用期；GPU 在途帧将协议引用保活到 page-flip 完成。
+  Content 持有 SHM 像素（GPU 后端直接位于纹理）或 dma-buf 使用期；GPU 在途帧将 dma-buf 协议引用保活到 page-flip 完成。
   VirGL2 初始化成功才公布 linux-dmabuf v4，ARGB/XRGB 单平面隐式 modifier 直接 PRIME 导入，无 CPU 像素副本。
-  GPU 路径已接入代码，尚未执行画面/性能验收。`damage`/`damage_buffer` 当前以整帧重绘保守覆盖，
-  不代表已经实现局部更新或完整 OpenGL 兼容。
+  GPU 路径已接入代码，尚未执行画面/性能验收。SHM 的 `damage`/`damage_buffer` 决定重读与上传的矩形，合成仍整帧重画；
+  dma-buf 内容直接取样，不代表完整 OpenGL 兼容。
   Legacy `CURSOR2` 把 64×64 ARGB dumb BO 通过规范要求的
   `RESOURCE_CREATE_2D`/`TRANSFER_TO_HOST_2D` 投影到 VirtIO-GPU 独立 cursorq；该 queue 的
   completion 水位与 controlq fence 分离。纯 position update 异步发布，slot 忙时只保留尚未发布的最新

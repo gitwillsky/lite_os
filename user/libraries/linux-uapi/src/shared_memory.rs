@@ -90,31 +90,50 @@ impl MemFd {
         self.len == 0
     }
 
-    /// Writes native-endian 32-bit words into the complete sealed file extent.
+    /// Writes native-endian 32-bit word segments into the sealed file extent.
     ///
     /// # Parameters
-    /// - `words`: Initialized words whose byte length equals this memfd's length.
+    /// - `segments`: `(word index, words)` pairs; every segment must lie inside the extent.
     ///
     /// # Returns
-    /// `()` after all bytes have been written at offset zero, without changing the fd position.
+    /// `()` after all segments have been written, without changing the fd position.
     ///
     /// # Errors
-    /// Returns `InvalidInput` on an extent mismatch, or the first fd duplication/write error.
-    pub fn write_words(&self, words: &[u32]) -> io::Result<()> {
+    /// Returns `InvalidInput` before writing anything when a segment exceeds the extent,
+    /// or the first fd duplication/write error.
+    pub fn write_segments<'a>(
+        &self,
+        segments: impl IntoIterator<Item = (usize, &'a [u32])>,
+    ) -> io::Result<()> {
         use std::{fs::File, os::unix::fs::FileExt};
-        let len = std::mem::size_of_val(words);
-        if len != self.len {
+        let segments: Vec<_> = segments.into_iter().collect();
+        if segments.iter().any(|(index, words)| {
+            index
+                .checked_add(words.len())
+                .and_then(|end| end.checked_mul(4))
+                .is_none_or(|end| end > self.len)
+        }) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "word extent does not match memfd",
+                "word segment exceeds memfd",
             ));
         }
-        // SAFETY: u32 has no padding; all bytes are initialized, and the byte view
-        // borrows the immutable input only for write_all_at. u8 requires no alignment.
-        // OWNER: the caller owns frame publication; this method never retains the view.
-        // Without a typed byte view the client needs thousands of tiny encoded writes.
-        let bytes = unsafe { std::slice::from_raw_parts(words.as_ptr().cast::<u8>(), len) };
-        File::from(self.fd.try_clone()?).write_all_at(bytes, 0)
+        // One duplicate serves every segment; per-row damage would otherwise dup once per row.
+        let file = File::from(self.fd.try_clone()?);
+        for (index, words) in segments {
+            // SAFETY: u32 has no padding; all bytes are initialized, and the byte view
+            // borrows the immutable input only for write_all_at. u8 requires no alignment.
+            // OWNER: the caller owns frame publication; this method never retains the view.
+            // Without a typed byte view the client needs thousands of tiny encoded writes.
+            let bytes = unsafe {
+                std::slice::from_raw_parts(
+                    words.as_ptr().cast::<u8>(),
+                    std::mem::size_of_val(words),
+                )
+            };
+            file.write_all_at(bytes, index as u64 * 4)?;
+        }
+        Ok(())
     }
 }
 
@@ -248,7 +267,9 @@ mod tests {
         let mut file = File::from(memory.as_fd().try_clone_to_owned().unwrap());
         file.seek(SeekFrom::Start(7)).unwrap();
         let words = [0x12345678u32, 0xffaabbcc, 0, u32::MAX];
-        memory.write_words(&words).unwrap();
+        memory
+            .write_segments([(0, &words[..1]), (1, &words[1..])])
+            .unwrap();
         let mut actual = [0u8; 16];
         file.read_exact_at(&mut actual, 0).unwrap();
         assert_eq!(
@@ -260,7 +281,10 @@ mod tests {
         );
         assert_eq!(file.stream_position().unwrap(), 7);
         assert_eq!(
-            memory.write_words(&words[..3]).unwrap_err().kind(),
+            memory
+                .write_segments([(0, &words[..1]), (2, &words[..3])])
+                .unwrap_err()
+                .kind(),
             std::io::ErrorKind::InvalidInput
         );
         let mut unchanged = [0u8; 16];

@@ -81,20 +81,35 @@ impl Art {
 }
 
 /// 把面板画在屏幕中央；`scale` 为输出 scale，几何以逻辑像素计。
-pub fn paint(p: &mut Painter<'_>, art: &Art, screen: (i32, i32), switcher: &Switcher) {
-    let (screen_w, screen_h) = screen;
-    let scale = p.scale();
+/// 面板的逻辑矩形：按项数排成至多 `MAX_COLUMNS` 列，居中在屏幕上。
+fn panel(screen: (i32, i32), scale: i32, switcher: &Switcher) -> Rect {
     let count = switcher.entries.len() as i32;
     let columns = count.min(MAX_COLUMNS as i32);
     let rows = (count + columns - 1) / columns;
     let width = columns * CELL + 2 * MARGIN;
     let height = rows * CELL + TITLE_HEIGHT + 2 * MARGIN;
-    let panel = Rect::new(
-        (screen_w / scale - width) / 2,
-        (screen_h / scale - height) / 2,
+    Rect::new(
+        (screen.0 / scale - width) / 2,
+        (screen.1 / scale - height) / 2,
         width,
         height,
-    );
+    )
+}
+
+/// 面板占用的物理矩形；叠加层只在这里绘制与上传。
+pub fn bounds(screen: (i32, i32), scale: i32, switcher: &Switcher) -> Rect {
+    let panel = panel(screen, scale, switcher);
+    Rect::new(
+        panel.x * scale,
+        panel.y * scale,
+        panel.width * scale,
+        panel.height * scale,
+    )
+}
+
+pub fn paint(p: &mut Painter<'_>, art: &Art, screen: (i32, i32), switcher: &Switcher) {
+    let panel = panel(screen, p.scale(), switcher);
+    let width = panel.width;
     let inner = p.edge(panel, Edge::Raised);
     p.fill(inner, C::ButtonFace);
     for (index, entry) in switcher.entries.iter().enumerate() {

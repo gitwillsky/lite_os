@@ -22,13 +22,22 @@ impl Client {
     pub(super) fn commit(&mut self, object: ObjectId) -> Result<(), Fail> {
         self.xdg_check_commit(object)?;
         self.layer_check_commit(object)?;
+        let synchronized = self.effectively_synchronized(object);
         let surface = self.surface_mut(object)?;
-        // 多次同步提交合并到同一缓存；共享像素不可变，不复制当前正在显示的像素。
-        let mut commit = surface.cached.take().unwrap_or_else(|| Committed {
-            state: surface.current.clone(),
-            unmapping: false,
-            callbacks: Vec::new(),
-            positions: BTreeMap::new(),
+        // 多次同步提交合并到同一缓存；缓存与当前显示共享像素，下一次 SHM 提交写时复制。
+        let mut commit = surface.cached.take().unwrap_or_else(|| {
+            let state = surface.current.clone();
+            // 非同步提交随后立即替换当前状态：先放开当前状态的像素引用，让本次 SHM 提交能原地只读损伤区域；
+            // 不放开时引用计数恒为 2，每次提交都整幅重读、重建纹理。协议错误会断开连接，不会留下空的当前状态。
+            if !synchronized {
+                surface.current.content = None;
+            }
+            Committed {
+                state,
+                unmapping: false,
+                callbacks: Vec::new(),
+                positions: BTreeMap::new(),
+            }
         });
         let pending = std::mem::take(&mut surface.pending);
         if let Some((x, y)) = pending.offset
@@ -79,7 +88,19 @@ impl Client {
                         &self.buffer_releases,
                     ));
                 } else if let Buffer::Shm(spec) = attachment.buffer.as_ref() {
-                    let pixels = spec.read_pixels().map_err(|error| match error {
+                    let damage = pending.damage.resolve(
+                        (spec.width, spec.height),
+                        commit.state.scale,
+                        commit.state.transform,
+                        commit.state.viewport != (None, None),
+                    );
+                    let content = Content::from_shm(
+                        commit.state.content.take(),
+                        spec,
+                        &damage,
+                        self.gpu.as_ref(),
+                    )
+                    .map_err(|error| match error {
                         super::shm::ReadError::Truncated => Fail::new(
                             attachment.object,
                             wl_shm::Error::InvalidFd as u32,
@@ -90,8 +111,13 @@ impl Client {
                             wayland_wire::protocol::wl_display::Error::NoMemory as u32,
                             "cannot allocate shared memory snapshot",
                         ),
+                        super::shm::ReadError::Upload => Fail::new(
+                            ObjectId::DISPLAY,
+                            wayland_wire::protocol::wl_display::Error::NoMemory as u32,
+                            "cannot upload shared memory to the compositor GPU",
+                        ),
                     })?;
-                    commit.state.content = Some(Content::new(spec.width, spec.height, pixels));
+                    commit.state.content = Some(content);
                     // 复制完成后即可 release；但已销毁/复用的对象编号不能收到旧缓冲的事件。
                     if matches!(self.objects.get(&attachment.object.get()), Some(Entry { data: Data::Buffer(live), .. }) if Rc::ptr_eq(live, &attachment.buffer))
                     {
@@ -126,7 +152,7 @@ impl Client {
             content.offset = commit.state.offset;
         }
         commit.positions.extend(self.take_child_positions(object));
-        if self.effectively_synchronized(object) {
+        if synchronized {
             self.surface_mut(object)?.cached = Some(commit);
         } else {
             self.apply_surface_commit(object, commit)?;

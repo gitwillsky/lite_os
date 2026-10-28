@@ -295,8 +295,12 @@ pub struct Widget {
 }
 /// 列表图标来源；只引用系统资源，不把应用像素或分配器传给运行库。
 pub enum Icon<'a> {
+    /// 系统经典资源的名称。
     Resource(&'a str),
+    /// 已安装应用的 app_id，由其 Desktop Entry 查图标。
     Application(&'a str),
+    /// Desktop Entry / MIME 声明的主题图标名或绝对 PNG/BMP 路径。
+    Theme(&'a str),
 }
 /// 行图标声明，id 必须已存在于当前列表/树。
 pub struct RowIcon<'a> {
@@ -737,6 +741,7 @@ impl Widget {
                 let (kind, value) = match icon.source {
                     Icon::Resource(value) => (0, value),
                     Icon::Application(value) => (1, value),
+                    Icon::Theme(value) => (2, value),
                 };
                 abi::RowIcon {
                     id: icon.id,
@@ -902,7 +907,15 @@ impl Widget {
         self.call(|c, w, id| {
             // SAFETY: 像素切片在同步调用内有效，运行库只读并复制。
             unsafe {
-                (c.api.canvas_frame)(c.context.as_ptr(), w, id, width, height, pixels.as_ptr(), pixels.len())
+                (c.api.canvas_frame)(
+                    c.context.as_ptr(),
+                    w,
+                    id,
+                    width,
+                    height,
+                    pixels.as_ptr(),
+                    pixels.len(),
+                )
             }
         })
     }

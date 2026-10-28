@@ -49,12 +49,24 @@ pub(crate) struct Gpu {
     // 只在上帧 flip 完成后的下一次 render 淘汰旧项；既保活在途纹理，也避免每帧创建/销毁同一视图。
     // 缺少资源引用会在客户端退出时悬空，直接把 GEM ID 当对象句柄会撞到 shader/state/FBO。
     views: BTreeMap<(u32, u32), TextureView>,
-    // OWNER: 每帧所有实际 drawable 的协议使用期 pin；仅保活纹理不能证明 aliased wl_buffer 已停止读取。
+    // OWNER: 每帧实际 dma-buf drawable 的协议使用期 pin；仅保活纹理不能证明 aliased wl_buffer 已停止读取。
     // 在上一帧 flip 完成后的 render 成功后替换，不复制像素，也不与 sampler cache 的资源寿命混用。
+    // SHM 内容在 commit 读取后即已 release，不在此 pin：多一个持有者会让下一次提交无法原地更新纹理。
     frame_contents: Vec<crate::wayland::Content>,
     next_view: u32,
     /// 已经按命令顺序销毁的空闲对象句柄；与活跃 views 互斥，避免场景缩小后永久丢失句柄。
     free_views: Vec<u32>,
+    /// 合成器自绘叠加层（Alt+Tab 面板、窗口菜单）的持久画布；首次需要时建立一次。
+    overlay: Option<Overlay>,
+}
+
+/// 整屏大小的叠加层画布与纹理，只重画、上传并采样当帧面板所在矩形。
+/// 缺少它每帧都要分配整屏像素、新建整屏纹理并整屏上传，菜单一打开悬停就会卡顿。
+struct Overlay {
+    pixels: Vec<u32>,
+    texture: Rc<VirglResource>,
+    /// 上一帧画过的矩形；本帧先清成透明，否则面板缩小或移动后旧像素会残留在下一次采样里。
+    painted: Rect,
 }
 impl Gpu {
     pub(crate) fn new(device: &DrmDevice, width: u32, height: u32) -> io::Result<Self> {
@@ -98,6 +110,7 @@ impl Gpu {
             frame_contents: Vec::new(),
             next_view: FIRST_VIEW,
             free_views: Vec::new(),
+            overlay: None,
         })
     }
     pub(crate) fn context(&self) -> VirglContext {
@@ -125,14 +138,14 @@ impl Gpu {
         back: usize,
         theme: &Theme,
         windows: &[Drawable<'_>],
-        has_overlay: bool,
+        overlay_bounds: Option<Rect>,
         overlay: impl FnOnce(Surface<'_>),
     ) -> io::Result<()> {
         let (width, height) = (
             self.targets[back].resource.width(),
             self.targets[back].resource.height(),
         );
-        let mut quads = Vec::with_capacity(windows.len() + usize::from(has_overlay));
+        let mut quads = Vec::with_capacity(windows.len() + usize::from(overlay_bounds.is_some()));
         let screen = Rect::new(0, 0, width as i32, height as i32);
         for window in windows {
             let rect = window.rect;
@@ -140,22 +153,68 @@ impl Gpu {
                 continue;
             }
             quads.push(Quad {
-                texture: window.content.texture(&self.context)?,
+                texture: window
+                    .content
+                    .texture()
+                    .ok_or_else(|| io::Error::other("CPU-backed content reached GPU composition"))?
+                    .clone(),
                 rect,
                 source: window.content.source,
             });
         }
-        if has_overlay {
+        if let Some(bounds) = overlay_bounds.filter(|bounds| !bounds.is_empty()) {
             // 合成器自身的菜单/切换面板也作为透明纹理取样，不退回整屏 CPU 合成。
-            let mut pixels = vec![0; width as usize * height as usize];
-            let surface = Surface::new(&mut pixels, width as i32, height as i32, width as usize)
+            let layer = match &mut self.overlay {
+                Some(layer) => layer,
+                None => self.overlay.insert(Overlay {
+                    pixels: vec![0; width as usize * height as usize],
+                    texture: Rc::new(self.context.create_texture(width, height)?),
+                    painted: Rect::default(),
+                }),
+            };
+            let stride = width as usize;
+            for row in layer.painted.y..layer.painted.bottom() {
+                let start = row as usize * stride + layer.painted.x as usize;
+                layer.pixels[start..start + layer.painted.width as usize].fill(0);
+            }
+            let surface = Surface::new(&mut layer.pixels, width as i32, height as i32, stride)
                 .expect("overlay geometry");
             overlay(surface);
-            let content = crate::wayland::Content::new(width as usize, height as usize, pixels);
+            // 清掉的旧矩形与新面板一并上传；采样只取新面板，但旧像素必须在下一次出现前变透明。
+            let (x, y) = (bounds.x.min(layer.painted.x), bounds.y.min(layer.painted.y));
+            let upload = if layer.painted.is_empty() {
+                bounds
+            } else {
+                Rect::new(
+                    x,
+                    y,
+                    bounds.right().max(layer.painted.right()) - x,
+                    bounds.bottom().max(layer.painted.bottom()) - y,
+                )
+            };
+            // 纹理通常仍被上一帧引用；write_texture 走命令流内联写入，不等待 fence。
+            let mut rows = Vec::with_capacity(upload.width as usize * upload.height as usize);
+            for row in upload.y..upload.bottom() {
+                let start = row as usize * stride + upload.x as usize;
+                rows.extend_from_slice(&layer.pixels[start..start + upload.width as usize]);
+            }
+            self.context.write_texture(
+                &layer.texture,
+                upload.x as u32,
+                upload.y as u32,
+                upload.width as u32,
+                upload.height as u32,
+                &rows,
+            )?;
+            layer.painted = bounds;
             quads.push(Quad {
-                texture: content.texture(&self.context)?,
-                rect: screen,
-                source: content.source,
+                texture: layer.texture.clone(),
+                rect: bounds,
+                source: canvas::ImageSource {
+                    origin: (f64::from(bounds.x), f64::from(bounds.y)),
+                    right: (f64::from(bounds.right()), f64::from(bounds.y)),
+                    bottom: (f64::from(bounds.x), f64::from(bounds.bottom())),
+                },
             });
         }
         let bytes = quads
@@ -265,7 +324,7 @@ impl Gpu {
         self.context.exec(commands.words(), &resources)?;
         self.frame_contents = windows
             .iter()
-            .filter(|window| !window.rect.intersect(screen).is_empty())
+            .filter(|window| window.content.is_dma() && !window.rect.intersect(screen).is_empty())
             .map(|window| window.content.clone())
             .collect();
         self.views = views;

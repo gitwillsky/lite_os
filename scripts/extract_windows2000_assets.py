@@ -33,7 +33,7 @@ PE_FILES = (
     # 设备管理器、网络连接与记事本的专用图标。
     "devmgr.dll", "netshell.dll", "notepad.exe",
     # 文件夹 Web 视图的模板、样式与左侧水印/分隔线（类型 23 资源）。
-    "webvw.dll", "mprui.dll",
+    "webvw.dll", "mprui.dll", "mplay32.exe", "mspaint.exe",
 )
 # 只为取工具栏位图而加入的 DLL：其中个别资源可能是损坏/非标准图标，跳过并记警告，
 # 不影响上面逐图核对的核心素材。
@@ -48,6 +48,11 @@ ICONS = {
     "file-generic": ("shell32.dll", 1),
     "file-text": ("shell32.dll", 152),
     "file-app": ("shell32.dll", 3),
+    "file-media": ("mplay32.exe", 11),
+    "file-audio": ("mplay32.exe", 12),
+    "file-video": ("mplay32.exe", 13),
+    "file-midi": ("mplay32.exe", 15),
+    "file-image": ("mspaint.exe", 3),
     "drive-hdd": ("shell32.dll", 9),
     "drive-network": ("shell32.dll", 10),
     "drive-network-offline": ("shell32.dll", 11),

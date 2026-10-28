@@ -137,7 +137,8 @@ impl WindowMenu {
         }
     }
 
-    fn rect(&self) -> Rect {
+    /// 菜单占用的物理矩形；叠加层只在这里绘制与上传。
+    pub fn rect(&self) -> Rect {
         Rect::new(
             self.origin.0,
             self.origin.1,

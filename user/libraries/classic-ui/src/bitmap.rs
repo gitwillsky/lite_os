@@ -154,15 +154,17 @@ impl Bitmap {
                     if width != height || !(1..=2048).contains(&width) {
                         continue;
                     }
-                    let path = entry.path().join("apps").join(format!("{icon}.png"));
-                    if path.is_file() {
-                        candidates.push((
-                            width != size,
-                            (width - size).abs(),
-                            width < size,
-                            priority,
-                            path,
-                        ));
+                    for context in ["mimetypes", "apps"] {
+                        let path = entry.path().join(context).join(format!("{icon}.png"));
+                        if path.is_file() {
+                            candidates.push((
+                                priority,
+                                width != size,
+                                (width - size).abs(),
+                                width < size,
+                                path,
+                            ));
+                        }
                     }
                 }
             }

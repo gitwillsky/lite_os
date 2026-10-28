@@ -500,11 +500,12 @@ impl View {
                 text: "",
             }]);
         }
+        self.video.set_drawing(&[])?;
         match engine.render(width, height) {
             Ok(pixels) => self.video.set_frame(width, height, pixels),
             Err(error) => {
                 engine.state.message = format!("渲染失败：{error}");
-                Ok(())
+                self.controls_state(&engine.state)
             }
         }
     }

@@ -798,8 +798,30 @@ impl Client {
                 Ok(())
             }
             R::Commit => self.commit(object),
-            // 损伤区域只用于局部重绘；本合成器每次整屏重画，所以这些请求无需记录。
-            R::Damage { .. } | R::DamageBuffer { .. } => Ok(()),
+            R::Damage {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                self.surface_mut(object)?
+                    .pending
+                    .damage
+                    .add_surface(canvas::Rect::new(x, y, width, height));
+                Ok(())
+            }
+            R::DamageBuffer {
+                x,
+                y,
+                width,
+                height,
+            } => {
+                self.surface_mut(object)?
+                    .pending
+                    .damage
+                    .add_buffer(canvas::Rect::new(x, y, width, height));
+                Ok(())
+            }
         }
     }
 }

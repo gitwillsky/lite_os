@@ -1,0 +1,26 @@
+{
+  "version": 1,
+  "files": {
+    "16x16/mimetypes/file-video-modern.png": {
+      "sha256": "bd601e93a3601d2a5784e428c61c4559245ee5499f650f15e900b869b1c64d82",
+      "icon": "file-video-modern"
+    },
+    "32x32/mimetypes/file-video-modern.png": {
+      "sha256": "37275322ce20e84295c8a5f267fad96de6c641849ced8d4040a6f3726f2d8ced",
+      "icon": "file-video-modern"
+    },
+    "64x64/mimetypes/file-video-modern.png": {
+      "sha256": "7a6d63d44b06ccd0aae9193822b7291e59542ce3eea3d119e63472ba4f8cec11",
+      "icon": "file-video-modern"
+    }
+  },
+  "icons": {
+    "file-video-modern": {
+      "generator": "OpenAI image_gen",
+      "source_sha256": "0755ad83e77ab49d0ac40d42e96fa114ec4eb041111ff0636b506719eb1fdfba",
+      "prompt": "Create exactly ONE small classic desktop FILE TYPE ICON for modern video documents (MP4 / MKV / WebM), as a transparent PNG. Intended use: Windows 2000 styled file explorer, 32x32 logical pixel icon. Style: authentic late-1990s Windows 95/2000 hand-pixelled raster icon, very crisp black 1-pixel outlines, restrained 16/256-color palette, tiny stepped highlights and checkerboard pixel shading, no smooth modern vector gradients, no rounded modern app square. Composition: a white rectangular document page with a folded upper-right corner and black outline, in the lower center a small blue/cyan video filmstrip with black sprocket holes, and a tiny green right-pointing play triangle. It must clearly read as a document icon, not a standalone media player app. Use a strict 32 by 32 logical pixel grid, output as a much larger square with every logical pixel enlarged to the same solid square; pixel edges must be hard, with no antialiasing or blur. Icon occupies roughly 26x29 logical pixels, centered, with fully transparent margins around it. Entire background is actually transparent, not white and not a checkerboard pattern. No text, no letters, no file extension lettering, no labels, no extra objects, no cast shadow outside the icon. One single icon only.\n",
+      "crop": null,
+      "conversion": "alpha bounds >=128; centered nearest-neighbor; binary alpha"
+    }
+  }
+}

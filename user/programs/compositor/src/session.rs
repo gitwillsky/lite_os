@@ -786,7 +786,17 @@ impl Session {
 
     fn set_mode(&mut self, client: ClientId, surface: ObjectId, mode: Mode) {
         let (work, full) = (self.work_area(), self.full_area());
+        let before = self
+            .stack
+            .placement(client, surface)
+            .map(|placed| (placed.x, placed.y, placed.width, placed.height));
         if let Some(size) = self.stack.set_mode(client, surface, mode, work, full) {
+            // 窗口几何立即切到目标，画面用整窗缩放从旧矩形过渡到新矩形；
+            // 缺少它，旧尺寸的缓冲会先跳到新位置，等客户端提交新尺寸才撑满，观感是先移动再拉伸。
+            if let (Some(from), Some(placed)) = (before, self.stack.placement(client, surface)) {
+                let to = (placed.x, placed.y, placed.width, placed.height);
+                self.start_animation(client, surface, from, to, false);
+            }
             // 回到普通模式时要带上还原尺寸：普通窗口默认的 0×0 会让客户端留在最大化时的大小。
             self.send_configure(client, surface, Some(size), false);
             self.dirty = true;

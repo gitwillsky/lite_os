@@ -111,6 +111,7 @@ impl Display {
                 configured: false,
                 mapped: false,
                 frame: None,
+                history: Default::default(),
             },
         );
         self.configure_layer(id, settings)?;
@@ -187,6 +188,8 @@ impl Display {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "not a layer surface"))?;
         state.configured = false;
         state.frame = None;
+        // 撤销映射后合成器没有内容；保留历史会让下一次空损伤只 commit 不 attach，表面永远不再出现。
+        state.history = Default::default();
         self.events.retain(|event| event.window != window);
         if self.keyboard == Some(window) {
             self.keyboard = None;

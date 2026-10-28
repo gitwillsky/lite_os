@@ -151,6 +151,10 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 - 字体 cmap 按 [OpenType 1.9.1 cmap](https://learn.microsoft.com/en-us/typography/opentype/spec/cmap)：
   优先 Unicode format 4/12；原版 Marlett 采用 Windows Symbol (platform 3, encoding 0) format 4 的原始私用码位。
 - Desktop Entry Specification `1.5`；当前程序启动只实现 [Exec 规则](https://specifications.freedesktop.org/desktop-entry/1.5/exec-variables.html) 的明确子集，未支持项不作为完整兼容性声明。
+- 文件关联依据 [MIME Applications Associations 1.0.1](https://specifications.freedesktop.org/mime-apps-spec/1.0.1/) 与
+  [Shared MIME-info 0.21](https://specifications.freedesktop.org/shared-mime-info/0.21/)；读取标准 XML 注册信息，
+  `roxmltree=0.21.1`、`glob=0.3.3` 固定在 `user/Cargo.lock`。当前支持范围由 UI 框架契约维护。
+  原版外观与动作分层参照 Windows Shell 的 [ProgID/FriendlyTypeName/DefaultIcon](https://learn.microsoft.com/en-us/windows/win32/shell/fa-progids)，不另建注册表副本。
 - 系统图像固定为 [BITMAPV4HEADER](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-bitmapv4header) 的 108-byte header、top-down 与 sRGB：32-bit BI_BITFIELDS 使用显式 RGBA masks；
   8-bit BI_RGB 使用 [RGBQUAD](https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-rgbquad) 调色板与四字节行对齐，下标不经 RGB 转换。
   BI_RGB 的保留字节不承载 alpha。

@@ -5,6 +5,7 @@ mod fileops;
 mod folder_dialog;
 mod model;
 mod network_dialog;
+mod open_with;
 mod view;
 mod webview;
 use browser::{Browser, Clipboard, Visit};
@@ -66,6 +67,13 @@ impl Session {
         let trash = browser.location.is_recycle_bin();
         Ok(Availability {
             selected: !self.view.list.selected_rows()?.is_empty(),
+            file_selected: self.view.list.selected_rows()?.len() == 1
+                && self.selected()?.is_some_and(|item| {
+                    item.path.is_some()
+                        && item.target.is_none()
+                        && item.launch.is_none()
+                        && item.drive.is_none()
+                }),
             editable: matches!(browser.location, Location::Directory(_)),
             paste: browser.clipboard.is_some(),
             trash,
@@ -98,6 +106,36 @@ impl Session {
                 }),
         })
     }
+    async fn open_with(&self, path: PathBuf) -> Result<()> {
+        let associations = self
+            .background
+            .run(|| Ok::<_, std::io::Error>(desktop_entry::Associations::load()))?
+            .await?;
+        let Some((entry, always)) =
+            open_with::choose(&self.dialogs, &self.view.window, &path, &associations).await?
+        else {
+            return Ok(());
+        };
+        let child = self
+            .background
+            .run(move || {
+                if always {
+                    associations.set_default(&path, &entry)?;
+                }
+                entry
+                    .command_for(&path)
+                    .ok_or(std::io::ErrorKind::InvalidInput)?
+                    .env_remove("WAYLAND_SOCKET")
+                    .spawn()
+            })?
+            .await?;
+        self.record(child);
+        if always {
+            self.refresh().await?;
+        }
+        Ok(())
+    }
+
     fn menus(&self) -> liteos_ui::Result<()> {
         let availability = self.availability()?;
         self.view.menus(&availability)
@@ -511,9 +549,24 @@ impl Session {
                     } else if let Some(target) = item.target {
                         self.navigate(target, Visit::Push, true).await?;
                     } else {
-                        let child = self.background.run(move || browser::open(item))?.await?;
-                        self.record(child);
+                        let path = item.path.clone();
+                        match self.background.run(move || browser::open(item))?.await {
+                            Ok(child) => self.record(child),
+                            Err(error) if error.kind() == std::io::ErrorKind::Unsupported => {
+                                if let Some(path) = path {
+                                    self.open_with(path).await?;
+                                } else {
+                                    return Err(error.into());
+                                }
+                            }
+                            Err(error) => return Err(error.into()),
+                        }
                     }
+                }
+            }
+            Action::OpenWith => {
+                if let Some(path) = self.selected()?.and_then(|item| item.path) {
+                    self.open_with(path).await?;
                 }
             }
             Action::Properties => {
@@ -719,6 +772,7 @@ fn parse_launch(home: &Path) -> Result<Launch> {
                     Some("delete") => Action::Delete,
                     Some("rename") => Action::Rename,
                     Some("properties") => Action::Properties,
+                    Some("open-with") => Action::OpenWith,
                     _ => return Err("unknown --verb".into()),
                 },
             );

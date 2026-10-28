@@ -56,9 +56,11 @@ compositor 报告各自的首个事件。它不测量时间，参考帧与比对
 ## 客户端成本决策
 
 客户端每个窗口只允许一个未完成 frame callback；应用在 ready_to_draw 为真时才渲染，避免积压整帧 CPU 工作。
-每帧创建一个不可变 memfd，经 `MemFd::write_words` 批量写入 native-endian 像素，不为整帧再分配字节数组，也不按 4096 字节拆成大量 syscall。
+每个窗口最多 3 块 memfd 缓冲轮换；`Display::present` 与上一次提交逐行比较，只经 `MemFd::write_segments` 写入变化区域
+（宽矩形连同行间一次写，窄矩形逐行写）并以 `damage_buffer` 声明，复用缓冲补写它落后的各帧损伤。比较是一次 O(帧像素) 的内存比较，
+换掉的是整帧共享内存写入、合成器整帧 `pread` 与纹理整幅上传。
 buffer.release 回收资源，断开由 RAII 清理。
-合成器按 64 KiB 预算批量 `pread`（大 stride 时至少一行），保留截断文件的协议错误语义。
+合成器只读取损伤矩形：宽矩形按 64 KiB 预算批量 `pread`（大 stride 时至少一行），窄矩形逐行读，保留截断文件的协议错误语义。
 `canvas::Surface::blit` 对同倍率且实际像素完全不透明的可见行直接复制；其余保留预乘 alpha 合成与整数缩放。
 该快路径不缓存不透明状态，也不信任客户端声明。O(帧像素数) 的成本由相同工作负载的离线前后微基准与既有 canvas 基线评估；
 SHM 的 stride/offset/末行/truncation、blit 语义测试与真实窗口的重复提交、尺寸变更验证等价性。

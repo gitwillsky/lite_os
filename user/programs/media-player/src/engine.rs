@@ -1,4 +1,4 @@
-//! mpv 引擎与播放状态镜像：所有 mpv 调用都在 UI 线程，事件由唤醒 fd 驱动。
+//! mpv 播放状态镜像：client API 在 UI 线程，render API 由 mpv-client 的独立线程拥有。
 use mpv_client::{EndReason, Event, Format, Mpv, Value};
 use std::{io, os::unix::net::UnixStream};
 
@@ -147,7 +147,6 @@ impl Default for State {
 pub struct Engine {
     mpv: Mpv,
     pub state: State,
-    frame: Vec<u32>,
 }
 
 impl Engine {
@@ -188,7 +187,6 @@ impl Engine {
             Self {
                 mpv,
                 state: State::default(),
-                frame: Vec::new(),
             },
             reader,
         ))
@@ -398,9 +396,7 @@ impl Engine {
 
     /// 把当前帧渲染到 `width`×`height` 设备像素的缓冲并返回；缓冲在多次调用间复用。
     pub fn render(&mut self, width: u32, height: u32) -> io::Result<&[u32]> {
-        self.frame.resize(width as usize * height as usize, 0);
-        self.mpv.render(width, height, &mut self.frame)?;
-        Ok(&self.frame)
+        self.mpv.render(width, height)
     }
 
     /// 运行 mpv 命令；失败时把原因放进状态栏消息并返回 false。
@@ -444,8 +440,8 @@ impl Engine {
         if self.state.idle {
             return;
         }
-        let value = if self.state.paused { "no" } else { "yes" };
-        self.set("pause", value);
+        // 由 mpv 原子切换真实状态；UI 观察事件可能尚未到达，不能据旧快照重写同一个值。
+        self.run(&["cycle", "pause"]);
     }
 
     pub fn seek_relative(&mut self, seconds: f64) {
