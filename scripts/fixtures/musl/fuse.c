@@ -3,7 +3,8 @@
  *
  * 覆盖：INIT 前 /proc/mounts 不阻塞、GETATTR/LOOKUP、创建与超过 max_write 的分块写、重新打开以多页预读读回、mmap、
  * O_CREAT 的原子 CREATE 与守护进程不支持时的 MKNOD+OPEN 回退、KEEP_CACHE 下 AUTO_INVAL_DATA 发现远端改写、close 的 FLUSH 与其错误返回、
- * truncate、READDIRPLUS、rename、mkdir/rmdir/unlink、statfs、守护进程 errno 透传、signal → INTERRUPT → EINTR、
+ * truncate、READDIRPLUS、rename、mkdir/rmdir/unlink、statfs、xattr 权限委托/长度/错误/ENOSYS 缓存、
+ * 守护进程 errno 透传、signal → INTERRUPT → EINTR、
  * FORGET、FUSE_DEV_IOC_CLONE，以及守护进程消失后的 ENOTCONN 与卸载；第二个挂载协商 WRITEBACK_CACHE，验证
  * 缓冲写、close 写回与 mmap 脏页在最后句柄释放前写回。
  *
@@ -23,6 +24,7 @@
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/wait.h>
+#include <sys/xattr.h>
 #include <dirent.h>
 #include <unistd.h>
 
@@ -51,6 +53,9 @@ struct node {
 	size_t size;
 	uint64_t mtime;
 	unsigned char *data;
+	int has_xattr;
+	size_t xattr_size;
+	unsigned char xattr[128];
 };
 
 static struct node nodes[NODES + 1];
@@ -385,6 +390,67 @@ static void serve(void)
 			send_reply(in->unique, 0, listing, used);
 			break;
 		}
+		case FUSE_SETXATTR: {
+			struct fuse_setxattr_in *set = body;
+			const char *name = (char *)body + FUSE_COMPAT_SETXATTR_IN_SIZE;
+			const unsigned char *value = (const void *)(name + strlen(name) + 1);
+			if (strcmp(name, "user.DOSATTRIB") != 0)
+				send_reply(in->unique, -EOPNOTSUPP, NULL, 0);
+			else if (set->flags & XATTR_CREATE && nodes[id].has_xattr)
+				send_reply(in->unique, -EEXIST, NULL, 0);
+			else if (set->flags & XATTR_REPLACE && !nodes[id].has_xattr)
+				send_reply(in->unique, -ENODATA, NULL, 0);
+			else if (set->size > sizeof nodes[id].xattr)
+				send_reply(in->unique, -E2BIG, NULL, 0);
+			else {
+				memcpy(nodes[id].xattr, value, set->size);
+				nodes[id].xattr_size = set->size;
+				nodes[id].has_xattr = 1;
+				send_reply(in->unique, 0, NULL, 0);
+			}
+			break;
+		}
+		case FUSE_GETXATTR:
+		case FUSE_LISTXATTR: {
+			struct fuse_getxattr_in *get = body;
+			const char *name = (char *)body + sizeof *get;
+			if (in->opcode == FUSE_GETXATTR && strcmp(name, "user.unsupported") == 0) {
+				write(report, "X", 1);
+				send_reply(in->unique, -ENOSYS, NULL, 0);
+				break;
+			}
+			if (in->opcode == FUSE_GETXATTR &&
+			    (strcmp(name, "user.DOSATTRIB") != 0 || !nodes[id].has_xattr)) {
+				send_reply(in->unique, -ENODATA, NULL, 0);
+				break;
+			}
+			const void *value = nodes[id].xattr;
+			size_t size = nodes[id].xattr_size;
+			if (in->opcode == FUSE_LISTXATTR) {
+				value = "user.DOSATTRIB";
+				size = nodes[id].has_xattr ? sizeof "user.DOSATTRIB" : 0;
+				if (strcmp(nodes[id].name, "bad-list") == 0) {
+					value = "unterminated";
+					size = strlen(value);
+				}
+			}
+			if (!get->size) {
+				struct fuse_getxattr_out out = { .size = size };
+				send_reply(in->unique, 0, &out, sizeof out);
+			} else if (get->size < size)
+				send_reply(in->unique, -ERANGE, NULL, 0);
+			else
+				send_reply(in->unique, 0, value, size);
+			break;
+		}
+		case FUSE_REMOVEXATTR:
+			if (strcmp(body, "user.DOSATTRIB") != 0 || !nodes[id].has_xattr)
+				send_reply(in->unique, -ENODATA, NULL, 0);
+			else {
+				nodes[id].has_xattr = 0;
+				send_reply(in->unique, 0, NULL, 0);
+			}
+			break;
 		case FUSE_STATFS: {
 			struct fuse_statfs_out out = { .st = { .blocks = 1000, .bfree = 600, .bavail = 500,
 							       .files = NODES, .ffree = 3, .bsize = 4096,
@@ -549,6 +615,37 @@ int main(void)
 	CHECK(21, write(fd, buffer, FILE_BYTES) == FILE_BYTES);
 	CHECK(22, close(fd) == 0);
 	CHECK(23, stat(MOUNTPOINT "/data", &info) == 0 && S_ISREG(info.st_mode) && info.st_size == FILE_BYTES);
+	/* 属性保留空值/CREATE/REPLACE，并通过 size=0 查询；不在本地制造第二份 xattr 内容。 */
+	CHECK(110, getxattr(MOUNTPOINT "/data", "user.DOSATTRIB", NULL, 0) == -1 && errno == ENODATA);
+	CHECK(111, setxattr(MOUNTPOINT "/data", "user.DOSATTRIB", "0x20", 4, XATTR_CREATE) == 0);
+	CHECK(112, setxattr(MOUNTPOINT "/data", "user.DOSATTRIB", "", 0, XATTR_CREATE) == -1 && errno == EEXIST);
+	CHECK(113, getxattr(MOUNTPOINT "/data", "user.DOSATTRIB", NULL, 0) == 4);
+	CHECK(114, getxattr(MOUNTPOINT "/data", "user.DOSATTRIB", buffer, 2) == -1 && errno == ERANGE);
+	CHECK(115, getxattr(MOUNTPOINT "/data", "user.DOSATTRIB", buffer, 4) == 4 && memcmp(buffer, "0x20", 4) == 0);
+	CHECK(116, listxattr(MOUNTPOINT "/data", NULL, 0) == sizeof "user.DOSATTRIB");
+	CHECK(117, listxattr(MOUNTPOINT "/data", (char *)buffer, 64) == sizeof "user.DOSATTRIB" &&
+		  memcmp(buffer, "user.DOSATTRIB", sizeof "user.DOSATTRIB") == 0);
+	/* 未设置 default_permissions：服务端允许普通用户写 root:0644 文件属性，本地 DAC 不能抢先拒绝。 */
+	pid_t caller = fork();
+	CHECK(118, caller >= 0);
+	if (caller == 0) {
+		CHECK(119, setgid(1000) == 0 && setuid(1000) == 0);
+		CHECK(120, setxattr(MOUNTPOINT "/data", "user.DOSATTRIB", "", 0, XATTR_REPLACE) == 0);
+		_exit(0);
+	}
+	int caller_status;
+	CHECK(121, waitpid(caller, &caller_status, 0) == caller && WIFEXITED(caller_status) && WEXITSTATUS(caller_status) == 0);
+	CHECK(122, getxattr(MOUNTPOINT "/data", "user.DOSATTRIB", buffer, 4) == 0);
+	CHECK(123, removexattr(MOUNTPOINT "/data", "user.DOSATTRIB") == 0);
+	CHECK(124, removexattr(MOUNTPOINT "/data", "user.DOSATTRIB") == -1 && errno == ENODATA);
+	CHECK(125, listxattr(MOUNTPOINT "/data", NULL, 0) == 0);
+	int malformed = open(MOUNTPOINT "/bad-list", O_CREAT | O_RDWR, 0644);
+	CHECK(126, malformed >= 0 && listxattr(MOUNTPOINT "/bad-list", (char *)buffer, 64) == -1 && errno == EIO);
+	CHECK(127, close(malformed) == 0 && unlink(MOUNTPOINT "/bad-list") == 0);
+	/* ENOSYS 对该 opcode 缓存：第二次不再向守护进程发请求，其他 xattr opcode 不受影响。 */
+	CHECK(128, getxattr(MOUNTPOINT "/data", "user.unsupported", NULL, 0) == -1 && errno == EOPNOTSUPP);
+	CHECK(129, getxattr(MOUNTPOINT "/data", "user.unsupported", NULL, 0) == -1 && errno == EOPNOTSUPP);
+	CHECK(130, setxattr(MOUNTPOINT "/data", "user.DOSATTRIB", "", 0, 0) == 0);
 
 	/* 重新打开读回（无 KEEP_CACHE：打开作废页缓存，内容来自守护进程）。 */
 	memset(buffer, 0, sizeof buffer);
@@ -624,15 +721,17 @@ int main(void)
 	alarm(1);
 	CHECK(91, stat(MOUNTPOINT "/slow", &info) == -1 && errno == EINTR);
 	char event = 0;
-	int interrupted = 0, forgotten = 0, readahead = 0, flushed = 0, created = 0;
+	int interrupted = 0, forgotten = 0, readahead = 0, flushed = 0, created = 0, no_getxattr = 0;
 	while (read(reports[0], &event, 1) == 1) {
 		interrupted |= event == 'I';
 		forgotten |= event == 'F';
 		readahead |= event == 'R';
 		flushed |= event == 'L';
 		created |= event == 'C';
+		no_getxattr += event == 'X';
 	}
 	CHECK(96, created);
+	CHECK(131, no_getxattr == 1);
 	CHECK(95, flushed);
 	CHECK(92, interrupted);
 	CHECK(94, readahead);

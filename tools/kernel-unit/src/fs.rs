@@ -87,6 +87,13 @@ pub(crate) trait StorageWriter {
 }
 
 pub(crate) trait Inode: Send + Sync {
+    fn require_access(
+        &self,
+        identity: &AccessIdentity,
+        requested: u8,
+    ) -> Result<(), FileSystemError> {
+        identity.require(self.metadata()?, requested)
+    }
     fn notification_link_state(&self) -> Option<(u64, u32)> {
         self.metadata()
             .ok()

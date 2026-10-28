@@ -2,13 +2,13 @@
 
 | Number | Syscall | Status | 当前范围 |
 |---:|---|---|---|
-| 5 | `setxattr` | Partial | 当前源码tmpfs/ext4/memfd user/trusted/security属性及file-cap rootid转换；整批集中验证待执行 |
+| 5 | `setxattr` | Partial | tmpfs/ext4/memfd 与 FUSE user/trusted/security 属性及 file-cap rootid 转换；新增 FUSE 运行验证待执行 |
 | 6 | `lsetxattr` | Partial | 同一mutation路径，最终symlink不跟随；user属性类型约束 |
 | 7 | `fsetxattr` | Partial | 实际OFD path writer，按当前caller授权，不使用opener凭据 |
 | 8 | `getxattr` | Partial | 属性快照与security.capability当前namespace rootid投影 |
 | 9 | `lgetxattr` | Partial | get路径最终symlink不跟随 |
 | 10 | `fgetxattr` | Partial | 当前caller权限，零size查询，非零size的ERANGE/E2BIG边界 |
-| 11 | `listxattr` | Partial | NUL分隔名称，trusted按initial UserNS SYS_ADMIN过滤 |
+| 11 | `listxattr` | Partial | NUL 分隔名称；本地 trusted 按 SYS_ADMIN 过滤，FUSE 名称由服务端提供 |
 | 12 | `llistxattr` | Partial | list路径最终symlink不跟随 |
 | 13 | `flistxattr` | Partial | 实际inode名称快照，不要求read内容权限 |
 | 14 | `removexattr` | Partial | 存在检查、同一inode变更gate及ctime/IN_ATTRIB |
@@ -124,7 +124,7 @@ ring 关闭（含进程退出关闭 fd）取消该 ring 的全部挂起请求，
 `BUFFER_SELECT` 返回 `-EOPNOTSUPP`；`IOSQE_ASYNC` 被接受但只是调度提示；`FIXED_FILE` 因没有注册文件表返回 `-EBADF`。
 固定文件/缓冲区注册、其余 opcode、SQPOLL/IOPOLL、SQE128/CQE32 未开放。CQ 溢出链表上限为 CQ 容量的 8 倍，超出后丢弃并经 `EBADR` 通知。
 未支持ACL、splice family 或完整 block I/O priority enforcement；
-xattr目前接入tmpfs/ext4/memfd源码，其余filesystem返回EOPNOTSUPP；新 ext4 镜像启用原生 EA_INODE，
+xattr目前接入tmpfs/ext4/memfd/FUSE源码，其余filesystem返回EOPNOTSUPP；新 ext4 镜像启用原生 EA_INODE，
 值 inode/extents/hash/refcount 与父属性同 journal owner。旧卷未启用该 feature 时按其实际容量返回ENOSPC；
 名称区域、磁盘空间及 journal 暂存仍有限，ABI单值上限64KiB不代表filesystem保证容量。
 file-cap磁盘revision1/2/3可供exec解析，非空set只接受标准revision2/3。
@@ -202,12 +202,15 @@ BIG_WRITES、AUTO_INVAL_DATA、WRITEBACK_CACHE（写进页缓存，close 与最�
 INIT_EXT；页缓存未命中按协商的 `max_readahead`（≤128 KiB）一次 READ 预读；次版本低于 12 的守护进程
 INIT 失败（请求 `ECONNREFUSED`）。按 entry/attr 超时缓存查找与属性；被 signal 打断的请求发 INTERRUPT。通知支持
 INVAL_INODE（作废属性与整个文件的页缓存）、INVAL_ENTRY、DELETE，其余通知 `ENOSYS`。
+支持 GETXATTR/SETXATTR/LISTXATTR/REMOVEXATTR：零缓冲查询、空值、CREATE/REPLACE、64 KiB 上限、
+列表格式校验与独立 ENOSYS 缓存；通用 namespace/capability policy 仍由 VFS 拥有，普通权限由实际 FUSE 判定。
+POSIX ACL 的 system.* handler 尚未实现。新增 xattr guest 探针已编写，未宣称运行通过。
 范围缩减：
 - 尚未实现（网络驱动器计划阶段 1 进行中）：`/sys/fs/fuse/connections`、
   FUSE over io_uring、passthrough。仍被映射的页在作废时保留到映射解除。
 - `FOPEN_DIRECT_IO` 仍经页缓存；`O_CREAT` 用 CREATE 原子创建打开（守护进程不支持时回退 MKNOD+OPEN）。每次关闭 fd 发 FLUSH（`close(2)` 返回其错误），
   最后一个引用发 RELEASE。
-- 不转发 xattr、POSIX/flock 锁（锁在本地 VFS 生效）、ioctl、poll、lseek、copy_file_range、tmpfile、statx；xattr 返回 `EOPNOTSUPP`。
+- 不转发 POSIX/flock 锁（锁在本地 VFS 生效）、ioctl、poll、lseek、copy_file_range、tmpfile、statx。
 - `st_ino` 取 nodeid，`d_ino` 取守护进程报告值；非 initial user namespace 不能挂载（无 FS_USERNS_MOUNT），普通用户经 setuid `fusermount3`。
 - 不支持 fuseblk、CUSE 与 virtio-fs。
 

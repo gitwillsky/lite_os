@@ -2423,7 +2423,11 @@ kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: Fallocate = 1 << 4
 kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: Flush = 1 << 5
 kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: Fsync = 1 << 2
 kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: FsyncDirectory = 1 << 3
+kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: GetXattr = 1 << 7
+kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: ListXattr = 1 << 9
+kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: RemoveXattr = 1 << 10
 kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: Rename2 = 1 << 1
+kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: SetXattr = 1 << 8
 kernel/src/fs/fuse/filesystem.rs :: pub (super) Mount :: connection : Arc < Connection >
 kernel/src/fs/fuse/filesystem.rs :: pub (super) Mount :: filesystem_id : usize
 kernel/src/fs/fuse/filesystem.rs :: pub (super) Mount :: options : Options
@@ -2483,6 +2487,9 @@ kernel/src/fs/fuse/inode/handle.rs :: pub (super) struct Handle
 kernel/src/fs/fuse/inode/handle.rs :: pub (super) struct HandleLease
 kernel/src/fs/fuse/inode/handle.rs :: pub (super) struct HandleRef
 kernel/src/fs/fuse/inode/handle.rs :: pub (super) struct RegisteredHandle
+kernel/src/fs/fuse/inode/xattr.rs :: pub (super) impl FuseInode :: fn change_remote_xattr (& self , mut change : XattrChange < '_ > ,) -> Result < () , FileSystemError >
+kernel/src/fs/fuse/inode/xattr.rs :: pub (super) impl FuseInode :: fn remote_xattr (& self , name : Option < & [u8] >) -> Result < Vec < u8 > , FileSystemError >
+kernel/src/fs/fuse/inode/xattr.rs :: pub (super) impl FuseInode :: fn remote_xattr_size (& self , name : Option < & [u8] >) -> Result < usize , FileSystemError >
 kernel/src/fs/fuse/options.rs :: pub (super) Options :: allow_other : bool
 kernel/src/fs/fuse/options.rs :: pub (super) Options :: default_permissions : bool
 kernel/src/fs/fuse/options.rs :: pub (super) Options :: fd : i32
@@ -2675,6 +2682,8 @@ kernel/src/fs/inode.rs :: trait Inode :: fn unlinked (& self , _directory : bool
 kernel/src/fs/inode.rs :: trait Inode :: fn write_access (& self) -> Option < & super :: InodeWriteAccess >
 kernel/src/fs/inode.rs :: trait Inode :: fn write_storage (& self , offset : u64 , buf : & [u8] , identity : Option < & crate :: fs :: AccessIdentity > ,) -> Result < usize , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn writeback_storage_batch (& self , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn xattr_list_size (& self , identity : & super :: AccessIdentity) -> Result < usize , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn xattr_size (& self , name : & [u8]) -> Result < usize , super :: FileSystemError >
 kernel/src/fs/inode.rs :: trait StorageOpen :: fn flush (& self , _owner : u64) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait StorageRead :: fn step (& mut self , output : & mut [u8]) -> Result < StorageStep , FileSystemError >
 kernel/src/fs/inode.rs :: trait StorageWriter :: fn write (& mut self , offset : u64 , bytes : & [u8]) -> Result < usize , FileSystemError >
@@ -3890,6 +3899,8 @@ kernel/src/fs/vfs/opened_xattr.rs :: pub (crate) impl OpenedFile :: fn change_xa
 kernel/src/fs/vfs/opened_xattr.rs :: pub (crate) impl OpenedFile :: fn executable_capability (& self , namespace : & super :: MountNamespace , caller : & Arc < UserNamespace > ,) -> Result < Option < file_capability :: FileCapabilityData > , FileSystemError >
 kernel/src/fs/vfs/opened_xattr.rs :: pub (crate) impl OpenedFile :: fn list_xattrs (& self , identity : & AccessIdentity) -> Result < Vec < u8 > , XattrError >
 kernel/src/fs/vfs/opened_xattr.rs :: pub (crate) impl OpenedFile :: fn read_xattr (& self , name : & [u8] , identity : & AccessIdentity ,) -> Result < Vec < u8 > , XattrError >
+kernel/src/fs/vfs/opened_xattr.rs :: pub (crate) impl OpenedFile :: fn xattr_list_size (& self , identity : & AccessIdentity) -> Result < usize , XattrError >
+kernel/src/fs/vfs/opened_xattr.rs :: pub (crate) impl OpenedFile :: fn xattr_size (& self , name : & [u8] , identity : & AccessIdentity ,) -> Result < usize , XattrError >
 kernel/src/fs/vfs/path_lookup.rs :: enum PathLookup :: Created (CreatedEntry)
 kernel/src/fs/vfs/path_lookup.rs :: enum PathLookup :: Existing (Arc < OpenedFile >)
 kernel/src/fs/vfs/path_lookup.rs :: pub (crate) impl VirtualFileSystem :: fn current_directory_path (& self , origin : LookupOrigin ,) -> Result < Vec < u8 > , FileSystemError >
@@ -3950,6 +3961,7 @@ kernel/src/fs/xattr.rs :: pub (super) fn require_access (inode : & dyn Inode , i
 kernel/src/fs/xattr.rs :: pub (super) fn require_handler (name : & [u8]) -> Result < () , FileSystemError >
 kernel/src/fs/xattr.rs :: pub (super) fn root_in_namespace (root : u32 , user : & Arc < UserNamespace >) -> bool
 kernel/src/fs/xattr.rs :: pub (super) impl XattrChange < '_ > :: fn prepare (& mut self , owner : & OwnerModeState , writable : Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
+kernel/src/fs/xattr.rs :: pub (super) impl XattrChange < '_ > :: fn prepare_access (& mut self , owner : & OwnerModeState , writable : Result < () , FileSystemError > , access : impl FnOnce () -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
 kernel/src/fs/xattr.rs :: pub (super) impl Xattrs :: const fn new () -> Self
 kernel/src/fs/xattr.rs :: pub (super) impl Xattrs :: fn change (& mut self , name : & [u8] , value : Option < Vec < u8 > > , flags : u32 ,) -> Result < Option < Vec < u8 > > , FileSystemError >
 kernel/src/fs/xattr.rs :: pub (super) impl Xattrs :: fn get (& self , name : & [u8]) -> Result < Vec < u8 > , FileSystemError >

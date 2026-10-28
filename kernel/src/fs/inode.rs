@@ -206,16 +206,25 @@ pub(crate) trait Inode: Send + Sync {
     fn read_xattr(&self, _name: &[u8]) -> Result<Vec<u8>, super::FileSystemError> {
         Err(super::FileSystemError::NotSupported)
     }
+    /// 零缓冲 getxattr 查询；`name` 为完整属性名，返回原始值长度或与 read_xattr 相同的错误。
+    /// 远端 filesystem 可只请求长度；缺省沿用实际值快照，不增加第二份缓存。
+    fn xattr_size(&self, name: &[u8]) -> Result<usize, super::FileSystemError> {
+        self.read_xattr(name).map(|value| value.len())
+    }
     /// filesystem immutable/append-only事实；只读mount准入由实际path writer lease负责。
     fn check_xattr_write(&self) -> Result<(), super::FileSystemError> {
         Ok(())
     }
-    /// NUL分隔的可见attribute名称；trusted属性按实际caller权限过滤。
+    /// NUL分隔的可见attribute名称；本地handler按caller过滤trusted，远端filesystem由服务端提供名称。
     fn list_xattrs(
         &self,
         _identity: &super::AccessIdentity,
     ) -> Result<Vec<u8>, super::FileSystemError> {
         Err(super::FileSystemError::NotSupported)
+    }
+    /// 零缓冲 listxattr 查询；`identity` 为当前 caller，返回可见名称列表长度或实际 filesystem 错误。
+    fn xattr_list_size(&self, identity: &super::AccessIdentity) -> Result<usize, FileSystemError> {
+        self.list_xattrs(identity).map(|names| names.len())
     }
     /// 修改同一实际inode属性；backend在实际mutation gate内按live tuple授权并转换rootid。
     /// None删除、Some(empty)保存空值；失败不改变旧值，成功后ctime归实际inode owner。

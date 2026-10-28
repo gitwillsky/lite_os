@@ -30,6 +30,7 @@ use crate::{
 
 mod directory;
 mod handle;
+mod xattr;
 use directory::CachedEntry;
 use handle::HandleRef;
 
@@ -368,6 +369,28 @@ fn io_in(handle: HandleRef, offset: u64, size: u32, io_flags: u32) -> [u8; 40] {
 }
 
 impl Inode for FuseInode {
+    fn read_xattr(&self, name: &[u8]) -> Result<Vec<u8>, FileSystemError> {
+        self.remote_xattr(Some(name))
+    }
+
+    fn xattr_size(&self, name: &[u8]) -> Result<usize, FileSystemError> {
+        self.remote_xattr_size(Some(name))
+    }
+
+    fn list_xattrs(&self, identity: &AccessIdentity) -> Result<Vec<u8>, FileSystemError> {
+        self.require_access(identity, 0)?;
+        self.remote_xattr(None)
+    }
+
+    fn xattr_list_size(&self, identity: &AccessIdentity) -> Result<usize, FileSystemError> {
+        self.require_access(identity, 0)?;
+        self.remote_xattr_size(None)
+    }
+
+    fn change_xattr(&self, change: crate::fs::XattrChange<'_>) -> Result<(), FileSystemError> {
+        self.change_remote_xattr(change)
+    }
+
     fn write_access(&self) -> Option<&InodeWriteAccess> {
         (self.kind == InodeType::File).then_some(&self.write_access)
     }

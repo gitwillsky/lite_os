@@ -35,8 +35,13 @@ Status: Active
      （Codex 协助定位，BusyBox 门禁含掉电 e2fsck 全部通过）。
    - 已完成：O_CREAT 的 CREATE 原子打开（`Inode::create_open`）。
    - 已完成：WRITEBACK_CACHE（页缓存缓冲写、close/最后句柄写回；修复 mmap 脏页在句柄释放后丢失）。
+   - 已实现、运行验证待执行：目录级 VFS 锁与短 topology/publication 事务；FUSE 等待不持全局锁，
+     O_CREAT 查找/创建同次持父目录独占锁，remount 后端准备在 topology gate 外。
+   - 已实现、运行验证待执行：GETXATTR/SETXATTR/LISTXATTR/REMOVEXATTR，长度查询、空值、CREATE/REPLACE、
+     逐操作 ENOSYS 缓存、列表格式校验；沿用 VFS user/trusted/security 与 capability policy，普通 DAC 经
+     实际 filesystem 判定。guest 探针增加非特权 caller、错误与缓存边界；按用户要求不执行回归或 QEMU。
    - 阶段 1 剩余：
-     FOPEN_DIRECT_IO、xattr、`/sys/fs/fuse/connections`、FUSE over io_uring、passthrough；探针随各项扩展。
+     FOPEN_DIRECT_IO、`/sys/fs/fuse/connections`、FUSE over io_uring、passthrough；探针随各项扩展。
    - `/dev/fuse`（10:229）：每次 open 一个连接；read 取请求、write 回复、poll；守护进程关闭 fd 即中止连接，
      未完成请求返回 ENOTCONN。
    - `mount -t fuse[.subtype]`：`fd=`、`rootmode=`、`user_id=`、`group_id=`、`default_permissions`、

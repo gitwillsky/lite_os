@@ -73,6 +73,18 @@
   的 `max_readahead`（≤128 KiB 且 ≤ 单请求页数），整窗一个 READ。预读页准备失败只缩短窗口。
 - `Inode::unlinked(directory)`：VFS 在 unlink/rmdir 与 rename 覆盖成功后通知 victim（Linux `drop_nlink`）；
   ext4/tmpfs 在父目录事务中维护链接数，保持空实现；FUSE 据此把缓存链接数降到零，页缓存随最后 dentry 逐出。
+- xattr 的 GET/SET/LIST/REMOVE 转发标准请求；未协商 SETXATTR_EXT，SET 使用 8-byte 兼容头。
+  属性值和名称列表仅属于服务端，不建立本地 xattr 缓存；成功变更使 inode 属性缓存过期以重取 ctime。
+  `Inode::xattr_size`/`xattr_list_size` 只由 OpenedFile 的零缓冲 syscall 路径使用，FUSE 发 size=0 查询；
+  本地 filesystem 缺省沿用实际属性快照，security.capability 按 caller namespace 投影后计长。
+  非零读取沿用 owned snapshot 接口，以 64 KiB 上限单次获取；小 caller 缓冲由统一 ABI 返回 ERANGE，
+  最大缓冲仍装不下为 E2BIG，零缓冲查询按 Linux 将服务端长度截到上限。LIST 拒绝空名称/缺少 NUL 终止。
+  四种操作分别缓存 ENOSYS→EOPNOTSUPP；ENODATA 在 raw inode 层为 NotFound，exec 因而正确识别无 capability。
+  namespace、sticky、trusted/security capability 与 rootid 映射由共同 xattr policy 拥有；普通访问经
+  `Inode::require_access`，FUSE 未启用 default_permissions 时由服务端判定。FUSE LIST 原样返回服务端名称，
+  不套用本地 filesystem 的 trusted 名称过滤；POSIX ACL 的 system.* handler 仍未实现。
+  Benchmark 决策：没有新增缓存/锁，零缓冲只收 8-byte 回复，普通读不先查询长度而多一次往返；
+  本地属性的既有快照路径不变，新增 delegation 仅出现在 xattr 冷路径，沿用现有基线，未改阈值。
 
 性能：请求按单页最多 256 页（1 MiB）分块；名字与属性缓存使每个路径分量在超时内不再往返。新增连接、
 队列与 codec 都在 FUSE 自己的请求路径上，不进入既有文件系统热路径；`superblock()` 让 mount table 去掉

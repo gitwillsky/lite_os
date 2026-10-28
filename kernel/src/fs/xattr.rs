@@ -53,6 +53,20 @@ impl XattrChange<'_> {
         owner: &OwnerModeState,
         writable: Result<(), FileSystemError>,
     ) -> Result<(), FileSystemError> {
+        let identity = self.identity;
+        self.prepare_access(owner, writable, || identity.require_owner(owner, 2))
+    }
+
+    /// 复用相同的 namespace/capability policy，由实际 filesystem 判定普通 inode 访问权限。
+    ///
+    /// `owner` 为实际属性快照，`writable` 为 immutable/append-only 准入；`access` 判定普通写权限，
+    /// security/trusted 等无需 DAC 的 namespace 不调用它。成功返回 ()，所有授权/转换错误直接传播。
+    pub(super) fn prepare_access(
+        &mut self,
+        owner: &OwnerModeState,
+        writable: Result<(), FileSystemError>,
+        access: impl FnOnce() -> Result<(), FileSystemError>,
+    ) -> Result<(), FileSystemError> {
         if self.name == file_capability::NAME
             && self.value.as_ref().is_some_and(|value| !value.is_empty())
         {
@@ -64,7 +78,9 @@ impl XattrChange<'_> {
             )?);
         }
         writable?;
-        require_permission(owner, self.identity, self.name, true)?;
+        if require_namespace(owner, self.identity, self.name, true)? {
+            access()?;
+        }
         if self
             .filesystem_user
             .map_kernel_id(true, owner.uid())
@@ -119,7 +135,7 @@ pub(super) fn require_access(
     if write {
         inode.check_xattr_write()?;
     }
-    require_permission(
+    let discretionary = require_namespace(
         &OwnerModeState::new(
             metadata.kind,
             metadata.mode as u16,
@@ -130,15 +146,20 @@ pub(super) fn require_access(
         name,
         write,
     )?;
+    if discretionary {
+        inode.require_access(identity, if write { 2 } else { 4 })?;
+    }
     Ok(metadata)
 }
 
-fn require_permission(
+/// 检查属性 namespace 的通用 policy；返回 true 表示还须由实际 inode 判定普通 R/W 权限。
+/// security/system 与有权访问的 trusted 不要求 DAC；不能把 FUSE 的访问授权替换为本地 mode 位。
+fn require_namespace(
     owner: &OwnerModeState,
     identity: &AccessIdentity,
     name: &[u8],
     write: bool,
-) -> Result<(), FileSystemError> {
+) -> Result<bool, FileSystemError> {
     if name.is_empty() || name.contains(&0) {
         return Err(FileSystemError::InvalidOperation);
     }
@@ -146,7 +167,7 @@ fn require_permission(
         return Err(FileSystemError::NameTooLong);
     }
     if name.starts_with(b"security.") || name.starts_with(b"system.") {
-        return Ok(());
+        return Ok(false);
     }
     let denied = || {
         if write {
@@ -159,7 +180,7 @@ fn require_permission(
         if !identity.has_capability(Capability::SYS_ADMIN) {
             return Err(denied());
         }
-        return Ok(());
+        return Ok(false);
     }
     if name.starts_with(b"user.") {
         match owner.kind() {
@@ -172,7 +193,7 @@ fn require_permission(
             _ => return Err(denied()),
         }
     }
-    identity.require_owner(owner, if write { 2 } else { 4 })
+    Ok(true)
 }
 
 /// 当前支持的filesystem xattr handler namespace；system ACL需要实际ACL owner，不能作为普通bytes放行。

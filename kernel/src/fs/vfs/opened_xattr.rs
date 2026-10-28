@@ -29,9 +29,29 @@ impl OpenedFile {
             Ok(value)
         }
     }
-    /// listxattr不额外授予read内容权限；filesystem过滤实际caller不可见的trusted名称。
+    /// 零缓冲查询 caller-visible 属性长度；capability 仍按 caller namespace 投影后计长。
+    ///
+    /// `name` 为属性名，`identity` 为当前 caller；返回字节数，传播权限、属性和 rootid 投影错误。
+    pub(crate) fn xattr_size(
+        &self,
+        name: &[u8],
+        identity: &AccessIdentity,
+    ) -> Result<usize, XattrError> {
+        if name == file_capability::NAME {
+            return self.read_xattr(name, identity).map(|value| value.len());
+        }
+        let inode = self.inode();
+        xattr::require_access(&*inode, identity, name, false)?;
+        xattr::require_handler(name)?;
+        Ok(inode.xattr_size(name)?)
+    }
+    /// listxattr不额外授予read内容权限；名称可见性由实际filesystem判定。
     pub(crate) fn list_xattrs(&self, identity: &AccessIdentity) -> Result<Vec<u8>, XattrError> {
         Ok(self.inode().list_xattrs(identity)?)
+    }
+    /// 零缓冲查询可见属性名称列表长度；`identity` 为当前 caller，错误由 filesystem 原样返回。
+    pub(crate) fn xattr_list_size(&self, identity: &AccessIdentity) -> Result<usize, XattrError> {
+        Ok(self.inode().xattr_list_size(identity)?)
     }
     /// set/remove共用实际mount writer与inode mutation；准备失败不发表attribute或通知。
     /// capability非空set按fixed commoncap转换；remove需要inode-scoped SETFCAP，空set遵循Linux特殊路径。

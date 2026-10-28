@@ -4,7 +4,7 @@ use alloc::{
     vec::Vec,
 };
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use core::sync::atomic::{AtomicU16, Ordering};
 
 use spin::Mutex;
 use syscall_abi::{errno, fuse};
@@ -36,9 +36,9 @@ pub(super) struct Mount {
     // 同一 inode 并累加 nlookup；缺失时同一文件出现多个 inode，各自的属性与页缓存互不一致。
     nodes: Mutex<FallibleMap<u64, Weak<FuseInode>>>,
     // OWNER: 守护进程以 ENOSYS 声明不实现的可选操作（Linux `no_access`/`no_rename2`/`no_fsync`/
-    // `no_fsyncdir`/`no_fallocate`/`no_flush`/`no_create`），按 [`Unsupported`] 位记录。缺失时每次 access/fsync 都多一个
+    // `no_fsyncdir`/`no_fallocate`/`no_flush`/`no_create`/xattr），按 [`Unsupported`] 位记录。缺失时每次 access/fsync 都多一个
     // 注定失败的往返，RENAME_NOREPLACE 在不支持的服务器上也得不到 Linux 的 EINVAL。
-    unsupported: AtomicU8,
+    unsupported: AtomicU16,
 }
 
 /// 守护进程不实现的可选操作。
@@ -51,16 +51,20 @@ pub(super) enum Unsupported {
     Fallocate = 1 << 4,
     Flush = 1 << 5,
     Create = 1 << 6,
+    GetXattr = 1 << 7,
+    SetXattr = 1 << 8,
+    ListXattr = 1 << 9,
+    RemoveXattr = 1 << 10,
 }
 
 impl Mount {
     pub(super) fn unsupported(&self, operation: Unsupported) -> bool {
-        self.unsupported.load(Ordering::Relaxed) & operation as u8 != 0
+        self.unsupported.load(Ordering::Relaxed) & operation as u16 != 0
     }
 
     pub(super) fn mark_unsupported(&self, operation: Unsupported) {
         self.unsupported
-            .fetch_or(operation as u8, Ordering::Relaxed);
+            .fetch_or(operation as u16, Ordering::Relaxed);
     }
 
     /// nodeid 对应的存活 inode。
@@ -265,7 +269,7 @@ impl FileSystemType for FuseFileSystemType {
             filesystem_id: crate::fs::allocate_filesystem_id(),
             options,
             nodes: Mutex::new(FallibleMap::new()),
-            unsupported: AtomicU8::new(0),
+            unsupported: AtomicU16::new(0),
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
         let root = FuseInode::root(mount.clone(), &root_attributes)?;

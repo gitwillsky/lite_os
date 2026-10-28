@@ -28,6 +28,16 @@ fn xattr_error(error: XattrError) -> isize {
     }
 }
 
+/// Linux get/list 在最大缓冲仍装不下时用 E2BIG；较小 caller 缓冲保持 ERANGE。
+fn read_error(error: XattrError, size: usize) -> isize {
+    let error = xattr_error(error);
+    if error == -errno::ERANGE && size >= MAX_SIZE {
+        -errno::E2BIG
+    } else {
+        error
+    }
+}
+
 fn name(task: &TaskControlBlock, pointer: usize) -> Result<Vec<u8>, isize> {
     let name = task.copy_user_c_string(pointer, 256).map_err(user_error)?;
     if name.is_empty() {
@@ -108,22 +118,20 @@ pub(crate) fn set(
     result.map_or_else(|error| error, |()| 0)
 }
 
-/// get/list的零size只查询长度；非零size截到Linux64KiB上限，只有成功快照才copyout。
+/// get/list的非零缓冲截到Linux64KiB上限，只有完整快照才copyout；零缓冲由独立长度查询处理。
 fn output(task: &TaskControlBlock, bytes: &[u8], pointer: usize, size: usize) -> isize {
     let capacity = size.min(MAX_SIZE);
-    if size != 0 {
-        if bytes.len() > capacity {
-            return if capacity == MAX_SIZE {
-                -errno::E2BIG
-            } else {
-                -errno::ERANGE
-            };
-        }
-        if !bytes.is_empty()
-            && let Err(error) = task.copy_to_user(pointer, bytes)
-        {
-            return user_error(error);
-        }
+    if bytes.len() > capacity {
+        return if capacity == MAX_SIZE {
+            -errno::E2BIG
+        } else {
+            -errno::ERANGE
+        };
+    }
+    if !bytes.is_empty()
+        && let Err(error) = task.copy_to_user(pointer, bytes)
+    {
+        return user_error(error);
     }
     bytes.len() as isize
 }
@@ -142,24 +150,38 @@ pub(crate) fn get(
         at_flags(lookup)?;
         let name = name(&task, attribute)?;
         let opened = target(&task, dirfd, pathname, lookup)?;
-        opened
+        if size == 0 {
+            return opened
+                .xattr_size(&name, &task.access_identity(true))
+                .map(|length| length as isize)
+                .map_err(xattr_error);
+        }
+        let bytes = opened
             .read_xattr(&name, &task.access_identity(true))
-            .map_err(xattr_error)
+            .map_err(|error| read_error(error, size))?;
+        Ok(output(&task, &bytes, value, size))
     })();
-    result.map_or_else(|error| error, |bytes| output(&task, &bytes, value, size))
+    result.unwrap_or_else(|error| error)
 }
 
-/// listxattr族读取NUL分隔名称；实际filesystem按当前caller过滤trusted属性。
+/// listxattr族读取NUL分隔名称；名称可见性由实际filesystem判定。
 pub(crate) fn list(dirfd: isize, pathname: usize, lookup: u32, value: usize, size: usize) -> isize {
     let task = current_task().expect("listxattr requires current task");
     let result = (|| {
         at_flags(lookup)?;
         let opened = target(&task, dirfd, pathname, lookup)?;
-        opened
+        if size == 0 {
+            return opened
+                .xattr_list_size(&task.access_identity(true))
+                .map(|length| length as isize)
+                .map_err(xattr_error);
+        }
+        let bytes = opened
             .list_xattrs(&task.access_identity(true))
-            .map_err(xattr_error)
+            .map_err(|error| read_error(error, size))?;
+        Ok(output(&task, &bytes, value, size))
     })();
-    result.map_or_else(|error| error, |bytes| output(&task, &bytes, value, size))
+    result.unwrap_or_else(|error| error)
 }
 
 /// removexattr必须存在；统一实际writer/权限路径，不把missing属性作为成功删除。
