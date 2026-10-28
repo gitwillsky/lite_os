@@ -536,29 +536,6 @@ pub(crate) struct fuse_init_out {
 
 #[repr(C)]
 #[derive(Debug, FromBytes, KnownLayout, Immutable)]
-pub(crate) struct cuse_init_in {
-    pub(crate) major: u32,
-    pub(crate) minor: u32,
-    pub(crate) unused: u32,
-    pub(crate) flags: u32,
-}
-
-#[repr(C)]
-#[derive(Debug, KnownLayout, Immutable)]
-pub(crate) struct cuse_init_out {
-    pub(crate) major: u32,
-    pub(crate) minor: u32,
-    pub(crate) unused: u32,
-    pub(crate) flags: u32,
-    pub(crate) max_read: u32,
-    pub(crate) max_write: u32,
-    pub(crate) dev_major: u32, // chardev major
-    pub(crate) dev_minor: u32, // chardev minor
-    pub(crate) spare: [u32; 10],
-}
-
-#[repr(C)]
-#[derive(Debug, FromBytes, KnownLayout, Immutable)]
 pub(crate) struct fuse_interrupt_in {
     pub(crate) unique: u64,
 }
@@ -586,13 +563,6 @@ pub(crate) struct fuse_ioctl_in {
     pub(crate) arg: u64,
     pub(crate) in_size: u32,
     pub(crate) out_size: u32,
-}
-
-#[repr(C)]
-#[derive(Debug, KnownLayout, Immutable)]
-pub(crate) struct fuse_ioctl_iovec {
-    pub(crate) base: u64,
-    pub(crate) len: u64,
 }
 
 #[repr(C)]
@@ -707,28 +677,6 @@ pub(crate) struct fuse_notify_store_out {
     pub(crate) offset: u64,
     pub(crate) size: u32,
     pub(crate) padding: u32,
-}
-
-#[repr(C)]
-#[derive(Debug, KnownLayout, Immutable)]
-pub(crate) struct fuse_notify_retrieve_out {
-    pub(crate) notify_unique: u64,
-    pub(crate) nodeid: u64,
-    pub(crate) offset: u64,
-    pub(crate) size: u32,
-    pub(crate) padding: u32,
-}
-
-#[repr(C)]
-#[derive(Debug, FromBytes, KnownLayout, Immutable)]
-pub(crate) struct fuse_notify_retrieve_in {
-    // matches the size of fuse_write_in
-    pub(crate) dummy1: u64,
-    pub(crate) offset: u64,
-    pub(crate) size: u32,
-    pub(crate) dummy2: u32,
-    pub(crate) dummy3: u64,
-    pub(crate) dummy4: u64,
 }
 
 #[repr(C)]
