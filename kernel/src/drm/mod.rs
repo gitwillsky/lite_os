@@ -13,7 +13,9 @@ use crate::{
 
 const DUMB_OFFSET_SHIFT: u32 = 32;
 const DRIVER_NAME: &str = "virtio_gpu";
-pub(crate) const VIRGL_COMMAND_MAX: usize = 64 * 1024;
+/// 单次 EXECBUFFER 命令流上限：Mesa virgl 命令缓冲的最大值
+/// （`VIRGL_MAX_CMDBUF_DWORDS` = 64 Ki + 1024 dwords）；更小的上限会拒绝合法的 Mesa 提交。
+pub(crate) const VIRGL_COMMAND_MAX: usize = (64 * 1024 + 1024) * 4;
 
 mod event;
 pub(crate) use event::DrmEvent;

@@ -36,12 +36,20 @@ class ProductAssetTests(unittest.TestCase):
         for text in sources:
             fixed.update(re.findall(r'"(?:/usr/share/liteos/ui/)?([a-z][a-z0-9-]*-(?:16|32|64))(?:\.bmp)?"', text))
         self.assertFalse(fixed - ui, f'missing fixed icon requests: {sorted(fixed - ui)}')
+        # 共享 MIME 数据库的 <icon>/<generic-icon> 也是标准消费者：资源管理器按类型名在运行时拼出
+        # `/usr/share/liteos/ui/<name>-{16,32}.bmp`，源码里不会出现字面路径。声明的图标必须真实存在。
+        mime = {match for path in (root / 'user/base/mime/packages').glob('*.xml')
+                for match in re.findall(r'<(?:generic-)?icon name="([a-z][a-z0-9-]*)"', path.read_text())}
+        modern = set(json.loads((root / 'assets/file-icons/manifest.json').read_text())['icons'])
+        stems = {re.sub(r'-(?:16|32|64)$', '', name) for name in ui}
+        self.assertFalse(mime - stems - modern, f'missing MIME icons: {sorted(mime - stems - modern)}')
         for name in ui:
             stem = re.sub(r'-(?:16|32|64|1x)$', '', name)
             # 工具栏的三种状态由 strip 名在运行时组合，仍属于同一个资源消费者。
             stem = re.sub(r'-(?:default|hot|disabled)$', '', stem)
             pattern = r'"(?:/usr/share/liteos/ui/)?' + re.escape(stem) + r'(?:-(?:16|32|64|1x))?(?:\.bmp)?"'
-            used = any(re.search(pattern, text) for text in sources) or any('Icon=' + stem + '\n' in text for text in entries)
+            used = (any(re.search(pattern, text) for text in sources) or stem in mime
+                    or any('Icon=' + stem + '\n' in text for text in entries))
             self.assertTrue(used, f'unreferenced UI resource: {name}')
 
     def test_host_metadata_is_ignored_but_invalid_assets_fail(self) -> None:

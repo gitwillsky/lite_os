@@ -295,9 +295,16 @@
   context 只等待自己的 detach，不等待其他进程仍持有的资源。全局退休观察者是最后一个 Arc 且 fence 完成后才 RESOURCE_UNREF。
 - context_creation task mutex 串行化 context 创建、PRIME import 与 GEM_CLOSE 的 handle 发布，等待 host 时不持有 spin lock。
   重复/self-import 返回原 handle，不增 GEM handle 引用计数；未发布 handle 的 copyout/分配/等待失败统一回滚。
-- 每资源 reservation task mutex 在 exec/transfer 的等待、提交与 fence 记录间独占；多资源按设备 resource ID 排序获取，
-  可中断等待返回 EINTR。缺少此边界会让跨 context 消费者在生产者登记 fence 前读取旧数据。
+- 每资源 reservation task mutex 在 exec/transfer 的提交与 fence 记录间独占；多资源按设备 resource ID 排序获取，
+  可中断获取返回 EINTR。对照 Linux virtio-gpu，exec/transfer 不在 CPU 上等待旧 fence：主机按控制队列顺序执行，
+  先提交的生产者命令必然先于后提交的消费者命令生效；需要 CPU 可见结果的一方经 VIRTGPU_WAIT 或 DMA_BUF BEGIN_SYNC 等待。
+  CPU 等待会把每次提交量化到主机 fence 通知周期（macOS QEMU 实测约 10 ms），合成每帧都被拖慢一个周期。
   VirglAccess 去重并保活真实 attachment，最后 fence 只取 max；独立资源不共享这把锁。
+- EXECBUFFER 命令流上限 `VIRGL_COMMAND_MAX` 等于 Mesa virgl 命令缓冲最大值（64 Ki + 1024 dwords）。
+  ioctl 在任何提交锁之前把命令流分段拷入 `DeviceMemoryKind::Driver` 的 DeviceBacking，`Submit3d` 以 Arc 持有它；
+  adapter 只在槽位写 32 字节请求头，命令流按 backing extent 作为第二个 descriptor 发布，槽位持有 backing 到 used ring 归还，
+  对应 Linux 每次提交复制命令缓冲并单独挂入 sg。extent 超过 `VIRGL_COMMAND_EXTENTS_MAX`（16）返回 ENOMEM，
+  否则这条 chain 永远装不进 64 项队列而无限重试。槽位请求缓冲只按 ATTACH_BACKING 的 256 个 extent 条目预留。
 - dma-buf 支持标准 PRIME FD、DMA_BUF_IOCTL_SYNC、poll 与共享 backing mmap（当前 offset=0）。
   BEGIN_SYNC 等待同一 reservation/fence；END_SYNC 使用当前一致性 DMA backing。poll generation 来自资源 fence，不能被其他资源 completion 制造 ET 边沿。
   DeviceFile 可提供弱 OFD identity；syscall 负责 reserve FD、复用实际 OFD、copyout 后发布，CLOEXEC 属于 FD。
@@ -316,7 +323,9 @@
   dumb buffer 不可导出，恒为私有。fdinfo 在 OFD 锁内读取 lifecycle 锁，锁序与 `virgl_wait` 相同。
   统计沿用现有 owner，无新增状态、锁或分配；每次读取按客户端 GEM handle 数线性遍历，属于显式监控查询冷路径。
 - completion 将退休节点移出锁域再析构；回收不分配。已发布 resource ID 不复用，未发布 ID 等 UNREF completion 后回收。
-- Benchmark 决策：新增 reservation 成本属于共享资源同步的必要契约；沿用 GPU 门禁检查真实清屏读回、PRIME 寿命、上游 Wayland EGL 消费与 page-flip 节拍，
+- Benchmark 决策：命令流改为每次提交分配 backing（与 Linux memdup 同量级），换掉 32 个 64 KiB 预分配槽位与锁内整段拷贝；
+  去掉 exec/transfer 的 CPU fence 等待后，合成帧与 SHM 提交不再各自付出一个主机 fence 通知周期。
+  新增 reservation 成本属于共享资源同步的必要契约；沿用 GPU 门禁检查真实清屏读回、PRIME 寿命、上游 Wayland EGL 消费与 page-flip 节拍，
   不以 host 墙钟推断 GPU 性能。具体结果只由实际运行记录声明。
 
 当前只在同一设备共享 VirGL GEM；不宣称跨设备 PRIME、blob、sync_file/syncobj、Vulkan 或全部 OpenGL resource transfer 语义。

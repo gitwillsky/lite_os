@@ -45,8 +45,8 @@ pub const BIND_DISPLAY_TARGET: u32 = 1 << 8;
 pub const BIND_SCANOUT: u32 = 1 << 14;
 /// Resource 以浏览器/scanout 的 top-left origin 解释 Y 坐标。
 pub const RESOURCE_Y_0_TOP: u32 = 1;
-/// 单次 `EXECBUFFER` 命令流的字节上限，与 LiteOS 内核 `VIRGL_COMMAND_MAX` 一致。
-const EXEC_COMMAND_MAX: usize = 64 * 1024;
+/// 单次 `EXECBUFFER` 命令流的字节上限：Mesa virgl 命令缓冲最大值，与 LiteOS 内核 `VIRGL_COMMAND_MAX` 一致。
+const EXEC_COMMAND_MAX: usize = (64 * 1024 + 1024) * 4;
 
 /// Immutable host capability bytes for the selected VirGL2 context ABI.
 #[derive(Clone)]

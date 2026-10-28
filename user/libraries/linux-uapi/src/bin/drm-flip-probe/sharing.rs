@@ -91,7 +91,8 @@ pub(super) fn verify() -> Result<(), String> {
     {
         return Err("closing the dma-buf fd made a PRIME GEM private".into());
     }
-    // No producer wait: the consumer transfer itself must obey the shared implicit reservation.
+    // No producer wait: as on Linux, host control-queue order runs the consumer transfer after the
+    // producer's earlier draw; only the consumer's own result needs the following wait.
     step(
         "consumer transfer after exporter close",
         alias.transfer_from_host(0, 0, 16, 16),

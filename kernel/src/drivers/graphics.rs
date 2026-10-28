@@ -69,6 +69,11 @@ pub(crate) enum VirglTransferDirection {
     FromHost,
 }
 
+/// 一段 SUBMIT_3D 命令流 backing 允许的最多物理 extent 数。命令流占一个描述符/extent，
+/// adapter 的有界队列必须能同时装下它与请求头、响应；碎片化到更多 extent 时由分配方返回 ENOMEM，
+/// 否则这条 chain 永远放不进队列，提交只会无限重试。
+pub(crate) const VIRGL_COMMAND_EXTENTS_MAX: usize = 16;
+
 /// 一条标准 VirtIO-GPU VirGL controlq operation。
 #[derive(Clone)]
 pub(crate) enum VirglCommand<'a> {
@@ -136,8 +141,12 @@ pub(crate) enum VirglCommand<'a> {
     Submit3d {
         /// 接收 command stream 的 context identity。
         context_id: u32,
-        /// 4-byte aligned VirGL dword stream。
-        commands: &'a [u8],
+        /// 命令流所在的 DMA-stable backing：ioctl 在提交锁外拷入，adapter 持有到设备完成，
+        /// 对应 Linux 每次提交复制并单独挂入 sg 的命令缓冲。extent 数不超过
+        /// [`VIRGL_COMMAND_EXTENTS_MAX`]。
+        commands: Arc<DeviceBacking>,
+        /// backing 前缀中 4-byte aligned VirGL dword stream 的字节数。
+        length: usize,
     },
     /// 在 guest backing 与 host resource 之间传输一个三维区域。
     Transfer3d {

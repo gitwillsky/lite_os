@@ -402,7 +402,10 @@ fn chart(commands: &mut Vec<Draw<'_>>, bounds: Rect, samples: &VecDeque<u8>, cou
     // 2. 相邻点之间逐列线性插值成 1 像素粗的折线；每列竖向覆盖上一列到本列的高度，陡坡不断线。
     let point = |index: usize, value: u8| {
         let x = bounds.width - 1 - (visible - 1 - index) as i32 * STEP;
-        (x, bounds.height - 1 - i32::from(value) * (bounds.height - 1) / 100)
+        (
+            x,
+            bounds.height - 1 - i32::from(value) * (bounds.height - 1) / 100,
+        )
     };
     let mut previous: Option<(i32, i32)> = None;
     for (index, value) in samples.iter().skip(samples.len() - visible).enumerate() {
@@ -419,7 +422,10 @@ fn chart(commands: &mut Vec<Draw<'_>>, bounds: Rect, samples: &VecDeque<u8>, cou
             last = y;
         }
         if previous.is_none() {
-            commands.push(fill(Rect::new(bounds.x + x1.max(0), bounds.y + y1, 1, 1), LIT));
+            commands.push(fill(
+                Rect::new(bounds.x + x1.max(0), bounds.y + y1, 1, 1),
+                LIT,
+            ));
         }
         previous = Some((x1, y1));
     }

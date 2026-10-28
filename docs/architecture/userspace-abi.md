@@ -30,7 +30,8 @@
   归属单一 `user/` workspace 与 lockfile；产品安装 `logon`、`desktop`、`file-explorer`、`control-panel`、`taskmgr`（任务管理器）、`sndvol`（音量控制）、终端 `terminal` 与 `session-launch`，没有用户态音频服务。
   kernel、rootfs、APK 与 cache 都携带同一个 architecture identity。
 - 系统内部 Rust dylib 安装在 `/usr/lib/liteos`，动态链接器路径由 `/etc/ld-musl-<arch>.path` 提供。
-  尚未迁移的系统组件用 prefer-dynamic，共同构建并发布，仍受同一 Rust 工具链约束。
+  尚未迁移的系统组件用 prefer-dynamic，共同构建并发布，仍受同一 Rust 工具链约束；凡按 Cargo 依赖图（传递）依赖系统库包的程序
+  （含门禁探针）一律如此链接，静态链接会因 dylib 之间的菱形依赖重复引入 std 而失败。
   `libliteos_ui.so.1` 是独立的稳定 UI 二进制边界，其 Rust 依赖和 std 静态纳入库内。
   SDK 应用也拥有自己的 Rust/std，只动态依赖该运行库与 musl；音量控制和终端已使用这条路径。
   `verify_busybox` 为 SDK 应用和 UI 运行库检查实际 ELF 依赖，拒绝回到系统 Rust dylib。

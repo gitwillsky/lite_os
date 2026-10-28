@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import io
+import json
 import lzma
 import shutil
 import os
@@ -115,10 +117,6 @@ SYSTEM_LIBRARIES = (
     UI_RUNTIME,
 )
 SYSTEM_LIBRARY_DIRECTORY = "/usr/lib/liteos"
-SYSTEM_LIBRARY_PROGRAMS = frozenset({
-    ("compositor", "compositor"), ("logon", "logon"), ("desktop", "desktop"),
-    ("sound-player", "sndplay"),
-})
 STABLE_UI_PROGRAMS = frozenset({("file-explorer", "file-explorer"), ("control-panel", "control-panel"), ("notepad", "notepad"), ("device-manager", "devmgmt"), ("volume-control", "sndvol"), ("terminal", "terminal"), ("task-manager", "taskmgr"), ("media-player", "mplay")})
 RUST_USER_RUSTFLAGS = (
     "-C link-self-contained=no -C target-feature=-crt-static "
@@ -1099,9 +1097,9 @@ class _RustUserTarget:
 
     @property
     def dynamic(self) -> bool:
-        return (self.library and (self.package, self.name) != UI_RUNTIME) or (
-            self.package, self.name
-        ) in SYSTEM_LIBRARY_PROGRAMS
+        if self.library:
+            return (self.package, self.name) != UI_RUNTIME
+        return not self.sdk_consumer and self.package in _system_library_consumers()
 
     @property
     def sdk_consumer(self) -> bool:
@@ -1110,6 +1108,47 @@ class _RustUserTarget:
     @property
     def artifact(self) -> str:
         return f"lib{self.name}.so" if self.library else self.name
+
+
+@functools.cache
+def _system_library_consumers() -> frozenset[str]:
+    """依赖（直接或传递）任一系统共享库包的 workspace package。
+
+    这些 package 的程序必须与系统库一样以 ``-C prefer-dynamic`` 链接：静态链接时 Cargo 仍会为依赖链上
+    的 dylib 各自编译一份，dylib 之间的菱形依赖（如 typeface 同时经 linux-uapi 与直接依赖
+    liteos-runtime）会让 std 与 liteos_runtime 各出现两次而链接失败。由 Cargo 依赖图推导，
+    不维护会与真实依赖脱节的程序名单。
+    """
+    metadata = json.loads(run(
+        ["cargo", "metadata", "--format-version", "1", "--no-deps", "--offline",
+         "--manifest-path", str(ROOT / "user/Cargo.toml")],
+        ROOT,
+    ))
+    dependencies = {
+        package["name"]: {
+            dependency["name"]
+            for dependency in package["dependencies"]
+            if dependency["kind"] is None
+        }
+        for package in metadata["packages"]
+    }
+    consumers = {package for package, _ in SYSTEM_LIBRARIES}
+    libraries = frozenset(consumers)
+    while True:
+        grown = {
+            package
+            for package, direct in dependencies.items()
+            if package not in consumers and direct & consumers
+        }
+        if not grown:
+            break
+        consumers |= grown
+    # 系统库包自身的程序只在依赖其他系统库时才算消费者，与其余 package 同一判定。
+    return frozenset(
+        package
+        for package in consumers
+        if package not in libraries or dependencies.get(package, set()) & libraries
+    )
 
 
 def _build_rust_user_targets(

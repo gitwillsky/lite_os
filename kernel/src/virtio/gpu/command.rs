@@ -90,6 +90,8 @@ pub(super) struct PreparedCommand {
     pub(super) opcode: u32,
     pub(super) length: usize,
     pub(super) stage: RuntimeStage,
+    /// SUBMIT_3D 的命令流 backing 与字节数；作为请求头之后的第二个 descriptor 发布。
+    pub(super) stream: Option<(Arc<DeviceBacking>, usize)>,
 }
 
 /// controlq 一个有界 slot 中的 descriptor 与 fence 凭据。
@@ -226,6 +228,7 @@ impl GpuCommand {
             opcode,
             length,
             stage,
+            stream: None,
         })
     }
 }
@@ -244,6 +247,9 @@ pub(super) struct CommandSlot {
     pub(super) request: DmaBuffer<CONTROL_REQUEST_SIZE>,
     pub(super) response: DmaBuffer<CAPSET_RESPONSE_SIZE>,
     pub(super) pending: Option<PendingCommand>,
+    /// 在途 SUBMIT_3D 的命令流 backing；设备经 used ring 归还 descriptor 前不得释放，
+    /// 否则设备会读到已回收的物理页。
+    pub(super) stream: Option<Arc<DeviceBacking>>,
 }
 
 pub(super) struct CommandSlots {
@@ -258,9 +264,15 @@ pub(super) enum CommandPayload {
 pub(super) struct CompletedCommand {
     pending: PendingCommand,
     payload: CommandPayload,
+    stream: Option<Arc<DeviceBacking>>,
 }
 
 impl CompletedCommand {
+    /// 交出已完成 SUBMIT_3D 的命令流 backing；调用方必须在释放控制队列锁之后再析构它。
+    pub(super) fn take_stream(&mut self) -> Option<Arc<DeviceBacking>> {
+        self.stream.take()
+    }
+
     pub(super) fn into_parts(self) -> (PendingCommand, CommandPayload) {
         (self.pending, self.payload)
     }
@@ -275,6 +287,7 @@ impl CommandSlots {
                 request: DmaBuffer::try_zeroed().ok()?,
                 response: DmaBuffer::try_zeroed().ok()?,
                 pending: None,
+                stream: None,
             });
         }
         Some(Self { slots })
@@ -361,7 +374,11 @@ impl CommandSlots {
             _ => CommandPayload::None,
         };
         let pending = slot.pending.take().ok_or(DisplayError::Device)?;
-        Ok(CompletedCommand { pending, payload })
+        Ok(CompletedCommand {
+            pending,
+            payload,
+            stream: slot.stream.take(),
+        })
     }
 
     pub(super) fn boot_slot_mut(&mut self) -> &mut CommandSlot {

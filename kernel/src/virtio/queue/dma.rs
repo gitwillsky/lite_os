@@ -5,7 +5,7 @@ use core::{
 };
 
 #[cfg(not(test))]
-use crate::memory::{KERNEL_SPACE, PAGE_SIZE, VirtualAddress};
+use crate::memory::{DeviceBacking, KERNEL_SPACE, PAGE_SIZE, VirtualAddress};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// fixed DMA mapping 在 descriptor publication 前的构造错误。
@@ -101,7 +101,7 @@ impl<const SIZE: usize> DeviceWriteBuffer<SIZE> {
     pub(in crate::virtio) fn writable_prefix(&self, length: usize) -> DmaSlice<'_> {
         assert!(length != 0 && length <= SIZE);
         DmaSlice {
-            segments: &self.segments,
+            source: DmaSource::Mapped(&self.segments),
             range: 0..length,
             device_writable: true,
         }
@@ -180,7 +180,7 @@ impl<const SIZE: usize> DmaBuffer<SIZE> {
     fn whole(&self, device_writable: bool) -> DmaSlice<'_> {
         assert!(SIZE != 0, "zero-sized DMA buffer has no descriptor");
         DmaSlice {
-            segments: &self.segments,
+            source: DmaSource::Mapped(&self.segments),
             range: 0..SIZE,
             device_writable,
         }
@@ -195,7 +195,7 @@ impl<const SIZE: usize> DmaBuffer<SIZE> {
             return Err(DmaMappingError::InvalidRange);
         }
         Ok(DmaSlice {
-            segments: &self.segments,
+            source: DmaSource::Mapped(&self.segments),
             range,
             device_writable,
         })
@@ -234,25 +234,83 @@ impl<const SIZE: usize> DerefMut for DmaBuffer<SIZE> {
 /// 该 borrow 只证明 publication 时 backing/mapping 存活；adapter 的 completion/reset state 必须继续
 /// 保持 owner，直到 device 不再拥有 descriptor。
 pub(in crate::virtio) struct DmaSlice<'mapping> {
-    segments: &'mapping [DmaSegment],
+    source: DmaSource<'mapping>,
     range: Range<usize>,
     device_writable: bool,
 }
 
+/// descriptor segment 的来源：固定 buffer 的 cached mapping，或 device backing 的物理 extent。
+#[derive(Clone)]
+enum DmaSource<'mapping> {
+    Mapped(&'mapping [DmaSegment]),
+    /// 每个 extent 已是物理连续页；直接按 extent 生成 segment，提交锁内不分配 mapping 表。
+    #[cfg(not(test))]
+    Backing(&'mapping DeviceBacking),
+}
+
+impl DmaSource<'_> {
+    fn for_each(&self, mut visit: impl FnMut(DmaSegment)) {
+        match self {
+            Self::Mapped(segments) => {
+                for segment in *segments {
+                    visit(*segment);
+                }
+            }
+            #[cfg(not(test))]
+            Self::Backing(backing) => {
+                let mut offset = 0;
+                for (page, pages) in
+                    (0..backing.extent_count()).filter_map(|index| backing.extent(index))
+                {
+                    let length = pages * PAGE_SIZE;
+                    visit(DmaSegment {
+                        physical: (page.as_usize() * PAGE_SIZE) as u64,
+                        offset,
+                        length,
+                    });
+                    offset += length;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(not(test))]
+impl<'mapping> DmaSlice<'mapping> {
+    /// 投影 device backing 的只读前缀；backing 必须由 slot 保活到 used ring 归还 descriptor。
+    ///
+    /// # Errors
+    ///
+    /// 空范围或超过 backing 容量返回 `InvalidRange`。
+    pub(in crate::virtio) fn backing(
+        backing: &'mapping DeviceBacking,
+        length: usize,
+    ) -> Result<Self, DmaMappingError> {
+        if length == 0 || length > backing.pages().saturating_mul(PAGE_SIZE) {
+            return Err(DmaMappingError::InvalidRange);
+        }
+        Ok(Self {
+            source: DmaSource::Backing(backing),
+            range: 0..length,
+            device_writable: false,
+        })
+    }
+}
+
 impl DmaSlice<'_> {
     pub(super) fn segment_count(&self) -> usize {
-        self.segments
-            .iter()
-            .filter(|segment| segment_overlaps(segment, &self.range))
-            .count()
+        let mut count = 0;
+        self.source.for_each(|segment| {
+            count += usize::from(segment_overlaps(&segment, &self.range));
+        });
+        count
     }
 
     pub(super) fn for_each_segment(&self, mut visit: impl FnMut(u64, usize, bool)) {
-        for segment in self
-            .segments
-            .iter()
-            .filter(|segment| segment_overlaps(segment, &self.range))
-        {
+        self.source.for_each(|segment| {
+            if !segment_overlaps(&segment, &self.range) {
+                return;
+            }
             let start = segment.offset.max(self.range.start);
             let end = (segment.offset + segment.length).min(self.range.end);
             visit(
@@ -260,7 +318,7 @@ impl DmaSlice<'_> {
                 end - start,
                 self.device_writable,
             );
-        }
+        });
     }
 }
 
@@ -325,7 +383,8 @@ fn map_segments_with(
 #[cfg(test)]
 mod tests {
     use super::{
-        DmaChainRequirement, DmaMappingError, DmaSlice, descriptor_requirement, map_segments_with,
+        DmaChainRequirement, DmaMappingError, DmaSlice, DmaSource, descriptor_requirement,
+        map_segments_with,
     };
 
     #[test]
@@ -334,7 +393,7 @@ mod tests {
             map_segments_with(4094, 6, 4096, |address| Some(address as u64 + 0x1000)).unwrap();
         assert_eq!(segments.len(), 2);
         let slice = DmaSlice {
-            segments: &segments,
+            source: DmaSource::Mapped(&segments),
             range: 0..6,
             device_writable: false,
         };
@@ -359,7 +418,7 @@ mod tests {
     fn subrange_counts_only_overlapping_segments() {
         let segments = map_segments_with(4094, 8196, 4096, |address| Some(address as u64)).unwrap();
         let slice = DmaSlice {
-            segments: &segments,
+            source: DmaSource::Mapped(&segments),
             range: 1..4099,
             device_writable: true,
         };
@@ -370,12 +429,12 @@ mod tests {
     fn descriptor_capacity_is_checked_from_cached_segments() {
         let segments = map_segments_with(4094, 8196, 4096, |address| Some(address as u64)).unwrap();
         let first = DmaSlice {
-            segments: &segments,
+            source: DmaSource::Mapped(&segments),
             range: 0..2,
             device_writable: false,
         };
         let second = DmaSlice {
-            segments: &segments,
+            source: DmaSource::Mapped(&segments),
             range: 2..8196,
             device_writable: true,
         };

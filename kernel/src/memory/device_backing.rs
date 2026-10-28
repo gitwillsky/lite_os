@@ -13,7 +13,8 @@ use super::{
 };
 
 const MAX_EXTENT_PAGES: usize = 64;
-const MAX_EXTENTS: usize = 256;
+/// 一份 backing 的最多物理 extent 数；ATTACH_BACKING 请求按它预留条目空间。
+pub(crate) const MAX_EXTENTS: usize = 256;
 
 /// 一份 device backing 在 Linux meminfo 中的页类别；由 backing 的唯一分配者声明一次。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

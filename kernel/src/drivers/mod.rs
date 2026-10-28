@@ -18,7 +18,8 @@ pub(crate) use display::{
 };
 pub(crate) use entropy::EntropySource;
 pub(crate) use graphics::{
-    CursorCommand, GraphicsDevice, VirglBox, VirglCapsetInfo, VirglCommand, VirglTransferDirection,
+    CursorCommand, GraphicsDevice, VIRGL_COMMAND_EXTENTS_MAX, VirglBox, VirglCapsetInfo,
+    VirglCommand, VirglTransferDirection,
 };
 pub(crate) use input::{InputAbsInfo, InputDevice, InputDeviceError, InputId, RawInputEvent};
 pub(crate) use port::{PortActivity, PortDevice, PortError};

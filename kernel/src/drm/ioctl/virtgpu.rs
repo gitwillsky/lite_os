@@ -1,11 +1,13 @@
-use alloc::vec::Vec;
+use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
+    drivers::VIRGL_COMMAND_EXTENTS_MAX,
     drm::{
-        DrmFile, DrmSubmission, VIRGL_COMMAND_MAX, VirglBox, VirglCommand,
-        VirglResourceCreate, VirglTransferDirection,
+        DrmFile, DrmSubmission, VIRGL_COMMAND_MAX, VirglBox, VirglCommand, VirglResourceCreate,
+        VirglTransferDirection,
     },
     fs::chardev::UserMemory,
+    memory::{DeviceBacking, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE},
 };
 
 use syscall_abi::errno;
@@ -254,12 +256,11 @@ pub(super) fn execbuffer(
     {
         return Err(errno::EINVAL);
     }
-    let mut commands = try_zeroed(size)?;
-    user.read(
+    let commands = copy_command_stream(
+        user,
         usize::try_from(read_u64(&bytes, 8)?).map_err(|_| errno::EFAULT)?,
-        &mut commands,
-    )
-    .map_err(|_| errno::EFAULT)?;
+        size,
+    )?;
     let mut handles = try_zeroed(count.checked_mul(4).ok_or(errno::EINVAL)?)?;
     if !handles.is_empty() {
         user.read(
@@ -289,7 +290,8 @@ pub(super) fn execbuffer(
         file,
         VirglCommand::Submit3d {
             context_id: access.context_id,
-            commands: &commands,
+            commands,
+            length: size,
         },
     )?;
     access.record(fence);
@@ -357,6 +359,40 @@ pub(super) fn submit_only(file: &DrmFile, command: VirglCommand<'_>) -> Result<u
             DrmSubmission::Retry(retry) => wait_retry(retry)?,
         }
     }
+}
+
+/// 在任何提交锁之前把用户命令流直接拷入驱动 DMA backing；其所有权随命令交给 adapter，
+/// 设备完成后才释放，对应 Linux 每次提交复制命令缓冲并单独挂入 sg。
+///
+/// # Errors
+///
+/// 物理页不足或碎片化到超过 [`VIRGL_COMMAND_EXTENTS_MAX`] 个 extent 返回 ENOMEM；用户地址无效返回 EFAULT。
+fn copy_command_stream(
+    user: &dyn UserMemory,
+    address: usize,
+    length: usize,
+) -> Result<Arc<DeviceBacking>, isize> {
+    let backing = DeviceBacking::try_allocate(
+        length.div_ceil(PAGE_SIZE),
+        FrameAllocationClass::Reclaimable,
+        DeviceMemoryKind::Driver,
+    )
+    .filter(|backing| backing.extent_count() <= VIRGL_COMMAND_EXTENTS_MAX)
+    .ok_or(errno::ENOMEM)?;
+    // 经固定小缓冲分段搬运，不为整条命令流再分配一份内核副本。
+    let mut chunk = [0u8; 512];
+    let mut copied = 0;
+    while copied < length {
+        let count = (length - copied).min(chunk.len());
+        let source = address.checked_add(copied).ok_or(errno::EFAULT)?;
+        user.read(source, &mut chunk[..count])
+            .map_err(|_| errno::EFAULT)?;
+        backing
+            .write(copied, &chunk[..count])
+            .map_err(|()| errno::EFAULT)?;
+        copied += count;
+    }
+    Arc::try_new(backing).map_err(|_| errno::ENOMEM)
 }
 
 fn try_zeroed(length: usize) -> Result<Vec<u8>, isize> {

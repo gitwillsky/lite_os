@@ -1,16 +1,18 @@
-use crate::drivers::{DisplayError, VirglCommand, VirglTransferDirection};
+use crate::{
+    drivers::{DisplayError, VirglCommand, VirglTransferDirection},
+    memory::PAGE_SIZE,
+};
 
 use super::{
     command::PreparedCommand,
     sequence_policy::RuntimeStage,
     wire::{
-        CONTROL_REQUEST_SIZE, VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, VIRTIO_GPU_CMD_CTX_CREATE,
-        VIRTIO_GPU_CMD_CTX_DESTROY, VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE,
-        VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, VIRTIO_GPU_CMD_RESOURCE_CREATE_3D,
-        VIRTIO_GPU_CMD_RESOURCE_FLUSH, VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT,
-        VIRTIO_GPU_CMD_SUBMIT_3D, VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D,
-        VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D, prepare_attach, prepare_flush, prepare_set_scanout,
-        prepare_unref, write_u32, write_u64,
+        VIRTIO_GPU_CMD_CTX_ATTACH_RESOURCE, VIRTIO_GPU_CMD_CTX_CREATE, VIRTIO_GPU_CMD_CTX_DESTROY,
+        VIRTIO_GPU_CMD_CTX_DETACH_RESOURCE, VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
+        VIRTIO_GPU_CMD_RESOURCE_CREATE_3D, VIRTIO_GPU_CMD_RESOURCE_FLUSH,
+        VIRTIO_GPU_CMD_RESOURCE_UNREF, VIRTIO_GPU_CMD_SET_SCANOUT, VIRTIO_GPU_CMD_SUBMIT_3D,
+        VIRTIO_GPU_CMD_TRANSFER_FROM_HOST_3D, VIRTIO_GPU_CMD_TRANSFER_TO_HOST_3D, prepare_attach,
+        prepare_flush, prepare_set_scanout, prepare_unref, write_u32, write_u64,
     },
 };
 
@@ -33,6 +35,7 @@ pub(super) fn prepare(
     command: VirglCommand<'_>,
     request: &mut [u8],
 ) -> Result<PreparedCommand, DisplayError> {
+    let mut stream = None;
     let (opcode, length) = match command {
         VirglCommand::ContextCreate {
             context_id,
@@ -119,18 +122,24 @@ pub(super) fn prepare(
         VirglCommand::Submit3d {
             context_id,
             commands,
+            length,
         } => {
-            let length = 32usize
-                .checked_add(commands.len())
-                .filter(|length| *length <= CONTROL_REQUEST_SIZE)
-                .ok_or(DisplayError::Device)?;
-            if commands.is_empty() || !commands.len().is_multiple_of(4) {
+            // 请求只含 32 字节头；命令流作为 chain 的第二个 descriptor 直接从 backing 读取。
+            if length == 0
+                || !length.is_multiple_of(4)
+                || length > commands.pages().saturating_mul(PAGE_SIZE)
+            {
                 return Err(DisplayError::Device);
             }
-            context_header(request, context_id, length)?;
-            write_u32(request, 24, commands.len() as u32).ok_or(DisplayError::Device)?;
-            request[32..length].copy_from_slice(commands);
-            (VIRTIO_GPU_CMD_SUBMIT_3D, length)
+            context_header(request, context_id, 32)?;
+            write_u32(
+                request,
+                24,
+                u32::try_from(length).map_err(|_| DisplayError::Device)?,
+            )
+            .ok_or(DisplayError::Device)?;
+            stream = Some((commands, length));
+            (VIRTIO_GPU_CMD_SUBMIT_3D, 32)
         }
         VirglCommand::Transfer3d {
             direction,
@@ -193,6 +202,7 @@ pub(super) fn prepare(
         opcode,
         length,
         stage: RuntimeStage::Virgl,
+        stream,
     })
 }
 
@@ -226,27 +236,9 @@ fn context_resource(
 
 #[cfg(test)]
 mod tests {
+    use super::super::wire::CONTROL_REQUEST_SIZE;
     use super::*;
     use crate::drivers::VirglBox;
-
-    #[test]
-    fn submit_encodes_context_and_exact_dword_stream() {
-        let mut request = [0xff; CONTROL_REQUEST_SIZE];
-        let commands = [1, 2, 3, 4, 5, 6, 7, 8];
-        let prepared = prepare(
-            VirglCommand::Submit3d {
-                context_id: 9,
-                commands: &commands,
-            },
-            &mut request,
-        )
-        .unwrap();
-        assert_eq!(prepared.opcode, VIRTIO_GPU_CMD_SUBMIT_3D);
-        assert_eq!(prepared.length, 40);
-        assert_eq!(&request[16..20], &9u32.to_le_bytes());
-        assert_eq!(&request[24..28], &8u32.to_le_bytes());
-        assert_eq!(&request[32..40], &commands);
-    }
 
     #[test]
     fn transfer_3d_matches_virtio_wire_offsets() {

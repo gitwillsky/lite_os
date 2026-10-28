@@ -6,7 +6,7 @@ use crate::memory::{DeviceBacking, DeviceMemoryKind, FrameAllocationClass, PAGE_
 use super::{
     VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
-    queue::{DmaBuffer, VirtQueue, VirtQueueError},
+    queue::{DmaBuffer, DmaSlice, VirtQueue, VirtQueueError},
 };
 use crate::drivers::{
     CursorCommand, DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate,
@@ -336,7 +336,15 @@ impl VirtIOGpuDevice {
                 .readable(0..prepared.length)
                 .map_err(|_| DisplayError::Device)?;
             let response = slot.response.writable_all();
-            match queue.add_dma(&[request, response]) {
+            let added = match &prepared.stream {
+                Some((backing, length)) => queue.add_dma(&[
+                    request,
+                    DmaSlice::backing(backing, *length).map_err(|_| DisplayError::Device)?,
+                    response,
+                ]),
+                None => queue.add_dma(&[request, response]),
+            };
+            match added {
                 Ok(head) => head,
                 Err(VirtQueueError::NoDescriptors) => return Err(DisplayError::WouldBlock),
                 Err(VirtQueueError::InvalidBuffer) => return Err(DisplayError::Device),
@@ -347,7 +355,9 @@ impl VirtIOGpuDevice {
         control.next_fence = next_fence;
         control.queue.add_to_avail(head);
         let operation_fence = operation_fence.unwrap_or(command_fence);
-        let pending = &mut control.commands.slots[slot_index].pending;
+        let slot = &mut control.commands.slots[slot_index];
+        slot.stream = prepared.stream.map(|(backing, _)| backing);
+        let pending = &mut slot.pending;
         assert!(pending.is_none(), "published VirtIO GPU slot was not idle");
         *pending = Some(PendingCommand {
             head,
@@ -564,6 +574,8 @@ impl DisplayDevice for VirtIOGpuDevice {
             Ok(None) => {}
             Err(_) => return Err(self.fail_device()),
         }
+        // 先于锁声明：逆序析构保证已完成命令流的页总在控制队列锁释放之后才回收（completion 不在锁内析构）。
+        let _released_stream;
         let mut control = self.control.lock();
         if control.failed {
             return Err(DisplayError::Device);
@@ -637,7 +649,7 @@ impl DisplayDevice for VirtIOGpuDevice {
                     return Err(self.fail_device());
                 }
             };
-            let completed = match control
+            let mut completed = match control
                 .commands
                 .complete(used.head(), used.length() as usize)
             {
@@ -647,6 +659,7 @@ impl DisplayDevice for VirtIOGpuDevice {
                     return Err(self.fail_device());
                 }
             };
+            _released_stream = completed.take_stream();
             let action = match sequence::complete(&mut control, completed) {
                 Ok(action) => action,
                 Err(_) => {

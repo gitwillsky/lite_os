@@ -39,7 +39,9 @@ pub(super) const VIRTIO_GPU_NUM_CAPSETS: usize = 12;
 pub(super) const CONTROL_QUEUE: u32 = 0;
 pub(super) const CURSOR_QUEUE: u32 = 1;
 pub(super) const QUEUE_SIZE: u16 = 64;
-pub(super) const CONTROL_REQUEST_SIZE: usize = 32 + 64 * 1024;
+/// 除 SUBMIT_3D 外最大的请求是 ATTACH_BACKING：32 字节头加每个 extent 16 字节条目。
+/// SUBMIT_3D 的命令流不进槽位，作为独立 descriptor 从其 backing 读取。
+pub(super) const CONTROL_REQUEST_SIZE: usize = 32 + 16 * crate::memory::DEVICE_BACKING_EXTENTS_MAX;
 pub(super) const CONTROL_HEADER_SIZE: usize = 24;
 pub(super) const CURSOR_REQUEST_SIZE: usize = 56;
 pub(super) const DISPLAY_INFO_SIZE: usize = CONTROL_HEADER_SIZE + 16 * 24;

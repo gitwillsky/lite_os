@@ -34,7 +34,9 @@ const KERNEL_PROGRESS_RESERVE_PAGES: usize = 16;
 pub(crate) use crate::config::KERNEL_STACK_SIZE;
 pub(crate) use address::{PhysicalAddress, PhysicalPageNumber, VirtualAddress};
 pub(crate) use config::*;
-pub(crate) use device_backing::{DeviceBacking, DeviceMemoryKind};
+pub(crate) use device_backing::{
+    DeviceBacking, DeviceMemoryKind, MAX_EXTENTS as DEVICE_BACKING_EXTENTS_MAX,
+};
 pub(crate) use executable::{
     ExecutableImage, ExecutableParseError, ExecutableSource, parse_interpreter_elf, parse_main_elf,
 };
