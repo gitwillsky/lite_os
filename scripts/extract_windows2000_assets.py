@@ -102,6 +102,8 @@ BITMAPS = {
     "boot-scene": ("ntoskrnl.exe", 1),
     "logon-banner": ("msgina.dll", 101),
     "start-banner": ("explorer.exe", 157),
+    # “映射网络驱动器”向导页左侧的 88×157 对话框单位侧边图。
+    "network-drive-banner": ("netplwiz.dll", 101),
     # 资源管理器工具栏：默认（灰阶）/ 悬停（彩色）/ 禁用三条 47 帧 20×20 横条，洋红为透明色。
     "toolbar-default": ("browseui.dll", 272),
     "toolbar-hot": ("browseui.dll", 273),
@@ -131,7 +133,6 @@ INDEXED = {"worldmap"}
 WEBVIEW = {"webview-left": "WVLEFT.BMP", "webview-line": "WVLINE.GIF"}
 # 桌面墙纸由附件组件 INF 安装：[DeskpaperCopyFilesSys] 列出复制到 %windir% 的 BMP，
 # [Strings] 给出安装后的长文件名；只认这一节，不枚举 I386 里其他用途的位图。
-WALLPAPER_INF = ("accessor.inf", "DeskpaperCopyFilesSys")
 # HIVEDEF.INF 的默认 AppEvents 配置；logoff 是独立提供的注销素材。
 SOUNDS = {
     "logon": "logon.wav", "logoff": "logoff.wav",
@@ -181,38 +182,6 @@ def best_icon_frame(ico, size: int):
     return ico.frame(max(candidates, key=lambda i: ico.entry[i].bpp))
 
 
-def inf_sections(text: str) -> dict[str, list[str]]:
-    """按 Windows INF 语法拆节；节名不区分大小写，去掉注释与空行。"""
-    sections: dict[str, list[str]] = {}
-    lines: list[str] | None = None
-    for raw in text.splitlines():
-        line = raw.split(";", 1)[0].strip()
-        if line.startswith("[") and line.endswith("]"):
-            lines = sections.setdefault(line[1:-1].strip().lower(), [])
-        elif line and lines is not None:
-            lines.append(line)
-    return sections
-
-
-def wallpapers(text: str) -> dict[str, str]:
-    """返回 `{安装长文件名: 介质短文件名}`；%字符串% 缺失或重名时抛出 ValueError。"""
-    sections = inf_sections(text)
-    strings = {}
-    for line in sections.get("strings", ()):
-        key, _, value = line.partition("=")
-        strings[key.strip().lower()] = value.strip().strip('"')
-    result = {}
-    for line in sections.get(WALLPAPER_INF[1].lower(), ()):
-        target, _, source = (part.strip() for part in line.partition(","))
-        name = strings.get(target.strip("%").lower()) if target.startswith("%") else target
-        if not name or not source or name in result:
-            raise ValueError(f"invalid wallpaper entry in {WALLPAPER_INF[0]}: {line}")
-        result[name] = source.lower()
-    if not result:
-        raise ValueError(f"{WALLPAPER_INF[0]} lists no wallpapers")
-    return result
-
-
 def check(directory: Path) -> dict:
     """校验 manifest 中每个文件及逻辑引用；缺失、越界或哈希不符时失败。"""
     manifest = json.loads((directory / "manifest.json").read_text())
@@ -228,68 +197,6 @@ def check(directory: Path) -> dict:
                 if name not in manifest["files"]:
                     raise ValueError(f"unrecorded logical asset: {name}")
     return manifest
-
-
-def network_drive_labels(expanded: Path) -> str:
-    """解析固定 ISO 的 DLGTEMPLATEEX/RT_STRING，只发布网络驱动器实际使用的标签。"""
-    def dialog(source: str, number: int) -> tuple[str, list[tuple[int, str]]]:
-        data = subprocess.check_output(["wrestool", "-x", "--raw", "-t5", f"-n{number}", str(expanded / source)])
-        if data[:4] != b"\x01\x00\xff\xff":
-            raise ValueError(f"expected fixed DLGTEMPLATEEX: {source}:{number}")
-        position = 26
-        def field() -> str:
-            nonlocal position
-            value = struct.unpack_from("<H", data, position)[0]
-            position += 2
-            if value == 0xffff:
-                position += 2
-                return ""
-            values = []
-            while value:
-                values.append(value)
-                value = struct.unpack_from("<H", data, position)[0]
-                position += 2
-            return struct.pack("<" + "H" * len(values), *values).decode("utf-16le")
-        field(); field()
-        caption = field()
-        if struct.unpack_from("<I", data, 12)[0] & 0x40:
-            position += 6
-            field()
-        controls = []
-        for _ in range(struct.unpack_from("<H", data, 16)[0]):
-            position = (position + 3) & ~3
-            control = struct.unpack_from("<I", data, position + 20)[0]
-            position += 24
-            field()
-            text = field()
-            extra = struct.unpack_from("<H", data, position)[0]
-            position += 2
-            if extra:
-                raise ValueError("fixed network dialog unexpectedly has creation data")
-            if text:
-                controls.append((control, text))
-        return caption, controls
-    title, mapping = dialog("netplwiz.dll", 106)
-    _, credentials = dialog("netplwiz.dll", 117)
-    _, disconnect = dialog("mprui.dll", 7002)
-    # 控件 ID 与静态标签顺序来自固定资源，不按中文关键字猜测或保留手写替代文字。
-    values = {
-        "MAP_TITLE": title, "MAP_PROMPT": mapping[1][1], "DRIVE": mapping[2][1], "FOLDER": mapping[3][1],
-        "RECONNECT": dict(mapping)[1038], "USERNAME": credentials[0][1], "PASSWORD": credentials[1][1], "DOMAIN": credentials[2][1],
-        "DISCONNECT_PROMPT": dict(disconnect)[4115], "OK": dict(disconnect)[1], "CANCEL": dict(disconnect)[2],
-    }
-    number = 12055
-    data = subprocess.check_output(["wrestool", "-x", "--raw", "-t6", f"-n{number // 16 + 1}", str(expanded / "mprui.dll")])
-    position = 0
-    for index in range(16):
-        length = struct.unpack_from("<H", data, position)[0]
-        position += 2
-        text = data[position:position + length * 2].decode("utf-16le")
-        position += length * 2
-        if index == number % 16:
-            values["DISCONNECT_TITLE"] = text
-    return "// 由唯一 Windows 2000 ISO 导入器生成；来源见 assets/classic/manifest.json。\n" + "".join(
-        f"pub const {name}: &str = {json.dumps(text, ensure_ascii=False)};\n" for name, text in values.items())
 
 
 def extract(iso: Path, output: Path) -> dict:
@@ -318,13 +225,6 @@ def extract(iso: Path, output: Path) -> dict:
                             if p.name in wanted or p.suffix in {".WA_", ".CU_", ".AN_"})
         for path in containers:
             run("cabextract", "-q", "-L", "-d", expanded, path)
-        # 先展开组件 INF，再按其中的墙纸节只展开被安装的 BMP。
-        run("cabextract", "-q", "-L", "-d", expanded, i386 / (WALLPAPER_INF[0].upper()[:-1] + "_"))
-        # INF 是带 BOM 的 UTF-16LE（Unicode INF）或简中 ANSI 代码页 936。
-        data = (expanded / WALLPAPER_INF[0]).read_bytes()
-        deskpaper = wallpapers(data.decode("utf-16") if data.startswith(b"\xff\xfe") else data.decode("gb18030"))
-        for short in deskpaper.values():
-            run("cabextract", "-q", "-L", "-d", expanded, i386 / (short.upper()[:-1] + "_"))
         for name in ("HIVEDEF.INF", "TXTSETUP.SIF"):
             shutil.copyfile(i386 / name, expanded / name.lower())
         missing = [name for name in PE_FILES if not (expanded / name).is_file()]
@@ -369,7 +269,7 @@ def extract(iso: Path, output: Path) -> dict:
                     warnings.append(f"{path.name}: skipped ({error})")
                     path.unlink()
 
-        logical: dict[str, dict] = {kind: {} for kind in ("icons", "cursors", "bitmaps", "sounds", "fonts", "wallpapers", "ui_text")}
+        logical: dict[str, dict] = {kind: {} for kind in ("icons", "cursors", "bitmaps", "sounds", "fonts")}
 
         def resource(source: str, kind: int, number: int | str, suffix: str) -> Path:
             # 这里只接受简中资源，不把其他语言悄悄当成简中参照。
@@ -444,17 +344,6 @@ def extract(iso: Path, output: Path) -> dict:
             if path.read_bytes()[:4] not in (b"ttcf", b"\0\1\0\0", b"OTTO"):
                 raise ValueError(f"invalid font signature: {name}")
             record("fonts", name, [path])
-        record("wallpapers", WALLPAPER_INF[0], [expanded / WALLPAPER_INF[0]], section=WALLPAPER_INF[1])
-        for name, short in deskpaper.items():
-            path = expanded / short
-            with Image.open(path) as image:
-                image.load()
-                size = list(image.size)
-            record("wallpapers", name, [path], file=short, size=size)
-        text = result / "text/network-drive.rs"
-        text.parent.mkdir()
-        text.write_text(network_drive_labels(expanded))
-        record("ui_text", "network-drive", [text], sources={"netplwiz.dll": {"dialogs": [106, 117]}, "mprui.dll": {"dialogs": [7002], "strings": [12055]}})
         files = {}
         for path in sorted(result.rglob("*")):
             if path.is_file():
@@ -491,8 +380,6 @@ def publish(directory: Path) -> dict:
     source = check(directory)
     if set(source["logical"].get("fonts", ())) != set(FONTS):
         raise ValueError("font extraction recipe changed; re-extract into a new --output directory")
-    if WALLPAPER_INF[0] not in source["logical"].get("wallpapers", {}):
-        raise ValueError("wallpaper extraction recipe changed; re-extract into a new --output directory")
     from PIL import Image
     from pack_boot_scene import pack as pack_boot
     from pack_cursors import CURSOR_FILES, pack_sources
@@ -528,12 +415,6 @@ def publish(directory: Path) -> dict:
                     if image.endswith(".png") and path.is_file():
                         record(path, "ui", {"source": item["source"], "resource": item["resource"],
                                             "language": 2052, "conversion": "BMP V4; native dimensions"})
-        for item in source["logical"]["ui_text"].values():
-            original = directory / item["paths"][0]
-            path = result / "text" / original.name
-            path.parent.mkdir(exist_ok=True)
-            shutil.copyfile(original, path)
-            record(path, "ui_text", {"sources": item["sources"], "language": 2052, "conversion": "DLGTEMPLATEEX/RT_STRING labels; UTF-8 Rust constants"})
         # 2. 启动画面、光标、字体和声音由同一份 ISO 提供，不保留原创或替代来源。
         with Image.open(directory / "bitmaps-src/boot-scene-1x.png") as image:
             (result / "boot-scene.lbs").write_bytes(pack_boot(image))
@@ -551,16 +432,6 @@ def publish(directory: Path) -> dict:
                 path = result / group / original.name
                 shutil.copyfile(original, path)
                 record(path, group, {"source": original.name, "conversion": "original bytes"})
-        # 墙纸保留原始 BMP 字节，安装名取 INF [Strings]，与 Windows 2000 的 %windir% 一致。
-        (result / "wallpapers").mkdir()
-        for name, item in source["logical"]["wallpapers"].items():
-            if name == WALLPAPER_INF[0]:
-                continue
-            original = directory / item["paths"][0]
-            path = result / "wallpapers" / name
-            shutil.copyfile(original, path)
-            record(path, "wallpapers", {"source": item["file"], "inf": f"{WALLPAPER_INF[0]} [{WALLPAPER_INF[1]}]",
-                                        "conversion": "original bytes"})
         mapping = result / "fonts/fontmap.ini"
         mapping.write_text("; 原版字体目录；仅保留逻辑字体别名与 Tahoma 的中文 FontLink。\n"
                            "[FontSubstitutes]\nMS Shell Dlg=Tahoma\nMS Shell Dlg 2=Tahoma\n"
@@ -571,13 +442,21 @@ def publish(directory: Path) -> dict:
         # 3. 清除旧源图与旧产品文件，只留下 manifest 声明的运行时文件和主题配置。
         destination = classic_assets.DIRECTORY
         for path in destination.iterdir():
-            if path.name == "theme":
+            # 主题配置与原创壁纸由 Git 直接持有，不来自 ISO，导入器只登记不改写。
+            if path.name in {"theme", "wallpapers"}:
                 continue
             if path.is_dir():
                 shutil.rmtree(path)
             else:
                 path.unlink()
         shutil.copytree(result, destination, dirs_exist_ok=True)
+        for path in sorted((destination / "wallpapers").iterdir()):
+            if path.is_file() and path.name != ".DS_Store":
+                manifest["files"][f"wallpapers/{path.name}"] = {
+                    "group": "wallpapers", "bytes": path.stat().st_size, "sha256": digest(path),
+                    "origin": {"source": "LiteOS original artwork generated with Codex", "conversion": "JPEG, 1920x1080"},
+                }
+        manifest["files"] = dict(sorted(manifest["files"].items()))
         (destination / "manifest.json").write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n")
     classic_assets.check()
     return manifest

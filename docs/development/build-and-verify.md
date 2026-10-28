@@ -64,8 +64,9 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
 - `sync-userland` 离线同步 UART 基线的 init、rcS、profile、shutdown 与共享启动素材，并移除旧镜像中退休的
   图形 binary、私有会话脚本和呈现素材；不修改 `/root`、用户安装的 APK 或项目。镜像内内容指纹命中时 no-op。
   `run` 与 `run-gui` 自动同步；`reset-rootfs` 才从基线显式重建开发镜像。
-- Rust 验证探针以 target、工具链、sysroot、libunwind 与 link flags 隔离 Cargo compilation cache，
-  最终 ELF 按完整源码内容发布不可变 generation。
+- Rust userspace 以 target、工具链、sysroot、libunwind 与 link flags 隔离 Cargo compilation cache；
+  Cargo 拥有源码与构建脚本的依赖新鲜度，系统库和应用按链接方式批量构建，最终 ELF 按内容发布不可变 generation。
+  SDK 应用的 UI 库搜索路径只传给最终 bin，不能进入 std 与依赖的全局编译参数。
 - `run-gui` 进入 logon 与用户桌面，UART 保留恢复 shell；首次账户设置及产品会话门禁见[桌面验证](desktop-verification.md)。
 - UTM 手动删除后若残留注册，启动脚本会检查删除后的列表并停止，避免复用旧串口配置；退出并重新打开 UTM 后再运行。
   开发磁盘 `fs-${ARCH}.img` 独立于生成的虚拟机配置包，恢复注册不需要重建或删除开发磁盘。

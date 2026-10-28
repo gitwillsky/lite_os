@@ -95,7 +95,9 @@ class UserlandSyncTests(unittest.TestCase):
         from verify_busybox import base_userland
 
         from unittest.mock import patch, Mock
-        with patch("verify_busybox.build_rust_user_program", return_value=Path("/nonexistent/program")):
+        with patch("verify_busybox._build_rust_user_targets", side_effect=lambda _musl, targets: {
+            target: Path("/nonexistent/program") for target in targets
+        }):
             for artifact in base_userland(Mock()):
                 self.assertTrue(sync_userland.managed_path(artifact.destination), artifact.destination)
 

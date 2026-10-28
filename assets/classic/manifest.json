@@ -7,7 +7,7 @@
   },
   "language": 2052,
   "tools": {
-    "7zz": "7-Zip (z) 26.02 (arm64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-06-25",
+    "7zz": "7-Zip (z) 26.04 (arm64) : Copyright (c) 1999-2026 Igor Pavlov : 2026-10-05",
     "cabextract": "cabextract version 1.11",
     "wrestool": "wrestool (icoutils) 0.32.3"
   },
@@ -123,31 +123,6 @@
       "origin": {
         "source": "recycle.wav",
         "conversion": "original bytes"
-      }
-    },
-    "text/network-drive.rs": {
-      "group": "ui_text",
-      "bytes": 694,
-      "sha256": "bd737f85d600c186fd23c9f786f2541832933bf1ab71d32470ab70896c18feac",
-      "origin": {
-        "sources": {
-          "netplwiz.dll": {
-            "dialogs": [
-              106,
-              117
-            ]
-          },
-          "mprui.dll": {
-            "dialogs": [
-              7002
-            ],
-            "strings": [
-              12055
-            ]
-          }
-        },
-        "language": 2052,
-        "conversion": "DLGTEMPLATEEX/RT_STRING labels; UTF-8 Rust constants"
       }
     },
     "ui/brand-22-1x.bmp": {
@@ -762,6 +737,17 @@
       "origin": {
         "source": "netshell.dll",
         "resource": 123,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/network-drive-banner-1x.bmp": {
+      "group": "ui",
+      "bytes": 133178,
+      "sha256": "a33febc5bc62f0ef18d5dd902304ee6b2efe4febbe3b73e93490430e66796a76",
+      "origin": {
+        "source": "netplwiz.dll",
+        "resource": 101,
         "language": 2052,
         "conversion": "BMP V4; native dimensions"
       }

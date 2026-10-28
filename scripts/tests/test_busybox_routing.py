@@ -197,7 +197,9 @@ class BusyBoxRoutingTests(unittest.TestCase):
     def test_login_path_exposes_npm_global_commands(self) -> None:
         module = reload_busybox("aarch64", "hvf")
         profile = (module.ROOT / "user/base/profile").read_text().strip()
-        with patch.object(module, "build_rust_user_program", return_value=module.ROOT / "user/base/profile"):
+        with patch.object(module, "_build_rust_user_targets", side_effect=lambda _musl, targets: {
+            target: module.ROOT / "user/base/profile" for target in targets
+        }):
             artifacts = module.base_userland(Mock())
 
         self.assertEqual(
