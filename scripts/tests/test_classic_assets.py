@@ -44,10 +44,10 @@ class ProductAssetTests(unittest.TestCase):
             used = any(re.search(pattern, text) for text in sources) or any('Icon=' + stem + '\n' in text for text in entries)
             self.assertTrue(used, f'unreferenced UI resource: {name}')
 
-    def test_missing_corrupt_and_unregistered_assets_fail(self) -> None:
+    def test_host_metadata_is_ignored_but_invalid_assets_fail(self) -> None:
         with tempfile.TemporaryDirectory() as work:
             root = Path(work)
-            info = classic_assets.check()['files']['ui/my-documents-32.bmp']
+            info = json.loads((classic_assets.DIRECTORY / 'manifest.json').read_text())['files']['ui/my-documents-32.bmp']
             (root / 'manifest.json').write_text(json.dumps({'files': {'ui/my-documents-32.bmp': info}}))
             with mock.patch.object(classic_assets, 'DIRECTORY', root):
                 with self.assertRaises(FileNotFoundError):
@@ -60,9 +60,16 @@ class ProductAssetTests(unittest.TestCase):
                 path.write_bytes((classic_assets.ROOT / 'assets/classic/ui/my-documents-32.bmp').read_bytes())
                 (root / 'theme').mkdir()
                 (root / 'theme/classic.theme').write_text('')
-                (root / 'old-default.png').write_bytes(b'unused')
-                with self.assertRaisesRegex(ValueError, 'unregistered'):
-                    classic_assets.check()
+                for name in ('.DS_Store', 'ui/.DS_Store', 'theme/.DS_Store'):
+                    (root / name).write_bytes(b'Finder metadata')
+                classic_assets.check()
+                for name in ('old-default.png', 'ui/.hidden-asset', 'ui/.DS_Store.bmp'):
+                    with self.subTest(name=name):
+                        extra = root / name
+                        extra.write_bytes(b'unused')
+                        with self.assertRaisesRegex(ValueError, 'unregistered'):
+                            classic_assets.check()
+                        extra.unlink()
 
 
 if __name__ == '__main__':

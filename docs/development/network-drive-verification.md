@@ -32,13 +32,9 @@ smbfs reconnect
 `sign` 允许服务器要求加密；`encrypt` 强制使用 SMB3 加密。`save|session` 和 `reconnect|once` 是显式选项，
 `session reconnect` 会被拒绝。底层 `serve SOURCE MOUNTPOINT sign|encrypt` 只在认证并处理 FUSE INIT 后输出 READY。
 
-## 静态检查
-
-统一使用[构建与验证](build-and-verify.md)的格式、严格 Clippy 与架构门禁，不另维护检查命令副本。
-
 ## 运行时门禁
 
-本次按用户要求未执行运行时门禁、回归或 benchmark；下列入口已实现，运行结果仍待实际验证。
+运行时门禁、回归与 benchmark 的结果尚待实际验证。
 Samba 构建需要宿主 C 编译器、make、Python、pkg-config 与 GnuTLS 开发环境；不使用系统滚动版本的 smbd。
 
 构建与运行入口集中在[构建与验证](build-and-verify.md#运行时门禁)。

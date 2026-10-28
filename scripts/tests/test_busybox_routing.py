@@ -31,9 +31,13 @@ class BusyBoxRoutingTests(unittest.TestCase):
             libc = work / "usr/lib/libc.so"
             libc.parent.mkdir(parents=True)
             libc.write_bytes(b"libc")
-            names = ("memory-file", "special-file", "fs-stress", "inotify")
-            probes = {name: work / f"{name}-probe" for name in names}
-            for path in probes.values(): path.write_bytes(b"probe-v1")
+            probes = {}
+
+            def build_probe(_musl, name: str) -> Path:
+                if name not in probes:
+                    probes[name] = work / f"{name}-probe"
+                    probes[name].write_bytes(b"probe-v1")
+                return probes[name]
             artifact = work / "kernel"
             artifact.write_bytes(b"kernel")
             payloads = []
@@ -53,7 +57,7 @@ class BusyBoxRoutingTests(unittest.TestCase):
                 patch.object(module, "cached_musl_paths", return_value=Mock(install=work)),
                 patch.object(module, "build_openssl", return_value=Mock(binary=artifact)),
                 patch.object(module, "build_dynamic_probe", return_value=(artifact, artifact)),
-                patch.object(module, "build_musl_probe", side_effect=lambda _musl, name: probes[name]),
+                patch.object(module, "build_musl_probe", side_effect=build_probe),
                 patch.object(module, "target_runtime_artifacts", return_value=(artifact,)),
                 patch.object(module, "runtime_gate_hit", side_effect=hit),
                 patch("build_cache.validate_kernel_boot_artifact", return_value=artifact),
@@ -61,11 +65,15 @@ class BusyBoxRoutingTests(unittest.TestCase):
                 patch("build_cache.subprocess.run", return_value=subprocess.CompletedProcess([], 0, "QEMU fixture\n")),
             ):
                 self.assertEqual(module.main(), 0)
-                probes["memory-file"].write_bytes(b"probe-v2")
-                self.assertEqual(module.main(), 0)
-            self.assertNotEqual(payloads[0]["inputs"], payloads[1]["inputs"])
-            for path in probes.values(): self.assertIn(str(path), payloads[0]["inputs"])
-            self.assertEqual(payloads[0]["qemu"], payloads[1]["qemu"])
+                self.assertIn("fuse", probes)
+                for name, path in probes.items():
+                    with self.subTest(probe=name):
+                        self.assertIn(str(path), payloads[0]["inputs"])
+                        previous = payloads[-1]
+                        path.write_bytes(b"probe-v2")
+                        self.assertEqual(module.main(), 0)
+                        self.assertNotEqual(previous["inputs"][str(path)], payloads[-1]["inputs"][str(path)])
+                        self.assertEqual(previous["qemu"], payloads[-1]["qemu"])
 
     def test_openssl_strip_cache_identity_matches_executed_symlink(self) -> None:
         with patch.dict(os.environ, {"ARCH": "aarch64", "ACCEL": "tcg"}, clear=True):

@@ -102,7 +102,7 @@ signalfd 的 anonymous-files 包含真实 reader/dup mask/readv/EFAULT、fork �
 路径及标准 SCM copy 的冷成本。
 
 AF_UNIX autobind 的回归包含 actual namespace host fixture 的 OOM/碰撞复用/重复绑定零分配/closed observer 拒绝/类型隔离，以及 namespace-user guest 的三种 socket type、原生 8-byte sockaddr、显式碰撞、同名不同类型、关闭后重绑
-和 datagram 投递。绑定为冷路径，本次不新增热路径 benchmark；已有 socket/SCM benchmark 阈值保持。
+和 datagram 投递。
 
 Socket timeout 的回归包括 actual SocketTimeouts/native codec host fixture（非法 usec、负秒与零的不同等待语义、tick 上取整、饱和、dup 共享/已冻结 deadline 独立）、namespace-user guest 的 scalar/vector/message recv/send、stream 和
 datagram 背压、accept、OLD/NEW option、短/零/负 getter 长度与 UNIX accepted 默认 policy。unix-rights-bench 增加实际 policy lock/deadline snapshot，沿用 2M 次、5 采样与 200 ns 既有阈值。

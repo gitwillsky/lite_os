@@ -7,7 +7,7 @@
 
 ## 服务端与外壳协议
 
-Wayland 门禁（`scripts/verify_wayland.py`，`make verify-runtime-wayland`）在同一 QEMU 显示会话里注入固定的上游 `wayland-info` 与本仓库的 `wayland-probe`（私有镜像，产品 rootfs 不含）：`wayland-info` 必须列出 `wl_compositor`、`wl_shm`（含格式）、
+同一 QEMU 显示会话使用固定的上游 `wayland-info` 与本仓库的 `wayland-probe`：`wayland-info` 必须列出 `wl_compositor`、`wl_shm`（含格式）、
 `xdg_wm_base` 与 `wl_output`（模式、scale、名字）；探针走完 xdg configure/ack、五帧 shm buffer 与 frame callback；`screendump` 里
 窗口矩形是最后一帧颜色、其外是桌面背景、位置是层叠放置的第一个窗口；收到的 keymap 由 guest 里链接上游 libxkbcommon 的 `xkb-check`
 （禁用默认 include，逐键与修饰键索引裁决）编译；注入平板移动/点击与 Shift+A，客户端必须按序收到 `wl_pointer` 的 enter/motion/button/leave
@@ -57,13 +57,12 @@ compositor 报告各自的首个事件。它不测量时间，参考帧与比对
 
 客户端每个窗口只允许一个未完成 frame callback；应用在 ready_to_draw 为真时才渲染，避免积压整帧 CPU 工作。
 每帧创建一个不可变 memfd，经 `MemFd::write_words` 批量写入 native-endian 像素，不为整帧再分配字节数组，也不按 4096 字节拆成大量 syscall。
-buffer.release 回收资源，断开由 RAII 清理，不增加线程、锁、Atomic、全局 cache 或 raw FFI。
+buffer.release 回收资源，断开由 RAII 清理。
 合成器按 64 KiB 预算批量 `pread`（大 stride 时至少一行），保留截断文件的协议错误语义。
 `canvas::Surface::blit` 对同倍率且实际像素完全不透明的可见行直接复制；其余保留预乘 alpha 合成与整数缩放。
-该快路径不缓存不透明状态，也不信任客户端声明。成本决策采用相同工作负载的离线前后微基准及既有 canvas 基线，
-另以 SHM 的 stride/offset/末行/truncation 和 blit 现有语义测试验证等价性，不增加宿主墙钟阈值。
-该路径的成本为 O(帧像素数)，当前由真实窗口的重复提交、尺寸变更和已有 canvas blocking benchmark 裁决正确性与光栅基线，
-不新增宿主墙钟阈值；它尚不是高帧率动画的性能承诺。后续复用 shm 或添加动画时需以目标 workload 再作测量。
+该快路径不缓存不透明状态，也不信任客户端声明。O(帧像素数) 的成本由相同工作负载的离线前后微基准与既有 canvas 基线评估；
+SHM 的 stride/offset/末行/truncation、blit 语义测试与真实窗口的重复提交、尺寸变更验证等价性。
+不设宿主墙钟阈值；复用 shm 或添加动画时需以目标 workload 再作测量。
 编辑按键不复制整份文本；UTF-8 查找和 String 编辑为单行长度的 O(n)，绘制时仅密码掩码生成临时文本。
 
 ## 会话委派与监听状态

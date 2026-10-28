@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 from apk_cache import ALPINE_BRANCH, ALPINE_MIRROR, ApkBootstrapPaths, cached_apk_bootstrap
 from apk_package import ApkPackageMetadata, build_signed_apk, tamper_signed_apk_control
 from build_target import target_from_environment
+from ext4_image import debugfs_path
 from qemu_gate import boot, guest_inittab
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -83,7 +85,7 @@ def _stage_package_root(
     """从唯一 ext4 image primitive 导出 package payload，并恢复 hardlink identity。"""
     staging = workspace / "rootfs"
     staging.mkdir()
-    run([str(debugfs), "-R", f"rdump / {staging}", str(image)])
+    run([str(debugfs), "-R", f"rdump / {debugfs_path(staging)}", str(image)])
     for unmanaged in ("lost+found", "dev", "proc", "sys"):
         path = staging / unmanaged
         if path.is_dir():
@@ -112,6 +114,17 @@ def _stage_package_root(
     apk = staging / "sbin/apk"
     apk.unlink(missing_ok=True)
     os.link(apk_static, apk)
+    # rdump 只保留 rwx；打包前从原 inode 恢复完整 mode，否则 setuid helper 与 sticky 目录失效。
+    paths = sorted(path for path in staging.rglob("*") if not path.is_symlink())
+    script = workspace / "package-modes.debugfs"
+    script.write_text(''.join(f'stat {debugfs_path("/" + path.relative_to(staging).as_posix())}\n' for path in paths))
+    metadata = run([str(debugfs), "-f", str(script), str(image)])
+    modes = re.findall(r"^Inode:\s+\d+\s+Type:\s+\S+\s+Mode:\s+([0-7]+)\b", metadata, re.MULTILINE)
+    if len(modes) != len(paths):
+        tail = "\n".join(metadata.splitlines()[-20:])
+        raise RuntimeError(f"rootfs staging inode modes are incomplete\n{tail}")
+    for path, mode in zip(paths, modes, strict=True):
+        path.chmod(int(mode, 8))
     return staging
 
 

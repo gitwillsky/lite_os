@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import gzip
 import importlib
+import io
 import os
+import subprocess
 import sys
+import tarfile
 import tempfile
 import unittest
 from pathlib import Path
@@ -15,6 +19,8 @@ import apk_apps_cache  # noqa: E402
 import apk_cache  # noqa: E402
 import apk_rootfs  # noqa: E402
 import verify_apk_apps  # noqa: E402
+from apk_package import _data_member  # noqa: E402
+from ext4_image import find_debugfs, find_mke2fs  # noqa: E402
 
 
 def reload_apk_modules(arch: str, accel: str) -> tuple[object, object, object, object]:
@@ -27,6 +33,33 @@ def reload_apk_modules(arch: str, accel: str) -> tuple[object, object, object, o
 
 
 class ApkRoutingTests(unittest.TestCase):
+    def test_base_package_preserves_image_special_permission_bits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            source = work / 'source'
+            for name in ('bin', 'sbin', 'usr/bin', 'tmp', 'group'):
+                (source / name).mkdir(parents=True, exist_ok=True)
+            for name in ('bin/init', 'bin/liteos-stress', 'sbin/apk.static', 'bin/fusermount3'):
+                (source / name).write_bytes(b'payload')
+            os.link(source / 'bin/init', source / 'usr/bin/env')
+            os.link(source / 'sbin/apk.static', source / 'sbin/apk')
+            modes = {'bin/fusermount3': 0o4755, 'tmp': 0o1777, 'group': 0o2770}
+            for name, mode in modes.items():
+                (source / name).chmod(mode)
+            image = work / 'rootfs.img'
+            with image.open('wb') as stream:
+                stream.truncate(16 * 1024 * 1024)
+            subprocess.run([str(find_mke2fs()), '-q', '-t', 'ext4', '-b', '4096',
+                            '-J', 'size=4', '-d', str(source), str(image)], check=True)
+            staging = apk_rootfs._stage_package_root(image, find_debugfs(), work, (), ())
+            data, _ = _data_member(staging)
+            with tarfile.open(fileobj=io.BytesIO(gzip.decompress(data))) as archive:
+                for name, mode in modes.items():
+                    with self.subTest(path=name):
+                        entry = archive.getmember(name)
+                        self.assertEqual(entry.mode, mode)
+                        self.assertEqual((entry.uid, entry.gid), (0, 0))
+
     def test_aarch64_bootstrap_digests_are_complete(self) -> None:
         cache, _, _, _ = reload_apk_modules("aarch64", "hvf")
         packages = cache.fixed_bootstrap_packages()

@@ -58,21 +58,20 @@ host unit loop 无法代表它。改动必须通过双 architecture compile/stat
 
 资源使用记账（`getrusage`）不新增 benchmark：用户态 trap 返回多一次 counter 读和一次本 CPU 私有 Relaxed 存储，
 缺页多一次 Relaxed 读和一次原子加，上下文切换多两次原子加，tick 多一次原子加，都没有新增锁或分配。
-guest 里 `write(/dev/null)` 紧循环 0.4 秒完成 441k 与 446k 次（改动前后），在噪声内；host 微基准无法代表 trap 往返，
-user/system 拆分的纯算术由 `scheduler-unit` 单测，端到端由 musl smoke 的 `resource-usage.c` 裁决。
+host 微基准无法代表 trap 往返；user/system 拆分的纯算术由 `scheduler-unit` 单测，
+端到端由 musl smoke 的 `resource-usage.c` 裁决。
 
 io_uring 当前切片不新增 blocking benchmark：同步路径是对共享页的有界内存循环加一次无竞争的 `TaskMutex` 快路径，CQE 发布是一次 `spin::Mutex` 内的
 16 字节写与一次 release 存储，稳态没有分配（溢出链表只在 CQ 满时增长，且有硬上限）。读写类 opcode 的成本由已有的 `read(2)`/`write(2)` 核心决定，新增部分只有
 一次 NOWAIT 尝试。阻塞路径每次唤醒重新登记一次 `wait_for_poll`（O(挂起请求数) 个 key），挂起数量大时这是线性成本，但它只在请求真的阻塞时发生，
-host 微基准测到的只是 key 构造，不代表 io_uring 的真实价值——批量提交摊薄 syscall 往返、阻塞请求不占线程。这两项要等 `POLL_ADD`/`TIMEOUT` 与块层异步落地、
-有可比较的基线后再加入 blocking benchmark。
+host key 构造微基准无法衡量批量提交的 syscall 摊销或块层异步重叠；blocking benchmark 需要可比较的实际 I/O 工作负载。
 每条挂起的链是一个 `Box`ed future（fallible 分配）：不会等待的 op（普通文件、显式偏移、fsync、close、cancel、NOP）直接同步完成、不分配；
 会等待的 op（pipe/socket 流式读写、poll、timeout）无论是否真的阻塞都分配一次 future，因为 future 必须在首次 poll 之前就位于堆上（poll 过的 future 不能搬动）。
 持久文件读的新增成本：page cache 命中路径只多一次 `storage_epoch` 读取与一次 `NowaitRead` 状态构造（无分配）；
 未命中每页多一个 `Box`ed `StorageRead`、一个 `PendingRead` 与预留的 cache 节点和页，这些原本也要分配。阻塞车道每个作业一次 `Box` 与一个结果槽 `Arc`。
-host 微基准测不到块层真实重叠的收益（需要真实设备延迟），本次没有新增 benchmark，正确性由 host 单测与 guest 冷读检查点裁决。
+正确性由 host 单测与 guest 冷读检查点裁决。
 链新增的热路径成本是每个 SQE 一次 `Member` 构造与每条链一次 `Ring::admit`（`spin::Mutex` 内的有序 `Vec` 追加，链完成时 `binary_search` 加 `remove`），
-批内 SQE 不分配；这些在 `io_uring_enter` 的 syscall 开销面前可忽略，本次没有新增 benchmark，原因同上。正确性由 `io-uring.c` 烟测（提交/完成顺序、溢出、阻塞唤醒、取消、读写、epoll 通知）与 `abi.rs` 单测裁决，本次没有测得吞吐数字。
+批内 SQE 不分配；提交/完成顺序、溢出、阻塞唤醒、取消、读写与 epoll 通知由 `io-uring.c` 烟测与 `abi.rs` 单测裁决，尚无吞吐测量。
 
 选核轮转不新增 benchmark：每次抢占只多一次本 CPU 私有计数的 Relaxed 读写和一次 Ready/Running 计数读取，选核仍是
 O(CPU 数) 的单趟扫描，没有新增锁、分配或跨 CPU 访问；收益是公平性而非延迟，由 `verify-runtime-scheduler` 与

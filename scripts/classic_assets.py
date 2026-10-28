@@ -27,7 +27,9 @@ def check() -> dict:
         data = path.read_bytes()
         if len(data) != info["bytes"] or hashlib.sha256(data).hexdigest() != info["sha256"]:
             raise ValueError(f"asset integrity mismatch: {name}")
-    actual = {str(path.relative_to(DIRECTORY)) for path in DIRECTORY.rglob("*") if path.is_file()}
+    # Finder 的目录元数据不是产品资源；纳入清单会让浏览素材目录后的构建失败。
+    actual = {str(path.relative_to(DIRECTORY)) for path in DIRECTORY.rglob("*")
+              if path.is_file() and path.name != ".DS_Store"}
     expected = set(manifest["files"]) | {"manifest.json", "theme/classic.theme"}
     if actual != expected:
         raise ValueError(f"unregistered or missing product assets: {sorted(actual ^ expected)}")

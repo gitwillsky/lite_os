@@ -166,8 +166,6 @@ recipe 换代后从同一固定归档解包干净 generation，避免 VPATH 跳�
 - `make clean` 是完整 Cargo 清理，会删除根 `target/` 中的其他派生产物；日常释放历史镜像空间
   使用定向清理入口。关闭 `CARGO_INCREMENTAL` 不会删除已有缓存，并会增加后续源码修改的重编译量。
 
-缓存淘汰只在构建发布阶段遍历镜像条目，不进入 kernel/userspace 热路径，无需新增运行时 benchmark。
-
 ## 经典桌面素材导入
 
 普通构建只消费受 Git 管理的 `assets/classic/`，不读取 `.local/` 的素材覆盖；clone 后资源完整可用。
@@ -190,9 +188,6 @@ ISO 默认位于 `.local/inputs/windows2000/Windows 2000 Professional Service Pa
 只转换并发布产品依赖到 `assets/classic/`，同步删除旧素材。提取配方改变时使用新的 `--output` 目录。
 提交生成的产品文件与 manifest；不提交 ISO、DLL、中间 PNG 或无引用的资源。
 `--check` 无需 ISO、Pillow 和外部提取工具。普通构建和开发镜像同步安装完全相同的清单，资源内容进入各自指纹。
-
-没有新增 kernel/userspace 热路径、锁、分配或 codec，故不新增 benchmark；验证覆盖资源完整性、
-缺失与损坏拒绝、原版字体 collection/点阵和光标热点/缩放，产品门禁仍为 `make verify`。
 
 ## 推荐入口
 
