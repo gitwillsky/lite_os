@@ -157,6 +157,53 @@ pub(crate) fn writeback_cached(id: SharedFileId) -> Result<(), FileSystemError> 
     writeback_file(&file)
 }
 
+/// 让一个文件的缓存内容失效（Linux `invalidate_inode_pages2` 的未映射部分），之后的读取重新向
+/// filesystem 取数据。远端可被他人修改的 filesystem（FUSE）在打开文件或收到失效通知时调用。
+///
+/// 1. 与 write/truncate 同一 operation domain，并推进存储版本使在途的异步填页作废；
+/// 2. 先写回脏页，再丢弃只被缓存持有的干净页；仍被映射或正在 I/O 的页保留到映射解除，
+///    否则 mmap 进程手中的页与缓存分裂成两份内容。
+///
+/// # Parameters
+///
+/// - `wait`: true 时等待 write/truncate 结束（打开文件、守护进程通知：调用者不持该文件的页缓存锁）；
+///   false 时只在锁空闲时作废（属性刷新与读入口：调用者可能正持同一文件的写序列，阻塞会自锁）。
+///
+/// # Errors
+///
+/// `wait` 为 false 且锁被占用返回 `Busy`，调用者保留作废需求稍后重试；写回失败透传，此时不丢弃
+/// 任何页；锁元数据分配失败返回 `OutOfMemory`。没有缓存时为空操作。
+pub(crate) fn invalidate(id: SharedFileId, wait: bool) -> Result<(), FileSystemError> {
+    let Some(file) = lookup_cached(id) else {
+        return Ok(());
+    };
+    let (_sequence, _operation) = if wait {
+        let sequence = file
+            .write_sequence
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let operation = file
+            .operation
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        (sequence, operation)
+    } else {
+        let sequence = file
+            .write_sequence
+            .try_lock()
+            .ok_or(FileSystemError::Busy)?;
+        let operation = file.operation.try_lock().ok_or(FileSystemError::Busy)?;
+        (sequence, operation)
+    };
+    let _epoch = file.storage_epoch.begin_mutation();
+    file.writeback_range(0, u64::MAX, false)?;
+    file.pages
+        .lock()
+        .entries
+        .retain(|_, page| !(page.reclaimable() && Arc::strong_count(page) == 1));
+    Ok(())
+}
+
 /// 写回并逐出一个缓存文件（块设备在被文件系统挂载前使用）。
 ///
 /// # Errors
@@ -221,7 +268,28 @@ fn writeback_file(file: &CachedFile) -> Result<(), FileSystemError> {
         .operation
         .lock()
         .map_err(|_| FileSystemError::OutOfMemory)?;
-    file.writeback_range(0, u64::MAX)
+    file.writeback_range(0, u64::MAX, true)
+}
+
+/// 把 `id` 的脏页交给 filesystem 而不建立持久化边界（Linux `filemap_write_and_wait`）：FUSE 在
+/// `close(2)` 发 FLUSH 前、以及最后一个可写句柄释放前调用，让缓冲写与 mmap 脏页用仍有效的句柄写出。
+///
+/// # Errors
+///
+/// 写回失败透传，页保持 dirty；锁元数据分配失败返回 `OutOfMemory`。没有缓存时为空操作。
+pub(crate) fn write_back(id: SharedFileId) -> Result<(), FileSystemError> {
+    let Some(file) = lookup_cached(id) else {
+        return Ok(());
+    };
+    let _sequence = file
+        .write_sequence
+        .lock()
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    let _operation = file
+        .operation
+        .lock()
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    file.writeback_range(0, u64::MAX, false)
 }
 
 /// 从唯一 CachedFile page maps 汇总一次全局 resident/dirty/reclaimable 快照。

@@ -126,8 +126,12 @@ mod fs {
         pub(crate) fine_times: FineTimes,
         pub(crate) device: Option<()>,
     }
-    pub(crate) struct FileSystemStatistics {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct SuperblockFacts {
         pub(crate) type_name: &'static str,
+        pub(crate) read_only: bool,
+    }
+    pub(crate) struct FileSystemStatistics {
         pub(crate) magic: u64,
         pub(crate) block_size: u64,
         pub(crate) blocks: u64,
@@ -252,6 +256,7 @@ mod fs {
         }
     }
     pub(crate) trait FileSystem: Send + Sync {
+        fn superblock(&self) -> SuperblockFacts;
         fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError>;
         fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError>;
     }
@@ -2162,7 +2167,11 @@ mod fs {
         assert!(root.namespace_reference().is_none());
         let statistics = opened.mount.filesystem.statistics().unwrap();
         assert_eq!(
-            (statistics.type_name, statistics.magic, statistics.flags),
+            (
+                opened.mount.filesystem.superblock().type_name,
+                statistics.magic,
+                statistics.flags
+            ),
             ("nsfs", 0x6e73_6673, 0x20)
         );
         opened
@@ -2213,7 +2222,13 @@ mod fs {
         );
         assert!(root.namespace_reference().is_none());
         let statistics = filesystem.filesystem.statistics().unwrap();
-        assert_eq!((statistics.type_name, statistics.flags), ("nsfs", 0x20));
+        assert_eq!(
+            (
+                filesystem.filesystem.superblock().type_name,
+                statistics.flags
+            ),
+            ("nsfs", 0x20)
+        );
         drop(reopened);
         drop(namespace);
         assert!(weak_namespace.upgrade().is_some());

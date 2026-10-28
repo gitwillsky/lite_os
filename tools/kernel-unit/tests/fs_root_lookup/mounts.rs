@@ -104,17 +104,12 @@ fn mount_table_formats_use_actual_mount_parent_root_and_escaped_fields() {
     let bound = VFS.open_file(b"/jail/inner").unwrap();
     let view = bound.mount.as_ref().unwrap();
     let mut output = Vec::new();
-    let stats = FileSystemStatistics {
-        type_name: "fixture",
-        flags: 0,
-    };
     mount_table::write_mount_record(
         &mut output,
         view,
         &f.global,
         b"/jail/inner",
         b"/jail",
-        &stats,
         mount_table::MountTableKind::Info,
     )
     .unwrap();
@@ -135,7 +130,6 @@ fn mount_table_formats_use_actual_mount_parent_root_and_escaped_fields() {
         &f.global,
         b"/a b\t\n\\",
         b"/jail",
-        &stats,
         mount_table::MountTableKind::Stats,
     )
     .unwrap();

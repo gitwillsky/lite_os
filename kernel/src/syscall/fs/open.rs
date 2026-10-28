@@ -37,7 +37,7 @@ fn change_directory(
     if inode.inode_type() != InodeType::Directory {
         return -errno::ENOTDIR;
     }
-    if let Err(error) = inode.require_access(identity, 1) {
+    if let Err(error) = inode.require_access(identity, 1 | crate::fs::MAY_CHDIR) {
         return ferr(error);
     }
     task.set_working_directory(opened);
@@ -80,7 +80,7 @@ pub(crate) fn sys_chroot(name: *const u8) -> isize {
     if inode.inode_type() != InodeType::Directory {
         return -errno::ENOTDIR;
     }
-    if let Err(error) = inode.require_access(&identity, 1) {
+    if let Err(error) = inode.require_access(&identity, 1 | crate::fs::MAY_CHDIR) {
         return ferr(error);
     }
     if !task.has_capability(syscall_abi::capability::Capability::SYS_CHROOT) {
@@ -172,15 +172,9 @@ pub(in crate::syscall) fn open_at(
         Err(error) => return error,
     };
     let identity = task.access_identity(true);
-    let (opened, created) = if flags & O_CREAT != 0 {
-        match vfs().open_or_create_file_at(
-            start,
-            &path,
-            task.creation_mode(mode),
-            &identity,
-            flags & O_EXCL != 0,
-            flags & O_NOFOLLOW != 0,
-        ) {
+    let (opened, created, created_backend) = if flags & O_CREAT != 0 {
+        match vfs().open_or_create_file_at(start, &path, task.creation_mode(mode), &identity, flags)
+        {
             Ok(opened) => opened,
             Err(error) => return ferr(error),
         }
@@ -191,7 +185,7 @@ pub(in crate::syscall) fn open_at(
             vfs().open_file_at(start, &path, &identity)
         };
         match result {
-            Ok(opened) => (opened, false),
+            Ok(opened) => (opened, false, None),
             Err(error) => return ferr(error),
         }
     };
@@ -254,10 +248,14 @@ pub(in crate::syscall) fn open_at(
         Ok(prepared) => prepared,
         Err(error) => return ferr(error),
     };
-    let backend = match inode.open_backend(flags, &identity, &task.namespace_authority()) {
-        Ok(backend) => backend,
-        Err(InodeOpenError::Filesystem(error)) => return ferr(error),
-        Err(InodeOpenError::Interrupted) => return crate::syscall::INTERNAL_RESTART_SYS,
+    // 原子创建已打开的 backend 直接使用；否则按 inode 类型打开。
+    let backend = match created_backend {
+        Some(backend) => backend,
+        None => match inode.open_backend(flags, &identity, &task.namespace_authority()) {
+            Ok(backend) => backend,
+            Err(InodeOpenError::Filesystem(error)) => return ferr(error),
+            Err(InodeOpenError::Interrupted) => return crate::syscall::INTERNAL_RESTART_SYS,
+        },
     };
     let ofd = prepared.finish(backend);
     // 成功建立 actual OFD 即发 OPEN；后续 truncate 拒绝仍有配对 CLOSE（Linux vfs_open）。

@@ -90,7 +90,16 @@ impl CachedFile {
     }
 
     /// 以固定 resident scan batch 写回 range，并只发布成功提交的 clean prefix。
-    pub(super) fn writeback_range(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
+    ///
+    /// `durable` 为 true 时最后调用 [`Inode::sync_storage`](crate::fs::Inode::sync_storage) 建立持久化边界
+    /// （fsync/msync/sync/umount）；false 只把脏页交给 filesystem（Linux `filemap_write_and_wait`），
+    /// 用于缓存作废与 FUSE 关闭时的写回，缺失这一区分会让每次打开/关闭都多一次 FSYNC 往返。
+    pub(super) fn writeback_range(
+        &self,
+        offset: u64,
+        length: u64,
+        durable: bool,
+    ) -> Result<(), FileSystemError> {
         let end = offset.saturating_add(length);
         // 1. operation lock 保证本次 writeback 的 EOF 不被 write/truncate 改动；只读取一次，
         // 避免每个 resident page 都进入 filesystem metadata owner。
@@ -171,6 +180,10 @@ impl CachedFile {
                 break;
             }
         }
-        self.inode.sync_storage()
+        if durable {
+            self.inode.sync_storage()
+        } else {
+            Ok(())
+        }
     }
 }

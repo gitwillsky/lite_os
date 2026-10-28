@@ -199,8 +199,10 @@ impl VirtualFileSystem {
             .mount
             .as_ref()
             .ok_or(FileSystemError::InvalidFileSystem)?;
-        let mut statistics = view.filesystem.filesystem.statistics()?;
-        statistics.flags |= 0x20 | view.flags().bits();
+        let filesystem = &view.filesystem.filesystem;
+        let mut statistics = filesystem.statistics()?;
+        statistics.flags |=
+            0x20 | view.flags().bits() | u64::from(filesystem.superblock().read_only);
         Ok(statistics)
     }
     /// proc opened snapshot 提供被观察的实际 namespace 和该目标 FS root；不读取全局 mount table。
@@ -226,15 +228,7 @@ impl VirtualFileSystem {
                 b"",
             )?)?;
             let relative = path.filesystem_path(&filesystem_root)?;
-            write_mount_record(
-                &mut output,
-                &view,
-                root,
-                &destination,
-                &relative,
-                &view.filesystem.filesystem.statistics()?,
-                kind,
-            )?;
+            write_mount_record(&mut output, &view, root, &destination, &relative, kind)?;
         }
         Ok(output)
     }

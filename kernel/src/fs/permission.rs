@@ -4,6 +4,12 @@ use syscall_abi::capability::{Capability, VALID_MASK};
 
 use super::{FileSystemError, InodeMetadata, InodeType};
 
+/// `require_access` 掩码的意图位（Linux `MAY_ACCESS`）：请求来自 `access(2)`/`faccessat(2)`。
+/// DAC 忽略它；不由内核判定权限的 filesystem（FUSE）据此向服务器发 FUSE_ACCESS。
+pub(crate) const MAY_ACCESS: u8 = 0x10;
+/// `require_access` 掩码的意图位（Linux `MAY_CHDIR`）：请求来自 `chdir(2)`/`fchdir(2)`/`chroot(2)`。
+pub(crate) const MAY_CHDIR: u8 = 0x40;
+
 /// VFS permission evaluator 消费的不可变调用身份；凭据状态由 calling Thread 独占。
 #[derive(Clone)]
 pub(crate) struct AccessIdentity {
@@ -179,6 +185,8 @@ impl AccessIdentity {
     }
 
     fn permits_owner(&self, owner: &OwnerModeState, requested: u8) -> bool {
+        // MAY_ACCESS/MAY_CHDIR 只说明调用意图，不是 DAC 位。
+        let requested = requested & 7;
         let granted = if self.uid == owner.uid {
             (owner.mode >> 6) & 7
         } else if self.in_group(owner.gid) {
@@ -304,6 +312,21 @@ impl OwnerModeChange {
             identity,
             operation: OwnerModeOperation::Chown { uid, gid },
         }
+    }
+
+    /// 不授权、只投影请求后的状态：由服务器判定权限的 filesystem（未启用 `default_permissions` 的
+    /// FUSE，对应 Linux `ATTR_FORCE`）把请求原样交给服务器，本地授权会拒绝服务器允许的操作。
+    pub(super) fn requested(&self, mut current: OwnerModeState) -> OwnerModeState {
+        match self.operation {
+            OwnerModeOperation::Chmod { mode } => {
+                current.mode = current.mode & !0o7777 | mode as u16 & 0o7777;
+            }
+            OwnerModeOperation::Chown { uid, gid } => {
+                current.uid = uid.unwrap_or(current.uid);
+                current.gid = gid.unwrap_or(current.gid);
+            }
+        }
+        current
     }
 
     /// 对 immutable/read-only inode snapshot 保留与 writable inode 相同的权限错误顺序。

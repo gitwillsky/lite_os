@@ -1,6 +1,7 @@
 //! procfs 挂载构造、namespace 权限与文件系统统计；目录节点和读取仍由 ProcInode 拥有。
 
 use super::*;
+use crate::fs::SuperblockFacts;
 
 impl ProcFileSystem {
     pub(crate) fn new(
@@ -28,9 +29,15 @@ impl FileSystem for ProcFileSystem {
         Ok(self.root.clone())
     }
 
+    fn superblock(&self) -> SuperblockFacts {
+        SuperblockFacts {
+            type_name: "proc",
+            read_only: false,
+        }
+    }
+
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
         Ok(FileSystemStatistics {
-            type_name: "proc",
             magic: 0x9fa0,
             block_size: 4096,
             blocks: 0,

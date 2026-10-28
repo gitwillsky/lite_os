@@ -50,6 +50,8 @@ pub(crate) enum FileSystemError {
     ReadOnly,
     TooManyLinks,
     TextBusy,
+    Loop,
+    Errno(u16),
 }
 
 // kernel error 诊断在 host 测试中写入被捕获的 stderr；只有失败用例才显示，便于定位 fail-stop 原因。

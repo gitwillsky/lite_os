@@ -63,11 +63,10 @@
 
 ## State-owner registry
 
-AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-contract/ordered-storage.md)。
-
 ### Persistent FallibleMap registry
 
 下表是生产 kernel 中全部持久 `FallibleMap` 字段与 static 的精确集合。checker 对 location 与完整类型双向比对；新增、删除、换型或遗漏登记都必须先完成 owner/interface review。函数局部 transaction scratch 不属于持久 owner，不在此登记。
+AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-contract/ordered-storage.md)。
 
 | Location | Type |
 |---|---|
@@ -110,6 +109,8 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 | `kernel/src/fs/ext4/journal.rs :: ActiveTransaction.freed` | `FallibleMap < u64 , u64 >` |
 | `kernel/src/fs/ext4/journal.rs :: RunningTransaction.freed` | `FallibleMap < u64 , u64 >` |
 | `kernel/src/fs/page_cache/registry.rs :: static FILES` | `Once < Mutex < FallibleMap < SharedFileId , Arc < CachedFile > > > >` |
+| `kernel/src/fs/fuse/filesystem.rs :: Mount.nodes` | `Mutex < FallibleMap < u64 , Weak < FuseInode > > >` |
+| `kernel/src/fs/fuse/inode.rs :: FuseInode.entries` | `Mutex < FallibleMap < Vec < u8 > , CachedEntry > >` |
 | `kernel/src/fs/page_cache/reclaim.rs :: CachedPages.entries` | `FallibleMap < u64 , Arc < CachedPage > >` |
 | `kernel/src/arch/riscv64/page_table.rs :: PageTable.table_pages` | `FallibleMap < usize , Page >` |
 | `kernel/src/arch/aarch64/page_table.rs :: PageTable.table_pages` | `FallibleMap < usize , Page >` |
@@ -194,7 +195,6 @@ AVL mechanism 与审查规则见 [有序存储与源码审查](architecture-cont
 ## Change contract
 
 - 修改前确定所属 module、state owner、interface 与依赖变化，以及 error、exit、interrupt cleanup。
-- 未列入 dependency matrix 的跨 module 依赖一律失败；同 module 内引用不构成跨 seam 依赖。
 - 新 global、lock、Atomic、Once、cache、flag 或 unsafe 必须在领域契约记录 owner、安全证明与缺失时的具体失败。
 - scoped interface 只能用 `cargo run -p architecture-check -- --write-interface` 生成到 [generated baseline](generated/architecture-interface.txt)，禁止手工编辑。
 - 文档、单元测试、性能测试和运行时 gate 必须随契约变化同步维护；不得放宽围栏或阈值来接受实现错误。

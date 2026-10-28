@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Mutex;
 
-use crate::fallible_tree::FallibleMap;
+use crate::fallible_tree::{FallibleMap, NodeSlot};
 use crate::memory::{
     MemoryReclaimer, PAGE_SIZE, PageMapCount, ReclaimRequest, ReclaimResult, SharedFileError,
     SharedFileId, SharedFileMapping, SharedFrame, SharedPage, SharedPagePin,
@@ -26,7 +26,9 @@ pub(super) use swap::prepare_swap_file;
 mod registry;
 use registry::cached_file;
 pub(super) use registry::evict_if_unlinked;
-pub(crate) use registry::{evict_cached, evict_filesystem, statistics, sync_all, writeback_cached};
+pub(crate) use registry::{
+    evict_cached, evict_filesystem, invalidate, statistics, sync_all, write_back, writeback_cached,
+};
 mod reclaim;
 mod regular_write;
 mod writeback;
@@ -38,6 +40,10 @@ const PAGE_DIRTY: usize = 1 << (usize::BITS - 1);
 const PAGE_WRITER_MASK: usize = PAGE_DIRTY - 1;
 const DIRTY_LIMIT_DIVISOR: usize = 4;
 const DIRTY_THROTTLE_PAGES: usize = WRITEBACK_BATCH_PAGES * 2;
+/// 一页填充的预留：cache membership 节点与尚未发布的 frame。
+type PreparedFill = (NodeSlot<u64, Arc<CachedPage>>, SharedFrame);
+/// 一次未命中最多填充的页数（Linux `VM_READAHEAD_PAGES`，128 KiB）；栈上准备，miss 路径不分配堆。
+const MAX_READAHEAD_PAGES: usize = 32;
 
 // OWNER: dirty count 只投影 CachedPage 单一 atomic state 的 clean→dirty / dirty→clean
 // 转换。缺少该高水位投影会让 writable mapping 吃完可用于 journal writeback 的内存。
@@ -86,6 +92,14 @@ impl CachedPage {
 
     fn dirty_unmapped(&self) -> bool {
         self.state.load(Ordering::Acquire) == PAGE_DIRTY
+    }
+
+    /// 缓冲写修改了页内容：发布 dirty（不计 writable PTE），写回前一直保留；clean→dirty 计入全局 dirty 数。
+    fn mark_dirty(&self) {
+        let previous = self.state.fetch_or(PAGE_DIRTY, Ordering::AcqRel);
+        if previous & PAGE_DIRTY == 0 {
+            DIRTY_PAGES.fetch_add(1, Ordering::Relaxed);
+        }
     }
 
     fn mark_clean_if_unmapped(&self) {
@@ -209,25 +223,152 @@ impl CachedFile {
         if offset >= size {
             return Err(FileSystemError::InvalidOperation);
         }
-        if let Some(page) = self.pages.lock().entries.get(&index).cloned() {
-            return Ok((page, 0));
-        }
-        // 在 frame/I/O 等外部资源进入事务前预留 cache membership；缺失该步骤会在
-        //    storage read 成功后因 tree node OOM 直接 panic，且无法向 fault/read 返回 ENOMEM。
-        let page_slot = FallibleMap::<u64, Arc<CachedPage>>::try_reserve_node()
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        let mut frame = SharedFrame::allocate().map_err(shared_error)?;
-        let available = usize::try_from(size - offset)
-            .unwrap_or(usize::MAX)
-            .min(PAGE_SIZE);
-        // frame 尚未发布且保持独占，storage 直接填充其有效前缀；临时 Vec 会在每次
-        // cache miss 增加一次 heap allocation 和一次最多整页 memcpy。
-        let read = self
+        // 1. 预读窗口：从缺失页起、不越过 EOF 与下一个已缓存页的连续页（Linux 同步预读）。
+        let mut count = self
             .inode
-            .read_storage(offset, &mut frame.bytes_mut()[..available])?;
-        if read != available {
+            .readahead_pages()
+            .clamp(1, MAX_READAHEAD_PAGES)
+            .min(usize::try_from((size - 1) / PAGE_SIZE as u64 - index + 1).unwrap_or(usize::MAX));
+        if let Some((&next, page)) = self.pages.lock().entries.ceiling(&index) {
+            if next == index {
+                return Ok((page.clone(), 0));
+            }
+            count = count.min(usize::try_from(next - index).unwrap_or(usize::MAX));
+        }
+        // 2. 在 frame/I/O 等外部资源进入事务前预留 cache membership；缺失该步骤会在 storage read
+        //    成功后因 tree node OOM 直接 panic，且无法向 fault/read 返回 ENOMEM。预读页准备失败只
+        //    缩短窗口，缺失页本身失败才返回错误。
+        let mut fills: [Option<PreparedFill>; MAX_READAHEAD_PAGES] =
+            [const { None }; MAX_READAHEAD_PAGES];
+        for (filled, fill) in fills.iter_mut().take(count).enumerate() {
+            let prepared = FallibleMap::<u64, Arc<CachedPage>>::try_reserve_node()
+                .map_err(|_| FileSystemError::OutOfMemory)
+                .and_then(|slot| Ok((slot, SharedFrame::allocate().map_err(shared_error)?)));
+            match prepared {
+                Ok(prepared) => *fill = Some(prepared),
+                Err(error) if filled == 0 => return Err(error),
+                Err(_) => {
+                    count = filled;
+                    break;
+                }
+            }
+        }
+        // 3. frame 尚未发布且保持独占，storage 直接填充各页有效前缀；临时 Vec 会让每次 miss
+        //    多一次 heap allocation 和一次整页 memcpy。
+        let mut expected = 0;
+        let read = {
+            let mut slices: [&mut [u8]; MAX_READAHEAD_PAGES] =
+                core::array::from_fn(|_| &mut [][..]);
+            for (slice, fill) in slices.iter_mut().zip(fills.iter_mut()).take(count) {
+                let (_, frame) = fill.as_mut().expect("prepared readahead page");
+                let available = usize::try_from(size - offset - expected as u64)
+                    .unwrap_or(usize::MAX)
+                    .min(PAGE_SIZE);
+                *slice = &mut frame.bytes_mut()[..available];
+                expected += available;
+            }
+            self.inode
+                .read_storage_pages(offset, &mut slices[..count])?
+        };
+        if read != expected {
             return Err(FileSystemError::IoError);
         }
+        // 4. 发布；不持 `operation` 的异步填页可能已发布同一页，它读到的是同一份未被改写的数据
+        //    （改写者都在 `operation` 里，而我们现在持有它），保留已发布的页。
+        let mut requested = None;
+        for (position, fill) in fills.iter_mut().take(count).enumerate() {
+            let (slot, frame) = fill.take().expect("prepared readahead page");
+            let Ok(page) = Arc::try_new(CachedPage {
+                frame,
+                state: AtomicUsize::new(0),
+                writer_retired: self.writer_retired.clone(),
+                mapped: PageMapCount::default(),
+            }) else {
+                if position == 0 {
+                    return Err(FileSystemError::OutOfMemory);
+                }
+                break;
+            };
+            let page_index = index + position as u64;
+            let mut pages = self.pages.lock();
+            let published = match pages.entries.get(&page_index).cloned() {
+                Some(existing) => existing,
+                None => {
+                    pages
+                        .entries
+                        .commit_vacant(slot.fill(page_index, page.clone()));
+                    page
+                }
+            };
+            drop(pages);
+            if position == 0 {
+                requested = Some(published);
+            }
+        }
+        Ok((requested.expect("requested page published"), read))
+    }
+
+    /// 缓冲写（[`Inode::buffered_writes`]）：数据只进入页缓存并标记 dirty，由写回交给 storage。
+    ///
+    /// 1. 覆盖整页或起点不早于 EOF 的页直接用清零的新页；EOF 内的部分写先从 storage 填充原内容；
+    /// 2. 复制并发布 dirty，EOF 经 [`Inode::extend_buffered_size`] 推进；
+    /// 3. 全局 dirty 达到高水位时同步写回本文件：回收路径不能等待用户态 filesystem，缺失这一步时
+    ///    大文件复制会把内存全部变成无法回收的脏页。
+    ///
+    /// # Returns
+    ///
+    /// 写入的字节数；中途分配或填充失败时返回已写入的前缀，一字节都未写入才返回错误。
+    fn write_buffered(
+        &self,
+        offset: u64,
+        input: &[u8],
+        operation: &TaskMutexGuard<'_, ()>,
+    ) -> Result<usize, FileSystemError> {
+        let size = self.inode.size();
+        let mut done = 0;
+        while done < input.len() {
+            let position = offset
+                .checked_add(done as u64)
+                .ok_or(FileSystemError::NoSpace)?;
+            let index = position / PAGE_SIZE as u64;
+            let within = (position % PAGE_SIZE as u64) as usize;
+            let count = (PAGE_SIZE - within).min(input.len() - done);
+            let resident = self.pages.lock().entries.get(&index).cloned();
+            let page = match resident {
+                Some(page) => Ok(page),
+                None if index * (PAGE_SIZE as u64) < size && count != PAGE_SIZE => self
+                    .page_after_operation_lock(index, operation)
+                    .map(|(page, _)| page),
+                None => self.zeroed_page(index),
+            };
+            let page = match page {
+                Ok(page) => page,
+                Err(error) if done == 0 => return Err(error),
+                Err(_) => break,
+            };
+            page.frame.write(within, &input[done..done + count]);
+            page.mark_dirty();
+            done += count;
+        }
+        let end = offset + done as u64;
+        if end > size {
+            self.inode.extend_buffered_size(end);
+        }
+        let dirty_limit = crate::memory::frame_statistics()
+            .capacity_pages
+            .div_ceil(DIRTY_LIMIT_DIVISOR);
+        if DIRTY_PAGES.load(Ordering::Relaxed) >= dirty_limit {
+            self.writeback_range(0, u64::MAX, false)?;
+        }
+        Ok(done)
+    }
+
+    /// 发布一个清零的新页（缓冲写覆盖整页或写在 EOF 之后时不需要读 storage）。
+    fn zeroed_page(&self, index: u64) -> Result<Arc<CachedPage>, FileSystemError> {
+        let slot = FallibleMap::<u64, Arc<CachedPage>>::try_reserve_node()
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let mut frame = SharedFrame::allocate().map_err(shared_error)?;
+        frame.bytes_mut().fill(0);
         let page = Arc::try_new(CachedPage {
             frame,
             state: AtomicUsize::new(0),
@@ -236,15 +377,11 @@ impl CachedFile {
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
         let mut pages = self.pages.lock();
-        // 不持 `operation` 的异步填页可能已经发布了同一页；它读到的是同一份未被改写的数据（改写者
-        // 都在 `operation` 里，而我们现在持有它），所以直接用已发布的页。
         if let Some(existing) = pages.entries.get(&index).cloned() {
-            return Ok((existing, 0));
+            return Ok(existing);
         }
-        pages
-            .entries
-            .commit_vacant(page_slot.fill(index, page.clone()));
-        Ok((page, available))
+        pages.entries.commit_vacant(slot.fill(index, page.clone()));
+        Ok(page)
     }
 
     fn page_with_storage(&self, index: u64) -> Result<(Arc<CachedPage>, usize), FileSystemError> {
@@ -324,7 +461,7 @@ impl SharedFileMapping for CachedFile {
             .operation
             .lock()
             .map_err(|_| SharedFileError::OutOfMemory)?;
-        self.writeback_range(offset, length).map_err(fs_error)
+        self.writeback_range(offset, length, true).map_err(fs_error)
     }
 }
 
@@ -528,7 +665,7 @@ pub(crate) fn sync_inode(inode: Arc<dyn Inode>) -> Result<(), FileSystemError> {
         .operation
         .lock()
         .map_err(|_| FileSystemError::OutOfMemory)?;
-    file.writeback_range(0, u64::MAX)?;
+    file.writeback_range(0, u64::MAX, true)?;
     if block_device {
         // 块设备的“数据已写回”只到设备队列；fsync 还要求设备把它推进到稳定存储。
         file.inode.sync_storage()?;

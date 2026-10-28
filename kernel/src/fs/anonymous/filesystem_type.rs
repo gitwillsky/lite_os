@@ -22,17 +22,26 @@ impl PseudoFileSystem {
             Self::Pid => 12,
         }
     }
+    pub(in crate::fs) const fn type_name(self) -> &'static str {
+        match self {
+            Self::Memory => "tmpfs",
+            Self::Pipe => "pipefs",
+            Self::Socket => "sockfs",
+            Self::Anonymous => "anon_inodefs",
+            Self::Namespace => "nsfs",
+            Self::Pid => "pidfs",
+        }
+    }
     pub(in crate::fs) fn statistics(self) -> FileSystemStatistics {
-        let (type_name, magic) = match self {
-            Self::Memory => ("tmpfs", 0x0102_1994),
-            Self::Pipe => ("pipefs", 0x5049_5045),
-            Self::Socket => ("sockfs", 0x534f_434b),
-            Self::Anonymous => ("anon_inodefs", 0x0904_1934),
-            Self::Namespace => ("nsfs", 0x6e73_6673),
-            Self::Pid => ("pidfs", 0x5049_4446),
+        let magic = match self {
+            Self::Memory => 0x0102_1994,
+            Self::Pipe => 0x5049_5045,
+            Self::Socket => 0x534f_434b,
+            Self::Anonymous => 0x0904_1934,
+            Self::Namespace => 0x6e73_6673,
+            Self::Pid => 0x5049_4446,
         };
         FileSystemStatistics {
-            type_name,
             magic,
             block_size: 4096,
             blocks: 0,

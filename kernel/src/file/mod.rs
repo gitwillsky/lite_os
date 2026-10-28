@@ -58,6 +58,9 @@ pub(crate) struct OpenFileDescription {
     // fork 后各 fd table 使用独立锁，单表扫描无法识别最后一个 descriptor；该计数负责跨表触发
     // epoll 的 Linux close cleanup，缺失时会留下 fd reuse 可命中的旧 interest。
     descriptor_refs: AtomicUsize,
+    // filesystem 的 per-open 状态（FUSE 文件句柄）；字段 drop 即 release，在 Drop 发出 close 通知之后。
+    // 缺失时守护进程收不到 RELEASE，服务器端句柄泄漏到卸载。
+    _storage_open: Option<Arc<dyn crate::fs::StorageOpen>>,
     // 以写方式打开 inode 时登记的挂载写者；Drop 时归还。缺失则 `remount,ro` 看不到仍在写的 fd。
     _write_open: Option<WritableInodeLease>,
 }
@@ -114,6 +117,18 @@ impl Drop for WritableInodeLease {
 }
 
 impl OpenFileDescription {
+    /// 一个引用本 OFD 的 fd 被关闭（Linux `filp_close` 的 `f_op->flush`）；O_PATH 没有 file operations。
+    ///
+    /// # Errors
+    ///
+    /// filesystem 的 flush 错误，由 `close(2)` 返回给调用者。
+    pub(crate) fn flush(&self, owner: usize) -> Result<(), FileSystemError> {
+        match &self._storage_open {
+            Some(open) if !self.is_path() => open.flush(owner as u64),
+            _ => Ok(()),
+        }
+    }
+
     /// 从唯一 status flags 投影原生 FMODE_PATH；不保存第二份 backend-access 状态。
     pub(crate) fn is_path(&self) -> bool {
         self.status_flags() & crate::fs::O_PATH != 0
@@ -507,7 +522,7 @@ impl OpenFileDescription {
         opened: Arc<OpenedFile>,
     ) -> Result<Arc<Self>, ()> {
         let prepared = PreparedFileDescription::try_new().map_err(|_| ())?;
-        Ok(prepared.initialize(OpenFileKind::Pipe(endpoint), opened, flags, None))
+        Ok(prepared.initialize(OpenFileKind::Pipe(endpoint), opened, flags, None, None))
     }
 
     /// 把 OFD 投影为 VFS advisory lock（flock/fcntl）使用的持锁者视图。
@@ -526,19 +541,31 @@ impl OpenFileDescription {
     pub(crate) fn epoll(epoll: Arc<Epoll>) -> Result<Arc<Self>, ()> {
         let prepared = PreparedFileDescription::try_new().map_err(|_| ())?;
         let opened = crate::fs::anonymous_opened(b"anon_inode:[eventpoll]").map_err(|_| ())?;
-        Ok(prepared.initialize(OpenFileKind::Epoll(epoll), opened, O_RDWR, None))
+        Ok(prepared.initialize(OpenFileKind::Epoll(epoll), opened, O_RDWR, None, None))
     }
 
     pub(crate) fn event_fd(event: Arc<EventFd>, flags: u32) -> Result<Arc<Self>, ()> {
         let prepared = PreparedFileDescription::try_new().map_err(|_| ())?;
         let opened = crate::fs::anonymous_opened(b"anon_inode:[eventfd]").map_err(|_| ())?;
-        Ok(prepared.initialize(OpenFileKind::EventFd(event), opened, O_RDWR | flags, None))
+        Ok(prepared.initialize(
+            OpenFileKind::EventFd(event),
+            opened,
+            O_RDWR | flags,
+            None,
+            None,
+        ))
     }
 
     pub(crate) fn timer_fd(timer: Arc<TimerFd>, flags: u32) -> Result<Arc<Self>, ()> {
         let prepared = PreparedFileDescription::try_new().map_err(|_| ())?;
         let opened = crate::fs::anonymous_opened(b"anon_inode:[timerfd]").map_err(|_| ())?;
-        Ok(prepared.initialize(OpenFileKind::TimerFd(timer), opened, O_RDWR | flags, None))
+        Ok(prepared.initialize(
+            OpenFileKind::TimerFd(timer),
+            opened,
+            O_RDWR | flags,
+            None,
+            None,
+        ))
     }
 
     /// 在 backend 发布前准备完整 signalfd OFD；没有创建者的 Task 引用。
@@ -546,7 +573,13 @@ impl OpenFileDescription {
         let prepared = PreparedFileDescription::try_new().map_err(|_| ())?;
         let opened = crate::fs::anonymous_opened(b"anon_inode:[signalfd]").map_err(|_| ())?;
         let signal = SignalFd::try_new(mask)?;
-        Ok(prepared.initialize(OpenFileKind::SignalFd(signal), opened, O_RDWR | flags, None))
+        Ok(prepared.initialize(
+            OpenFileKind::SignalFd(signal),
+            opened,
+            O_RDWR | flags,
+            None,
+            None,
+        ))
     }
 
     /// 返回每个 OFD 唯一的 inode identity；是否支持 I/O 由 backend 决定。

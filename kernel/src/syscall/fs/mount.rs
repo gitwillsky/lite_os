@@ -58,6 +58,26 @@ const OPTIONS_MAX: usize = 4096;
 /// 文件系统类型名上限。
 const TYPE_MAX: usize = 256;
 
+/// `fd=` 一类挂载选项按调用者 fd 表解析（Linux FUSE `fill_super` 中的 `fget`，不接受 O_PATH）。
+struct TaskFiles<'a>(&'a TaskControlBlock);
+
+impl crate::fs::CallerFiles for TaskFiles<'_> {
+    fn device_file(
+        &self,
+        fd: i32,
+    ) -> Result<alloc::sync::Arc<dyn crate::fs::chardev::DeviceFile>, crate::fs::FileSystemError>
+    {
+        let file = usize::try_from(fd)
+            .ok()
+            .and_then(|fd| self.0.fd_get(fd))
+            .ok_or(crate::fs::FileSystemError::InvalidOperation)?;
+        match &file.kind {
+            crate::file::OpenFileKind::Device(device) => Ok(device.clone()),
+            _ => Err(crate::fs::FileSystemError::InvalidOperation),
+        }
+    }
+}
+
 /// Linux may_mount 使用实际 caller mount namespace 的 owning user namespace。
 fn may_mount(task: &TaskControlBlock) -> bool {
     task.namespace_authority().capable(
@@ -231,12 +251,31 @@ pub(crate) fn sys_mount(
     if fstype.is_null() {
         return -errno::EINVAL;
     }
-    let kind = match user_string(&task, fstype, TYPE_MAX) {
-        Ok(name) => match get_filesystem_type(&name) {
-            Some(kind) => kind,
-            None => return -errno::ENODEV,
-        },
+    let name = match user_string(&task, fstype, TYPE_MAX) {
+        Ok(name) => name,
         Err(error) => return error,
+    };
+    let Some((kind, subtype)) = get_filesystem_type(&name) else {
+        return -errno::ENODEV;
+    };
+    // Linux do_new_mount：`fuse.` 后为空返回 EINVAL；子类型先于 data 作为 `subtype=` 参数交给类型。
+    let options = match subtype {
+        Some([]) => return -errno::EINVAL,
+        Some(subtype) => {
+            let mut prefixed = Vec::new();
+            if prefixed
+                .try_reserve_exact(b"subtype=,".len() + subtype.len() + options.len())
+                .is_err()
+            {
+                return -errno::ENOMEM;
+            }
+            prefixed.extend_from_slice(b"subtype=");
+            prefixed.extend_from_slice(subtype);
+            prefixed.push(b',');
+            prefixed.extend_from_slice(&options);
+            prefixed
+        }
+        None => options,
     };
     if !identity.user_namespace().is_initial() && !kind.user_namespace_mount() {
         return -errno::EPERM;
@@ -277,6 +316,7 @@ pub(crate) fn sys_mount(
         &options,
         attributes,
         point,
+        &TaskFiles(&task),
     )
     .map_or_else(ferr, |()| 0)
 }

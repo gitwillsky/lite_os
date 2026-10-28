@@ -77,7 +77,7 @@ impl Dentry {
         self.inode.clone()
     }
     pub(super) fn inode_identity(&self) -> Result<(usize, u64), FileSystemError> {
-        Ok((self.inode.filesystem_id(), self.inode.metadata()?.inode))
+        Ok((self.inode.filesystem_id(), self.inode.identity()?.1))
     }
     fn location(&self) -> Option<&Mutex<Location>> {
         match &self.place {

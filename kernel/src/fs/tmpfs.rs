@@ -20,7 +20,7 @@ use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use super::{
     CreateMetadata, DataBacking, DeviceNumber, DirectoryEntry, DirectoryRead, DirectoryVisit,
     DirectoryVisitor, FileSystem, FileSystemError, FileSystemStatistics, Inode, InodeMetadata,
-    InodeType, MemoryFile, OwnerModeChange, StorageBudget,
+    InodeType, MemoryFile, OwnerModeChange, StorageBudget, SuperblockFacts,
     mount::{FileSystemType, MountRequest},
     permission::OwnerModeState,
 };

@@ -53,7 +53,7 @@ pub(crate) fn sys_memfd_create(name: usize, flags: u32) -> isize {
         Err(_) => return -errno::ENOMEM,
     };
     let ofd = match prepared.prepare_named(file, O_RDWR) {
-        Ok(prepared) => prepared.finish(crate::fs::InodeOpen::Storage),
+        Ok(prepared) => prepared.finish(crate::fs::InodeOpen::Storage(None)),
         Err(error) => return super::fs::ferr(error),
     };
     reservation.publish(ofd) as isize

@@ -45,11 +45,8 @@ impl TaskControlBlock {
             )
         })?;
         if let Some(descriptor) = retired {
-            let old = descriptor.finish_close();
-            vfs().release_record_locks_for_file(
-                self.file_lock_owner().identity(),
-                &old.lock_holder(),
-            );
+            // 被替换的 fd 照常关闭；flush 错误没有返回通道（Linux do_dup2 同样忽略）。
+            let _ = self.close_detached(descriptor);
         }
         Ok(fd)
     }
@@ -74,11 +71,26 @@ impl TaskControlBlock {
         self.with_files(|files| files.capture_many(descriptors))
     }
 
-    pub(crate) fn fd_close(&self, fd: usize) -> Result<(), ()> {
+    /// 关闭 `fd`（Linux `close_fd` → `filp_close`）。
+    ///
+    /// # Returns
+    ///
+    /// 外层 `Err` 表示 fd 无效（`EBADF`）；内层是 filesystem flush 的结果，fd 无论如何都已关闭。
+    pub(crate) fn fd_close(&self, fd: usize) -> Result<Result<(), crate::fs::FileSystemError>, ()> {
         let descriptor = self.with_files(|files| files.detach(fd))?;
+        Ok(self.close_detached(descriptor))
+    }
+
+    /// Linux `filp_close`：先 flush，再执行 descriptor cleanup 与本文件表在该 inode 上的 POSIX 锁释放。
+    fn close_detached(
+        &self,
+        descriptor: DetachedFileDescriptor,
+    ) -> Result<(), crate::fs::FileSystemError> {
+        let owner = self.file_lock_owner().identity();
+        let flushed = descriptor.file().flush(owner);
         let ofd = descriptor.finish_close();
-        vfs().release_record_locks_for_file(self.file_lock_owner().identity(), &ofd.lock_holder());
-        Ok(())
+        vfs().release_record_locks_for_file(owner, &ofd.lock_holder());
+        flushed
     }
 
     /// POSIX lock 提交后在同一表 guard 下复验 fd/OFD identity；共享表 close/reuse 可跨等待发生。
@@ -122,13 +134,11 @@ impl TaskControlBlock {
                 break;
             }
             for descriptor in &mut batch[..count] {
-                let ofd = descriptor
-                    .take()
-                    .expect("CLOEXEC batch count exceeded detached entries")
-                    .finish_close();
-                vfs().release_record_locks_for_file(
-                    self.file_lock_owner().identity(),
-                    &ofd.lock_holder(),
+                // exec 已越过返回点，flush 错误不可报告（Linux do_close_on_exec 同样忽略）。
+                let _ = self.close_detached(
+                    descriptor
+                        .take()
+                        .expect("CLOEXEC batch count exceeded detached entries"),
                 );
             }
         }
@@ -155,11 +165,8 @@ impl TaskControlBlock {
             files.duplicate_to(old, new, cloexec, self.file_descriptor_limit())
         })?;
         if let Some(descriptor) = replaced {
-            let ofd = descriptor.finish_close();
-            vfs().release_record_locks_for_file(
-                self.file_lock_owner().identity(),
-                &ofd.lock_holder(),
-            );
+            // dup2 静默关闭被替换的 fd；flush 错误不返回（Linux do_dup2）。
+            let _ = self.close_detached(descriptor);
         }
         Ok(new)
     }

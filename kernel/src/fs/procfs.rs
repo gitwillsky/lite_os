@@ -745,7 +745,7 @@ impl Inode for ProcInode {
         authority: &crate::namespace::NamespaceAuthority,
     ) -> Result<super::InodeOpen, super::InodeOpenError> {
         if self.inode_type() != InodeType::File {
-            return Ok(super::InodeOpen::Storage);
+            return Ok(super::InodeOpen::Storage(None));
         }
         opened_operations::open(self, flags, authority)
             .map(super::InodeOpen::Device)

@@ -1,5 +1,5 @@
 use super::*;
-use crate::fs::{FileSystemStatistics, KernelThreadSupport};
+use crate::fs::{FileSystemStatistics, KernelThreadSupport, SuperblockFacts};
 use core::sync::atomic::Ordering;
 
 impl FileSystem for Ext4FileSystem {
@@ -19,6 +19,13 @@ impl FileSystem for Ext4FileSystem {
             .upgrade()
             .ok_or(FileSystemError::InvalidFileSystem)?;
         Ext4Inode::load(fs_arc, EXT4_ROOT_INO).map(|inode| inode as Arc<dyn Inode>)
+    }
+
+    fn superblock(&self) -> SuperblockFacts {
+        SuperblockFacts {
+            type_name: "ext4",
+            read_only: false,
+        }
     }
 
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
@@ -45,7 +52,6 @@ impl FileSystem for Ext4FileSystem {
         let second = u64::from_le_bytes(superblock.s_uuid[8..].try_into().unwrap());
         let fsid = first ^ second;
         Ok(FileSystemStatistics {
-            type_name: "ext4",
             magic: EXT4_SUPER_MAGIC as u64,
             block_size: self.block_size as u64,
             blocks: superblock.blocks_count().saturating_sub(overhead),
@@ -93,23 +99,35 @@ impl FileSystem for Ext4FileSystem {
 }
 
 impl Ext4FileSystem {
-    /// 提交 running transaction；`fsync`、`fdatasync` 与 `sync` 的持久化边界。
+    /// 排空已失去引用的延迟 orphan 回收，再提交 running transaction；`fsync`、`fdatasync` 与
+    /// `sync` 的持久化边界。
     ///
-    /// 每次提交都以 home checkpoint 后的 barrier 结束，因此已提交事务都已 durable；提交后不再
-    /// 需要额外 flush。没有 running transaction 时不产生任何 I/O。
+    /// 1. 沿唯一回收路径每轮回收一个 final Drop 时因 owner 忙而延迟的 orphan；缺失时 sync 之后
+    ///    磁盘仍留着 nlink 0、dtime 0、占用 bitmap 与 orphan 槽位的 inode（e2fsck 报不一致）；
+    /// 2. 取得 owner 后重验待办，回收期间新发布的待办继续排空；仍被打开或映射的 orphan 保留；
+    /// 3. 同一 owner 内提交；每次提交都以 home checkpoint 后的 barrier 结束，没有 running
+    ///    transaction 时不产生 I/O。
     ///
     /// # Errors
     ///
-    /// mutation owner 取得失败返回 `OutOfMemory`；提交 I/O 失败返回错误并使 journal fail-stop。
+    /// owner 或回收分配失败、元数据无效、停止状态与提交 I/O 错误向上传递；回收失败保留重试 bit，
+    /// 提交 I/O 失败使 journal fail-stop。
     pub(super) fn sync_journal(&self) -> Result<(), FileSystemError> {
-        let _mutation = self
-            .mutation
-            .lock()
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        if self.stopping.load(Ordering::Acquire) {
-            return Err(FileSystemError::InvalidOperation);
+        loop {
+            // 回收自己取得 mutation owner；持 owner 调用会再次获取同一 TaskMutex 而自锁。
+            self.reclaim_pending_orphan()?;
+            let _mutation = self
+                .mutation
+                .lock()
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+            if self.stopping.load(Ordering::Acquire) {
+                return Err(FileSystemError::InvalidOperation);
+            }
+            if self.pending_orphan_reclaim.load(Ordering::Acquire) {
+                continue;
+            }
+            return self.commit_running_transaction();
         }
-        self.commit_running_transaction()
     }
 
     /// 创建本 filesystem 的写回内核线程（对应 Linux 每个 journal 的 jbd2 线程）。

@@ -105,6 +105,16 @@ pub(crate) fn kernel_thread_support(_scheduler: SchedulerReady) -> crate::fs::Ke
     }
 }
 
+/// 当前用户线程的 FSUID/FSGID 与 TID identity；filesystem 请求头经 `MountEnvironment` 消费。
+/// 内核线程没有用户凭据，返回 `None`。
+pub(crate) fn current_requester() -> Option<crate::fs::Requester> {
+    let task = current_task().filter(|task| !task.is_kernel_thread())?;
+    Some(crate::fs::Requester {
+        identity: task.access_identity(true),
+        thread: task.tid_identity(),
+    })
+}
+
 /// 未指定 `init=` 时依次尝试的程序（Linux `kernel_init`）。
 const DEFAULT_INIT_PROGRAMS: [&[u8]; 4] = [b"/sbin/init", b"/etc/init", b"/bin/init", b"/bin/sh"];
 

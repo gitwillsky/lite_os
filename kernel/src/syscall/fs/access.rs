@@ -38,6 +38,6 @@ pub(crate) fn sys_faccessat(dirfd: isize, name: *const u8, mode: usize) -> isize
         return -errno::EROFS;
     }
     inode
-        .require_access(&identity, mode as u8)
+        .require_access(&identity, mode as u8 | crate::fs::MAY_ACCESS)
         .map_or_else(ferr, |()| 0)
 }

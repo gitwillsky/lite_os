@@ -512,10 +512,6 @@ fn mountinfo_reports_view_and_superblock_readonly_independently() {
         &f.global,
         b"/",
         b"/",
-        &FileSystemStatistics {
-            type_name: "fixture",
-            flags: 0,
-        },
         mount_table::MountTableKind::Info,
     )
     .unwrap();

@@ -76,6 +76,7 @@
 - [经典桌面与 Win32 运行时](plans/classic-desktop.md)
 - [SDK、二进制兼容与系统内开发（实施中）](plans/classic-ui-sdk.md)
 - [经典桌面应用框架（实施中）](plans/classic-ui-framework.md)
+- [映射网络驱动器（SMB，实施中）](plans/network-drive.md)
 
 ## 设计决策与术语
 
@@ -91,6 +92,7 @@
 
 - [领域依赖说明](architecture-contract/dependency-owners.md)
 - [文件系统接口、事务与退休契约](architecture-contract/filesystem-transactions.md)
+- [FUSE 契约](architecture-contract/fuse.md)
 - [IPv4 与 TCP/UDP 传输契约](architecture-contract/ipv4-transports.md)
 - [有序存储与源码审查](architecture-contract/ordered-storage.md)
 - [Packet 与 Netlink 契约](architecture-contract/packet-netlink.md)

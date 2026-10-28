@@ -105,11 +105,31 @@ pub(crate) enum LinkTarget {
     Opened(Arc<OpenedFile>),
 }
 
+/// 一次 storage 打开的 filesystem 私有状态（Linux `file->private_data` 与 `f_op->release`）。
+///
+/// OFD 持有它直到最后一个引用释放，Drop 即 release；VFS 不读取其内容。缺失时 FUSE 无法把
+/// 服务器文件句柄的寿命绑定到 OFD，SMB 服务器上的文件会一直保持打开并拒绝删除。
+pub(crate) trait StorageOpen: Send + Sync {
+    /// 一个 fd 关闭（Linux `filp_close` 中的 `f_op->flush`）：close/dup2 替换/CLOEXEC/进程退出各调用一次，
+    /// 与 OFD 最后释放的 release 不同。`owner` 是关闭它的文件表身份（Linux `fl_owner_t`）。
+    ///
+    /// # Errors
+    ///
+    /// 后端报告的错误由 `close(2)` 返回；描述符照常关闭。缺省无事可做。
+    fn flush(&self, _owner: u64) -> Result<(), FileSystemError> {
+        Ok(())
+    }
+}
+
 /// inode owner 决定真实打开操作；storage 和专属 file operations 不按 pathname 分流。
 pub(crate) enum InodeOpen {
-    Storage,
+    /// 经 VFS/page cache 访问 inode storage；有 per-open 状态的 filesystem 附带其 release 令牌。
+    Storage(Option<Arc<dyn StorageOpen>>),
     Device(Arc<dyn super::chardev::DeviceFile>),
 }
+
+/// [`Inode::create_open`] 的结果：新 inode 与随创建一起打开的 backend。
+pub(crate) type CreatedOpen = (Arc<dyn Inode>, InodeOpen);
 
 /// 打开 storage 的错误与可重启的 peer rendezvous 中断，保留各自领域语义。
 pub(crate) enum InodeOpenError {
@@ -127,6 +147,49 @@ impl InodeOpenError {
             super::FifoOpenError::NoReader => FileSystemError::NoDevice.into(),
             super::FifoOpenError::OutOfMemory => FileSystemError::OutOfMemory.into(),
             super::FifoOpenError::Interrupted => Self::Interrupted,
+        }
+    }
+}
+
+/// 按 inode 类型打开的通用后端：FIFO 与字符设备进入各自领域，数据 inode 走 storage。
+///
+/// [`Inode::open_backend`] 的缺省实现；有 per-open 状态的 filesystem 只为自己的数据 inode 覆盖，
+/// 其余类型仍经此处，保证 FIFO/设备节点在任何 filesystem 上语义相同。
+///
+/// # Errors
+///
+/// FIFO 汇合被 signal 打断返回 `Interrupted`；设备不存在、socket/symlink 返回 `NoDevice`。
+pub(crate) fn open_by_type<T: Inode + ?Sized>(
+    inode: &T,
+    flags: u32,
+    identity: &super::AccessIdentity,
+) -> Result<InodeOpen, InodeOpenError> {
+    match inode.inode_type() {
+        InodeType::Fifo => {
+            let access = match flags & super::O_ACCMODE {
+                super::O_RDONLY => super::FifoAccess::Read,
+                super::O_WRONLY => super::FifoAccess::Write,
+                _ => super::FifoAccess::ReadWrite,
+            };
+            let number = inode.identity()?.1;
+            super::open_fifo(
+                (inode.filesystem_id(), number),
+                access,
+                flags & super::O_NONBLOCK != 0,
+            )
+            .map(InodeOpen::Device)
+            .map_err(InodeOpenError::from_fifo)
+        }
+        InodeType::CharacterDevice => super::chardev::open(&super::chardev::OpenRequest {
+            number: inode.device_number().ok_or(FileSystemError::NoDevice)?,
+            flags,
+            identity,
+        })
+        .map(InodeOpen::Device)
+        .map_err(InodeOpenError::Filesystem),
+        InodeType::Socket | InodeType::SymLink => Err(FileSystemError::NoDevice.into()),
+        InodeType::File | InodeType::Directory | InodeType::BlockDevice => {
+            Ok(InodeOpen::Storage(None))
         }
     }
 }
@@ -181,6 +244,15 @@ pub(crate) trait Inode: Send + Sync {
 
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError>;
 
+    /// 不发起 I/O 的 `(st_dev, st_ino)`（Linux `sb->s_dev` 与 `i_ino`）；dentry 索引与 mountinfo 只用它。
+    ///
+    /// 缺省取自 [`Inode::metadata`]。属性要远端往返的 filesystem（FUSE）必须覆盖：否则每个路径分量的
+    /// dentry 准入都等一次服务器，守护进程卡住时 `/proc/self/mountinfo` 也随之阻塞。
+    fn identity(&self) -> Result<(u64, u64), FileSystemError> {
+        let metadata = self.metadata()?;
+        Ok((metadata.filesystem, metadata.inode))
+    }
+
     /// inode 实际 permission operation；默认 DAC，proc sysctl 等 owner 可提供自己的 scoped policy。
     fn require_access(
         &self,
@@ -224,34 +296,7 @@ pub(crate) trait Inode: Send + Sync {
         identity: &super::AccessIdentity,
         _authority: &crate::namespace::NamespaceAuthority,
     ) -> Result<InodeOpen, InodeOpenError> {
-        match self.inode_type() {
-            InodeType::Fifo => {
-                let access = match flags & super::O_ACCMODE {
-                    super::O_RDONLY => super::FifoAccess::Read,
-                    super::O_WRONLY => super::FifoAccess::Write,
-                    _ => super::FifoAccess::ReadWrite,
-                };
-                let inode = self.metadata()?.inode;
-                super::open_fifo(
-                    (self.filesystem_id(), inode),
-                    access,
-                    flags & super::O_NONBLOCK != 0,
-                )
-                .map(InodeOpen::Device)
-                .map_err(InodeOpenError::from_fifo)
-            }
-            InodeType::CharacterDevice => super::chardev::open(&super::chardev::OpenRequest {
-                number: self.device_number().ok_or(FileSystemError::NoDevice)?,
-                flags,
-                identity,
-            })
-            .map(InodeOpen::Device)
-            .map_err(InodeOpenError::Filesystem),
-            InodeType::Socket | InodeType::SymLink => Err(FileSystemError::NoDevice.into()),
-            InodeType::File | InodeType::Directory | InodeType::BlockDevice => {
-                Ok(InodeOpen::Storage)
-            }
-        }
+        open_by_type(self, flags, identity)
     }
 
     /// 不进入 mount namespace 的 pseudo-filesystem 事实；path/fd statfs 共用此 projection。
@@ -286,7 +331,7 @@ pub(crate) trait Inode: Send + Sync {
     fn page_cache_id(&self) -> Result<crate::memory::SharedFileId, FileSystemError> {
         Ok(crate::memory::SharedFileId {
             filesystem: self.filesystem_id(),
-            inode: self.metadata()?.inode,
+            inode: self.identity()?.1,
         })
     }
 
@@ -340,6 +385,62 @@ pub(crate) trait Inode: Send + Sync {
     }
 
     fn read_storage(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError>;
+
+    /// regular read 开始前、未持该文件页缓存锁时的数据重新验证（Linux FUSE 在 `read_iter` 中的
+    /// `fuse_update_attributes`）。缺省无事可做；内容可被其他客户端改动的 filesystem 在此刷新过期属性，
+    /// 发现 mtime/size 变化时作废页缓存，缺失时长期打开的文件一直读到旧内容。
+    ///
+    /// # Errors
+    ///
+    /// 属性刷新失败透传；页缓存暂时忙不是错误，作废需求保留到下一次。
+    fn revalidate_data(&self) -> Result<(), FileSystemError> {
+        Ok(())
+    }
+
+    /// regular write 是否只写入页缓存、由写回交给 storage（Linux 的缓冲写；FUSE 协商 WRITEBACK_CACHE）。
+    ///
+    /// 缺省 false：每次写直达 [`Inode::write_storage`]（ext4/tmpfs 的既有 write-through 语义）。为 true 时
+    /// 页缓存负责 EOF 的推进（经 [`Inode::extend_buffered_size`]），filesystem 不得再以服务器大小覆盖。
+    fn buffered_writes(&self) -> bool {
+        false
+    }
+
+    /// 缓冲写把 EOF 推进到 `size`（Linux `generic_perform_write` 中的 `i_size_write` 与 `file_update_time`）。
+    /// 只对 [`Inode::buffered_writes`] 为 true 的 inode 调用，调用者持该文件的页缓存 operation 锁。
+    fn extend_buffered_size(&self, _size: u64) {}
+
+    /// 页缓存未命中时一次填充的最大连续页数（Linux superblock 的 `bdi->ra_pages`）。
+    ///
+    /// 缺省 1：只读缺失的那一页。每次存储请求往返昂贵的 filesystem（FUSE）返回协商的预读窗口，
+    /// 缺失时顺序读取每 4 KiB 都是一次服务器往返。
+    fn readahead_pages(&self) -> usize {
+        1
+    }
+
+    /// 把从 `offset` 起连续的若干页一次读入 `pages`；每个切片是一页的有效前缀，只有最后一页可能不满。
+    ///
+    /// # Returns
+    ///
+    /// 读到的总字节数；少于各切片总长时调用者按 I/O 错误处理。
+    ///
+    /// # Errors
+    ///
+    /// 透传存储错误。缺省逐页调用 [`Inode::read_storage`]；FUSE 覆盖为单个 READ 请求。
+    fn read_storage_pages(
+        &self,
+        offset: u64,
+        pages: &mut [&mut [u8]],
+    ) -> Result<usize, FileSystemError> {
+        let mut total = 0;
+        for page in pages {
+            let read = self.read_storage(offset + total as u64, page)?;
+            total += read;
+            if read != page.len() {
+                break;
+            }
+        }
+        Ok(total)
+    }
 
     /// 开始一段不阻塞调用者的存储读；块读完成时调用 `notify`。
     ///
@@ -535,6 +636,30 @@ pub(crate) trait Inode: Send + Sync {
         metadata: CreateMetadata,
     ) -> Result<Arc<dyn Inode>, FileSystemError>;
 
+    /// `open(O_CREAT)` 创建普通文件时一并打开（Linux `i_op->atomic_open`）。
+    ///
+    /// # Parameters
+    ///
+    /// - `flags`: 本次 open 的原始 status flags。
+    ///
+    /// # Returns
+    ///
+    /// `Some((inode, backend))` 时 VFS 直接使用该 backend，不再 `open_backend`；`None` 表示不支持，
+    /// VFS 退回 [`Inode::create`] 加 `open_backend`。缺省 `None`；创建与打开要两次服务器往返、且
+    /// 中间可能被他人删改的 filesystem（FUSE CREATE）覆盖。
+    ///
+    /// # Errors
+    ///
+    /// 与 [`Inode::create`] 相同。
+    fn create_open(
+        &self,
+        _name: &[u8],
+        _metadata: CreateMetadata,
+        _flags: u32,
+    ) -> Result<Option<CreatedOpen>, FileSystemError> {
+        Ok(None)
+    }
+
     /// 在当前目录创建 FIFO 或设备节点（Linux `mknod`）。
     ///
     /// # Parameters
@@ -612,6 +737,13 @@ pub(crate) trait Inode: Send + Sync {
     }
 
     fn unlink(&self, name: &[u8], remove_directory: bool) -> Result<(), FileSystemError>;
+
+    /// 本 inode 刚被父目录的 unlink/rmdir 或 rename 覆盖删除了一个名字（Linux filesystem 在
+    /// `i_op->unlink` 中对 victim 执行的 `drop_nlink`/`clear_nlink`）；VFS 在父目录操作成功后调用。
+    ///
+    /// 自己在父目录事务里维护链接数的 filesystem（ext4、tmpfs）保持缺省空实现。链接数只是远端缓存的
+    /// filesystem（FUSE）必须实现：否则已删除文件的缓存链接数不归零，页缓存与 inode 滞留到下一次 sync。
+    fn unlinked(&self, _directory: bool) {}
 
     fn rename(
         &self,

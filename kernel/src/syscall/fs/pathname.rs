@@ -32,6 +32,7 @@ pub(in crate::syscall) fn ferr(error: FileSystemError) -> isize {
         FileSystemError::Loop => errno::ELOOP,
         FileSystemError::OutOfMemory => errno::ENOMEM,
         FileSystemError::IoError | FileSystemError::InvalidFileSystem => errno::EIO,
+        FileSystemError::Errno(value) => value as isize,
     })
 }
 

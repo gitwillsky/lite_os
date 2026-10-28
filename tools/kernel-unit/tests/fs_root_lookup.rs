@@ -181,6 +181,11 @@ mod fs {
         }
         fn inode_type(&self) -> InodeType;
         fn metadata(&self) -> Result<Metadata, FileSystemError>;
+        fn unlinked(&self, _directory: bool) {}
+        fn identity(&self) -> Result<(u64, u64), FileSystemError> {
+            let metadata = self.metadata()?;
+            Ok((metadata.filesystem, metadata.inode))
+        }
         fn require_access(
             &self,
             identity: &AccessIdentity,
@@ -209,15 +214,25 @@ mod fs {
         pub(crate) spawn: SpawnKernelThread,
     }
     pub(crate) struct FileSystemStatistics {
-        pub(crate) type_name: &'static str,
         pub(crate) flags: u64,
     }
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub(crate) struct SuperblockFacts {
+        pub(crate) type_name: &'static str,
+        pub(crate) read_only: bool,
+    }
     pub(crate) trait FileSystem: Send + Sync {
-        fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
-            Ok(FileSystemStatistics {
+        fn superblock(&self) -> SuperblockFacts {
+            SuperblockFacts {
                 type_name: "fixture",
-                flags: 0,
-            })
+                read_only: false,
+            }
+        }
+        fn subtype(&self) -> &[u8] {
+            &[]
+        }
+        fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
+            Ok(FileSystemStatistics { flags: 0 })
         }
         fn show_mount_options(&self) -> Result<Vec<u8>, FileSystemError> {
             Ok(Vec::new())
@@ -315,11 +330,14 @@ mod fs {
             fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError> {
                 Ok(Arc::try_new(Root).map_err(|_| FileSystemError::OutOfMemory)?)
             }
-            fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
-                Ok(FileSystemStatistics {
+            fn superblock(&self) -> SuperblockFacts {
+                SuperblockFacts {
                     type_name: "nsfs",
-                    flags: 0x20,
-                })
+                    read_only: false,
+                }
+            }
+            fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
+                Ok(FileSystemStatistics { flags: 0x20 })
             }
         }
         pub(super) fn mounted_filesystem() -> Result<Arc<vfs::MountedFilesystem>, FileSystemError> {

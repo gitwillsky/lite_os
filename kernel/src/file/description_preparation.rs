@@ -6,7 +6,9 @@ use spin::Mutex;
 use super::{
     EpollMemberships, FilePosition, OpenFileDescription, OpenFileKind, WritableInodeLease,
 };
-use crate::fs::{FileSystemError, InodeOpen, InodeType, O_ACCMODE, O_RDONLY, OpenedFile};
+use crate::fs::{
+    FileSystemError, InodeOpen, InodeType, O_ACCMODE, O_RDONLY, OpenedFile, StorageOpen,
+};
 
 /// 具体 anonymous device 建立资源前准备 OFD 与真实 opened identity；finish 不分配。
 pub(crate) struct PreparedDeviceDescription {
@@ -29,8 +31,13 @@ impl PreparedDeviceDescription {
         self,
         device: Arc<dyn crate::fs::chardev::DeviceFile>,
     ) -> Arc<OpenFileDescription> {
-        self.description
-            .initialize(OpenFileKind::Device(device), self.opened, self.flags, None)
+        self.description.initialize(
+            OpenFileKind::Device(device),
+            self.opened,
+            self.flags,
+            None,
+            None,
+        )
     }
 }
 
@@ -49,7 +56,7 @@ impl PreparedFileDescription {
         flags: u32,
     ) -> Arc<OpenFileDescription> {
         assert!(flags & crate::fs::O_PATH != 0);
-        self.initialize(OpenFileKind::Inode, opened, flags, None)
+        self.initialize(OpenFileKind::Inode, opened, flags, None, None)
     }
     /// 由实际 pseudo filesystem 准备好的 opened/backend 建立 OFD；不另建匿名 inode。
     pub(crate) fn finish_backend(
@@ -58,7 +65,7 @@ impl PreparedFileDescription {
         backend: Arc<dyn crate::fs::chardev::DeviceFile>,
         flags: u32,
     ) -> Arc<OpenFileDescription> {
-        self.initialize(OpenFileKind::Device(backend), opened, flags, None)
+        self.initialize(OpenFileKind::Device(backend), opened, flags, None, None)
     }
     /// 在 pathname/create/backend 副作用前 fallible 分配 OFD。
     /// # Errors
@@ -76,6 +83,7 @@ impl PreparedFileDescription {
         opened: Arc<OpenedFile>,
         flags: u32,
         write_open: Option<WritableInodeLease>,
+        storage_open: Option<Arc<dyn StorageOpen>>,
     ) -> Arc<OpenFileDescription> {
         Arc::get_mut(&mut self.allocation)
             .expect("unpublished OFD allocation is unique")
@@ -86,6 +94,7 @@ impl PreparedFileDescription {
                 opened,
                 epoll_memberships: EpollMemberships::new(),
                 descriptor_refs: AtomicUsize::new(0),
+                _storage_open: storage_open,
                 _write_open: write_open,
             });
         // SAFETY: allocation token 从未 clone/Weak/publication；唯一 write 完整初始化 Self，
@@ -143,11 +152,11 @@ pub(crate) struct PreparedNamedFile {
 impl PreparedNamedFile {
     /// 消费已成功打开的实际 backend，无分配建立唯一 OFD lifecycle。
     pub(crate) fn finish(self, backend: InodeOpen) -> Arc<OpenFileDescription> {
-        let kind = match backend {
-            InodeOpen::Storage => OpenFileKind::Inode,
-            InodeOpen::Device(file) => OpenFileKind::Device(file),
+        let (kind, storage_open) = match backend {
+            InodeOpen::Storage(open) => (OpenFileKind::Inode, open),
+            InodeOpen::Device(file) => (OpenFileKind::Device(file), None),
         };
         self.allocation
-            .initialize(kind, self.opened, self.flags, self.write_open)
+            .initialize(kind, self.opened, self.flags, self.write_open, storage_open)
     }
 }

@@ -794,6 +794,7 @@ fn program_load_errno(error: ProgramLoadError) -> isize {
         ProgramLoadError::FileSystem(FileSystemError::NoSpace) => errno::ENOMEM,
         ProgramLoadError::FileSystem(FileSystemError::NoDevice) => errno::ENXIO,
         ProgramLoadError::FileSystem(FileSystemError::NotSupported) => errno::EOPNOTSUPP,
+        ProgramLoadError::FileSystem(FileSystemError::Errno(value)) => value as isize,
     };
     -errno
 }

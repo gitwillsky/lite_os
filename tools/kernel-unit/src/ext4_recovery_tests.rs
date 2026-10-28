@@ -457,6 +457,52 @@ fn orphan_drop_defers_while_mutation_owner_is_busy() {
 }
 
 #[test]
+fn sync_drains_orphan_whose_drop_found_mutation_owner_busy() {
+    let _serial = COST_TEST_LOCK.lock().unwrap();
+    let (_image, fs) = mounted();
+    let before = test_mount_allocation_state(&fs);
+    let root = fs.root_inode().unwrap();
+    let metadata = CreateMetadata {
+        mode: 0o644,
+        uid: 0,
+        gid: 0,
+    };
+    // 仍打开的 orphan：sync 不得提前回收。
+    let live = root
+        .create(b"sync-live-orphan", InodeType::File, metadata)
+        .unwrap();
+    live.write_storage(0, &[0x5a], None).unwrap();
+    root.unlink(b"sync-live-orphan", false).unwrap();
+    let with_live = test_mount_allocation_state(&fs);
+    let file = root
+        .create(b"sync-deferred-orphan", InodeType::File, metadata)
+        .unwrap();
+    file.write_storage(0, &[0x5a], None).unwrap();
+    let inode = file.metadata().unwrap().inode as u32;
+    root.unlink(b"sync-deferred-orphan", false).unwrap();
+    arm_test_orphan_drop(inode);
+    std::thread::scope(|scope| {
+        let inode_drop = scope.spawn(move || drop(file));
+        wait_test_orphan_drop_admission();
+        with_test_mutation_lock(&fs, || {
+            release_test_orphan_drop();
+            inode_drop.join().unwrap();
+        });
+    });
+
+    // 之后没有普通 mutation：sync 自己必须完成延迟回收（恢复门禁中 `rm; sync` 的形状）。
+    root.sync_storage().unwrap();
+    assert_eq!(
+        test_mount_allocation_state(&fs),
+        with_live,
+        "sync must reclaim an orphan whose final Drop deferred, and keep the open one"
+    );
+    drop(live);
+    root.sync_storage().unwrap();
+    assert_eq!(test_mount_allocation_state(&fs), before);
+}
+
+#[test]
 fn reclaimed_inode_final_drop_does_not_reclaim_again() {
     let _serial = COST_TEST_LOCK.lock().unwrap();
     let (_image, fs) = mounted();

@@ -157,9 +157,7 @@ impl Ext4FileSystem {
     pub(super) fn reclaim_pending_orphan(&self) -> Result<(), FileSystemError> {
         // 普通 mutation 只做 shared load；每次 I/O 都写同一 cache line 会把无 pending 的
         // 多核 ext4 transaction 人为串行化。
-        if !self.pending_orphan_reclaim.load(Ordering::Acquire)
-            || !self.pending_orphan_reclaim.swap(false, Ordering::AcqRel)
-        {
+        if !self.pending_orphan_reclaim.load(Ordering::Acquire) {
             return Ok(());
         }
         let result = self.reclaim_one_pending_orphan();
@@ -171,6 +169,11 @@ impl Ext4FileSystem {
 
     fn reclaim_one_pending_orphan(&self) -> Result<(), FileSystemError> {
         let mut mutation = MutationGuard::begin(self)?;
+        // 1. 取得 owner 之后才消费重试 bit：等待 owner 期间先清 bit，会让并发 sync 看到“无待办”，
+        //    在 inode 尚未回收时就提交并返回。
+        if !self.pending_orphan_reclaim.swap(false, Ordering::AcqRel) {
+            return Ok(());
+        }
         let orphan = self.orphan.lock();
         let dead = self.find_orphan_slot(&orphan, |value| {
             value != 0
@@ -187,10 +190,10 @@ impl Ext4FileSystem {
         };
         let inode = self.load_inode(number)?;
         inode.reclaim_dropped_orphan_locked(&mut mutation)?;
-        mutation.commit()?;
-        // 一次 transaction 只回收一个 inode，避免大量 orphan 超过 journal 容量。
+        // 2. 一次 transaction 只回收一个 inode，避免大量 orphan 超过 journal 容量；继续扫描的责任在
+        //    释放 owner 前重新发布，sync 取得 owner 后据此继续排空。
         self.pending_orphan_reclaim.store(true, Ordering::Release);
-        Ok(())
+        mutation.commit()
     }
 
     /// 将无目录项但仍被 OFD 持有的 inode 原子记入 orphan file。

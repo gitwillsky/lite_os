@@ -101,6 +101,11 @@ pub(crate) struct CancelledFileReservation {
 }
 
 impl DetachedFileDescriptor {
+    /// 被摘除 descriptor 引用的 OFD；close 在 descriptor cleanup 前先 flush（Linux `filp_close` 顺序）。
+    pub(crate) fn file(&self) -> &Arc<OpenFileDescription> {
+        self.0.file()
+    }
+
     /// 完成 descriptor_refs/epoll/flock cleanup，并保留 OFD 供 record-lock cleanup。
     ///
     /// # Returns
@@ -476,6 +481,14 @@ impl FileDescriptorTable {
     /// # Returns
     ///
     /// 按 fd 递增的 `(descriptor, OFD)` 快照；内存不足返回错误。
+    /// 全部已发布 descriptor 引用的 OFD（同一 OFD 被多个 fd 引用时出现多次，与逐 fd 关闭一致）。
+    pub(crate) fn published_files(&self) -> impl Iterator<Item = &Arc<OpenFileDescription>> {
+        self.slots
+            .iter()
+            .filter(|(_, entry)| entry.published)
+            .map(|(_, entry)| entry.file())
+    }
+
     pub(crate) fn snapshot(&self) -> Result<Vec<(usize, Arc<OpenFileDescription>)>, ()> {
         let count = self
             .slots

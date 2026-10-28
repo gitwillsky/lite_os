@@ -256,6 +256,7 @@ pub(crate) fn syscall(
             SYSCALL_UMOUNT2 => fs::mount::sys_umount2(args[0] as *const u8, args[1]),
             SYSCALL_STATFS => fs::statistics::sys_statfs(args[0] as *const u8, args[1]),
             SYSCALL_FSTATFS => fs::statistics::sys_fstatfs(args[0], args[1]),
+            SYSCALL_TRUNCATE => sys_truncate(args[0] as *const u8, args[1] as i64),
             SYSCALL_FTRUNCATE => sys_ftruncate(args[0], args[1] as u64),
             SYSCALL_FADVISE64 => sys_fadvise64(args[0], args[3]),
             SYSCALL_FALLOCATE => sys_fallocate(args[0], args[1], args[2] as i64, args[3] as i64),

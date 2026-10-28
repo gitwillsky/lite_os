@@ -61,7 +61,8 @@ const AT_FDCWD: isize = -100;
 const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 pub(crate) fn sys_close(fd: usize) -> isize {
     current_task().map_or(-errno::ESRCH, |t| {
-        t.fd_close(fd).map_or(-errno::EBADF, |_| 0)
+        t.fd_close(fd)
+            .map_or(-errno::EBADF, |flushed| flushed.map_or_else(ferr, |()| 0))
     })
 }
 
@@ -199,6 +200,62 @@ pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
         .map_or_else(ferr, |_| 0);
     if result == 0 {
         crate::fs::notify_opened(&ofd.opened_ref(), crate::fs::IN_MODIFY);
+    }
+    result
+}
+
+/// Linux `truncate(2)`（`do_sys_truncate` → `vfs_truncate`）：按路径截断 regular file。
+///
+/// 1. 跟随符号链接解析路径；目录 `EISDIR`，其他非 regular `EINVAL`，负长度 `EINVAL`；
+/// 2. 取得挂载写者（只读挂载 `EROFS`），检查 caller 的写权限，取得写访问（正在执行或作为 swap
+///    的文件 `ETXTBSY`）；
+/// 3. 超过 RLIMIT_FSIZE 投递 `SIGXFSZ` 并返回 `EFBIG`；之后与 `ftruncate` 共用同一 filesystem 截断。
+pub(crate) fn sys_truncate(path: *const u8, size: i64) -> isize {
+    let Some(task) = current_task() else {
+        return -errno::ESRCH;
+    };
+    let path = match user_path(&task, path) {
+        Ok(path) => path,
+        Err(error) => return error,
+    };
+    let Ok(size) = u64::try_from(size) else {
+        return -errno::EINVAL;
+    };
+    let identity = task.access_identity(true);
+    let opened = match vfs().open_file_at(task.lookup_origin(), &path, &identity) {
+        Ok(opened) => opened,
+        Err(error) => return ferr(error),
+    };
+    let inode = opened.inode();
+    match inode.inode_type() {
+        InodeType::File => {}
+        InodeType::Directory => return -errno::EISDIR,
+        _ => return -errno::EINVAL,
+    }
+    let _writer = match opened.begin_content_write() {
+        Ok(writer) => writer,
+        Err(error) => return ferr(error),
+    };
+    if let Err(error) = inode.require_access(&identity, 2) {
+        return ferr(error);
+    }
+    let _access = match crate::fs::InodeAccessLease::write(inode.clone()) {
+        Ok(access) => access,
+        Err(error) => return ferr(error),
+    };
+    if size > task.file_size_limit() {
+        send_kernel_thread_signal(
+            task.tgid(),
+            task.tid(),
+            syscall_abi::signal::SIGXFSZ,
+            crate::task::PendingSignal::kernel(),
+        )
+        .expect("current truncate caller must exist");
+        return -errno::EFBIG;
+    }
+    let result = crate::fs::truncate(inode, size, &identity).map_or_else(ferr, |_| 0);
+    if result == 0 {
+        crate::fs::notify_opened(&opened, crate::fs::IN_MODIFY);
     }
     result
 }

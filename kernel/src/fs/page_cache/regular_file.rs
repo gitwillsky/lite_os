@@ -128,7 +128,10 @@ impl RegularFile {
         output: &mut [u8],
     ) -> Result<RegularFileRead, FileSystemError> {
         let file = match &self.0 {
-            RegularFileBackend::Cached(file) => file,
+            RegularFileBackend::Cached(file) => {
+                file.inode.revalidate_data()?;
+                file
+            }
             RegularFileBackend::Snapshot(inode) => {
                 return inode
                     .read_storage(offset, output)

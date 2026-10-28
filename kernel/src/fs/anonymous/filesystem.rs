@@ -2,6 +2,7 @@
 use super::super::{
     AccessIdentity, CreateMetadata, DataBacking, DirectoryRead, DirectoryVisitor, FileSystem,
     FileSystemError, FileSystemStatistics, Inode, InodeMetadata, InodeType, OpenedFile,
+    SuperblockFacts,
     vfs::{Dentry, MountedFilesystem, internal_mount},
 };
 use super::PseudoFileSystem;
@@ -69,7 +70,7 @@ impl PseudoMount {
                 })?;
                 let source = Arc::try_new(super::super::try_format_bytes(format_args!(
                     "{}",
-                    kind.statistics().type_name
+                    kind.type_name()
                 ))?)
                 .map_err(|_| FileSystemError::OutOfMemory)?;
                 internal_mount(owner.clone(), root.clone(), source)
@@ -82,6 +83,12 @@ struct PseudoFilesystem {
     root: Arc<RootInode>,
 }
 impl FileSystem for PseudoFilesystem {
+    fn superblock(&self) -> SuperblockFacts {
+        SuperblockFacts {
+            type_name: self.root.filesystem.type_name(),
+            read_only: false,
+        }
+    }
     fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError> {
         Ok(self.root.clone())
     }

@@ -23,6 +23,41 @@ pub(crate) struct MountEnvironment {
     pub(crate) cpu_count: usize,
     /// sysfs `/sys/class/net` 投影的接口来源。
     pub(crate) net_links: Arc<dyn super::NetLinkSource>,
+    /// 当前调用者的凭据与线程；FUSE 据此填写请求头的 uid/gid/pid。
+    pub(crate) requester: CurrentRequester,
+}
+
+/// 发起文件系统请求的当前线程（Linux `current_fsuid()`/`current_fsgid()` 与 `task_pid(current)`）。
+pub(crate) struct Requester {
+    /// FSUID/FSGID 与 user namespace 快照。
+    pub(crate) identity: AccessIdentity,
+    /// 当前线程的 PID identity；由各 filesystem 投影到自己捕获的 PID namespace。
+    pub(crate) thread: Arc<crate::namespace::PidIdentity>,
+}
+
+/// 取得当前调用者；内核线程等没有用户凭据的上下文返回 `None`。
+pub(crate) type CurrentRequester = fn() -> Option<Requester>;
+
+/// `mount(2)` 调用者的 fd 表视图（Linux 在 `fill_super` 中对调用者执行的 `fget`）。
+pub(crate) trait CallerFiles {
+    /// 取得 `fd` 指向的设备文件。
+    ///
+    /// # Errors
+    ///
+    /// fd 无效或不是设备文件返回 `InvalidOperation`（Linux FUSE 挂载对此返回 `EINVAL`）。
+    fn device_file(&self, fd: i32) -> Result<Arc<dyn super::chardev::DeviceFile>, FileSystemError>;
+}
+
+/// 没有调用者 fd 表的挂载（根挂载、内核自挂的 devtmpfs）。
+struct NoCallerFiles;
+
+impl CallerFiles for NoCallerFiles {
+    fn device_file(
+        &self,
+        _fd: i32,
+    ) -> Result<Arc<dyn super::chardev::DeviceFile>, FileSystemError> {
+        Err(FileSystemError::InvalidOperation)
+    }
 }
 
 // OWNER: 根挂载时安装一次的挂载环境，供之后的 `mount(2)` 使用；缺失时 proc/sysfs/ext4 无法创建
@@ -51,6 +86,8 @@ pub(crate) struct MountRequest<'a> {
     pub(crate) read_only: bool,
     /// `mount(2)` 的 `data` 选项字符串；由类型自己解析。
     pub(crate) options: &'a [u8],
+    /// 调用者 fd 表；FUSE 的 `fd=` 经它取得 `/dev/fuse` 连接。
+    pub(crate) files: &'a dyn CallerFiles,
 }
 
 /// 类型创建的实际 adapter 与 owning user namespace，作为同一次创建结果交给 VFS。
@@ -69,6 +106,11 @@ pub(crate) trait FileSystemType: Sync {
     /// `source` 是否必须是块设备（Linux `FS_REQUIRES_DEV`）；为真时 `MountRequest::device` 非空，
     /// 新建 adapter 时 VFS 已独占设备；已有同类型 superblock 则共享真实 owner。
     fn requires_device(&self) -> bool {
+        false
+    }
+
+    /// Linux `FS_HAS_SUBTYPE`：接受 `<name>.<subtype>` 形式的类型名，子类型作为 `subtype=` 选项传入。
+    fn has_subtype(&self) -> bool {
         false
     }
 
@@ -118,13 +160,26 @@ pub(crate) fn register_filesystem(
     Ok(())
 }
 
-/// 按 `mount(2)` 的 `filesystemtype` 名称查找类型。
-pub(crate) fn get_filesystem_type(name: &[u8]) -> Option<&'static dyn FileSystemType> {
+/// 按 `mount(2)` 的 `filesystemtype` 名称查找类型（Linux `get_fs_type`）。
+///
+/// # Returns
+///
+/// 类型与子类型：`fuse.sshfs` 在第一个 `.` 处拆分，只有 [`FileSystemType::has_subtype`] 的类型接受；
+/// 子类型可能为空串，由调用者按 `EINVAL` 拒绝。没有匹配返回 `None`。
+pub(crate) fn get_filesystem_type(
+    name: &[u8],
+) -> Option<(&'static dyn FileSystemType, Option<&[u8]>)> {
+    let (base, subtype) = match name.iter().position(|&byte| byte == b'.') {
+        Some(at) => (&name[..at], Some(&name[at + 1..])),
+        None => (name, None),
+    };
     TYPES
         .lock()
         .iter()
         .copied()
-        .find(|kind| kind.name().as_bytes() == name)
+        .find(|kind| kind.name().as_bytes() == base)
+        .filter(|kind| subtype.is_none() || kind.has_subtype())
+        .map(|kind| (kind, subtype))
 }
 
 /// 创建并发布一个新文件系统实例（Linux `do_new_mount`）。
@@ -141,6 +196,7 @@ pub(crate) fn get_filesystem_type(name: &[u8]) -> Option<&'static dyn FileSystem
 /// - `options`: `mount(2)` 的 `data` 选项字符串。
 /// - `flags`: 挂载属性（`ro`、`nosuid`、`nodev`、`noexec`）。
 /// - `point`: 已解析的 mountpoint 目录。
+/// - `files`: 调用者 fd 表，供类型解析 `fd=` 一类选项。
 ///
 /// # Errors
 ///
@@ -159,6 +215,7 @@ pub(crate) fn mount(
     options: &[u8],
     flags: MountFlags,
     point: Arc<OpenedFile>,
+    files: &dyn CallerFiles,
 ) -> Result<(), FileSystemError> {
     let _transaction = MOUNT_TRANSACTION
         .lock()
@@ -186,6 +243,7 @@ pub(crate) fn mount(
         device,
         read_only: flags.read_only(),
         options,
+        files,
     })?;
     let (filesystem, root) = MountedFilesystem::new(
         filesystem.filesystem,
@@ -347,8 +405,9 @@ pub(crate) fn mount_root(
     let candidates: Vec<&'static dyn FileSystemType> = match filesystem_type {
         Some(name) => {
             let kind = get_filesystem_type(name)
-                .filter(|kind| kind.requires_device())
-                .ok_or(FileSystemError::InvalidOperation)?;
+                .filter(|(kind, subtype)| kind.requires_device() && subtype.is_none())
+                .ok_or(FileSystemError::InvalidOperation)?
+                .0;
             let mut one = Vec::new();
             one.try_reserve_exact(1)
                 .map_err(|_| FileSystemError::OutOfMemory)?;
@@ -375,6 +434,7 @@ pub(crate) fn mount_root(
             device: Some(number),
             read_only: flags.read_only(),
             options: b"",
+            files: &NoCallerFiles,
         }) {
             Ok(filesystem) => filesystem,
             Err(error) => {
@@ -389,7 +449,7 @@ pub(crate) fn mount_root(
             filesystem.user_namespace,
         )?;
         vfs().mount_root(owner, source, root_inode, flags)?;
-        let devtmpfs = get_filesystem_type(b"devtmpfs").ok_or(FileSystemError::NoDevice)?;
+        let (devtmpfs, _) = get_filesystem_type(b"devtmpfs").ok_or(FileSystemError::NoDevice)?;
         let source = prepare_source(b"devtmpfs")?;
         let devices = devtmpfs.create(&MountRequest {
             environment,
@@ -397,6 +457,7 @@ pub(crate) fn mount_root(
             device: None,
             read_only: false,
             options: b"",
+            files: &NoCallerFiles,
         })?;
         let (devices, root) =
             MountedFilesystem::new(devices.filesystem, None, false, devices.user_namespace)?;

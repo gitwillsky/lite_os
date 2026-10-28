@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use crate::fs::{
     DirectoryEntry, DirectoryRead, DirectoryVisitor, FileSystem, FileSystemError,
-    FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType,
+    FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType, SuperblockFacts,
 };
 
 use crate::fs::DeviceNumber;
@@ -287,9 +287,15 @@ impl FileSystem for DevPtsFileSystem {
         Ok(self.root.clone())
     }
 
+    fn superblock(&self) -> SuperblockFacts {
+        SuperblockFacts {
+            type_name: "devpts",
+            read_only: false,
+        }
+    }
+
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
         Ok(FileSystemStatistics {
-            type_name: "devpts",
             magic: DEVPTS_SUPER_MAGIC,
             block_size: 4096,
             blocks: 0,

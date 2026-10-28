@@ -1,5 +1,7 @@
 # 文件系统与存储契约
 
+FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
+
 - ProcNode 的 NamespaceSelector 区分 active time 与 time_for_children，两条链接都打开实际
   TimeNamespace 类型的同一 nsfs owner；readlink 显示真实类型 time，不能据显示名重建 membership。
   timens_offsets 的 per-open 只 pin 实际 proc inode/source 与 opener f_cred，读写都重新捕获

@@ -227,6 +227,7 @@ pub(crate) trait FileSystem: Send + Sync {
     fn show_mount_options(&self) -> Result<Vec<u8>, FileSystemError> {
         Ok(Vec::new())
     }
+    fn superblock(&self) -> SuperblockFacts;
     fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError>;
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError>;
     fn remount(
@@ -246,8 +247,13 @@ pub(crate) trait FileSystem: Send + Sync {
     }
 }
 
-pub(crate) struct FileSystemStatistics {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SuperblockFacts {
     pub(crate) type_name: &'static str,
+    pub(crate) read_only: bool,
+}
+
+pub(crate) struct FileSystemStatistics {
     pub(crate) magic: u64,
     pub(crate) block_size: u64,
     pub(crate) blocks: u64,
@@ -280,6 +286,20 @@ pub(crate) mod ext4_identity;
 
 #[path = "../../../kernel/src/fs/mount_options.rs"]
 pub(crate) mod mount_options;
+
+// FUSE 协议与挂载选项的纯编解码；连接与 inode 由 guest 探针在真实 `/dev/fuse` 上覆盖。
+#[path = "../../../kernel/src/fs/fuse/options.rs"]
+#[allow(
+    dead_code,
+    reason = "host 只运行选项解析用例，生产调用者在 fuse 文件系统类型中"
+)]
+mod fuse_options;
+#[path = "../../../kernel/src/fs/fuse/protocol.rs"]
+#[allow(
+    dead_code,
+    reason = "host 只运行编解码用例，生产调用者在连接与 inode 中"
+)]
+mod protocol;
 
 #[path = "../../../kernel/src/fs/tmpfs/options.rs"]
 pub(crate) mod tmpfs_options;

@@ -230,6 +230,7 @@ fn mount_filesystems(
         proc_source: Arc::try_new(task::KernelProcSource).expect("proc source allocation failed"),
         cpu_count: cpu::count(),
         net_links: Arc::try_new(task::KernelProcSource).expect("net link source allocation failed"),
+        requester: task::current_requester,
     };
     // 没有 `root=` 时以首块盘为根（Linux 由构建期 ROOT_DEV 给出缺省）。
     let default_root;

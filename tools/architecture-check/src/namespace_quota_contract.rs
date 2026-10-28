@@ -58,7 +58,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let access = source(sources, "kernel/src/syscall/fs/access.rs");
     if !inode.contains("fn require_access(")
         || !open.contains("inode.require_access(&identity, requested)")
-        || !access.contains(".require_access(&identity, mode as u8)")
+        || !access.contains(".require_access(&identity, mode as u8 | crate::fs::MAY_ACCESS)")
     {
         errors.push("namespace-quota: syscall permission must dispatch through actual inode policy without a sysctl-only ABI bypass".into());
     }

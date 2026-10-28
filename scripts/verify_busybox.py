@@ -1761,6 +1761,7 @@ def main() -> int:
             "special-file-probe": build_musl_probe(musl, "special-file"),
             "fs-stress-probe": build_musl_probe(musl, "fs-stress"),
             "inotify-probe": build_musl_probe(musl, "inotify"),
+            "fuse-probe": build_musl_probe(musl, "fuse"),
         }
         stamp = ROOT / f"target/verify-gates/busybox-{TARGET.arch}.json"
         payload = runtime_gate_payload(
@@ -2164,6 +2165,10 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_INOTIFY_42",
+                    ShellCommand(b"/var/tmp/fuse-probe\n"),
+                ),
+                (
+                    "LITEOS_FUSE_42",
                     ShellCommand(b"/bin/rm -rf /links; /bin/mkdir /links; echo alpha >/links/source; /bin/ln /links/source /links/hard; /bin/ln -s source /links/soft; [ \"$(/bin/cat /links/hard)\" = alpha ] && [ \"$(/bin/cat /links/soft)\" = alpha ] && echo beta >/links/hard; /bin/rm /links/source; [ \"$(/bin/cat /links/hard)\" = beta ] && /bin/ls -l /links/soft | /bin/grep -q -- '-> source' && echo LITEOS_LINKS_$((6*7+1))\n"),
                 ),
                 (

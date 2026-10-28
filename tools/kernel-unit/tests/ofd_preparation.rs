@@ -49,8 +49,9 @@ mod fs {
             "this fixture covers storage preparation; anonymous inode publication is covered by the actual anonymous owner fixture"
         )
     }
+    pub(crate) trait StorageOpen: Send + Sync {}
     pub(crate) enum InodeOpen {
-        Storage,
+        Storage(Option<Arc<dyn StorageOpen>>),
         Device(Arc<dyn chardev::DeviceFile>),
     }
     std::thread_local! {
@@ -129,6 +130,7 @@ mod file {
         pub(crate) opened: Arc<crate::fs::OpenedFile>,
         pub(crate) epoll_memberships: EpollMemberships,
         pub(crate) descriptor_refs: AtomicUsize,
+        pub(crate) _storage_open: Option<Arc<dyn crate::fs::StorageOpen>>,
         pub(crate) _write_open: Option<WritableInodeLease>,
     }
     impl Drop for OpenFileDescription {
@@ -168,7 +170,7 @@ fn actual_uninitialized_abort_has_no_close_and_initialized_owner_closes_exactly_
     let ofd = prepared
         .prepare_named(opened.clone(), fs::O_RDONLY)
         .unwrap()
-        .finish(fs::InodeOpen::Storage);
+        .finish(fs::InodeOpen::Storage(None));
     assert!(
         !allocation_failure::was_consumed(),
         "initialize must not allocate"

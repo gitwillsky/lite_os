@@ -3,7 +3,7 @@ use alloc::{sync::Arc, vec::Vec};
 use super::devnode::{self as registry, RegistryEntry};
 use super::{
     DirectoryEntry, DirectoryRead, DirectoryVisitor, FileSystem, FileSystemError,
-    FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType,
+    FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType, SuperblockFacts,
 };
 
 #[derive(Clone, Copy)]
@@ -372,9 +372,15 @@ impl FileSystem for DevFileSystem {
         Ok(self.root.clone())
     }
 
+    fn superblock(&self) -> SuperblockFacts {
+        SuperblockFacts {
+            type_name: "devtmpfs",
+            read_only: true,
+        }
+    }
+
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
         Ok(FileSystemStatistics {
-            type_name: "devtmpfs",
             magic: 0x8584_58f6,
             block_size: 4096,
             blocks: 0,
@@ -385,7 +391,7 @@ impl FileSystem for DevFileSystem {
             fsid: [self.root.filesystem_id as u32, 0],
             name_length: 255,
             fragment_size: 4096,
-            flags: 1,
+            flags: 0,
         })
     }
 }

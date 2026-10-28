@@ -21,7 +21,7 @@
 | 26 | `inotify_init1` | Complete | `IN_NONBLOCK`/`IN_CLOEXEC`；默认每 real UID/UserNS 128 个实例、受祖先配额限制（`EMFILE`） |
 | 27 | `inotify_add_watch` | Partial | 见下“inotify”；按实例原创建者 real UID/UserNS/祖先共享 watch 配额（`ENOSPC`） |
 | 28 | `inotify_rm_watch` | Complete | 删除后投递 `IN_IGNORED` |
-| 29 | `ioctl` | Partial | TTY（含 `TCFLSH`）、socket、DRM、evdev、ALSA playback/control 子集、块设备 `BLK*` 与管道/FIFO 的 `FIONREAD` |
+| 29 | `ioctl` | Partial | TTY（含 `TCFLSH`）、socket、DRM、evdev、ALSA playback/control 子集、块设备 `BLK*`、管道/FIFO 的 `FIONREAD` 与 `/dev/fuse` 的 `FUSE_DEV_IOC_CLONE` |
 | 30 | `ioprio_set` | Partial | WHO_PROCESS policy storage；无 block enforcement |
 | 31 | `ioprio_get` | Partial | WHO_PROCESS policy query |
 | 32 | `flock` | Complete | BSD whole-file lock lifecycle |
@@ -32,9 +32,10 @@
 | 37 | `linkat` | Partial | hardlink 与 link-count limit；部分 flags 未开放 |
 | 38 | `renameat` | Complete | 普通原子移动与替换 |
 | 39 | `umount2` | Partial | 普通卸载判忙与实际资源退休；caller root 转 superblock RO；lazy detach、两阶段 expire、nofollow；`MNT_FORCE` 不增加强制中止 I/O 能力 |
-| 40 | `mount` | Partial | 已登记文件系统、挂载安全/atime 属性、remount、bind/move/propagation 与堆叠；类型解析 `data`，ext4 接受实际 `data=ordered`；未知选项/flags `EINVAL` |
+| 40 | `mount` | Partial | 已登记文件系统、挂载安全/atime 属性、remount、bind/move/propagation 与堆叠；类型解析 `data`，ext4 接受实际 `data=ordered`；`fuse.<subtype>` 以 `subtype=` 交给 FUSE（见下）；未知选项/flags `EINVAL` |
 | 43 | `statfs` | Complete | mounted/pseudo filesystem 同 inode projection |
 | 44 | `fstatfs` | Complete | 所有 OFD 的真实 inode filesystem projection（pipefs/sockfs/anon_inodefs/shmem 区分） |
+| 45 | `truncate` | Complete | 跟随路径；EISDIR/EINVAL 类型检查、挂载写者 EROFS、写权限、ETXTBSY、RLIMIT_FSIZE 的 SIGXFSZ/EFBIG，截断与 ftruncate 共用 |
 | 46 | `ftruncate` | Complete | 实际 regular inode 与各 filesystem 截断策略；page cache/mapping invalidation、memfd seal；proc 更新时间且保留固定 size/control value |
 | 223 | `fadvise64` | Partial | 校验 fd 与 advice 后返回成功；不影响 page cache（提示不改变语义）；非 inode OFD 返回 `ESPIPE` |
 | 47 | `fallocate` | Partial | mode 0 space reservation |
@@ -192,6 +193,23 @@ TTSTAMP 时钟选择和启用后的 STATUS/SYNC_PTR 时钟快照，SW_PARAMS 允
 当前仍限定整 period WRITEI/mmap pointer 增量及固定 buffer，SW_PARAMS 限 avail_min≤buffer、阈值≤boundary；
 阻塞 open 等待、RW 自动启动、REWIND、RESET、DRAIN、STATUS_EXT、trigger timestamp 与 capture 尚未支持。
 固定上游 alsa-lib 的显式启动八路播放和 amixer 已由 AArch64/HVF runtime gate 覆盖；Wine 尚未验证。
+
+FUSE（协议 7.45）：`/dev/fuse`（10:229，0666）每次 open 一个端点，挂载 `fd=` 或 `FUSE_DEV_IOC_CLONE` 绑定连接；
+未绑定端点读写 `EPERM`，读缓冲小于 `max(8192, 80 + max_write)` 为 `EINVAL`，回复须写回读走请求的端点，最后一个端点关闭
+即中止连接（请求 `ENOTCONN`，协商 `ABORT_ERROR` 时 `ECONNABORTED`）。选项 `fd`/`rootmode`/`user_id`/`group_id` 必填，另有
+`default_permissions`、`allow_other`、`max_read`、`subtype`，`/proc/mounts` 显示 `fuse.<subtype>`。INIT 协商 ASYNC_READ、
+BIG_WRITES、AUTO_INVAL_DATA、WRITEBACK_CACHE（写进页缓存，close 与最后句柄释放时写回）、MAX_PAGES（单请求 1 MiB）、DO_READDIRPLUS/READDIRPLUS_AUTO、PARALLEL_DIROPS、ABORT_ERROR、
+INIT_EXT；页缓存未命中按协商的 `max_readahead`（≤128 KiB）一次 READ 预读；次版本低于 12 的守护进程
+INIT 失败（请求 `ECONNREFUSED`）。按 entry/attr 超时缓存查找与属性；被 signal 打断的请求发 INTERRUPT。通知支持
+INVAL_INODE（作废属性与整个文件的页缓存）、INVAL_ENTRY、DELETE，其余通知 `ENOSYS`。
+范围缩减：
+- 尚未实现（网络驱动器计划阶段 1 进行中）：`/sys/fs/fuse/connections`、
+  FUSE over io_uring、passthrough。仍被映射的页在作废时保留到映射解除。
+- `FOPEN_DIRECT_IO` 仍经页缓存；`O_CREAT` 用 CREATE 原子创建打开（守护进程不支持时回退 MKNOD+OPEN）。每次关闭 fd 发 FLUSH（`close(2)` 返回其错误），
+  最后一个引用发 RELEASE。
+- 不转发 xattr、POSIX/flock 锁（锁在本地 VFS 生效）、ioctl、poll、lseek、copy_file_range、tmpfile、statx；xattr 返回 `EOPNOTSUPP`。
+- `st_ino` 取 nodeid，`d_ino` 取守护进程报告值；非 initial user namespace 不能挂载（无 FS_USERNS_MOUNT），普通用户经 setuid `fusermount3`。
+- 不支持 fuseblk、CUSE 与 virtio-fs。
 
 `statx` 的时间戳精度取决于 filesystem 实际记录的内容：ext4 保存纳秒与创建时间并如实报告；其余 filesystem 的
 `Inode::set_times`/`touch_access` 以秒为单位，纳秒恒为 0、不报告 `BTIME`（Linux 对不记录创建时间的 filesystem 同样不设该位）。

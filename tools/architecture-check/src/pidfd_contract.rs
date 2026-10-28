@@ -90,7 +90,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     require(
         sources,
         "kernel/src/file/description_preparation.rs",
-        &["self.initialize(OpenFileKind::Inode, opened, flags, None)"],
+        &["self.initialize(OpenFileKind::Inode, opened, flags, None, None)"],
         errors,
     );
     require(

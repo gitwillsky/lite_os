@@ -8,6 +8,7 @@
 //!   ext4 的两个兄弟文件是**刻意**放在引擎之外的接缝：`ext4_type`（`mount(2)` 类型适配，依赖 `devnode` 注册表）
 //!   和 `ext4_identity`（`root=UUID=/LABEL=` 用的超级块纯函数）。把它们收进 `ext4/` 会让引擎依赖注册表。
 //! - **伪文件系统**：`procfs`、`sysfs`、`devfs`、`nsfs`、`pidfs`、`anonymous`（匿名 inode）、`memfd`、`fifo`。
+//! - **用户态文件系统**：`fuse`（`/dev/fuse` 设备、连接与 inode 翻译）。
 //! - **字符设备**：`devnum`（`dev_t` 编解码）、`chardev`（driver 区间注册表与 `DeviceFile`）、`devnode`
 //!   （devfs 节点与块设备注册表）和 `mem_device`
 //!   （`/dev/null`、`zero`、`random`、`urandom`、`kmsg` 这组 major 1 驱动，不是文件系统）。
@@ -36,6 +37,7 @@ mod ext4;
 mod ext4_identity;
 mod ext4_type;
 mod fifo;
+mod fuse;
 mod inode;
 mod inode_identity;
 mod inode_times;
@@ -75,7 +77,7 @@ pub(crate) use directory::{
 pub(crate) use fifo::{FifoAccess, FifoOpenError, open as open_fifo};
 pub(crate) use inode::{
     DataBacking, FineTimes, Inode, InodeMetadata, InodeOpen, InodeOpenError, InodeType, LinkTarget,
-    StorageRead, StorageStep, StorageWriter,
+    StorageOpen, StorageRead, StorageStep, StorageWriter,
 };
 pub(crate) use inotify::{
     IN_ACCESS, IN_ATTRIB, IN_CLOEXEC, IN_CLOSE_NOWRITE, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE,
@@ -86,14 +88,17 @@ pub(crate) use inotify::{
 pub(crate) use memfd::MemFile;
 pub(crate) use memory_file::MemoryFile;
 pub(crate) use mount::{
-    CreatedFileSystem, FileSystemType, MountEnvironment, MountRequest, get_filesystem_type, mount,
-    mount_root, register_filesystem, remount, unmount, unmount_root_read_only,
+    CallerFiles, CreatedFileSystem, CurrentRequester, FileSystemType, MountEnvironment,
+    MountRequest, Requester, get_filesystem_type, mount, mount_root, register_filesystem, remount,
+    unmount, unmount_root_read_only,
 };
 pub(crate) use page_cache::{
     NowaitRead, ReadStep, RegularFile, RegularFileWrite, allocate, mapping,
     statistics as page_cache_statistics, sync_all, sync_inode, truncate,
 };
-pub(crate) use permission::{AccessIdentity, CreateMetadata, OwnerModeChange};
+pub(crate) use permission::{
+    AccessIdentity, CreateMetadata, MAY_ACCESS, MAY_CHDIR, OwnerModeChange,
+};
 pub(crate) use procfs::{
     ProcCpuSnapshot, ProcCredentialSnapshot, ProcDirectory, ProcFileDescriptorSnapshot,
     ProcIoSnapshot, ProcNetworkSnapshot, ProcProcessSnapshot, ProcRouteSnapshot, ProcSnapshot,
@@ -113,10 +118,20 @@ pub(crate) use vfs::{
     mount_limit, set_mount_limit, vfs,
 };
 
-/// filesystem adapter 向 VFS 投影的容量、inode 与类型快照。
-pub(crate) struct FileSystemStatistics {
-    /// `/proc/mounts` 使用的 filesystem type name。
+/// Linux superblock 的静态事实（`s_type->name`、`SB_RDONLY`）。
+///
+/// mount table 与 superblock 复用只读取这些事实，不调用 [`FileSystem::statistics`]：FUSE 的统计要等
+/// 用户态守护进程回复，缺失这一分离时守护进程卡住会让 `/proc/mounts` 的读者一起阻塞。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SuperblockFacts {
+    /// `/proc/mounts` 显示与 superblock 复用比较的类型名。
     pub(crate) type_name: &'static str,
+    /// filesystem 自身只读（sysfs、devtmpfs）；`statfs` 与 mount table 都据此报告只读。
+    pub(crate) read_only: bool,
+}
+
+/// filesystem adapter 向 VFS 投影的容量与 inode 快照（`statfs(2)`）。
+pub(crate) struct FileSystemStatistics {
     /// Linux `statfs.f_type` magic。
     pub(crate) magic: u64,
     /// 最优传输块大小。
@@ -137,7 +152,7 @@ pub(crate) struct FileSystemStatistics {
     pub(crate) name_length: u64,
     /// 容量计数使用的基本块大小。
     pub(crate) fragment_size: u64,
-    /// Linux `ST_*` flags；VFS 负责补充 `ST_VALID`。
+    /// Linux `ST_*` flags；VFS 负责补充 `ST_VALID`、挂载属性与 superblock 只读。
     pub(crate) flags: u64,
 }
 
@@ -169,6 +184,10 @@ pub(crate) enum FileSystemError {
     TextBusy,
     /// 设备号没有 driver，或 driver 当前不提供该设备（`ENXIO`）。
     NoDevice,
+    /// 后端直接给出的 Linux errno（正值）：FUSE 守护进程的回复、连接断开的 `ENOTCONN`、请求被
+    /// signal 中断的 `EINTR`。上面的变体已能表达的 errno 不经此变体，缺失时网络文件系统的
+    /// `ETIMEDOUT`/`ENOTCONN` 等会被折叠成 `EIO`。
+    Errno(u16),
 }
 
 struct FallibleBytes(Vec<u8>);
@@ -218,6 +237,14 @@ pub(crate) trait FileSystem: Send + Sync {
     fn show_mount_options(&self) -> Result<Vec<u8>, FileSystemError> {
         Ok(Vec::new())
     }
+
+    /// Linux `sb->s_subtype`：`/proc/mounts` 把类型显示为 `<type>.<subtype>`。没有子类型返回空。
+    fn subtype(&self) -> &[u8] {
+        &[]
+    }
+
+    /// 不发起 I/O 的 superblock 静态事实。
+    fn superblock(&self) -> SuperblockFacts;
 
     /// 加载该文件系统的根 inode。
     ///
@@ -312,6 +339,7 @@ pub(crate) fn init_vfs() -> VfsReady {
     register_filesystem(&sysfs::SysFileSystemType).expect("sysfs type registration failed");
     register_filesystem(&devfs::DevFileSystemType).expect("devtmpfs type registration failed");
     register_filesystem(&tmpfs::TmpFileSystemType).expect("tmpfs type registration failed");
+    fuse::register().expect("fuse registration failed");
     VfsReady(())
 }
 

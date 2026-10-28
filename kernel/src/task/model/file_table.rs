@@ -123,8 +123,16 @@ impl FileTableOwner {
 
 impl Drop for FileTableOwner {
     fn drop(&mut self) {
-        // Arc address 尚未释放，table guard/handle guard 均不存在；notify 可进入其他 owner。
-        vfs().release_file_table_record_locks(self.identity());
+        // 1. 进程退出关闭剩余 fd（Linux close_files → filp_close）：每个 fd 一次 flush，错误不可报告。
+        //    最后 Drop 独占本表，try_lock 必然成功；flush 可等待 filesystem，但不取其他文件表。
+        let owner = self.identity();
+        if let Some(table) = self.table.try_lock() {
+            for file in table.published_files() {
+                let _ = file.flush(owner);
+            }
+        }
+        // 2. Arc address 尚未释放，table guard/handle guard 均不存在；notify 可进入其他 owner。
+        vfs().release_file_table_record_locks(owner);
     }
 }
 

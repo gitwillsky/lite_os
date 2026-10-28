@@ -247,6 +247,10 @@ mod file {
         pub(crate) fn is_path(&self) -> bool {
             self.flags & 0x200000 != 0
         }
+        /// fixture 的 OFD 没有 storage per-open 状态；flush 语义由 FUSE guest 探针覆盖。
+        pub(crate) fn flush(&self, _owner: usize) -> Result<(), crate::fs::FileSystemError> {
+            Ok(())
+        }
         pub(crate) fn file_information(
             &self,
             _: u32,
@@ -549,7 +553,7 @@ fn sharing_unshare_and_exit_do_not_follow_tgid_or_tcb_lifetime() {
     let private = parent.child(3, true, false);
     let ofd = parent.fd_get(0).unwrap();
     assert_eq!(ofd.descriptor_refs.load(Ordering::Relaxed), 2);
-    shared.fd_close(0).unwrap();
+    shared.fd_close(0).unwrap().unwrap();
     assert!(parent.fd_get(0).is_none());
     assert!(private.fd_get(0).is_some());
     private.exit_files();
@@ -600,14 +604,14 @@ fn file_table_identity_and_reported_pid_are_independent() {
             .pid,
         11
     );
-    copied.fd_close(0).unwrap();
+    copied.fd_close(0).unwrap().unwrap();
     assert!(
         vfs()
             .record_lock_conflict(&holder, fs::RecordLockOwner::new(1, 99), Write, range)
             .unwrap()
             .is_some()
     );
-    shared.fd_close(0).unwrap();
+    shared.fd_close(0).unwrap().unwrap();
     assert!(
         vfs()
             .record_lock_conflict(&holder, fs::RecordLockOwner::new(1, 99), Write, range)
@@ -685,7 +689,7 @@ fn every_combined_unshare_allocation_failure_preserves_the_original_two_handles(
         );
         shared.replace_umask(0o077);
         assert_eq!(parent.creation_mode(0o777), 0o700);
-        shared.fd_close(0).unwrap();
+        shared.fd_close(0).unwrap().unwrap();
         assert!(parent.fd_get(0).is_none());
     }
 }
@@ -771,7 +775,7 @@ fn scm_single_fd_reservations_use_the_actual_open_owner_and_publish_only_after_s
     received.publish(ofd.clone());
     assert_eq!(ofd.descriptor_refs.load(Ordering::Relaxed), 3);
     assert_eq!(parent.fd_flags(fd).unwrap(), 1);
-    parent.fd_close(fd).unwrap();
+    parent.fd_close(fd).unwrap().unwrap();
     assert_eq!(ofd.descriptor_refs.load(Ordering::Relaxed), 2);
 }
 
@@ -789,7 +793,7 @@ fn scm_published_prefix_survives_later_scalar_reservation_cancellation() {
     drop(tail);
     assert!(Arc::ptr_eq(&owner.fd_get_raw(fd).unwrap(), &original));
     assert_eq!(owner.fd_prepare_open(true).unwrap().descriptors(), [next]);
-    owner.fd_close(fd).unwrap();
+    owner.fd_close(fd).unwrap().unwrap();
 }
 
 #[test]
@@ -851,7 +855,7 @@ fn proc_thread_descriptors_follow_own_handle_after_private_copy_and_leader_retir
     let parent = task::TaskControlBlock::root(71);
     task::enter(&parent);
     let target = parent.child(72, false, false);
-    target.fd_close(0).unwrap();
+    target.fd_close(0).unwrap().unwrap();
     assert!(
         parent
             .snapshot_descriptors()
@@ -905,7 +909,7 @@ fn file_table_lookup_snapshot_and_posix_request_cpu_cost() {
         let reservation = parent.fd_prepare_open(true).unwrap();
         black_box(reservation.descriptors()[0]);
         let fd = reservation.publish(received.clone());
-        parent.fd_close(fd).unwrap();
+        parent.fd_close(fd).unwrap().unwrap();
     });
     let holder = parent.fd_get(0).unwrap().lock_holder();
     let owner = parent.file_lock_owner();
@@ -938,7 +942,7 @@ fn successful_posix_acquisition_rechecks_closed_or_reused_descriptor_identity() 
         if replace {
             sibling.fd_duplicate_to(1, 0, false).unwrap();
         } else {
-            sibling.fd_close(0).unwrap();
+            sibling.fd_close(0).unwrap().unwrap();
         }
         vfs()
             .try_record_lock(
@@ -1198,7 +1202,7 @@ fn actual_path_descriptor_is_available_to_raw_lookup_and_dup_but_not_io_lookup()
     assert!(owner.fd_get(duplicate).is_none());
     assert_eq!(owner.fd_flags(duplicate), Ok(0));
     assert!(Arc::ptr_eq(&owner.fd_get_raw(duplicate).unwrap(), &path));
-    owner.fd_close(fd).unwrap();
+    owner.fd_close(fd).unwrap().unwrap();
     assert!(Arc::ptr_eq(&owner.fd_get_raw(duplicate).unwrap(), &path));
 }
 

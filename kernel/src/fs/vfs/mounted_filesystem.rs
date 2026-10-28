@@ -112,7 +112,7 @@ impl MountedFilesystem {
         read_only: bool,
         user: &Arc<crate::namespace::UserNamespace>,
     ) -> Result<Arc<dyn Inode>, FileSystemError> {
-        if self.filesystem.statistics()?.type_name != type_name
+        if self.filesystem.superblock().type_name != type_name
             || self.state.lock().read_only != read_only
         {
             return Err(FileSystemError::Busy);

@@ -37,7 +37,7 @@ pub(in crate::fs) fn prepare_swap_file(
     }
     // 3. No new writer may publish after freeze; cache batch writeback alone can drain Preparing.
     let _operation = file.operation.lock_prepared(&mut wait);
-    file.writeback_range(0, u64::MAX)?;
+    file.writeback_range(0, u64::MAX, true)?;
     if file.pages.lock().entries.values().any(|page| page.dirty()) {
         return Err(FileSystemError::IoError);
     }

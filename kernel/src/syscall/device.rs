@@ -61,7 +61,7 @@ impl UserMemory for TaskUserMemory<'_> {
             crate::fs::InodeOpen::Device(file) => {
                 prepared.finish(crate::fs::InodeOpen::Device(file))
             }
-            crate::fs::InodeOpen::Storage => {
+            crate::fs::InodeOpen::Storage(_) => {
                 return Err(DeviceError::Errno(syscall_abi::errno::EINVAL));
             }
         };

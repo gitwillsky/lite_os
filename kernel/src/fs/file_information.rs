@@ -18,7 +18,7 @@ pub(crate) fn format_file_information(
         output,
         "pos:\t{position}\nflags:\t{flags:08o}\nmnt_id:\t{}\nino:\t{}\n",
         opened.mount_id(),
-        opened.inode().metadata()?.inode
+        opened.inode().identity()?.1
     )
     .map_err(|_| FileSystemError::OutOfMemory)?;
     if let Some(backend) = backend {

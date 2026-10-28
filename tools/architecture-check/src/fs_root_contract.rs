@@ -197,7 +197,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors.push("fs-root: stacked mount parent traversal must clamp actual caller path before each attachment escape".into());
     }
     let syscall = source(sources, "kernel/src/syscall/fs/open.rs");
-    if !matches!((syscall.text.find("pub(crate) fn sys_chroot"),syscall.text.rfind("inode.require_access(&identity, 1)"),syscall.text.find("Capability::SYS_CHROOT"),syscall.text.find("task.set_root_directory(opened)")),(Some(start),Some(search),Some(cap),Some(commit)) if start<search && search<cap && cap<commit)
+    if !matches!((syscall.text.find("pub(crate) fn sys_chroot"),syscall.text.rfind("inode.require_access(&identity, 1 | crate::fs::MAY_CHDIR)"),syscall.text.find("Capability::SYS_CHROOT"),syscall.text.find("task.set_root_directory(opened)")),(Some(start),Some(search),Some(cap),Some(commit)) if start<search && search<cap && cap<commit)
     {
         errors.push(
             "fs-root: chroot must authorize pathname/search before capability and commit only root"

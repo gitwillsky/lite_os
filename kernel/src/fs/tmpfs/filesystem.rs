@@ -62,6 +62,13 @@ impl FileSystem for TmpFileSystem {
         Ok(output.0)
     }
 
+    fn superblock(&self) -> SuperblockFacts {
+        SuperblockFacts {
+            type_name: "tmpfs",
+            read_only: false,
+        }
+    }
+
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
         let shared = &self.shared;
         let budget = shared.budget.snapshot();
@@ -74,7 +81,6 @@ impl FileSystem for TmpFileSystem {
             None => (0, 0),
         };
         Ok(FileSystemStatistics {
-            type_name: "tmpfs",
             magic: TMPFS_MAGIC,
             block_size: BLOCK_SIZE,
             blocks,

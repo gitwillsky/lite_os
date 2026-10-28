@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use super::{
     DirectoryEntry, DirectoryRead, DirectoryVisitor, FileSystem, FileSystemError,
-    FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType,
+    FileSystemStatistics, IndexedDirectory, Inode, InodeMetadata, InodeType, SuperblockFacts,
 };
 
 const SYSFS_MAGIC: u64 = 0x6265_6572;
@@ -503,9 +503,15 @@ impl FileSystem for SysFileSystem {
         Ok(self.root.clone())
     }
 
+    fn superblock(&self) -> SuperblockFacts {
+        SuperblockFacts {
+            type_name: "sysfs",
+            read_only: true,
+        }
+    }
+
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
         Ok(FileSystemStatistics {
-            type_name: "sysfs",
             magic: SYSFS_MAGIC,
             block_size: 4096,
             blocks: 0,
@@ -516,7 +522,7 @@ impl FileSystem for SysFileSystem {
             fsid: [self.root.filesystem_id as u32, 0],
             name_length: 255,
             fragment_size: 4096,
-            flags: 1,
+            flags: 0,
         })
     }
 }

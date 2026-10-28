@@ -1662,13 +1662,14 @@ kernel/src/file/description_preparation.rs :: pub (crate) impl PreparedNamedFile
 kernel/src/file/description_preparation.rs :: pub (crate) struct PreparedDeviceDescription
 kernel/src/file/description_preparation.rs :: pub (crate) struct PreparedFileDescription
 kernel/src/file/description_preparation.rs :: pub (crate) struct PreparedNamedFile
-kernel/src/file/description_preparation.rs :: pub (super) impl PreparedFileDescription :: fn initialize (mut self , kind : OpenFileKind , opened : Arc < OpenedFile > , flags : u32 , write_open : Option < WritableInodeLease > ,) -> Arc < OpenFileDescription >
+kernel/src/file/description_preparation.rs :: pub (super) impl PreparedFileDescription :: fn initialize (mut self , kind : OpenFileKind , opened : Arc < OpenedFile > , flags : u32 , write_open : Option < WritableInodeLease > , storage_open : Option < Arc < dyn StorageOpen > > ,) -> Arc < OpenFileDescription >
 kernel/src/file/descriptor_table.rs :: enum FileDescriptorError :: Busy
 kernel/src/file/descriptor_table.rs :: enum FileDescriptorError :: Limit
 kernel/src/file/descriptor_table.rs :: enum FileDescriptorError :: NotFound
 kernel/src/file/descriptor_table.rs :: enum FileDescriptorError :: OutOfMemory
 kernel/src/file/descriptor_table.rs :: pub (crate) const MAX_FILE_DESCRIPTORS : usize = indexed_slots :: MAX_FILE_DESCRIPTORS
 kernel/src/file/descriptor_table.rs :: pub (crate) enum FileDescriptorError
+kernel/src/file/descriptor_table.rs :: pub (crate) impl DetachedFileDescriptor :: fn file (& self) -> & Arc < OpenFileDescription >
 kernel/src/file/descriptor_table.rs :: pub (crate) impl DetachedFileDescriptor :: fn finish_close (self) -> Arc < OpenFileDescription >
 kernel/src/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn allocate (& mut self , ofd : Arc < OpenFileDescription > , minimum : usize , cloexec : bool , limit : usize ,) -> Result < usize , FileDescriptorError >
 kernel/src/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn allocate_pair (& mut self , first : Arc < OpenFileDescription > , second : Arc < OpenFileDescription > , cloexec : bool , limit : usize ,) -> Result < (usize , usize) , FileDescriptorError >
@@ -1681,6 +1682,7 @@ kernel/src/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: f
 kernel/src/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn get (& self , fd : usize) -> Option < Arc < OpenFileDescription > >
 kernel/src/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn get_with_flags (& self , fd : usize) -> Option < (Arc < OpenFileDescription > , u32) >
 kernel/src/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn publish_open (& mut self , fd : usize , file : Arc < OpenFileDescription >)
+kernel/src/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn published_files (& self) -> impl Iterator < Item = & Arc < OpenFileDescription > >
 kernel/src/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn receive (& mut self , file : Arc < OpenFileDescription > , destination : Option < usize > , cloexec : bool , limit : usize ,) -> Result < (usize , Option < DetachedFileDescriptor >) , FileDescriptorError >
 kernel/src/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn reserve_open (& mut self , cloexec : bool , limit : usize ,) -> Result < usize , FileDescriptorError >
 kernel/src/file/descriptor_table.rs :: pub (crate) impl FileDescriptorTable :: fn set_descriptor_flags (& mut self , fd : usize , flags : u32) -> Result < () , () >
@@ -1764,6 +1766,7 @@ kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn epoll_polla
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn event_fd (event : Arc < EventFd > , flags : u32) -> Result < Arc < Self > , () >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn file_information (& self , descriptor_flags : u32 , view : & crate :: namespace :: PidNamespace ,) -> Result < alloc :: vec :: Vec < u8 > , FileSystemError >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn filesystem_statistics (& self) -> Result < FileSystemStatistics , FileSystemError >
+kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn flush (& self , owner : usize) -> Result < () , FileSystemError >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn inode_ref (& self) -> Arc < dyn Inode >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn is_path (& self) -> bool
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn lock_holder (self : & Arc < Self >) -> LockHolder
@@ -1875,6 +1878,7 @@ kernel/src/fs/anonymous/filesystem_type.rs :: enum PseudoFileSystem :: Pipe
 kernel/src/fs/anonymous/filesystem_type.rs :: enum PseudoFileSystem :: Socket
 kernel/src/fs/anonymous/filesystem_type.rs :: pub (in crate :: fs) enum PseudoFileSystem
 kernel/src/fs/anonymous/filesystem_type.rs :: pub (in crate :: fs) impl PseudoFileSystem :: const fn id (self) -> usize
+kernel/src/fs/anonymous/filesystem_type.rs :: pub (in crate :: fs) impl PseudoFileSystem :: const fn type_name (self) -> & 'static str
 kernel/src/fs/anonymous/filesystem_type.rs :: pub (in crate :: fs) impl PseudoFileSystem :: fn statistics (self) -> FileSystemStatistics
 kernel/src/fs/anonymous/metadata.rs :: pub (in crate :: fs) impl Metadata :: fn change (& self , change : & OwnerModeChange) -> Result < () , FileSystemError >
 kernel/src/fs/anonymous/metadata.rs :: pub (in crate :: fs) impl Metadata :: fn new (filesystem : PseudoFileSystem , inode : u64 , kind : InodeType , creator : CreateMetadata , links : u32 , times : TimeOwner ,) -> Self
@@ -2372,11 +2376,196 @@ kernel/src/fs/fifo.rs :: pub (super) enum PipeOpenKind
 kernel/src/fs/fifo.rs :: pub (super) enum SessionOpenError
 kernel/src/fs/fifo.rs :: pub (super) fn open_session (pipe : Arc < Pipe > , access : FifoAccess , nonblocking : bool , kind : PipeOpenKind ,) -> Result < Arc < dyn DeviceFile > , SessionOpenError >
 kernel/src/fs/file_information.rs :: pub (crate) fn format_file_information (opened : & OpenedFile , position : u64 , flags : u32 , backend : Option < & dyn DeviceFile > , view : & crate :: namespace :: PidNamespace ,) -> Result < Vec < u8 > , FileSystemError >
+kernel/src/fs/fuse.rs :: pub (super) fn register () -> Result < () , FileSystemError >
+kernel/src/fs/fuse/connection.rs :: pub (super) Connection :: max_read : u32
+kernel/src/fs/fuse/connection.rs :: pub (super) Negotiated :: flags : u64
+kernel/src/fs/fuse/connection.rs :: pub (super) Negotiated :: max_pages : u32
+kernel/src/fs/fuse/connection.rs :: pub (super) Negotiated :: max_readahead : u32
+kernel/src/fs/fuse/connection.rs :: pub (super) Negotiated :: max_write : u32
+kernel/src/fs/fuse/connection.rs :: pub (super) Negotiated :: minor : u32
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn abort (& self , explicit : bool)
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn attach_device (& self) -> u64
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn attach_mount (& self , mount : & Arc < Mount >)
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn call (& self , opcode : u32 , nodeid : u64 , arguments : & [& [u8]] , reply : ReplyShape ,) -> Result < Vec < u8 > , FileSystemError >
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn current_allowed (& self , user_id : u32 , group_id : u32) -> bool
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn detach_device (& self , device : u64)
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn drain_readiness (& self)
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn forget (& self , nodeid : u64 , lookups : u64)
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn mount (& self) -> Option < Arc < Mount > >
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn negotiated (& self) -> Option < & Negotiated >
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn new (requester : CurrentRequester , pid_namespace : Arc < PidNamespace > , max_read : u32 ,) -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn poll (& self , events : i16) -> i16
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn read (& self , device : u64 , output : & mut dyn UserOutput , nonblocking : bool , wait : impl Fn () -> Result < () , DeviceError > ,) -> Result < () , DeviceError >
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn readiness_pipe (& self) -> Arc < Pipe >
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn reserve (self : & Arc < Self > , opcode : u32 , nodeid : u64 , arguments : & [& [u8]] ,) -> Result < Reserved , FileSystemError >
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn reserve_forgets (& self , count : usize) -> Result < () , FileSystemError >
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn unreserve_forgets (& self , count : usize)
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn write (& self , device : u64 , input : & mut dyn UserInput , notify : impl FnOnce (i32 , & [u8]) -> Result < () , FileSystemError > ,) -> Result < () , DeviceError >
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Negotiated :: const fn has (& self , flag : u64) -> bool
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Negotiated :: fn write_chunk (& self) -> usize
+kernel/src/fs/fuse/connection.rs :: pub (super) impl ReplyShape :: const fn fixed (size : usize) -> Self
+kernel/src/fs/fuse/connection.rs :: pub (super) impl ReplyShape :: const fn up_to (size : usize) -> Self
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Reserved :: fn patch (& mut self , offset : usize , bytes : & [u8])
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Reserved :: fn send (mut self)
+kernel/src/fs/fuse/connection.rs :: pub (super) impl Reserved :: fn set_nodeid (& mut self , nodeid : u64)
+kernel/src/fs/fuse/connection.rs :: pub (super) struct Connection
+kernel/src/fs/fuse/connection.rs :: pub (super) struct Negotiated
+kernel/src/fs/fuse/connection.rs :: pub (super) struct ReplyShape
+kernel/src/fs/fuse/connection.rs :: pub (super) struct Request
+kernel/src/fs/fuse/connection.rs :: pub (super) struct Reserved
+kernel/src/fs/fuse/device.rs :: pub (super) fn register () -> Result < () , FileSystemError >
+kernel/src/fs/fuse/device.rs :: pub (super) impl FuseDevice :: fn bind (& self , connection : & Arc < Connection >) -> Result < () , FileSystemError >
+kernel/src/fs/fuse/device.rs :: pub (super) impl FuseDevice :: fn from_file (file : & dyn DeviceFile) -> Option < & Self >
+kernel/src/fs/fuse/device.rs :: pub (super) struct FuseDevice
+kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: Access = 1 << 0
+kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: Create = 1 << 6
+kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: Fallocate = 1 << 4
+kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: Flush = 1 << 5
+kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: Fsync = 1 << 2
+kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: FsyncDirectory = 1 << 3
+kernel/src/fs/fuse/filesystem.rs :: enum Unsupported :: Rename2 = 1 << 1
+kernel/src/fs/fuse/filesystem.rs :: pub (super) Mount :: connection : Arc < Connection >
+kernel/src/fs/fuse/filesystem.rs :: pub (super) Mount :: filesystem_id : usize
+kernel/src/fs/fuse/filesystem.rs :: pub (super) Mount :: options : Options
+kernel/src/fs/fuse/filesystem.rs :: pub (super) SetAttributes :: atime : u64
+kernel/src/fs/fuse/filesystem.rs :: pub (super) SetAttributes :: gid : u32
+kernel/src/fs/fuse/filesystem.rs :: pub (super) SetAttributes :: handle : u64
+kernel/src/fs/fuse/filesystem.rs :: pub (super) SetAttributes :: mode : u32
+kernel/src/fs/fuse/filesystem.rs :: pub (super) SetAttributes :: mtime : u64
+kernel/src/fs/fuse/filesystem.rs :: pub (super) SetAttributes :: size : u64
+kernel/src/fs/fuse/filesystem.rs :: pub (super) SetAttributes :: uid : u32
+kernel/src/fs/fuse/filesystem.rs :: pub (super) SetAttributes :: valid : u32
+kernel/src/fs/fuse/filesystem.rs :: pub (super) enum Unsupported
+kernel/src/fs/fuse/filesystem.rs :: pub (super) fn notify (connection : & Connection , code : i32 , payload : & [u8] ,) -> Result < () , FileSystemError >
+kernel/src/fs/fuse/filesystem.rs :: pub (super) impl Mount :: fn adopt (self : & Arc < Self > , entry : & protocol :: Entry ,) -> Result < Arc < FuseInode > , FileSystemError >
+kernel/src/fs/fuse/filesystem.rs :: pub (super) impl Mount :: fn mark_unsupported (& self , operation : Unsupported)
+kernel/src/fs/fuse/filesystem.rs :: pub (super) impl Mount :: fn node (& self , nodeid : u64) -> Option < Arc < FuseInode > >
+kernel/src/fs/fuse/filesystem.rs :: pub (super) impl Mount :: fn retire (& self , nodeid : u64 , inode : * const FuseInode)
+kernel/src/fs/fuse/filesystem.rs :: pub (super) impl Mount :: fn unsupported (& self , operation : Unsupported) -> bool
+kernel/src/fs/fuse/filesystem.rs :: pub (super) impl SetAttributes :: const fn new (valid : u32) -> Self
+kernel/src/fs/fuse/filesystem.rs :: pub (super) impl SetAttributes :: fn encode (& self) -> [u8 ; 88]
+kernel/src/fs/fuse/filesystem.rs :: pub (super) struct FuseFileSystemType
+kernel/src/fs/fuse/filesystem.rs :: pub (super) struct Mount
+kernel/src/fs/fuse/filesystem.rs :: pub (super) struct SetAttributes
+kernel/src/fs/fuse/inode.rs :: pub (super) impl FuseInode :: fn add_lookup (& self)
+kernel/src/fs/fuse/inode.rs :: pub (super) impl FuseInode :: fn invalidate_attributes (& self)
+kernel/src/fs/fuse/inode.rs :: pub (super) impl FuseInode :: fn invalidate_data (& self , wait : bool) -> Result < () , FileSystemError >
+kernel/src/fs/fuse/inode.rs :: pub (super) impl FuseInode :: fn matches (& self , generation : u64 , kind : InodeType) -> bool
+kernel/src/fs/fuse/inode.rs :: pub (super) impl FuseInode :: fn new (mount : Arc < Mount > , entry : & Entry , kind : InodeType ,) -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/fuse/inode.rs :: pub (super) impl FuseInode :: fn root (mount : Arc < Mount > , attributes : & Attributes ,) -> Result < Arc < Self > , FileSystemError >
+kernel/src/fs/fuse/inode.rs :: pub (super) impl FuseInode :: fn store_attributes (& self , attributes : & Attributes , valid : (u64 , u32))
+kernel/src/fs/fuse/inode.rs :: pub (super) struct FuseInode
+kernel/src/fs/fuse/inode/directory.rs :: pub (in crate :: fs :: fuse) impl FuseInode :: fn clear_entries (& self)
+kernel/src/fs/fuse/inode/directory.rs :: pub (in crate :: fs :: fuse) impl FuseInode :: fn invalidate_entry (& self , name : & [u8] , child : Option < u64 >)
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn cache_entry (& self , name : & [u8] , inode : & Arc < FuseInode > , valid : (u64 , u32))
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn cached_child (& self , name : & [u8]) -> Option < Arc < FuseInode > >
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn create_and_open (& self , name : & [u8] , metadata : CreateMetadata , flags : u32 ,) -> Result < Option < crate :: fs :: inode :: CreatedOpen > , FileSystemError >
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn create_entry (& self , name : & [u8] , kind : InodeType , metadata : CreateMetadata ,) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn create_link (& self , name : & [u8] , target : Arc < dyn Inode > ,) -> Result < () , FileSystemError >
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn create_node (& self , name : & [u8] , mode : u32 , rdev : u32 ,) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn create_special (& self , name : & [u8] , kind : InodeType , metadata : CreateMetadata , device : Option < DeviceNumber > ,) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn create_symlink (& self , name : & [u8] , target : & [u8] ,) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn entry_request (& self , opcode : u32 , arguments : & [& [u8]] , name : & [u8] ,) -> Result < Arc < FuseInode > , FileSystemError >
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn forget_name (& self , name : & [u8])
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn lookup (& self , name : & [u8]) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn read_entries (& self , cursor : u64 , visitor : & mut dyn DirectoryVisitor ,) -> Result < DirectoryRead , FileSystemError >
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn remove_entry (& self , name : & [u8] , remove_directory : bool ,) -> Result < () , FileSystemError >
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn rename_entry (& self , old_name : & [u8] , new_parent_inode : u64 , new_name : & [u8] , no_replace : bool ,) -> Result < () , FileSystemError >
+kernel/src/fs/fuse/inode/directory.rs :: pub (super) struct CachedEntry
+kernel/src/fs/fuse/inode/handle.rs :: pub (super) HandleRef :: flags : u32
+kernel/src/fs/fuse/inode/handle.rs :: pub (super) HandleRef :: handle : u64
+kernel/src/fs/fuse/inode/handle.rs :: pub (super) impl FuseInode :: fn attach_handle (& self , opened : & protocol :: Opened , flags : u32 , mut release : Reserved ,) -> Result < Arc < Handle > , FileSystemError >
+kernel/src/fs/fuse/inode/handle.rs :: pub (super) impl FuseInode :: fn drain_writes (& self , handle : HandleRef)
+kernel/src/fs/fuse/inode/handle.rs :: pub (super) impl FuseInode :: fn handle (& self , writable : bool) -> Result < HandleRef , FileSystemError >
+kernel/src/fs/fuse/inode/handle.rs :: pub (super) impl FuseInode :: fn register_handle (& self , handle : & Arc < Handle >) -> Result < () , FileSystemError >
+kernel/src/fs/fuse/inode/handle.rs :: pub (super) struct Handle
+kernel/src/fs/fuse/inode/handle.rs :: pub (super) struct HandleRef
+kernel/src/fs/fuse/options.rs :: pub (super) Options :: allow_other : bool
+kernel/src/fs/fuse/options.rs :: pub (super) Options :: default_permissions : bool
+kernel/src/fs/fuse/options.rs :: pub (super) Options :: fd : i32
+kernel/src/fs/fuse/options.rs :: pub (super) Options :: group_id : u32
+kernel/src/fs/fuse/options.rs :: pub (super) Options :: max_read : Option < u32 >
+kernel/src/fs/fuse/options.rs :: pub (super) Options :: root_mode : u32
+kernel/src/fs/fuse/options.rs :: pub (super) Options :: subtype : Vec < u8 >
+kernel/src/fs/fuse/options.rs :: pub (super) Options :: user_id : u32
+kernel/src/fs/fuse/options.rs :: pub (super) impl Options :: fn parse (options : & [u8]) -> Result < Self , FileSystemError >
+kernel/src/fs/fuse/options.rs :: pub (super) struct Options
+kernel/src/fs/fuse/protocol.rs :: pub (super) Attributes :: atime : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Attributes :: atime_nsec : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) Attributes :: block_size : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) Attributes :: blocks : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Attributes :: ctime : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Attributes :: ctime_nsec : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) Attributes :: gid : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) Attributes :: links : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) Attributes :: mode : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) Attributes :: mtime : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Attributes :: mtime_nsec : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) Attributes :: rdev : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) Attributes :: size : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Attributes :: uid : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) Caller :: gid : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) Caller :: pid : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) Caller :: uid : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) DirectoryRecord :: entry : Option < Entry >
+kernel/src/fs/fuse/protocol.rs :: pub (super) DirectoryRecord :: ino : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) DirectoryRecord :: kind : InodeType
+kernel/src/fs/fuse/protocol.rs :: pub (super) DirectoryRecord :: name : & 'a [u8]
+kernel/src/fs/fuse/protocol.rs :: pub (super) DirectoryRecord :: offset : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Entry :: attr_valid : (u64 , u32)
+kernel/src/fs/fuse/protocol.rs :: pub (super) Entry :: attributes : Attributes
+kernel/src/fs/fuse/protocol.rs :: pub (super) Entry :: entry_valid : (u64 , u32)
+kernel/src/fs/fuse/protocol.rs :: pub (super) Entry :: generation : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Entry :: nodeid : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Opened :: flags : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) Opened :: handle : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Statfs :: block_size : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) Statfs :: blocks : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Statfs :: blocks_available : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Statfs :: blocks_free : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Statfs :: files : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Statfs :: files_free : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Statfs :: fragment_size : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) Statfs :: name_length : u32
+kernel/src/fs/fuse/protocol.rs :: pub (super) fn attr_out (bytes : & [u8]) -> Result < ((u64 , u32) , Attributes) , FileSystemError >
+kernel/src/fs/fuse/protocol.rs :: pub (super) fn deadline (now : u64 , seconds : u64 , nanoseconds : u32) -> u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) fn header (length : u32 , opcode : u32 , unique : u64 , nodeid : u64 , caller : Caller ,) -> [u8 ; fuse :: IN_HEADER_SIZE]
+kernel/src/fs/fuse/protocol.rs :: pub (super) fn mode_kind (mode : u32) -> Option < InodeType >
+kernel/src/fs/fuse/protocol.rs :: pub (super) fn name (name : & [u8]) -> Result < Vec < u8 > , FileSystemError >
+kernel/src/fs/fuse/protocol.rs :: pub (super) fn open_out (bytes : & [u8]) -> Result < Opened , FileSystemError >
+kernel/src/fs/fuse/protocol.rs :: pub (super) fn reply_error (error : u16) -> FileSystemError
+kernel/src/fs/fuse/protocol.rs :: pub (super) fn request (opcode : u32 , unique : u64 , nodeid : u64 , caller : Caller , arguments : & [& [u8]] ,) -> Result < Vec < u8 > , FileSystemError >
+kernel/src/fs/fuse/protocol.rs :: pub (super) fn statfs_out (bytes : & [u8]) -> Result < Statfs , FileSystemError >
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Attributes :: const fn root (mode : u32 , uid : u32 , gid : u32) -> Self
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Attributes :: fn kind (& self) -> Option < InodeType >
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl DirectoryRecords < 'a > :: const fn new (bytes : & 'a [u8] , plus : bool) -> Self
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Entry :: fn parse (bytes : & [u8]) -> Result < Self , FileSystemError >
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Entry :: fn read (reader : & mut Reader < '_ >) -> Result < Self , FileSystemError >
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Fields < N > :: const fn new () -> Self
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Fields < N > :: fn finish (self) -> [u8 ; N]
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Fields < N > :: fn u32 (mut self , value : u32) -> Self
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Fields < N > :: fn u64 (mut self , value : u64) -> Self
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Reader < 'a > :: const fn new (bytes : & 'a [u8]) -> Self
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Reader < 'a > :: fn bytes (& mut self , count : usize) -> Result < & 'a [u8] , FileSystemError >
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Reader < 'a > :: fn remaining (& self) -> usize
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Reader < 'a > :: fn skip (& mut self , count : usize) -> Result < () , FileSystemError >
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Reader < 'a > :: fn u16 (& mut self) -> Result < u16 , FileSystemError >
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Reader < 'a > :: fn u32 (& mut self) -> Result < u32 , FileSystemError >
+kernel/src/fs/fuse/protocol.rs :: pub (super) impl Reader < 'a > :: fn u64 (& mut self) -> Result < u64 , FileSystemError >
+kernel/src/fs/fuse/protocol.rs :: pub (super) struct Attributes
+kernel/src/fs/fuse/protocol.rs :: pub (super) struct Caller
+kernel/src/fs/fuse/protocol.rs :: pub (super) struct DirectoryRecord < 'a >
+kernel/src/fs/fuse/protocol.rs :: pub (super) struct DirectoryRecords < 'a >
+kernel/src/fs/fuse/protocol.rs :: pub (super) struct Entry
+kernel/src/fs/fuse/protocol.rs :: pub (super) struct Fields < const N : usize >
+kernel/src/fs/fuse/protocol.rs :: pub (super) struct Opened
+kernel/src/fs/fuse/protocol.rs :: pub (super) struct Reader < 'a >
+kernel/src/fs/fuse/protocol.rs :: pub (super) struct Statfs
 kernel/src/fs/inode.rs :: enum DataBacking :: # [doc = " 内存型文件（tmpfs、memfd）：页即内容，由该 inode 独占，没有 backing storage。"] Memory (alloc :: sync :: Arc < super :: memory_file :: MemoryFile >)
 kernel/src/fs/inode.rs :: enum DataBacking :: # [doc = " 持久文件：经全局 page cache 缓存 filesystem storage。"] PageCache
 kernel/src/fs/inode.rs :: enum DataBacking :: # [doc = " 每次读取即时生成的只读快照（procfs）：不缓存、不可 mmap、不可写。"] Snapshot
+kernel/src/fs/inode.rs :: enum InodeOpen :: # [doc = " 经 VFS/page cache 访问 inode storage；有 per-open 状态的 filesystem 附带其 release 令牌。"] Storage (Option < Arc < dyn StorageOpen > >)
 kernel/src/fs/inode.rs :: enum InodeOpen :: Device (Arc < dyn super :: chardev :: DeviceFile >)
-kernel/src/fs/inode.rs :: enum InodeOpen :: Storage
 kernel/src/fs/inode.rs :: enum InodeOpenError :: Filesystem (FileSystemError)
 kernel/src/fs/inode.rs :: enum InodeOpenError :: Interrupted
 kernel/src/fs/inode.rs :: enum InodeType :: BlockDevice = 6
@@ -2416,25 +2605,32 @@ kernel/src/fs/inode.rs :: pub (crate) enum InodeOpenError
 kernel/src/fs/inode.rs :: pub (crate) enum InodeType
 kernel/src/fs/inode.rs :: pub (crate) enum LinkTarget
 kernel/src/fs/inode.rs :: pub (crate) enum StorageStep
+kernel/src/fs/inode.rs :: pub (crate) fn open_by_type < T : Inode + ? Sized > (inode : & T , flags : u32 , identity : & super :: AccessIdentity ,) -> Result < InodeOpen , InodeOpenError >
 kernel/src/fs/inode.rs :: pub (crate) struct FineTimes
 kernel/src/fs/inode.rs :: pub (crate) struct InodeMetadata
 kernel/src/fs/inode.rs :: pub (crate) trait Inode
+kernel/src/fs/inode.rs :: pub (crate) trait StorageOpen
 kernel/src/fs/inode.rs :: pub (crate) trait StorageRead
 kernel/src/fs/inode.rs :: pub (crate) trait StorageWriter
+kernel/src/fs/inode.rs :: pub (crate) type CreatedOpen  = (Arc < dyn Inode > , InodeOpen)
 kernel/src/fs/inode.rs :: pub (super) impl InodeOpenError :: fn from_fifo (error : super :: FifoOpenError) -> Self
 kernel/src/fs/inode.rs :: trait Inode :: fn add_seals (& self , seals : u32) -> Result < u32 , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn allocate_storage (& self , _offset : u64 , _length : u64 , _identity : Option < & crate :: fs :: AccessIdentity > ,) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn allows_notifications (& self) -> bool
 kernel/src/fs/inode.rs :: trait Inode :: fn append_storage (& self , buf : & [u8] , identity : Option < & crate :: fs :: AccessIdentity > ,) -> Result < (u64 , usize) , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn begin_storage_read (& self , offset : u64 , length : usize , notify : Arc < dyn crate :: block :: CompletionNotify > ,) -> Result < Option < alloc :: boxed :: Box < dyn StorageRead > > , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn buffered_writes (& self) -> bool
 kernel/src/fs/inode.rs :: trait Inode :: fn change_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn change_xattr (& self , mut change : super :: XattrChange < '_ > ,) -> Result < () , super :: FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn check_xattr_write (& self) -> Result < () , super :: FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn create (& self , name : & [u8] , kind : InodeType , metadata : CreateMetadata ,) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn create_open (& self , _name : & [u8] , _metadata : CreateMetadata , _flags : u32 ,) -> Result < Option < CreatedOpen > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn data_backing (& self) -> DataBacking
 kernel/src/fs/inode.rs :: trait Inode :: fn device_number (& self) -> Option < crate :: fs :: DeviceNumber >
+kernel/src/fs/inode.rs :: trait Inode :: fn extend_buffered_size (& self , _size : u64)
 kernel/src/fs/inode.rs :: trait Inode :: fn filesystem_id (& self) -> usize
 kernel/src/fs/inode.rs :: trait Inode :: fn find_child (& self , name : & [u8]) -> Result < Arc < dyn Inode > , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn identity (& self) -> Result < (u64 , u64) , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn inode_type (& self) -> InodeType
 kernel/src/fs/inode.rs :: trait Inode :: fn ioctl (& self , _call : & super :: chardev :: IoctlCall < '_ > ,) -> Result < isize , super :: chardev :: DeviceError >
 kernel/src/fs/inode.rs :: trait Inode :: fn is_executable (& self) -> bool
@@ -2457,9 +2653,12 @@ kernel/src/fs/inode.rs :: trait Inode :: fn pseudo_statistics (& self) -> Option
 kernel/src/fs/inode.rs :: trait Inode :: fn read_directory (& self , cursor : u64 , visitor : & mut dyn DirectoryVisitor ,) -> Result < DirectoryRead , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn read_link (& self) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn read_storage (& self , offset : u64 , buf : & mut [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn read_storage_pages (& self , offset : u64 , pages : & mut [& mut [u8]] ,) -> Result < usize , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn read_xattr (& self , _name : & [u8]) -> Result < Vec < u8 > , super :: FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn readahead_pages (& self) -> usize
 kernel/src/fs/inode.rs :: trait Inode :: fn rename (& self , old_name : & [u8] , new_parent_inode : u64 , new_name : & [u8] , no_replace : bool ,) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn require_access (& self , identity : & super :: AccessIdentity , requested : u8 ,) -> Result < () , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn revalidate_data (& self) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn seals (& self) -> Result < u32 , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn set_times (& self , atime : Option < u64 > , mtime : Option < u64 >) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn size (& self) -> u64
@@ -2469,9 +2668,11 @@ kernel/src/fs/inode.rs :: trait Inode :: fn touch_access (& self , _now : u64 , 
 kernel/src/fs/inode.rs :: trait Inode :: fn truncate_storage (& self , size : u64 , identity : Option < & crate :: fs :: AccessIdentity > ,) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn try_writeback_storage_batch (& self , _batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn unlink (& self , name : & [u8] , remove_directory : bool) -> Result < () , FileSystemError >
+kernel/src/fs/inode.rs :: trait Inode :: fn unlinked (& self , _directory : bool)
 kernel/src/fs/inode.rs :: trait Inode :: fn write_access (& self) -> Option < & super :: InodeWriteAccess >
 kernel/src/fs/inode.rs :: trait Inode :: fn write_storage (& self , offset : u64 , buf : & [u8] , identity : Option < & crate :: fs :: AccessIdentity > ,) -> Result < usize , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn writeback_storage_batch (& self , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
+kernel/src/fs/inode.rs :: trait StorageOpen :: fn flush (& self , _owner : u64) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait StorageRead :: fn step (& mut self , output : & mut [u8]) -> Result < StorageStep , FileSystemError >
 kernel/src/fs/inode.rs :: trait StorageWriter :: fn write (& mut self , offset : u64 , bytes : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/inode_identity.rs :: pub (super) impl LiveInodes < T , K > :: const fn new () -> Self
@@ -2630,6 +2831,7 @@ kernel/src/fs/memory_file/sparse.rs :: trait PageBytes :: fn zero_from (& self ,
 kernel/src/fs/memory_file/sparse.rs :: trait PageBytes :: type Error
 kernel/src/fs/mod.rs :: enum FileSystemError :: # [doc = " Active swap inode rejects writes/truncate/allocation (ETXTBSY)."] TextBusy
 kernel/src/fs/mod.rs :: enum FileSystemError :: # [doc = " Two-pass mount expiry has been armed; caller retries after observing EAGAIN."] Retry
+kernel/src/fs/mod.rs :: enum FileSystemError :: # [doc = " 后端直接给出的 Linux errno（正值）：FUSE 守护进程的回复、连接断开的 `ENOTCONN`、请求被"] # [doc = " signal 中断的 `EINTR`。上面的变体已能表达的 errno 不经此变体，缺失时网络文件系统的"] # [doc = " `ETIMEDOUT`/`ENOTCONN` 等会被折叠成 `EIO`。"] Errno (u16)
 kernel/src/fs/mod.rs :: enum FileSystemError :: # [doc = " 设备号没有 driver，或 driver 当前不提供该设备（`ENXIO`）。"] NoDevice
 kernel/src/fs/mod.rs :: enum FileSystemError :: AccessDenied
 kernel/src/fs/mod.rs :: enum FileSystemError :: AlreadyExists
@@ -2662,9 +2864,10 @@ kernel/src/fs/mod.rs :: pub (crate) FileSystemStatistics :: fragment_size : u64
 kernel/src/fs/mod.rs :: pub (crate) FileSystemStatistics :: fsid : [u32 ; 2]
 kernel/src/fs/mod.rs :: pub (crate) FileSystemStatistics :: magic : u64
 kernel/src/fs/mod.rs :: pub (crate) FileSystemStatistics :: name_length : u64
-kernel/src/fs/mod.rs :: pub (crate) FileSystemStatistics :: type_name : & 'static str
 kernel/src/fs/mod.rs :: pub (crate) KernelThreadSupport :: sleep_until : fn (u64)
 kernel/src/fs/mod.rs :: pub (crate) KernelThreadSupport :: spawn : SpawnKernelThread
+kernel/src/fs/mod.rs :: pub (crate) SuperblockFacts :: read_only : bool
+kernel/src/fs/mod.rs :: pub (crate) SuperblockFacts :: type_name : & 'static str
 kernel/src/fs/mod.rs :: pub (crate) enum FileSystemError
 kernel/src/fs/mod.rs :: pub (crate) fn allocate_filesystem_id () -> usize
 kernel/src/fs/mod.rs :: pub (crate) fn init_vfs () -> VfsReady
@@ -2677,6 +2880,7 @@ kernel/src/fs/mod.rs :: pub (crate) mod pidfs
 kernel/src/fs/mod.rs :: pub (crate) struct FileSystemStatistics
 kernel/src/fs/mod.rs :: pub (crate) struct KernelThreadSupport
 kernel/src/fs/mod.rs :: pub (crate) struct RootMounted
+kernel/src/fs/mod.rs :: pub (crate) struct SuperblockFacts
 kernel/src/fs/mod.rs :: pub (crate) struct VfsReady
 kernel/src/fs/mod.rs :: pub (crate) trait FileSystem
 kernel/src/fs/mod.rs :: pub (crate) type SpawnKernelThread  = fn (& 'static str , alloc :: boxed :: Box < dyn FnOnce () + Send > ,) -> Result < () , crate :: memory :: MemoryError >
@@ -2687,15 +2891,15 @@ kernel/src/fs/mod.rs :: pub (crate) use devnum :: DeviceNumber
 kernel/src/fs/mod.rs :: pub (crate) use directory :: { DirectoryEntry , DirectoryRead , DirectoryVisit , DirectoryVisitor , Dirent64Batch , IndexedDirectory , MAX_GETDENTS_BATCH_BYTES , }
 kernel/src/fs/mod.rs :: pub (crate) use fifo :: { FifoAccess , FifoOpenError , open as open_fifo }
 kernel/src/fs/mod.rs :: pub (crate) use file_information :: format_file_information
-kernel/src/fs/mod.rs :: pub (crate) use inode :: { DataBacking , FineTimes , Inode , InodeMetadata , InodeOpen , InodeOpenError , InodeType , LinkTarget , StorageRead , StorageStep , StorageWriter , }
+kernel/src/fs/mod.rs :: pub (crate) use inode :: { DataBacking , FineTimes , Inode , InodeMetadata , InodeOpen , InodeOpenError , InodeType , LinkTarget , StorageOpen , StorageRead , StorageStep , StorageWriter , }
 kernel/src/fs/mod.rs :: pub (crate) use inotify :: { IN_ACCESS , IN_ATTRIB , IN_CLOEXEC , IN_CLOSE_NOWRITE , IN_CLOSE_WRITE , IN_CREATE , IN_DELETE , IN_MODIFY , IN_MOVE_SELF , IN_MOVED_FROM , IN_MOVED_TO , IN_NONBLOCK , IN_OPEN , InitError , Inotify , WatchError , add_watch_flags , filesystem_unmounted , next_cookie , notify_dentry_reclaimed , notify_entry , notify_opened , notify_self , watching , }
 kernel/src/fs/mod.rs :: pub (crate) use inotify :: { InotifyLimit , inotify_watch_limit }
 kernel/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
 kernel/src/fs/mod.rs :: pub (crate) use memory_file :: MemoryFile
-kernel/src/fs/mod.rs :: pub (crate) use mount :: { CreatedFileSystem , FileSystemType , MountEnvironment , MountRequest , get_filesystem_type , mount , mount_root , register_filesystem , remount , unmount , unmount_root_read_only , }
+kernel/src/fs/mod.rs :: pub (crate) use mount :: { CallerFiles , CreatedFileSystem , CurrentRequester , FileSystemType , MountEnvironment , MountRequest , Requester , get_filesystem_type , mount , mount_root , register_filesystem , remount , unmount , unmount_root_read_only , }
 kernel/src/fs/mod.rs :: pub (crate) use nsfs :: namespace_opened
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { NowaitRead , ReadStep , RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
-kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , OwnerModeChange }
+kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , MAY_ACCESS , MAY_CHDIR , OwnerModeChange , }
 kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcCredentialSnapshot , ProcDirectory , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcRouteSnapshot , ProcSnapshot , ProcSnapshotScope , ProcSource , ProcTaskIdentity , ProcThreadSnapshot , }
 kernel/src/fs/mod.rs :: pub (crate) use swap :: { SwapSource , prepare_swap_storage }
 kernel/src/fs/mod.rs :: pub (crate) use syscall_abi :: open :: { O_ACCMODE , O_APPEND , O_CLOEXEC , O_NOCTTY , O_NOFOLLOW , O_NONBLOCK , O_PATH , O_RDONLY , O_RDWR , O_WRONLY , }
@@ -2709,19 +2913,25 @@ kernel/src/fs/mod.rs :: trait FileSystem :: fn root_inode (& self) -> Result < A
 kernel/src/fs/mod.rs :: trait FileSystem :: fn show_mount_options (& self) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn shutdown (& self) -> Result < () , FileSystemError >
 kernel/src/fs/mod.rs :: trait FileSystem :: fn statistics (& self) -> Result < FileSystemStatistics , FileSystemError >
+kernel/src/fs/mod.rs :: trait FileSystem :: fn subtype (& self) -> & [u8]
+kernel/src/fs/mod.rs :: trait FileSystem :: fn superblock (& self) -> SuperblockFacts
 kernel/src/fs/mount.rs :: pub (crate) CreatedFileSystem :: filesystem : Arc < dyn FileSystem >
 kernel/src/fs/mount.rs :: pub (crate) CreatedFileSystem :: user_namespace : Arc < crate :: namespace :: UserNamespace >
 kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: cpu_count : usize
 kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: net_links : Arc < dyn super :: NetLinkSource >
 kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: proc_source : Arc < dyn ProcSource >
+kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: requester : CurrentRequester
 kernel/src/fs/mount.rs :: pub (crate) MountEnvironment :: threads : KernelThreadSupport
 kernel/src/fs/mount.rs :: pub (crate) MountRequest :: device : Option < DeviceNumber >
 kernel/src/fs/mount.rs :: pub (crate) MountRequest :: environment : & 'a MountEnvironment
+kernel/src/fs/mount.rs :: pub (crate) MountRequest :: files : & 'a dyn CallerFiles
 kernel/src/fs/mount.rs :: pub (crate) MountRequest :: identity : & 'a AccessIdentity
 kernel/src/fs/mount.rs :: pub (crate) MountRequest :: options : & 'a [u8]
 kernel/src/fs/mount.rs :: pub (crate) MountRequest :: read_only : bool
-kernel/src/fs/mount.rs :: pub (crate) fn get_filesystem_type (name : & [u8]) -> Option < & 'static dyn FileSystemType >
-kernel/src/fs/mount.rs :: pub (crate) fn mount (namespace : & Arc < MountNamespace > , identity : & AccessIdentity , kind : & 'static dyn FileSystemType , source : & [u8] , device : Option < DeviceNumber > , options : & [u8] , flags : MountFlags , point : Arc < OpenedFile > ,) -> Result < () , FileSystemError >
+kernel/src/fs/mount.rs :: pub (crate) Requester :: identity : AccessIdentity
+kernel/src/fs/mount.rs :: pub (crate) Requester :: thread : Arc < crate :: namespace :: PidIdentity >
+kernel/src/fs/mount.rs :: pub (crate) fn get_filesystem_type (name : & [u8] ,) -> Option < (& 'static dyn FileSystemType , Option < & [u8] >) >
+kernel/src/fs/mount.rs :: pub (crate) fn mount (namespace : & Arc < MountNamespace > , identity : & AccessIdentity , kind : & 'static dyn FileSystemType , source : & [u8] , device : Option < DeviceNumber > , options : & [u8] , flags : MountFlags , point : Arc < OpenedFile > , files : & dyn CallerFiles ,) -> Result < () , FileSystemError >
 kernel/src/fs/mount.rs :: pub (crate) fn mount_root (environment : MountEnvironment , root : & [u8] , filesystem_type : Option < & [u8] > , flags : MountFlags ,) -> Result < super :: RootMounted , FileSystemError >
 kernel/src/fs/mount.rs :: pub (crate) fn register_filesystem (kind : & 'static dyn FileSystemType ,) -> Result < () , FileSystemError >
 kernel/src/fs/mount.rs :: pub (crate) fn remount (namespace : & Arc < MountNamespace > , identity : & AccessIdentity , root : & Arc < OpenedFile > , flags : MountFlags , options : & [u8] , bind : bool ,) -> Result < () , FileSystemError >
@@ -2730,8 +2940,13 @@ kernel/src/fs/mount.rs :: pub (crate) fn unmount_root_read_only (namespace : & A
 kernel/src/fs/mount.rs :: pub (crate) struct CreatedFileSystem
 kernel/src/fs/mount.rs :: pub (crate) struct MountEnvironment
 kernel/src/fs/mount.rs :: pub (crate) struct MountRequest < 'a >
+kernel/src/fs/mount.rs :: pub (crate) struct Requester
+kernel/src/fs/mount.rs :: pub (crate) trait CallerFiles
 kernel/src/fs/mount.rs :: pub (crate) trait FileSystemType
+kernel/src/fs/mount.rs :: pub (crate) type CurrentRequester  = fn () -> Option < Requester >
+kernel/src/fs/mount.rs :: trait CallerFiles :: fn device_file (& self , fd : i32) -> Result < Arc < dyn super :: chardev :: DeviceFile > , FileSystemError >
 kernel/src/fs/mount.rs :: trait FileSystemType :: fn create (& self , request : & MountRequest < '_ >) -> Result < CreatedFileSystem , FileSystemError >
+kernel/src/fs/mount.rs :: trait FileSystemType :: fn has_subtype (& self) -> bool
 kernel/src/fs/mount.rs :: trait FileSystemType :: fn name (& self) -> & 'static str
 kernel/src/fs/mount.rs :: trait FileSystemType :: fn requires_device (& self) -> bool
 kernel/src/fs/mount.rs :: trait FileSystemType :: fn user_namespace_mount (& self) -> bool
@@ -2758,7 +2973,7 @@ kernel/src/fs/page_cache.rs :: pub (crate) struct CachedWrite < 'a >
 kernel/src/fs/page_cache.rs :: pub (crate) struct MemoryInodeWrite < 'a >
 kernel/src/fs/page_cache.rs :: pub (crate) struct PageCacheStatistics
 kernel/src/fs/page_cache.rs :: pub (crate) use nowait_read :: { NowaitRead , ReadStep }
-kernel/src/fs/page_cache.rs :: pub (crate) use registry :: { evict_cached , evict_filesystem , statistics , sync_all , writeback_cached }
+kernel/src/fs/page_cache.rs :: pub (crate) use registry :: { evict_cached , evict_filesystem , invalidate , statistics , sync_all , write_back , writeback_cached , }
 kernel/src/fs/page_cache.rs :: pub (crate) use regular_file :: RegularFile
 kernel/src/fs/page_cache.rs :: pub (super) impl CachedPage :: fn reclaimable (& self) -> bool
 kernel/src/fs/page_cache.rs :: pub (super) struct CachedPage
@@ -2783,8 +2998,10 @@ kernel/src/fs/page_cache/reclaim.rs :: pub (super) struct CachedPages
 kernel/src/fs/page_cache/reclaim.rs :: pub (super) struct PreparedReclaim
 kernel/src/fs/page_cache/registry.rs :: pub (crate) fn evict_cached (id : SharedFileId) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache/registry.rs :: pub (crate) fn evict_filesystem (filesystem_id : usize) -> Result < () , FileSystemError >
+kernel/src/fs/page_cache/registry.rs :: pub (crate) fn invalidate (id : SharedFileId , wait : bool) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache/registry.rs :: pub (crate) fn statistics () -> PageCacheStatistics
 kernel/src/fs/page_cache/registry.rs :: pub (crate) fn sync_all () -> Result < () , FileSystemError >
+kernel/src/fs/page_cache/registry.rs :: pub (crate) fn write_back (id : SharedFileId) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache/registry.rs :: pub (crate) fn writeback_cached (id : SharedFileId) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache/registry.rs :: pub (in crate :: fs) fn evict_if_unlinked (inode : & Arc < dyn Inode >)
 kernel/src/fs/page_cache/registry.rs :: pub (super) fn cached_file (inode : Arc < dyn Inode > ,) -> Result < Option < Arc < CachedFile > > , FileSystemError >
@@ -2812,7 +3029,7 @@ kernel/src/fs/page_cache/storage_epoch.rs :: pub (super) struct Mutation < 'a >
 kernel/src/fs/page_cache/storage_epoch.rs :: pub (super) struct StorageEpoch
 kernel/src/fs/page_cache/swap.rs :: pub (in crate :: fs) fn prepare_swap_file (opened : & Arc < OpenedFile > ,) -> Result < PreparedSwapFile , FileSystemError >
 kernel/src/fs/page_cache/writeback.rs :: pub (super) impl CachedFile :: fn reclaim_under_pressure (& self , request : ReclaimRequest) -> ReclaimResult
-kernel/src/fs/page_cache/writeback.rs :: pub (super) impl CachedFile :: fn writeback_range (& self , offset : u64 , length : u64) -> Result < () , FileSystemError >
+kernel/src/fs/page_cache/writeback.rs :: pub (super) impl CachedFile :: fn writeback_range (& self , offset : u64 , length : u64 , durable : bool ,) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) CommittedPrefix :: bytes : usize
 kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) CommittedPrefix :: offset : u64
 kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) const REGULAR_WRITE_BATCH_PAGES : usize = 256
@@ -2823,6 +3040,8 @@ kernel/src/fs/page_cache/writeback_batch.rs :: pub (super) struct CommittedPrefi
 kernel/src/fs/permission.rs :: pub (crate) CreateMetadata :: gid : u32
 kernel/src/fs/permission.rs :: pub (crate) CreateMetadata :: mode : u32
 kernel/src/fs/permission.rs :: pub (crate) CreateMetadata :: uid : u32
+kernel/src/fs/permission.rs :: pub (crate) const MAY_ACCESS : u8 = 0x10
+kernel/src/fs/permission.rs :: pub (crate) const MAY_CHDIR : u8 = 0x40
 kernel/src/fs/permission.rs :: pub (crate) impl AccessIdentity :: fn effective_uid (& self) -> u32
 kernel/src/fs/permission.rs :: pub (crate) impl AccessIdentity :: fn gid (& self) -> u32
 kernel/src/fs/permission.rs :: pub (crate) impl AccessIdentity :: fn has_capability (& self , capability : Capability) -> bool
@@ -2848,6 +3067,7 @@ kernel/src/fs/permission.rs :: pub (super) impl OwnerModeChange :: fn authorize 
 kernel/src/fs/permission.rs :: pub (super) impl OwnerModeChange :: fn authorize_metadata (self , metadata : InodeMetadata) -> Result < () , FileSystemError >
 kernel/src/fs/permission.rs :: pub (super) impl OwnerModeChange :: fn changes_mode (& self) -> bool
 kernel/src/fs/permission.rs :: pub (super) impl OwnerModeChange :: fn kills_privileges (& self , kind : InodeType) -> bool
+kernel/src/fs/permission.rs :: pub (super) impl OwnerModeChange :: fn requested (& self , mut current : OwnerModeState) -> OwnerModeState
 kernel/src/fs/permission.rs :: pub (super) impl OwnerModeState :: const fn gid (& self) -> u32
 kernel/src/fs/permission.rs :: pub (super) impl OwnerModeState :: const fn kind (& self) -> InodeType
 kernel/src/fs/permission.rs :: pub (super) impl OwnerModeState :: const fn mode (& self) -> u16
@@ -3546,7 +3766,7 @@ kernel/src/fs/vfs/mount_table.rs :: enum MountTableKind :: Info
 kernel/src/fs/vfs/mount_table.rs :: enum MountTableKind :: Mounts
 kernel/src/fs/vfs/mount_table.rs :: enum MountTableKind :: Stats
 kernel/src/fs/vfs/mount_table.rs :: pub (crate) enum MountTableKind
-kernel/src/fs/vfs/mount_table.rs :: pub (super) fn write_mount_record (output : & mut Vec < u8 > , view : & MountView , viewer_root : & Arc < super :: OpenedFile > , target : & [u8] , filesystem_root : & [u8] , statistics : & FileSystemStatistics , kind : MountTableKind ,) -> Result < () , FileSystemError >
+kernel/src/fs/vfs/mount_table.rs :: pub (super) fn write_mount_record (output : & mut Vec < u8 > , view : & MountView , viewer_root : & Arc < super :: OpenedFile > , target : & [u8] , filesystem_root : & [u8] , kind : MountTableKind ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs/mount_unmount.rs :: pub (super) fn unmount (root : & Arc < MountView > , synchronous : bool ,) -> Result < Vec < Arc < crate :: sync :: TaskEvent > > , FileSystemError >
 kernel/src/fs/vfs/mount_view.rs :: enum Reconfiguration :: MountAndSuperblock (super :: MountFlags)
 kernel/src/fs/vfs/mount_view.rs :: enum Reconfiguration :: SuperblockReadOnly
@@ -3622,7 +3842,7 @@ kernel/src/fs/vfs/mounted_filesystem.rs :: pub (super) struct SuperState
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn create_at (& self , start : LookupOrigin , path : & [u8] , kind : InodeType , mode : u32 , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn link_at (& self , target : Arc < OpenedFile > , new_start : LookupOrigin , new_path : & [u8] , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn mknod_at (& self , start : LookupOrigin , path : & [u8] , kind : InodeType , mode : u32 , device : Option < DeviceNumber > , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
-kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn open_or_create_file_at (& self , start : LookupOrigin , path : & [u8] , mode : u32 , identity : & AccessIdentity , exclusive : bool , no_follow : bool ,) -> Result < (Arc < OpenedFile > , bool) , FileSystemError >
+kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn open_or_create_file_at (& self , start : LookupOrigin , path : & [u8] , mode : u32 , identity : & AccessIdentity , open_flags : u32 ,) -> Result < (Arc < OpenedFile > , bool , Option < crate :: fs :: InodeOpen >) , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn rename_at (& self , old_start : LookupOrigin , old_path : & [u8] , new_start : LookupOrigin , new_path : & [u8] , no_replace : bool , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn symlink_at (& self , start : LookupOrigin , path : & [u8] , target : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn unlink_at (& self , start : LookupOrigin , path : & [u8] , directory : bool , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
@@ -4999,7 +5219,7 @@ kernel/src/memory/mod.rs :: pub (crate) use pressure :: run_background_reclaim
 kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { MappedFileOwner , MemoryMappingOwner , MemoryReclaimer , PageMapCount , ReclaimRequest , ReclaimResult , SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedPage , SharedPagePin , complete_memory_mapping_owner_initialization , invalidate_shared_file , reclaim_pages , reclaim_statistics , register_memory_mapping_owner , register_memory_reclaimer , revoke_shared_file_writers , }
 kernel/src/memory/mod.rs :: pub (crate) use shared_memory :: { SharedMemoryMappingSource , SharedMemoryVma }
 kernel/src/memory/mod.rs :: pub (crate) use swappable_page :: { SwappablePage , cached_pages as swap_cached_pages }
-kernel/src/memory/mod.rs :: pub (crate) use vmstat :: { PageStateSnapshot , snapshot as page_state_snapshot }
+kernel/src/memory/mod.rs :: pub (crate) use vmstat :: snapshot as page_state_snapshot
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn activate_kernel (& self)
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn kernel_trap_token (& self) -> crate :: arch :: mmu :: KernelTrapToken
 kernel/src/memory/page_table.rs :: pub (crate) impl PageTable :: fn new (kind : AddressSpaceKind) -> Self
@@ -6735,6 +6955,7 @@ kernel/src/syscall/fs.rs :: pub (crate) fn sys_lseek (fd : usize , offset : i64 
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_newfstatat (fd : isize , name : * const u8 , pointer : * mut u8 , flags : u32) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_pipe2 (descriptors : usize , flags : u32) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_sync () -> isize
+kernel/src/syscall/fs.rs :: pub (crate) fn sys_truncate (path : * const u8 , size : i64) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) fn sys_utimensat (fd : isize , name : * const u8 , times : * const super :: timer :: TimeSpec , flags : u32 ,) -> isize
 kernel/src/syscall/fs.rs :: pub (crate) mod mount
 kernel/src/syscall/fs.rs :: pub (crate) mod statistics
@@ -7294,6 +7515,7 @@ kernel/src/task/memory_barrier.rs :: pub (super) fn initialize ()
 kernel/src/task/mod.rs :: pub (crate) InitProgram :: arguments : & 'a [Vec < u8 >]
 kernel/src/task/mod.rs :: pub (crate) InitProgram :: environment : & 'a [Vec < u8 >]
 kernel/src/task/mod.rs :: pub (crate) InitProgram :: path : Option < & 'a [u8] >
+kernel/src/task/mod.rs :: pub (crate) fn current_requester () -> Option < crate :: fs :: Requester >
 kernel/src/task/mod.rs :: pub (crate) fn initialize (_vfs : crate :: fs :: VfsReady) -> SchedulerReady
 kernel/src/task/mod.rs :: pub (crate) fn initialize_interrupt_state ()
 kernel/src/task/mod.rs :: pub (crate) fn kernel_thread_support (_scheduler : SchedulerReady) -> crate :: fs :: KernelThreadSupport
@@ -7564,7 +7786,7 @@ kernel/src/task/model/credentials.rs :: pub (super) impl TaskControlBlock :: fn 
 kernel/src/task/model/credentials.rs :: pub (super) struct PreparedExecCredentials
 kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_allocate (& self , ofd : Arc < OpenFileDescription > , minimum : usize , cloexec : bool ,) -> Result < usize , FileDescriptorError >
 kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_capture_many (& self , descriptors : & [usize] ,) -> Result < alloc :: vec :: Vec < Arc < OpenFileDescription > > , FileDescriptorError >
-kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_close (& self , fd : usize) -> Result < () , () >
+kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_close (& self , fd : usize) -> Result < Result < () , crate :: fs :: FileSystemError > , () >
 kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_duplicate (& self , old : usize , minimum : usize , cloexec : bool ,) -> Result < usize , FileDescriptorError >
 kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_duplicate_to (& self , old : usize , new : usize , cloexec : bool ,) -> Result < usize , FileDescriptorError >
 kernel/src/task/model/file_descriptions.rs :: pub (crate) impl TaskControlBlock :: fn fd_flags (& self , fd : usize) -> Result < u32 , () >

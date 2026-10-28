@@ -2,7 +2,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use super::mount_view::MountView;
-use super::{FileSystemError, FileSystemStatistics, MountFlags};
+use super::{FileSystemError, MountFlags};
+use crate::fs::SuperblockFacts;
 
 /// 同一实际 namespace 拓扑的 Linux proc 展示格式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -12,18 +13,27 @@ pub(crate) enum MountTableKind {
     Stats,
 }
 
+/// Linux `show_type`：有子类型的 superblock 显示为 `<type>.<subtype>`（如 `fuse.sshfs`）。
+fn write_type(output: &mut Vec<u8>, superblock: SuperblockFacts, subtype: &[u8]) {
+    write_field(output, superblock.type_name.as_bytes());
+    if !subtype.is_empty() {
+        output.push(b'.');
+        write_field(output, subtype);
+    }
+}
+
 fn write_mounts_record(
     output: &mut Vec<u8>,
     source: &[u8],
     target: &[u8],
-    statistics: &FileSystemStatistics,
+    (superblock, subtype): (SuperblockFacts, &[u8]),
     flags: MountFlags,
     options: &[u8],
 ) -> Result<(), FileSystemError> {
     let escaped_fields = source
         .len()
         .checked_add(target.len())
-        .and_then(|length| length.checked_add(statistics.type_name.len()))
+        .and_then(|length| length.checked_add(superblock.type_name.len() + 1 + subtype.len()))
         .and_then(|length| length.checked_mul(4))
         .ok_or(FileSystemError::OutOfMemory)?;
     let required = escaped_fields
@@ -37,9 +47,9 @@ fn write_mounts_record(
     output.push(b' ');
     write_field(output, target);
     output.push(b' ');
-    write_field(output, statistics.type_name.as_bytes());
+    write_type(output, superblock, subtype);
     // 文件系统自身只读（sysfs/devtmpfs）与挂载只读都显示为 `ro`。
-    let read_only = statistics.flags & 1 != 0 || flags.read_only();
+    let read_only = superblock.read_only || flags.read_only();
     output.extend_from_slice(if read_only { b" ro" } else { b" rw" });
     for (set, name) in [
         (flags.nosuid(), &b",nosuid"[..]),
@@ -78,7 +88,6 @@ pub(super) fn write_mount_record(
     viewer_root: &Arc<super::OpenedFile>,
     target: &[u8],
     filesystem_root: &[u8],
-    statistics: &FileSystemStatistics,
     kind: MountTableKind,
 ) -> Result<(), FileSystemError> {
     let options = if kind == MountTableKind::Stats {
@@ -86,19 +95,21 @@ pub(super) fn write_mount_record(
     } else {
         view.filesystem.filesystem.show_mount_options()?
     };
+    let superblock = view.filesystem.filesystem.superblock();
+    let subtype = view.filesystem.filesystem.subtype();
     if kind == MountTableKind::Mounts {
         return write_mounts_record(
             output,
             &view.source,
             target,
-            statistics,
+            (superblock, subtype),
             view.flags(),
             &options,
         );
     }
     // 行发表前完成所有可能失败的inode/传播投影；emit期间只有已预留Vec和scalar codec。
     let info = if kind == MountTableKind::Info {
-        let device = super::super::DeviceNumber::decode(view.root.inode().metadata()?.filesystem);
+        let device = super::super::DeviceNumber::decode(view.root.inode().identity()?.0);
         let shared = super::mount_propagation::group(view).map(|group| group.id);
         let master = super::mount_propagation::master(view);
         let master_id = master
@@ -124,7 +135,7 @@ pub(super) fn write_mount_record(
         .len()
         .checked_add(target.len())
         .and_then(|n| n.checked_add(filesystem_root.len()))
-        .and_then(|n| n.checked_add(statistics.type_name.len()))
+        .and_then(|n| n.checked_add(superblock.type_name.len() + 1 + subtype.len()))
         .and_then(|n| n.checked_mul(4))
         .and_then(|n| n.checked_add(options.len()))
         // 两个mount ID、dev_t、全部view flags和四种传播tag最多占固定256bytes。
@@ -139,7 +150,7 @@ pub(super) fn write_mount_record(
         output.extend_from_slice(b" mounted on ");
         write_field(output, target);
         output.extend_from_slice(b" with fstype ");
-        write_field(output, statistics.type_name.as_bytes());
+        write_type(output, superblock, subtype);
         output.push(b'\n');
         return Ok(());
     }
@@ -183,11 +194,11 @@ pub(super) fn write_mount_record(
         output.extend_from_slice(b" unbindable");
     }
     output.extend_from_slice(b" - ");
-    write_field(output, statistics.type_name.as_bytes());
+    write_type(output, superblock, subtype);
     output.push(b' ');
     write_field(output, &view.source);
     output.extend_from_slice(
-        if view.filesystem.state.lock().read_only || statistics.flags & 1 != 0 {
+        if view.filesystem.state.lock().read_only || superblock.read_only {
             b" ro"
         } else {
             b" rw"

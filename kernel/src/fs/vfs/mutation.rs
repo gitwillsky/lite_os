@@ -41,12 +41,13 @@ impl VirtualFileSystem {
     /// - `path`: 已从 userspace 复制并验证的 pathname bytes。
     /// - `mode`: 创建时已经过 caller umask 收敛的 permission bits。
     /// - `identity`: 本次 operation 的 effective credential snapshot。
-    /// - `exclusive`: true 表示已存在时返回 `AlreadyExists`，对应 `O_EXCL`。
-    /// - `no_follow`: true 保留末项 link，由 open 权限层返回 ELOOP。
+    /// - `open_flags`: 本次 open 的 status flags：`O_EXCL` 时已存在返回 `AlreadyExists`，`O_NOFOLLOW`
+    ///   保留末项 link（由 open 权限层返回 ELOOP）；filesystem 支持原子创建打开时随创建一起打开。
     ///
     /// # Returns
     ///
-    /// 已存在或本事务新建文件的唯一 opened entry 与是否由本事务创建的结果。
+    /// 已存在或本事务新建文件的唯一 opened entry、是否由本事务创建，以及 filesystem 原子创建时
+    /// 已打开的 backend（Linux `atomic_open`）；为 `None` 时调用者照常 `open_backend`。
     ///
     /// # Errors
     ///
@@ -57,9 +58,10 @@ impl VirtualFileSystem {
         path: &[u8],
         mode: u32,
         identity: &AccessIdentity,
-        exclusive: bool,
-        no_follow: bool,
-    ) -> Result<(Arc<OpenedFile>, bool), FileSystemError> {
+        open_flags: u32,
+    ) -> Result<(Arc<OpenedFile>, bool, Option<crate::fs::InodeOpen>), FileSystemError> {
+        let exclusive = open_flags & syscall_abi::open::O_EXCL != 0;
+        let no_follow = open_flags & crate::fs::O_NOFOLLOW != 0;
         let namespace = self.namespace()?;
         match namespace.resolve_for_create(start, path, exclusive || no_follow, identity)? {
             super::path_lookup::PathLookup::Existing(_) if exclusive => {
@@ -69,12 +71,20 @@ impl VirtualFileSystem {
                 if opened.inode().inode_type() == InodeType::Directory {
                     Err(FileSystemError::IsDirectory)
                 } else {
-                    Ok((opened, false))
+                    Ok((opened, false, None))
                 }
             }
             super::path_lookup::PathLookup::Missing { parent, name } => namespace
-                .create_child(parent, &name, InodeType::File, mode, None, identity)
-                .map(|opened| (opened, true)),
+                .create_child(
+                    parent,
+                    &name,
+                    InodeType::File,
+                    mode,
+                    None,
+                    identity,
+                    Some(open_flags),
+                )
+                .map(|(opened, backend)| (opened, true, backend)),
         }
     }
 
@@ -173,6 +183,7 @@ impl VirtualFileSystem {
             return Err(FileSystemError::PermissionDenied);
         }
         parent_inode.unlink(&name, directory)?;
+        target_inode.unlinked(directory);
         // Linux vfs_unlink：link-count ATTRIB 先于 d_delete_notify 的目录 DELETE。
         crate::fs::notify_self(target_inode.as_ref(), crate::fs::IN_ATTRIB);
         self.dentries.mark_unlinked(
@@ -245,16 +256,19 @@ impl VirtualFileSystem {
         }
         let source_identity = (source_inode.filesystem_id(), source.inode);
         if let Some(target) = &target
-            && (target.filesystem_id(), target.metadata()?.inode) == source_identity
+            && (target.filesystem_id(), target.identity()?.1) == source_identity
             && !no_replace
         {
             return Ok(());
         }
         let replaced_identity = target
             .as_ref()
-            .map(|target| Ok((target.filesystem_id(), target.metadata()?.inode)))
+            .map(|target| Ok((target.filesystem_id(), target.identity()?.1)))
             .transpose()?;
         old_parent_inode.rename(&old_name, new_metadata.inode, &new_name, no_replace)?;
+        if let Some(target) = &target {
+            target.unlinked(target.inode_type() == InodeType::Directory);
+        }
         let is_directory = source.kind == InodeType::Directory;
         let cookie = crate::fs::next_cookie();
         crate::fs::notify_entry(
@@ -319,10 +333,18 @@ impl super::NamespaceAccess<'_> {
         if matches!(name.as_slice(), b"." | b"..") {
             return Err(FileSystemError::AlreadyExists);
         }
-        self.create_child(parent, &name, kind, mode, device, identity)
+        self.create_child(parent, &name, kind, mode, device, identity, None)
+            .map(|(opened, _)| opened)
     }
 
     /// 消费同一 namespace transaction 的实际 parent/name；不重走未展开的 pathname。
+    ///
+    /// `open` 为 `Some(flags)` 时（`open(O_CREAT)` 创建普通文件）先请 filesystem 原子创建并打开，
+    /// 返回其 backend；不支持时退回 `create`，backend 为 `None`。
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "同一次创建事务的独立领域输入，与 mknod_at 的参数逐项对应"
+    )]
     fn create_child(
         &self,
         parent: Arc<OpenedFile>,
@@ -331,7 +353,8 @@ impl super::NamespaceAccess<'_> {
         mode: u32,
         device: Option<DeviceNumber>,
         identity: &AccessIdentity,
-    ) -> Result<Arc<OpenedFile>, FileSystemError> {
+        open: Option<u32>,
+    ) -> Result<(Arc<OpenedFile>, Option<crate::fs::InodeOpen>), FileSystemError> {
         let parent_inode = parent.inode();
         let _writer = parent.begin_write()?;
         let parent_metadata = parent_inode.metadata()?;
@@ -352,11 +375,21 @@ impl super::NamespaceAccess<'_> {
             uid: identity.uid(),
             gid,
         };
-        let inode = match kind {
-            InodeType::Fifo | InodeType::CharacterDevice | InodeType::BlockDevice => {
-                parent_inode.mknod(name, kind, metadata, device)?
-            }
-            _ => parent_inode.create(name, kind, metadata)?,
+        let created = match (kind, open) {
+            (InodeType::File, Some(flags)) => parent_inode.create_open(name, metadata, flags)?,
+            _ => None,
+        };
+        let (inode, backend) = match created {
+            Some((inode, backend)) => (inode, Some(backend)),
+            None => (
+                match kind {
+                    InodeType::Fifo | InodeType::CharacterDevice | InodeType::BlockDevice => {
+                        parent_inode.mknod(name, kind, metadata, device)?
+                    }
+                    _ => parent_inode.create(name, kind, metadata)?,
+                },
+                None,
+            ),
         };
         crate::fs::notify_entry(
             parent_inode.as_ref(),
@@ -365,6 +398,6 @@ impl super::NamespaceAccess<'_> {
             kind == InodeType::Directory,
             0,
         );
-        OpenedFile::child(inode, parent, name)
+        OpenedFile::child(inode, parent, name).map(|opened| (opened, backend))
     }
 }

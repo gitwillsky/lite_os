@@ -113,6 +113,9 @@
   retry bit，并由下一次 task-context mutation 在独立 transaction 中从 on-disk orphan file
   选择一个 Weak 已失效的 inode 回收。普通 mutation 只读该 bit；缺失延迟 owner 会令
   scheduler/deferred context 在锁竞争时 panic，直接跳过则会把空间永久泄漏到下次挂载。
+- retry bit 只在 mutation owner 内消费与重新发布；task-context sync 沿同一回收路径逐个排空已失去
+  live Weak 的延迟 orphan（每个 transaction 仍只回收一个），取得 owner 后重验待办再提交。缺失时
+  `rm; sync` 后磁盘留下 nlink 0、dtime 0、仍占 bitmap 与 orphan 槽位的 inode；仍被打开或映射的 orphan 保留。
 - close/dup/CLOEXEC 在 fd-table lock 内只 detach；OFD drop、epoll/flock/record-lock consequence 在锁外执行。
 - `SCM_RIGHTS` 传递 memfd 时只共享既有 OFD/inode identity；发送失败、接收 copyout 失败、
   connection EOF 与最后 fd close 沿通用 descriptor cleanup 释放引用及 mapping，不建立音频专用 fd 表。

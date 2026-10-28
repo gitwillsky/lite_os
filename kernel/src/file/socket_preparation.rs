@@ -79,7 +79,13 @@ impl PreparedSocketDescription {
         opened: Arc<OpenedFile>,
         flags: u32,
     ) -> Arc<OpenFileDescription> {
-        let ofd = description.initialize(OpenFileKind::Socket(socket.clone()), opened, flags, None);
+        let ofd = description.initialize(
+            OpenFileKind::Socket(socket.clone()),
+            opened,
+            flags,
+            None,
+            None,
+        );
         let owner: Arc<dyn UnixPassedFile> = ofd.clone();
         socket.bind_unix_rights_owner(Arc::downgrade(&owner));
         ofd

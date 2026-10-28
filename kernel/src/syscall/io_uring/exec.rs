@@ -333,7 +333,9 @@ impl Op {
                 )
             }
             Op::Close { fd } => Issue::Done(Outcome::of(fd.map_or(-errno::EBADF, |fd| {
-                task.fd_close(fd).map_or(-errno::EBADF, |_| 0)
+                task.fd_close(fd).map_or(-errno::EBADF, |flushed| {
+                    flushed.map_or_else(crate::syscall::fs::ferr, |()| 0)
+                })
             }))),
             Op::Poll { fd, mask } => match ofd_of(task, fd) {
                 Some(ofd) => Issue::Wait(Wait::Poll { ofd, mask }),

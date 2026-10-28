@@ -83,6 +83,9 @@ mod fs {
         fn is_swap_file(&self) -> bool {
             false
         }
+        fn revalidate_data(&self) -> Result<(), FileSystemError> {
+            Ok(())
+        }
         fn metadata(&self) -> Result<Metadata, FileSystemError>;
         fn notification_link_state(&self) -> Option<(u64, u32)> {
             self.metadata()
@@ -173,6 +176,9 @@ mod fs {
         fn lock(&self) -> Result<TaskMutexGuard<'_, T>, ()> {
             Ok(self.0.lock())
         }
+        fn try_lock(&self) -> Option<TaskMutexGuard<'_, T>> {
+            self.0.try_lock()
+        }
     }
     struct Frame([u8; PAGE_SIZE]);
     impl Frame {
@@ -244,7 +250,7 @@ mod fs {
                 .map_err(|_| FileSystemError::OutOfMemory)?;
             Ok((page, filled))
         }
-        fn writeback_range(&self, _: u64, _: u64) -> Result<(), FileSystemError> {
+        fn writeback_range(&self, _: u64, _: u64, _: bool) -> Result<(), FileSystemError> {
             Ok(())
         }
     }
