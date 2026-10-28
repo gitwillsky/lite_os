@@ -162,6 +162,15 @@ impl memory::shared_file::MemoryMappingOwner for Mapping {
     ) -> Result<(), memory::shared_file::SharedFileError> {
         Ok(())
     }
+    fn invalidate_cached_file(
+        &self,
+        _: memory::shared_file::SharedFileId,
+        _: u64,
+        _: u64,
+        _: &mut sync::TaskMutexWaitPreparation,
+    ) {
+        self.0.fetch_add(1, Ordering::Relaxed);
+    }
     fn invalidate_shared_file(
         &self,
         _: memory::shared_file::SharedFileId,

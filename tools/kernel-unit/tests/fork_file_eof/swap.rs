@@ -57,7 +57,9 @@ impl crate::memory::swap::SwapStorage for SwapDisk {
             return Err(crate::memory::swap::SwapError::Io);
         }
         output.copy_from_slice(&self.pages.lock().unwrap()[page]);
-        if let Some(hook) = self.read_hook.lock().unwrap().take() { hook(); }
+        if let Some(hook) = self.read_hook.lock().unwrap().take() {
+            hook();
+        }
         Ok(())
     }
     fn write_page(
@@ -137,6 +139,18 @@ impl crate::memory::shared_file::MemoryMappingOwner for SwapMemory {
         _: &mut crate::sync::TaskMutexWaitPreparation,
     ) {
         self.memory.lock().unwrap().revoke_shared_file_writers(id);
+    }
+    fn invalidate_cached_file(
+        &self,
+        id: SharedFileId,
+        first: u64,
+        last: u64,
+        _: &mut crate::sync::TaskMutexWaitPreparation,
+    ) {
+        self.memory
+            .lock()
+            .unwrap()
+            .invalidate_cached_file(id, first, last);
     }
     fn invalidate_shared_file(
         &self,
@@ -589,4 +603,7 @@ include!(concat!(
     "/tests/fork_file_eof/page_cost.rs"
 ));
 
-include!(concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fork_file_eof/interrupt.rs"));
+include!(concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/tests/fork_file_eof/interrupt.rs"
+));

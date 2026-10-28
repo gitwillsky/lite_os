@@ -75,9 +75,10 @@ pub(crate) use directory::{
     IndexedDirectory, MAX_GETDENTS_BATCH_BYTES,
 };
 pub(crate) use fifo::{FifoAccess, FifoOpenError, open as open_fifo};
+mod storage_open;
 pub(crate) use inode::{
     DataBacking, FineTimes, Inode, InodeMetadata, InodeOpen, InodeOpenError, InodeType, LinkTarget,
-    StorageOpen, StorageRead, StorageStep, StorageWriter,
+    StorageRead, StorageStep, StorageWriter,
 };
 pub(crate) use inotify::{
     IN_ACCESS, IN_ATTRIB, IN_CLOEXEC, IN_CLOSE_NOWRITE, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE,
@@ -105,6 +106,7 @@ pub(crate) use procfs::{
     ProcSnapshotScope, ProcSource, ProcTaskIdentity, ProcThreadSnapshot,
 };
 use storage_budget::StorageBudget;
+pub(crate) use storage_open::{DirectIo, StorageOpen};
 pub(crate) use syscall_abi::open::{
     O_ACCMODE, O_APPEND, O_CLOEXEC, O_NOCTTY, O_NOFOLLOW, O_NONBLOCK, O_PATH, O_RDONLY, O_RDWR,
     O_WRONLY,

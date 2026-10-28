@@ -1,6 +1,6 @@
 use super::*;
 
-/// 持久 page-cache 与只读动态快照共用的 regular-file I/O facade。
+/// 持久 page-cache、per-open 直接 I/O 与内存/快照共用的 regular-file I/O facade。
 ///
 /// syscall 在一次 read/write 操作内复用该值，避免每个 user-copy chunk 重复读取 inode
 /// metadata、获取全局 FILES lock 并查找同一个 ordered entry。
@@ -8,6 +8,10 @@ pub(crate) struct RegularFile(RegularFileBackend);
 
 enum RegularFileBackend {
     Cached(Arc<CachedFile>),
+    Direct {
+        file: Arc<CachedFile>,
+        io: Arc<dyn super::DirectIo>,
+    },
     Snapshot(Arc<dyn Inode>),
     Memory {
         file: Arc<MemoryFile>,
@@ -20,11 +24,27 @@ enum RegularFileBackend {
 pub(crate) struct RegularFileRead {
     /// 复制到 kernel output 的 logical file bytes。
     pub(crate) bytes: usize,
-    /// 本次调用因 cache miss 从 filesystem storage 成功填充的 bytes。
+    /// 本次调用因 cache miss 填充或直接 I/O 从 filesystem 成功读取的 bytes。
     pub(crate) storage_bytes: usize,
 }
 
 impl RegularFile {
+    /// 由 `inode` 与实际打开的可选 `io` 建立 facade；返回共享 cache owner 的 I/O 视图。
+    /// 直接 I/O 只适用于持久 backing；传播 inode/cache 分配与准入错误。
+    pub(crate) fn from_open(
+        inode: Arc<dyn Inode>,
+        io: Option<Arc<dyn super::DirectIo>>,
+    ) -> Result<Self, FileSystemError> {
+        let file = Self::from_inode(inode)?;
+        match (file.0, io) {
+            (RegularFileBackend::Cached(file), Some(io)) => {
+                Ok(Self(RegularFileBackend::Direct { file, io }))
+            }
+            (backend, None) => Ok(Self(backend)),
+            (_, Some(_)) => Err(FileSystemError::InvalidOperation),
+        }
+    }
+
     /// 将 regular inode 解析为持久 page-cache owner 或只读动态快照。
     ///
     /// # Parameters
@@ -66,19 +86,21 @@ impl RegularFile {
     /// 持久文件返回 filesystem/inode identity；动态快照没有 cache identity，返回 None。
     pub(crate) fn id(&self) -> Option<SharedFileId> {
         match &self.0 {
-            RegularFileBackend::Cached(file) => Some(file.id),
+            RegularFileBackend::Cached(file) | RegularFileBackend::Direct { file, .. } => {
+                Some(file.id)
+            }
             RegularFileBackend::Memory { file, .. } => Some(file.id()),
             RegularFileBackend::Snapshot(_) => None,
         }
     }
 
-    /// 是否有可能不阻塞地读（持久 page-cache 文件）；其余后端从不等待磁盘。
+    /// 是否支持现有的非阻塞 cache fill；直接 I/O 交给 io_uring 阻塞 worker，不能从缓存返回。
     pub(crate) fn supports_nowait(&self) -> bool {
         matches!(self.0, RegularFileBackend::Cached(_))
     }
 
-    /// 开始一段不阻塞的读；只有持久 page-cache 文件才可能阻塞，其余后端返回 `None`，调用者直接用
-    /// [`RegularFile::read`]（它们从不等待磁盘）。
+    /// 开始一段不阻塞的 cache 读；其余后端返回 None，由调用者执行阻塞路径。
+    /// 直接 I/O 可能等待服务端，io_uring 必须派给 worker，不能在提交线程调用 read。
     pub(crate) fn begin_read_nowait(
         &self,
         offset: u64,
@@ -100,9 +122,21 @@ impl RegularFile {
     /// filesystem metadata owner 的当前 i_size 投影。
     pub(crate) fn size(&self) -> u64 {
         match &self.0 {
-            RegularFileBackend::Cached(file) => file.inode.size(),
+            RegularFileBackend::Cached(file) | RegularFileBackend::Direct { file, .. } => {
+                file.inode.size()
+            }
             RegularFileBackend::Memory { file, .. } => file.size(),
             RegularFileBackend::Snapshot(inode) => inode.size(),
+        }
+    }
+
+    /// 给定 `offset` 与请求 `limit`，返回本次 copy 可尝试的长度；直接读由服务端短读判定结束。
+    pub(crate) fn read_limit(&self, offset: u64, limit: usize) -> usize {
+        match self.0 {
+            RegularFileBackend::Direct { .. } => limit,
+            _ => usize::try_from(self.size().saturating_sub(offset))
+                .unwrap_or(usize::MAX)
+                .min(limit),
         }
     }
 
@@ -128,6 +162,25 @@ impl RegularFile {
         output: &mut [u8],
     ) -> Result<RegularFileRead, FileSystemError> {
         let file = match &self.0 {
+            RegularFileBackend::Direct { file, io } => {
+                if output.is_empty() {
+                    return Ok(RegularFileRead {
+                        bytes: 0,
+                        storage_bytes: 0,
+                    });
+                }
+                let _operation = file
+                    .operation
+                    .lock()
+                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                file.writeback_range(offset, output.len() as u64, false)?;
+                // 不看缓存 EOF、不填页、不补零；短读长度与每次打开的 fh 都属于服务端。
+                let bytes = io.read(offset, output)?;
+                return Ok(RegularFileRead {
+                    bytes,
+                    storage_bytes: bytes,
+                });
+            }
             RegularFileBackend::Cached(file) => {
                 file.inode.revalidate_data()?;
                 file
@@ -169,6 +222,7 @@ impl RegularFile {
     }
 
     /// 开始一次不可被其他 regular-file mutation 穿插的 write operation。
+    /// `identity` 为实际 caller，`append` 为本次 syscall 冻结的追加语义；直接追加先刷新 i_size。
     ///
     /// # Returns
     ///
@@ -180,9 +234,10 @@ impl RegularFile {
     pub(crate) fn begin_write(
         &self,
         identity: AccessIdentity,
+        append: bool,
     ) -> Result<RegularFileWrite<'_>, FileSystemError> {
         match &self.0 {
-            RegularFileBackend::Cached(file) => {
+            RegularFileBackend::Cached(file) | RegularFileBackend::Direct { file, .. } => {
                 let sequence = file
                     .write_sequence
                     .lock()
@@ -190,11 +245,23 @@ impl RegularFile {
                 if file.inode.is_swap_file() {
                     return Err(FileSystemError::TextBusy);
                 }
-                Ok(RegularFileWrite::Cached(CachedWrite {
+                let cached = CachedWrite {
                     file,
                     identity,
                     _sequence: sequence,
-                }))
+                };
+                if let RegularFileBackend::Direct { io, .. } = &self.0 {
+                    // 追加的 range/limit 检查前刷新一次 i_size，后续 user-copy 与提交共享该 write_sequence。
+                    if append {
+                        io.size()?;
+                    }
+                    Ok(RegularFileWrite::Direct(super::DirectWrite {
+                        cached,
+                        io: &**io,
+                    }))
+                } else {
+                    Ok(RegularFileWrite::Cached(cached))
+                }
             }
             RegularFileBackend::Memory { file, inode } => {
                 Ok(RegularFileWrite::Memory(MemoryInodeWrite {

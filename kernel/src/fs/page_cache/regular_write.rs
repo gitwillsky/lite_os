@@ -14,6 +14,11 @@ impl RegularFileWrite<'_> {
     pub(crate) fn prepare_content_write(&self) -> Result<(), FileSystemError> {
         match self {
             Self::Cached(write) => write.file.inode.prepare_cached_write(&write.identity),
+            Self::Direct(write) => write
+                .cached
+                .file
+                .inode
+                .prepare_cached_write(&write.cached.identity),
             Self::Memory(write) => write
                 .inode
                 .prepare_memory_write(&write.write, Some(&write.identity)),
@@ -22,6 +27,7 @@ impl RegularFileWrite<'_> {
     pub(crate) fn size(&self) -> u64 {
         match self {
             Self::Cached(write) => write.file.inode.size(),
+            Self::Direct(write) => write.cached.file.inode.size(),
             Self::Memory(write) => write.write.size(),
         }
     }
@@ -30,6 +36,7 @@ impl RegularFileWrite<'_> {
     pub(crate) fn write(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
         match self {
             Self::Cached(write) => write.write(offset, input),
+            Self::Direct(write) => write.write(offset, input),
             Self::Memory(write) => write.write(offset, input),
         }
     }
@@ -42,6 +49,7 @@ impl RegularFileWrite<'_> {
     ) -> Result<(u64, usize), FileSystemError> {
         match self {
             Self::Cached(write) => write.append(input, size_limit),
+            Self::Direct(write) => write.append(input, size_limit),
             Self::Memory(write) => write.append(input, size_limit),
         }
     }

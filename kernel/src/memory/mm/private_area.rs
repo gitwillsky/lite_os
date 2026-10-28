@@ -212,6 +212,23 @@ impl PrivateFileArea {
         }
     }
 
+    /// 投影 `vpn` 的 cache 文件页身份；非 cached backing 或范围外返回 None，COW 由 resident owner 判断。
+    pub(super) fn cached_identity(
+        &self,
+        vpn: VirtualPageNumber,
+    ) -> Option<(crate::memory::SharedFileId, u64)> {
+        let PrivateSource::CachedFile {
+            source,
+            data_start,
+            pages,
+        } = &self.source
+        else {
+            return None;
+        };
+        let relative = Self::cached_relative_page(*data_start, vpn)?;
+        Some((source.id(), pages.page(relative)?))
+    }
+
     /// 投影 truncate 后首个必须撤销的 cached private VMA page。
     pub(super) fn first_stale_page(
         &self,

@@ -6,7 +6,7 @@ use syscall_abi::{errno, fuse};
 use super::FuseInode;
 use crate::{
     fs::{
-        FileSystemError, Inode, InodeType, StorageOpen,
+        AccessIdentity, DirectIo, FileSystemError, Inode, InodeType, StorageOpen,
         fuse::{
             connection::{ReplyShape, Reserved},
             filesystem::{Mount, Unsupported},
@@ -32,6 +32,28 @@ pub(super) struct Handle {
 }
 
 impl StorageOpen for Handle {
+    fn direct_io(self: Arc<Self>) -> Option<Arc<dyn DirectIo>> {
+        (self.file && self.open_flags & fuse::FOPEN_DIRECT_IO != 0)
+            .then_some(self as Arc<dyn DirectIo>)
+    }
+
+    fn prepare_mapping(&self, shared: bool) -> Result<(), FileSystemError> {
+        if self.open_flags & fuse::FOPEN_DIRECT_IO == 0 {
+            return Ok(());
+        }
+        // 未协商 DIRECT_IO_ALLOW_MMAP；Linux 对只读 MAP_SHARED 也返回 ENODEV。
+        if shared {
+            return Err(FileSystemError::NoDevice);
+        }
+        crate::fs::page_cache::invalidate(
+            SharedFileId {
+                filesystem: self.mount.filesystem_id,
+                inode: self.nodeid,
+            },
+            true,
+        )
+    }
+
     /// FUSE_FLUSH（Linux `fuse_flush`）：每次关闭一个 fd 发送，守护进程据此报告延迟的写错误并释放该
     /// 文件表在服务器上的 POSIX 锁。守护进程不实现时记录 `no_flush`，此后不再发送。
     fn flush(&self, owner: u64) -> Result<(), FileSystemError> {
@@ -67,6 +89,68 @@ impl StorageOpen for Handle {
                 Ok(())
             }
             result => result.map(drop),
+        }
+    }
+}
+
+impl DirectIo for Handle {
+    fn read(&self, offset: u64, output: &mut [u8]) -> Result<usize, FileSystemError> {
+        let inode = self
+            .mount
+            .node(self.nodeid)
+            .ok_or(FileSystemError::NotFound)?;
+        let chunk = (inode.negotiated()?.max_pages * crate::memory::PAGE_SIZE as u32)
+            .min(self.mount.connection.max_read) as usize;
+        let mut done = 0;
+        while done < output.len() {
+            let count = chunk.min(output.len() - done);
+            let reply = match inode.read_handle(self.reference(), offset + done as u64, count) {
+                Ok(reply) => reply,
+                Err(_) if done != 0 => break,
+                Err(error) => return Err(error),
+            };
+            output[done..done + reply.len()].copy_from_slice(&reply);
+            done += reply.len();
+            if reply.len() < count {
+                break;
+            }
+        }
+        Ok(done)
+    }
+
+    fn write(
+        &self,
+        offset: u64,
+        input: &[u8],
+        identity: &AccessIdentity,
+    ) -> Result<usize, FileSystemError> {
+        let inode = self
+            .mount
+            .node(self.nodeid)
+            .ok_or(FileSystemError::NotFound)?;
+        let flags = if identity.has_capability(syscall_abi::capability::Capability::FSETID) {
+            0
+        } else {
+            fuse::WRITE_KILL_SUIDGID
+        };
+        inode.write_handle(self.reference(), offset, input, flags)
+    }
+
+    fn size(&self) -> Result<u64, FileSystemError> {
+        let inode = self
+            .mount
+            .node(self.nodeid)
+            .ok_or(FileSystemError::NotFound)?;
+        inode.invalidate_attributes();
+        inode.metadata().map(|metadata| metadata.size)
+    }
+}
+
+impl Handle {
+    fn reference(&self) -> HandleRef {
+        HandleRef {
+            handle: self.handle,
+            flags: self.flags,
         }
     }
 }

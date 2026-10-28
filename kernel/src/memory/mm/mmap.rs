@@ -53,6 +53,7 @@ use super::*;
 
 mod advice;
 mod anonymous_shared;
+mod cache_invalidation;
 mod device;
 mod fault;
 mod installation;

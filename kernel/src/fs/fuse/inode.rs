@@ -30,6 +30,7 @@ use crate::{
 
 mod directory;
 mod handle;
+mod io;
 mod xattr;
 use directory::CachedEntry;
 use handle::HandleRef;
@@ -579,16 +580,7 @@ impl Inode for FuseInode {
         let mut done = 0;
         while done < total {
             let size = chunk.min(total - done);
-            let reply = self.call(
-                fuse::READ,
-                &[&io_in(
-                    handle.reference,
-                    offset + done as u64,
-                    size as u32,
-                    0,
-                )],
-                ReplyShape::up_to(size),
-            )?;
+            let reply = self.read_handle(handle.reference, offset + done as u64, size)?;
             let mut source = &reply[..];
             while !source.is_empty() {
                 let target = &mut pages[page][within..];
@@ -624,38 +616,12 @@ impl Inode for FuseInode {
         _identity: Option<&AccessIdentity>,
     ) -> Result<usize, FileSystemError> {
         let handle = self.handle(true)?;
-        // 缓冲写模式下写回的是页缓存内容（Linux `FUSE_WRITE_CACHE`）。
         let write_flags = if self.buffered_writes() {
             fuse::WRITE_CACHE
         } else {
             0
         };
-        let chunk = self.negotiated()?.write_chunk();
-        let mut done = 0;
-        while done < buffer.len() {
-            let size = chunk.min(buffer.len() - done);
-            let position = offset + done as u64;
-            let reply = self.call(
-                fuse::WRITE,
-                &[
-                    &io_in(handle.reference, position, size as u32, write_flags),
-                    &buffer[done..done + size],
-                ],
-                ReplyShape::fixed(fuse::WRITE_OUT_SIZE),
-            )?;
-            let written = protocol::Reader::new(&reply).u32()? as usize;
-            if written > size {
-                return Err(FileSystemError::IoError);
-            }
-            done += written;
-            if written < size {
-                break;
-            }
-        }
-        let mut cached = self.attributes.lock();
-        cached.attributes.size = cached.attributes.size.max(offset + done as u64);
-        cached.valid_until = 0;
-        Ok(done)
+        self.write_handle(handle.reference, offset, buffer, write_flags)
     }
 
     fn prepare_cached_write(&self, _identity: &AccessIdentity) -> Result<(), FileSystemError> {

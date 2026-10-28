@@ -46,7 +46,7 @@ mod fs {
     const PAGE_SIZE: usize = 4096;
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum FileSystemError {
+    pub(crate) enum FileSystemError {
         OutOfMemory,
         InvalidOperation,
         AlreadyExists,
@@ -271,7 +271,10 @@ mod fs {
         }
     }
     // Permission values are a seam: this fixture only admits block devices, never regular modes.
-    struct AccessIdentity;
+    pub(crate) struct AccessIdentity;
+    #[path = "storage_open.rs"]
+    mod storage_open;
+    use storage_open::DirectIo;
     struct MemoryInodeWrite<'a> {
         write: MemoryWrite<'a>,
         inode: &'a Arc<dyn Inode>,
@@ -279,7 +282,12 @@ mod fs {
     }
     enum RegularFileWrite<'a> {
         Cached(CachedWrite<'a>),
+        Direct(DirectWrite<'a>),
         Memory(MemoryInodeWrite<'a>),
+    }
+    struct DirectWrite<'a> {
+        cached: CachedWrite<'a>,
+        io: &'a dyn DirectIo,
     }
     struct CachedWrite<'a> {
         file: &'a CachedFile,

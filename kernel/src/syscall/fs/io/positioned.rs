@@ -62,7 +62,7 @@ pub(in crate::syscall) fn positioned_read(
     if vectors.iter().all(|vector| vector.length == 0) {
         return 0;
     }
-    let file = match RegularFile::from_inode(inode) {
+    let file = match ofd.regular_file() {
         Ok(file) => file,
         Err(error) => return ferr(error),
     };
@@ -126,7 +126,7 @@ pub(in crate::syscall) fn begin_positioned_read(
     if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
         return Ok(None);
     }
-    let Ok(file) = RegularFile::from_inode(inode) else {
+    let Ok(file) = ofd.regular_file() else {
         return Ok(None);
     };
     if !file.supports_nowait() {
@@ -387,7 +387,7 @@ pub(in crate::syscall) fn positioned_write(
         .iter()
         .try_fold(0usize, |total, vector| total.checked_add(vector.length))
         .expect("positioned write vectors must have a checked total length");
-    let file = match RegularFile::from_inode(inode) {
+    let file = match ofd.regular_file() {
         Ok(file) => file,
         Err(error) => return ferr(error),
     };
@@ -397,7 +397,7 @@ pub(in crate::syscall) fn positioned_write(
     let result = with_prepared_staging(staging, |staging| {
         let mut staging = staging.as_input_staging();
         let mut position = offset as u64;
-        let writer = match file.begin_write(task.access_identity(true)) {
+        let writer = match file.begin_write(task.access_identity(true), append) {
             Ok(writer) => writer,
             Err(error) => return ferr(error),
         };

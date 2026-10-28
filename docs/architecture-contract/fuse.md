@@ -40,6 +40,23 @@
 - `InodeOpen::Storage(Option<Arc<dyn StorageOpen>>)`：OFD 的 `_storage_open` 持有 per-open 状态直到最后
   引用；FUSE 句柄是唯一非空调用者。`inode::open_by_type` 是 `open_backend` 的缺省实现，FUSE 对
   FIFO/设备节点复用它。
+- `fs/storage_open` 拥有 `StorageOpen` 与 `DirectIo`，`Handle` 为唯一实际 backend；
+  `StorageOpen::direct_io(Arc<Self>)` 投影 FOPEN_DIRECT_IO，`OpenFileDescription::regular_file` 将它传给
+  `RegularFile::from_open`。所有用户 fd 读写（含 vector、positioned、sendfile/copy）由该入口进入；
+  不把 per-open 标志放进 inode，也不从 inode 的任意句柄读写 direct 数据。
+  直接读不按 i_size 截短、不填页、不补零，短读不收缩 EOF；直接写不使用 WRITE_CACHE，即使 INIT
+  协商 WRITEBACK_CACHE。READ/WRITE 编解码与缓存路径复用，后续分块失败保留成功前缀并更新实际大小。
+  append 在 user-copy/limit 检查前刷新 i_size，整次 syscall 沿用同一 write_sequence。
+- direct 视图仍引用同一 `CachedFile`，不建立内容缓存或新锁。直接读在 operation 内写回范围内脏页再发 READ；
+  直接写在 write_sequence 内、operation 外经 `memory::invalidate_cached_file` 撤销范围内共享与未 COW
+  private cache aliases，复用 generation-aware MM registry、预分配 waiter 与远端 fence，保留独立 COW 数据。
+  随后在 operation/epoch 内写回脏页、检查并发 fault/reader pin，再逐出范围页并发 WRITE；pin 仍存在返回 EBUSY，
+  不能提交后再报告整次失败。异步旧填页由 epoch 拒绝，未缓存/无 alias 时不扫描 MM，缓存路径不经过这些步骤。
+  io_uring 的直接读不走 cache nowait，而由既有 worker 执行；没有另加 FUSE 私有异步 ABI。
+- `StorageOpen::prepare_mapping(shared)` 由 mmap 在 MAP_FIXED 替换前调用。未协商 DIRECT_IO_ALLOW_MMAP，
+  direct MAP_SHARED（含只读）返回 ENODEV；MAP_PRIVATE 经现有 cache fault/COW 路径，打开与映射均可作废旧缓存。
+  Benchmark 决策：复用既有锁/epoch，无新全局状态；direct 不分配内容页，失效只在相关 cache 页有 pin 时遍历 MM。
+  waiter/请求分配与混合 mmap 的 fence 属新增成本；按用户要求不运行 benchmark，不调整基线或阈值。
 - `StorageOpen::flush(owner)` 与 `OpenFileDescription::flush`：任务层 `close_detached` 是 Linux `filp_close`
   的唯一实现（flush → descriptor cleanup → 本表 POSIX 锁释放），close/dup2 替换/CLOEXEC/ADDFD 替换共用；
   `FileTableOwner` 最后 Drop 对剩余 fd 逐个 flush（Linux `close_files`）。只有 `close(2)` 返回 flush 错误。

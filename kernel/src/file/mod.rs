@@ -129,6 +129,23 @@ impl OpenFileDescription {
         }
     }
 
+    /// 从本 OFD 的实际打开状态建立一次 regular I/O；传播 inode/cache admission 错误。
+    pub(crate) fn regular_file(&self) -> Result<crate::fs::RegularFile, FileSystemError> {
+        crate::fs::RegularFile::from_open(
+            self.inode_ref(),
+            self._storage_open
+                .as_ref()
+                .and_then(|open| open.clone().direct_io()),
+        )
+    }
+
+    /// 按 `shared` 准入本次打开的 mmap；失败不改变已有 VMA，传播后端错误。
+    pub(crate) fn prepare_mapping(&self, shared: bool) -> Result<(), FileSystemError> {
+        self._storage_open
+            .as_ref()
+            .map_or(Ok(()), |open| open.prepare_mapping(shared))
+    }
+
     /// 从唯一 status flags 投影原生 FMODE_PATH；不保存第二份 backend-access 状态。
     pub(crate) fn is_path(&self) -> bool {
         self.status_flags() & crate::fs::O_PATH != 0

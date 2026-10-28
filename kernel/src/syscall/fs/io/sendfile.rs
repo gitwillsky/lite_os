@@ -96,11 +96,11 @@ fn do_sendfile(
     if input_inode.inode_type() != InodeType::File || output_inode.inode_type() != InodeType::File {
         return -errno::EINVAL;
     }
-    let input = match RegularFile::from_inode(input_inode) {
+    let input = match input_ofd.regular_file() {
         Ok(file) => file,
         Err(error) => return ferr(error),
     };
-    let output = match RegularFile::from_inode(output_inode) {
+    let output = match output_ofd.regular_file() {
         Ok(file) => file,
         Err(error) => return ferr(error),
     };
@@ -240,11 +240,11 @@ fn do_copy_file_range(
             _ => return -errno::EINVAL,
         }
     }
-    let input = match RegularFile::from_inode(input_inode) {
+    let input = match input_ofd.regular_file() {
         Ok(file) => file,
         Err(error) => return ferr(error),
     };
-    let output = match RegularFile::from_inode(output_inode) {
+    let output = match output_ofd.regular_file() {
         Ok(file) => file,
         Err(error) => return ferr(error),
     };

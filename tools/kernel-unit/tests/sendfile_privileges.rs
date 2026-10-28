@@ -60,13 +60,13 @@ impl RegularFile {
             mode: Cell::new(0o6777),
         }
     }
-    fn size(&self) -> u64 {
-        8192
+    fn read_limit(&self, offset: u64, limit: usize) -> usize {
+        (8192u64.saturating_sub(offset) as usize).min(limit)
     }
     fn id(&self) -> Option<usize> {
         None
     }
-    fn begin_write(&self, _: AccessIdentity) -> Result<Writer<'_>, FileSystemError> {
+    fn begin_write(&self, _: AccessIdentity, _: bool) -> Result<Writer<'_>, FileSystemError> {
         Ok(Writer(self))
     }
     fn read(&self, _: u64, bytes: &mut [u8]) -> Result<Read, FileSystemError> {

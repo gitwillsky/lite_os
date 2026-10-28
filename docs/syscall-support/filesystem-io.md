@@ -205,10 +205,15 @@ INVAL_INODE（作废属性与整个文件的页缓存）、INVAL_ENTRY、DELETE�
 支持 GETXATTR/SETXATTR/LISTXATTR/REMOVEXATTR：零缓冲查询、空值、CREATE/REPLACE、64 KiB 上限、
 列表格式校验与独立 ENOSYS 缓存；通用 namespace/capability policy 仍由 VFS 拥有，普通权限由实际 FUSE 判定。
 POSIX ACL 的 system.* handler 尚未实现。新增 xattr guest 探针已编写，未宣称运行通过。
+FOPEN_DIRECT_IO 按 per-open fh 绕过内容页缓存，覆盖 vector/positioned I/O、sendfile/copy 与 io_uring worker；
+短读不收缩 EOF，分块写后续失败保留已提交前缀，WRITEBACK_CACHE 不改变 direct 写语义。
+混合缓存先写回脏页，直接写前撤销范围 cache aliases（保留 private COW），并发 pin 无法逐出返回 EBUSY。
+MAP_PRIVATE 使用既有 cache/COW；未协商 DIRECT_IO_ALLOW_MMAP，MAP_SHARED（含只读）返回 ENODEV，
+MAP_FIXED 失败保留旧 VMA。新增 direct guest 探针已编写，运行验证待执行。
 范围缩减：
 - 尚未实现（网络驱动器计划阶段 1 进行中）：`/sys/fs/fuse/connections`、
-  FUSE over io_uring、passthrough。仍被映射的页在作废时保留到映射解除。
-- `FOPEN_DIRECT_IO` 仍经页缓存；`O_CREAT` 用 CREATE 原子创建打开（守护进程不支持时回退 MKNOD+OPEN）。每次关闭 fd 发 FLUSH（`close(2)` 返回其错误），
+  FUSE over io_uring、passthrough。一般 INVAL_INODE/打开作废仍保留被映射页到映射解除；直接写会撤销相关 cache aliases。
+- `O_CREAT` 用 CREATE 原子创建打开（守护进程不支持时回退 MKNOD+OPEN）。每次关闭 fd 发 FLUSH（`close(2)` 返回其错误），
   最后一个引用发 RELEASE。
 - 不转发 POSIX/flock 锁（锁在本地 VFS 生效）、ioctl、poll、lseek、copy_file_range、tmpfile、statx。
 - `st_ino` 取 nodeid，`d_ino` 取守护进程报告值；非 initial user namespace 不能挂载（无 FS_USERNS_MOUNT），普通用户经 setuid `fusermount3`。

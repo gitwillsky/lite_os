@@ -180,6 +180,8 @@ mod memory {
             }
         }
         pub(crate) use shared_area::AnonymousSharedBacking as SharedMemoryBacking;
+        #[path = "mmap/cache_invalidation.rs"]
+        mod cache_invalidation;
         mod shared_swap;
         #[path = "mmap/shared_write.rs"]
         mod shared_write;

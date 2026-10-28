@@ -15,7 +15,7 @@ fn write_regular_descriptor(
     if total_length == 0 {
         return 0;
     }
-    let file = match RegularFile::from_inode(inode) {
+    let file = match ofd.regular_file() {
         Ok(file) => file,
         Err(error) => return ferr(error),
     };
@@ -24,7 +24,7 @@ fn write_regular_descriptor(
     with_prepared_staging(staging, |staging| {
         let mut staging = staging.as_input_staging();
         ofd.with_position(|offset| {
-            let writer = match file.begin_write(task.access_identity(true)) {
+            let writer = match file.begin_write(task.access_identity(true), append) {
                 Ok(writer) => writer,
                 Err(error) => return ferr(error),
             };

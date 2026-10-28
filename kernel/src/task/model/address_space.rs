@@ -528,6 +528,18 @@ impl MemoryMappingOwner for AddressSpace {
             })
     }
 
+    fn invalidate_cached_file(
+        &self,
+        id: SharedFileId,
+        first: u64,
+        last: u64,
+        wait: &mut crate::sync::TaskMutexWaitPreparation,
+    ) {
+        self.memory_set
+            .lock_prepared(wait)
+            .invalidate_cached_file(id, first, last);
+    }
+
     fn invalidate_shared_file(
         &self,
         id: SharedFileId,

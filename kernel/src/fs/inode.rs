@@ -2,6 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 
 use super::{
     CreateMetadata, DirectoryRead, DirectoryVisitor, FileSystemError, OpenedFile, OwnerModeChange,
+    StorageOpen,
 };
 
 /// [`StorageRead::step`] 的进展。
@@ -103,22 +104,6 @@ pub(crate) enum DataBacking {
 pub(crate) enum LinkTarget {
     Text(Vec<u8>),
     Opened(Arc<OpenedFile>),
-}
-
-/// 一次 storage 打开的 filesystem 私有状态（Linux `file->private_data` 与 `f_op->release`）。
-///
-/// OFD 持有它直到最后一个引用释放，Drop 即 release；VFS 不读取其内容。缺失时 FUSE 无法把
-/// 服务器文件句柄的寿命绑定到 OFD，SMB 服务器上的文件会一直保持打开并拒绝删除。
-pub(crate) trait StorageOpen: Send + Sync {
-    /// 一个 fd 关闭（Linux `filp_close` 中的 `f_op->flush`）：close/dup2 替换/CLOEXEC/进程退出各调用一次，
-    /// 与 OFD 最后释放的 release 不同。`owner` 是关闭它的文件表身份（Linux `fl_owner_t`）。
-    ///
-    /// # Errors
-    ///
-    /// 后端报告的错误由 `close(2)` 返回；描述符照常关闭。缺省无事可做。
-    fn flush(&self, _owner: u64) -> Result<(), FileSystemError> {
-        Ok(())
-    }
 }
 
 /// inode owner 决定真实打开操作；storage 和专属 file operations 不按 pathname 分流。

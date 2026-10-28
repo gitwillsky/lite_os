@@ -28,9 +28,7 @@ pub(super) fn copy_regular_file(
     output_position: &mut u64,
     count: usize,
 ) -> isize {
-    let available = usize::try_from(input.size().saturating_sub(*input_position))
-        .unwrap_or(usize::MAX)
-        .min(count);
+    let available = input.read_limit(*input_position, count);
     if available == 0 {
         return 0;
     }
@@ -48,7 +46,7 @@ pub(super) fn copy_regular_file(
         }
     }
 
-    let writer = match output.begin_write(task.access_identity(true)) {
+    let writer = match output.begin_write(task.access_identity(true), false) {
         Ok(writer) => writer,
         Err(error) => return ferr(error),
     };
@@ -96,7 +94,7 @@ pub(super) fn copy_regular_file(
             .checked_add(written as u64)
             .expect("sendfile output position overflow");
         total += written;
-        if written < read {
+        if written < read || read < requested {
             break;
         }
     }

@@ -1775,9 +1775,11 @@ kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn opened_ref 
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn pipe (endpoint : Arc < PipeEnd > , flags : u32 , opened : Arc < OpenedFile > ,) -> Result < Arc < Self > , () >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn poll_events (& self , events : i16 , context : & impl FileReadinessContext) -> i16
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn position_snapshot (& self) -> Result < u64 , PositionError >
+kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn prepare_mapping (& self , shared : bool) -> Result < () , FileSystemError >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn read_access (& self) -> crate :: fs :: ReadAccess < '_ >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn readiness_generation (& self , events : i16 , context : & impl FileReadinessContext ,) -> u64
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn readiness_sources (& self , events : i16 , context : & impl FileReadinessContext ,) -> ReadinessSources
+kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn regular_file (& self) -> Result < crate :: fs :: RegularFile , FileSystemError >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn seek_position (& self , offset : i64 , base : impl FnOnce (u64) -> u64 ,) -> Result < u64 , PositionError >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn set_nonblocking (& self , enabled : bool)
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn set_status_flags (& self , flags : u32)
@@ -2487,6 +2489,8 @@ kernel/src/fs/fuse/inode/handle.rs :: pub (super) struct Handle
 kernel/src/fs/fuse/inode/handle.rs :: pub (super) struct HandleLease
 kernel/src/fs/fuse/inode/handle.rs :: pub (super) struct HandleRef
 kernel/src/fs/fuse/inode/handle.rs :: pub (super) struct RegisteredHandle
+kernel/src/fs/fuse/inode/io.rs :: pub (super) impl FuseInode :: fn read_handle (& self , handle : HandleRef , offset : u64 , size : usize ,) -> Result < Vec < u8 > , FileSystemError >
+kernel/src/fs/fuse/inode/io.rs :: pub (super) impl FuseInode :: fn write_handle (& self , handle : HandleRef , offset : u64 , buffer : & [u8] , write_flags : u32 ,) -> Result < usize , FileSystemError >
 kernel/src/fs/fuse/inode/xattr.rs :: pub (super) impl FuseInode :: fn change_remote_xattr (& self , mut change : XattrChange < '_ > ,) -> Result < () , FileSystemError >
 kernel/src/fs/fuse/inode/xattr.rs :: pub (super) impl FuseInode :: fn remote_xattr (& self , name : Option < & [u8] >) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/fuse/inode/xattr.rs :: pub (super) impl FuseInode :: fn remote_xattr_size (& self , name : Option < & [u8] >) -> Result < usize , FileSystemError >
@@ -2619,7 +2623,6 @@ kernel/src/fs/inode.rs :: pub (crate) fn open_by_type < T : Inode + ? Sized > (i
 kernel/src/fs/inode.rs :: pub (crate) struct FineTimes
 kernel/src/fs/inode.rs :: pub (crate) struct InodeMetadata
 kernel/src/fs/inode.rs :: pub (crate) trait Inode
-kernel/src/fs/inode.rs :: pub (crate) trait StorageOpen
 kernel/src/fs/inode.rs :: pub (crate) trait StorageRead
 kernel/src/fs/inode.rs :: pub (crate) trait StorageWriter
 kernel/src/fs/inode.rs :: pub (crate) type CreatedOpen  = (Arc < dyn Inode > , InodeOpen)
@@ -2684,7 +2687,6 @@ kernel/src/fs/inode.rs :: trait Inode :: fn write_storage (& self , offset : u64
 kernel/src/fs/inode.rs :: trait Inode :: fn writeback_storage_batch (& self , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn xattr_list_size (& self , identity : & super :: AccessIdentity) -> Result < usize , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn xattr_size (& self , name : & [u8]) -> Result < usize , super :: FileSystemError >
-kernel/src/fs/inode.rs :: trait StorageOpen :: fn flush (& self , _owner : u64) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait StorageRead :: fn step (& mut self , output : & mut [u8]) -> Result < StorageStep , FileSystemError >
 kernel/src/fs/inode.rs :: trait StorageWriter :: fn write (& mut self , offset : u64 , bytes : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/inode_identity.rs :: pub (super) impl LiveInodes < T , K > :: const fn new () -> Self
@@ -2903,7 +2905,7 @@ kernel/src/fs/mod.rs :: pub (crate) use devnum :: DeviceNumber
 kernel/src/fs/mod.rs :: pub (crate) use directory :: { DirectoryEntry , DirectoryRead , DirectoryVisit , DirectoryVisitor , Dirent64Batch , IndexedDirectory , MAX_GETDENTS_BATCH_BYTES , }
 kernel/src/fs/mod.rs :: pub (crate) use fifo :: { FifoAccess , FifoOpenError , open as open_fifo }
 kernel/src/fs/mod.rs :: pub (crate) use file_information :: format_file_information
-kernel/src/fs/mod.rs :: pub (crate) use inode :: { DataBacking , FineTimes , Inode , InodeMetadata , InodeOpen , InodeOpenError , InodeType , LinkTarget , StorageOpen , StorageRead , StorageStep , StorageWriter , }
+kernel/src/fs/mod.rs :: pub (crate) use inode :: { DataBacking , FineTimes , Inode , InodeMetadata , InodeOpen , InodeOpenError , InodeType , LinkTarget , StorageRead , StorageStep , StorageWriter , }
 kernel/src/fs/mod.rs :: pub (crate) use inotify :: { IN_ACCESS , IN_ATTRIB , IN_CLOEXEC , IN_CLOSE_NOWRITE , IN_CLOSE_WRITE , IN_CREATE , IN_DELETE , IN_MODIFY , IN_MOVE_SELF , IN_MOVED_FROM , IN_MOVED_TO , IN_NONBLOCK , IN_OPEN , InitError , Inotify , WatchError , add_watch_flags , filesystem_unmounted , next_cookie , notify_dentry_reclaimed , notify_entry , notify_opened , notify_self , watching , }
 kernel/src/fs/mod.rs :: pub (crate) use inotify :: { InotifyLimit , inotify_watch_limit }
 kernel/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
@@ -2913,6 +2915,7 @@ kernel/src/fs/mod.rs :: pub (crate) use nsfs :: namespace_opened
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { NowaitRead , ReadStep , RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , MAY_ACCESS , MAY_CHDIR , OwnerModeChange , }
 kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcCredentialSnapshot , ProcDirectory , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcRouteSnapshot , ProcSnapshot , ProcSnapshotScope , ProcSource , ProcTaskIdentity , ProcThreadSnapshot , }
+kernel/src/fs/mod.rs :: pub (crate) use storage_open :: { DirectIo , StorageOpen }
 kernel/src/fs/mod.rs :: pub (crate) use swap :: { SwapSource , prepare_swap_storage }
 kernel/src/fs/mod.rs :: pub (crate) use syscall_abi :: open :: { O_ACCMODE , O_APPEND , O_CLOEXEC , O_NOCTTY , O_NOFOLLOW , O_NONBLOCK , O_PATH , O_RDONLY , O_RDWR , O_WRONLY , }
 kernel/src/fs/mod.rs :: pub (crate) use sysfs_drm :: { GraphicsSysfsSource , register_source as register_graphics_sysfs }
@@ -2972,6 +2975,7 @@ kernel/src/fs/mount_options.rs :: pub (super) fn parse_scaled (value : & [u8]) -
 kernel/src/fs/mount_options.rs :: pub (super) struct MountOption < 'a >
 kernel/src/fs/nsfs.rs :: pub (crate) fn namespace_opened (namespace : NamespaceReference ,) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/fs/page_cache.rs :: enum RegularFileWrite :: Cached (CachedWrite < 'a >)
+kernel/src/fs/page_cache.rs :: enum RegularFileWrite :: Direct (DirectWrite < 'a >)
 kernel/src/fs/page_cache.rs :: enum RegularFileWrite :: Memory (MemoryInodeWrite < 'a >)
 kernel/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: dirty_pages : usize
 kernel/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: reclaimable_pages : usize
@@ -2982,6 +2986,7 @@ kernel/src/fs/page_cache.rs :: pub (crate) fn mapping (inode : Arc < dyn Inode >
 kernel/src/fs/page_cache.rs :: pub (crate) fn sync_inode (inode : Arc < dyn Inode >) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) fn truncate (inode : Arc < dyn Inode > , size : u64 , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
 kernel/src/fs/page_cache.rs :: pub (crate) struct CachedWrite < 'a >
+kernel/src/fs/page_cache.rs :: pub (crate) struct DirectWrite < 'a >
 kernel/src/fs/page_cache.rs :: pub (crate) struct MemoryInodeWrite < 'a >
 kernel/src/fs/page_cache.rs :: pub (crate) struct PageCacheStatistics
 kernel/src/fs/page_cache.rs :: pub (crate) use nowait_read :: { NowaitRead , ReadStep }
@@ -2991,6 +2996,8 @@ kernel/src/fs/page_cache.rs :: pub (super) impl CachedPage :: fn reclaimable (& 
 kernel/src/fs/page_cache.rs :: pub (super) struct CachedPage
 kernel/src/fs/page_cache.rs :: pub (super) use registry :: evict_if_unlinked
 kernel/src/fs/page_cache.rs :: pub (super) use swap :: prepare_swap_file
+kernel/src/fs/page_cache/direct_write.rs :: pub (super) impl DirectWrite < '_ > :: fn append (& self , input : & [u8] , limit : u64) -> Result < (u64 , usize) , FileSystemError >
+kernel/src/fs/page_cache/direct_write.rs :: pub (super) impl DirectWrite < '_ > :: fn write (& self , offset : u64 , input : & [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/page_cache/nowait_read.rs :: enum ReadStep :: # [doc = " 无法继续不阻塞地读：丢弃本次读，改走阻塞的 `RegularFile::read`。"] Fallback
 kernel/src/fs/page_cache/nowait_read.rs :: enum ReadStep :: # [doc = " 有块读在途；完成通知触发后再次调用 `step`。"] Wait
 kernel/src/fs/page_cache/nowait_read.rs :: enum ReadStep :: Done (super :: regular_file :: RegularFileRead)
@@ -3020,10 +3027,12 @@ kernel/src/fs/page_cache/registry.rs :: pub (super) fn cached_file (inode : Arc 
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) RegularFileRead :: bytes : usize
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) RegularFileRead :: storage_bytes : usize
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn begin_read_nowait (& self , offset : u64 , length : usize , notify : Arc < dyn CompletionNotify > ,) -> Option < NowaitRead >
-kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn begin_write (& self , identity : AccessIdentity ,) -> Result < RegularFileWrite < '_ > , FileSystemError >
+kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn begin_write (& self , identity : AccessIdentity , append : bool ,) -> Result < RegularFileWrite < '_ > , FileSystemError >
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn from_inode (inode : Arc < dyn Inode >) -> Result < Self , FileSystemError >
+kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn from_open (inode : Arc < dyn Inode > , io : Option < Arc < dyn super :: DirectIo > > ,) -> Result < Self , FileSystemError >
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn id (& self) -> Option < SharedFileId >
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn read (& self , offset : u64 , output : & mut [u8] ,) -> Result < RegularFileRead , FileSystemError >
+kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn read_limit (& self , offset : u64 , limit : usize) -> usize
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn size (& self) -> u64
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn supports_nowait (& self) -> bool
 kernel/src/fs/page_cache/regular_file.rs :: pub (crate) impl RegularFile :: fn tracks_access_time (& self) -> bool
@@ -3416,6 +3425,14 @@ kernel/src/fs/storage_budget.rs :: pub (super) impl StorageBudget :: fn set_limi
 kernel/src/fs/storage_budget.rs :: pub (super) impl StorageBudget :: fn snapshot (& self) -> BudgetSnapshot
 kernel/src/fs/storage_budget.rs :: pub (super) struct BudgetSnapshot
 kernel/src/fs/storage_budget.rs :: pub (super) struct StorageBudget
+kernel/src/fs/storage_open.rs :: pub (crate) trait DirectIo
+kernel/src/fs/storage_open.rs :: pub (crate) trait StorageOpen
+kernel/src/fs/storage_open.rs :: trait DirectIo :: fn read (& self , offset : u64 , output : & mut [u8]) -> Result < usize , FileSystemError >
+kernel/src/fs/storage_open.rs :: trait DirectIo :: fn size (& self) -> Result < u64 , FileSystemError >
+kernel/src/fs/storage_open.rs :: trait DirectIo :: fn write (& self , offset : u64 , input : & [u8] , identity : & AccessIdentity ,) -> Result < usize , FileSystemError >
+kernel/src/fs/storage_open.rs :: trait StorageOpen :: fn direct_io (self : Arc < Self >) -> Option < Arc < dyn DirectIo > >
+kernel/src/fs/storage_open.rs :: trait StorageOpen :: fn flush (& self , _owner : u64) -> Result < () , FileSystemError >
+kernel/src/fs/storage_open.rs :: trait StorageOpen :: fn prepare_mapping (& self , _shared : bool) -> Result < () , FileSystemError >
 kernel/src/fs/swap.rs :: pub (crate) fn prepare_swap_storage (source : SwapSource ,) -> Result < Arc < dyn SwapStorage > , FileSystemError >
 kernel/src/fs/swap.rs :: pub (crate) impl SwapSource :: fn identity (& self) -> Result < crate :: memory :: SharedFileId , FileSystemError >
 kernel/src/fs/swap.rs :: pub (crate) struct SwapSource
@@ -5022,6 +5039,7 @@ kernel/src/memory/mm/mmap/advice.rs :: pub (crate) impl MemorySet :: fn advise_u
 kernel/src/memory/mm/mmap/anonymous_shared.rs :: pub (crate) impl MemorySet :: fn map_shared_anonymous (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , address_space_limit : u64 ,) -> Result < usize , MemoryError >
 kernel/src/memory/mm/mmap/anonymous_shared.rs :: pub (crate) impl MemorySet :: fn map_system_v_shared_memory (& mut self , address : usize , length : usize , permission : MapPermission , source : crate :: memory :: SharedMemoryMappingSource , address_space_limit : u64 ,) -> Result < usize , MemoryError >
 kernel/src/memory/mm/mmap/anonymous_shared.rs :: pub (crate) impl MemorySet :: fn prepare_shared_memory_detach (& mut self , address : usize ,) -> Result < PreparedAreaRetirement , MemoryError >
+kernel/src/memory/mm/mmap/cache_invalidation.rs :: pub (crate) impl MemorySet :: fn invalidate_cached_file (& mut self , id : SharedFileId , first : u64 , last : u64)
 kernel/src/memory/mm/mmap/device.rs :: pub (crate) impl MemorySet :: fn map_device (& mut self , address : usize , length : usize , permission : MapPermission , fixed_noreplace : bool , source : DeviceMappingSource , address_space_limit : u64 ,) -> Result < usize , MemoryError >
 kernel/src/memory/mm/mmap/fault.rs :: pub (crate) impl MemorySet :: fn handle_page_fault (& mut self , address : usize , access : PageFaultAccess ,) -> Result < PageFaultOutcome , MemoryError >
 kernel/src/memory/mm/mmap/fault.rs :: pub (crate) impl MemorySet :: fn handle_page_fault_with_limits (& mut self , address : usize , access : PageFaultAccess , limits : UserFaultLimits ,) -> Result < PageFaultOutcome , MemoryError >
@@ -5055,6 +5073,7 @@ kernel/src/memory/mm/private_area.rs :: enum PrivateFaultPreparation :: Cached (
 kernel/src/memory/mm/private_area.rs :: enum PrivateFaultPreparation :: Executable
 kernel/src/memory/mm/private_area.rs :: pub (super) enum PrivateFaultPreparation
 kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn cached_file (source : Arc < dyn SharedFileMapping > , data_start : usize , pages : FilePageRange ,) -> Self
+kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn cached_identity (& self , vpn : VirtualPageNumber ,) -> Option < (crate :: memory :: SharedFileId , u64) >
 kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn can_extend (& self , extra : u64) -> bool
 kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn executable (source : Arc < dyn ExecutableSource > , data_start : usize , source_offset : usize , file_size : usize ,) -> Self
 kernel/src/memory/mm/private_area.rs :: pub (super) impl PrivateFileArea :: fn extend (& mut self , extra : u64)
@@ -5237,7 +5256,7 @@ kernel/src/memory/mod.rs :: pub (crate) use mm :: SharedMemoryBacking
 kernel/src/memory/mod.rs :: pub (crate) use mm :: { DeviceMappingSource , ElfLoadError , FileMappingError , FileMappingSource , FutexAccessError , FutexKey , InitialStack , InitialStackCredentials , MappingPlacement , MappingResourceLimits , MemoryAdvice , MemoryError , MemorySet , PageFaultAccess , PageFaultOutcome , RemapError , RemapPlacement , RemapRequest , SegmentationCause , UserAccessError , UserAtomicU32 , UserAtomicU32Op , UserFaultLimits , UserMappingRequest , UserMappingSource , UserPageStatistics , reclaim_address_space , }
 kernel/src/memory/mod.rs :: pub (crate) use permissions :: MapPermission
 kernel/src/memory/mod.rs :: pub (crate) use pressure :: run_background_reclaim
-kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { MappedFileOwner , MemoryMappingOwner , MemoryReclaimer , PageMapCount , ReclaimRequest , ReclaimResult , SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedPage , SharedPagePin , complete_memory_mapping_owner_initialization , invalidate_shared_file , reclaim_pages , reclaim_statistics , register_memory_mapping_owner , register_memory_reclaimer , revoke_shared_file_writers , }
+kernel/src/memory/mod.rs :: pub (crate) use shared_file :: { MappedFileOwner , MemoryMappingOwner , MemoryReclaimer , PageMapCount , ReclaimRequest , ReclaimResult , SharedFileError , SharedFileId , SharedFileMapping , SharedFrame , SharedPage , SharedPagePin , complete_memory_mapping_owner_initialization , invalidate_cached_file , invalidate_shared_file , reclaim_pages , reclaim_statistics , register_memory_mapping_owner , register_memory_reclaimer , revoke_shared_file_writers , }
 kernel/src/memory/mod.rs :: pub (crate) use shared_memory :: { SharedMemoryMappingSource , SharedMemoryVma }
 kernel/src/memory/mod.rs :: pub (crate) use swappable_page :: { SwappablePage , cached_pages as swap_cached_pages }
 kernel/src/memory/mod.rs :: pub (crate) use vmstat :: snapshot as page_state_snapshot
@@ -5287,6 +5306,7 @@ kernel/src/memory/shared_file.rs :: pub (crate) SharedFileId :: inode : u64
 kernel/src/memory/shared_file.rs :: pub (crate) enum SharedFileError
 kernel/src/memory/shared_file.rs :: pub (crate) enum SharedPagePin < 'a >
 kernel/src/memory/shared_file.rs :: pub (crate) fn complete_memory_mapping_owner_initialization ()
+kernel/src/memory/shared_file.rs :: pub (crate) fn invalidate_cached_file (id : SharedFileId , first : u64 , last : u64 , wait : & mut TaskMutexWaitPreparation ,)
 kernel/src/memory/shared_file.rs :: pub (crate) fn invalidate_shared_file (id : SharedFileId , size : u64 , wait : & mut TaskMutexWaitPreparation ,)
 kernel/src/memory/shared_file.rs :: pub (crate) fn reclaim_pages (limit : usize) -> ReclaimResult
 kernel/src/memory/shared_file.rs :: pub (crate) fn reclaim_statistics () -> ReclaimStatisticsSnapshot
@@ -5328,6 +5348,7 @@ kernel/src/memory/shared_file.rs :: pub (in crate :: memory) impl ReclaimResult 
 kernel/src/memory/shared_file.rs :: pub (in crate :: memory) impl ReclaimResult :: const fn scanned_pages (self) -> usize
 kernel/src/memory/shared_file.rs :: pub (in crate :: memory) impl SharedFrame :: fn copy_frame (& self) -> Option < frame_allocator :: FrameTracker >
 kernel/src/memory/shared_file.rs :: pub (in crate :: memory) impl SharedFrame :: fn from_frame (mut frame : frame_allocator :: FrameTracker) -> Self
+kernel/src/memory/shared_file.rs :: trait MemoryMappingOwner :: fn invalidate_cached_file (& self , id : SharedFileId , first : u64 , last : u64 , wait : & mut TaskMutexWaitPreparation ,)
 kernel/src/memory/shared_file.rs :: trait MemoryMappingOwner :: fn invalidate_shared_file (& self , id : SharedFileId , size : u64 , wait : & mut TaskMutexWaitPreparation ,)
 kernel/src/memory/shared_file.rs :: trait MemoryMappingOwner :: fn restore_swapped_pages (& self , identity : SharedFileId , wait : & mut TaskMutexWaitPreparation ,) -> Result < () , SharedFileError >
 kernel/src/memory/shared_file.rs :: trait MemoryMappingOwner :: fn revoke_shared_file_writers (& self , id : SharedFileId , wait : & mut TaskMutexWaitPreparation)

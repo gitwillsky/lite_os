@@ -86,6 +86,7 @@ pub const FOPEN_NOFLUSH: u32 = 1 << 5;
 pub const RELEASE_FLUSH: u32 = 1 << 0;
 pub const GETATTR_FH: u32 = 1 << 0;
 pub const WRITE_CACHE: u32 = 1 << 0;
+pub const WRITE_KILL_SUIDGID: u32 = 1 << 2;
 pub const FSYNC_FDATASYNC: u32 = 1 << 0;
 
 /// `RENAME_NOREPLACE`，经 `fuse_rename2_in.flags` 传给守护进程。

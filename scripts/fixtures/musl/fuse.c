@@ -6,7 +6,8 @@
  * truncate、READDIRPLUS、rename、mkdir/rmdir/unlink、statfs、xattr 权限委托/长度/错误/ENOSYS 缓存、
  * 守护进程 errno 透传、signal → INTERRUPT → EINTR、
  * FORGET、FUSE_DEV_IOC_CLONE，以及守护进程消失后的 ENOTCONN 与卸载；第二个挂载协商 WRITEBACK_CACHE，验证
- * 缓冲写、close 写回与 mmap 脏页在最后句柄释放前写回。
+ * 缓冲写、close 写回与 mmap 脏页在最后句柄释放前写回；直接 I/O 覆盖 per-open fh、短读、
+ * 部分写入、零大小文件读取、混合缓存/COW 映射与 MAP_FIXED 失败保留旧映射。
  *
  * 每一步失败都以步骤编号作为退出码；全部通过才打印唯一的成功 marker。 */
 #include <errno.h>
@@ -33,6 +34,7 @@
 #define FILE_BYTES 300000
 #define NODES 16
 #define FUSE_MAGIC 0x65735546
+#define DIRECT_HANDLE (UINT64_C(1) << 63)
 
 static void fail(int step)
 {
@@ -81,7 +83,7 @@ static void attributes(uint64_t id, struct fuse_attr *attr)
 	attr->ino = id;
 	attr->mode = nodes[id].mode;
 	attr->nlink = S_ISDIR(nodes[id].mode) ? 2 : 1;
-	attr->size = nodes[id].size;
+	attr->size = strcmp(nodes[id].name, "stream") == 0 ? 0 : nodes[id].size;
 	attr->mtime = nodes[id].mtime;
 	attr->blocks = (nodes[id].size + 511) / 512;
 	attr->blksize = 4096;
@@ -93,6 +95,17 @@ static void entry(uint64_t id, struct fuse_entry_out *out)
 	out->nodeid = id;
 	attributes(id, &out->attr);
 	nodes[id].lookups++;
+}
+
+/* CREATE 的三个 direct 文件始终直接打开；同一 direct inode 的后续 OPEN 由 NONBLOCK 区分两种 fh。 */
+static struct fuse_open_out opened(uint64_t id, int direct)
+{
+	struct fuse_open_out out = { .fh = id, .open_flags = FOPEN_KEEP_CACHE };
+	if (direct) {
+		out.fh |= DIRECT_HANDLE;
+		out.open_flags |= FOPEN_DIRECT_IO;
+	}
+	return out;
 }
 
 static void send_reply(uint64_t unique, int error, const void *payload, size_t length)
@@ -121,6 +134,10 @@ static uint64_t add_node(uint64_t parent, const char *name, uint32_t mode)
 		snprintf(nodes[id].name, sizeof nodes[id].name, "%s", name);
 		if (S_ISREG(mode))
 			nodes[id].data = calloc(1, FILE_BYTES);
+			if (strcmp(name, "stream") == 0) {
+				memcpy(nodes[id].data, "stream", 6);
+				nodes[id].size = 6;
+			}
 		return id;
 	}
 	return 0;
@@ -308,6 +325,8 @@ static void serve(void)
 				struct fuse_entry_out entry;
 				struct fuse_open_out open;
 			} out = { .open = { .fh = child } };
+			if (strcmp(name, "direct") == 0 || strcmp(name, "stream") == 0 || strcmp(name, "partial") == 0)
+				out.open = opened(child, 1);
 			entry(child, &out.entry);
 			write(report, "C", 1);
 			send_reply(in->unique, 0, &out, sizeof out);
@@ -352,6 +371,8 @@ static void serve(void)
 				.fh = id,
 				.open_flags = strcmp(nodes[id].name, "data") == 0 ? FOPEN_KEEP_CACHE : 0,
 			};
+			if (strcmp(nodes[id].name, "direct") == 0)
+				out = opened(id, ((struct fuse_open_in *)body)->flags & O_NONBLOCK);
 			send_reply(in->unique, 0, &out, sizeof out);
 			break;
 		}
@@ -365,11 +386,23 @@ static void serve(void)
 				if (count > read_in->size)
 					count = read_in->size;
 			}
+			/* 直接 fh 的短读不是 EOF；选错 inode 全局 fh 会返回完整长度而暴露问题。 */
+			if ((read_in->fh & DIRECT_HANDLE) && strcmp(nodes[id].name, "direct") == 0 && count > 3)
+				count = 3;
 			send_reply(in->unique, 0, nodes[id].data + read_in->offset, count);
 			break;
 		}
 		case FUSE_WRITE: {
 			struct fuse_write_in *write_in = body;
+			if (write_in->fh & DIRECT_HANDLE) {
+				if (write_in->write_flags & FUSE_WRITE_CACHE ||
+				    (strcmp(nodes[id].name, "partial") == 0 && write_in->offset >= MAX_WRITE)) {
+					send_reply(in->unique, -EIO, NULL, 0);
+					break;
+				}
+				if (write_in->size == 4)
+					write_in->size = 2;
+			}
 			if (write_in->size > MAX_WRITE || write_in->offset + write_in->size > FILE_BYTES)
 				_exit(94);
 			memcpy(nodes[id].data + write_in->offset, (char *)body + sizeof *write_in, write_in->size);
@@ -577,6 +610,54 @@ static void writeback_phase(void)
 	CHECK(226, umount("/tmp/fuse-wb") == 0);
 }
 
+/* 同一挂载启用 WRITEBACK_CACHE：DIRECT_IO 必须仍立即使用本次打开的 fh，不缓冲、不钳制 EOF。 */
+static void direct_phase(void)
+{
+	static char data[MAX_WRITE + 4096];
+	struct stat info;
+	int events;
+	writeback_mode = 1;
+	pid_t daemon = start("/tmp/fuse-dio", &events);
+	int direct = open("/tmp/fuse-dio/direct", O_CREAT | O_RDWR, 0644);
+	memset(data, 'a', 8192);
+	CHECK(140, direct >= 0 && write(direct, data, 8192) == 8192);
+	CHECK(141, close(direct) == 0);
+	int cached = open("/tmp/fuse-dio/direct", O_RDWR);
+	CHECK(142, cached >= 0 && pread(cached, data, 8192, 0) == 8192 && data[8191] == 'a');
+	direct = open("/tmp/fuse-dio/direct", O_RDWR | O_NONBLOCK);
+	CHECK(143, direct >= 0 && pread(direct, data, 16, 0) == 3);
+	CHECK(144, fstat(direct, &info) == 0 && info.st_size == 8192);
+	char *shared = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_SHARED, cached, 0);
+	char *cow = mmap(NULL, 8192, PROT_READ | PROT_WRITE, MAP_PRIVATE, cached, 0);
+	char *clean = mmap(NULL, 8192, PROT_READ, MAP_PRIVATE, direct, 0);
+	CHECK(145, shared != MAP_FAILED && cow != MAP_FAILED && clean != MAP_FAILED);
+	CHECK(146, clean[0] == 'a');
+	cow[0] = 'P';
+	shared[0] = 'M';
+	/* 撤销 cache aliases 并写回 mmap 脏页后，只提交服务端确认的两个字节；COW 私有内容不丢失。 */
+	CHECK(147, pwrite(direct, "ABCD", 4, 0) == 2);
+	CHECK(148, shared[0] == 'A' && shared[1] == 'B' && clean[0] == 'A' && cow[0] == 'P');
+	CHECK(149, pread(cached, data, 4, 0) == 4 && memcmp(data, "ABaa", 4) == 0);
+	CHECK(150, munmap(shared, 8192) == 0 && munmap(cow, 8192) == 0 && munmap(clean, 8192) == 0);
+	char *old = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	CHECK(151, old != MAP_FAILED);
+	old[0] = 'q';
+	CHECK(152, mmap(old, 4096, PROT_READ, MAP_SHARED | MAP_FIXED, direct, 0) == MAP_FAILED && errno == ENODEV);
+	CHECK(153, old[0] == 'q' && munmap(old, 4096) == 0);
+	CHECK(154, close(direct) == 0 && close(cached) == 0);
+
+	direct = open("/tmp/fuse-dio/stream", O_CREAT | O_RDWR, 0644);
+	CHECK(155, direct >= 0 && fstat(direct, &info) == 0 && info.st_size == 0);
+	CHECK(156, pread(direct, data, 16, 0) == 6 && memcmp(data, "stream", 6) == 0);
+	CHECK(157, close(direct) == 0);
+	direct = open("/tmp/fuse-dio/partial", O_CREAT | O_RDWR, 0644);
+	memset(data, 'p', sizeof data);
+	CHECK(158, direct >= 0 && write(direct, data, sizeof data) == MAX_WRITE);
+	CHECK(159, fstat(direct, &info) == 0 && info.st_size == MAX_WRITE && close(direct) == 0);
+	CHECK(160, kill(daemon, SIGKILL) == 0 && waitpid(daemon, NULL, 0) == daemon);
+	CHECK(161, umount("/tmp/fuse-dio") == 0 && close(events) == 0);
+}
+
 int main(void)
 {
 	static unsigned char buffer[FILE_BYTES];
@@ -746,6 +827,7 @@ int main(void)
 	CHECK(103, umount(MOUNTPOINT) == 0);
 	CHECK(104, !mounts_contains("fuse.probe"));
 	writeback_phase();
+	direct_phase();
 	puts("LITEOS_FUSE_42");
 	return 0;
 }

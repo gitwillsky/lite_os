@@ -10,9 +10,9 @@ use crate::memory::{
 };
 use crate::sync::{TaskEvent, TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
 
-use super::AccessIdentity;
 use super::CompletionNotify;
 use super::memory_file::{MemoryFile, MemoryWrite};
+use super::{AccessIdentity, DirectIo};
 use super::{DataBacking, FileSystemError, Inode, InodeType};
 
 mod nowait_read;
@@ -29,6 +29,7 @@ pub(super) use registry::evict_if_unlinked;
 pub(crate) use registry::{
     evict_cached, evict_filesystem, invalidate, statistics, sync_all, write_back, writeback_cached,
 };
+mod direct_write;
 mod reclaim;
 mod regular_write;
 mod writeback;
@@ -476,7 +477,14 @@ impl MemoryReclaimer for CachedFile {
 /// Drop 无条件释放 gate；error、signal 或 partial user-copy 都不会遗留 transaction owner。
 pub(crate) enum RegularFileWrite<'a> {
     Cached(CachedWrite<'a>),
+    Direct(DirectWrite<'a>),
     Memory(MemoryInodeWrite<'a>),
+}
+
+/// 同一 cache mutation owner 下的 per-open 直接写；不建立另一份大小或锁。
+pub(crate) struct DirectWrite<'a> {
+    cached: CachedWrite<'a>,
+    io: &'a dyn super::DirectIo,
 }
 
 /// page-cache 文件的一次 write 序列化权。

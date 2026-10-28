@@ -40,8 +40,12 @@ Status: Active
    - 已实现、运行验证待执行：GETXATTR/SETXATTR/LISTXATTR/REMOVEXATTR，长度查询、空值、CREATE/REPLACE、
      逐操作 ENOSYS 缓存、列表格式校验；沿用 VFS user/trusted/security 与 capability policy，普通 DAC 经
      实际 filesystem 判定。guest 探针增加非特权 caller、错误与缓存边界；按用户要求不执行回归或 QEMU。
+   - 已实现、运行验证待执行：FOPEN_DIRECT_IO 按 per-open fh 绕过内容页缓存，覆盖 read/write/vector、
+     positioned I/O、sendfile/copy 与 io_uring worker；短读不修改 EOF，分块写错误保留已提交前缀。
+     混合缓存写先撤销共享/未 COW 私有映射、写回并作废相关页；未协商 DIRECT_IO_ALLOW_MMAP，
+     MAP_SHARED 返回 ENODEV，MAP_PRIVATE 保留已有 COW。guest 探针已扩展，按用户要求不运行。
    - 阶段 1 剩余：
-     FOPEN_DIRECT_IO、`/sys/fs/fuse/connections`、FUSE over io_uring、passthrough；探针随各项扩展。
+     `/sys/fs/fuse/connections`、FUSE over io_uring、passthrough；探针随各项扩展。
    - `/dev/fuse`（10:229）：每次 open 一个连接；read 取请求、write 回复、poll；守护进程关闭 fd 即中止连接，
      未完成请求返回 ENOTCONN。
    - `mount -t fuse[.subtype]`：`fd=`、`rootmode=`、`user_id=`、`group_id=`、`default_permissions`、

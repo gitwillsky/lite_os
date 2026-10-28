@@ -11,7 +11,7 @@ fn read_regular_descriptor(
     if inode.inode_type() == InodeType::Directory {
         return -errno::EISDIR;
     }
-    let file = match RegularFile::from_inode(inode) {
+    let file = match ofd.regular_file() {
         Ok(file) => file,
         Err(error) => return ferr(error),
     };

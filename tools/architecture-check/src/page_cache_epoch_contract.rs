@@ -19,6 +19,19 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let cache = source(sources, "kernel/src/fs/page_cache.rs");
     let write = source(sources, "kernel/src/fs/page_cache/regular_write.rs");
     let nowait = source(sources, "kernel/src/fs/page_cache/nowait_read.rs");
+    let direct = source(sources, "kernel/src/fs/page_cache/direct_write.rs");
+    // 直接写也必须在 operation 内推进 epoch；MM alias 撤销只能发生在 operation 外，避免 fault 反向锁序。
+    let direct_invalidation_before_lock = direct
+        .find("crate::memory::invalidate_cached_file(")
+        .zip(direct.find("file.operation.lock_prepared("))
+        .is_some_and(|(invalidate, lock)| invalidate < lock);
+    if !direct_invalidation_before_lock
+        || !direct.contains(
+            "let_operation=file.operation.lock_prepared(&mutwait);let_epoch=file.begin_mutation();",
+        )
+    {
+        errors.push("page-cache-epoch: direct writes must invalidate MM aliases before taking operation and begin_mutation immediately after locking it".into());
+    }
     // 每个持有 `operation` 并改变文件内容/EOF 的入口（write、append、truncate、allocate）都必须紧接着标记；
     // 漏掉一个，异步填页就可能把改写之前读到的旧块发布进 cache。
     if count(

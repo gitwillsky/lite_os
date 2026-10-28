@@ -200,6 +200,15 @@ pub(crate) trait SharedFileMapping: Send + Sync + Debug {
 
 /// memory subsystem 对 live AddressSpace 的反向维护 interface。
 pub(crate) trait MemoryMappingOwner: Send + Sync {
+    /// 撤销 `id` 的闭区间文件页 `first..=last` 的 cache aliases，保留 private COW。
+    /// `wait` 在 storage mutation 前准备；远端 fence 后释放引用，无返回值且不分配。
+    fn invalidate_cached_file(
+        &self,
+        id: SharedFileId,
+        first: u64,
+        last: u64,
+        wait: &mut TaskMutexWaitPreparation,
+    );
     /// Try-lock once, revoke/fence all aliases, count actual references including PROT_NONE.
     /// None cancels migration; this callback must never wait for MM or acquire PageOp.
     fn revoke_swappable_page(&self, page: &SwappablePage, ppn: PhysicalPageNumber)
@@ -558,6 +567,24 @@ pub(crate) fn revoke_shared_file_writers(id: SharedFileId, wait: &mut TaskMutexW
         },
     )
     .expect("writer retirement is infallible after preparation");
+}
+
+/// 撤销 `id` 的闭区间 cache 页 aliases；`wait` 为调用前准备的 waiter。
+/// 返回时本轮 live MM 已完成 fence；caller 仍须在 operation lock 内检查新 fault/reader pins。
+pub(crate) fn invalidate_cached_file(
+    id: SharedFileId,
+    first: u64,
+    last: u64,
+    wait: &mut TaskMutexWaitPreparation,
+) {
+    maintain_mapping_owners(
+        || Ok(()),
+        |owner| {
+            owner.invalidate_cached_file(id, first, last, wait);
+            Ok::<(), SharedFileError>(())
+        },
+    )
+    .expect("cache invalidation is infallible after preparation");
 }
 
 fn maintain_mapping_owners<E>(

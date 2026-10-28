@@ -172,6 +172,9 @@ pub(crate) fn sys_mmap(
             {
                 return -errno::ETXTBSY;
             }
+            if let Err(error) = ofd.prepare_mapping(sharing == MAP_SHARED) {
+                return super::fs::filesystem_error(error);
+            }
             ofd.opened_ref().touch_access();
             let mapping = match crate::fs::mapping(
                 inode.clone(),
