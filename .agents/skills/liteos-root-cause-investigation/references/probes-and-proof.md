@@ -20,10 +20,10 @@ file "target/rootfs/${LITEOS_ARCH}.img" "fs-${LITEOS_ARCH}.img"
 
 `scripts/qemu_gate.py::boot()` 默认复制 private image，优先复用它。手工实验需要持久写入时：
 
-1. 用 `mktemp -d` 创建本次实验的唯一目录；
+1. 用 `mktemp -d` / `tempfile.TemporaryDirectory` 在系统临时目录创建本次实验的唯一目录，不放入 `.local/`；
 2. 从已记录摘要的源镜像复制；
 3. 只让一台 QEMU 使用该副本；
-4. 实验后把需要保留的日志、镜像摘要和复现命令移入诊断目录，其余产物可恢复地清理。
+4. 实验后清理临时脚本、镜像副本与日志；需保留的验证证据摘要写入交付说明，正式门禁日志沿用 `target/logs/`。
 
 修改开发实例前，设置 `LITEOS_ARCH` 并执行 `lsof -- "fs-${LITEOS_ARCH}.img"`，确认无 QEMU
 持有。镜像锁失败属于 host orchestration 证据，不属于 guest kernel 证据。

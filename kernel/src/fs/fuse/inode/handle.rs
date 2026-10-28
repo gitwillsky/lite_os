@@ -50,7 +50,7 @@ impl StorageOpen for Handle {
         }
         // 未协商 DIRECT_IO_ALLOW_MMAP；Linux 对只读 MAP_SHARED 也返回 ENODEV。
         if shared {
-            return Err(FileSystemError::NoDevice);
+            return Err(FileSystemError::Errno(errno::ENODEV as u16));
         }
         crate::fs::page_cache::invalidate(
             SharedFileId {

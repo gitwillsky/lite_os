@@ -205,6 +205,9 @@ impl Catalogue {
     fn register(&mut self, parent: u64, folder: Folder) -> Option<u64> {
         let key = (parent, folder.location.clone());
         if let Some(id) = self.indices.get(&key) {
+            let node = self.nodes.get_mut(id).expect("catalogue index owns a node");
+            node.name = folder.name;
+            node.icon = folder.icon;
             return Some(*id);
         }
         let mut ancestor = parent;
@@ -433,5 +436,34 @@ impl Browser {
     pub fn history(&self, offset: isize) -> Option<(usize, Location)> {
         let index = self.cursor.checked_add_signed(offset)?;
         Some((index, self.history.get(index)?.clone()))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refreshed_drive_updates_icon_without_replacing_its_subtree() {
+        let mut catalogue = Catalogue::new();
+        let drive = Location::Directory("/root/Network/Z".into());
+        let folder = |icon| Folder {
+            location: drive.clone(),
+            name: "共享 (Z:)".into(),
+            icon,
+        };
+        let id = catalogue.register(1, folder(Icon::OfflineDrive)).unwrap();
+        catalogue.update(Branch {
+            location: drive.clone(),
+            folders: vec![Folder {
+                location: Location::Directory("/root/Network/Z/教程".into()),
+                name: "教程".into(),
+                icon: Icon::Folder,
+            }],
+        });
+        let children = catalogue.nodes[&id].children.clone();
+        assert_eq!(catalogue.register(1, folder(Icon::NetworkDrive)), Some(id));
+        assert!(matches!(catalogue.nodes[&id].icon, Icon::NetworkDrive));
+        assert_eq!(catalogue.nodes[&id].children, children);
     }
 }

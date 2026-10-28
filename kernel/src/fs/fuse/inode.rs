@@ -260,7 +260,8 @@ impl FuseInode {
             return Err(FileSystemError::IoError);
         }
         self.store_attributes(&attributes, valid);
-        Ok(attributes)
+        // WRITEBACK_CACHE 下 size/mtime/ctime 以内核为准；刷新调用者也必须看到合并后的属性。
+        Ok(self.cached())
     }
 
     fn call(

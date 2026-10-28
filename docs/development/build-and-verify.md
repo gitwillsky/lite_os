@@ -143,9 +143,10 @@ recipe 换代后从同一固定归档解包干净 generation，避免 VPATH 跳�
 | `.local/inputs/fonts/`、`host/`、`windows2000/` | 字体源、host 安装器、用户原版素材与本地覆盖包 |
 | `.local/keys/apk/<arch>/` | 本地 repository 签名身份；`apk_cache.py`，迁移时保留原 key pair |
 | `.local/tools/` | host Python 虚拟环境；不依赖 target/ 存活 |
-| `.local/spikes/<主题>/` | 实验脚本、源码、VM 与基线结果；经典桌面实验位于 `classic-desktop/` |
+| `.local/spikes/<主题>/` | 需长期复用的实验环境与基线；经典桌面参照 VM 位于 `classic-desktop/` |
 
-`target/` 保留编译 cache、sysroot、构建工具产物、验证镜像、临时工作区、日志和 success stamp。
+一次性诊断脚本、镜像副本、提取中间文件和临时日志使用系统临时目录，结束后清理，不进入 `.local/`。
+`target/` 保留正式编译 cache、sysroot、构建工具产物、验证镜像、门禁日志和 success stamp。
 `clean-musl` / `clean-busybox` 或删除 `target/` 只使产物重新构建，不再下载已校验固定输入，
 也不重建本地签名身份。实际构建仍逐项检查摘要、manifest 和架构；目录迁移不放宽输入验证。
 本地目录不进入架构源码扫描；仓库内有本地修改的 `vendor/smoltcp` 仍属于受版本管理的实现源码。

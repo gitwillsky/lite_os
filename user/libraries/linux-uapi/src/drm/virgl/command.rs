@@ -14,6 +14,7 @@ const SET_CONSTANT_BUFFER: u32 = 12;
 const BIND_SAMPLER_STATES: u32 = 18;
 const BIND_SHADER: u32 = 31;
 const LINK_SHADER: u32 = 52;
+const INLINE_WRITE_PARAMETERS: usize = 11;
 
 /// VirGL context object type.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -299,6 +300,16 @@ impl CommandEncoder {
         ]);
     }
 
+    /// Returns how many complete, nonempty rows fit in one inline-write submission.
+    pub(super) fn inline_write_rows(width: usize, submission_words: usize) -> usize {
+        // The packet payload has a 16-bit length independent of the execbuffer limit.
+        // Bounding only the submission can overflow that header and abort the compositor.
+        (submission_words - 1)
+            .min(usize::from(u16::MAX))
+            .saturating_sub(INLINE_WRITE_PARAMETERS)
+            / width
+    }
+
     /// Writes pixels into a resource region through the command stream (`RESOURCE_INLINE_WRITE`).
     ///
     /// The host applies the write in command order, so draws submitted earlier still sample the
@@ -325,7 +336,7 @@ impl CommandEncoder {
         pixels: &[u32],
     ) {
         assert_eq!(pixels.len(), width as usize * height as usize);
-        let length = 11 + pixels.len();
+        let length = INLINE_WRITE_PARAMETERS + pixels.len();
         assert!(
             length <= usize::from(u16::MAX),
             "inline write exceeds one packet"
@@ -366,6 +377,25 @@ impl Default for CommandEncoder {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn inline_write_bands_fit_packet_and_submission_limits() {
+        for width in [1, 1024, 3008, 16384] {
+            let submission_words = super::super::EXEC_COMMAND_MAX / 4;
+            let rows = CommandEncoder::inline_write_rows(width, submission_words);
+            let pixels = vec![0xff12_3456; width * rows];
+            let mut encoder = CommandEncoder::new();
+            encoder.inline_write(29, 0, 7, width as u32, rows as u32, &pixels);
+            let packet_words = 1 + (encoder.words()[0] >> 16) as usize;
+            assert_eq!(packet_words, encoder.len());
+            assert!(encoder.len() <= submission_words);
+            assert_eq!(&encoder.words()[12..], pixels);
+            assert!(
+                packet_words + width > submission_words
+                    || packet_words - 1 + width > usize::from(u16::MAX)
+            );
+        }
+    }
 
     #[test]
     fn inline_write_packet_matches_virgl_protocol_layout() {

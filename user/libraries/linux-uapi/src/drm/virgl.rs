@@ -262,7 +262,8 @@ impl VirglContext {
     ///    `TRANSFER_TO_HOST`, which suits large regions.
     /// 2. A texture still referenced by a pending command may have a transfer reading its backing,
     ///    so the pixels go inline through the command stream (`RESOURCE_INLINE_WRITE`), split into
-    ///    submissions within the kernel command-stream limit. The host applies them in order: earlier draws keep the
+    ///    submissions within both the 16-bit packet length and kernel command-stream limit.
+    ///    The host applies them in order: earlier draws keep the
     ///    old texels, later draws see the new ones. This mirrors Mesa virgl's busy-resource upload.
     ///
     /// # Parameters
@@ -299,8 +300,7 @@ impl VirglContext {
             }
             return texture.transfer_to_host(x, y, width, height);
         }
-        // 每个命令包 11 个参数字加 1 个头字；一次提交装下尽可能多的整行。
-        let rows = (EXEC_COMMAND_MAX / 4 - 12) / row;
+        let rows = CommandEncoder::inline_write_rows(row, EXEC_COMMAND_MAX / 4);
         if rows == 0 {
             return Err(invalid_input("texture row exceeds one command submission"));
         }
