@@ -9533,6 +9533,7 @@ kernel/src/virtio/gpu/command.rs :: pub (super) impl CommandSlots :: fn idle_pai
 kernel/src/virtio/gpu/command.rs :: pub (super) impl CommandSlots :: fn request_mut (& mut self , index : usize) -> & mut DmaBuffer < CONTROL_REQUEST_SIZE >
 kernel/src/virtio/gpu/command.rs :: pub (super) impl CommandSlots :: fn try_new () -> Option < Self >
 kernel/src/virtio/gpu/command.rs :: pub (super) impl CompletedCommand :: fn into_parts (self) -> (PendingCommand , CommandPayload)
+kernel/src/virtio/gpu/command.rs :: pub (super) impl CompletedCommand :: fn take_stream (& mut self) -> Option < Arc < DeviceBacking > >
 kernel/src/virtio/gpu/command.rs :: pub (super) impl GpuCommand :: const fn stage (& self) -> RuntimeStage
 kernel/src/virtio/gpu/command.rs :: pub (super) impl GpuCommand :: fn prepare (self , request : & mut [u8]) -> Result < PreparedCommand , DisplayError >
 kernel/src/virtio/gpu/command.rs :: pub (super) impl PendingCommand :: const fn response_length (& self) -> usize

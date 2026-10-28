@@ -4,9 +4,7 @@
 from __future__ import annotations
 
 import argparse
-import functools
 import io
-import json
 import lzma
 import shutil
 import os
@@ -89,7 +87,9 @@ ROOTFS_RECIPE_VERSION = 17
 # APK assembly 同时保留已安装文件、压缩包及 APK 的原子替换临时文件。
 # 容量按真实发布输入推导；固定最小值只覆盖小型 rootfs，不能限制新增运行库。
 ROOTFS_MIN_SIZE_MIB = 512
-RUST_USER_CARGO_CACHE_RECIPE_VERSION = 1
+# 3：动态世界改为一次 Cargo 调用整体构建，静态世界不再以系统库包为主包；旧 cache 里可能留有
+# 分批构建产出的同名不同身份 dylib，Cargo 视其为新鲜，必须换目录作废。
+RUST_USER_CARGO_CACHE_RECIPE_VERSION = 3
 if TARGET.arch == "aarch64":
     BUSYBOX_ARCH = "arm64"
     BUSYBOX_TARGET_CFLAGS = "-march=armv8-a"
@@ -117,6 +117,14 @@ SYSTEM_LIBRARIES = (
     UI_RUNTIME,
 )
 SYSTEM_LIBRARY_DIRECTORY = "/usr/lib/liteos"
+# 动态世界的程序：链接系统 Rust dylib 的产品程序与门禁探针。Rust dylib 没有稳定 ABI，
+# 它们必须与系统库出自同一次 Cargo 调用并整体发布，门禁直接取用这次的探针，不另行构建。
+DYNAMIC_PROGRAMS = frozenset({
+    ("compositor", "compositor"), ("logon", "logon"), ("desktop", "desktop"),
+    ("sound-player", "sndplay"), ("smbfs", "smbfs"), ("linux-uapi", "session-launch"),
+    ("compositor", "wayland-probe"), ("compositor", "shell-probe"),
+    ("classic-ui", "ui-probe"), ("classic-ui", "session-probe"), ("linux-uapi", "drm-flip-probe"),
+})
 STABLE_UI_PROGRAMS = frozenset({("file-explorer", "file-explorer"), ("control-panel", "control-panel"), ("notepad", "notepad"), ("device-manager", "devmgmt"), ("volume-control", "sndvol"), ("terminal", "terminal"), ("task-manager", "taskmgr"), ("media-player", "mplay")})
 RUST_USER_RUSTFLAGS = (
     "-C link-self-contained=no -C target-feature=-crt-static "
@@ -1099,7 +1107,7 @@ class _RustUserTarget:
     def dynamic(self) -> bool:
         if self.library:
             return (self.package, self.name) != UI_RUNTIME
-        return not self.sdk_consumer and self.package in _system_library_consumers()
+        return (self.package, self.name) in DYNAMIC_PROGRAMS
 
     @property
     def sdk_consumer(self) -> bool:
@@ -1110,45 +1118,54 @@ class _RustUserTarget:
         return f"lib{self.name}.so" if self.library else self.name
 
 
-@functools.cache
-def _system_library_consumers() -> frozenset[str]:
-    """依赖（直接或传递）任一系统共享库包的 workspace package。
-
-    这些 package 的程序必须与系统库一样以 ``-C prefer-dynamic`` 链接：静态链接时 Cargo 仍会为依赖链上
-    的 dylib 各自编译一份，dylib 之间的菱形依赖（如 typeface 同时经 linux-uapi 与直接依赖
-    liteos-runtime）会让 std 与 liteos_runtime 各出现两次而链接失败。由 Cargo 依赖图推导，
-    不维护会与真实依赖脱节的程序名单。
-    """
-    metadata = json.loads(run(
-        ["cargo", "metadata", "--format-version", "1", "--no-deps", "--offline",
-         "--manifest-path", str(ROOT / "user/Cargo.toml")],
-        ROOT,
-    ))
-    dependencies = {
-        package["name"]: {
-            dependency["name"]
-            for dependency in package["dependencies"]
-            if dependency["kind"] is None
-        }
-        for package in metadata["packages"]
-    }
-    consumers = {package for package, _ in SYSTEM_LIBRARIES}
-    libraries = frozenset(consumers)
-    while True:
-        grown = {
-            package
-            for package, direct in dependencies.items()
-            if package not in consumers and direct & consumers
-        }
-        if not grown:
-            break
-        consumers |= grown
-    # 系统库包自身的程序只在依赖其他系统库时才算消费者，与其余 package 同一判定。
-    return frozenset(
-        package
-        for package in consumers
-        if package not in libraries or dependencies.get(package, set()) & libraries
+def _dynamic_world() -> tuple[_RustUserTarget, ...]:
+    """动态世界的全部成员：系统 Rust dylib 与链接它们的全部程序，总是由同一次 Cargo 调用产出。"""
+    return (
+        *(_RustUserTarget(package, name, f"system-library-{name}", 1, True)
+          for package, name in SYSTEM_LIBRARIES if (package, name) != UI_RUNTIME),
+        *(_RustUserTarget(package, name, name, 1) for package, name in DYNAMIC_PROGRAMS),
     )
+
+
+def _llvm_tool(compiler: Path, name: str) -> Path:
+    """与目标工具链同前缀的 LLVM 工具；缺失时退回 PATH 或 Homebrew LLVM。"""
+    prefixed = Path(f"{str(compiler)[: -len('gcc')]}{name}")
+    if prefixed.is_file():
+        return prefixed
+    return Path(shutil.which(f"llvm-{name}") or f"/opt/homebrew/opt/llvm/bin/llvm-{name}")
+
+
+def verify_dynamic_world(compiler: Path, release: Path, artifacts: tuple[str, ...]) -> None:
+    """一次构建产出的动态世界必须符号自洽：每个 Rust 符号引用都由其 NEEDED 闭包里的系统库定义。
+
+    Rust dylib 没有稳定 ABI，crate 身份（StableCrateId）随特性解析、主包身份等构建条件变化；
+    同名 .so 若来自另一份身份，程序要到加载时才报 symbol not found。这里在发布前拦下。
+    """
+    readelf, nm = _llvm_tool(compiler, "readelf"), _llvm_tool(compiler, "nm")
+
+    def needed(path: Path) -> set[str]:
+        output = run([str(readelf), "--dynamic", "--wide", str(path)], ROOT)
+        return {line.split("Shared library: [", 1)[1].split("]", 1)[0]
+                for line in output.splitlines() if "Shared library: [" in line}
+
+    def symbols(path: Path, kind: str) -> set[str]:
+        output = run([str(nm), "-D", f"--{kind}-only", "--format=just-symbols", str(path)], ROOT)
+        return {symbol for symbol in output.split() if symbol.startswith(("_R", "_ZN"))}
+
+    libraries = {name: release / name for name in artifacts if name.endswith(".so")}
+    defined = {name: symbols(path, "defined") for name, path in libraries.items()}
+    dependencies = {name: needed(release / name) for name in artifacts}
+    for artifact in artifacts:
+        closure, pending = set(), [artifact]
+        while pending:
+            for library in dependencies.get(pending.pop(), set()) & libraries.keys():
+                if library not in closure:
+                    closure.add(library)
+                    pending.append(library)
+        provided = set().union(*(defined[library] for library in closure))
+        missing = symbols(release / artifact, "undefined") - provided
+        if missing:
+            raise RuntimeError(f"{artifact} references Rust symbols its system libraries do not define: {sorted(missing)[:3]}")
 
 
 def _build_rust_user_targets(
@@ -1173,6 +1190,8 @@ def _build_rust_user_targets(
     for target in targets:
         if target.library and (target.package, target.name) not in SYSTEM_LIBRARIES:
             raise RuntimeError(f"{target.package} is not a registered system library")
+        if not target.library and not target.dynamic and not target.sdk_consumer:
+            raise RuntimeError(f"{target.package}/{target.name} is neither a dynamic-world nor an SDK program")
     from verify_rust_std import build_libunwind
 
     # OWNER/PROOF: 同一 build lock 覆盖 Cargo 的可变目录、UI 链接输入与不可变发布。
@@ -1185,12 +1204,13 @@ def _build_rust_user_targets(
             dynamic: rust_user_cargo_target(musl, cargo_version, rustc_version, driver_sha256, unwind_sha256, dynamic)
             for dynamic in (False, True)
         }
-        # 1. 同一链接方式批量调用 Cargo；UI 运行库先完成，SDK 应用才可链接它。
+        # 1. 动态世界任一成员被请求时整体构建一次：系统 dylib 与全部链接它们的程序（含门禁探针）
+        #    出自同一次 Cargo 调用、同一特性解析，整体发布；分批构建会得到同名不同 crate 身份的 .so。
+        # 2. 静态世界（UI 运行库、SDK 应用）独立目录，先完成 UI 运行库，SDK 应用才可链接它。
+        world = _dynamic_world()
         groups = (
             tuple(target for target in targets if target == ui_target),
-            tuple(target for target in targets if target.dynamic and target.library),
-            tuple(target for target in targets if target.dynamic and not target.library),
-            tuple(target for target in targets if not target.dynamic and target != ui_target and not target.sdk_consumer),
+            world if any(target.dynamic for target in targets) else (),
             *((target,) for target in targets if target.sdk_consumer),
         )
         published = {}
@@ -1198,6 +1218,11 @@ def _build_rust_user_targets(
             if not group:
                 continue
             first = group[0]
+            # Cargo 只给非主包的 dylib 自动加 -C prefer-dynamic，而单元哈希不含主包身份；
+            # 静态世界若选中系统库包，产出的 .so 会静态嵌入 liteos_runtime 并被后续复用。
+            system_packages = {package for package, name in SYSTEM_LIBRARIES if (package, name) != UI_RUNTIME}
+            if not first.dynamic and any(target.package in system_packages for target in group):
+                raise RuntimeError(f"static Rust build must not select a system library package: {group}")
             cargo_target = cargo_targets[first.dynamic]
             env = build_environment()
             linker_variable = f"CARGO_TARGET_{RUST_USER_TARGET.upper().replace('-', '_')}_LINKER"
@@ -1228,18 +1253,21 @@ def _build_rust_user_targets(
             ]
             for package in dict.fromkeys(target.package for target in group):
                 command.extend(("-p", package))
-            if first.library:
+            if any(target.library for target in group):
                 command.append("--lib")
-            else:
-                for target in group:
+            for target in group:
+                if not target.library:
                     command.extend(("--bin", target.name))
             if first.sdk_consumer:
                 # 2. 目录只传给最终 bin 的 rustc，不污染 std/依赖的 RUSTFLAGS；
                 # 此可变输入由同一 build lock 保护，发布目录变化不会触发整组重编。
                 command.extend(("--", "-L", f"native={cargo_targets[False] / RUST_USER_TARGET / 'release'}"))
             run(command, ROOT, env)
-            # 3. Cargo 已检查真实依赖（含 XML、include! 和 build.rs）；只按最终 bytes 发布。
-            for target in group:
+            release = cargo_target / RUST_USER_TARGET / "release"
+            if group is world:
+                verify_dynamic_world(musl.compiler, release, tuple(target.artifact for target in world))
+            # 3. Cargo 已检查真实依赖（含 XML、include! 和 build.rs）；只按最终 bytes 发布被请求的产物。
+            for target in (tuple(target for target in targets if target.dynamic) if group is world else group):
                 built = cargo_target / RUST_USER_TARGET / "release" / target.artifact
                 if not built.is_file():
                     raise RuntimeError(f"Cargo did not produce {target.artifact}")
