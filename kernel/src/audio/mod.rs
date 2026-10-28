@@ -419,34 +419,65 @@ impl PcmFile {
         Ok(())
     }
 
-    /// 写入一个完整 period 并推进应用指针；混音由随后的 `process` 完成。
+    /// 写入至多一个 period 的完整音频帧并推进应用指针；混音由随后的 `process` 完成。
     ///
     /// # Parameters
     ///
-    /// - `bytes`: 256 frame 的 native little-endian float bytes。
+    /// - `bytes`: 1..=256 帧的双声道 native little-endian float bytes。
+    ///
+    /// # Returns
+    ///
+    /// 实际接收的帧数；空间不足时允许短写，完全无空间才返回 EAGAIN。
     ///
     /// # Errors
     ///
-    /// 环形缓冲没有一个 period 的空位返回 `WouldBlock`；状态不允许写入返回 `InvalidState`。
-    pub(crate) fn write_period(&self, bytes: &[u8]) -> Result<(), AudioError> {
+    /// 无可用空间为 EAGAIN，XRUN 为 EPIPE，断连为 ENODEV，未准备的流为 EBADFD，非法帧长度为 EINVAL。
+    pub(crate) fn write_frames(&self, bytes: &[u8]) -> Result<usize, isize> {
+        use syscall_abi::errno;
+        if bytes.is_empty()
+            || bytes.len() > PCM_PERIOD_BYTES
+            || !bytes.len().is_multiple_of(PCM_FRAME_BYTES)
+        {
+            return Err(errno::EINVAL);
+        }
+        let requested = bytes.len() / PCM_FRAME_BYTES;
         let _operation = self.operation.lock();
+        let frames;
         {
             let mut engine = self.card.engine.lock();
             let state = engine.state(self.index);
-            if !state.writable() {
-                return Err(AudioError::WouldBlock);
+            // XRUN 的 poll 立即报告错误；若仍把它当成满缓冲，WRITEI 会在关中断的 syscall 中
+            // 不断重试，阻断远端 TLB ack，令其他 CPU 的 munmap 与整个桌面一起停住。
+            match state.state {
+                PcmState::Xrun => return Err(errno::EPIPE),
+                PcmState::Disconnected => return Err(errno::ENODEV),
+                PcmState::Open | PcmState::Setup => return Err(errno::EBADFD),
+                PcmState::Prepared | PcmState::Running => {}
             }
+            frames = requested.min(PCM_BUFFER_FRAMES - state.delay() as usize);
+            if frames == 0 {
+                return Err(errno::EAGAIN);
+            }
+            let bytes = &bytes[..frames * PCM_FRAME_BYTES];
             // 引擎只读取应用指针之前的帧，所以必须先写数据、再推进指针，两步在同一把锁里完成。
             let frame = state.application_frames as usize % PCM_BUFFER_FRAMES;
+            let first = bytes
+                .len()
+                .min((PCM_BUFFER_FRAMES - frame) * PCM_FRAME_BYTES);
             self.ring
-                .write(frame * PCM_FRAME_BYTES, bytes)
-                .map_err(|()| AudioError::Device)?;
+                .write(frame * PCM_FRAME_BYTES, &bytes[..first])
+                .map_err(|()| errno::EIO)?;
+            if first < bytes.len() {
+                self.ring
+                    .write(0, &bytes[first..])
+                    .map_err(|()| errno::EIO)?;
+            }
             engine
-                .application_period(self.index)
-                .map_err(|()| AudioError::InvalidState)?;
+                .application_frames(self.index, frames as u64)
+                .map_err(|()| errno::EBADFD)?;
         }
         self.card.process();
-        Ok(())
+        Ok(frames)
     }
 
     pub(crate) fn status(&self) -> PcmStatus {
@@ -482,7 +513,7 @@ impl PcmFile {
         ))
     }
 
-    /// 从 ALSA mmap ring 提交 application pointer 的整 period 增量。数据已经由应用直接写进环形缓冲，
+    /// 从 ALSA mmap ring 提交 application pointer 的帧增量。数据已经由应用直接写进环形缓冲，
     /// 所以这里只推进指针，不拷贝。
     ///
     /// # Parameters
@@ -505,12 +536,12 @@ impl PcmFile {
             } else {
                 boundary - current + new_application_pointer
             };
-            if !delta.is_multiple_of(PCM_PERIOD_FRAMES as u64) || delta > PCM_BUFFER_FRAMES as u64 {
+            if delta > PCM_BUFFER_FRAMES as u64 {
                 return Err(AudioError::InvalidState);
             }
-            for _ in 0..delta as usize / PCM_PERIOD_FRAMES {
+            if delta != 0 {
                 engine
-                    .application_period(self.index)
+                    .application_frames(self.index, delta)
                     .map_err(|()| AudioError::InvalidState)?;
             }
         }

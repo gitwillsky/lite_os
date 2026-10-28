@@ -24,7 +24,7 @@ const LEAD_PERIODS: usize = PCM_PERIODS - 1;
 
 const _: () = assert!(
     SUBSTREAMS <= u8::BITS as usize,
-    "contributor mask is one byte"
+    "running/ready masks are one byte"
 );
 const _: () = assert!(PCM_PERIODS > 1);
 /// 子流环形缓冲的读取接口；`offset` 是缓冲内字节偏移。
@@ -61,39 +61,39 @@ pub(super) struct Master {
     pub(super) enabled: [bool; 2],
 }
 
-/// 硬件队列的记账：每个在途 period 一个位掩码，记录哪些子流贡献了数据。
+/// 每个在途物理 period 记录各子流实际贡献的帧数；短尾帧不能按完整 period 推进 hw_ptr。
 #[derive(Debug, Default)]
 struct PeriodQueue {
-    masks: [u8; PCM_PERIODS],
+    frames: [[u16; SUBSTREAMS]; PCM_PERIODS],
     head: usize,
     len: usize,
 }
 
 impl PeriodQueue {
-    fn push(&mut self, mask: u8) -> bool {
+    fn push(&mut self, frames: [u16; SUBSTREAMS]) -> bool {
         if self.len == PCM_PERIODS {
             return false;
         }
-        self.masks[(self.head + self.len) % PCM_PERIODS] = mask;
+        self.frames[(self.head + self.len) % PCM_PERIODS] = frames;
         self.len += 1;
         true
     }
 
-    fn pop(&mut self) -> Option<u8> {
+    fn pop(&mut self) -> Option<[u16; SUBSTREAMS]> {
         if self.len == 0 {
             return None;
         }
-        let mask = self.masks[self.head];
+        let frames = self.frames[self.head];
         self.head = (self.head + 1) % PCM_PERIODS;
         self.len -= 1;
-        Some(mask)
+        Some(frames)
     }
 
     /// 摘掉一个子流在所有在途 period 里的贡献：这些 period 仍会播放，但完成时不再给它记 hw_ptr。
     /// 缺少这一步，子流被 drop/重新 prepare 后会被旧 period 的完成事件错误地推进指针。
     fn forget(&mut self, substream: usize) {
-        for mask in &mut self.masks {
-            *mask &= !(1 << substream);
+        for frames in &mut self.frames {
+            frames[substream] = 0;
         }
     }
 
@@ -104,7 +104,7 @@ impl PeriodQueue {
 
 struct Slot<R> {
     state: PcmStateOwner,
-    /// 已混入硬件队列的帧数；与 `state.application_frames` 同一计数域，始终是整 period，且不超过应用指针。
+    /// 已混入硬件队列的帧数；与 `state.application_frames` 同一计数域，且不超过应用指针。
     mixed: u64,
     ring: Option<R>,
 }
@@ -244,7 +244,7 @@ impl<R: Ring> Engine<R> {
         )
     }
 
-    /// Setup 或 Xrun → Prepared，指针清零。
+    /// Setup、Prepared 或 Xrun → Prepared，指针清零并撤销旧 period 归属。
     pub(super) fn prepare(&mut self, index: usize) -> Result<(), ()> {
         self.slots[index].state.prepare()?;
         self.detach(index);
@@ -268,9 +268,9 @@ impl<R: Ring> Engine<R> {
         Ok(())
     }
 
-    /// 应用完整写入了一个 period（数据已经在环形缓冲里）。
-    pub(super) fn application_period(&mut self, index: usize) -> Result<(), ()> {
-        self.slots[index].state.submit_period()
+    /// 应用提交了 `frames` 帧（数据已经在环形缓冲里）。
+    pub(super) fn application_frames(&mut self, index: usize, frames: u64) -> Result<(), ()> {
+        self.slots[index].state.submit_frames(frames)
     }
 
     /// 设备回调累积的事件交给引擎：记账完成的 period，补填队列，按需启停物理流，并检出欠载的子流。
@@ -289,11 +289,13 @@ impl<R: Ring> Engine<R> {
         let mut changed = false;
         // 1. 完成的 period 只给当时贡献过数据的子流记 hw_ptr。
         for _ in 0..events.completed {
-            let Some(mask) = self.queue.pop() else {
+            let Some(frames) = self.queue.pop() else {
                 break;
             };
-            for index in each_bit(mask) {
-                self.slots[index].state.complete_period();
+            for (index, frames) in frames.into_iter().enumerate() {
+                if frames != 0 {
+                    self.slots[index].state.complete_period(u64::from(frames));
+                }
             }
             changed = true;
         }
@@ -323,10 +325,7 @@ impl<R: Ring> Engine<R> {
         }
         // 5. 运行中的子流既没有可混的数据、也没有在途数据：它已经跑空。
         for slot in &mut self.slots {
-            if slot.running()
-                && slot.pending() < PCM_PERIOD_FRAMES as u64
-                && slot.mixed == slot.state.hardware_frames
-            {
+            if slot.running() && slot.pending() == 0 && slot.mixed == slot.state.hardware_frames {
                 slot.state.xrun();
                 changed = true;
             }
@@ -352,7 +351,10 @@ impl<R: Ring> Engine<R> {
             for (index, slot) in self.slots.iter().enumerate() {
                 if slot.running() {
                     running |= 1 << index;
-                    if slot.pending() >= PCM_PERIOD_FRAMES as u64 {
+                    // 整周期照常预送；短批次等本流在途数据耗尽才输出，避免过早插入静音间隙。
+                    if slot.pending() >= PCM_PERIOD_FRAMES as u64
+                        || slot.pending() != 0 && slot.mixed == slot.state.hardware_frames
+                    {
                         ready |= 1 << index;
                     }
                 }
@@ -374,16 +376,25 @@ impl<R: Ring> Engine<R> {
             let mut accumulator = Accumulator::new();
             let mut period = [0u8; PCM_PERIOD_BYTES];
             let mut mixed = 0u8;
+            let mut contributions = [0u16; SUBSTREAMS];
             for index in each_bit(ready) {
                 let slot = &self.slots[index];
                 let offset = (slot.mixed % PCM_BUFFER_FRAMES as u64) as usize * PCM_FRAME_BYTES;
-                let read = slot
-                    .ring
-                    .as_ref()
-                    .map(|ring| ring.read(offset, &mut period));
+                let frames = slot.pending().min(PCM_PERIOD_FRAMES as u64) as usize;
+                let bytes = frames * PCM_FRAME_BYTES;
+                let first = bytes.min(PCM_BUFFER_FRAMES * PCM_FRAME_BYTES - offset);
+                let read = slot.ring.as_ref().map(|ring| {
+                    ring.read(offset, &mut period[..first])?;
+                    if first < bytes {
+                        ring.read(0, &mut period[first..bytes])?;
+                    }
+                    Ok::<(), ()>(())
+                });
                 if read == Some(Ok(())) {
+                    period[bytes..].fill(0);
                     accumulator.add(&period, self.substream_volume[index].map(volume_gain));
                     mixed |= 1 << index;
+                    contributions[index] = frames as u16;
                 } else {
                     // 环形缓冲读取不应失败；失败的子流退出这个 period，而不是让混音带着垃圾数据出声。
                     self.slots[index].state.xrun();
@@ -399,12 +410,12 @@ impl<R: Ring> Engine<R> {
                 Err(PcmOutputError::WouldBlock) => break,
                 Err(_) => return Err(()),
             }
-            let queued = self.queue.push(mixed);
+            let queued = self.queue.push(contributions);
             debug_assert!(queued, "queue depth is bounded by LEAD_PERIODS");
             for index in each_bit(mixed) {
                 self.slots[index].mixed = self.slots[index]
                     .mixed
-                    .wrapping_add(PCM_PERIOD_FRAMES as u64);
+                    .wrapping_add(u64::from(contributions[index]));
             }
             changed = true;
         }

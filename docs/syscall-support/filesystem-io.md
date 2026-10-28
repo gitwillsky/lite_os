@@ -191,9 +191,10 @@ SUBSCRIBE_EVENTS 支持负值查询、订阅和取消，read 返回 native 72-by
 PCM_PREFER_SUBDEVICE 按 control opener 实际 TID 和 OFD open 顺序生效，-1 自动，其他值精确选择，
 busy 或不存在的槽位返回 EBUSY；dup 共享偏好，actual fput 撤销。
 PCM 实现 USER_PVERSION 的 user-copy（当前不开放 status/control mmap，无版本相关布局状态）、
-TTSTAMP 时钟选择和启用后的 STATUS/SYNC_PTR 时钟快照，SW_PARAMS 允许 Prepared/Running 更新。
-当前仍限定整 period WRITEI/mmap pointer 增量及固定 buffer，SW_PARAMS 限 avail_min≤buffer、阈值≤boundary；
-阻塞 open 等待、RW 自动启动、REWIND、RESET、DRAIN、STATUS_EXT、trigger timestamp 与 capture 尚未支持。
+TTSTAMP 时钟选择和启用后的 STATUS/STATUS_EXT/SYNC_PTR 参考时钟快照；STATUS_EXT 不声明硬件音频时间戳或精度。
+PREPARE 允许重新准备 Prepared 流并清空旧指针，SW_PARAMS 允许 Prepared/Running 更新。
+WRITEI 支持短帧批次和环形缓冲跨界，XRUN 返回 EPIPE；mmap pointer 接受非整周期增量；固定 buffer，SW_PARAMS 限 avail_min≤buffer、阈值≤boundary；
+阻塞 open 等待、RW 自动启动、REWIND、RESET、DRAIN、trigger timestamp 与 capture 尚未支持。
 固定上游 alsa-lib 的显式启动八路播放和 amixer 已由 AArch64/HVF runtime gate 覆盖；Wine 尚未验证。
 
 FUSE（协议 7.45）：`/dev/fuse`（10:229，0666）每次 open 一个端点，挂载 `fd=` 或 `FUSE_DEV_IOC_CLONE` 绑定连接；

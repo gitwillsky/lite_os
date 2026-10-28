@@ -31,15 +31,15 @@ fn pcm_state_tracks_period_positions_and_recovers_xrun() {
         .unwrap();
     state.prepare().unwrap();
     for _ in 0..4 {
-        state.submit_period().unwrap();
+        state.submit_frames(PCM_PERIOD_FRAMES as u64).unwrap();
     }
     assert!(!state.writable());
     state.start().unwrap();
-    state.complete_period();
+    state.complete_period(PCM_PERIOD_FRAMES as u64);
     assert_eq!(state.hardware_frames, PCM_PERIOD_FRAMES as u64);
     assert!(state.writable());
     for _ in 0..4 {
-        state.complete_period();
+        state.complete_period(PCM_PERIOD_FRAMES as u64);
     }
     assert_eq!(state.state, PcmState::Xrun);
     state.prepare().unwrap();
@@ -54,13 +54,28 @@ fn pcm_state_tracks_period_positions_and_recovers_xrun() {
 }
 
 #[test]
+fn pcm_prepare_resets_an_already_prepared_stream() {
+    let mut state = PcmStateOwner::new();
+    state.configure().unwrap();
+    state.prepare().unwrap();
+    state.submit_frames(PCM_PERIOD_FRAMES as u64).unwrap();
+    state.prepare().unwrap();
+    assert_eq!(state.state, PcmState::Prepared);
+    assert_eq!(state.application_frames, 0);
+    assert_eq!(state.hardware_frames, 0);
+    state.start().unwrap();
+    assert!(state.prepare().is_err());
+    assert_eq!(state.state, PcmState::Running);
+}
+
+#[test]
 fn pcm_disconnect_is_terminal_for_submission() {
     let mut state = PcmStateOwner::new();
     state.configure().unwrap();
     state.prepare().unwrap();
     state.disconnect();
     assert_eq!(state.state, PcmState::Disconnected);
-    assert!(state.submit_period().is_err());
+    assert!(state.submit_frames(PCM_PERIOD_FRAMES as u64).is_err());
     assert!(!state.writable());
 }
 
@@ -154,6 +169,7 @@ fn alsa_ioctl_numbers_and_layout_match_linux_native_64_bit_uapi() {
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_HW_FREE, 0x0000_4112);
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_SW_PARAMS, 0xc088_4113);
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_STATUS, 0x8098_4120);
+    assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_STATUS_EXT, 0xc098_4124);
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_DELAY, 0x8008_4121);
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_SYNC_PTR, 0xc088_4123);
     assert_eq!(alsa_codec::SNDRV_PCM_IOCTL_PREPARE, 0x0000_4140);
@@ -495,7 +511,7 @@ fn software_parameters_can_change_after_prepare_and_while_running() {
     state.configure().unwrap();
     state.prepare().unwrap();
     state.set_software(512, 1 << 31, 1024, 1 << 31).unwrap();
-    state.submit_period().unwrap();
+    state.submit_frames(PCM_PERIOD_FRAMES as u64).unwrap();
     state.start().unwrap();
     state.set_software(256, 1024, 1024, 1 << 31).unwrap();
     assert_eq!(state.state, PcmState::Running);

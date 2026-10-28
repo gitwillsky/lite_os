@@ -7,6 +7,7 @@ pub(crate) const SNDRV_PCM_IOCTL_HW_PARAMS: usize = 0xc260_4111;
 pub(crate) const SNDRV_PCM_IOCTL_HW_FREE: usize = 0x0000_4112;
 pub(crate) const SNDRV_PCM_IOCTL_SW_PARAMS: usize = 0xc088_4113;
 pub(crate) const SNDRV_PCM_IOCTL_STATUS: usize = 0x8098_4120;
+pub(crate) const SNDRV_PCM_IOCTL_STATUS_EXT: usize = 0xc098_4124;
 pub(crate) const SNDRV_PCM_IOCTL_DELAY: usize = 0x8008_4121;
 pub(crate) const SNDRV_PCM_IOCTL_SYNC_PTR: usize = 0xc088_4123;
 pub(crate) const SNDRV_PCM_IOCTL_PREPARE: usize = 0x0000_4140;

@@ -6,10 +6,11 @@ use super::codec::{
     HW_PARAMS_BYTES, PCM_PROTOCOL_VERSION, PcmInfo, SNDRV_PCM_IOCTL_DELAY, SNDRV_PCM_IOCTL_DROP,
     SNDRV_PCM_IOCTL_HW_FREE, SNDRV_PCM_IOCTL_HW_PARAMS, SNDRV_PCM_IOCTL_HW_REFINE,
     SNDRV_PCM_IOCTL_INFO, SNDRV_PCM_IOCTL_PREPARE, SNDRV_PCM_IOCTL_PVERSION, SNDRV_PCM_IOCTL_START,
-    SNDRV_PCM_IOCTL_STATUS, SNDRV_PCM_IOCTL_SW_PARAMS, SNDRV_PCM_IOCTL_SYNC_PTR,
-    SNDRV_PCM_IOCTL_TTSTAMP, SNDRV_PCM_IOCTL_USER_PVERSION, SNDRV_PCM_IOCTL_WRITEI_FRAMES,
-    STATUS_BYTES, SW_PARAMS_BYTES, SYNC_PTR_BYTES, XFER_BYTES, encode_pcm_info, exact_interval,
-    exact_mask, read_u32, read_u64, refine_hardware, stop_or_error, write_u32, write_u64,
+    SNDRV_PCM_IOCTL_STATUS, SNDRV_PCM_IOCTL_STATUS_EXT, SNDRV_PCM_IOCTL_SW_PARAMS,
+    SNDRV_PCM_IOCTL_SYNC_PTR, SNDRV_PCM_IOCTL_TTSTAMP, SNDRV_PCM_IOCTL_USER_PVERSION,
+    SNDRV_PCM_IOCTL_WRITEI_FRAMES, STATUS_BYTES, SW_PARAMS_BYTES, SYNC_PTR_BYTES, XFER_BYTES,
+    encode_pcm_info, exact_interval, exact_mask, read_u32, read_u64, refine_hardware,
+    stop_or_error, write_u32, write_u64,
 };
 use super::{
     AudioError, HardwareParameters, PCM_BUFFER_FRAMES, PCM_FRAME_BYTES, PCM_PERIOD_BYTES,
@@ -61,9 +62,24 @@ fn describe_hardware(bytes: &mut [u8; HW_PARAMS_BYTES]) -> Result<(), isize> {
     write_u32(bytes, 532, 1).ok_or(errno::EIO)
 }
 
-fn copy_status(user: &dyn UserMemory, file: &PcmFile, argument: usize) -> Result<(), isize> {
+fn copy_status(
+    user: &dyn UserMemory,
+    file: &PcmFile,
+    argument: usize,
+    extended: bool,
+) -> Result<(), isize> {
     if argument == 0 {
         return Err(errno::EFAULT);
+    }
+    if extended {
+        // Linux STATUS_EXT 只读入 audio_tstamp_data；本设备仅提供参考时钟，不声明硬件音频时间戳，
+        // 返回的 report/accuracy 维持零值，不能把请求中的类型和精度标志当成已实现能力原样返回。
+        let mut configuration = [0u8; 4];
+        user.read(
+            argument.checked_add(92).ok_or(errno::EFAULT)?,
+            &mut configuration,
+        )
+        .map_err(|_| errno::EFAULT)?;
     }
     let status = file.status();
     let mut bytes = [0u8; STATUS_BYTES];
@@ -93,34 +109,35 @@ fn write_frames(
     let pointer = read_u64(&transfer, 8).ok_or(errno::EFAULT)? as usize;
     let frames = usize::try_from(read_u64(&transfer, 16).ok_or(errno::EFAULT)?)
         .map_err(|_| errno::EINVAL)?;
-    if frames == 0 || !frames.is_multiple_of(PCM_PERIOD_FRAMES) {
-        return Err(errno::EINVAL);
-    }
     let mut period = [0u8; PCM_PERIOD_BYTES];
     let mut completed = 0usize;
     'transfer: while completed < frames {
+        let count = (frames - completed).min(PCM_PERIOD_FRAMES);
         let offset = completed
             .checked_mul(PCM_FRAME_BYTES)
             .and_then(|offset| pointer.checked_add(offset))
             .ok_or(errno::EFAULT)?;
-        if user.read(offset, &mut period).is_err() {
+        if user
+            .read(offset, &mut period[..count * PCM_FRAME_BYTES])
+            .is_err()
+        {
             stop_or_error(completed, errno::EFAULT)?;
             break;
         }
         loop {
-            match file.write_period(&period) {
-                Ok(()) => {
-                    completed += PCM_PERIOD_FRAMES;
+            match file.write_frames(&period[..count * PCM_FRAME_BYTES]) {
+                Ok(written) => {
+                    completed += written;
                     continue 'transfer;
                 }
-                Err(AudioError::WouldBlock) => {
+                Err(errno::EAGAIN) => {
                     if let Err(error) = chardev::wait_ready(file, POLLOUT, nonblocking) {
                         stop_or_error(completed, error.errno())?;
                         break 'transfer;
                     }
                 }
                 Err(error) => {
-                    stop_or_error(completed, pcm_errno(error))?;
+                    stop_or_error(completed, error)?;
                     break 'transfer;
                 }
             }
@@ -238,7 +255,12 @@ pub(super) fn ioctl(file: &PcmFile, call: &IoctlCall<'_>) -> Result<isize, Devic
                     .and_then(|()| user.write(argument, &bytes).map_err(|_| errno::EFAULT))
             }
         }
-        SNDRV_PCM_IOCTL_STATUS => copy_status(user, file, argument),
+        SNDRV_PCM_IOCTL_STATUS | SNDRV_PCM_IOCTL_STATUS_EXT => copy_status(
+            user,
+            file,
+            argument,
+            call.request == SNDRV_PCM_IOCTL_STATUS_EXT,
+        ),
         SNDRV_PCM_IOCTL_DELAY => {
             if argument == 0 {
                 Err(errno::EFAULT)

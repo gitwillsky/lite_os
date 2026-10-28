@@ -70,7 +70,10 @@ impl PcmStateOwner {
     }
 
     pub(crate) fn prepare(&mut self) -> Result<(), ()> {
-        if !matches!(self.state, PcmState::Setup | PcmState::Xrun) {
+        if !matches!(
+            self.state,
+            PcmState::Setup | PcmState::Prepared | PcmState::Xrun
+        ) {
             return Err(());
         }
         self.state = PcmState::Prepared;
@@ -108,23 +111,22 @@ impl PcmStateOwner {
         Ok(())
     }
 
-    pub(crate) fn submit_period(&mut self) -> Result<(), ()> {
+    pub(crate) fn submit_frames(&mut self, frames: u64) -> Result<(), ()> {
         if !matches!(self.state, PcmState::Prepared | PcmState::Running)
-            || self.delay() + PCM_PERIOD_FRAMES as u64 > PCM_BUFFER_FRAMES as u64
+            || frames == 0
+            || frames > PCM_BUFFER_FRAMES as u64 - self.delay()
         {
             return Err(());
         }
-        self.application_frames = self
-            .application_frames
-            .wrapping_add(PCM_PERIOD_FRAMES as u64);
+        self.application_frames = self.application_frames.wrapping_add(frames);
         Ok(())
     }
 
-    pub(crate) fn complete_period(&mut self) {
+    pub(crate) fn complete_period(&mut self, frames: u64) {
         if !matches!(self.state, PcmState::Prepared | PcmState::Running) {
             return;
         }
-        let completed = self.hardware_frames.wrapping_add(PCM_PERIOD_FRAMES as u64);
+        let completed = self.hardware_frames.wrapping_add(frames);
         if completed > self.application_frames {
             self.state = PcmState::Xrun;
             return;
@@ -148,6 +150,6 @@ impl PcmStateOwner {
 
     pub(crate) fn writable(&self) -> bool {
         matches!(self.state, PcmState::Prepared | PcmState::Running)
-            && self.delay() + PCM_PERIOD_FRAMES as u64 <= PCM_BUFFER_FRAMES as u64
+            && self.delay() + self.available_min <= PCM_BUFFER_FRAMES as u64
     }
 }

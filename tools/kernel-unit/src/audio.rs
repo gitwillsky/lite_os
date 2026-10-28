@@ -302,7 +302,7 @@ mod engine_tests {
         index
     }
 
-    /// 应用写入 `periods` 个 period：先填数据再推进应用指针，与 `PcmFile::write_period` 的顺序一致。
+    /// 应用写入 `periods` 个 period：先填数据再推进应用指针，与 `PcmFile::write_frames` 的顺序一致。
     fn write(
         engine: &mut Engine<FakeRing>,
         index: usize,
@@ -314,7 +314,7 @@ mod engine_tests {
         for _ in 0..periods {
             let slot = (engine.state(index).application_frames / PERIOD) as usize % 4;
             ring.fill(slot, left, right);
-            engine.application_period(index).unwrap();
+            engine.application_frames(index, PERIOD).unwrap();
         }
     }
 
@@ -408,6 +408,8 @@ mod engine_tests {
         assert_eq!(level(&output.submitted.borrow()[PCM_PERIODS]), (0.5, -0.5));
         assert_eq!(engine.state(a).state, PcmState::Running);
     }
+
+    mod transfer_tests;
 
     #[test]
     fn prefetch_preserves_one_ready_period_across_batched_completions() {

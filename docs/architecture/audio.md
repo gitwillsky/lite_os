@@ -4,7 +4,7 @@
 
 用户态通过 Linux ALSA `/dev/snd/pcmC0D0p` 写入独立 playback 子流；`kernel::audio::engine`
 把运行中的子流混成一个物理 period，经 `drivers::PcmOutput` 交给 VirtIO Sound device ID 25。
-没有用户态混音服务、私有音频 IPC 或 Web media runtime，当前产品也没有媒体播放器。
+媒体播放机经 libmpv/FFmpeg 解码、alsa-lib 写入同一 PCM；没有用户态混音服务或私有音频 IPC。
 桌面的系统提示音由 `user/libraries/sound` 直接写同一个 PCM：登录完成、注销、清空回收站各播一段，只有本地提取了原版素材时才安装，
 设备不可用（例如非 root 账户没有 `/dev/snd` 权限）时静默跳过。
 
@@ -17,13 +17,14 @@ UTM 只在 `Sound` 非空时启用客户端音频；空列表配合手工 QEMU �
 - 卡提供 8 个软件 playback 子流；默认 open 占用首个空槽，也可由同一 opener TID 的 control OFD
   指定子设备。OFD 独占状态、应用指针和全新 ring backing。
 - PCM 固定 48 kHz、双声道、F32_LE，period 256 帧、buffer 1024 帧；支持 RW 与 mmap interleaved。
-- 卡级 `Engine` 独占物理流、子流槽位、在途 period 的 contributor mask 和 Master；物理流在卡初始化时
+- 卡级 `Engine` 独占物理流、子流槽位、在途 period 的各子流有效帧数和 Master；物理流在卡初始化时
   configure/prepare 一次，各子流的 HW_PARAMS/PREPARE 不重配设备。
 - 应用提交或设备完成触发 tick，最多预送物理缓冲容量减一的 3 个 period（16 ms），保留一段应用数据跨越批量完成；
   完成时只推进实际贡献子流的 hw_ptr。全部预送会在整批 TX 完成、写进程尚未补充时提前耗尽应用数据并报告 XRUN。
   批量完成后先补填队列，补填后仍为空才停止并重新 prepare；否则连续播放会随每批完成反复停启物理流。
   只预送 2 个 period 的约 10.7 ms 余量不足以覆盖 QEMU 默认 10 ms 音频消费与补充延迟，会使宿主回放断音。
   预送时若某一路暂缺下一段、但仍有在途数据，等待该流补充；仅在它的数据真正耗尽后报告 XRUN，再让其他流继续。
+  WRITEI 与 mmap 应用指针允许非整周期增量；短批次在本流在途数据耗尽后提交，物理周期剩余部分静音，完成只计入实际帧数。
 - `mixer::Accumulator` 对每路先施加左右 PCM 增益再逐样本相加，NaN/Inf 按静音处理，
   施加左右 Master 增益后硬削波到 [-1, 1]。静音分支直接输出零，即使有限样本求和已溢出，静音也不会产生 NaN。
   音量 0..100 按平方曲线映射，默认 100 且开启；没有 lookahead limiter 或持久化音量。
@@ -32,16 +33,17 @@ UTM 只在 `Sound` 非空时启用客户端音频；空列表配合手工 QEMU �
 - control 订阅属于 OFD，最多排队 10 个元素，首次变化 FIFO，同一元素未读前的变化合并。
   read/poll 通过独立 readiness pipe 等待，PCM completion 不唤醒空闲 mixer。
 - PCM 支持 USER_PVERSION、TTSTAMP，以及启用后的 STATUS/SYNC_PTR 参考时钟快照。
+  STATUS_EXT 读取标准音频时间戳配置字段，返回同一参考时钟快照，不声明硬件音频时间戳或精度。
   realtime 使用 timer 的 RTC offset；MONOTONIC/RAW 共用当前未校频的 counter。SW_PARAMS 可在
   Prepared/Running 状态更新；状态时间戳不提供硬件级采样精度或 trigger timestamp。
 
 ## 失败与当前限制
 
 OFD close 清除该子流在所有在途 period 的归属，再归还槽位，旧 mmap backing 不会与新 open 共享。
-物理设备失败使整张卡断开，poll 返回错误/挂断；单子流欠载进入 XRUN。
+物理设备失败使整张卡断开，poll 返回错误/挂断；单子流欠载进入 XRUN，WRITEI 返回 EPIPE，客户端可 PREPARE 恢复。
 
 指定槽位忙时返回 EBUSY，不回退到其他槽；control actual fput 立即撤销偏好与订阅，dup 保留同一 OFD。
-PCM 的阻塞 open 等待、RW 自动启动、任意 frame 长度传输、REWIND、RESET、DRAIN、STATUS_EXT 等仍未提供；
+PCM 的阻塞 open 等待、RW 自动启动、REWIND、RESET、DRAIN 等仍未提供；
 这些范围不能由显式启动、整 period 写入的探针通过来替代，Wine consumer 尚待后续验证。
 
 AArch64/HVF 是声音 runtime 的目标。`verify-runtime-audio` 使用固定上游 alsa-lib/amixer，

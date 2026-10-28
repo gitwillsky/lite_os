@@ -1,5 +1,8 @@
 /* 上游 alsa-lib 的八路 RW consumer：样本只由公开 API 送入标准 PCM 设备。 */
 #include <alsa/asoundlib.h>
+#include <errno.h>
+#include <sys/ioctl.h>
+#include <unistd.h>
 #include <math.h>
 #include <poll.h>
 #include <stdint.h>
@@ -58,6 +61,14 @@ static void configure(snd_pcm_t **pcm, unsigned index)
     snd_htimestamp_t timestamp;
     check(16, snd_pcm_htimestamp(*pcm, &available, &timestamp));
     if (timestamp.tv_sec == 0 && timestamp.tv_nsec == 0) check(17, -EIO);
+    /* alsa-lib 的 HW_PARAMS 已准备流；mpv 等 consumer 仍会在启动前再次 PREPARE。 */
+    check(18, snd_pcm_prepare(*pcm));
+    snd_pcm_status_t *status;
+    snd_pcm_status_alloca(&status);
+    check(19, snd_pcm_status(*pcm, status));
+    float short_frames[17][2] = {{0}};
+    check(60, snd_pcm_writei(*pcm, short_frames, 17) == 17 ? 0 : -EIO);
+    check(61, snd_pcm_prepare(*pcm));
 }
 
 static void samples(float output[PERIOD][2], unsigned stream, uint64_t from)
@@ -138,6 +149,29 @@ int main(void)
     check(33, snd_pcm_start(blocking));
     check(34, snd_pcm_writei(blocking, silence, 32 * PERIOD) == 32 * PERIOD ? 0 : -EIO);
     check(35, snd_pcm_drop(blocking));
+    check(37, snd_pcm_prepare(blocking));
+    check(38, snd_pcm_writei(blocking, silence, PERIOD) == PERIOD ? 0 : -EIO);
+    check(39, snd_pcm_start(blocking));
+    snd_pcm_status_t *status;
+    snd_pcm_status_alloca(&status);
+    for (unsigned attempt = 0; attempt < 2000; ++attempt) {
+        check(40, snd_pcm_status(blocking, status));
+        if (snd_pcm_status_get_state(status) == SND_PCM_STATE_XRUN) break;
+        usleep(1000);
+    }
+    check(41, snd_pcm_status_get_state(status) == SND_PCM_STATE_XRUN ? 0 : -EIO);
+    /* 直接进入实际 WRITEI：alsa-lib 自身的 cached-state 检查不能替内核挡住 XRUN 忙循环。 */
+    struct pollfd blocking_descriptor;
+    check(44, snd_pcm_poll_descriptors(blocking, &blocking_descriptor, 1));
+    /* native snd_xferi 布局；内核 asound.h 与 alsa-lib 公共头的同名 typedef 不能共用一个 TU。 */
+    struct pcm_transfer {
+        snd_pcm_sframes_t result;
+        void *buf;
+        snd_pcm_uframes_t frames;
+    } transfer = {.buf = silence, .frames = PERIOD};
+    check(42, ioctl(blocking_descriptor.fd, _IOW('A', 0x50, struct pcm_transfer), &transfer) == -1 && errno == EPIPE ? 0 : -EIO);
+    check(43, snd_pcm_prepare(blocking));
+    puts("ALSA_XRUN_RECOVERY_READY");
     check(36, snd_pcm_close(blocking));
     check(29, snd_ctl_close(ctl));
     printf("ALSA_PLAYBACK_READY streams=%u frames=%u xruns=0\n", STREAMS, PHASES * RATE);

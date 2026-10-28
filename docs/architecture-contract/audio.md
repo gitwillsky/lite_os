@@ -15,6 +15,10 @@
 | `platform` / `fs` | adapter 装配 / 按已注册设备号发布 PCM 与 control 节点 |
 
 PCM/control ioctl 的唯一 caller 是已注册 DeviceFile dispatch，不经过 syscall 中的设备专用分支。
+`PcmFile::write_frames` 只由 PCM ioctl 调用，返回实际写入帧数或原生 errno；XRUN 返回 EPIPE，
+不能进入仅处理 EAGAIN 的等待重试。`Engine::application_frames` 只由 PcmFile 的 WRITEI/mmap 提交调用；
+`PcmStateOwner::submit_frames` 与 `complete_period(frames)` 只由 Engine 推进真实帧数。
+`codec::SNDRV_PCM_IOCTL_STATUS_EXT` 只由 ioctl 分派消费，与 STATUS 共用参考时钟快照。
 `PcmInfo`/`CardText` 只向 codec 提供卡与子流快照；`PcmFile::subdevices` 向 INFO 提供槽位、总数和空闲数。
 内核不依赖用户态 mixer 或媒体协议。
 
@@ -31,7 +35,8 @@ PCM/control ioctl 的唯一 caller 是已注册 DeviceFile dispatch，不经过 
    子流不调用物理 release；`PcmOutput` 只保留 configure/prepare/start/stop/submit/writable。
    init 后物理流持续属于卡，子流 HW_FREE/CLOSE 只回收软件状态。
 3. 每次 open 分配新 DeviceBacking 和 mmap identity，再占槽、发布 OFD；OFD 分配失败回滚槽位。
-   close/prepare/drop 清除 contributor mask，旧 completion 不得推进复用槽位的 hw_ptr。
+   每个在途物理 period 保存各子流的有效帧数；短批次补零不增加应用/hardware 指针。
+   close/prepare/drop 清除该流的在途帧数，旧 completion 不得推进复用槽位的 hw_ptr。
    backing 在 Engine 锁外销毁，旧映射可继续持有原 backing，但不能访问新 open 的音频。
 4. `main` 装配实际调用 TID observer，audio 不依赖 task；control open 保存 `Arc<PidIdentity>`，
    偏好只匹配原 opener 的 identity，数字 TID 复用、fd 传递或其他线程不能继承它。
@@ -47,6 +52,8 @@ PCM/control ioctl 的唯一 caller 是已注册 DeviceFile dispatch，不经过 
 
 `Engine<Ring>` 的窄接口由 Card/PcmFile 使用，host fixture 注入假 ring/output 验证相同状态机；
 `Accumulator` 只由 Engine 消费。steady tick 使用固定栈数组与预分配 ring，不引入 period 级堆分配。
+短帧记账使用固定大小的每流帧数数组，跨 ring 边界至多两次复制；短尾补零不增加锁或分配。
+成本验证沿用八路零 XRUN 与实际 WAV 门禁，不为该分支另设时间阈值；mixer 算法与其 CPU 基准不变。
 逐流增益的新增成本由生产 Accumulator 的 host diagnostic benchmark 与 AArch64/HVF 八路无 XRUN
 workload 分别观察；不以 host 硬件浮点计时宣称 kernel softfloat 延迟达标。门禁和证据范围见构建验证文档。
 
