@@ -12,32 +12,31 @@ impl VirtualFileSystem {
         root_inode: Arc<dyn Inode>,
         flags: MountFlags,
     ) -> Result<(), FileSystemError> {
-        let _transaction = self.namespace()?;
-        // lock_mount的destination必须进入实际顶层mount；旧dirfd magic path可能仍指被覆盖的下层。
-        let point = self.enter_mount(point)?;
-        let parent = point
-            .mount
-            .as_ref()
-            .ok_or(FileSystemError::InvalidOperation)?;
-        if !namespace.contains(parent) {
-            return Err(FileSystemError::InvalidOperation);
-        }
-        if point.inode().inode_type() != InodeType::Directory
-            || root_inode.inode_type() != InodeType::Directory
-        {
-            return Err(FileSystemError::NotDirectory);
-        }
-        let dentry = self.dentries.admit(Dentry::named(root_inode, None, b"")?)?;
-        let view = MountView::new(
-            namespace.scope.clone(),
-            source,
-            filesystem.clone(),
-            dentry,
-            Some(Attachment::new(parent, point.dentry.clone())),
-            flags,
-            MountRestrictions::default(),
-        )?;
-        super::mount_attachment::attach(core::slice::from_ref(&view), &point)
+        self.lock_mount(point, |point| {
+            let parent = point
+                .mount
+                .as_ref()
+                .ok_or(FileSystemError::InvalidOperation)?;
+            if !namespace.contains(parent) {
+                return Err(FileSystemError::InvalidOperation);
+            }
+            if point.inode().inode_type() != InodeType::Directory
+                || root_inode.inode_type() != InodeType::Directory
+            {
+                return Err(FileSystemError::NotDirectory);
+            }
+            let dentry = self.dentries.admit(Dentry::named(root_inode, None, b"")?)?;
+            let view = MountView::new(
+                namespace.scope.clone(),
+                source,
+                filesystem.clone(),
+                dentry,
+                Some(Attachment::new(parent, point.dentry.clone())),
+                flags,
+                MountRestrictions::default(),
+            )?;
+            super::mount_attachment::attach(core::slice::from_ref(&view), point)
+        })
     }
     /// MS_BIND 创建实际新 view，共享 superblock 与 canonical subtree root，不复制 filesystem。
     /// 所有节点、容量与 membership 先准备；target 必须属于调用者 namespace；source须为调用者当前namespace中的普通mounted view。
@@ -48,86 +47,86 @@ impl VirtualFileSystem {
         point: &Arc<OpenedFile>,
         recursive: bool,
     ) -> Result<(), FileSystemError> {
-        let _transaction = self.namespace()?;
-        let point = self.enter_mount(point.clone())?;
-        let origin = source
-            .mount
-            .as_ref()
-            .ok_or(FileSystemError::InvalidOperation)?;
-        let namespace_file = source.inode().namespace_reference().is_some();
-        let parent = point
-            .mount
-            .as_ref()
-            .ok_or(FileSystemError::InvalidOperation)?;
-        if !namespace.contains(parent) || !namespace_file && !namespace.contains(origin) {
-            return Err(FileSystemError::InvalidOperation);
-        }
-        if namespace.namespace_file_loops(&*source.inode()) {
-            // 固定Linux do_loopback的此项拒绝是EINVAL；move子树检查使用ELOOP。
-            return Err(FileSystemError::InvalidOperation);
-        }
-        if (source.inode().inode_type() == InodeType::Directory)
-            != (point.inode().inode_type() == InodeType::Directory)
-        {
-            return Err(FileSystemError::NotDirectory);
-        }
-        if mount_propagation::unbindable(origin) {
-            return Err(FileSystemError::InvalidOperation);
-        }
-        let mut selected = Vec::new();
-        selected
-            .try_reserve(1)
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        selected.push(origin.clone());
-        for old in origin.snapshot_subtree()? {
-            if Arc::ptr_eq(&old, origin) {
-                continue;
-            }
-            let old_root = OpenedFile::at(old.clone(), old.root.clone())?;
-            if !old_root.project_path(source, false)?.1 {
-                continue;
-            }
-            if !recursive && old.state.lock().restrictions.inseparable {
+        self.lock_mount(point.clone(), |point| {
+            let origin = source
+                .mount
+                .as_ref()
+                .ok_or(FileSystemError::InvalidOperation)?;
+            let namespace_file = source.inode().namespace_reference().is_some();
+            let parent = point
+                .mount
+                .as_ref()
+                .ok_or(FileSystemError::InvalidOperation)?;
+            if !namespace.contains(parent) || !namespace_file && !namespace.contains(origin) {
                 return Err(FileSystemError::InvalidOperation);
             }
-            if recursive {
-                let mut ancestor = Some(old.clone());
-                let mut pruned = false;
-                while let Some(view) = ancestor {
-                    if Arc::ptr_eq(&view, origin) {
-                        break;
-                    }
-                    if mount_propagation::unbindable(&view) {
-                        if view.state.lock().restrictions.inseparable {
-                            return Err(FileSystemError::PermissionDenied);
-                        }
-                        pruned = true;
-                        break;
-                    }
-                    ancestor = view.attachment().and_then(|edge| edge.parent.upgrade());
-                }
-                if pruned {
+            if namespace.namespace_file_loops(&*source.inode()) {
+                // 固定Linux do_loopback的此项拒绝是EINVAL；move子树检查使用ELOOP。
+                return Err(FileSystemError::InvalidOperation);
+            }
+            if (source.inode().inode_type() == InodeType::Directory)
+                != (point.inode().inode_type() == InodeType::Directory)
+            {
+                return Err(FileSystemError::NotDirectory);
+            }
+            if mount_propagation::unbindable(origin) {
+                return Err(FileSystemError::InvalidOperation);
+            }
+            let mut selected = Vec::new();
+            selected
+                .try_reserve(1)
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+            selected.push(origin.clone());
+            for old in origin.snapshot_subtree()? {
+                if Arc::ptr_eq(&old, origin) {
                     continue;
                 }
-                selected
-                    .try_reserve(1)
-                    .map_err(|_| FileSystemError::OutOfMemory)?;
-                selected.push(old);
+                let old_root = OpenedFile::at(old.clone(), old.root.clone())?;
+                if !old_root.project_path(source, false)?.1 {
+                    continue;
+                }
+                if !recursive && old.state.lock().restrictions.inseparable {
+                    return Err(FileSystemError::InvalidOperation);
+                }
+                if recursive {
+                    let mut ancestor = Some(old.clone());
+                    let mut pruned = false;
+                    while let Some(view) = ancestor {
+                        if Arc::ptr_eq(&view, origin) {
+                            break;
+                        }
+                        if mount_propagation::unbindable(&view) {
+                            if view.state.lock().restrictions.inseparable {
+                                return Err(FileSystemError::PermissionDenied);
+                            }
+                            pruned = true;
+                            break;
+                        }
+                        ancestor = view.attachment().and_then(|edge| edge.parent.upgrade());
+                    }
+                    if pruned {
+                        continue;
+                    }
+                    selected
+                        .try_reserve(1)
+                        .map_err(|_| FileSystemError::OutOfMemory)?;
+                    selected.push(old);
+                }
             }
-        }
-        let views = super::mount_copy::copy_tree(
-            &selected,
-            super::mount_copy::CopyPolicy {
-                scope: namespace.scope.clone(),
-                root: source.dentry.clone(),
-                attachment: Some(Attachment::new(parent, point.dentry.clone())),
-                slave: false,
-                shared: false,
-                lock_tree: false,
-                prepared_shared: &[],
-            },
-        )?;
-        super::mount_attachment::attach(&views, &point)
+            let views = super::mount_copy::copy_tree(
+                &selected,
+                super::mount_copy::CopyPolicy {
+                    scope: namespace.scope.clone(),
+                    root: source.dentry.clone(),
+                    attachment: Some(Attachment::new(parent, point.dentry.clone())),
+                    slave: false,
+                    shared: false,
+                    lock_tree: false,
+                    prepared_shared: &[],
+                },
+            )?;
+            super::mount_attachment::attach(&views, point)
+        })
     }
     /// MS_MOVE 迁移同一 view identity；失败不会先摘除旧位置或修改任何 parent。
     pub(crate) fn move_mount(
@@ -136,57 +135,80 @@ impl VirtualFileSystem {
         source: &Arc<OpenedFile>,
         point: &Arc<OpenedFile>,
     ) -> Result<(), FileSystemError> {
-        let _transaction = self.namespace()?;
-        let point = self.enter_mount(point.clone())?;
-        let view = source
-            .mount
-            .as_ref()
-            .ok_or(FileSystemError::InvalidOperation)?;
-        let parent = point
-            .mount
-            .as_ref()
-            .ok_or(FileSystemError::InvalidOperation)?;
-        if !namespace.contains(view)
-            || !namespace.contains(parent)
-            || !Arc::ptr_eq(&source.dentry, &view.root)
-            || view.attachment().is_none()
-            || view.state.lock().restrictions.inseparable
-        {
-            return Err(FileSystemError::InvalidOperation);
+        self.lock_mount(point.clone(), |point| {
+            let view = source
+                .mount
+                .as_ref()
+                .ok_or(FileSystemError::InvalidOperation)?;
+            let parent = point
+                .mount
+                .as_ref()
+                .ok_or(FileSystemError::InvalidOperation)?;
+            if !namespace.contains(view)
+                || !namespace.contains(parent)
+                || !Arc::ptr_eq(&source.dentry, &view.root)
+                || view.attachment().is_none()
+                || view.state.lock().restrictions.inseparable
+            {
+                return Err(FileSystemError::InvalidOperation);
+            }
+            if (source.inode().inode_type() == InodeType::Directory)
+                != (point.inode().inode_type() == InodeType::Directory)
+            {
+                return Err(FileSystemError::NotDirectory);
+            }
+            let old_parent = view
+                .attachment()
+                .and_then(|edge| edge.parent.upgrade())
+                .ok_or(FileSystemError::InvalidOperation)?;
+            if mount_propagation::group(&old_parent).is_some() {
+                return Err(FileSystemError::InvalidOperation);
+            }
+            let tree = view.snapshot_subtree()?;
+            if tree
+                .iter()
+                .any(|view| namespace.namespace_file_loops(&*view.root.inode()))
+            {
+                return Err(FileSystemError::Loop);
+            }
+            super::mount_attachment::attach(&tree, point)
+        })
+    }
+    /// Linux `lock_mount`：独占持有实际顶层挂载点 dentry，再取得 namespace gate 执行 `attach`。
+    ///
+    /// 1. 旧 dirfd/magic path 可能仍指被覆盖的下层，先进入实际顶层 mount；
+    /// 2. 等待挂载点锁期间别人先挂到同一位置时，换到新的顶层重试；
+    /// 3. 挂载点已被删除为 ENOENT。持有挂载点锁使 unlink/rename 的挂载点检查与本次挂载互斥。
+    fn lock_mount<R>(
+        &self,
+        point: Arc<OpenedFile>,
+        attach: impl FnOnce(&Arc<OpenedFile>) -> Result<R, FileSystemError>,
+    ) -> Result<R, FileSystemError> {
+        let mut point = self.enter_mount(point)?;
+        loop {
+            let top = {
+                let _point = point.dentry.lock_exclusive()?;
+                let transaction = self.namespace()?;
+                let top = transaction.enter_mount(point.clone())?;
+                if top.same_path(&point) {
+                    if point.is_unlinked() {
+                        return Err(FileSystemError::NotFound);
+                    }
+                    return attach(&point);
+                }
+                top
+            };
+            point = top;
         }
-        if (source.inode().inode_type() == InodeType::Directory)
-            != (point.inode().inode_type() == InodeType::Directory)
-        {
-            return Err(FileSystemError::NotDirectory);
-        }
-        let old_parent = view
-            .attachment()
-            .and_then(|edge| edge.parent.upgrade())
-            .ok_or(FileSystemError::InvalidOperation)?;
-        if mount_propagation::group(&old_parent).is_some() {
-            return Err(FileSystemError::InvalidOperation);
-        }
-        let tree = view.snapshot_subtree()?;
-        if tree
-            .iter()
-            .any(|view| namespace.namespace_file_loops(&*view.root.inode()))
-        {
-            return Err(FileSystemError::Loop);
-        }
-        super::mount_attachment::attach(&tree, &point)
     }
     /// 路径沿所属 tree 的 attachment 展开；setns 保留的旧 root/dirfd 继续使用其真实 view。
     pub(super) fn enter_mount(
         &self,
-        mut opened: Arc<OpenedFile>,
+        opened: Arc<OpenedFile>,
     ) -> Result<Arc<OpenedFile>, FileSystemError> {
-        while let Some(view) = &opened.mount
-            && let Some(child) = mount_index::child(view, &opened.dentry)
-        {
-            let dentry = child.root.clone();
-            opened = OpenedFile::at(child, dentry)?;
-        }
-        Ok(opened)
+        // 只在取得实际 mount pin 时持拓扑锁；与普通卸载的 busy 检查、摘索引保持同一事务。
+        // 后续 find_child/权限检查在锁外执行，不能把 FUSE 请求的等待带回全局 gate。
+        self.namespace()?.enter_mount(opened)
     }
     pub(super) fn is_mount_point(&self, path: &Arc<OpenedFile>) -> bool {
         path.mount.as_ref().is_some_and(|view| {
@@ -243,5 +265,23 @@ impl VirtualFileSystem {
         mount_propagation::change(&views, kind)?;
         view.scope.changed();
         Ok(())
+    }
+}
+
+impl super::namespace_access::NamespaceAccess<'_> {
+    /// 在 caller 已持有的拓扑事务中进入实际顶层 mount，不调用 filesystem I/O。
+    ///
+    /// `opened` 是待穿越的实际路径；返回已取得 mount pin 的路径。路径分配失败返回 OutOfMemory。
+    pub(super) fn enter_mount(
+        &self,
+        mut opened: Arc<OpenedFile>,
+    ) -> Result<Arc<OpenedFile>, FileSystemError> {
+        while let Some(view) = &opened.mount
+            && let Some(child) = mount_index::child(view, &opened.dentry)
+        {
+            let dentry = child.root.clone();
+            opened = OpenedFile::at(child, dentry)?;
+        }
+        Ok(opened)
     }
 }

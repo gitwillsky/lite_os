@@ -131,17 +131,40 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors.push("fs-root: magic suffix preserves trailing slash and outside cwd emits one preallocated prefix".into());
     }
     let namespace = source(sources, "kernel/src/fs/vfs/namespace_access.rs");
+    let mutation = source(sources, "kernel/src/fs/vfs/mutation.rs");
+    let mount = source(sources, "kernel/src/fs/vfs/mount_operations.rs");
+    // 只有 getcwd 的完整路径投影可在本文件取得 namespace capability；walk 经 enter_mount
+    // 借短拓扑事务，不得另持全局 guard 跨 find_child/FUSE。用 AST tokens 排除注释/排版影响。
+    let lookup_tokens: String = lookup
+        .syntax
+        .to_token_stream()
+        .to_string()
+        .split_whitespace()
+        .collect();
     if !namespace.text.contains("_guard: TaskMutexGuard<'a, ()>")
-        || !lookup.text.contains("impl NamespaceAccess<'_>")
-        || !lookup.text.contains("self.namespace()?")
-        || !source(sources, "kernel/src/fs/vfs/mutation.rs")
+        || !lookup.text.contains("self.namespace()?.path(")
+        || lookup_tokens.matches(".namespace()").count() != 1
+        || lookup_tokens.contains(".namespace_prepared(")
+        || !lookup.text.contains("parent.dentry.lock_shared()?")
+        || !lookup.text.contains("parent.dentry.lock_exclusive()?")
+        || !lookup
             .text
-            .contains("namespace.create_entry(")
+            .contains("OpenedFile::child(inode, parent.clone(), name)?")
+        || lookup.text.contains("impl NamespaceAccess<'_>")
+        || !mutation.text.contains("parent.dentry.lock_exclusive()?")
+        || !mutation
+            .text
+            .contains("self.namespace_prepared(&mut publication)")
+        || !mount.text.contains("self.namespace()?.enter_mount(opened)")
+        || !mount.text.contains("point.dentry.lock_exclusive()?")
+        || !mount
+            .text
+            .contains("transaction.enter_mount(point.clone())?")
         || !source(sources, "kernel/src/fs/procfs.rs")
             .text
             .contains("size: node.metadata_size(),")
     {
-        errors.push("fs-root: admission/projection need one namespace capability; proc metadata must not reacquire it".into());
+        errors.push("fs-root: namespace capability owns topology/projection only; directory locks must cover lookup admission and mutation, with prepared publication and serialized mount pins; proc metadata must not reacquire it".into());
     }
     let inode = source(sources, "kernel/src/fs/inode.rs");
     let proc_inode = source(sources, "kernel/src/fs/procfs/link.rs");
@@ -363,6 +386,15 @@ mod tests {
             "kernel/src/fs/vfs/namespace_access.rs",
             "_guard: TaskMutexGuard<'a, ()>",
             "_guard: ()",
+            "namespace capability",
+        );
+    }
+    #[test]
+    fn rejects_lookup_holding_namespace_gate_across_filesystem_io() {
+        reject(
+            LOOKUP,
+            "let mut opened = self.enter_mount(opened)?;",
+            "let _namespace = self.namespace()?; let mut opened = self.enter_mount(opened)?;",
             "namespace capability",
         );
     }

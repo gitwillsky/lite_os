@@ -70,6 +70,42 @@ mod sync {
     pub(crate) fn observe_blocking(sender: std::sync::mpsc::Sender<()>) {
         BLOCKED.with(|hook| *hook.borrow_mut() = Some(sender));
     }
+    fn report_blocked() {
+        BLOCKED.with(|hook| {
+            if let Some(sender) = hook.borrow_mut().take() {
+                sender.send(()).unwrap();
+            }
+        });
+    }
+    // 这里只替换 host 调度 primitive；实际 TaskRwSemaphore 的 FIFO/交接由 src/sync 加载验证。
+    pub(crate) struct TaskRwSemaphore(std::sync::RwLock<()>);
+    pub(crate) type TaskReadGuard<'a> = std::sync::RwLockReadGuard<'a, ()>;
+    pub(crate) type TaskWriteGuard<'a> = std::sync::RwLockWriteGuard<'a, ()>;
+    impl TaskRwSemaphore {
+        pub(crate) const fn new() -> Self {
+            Self(std::sync::RwLock::new(()))
+        }
+        pub(crate) fn read(&self) -> Result<TaskReadGuard<'_>, ()> {
+            match self.0.try_read() {
+                Ok(guard) => Ok(guard),
+                Err(std::sync::TryLockError::Poisoned(_)) => Err(()),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    report_blocked();
+                    self.0.read().map_err(|_| ())
+                }
+            }
+        }
+        pub(crate) fn write(&self) -> Result<TaskWriteGuard<'_>, ()> {
+            match self.0.try_write() {
+                Ok(guard) => Ok(guard),
+                Err(std::sync::TryLockError::Poisoned(_)) => Err(()),
+                Err(std::sync::TryLockError::WouldBlock) => {
+                    report_blocked();
+                    self.0.write().map_err(|_| ())
+                }
+            }
+        }
+    }
     pub(crate) struct TaskMutex<T>(std::sync::Mutex<T>);
     pub(crate) type TaskMutexGuard<'a, T> = std::sync::MutexGuard<'a, T>;
     impl<T> TaskMutex<T> {
@@ -90,11 +126,7 @@ mod sync {
                 Ok(guard) => Ok(guard),
                 Err(std::sync::TryLockError::Poisoned(_)) => Err(()),
                 Err(std::sync::TryLockError::WouldBlock) => {
-                    BLOCKED.with(|hook| {
-                        if let Some(sender) = hook.borrow_mut().take() {
-                            sender.send(()).unwrap();
-                        }
-                    });
+                    report_blocked();
                     self.0.lock().map_err(|_| ())
                 }
             }
@@ -167,6 +199,8 @@ mod fs {
         Text(Vec<u8>),
         Opened(Arc<OpenedFile>),
     }
+    // 本 fixture 只执行 lookup，filesystem backend 不在其范围内；保留不可构造的显式类型边界。
+    pub(crate) enum InodeOpen {}
     mod write_access;
     pub(crate) use write_access::{InodeAccessLease, InodeWriteAccess};
     pub(crate) trait Inode: Send + Sync {
@@ -388,7 +422,6 @@ mod fs {
         use mount_propagation::MountPropagation;
         use mount_view::{Attachment, MountRestrictions, MountScope, MountView, WriteOpen};
         pub(in crate::fs) use mounted_filesystem::MountedFilesystem;
-        use namespace_access::NamespaceAccess;
         pub(crate) use opened::OpenedFile;
         pub(crate) struct VirtualFileSystem {
             root: Mutex<Option<Arc<OpenedFile>>>,
@@ -728,56 +761,79 @@ mod fs {
                 b"chain",
                 Node::new(InodeType::SymLink, b"dangling-relative"),
             );
-            let transaction = VFS.namespace().unwrap();
+            // 创建方只提供 backend seam；展开路径、父目录锁和 dentry admission 使用生产 walk。
+            let mut unexpected_create =
+                |_: Arc<OpenedFile>,
+                 _: &[u8]|
+                 -> Result<path_lookup::CreatedEntry, FileSystemError> {
+                    panic!("invalid or existing path must not create")
+                };
             for (link, expected) in [
                 (b"/dangling-relative".as_slice(), b"new-relative".as_slice()),
                 (b"/dangling-absolute", b"new-absolute"),
                 (b"/chain", b"new-relative"),
             ] {
-                match transaction
-                    .resolve_for_create(f.origin(), link, false, &AccessIdentity)
+                let mut create = |parent: Arc<OpenedFile>, name: &[u8]| {
+                    OpenedFile::child(f.file.clone(), parent, name).map(|opened| (opened, None))
+                };
+                match VFS
+                    .resolve_for_create(f.origin(), link, false, &AccessIdentity, &mut create)
                     .unwrap()
                 {
-                    path_lookup::PathLookup::Missing { parent, name } => {
-                        assert!(parent.same_path(&f.inner));
-                        assert_eq!(name, expected);
+                    path_lookup::PathLookup::Created((opened, _)) => {
+                        assert!(opened.parent(&f.jail).unwrap().unwrap().same_path(&f.inner));
+                        assert_eq!(opened.dentry.snapshot().unwrap().1.bytes(), expected);
                     }
                     path_lookup::PathLookup::Existing(_) => {
                         panic!("dangling target unexpectedly exists")
                     }
                 }
                 assert!(matches!(
-                    transaction.resolve_from(f.origin(), link, false, &AccessIdentity),
+                    VFS.resolve_from(f.origin(), link, false, &AccessIdentity),
                     Err(FileSystemError::NotFound)
                 ));
                 assert!(
-                    matches!(transaction.resolve_for_create(f.origin(), link, true, &AccessIdentity), Ok(path_lookup::PathLookup::Existing(opened)) if opened.inode().inode_type()==InodeType::SymLink)
+                    matches!(VFS.resolve_for_create(f.origin(), link, true, &AccessIdentity, &mut unexpected_create), Ok(path_lookup::PathLookup::Existing(opened)) if opened.inode().inode_type()==InodeType::SymLink)
                 );
             }
             assert!(matches!(
-                transaction.resolve_for_create(
+                VFS.resolve_for_create(
                     f.origin(),
                     b"/missing-parent/child",
                     false,
-                    &AccessIdentity
+                    &AccessIdentity,
+                    &mut unexpected_create
                 ),
                 Err(FileSystemError::NotFound)
             ));
             assert!(matches!(
-                transaction.resolve_for_create(
+                VFS.resolve_for_create(
                     f.origin(),
                     b"/missing-leaf/",
                     false,
-                    &AccessIdentity
+                    &AccessIdentity,
+                    &mut unexpected_create
                 ),
                 Err(FileSystemError::IsDirectory)
             ));
             assert!(matches!(
-                transaction.resolve_for_create(f.origin(), b"/inner/", false, &AccessIdentity),
+                VFS.resolve_for_create(
+                    f.origin(),
+                    b"/inner/",
+                    false,
+                    &AccessIdentity,
+                    &mut unexpected_create
+                ),
                 Err(FileSystemError::IsDirectory)
             ));
             assert!(matches!(
-                transaction.resolve_for_create(f.origin(), b"/loop", false, &AccessIdentity),
+                VFS.resolve_for_create(
+                    f.origin(),
+                    b"/loop",
+                    false,
+                    &AccessIdentity,
+                    &mut unexpected_create
+                ),
                 Err(FileSystemError::Loop)
             ));
         }
@@ -1001,9 +1057,7 @@ mod fs {
                 Err(FileSystemError::NameTooLong)
             ));
             assert!(matches!(
-                VFS.namespace()
-                    .unwrap()
-                    .parent_from(f.origin(), &name, &AccessIdentity),
+                VFS.parent_from(f.origin(), &name, &AccessIdentity),
                 Err(FileSystemError::NameTooLong)
             ));
             let long = [b'x'; 254];
@@ -1040,7 +1094,7 @@ mod fs {
             assert!(opened.same_path(&f.inner));
         }
         #[test]
-        fn lookup_admission_and_rename_publish_one_namespace_transaction() {
+        fn waiting_lookup_blocks_its_directory_rename_but_not_daemon_paths() {
             use std::{
                 sync::{Barrier, mpsc},
                 thread,
@@ -1052,13 +1106,14 @@ mod fs {
             let origin = f.origin();
             let reader =
                 thread::spawn(move || VFS.open_file_at(origin, b"/file", &AccessIdentity).unwrap());
-            pause.0.wait(); // Reader holds namespace while storage returns its child.
+            pause.0.wait(); // Reader 在 filesystem 等待期间只共享持有 jail 目录。
             let (blocked_tx, blocked_rx) = mpsc::channel();
             let (done_tx, done_rx) = mpsc::channel();
             let jail = f.jail.clone();
             let file = f.file.id;
             let writer = thread::spawn(move || {
                 crate::sync::observe_blocking(blocked_tx);
+                let _directory = jail.dentry.lock_exclusive().unwrap();
                 let _namespace = VFS.namespace().unwrap();
                 VFS.dentries.move_entry(
                     jail.inode_identity().unwrap(),
@@ -1071,15 +1126,31 @@ mod fs {
                 done_tx.send(()).unwrap();
             });
             let blocked = blocked_rx.recv_timeout(std::time::Duration::from_secs(2));
+            // 守护进程可能要先查找其他目录/投影路径才能回复 LOOKUP；这些不能等待该 LOOKUP 释放。
+            let daemon_origin = LookupOrigin::new(f.global.clone(), f.global.clone());
+            let projected_origin = f.origin();
+            let (daemon_tx, daemon_rx) = mpsc::channel();
+            let daemon = thread::spawn(move || {
+                let opened = VFS
+                    .open_file_at(daemon_origin, b"outside", &AccessIdentity)
+                    .unwrap();
+                let projected = VFS.current_directory_path(projected_origin).unwrap();
+                daemon_tx.send((opened, projected)).unwrap();
+            });
+            let independent = daemon_rx.recv_timeout(std::time::Duration::from_secs(2));
+            // 无论断言是否成功都先解除暂停并回收线程，让旧实现失败而非把测试进程挂住。
             pause.1.wait();
             let opened = reader.join().unwrap();
             writer.join().unwrap();
+            daemon.join().unwrap();
             done_rx.recv().unwrap();
             *f.jail_inode.find_pause.lock() = None;
             assert!(
                 blocked.is_ok(),
-                "writer must encounter the reader namespace guard"
+                "same-directory rename must wait until lookup admission completes"
             );
+            let (_, projected) = independent.expect("daemon paths must finish before LOOKUP reply");
+            assert_eq!(projected, b"/inner");
             assert_eq!(
                 VFS.namespace()
                     .unwrap()

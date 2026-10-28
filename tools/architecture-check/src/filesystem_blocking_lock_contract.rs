@@ -57,6 +57,22 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         "TaskMutex < () >",
         errors,
     );
+    require_field(
+        sources,
+        "kernel/src/fs/vfs/dentry.rs",
+        "Dentry",
+        "lock",
+        "TaskRwSemaphore",
+        errors,
+    );
+    require_field(
+        sources,
+        "kernel/src/fs/vfs/mounted_filesystem.rs",
+        "MountedFilesystem",
+        "rename",
+        "TaskMutex < () >",
+        errors,
+    );
 
     if let Some(position) = source(sources, "kernel/src/file/position.rs", errors)
         && (!position

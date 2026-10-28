@@ -37,6 +37,12 @@
   必须在锁外执行。unlock 必须先退休 queue/publisher 持有的 wait-node owner，再发布独立
   completion token；否则 arming task 可在旧 Arc 释放前恢复，取得 guard 后无法回收并复用其
   预分配 waiter。
+- `sync::TaskRwSemaphore` 拥有 task-context 共享读者数、独占写者、FIFO 等待链和每锁 ticket；
+  guard 不携带自旋锁且不可 Send，可跨阻塞 I/O 保活。它复用 TaskMutex 的 waiter preparation、
+  WaitCompletion 与唯一 TaskWaitTarget adapter，不新增 scheduler 状态或轮询等待。
+  新读者不能越过已排队写者；最后一个读者或写者释放时，在 state 短锁内直接授予队首写者或连续读者批次，
+  锁外先归还 queue/publisher 的 waiter Arc 再 complete/exact wake，防止 preparation 重用时仍有旧引用。
+  无竞争准入不分配；竞争 preflight OOM 返回错误，已入队的等待不可中断，guard Drop 必定交接/归还所有权。
 
 ## Failure and cleanup
 

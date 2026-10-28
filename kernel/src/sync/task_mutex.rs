@@ -59,14 +59,17 @@ use super::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TaskMutexOutOfMemory;
 
-struct Waiter {
-    key: TaskWaitKey,
+pub(super) struct Waiter {
+    pub(super) key: TaskWaitKey,
+    /// 读写锁队列里区分写者与读者（`TaskRwSemaphore` 释放时据此成批交接读者）；互斥锁恒为 true。
+    /// 若不区分，成批唤醒读者会把写者也当成共享持有者，破坏写入互斥。
+    pub(super) exclusive: bool,
     // OWNER: completion 独立保活，使 unlock 能先释放最后一个 queue/publisher waiter 引用，
     // 再发布完成。若 token 内嵌于 waiter，arming task 可在 publisher Arc 释放前恢复，
     // 导致 preparation 无法重新取得唯一 waiter ownership。
     completion: Arc<WaitCompletion>,
     target: Option<Arc<dyn TaskWaitTarget>>,
-    next: spin::Mutex<Option<Arc<Waiter>>>,
+    pub(super) next: spin::Mutex<Option<Arc<Waiter>>>,
 }
 
 impl Waiter {
@@ -79,6 +82,7 @@ impl Waiter {
                 deadline_ns: None,
                 mode: TaskWaitMode::Uninterruptible,
             },
+            exclusive: true,
             completion,
             target: None,
             next: spin::Mutex::new(None),
@@ -86,7 +90,7 @@ impl Waiter {
         .map_err(|_| TaskMutexOutOfMemory)
     }
 
-    fn wait(self: &Arc<Self>) {
+    pub(super) fn wait(self: &Arc<Self>) {
         let result = self
             .target
             .as_ref()
@@ -110,7 +114,7 @@ impl Waiter {
         (completion, wake)
     }
 
-    fn publish(self: Arc<Self>) -> Option<Wake> {
+    pub(super) fn publish(self: Arc<Self>) -> Option<Wake> {
         let (completion, wake) = self.retire();
         completion.complete().then_some(wake)
     }
@@ -149,20 +153,47 @@ impl TaskMutexWaitPreparation {
         self.arm_mode(mutex, TaskWaitMode::Uninterruptible)
     }
     fn arm_mode<T: ?Sized>(&mut self, mutex: &TaskMutex<T>, mode: TaskWaitMode) -> Arc<Waiter> {
+        self.arm_for(
+            core::ptr::from_ref(mutex).cast::<()>() as usize,
+            &mutex.next_ticket,
+            mode,
+            true,
+        )
+    }
+    /// 为 task mutex 或读写信号量的本次等待装填预分配 waiter。
+    ///
+    /// # Parameters
+    /// - `owner`：锁的稳定地址，用于 scheduler 的精确等待身份。
+    /// - `tickets`：该锁自己的 ticket 序列，不承载受保护数据的 memory ordering。
+    /// - `mode`：本次等待的 signal policy。
+    /// - `exclusive`：互斥/写者为 true，读写信号量的共享读者为 false。
+    ///
+    /// # Returns
+    /// 可移交队列的 waiter 引用；取得锁后由同一 preparation disarm。
+    ///
+    /// # Panics
+    /// preparation 尚有前次引用、ticket 耗尽或在非 task 上下文竞争时 fail-stop。
+    pub(super) fn arm_for(
+        &mut self,
+        owner: usize,
+        tickets: &AtomicU64,
+        mode: TaskWaitMode,
+        exclusive: bool,
+    ) -> Arc<Waiter> {
         let waiter = Arc::get_mut(&mut self.waiter)
             .expect("task mutex wait preparation reused before acquisition");
-        let ticket = mutex
-            .next_ticket
+        let ticket = tickets
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
                 current.checked_add(1)
             })
             .expect("task mutex waiter ticket exhausted");
         waiter.key = TaskWaitKey {
-            owner: core::ptr::from_ref(mutex).cast::<()>() as usize,
+            owner,
             ticket,
             deadline_ns: None,
             mode,
         };
+        waiter.exclusive = exclusive;
         waiter.target =
             Some(current_wait_target().expect("contended task mutex outside task context"));
         waiter.completion.reset();
@@ -170,7 +201,7 @@ impl TaskMutexWaitPreparation {
         self.waiter.clone()
     }
 
-    fn disarm(&mut self, waiter: Arc<Waiter>) {
+    pub(super) fn disarm(&mut self, waiter: Arc<Waiter>) {
         waiter.completion.complete();
         drop(waiter);
         Arc::get_mut(&mut self.waiter)
@@ -179,13 +210,13 @@ impl TaskMutexWaitPreparation {
     }
 }
 
-struct Wake {
+pub(super) struct Wake {
     target: Arc<dyn TaskWaitTarget>,
     key: TaskWaitKey,
 }
 
 impl Wake {
-    fn wake(self) {
+    pub(super) fn wake(self) {
         self.target.wake(self.key);
     }
 }

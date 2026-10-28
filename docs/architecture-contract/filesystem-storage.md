@@ -141,10 +141,24 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   为 `(unreachable)`，proc 路径不可达仍是全局链，deleted suffix 规则独立。path identity 必须同时比较
   actual mount view 与 canonical dentry，不按 inode ID 把 bind alias 或不同 namespace root 当成相同路径。
   Proc magic link source 供给 viewer root；mount table source 原子供给 TARGET mount namespace 与 TARGET FS root。lower VFS 无 Task 依赖。
-- `NamespaceAccess` 是既有 namespace TaskMutex 的唯一 RAII capability；普通 lookup、
-  find_child→DentryIndex.admit、mutation、整条 parent/name path projection 以及 mount/umount
-  同锁串行。mutation 借同一 capability traversal，不重新取得 gate。Canonical dentry location facts
-  每 dentry 单锁 snapshot，所有 Vec reserve 在该短锁外。禁止 entry admission 越过 rename。
+- `NamespaceAccess` 是 namespace TaskMutex 的唯一 RAII capability，只串行 mount 拓扑、整条 parent/name
+  投影与 unlink/rename 的 dentry 位置发布，不能跨可能等待用户态的 filesystem 操作持有。
+  普通 walk 对每个父目录共享持有 `Dentry::lock`（`TaskRwSemaphore`），覆盖 find_child→DentryIndex.admit；
+  create/link/symlink/unlink 与 O_CREAT 末项独占持有父目录，同目录的 lookup admission 不能越过变更发布。
+  已删除目录在取锁后拒绝新查找/变更。锁属于实际 canonical dentry，bind/namespace alias 不另建锁；
+  文件 hardlink 的各个 dentry 保持独立路径锁，inode 属性与链接数的原子性仍由实际 filesystem owner 负责。
+  跨目录 rename 先持实际 MountedFilesystem.rename（Linux s_vfs_rename_mutex），按祖先优先锁两个父目录，
+  再锁源/目标 dentry；在加受害者锁前拒绝祖先陷阱和目录/非目录互相覆盖。受害者锁按 dentry 地址排序并去重，
+  同目录变更不取 filesystem rename 锁。所有目录锁先于短 namespace gate，禁止反向等待目录锁或 backend admission。
+  unlink/rename 在 backend 提交前预分配 namespace waiter，成功后用 namespace_prepared 无失败发布位置；
+  最后 dput 前释放受害者/父目录锁和临时 inode pin，错误路径按 RAII 逆序释放。
+  mount 独占实际顶层挂载点，随后取 topology gate 并重查 overmount/deleted；lookup 穿越 mount 仅短暂持 gate，
+  新 mount pin 与普通 umount 的 busy 检查/摘索引同锁串行。已持 capability 的 caller 直接复用，不递归取 gate。
+  remount/根挂载转只读先在短 gate 内验证并 pin 实际 view，再由 filesystem admission 串行配置与 writer；
+  sync/后端重配置在 gate 外。普通卸载受 path pin 阻止，lazy detach 不撤销已开始的 superblock 配置。
+  Canonical dentry location facts 每 dentry 单锁 snapshot，所有 Vec reserve 在该短锁外。
+  Benchmark 决策：无竞争目录锁只更新 state，不分配 waiter；取消覆盖整条 walk 的全局串行。
+  O_CREAT 沿用唯一 walk，unlink/rename 只在冷提交前增加预分配；沿用现有 lookup/projection 成本基线，未改阈值。
 - Proc fd snapshot 只持真实 `Arc<OpenedFile>`，不保留 label/Text lookup 路由，不在 enumeration 中取得
   namespace/projection。组件上限 255 byte，d_path/getcwd 包含 NUL 上限 4096 byte，
   超限统一 NameTooLong→ENAMETOOLONG。Inode::link_target 一次返回 LinkTarget::Text/Opened，错误直接传播；
@@ -153,7 +167,7 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   topology 增长容量在短锁外 prepare，已有 mount records/attributes 在原锁内无分配移动。
   Proc fd link i_size 固定 64，root/cwd/exe 与 snapshot 为 0，
   不调用 read_link；readlink 在 namespace projection transaction 中使用 viewer root。因此 lookup
-  已持 gate 时不会经 proc metadata/fd enumeration 递归取得同一 TaskMutex。
+  不会经 proc metadata/fd enumeration 递归取得 namespace TaskMutex。
 - OFD status lock 保持 private；syscall 只经 `status_flags` 查询，`set_status_flags` 更新当前
   F_SETFL 支持的 O_APPEND/O_NONBLOCK，`set_nonblocking` 处理 FIONBIO。后者保留所有其他 flags，
   与 F_SETFL 在同一临界区串行化；dup/fork 不复制状态 owner。
@@ -295,7 +309,7 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   Ext4 构造显式接收实际 block dev_t，所有 inode st_dev/mountinfo 共用它；internal cache/filesystem
   identity 独立于 dev_t，禁止恢复固定 st_dev=1。DeviceNumber codec 属于 `fs::devnum`，host 加载实际 codec。
 - `RegularFileWrite` 的 write-sequence 与 operation gates 共同独占一次 syscall 的 position、append placement、storage transaction 和 resident-cache publication 顺序。
-- VFS namespace read/mutation 与 ext4 live-state transaction 使用 `TaskMutex` 逻辑 owner；其内部
+- VFS 短拓扑/位置发布事务与 ext4 live-state transaction 使用 `TaskMutex` 逻辑 owner；其内部
   spin gate 只发布 `Available/Held/Handoff(ticket)` 与预分配 waiter 链，logical guard 可以跨
   block I/O 和 task handoff，但不得保留 spin guard。竞争 waiter 必须进入 scheduler `Blocked`，
   unlock 在短锁内把 owner 直接交给最旧 ticket、锁外 exact wake；禁止恢复 spin/yield polling。

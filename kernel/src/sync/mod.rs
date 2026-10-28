@@ -12,12 +12,14 @@ use core::{
 
 mod task_event;
 mod task_mutex;
+mod task_rw_semaphore;
 mod task_wait;
 mod wait_completion;
 pub(crate) use task_event::TaskEvent;
 pub(crate) use task_mutex::{
     TaskMutex, TaskMutexGuard, TaskMutexLockError, TaskMutexWaitPreparation,
 };
+pub(crate) use task_rw_semaphore::{TaskReadGuard, TaskRwSemaphore, TaskWriteGuard};
 pub(crate) use task_wait::task_interrupted;
 pub(crate) use task_wait::{TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory};
 pub(crate) use wait_completion::WaitCompletion;

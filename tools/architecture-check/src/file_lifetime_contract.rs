@@ -33,7 +33,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         .split("fnrename_at(")
         .nth(1)
         .unwrap()
-        .split("implsuper::NamespaceAccess")
+        .split("implVirtualFileSystem{")
         .next()
         .unwrap();
     let opened = compact(sources, "kernel/src/fs/vfs/opened.rs");
@@ -43,14 +43,20 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         || !ordered(
             unlink,
             &[
-                "drop(namespace);",
+                "drop(victim_guard);",
+                "drop(directory_guard);",
                 "drop(target_inode);",
                 "drop(target_path);",
             ],
         )
         || !ordered(
             rename,
-            &["drop(namespace);", "drop(target);", "drop(target_path);"],
+            &[
+                "drop((first_victim,second_victim));",
+                "drop((first_directory,second_directory,rename));",
+                "drop(target);",
+                "drop(target_path);",
+            ],
         )
         || !ofd.contains("write._content.release_inode_access();")
         || !ordered(

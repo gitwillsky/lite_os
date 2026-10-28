@@ -38,7 +38,6 @@ use mount_table::write_mount_record;
 pub(crate) use mount_view::WriteOpen;
 use mount_view::{Attachment, MountRestrictions, MountScope, MountView};
 pub(in crate::fs) use mounted_filesystem::{MountDeviceClaim, MountedFilesystem};
-use namespace_access::NamespaceAccess;
 pub(crate) use opened::{ContentWrite, OpenedFile, ReadAccess};
 use spin::Once;
 /// pseudo filesystem 唯一internal mount producer；不加入任何namespace森林或quota/count/index。
@@ -76,7 +75,7 @@ pub(crate) use record_lock::{
 /// namespace 各自拥有 topology；这里只保留 boot initial namespace，不按当前 Task 隐式选路径。
 pub(crate) struct VirtualFileSystem {
     initial: Arc<MountNamespace>,
-    // OWNER: rename/inode mutation 与 dentry/index/attachment publication 使用同一 sleeping gate。
+    // OWNER: mount 拓扑、路径投影与 dentry 位置发布的短事务；不跨 filesystem I/O 持有。
     namespace_mutation: TaskMutex<()>,
     dentries: DentryIndex,
     advisory_locks: Mutex<Vec<advisory_lock::AdvisoryFileLock>>,
@@ -105,8 +104,8 @@ impl VirtualFileSystem {
         &self,
         target: &Arc<MountNamespace>,
     ) -> Result<Arc<OpenedFile>, FileSystemError> {
-        let _transaction = self.namespace()?;
-        self.enter_mount(target.root()?)
+        let transaction = self.namespace()?;
+        transaction.enter_mount(target.root()?)
     }
     fn root_opened(&self) -> Result<Arc<OpenedFile>, FileSystemError> {
         self.initial.root()
@@ -151,14 +150,19 @@ impl VirtualFileSystem {
         options: &[u8],
         bind: bool,
     ) -> Result<(), FileSystemError> {
-        let _transaction = self.namespace()?;
-        let view = root
-            .mount
-            .as_ref()
-            .ok_or(FileSystemError::InvalidOperation)?;
-        if !namespace.contains(view) || !Arc::ptr_eq(&root.dentry, &view.root) {
-            return Err(FileSystemError::InvalidOperation);
-        }
+        let view = {
+            let _transaction = self.namespace()?;
+            let view = root
+                .mount
+                .as_ref()
+                .ok_or(FileSystemError::InvalidOperation)?;
+            if !namespace.contains(view) || !Arc::ptr_eq(&root.dentry, &view.root) {
+                return Err(FileSystemError::InvalidOperation);
+            }
+            view.clone()
+        };
+        // 实际 path pin 阻止普通卸载；lazy detach 可撤销 membership，但不撤销已开始的
+        // superblock 配置。admission 唯一串行配置与 writer，等待后端期间不能持拓扑锁。
         view.reconfigure(
             if bind {
                 mount_view::Reconfiguration::View(flags)
@@ -178,8 +182,10 @@ impl VirtualFileSystem {
         root: &Arc<OpenedFile>,
         identity: &AccessIdentity,
     ) -> Result<(), FileSystemError> {
-        let _transaction = self.namespace()?;
-        let view = namespace.unmount_view(root)?;
+        let view = {
+            let _transaction = self.namespace()?;
+            namespace.unmount_view(root)?.clone()
+        };
         view.reconfigure(
             mount_view::Reconfiguration::SuperblockReadOnly,
             &[],

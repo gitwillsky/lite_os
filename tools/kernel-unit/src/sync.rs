@@ -28,6 +28,9 @@ pub(crate) use task_mutex::{
     TaskMutex, TaskMutexGuard, TaskMutexLockError, TaskMutexWaitPreparation,
 };
 
+#[path = "../../../kernel/src/sync/task_rw_semaphore.rs"]
+mod task_rw_semaphore;
+
 #[path = "../../../kernel/src/sync/task_event.rs"]
 #[allow(
     dead_code,

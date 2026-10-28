@@ -2472,14 +2472,17 @@ kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn read_e
 kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn remove_entry (& self , name : & [u8] , remove_directory : bool ,) -> Result < () , FileSystemError >
 kernel/src/fs/fuse/inode/directory.rs :: pub (super) impl FuseInode :: fn rename_entry (& self , old_name : & [u8] , new_parent_inode : u64 , new_name : & [u8] , no_replace : bool ,) -> Result < () , FileSystemError >
 kernel/src/fs/fuse/inode/directory.rs :: pub (super) struct CachedEntry
+kernel/src/fs/fuse/inode/handle.rs :: pub (super) HandleLease :: reference : HandleRef
 kernel/src/fs/fuse/inode/handle.rs :: pub (super) HandleRef :: flags : u32
 kernel/src/fs/fuse/inode/handle.rs :: pub (super) HandleRef :: handle : u64
 kernel/src/fs/fuse/inode/handle.rs :: pub (super) impl FuseInode :: fn attach_handle (& self , opened : & protocol :: Opened , flags : u32 , mut release : Reserved ,) -> Result < Arc < Handle > , FileSystemError >
 kernel/src/fs/fuse/inode/handle.rs :: pub (super) impl FuseInode :: fn drain_writes (& self , handle : HandleRef)
-kernel/src/fs/fuse/inode/handle.rs :: pub (super) impl FuseInode :: fn handle (& self , writable : bool) -> Result < HandleRef , FileSystemError >
+kernel/src/fs/fuse/inode/handle.rs :: pub (super) impl FuseInode :: fn handle (& self , writable : bool) -> Result < HandleLease , FileSystemError >
 kernel/src/fs/fuse/inode/handle.rs :: pub (super) impl FuseInode :: fn register_handle (& self , handle : & Arc < Handle >) -> Result < () , FileSystemError >
 kernel/src/fs/fuse/inode/handle.rs :: pub (super) struct Handle
+kernel/src/fs/fuse/inode/handle.rs :: pub (super) struct HandleLease
 kernel/src/fs/fuse/inode/handle.rs :: pub (super) struct HandleRef
+kernel/src/fs/fuse/inode/handle.rs :: pub (super) struct RegisteredHandle
 kernel/src/fs/fuse/options.rs :: pub (super) Options :: allow_other : bool
 kernel/src/fs/fuse/options.rs :: pub (super) Options :: default_permissions : bool
 kernel/src/fs/fuse/options.rs :: pub (super) Options :: fd : i32
@@ -3621,7 +3624,10 @@ kernel/src/fs/vfs/dentry.rs :: pub (super) impl Dentry :: fn diagnostic_label (&
 kernel/src/fs/vfs/dentry.rs :: pub (super) impl Dentry :: fn index_key (& self) -> Result < Option < DentryKey > , FileSystemError >
 kernel/src/fs/vfs/dentry.rs :: pub (super) impl Dentry :: fn inode (& self) -> Arc < dyn Inode >
 kernel/src/fs/vfs/dentry.rs :: pub (super) impl Dentry :: fn inode_identity (& self) -> Result < (usize , u64) , FileSystemError >
+kernel/src/fs/vfs/dentry.rs :: pub (super) impl Dentry :: fn is_ancestor_of (& self , other : & Arc < Self >) -> bool
 kernel/src/fs/vfs/dentry.rs :: pub (super) impl Dentry :: fn is_unlinked (& self) -> bool
+kernel/src/fs/vfs/dentry.rs :: pub (super) impl Dentry :: fn lock_exclusive (& self) -> Result < TaskWriteGuard < '_ > , FileSystemError >
+kernel/src/fs/vfs/dentry.rs :: pub (super) impl Dentry :: fn lock_shared (& self) -> Result < TaskReadGuard < '_ > , FileSystemError >
 kernel/src/fs/vfs/dentry.rs :: pub (super) impl Dentry :: fn mark_deleted (& self , key : DentryKey)
 kernel/src/fs/vfs/dentry.rs :: pub (super) impl Dentry :: fn move_to (& self , key : DentryKey , parent : Arc < Self > , name : FileName , new_key : DentryKey ,) -> Arc < Self >
 kernel/src/fs/vfs/dentry.rs :: pub (super) impl Dentry :: fn named (inode : Arc < dyn Inode > , parent : Option < Arc < Self > > , name : & [u8] ,) -> Result < Arc < Self > , FileSystemError >
@@ -3706,8 +3712,9 @@ kernel/src/fs/vfs/mount_operations.rs :: pub (crate) impl VirtualFileSystem :: f
 kernel/src/fs/vfs/mount_operations.rs :: pub (crate) impl VirtualFileSystem :: fn is_namespace_root (& self , namespace : & Arc < MountNamespace > , opened : & Arc < OpenedFile > ,) -> bool
 kernel/src/fs/vfs/mount_operations.rs :: pub (crate) impl VirtualFileSystem :: fn move_mount (& self , namespace : & Arc < MountNamespace > , source : & Arc < OpenedFile > , point : & Arc < OpenedFile > ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs/mount_operations.rs :: pub (in crate :: fs) impl VirtualFileSystem :: fn mount (& self , namespace : & Arc < MountNamespace > , point : Arc < OpenedFile > , filesystem : Arc < MountedFilesystem > , source : Arc < Vec < u8 > > , root_inode : Arc < dyn Inode > , flags : MountFlags ,) -> Result < () , FileSystemError >
-kernel/src/fs/vfs/mount_operations.rs :: pub (super) impl VirtualFileSystem :: fn enter_mount (& self , mut opened : Arc < OpenedFile > ,) -> Result < Arc < OpenedFile > , FileSystemError >
+kernel/src/fs/vfs/mount_operations.rs :: pub (super) impl VirtualFileSystem :: fn enter_mount (& self , opened : Arc < OpenedFile > ,) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/fs/vfs/mount_operations.rs :: pub (super) impl VirtualFileSystem :: fn is_mount_point (& self , path : & Arc < OpenedFile >) -> bool
+kernel/src/fs/vfs/mount_operations.rs :: pub (super) impl super :: namespace_access :: NamespaceAccess < '_ > :: fn enter_mount (& self , mut opened : Arc < OpenedFile > ,) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/fs/vfs/mount_propagation.rs :: enum MountPropagation :: Private
 kernel/src/fs/vfs/mount_propagation.rs :: enum MountPropagation :: Shared
 kernel/src/fs/vfs/mount_propagation.rs :: enum MountPropagation :: Slave
@@ -3831,6 +3838,7 @@ kernel/src/fs/vfs/mounted_filesystem.rs :: pub (in crate :: fs) struct MountDevi
 kernel/src/fs/vfs/mounted_filesystem.rs :: pub (in crate :: fs) struct MountedFilesystem
 kernel/src/fs/vfs/mounted_filesystem.rs :: pub (super) MountedFilesystem :: admission : TaskMutex < () >
 kernel/src/fs/vfs/mounted_filesystem.rs :: pub (super) MountedFilesystem :: filesystem : Arc < dyn FileSystem >
+kernel/src/fs/vfs/mounted_filesystem.rs :: pub (super) MountedFilesystem :: rename : TaskMutex < () >
 kernel/src/fs/vfs/mounted_filesystem.rs :: pub (super) MountedFilesystem :: state : Mutex < SuperState >
 kernel/src/fs/vfs/mounted_filesystem.rs :: pub (super) MountedFilesystem :: user : Arc < crate :: namespace :: UserNamespace >
 kernel/src/fs/vfs/mounted_filesystem.rs :: pub (super) SuperState :: read_only : bool
@@ -3846,10 +3854,9 @@ kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn open_o
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn rename_at (& self , old_start : LookupOrigin , old_path : & [u8] , new_start : LookupOrigin , new_path : & [u8] , no_replace : bool , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn symlink_at (& self , start : LookupOrigin , path : & [u8] , target : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/vfs/mutation.rs :: pub (crate) impl VirtualFileSystem :: fn unlink_at (& self , start : LookupOrigin , path : & [u8] , directory : bool , identity : & AccessIdentity ,) -> Result < () , FileSystemError >
-kernel/src/fs/vfs/mutation.rs :: pub (super) impl super :: NamespaceAccess < '_ > :: fn create_entry (& self , start : LookupOrigin , path : & [u8] , kind : InodeType , mode : u32 , device : Option < DeviceNumber > , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
-kernel/src/fs/vfs/namespace_access.rs :: pub (super) NamespaceAccess :: vfs : & 'a VirtualFileSystem
 kernel/src/fs/vfs/namespace_access.rs :: pub (super) impl NamespaceAccess < '_ > :: fn path (& self , opened : & Arc < OpenedFile > , root : & Arc < OpenedFile > , proc : bool ,) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/vfs/namespace_access.rs :: pub (super) impl VirtualFileSystem :: fn namespace (& self) -> Result < NamespaceAccess < '_ > , FileSystemError >
+kernel/src/fs/vfs/namespace_access.rs :: pub (super) impl VirtualFileSystem :: fn namespace_prepared (& self , preparation : & mut TaskMutexWaitPreparation ,) -> NamespaceAccess < '_ >
 kernel/src/fs/vfs/namespace_access.rs :: pub (super) struct NamespaceAccess < 'a >
 kernel/src/fs/vfs/opened.rs :: pub (crate) impl ContentWrite :: fn release_inode_access (& mut self)
 kernel/src/fs/vfs/opened.rs :: pub (crate) impl OpenedFile :: fn begin_content_write (& self) -> Result < ContentWrite , FileSystemError >
@@ -3883,8 +3890,8 @@ kernel/src/fs/vfs/opened_xattr.rs :: pub (crate) impl OpenedFile :: fn change_xa
 kernel/src/fs/vfs/opened_xattr.rs :: pub (crate) impl OpenedFile :: fn executable_capability (& self , namespace : & super :: MountNamespace , caller : & Arc < UserNamespace > ,) -> Result < Option < file_capability :: FileCapabilityData > , FileSystemError >
 kernel/src/fs/vfs/opened_xattr.rs :: pub (crate) impl OpenedFile :: fn list_xattrs (& self , identity : & AccessIdentity) -> Result < Vec < u8 > , XattrError >
 kernel/src/fs/vfs/opened_xattr.rs :: pub (crate) impl OpenedFile :: fn read_xattr (& self , name : & [u8] , identity : & AccessIdentity ,) -> Result < Vec < u8 > , XattrError >
+kernel/src/fs/vfs/path_lookup.rs :: enum PathLookup :: Created (CreatedEntry)
 kernel/src/fs/vfs/path_lookup.rs :: enum PathLookup :: Existing (Arc < OpenedFile >)
-kernel/src/fs/vfs/path_lookup.rs :: enum PathLookup :: Missing { parent : Arc < OpenedFile > , name : Vec < u8 > , }
 kernel/src/fs/vfs/path_lookup.rs :: pub (crate) impl VirtualFileSystem :: fn current_directory_path (& self , origin : LookupOrigin ,) -> Result < Vec < u8 > , FileSystemError >
 kernel/src/fs/vfs/path_lookup.rs :: pub (crate) impl VirtualFileSystem :: fn initial_origin (& self) -> Result < LookupOrigin , FileSystemError >
 kernel/src/fs/vfs/path_lookup.rs :: pub (crate) impl VirtualFileSystem :: fn open_at (& self , origin : LookupOrigin , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < dyn Inode > , FileSystemError >
@@ -3892,9 +3899,11 @@ kernel/src/fs/vfs/path_lookup.rs :: pub (crate) impl VirtualFileSystem :: fn ope
 kernel/src/fs/vfs/path_lookup.rs :: pub (crate) impl VirtualFileSystem :: fn open_file_at (& self , origin : LookupOrigin , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/fs/vfs/path_lookup.rs :: pub (crate) impl VirtualFileSystem :: fn open_file_at_no_follow (& self , origin : LookupOrigin , path : & [u8] , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
 kernel/src/fs/vfs/path_lookup.rs :: pub (super) enum PathLookup
-kernel/src/fs/vfs/path_lookup.rs :: pub (super) impl NamespaceAccess < '_ > :: fn parent_from (& self , origin : LookupOrigin , path : & [u8] , identity : & AccessIdentity ,) -> Result < (Arc < OpenedFile > , Vec < u8 >) , FileSystemError >
-kernel/src/fs/vfs/path_lookup.rs :: pub (super) impl NamespaceAccess < '_ > :: fn resolve_for_create (& self , origin : LookupOrigin , path : & [u8] , keep_final_symlink : bool , identity : & AccessIdentity ,) -> Result < PathLookup , FileSystemError >
-kernel/src/fs/vfs/path_lookup.rs :: pub (super) impl NamespaceAccess < '_ > :: fn resolve_from (& self , origin : LookupOrigin , path : & [u8] , allow_final_symlink : bool , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
+kernel/src/fs/vfs/path_lookup.rs :: pub (super) impl VirtualFileSystem :: fn parent_from (& self , origin : LookupOrigin , path : & [u8] , identity : & AccessIdentity ,) -> Result < (Arc < OpenedFile > , Vec < u8 >) , FileSystemError >
+kernel/src/fs/vfs/path_lookup.rs :: pub (super) impl VirtualFileSystem :: fn resolve_for_create (& self , origin : LookupOrigin , path : & [u8] , keep_final_symlink : bool , identity : & AccessIdentity , create : CreateMissing < '_ > ,) -> Result < PathLookup , FileSystemError >
+kernel/src/fs/vfs/path_lookup.rs :: pub (super) impl VirtualFileSystem :: fn resolve_from (& self , origin : LookupOrigin , path : & [u8] , allow_final_symlink : bool , identity : & AccessIdentity ,) -> Result < Arc < OpenedFile > , FileSystemError >
+kernel/src/fs/vfs/path_lookup.rs :: pub (super) type CreateMissing < 'a > = & 'a mut dyn FnMut (Arc < OpenedFile > , & [u8]) -> Result < CreatedEntry , FileSystemError >
+kernel/src/fs/vfs/path_lookup.rs :: pub (super) type CreatedEntry  = (Arc < OpenedFile > , Option < crate :: fs :: InodeOpen >)
 kernel/src/fs/vfs/record_lock.rs :: enum RecordLockMode :: Read
 kernel/src/fs/vfs/record_lock.rs :: enum RecordLockMode :: Write
 kernel/src/fs/vfs/record_lock.rs :: pub (crate) RecordLockConflict :: mode : RecordLockMode
@@ -6849,6 +6858,7 @@ kernel/src/sync/mod.rs :: pub (crate) struct LocalIrqGuard
 kernel/src/sync/mod.rs :: pub (crate) struct LocalIrqTransfer
 kernel/src/sync/mod.rs :: pub (crate) use task_event :: TaskEvent
 kernel/src/sync/mod.rs :: pub (crate) use task_mutex :: { TaskMutex , TaskMutexGuard , TaskMutexLockError , TaskMutexWaitPreparation , }
+kernel/src/sync/mod.rs :: pub (crate) use task_rw_semaphore :: { TaskReadGuard , TaskRwSemaphore , TaskWriteGuard }
 kernel/src/sync/mod.rs :: pub (crate) use task_wait :: task_interrupted
 kernel/src/sync/mod.rs :: pub (crate) use task_wait :: { TaskWaitKey , TaskWaitTarget , WaitResult , install_wait_target_factory }
 kernel/src/sync/mod.rs :: pub (crate) use wait_completion :: WaitCompletion
@@ -6871,11 +6881,27 @@ kernel/src/sync/task_mutex.rs :: pub (crate) struct TaskMutexGuard < 'a , T : ? 
 kernel/src/sync/task_mutex.rs :: pub (crate) struct TaskMutexOutOfMemory
 kernel/src/sync/task_mutex.rs :: pub (crate) struct TaskMutexWaitPreparation
 kernel/src/sync/task_mutex.rs :: pub (crate) use signal_acquisition :: TaskMutexLockError
+kernel/src/sync/task_mutex.rs :: pub (super) Waiter :: exclusive : bool
+kernel/src/sync/task_mutex.rs :: pub (super) Waiter :: key : TaskWaitKey
+kernel/src/sync/task_mutex.rs :: pub (super) Waiter :: next : spin :: Mutex < Option < Arc < Waiter > > >
+kernel/src/sync/task_mutex.rs :: pub (super) impl TaskMutexWaitPreparation :: fn arm_for (& mut self , owner : usize , tickets : & AtomicU64 , mode : TaskWaitMode , exclusive : bool ,) -> Arc < Waiter >
+kernel/src/sync/task_mutex.rs :: pub (super) impl TaskMutexWaitPreparation :: fn disarm (& mut self , waiter : Arc < Waiter >)
+kernel/src/sync/task_mutex.rs :: pub (super) impl Waiter :: fn publish (self : Arc < Self >) -> Option < Wake >
+kernel/src/sync/task_mutex.rs :: pub (super) impl Waiter :: fn wait (self : & Arc < Self >)
+kernel/src/sync/task_mutex.rs :: pub (super) impl Wake :: fn wake (self)
+kernel/src/sync/task_mutex.rs :: pub (super) struct Waiter
+kernel/src/sync/task_mutex.rs :: pub (super) struct Wake
 kernel/src/sync/task_mutex/signal_acquisition.rs :: enum TaskMutexLockError :: Interrupted
 kernel/src/sync/task_mutex/signal_acquisition.rs :: enum TaskMutexLockError :: OutOfMemory
 kernel/src/sync/task_mutex/signal_acquisition.rs :: pub (crate) enum TaskMutexLockError
 kernel/src/sync/task_mutex/signal_acquisition.rs :: pub (crate) impl TaskMutex < T > :: fn lock_interruptible (& self) -> Result < TaskMutexGuard < '_ , T > , TaskMutexLockError >
 kernel/src/sync/task_mutex/signal_acquisition.rs :: pub (crate) impl TaskMutex < T > :: fn lock_killable (& self) -> Result < TaskMutexGuard < '_ , T > , TaskMutexLockError >
+kernel/src/sync/task_rw_semaphore.rs :: pub (crate) impl TaskRwSemaphore :: const fn new () -> Self
+kernel/src/sync/task_rw_semaphore.rs :: pub (crate) impl TaskRwSemaphore :: fn read (& self) -> Result < TaskReadGuard < '_ > , TaskMutexOutOfMemory >
+kernel/src/sync/task_rw_semaphore.rs :: pub (crate) impl TaskRwSemaphore :: fn write (& self) -> Result < TaskWriteGuard < '_ > , TaskMutexOutOfMemory >
+kernel/src/sync/task_rw_semaphore.rs :: pub (crate) struct TaskReadGuard < 'a >
+kernel/src/sync/task_rw_semaphore.rs :: pub (crate) struct TaskRwSemaphore
+kernel/src/sync/task_rw_semaphore.rs :: pub (crate) struct TaskWriteGuard < 'a >
 kernel/src/sync/task_wait.rs :: enum TaskWaitMode :: # [doc = " Linux TASK_IDLE：不可中断的 daemon 空闲等待，TASK_NOLOAD 排除负载统计。"] Idle
 kernel/src/sync/task_wait.rs :: enum TaskWaitMode :: Interruptible
 kernel/src/sync/task_wait.rs :: enum TaskWaitMode :: Killable

@@ -75,7 +75,9 @@
 - directory iteration 由 inode adapter 从 opaque cursor 直接推进：ext4 线性目录的 cursor 是下一 record byte
   offset，htree 目录的 cursor 是 hash 位置，内存型 adapter 使用 ordinal cookie；VFS 不物化完整目录，`getdents64` 只编码一个有界 batch。
 - close、dup replacement、CLOEXEC 与 SCM receive 遵守 reserve/detach/publish 顺序，可能析构或通知的 consequence 在 fd-table lock 外执行。
-- VFS `openat(O_CREAT)` 在 namespace mutation owner 内原子选择 existing winner 或 create commit；
+- VFS lookup 共享持有实际父目录锁，create/unlink/rename 独占持有相关目录项；等待 FUSE 不持全局拓扑锁。
+  mount 穿越、位置发布与整条路径投影只短暂持有 namespace gate，remount 的后端准备在 gate 外。
+  VFS `openat(O_CREAT)` 在同一次父目录独占持有内原子选择 existing winner 或 create commit；
   无 `O_EXCL` 的并发 append 不会因另一个 creator 先提交而误报 `EEXIST`。
 
 ## Known limits

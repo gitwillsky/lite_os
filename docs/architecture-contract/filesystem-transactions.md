@@ -25,7 +25,7 @@
   `Inode::data_backing` 分派，不经 page cache），不注册 pathname 或引入私有 shared-memory ABI。当前 seal 支持 `SEAL|SHRINK|GROW|WRITE|FUTURE_WRITE`（写映射 lease 见文件系统存储契约），未支持的 hugetlb
   语义明确返回错误。F_ADD_SEALS 先判 Memory backing，再判 OFD writable，最后校验 mask；RO memfd 的零/未知 mask 均 EPERM。add_seals 与 truncate/write 共用 write_sequence；truncate 先 check seal，再 prepare metadata guard、执行可失败 pages
   mutation，成功后无失败提交 killpriv。所有 pages/metadata guards 在 MM invalidation 前释放；seal/OOM/I/O 拒绝不清 set-ID、不改 size/time。
-- `openat(O_CREAT)` 的 final lookup 与 create 必须在同一个 VFS namespace mutation transaction
+- `openat(O_CREAT)` 的 final lookup 与 create 必须在同一次 VFS 父目录锁独占持有
   内完成：存在且无 `O_EXCL` 时打开 winner，存在且有 `O_EXCL` 时返回 `EEXIST`，不存在时创建。
   禁止锁外先 lookup 再调用独立 create；该双阶段会让并发普通 append 错误收到 `EEXIST`。
 - file 的 `PreparedFileDescription` 是唯一 OFD allocation protocol：Arc<MaybeUninit<OFD>>
@@ -266,7 +266,7 @@ Sequential read 不再以全局 count==0 捷径跳过 OFD 类型操作；eventfd
   回归覆盖，warm open 仅新增现有 path shell 的 mount Arc pin，成本纳入最终 OFD benchmark。
 
 - O_CREAT 与 lookup 共用唯一 PathLookup walk：create intent 只允许最终 normal component 缺失，
-  返回展开后的实际 parent/name，create_child 在同一 namespace mutation gate 中消费；禁止因
+  在最终父目录独占持有内将展开后的实际 parent/name 交给 create_child 回调并返回 Created；禁止因
   跟随链接后的 ENOENT 重走原始路径。普通 lookup 的 ENOENT 不额外分配，create normal 末项的
   trailing slash 在父搜索后返回 EISDIR，缺失中间目录保留 ENOENT。新建结果只在一次 open 中
   传递，FMODE_CREATED 按 parent 授权免除新 inode mode 检查/O_TRUNC，不作为 inode 缓存状态。

@@ -45,6 +45,10 @@ pub(in crate::fs) struct MountedFilesystem {
     // OWNER: writer grant 与 backend reconfiguration 的唯一 sleeping gate。
     // writer release 只使用 state 短锁；若先发表 RW 再恢复 journal，会准入未准备好的写者。
     pub(super) admission: TaskMutex<()>,
+    // OWNER: 跨目录 rename 的唯一串行锁（Linux `s_vfs_rename_mutex`），先于两个父目录锁取得。
+    // 它冻结本 filesystem 的 dentry 祖先关系，rename 才能判定父目录加锁顺序与"移入自身子树"；
+    // 缺失时两个跨目录 rename 可按相反顺序锁住同一对目录而死锁。
+    pub(super) rename: TaskMutex<()>,
     // None 是尚未注册的已创建资源；失败仍要 shutdown，但不能删除别人的 membership。
     registration: Mutex<Option<usize>>,
 }
@@ -66,6 +70,7 @@ impl MountedFilesystem {
                 writers: 0,
             }),
             admission: TaskMutex::new(()),
+            rename: TaskMutex::new(()),
             registration: Mutex::new(None),
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;

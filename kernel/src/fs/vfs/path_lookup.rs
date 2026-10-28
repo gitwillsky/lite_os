@@ -1,13 +1,16 @@
 use super::*;
 
-/// 唯一 walk 的末项结果；Missing 只在 create intent 下交付已授权搜索的真实父目录。
+/// 创建意图下由 walk 在父目录独占持有内创建出的末项，以及 filesystem 原子创建时已打开的 backend。
+pub(super) type CreatedEntry = (Arc<OpenedFile>, Option<crate::fs::InodeOpen>);
+/// O_CREAT 末项的创建回调：walk 已独占持有 `parent` 并确认 `name` 不存在（Linux `lookup_open`）。
+pub(super) type CreateMissing<'a> =
+    &'a mut dyn FnMut(Arc<OpenedFile>, &[u8]) -> Result<CreatedEntry, FileSystemError>;
+
+/// 唯一 walk 的末项结果；Created 只在 create intent 下、由同一次父目录独占持有内的回调产生。
 /// 原始路径/链接展开路径不再由创建方重新解析，不把悬空链接的 ENOENT 当作原路径不存在。
 pub(super) enum PathLookup {
     Existing(Arc<OpenedFile>),
-    Missing {
-        parent: Arc<OpenedFile>,
-        name: Vec<u8>,
-    },
+    Created(CreatedEntry),
 }
 
 impl VirtualFileSystem {
@@ -66,8 +69,7 @@ impl VirtualFileSystem {
         path: &[u8],
         identity: &AccessIdentity,
     ) -> Result<Arc<OpenedFile>, FileSystemError> {
-        self.namespace()?
-            .resolve_from(origin, path, false, identity)
+        self.resolve_from(origin, path, false, identity)
     }
 
     /// 解析 pathname 但不跟随最终 symbolic link，保留最终目录项身份（`UMOUNT_NOFOLLOW`）。
@@ -81,11 +83,9 @@ impl VirtualFileSystem {
         path: &[u8],
         identity: &AccessIdentity,
     ) -> Result<Arc<OpenedFile>, FileSystemError> {
-        self.namespace()?.resolve_from(origin, path, true, identity)
+        self.resolve_from(origin, path, true, identity)
     }
-}
 
-impl NamespaceAccess<'_> {
     pub(super) fn resolve_from(
         &self,
         origin: LookupOrigin,
@@ -93,21 +93,35 @@ impl NamespaceAccess<'_> {
         allow_final_symlink: bool,
         identity: &AccessIdentity,
     ) -> Result<Arc<OpenedFile>, FileSystemError> {
-        match self.resolve_from_with_limit(origin, path, allow_final_symlink, identity, 0, false)? {
+        match self.resolve_from_with_limit(origin, path, allow_final_symlink, identity, 0, None)? {
             PathLookup::Existing(opened) => Ok(opened),
-            PathLookup::Missing { .. } => unreachable!("lookup without create intent"),
+            PathLookup::Created(_) => unreachable!("lookup without create intent"),
         }
     }
 
-    /// O_CREAT 与普通 lookup 共用同一 walk；仅允许最终 normal component 缺失。
+    /// O_CREAT 与普通 lookup 共用同一 walk；仅最终 normal component 缺失时调用 `create`。
+    ///
+    /// # Parameters
+    /// - `origin`：caller 的 root/start 快照，链接展开不替换 root。
+    /// - `path`：原始 pathname bytes。
+    /// - `keep_final_symlink`：O_EXCL/O_NOFOLLOW 保留无尾随斜杠的末项链接。
+    /// - `identity`：整次 walk 与创建使用的 credential snapshot。
+    /// - `create`：父目录已独占持有且末项不存在时调用的创建方。
+    ///
+    /// # Returns
+    /// 已存在的实际路径，或同次父目录独占持有内创建的路径/backend。
+    ///
+    /// # Errors
+    /// 传播 traversal、目录锁分配与创建方错误，不重走原 pathname。
     pub(super) fn resolve_for_create(
         &self,
         origin: LookupOrigin,
         path: &[u8],
         keep_final_symlink: bool,
         identity: &AccessIdentity,
+        create: CreateMissing<'_>,
     ) -> Result<PathLookup, FileSystemError> {
-        self.resolve_from_with_limit(origin, path, keep_final_symlink, identity, 0, true)
+        self.resolve_from_with_limit(origin, path, keep_final_symlink, identity, 0, Some(create))
     }
 
     fn resolve_from_with_limit(
@@ -117,7 +131,7 @@ impl NamespaceAccess<'_> {
         allow_final_symlink: bool,
         identity: &AccessIdentity,
         followed_links: usize,
-        create: bool,
+        mut create: Option<CreateMissing<'_>>,
     ) -> Result<PathLookup, FileSystemError> {
         const MAX_SYMLINKS: usize = 40;
         if path.is_empty() {
@@ -129,7 +143,7 @@ impl NamespaceAccess<'_> {
         } else {
             start
         };
-        let mut opened = self.vfs.enter_mount(opened)?;
+        let mut opened = self.enter_mount(opened)?;
         let component_count = path
             .split(|byte| *byte == b'/')
             .filter(|component| !component.is_empty())
@@ -150,7 +164,7 @@ impl NamespaceAccess<'_> {
                         continue;
                     }
                     if let Some(parent) = opened.parent(&root)? {
-                        opened = self.vfs.enter_mount(parent)?;
+                        opened = self.enter_mount(parent)?;
                     }
                 }
                 name => {
@@ -158,28 +172,33 @@ impl NamespaceAccess<'_> {
                         return Err(FileSystemError::NameTooLong);
                     }
                     let parent = opened.clone();
-                    let is_final = index + 1 == component_count;
+                    let creating = create.is_some() && index + 1 == component_count;
                     // lookup_fast_for_open：父目录搜索成功后，O_CREAT normal 末项尾随斜杠为 EISDIR。
-                    if create && is_final && path.last() == Some(&b'/') {
+                    if creating && path.last() == Some(&b'/') {
                         return Err(FileSystemError::IsDirectory);
                     }
-                    let inode = match parent.inode().find_child(name) {
-                        Ok(inode) => inode,
-                        Err(FileSystemError::NotFound) if create && is_final => {
-                            let mut owned_name = Vec::new();
-                            owned_name
-                                .try_reserve_exact(name.len())
-                                .map_err(|_| FileSystemError::OutOfMemory)?;
-                            owned_name.extend_from_slice(name);
-                            return Ok(PathLookup::Missing {
-                                parent,
-                                name: owned_name,
-                            });
+                    // Linux lookup_slow/lookup_open：find_child 与 dentry admission 在父目录锁内，
+                    // 与同目录的 unlink/rename 发布互斥；O_CREAT 末项独占，查找与创建不被插入。
+                    let child = {
+                        let (_shared, _exclusive) = if creating {
+                            (None, Some(parent.dentry.lock_exclusive()?))
+                        } else {
+                            (Some(parent.dentry.lock_shared()?), None)
+                        };
+                        // Linux IS_DEADDIR：已删除的目录里不再查找或创建。
+                        if parent.is_unlinked() {
+                            return Err(FileSystemError::NotFound);
                         }
-                        Err(error) => return Err(error),
+                        match parent.inode().find_child(name) {
+                            Ok(inode) => OpenedFile::child(inode, parent.clone(), name)?,
+                            Err(FileSystemError::NotFound) if creating => {
+                                let create = create.as_deref_mut().expect("create intent");
+                                return create(parent.clone(), name).map(PathLookup::Created);
+                            }
+                            Err(error) => return Err(error),
+                        }
                     };
-                    opened = OpenedFile::child(inode, parent.clone(), name)?;
-                    opened = self.vfs.enter_mount(opened)?;
+                    opened = self.enter_mount(child)?;
                     let is_untrailed_final = index + 1 == component_count
                         && path.last().is_none_or(|byte| *byte != b'/');
                     if opened.inode().inode_type() == InodeType::SymLink

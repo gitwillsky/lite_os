@@ -206,11 +206,11 @@ fn lazy_detach_disconnects_unlocked_children_and_preserves_locked_edges() {
             .restrictions
             .inseparable = locked;
         {
-            let _transaction = VFS.namespace().unwrap();
+            let transaction = VFS.namespace().unwrap();
             namespace.remove(&old_root, UnmountMode::Detach).unwrap();
             assert!(!namespace.contains(old_root.mount.as_ref().unwrap()));
             assert!(!namespace.contains(old_child.mount.as_ref().unwrap()));
-            let visible = VFS.enter_mount(child_point.clone()).unwrap();
+            let visible = transaction.enter_mount(child_point.clone()).unwrap();
             assert_eq!(visible.same_path(&old_child), locked);
             if locked {
                 assert!(

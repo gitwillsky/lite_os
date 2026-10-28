@@ -32,6 +32,8 @@
 - **锁序**：`Connection.queue` → `Request.phase`；inode 的 attributes/entries/handles 各自独立，互不嵌套；
   名字缓存与索引的被替换项在锁外析构，子 inode 的最终 Drop 可重入连接。目录操作在守护进程未声明
   PARALLEL_DIROPS 时取 `directory_operations`，持有期间只发请求，不取其他 inode 的锁。
+  VFS 只在实际父目录锁内等待 LOOKUP/目录变更；全局 topology gate 不跨 FUSE 请求、页缓存同步或 remount。
+  等待中的请求必须允许守护进程访问不相关目录并投影路径；目录与 mount 锁序由[存储契约](filesystem-storage.md)拥有。
 
 本域引入的 VFS 接口与调用者：
 
