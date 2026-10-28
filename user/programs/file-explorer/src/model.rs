@@ -19,9 +19,9 @@ pub enum Location {
     Desktop,
     MyComputer,
     ControlPanel,
-    /// 网上邻居：只有“整个网络”；系统没有 SMB 与网络邻居发现协议。
+    /// 网上邻居：只有“整个网络”；网络邻居发现不使用 NetBIOS 广播；共享通过显式 UNC 映射。
     NetworkPlaces,
-    /// 整个网络：没有网络提供程序时为空文件夹。
+    /// 整个网络：尚不枚举局域网服务器。
     EntireNetwork,
     /// 网络和拨号连接：本机的局域网接口（`/sys/class/net`）。
     NetworkConnections,
@@ -40,6 +40,8 @@ pub enum Icon {
     System,
     Disk,
     OpticalDisc,
+    NetworkDrive,
+    OfflineDrive,
     ControlPanel,
     MyDocuments,
     RecycleBin,
@@ -67,6 +69,8 @@ impl Icon {
             Icon::Application => "file-app",
             Icon::System => "file-system",
             Icon::Disk => "drive-hdd",
+            Icon::NetworkDrive => "drive-network",
+            Icon::OfflineDrive => "drive-network-offline",
             Icon::OpticalDisc => "drive-cd",
             Icon::ControlPanel => "control-panel",
             Icon::MyDocuments => "my-documents",
@@ -182,6 +186,8 @@ pub enum Details {
 /// 一个可显示、可打开的条目。
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Item {
+    /// 映射盘符只由 network-drive 记录提供；打开时使用它恢复连接，不从显示文字解析。
+    pub drive: Option<char>,
     pub name: String,
     pub icon: Icon,
     /// “类型”列文本，如“文件夹”“文本文档”。
@@ -201,6 +207,7 @@ pub struct Item {
 impl Item {
     fn new(name: impl Into<String>, icon: Icon, kind: impl Into<String>) -> Self {
         Self {
+            drive: None,
             name: name.into(),
             icon,
             kind: kind.into(),
@@ -459,6 +466,7 @@ impl Location {
             }
             Location::MyComputer => {
                 let mut items = drives(mounts);
+                items.extend(network_drives()?);
                 let mut panel = Item::new("控制面板", Icon::ControlPanel, "系统文件夹");
                 panel.target = Some(Location::ControlPanel);
                 items.push(panel);
@@ -640,6 +648,35 @@ fn drives(mounts: &str) -> Vec<Item> {
         });
     }
     items
+}
+
+fn network_drives() -> io::Result<Vec<Item>> {
+    let store = network_drive::Store::current()?;
+    let mut items = Vec::new();
+    for mapping in store.list()? {
+        let point = store.mountpoint(mapping.letter)?;
+        let mounted = store.mounted(mapping.letter)?;
+        items.push(Item {
+            drive: Some(mapping.letter),
+            target: Some(Location::Directory(point.clone())),
+            path: Some(point),
+            details: Details::Drive(None),
+            ..Item::new(
+                format!("{} ({}:)", mapping.source, mapping.letter),
+                if mounted {
+                    Icon::NetworkDrive
+                } else {
+                    Icon::OfflineDrive
+                },
+                if mounted {
+                    "网络驱动器"
+                } else {
+                    "已断开的网络驱动器"
+                },
+            )
+        });
+    }
+    Ok(items)
 }
 
 /// 描述一个文件系统条目；元数据读取失败时按普通文件处理，不让单个坏条目挡住整个目录。

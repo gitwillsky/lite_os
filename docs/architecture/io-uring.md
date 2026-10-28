@@ -3,6 +3,7 @@
 ## 当前设计
 
 io_uring 是 Linux ABI 里对应 Windows NT 完成端口的接口：用户态把请求写进提交队列（SQ），内核把结果投到完成队列（CQ），
+已支持 SQE64/SQE128 与单次设备 `URING_CMD`（当前 `/dev/fuse`）；CQE 为标准 16 字节。
 双方只通过共享内存里的 head/tail 交接，不必为每个请求进内核。已实现骨架、`NOP`、读写类 opcode、`FSYNC`、`OPENAT`、`STATX`、`CLOSE` 以及阻塞请求的异步完成，
 其余 opcode 的接入按 [io_uring 契约](../architecture-contract/io-uring.md)分期进行。
 
@@ -35,7 +36,7 @@ io_uring 是 Linux ABI 里对应 Windows NT 完成端口的接口：用户态把
 
 ## Known limits
 
-- 未开放：multishot 的 poll/timeout、其余 opcode、`BUFFER_SELECT`、固定文件/缓冲区注册、SQPOLL/IOPOLL、SQE128/CQE32。
+- 未开放：multishot 的 poll/timeout、其余 opcode、`BUFFER_SELECT`、固定文件/缓冲区注册、SQPOLL/IOPOLL、CQE32。
 - 阻塞车道最多 `MAX_WORKERS`（8）个线程：超过后作业在共享 FIFO 里排队（有界并发），空闲 worker 不退出。regular 文件的写与 fsync 在 worker 上同步执行，不是真异步（Linux io-wq 同样）。
 - regular 文件读只在 page cache 未命中且后端支持异步读（ext4；其固定 4 KiB profile 保证文件系统块恒等于设备块）时不占线程，其余后端与请求槽暂满时回退车道。
 - 同时发起的两个当前位置读读取同一区间（Linux 相同）：需要顺序语义的用户应使用链。

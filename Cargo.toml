@@ -24,6 +24,8 @@ exclude = [
     "user/libraries/desktop-entry",
     "user/libraries/desktop-settings",
     "user/libraries/network-config",
+    "user/libraries/network-drive",
+    "user/programs/smbfs",
     "user/programs/control-panel",
     "user/libraries/calendar",
     "user/libraries/sound",

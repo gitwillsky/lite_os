@@ -303,6 +303,17 @@ impl Waiter {
         self.0.state.lock().lane = Some(ticket);
     }
 
+    /// 车道已完成；之后的设备等待必须允许取消，不能把已完成票据继续判为 Running。
+    pub(super) fn detach_lane(&self) {
+        let retired = self.0.state.lock().lane.take();
+        drop(retired);
+    }
+
+    /// 多阶段设备命令在一次不可取消的复制结束后，仍须观察该阶段中到期的 LINK_TIMEOUT。
+    pub(super) fn link_timed_out(&self) -> bool {
+        self.0.state.lock().timed_out
+    }
+
     /// 正在等待的成员匹配 `target` 时尝试取消它。
     pub(super) fn cancel(&self, target: &Target) -> Cancel {
         let mut state = self.0.state.lock();

@@ -2,6 +2,7 @@ mod capabilities;
 mod clone_errno;
 mod credentials;
 mod device;
+mod device_backing;
 mod epoll;
 use syscall_abi::errno;
 mod eventfd;

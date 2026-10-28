@@ -66,10 +66,15 @@ impl Background {
 impl Queue {
     /// reserve/前台 enqueue 预留了 deferred 项的 pending 槽；promotion 只移动 Arc，不分配。
     pub(super) fn promote_background(&mut self) {
-        while self.background.active < usize::from(self.background.maximum) {
-            let Some(request) = self.background.pending.pop_front() else {
-                break;
-            };
+        while let Some(index) = self.background.pending.iter().position(|request| {
+            self.background.active < usize::from(self.background.maximum)
+                || self.idle_ring_queue(request)
+        }) {
+            let request = self
+                .background
+                .pending
+                .remove(index)
+                .expect("eligible background request");
             self.background.active += 1;
             self.pending.push_back(request);
         }
@@ -95,10 +100,11 @@ impl Connection {
             .try_reserve(needed)
             .map_err(|_| FileSystemError::OutOfMemory)?;
         // 2. 由同一 budget owner 准入，包含初始化请求；前台调用独立，不被后台限流。
+        queue.route(&request);
         queue.background.pending.push_back(request);
         queue.promote_background();
         drop(queue);
-        self.readiness.1.signal_readiness();
+        self.wake_requests();
         Ok(())
     }
 
@@ -125,7 +131,7 @@ impl Connection {
             queue.promote_background();
         }
         drop(queue);
-        self.readiness.1.signal_readiness();
+        self.wake_requests();
     }
 
     /// 返回实际请求令牌数，包括等 INIT 的调用，不含未发送的预留 RELEASE/FORGET。
@@ -151,7 +157,7 @@ impl Connection {
         }
         queue.promote_background();
         drop(queue);
-        self.readiness.1.signal_readiness();
+        self.wake_requests();
     }
 
     /// 积压与活动后台请求达到 congestion threshold 时，调用方只填充 demand 页，停止额外预读。

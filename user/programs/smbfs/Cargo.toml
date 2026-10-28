@@ -1,0 +1,17 @@
+[package]
+name = "smbfs"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+network-drive = { path = "../../libraries/network-drive" }
+linux-uapi = { path = "../../libraries/linux-uapi" }
+fuser = { version = "=0.17.0", default-features = false, features = ["abi-7-31"] }
+smb = { version = "=0.12.1", default-features = false, features = ["multi_threaded", "sign", "encrypt_aes128ccm", "encrypt_aes128gcm"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+fuser = { version = "=0.17.0", default-features = false, features = ["macos-no-mount"] }
+
+[lints]
+workspace = true

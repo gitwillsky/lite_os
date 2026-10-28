@@ -22,10 +22,16 @@ use super::{
     user_iovec::{UserIoCursor, UserIoVec},
 };
 
-/// 当前 task 地址空间上的 [`UserMemory`]。
-struct TaskUserMemory<'a>(&'a TaskControlBlock);
+/// 指定 task 地址空间上的 [`UserMemory`]；io_uring 车道也以提交线程而非当前执行体访问。
+pub(super) struct TaskUserMemory<'a>(pub(super) &'a TaskControlBlock);
 
 impl UserMemory for TaskUserMemory<'_> {
+    fn backing_file(
+        &self,
+        fd: i32,
+    ) -> Result<alloc::sync::Arc<dyn crate::fs::BackingFile>, DeviceError> {
+        super::device_backing::capture(self.0, fd)
+    }
     fn pid_namespace(&self) -> alloc::sync::Arc<crate::namespace::PidNamespace> {
         self.0.pid_namespace()
     }

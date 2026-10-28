@@ -296,6 +296,7 @@ pub(super) fn attr_out(bytes: &[u8]) -> Result<((u64, u32), Attributes), FileSys
 pub(super) struct Opened {
     pub(super) handle: u64,
     pub(super) flags: u32,
+    pub(super) backing_id: i32,
 }
 
 pub(super) fn open_out(bytes: &[u8]) -> Result<Opened, FileSystemError> {
@@ -303,6 +304,7 @@ pub(super) fn open_out(bytes: &[u8]) -> Result<Opened, FileSystemError> {
     Ok(Opened {
         handle: reader.u64()?,
         flags: reader.u32()?,
+        backing_id: reader.u32()? as i32,
     })
 }
 

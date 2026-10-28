@@ -3,6 +3,7 @@
 //! ring 的布局、SQE 校验和 CQE 发布由 `crate::io_uring` 拥有；这里不解释 ring 内存。
 
 mod chain;
+mod device;
 mod exec;
 mod lane;
 mod ops;

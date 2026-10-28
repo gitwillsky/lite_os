@@ -370,6 +370,12 @@ fn io_in(handle: HandleRef, offset: u64, size: u32, io_flags: u32) -> [u8; 40] {
 }
 
 impl Inode for FuseInode {
+    fn stack_depth(&self) -> u32 {
+        self.mount
+            .connection
+            .negotiated()
+            .map_or(0, |options| options.max_stack_depth)
+    }
     fn read_xattr(&self, name: &[u8]) -> Result<Vec<u8>, FileSystemError> {
         self.remote_xattr(Some(name))
     }

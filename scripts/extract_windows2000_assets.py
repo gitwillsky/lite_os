@@ -33,7 +33,7 @@ PE_FILES = (
     # 设备管理器、网络连接与记事本的专用图标。
     "devmgr.dll", "netshell.dll", "notepad.exe",
     # 文件夹 Web 视图的模板、样式与左侧水印/分隔线（类型 23 资源）。
-    "webvw.dll",
+    "webvw.dll", "mprui.dll",
 )
 # 只为取工具栏位图而加入的 DLL：其中个别资源可能是损坏/非标准图标，跳过并记警告，
 # 不影响上面逐图核对的核心素材。
@@ -49,6 +49,8 @@ ICONS = {
     "file-text": ("shell32.dll", 152),
     "file-app": ("shell32.dll", 3),
     "drive-hdd": ("shell32.dll", 9),
+    "drive-network": ("shell32.dll", 10),
+    "drive-network-offline": ("shell32.dll", 11),
     "drive-cd": ("shell32.dll", 12),
     "file-system": ("shell32.dll", 153),
     "control-panel": ("shell32.dll", 137),
@@ -228,6 +230,68 @@ def check(directory: Path) -> dict:
     return manifest
 
 
+def network_drive_labels(expanded: Path) -> str:
+    """解析固定 ISO 的 DLGTEMPLATEEX/RT_STRING，只发布网络驱动器实际使用的标签。"""
+    def dialog(source: str, number: int) -> tuple[str, list[tuple[int, str]]]:
+        data = subprocess.check_output(["wrestool", "-x", "--raw", "-t5", f"-n{number}", str(expanded / source)])
+        if data[:4] != b"\x01\x00\xff\xff":
+            raise ValueError(f"expected fixed DLGTEMPLATEEX: {source}:{number}")
+        position = 26
+        def field() -> str:
+            nonlocal position
+            value = struct.unpack_from("<H", data, position)[0]
+            position += 2
+            if value == 0xffff:
+                position += 2
+                return ""
+            values = []
+            while value:
+                values.append(value)
+                value = struct.unpack_from("<H", data, position)[0]
+                position += 2
+            return struct.pack("<" + "H" * len(values), *values).decode("utf-16le")
+        field(); field()
+        caption = field()
+        if struct.unpack_from("<I", data, 12)[0] & 0x40:
+            position += 6
+            field()
+        controls = []
+        for _ in range(struct.unpack_from("<H", data, 16)[0]):
+            position = (position + 3) & ~3
+            control = struct.unpack_from("<I", data, position + 20)[0]
+            position += 24
+            field()
+            text = field()
+            extra = struct.unpack_from("<H", data, position)[0]
+            position += 2
+            if extra:
+                raise ValueError("fixed network dialog unexpectedly has creation data")
+            if text:
+                controls.append((control, text))
+        return caption, controls
+    title, mapping = dialog("netplwiz.dll", 106)
+    _, credentials = dialog("netplwiz.dll", 117)
+    _, disconnect = dialog("mprui.dll", 7002)
+    # 控件 ID 与静态标签顺序来自固定资源，不按中文关键字猜测或保留手写替代文字。
+    values = {
+        "MAP_TITLE": title, "MAP_PROMPT": mapping[1][1], "DRIVE": mapping[2][1], "FOLDER": mapping[3][1],
+        "RECONNECT": dict(mapping)[1038], "USERNAME": credentials[0][1], "PASSWORD": credentials[1][1], "DOMAIN": credentials[2][1],
+        "DISCONNECT_PROMPT": dict(disconnect)[4115], "OK": dict(disconnect)[1], "CANCEL": dict(disconnect)[2],
+    }
+    number = 12055
+    data = subprocess.check_output(["wrestool", "-x", "--raw", "-t6", f"-n{number // 16 + 1}", str(expanded / "mprui.dll")])
+    position = 0
+    for index in range(16):
+        length = struct.unpack_from("<H", data, position)[0]
+        position += 2
+        text = data[position:position + length * 2].decode("utf-16le")
+        position += length * 2
+        if index == number % 16:
+            values["DISCONNECT_TITLE"] = text
+    return "// 由唯一 Windows 2000 ISO 导入器生成；来源见 assets/classic/manifest.json。\n" + "".join(
+        f"pub const {name}: &str = {json.dumps(text, ensure_ascii=False)};\n" for name, text in values.items())
+
+
 def extract(iso: Path, output: Path) -> dict:
     """提取 ISO 到新的本地目录，返回 manifest；不覆盖已有结果，失败清理临时文件。"""
     from PIL import Image
@@ -305,7 +369,7 @@ def extract(iso: Path, output: Path) -> dict:
                     warnings.append(f"{path.name}: skipped ({error})")
                     path.unlink()
 
-        logical: dict[str, dict] = {kind: {} for kind in ("icons", "cursors", "bitmaps", "sounds", "fonts", "wallpapers")}
+        logical: dict[str, dict] = {kind: {} for kind in ("icons", "cursors", "bitmaps", "sounds", "fonts", "wallpapers", "ui_text")}
 
         def resource(source: str, kind: int, number: int | str, suffix: str) -> Path:
             # 这里只接受简中资源，不把其他语言悄悄当成简中参照。
@@ -387,6 +451,10 @@ def extract(iso: Path, output: Path) -> dict:
                 image.load()
                 size = list(image.size)
             record("wallpapers", name, [path], file=short, size=size)
+        text = result / "text/network-drive.rs"
+        text.parent.mkdir()
+        text.write_text(network_drive_labels(expanded))
+        record("ui_text", "network-drive", [text], sources={"netplwiz.dll": {"dialogs": [106, 117]}, "mprui.dll": {"dialogs": [7002], "strings": [12055]}})
         files = {}
         for path in sorted(result.rglob("*")):
             if path.is_file():
@@ -460,6 +528,12 @@ def publish(directory: Path) -> dict:
                     if image.endswith(".png") and path.is_file():
                         record(path, "ui", {"source": item["source"], "resource": item["resource"],
                                             "language": 2052, "conversion": "BMP V4; native dimensions"})
+        for item in source["logical"]["ui_text"].values():
+            original = directory / item["paths"][0]
+            path = result / "text" / original.name
+            path.parent.mkdir(exist_ok=True)
+            shutil.copyfile(original, path)
+            record(path, "ui_text", {"sources": item["sources"], "language": 2052, "conversion": "DLGTEMPLATEEX/RT_STRING labels; UTF-8 Rust constants"})
         # 2. 启动画面、光标、字体和声音由同一份 ISO 提供，不保留原创或替代来源。
         with Image.open(directory / "bitmaps-src/boot-scene-1x.png") as image:
             (result / "boot-scene.lbs").write_bytes(pack_boot(image))

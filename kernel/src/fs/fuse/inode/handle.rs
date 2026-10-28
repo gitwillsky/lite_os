@@ -8,7 +8,7 @@ use crate::{
     fs::{
         AccessIdentity, DirectIo, FileSystemError, Inode, InodeType, StorageOpen,
         fuse::{
-            connection::{ReplyShape, Reserved},
+            connection::{OpenedBacking, ReplyShape, Reserved},
             filesystem::{Mount, Unsupported},
             protocol::{self, Fields},
         },
@@ -24,6 +24,7 @@ pub(super) struct Handle {
     flags: u32,
     /// 回复里的 FOPEN_* 标志。
     open_flags: u32,
+    backing: Option<OpenedBacking>,
     /// OPEN 得到的普通文件句柄；目录句柄没有 flush（Linux 目录 file_operations 不含 `flush`）。
     file: bool,
     readable: bool,
@@ -32,12 +33,18 @@ pub(super) struct Handle {
 }
 
 impl StorageOpen for Handle {
+    fn backing_file(&self) -> Option<Arc<dyn crate::fs::BackingOpen>> {
+        self.backing.as_ref().map(|backing| backing.opened.clone())
+    }
     fn direct_io(self: Arc<Self>) -> Option<Arc<dyn DirectIo>> {
-        (self.file && self.open_flags & fuse::FOPEN_DIRECT_IO != 0)
+        (self.file && (self.open_flags & fuse::FOPEN_DIRECT_IO != 0 || self.backing.is_some()))
             .then_some(self as Arc<dyn DirectIo>)
     }
 
     fn prepare_mapping(&self, shared: bool) -> Result<(), FileSystemError> {
+        if self.backing.is_some() {
+            return Ok(());
+        }
         if self.open_flags & fuse::FOPEN_DIRECT_IO == 0 {
             return Ok(());
         }
@@ -95,6 +102,11 @@ impl StorageOpen for Handle {
 
 impl DirectIo for Handle {
     fn read(&self, offset: u64, output: &mut [u8]) -> Result<usize, FileSystemError> {
+        if self.open_flags & fuse::FOPEN_DIRECT_IO == 0
+            && let Some(backing) = &self.backing
+        {
+            return backing.opened.read(offset, output);
+        }
         let inode = self
             .mount
             .node(self.nodeid)
@@ -128,6 +140,17 @@ impl DirectIo for Handle {
             .mount
             .node(self.nodeid)
             .ok_or(FileSystemError::NotFound)?;
+        if self.open_flags & fuse::FOPEN_DIRECT_IO == 0
+            && let Some(backing) = &self.backing
+        {
+            let written = backing.opened.write(offset, input, identity)?;
+            if written != 0 {
+                let mut cached = inode.attributes.lock();
+                cached.attributes.size = cached.attributes.size.max(offset + written as u64);
+                cached.valid_until = 0;
+            }
+            return Ok(written);
+        }
         let flags = if identity.has_capability(syscall_abi::capability::Capability::FSETID) {
             0
         } else {
@@ -141,6 +164,15 @@ impl DirectIo for Handle {
             .mount
             .node(self.nodeid)
             .ok_or(FileSystemError::NotFound)?;
+        if self.open_flags & fuse::FOPEN_DIRECT_IO == 0
+            && let Some(backing) = &self.backing
+        {
+            let size = backing.opened.size()?;
+            let mut cached = inode.attributes.lock();
+            cached.attributes.size = size;
+            cached.valid_until = 0;
+            return Ok(size);
+        }
         inode.invalidate_attributes();
         inode.metadata().map(|metadata| metadata.size)
     }
@@ -164,6 +196,8 @@ pub(super) struct HandleLease {
 
 /// inode 句柄表的一项：访问方向随登记保存，挑选时不必在锁内升级 Weak。
 pub(super) struct RegisteredHandle {
+    registration: Option<Weak<dyn crate::fs::BackingFile>>,
+    direct: bool,
     handle: Weak<Handle>,
     readable: bool,
     writable: bool,
@@ -258,6 +292,23 @@ impl FuseInode {
         mut release: Reserved,
     ) -> Result<Arc<Handle>, FileSystemError> {
         release.patch(0, &opened.handle.to_ne_bytes());
+        let backing = if opened.flags & fuse::FOPEN_PASSTHROUGH != 0 {
+            let allowed =
+                fuse::FOPEN_PASSTHROUGH | fuse::FOPEN_DIRECT_IO | fuse::FOPEN_NOFLUSH | (1 << 6);
+            if self.kind != InodeType::File || opened.flags & !allowed != 0 {
+                release.send();
+                return Err(FileSystemError::InvalidOperation);
+            }
+            match self.mount.connection.open_backing(opened.backing_id, flags) {
+                Ok(backing) => Some(backing),
+                Err(error) => {
+                    release.send();
+                    return Err(error);
+                }
+            }
+        } else {
+            None
+        };
         let access = flags & crate::fs::O_ACCMODE;
         let handle = Arc::try_new(Handle {
             mount: self.mount.clone(),
@@ -265,6 +316,7 @@ impl FuseInode {
             handle: opened.handle,
             flags,
             open_flags: opened.flags,
+            backing,
             file: self.kind == InodeType::File,
             readable: access != crate::fs::O_WRONLY,
             writable: access != crate::fs::O_RDONLY,
@@ -278,10 +330,27 @@ impl FuseInode {
     pub(super) fn register_handle(&self, handle: &Arc<Handle>) -> Result<(), FileSystemError> {
         let mut handles = self.handles.lock();
         handles.retain(|entry| entry.handle.strong_count() != 0);
+        let registration = handle
+            .backing
+            .as_ref()
+            .map(|backing| Arc::downgrade(&backing.registration));
+        for active in handles.iter() {
+            let valid = match (&registration, &active.registration) {
+                (Some(new), Some(old)) => Weak::ptr_eq(new, old),
+                (Some(_), None) => active.direct,
+                (None, Some(_)) => false,
+                (None, None) => true,
+            };
+            if !valid {
+                return Err(FileSystemError::InvalidOperation);
+            }
+        }
         handles
             .try_reserve(1)
             .map_err(|_| FileSystemError::OutOfMemory)?;
         handles.push(RegisteredHandle {
+            registration,
+            direct: handle.open_flags & fuse::FOPEN_DIRECT_IO != 0,
             handle: Arc::downgrade(handle),
             readable: handle.readable,
             writable: handle.writable,

@@ -9,7 +9,7 @@
 | `kernel::io_uring::ops` | SQE 的 init/prep/issue；支持的 opcode 集合由 `abi::op_supported` 唯一定义，probe 与 issue 共用 |
 | `kernel::io_uring::file` | ring fd 的 `DeviceFile`：poll/epoll、mmap 与匿名 inode 标签 |
 | `memory::DeviceBacking` | ring 页的物理所有权，以及 `atomic_u32`/`write` 这两个唯一的共享页访问入口 |
-| `syscall::io_uring` | `io_uring_setup/enter/register` 的参数解码、user-copy、临时 signal mask 与 errno；opcode 的 prep（`ops`）；`Now`/`Wait` 与显式 task 的执行（`exec`）；interest 登记（`wait`）；reactor 与取消（`worker`）；不解释 ring 内存 |
+| `syscall::io_uring` | `io_uring_setup/enter/register` 的参数、user-copy、sigmask 与 errno；prep（`ops`）；`Now`/`Wait` 与显式 task 的执行（`exec`）；设备命令交接（`device`）；interest 登记（`wait`）；reactor 与取消（`worker`）；不解释 ring 内存 |
 | `syscall::fs::io` | `perform_read/perform_write`：`read(2)`、`readv(2)` 与 io_uring 共用的读写核心、记账与 inotify 通知；`nowait` 是唯一的 per-IO 阻塞开关 |
 
 规范：Linux `v7.1`，见 [标准基线](../standards-baseline.md) 的 `include/uapi/linux/io_uring.h` 与 `io_uring/` 实现语义。
@@ -17,6 +17,8 @@
 
 ## Interface
 
+- `IORING_SETUP_SQE128` 决定 SQE stride（64/128）与实际收费/mmap 区域；SQ array 下标仍代表一个请求。
+  每次消费在 head 发布前复制完整 SQE（含后 64 字节），普通 SQE 不读取相邻槽；CQE 仍为 16 字节。
 - ring 头部布局：`sq.head@0`、`sq.tail@64`、`cq.head@128`、`cq.tail@192`、各 mask/entries/flags/dropped/overflow 紧随其后，CQE 数组从
   320 起，SQ array 在 CQE 数组之后。偏移经 `io_uring_params` 告知用户态，不得被假定固定。
 - 所有 head/tail/flags 访问都经 `AtomicU32`：内核写 CQE 后 release 写 `cq.tail`，读 `sq.tail` 用 acquire，写 `sq.head` 用 release。
@@ -42,6 +44,23 @@
   否则 future 被挂起后没有任何东西会重新 poll 它。
 - 带计数的 `TIMEOUT` 统计“除 timeout 自身外已发布的 CQE 数”（`Ring::events_posted`）；timeout 的完成必须经 `complete_timeout`，否则两个 timeout 会互相推进对方。
 - 凭据：请求使用提交者提交时刻的凭据（`IORING_FEAT_CUR_PERSONALITY`），没有注册 personality。
+
+## 设备命令
+
+- `IORING_OP_URING_CMD` 的 cmd_op、标准 addr/len 与 offset48 起的 command area 在 prep 复制；
+  flags 只接受普通单次命令，FIXED/MULTISHOT 返回 EOPNOTSUPP；pad1/未知 flags 为 EINVAL。
+- `fs::chardev::{UringCommand, PendingCommand}` 与 `DeviceFile::uring_command` 为唯一设备 seam，
+  当前只有 `/dev/fuse` 实现；非设备/未实现设备 EOPNOTSUPP，非法 fd EBADF。syscall 不解释 FUSE UAPI。
+- `PendingCommand::ready` 只登记 Weak<CompletionNotify> 并检查状态，不访问用户页；`step` 与启动命令
+  的用户复制在现有 lane 中执行。没有请求时用 Interest::Block 等待，不能占一个 lane worker 等守护进程请求。
+- `device::Progress` 的短 Mutex 仅移交唯一命令令牌/结果，不持锁调用设备或 user-copy；future 与在途 lane
+  各持 Arc。丢弃 future 后，已开始复制的作业仍保活实际 OFD，结束后释放令牌；尚未开始的作业可取消。
+  设备只保留弱通知，不能反向保活 ring。lane 的作用域守卫在完成、取消和 future Drop 时均撤下票据，打断 Waiter/Ticket 的通知引用环；之后的设备等待重新允许取消；
+  复制期间到期的 LINK_TIMEOUT 在下一等待边界继续生效，不能被一次 Running 的取消尝试吞掉。
+- FUSE 等待取消按设备语义 ENOTCONN；普通设备默认 ECANCELED。关闭 ring 继续复用原先的 future Drop，
+  不另设设备命令登记表。每个命令只用一个交接槽，复制可 fault 的一次 step 才分配车道作业/票据。
+- Benchmark 决策：普通 opcode 不新增间接层/分配；设备命令多一次交接槽和每次实际复制的车道调度，
+  复用既有最多 8 个 worker。按用户要求不执行 benchmark，不改变阈值；吞吐与取消交错仍待运行验证。
 
 ## Failure and cleanup
 

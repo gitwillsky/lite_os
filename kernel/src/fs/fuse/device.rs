@@ -82,6 +82,14 @@ impl FuseDevice {
 }
 
 impl DeviceFile for FuseDevice {
+    fn uring_command(
+        &self,
+        command: &chardev::UringCommand,
+        user: &dyn chardev::UserMemory,
+    ) -> Result<alloc::boxed::Box<dyn chardev::PendingCommand>, DeviceError> {
+        self.bound()?.connection.uring_command(command, user)
+    }
+
     fn release(&self) {
         if !self.released.swap(true, Ordering::AcqRel)
             && let Some(binding) = self.binding.get()
@@ -148,6 +156,9 @@ impl DeviceFile for FuseDevice {
     fn ioctl(&self, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {
         match call.request {
             fuse::DEV_IOC_CLONE => self.clone_from(call),
+            fuse::DEV_IOC_BACKING_OPEN | fuse::DEV_IOC_BACKING_CLOSE => {
+                self.bound()?.connection.backing_ioctl(call)
+            }
             _ => Err(DeviceError::Errno(errno::ENOTTY)),
         }
     }

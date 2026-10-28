@@ -21,7 +21,7 @@
 | 26 | `inotify_init1` | Complete | `IN_NONBLOCK`/`IN_CLOEXEC`；默认每 real UID/UserNS 128 个实例、受祖先配额限制（`EMFILE`） |
 | 27 | `inotify_add_watch` | Partial | 见下“inotify”；按实例原创建者 real UID/UserNS/祖先共享 watch 配额（`ENOSPC`） |
 | 28 | `inotify_rm_watch` | Complete | 删除后投递 `IN_IGNORED` |
-| 29 | `ioctl` | Partial | TTY（含 `TCFLSH`）、socket、DRM、evdev、ALSA playback/control 子集、块设备 `BLK*`、管道/FIFO 的 `FIONREAD` 与 `/dev/fuse` 的 `FUSE_DEV_IOC_CLONE` |
+| 29 | `ioctl` | Partial | TTY（含 `TCFLSH`）、socket、DRM、evdev、ALSA playback/control 子集、块设备 `BLK*`、管道/FIFO 的 `FIONREAD` 与 `/dev/fuse` 的 CLONE 与 BACKING_OPEN/CLOSE |
 | 30 | `ioprio_set` | Partial | WHO_PROCESS policy storage；无 block enforcement |
 | 31 | `ioprio_get` | Partial | WHO_PROCESS policy query |
 | 32 | `flock` | Complete | BSD whole-file lock lifecycle |
@@ -74,7 +74,7 @@
 | 279 | `memfd_create` | Partial | creator FSIDs 的 regular inode；proc FD 重开独立 OFD/offset/status，共享 content/seals；flags 与已开放操作见下文 |
 | 286 | `preadv2` | Partial | positioned vector I/O 与已声明 flags |
 | 287 | `pwritev2` | Partial | positioned vector I/O 与已声明 flags |
-| 425 | `io_uring_setup` | Partial | 返回恒带 `O_CLOEXEC` 的 ring fd；`IORING_SETUP_CQSIZE`/`CLAMP` 与 Linux 一致，SQ 上限 32768；其余 flags、非零保留字段返回 `EINVAL`；features：`SINGLE_MMAP`/`NODROP`/`SUBMIT_STABLE`/`RW_CUR_POS`/`CUR_PERSONALITY`/`FAST_POLL`/`EXT_ARG` |
+| 425 | `io_uring_setup` | Partial | 返回恒带 `O_CLOEXEC` 的 ring fd；`IORING_SETUP_CQSIZE`/`CLAMP`/`SQE128` 与 Linux 一致，SQ 上限 32768；其余 flags、非零保留字段返回 `EINVAL`；features：`SINGLE_MMAP`/`NODROP`/`SUBMIT_STABLE`/`RW_CUR_POS`/`CUR_PERSONALITY`/`FAST_POLL`/`EXT_ARG` |
 | 426 | `io_uring_enter` | Partial | 提交与 `IORING_ENTER_GETEVENTS`，`EXT_ARG` 超时（`ETIME`）与临时 sigmask；`min_wait_usec` 非零、`SQ_WAKEUP`/`SQ_WAIT`/`REGISTERED_RING` 等其余 flags 返回 `EINVAL`；非 ring fd 返回 `EOPNOTSUPP` |
 | 427 | `io_uring_register` | Partial | 仅 `IORING_REGISTER_PROBE`；其余 opcode 返回 `EINVAL` |
 | 463 | `setxattrat` | Partial | AT_EMPTY_PATH/AT_SYMLINK_NOFOLLOW，标准16-byte xattr_args与零扩展校验 |
@@ -90,7 +90,9 @@ grow/shrink/seal seals；hugetlb 与 write seals 未开放。
 
 tmpfs 选项：`size=`（字节，`k/m/g`/`%`）、`nr_blocks=`、`nr_inodes=`、`mode=`、`uid=`、`gid=`；`huge=`、`mpol=` 等返回 `EINVAL`。
 
-io_uring 已实现的 opcode：`NOP`、`READV`/`WRITEV`/`READ`/`WRITE`、`FSYNC`、`OPENAT`、`STATX`、`CLOSE`、`POLL_ADD`/`POLL_REMOVE`、`TIMEOUT`/`TIMEOUT_REMOVE`、`ASYNC_CANCEL`、`ACCEPT`、`CONNECT`、`SEND`、`RECV`；
+io_uring 已实现的 opcode：`NOP`、`READV`/`WRITEV`/`READ`/`WRITE`、`FSYNC`、`OPENAT`、`STATX`、`CLOSE`、`POLL_ADD`/`POLL_REMOVE`、`TIMEOUT`/`TIMEOUT_REMOVE`、`ASYNC_CANCEL`、`ACCEPT`、`CONNECT`、`SEND`、`RECV`、`URING_CMD`；
+`URING_CMD`：标准 command area 经 prep 完整复制，设备 owner 执行，当前实现 `/dev/fuse` 的 SQE128 REGISTER/COMMIT_AND_FETCH；
+无设备实现 EOPNOTSUPP，非法 fd EBADF，pad1/未知 flags EINVAL，FIXED/MULTISHOT EOPNOTSUPP。用户页复制经阻塞车道，等待请求不占 worker；
 `STATX`：路径在 prep 时复制，在阻塞车道上以提交线程的 cwd、凭据与地址空间执行并写回 `addr2` 指向的缓冲区；
 参数校验与 `statx(2)` 共用同一核心（未知 flags、互斥同步类型位、保留 mask 位为 `-EINVAL`，坏输出地址为 `-EFAULT`）；
 `IOSQE_FIXED_FILE` 返回 `-EBADF`，`buf_index`/`file_index` 非零返回 `-EINVAL`。
@@ -122,7 +124,7 @@ ring 关闭（含进程退出关闭 fd）取消该 ring 的全部挂起请求，
 对尚未 issue 的链成员发 `ASYNC_CANCEL` 返回 `-ENOENT`，与 Linux 相同（`io_try_cancel` 只搜索 io-wq、poll、waitid、futex 与 timeout，不遍历链）。
 `IOSQE_IO_DRAIN`：等所有更早的请求链完成才开始，其后的链等它完成；链中间的 DRAIN 使链头 DRAIN 且其后的下一条链也 DRAIN；ring 上用过 `CQE_SKIP_SUCCESS` 之后 DRAIN 返回 `-EOPNOTSUPP`（同 Linux）。
 `BUFFER_SELECT` 返回 `-EOPNOTSUPP`；`IOSQE_ASYNC` 被接受但只是调度提示；`FIXED_FILE` 因没有注册文件表返回 `-EBADF`。
-固定文件/缓冲区注册、其余 opcode、SQPOLL/IOPOLL、SQE128/CQE32 未开放。CQ 溢出链表上限为 CQ 容量的 8 倍，超出后丢弃并经 `EBADR` 通知。
+固定文件/缓冲区注册、其余 opcode、SQPOLL/IOPOLL、CQE32 未开放。CQ 溢出链表上限为 CQ 容量的 8 倍，超出后丢弃并经 `EBADR` 通知。
 未支持ACL、splice family 或完整 block I/O priority enforcement；
 xattr目前接入tmpfs/ext4/memfd/FUSE源码，其余filesystem返回EOPNOTSUPP；新 ext4 镜像启用原生 EA_INODE，
 值 inode/extents/hash/refcount 与父属性同 journal owner。旧卷未启用该 feature 时按其实际容量返回ENOSPC；
@@ -215,8 +217,16 @@ MAP_FIXED 失败保留旧 VMA。新增 direct guest 探针已编写，运行验�
 控制文件按 Linux 保留分段 waiting 快照、nonseekable 与控制写不推进 ppos；卸载后旧 fd 读 EOF/写成功不复活连接。
 设备 read 在显式 abort 且协商 ABORT_ERROR 时返回 ECONNABORTED，否则 ENODEV；新请求始终 ENOTCONN。
 新增 fusectl guest 探针已编写，运行验证待执行；非特权预算上限用固定 Linux 默认 RAM 公式，未提供可写 module 参数。
+FUSE over io_uring：INIT 选择 OVER_IO_URING，SQE128 的每 CPU REGISTER 完整后切换路由；COMMIT_AND_FETCH
+提交回复并继续取请求。FORGET/INTERRUPT/通知保留传统设备路径；已挂起命令断连/取消 ENOTCONN，主动 abort
+后的新命令 ECONNABORTED。Active 前登记失败退回传统传输，不支持同连接重新启用或可写 enable_uring module 参数。
+已扩展现有 guest 探针，运行验证待执行；当前用单个连接锁与按 CPU 筛选，不声明 Linux 分队列吞吐。
+
+- 已实现 PASSTHROUGH、BACKING_OPEN/CLOSE 与 FOPEN_PASSTHROUGH，运行验收待执行：initial CAP_SYS_ADMIN 登记本地 regular file，
+  独立后备 OFD 读写与 mmap，注销保留旧引用，深度上限 2；不与 WRITEBACK_CACHE 协商。普通用户 SMB 使用标准 FUSE，无需 passthrough 权限。
 范围缩减：
-- 尚未实现（网络驱动器计划阶段 1 进行中）：FUSE over io_uring、passthrough。一般 INVAL_INODE/打开作废仍保留被映射页到映射解除；直接写会撤销相关 cache aliases。
+
+- 一般 INVAL_INODE/打开作废仍保留被映射页到映射解除；直接写会撤销相关 cache aliases。
 - `O_CREAT` 用 CREATE 原子创建打开（守护进程不支持时回退 MKNOD+OPEN）。每次关闭 fd 发 FLUSH（`close(2)` 返回其错误），
   最后一个引用发 RELEASE。
 - 不转发 POSIX/flock 锁（锁在本地 VFS 生效）、ioctl、poll、lseek、copy_file_range、tmpfile、statx。

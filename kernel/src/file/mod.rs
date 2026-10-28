@@ -139,6 +139,35 @@ impl OpenFileDescription {
         )
     }
 
+    /// 从当前打开的唯一数据 owner 建立 mmap，不能把 passthrough 又映射到上层 FUSE 缓存。
+    pub(crate) fn mapping(
+        self: Arc<Self>,
+        shared: bool,
+        write: bool,
+        execute: bool,
+    ) -> Result<Arc<dyn crate::memory::SharedFileMapping>, FileSystemError> {
+        if let Some(backing) = self
+            ._storage_open
+            .as_ref()
+            .and_then(|open| open.backing_file())
+        {
+            return backing.mapping(shared, write, execute);
+        }
+        if execute && self.opened_ref().mount_flags().noexec() {
+            return Err(FileSystemError::PermissionDenied);
+        }
+        let writable = self.status_flags() & crate::fs::O_ACCMODE != crate::fs::O_RDONLY;
+        if shared && write {
+            if !writable {
+                return Err(FileSystemError::AccessDenied);
+            }
+            if self.inode_ref().is_swap_file() {
+                return Err(FileSystemError::TextBusy);
+            }
+        }
+        crate::fs::mapping(self.inode_ref(), Some(self), writable, shared, write)
+    }
+
     /// 按 `shared` 准入本次打开的 mmap；失败不改变已有 VMA，传播后端错误。
     pub(crate) fn prepare_mapping(&self, shared: bool) -> Result<(), FileSystemError> {
         self._storage_open

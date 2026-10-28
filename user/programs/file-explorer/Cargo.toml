@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+network-drive = { path = "../../libraries/network-drive" }
 liteos-ui = { path = "../../libraries/liteos-ui" }
 desktop-entry = { path = "../../libraries/desktop-entry" }
 calendar = { path = "../../libraries/calendar" }

@@ -106,7 +106,7 @@ pub(crate) use procfs::{
     ProcSnapshotScope, ProcSource, ProcTaskIdentity, ProcThreadSnapshot,
 };
 use storage_budget::StorageBudget;
-pub(crate) use storage_open::{DirectIo, StorageOpen};
+pub(crate) use storage_open::{BackingFile, BackingOpen, DirectIo, StorageOpen};
 pub(crate) use syscall_abi::open::{
     O_ACCMODE, O_APPEND, O_CLOEXEC, O_NOCTTY, O_NOFOLLOW, O_NONBLOCK, O_PATH, O_RDONLY, O_RDWR,
     O_WRONLY,

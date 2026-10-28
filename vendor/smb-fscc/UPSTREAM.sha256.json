@@ -1,0 +1,18 @@
+{
+  "Cargo.toml": "3b2f3877b26d7ad069b330d04c7b0594086fdc2fb5aa8705fe242a15a221bbbd",
+  "README.md": "a22d94794008eace0fa2691da5eb4ff9a08b0fdc106aa52729e2cea91a89535a",
+  "Cargo.toml.orig": "b027feb3348b3e55dd736206825e52c8a85245b9d18eed667acf14cd303afdbc",
+  "src/filesystem_info.rs": "2efcac936406961aacd2561039cc7ab78a72fcacce0dbe42b31bbca040499c29",
+  "src/notify.rs": "e8139020859f43e2a4c2a9373ab7f846bb2359ede820fd43db51a391730100c1",
+  "src/quota.rs": "15dc59937de7d2b139954219869192fec9677875fe842334d302e0d8497f20eb",
+  "src/info_classes.rs": "608b679d7c6c719b1a1bc6ade9634e36c78776284ae559d1f603948fd4d1e081",
+  "src/file_attributes.rs": "b734c794aec6de2b38aac9db1179083802f5046f5b644c3193c2c4dceaecbe46",
+  "src/error.rs": "4755fe802c6b94e1136c08c0eeb33b609b33291104df48457c9969f74d886f12",
+  "src/query_file_info.rs": "828e2bd19ec8d38676ede6fe1edfe3ee142d40756c439e8dbb01c5cd0e129512",
+  "src/lib.rs": "411218dc98a2db1ecb3e624c9c18771d752b868ddea30f5a4f648af27a55429a",
+  "src/chained_list.rs": "6c8b666d6cb7f1a231af20f73c6e090cabc5ba806761545548bee2edffd2cb93",
+  "src/set_file_info.rs": "9b212b63a1aec117fd286e1d99f470228c24e43afef6e8198c3e467069571ce4",
+  "src/common_info.rs": "570b42e592440009b6d1b344b18100d93c3bc1de3426ebf535e83c7719c7284d",
+  "src/directory_info.rs": "f5514c2d2cfcf0b7b97f9eef465ebdd60fd678052e9f4d559919fbc20182a232",
+  "src/access_masks.rs": "6522ac60c522659859ecb7a29b5407fc5e62b1ab5aa6035d7c5912d2bd140274"
+}

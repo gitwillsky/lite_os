@@ -509,8 +509,13 @@ pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<Entry>)> {
     favorites.push(HEADER + 399, "(空)", "", DISABLED);
 
     let mut tools = Builder::new(HEADER + 400);
-    tools.action(Action::MapDrive, "映射网络驱动器(N)...", "", false);
-    tools.action(Action::DisconnectDrive, "断开网络驱动器(D)...", "", false);
+    tools.action(Action::MapDrive, "映射网络驱动器(N)...", "", !state.busy);
+    tools.action(
+        Action::DisconnectDrive,
+        "断开网络驱动器(D)...",
+        "",
+        !state.busy,
+    );
     tools.action(Action::Synchronize, "同步(S)...", "", false);
     tools.separator();
     tools.action(Action::FolderOptions, "文件夹选项(O)...", "", false);

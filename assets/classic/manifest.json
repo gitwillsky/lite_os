@@ -125,6 +125,31 @@
         "conversion": "original bytes"
       }
     },
+    "text/network-drive.rs": {
+      "group": "ui_text",
+      "bytes": 694,
+      "sha256": "bd737f85d600c186fd23c9f786f2541832933bf1ab71d32470ab70896c18feac",
+      "origin": {
+        "sources": {
+          "netplwiz.dll": {
+            "dialogs": [
+              106,
+              117
+            ]
+          },
+          "mprui.dll": {
+            "dialogs": [
+              7002
+            ],
+            "strings": [
+              12055
+            ]
+          }
+        },
+        "language": 2052,
+        "conversion": "DLGTEMPLATEEX/RT_STRING labels; UTF-8 Rust constants"
+      }
+    },
     "ui/brand-22-1x.bmp": {
       "group": "ui",
       "bytes": 79498,
@@ -352,6 +377,50 @@
       "origin": {
         "source": "shell32.dll",
         "resource": 9,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/drive-network-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "255574ccfbfa2d3a3c79b6cf0ef2825d3d6543b907bb86bcef6cb1447b1661f5",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 10,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/drive-network-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "6019d0c1ac68e8940e6effa9d6a1d622ce6355c12997d1dc559afdcc99e34767",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 10,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/drive-network-offline-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "8a436c11e3782d4ba06cd64ce6bb44496557bf7e8d69262e67fff79f0d5fb41e",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 11,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/drive-network-offline-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "877360da77fd59762eb7bca2949bc673e9fe4707ef1d4c29297d7b1e27ebf6a0",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 11,
         "language": 2052,
         "conversion": "BMP V4; native dimensions"
       }

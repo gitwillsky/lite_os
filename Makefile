@@ -44,7 +44,7 @@ WORKFLOW := $(PYTHON) scripts/workflow.py
 	run-gdb clean clean-musl clean-busybox build verify verify-fast \
 	verify-runtime verify-riscv64-secondary verify-unit \
 	verify-architecture-benchmark verify-architecture-release \
-	verify-runtime-gates verify-runtime-boot verify-runtime-shutdown verify-runtime-audio verify-runtime-gpu verify-runtime-display verify-runtime-wayland verify-runtime-desktop verify-runtime-wine verify-runtime-scheduler \
+	verify-runtime-gates verify-runtime-boot verify-runtime-shutdown verify-runtime-audio verify-runtime-gpu verify-runtime-display verify-runtime-wayland verify-runtime-desktop verify-runtime-wine verify-runtime-network-drive verify-runtime-scheduler \
 	verify-runtime-musl verify-runtime-rust-std \
 	verify-runtime-busybox verify-runtime-apk-apps verify-musl verify-rust-std \
 	verify-busybox verify-apk-apps gdb addr2line diagnose-scheduler-latency \
@@ -56,7 +56,7 @@ run-agent-development build-apk-apps regen-font run run-gui \
 run-gdb clean clean-musl clean-busybox build verify verify-fast verify-runtime \
 verify-riscv64-secondary verify-unit verify-architecture-benchmark \
 verify-architecture-release verify-runtime-gates verify-runtime-boot \
-verify-runtime-shutdown verify-runtime-audio verify-runtime-gpu verify-runtime-display verify-runtime-wayland verify-runtime-desktop verify-runtime-wine verify-runtime-scheduler verify-runtime-musl \
+verify-runtime-shutdown verify-runtime-audio verify-runtime-gpu verify-runtime-display verify-runtime-wayland verify-runtime-desktop verify-runtime-wine verify-runtime-network-drive verify-runtime-scheduler verify-runtime-musl \
 verify-runtime-rust-std verify-runtime-busybox verify-runtime-apk-apps \
 verify-musl verify-rust-std verify-busybox verify-apk-apps gdb addr2line diagnose-scheduler-latency \
 prune-cache prune-cache-preview:

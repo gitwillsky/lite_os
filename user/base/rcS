@@ -6,6 +6,8 @@ set -e
 /bin/mount -t proc proc /proc
 # 根可能以 ro 启动参数只读挂载（Linux 约定）：此处转为可写；已是可写时是空操作。
 /bin/mount -t ext4 -o remount,rw /
+# 上游 fusermount3 读取标准 mtab；用内核真实挂载表，避免另维护一份可漂移记录。
+/bin/ln -sf /proc/mounts /etc/mtab
 /bin/mount -t sysfs sysfs /sys
 /bin/mount -t fusectl fusectl /sys/fs/fuse/connections
 /bin/mount -t devpts devpts /dev/pts

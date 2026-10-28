@@ -391,3 +391,25 @@ zero-window 使用有界原生 timer；通用 PMTU/fragment 与其他未声明 T
 
 - Trash Specification `1.0`，发布日期 `2014-01-02`；[固定版本](https://specifications.freedesktop.org/trash/1.0/)。
 - home trash 的 files/info 对应关系、URL 原生字节编码、当地 YYYY-MM-DDThh:mm:ss 删除时间和先 O_EXCL 创建信息文件以该版为准。
+
+### SMB2/3 与普通用户 FUSE consumer
+
+| 规范 | 固定发布 | SHA-256 |
+|---|---|---|
+| [MS-SMB2](https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-SMB2/%5BMS-SMB2%5D-260928.pdf) | 2026-09-28，88.0 | `fef3a06507679130a8cfdcaeaed581482d7f235435dd904f6c794f113ff04bd1` |
+| [MS-NLMP](https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-NLMP/%5BMS-NLMP%5D-260330.pdf) | 2026-03-30，37.0 | `00fe14a058134aabf6a6db1bcc1c47b8d45f0656ef7de610c03712906a945a27` |
+| [MS-SPNG](https://winprotocoldocs-bhdugrdyduf5h2e4.b02.azurefd.net/MS-SPNG/%5BMS-SPNG%5D-261026.pdf) | 2026-10-26，23.0 | `ce8117cce276e1b01430899a6752f5b49b99fa0ad45f50de12b75e3ff02bd96e` |
+
+- 客户端：[smb-rs](https://github.com/afiffon/smb-rs) 的 smb、smb-dtyp、smb-fscc 均为 `0.12.1`；
+  修改后的唯一生产源在 `vendor/`，每包 `UPSTREAM.sha256.json` 记录原文件摘要，`LITEOS.md` 记录修改。
+  EOF/长度、结构化 I/O 错误、回复边界、断线清理、FILETIME 溢出、rename 计算字段与 feature 裁剪在该 owner 修复。
+  `user/Cargo.toml` patch 与 `Cargo.lock` 固定唯一来源及 RustCrypto/SSPI 依赖，不保留 registry 副本编译路径。
+- FUSE consumer 为 `fuser 0.17.0`，固定到 `user/Cargo.lock`；Linux 使用标准纯 Rust 挂载路径。
+  helper 为 Alpine v3.22 `fuse3-3.16.2-r1.apk`，aarch64 SHA-256
+  `cb77007fa83b6e75a6da20aecab37c79a62f3aee25958eba7b3b382bf8bcc099`，riscv64 SHA-256
+  `080203debb4f1751bcd44f8588abd9670343d40441b12ddc656e21d110a0e1bd`。
+  上游语义取 [libfuse fuse-3.16.2](https://github.com/libfuse/libfuse/tree/fuse-3.16.2) 的 util/fusermount.c 与 lib/mount_util.c；
+  编码/源码下载均放 `.local/inputs/`，helper 的版本与 ELF 依赖由 `scripts/fuse_runtime.py` 校验。
+- 验收服务端为 [Samba 4.22.11](https://download.samba.org/pub/samba/stable/samba-4.22.11.tar.gz)，SHA-256
+  `d569b298a81cc212a39e9d1813bc4ca5c71ac93c4ceb2eec03db178096958d00`；
+  `source3/lib/util_sec.c` 的 non_root_mode 与 standalone passdb 语义定义非 root 验收环境。

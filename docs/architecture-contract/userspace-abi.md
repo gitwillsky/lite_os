@@ -77,6 +77,11 @@
   系统 GUI 正逐步迁移到共享控件运行库，尚未全部解除内部 Rust dylib 的构建集合约束。
 
 
+- `network-drive` 独占每用户映射记录、credentials 文件与 OFD flock，资源管理器、桌面重连和命令行只委托它。
+  `smbfs::State` 独占 SMB 会话、FUSE 节点 lookup 与打开句柄；传输失败撤销旧代，不自动重放修改。
+  上游 helper 的提取与 setuid 权限属于 `scripts/fuse_runtime.py`/`base_userland`；普通用户认证不经过 root 服务。
+  完整边界见 [网络驱动器](../architecture/network-drives.md)。
+
 ## Interface
 
 - 未接入 number 返回 `ENOSYS`；不得建立私有 number、错号转发、silent flag ignore 或 userspace compatibility shim。

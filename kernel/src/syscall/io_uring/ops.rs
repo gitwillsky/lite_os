@@ -17,7 +17,8 @@ use crate::{
         abi::{
             IOSQE_FIXED_FILE, OP_ACCEPT, OP_ASYNC_CANCEL, OP_CLOSE, OP_CONNECT, OP_FSYNC,
             OP_LINK_TIMEOUT, OP_OPENAT, OP_POLL_ADD, OP_POLL_REMOVE, OP_READ, OP_READV, OP_RECV,
-            OP_SEND, OP_STATX, OP_TIMEOUT, OP_TIMEOUT_REMOVE, OP_WRITE, OP_WRITEV, Sqe,
+            OP_SEND, OP_STATX, OP_TIMEOUT, OP_TIMEOUT_REMOVE, OP_URING_CMD, OP_WRITE, OP_WRITEV,
+            Sqe,
         },
     },
     syscall::{
@@ -63,7 +64,7 @@ pub(super) struct TaskSubmitter {
 impl Submitter for TaskSubmitter {
     type Op = Op;
 
-    fn prepare_op(&self, _ring: &Ring, sqe: &Sqe) -> Result<Op, isize> {
+    fn prepare_op(&self, ring: &Ring, sqe: &Sqe) -> Result<Op, isize> {
         match sqe.opcode {
             OP_READ | OP_WRITE | OP_READV | OP_WRITEV => self.read_write(sqe),
             OP_FSYNC => fsync(sqe),
@@ -77,6 +78,7 @@ impl Submitter for TaskSubmitter {
             OP_TIMEOUT => self.timeout(sqe),
             OP_LINK_TIMEOUT => self.link_timeout(sqe),
             OP_POLL_REMOVE | OP_TIMEOUT_REMOVE | OP_ASYNC_CANCEL => cancel(sqe),
+            OP_URING_CMD => uring_command(ring, sqe),
             _ => unreachable!("op_supported admitted an opcode without a prep arm"),
         }
     }
@@ -84,6 +86,31 @@ impl Submitter for TaskSubmitter {
     fn launch(&self, ring: &Arc<Ring>, chain: Chain<Op>) {
         launch(&self.task, ring, chain);
     }
+}
+
+/// 标准命令区 offset 48..128 在 prep 时复制；设备命令只在 issue 阶段解析目标 fd。
+fn uring_command(ring: &Ring, sqe: &Sqe) -> Result<Op, isize> {
+    if sqe.off >> 32 != 0 || sqe.op_flags & !3 != 0 {
+        return Err(errno::EINVAL);
+    }
+    // FIXED 与 MULTISHOT 分别需要注册缓冲区与多 CQE；不把它们静默当成普通命令。
+    if sqe.op_flags != 0 {
+        return Err(errno::EOPNOTSUPP);
+    }
+    let mut data = [0; 80];
+    data[..8].copy_from_slice(&sqe.addr3.to_ne_bytes());
+    data[8..16].copy_from_slice(&sqe.pad2.to_ne_bytes());
+    data[16..].copy_from_slice(&sqe.extra);
+    Ok(Op::DeviceCommand {
+        fd: fd_of(sqe),
+        command: crate::fs::chardev::UringCommand {
+            operation: sqe.off as u32,
+            address: sqe.addr as usize,
+            length: sqe.len,
+            data,
+            extended: ring.sqe128(),
+        },
+    })
 }
 
 /// `sqe->fd` 解析成 fd 表下标；负数或 fixed 引用（没有注册文件表）在 issue 时得到 `EBADF`。

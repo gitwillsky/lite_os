@@ -11,6 +11,7 @@
 | [`logon/`](logon/README.md) | 本机登录与会话监督 | `/bin/logon` |
 | [`desktop/`](desktop/README.md) | 用户桌面外壳 | `/bin/desktop` |
 | [`file-explorer/`](file-explorer/README.md) | 资源管理器 | `/bin/file-explorer` |
+| [`smbfs/`](smbfs/README.md) | SMB2/3 网络驱动器 FUSE 守护进程 | `/bin/smbfs` |
 | [`control-panel/`](control-panel/README.md) | 控制面板小程序 | `/bin/control-panel <system|datetime|winver>` |
 | [`task-manager/`](task-manager/README.md) | 任务管理器 | `/bin/taskmgr` |
 | [`sound-player/`](sound-player/README.md) | 播放系统提示音（独立进程，隔离故障） | `/bin/sndplay` |

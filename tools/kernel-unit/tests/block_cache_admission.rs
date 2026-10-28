@@ -3,6 +3,11 @@
 #![allow(dead_code)]
 
 extern crate alloc;
+// 此 fixture 只执行 block/cache facade，不建立映射；后备映射返回类型由 memory adapter 提供，不能复制生产映射实现。
+mod memory {
+    pub(crate) trait SharedFileMapping: Send + Sync + std::fmt::Debug {}
+}
+
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::{Cell, RefCell},

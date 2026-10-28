@@ -22,17 +22,32 @@ impl Connection {
             match queue.link {
                 Link::Connected => {}
                 Link::Detached => return Err(DeviceError::Errno(errno::ENODEV)),
-                Link::Aborted => return Err(DeviceError::Errno(errno::ECONNABORTED)),
+                Link::Aborted => {
+                    return Err(DeviceError::Errno(
+                        if self
+                            .negotiated
+                            .get()
+                            .is_some_and(|negotiated| negotiated.has(fuse::ABORT_ERROR))
+                        {
+                            errno::ECONNABORTED
+                        } else {
+                            errno::ENODEV
+                        },
+                    ));
+                }
             }
             if let Some(request) = queue.interrupts.pop_front() {
                 drop(queue);
                 return self.write_interrupt(&request, output);
             }
             if !queue.forgets.is_empty() {
-                let take_forget = queue.pending.is_empty() || {
-                    queue.forget_batch -= 1;
-                    queue.forget_batch >= 0
-                };
+                let take_forget =
+                    !queue.pending.iter().any(|request| {
+                        matches!(*request.phase.lock(), Phase::Queued { cpu: None })
+                    }) || {
+                        queue.forget_batch -= 1;
+                        queue.forget_batch >= 0
+                    };
                 if take_forget {
                     return self.write_forgets(queue, output);
                 }
@@ -40,7 +55,11 @@ impl Connection {
                     queue.forget_batch = FORGET_BATCH;
                 }
             }
-            let Some(request) = queue.pending.pop_front() else {
+            let Some(index) = queue
+                .pending
+                .iter()
+                .position(|request| matches!(*request.phase.lock(), Phase::Queued { cpu: None }))
+            else {
                 drop(queue);
                 if nonblocking {
                     return Err(DeviceError::WouldBlock);
@@ -48,6 +67,7 @@ impl Connection {
                 wait()?;
                 continue;
             };
+            let request = queue.pending.remove(index).expect("legacy pending index");
             if request.message.len() > output.remaining() {
                 drop(queue);
                 self.finish(&request, Err(FileSystemError::IoError));
@@ -199,7 +219,11 @@ impl Connection {
                     .iter()
                     .find(|request| {
                         request.unique == unique & !1
-                            && matches!(*request.phase.lock(), Phase::Sent { device: owner } if owner == device)
+                            && match *request.phase.lock() {
+                                Phase::Sent { device: owner } => owner == device,
+                                Phase::Ring { .. } => true,
+                                _ => false,
+                            }
                     })
                     .cloned()
             }

@@ -337,6 +337,15 @@ host token 回归不能代替该双架构 SMP runtime 验证。
 
 ## 运行时门禁
 
+SMB 的固定非 root Samba、普通用户挂载、签名/加密与凭据重连使用独立入口
+`make verify-runtime-network-drive`，详见[网络驱动器验证](network-drive-verification.md)。该入口只操作私有镜像。
+
+```bash
+python3 scripts/samba_gate.py --build-only
+make verify-runtime-network-drive
+```
+
+
 完整验证从同一个只读 rootfs baseline 派生相互隔离的可写镜像，并覆盖：
 
 - boot、CPU topology、interrupt、timer 与基础 filesystem；

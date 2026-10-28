@@ -73,6 +73,9 @@
   registry SRI 固定的 cache 全局安装 Codex 与 Claude；安装只发布 `/usr/local` 的 npm owner，
   不保留 raw binary 或 Claude APK 第二路径，也不修改产品 `/etc/apk/repositories`。
 
+- 每用户 SMB 网络驱动器经标准 FUSE、上游 setuid helper 与普通文件路径接入；owner、凭据和断线语义见
+  [网络驱动器](network-drives.md)。
+
 ## Known limits
 
 - 支持矩阵只证明列出的 syscall、对象类型和 consumer，不宣称完整 Linux、POSIX 或任意 musl 程序兼容。

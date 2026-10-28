@@ -1770,6 +1770,7 @@ kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn flush (& se
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn inode_ref (& self) -> Arc < dyn Inode >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn is_path (& self) -> bool
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn lock_holder (self : & Arc < Self >) -> LockHolder
+kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn mapping (self : Arc < Self > , shared : bool , write : bool , execute : bool ,) -> Result < Arc < dyn crate :: memory :: SharedFileMapping > , FileSystemError >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn notify (& self , event : u32)
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn opened_ref (& self) -> Arc < OpenedFile >
 kernel/src/file/mod.rs :: pub (crate) impl OpenFileDescription :: fn pipe (endpoint : Arc < PipeEnd > , flags : u32 , opened : Arc < OpenedFile > ,) -> Result < Arc < Self > , () >
@@ -1949,6 +1950,11 @@ kernel/src/fs/chardev.rs :: pub (crate) MapRequest :: writable : bool
 kernel/src/fs/chardev.rs :: pub (crate) OpenRequest :: flags : u32
 kernel/src/fs/chardev.rs :: pub (crate) OpenRequest :: identity : & 'a AccessIdentity
 kernel/src/fs/chardev.rs :: pub (crate) OpenRequest :: number : DeviceNumber
+kernel/src/fs/chardev.rs :: pub (crate) UringCommand :: address : usize
+kernel/src/fs/chardev.rs :: pub (crate) UringCommand :: data : [u8 ; 80]
+kernel/src/fs/chardev.rs :: pub (crate) UringCommand :: extended : bool
+kernel/src/fs/chardev.rs :: pub (crate) UringCommand :: length : u32
+kernel/src/fs/chardev.rs :: pub (crate) UringCommand :: operation : u32
 kernel/src/fs/chardev.rs :: pub (crate) enum DeviceError
 kernel/src/fs/chardev.rs :: pub (crate) enum DeviceWaitSource
 kernel/src/fs/chardev.rs :: pub (crate) fn open (request : & OpenRequest < '_ >) -> Result < Arc < dyn DeviceFile > , FileSystemError >
@@ -1964,9 +1970,11 @@ kernel/src/fs/chardev.rs :: pub (crate) struct DeviceWaitSources
 kernel/src/fs/chardev.rs :: pub (crate) struct IoctlCall < 'a >
 kernel/src/fs/chardev.rs :: pub (crate) struct MapRequest
 kernel/src/fs/chardev.rs :: pub (crate) struct OpenRequest < 'a >
+kernel/src/fs/chardev.rs :: pub (crate) struct UringCommand
 kernel/src/fs/chardev.rs :: pub (crate) struct UserFault
 kernel/src/fs/chardev.rs :: pub (crate) trait CharacterDriver
 kernel/src/fs/chardev.rs :: pub (crate) trait DeviceFile
+kernel/src/fs/chardev.rs :: pub (crate) trait PendingCommand
 kernel/src/fs/chardev.rs :: pub (crate) trait PositionedFile
 kernel/src/fs/chardev.rs :: pub (crate) trait UserInput
 kernel/src/fs/chardev.rs :: pub (crate) trait UserMemory
@@ -1989,9 +1997,13 @@ kernel/src/fs/chardev.rs :: trait DeviceFile :: fn seek (& self , _offset : i64 
 kernel/src/fs/chardev.rs :: trait DeviceFile :: fn shared_description (& self ,) -> Option < & Mutex < Option < alloc :: sync :: Weak < dyn core :: any :: Any + Send + Sync > > > >
 kernel/src/fs/chardev.rs :: trait DeviceFile :: fn supports_read (& self) -> bool
 kernel/src/fs/chardev.rs :: trait DeviceFile :: fn supports_write (& self) -> bool
+kernel/src/fs/chardev.rs :: trait DeviceFile :: fn uring_command (& self , _command : & UringCommand , _user : & dyn UserMemory ,) -> Result < Box < dyn PendingCommand > , DeviceError >
 kernel/src/fs/chardev.rs :: trait DeviceFile :: fn wait_sources (& self , _events : i16) -> DeviceWaitSources
 kernel/src/fs/chardev.rs :: trait DeviceFile :: fn write (& self , _input : & mut dyn UserInput , _nonblocking : bool) -> Result < () , DeviceError >
 kernel/src/fs/chardev.rs :: trait DeviceFile :: fn write_file_information (& self , _view : & FileInformationView , _output : & mut dyn core :: fmt :: Write ,) -> core :: fmt :: Result
+kernel/src/fs/chardev.rs :: trait PendingCommand :: fn canceled_result (& self) -> isize
+kernel/src/fs/chardev.rs :: trait PendingCommand :: fn ready (& self , notify : & Arc < dyn super :: CompletionNotify >) -> bool
+kernel/src/fs/chardev.rs :: trait PendingCommand :: fn step (& mut self , user : & dyn UserMemory , notify : & Arc < dyn super :: CompletionNotify > ,) -> Option < Result < isize , DeviceError > >
 kernel/src/fs/chardev.rs :: trait PositionedFile :: fn advances_write_position (& self) -> bool
 kernel/src/fs/chardev.rs :: trait PositionedFile :: fn read_at (& self , output : & mut dyn UserOutput , offset : u64) -> Result < () , DeviceError >
 kernel/src/fs/chardev.rs :: trait PositionedFile :: fn seek (& self , current : u64 , offset : i64 , whence : u32) -> Result < u64 , DeviceError >
@@ -2000,6 +2012,7 @@ kernel/src/fs/chardev.rs :: trait PositionedFile :: fn write_at (& self , input 
 kernel/src/fs/chardev.rs :: trait UserInput :: fn consume (& mut self , count : usize)
 kernel/src/fs/chardev.rs :: trait UserInput :: fn copy (& self , bytes : & mut [u8]) -> Result < () , UserFault >
 kernel/src/fs/chardev.rs :: trait UserInput :: fn remaining (& self) -> usize
+kernel/src/fs/chardev.rs :: trait UserMemory :: fn backing_file (& self , _fd : i32) -> Result < Arc < dyn super :: BackingFile > , DeviceError >
 kernel/src/fs/chardev.rs :: trait UserMemory :: fn device_file (& self , fd : i32) -> Result < Arc < dyn DeviceFile > , DeviceError >
 kernel/src/fs/chardev.rs :: trait UserMemory :: fn install_device (& self , file : Arc < dyn DeviceFile > , flags : u32 , fd_address : usize ,) -> Result < i32 , DeviceError >
 kernel/src/fs/chardev.rs :: trait UserMemory :: fn install_namespace (& self , namespace : crate :: namespace :: NamespaceReference ,) -> Result < isize , DeviceError >
@@ -2385,6 +2398,7 @@ kernel/src/fs/fuse/connection.rs :: pub (super) Connection :: max_read : u32
 kernel/src/fs/fuse/connection.rs :: pub (super) Negotiated :: flags : u64
 kernel/src/fs/fuse/connection.rs :: pub (super) Negotiated :: max_pages : u32
 kernel/src/fs/fuse/connection.rs :: pub (super) Negotiated :: max_readahead : u32
+kernel/src/fs/fuse/connection.rs :: pub (super) Negotiated :: max_stack_depth : u32
 kernel/src/fs/fuse/connection.rs :: pub (super) Negotiated :: max_write : u32
 kernel/src/fs/fuse/connection.rs :: pub (super) Negotiated :: minor : u32
 kernel/src/fs/fuse/connection.rs :: pub (super) impl Connection :: fn abort (& self , explicit : bool)
@@ -2416,6 +2430,7 @@ kernel/src/fs/fuse/connection.rs :: pub (super) struct ReplyShape
 kernel/src/fs/fuse/connection.rs :: pub (super) struct Request
 kernel/src/fs/fuse/connection.rs :: pub (super) struct Reserved
 kernel/src/fs/fuse/connection.rs :: pub (super) use background :: { Limit , unprivileged_limit }
+kernel/src/fs/fuse/connection.rs :: pub (super) use backing :: OpenedBacking
 kernel/src/fs/fuse/connection/background.rs :: enum Limit :: Congestion
 kernel/src/fs/fuse/connection/background.rs :: enum Limit :: Maximum
 kernel/src/fs/fuse/connection/background.rs :: pub (in crate :: fs :: fuse) enum Limit
@@ -2434,8 +2449,22 @@ kernel/src/fs/fuse/connection/background.rs :: pub (super) impl Queue :: fn prom
 kernel/src/fs/fuse/connection/background.rs :: pub (super) impl Waiting :: fn new (counter : & Arc < AtomicUsize >) -> Self
 kernel/src/fs/fuse/connection/background.rs :: pub (super) struct Background
 kernel/src/fs/fuse/connection/background.rs :: pub (super) struct Waiting
+kernel/src/fs/fuse/connection/backing.rs :: pub (in crate :: fs :: fuse) OpenedBacking :: opened : Arc < dyn BackingOpen >
+kernel/src/fs/fuse/connection/backing.rs :: pub (in crate :: fs :: fuse) OpenedBacking :: registration : Arc < dyn crate :: fs :: BackingFile >
+kernel/src/fs/fuse/connection/backing.rs :: pub (in crate :: fs :: fuse) impl Connection :: fn backing_ioctl (& self , call : & IoctlCall < '_ > ,) -> Result < isize , DeviceError >
+kernel/src/fs/fuse/connection/backing.rs :: pub (in crate :: fs :: fuse) impl Connection :: fn open_backing (& self , id : i32 , flags : u32 ,) -> Result < OpenedBacking , FileSystemError >
+kernel/src/fs/fuse/connection/backing.rs :: pub (in crate :: fs :: fuse) struct OpenedBacking
 kernel/src/fs/fuse/connection/device_io.rs :: pub (in crate :: fs :: fuse) impl Connection :: fn read (& self , device : u64 , output : & mut dyn UserOutput , nonblocking : bool , wait : impl Fn () -> Result < () , DeviceError > ,) -> Result < () , DeviceError >
 kernel/src/fs/fuse/connection/device_io.rs :: pub (in crate :: fs :: fuse) impl Connection :: fn write (& self , device : u64 , input : & mut dyn UserInput , notify : impl FnOnce (i32 , & [u8]) -> Result < () , FileSystemError > ,) -> Result < () , DeviceError >
+kernel/src/fs/fuse/connection/uring.rs :: pub (in crate :: fs :: fuse) impl Connection :: fn uring_command (self : & Arc < Self > , command : & UringCommand , user : & dyn UserMemory ,) -> Result < Box < dyn PendingCommand > , DeviceError >
+kernel/src/fs/fuse/connection/uring.rs :: pub (super) fn operation_header (opcode : u32 , arguments : & [& [u8]]) -> usize
+kernel/src/fs/fuse/connection/uring.rs :: pub (super) impl Connection :: fn wake_requests (& self)
+kernel/src/fs/fuse/connection/uring.rs :: pub (super) impl Queue :: fn idle_ring_queue (& self , request : & Request) -> bool
+kernel/src/fs/fuse/connection/uring.rs :: pub (super) impl Queue :: fn route (& self , request : & Request)
+kernel/src/fs/fuse/connection/uring.rs :: pub (super) impl Transport :: fn negotiate (& mut self , enabled : bool)
+kernel/src/fs/fuse/connection/uring.rs :: pub (super) impl Transport :: fn new () -> Self
+kernel/src/fs/fuse/connection/uring.rs :: pub (super) impl Transport :: fn registering (& self) -> bool
+kernel/src/fs/fuse/connection/uring.rs :: pub (super) struct Transport
 kernel/src/fs/fuse/control.rs :: pub (super) fn register (mount : & Arc < Mount >) -> Result < () , FileSystemError >
 kernel/src/fs/fuse/control.rs :: pub (super) fn unregister (id : usize)
 kernel/src/fs/fuse/control.rs :: pub (super) struct ControlFileSystemType
@@ -2555,6 +2584,7 @@ kernel/src/fs/fuse/protocol.rs :: pub (super) Entry :: attributes : Attributes
 kernel/src/fs/fuse/protocol.rs :: pub (super) Entry :: entry_valid : (u64 , u32)
 kernel/src/fs/fuse/protocol.rs :: pub (super) Entry :: generation : u64
 kernel/src/fs/fuse/protocol.rs :: pub (super) Entry :: nodeid : u64
+kernel/src/fs/fuse/protocol.rs :: pub (super) Opened :: backing_id : i32
 kernel/src/fs/fuse/protocol.rs :: pub (super) Opened :: flags : u32
 kernel/src/fs/fuse/protocol.rs :: pub (super) Opened :: handle : u64
 kernel/src/fs/fuse/protocol.rs :: pub (super) Statfs :: block_size : u32
@@ -2699,6 +2729,7 @@ kernel/src/fs/inode.rs :: trait Inode :: fn revalidate_data (& self) -> Result <
 kernel/src/fs/inode.rs :: trait Inode :: fn seals (& self) -> Result < u32 , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn set_times (& self , atime : Option < u64 > , mtime : Option < u64 >) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn size (& self) -> u64
+kernel/src/fs/inode.rs :: trait Inode :: fn stack_depth (& self) -> u32
 kernel/src/fs/inode.rs :: trait Inode :: fn symlink (& self , _name : & [u8] , _target : & [u8] , _metadata : CreateMetadata ,) -> Result < Arc < dyn Inode > , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn sync_storage (& self) -> Result < () , FileSystemError >
 kernel/src/fs/inode.rs :: trait Inode :: fn touch_access (& self , _now : u64 , _relatime : bool) -> Result < () , FileSystemError >
@@ -2939,7 +2970,7 @@ kernel/src/fs/mod.rs :: pub (crate) use nsfs :: namespace_opened
 kernel/src/fs/mod.rs :: pub (crate) use page_cache :: { NowaitRead , ReadStep , RegularFile , RegularFileWrite , allocate , mapping , statistics as page_cache_statistics , sync_all , sync_inode , truncate , }
 kernel/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , MAY_ACCESS , MAY_CHDIR , OwnerModeChange , }
 kernel/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcCredentialSnapshot , ProcDirectory , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcRouteSnapshot , ProcSnapshot , ProcSnapshotScope , ProcSource , ProcTaskIdentity , ProcThreadSnapshot , }
-kernel/src/fs/mod.rs :: pub (crate) use storage_open :: { DirectIo , StorageOpen }
+kernel/src/fs/mod.rs :: pub (crate) use storage_open :: { BackingFile , BackingOpen , DirectIo , StorageOpen }
 kernel/src/fs/mod.rs :: pub (crate) use swap :: { SwapSource , prepare_swap_storage }
 kernel/src/fs/mod.rs :: pub (crate) use syscall_abi :: open :: { O_ACCMODE , O_APPEND , O_CLOEXEC , O_NOCTTY , O_NOFOLLOW , O_NONBLOCK , O_PATH , O_RDONLY , O_RDWR , O_WRONLY , }
 kernel/src/fs/mod.rs :: pub (crate) use sysfs_drm :: { GraphicsSysfsSource , register_source as register_graphics_sysfs }
@@ -3449,11 +3480,17 @@ kernel/src/fs/storage_budget.rs :: pub (super) impl StorageBudget :: fn set_limi
 kernel/src/fs/storage_budget.rs :: pub (super) impl StorageBudget :: fn snapshot (& self) -> BudgetSnapshot
 kernel/src/fs/storage_budget.rs :: pub (super) struct BudgetSnapshot
 kernel/src/fs/storage_budget.rs :: pub (super) struct StorageBudget
+kernel/src/fs/storage_open.rs :: pub (crate) trait BackingFile
+kernel/src/fs/storage_open.rs :: pub (crate) trait BackingOpen
 kernel/src/fs/storage_open.rs :: pub (crate) trait DirectIo
 kernel/src/fs/storage_open.rs :: pub (crate) trait StorageOpen
+kernel/src/fs/storage_open.rs :: trait BackingFile :: fn reopen (& self , flags : u32) -> Result < Arc < dyn BackingOpen > , FileSystemError >
+kernel/src/fs/storage_open.rs :: trait BackingFile :: fn stack_depth (& self) -> u32
+kernel/src/fs/storage_open.rs :: trait BackingOpen :: fn mapping (self : Arc < Self > , shared : bool , write : bool , execute : bool ,) -> Result < Arc < dyn crate :: memory :: SharedFileMapping > , FileSystemError >
 kernel/src/fs/storage_open.rs :: trait DirectIo :: fn read (& self , offset : u64 , output : & mut [u8]) -> Result < usize , FileSystemError >
 kernel/src/fs/storage_open.rs :: trait DirectIo :: fn size (& self) -> Result < u64 , FileSystemError >
 kernel/src/fs/storage_open.rs :: trait DirectIo :: fn write (& self , offset : u64 , input : & [u8] , identity : & AccessIdentity ,) -> Result < usize , FileSystemError >
+kernel/src/fs/storage_open.rs :: trait StorageOpen :: fn backing_file (& self) -> Option < Arc < dyn BackingOpen > >
 kernel/src/fs/storage_open.rs :: trait StorageOpen :: fn direct_io (self : Arc < Self >) -> Option < Arc < dyn DirectIo > >
 kernel/src/fs/storage_open.rs :: trait StorageOpen :: fn flush (& self , _owner : u64) -> Result < () , FileSystemError >
 kernel/src/fs/storage_open.rs :: trait StorageOpen :: fn prepare_mapping (& self , _shared : bool) -> Result < () , FileSystemError >
@@ -4121,12 +4158,14 @@ kernel/src/io_uring/abi.rs :: pub (crate) Geometry :: array_offset : u32
 kernel/src/io_uring/abi.rs :: pub (crate) Geometry :: cq_entries : u32
 kernel/src/io_uring/abi.rs :: pub (crate) Geometry :: ring_bytes : usize
 kernel/src/io_uring/abi.rs :: pub (crate) Geometry :: sq_entries : u32
+kernel/src/io_uring/abi.rs :: pub (crate) Geometry :: sqe_stride : usize
 kernel/src/io_uring/abi.rs :: pub (crate) Geometry :: sqes_bytes : usize
 kernel/src/io_uring/abi.rs :: pub (crate) SetupParams :: cq_entries : u32
 kernel/src/io_uring/abi.rs :: pub (crate) SetupParams :: flags : u32
 kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: addr : u64
 kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: addr3 : u64
 kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: buf_index : u16
+kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: extra : [u8 ; SQE_BYTES]
 kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: fd : i32
 kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: flags : u8
 kernel/src/io_uring/abi.rs :: pub (crate) Sqe :: ioprio : u16
@@ -4188,6 +4227,7 @@ kernel/src/io_uring/abi.rs :: pub (crate) const OP_SEND : u8 = 26
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_STATX : u8 = 21
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_TIMEOUT : u8 = 11
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_TIMEOUT_REMOVE : u8 = 12
+kernel/src/io_uring/abi.rs :: pub (crate) const OP_URING_CMD : u8 = 46
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_WRITE : u8 = 23
 kernel/src/io_uring/abi.rs :: pub (crate) const OP_WRITEV : u8 = 2
 kernel/src/io_uring/abi.rs :: pub (crate) const PARAMS_BYTES : usize = 120
@@ -4197,6 +4237,7 @@ kernel/src/io_uring/abi.rs :: pub (crate) const PROBE_OP_SUPPORTED : u16 = 1 << 
 kernel/src/io_uring/abi.rs :: pub (crate) const REGISTER_PROBE : u32 = 8
 kernel/src/io_uring/abi.rs :: pub (crate) const SETUP_CLAMP : u32 = 1 << 4
 kernel/src/io_uring/abi.rs :: pub (crate) const SETUP_CQSIZE : u32 = 1 << 3
+kernel/src/io_uring/abi.rs :: pub (crate) const SETUP_SQE128 : u32 = 1 << 10
 kernel/src/io_uring/abi.rs :: pub (crate) const SQE_BYTES : usize = 64
 kernel/src/io_uring/abi.rs :: pub (crate) const SQE_VALID_FLAGS : u8 = IOSQE_FIXED_FILE | IOSQE_IO_DRAIN | IOSQE_IO_LINK | IOSQE_IO_HARDLINK | IOSQE_ASYNC | IOSQE_BUFFER_SELECT | IOSQE_CQE_SKIP_SUCCESS
 kernel/src/io_uring/abi.rs :: pub (crate) const SQ_CQ_OVERFLOW : u32 = 1 << 1
@@ -4207,7 +4248,7 @@ kernel/src/io_uring/abi.rs :: pub (crate) const SQ_RING_ENTRIES : u32 = 264
 kernel/src/io_uring/abi.rs :: pub (crate) const SQ_RING_MASK : u32 = 256
 kernel/src/io_uring/abi.rs :: pub (crate) const SQ_TAIL : u32 = 64
 kernel/src/io_uring/abi.rs :: pub (crate) const SUPPORTED_ENTER_FLAGS : u32 = ENTER_GETEVENTS | ENTER_EXT_ARG
-kernel/src/io_uring/abi.rs :: pub (crate) const SUPPORTED_SETUP_FLAGS : u32 = SETUP_CQSIZE | SETUP_CLAMP
+kernel/src/io_uring/abi.rs :: pub (crate) const SUPPORTED_SETUP_FLAGS : u32 = SETUP_CQSIZE | SETUP_CLAMP | SETUP_SQE128
 kernel/src/io_uring/abi.rs :: pub (crate) const fn op_supported (opcode : u8) -> bool
 kernel/src/io_uring/abi.rs :: pub (crate) fn encode_probe (ops : usize , output : & mut [u8])
 kernel/src/io_uring/abi.rs :: pub (crate) fn probe_ops (nr_args : u32) -> usize
@@ -4299,6 +4340,7 @@ kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn readiness_read (& sel
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn region (& self , offset : u64) -> Option < (Arc < DeviceBacking > , u64) >
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn sq_has_space (& self) -> bool
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn sq_pending (& self) -> u32
+kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn sqe128 (& self) -> bool
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn submit (& self , to_submit : u32 , mut execute : impl FnMut (Sqe) -> Flow ,) -> Result < u32 , RingError >
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn take_dropped (& self) -> bool
 kernel/src/io_uring/ring.rs :: pub (crate) impl Ring :: fn try_new (geometry : Geometry , owner : (Arc < crate :: namespace :: UserNamespace > , u32) ,) -> Result < Arc < Self > , RingError >
@@ -7011,6 +7053,7 @@ kernel/src/syscall/credentials.rs :: pub (crate) fn sys_set_id (uid : bool , val
 kernel/src/syscall/credentials.rs :: pub (crate) fn sys_set_res_ids (uid : bool , values : [u32 ; 3]) -> isize
 kernel/src/syscall/credentials.rs :: pub (crate) fn sys_setgroups (size : usize , list : usize) -> isize
 kernel/src/syscall/credentials.rs :: pub (crate) fn sys_umask (mask : u32) -> isize
+kernel/src/syscall/device.rs :: pub (super) TaskUserMemory :: <tuple> : & 'a TaskControlBlock
 kernel/src/syscall/device.rs :: pub (super) fn device_error (error : DeviceError) -> isize
 kernel/src/syscall/device.rs :: pub (super) fn ioctl_device (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & dyn DeviceFile , request : usize , argument : usize ,) -> isize
 kernel/src/syscall/device.rs :: pub (super) fn ioctl_inode (task : & TaskControlBlock , ofd : & OpenFileDescription , inode : & dyn crate :: fs :: Inode , request : usize , argument : usize ,) -> isize
@@ -7019,6 +7062,8 @@ kernel/src/syscall/device.rs :: pub (super) fn read_device (task : & TaskControl
 kernel/src/syscall/device.rs :: pub (super) fn read_positioned_file (task : & TaskControlBlock , file : & dyn PositionedFile , vectors : & [UserIoVec] , total_length : usize , offset : u64 ,) -> isize
 kernel/src/syscall/device.rs :: pub (super) fn write_device (task : & TaskControlBlock , ofd : & OpenFileDescription , file : & dyn DeviceFile , vectors : & [UserIoVec] , total_length : usize , nonblocking : bool ,) -> isize
 kernel/src/syscall/device.rs :: pub (super) fn write_positioned_file (task : & TaskControlBlock , file : & dyn PositionedFile , vectors : & [UserIoVec] , total_length : usize , offset : u64 ,) -> isize
+kernel/src/syscall/device.rs :: pub (super) struct TaskUserMemory < 'a >
+kernel/src/syscall/device_backing.rs :: pub (super) fn capture (task : & TaskControlBlock , fd : i32 ,) -> Result < Arc < dyn BackingFile > , DeviceError >
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_create1 (flags : usize) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_ctl (epoll_fd_number : usize , operation : usize , fd : usize , event_pointer : usize ,) -> isize
 kernel/src/syscall/epoll.rs :: pub (crate) fn sys_epoll_pwait (epoll_fd_number : usize , events : usize , maximum : usize , timeout_ms : isize , signal_mask : usize , signal_set_size : usize ,) -> isize
@@ -7176,6 +7221,7 @@ kernel/src/syscall/getrandom_flags.rs :: pub (super) const GRND_NONBLOCK : usize
 kernel/src/syscall/getrandom_flags.rs :: pub (super) const GRND_RANDOM : usize = 0x2
 kernel/src/syscall/getrandom_flags.rs :: pub (super) const fn getrandom_flags_supported (flags : usize) -> bool
 kernel/src/syscall/io_uring/chain.rs :: pub (super) fn launch (task : & Arc < TaskControlBlock > , ring : & Arc < Ring > , chain : Chain < Op >)
+kernel/src/syscall/io_uring/device.rs :: pub (super) async fn drive (ofd : Arc < OpenFileDescription > , request : UringCommand , task : & Weak < TaskControlBlock > , waiter : & Waiter ,) -> Outcome
 kernel/src/syscall/io_uring/exec.rs :: enum Issue :: Done (Outcome)
 kernel/src/syscall/io_uring/exec.rs :: enum Issue :: Wait (Wait)
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: # [doc = " `IORING_OP_LINK_TIMEOUT`：约束它前面那个链成员。前一个成员需要等待时由链执行者摘下它装成定时器"] # [doc = " （[`Op::link_deadline`]）；走到 issue 说明前一个成员已经同步完成，定时器没有对象，以 `-ECANCELED` 结束。"] LinkTimeout { nanoseconds : u64 , absolute : bool , }
@@ -7186,6 +7232,7 @@ kernel/src/syscall/io_uring/exec.rs :: enum Op :: Accept { fd : Option < usize >
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Cancel { target : Target , # [doc = " `IORING_ASYNC_CANCEL_ALL`：取消全部匹配项并返回个数，否则只取消第一个。"] all : bool , # [doc = " `IORING_ASYNC_CANCEL_FD`：按这个 fd 所指的 OFD 匹配；外层 `Some` 表示给了 FD 条件，内层 `None` 是无效 fd（fixed 或负数）。"] by_fd : Option < Option < usize > > , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Close { fd : Option < usize > , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Connect { fd : Option < usize > , address : usize , length : usize , }
+kernel/src/syscall/io_uring/exec.rs :: enum Op :: DeviceCommand { fd : Option < usize > , command : UringCommand , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Fsync { fd : Option < usize > , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: Poll { fd : Option < usize > , mask : i16 , }
 kernel/src/syscall/io_uring/exec.rs :: enum Op :: ReadWrite { fd : Option < usize > , vectors : Vec < UserIoVec > , total : usize , write : bool , vectored : bool , # [doc = " `sqe->off`：`-1` 使用并推进当前 position，其他负值非法。"] offset : i64 , }
@@ -7197,10 +7244,12 @@ kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 一次性 poll：
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 会睡眠在磁盘上的作业（regular 文件写、fsync、当前位置读、无法不阻塞的读），交给阻塞车道。"] Lane { work : lane :: Work , # [doc = " 作业操作的 OFD，仅供按 fd 取消匹配（作业本身已捕获它）；openat 之类没有目标 OFD。"] file : Option < Arc < OpenFileDescription > > , # [doc = " 读写作业传输量不等于请求量即失败；fsync 为 `None`。"] total : Option < usize > , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 握手已发起：等 socket 可写或出错，再读连接结果。"] Connect { ofd : Arc < OpenFileDescription > }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 绝对 monotonic deadline，或“除 timeout 外又发布 N 个 CQE”（`target_events`）。"] Timeout { deadline : u64 , target_events : Option < u32 > , etime_success : bool , }
+kernel/src/syscall/io_uring/exec.rs :: enum Wait :: # [doc = " 设备 owner 持有协议状态；reactor 只检查 ready，用户页复制经阻塞车道执行。"] DeviceCommand { ofd : Arc < OpenFileDescription > , command : UringCommand , }
 kernel/src/syscall/io_uring/exec.rs :: enum Wait :: Accept { ofd : Arc < OpenFileDescription > , flags : usize , address : usize , length : usize , }
 kernel/src/syscall/io_uring/exec.rs :: pub (super) Outcome :: fail : bool
 kernel/src/syscall/io_uring/exec.rs :: pub (super) Outcome :: res : i32
 kernel/src/syscall/io_uring/exec.rs :: pub (super) async fn drive (op : Wait , ring : Arc < Ring > , task : Weak < TaskControlBlock > , waiter : Waiter ,) -> Outcome
+kernel/src/syscall/io_uring/exec.rs :: pub (super) async fn run_lane (work : lane :: Work , total : Option < usize > , task : & Weak < TaskControlBlock > , waiter : & Waiter ,) -> Outcome
 kernel/src/syscall/io_uring/exec.rs :: pub (super) enum Issue
 kernel/src/syscall/io_uring/exec.rs :: pub (super) enum Op
 kernel/src/syscall/io_uring/exec.rs :: pub (super) enum Wait
@@ -7257,9 +7306,11 @@ kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn block (& se
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn cancel (& self , target : & Target) -> Cancel
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn capacity (& self , capacity : & Arc < SocketCapacityWait >) -> Suspend
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn clear_notified (& self)
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn detach_lane (& self)
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn disarm_link_timeout (& self) -> bool
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn end (& self)
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn link_deadline (& self) -> Option < u64 >
+kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn link_timed_out (& self) -> bool
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn new (ring : & Arc < Ring >) -> Result < Self , () >
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn notifier (& self) -> Arc < dyn CompletionNotify >
 kernel/src/syscall/io_uring/wait.rs :: pub (super) impl Waiter :: fn ofd_ready (& self , ofd : & Arc < OpenFileDescription > , mask : i16 , task : & Weak < TaskControlBlock > ,) -> Suspend

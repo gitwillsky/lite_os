@@ -1154,6 +1154,12 @@ def build_rust_user_program(
         }
         | {"Cargo.toml": sha256(workspace / "Cargo.toml")},
         "lock_sha256": sha256(workspace / "Cargo.lock"),
+        "classic_manifest_sha256": sha256(ROOT / "assets/classic/manifest.json"),
+        "smb_vendor_sha256": {
+            str(path.relative_to(ROOT)): sha256(path)
+            for name in ("smb", "smb-dtyp", "smb-fscc")
+            for path in sorted((ROOT / "vendor" / name).rglob("*")) if path.is_file()
+        },
         "source_sha256": {
             str(source.relative_to(workspace)): sha256(source)
             for source in sources
@@ -1288,11 +1294,12 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
     """构建产品系统文件的唯一安装清单；构建与开发镜像同步共同消费。"""
     from ui_sdk import sdk_files
     from mesa_runtime import mesa_userland
+    from fuse_runtime import fuse_userland
 
     programs = tuple(
         UserlandArtifact(build_rust_user_program(musl, crate, binary, binary, 1), f"/bin/{binary}", 0o755)
         for crate, binary in (("compositor", "compositor"), ("logon", "logon"),
-                              ("desktop", "desktop"), ("file-explorer", "file-explorer"),
+                              ("desktop", "desktop"), ("file-explorer", "file-explorer"), ("smbfs", "smbfs"),
                               ("control-panel", "control-panel"), ("task-manager", "taskmgr"), ("volume-control", "sndvol"),
                               ("sound-player", "sndplay"), ("media-player", "mplay"),
                               ("notepad", "notepad"), ("device-manager", "devmgmt"),
@@ -1322,7 +1329,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         *(UserlandArtifact(path, f"{SYSTEM_LIBRARY_DIRECTORY}/{name}", 0o755)
           for path, name in build_system_libraries(musl)),
         UserlandArtifact(ROOT / "user/base/ld-musl.path", f"/etc/{Path(TARGET.musl_loader).name.removesuffix('.so.1')}.path"),
-        *programs, *fonts, *ui, *wallpapers, *mesa_userland(),
+        *programs, *fonts, *ui, *wallpapers, *mesa_userland(), *fuse_userland(),
         *(UserlandArtifact(path, destination, mode) for path, destination, mode in sdk_files()),
         *(UserlandArtifact(path, f"/usr/share/liteos/sounds/{name}") for name, path in sounds()),
     )
@@ -1504,7 +1511,7 @@ def create_image(
     for artifact in userland:
         commands.append(f"write {debugfs_path(artifact.source)} {debugfs_path(artifact.destination)}")
         commands.append(
-            f"set_inode_field {debugfs_path(artifact.destination)} mode 0100{artifact.mode:o}"
+            f"set_inode_field {debugfs_path(artifact.destination)} mode 0{0o100000 | artifact.mode:o}"
         )
     commands.extend(f"ln /bin/init /bin/{applet}" for applet in BUSYBOX_LINKS)
     # npm/pnpm use `#!/usr/bin/env node`; without the standard env location apk installs succeed
@@ -1598,7 +1605,7 @@ def create_image(
             run([str(find_debugfs()), "-R", f"dump -p {debugfs_path(artifact.destination)} {observed}", str(image)], ROOT)
             if not observed.is_file() or sha256(observed) != sha256(artifact.source):
                 raise RuntimeError(f"BusyBox rootfs system file differs: {artifact.destination}")
-            if observed.stat().st_mode & 0o777 != artifact.mode:
+            if observed.stat().st_mode & 0o7777 != artifact.mode:
                 raise RuntimeError(f"BusyBox rootfs system mode differs: {artifact.destination}")
     ca_bundle = run([str(find_debugfs()), "-R", "stat /etc/ssl/cert.pem", str(image)], ROOT)
     ca_store = run(

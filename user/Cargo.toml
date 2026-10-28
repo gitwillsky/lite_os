@@ -13,6 +13,8 @@ members = [
     "libraries/desktop-entry",
     "libraries/desktop-settings",
     "libraries/network-config",
+    "libraries/network-drive",
+    "programs/smbfs",
     "programs/file-explorer",
     "libraries/classic-ui",
     "libraries/keyboard",
@@ -72,3 +74,8 @@ rc_mutex = "deny"
 todo = "deny"
 unchecked_time_subtraction = "deny"
 unimplemented = "deny"
+
+[patch.crates-io]
+smb = { path = "../vendor/smb" }
+smb-fscc = { path = "../vendor/smb-fscc" }
+smb-dtyp = { path = "../vendor/smb-dtyp" }

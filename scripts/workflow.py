@@ -478,6 +478,11 @@ def verify_runtime_desktop(environment: Mapping[str, str] | None = None) -> None
     run(python_script("verify_desktop.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
 
 
+def verify_runtime_network_drive(environment: Mapping[str, str] | None = None) -> None:
+    """用固定非 root Samba 验证标准用户挂载、签名/加密与保存凭据重连。"""
+    run(python_script("verify_network_drive.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
+
+
 def verify_runtime_wine(environment: Mapping[str, str] | None = None) -> None:
     """在私有盘验证每用户 Wine 安装、桌面启动、i386 保存和冷启动。"""
     run(python_script("verify_wine.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
@@ -737,6 +742,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         "verify-runtime-wayland": verify_runtime_wayland,
         "verify-runtime-desktop": verify_runtime_desktop,
         "verify-runtime-wine": verify_runtime_wine,
+        "verify-runtime-network-drive": verify_runtime_network_drive,
         "verify-runtime-scheduler": verify_runtime_scheduler,
         "diagnose-scheduler-latency": diagnose_scheduler_latency,
         "verify-runtime-musl": verify_runtime_musl,

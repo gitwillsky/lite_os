@@ -12,8 +12,9 @@ pub(crate) const MAX_CQ_ENTRIES: u32 = 2 * MAX_ENTRIES;
 
 pub(crate) const SETUP_CQSIZE: u32 = 1 << 3;
 pub(crate) const SETUP_CLAMP: u32 = 1 << 4;
-/// 本实现接受的全部 `io_uring_setup` flags。其余已定义位（IOPOLL、SQPOLL、SQE128 等）见 ABI 矩阵。
-pub(crate) const SUPPORTED_SETUP_FLAGS: u32 = SETUP_CQSIZE | SETUP_CLAMP;
+pub(crate) const SETUP_SQE128: u32 = 1 << 10;
+/// 本实现接受的全部 `io_uring_setup` flags。其余已定义位见 ABI 矩阵。
+pub(crate) const SUPPORTED_SETUP_FLAGS: u32 = SETUP_CQSIZE | SETUP_CLAMP | SETUP_SQE128;
 
 pub(crate) const FEAT_SINGLE_MMAP: u32 = 1 << 0;
 pub(crate) const FEAT_NODROP: u32 = 1 << 1;
@@ -85,6 +86,7 @@ pub(crate) const OP_READ: u8 = 22;
 pub(crate) const OP_WRITE: u8 = 23;
 pub(crate) const OP_SEND: u8 = 26;
 pub(crate) const OP_RECV: u8 = 27;
+pub(crate) const OP_URING_CMD: u8 = 46;
 /// `IORING_OP_LAST`：v7.1 共 65 个 opcode（0..=64）。
 pub(crate) const OP_LAST: u8 = 65;
 pub(crate) const NOP_INJECT_RESULT: u32 = 1 << 0;
@@ -156,6 +158,8 @@ pub(crate) struct Geometry {
     pub(crate) ring_bytes: usize,
     /// SQE 数组字节数，未按页取整。
     pub(crate) sqes_bytes: usize,
+    /// 每个 SQ array 下标对应的实际字节跨度；SQE128 不能按两个独立 SQE 消费。
+    pub(crate) sqe_stride: usize,
 }
 
 impl Geometry {
@@ -203,12 +207,18 @@ impl Geometry {
             2 * sq_entries
         };
         let array_offset = CQES_OFFSET + cq_entries * CQE_BYTES as u32;
+        let sqe_stride = if params.flags & SETUP_SQE128 != 0 {
+            2 * SQE_BYTES
+        } else {
+            SQE_BYTES
+        };
         Ok(Self {
             sq_entries,
             cq_entries,
             array_offset,
             ring_bytes: array_offset as usize + sq_entries as usize * 4,
-            sqes_bytes: sq_entries as usize * SQE_BYTES,
+            sqes_bytes: sq_entries as usize * sqe_stride,
+            sqe_stride,
         })
     }
 
@@ -275,6 +285,8 @@ pub(crate) struct Sqe {
     pub(crate) addr3: u64,
     /// offset 56：Linux 读写类 opcode 的 `attr_type_mask`，其余 opcode 的保留字。
     pub(crate) pad2: u64,
+    /// SQE128 的后 64 字节；普通 SQE 不读取相邻槽。
+    pub(crate) extra: [u8; SQE_BYTES],
 }
 
 impl Sqe {
@@ -299,6 +311,7 @@ impl Sqe {
             splice_fd_in: u32_at(44) as i32,
             addr3: u64_at(48),
             pad2: u64_at(56),
+            extra: [0; SQE_BYTES],
         }
     }
 }
@@ -345,6 +358,7 @@ pub(crate) const fn op_supported(opcode: u8) -> bool {
             | OP_CONNECT
             | OP_SEND
             | OP_RECV
+            | OP_URING_CMD
     )
 }
 

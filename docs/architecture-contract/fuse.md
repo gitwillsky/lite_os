@@ -118,7 +118,7 @@
   原子仅是诊断投影，Relaxed 不承担同步；令牌持独立 Arc<AtomicUsize>，不能反向持 Connection 形成队列环。
 - `Connection.queue.background` 独占 deferred 请求、活动预算与两个阈值；活动数包括 pending/processing 的后台请求。
   默认 12/9，INIT 7.13 起接受非零协商值；非特权上限沿固定 Linux 默认 RAM/8192/392（封顶 65535），
-  未实现可写的 fuse module 参数。设置 max_background=0 可暂停后台发出，前台请求不受后台预算限制。
+  未实现可写的 fuse module 参数。传统传输设置 max_background=0 可暂停后台发出；ring 允许每个空闲 CPU 队列至少一个后台请求，前台不受限。
   RELEASE 与 INIT 经同一 promotion；reserve 同时预留 deferred 与最终 pending 槽，完成、Drop、abort 不分配。
   所有完成路径只归还一次预算，读/回复复制失败的 INIT 也发布失败 latch；设备关闭逐个摘除，无 OOM 遗留请求。
 - congestion_threshold 达到时停止额外预读，仅保留 demand 页；当前缓存写回为同步路径，没有私设另一套异步限流。
@@ -127,3 +127,52 @@
   控制写不推进唯一 OFD position，参数 fd 支持重新定位；没有 backend offset 副本。
 - Benchmark 决策：每个实际请求新增一次原子计入/归还，不新增请求分配；后台操作复用 queue 锁、两队列容量预留。
   fusectl 索引、数字渲染与控制快照仅在冷路径分配/加锁。按用户要求只做静态检查，不运行 benchmark 或调整阈值。
+
+## FUSE over io_uring
+
+- 同一固定 Linux 的 `fs/fuse/dev_uring.c` 与 `Documentation/filesystems/fuse/fuse-io-uring.rst` 定义传输。
+  INIT 声明/选择 `FUSE_OVER_IO_URING`；INIT 仍用 `/dev/fuse`，全部 possible CPU 的标准 qid 各有至少
+  一个可用 REGISTER 后才发表 Active。初始化 latch 此时释放等待者，不能让新请求提前绕回传统传输。
+  FORGET/BATCH_FORGET、INTERRUPT 与异步通知继续走 `/dev/fuse`，这是标准协议的固定分工。
+- `connection::uring::Transport` 在唯一 queue 锁内拥有阶段、登记缓冲区与 entry state；请求引用仍只在
+  pending/processing 中，`Phase::Queued` 的 logical CpuId 区分路由，`Phase::RingCopying`/`Ring` 区分复制与实际交付，复制成功后才允许发 INTERRUPT。
+  qid 与 CPU topology 一致，不固定队列数，不把 hardware ID 当索引；后台请求保留其排队时 CPU。
+- `FuseDevice::uring_command` 只委托 Connection；REGISTER 导入两个 iovec（288-byte header、至少
+  max(8192,max_write,max_pages*PAGE_SIZE) 的 payload），只保留用户地址，不 pin 或直接引用用户页。
+  每次复制使用该 SQE 提交任务的 UserMemory；缓冲区生命周期由守护进程维护，提交后不能提前回收。
+  REGISTER 同时为每个 entry 预留 processing 槽，后续交付不为转移请求分配或因 OOM 遗失唯一 CPU 接收者。
+- `fuse_in_header`/首个定长参数/其余参数分别进入 in_out/op_in/payload；无定长首参的名称操作保留空 op_in。
+  元数据给出实际 payload_sz 与 unique commit_id；CQE 成功为 0。回复的全部参数从 payload 读取，
+  out_header.len 不决定长度（与上游相同）；按实际 reply shape/协商上限校验大小、errno 与 unique。
+- COMMIT_AND_FETCH 按 (qid,commit_id) 原子认领 Userspace entry；复制期间保持 processing 引用，abort
+  可以完成它；重复 commit 返回 ENOENT。回复错误只结束本条 FUSE 请求，命令继续获取下一条请求。
+  请求复制错误也结束对应请求并保留可用登记项；输入/回复均不能越过注册的协商 payload 容量。
+- `PendingCommand` 是未完成 SQE 的撤销令牌，Drop 移除尚未交付的登记项；已交付登记项由后续 COMMIT
+  接管。通知只存 Weak，队列解锁后才升级/回调，完成/abort 不为通知分配集合；本轮通知有 ID 上界，
+  并发持续登记不能无限延长它。没有新增连接锁/atomic 或第二份请求队列。
+- REGISTER 参数/分配失败在 Active 前解除 ring 初始化并退回传统传输，既有未完成登记以 ENOTCONN
+  结束；本连接随后拒绝重新登记（EOPNOTSUPP，无可写 enable_uring module 开关）。Active 后不切换传输。
+  已挂起命令在关闭/卸载/主动 abort 时为 ENOTCONN；主动 abort 后新提交的命令为 ECONNABORTED，
+  其余断连为 ENOTCONN，不受设备 read 的 ABORT_ERROR 协商控制。
+- Benchmark 决策：使用同一短 queue 锁与 Vec 登记表，按 CPU 筛选 pending，未为 CPU 另设锁或队列缓存；
+  空闲 ring CPU 的后台预算从真实 pending/processing 推导。额外扫描、车道复制与唤醒开销需后续实测，
+  不声明与 Linux 分队列实现等吞吐。guest 探针已扩展 SQE128、每 CPU 登记、读写/xattr/rename、
+  legacy INTERRUPT 与卸载；按用户要求不运行回归、QEMU 或 benchmark。
+
+## Passthrough
+
+- 使用固定 Linux 的 `FUSE_PASSTHROUGH`、`FOPEN_PASSTHROUGH`、`FUSE_DEV_IOC_BACKING_OPEN/CLOSE`。
+  INIT 的 max_stack_depth 只接受 1–2，且不与 WRITEBACK_CACHE 同时启用；后备文件须低于协商深度，超出 ELOOP。
+  BACKING_OPEN/CLOSE 要求 initial CAP_SYS_ADMIN，普通用户的 SMB 挂载不需要或获得该权限。
+- `Connection.queue` 独占正 backing_id 与登记文件的 Arc。`UserMemory::backing_file` 经 syscall adapter
+  捕获真实 regular OFD、登记时的凭据与 namespace authority；`fs` 不依赖 `file`/`task`/syscall。
+  目录 EISDIR、非普通文件 EINVAL、无效 fd EBADF；登记分配失败不发布 ID，注销在锁内摘除、锁外析构。
+- `fs::BackingFile::reopen` 用保存的凭据重开独立下层 OFD，不与登记 fd 共享 offset；每个 `Handle` 成对拥有
+  登记 identity 与下层 `BackingOpen`，同 inode 的并行打开必须使用同一后备 identity，避免两套内容事实。
+  注销只撤销未来 OPEN，已打开句柄继续保活后备文件。无效 OPEN 回复仍发送预留 RELEASE，不能泄漏 daemon fh。
+- read/write/vector/positioned I/O 通过 per-open DirectIo 到下层 regular-file owner，不建立 FUSE 内容缓存。
+  `OpenFileDescription::mapping` 同时承接普通文件与后备文件的映射，传播 shared/write/execute 与下层
+  noexec、只读和 swapfile 准入；VMA 持有下层 OFD，关闭上层 fd 或注销登记不撤销已有映射。
+  FOPEN_DIRECT_IO 优先保留 daemon 的直接读写，mmap 仍使用后备文件；flush/fsync/release 保留标准 FUSE 请求语义。
+- Benchmark 决策：登记表复用原 queue 锁，clone、reopen、最终 Drop 均在锁外；不新增全局锁或内容副本。
+  已扩展 production-path guest 探针，按用户要求未运行回归、QEMU 或 benchmark，不声明已验证加速收益。

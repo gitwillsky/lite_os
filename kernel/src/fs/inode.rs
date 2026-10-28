@@ -181,6 +181,10 @@ pub(crate) fn open_by_type<T: Inode + ?Sized>(
 
 /// 唯一 VFS inode 接口，读写和目录变更不保留只读旁路。
 pub(crate) trait Inode: Send + Sync {
+    /// filesystem 的实际叠加深度；普通文件系统为零，FUSE 从 INIT 协商事实投影。
+    fn stack_depth(&self) -> u32 {
+        0
+    }
     /// 原生 proc TGID directory operations 的实际 PID observer；普通 inode/PIDFS/O_PATH 不借标签识别。
     fn process_directory_identity(
         &self,

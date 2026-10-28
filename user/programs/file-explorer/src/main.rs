@@ -4,6 +4,7 @@ mod chrome;
 mod fileops;
 mod folder_dialog;
 mod model;
+mod network_dialog;
 mod view;
 mod webview;
 use browser::{Browser, Clipboard, Visit};
@@ -505,7 +506,9 @@ impl Session {
             }
             Action::Open => {
                 if let Some(item) = self.selected()? {
-                    if let Some(target) = item.target {
+                    if let Some(letter) = item.drive {
+                        self.open_network_drive(letter).await?;
+                    } else if let Some(target) = item.target {
                         self.navigate(target, Visit::Push, true).await?;
                     } else {
                         let child = self.background.run(move || browser::open(item))?.await?;
@@ -617,6 +620,10 @@ impl Session {
                     }
                 };
                 self.navigate(location, Visit::Push, true).await?;
+            }
+            Action::MapDrive | Action::DisconnectDrive => {
+                self.network_drive_dialog(action == Action::DisconnectDrive)
+                    .await?
             }
             Action::AboutWindows => self.launch("/bin/control-panel", &["winver"])?,
             // 其余命令在菜单与工具栏中保持禁用（没有对应后端）。

@@ -176,12 +176,10 @@ pub(crate) fn sys_mmap(
                 return super::fs::filesystem_error(error);
             }
             ofd.opened_ref().touch_access();
-            let mapping = match crate::fs::mapping(
-                inode.clone(),
-                Some(ofd.clone()),
-                access_mode != O_RDONLY,
+            let mapping = match ofd.clone().mapping(
                 sharing == MAP_SHARED,
                 permission.contains(MapPermission::W),
+                permission.contains(MapPermission::X),
             ) {
                 Ok(mapping) => mapping,
                 Err(error) => return super::fs::filesystem_error(error),

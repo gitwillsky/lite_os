@@ -82,6 +82,7 @@ pub const FOPEN_KEEP_CACHE: u32 = 1 << 1;
 pub const FOPEN_NONSEEKABLE: u32 = 1 << 2;
 pub const FOPEN_CACHE_DIR: u32 = 1 << 3;
 pub const FOPEN_NOFLUSH: u32 = 1 << 5;
+pub const FOPEN_PASSTHROUGH: u32 = 1 << 7;
 
 pub const RELEASE_FLUSH: u32 = 1 << 0;
 pub const GETATTR_FH: u32 = 1 << 0;
@@ -94,6 +95,16 @@ pub const RENAME_NOREPLACE: u32 = 1 << 0;
 
 /// `FUSE_DEV_IOC_CLONE`：`_IOR(229, 0, uint32_t)`，把新 `/dev/fuse` fd 绑定到参数 fd 的连接。
 pub const DEV_IOC_CLONE: usize = 0x8004_e500;
+pub const DEV_IOC_BACKING_OPEN: usize = 0x4010_e501;
+pub const DEV_IOC_BACKING_CLOSE: usize = 0x4004_e502;
+
+/// 标准 SQE128 command area 的 FUSE 子命令。
+pub const IO_URING_CMD_REGISTER: u32 = 1;
+pub const IO_URING_CMD_COMMIT_AND_FETCH: u32 = 2;
+/// `fuse_uring_req_header` 的两个固定头区与尾部元数据尺寸。
+pub const URING_IN_OUT_HEADER_SIZE: usize = 128;
+pub const URING_OP_IN_OUT_SIZE: usize = 128;
+pub const URING_HEADER_SIZE: usize = URING_IN_OUT_HEADER_SIZE + URING_OP_IN_OUT_SIZE + 32;
 
 /// `fuse_in_header` 字节数。
 pub const IN_HEADER_SIZE: usize = 40;

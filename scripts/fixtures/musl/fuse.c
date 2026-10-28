@@ -7,12 +7,17 @@
  * 守护进程 errno 透传、signal → INTERRUPT → EINTR、
  * FORGET、FUSE_DEV_IOC_CLONE，以及守护进程消失后的 ENOTCONN 与卸载；第二个挂载协商 WRITEBACK_CACHE，验证
  * 缓冲写、close 写回与 mmap 脏页在最后句柄释放前写回；直接 I/O 覆盖 per-open fh、短读、
- * 部分写入、零大小文件读取、混合缓存/COW 映射与 MAP_FIXED 失败保留旧映射。
+ * 部分写入、零大小文件读取、混合缓存/COW 映射与 MAP_FIXED 失败保留旧映射；SQE128 模式复用同一守护进程，
+ * 覆盖每 CPU 登记、COMMIT_AND_FETCH、名称/数据/xattr 编解码、传统 INTERRUPT 与卸载清理。
  *
  * 每一步失败都以步骤编号作为退出码；全部通过才打印唯一的成功 marker。 */
 #include <errno.h>
 #include <fcntl.h>
 #include <linux/fuse.h>
+#include <linux/io_uring.h>
+#include <poll.h>
+#include <sys/syscall.h>
+#include <sys/uio.h>
 #include <signal.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -70,6 +75,122 @@ static uint64_t slow_unique;
 static int writeback_mode;
 /* 控制阶段分别协商/不协商 ABORT_ERROR，核对实际 errno 与后台预算。 */
 static int control_mode;
+static int uring_mode;
+/* passthrough 的同一外部文件由登记持有；注销只能撤销未来 OPEN，不能撤销已打开的 OFD/mmap。 */
+static int passthrough_mode, backing_fd = -1, backing_id;
+
+/* ---------- 同一守护进程的标准 SQE128 传输；不复制文件系统操作实现 ---------- */
+struct ring_entry {
+	struct fuse_uring_req_header header;
+	struct iovec vectors[2];
+	unsigned char *payload;
+	uint64_t unique;
+};
+static struct {
+	int fd;
+	unsigned count, tail, mask;
+	unsigned char *sqes;
+	uint32_t *sq_tail, *sq_array, *cq_head, *cq_tail;
+	struct io_uring_cqe *cqes;
+	struct ring_entry *entries;
+} transport;
+
+static void ring_command(unsigned index, unsigned operation, uint64_t commit)
+{
+	unsigned slot = transport.tail++ & transport.mask;
+	struct io_uring_sqe *sqe = (void *)(transport.sqes + slot * 128);
+	memset(sqe, 0, 128);
+	sqe->opcode = IORING_OP_URING_CMD;
+	sqe->fd = device;
+	sqe->cmd_op = operation;
+	sqe->addr = (uintptr_t)transport.entries[index].vectors;
+	sqe->len = 2;
+	sqe->user_data = index + 1;
+	struct fuse_uring_cmd_req command = { .commit_id = commit, .qid = index };
+	memcpy(sqe->cmd, &command, sizeof command);
+	transport.sq_array[slot] = slot;
+	__atomic_store_n(transport.sq_tail, transport.tail, __ATOMIC_RELEASE);
+	if (syscall(__NR_io_uring_enter, transport.fd, 1, 0, 0, NULL, 0) != 1)
+		_exit(97);
+}
+
+static void ring_start(void)
+{
+	long count = sysconf(_SC_NPROCESSORS_CONF);
+	if (count <= 0 || count > UINT16_MAX)
+		_exit(96);
+	transport.count = count;
+	struct io_uring_params params = { .flags = IORING_SETUP_SQE128 };
+	transport.fd = syscall(__NR_io_uring_setup, transport.count, &params);
+	if (transport.fd < 0)
+		_exit(97);
+	size_t sq_end = params.sq_off.array + params.sq_entries * sizeof(uint32_t);
+	size_t cq_end = params.cq_off.cqes + params.cq_entries * sizeof(struct io_uring_cqe);
+	unsigned char *rings = mmap(NULL, sq_end > cq_end ? sq_end : cq_end,
+		PROT_READ | PROT_WRITE, MAP_SHARED, transport.fd, IORING_OFF_SQ_RING);
+	transport.sqes = mmap(NULL, params.sq_entries * 128,
+		PROT_READ | PROT_WRITE, MAP_SHARED, transport.fd, IORING_OFF_SQES);
+	if (rings == MAP_FAILED || transport.sqes == MAP_FAILED)
+		_exit(98);
+	transport.mask = params.sq_entries - 1;
+	transport.sq_tail = (void *)(rings + params.sq_off.tail);
+	transport.sq_array = (void *)(rings + params.sq_off.array);
+	transport.cq_head = (void *)(rings + params.cq_off.head);
+	transport.cq_tail = (void *)(rings + params.cq_off.tail);
+	transport.cqes = (void *)(rings + params.cq_off.cqes);
+	transport.entries = calloc(transport.count, sizeof *transport.entries);
+	if (!transport.entries)
+		_exit(99);
+	for (unsigned i = 0; i < transport.count; ++i) {
+		struct ring_entry *entry = &transport.entries[i];
+		entry->payload = malloc(MAX_WRITE);
+		if (!entry->payload)
+			_exit(99);
+		entry->vectors[0] = (struct iovec){ &entry->header, sizeof entry->header };
+		entry->vectors[1] = (struct iovec){ entry->payload, MAX_WRITE };
+		ring_command(i, FUSE_IO_URING_CMD_REGISTER, 0);
+	}
+}
+
+static ssize_t receive_request(void)
+{
+	if (!transport.entries)
+		return read(device, request, sizeof request);
+	for (;;) {
+		unsigned head = __atomic_load_n(transport.cq_head, __ATOMIC_RELAXED);
+		if (head != __atomic_load_n(transport.cq_tail, __ATOMIC_ACQUIRE)) {
+			struct io_uring_cqe completion = transport.cqes[head & (2 * (transport.mask + 1) - 1)];
+			__atomic_store_n(transport.cq_head, head + 1, __ATOMIC_RELEASE);
+			if (completion.res == -ENOTCONN)
+				_exit(0);
+			if (completion.res != 0 || completion.user_data == 0 || completion.user_data > transport.count)
+				_exit(100);
+			struct ring_entry *entry = &transport.entries[completion.user_data - 1];
+			struct fuse_in_header in;
+			memcpy(&in, entry->header.in_out, sizeof in);
+			size_t payload = entry->header.ring_ent_in_out.payload_sz;
+			if (entry->header.ring_ent_in_out.commit_id != in.unique || in.len < sizeof in + payload ||
+			    in.len > sizeof request || in.len - sizeof in - payload > FUSE_URING_OP_IN_OUT_SZ)
+				_exit(101);
+			size_t operation = in.len - sizeof in - payload;
+			memcpy(request, &in, sizeof in);
+			memcpy(request + sizeof in, entry->header.op_in, operation);
+			memcpy(request + sizeof in + operation, entry->payload, payload);
+			entry->unique = in.unique;
+			write(report, "U", 1);
+			return in.len;
+		}
+		struct pollfd descriptors[2] = { { device, POLLIN, 0 }, { transport.fd, POLLIN, 0 } };
+		if (poll(descriptors, 2, -1) < 0) {
+			if (errno == EINTR)
+				continue;
+			_exit(102);
+		}
+		if (descriptors[0].revents)
+			return read(device, request, sizeof request);
+	}
+}
+
 
 static uint64_t node_of(uint64_t parent, const char *name)
 {
@@ -117,6 +238,20 @@ static void send_reply(uint64_t unique, int error, const void *payload, size_t l
 		.error = error,
 		.unique = unique,
 	};
+	for (unsigned i = 0; i < transport.count; ++i) {
+		struct ring_entry *entry = &transport.entries[i];
+		if (entry->unique != unique)
+			continue;
+		if (length > MAX_WRITE)
+			_exit(103);
+		memcpy(entry->header.in_out, &header, sizeof header);
+		if (length)
+			memcpy(entry->payload, payload, length);
+		entry->header.ring_ent_in_out.payload_sz = length;
+		entry->unique = 0;
+		ring_command(i, FUSE_IO_URING_CMD_COMMIT_AND_FETCH, unique);
+		return;
+	}
 	memcpy(reply, &header, sizeof header);
 	if (length)
 		memcpy(reply + sizeof header, payload, length);
@@ -134,12 +269,13 @@ static uint64_t add_node(uint64_t parent, const char *name, uint32_t mode)
 		nodes[id].parent = parent;
 		nodes[id].mode = mode;
 		snprintf(nodes[id].name, sizeof nodes[id].name, "%s", name);
-		if (S_ISREG(mode))
+		if (S_ISREG(mode)) {
 			nodes[id].data = calloc(1, FILE_BYTES);
 			if (strcmp(name, "stream") == 0) {
 				memcpy(nodes[id].data, "stream", 6);
 				nodes[id].size = 6;
 			}
+		}
 		return id;
 	}
 	return 0;
@@ -191,8 +327,10 @@ static void serve(void)
 	close(clone);
 
 	nodes[1] = (struct node){ .used = 1, .mode = S_IFDIR | 0755 };
+	if (passthrough_mode)
+		nodes[2] = (struct node){ .used = 1, .parent = 1, .name = "backed", .mode = S_IFREG | 0600, .size = 4096 };
 	for (;;) {
-		ssize_t length = read(device, request, sizeof request);
+		ssize_t length = receive_request();
 		if (length < 0 && (errno == ENODEV || errno == ECONNABORTED)) {
 			if (control_mode && errno != (control_mode == 2 ? ECONNABORTED : ENODEV))
 				_exit(95);
@@ -214,17 +352,28 @@ static void serve(void)
 					 FUSE_DO_READDIRPLUS | FUSE_PARALLEL_DIROPS | FUSE_AUTO_INVAL_DATA |
 					 FUSE_INIT_EXT | (writeback_mode ? FUSE_WRITEBACK_CACHE : 0) |
 					 (control_mode == 2 ? FUSE_ABORT_ERROR : 0),
+				.flags2 = (uring_mode ? (FUSE_OVER_IO_URING >> 32) : 0) | (passthrough_mode ? (FUSE_PASSTHROUGH >> 32) : 0),
+                .max_stack_depth = passthrough_mode ? 1 : 0,
 				.max_background = control_mode ? 7 : 0,
 				.congestion_threshold = control_mode ? 5 : 0,
 				.max_write = MAX_WRITE,
 				.max_pages = MAX_WRITE / 4096,
 				.time_gran = 1,
 			};
+			if (uring_mode && !(init->flags2 & (FUSE_OVER_IO_URING >> 32)))
+				_exit(104);
 			send_reply(in->unique, 0, &out, sizeof out);
+			if (uring_mode)
+				ring_start();
 			break;
 		}
 		case FUSE_LOOKUP: {
 			const char *name = body;
+            if (passthrough_mode && strcmp(name, "unregister") == 0) {
+                if (ioctl(device, FUSE_DEV_IOC_BACKING_CLOSE, &backing_id) != 0) _exit(109);
+                send_reply(in->unique, -ENOENT, NULL, 0);
+                break;
+            }
 			if (strcmp(name, "timeout") == 0) {
 				send_reply(in->unique, -ETIMEDOUT, NULL, 0);
 				break;
@@ -380,6 +529,22 @@ static void serve(void)
 				.fh = id,
 				.open_flags = strcmp(nodes[id].name, "data") == 0 ? FOPEN_KEEP_CACHE : 0,
 			};
+            if (passthrough_mode && id == 2) {
+                if (!backing_id) {
+                    struct fuse_backing_map map = { .fd = backing_fd };
+                    backing_id = ioctl(device, FUSE_DEV_IOC_BACKING_OPEN, &map);
+                    if (backing_id <= 0) _exit(110);
+                    pid_t child = fork();
+                    if (child == 0) {
+                        if (setuid(65534) != 0 || ioctl(device, FUSE_DEV_IOC_BACKING_OPEN, &map) != -1 || errno != EPERM) _exit(1);
+                        _exit(0);
+                    }
+                    int status;
+                    if (child < 0 || waitpid(child, &status, 0) != child || !WIFEXITED(status) || WEXITSTATUS(status)) _exit(111);
+                }
+                out.open_flags = FOPEN_PASSTHROUGH;
+                out.backing_id = backing_id;
+            }
 			if (strcmp(nodes[id].name, "direct") == 0)
 				out = opened(id, ((struct fuse_open_in *)body)->flags & O_NONBLOCK);
 			send_reply(in->unique, 0, &out, sizeof out);
@@ -742,6 +907,72 @@ static void control_phase(int mode)
 	CHECK(198, close(fd) == 0 && close(limit) == 0 && close(abort_fd) == 0 && close(events) == 0);
 }
 
+static void uring_phase(void)
+{
+	const char *point = "/tmp/fuse-uring";
+	uring_mode = 1;
+	control_mode = 0;
+	writeback_mode = 0;
+	int events;
+	pid_t daemon = start(point, &events);
+	struct stat info;
+	CHECK(210, stat(point, &info) == 0);
+	int file = open("/tmp/fuse-uring/data", O_CREAT | O_RDWR, 0600);
+	CHECK(211, file >= 0 && write(file, "ring-data", 9) == 9 && close(file) == 0);
+	file = open("/tmp/fuse-uring/data", O_RDONLY);
+	char buffer[16] = { 0 };
+	CHECK(212, file >= 0 && read(file, buffer, sizeof buffer) == 9 && memcmp(buffer, "ring-data", 9) == 0);
+	CHECK(213, close(file) == 0);
+	CHECK(214, setxattr("/tmp/fuse-uring/data", "user.DOSATTRIB", "ring", 4, 0) == 0);
+	CHECK(215, getxattr("/tmp/fuse-uring/data", "user.DOSATTRIB", buffer, sizeof buffer) == 4 && memcmp(buffer, "ring", 4) == 0);
+	CHECK(216, rename("/tmp/fuse-uring/data", "/tmp/fuse-uring/renamed") == 0);
+	CHECK(217, unlink("/tmp/fuse-uring/renamed") == 0);
+	alarm(1);
+	CHECK(218, stat("/tmp/fuse-uring/slow", &info) == -1 && errno == EINTR);
+	int ring_seen = 0, interrupt_seen = 0;
+	char event;
+	while (read(events, &event, 1) == 1) {
+		ring_seen |= event == 'U';
+		interrupt_seen |= event == 'I';
+	}
+	CHECK(219, ring_seen && interrupt_seen);
+	CHECK(220, umount(point) == 0);
+	int status;
+	CHECK(221, waitpid(daemon, &status, 0) == daemon && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+	CHECK(222, close(events) == 0);
+	uring_mode = 0;
+}
+
+/* 不执行 READ/WRITE RPC 的本地后备路径：同时覆盖登记权限、OFD offset、注销与 VMA 生命周期。 */
+static void passthrough_phase(void)
+{
+    passthrough_mode = 1;
+    backing_id = 0;
+    backing_fd = open("/tmp/fuse-backing", O_CREAT | O_TRUNC | O_RDWR, 0600);
+    CHECK(223, backing_fd >= 0 && ftruncate(backing_fd, 4096) == 0 && write(backing_fd, "LOWER", 5) == 5);
+    int events;
+    pid_t daemon = start("/tmp/fuse-passthrough", &events);
+    int first = open("/tmp/fuse-passthrough/backed", O_RDWR);
+    int second = open("/tmp/fuse-passthrough/backed", O_RDONLY);
+    char data[8] = {0};
+    CHECK(224, first >= 0 && second >= 0 && read(first, data, 5) == 5 && memcmp(data, "LOWER", 5) == 0);
+    CHECK(225, read(second, data, 5) == 5 && memcmp(data, "LOWER", 5) == 0 && lseek(backing_fd, 0, SEEK_CUR) == 5);
+    CHECK(226, pwrite(first, "UPPER", 5, 0) == 5 && pread(backing_fd, data, 5, 0) == 5 && memcmp(data, "UPPER", 5) == 0);
+    unsigned char *mapping = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_SHARED, first, 0);
+    CHECK(227, mapping != MAP_FAILED && memcmp(mapping, "UPPER", 5) == 0);
+    struct stat info;
+    CHECK(228, stat("/tmp/fuse-passthrough/unregister", &info) == -1 && errno == ENOENT);
+    CHECK(229, open("/tmp/fuse-passthrough/backed", O_RDONLY) == -1 && errno == ENOENT);
+    CHECK(230, close(first) == 0 && close(second) == 0);
+    memcpy(mapping, "MMAP", 4);
+    CHECK(231, msync(mapping, 4096, MS_SYNC) == 0 && pread(backing_fd, data, 4, 0) == 4 && memcmp(data, "MMAP", 4) == 0);
+    CHECK(232, munmap(mapping, 4096) == 0 && close(backing_fd) == 0 && unlink("/tmp/fuse-backing") == 0);
+    CHECK(233, umount("/tmp/fuse-passthrough") == 0);
+    int status;
+    CHECK(234, waitpid(daemon, &status, 0) == daemon && WIFEXITED(status) && WEXITSTATUS(status) == 0 && close(events) == 0);
+    passthrough_mode = 0;
+}
+
 int main(void)
 {
 	static unsigned char buffer[FILE_BYTES];
@@ -914,6 +1145,8 @@ int main(void)
 	direct_phase();
 	control_phase(1);
 	control_phase(2);
+	uring_phase();
+    passthrough_phase();
 	puts("LITEOS_FUSE_42");
 	return 0;
 }

@@ -94,6 +94,17 @@ impl Desktop {
         let home = std::env::var_os("HOME")
             .map(PathBuf::from)
             .ok_or_else(|| io::Error::other("HOME missing"))?;
+        // 登录重连走后台线程；服务器不可达时不能阻塞桌面、任务栏或登录完成。
+        std::thread::spawn(|| {
+            match network_drive::Store::current().and_then(|store| store.reconnect()) {
+                Ok(failures) => {
+                    for (letter, error) in failures {
+                        eprintln!("网络驱动器 {letter}: {error}");
+                    }
+                }
+                Err(error) => eprintln!("网络驱动器重连：{error}"),
+            }
+        });
         let control = UnixStream::from(std::io::stdout().as_fd().try_clone_to_owned()?);
         Ok(Self {
             background,

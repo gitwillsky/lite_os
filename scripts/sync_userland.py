@@ -50,7 +50,7 @@ def managed_path(path: str) -> bool:
     return path in {
         *RETIRED_FILES, *(f"/bin/{name}" for name in ACCOUNT_APPLETS), "/bin/shutdown", "/bin/wine", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
         "/etc/init.d/display-service", "/etc/init.d/network-service", "/usr/share/udhcpc/default.script",
-        "/etc/profile", "/bin/logon", "/bin/desktop", "/bin/file-explorer", "/bin/control-panel", "/bin/taskmgr", "/bin/sndvol", "/bin/sndplay", "/bin/mplay", "/bin/notepad", "/bin/devmgmt", "/bin/session-launch",
+        "/etc/profile", "/bin/logon", "/bin/desktop", "/bin/file-explorer", "/bin/smbfs", "/bin/fusermount3", "/etc/fuse.conf", "/bin/control-panel", "/bin/taskmgr", "/bin/sndvol", "/bin/sndplay", "/bin/mplay", "/bin/notepad", "/bin/devmgmt", "/bin/session-launch",
     } or any(path.startswith(root + "/") for root in RETIRED_TREES)
 
 
@@ -299,7 +299,7 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
                     (
                         f"rm {destination}",
                         f"write {debugfs_path(artifact.source)} {destination}",
-                        f"set_inode_field {destination} mode 0100{artifact.mode:o}",
+                        f"set_inode_field {destination} mode 0{0o100000 | artifact.mode:o}",
                     )
                 )
             run_batch(image, commands, directory, "write-userland", writable=True)

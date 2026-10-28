@@ -1,0 +1,23 @@
+{
+  "Cargo.toml": "61eca30782c6dfc4dbb7d336a51e3fe5c80d95bce7ad32a93ab46e85c74be7d0",
+  "README.md": "11853797b80368f1b0d639954fae3521d98d5c84016cd1b1848704d302ca68c9",
+  "Cargo.toml.orig": "0d7debf0456f7a87b57c9d21c115a84bf0627aa65ebfe03af14afbdca379e54f",
+  "src/guid.rs": "98eb86ac90c2ed91f1756d4dd5c022985c3589ed81b0c7e322612859b0a334d0",
+  "src/util.rs": "04b3c8a13d5e1044d2ad1628c98da2f418ae61b70a56fc4f84d36a6985a6a5ab",
+  "src/security.rs": "57bd6389186f2d8e5b9b835e2f1266c6bed5b72fa256584b42d02075984fe6e5",
+  "src/lib.rs": "6c039e97b44b1dbe6143ba5377f2df420f0d3fab5b32c176cacd99d2eb9eda71",
+  "src/binrw_util.rs": "c36e066d5b80fe5c5645c69016e6f5c21ae0543da1eee685c9b33172a2258ef1",
+  "src/security/security_descriptor.rs": "1d12b857588fcad16ad7d1cbac5ec22d0ad3faed3a19bd1433914044b8d2a96e",
+  "src/security/ace.rs": "9d254da4c567832ab3ecc175fbebc9f23c78734f1eff0c967a0fbeb326f52d08",
+  "src/security/tests.rs": "3eb0ffb57b0d622d9d14f8da5aea610b98a9ff96c59033642dd1b8e4ccf459fe",
+  "src/security/sid.rs": "effdf41ac47a154cf46a14b084014e74288dab61ee9efaf2858fa1ccdc320265",
+  "src/security/acl.rs": "b6d93896330542088de5d44b334a6c55f78b5f41e7418ddd748b07a805cccd5f",
+  "src/binrw_util/multi_sz.rs": "41f1eaf3788d7c01f6624ef893a1b53d4f2ab65b21df2f03cc9ae181014f6b5e",
+  "src/binrw_util/boolean.rs": "6ec3ee1b5b28c42b2362c2f1e8527a841010243b49267722c74967867a38f608",
+  "src/binrw_util/file_time.rs": "657205336bd614142ae7c1fcb464166286245405327ec0241f60fabe14236a3c",
+  "src/binrw_util/sized_string.rs": "d547075108b728bd32360f8a15da975b50816e2e24500f3d15a31048ea1ce96b",
+  "src/binrw_util/fixed_string.rs": "58ef13e96204cc0d1a92647bffc0d2b9fc3a8b18682e31fb0cc4fd0fafe090cc",
+  "src/binrw_util/helpers.rs": "ad5cd97a1ed94e16d01d38a46193b618c0b2b7f17d2c827da9d41b1f81f1ba8b",
+  "src/binrw_util/pos_marker.rs": "2af61e889301f0fdd354c8e2e5fddea95a3e0630644bd9072d44cdf3a30bc293",
+  "src/binrw_util/debug.rs": "95cd095aa8c30c64f5afdff7ca9eba4f3e4698d61afabacfac7d6a6584c85425"
+}

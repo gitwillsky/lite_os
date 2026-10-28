@@ -375,11 +375,18 @@ impl Ring {
                 break;
             }
             let mut raw = [0u8; SQE_BYTES];
+            let offset = index as usize * self.geometry.sqe_stride;
             self.sqes
-                .read(index as usize * SQE_BYTES, &mut raw)
+                .read(offset, &mut raw)
                 .expect("SQE index was bounds-checked against sq_entries");
+            let mut sqe = Sqe::decode(&raw);
+            if self.sqe128() {
+                self.sqes
+                    .read(offset + SQE_BYTES, &mut sqe.extra)
+                    .expect("SQE128 tail belongs to the same slot");
+            }
             consumed += 1;
-            if execute(Sqe::decode(&raw)) == Flow::Stop {
+            if execute(sqe) == Flow::Stop {
                 break;
             }
         }
@@ -387,6 +394,11 @@ impl Ring {
         self.advance_generation();
         self.readiness.1.signal_readiness();
         Ok(consumed)
+    }
+
+    /// ring 是否以 Linux SQE128 布局创建；设备命令据此判断 80-byte command area 是否存在。
+    pub(crate) fn sqe128(&self) -> bool {
+        self.geometry.sqe_stride == 2 * SQE_BYTES
     }
 
     /// 发布一个 CQE：环有空位且溢出链表为空时直接入环，否则入溢出链表保持完成顺序。

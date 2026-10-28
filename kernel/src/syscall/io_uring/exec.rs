@@ -17,7 +17,7 @@ use super::{
 };
 use crate::{
     file::{OpenFileDescription, OpenFileKind},
-    fs::O_NONBLOCK,
+    fs::{O_NONBLOCK, chardev::UringCommand},
     io_uring::Ring,
     socket::{SocketCapacityWait, SocketError},
     syscall::{
@@ -70,6 +70,10 @@ impl Outcome {
 
 /// 一个已通过 prep 校验、拥有全部用户数据的请求。`fd` 为 `None` 表示 prep 时就已无效（负数或 fixed 引用）。
 pub(super) enum Op {
+    DeviceCommand {
+        fd: Option<usize>,
+        command: UringCommand,
+    },
     ReadWrite {
         fd: Option<usize>,
         vectors: Vec<UserIoVec>,
@@ -162,6 +166,11 @@ pub(super) enum Issue {
     reason = "each Wait lives inside one boxed chain future; boxing a variant would add a second allocation per request"
 )]
 pub(super) enum Wait {
+    /// 设备 owner 持有协议状态；reactor 只检查 ready，用户页复制经阻塞车道执行。
+    DeviceCommand {
+        ofd: Arc<OpenFileDescription>,
+        command: UringCommand,
+    },
     /// pipe/socket/eventfd 等流式读写：`EAGAIN` 时等目标 OFD 就绪再试。
     Stream {
         ofd: Arc<OpenFileDescription>,
@@ -220,6 +229,7 @@ impl Wait {
     pub(super) fn file(&self) -> Option<Arc<OpenFileDescription>> {
         match self {
             Wait::Stream { ofd, .. }
+            | Wait::DeviceCommand { ofd, .. }
             | Wait::Accept { ofd, .. }
             | Wait::Connect { ofd }
             | Wait::ConnectBacklog { ofd, .. }
@@ -233,6 +243,7 @@ impl Wait {
     pub(super) fn kind(&self) -> Kind {
         match self {
             Wait::Stream { .. }
+            | Wait::DeviceCommand { .. }
             | Wait::Accept { .. }
             | Wait::Connect { .. }
             | Wait::ConnectBacklog { .. }
@@ -286,6 +297,15 @@ impl Op {
     /// 在 `task` 的上下文里 issue：同步 op 直接得出结果，会等待的 op 返回 [`Wait`]。
     pub(super) fn issue(self, task: &TaskControlBlock, ring: &Arc<Ring>) -> Issue {
         match self {
+            Op::DeviceCommand { fd, command } => {
+                let Some(ofd) = ofd_of(task, fd) else {
+                    return Issue::Done(Outcome::of(-errno::EBADF));
+                };
+                let OpenFileKind::Device(_) = &ofd.kind else {
+                    return Issue::Done(Outcome::of(-errno::EOPNOTSUPP));
+                };
+                Issue::Wait(Wait::DeviceCommand { ofd, command })
+            }
             Op::ReadWrite {
                 fd,
                 vectors,
@@ -557,8 +577,18 @@ fn lane_outcome(result: isize, total: Option<usize>) -> Outcome {
     }
 }
 
+/// future 直接被丢弃时也拆掉 Waiter → Ticket → notify(Waiter) 引用环。
+/// 票据只在车道作业实际执行期间拥有目标 OFD，不能让一次 ring close 永久保活连接。
+struct LaneWait<'a>(&'a Waiter);
+
+impl Drop for LaneWait<'_> {
+    fn drop(&mut self) {
+        self.0.detach_lane();
+    }
+}
+
 /// 在阻塞车道上执行作业并等它完成。
-async fn run_lane(
+pub(super) async fn run_lane(
     work: lane::Work,
     total: Option<usize>,
     task: &Weak<TaskControlBlock>,
@@ -568,6 +598,7 @@ async fn run_lane(
         return Outcome::of(-errno::ENOMEM);
     };
     waiter.attach_lane(ticket.clone());
+    let _attachment = LaneWait(waiter);
     loop {
         // 只有尚未开始的作业才能真正取消；已开始的作业副作用会发生，等它完成并报告真实结果。
         if waiter.take_canceled() && ticket.try_cancel() {
@@ -653,6 +684,9 @@ pub(super) async fn drive(
     waiter: Waiter,
 ) -> Outcome {
     match op {
+        Wait::DeviceCommand { ofd, command } => {
+            super::device::drive(ofd, command, &task, &waiter).await
+        }
         Wait::Stream {
             ofd,
             vectors,

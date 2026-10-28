@@ -5,7 +5,7 @@
 //! 任何具体设备类型，新增设备只需在其子系统内实现并注册。devfs 里有哪些节点见 [`super::devnode`]，
 //! 设备号编码见 [`super::DeviceNumber`]。
 
-use alloc::{sync::Arc, vec::Vec};
+use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 use spin::Mutex;
 use syscall_abi::errno;
@@ -66,8 +66,60 @@ pub(crate) struct IoctlCall<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UserFault;
 
-/// 设备 ioctl 访问调用者用户内存的唯一 seam；页表遍历与 fault 处理归 syscall 实现。
+/// 已从 SQE 复制的标准 `IORING_OP_URING_CMD` 输入；设备 owner 解释 command area。
+pub(crate) struct UringCommand {
+    /// SQE 的 cmd_op。
+    pub(crate) operation: u32,
+    /// SQE 的 addr 与 len；FUSE REGISTER 将其解释为两个 iovec。
+    pub(crate) address: usize,
+    pub(crate) length: u32,
+    /// offset 48 起的命令区；SQE64 只有前 16 字节有效。
+    pub(crate) data: [u8; 80],
+    pub(crate) extended: bool,
+}
+
+/// 设备命令的唯一等待/取消令牌。设备不得持有 task 或反向持有 io_uring 对象。
+///
+/// Drop 撤销尚未完成的登记；已交付给用户的资源由设备自己的协议状态接管。
+pub(crate) trait PendingCommand: Send {
+    /// 不接触用户页地登记通知并检查能否推进；reactor 只调用该方法。
+    ///
+    /// # Parameters
+    /// - `notify`: 条件改变时唤醒 reactor 的通知，设备只保存 Weak。
+    ///
+    /// # Returns
+    /// true 表示可在阻塞车道上调用 step；检查条件与登记必须同一事务，防止漏唤醒。
+    fn ready(&self, notify: &Arc<dyn super::CompletionNotify>) -> bool;
+
+    /// 尝试完成设备命令，不等待设备请求入队；用户页 fault 允许睡眠，只在阻塞车道调用。
+    ///
+    /// # Parameters
+    /// - `user`: 本次提交线程的地址空间，仅在本次调用内有效。
+    /// - `notify`: 条件变化时调用的通知；设备只保留 Weak，防止命令与 ring 互相保活。
+    ///
+    /// # Returns
+    /// 完成的 CQE 结果，或已登记 notify、等待再次调用的 None。
+    ///
+    /// # Errors
+    /// 完成值的 Err 为设备 errno；复制失败必须结束对应 backend 请求，不能遗留等待者。
+    fn step(
+        &mut self,
+        user: &dyn UserMemory,
+        notify: &Arc<dyn super::CompletionNotify>,
+    ) -> Option<Result<isize, DeviceError>>;
+
+    /// 取消该命令的 CQE 结果；实际撤销由 Drop 执行。
+    fn canceled_result(&self) -> isize {
+        -errno::ECANCELED
+    }
+}
+
+/// 设备 ioctl/uring_cmd 访问调用者用户内存的唯一 seam；页表与 fault 处理归 syscall 实现。
 pub(crate) trait UserMemory {
+    /// 取得实际后备 file 并冻结登记凭据；缺省 EOPNOTSUPP，设备不查 task/fd 表。
+    fn backing_file(&self, _fd: i32) -> Result<Arc<dyn super::BackingFile>, DeviceError> {
+        Err(DeviceError::Errno(errno::EOPNOTSUPP))
+    }
     /// nsfs PID parent visibility 的 calling active namespace；不从 user namespace 推测 PID view。
     fn pid_namespace(&self) -> alloc::sync::Arc<crate::namespace::PidNamespace>;
     /// 按 syscall fd transaction 发布一个具体 namespace fd；领域 owner 决定相关 namespace 与权限。
@@ -164,6 +216,25 @@ pub(crate) trait PositionedFile: Send + Sync {
 /// 读写自行负责记录边界与阻塞语义：只在尚未交付任何字节且 `nonblocking` 为 false 时等待
 /// （见 [`wait_ready`]），被可交付 signal 中断时返回 `EINTR`。
 pub(crate) trait DeviceFile: Send + Sync + core::any::Any {
+    /// 开始标准设备命令；仅 syscall/io_uring 调用，设备 UAPI 与状态仍由设备 owner 解释。
+    ///
+    /// # Parameters
+    /// - `command`: prep 阶段已复制的 SQE 命令区与缓冲区描述。
+    /// - `user`: 提交线程的用户内存 seam，不得保存引用。
+    ///
+    /// # Returns
+    /// 可非阻塞推进、Drop 可撤销的命令令牌。
+    ///
+    /// # Errors
+    /// 缺省 EOPNOTSUPP；实现返回设备自己的参数、分配或连接错误。
+    fn uring_command(
+        &self,
+        _command: &UringCommand,
+        _user: &dyn UserMemory,
+    ) -> Result<Box<dyn PendingCommand>, DeviceError> {
+        Err(DeviceError::Errno(errno::EOPNOTSUPP))
+    }
+
     /// native file operations 的 read/write capability；缺失操作先于零长度与用户 iovec copy。
     /// 默认设备提供两者，只有实际不提供对应 operation 的文件覆写为 false。
     fn supports_read(&self) -> bool {

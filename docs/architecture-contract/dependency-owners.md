@@ -98,7 +98,11 @@ Pipe byte/endpoint、eventfd 与实际 IPC namespace/System V message queue、se
 ## `fs`
 
 VFS、具体文件系统、字符设备注册表、inotify 与 mem/kmsg 设备（kmsg 经 `deferred` 唤醒）；OFD 归 `file`、终端归 `tty`，advisory lock 经 `LockHolder` 识别持锁者。
+FUSE ring 只经 `cpu` 的 logical CpuId/possible/current_id 为标准 qid 路由，不读取 hardware identity 或 arch adapter。
 procfs 经 `socket` 的 NET identity 和只读快照投影 networking 事实，不持有另一份协议/端口/路由状态。
+
+FUSE 后备文件只通过 `BackingFile`/`BackingOpen` 与 user-copy seam 注入，fd/凭据捕获属于 syscall adapter；
+映射机制沿已有 memory seam 返回，不反向依赖 file 或 task。
 
 ## `file`
 

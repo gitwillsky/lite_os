@@ -15,6 +15,7 @@
 - [进程与调度](architecture/process-scheduling.md)
 - [文件系统与存储](architecture/filesystem-storage.md)
 - [IPC 与网络](architecture/ipc-network.md)
+- [网络驱动器](architecture/network-drives.md)
 - [设备与终端](architecture/devices-terminal.md)
 - [音频](architecture/audio.md)
 - [io_uring](architecture/io-uring.md)
@@ -54,6 +55,7 @@
 
 - [固定规范与上游来源](standards-baseline.md)
 - [构建、测试与验证](development/build-and-verify.md)
+- [网络驱动器验证](development/network-drive-verification.md)
 - [性能验证范围与成本契约](development/performance-coverage.md)
 - [Rust UI SDK 与本机开发](development/ui-sdk.md)
 - [Wine 运行时：构建、打包与安装](development/wine-runtime.md)
@@ -76,7 +78,6 @@
 - [经典桌面与 Win32 运行时](plans/classic-desktop.md)
 - [SDK、二进制兼容与系统内开发（实施中）](plans/classic-ui-sdk.md)
 - [经典桌面应用框架（实施中）](plans/classic-ui-framework.md)
-- [映射网络驱动器（SMB，实施中）](plans/network-drive.md)
 
 ## 设计决策与术语
 

@@ -30,9 +30,12 @@ use crate::{
 };
 
 mod background;
+mod backing;
 mod device_io;
+mod uring;
 use background::{Background, Waiting};
 pub(super) use background::{Limit, unprivileged_limit};
+pub(super) use backing::OpenedBacking;
 
 /// 内核声明支持、守护进程可选择启用的 INIT 能力（Linux `fuse_new_init` 的子集）。
 const SUPPORTED: u64 = fuse::ASYNC_READ
@@ -44,6 +47,8 @@ const SUPPORTED: u64 = fuse::ASYNC_READ
     | fuse::PARALLEL_DIROPS
     | fuse::ABORT_ERROR
     | fuse::MAX_PAGES
+    | fuse::OVER_IO_URING
+    | fuse::PASSTHROUGH
     | fuse::INIT_EXT;
 /// INIT 中提出的预读上限（Linux 缺省 bdi `ra_pages` 128 KiB，与页缓存一次填充上限一致）。
 const MAX_READAHEAD: u32 = 128 * 1024;
@@ -63,6 +68,7 @@ const POLLWRNORM: i16 = 0x100;
 /// INIT 回复协商出的连接参数。
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Negotiated {
+    pub(super) max_stack_depth: u32,
     /// INIT 非零时覆盖默认后台预算；协议 7.13 起有效。
     max_background: u16,
     congestion_threshold: u16,
@@ -118,11 +124,20 @@ impl Negotiated {
         let max_pages = field(2) as u32;
         let _map_alignment = field(2);
         let flags2 = field(4);
+        let max_stack_depth = field(4) as u32;
         if flags & fuse::INIT_EXT != 0 {
             flags |= flags2 << 32;
         }
-        let flags = flags & SUPPORTED;
+        let mut flags = flags & SUPPORTED;
+        if !(1..=2).contains(&max_stack_depth) || flags & fuse::WRITEBACK_CACHE != 0 {
+            flags &= !fuse::PASSTHROUGH;
+        }
         Ok(Self {
+            max_stack_depth: if flags & fuse::PASSTHROUGH != 0 {
+                max_stack_depth
+            } else {
+                0
+            },
             max_background,
             congestion_threshold,
             minor,
@@ -167,8 +182,21 @@ impl ReplyShape {
 }
 
 enum Phase {
-    Queued,
-    Sent { device: u64 },
+    Queued {
+        cpu: Option<crate::cpu::CpuId>,
+    },
+    Sent {
+        device: u64,
+    },
+    /// 已认领但用户复制尚未成功；不能先发 INTERRUPT，守护进程还不知道请求。
+    RingCopying {
+        cpu: crate::cpu::CpuId,
+        entry: u64,
+    },
+    Ring {
+        cpu: crate::cpu::CpuId,
+        entry: u64,
+    },
     Done(Result<Vec<u8>, FileSystemError>),
     Taken,
 }
@@ -183,6 +211,8 @@ pub(super) struct Request {
     unique: u64,
     opcode: u32,
     message: Vec<u8>,
+    /// 第一个定长 op 参数的长度；ring 把它放进 op_in，名称/内容只进入 payload。
+    operation_header: usize,
     reply: ReplyShape,
     phase: Mutex<Phase>,
     // OWNER: 只有发起请求的线程等待；回复、中止与读取失败 signal，持锁时不调用 scheduler。
@@ -264,6 +294,9 @@ enum Link {
 }
 
 struct Queue {
+    /// BACKING_OPEN 登记的实际 file；关闭登记不撤销已经打开的 per-open backing 引用。
+    backings: Vec<(i32, Arc<dyn crate::fs::BackingFile>)>,
+    uring: uring::Transport,
     background: Background,
     link: Link,
     initialized: bool,
@@ -323,6 +356,8 @@ impl Connection {
         let pair = || Pipe::notification_pair().map_err(|_| FileSystemError::OutOfMemory);
         let connection = Arc::try_new(Self {
             queue: Mutex::new(Queue {
+                backings: Vec::new(),
+                uring: uring::Transport::new(),
                 background: Background::new(),
                 link: Link::Connected,
                 initialized: false,
@@ -418,8 +453,9 @@ impl Connection {
             unique,
             opcode,
             message,
+            operation_header: uring::operation_header(opcode, arguments),
             reply,
-            phase: Mutex::new(Phase::Queued),
+            phase: Mutex::new(Phase::Queued { cpu: None }),
             done: TaskEvent::new(),
             interrupted: AtomicBool::new(false),
         })
@@ -436,9 +472,10 @@ impl Connection {
             .pending
             .try_reserve(needed)
             .map_err(|_| FileSystemError::OutOfMemory)?;
+        queue.route(&request);
         queue.pending.push_back(request);
         drop(queue);
-        self.readiness.1.signal_readiness();
+        self.wake_requests();
         Ok(())
     }
 
@@ -450,7 +487,7 @@ impl Connection {
                 if let Some(error) = queue.refusal() {
                     return Err(error);
                 }
-                if queue.initialized {
+                if queue.initialized && !queue.uring.registering() {
                     return Ok(());
                 }
             }
@@ -508,7 +545,10 @@ impl Connection {
                 }
             }
             request.interrupted.store(true, Ordering::Release);
-            if matches!(*request.phase.lock(), Phase::Sent { .. }) {
+            if matches!(
+                *request.phase.lock(),
+                Phase::Sent { .. } | Phase::Ring { .. }
+            ) {
                 self.queue_interrupt(request);
             }
         }
@@ -518,7 +558,7 @@ impl Connection {
             }
             if request.done.wait_killable() == WaitResult::Interrupted {
                 let mut queue = self.queue.lock();
-                if matches!(*request.phase.lock(), Phase::Queued)
+                if matches!(*request.phase.lock(), Phase::Queued { .. })
                     && let Some(index) = queue
                         .pending
                         .iter()
@@ -543,7 +583,10 @@ impl Connection {
         // 已完成或已在中断队列中的请求不再排队；分配失败时放弃中断，调用者继续等待回复。
         if queue.link != Link::Connected
             || queue.no_interrupt
-            || !matches!(*request.phase.lock(), Phase::Sent { .. })
+            || !matches!(
+                *request.phase.lock(),
+                Phase::Sent { .. } | Phase::Ring { .. }
+            )
             || queue
                 .interrupts
                 .iter()
@@ -605,10 +648,11 @@ impl Connection {
             return;
         };
         // 预留保证容量，push 不会分配。
+        queue.route(&request);
         queue.background.pending.push_back(request);
         queue.promote_background();
         drop(queue);
-        self.readiness.1.signal_readiness();
+        self.wake_requests();
     }
 
     /// 为 `count` 次可能的查找预留 FORGET 空位；每个空位由 [`Connection::forget`] 恰好消费一次，
@@ -676,11 +720,7 @@ impl Connection {
             if queue.link != Link::Connected {
                 return;
             }
-            let abort_error = self
-                .negotiated
-                .get()
-                .is_some_and(|negotiated| negotiated.has(fuse::ABORT_ERROR));
-            queue.link = if explicit && abort_error {
+            queue.link = if explicit {
                 Link::Aborted
             } else {
                 Link::Detached
@@ -700,7 +740,7 @@ impl Connection {
                 Err(FileSystemError::Errno(errno::ECONNABORTED as u16)),
             );
         }
-        self.readiness.1.signal_readiness();
+        self.wake_requests();
         self.initialized.1.signal_readiness();
     }
 
@@ -713,6 +753,7 @@ impl Connection {
             queue.initialized = true;
             queue.failed = negotiated.is_err();
             if let Ok(negotiated) = negotiated {
+                queue.uring.negotiate(negotiated.has(fuse::OVER_IO_URING));
                 queue.background.negotiate(
                     negotiated,
                     (self.requester)().is_some_and(|requester| {
@@ -724,7 +765,9 @@ impl Connection {
             }
             queue.promote_background();
         }
-        self.initialized.1.signal_readiness();
+        if !self.queue.lock().uring.registering() {
+            self.initialized.1.signal_readiness();
+        }
     }
 
     /// 守护进程可读（有请求）、总可写；连接断开报告 POLLERR（Linux `fuse_dev_poll`）。
@@ -733,7 +776,10 @@ impl Connection {
         let mut ready = POLLOUT | POLLWRNORM;
         if queue.link != Link::Connected {
             ready |= POLLERR;
-        } else if !queue.pending.is_empty()
+        } else if queue
+            .pending
+            .iter()
+            .any(|request| matches!(*request.phase.lock(), Phase::Queued { cpu: None }))
             || !queue.interrupts.is_empty()
             || !queue.forgets.is_empty()
         {
