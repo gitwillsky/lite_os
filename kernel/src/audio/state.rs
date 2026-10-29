@@ -1,5 +1,9 @@
 use crate::drivers::{PCM_BUFFER_FRAMES, PCM_PERIOD_FRAMES};
 
+/// 每个 OFD 的软件 ring 上限为 64 KiB，允许常规播放器协商约 100ms 缓冲。
+/// 物理 DMA 队列仍由 adapter 固定；若软件 ring 也限为它的 21ms，普通调度抖动即可耗尽音频。
+pub(super) const MAX_BUFFER_FRAMES: usize = 8_192;
+
 /// ALSA playback stream state number，固定到 Linux `snd_pcm_state_t`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]
@@ -17,6 +21,7 @@ pub(crate) struct PcmStateOwner {
     pub(crate) state: PcmState,
     pub(crate) application_frames: u64,
     pub(crate) hardware_frames: u64,
+    pub(crate) buffer_frames: u64,
     pub(crate) available_min: u64,
     pub(crate) start_threshold: u64,
     pub(crate) stop_threshold: u64,
@@ -29,6 +34,7 @@ impl PcmStateOwner {
             state: PcmState::Open,
             application_frames: 0,
             hardware_frames: 0,
+            buffer_frames: PCM_BUFFER_FRAMES as u64,
             available_min: PCM_PERIOD_FRAMES as u64,
             start_threshold: PCM_BUFFER_FRAMES as u64,
             stop_threshold: PCM_BUFFER_FRAMES as u64,
@@ -36,13 +42,32 @@ impl PcmStateOwner {
         }
     }
 
-    pub(crate) fn configure(&mut self) -> Result<(), ()> {
-        if self.state != PcmState::Open {
+    /// 将 Open 流配置为指定的软件 ring 容量。
+    ///
+    /// # Parameters
+    /// - `buffer_frames`: 4..=32 个完整 256-frame period。
+    ///
+    /// # Errors
+    /// 非 Open 状态、容量越界或不含完整 period 时返回错误，原状态不变。
+    pub(crate) fn configure(&mut self, buffer_frames: u64) -> Result<(), ()> {
+        if self.state != PcmState::Open
+            || !(PCM_BUFFER_FRAMES as u64..=MAX_BUFFER_FRAMES as u64).contains(&buffer_frames)
+            || !buffer_frames.is_multiple_of(PCM_PERIOD_FRAMES as u64)
+        {
             return Err(());
         }
         self.state = PcmState::Setup;
         self.application_frames = 0;
         self.hardware_frames = 0;
+        self.buffer_frames = buffer_frames;
+        self.available_min = PCM_PERIOD_FRAMES as u64;
+        self.start_threshold = buffer_frames;
+        self.stop_threshold = buffer_frames;
+        // Linux 的默认 boundary 是 buffer 的二次幂倍数；非二次幂 ring 跨 boundary 后仍须落在相同位置。
+        self.boundary = buffer_frames;
+        while self.boundary <= (i64::MAX as u64 - buffer_frames) / 2 {
+            self.boundary *= 2;
+        }
         Ok(())
     }
 
@@ -55,10 +80,10 @@ impl PcmStateOwner {
     ) -> Result<(), ()> {
         if matches!(self.state, PcmState::Open | PcmState::Disconnected)
             || available_min == 0
-            || available_min > PCM_BUFFER_FRAMES as u64
+            || available_min > self.buffer_frames
             || start_threshold > boundary
             || stop_threshold > boundary
-            || boundary < (PCM_BUFFER_FRAMES * 2) as u64
+            || boundary < self.buffer_frames * 2
         {
             return Err(());
         }
@@ -114,7 +139,7 @@ impl PcmStateOwner {
     pub(crate) fn submit_frames(&mut self, frames: u64) -> Result<(), ()> {
         if !matches!(self.state, PcmState::Prepared | PcmState::Running)
             || frames == 0
-            || frames > PCM_BUFFER_FRAMES as u64 - self.delay()
+            || frames > self.buffer_frames - self.delay()
         {
             return Err(());
         }
@@ -150,6 +175,6 @@ impl PcmStateOwner {
 
     pub(crate) fn writable(&self) -> bool {
         matches!(self.state, PcmState::Prepared | PcmState::Running)
-            && self.delay() + self.available_min <= PCM_BUFFER_FRAMES as u64
+            && self.delay() + self.available_min <= self.buffer_frames
     }
 }

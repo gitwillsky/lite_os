@@ -1,3 +1,6 @@
+use super::state::MAX_BUFFER_FRAMES;
+use crate::drivers::{PCM_BUFFER_FRAMES, PCM_PERIOD_FRAMES};
+
 pub(crate) const SNDRV_PCM_IOCTL_PVERSION: usize = 0x8004_4100;
 pub(crate) const SNDRV_PCM_IOCTL_TTSTAMP: usize = 0x4004_4103;
 pub(crate) const SNDRV_PCM_IOCTL_USER_PVERSION: usize = 0x4004_4104;
@@ -115,11 +118,23 @@ const fn interval_offset(parameter: usize) -> usize {
     260 + (parameter - 8) * 12
 }
 
-/// 固定硬件能力：每个区间参数的闭区间 `[min, max]`，以及它是否是需要开区间标记的派生时间量。
+/// 指定软件 period 数时的配置：各区间及派生时间量的开端点标记。
 ///
 /// 时间量（微秒）由采样率与帧数推出，不是整数：period_time = 256 / 48000 s = 5333.33 µs。Linux 用
 /// 开区间端点 `(5333, 5334)` 表示"介于这两个整数之间"，`alsa-lib` 依赖这个形式才能正确折算。
-const fn capability(parameter: usize) -> Option<(u32, u32, u32)> {
+const fn capability(parameter: usize, periods: u32) -> Option<(u32, u32, u32)> {
+    let frames = periods * PCM_PERIOD_FRAMES as u32;
+    let scaled_time = frames as u64 * 1_000_000;
+    let buffer_time = (scaled_time / 48_000) as u32;
+    let time = if scaled_time.is_multiple_of(48_000) {
+        (buffer_time, buffer_time, INTERVAL_INTEGER)
+    } else {
+        (
+            buffer_time,
+            buffer_time + 1,
+            INTERVAL_OPEN_MIN | INTERVAL_OPEN_MAX,
+        )
+    };
     // (min, max, flags)
     Some(match parameter {
         parameter::SAMPLE_BITS => (32, 32, INTERVAL_INTEGER),
@@ -129,13 +144,29 @@ const fn capability(parameter: usize) -> Option<(u32, u32, u32)> {
         parameter::PERIOD_TIME => (5_333, 5_334, INTERVAL_OPEN_MIN | INTERVAL_OPEN_MAX),
         parameter::PERIOD_SIZE => (256, 256, INTERVAL_INTEGER),
         parameter::PERIOD_BYTES => (2_048, 2_048, INTERVAL_INTEGER),
-        parameter::PERIODS => (4, 4, INTERVAL_INTEGER),
-        parameter::BUFFER_TIME => (21_333, 21_334, INTERVAL_OPEN_MIN | INTERVAL_OPEN_MAX),
-        parameter::BUFFER_SIZE => (1_024, 1_024, INTERVAL_INTEGER),
-        parameter::BUFFER_BYTES => (8_192, 8_192, INTERVAL_INTEGER),
+        parameter::PERIODS => (periods, periods, INTERVAL_INTEGER),
+        parameter::BUFFER_TIME => time,
+        parameter::BUFFER_SIZE => (frames, frames, INTERVAL_INTEGER),
+        parameter::BUFFER_BYTES => (frames * 8, frames * 8, INTERVAL_INTEGER),
         parameter::TICK_TIME => (0, 0, INTERVAL_INTEGER),
         _ => return None,
     })
+}
+
+fn intersects(request: (u32, u32, u32), capability: (u32, u32, u32)) -> bool {
+    let (min, max, flags) = request;
+    let (low, high, supported) = capability;
+    if flags & INTERVAL_EMPTY != 0 || min > max || flags & INTERVAL_INTEGER != 0 && low != high {
+        return false;
+    }
+    let first = min.max(low);
+    let last = max.min(high);
+    first < last
+        || first == last
+            && !(first == min && flags & INTERVAL_OPEN_MIN != 0
+                || first == max && flags & INTERVAL_OPEN_MAX != 0
+                || first == low && supported & INTERVAL_OPEN_MIN != 0
+                || first == high && supported & INTERVAL_OPEN_MAX != 0)
 }
 
 /// 固定硬件能力里的掩码参数允许的取值位集合。
@@ -151,11 +182,11 @@ const fn allowed_mask(parameter: usize) -> u32 {
     }
 }
 
-/// 把一组 `snd_pcm_hw_params` 与固定硬件能力求交，写回结果。
+/// 把一组 `snd_pcm_hw_params` 与 PCM 支持的配置求交，写回结果。
 ///
 /// 这是 `SNDRV_PCM_IOCTL_HW_REFINE` 的语义：调用方（`alsa-lib` 的 hw/plug 插件）提出一个约束空间，内核把它
-/// 收窄到硬件真正支持的子集；与能力不相交就是 `EINVAL`。这里的硬件只有一个点，所以求交的结果要么是那个点
-/// 要么为空，但调用方依靠 `cmask` 判断哪些参数被改动、依靠区间端点标志折算派生量，所以两者都要如实给出。
+/// 收窄到真正支持的子集；与能力不相交就是 `EINVAL`。格式、采样率与 period 固定，软件 ring 可协商。
+/// 枚举有界 period 数，并同时验证 buffer size/bytes/time，保证这些相关约束不会各自通过却彼此矛盾。
 ///
 /// # Parameters
 ///
@@ -186,26 +217,48 @@ pub(super) fn refine_hardware(bytes: &mut [u8; HW_PARAMS_BYTES]) -> Result<(), (
             write_u32(bytes, offset + index * 4, 0).ok_or(())?;
         }
     }
+    // 1. 只保留同时满足全部区间的配置；这里是配置冷路径，最多检查 29 × 12 个点，不分配。
+    let mut first = None;
+    let mut last = None;
+    for periods in (PCM_BUFFER_FRAMES / PCM_PERIOD_FRAMES) as u32
+        ..=(MAX_BUFFER_FRAMES / PCM_PERIOD_FRAMES) as u32
+    {
+        let mut fits = true;
+        for parameter in parameter::SAMPLE_BITS..=parameter::TICK_TIME {
+            let offset = interval_offset(parameter);
+            let request = (
+                read_u32(bytes, offset).ok_or(())?,
+                read_u32(bytes, offset + 4).ok_or(())?,
+                read_u32(bytes, offset + 8).ok_or(())?,
+            );
+            if !intersects(request, capability(parameter, periods).ok_or(())?) {
+                fits = false;
+                break;
+            }
+        }
+        if fits {
+            first.get_or_insert(periods);
+            last = Some(periods);
+        }
+    }
+    let (first, last) = (first.ok_or(())?, last.ok_or(())?);
+    // 2. 投影剩余配置的区间包络；派生时间保留真实开端点，精确 buffer 请求仍会约束 period 数。
     for parameter in parameter::SAMPLE_BITS..=parameter::TICK_TIME {
-        let (capability_min, capability_max, capability_flags) = capability(parameter).ok_or(())?;
+        let (capability_min, _, lower_flags) = capability(parameter, first).ok_or(())?;
+        let (_, capability_max, upper_flags) = capability(parameter, last).ok_or(())?;
+        let capability_flags = lower_flags & INTERVAL_OPEN_MIN
+            | upper_flags & INTERVAL_OPEN_MAX
+            | if parameter != parameter::BUFFER_TIME || first == last {
+                lower_flags & upper_flags & INTERVAL_INTEGER
+            } else {
+                0
+            };
         let offset = interval_offset(parameter);
         let (minimum, maximum, flags) = (
             read_u32(bytes, offset).ok_or(())?,
             read_u32(bytes, offset + 4).ok_or(())?,
             read_u32(bytes, offset + 8).ok_or(())?,
         );
-        // 请求区间必须与能力区间相交。开区间端点按"不含端点"处理：请求 (5333, 5334) 与能力 (5333, 5334)
-        // 相同；请求 [10000, 10000] 与它不相交，调用方会换一个值再试。
-        let empty = flags & INTERVAL_EMPTY != 0 || minimum > maximum;
-        let lowest = minimum.max(capability_min);
-        let highest = maximum.min(capability_max);
-        let disjoint = empty
-            || lowest > highest
-            || (capability_flags & INTERVAL_OPEN_MIN != 0 && maximum <= capability_min)
-            || (capability_flags & INTERVAL_OPEN_MAX != 0 && minimum >= capability_max);
-        if disjoint {
-            return Err(());
-        }
         let unchanged = (minimum, maximum, flags & !INTERVAL_INTEGER)
             == (
                 capability_min,
@@ -220,6 +273,35 @@ pub(super) fn refine_hardware(bytes: &mut [u8; HW_PARAMS_BYTES]) -> Result<(), (
         write_u32(bytes, offset + 8, capability_flags).ok_or(())?;
     }
     write_u32(bytes, CMASK_OFFSET, changed).ok_or(())
+}
+
+/// 按 Linux `snd_pcm_hw_params_choose` 从有效约束中选定配置。
+///
+/// # Parameters
+/// - `bytes`: 原生 `snd_pcm_hw_params`；成功时写回选定值与变化掩码。
+///
+/// # Errors
+/// 约束没有共同可行配置时返回错误。格式、rate 与 period 固定，因此只需选首个 access 与最大 buffer。
+pub(super) fn choose_hardware(bytes: &mut [u8; HW_PARAMS_BYTES]) -> Result<(), ()> {
+    refine_hardware(bytes)?;
+    let mut changed = read_u32(bytes, CMASK_OFFSET).ok_or(())?;
+    for parameter in parameter::ACCESS..=parameter::SUBFORMAT {
+        let offset = mask_offset(parameter);
+        let mask = read_u32(bytes, offset).ok_or(())?;
+        let first = mask.isolate_lowest_one();
+        if first != mask {
+            write_u32(bytes, offset, first).ok_or(())?;
+            changed |= 1 << parameter;
+        }
+    }
+    let offset = interval_offset(parameter::BUFFER_SIZE);
+    let maximum = read_u32(bytes, offset + 4).ok_or(())?;
+    if read_u32(bytes, offset) != Some(maximum) {
+        write_u32(bytes, offset, maximum).ok_or(())?;
+        changed |= 1 << parameter::BUFFER_SIZE;
+    }
+    write_u32(bytes, CMASK_OFFSET, changed).ok_or(())?;
+    refine_hardware(bytes)
 }
 
 /// `snd_pcm_info`：PCM 设备与子流的身份和容量。

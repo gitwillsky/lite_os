@@ -182,7 +182,7 @@ poll/epoll 可用。record 没有 Linux 的 dictionary 续行，也不做 printk
 或 mmap ring 传输；`/dev/dri/card0` 的 `write` 返回 `EOPNOTSUPP`。
 
 ALSA 卡有 8 个 playback 子流，每次 PCM open 默认占用首个空槽。固定 48 kHz stereo F32_LE、
-256-frame period、1024-frame buffer，INFO/HW_REFINE 按此约束报告；不声明任意采样率/格式转换。
+256-frame period，软件 buffer 可协商，INFO/HW_REFINE 按此约束报告；不声明任意采样率/格式转换。
 `/dev/snd/controlC0` 实现 PVERSION、CARD_INFO、ELEM_LIST/INFO/READ/WRITE、PCM_NEXT_DEVICE/INFO，
 发布 Master Playback Volume/Switch 与 index 0..7 的 PCM Playback Volume，值按平方曲线映射增益。
 SUBSCRIBE_EVENTS 支持负值查询、订阅和取消，read 返回 native 72-byte ELEM/VALUE 事件；
@@ -193,7 +193,9 @@ busy 或不存在的槽位返回 EBUSY；dup 共享偏好，actual fput 撤销�
 PCM 实现 USER_PVERSION 的 user-copy（当前不开放 status/control mmap，无版本相关布局状态）、
 TTSTAMP 时钟选择和启用后的 STATUS/STATUS_EXT/SYNC_PTR 参考时钟快照；STATUS_EXT 不声明硬件音频时间戳或精度。
 PREPARE 允许重新准备 Prepared 流并清空旧指针，SW_PARAMS 允许 Prepared/Running 更新。
-WRITEI 支持短帧批次和环形缓冲跨界，XRUN 返回 EPIPE；mmap pointer 接受非整周期增量；固定 buffer，SW_PARAMS 限 avail_min≤buffer、阈值≤boundary；
+WRITEI 支持短帧批次和环形缓冲跨界，XRUN 返回 EPIPE；mmap pointer 接受非整周期增量；
+HW_REFINE/HW_PARAMS 联合协商 4..=32 个 256-frame period 的软件 buffer；物理队列容量独立固定。
+SW_PARAMS 限 avail_min≤已协商 buffer、阈值≤boundary；
 阻塞 open 等待、RW 自动启动、REWIND、RESET、DRAIN、trigger timestamp 与 capture 尚未支持。
 固定上游 alsa-lib 的显式启动八路播放和 amixer 已由 AArch64/HVF runtime gate 覆盖；Wine 尚未验证。
 

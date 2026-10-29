@@ -16,7 +16,9 @@ UTM 只在 `Sound` 非空时启用客户端音频；空列表配合手工 QEMU �
 
 - 卡提供 8 个软件 playback 子流；默认 open 占用首个空槽，也可由同一 opener TID 的 control OFD
   指定子设备。OFD 独占状态、应用指针和全新 ring backing。
-- PCM 固定 48 kHz、双声道、F32_LE，period 256 帧、buffer 1024 帧；支持 RW 与 mmap interleaved。
+- PCM 固定 48 kHz、双声道、F32_LE、period 256 帧；软件 buffer 经标准 HW_REFINE/HW_PARAMS
+  协商为 4..=32 个 period（1024..=8192 帧），支持 RW 与 mmap interleaved。
+  物理 DMA 队列仍为 4 个 period；软件 ring 不再受其 21ms 容量限制，普通播放器可申请约 100ms 缓冲。
 - 卡级 `Engine` 独占物理流、子流槽位、在途 period 的各子流有效帧数和 Master；物理流在卡初始化时
   configure/prepare 一次，各子流的 HW_PARAMS/PREPARE 不重配设备。
 - 应用提交或设备完成触发 tick，最多预送物理缓冲容量减一的 3 个 period（16 ms），保留一段应用数据跨越批量完成；

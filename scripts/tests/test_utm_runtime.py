@@ -255,8 +255,9 @@ class UtmRuntimeTests(unittest.TestCase):
                 patch.object(
                     utm_runtime,
                     "_status",
-                    side_effect=["stopped", "started", KeyboardInterrupt],
+                    side_effect=["stopped", "started"],
                 ),
+                patch.object(utm_runtime.select, "select", side_effect=KeyboardInterrupt),
                 patch.object(utm_runtime, "_registered", return_value=True),
                 patch.object(utm_runtime, "_ctl", return_value="") as ctl,
             ):

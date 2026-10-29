@@ -288,7 +288,7 @@ mod engine_tests {
         let index = engine
             .allocate(ring.clone(), -1)
             .unwrap_or_else(|_| panic!("no free substream"));
-        engine.configure(index).unwrap();
+        engine.configure(index, PCM_BUFFER_FRAMES as u64).unwrap();
         engine
             .set_software(
                 index,

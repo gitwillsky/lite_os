@@ -9,12 +9,12 @@ use super::codec::{
     SNDRV_PCM_IOCTL_STATUS, SNDRV_PCM_IOCTL_STATUS_EXT, SNDRV_PCM_IOCTL_SW_PARAMS,
     SNDRV_PCM_IOCTL_SYNC_PTR, SNDRV_PCM_IOCTL_TTSTAMP, SNDRV_PCM_IOCTL_USER_PVERSION,
     SNDRV_PCM_IOCTL_WRITEI_FRAMES, STATUS_BYTES, SW_PARAMS_BYTES, SYNC_PTR_BYTES, XFER_BYTES,
-    encode_pcm_info, exact_interval, exact_mask, read_u32, read_u64, refine_hardware,
-    stop_or_error, write_u32, write_u64,
+    choose_hardware, encode_pcm_info, exact_interval, exact_mask, read_u32, read_u64,
+    refine_hardware, stop_or_error, write_u32, write_u64,
 };
 use super::{
-    AudioError, HardwareParameters, PCM_BUFFER_FRAMES, PCM_FRAME_BYTES, PCM_PERIOD_BYTES,
-    PCM_PERIOD_FRAMES, PcmFile, SoftwareParameters,
+    AudioError, HardwareParameters, PCM_FRAME_BYTES, PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES, PcmFile,
+    SoftwareParameters,
 };
 use crate::fs::chardev::{self, DeviceError, IoctlCall, UserMemory};
 
@@ -53,7 +53,7 @@ fn pcm_errno(error: AudioError) -> isize {
     }
 }
 
-/// 写 `snd_pcm_hw_params` 里描述硬件能力的信息字段：`info`（`SNDRV_PCM_INFO_MMAP_VALID` 位）、
+/// 写 `snd_pcm_hw_params` 里描述硬件能力的信息字段：`info`（`SNDRV_PCM_INFO_INTERLEAVED` 位）、
 /// `msbits`、以及有理数形式的采样率 `rate_num / rate_den`。`HW_REFINE` 与 `HW_PARAMS` 都要返回它们。
 fn describe_hardware(bytes: &mut [u8; HW_PARAMS_BYTES]) -> Result<(), isize> {
     write_u32(bytes, 520, 0x0000_0100).ok_or(errno::EIO)?;
@@ -89,7 +89,7 @@ fn copy_status(
     write_u64(&mut bytes, 40, status.application_frames).ok_or(errno::EIO)?;
     write_u64(&mut bytes, 48, status.hardware_frames).ok_or(errno::EIO)?;
     write_u64(&mut bytes, 56, status.delay_frames as u64).ok_or(errno::EIO)?;
-    let available = PCM_BUFFER_FRAMES as u64 - status.delay_frames.max(0) as u64;
+    let available = status.buffer_frames - status.delay_frames.max(0) as u64;
     write_u64(&mut bytes, 64, available).ok_or(errno::EIO)?;
     user.write(argument, &bytes).map_err(|_| errno::EFAULT)
 }
@@ -234,6 +234,7 @@ pub(super) fn ioctl(file: &PcmFile, call: &IoctlCall<'_>) -> Result<isize, Devic
                 let mut bytes = [0u8; HW_PARAMS_BYTES];
                 user.read(argument, &mut bytes)
                     .map_err(|_| errno::EFAULT)
+                    .and_then(|()| choose_hardware(&mut bytes).map_err(|()| errno::EINVAL))
                     .and_then(|()| decode_hardware(&bytes).ok_or(errno::EINVAL))
                     .and_then(|parameters| file.hardware_parameters(parameters).map_err(pcm_errno))
                     .and_then(|()| {

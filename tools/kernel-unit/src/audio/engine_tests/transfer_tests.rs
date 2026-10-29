@@ -1,6 +1,44 @@
 use super::*;
 
 #[test]
+fn negotiated_non_power_of_two_ring_wraps_at_its_own_boundary() {
+    let (mut engine, output, ring) = (Engine::new(), FakeOutput::new(), FakeRing::new());
+    let buffer_frames = 19 * PERIOD;
+    ring.0
+        .lock()
+        .unwrap()
+        .resize(buffer_frames as usize * PCM_FRAME_BYTES, 0);
+    let a = engine
+        .allocate(ring.clone(), -1)
+        .unwrap_or_else(|_| panic!("no free substream"));
+    engine.configure(a, buffer_frames).unwrap();
+    assert_eq!(engine.state(a).boundary % buffer_frames, 0);
+    assert!(engine.state(a).boundary >= 2 * buffer_frames);
+    engine.prepare(a).unwrap();
+    for slot in 0..19 {
+        ring.fill(slot, 0.25, -0.25);
+    }
+    let initial = buffer_frames - 64;
+    engine.application_frames(a, initial).unwrap();
+    engine.start(a).unwrap();
+    engine.tick(NONE, &output);
+    for _ in 0..18 {
+        engine.tick(output.complete_one(), &output);
+    }
+    ring.fill(18, 0.5, -0.5);
+    engine.application_frames(a, 80).unwrap();
+    engine.tick(output.complete_one(), &output);
+    let wrapped = output.submitted.borrow()[19];
+    assert_eq!(level(&wrapped), (0.5, -0.5));
+    assert_eq!(
+        f32::from_le_bytes(wrapped[64 * PCM_FRAME_BYTES..][..4].try_into().unwrap()),
+        0.25
+    );
+    engine.tick(output.complete_one(), &output);
+    assert_eq!(engine.state(a).hardware_frames, initial + 80);
+}
+
+#[test]
 fn short_frames_wait_for_device_capacity_without_false_xrun() {
     let (mut engine, output, ring) = (Engine::new(), FakeOutput::new(), FakeRing::new());
     let a = open(&mut engine, &ring);

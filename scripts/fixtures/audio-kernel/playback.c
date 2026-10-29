@@ -88,6 +88,28 @@ static void samples(float output[PERIOD][2], unsigned stream, uint64_t from)
 
 int main(void)
 {
+    /* mpv 的真实协商顺序：约 100ms buffer，再请求最接近 4 的 period 数。
+       固定 256-frame period 下应联合得到 19 periods，不能把 buffer 强制缩回 1024。 */
+    snd_pcm_t *negotiated;
+    check(81, snd_pcm_open(&negotiated, "hw:0,0,0", SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK));
+    snd_pcm_hw_params_t *hardware;
+    snd_pcm_hw_params_alloca(&hardware);
+    check(82, snd_pcm_hw_params_any(negotiated, hardware));
+    check(83, snd_pcm_hw_params_set_access(negotiated, hardware, SND_PCM_ACCESS_RW_INTERLEAVED));
+    check(84, snd_pcm_hw_params_set_format(negotiated, hardware, SND_PCM_FORMAT_FLOAT_LE));
+    check(85, snd_pcm_hw_params_set_channels(negotiated, hardware, 2));
+    check(86, snd_pcm_hw_params_set_rate(negotiated, hardware, RATE, 0));
+    unsigned buffer_time = 100000, periods = 4;
+    check(87, snd_pcm_hw_params_set_buffer_time_near(negotiated, hardware, &buffer_time, NULL));
+    check(88, snd_pcm_hw_params_set_periods_near(negotiated, hardware, &periods, NULL));
+    check(89, snd_pcm_hw_params(negotiated, hardware));
+    snd_pcm_uframes_t buffer_frames;
+    check(90, snd_pcm_hw_params_get_buffer_size(hardware, &buffer_frames));
+    check(91, buffer_frames == 4864 && periods == 19 ? 0 : -EIO);
+    float buffered[4864][2] = {{0}};
+    check(92, snd_pcm_writei(negotiated, buffered, 4864) == 4864 ? 0 : -EIO);
+    check(93, snd_pcm_close(negotiated));
+    puts("ALSA_BUFFER_NEGOTIATION_READY");
     snd_ctl_t *ctl;
     check(20, snd_ctl_open(&ctl, "hw:0", 0));
     snd_pcm_t *pcm[STREAMS];

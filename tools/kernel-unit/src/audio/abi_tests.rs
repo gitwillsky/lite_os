@@ -20,7 +20,7 @@ fn alsa_poll_rechecks_output_level() {
 fn pcm_state_tracks_period_positions_and_recovers_xrun() {
     let mut state = PcmStateOwner::new();
     assert_eq!(state.state, PcmState::Open);
-    state.configure().unwrap();
+    state.configure(PCM_BUFFER_FRAMES as u64).unwrap();
     state
         .set_software(
             PCM_PERIOD_FRAMES as u64,
@@ -56,7 +56,7 @@ fn pcm_state_tracks_period_positions_and_recovers_xrun() {
 #[test]
 fn pcm_prepare_resets_an_already_prepared_stream() {
     let mut state = PcmStateOwner::new();
-    state.configure().unwrap();
+    state.configure(PCM_BUFFER_FRAMES as u64).unwrap();
     state.prepare().unwrap();
     state.submit_frames(PCM_PERIOD_FRAMES as u64).unwrap();
     state.prepare().unwrap();
@@ -71,7 +71,7 @@ fn pcm_prepare_resets_an_already_prepared_stream() {
 #[test]
 fn pcm_disconnect_is_terminal_for_submission() {
     let mut state = PcmStateOwner::new();
-    state.configure().unwrap();
+    state.configure(PCM_BUFFER_FRAMES as u64).unwrap();
     state.prepare().unwrap();
     state.disconnect();
     assert_eq!(state.state, PcmState::Disconnected);
@@ -267,7 +267,7 @@ fn virtio_sound_polled_control_ack_preserves_coalesced_tx_work() {
 }
 
 mod hw_refine {
-    use crate::audio::codec::{HW_PARAMS_BYTES, refine_hardware};
+    use crate::audio::codec::{HW_PARAMS_BYTES, choose_hardware, refine_hardware};
 
     fn u32_at(bytes: &[u8], offset: usize) -> u32 {
         u32::from_ne_bytes(bytes[offset..offset + 4].try_into().unwrap())
@@ -303,7 +303,40 @@ mod hw_refine {
     }
 
     #[test]
-    fn an_unconstrained_request_narrows_to_the_single_hardware_configuration() {
+    fn buffer_size_refines_period_count_and_rejects_inconsistent_constraints() {
+        let mut bytes = unconstrained();
+        let offset = 260 + (17 - 8) * 12;
+        set_u32(&mut bytes, offset, 4_864);
+        set_u32(&mut bytes, offset + 4, 4_864);
+        refine_hardware(&mut bytes).unwrap();
+        assert_eq!(interval(&bytes, 15), (19, 19, 0b100));
+        assert_eq!(interval(&bytes, 16), (101_333, 101_334, 0b011));
+        let periods = 260 + (15 - 8) * 12;
+        set_u32(&mut bytes, periods, 4);
+        set_u32(&mut bytes, periods + 4, 4);
+        assert!(refine_hardware(&mut bytes).is_err());
+    }
+
+    #[test]
+    fn hardware_selection_chooses_linux_defaults_and_preserves_exact_requests() {
+        let mut bytes = unconstrained();
+        choose_hardware(&mut bytes).unwrap();
+        assert_eq!(u32_at(&bytes, 4), 1, "first access is mmap interleaved");
+        assert_eq!(interval(&bytes, 17), (8_192, 8_192, 0b100));
+        assert_eq!(interval(&bytes, 15), (32, 32, 0b100));
+        let mut exact = unconstrained();
+        set_u32(&mut exact, 4, 1 << 3);
+        let buffer = 260 + (17 - 8) * 12;
+        set_u32(&mut exact, buffer, 4_864);
+        set_u32(&mut exact, buffer + 4, 4_864);
+        choose_hardware(&mut exact).unwrap();
+        assert_eq!(u32_at(&exact, 4), 1 << 3);
+        assert_eq!(interval(&exact, 17), (4_864, 4_864, 0b100));
+        assert_eq!(interval(&exact, 15), (19, 19, 0b100));
+    }
+
+    #[test]
+    fn an_unconstrained_request_exposes_fixed_period_and_negotiable_buffer() {
         let mut bytes = unconstrained();
         refine_hardware(&mut bytes).unwrap();
         assert_eq!(
@@ -332,12 +365,12 @@ mod hw_refine {
         );
         assert_eq!(
             (interval(&bytes, 15).0, interval(&bytes, 15).1),
-            (4, 4),
+            (4, 32),
             "periods"
         );
         assert_eq!(
             (interval(&bytes, 17).0, interval(&bytes, 17).1),
-            (1_024, 1_024),
+            (1_024, 8_192),
             "buffer size"
         );
         // 每个被收窄的参数都出现在 cmask 里。
@@ -354,6 +387,9 @@ mod hw_refine {
     #[test]
     fn derived_times_keep_open_endpoints_so_alsa_lib_can_round_them() {
         let mut bytes = unconstrained();
+        let periods = 260 + (15 - 8) * 12;
+        set_u32(&mut bytes, periods, 4);
+        set_u32(&mut bytes, periods + 4, 4);
         refine_hardware(&mut bytes).unwrap();
         // 256/48000 s = 5333.33 µs 不是整数：必须是开区间 (5333, 5334)，不能被写成整数点。
         assert_eq!(interval(&bytes, 12), (5_333, 5_334, 0b011));
@@ -508,7 +544,7 @@ mod pcm_info {
 fn software_parameters_can_change_after_prepare_and_while_running() {
     let mut state = PcmStateOwner::new();
     assert!(state.set_software(256, 1024, 1024, 1 << 31).is_err());
-    state.configure().unwrap();
+    state.configure(PCM_BUFFER_FRAMES as u64).unwrap();
     state.prepare().unwrap();
     state.set_software(512, 1 << 31, 1024, 1 << 31).unwrap();
     state.submit_frames(PCM_PERIOD_FRAMES as u64).unwrap();

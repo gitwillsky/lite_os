@@ -212,6 +212,11 @@ fn verify_protocol(fd: BorrowedFd<'_>) -> io::Result<()> {
 
 fn configure_hardware(fd: BorrowedFd<'_>) -> io::Result<()> {
     let mut bytes = [0u8; HW_PARAMS_BYTES];
+    // Start with unconstrained intervals; period/buffer times are derived by HW_PARAMS.
+    // Zero-initialized time intervals would request 0 us and conflict with the frame counts below.
+    for parameter in 8..=19 {
+        write_u32(&mut bytes, 260 + (parameter - 8) * 12 + 4, u32::MAX);
+    }
     set_mask(&mut bytes, 4, 0);
     set_mask(&mut bytes, 36, 14);
     set_mask(&mut bytes, 68, 0);

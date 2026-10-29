@@ -616,17 +616,18 @@ def run_gui(
             # The capture file is the sole durable serial owner. Reading only
             # UTM's PTY UI loses the first failure as soon as the window closes.
             while True:
-                status = _status()
-                if status == "stopped":
-                    return
-                if status is None:
-                    raise RuntimeError("UTM removed the managed LiteOS registration while running")
-                ready, _, _ = select.select([serial_socket], [], [], 0.5)
-                if ready:
-                    chunk = serial_socket.recv(16 * 1024)
-                    if not chunk:
-                        raise RuntimeError("UTM serial stream closed while the VM was running")
-                    output.write(chunk)
+                # QEMU owns this connection until exit. Polling utmctl for every
+                # read starts foreground macOS applications and churns the Dock.
+                select.select([serial_socket], [], [])
+                chunk = serial_socket.recv(16 * 1024)
+                if not chunk:
+                    status = _status()
+                    if status in ("stopping", "stopped"):
+                        return
+                    if status is None:
+                        raise RuntimeError("UTM removed the managed LiteOS registration while running")
+                    raise RuntimeError("UTM serial stream closed while the VM was running")
+                output.write(chunk)
     except KeyboardInterrupt:
         if _registered():
             _ctl("stop", VM_UUID)

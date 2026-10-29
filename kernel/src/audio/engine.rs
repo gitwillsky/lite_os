@@ -12,8 +12,7 @@ use super::control::Element;
 use super::mixer::{Accumulator, VOLUME_MAX, volume_gain};
 use super::state::{PcmState, PcmStateOwner};
 use crate::drivers::{
-    PCM_BUFFER_FRAMES, PCM_FRAME_BYTES, PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES, PCM_PERIODS,
-    PcmOutput, PcmOutputError,
+    PCM_FRAME_BYTES, PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES, PCM_PERIODS, PcmOutput, PcmOutputError,
 };
 
 /// 同时可打开的 playback 子流数量，即 `snd_pcm_info.subdevices_count`。
@@ -223,8 +222,8 @@ impl<R: Ring> Engine<R> {
     }
 
     /// hw_params 生效：Open → Setup。
-    pub(super) fn configure(&mut self, index: usize) -> Result<(), ()> {
-        self.slots[index].state.configure()
+    pub(super) fn configure(&mut self, index: usize, buffer_frames: u64) -> Result<(), ()> {
+        self.slots[index].state.configure(buffer_frames)
     }
 
     /// 设置唤醒、启动、停止阈值与 boundary。
@@ -379,10 +378,10 @@ impl<R: Ring> Engine<R> {
             let mut contributions = [0u16; SUBSTREAMS];
             for index in each_bit(ready) {
                 let slot = &self.slots[index];
-                let offset = (slot.mixed % PCM_BUFFER_FRAMES as u64) as usize * PCM_FRAME_BYTES;
+                let offset = (slot.mixed % slot.state.buffer_frames) as usize * PCM_FRAME_BYTES;
                 let frames = slot.pending().min(PCM_PERIOD_FRAMES as u64) as usize;
                 let bytes = frames * PCM_FRAME_BYTES;
-                let first = bytes.min(PCM_BUFFER_FRAMES * PCM_FRAME_BYTES - offset);
+                let first = bytes.min(slot.state.buffer_frames as usize * PCM_FRAME_BYTES - offset);
                 let read = slot.ring.as_ref().map(|ring| {
                     ring.read(offset, &mut period[..first])?;
                     if first < bytes {

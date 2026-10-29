@@ -753,6 +753,7 @@ kernel/src/audio/codec.rs :: pub (super) const SW_PARAMS_BYTES : usize = 136
 kernel/src/audio/codec.rs :: pub (super) const SYNC_PTR_BYTES : usize = 136
 kernel/src/audio/codec.rs :: pub (super) const TICK_TIME : usize = 19
 kernel/src/audio/codec.rs :: pub (super) const XFER_BYTES : usize = 24
+kernel/src/audio/codec.rs :: pub (super) fn choose_hardware (bytes : & mut [u8 ; HW_PARAMS_BYTES]) -> Result < () , () >
 kernel/src/audio/codec.rs :: pub (super) fn encode_pcm_info (info : & PcmInfo < '_ >) -> [u8 ; PCM_INFO_BYTES]
 kernel/src/audio/codec.rs :: pub (super) fn exact_interval (bytes : & [u8] , parameter : usize) -> Option < u32 >
 kernel/src/audio/codec.rs :: pub (super) fn exact_mask (bytes : & [u8] , offset : usize) -> Option < i32 >
@@ -825,7 +826,7 @@ kernel/src/audio/engine.rs :: pub (super) const SUBSTREAMS : usize = 8
 kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn allocate (& mut self , ring : R , preferred : i32) -> Result < usize , R >
 kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn application_frames (& mut self , index : usize , frames : u64) -> Result < () , () >
 kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn available (& self) -> usize
-kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn configure (& mut self , index : usize) -> Result < () , () >
+kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn configure (& mut self , index : usize , buffer_frames : u64) -> Result < () , () >
 kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn control_values (& self , element : Element) -> [u32 ; 2]
 kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn drop_stream (& mut self , index : usize) -> Result < () , () >
 kernel/src/audio/engine.rs :: pub (super) impl Engine < R > :: fn free_hardware (& mut self , index : usize) -> Result < () , () >
@@ -857,6 +858,7 @@ kernel/src/audio/mod.rs :: pub (crate) HardwareParameters :: period_frames : u64
 kernel/src/audio/mod.rs :: pub (crate) HardwareParameters :: periods : u32
 kernel/src/audio/mod.rs :: pub (crate) HardwareParameters :: rate : u32
 kernel/src/audio/mod.rs :: pub (crate) PcmStatus :: application_frames : u64
+kernel/src/audio/mod.rs :: pub (crate) PcmStatus :: buffer_frames : u64
 kernel/src/audio/mod.rs :: pub (crate) PcmStatus :: delay_frames : i64
 kernel/src/audio/mod.rs :: pub (crate) PcmStatus :: hardware_frames : u64
 kernel/src/audio/mod.rs :: pub (crate) PcmStatus :: state : PcmState
@@ -886,7 +888,7 @@ kernel/src/audio/mod.rs :: pub (crate) struct HardwareParameters
 kernel/src/audio/mod.rs :: pub (crate) struct PcmFile
 kernel/src/audio/mod.rs :: pub (crate) struct PcmStatus
 kernel/src/audio/mod.rs :: pub (crate) struct SoftwareParameters
-kernel/src/audio/mod.rs :: pub (crate) use crate :: drivers :: { PCM_BUFFER_FRAMES , PCM_FRAME_BYTES , PCM_PERIOD_BYTES , PCM_PERIOD_FRAMES , PCM_RATE , PcmOutputError as AudioError , }
+kernel/src/audio/mod.rs :: pub (crate) use crate :: drivers :: { PCM_FRAME_BYTES , PCM_PERIOD_BYTES , PCM_PERIOD_FRAMES , PCM_RATE , PcmOutputError as AudioError , }
 kernel/src/audio/mod.rs :: pub (crate) use state :: PcmState
 kernel/src/audio/pcm_file.rs :: pub (super) const PCM_NUMBER : DeviceNumber = DeviceNumber :: new (116 , 16)
 kernel/src/audio/pcm_file.rs :: pub (super) const PCM_PATH : & [u8] = b"snd/pcmC0D0p"
@@ -900,6 +902,7 @@ kernel/src/audio/state.rs :: enum PcmState :: Xrun = 4
 kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: application_frames : u64
 kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: available_min : u64
 kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: boundary : u64
+kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: buffer_frames : u64
 kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: hardware_frames : u64
 kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: start_threshold : u64
 kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: state : PcmState
@@ -907,7 +910,7 @@ kernel/src/audio/state.rs :: pub (crate) PcmStateOwner :: stop_threshold : u64
 kernel/src/audio/state.rs :: pub (crate) enum PcmState
 kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: const fn new () -> Self
 kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn complete_period (& mut self , frames : u64)
-kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn configure (& mut self) -> Result < () , () >
+kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn configure (& mut self , buffer_frames : u64) -> Result < () , () >
 kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn delay (& self) -> u64
 kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn disconnect (& mut self)
 kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn drop_stream (& mut self) -> Result < () , () >
@@ -919,6 +922,7 @@ kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn submit_frames 
 kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn writable (& self) -> bool
 kernel/src/audio/state.rs :: pub (crate) impl PcmStateOwner :: fn xrun (& mut self)
 kernel/src/audio/state.rs :: pub (crate) struct PcmStateOwner
+kernel/src/audio/state.rs :: pub (super) const MAX_BUFFER_FRAMES : usize = 8_192
 kernel/src/block/device.rs :: enum BlockError :: # [doc = " 异步提交暂时没有空闲请求槽；调用者稍后重试或改走同步路径。"] WouldBlock
 kernel/src/block/device.rs :: enum BlockError :: DeviceError
 kernel/src/block/device.rs :: enum BlockError :: InvalidBlock

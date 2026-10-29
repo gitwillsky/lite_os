@@ -29,12 +29,12 @@ mod mixer;
 mod pcm_file;
 mod state;
 use engine::{Engine, Events, SUBSTREAMS};
+use state::MAX_BUFFER_FRAMES;
 pub(crate) use state::PcmState;
 include!("readiness.rs");
 
 pub(crate) use crate::drivers::{
-    PCM_BUFFER_FRAMES, PCM_FRAME_BYTES, PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES, PCM_RATE,
-    PcmOutputError as AudioError,
+    PCM_FRAME_BYTES, PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES, PCM_RATE, PcmOutputError as AudioError,
 };
 
 /// ALSA PCM hardware 参数的唯一受支持领域值。
@@ -67,6 +67,7 @@ pub(crate) struct PcmStatus {
     pub(crate) application_frames: u64,
     pub(crate) hardware_frames: u64,
     pub(crate) delay_frames: i64,
+    pub(crate) buffer_frames: u64,
     pub(crate) timestamp_ns: u64,
 }
 
@@ -268,7 +269,9 @@ fn open() -> Result<Arc<PcmFile>, AudioError> {
     let ring = Arc::try_new(
         // virtio-snd 的 SNDRV_DMA_TYPE_VMALLOC ring 经 remap_vmalloc_range 插入普通页。
         DeviceBacking::try_allocate(
-            (PCM_BUFFER_FRAMES * PCM_FRAME_BYTES).div_ceil(PAGE_SIZE),
+            // 整个 OFD 生命周期共享同一 backing；预留有界上限，协商及混音热路径不重分配，
+            // 旧 mmap 即使跨 HW_FREE 仍有效，也不会与其他 OFD 的 ring 共享物理页。
+            (MAX_BUFFER_FRAMES * PCM_FRAME_BYTES).div_ceil(PAGE_SIZE),
             FrameAllocationClass::Reclaimable,
             DeviceMemoryKind::InsertedPages,
         )
@@ -305,7 +308,7 @@ fn open() -> Result<Arc<PcmFile>, AudioError> {
 }
 
 impl PcmFile {
-    /// 配置唯一 48kHz/stereo/F32_LE/MMAP-or-RW-interleaved hardware contract。
+    /// 配置 48kHz/stereo/F32_LE/MMAP-or-RW-interleaved 和协商的软件缓冲。
     ///
     /// # Parameters
     ///
@@ -320,15 +323,14 @@ impl PcmFile {
             || parameters.channels != 2
             || parameters.rate != PCM_RATE
             || parameters.period_frames != PCM_PERIOD_FRAMES as u64
-            || parameters.periods != 4
-            || parameters.buffer_frames != PCM_BUFFER_FRAMES as u64
+            || parameters.buffer_frames != u64::from(parameters.periods) * PCM_PERIOD_FRAMES as u64
         {
             return Err(AudioError::InvalidState);
         }
         self.card
             .engine
             .lock()
-            .configure(self.index)
+            .configure(self.index, parameters.buffer_frames)
             .map_err(|()| AudioError::InvalidState)?;
         crate::info!("ALSA playback substream {} configured", self.index);
         Ok(())
@@ -454,16 +456,16 @@ impl PcmFile {
                 PcmState::Open | PcmState::Setup => return Err(errno::EBADFD),
                 PcmState::Prepared | PcmState::Running => {}
             }
-            frames = requested.min(PCM_BUFFER_FRAMES - state.delay() as usize);
+            frames = requested.min((state.buffer_frames - state.delay()) as usize);
             if frames == 0 {
                 return Err(errno::EAGAIN);
             }
             let bytes = &bytes[..frames * PCM_FRAME_BYTES];
             // 引擎只读取应用指针之前的帧，所以必须先写数据、再推进指针，两步在同一把锁里完成。
-            let frame = state.application_frames as usize % PCM_BUFFER_FRAMES;
+            let frame = (state.application_frames % state.buffer_frames) as usize;
             let first = bytes
                 .len()
-                .min((PCM_BUFFER_FRAMES - frame) * PCM_FRAME_BYTES);
+                .min((state.buffer_frames as usize - frame) * PCM_FRAME_BYTES);
             self.ring
                 .write(frame * PCM_FRAME_BYTES, &bytes[..first])
                 .map_err(|()| errno::EIO)?;
@@ -489,22 +491,31 @@ impl PcmFile {
             application_frames: state.application_frames % state.boundary,
             hardware_frames: state.hardware_frames % state.boundary,
             delay_frames: state.delay() as i64,
+            buffer_frames: state.buffer_frames,
             timestamp_ns: clock.sample(),
         }
     }
 
-    /// 返回 ALSA data mmap 的固定 1024-frame backing。
+    /// 返回 ALSA data mmap 的 OFD backing，只允许映射已协商的完整软件缓冲。
     ///
     /// # Parameters
     ///
     /// - `offset`: 只接受 `SNDRV_PCM_MMAP_OFFSET_DATA=0`。
-    /// - `length`: 必须覆盖完整 hardware buffer。
+    /// - `length`: 覆盖完整软件 buffer，允许向上取整到所在页末尾。
     pub(crate) fn mapping(
         &self,
         offset: u64,
         length: usize,
     ) -> Result<DeviceMappingSource, AudioError> {
-        if offset != 0 || length != PCM_BUFFER_FRAMES * PCM_FRAME_BYTES {
+        let _operation = self.operation.lock();
+        let engine = self.card.engine.lock();
+        let state = engine.state(self.index);
+        let bytes = state.buffer_frames as usize * PCM_FRAME_BYTES;
+        if matches!(state.state, PcmState::Open | PcmState::Disconnected)
+            || offset != 0
+            || length < bytes
+            || length > bytes.div_ceil(PAGE_SIZE) * PAGE_SIZE
+        {
             return Err(AudioError::InvalidState);
         }
         Ok(DeviceMappingSource::new(
@@ -536,7 +547,7 @@ impl PcmFile {
             } else {
                 boundary - current + new_application_pointer
             };
-            if delta > PCM_BUFFER_FRAMES as u64 {
+            if delta > state.buffer_frames {
                 return Err(AudioError::InvalidState);
             }
             if delta != 0 {
