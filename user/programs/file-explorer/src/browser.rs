@@ -394,6 +394,52 @@ impl Browser {
         }
         self.sort_items();
     }
+    /// 当前列表中的映射盘投影，用于拒绝后台读取期间已经过时的结果。
+    pub(super) fn network_drives(&self) -> Vec<Item> {
+        let mut drives: Vec<_> = self
+            .items
+            .iter()
+            .filter(|(_, item)| item.drive.is_some())
+            .map(|(_, item)| item.clone())
+            .collect();
+        drives.sort_by_key(|item| item.drive);
+        drives
+    }
+
+    /// 更新“我的电脑”的映射盘，复用 publish 的稳定行身份与排序，不重新读取远程目录。
+    pub(super) fn publish_network_drives(&mut self, drives: Vec<Item>) {
+        let mut items: Vec<_> = self
+            .items
+            .iter()
+            .filter(|(_, item)| item.drive.is_none())
+            .map(|(_, item)| item.clone())
+            .collect();
+        items.extend(drives);
+        let folders = items
+            .iter()
+            .filter_map(|item| {
+                Some(Folder {
+                    location: item.target.clone()?,
+                    name: item.name.clone(),
+                    icon: item.icon,
+                })
+            })
+            .collect();
+        self.publish(
+            Listing {
+                location: Location::MyComputer,
+                items,
+                truncated: self.truncated,
+                free: self.free,
+                branches: vec![Branch {
+                    location: Location::MyComputer,
+                    folders,
+                }],
+            },
+            Visit::Refresh,
+        );
+    }
+
     pub fn sort_items(&mut self) {
         let (column, descending) = self.sort;
         self.items.sort_by(|(_, a), (_, b)| {

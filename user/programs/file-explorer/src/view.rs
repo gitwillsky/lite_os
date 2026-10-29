@@ -379,6 +379,12 @@ impl View {
     /// 文件夹树与地址下拉共用同一份目录：树显示已加载的全部分支，地址下拉只显示当前位置的祖先链
     /// 与根下的系统文件夹（ComboBoxEx 的 Windows 2000 内容）。
     pub fn tree(&self, browser: &Browser) -> liteos_ui::Result<()> {
+        self.address.select(self.places(browser)?)?;
+        self.address.set_text(&browser.location.address())
+    }
+
+    /// 更新目录树与地址候选项，返回当前位置候选 ID；后台刷新不覆盖用户正在输入的地址。
+    pub(super) fn places(&self, browser: &Browser) -> liteos_ui::Result<Option<u64>> {
         let catalogue = &browser.catalogue;
         let current = self.folders.selection()?.filter(|id| {
             catalogue
@@ -449,9 +455,7 @@ impl View {
                 .filter(|icon| shown_ids.contains(&icon.id))
                 .collect::<Vec<_>>(),
         )?;
-        self.address
-            .select(selected.filter(|id| shown_ids.contains(id)))?;
-        self.address.set_text(&browser.location.address())
+        Ok(selected.filter(|id| shown_ids.contains(id)))
     }
 
     /// 菜单栏、标准按钮与“文件夹”按钮状态。

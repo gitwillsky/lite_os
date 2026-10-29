@@ -170,6 +170,22 @@ fn run() -> Result<()> {
             }
         })?
     };
+    let _network_drives = {
+        let session = session.clone();
+        let clock = app.clock();
+        app.spawn_local(&window, async move {
+            loop {
+                let Ok(wait) = clock.sleep(Duration::from_secs(1)) else {
+                    break;
+                };
+                wait.await;
+                // mount table 没有窗口通知入口；每秒只在“我的电脑”读取本地快照。
+                // 单个 Future 串行等待结果，关闭窗口即取消；不发 SMB 探测，不叠加连接任务。
+                // 后台读取失败保留上次投影；显式打开/刷新仍走原有错误提示，不周期性刷日志。
+                let _ = session.refresh_network_drives().await;
+            }
+        })?
+    };
     app.run(|app, event| {
         tasks.retain(|task: &liteos_ui::Task<()>| !task.is_finished());
         if event.window != window.id() {

@@ -660,7 +660,7 @@ fn drives(mounts: &str) -> Vec<Item> {
     items
 }
 
-fn network_drives() -> io::Result<Vec<Item>> {
+pub(super) fn network_drives() -> io::Result<Vec<Item>> {
     let store = network_drive::Store::current()?;
     let mut items = Vec::new();
     for mapping in store.list()? {

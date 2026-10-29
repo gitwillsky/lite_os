@@ -251,6 +251,34 @@ impl Session {
         self.status()?;
         Ok(())
     }
+    /// 只读取本地映射记录与 mount table；后台连接完成后无需导航即可更新图标。
+    pub(super) async fn refresh_network_drives(&self) -> Result<()> {
+        if self.busy.get()
+            || !self.shown.get()
+            || self.browser.borrow().location != Location::MyComputer
+        {
+            return Ok(());
+        }
+        let previous = self.browser.borrow().network_drives();
+        let drives = self.background.run(model::network_drives)?.await?;
+        // 等待期间可能导航、打开对话框或完成另一项映射操作；旧结果不能覆盖较新的 UI。
+        if self.busy.get() || self.browser.borrow().location != Location::MyComputer {
+            return Ok(());
+        }
+        {
+            let mut browser = self.browser.borrow_mut();
+            if browser.network_drives() != previous || drives == previous {
+                return Ok(());
+            }
+            browser.publish_network_drives(drives);
+            self.view.rows(&browser)?;
+            self.view.places(&browser)?;
+        }
+        self.status()?;
+        self.menus()?;
+        Ok(())
+    }
+
     pub(super) async fn refresh(&self) -> Result<()> {
         let location = self.browser.borrow().location.clone();
         self.navigate(location, Visit::Refresh, false).await
