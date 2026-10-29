@@ -37,6 +37,9 @@ pub enum Action {
     VolumeStep(f64),
     Mute,
     AudioDelay(f64),
+    SharedOutput,
+    NativeOutput(usize),
+    RefreshOutputs,
     AddSubtitle,
     SubtitleDelay(f64),
     SubtitleScale(f64),
@@ -105,6 +108,10 @@ const INFO: u64 = 101;
 const ABOUT: u64 = 110;
 const VIDEO_TRACK: u64 = 1000;
 const AUDIO_TRACK: u64 = 2000;
+const OUTPUT: u64 = 120;
+const SHARED_OUTPUT: u64 = 121;
+const REFRESH_OUTPUTS: u64 = 122;
+const NATIVE_OUTPUT: u64 = 4000;
 const SUB_TRACK: u64 = 3000;
 /// 轨道项的“关闭”（`no`）偏移；轨道 id 从 1 起，所以 0 不会与真实轨道冲突。
 const NO_TRACK: u64 = 0;
@@ -149,6 +156,11 @@ impl Action {
             VOL_UP => Self::VolumeStep(5.),
             VOL_DOWN => Self::VolumeStep(-5.),
             MUTE => Self::Mute,
+            SHARED_OUTPUT => Self::SharedOutput,
+            REFRESH_OUTPUTS => Self::RefreshOutputs,
+            id if (NATIVE_OUTPUT..NATIVE_OUTPUT + 64).contains(&id) => {
+                Self::NativeOutput((id - NATIVE_OUTPUT) as usize)
+            }
             AUDIO_SLOWER => Self::AudioDelay(-0.1),
             AUDIO_FASTER => Self::AudioDelay(0.1),
             ADD_SUB => Self::AddSubtitle,
@@ -414,6 +426,8 @@ impl View {
         self.next.set_state(disabled(state_.playlist.len() > 1))?;
         self.seek
             .set_state(disabled(open && state_.duration > 0.))?;
+        self.volume
+            .set_state(disabled(state_.native_card.is_none()))?;
         self.volume.set_range(Range {
             minimum: 0,
             maximum: 130,
@@ -432,7 +446,11 @@ impl View {
         } else {
             state_.message.clone()
         }];
-        parts.push(format!("速度 {}x", state_.speed));
+        parts.push(if state_.native_card.is_some() {
+            "原生独占输出".to_owned()
+        } else {
+            format!("速度 {}x", state_.speed)
+        });
         parts.push(match (state_.loop_a, state_.loop_b) {
             (Some(a), Some(b)) => format!("A-B {} – {}", clock(a), clock(b)),
             (Some(a), None) => format!("A {}", clock(a)),
@@ -502,7 +520,10 @@ impl View {
         }
         self.video.set_drawing(&[])?;
         match engine.render(width, height) {
-            Ok(pixels) => self.video.set_frame(width, height, pixels),
+            Ok(Some(frame)) => self
+                .video
+                .set_frame(frame.width, frame.height, &frame.pixels),
+            Ok(None) => Ok(()),
             Err(error) => {
                 engine.state.message = format!("渲染失败：{error}");
                 self.controls_state(&engine.state)
@@ -676,9 +697,27 @@ impl View {
         video.extend(tracks(VIDEO_MENU, VIDEO_TRACK, TrackKind::Video, "关闭"));
         let mut audio = tracks(AUDIO_MENU, AUDIO_TRACK, TrackKind::Audio, "关闭");
         audio.extend([
-            item(VOL_UP, "增大音量", "↑", SEPARATOR, 0),
-            item(VOL_DOWN, "减小音量", "↓", 0, 0),
-            item(MUTE, "静音(M)", "M", check(state_.muted), 0),
+            item(
+                VOL_UP,
+                "增大音量",
+                "↑",
+                SEPARATOR | gate(state_.native_card.is_none()),
+                0,
+            ),
+            item(
+                VOL_DOWN,
+                "减小音量",
+                "↓",
+                gate(state_.native_card.is_none()),
+                0,
+            ),
+            item(
+                MUTE,
+                "静音(M)",
+                "M",
+                check(state_.muted) | gate(state_.native_card.is_none()),
+                0,
+            ),
             item(
                 AUDIO_SLOWER,
                 "音频延迟 -0.1 秒",
@@ -688,6 +727,24 @@ impl View {
             ),
             item(AUDIO_FASTER, "音频延迟 +0.1 秒", "", gate(open), 0),
         ]);
+        audio.push(item(OUTPUT, "输出设备(O)", "", SEPARATOR, 0));
+        audio.push(item(
+            SHARED_OUTPUT,
+            "桌面共享混音",
+            "",
+            check(state_.native_card.is_none()),
+            OUTPUT,
+        ));
+        for (index, output) in state_.outputs.iter().take(64).enumerate() {
+            audio.push(item(
+                NATIVE_OUTPUT + index as u64,
+                &format!("{}（原生独占）", output.name),
+                "",
+                check(state_.native_card == Some(output.card)),
+                OUTPUT,
+            ));
+        }
+        audio.push(item(REFRESH_OUTPUTS, "刷新音频设备", "", SEPARATOR, OUTPUT));
         let mut subtitle = tracks(SUB_MENU, SUB_TRACK, TrackKind::Subtitle, "关闭");
         subtitle.extend([
             item(ADD_SUB, "载入字幕(L)...", "", SEPARATOR | gate(open), 0),

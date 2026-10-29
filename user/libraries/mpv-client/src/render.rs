@@ -1,4 +1,4 @@
-//! 渲染线程独占 mpv_render_*；回调只投递 Update，不能等待执行普通 client API 的 UI 线程。
+//! 渲染线程独占 mpv_render_*；UI 只交换最新尺寸与已完成帧，双方不等待对方执行 libmpv。
 use crate::{
     check,
     ffi::{self, Api, Handle, Param, RenderContext},
@@ -8,7 +8,10 @@ use std::{
     io::{self, Write},
     os::unix::net::UnixStream,
     ptr,
-    sync::mpsc::{self, Sender},
+    sync::{
+        Arc, Mutex,
+        mpsc::{self, SyncSender},
+    },
     thread::{self, JoinHandle},
 };
 
@@ -22,42 +25,33 @@ impl CoreHandle {
     }
 }
 
-enum Request {
-    Update,
-    Ready(Sender<bool>),
-    Draw {
-        width: u32,
-        height: u32,
-        pixels: Vec<u32>,
-        reply: Sender<(Vec<u32>, io::Result<()>)>,
-    },
-    Stop,
+/// 帧交接只持锁移动 Vec/尺寸；锁内禁止 libmpv 调用、像素复制或等待。
+/// 一个完成槽合并慢 UI 尚未取走的帧，一个 spare 复用 UI 归还的存储，避免帧队列持续膨胀。
+#[derive(Default)]
+struct Mailbox {
+    size: Option<(u32, u32)>,
+    completed: Option<io::Result<crate::Frame>>,
+    spare: Option<Vec<u32>>,
+    stop: bool,
 }
 struct Wake {
-    requests: Sender<Request>,
-    writer: UnixStream,
+    requests: SyncSender<()>,
 }
 
 extern "C" fn wake(pointer: *mut c_void) {
     // SAFETY: State 持有地址稳定的 Box，撤销 callback 并等待回调退出后才析构它。
     let wake = unsafe { &*pointer.cast::<Wake>() };
-    // Sender::send 不等待 receiver；不能在 libmpv callback 中调用 render API 或等待 UI。
-    let _ = wake.requests.send(Request::Update);
+    // 容量为 1 的通知只表示“有工作”；满时已有唤醒，不积压回调，也不等待 UI。
+    let _ = wake.requests.try_send(());
 }
 
 struct State {
     api: Api,
     context: *mut RenderContext,
     wake: Box<Wake>,
-    ready: bool,
 }
 impl State {
-    fn create(
-        api: Api,
-        core: CoreHandle,
-        requests: Sender<Request>,
-        writer: UnixStream,
-    ) -> io::Result<Self> {
+    fn create(api: Api, core: CoreHandle, requests: SyncSender<()>) -> io::Result<Self> {
         let mut params = [
             Param {
                 kind: ffi::PARAM_API_TYPE,
@@ -76,8 +70,7 @@ impl State {
         let mut state = Self {
             api,
             context,
-            wake: Box::new(Wake { requests, writer }),
-            ready: false,
+            wake: Box::new(Wake { requests }),
         };
         let pointer = ptr::addr_of_mut!(*state.wake).cast();
         // SAFETY: callback 数据的 Box 不再移动；Drop 先撤销 callback 再释放 context 和数据。
@@ -85,12 +78,9 @@ impl State {
         Ok(state)
     }
 
-    fn update(&mut self) {
+    fn update(&mut self) -> bool {
         // SAFETY: 全部 render API 调用由本线程串行执行，永不在 callback 中调用。
-        self.ready |= unsafe { (self.api.render_update)(self.context) & ffi::UPDATE_FRAME != 0 };
-        if self.ready {
-            let _ = (&self.wake.writer).write(&[1]);
-        }
+        unsafe { (self.api.render_update)(self.context) & ffi::UPDATE_FRAME != 0 }
     }
 
     fn draw(&self, width: u32, height: u32, pixels: &mut Vec<u32>) -> io::Result<()> {
@@ -144,9 +134,10 @@ impl Drop for State {
 }
 
 pub(super) struct Renderer {
-    requests: Sender<Request>,
+    requests: SyncSender<()>,
+    mailbox: Arc<Mutex<Mailbox>>,
     thread: Option<JoinHandle<()>>,
-    pixels: Vec<u32>,
+    frame: Option<crate::Frame>,
 }
 impl Renderer {
     /// 创建唯一渲染 owner；失败时 join 已启动线程，调用者才能销毁 core。
@@ -159,13 +150,15 @@ impl Renderer {
         writer: UnixStream,
     ) -> io::Result<Self> {
         let core = CoreHandle(core);
-        let (requests, receiver) = mpsc::channel();
+        let (requests, receiver) = mpsc::sync_channel(1);
         let callback_requests = requests.clone();
+        let mailbox = Arc::new(Mutex::new(Mailbox::default()));
+        let rendering = mailbox.clone();
         let (started, startup) = mpsc::channel();
         let thread = thread::Builder::new()
             .name("mpv-render".into())
             .spawn(move || {
-                let mut state = match State::create(api, core, callback_requests, writer) {
+                let mut state = match State::create(api, core, callback_requests) {
                     Ok(state) => state,
                     Err(error) => {
                         let _ = started.send(Err(error));
@@ -175,23 +168,46 @@ impl Renderer {
                 if started.send(Ok(())).is_err() {
                     return;
                 }
-                while let Ok(request) = receiver.recv() {
-                    match request {
-                        Request::Update => state.update(),
-                        Request::Ready(reply) => {
-                            let _ = reply.send(std::mem::take(&mut state.ready));
-                        }
-                        Request::Draw {
+                let mut pixels = Vec::new();
+                let mut rendered_size = None;
+                let mut pending = false;
+                while receiver.recv().is_ok() {
+                    let size = match rendering.lock() {
+                        Ok(mailbox) if !mailbox.stop => mailbox.size,
+                        _ => break,
+                    };
+                    pending |= state.update();
+                    let Some((width, height)) = size else {
+                        continue;
+                    };
+                    if !pending && rendered_size == size {
+                        continue;
+                    }
+                    // 即使 UI 尚未消费旧帧也继续服务 mpv；等待 UI 会阻塞 core，
+                    // 而 UI 的同步 client API 又可能等待 core，重新形成死锁。
+                    let result = state
+                        .draw(width, height, &mut pixels)
+                        .map(|()| crate::Frame {
                             width,
                             height,
-                            mut pixels,
-                            reply,
-                        } => {
-                            let result = state.draw(width, height, &mut pixels);
-                            let _ = reply.send((pixels, result));
-                        }
-                        Request::Stop => break,
+                            pixels: std::mem::take(&mut pixels),
+                        });
+                    let Ok(mut mailbox) = rendering.lock() else {
+                        break;
+                    };
+                    let previous = mailbox.completed.replace(result);
+                    let spare = mailbox.spare.take();
+                    drop(mailbox);
+                    if pixels.is_empty() {
+                        pixels = previous
+                            .and_then(Result::ok)
+                            .map(|frame| frame.pixels)
+                            .or(spare)
+                            .unwrap_or_default();
                     }
+                    pending = false;
+                    rendered_size = size;
+                    let _ = (&writer).write(&[1]);
                 }
             })?;
         match startup
@@ -200,8 +216,9 @@ impl Renderer {
         {
             Ok(()) => Ok(Self {
                 requests,
+                mailbox,
                 thread: Some(thread),
-                pixels: Vec::new(),
+                frame: None,
             }),
             Err(error) => {
                 let _ = thread.join();
@@ -211,32 +228,56 @@ impl Renderer {
     }
 
     pub(super) fn ready(&self) -> bool {
-        let (reply, receiver) = mpsc::channel();
-        self.requests.send(Request::Ready(reply)).is_ok() && receiver.recv().unwrap_or(false)
+        self.thread.as_ref().is_some_and(JoinHandle::is_finished)
+            || self
+                .mailbox
+                .lock()
+                .map_or(true, |mailbox| mailbox.completed.is_some())
     }
 
-    pub(super) fn render(&mut self, width: u32, height: u32) -> io::Result<&[u32]> {
-        let (reply, receiver) = mpsc::channel();
-        self.requests
-            .send(Request::Draw {
-                width,
-                height,
-                pixels: std::mem::take(&mut self.pixels),
-                reply,
-            })
-            .map_err(|_| io::Error::other("mpv render thread stopped"))?;
-        let (pixels, result) = receiver
-            .recv()
-            .map_err(|_| io::Error::other("mpv render thread stopped"))?;
-        self.pixels = pixels;
-        result?;
-        Ok(&self.pixels)
+    pub(super) fn render(&mut self, width: u32, height: u32) -> io::Result<Option<&crate::Frame>> {
+        if width == 0 || height == 0 || width > 16384 || height > 16384 {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        if self.thread.as_ref().is_none_or(JoinHandle::is_finished) {
+            return Err(io::Error::other("mpv render thread stopped"));
+        }
+        let mut mailbox = self
+            .mailbox
+            .lock()
+            .map_err(|_| io::Error::other("mpv render mailbox poisoned"))?;
+        let changed = mailbox.size != Some((width, height));
+        mailbox.size = Some((width, height));
+        let completed = mailbox.completed.take();
+        drop(mailbox);
+        if changed {
+            // callback 与尺寸变化共用一个有界唤醒，渲染线程总是读取最新尺寸。
+            let _ = self.requests.try_send(());
+        }
+        let Some(completed) = completed else {
+            return Ok(None);
+        };
+        let old = self.frame.replace(completed?);
+        if let Some(old) = old {
+            let spare = self
+                .mailbox
+                .lock()
+                .map_err(|_| io::Error::other("mpv render mailbox poisoned"))?
+                .spare
+                .replace(old.pixels);
+            drop(spare);
+        }
+        Ok(self.frame.as_ref())
     }
 }
 impl Drop for Renderer {
     fn drop(&mut self) {
-        // callback 自持 sender，所以不能依赖断开 channel 退出；Stop + join 是销毁 core 前的明确屏障。
-        let _ = self.requests.send(Request::Stop);
+        // callback 自持 sender，所以不能依赖断开 channel 退出。stop 与最新尺寸
+        // 同属 mailbox；即使通知已满，下一次处理也会看到 stop。join 后才能销毁 core。
+        if let Ok(mut mailbox) = self.mailbox.lock() {
+            mailbox.stop = true;
+        }
+        let _ = self.requests.try_send(());
         if let Some(thread) = self.thread.take() {
             let _ = thread.join();
         }

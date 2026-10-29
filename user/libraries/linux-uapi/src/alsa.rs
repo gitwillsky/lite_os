@@ -39,6 +39,61 @@ const SW_PARAMS_BYTES: usize = 136;
 const STATUS_BYTES: usize = 152;
 const SYNC_PTR_BYTES: usize = 136;
 
+/// 一个标准 ALSA 原生输出端点；card 编号来自实际存在的 PCM 节点。
+pub struct NativeOutput {
+    pub card: u32,
+    pub name: String,
+}
+
+/// 枚举 LiteOS 声卡发布的原生独占 PCM（device 1），并读取标准 CARD_INFO 名称。
+///
+/// # Returns
+/// 按 card 编号排序的可访问端点；单个不可访问的 control 不作为可选择设备发布。
+///
+/// # Errors
+/// 无法枚举 `/dev/snd` 时返回文件系统错误。
+pub fn native_outputs() -> io::Result<Vec<NativeOutput>> {
+    use std::{
+        fs::{self, OpenOptions},
+        os::fd::AsFd,
+    };
+    let mut outputs = Vec::new();
+    for entry in fs::read_dir("/dev/snd")? {
+        let entry = entry?;
+        let name = entry.file_name();
+        let Some(card) = name
+            .to_str()
+            .and_then(|name| name.strip_prefix("pcmC"))
+            .and_then(|name| name.strip_suffix("D1p"))
+            .and_then(|card| card.parse::<u32>().ok())
+        else {
+            continue;
+        };
+        let Ok(control) = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(format!("/dev/snd/controlC{card}"))
+        else {
+            continue;
+        };
+        let mut info = [0u8; 376];
+        if ioctl_bytes(control.as_fd(), 0x8178_5501, &mut info).is_err() {
+            continue;
+        }
+        let bytes = &info[40..72];
+        let end = bytes
+            .iter()
+            .position(|byte| *byte == 0)
+            .unwrap_or(bytes.len());
+        outputs.push(NativeOutput {
+            card,
+            name: String::from_utf8_lossy(&bytes[..end]).into_owned(),
+        });
+    }
+    outputs.sort_by_key(|output| output.card);
+    Ok(outputs)
+}
+
 /// Linux `snd_pcm_state_t` values returned by [`PlaybackPcm::state`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(i32)]

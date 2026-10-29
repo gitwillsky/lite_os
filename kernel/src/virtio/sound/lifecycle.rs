@@ -17,6 +17,10 @@ impl DeviceState {
         matches!(self, Self::Configured | Self::Stopped).then_some(Self::Prepared)
     }
 
+    pub(super) fn after_release(self) -> Option<Self> {
+        matches!(self, Self::Configured | Self::Prepared | Self::Stopped).then_some(Self::Setup)
+    }
+
     pub(super) fn after_start(self) -> Option<Self> {
         matches!(self, Self::Prepared | Self::Stopped).then_some(Self::Running)
     }

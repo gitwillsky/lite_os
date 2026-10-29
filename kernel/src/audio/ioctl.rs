@@ -12,10 +12,7 @@ use super::codec::{
     choose_hardware, encode_pcm_info, exact_interval, exact_mask, read_u32, read_u64,
     refine_hardware, stop_or_error, write_u32, write_u64,
 };
-use super::{
-    AudioError, HardwareParameters, PCM_FRAME_BYTES, PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES, PcmFile,
-    SoftwareParameters,
-};
+use super::{AudioError, HardwareParameters, PcmFile, SoftwareParameters};
 use crate::fs::chardev::{self, DeviceError, IoctlCall, UserMemory};
 
 const POLLOUT: i16 = 0x004;
@@ -56,9 +53,11 @@ fn pcm_errno(error: AudioError) -> isize {
 /// 写 `snd_pcm_hw_params` 里描述硬件能力的信息字段：`info`（`SNDRV_PCM_INFO_INTERLEAVED` 位）、
 /// `msbits`、以及有理数形式的采样率 `rate_num / rate_den`。`HW_REFINE` 与 `HW_PARAMS` 都要返回它们。
 fn describe_hardware(bytes: &mut [u8; HW_PARAMS_BYTES]) -> Result<(), isize> {
+    let format = exact_mask(bytes, 36).and_then(super::codec::pcm_format);
+    let rate = exact_interval(bytes, 11).unwrap_or(0);
     write_u32(bytes, 520, 0x0000_0100).ok_or(errno::EIO)?;
-    write_u32(bytes, 524, 32).ok_or(errno::EIO)?;
-    write_u32(bytes, 528, 48_000).ok_or(errno::EIO)?;
+    write_u32(bytes, 524, format.map_or(0, |format| format.bits())).ok_or(errno::EIO)?;
+    write_u32(bytes, 528, rate).ok_or(errno::EIO)?;
     write_u32(bytes, 532, 1).ok_or(errno::EIO)
 }
 
@@ -109,23 +108,25 @@ fn write_frames(
     let pointer = read_u64(&transfer, 8).ok_or(errno::EFAULT)? as usize;
     let frames = usize::try_from(read_u64(&transfer, 16).ok_or(errno::EFAULT)?)
         .map_err(|_| errno::EINVAL)?;
-    let mut period = [0u8; PCM_PERIOD_BYTES];
+    let configuration = file.transfer_configuration();
+    let frame_bytes = configuration.frame_bytes();
+    let mut period = [0u8; crate::drivers::MAX_PCM_PERIOD_BYTES];
     let mut completed = 0usize;
     'transfer: while completed < frames {
-        let count = (frames - completed).min(PCM_PERIOD_FRAMES);
+        let count = (frames - completed).min(configuration.period_frames);
         let offset = completed
-            .checked_mul(PCM_FRAME_BYTES)
+            .checked_mul(frame_bytes)
             .and_then(|offset| pointer.checked_add(offset))
             .ok_or(errno::EFAULT)?;
         if user
-            .read(offset, &mut period[..count * PCM_FRAME_BYTES])
+            .read(offset, &mut period[..count * frame_bytes])
             .is_err()
         {
             stop_or_error(completed, errno::EFAULT)?;
             break;
         }
         loop {
-            match file.write_frames(&period[..count * PCM_FRAME_BYTES]) {
+            match file.write_frames(&period[..count * frame_bytes], configuration) {
                 Ok(written) => {
                     completed += written;
                     continue 'transfer;
@@ -204,11 +205,13 @@ pub(super) fn ioctl(file: &PcmFile, call: &IoctlCall<'_>) -> Result<isize, Devic
             } else {
                 let (subdevice, count, available) = file.subdevices();
                 let info = encode_pcm_info(&PcmInfo {
+                    device: file.endpoint.device(),
+                    card: file.card.index,
                     subdevice: subdevice as u32,
                     subdevices_count: count as u32,
                     subdevices_available: available as u32,
-                    card_id: super::CARD_ID,
-                    name: super::PCM_NAME,
+                    card_id: file.card.id.as_bytes(),
+                    name: file.endpoint.name(),
                 });
                 user.write(argument, &info).map_err(|_| errno::EFAULT)
             }
@@ -220,7 +223,10 @@ pub(super) fn ioctl(file: &PcmFile, call: &IoctlCall<'_>) -> Result<isize, Devic
                 let mut bytes = [0u8; HW_PARAMS_BYTES];
                 user.read(argument, &mut bytes)
                     .map_err(|_| errno::EFAULT)
-                    .and_then(|()| refine_hardware(&mut bytes).map_err(|()| errno::EINVAL))
+                    .and_then(|()| {
+                        refine_hardware(&mut bytes, file.card.output.capabilities(), file.endpoint)
+                            .map_err(|()| errno::EINVAL)
+                    })
                     .and_then(|()| {
                         describe_hardware(&mut bytes)?;
                         user.write(argument, &bytes).map_err(|_| errno::EFAULT)
@@ -234,7 +240,10 @@ pub(super) fn ioctl(file: &PcmFile, call: &IoctlCall<'_>) -> Result<isize, Devic
                 let mut bytes = [0u8; HW_PARAMS_BYTES];
                 user.read(argument, &mut bytes)
                     .map_err(|_| errno::EFAULT)
-                    .and_then(|()| choose_hardware(&mut bytes).map_err(|()| errno::EINVAL))
+                    .and_then(|()| {
+                        choose_hardware(&mut bytes, file.card.output.capabilities(), file.endpoint)
+                            .map_err(|()| errno::EINVAL)
+                    })
                     .and_then(|()| decode_hardware(&bytes).ok_or(errno::EINVAL))
                     .and_then(|parameters| file.hardware_parameters(parameters).map_err(pcm_errno))
                     .and_then(|()| {

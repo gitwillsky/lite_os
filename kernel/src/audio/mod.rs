@@ -5,6 +5,8 @@
 //! 与 Linux 里带硬件混音的声卡（例如 emu10k1）的对外形态一致，因此任何 ALSA 客户端都不需要用户态混音服务。
 
 use alloc::{
+    format,
+    string::String,
     sync::{Arc, Weak},
     vec::Vec,
 };
@@ -18,6 +20,7 @@ use crate::{
         DeviceBacking, DeviceMappingSource, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE,
     },
     namespace::PidIdentity,
+    sync::TaskMutex,
 };
 
 mod codec;
@@ -28,14 +31,13 @@ mod ioctl;
 mod mixer;
 mod pcm_file;
 mod state;
-use engine::{Engine, Events, SUBSTREAMS};
-use state::MAX_BUFFER_FRAMES;
+use crate::drivers::{MAX_PCM_PERIOD_BYTES, PcmConfiguration};
+use engine::{Engine, Events, PcmEndpoint, SUBSTREAMS};
+use state::MAX_BUFFER_PERIODS;
 pub(crate) use state::PcmState;
 include!("readiness.rs");
 
-pub(crate) use crate::drivers::{
-    PCM_FRAME_BYTES, PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES, PCM_RATE, PcmOutputError as AudioError,
-};
+pub(crate) use crate::drivers::PcmOutputError as AudioError;
 
 /// ALSA PCM hardware 参数的唯一受支持领域值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -71,10 +73,6 @@ pub(crate) struct PcmStatus {
     pub(crate) timestamp_ns: u64,
 }
 
-/// 声卡在 `snd_pcm_info` / `snd_ctl_card_info` 里的短 id，以及 PCM 设备的名字。
-const CARD_ID: &[u8] = b"LiteOS";
-const PCM_NAME: &[u8] = b"LiteOS Playback";
-
 /// 子流环形缓冲：引擎按字节偏移读取整个 period。
 impl engine::Ring for Arc<DeviceBacking> {
     fn read(&self, offset: usize, output: &mut [u8]) -> Result<(), ()> {
@@ -105,6 +103,11 @@ impl EventCounters {
 
 /// 一块声卡：物理输出、混音引擎与等待者通知。
 struct Card {
+    // OWNER: 冷配置事务的唯一 task 锁；等待 USB 控制传输时不持 Engine/operation 自旋锁。
+    configuration: TaskMutex<()>,
+    index: u32,
+    id: String,
+    shared: bool,
     output: Arc<dyn PcmOutput>,
     // OWNER: composition root 安装的调用线程 identity 投影；只在 task context、且未持音频锁时调用。
     caller: fn() -> Option<Arc<PidIdentity>>,
@@ -122,36 +125,77 @@ struct Card {
     control_notification_write: Arc<PipeEnd>,
 }
 
-// OWNER: audio domain 独占发布唯一的声卡；init 之后只读。
-static CARD: Once<Arc<Card>> = Once::new();
+// OWNER: discovery 是 drivers PCM index → ALSA card 的唯一绑定者。next 只在本锁下推进；
+// 硬件热插入发布 DRIVER_IO 后在 task/idle safe point 绑定，IRQ 不分配、不发布 devfs 节点。
+struct Discovery {
+    next: Mutex<usize>,
+    caller: fn() -> Option<Arc<PidIdentity>>,
+}
+static DISCOVERY: Once<Arc<Discovery>> = Once::new();
 
-/// 把 platform PCM adapter 装配成带软件混音的 ALSA 声卡。
+/// 安装 ALSA 设备发现并发布已存在的 PCM adapter；之后的新 adapter 经 DRIVER_IO 发现。
 ///
 /// # Parameters
-///
-/// - `output`: 唯一物理 playback adapter。
-/// - `caller`: task owner 提供的实际 TID observer，用于 Linux control opener 语义。
+/// - `caller`: task owner 的实际 TID observer。
 ///
 /// # Errors
-///
-/// 重复初始化、物理流配置失败、observer/completion source 发布失败或内存不足。
-pub(crate) fn init(
+/// 重复安装、分配或 completion source 发布失败时返回错误。
+pub(crate) fn init(caller: fn() -> Option<Arc<PidIdentity>>) -> Result<(), ()> {
+    if DISCOVERY.get().is_some() {
+        return Err(());
+    }
+    let discovery = Arc::try_new(Discovery {
+        next: Mutex::new(0),
+        caller,
+    })
+    .map_err(|_| ())?;
+    crate::drivers::register_completion_source(discovery.clone()).map_err(|_| ())?;
+    DISCOVERY.call_once(|| discovery.clone());
+    discovery.dispatch_completions();
+    Ok(())
+}
+
+impl CompletionSource for Discovery {
+    fn dispatch_completions(&self) -> bool {
+        let mut next = self.next.lock();
+        while let Some(output) = crate::drivers::pcm_output(*next) {
+            let index = *next;
+            *next += 1;
+            if attach(index, output, self.caller).is_err() {
+                crate::error!("ALSA card {} initialization failed", index);
+            }
+        }
+        false
+    }
+}
+
+fn attach(
+    index: usize,
     output: Arc<dyn PcmOutput>,
     caller: fn() -> Option<Arc<PidIdentity>>,
 ) -> Result<(), ()> {
-    if CARD.get().is_some() {
-        return Err(());
+    let index = u32::try_from(index).map_err(|_| ())?;
+    let minor = index.checked_mul(32).ok_or(())?;
+    let shared = output.capabilities().supports(PcmConfiguration::SHARED);
+    if shared {
+        output.configure(PcmConfiguration::SHARED).map_err(|_| ())?;
+        output.prepare().map_err(|_| ())?;
     }
-    // 物理流只配置并 prepare 一次，此后归混音引擎独占；子流的 hw_params/prepare 只是软件状态转换。
-    output.configure().map_err(|_| ())?;
-    output.prepare().map_err(|_| ())?;
     let notification = Pipe::notification_pair()?;
     let control_notification = Pipe::notification_pair()?;
     let card = Arc::try_new(Card {
+        configuration: TaskMutex::new(()),
+        index,
+        id: if index == 0 {
+            String::from("LiteOS")
+        } else {
+            format!("LiteOS{index}")
+        },
+        shared,
         output: output.clone(),
         caller,
         controls: Mutex::new(Vec::new()),
-        engine: Mutex::new(Engine::new()),
+        engine: Mutex::new(Engine::new(shared.then_some(PcmConfiguration::SHARED))),
         events: EventCounters::default(),
         notification_read: notification.0,
         notification_write: notification.1,
@@ -159,27 +203,65 @@ pub(crate) fn init(
         control_notification_write: control_notification.1,
     })
     .map_err(|_| ())?;
-    let observer: Arc<dyn PcmCompletionObserver> = card.clone();
-    output.set_observer(observer).map_err(|_| ())?;
-    let source: Arc<dyn CompletionSource> = card.clone();
-    crate::drivers::register_completion_source(source).map_err(|_| ())?;
-    CARD.call_once(|| card);
-    let driver = Arc::try_new(pcm_file::PcmDriver).map_err(|_| ())?;
-    crate::fs::chardev::register_driver(pcm_file::PCM_NUMBER, 1, driver).map_err(|_| ())?;
-    crate::fs::devnode::register_node(pcm_file::PCM_PATH, pcm_file::PCM_NUMBER, 0o600)
+    output.set_observer(card.clone()).map_err(|_| ())?;
+    crate::drivers::register_completion_source(card.clone()).map_err(|_| ())?;
+    for endpoint in [PcmEndpoint::Shared, PcmEndpoint::Direct] {
+        if endpoint == PcmEndpoint::Shared && !shared {
+            continue;
+        }
+        let number =
+            crate::fs::DeviceNumber::new(116, minor.checked_add(16 + endpoint.device()).ok_or(())?);
+        let driver = Arc::try_new(pcm_file::PcmDriver {
+            card: card.clone(),
+            endpoint,
+        })
         .map_err(|_| ())?;
-    let control = Arc::try_new(control_file::ControlDriver).map_err(|_| ())?;
-    crate::fs::chardev::register_driver(control_file::CONTROL_NUMBER, 1, control)
+        crate::fs::chardev::register_driver(number, 1, driver).map_err(|_| ())?;
+        crate::fs::devnode::register_node(
+            format!("snd/pcmC{index}D{}p", endpoint.device()).as_bytes(),
+            number,
+            0o600,
+        )
         .map_err(|_| ())?;
-    crate::fs::devnode::register_node(
-        control_file::CONTROL_PATH,
-        control_file::CONTROL_NUMBER,
-        0o600,
-    )
-    .map_err(|_| ())
+    }
+    let number = crate::fs::DeviceNumber::new(116, minor);
+    let control = Arc::try_new(control_file::ControlDriver { card }).map_err(|_| ())?;
+    crate::fs::chardev::register_driver(number, 1, control).map_err(|_| ())?;
+    crate::fs::devnode::register_node(format!("snd/controlC{index}").as_bytes(), number, 0o600)
+        .map_err(|_| ())
 }
 
 impl Card {
+    /// 配置锁由调用方持有；先冻结提交，再在全部自旋锁之外完成 stop/release/configure/prepare。
+    fn switch_output(&self, target: Option<PcmConfiguration>) -> Result<(), AudioError> {
+        let (previous, running) = {
+            let mut engine = self.engine.lock();
+            let previous = engine.configuration();
+            (previous, engine.begin_transition()?)
+        };
+        let result = (|| {
+            if running {
+                self.output.stop()?;
+            }
+            if previous.is_some() {
+                self.output.release()?;
+            }
+            // RELEASE 是旧 DMA 与回调的完成屏障，新的 stream 尚未提交任何 I/O。
+            let _ = self.events.take();
+            if let Some(configuration) = target {
+                self.output.configure(configuration)?;
+                self.output.prepare()?;
+            }
+            Ok(())
+        })();
+        let mut engine = self.engine.lock();
+        if let Err(error) = result {
+            engine.fail();
+            return Err(error);
+        }
+        engine.finish_transition(target)
+    }
+
     /// 让引擎消化设备事件并补填队列；有变化时唤醒所有等待者。
     ///
     /// 补填期间设备 reclaim 可能又累计出新的完成事件，所以循环到事件取空为止。
@@ -200,8 +282,7 @@ impl Card {
 }
 
 impl PcmCompletionObserver for Card {
-    fn period_completed(&self, frames: usize) {
-        assert_eq!(frames, PCM_PERIOD_FRAMES);
+    fn period_completed(&self, _frames: usize) {
         self.events.completed.fetch_add(1, Ordering::AcqRel);
     }
 
@@ -245,6 +326,7 @@ impl PcmClock {
 
 /// `/dev/snd/pcmC0D0p` 的单个 open-file-description：对一个子流的句柄。
 pub(crate) struct PcmFile {
+    endpoint: PcmEndpoint,
     card: Arc<Card>,
     index: usize,
     // OWNER: serializes ALSA control/data transitions for one OFD.
@@ -263,15 +345,18 @@ pub(crate) struct PcmFile {
 /// # Errors
 ///
 /// 无设备、全部子流都被占用（`InvalidState`，映射成 `EBUSY`）或分配失败。
-fn open() -> Result<Arc<PcmFile>, AudioError> {
-    let card = CARD.get().cloned().ok_or(AudioError::Device)?;
+fn open(card: Arc<Card>, endpoint: PcmEndpoint) -> Result<Arc<PcmFile>, AudioError> {
     // 每次 open 分配全新的环形缓冲与 mmap identity：旧 OFD 留下的映射不能和新子流的缓冲别名。
     let ring = Arc::try_new(
         // virtio-snd 的 SNDRV_DMA_TYPE_VMALLOC ring 经 remap_vmalloc_range 插入普通页。
         DeviceBacking::try_allocate(
             // 整个 OFD 生命周期共享同一 backing；预留有界上限，协商及混音热路径不重分配，
             // 旧 mmap 即使跨 HW_FREE 仍有效，也不会与其他 OFD 的 ring 共享物理页。
-            (MAX_BUFFER_FRAMES * PCM_FRAME_BYTES).div_ceil(PAGE_SIZE),
+            (match endpoint {
+                PcmEndpoint::Shared => PcmConfiguration::SHARED.period_bytes() * MAX_BUFFER_PERIODS,
+                PcmEndpoint::Direct => MAX_PCM_PERIOD_BYTES * MAX_BUFFER_PERIODS,
+            })
+            .div_ceil(PAGE_SIZE),
             FrameAllocationClass::Reclaimable,
             DeviceMemoryKind::InsertedPages,
         )
@@ -282,10 +367,11 @@ fn open() -> Result<Arc<PcmFile>, AudioError> {
     let index = card
         .engine
         .lock()
-        .allocate(ring.clone(), preferred)
+        .allocate(ring.clone(), preferred, endpoint)
         .map_err(|_| AudioError::InvalidState)?;
     let file = Arc::try_new(PcmFile {
-        card,
+        endpoint,
+        card: card.clone(),
         index,
         operation: Mutex::new(PcmClock {
             kind: 0,
@@ -301,7 +387,7 @@ fn open() -> Result<Arc<PcmFile>, AudioError> {
         }
         Err(_) => {
             // 分配失败：把已占用的子流还回去，否则它永远空闲不下来。
-            let _ = CARD.get().map(|card| card.engine.lock().release(index));
+            let _ = card.engine.lock().release(index);
             Err(AudioError::Device)
         }
     }
@@ -317,20 +403,39 @@ impl PcmFile {
         &self,
         parameters: HardwareParameters,
     ) -> Result<(), AudioError> {
-        let _operation = self.operation.lock();
+        let _configuration = self
+            .card
+            .configuration
+            .lock()
+            .map_err(|_| AudioError::Device)?;
+        let configuration = PcmConfiguration {
+            rate: parameters.rate,
+            format: codec::pcm_format(parameters.format).ok_or(AudioError::InvalidState)?,
+            period_frames: usize::try_from(parameters.period_frames)
+                .map_err(|_| AudioError::InvalidState)?,
+        };
         if !matches!(parameters.access, 0 | 3)
-            || parameters.format != 14
             || parameters.channels != 2
-            || parameters.rate != PCM_RATE
-            || parameters.period_frames != PCM_PERIOD_FRAMES as u64
-            || parameters.buffer_frames != u64::from(parameters.periods) * PCM_PERIOD_FRAMES as u64
+            || !self.card.output.capabilities().supports(configuration)
+            || parameters.buffer_frames != u64::from(parameters.periods) * parameters.period_frames
+            || configuration.period_bytes() > MAX_PCM_PERIOD_BYTES
+            || self.endpoint == PcmEndpoint::Shared && configuration != PcmConfiguration::SHARED
         {
             return Err(AudioError::InvalidState);
+        }
+        {
+            let engine = self.card.engine.lock();
+            if engine.state(self.index).state != PcmState::Open {
+                return Err(AudioError::InvalidState);
+            }
+        }
+        if self.card.engine.lock().configuration() != Some(configuration) {
+            self.card.switch_output(Some(configuration))?;
         }
         self.card
             .engine
             .lock()
-            .configure(self.index, parameters.buffer_frames)
+            .configure(self.index, parameters.buffer_frames, configuration)
             .map_err(|()| AudioError::InvalidState)?;
         crate::info!("ALSA playback substream {} configured", self.index);
         Ok(())
@@ -380,15 +485,33 @@ impl PcmFile {
     }
 
     pub(crate) fn prepare(&self) -> Result<(), AudioError> {
-        let _operation = self.operation.lock();
-        self.card
-            .engine
+        let _configuration = self
+            .card
+            .configuration
             .lock()
-            .prepare(self.index)
-            .map_err(|()| AudioError::InvalidState)
+            .map_err(|_| AudioError::Device)?;
+        let (configuration, restart) = {
+            let _operation = self.operation.lock();
+            let mut engine = self.card.engine.lock();
+            let restart = self.endpoint == PcmEndpoint::Direct && engine.running();
+            engine
+                .prepare(self.index)
+                .map_err(|()| AudioError::InvalidState)?;
+            (engine.state(self.index).configuration, restart)
+        };
+        if restart {
+            self.card.switch_output(Some(configuration))?;
+        }
+        self.card.process();
+        Ok(())
     }
 
     pub(crate) fn free_hardware(&self) -> Result<(), AudioError> {
+        let _configuration = self
+            .card
+            .configuration
+            .lock()
+            .map_err(|_| AudioError::Device)?;
         let _operation = self.operation.lock();
         self.card
             .engine
@@ -410,13 +533,22 @@ impl PcmFile {
     }
 
     pub(crate) fn drop_stream(&self) -> Result<(), AudioError> {
-        let _operation = self.operation.lock();
-        self.card
-            .engine
+        let _configuration = self
+            .card
+            .configuration
             .lock()
-            .drop_stream(self.index)
-            .map_err(|()| AudioError::InvalidState)?;
-        crate::info!("ALSA playback substream {} stopped", self.index);
+            .map_err(|_| AudioError::Device)?;
+        let configuration = {
+            let _operation = self.operation.lock();
+            let mut engine = self.card.engine.lock();
+            engine
+                .drop_stream(self.index)
+                .map_err(|()| AudioError::InvalidState)?;
+            engine.state(self.index).configuration
+        };
+        if self.endpoint == PcmEndpoint::Direct {
+            self.card.switch_output(Some(configuration))?;
+        }
         self.card.process();
         Ok(())
     }
@@ -434,20 +566,28 @@ impl PcmFile {
     /// # Errors
     ///
     /// 无可用空间为 EAGAIN，XRUN 为 EPIPE，断连为 ENODEV，未准备的流为 EBADFD，非法帧长度为 EINVAL。
-    pub(crate) fn write_frames(&self, bytes: &[u8]) -> Result<usize, isize> {
+    pub(crate) fn write_frames(
+        &self,
+        bytes: &[u8],
+        configuration: PcmConfiguration,
+    ) -> Result<usize, isize> {
         use syscall_abi::errno;
+        let frame_bytes = configuration.frame_bytes();
         if bytes.is_empty()
-            || bytes.len() > PCM_PERIOD_BYTES
-            || !bytes.len().is_multiple_of(PCM_FRAME_BYTES)
+            || bytes.len() > configuration.period_bytes()
+            || !bytes.len().is_multiple_of(frame_bytes)
         {
             return Err(errno::EINVAL);
         }
-        let requested = bytes.len() / PCM_FRAME_BYTES;
+        let requested = bytes.len() / frame_bytes;
         let _operation = self.operation.lock();
         let frames;
         {
             let mut engine = self.card.engine.lock();
             let state = engine.state(self.index);
+            if state.configuration != configuration {
+                return Err(errno::EBADFD);
+            }
             // XRUN 的 poll 立即报告错误；若仍把它当成满缓冲，WRITEI 会在关中断的 syscall 中
             // 不断重试，阻断远端 TLB ack，令其他 CPU 的 munmap 与整个桌面一起停住。
             match state.state {
@@ -460,14 +600,14 @@ impl PcmFile {
             if frames == 0 {
                 return Err(errno::EAGAIN);
             }
-            let bytes = &bytes[..frames * PCM_FRAME_BYTES];
+            let bytes = &bytes[..frames * frame_bytes];
             // 引擎只读取应用指针之前的帧，所以必须先写数据、再推进指针，两步在同一把锁里完成。
             let frame = (state.application_frames % state.buffer_frames) as usize;
             let first = bytes
                 .len()
-                .min((state.buffer_frames as usize - frame) * PCM_FRAME_BYTES);
+                .min((state.buffer_frames as usize - frame) * frame_bytes);
             self.ring
-                .write(frame * PCM_FRAME_BYTES, &bytes[..first])
+                .write(frame * frame_bytes, &bytes[..first])
                 .map_err(|()| errno::EIO)?;
             if first < bytes.len() {
                 self.ring
@@ -510,7 +650,7 @@ impl PcmFile {
         let _operation = self.operation.lock();
         let engine = self.card.engine.lock();
         let state = engine.state(self.index);
-        let bytes = state.buffer_frames as usize * PCM_FRAME_BYTES;
+        let bytes = state.buffer_frames as usize * state.configuration.frame_bytes();
         if matches!(state.state, PcmState::Open | PcmState::Disconnected)
             || offset != 0
             || length < bytes
@@ -588,15 +728,37 @@ impl PcmFile {
         self.card.notification_read.pipe()
     }
 
+    pub(crate) fn transfer_configuration(&self) -> PcmConfiguration {
+        self.card.engine.lock().state(self.index).configuration
+    }
+
     /// 本子流的编号与卡上总子流数、仍空闲的子流数，供 `SNDRV_PCM_IOCTL_INFO` 使用。
     pub(crate) fn subdevices(&self) -> (usize, usize, usize) {
-        (self.index, SUBSTREAMS, self.card.engine.lock().available())
+        (
+            self.index,
+            if self.endpoint == PcmEndpoint::Shared {
+                SUBSTREAMS
+            } else {
+                1
+            },
+            self.card.engine.lock().endpoint_available(self.endpoint),
+        )
     }
 }
 
 impl Drop for PcmFile {
     fn drop(&mut self) {
         // 引擎摘掉本子流在在途 period 里的归属并交还环形缓冲；缓冲在锁外销毁。
+        if self.endpoint == PcmEndpoint::Direct {
+            match self.card.configuration.lock() {
+                Ok(_configuration) => {
+                    if self.card.switch_output(None).is_err() {
+                        crate::warn!("native PCM release failed");
+                    }
+                }
+                Err(_) => self.card.engine.lock().fail(),
+            }
+        }
         let ring = self.card.engine.lock().release(self.index);
         drop(ring);
         self.card.process();

@@ -1,7 +1,6 @@
+use super::{PcmCapabilities, PcmConfiguration};
 use alloc::sync::Arc;
 
-/// 固定 PCM 输出正规形。
-pub(crate) const PCM_RATE: u32 = 48_000;
 /// 固定 PCM 输出声道数。
 pub(crate) const PCM_CHANNELS: u8 = 2;
 /// 一个 hardware period 的 frame 数。
@@ -14,8 +13,6 @@ pub(crate) const PCM_FRAME_BYTES: usize = 8;
 pub(crate) const PCM_PERIOD_BYTES: usize = PCM_PERIOD_FRAMES * PCM_FRAME_BYTES;
 /// 完整 hardware buffer 的 frame 数。
 pub(crate) const PCM_BUFFER_FRAMES: usize = PCM_PERIOD_FRAMES * PCM_PERIODS;
-/// 完整 hardware buffer 的 byte 数。
-pub(crate) const PCM_BUFFER_BYTES: usize = PCM_PERIOD_BYTES * PCM_PERIODS;
 
 /// PCM adapter 可恢复操作错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,6 +43,10 @@ pub(crate) trait PcmCompletionObserver: Send + Sync {
 
 /// 不泄漏 VirtIO queue/config 的通用 PCM playback adapter。
 pub(crate) trait PcmOutput: Send + Sync {
+    /// 设备发现时保存的稳定显示名称。
+    fn name(&self) -> &str;
+    /// 返回 discovery 得到的实际格式和采样率；不推测宿主 DAC 的能力。
+    fn capabilities(&self) -> PcmCapabilities;
     /// 一次性安装 completion observer。
     ///
     /// # Parameters
@@ -57,12 +58,15 @@ pub(crate) trait PcmOutput: Send + Sync {
     /// observer 已安装或 adapter 已失败时返回 `Device`。
     fn set_observer(&self, observer: Arc<dyn PcmCompletionObserver>) -> Result<(), PcmOutputError>;
 
-    /// 按固定正规形配置唯一 playback stream。
+    /// 按已协商格式配置唯一 playback stream；调用前必须 release 旧配置。
     ///
     /// # Errors
     ///
     /// device 不支持固定格式或 lifecycle 非法时返回错误。
-    fn configure(&self) -> Result<(), PcmOutputError>;
+    fn configure(&self, configuration: PcmConfiguration) -> Result<(), PcmOutputError>;
+
+    /// 释放已停止或未启动的物理流；返回前完成所有旧 DMA，之后才能重新配置。
+    fn release(&self) -> Result<(), PcmOutputError>;
 
     /// 准备已配置 stream 与固定 DMA period slots。
     fn prepare(&self) -> Result<(), PcmOutputError>;

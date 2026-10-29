@@ -14,30 +14,27 @@ use super::control::{
     SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS, describe_element, element_by_id, encode_card_info,
     encode_event, list_elements, read_element, write_element,
 };
-use super::{CARD, CARD_ID, Card, PCM_NAME, SUBSTREAMS};
+use super::engine::PcmEndpoint;
+use super::{Card, SUBSTREAMS};
 use crate::{
     fs::{
         FileSystemError,
-        {
-            DeviceNumber,
-            chardev::{
-                CharacterDriver, DeviceError, DeviceFile, DeviceWaitSources, IoctlCall,
-                OpenRequest, UserMemory, UserOutput,
-            },
+        chardev::{
+            CharacterDriver, DeviceError, DeviceFile, DeviceWaitSources, IoctlCall, OpenRequest,
+            UserMemory, UserOutput,
         },
     },
     ipc::{Pipe, PipeDirection},
     namespace::PidIdentity,
 };
 
-pub(super) const CONTROL_NUMBER: DeviceNumber = DeviceNumber::new(116, 0);
-pub(super) const CONTROL_PATH: &[u8] = b"snd/controlC0";
-
-pub(super) struct ControlDriver;
+pub(super) struct ControlDriver {
+    pub(super) card: Arc<Card>,
+}
 
 impl CharacterDriver for ControlDriver {
     fn open(&self, _request: &OpenRequest<'_>) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
-        let card = CARD.get().cloned().ok_or(FileSystemError::IoError)?;
+        let card = self.card.clone();
         let opener = (card.caller)().ok_or(FileSystemError::IoError)?;
         let file = Arc::try_new(ControlFile {
             card: card.clone(),
@@ -126,6 +123,14 @@ fn exchange<const N: usize>(
 impl ControlFile {
     fn dispatch(&self, call: &IoctlCall<'_>) -> Result<isize, isize> {
         let (user, argument) = (call.user, call.argument);
+        if !self.card.shared
+            && matches!(
+                call.request,
+                SNDRV_CTL_IOCTL_ELEM_INFO | SNDRV_CTL_IOCTL_ELEM_READ | SNDRV_CTL_IOCTL_ELEM_WRITE
+            )
+        {
+            return Err(errno::ENOENT);
+        }
         match call.request {
             SNDRV_CTL_IOCTL_PVERSION => {
                 if argument == 0 {
@@ -140,9 +145,10 @@ impl ControlFile {
                     return Err(errno::EFAULT);
                 }
                 let info = encode_card_info(&CardText {
-                    id: CARD_ID,
-                    name: b"LiteOS Sound",
-                    long_name: b"LiteOS VirtIO Sound Card",
+                    card: self.card.index,
+                    id: self.card.id.as_bytes(),
+                    name: self.card.output.name().as_bytes(),
+                    long_name: self.card.output.name().as_bytes(),
                     mixer_name: b"LiteOS Mixer",
                 });
                 debug_assert_eq!(info.len(), CARD_INFO_BYTES);
@@ -156,6 +162,12 @@ impl ControlFile {
                 let mut list = [0u8; ELEM_LIST_BYTES];
                 user.read(argument, &mut list).map_err(|_| errno::EFAULT)?;
                 let pointer = super::codec::read_u64(&list, 16).ok_or(errno::EFAULT)? as usize;
+                if !self.card.shared {
+                    super::codec::write_u32(&mut list, 8, 0).ok_or(errno::EIO)?;
+                    super::codec::write_u32(&mut list, 12, 0).ok_or(errno::EIO)?;
+                    user.write(argument, &list).map_err(|_| errno::EFAULT)?;
+                    return Ok(0);
+                }
                 let (ids, used) = list_elements(&mut list).map_err(control_errno)?;
                 // 只有 space=0 才是计数查询；需要输出 ID 时 NULL pids 必须返回 EFAULT。
                 if used != 0 {
@@ -211,7 +223,12 @@ impl ControlFile {
                 }
                 let mut bytes = [0u8; 4];
                 user.read(argument, &mut bytes).map_err(|_| errno::EFAULT)?;
-                let next: i32 = if i32::from_ne_bytes(bytes) < 0 { 0 } else { -1 };
+                let next: i32 = match i32::from_ne_bytes(bytes) {
+                    value if value < 0 && self.card.shared => 0,
+                    value if value < 0 => 1,
+                    0 => 1,
+                    _ => -1,
+                };
                 user.write(argument, &next.to_ne_bytes())
                     .map_err(|_| errno::EFAULT)?;
                 Ok(0)
@@ -221,16 +238,28 @@ impl ControlFile {
                 let device = read_u32(bytes, 0).ok_or(errno::EINVAL)?;
                 let subdevice = read_u32(bytes, 4).ok_or(errno::EINVAL)?;
                 let stream = read_u32(bytes, 8).ok_or(errno::EINVAL)?;
-                if device != 0 || stream != 0 || subdevice as usize >= SUBSTREAMS {
+                let endpoint = match device {
+                    0 if self.card.shared => PcmEndpoint::Shared,
+                    1 => PcmEndpoint::Direct,
+                    _ => return Err(errno::ENOENT),
+                };
+                let count = if endpoint == PcmEndpoint::Shared {
+                    SUBSTREAMS
+                } else {
+                    1
+                };
+                if stream != 0 || subdevice as usize >= count {
                     return Err(errno::ENOENT);
                 }
-                let available = self.card.engine.lock().available();
+                let available = self.card.engine.lock().endpoint_available(endpoint);
                 *bytes = encode_pcm_info(&PcmInfo {
+                    device,
+                    card: self.card.index,
                     subdevice,
-                    subdevices_count: SUBSTREAMS as u32,
+                    subdevices_count: count as u32,
                     subdevices_available: available as u32,
-                    card_id: CARD_ID,
-                    name: PCM_NAME,
+                    card_id: self.card.id.as_bytes(),
+                    name: endpoint.name(),
                 });
                 Ok(())
             })

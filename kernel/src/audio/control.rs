@@ -132,6 +132,7 @@ fn write_id(bytes: &mut [u8], element: Element) {
 
 /// `snd_ctl_card_info` 的文本字段。
 pub(super) struct CardText<'a> {
+    pub(super) card: u32,
     pub(super) id: &'a [u8],
     pub(super) name: &'a [u8],
     pub(super) long_name: &'a [u8],
@@ -145,7 +146,7 @@ pub(super) fn encode_card_info(text: &CardText<'_>) -> [u8; CARD_INFO_BYTES] {
         bytes[offset..offset + length].copy_from_slice(&value[..length]);
     }
     let mut bytes = [0u8; CARD_INFO_BYTES];
-    // card = 0（偏移 0）已经是零。
+    let _ = write_u32(&mut bytes, 0, text.card);
     put(&mut bytes, 8, 16, text.id);
     put(&mut bytes, 24, 16, b"LiteOS");
     put(&mut bytes, 40, 32, text.name);

@@ -1393,6 +1393,7 @@ dependencies = [
 name = "media-player"
 version = "0.1.0"
 dependencies = [
+ "linux-uapi",
  "liteos-ui",
  "mpv-client",
 ]

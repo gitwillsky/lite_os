@@ -901,8 +901,8 @@ impl Widget {
         })?;
         Ok(color)
     }
-    /// 替换 Canvas 的媒体帧：`width`×`height` 个设备像素的 0x00RRGGBB（行优先），运行库复制后 1:1 绘在显示列表之下。
-    /// 帧尺寸应等于 [`Widget::geometry`] 的逻辑矩形乘以窗口 scale；`(0, 0, &[])` 清除帧。
+    /// 替换 Canvas 的媒体帧：`width`×`height` 个设备像素的 0x00RRGGBB（行优先），运行库复制后等比居中绘在显示列表之下，空白补黑。
+    /// 帧尺寸可暂时落后于 [`Widget::geometry`]，缩放无需等待新帧；`(0, 0, &[])` 清除帧。
     pub fn set_frame(&self, width: u32, height: u32, pixels: &[u32]) -> Result<()> {
         self.call(|c, w, id| {
             // SAFETY: 像素切片在同步调用内有效，运行库只读并复制。

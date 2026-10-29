@@ -330,7 +330,7 @@ impl Tree {
                 }
                 widget::CANVAS => {
                     if let Some(frame) = &node.frame {
-                        p.clipped(rect, |p| frame.paint_physical(p, rect.x, rect.y));
+                        p.clipped(rect, |p| frame.paint_fitted(p, rect));
                     }
                     for command in &node.drawing {
                         let r = Rect::new(

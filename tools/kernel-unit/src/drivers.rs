@@ -1,3 +1,8 @@
+#[path = "../../../kernel/src/drivers/pcm_format.rs"]
+pub(crate) mod pcm_format;
+pub(crate) use pcm_format::{
+    MAX_PCM_PERIOD_BYTES, PCM_RATES, PcmCapabilities, PcmConfiguration, PcmFormat,
+};
 #[path = "../../../tools/kernel-view/drivers/io_completion/io_completion/io_completion.rs"]
 pub(crate) mod io_completion;
 

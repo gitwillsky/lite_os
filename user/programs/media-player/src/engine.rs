@@ -6,6 +6,9 @@ use std::{io, os::unix::net::UnixStream};
 const OPTIONS: &[(&str, &str)] = &[
     ("vo", "libmpv"),
     ("ao", "alsa"),
+    ("audio-fallback-to-null", "no"),
+    ("alsa-resample", "no"),
+    ("video-sync", "audio"),
     ("idle", "yes"),
     ("keep-open", "yes"),
     ("force-window", "no"),
@@ -101,6 +104,8 @@ impl Changes {
 }
 
 pub struct State {
+    pub native_card: Option<u32>,
+    pub outputs: Vec<linux_uapi::alsa::NativeOutput>,
     pub idle: bool,
     pub paused: bool,
     pub buffering: bool,
@@ -123,6 +128,8 @@ pub struct State {
 impl Default for State {
     fn default() -> Self {
         Self {
+            native_card: None,
+            outputs: linux_uapi::alsa::native_outputs().unwrap_or_default(),
             idle: true,
             paused: false,
             buffering: false,
@@ -144,7 +151,15 @@ impl Default for State {
     }
 }
 
+struct Processing {
+    volume: f64,
+    muted: bool,
+    speed: f64,
+}
+
 pub struct Engine {
+    // A historical snapshot, retained only while native output owns the playback policy.
+    shared_processing: Option<Processing>,
     mpv: Mpv,
     pub state: State,
 }
@@ -186,6 +201,7 @@ impl Engine {
         Ok((
             Self {
                 mpv,
+                shared_processing: None,
                 state: State::default(),
             },
             reader,
@@ -214,6 +230,10 @@ impl Engine {
             Event::FileLoaded => {
                 self.state.message.clear();
                 changes = Changes::ALL;
+            }
+            Event::AudioReconfig => {
+                self.check_native_rate();
+                changes.controls = true;
             }
             Event::VideoReconfig | Event::PlaybackRestart => changes.frame = true,
             Event::QueueOverflow => changes = self.refresh_all(),
@@ -394,8 +414,8 @@ impl Engine {
         };
     }
 
-    /// 把当前帧渲染到 `width`×`height` 设备像素的缓冲并返回；缓冲在多次调用间复用。
-    pub fn render(&mut self, width: u32, height: u32) -> io::Result<&[u32]> {
+    /// 请求最新画布尺寸并取出已完成帧；尚在渲染时返回 None，不阻塞 UI。
+    pub fn render(&mut self, width: u32, height: u32) -> io::Result<Option<&mpv_client::Frame>> {
         self.mpv.render(width, height)
     }
 
@@ -413,12 +433,104 @@ impl Engine {
 
     /// 设置属性；失败时把原因放进状态栏消息。
     pub fn set(&mut self, name: &str, value: &str) -> bool {
+        if self.state.native_card.is_some() && matches!(name, "volume" | "mute" | "speed" | "af") {
+            self.state.message = "原生独占输出中，请在音频设备上调节音量".into();
+            return false;
+        }
         match self.mpv.set_property(name, value) {
             Ok(()) => true,
             Err(error) => {
                 self.state.message = format!("{name}：{error}");
                 false
             }
+        }
+    }
+
+    /// 选择共享混音或指定声卡的原生独占端点；切换时先暂停，失败时恢复原输出与处理参数。
+    pub fn select_output(&mut self, card: Option<u32>) -> bool {
+        let old = self.state.native_card;
+        if old == card {
+            return true;
+        }
+        let before = Processing {
+            volume: self.state.volume,
+            muted: self.state.muted,
+            speed: self.state.speed,
+        };
+        let device = |card: Option<u32>| {
+            card.map_or_else(
+                || "alsa/hw:0,0".to_owned(),
+                |card| format!("alsa/hw:{card},1"),
+            )
+        };
+        let paused = self.state.paused;
+        let result = (|| {
+            self.mpv.set_property("pause", "yes")?;
+            if card.is_some() {
+                self.mpv.set_property("volume", "100")?;
+                self.mpv.set_property("mute", "no")?;
+                self.mpv.set_property("speed", "1")?;
+                self.mpv.set_property("af", "")?;
+                self.mpv.set_property("audio-samplerate", "0")?;
+            }
+            self.mpv.set_property("audio-device", &device(card))
+        })();
+        if let Err(error) = result {
+            let _ = self.mpv.set_property("audio-device", &device(old));
+            let _ = self.mpv.set_property("volume", &before.volume.to_string());
+            let _ = self
+                .mpv
+                .set_property("mute", if before.muted { "yes" } else { "no" });
+            let _ = self.mpv.set_property("speed", &before.speed.to_string());
+            let _ = self
+                .mpv
+                .set_property("pause", if paused { "yes" } else { "no" });
+            self.state.message = format!("无法切换音频输出：{error}");
+            return false;
+        }
+        if old.is_none() && card.is_some() {
+            self.shared_processing = Some(before);
+        }
+        self.state.native_card = card;
+        if card.is_none()
+            && let Some(previous) = self.shared_processing.take()
+        {
+            let _ = self
+                .mpv
+                .set_property("volume", &previous.volume.to_string());
+            let _ = self
+                .mpv
+                .set_property("mute", if previous.muted { "yes" } else { "no" });
+            let _ = self.mpv.set_property("speed", &previous.speed.to_string());
+        }
+        let _ = self
+            .mpv
+            .set_property("pause", if paused { "yes" } else { "no" });
+        self.state.message.clear();
+        true
+    }
+
+    fn check_native_rate(&mut self) {
+        if self.state.native_card.is_none() {
+            return;
+        }
+        let source = self.mpv.int("audio-params/samplerate");
+        let output = self.mpv.int("audio-out-params/samplerate");
+        let channels = self.mpv.int("audio-params/channel-count");
+        if source
+            .zip(output)
+            .is_some_and(|(source, output)| source != output)
+            || channels.is_some_and(|count| count != 2)
+        {
+            let _ = self.mpv.command(&["stop"]);
+            self.state.message = "设备无法按音源采样率与声道输出，已停止原生独占播放".into();
+        }
+    }
+
+    pub fn refresh_outputs(&mut self) {
+        match linux_uapi::alsa::native_outputs() {
+            Ok(outputs) => self.state.outputs = outputs,
+            Err(error) => self.state.message = format!("无法枚举音频设备：{error}"),
         }
     }
 

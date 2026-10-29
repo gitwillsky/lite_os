@@ -496,19 +496,30 @@ impl Bitmap {
         self.paint_region(painter, x, y, 0, self.width);
     }
 
-    /// 以设备像素 1:1 绘制（不乘 Painter 的整数 scale），`x`/`y` 为逻辑坐标；视频帧已按设备分辨率生成。
-    pub fn paint_physical(&self, painter: &mut Painter<'_>, x: i32, y: i32) {
-        let scale = painter.scale;
-        painter.surface.blit(
-            Image {
-                pixels: &self.pixels,
-                width: self.width,
-                height: self.height,
-                stride: self.width as usize,
-            },
-            x * scale,
-            y * scale,
-            1,
+    /// 把位图等比居中放入逻辑矩形 `rect`，空白补黑；用于异步媒体帧与窗口尺寸暂时不一致时的重绘。
+    /// 空矩形不绘制，源像素不复制；设备像素缩放由当前 Painter 的同一采样路径处理。
+    pub fn paint_fitted(&self, painter: &mut Painter<'_>, rect: Rect) {
+        let area = painter.physical(rect);
+        if area.is_empty() || self.width <= 0 || self.height <= 0 {
+            return;
+        }
+        let width = i64::from(area.width)
+            .min(i64::from(area.height) * i64::from(self.width) / i64::from(self.height))
+            .max(1) as i32;
+        let height = i64::from(area.height)
+            .min(i64::from(area.width) * i64::from(self.height) / i64::from(self.width))
+            .max(1) as i32;
+        if width != area.width || height != area.height {
+            painter.surface.fill_rect(area, Color::rgb(0, 0, 0));
+        }
+        painter.surface.blit_scaled(
+            self.image(),
+            Rect::new(
+                area.x + (area.width - width) / 2,
+                area.y + (area.height - height) / 2,
+                width,
+                height,
+            ),
         );
     }
 

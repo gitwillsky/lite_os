@@ -22,6 +22,17 @@ use std::{
 /// Soname installed by `scripts/mpv_runtime.py`.
 pub const LIBRARY: &str = "libmpv.so.2";
 
+/// A completed software-rendered BGR0 frame at its actual device-pixel size.
+/// Its pixels remain borrowed until the next [`Mpv::render`] call or renderer destruction.
+pub struct Frame {
+    /// Width in device pixels; may differ from the latest requested size during resize.
+    pub width: u32,
+    /// Height in device pixels.
+    pub height: u32,
+    /// Row-major 0x00RRGGBB pixels; the high byte is padding.
+    pub pixels: Vec<u32>,
+}
+
 /// A property value in one of the formats the player reads.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Value {
@@ -358,17 +369,19 @@ impl Mpv {
         }
     }
 
-    /// Whether mpv has a new video frame that [`Mpv::render`] should draw.
+    /// Whether a completed frame or rendering error is ready for [`Mpv::render`].
+    /// This never waits for libmpv or an unfinished render.
     pub fn render_ready(&self) -> bool {
         self.render.as_ref().is_some_and(Renderer::ready)
     }
 
-    /// Renders the current frame on its dedicated render thread and returns the reused BGR0 buffer.
-    /// The buffer remains borrowed until the caller finishes copying it into its UI surface.
+    /// Requests the latest device-pixel size and takes a completed frame without waiting.
+    /// Returns `None` while rendering; a completed frame can have an older size during resize.
+    /// The returned frame is borrowed until the next render call.
     ///
     /// # Errors
-    /// Invalid dimensions, a stopped render thread, or an upstream rendering failure.
-    pub fn render(&mut self, width: u32, height: u32) -> io::Result<&[u32]> {
+    /// Zero/oversized dimensions, a stopped render thread, or an upstream rendering failure.
+    pub fn render(&mut self, width: u32, height: u32) -> io::Result<Option<&Frame>> {
         self.render
             .as_mut()
             .ok_or_else(|| io::Error::other("mpv renderer is unavailable"))?

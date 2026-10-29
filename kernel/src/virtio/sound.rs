@@ -9,8 +9,9 @@ use super::{
     queue::{DmaBuffer, VirtQueue},
 };
 use crate::drivers::{
-    PCM_BUFFER_BYTES, PCM_CHANNELS, PCM_PERIOD_BYTES, PCM_PERIODS, PcmCompletionObserver,
-    PcmOutput, PcmOutputError, io_completion::CompletionSource,
+    MAX_PCM_PERIOD_BYTES, PCM_CHANNELS, PCM_PERIODS, PCM_RATES, PcmCapabilities,
+    PcmCompletionObserver, PcmConfiguration, PcmFormat, PcmOutput, PcmOutputError,
+    io_completion::CompletionSource,
 };
 use crate::hal::{InterruptError, InterruptHandler, InterruptVector};
 
@@ -23,6 +24,38 @@ const QUEUE_SIZE: u16 = 64;
 const EVENT_SLOTS: usize = 8;
 const CONTROL_SPIN_LIMIT: usize = 1 << 24;
 
+fn format_code(format: PcmFormat) -> u8 {
+    match format {
+        PcmFormat::S16 => 5,
+        PcmFormat::S24Packed => 11,
+        PcmFormat::S24 => 15,
+        PcmFormat::S32 => 17,
+        PcmFormat::Float => 19,
+    }
+}
+
+fn rate_code(rate: u32) -> Option<u8> {
+    const RATES: [(u32, u8); 14] = [
+        (5512, 0),
+        (8000, 1),
+        (11025, 2),
+        (16000, 3),
+        (22050, 4),
+        (32000, 5),
+        (44100, 6),
+        (48000, 7),
+        (64000, 8),
+        (88200, 9),
+        (96000, 10),
+        (176400, 11),
+        (192000, 12),
+        (384000, 13),
+    ];
+    RATES
+        .iter()
+        .find_map(|(value, code)| (*value == rate).then_some(*code))
+}
+
 struct EventSlot {
     buffer: DmaBuffer<EVENT_BYTES>,
     head: u16,
@@ -30,7 +63,7 @@ struct EventSlot {
 
 struct TxSlot {
     xfer: DmaBuffer<XFER_BYTES>,
-    frames: DmaBuffer<PCM_PERIOD_BYTES>,
+    frames: DmaBuffer<MAX_PCM_PERIOD_BYTES>,
     status: DmaBuffer<STATUS_BYTES>,
     head: Option<u16>,
 }
@@ -45,6 +78,8 @@ struct SoundQueues {
     events: Vec<EventSlot>,
     tx_slots: Vec<TxSlot>,
     state: DeviceState,
+    configuration: Option<PcmConfiguration>,
+    capabilities: PcmCapabilities,
 }
 
 /// Modern VirtIO-MMIO Sound adapter；所有 DMA owner 在 reset 前保持存活。
@@ -95,7 +130,7 @@ impl VirtIOSoundDevice {
         let queues = [
             Self::new_queue(&device, CONTROL_QUEUE, 4)?,
             Self::new_queue(&device, EVENT_QUEUE, (EVENT_SLOTS * 2) as u16)?,
-            Self::new_queue(&device, TX_QUEUE, (PCM_PERIODS * 6) as u16)?,
+            Self::new_queue(&device, TX_QUEUE, (PCM_PERIODS * 8) as u16)?,
             Self::new_queue(&device, RX_QUEUE, 1)?,
         ];
         let [control, event, tx, rx] = queues;
@@ -129,6 +164,8 @@ impl VirtIOSoundDevice {
             events,
             tx_slots,
             state: DeviceState::Setup,
+            configuration: None,
+            capabilities: PcmCapabilities::EMPTY,
         };
         Self::populate_events(&mut owner)?;
         device.notify_queue(EVENT_QUEUE).ok()?;
@@ -185,15 +222,33 @@ impl VirtIOSoundDevice {
             )?;
         }
         self.execute_control(16, CONTROL_RESPONSE_BYTES)?;
-        let owner = self.queues.lock();
+        let mut owner = self.queues.lock();
         let response = owner.control_response.as_slice();
-        (read_u32(response, 0)? == S_OK
+        let formats = read_u64(response, 12)?;
+        let rates = read_u64(response, 20)?;
+        let rate_mask = PCM_RATES
+            .iter()
+            .enumerate()
+            .filter(|(_, rate)| rate_code(**rate).is_some_and(|code| rates & (1 << code) != 0))
+            .fold(0, |mask, (index, _)| mask | (1 << index));
+        let capabilities = PcmCapabilities {
+            rates: PcmFormat::ALL.map(|format| {
+                if formats & (1 << format_code(format)) != 0 {
+                    rate_mask
+                } else {
+                    0
+                }
+            }),
+        };
+        let valid = (read_u32(response, 0)? == S_OK
             && read_u64(response, 12)? & (1 << PCM_FMT_FLOAT) != 0
             && read_u64(response, 20)? & (1 << PCM_RATE_48000) != 0
             && response[28] == D_OUTPUT
             && response[29] <= PCM_CHANNELS
             && response[30] >= PCM_CHANNELS)
-            .then_some(())
+            .then_some(());
+        owner.capabilities = capabilities;
+        valid
     }
 
     fn execute_control(&self, request_bytes: usize, response_bytes: usize) -> Option<()> {
@@ -278,7 +333,6 @@ impl VirtIOSoundDevice {
             self.fail();
             return false;
         }
-        let mut completed = 0usize;
         let mut saw_xrun = false;
         let mut reposted_event = false;
         let mut failed = false;
@@ -308,7 +362,11 @@ impl VirtIOSoundDevice {
                     break;
                 }
                 owner.tx_slots[index].head = None;
-                completed += 1;
+                if let (Some(observer), Some(configuration)) =
+                    (self.observer.get(), owner.configuration)
+                {
+                    observer.period_completed(configuration.period_frames);
+                }
             }
             for _ in 0..QUEUE_SIZE {
                 let completion = match owner.event.used() {
@@ -360,15 +418,8 @@ impl VirtIOSoundDevice {
             self.fail();
             return false;
         }
-        if (completed != 0 || saw_xrun)
-            && let Some(observer) = self.observer.get()
-        {
-            for _ in 0..completed {
-                observer.period_completed(crate::drivers::PCM_PERIOD_FRAMES);
-            }
-            if saw_xrun {
-                observer.xrun();
-            }
+        if saw_xrun && let Some(observer) = self.observer.get() {
+            observer.xrun();
         }
         backlog
     }
@@ -382,6 +433,13 @@ impl VirtIOSoundDevice {
 }
 
 impl PcmOutput for VirtIOSoundDevice {
+    fn name(&self) -> &str {
+        "VirtIO Sound"
+    }
+    fn capabilities(&self) -> PcmCapabilities {
+        self.queues.lock().capabilities
+    }
+
     fn set_observer(&self, observer: Arc<dyn PcmCompletionObserver>) -> Result<(), PcmOutputError> {
         if self.observer.get().is_some() || self.queues.lock().state == DeviceState::Failed {
             return Err(PcmOutputError::Device);
@@ -390,7 +448,13 @@ impl PcmOutput for VirtIOSoundDevice {
         Ok(())
     }
 
-    fn configure(&self) -> Result<(), PcmOutputError> {
+    fn configure(&self, configuration: PcmConfiguration) -> Result<(), PcmOutputError> {
+        if !self.capabilities().supports(configuration)
+            || configuration.period_frames == 0
+            || configuration.period_bytes() > MAX_PCM_PERIOD_BYTES
+        {
+            return Err(PcmOutputError::InvalidState);
+        }
         let _command = self.command.lock();
         let mut owner = self.queues.lock();
         let next = owner
@@ -404,21 +468,45 @@ impl PcmOutput for VirtIOSoundDevice {
         write_u32(
             owner.control_request.as_mut_slice(),
             8,
-            PCM_BUFFER_BYTES as u32,
+            (configuration.period_bytes() * PCM_PERIODS) as u32,
         )
         .ok_or(PcmOutputError::Device)?;
         write_u32(
             owner.control_request.as_mut_slice(),
             12,
-            PCM_PERIOD_BYTES as u32,
+            configuration.period_bytes() as u32,
         )
         .ok_or(PcmOutputError::Device)?;
         owner.control_request[20] = PCM_CHANNELS;
-        owner.control_request[21] = PCM_FMT_FLOAT;
-        owner.control_request[22] = PCM_RATE_48000;
+        owner.control_request[21] = format_code(configuration.format);
+        owner.control_request[22] =
+            rate_code(configuration.rate).ok_or(PcmOutputError::InvalidState)?;
         drop(owner);
         self.execute_control(24, 4).ok_or(PcmOutputError::Device)?;
-        self.queues.lock().state = next;
+        let mut owner = self.queues.lock();
+        owner.state = next;
+        owner.configuration = Some(configuration);
+        Ok(())
+    }
+
+    fn release(&self) -> Result<(), PcmOutputError> {
+        let _command = self.command.lock();
+        let next = self
+            .queues
+            .lock()
+            .state
+            .after_release()
+            .ok_or(PcmOutputError::InvalidState)?;
+        self.pcm_command(R_PCM_RELEASE)?;
+        self.reclaim();
+        let mut owner = self.queues.lock();
+        if owner.tx_slots.iter().any(|slot| slot.head.is_some()) {
+            drop(owner);
+            self.fail();
+            return Err(PcmOutputError::Device);
+        }
+        owner.configuration = None;
+        owner.state = next;
         Ok(())
     }
 
@@ -458,28 +546,31 @@ impl PcmOutput for VirtIOSoundDevice {
     }
 
     fn submit_period(&self, bytes: &[u8]) -> Result<(), PcmOutputError> {
-        if bytes.len() != PCM_PERIOD_BYTES {
-            return Err(PcmOutputError::InvalidState);
-        }
         self.reclaim();
         let mut owner = self.queues.lock();
         if owner.state == DeviceState::Failed {
             return Err(PcmOutputError::Device);
         }
-        if !matches!(owner.state, DeviceState::Prepared | DeviceState::Running) {
+        if !matches!(owner.state, DeviceState::Prepared | DeviceState::Running)
+            || owner
+                .configuration
+                .is_none_or(|configuration| bytes.len() != configuration.period_bytes())
+        {
             return Err(PcmOutputError::InvalidState);
         }
         let Some(index) = owner.tx_slots.iter().position(|slot| slot.head.is_none()) else {
             return Err(PcmOutputError::WouldBlock);
         };
-        owner.tx_slots[index].frames.copy_from_slice(bytes);
+        owner.tx_slots[index].frames[..bytes.len()].copy_from_slice(bytes);
         owner.tx_slots[index].status.fill(0);
         let head = {
             let SoundQueues { tx, tx_slots, .. } = &mut *owner;
             let slot = &tx_slots[index];
             tx.add_dma(&[
                 slot.xfer.readable_all(),
-                slot.frames.readable_all(),
+                slot.frames
+                    .readable(0..bytes.len())
+                    .map_err(|_| PcmOutputError::Device)?,
                 slot.status.writable_all(),
             ])
             .map_err(|_| PcmOutputError::Device)?

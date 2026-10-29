@@ -496,8 +496,8 @@ pub struct Api {
     /// Image 的 256 项 0xRRGGBB 调色板：同步复制输入，按位图保留的原始下标着色。
     /// 非 Image、非下标图像、数量不等于 256 或颜色越界返回 INVALID，旧图像不变；缺图时保持空白。
     pub image_palette: unsafe extern "C" fn(*mut c_void, u64, u64, *const u32, usize) -> i32,
-    /// Canvas 的媒体帧：`width`×`height` 个设备像素的 0x00RRGGBB（高字节被忽略），同步复制后以 1:1 绘在显示列表之下。
-    /// 非 Canvas、尺寸非正、超过 16384×16384 或 `count != width * height` 返回 INVALID，旧帧不变；尺寸为 0 清除帧。
+    /// Canvas 的媒体帧：`width`×`height` 个设备像素的 0x00RRGGBB（高字节被忽略），同步复制后等比居中绘在显示列表之下，空白补黑。
+    /// 非 Canvas、尺寸非正、超过 16384×16384 或 `count != width * height` 返回 INVALID，旧帧不变；(0, 0) 清除帧。
     pub canvas_frame:
         unsafe extern "C" fn(*mut c_void, u64, u64, u32, u32, *const u32, usize) -> i32,
     /// 请求本窗口进入（非 0）或退出（0）标准 xdg_toplevel 全屏；结果以 Configure 事件通知，非法窗口返回 NOT_FOUND。

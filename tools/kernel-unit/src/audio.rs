@@ -172,6 +172,8 @@ mod engine_tests {
 
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum Phase {
+        Unconfigured,
+        Configured,
         Prepared,
         Running,
         Stopped,
@@ -217,20 +219,43 @@ mod engine_tests {
     unsafe impl Sync for FakeOutput {}
 
     impl PcmOutput for FakeOutput {
+        fn name(&self) -> &str {
+            "Fixture PCM"
+        }
         fn set_observer(&self, _: Arc<dyn PcmCompletionObserver>) -> Result<(), PcmOutputError> {
             Ok(())
         }
 
-        fn configure(&self) -> Result<(), PcmOutputError> {
-            panic!("the engine must never reconfigure the physical stream");
+        fn capabilities(&self) -> crate::drivers::PcmCapabilities {
+            crate::drivers::PcmCapabilities::SHARED
+        }
+
+        fn release(&self) -> Result<(), PcmOutputError> {
+            assert!(matches!(
+                *self.phase.borrow(),
+                Phase::Prepared | Phase::Stopped | Phase::Configured
+            ));
+            *self.queued.borrow_mut() = 0;
+            *self.phase.borrow_mut() = Phase::Unconfigured;
+            self.history.borrow_mut().push("release");
+            Ok(())
+        }
+
+        fn configure(
+            &self,
+            _configuration: crate::drivers::PcmConfiguration,
+        ) -> Result<(), PcmOutputError> {
+            assert_eq!(*self.phase.borrow(), Phase::Unconfigured);
+            *self.phase.borrow_mut() = Phase::Configured;
+            self.history.borrow_mut().push("configure");
+            Ok(())
         }
 
         fn prepare(&self) -> Result<(), PcmOutputError> {
-            assert_eq!(
+            assert!(matches!(
                 *self.phase.borrow(),
-                Phase::Stopped,
-                "prepare is only legal after stop"
-            );
+                Phase::Stopped | Phase::Configured
+            ));
             self.history.borrow_mut().push("prepare");
             *self.phase.borrow_mut() = Phase::Prepared;
             Ok(())
@@ -286,9 +311,15 @@ mod engine_tests {
     /// 打开一个子流并走完 Open → Setup → Prepared 的前置步骤。
     fn open(engine: &mut Engine<FakeRing>, ring: &FakeRing) -> usize {
         let index = engine
-            .allocate(ring.clone(), -1)
+            .allocate(ring.clone(), -1, crate::audio::engine::PcmEndpoint::Shared)
             .unwrap_or_else(|_| panic!("no free substream"));
-        engine.configure(index, PCM_BUFFER_FRAMES as u64).unwrap();
+        engine
+            .configure(
+                index,
+                PCM_BUFFER_FRAMES as u64,
+                crate::drivers::PcmConfiguration::SHARED,
+            )
+            .unwrap();
         engine
             .set_software(
                 index,
@@ -325,7 +356,7 @@ mod engine_tests {
 
     #[test]
     fn hardware_free_rejects_running_and_preserves_card_master() {
-        let mut engine = Engine::new();
+        let mut engine = Engine::new(Some(crate::drivers::PcmConfiguration::SHARED));
         let ring = FakeRing::new();
         let index = open(&mut engine, &ring);
         let master = Master {
@@ -353,20 +384,71 @@ mod engine_tests {
 
     #[test]
     fn preferred_substream_never_falls_back_to_a_different_slot() {
-        let mut engine = Engine::new();
-        assert_eq!(engine.allocate(FakeRing::new(), 5).ok(), Some(5));
-        assert_eq!(engine.allocate(FakeRing::new(), -1).ok(), Some(0));
-        assert!(engine.allocate(FakeRing::new(), 5).is_err());
-        assert!(engine.allocate(FakeRing::new(), SUBSTREAMS as i32).is_err());
-        assert!(engine.allocate(FakeRing::new(), -2).is_err());
+        let mut engine = Engine::new(Some(crate::drivers::PcmConfiguration::SHARED));
+        assert_eq!(
+            engine
+                .allocate(
+                    FakeRing::new(),
+                    5,
+                    crate::audio::engine::PcmEndpoint::Shared
+                )
+                .ok(),
+            Some(5)
+        );
+        assert_eq!(
+            engine
+                .allocate(
+                    FakeRing::new(),
+                    -1,
+                    crate::audio::engine::PcmEndpoint::Shared
+                )
+                .ok(),
+            Some(0)
+        );
+        assert!(
+            engine
+                .allocate(
+                    FakeRing::new(),
+                    5,
+                    crate::audio::engine::PcmEndpoint::Shared
+                )
+                .is_err()
+        );
+        assert!(
+            engine
+                .allocate(
+                    FakeRing::new(),
+                    SUBSTREAMS as i32,
+                    crate::audio::engine::PcmEndpoint::Shared
+                )
+                .is_err()
+        );
+        assert!(
+            engine
+                .allocate(
+                    FakeRing::new(),
+                    -2,
+                    crate::audio::engine::PcmEndpoint::Shared
+                )
+                .is_err()
+        );
         engine.release(5);
-        assert_eq!(engine.allocate(FakeRing::new(), 5).ok(), Some(5));
+        assert_eq!(
+            engine
+                .allocate(
+                    FakeRing::new(),
+                    5,
+                    crate::audio::engine::PcmEndpoint::Shared
+                )
+                .ok(),
+            Some(5)
+        );
     }
 
     #[test]
     fn each_pcm_volume_changes_only_its_contribution_and_survives_close() {
         let (mut engine, output, first, second) = (
-            Engine::new(),
+            Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
             FakeOutput::new(),
             FakeRing::new(),
             FakeRing::new(),
@@ -382,13 +464,26 @@ mod engine_tests {
         engine.tick(NONE, &output);
         assert_eq!(level(&output.submitted.borrow()[0]), (0.3125, 0.5));
         engine.release(a);
-        assert_eq!(engine.allocate(FakeRing::new(), a as i32).ok(), Some(a));
+        assert_eq!(
+            engine
+                .allocate(
+                    FakeRing::new(),
+                    a as i32,
+                    crate::audio::engine::PcmEndpoint::Shared
+                )
+                .ok(),
+            Some(a)
+        );
         assert_eq!(engine.control_values(Element::PcmVolume(a)), [50, 100]);
     }
 
     #[test]
     fn one_substream_is_mixed_started_and_credited_on_completion() {
-        let (mut engine, output, ring) = (Engine::new(), FakeOutput::new(), FakeRing::new());
+        let (mut engine, output, ring) = (
+            Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+            FakeOutput::new(),
+            FakeRing::new(),
+        );
         let a = open(&mut engine, &ring);
         write(&mut engine, a, &ring, 0.25, -0.25, 4);
         engine.start(a).unwrap();
@@ -413,7 +508,11 @@ mod engine_tests {
 
     #[test]
     fn prefetch_preserves_one_ready_period_across_batched_completions() {
-        let (mut engine, output, ring) = (Engine::new(), FakeOutput::new(), FakeRing::new());
+        let (mut engine, output, ring) = (
+            Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+            FakeOutput::new(),
+            FakeRing::new(),
+        );
         let a = open(&mut engine, &ring);
         write(&mut engine, a, &ring, 0.25, -0.25, PCM_PERIODS);
         engine.start(a).unwrap();
@@ -433,7 +532,10 @@ mod engine_tests {
 
     #[test]
     fn concurrent_substreams_are_summed_into_one_hardware_period() {
-        let (mut engine, output) = (Engine::new(), FakeOutput::new());
+        let (mut engine, output) = (
+            Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+            FakeOutput::new(),
+        );
         let (ring_a, ring_b) = (FakeRing::new(), FakeRing::new());
         let (a, b) = (open(&mut engine, &ring_a), open(&mut engine, &ring_b));
         write(&mut engine, a, &ring_a, 0.25, 0.0, 2);
@@ -451,7 +553,10 @@ mod engine_tests {
 
     #[test]
     fn joining_stream_waits_for_prefilled_audio_without_premature_xrun() {
-        let (mut engine, output) = (Engine::new(), FakeOutput::new());
+        let (mut engine, output) = (
+            Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+            FakeOutput::new(),
+        );
         let (first, second) = (FakeRing::new(), FakeRing::new());
         let (a, b) = (open(&mut engine, &first), open(&mut engine, &second));
         write(&mut engine, a, &first, 0.25, 0.25, PCM_PERIODS - 2);
@@ -474,7 +579,10 @@ mod engine_tests {
 
     #[test]
     fn completion_credits_only_the_substreams_that_contributed() {
-        let (mut engine, output) = (Engine::new(), FakeOutput::new());
+        let (mut engine, output) = (
+            Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+            FakeOutput::new(),
+        );
         let (ring_a, ring_b) = (FakeRing::new(), FakeRing::new());
         let (a, b) = (open(&mut engine, &ring_a), open(&mut engine, &ring_b));
         write(&mut engine, a, &ring_a, 0.25, 0.25, 4);
@@ -515,7 +623,11 @@ mod engine_tests {
 
     #[test]
     fn dropping_a_substream_stops_crediting_it_for_periods_already_in_flight() {
-        let (mut engine, output, ring) = (Engine::new(), FakeOutput::new(), FakeRing::new());
+        let (mut engine, output, ring) = (
+            Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+            FakeOutput::new(),
+            FakeRing::new(),
+        );
         let a = open(&mut engine, &ring);
         write(&mut engine, a, &ring, 0.25, 0.25, 4);
         engine.start(a).unwrap();
@@ -539,7 +651,11 @@ mod engine_tests {
 
     #[test]
     fn a_dry_substream_xruns_and_the_physical_stream_stops_then_restarts_on_new_data() {
-        let (mut engine, output, ring) = (Engine::new(), FakeOutput::new(), FakeRing::new());
+        let (mut engine, output, ring) = (
+            Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+            FakeOutput::new(),
+            FakeRing::new(),
+        );
         let a = open(&mut engine, &ring);
         write(&mut engine, a, &ring, 0.25, 0.25, 2);
         engine.start(a).unwrap();
@@ -569,7 +685,11 @@ mod engine_tests {
 
     #[test]
     fn starting_with_no_data_is_an_immediate_underrun() {
-        let (mut engine, output, ring) = (Engine::new(), FakeOutput::new(), FakeRing::new());
+        let (mut engine, output, ring) = (
+            Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+            FakeOutput::new(),
+            FakeRing::new(),
+        );
         let a = open(&mut engine, &ring);
         engine.start(a).unwrap();
         assert!(engine.tick(NONE, &output));
@@ -584,7 +704,11 @@ mod engine_tests {
 
     #[test]
     fn master_volume_and_mute_shape_the_mixed_output() {
-        let (mut engine, output, ring) = (Engine::new(), FakeOutput::new(), FakeRing::new());
+        let (mut engine, output, ring) = (
+            Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+            FakeOutput::new(),
+            FakeRing::new(),
+        );
         let a = open(&mut engine, &ring);
         write(&mut engine, a, &ring, 0.5, 0.5, 2);
         engine.set_control(Element::MasterVolume, [50, 100]);
@@ -606,24 +730,40 @@ mod engine_tests {
 
     #[test]
     fn substreams_are_bounded_released_and_reusable() {
-        let mut engine = Engine::new();
+        let mut engine = Engine::new(Some(crate::drivers::PcmConfiguration::SHARED));
         let mut indices = Vec::new();
         for _ in 0..SUBSTREAMS {
             indices.push(
                 engine
-                    .allocate(FakeRing::new(), -1)
+                    .allocate(
+                        FakeRing::new(),
+                        -1,
+                        crate::audio::engine::PcmEndpoint::Shared,
+                    )
                     .unwrap_or_else(|_| panic!("free")),
             );
         }
         assert_eq!(engine.available(), 0);
         assert!(
-            engine.allocate(FakeRing::new(), -1).is_err(),
+            engine
+                .allocate(
+                    FakeRing::new(),
+                    -1,
+                    crate::audio::engine::PcmEndpoint::Shared
+                )
+                .is_err(),
             "all substreams are busy"
         );
         assert!(engine.release(indices[3]).is_some());
         assert_eq!(engine.available(), 1);
         assert_eq!(
-            engine.allocate(FakeRing::new(), -1).ok(),
+            engine
+                .allocate(
+                    FakeRing::new(),
+                    -1,
+                    crate::audio::engine::PcmEndpoint::Shared
+                )
+                .ok(),
             Some(indices[3]),
             "freed slot is reused"
         );
@@ -636,7 +776,10 @@ mod engine_tests {
 
     #[test]
     fn a_failed_device_disconnects_every_substream_and_is_permanent() {
-        let (mut engine, output) = (Engine::new(), FakeOutput::new());
+        let (mut engine, output) = (
+            Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+            FakeOutput::new(),
+        );
         let (ring_a, ring_b) = (FakeRing::new(), FakeRing::new());
         let (a, b) = (open(&mut engine, &ring_a), open(&mut engine, &ring_b));
         write(&mut engine, a, &ring_a, 0.25, 0.25, 2);
@@ -653,7 +796,11 @@ mod engine_tests {
         assert!(output.submitted.borrow().is_empty());
         // 之后新打开的子流也直接是 Disconnected，引擎不再触碰设备。
         let late = engine
-            .allocate(FakeRing::new(), -1)
+            .allocate(
+                FakeRing::new(),
+                -1,
+                crate::audio::engine::PcmEndpoint::Shared,
+            )
             .unwrap_or_else(|_| panic!("free"));
         assert_eq!(engine.state(late).state, PcmState::Disconnected);
         assert!(!engine.tick(NONE, &output));
@@ -661,7 +808,11 @@ mod engine_tests {
 
     #[test]
     fn a_submit_error_fails_the_whole_card_but_would_block_just_waits() {
-        let (mut engine, output, ring) = (Engine::new(), FakeOutput::new(), FakeRing::new());
+        let (mut engine, output, ring) = (
+            Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+            FakeOutput::new(),
+            FakeRing::new(),
+        );
         let a = open(&mut engine, &ring);
         write(&mut engine, a, &ring, 0.25, 0.25, 4);
         engine.start(a).unwrap();
@@ -680,7 +831,10 @@ mod engine_tests {
 
     #[test]
     fn the_queue_never_exceeds_prefetch_depth_even_with_many_ready_substreams() {
-        let (mut engine, output) = (Engine::new(), FakeOutput::new());
+        let (mut engine, output) = (
+            Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+            FakeOutput::new(),
+        );
         let rings: Vec<_> = (0..SUBSTREAMS).map(|_| FakeRing::new()).collect();
         let indices: Vec<_> = rings.iter().map(|ring| open(&mut engine, ring)).collect();
         for (index, ring) in indices.iter().zip(&rings) {
@@ -770,6 +924,7 @@ mod control_tests {
     #[test]
     fn card_info_places_every_text_field_at_its_linux_offset() {
         let bytes = encode_card_info(&CardText {
+            card: 0,
             id: b"LiteOS",
             name: b"LiteOS Sound",
             long_name: b"LiteOS VirtIO Sound",

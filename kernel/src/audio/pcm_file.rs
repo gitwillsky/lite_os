@@ -3,16 +3,14 @@
 use alloc::sync::Arc;
 use syscall_abi::errno;
 
-use super::{AudioError, PcmFile, ioctl};
+use super::engine::PcmEndpoint;
+use super::{AudioError, Card, PcmFile, ioctl};
 use crate::{
     fs::{
         FileSystemError,
-        {
-            DeviceNumber,
-            chardev::{
-                CharacterDriver, DeviceError, DeviceFile, DeviceWaitSources, IoctlCall, MapRequest,
-                OpenRequest, UserInput, UserOutput,
-            },
+        chardev::{
+            CharacterDriver, DeviceError, DeviceFile, DeviceWaitSources, IoctlCall, MapRequest,
+            OpenRequest, UserInput, UserOutput,
         },
     },
     ipc::Pipe,
@@ -24,15 +22,14 @@ use crate::{
 /// 永远无法匹配该 edge。
 const NOTIFICATION_WAIT_EVENTS: i16 = 0x001;
 
-/// Linux ALSA `pcmC0D0p` 设备号。
-pub(super) const PCM_NUMBER: DeviceNumber = DeviceNumber::new(116, 16);
-pub(super) const PCM_PATH: &[u8] = b"snd/pcmC0D0p";
-
-pub(super) struct PcmDriver;
+pub(super) struct PcmDriver {
+    pub(super) card: Arc<Card>,
+    pub(super) endpoint: PcmEndpoint,
+}
 
 impl CharacterDriver for PcmDriver {
     fn open(&self, _request: &OpenRequest<'_>) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
-        super::open()
+        super::open(self.card.clone(), self.endpoint)
             .map(|file| file as Arc<dyn DeviceFile>)
             .map_err(|error| match error {
                 AudioError::InvalidState => FileSystemError::Busy,

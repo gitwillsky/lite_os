@@ -9,6 +9,7 @@ name = "mplay"
 path = "src/main.rs"
 
 [dependencies]
+linux-uapi = { path = "../../libraries/linux-uapi" }
 liteos-ui = { path = "../../libraries/liteos-ui" }
 mpv-client = { path = "../../libraries/mpv-client" }
 

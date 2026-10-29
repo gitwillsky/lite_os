@@ -6,9 +6,7 @@ pub(super) const RX_QUEUE: u32 = 3;
 pub(super) const R_PCM_INFO: u32 = 0x0100;
 pub(super) const R_PCM_SET_PARAMS: u32 = 0x0101;
 pub(super) const R_PCM_PREPARE: u32 = 0x0102;
-/// VirtIO Sound 规范里的 RELEASE 命令编号。物理流只配置一次、永不释放，所以驱动不发送它；常量保留是因为
-/// 这一组值整体对应规范 §5.14.6.6，由测试逐个核对。
-#[allow(dead_code)]
+/// VirtIO Sound §5.14.6.6：重新 SET_PARAMS 前的 DMA revocation barrier。
 pub(super) const R_PCM_RELEASE: u32 = 0x0103;
 pub(super) const R_PCM_START: u32 = 0x0104;
 pub(super) const R_PCM_STOP: u32 = 0x0105;

@@ -1,8 +1,8 @@
-use crate::drivers::{PCM_BUFFER_FRAMES, PCM_PERIOD_FRAMES};
+use crate::drivers::{PCM_BUFFER_FRAMES, PCM_PERIOD_FRAMES, PcmConfiguration};
 
 /// 每个 OFD 的软件 ring 上限为 64 KiB，允许常规播放器协商约 100ms 缓冲。
 /// 物理 DMA 队列仍由 adapter 固定；若软件 ring 也限为它的 21ms，普通调度抖动即可耗尽音频。
-pub(super) const MAX_BUFFER_FRAMES: usize = 8_192;
+pub(super) const MAX_BUFFER_PERIODS: usize = 32;
 
 /// ALSA playback stream state number，固定到 Linux `snd_pcm_state_t`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -18,6 +18,7 @@ pub(crate) enum PcmState {
 
 /// 单一 playback OFD 的 ALSA state 与 position owner。
 pub(crate) struct PcmStateOwner {
+    pub(crate) configuration: PcmConfiguration,
     pub(crate) state: PcmState,
     pub(crate) application_frames: u64,
     pub(crate) hardware_frames: u64,
@@ -31,6 +32,7 @@ pub(crate) struct PcmStateOwner {
 impl PcmStateOwner {
     pub(crate) const fn new() -> Self {
         Self {
+            configuration: PcmConfiguration::SHARED,
             state: PcmState::Open,
             application_frames: 0,
             hardware_frames: 0,
@@ -49,18 +51,25 @@ impl PcmStateOwner {
     ///
     /// # Errors
     /// 非 Open 状态、容量越界或不含完整 period 时返回错误，原状态不变。
-    pub(crate) fn configure(&mut self, buffer_frames: u64) -> Result<(), ()> {
+    pub(crate) fn configure(
+        &mut self,
+        buffer_frames: u64,
+        configuration: PcmConfiguration,
+    ) -> Result<(), ()> {
+        let period = configuration.period_frames as u64;
         if self.state != PcmState::Open
-            || !(PCM_BUFFER_FRAMES as u64..=MAX_BUFFER_FRAMES as u64).contains(&buffer_frames)
-            || !buffer_frames.is_multiple_of(PCM_PERIOD_FRAMES as u64)
+            || period == 0
+            || !(period * 4..=period * MAX_BUFFER_PERIODS as u64).contains(&buffer_frames)
+            || !buffer_frames.is_multiple_of(period)
         {
             return Err(());
         }
         self.state = PcmState::Setup;
+        self.configuration = configuration;
         self.application_frames = 0;
         self.hardware_frames = 0;
         self.buffer_frames = buffer_frames;
-        self.available_min = PCM_PERIOD_FRAMES as u64;
+        self.available_min = period;
         self.start_threshold = buffer_frames;
         self.stop_threshold = buffer_frames;
         // Linux 的默认 boundary 是 buffer 的二次幂倍数；非二次幂 ring 跨 boundary 后仍须落在相同位置。

@@ -76,10 +76,11 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   同一桌面的普通应用可使用标准 foreign-toplevel，任务管理器依赖该能力；layer-shell 只授予 Session/Shell，
   security-context manager 只授予 Session。公开 socket 的 root 身份也不能获得后两者。
 - 媒体播放状态由 libmpv 拥有，Engine 只镜像观察事件；播放/暂停命令在后端切换真实状态，不按迟到的 UI 快照重写。
-  `mpv-client::render` 独占 render context，callback 只投递 Update，渲染线程不等待普通 client API 或 UI。
-  关闭先撤销 client callback，再 Stop/join 渲染 owner（撤销 render callback、释放 context），最后销毁 core 与动态库。
-  软件帧的唯一 Vec 在请求/回复间转移并复用；Canvas 复制后才允许下一次渲染，空闲绘图命令不能留在新帧之上。
-  Benchmark 决策：新增消息队列交接与单一渲染线程，没有新增帧副本；调度与延迟成本留待实测，不声明吞吐改善。
+  `mpv-client::render` 独占 render context，callback 只投递容量为 1 的唤醒；UI 不等待 render API，渲染线程不等待普通 client API 或 UI。
+  关闭先撤销 client callback，再 stop/join 渲染 owner（撤销 render callback、释放 context），最后销毁 core 与动态库。
+  尺寸请求与完成帧各只保留最新一项；短锁仅交换元数据/Vec，锁外渲染和复制。工作帧、已完成帧与 UI 借用帧至多三份存储，归还后复用；
+  即使 UI 尚未取帧也继续服务 mpv 并替换完成槽，避免 core 等待渲染、UI 等待 core 的循环。关闭唤醒与更新共用队列，不能因队列满而丢失 stop。
+  空闲绘图命令不能留在新帧之上。Benchmark 决策：保留软件渲染与原有呈现计时，增加有界存储换取 UI 不等待；交互延迟需用真实播放缩放测量，不以线程拆分推断性能改善。
 - Canvas 的 TAB_INPUT 明确请求原始 Tab（终端补全）；未设置时由框架执行焦点遍历，不在应用另维护一份修饰键状态。
 - 公共 setter 在相同标题、文本、菜单或显示列表时不提交新绘制；菜单数据不变时保留正在进行的键盘/指针交互。
 - Canvas 入口按已定义的 kind 1～7 校验并原子发布整批命令；kind 7 的墙纸预览与 SDK、renderer 使用同一契约。
@@ -176,9 +177,9 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   引用收集沿用原 Canvas 扫描，新增 socket 通知与 Arc 下标克隆只在加载/重着色时发生；常规绘制仍借用已有像素。
   调色板转换只在选择改变时执行 O(像素数) 分配。沿用现有 canvas/GPU 基线，不新增 wall-clock 阈值。
 - Canvas 媒体帧与窗口全屏是追加到 ABI 表尾的两个入口。`canvas_frame(window, id, width, height, pixels, count)` 同步复制
-  `width×height` 个设备像素（高字节被忽略并补成不透明）为 Canvas 独占的 `Rc<Bitmap>`，以 1:1 绘在显示列表之下；
+  `width×height` 个设备像素（高字节被忽略并补成不透明）为 Canvas 独占的 `Rc<Bitmap>`，等比居中绘在显示列表之下，空白补黑；
   非 Canvas、边长为 0 或超过 16384、`count` 不等于 `width*height` 返回 INVALID 且旧帧不变，`(0,0)` 清除。
-  帧尺寸由应用按 `geometry × scale` 给出，运行库不缩放；缺少该入口时视频播放器只能经显示列表逐矩形填充，帧率不可接受。
+  异步帧尺寸可落后于当前几何，Canvas 在同一绘制层采样旧帧，窗口配置与控件重绘无需等待新尺寸渲染。
   `fullscreen(window, on)` 只编码标准 `xdg_toplevel.set_fullscreen/unset_fullscreen`，结果由 Configure 事件通知。
   Benchmark 决策：每帧一次 O(像素数) 复制与一次 blit，与窗口重绘同量级；沿用现有 canvas 基线，不新增阈值。
 

@@ -132,6 +132,13 @@ fn info_rows(engine: &Engine) -> Vec<(String, String)> {
         pair(engine, "container-fps").map(|fps| format!("{fps} fps")),
     );
     add("音频编码", pair(engine, "audio-codec"));
+    add("输出设备", pair(engine, "audio-device"));
+    add("音源格式", pair(engine, "audio-params/format"));
+    add("输出格式", pair(engine, "audio-out-params/format"));
+    add(
+        "输出采样率",
+        pair(engine, "audio-out-params/samplerate").map(|rate| format!("{rate} Hz")),
+    );
     add(
         "采样率",
         pair(engine, "audio-params/samplerate").map(|rate| format!("{rate} Hz")),
@@ -272,7 +279,24 @@ fn perform(
         Action::Track(kind, id) => shell.engine.borrow_mut().select_track(kind, id),
         Action::VolumeStep(delta) => shell.engine.borrow_mut().adjust_volume(delta),
         Action::Mute => {
-            shell.engine.borrow_mut().run(&["cycle", "mute"]);
+            let mut engine = shell.engine.borrow_mut();
+            let value = if engine.state.muted { "no" } else { "yes" };
+            engine.set("mute", value);
+        }
+        Action::SharedOutput => {
+            shell.engine.borrow_mut().select_output(None);
+            refresh.menus = true;
+        }
+        Action::NativeOutput(index) => {
+            let mut engine = shell.engine.borrow_mut();
+            if let Some(card) = engine.state.outputs.get(index).map(|output| output.card) {
+                engine.select_output(Some(card));
+            }
+            refresh.menus = true;
+        }
+        Action::RefreshOutputs => {
+            shell.engine.borrow_mut().refresh_outputs();
+            refresh.menus = true;
         }
         Action::AudioDelay(delta) => {
             shell

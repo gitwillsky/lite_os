@@ -101,7 +101,9 @@ pub(crate) fn input_device_count() -> usize {
 ///
 /// 注册表扩容失败时原样返回 adapter。
 pub(crate) fn register_pcm_output(device: Arc<dyn PcmOutput>) -> Result<usize, Arc<dyn PcmOutput>> {
-    PCM_OUTPUTS.register(device)
+    let index = PCM_OUTPUTS.register(device)?;
+    crate::deferred::raise(crate::deferred::DeferredWork::DRIVER_IO);
+    Ok(index)
 }
 
 /// 第 `index` 个 PCM playback adapter。

@@ -12,7 +12,8 @@ use super::control::Element;
 use super::mixer::{Accumulator, VOLUME_MAX, volume_gain};
 use super::state::{PcmState, PcmStateOwner};
 use crate::drivers::{
-    PCM_FRAME_BYTES, PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES, PCM_PERIODS, PcmOutput, PcmOutputError,
+    MAX_PCM_PERIOD_BYTES, PCM_PERIOD_BYTES, PCM_PERIODS, PcmConfiguration, PcmOutput,
+    PcmOutputError,
 };
 
 /// 同时可打开的 playback 子流数量，即 `snd_pcm_info.subdevices_count`。
@@ -44,6 +45,8 @@ pub(super) struct Events {
 /// 物理流的生命周期，与 VirtIO Sound 的 Prepared/Running/Stopped 对应。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Hardware {
+    Unconfigured,
+    Transition,
     /// 已 prepare、尚未 start：可以提交 period，但设备不消费。
     Stopped,
     Running,
@@ -128,7 +131,32 @@ impl<R> Slot<R> {
 }
 
 /// 一个硬件流加 [`SUBSTREAMS`] 个子流的混音状态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PcmEndpoint {
+    Shared,
+    Direct,
+}
+
+impl PcmEndpoint {
+    pub(super) const fn name(self) -> &'static [u8] {
+        match self {
+            Self::Shared => b"LiteOS Playback",
+            Self::Direct => b"LiteOS Native (Exclusive)",
+        }
+    }
+    pub(super) const fn device(self) -> u32 {
+        match self {
+            Self::Shared => 0,
+            Self::Direct => 1,
+        }
+    }
+}
+
 pub(super) struct Engine<R> {
+    endpoint: PcmEndpoint,
+    configuration: Option<PcmConfiguration>,
+    // OWNER: one bounded output scratch belongs to the physical stream, avoiding hot-path allocation.
+    period: [u8; MAX_PCM_PERIOD_BYTES],
     slots: [Slot<R>; SUBSTREAMS],
     queue: PeriodQueue,
     hardware: Hardware,
@@ -142,12 +170,19 @@ fn each_bit(mask: u8) -> impl Iterator<Item = usize> {
 
 impl<R: Ring> Engine<R> {
     /// 新引擎：物理流已 prepare 好（由 `audio::init` 在构造之前完成），所有子流空闲，音量满、不静音。
-    pub(super) fn new() -> Self {
+    pub(super) fn new(configuration: Option<PcmConfiguration>) -> Self {
         Self {
+            endpoint: PcmEndpoint::Shared,
+            configuration,
+            period: [0; MAX_PCM_PERIOD_BYTES],
             slots: core::array::from_fn(|_| Slot::vacant()),
             queue: PeriodQueue::default(),
             substream_volume: [[VOLUME_MAX; 2]; SUBSTREAMS],
-            hardware: Hardware::Stopped,
+            hardware: if configuration.is_some() {
+                Hardware::Stopped
+            } else {
+                Hardware::Unconfigured
+            },
             master: Master {
                 volume: [VOLUME_MAX; 2],
                 enabled: [true; 2],
@@ -160,12 +195,24 @@ impl<R: Ring> Engine<R> {
     /// # Returns
     ///
     /// 子流编号；全部占满时把 `ring` 原样退回，调用方在锁外释放它。
-    pub(super) fn allocate(&mut self, ring: R, preferred: i32) -> Result<usize, R> {
+    pub(super) fn allocate(
+        &mut self,
+        ring: R,
+        preferred: i32,
+        endpoint: PcmEndpoint,
+    ) -> Result<usize, R> {
+        let occupied = self.slots.iter().any(|slot| slot.ring.is_some());
+        if (endpoint == PcmEndpoint::Direct && (occupied || preferred > 0))
+            || (occupied && self.endpoint != endpoint)
+        {
+            return Err(ring);
+        }
         let Some(index) = self.slots.iter().enumerate().position(|(index, slot)| {
             slot.ring.is_none() && (preferred == -1 || preferred == index as i32)
         }) else {
             return Err(ring);
         };
+        self.endpoint = endpoint;
         let slot = &mut self.slots[index];
         *slot = Slot::vacant();
         slot.ring = Some(ring);
@@ -222,8 +269,60 @@ impl<R: Ring> Engine<R> {
     }
 
     /// hw_params 生效：Open → Setup。
-    pub(super) fn configure(&mut self, index: usize, buffer_frames: u64) -> Result<(), ()> {
-        self.slots[index].state.configure(buffer_frames)
+    pub(super) fn configure(
+        &mut self,
+        index: usize,
+        buffer_frames: u64,
+        configuration: PcmConfiguration,
+    ) -> Result<(), ()> {
+        self.slots[index]
+            .state
+            .configure(buffer_frames, configuration)
+    }
+
+    pub(super) fn configuration(&self) -> Option<PcmConfiguration> {
+        self.configuration
+    }
+
+    /// 冻结物理提交；调用者持 task 级配置锁，在释放 Engine 锁后完成可睡眠的设备控制事务。
+    pub(super) fn begin_transition(&mut self) -> Result<bool, PcmOutputError> {
+        if matches!(self.hardware, Hardware::Failed | Hardware::Transition) {
+            return Err(PcmOutputError::Device);
+        }
+        let running = self.hardware == Hardware::Running;
+        self.hardware = Hardware::Transition;
+        Ok(running)
+    }
+
+    pub(super) fn finish_transition(
+        &mut self,
+        configuration: Option<PcmConfiguration>,
+    ) -> Result<(), PcmOutputError> {
+        if self.hardware != Hardware::Transition {
+            return Err(PcmOutputError::Device);
+        }
+        self.queue.clear();
+        self.configuration = configuration;
+        self.hardware = if configuration.is_some() {
+            Hardware::Stopped
+        } else {
+            Hardware::Unconfigured
+        };
+        Ok(())
+    }
+
+    pub(super) fn running(&self) -> bool {
+        self.hardware == Hardware::Running
+    }
+
+    pub(super) fn endpoint_available(&self, endpoint: PcmEndpoint) -> usize {
+        if self.slots.iter().any(|slot| slot.ring.is_some()) && self.endpoint != endpoint {
+            0
+        } else if endpoint == PcmEndpoint::Direct {
+            usize::from(self.available() == SUBSTREAMS)
+        } else {
+            self.available()
+        }
     }
 
     /// 设置唤醒、启动、停止阈值与 boundary。
@@ -285,6 +384,9 @@ impl<R: Ring> Engine<R> {
             self.fail();
             return true;
         }
+        if self.hardware == Hardware::Unconfigured {
+            return false;
+        }
         let mut changed = false;
         // 1. 完成的 period 只给当时贡献过数据的子流记 hw_ptr。
         for _ in 0..events.completed {
@@ -298,6 +400,9 @@ impl<R: Ring> Engine<R> {
             }
             changed = true;
         }
+        if self.hardware == Hardware::Transition {
+            return changed;
+        }
         // 2. 先补填：设备可一次归还多个 TX，暂时没有在途 period 不代表应用断粮。
         match self.fill(output) {
             Ok(filled) => changed |= filled,
@@ -307,7 +412,10 @@ impl<R: Ring> Engine<R> {
             }
         }
         // 3. 补填后仍为空才停止并 prepare；先停止会打断设备已接收的连续 PCM，造成反复停启和卡顿。
-        if self.hardware == Hardware::Running && self.queue.len == 0 {
+        if self.endpoint == PcmEndpoint::Shared
+            && self.hardware == Hardware::Running
+            && self.queue.len == 0
+        {
             if Self::rearm(output).is_err() {
                 self.fail();
                 return true;
@@ -343,6 +451,12 @@ impl<R: Ring> Engine<R> {
     ///
     /// 提交了 period 或有子流因此进入 Xrun 时为 `true`；设备失败时返回 `Err`。
     fn fill(&mut self, output: &dyn PcmOutput) -> Result<bool, ()> {
+        let Some(configuration) = self.configuration else {
+            return Ok(false);
+        };
+        let frame_bytes = configuration.frame_bytes();
+        let period_frames = configuration.period_frames;
+        let period_bytes = configuration.period_bytes();
         let mut changed = false;
         while self.queue.len < LEAD_PERIODS && output.writable() {
             let mut running = 0u8;
@@ -351,7 +465,7 @@ impl<R: Ring> Engine<R> {
                 if slot.running() {
                     running |= 1 << index;
                     // 整周期照常预送；短批次等本流在途数据耗尽才输出，避免过早插入静音间隙。
-                    if slot.pending() >= PCM_PERIOD_FRAMES as u64
+                    if slot.pending() >= period_frames as u64
                         || slot.pending() != 0 && slot.mixed == slot.state.hardware_frames
                     {
                         ready |= 1 << index;
@@ -373,16 +487,21 @@ impl<R: Ring> Engine<R> {
                 changed = true;
             }
             let mut accumulator = Accumulator::new();
-            let mut period = [0u8; PCM_PERIOD_BYTES];
+            let mut source = [0u8; PCM_PERIOD_BYTES];
             let mut mixed = 0u8;
             let mut contributions = [0u16; SUBSTREAMS];
             for index in each_bit(ready) {
                 let slot = &self.slots[index];
-                let offset = (slot.mixed % slot.state.buffer_frames) as usize * PCM_FRAME_BYTES;
-                let frames = slot.pending().min(PCM_PERIOD_FRAMES as u64) as usize;
-                let bytes = frames * PCM_FRAME_BYTES;
-                let first = bytes.min(slot.state.buffer_frames as usize * PCM_FRAME_BYTES - offset);
+                let offset = (slot.mixed % slot.state.buffer_frames) as usize * frame_bytes;
+                let frames = slot.pending().min(period_frames as u64) as usize;
+                let bytes = frames * frame_bytes;
+                let first = bytes.min(slot.state.buffer_frames as usize * frame_bytes - offset);
                 let read = slot.ring.as_ref().map(|ring| {
+                    let period = if self.endpoint == PcmEndpoint::Direct {
+                        &mut self.period[..period_bytes]
+                    } else {
+                        &mut source[..]
+                    };
                     ring.read(offset, &mut period[..first])?;
                     if first < bytes {
                         ring.read(0, &mut period[first..bytes])?;
@@ -390,8 +509,12 @@ impl<R: Ring> Engine<R> {
                     Ok::<(), ()>(())
                 });
                 if read == Some(Ok(())) {
-                    period[bytes..].fill(0);
-                    accumulator.add(&period, self.substream_volume[index].map(volume_gain));
+                    if self.endpoint == PcmEndpoint::Direct {
+                        self.period[bytes..period_bytes].fill(0);
+                    } else {
+                        source[bytes..].fill(0);
+                        accumulator.add(&source, self.substream_volume[index].map(volume_gain));
+                    }
                     mixed |= 1 << index;
                     contributions[index] = frames as u16;
                 } else {
@@ -403,8 +526,16 @@ impl<R: Ring> Engine<R> {
             if mixed == 0 {
                 continue;
             }
-            accumulator.finish(self.output_gain(), &mut period);
-            match output.submit_period(&period) {
+            if self.endpoint == PcmEndpoint::Shared {
+                let gain = self.output_gain();
+                accumulator.finish(
+                    gain,
+                    (&mut self.period[..PCM_PERIOD_BYTES])
+                        .try_into()
+                        .map_err(|_| ())?,
+                );
+            }
+            match output.submit_period(&self.period[..period_bytes]) {
                 Ok(()) => {}
                 Err(PcmOutputError::WouldBlock) => break,
                 Err(_) => return Err(()),
@@ -433,7 +564,7 @@ impl<R: Ring> Engine<R> {
     }
 
     /// 设备永久失败：所有子流断开，在途记账作废。
-    fn fail(&mut self) {
+    pub(super) fn fail(&mut self) {
         self.hardware = Hardware::Failed;
         self.queue.clear();
         for slot in &mut self.slots {

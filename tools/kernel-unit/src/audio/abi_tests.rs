@@ -20,7 +20,12 @@ fn alsa_poll_rechecks_output_level() {
 fn pcm_state_tracks_period_positions_and_recovers_xrun() {
     let mut state = PcmStateOwner::new();
     assert_eq!(state.state, PcmState::Open);
-    state.configure(PCM_BUFFER_FRAMES as u64).unwrap();
+    state
+        .configure(
+            PCM_BUFFER_FRAMES as u64,
+            crate::drivers::PcmConfiguration::SHARED,
+        )
+        .unwrap();
     state
         .set_software(
             PCM_PERIOD_FRAMES as u64,
@@ -56,7 +61,12 @@ fn pcm_state_tracks_period_positions_and_recovers_xrun() {
 #[test]
 fn pcm_prepare_resets_an_already_prepared_stream() {
     let mut state = PcmStateOwner::new();
-    state.configure(PCM_BUFFER_FRAMES as u64).unwrap();
+    state
+        .configure(
+            PCM_BUFFER_FRAMES as u64,
+            crate::drivers::PcmConfiguration::SHARED,
+        )
+        .unwrap();
     state.prepare().unwrap();
     state.submit_frames(PCM_PERIOD_FRAMES as u64).unwrap();
     state.prepare().unwrap();
@@ -71,7 +81,12 @@ fn pcm_prepare_resets_an_already_prepared_stream() {
 #[test]
 fn pcm_disconnect_is_terminal_for_submission() {
     let mut state = PcmStateOwner::new();
-    state.configure(PCM_BUFFER_FRAMES as u64).unwrap();
+    state
+        .configure(
+            PCM_BUFFER_FRAMES as u64,
+            crate::drivers::PcmConfiguration::SHARED,
+        )
+        .unwrap();
     state.prepare().unwrap();
     state.disconnect();
     assert_eq!(state.state, PcmState::Disconnected);
@@ -239,6 +254,8 @@ fn virtio_sound_lifecycle_is_single_track_and_reset_is_idempotent() {
     assert_eq!(state, DeviceState::Failed);
     assert!(!state.fail());
     assert!(state.after_start().is_none());
+    let released = state.after_release().unwrap();
+    assert_eq!(released.after_configure(), Some(DeviceState::Configured));
 }
 
 #[test]
@@ -308,19 +325,36 @@ mod hw_refine {
         let offset = 260 + (17 - 8) * 12;
         set_u32(&mut bytes, offset, 4_864);
         set_u32(&mut bytes, offset + 4, 4_864);
-        refine_hardware(&mut bytes).unwrap();
+        refine_hardware(
+            &mut bytes,
+            crate::drivers::PcmCapabilities::SHARED,
+            crate::audio::engine::PcmEndpoint::Shared,
+        )
+        .unwrap();
         assert_eq!(interval(&bytes, 15), (19, 19, 0b100));
         assert_eq!(interval(&bytes, 16), (101_333, 101_334, 0b011));
         let periods = 260 + (15 - 8) * 12;
         set_u32(&mut bytes, periods, 4);
         set_u32(&mut bytes, periods + 4, 4);
-        assert!(refine_hardware(&mut bytes).is_err());
+        assert!(
+            refine_hardware(
+                &mut bytes,
+                crate::drivers::PcmCapabilities::SHARED,
+                crate::audio::engine::PcmEndpoint::Shared
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn hardware_selection_chooses_linux_defaults_and_preserves_exact_requests() {
         let mut bytes = unconstrained();
-        choose_hardware(&mut bytes).unwrap();
+        choose_hardware(
+            &mut bytes,
+            crate::drivers::PcmCapabilities::SHARED,
+            crate::audio::engine::PcmEndpoint::Shared,
+        )
+        .unwrap();
         assert_eq!(u32_at(&bytes, 4), 1, "first access is mmap interleaved");
         assert_eq!(interval(&bytes, 17), (8_192, 8_192, 0b100));
         assert_eq!(interval(&bytes, 15), (32, 32, 0b100));
@@ -329,7 +363,12 @@ mod hw_refine {
         let buffer = 260 + (17 - 8) * 12;
         set_u32(&mut exact, buffer, 4_864);
         set_u32(&mut exact, buffer + 4, 4_864);
-        choose_hardware(&mut exact).unwrap();
+        choose_hardware(
+            &mut exact,
+            crate::drivers::PcmCapabilities::SHARED,
+            crate::audio::engine::PcmEndpoint::Shared,
+        )
+        .unwrap();
         assert_eq!(u32_at(&exact, 4), 1 << 3);
         assert_eq!(interval(&exact, 17), (4_864, 4_864, 0b100));
         assert_eq!(interval(&exact, 15), (19, 19, 0b100));
@@ -338,13 +377,22 @@ mod hw_refine {
     #[test]
     fn an_unconstrained_request_exposes_fixed_period_and_negotiable_buffer() {
         let mut bytes = unconstrained();
-        refine_hardware(&mut bytes).unwrap();
+        refine_hardware(
+            &mut bytes,
+            crate::drivers::PcmCapabilities::SHARED,
+            crate::audio::engine::PcmEndpoint::Shared,
+        )
+        .unwrap();
         assert_eq!(
             u32_at(&bytes, 4),
             (1 << 0) | (1 << 3),
             "access: mmap-interleaved and rw-interleaved"
         );
         assert_eq!(u32_at(&bytes, 36), 1 << 14, "format: FLOAT_LE only");
+        assert_eq!(
+            crate::audio::codec::pcm_format(14),
+            Some(crate::drivers::PcmFormat::Float)
+        );
         assert_eq!(u32_at(&bytes, 68), 1, "subformat: standard");
         for word in 1..8 {
             assert_eq!(u32_at(&bytes, 4 + word * 4), 0, "no other access bits");
@@ -390,7 +438,12 @@ mod hw_refine {
         let periods = 260 + (15 - 8) * 12;
         set_u32(&mut bytes, periods, 4);
         set_u32(&mut bytes, periods + 4, 4);
-        refine_hardware(&mut bytes).unwrap();
+        refine_hardware(
+            &mut bytes,
+            crate::drivers::PcmCapabilities::SHARED,
+            crate::audio::engine::PcmEndpoint::Shared,
+        )
+        .unwrap();
         // 256/48000 s = 5333.33 µs 不是整数：必须是开区间 (5333, 5334)，不能被写成整数点。
         assert_eq!(interval(&bytes, 12), (5_333, 5_334, 0b011));
         assert_eq!(interval(&bytes, 16), (21_333, 21_334, 0b011));
@@ -399,9 +452,19 @@ mod hw_refine {
     #[test]
     fn refining_a_refined_request_changes_nothing() {
         let mut bytes = unconstrained();
-        refine_hardware(&mut bytes).unwrap();
+        refine_hardware(
+            &mut bytes,
+            crate::drivers::PcmCapabilities::SHARED,
+            crate::audio::engine::PcmEndpoint::Shared,
+        )
+        .unwrap();
         let first = bytes;
-        refine_hardware(&mut bytes).unwrap();
+        refine_hardware(
+            &mut bytes,
+            crate::drivers::PcmCapabilities::SHARED,
+            crate::audio::engine::PcmEndpoint::Shared,
+        )
+        .unwrap();
         assert_eq!(u32_at(&bytes, 516), 0, "idempotent: nothing left to narrow");
         assert_eq!(&bytes[..512], &first[..512]);
     }
@@ -414,7 +477,12 @@ mod hw_refine {
             set_u32(&mut bytes, offset, value);
             set_u32(&mut bytes, offset + 4, value);
             assert!(
-                refine_hardware(&mut bytes).is_err(),
+                refine_hardware(
+                    &mut bytes,
+                    crate::drivers::PcmCapabilities::SHARED,
+                    crate::audio::engine::PcmEndpoint::Shared
+                )
+                .is_err(),
                 "parameter {parameter} = {value} is unsupported"
             );
         }
@@ -425,7 +493,12 @@ mod hw_refine {
         }
         set_u32(&mut bytes, 36, 1 << 2);
         assert!(
-            refine_hardware(&mut bytes).is_err(),
+            refine_hardware(
+                &mut bytes,
+                crate::drivers::PcmCapabilities::SHARED,
+                crate::audio::engine::PcmEndpoint::Shared
+            )
+            .is_err(),
             "S16_LE alone has no common format"
         );
         // 只要求 S16 访问以外的方式（NONINTERLEAVED=1）也为空。
@@ -434,7 +507,14 @@ mod hw_refine {
             *byte = 0;
         }
         set_u32(&mut bytes, 4, 1 << 1);
-        assert!(refine_hardware(&mut bytes).is_err());
+        assert!(
+            refine_hardware(
+                &mut bytes,
+                crate::drivers::PcmCapabilities::SHARED,
+                crate::audio::engine::PcmEndpoint::Shared
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -442,7 +522,12 @@ mod hw_refine {
         let mut bytes = unconstrained();
         set_u32(&mut bytes, 260 + 3 * 12, 8_000);
         set_u32(&mut bytes, 260 + 3 * 12 + 4, 96_000);
-        refine_hardware(&mut bytes).unwrap();
+        refine_hardware(
+            &mut bytes,
+            crate::drivers::PcmCapabilities::SHARED,
+            crate::audio::engine::PcmEndpoint::Shared,
+        )
+        .unwrap();
         assert_eq!(
             (interval(&bytes, 11).0, interval(&bytes, 11).1),
             (48_000, 48_000)
@@ -453,12 +538,24 @@ mod hw_refine {
     fn an_empty_interval_is_rejected_even_if_its_numbers_overlap() {
         let mut bytes = unconstrained();
         set_u32(&mut bytes, 260 + 3 * 12 + 8, 1 << 3);
-        assert!(refine_hardware(&mut bytes).is_err());
+        assert!(
+            refine_hardware(
+                &mut bytes,
+                crate::drivers::PcmCapabilities::SHARED,
+                crate::audio::engine::PcmEndpoint::Shared
+            )
+            .is_err()
+        );
         let mut inverted = unconstrained();
         set_u32(&mut inverted, 260 + 3 * 12, 50_000);
         set_u32(&mut inverted, 260 + 3 * 12 + 4, 40_000);
         assert!(
-            refine_hardware(&mut inverted).is_err(),
+            refine_hardware(
+                &mut inverted,
+                crate::drivers::PcmCapabilities::SHARED,
+                crate::audio::engine::PcmEndpoint::Shared
+            )
+            .is_err(),
             "min > max is empty"
         );
     }
@@ -483,6 +580,8 @@ mod pcm_info {
     #[test]
     fn layout_matches_linux_snd_pcm_info() {
         let bytes = encode_pcm_info(&PcmInfo {
+            card: 0,
+            device: crate::audio::engine::PcmEndpoint::Shared.device(),
             subdevice: 3,
             subdevices_count: 8,
             subdevices_available: 5,
@@ -511,6 +610,8 @@ mod pcm_info {
     fn subname_numbers_have_no_leading_zero_and_handle_multiple_digits() {
         let name = |subdevice: u32| {
             let bytes = encode_pcm_info(&PcmInfo {
+                card: 0,
+                device: crate::audio::engine::PcmEndpoint::Shared.device(),
                 subdevice,
                 subdevices_count: 8,
                 subdevices_available: 0,
@@ -529,7 +630,9 @@ mod pcm_info {
     fn overlong_strings_truncate_but_stay_nul_terminated() {
         let long = [b'x'; 200];
         let bytes = encode_pcm_info(&PcmInfo {
-            subdevice: 0,
+            card: 0,
+            device: crate::audio::engine::PcmEndpoint::Shared.device(),
+            subdevice: crate::audio::engine::PcmEndpoint::Shared.device(),
             subdevices_count: 8,
             subdevices_available: 8,
             card_id: &long,
@@ -544,7 +647,12 @@ mod pcm_info {
 fn software_parameters_can_change_after_prepare_and_while_running() {
     let mut state = PcmStateOwner::new();
     assert!(state.set_software(256, 1024, 1024, 1 << 31).is_err());
-    state.configure(PCM_BUFFER_FRAMES as u64).unwrap();
+    state
+        .configure(
+            PCM_BUFFER_FRAMES as u64,
+            crate::drivers::PcmConfiguration::SHARED,
+        )
+        .unwrap();
     state.prepare().unwrap();
     state.set_software(512, 1 << 31, 1024, 1 << 31).unwrap();
     state.submit_frames(PCM_PERIOD_FRAMES as u64).unwrap();
