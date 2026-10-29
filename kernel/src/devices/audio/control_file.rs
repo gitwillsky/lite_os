@@ -35,6 +35,13 @@ pub(super) struct ControlDriver {
 impl CharacterDriver for ControlDriver {
     fn open(&self, _request: &OpenRequest<'_>) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
         let card = self.card.clone();
+        if card
+            .events
+            .disconnected
+            .load(core::sync::atomic::Ordering::Acquire)
+        {
+            return Err(FileSystemError::NoDevice);
+        }
         let opener = (card.caller)().ok_or(FileSystemError::IoError)?;
         let file = Arc::try_new(ControlFile {
             card: card.clone(),
@@ -122,6 +129,14 @@ fn exchange<const N: usize>(
 
 impl ControlFile {
     fn dispatch(&self, call: &IoctlCall<'_>) -> Result<isize, isize> {
+        if self
+            .card
+            .events
+            .disconnected
+            .load(core::sync::atomic::Ordering::Acquire)
+        {
+            return Err(errno::ENODEV);
+        }
         let (user, argument) = (call.user, call.argument);
         if !self.card.shared
             && matches!(

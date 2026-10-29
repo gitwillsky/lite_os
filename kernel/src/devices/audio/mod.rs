@@ -128,6 +128,9 @@ struct Card {
 // 硬件热插入发布 DRIVER_IO 后在 task/idle safe point 绑定，IRQ 不分配、不发布 devfs 节点。
 struct Discovery {
     next: Mutex<usize>,
+    // OWNER: 每卡 completion 的只追加索引；固定 DRIVER_IO 只登记 Discovery，拔插不消耗额外硬件源槽位。
+    // get 克隆 Arc 后立即释放 registry 锁，Card.process 不在 discovery/registry 锁下运行。
+    cards: crate::devices::registry::AppendOnlyRegistry<Card>,
     caller: fn() -> Option<Arc<PidIdentity>>,
 }
 // OWNER: 唯一音频发现游标及 caller 绑定，init 发布后由 DRIVER_IO 处理新增 adapter；缺失时热插拔设备不能发布 ALSA 节点。
@@ -146,6 +149,7 @@ pub(crate) fn init(caller: fn() -> Option<Arc<PidIdentity>>) -> Result<(), ()> {
     }
     let discovery = Arc::try_new(Discovery {
         next: Mutex::new(0),
+        cards: crate::devices::registry::AppendOnlyRegistry::new(),
         caller,
     })
     .map_err(|_| ())?;
@@ -161,8 +165,15 @@ impl CompletionSource for Discovery {
         while let Some(output) = crate::devices::model::pcm_output(*next) {
             let index = *next;
             *next += 1;
-            if attach(index, output, self.caller).is_err() {
+            if attach(index, output, self.caller, &self.cards).is_err() {
                 crate::error!("ALSA card {} initialization failed", index);
+            }
+        }
+        drop(next);
+        let count = self.cards.count();
+        for index in 0..count {
+            if let Some(card) = self.cards.get(index) {
+                card.process();
             }
         }
         false
@@ -173,6 +184,7 @@ fn attach(
     index: usize,
     output: Arc<dyn PcmOutput>,
     caller: fn() -> Option<Arc<PidIdentity>>,
+    cards: &crate::devices::registry::AppendOnlyRegistry<Card>,
 ) -> Result<(), ()> {
     let index = u32::try_from(index).map_err(|_| ())?;
     let minor = index.checked_mul(32).ok_or(())?;
@@ -204,7 +216,7 @@ fn attach(
     })
     .map_err(|_| ())?;
     output.set_observer(card.clone()).map_err(|_| ())?;
-    crate::devices::model::register_completion_source(card.clone()).map_err(|_| ())?;
+    cards.register(card.clone()).map_err(|_| ())?;
     for endpoint in [PcmEndpoint::Shared, PcmEndpoint::Direct] {
         if endpoint == PcmEndpoint::Shared && !shared {
             continue;
@@ -284,6 +296,8 @@ impl Card {
 impl PcmCompletionObserver for Card {
     fn period_completed(&self, _frames: usize) {
         self.events.completed.fetch_add(1, Ordering::AcqRel);
+        // producer 可在 Discovery 之后运行；重新发布合并位，不能等下一次硬件 IRQ 才推进 hw_ptr。
+        crate::execution::deferred::raise(crate::execution::deferred::DeferredWork::DRIVER_IO);
     }
 
     fn xrun(&self) {
@@ -293,15 +307,9 @@ impl PcmCompletionObserver for Card {
 
     fn disconnected(&self) {
         self.events.disconnected.store(true, Ordering::Release);
+        crate::execution::deferred::raise(crate::execution::deferred::DeferredWork::DRIVER_IO);
         crate::info!("ALSA playback reset");
         self.notification_write.signal_readiness();
-    }
-}
-
-impl CompletionSource for Card {
-    fn dispatch_completions(&self) -> bool {
-        self.process();
-        false
     }
 }
 

@@ -4,6 +4,7 @@
 
 | Owner | 唯一职责与调用者 |
 |---|---|
+| `drivers::usb` | UAC2 clock/alternate、反馈与等时队列；实现同一 PCM seam |
 | `drivers::virtio::sound` | 物理流 command、DMA、queue、completion 与 reset；实现 `devices::model::PcmOutput` |
 | `audio::Card` | 每个实际 adapter 的卡、observer、completion counter、Engine mutex、control 弱引用 registry 与两条 readiness pipe |
 | `audio::engine` | 纯状态机；8 个子流、物理队列、Master/PCM 音量、各流贡献帧数，由 Card 串行调用 |
@@ -35,7 +36,7 @@ open 预留 backing 后不重分配，协商不改变物理 DMA 队列；旧 mma
    Engine 处理完成事件后必须先补填，再判断物理流是否空闲；TX 批量归还不等于应用欠载，提前 STOP 会打断连续 PCM。
    预送深度为 `PCM_PERIODS - 1`，保留一段应用数据跨越整批 TX 完成；额外缩短深度会使宿主断粮，全部预送会提前耗尽应用数据。
    缺少未来 period 的运行中子流若仍有在途贡献，不得提前混入缺口或置 Xrun；等待补充或在途耗尽后再裁决。
-2. 全局 `DISCOVERY` 只发布一次，按设备注册表的只追加顺序附加实际 PCM outputs，每张卡独占 observer 与 Engine。
+2. 全局 `DISCOVERY` 只发布一次，按设备注册表的只追加顺序附加实际 PCM outputs，每张卡独占 observer 与 Engine。Discovery 聚合卡级 completion，只占一个固定 DRIVER_IO 槽位；重复 USB 拔插不会耗尽硬件源表。
    共享与原生端点互斥；原生 HW_PARAMS/HW_FREE/CLOSE 经 `Card.configuration` 的 TaskMutex 串行化，
    Engine spin lock 只保护状态，adapter configure/release 等等待发生在其外。原生提交不经过 Accumulator。
    缺少卡级配置事务会让共享恢复和独占重配交错，或让 completion 等待自身持有的 Engine 锁。
@@ -66,7 +67,7 @@ workload 分别观察；不以 host 硬件浮点计时宣称 kernel softfloat �
 
 ## 失败、范围与验证
 
-- 无卡或 backing 分配失败不得发布 OFD；槽位耗尽返回 EBUSY。
+- 无卡或 backing 分配失败不得发布 OFD；槽位耗尽返回 EBUSY。断开卡拒绝新的 PCM/control open，已有 control ioctl 返回 ENODEV；旧卡号和 OFD 不绑定到新连接。
 - 子流 xrun、drop、close 与设备断开必须分别保留软件状态和在途完成的正确归属；断开不重连。
 - 未登记 ioctl 返回 ENOTTY；control ID 不存在返回 ENOENT、值非法返回 EINVAL、user-copy 失败返回 EFAULT。
 - 未订阅 read 返回 EBADFD、长度不足一个 72-byte 事件返回 EINVAL、空队列非阻塞 read 返回 EAGAIN。

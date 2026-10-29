@@ -64,9 +64,9 @@ impl PcmConfiguration {
 }
 
 /// 可枚举的 PCM 采样率集合；位序只属于通用设备 seam，adapter 必须显式转换总线编码。
-pub(crate) const PCM_RATES: [u32; 14] = [
+pub(crate) const PCM_RATES: [u32; 17] = [
     5_512, 8_000, 11_025, 16_000, 22_050, 32_000, 44_100, 48_000, 64_000, 88_200, 96_000, 176_400,
-    192_000, 384_000,
+    192_000, 384_000, 352_800, 705_600, 768_000,
 ];
 
 /// 设备实际公布的 PCM 能力；未知/未实现的格式不能作为支持位返回。
@@ -90,5 +90,5 @@ impl PcmCapabilities {
     }
 }
 
-/// 384 kHz 的 5ms stereo S32 period 上限；DMA 与热路径 scratch 在配置前预留，不逐周期分配。
-pub(crate) const MAX_PCM_PERIOD_BYTES: usize = 1_920 * 8;
+/// 768 kHz 的 5ms stereo S32 period 上限；DMA 与热路径 scratch 在配置前预留，不逐周期分配。
+pub(crate) const MAX_PCM_PERIOD_BYTES: usize = 3_840 * 8;

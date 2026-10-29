@@ -52,6 +52,17 @@ impl TaskEvent {
         assert_eq!(self.wait_mode(TaskWaitMode::Idle, None), WaitResult::Woken);
     }
 
+    /// 不可中断的有界设备事务等待；超时交由设备 owner 停止或隔离 DMA。
+    ///
+    /// # Parameters
+    /// - `deadline_ns`: monotonic 绝对截止时间。
+    /// # Returns
+    /// signal 返回 Woken，到期返回 TimedOut，wait membership 分配失败返回 OutOfMemory。
+    /// 普通信号不取消已提交给硬件的事务。
+    pub(crate) fn wait_until(&self, deadline_ns: u64) -> WaitResult {
+        self.wait_mode(TaskWaitMode::Uninterruptible, Some(deadline_ns))
+    }
+
     /// 等待事件或可交付信号；不分配 waiter，Interrupted 后事件及 owner 继续有效。
     pub(crate) fn wait_interruptible(&self) -> WaitResult {
         self.wait_mode(TaskWaitMode::Interruptible, None)

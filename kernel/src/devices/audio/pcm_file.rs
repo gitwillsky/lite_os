@@ -29,6 +29,14 @@ pub(super) struct PcmDriver {
 
 impl CharacterDriver for PcmDriver {
     fn open(&self, _request: &OpenRequest<'_>) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
+        if self
+            .card
+            .events
+            .disconnected
+            .load(core::sync::atomic::Ordering::Acquire)
+        {
+            return Err(FileSystemError::NoDevice);
+        }
         super::open(self.card.clone(), self.endpoint)
             .map(|file| file as Arc<dyn DeviceFile>)
             .map_err(|error| match error {

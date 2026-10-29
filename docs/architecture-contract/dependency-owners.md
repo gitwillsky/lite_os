@@ -68,6 +68,11 @@ VMA/frame policy；页表只通过 `arch::mmu` 的静态 frame-owner adapter，�
 
 PCI ECAM 根总线枚举、配置空间与唯一 BAR 资源分配；消费 platform 的 host 窗口与中断路由事实，由 VirtIO PCI 使用；后续 USB host adapter 复用同一资源 owner。具体设备协议不属于 PCI owner。
 
+## `usb`
+
+`drivers::usb` 拥有 xHCI command/event/transfer rings、USB root-port attachment 与 UAC2 playback adapter。只消费 PCI inventory、platform 地址/INTx、DMA backing 与 PCM seam；不认识 ALSA 文件、task TCB 或宿主音频设备。
+`main` 创建枚举线程，task-only control 事务与 deferred packet completion 分离。
+
 ## `device`
 
 位于 `devices::model` 的设备类 seam（display、graphics、input、network、PCM output、entropy、named port）、只追加的设备注册表与 driver I/O completion；块 seam 属于 `block`，总线 adapter 属于 `drivers::virtio` 等具体总线领域。

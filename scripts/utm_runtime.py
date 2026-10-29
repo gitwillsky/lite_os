@@ -185,9 +185,9 @@ def _configuration(
             "AdditionalArguments": additional,
         },
         "Input": {
-            "UsbBusSupport": "Disabled",
-            "UsbSharing": False,
-            "MaximumUsbShare": 0,
+            "UsbBusSupport": "3.0",
+            "UsbSharing": True,
+            "MaximumUsbShare": 3,
         },
         "Sharing": {
             "DirectoryShareMode": "None",

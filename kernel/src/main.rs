@@ -151,6 +151,12 @@ fn kernel_main(context: execution::entry::BootContext) -> ! {
         .expect("TTY initialization failed");
     net::init();
     let root = mount_filesystems(scheduler, &parameters);
+    for host in drivers::usb::initialize().expect("USB host initialization failed") {
+        let body =
+            alloc::boxed::Box::try_new(move || host.run()).expect("USB worker allocation failed");
+        execution::task::spawn_kernel_thread("usb-enumerate", body)
+            .expect("USB worker initialization failed");
+    }
     let mut reclaim_wait = execution::task::KernelDeadlineWait::new()
         .expect("background reclaim deadline reservation failed");
     let reclaim_body = alloc::boxed::Box::try_new(move || {

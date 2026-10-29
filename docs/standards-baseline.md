@@ -50,6 +50,13 @@ ptrace 的 request、access policy、stop/wait、exec/exit 与 regset 布局取�
 - 来源：[固定 edition](https://pubs.opengroup.org/onlinepubs/9799919799.2024edition/)。
 - 它定义用户可观察的标准函数与 utility 语义；不定义 Linux number、register ABI 或 Linux-private object。
 
+### USB host 与 USB Audio
+
+- xHCI Requirements Specification `1.2`，May 2019；[Intel 原文](https://www.intel.com/content/dam/www/public/us/en/documents/technical-specifications/extensible-host-controler-interface-usb-xhci.pdf)，SHA-256 `9257ca24f34bff08e6020623f707c788ca0f0df657aa713309ff489a68b1731e`。
+- USB 2.0，April 27, 2000；[USB-IF 发布入口](https://www.usb.org/document-library/usb-20-specification)。root-port debounce/reset recovery、standard requests 与 high-speed isochronous/feedback 以该规范为准。
+- USB Device Class Definition for Audio Devices `2.0`，errata/ECN through September 14, 2026；[USB-IF 原文](https://www.usb.org/sites/default/files/Audio2_with_Errata_and_ECN_through_Sep_14_2026.pdf)。Type-I PCM 以同发布组的 Audio Data Formats 2.0 为准。
+- clock/format/feedback 的成熟实现参照本文件固定 Linux revision 的 `sound/usb/clock.c`、`format.c`、`endpoint.c`；xHCI ring/stop/retirement 参照 `drivers/usb/host/xhci-ring.c`。
+
 ### VirtIO
 
 - Virtual I/O Device `1.4` Committee Specification 01；source commit `917e900e0246b7fe21cdde795b0e566dd4f57d8d`。

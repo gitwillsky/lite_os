@@ -1649,8 +1649,8 @@ kernel/src/devices/model/pcm_format.rs :: pub (crate) PcmCapabilities :: rates :
 kernel/src/devices/model/pcm_format.rs :: pub (crate) PcmConfiguration :: format : PcmFormat
 kernel/src/devices/model/pcm_format.rs :: pub (crate) PcmConfiguration :: period_frames : usize
 kernel/src/devices/model/pcm_format.rs :: pub (crate) PcmConfiguration :: rate : u32
-kernel/src/devices/model/pcm_format.rs :: pub (crate) const MAX_PCM_PERIOD_BYTES : usize = 1_920 * 8
-kernel/src/devices/model/pcm_format.rs :: pub (crate) const PCM_RATES : [u32 ; 14] = [5_512 , 8_000 , 11_025 , 16_000 , 22_050 , 32_000 , 44_100 , 48_000 , 64_000 , 88_200 , 96_000 , 176_400 , 192_000 , 384_000 ,]
+kernel/src/devices/model/pcm_format.rs :: pub (crate) const MAX_PCM_PERIOD_BYTES : usize = 3_840 * 8
+kernel/src/devices/model/pcm_format.rs :: pub (crate) const PCM_RATES : [u32 ; 17] = [5_512 , 8_000 , 11_025 , 16_000 , 22_050 , 32_000 , 44_100 , 48_000 , 64_000 , 88_200 , 96_000 , 176_400 , 192_000 , 384_000 , 352_800 , 705_600 , 768_000 ,]
 kernel/src/devices/model/pcm_format.rs :: pub (crate) enum PcmFormat
 kernel/src/devices/model/pcm_format.rs :: pub (crate) impl PcmCapabilities :: fn supports (self , configuration : PcmConfiguration) -> bool
 kernel/src/devices/model/pcm_format.rs :: pub (crate) impl PcmConfiguration :: const fn frame_bytes (self) -> usize
@@ -1815,6 +1815,7 @@ kernel/src/devices/tty/terminal/input_batch.rs :: pub (crate) struct TerminalInp
 kernel/src/devices/virtio_port.rs :: pub (crate) fn init (device : Arc < dyn PortDevice >) -> Result < () , () >
 kernel/src/devices/virtio_port.rs :: pub (crate) struct Port
 kernel/src/drivers/mod.rs :: pub (crate) mod pci
+kernel/src/drivers/mod.rs :: pub (crate) mod usb
 kernel/src/drivers/mod.rs :: pub (crate) mod virtio
 kernel/src/drivers/pci.rs :: pub (crate) Bar :: address : usize
 kernel/src/drivers/pci.rs :: pub (crate) Bar :: size : usize
@@ -1825,6 +1826,111 @@ kernel/src/drivers/pci.rs :: pub (crate) fn functions () -> & 'static [Function]
 kernel/src/drivers/pci.rs :: pub (crate) fn initialize (host : Option < & PciHost >) -> Result < () , () >
 kernel/src/drivers/pci.rs :: pub (crate) struct Bar
 kernel/src/drivers/pci.rs :: pub (crate) struct Function
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Alternate :: alternate : u8
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Alternate :: clock : u8
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Alternate :: clock_controls : u8
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Alternate :: feedback : Option < Endpoint >
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Alternate :: format : PcmFormat
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Alternate :: interface : u8
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Alternate :: output : Endpoint
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Alternate :: rates : u32
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Alternate :: terminal : u8
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Configuration :: alternates : Vec < Alternate >
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Configuration :: control : u8
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Configuration :: value : u8
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Endpoint :: address : u8
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Endpoint :: interval : u8
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Endpoint :: packet : u16
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) impl Endpoint :: fn dci (self) -> u8
+kernel/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) impl Endpoint :: fn payload (self) -> usize
+kernel/src/drivers/usb/audio.rs :: pub (super) fn capabilities (alternates : & [Alternate]) -> PcmCapabilities
+kernel/src/drivers/usb/audio.rs :: pub (super) fn descriptors (bytes : & [u8]) -> Result < impl Iterator < Item = & [u8] > >
+kernel/src/drivers/usb/audio.rs :: pub (super) fn parse (bytes : & [u8]) -> Result < Configuration >
+kernel/src/drivers/usb/audio.rs :: pub (super) fn rate_mask (range : & [u8] , alt : Alternate) -> Result < u32 >
+kernel/src/drivers/usb/audio.rs :: pub (super) mod stream
+kernel/src/drivers/usb/audio.rs :: pub (super) struct Alternate
+kernel/src/drivers/usb/audio.rs :: pub (super) struct Configuration
+kernel/src/drivers/usb/audio.rs :: pub (super) struct Endpoint
+kernel/src/drivers/usb/audio.rs :: pub (super) use stream :: Stream
+kernel/src/drivers/usb/audio/stream.rs :: enum Lifecycle :: Configured
+kernel/src/drivers/usb/audio/stream.rs :: enum Lifecycle :: Failed
+kernel/src/drivers/usb/audio/stream.rs :: enum Lifecycle :: Prepared
+kernel/src/drivers/usb/audio/stream.rs :: enum Lifecycle :: Running
+kernel/src/drivers/usb/audio/stream.rs :: enum Lifecycle :: Stopped
+kernel/src/drivers/usb/audio/stream.rs :: enum Lifecycle :: Unconfigured
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) Stream :: alternates : Vec < Alternate >
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) Stream :: configuration : Option < PcmConfiguration >
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) Stream :: feedback : Ring
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) Stream :: observer : Option < Arc < dyn PcmCompletionObserver > >
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) Stream :: output : Ring
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) Stream :: selected : Option < Alternate >
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) Stream :: slot : u8
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) Stream :: state : Lifecycle
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) enum Lifecycle
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) impl Stream :: fn complete (& mut self , host : & Host , event : Trb) -> Result < () >
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) impl Stream :: fn disconnect (& mut self)
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) impl Stream :: fn new (slot : u8 , alternates : Vec < Alternate >) -> Result < Self >
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) impl Stream :: fn reset (& mut self) -> Result < () >
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) impl Stream :: fn start (& mut self , host : & Host) -> Result < () >
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) impl Stream :: fn submit (& mut self , host : & Host , bytes : & [u8]) -> Result < () >
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) impl Stream :: fn writable (& self) -> bool
+kernel/src/drivers/usb/audio/stream.rs :: pub (in crate :: drivers :: usb) struct Stream
+kernel/src/drivers/usb/dma.rs :: pub (super) Dma :: bytes : usize
+kernel/src/drivers/usb/dma.rs :: pub (super) Dma :: physical : u64
+kernel/src/drivers/usb/dma.rs :: pub (super) Ring :: memory : Dma
+kernel/src/drivers/usb/dma.rs :: pub (super) Trb :: <tuple> : [u32 ; 4]
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Dma :: fn allocate (pages : usize) -> Result < Self >
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Dma :: fn pointer (& self , offset : usize , value : u64) -> Result < () >
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Dma :: fn read (& self , offset : usize , bytes : & mut [u8]) -> Result < () >
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Dma :: fn set_word (& self , offset : usize , value : u32) -> Result < () >
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Dma :: fn word (& self , offset : usize) -> Result < u32 >
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Dma :: fn write (& self , offset : usize , bytes : & [u8]) -> Result < () >
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Ring :: fn complete (& mut self , address : u64) -> Result < () >
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Ring :: fn free (& self) -> usize
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Ring :: fn new (pages : usize) -> Result < Self >
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Ring :: fn push (& mut self , mut trb : Trb) -> Result < u64 >
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Ring :: fn reset (& mut self) -> Result < () >
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Trb :: fn address (self) -> u64
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Trb :: fn code (self) -> u32
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Trb :: fn endpoint (self) -> u8
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Trb :: fn kind (self) -> u32
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Trb :: fn new (pointer : u64 , status : u32 , control : u32) -> Self
+kernel/src/drivers/usb/dma.rs :: pub (super) impl Trb :: fn slot (self) -> u8
+kernel/src/drivers/usb/dma.rs :: pub (super) struct Dma
+kernel/src/drivers/usb/dma.rs :: pub (super) struct Ring
+kernel/src/drivers/usb/dma.rs :: pub (super) struct Trb
+kernel/src/drivers/usb/mod.rs :: enum Error :: Busy
+kernel/src/drivers/usb/mod.rs :: enum Error :: Controller (u8)
+kernel/src/drivers/usb/mod.rs :: enum Error :: Disconnected
+kernel/src/drivers/usb/mod.rs :: enum Error :: Memory
+kernel/src/drivers/usb/mod.rs :: enum Error :: Protocol
+kernel/src/drivers/usb/mod.rs :: enum Error :: Timeout
+kernel/src/drivers/usb/mod.rs :: enum Error :: Unsupported
+kernel/src/drivers/usb/mod.rs :: pub (crate) enum Error
+kernel/src/drivers/usb/mod.rs :: pub (crate) fn initialize () -> Result < Vec < Arc < Host > > >
+kernel/src/drivers/usb/mod.rs :: pub (crate) use xhci :: Host
+kernel/src/drivers/usb/xhci.rs :: pub (crate) struct Host
+kernel/src/drivers/usb/xhci.rs :: pub (super) impl Host :: fn doorbell (& self , slot : u8 , endpoint : u8) -> Result < () >
+kernel/src/drivers/usb/xhci.rs :: pub (super) impl Host :: fn new (function : & crate :: drivers :: pci :: Function) -> Result < Arc < Self > >
+kernel/src/drivers/usb/xhci/control.rs :: pub (in crate :: drivers :: usb) Setup :: index : u16
+kernel/src/drivers/usb/xhci/control.rs :: pub (in crate :: drivers :: usb) Setup :: kind : u8
+kernel/src/drivers/usb/xhci/control.rs :: pub (in crate :: drivers :: usb) Setup :: request : u8
+kernel/src/drivers/usb/xhci/control.rs :: pub (in crate :: drivers :: usb) Setup :: value : u16
+kernel/src/drivers/usb/xhci/control.rs :: pub (in crate :: drivers :: usb) struct Setup
+kernel/src/drivers/usb/xhci/control.rs :: pub (super) impl Control < '_ > :: fn command (& self , trb : Trb) -> Result < Trb >
+kernel/src/drivers/usb/xhci/control.rs :: pub (super) impl Control < '_ > :: fn interface (& self , slot : u8 , interface : u8 , alternate : u8) -> Result < () >
+kernel/src/drivers/usb/xhci/control.rs :: pub (super) impl Control < '_ > :: fn remove (& self , slot : u8) -> Result < () >
+kernel/src/drivers/usb/xhci/control.rs :: pub (super) impl Control < '_ > :: fn transfer (& self , slot : u8 , setup : Setup , bytes : & mut [u8]) -> Result < usize >
+kernel/src/drivers/usb/xhci/control.rs :: pub (super) impl Host :: fn control (& self) -> Result < Control < '_ > >
+kernel/src/drivers/usb/xhci/control.rs :: pub (super) struct Control < 'a >
+kernel/src/drivers/usb/xhci/enumerate.rs :: pub (crate) impl Host :: fn run (self : Arc < Self >)
+kernel/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output :: capabilities : PcmCapabilities
+kernel/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output :: control : u8
+kernel/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output :: generation : u64
+kernel/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output :: host : Arc < Host >
+kernel/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output :: name : String
+kernel/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output :: slot : u8
+kernel/src/drivers/usb/xhci/output.rs :: pub (super) struct Output
 kernel/src/drivers/virtio/binding.rs :: pub (crate) fn bind_display () -> Option < EarlyDisplay >
 kernel/src/drivers/virtio/binding.rs :: pub (crate) fn bind_platform_devices (display : Option < & EarlyDisplay >)
 kernel/src/drivers/virtio/binding.rs :: pub (crate) impl EarlyDisplay :: fn framebuffer (& self) -> & dyn BootFramebuffer
@@ -2401,6 +2507,7 @@ kernel/src/execution/sync/task_event.rs :: pub (crate) impl TaskEvent :: fn wait
 kernel/src/execution/sync/task_event.rs :: pub (crate) impl TaskEvent :: fn wait_interruptible (& self) -> WaitResult
 kernel/src/execution/sync/task_event.rs :: pub (crate) impl TaskEvent :: fn wait_interruptible_until (& self , deadline_ns : u64) -> WaitResult
 kernel/src/execution/sync/task_event.rs :: pub (crate) impl TaskEvent :: fn wait_killable (& self) -> WaitResult
+kernel/src/execution/sync/task_event.rs :: pub (crate) impl TaskEvent :: fn wait_until (& self , deadline_ns : u64) -> WaitResult
 kernel/src/execution/sync/task_event.rs :: pub (crate) struct TaskEvent
 kernel/src/execution/sync/task_mutex.rs :: pub (crate) impl TaskMutex < T > :: const fn new (value : T) -> Self
 kernel/src/execution/sync/task_mutex.rs :: pub (crate) impl TaskMutex < T > :: fn lock (& self) -> Result < TaskMutexGuard < '_ , T > , TaskMutexOutOfMemory >

@@ -3,7 +3,7 @@
 ## 生产链路
 
 用户态通过 Linux ALSA 访问每张声卡：`pcmCND0p` 提供桌面共享混音，`pcmCND1p` 提供原生格式独占输出。
-`kernel::devices::audio::engine` 经 `devices::model::PcmOutput` 消费实际 adapter 能力；当前硬件实现为 VirtIO Sound。
+`kernel::devices::audio::engine` 经 `devices::model::PcmOutput` 消费实际 adapter 能力；硬件实现包括 VirtIO Sound 与 xHCI/UAC2 USB DAC。
 媒体播放机经 libmpv/FFmpeg 解码、alsa-lib 写入同一 PCM；没有用户态混音服务或私有音频 IPC。
 桌面的系统提示音由 `user/libraries/sound` 直接写同一个 PCM：登录完成、注销、清空回收站各播一段，只有本地提取了原版素材时才安装，
 设备不可用（例如非 root 账户没有 `/dev/snd` 权限）时静默跳过。
@@ -42,7 +42,7 @@ UTM 只在 `Sound` 非空时启用客户端音频；空列表配合手工 QEMU �
 
 ## 失败与当前限制
 
-原生端点只保证 guest 到 adapter 的 PCM 保真；UTM/SPICE 出口仍可能转换格式。USB Audio 驱动与 macOS 独占后端尚未实现，不能据此宣称端到端 bit-perfect。
+原生端点只保证 guest 到 adapter 的 PCM 保真；UTM/SPICE 出口仍可能转换格式。USB DAC 路径直接发送原生 PCM；macOS 独占后端尚未实现，VirtIO/UTM 音频路径不能据此宣称端到端 bit-perfect。
 
 OFD close 清除该子流在所有在途 period 的归属，再归还槽位，旧 mmap backing 不会与新 open 共享。
 物理设备失败使整张卡断开，poll 返回错误/挂断；单子流欠载进入 XRUN，WRITEI 返回 EPIPE，客户端可 PREPARE 恢复。
@@ -55,3 +55,10 @@ AArch64/HVF 是声音 runtime 的目标。`verify-runtime-audio` 使用固定上
 冷启动私有镜像，运行八路 consumer 并分析设备实际 WAV 的频率、左右增益、静音和硬削波。
 其六秒 workload 要求无 XRUN；host mixer benchmark 仅作数学 CPU 成本诊断，不冒充 softfloat 设备延迟。
 RISC-V 复用源码，只有编译与静态覆盖。
+
+## UTM USB DAC 使用
+
+`make run-gui` 的 UTM 配置启用 USB 3.0 sharing（3 个转发通道）；在 UTM 的 USB 菜单中把 DAC 连接到 LiteOS，设备需由 guest 独占。USB2 high-speed DAC 仍通过 xHCI 的 USB2 root port 工作。
+媒体播放机选择新出现的“原生独占”USB DAC，系统使用对应 `/dev/snd/pcmCND1p`；编号来自实际发现顺序，不固定为 card 1。D&A Alpha 的 24/32 位 PCM 与采样率按描述符及 clock range 发布，不按型号硬编码。
+
+USB 驱动目前只有编译与静态验证；真实 Alpha 播放、切换采样率、长时间无丢样及拔插仍需实机验收。

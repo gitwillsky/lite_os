@@ -1,6 +1,6 @@
 # ADR: 首期音频硬件只使用 VirtIO Sound
 
-- 状态：已接受
+- 状态：首期决策已完成；当前硬件范围由[音频架构](../architecture/audio.md)维护
 - 日期：2026-07-26
 
 ## 背景
@@ -20,7 +20,7 @@ LiteOS 的 QEMU `virt` platform 已使用 modern VirtIO-MMIO；AArch64 UTM 路�
 - kernel adapter 独占 controlq、eventq、txq、DMA、PCM command lifecycle、completion、xrun 与 reset；
 - `drivers` 只发布通用 PCM output seam，platform 独占 DTB discovery 与 adapter 装配。
 
-不增加 PCI sound、HDA、AC97、USB Audio 或第二种音频 adapter。
+首期未纳入 PCI sound、HDA、AC97 或 USB Audio；UAC2 扩展现已按同一 PCM seam 接入，当前范围以架构文档为准。
 
 ## 结果
 

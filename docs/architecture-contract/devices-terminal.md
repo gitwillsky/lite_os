@@ -335,3 +335,18 @@ WouldBlock 不清除 intent、不 panic，新 master 在此期间不能提交新
 render/adapter/display completion 都先推进 reset，再推进 detach/UNREF，避免迟到的 disable 覆盖新所有者或扫描已释放资源。
 首个合法 EXECBUFFER 与 RESOURCE_CREATE 一样可惰性发布 context；已发布 context 在 OFD 存活期间不可撤销，热路径不重复取得创建 task mutex。
 未置位的 fence/ring 字段及零数量 syncobj 的 stride/pointer 按固定 Linux 语义忽略，不要求客户端写入私有 sentinel。
+
+## USB host 与 UAC2 playback
+
+1. `drivers::usb::xhci::Host` 独占控制器 DMA 与 slot generation。hardirq 只 ack/发布 `DRIVER_IO`；State spin lock 只覆盖有界 ring 操作，task-only operations mutex 串行化 command、EP0、时钟与 alternate setting。枚举线程由 `main` 创建，驱动不反向依赖 task。
+   端口的 Empty/Seen/Addressed 状态同时覆盖未绑定的 HID 等设备，避免 reset 事件自激重枚举。
+2. producer 最后 Release 发布 TRB cycle，doorbell 前经过 arch 的 device-ordering 屏障；consumer Acquire 读取 event cycle，核对地址/slot/DCI 后回收。event ring 每次最多处理 128 项，仍有工作则再次投递。
+   每个 slot generation 在控制器生命周期内不复用；旧 PCM adapter 即使遇到相同 slot/port，也不能操作新连接。
+3. Disable Slot completion 是 context、ring 与 payload 的释放屏障；Stop Endpoint completion 后才能清 ring、Set TR Dequeue 或重配。command/control 超时后停止控制器并保留注册 Arc 的 DMA，不以超时冒充硬件已停止。
+   设备传输错误断开对应卡，未知 completion/控制器错误隔离整台 host。
+4. UAC2 从 Type-I PCM alternate、USB streaming terminal、当前 clock selector 与 clock source GET_RANGE 求交能力。异步 OUT 必须配显式 feedback；high-speed feedback 为 16.16 samples/microframe。
+   反馈只决定完整 PCM frame 的 packet 分布，不做插值、重采样或数字增益；24-in-32 的 USB 左对齐与 ALSA 低位对齐之间仅移动有效位。原生 DSD 不作为 PCM 暴露。
+5. 当前覆盖 PCI xHCI root-port 上的 USB2 high-speed、单 AudioControl function、双声道 UAC2 Type-I PCM；枚举可选择不同 configuration。UAC1、USB hub/TT、FS/LS/SS 音频、capture 和 native DSD 未实现，遇到时不发布猜测的声卡。
+   PCM 能力上限包含 768 kHz，但每一格式仍须满足设备实际 clock range 与 service payload。
+6. 热路径使用预分配的 4 个 PCM periods、128 个 OUT packet slots 和 16 个 feedback slots；没有每 packet 分配、USB control 或睡眠。IOC 至少每 8 个 OUT packets 或 period 边界一次。
+   benchmark 决策：分包、整数反馈累加与 staging copy 是新增成本，需用目标 USB 连续播放观察 underrun/CPU；未执行实机门禁时不声明延迟或零丢样已验证。

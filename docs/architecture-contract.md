@@ -22,6 +22,7 @@
 | `execution` | 无 | 执行源码分组 |
 | `drivers` | 无 | 仅声明具体总线与硬件驱动 |
 | `pci` | `platform`,`arch` | PCI 枚举与 BAR 分配 |
+| `usb` | `arch`,`pci`,`platform`,`memory`,`device`,`sync`,`interrupt`,`deferred`,`timer` | xHCI、USB 枚举与 UAC2 PCM adapter |
 | `interrupt` | 无 | 设备中断处理契约 |
 | `device_registry` | 无 | adapter 注册容器 |
 | `console` | `device_registry`,`interrupt`,`sync` | 串口接收队列与设备接口 |
@@ -30,7 +31,7 @@
 | `boot_screen` | `device` | 领域规则见依赖说明 |
 | `virtio` | `block`,`deferred`,`device`,`memory`,`platform`,`pci`,`arch`,`interrupt` | 领域规则见依赖说明 |
 | `virtio_port` | `deferred`,`device`,`fs`,`ipc` | 领域规则见依赖说明 |
-| `audio` | `sync`,`device`,`fs`,`id`,`ipc`,`memory`,`namespace`,`timer` | 领域规则见依赖说明 |
+| `audio` | `deferred`,`device_registry`,`sync`,`device`,`fs`,`id`,`ipc`,`memory`,`namespace`,`timer` | 领域规则见依赖说明 |
 | `drm` | `deferred`,`device`,`fallible_tree`,`fs`,`ipc`,`memory`,`net`,`sync` | 领域规则见依赖说明 |
 | `input` | `deferred`,`device`,`fs`,`ipc`,`timer` | 领域规则见依赖说明 |
 | `io_uring` | `fs`,`id`,`ipc`,`memory`,`namespace`,`sync`,`timer` | 领域规则见依赖说明 |
