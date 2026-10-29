@@ -278,7 +278,7 @@ impl Ext4FileSystem {
             metadata_cache: Mutex::new(MetadataBlockCache::new()),
             inode_cache: Mutex::new(FallibleMap::new()),
             next_generation: AtomicU32::new(
-                (crate::timer::get_realtime_ns() / 1_000_000_000) as u32 | 1,
+                (crate::execution::timer::get_realtime_ns() / 1_000_000_000) as u32 | 1,
             ),
             self_ref: spin::Mutex::new(Weak::new()),
         })

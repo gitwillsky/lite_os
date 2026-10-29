@@ -24,7 +24,7 @@ from build_cache import (
     write_manifest,
 )
 from build_target import target_from_environment
-from verify_musl import MuslCachePaths, compiler_identity, find_stripper, run
+from toolchain.musl import MuslCachePaths, compiler_identity, find_stripper, run
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target/openssl-runtime"

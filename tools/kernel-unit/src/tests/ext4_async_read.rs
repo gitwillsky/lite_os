@@ -9,7 +9,7 @@ use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use super::{FILE, FS_BLOCK, WritableImage, e2fsck_clean, mount_with, scratch_copy};
 use crate::{
     InodeType,
-    block::{BlockDevice, BlockError, CompletionNotify, PendingRead},
+    devices::block::{BlockDevice, BlockError, CompletionNotify, PendingRead},
     ext4_cost_tests::COST_TEST_LOCK,
     fs::{FileSystem, Inode, StorageRead, StorageStep, ext4::clear_test_metadata_cache},
 };

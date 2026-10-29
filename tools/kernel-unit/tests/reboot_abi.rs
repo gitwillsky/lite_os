@@ -7,24 +7,6 @@ thread_local! {
     static RESET: Cell<Option<system::ResetKind>> = const { Cell::new(None) };
 }
 
-mod task {
-    pub(crate) struct Task;
-
-    pub(crate) fn current_task() -> Option<Task> {
-        Some(Task)
-    }
-
-    impl Task {
-        pub(crate) fn has_initial_capability(
-            &self,
-            cap: syscall_abi::capability::Capability,
-        ) -> bool {
-            assert_eq!(cap, syscall_abi::capability::Capability::SYS_BOOT);
-            super::EFFECTIVE_UID.get() == 0 // injected authorization, not production UID policy
-        }
-    }
-}
-
 #[path = "../../../syscall-abi/src/errno.rs"]
 mod errno;
 
@@ -134,4 +116,24 @@ fn normalization_preserves_invalid_and_unsupported_command_errors() {
         reboot::sys_reboot(0xfee1_dead, 0x2812_1969, 0xa1b2_c3d4, 0x1_0000_0000),
         -syscall::errno::EINVAL
     );
+}
+
+pub(crate) mod execution {
+    pub(crate) mod task {
+        pub(crate) struct Task;
+
+        pub(crate) fn current_task() -> Option<Task> {
+            Some(Task)
+        }
+
+        impl Task {
+            pub(crate) fn has_initial_capability(
+                &self,
+                cap: syscall_abi::capability::Capability,
+            ) -> bool {
+                assert_eq!(cap, syscall_abi::capability::Capability::SYS_BOOT);
+                crate::EFFECTIVE_UID.get() == 0 // injected authorization, not production UID policy
+            }
+        }
+    }
 }

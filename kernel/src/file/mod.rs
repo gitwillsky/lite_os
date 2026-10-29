@@ -30,7 +30,7 @@ use crate::fs::{
 };
 use crate::{
     ipc::{EventFd, PipeEnd},
-    socket::Socket,
+    net::Socket,
 };
 
 mod unix_passed;
@@ -260,7 +260,7 @@ impl OpenFileDescription {
         }
     }
 
-    fn socket_poll_events(events: i16, state: crate::socket::SocketPollState) -> i16 {
+    fn socket_poll_events(events: i16, state: crate::net::SocketPollState) -> i16 {
         const INPUT: i16 = 0x001;
         const OUTPUT: i16 = 0x004;
         const ERROR: i16 = 0x008;

@@ -3,7 +3,7 @@ mod statistics;
 pub(in crate::memory) use statistics::{SharedPageResidency, SharedPageStatistics};
 
 use super::MemoryError;
-use crate::sync::{TaskMutex, TaskMutexGuard};
+use crate::execution::sync::{TaskMutex, TaskMutexGuard};
 use alloc::sync::Arc;
 use core::fmt::Debug;
 use core::sync::atomic::{AtomicBool, Ordering};

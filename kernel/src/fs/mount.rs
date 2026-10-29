@@ -11,7 +11,7 @@ use super::{
     AccessIdentity, FileSystem, FileSystemError, KernelThreadSupport, MountFlags, MountNamespace,
     OpenedFile, ProcSource, UnmountMode, vfs, {DeviceNumber, devnode},
 };
-use crate::sync::TaskMutex;
+use crate::execution::sync::TaskMutex;
 
 /// 挂载新文件系统实例所需、由 composition root 注入的能力。
 pub(crate) struct MountEnvironment {

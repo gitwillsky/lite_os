@@ -1,4 +1,4 @@
-use crate::task::{register_private_memory_barrier, synchronize_private_memory};
+use crate::execution::task::{register_private_memory_barrier, synchronize_private_memory};
 
 use super::errno;
 

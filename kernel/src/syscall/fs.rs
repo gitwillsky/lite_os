@@ -1,4 +1,4 @@
-use crate::sync::WaitResult;
+use crate::execution::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 use core::mem;
 
@@ -47,6 +47,9 @@ pub(in crate::syscall) use statx::{
 };
 
 use crate::{
+    execution::task::{
+        TaskControlBlock, current_task, send_kernel_thread_signal, send_thread_signal,
+    },
     file::{OpenFileDescription, OpenFileKind},
     fs::{
         Dirent64Batch, InodeMetadata, InodeType, MAX_GETDENTS_BATCH_BYTES, O_ACCMODE, O_APPEND,
@@ -54,7 +57,6 @@ use crate::{
     },
     ipc::{PIPE_BUF, Pipe, PipeDirection, PipeRead, PipeWaitCondition, PipeWrite},
     syscall::errno,
-    task::{TaskControlBlock, current_task, send_kernel_thread_signal, send_thread_signal},
 };
 
 const AT_FDCWD: isize = -100;
@@ -186,7 +188,7 @@ pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
             task.tgid(),
             task.tid(),
             syscall_abi::signal::SIGXFSZ,
-            crate::task::PendingSignal::kernel(),
+            crate::execution::task::PendingSignal::kernel(),
         )
         .expect("current ftruncate caller must exist");
         return -errno::EFBIG;
@@ -248,7 +250,7 @@ pub(crate) fn sys_truncate(path: *const u8, size: i64) -> isize {
             task.tgid(),
             task.tid(),
             syscall_abi::signal::SIGXFSZ,
-            crate::task::PendingSignal::kernel(),
+            crate::execution::task::PendingSignal::kernel(),
         )
         .expect("current truncate caller must exist");
         return -errno::EFBIG;
@@ -330,7 +332,7 @@ pub(crate) fn sys_fallocate(fd: usize, mode: usize, offset: i64, length: i64) ->
             task.tgid(),
             task.tid(),
             syscall_abi::signal::SIGXFSZ,
-            crate::task::PendingSignal::kernel(),
+            crate::execution::task::PendingSignal::kernel(),
         )
         .expect("current fallocate caller must exist");
         return -errno::EFBIG;
@@ -568,7 +570,7 @@ pub(crate) fn sys_utimensat(
     };
     let inode = opened.inode();
 
-    let now = crate::timer::get_realtime_ns() / 1_000_000_000;
+    let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
     let owner_only =
         encoded_times.is_some_and(|values| !values.iter().all(|value| value.tv_nsec == UTIME_NOW));
     let values = if let Some(encoded) = encoded_times {

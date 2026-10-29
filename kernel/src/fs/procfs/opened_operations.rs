@@ -15,7 +15,7 @@ use syscall_abi::errno;
 enum ProcOpenFile {
     Network {
         source: Arc<dyn super::ProcSource>,
-        target: Arc<crate::socket::NetNamespace>,
+        target: Arc<crate::net::NetNamespace>,
         table: super::networking::NetworkTable,
     },
     TimeOffsets {
@@ -40,17 +40,17 @@ enum ProcOpenFile {
     MountLimit,
     InotifyLimit(crate::fs::InotifyLimit),
     CoreBufferLimit {
-        target: Arc<crate::socket::NetNamespace>,
-        resource: crate::socket::CoreBufferLimit,
+        target: Arc<crate::net::NetNamespace>,
+        resource: crate::net::CoreBufferLimit,
     },
-    OptmemLimit(Arc<crate::socket::NetNamespace>),
+    OptmemLimit(Arc<crate::net::NetNamespace>),
     IpcTable {
         target: Arc<crate::ipc::IpcNamespace>,
         table: crate::ipc::IpcTable,
         viewer: Arc<UserNamespace>,
         pid: Arc<crate::namespace::PidNamespace>,
         // OWNER: 同一 actual open 的 seq cursor；reader TaskMutex 串行 copy，IPC registry 短 guard 不跨 codec/user-copy。
-        reader: Box<crate::sync::TaskMutex<super::ipc_description::IpcReadCursor>>,
+        reader: Box<crate::execution::sync::TaskMutex<super::ipc_description::IpcReadCursor>>,
     },
     IpcLimit {
         target: Arc<crate::ipc::IpcNamespace>,
@@ -139,7 +139,7 @@ pub(super) fn open(
             table,
             viewer: opener.namespace.clone(),
             pid: inode.source.current_pid_namespace(),
-            reader: Box::try_new(crate::sync::TaskMutex::new(
+            reader: Box::try_new(crate::execution::sync::TaskMutex::new(
                 super::ipc_description::IpcReadCursor::new(),
             ))
             .map_err(|_| FileSystemError::OutOfMemory)?,
@@ -217,10 +217,7 @@ fn namespace_error(error: NamespaceError) -> DeviceError {
         NamespaceError::NestingLimit | NamespaceError::QuotaLimit => errno::ENOSPC,
     })
 }
-fn may_set_core_buffers(
-    target: &crate::socket::NetNamespace,
-    authority: &NamespaceAuthority,
-) -> bool {
+fn may_set_core_buffers(target: &crate::net::NetNamespace, authority: &NamespaceAuthority) -> bool {
     target.is_initial() && target.may_set_limits(authority)
 }
 fn ipc_error(error: crate::ipc::IpcError) -> DeviceError {

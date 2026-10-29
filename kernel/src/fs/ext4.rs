@@ -19,9 +19,9 @@ use super::{
     Inode, InodeMetadata, InodeType, OwnerModeChange, StorageWriter,
 };
 use crate::{
-    block::{BLOCK_SIZE, BlockDevice, BlockError},
+    devices::block::{BLOCK_SIZE, BlockDevice, BlockError},
+    execution::sync::{TaskEvent, TaskMutex, TaskMutexWaitPreparation},
     fallible_tree::FallibleMap,
-    sync::{TaskEvent, TaskMutex, TaskMutexWaitPreparation},
 };
 
 fn block_error(error: BlockError) -> FileSystemError {

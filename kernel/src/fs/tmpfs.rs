@@ -25,9 +25,9 @@ use super::{
     permission::OwnerModeState,
 };
 use crate::{
+    execution::sync::{TaskMutex, TaskMutexGuard},
     fallible_tree::FallibleMap,
     memory::SharedFileId,
-    sync::{TaskMutex, TaskMutexGuard},
 };
 use directory::{Directory, FIRST_ENTRY_COOKIE};
 
@@ -130,7 +130,7 @@ impl Drop for TmpInode {
 }
 
 fn now_seconds() -> u64 {
-    crate::timer::get_realtime_ns() / 1_000_000_000
+    crate::execution::timer::get_realtime_ns() / 1_000_000_000
 }
 
 fn lock_error<T>(_: T) -> FileSystemError {
@@ -509,7 +509,8 @@ impl Inode for TmpInode {
         identity: Option<&crate::fs::AccessIdentity>,
     ) -> Result<(), FileSystemError> {
         // Success has already published pages/length: reserve the metadata waiter before mutation.
-        let mut wait = crate::sync::TaskMutexWaitPreparation::prepare().map_err(lock_error)?;
+        let mut wait =
+            crate::execution::sync::TaskMutexWaitPreparation::prepare().map_err(lock_error)?;
         self.file()?.allocate_with_metadata(offset, length, || {
             self.remove_write_privileges_prepared(identity, &mut wait)
         })
@@ -981,40 +982,4 @@ impl TmpFileSystem {
     }
 }
 
-/// tmpfs 类型：`size=`、`nr_blocks=`、`nr_inodes=`、`mode=`、`uid=`、`gid=`。
-pub(super) struct TmpFileSystemType;
-
-impl FileSystemType for TmpFileSystemType {
-    fn user_namespace_mount(&self) -> bool {
-        true
-    }
-    fn name(&self) -> &'static str {
-        "tmpfs"
-    }
-
-    fn create(
-        &self,
-        request: &MountRequest<'_>,
-    ) -> Result<super::mount::CreatedFileSystem, FileSystemError> {
-        let ram_pages = request
-            .environment
-            .proc_source
-            .snapshot(
-                super::ProcSnapshotScope::System,
-                &request.environment.proc_source.current_pid_namespace(),
-            )?
-            .total_pages as u64;
-        let options = options::parse(
-            request.options,
-            ram_pages,
-            options::defaults(ram_pages, request.identity.uid(), request.identity.gid()),
-            &request.identity.user_namespace(),
-        )
-        .map_err(|_| FileSystemError::InvalidOperation)?;
-        let filesystem = TmpFileSystem::new(&options, ram_pages)?;
-        Ok(super::mount::CreatedFileSystem {
-            filesystem,
-            user_namespace: request.identity.user_namespace(),
-        })
-    }
-}
+pub(super) use filesystem::TmpFileSystemType;

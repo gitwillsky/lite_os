@@ -44,7 +44,7 @@ pub(crate) fn verify() {
 }
 
 pub(crate) fn start_cpu(
-    hardware_cpu_id: crate::cpu::HardwareCpuId,
+    hardware_cpu_id: crate::execution::cpu::HardwareCpuId,
     entry_address: usize,
     boot: super::BootInfo,
 ) -> Result<(), CpuStartError> {

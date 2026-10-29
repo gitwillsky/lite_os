@@ -7,18 +7,6 @@ mod firmware {
     pub(crate) struct FirmwareError;
 }
 
-mod sync {
-    pub(crate) struct IrqMutex<T>(std::sync::Mutex<T>);
-    impl<T> IrqMutex<T> {
-        pub(crate) const fn new(value: T) -> Self {
-            Self(std::sync::Mutex::new(value))
-        }
-        pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, T> {
-            self.0.lock().unwrap()
-        }
-    }
-}
-
 thread_local! {
     static BATCHES: RefCell<Vec<Vec<u8>>> = const { RefCell::new(Vec::new()) };
 }
@@ -61,5 +49,19 @@ fn firmware_failure_keeps_flushing_full_batches_and_the_partial_tail() {
         });
         assert_eq!(console::write_bytes(b"next write"), Ok(()));
         BATCHES.with(|batches| assert_eq!(batches.borrow().last().unwrap(), b"next write"));
+    }
+}
+
+pub(crate) mod execution {
+    pub(crate) mod sync {
+        pub(crate) struct IrqMutex<T>(std::sync::Mutex<T>);
+        impl<T> IrqMutex<T> {
+            pub(crate) const fn new(value: T) -> Self {
+                Self(std::sync::Mutex::new(value))
+            }
+            pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, T> {
+                self.0.lock().unwrap()
+            }
+        }
     }
 }

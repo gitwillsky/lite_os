@@ -3,7 +3,10 @@
 use alloc::sync::Arc;
 use spin::Once;
 
-use crate::hal::{InterruptError, InterruptHandler, InterruptVector, MmioBus};
+use crate::{
+    arch::mmio::MmioBus, execution::interrupt::InterruptError,
+    execution::interrupt::InterruptHandler, execution::interrupt::InterruptVector,
+};
 
 const DATA: usize = 0x00;
 const FLAGS: usize = 0x18;
@@ -52,7 +55,7 @@ impl InterruptHandler for Pl011InterruptHandler {
             bytes[count] = uart.read(DATA) as u8;
             count += 1;
         }
-        crate::hal::console::publish_received(&bytes[..count]);
+        crate::devices::console::publish_received(&bytes[..count]);
         Ok(())
     }
 }

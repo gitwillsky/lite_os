@@ -1,12 +1,12 @@
 //! FUSE 后备 file 的 syscall adapter：真实 OFD 保活，登记凭据只在这里冻结；fs 不导入 task/file。
 use crate::{
+    execution::task::TaskControlBlock,
     file::{OpenFileDescription, OpenFileKind, PreparedFileDescription},
     fs::{
         self, AccessIdentity, BackingFile, BackingOpen, DirectIo, FileSystemError, InodeOpen,
         InodeOpenError,
     },
     namespace::NamespaceAuthority,
-    task::TaskControlBlock,
 };
 use alloc::sync::Arc;
 use fs::chardev::DeviceError;

@@ -8,8 +8,7 @@ mod fallible_tree;
 mod id;
 #[path = "../src/pipe_fixture.rs"]
 mod ipc;
-#[path = "../src/sync.rs"]
-mod sync;
+
 #[path = "../../../kernel/src/fs"]
 mod fs {
     pub(crate) mod fifo;
@@ -182,4 +181,10 @@ fn reader_fput_immediately_breaks_writer_and_next_session_keeps_native_open_rule
         "new named reader suppresses HUP until a writer opens"
     );
     replacement.release();
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
 }

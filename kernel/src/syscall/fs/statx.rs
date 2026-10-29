@@ -1,7 +1,7 @@
 //! `statx`：按 Linux `struct statx` 布局报告 inode metadata。
 
 use super::{AT_SYMLINK_NOFOLLOW, copy_stat_path, errno, resolve_stat_path};
-use crate::{fs::DeviceNumber, fs::InodeMetadata, task::current_task};
+use crate::{execution::task::current_task, fs::DeviceNumber, fs::InodeMetadata};
 
 const AT_NO_AUTOMOUNT: u32 = 0x800;
 pub(in crate::syscall) const AT_EMPTY_PATH: u32 = 0x1000;
@@ -81,7 +81,7 @@ pub(in crate::syscall) fn statx_request_valid(flags: u32, mask: u32) -> bool {
 ///
 /// 成功返回 0；路径/权限错误与 `stat` 一致，输出不可写返回 `-EFAULT`。
 pub(in crate::syscall) fn statx_at(
-    task: &crate::task::TaskControlBlock,
+    task: &crate::execution::task::TaskControlBlock,
     fd: isize,
     path: alloc::vec::Vec<u8>,
     flags: u32,
@@ -103,7 +103,7 @@ pub(in crate::syscall) fn statx_at(
 }
 
 fn encode_statx(
-    task: &crate::task::TaskControlBlock,
+    task: &crate::execution::task::TaskControlBlock,
     metadata: &InodeMetadata,
     mount_id: u64,
 ) -> [u8; STATX_BYTES] {

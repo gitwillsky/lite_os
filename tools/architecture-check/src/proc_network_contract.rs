@@ -14,11 +14,11 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let node = source(sources, "kernel/src/fs/procfs/node.rs");
     let link = source(sources, "kernel/src/fs/procfs/link.rs");
     let opened = source(sources, "kernel/src/fs/procfs/opened_operations.rs");
-    let provider = source(sources, "kernel/src/task/process_table/procfs.rs");
+    let provider = source(sources, "kernel/src/execution/task/process_table/procfs.rs");
     let snapshot = source(sources, "kernel/src/fs/procfs/snapshot.rs");
-    let config = source(sources, "kernel/src/socket/inet/configuration.rs");
-    let task = source(sources, "kernel/src/task/model/namespaces.rs");
-    let kernel = source(sources, "kernel/src/task/model/kernel_thread.rs");
+    let config = source(sources, "kernel/src/net/inet/configuration.rs");
+    let task = source(sources, "kernel/src/execution/task/model/namespaces.rs");
+    let kernel = source(sources, "kernel/src/execution/task/model/kernel_thread.rs");
     let table = source(sources, "kernel/src/fs/procfs/networking.rs");
     let generic = node
         .split("fngeneric_entries()")
@@ -87,22 +87,22 @@ mod tests {
     fn rejects_caller_selection_first_link_and_unretired_kernel_proxy() {
         for (path, old, new) in [
             (
-                "kernel/src/task/process_table/procfs.rs",
+                "kernel/src/execution/task/process_table/procfs.rs",
                 "target.proc_net_namespace()",
-                "Some(crate::socket::initial_net())",
+                "Some(crate::net::initial_net())",
             ),
             (
                 "kernel/src/fs/procfs/opened_operations.rs",
                 "source.network_snapshot(target)?",
-                "source.network_snapshot(&crate::socket::initial_net())?",
+                "source.network_snapshot(&crate::net::initial_net())?",
             ),
             (
-                "kernel/src/socket/inet/configuration.rs",
+                "kernel/src/net/inet/configuration.rs",
                 "network.interfaces.iter().map(|interface| NetworkSnapshot",
                 "network.interfaces.iter().take(1).map(|interface| NetworkSnapshot",
             ),
             (
-                "kernel/src/task/model/kernel_thread.rs",
+                "kernel/src/execution/task/model/kernel_thread.rs",
                 ".take()\n            .expect(\"kernel nsproxy retired twice\")",
                 ".clone()\n            .expect(\"kernel nsproxy retired twice\")",
             ),

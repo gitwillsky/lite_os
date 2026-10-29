@@ -2,13 +2,13 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use spin::Mutex;
 
+use crate::execution::sync::{TaskEvent, TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
 use crate::fallible_tree::{FallibleMap, NodeSlot};
 use crate::memory::{
     MemoryReclaimer, PAGE_SIZE, PageMapCount, ReclaimRequest, ReclaimResult, SharedFileError,
     SharedFileId, SharedFileMapping, SharedFrame, SharedPage, SharedPagePin,
     invalidate_shared_file, register_memory_reclaimer,
 };
-use crate::sync::{TaskEvent, TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
 
 use super::CompletionNotify;
 use super::memory_file::{MemoryFile, MemoryWrite};

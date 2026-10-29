@@ -3,9 +3,9 @@
 ## 当前设计
 
 - `arch` 以静态 façade 暴露 `UserContext`、`KernelContext`、`TrapEvent`、MMU、local interrupt 与 fail-stop mechanism；内部寄存器布局不泄漏。
-- `entry` 是 raw boot/trap callback ABI 的唯一 codec。boot 生成 typed `BootContext`，trap 生成 semantic event。
+- `execution::entry` 是 raw boot/trap callback ABI 的唯一 codec。boot 生成 typed `BootContext`，trap 生成 semantic event。
 - `cpu::CpuTopology` 唯一拥有 hardware identity 到 logical `CpuId` 的映射及 possible/online/active lifecycle；领域状态按 logical CPU 建槽。
-- `trap` 只协调 syscall、fault、timer、software 和 external interrupt 的领域投递。CSR/cause decode
+- `execution::trap` 只协调 syscall、fault、timer、software 和 external interrupt 的领域投递。CSR/cause decode
   留在 architecture backend；illegal instruction 由 backend 以“短 transaction 分类 →
   transaction 外读取 → 短 transaction 提交”返回 retry 或 typed fault，不经过 capability probe 链，
   也不持有 context claim 获取 AddressSpace lock。

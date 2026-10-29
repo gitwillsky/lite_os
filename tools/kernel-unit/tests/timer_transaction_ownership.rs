@@ -6,7 +6,7 @@ extern crate alloc;
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../../../kernel/src/task/process_table"]
+#[path = "../../../kernel/src/execution/task/process_table"]
 mod task_table {
     use crate::fallible_tree::FallibleMap;
     struct FixtureThread {

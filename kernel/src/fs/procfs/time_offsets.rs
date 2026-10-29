@@ -127,7 +127,7 @@ pub(super) fn write(
     let target = source
         .thread_time_for_children(tid)
         .ok_or(DeviceError::Errno(errno::ESRCH))?;
-    let now = crate::timer::get_time_ns();
+    let now = crate::execution::timer::get_time_ns();
     // 当前没有 suspend，host boottime 与 monotonic 同源；两个 namespace offset 独立。
     target
         .update(&changes[..used], (now, now), opener)

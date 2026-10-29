@@ -2,9 +2,9 @@ use alloc::{sync::Arc, vec::Vec};
 
 use super::{SocketAddress, encode_address, errno, socket_error};
 use crate::{
+    execution::task::TaskControlBlock,
     file::OpenFileDescription,
-    socket::{Socket, SocketDomain, UnixPassedFile, UnixRights},
-    task::TaskControlBlock,
+    net::{Socket, SocketDomain, UnixPassedFile, UnixRights},
 };
 
 use super::control_list::{CMSG_HEADER, ControlList, ControlSnapshot};
@@ -38,8 +38,8 @@ fn align(length: usize) -> Option<usize> {
 /// malformed/unsupported cmsg、无效 fd、地址 policy 或 OOM 返回标准 errno。
 pub(super) struct SendAncillary {
     pub(super) rights: Option<UnixRights>,
-    pub(super) credentials: crate::socket::UnixSendCredentials,
-    pub(super) packet_info: Option<crate::socket::InternetSendPacketInfo>,
+    pub(super) credentials: crate::net::UnixSendCredentials,
+    pub(super) packet_info: Option<crate::net::InternetSendPacketInfo>,
 }
 
 pub(super) fn parse_send(
@@ -49,7 +49,7 @@ pub(super) fn parse_send(
 ) -> Result<SendAncillary, isize> {
     let mut credentials = super::credentials::sender(task);
     let mut descriptors = Vec::new();
-    let mut packet_info: Option<crate::socket::InternetSendPacketInfo> = None;
+    let mut packet_info: Option<crate::net::InternetSendPacketInfo> = None;
     for message in ControlList::new(snapshot.bytes()) {
         let message = message.map_err(|_| -errno::EINVAL)?;
         match (message.level, message.kind) {
@@ -62,7 +62,7 @@ pub(super) fn parse_send(
                 }
                 // Linux scm_fp_copy 按完整 int 个数截断：空/不足 int 的 payload 不产生 rights。
                 let count = message.data.len() / core::mem::size_of::<i32>();
-                if descriptors.len().saturating_add(count) > crate::socket::SCM_MAX_FD {
+                if descriptors.len().saturating_add(count) > crate::net::SCM_MAX_FD {
                     return Err(-errno::EINVAL);
                 }
                 descriptors.try_reserve(count).map_err(|_| -errno::ENOMEM)?;
@@ -139,7 +139,7 @@ fn write_rights(
     task: &TaskControlBlock,
     pointer: usize,
     remaining: usize,
-    rights: crate::socket::UnixReceivedRights,
+    rights: crate::net::UnixReceivedRights,
     cloexec: bool,
 ) -> (usize, bool) {
     let total = rights.len();
@@ -241,13 +241,13 @@ pub(super) struct ReceiveContent {
     /// backend source address。
     pub(super) source: Option<SocketAddress>,
     /// actual ingress冻结的IP_PKTINFO；不查询当前caller或已变更接口。
-    pub(super) internet_packet_info: Option<crate::socket::InternetPacketInfo>,
+    pub(super) internet_packet_info: Option<crate::net::InternetPacketInfo>,
     /// 当前 socket 是否请求 IP_PKTINFO。
     pub(super) packet_info: bool,
     /// AF_UNIX transport 转交的 descriptor capabilities。
-    pub(super) rights: Option<crate::socket::UnixReceivedRights>,
+    pub(super) rights: Option<crate::net::UnixReceivedRights>,
     /// transport 保存的实际消息凭据；None 与 peer credentials 无关。
-    pub(super) credentials: Option<crate::socket::UnixCredentials>,
+    pub(super) credentials: Option<crate::net::UnixCredentials>,
     /// SO_PASSCRED 请求输出，未保存凭据时编码 overflow IDs。
     pub(super) pass_credentials: bool,
     /// 新发布 descriptor 是否设置 FD_CLOEXEC。

@@ -120,7 +120,7 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
         }
     }
     let source = |path: &str| sources.iter().find(|source| source.relative == path);
-    let Some(inet) = source("kernel/src/socket/inet.rs") else {
+    let Some(inet) = source("kernel/src/net/inet.rs") else {
         errors.push("udp-owner: missing inet owner".into());
         return;
     };
@@ -148,7 +148,7 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
             "udp-owner: EndpointState cannot mirror transport peer or omit native policy".into(),
         );
     }
-    let Some(udp) = source("kernel/src/socket/inet/udp.rs") else {
+    let Some(udp) = source("kernel/src/net/inet/udp.rs") else {
         errors.push("udp-owner: missing UDP native owner".into());
         return;
     };

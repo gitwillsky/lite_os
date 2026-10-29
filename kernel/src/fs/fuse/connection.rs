@@ -20,13 +20,13 @@ use super::{
     protocol::{self, Caller, Fields, Reader},
 };
 use crate::{
+    execution::sync::{TaskEvent, WaitResult},
     fs::{
         CurrentRequester, FileSystemError,
         chardev::{DeviceError, UserFault, UserInput, UserOutput},
     },
     ipc::{Pipe, PipeEnd, PipeWaitCondition},
     namespace::PidNamespace,
-    sync::{TaskEvent, WaitResult},
 };
 
 mod background;
@@ -183,18 +183,18 @@ impl ReplyShape {
 
 enum Phase {
     Queued {
-        cpu: Option<crate::cpu::CpuId>,
+        cpu: Option<crate::execution::cpu::CpuId>,
     },
     Sent {
         device: u64,
     },
     /// 已认领但用户复制尚未成功；不能先发 INTERRUPT，守护进程还不知道请求。
     RingCopying {
-        cpu: crate::cpu::CpuId,
+        cpu: crate::execution::cpu::CpuId,
         entry: u64,
     },
     Ring {
-        cpu: crate::cpu::CpuId,
+        cpu: crate::execution::cpu::CpuId,
         entry: u64,
     },
     Done(Result<Vec<u8>, FileSystemError>),

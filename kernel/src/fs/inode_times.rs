@@ -108,7 +108,7 @@ impl TimeOwner {
     }
 }
 fn now_seconds() -> u64 {
-    crate::timer::get_realtime_ns() / 1_000_000_000
+    crate::execution::timer::get_realtime_ns() / 1_000_000_000
 }
 
 /// 固定 Linux relatime_need_update/atime_needs_update；时钟倒退也可更新，不能用 max 冻结未来 atime。

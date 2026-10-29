@@ -1,10 +1,10 @@
 //! asm-generic xattr ABI；路径查找交给现有VFS，权限与属性变更交给实际OpenedFile。
 use super::pathname::{base, ferr, path_allow_empty};
 use crate::{
+    execution::task::{TaskControlBlock, current_task},
     fs::{FileSystemError, OpenedFile, XattrError, vfs},
     memory::UserAccessError,
     syscall::errno,
-    task::{TaskControlBlock, current_task},
 };
 use alloc::{sync::Arc, vec::Vec};
 

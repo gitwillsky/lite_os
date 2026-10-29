@@ -13,8 +13,8 @@ use super::{
     worker,
 };
 use crate::{
+    execution::task::TaskControlBlock,
     io_uring::{Chain, Link, Member, Members, Ring, Step, Unit, cancel_rest},
-    task::TaskControlBlock,
 };
 
 /// 成员完成时需要的元数据；成员的 `Step` 已被消费。
@@ -105,7 +105,7 @@ fn advance(
                         let Step::LinkTimeout(op) = timeout.step else {
                             return None;
                         };
-                        let deadline = op.link_deadline(crate::timer::get_time_ns())?;
+                        let deadline = op.link_deadline(crate::execution::timer::get_time_ns())?;
                         Some((timeout.user_data, deadline))
                     });
                     return Some((wait, meta));

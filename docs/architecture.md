@@ -6,7 +6,7 @@ LiteOS 是架构中立的 Rust `no_std` kernel。通用代码只消费编译期�
 
 1. `main.rs` 是唯一 composition root，只决定初始化顺序、adapter 装配和 fail-stop policy。
 2. `arch` 隐藏指令集 execution mechanism；`platform` 隐藏 machine、firmware 与设备装配。
-3. `entry` 将 raw boot/trap ABI 转成 typed value；generic `trap` 只处理语义事件。
+3. `execution::entry` 将 raw boot/trap ABI 转成 typed value；generic `execution::trap` 只处理语义事件。
 4. 每个复合状态有且仅有一个 owner；其他 module 通过窄 façade 请求操作或读取不可变快照。
 5. syscall 层只处理 Linux 64-bit 编号、UAPI codec、user-copy 和 errno；寄存器、ELF 与 signal frame 由编译期 architecture ABI backend 拥有。
 6. 同一能力只保留一条生产路径；不提供私有 ABI、兼容入口或运行时 backend 分派。

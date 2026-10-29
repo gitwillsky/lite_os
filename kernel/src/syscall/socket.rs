@@ -1,21 +1,21 @@
-use crate::sync::WaitResult;
+use crate::execution::sync::WaitResult;
 use alloc::sync::Arc;
 
 use crate::{
+    execution::task::{TaskControlBlock, current_task},
     file::{OpenFileDescription, OpenFileKind, PreparedSocketDescription},
     fs::{O_CLOEXEC, O_NONBLOCK, O_RDWR},
-    socket::{
+    net::{
         InetAddress, NetlinkAddress, PacketAddress, Socket, SocketAddress, SocketConnectError,
         SocketDomain, SocketError, SocketRequest, SocketType, UnixAddress, UnixConnectResources,
         UnixConnectionData, UnixCredentials, configure_address, configure_broadcast, configure_mtu,
         configure_netmask, configure_route, configure_up, interface_index, interface_snapshot,
         interface_snapshots,
     },
-    task::{TaskControlBlock, current_task},
 };
 
 use super::{errno, poll::wait_for_ofd};
-use crate::socket::SocketIoDirection;
+use crate::net::SocketIoDirection;
 
 mod control;
 mod control_list;
@@ -474,7 +474,7 @@ pub(in crate::syscall) enum ConnectBegin {
     /// 握手进行中：等待 socket 可写或出错，再读 [`Socket::connection_result`]。
     InProgress,
     /// Unix 目标的 backlog 已满：可等待的容量句柄。
-    BacklogFull(crate::socket::SocketCapacityWait),
+    BacklogFull(crate::net::SocketCapacityWait),
 }
 
 /// 发起 connect（不等待）：解码地址、解析 Unix pathname、提交到后端。
@@ -542,7 +542,7 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
     let task = current_task().unwrap();
     let deadline = client
         .timeout(SocketIoDirection::Send)
-        .deadline(crate::timer::get_time_ns());
+        .deadline(crate::execution::timer::get_time_ns());
     let nonblocking = ofd.status_flags() & O_NONBLOCK != 0;
     loop {
         match connect_begin(&task, &client, address, length) {
@@ -634,7 +634,7 @@ pub(crate) fn sys_accept4(fd: usize, address: usize, length: usize, flags: usize
     let task = current_task().unwrap();
     let deadline = listener
         .timeout(SocketIoDirection::Receive)
-        .deadline(crate::timer::get_time_ns());
+        .deadline(crate::execution::timer::get_time_ns());
     let nonblocking = ofd.status_flags() & O_NONBLOCK != 0;
     loop {
         let result = accept_once(&task, &listener, flags, address, length);

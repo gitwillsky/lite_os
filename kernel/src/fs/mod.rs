@@ -67,7 +67,7 @@ mod sysfs_net;
 mod tmpfs;
 mod vfs;
 
-pub(crate) use crate::block::CompletionNotify;
+pub(crate) use crate::devices::block::CompletionNotify;
 pub(crate) use anonymous::{anonymous_opened, pipe_opened, socket_opened};
 pub(crate) use block_node::BlockNode;
 pub(crate) use directory::{
@@ -355,15 +355,15 @@ const DISK_MINORS: u32 = 16;
 /// 未对齐到 4 KiB 的分区（例如旧工具默认的 63 扇区起点）无法用整块读写表示，不发布；现代工具默认的
 /// 1 MiB 对齐满足要求。
 fn publishable_partitions(
-    partitions: Vec<crate::block::partition_table::Partition>,
-) -> Vec<crate::block::partition_table::Partition> {
+    partitions: Vec<crate::devices::block::partition_table::Partition>,
+) -> Vec<crate::devices::block::partition_table::Partition> {
     const SECTORS_PER_BLOCK: u64 = 8;
     partitions
         .into_iter()
         .filter_map(|partition| {
             let sectors = partition.sectors / SECTORS_PER_BLOCK * SECTORS_PER_BLOCK;
             (partition.start % SECTORS_PER_BLOCK == 0 && sectors != 0).then_some(
-                crate::block::partition_table::Partition {
+                crate::devices::block::partition_table::Partition {
                     sectors,
                     ..partition
                 },
@@ -378,7 +378,7 @@ fn publishable_partitions(
 ///
 /// 名称重复返回 `AlreadyExists`；设备号空间耗尽返回 `NoSpace`；分配失败返回 `OutOfMemory`。
 pub(crate) fn publish_block_device(
-    disk: Arc<dyn crate::block::BlockDevice>,
+    disk: Arc<dyn crate::devices::block::BlockDevice>,
 ) -> Result<(), FileSystemError> {
     let minor = u32::try_from(devnode::block_count())
         .ok()
@@ -401,7 +401,8 @@ fn publish_partitions(disk_name: &[u8], whole: DeviceNumber) -> Result<(), FileS
     let Some(node) = devnode::block_node(whole) else {
         return Err(FileSystemError::NoDevice);
     };
-    let parsed = crate::block::partition_table::parse(node.as_ref(), node.capacity() / 512);
+    let parsed =
+        crate::devices::block::partition_table::parse(node.as_ref(), node.capacity() / 512);
     let published = publishable_partitions(parsed.clone());
     if published.len() != parsed.len() {
         crate::warn!(
@@ -411,7 +412,7 @@ fn publish_partitions(disk_name: &[u8], whole: DeviceNumber) -> Result<(), FileS
         );
     }
     // MBR 分区的 `PARTUUID` 由磁盘签名与分区号构成；GPT 分区用自己的 GUID。
-    let signature = crate::block::partition_table::mbr_signature(node.as_ref());
+    let signature = crate::devices::block::partition_table::mbr_signature(node.as_ref());
     for partition in &published {
         let mut name = Vec::new();
         name.try_reserve_exact(disk_name.len() + 4)
@@ -429,20 +430,22 @@ fn publish_partitions(disk_name: &[u8], whole: DeviceNumber) -> Result<(), FileS
             length += 1;
         }
         name.extend(digits[..length].iter().rev());
-        let device = Arc::try_new(crate::block::partition_device::PartitionDevice::new(
-            name.clone(),
-            node.device().clone(),
-            (partition.start / 8) as usize,
-            (partition.sectors / 8) as usize,
-        ))
+        let device = Arc::try_new(
+            crate::devices::block::partition_device::PartitionDevice::new(
+                name.clone(),
+                node.device().clone(),
+                (partition.start / 8) as usize,
+                (partition.sectors / 8) as usize,
+            ),
+        )
         .map_err(|_| FileSystemError::OutOfMemory)?;
         let number = DeviceNumber::new(whole.major, whole.minor + partition.number);
         let info = block_node::PartitionInfo {
             whole: node.clone(),
             start: partition.start,
             uuid: match (partition.guid, signature) {
-                (Some(guid), _) => Some(crate::block::identity::PartUuid::Gpt(guid)),
-                (None, Some(signature)) => Some(crate::block::identity::PartUuid::Mbr {
+                (Some(guid), _) => Some(crate::devices::block::identity::PartUuid::Gpt(guid)),
+                (None, Some(signature)) => Some(crate::devices::block::identity::PartUuid::Mbr {
                     signature,
                     number: partition.number,
                 }),

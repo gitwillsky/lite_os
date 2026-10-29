@@ -51,141 +51,11 @@ mod id {
     }
 }
 
-mod timer {
-    pub(crate) fn get_time_ns() -> u64 {
-        0
-    }
-}
-
-#[path = "../../../kernel/src/sync"]
-mod sync {
-    pub(crate) struct IrqMutex<T>(spin::Mutex<T>);
-    impl<T> IrqMutex<T> {
-        pub(crate) const fn new(value: T) -> Self {
-            Self(spin::Mutex::new(value))
-        }
-        pub(crate) fn lock(&self) -> spin::MutexGuard<'_, T> {
-            self.0.lock()
-        }
-    }
-    mod wait_completion;
-    pub(crate) use wait_completion::WaitCompletion;
-    mod task_event;
-    pub(crate) use task_event::TaskEvent;
-    pub(crate) use task_wait::WaitResult;
-
-    mod task_wait;
-    mod target {
-        use super::{
-            WaitCompletion,
-            task_wait::{TaskWaitKey, TaskWaitMode, TaskWaitTarget, WaitResult},
-        };
-        use alloc::sync::Arc;
-
-        struct Target;
-        impl TaskWaitTarget for Target {
-            fn sleep(self: Arc<Self>, completion: &WaitCompletion, key: TaskWaitKey) -> WaitResult {
-                assert_eq!(
-                    key.mode,
-                    TaskWaitMode::Idle,
-                    "daemon deadline sleep must not contribute to system load"
-                );
-                assert!(completion.begin_arming());
-                // 定时器在 scheduler arming 期间到期；真实 TaskEvent 必须保留 pending 并完成握手。
-                crate::task::process_table::timer_queue::expire();
-                assert!(completion.finish_arming());
-                WaitResult::Woken
-            }
-            fn wake(self: Arc<Self>, _: TaskWaitKey) {
-                panic!("arming completion must not issue a sleeping wake");
-            }
-        }
-        static TARGET: spin::Once<Arc<dyn TaskWaitTarget>> = spin::Once::new();
-        pub(super) fn factory() -> Option<Arc<dyn TaskWaitTarget>> {
-            Some(TARGET.call_once(|| Arc::new(Target)).clone())
-        }
-    }
-    pub(crate) fn warm_target() {
-        let _ = target::factory();
-        static INSTALL: std::sync::Once = std::sync::Once::new();
-        INSTALL.call_once(|| task_wait::install_wait_target_factory(target::factory));
-    }
-}
-
-#[path = "../../../kernel/src/task"]
-mod task {
-    #[path = "process_table"]
-    pub(crate) mod process_table {
-        // clock/expiry drive 为测试注入；deadline index 使用生产 AVL 和相同 key/payload。
-        struct ProcessTable {
-            timers: crate::sync::IrqMutex<timer_queue::TimerQueue>,
-        }
-        static PROCESS_TABLE: ProcessTable = ProcessTable {
-            timers: crate::sync::IrqMutex::new(timer_queue::TimerQueue::new()),
-        };
-
-        pub(crate) mod timer_queue {
-            use crate::fallible_tree::{FallibleMap, VacantEntry};
-            use alloc::sync::Weak;
-
-            #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-            pub(super) enum TimerIdentity {
-                Kernel(u64),
-            }
-            type DeadlineEntry = VacantEntry<(u64, TimerIdentity), Option<Weak<KernelTimer>>>;
-            pub(super) struct TimerQueue {
-                deadline_index: FallibleMap<(u64, TimerIdentity), Option<Weak<KernelTimer>>>,
-            }
-            impl TimerQueue {
-                pub(super) const fn new() -> Self {
-                    Self {
-                        deadline_index: FallibleMap::new(),
-                    }
-                }
-            }
-            mod kernel_wait;
-            pub(crate) use kernel_wait::KernelDeadlineWait;
-            use kernel_wait::{KernelTimer, KernelTimerExpiration};
-            pub(super) struct TimerExpirationRetirement {
-                entry: Option<DeadlineEntry>,
-            }
-            impl TimerExpirationRetirement {
-                fn from_deadline(entry: Option<DeadlineEntry>) -> Self {
-                    Self { entry }
-                }
-            }
-            pub(super) enum ExpiredTimer {
-                Kernel(KernelTimerExpiration),
-                Silent(TimerExpirationRetirement),
-            }
-
-            pub(crate) fn expire() {
-                let entry = {
-                    let mut queue = super::PROCESS_TABLE.timers.lock();
-                    let key = *queue.deadline_index.first_key_value().unwrap().0;
-                    queue.deadline_index.take_entry(&key).unwrap()
-                };
-                let pointer = entry.value() as *const _ as usize;
-                crate::DEADLINE_NODE.with(|saved| {
-                    if saved.get() == 0 {
-                        saved.set(pointer);
-                    }
-                    assert_eq!(saved.get(), pointer, "deadline storage must be reused");
-                });
-                match KernelTimerExpiration::from_entry(entry) {
-                    ExpiredTimer::Kernel(expired) => expired.complete(),
-                    ExpiredTimer::Silent(_) => panic!("live sleep lost timer owner"),
-                }
-                crate::EXPIRATIONS.with(|count| count.set(count.get() + 1));
-            }
-        }
-    }
-}
-
 #[test]
 fn repeated_sleep_reuses_deadline_and_event_under_total_allocation_failure() {
-    sync::warm_target();
-    let mut waiter = task::process_table::timer_queue::KernelDeadlineWait::new().unwrap();
+    crate::execution::sync::warm_target();
+    let mut waiter =
+        crate::execution::task::process_table::timer_queue::KernelDeadlineWait::new().unwrap();
     REJECT_ALLOCATIONS.set(true);
     let mut control = alloc::vec::Vec::<u64>::new();
     let control_failed = control.try_reserve_exact(2).is_err();
@@ -201,4 +71,140 @@ fn repeated_sleep_reuses_deadline_and_event_under_total_allocation_failure() {
     // 已到期 deadline 不发布 node，也不等待新事件。
     waiter.sleep_until(0);
     assert_eq!(EXPIRATIONS.get(), 100);
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    pub(crate) mod timer {
+        pub(crate) fn get_time_ns() -> u64 {
+            0
+        }
+    }
+    #[path = "../../../kernel/src/execution/sync"]
+    pub(crate) mod sync {
+        pub(crate) struct IrqMutex<T>(spin::Mutex<T>);
+        impl<T> IrqMutex<T> {
+            pub(crate) const fn new(value: T) -> Self {
+                Self(spin::Mutex::new(value))
+            }
+            pub(crate) fn lock(&self) -> spin::MutexGuard<'_, T> {
+                self.0.lock()
+            }
+        }
+        mod wait_completion;
+        pub(crate) use wait_completion::WaitCompletion;
+        mod task_event;
+        pub(crate) use task_event::TaskEvent;
+        pub(crate) use task_wait::WaitResult;
+
+        mod task_wait;
+        mod target {
+            use super::{
+                WaitCompletion,
+                task_wait::{TaskWaitKey, TaskWaitMode, TaskWaitTarget, WaitResult},
+            };
+            use alloc::sync::Arc;
+
+            struct Target;
+            impl TaskWaitTarget for Target {
+                fn sleep(
+                    self: Arc<Self>,
+                    completion: &WaitCompletion,
+                    key: TaskWaitKey,
+                ) -> WaitResult {
+                    assert_eq!(
+                        key.mode,
+                        TaskWaitMode::Idle,
+                        "daemon deadline sleep must not contribute to system load"
+                    );
+                    assert!(completion.begin_arming());
+                    // 定时器在 scheduler arming 期间到期；真实 TaskEvent 必须保留 pending 并完成握手。
+                    crate::execution::task::process_table::timer_queue::expire();
+                    assert!(completion.finish_arming());
+                    WaitResult::Woken
+                }
+                fn wake(self: Arc<Self>, _: TaskWaitKey) {
+                    panic!("arming completion must not issue a sleeping wake");
+                }
+            }
+            static TARGET: spin::Once<Arc<dyn TaskWaitTarget>> = spin::Once::new();
+            pub(super) fn factory() -> Option<Arc<dyn TaskWaitTarget>> {
+                Some(TARGET.call_once(|| Arc::new(Target)).clone())
+            }
+        }
+        pub(crate) fn warm_target() {
+            let _ = target::factory();
+            static INSTALL: std::sync::Once = std::sync::Once::new();
+            INSTALL.call_once(|| task_wait::install_wait_target_factory(target::factory));
+        }
+    }
+    #[path = "../../../kernel/src/execution/task"]
+    pub(crate) mod task {
+        #[path = "process_table"]
+        pub(crate) mod process_table {
+            // clock/expiry drive 为测试注入；deadline index 使用生产 AVL 和相同 key/payload。
+            struct ProcessTable {
+                timers: crate::execution::sync::IrqMutex<timer_queue::TimerQueue>,
+            }
+            static PROCESS_TABLE: ProcessTable = ProcessTable {
+                timers: crate::execution::sync::IrqMutex::new(timer_queue::TimerQueue::new()),
+            };
+
+            pub(crate) mod timer_queue {
+                use crate::fallible_tree::{FallibleMap, VacantEntry};
+                use alloc::sync::Weak;
+
+                #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+                pub(super) enum TimerIdentity {
+                    Kernel(u64),
+                }
+                type DeadlineEntry = VacantEntry<(u64, TimerIdentity), Option<Weak<KernelTimer>>>;
+                pub(super) struct TimerQueue {
+                    deadline_index: FallibleMap<(u64, TimerIdentity), Option<Weak<KernelTimer>>>,
+                }
+                impl TimerQueue {
+                    pub(super) const fn new() -> Self {
+                        Self {
+                            deadline_index: FallibleMap::new(),
+                        }
+                    }
+                }
+                mod kernel_wait;
+                pub(crate) use kernel_wait::KernelDeadlineWait;
+                use kernel_wait::{KernelTimer, KernelTimerExpiration};
+                pub(super) struct TimerExpirationRetirement {
+                    entry: Option<DeadlineEntry>,
+                }
+                impl TimerExpirationRetirement {
+                    fn from_deadline(entry: Option<DeadlineEntry>) -> Self {
+                        Self { entry }
+                    }
+                }
+                pub(super) enum ExpiredTimer {
+                    Kernel(KernelTimerExpiration),
+                    Silent(TimerExpirationRetirement),
+                }
+
+                pub(crate) fn expire() {
+                    let entry = {
+                        let mut queue = super::PROCESS_TABLE.timers.lock();
+                        let key = *queue.deadline_index.first_key_value().unwrap().0;
+                        queue.deadline_index.take_entry(&key).unwrap()
+                    };
+                    let pointer = entry.value() as *const _ as usize;
+                    crate::DEADLINE_NODE.with(|saved| {
+                        if saved.get() == 0 {
+                            saved.set(pointer);
+                        }
+                        assert_eq!(saved.get(), pointer, "deadline storage must be reused");
+                    });
+                    match KernelTimerExpiration::from_entry(entry) {
+                        ExpiredTimer::Kernel(expired) => expired.complete(),
+                        ExpiredTimer::Silent(_) => panic!("live sleep lost timer owner"),
+                    }
+                    crate::EXPIRATIONS.with(|count| count.set(count.get() + 1));
+                }
+            }
+        }
+    }
 }

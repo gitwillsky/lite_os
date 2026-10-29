@@ -5,12 +5,12 @@ first broken contract。
 
 | 领域 | 权威 contract | 代码入口 |
 |---|---|---|
-| boot、trap、CPU、deferred | `docs/architecture-contract/execution.md` | `kernel/src/entry.rs`、`kernel/src/trap/`、`kernel/src/cpu/` |
-| process、scheduler、wait、signal | `docs/architecture-contract/process-scheduling.md` | `kernel/src/syscall/process*.rs`、`kernel/src/task/` |
+| boot、trap、CPU、deferred | `docs/architecture-contract/execution.md` | `kernel/src/execution/entry.rs`、`kernel/src/execution/trap/`、`kernel/src/execution/cpu/` |
+| process、scheduler、wait、signal | `docs/architecture-contract/process-scheduling.md` | `kernel/src/syscall/process*.rs`、`kernel/src/execution/task/` |
 | address space、page fault、COW、TLB | `docs/architecture-contract/memory.md` | `kernel/src/syscall/memory.rs`、`kernel/src/memory/`、`kernel/src/arch/*/mmu*` |
 | VFS、ext2、page cache、OFD | `docs/architecture-contract/filesystem-storage.md` | `kernel/src/syscall/fs/`、`kernel/src/fs/` |
-| epoll、pipe、AF_UNIX、IPv4 | `docs/architecture-contract/ipc-network.md` | `kernel/src/syscall/{epoll,poll,socket}.rs`、`kernel/src/fs/epoll*`、`kernel/src/socket/` |
-| device、TTY、VirtIO | `docs/architecture-contract/devices-terminal.md` | `kernel/src/drivers/`、`kernel/src/input/`、`kernel/src/drm/`、TTY/PTY modules |
+| epoll、pipe、AF_UNIX、IPv4 | `docs/architecture-contract/ipc-network.md` | `kernel/src/syscall/{epoll,poll,socket}.rs`、`kernel/src/fs/epoll*`、`kernel/src/net/` |
+| device、TTY、VirtIO | `docs/architecture-contract/devices-terminal.md` | `kernel/src/devices/model/`、`kernel/src/devices/input/`、`kernel/src/devices/drm/`、TTY/PTY modules |
 | arch mechanism | 相关领域 contract 与 `docs/architecture-contract.md` | `kernel/src/arch/` |
 | machine facts、IPI、设备装配 | `docs/architecture-contract/boot-platform.md` | `kernel/src/platform/` |
 | Linux ABI | `docs/syscall-support.md` 路由到领域矩阵 | `syscall-abi/`、`kernel/src/syscall/` |

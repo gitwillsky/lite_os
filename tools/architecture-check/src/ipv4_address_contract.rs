@@ -10,12 +10,12 @@ fn source(sources: &[SourceFile], path: &str) -> String {
         .collect()
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let iface = source(sources, "kernel/src/socket/inet/interface.rs");
-    let fib = source(sources, "kernel/src/socket/inet/route.rs");
-    let config = source(sources, "kernel/src/socket/inet/configuration.rs");
+    let iface = source(sources, "kernel/src/net/inet/interface.rs");
+    let fib = source(sources, "kernel/src/net/inet/route.rs");
+    let config = source(sources, "kernel/src/net/inet/configuration.rs");
     let ioctl = source(sources, "kernel/src/syscall/socket/interface.rs");
-    let raw = source(sources, "kernel/src/socket/inet/raw.rs");
-    let udp = source(sources, "kernel/src/socket/inet/udp.rs");
+    let raw = source(sources, "kernel/src/net/inet/raw.rs");
+    let udp = source(sources, "kernel/src/net/inet/udp.rs");
     if !config.contains("broadcast:interface.state.broadcast")
         || !config.contains("ifinterface.state.address==next{returnOk(());}")
         || !config.contains("first<240{returnErr(SocketError::Invalid);}")
@@ -46,7 +46,7 @@ mod tests {
     fn rejects_broadcast_noop_reconstruction_and_protocol_disconnect() {
         for (path, old, new) in [
             (
-                "kernel/src/socket/inet/configuration.rs",
+                "kernel/src/net/inet/configuration.rs",
                 "state.broadcast = address;",
                 "let _ = address;",
             ),
@@ -56,7 +56,7 @@ mod tests {
                 "core::net::Ipv4Addr::BROADCAST",
             ),
             (
-                "kernel/src/socket/inet/udp.rs",
+                "kernel/src/net/inet/udp.rs",
                 "route.kind == super::route::Ipv4RouteKind::Broadcast",
                 "peer.address.is_broadcast()",
             ),

@@ -1,5 +1,5 @@
 // 实际 InetSocket、smoltcp SocketSet、port leases 与 deferred cleanup；只有 NIC/时钟/唤醒为边界。
-use crate::socket::NETWORK_TEST_SERIAL as SERIAL;
+use crate::net::NETWORK_TEST_SERIAL as SERIAL;
 #[test]
 fn passive_child_freezes_final_ack_policy_and_failed_accept_keeps_the_same_child() {
     use super::super::{SocketIoDirection::Receive, SocketTimeout};
@@ -10,7 +10,7 @@ fn passive_child_freezes_final_ack_policy_and_failed_accept_keeps_the_same_child
         InetProtocol::Tcp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     listener.bind(address(43007)).unwrap();
@@ -24,7 +24,7 @@ fn passive_child_freezes_final_ack_policy_and_failed_accept_keeps_the_same_child
     ingress(peer_tcp_frame(43007, TcpControl::Syn, None));
     {
         use smoltcp::wire::*;
-        let wire = crate::drivers::WIRE.lock().unwrap();
+        let wire = crate::devices::model::WIRE.lock().unwrap();
         assert!(
             wire.1.iter().any(|frame| {
                 let ethernet = EthernetFrame::new_checked(frame.as_slice()).unwrap();
@@ -76,7 +76,7 @@ fn passive_child_freezes_final_ack_policy_and_failed_accept_keeps_the_same_child
     listener.set_reuse_address(false).unwrap();
     let notify = Pipe::notification_pair().unwrap();
     let policy = Arc::new(SocketTimeouts::new());
-    let memory = crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap();
+    let memory = crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap();
     crate::allocation_failure::fail_next();
     assert!(matches!(
         listener.accept(notify, policy, memory),
@@ -91,7 +91,7 @@ fn passive_child_freezes_final_ack_policy_and_failed_accept_keeps_the_same_child
         .accept(
             Pipe::notification_pair().unwrap(),
             Arc::new(SocketTimeouts::new()),
-            crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+            crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
         )
         .unwrap();
     assert_eq!(
@@ -126,12 +126,12 @@ fn passive_child_freezes_final_ack_policy_and_failed_accept_keeps_the_same_child
     // SYN 时的真实广告已固定；ESTABLISHED setter 只改变下一次 open policy，不伪造当前 MSS。
     child.set_max_segment(88).unwrap();
     assert_eq!(child.option(InternetOption::MaxSegment).unwrap(), 512);
-    crate::drivers::WIRE.lock().unwrap().1.clear();
+    crate::devices::model::WIRE.lock().unwrap().1.clear();
     assert_eq!(child.send_to(&vec![0x35; 2000], None, None).unwrap(), 2000);
     initial_stack().unwrap().lock().unwrap().poll();
     {
         use smoltcp::wire::*;
-        let wire = crate::drivers::WIRE.lock().unwrap();
+        let wire = crate::devices::model::WIRE.lock().unwrap();
         let mut bytes = 0;
         for frame in &wire.1 {
             let ethernet = EthernetFrame::new_checked(frame.as_slice()).unwrap();
@@ -174,7 +174,7 @@ fn final_ack_and_reset_in_one_batch_preserve_accept_binding_and_one_error() {
         InetProtocol::Tcp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     listener.bind(address(43008)).unwrap();
@@ -183,7 +183,7 @@ fn final_ack_and_reset_in_one_batch_preserve_accept_binding_and_one_error() {
     ingress(peer_tcp_frame(43008, TcpControl::Syn, None));
     let ack = syn_ack(43008);
     {
-        let mut wire = crate::drivers::WIRE.lock().unwrap();
+        let mut wire = crate::devices::model::WIRE.lock().unwrap();
         wire.0
             .push_back(peer_tcp_frame(43008, TcpControl::None, Some(ack)));
         wire.0
@@ -198,7 +198,7 @@ fn final_ack_and_reset_in_one_batch_preserve_accept_binding_and_one_error() {
         .accept(
             Pipe::notification_pair().unwrap(),
             Arc::new(SocketTimeouts::new()),
-            crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+            crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
         )
         .unwrap();
     assert_eq!(
@@ -260,7 +260,7 @@ fn receive_shutdown_keeps_queued_data_and_fin_eof_precedes_reset_error() {
         InetProtocol::Tcp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     listener.bind(address(43009)).unwrap();
@@ -273,7 +273,7 @@ fn receive_shutdown_keeps_queued_data_and_fin_eof_precedes_reset_error() {
         .accept(
             Pipe::notification_pair().unwrap(),
             Arc::new(SocketTimeouts::new()),
-            crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+            crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
         )
         .unwrap();
     // native TCP 忽略有效目的地址，实际连接仍指向已建立的 peer。
@@ -353,7 +353,7 @@ fn refused_active_connect_keeps_its_binding_and_does_not_refill_consumed_error()
         InetProtocol::Tcp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     assert!(endpoint.poll_state().writable && endpoint.poll_state().hangup);
@@ -366,7 +366,7 @@ fn refused_active_connect_keeps_its_binding_and_does_not_refill_consumed_error()
     initial_stack().unwrap().lock().unwrap().poll();
     let binding = endpoint.address().unwrap();
     let ack = {
-        let mut wire = crate::drivers::WIRE.lock().unwrap();
+        let mut wire = crate::devices::model::WIRE.lock().unwrap();
         wire.1
             .drain(..)
             .find_map(|bytes| {
@@ -426,7 +426,7 @@ fn simultaneous_open_shutdown_waits_for_final_ack_before_connect_completion_and_
         InetProtocol::Tcp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     endpoint.bind(address(43015)).unwrap();
@@ -487,7 +487,7 @@ fn simultaneous_open_shutdown_waits_for_final_ack_before_connect_completion_and_
                 && tcp.state() == State::FinWait1
         }));
     }
-    let fin_sent = crate::drivers::WIRE.lock().unwrap().1.iter().any(|bytes| {
+    let fin_sent = crate::devices::model::WIRE.lock().unwrap().1.iter().any(|bytes| {
         let Ok(ethernet) = EthernetFrame::new_checked(&bytes[..]) else {
             return false;
         };
@@ -520,7 +520,7 @@ fn closed_shutdown_updates_readiness_and_bind_without_a_connected_transport() {
         InetProtocol::Tcp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     let generation = endpoint.readiness_generation();
@@ -556,7 +556,7 @@ fn syn_sent_shutdown_cancels_without_allocation_or_wire_reset_and_can_reconnect(
         InetProtocol::Tcp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     endpoint.bind(address(43012)).unwrap();
@@ -567,7 +567,7 @@ fn syn_sent_shutdown_cancels_without_allocation_or_wire_reset_and_can_reconnect(
     };
     assert_eq!(endpoint.connect(peer), Err(SocketError::InProgress));
     initial_stack().unwrap().lock().unwrap().poll();
-    crate::drivers::WIRE.lock().unwrap().1.clear();
+    crate::devices::model::WIRE.lock().unwrap().1.clear();
     let generation = endpoint.readiness_generation();
     crate::allocation_failure::fail_next();
     let result = endpoint.shutdown(1);
@@ -579,7 +579,7 @@ fn syn_sent_shutdown_cancels_without_allocation_or_wire_reset_and_can_reconnect(
     assert_eq!(endpoint.take_error(), Some(SocketError::ConnectionReset));
     assert_eq!(counts(), (1, 0, 1));
     initial_stack().unwrap().lock().unwrap().poll();
-    assert!(crate::drivers::WIRE.lock().unwrap().1.iter().all(|bytes| {
+    assert!(crate::devices::model::WIRE.lock().unwrap().1.iter().all(|bytes| {
         let Ok(ethernet) = EthernetFrame::new_checked(&bytes[..]) else {
             return true;
         };
@@ -608,7 +608,7 @@ fn listener_read_shutdown_retires_children_and_relisten_uses_the_same_facade_slo
         InetProtocol::Tcp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     listener.bind(address(43013)).unwrap();
@@ -622,7 +622,7 @@ fn listener_read_shutdown_retires_children_and_relisten_uses_the_same_facade_slo
         listener.poll_state().readable,
         "listener SHUT_WR leaves accept intact"
     );
-    crate::drivers::TRANSMIT_AVAILABLE.store(false, Relaxed);
+    crate::devices::model::TRANSMIT_AVAILABLE.store(false, Relaxed);
     let result = listener.shutdown(0);
     assert_eq!(result, Ok(()));
     assert_eq!(listener.address().unwrap(), address(43013));
@@ -631,7 +631,7 @@ fn listener_read_shutdown_retires_children_and_relisten_uses_the_same_facade_slo
         listener.accept(
             Pipe::notification_pair().unwrap(),
             Arc::new(SocketTimeouts::new()),
-            crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap()
+            crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap()
         ),
         Err(SocketError::Invalid)
     ));
@@ -649,7 +649,7 @@ fn listener_read_shutdown_retires_children_and_relisten_uses_the_same_facade_slo
         (3, 0, 1),
         "NIC backpressure cannot retain a closed TCP identity"
     );
-    crate::drivers::TRANSMIT_AVAILABLE.store(true, Relaxed);
+    crate::devices::model::TRANSMIT_AVAILABLE.store(true, Relaxed);
     initial_stack().unwrap().lock().unwrap().poll_at(now() + smoltcp::time::Duration::from_millis(1000));
     assert_eq!(counts(), (3, 0, 1));
     listener.disconnect().unwrap();
@@ -667,7 +667,7 @@ fn abortive_last_fput_releases_the_port_before_reset_delivery() {
         InetProtocol::Tcp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     listener.bind(address(43014)).unwrap();
@@ -676,7 +676,7 @@ fn abortive_last_fput_releases_the_port_before_reset_delivery() {
     ingress(peer_tcp_frame(43014, TcpControl::Syn, None));
     let ack = syn_ack(43014);
     ingress(peer_tcp_frame(43014, TcpControl::None, Some(ack)));
-    crate::drivers::TRANSMIT_AVAILABLE.store(false, Relaxed);
+    crate::devices::model::TRANSMIT_AVAILABLE.store(false, Relaxed);
     listener.close_description();
     initial_stack().unwrap().lock().unwrap().poll();
     assert_eq!(counts(), (0, 0, 0));
@@ -684,16 +684,16 @@ fn abortive_last_fput_releases_the_port_before_reset_delivery() {
         InetProtocol::Tcp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     replacement.bind(address(43014)).unwrap();
-    crate::drivers::TRANSMIT_AVAILABLE.store(true, Relaxed);
+    crate::devices::model::TRANSMIT_AVAILABLE.store(true, Relaxed);
     // 首次失败发送只安排有界queue的本地重试；不持有旧TCP/端口。
     initial_stack().unwrap().lock().unwrap().poll_at(now() + smoltcp::time::Duration::from_millis(1000));
     {
         use smoltcp::wire::*;
-        let wire = crate::drivers::WIRE.lock().unwrap();
+        let wire = crate::devices::model::WIRE.lock().unwrap();
         let resets: Vec<_> = wire.1.iter().filter_map(|frame| {
             let ethernet = EthernetFrame::new_checked(frame.as_slice()).ok()?;
             if ethernet.ethertype() != EthernetProtocol::Ipv4 { return None; }
@@ -722,7 +722,7 @@ fn udp_actual_fput_releases_port_and_closed_observer_cannot_access_reused_handle
         InetProtocol::Udp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     endpoint.bind(address(43001)).unwrap();
@@ -734,7 +734,7 @@ fn udp_actual_fput_releases_port_and_closed_observer_cannot_access_reused_handle
         InetProtocol::Udp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -781,7 +781,7 @@ fn closed_listener_observer_does_not_hold_port_or_retire_replacement() {
         InetProtocol::Tcp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     listener.bind(address(43004)).unwrap();
@@ -794,7 +794,7 @@ fn closed_listener_observer_does_not_hold_port_or_retire_replacement() {
         InetProtocol::Tcp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     replacement.bind(address(43004)).unwrap();
@@ -808,7 +808,7 @@ fn closed_listener_observer_does_not_hold_port_or_retire_replacement() {
         observer.accept(
             Pipe::notification_pair().unwrap(),
             Arc::new(SocketTimeouts::new()),
-            crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap()
+            crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap()
         ),
         Err(SocketError::NotConnected)
     ));
@@ -826,7 +826,7 @@ fn deferred_actual_close_releases_port_before_the_next_task_transaction() {
         InetProtocol::Udp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     endpoint.bind(address(43006)).unwrap();
@@ -849,7 +849,7 @@ fn deferred_actual_close_releases_port_before_the_next_task_transaction() {
         InetProtocol::Udp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     replacement.bind(address(43006)).unwrap();
@@ -869,7 +869,7 @@ fn fresh_tcp_admissions_and_final_cleanup_share_the_actual_socket_capacity() {
                 InetProtocol::Tcp,
                 Pipe::notification_pair().unwrap(),
                 Arc::new(SocketTimeouts::new()),
-                crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+                crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
             )
             .unwrap(),
         );
@@ -883,7 +883,7 @@ fn fresh_tcp_admissions_and_final_cleanup_share_the_actual_socket_capacity() {
             InetProtocol::Tcp,
             Pipe::notification_pair().unwrap(),
             Arc::new(SocketTimeouts::new()),
-            crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+            crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
         ),
         Err(SocketError::NoMemory)
     ));
@@ -903,7 +903,7 @@ fn fresh_tcp_admissions_and_final_cleanup_share_the_actual_socket_capacity() {
         InetProtocol::Tcp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     for endpoint in endpoints {
@@ -924,7 +924,7 @@ fn tcp_recreated_actual_transport_keeps_live_option_policy() {
         InetProtocol::Tcp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap();
     assert_eq!(endpoint.option(InternetOption::HopLimit).unwrap(), 64);
@@ -979,7 +979,7 @@ fn reset_allocation_failure_and_missing_route_do_not_retain_closed_tcp_or_port()
     for missing_route in [false, true] {
         initialize();
         let port = if missing_route { 43035 } else { 43034 };
-        let listener = scoped_endpoint(&crate::socket::initial_net(), InetProtocol::Tcp);
+        let listener = scoped_endpoint(&crate::net::initial_net(), InetProtocol::Tcp);
         listener.bind(address(port)).unwrap();
         listener.listen(1).unwrap();
         ingress(peer_arp_frame());
@@ -987,7 +987,7 @@ fn reset_allocation_failure_and_missing_route_do_not_retain_closed_tcp_or_port()
         let ack = syn_ack(port);
         ingress(peer_tcp_frame(port, TcpControl::None, Some(ack)));
         if missing_route {
-            configure_up(&crate::socket::initial_net(), 2, false).unwrap();
+            configure_up(&crate::net::initial_net(), 2, false).unwrap();
         } else {
             crate::allocation_failure::fail_next();
         }
@@ -996,10 +996,10 @@ fn reset_allocation_failure_and_missing_route_do_not_retain_closed_tcp_or_port()
             assert!(crate::allocation_failure::was_consumed(), "actual reset packet preparation must fail, not a synthetic error");
         }
         assert_eq!(counts(), (0, 0, 0), "best-effort reset cannot retain transport after no route or OOM");
-        let replacement = scoped_endpoint(&crate::socket::initial_net(), InetProtocol::Tcp);
+        let replacement = scoped_endpoint(&crate::net::initial_net(), InetProtocol::Tcp);
         replacement.bind(address(port)).unwrap();
         replacement.close_description();
-        configure_up(&crate::socket::initial_net(), 2, true).unwrap();
+        configure_up(&crate::net::initial_net(), 2, true).unwrap();
     }
 }
 
@@ -1011,7 +1011,7 @@ fn actual_fin_wait2_linger_is_orphan_only_and_expires_without_route_or_interface
     for (ordinal, seconds) in [-1, 1, 0, 120].into_iter().enumerate() {
         initialize();
         let port = 43040 + ordinal as u16;
-        let listener = scoped_endpoint(&crate::socket::initial_net(), InetProtocol::Tcp);
+        let listener = scoped_endpoint(&crate::net::initial_net(), InetProtocol::Tcp);
         listener.bind(address(port)).unwrap();
         listener.set_timer_option(InternetOption::Linger2, seconds).unwrap();
         listener.listen(1).unwrap();
@@ -1020,13 +1020,13 @@ fn actual_fin_wait2_linger_is_orphan_only_and_expires_without_route_or_interface
         let ack = syn_ack(port);
         ingress(peer_tcp_frame(port, TcpControl::None, Some(ack)));
         let child = listener.accept(Pipe::notification_pair().unwrap(), Arc::new(SocketTimeouts::new()),
-            crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap()).unwrap();
+            crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap()).unwrap();
         listener.close_description();
         let InetEndpoint::Tcp(id) = child.endpoint else { unreachable!() };
         child.shutdown(1).unwrap();
         initial_stack().unwrap().lock().unwrap().poll();
         let fin_ack = {
-            let wire = crate::drivers::WIRE.lock().unwrap();
+            let wire = crate::devices::model::WIRE.lock().unwrap();
             wire.1.iter().find_map(|frame| {
                 let ethernet = EthernetFrame::new_checked(frame.as_slice()).ok()?;
                 if ethernet.ethertype() != EthernetProtocol::Ipv4 { return None; }
@@ -1056,14 +1056,14 @@ fn actual_fin_wait2_linger_is_orphan_only_and_expires_without_route_or_interface
             let before = now();
             let expected_seconds = if seconds == 0 { 60 } else { seconds as u64 };
             assert!(deadline > before + Duration::from_millis(expected_seconds * 1000 - 100));
-            configure_up(&crate::socket::initial_net(), 2, false).unwrap();
+            configure_up(&crate::net::initial_net(), 2, false).unwrap();
             initial_stack().unwrap().lock().unwrap().poll_at(deadline - Duration::from_millis(1));
             assert_eq!(counts(), (1, 0, 1));
             initial_stack().unwrap().lock().unwrap().poll_at(deadline);
             assert_eq!(counts(), (0, 0, 0), "FIN_WAIT2 clock cannot depend on route or NIC");
-            configure_up(&crate::socket::initial_net(), 2, true).unwrap();
+            configure_up(&crate::net::initial_net(), 2, true).unwrap();
         }
-        let replacement = scoped_endpoint(&crate::socket::initial_net(), InetProtocol::Tcp);
+        let replacement = scoped_endpoint(&crate::net::initial_net(), InetProtocol::Tcp);
         replacement.bind(address(port)).unwrap();
         replacement.close_description();
     }

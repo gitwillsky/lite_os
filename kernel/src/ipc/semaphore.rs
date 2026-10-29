@@ -2,9 +2,9 @@
 use super::sem_undo::{SemaphoreUndoEntry, UndoRegistration};
 use super::{IpcAccess, IpcError, IpcPermission};
 use crate::{
+    execution::sync::{TaskEvent, WaitResult},
     fallible_tree::{FallibleMap, VacantEntry},
     namespace::{PidIdentity, UserNamespace},
-    sync::{TaskEvent, WaitResult},
 };
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;

@@ -96,20 +96,20 @@ pub(crate) trait ProcSource: Send + Sync {
     /// IPC sysctl lookup pin calling Thread 的实际 owner；以后 setns 不重定向既有 fd。
     fn current_ipc_namespace(&self) -> Result<Arc<crate::ipc::IpcNamespace>, FileSystemError>;
     /// net sysctl lookup 固定调用者网络域；inode key/metadata 与已打开 fd 保持同一对象。
-    fn current_net_namespace(&self) -> Result<Arc<crate::socket::NetNamespace>, FileSystemError>;
+    fn current_net_namespace(&self) -> Result<Arc<crate::net::NetNamespace>, FileSystemError>;
 
     /// /proc/TID/net 每次 lookup/readdir 从实际 Thread 的 nsproxy 捕获 NET；已退休/kernel 无替代域。
-    fn thread_net_namespace(&self, tid: usize) -> Option<Arc<crate::socket::NetNamespace>>;
+    fn thread_net_namespace(&self, tid: usize) -> Option<Arc<crate::net::NetNamespace>>;
     /// 网络文件只读取 open 捕获的实际 NET 全接口快照；不收集全局 CPU/MM/Process 状态。
     fn network_snapshot(
         &self,
-        target: &crate::socket::NetNamespace,
+        target: &crate::net::NetNamespace,
     ) -> Result<Vec<ProcNetworkSnapshot>, FileSystemError>;
 
     /// 网络路由文件读取捕获NET的实际MAIN FIB，不从地址快照合成route。
     fn route_snapshot(
         &self,
-        target: &crate::socket::NetNamespace,
+        target: &crate::net::NetNamespace,
     ) -> Result<Vec<ProcRouteSnapshot>, FileSystemError>;
 
     /// user sysctl lookup 绑定实际 caller namespace；打开 fd 不随以后 setns/unshare 重定向。
@@ -228,7 +228,7 @@ struct ProcInode {
     pid_namespace: Arc<crate::namespace::PidNamespace>,
     sysctl_pid_namespace: Option<Weak<crate::namespace::PidNamespace>>,
     sysctl_ipc_namespace: Option<Weak<crate::ipc::IpcNamespace>>,
-    net_namespace: Option<Weak<crate::socket::NetNamespace>>,
+    net_namespace: Option<Weak<crate::net::NetNamespace>>,
     user_namespace: Option<Weak<crate::namespace::UserNamespace>>,
     identities: Arc<ProcIdentities<Self>>,
     attributes: attributes::ProcAttributes,
@@ -243,7 +243,7 @@ impl ProcInode {
         node: ProcNode,
         pid_namespace: Arc<crate::namespace::PidNamespace>,
         namespace: Option<Arc<crate::namespace::UserNamespace>>,
-        network: Option<Arc<crate::socket::NetNamespace>>,
+        network: Option<Arc<crate::net::NetNamespace>>,
         identities: Arc<ProcIdentities<Self>>,
     ) -> Result<Arc<Self>, FileSystemError> {
         let user_namespace = if matches!(
@@ -413,7 +413,7 @@ impl ProcInode {
         &self,
         node: ProcNode,
         descendant: bool,
-        network: Option<Arc<crate::socket::NetNamespace>>,
+        network: Option<Arc<crate::net::NetNamespace>>,
     ) -> Result<Arc<Self>, FileSystemError> {
         let child = Self::new(
             self.filesystem_id,
@@ -1087,7 +1087,7 @@ impl Inode for ProcInode {
             }
             ProcNode::CoreNetSysctlDir => {
                 emit!(ProcNode::OptmemLimit, InodeType::File, b"optmem_max");
-                for resource in crate::socket::CoreBufferLimit::ALL {
+                for resource in crate::net::CoreBufferLimit::ALL {
                     emit!(
                         ProcNode::CoreBufferLimit(resource),
                         InodeType::File,
@@ -1315,7 +1315,7 @@ impl Inode for ProcInode {
             ProcNode::NetSysctlDir => return Err(FileSystemError::NotFound),
             ProcNode::CoreNetSysctlDir if name == b"optmem_max" => ProcNode::OptmemLimit,
             ProcNode::CoreNetSysctlDir => ProcNode::CoreBufferLimit(
-                crate::socket::CoreBufferLimit::ALL
+                crate::net::CoreBufferLimit::ALL
                     .into_iter()
                     .find(|resource| resource.name() == name)
                     .ok_or(FileSystemError::NotFound)?,

@@ -1,6 +1,6 @@
 use crate::{
+    execution::task::{current_task, parent_death_signal},
     syscall::errno,
-    task::{current_task, parent_death_signal},
 };
 
 const PR_SET_PDEATHSIG: u32 = 1;

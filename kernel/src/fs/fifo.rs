@@ -3,7 +3,7 @@
 //! FIFO inode 本身不保存数据；第一个 open 创建 Pipe，最后一个 endpoint 关闭时 Pipe 随之消失（未读数据
 //! 丢弃）。同一 inode 的所有 open 通过 `(filesystem, inode)` 找到同一个 Pipe。
 
-use crate::sync::TaskMutex;
+use crate::execution::sync::TaskMutex;
 use alloc::{sync::Arc, sync::Weak, vec::Vec};
 
 use syscall_abi::errno;
@@ -13,11 +13,11 @@ use super::chardev::{
     UserOutput,
 };
 use crate::{
+    execution::sync::WaitResult,
     ipc::{
         PIPE_BUF, Pipe, PipeDirection, PipeEnd, PipeOpenAccess, PipeOpenError, PipeRead,
         PipeWaitCondition, PipeWrite, ReceiveBuffer,
     },
-    sync::WaitResult,
 };
 
 /// FIFO open 的失败原因。

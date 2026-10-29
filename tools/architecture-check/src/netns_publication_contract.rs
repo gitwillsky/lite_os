@@ -10,10 +10,10 @@ fn source(sources: &[SourceFile], path: &str) -> String {
         .collect()
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let task = source(sources, "kernel/src/task/model/namespaces.rs");
-    let inet = source(sources, "kernel/src/socket/inet.rs");
+    let task = source(sources, "kernel/src/execution/task/model/namespaces.rs");
+    let inet = source(sources, "kernel/src/net/inet.rs");
     let reference = source(sources, "kernel/src/namespace/reference.rs");
-    let owner = source(sources, "kernel/src/socket/net_namespace.rs");
+    let owner = source(sources, "kernel/src/net/net_namespace.rs");
     let clone = source(sources, "kernel/src/syscall/process.rs");
     let unshare = source(sources, "kernel/src/syscall/process_context.rs");
     let pidfd = source(sources, "kernel/src/fs/pidfs/ioctl.rs");
@@ -27,11 +27,11 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     if !factory.contains("super::NetNamespace::create(user,creator_uid)?")
         || !factory.contains("prepare_network(&namespace,&[],false)")
         || !factory.contains("namespace.install_protocol(owner);Ok(namespace)")
-        || !task.contains("membership.net=crate::socket::create_net_namespace(owner,authority.effective_uid)?")
+        || !task.contains("membership.net=crate::net::create_net_namespace(owner,authority.effective_uid)?")
         || !clone.contains("|NEWNET|") || !clone.contains("flags&NEWNET!=0,")
         || !unshare.contains("flags&CLONE_NEWNET!=0,")
         || !task.contains("NamespaceType::Net=>")
-        || !task.contains("target.downcast::<crate::socket::NetNamespace>()?")
+        || !task.contains("target.downcast::<crate::net::NetNamespace>()?")
         || !task.contains("!authority.capable(&net.user_namespace(),syscall_abi::capability::Capability::SYS_ADMIN,)")
         || !task.contains(".expect(\"livenamespacemembership\").net,net,")
     {
@@ -62,14 +62,14 @@ mod tests {
     fn rejects_protocol_free_namespace_and_initial_owner_selection() {
         for (path, old, new) in [
             (
-                "kernel/src/socket/inet.rs",
+                "kernel/src/net/inet.rs",
                 "prepare_network(&namespace, &[], false)",
                 "prepare_network(&namespace, &[], true)",
             ),
             (
-                "kernel/src/task/model/namespaces.rs",
+                "kernel/src/execution/task/model/namespaces.rs",
                 "NamespaceReference::new(self.net.clone())",
-                "NamespaceReference::new(crate::socket::initial_net())",
+                "NamespaceReference::new(crate::net::initial_net())",
             ),
             (
                 "kernel/src/fs/pidfs/ioctl.rs",

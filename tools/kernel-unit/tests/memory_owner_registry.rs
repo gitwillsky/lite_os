@@ -54,10 +54,6 @@ static ALLOCATOR: ReclaimingAllocator = ReclaimingAllocator;
 #[allow(dead_code)]
 mod fallible_tree;
 
-mod sync {
-    pub(crate) struct TaskMutexWaitPreparation;
-}
-
 // 不执行页内容或 MMU 操作；这里只提供生产 shared_file 的独立 registry 所需类型。
 #[path = "../../../kernel/src/memory"]
 #[allow(dead_code)]
@@ -151,14 +147,14 @@ impl memory::shared_file::MemoryMappingOwner for Mapping {
     fn revoke_shared_file_writers(
         &self,
         _: memory::shared_file::SharedFileId,
-        _: &mut sync::TaskMutexWaitPreparation,
+        _: &mut crate::execution::sync::TaskMutexWaitPreparation,
     ) {
         self.0.fetch_add(1, Ordering::Relaxed);
     }
     fn restore_swapped_pages(
         &self,
         _: memory::shared_file::SharedFileId,
-        _: &mut sync::TaskMutexWaitPreparation,
+        _: &mut crate::execution::sync::TaskMutexWaitPreparation,
     ) -> Result<(), memory::shared_file::SharedFileError> {
         Ok(())
     }
@@ -167,7 +163,7 @@ impl memory::shared_file::MemoryMappingOwner for Mapping {
         _: memory::shared_file::SharedFileId,
         _: u64,
         _: u64,
-        _: &mut sync::TaskMutexWaitPreparation,
+        _: &mut crate::execution::sync::TaskMutexWaitPreparation,
     ) {
         self.0.fetch_add(1, Ordering::Relaxed);
     }
@@ -175,7 +171,7 @@ impl memory::shared_file::MemoryMappingOwner for Mapping {
         &self,
         _: memory::shared_file::SharedFileId,
         _: u64,
-        _: &mut sync::TaskMutexWaitPreparation,
+        _: &mut crate::execution::sync::TaskMutexWaitPreparation,
     ) {
         self.0.fetch_add(1, Ordering::Relaxed);
     }
@@ -254,7 +250,7 @@ fn registry_preparation_can_reenter_direct_reclaim() {
             inode: 1,
         },
         0,
-        &mut sync::TaskMutexWaitPreparation,
+        &mut crate::execution::sync::TaskMutexWaitPreparation,
     );
     assert_eq!(mapping.0.load(Ordering::Relaxed), 1);
     assert_eq!(another_mapping.0.load(Ordering::Relaxed), 0);
@@ -271,7 +267,13 @@ fn registry_preparation_can_reenter_direct_reclaim() {
             inode: 1,
         },
         0,
-        &mut sync::TaskMutexWaitPreparation,
+        &mut crate::execution::sync::TaskMutexWaitPreparation,
     );
     assert_eq!(another_mapping.0.load(Ordering::Relaxed), 1);
+}
+
+pub(crate) mod execution {
+    pub(crate) mod sync {
+        pub(crate) struct TaskMutexWaitPreparation;
+    }
 }

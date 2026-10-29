@@ -10,11 +10,11 @@ fn source(sources: &[SourceFile], path: &str) -> String {
         .collect()
 }
 pub(super) fn check(root: &std::path::Path, sources: &[SourceFile], errors: &mut Vec<String>) {
-    let config = source(sources, "kernel/src/socket/inet/configuration.rs");
-    let device = source(sources, "kernel/src/socket/inet/device.rs");
-    let loopback = source(sources, "kernel/src/socket/inet/device/loopback.rs");
+    let config = source(sources, "kernel/src/net/inet/configuration.rs");
+    let device = source(sources, "kernel/src/net/inet/device.rs");
+    let loopback = source(sources, "kernel/src/net/inet/device/loopback.rs");
     let ioctl = source(sources, "kernel/src/syscall/socket/interface.rs");
-    let packet = source(sources, "kernel/src/socket/packet.rs");
+    let packet = source(sources, "kernel/src/net/packet.rs");
     let mechanism = std::fs::read_to_string(root.join("vendor/smoltcp/src/iface/interface/mod.rs"))
         .expect("pinned MTU mechanism")
         .split_whitespace()
@@ -68,7 +68,7 @@ mod tests {
             let mut sources = super::super::load_sources(&root).unwrap();
             let source = sources
                 .iter_mut()
-                .find(|source| source.relative == "kernel/src/socket/inet/configuration.rs")
+                .find(|source| source.relative == "kernel/src/net/inet/configuration.rs")
                 .unwrap();
             assert!(source.text.contains(old));
             source.text = source.text.replace(old, new);

@@ -1,9 +1,9 @@
 use crate::{
+    execution::task::current_task,
     file::OpenFileKind,
     fs::{InodeType, O_ACCMODE, O_RDONLY, O_WRONLY},
     memory::{FileMappingError, FileMappingSource, MapPermission, MemoryAdvice, MemoryError},
     memory::{MappingPlacement, UserMappingRequest, UserMappingSource},
-    task::current_task,
 };
 
 use super::{

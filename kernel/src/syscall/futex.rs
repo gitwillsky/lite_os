@@ -1,7 +1,9 @@
 use crate::{
+    execution::task::{
+        FutexWaitError, current_task, futex_requeue, futex_wait, futex_wake, futex_wake_op,
+    },
+    execution::timer::{get_realtime_ns, get_time_ns},
     syscall::errno,
-    task::{FutexWaitError, current_task, futex_requeue, futex_wait, futex_wake, futex_wake_op},
-    timer::{get_realtime_ns, get_time_ns},
 };
 
 use super::{
@@ -23,7 +25,7 @@ const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
 mod wake_op;
 
 fn read_timeout(
-    task: &crate::task::TaskControlBlock,
+    task: &crate::execution::task::TaskControlBlock,
     address: usize,
 ) -> Result<Option<u64>, isize> {
     if address == 0 {
@@ -43,7 +45,7 @@ fn read_timeout(
 }
 
 fn relative_deadline(
-    task: &crate::task::TaskControlBlock,
+    task: &crate::execution::task::TaskControlBlock,
     address: usize,
 ) -> Result<Option<u64>, isize> {
     Ok(read_timeout(task, address)?
@@ -51,7 +53,7 @@ fn relative_deadline(
 }
 
 fn absolute_deadline(
-    task: &crate::task::TaskControlBlock,
+    task: &crate::execution::task::TaskControlBlock,
     address: usize,
     realtime: bool,
 ) -> Result<Option<u64>, isize> {
@@ -198,7 +200,7 @@ pub(crate) fn sys_futex(
 
 /// 执行已导入的 WAIT；原始入口与标准 restart_syscall 共用同一期限和 actual wait owner。
 pub(super) fn wait_with_deadline(
-    task: alloc::sync::Arc<crate::task::TaskControlBlock>,
+    task: alloc::sync::Arc<crate::execution::task::TaskControlBlock>,
     address: usize,
     expected: u32,
     private: bool,
@@ -211,7 +213,7 @@ pub(super) fn wait_with_deadline(
             let Some(deadline) = deadline else {
                 return INTERNAL_RESTART_SYS;
             };
-            task.set_syscall_restart_block(crate::task::SyscallRestartBlock::Futex {
+            task.set_syscall_restart_block(crate::execution::task::SyscallRestartBlock::Futex {
                 address,
                 expected,
                 private,

@@ -17,7 +17,7 @@ use spin::Mutex;
 use super::shared_memory::{SharedPageResidency, SharedPageStatistics};
 use super::vmstat::{self, PageState};
 use super::{SharedFileError, SharedFileId, SharedFrame, address::PhysicalPageNumber, swap};
-use crate::sync::{TaskMutex, TaskMutexGuard};
+use crate::execution::sync::{TaskMutex, TaskMutexGuard};
 use references::{MappingReference, MappingState};
 
 /// 实际 anonymous shared backing 的 swap admission；仅其页持 Weak，observer 不保活整个 backing。

@@ -11,18 +11,10 @@ mod memory;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 #[path = "../src/socket_core_fixture.rs"]
-mod socket;
-mod timer {
-    pub(crate) fn get_time_ns() -> u64 {
-        2_000_000_000
-    }
-    pub(crate) fn get_realtime_ns() -> u64 {
-        11_000_000_000
-    }
-}
+mod net;
+
 // 本fixture不执行mount poll；调度/namespace拓扑在实际VFS专用fixture覆盖。
-#[path = "../src/sync.rs"]
-mod sync;
+
 mod ipc {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -420,11 +412,11 @@ mod fs {
         trait ProcSource: Send + Sync {
             fn network_snapshot(
                 &self,
-                target: &crate::socket::NetNamespace,
+                target: &crate::net::NetNamespace,
             ) -> Result<Vec<networking::ProcNetworkSnapshot>, FileSystemError>;
             fn route_snapshot(
                 &self,
-                target: &crate::socket::NetNamespace,
+                target: &crate::net::NetNamespace,
             ) -> Result<Vec<networking::ProcRouteSnapshot>, FileSystemError>;
             fn thread_time_for_children(
                 &self,
@@ -441,7 +433,7 @@ mod fs {
         impl ProcSource for Source {
             fn network_snapshot(
                 &self,
-                _: &crate::socket::NetNamespace,
+                _: &crate::net::NetNamespace,
             ) -> Result<Vec<networking::ProcNetworkSnapshot>, FileSystemError> {
                 unreachable!(
                     "protocol snapshot belongs to actual network endpoint fixture; this seam checks open lifetime only"
@@ -449,7 +441,7 @@ mod fs {
             }
             fn route_snapshot(
                 &self,
-                _: &crate::socket::NetNamespace,
+                _: &crate::net::NetNamespace,
             ) -> Result<Vec<networking::ProcRouteSnapshot>, FileSystemError> {
                 unreachable!(
                     "actual FIB belongs to the network endpoint fixture; this seam checks captured open lifetime"
@@ -489,7 +481,7 @@ mod fs {
             node: ProcNode,
             sysctl_pid_namespace: Option<alloc::sync::Weak<crate::namespace::PidNamespace>>,
             sysctl_ipc_namespace: Option<alloc::sync::Weak<crate::ipc::IpcNamespace>>,
-            net_namespace: Option<alloc::sync::Weak<crate::socket::NetNamespace>>,
+            net_namespace: Option<alloc::sync::Weak<crate::net::NetNamespace>>,
             user_namespace: Option<alloc::sync::Weak<UserNamespace>>,
         }
         impl ProcInode {
@@ -561,7 +553,7 @@ mod fs {
                 node: ProcNode::UserMap(41, kind),
                 sysctl_pid_namespace: None,
                 sysctl_ipc_namespace: None,
-                net_namespace: Some(Arc::downgrade(&crate::socket::boot_net())),
+                net_namespace: Some(Arc::downgrade(&crate::net::boot_net())),
                 user_namespace: None,
             }
         }
@@ -865,7 +857,7 @@ mod fs {
                 effective_capabilities: 0,
                 ..root.clone()
             };
-            for resource in crate::socket::CoreBufferLimit::ALL {
+            for resource in crate::net::CoreBufferLimit::ALL {
                 let mut node = inode(root.namespace.clone(), UserNamespaceMap::Uid);
                 node.node = ProcNode::CoreBufferLimit(resource);
                 let file = opened_operations::open(&node, 0, &denied).unwrap();
@@ -902,8 +894,8 @@ mod fs {
         #[test]
         fn optmem_sysctl_uses_actual_captured_policy_and_current_writer() {
             let root = authority();
-            let target = crate::socket::boot_net();
-            struct Restore(Arc<crate::socket::NetNamespace>, NamespaceAuthority, u32);
+            let target = crate::net::boot_net();
+            struct Restore(Arc<crate::net::NetNamespace>, NamespaceAuthority, u32);
             impl Drop for Restore {
                 fn drop(&mut self) {
                     self.0.set_optmem_max(self.2, &self.1).unwrap();
@@ -982,10 +974,9 @@ mod fs {
         #[test]
         fn network_table_open_pins_exact_child_domain_without_task_or_caller_fallback() {
             let root = authority();
-            crate::socket::boot_net();
-            let first = crate::socket::NetNamespace::create(root.namespace.clone(), 88372).unwrap();
-            let second =
-                crate::socket::NetNamespace::create(root.namespace.clone(), 88372).unwrap();
+            crate::net::boot_net();
+            let first = crate::net::NetNamespace::create(root.namespace.clone(), 88372).unwrap();
+            let second = crate::net::NetNamespace::create(root.namespace.clone(), 88372).unwrap();
             let retired = Arc::downgrade(&first);
             let mut node = inode(root.namespace.clone(), UserNamespaceMap::Uid);
             node.node = ProcNode::NetDev;
@@ -1091,10 +1082,9 @@ mod fs {
         #[test]
         fn distinct_network_sysctl_opens_capture_policy_and_global_buffers_are_readonly() {
             let root = authority();
-            crate::socket::boot_net();
-            let first = crate::socket::NetNamespace::create(root.namespace.clone(), 88371).unwrap();
-            let second =
-                crate::socket::NetNamespace::create(root.namespace.clone(), 88371).unwrap();
+            crate::net::boot_net();
+            let first = crate::net::NetNamespace::create(root.namespace.clone(), 88371).unwrap();
+            let second = crate::net::NetNamespace::create(root.namespace.clone(), 88371).unwrap();
             let mut node = inode(root.namespace.clone(), UserNamespaceMap::Uid);
             node.node = ProcNode::OptmemLimit;
             node.net_namespace = Some(Arc::downgrade(&first));
@@ -1114,7 +1104,7 @@ mod fs {
             assert_eq!(second.optmem_max(), 128 * 1024);
             assert_eq!(read(&*file), "41\n");
             assert_eq!(read(&*next), "131072\n");
-            for resource in crate::socket::CoreBufferLimit::ALL {
+            for resource in crate::net::CoreBufferLimit::ALL {
                 node.node = ProcNode::CoreBufferLimit(resource);
                 assert!(matches!(
                     opened_operations::open(&node, 2, &root),
@@ -2348,4 +2338,18 @@ mod fs {
             format!("user:[{}]", NamespaceReference::new(child).inode()).into_bytes()
         );
     }
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    pub(crate) mod timer {
+        pub(crate) fn get_time_ns() -> u64 {
+            2_000_000_000
+        }
+        pub(crate) fn get_realtime_ns() -> u64 {
+            11_000_000_000
+        }
+    }
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
 }

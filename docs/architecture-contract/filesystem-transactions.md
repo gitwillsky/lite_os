@@ -78,7 +78,7 @@
   fallible 分配，节点与字节只移动；active view 在 commit/drop 时按 identity 原样交回 handle，
   reader 的 Arc 不得逃出 journal guard。cache miss 可继续访问 home device；禁止把 block I/O
   重新放回 journal spin guard。commit failure 必须清空 metadata cache 并把 journal 标记为
-  fail-stop，后续 mutation 不得另走无 journal 兼容路径；`fsync`/`sync` 报告该提交失败的 EIO。
+  fail-stop，后续 mutation 不得另走无 journal 兼容路径；`fsync`/`execution::sync` 报告该提交失败的 EIO。
 - mount journal replay 若更新了 home blocks，必须在任何 superblock home write、orphan reclaim 或
   consistency scan 前，从 primary home blocks 重新 decode/validate superblock 与完整 GDT，验证
   immutable topology 未改变、清空 replay 前 cache identity，再一次性发布 runtime owner。禁止让

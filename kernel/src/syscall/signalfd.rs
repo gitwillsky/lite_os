@@ -1,8 +1,8 @@
 use super::errno;
 use crate::{
+    execution::task::current_task,
     file::{OpenFileDescription, OpenFileKind},
     fs::{O_CLOEXEC, O_NONBLOCK},
-    task::current_task,
 };
 
 /// Linux signalfd4：创建 reader-relative OFD 或替换既有 OFD 的消费 mask。
@@ -35,7 +35,7 @@ pub(crate) fn sys_signalfd4(fd: i32, pointer: usize, size: usize, flags: u32) ->
             return -errno::EINVAL;
         };
         signal.replace_mask(mask);
-        crate::task::notify_signal_waiters(&task);
+        crate::execution::task::notify_signal_waiters(&task);
         fd as isize
     }
 }

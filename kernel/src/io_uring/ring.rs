@@ -14,9 +14,9 @@ use super::abi::{
     SQ_TAIL, SQE_BYTES, Sqe,
 };
 use crate::{
+    execution::sync::{TaskMutex, WaitResult},
     ipc::{Pipe, PipeEnd, PipeWaitCondition},
     memory::{DeviceBacking, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE},
-    sync::{TaskMutex, WaitResult},
 };
 
 /// 内核侧溢出链表相对 CQ 容量的倍数上限。超过后 CQE 被丢弃并计入 `cq_overflow`；缺少上限，
@@ -179,7 +179,7 @@ impl Ring {
                 dropped_unreported: false,
             }),
             readiness,
-            generation: AtomicU64::new(crate::sync::next_readiness_generation()),
+            generation: AtomicU64::new(crate::execution::sync::next_readiness_generation()),
             closed: AtomicBool::new(false),
             posted: AtomicU32::new(0),
             timeouts_posted: AtomicU32::new(0),
@@ -310,8 +310,10 @@ impl Ring {
     }
 
     fn advance_generation(&self) {
-        self.generation
-            .fetch_max(crate::sync::next_readiness_generation(), Ordering::AcqRel);
+        self.generation.fetch_max(
+            crate::execution::sync::next_readiness_generation(),
+            Ordering::AcqRel,
+        );
     }
 
     pub(crate) fn readiness_generation(&self) -> u64 {
@@ -492,7 +494,7 @@ impl Ring {
             if self.cq_ready() >= minimum {
                 return CqWait::Satisfied;
             }
-            if deadline.is_some_and(|value| value <= crate::timer::get_time_ns()) {
+            if deadline.is_some_and(|value| value <= crate::execution::timer::get_time_ns()) {
                 return CqWait::TimedOut;
             }
             self.readiness.0.drain_readiness();

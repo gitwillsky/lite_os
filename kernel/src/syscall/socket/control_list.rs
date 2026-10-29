@@ -1,5 +1,5 @@
 //! Linux native cmsghdr 的一次 copyin 与只读遍历；解析期间不再次读取 userspace header/data。
-use crate::{syscall::user_iovec::UserInputStaging, task::TaskControlBlock};
+use crate::{execution::task::TaskControlBlock, syscall::user_iovec::UserInputStaging};
 
 pub(super) const CMSG_HEADER: usize = 16;
 const INLINE_CONTROL: usize = CMSG_HEADER + 20;
@@ -17,7 +17,7 @@ enum Storage {
     Heap {
         bytes: UserInputStaging<'static>,
         // 字段 drop 顺序保证先释放 allocation，再退实际 socket 费用。
-        _charge: crate::socket::ControlMemoryCharge,
+        _charge: crate::net::ControlMemoryCharge,
     },
 }
 /// 已完整 copyin 的唯一 ancillary bytes；只把 initialized prefix 暴露给 codec。
@@ -27,7 +27,7 @@ impl ControlSnapshot {
     /// 任一 fault 不返回半份 snapshot，OOM/超界返回 NoBuffer，不捕获任何 descriptor。
     pub(super) fn import(
         task: &TaskControlBlock,
-        socket: &crate::socket::Socket,
+        socket: &crate::net::Socket,
         pointer: usize,
         length: usize,
     ) -> Result<Self, ImportError> {

@@ -4,21 +4,21 @@
 
 - RISC-V `bootloader` 独占 M-mode firmware state、machine trap stack、PMP 与 RustSBI service；AArch64 不得依赖该 domain。
 - `bootloader::rfence` 独占每 hart 的 request/range/ack mailbox 与 broadcast serialization lock；`STARTS`/`SIZES` 只由持锁 sender 在 request Release 前写，并由目标 hart 在 request Acquire 后读。
-- `platform::qemu_virt::riscv64` 独占 SBI/PLIC machine codec；`platform::qemu_virt::aarch64` 独占 PSCI/GICv3/PL011/PL031 machine codec。共同 façade 独占 DTB machine facts 与具体设备装配。
+- `platform::qemu_virt::riscv64` 独占 SBI/PLIC machine codec；`platform::qemu_virt::aarch64` 独占 PSCI/GICv3/PL011/PL031 machine codec。共同 façade 独占 DTB machine facts 与中断控制器、早期串口装配。
 - 各架构 `device_tree` 独占 DTB 到 `PlatformInfo` 的纯解码；`discovery` 只独占 boot handoff 指针、
   一次性 publication 与 hardware CPU 投影。`qemu_virt::virtio_mmio` 独占 VirtIO-MMIO transport 识别与
-  有界 transport 表；`virtio::binding` 是 device ID 到 driver adapter 的唯一装配表，只消费 platform 给出的 transport 表、
-  PCI host、physical→virtual 映射与 interrupt 注册入口；platform 不认识任何设备类，禁止恢复各架构自带的 `init_virtio_*` 分派。
-- 显示设备分两步装配：`virtio::bind_display` 在 `memory::init` 之后立即初始化首个 GPU（只需内存分配器、窗口地址转换
-  与 DTB 结果），让 `boot_screen` 在其余设备、文件系统与 scheduler 之前上屏；返回的 `EarlyDisplay` 令牌交给
+  有界 transport 表；`drivers::virtio::binding` 是 device ID 到 driver adapter 的唯一装配表，只消费 platform 给出的 transport 表、
+  PCI host、physical→virtual 映射与 interrupt 注册入口；platform 不消费通用设备类的 DMA、队列或 UAPI，禁止恢复各架构自带的 `init_virtio_*` 分派。
+- 显示设备分两步装配：`drivers::virtio::bind_display` 在 `memory::init` 之后立即初始化首个 GPU（只需内存分配器、窗口地址转换
+  与 DTB 结果），让 `boot::boot_screen` 在其余设备、文件系统与 scheduler 之前上屏；返回的 `EarlyDisplay` 令牌交给
   `bind_platform_devices`，由它在 interrupt controller 就绪后补注册 GPU 中断。缺少这一步 GPU 永远收不到 completion。
-  `drivers::BootFramebuffer` 只在 DRM 绑定 completion work 之前接受同步写入与刷新，之后一律返回 `WouldBlock`。
+  `devices::model::BootFramebuffer` 只在 DRM 绑定 completion work 之前接受同步写入与刷新，之后一律返回 `WouldBlock`。
 - `arch::<target>::io` 独占 MMIO 指令与 normal-memory/device ordering mechanism；通用
-  `hal::MmioBus` 只做 window 边界/对齐验证并通过静态 façade 访问，具体 adapter
+  `arch::mmio::MmioBus` 只做 window 边界/对齐验证并通过静态 façade 访问，具体 adapter
   不得直接选择 target 指令形态。
-- platform 的设备寄存器（GICv3、PL011、PL031、16550、PLIC、Goldfish RTC）与 VirtIO 一样只经 `hal::MmioBus`：
+- platform 的设备寄存器（GICv3、PL011、PL031、16550、PLIC、Goldfish RTC）与 VirtIO 一样只经 `arch::mmio::MmioBus`：
   构造时验证 window 的非空与地址上界，每次访问检查范围与实际地址对齐；子窗口必须包含于父窗口。
-  architecture-check 禁止 platform/devices 出现裸 volatile 访问，所有 owner（除 arch、hal）禁止直接
+  architecture-check 禁止 platform/devices 出现裸 volatile 访问，所有 owner（除 arch）禁止直接
   引用 raw MMIO primitive，包括分组/别名导入、指针方法与宏体。越界/未对齐访问由 adapter 报错或 fail-stop。
 - GIC claim/EOI 使用 ICC system register，不经过 MMIO window；PLIC claim/complete 使用检查后的 MMIO。
   `architecture-bench` 直接复用 production `MmioBus`，在 host-owned aligned buffer 上测量有界 read/write
@@ -41,8 +41,8 @@
 - `platform::qemu_virt` 的 PLIC register codec 只编码 source ID `1..=1023`；`0` 是 claim 哨兵，越过单个 context `0x80` enable bitmap 的 ID 必须在 MMIO 前拒绝。
 - 新 machine 必须作为独立 compile-time platform backend 接入；禁止在 generic code 追加 target 分支。
 - AArch64 backend 必须验证 GICv3、PSCI HVC、PL011、PL031 与 `dma-coherent`。PCI host
-  存在时还必须从 DTB 验证 ECAM、32-bit MMIO range 与 `interrupt-map`，只允许 platform
-  扫描 bus 0、分配 memory BAR 并把 INTx 投影为 GIC vector；不支持的 GICv2/ITS/MSI、
+  存在时还必须从 DTB 验证 ECAM、32-bit MMIO range 与 `interrupt-map`，由 `drivers::pci`
+  扫描 bus 0 并唯一分配 memory BAR，platform 把 INTx route 投影为 GIC vector；不支持的 GICv2/ITS/MSI、
   PCI bridge/hotplug、SMC、ACPI 或 guessed address 必须拒绝。
 - AArch64 byte/word/doubleword MMIO 必须分别固定为 exact base-register
   `LDRB/STRB/LDR/STR`；禁止 LLVM 生成 post-index、unscaled、pair 或 SIMD device access。

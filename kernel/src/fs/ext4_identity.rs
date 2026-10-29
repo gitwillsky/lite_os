@@ -2,7 +2,7 @@
 //!
 //! 纯函数，不依赖设备注册表。
 
-use crate::block::identity::format_uuid;
+use crate::devices::block::identity::format_uuid;
 
 /// ext4 超级块（从偏移 1024 起的 1024 字节）里的 UUID 与卷标；不是 ext4 返回 `None`。
 pub(super) fn ext4_identity(superblock: &[u8]) -> Option<([u8; 16], &[u8])> {

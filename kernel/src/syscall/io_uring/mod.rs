@@ -20,6 +20,7 @@ pub(crate) fn start_worker() -> Result<(), ()> {
 }
 
 use crate::{
+    execution::task::current_task,
     file::OpenFileKind,
     io_uring::{
         CqWait, Ring, SetupFailure,
@@ -28,7 +29,6 @@ use crate::{
             PROBE_OP_BYTES, REGISTER_PROBE, SUPPORTED_ENTER_FLAGS, encode_probe, probe_ops,
         },
     },
-    task::current_task,
 };
 
 /// 创建 ring 与对应 fd；fd 恒带 `O_CLOEXEC`（Linux `get_unused_fd_flags(O_RDWR | O_CLOEXEC)`）。
@@ -67,7 +67,7 @@ pub(crate) fn sys_io_uring_setup(entries: u32, params: usize) -> isize {
 }
 
 /// 取出 ring；fd 无效 `EBADF`，不是 io_uring fd `EOPNOTSUPP`（与 Linux 相同）。
-fn ring_of(task: &crate::task::TaskControlBlock, fd: usize) -> Result<Arc<Ring>, isize> {
+fn ring_of(task: &crate::execution::task::TaskControlBlock, fd: usize) -> Result<Arc<Ring>, isize> {
     let Some(file) = task.fd_get(fd) else {
         return Err(-errno::EBADF);
     };
@@ -124,7 +124,7 @@ pub(crate) fn sys_io_uring_enter(
 
 /// 解析 `argp`（sigset 指针或 `io_uring_getevents_arg`）并等待 CQE。
 fn get_events(
-    task: &crate::task::TaskControlBlock,
+    task: &crate::execution::task::TaskControlBlock,
     ring: &Ring,
     min_complete: u32,
     flags: u32,
@@ -184,7 +184,10 @@ fn get_events(
 }
 
 /// 读取用户 `__kernel_timespec` 并换算成绝对 monotonic 纳秒 deadline。
-fn relative_deadline(task: &crate::task::TaskControlBlock, pointer: usize) -> Result<u64, isize> {
+fn relative_deadline(
+    task: &crate::execution::task::TaskControlBlock,
+    pointer: usize,
+) -> Result<u64, isize> {
     let mut raw = [0u8; 16];
     if task.copy_from_user(pointer, &mut raw).is_err() {
         return Err(-errno::EFAULT);
@@ -197,7 +200,7 @@ fn relative_deadline(task: &crate::task::TaskControlBlock, pointer: usize) -> Re
     let relative = (seconds as u64)
         .saturating_mul(1_000_000_000)
         .saturating_add(nanoseconds as u64);
-    Ok(crate::timer::get_time_ns().saturating_add(relative))
+    Ok(crate::execution::timer::get_time_ns().saturating_add(relative))
 }
 
 /// 目前只实现 `IORING_REGISTER_PROBE`；其余 opcode 返回 `EINVAL`。
@@ -213,7 +216,7 @@ pub(crate) fn sys_io_uring_register(fd: usize, opcode: u32, arg: usize, nr_args:
 }
 
 /// Linux `io_probe`：用户缓冲区必须整体清零，响应逐 opcode 标注支持情况。
-fn probe(task: &crate::task::TaskControlBlock, arg: usize, nr_args: u32) -> isize {
+fn probe(task: &crate::execution::task::TaskControlBlock, arg: usize, nr_args: u32) -> isize {
     let ops = probe_ops(nr_args);
     let size = PROBE_HEADER_BYTES + ops * PROBE_OP_BYTES;
     let mut buffer = Vec::new();

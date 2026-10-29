@@ -1,8 +1,8 @@
 //! Linux ucred 输入验证；PID 只经实际 namespace association 取得 observer，不选择 live TCB。
 use super::errno;
 use crate::{
-    socket::UnixCredentials,
-    task::{MessageIdentityError, TaskControlBlock},
+    execution::task::{MessageIdentityError, TaskControlBlock},
+    net::UnixCredentials,
 };
 
 pub(super) fn prepare(task: &TaskControlBlock, bytes: &[u8]) -> Result<UnixCredentials, isize> {
@@ -37,9 +37,9 @@ pub(super) fn prepare(task: &TaskControlBlock, bytes: &[u8]) -> Result<UnixCrede
 }
 
 /// 每次发送调用冻结 TGID 和 real UID/GID；peer credentials 仍独立使用 effective IDs。
-pub(in crate::syscall) fn sender(task: &TaskControlBlock) -> crate::socket::UnixSendCredentials {
+pub(in crate::syscall) fn sender(task: &TaskControlBlock) -> crate::net::UnixSendCredentials {
     let ids = task.message_identity().ids(false);
-    crate::socket::UnixSendCredentials {
+    crate::net::UnixSendCredentials {
         sender: UnixCredentials {
             pid: task.tgid_identity().clone(),
             uid: ids[0],

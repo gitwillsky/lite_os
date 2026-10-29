@@ -26,26 +26,12 @@ unsafe impl GlobalAlloc for FaultAllocator {
 }
 #[global_allocator]
 static ALLOCATOR: FaultAllocator = FaultAllocator;
-#[path = "../../../kernel/src/sync"]
-mod sync {
-    mod wait_completion;
-    pub(crate) use wait_completion::WaitCompletion;
-    mod task_wait;
-    pub(crate) use task_wait::{
-        TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory,
-    };
-    #[allow(
-        unused_imports,
-        reason = "focused fixture does not consume every TaskMutex lock mode"
-    )]
-    mod task_mutex;
-    pub(crate) use task_mutex::TaskMutex;
-}
+
 #[path = "../src/interruptible_event_target.rs"]
 mod scheduler_target;
-#[path = "../../../kernel/src/task/model"]
+#[path = "../../../kernel/src/execution/task/model"]
 mod model {
-    use crate::sync::TaskMutex;
+    use crate::execution::sync::TaskMutex;
     use alloc::sync::Arc;
     #[derive(Debug)]
     pub(crate) enum MemoryError {
@@ -191,4 +177,23 @@ mod model {
 }
 mod memory {
     pub(crate) const PAGE_SIZE: usize = 4096;
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../../../kernel/src/execution/sync"]
+    pub(crate) mod sync {
+        mod wait_completion;
+        pub(crate) use wait_completion::WaitCompletion;
+        mod task_wait;
+        pub(crate) use task_wait::{
+            TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory,
+        };
+        #[allow(
+            unused_imports,
+            reason = "focused fixture does not consume every TaskMutex lock mode"
+        )]
+        mod task_mutex;
+        pub(crate) use task_mutex::TaskMutex;
+    }
 }

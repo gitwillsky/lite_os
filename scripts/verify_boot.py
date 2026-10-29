@@ -11,8 +11,8 @@ from build_cache import publish_runtime_gate, runtime_gate_hit, runtime_gate_pay
 from build_target import BuildTarget, acceleration_from_environment, target_from_environment
 from qemu_gate import boot as boot_image, cpu_topology_markers
 from utm_gate import boot_graphics
-from verify_busybox import cached_busybox_binary
-from verify_musl import cached_musl_paths, find_compiler
+from userland.busybox import cached_busybox_binary
+from toolchain.musl import cached_musl_paths, find_compiler
 
 ROOT = Path(__file__).resolve().parent.parent
 # musl 和 BusyBox runtime gates 已分别覆盖 1/8 hart；这里只保留独有的非幂次 3-hart DTB。

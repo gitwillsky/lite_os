@@ -165,7 +165,7 @@
   INIT 的 max_stack_depth 只接受 1–2，且不与 WRITEBACK_CACHE 同时启用；后备文件须低于协商深度，超出 ELOOP。
   BACKING_OPEN/CLOSE 要求 initial CAP_SYS_ADMIN，普通用户的 SMB 挂载不需要或获得该权限。
 - `Connection.queue` 独占正 backing_id 与登记文件的 Arc。`UserMemory::backing_file` 经 syscall adapter
-  捕获真实 regular OFD、登记时的凭据与 namespace authority；`fs` 不依赖 `file`/`task`/syscall。
+  捕获真实 regular OFD、登记时的凭据与 namespace authority；`fs` 不依赖 `file`/`execution::task`/syscall。
   目录 EISDIR、非普通文件 EINVAL、无效 fd EBADF；登记分配失败不发布 ID，注销在锁内摘除、锁外析构。
 - `fs::BackingFile::reopen` 用保存的凭据重开独立下层 OFD，不与登记 fd 共享 offset；每个 `Handle` 成对拥有
   登记 identity 与下层 `BackingOpen`，同 inode 的并行打开必须使用同一后备 identity，避免两套内容事实。

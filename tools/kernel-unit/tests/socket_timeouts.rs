@@ -1,11 +1,9 @@
 #![allow(dead_code)]
 //! 直接加载实际 socket timeout owner 与 native codec；scheduler cadence 是显式边界输入。
 use syscall_abi::errno;
-mod timer {
-    pub(crate) const SCHEDULER_TICK_NS: u64 = 10_000_000;
-}
-#[path = "../../../kernel/src/socket"]
-mod socket {
+
+#[path = "../../../kernel/src/net"]
+mod net {
     pub(crate) mod timeouts;
     pub(crate) use timeouts::{SocketIoDirection, SocketTimeout};
     pub(crate) struct Owner(timeouts::SocketTimeouts);
@@ -28,7 +26,7 @@ mod socket {
 }
 #[path = "../../../kernel/src/syscall/socket/timeout.rs"]
 mod timeout;
-use socket::{
+use net::{
     SocketIoDirection::{Receive, Send},
     SocketTimeout,
 };
@@ -67,7 +65,7 @@ fn finite_policy_rounds_up_to_actual_scheduler_tick_and_saturates_both_conversio
 }
 #[test]
 fn dup_shares_actual_policy_while_frozen_wait_and_accepted_owner_are_independent() {
-    let owner = std::sync::Arc::new(socket::Owner::new());
+    let owner = std::sync::Arc::new(net::Owner::new());
     let duplicate = owner.clone();
     owner.set(Receive, timeout::decode(timeval(0, 50_000)).unwrap());
     let frozen = owner.get(Receive).deadline(100);
@@ -79,4 +77,10 @@ fn dup_shares_actual_policy_while_frozen_wait_and_accepted_owner_are_independent
     assert_eq!(frozen, Some(50_000_100));
     assert_eq!(accepted.get(Receive).deadline(100), frozen);
     assert_eq!(accepted.get(Send), SocketTimeout::Infinite);
+}
+
+pub(crate) mod execution {
+    pub(crate) mod timer {
+        pub(crate) const SCHEDULER_TICK_NS: u64 = 10_000_000;
+    }
 }

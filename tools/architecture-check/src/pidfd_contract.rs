@@ -2,8 +2,8 @@
 use super::SourceFile;
 use quote::ToTokens;
 
-const PIDFD: &str = "kernel/src/task/process_table/pidfd.rs";
-const EXIT: &str = "kernel/src/task/process_table/process_exit.rs";
+const PIDFD: &str = "kernel/src/execution/task/process_table/pidfd.rs";
+const EXIT: &str = "kernel/src/execution/task/process_table/process_exit.rs";
 const PROCESS: &str = "kernel/src/syscall/process.rs";
 fn normalized(source: &str) -> String {
     source.split_whitespace().collect()
@@ -83,7 +83,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/task/model/file_descriptions.rs",
+        "kernel/src/execution/task/model/file_descriptions.rs",
         &["self.fd_get_raw(fd).filter(|file| !file.is_path())"],
         errors,
     );
@@ -95,11 +95,11 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/task/model/file_table.rs",
+        "kernel/src/execution/task/model/file_table.rs",
         &[
             "self.credential_guard().lock_killable()",
             "caller.may_inspect_thread_real(self)",
-            "crate::task::process_table::pidfd::file_accessible(self)",
+            "crate::execution::task::process_table::pidfd::file_accessible(self)",
             "owner.with_table(|table| table.get_with_flags(fd))",
         ],
         errors,
@@ -111,19 +111,24 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             "ChildWaitSelector::Pid(identity)",
             "nonblocking || options & NOHANG != 0",
             "options & NOWAIT != 0",
-            "crate::task::release_child_status(record)",
+            "crate::execution::task::release_child_status(record)",
             "task.validate_user_write(information, 128)",
         ],
         errors,
     );
     require(
         sources,
-        "kernel/src/task/process_table/signal.rs",
+        "kernel/src/execution/task/process_table/signal.rs",
         &[
-            "ProcessSelector::ThreadGroupOfPid(identity.key())",
             "sender.may_signal_thread(thread)",
             "super::thread_selector::execution_by_tid(&graph, pid)",
         ],
+        errors,
+    );
+    require(
+        sources,
+        "kernel/src/execution/task/process_table/signal/pidfd.rs",
+        &["ProcessSelector::ThreadGroupOfPid(identity.key())"],
         errors,
     );
     if let Some(source) = sources.iter().find(|source| source.relative == PIDFD) {
@@ -238,7 +243,7 @@ mod tests {
     #[test]
     fn path_descriptor_cannot_acquire_device_operations() {
         reject(
-            "kernel/src/task/model/file_descriptions.rs",
+            "kernel/src/execution/task/model/file_descriptions.rs",
             ".filter(|file| !file.is_path())",
             ".filter(|_| true)",
             "fd_get_raw(fd)",
@@ -258,7 +263,7 @@ mod tests {
         reject(
             PROCESS,
             "consume_child_status(record);",
-            "crate::task::release_child_status(record);",
+            "crate::execution::task::release_child_status(record);",
             "sys_wait4: lost ordered stage",
         );
     }

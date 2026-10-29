@@ -14,6 +14,7 @@ sys.path.insert(0, str(SCRIPTS))
 import check_trap_cost  # noqa: E402
 import verify_architecture_release  # noqa: E402
 import verify_artifacts  # noqa: E402
+from toolchain import kernel_image
 import qemu_gate  # noqa: E402
 from build_target import target_from_environment  # noqa: E402
 
@@ -205,11 +206,11 @@ class AArch64InstructionContainmentTests(unittest.TestCase):
 class ArtifactRoutingTests(unittest.TestCase):
     def test_aarch64_uses_release_kernel_without_bootloader(self) -> None:
         target = target_from_environment({"ARCH": "aarch64"})
-        specs = verify_artifacts.target_artifacts(target, Path("/cache/busybox"))
+        specs = kernel_image.target_artifacts(target, Path("/cache/busybox"))
         self.assertEqual(len(specs), 2)
         self.assertEqual(
             specs[0].path,
-            verify_artifacts.ROOT
+            kernel_image.ROOT
             / "target/aarch64-unknown-none-softfloat/release/kernel",
         )
         self.assertIn("AArch64", specs[0].markers)
@@ -226,7 +227,7 @@ class ArtifactRoutingTests(unittest.TestCase):
     def test_writable_executable_load_is_rejected(self) -> None:
         output = "LOAD 0x0 0x0 0x0 0x100 0x100 RWE 0x1000"
         with self.assertRaisesRegex(RuntimeError, "writable executable"):
-            verify_artifacts.require(output, "kernel", ())
+            kernel_image.require(output, "kernel", ())
 
 
 class AArch64ImageHeaderTests(unittest.TestCase):
@@ -234,10 +235,10 @@ class AArch64ImageHeaderTests(unittest.TestCase):
         self,
         path: Path,
         *,
-        text_offset: int = verify_artifacts.AARCH64_TEXT_OFFSET,
+        text_offset: int = kernel_image.AARCH64_TEXT_OFFSET,
         image_size: int = 0x3000,
         physical: int = 0x40080000,
-        magic: bytes = verify_artifacts.AARCH64_IMAGE_MAGIC,
+        magic: bytes = kernel_image.AARCH64_IMAGE_MAGIC,
     ) -> tuple[int, int, int, bytes]:
         entry = physical
         high_virtual = 0xFFFFFFC000081000
@@ -251,7 +252,7 @@ class AArch64ImageHeaderTests(unittest.TestCase):
             0,
             bytes(identity),
             2,
-            verify_artifacts.AARCH64_MACHINE,
+            kernel_image.AARCH64_MACHINE,
             2,
             entry,
             64,
@@ -268,7 +269,7 @@ class AArch64ImageHeaderTests(unittest.TestCase):
             "<IIQQQQQQ",
             data,
             64,
-            verify_artifacts.PT_LOAD,
+            kernel_image.PT_LOAD,
             5,
             0x200,
             entry,
@@ -281,7 +282,7 @@ class AArch64ImageHeaderTests(unittest.TestCase):
             "<IIQQQQQQ",
             data,
             120,
-            verify_artifacts.PT_LOAD,
+            kernel_image.PT_LOAD,
             6,
             0x300,
             high_virtual,
@@ -301,7 +302,7 @@ class AArch64ImageHeaderTests(unittest.TestCase):
             elf = Path(directory) / "kernel"
             entry, start, end, _ = self.make_elf(elf)
             layout_end = 0x40083000
-            layout = verify_artifacts.require_aarch64_elf_contract(
+            layout = kernel_image.require_aarch64_elf_contract(
                 elf,
                 "\n".join(
                     (
@@ -320,9 +321,9 @@ class AArch64ImageHeaderTests(unittest.TestCase):
             elf = Path(directory) / "kernel"
             raw = Path(directory) / "Image"
             _, _, _, elf_bytes = self.make_elf(elf)
-            layout = verify_artifacts.aarch64_elf_layout(elf)
-            raw.write_bytes(verify_artifacts.expected_aarch64_raw_image(elf, layout))
-            verify_artifacts.require_aarch64_raw_image(elf, raw)
+            layout = kernel_image.aarch64_elf_layout(elf)
+            raw.write_bytes(kernel_image.expected_aarch64_raw_image(elf, layout))
+            kernel_image.require_aarch64_raw_image(elf, raw)
             image = raw.read_bytes()
             self.assertEqual(image[:0x80], elf_bytes[0x200:0x280])
             self.assertEqual(image[0x80:0x1000], bytes(0xF80))
@@ -332,8 +333,8 @@ class AArch64ImageHeaderTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             elf, raw = Path(directory) / "kernel", Path(directory) / "Image"
             self.make_elf(elf)
-            layout = verify_artifacts.aarch64_elf_layout(elf)
-            raw.write_bytes(verify_artifacts.expected_aarch64_raw_image(elf, layout))
+            layout = kernel_image.aarch64_elf_layout(elf)
+            raw.write_bytes(kernel_image.expected_aarch64_raw_image(elf, layout))
             runtime = replace(
                 qemu_gate.qemu_runtime({"ARCH": "aarch64", "ACCEL": "tcg"}),
                 kernel_elf=str(elf), kernel_boot_artifact=str(raw),
@@ -364,7 +365,7 @@ class AArch64ImageHeaderTests(unittest.TestCase):
                 elf = Path(directory) / "kernel"
                 self.make_elf(elf, **arguments)
                 with self.assertRaises(RuntimeError):
-                    verify_artifacts.aarch64_elf_layout(elf)
+                    kernel_image.aarch64_elf_layout(elf)
 
     def test_failed_generation_preserves_previous_image_and_removes_temporary(self) -> None:
         target = target_from_environment({"ARCH": "aarch64"})
@@ -381,20 +382,20 @@ class AArch64ImageHeaderTests(unittest.TestCase):
                 raise RuntimeError("objcopy failed")
 
             with (
-                patch.object(verify_artifacts, "ROOT", root),
+                patch.object(kernel_image, "ROOT", root),
                 patch.object(
-                    verify_artifacts,
+                    kernel_image,
                     "pinned_rust_objcopy",
                     return_value=Path("/pinned/llvm-objcopy"),
                 ),
                 patch.object(
-                    verify_artifacts,
+                    kernel_image,
                     "run_host",
                     side_effect=fail_after_partial_output,
                 ),
                 self.assertRaisesRegex(RuntimeError, "objcopy failed"),
             ):
-                verify_artifacts.build_kernel_boot_artifact(target, "release")
+                kernel_image.build_kernel_boot_artifact(target, "release")
 
             self.assertEqual(image.read_bytes(), b"previous complete Image")
             self.assertEqual(list(image.parent.glob(".Image.*.tmp")), [])

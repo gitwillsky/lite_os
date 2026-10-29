@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 
 use super::{discovery, gicv3, pl011};
-use crate::hal::InterruptHandler;
+use crate::execution::interrupt::InterruptHandler;
 use crate::info;
 
 use super::super::{PciHost, VirtioMmioTransports};
@@ -23,8 +23,8 @@ pub(crate) fn initialize() {
 fn initialize_pl011() {
     let platform = discovery::info();
     // Linux 为该 UART 使用的设备名，`console=` 按它选择。
-    crate::hal::console::register_serial(b"ttyAMA0", |bytes| {
-        super::console::write_bytes(bytes).map_err(|_| crate::hal::console::ConsoleError)
+    crate::devices::console::register_serial(b"ttyAMA0", |bytes| {
+        super::console::write_bytes(bytes).map_err(|_| crate::devices::console::ConsoleError)
     })
     .expect("console registration failed");
     let handler = pl011::initialize(platform.uart.base_addr, platform.uart.size)
@@ -53,7 +53,7 @@ pub(crate) fn register_device_interrupt(
     handler: Arc<dyn InterruptHandler>,
     label: &'static str,
 ) {
-    let affinity = crate::cpu::CpuSet::singleton(crate::cpu::boot_id());
+    let affinity = crate::execution::cpu::CpuSet::singleton(crate::execution::cpu::boot_id());
     gicv3::register_device(vector, handler, affinity)
         .unwrap_or_else(|error| panic!("{label} IRQ {vector} registration failed: {error}"));
 }

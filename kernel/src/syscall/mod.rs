@@ -80,7 +80,7 @@ pub(crate) enum SyscallOutcome {
     /// exec 已替换 UserContext，或 seccomp TRAP 保留原 registers；不写 completion 或 arm restart。
     PreserveRegisters,
     /// 暂存为 `EINTR`，并由实际交付 signal 的 disposition 决定是否重放 syscall instruction。
-    Restart(crate::task::SyscallRestartPolicy),
+    Restart(crate::execution::task::SyscallRestartPolicy),
 }
 
 /// 解码一个 asm-generic Linux syscall，并隔离不得暴露给用户态的内部重启结果。
@@ -97,7 +97,7 @@ pub(crate) enum SyscallOutcome {
 pub(crate) fn syscall(
     syscall_id: usize,
     args: [usize; 6],
-    current: alloc::sync::Arc<crate::task::TaskControlBlock>,
+    current: alloc::sync::Arc<crate::execution::task::TaskControlBlock>,
 ) -> SyscallOutcome {
     if let Some(outcome) = seccomp::enforce(current, syscall_id, args) {
         return outcome;
@@ -550,11 +550,11 @@ pub(crate) fn syscall(
         },
     };
     if result == INTERNAL_RESTART_SYS {
-        SyscallOutcome::Restart(crate::task::SyscallRestartPolicy::WithRestartHandler)
+        SyscallOutcome::Restart(crate::execution::task::SyscallRestartPolicy::WithRestartHandler)
     } else if result == INTERNAL_RESTART_NO_HANDLER {
-        SyscallOutcome::Restart(crate::task::SyscallRestartPolicy::WithoutHandler)
+        SyscallOutcome::Restart(crate::execution::task::SyscallRestartPolicy::WithoutHandler)
     } else if result == INTERNAL_RESTART_BLOCK {
-        SyscallOutcome::Restart(crate::task::SyscallRestartPolicy::RestartBlock)
+        SyscallOutcome::Restart(crate::execution::task::SyscallRestartPolicy::RestartBlock)
     } else if syscall_id == SYSCALL_EXECVE && result == 0 {
         // 只有实际 handler 成功才代表替换；seccomp ERRNO|0 已在 dispatch 前返回 Return(0)。
         SyscallOutcome::PreserveRegisters

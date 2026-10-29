@@ -24,10 +24,10 @@ use syscall_abi::errno;
 
 use super::wait::{Cancel, Interest, Target, Waiter};
 use crate::{
+    execution::task::{spawn_kernel_thread, wait_for_poll},
     io_uring::Ring,
     ipc::{Pipe, PipeEnd},
     syscall::poll::{PollWaitKeys, prepare_wait_sources},
-    task::{spawn_kernel_thread, wait_for_poll},
 };
 
 type ChainFuture = Pin<Box<dyn Future<Output = ()> + Send>>;

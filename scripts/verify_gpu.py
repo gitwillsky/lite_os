@@ -27,7 +27,7 @@ from mesa_runtime import mesa_userland
 from apk_cache import download
 from utm_gate import boot_graphics
 from verify_busybox import build_drm_flip_probe
-from verify_musl import cached_musl_paths, find_compiler
+from toolchain.musl import cached_musl_paths, find_compiler
 
 ROOT = Path(__file__).resolve().parent.parent
 

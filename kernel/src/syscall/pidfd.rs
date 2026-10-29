@@ -1,7 +1,7 @@
 //! 标准 PIDFD raw flags/int codec 与 errno；实际 identity、权限、文件及生命周期归对应 owner。
 use crate::{
+    execution::task::{PidFdError, current_task},
     syscall::errno,
-    task::{PidFdError, current_task},
 };
 
 pub(in crate::syscall) fn error(error: PidFdError) -> isize {
@@ -23,11 +23,11 @@ pub(crate) fn sys_pidfd_open(pid: i32, flags: u32) -> isize {
         return -errno::EINVAL;
     }
     let task = current_task().expect("pidfd_open requires current Thread");
-    let identity = match crate::task::pidfd_identity(pid, &task) {
+    let identity = match crate::execution::task::pidfd_identity(pid, &task) {
         Ok(pid) => pid,
         Err(failure) => return error(failure),
     };
-    crate::task::open_pidfd(identity, flags & PIDFD_THREAD != 0, flags, &task)
+    crate::execution::task::open_pidfd(identity, flags & PIDFD_THREAD != 0, flags, &task)
         .map_or_else(error, |fd| fd as isize)
 }
 
@@ -46,16 +46,17 @@ pub(crate) fn sys_pidfd_getfd(pidfd: i32, descriptor: i32, flags: u32) -> isize 
         },
         _ => return -errno::EBADF,
     };
-    let captured = match crate::task::pidfd_get_file(identity, descriptor as usize, &task) {
-        Ok(file) => file,
-        Err(failure) => return error(failure),
-    };
+    let captured =
+        match crate::execution::task::pidfd_get_file(identity, descriptor as usize, &task) {
+            Ok(file) => file,
+            Err(failure) => return error(failure),
+        };
     task.fd_receive(captured, None, true)
         .map_or_else(super::file_descriptor_error, |fd| fd as isize)
 }
 
 pub(crate) fn sys_pidfd_send_signal(pidfd: i32, signal: i32, info: usize, flags: u32) -> isize {
-    use crate::task::PidSignalScope;
+    use crate::execution::task::PidSignalScope;
     if flags & !7 != 0 || flags.count_ones() > 1 {
         return -errno::EINVAL;
     }
@@ -108,6 +109,6 @@ pub(crate) fn sys_pidfd_send_signal(pidfd: i32, signal: i32, info: usize, flags:
             Err(error) => return error,
         }
     };
-    crate::task::send_pid_signal(&identity, scope, signal as usize, info)
+    crate::execution::task::send_pid_signal(&identity, scope, signal as usize, info)
         .map_or_else(super::signal::signal_send_errno, |()| 0)
 }

@@ -92,8 +92,9 @@ pub(crate) fn kernel_mmio_regions() -> impl Iterator<Item = core::ops::Range<usi
 pub(crate) fn read_realtime_ns() -> Option<u64> {
     let rtc = discovery::info().rtc;
     // discovery 已验证 PL031 compatibility；RTCDR 位于 window 偏移 0。
-    let bus = crate::hal::MmioBus::new(crate::arch::mmu::physical_to_virtual(rtc.start), rtc.size)
-        .ok()?;
+    let bus =
+        crate::arch::mmio::MmioBus::new(crate::arch::mmu::physical_to_virtual(rtc.start), rtc.size)
+            .ok()?;
     let seconds = bus.read_u32(0).ok()?;
     Some((seconds as u64).saturating_mul(1_000_000_000))
 }
@@ -119,7 +120,7 @@ pub(crate) fn arm_timer(deadline: u64) -> Result<(), TimerArmError> {
 ///
 /// SGI 投递失败时返回 `TlbShootdownError`。
 pub(crate) fn synchronize_tlb(
-    cpus: crate::cpu::CpuSet,
+    cpus: crate::execution::cpu::CpuSet,
     start_address: usize,
     size: usize,
 ) -> Result<(), TlbShootdownError> {
@@ -143,7 +144,7 @@ pub(crate) fn complete_pending_ipi() {
 }
 
 pub(crate) fn synchronize_instruction_cache(
-    cpus: crate::cpu::CpuSet,
+    cpus: crate::execution::cpu::CpuSet,
 ) -> Result<(), InstructionFenceError> {
     if cpus.is_empty() {
         return Ok(());

@@ -12,7 +12,7 @@ from build_target import acceleration_from_environment, target_from_environment
 from display_gate import display_session
 from ext4_image import run_debugfs
 from classic_assets import shell_bitmaps
-from verify_musl import cached_musl_paths, find_compiler, run
+from toolchain.musl import cached_musl_paths, find_compiler, run
 from verify_wayland import install_files, pointer_to, button, tap, wait_screen, DESKTOP_BACKGROUND
 ROOT = Path(__file__).resolve().parents[1]
 RECIPE_VERSION = 1

@@ -8,10 +8,9 @@ mod fallible_tree;
 mod id;
 #[path = "../src/pipe_fixture.rs"]
 mod ipc;
-#[path = "../src/sync.rs"]
-mod sync;
-#[path = "../../../kernel/src/socket"]
-mod socket {
+
+#[path = "../../../kernel/src/net"]
+mod net {
     use alloc::sync::Arc;
     #[derive(Clone, Copy)]
     pub(crate) enum SocketError {
@@ -139,8 +138,8 @@ mod socket {
 }
 #[test]
 fn actual_listener_capacity_recheck_survives_accept_close_and_stale_notification() {
-    let listener = socket::UnixSocket::listener();
-    let wait = socket::backlog(listener.clone());
+    let listener = net::UnixSocket::listener();
+    let wait = net::backlog(listener.clone());
     assert!(wait.is_ready());
     listener.publish();
     assert!(!wait.is_ready());
@@ -158,11 +157,17 @@ fn actual_listener_capacity_recheck_survives_accept_close_and_stale_notification
 }
 #[test]
 fn actual_packet_capacity_recheck_returns_ready_after_owner_changes_or_closes() {
-    let endpoint = socket::UnixSocket::listener();
+    let endpoint = net::UnixSocket::listener();
     endpoint.replace_packet_state();
-    let wait = socket::packets(endpoint.clone());
+    let wait = net::packets(endpoint.clone());
     assert!(wait.is_ready());
     endpoint.close();
     wait.prepare_wait();
     assert!(wait.is_ready());
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
 }

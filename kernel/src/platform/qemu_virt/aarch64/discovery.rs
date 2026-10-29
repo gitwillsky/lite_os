@@ -4,7 +4,7 @@ use dtb_walker::{Dtb, HeaderError};
 use spin::Once;
 
 use super::device_tree::PlatformInfo;
-use crate::cpu::HardwareCpuId;
+use crate::execution::cpu::HardwareCpuId;
 
 // OWNER: discovery publishes the only immutable AArch64 QEMU machine description.
 static PLATFORM_INFO: Once<PlatformInfo> = Once::new();

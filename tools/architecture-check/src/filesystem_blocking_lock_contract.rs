@@ -10,9 +10,9 @@ const INODE_MUTATION: &str = "kernel/src/fs/ext4/journal/inode_mutation.rs";
 const MOUNT: &str = "kernel/src/fs/ext4/mount.rs";
 const PAGE_CACHE: &str = "kernel/src/fs/page_cache.rs";
 const VFS: &str = "kernel/src/fs/vfs.rs";
-const MUTEX: &str = "kernel/src/sync/task_mutex.rs";
-const ADAPTER: &str = "kernel/src/task/process_table/task_wait.rs";
-const EVENT: &str = "kernel/src/sync/task_event.rs";
+const MUTEX: &str = "kernel/src/execution/sync/task_mutex.rs";
+const ADAPTER: &str = "kernel/src/execution/task/process_table/task_wait.rs";
+const EVENT: &str = "kernel/src/execution/sync/task_event.rs";
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     require_field(
@@ -121,7 +121,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     // 可中断 event 的迟到 wake 可以合法失败；mutex 的 exact wake 仍必须 fail-stop。
     // 围栏跟随显式 policy 及 publication 后的信号复查，不能继续要求无条件 assert。
     for required in [
-        "letwoken=crate::task::processor::wake_waiting_task(",
+        "letwoken=crate::execution::task::processor::wake_waiting_task(",
         "assert!(woken||key.interruptible(),",
         "elseifkey.signal_pending(self.as_ref())",
     ] {

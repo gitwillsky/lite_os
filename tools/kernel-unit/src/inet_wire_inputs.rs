@@ -1,25 +1,25 @@
 pub(super) fn initialize() {
     crate::namespace::boot();
-    crate::socket::initialize_net().unwrap();
-    crate::drivers::TRANSMIT_AVAILABLE.store(true, core::sync::atomic::Ordering::Relaxed);
-    let mut wire = crate::drivers::WIRE.lock().unwrap();
+    crate::net::initialize_net().unwrap();
+    crate::devices::model::TRANSMIT_AVAILABLE.store(true, core::sync::atomic::Ordering::Relaxed);
+    let mut wire = crate::devices::model::WIRE.lock().unwrap();
     wire.0.clear();
     wire.1.clear();
     drop(wire);
     init();
     configure_address(
-        crate::socket::net_namespace::initial_net_ref(),
+        crate::net::net_namespace::initial_net_ref(),
         2,
         Ipv4Addr::new(10, 0, 2, 15),
     )
     .unwrap();
     configure_netmask(
-        crate::socket::net_namespace::initial_net_ref(),
+        crate::net::net_namespace::initial_net_ref(),
         2,
         Ipv4Addr::new(255, 255, 255, 0),
     )
     .unwrap();
-    configure_up(crate::socket::net_namespace::initial_net_ref(), 2, true).unwrap();
+    configure_up(crate::net::net_namespace::initial_net_ref(), 2, true).unwrap();
 }
 
 // 仅编码边界 peer 的标准 wire frames；握手与 policy capture 不在 fixture 中实现。
@@ -107,12 +107,12 @@ pub(super) fn peer_arp_frame_for(local: Ipv4Addr, peer: Ipv4Addr) -> Vec<u8> {
     bytes
 }
 pub(super) fn ingress(frame: Vec<u8>) {
-    crate::drivers::WIRE.lock().unwrap().0.push_back(frame);
+    crate::devices::model::WIRE.lock().unwrap().0.push_back(frame);
     initial_stack().unwrap().lock().unwrap().poll();
 }
 pub(super) fn syn_ack(port: u16) -> smoltcp::wire::TcpSeqNumber {
     use smoltcp::wire::*;
-    let mut wire = crate::drivers::WIRE.lock().unwrap();
+    let mut wire = crate::devices::model::WIRE.lock().unwrap();
     for frame in wire.1.drain(..) {
         let ethernet = EthernetFrame::new_checked(&frame[..]).unwrap();
         if ethernet.ethertype() != EthernetProtocol::Ipv4 {

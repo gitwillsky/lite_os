@@ -3,9 +3,9 @@ use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 use spin::Once;
 
 use crate::{
-    deferred::DeferredWork,
+    execution::deferred::DeferredWork,
+    execution::sync::{IrqMutex, TaskMutex},
     println,
-    sync::{IrqMutex, TaskMutex},
 };
 
 mod kmsg_wire;
@@ -261,7 +261,7 @@ impl Logger {
         let sequence = self.next_sequence;
         let slot = &mut self.records[sequence as usize % KMSG_RECORD_CAPACITY];
         slot.sequence = sequence;
-        slot.timestamp_us = crate::timer::get_time_us();
+        slot.timestamp_us = crate::execution::timer::get_time_us();
         slot.priority = priority;
         slot.length = length as u16;
         slot.message[..length].copy_from_slice(&text[..length]);
@@ -269,7 +269,7 @@ impl Logger {
     }
 
     fn log(&mut self, level: LogLevel, module: &str, args: fmt::Arguments) {
-        let cpu = crate::cpu::current_id().index();
+        let cpu = crate::execution::cpu::current_id().index();
         let sequence = self.next_sequence;
         // 直接格式化进环槽位：hardirq 也会走到这里，栈上不放 1 KiB 临时缓冲。
         let slot = &mut self.records[sequence as usize % KMSG_RECORD_CAPACITY];
@@ -280,7 +280,7 @@ impl Logger {
         write!(message, "[CPU-{cpu}] [{module}] {args}").expect("slice formatting never fails");
         let length = message.length;
         slot.sequence = sequence;
-        slot.timestamp_us = crate::timer::get_time_us();
+        slot.timestamp_us = crate::execution::timer::get_time_us();
         slot.priority = level.syslog_priority();
         slot.length = length as u16;
         self.next_sequence = sequence.checked_add(1).expect("kmsg sequence exhausted");
@@ -374,7 +374,7 @@ pub(crate) fn bind_publish_work(work: DeferredWork) {
 /// 在 logger 锁之外发布一次“有新 record”的合并通知。
 fn publish_notification() {
     if let Some(work) = PUBLISH_WORK.get() {
-        crate::deferred::raise(*work);
+        crate::execution::deferred::raise(*work);
     }
 }
 
@@ -394,7 +394,7 @@ pub(crate) fn publish_user_message(input: &[u8]) {
         5 | 6 => LogLevel::Info,
         _ => LogLevel::Debug,
     };
-    let cpu = crate::cpu::current_id().index();
+    let cpu = crate::execution::cpu::current_id().index();
     {
         let mut logger = LOGGER.lock();
         logger.log_user(priority, text);

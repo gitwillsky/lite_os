@@ -2,6 +2,7 @@
 
 extern crate alloc;
 
+use crate::devices::model::{BootFramebuffer, DisplayError, DisplayMode, DisplayRect};
 use std::cell::RefCell;
 
 macro_rules! warn {
@@ -15,43 +16,42 @@ thread_local! {
 }
 
 /// 内核 `drivers` seam 里 boot_screen 用到的那一部分；字段与语义和生产类型一致。
-mod drivers {
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) struct DisplayMode {
-        pub(crate) width: u32,
-        pub(crate) height: u32,
-        pub(crate) pitch: u32,
-    }
+mod devices {
+    pub(crate) mod model {
 
-    #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-    pub(crate) struct DisplayRect {
-        pub(crate) x: u32,
-        pub(crate) y: u32,
-        pub(crate) width: u32,
-        pub(crate) height: u32,
-    }
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub(crate) struct DisplayMode {
+            pub(crate) width: u32,
+            pub(crate) height: u32,
+            pub(crate) pitch: u32,
+        }
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub(crate) enum DisplayError {
-        WouldBlock,
-        InvalidRectangle,
-        Device,
-    }
+        #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+        pub(crate) struct DisplayRect {
+            pub(crate) x: u32,
+            pub(crate) y: u32,
+            pub(crate) width: u32,
+            pub(crate) height: u32,
+        }
 
-    pub(crate) trait BootFramebuffer {
-        fn mode(&self) -> DisplayMode;
-        fn write(&self, offset: usize, bytes: &[u8]) -> Result<(), DisplayError>;
-        fn flush(&self, rect: DisplayRect) -> Result<(), DisplayError>;
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        pub(crate) enum DisplayError {
+            WouldBlock,
+            InvalidRectangle,
+            Device,
+        }
+
+        pub(crate) trait BootFramebuffer {
+            fn mode(&self) -> DisplayMode;
+            fn write(&self, offset: usize, bytes: &[u8]) -> Result<(), DisplayError>;
+            fn flush(&self, rect: DisplayRect) -> Result<(), DisplayError>;
+        }
     }
 }
 
-#[path = "../../../kernel/src/boot_screen.rs"]
-mod boot_screen;
-
 use std::cell::Cell;
 
-use boot_screen::{BootScreen, Milestone};
-use drivers::{BootFramebuffer, DisplayError, DisplayMode, DisplayRect};
+use crate::boot::boot_screen::{BootScreen, Milestone};
 
 /// 仓库提交的默认画面，与内核实际编入的格式一致。
 const SCENE: &[u8] = include_bytes!("../../../assets/classic/boot-scene.lbs");
@@ -322,4 +322,10 @@ fn kernel_to_compositor_handoff_preserves_every_pixel_at_both_product_scales() {
             );
         }
     }
+}
+
+#[path = "."]
+pub(crate) mod boot {
+    #[path = "../../../kernel/src/boot/boot_screen.rs"]
+    pub(crate) mod boot_screen;
 }

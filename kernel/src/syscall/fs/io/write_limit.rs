@@ -7,7 +7,7 @@ pub(super) fn file_size_exceeded(task: &TaskControlBlock) -> isize {
         task.tgid(),
         task.tid(),
         syscall_abi::signal::SIGXFSZ,
-        crate::task::PendingSignal::kernel(),
+        crate::execution::task::PendingSignal::kernel(),
     )
     .expect("current file writer must exist");
     -errno::EFBIG

@@ -7,7 +7,7 @@ use core::{
 };
 use spin::Once;
 
-use crate::cpu::{self, CpuSet};
+use crate::execution::cpu::{self, CpuSet};
 
 struct TlbCpuState {
     request: AtomicU64,

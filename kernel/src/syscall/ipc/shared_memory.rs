@@ -1,9 +1,9 @@
 //! Linux native64 shm UAPI；对象、挂接计数与映射生命周期不在 codec 中维护。
 use super::{encode_permission, ipc_error};
 use crate::{
+    execution::task::current_task,
     ipc::IpcError,
     memory::{MapPermission, MemoryError, PAGE_SIZE},
-    task::current_task,
 };
 use syscall_abi::{errno, ipc::*};
 
@@ -100,7 +100,7 @@ pub(in crate::syscall) fn sys_shmctl(id: i32, command: i32, address: usize) -> i
                     gid,
                     u32::from_ne_bytes(bytes[20..24].try_into().unwrap()) as u16,
                     &access,
-                    crate::timer::get_realtime_ns() / 1_000_000_000,
+                    crate::execution::timer::get_realtime_ns() / 1_000_000_000,
                 )
                 .map_or_else(ipc_error, |()| 0)
         }

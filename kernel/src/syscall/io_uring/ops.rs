@@ -12,6 +12,7 @@ use super::{
     wait::{Only, Target},
 };
 use crate::{
+    execution::task::TaskControlBlock,
     io_uring::{
         Chain, Ring, Submitter,
         abi::{
@@ -26,7 +27,6 @@ use crate::{
         socket::{MSG_DONTWAIT, MSG_NOSIGNAL, SOCK_CLOEXEC, SOCK_NONBLOCK},
         user_iovec::UserIoVec,
     },
-    task::TaskControlBlock,
 };
 
 const FSYNC_DATASYNC: u32 = 1 << 0;

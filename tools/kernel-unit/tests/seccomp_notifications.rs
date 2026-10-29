@@ -23,8 +23,7 @@ mod seccomp_environment;
 use seccomp_environment::{file, fs, id, ipc};
 #[path = "../src/interruptible_event_target.rs"]
 mod scheduler_target;
-#[path = "../src/sync.rs"]
-mod sync;
+
 mod arch {
     pub(crate) mod user {
         pub(crate) const AUDIT_ARCH: u32 = 0xc000_00b7;
@@ -130,7 +129,8 @@ impl TaskControlBlock {
         cloexec: bool,
     ) -> Result<usize, file::FileDescriptorError> {
         assert!(
-            task::current_task().is_some_and(|current| core::ptr::eq(current.as_ref(), self)),
+            crate::execution::task::current_task()
+                .is_some_and(|current| core::ptr::eq(current.as_ref(), self)),
             "observer must not inject by operating another task's table"
         );
         if let Some(handoff) = &self.handoff {
@@ -147,11 +147,7 @@ impl TaskControlBlock {
     }
 }
 thread_local! { static CURRENT: RefCell<Option<Arc<TaskControlBlock>>> = const { RefCell::new(None) }; }
-mod task {
-    pub(crate) fn current_task() -> Option<alloc::sync::Arc<super::TaskControlBlock>> {
-        super::CURRENT.with_borrow(Clone::clone)
-    }
-}
+
 struct Binding {
     _event: scheduler_target::Binding,
 }
@@ -184,12 +180,12 @@ impl ipc::PipeScheduler for PipeScheduler {
         pipe: &Arc<ipc::Pipe>,
         condition: ipc::PipeWaitCondition,
         _: Option<u64>,
-    ) -> sync::WaitResult {
+    ) -> crate::execution::sync::WaitResult {
         let mut epoch = self.epoch.lock().unwrap();
         while !pipe.poll_state(condition.direction()).satisfies(condition) {
             epoch = self.changed.wait(epoch).unwrap();
         }
-        sync::WaitResult::Woken
+        crate::execution::sync::WaitResult::Woken
     }
 }
 fn initialize_pipe_scheduler() {
@@ -779,5 +775,16 @@ fn receive_projects_actual_tid_in_each_receivers_namespace_after_listener_transf
             Ok(0)
         );
         assert_eq!(worker.join().unwrap(), Ok(Some(17)));
+    }
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
+    pub(crate) mod task {
+        pub(crate) fn current_task() -> Option<alloc::sync::Arc<crate::TaskControlBlock>> {
+            crate::CURRENT.with_borrow(Clone::clone)
+        }
     }
 }

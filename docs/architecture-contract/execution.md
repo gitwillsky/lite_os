@@ -3,8 +3,8 @@
 ## Owner
 
 - `arch` 独占寄存器布局、context switch、trap decode、MMU encoding、local interrupt 与 architecture fail-stop。
-- `entry` 独占 raw boot/trap callback ABI；`cpu` 独占 logical identity/lifecycle/deferred bitset。
-- `timer` 独占 per-CPU deadline；`TimerQueue` 独占 Process timer record/deadline index；
+- `execution::entry` 独占 raw boot/trap callback ABI；`execution::cpu` 独占 logical identity/lifecycle/deferred bitset。
+- `execution::timer` 独占 per-CPU deadline；`TimerQueue` 独占 Process timer record/deadline index；
   `WaitRegistry` 独占 wait ID、registration 与 sharded source/deadline indexes。
 - boot CPU 保留 always-armed housekeeping/liveness timer source；`TimerQueue` owner 不变，运行中的
   CPU 仍可消费 timer deferred work。非 boot timer source 只在 task execution 期间开启。
@@ -46,7 +46,7 @@
 ## Interface
 
 - generic callers 只能使用 typed `BootContext`、`UserContext`、`KernelContext`、`TrapEvent`、`UserFault`、`CpuId`、`CpuSet` 与 semantic MMU permissions。
-- `trap` 只做事件投递和 user-return orchestration；不得读取 CSR、计算 interrupt-controller context 或拥有 syscall state。
+- `execution::trap` 只做事件投递和 user-return orchestration；不得读取 CSR、计算 interrupt-controller context 或拥有 syscall state。
 - steady user return/trampoline 不得执行 `fence.i` 或 full `sfence.vma`；instruction publication 属于 executable mapping transaction，translation reuse 属于 ASID generation owner。换代后首次 activation 的 full local fence 只由该 owner 的 pending consequence 触发。
 - syscall trap 只通过窄 transaction 读取 `a7/a0..a5/sepc`、写 completion `a0`，并在最终
   user-return 唯一发布 CPU-local metadata；禁止恢复 `load/set_user_context` 全量复制路径。
@@ -88,7 +88,7 @@
 - illegal-instruction 首次分类与最终 state commit 各使用一个短 context transaction；可能取得
   AddressSpace lock 的 instruction copy 必须位于两者之间，禁止持有 context claim 跨阻塞锁。
 - deferred consumer 必须有界并可续批；hardirq 只确认硬件与发布 work，不执行无界领域逻辑。
-- `deferred` 对每个 logical CPU 的 bitmap 只在空→非空 transition 调用一次
+- `execution::deferred` 对每个 logical CPU 的 bitmap 只在空→非空 transition 调用一次
   `arch::interrupt::raise_software`；bitmap 非空时已有 edge 或当前 hardirq continuation 负责抵达 safe point，
   重复发布只能合并 bit。缺少 transition 条件会让 AArch64 self-SGI 在 console raw ring 尚可读时
   无限重入，idle safe point 永远不能消费输入。

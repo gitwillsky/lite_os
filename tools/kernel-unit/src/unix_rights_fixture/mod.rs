@@ -13,7 +13,7 @@ pub(crate) enum SocketError {
     ConnectionRefused,
     TooManyReferences,
 }
-#[path = "../../../../kernel/src/socket/credentials.rs"]
+#[path = "../../../../kernel/src/net/credentials.rs"]
 mod credentials;
 pub(crate) use credentials::UnixCredentials;
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -41,10 +41,10 @@ impl Socket {
 mod unix_rights_limit;
 pub(crate) use unix_rights_limit::ProducedLimit;
 
-#[path = "../../../../kernel/src/socket/core_buffer_limit.rs"]
+#[path = "../../../../kernel/src/net/core_buffer_limit.rs"]
 mod core_buffer_limit;
 pub(crate) use core_buffer_limit::CoreBufferLimit;
-#[path = "../../../../kernel/src/socket/core_buffers.rs"]
+#[path = "../../../../kernel/src/net/core_buffers.rs"]
 mod core_buffers;
 #[derive(Clone, Copy)]
 pub(crate) enum SocketDomain {

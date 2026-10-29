@@ -13,10 +13,13 @@ ROOT = SCRIPTS.parent
 sys.path.insert(0, str(SCRIPTS))
 
 import verify_rust_std  # noqa: E402
+from toolchain import unwind, musl
 
 
 def reload_rust_std(arch: str, accel: str) -> object:
     with patch.dict(os.environ, {"ARCH": arch, "ACCEL": accel}, clear=True):
+        importlib.reload(musl)
+        importlib.reload(unwind)
         return importlib.reload(verify_rust_std)
 
 
@@ -50,7 +53,8 @@ class RustStdRoutingTests(unittest.TestCase):
             self.assertEqual(run.call_args.args[0][0], "/tool/debugfs")
 
     def test_rust_source_probe_drops_make_jobserver_capability(self) -> None:
-        module = reload_rust_std("aarch64", "hvf")
+        reload_rust_std("aarch64", "hvf")
+        module = unwind
         with tempfile.TemporaryDirectory() as workspace:
             sysroot = Path(workspace)
             manifest = sysroot / "lib/rustlib/src/rust/library/std/Cargo.toml"

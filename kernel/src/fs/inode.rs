@@ -453,7 +453,7 @@ pub(crate) trait Inode: Send + Sync {
         &self,
         offset: u64,
         length: usize,
-        notify: Arc<dyn crate::block::CompletionNotify>,
+        notify: Arc<dyn crate::devices::block::CompletionNotify>,
     ) -> Result<Option<alloc::boxed::Box<dyn StorageRead>>, FileSystemError> {
         let _ = (offset, length, notify);
         Ok(None)

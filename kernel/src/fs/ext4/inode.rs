@@ -35,7 +35,7 @@ pub(super) struct Timestamp {
 
 impl Timestamp {
     pub(super) fn now() -> Self {
-        let nanoseconds = crate::timer::get_realtime_ns();
+        let nanoseconds = crate::execution::timer::get_realtime_ns();
         Self {
             seconds: (nanoseconds / 1_000_000_000) as i64,
             nanoseconds: (nanoseconds % 1_000_000_000) as u32,

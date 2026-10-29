@@ -18,11 +18,11 @@ use super::{FileSystemError, InodeType, try_format_bytes};
 /// sysfs 网络子树的数据来源：调用者的网络命名空间与它的实际接口表；由 task 层实现、composition root 注入。
 pub(crate) trait NetLinkSource: Send + Sync {
     /// 挂载 sysfs 的任务所在的 NET。
-    fn current_net_namespace(&self) -> Result<Arc<crate::socket::NetNamespace>, FileSystemError>;
+    fn current_net_namespace(&self) -> Result<Arc<crate::net::NetNamespace>, FileSystemError>;
     /// `target` 的全部接口；与 `SIOCGIFFLAGS`、rtnetlink 共用同一份接口快照。
     fn link_snapshot(
         &self,
-        target: &crate::socket::NetNamespace,
+        target: &crate::net::NetNamespace,
     ) -> Result<Vec<NetLinkSnapshot>, FileSystemError>;
 }
 
@@ -52,7 +52,7 @@ impl NetLinkSnapshot {
 pub(super) struct NetView {
     // OWNER: sysfs 实例只弱引用挂载者 NET；NET 销毁后列表为空，不因挂载而延长命名空间寿命。
     // FAILURE: 缺少它只能列出某个固定 NET，容器内挂载的 sysfs 会看到宿主接口。
-    namespace: Weak<crate::socket::NetNamespace>,
+    namespace: Weak<crate::net::NetNamespace>,
     source: Arc<dyn NetLinkSource>,
 }
 

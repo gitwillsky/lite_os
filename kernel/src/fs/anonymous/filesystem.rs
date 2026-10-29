@@ -56,7 +56,7 @@ impl PseudoMount {
                     let filesystem = Arc::try_new(PseudoFilesystem {
                         root: Arc::try_new(RootInode {
                             filesystem: kind,
-                            created: crate::timer::get_realtime_ns() / 1_000_000_000,
+                            created: crate::execution::timer::get_realtime_ns() / 1_000_000_000,
                         })
                         .map_err(|_| FileSystemError::OutOfMemory)?,
                     })

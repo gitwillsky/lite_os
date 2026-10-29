@@ -37,7 +37,7 @@ pub(super) enum ProcNode {
     SysDir,
     NetSysctlDir,
     CoreNetSysctlDir,
-    CoreBufferLimit(crate::socket::CoreBufferLimit),
+    CoreBufferLimit(crate::net::CoreBufferLimit),
     OptmemLimit,
     SysvipcDir,
     IpcTable(crate::ipc::IpcTable),

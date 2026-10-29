@@ -3,12 +3,12 @@ use syn::Item;
 
 use super::SourceFile;
 
-const ADDRESS_SPACE: &str = "kernel/src/task/model/address_space.rs";
-const TASK_ACCESS: &str = "kernel/src/task/model/address_space/task_access.rs";
-const EXIT: &str = "kernel/src/task/process_table/process_exit.rs";
-const EXIT_MEMORY: &str = "kernel/src/task/model/process_exit.rs";
-const MUTEX: &str = "kernel/src/sync/task_mutex.rs";
-const PROCESS_CLONE: &str = "kernel/src/task/model/process_clone.rs";
+const ADDRESS_SPACE: &str = "kernel/src/execution/task/model/address_space.rs";
+const TASK_ACCESS: &str = "kernel/src/execution/task/model/address_space/task_access.rs";
+const EXIT: &str = "kernel/src/execution/task/process_table/process_exit.rs";
+const EXIT_MEMORY: &str = "kernel/src/execution/task/model/process_exit.rs";
+const MUTEX: &str = "kernel/src/execution/sync/task_mutex.rs";
+const PROCESS_CLONE: &str = "kernel/src/execution/task/model/process_clone.rs";
 const COW: &str = "kernel/src/memory/mm/cow.rs";
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
@@ -240,7 +240,7 @@ fn require_field(
 fn check_mapping_installation(sources: &[SourceFile], errors: &mut Vec<String>) {
     let paths = [
         "kernel/src/memory/mm/mmap/installation.rs",
-        "kernel/src/task/model/address_space/mapping.rs",
+        "kernel/src/execution/task/model/address_space/mapping.rs",
         "kernel/src/syscall/memory.rs",
     ];
     let found: Vec<_> = paths

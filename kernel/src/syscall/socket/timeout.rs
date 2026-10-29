@@ -1,6 +1,6 @@
 //! Linux LP64 socket timeval codec；仅产生语义 policy，不拥有 socket 或等待状态。
 use super::errno;
-use crate::socket::SocketTimeout;
+use crate::net::SocketTimeout;
 
 pub(super) fn decode(bytes: [u8; 16]) -> Result<SocketTimeout, isize> {
     let seconds = i64::from_ne_bytes(bytes[..8].try_into().unwrap());

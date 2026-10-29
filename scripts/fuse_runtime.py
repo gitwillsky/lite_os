@@ -15,8 +15,8 @@ PACKAGES = {
 
 def fuse_userland():
     """返回只依赖当前 musl 的原版 helper 与禁止 allow_other 的配置；摘要/ELF 不符立即失败。"""
-    from verify_busybox import UserlandArtifact
-    from verify_artifacts import llvm_tool
+    from userland import UserlandArtifact
+    from toolchain.kernel_image import llvm_tool
     root = Path(__file__).resolve().parent.parent
     target = target_from_environment()
     name = "fuse3-3.16.2-r1.apk"

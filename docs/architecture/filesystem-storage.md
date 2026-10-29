@@ -12,7 +12,7 @@
   live opened entries。index node 只持有 Weak；namespace mutation 在锁外 upgrade，
   且被替换 parent 与临时 strong pin 均在 index lock 外析构，避免 final Drop 递归取锁。
   OpenFileDescription 拥有 backend、offset、status flags 与 descriptor reference
-  consequence；fd table 只拥有 slot 和 descriptor flags。二者属于 `file` module（位于 `fs` 与 `socket` 之上），VFS 的
+  consequence；fd table 只拥有 slot 和 descriptor flags。二者属于 `file` module（位于 `fs` 与 `net` 之上），VFS 的
   advisory lock 只经 `LockHolder` 识别持锁者，不认识 OFD。
 - ext4 是当前可写 root filesystem，只接受 e2fsprogs 1.47.4 `mke2fs -t ext4` 默认 profile（extent、
   64bit、flex_bg、metadata_csum、dir_index、orphan_file、JBD2 `CSUM_V3`）；其余 feature 在 mount 时拒绝。
@@ -29,7 +29,7 @@
   filesystem 合并 retry，下一次 task mutation 前回收一个已无 live Weak identity 的 orphan。
 - ext4 写路径是 Linux `data=ordered` + group commit：`write`/`create`/`rename` 等 mutation 只把
   staged metadata 与文件数据并入内存中的 running transaction 后返回；metadata 经 JBD2 原子提交，
-  数据不进 journal、在 commit record 之前直接写回 home。running transaction 由 `fsync`/`sync`、
+  数据不进 journal、在 commit record 之前直接写回 home。running transaction 由 `fsync`/`execution::sync`、
   journal 容量、16 MiB 数据上限或 5 秒年龄触发提交；每个 ext4 filesystem 的写回内核线程负责空闲期的
   5 秒上限。backup superblock/GDT 保持 mkfs 时的内容，由 e2fsck 维护。
 - JBD2 commit 在 commit record 前持久化 dirty marker、descriptor 与 data image；mount replay 后先从
@@ -48,7 +48,7 @@
   不经 page cache。`Inode::data_backing` 区分 `PageCache`（持久文件）、`Snapshot`（procfs 即时生成）与
   `Memory`；read/write/truncate/fallocate/mmap 按它分派。页在文件失去最后一个 link 与最后一个打开/映射引用
   时随 `Arc` 释放并立即归还 `size=` 配额；page cache 的全局 registry 持有 inode 会让已删除文件的内容滞留到
-  下一次 `sync`，并让热数据占两份内存，所以内存型文件不得经过它。
+  下一次 `execution::sync`，并让热数据占两份内存，所以内存型文件不得经过它。
 - tmpfs 的目录项按名字索引并按单调 cookie 迭代（`getdents` cursor 是上一项 cookie，`.`/`..` 固定为 1/2），
   迭代中途创建或删除不会让位置漂移。`size=`/`nr_blocks=` 限制数据页，`nr_inodes=` 限制 inode；
   `mode=`/`uid=`/`gid=` 决定根目录。`/dev/shm` 是 devfs 注册表声明的空目录，由 init 在其上挂载 tmpfs。
@@ -112,9 +112,9 @@
   `MS_MANDLOCK`、`MS_NOSYMFOLLOW` 与同目录堆叠挂载返回 `EINVAL`/`EBUSY`。
 - tmpfs 目录树释放（umount 或最后一个引用消失）用常数栈的循环拆除，深度不受限。
 - 已删除文件的 page cache 在 unlink/rename 覆盖或最后一个打开条目释放时随 inode 逐出（Linux `evict_inode`），
-  ext4 的 orphan 回收不再等待下一次 `sync`；仍被打开或映射的文件保持存活。
+  ext4 的 orphan 回收不再等待下一次 `execution::sync`；仍被打开或映射的文件保持存活。
 - 没有通用 block scheduler 或多个可热插拔持久卷策略。
-- 已返回的写入在 `fsync`/`sync` 前最多可能丢失 5 秒（与 Linux `commit=5` 一致）；块分配仍发生在
+- 已返回的写入在 `fsync`/`execution::sync` 前最多可能丢失 5 秒（与 Linux `commit=5` 一致）；块分配仍发生在
   `write` 时，没有 delayed allocation。
 - ext4 磁盘保存纳秒时间戳与 crtime，但 VFS metadata 只投影非负秒数；`utimensat` 的纳秒部分与
   `statx` birth time 不对用户可见。

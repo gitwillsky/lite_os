@@ -2,7 +2,7 @@ use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use super::{AccessIdentity, FileSystemError, FileSystemStatistics, Inode, InodeType};
-use crate::sync::TaskMutex;
+use crate::execution::sync::TaskMutex;
 
 mod lookup_origin;
 mod mount_flags;
@@ -136,7 +136,7 @@ impl VirtualFileSystem {
         namespace: &Arc<MountNamespace>,
         root: &Arc<OpenedFile>,
         mode: UnmountMode,
-    ) -> Result<Vec<Arc<crate::sync::TaskEvent>>, FileSystemError> {
+    ) -> Result<Vec<Arc<crate::execution::sync::TaskEvent>>, FileSystemError> {
         let _transaction = self.namespace()?;
         namespace.remove(root, mode)
     }

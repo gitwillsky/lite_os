@@ -12,7 +12,7 @@ use super::{
         chardev::{DeviceError, IoctlCall},
     },
 };
-use crate::block::{
+use crate::devices::block::{
     BlockDevice, BlockError,
     identity::PartUuid,
     range::{self, BlockStore, RangeError},
@@ -31,7 +31,7 @@ pub(crate) struct BlockNode {
     number: DeviceNumber,
     device: Arc<dyn BlockDevice>,
     /// 整盘节点已发布的分区；分区节点为空。`BLKRRPART` 以它判断分区表是否变化。
-    partitions: spin::Mutex<Vec<crate::block::partition_table::Partition>>,
+    partitions: spin::Mutex<Vec<crate::devices::block::partition_table::Partition>>,
     /// 分区的位置与 `PARTUUID`；整盘为 `None`。
     partition: Option<PartitionInfo>,
     /// physical extent 的唯一盘 claim owner 与稳定节点 key。
@@ -120,7 +120,10 @@ impl BlockNode {
     }
 
     /// 记录整盘已发布的分区集合。
-    pub(super) fn set_partitions(&self, partitions: Vec<crate::block::partition_table::Partition>) {
+    pub(super) fn set_partitions(
+        &self,
+        partitions: Vec<crate::devices::block::partition_table::Partition>,
+    ) {
         *self.partitions.lock() = partitions;
     }
 
@@ -130,7 +133,7 @@ impl BlockNode {
     ///
     /// 分区表与已发布的不同返回 `Busy`：设备注册表只追加，不支持热移除或改号已发布的分区节点。
     pub(crate) fn reread_partitions(&self) -> Result<(), FileSystemError> {
-        let current = crate::block::partition_table::parse(self, self.capacity() / 512);
+        let current = crate::devices::block::partition_table::parse(self, self.capacity() / 512);
         let current = super::publishable_partitions(current);
         if *self.partitions.lock() == current {
             Ok(())
@@ -420,7 +423,7 @@ impl Inode for BlockSpecial {
     }
 }
 
-impl crate::block::partition_table::SectorSource for BlockNode {
+impl crate::devices::block::partition_table::SectorSource for BlockNode {
     fn read(&self, lba: u64, buffer: &mut [u8]) -> bool {
         BlockNode::read(self, lba * 512, buffer).is_ok_and(|count| count == buffer.len())
     }

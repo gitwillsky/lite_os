@@ -15,7 +15,7 @@
   仍使用 transient source-key seam，两者在唤醒后都复查 backend level state。source notifier
   不等待 IPv4 `TaskMutex`；owner 竞争时先保守保留 ready membership，由 task-context delivery
   做精确 level recheck，避免 deferred callback 睡眠或丢失 edge。
-- `socket` façade 拥有 domain dispatch；AF_UNIX namespace/queue/SCM graph、IPv4 stack、
+- `net` façade 拥有 domain dispatch；AF_UNIX namespace/queue/SCM graph、IPv4 stack、
   AF_PACKET registry 与 kobject listener 各自拥有复合状态。IPv4 `TaskMutex` protocol owner 保持
   唯一 `SocketSet`；endpoint data-plane 通过稳定 placeholder slot 临时借出真实 socket，在 owner 外
   复制 payload；独立 endpoint 只共享 O(1) loan count，不共享互斥 guard、也不互相串行。poll 只在

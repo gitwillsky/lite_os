@@ -1,16 +1,19 @@
 //! 生产混音数学的诊断计时；host 浮点不能代表 kernel softfloat 或设备时序。
 use std::{hint::black_box, time::Instant};
 
-mod drivers {
-    pub(crate) const PCM_PERIOD_FRAMES: usize = 256;
-    pub(crate) const PCM_PERIOD_BYTES: usize = PCM_PERIOD_FRAMES * 8;
+mod devices {
+    pub(crate) mod model {
+
+        pub(crate) const PCM_PERIOD_FRAMES: usize = 256;
+        pub(crate) const PCM_PERIOD_BYTES: usize = PCM_PERIOD_FRAMES * 8;
+    }
 }
 
-#[path = "../../../kernel/src/audio/mixer.rs"]
+#[path = "../../../kernel/src/devices/audio/mixer.rs"]
 mod mixer;
 
 fn main() {
-    let mut period = [0; drivers::PCM_PERIOD_BYTES];
+    let mut period = [0; devices::model::PCM_PERIOD_BYTES];
     for sample in period.as_chunks_mut::<4>().0 {
         sample.copy_from_slice(&0.04_f32.to_le_bytes());
     }

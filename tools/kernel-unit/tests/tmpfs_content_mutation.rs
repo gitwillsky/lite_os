@@ -7,11 +7,7 @@ extern crate alloc;
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-mod timer {
-    pub(crate) fn get_realtime_ns() -> u64 {
-        1_000_000_000
-    }
-}
+
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
@@ -36,26 +32,12 @@ unsafe impl GlobalAlloc for FaultAllocator {
 }
 #[global_allocator]
 static ALLOCATOR: FaultAllocator = FaultAllocator;
-#[path = "../../../kernel/src/sync"]
-mod sync {
-    mod wait_completion;
-    pub(crate) use wait_completion::WaitCompletion;
-    mod task_wait;
-    pub(crate) use task_wait::{
-        TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory,
-    };
-    #[allow(
-        unused_imports,
-        reason = "focused fixture does not consume every TaskMutex lock mode"
-    )]
-    mod task_mutex;
-    pub(crate) use task_mutex::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
-}
+
 #[path = "../src/interruptible_event_target.rs"]
 mod target;
 #[path = "../../../kernel/src/fs"]
 mod fs {
-    use crate::sync::{TaskMutex, TaskMutexGuard};
+    use crate::execution::sync::{TaskMutex, TaskMutexGuard};
     use alloc::sync::Arc;
     #[derive(Debug, PartialEq, Eq)]
     pub(crate) enum FileSystemError {
@@ -167,7 +149,7 @@ mod fs {
         let worker_target = target.clone();
         let worker = std::thread::spawn(move || {
             let _binding = worker_target.bind();
-            let mut wait = crate::sync::TaskMutexWaitPreparation::prepare().unwrap();
+            let mut wait = crate::execution::sync::TaskMutexWaitPreparation::prepare().unwrap();
             let identity = AccessIdentity::new(1000, 1000, None, crate::namespace::boot(), 0, 1000);
             crate::FAIL_NEXT.set(true);
             worker_inode.remove_write_privileges_prepared(Some(&identity), &mut wait);
@@ -478,5 +460,29 @@ mod fs {
             global.prepare(&owner, Ok(())),
             Err(FileSystemError::PermissionDenied)
         );
+    }
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    pub(crate) mod timer {
+        pub(crate) fn get_realtime_ns() -> u64 {
+            1_000_000_000
+        }
+    }
+    #[path = "../../../kernel/src/execution/sync"]
+    pub(crate) mod sync {
+        mod wait_completion;
+        pub(crate) use wait_completion::WaitCompletion;
+        mod task_wait;
+        pub(crate) use task_wait::{
+            TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory,
+        };
+        #[allow(
+            unused_imports,
+            reason = "focused fixture does not consume every TaskMutex lock mode"
+        )]
+        mod task_mutex;
+        pub(crate) use task_mutex::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
     }
 }

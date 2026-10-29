@@ -1,12 +1,12 @@
-use crate::sync::WaitResult;
+use crate::execution::sync::WaitResult;
 use crate::{
-    syscall::errno,
-    task::{
+    execution::task::{
         PendingSignal, SignalAction, SignalSendError, SignalStack, SignalStackError,
         SignalWaitError, current_task, send_process_signal, send_queued_process_signal,
         send_queued_thread_signal, send_thread_signal, send_tid_signal, wait_for_signal,
         wait_for_signal_delivery,
     },
+    syscall::errno,
 };
 
 use super::timer::{TimeSpec, decode_timespec, timespec_ns};
@@ -339,7 +339,7 @@ pub(crate) fn sys_rt_sigtimedwait(
             Err(error) => return error,
         };
         Some(
-            crate::timer::get_time_ns()
+            crate::execution::timer::get_time_ns()
                 .saturating_add(relative)
                 .min(i64::MAX as u64),
         )
@@ -372,16 +372,18 @@ pub(crate) fn sys_rt_sigreturn() -> isize {
     task.clear_syscall_restart();
     match task.restore_signal_frame() {
         Ok(result) => result as isize,
-        Err(crate::task::SignalFrameRestoreError::OutOfMemory) => {
+        Err(crate::execution::task::SignalFrameRestoreError::OutOfMemory) => {
             drop(task);
-            crate::task::exit_current_group_by_signal(syscall_abi::signal::SIGKILL);
+            crate::execution::task::exit_current_group_by_signal(syscall_abi::signal::SIGKILL);
         }
-        Err(crate::task::SignalFrameRestoreError::Invalid { address }) => {
+        Err(crate::execution::task::SignalFrameRestoreError::Invalid { address }) => {
             let info = match task.signal_frame_fault(address) {
                 Ok(info) => info,
                 Err(_) => {
                     drop(task);
-                    crate::task::exit_current_group_by_signal(syscall_abi::signal::SIGKILL);
+                    crate::execution::task::exit_current_group_by_signal(
+                        syscall_abi::signal::SIGKILL,
+                    );
                 }
             };
             task.queue_synchronous_fault(syscall_abi::signal::SIGSEGV, info)

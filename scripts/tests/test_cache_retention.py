@@ -16,7 +16,7 @@ sys.path.insert(0, str(SCRIPTS))
 import build_cache
 import prune_build_cache
 import verify_apk_apps
-import verify_busybox
+from userland import image as userland_image
 
 
 class CacheRetentionTests(unittest.TestCase):
@@ -188,33 +188,33 @@ class CacheRetentionTests(unittest.TestCase):
         def create_image(_binary, _musl, _openssl, destination):
             destination.write_bytes(b"new rootfs")
         with (
-            patch.object(verify_busybox, "WORK", work),
-            patch.object(verify_busybox, "base_userland", return_value=()),
-            patch.object(verify_busybox, "build_stress_tools", return_value=artifact),
-            patch.object(verify_busybox, "cached_apk_bootstrap", return_value=bootstrap),
-            patch.object(verify_busybox, "target_runtime_artifacts", return_value=()),
-            patch.object(verify_busybox, "boot_scene", return_value=artifact),
-            patch.object(verify_busybox, "sha256", return_value="digest"),
-            patch.object(verify_busybox, "find_mke2fs", return_value=artifact),
-            patch.object(verify_busybox, "find_debugfs", return_value=artifact),
-            patch.object(verify_busybox.shutil, "which", return_value="/bin/openssl"),
-            patch.object(verify_busybox, "create_image", side_effect=create_image) as create,
-            patch.object(verify_busybox, "prune_rootfs_images", side_effect=guarded_prune),
+            patch.object(userland_image, "WORK", work),
+            patch.object(userland_image, "base_userland", return_value=()),
+            patch.object(userland_image, "build_stress_tools", return_value=artifact),
+            patch.object(userland_image, "cached_apk_bootstrap", return_value=bootstrap),
+            patch.object(userland_image, "target_runtime_artifacts", return_value=()),
+            patch.object(userland_image, "boot_scene", return_value=artifact),
+            patch.object(userland_image, "sha256", return_value="digest"),
+            patch.object(userland_image, "find_mke2fs", return_value=artifact),
+            patch.object(userland_image, "find_debugfs", return_value=artifact),
+            patch.object(userland_image.shutil, "which", return_value="/bin/openssl"),
+            patch.object(userland_image, "create_image", side_effect=create_image) as create,
+            patch.object(userland_image, "prune_rootfs_images", side_effect=guarded_prune),
             redirect_stdout(StringIO()),
         ):
             musl = Mock(install=self.root)
             openssl = Mock(binary=artifact)
-            self.assertEqual(verify_busybox.create_published_image(artifact, musl, openssl, output), output)
+            self.assertEqual(userland_image.create_published_image(artifact, musl, openssl, output), output)
             # 命中时同样先完成 consumer 的独立复制，再应用保留策略。
             output.unlink()
-            self.assertEqual(verify_busybox.create_published_image(artifact, musl, openssl, output), output)
+            self.assertEqual(userland_image.create_published_image(artifact, musl, openssl, output), output)
             create.assert_called_once()
             survivors = set((work / "rootfs-images").iterdir())
-            with patch.object(verify_busybox, "fingerprint", return_value="f" * 64), patch.object(
-                verify_busybox, "create_image", side_effect=RuntimeError("assembly failed"),
+            with patch.object(userland_image, "fingerprint", return_value="f" * 64), patch.object(
+                userland_image, "create_image", side_effect=RuntimeError("assembly failed"),
             ):
                 with self.assertRaisesRegex(RuntimeError, "assembly failed"):
-                    verify_busybox.create_published_image(artifact, musl, openssl, output)
+                    userland_image.create_published_image(artifact, musl, openssl, output)
             self.assertEqual(set((work / "rootfs-images").iterdir()), survivors)
             self.assertEqual(output.read_bytes(), b"new rootfs")
         self.assertFalse(old[0].exists())

@@ -18,7 +18,7 @@ fn interrupted_physical_drain_preserves_partial_restore_slots_and_storage_for_re
     );
     assert_eq!(swap::statistics(), (7, 5));
     target.signal();
-    let mut wait = crate::sync::TaskMutexWaitPreparation;
+    let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
     assert_eq!(
         swap::deactivate(disk.identity(), &mut wait),
         Err(swap::SwapError::Interrupted)
@@ -75,7 +75,7 @@ fn signal_interrupts_final_slot_retirement_and_reactivation_keeps_the_lease() {
     let identity = disk.identity();
     let drain = std::thread::spawn(move || {
         let _binding = worker_target.bind();
-        swap::deactivate(identity, &mut crate::sync::TaskMutexWaitPreparation)
+        swap::deactivate(identity, &mut crate::execution::sync::TaskMutexWaitPreparation)
     });
     target.wait_until_sleeping();
     assert!(swap::reserve().is_none());
@@ -88,7 +88,7 @@ fn signal_interrupts_final_slot_retirement_and_reactivation_keeps_the_lease() {
         "Interrupted must restore Active admission"
     );
     drop(orphan);
-    swap::deactivate(identity, &mut crate::sync::TaskMutexWaitPreparation).unwrap();
+    swap::deactivate(identity, &mut crate::execution::sync::TaskMutexWaitPreparation).unwrap();
     assert!(disk.closed.load(Ordering::Acquire));
     assert_eq!(swap::statistics(), (0, 0));
 }
@@ -104,7 +104,7 @@ fn empty_area_and_last_slot_restored_before_checkpoint_win_over_pending_signal()
     let disk = SwapDisk::new(9);
     swap::activate(disk.clone(), b"/dev/test", 0).unwrap();
     target.signal();
-    let mut wait = crate::sync::TaskMutexWaitPreparation;
+    let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
     swap::deactivate(disk.identity(), &mut wait).unwrap();
     assert!(disk.closed.load(Ordering::Acquire));
     target.clear_signal();

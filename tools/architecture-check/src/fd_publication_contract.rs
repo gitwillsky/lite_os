@@ -55,7 +55,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fd-publication: named storage/device backends must share pre-open writer admission and a single no-fail lifecycle commit".into());
     }
-    let owner = source(sources, "kernel/src/task/model/file_table.rs");
+    let owner = source(sources, "kernel/src/execution/task/model/file_table.rs");
     let reservation = owner
         .split("pub(crate) struct OpenFdReservation")
         .nth(1)
@@ -166,7 +166,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         .split("pub(crate) fn sys_accept4")
         .next()
         .unwrap();
-    let socket_prepared = source(sources, "kernel/src/socket/preparation.rs");
+    let socket_prepared = source(sources, "kernel/src/net/preparation.rs");
     let socket_ofd = source(sources, "kernel/src/file/socket_preparation.rs");
     if !before(accept, "task.fd_prepare_open", "prepared.accept(")
         || !before(

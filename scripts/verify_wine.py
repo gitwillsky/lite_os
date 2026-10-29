@@ -13,9 +13,9 @@ from build_target import acceleration_from_environment, target_from_environment
 from display_gate import TIMEOUT_SECONDS, display_session
 from ext4_image import ensure_ext4_capacity
 from sync_userland import synchronize
-from verify_busybox import base_userland
+from userland.artifacts import base_userland
 from verify_desktop import click
-from verify_musl import cached_musl_paths, find_compiler
+from toolchain.musl import cached_musl_paths, find_compiler
 from verify_wayland import install_files, key_events, tap, tap_steps
 from wine_runtime import REQUIRED_CAPACITY_MIB, unpack_runtime, wine_userland
 

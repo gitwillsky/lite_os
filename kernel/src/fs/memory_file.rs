@@ -9,12 +9,12 @@ use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
 use super::{FileSystemError, StorageBudget};
+use crate::execution::sync::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
 use crate::memory::{
     MemoryReclaimer, PAGE_SIZE, ReclaimRequest, ReclaimResult, SharedFileError, SharedFileId,
     SharedFileMapping, SharedPage, SharedPagePin, SwappablePage, invalidate_shared_file,
     register_memory_reclaimer,
 };
-use crate::sync::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
 
 mod seals;
 mod sparse;

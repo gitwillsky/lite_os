@@ -8,9 +8,9 @@ use super::plic::PlicInterruptController;
 use super::uart;
 #[cfg(debug_assertions)]
 use crate::debug;
-use crate::hal::{InterruptError, InterruptHandler};
+use crate::execution::sync::IrqMutex;
 use crate::info;
-use crate::sync::IrqMutex;
+use crate::{execution::interrupt::InterruptError, execution::interrupt::InterruptHandler};
 
 /// PLIC 是外部中断的唯一权威控制器，不经过通用设备 registry。
 // OWNER: platform layer owns the unique interrupt controller discovered from DTB.
@@ -29,9 +29,12 @@ fn interrupt_controller() -> &'static IrqMutex<PlicInterruptController> {
 /// PLIC 初始化、UART 或任一已识别 VirtIO 设备的 interrupt 注册失败时，带原因 fail-stop。
 pub(crate) fn initialize() {
     let plic = &platform_info().plic;
-    let controller =
-        PlicInterruptController::new(plic.start, plic.end - plic.start, crate::cpu::possible())
-            .unwrap_or_else(|error| panic!("PLIC initialization failed: {error}"));
+    let controller = PlicInterruptController::new(
+        plic.start,
+        plic.end - plic.start,
+        crate::execution::cpu::possible(),
+    )
+    .unwrap_or_else(|error| panic!("PLIC initialization failed: {error}"));
     INTERRUPT_CONTROLLER.call_once(|| IrqMutex::new(controller));
     initialize_uart();
     info!("Device initialization completed");
@@ -40,8 +43,8 @@ pub(crate) fn initialize() {
 fn initialize_uart() {
     let board = platform_info();
     // Linux 为该 UART 使用的设备名，`console=` 按它选择。
-    crate::hal::console::register_serial(b"ttyS0", |bytes| {
-        super::console::write_bytes(bytes).map_err(|_| crate::hal::console::ConsoleError)
+    crate::devices::console::register_serial(b"ttyS0", |bytes| {
+        super::console::write_bytes(bytes).map_err(|_| crate::devices::console::ConsoleError)
     })
     .expect("console registration failed");
     let handler = uart::initialize(board.uart.start, board.uart.end - board.uart.start)
@@ -73,7 +76,10 @@ fn register_device(vector: u32, handler: Arc<dyn InterruptHandler>) -> Result<()
     let mut controller = interrupt_controller().lock();
     controller.register_handler(vector, handler)?;
     controller.set_priority(vector)?;
-    controller.set_affinity(vector, crate::cpu::CpuSet::singleton(crate::cpu::boot_id()))?;
+    controller.set_affinity(
+        vector,
+        crate::execution::cpu::CpuSet::singleton(crate::execution::cpu::boot_id()),
+    )?;
     controller.enable_interrupt(vector)
 }
 

@@ -16,10 +16,11 @@ use super::{
     worker,
 };
 use crate::{
+    execution::task::TaskControlBlock,
     file::{OpenFileDescription, OpenFileKind},
     fs::{O_NONBLOCK, chardev::UringCommand},
     io_uring::Ring,
-    socket::{SocketCapacityWait, SocketError},
+    net::{SocketCapacityWait, SocketError},
     syscall::{
         fs::{
             AsyncPositionedRead, AsyncReadStep, begin_current_position_read, begin_positioned_read,
@@ -32,7 +33,6 @@ use crate::{
         },
         user_iovec::UserIoVec,
     },
-    task::TaskControlBlock,
 };
 
 const POLLIN: i16 = 0x001;
@@ -412,7 +412,7 @@ impl Op {
                 deadline: if absolute {
                     nanoseconds
                 } else {
-                    crate::timer::get_time_ns().saturating_add(nanoseconds)
+                    crate::execution::timer::get_time_ns().saturating_add(nanoseconds)
                 },
                 // 目标序号在 issue 时取（Linux `io_timeout`），而不是 prep 时。
                 target_events: (count != 0).then(|| ring.events_posted().wrapping_add(count)),
@@ -846,7 +846,7 @@ pub(super) async fn drive(
             if target_events.is_some_and(|target| event_count_reached(&ring, target)) {
                 return Outcome::of(0);
             }
-            if deadline <= crate::timer::get_time_ns() {
+            if deadline <= crate::execution::timer::get_time_ns() {
                 // ETIME_SUCCESS 只让链不断开，CQE 的 res 仍是 -ETIME（Linux `io_timeout_fn`）。
                 return Outcome {
                     res: -(errno::ETIME as i32),

@@ -4,9 +4,12 @@ use super::plic_policy::{
     MAX_INTERRUPT_VECTOR, dispatch_claim_batch, enable_word_offset, valid_interrupt_vector,
 };
 use crate::{
-    cpu::{self, CpuSet},
+    arch::mmio::MmioBus,
+    execution::cpu::{self, CpuSet},
+    execution::interrupt::InterruptError,
+    execution::interrupt::InterruptHandler,
+    execution::interrupt::InterruptVector,
     fallible_tree::FallibleMap,
-    hal::{InterruptError, InterruptHandler, InterruptVector, MmioBus},
 };
 
 /// QEMU virt PLIC adapter。hardware context 编码仅存在于 platform backend。
@@ -82,7 +85,7 @@ impl PlicInterruptController {
     }
 
     #[inline(always)]
-    fn context_for(cpu: crate::cpu::CpuId) -> u32 {
+    fn context_for(cpu: crate::execution::cpu::CpuId) -> u32 {
         let hardware = cpu::hardware_id(cpu).raw();
         Self::supervisor_context(
             u32::try_from(hardware).expect("PLIC hardware CPU identity exceeds u32"),

@@ -1,6 +1,4 @@
-#!/usr/bin/env python3
-"""构建固定 Rust std consumer，并在目标 LiteOS guest 中验证 Linux/musl 路径。"""
-
+"""Rust std consumer 的构建与 QEMU runtime 门禁。"""
 from __future__ import annotations
 
 import argparse
@@ -8,8 +6,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-from pathlib import Path
-
 from build_cache import (
     build_environment,
     cache_lock,
@@ -25,20 +21,19 @@ from build_cache import (
 )
 from build_target import target_from_environment
 from ext4_image import find_debugfs
-from qemu_gate import boot, cpu_topology_markers, ShellCommand
-from verify_busybox import start_http_gate, verify_elf
-from verify_musl import (
-    MuslCachePaths,
-    cached_musl_paths,
-    find_compiler,
-    run,
-    rustc_probe_environment,
-)
+from pathlib import Path
+from qemu_gate import ShellCommand, boot, cpu_topology_markers
+from toolchain.unwind import build_libunwind, rust_source_root
+from verify_busybox import start_http_gate
+from userland.rust import verify_elf
+from toolchain.musl import MuslCachePaths, cached_musl_paths, find_compiler, run
 
 ROOT = Path(__file__).resolve().parent.parent
 TARGET = target_from_environment()
 WORK = ROOT / "target" / "rust-std-runtime" / TARGET.arch
+
 CRATE = ROOT / "scripts" / "fixtures" / "rust-std"
+
 if TARGET.arch == "aarch64":
     RUST_USER_TARGET = "aarch64-unknown-linux-musl"
 else:
@@ -52,14 +47,7 @@ BASE_RUST_FLAGS = (
     "-C link-arg=-Wl,--gc-sections,-z,relro,-z,now,-z,noexecstack "
     "-D warnings"
 )
-LIBUNWIND_CXX_SOURCES = ("libunwind.cpp", "Unwind-EHABI.cpp", "Unwind-seh.cpp")
-LIBUNWIND_C_SOURCES = (
-    "UnwindLevel1.c",
-    "UnwindLevel1-gcc-ext.c",
-    "Unwind-sjlj.c",
-    "Unwind-wasm.c",
-)
-LIBUNWIND_ASM_SOURCES = ("UnwindRegistersRestore.S", "UnwindRegistersSave.S")
+
 STD_MARKERS = (
     "LITEOS_RUST_STD_ALLOC_61",
     "LITEOS_RUST_STD_FS_61",
@@ -69,123 +57,6 @@ STD_MARKERS = (
     "LITEOS_RUST_STD_IPV4_61",
     "LITEOS_RUST_STD_61",
 )
-
-
-def rust_source_root(rustc: str) -> Path:
-    """返回固定 toolchain 的完整 rust-src root；缺失时禁止回退 host LLVM。"""
-    # Make jobserver fd 不属于 rustc；若继承失效 capability，其 warning 会和被捕获的 stdout
-    # 合并并把 sysroot 解析成不存在的多行路径。
-    sysroot = Path(
-        run(
-            [rustc, "--print", "sysroot"],
-            ROOT,
-            rustc_probe_environment(),
-        ).strip()
-    )
-    source = sysroot / "lib/rustlib/src/rust"
-    if not (source / "library/std/Cargo.toml").is_file():
-        raise RuntimeError("pinned rust-src component is required for Rust std userspace")
-    return source
-
-
-def build_libunwind(musl: MuslCachePaths, rustc: str) -> Path:
-    """从同一固定 rust-src 构建目标静态 LLVM libunwind。"""
-    rust_source = rust_source_root(rustc)
-    source = rust_source / "src/llvm-project/libunwind"
-    source_directory = source / "src"
-    selected_sources = tuple(
-        source_directory / name
-        for name in (
-            *LIBUNWIND_CXX_SOURCES,
-            *LIBUNWIND_C_SOURCES,
-            *LIBUNWIND_ASM_SOURCES,
-        )
-    )
-    headers = tuple(
-        sorted(
-            path
-            for directory in (source / "include", source_directory)
-            for path in directory.rglob("*")
-            if path.is_file() and path.suffix in {".h", ".hpp"}
-        )
-    )
-    for path in (*selected_sources, *headers):
-        if not path.is_file():
-            raise RuntimeError(f"pinned rust-src libunwind input is missing: {path}")
-    payload = {
-        "kind": "rust-std-libunwind",
-        "recipe_version": 1,
-        "arch": TARGET.arch,
-        "linux_target": TARGET.linux_triple,
-        "musl_sysroot_fingerprint": musl.sysroot_fingerprint,
-        "compiler": run([str(musl.compiler), "--version"], ROOT).splitlines()[0],
-        "archiver": run([str(musl.archiver), "--version"], ROOT).splitlines()[0],
-        "source_sha256": {
-            str(path.relative_to(source)): sha256(path)
-            for path in (*selected_sources, *headers)
-        },
-    }
-    identity = fingerprint(payload)
-    entry = WORK / "libunwind" / identity
-    if manifest_matches(entry, payload, ("libunwind.a",)):
-        return entry / "libunwind.a"
-
-    generation = generation_directory(WORK / "libunwind-generations", identity)
-    common = [
-        str(musl.compiler),
-        f"--target={TARGET.linux_triple}",
-        "-nostdlibinc",
-        "-isystem",
-        str(musl.install / "usr/include"),
-        "-I",
-        str(source / "include"),
-        "-I",
-        str(source_directory),
-        "-D_LIBUNWIND_IS_NATIVE_ONLY",
-        "-DNDEBUG",
-        # libunwind 只服务 panic/backtrace 冷路径；release 固定 O2，正确性由 std runtime gate
-        # 验证，不增加无法代表 target unwind 的 host wall-clock benchmark。
-        "-O2",
-        "-fPIC",
-        "-ffunction-sections",
-        "-fdata-sections",
-        "-funwind-tables",
-        "-fvisibility=hidden",
-    ]
-    if TARGET.arch == "aarch64":
-        common.append("-march=armv8-a")
-    else:
-        common.extend(("-march=rv64gc", "-mabi=lp64d"))
-    objects: list[Path] = []
-    try:
-        for index, path in enumerate(selected_sources):
-            output = generation / f"{index}-{path.name}.o"
-            if path.name in LIBUNWIND_CXX_SOURCES:
-                language = (
-                    "-x",
-                    "c++",
-                    "-std=c++17",
-                    "-fno-exceptions",
-                    "-fno-rtti",
-                    "-nostdinc++",
-                )
-            elif path.name in LIBUNWIND_C_SOURCES:
-                language = ("-x", "c", "-std=c99", "-fexceptions")
-            else:
-                language = ("-x", "assembler-with-cpp")
-            run([*common, *language, "-c", str(path), "-o", str(output)], ROOT)
-            objects.append(output)
-        archive = generation / "libunwind.a"
-        run([str(musl.archiver), "crs", str(archive), *(str(path) for path in objects)], ROOT)
-        run([str(musl.ranlib), str(archive)], ROOT)
-        for path in objects:
-            path.unlink()
-        write_manifest(generation, payload)
-        publish_generation(generation, entry)
-    except BaseException:
-        shutil.rmtree(generation, ignore_errors=True)
-        raise
-    return entry / "libunwind.a"
 
 
 def build_std_smoke(musl: MuslCachePaths, libunwind: Path) -> Path:
@@ -405,7 +276,6 @@ def main() -> int:
                 http_server.wait(timeout=3)
     print(f"Rust std {TARGET.arch} runtime verification passed")
     return 0
-
 
 if __name__ == "__main__":
     raise SystemExit(main())

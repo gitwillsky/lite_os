@@ -3,7 +3,7 @@ use super::{
     FileSystemError, VirtualFileSystem, mount_index,
     mount_view::{Attachment, MountPayload, MountView},
 };
-use crate::sync::{TaskEvent, TaskMutexWaitPreparation};
+use crate::execution::sync::{TaskEvent, TaskMutexWaitPreparation};
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use spin::Mutex;
 

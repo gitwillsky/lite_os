@@ -8,12 +8,6 @@ mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 
-#[allow(
-    dead_code,
-    reason = "TSYNC consumes killable locking; other TaskMutex modes are covered by synchronization fixtures"
-)]
-#[path = "../src/sync.rs"]
-mod sync;
 use alloc::sync::Arc;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
@@ -36,25 +30,17 @@ mod arch {
         pub(crate) const AUDIT_ARCH: u32 = 0xc000_00b7;
     }
 }
-mod task {
-    pub(crate) fn current_task() -> Option<alloc::sync::Arc<crate::TaskControlBlock>> {
-        unreachable!("descriptor notification processing belongs to seccomp_notifications")
-    }
-    pub(crate) use super::SeccompError;
-    pub(crate) mod model {
-        pub(crate) use crate::model::seccomp::{RetiredSecurity, ValidatedFilter};
-    }
-}
-#[path = "../../../kernel/src/task/process_table/seccomp.rs"]
+
+#[path = "../../../kernel/src/execution/task/process_table/seccomp.rs"]
 mod installation;
 
 pub(crate) struct TaskControlBlock {
     pid: namespace::PidRegistration,
     security: ThreadSecurityOwner,
-    credential_guard: Arc<sync::TaskMutex<()>>,
+    credential_guard: Arc<crate::execution::sync::TaskMutex<()>>,
 }
 impl TaskControlBlock {
-    fn credential_guard(&self) -> &sync::TaskMutex<()> {
+    fn credential_guard(&self) -> &crate::execution::sync::TaskMutex<()> {
         &self.credential_guard
     }
     fn thread(&self) -> &Self {
@@ -186,7 +172,7 @@ fn current_task() -> Option<Arc<TaskControlBlock>> {
 fn table(count: usize) -> (ProcessTable, Vec<Arc<TaskControlBlock>>) {
     let owner = namespace::boot();
     let view = namespace::initial_pid().child(owner, 0).unwrap();
-    let credential_guard = Arc::new(sync::TaskMutex::new(()));
+    let credential_guard = Arc::new(crate::execution::sync::TaskMutex::new(()));
     let tasks: Vec<_> = (1..=count)
         .map(|tid| {
             let mut pid = namespace::PreparedPid::try_new(
@@ -560,4 +546,23 @@ fn facade_strict_installation_uses_the_same_owner() {
     );
     CURRENT.set(None);
     assert!(matches!(ProcessState::Exited(()), ProcessState::Exited(())));
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[allow(
+        dead_code,
+        reason = "TSYNC consumes killable locking; other TaskMutex modes are covered by synchronization fixtures"
+    )]
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
+    pub(crate) mod task {
+        pub(crate) fn current_task() -> Option<alloc::sync::Arc<crate::TaskControlBlock>> {
+            unreachable!("descriptor notification processing belongs to seccomp_notifications")
+        }
+        pub(crate) use crate::SeccompError;
+        pub(crate) mod model {
+            pub(crate) use crate::model::seccomp::{RetiredSecurity, ValidatedFilter};
+        }
+    }
 }

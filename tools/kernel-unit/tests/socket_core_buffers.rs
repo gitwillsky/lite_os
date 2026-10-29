@@ -15,11 +15,10 @@ mod ipc;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 #[path = "../src/unix_endpoint_fixture.rs"]
-mod socket;
-#[path = "../src/sync.rs"]
-mod sync;
+mod net;
+
 use alloc::sync::Arc;
-use socket::{CoreBufferLimit, SocketIoDirection, SocketType, UnixSocket};
+use net::{CoreBufferLimit, SocketIoDirection, SocketType, UnixSocket};
 
 struct Restore([u32; 4]);
 impl Drop for Restore {
@@ -34,7 +33,7 @@ fn endpoint() -> Arc<UnixSocket> {
         SocketType::Datagram,
         ipc::Pipe::notification_pair().unwrap(),
         id::next_runtime_object_id(),
-        socket::boot_net(),
+        net::boot_net(),
     )
     .unwrap()
 }
@@ -104,7 +103,13 @@ fn actual_global_tuning_changes_future_defaults_and_option_clamps_only() {
             assert_eq!(resource.value(), before);
         }
     }
-    socket::close_description(&original);
-    socket::close_description(&fresh);
-    socket::close_description(&larger_default);
+    net::close_description(&original);
+    net::close_description(&fresh);
+    net::close_description(&larger_default);
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
 }

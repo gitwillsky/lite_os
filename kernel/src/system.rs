@@ -55,7 +55,7 @@ pub(crate) fn time_counter_frequency() -> u64 {
 ///
 /// calling CPU 不属于已发布 topology 时 fail-stop。
 pub(crate) fn current_cpu_index() -> usize {
-    crate::cpu::current_id().index()
+    crate::execution::cpu::current_id().index()
 }
 
 /// 投影 CpuTopology 的 logical online CPU mask，供 Linux userspace ABI 校验 selector。
@@ -64,7 +64,7 @@ pub(crate) fn current_cpu_index() -> usize {
 ///
 /// bit N 表示 logical CPU N 已 online。
 pub(crate) fn online_cpu_mask() -> usize {
-    crate::cpu::online().native_word()
+    crate::execution::cpu::online().native_word()
 }
 
 /// 通过唯一 platform reset seam 关闭或冷重启整个 SMP system。

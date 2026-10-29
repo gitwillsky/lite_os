@@ -5,8 +5,8 @@ use syn::{Arm, ExprMatch, ImplItem, Item, ItemFn, visit::Visit};
 
 use super::SourceFile;
 
-const TRAP_SOURCE: &str = "kernel/src/trap/mod.rs";
-const ADDRESS_SPACE_SOURCE: &str = "kernel/src/task/model/address_space.rs";
+const TRAP_SOURCE: &str = "kernel/src/execution/trap/mod.rs";
+const ADDRESS_SPACE_SOURCE: &str = "kernel/src/execution/task/model/address_space.rs";
 const USER_CONTEXT_SOURCE: &str = "kernel/src/arch/riscv64/user_context.rs";
 const USER_CONTEXT_BYTES: usize = 72 * core::mem::size_of::<u64>();
 
@@ -72,7 +72,7 @@ fn check_call_graph(sources: &[SourceFile], errors: &mut Vec<String>) {
         .sum::<usize>();
     let owner_snapshots = sources
         .iter()
-        .filter(|source| source.relative == "kernel/src/task/model/trap_context.rs")
+        .filter(|source| source.relative == "kernel/src/execution/task/model/trap_context.rs")
         .map(|source| source.text.matches(".snapshot_for_clone()").count())
         .sum::<usize>();
     if clone_snapshots != 2 || owner_snapshots != 1 {

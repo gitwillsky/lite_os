@@ -14,18 +14,18 @@ const INSTRUCTION_CACHE: &str = "kernel/src/arch/aarch64/instruction_cache.rs";
 const SHOOTDOWN: &str = "kernel/src/memory/mm/shootdown.rs";
 const GICV3: &str = "kernel/src/platform/qemu_virt/aarch64/gicv3.rs";
 const AARCH64_IO: &str = "kernel/src/arch/aarch64/io.rs";
-const MMIO_BUS: &str = "kernel/src/hal/bus.rs";
+const MMIO_BUS: &str = "kernel/src/arch/mmio.rs";
 const HEAP: &str = "kernel/src/memory/heap_allocator.rs";
-const VIRTIO_QUEUE: &str = "kernel/src/virtio/queue.rs";
+const VIRTIO_QUEUE: &str = "kernel/src/drivers/virtio/queue.rs";
 const KERNEL_STACK: &str = "kernel/src/memory/kernel_stack.rs";
 const AARCH64_CONTEXT: &str = "kernel/src/arch/aarch64/user_context.rs";
 const RISCV64_CONTEXT: &str = "kernel/src/arch/riscv64/user_context.rs";
-const CONTEXT_STORAGE: &str = "kernel/src/task/model/context_storage.rs";
-const TASK_USER_CONTEXT: &str = "kernel/src/task/model/user_context.rs";
-const TASK_MODEL: &str = "kernel/src/task/model.rs";
-const PROCESS_CLONE: &str = "kernel/src/task/model/process_clone.rs";
-const PROCESS_EXEC: &str = "kernel/src/task/model/process_exec.rs";
-const TASK_TRAP_CONTEXT: &str = "kernel/src/task/model/trap_context.rs";
+const CONTEXT_STORAGE: &str = "kernel/src/execution/task/model/context_storage.rs";
+const TASK_USER_CONTEXT: &str = "kernel/src/execution/task/model/user_context.rs";
+const TASK_MODEL: &str = "kernel/src/execution/task/model.rs";
+const PROCESS_CLONE: &str = "kernel/src/execution/task/model/process_clone.rs";
+const PROCESS_EXEC: &str = "kernel/src/execution/task/model/process_exec.rs";
+const TASK_TRAP_CONTEXT: &str = "kernel/src/execution/task/model/trap_context.rs";
 
 pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     let Ok(linker) = read(root, LINKER, errors) else {

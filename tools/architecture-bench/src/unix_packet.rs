@@ -16,25 +16,24 @@ mod ipc;
 #[path = "../../kernel-unit/src/namespace_fixture.rs"]
 mod namespace;
 #[path = "../../kernel-unit/src/unix_endpoint_fixture.rs"]
-mod socket;
-#[path = "../../kernel-unit/src/sync.rs"]
-mod sync;
+mod net;
+
 use alloc::sync::Arc;
 use std::{hint::black_box, time::Instant};
-fn endpoint() -> (Arc<socket::UnixSocket>, Arc<file::OpenFileDescription>) {
-    let endpoint = socket::UnixSocket::new(
-        socket::SocketType::SeqPacket,
+fn endpoint() -> (Arc<net::UnixSocket>, Arc<file::OpenFileDescription>) {
+    let endpoint = net::UnixSocket::new(
+        net::SocketType::SeqPacket,
         ipc::Pipe::notification_pair().unwrap(),
         id::next_runtime_object_id(),
-        socket::boot_net(),
+        net::boot_net(),
     )
     .unwrap();
     let ofd = Arc::new(file::OpenFileDescription {
-        kind: file::OpenFileKind::Socket(Arc::new(socket::Socket {
+        kind: file::OpenFileKind::Socket(Arc::new(net::Socket {
             endpoint: endpoint.clone(),
         })),
     });
-    socket::bind_file(&endpoint, &ofd);
+    net::bind_file(&endpoint, &ofd);
     (endpoint, ofd)
 }
 fn measure(name: &str, iterations: u64, gated: bool, mut operation: impl FnMut()) {
@@ -70,21 +69,21 @@ fn main() {
     .unwrap();
     pid.publish().unwrap();
     let _registration = pid.take_registration();
-    let credentials = socket::UnixCredentials {
+    let credentials = net::UnixCredentials {
         pid: pid.identity(),
         uid: 1000,
         gid: 2000,
     };
     let (sender, _sender_file) = endpoint();
     let (receiver, _receiver_file) = endpoint();
-    socket::UnixSocket::pair(
+    net::UnixSocket::pair(
         &sender,
         &receiver,
-        socket::UnixConnectionData::Packet,
+        net::UnixConnectionData::Packet,
         credentials.clone(),
     )
     .unwrap();
-    let input = socket::UnixSendCredentials {
+    let input = net::UnixSendCredentials {
         sender: credentials,
         claimed: None,
     };
@@ -116,7 +115,13 @@ fn main() {
                 Ok(6)
             ));
             let mut output = ipc::ReceiveBuffer::from_slice(&mut bytes);
-            black_box(socket::receive(&receiver, &mut output, false, false, true).unwrap());
+            black_box(net::receive(&receiver, &mut output, false, false, true).unwrap());
         },
     );
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../../kernel-unit/src/sync.rs"]
+    pub(crate) mod sync;
 }

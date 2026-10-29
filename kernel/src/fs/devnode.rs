@@ -8,7 +8,7 @@ use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
 
 use super::{BlockNode, DeviceNumber, FileSystemError};
-use crate::block::BlockDevice;
+use crate::devices::block::BlockDevice;
 
 /// devfs 中由注册表生成的一个设备节点（Linux devtmpfs node）。
 pub(super) struct DeviceNode {

@@ -2,23 +2,23 @@
 extern crate alloc;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/scheduler/preallocated_heap.rs"]
+#[path = "../../../kernel/src/execution/task/scheduler/preallocated_heap.rs"]
 mod preallocated_heap;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/scheduler/preemption_policy.rs"]
+#[path = "../../../kernel/src/execution/task/scheduler/preemption_policy.rs"]
 mod preemption_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/scheduler/placement_policy.rs"]
+#[path = "../../../kernel/src/execution/task/scheduler/placement_policy.rs"]
 mod placement_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/model/cputime_split.rs"]
+#[path = "../../../kernel/src/execution/task/model/cputime_split.rs"]
 mod cputime_split;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/process_table/signal/selection_result.rs"]
+#[path = "../../../kernel/src/execution/task/process_table/signal/selection_result.rs"]
 mod signal_selection_result;
 
 #[cfg(test)]

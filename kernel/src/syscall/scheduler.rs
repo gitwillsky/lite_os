@@ -1,12 +1,12 @@
 use core::mem::size_of;
 
 use crate::{
-    syscall::errno,
-    task::{
+    execution::task::{
         SchedulerAffinityError, SchedulerNiceSelector, SchedulerPolicyError,
         SchedulerPolicyRequest, current_task, scheduler_affinity, scheduler_io_priority,
         scheduler_nice, scheduler_policy, scheduler_rr_interval, suspend_current_and_run_next,
     },
+    syscall::errno,
 };
 
 const CPU_MASK_BYTES: usize = size_of::<usize>();

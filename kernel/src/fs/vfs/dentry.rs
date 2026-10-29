@@ -1,7 +1,7 @@
 //! Filesystem directory entry 的唯一关系 owner；mount view 与 OFD 不复制 parent/name/deleted。
 use super::dentry_index::DentryKey;
 use super::{FileSystemError, Inode};
-use crate::sync::{TaskReadGuard, TaskRwSemaphore, TaskWriteGuard};
+use crate::execution::sync::{TaskReadGuard, TaskRwSemaphore, TaskWriteGuard};
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use spin::Mutex;
 

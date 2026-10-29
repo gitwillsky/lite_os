@@ -1,6 +1,6 @@
 use alloc::sync::Arc;
 pub(crate) enum OpenFileKind {
-    Socket(Arc<crate::socket::Socket>),
+    Socket(Arc<crate::net::Socket>),
     Other,
 }
 pub(crate) struct OpenFileDescription {

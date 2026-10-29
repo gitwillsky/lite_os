@@ -15,26 +15,25 @@ mod ipc;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 #[path = "../src/unix_endpoint_fixture.rs"]
-mod socket;
-#[path = "../src/sync.rs"]
-mod sync;
+mod net;
+
 use alloc::{sync::Arc, vec};
-use socket::{SocketError, SocketType, UnixCredentials, UnixSendCredentials, UnixSocket};
+use net::{SocketError, SocketType, UnixCredentials, UnixSendCredentials, UnixSocket};
 fn endpoint(kind: SocketType) -> (Arc<UnixSocket>, Arc<file::OpenFileDescription>) {
     namespace::boot();
     let endpoint = UnixSocket::new(
         kind,
         ipc::Pipe::notification_pair().unwrap(),
         id::next_runtime_object_id(),
-        socket::boot_net(),
+        net::boot_net(),
     )
     .unwrap();
     let ofd = Arc::new(file::OpenFileDescription {
-        kind: file::OpenFileKind::Socket(Arc::new(socket::Socket {
+        kind: file::OpenFileKind::Socket(Arc::new(net::Socket {
             endpoint: endpoint.clone(),
         })),
     });
-    socket::bind_file(&endpoint, &ofd);
+    net::bind_file(&endpoint, &ofd);
     (endpoint, ofd)
 }
 fn credential(key: usize) -> (UnixCredentials, namespace::PidRegistration) {
@@ -64,32 +63,32 @@ fn listener(
 ) -> (Arc<UnixSocket>, Arc<file::OpenFileDescription>) {
     let (endpoint, ofd) = endpoint(kind);
     endpoint
-        .bind(socket::UnixAddress::new(label).unwrap())
+        .bind(net::UnixAddress::new(label).unwrap())
         .unwrap();
     endpoint.listen(0, credentials.clone()).unwrap();
     (endpoint, ofd)
 }
-fn resources(kind: SocketType) -> Result<socket::UnixConnectResources, SocketError> {
-    Ok(socket::UnixConnectResources {
+fn resources(kind: SocketType) -> Result<net::UnixConnectResources, SocketError> {
+    Ok(net::UnixConnectResources {
         server_notify: ipc::Pipe::notification_pair().unwrap(),
         data: if kind == SocketType::Stream {
-            socket::UnixConnectionData::Stream {
+            net::UnixConnectionData::Stream {
                 first_to_second: ipc::Pipe::notification_pair().unwrap(),
                 second_to_first: ipc::Pipe::notification_pair().unwrap(),
             }
         } else {
-            socket::UnixConnectionData::Packet
+            net::UnixConnectionData::Packet
         },
     })
 }
 fn accepted(listener: &UnixSocket) -> (Arc<UnixSocket>, Arc<file::OpenFileDescription>) {
     let endpoint = listener.accept().unwrap();
     let ofd = Arc::new(file::OpenFileDescription {
-        kind: file::OpenFileKind::Socket(Arc::new(socket::Socket {
+        kind: file::OpenFileKind::Socket(Arc::new(net::Socket {
             endpoint: endpoint.clone(),
         })),
     });
-    socket::bind_file(&endpoint, &ofd);
+    net::bind_file(&endpoint, &ofd);
     (endpoint, ofd)
 }
 #[test]
@@ -155,7 +154,7 @@ fn seqpacket_pending_messages_credentials_and_half_close_drain_one_actual_queue(
     assert!(server.pass_credentials());
     let mut bytes = [0u8; 3];
     for peek in [true, false] {
-        let (count, full, _, rights, actual) = socket::receive(
+        let (count, full, _, rights, actual) = net::receive(
             &server,
             &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
             peek,
@@ -168,7 +167,7 @@ fn seqpacket_pending_messages_credentials_and_half_close_drain_one_actual_queue(
         assert!(rights.is_none());
         assert!(Arc::ptr_eq(&actual.unwrap().pid, &credentials.pid));
     }
-    let (count, full, _, _, _) = socket::receive(
+    let (count, full, _, _, _) = net::receive(
         &server,
         &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
         false,
@@ -179,7 +178,7 @@ fn seqpacket_pending_messages_credentials_and_half_close_drain_one_actual_queue(
     assert_eq!((count, full), (3, 6));
     assert_eq!(&bytes, b"sec");
     assert_eq!(
-        socket::receive(
+        net::receive(
             &server,
             &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
             false,
@@ -192,7 +191,7 @@ fn seqpacket_pending_messages_credentials_and_half_close_drain_one_actual_queue(
     );
     assert!(matches!(
         client.send_to_with_ancillary(b"closed", None, &mut None, &sender),
-        Err(socket::SocketSendError::Error(SocketError::BrokenPipe))
+        Err(net::SocketSendError::Error(SocketError::BrokenPipe))
     ));
     assert!(matches!(
         server.send_to_with_ancillary(b"reply", None, &mut None, &sender),
@@ -218,13 +217,13 @@ fn queued_datagram_keeps_actual_sender_address_after_late_bind_and_fput() {
         source.send_to_with_ancillary(b"queued", Some(&target), &mut None, &sender),
         Ok(6)
     ));
-    let address = socket::UnixAddress::new(b"\0bound-after-send").unwrap();
+    let address = net::UnixAddress::new(b"\0bound-after-send").unwrap();
     source.bind(address).unwrap();
     drop(source_file);
     let (replacement, _replacement_file) = endpoint(SocketType::Datagram);
     replacement.bind(address).unwrap();
     let mut bytes = [0u8; 16];
-    let (count, full, actual, _, _) = socket::receive(
+    let (count, full, actual, _, _) = net::receive(
         &target,
         &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
         true,
@@ -234,7 +233,7 @@ fn queued_datagram_keeps_actual_sender_address_after_late_bind_and_fput() {
     .unwrap();
     assert_eq!((count, full, actual), (6, 6, Some(address)));
     assert_eq!(&bytes[..count], b"queued");
-    let (_, _, actual, _, _) = socket::receive(
+    let (_, _, actual, _, _) = net::receive(
         &target,
         &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
         false,
@@ -257,7 +256,7 @@ fn datagram_connected_peer_filter_and_native_read_shutdown_policy() {
     second.connect_datagram(&first).unwrap();
     assert!(matches!(
         stranger.send_to_with_ancillary(b"rejected", Some(&second), &mut None, &sender),
-        Err(socket::SocketSendError::Error(
+        Err(net::SocketSendError::Error(
             SocketError::OperationNotPermitted
         ))
     ));
@@ -272,11 +271,11 @@ fn datagram_connected_peer_filter_and_native_read_shutdown_policy() {
     second.shutdown(0).unwrap();
     assert!(matches!(
         first.send_to_with_ancillary(b"closed", Some(&second), &mut None, &sender),
-        Err(socket::SocketSendError::Error(SocketError::BrokenPipe))
+        Err(net::SocketSendError::Error(SocketError::BrokenPipe))
     ));
     let mut bytes = [0u8; 16];
     assert_eq!(
-        socket::receive(
+        net::receive(
             &second,
             &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
             false,
@@ -288,7 +287,7 @@ fn datagram_connected_peer_filter_and_native_read_shutdown_policy() {
         8
     );
     assert!(matches!(
-        socket::receive(
+        net::receive(
             &second,
             &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
             false,
@@ -298,7 +297,7 @@ fn datagram_connected_peer_filter_and_native_read_shutdown_policy() {
         Err(SocketError::Again)
     ));
     assert_eq!(
-        socket::receive(
+        net::receive(
             &second,
             &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
             false,
@@ -340,7 +339,7 @@ fn oriented_close_reports_reset_once_and_stream_drains_queued_prefix_first() {
         let mut bytes = [0; 16];
         if kind == SocketType::Stream {
             assert_eq!(
-                socket::receive(
+                net::receive(
                     &client,
                     &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
                     false,
@@ -355,7 +354,7 @@ fn oriented_close_reports_reset_once_and_stream_drains_queued_prefix_first() {
             assert!(client.poll_state().error);
         }
         assert!(matches!(
-            socket::receive(
+            net::receive(
                 &client,
                 &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
                 false,
@@ -368,7 +367,7 @@ fn oriented_close_reports_reset_once_and_stream_drains_queued_prefix_first() {
         assert_eq!(client.take_error(), None);
         if kind == SocketType::SeqPacket {
             assert_eq!(
-                socket::receive(
+                net::receive(
                     &client,
                     &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
                     false,
@@ -381,7 +380,7 @@ fn oriented_close_reports_reset_once_and_stream_drains_queued_prefix_first() {
             );
         }
         assert_eq!(
-            socket::receive(
+            net::receive(
                 &client,
                 &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
                 false,
@@ -413,7 +412,7 @@ fn unaccepted_empty_connection_close_reports_reset_and_so_error_consumes_it() {
         assert!(!client.poll_state().error);
         let mut bytes = [0; 1];
         assert_eq!(
-            socket::receive(
+            net::receive(
                 &client,
                 &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
                 false,
@@ -454,10 +453,10 @@ fn stream_shutdown_read_preserves_queued_bytes_and_controls_until_drain() {
     assert!(!client.poll_state().read_closed);
     assert!(matches!(
         client.send_to_with_ancillary(b"new", None, &mut None, &sender),
-        Err(socket::SocketSendError::Error(SocketError::BrokenPipe))
+        Err(net::SocketSendError::Error(SocketError::BrokenPipe))
     ));
     let mut bytes = [0; 16];
-    let result = socket::receive(
+    let result = net::receive(
         &server,
         &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
         false,
@@ -469,7 +468,7 @@ fn stream_shutdown_read_preserves_queued_bytes_and_controls_until_drain() {
     assert_eq!(&bytes[..7], b"history");
     assert!(Arc::ptr_eq(&result.4.unwrap().pid, &credentials.pid));
     assert_eq!(
-        socket::receive(
+        net::receive(
             &server,
             &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
             false,
@@ -490,8 +489,8 @@ fn pathname_inode_is_pinned_by_live_endpoint_and_child_but_not_closed_observers(
     let (listener, listener_file) = endpoint(SocketType::SeqPacket);
     let inode = Arc::new(42u8);
     let witness = Arc::downgrade(&inode);
-    let address = socket::UnixAddress::new(b"/tmp/actual-inode-owner").unwrap();
-    let identity = socket::UnixPathIdentity {
+    let address = net::UnixAddress::new(b"/tmp/actual-inode-owner").unwrap();
+    let identity = net::UnixPathIdentity {
         filesystem: 725,
         inode: 42,
     };
@@ -563,14 +562,12 @@ fn datagram_reconnect_purges_old_queue_and_reports_loss_to_mutual_peer() {
     drop(old_file);
     assert!(matches!(
         source.send_to_with_ancillary(b"dead", None, &mut None, &sender),
-        Err(socket::SocketSendError::Error(
-            SocketError::ConnectionRefused
-        ))
+        Err(net::SocketSendError::Error(SocketError::ConnectionRefused))
     ));
     assert!(!source.poll_state().readable);
     assert!(matches!(
         source.send_to_with_ancillary(b"again", None, &mut None, &sender),
-        Err(socket::SocketSendError::Error(SocketError::NotConnected))
+        Err(net::SocketSendError::Error(SocketError::NotConnected))
     ));
 }
 
@@ -592,11 +589,11 @@ fn stream_preconnect_shutdown_write_is_not_replayed_as_peer_eof() {
     let (server, _server_file) = accepted(&listener);
     assert!(matches!(
         client.send_to_with_ancillary(b"new", None, &mut None, &sender),
-        Err(socket::SocketSendError::Error(SocketError::BrokenPipe))
+        Err(net::SocketSendError::Error(SocketError::BrokenPipe))
     ));
     let mut bytes = [0; 16];
     assert!(matches!(
-        socket::receive(
+        net::receive(
             &server,
             &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
             false,
@@ -610,7 +607,7 @@ fn stream_preconnect_shutdown_write_is_not_replayed_as_peer_eof() {
         Ok(5)
     ));
     assert_eq!(
-        socket::receive(
+        net::receive(
             &client,
             &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
             false,
@@ -623,7 +620,7 @@ fn stream_preconnect_shutdown_write_is_not_replayed_as_peer_eof() {
     );
     drop(client_file);
     assert_eq!(
-        socket::receive(
+        net::receive(
             &server,
             &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
             false,
@@ -678,7 +675,7 @@ fn seqpacket_uses_sender_memory_instead_of_ten_message_limit_and_refunds_on_drai
                 assert_eq!(count, payload.len());
                 sent += 1;
             }
-            Err(socket::SocketSendError::Capacity(wait)) => {
+            Err(net::SocketSendError::Capacity(wait)) => {
                 assert!(!wait.is_ready());
                 assert!(
                     sent > 11,
@@ -693,7 +690,7 @@ fn seqpacket_uses_sender_memory_instead_of_ten_message_limit_and_refunds_on_drai
     for _ in 0..sent {
         let mut output = ipc::ReceiveBuffer::deferred(usize::MAX);
         assert_eq!(
-            socket::receive(&server, &mut output, false, false, true)
+            net::receive(&server, &mut output, false, false, true)
                 .unwrap()
                 .0,
             payload.len()
@@ -733,14 +730,14 @@ fn packet_receive_prepares_actual_large_message_without_user_capacity_allocation
     assert!(!client.poll_state().writable);
     let mut output = ipc::ReceiveBuffer::deferred(usize::MAX);
     allocation_failure::fail_next();
-    let result = socket::receive(&server, &mut output, true, false, true);
+    let result = net::receive(&server, &mut output, true, false, true);
     let consumed = allocation_failure::was_consumed();
     assert!(consumed);
     assert!(matches!(result, Err(SocketError::NoMemory)));
     assert_eq!(output.len(), 0);
     assert!(!client.poll_state().writable);
     assert_eq!(
-        socket::receive(&server, &mut output, true, false, true)
+        net::receive(&server, &mut output, true, false, true)
             .unwrap()
             .0,
         payload.len()
@@ -752,7 +749,7 @@ fn packet_receive_prepares_actual_large_message_without_user_capacity_allocation
     );
     let mut output = ipc::ReceiveBuffer::deferred(payload.len());
     assert_eq!(
-        socket::receive(&server, &mut output, false, false, true)
+        net::receive(&server, &mut output, false, false, true)
             .unwrap()
             .0,
         payload.len()
@@ -776,12 +773,12 @@ fn unconnected_packet_queue_admits_native_plus_one_and_self_send_uses_memory_bud
         ));
     }
     let wait = match source.send_to_with_ancillary(b"x", Some(&target), &mut None, &sender) {
-        Err(socket::SocketSendError::Capacity(wait)) => wait,
+        Err(net::SocketSendError::Capacity(wait)) => wait,
         _ => panic!("twelfth unconnected packet must wait for target queue capacity"),
     };
     assert!(!wait.is_ready());
     let mut byte = [0];
-    socket::receive(
+    net::receive(
         &target,
         &mut ipc::ReceiveBuffer::from_slice(&mut byte),
         false,
@@ -800,7 +797,7 @@ fn unconnected_packet_queue_admits_native_plus_one_and_self_send_uses_memory_bud
 
 #[test]
 fn buffer_policy_clamps_unsigned_inputs_and_new_children_keep_native_defaults() {
-    use socket::SocketIoDirection::{Receive, Send};
+    use net::SocketIoDirection::{Receive, Send};
     let (credentials, _registration) = credential(72414);
     let (listener, _listener_file) = listener(SocketType::Stream, b"\0buffer-policy", &credentials);
     assert_eq!(listener.buffer_limit(Send), 212_992);
@@ -827,7 +824,7 @@ fn buffer_policy_clamps_unsigned_inputs_and_new_children_keep_native_defaults() 
 
 #[test]
 fn stream_sender_credit_tracks_partial_reads_peek_frames_oom_and_final_close() {
-    use socket::SocketIoDirection::Send;
+    use net::SocketIoDirection::Send;
     let (credentials, _registration) = credential(72415);
     let sender = UnixSendCredentials {
         sender: credentials.clone(),
@@ -849,7 +846,7 @@ fn stream_sender_credit_tracks_partial_reads_peek_frames_oom_and_final_close() {
     assert!(allocation_failure::was_consumed());
     assert!(matches!(
         result,
-        Err(socket::SocketSendError::Error(SocketError::NoMemory))
+        Err(net::SocketSendError::Error(SocketError::NoMemory))
     ));
     assert!(client.poll_state().writable);
     let payload = vec![0x35; 8192];
@@ -860,7 +857,7 @@ fn stream_sender_credit_tracks_partial_reads_peek_frames_oom_and_final_close() {
                 assert!(count > 0 && count < payload.len());
                 queued += count;
             }
-            Err(socket::SocketSendError::Capacity(wait)) => break wait,
+            Err(net::SocketSendError::Capacity(wait)) => break wait,
             _ => panic!("unexpected stream credit result"),
         }
     };
@@ -868,7 +865,7 @@ fn stream_sender_credit_tracks_partial_reads_peek_frames_oom_and_final_close() {
     assert!(!client.poll_state().writable);
     let mut bytes = [0; 97];
     for _ in 0..2 {
-        let (_, _, _, _, credentials) = socket::receive(
+        let (_, _, _, _, credentials) = net::receive(
             &server,
             &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
             true,
@@ -880,7 +877,7 @@ fn stream_sender_credit_tracks_partial_reads_peek_frames_oom_and_final_close() {
         assert_eq!(bytes, [0x35; 97]);
         assert!(!wait.is_ready());
     }
-    let consumed = socket::receive(
+    let consumed = net::receive(
         &server,
         &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
         false,
@@ -897,7 +894,7 @@ fn stream_sender_credit_tracks_partial_reads_peek_frames_oom_and_final_close() {
     );
     assert!(!client.poll_state().writable);
     while queued != 0 {
-        let count = socket::receive(
+        let count = net::receive(
             &server,
             &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
             false,
@@ -933,7 +930,7 @@ fn packet_receive_buffer_hint_does_not_create_a_non_native_byte_limit() {
     };
     let (source, _source_file) = endpoint(SocketType::Datagram);
     let (target, _target_file) = endpoint(SocketType::Datagram);
-    target.set_buffer_limit(socket::SocketIoDirection::Receive, 0, false);
+    target.set_buffer_limit(net::SocketIoDirection::Receive, 0, false);
     let payload = vec![0x61; 100_000];
     assert!(matches!(
         source.send_to_with_ancillary(&payload, Some(&target), &mut None, &sender),
@@ -941,7 +938,7 @@ fn packet_receive_buffer_hint_does_not_create_a_non_native_byte_limit() {
     ));
     let mut output = ipc::ReceiveBuffer::deferred(usize::MAX);
     assert_eq!(
-        socket::receive(&target, &mut output, false, false, true)
+        net::receive(&target, &mut output, false, false, true)
             .unwrap()
             .0,
         payload.len()
@@ -993,7 +990,7 @@ fn concurrent_connect_preparation_cannot_overwrite_or_reset_the_winning_connecti
         ));
         let mut bytes = [0; 6];
         assert_eq!(
-            socket::receive(
+            net::receive(
                 &server,
                 &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
                 false,
@@ -1031,11 +1028,11 @@ fn connect_publication_observes_shutdown_during_preparation_and_rolls_back_liste
     };
     assert!(matches!(
         client.send_to_with_ancillary(b"x", None, &mut None, &sender),
-        Err(socket::SocketSendError::Error(SocketError::BrokenPipe))
+        Err(net::SocketSendError::Error(SocketError::BrokenPipe))
     ));
     let mut bytes = [0; 1];
     assert!(matches!(
-        socket::receive(
+        net::receive(
             &server,
             &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
             false,
@@ -1069,7 +1066,7 @@ fn explicit_closed_destination_requests_relookup_without_clearing_a_different_pe
     drop(closed_file);
     assert!(matches!(
         source.send_to_with_ancillary(b"retry", Some(&closed), &mut None, &sender),
-        Err(socket::SocketSendError::DestinationChanged)
+        Err(net::SocketSendError::DestinationChanged)
     ));
     assert!(matches!(
         source.send_to_with_ancillary(b"current", None, &mut None, &sender),
@@ -1077,7 +1074,7 @@ fn explicit_closed_destination_requests_relookup_without_clearing_a_different_pe
     ));
     let mut bytes = [0; 7];
     assert_eq!(
-        socket::receive(
+        net::receive(
             &current,
             &mut ipc::ReceiveBuffer::from_slice(&mut bytes),
             false,
@@ -1118,7 +1115,7 @@ fn zero_stream_send_distinguishes_peer_read_shutdown_from_final_peer_close() {
     ));
     assert!(matches!(
         client.send_to_with_ancillary(b"x", None, &mut None, &sender),
-        Err(socket::SocketSendError::Error(SocketError::BrokenPipe))
+        Err(net::SocketSendError::Error(SocketError::BrokenPipe))
     ));
     drop(server_file);
     assert!(matches!(
@@ -1127,7 +1124,7 @@ fn zero_stream_send_distinguishes_peer_read_shutdown_from_final_peer_close() {
     ));
     assert!(matches!(
         client.send_to_with_ancillary(b"", None, &mut None, &sender),
-        Err(socket::SocketSendError::Error(SocketError::BrokenPipe))
+        Err(net::SocketSendError::Error(SocketError::BrokenPipe))
     ));
 }
 
@@ -1190,7 +1187,7 @@ fn stream_actual_chunk_can_exceed_old_ring_and_refunds_only_at_final_byte() {
     assert!(!client.poll_state().writable);
     let mut output = ipc::ReceiveBuffer::deferred(99_999);
     assert_eq!(
-        socket::receive(&server, &mut output, false, false, true)
+        net::receive(&server, &mut output, false, false, true)
             .unwrap()
             .0,
         99_999
@@ -1202,7 +1199,7 @@ fn stream_actual_chunk_can_exceed_old_ring_and_refunds_only_at_final_byte() {
     );
     let mut byte = [0];
     assert_eq!(
-        socket::receive(
+        net::receive(
             &server,
             &mut ipc::ReceiveBuffer::from_slice(&mut byte),
             false,
@@ -1215,4 +1212,10 @@ fn stream_actual_chunk_can_exceed_old_ring_and_refunds_only_at_final_byte() {
     );
     assert_eq!(byte, [0x6c]);
     assert!(client.poll_state().writable);
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
 }

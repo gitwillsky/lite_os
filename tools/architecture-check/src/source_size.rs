@@ -60,9 +60,10 @@ fn reviews(root: &Path) -> Result<BTreeMap<String, SourceSizeReview>, String> {
             reason: columns[4].to_owned(),
             exit: columns[5].to_owned(),
         };
-        if review.limit <= REVIEW_LINE_THRESHOLD {
+        // 拆分后仍保留已审核文件的递减上限，不能因降到 review threshold 以下而丢失围栏。
+        if review.limit == 0 {
             return Err(format!(
-                "{relative}: source-size review must exceed the {REVIEW_LINE_THRESHOLD}-line review threshold"
+                "{relative}: source-size review must have a positive line limit"
             ));
         }
         if review.owner.is_empty() || review.reason.is_empty() || review.exit.is_empty() {

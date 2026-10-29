@@ -1,5 +1,5 @@
 //! Linux FUTEX_OP 位域 codec；原子 word 与实际队列仍由 memory/task owner 消费。
-use crate::{memory::UserAtomicU32Op, task::FutexWaitError};
+use crate::{execution::task::FutexWaitError, memory::UserAtomicU32Op};
 
 pub(super) struct WakeOperation {
     pub(super) update: Option<UserAtomicU32Op>,

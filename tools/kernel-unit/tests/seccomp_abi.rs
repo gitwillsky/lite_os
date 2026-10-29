@@ -43,11 +43,9 @@ mod model;
 pub(crate) mod process_control;
 #[path = "../../../kernel/src/syscall/seccomp.rs"]
 pub(crate) mod seccomp;
-#[allow(dead_code, unused_imports)]
-#[path = "../src/sync.rs"]
-mod sync;
+
 use model::seccomp as security;
-#[path = "../../../kernel/src/task/model/signal_info.rs"]
+#[path = "../../../kernel/src/execution/task/model/signal_info.rs"]
 #[allow(dead_code)]
 mod signal_info;
 #[path = "../../../kernel/src/syscall/user_iovec/input_staging.rs"]
@@ -152,44 +150,7 @@ thread_local! {
     static CURRENT: RefCell<Option<Arc<TaskControlBlock>>> = const { RefCell::new(None) };
     static USERS: RefCell<BTreeMap<usize, Vec<u8>>> = const { RefCell::new(BTreeMap::new()) };
 }
-mod task {
-    pub(crate) enum SyscallRestartPolicy {
-        WithRestartHandler,
-    }
-    pub(crate) use super::TaskControlBlock;
-    pub(crate) use super::security::{SeccompDecision, SeccompError};
-    pub(crate) use super::signal_info::PendingSignal;
-    pub(crate) fn current_task() -> Option<std::sync::Arc<super::TaskControlBlock>> {
-        super::CURRENT.with_borrow(|current| current.clone())
-    }
-    pub(crate) fn enable_strict_seccomp() -> Result<(), SeccompError> {
-        current_task().unwrap().security.enable_strict()
-    }
-    pub(crate) fn install_seccomp_filter(
-        bytes: &[u8],
-        flags: u32,
-    ) -> Result<Option<usize>, SeccompError> {
-        super::LAST_SYNCHRONIZE.set(flags & syscall_abi::seccomp::FILTER_FLAG_TSYNC != 0);
-        if let Some(tid) = super::INSTALL_FAILURE.get() {
-            return Err(SeccompError::Unsynchronized(tid));
-        }
-        let current = current_task().unwrap();
-        let program = super::security::ValidatedFilter::prepare(bytes, flags)?;
-        let prepared = current.security.prepare_filter(&program)?;
-        assert!(prepared.matches(&current.security));
-        drop(prepared.publish(&current.security, false));
-        Ok(None)
-    }
-    pub(crate) fn parent_death_signal(_: Option<usize>) -> Result<usize, ()> {
-        Err(())
-    }
-    pub(crate) fn exit_current_thread_by_signal(signal: usize) -> ! {
-        panic!("thread fatal {signal}")
-    }
-    pub(crate) fn exit_current_group_by_signal(signal: usize) -> ! {
-        panic!("group fatal {signal}")
-    }
-}
+
 mod system {
     pub(crate) fn audit_architecture() -> u32 {
         super::arch::user::AUDIT_ARCH
@@ -201,7 +162,7 @@ mod syscall {
     pub(crate) enum SyscallOutcome {
         Return(isize),
         PreserveRegisters,
-        Restart(crate::task::SyscallRestartPolicy),
+        Restart(crate::execution::task::SyscallRestartPolicy),
     }
     pub(crate) fn file_descriptor_error(_: crate::file::FileDescriptorError) -> isize {
         unreachable!("policy-only descriptor errno seam")
@@ -462,4 +423,49 @@ fn notification_sizes_are_fixed_codec_and_flag_combinations_precede_user_copy() 
         sys_seccomp(GET_NOTIF_SIZES, FILTER_FLAG_LOG, destination),
         -errno::EINVAL
     );
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[allow(dead_code, unused_imports)]
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
+    pub(crate) mod task {
+        pub(crate) enum SyscallRestartPolicy {
+            WithRestartHandler,
+        }
+        pub(crate) use crate::TaskControlBlock;
+        pub(crate) use crate::security::{SeccompDecision, SeccompError};
+        pub(crate) use crate::signal_info::PendingSignal;
+        pub(crate) fn current_task() -> Option<std::sync::Arc<crate::TaskControlBlock>> {
+            crate::CURRENT.with_borrow(|current| current.clone())
+        }
+        pub(crate) fn enable_strict_seccomp() -> Result<(), SeccompError> {
+            current_task().unwrap().security.enable_strict()
+        }
+        pub(crate) fn install_seccomp_filter(
+            bytes: &[u8],
+            flags: u32,
+        ) -> Result<Option<usize>, SeccompError> {
+            crate::LAST_SYNCHRONIZE.set(flags & syscall_abi::seccomp::FILTER_FLAG_TSYNC != 0);
+            if let Some(tid) = crate::INSTALL_FAILURE.get() {
+                return Err(SeccompError::Unsynchronized(tid));
+            }
+            let current = current_task().unwrap();
+            let program = crate::security::ValidatedFilter::prepare(bytes, flags)?;
+            let prepared = current.security.prepare_filter(&program)?;
+            assert!(prepared.matches(&current.security));
+            drop(prepared.publish(&current.security, false));
+            Ok(None)
+        }
+        pub(crate) fn parent_death_signal(_: Option<usize>) -> Result<usize, ()> {
+            Err(())
+        }
+        pub(crate) fn exit_current_thread_by_signal(signal: usize) -> ! {
+            panic!("thread fatal {signal}")
+        }
+        pub(crate) fn exit_current_group_by_signal(signal: usize) -> ! {
+            panic!("group fatal {signal}")
+        }
+    }
 }

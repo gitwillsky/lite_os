@@ -1,9 +1,9 @@
-use crate::sync::WaitResult;
+use crate::execution::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
+    execution::task::{current_task, wait_for_poll},
     file::{Epoll, EpollChange, EpollEvent, OpenFileDescription, OpenFileKind},
-    task::{current_task, wait_for_poll},
 };
 
 use super::{
@@ -45,7 +45,7 @@ struct ReadyEvent {
 
 struct Evaluation {
     ready: Vec<ReadyEvent>,
-    keys: Vec<crate::task::PollWaitKey>,
+    keys: Vec<crate::execution::task::PollWaitKey>,
     guards: PollWaitGuards,
 }
 
@@ -240,7 +240,7 @@ pub(crate) fn sys_epoll_pwait(
         None
     } else {
         Some(
-            crate::timer::get_time_ns()
+            crate::execution::timer::get_time_ns()
                 .saturating_add((timeout_ms as u64).saturating_mul(1_000_000)),
         )
     };
@@ -298,7 +298,7 @@ pub(crate) fn sys_epoll_pwait(
             restore_mask_after_error(temporary_mask);
             return evaluation.ready.len() as isize;
         }
-        if deadline.is_some_and(|value| value <= crate::timer::get_time_ns()) {
+        if deadline.is_some_and(|value| value <= crate::execution::timer::get_time_ns()) {
             restore_mask_after_error(temporary_mask);
             return 0;
         }

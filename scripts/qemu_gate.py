@@ -197,7 +197,7 @@ def validate_kernel_boot_artifact(runtime: QemuRuntime | None = None) -> Path:
     artifact = ROOT / runtime.kernel_boot_artifact
     if runtime.arch == "aarch64":
         # 延迟 import，artifact 工具的 userland recipe 也使用此 gate。
-        from verify_artifacts import require_aarch64_raw_image
+        from toolchain.kernel_image import require_aarch64_raw_image
 
         require_aarch64_raw_image(ROOT / runtime.kernel_elf, artifact)
     elif not artifact.is_file():

@@ -6,6 +6,7 @@
 use alloc::vec::Vec;
 
 use crate::{
+    execution::task::TaskControlBlock,
     file::OpenFileDescription,
     fs::{
         O_NONBLOCK,
@@ -14,7 +15,6 @@ use crate::{
             UserMemory, UserOutput,
         },
     },
-    task::TaskControlBlock,
 };
 
 use super::{
@@ -292,8 +292,12 @@ pub(super) fn write_device(
     let result = file.write(&mut input, nonblocking);
     if result == Err(DeviceError::BrokenPipe) {
         // 无论是否已有进度，peer 关闭都投递 SIGPIPE；已有进度时返回值仍是已写字节数。
-        crate::task::send_thread_signal(task.tgid(), task.tid(), syscall_abi::signal::SIGPIPE)
-            .expect("current device writer must exist");
+        crate::execution::task::send_thread_signal(
+            task.tgid(),
+            task.tid(),
+            syscall_abi::signal::SIGPIPE,
+        )
+        .expect("current device writer must exist");
     }
     progress_or(input.cursor.completed(), result)
 }

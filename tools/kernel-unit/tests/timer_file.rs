@@ -12,19 +12,14 @@ mod id;
 mod ipc;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../src/sync.rs"]
-mod sync;
+
 #[path = "../../../kernel/src/file"]
 mod file {
     mod timerfd;
     pub(crate) use timerfd::{TimerError, TimerFdBackend, TimerFdRead, TimerSetting};
 }
-mod timer {
-    pub(crate) fn realtime_deadline_to_monotonic_ns(value: u64) -> u64 {
-        value.saturating_sub(1_000)
-    }
-}
-#[path = "../../../kernel/src/task/process_table"]
+
+#[path = "../../../kernel/src/execution/task/process_table"]
 mod task_table {
     use alloc::sync::Arc;
     struct ProcessTable {
@@ -231,5 +226,16 @@ mod task_table {
             drop(timer);
         }
         assert_eq!(count(), 0);
+    }
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
+    pub(crate) mod timer {
+        pub(crate) fn realtime_deadline_to_monotonic_ns(value: u64) -> u64 {
+            value.saturating_sub(1_000)
+        }
     }
 }

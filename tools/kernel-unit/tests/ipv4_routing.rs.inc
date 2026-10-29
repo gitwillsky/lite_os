@@ -2,13 +2,13 @@
 fn routing_domain(
     uid: u32,
 ) -> (
-    Arc<crate::socket::NetNamespace>,
-    Arc<crate::drivers::WireDevice>,
-    Arc<crate::drivers::WireDevice>,
+    Arc<crate::net::NetNamespace>,
+    Arc<crate::devices::model::WireDevice>,
+    Arc<crate::devices::model::WireDevice>,
 ) {
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), uid).unwrap();
-    let a = Arc::new(crate::drivers::WireDevice::new());
-    let b = Arc::new(crate::drivers::WireDevice::new());
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), uid).unwrap();
+    let a = Arc::new(crate::devices::model::WireDevice::new());
+    let b = Arc::new(crate::devices::model::WireDevice::new());
     net.install_protocol(prepare_network(&net, &[a.clone(), b.clone()], true).unwrap());
     for (index, address) in [
         (2, Ipv4Addr::new(10, 40, 0, 15)),
@@ -503,7 +503,7 @@ fn actual_tcp_passive_advertisement_uses_reverse_fib_mtu_and_actual_bound_reply_
             .push_back(routing_tcp_syn(peer, local_a, port));
     }
     advance_actual_domains();
-    let syn_mss = |device: &Arc<crate::drivers::WireDevice>, port| {
+    let syn_mss = |device: &Arc<crate::devices::model::WireDevice>, port| {
         device.wire.lock().unwrap().1.iter().find_map(|frame| {
             let ethernet = EthernetFrame::new_checked(frame.as_slice()).unwrap();
             if ethernet.ethertype() != EthernetProtocol::Ipv4 {
@@ -654,7 +654,7 @@ fn actual_route_metrics_drive_advertisement_receive_window_and_independent_sende
         .accept(
             Pipe::notification_pair().unwrap(),
             Arc::new(SocketTimeouts::new()),
-            crate::socket::SocketMemory::try_new(net.clone()).unwrap(),
+            crate::net::SocketMemory::try_new(net.clone()).unwrap(),
         )
         .unwrap();
     assert_eq!(
@@ -861,7 +861,7 @@ fn actual_tcp_keepalive_probes_are_budgeted_counted_only_after_transmit_and_repl
             .accept(
                 Pipe::notification_pair().unwrap(),
                 Arc::new(SocketTimeouts::new()),
-                crate::socket::SocketMemory::try_new(net.clone()).unwrap(),
+                crate::net::SocketMemory::try_new(net.clone()).unwrap(),
             )
             .unwrap();
         listener.set_timer_option(O::KeepCount, 9).unwrap();
@@ -1158,7 +1158,7 @@ fn actual_zero_window_clock_preserves_user_deadline_and_unrouted_probe_budget() 
             .accept(
                 Pipe::notification_pair().unwrap(),
                 Arc::new(SocketTimeouts::new()),
-                crate::socket::SocketMemory::try_new(net.clone()).unwrap(),
+                crate::net::SocketMemory::try_new(net.clone()).unwrap(),
             )
             .unwrap();
         child.send_to(b"x", None, None).unwrap();
@@ -1273,13 +1273,13 @@ fn actual_single_nic_tcp_rejects_ack_of_unsent_data_and_fin_but_accepts_ack_afte
     let _serial = SERIAL.lock().unwrap();
     initialize();
     for close_write in [false, true] {
-        let net = crate::socket::NetNamespace::create(
+        let net = crate::net::NetNamespace::create(
             crate::namespace::initial_user(),
             89260 + u32::from(close_write),
         )
         .unwrap();
-        let device = Arc::new(crate::drivers::WireDevice::new());
-        net.install_protocol(prepare_network(&net, &[device.clone() as Arc<dyn crate::drivers::network::NetworkDevice>], true).unwrap());
+        let device = Arc::new(crate::devices::model::WireDevice::new());
+        net.install_protocol(prepare_network(&net, &[device.clone() as Arc<dyn crate::devices::model::network::NetworkDevice>], true).unwrap());
         let local = Ipv4Addr::new(10, 40, 0, 15);
         let peer = Ipv4Addr::new(10, 40, 0, 16);
         configure_address(&net, 2, local).unwrap();
@@ -1344,7 +1344,7 @@ fn actual_single_nic_tcp_rejects_ack_of_unsent_data_and_fin_but_accepts_ack_afte
             .accept(
                 Pipe::notification_pair().unwrap(),
                 Arc::new(SocketTimeouts::new()),
-                crate::socket::SocketMemory::try_new(net.clone()).unwrap(),
+                crate::net::SocketMemory::try_new(net.clone()).unwrap(),
             )
             .unwrap();
         let InetEndpoint::Tcp(id) = child.endpoint else {
@@ -1444,9 +1444,9 @@ fn actual_single_nic_udp_and_raw_reject_oversize_before_queue_publication() {
     use smoltcp::wire::*;
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89262).unwrap();
-    let device = Arc::new(crate::drivers::WireDevice::new());
-    net.install_protocol(prepare_network(&net, &[device.clone() as Arc<dyn crate::drivers::network::NetworkDevice>], true).unwrap());
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89262).unwrap();
+    let device = Arc::new(crate::devices::model::WireDevice::new());
+    net.install_protocol(prepare_network(&net, &[device.clone() as Arc<dyn crate::devices::model::network::NetworkDevice>], true).unwrap());
     let local = Ipv4Addr::new(10, 40, 0, 15);
     let peer = Ipv4Addr::new(10, 40, 0, 16);
     configure_address(&net, 2, local).unwrap();
@@ -1515,9 +1515,9 @@ fn actual_single_nic_rejects_all_ipv4_fragments_without_reassembly() {
     use smoltcp::wire::*;
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89263).unwrap();
-    let device = Arc::new(crate::drivers::WireDevice::new());
-    net.install_protocol(prepare_network(&net, &[device.clone() as Arc<dyn crate::drivers::network::NetworkDevice>], true).unwrap());
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89263).unwrap();
+    let device = Arc::new(crate::devices::model::WireDevice::new());
+    net.install_protocol(prepare_network(&net, &[device.clone() as Arc<dyn crate::devices::model::network::NetworkDevice>], true).unwrap());
     let local = InetAddress { address: Ipv4Addr::new(10, 41, 0, 15), port: 44363 };
     let peer = InetAddress { address: Ipv4Addr::new(10, 41, 0, 16), port: 44000 };
     configure_address(&net, 2, local.address).unwrap();

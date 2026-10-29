@@ -14,7 +14,7 @@ use alloc::{boxed::Box, sync::Arc};
 use super::storage_epoch::Mutation;
 use super::{CachedFile, CachedPage, FileSystemError, PAGE_SIZE, SharedFrame, shared_error};
 use crate::{
-    block::CompletionNotify,
+    devices::block::CompletionNotify,
     fallible_tree::{FallibleMap, NodeSlot},
     fs::{StorageRead, StorageStep},
 };

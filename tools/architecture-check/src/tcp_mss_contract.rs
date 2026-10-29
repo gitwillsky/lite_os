@@ -48,9 +48,9 @@ fn check_transport(source: &str, errors: &mut Vec<String>) {
     }
 }
 fn check_kernel(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let options = normalized(source(sources, "kernel/src/socket/inet/options.rs"));
-    let tcp = normalized(source(sources, "kernel/src/socket/inet/tcp.rs"));
-    let lifecycle = normalized(source(sources, "kernel/src/socket/inet/tcp/lifecycle.rs"));
+    let options = normalized(source(sources, "kernel/src/net/inet/options.rs"));
+    let tcp = normalized(source(sources, "kernel/src/net/inet/tcp.rs"));
+    let lifecycle = normalized(source(sources, "kernel/src/net/inet/tcp/lifecycle.rs"));
     let abi = normalized(source(sources, "kernel/src/syscall/socket/options.rs"));
     if !options.contains("socket.set_user_mss(self.user_mss)")
         || !options.contains("value!=0&&!(88..=32767).contains(&value)")
@@ -141,7 +141,7 @@ mod tests {
         let mut sources = fixture();
         let file = sources
             .iter_mut()
-            .find(|file| file.relative == "kernel/src/socket/inet/tcp/lifecycle.rs")
+            .find(|file| file.relative == "kernel/src/net/inet/tcp/lifecycle.rs")
             .unwrap();
         assert!(file.text.contains("state.options.user_mss = None;"));
         file.text = file.text.replace(

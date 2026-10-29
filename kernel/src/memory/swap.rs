@@ -6,7 +6,7 @@ use alloc::{sync::Arc, vec::Vec};
 use core::fmt::Debug;
 use spin::{Mutex, Once};
 
-use crate::sync::{TaskEvent, TaskMutex, TaskMutexWaitPreparation};
+use crate::execution::sync::{TaskEvent, TaskMutex, TaskMutexWaitPreparation};
 
 const MAX_AREAS: usize = 32;
 const RESERVED_SLOT: u32 = u32::MAX;
@@ -33,7 +33,7 @@ impl From<super::SharedFileError> for SwapError {
 }
 
 fn check_interrupted() -> Result<(), SwapError> {
-    if crate::sync::task_interrupted() {
+    if crate::execution::sync::task_interrupted() {
         Err(SwapError::Interrupted)
     } else {
         Ok(())
@@ -389,7 +389,7 @@ pub(crate) fn deactivate(
         // live mm 已扫描并恢复；余下引用属于正在退出的字段 retirement。
         // 条件复查与 TaskEvent pending/arming 协议覆盖 unlock 到 wait 之间的最后一个 Drop。
         drop(state);
-        if area.retired.wait_interruptible() == crate::sync::WaitResult::Interrupted {
+        if area.retired.wait_interruptible() == crate::execution::sync::WaitResult::Interrupted {
             // 已恢复页无需回滚；剩余槽仍持 storage，Active 重新允许换出和下一次 swapoff。
             // 完整 drain 与中断竞争时，最后槽先退休则允许成功，与 Linux try_to_unuse 一致。
             let mut state = area.state.lock();

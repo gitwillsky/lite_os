@@ -18,8 +18,8 @@ macro_rules! println {
 
 // print 宏可在中断上下文使用；IRQ-safe lock 防止 task 输出被打断后同 hart 再入。
 // OWNER: console module owns the unique kernel console endpoint.
-static CONSOLE: crate::sync::IrqMutex<ConsoleWriter> =
-    crate::sync::IrqMutex::new(ConsoleWriter::new());
+static CONSOLE: crate::execution::sync::IrqMutex<ConsoleWriter> =
+    crate::execution::sync::IrqMutex::new(ConsoleWriter::new());
 
 pub(crate) fn _print_fmt(args: core::fmt::Arguments) {
     use core::fmt::Write;

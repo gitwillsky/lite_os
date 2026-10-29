@@ -19,7 +19,7 @@ from build_cache import (
 from build_target import acceleration_from_environment, target_from_environment
 from ext4_image import recover_ext4_journal, find_debugfs
 from qemu_gate import boot, guest_inittab
-from verify_musl import cached_musl_paths, find_compiler, run
+from toolchain.musl import cached_musl_paths, find_compiler, run
 
 ROOT = Path(__file__).resolve().parent.parent
 WORK = ROOT / "target/audio-runtime"

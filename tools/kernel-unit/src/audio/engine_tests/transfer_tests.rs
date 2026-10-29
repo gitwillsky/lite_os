@@ -3,7 +3,7 @@ use super::*;
 #[test]
 fn negotiated_non_power_of_two_ring_wraps_at_its_own_boundary() {
     let (mut engine, output, ring) = (
-        Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+        Engine::new(Some(crate::devices::model::PcmConfiguration::SHARED)),
         FakeOutput::new(),
         FakeRing::new(),
     );
@@ -13,10 +13,18 @@ fn negotiated_non_power_of_two_ring_wraps_at_its_own_boundary() {
         .unwrap()
         .resize(buffer_frames as usize * PCM_FRAME_BYTES, 0);
     let a = engine
-        .allocate(ring.clone(), -1, crate::audio::engine::PcmEndpoint::Shared)
+        .allocate(
+            ring.clone(),
+            -1,
+            crate::devices::audio::engine::PcmEndpoint::Shared,
+        )
         .unwrap_or_else(|_| panic!("no free substream"));
     engine
-        .configure(a, buffer_frames, crate::drivers::PcmConfiguration::SHARED)
+        .configure(
+            a,
+            buffer_frames,
+            crate::devices::model::PcmConfiguration::SHARED,
+        )
         .unwrap();
     assert_eq!(engine.state(a).boundary % buffer_frames, 0);
     assert!(engine.state(a).boundary >= 2 * buffer_frames);
@@ -47,7 +55,7 @@ fn negotiated_non_power_of_two_ring_wraps_at_its_own_boundary() {
 #[test]
 fn short_frames_wait_for_device_capacity_without_false_xrun() {
     let (mut engine, output, ring) = (
-        Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+        Engine::new(Some(crate::devices::model::PcmConfiguration::SHARED)),
         FakeOutput::new(),
         FakeRing::new(),
     );
@@ -68,7 +76,7 @@ fn short_frames_wait_for_device_capacity_without_false_xrun() {
 #[test]
 fn short_tail_and_wrapped_frames_are_mixed_and_credited_exactly() {
     let (mut engine, output, ring) = (
-        Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+        Engine::new(Some(crate::devices::model::PcmConfiguration::SHARED)),
         FakeOutput::new(),
         FakeRing::new(),
     );
@@ -111,9 +119,9 @@ fn short_tail_and_wrapped_frames_are_mixed_and_credited_exactly() {
 
 #[test]
 fn native_lease_excludes_shared_streams_and_bypasses_software_gain() {
-    use crate::{audio::engine::PcmEndpoint, drivers::PcmConfiguration};
+    use crate::{devices::audio::engine::PcmEndpoint, devices::model::PcmConfiguration};
     let (mut engine, output, ring) = (
-        Engine::new(Some(crate::drivers::PcmConfiguration::SHARED)),
+        Engine::new(Some(crate::devices::model::PcmConfiguration::SHARED)),
         FakeOutput::new(),
         FakeRing::new(),
     );
@@ -136,10 +144,14 @@ fn native_lease_excludes_shared_streams_and_bypasses_software_gain() {
         .unwrap();
     engine.prepare(index).unwrap();
     ring.fill(0, 0.25, -0.25);
-    engine.set_control(crate::audio::control::Element::MasterVolume, [0, 0]);
+    engine.set_control(
+        crate::devices::audio::control::Element::MasterVolume,
+        [0, 0],
+    );
     engine.application_frames(index, PERIOD).unwrap();
     engine.start(index).unwrap();
     engine.tick(NONE, &output);
+    assert!(engine.running());
     assert_eq!(level(&output.submitted.borrow()[0]), (0.25, -0.25));
     assert!(engine.begin_transition().unwrap());
     output.stop().unwrap();

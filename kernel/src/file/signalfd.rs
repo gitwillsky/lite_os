@@ -12,7 +12,7 @@ impl SignalWaitSource {
     /// 在 sighand 发布前准备等待源；OOM 不建立部分信号 owner。
     pub(crate) fn try_new() -> Result<Arc<Self>, ()> {
         Arc::try_new(Self {
-            generation: AtomicU64::new(crate::sync::next_readiness_generation()),
+            generation: AtomicU64::new(crate::execution::sync::next_readiness_generation()),
         })
         .map_err(|_| ())
     }
@@ -26,8 +26,10 @@ impl SignalWaitSource {
     }
     /// signal publication/mask 更新后推进 generation；max 防止并发 publisher 倒退 edge。
     pub(crate) fn changed(&self) {
-        self.generation
-            .fetch_max(crate::sync::next_readiness_generation(), Ordering::AcqRel);
+        self.generation.fetch_max(
+            crate::execution::sync::next_readiness_generation(),
+            Ordering::AcqRel,
+        );
     }
 }
 

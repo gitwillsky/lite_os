@@ -15,7 +15,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let nsfs = source(sources, "kernel/src/fs/nsfs.rs");
     let opened = source(sources, "kernel/src/fs/procfs/opened_operations.rs");
     let node = source(sources, "kernel/src/fs/procfs/node.rs");
-    let credentials = source(sources, "kernel/src/task/model/credentials.rs");
+    let credentials = source(sources, "kernel/src/execution/task/model/credentials.rs");
     if !cache
         .contains("DataBacking::Snapshot => return inode.truncate_storage(size, Some(identity))")
     {

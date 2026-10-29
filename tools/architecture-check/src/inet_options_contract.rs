@@ -14,17 +14,17 @@ fn before(text: &str, first: &str, second: &str) -> bool {
     matches!((text.find(first),text.find(second)),(Some(a),Some(b)) if a < b)
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let options = normalized(source(sources, "kernel/src/socket/inet/options.rs"));
-    let tcp = normalized(source(sources, "kernel/src/socket/inet/tcp.rs"));
-    let lifecycle = normalized(source(sources, "kernel/src/socket/inet/tcp/lifecycle.rs"));
-    let accept = normalized(source(sources, "kernel/src/socket/inet/tcp/accept.rs"));
-    let io = normalized(source(sources, "kernel/src/socket/inet/tcp/io.rs"));
-    let raw = normalized(source(sources, "kernel/src/socket/inet/raw.rs"));
+    let options = normalized(source(sources, "kernel/src/net/inet/options.rs"));
+    let tcp = normalized(source(sources, "kernel/src/net/inet/tcp.rs"));
+    let lifecycle = normalized(source(sources, "kernel/src/net/inet/tcp/lifecycle.rs"));
+    let accept = normalized(source(sources, "kernel/src/net/inet/tcp/accept.rs"));
+    let io = normalized(source(sources, "kernel/src/net/inet/tcp/io.rs"));
+    let raw = normalized(source(sources, "kernel/src/net/inet/raw.rs"));
     let abi = normalized(source(sources, "kernel/src/syscall/socket/options.rs"));
-    let udp = normalized(source(sources, "kernel/src/socket/inet/udp.rs"));
+    let udp = normalized(source(sources, "kernel/src/net/inet/udp.rs"));
     let control = normalized(source(sources, "kernel/src/syscall/socket/control.rs"));
     let message = normalized(source(sources, "kernel/src/syscall/socket/message.rs"));
-    let socket = normalized(source(sources, "kernel/src/socket/mod.rs"));
+    let socket = normalized(source(sources, "kernel/src/net/mod.rs"));
     let update = tcp
         .split("fnupdate_transport_options(")
         .nth(1)
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn rejects_modifying_established_passive_child() {
         reject(
-            "kernel/src/socket/inet/tcp.rs",
+            "kernel/src/net/inet/tcp.rs",
             "if entry.passive.is_none() {",
             "if true {",
             "frozen passive",
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn rejects_losing_option_on_accept_replacement() {
         reject(
-            "kernel/src/socket/inet/tcp/accept.rs",
+            "kernel/src/net/inet/tcp/accept.rs",
             "listener_options.apply_tcp(",
             "listener_options.ignore_tcp(",
             "every real handle",
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn rejects_raw_option_mirror() {
         reject(
-            "kernel/src/socket/inet/raw.rs",
+            "kernel/src/net/inet/raw.rs",
             "pub(super) options: super::InetSocketOptions,",
             "pub(super) hop_limit: u8,",
             "actual protocol owner",
@@ -161,13 +161,13 @@ mod tests {
     #[test]
     fn rejects_raw_codec_detached_from_actual_option_policy() {
         reject(
-            "kernel/src/socket/inet/raw.rs",
+            "kernel/src/net/inet/raw.rs",
             "let options = state.options;",
             "let options = super::InetSocketOptions::default();",
             "actual protocol owner",
         );
         reject(
-            "kernel/src/socket/inet/raw.rs",
+            "kernel/src/net/inet/raw.rs",
             "options.hop_limit",
             "None::<u8>",
             "actual protocol owner",
@@ -182,7 +182,7 @@ mod tests {
             "bind-device sizing",
         );
         reject(
-            "kernel/src/socket/inet/options.rs",
+            "kernel/src/net/inet/options.rs",
             "if options.bound_to_device",
             "if false",
             "bind-device sizing",
@@ -212,13 +212,13 @@ mod tests {
             "single-request source/oif",
         );
         reject(
-            "kernel/src/socket/inet/udp.rs",
+            "kernel/src/net/inet/udp.rs",
             "metadata.local_spec_address",
             "metadata.local_address",
             "queued ingress metadata",
         );
         reject(
-            "kernel/src/socket/inet/udp.rs",
+            "kernel/src/net/inet/udp.rs",
             "requested_source\n                    .map(ipv4)\n                    .or_else(|| route_address.map(ipv4))",
             "route_address.map(ipv4).or_else(|| requested_source.map(ipv4))",
             "single-request source/oif",

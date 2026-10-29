@@ -72,7 +72,7 @@ fn unmapped_memory_file_swap_preserves_quota_short_io_and_atomic_tail_truncate()
 
     // Storage reclaim still covers content with no mmap record; swapoff restores those owners.
     assert_eq!(file.reclaim_pages(request).reclaimed_pages(), 1);
-    let mut wait = crate::sync::TaskMutexWaitPreparation;
+    let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
     swap::deactivate(
         SharedFileId {
             filesystem: 999,

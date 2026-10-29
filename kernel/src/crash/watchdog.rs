@@ -7,7 +7,7 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::{cpu, timer};
+use crate::{execution::cpu, execution::timer};
 
 /// deferred work 停滞超过该时长即视为 hang。
 const STALL_LIMIT_US: u64 = 30_000_000;

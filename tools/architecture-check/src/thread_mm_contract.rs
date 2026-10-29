@@ -2,10 +2,10 @@
 use super::SourceFile;
 use quote::ToTokens;
 use syn::Item;
-const MODEL: &str = "kernel/src/task/model.rs";
-const MM: &str = "kernel/src/task/model/thread_mm.rs";
-const EXIT: &str = "kernel/src/task/model/process_exit.rs";
-const EXEC: &str = "kernel/src/task/model/process_exec.rs";
+const MODEL: &str = "kernel/src/execution/task/model.rs";
+const MM: &str = "kernel/src/execution/task/model/thread_mm.rs";
+const EXIT: &str = "kernel/src/execution/task/model/process_exit.rs";
+const EXEC: &str = "kernel/src/execution/task/model/process_exec.rs";
 
 fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a SourceFile {
     sources
@@ -62,10 +62,16 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             "{MODEL}: Process cannot independently own a mutable mm root"
         ));
     }
-    let kernel = source(sources, "kernel/src/task/model/kernel_thread.rs");
-    let identity = source(sources, "kernel/src/task/model/thread_identity.rs");
-    let graph = source(sources, "kernel/src/task/process_table.rs");
-    let kernel_exit = source(sources, "kernel/src/task/process_table/process_exit.rs");
+    let kernel = source(sources, "kernel/src/execution/task/model/kernel_thread.rs");
+    let identity = source(
+        sources,
+        "kernel/src/execution/task/model/thread_identity.rs",
+    );
+    let graph = source(sources, "kernel/src/execution/task/process_table.rs");
+    let kernel_exit = source(
+        sources,
+        "kernel/src/execution/task/process_table/process_exit.rs",
+    );
     if field(kernel, "KernelThread", "pid").as_deref()
         != Some("Mutex < Option < PidRegistration > >")
         || !kernel.text.contains("self.pid.lock().take()")
@@ -98,7 +104,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             "{MM}: independent Thread handle must retire its sole mapping user and retain only authorization facts"
         ));
     }
-    let membership = source(sources, "kernel/src/task/model/thread_mm/membership.rs");
+    let membership = source(
+        sources,
+        "kernel/src/execution/task/model/thread_mm/membership.rs",
+    );
     let membership: String = membership.text.split_whitespace().collect();
     if !membership
         .contains("letuser_dumpable=self.live().expect(\"Threadmmretiredtwice\").dumpable();")
@@ -147,13 +156,19 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             _ => errors.push(format!("{EXEC}: exec credentials and latest files/sighand must serialize around complete sibling retirement")),
         }
     }
-    let tsync = source(sources, "kernel/src/task/process_table/seccomp.rs");
+    let tsync = source(
+        sources,
+        "kernel/src/execution/task/process_table/seccomp.rs",
+    );
     if !tsync.text.contains(".credential_guard()") || !tsync.text.contains(".lock_killable()") {
         errors.push(
             "exec: TSYNC must hold the same killable Process credential preparation guard".into(),
         );
     }
-    let drain = source(sources, "kernel/src/task/process_table/exec_drain.rs");
+    let drain = source(
+        sources,
+        "kernel/src/execution/task/process_table/exec_drain.rs",
+    );
     if !drain
         .text
         .contains("thread_retirements().wait_for_survivor()")
@@ -164,8 +179,11 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("exec: drain must own exact identity, concurrent birth and post-cleanup retirement with fatal-only cancellation".into());
     }
-    let retirement = source(sources, "kernel/src/task/model/thread_retirement.rs");
-    let graph = source(sources, "kernel/src/task/process_table.rs");
+    let retirement = source(
+        sources,
+        "kernel/src/execution/task/model/thread_retirement.rs",
+    );
+    let graph = source(sources, "kernel/src/execution/task/process_table.rs");
     if !retirement.text.contains("completed.wait_killable()")
         || !retirement.text.contains("outstanding.fetch_add(1")
         || !retirement.text.contains("outstanding.fetch_sub(1")
@@ -178,7 +196,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
                 .into(),
         );
     }
-    let graph_exit = source(sources, "kernel/src/task/process_table/process_exit.rs");
+    let graph_exit = source(
+        sources,
+        "kernel/src/execution/task/process_table/process_exit.rs",
+    );
     if !matches!((graph_exit.text.find("exit_memory.complete();"), graph_exit.text.find("thread_retirement.complete();")), (Some(a), Some(b)) if a < b)
         || !matches!((graph_exit.text.find("if let Some(completion) = vfork_completion"), graph_exit.text.find("thread_retirement.complete();")), (Some(a), Some(b)) if a < b)
         || !graph_exit
@@ -189,7 +210,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     let access = source(
         sources,
-        "kernel/src/task/model/address_space/task_access.rs",
+        "kernel/src/execution/task/model/address_space/task_access.rs",
     );
     for name in [
         "copy_from_user",
@@ -270,7 +291,7 @@ mod tests {
     #[test]
     fn rejects_tcb_observer_used_as_live_mm_proof() {
         reject(
-            "kernel/src/task/model/address_space/task_access.rs",
+            "kernel/src/execution/task/model/address_space/task_access.rs",
             "self.mm_snapshot()\n            .ok_or(UserAccessError::Fault)?",
             "self.address_space()",
             "fallible user-copy",
@@ -279,7 +300,7 @@ mod tests {
     #[test]
     fn rejects_kernel_actor_accessing_user_process() {
         reject(
-            "kernel/src/task/model/thread_identity.rs",
+            "kernel/src/execution/task/model/thread_identity.rs",
             "TaskKind::Kernel(thread) => thread.identity()",
             "TaskKind::Kernel(_) => self.process().tgid.identity()",
             "kernel-pid: actual executor",
@@ -288,7 +309,7 @@ mod tests {
     #[test]
     fn rejects_kernel_pid_retirement_delayed_until_tcb_observer_drop() {
         reject(
-            "kernel/src/task/process_table/process_exit.rs",
+            "kernel/src/execution/task/process_table/process_exit.rs",
             ".retire_kernel_pid()",
             ".tid()",
             "kernel-pid: actual executor",
@@ -387,7 +408,7 @@ mod tests {
     #[test]
     fn rejects_tsync_without_exec_credential_guard() {
         reject(
-            "kernel/src/task/process_table/seccomp.rs",
+            "kernel/src/execution/task/process_table/seccomp.rs",
             ".lock_killable()",
             ".lock()",
             "same killable",
@@ -396,7 +417,7 @@ mod tests {
     #[test]
     fn rejects_ordinary_signal_cancelling_exec_after_ponr() {
         reject(
-            "kernel/src/task/model/thread_retirement.rs",
+            "kernel/src/execution/task/model/thread_retirement.rs",
             "completed.wait_killable()",
             "completed.wait_interruptible()",
             "persistent Thread lifecycle",
@@ -405,7 +426,7 @@ mod tests {
     #[test]
     fn rejects_post_ponr_oom_overriding_pending_sigkill() {
         reject(
-            "kernel/src/task/process_table/process_exit.rs",
+            "kernel/src/execution/task/process_table/process_exit.rs",
             "preserve_pending_fatal && current.has_fatal_signal()",
             "false",
             "preserve pending SIGKILL",
@@ -414,7 +435,7 @@ mod tests {
     #[test]
     fn rejects_exec_retirement_before_original_vfork_completion() {
         reject(
-            "kernel/src/task/process_table/process_exit.rs",
+            "kernel/src/execution/task/process_table/process_exit.rs",
             "let process_completed = thread_retirement.complete();",
             "let process_completed = true;",
             "completion must follow MM cleanup",

@@ -9,11 +9,7 @@ mod allocation_failure;
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-mod timer {
-    pub(crate) fn get_realtime_ns() -> u64 {
-        1_000_000_000
-    }
-}
+
 #[macro_export]
 macro_rules! warn { ($($arg:tt)*) => { eprintln!($($arg)*) }; }
 // 显式 scheduler notification adapter；event/seen-event/topology 均加载生产 owner。
@@ -42,97 +38,7 @@ mod ipc {
 }
 // Blocking mutex implementation is a host scheduler adapter; actual namespace guard,
 // traversal/admission/projection ownership is loaded from production.
-mod sync {
-    pub(crate) struct TaskEvent;
-    impl TaskEvent {
-        pub(crate) const fn new() -> Self {
-            Self
-        }
-        pub(crate) fn signal(&self) {}
-        pub(crate) fn wait_idle(&self) {
-            unreachable!("worker scheduler adapter not executed in host fixture");
-        }
-    }
-    pub(crate) struct TaskMutexWaitPreparation;
-    impl TaskMutexWaitPreparation {
-        pub(crate) fn prepare() -> Result<Self, ()> {
-            Ok(Self)
-        }
-    }
 
-    pub(crate) fn next_readiness_generation() -> u64 {
-        static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
-        NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
-    }
-    thread_local! {
-        static BLOCKED: std::cell::RefCell<Option<std::sync::mpsc::Sender<()>>> = const { std::cell::RefCell::new(None) };
-    }
-    pub(crate) fn observe_blocking(sender: std::sync::mpsc::Sender<()>) {
-        BLOCKED.with(|hook| *hook.borrow_mut() = Some(sender));
-    }
-    fn report_blocked() {
-        BLOCKED.with(|hook| {
-            if let Some(sender) = hook.borrow_mut().take() {
-                sender.send(()).unwrap();
-            }
-        });
-    }
-    // 这里只替换 host 调度 primitive；实际 TaskRwSemaphore 的 FIFO/交接由 src/sync 加载验证。
-    pub(crate) struct TaskRwSemaphore(std::sync::RwLock<()>);
-    pub(crate) type TaskReadGuard<'a> = std::sync::RwLockReadGuard<'a, ()>;
-    pub(crate) type TaskWriteGuard<'a> = std::sync::RwLockWriteGuard<'a, ()>;
-    impl TaskRwSemaphore {
-        pub(crate) const fn new() -> Self {
-            Self(std::sync::RwLock::new(()))
-        }
-        pub(crate) fn read(&self) -> Result<TaskReadGuard<'_>, ()> {
-            match self.0.try_read() {
-                Ok(guard) => Ok(guard),
-                Err(std::sync::TryLockError::Poisoned(_)) => Err(()),
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    report_blocked();
-                    self.0.read().map_err(|_| ())
-                }
-            }
-        }
-        pub(crate) fn write(&self) -> Result<TaskWriteGuard<'_>, ()> {
-            match self.0.try_write() {
-                Ok(guard) => Ok(guard),
-                Err(std::sync::TryLockError::Poisoned(_)) => Err(()),
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    report_blocked();
-                    self.0.write().map_err(|_| ())
-                }
-            }
-        }
-    }
-    pub(crate) struct TaskMutex<T>(std::sync::Mutex<T>);
-    pub(crate) type TaskMutexGuard<'a, T> = std::sync::MutexGuard<'a, T>;
-    impl<T> TaskMutex<T> {
-        pub(crate) const fn new(value: T) -> Self {
-            Self(std::sync::Mutex::new(value))
-        }
-        pub(crate) fn lock_prepared(
-            &self,
-            _: &mut TaskMutexWaitPreparation,
-        ) -> TaskMutexGuard<'_, T> {
-            self.lock().unwrap()
-        }
-        pub(crate) fn try_lock(&self) -> Option<TaskMutexGuard<'_, T>> {
-            self.0.try_lock().ok()
-        }
-        pub(crate) fn lock(&self) -> Result<TaskMutexGuard<'_, T>, ()> {
-            match self.0.try_lock() {
-                Ok(guard) => Ok(guard),
-                Err(std::sync::TryLockError::Poisoned(_)) => Err(()),
-                Err(std::sync::TryLockError::WouldBlock) => {
-                    report_blocked();
-                    self.0.lock().map_err(|_| ())
-                }
-            }
-        }
-    }
-}
 #[path = "../../../kernel/src/fs"]
 mod fs {
     // notification 子系统边界只记录 actual last-dput 的调用事实，不复制判断 links/投递算法。
@@ -427,13 +333,13 @@ mod fs {
             root: Mutex<Option<Arc<OpenedFile>>>,
             namespace: Mutex<Option<Arc<MountNamespace>>>,
             dentries: DentryIndex,
-            namespace_mutation: crate::sync::TaskMutex<()>,
+            namespace_mutation: crate::execution::sync::TaskMutex<()>,
         }
         static VFS: VirtualFileSystem = VirtualFileSystem {
             root: Mutex::new(None),
             namespace: Mutex::new(None),
             dentries: DentryIndex::new(),
-            namespace_mutation: crate::sync::TaskMutex::new(()),
+            namespace_mutation: crate::execution::sync::TaskMutex::new(()),
         };
         pub(super) fn vfs() -> &'static VirtualFileSystem {
             &VFS
@@ -1112,7 +1018,7 @@ mod fs {
             let jail = f.jail.clone();
             let file = f.file.id;
             let writer = thread::spawn(move || {
-                crate::sync::observe_blocking(blocked_tx);
+                crate::execution::sync::observe_blocking(blocked_tx);
                 let _directory = jail.dentry.lock_exclusive().unwrap();
                 let _namespace = VFS.namespace().unwrap();
                 VFS.dentries.move_entry(
@@ -1169,7 +1075,7 @@ mod fs {
             let (tx, rx) = mpsc::channel();
             let (blocked_tx, blocked_rx) = mpsc::channel();
             let reader = thread::spawn(move || {
-                crate::sync::observe_blocking(blocked_tx);
+                crate::execution::sync::observe_blocking(blocked_tx);
                 tx.send(VFS.current_directory_path(origin).unwrap())
                     .unwrap();
             });
@@ -1238,4 +1144,103 @@ mod fs {
         }
     }
     pub(crate) use vfs::OpenedFile;
+}
+
+pub(crate) mod execution {
+    pub(crate) mod timer {
+        pub(crate) fn get_realtime_ns() -> u64 {
+            1_000_000_000
+        }
+    }
+    pub(crate) mod sync {
+        pub(crate) struct TaskEvent;
+        impl TaskEvent {
+            pub(crate) const fn new() -> Self {
+                Self
+            }
+            pub(crate) fn signal(&self) {}
+            pub(crate) fn wait_idle(&self) {
+                unreachable!("worker scheduler adapter not executed in host fixture");
+            }
+        }
+        pub(crate) struct TaskMutexWaitPreparation;
+        impl TaskMutexWaitPreparation {
+            pub(crate) fn prepare() -> Result<Self, ()> {
+                Ok(Self)
+            }
+        }
+
+        pub(crate) fn next_readiness_generation() -> u64 {
+            static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+            NEXT.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
+        }
+        thread_local! {
+            static BLOCKED: std::cell::RefCell<Option<std::sync::mpsc::Sender<()>>> = const { std::cell::RefCell::new(None) };
+        }
+        pub(crate) fn observe_blocking(sender: std::sync::mpsc::Sender<()>) {
+            BLOCKED.with(|hook| *hook.borrow_mut() = Some(sender));
+        }
+        fn report_blocked() {
+            BLOCKED.with(|hook| {
+                if let Some(sender) = hook.borrow_mut().take() {
+                    sender.send(()).unwrap();
+                }
+            });
+        }
+        // 这里只替换 host 调度 primitive；实际 TaskRwSemaphore 的 FIFO/交接由 src/sync 加载验证。
+        pub(crate) struct TaskRwSemaphore(std::sync::RwLock<()>);
+        pub(crate) type TaskReadGuard<'a> = std::sync::RwLockReadGuard<'a, ()>;
+        pub(crate) type TaskWriteGuard<'a> = std::sync::RwLockWriteGuard<'a, ()>;
+        impl TaskRwSemaphore {
+            pub(crate) const fn new() -> Self {
+                Self(std::sync::RwLock::new(()))
+            }
+            pub(crate) fn read(&self) -> Result<TaskReadGuard<'_>, ()> {
+                match self.0.try_read() {
+                    Ok(guard) => Ok(guard),
+                    Err(std::sync::TryLockError::Poisoned(_)) => Err(()),
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        report_blocked();
+                        self.0.read().map_err(|_| ())
+                    }
+                }
+            }
+            pub(crate) fn write(&self) -> Result<TaskWriteGuard<'_>, ()> {
+                match self.0.try_write() {
+                    Ok(guard) => Ok(guard),
+                    Err(std::sync::TryLockError::Poisoned(_)) => Err(()),
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        report_blocked();
+                        self.0.write().map_err(|_| ())
+                    }
+                }
+            }
+        }
+        pub(crate) struct TaskMutex<T>(std::sync::Mutex<T>);
+        pub(crate) type TaskMutexGuard<'a, T> = std::sync::MutexGuard<'a, T>;
+        impl<T> TaskMutex<T> {
+            pub(crate) const fn new(value: T) -> Self {
+                Self(std::sync::Mutex::new(value))
+            }
+            pub(crate) fn lock_prepared(
+                &self,
+                _: &mut TaskMutexWaitPreparation,
+            ) -> TaskMutexGuard<'_, T> {
+                self.lock().unwrap()
+            }
+            pub(crate) fn try_lock(&self) -> Option<TaskMutexGuard<'_, T>> {
+                self.0.try_lock().ok()
+            }
+            pub(crate) fn lock(&self) -> Result<TaskMutexGuard<'_, T>, ()> {
+                match self.0.try_lock() {
+                    Ok(guard) => Ok(guard),
+                    Err(std::sync::TryLockError::Poisoned(_)) => Err(()),
+                    Err(std::sync::TryLockError::WouldBlock) => {
+                        report_blocked();
+                        self.0.lock().map_err(|_| ())
+                    }
+                }
+            }
+        }
+    }
 }

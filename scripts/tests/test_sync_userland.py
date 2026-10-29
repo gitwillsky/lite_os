@@ -12,7 +12,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import sync_userland
 from ext4_image import find_mke2fs, run_debugfs
-from verify_busybox import UserlandArtifact
+from userland import UserlandArtifact
 
 
 class UserlandSyncTests(unittest.TestCase):
@@ -92,7 +92,7 @@ class UserlandSyncTests(unittest.TestCase):
 
     def test_every_product_file_is_a_managed_path(self):
         # 产品清单新增文件时，同步器的白名单必须同步更新；否则开发镜像同步会在运行时才报错。
-        from verify_busybox import base_userland
+        from userland.artifacts import base_userland
 
         from unittest.mock import patch, Mock
         with patch("verify_busybox._build_rust_user_targets", side_effect=lambda _musl, targets: {

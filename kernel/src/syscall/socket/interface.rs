@@ -16,16 +16,16 @@ const RTF_WINDOW: u16 = 0x80;
 const RTF_IRTT: u16 = 0x100;
 const RTF_REJECT: u16 = 0x200;
 
-fn route_error(error: crate::socket::Ipv4RouteError) -> isize {
+fn route_error(error: crate::net::Ipv4RouteError) -> isize {
     -(error.errno() as isize)
 }
 fn configure_route(
     task: &TaskControlBlock,
-    scope: &crate::socket::NetNamespace,
+    scope: &crate::net::NetNamespace,
     operation: usize,
     argument: usize,
 ) -> isize {
-    use crate::socket::{Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest};
+    use crate::net::{Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest};
     if argument == 0 {
         return -errno::EFAULT;
     }
@@ -151,7 +151,7 @@ fn configure_route(
 
 fn copy_ifconf(
     task: &TaskControlBlock,
-    scope: &crate::socket::NetNamespace,
+    scope: &crate::net::NetNamespace,
     argument: usize,
 ) -> isize {
     if argument == 0 {

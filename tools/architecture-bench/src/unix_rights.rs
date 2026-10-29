@@ -5,12 +5,10 @@ extern crate alloc;
 #[path = "../../kernel-unit/src/allocation_failure.rs"]
 mod allocation_failure;
 mod cost_policy;
-#[path = "../../../kernel/src/task/model/message_identity.rs"]
+#[path = "../../../kernel/src/execution/task/model/message_identity.rs"]
 mod message_identity;
 // 实际 scheduler cadence 为 benchmark 边界；policy/锁/deadline 运算全部来自 production。
-mod timer {
-    pub(crate) const SCHEDULER_TICK_NS: u64 = 10_000_000;
-}
+
 #[path = "../../../kernel/src/fallible_tree/mod.rs"]
 mod fallible_tree;
 #[path = "../../kernel-unit/src/unix_rights_fixture/file.rs"]
@@ -22,18 +20,17 @@ mod ipc;
 #[path = "../../kernel-unit/src/namespace_fixture.rs"]
 mod namespace;
 #[path = "../../kernel-unit/src/unix_rights_fixture/mod.rs"]
-mod socket;
-#[path = "../../../kernel/src/socket/timeouts.rs"]
+mod net;
+#[path = "../../../kernel/src/net/timeouts.rs"]
 mod socket_timeouts;
-#[path = "../../kernel-unit/src/sync.rs"]
-mod sync;
+
 use alloc::{sync::Arc, vec};
-use socket::{UnixPassedFile, UnixRights, UnixSocket};
+use net::{UnixPassedFile, UnixRights, UnixSocket};
 use std::{hint::black_box, time::Instant};
 fn endpoint() -> (Arc<UnixSocket>, Arc<file::OpenFileDescription>) {
     let socket = UnixSocket::new();
     let file = Arc::new(file::OpenFileDescription {
-        kind: file::OpenFileKind::Socket(Arc::new(socket::Socket {
+        kind: file::OpenFileKind::Socket(Arc::new(net::Socket {
             endpoint: socket.clone(),
         })),
     });
@@ -44,7 +41,7 @@ fn rights(file: &Arc<file::OpenFileDescription>, uid: u32, limit: Option<usize>)
     UnixRights::new(
         vec![file.clone()],
         uid,
-        limit.map(|limit| -> Arc<dyn socket::UnixFileLimit> { socket::ProducedLimit::new(limit) }),
+        limit.map(|limit| -> Arc<dyn net::UnixFileLimit> { net::ProducedLimit::new(limit) }),
     )
     .unwrap()
 }
@@ -133,7 +130,7 @@ fn main() {
     );
     let (credential_target, _credential_file) = endpoint();
     let credential_channel = UnixSocket::stream_channel(&credential_target);
-    let sender = socket::UnixCredentials {
+    let sender = net::UnixCredentials {
         pid: prepared_pid.identity(),
         uid: 1001,
         gid: 2001,
@@ -264,4 +261,13 @@ fn main() {
             socket.release_queue();
         }
     }
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    pub(crate) mod timer {
+        pub(crate) const SCHEDULER_TICK_NS: u64 = 10_000_000;
+    }
+    #[path = "../../kernel-unit/src/sync.rs"]
+    pub(crate) mod sync;
 }

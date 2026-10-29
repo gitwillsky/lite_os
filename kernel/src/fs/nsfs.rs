@@ -176,7 +176,7 @@ impl Inode for NamespaceInode {
         size: u64,
         identity: Option<&super::AccessIdentity>,
     ) -> Result<(), FileSystemError> {
-        let now = crate::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
         let mut attributes = self.attributes.lock();
         if let Some(identity) = identity {
             let kill = identity.write_kill_mask(
@@ -200,12 +200,12 @@ impl Inode for NamespaceInode {
         Ok(())
     }
     fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {
-        let now = crate::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
         self.attributes.lock().times.set_at(now, atime, mtime);
         Ok(())
     }
     fn change_owner_mode(&self, change: OwnerModeChange) -> Result<(), FileSystemError> {
-        let now = crate::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
         let mut attributes = self.attributes.lock();
         attributes.owner = change.authorize(OwnerModeState::new(
             InodeType::File,

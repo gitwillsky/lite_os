@@ -1,1 +1,0 @@
-../../../../../../kernel/src/socket/unix/stream/write.rs

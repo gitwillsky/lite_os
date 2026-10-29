@@ -30,7 +30,7 @@ LITEOS_IMAGE="fs-${LITEOS_ARCH}.img" PYTHONPATH=scripts python3 -c \
 | 第一个症状 | 先区分 | 下一 owner |
 |---|---|---|
 | `command not found` | 文件 inode、mode、PATH、shebang interpreter、ELF interpreter、target architecture | rootfs、`user/base/`、userspace ABI |
-| `illegal instruction` | shell 名称是否正确、ELF machine、用户态 PC/instruction、trap decode、CPU feature | userspace ABI、`kernel/src/trap/`、`kernel/src/arch/` |
+| `illegal instruction` | shell 名称是否正确、ELF machine、用户态 PC/instruction、trap decode、CPU feature | userspace ABI、`kernel/src/execution/trap/`、`kernel/src/arch/` |
 | spawn/fork 返回 `EAGAIN` | 精确 syscall 返回点、资源限制、single/multithread、child 是否已创建 | process syscall、task graph、process ABI |
 | launcher 失败但 native ELF 成功 | shebang、runtime、PATH、spawn/exec；native 主体退出路径暂时移出范围 | user session、process ABI |
 | native ELF 也失败 | 最小 musl fixture、ELF loader、syscall trace、相同输入 | userspace ABI、对应 syscall/domain |

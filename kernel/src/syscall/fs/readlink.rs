@@ -1,7 +1,7 @@
 use crate::{
+    execution::task::current_task,
     fs::{InodeType, vfs},
     syscall::errno,
-    task::current_task,
 };
 
 use super::pathname::path_allow_empty;

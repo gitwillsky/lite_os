@@ -4,7 +4,7 @@ fn udp_endpoint() -> Arc<InetSocket> {
         InetProtocol::Udp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
     )
     .unwrap()
 }
@@ -179,7 +179,7 @@ fn udp_already_enqueued_transmit_retains_source_and_ttl_after_policy_change_and_
     endpoint.disconnect().unwrap();
     assert_eq!(endpoint.address().unwrap().port, 0);
     initial_stack().unwrap().lock().unwrap().poll();
-    let wire = crate::drivers::WIRE.lock().unwrap();
+    let wire = crate::devices::model::WIRE.lock().unwrap();
     let delivered = wire.1.iter().any(|bytes| {
         let ethernet = EthernetFrame::new_checked(bytes.as_slice()).unwrap();
         if ethernet.ethertype() != EthernetProtocol::Ipv4 {

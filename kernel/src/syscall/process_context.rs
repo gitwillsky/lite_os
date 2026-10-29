@@ -1,5 +1,5 @@
 //! Linux unshare codec；具体 namespace 与资源 owner 完成一次 prepare→commit。
-use crate::{namespace::NamespaceError, syscall::errno, task::current_task};
+use crate::{execution::task::current_task, namespace::NamespaceError, syscall::errno};
 
 pub(crate) fn namespace_error(error: NamespaceError) -> isize {
     -match error {

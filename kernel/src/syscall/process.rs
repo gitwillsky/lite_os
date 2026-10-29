@@ -1,16 +1,16 @@
 use alloc::vec::Vec;
 
 use crate::{
-    fs::FileSystemError,
-    memory::{ElfLoadError, UserAccessError},
-    syscall::errno,
-    task::{
+    execution::task::{
         EXEC_ARGUMENT_BYTES_LIMIT, ProcessCloneError, ProcessCloneResources, ProcessGroupError,
         ProgramLoadError, SetProcessGroupError, TaskControlBlock, ThreadCloneError, WaitChildError,
         child_status_pid, clone_current_process, clone_current_thread, consume_child_status,
         create_session, current_task, exit_current_group, exit_current_thread, load_executable,
         parent_pid, process_group, session_id, set_process_group, wait_child,
     },
+    fs::FileSystemError,
+    memory::{ElfLoadError, UserAccessError},
+    syscall::errno,
 };
 
 use super::INTERNAL_RESTART_SYS;
@@ -170,7 +170,7 @@ pub(crate) fn sys_clone(
     create_clone(
         (flags as u64 & !0xff) & !DETACHED,
         (flags & 0xff) as u64,
-        crate::task::CloneParameters {
+        crate::execution::task::CloneParameters {
             stack,
             tls: (flags as u64 & SETTLS != 0).then_some(tls),
             parent_set_tid: (flags as u64 & PARENT_SETTID != 0).then_some(parent_tid),
@@ -266,7 +266,7 @@ pub(crate) fn sys_clone3(address: usize, size: usize) -> isize {
     create_clone(
         arguments.flags,
         arguments.exit_signal,
-        crate::task::CloneParameters {
+        crate::execution::task::CloneParameters {
             stack,
             tls: (arguments.flags & SETTLS != 0).then_some(arguments.tls as usize),
             parent_set_tid: (arguments.flags & PARENT_SETTID != 0)
@@ -281,7 +281,11 @@ pub(crate) fn sys_clone3(address: usize, size: usize) -> isize {
     )
 }
 
-fn create_clone(flags: u64, exit_signal: u64, parameters: crate::task::CloneParameters) -> isize {
+fn create_clone(
+    flags: u64,
+    exit_signal: u64,
+    parameters: crate::execution::task::CloneParameters,
+) -> isize {
     use syscall_abi::clone::*;
     const SUPPORTED: u64 = VM
         | FS
@@ -336,7 +340,7 @@ fn create_clone(flags: u64, exit_signal: u64, parameters: crate::task::ClonePara
     if flags & THREAD != 0 {
         return match clone_current_thread(
             parameters,
-            crate::task::ThreadCloneResources {
+            crate::execution::task::ThreadCloneResources {
                 share_fs: flags & FS != 0,
                 share_files: flags & FILES != 0,
                 share_sem_undo: flags & SYSVSEM != 0,
@@ -412,14 +416,14 @@ pub(crate) fn sys_set_robust_list(head: usize, length: usize) -> isize {
 /// 按 native REALCREDS/exec 序列查询 registration；len copyout 先于 head copyout。
 pub(crate) fn sys_get_robust_list(pid: i32, head_pointer: usize, length_pointer: usize) -> isize {
     let task = current_task().expect("get_robust_list requires current task");
-    let head = match crate::task::robust_list_head(pid, &task) {
+    let head = match crate::execution::task::robust_list_head(pid, &task) {
         Ok(head) => head,
         Err(error) => {
             return -match error {
-                crate::task::RobustListError::NotFound => errno::ESRCH,
-                crate::task::RobustListError::Permission => errno::EPERM,
-                crate::task::RobustListError::OutOfMemory => errno::ENOMEM,
-                crate::task::RobustListError::Interrupted => errno::EINTR,
+                crate::execution::task::RobustListError::NotFound => errno::ESRCH,
+                crate::execution::task::RobustListError::Permission => errno::EPERM,
+                crate::execution::task::RobustListError::OutOfMemory => errno::ENOMEM,
+                crate::execution::task::RobustListError::Interrupted => errno::EINTR,
             };
         }
     };
@@ -464,13 +468,13 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: u32, rusage: *mut
         options & WNOHANG != 0,
         options & WUNTRACED != 0,
         options & WCONTINUED != 0,
-        crate::task::ChildWaitFilter {
+        crate::execution::task::ChildWaitFilter {
             class: if options & WALL != 0 {
-                crate::task::ChildWaitClass::All
+                crate::execution::task::ChildWaitClass::All
             } else if options & WCLONE != 0 {
-                crate::task::ChildWaitClass::Clone
+                crate::execution::task::ChildWaitClass::Clone
             } else {
-                crate::task::ChildWaitClass::Ordinary
+                crate::execution::task::ChildWaitClass::Ordinary
             },
             creator_only: options & WNOTHREAD != 0,
             ptrace_stops: true,
@@ -487,7 +491,7 @@ pub(crate) fn sys_wait4(pid: isize, status: *mut i32, options: u32, rusage: *mut
     // native kernel_wait4 先消费退出/作业事件，再返回 user-copy；EFAULT 不恢复已回收的 child。
     let wait_status = record.status;
     // 回收后 child 的 Process 不再可达，所以必须先读取 rusage。
-    let child_usage = crate::task::child_resource_usage(&record);
+    let child_usage = crate::execution::task::child_resource_usage(&record);
     consume_child_status(record);
     let task = current_task().expect("wait4 copyout requires current task");
     if !status.is_null()
@@ -533,7 +537,7 @@ pub(crate) fn sys_waitid(
         return -errno::EINVAL;
     }
     let task = current_task().expect("waitid requires current Thread");
-    use crate::task::ChildWaitSelector;
+    use crate::execution::task::ChildWaitSelector;
     let mut nonblocking = false;
     let selector = match which {
         0 => ChildWaitSelector::All,
@@ -555,37 +559,37 @@ pub(crate) fn sys_waitid(
         }
         _ => return -errno::EINVAL,
     };
-    let record = crate::task::wait_child_events(
+    let record = crate::execution::task::wait_child_events(
         selector,
         nonblocking || options & NOHANG != 0,
         options & EXITED != 0,
         options & STOPPED != 0,
         options & CONTINUED != 0,
-        crate::task::ChildWaitFilter {
+        crate::execution::task::ChildWaitFilter {
             class: if options & ALL != 0 {
-                crate::task::ChildWaitClass::All
+                crate::execution::task::ChildWaitClass::All
             } else if options & CLONE != 0 {
-                crate::task::ChildWaitClass::Clone
+                crate::execution::task::ChildWaitClass::Clone
             } else {
-                crate::task::ChildWaitClass::Ordinary
+                crate::execution::task::ChildWaitClass::Ordinary
             },
             creator_only: options & NOTHREAD != 0,
             ptrace_stops: options & STOPPED != 0,
         },
     );
     let mut info = [0u8; 28];
-    let mut child_usage = crate::task::ResourceUsage::default();
+    let mut child_usage = crate::execution::task::ResourceUsage::default();
     let result = match record {
         Ok(Some(record)) => {
-            child_usage = crate::task::child_resource_usage(&record);
-            let (pid, uid, code, status) = crate::task::child_status_info(&record);
+            child_usage = crate::execution::task::child_resource_usage(&record);
+            let (pid, uid, code, status) = crate::execution::task::child_status_info(&record);
             info[0..4].copy_from_slice(&(syscall_abi::signal::SIGCHLD as i32).to_ne_bytes());
             info[8..12].copy_from_slice(&code.to_ne_bytes());
             info[16..20].copy_from_slice(&pid.to_ne_bytes());
             info[20..24].copy_from_slice(&uid.to_ne_bytes());
             info[24..28].copy_from_slice(&status.to_ne_bytes());
             if options & NOWAIT != 0 {
-                crate::task::release_child_status(record);
+                crate::execution::task::release_child_status(record);
             } else {
                 consume_child_status(record);
             }
@@ -666,23 +670,23 @@ pub(crate) fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *
     };
     match task.execve_replace(&loaded, &envp) {
         Ok(()) => 0,
-        Err(crate::task::ExecError::Image(ElfLoadError::OutOfMemory)) => -errno::ENOMEM,
-        Err(crate::task::ExecError::Image(ElfLoadError::InvalidElf)) => -errno::ENOEXEC,
-        Err(crate::task::ExecError::Image(ElfLoadError::Io)) => -errno::EIO,
-        Err(crate::task::ExecError::Busy) => -errno::EAGAIN,
-        Err(crate::task::ExecError::Permission) => -errno::EPERM,
-        Err(crate::task::ExecError::Interrupted) => INTERNAL_RESTART_SYS,
-        Err(crate::task::ExecError::FatalInterrupted) => {
+        Err(crate::execution::task::ExecError::Image(ElfLoadError::OutOfMemory)) => -errno::ENOMEM,
+        Err(crate::execution::task::ExecError::Image(ElfLoadError::InvalidElf)) => -errno::ENOEXEC,
+        Err(crate::execution::task::ExecError::Image(ElfLoadError::Io)) => -errno::EIO,
+        Err(crate::execution::task::ExecError::Busy) => -errno::EAGAIN,
+        Err(crate::execution::task::ExecError::Permission) => -errno::EPERM,
+        Err(crate::execution::task::ExecError::Interrupted) => INTERNAL_RESTART_SYS,
+        Err(crate::execution::task::ExecError::FatalInterrupted) => {
             drop(loaded);
             drop(envp);
             drop(task);
-            crate::task::exit_current_group_by_signal(syscall_abi::signal::SIGKILL)
+            crate::execution::task::exit_current_group_by_signal(syscall_abi::signal::SIGKILL)
         }
-        Err(crate::task::ExecError::FatalImage) => {
+        Err(crate::execution::task::ExecError::FatalImage) => {
             drop(loaded);
             drop(envp);
             drop(task);
-            crate::task::exit_current_after_exec_failure()
+            crate::execution::task::exit_current_after_exec_failure()
         }
     }
 }

@@ -9,22 +9,6 @@ mod allocation;
 #[path = "../../../kernel/src/fallible_tree/mod.rs"]
 mod fallible_tree;
 
-mod sync {
-    pub(crate) type TaskMutexGuard<'a, T> = std::sync::MutexGuard<'a, T>;
-    pub(crate) struct TaskMutex<T>(std::sync::Mutex<T>);
-    impl<T> TaskMutex<T> {
-        pub(crate) fn new(value: T) -> Self {
-            Self(std::sync::Mutex::new(value))
-        }
-        pub(crate) fn lock(&self) -> Result<TaskMutexGuard<'_, T>, ()> {
-            self.0.lock().map_err(|_| ())
-        }
-        pub(crate) fn try_lock(&self) -> Option<TaskMutexGuard<'_, T>> {
-            self.0.try_lock().ok()
-        }
-    }
-}
-
 #[path = "../../../kernel/src/memory"]
 mod memory {
     pub(crate) const PAGE_SIZE: usize = 4096;
@@ -134,3 +118,21 @@ thread_local! {
     static WRITE_HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
 }
 static NEXT_FRAME: AtomicUsize = AtomicUsize::new(1);
+
+pub(crate) mod execution {
+    pub(crate) mod sync {
+        pub(crate) type TaskMutexGuard<'a, T> = std::sync::MutexGuard<'a, T>;
+        pub(crate) struct TaskMutex<T>(std::sync::Mutex<T>);
+        impl<T> TaskMutex<T> {
+            pub(crate) fn new(value: T) -> Self {
+                Self(std::sync::Mutex::new(value))
+            }
+            pub(crate) fn lock(&self) -> Result<TaskMutexGuard<'_, T>, ()> {
+                self.0.lock().map_err(|_| ())
+            }
+            pub(crate) fn try_lock(&self) -> Option<TaskMutexGuard<'_, T>> {
+                self.0.try_lock().ok()
+            }
+        }
+    }
+}

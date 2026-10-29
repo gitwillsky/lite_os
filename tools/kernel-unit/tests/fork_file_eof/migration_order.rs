@@ -95,7 +95,7 @@ fn early_revoked_alias_waiting_for_page_operation_does_not_deadlock_later_busy_m
             &[0x51; 4096]
         );
     }
-    let mut wait = crate::sync::TaskMutexWaitPreparation;
+    let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
     swap::deactivate(
         SharedFileId {
             filesystem: 999,
@@ -131,7 +131,7 @@ fn swapoff_waits_for_pre_draining_reservation_then_restores_its_completed_write(
     assert_eq!(swap::statistics(), (7, 6));
     let (drained, completion) = mpsc::channel();
     let drainer = std::thread::spawn(move || {
-        let mut wait = crate::sync::TaskMutexWaitPreparation;
+        let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
         drained
             .send(swap::deactivate(
                 SharedFileId {

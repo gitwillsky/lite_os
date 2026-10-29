@@ -14,7 +14,7 @@ use super::{
     config,
     frame_allocator::{self, FrameTracker},
 };
-use crate::sync::LocalIrqGuard;
+use crate::execution::sync::LocalIrqGuard;
 
 struct HeapStorage(UnsafeCell<[u8; config::BOOTSTRAP_HEAP_SIZE]>);
 
@@ -292,7 +292,7 @@ fn current_cpu_cache() -> Option<&'static UnsafeCell<CpuHeapCache>> {
     CPU_HEAP_CACHES
         .get()?
         .0
-        .get(crate::cpu::current_id().index())
+        .get(crate::execution::cpu::current_id().index())
 }
 
 fn bootstrap_bounds() -> (usize, usize) {
@@ -523,14 +523,14 @@ pub(crate) fn init() {
 /// topology 未发布、零 CPU 或重复初始化时 fail-stop。
 pub(crate) fn init_cpu_caches() {
     assert!(
-        crate::cpu::is_initialized(),
+        crate::execution::cpu::is_initialized(),
         "heap caches require initialized CPU topology"
     );
     assert!(
         CPU_HEAP_CACHES.get().is_none(),
         "heap caches initialized twice"
     );
-    let cpu_count = crate::cpu::count();
+    let cpu_count = crate::execution::cpu::count();
     assert!(cpu_count != 0, "heap caches require at least one CPU");
     let mut caches = Vec::new();
     caches

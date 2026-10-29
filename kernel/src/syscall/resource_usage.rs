@@ -1,6 +1,6 @@
 //! `getrusage`：按 Linux `struct rusage` 布局报告资源使用。
 
-use crate::{syscall::errno, task::ResourceUsage, task::current_task};
+use crate::{execution::task::ResourceUsage, execution::task::current_task, syscall::errno};
 
 const RUSAGE_SELF: i32 = 0;
 const RUSAGE_CHILDREN: i32 = -1;

@@ -1,23 +1,8 @@
 // 实际 packet/netlink/INET owner；Ethernet adapter 与 facade domain values 是边界。
 macro_rules! error { ($($message:tt)*) => {{ eprintln!($($message)*); }}; }
 // 唯一 deferred delivery adapter；只记录真实 driver 通知，不复制轮询/协议算法。
-pub(crate) mod deferred {
-    pub(crate) struct DeferredWork;
-    impl DeferredWork { pub(crate) const NETWORK: Self = Self; }
-    pub(crate) fn raise(_: DeferredWork) {
-        crate::drivers::network::POLL_REQUESTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-    }
-}
-pub(crate) mod timer {
-    pub(crate) const SCHEDULER_TICK_NS: u64 = 10_000_000;
-    pub(crate) fn get_time_us() -> u64 {
-        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-        START
-            .get_or_init(std::time::Instant::now)
-            .elapsed()
-            .as_micros() as u64
-    }
-}
+
+
 #[path = "allocation_failure.rs"]
 pub(crate) mod allocation_failure;
 #[path = "../../../kernel/src/fallible_tree/mod.rs"]
@@ -28,9 +13,10 @@ pub(crate) mod id;
 pub(crate) mod ipc;
 #[path = "namespace_fixture.rs"]
 pub(crate) mod namespace;
-#[path = "sync.rs"]
-pub(crate) mod sync;
-pub(crate) mod drivers {
+
+pub(crate) mod devices {
+    pub(crate) mod model {
+
     type WireQueues = (std::collections::VecDeque<alloc::vec::Vec<u8>>, alloc::vec::Vec<alloc::vec::Vec<u8>>);
     // 唯一边界 NIC 保存 wire frames；协议解析、握手和继承全部执行 production owners。
     pub(crate) static WIRE: std::sync::Mutex<WireQueues> = std::sync::Mutex::new((std::collections::VecDeque::new(), alloc::vec::Vec::new()));
@@ -41,14 +27,14 @@ pub(crate) mod drivers {
     pub(crate) mod network {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../kernel/src/drivers/network.rs"
+            "/../../kernel/src/devices/model/network.rs"
         ));
         // deferred delivery 为边界；真实 protocol cleanup/ring 仍由 production owner 执行。
         pub(crate) static POLL_REQUESTS: core::sync::atomic::AtomicUsize =
             core::sync::atomic::AtomicUsize::new(0);
         #[cfg(test)]
         pub(crate) fn request_poll() {
-            crate::deferred::raise(crate::deferred::DeferredWork::NETWORK);
+            crate::execution::deferred::raise(crate::execution::deferred::DeferredWork::NETWORK);
         }
     }
     use alloc::sync::Arc;
@@ -177,9 +163,11 @@ pub(crate) mod drivers {
             network::NetworkStatistics::default()
         }
     }
+
+    }
 }
-#[path = "../../../kernel/src/socket"]
-pub(crate) mod socket {
+#[path = "../../../kernel/src/net"]
+pub(crate) mod net {
     use alloc::sync::Arc;
     // OWNER: 本 fixture 内所有 socket 测试共用的串行锁。这些测试都会重置同一套进程级全局状态
     // （namespace::boot、initialize_net、packet/inet registry）；若每个测试模块各持私有锁，模块
@@ -207,7 +195,7 @@ pub(crate) mod socket {
     pub(crate) mod inet {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tools/kernel-view/socket/inet/inet/inet.rs"
+            "/../../tools/kernel-view/net/inet/inet/inet.rs"
         ));
         // fixture composition的显式initial入口，不存在于production IO/deferred代码。
         fn initial_stack() -> Option<&'static NetworkStackOwner> {
@@ -272,7 +260,7 @@ pub(crate) mod socket {
                 InetProtocol::Tcp,
                 Pipe::notification_pair().unwrap(),
                 Arc::new(SocketTimeouts::new()),
-                crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+                crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
             )
             .unwrap();
             listener.bind(wire_inputs::address(43010)).unwrap();
@@ -321,7 +309,7 @@ pub(crate) mod socket {
                         InetProtocol::Tcp,
                         Pipe::notification_pair().unwrap(),
                         Arc::new(SocketTimeouts::new()),
-                        crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+                        crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
                     )
                     .unwrap(),
                 );
@@ -360,7 +348,7 @@ pub(crate) mod socket {
                 InetProtocol::Udp,
                 Pipe::notification_pair().unwrap(),
                 Arc::new(SocketTimeouts::new()),
-                crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+                crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
             )
             .unwrap();
             datagram.bind(wire_inputs::address(43110)).unwrap();
@@ -413,7 +401,7 @@ pub(crate) mod socket {
             initial_stack().unwrap().lock().unwrap().poll();
             let endpoint = super::kobject::KobjectSocket::new(
                 Pipe::notification_pair().unwrap(),
-                crate::socket::SocketMemory::try_new(crate::socket::initial_net()).unwrap(),
+                crate::net::SocketMemory::try_new(crate::net::initial_net()).unwrap(),
             )
             .unwrap();
             let address = super::NetlinkAddress {
@@ -774,4 +762,27 @@ pub(crate) mod socket {
     }
 }
 
-pub(crate) use socket::inet::lifecycle_benchmark;
+pub(crate) use net::inet::lifecycle_benchmark;
+
+#[path = "."]
+pub(crate) mod execution {
+pub(crate) mod deferred {
+    pub(crate) struct DeferredWork;
+    impl DeferredWork { pub(crate) const NETWORK: Self = Self; }
+    pub(crate) fn raise(_: DeferredWork) {
+        crate::devices::model::network::POLL_REQUESTS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+pub(crate) mod timer {
+    pub(crate) const SCHEDULER_TICK_NS: u64 = 10_000_000;
+    pub(crate) fn get_time_us() -> u64 {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        START
+            .get_or_init(std::time::Instant::now)
+            .elapsed()
+            .as_micros() as u64
+    }
+}
+#[path = "sync.rs"]
+pub(crate) mod sync;
+}

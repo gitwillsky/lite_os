@@ -129,15 +129,22 @@ fn module_owner(relative: &Path, source_root: &str) -> String {
     let inside = relative
         .strip_prefix(source_root)
         .expect("source path must be below its source root");
-    // 目录结构就是 module 路径：owner 是 `<source_root>/` 下第一级目录或文件名。
-    let first = inside
+    let segments: Vec<String> = inside
         .components()
-        .next()
-        .expect("Rust source path is not empty")
-        .as_os_str()
-        .to_string_lossy()
-        .into_owned();
-    first.strip_suffix(".rs").unwrap_or(&first).to_owned()
+        .map(|component| {
+            component
+                .as_os_str()
+                .to_string_lossy()
+                .trim_end_matches(".rs")
+                .to_owned()
+        })
+        .collect();
+    if source_root == "kernel/src" {
+        return super::module_layout::namespace_owner(&segments)
+            .map(str::to_owned)
+            .unwrap_or_else(|| segments[0].clone());
+    }
+    segments[0].clone()
 }
 
 #[cfg(test)]

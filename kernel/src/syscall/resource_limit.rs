@@ -1,4 +1,6 @@
-use crate::task::{ResourceLimit, ResourceLimitError, current_task, process_resource_limit};
+use crate::execution::task::{
+    ResourceLimit, ResourceLimitError, current_task, process_resource_limit,
+};
 
 use super::errno;
 

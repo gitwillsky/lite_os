@@ -2,12 +2,12 @@
 
 ## 当前设计
 
-- `platform` 发现并装配具体 adapter；`drivers` 只公开 block、network、display、input、PCM output、
-  entropy、named byte-stream port 与 interrupt 等通用 seam。`drivers::registry` 为每个设备类保存一个
+- `platform` 提供设备发现事实，`main` 装配具体 adapter；`devices::model` 提供 network、display、input、PCM output、
+  entropy 与 named byte-stream port 等设备类接口，块语义属于 `devices::block`，硬件实现属于 `drivers`。`devices::model::registry` 为每个设备类保存一个
   按发现顺序编号、只追加的多实例注册表，注册只接受 trait 对象；选择实例是消费领域的策略：根文件
-  系统、IPv4/AF_PACKET、DRM、ALSA、SPICE port 与 entropy 当前绑定 index 0，evdev 发布全部 input。
+  系统、IPv4/AF_PACKET、DRM、SPICE port 与 entropy 当前绑定 index 0；ALSA 发布全部 PCM output，evdev 发布全部 input。
 - VirtIO queue 与 DMA payload 由各 adapter 拥有；block/RNG 的 request slot、descriptor identity、
-  lost-wake handshake 与 capacity wait 由 `drivers::io_completion` 统一拥有。hardirq 共用
+  lost-wake handshake 与 capacity wait 由 `devices::model::io_completion` 统一拥有。hardirq 共用
   transport-error latch，只确认 MMIO 并发布 `DriverIo` deferred bit，不进入 ordinary adapter lock；使用该
   vector 的 adapter 构造成功时自报为 `CompletionSource`，completion 在统一
   user-return/idle safe point 消费；VirtIO-net RX 由单一 slot lifecycle owner 原子
@@ -24,9 +24,9 @@
 - VirtIO Console adapter 只协商 modern multiport，固定选择 `com.redhat.spice.0`；同一个 transport-neutral adapter 在 UTM 产品路径消费 modern VirtIO PCI common/notify/ISR capabilities，在 headless gate 消费 modern MMIO，绝不复制 queue 或 port state。它拥有 control
   RX/TX、exact-name 命中后按 port id 选择的唯一 data RX/TX pair、named-port open state 与 64 KiB
   byte ring。UTM 可以先枚举 `org.qemu.guest_agent.0`，因此 data queue 不得固定为 port 1 的 4/5；
-  port 0 使用 0/1，port N 使用 `2N+2`/`2N+3`。hardirq 只 ack 并发布 `virtio_port` 注册绑定的
-  deferred vector；safe point 验证 completion、repost RX、通知 queue 并经 `virtio_port` domain
-  唤醒 task。`virtio_port` 经字符设备注册表把该 stream 发布为
+  port 0 使用 0/1，port N 使用 `2N+2`/`2N+3`。hardirq 只 ack 并发布 `devices::virtio_port` 注册绑定的
+  deferred vector；safe point 验证 completion、repost RX、通知 queue 并经 `devices::virtio_port` domain
+  唤醒 task。`devices::virtio_port` 经字符设备注册表把该 stream 发布为
   `/dev/virtio-ports/com.redhat.spice.0`。
 - GPU runtime completion 由独立 sequence owner 验证 fence/response 与 stage 顺序，阶段分支只选择
   下一条 `GpuCommand`；统一 command seam 负责 wire encoding、长度与 queue publication。
@@ -67,9 +67,9 @@
 - input owner 组合 device state、每-open evdev queue、grab、clock 与 revoke，并经 `input/eventN` 设备文件拥有 evdev UAPI；VirtIO input adapter 只提供 raw event/config。
 - 字符设备采用 Linux cdev/devtmpfs 模型：设备子系统向 `fs::chardev`/`fs::devnode` 注册 minor 区间 driver 与 devfs 节点，
   open 按 inode 设备号找到 driver，返回的 `DeviceFile` 拥有读写、poll、ioctl 与 mmap；fs、devfs 与 syscall
-  不认识具体设备。mem（`null`/`zero`/`random`/`urandom`/`kmsg`）与 TTY（`tty`/`console`/`ptmx`/`pts/N`）
-  分别由 fs 与 `tty` 自身注册；pts 设备号为 Linux `(136, index)`。
-- 系统 console Terminal 是 `tty` 持有的单例，`/dev/console`、init 的 fd 0/1/2 与 deferred UART 输入共享它；
+  不认识具体设备。mem（`null`/`zero`/`random`/`urandom`/`kmsg`）与 TTY（`devices::tty`/`console`/`ptmx`/`pts/N`）
+  分别由 fs 与 `devices::tty` 自身注册；pts 设备号为 Linux `(136, index)`。
+- 系统 console Terminal 是 `devices::tty` 持有的单例，`/dev/console`、init 的 fd 0/1/2 与 deferred UART 输入共享它；
   `/dev/tty` 按调用者 controlling terminal 的设备号重开底层设备。PTY registry、pair 与 Terminal
   session/foreground/winsize 各守自己的 seam；job control 只经 task 安装的 `JobControl`；控制面使用标准
   PTY、termios、ANSI/ECMA-48。

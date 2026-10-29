@@ -36,11 +36,11 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
 }
 
 fn measure(sources: &[SourceFile]) -> Result<DmaSubmissionCost, String> {
-    let net = source(sources, "kernel/src/virtio/net.rs")?;
-    let input = source(sources, "kernel/src/virtio/input.rs")?;
-    let gpu = source(sources, "kernel/src/virtio/gpu.rs")?;
-    let damage = source(sources, "kernel/src/virtio/gpu/damage.rs")?;
-    let block = source(sources, "kernel/src/virtio/blk.rs")?;
+    let net = source(sources, "kernel/src/drivers/virtio/net.rs")?;
+    let input = source(sources, "kernel/src/drivers/virtio/input.rs")?;
+    let gpu = source(sources, "kernel/src/drivers/virtio/gpu.rs")?;
+    let damage = source(sources, "kernel/src/drivers/virtio/gpu/damage.rs")?;
+    let block = source(sources, "kernel/src/drivers/virtio/blk.rs")?;
     let net_rx_locks = runtime_translation(method_text(net, "repost")?);
     let net_tx_locks = runtime_translation(method_text(net, "submit_transmit")?);
     let input_locks = runtime_translation(method_text(input, "receive_event")?);
@@ -92,7 +92,7 @@ fn runtime_translation(method: String) -> usize {
 }
 
 fn cached_dma_only(sources: &[SourceFile]) -> bool {
-    source(sources, "kernel/src/virtio/queue.rs").is_ok_and(|queue| {
+    source(sources, "kernel/src/drivers/virtio/queue.rs").is_ok_and(|queue| {
         queue.text.contains("DmaBuffer")
             && queue.text.contains("add_dma")
             && !queue.text.contains("fn add_buffer")
@@ -101,17 +101,18 @@ fn cached_dma_only(sources: &[SourceFile]) -> bool {
 }
 
 fn reset_before_dma_drop(sources: &[SourceFile]) -> bool {
-    let transport_waits = source(sources, "kernel/src/virtio/transport.rs").is_ok_and(|source| {
-        method_text(source, "reset")
-            .is_ok_and(|method| method.contains("while self . get_status () ? != 0"))
-    });
+    let transport_waits =
+        source(sources, "kernel/src/drivers/virtio/transport.rs").is_ok_and(|source| {
+            method_text(source, "reset")
+                .is_ok_and(|method| method.contains("while self . get_status () ? != 0"))
+        });
     transport_waits
         && [
-            ("kernel/src/virtio/net.rs", "VirtIONetworkDevice"),
-            ("kernel/src/virtio/input.rs", "VirtIOInputDevice"),
-            ("kernel/src/virtio/gpu.rs", "VirtIOGpuDevice"),
-            ("kernel/src/virtio/blk.rs", "VirtIOBlockDevice"),
-            ("kernel/src/virtio/rng.rs", "VirtIORngDevice"),
+            ("kernel/src/drivers/virtio/net.rs", "VirtIONetworkDevice"),
+            ("kernel/src/drivers/virtio/input.rs", "VirtIOInputDevice"),
+            ("kernel/src/drivers/virtio/gpu.rs", "VirtIOGpuDevice"),
+            ("kernel/src/drivers/virtio/blk.rs", "VirtIOBlockDevice"),
+            ("kernel/src/drivers/virtio/rng.rs", "VirtIORngDevice"),
         ]
         .into_iter()
         .all(|(path, owner)| {

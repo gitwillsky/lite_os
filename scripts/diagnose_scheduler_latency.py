@@ -28,7 +28,7 @@ from pathlib import Path
 from build_target import acceleration_from_environment, target_from_environment
 from ext4_image import recover_ext4_journal, run_debugfs
 from qemu_gate import SHELL_PROMPT, ShellCommand, boot
-from verify_musl import cached_musl_paths, compile_static_guest_program, find_compiler
+from toolchain.musl import cached_musl_paths, compile_static_guest_program, find_compiler
 
 ROOT = Path(__file__).resolve().parent.parent
 SOURCE = ROOT / "scripts/fixtures/diagnostics/scheduler-latency.c"

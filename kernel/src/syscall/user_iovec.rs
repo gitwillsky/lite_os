@@ -6,7 +6,7 @@ mod input_staging;
 pub(super) use input_staging::UserInputStaging;
 
 #[cfg(not(test))]
-use crate::task::TaskControlBlock;
+use crate::execution::task::TaskControlBlock;
 
 /// Linux limits one vector I/O operation to 1024 iovec entries.
 pub(super) const IOV_MAX: usize = 1024;

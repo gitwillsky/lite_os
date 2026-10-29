@@ -103,11 +103,11 @@ pub(crate) mod chardev {
     ) -> Result<(), DeviceError> {
         if let Some(pipe) = file.prepare_wait(events) {
             match pipe.wait(super::ipc::PipeWaitCondition::Readable, None) {
-                crate::sync::WaitResult::Woken => {}
-                crate::sync::WaitResult::Interrupted => {
+                crate::execution::sync::WaitResult::Woken => {}
+                crate::execution::sync::WaitResult::Interrupted => {
                     return Err(DeviceError::Errno(syscall_abi::errno::EINTR));
                 }
-                crate::sync::WaitResult::OutOfMemory => {
+                crate::execution::sync::WaitResult::OutOfMemory => {
                     return Err(DeviceError::Errno(syscall_abi::errno::ENOMEM));
                 }
                 other => panic!("unexpected host notification wait: {other:?}"),

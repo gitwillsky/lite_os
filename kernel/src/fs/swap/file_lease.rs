@@ -1,5 +1,5 @@
 //! Filesystem-owned swapfile freeze and immutable allocated extent contract.
-use crate::{block::BlockDevice, fs::FileSystemError};
+use crate::{devices::block::BlockDevice, fs::FileSystemError};
 use alloc::{sync::Arc, vec::Vec};
 
 /// Allocated 4KiB page range; current ext4 profile has an exact logical-to-swap-page correspondence.

@@ -8,8 +8,8 @@ mod allocation_failure;
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../../../kernel/src/socket"]
-mod socket {
+#[path = "../../../kernel/src/net"]
+mod net {
     mod inet {
         // 未安装protocol的类型边界：本binary只覆盖实际目录和namespace lifetime。
         pub(crate) struct NetworkStackOwner;
@@ -34,16 +34,16 @@ mod socket {
 #[test]
 fn actual_directory_is_bounded_fair_nonowning_and_allocation_failure_refunds() {
     namespace::boot();
-    socket::initialize_net().unwrap();
+    net::initialize_net().unwrap();
     let user = namespace::initial_user();
     let mut domains = alloc::vec::Vec::new();
     for _ in 0..24 {
-        domains.push(socket::NetNamespace::create(user.clone(), 89120).unwrap());
+        domains.push(net::NetNamespace::create(user.clone(), 89120).unwrap());
     }
-    let (first, backlog) = socket::batch(false);
+    let (first, backlog) = net::batch(false);
     assert_eq!(first.len(), 8);
     assert!(backlog);
-    let (timer, timer_backlog) = socket::batch(true);
+    let (timer, timer_backlog) = net::batch(true);
     assert!(timer_backlog);
     assert_eq!(
         first
@@ -64,7 +64,7 @@ fn actual_directory_is_bounded_fair_nonowning_and_allocation_failure_refunds() {
     assert!(held.upgrade().is_none(), "目录Weak不能保活实际NET");
     let mut observed = alloc::collections::BTreeSet::new();
     loop {
-        let (batch, more) = socket::batch(false);
+        let (batch, more) = net::batch(false);
         assert!(batch.len() <= 8);
         for net in batch {
             assert!(observed.insert(net.id()), "一次cursor遍历不能重复同一域");
@@ -74,18 +74,18 @@ fn actual_directory_is_bounded_fair_nonowning_and_allocation_failure_refunds() {
         }
     }
     assert_eq!(observed.len(), 17);
-    let (restarted, more) = socket::batch(false);
+    let (restarted, more) = net::batch(false);
     assert!(more);
-    assert_eq!(restarted[0].id(), socket::initial_net().id());
+    assert_eq!(restarted[0].id(), net::initial_net().id());
     drop(restarted);
     drop(domains);
     // 旧cursor域全退休后回到首项；不用重建目录或保留强引用。
-    let (empty_tail, more) = socket::batch(false);
+    let (empty_tail, more) = net::batch(false);
     assert!(!more);
     drop(empty_tail);
-    let (initial, more) = socket::batch(false);
+    let (initial, more) = net::batch(false);
     assert_eq!(initial.len(), 1);
-    assert_eq!(initial[0].id(), socket::initial_net().id());
+    assert_eq!(initial[0].id(), net::initial_net().id());
     assert!(!more);
     drop(initial);
     let root = namespace::root_authority();
@@ -94,26 +94,26 @@ fn actual_directory_is_bounded_fair_nonowning_and_allocation_failure_refunds() {
     user.set_resource_limit(resource, 1, &root).unwrap();
     for boundary in 0..8 {
         allocation_failure::fail_after(boundary);
-        let result = socket::NetNamespace::create(user.clone(), 89121);
+        let result = net::NetNamespace::create(user.clone(), 89121);
         if allocation_failure::was_consumed() {
             assert!(result.is_err());
         }
         drop(result);
-        let net = socket::NetNamespace::create(user.clone(), 89121).unwrap();
+        let net = net::NetNamespace::create(user.clone(), 89121).unwrap();
         assert!(matches!(
-            socket::NetNamespace::create(user.clone(), 89121),
+            net::NetNamespace::create(user.clone(), 89121),
             Err(namespace::NamespaceError::QuotaLimit)
         ));
         drop(net);
     }
     user.set_resource_limit(resource, previous, &root).unwrap();
     let domains: alloc::vec::Vec<_> = (0..16)
-        .map(|_| socket::NetNamespace::create(user.clone(), 89122).unwrap())
+        .map(|_| net::NetNamespace::create(user.clone(), 89122).unwrap())
         .collect();
     // 新增global目录/lock只有deferred观察；实际capture/IO没有追加查找。
     let began = std::time::Instant::now();
     for _ in 0..100_000 {
-        std::hint::black_box(socket::batch(false));
+        std::hint::black_box(net::batch(false));
     }
     eprintln!(
         "NET actual bounded directory diagnostic: {:?} / 100000 batches",

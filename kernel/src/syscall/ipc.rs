@@ -2,9 +2,9 @@
 mod semaphore;
 mod shared_memory;
 use crate::{
+    execution::sync::WaitResult,
+    execution::task::current_task,
     ipc::{IpcError, MessageLimit, MessageQueueWait, MessageReceive, PreparedMessage},
-    sync::WaitResult,
-    task::current_task,
 };
 use alloc::vec::Vec;
 pub(super) use semaphore::{sys_semctl, sys_semget, sys_semop, sys_semtimedop};
@@ -34,7 +34,7 @@ pub(super) fn sys_msgget(key: i32, flags: u32) -> isize {
             key,
             flags,
             &task.ipc_access(),
-            crate::timer::get_realtime_ns() / 1_000_000_000,
+            crate::execution::timer::get_realtime_ns() / 1_000_000_000,
         )
         .map_or_else(ipc_error, |id| id as isize)
 }
@@ -76,7 +76,7 @@ pub(super) fn sys_msgsnd(id: i32, address: usize, size: usize, flags: u32) -> is
     };
     let access = task.ipc_access();
     loop {
-        let now = crate::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
         match queue.send(
             &mut message,
             &access,
@@ -153,7 +153,7 @@ pub(super) fn sys_msgrcv(id: i32, address: usize, size: usize, kind: i64, flags:
     };
     let access = task.ipc_access();
     let message = loop {
-        let now = crate::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
         match queue.receive(&request, &access, task.tgid_identity().clone(), now, None) {
             Ok(Some(message)) => break message,
             Err(error) => return ipc_error(error),
@@ -236,7 +236,7 @@ pub(super) fn sys_msgctl(id: i32, command: i32, address: usize) -> isize {
                     mode,
                     limit,
                     &access,
-                    crate::timer::get_realtime_ns() / 1_000_000_000,
+                    crate::execution::timer::get_realtime_ns() / 1_000_000_000,
                 )
                 .map_or_else(ipc_error, |()| 0)
         }

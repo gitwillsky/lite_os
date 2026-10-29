@@ -48,11 +48,11 @@ fn function_body<'a>(source: &'a str, signature: &str) -> Option<&'a str> {
 }
 
 fn measure() -> HandoffCost {
-    let process_table = read("kernel/src/task/process_table.rs");
-    let context_switch = read("kernel/src/task/process_table/context_switch.rs");
-    let handoff = read("kernel/src/task/processor/handoff.rs");
-    let sync = read("kernel/src/sync/mod.rs");
-    let task = read("kernel/src/task/mod.rs");
+    let process_table = read("kernel/src/execution/task/process_table.rs");
+    let context_switch = read("kernel/src/execution/task/process_table/context_switch.rs");
+    let handoff = read("kernel/src/execution/task/processor/handoff.rs");
+    let sync = read("kernel/src/execution/sync/mod.rs");
+    let task = read("kernel/src/execution/task/mod.rs");
     let legacy_deschedule =
         function_body(&context_switch, "pub(super) fn schedule_with_task_context(").is_some_and(
             |body| body.contains("switch_kernel_context(task_cx_ptr, idle_task_cx_ptr)"),
@@ -100,7 +100,7 @@ fn measure() -> HandoffCost {
             kernel_context_switches: HANDOFFS,
             idle_entries_with_runnable_successor: 0,
             logical_cpu_restore_guards: usize::from(
-                sync.contains("cpu: crate::cpu::CpuId")
+                sync.contains("cpu: crate::execution::cpu::CpuId")
                     && irq_transfer_drop.is_some_and(|body| {
                         matches!(
                             (

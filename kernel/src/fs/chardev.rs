@@ -14,9 +14,9 @@ use super::{AccessIdentity, DeviceNumber, FileSystemError};
 /// fdinfo 所属 proc mount 的 PID 视图，由文件系统传入；设备不反查调用者或持有第二份视图。
 pub(crate) use crate::namespace::PidNamespace as FileInformationView;
 use crate::{
+    execution::sync::WaitResult,
     ipc::{Pipe, PipeDirection, PipeWaitCondition},
     memory::DeviceMappingSource,
-    sync::WaitResult,
 };
 
 /// 设备文件操作的失败；errno 为 Linux 正值编号，由 syscall 取负返回。

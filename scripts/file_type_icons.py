@@ -12,7 +12,7 @@ DIRECTORY = ROOT / "assets/file-icons"
 
 def userland():
     """返回受 manifest 管理的补充 MIME 图标；摘要不符或路径越界时拒绝发布。"""
-    from verify_busybox import UserlandArtifact
+    from userland import UserlandArtifact
     manifest = json.loads((DIRECTORY / "manifest.json").read_text())
     result = []
     for relative, metadata in manifest["files"].items():

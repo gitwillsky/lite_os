@@ -36,7 +36,7 @@ def extract_closure(packages, seeds: dict[str, str], output: Path, *, label: str
     Raises:
         RuntimeError: 路径重复、链接无效、ELF 架构不符或某个 DT_NEEDED 没有任何 APK 提供。
     """
-    from verify_artifacts import llvm_tool
+    from toolchain.kernel_image import llvm_tool
     readelf = llvm_tool("llvm-readelf")
     data = dict(data or {})
     trees = trees or {}

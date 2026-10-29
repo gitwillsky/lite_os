@@ -1,6 +1,6 @@
 //! `root=PARTUUID=` 与 UUID 用到的身份文本。
 
-use crate::block::identity::{PartUuid, format_gpt_guid, format_uuid};
+use crate::devices::block::identity::{PartUuid, format_gpt_guid, format_uuid};
 use std::vec::Vec;
 
 fn text(rendered: impl AsRef<[u8]>) -> Vec<u8> {

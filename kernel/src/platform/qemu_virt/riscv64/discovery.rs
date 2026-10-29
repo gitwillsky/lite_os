@@ -4,7 +4,7 @@ use dtb_walker::{Dtb, HeaderError};
 use spin::Once;
 
 use super::device_tree::PlatformInfo;
-use crate::cpu::HardwareCpuId;
+use crate::execution::cpu::HardwareCpuId;
 
 // OWNER: platform discovery publishes the immutable machine description for the kernel lifetime.
 static PLATFORM_INFO: Once<PlatformInfo> = Once::new();

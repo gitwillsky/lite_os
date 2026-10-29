@@ -33,30 +33,6 @@ unsafe impl GlobalAlloc for FaultAllocator {
 #[global_allocator]
 static ALLOCATOR: FaultAllocator = FaultAllocator;
 
-#[path = "../../../kernel/src/sync"]
-mod sync {
-    mod wait_completion;
-    pub(crate) use wait_completion::WaitCompletion;
-    mod task_event;
-    mod task_wait;
-    pub(crate) use task_event::TaskEvent;
-    pub(crate) use task_wait::{WaitResult, task_interrupted};
-    pub(crate) struct TaskMutexWaitPreparation;
-    pub(crate) type TaskMutexGuard<'a, T> = std::sync::MutexGuard<'a, T>;
-    pub(crate) struct TaskMutex<T>(std::sync::Mutex<T>);
-    impl<T> TaskMutex<T> {
-        pub(crate) fn new(value: T) -> Self {
-            Self(std::sync::Mutex::new(value))
-        }
-        pub(crate) fn try_lock(&self) -> Option<TaskMutexGuard<'_, T>> {
-            self.0.try_lock().ok()
-        }
-        pub(crate) fn lock(&self) -> Result<std::sync::MutexGuard<'_, T>, ()> {
-            self.0.lock().map_err(|_| ())
-        }
-    }
-}
-
 #[path = "../../../kernel/src/fallible_tree/mod.rs"]
 mod fallible_tree;
 
@@ -547,6 +523,33 @@ mod memory {
         fn full_read_preparation_keeps_madv_free_pages_during_self_reclaim() {
             two_page_copy(true, false);
             two_page_copy(false, false);
+        }
+    }
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../../../kernel/src/execution/sync"]
+    pub(crate) mod sync {
+        mod wait_completion;
+        pub(crate) use wait_completion::WaitCompletion;
+        mod task_event;
+        mod task_wait;
+        pub(crate) use task_event::TaskEvent;
+        pub(crate) use task_wait::{WaitResult, task_interrupted};
+        pub(crate) struct TaskMutexWaitPreparation;
+        pub(crate) type TaskMutexGuard<'a, T> = std::sync::MutexGuard<'a, T>;
+        pub(crate) struct TaskMutex<T>(std::sync::Mutex<T>);
+        impl<T> TaskMutex<T> {
+            pub(crate) fn new(value: T) -> Self {
+                Self(std::sync::Mutex::new(value))
+            }
+            pub(crate) fn try_lock(&self) -> Option<TaskMutexGuard<'_, T>> {
+                self.0.try_lock().ok()
+            }
+            pub(crate) fn lock(&self) -> Result<std::sync::MutexGuard<'_, T>, ()> {
+                self.0.lock().map_err(|_| ())
+            }
         }
     }
 }

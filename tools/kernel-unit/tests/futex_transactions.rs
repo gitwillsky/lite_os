@@ -7,9 +7,9 @@ mod allocation_failure;
 include!("../src/futex_owner_fixture.rs");
 #[path = "../src/interruptible_event_target.rs"]
 mod scheduler_target;
+use crate::execution::task::process_table as owner;
 use core::sync::atomic::{AtomicU32, Ordering};
 use memory::{FutexKey, UserAtomicU32Op};
-use task::process_table as owner;
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn key(address: usize) -> FutexKey {
     FutexKey::Private {
@@ -67,7 +67,7 @@ fn actual_rmw_uses_signed_operands_wrapping_add_and_old_signed_comparison() {
     );
     assert_eq!(
         wake_op::WakeOperation::decode(encoded(1, 1, 15, 0)).compare(0),
-        Err(task::FutexWaitError::Unsupported)
+        Err(crate::execution::task::FutexWaitError::Unsupported)
     );
 }
 #[test]
@@ -86,7 +86,10 @@ fn requeue_preserves_actual_bitset_deadline_and_same_key_count_without_allocatio
     assert_eq!(owner::wake(target, 1, 1), 0);
     assert!(!owner::expire(99));
     assert!(owner::expire(100));
-    assert_eq!(pending.arm(), Err(sync::WaitResult::TimedOut));
+    assert_eq!(
+        pending.arm(),
+        Err(crate::execution::sync::WaitResult::TimedOut)
+    );
     owner::assert_empty();
 }
 #[test]
@@ -103,8 +106,8 @@ fn actual_two_source_wake_consumes_each_wait_once_and_handles_identical_keys() {
             assert_eq!(wake(source, 1, u32::MAX), 1);
             assert_eq!(wake(target, 1, u32::MAX), 1);
         });
-        assert_eq!(first.arm(), Err(sync::WaitResult::Woken));
-        assert_eq!(second.arm(), Err(sync::WaitResult::Woken));
+        assert_eq!(first.arm(), Err(crate::execution::sync::WaitResult::Woken));
+        assert_eq!(second.arm(), Err(crate::execution::sync::WaitResult::Woken));
         assert_eq!(owner::wake(source, 2, u32::MAX), 0);
     }
 }

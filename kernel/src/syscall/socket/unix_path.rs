@@ -1,10 +1,10 @@
 use alloc::sync::Arc;
 
 use crate::{
+    execution::task::{TaskControlBlock, current_task},
     fs::{FileSystemError, Inode, InodeMetadata, InodeType, LookupOrigin, vfs},
-    socket::{Socket, UnixAddress, UnixPathIdentity},
+    net::{Socket, UnixAddress, UnixPathIdentity},
     syscall::errno,
-    task::{TaskControlBlock, current_task},
 };
 
 fn start(task: &TaskControlBlock) -> LookupOrigin {

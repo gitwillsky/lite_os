@@ -1,4 +1,4 @@
-use crate::cmdline::{CommandLineError, parse};
+use crate::boot::cmdline::{CommandLineError, parse};
 
 fn strings(entries: &[&str]) -> Vec<Vec<u8>> {
     entries

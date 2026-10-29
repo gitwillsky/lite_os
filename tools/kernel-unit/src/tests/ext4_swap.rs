@@ -1,7 +1,7 @@
 //! Actual ext4 inode freeze, storage mutation, journal drain, extent export and lease retirement.
 use super::*;
 use crate::{
-    block::BLOCK_SIZE,
+    devices::block::BLOCK_SIZE,
     ext4_cost_tests::{COST_TEST_LOCK, mounted},
 };
 use std::sync::atomic::Ordering;
@@ -199,7 +199,7 @@ fn production_swap_extent_and_writer_retirement_cpu_cost() {
     }
     // Actual TaskEvent.signal no-waiter path used by normal last writer retirement;
     // scheduler wake/contended waiter cost is outside this diagnostic.
-    let event = crate::sync::TaskEvent::new();
+    let event = crate::execution::sync::TaskEvent::new();
     for _ in 0..COUNT {
         event.signal();
     }

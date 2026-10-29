@@ -1,8 +1,9 @@
 use std::{fs, path::Path};
 
-const QUEUE_SOURCE: &str = "kernel/src/task/process_table/timer_queue.rs";
-const TRANSACTION_SOURCE: &str = "kernel/src/task/process_table/timer_queue/transaction.rs";
-const LOOP_SOURCE: &str = "kernel/src/task/process_table/timer_queue/transaction_loop.rs";
+const QUEUE_SOURCE: &str = "kernel/src/execution/task/process_table/timer_queue.rs";
+const TRANSACTION_SOURCE: &str =
+    "kernel/src/execution/task/process_table/timer_queue/transaction.rs";
+const LOOP_SOURCE: &str = "kernel/src/execution/task/process_table/timer_queue/transaction_loop.rs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct TimerTransactionCost {
@@ -73,15 +74,15 @@ pub(super) fn measure(root: &Path) -> Result<TimerTransactionCost, String> {
     }
     let posix_schedule = read(
         root,
-        "kernel/src/task/process_table/timer_queue/posix_schedule.rs",
+        "kernel/src/execution/task/process_table/timer_queue/posix_schedule.rs",
     )?;
     let timer_file = read(
         root,
-        "kernel/src/task/process_table/timer_queue/timer_file.rs",
+        "kernel/src/execution/task/process_table/timer_queue/timer_file.rs",
     )?;
     let kernel_wait = read(
         root,
-        "kernel/src/task/process_table/timer_queue/kernel_wait.rs",
+        "kernel/src/execution/task/process_table/timer_queue/kernel_wait.rs",
     )?;
     for (path, body) in [
         (QUEUE_SOURCE, queue.as_str()),

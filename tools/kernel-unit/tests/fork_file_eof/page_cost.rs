@@ -126,7 +126,7 @@ fn canonical_alias_revoke_and_unuse_cpu_cost() {
             "canonical revoke/write/read/unuse with {aliases} actual MM aliases: {:.2} ns/round (host IO/fence/TaskMutex seams)",
             samples[2].as_nanos() as f64 / 100.0
         );
-        let mut wait = crate::sync::TaskMutexWaitPreparation;
+        let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
         swap::deactivate(
             SharedFileId {
                 filesystem: 999,

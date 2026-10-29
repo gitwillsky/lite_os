@@ -38,7 +38,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let opened = source(sources, "kernel/src/fs/procfs/opened_operations.rs");
     let node = source(sources, "kernel/src/fs/procfs/node.rs");
     let identity = source(sources, "kernel/src/fs/permission.rs");
-    let credentials = source(sources, "kernel/src/task/model/credentials.rs");
+    let credentials = source(sources, "kernel/src/execution/task/model/credentials.rs");
     let proc_tokens: String = proc.split_whitespace().collect();
     let opened_tokens: String = opened.split_whitespace().collect();
     let node_tokens: String = node.split_whitespace().collect();

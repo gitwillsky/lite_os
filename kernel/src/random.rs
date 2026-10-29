@@ -50,7 +50,7 @@ impl<const CAPACITY: usize> EntropyBatch<CAPACITY> {
     /// device 未注册、失败或 completion 非法时返回 `DeviceUnavailable`。
     pub(crate) fn fill(&mut self, length: usize) -> Result<&[u8], RandomError> {
         assert!(length <= CAPACITY, "entropy batch length exceeds capacity");
-        crate::drivers::fill_entropy(&mut self.bytes[..length])
+        crate::devices::model::fill_entropy(&mut self.bytes[..length])
             .map_err(|_| RandomError::DeviceUnavailable)?;
         // SAFETY: `fill_entropy` returns Ok only after writing every element of this exact prefix.
         // Missing that contract would expose uninitialized bytes to user memory and be UB.

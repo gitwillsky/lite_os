@@ -73,7 +73,7 @@ fn repeated_registration_cannot_balance_a_missing_weak_dead_mm_reference() {
             .unwrap()
             .is_installed()
     );
-    let mut wait = crate::sync::TaskMutexWaitPreparation;
+    let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
     swap::deactivate(
         SharedFileId {
             filesystem: 999,
@@ -170,7 +170,7 @@ fn one_alias_fault_accounts_its_own_rss_and_discarding_stale_sibling_unpins_swap
         assert_eq!(result.scanned_pages(), 1);
     }
     assert_eq!(swap::statistics(), (7, 7));
-    let mut wait = crate::sync::TaskMutexWaitPreparation;
+    let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
     swap::deactivate(
         SharedFileId {
             filesystem: 999,

@@ -3,7 +3,7 @@ use super::{OpenFileDescription, OpenFileKind, PreparedFileDescription};
 use crate::{
     fs::{AccessIdentity, FileSystemError, OpenedFile},
     ipc::PipeEnd,
-    socket::{PreparedSocket, Socket, SocketError, SocketRequest, UnixPassedFile},
+    net::{PreparedSocket, Socket, SocketError, SocketRequest, UnixPassedFile},
 };
 use alloc::sync::Arc;
 
@@ -19,7 +19,7 @@ impl PreparedSocketDescription {
     pub(crate) fn try_new(
         flags: u32,
         creator: &AccessIdentity,
-        namespace: Arc<crate::socket::NetNamespace>,
+        namespace: Arc<crate::net::NetNamespace>,
     ) -> Result<Self, FileSystemError> {
         let description = PreparedFileDescription::try_new()?;
         let socket =

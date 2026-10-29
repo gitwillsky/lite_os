@@ -61,12 +61,13 @@ impl PreparedPipeEnd {
                     PipeDirection::Read => {
                         state.readers += 1;
                         state.reader_opens += 1;
-                        state.write_generation = crate::sync::next_readiness_generation();
+                        state.write_generation =
+                            crate::execution::sync::next_readiness_generation();
                     }
                     PipeDirection::Write => {
                         state.writers += 1;
                         state.writer_opens += 1;
-                        state.read_generation = crate::sync::next_readiness_generation();
+                        state.read_generation = crate::execution::sync::next_readiness_generation();
                     }
                 }
                 *end.registered.get_mut() = true;

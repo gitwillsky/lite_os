@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 
 use super::FileSystemError;
-use crate::sync::IrqMutex;
+use crate::execution::sync::IrqMutex;
 
 #[derive(Clone, Copy)]
 struct Quota {

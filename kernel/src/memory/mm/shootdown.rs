@@ -231,7 +231,7 @@ impl TranslationCommit {
     /// 所有必需 target 完成 fence 后成功；firmware 失败时返回原错误。
     #[cfg(not(test))]
     pub(super) fn synchronize(&mut self) -> Result<(), TranslationSynchronizationError> {
-        let plan = self.plan(crate::cpu::online().iter().count());
+        let plan = self.plan(crate::execution::cpu::online().iter().count());
         let remote_range = match plan.scope {
             FenceScope::None => None,
             FenceScope::Range { start, size } => {
@@ -246,8 +246,8 @@ impl TranslationCommit {
         if let Some((start, size)) = remote_range
             && plan.remote_targets != 0
         {
-            let mut targets = crate::cpu::online() & crate::cpu::possible();
-            targets.remove(crate::cpu::current_id());
+            let mut targets = crate::execution::cpu::online() & crate::execution::cpu::possible();
+            targets.remove(crate::execution::cpu::current_id());
             crate::platform::synchronize_tlb(targets, start, size)
                 .map_err(TranslationSynchronizationError::Translation)?;
         }
@@ -260,8 +260,8 @@ impl TranslationCommit {
                 .checked_mul(PAGE_SIZE)
                 .expect("instruction publication size overflow");
             crate::arch::instruction::publish_range(start, size);
-            let mut targets = crate::cpu::online() & crate::cpu::possible();
-            targets.remove(crate::cpu::current_id());
+            let mut targets = crate::execution::cpu::online() & crate::execution::cpu::possible();
+            targets.remove(crate::execution::cpu::current_id());
             crate::platform::synchronize_instruction_cache(targets)
                 .map_err(TranslationSynchronizationError::Instruction)?;
         }
@@ -358,8 +358,8 @@ pub(super) fn revoke_and_commit<T>(
 pub(super) fn synchronize_address_space_retirement()
 -> Result<(), crate::platform::TlbShootdownError> {
     crate::arch::mmu::flush_local();
-    let mut targets = crate::cpu::online() & crate::cpu::possible();
-    targets.remove(crate::cpu::current_id());
+    let mut targets = crate::execution::cpu::online() & crate::execution::cpu::possible();
+    targets.remove(crate::execution::cpu::current_id());
     crate::platform::synchronize_tlb(targets, 0, 0)
 }
 

@@ -14,18 +14,22 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
 import verify_busybox  # noqa: E402
+from userland import busybox, rust, artifacts, image
+from toolchain import musl
 import openssl_cache  # noqa: E402
 from build_cache import CACHE_MANIFEST  # noqa: E402
 
 
-def reload_busybox(arch: str, accel: str) -> object:
+def reload_busybox(arch: str, accel: str, owner: str = "busybox") -> object:
     with patch.dict(os.environ, {"ARCH": arch, "ACCEL": accel}, clear=True):
-        return importlib.reload(verify_busybox)
+        for module in (musl, busybox, rust, artifacts, image, verify_busybox):
+            importlib.reload(module)
+        return {"busybox": busybox, "rust": rust, "artifacts": artifacts, "gate": verify_busybox}[owner]
 
 
 class BusyBoxRoutingTests(unittest.TestCase):
     def test_probe_binary_change_invalidates_runtime_success_before_cache_lookup(self) -> None:
-        module = reload_busybox("aarch64", "tcg")
+        module = reload_busybox("aarch64", "tcg", "gate")
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             libc = work / "usr/lib/libc.so"
@@ -74,6 +78,7 @@ class BusyBoxRoutingTests(unittest.TestCase):
                         self.assertEqual(module.main(), 0)
                         self.assertNotEqual(previous["inputs"][str(path)], payloads[-1]["inputs"][str(path)])
                         self.assertEqual(previous["qemu"], payloads[-1]["qemu"])
+
 
     def test_openssl_strip_cache_identity_matches_executed_symlink(self) -> None:
         with patch.dict(os.environ, {"ARCH": "aarch64", "ACCEL": "tcg"}, clear=True):
@@ -179,14 +184,14 @@ class BusyBoxRoutingTests(unittest.TestCase):
         self.assertEqual(module.BUSYBOX_ARCH, "arm64")
         self.assertEqual(module.BUSYBOX_TARGET_CFLAGS, "-march=armv8-a")
         self.assertEqual(module.ELF_MACHINE, "AArch64")
-        self.assertEqual(module.RUST_USER_TARGET, "aarch64-unknown-linux-musl")
+        self.assertEqual(musl.RUST_USER_TARGET, "aarch64-unknown-linux-musl")
         self.assertIn("ARCH=aarch64", module.BUSYBOX_CC)
         self.assertIn("ARCH=aarch64", module.BUSYBOX_LD)
         self.assertNotIn("ARCH=arm64", module.BUSYBOX_CC)
         self.assertEqual(module.TARGET.linux_triple, "aarch64-linux-musl")
         self.assertEqual(module.TARGET.musl_loader, "/lib/ld-musl-aarch64.so.1")
         self.assertEqual(
-            module.target_runtime_artifacts(),
+            image.target_runtime_artifacts(),
             (
                 module.ROOT
                 / "target/aarch64-unknown-none-softfloat/release/kernel",
@@ -195,7 +200,7 @@ class BusyBoxRoutingTests(unittest.TestCase):
 
 
     def test_login_path_exposes_npm_global_commands(self) -> None:
-        module = reload_busybox("aarch64", "hvf")
+        module = reload_busybox("aarch64", "hvf", "artifacts")
         profile = (module.ROOT / "user/base/profile").read_text().strip()
         with patch.object(module, "_build_rust_user_targets", side_effect=lambda _musl, targets: {
             target: module.ROOT / "user/base/profile" for target in targets
@@ -211,6 +216,7 @@ class BusyBoxRoutingTests(unittest.TestCase):
             artifacts,
         )
 
+
     def test_package_script_shell_registry_applets_are_enabled(self) -> None:
         module = reload_busybox("aarch64", "hvf")
         config = module.CONFIG_FRAGMENT.read_text().splitlines()
@@ -225,12 +231,12 @@ class BusyBoxRoutingTests(unittest.TestCase):
         self.assertEqual(module.BUSYBOX_ARCH, "riscv")
         self.assertEqual(module.BUSYBOX_TARGET_CFLAGS, "-march=rv64gc -mabi=lp64d")
         self.assertEqual(module.ELF_MACHINE, "RISC-V")
-        self.assertEqual(module.RUST_USER_TARGET, "riscv64gc-unknown-linux-musl")
+        self.assertEqual(musl.RUST_USER_TARGET, "riscv64gc-unknown-linux-musl")
         self.assertIn("ARCH=riscv64", module.BUSYBOX_CC)
         self.assertIn("ARCH=riscv64", module.BUSYBOX_LD)
         self.assertNotIn("ARCH=riscv ", module.BUSYBOX_CC)
         self.assertEqual(
-            module.target_runtime_artifacts(),
+            image.target_runtime_artifacts(),
             (
                 module.ROOT / "target/riscv64gc-unknown-none-elf/release/kernel",
                 module.ROOT
@@ -239,7 +245,7 @@ class BusyBoxRoutingTests(unittest.TestCase):
         )
 
     def test_missing_aarch64_rust_target_is_explicit_blocker(self) -> None:
-        module = reload_busybox("aarch64", "hvf")
+        module = reload_busybox("aarch64", "hvf", "rust")
         musl = Mock()
         with (
             patch.object(module.shutil, "which", side_effect=["/tool/cargo", "/tool/rustc"]),
@@ -261,8 +267,9 @@ class BusyBoxRoutingTests(unittest.TestCase):
                     1,
                 )
 
+
     def test_rust_user_cargo_cache_identity_excludes_source_revision(self) -> None:
-        module = reload_busybox("aarch64", "hvf")
+        module = reload_busybox("aarch64", "hvf", "rust")
         musl = Mock(sysroot_fingerprint="sysroot-a")
         with tempfile.TemporaryDirectory() as directory, patch.object(
             module, "WORK", Path(directory)
@@ -295,8 +302,9 @@ class BusyBoxRoutingTests(unittest.TestCase):
 
 
 
+
     def test_verify_elf_accepts_aarch64_machine_and_loader(self) -> None:
-        module = reload_busybox("aarch64", "hvf")
+        module = reload_busybox("aarch64", "hvf", "rust")
         output = "\n".join(
             (
                 "ELF64 AArch64 DYN (Position-Independent Executable file)",
@@ -317,6 +325,7 @@ class BusyBoxRoutingTests(unittest.TestCase):
                 module.verify_elf(binary, compiler)
 
 
+
 class MuslDevelopmentCommandsTests(unittest.TestCase):
     def test_installs_headers_startup_objects_and_archives_but_not_loader(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -328,7 +337,7 @@ class MuslDevelopmentCommandsTests(unittest.TestCase):
             for name in ("crt1.o", "libc.a", "libc.so"):
                 (install / "usr/lib" / name).write_text("")
 
-            commands = verify_busybox.musl_development_commands(install)
+            commands = image.musl_development_commands(install)
 
         self.assertLess(commands.index("mkdir /usr/include"), commands.index("mkdir /usr/include/sys"))
         self.assertIn(f"write {install}/usr/include/sys/mman.h /usr/include/sys/mman.h", commands)

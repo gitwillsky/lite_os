@@ -4,9 +4,7 @@ extern crate alloc;
 #[path = "../src/shm_backing_fixture.rs"]
 mod memory;
 #[path = "../src/socket_core_fixture.rs"]
-mod socket;
-#[path = "../src/sync.rs"]
-mod sync;
+mod net;
 
 #[path = "../src/ipc_namespace_fixture.rs"]
 mod ipc;
@@ -61,11 +59,17 @@ fn actual_proc_metadata_preserves_fixed_linux_link_sizes() {
     ] {
         assert!(node.generic_index().is_none());
     }
-    for resource in socket::CoreBufferLimit::ALL {
+    for resource in net::CoreBufferLimit::ALL {
         assert!(
             ProcNode::CoreBufferLimit(resource)
                 .generic_index()
                 .is_none()
         );
     }
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
 }

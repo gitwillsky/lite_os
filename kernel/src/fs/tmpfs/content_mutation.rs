@@ -25,7 +25,7 @@ impl TmpInode {
     pub(super) fn remove_write_privileges_prepared(
         &self,
         identity: Option<&crate::fs::AccessIdentity>,
-        wait: &mut crate::sync::TaskMutexWaitPreparation,
+        wait: &mut crate::execution::sync::TaskMutexWaitPreparation,
     ) {
         if let Some(identity) = identity {
             let mut state = self.state.lock_prepared(wait);

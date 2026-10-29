@@ -15,11 +15,10 @@ mod ipc;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 #[path = "../src/unix_endpoint_fixture.rs"]
-mod socket;
-#[path = "../src/sync.rs"]
-mod sync;
+mod net;
+
 use alloc::sync::Arc;
-use socket::{NetNamespace, SocketError, SocketType, UnixAddress, UnixSocket};
+use net::{NetNamespace, SocketError, SocketType, UnixAddress, UnixSocket};
 fn endpoint(net: &Arc<NetNamespace>) -> Arc<UnixSocket> {
     UnixSocket::new(
         SocketType::Stream,
@@ -31,7 +30,7 @@ fn endpoint(net: &Arc<NetNamespace>) -> Arc<UnixSocket> {
 }
 #[test]
 fn actual_network_scope_partitions_abstract_names_and_preserves_global_inode_names() {
-    let initial = socket::boot_net();
+    let initial = net::boot_net();
     let root = namespace::root_authority();
     let resource = namespace::UserResource::Net;
     struct Restore(namespace::NamespaceAuthority, u32);
@@ -80,7 +79,7 @@ fn actual_network_scope_partitions_abstract_names_and_preserves_global_inode_nam
     let path_a = endpoint(&first);
     let path_b = endpoint(&second);
     let pathname = UnixAddress::new(b"/actual-inode-scope").unwrap();
-    let inode = socket::UnixPathIdentity {
+    let inode = net::UnixPathIdentity {
         filesystem: 88301,
         inode: 197,
     };
@@ -98,8 +97,8 @@ fn actual_network_scope_partitions_abstract_names_and_preserves_global_inode_nam
         NetNamespace::create(root.namespace.clone(), 88500),
         Err(namespace::NamespaceError::QuotaLimit)
     ));
-    socket::close_description(&a);
-    socket::close_description(&path_a);
+    net::close_description(&a);
+    net::close_description(&path_a);
     drop(a);
     drop(path_a);
     let third = NetNamespace::create(root.namespace.clone(), 88500).unwrap();
@@ -111,8 +110,8 @@ fn actual_network_scope_partitions_abstract_names_and_preserves_global_inode_nam
         &UnixSocket::lookup(&name, SocketType::Stream, &second).unwrap(),
         &b
     ));
-    socket::close_description(&b);
-    socket::close_description(&path_b);
+    net::close_description(&b);
+    net::close_description(&path_b);
     drop(b);
     drop(path_b);
     drop(second);
@@ -136,4 +135,10 @@ fn actual_network_scope_partitions_abstract_names_and_preserves_global_inode_nam
         ));
         drop(restored);
     }
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
 }

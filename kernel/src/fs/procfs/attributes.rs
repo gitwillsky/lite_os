@@ -106,7 +106,7 @@ impl ProcAttributes {
         {
             return Err(FileSystemError::PermissionDenied);
         }
-        let now = crate::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
         let mut owner = self.owner.lock();
         *owner = change.authorize(OwnerModeState::new(
             owner.kind(),
@@ -118,14 +118,14 @@ impl ProcAttributes {
         Ok(())
     }
     pub(super) fn truncate(&self) {
-        let now = crate::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
         self.times.lock().touch_at(now);
     }
     pub(super) fn touch_access(&self, now: u64, relatime: bool) {
         self.times.lock().access_at(now, relatime);
     }
     pub(super) fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) {
-        let now = crate::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
         self.times.lock().set_at(now, atime, mtime);
     }
 }

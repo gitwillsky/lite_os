@@ -1,5 +1,5 @@
 //! Host scheduler seam: exact TaskWait membership, signal readiness and one wake winner.
-use crate::sync::{TaskWaitKey, TaskWaitTarget, WaitCompletion, WaitResult};
+use crate::execution::sync::{TaskWaitKey, TaskWaitTarget, WaitCompletion, WaitResult};
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 use std::{
@@ -48,7 +48,7 @@ impl Target {
     }
     pub(crate) fn bind(self: &Arc<Self>) -> Binding {
         INSTALL.call_once(|| {
-            crate::sync::install_wait_target_factory(|| {
+            crate::execution::sync::install_wait_target_factory(|| {
                 CURRENT.with(|current| {
                     current
                         .borrow()

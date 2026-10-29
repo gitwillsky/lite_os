@@ -287,7 +287,8 @@ fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
                 .to_owned(),
         );
     }
-    let builder = fs::read_to_string(root.join("scripts/verify_busybox.py")).unwrap_or_default();
+    let builder =
+        fs::read_to_string(root.join("scripts/userland/artifacts.py")).unwrap_or_default();
     for required in [
         "def base_userland(",
         "user/base/inittab",
@@ -297,7 +298,9 @@ fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
         "cursors()",
     ] {
         if !builder.contains(required) {
-            errors.push(format!("scripts/verify_busybox.py: missing `{required}`"));
+            errors.push(format!(
+                "scripts/userland/artifacts.py: missing `{required}`"
+            ));
         }
     }
     for forbidden in [
@@ -308,7 +311,7 @@ fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
     ] {
         if builder.contains(forbidden) {
             errors.push(format!(
-                "scripts/verify_busybox.py: retired userland `{forbidden}` remains"
+                "scripts/userland/artifacts.py: retired userland `{forbidden}` remains"
             ));
         }
     }
@@ -320,12 +323,12 @@ fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
 fn check_graphics_device_path(root: &Path, errors: &mut Vec<String>) {
     let required = [
         (
-            "kernel/src/virtio/gpu.rs",
+            "kernel/src/drivers/virtio/gpu.rs",
             "notify_queue(CURSOR_QUEUE)",
             "hardware cursor commands must use the dedicated VirtIO-GPU cursor queue",
         ),
         (
-            "kernel/src/virtio/gpu.rs",
+            "kernel/src/drivers/virtio/gpu.rs",
             "cursor.latest_move = Some((x, y));",
             "cursor motion must coalesce in the adapter instead of blocking userspace",
         ),

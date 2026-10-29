@@ -26,7 +26,7 @@ def mesa_userland():
 
     任一 APK 哈希、ELF 架构或 DT_NEEDED 闭包不完整即失败，绝不覆盖系统 musl。
     """
-    from verify_busybox import UserlandArtifact
+    from userland import UserlandArtifact
     target = target_from_environment()
     if target.arch != "aarch64":
         return ()

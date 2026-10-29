@@ -1,5 +1,5 @@
 use super::*;
-use crate::sync::{TaskMutexGuard, TaskMutexWaitPreparation};
+use crate::execution::sync::{TaskMutexGuard, TaskMutexWaitPreparation};
 
 /// 单次 namespace transaction；唯一 guard 串行 mount 拓扑变更、dentry 位置发布（unlink 的
 /// mark_unlinked、rename 的 move_entry）与整条 parent/name 路径投影（Linux `namespace_sem` 与

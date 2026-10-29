@@ -68,7 +68,7 @@ pub(crate) struct InodeMetadata {
 mod device_number;
 pub(crate) use device_number::DeviceNumber;
 
-pub(crate) use crate::block::CompletionNotify;
+pub(crate) use crate::devices::block::CompletionNotify;
 
 /// 与 `kernel/src/fs/inode.rs` 的 `StorageStep`/`StorageRead` 同形；ext4 的步进读实现它们。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

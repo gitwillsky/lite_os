@@ -1,6 +1,6 @@
 //! Production capability state and Linux codec, with no policy/scheduler replacement.
 #![allow(dead_code)]
-#[path = "../../../kernel/src/task/model/capabilities.rs"]
+#[path = "../../../kernel/src/execution/task/model/capabilities.rs"]
 mod capabilities;
 use capabilities::{CapabilityError, CapabilityExecIds, CapabilityState};
 use syscall_abi::capability::{

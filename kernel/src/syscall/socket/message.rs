@@ -6,8 +6,9 @@ use super::{
     write_address,
 };
 use crate::{
+    execution::task::{current_task, send_thread_signal},
     file::OpenFileDescription,
-    socket::{Socket, SocketIoDirection, SocketSendError},
+    net::{Socket, SocketIoDirection, SocketSendError},
     syscall::{
         poll::wait_for_socket_capacity,
         user_iovec::{
@@ -15,7 +16,6 @@ use crate::{
             bounded_staging_capacity, import_iovecs, project_total_length, validate_user_buffers,
         },
     },
-    task::{current_task, send_thread_signal},
 };
 
 const MESSAGE_HEADER_SIZE: usize = 56;
@@ -96,7 +96,7 @@ fn send_error(
     if error == SocketError::BrokenPipe
         && completed == 0
         && flags & MSG_NOSIGNAL == 0
-        && socket.socket_type() == crate::socket::SocketType::Stream
+        && socket.socket_type() == crate::net::SocketType::Stream
     {
         send_thread_signal(task.tgid(), task.tid(), syscall_abi::signal::SIGPIPE)
             .expect("current socket sender must remain live");
@@ -115,7 +115,7 @@ enum SendTarget {
 }
 
 type ResolvedSendDestination = (
-    Option<crate::socket::SocketSendDestination>,
+    Option<crate::net::SocketSendDestination>,
     Option<Arc<dyn crate::fs::Inode>>,
 );
 
@@ -127,8 +127,8 @@ struct SendContext<'a> {
     flags: usize,
     nonblocking: bool,
     deadline: Option<u64>,
-    credentials: crate::socket::UnixSendCredentials,
-    packet_info: Option<crate::socket::InternetSendPacketInfo>,
+    credentials: crate::net::UnixSendCredentials,
+    packet_info: Option<crate::net::InternetSendPacketInfo>,
 }
 
 /// Native move_addr_to_kernel 先校验/copy 通用 sockaddr；SeqPacket/TCP 随后忽略目的地址。
@@ -141,13 +141,13 @@ fn read_target(
     if pointer == 0 || length == 0 {
         return Ok(None);
     }
-    if (socket.domain() == crate::socket::SocketDomain::Unix
+    if (socket.domain() == crate::net::SocketDomain::Unix
         && matches!(
             socket.socket_type(),
-            crate::socket::SocketType::Stream | crate::socket::SocketType::SeqPacket
+            crate::net::SocketType::Stream | crate::net::SocketType::SeqPacket
         ))
-        || (socket.domain() == crate::socket::SocketDomain::Inet
-            && socket.socket_type() == crate::socket::SocketType::Stream)
+        || (socket.domain() == crate::net::SocketDomain::Inet
+            && socket.socket_type() == crate::net::SocketType::Stream)
     {
         if length > 128 {
             return Err(-errno::EINVAL);
@@ -157,8 +157,8 @@ fn read_target(
             task.copy_from_user(pointer, &mut ignored[..length])
                 .map_err(|_| -errno::EFAULT)?;
         }
-        return Ok((socket.domain() == crate::socket::SocketDomain::Unix
-            && socket.socket_type() == crate::socket::SocketType::Stream)
+        return Ok((socket.domain() == crate::net::SocketDomain::Unix
+            && socket.socket_type() == crate::net::SocketType::Stream)
             .then_some(SendTarget::StreamName));
     }
     read_address(task, pointer, length, false).map(|address| Some(SendTarget::Address(address)))
@@ -168,7 +168,7 @@ impl SendContext<'_> {
     /// 发送者在 socket 所属 NET 的 owning UserNS 里是否有 CAP_NET_ADMIN（Linux `netlink_net_capable`）。
     /// 只有 netlink socket 需要，其他 domain 不查询 capability。
     fn net_admin(&self) -> bool {
-        self.socket.domain() == crate::socket::SocketDomain::Netlink
+        self.socket.domain() == crate::net::SocketDomain::Netlink
             && self.task.has_namespace_capability(
                 &self.socket.net_namespace().user_namespace(),
                 syscall_abi::capability::Capability::NET_ADMIN,
@@ -185,15 +185,15 @@ impl SendContext<'_> {
         {
             let (inode, identity) = super::unix_path::resolve(self.task, address, true)?;
             return Ok((
-                Some(crate::socket::SocketSendDestination::UnixPath(identity)),
+                Some(crate::net::SocketSendDestination::UnixPath(identity)),
                 Some(inode),
             ));
         }
         Ok((
             self.target.as_ref().and_then(|target| match target {
-                SendTarget::Address(address) => Some(
-                    crate::socket::SocketSendDestination::Address(address.clone()),
-                ),
+                SendTarget::Address(address) => {
+                    Some(crate::net::SocketSendDestination::Address(address.clone()))
+                }
                 SendTarget::StreamName => None,
             }),
             None,
@@ -204,7 +204,7 @@ impl SendContext<'_> {
 fn send_one_message(
     context: &SendContext<'_>,
     bytes: &[u8],
-    rights: &mut Option<crate::socket::UnixRights>,
+    rights: &mut Option<crate::net::UnixRights>,
 ) -> isize {
     // Linux 在首次 sendmsg 里 autobind netlink socket；回复要有可投递的 port。
     if let Err(error) = context
@@ -279,7 +279,7 @@ fn send_stream_message(
     context: &SendContext<'_>,
     vectors: &[UserIoVec],
     total_length: usize,
-    mut rights: Option<crate::socket::UnixRights>,
+    mut rights: Option<crate::net::UnixRights>,
 ) -> isize {
     if total_length == 0 {
         // Native stream 零长度 send 不发布 skb/rights，仍已在入口完整校验 cmsg。
@@ -386,7 +386,7 @@ fn send_message(
     context: SendContext<'_>,
     vectors: &[UserIoVec],
     total_length: usize,
-    rights: Option<crate::socket::UnixRights>,
+    rights: Option<crate::net::UnixRights>,
 ) -> isize {
     if let Err(error) = context
         .socket
@@ -443,7 +443,7 @@ pub(in crate::syscall) fn write_vectors(
             nonblocking: nonblocking || ofd.status_flags() & O_NONBLOCK != 0,
             deadline: socket
                 .timeout(SocketIoDirection::Send)
-                .deadline(crate::timer::get_time_ns()),
+                .deadline(crate::execution::timer::get_time_ns()),
             credentials: super::credentials::sender(task),
             packet_info: None,
         },
@@ -504,7 +504,7 @@ pub(crate) fn sys_sendmsg(fd: usize, message: usize, flags: usize) -> isize {
             nonblocking: flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0,
             deadline: socket
                 .timeout(SocketIoDirection::Send)
-                .deadline(crate::timer::get_time_ns()),
+                .deadline(crate::execution::timer::get_time_ns()),
         },
         &iovecs,
         total_length,
@@ -558,7 +558,7 @@ pub(crate) fn sys_sendto(
             nonblocking: flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0,
             deadline: socket
                 .timeout(SocketIoDirection::Send)
-                .deadline(crate::timer::get_time_ns()),
+                .deadline(crate::execution::timer::get_time_ns()),
         },
         &vectors,
         length,
@@ -596,7 +596,7 @@ pub(crate) fn sys_recvfrom(
     };
     let deadline = socket
         .timeout(SocketIoDirection::Receive)
-        .deadline(crate::timer::get_time_ns());
+        .deadline(crate::execution::timer::get_time_ns());
     let nonblocking = flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0;
     loop {
         match socket.receive_message(&mut output, flags & MSG_PEEK != 0, false, nonblocking) {
@@ -653,7 +653,7 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
     let nonblocking = flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0;
     let deadline = socket
         .timeout(SocketIoDirection::Receive)
-        .deadline(crate::timer::get_time_ns());
+        .deadline(crate::execution::timer::get_time_ns());
     loop {
         match socket.receive_message(&mut output, flags & MSG_PEEK != 0, true, nonblocking) {
             Ok(received) => {

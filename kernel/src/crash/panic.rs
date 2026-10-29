@@ -15,9 +15,10 @@ use super::{
     record::Recorder,
 };
 use crate::{
-    cpu::{self, CpuSet},
-    drivers::PanicFramebuffer,
-    platform, timer,
+    devices::model::PanicFramebuffer,
+    execution::cpu::{self, CpuSet},
+    execution::timer,
+    platform,
 };
 
 /// 等待其余 CPU 响应停止 IPI 的上限。IRQ 屏蔽的 CPU 收不到 IPI，不能无限等待。

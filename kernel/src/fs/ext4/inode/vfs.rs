@@ -124,7 +124,7 @@ impl Inode for Ext4Inode {
         &self,
         offset: u64,
         length: usize,
-        notify: Arc<dyn crate::block::CompletionNotify>,
+        notify: Arc<dyn crate::devices::block::CompletionNotify>,
     ) -> Result<Option<alloc::boxed::Box<dyn crate::fs::StorageRead>>, FileSystemError> {
         let disk = self.disk.lock().disk;
         let read = super::super::async_read::Ext4Read::new(

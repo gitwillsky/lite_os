@@ -111,7 +111,7 @@ impl OpenedFile {
         {
             return;
         }
-        let now = crate::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
         if let Some(view) = &self.mount {
             let Some(_writer) = view.try_access_writer() else {
                 return;

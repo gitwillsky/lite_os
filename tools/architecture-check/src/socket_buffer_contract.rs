@@ -11,8 +11,8 @@ fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a str {
         .text
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let owner = normalized(source(sources, "kernel/src/socket/core_buffers.rs"));
-    let ledger = normalized(source(sources, "kernel/src/socket/unix/send_memory.rs"));
+    let owner = normalized(source(sources, "kernel/src/net/core_buffers.rs"));
+    let ledger = normalized(source(sources, "kernel/src/net/unix/send_memory.rs"));
     let proc = normalized(source(sources, "kernel/src/fs/procfs/opened_operations.rs"));
     let abi = normalized(source(sources, "kernel/src/syscall/socket/options.rs"));
     if !owner.contains("staticLIMITS:[AtomicU32;4]")
@@ -61,7 +61,7 @@ mod tests {
     fn copied_maximum_and_missing_writer_recheck_are_rejected() {
         for (path, old, new) in [
             (
-                "kernel/src/socket/unix/send_memory.rs",
+                "kernel/src/net/unix/send_memory.rs",
                 ".min(maximum.value() as usize)",
                 ".min(212_992)",
             ),

@@ -4,18 +4,6 @@
 
 extern crate alloc;
 
-mod sync {
-    pub(crate) struct IrqMutex<T>(spin::Mutex<T>);
-    impl<T> IrqMutex<T> {
-        pub(crate) const fn new(value: T) -> Self {
-            Self(spin::Mutex::new(value))
-        }
-        pub(crate) fn lock(&self) -> spin::MutexGuard<'_, T> {
-            self.0.lock()
-        }
-    }
-}
-
 #[path = "../../../kernel/src/fs"]
 mod fs {
     #[derive(Debug, PartialEq, Eq)]
@@ -139,5 +127,19 @@ mod fs {
         let state = budget.snapshot();
         assert_eq!((state.used_pages, state.used_inodes), (0, 0));
         budget.set_limits(Some(0), Some(0)).unwrap();
+    }
+}
+
+pub(crate) mod execution {
+    pub(crate) mod sync {
+        pub(crate) struct IrqMutex<T>(spin::Mutex<T>);
+        impl<T> IrqMutex<T> {
+            pub(crate) const fn new(value: T) -> Self {
+                Self(spin::Mutex::new(value))
+            }
+            pub(crate) fn lock(&self) -> spin::MutexGuard<'_, T> {
+                self.0.lock()
+            }
+        }
     }
 }

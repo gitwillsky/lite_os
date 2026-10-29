@@ -1,5 +1,5 @@
 //! 标准 restart_syscall ABI；冻结的 semantic operation 由实际 Thread owner 提供。
-use crate::task::{SyscallRestartBlock, current_task};
+use crate::execution::task::{SyscallRestartBlock, current_task};
 
 /// 消费 calling Thread 的一个 restart block；未登记操作返回 Linux EINTR。
 pub(super) fn sys_restart_syscall() -> isize {

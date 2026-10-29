@@ -588,7 +588,7 @@ pub async fn show(
     Ok(())
 }
 
-impl crate::Session {
+impl crate::session::Session {
     /// 恢复实际连接后再进入挂载目录；不能把离线目录展示为空共享。
     pub(super) async fn open_network_drive(&self, letter: char) -> Result<()> {
         let path = self

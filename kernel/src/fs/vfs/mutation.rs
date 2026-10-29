@@ -4,9 +4,9 @@ use super::{
     AccessIdentity, FileSystemError, Inode, InodeType, LookupOrigin, OpenedFile, VirtualFileSystem,
     path_lookup::{CreatedEntry, PathLookup},
 };
+use crate::execution::sync::TaskMutexWaitPreparation;
 use crate::fs::CreateMetadata;
 use crate::fs::DeviceNumber;
-use crate::sync::TaskMutexWaitPreparation;
 
 impl VirtualFileSystem {
     /// 校验 parent access、umask/setgid inheritance 后创建 inode。

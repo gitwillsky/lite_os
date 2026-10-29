@@ -1,5 +1,5 @@
 //! Pipe 的实际 byte ring、endpoint admission、wait/readiness 与最后 close owner。
-use crate::sync::WaitResult;
+use crate::execution::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 use core::{
     num::NonZeroUsize,
@@ -276,8 +276,8 @@ impl Pipe {
                 reader_opens: 1,
                 writer_opens: 1,
                 rendezvous_waiters: 0,
-                read_generation: crate::sync::next_readiness_generation(),
-                write_generation: crate::sync::next_readiness_generation(),
+                read_generation: crate::execution::sync::next_readiness_generation(),
+                write_generation: crate::execution::sync::next_readiness_generation(),
             }),
         })
         .map_err(|_| ())?;
@@ -318,8 +318,8 @@ impl Pipe {
                 reader_opens: 0,
                 writer_opens: 0,
                 rendezvous_waiters: 0,
-                read_generation: crate::sync::next_readiness_generation(),
-                write_generation: crate::sync::next_readiness_generation(),
+                read_generation: crate::execution::sync::next_readiness_generation(),
+                write_generation: crate::execution::sync::next_readiness_generation(),
             }),
         })
         .map_err(|_| ())
@@ -461,7 +461,7 @@ impl Pipe {
             let retired = core::mem::replace(&mut state.bytes, bytes);
             state.head = 0;
             // 容量变化可能让阻塞的 writer 立即可写。
-            state.write_generation = crate::sync::next_readiness_generation();
+            state.write_generation = crate::execution::sync::next_readiness_generation();
             retired
         };
         drop(retired);
@@ -562,7 +562,7 @@ impl Pipe {
                     state.length -= count;
                 }
                 if count != 0 {
-                    state.write_generation = crate::sync::next_readiness_generation();
+                    state.write_generation = crate::execution::sync::next_readiness_generation();
                 }
                 PipeRead::Bytes(count)
             }
@@ -600,7 +600,7 @@ impl Pipe {
                         }
                         state.length += count;
                     }
-                    state.read_generation = crate::sync::next_readiness_generation();
+                    state.read_generation = crate::execution::sync::next_readiness_generation();
                     PipeWrite::Bytes(count)
                 }
             }
@@ -618,12 +618,12 @@ impl Pipe {
                 PipeDirection::Read => {
                     assert_ne!(state.readers, 0, "pipe reader underflow");
                     state.readers -= 1;
-                    state.write_generation = crate::sync::next_readiness_generation();
+                    state.write_generation = crate::execution::sync::next_readiness_generation();
                 }
                 PipeDirection::Write => {
                     assert_ne!(state.writers, 0, "pipe writer underflow");
                     state.writers -= 1;
-                    state.read_generation = crate::sync::next_readiness_generation();
+                    state.read_generation = crate::execution::sync::next_readiness_generation();
                 }
             }
             if state.readers == 0 && state.writers == 0 {
@@ -658,7 +658,7 @@ impl Pipe {
                     state.head = 0;
                     state.length = 1;
                 }
-                state.read_generation = crate::sync::next_readiness_generation();
+                state.read_generation = crate::execution::sync::next_readiness_generation();
                 true
             }
         };
@@ -679,7 +679,7 @@ impl Pipe {
         if state.length != 0 {
             state.head = 0;
             state.length = 0;
-            state.write_generation = crate::sync::next_readiness_generation();
+            state.write_generation = crate::execution::sync::next_readiness_generation();
         }
         generation
     }
@@ -696,8 +696,8 @@ impl Pipe {
             if discarded != 0 {
                 state.head = 0;
                 state.length = 0;
-                state.read_generation = crate::sync::next_readiness_generation();
-                state.write_generation = crate::sync::next_readiness_generation();
+                state.read_generation = crate::execution::sync::next_readiness_generation();
+                state.write_generation = crate::execution::sync::next_readiness_generation();
             }
             discarded
         };

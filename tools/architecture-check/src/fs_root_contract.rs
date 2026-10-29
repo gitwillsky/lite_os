@@ -3,7 +3,7 @@ use super::SourceFile;
 use quote::ToTokens;
 use syn::Item;
 const LOOKUP: &str = "kernel/src/fs/vfs/path_lookup.rs";
-const CONTEXT: &str = "kernel/src/task/model/process_resources.rs";
+const CONTEXT: &str = "kernel/src/execution/task/model/process_resources.rs";
 const OPENED: &str = "kernel/src/fs/vfs/opened.rs";
 fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a SourceFile {
     sources
@@ -168,7 +168,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     let inode = source(sources, "kernel/src/fs/inode.rs");
     let proc_inode = source(sources, "kernel/src/fs/procfs/link.rs");
-    let fd_producer = source(sources, "kernel/src/task/model/file_table.rs");
+    let fd_producer = source(sources, "kernel/src/execution/task/model/file_table.rs");
     if !inode.text.contains("pub(crate) enum LinkTarget")
         || !lookup.text.contains("match opened.inode().link_target()?")
         || lookup.text.contains("opened.inode().read_link()")
@@ -185,7 +185,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fs-root: link target must freeze kind/identity once and propagate producer failures without retry".into());
     }
-    let loader = source(sources, "kernel/src/task/loader.rs");
+    let loader = source(sources, "kernel/src/execution/task/loader.rs");
     if loader.text.matches(".open_file_at(origin.clone(),").count() != 2 {
         errors.push("fs-root: main/script and PT_INTERP must use the same caller origin".into());
     }
@@ -227,7 +227,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
                 .into(),
         );
     }
-    let proc = source(sources, "kernel/src/task/process_table/procfs.rs");
+    let proc = source(sources, "kernel/src/execution/task/process_table/procfs.rs");
     if !proc
         .text
         .split_whitespace()
@@ -305,7 +305,7 @@ mod tests {
     #[test]
     fn rejects_interpreter_using_boot_root() {
         reject(
-            "kernel/src/task/loader.rs",
+            "kernel/src/execution/task/loader.rs",
             ".open_file_at(origin.clone(), &path, identity)",
             ".open_file_at(global_origin, &path, identity)",
             "PT_INTERP",
@@ -314,7 +314,7 @@ mod tests {
     #[test]
     fn rejects_proc_worker_replacing_exited_leader_fs() {
         reject(
-            "kernel/src/task/process_table/procfs.rs",
+            "kernel/src/execution/task/process_table/procfs.rs",
             "super::thread_selector::execution_by_tid(&graph, tid)",
             "arbitrary_process_thread(&graph, tid)",
             "live main Thread",

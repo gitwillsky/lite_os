@@ -14,14 +14,14 @@ fn before(source: &str, first: &str, second: &str) -> bool {
     matches!((source.find(first),source.find(second)),(Some(a),Some(b)) if a < b)
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let packet = normalized(source(sources, "kernel/src/socket/packet.rs"));
-    let phy = normalized(source(sources, "kernel/src/socket/inet/device.rs"));
-    let lo = normalized(source(sources, "kernel/src/socket/inet/device/loopback.rs"));
-    let inet = normalized(source(sources, "kernel/src/socket/inet.rs"));
-    let poll = normalized(source(sources, "kernel/src/socket/inet/poll.rs"));
-    let config = normalized(source(sources, "kernel/src/socket/inet/configuration.rs"));
-    let prepare = normalized(source(sources, "kernel/src/socket/preparation.rs"));
-    let observe = normalized(source(sources, "kernel/src/socket/observation.rs"));
+    let packet = normalized(source(sources, "kernel/src/net/packet.rs"));
+    let phy = normalized(source(sources, "kernel/src/net/inet/device.rs"));
+    let lo = normalized(source(sources, "kernel/src/net/inet/device/loopback.rs"));
+    let inet = normalized(source(sources, "kernel/src/net/inet.rs"));
+    let poll = normalized(source(sources, "kernel/src/net/inet/poll.rs"));
+    let config = normalized(source(sources, "kernel/src/net/inet/configuration.rs"));
+    let prepare = normalized(source(sources, "kernel/src/net/preparation.rs"));
+    let observe = normalized(source(sources, "kernel/src/net/observation.rs"));
     let packet_poll = packet
         .split("fntry_poll_state(")
         .nth(1)
@@ -39,7 +39,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         || !phy.contains("packet::deliver(self.net_id,self.interface_index,self.mac,frame)")
         || !inet.contains("NetworkInterface::loopback(scope.id(),loopback_up)")
         || !inet.contains("scope.id(),u32::try_from(ordinal)")
-        || !lo.contains("crate::socket::packet::deliver_loopback(self.0.net_id,header,packet)")
+        || !lo.contains("crate::net::packet::deliver_loopback(self.0.net_id,header,packet)")
         || !before(&lo,"deliver_loopback(","operation(ifheader[12..14]")
     {
         errors.push("packet-net: actual OFD NET/link must select send and enqueue before L3; global Weak directory must not retain an initial NIC or fixed interface".into());
@@ -95,33 +95,29 @@ mod tests {
     #[test]
     fn rejects_cross_domain_delivery_and_unscoped_capacity_edge() {
         for (path, old, new) in [
+            ("kernel/src/net/packet.rs", "state.net_id == net_id", "true"),
             (
-                "kernel/src/socket/packet.rs",
-                "state.net_id == net_id",
-                "true",
-            ),
-            (
-                "kernel/src/socket/inet.rs",
+                "kernel/src/net/inet.rs",
                 "packet::publish_transmit_ready(namespace.id(), index)",
                 "packet::publish_transmit_ready(6, index)",
             ),
             (
-                "kernel/src/socket/inet/device.rs",
+                "kernel/src/net/inet/device.rs",
                 "self.net_id, self.interface_index, self.mac, frame",
                 "6, 1, self.mac, frame",
             ),
             (
-                "kernel/src/socket/packet.rs",
+                "kernel/src/net/packet.rs",
                 "drop(registry);",
                 "let _registry_is_still_held = &registry;",
             ),
             (
-                "kernel/src/socket/inet/device.rs",
+                "kernel/src/net/inet/device.rs",
                 "Ok(reservation) => reservation,",
                 "Ok(reservation) => reservation?,",
             ),
             (
-                "kernel/src/socket/packet.rs",
+                "kernel/src/net/packet.rs",
                 "if sender == Some(id) ||",
                 "if false ||",
             ),

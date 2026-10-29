@@ -10,45 +10,7 @@ use syn::{ItemUse, Macro, Path as SynPath, UseTree, visit::Visit};
 
 use super::SourceFile;
 
-const KERNEL_MODULES: &[&str] = &[
-    "arch",
-    "audio",
-    "block",
-    "boot_screen",
-    "cmdline",
-    "config",
-    "cpu",
-    "crash",
-    "deferred",
-    "drivers",
-    "drm",
-    "entry",
-    "fallible_tree",
-    "file",
-    "fs",
-    "hal",
-    "id",
-    "input",
-    "io_uring",
-    "ipc",
-    "lang_item",
-    "log",
-    "main",
-    "memory",
-    "namespace",
-    "platform",
-    "random",
-    "socket",
-    "sync",
-    "syscall",
-    "system",
-    "task",
-    "timer",
-    "trap",
-    "tty",
-    "virtio",
-    "virtio_port",
-];
+use super::module_layout;
 
 #[derive(Default)]
 struct PathCollector {
@@ -180,10 +142,18 @@ fn allowed_dependencies(root: &Path) -> Result<BTreeMap<String, BTreeSet<String>
             continue;
         }
         let owner = columns[1].trim_matches('`');
-        if !KERNEL_MODULES.contains(&owner) {
+        if !module_layout::known(owner) {
             continue;
         }
         let mut allowed = BTreeSet::new();
+        // composition root 已有的“可装配全部领域”契约；集合仍来自封闭的 owner 清单。
+        if owner == "main" && columns[2] == "所有已登记领域（仅装配）" {
+            allowed.extend(
+                module_layout::names()
+                    .filter(|module| *module != "main")
+                    .map(str::to_owned),
+            );
+        }
         let mut remainder = columns[2];
         while let Some(start) = remainder.find('`') {
             remainder = &remainder[start + 1..];
@@ -191,7 +161,7 @@ fn allowed_dependencies(root: &Path) -> Result<BTreeMap<String, BTreeSet<String>
                 return Err(format!("{owner}: malformed dependency matrix row"));
             };
             let dependency = &remainder[..end];
-            if !KERNEL_MODULES.contains(&dependency) {
+            if !module_layout::known(dependency) {
                 return Err(format!(
                     "{owner}: dependency matrix names unknown module `{dependency}`"
                 ));
@@ -205,8 +175,8 @@ fn allowed_dependencies(root: &Path) -> Result<BTreeMap<String, BTreeSet<String>
             ));
         }
     }
-    for module in KERNEL_MODULES {
-        if !rules.contains_key(*module) {
+    for module in module_layout::names() {
+        if !rules.contains_key(module) {
             return Err(format!(
                 "docs/architecture-contract.md lacks a dependency row for `{module}`"
             ));
@@ -274,7 +244,6 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
             return;
         }
     };
-    let known: BTreeSet<&str> = KERNEL_MODULES.iter().copied().collect();
     if let Some(cycle) = dependency_cycle(&allowlist) {
         errors.push(format!(
             "docs/architecture-contract.md: kernel dependency cycle: {}",
@@ -295,12 +264,33 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
         }
         let mut dependencies = BTreeSet::new();
         for path in &collector.paths {
-            if path.first().is_some_and(|segment| segment == "crate")
-                && let Some(module) = path.get(1)
-                && known.contains(module.as_str())
-                && module != &source.owner
-            {
-                dependencies.insert(module.as_str());
+            if path.first().is_some_and(|segment| segment == "crate") {
+                if path
+                    .get(1)
+                    .is_some_and(|segment| module_layout::grouping(std::slice::from_ref(segment)))
+                    && (path.len() == 2 || path.get(2).is_some_and(|segment| segment == "*"))
+                {
+                    errors.push(format!(
+                        "{}: import a named domain, not a grouping",
+                        source.relative
+                    ));
+                }
+                if path
+                    .get(1)
+                    .is_some_and(|name| module_layout::obsolete_root(name))
+                {
+                    errors.push(format!(
+                        "{}: obsolete root domain path {}; use its registered namespace",
+                        source.relative,
+                        path.join("::")
+                    ));
+                }
+                // 命名空间可分组，但依赖边仍落在最具体的稳定领域 owner 上。
+                if let Some(module) = module_layout::namespace_owner(&path[1..])
+                    && module != source.owner
+                {
+                    dependencies.insert(module);
+                }
             }
             check_facade_path(source, path, errors);
         }
@@ -354,10 +344,16 @@ fn check_facade_path(source: &SourceFile, path: &[String], errors: &mut Vec<Stri
         ));
     }
     if source.owner == "syscall" {
-        if matches!(
-            path.get(1).map(String::as_str),
-            Some("fs" | "memory" | "task")
-        ) && path.len() == 2
+        if matches!(path.get(1).map(String::as_str), Some("fs" | "memory")) && path.len() == 2 {
+            errors.push(format!(
+                "{}: syscall must import a named domain facade item, not alias its module root",
+                source.relative
+            ));
+        }
+        if path
+            .iter()
+            .map(String::as_str)
+            .eq(["crate", "execution", "task"])
         {
             errors.push(format!(
                 "{}: syscall must import a named domain facade item, not alias its module root",
@@ -370,7 +366,7 @@ fn check_facade_path(source: &SourceFile, path: &[String], errors: &mut Vec<Stri
             &["crate", "fs", "inode"][..],
             &["crate", "fs", "Ext4FileSystem"][..],
             &["crate", "memory", "page_table"][..],
-            &["crate", "task", "scheduler"][..],
+            &["crate", "execution", "task", "scheduler"][..],
         ];
         if forbidden.iter().any(|prefix| {
             path.len() >= prefix.len()

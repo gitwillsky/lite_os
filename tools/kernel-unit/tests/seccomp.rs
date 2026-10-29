@@ -44,9 +44,7 @@ impl TaskControlBlock {
 
 #[path = "seccomp/security.rs"]
 mod model;
-#[allow(dead_code, unused_imports)]
-#[path = "../src/sync.rs"]
-mod sync;
+
 use model::seccomp;
 
 use seccomp::{
@@ -413,8 +411,14 @@ fn maximum_filter_set_drop_is_bounded_on_a_small_stack() {
         .unwrap();
 }
 
-mod task {
-    pub(crate) fn current_task() -> Option<alloc::sync::Arc<super::TaskControlBlock>> {
-        None
+#[path = "."]
+pub(crate) mod execution {
+    #[allow(dead_code, unused_imports)]
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
+    pub(crate) mod task {
+        pub(crate) fn current_task() -> Option<alloc::sync::Arc<crate::TaskControlBlock>> {
+            None
+        }
     }
 }

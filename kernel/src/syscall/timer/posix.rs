@@ -3,9 +3,9 @@ use super::{
     CLOCK_THREAD_CPUTIME_ID, TIMER_ABSTIME, TimeSpec, decode_timespec, encode_timespec,
 };
 use crate::{
+    execution::task::{PosixTimerClock, PosixTimerNotification, current_task},
     file::{TimerError, TimerSetting},
     syscall::errno::{EAGAIN, EFAULT, EINVAL, ENOMEM, EOPNOTSUPP},
-    task::{PosixTimerClock, PosixTimerNotification, current_task},
 };
 
 const SIGEV_SIGNAL: i32 = 0;
@@ -100,12 +100,12 @@ pub(crate) fn sys_timer_create(clock_id: i32, event: usize, output: usize) -> is
         CLOCK_BOOTTIME => PosixTimerClock::Boottime,
         _ => PosixTimerClock::Monotonic,
     };
-    let id = match crate::task::create_posix_timer(task.tgid(), clock, notification) {
+    let id = match crate::execution::task::create_posix_timer(task.tgid(), clock, notification) {
         Ok(id) => id,
         Err(error) => return timer_error(error, true),
     };
     if task.copy_to_user(output, &id.to_ne_bytes()).is_err() {
-        crate::task::delete_posix_timer(task.tgid(), id)
+        crate::execution::task::delete_posix_timer(task.tgid(), id)
             .expect("new POSIX timer rollback must find its record");
         return -EFAULT;
     }
@@ -117,7 +117,11 @@ pub(crate) fn sys_timer_gettime(id: i32, output: usize) -> isize {
     let Some(task) = current_task() else {
         return -EFAULT;
     };
-    let setting = match crate::task::posix_timer(task.tgid(), id, crate::timer::get_time_ns()) {
+    let setting = match crate::execution::task::posix_timer(
+        task.tgid(),
+        id,
+        crate::execution::timer::get_time_ns(),
+    ) {
         Ok(setting) => setting,
         Err(error) => return timer_error(error, false),
     };
@@ -130,7 +134,7 @@ pub(crate) fn sys_timer_getoverrun(id: i32) -> isize {
     let Some(task) = current_task() else {
         return -EFAULT;
     };
-    crate::task::posix_timer_overrun(task.tgid(), id)
+    crate::execution::task::posix_timer_overrun(task.tgid(), id)
         .map(|overrun| overrun as isize)
         .unwrap_or_else(|error| timer_error(error, false))
 }
@@ -155,8 +159,8 @@ pub(crate) fn sys_timer_settime(id: i32, flags: i32, replacement: usize, previou
         Ok(value) => value,
         Err(error) => return error,
     };
-    let now_ns = crate::timer::get_time_ns();
-    let old = match crate::task::set_posix_timer(
+    let now_ns = crate::execution::timer::get_time_ns();
+    let old = match crate::execution::task::set_posix_timer(
         task.tgid(),
         id,
         value_ns,
@@ -179,6 +183,6 @@ pub(crate) fn sys_timer_delete(id: i32) -> isize {
     let Some(task) = current_task() else {
         return -EFAULT;
     };
-    crate::task::delete_posix_timer(task.tgid(), id)
+    crate::execution::task::delete_posix_timer(task.tgid(), id)
         .map_or_else(|error| timer_error(error, false), |()| 0)
 }

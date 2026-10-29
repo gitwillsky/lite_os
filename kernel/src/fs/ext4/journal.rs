@@ -3,9 +3,9 @@ use alloc::{sync::Arc, vec::Vec};
 use super::allocation_dirty::AllocationDirty;
 use super::journal_layout::JournalLayout;
 use super::*;
+use crate::execution::sync::TaskMutexGuard;
 use crate::fallible_tree::FallibleMap;
 use crate::memory::PAGE_SIZE;
-use crate::sync::TaskMutexGuard;
 
 mod codec;
 use codec::*;
@@ -591,7 +591,7 @@ impl Journal {
         fs.device.flush().map_err(block_error)?;
         scratch.fill(0);
         put_header(&mut *scratch, JBD2_COMMIT_BLOCK, sequence)?;
-        let nanoseconds = crate::timer::get_realtime_ns();
+        let nanoseconds = crate::execution::timer::get_realtime_ns();
         let seconds = nanoseconds / 1_000_000_000;
         put_be32(
             &mut *scratch,
@@ -849,7 +849,7 @@ impl<'a> MutationGuard<'a> {
         if !self.fs.journal.lock().ready_mut()?.active_fits_running() {
             self.fs.commit_running_transaction()?;
         }
-        let now = crate::timer::get_time_ns();
+        let now = crate::execution::timer::get_time_ns();
         let (started, due) = {
             let mut owner = self.fs.journal.lock();
             let journal = owner.ready_mut()?;

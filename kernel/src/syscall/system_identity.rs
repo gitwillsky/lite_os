@@ -1,4 +1,4 @@
-use crate::{syscall::errno, system, task::current_task};
+use crate::{execution::task::current_task, syscall::errno, system};
 
 const UTS_FIELD_BYTES: usize = 65;
 const UTS_FIELD_COUNT: usize = 6;

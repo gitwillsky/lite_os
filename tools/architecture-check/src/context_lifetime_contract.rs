@@ -3,10 +3,10 @@ use quote::ToTokens;
 use syn::Item;
 
 use super::SourceFile;
-const MODEL: &str = "kernel/src/task/model.rs";
-const CLONE: &str = "kernel/src/task/model/process_clone.rs";
-const CONTEXT: &str = "kernel/src/task/model/context_storage.rs";
-const EXEC: &str = "kernel/src/task/model/process_exec.rs";
+const MODEL: &str = "kernel/src/execution/task/model.rs";
+const CLONE: &str = "kernel/src/execution/task/model/process_clone.rs";
+const CONTEXT: &str = "kernel/src/execution/task/model/context_storage.rs";
+const EXEC: &str = "kernel/src/execution/task/model/process_exec.rs";
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     for (path, method) in [(MODEL, "clone_thread"), (CLONE, "clone_process")] {

@@ -3,7 +3,10 @@
 use alloc::sync::Arc;
 use spin::Once;
 
-use crate::hal::{InterruptError, InterruptHandler, InterruptVector, MmioBus};
+use crate::{
+    arch::mmio::MmioBus, execution::interrupt::InterruptError,
+    execution::interrupt::InterruptHandler, execution::interrupt::InterruptVector,
+};
 
 const RECEIVE_BUFFER: usize = 0;
 const INTERRUPT_ENABLE: usize = 1;
@@ -42,7 +45,7 @@ impl InterruptHandler for UartInterruptHandler {
             bytes[count] = uart.read(RECEIVE_BUFFER);
             count += 1;
         }
-        crate::hal::console::publish_received(&bytes[..count]);
+        crate::devices::console::publish_received(&bytes[..count]);
         Ok(())
     }
 }

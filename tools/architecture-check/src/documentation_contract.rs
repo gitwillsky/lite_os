@@ -215,7 +215,7 @@ fn check_document_ownership(
         "HartTopology",
         "HartState",
         "arch::hart",
-        "drivers::platform",
+        "devices::model::platform",
         "task::TrapContext",
         "task::TaskContext",
         "kernel/src/arch/riscv64/hart.rs",

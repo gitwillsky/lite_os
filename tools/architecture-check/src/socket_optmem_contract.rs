@@ -14,8 +14,8 @@ fn before(source: &str, first: &str, second: &str) -> bool {
     matches!((source.find(first), source.find(second)), (Some(a), Some(b)) if a < b)
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let memory = normalized(source(sources, "kernel/src/socket/control_memory.rs"));
-    let network = normalized(source(sources, "kernel/src/socket/net_namespace.rs"));
+    let memory = normalized(source(sources, "kernel/src/net/control_memory.rs"));
+    let network = normalized(source(sources, "kernel/src/net/net_namespace.rs"));
     let import = normalized(source(sources, "kernel/src/syscall/socket/control_list.rs"));
     let message = normalized(source(sources, "kernel/src/syscall/socket/message.rs"));
     let send = message
@@ -33,7 +33,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         || !memory.contains("self.memory.used.fetch_sub(self.bytes,")
         || !network.contains("optmem_max:AtomicU32::new(128*1024)")
         || !network.contains("self.optmem_max.store(value,Ordering::Relaxed)")
-        || !import.contains("_charge:crate::socket::ControlMemoryCharge")
+        || !import.contains("_charge:crate::net::ControlMemoryCharge")
         || !before(
             &import,
             "iflength<=INLINE_CONTROL",
@@ -53,14 +53,14 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("socket-optmem: actual per-socket atomic admission must charge requested bytes against captured NET policy before allocation/copy, retain heap token through protocol send and refund exactly once".into());
     }
-    let prepare = normalized(source(sources, "kernel/src/socket/preparation.rs"));
+    let prepare = normalized(source(sources, "kernel/src/net/preparation.rs"));
     let abi = normalized(source(sources, "kernel/src/syscall/socket.rs"));
     let proc = normalized(source(sources, "kernel/src/fs/procfs/opened_operations.rs"));
     if !prepare.contains("letmemory=super::SocketMemory::try_new(namespace)?")
         || !prepare.contains("memory:self.memory")
         || !abi.contains("task.net_namespace()")
         || !abi.contains("listener.net_namespace(),")
-        || !proc.contains("OptmemLimit(Arc<crate::socket::NetNamespace>)")
+        || !proc.contains("OptmemLimit(Arc<crate::net::NetNamespace>)")
         || !proc.contains("if!target.may_set_limits(writer){")
         || !proc.contains("target.set_optmem_max(value,writer)")
     {
@@ -81,7 +81,7 @@ mod tests {
     fn overshoot_unmetered_copy_early_refund_and_accept_redirection_are_rejected() {
         for (path, old, new) in [
             (
-                "kernel/src/socket/control_memory.rs",
+                "kernel/src/net/control_memory.rs",
                 "next >= maximum",
                 "next > maximum",
             ),

@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-const SOURCE: &str = "kernel/src/socket/packet.rs";
+const SOURCE: &str = "kernel/src/net/packet.rs";
 const ENDPOINTS: usize = 64;
 
 pub(super) fn check(root: &Path, errors: &mut Vec<String>) {

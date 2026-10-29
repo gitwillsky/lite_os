@@ -15,8 +15,9 @@ from ext4_image import find_debugfs, debugfs_path
 from local_inputs import INPUTS
 from qemu_gate import boot, guest_inittab, SHELL_PROMPT, ShellCommand
 from sync_userland import synchronize
-from verify_busybox import base_userland, build_musl_probe, BUSYBOX_KERNEL_ARGUMENTS
-from verify_musl import cached_musl_paths, find_compiler, run
+from userland.artifacts import base_userland
+from verify_busybox import build_musl_probe, BUSYBOX_KERNEL_ARGUMENTS
+from toolchain.musl import cached_musl_paths, find_compiler, run
 
 ROOT = Path(__file__).resolve().parents[1]
 

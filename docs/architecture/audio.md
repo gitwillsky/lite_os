@@ -2,8 +2,8 @@
 
 ## 生产链路
 
-用户态通过 Linux ALSA `/dev/snd/pcmC0D0p` 写入独立 playback 子流；`kernel::audio::engine`
-把运行中的子流混成一个物理 period，经 `drivers::PcmOutput` 交给 VirtIO Sound device ID 25。
+用户态通过 Linux ALSA 访问每张声卡：`pcmCND0p` 提供桌面共享混音，`pcmCND1p` 提供原生格式独占输出。
+`kernel::devices::audio::engine` 经 `devices::model::PcmOutput` 消费实际 adapter 能力；当前硬件实现为 VirtIO Sound。
 媒体播放机经 libmpv/FFmpeg 解码、alsa-lib 写入同一 PCM；没有用户态混音服务或私有音频 IPC。
 桌面的系统提示音由 `user/libraries/sound` 直接写同一个 PCM：登录完成、注销、清空回收站各播一段，只有本地提取了原版素材时才安装，
 设备不可用（例如非 root 账户没有 `/dev/snd` 权限）时静默跳过。
@@ -16,11 +16,12 @@ UTM 只在 `Sound` 非空时启用客户端音频；空列表配合手工 QEMU �
 
 - 卡提供 8 个软件 playback 子流；默认 open 占用首个空槽，也可由同一 opener TID 的 control OFD
   指定子设备。OFD 独占状态、应用指针和全新 ring backing。
-- PCM 固定 48 kHz、双声道、F32_LE、period 256 帧；软件 buffer 经标准 HW_REFINE/HW_PARAMS
+- 共享端点固定 48 kHz、双声道、F32_LE、period 256 帧；软件 buffer 经标准 HW_REFINE/HW_PARAMS
   协商为 4..=32 个 period（1024..=8192 帧），支持 RW 与 mmap interleaved。
   物理 DMA 队列仍为 4 个 period；软件 ring 不再受其 21ms 容量限制，普通播放器可申请约 100ms 缓冲。
-- 卡级 `Engine` 独占物理流、子流槽位、在途 period 的各子流有效帧数和 Master；物理流在卡初始化时
-  configure/prepare 一次，各子流的 HW_PARAMS/PREPARE 不重配设备。
+- 每个 adapter 对应一张卡；共享端点与独占端点互斥。独占端点的 HW_REFINE/HW_PARAMS 与实际设备能力求交，
+  按协商采样率、位深、声道与 period 配置物理流，提交原始 PCM bytes，不经过软件混音、增益或重采样。
+  configure/release 等冷路径由可睡眠的卡级配置锁串行化，不持 Engine spin lock 等待设备。
 - 应用提交或设备完成触发 tick，最多预送物理缓冲容量减一的 3 个 period（16 ms），保留一段应用数据跨越批量完成；
   完成时只推进实际贡献子流的 hw_ptr。全部预送会在整批 TX 完成、写进程尚未补充时提前耗尽应用数据并报告 XRUN。
   批量完成后先补填队列，补填后仍为空才停止并重新 prepare；否则连续播放会随每批完成反复停启物理流。
@@ -40,6 +41,8 @@ UTM 只在 `Sound` 非空时启用客户端音频；空列表配合手工 QEMU �
   Prepared/Running 状态更新；状态时间戳不提供硬件级采样精度或 trigger timestamp。
 
 ## 失败与当前限制
+
+原生端点只保证 guest 到 adapter 的 PCM 保真；UTM/SPICE 出口仍可能转换格式。USB Audio 驱动与 macOS 独占后端尚未实现，不能据此宣称端到端 bit-perfect。
 
 OFD close 清除该子流在所有在途 period 的归属，再归还槽位，旧 mmap backing 不会与新 open 共享。
 物理设备失败使整张卡断开，poll 返回错误/挂断；单子流欠载进入 XRUN，WRITEI 返回 EPIPE，客户端可 PREPARE 恢复。

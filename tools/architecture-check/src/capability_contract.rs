@@ -29,18 +29,18 @@ fn require(source: &SourceFile, facts: &[&str], message: &str, errors: &mut Vec<
     }
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let credentials = source(sources, "kernel/src/task/model/credentials.rs");
+    let credentials = source(sources, "kernel/src/execution/task/model/credentials.rs");
     if field(credentials, "Credentials", "capabilities").as_deref() != Some("CapabilityState") {
         errors.push("Credentials must own capabilities under the same credential lock".into());
     }
     for (path, structure, expected) in [
         (
-            "kernel/src/task/model.rs",
+            "kernel/src/execution/task/model.rs",
             "Process",
             "LeaderCredentialsHandle",
         ),
         (
-            "kernel/src/task/process_table.rs",
+            "kernel/src/execution/task/process_table.rs",
             "ProcessNode",
             "super :: model :: LeaderCredentialsHandle",
         ),
@@ -70,7 +70,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         "credential authorization and prepared exec must retain commoncap subset/ID rules",
         errors,
     );
-    let exec = source(sources, "kernel/src/task/model/process_exec.rs");
+    let exec = source(sources, "kernel/src/execution/task/model/process_exec.rs");
     let stages = [
         "prepare_exec_credentials(",
         "credentials.stack_credentials()",
@@ -86,7 +86,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             }
         }
     }
-    let reap = source(sources, "kernel/src/task/process_table/wait_child/claim.rs");
+    let reap = source(
+        sources,
+        "kernel/src/execution/task/process_table/wait_child/claim.rs",
+    );
     require(
         reap,
         &["retired.retire(&mut graph, record.pid)", "drop(retired);"],
@@ -168,7 +171,7 @@ mod tests {
     #[test]
     fn rejects_copied_zombie_capabilities() {
         reject(
-            "kernel/src/task/process_table.rs",
+            "kernel/src/execution/task/process_table.rs",
             "leader_credentials: super::model::LeaderCredentialsHandle,",
             "leader_credentials: CapabilityState,",
             "retargetable",
@@ -177,7 +180,7 @@ mod tests {
     #[test]
     fn rejects_scheduler_subset_bypass() {
         reject(
-            "kernel/src/task/model/credentials.rs",
+            "kernel/src/execution/task/model/credentials.rs",
             "target.capabilities.snapshot().sets.permitted & !caller_permitted == 0",
             "true",
             "commoncap subset",
@@ -195,7 +198,7 @@ mod tests {
     #[test]
     fn rejects_exec_recomputing_after_stack() {
         reject(
-            "kernel/src/task/model/process_exec.rs",
+            "kernel/src/execution/task/model/process_exec.rs",
             "self.commit_exec_credentials(credentials, loaded.readable());",
             "self.apply_exec_setid(0,0,0);",
             "same prepared",

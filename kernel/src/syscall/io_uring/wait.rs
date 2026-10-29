@@ -14,8 +14,8 @@ use core::{
 use spin::Mutex;
 
 use crate::{
-    file::OpenFileDescription, fs::CompletionNotify, io_uring::Ring, socket::SocketCapacityWait,
-    task::TaskControlBlock,
+    execution::task::TaskControlBlock, file::OpenFileDescription, fs::CompletionNotify,
+    io_uring::Ring, net::SocketCapacityWait,
 };
 
 /// 请求种类：只用于取消匹配和决定 CQE 的发布方式（timeout 的完成不计入事件数）。
@@ -390,7 +390,7 @@ impl CompletionNotify for WaiterInner {
 }
 
 fn link_due(deadline: u64) -> bool {
-    deadline <= crate::timer::get_time_ns()
+    deadline <= crate::execution::timer::get_time_ns()
 }
 
 pub(super) fn event_count_reached(ring: &Ring, target: u32) -> bool {
@@ -399,5 +399,5 @@ pub(super) fn event_count_reached(ring: &Ring, target: u32) -> bool {
 
 fn timeout_due(ring: &Ring, deadline: u64, target_events: Option<u32>) -> bool {
     target_events.is_some_and(|target| event_count_reached(ring, target))
-        || deadline <= crate::timer::get_time_ns()
+        || deadline <= crate::execution::timer::get_time_ns()
 }

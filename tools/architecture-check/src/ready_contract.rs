@@ -9,8 +9,8 @@ use super::{SourceFile, normalized};
 
 const READY_TRANSITION_CONSUMER: &str = "consume_ready_projection_parts";
 const READY_RETIREMENT_CONSUMER: &str = "consume_ready_projection_cpu";
-const READY_MEMBERSHIP_PATH: &str = "kernel/src/task/processor/ready_membership.rs";
-const PROCESSOR_PATH: &str = "kernel/src/task/processor.rs";
+const READY_MEMBERSHIP_PATH: &str = "kernel/src/execution/task/processor/ready_membership.rs";
+const PROCESSOR_PATH: &str = "kernel/src/execution/task/processor.rs";
 const READY_TRANSITION_COMMIT: &str = "commit_ready_transition";
 const READY_RETIREMENT_COMMIT: &str = "commit_ready_retirement";
 const READY_COMMIT_IMPORT: &str =
@@ -440,9 +440,9 @@ fn check_transition_shapes(sources: &[SourceFile], errors: &mut Vec<String>) {
         if !visitor.uses.is_empty() {
             let reviewed_super_glob = matches!(
                 source.relative.as_str(),
-                "kernel/src/task/processor/job_control.rs"
-                    | "kernel/src/task/processor/placement.rs"
-                    | "kernel/src/task/processor/ready_queue.rs"
+                "kernel/src/execution/task/processor/job_control.rs"
+                    | "kernel/src/execution/task/processor/placement.rs"
+                    | "kernel/src/execution/task/processor/ready_queue.rs"
             );
             for (line, import) in &visitor.glob_imports {
                 if !reviewed_super_glob || import != "super :: *" {

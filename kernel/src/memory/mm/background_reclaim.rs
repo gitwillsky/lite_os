@@ -128,7 +128,7 @@ impl MemorySet {
 
 /// Registered address-space adapter; IO always follows release of the originating MM guard.
 pub(crate) fn reclaim_address_space(
-    memory_set: &crate::sync::TaskMutex<MemorySet>,
+    memory_set: &crate::execution::sync::TaskMutex<MemorySet>,
     request: ReclaimRequest,
 ) -> ReclaimResult {
     if !request.allows_swap_io() {

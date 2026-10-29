@@ -5,9 +5,7 @@ extern crate alloc;
 #[path = "../src/shm_backing_fixture.rs"]
 mod memory;
 #[path = "../src/socket_core_fixture.rs"]
-mod socket;
-#[path = "../src/sync.rs"]
-mod sync;
+mod net;
 
 #[path = "../src/ipc_namespace_fixture.rs"]
 mod ipc;
@@ -114,4 +112,10 @@ mod fs {
             );
         }
     }
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
 }

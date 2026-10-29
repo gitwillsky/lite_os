@@ -18,7 +18,7 @@ allocator 上界交给 `memory::init`；memory 不反向调用 crash，页表仍
 | `panic::DISPLAY` | `crash::panic` | 无蓝屏，只有串口 |
 | `watchdog::BOOT_CPU_DEFERRED_US` | `crash::watchdog` | deferred 死锁表现为静默冻结 |
 | `PREVIOUS` | `crash` | 记录读出即作废，`/proc/last_panic` 无内容 |
-| `VirtIOGpuDevice::panic_screen` | `virtio::gpu` | DRM 接管后 panic 无法上屏 |
+| `VirtIOGpuDevice::panic_screen` | `drivers::virtio::gpu` | DRM 接管后 panic 无法上屏 |
 
 
 ## Interface 与安全证明

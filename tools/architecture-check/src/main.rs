@@ -38,6 +38,7 @@ mod ipv4_address_contract;
 mod ipv4_routing_contract;
 mod log_cost;
 mod memory_copy_cost;
+mod module_layout;
 mod namespace_quota_contract;
 mod netlink_namespace_contract;
 mod netns_publication_contract;
@@ -122,6 +123,7 @@ fn main() -> ExitCode {
         }
     };
 
+    module_layout::check(&root, &sources, &mut errors);
     dependency_contract::check(&root, &sources, &mut errors);
     source_size::check(&root, &sources, &mut errors, &mut review_notices);
     source_pattern_contract::check(&root, &sources, &mut errors);

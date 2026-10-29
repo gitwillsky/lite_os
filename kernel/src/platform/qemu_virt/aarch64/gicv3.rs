@@ -7,10 +7,13 @@ use spin::Once;
 
 use crate::{
     arch::interrupt::SOFTWARE_SGI,
-    cpu::{self, CpuSet},
+    arch::mmio::MmioBus,
+    execution::cpu::{self, CpuSet},
+    execution::interrupt::InterruptError,
+    execution::interrupt::InterruptHandler,
+    execution::interrupt::InterruptVector,
+    execution::sync::IrqMutex,
     fallible_tree::FallibleMap,
-    hal::{InterruptError, InterruptHandler, InterruptVector, MmioBus},
-    sync::IrqMutex,
 };
 
 use super::{super::ClaimedInterrupt, device_tree::GicV3Info};

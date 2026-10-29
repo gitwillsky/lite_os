@@ -9,7 +9,7 @@ pub(crate) enum RtcError {
 
 /// 从 Goldfish RTC MMIO 读取 realtime 纳秒值。
 pub(crate) struct GoldfishRTCDevice {
-    bus: crate::hal::MmioBus,
+    bus: crate::arch::mmio::MmioBus,
 }
 
 impl GoldfishRTCDevice {
@@ -31,7 +31,8 @@ impl GoldfishRTCDevice {
         if size < RTC_TIME_HIGH + core::mem::size_of::<u32>() {
             return Err(RtcError::InvalidRange);
         }
-        let bus = crate::hal::MmioBus::new(base_addr, size).map_err(|_| RtcError::InvalidRange)?;
+        let bus =
+            crate::arch::mmio::MmioBus::new(base_addr, size).map_err(|_| RtcError::InvalidRange)?;
         Ok(Self { bus })
     }
 

@@ -4,46 +4,6 @@
 
 extern crate alloc;
 
-#[path = "../../../kernel/src/sync"]
-mod sync {
-    mod wait_completion;
-    pub(crate) use wait_completion::WaitCompletion;
-    mod task_event;
-    mod task_wait;
-    pub(crate) use task_event::TaskEvent;
-    pub(crate) use task_wait::{
-        TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory, task_interrupted,
-    };
-    pub(crate) struct TaskMutexWaitPreparation;
-    impl TaskMutexWaitPreparation {
-        pub(crate) fn prepare() -> Result<Self, ()> {
-            Ok(Self)
-        }
-    }
-    pub(crate) struct IrqMutex<T>(spin::Mutex<T>);
-    impl<T> IrqMutex<T> {
-        pub(crate) const fn new(value: T) -> Self {
-            Self(spin::Mutex::new(value))
-        }
-        pub(crate) fn lock(&self) -> spin::MutexGuard<'_, T> {
-            self.0.lock()
-        }
-    }
-    pub(crate) type TaskMutexGuard<'a, T> = std::sync::MutexGuard<'a, T>;
-    pub(crate) struct TaskMutex<T>(std::sync::Mutex<T>);
-    impl<T> TaskMutex<T> {
-        pub(crate) fn new(value: T) -> Self {
-            Self(std::sync::Mutex::new(value))
-        }
-        pub(crate) fn try_lock(&self) -> Option<TaskMutexGuard<'_, T>> {
-            self.0.try_lock().ok()
-        }
-        pub(crate) fn lock(&self) -> Result<std::sync::MutexGuard<'_, T>, ()> {
-            self.0.lock().map_err(|_| ())
-        }
-    }
-}
-
 #[path = "../../../kernel/src/fallible_tree/mod.rs"]
 mod fallible_tree;
 
@@ -595,12 +555,6 @@ mod memory {
     }
 }
 
-mod timer {
-    pub(crate) fn get_realtime_ns() -> u64 {
-        1_000_000_000
-    }
-}
-
 #[path = "../../../kernel/src/fs"]
 mod fs {
     #[derive(Debug, PartialEq, Eq)]
@@ -702,4 +656,52 @@ fn future_write_seal_preserves_existing_admission_and_blocks_new_writers() {
     assert!(!read_only.may_write());
     drop(existing);
     quota.file.add_seals(8).unwrap();
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../../../kernel/src/execution/sync"]
+    pub(crate) mod sync {
+        mod wait_completion;
+        pub(crate) use wait_completion::WaitCompletion;
+        mod task_event;
+        mod task_wait;
+        pub(crate) use task_event::TaskEvent;
+        pub(crate) use task_wait::{
+            TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory, task_interrupted,
+        };
+        pub(crate) struct TaskMutexWaitPreparation;
+        impl TaskMutexWaitPreparation {
+            pub(crate) fn prepare() -> Result<Self, ()> {
+                Ok(Self)
+            }
+        }
+        pub(crate) struct IrqMutex<T>(spin::Mutex<T>);
+        impl<T> IrqMutex<T> {
+            pub(crate) const fn new(value: T) -> Self {
+                Self(spin::Mutex::new(value))
+            }
+            pub(crate) fn lock(&self) -> spin::MutexGuard<'_, T> {
+                self.0.lock()
+            }
+        }
+        pub(crate) type TaskMutexGuard<'a, T> = std::sync::MutexGuard<'a, T>;
+        pub(crate) struct TaskMutex<T>(std::sync::Mutex<T>);
+        impl<T> TaskMutex<T> {
+            pub(crate) fn new(value: T) -> Self {
+                Self(std::sync::Mutex::new(value))
+            }
+            pub(crate) fn try_lock(&self) -> Option<TaskMutexGuard<'_, T>> {
+                self.0.try_lock().ok()
+            }
+            pub(crate) fn lock(&self) -> Result<std::sync::MutexGuard<'_, T>, ()> {
+                self.0.lock().map_err(|_| ())
+            }
+        }
+    }
+    pub(crate) mod timer {
+        pub(crate) fn get_realtime_ns() -> u64 {
+            1_000_000_000
+        }
+    }
 }

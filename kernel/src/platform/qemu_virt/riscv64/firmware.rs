@@ -163,7 +163,7 @@ pub(crate) fn verify_firmware() {
 ///
 /// firmware 接受启动请求时返回 `Ok(())`，否则返回 SBI error。
 pub(crate) fn start_cpu(
-    hardware_cpu_id: crate::cpu::HardwareCpuId,
+    hardware_cpu_id: crate::execution::cpu::HardwareCpuId,
     start_address: usize,
     boot: super::BootInfo,
 ) -> Result<(), CpuStartError> {
@@ -262,7 +262,7 @@ pub(crate) fn arm_timer(timer_value: u64) -> Result<(), TimerArmError> {
 /// # Returns
 ///
 /// 成功返回 `Ok(())`，失败返回 SBI error。
-pub(crate) fn send_ipi(cpus: crate::cpu::CpuSet) -> Result<(), FirmwareError> {
+pub(crate) fn send_ipi(cpus: crate::execution::cpu::CpuSet) -> Result<(), FirmwareError> {
     for_each_hardware_mask(cpus, |mask, base| {
         let (error, value) = sbi_call(EID_IPI, FID_SEND_IPI, [mask, base, 0, 0, 0, 0]);
         value_or_error(error, value).map(|_| ())
@@ -282,7 +282,7 @@ pub(crate) fn send_ipi(cpus: crate::cpu::CpuSet) -> Result<(), FirmwareError> {
 ///
 /// SBI 仅在所有目标 hart 完成 fence 后返回 `Ok(())`；失败返回 SBI error。
 pub(crate) fn synchronize_tlb(
-    cpus: crate::cpu::CpuSet,
+    cpus: crate::execution::cpu::CpuSet,
     start_address: usize,
     size: usize,
 ) -> Result<(), TlbShootdownError> {
@@ -308,7 +308,7 @@ pub(crate) fn synchronize_tlb(
 ///
 /// SBI 在全部目标完成后返回成功；失败返回 firmware error。
 pub(crate) fn synchronize_instruction_cache(
-    cpus: crate::cpu::CpuSet,
+    cpus: crate::execution::cpu::CpuSet,
 ) -> Result<(), InstructionFenceError> {
     for_each_hardware_mask(cpus, |mask, base| {
         let (error, value) = sbi_call(EID_RFENCE, FID_REMOTE_FENCE_I, [mask, base, 0, 0, 0, 0]);
@@ -319,15 +319,15 @@ pub(crate) fn synchronize_instruction_cache(
 }
 
 fn for_each_hardware_mask<E>(
-    mut cpus: crate::cpu::CpuSet,
+    mut cpus: crate::execution::cpu::CpuSet,
     mut operation: impl FnMut(usize, usize) -> Result<(), E>,
 ) -> Result<(), E> {
     while let Some(first) = cpus.iter().next() {
-        let first_hardware = crate::cpu::hardware_id(first).raw();
+        let first_hardware = crate::execution::cpu::hardware_id(first).raw();
         let base = first_hardware / usize::BITS as usize * usize::BITS as usize;
         let mut mask = 0usize;
         for cpu in cpus.iter() {
-            let hardware = crate::cpu::hardware_id(cpu).raw();
+            let hardware = crate::execution::cpu::hardware_id(cpu).raw();
             if hardware >= base && hardware - base < usize::BITS as usize {
                 mask |= 1usize << (hardware - base);
                 cpus.remove(cpu);

@@ -26,7 +26,7 @@ fn measure(root: &Path) -> Result<StagingCost, String> {
     let sequential = read(root, SEQUENTIAL)?;
     let sequential_read = read(root, SEQUENTIAL_READ)?;
     let message = read(root, MESSAGE)?;
-    let socket = read(root, "kernel/src/socket/mod.rs")?;
+    let socket = read(root, "kernel/src/net/mod.rs")?;
     let buffer = read(root, "kernel/src/ipc/receive_buffer.rs")?;
     let legacy = usize::from(
         sequential.contains("bytes.resize(length, 0)")

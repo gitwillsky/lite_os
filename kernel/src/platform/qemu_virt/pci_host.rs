@@ -1,6 +1,6 @@
 /// 通用 PCI ECAM host 的设备发现事实；只有存在 PCI host 的机器（UTM 产品拓扑）才有。
 ///
-/// 配置空间枚举与 VirtIO PCI transport 解码属于 `virtio`，这里只给出窗口与 INTx 路由。
+/// 配置空间枚举与 BAR 分配属于 `pci`，具体 transport 由 adapter 解码；这里只给出窗口与 INTx 路由。
 #[derive(Debug, Clone)]
 pub(crate) struct PciHost {
     /// ECAM 配置空间的 physical 窗口。
@@ -26,7 +26,7 @@ impl PciHost {
 
     /// 设备 `slot` 的 INTx `pin`（1..=4）路由到的中断 vector；未路由返回 `None`。
     pub(crate) fn interrupt(&self, slot: usize, pin: usize) -> Option<u32> {
-        let vector = *self.intx.get(slot)?.get(pin.checked_sub(1)?)?;
+        let vector = *self.intx.get(slot & 3)?.get(pin.checked_sub(1)?)?;
         (vector != 0).then_some(vector)
     }
 }

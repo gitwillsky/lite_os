@@ -1,6 +1,6 @@
 //! 按生产嵌套层级装配真实 policy owner；benchmark 只计 evaluation，不外推 graph 提交成本。
 pub(crate) use super::TaskControlBlock;
-#[path = "../../../tools/kernel-view/task/model/seccomp/seccomp/seccomp.rs"]
+#[path = "../../../tools/kernel-view/execution/task/model/seccomp/seccomp/seccomp.rs"]
 pub(crate) mod seccomp;
 
 pub(crate) fn install_filter(owner: &seccomp::ThreadSecurityOwner, bytes: &[u8]) {

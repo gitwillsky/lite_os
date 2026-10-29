@@ -28,7 +28,7 @@ fn allowed_ready_consumers() -> SourceFile {
 
 fn bypass_ready_consumers() -> SourceFile {
     source(
-        "kernel/src/task/process_table.rs",
+        "kernel/src/execution/task/process_table.rs",
         r#"
             use SchedulingState::transition_to_ready as alias;
             use core::mem::forget as commit_ready_transition;
@@ -58,7 +58,7 @@ fn ready_projection_tokens_have_only_the_two_commit_callers() {
     assert!(errors.is_empty(), "{errors:#?}");
 
     let forbidden = source(
-        "kernel/src/task/process_table.rs",
+        "kernel/src/execution/task/process_table.rs",
         r#"
             use model::ReadyTransition::consume_ready_projection_parts as bypass;
             use core::mem::forget as commit_ready_transition;
@@ -112,7 +112,7 @@ fn ready_projection_fence_rejects_nested_impl_and_duplicate_committers() {
 #[test]
 fn ready_transitions_must_be_direct_commit_arguments() {
     let allowed = source(
-        "kernel/src/task/processor/placement.rs",
+        "kernel/src/execution/task/processor/placement.rs",
         r#"
             use super::*;
             fn publish(mut scheduling: SchedulingState) {

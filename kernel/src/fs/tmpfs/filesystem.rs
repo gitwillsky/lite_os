@@ -95,3 +95,41 @@ impl FileSystem for TmpFileSystem {
         })
     }
 }
+
+/// tmpfs 类型：`size=`、`nr_blocks=`、`nr_inodes=`、`mode=`、`uid=`、`gid=`。
+pub(in crate::fs) struct TmpFileSystemType;
+
+impl FileSystemType for TmpFileSystemType {
+    fn user_namespace_mount(&self) -> bool {
+        true
+    }
+    fn name(&self) -> &'static str {
+        "tmpfs"
+    }
+
+    fn create(
+        &self,
+        request: &MountRequest<'_>,
+    ) -> Result<crate::fs::mount::CreatedFileSystem, FileSystemError> {
+        let ram_pages = request
+            .environment
+            .proc_source
+            .snapshot(
+                crate::fs::ProcSnapshotScope::System,
+                &request.environment.proc_source.current_pid_namespace(),
+            )?
+            .total_pages as u64;
+        let options = options::parse(
+            request.options,
+            ram_pages,
+            options::defaults(ram_pages, request.identity.uid(), request.identity.gid()),
+            &request.identity.user_namespace(),
+        )
+        .map_err(|_| FileSystemError::InvalidOperation)?;
+        let filesystem = TmpFileSystem::new(&options, ram_pages)?;
+        Ok(crate::fs::mount::CreatedFileSystem {
+            filesystem,
+            user_namespace: request.identity.user_namespace(),
+        })
+    }
+}

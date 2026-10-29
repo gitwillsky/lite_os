@@ -8,11 +8,7 @@ mod allocation_failure;
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-mod timer {
-    pub(crate) fn get_realtime_ns() -> u64 {
-        5_000_000_000
-    }
-}
+
 #[path = "../../../kernel/src/fs"]
 mod fs {
     use alloc::sync::Arc;
@@ -237,6 +233,14 @@ mod fs {
             }
             samples.sort_by(f64::total_cmp);
             println!("{operation}: median {:.2} ns", samples[2]);
+        }
+    }
+}
+
+pub(crate) mod execution {
+    pub(crate) mod timer {
+        pub(crate) fn get_realtime_ns() -> u64 {
+            5_000_000_000
         }
     }
 }

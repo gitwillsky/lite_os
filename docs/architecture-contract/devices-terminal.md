@@ -2,15 +2,15 @@
 
 ## Owner
 
-- concrete VirtIO adapter 独占 queue、DMA、descriptor、completion 与 reset state；`drivers` 只发布通用 device seam。
+- concrete VirtIO adapter 独占 queue、DMA、descriptor、completion 与 reset state；`devices::model` 只发布通用设备类接口。
 - VirtIO Console adapter 独占 control RX/TX 与 exact-name 命中的唯一 data RX/TX pair、fixed RX/TX slot、named-port control state、
-  byte ring 与 terminal reset；`virtio_port` domain 独占自己创建的 notification Pipe。`drivers` 只发布
+  byte ring 与 terminal reset；`devices::virtio_port` domain 独占自己创建的 notification Pipe。`drivers` 只发布
   唯一物理 byte-stream seam，devfs 不复制 connected/readable/writable state。`VirtIODevice` 的
   transport enum 是 MMIO 与 PCI 的唯一分派点；两种 transport 不得各自实现 console adapter。
 - `VirtQueue` 独占 split-ring cursor、descriptor free list 与单一 pending-used latch；`used()` 只摘取
   ring entry 并返回不可复制的 `UsedDescriptor`，`recycle_used()` 只消费当前 queue 的唯一 token。
   adapter slot/generation/head、device length 与 response 尚未验证前，free list 不得改变。
-- `virtio::queue::DmaBuffer` 是 fixed bytes 与初始化时 kernel-VA→physical segments 的唯一共同
+- `drivers::virtio::queue::DmaBuffer` 是 fixed bytes 与初始化时 kernel-VA→physical segments 的唯一共同
   owner；adapter slot 从映射建立保持到 completion 或 reset，`VirtQueue` 只消费带 lifetime 的
   cached `DmaSlice`，不拥有、翻译或延长 backing 生命周期。
 - VirtIO-GPU `GpuCommand` 是 runtime opcode、wire length 与 completion stage 的唯一共同 owner；
@@ -21,14 +21,14 @@
   占用时只覆盖尚未发布的 latest position，并携带 cursorq 当前 resource 可见性，ioctl 不等待 used
   completion；shape update 必须等待 slot readiness，且 DRM cursor2 wait token 在 exact used completion
   前保活 64×64 B8G8R8A8 dumb backing。
-- `drivers::io_completion` 是 block/RNG 共用的唯一 request slot、descriptor identity、completion
+- `devices::model::io_completion` 是 block/RNG 共用的唯一 request slot、descriptor identity、completion
   handshake 与 capacity membership owner；typed `IoWaitKey { device, kind }` 保留完整 slot、
   generation 与 ticket，不位打包或复制 adapter 私有 wait ABI。`device` 是每个 adapter 构造时分配的
   实例 identity，而非设备种类；同类多实例按种类区分会让 completion 唤醒另一设备的 waiter。block 的 16 个 fixed slots 独占
   request/data/status DMA，RNG 的 4 个 fixed slots 独占 device-write DMA；scheduler 只通过
   `IoWaitTarget` callback 拥有 `WaitMembership::DriverIo`。
-- `hal::console` 独占 console RX ring 与通用串口 `ConsoleDevice`（platform 提供设备名与同步输出原语）；
-  `tty` 经它读写 raw 字节。输出原语接收整段字节，platform 必须在与内核日志相同的 console 序列化锁内
+- `devices::console` 独占 console RX ring 与通用串口 `ConsoleDevice`（platform 提供设备名与同步输出原语）；
+  `devices::tty` 经它读写 raw 字节。输出原语接收整段字节，platform 必须在与内核日志相同的 console 序列化锁内
   写完整段（aarch64/riscv64 各自的 `CONSOLE`）；逐字节输出会让 tty 数据插进一条内核日志的中间，
   日志行被撕裂，依赖串口提示符的 runtime gate 在多核下概率性失败。单次写入至多 512 字节，所以
   锁内的本地中断屏蔽时间与一条内核日志同量级；原语不得记录日志，否则会重入同一把 `IrqMutex`。
@@ -37,14 +37,14 @@
   Benchmark 决策：不新增 benchmark。每次 tty write 只多一次无竞争取锁，被其后逐字节的 UART MMIO
   轮询淹没；riscv64 的 SBI 调用数反而从逐字节降为 `ceil(n/256)`，日志批量成本由既有 `log_cost` 围栏继续约束。
   块设备 seam 属于 `block`，`fs` 不依赖 `drivers`。
-- `drivers::registry` 独占各设备类 adapter Arc 与 `DRIVER_IO` completion 源的发布；只追加，index 是
+- `devices::model::registry` 独占各设备类 adapter Arc 与 `DRIVER_IO` completion 源的发布；只追加，index 是
   稳定 identity，不区分“主设备”。platform 只经 trait 对象注册，消费领域不得持有具体 VirtIO 类型；具体 adapter 位于 `virtio`，块设备注册表归 `block`。
 - `drm::DrmDevice`/`DrmFile` 独占 display/KMS/GEM/framebuffer/master/event state；`input::EvdevDevice`/`InputFile` 独占 input/client state。
 - `fs::chardev` 独占字符设备 driver 注册表，`fs::devnode` 独占 devfs 节点与块设备注册表：driver 按单 major 内的 minor 区间登记（Linux `cdev_add`），
   devfs 节点按路径登记（devtmpfs）；devpts 等动态节点只登记 driver 区间。设备子系统以
   `DeviceFile` 拥有记录边界、阻塞、poll 唤醒源、ioctl UAPI 与 mmap 裁决，fs/devfs/syscall 不认识
   具体设备种类。
-- `tty` 独占系统 console Terminal 单例、TTY/pts 设备文件与 termios/session ioctl；`fs::mem` 独占
+- `devices::tty` 独占系统 console Terminal 单例、TTY/pts 设备文件与 termios/session ioctl；`fs::mem` 独占
   `null`/`zero`/`random`/`urandom`/`kmsg`。`tty::pty` 独占 PTY registry/pair；Terminal 独占
   session/foreground/termios/winsize 与创建时绑定的实际设备号。用户态终端只消费标准 PTY，
   图形窗口由共享 UI 运行库拥有。
@@ -68,7 +68,7 @@
   queue/control/event lock、遍历 `KERNEL_SPACE` 或回收 descriptor。net、GPU、input 的 ordinary
   adapter lock 只允许 task context 与统一 user-return/idle deferred safe point 进入；禁止为个别
   adapter 增设 IRQ-lock 兼容路径。
-- VirtIO Console hardirq 只发布 `virtio_port` 绑定的 deferred vector；deferred pass 必须先 claim/validate/recycle completion，
+- VirtIO Console hardirq 只发布 `devices::virtio_port` 绑定的 deferred vector；deferred pass 必须先 claim/validate/recycle completion，
   再 repost RX descriptor，并按每次 repost 通知对应 queue。用“used ring 仍有数据”代替 repost
   notification 会在恰好 drain 完一批后永久停止 host→guest stream，禁止这种近似。
 - `PORT_OPEN` 与 `PORT_NAME` 顺序没有领域保证；adapter 必须分别保存 host-open 与 exact-name match，
@@ -98,8 +98,8 @@
 - block/RNG hardirq 共用 `VirtIOCompletionIrq`：status/ack 成功时精确确认 bits，读取或 ack 失败时
   发布 transport-error latch，并无条件发布一次 `DriverIo` deferred work；safe point 消费 error 后
   reset/fail 全部 request。吞掉 MMIO error 会让已 claim 的唯一 IRQ edge 后 waiter 永久睡眠。
-- platform 是 concrete adapter 的唯一装配者；driver、DRM、input、filesystem 与 syscall 不得依赖 QEMU machine types。
-- AArch64 PCI owner 必须从 vendor capabilities 得到 modern common/notify/ISR/device windows，按
+- `main` 决定装配顺序，`drivers::virtio::binding` 拥有具体 VirtIO 绑定表；driver、DRM、input、filesystem 与 syscall 不得依赖 QEMU machine types。
+- VirtIO PCI discovery 必须从 vendor capabilities 得到 modern common/notify/ISR/device windows，按
   `cap.offset + queue_notify_off * notify_off_multiplier` 计算 doorbell，禁用 MSI-X 并只消费 DTB
   `interrupt-map` 给出的 INTx。BAR、capability chain、queue size 或 route 非法时不得发布半初始化 adapter。
 - QEMU `virt` 必须在任何 VirtIO queue publication 前证明 root `dma-coherent`；缺失时 fail-stop，禁止增加 bounce buffer、每次提交 cache flush 或“先运行再探测”的兼容路径。
@@ -145,7 +145,7 @@
 ### UART 基线
 
 - init 只监督网络服务、`display-service`（有 `/dev/dri/card0` 时 exec `/bin/compositor`，否则安静待命）与 UART shell，不建立 seat socket、显示器文本 VT 或旧图形会话。
-- `compositor` 独占 DRM master 与 evdev 读取；其首帧必须与内核 `boot_screen` 的最后一帧逐像素一致（`verify_display.py` 以 `LBS1` 参考解码器裁决），光标素材是 `LCS1` 数据文件，不内置常量。
+- `compositor` 独占 DRM master 与 evdev 读取；其首帧必须与内核 `boot::boot_screen` 的最后一帧逐像素一致（`verify_display.py` 以 `LBS1` 参考解码器裁决），光标素材是 `LCS1` 数据文件，不内置常量。
 - 指针焦点跟随光标下的窗口，键盘焦点跟随栈顶（活动）窗口；带描述符的消息（`wl_keyboard.keymap`）按段发送，fd 总先于引用它的消息到达。
 - `input::Decoder` 先累积原始相对位移并映射、钳制绝对坐标；会话仅原地合并同批相邻的语义指针位置，
   保留最新位置。按钮、按键和滚轮均为顺序屏障，不跨越屏障合并，不增加队列或分配。

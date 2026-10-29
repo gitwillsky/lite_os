@@ -36,7 +36,7 @@
 
 显示服务门禁（`scripts/verify_display.py`，`make verify-runtime-display`）在 QEMU（virtio-gpu、键盘、平板，无窗口）冷启动产品 rootfs：
 先等 compositor 的首帧与输入就绪标记，再经 QMP `screendump` 取回 scanout，与 `LBS1` 参考解码器按同一整数缩放居中规则算出的整帧逐像素
-比对；内核 `boot_screen` 与 compositor 任一方的缩放、居中或进度填充规则漂移都会失败。随后注入一次平板移动与一次按键，要求
+比对；内核 `boot::boot_screen` 与 compositor 任一方的缩放、居中或进度填充规则漂移都会失败。随后注入一次平板移动与一次按键，要求
 compositor 报告各自的首个事件。它不测量时间，参考帧与比对函数由 `scripts/tests/test_verify_display.py` 约束；只在 AArch64+HVF 承担。
 
 ## classic-ui 消费者

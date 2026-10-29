@@ -1,11 +1,11 @@
 use std::{fs, path::Path};
 
-const RNG_SOURCE: &str = "kernel/src/virtio/rng.rs";
-const BLOCK_SOURCE: &str = "kernel/src/block/device.rs";
-const VIRTIO_BLOCK_SOURCE: &str = "kernel/src/virtio/blk.rs";
-const IO_COMPLETION_SOURCE: &str = "kernel/src/drivers/io_completion.rs";
-const WAIT_COMPLETION_SOURCE: &str = "kernel/src/sync/wait_completion.rs";
-const VIRTIO_IRQ_SOURCE: &str = "kernel/src/virtio/completion_irq.rs";
+const RNG_SOURCE: &str = "kernel/src/drivers/virtio/rng.rs";
+const BLOCK_SOURCE: &str = "kernel/src/devices/block/device.rs";
+const VIRTIO_BLOCK_SOURCE: &str = "kernel/src/drivers/virtio/blk.rs";
+const IO_COMPLETION_SOURCE: &str = "kernel/src/devices/model/io_completion.rs";
+const WAIT_COMPLETION_SOURCE: &str = "kernel/src/execution/sync/wait_completion.rs";
+const VIRTIO_IRQ_SOURCE: &str = "kernel/src/drivers/virtio/completion_irq.rs";
 const GETRANDOM_SOURCE: &str = "kernel/src/syscall/random.rs";
 const DEV_RANDOM_SOURCE: &str = "kernel/src/fs/mem_device.rs";
 

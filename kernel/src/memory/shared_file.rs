@@ -1,4 +1,4 @@
-use crate::{fallible_tree::FallibleMap, sync::TaskMutexWaitPreparation};
+use crate::{execution::sync::TaskMutexWaitPreparation, fallible_tree::FallibleMap};
 use alloc::sync::{Arc, Weak};
 use core::{
     fmt::Debug,

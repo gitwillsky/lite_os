@@ -15,8 +15,10 @@ from pathlib import Path, PurePosixPath
 from build_cache import fingerprint, sha256
 from build_target import target_from_environment
 from ext4_image import debugfs_path, find_debugfs, recover_ext4_journal, verify_root_owned_files
-from verify_busybox import ACCOUNT_APPLETS, UserlandArtifact, base_userland, build_busybox, obtain_source
-from verify_musl import cached_musl_paths, find_compiler
+from userland.busybox import ACCOUNT_APPLETS, build_busybox, obtain_source
+from userland import UserlandArtifact
+from userland.artifacts import base_userland
+from toolchain.musl import cached_musl_paths, find_compiler
 
 ROOT = Path(__file__).resolve().parent.parent
 STAMP_PATH = "/usr/share/liteos/.userland-sync.json"

@@ -10,10 +10,10 @@ fn source(sources: &[SourceFile], path: &str) -> String {
         .collect()
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let endpoint = source(sources, "kernel/src/socket/kobject.rs");
-    let preparation = source(sources, "kernel/src/socket/preparation.rs");
+    let endpoint = source(sources, "kernel/src/net/kobject.rs");
+    let preparation = source(sources, "kernel/src/net/preparation.rs");
     let bind = source(sources, "kernel/src/syscall/socket.rs");
-    let observation = source(sources, "kernel/src/socket/observation.rs");
+    let observation = source(sources, "kernel/src/net/observation.rs");
     if !endpoint.contains("memory:Arc<SocketMemory>")
         || !endpoint.contains("ports:FallibleMap<(u8,u64,u32),u64>")
         || !endpoint.contains("letnet=self.memory.namespace_ref().id();")
@@ -70,17 +70,17 @@ mod tests {
     fn rejects_global_port_initial_net_only_delivery_and_blocking_observation() {
         for (path, old, new) in [
             (
-                "kernel/src/socket/kobject.rs",
+                "kernel/src/net/kobject.rs",
                 "let net = self.memory.namespace_ref().id();",
                 "let net = 6;",
             ),
             (
-                "kernel/src/socket/kobject.rs",
+                "kernel/src/net/kobject.rs",
                 ".user_namespace()\n                .is_initial()",
                 ".is_initial()",
             ),
             (
-                "kernel/src/socket/observation.rs",
+                "kernel/src/net/observation.rs",
                 "SocketBackend::Kobject(socket) => socket.try_poll_state(),",
                 "SocketBackend::Kobject(socket) => Some(socket.poll_state()),",
             ),

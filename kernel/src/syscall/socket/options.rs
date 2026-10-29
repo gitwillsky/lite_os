@@ -1,5 +1,5 @@
 use super::{SocketType, current_task, errno, socket_error, socket_ofd};
-use crate::socket::{InternetOption, SocketIoDirection, SocketTimeout};
+use crate::net::{InternetOption, SocketIoDirection, SocketTimeout};
 
 const IPPROTO_IP: usize = 0;
 const IP_PKTINFO: usize = 8;

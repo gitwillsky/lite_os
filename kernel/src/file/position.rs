@@ -1,4 +1,4 @@
-use crate::sync::TaskMutex;
+use crate::execution::sync::TaskMutex;
 
 /// position acquisition 在任何 I/O 之前失败；invalid seek 与 same owner 不改变 offset。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

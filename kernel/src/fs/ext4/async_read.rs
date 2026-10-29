@@ -19,7 +19,7 @@ use super::{
     extent::{ExtentTree, Mapping, Walk},
 };
 use crate::{
-    block::{BlockError, CompletionNotify, PendingRead},
+    devices::block::{BlockError, CompletionNotify, PendingRead},
     fs::{StorageRead, StorageStep},
 };
 

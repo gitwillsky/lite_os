@@ -2,7 +2,7 @@
 use super::super::FileSystem;
 use super::super::{BlockNode, DeviceNumber, devnode};
 use super::{FileSystemError, Inode};
-use crate::{fallible_tree::FallibleMap, sync::TaskMutex};
+use crate::{execution::sync::TaskMutex, fallible_tree::FallibleMap};
 use alloc::sync::{Arc, Weak};
 use spin::Mutex;
 

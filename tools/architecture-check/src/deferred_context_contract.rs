@@ -3,25 +3,25 @@ use syn::{Arm, Expr, ExprCall, ExprMatch, ImplItem, ImplItemFn, Item, ItemFn, Pa
 
 use super::SourceFile;
 
-const TRAP_SOURCE: &str = "kernel/src/trap/mod.rs";
-const CPU_DEFERRED_SOURCE: &str = "kernel/src/deferred.rs";
-const PROCESS_TABLE_SOURCE: &str = "kernel/src/task/process_table.rs";
-const CONTEXT_SWITCH_SOURCE: &str = "kernel/src/task/process_table/context_switch.rs";
+const TRAP_SOURCE: &str = "kernel/src/execution/trap/mod.rs";
+const CPU_DEFERRED_SOURCE: &str = "kernel/src/execution/deferred.rs";
+const PROCESS_TABLE_SOURCE: &str = "kernel/src/execution/task/process_table.rs";
+const CONTEXT_SWITCH_SOURCE: &str = "kernel/src/execution/task/process_table/context_switch.rs";
 const VIRTIO_LOCKS: &[(&str, &str, &str, &str)] = &[
     (
-        "kernel/src/virtio/net.rs",
+        "kernel/src/drivers/virtio/net.rs",
         "VirtIONetworkDevice",
         "queues",
         "Mutex < QueueState >",
     ),
     (
-        "kernel/src/virtio/input.rs",
+        "kernel/src/drivers/virtio/input.rs",
         "VirtIOInputDevice",
         "events",
         "Mutex < EventQueueState >",
     ),
     (
-        "kernel/src/virtio/gpu.rs",
+        "kernel/src/drivers/virtio/gpu.rs",
         "VirtIOGpuDevice",
         "control",
         "Mutex < ControlQueue >",
@@ -56,7 +56,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     check_driver_io_dispatch_lock_free(sources, errors);
 }
 
-const DRIVER_REGISTRY_SOURCE: &str = "kernel/src/drivers/registry.rs";
+const DRIVER_REGISTRY_SOURCE: &str = "kernel/src/devices/model/registry.rs";
 
 /// 方法调用名称计数器。
 #[derive(Default)]
@@ -438,7 +438,7 @@ fn check_software_interrupt_acknowledgement(source: &SourceFile, errors: &mut Ve
         .collect::<Vec<_>>();
     let expected = [
         "arch::interrupt::clear_software",
-        "crate::task::complete_pending_memory_barrier",
+        "crate::execution::task::complete_pending_memory_barrier",
         "crate::crash::stop_if_requested",
     ];
     if calls != expected {
@@ -659,8 +659,8 @@ mod tests {
         mutate(
             &mut sources,
             TRAP_SOURCE,
-            "    crate::task::complete_pending_memory_barrier();",
-            "    crate::task::complete_pending_memory_barrier();\n    task::dispatch_pending_deferred_work();",
+            "    crate::execution::task::complete_pending_memory_barrier();",
+            "    crate::execution::task::complete_pending_memory_barrier();\n    task::dispatch_pending_deferred_work();",
         );
         assert!(errors(&sources).iter().any(|error| {
             error.contains("supervisor software interrupt must first acknowledge SSIP")
@@ -669,8 +669,8 @@ mod tests {
         mutate(
             &mut sources,
             TRAP_SOURCE,
-            "    crate::task::complete_pending_memory_barrier();\n    // 先发布已到达的 barrier completion，再采集停止现场，避免其他等待者丢失确认。\n    crate::crash::stop_if_requested();",
-            "    crate::crash::stop_if_requested();\n    crate::task::complete_pending_memory_barrier();",
+            "    crate::execution::task::complete_pending_memory_barrier();\n    // 先发布已到达的 barrier completion，再采集停止现场，避免其他等待者丢失确认。\n    crate::crash::stop_if_requested();",
+            "    crate::crash::stop_if_requested();\n    crate::execution::task::complete_pending_memory_barrier();",
         );
         assert!(errors(&sources).iter().any(|error| {
             error.contains("supervisor software interrupt must first acknowledge SSIP")
@@ -752,7 +752,7 @@ mod tests {
         let mut sources = repository_sources();
         mutate(
             &mut sources,
-            "kernel/src/virtio/net.rs",
+            "kernel/src/drivers/virtio/net.rs",
             "        let status = self",
             "        self.queues.lock();\n        let status = self",
         );
@@ -768,7 +768,7 @@ mod tests {
         let mut sources = repository_sources();
         mutate(
             &mut sources,
-            "kernel/src/virtio/input.rs",
+            "kernel/src/drivers/virtio/input.rs",
             "events: Mutex<EventQueueState>",
             "events: IrqMutex<EventQueueState>",
         );

@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 #[path = "../../../kernel/src/arch/aarch64/pte.rs"]
 mod aarch64_pte;
 #[allow(dead_code)]
-#[path = "../../../kernel/src/task/model/syscall_restart.rs"]
+#[path = "../../../kernel/src/execution/task/model/syscall_restart.rs"]
 mod syscall_restart;
-#[path = "../../../kernel/src/timer/deadline.rs"]
+#[path = "../../../kernel/src/execution/timer/deadline.rs"]
 mod timer_deadline;
 #[path = "../../../kernel/src/arch/aarch64/va39.rs"]
 mod va39;
@@ -22,7 +22,7 @@ mod namespace;
 #[path = "mmio_fixture.rs"]
 mod arch;
 #[allow(dead_code)]
-#[path = "../../../kernel/src/hal/bus.rs"]
+#[path = "../../../kernel/src/arch/mmio.rs"]
 mod mmio_bus;
 
 macro_rules! info { ($($args:tt)*) => { let _ = format_args!($($args)*); }; }
@@ -41,14 +41,7 @@ mod ipc {
 #[allow(dead_code, unused_imports)]
 #[path = "../../kernel-unit/src/shm_backing_fixture.rs"]
 mod memory;
-#[allow(dead_code, unused_imports)]
-#[path = "../../kernel-unit/src/sync.rs"]
-mod sync;
-mod task {
-    pub(crate) fn current_task() -> Option<alloc::sync::Arc<super::TaskControlBlock>> {
-        None
-    }
-}
+
 #[allow(dead_code)]
 #[path = "seccomp_fixture.rs"]
 mod model;
@@ -391,4 +384,16 @@ fn main() {
             aarch64_pte::encode(permissions).expect("benchmark permissions must be valid");
         aarch64_pte::decode(encoded | aarch64_pte::TABLE_OR_PAGE).bits() as usize
     });
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[allow(dead_code, unused_imports)]
+    #[path = "../../kernel-unit/src/sync.rs"]
+    pub(crate) mod sync;
+    pub(crate) mod task {
+        pub(crate) fn current_task() -> Option<alloc::sync::Arc<crate::TaskControlBlock>> {
+            None
+        }
+    }
 }

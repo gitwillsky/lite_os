@@ -1,9 +1,9 @@
 use crate::{
+    execution::task::current_task,
     file::OpenFileDescription,
     fs::{O_CLOEXEC, O_NONBLOCK},
     ipc::EventFd,
     syscall::errno,
-    task::current_task,
 };
 
 const EFD_SEMAPHORE: u32 = 1;

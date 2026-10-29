@@ -30,7 +30,7 @@ fn rejects_first_side_effect_before_reservation_even_when_normal_open_remains() 
 #[test]
 fn rejects_rollback_through_replacement_thread_handle() {
     reject(
-        "kernel/src/task/model/file_table.rs",
+        "kernel/src/execution/task/model/file_table.rs",
         "self.owner.with_table(|files| files.cancel_reserved(fd))",
         "self.task.with_files(|files| files.cancel_reserved(fd))",
         "original FileTable",

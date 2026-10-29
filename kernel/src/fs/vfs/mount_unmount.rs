@@ -155,7 +155,7 @@ fn locked(view: &MountView, unlocked: &[Arc<MountView>]) -> bool {
 pub(super) fn unmount(
     root: &Arc<MountView>,
     synchronous: bool,
-) -> Result<Vec<Arc<crate::sync::TaskEvent>>, FileSystemError> {
+) -> Result<Vec<Arc<crate::execution::sync::TaskEvent>>, FileSystemError> {
     let original = root.snapshot_subtree()?;
     let mut selected = Selection {
         entries: Vec::new(),

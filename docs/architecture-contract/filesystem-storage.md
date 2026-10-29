@@ -289,7 +289,7 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   原子提交；data 不进 journal，必须在 commit record 之前写回 home 并共用同一 durability barrier。
   未提交事务释放的 block 在提交前不得重新分配，否则崩溃后旧文件会指向新文件已写回的数据。
 - running transaction 只在以下时机提交：handle 并入后 metadata 超过单个 journal transaction 容量
-  （先提交 running，再并入）、staged data 超过 16 MiB、年龄超过 5 秒、`fsync`/`fdatasync`/`sync`。
+  （先提交 running，再并入）、staged data 超过 16 MiB、年龄超过 5 秒、`fsync`/`fdatasync`/`execution::sync`。
   每个 ext4 filesystem 在 mount 时创建一个写回内核线程（对应 Linux jbd2）：running transaction
   由空变非空时经 `TaskEvent` 唤醒，睡到开始时刻加 5 秒后在 mutation owner 下提交；没有未提交
   mutation 时线程无限期阻塞，不产生周期唤醒。mount 发布前预备唯一 shutdown waiter；
@@ -386,7 +386,7 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   逐出重叠 alias 的缓存（writer 保留自身缓存）；失败先回滚 claim。任何重叠 alias 已挂载，或其他 key 有 writer 时 raw read
   绕过独立 page cache；自身 writer 保留自有 cache。cache admission 在 FILES lock 内
   重查该投影，claim guard 不跨 FILES；缓存身份仍由 `Inode::page_cache_id` 给出，与 devtmpfs 实例无关。
-- `/dev/kmsg` 的唤醒经 logger 发布 `deferred` vector → `fs::mem_device` 的合并 readiness Pipe；logger 在任何
+- `/dev/kmsg` 的唤醒经 logger 发布 `execution::deferred` vector → `fs::mem_device` 的合并 readiness Pipe；logger 在任何
   上下文（含 hardirq）都只做原子发布，不取 scheduler 锁。`KmsgReader.gate` 序列化同一 OFD 的 reader，
   `cursor` 只在整条 record 交给用户后推进。
 - `fs::FileSystemType` 注册表只追加、在 `init_vfs` 发布；`MOUNT_TRANSACTION` 串行化 mount/umount 事务。

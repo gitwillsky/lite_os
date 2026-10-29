@@ -2,7 +2,7 @@
 
 use super::{BlockNode, FileSystemError, OpenedFile, devnode};
 use crate::{
-    block::{BlockDevice, BlockError},
+    devices::block::{BlockDevice, BlockError},
     memory::swap::{SwapError, SwapStorage},
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};

@@ -6,10 +6,14 @@ use quote::ToTokens;
 use super::SourceFile;
 
 // 检查标识符而非文本子串：覆盖分组/别名导入、指针方法和宏体，忽略注释与字符串。
-/// 设备相关 module（驱动、virtio、音频、DRM、输入、tty）：它们的寄存器访问必须经 `hal::MmioBus`。
+/// 设备相关 module（驱动、virtio、音频、DRM、输入、tty）：它们的寄存器访问必须经 `arch::mmio::MmioBus`。
 const DEVICE_MODULES: &[&str] = &[
     "audio",
     "drivers",
+    "device",
+    "pci",
+    "block",
+    "console",
     "drm",
     "input",
     "tty",
@@ -63,11 +67,10 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
                 source.relative
             ));
         }
-        if !matches!(source.owner.as_str(), "arch" | "hal")
-            && contains_identifier(source.syntax.to_token_stream(), raw_mmio)
+        if source.owner != "arch" && contains_identifier(source.syntax.to_token_stream(), raw_mmio)
         {
             errors.push(format!(
-                "{}: device register access must go through hal::MmioBus, not the raw arch MMIO primitives",
+                "{}: device register access must go through arch::mmio::MmioBus, not the raw arch MMIO primitives",
                 source.relative
             ));
         }
@@ -77,7 +80,7 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
             })
         {
             errors.push(format!(
-                "{}: platform/devices registers must use hal::MmioBus (bounds, alignment and the arch-fixed access form), not raw volatile pointers",
+                "{}: platform/devices registers must use arch::mmio::MmioBus (bounds, alignment and the arch-fixed access form), not raw volatile pointers",
                 source.relative
             ));
         }
@@ -165,9 +168,9 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
     for retired in [
         "kernel/src/arch/riscv64/hart.rs",
         "kernel/src/arch/aarch64/fp_instruction.rs",
-        "kernel/src/task/context.rs",
-        "kernel/src/task/trap_context.rs",
-        "kernel/src/drivers/platform.rs",
+        "kernel/src/execution/task/context.rs",
+        "kernel/src/execution/task/trap_context.rs",
+        "kernel/src/devices/model/platform.rs",
     ] {
         if root.join(retired).exists() {
             errors.push(format!(
@@ -224,13 +227,13 @@ mod tests {
     }
 
     const PLATFORM: &str = "kernel/src/platform/qemu_virt/x.rs";
-    const DEVICE: &str = "kernel/src/virtio/x.rs";
+    const DEVICE: &str = "kernel/src/drivers/virtio/x.rs";
 
     #[test]
-    fn register_access_through_hal_and_documentation_are_accepted() {
+    fn register_access_through_typed_mmio_and_documentation_are_accepted() {
         for (owner, path) in [("platform", PLATFORM), ("virtio", DEVICE)] {
             for text in [
-                "fn f(bus: &crate::hal::MmioBus) { let _ = bus.read_u32(0); }",
+                "fn f(bus: &crate::arch::mmio::MmioBus) { let _ = bus.read_u32(0); }",
                 "// read_volatile must stay behind HAL\nfn f() { let _ = \"arch::read_mmio_u32\"; }",
             ] {
                 assert!(violations(owner, path, text).is_empty());
@@ -238,8 +241,8 @@ mod tests {
         }
         assert!(
             violations(
-                "hal",
-                "kernel/src/hal/bus.rs",
+                "arch",
+                "kernel/src/arch/mmio.rs",
                 "fn f() { unsafe { crate::arch::read_mmio_u32(0) }; }"
             )
             .is_empty()

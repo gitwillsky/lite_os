@@ -1,21 +1,11 @@
 //! Production event/completion protocol with a host scheduler and deliverable-signal seam.
 #![allow(dead_code)]
 extern crate alloc;
-#[path = "../../../kernel/src/sync"]
-mod sync {
-    mod task_event;
-    mod task_wait;
-    mod wait_completion;
-    pub(crate) use task_event::TaskEvent;
-    pub(crate) use task_wait::{
-        TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory,
-    };
-    pub(crate) use wait_completion::WaitCompletion;
-}
+
 #[path = "../src/interruptible_event_target.rs"]
 mod target;
+use crate::execution::sync::{TaskEvent, WaitResult};
 use alloc::sync::Arc;
-use sync::{TaskEvent, WaitResult};
 use target::Target;
 
 #[test]
@@ -114,7 +104,7 @@ fn task_mutex_style_uninterruptible_event_keeps_its_membership_until_completion(
 
 #[test]
 fn extracted_old_signal_wake_cannot_match_an_event_rebuilt_at_the_same_address() {
-    use sync::TaskWaitTarget;
+    use crate::execution::sync::TaskWaitTarget;
     let target = Target::new();
     let mut event = Arc::new(TaskEvent::new());
     let address = Arc::as_ptr(&event);
@@ -183,7 +173,22 @@ fn timed_event_wake_uses_exact_ticket_and_cannot_wake_later_wait() {
     assert!(key.deadline().is_some());
     event.signal();
     assert_eq!(worker.join().unwrap(), WaitResult::Woken);
-    sync::TaskWaitTarget::wake(target.clone(), key);
+    crate::execution::sync::TaskWaitTarget::wake(target.clone(), key);
     let _binding = target.bind();
     assert_eq!(event.wait_interruptible_until(0), WaitResult::TimedOut);
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../../../kernel/src/execution/sync"]
+    pub(crate) mod sync {
+        mod task_event;
+        mod task_wait;
+        mod wait_completion;
+        pub(crate) use task_event::TaskEvent;
+        pub(crate) use task_wait::{
+            TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory,
+        };
+        pub(crate) use wait_completion::WaitCompletion;
+    }
 }

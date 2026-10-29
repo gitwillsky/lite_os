@@ -1,5 +1,5 @@
 //! Actual FIFO mutex/event owners; Target is the scheduler/signal seam.
-use crate::sync::{TaskEvent, TaskMutex, TaskMutexLockError, WaitResult};
+use crate::execution::sync::{TaskEvent, TaskMutex, TaskMutexLockError, WaitResult};
 use alloc::sync::Arc;
 #[path = "interruptible_event_target.rs"]
 #[allow(dead_code, reason = "epoch capture 只在独立 task_event 回归使用")]

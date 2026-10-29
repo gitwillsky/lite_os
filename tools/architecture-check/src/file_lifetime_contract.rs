@@ -75,8 +75,8 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("file-lifetime: final dput must alone retire unlinked cache after transient/access inode pins and namespace guards; actual mount writer must outlive path/inode cleanup".into());
     }
-    let tty = compact(sources, "kernel/src/tty/mod.rs");
-    let pty = compact(sources, "kernel/src/tty/pty.rs");
+    let tty = compact(sources, "kernel/src/devices/tty/mod.rs");
+    let pty = compact(sources, "kernel/src/devices/tty/pty.rs");
     let fifo = compact(sources, "kernel/src/fs/fifo.rs");
     if !ofd.contains("OpenFileKind::Device(device)=>device.release()")
         || !tty.contains("implDeviceFileforTerminalFile{fnrelease(&self){ifletSome(slave)=&self.pty{slave.close();}}")
@@ -116,9 +116,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("file-lifetime: PTY index publication and devpts snapshot must prepare allocations outside registry spin guards and revalidate actual membership".into());
     }
-    let socket = compact(sources, "kernel/src/socket/retirement.rs");
-    let packet = compact(sources, "kernel/src/socket/packet.rs");
-    let kobject = compact(sources, "kernel/src/socket/kobject.rs");
+    let socket = compact(sources, "kernel/src/net/retirement.rs");
+    let packet = compact(sources, "kernel/src/net/packet.rs");
+    let kobject = compact(sources, "kernel/src/net/kobject.rs");
     if !ofd.contains("OpenFileKind::Socket(socket)=>socket.close_description()")
         || !socket.contains("SocketBackend::Packet(socket)=>socket.close_description()")
         || !socket.contains("SocketBackend::Kobject(socket)=>socket.close_description()")
@@ -144,10 +144,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("file-lifetime: actual socket fput must retire packet/netlink registrations, reject closed observers and avoid backend Drop reentering broadcast guards".into());
     }
-    let inet = compact(sources, "kernel/src/socket/inet.rs");
-    let options = compact(sources, "kernel/src/socket/inet/options.rs");
-    let owner = compact(sources, "kernel/src/socket/inet/protocol_owner.rs");
-    let wait = compact(sources, "kernel/src/socket/inet/wait.rs");
+    let inet = compact(sources, "kernel/src/net/inet.rs");
+    let options = compact(sources, "kernel/src/net/inet/options.rs");
+    let owner = compact(sources, "kernel/src/net/inet/protocol_owner.rs");
+    let wait = compact(sources, "kernel/src/net/inet/wait.rs");
     if !inet.contains("operation:Mutex<Option<InetEndpoint>>")
         || !ordered(
             &inet,
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn rejects_backend_observer_delaying_close() {
         reject(
-            "kernel/src/tty/mod.rs",
+            "kernel/src/devices/tty/mod.rs",
             "self.0.close();",
             "",
             "actual device fput",
@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn rejects_index_reuse_waiting_for_last_observer() {
         reject(
-            "kernel/src/tty/pty.rs",
+            "kernel/src/devices/tty/pty.rs",
             "!state.master_open && state.slave_opens == 0",
             "false",
             "index reuse",
@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn rejects_closed_netlink_observer_rebinding() {
         reject(
-            "kernel/src/socket/kobject.rs",
+            "kernel/src/net/kobject.rs",
             "let state = state_guard.as_mut().ok_or(SocketError::NotConnected)?;",
             "let state = state_guard.as_mut().get_or_insert_with(|| unreachable!());",
             "reject closed observers",
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn rejects_inet_close_waiting_for_backend_arc_drop() {
         reject(
-            "kernel/src/socket/inet.rs",
+            "kernel/src/net/inet.rs",
             "let retired = self.operation.lock().take();",
             "let retired = None;",
             "actual Inet fput",
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn rejects_deferred_inet_ports_surviving_next_task_transaction() {
         reject(
-            "kernel/src/socket/inet/protocol_owner.rs",
+            "kernel/src/net/inet/protocol_owner.rs",
             "let endpoint = self.pending_cleanup.lock().pop();",
             "let endpoint = None;",
             "retired ports before new task transactions",

@@ -1,8 +1,8 @@
 //! asm-generic semaphore syscall codec；操作、等待、权限与撤销均由实际 IPC owner 完成。
 use super::{encode_permission, ipc_error};
 use crate::{
+    execution::task::current_task,
     ipc::{SemaphoreChange, SemaphoreOperation},
-    task::current_task,
 };
 use alloc::vec::Vec;
 use syscall_abi::{errno, ipc::*};
@@ -15,7 +15,7 @@ pub(in crate::syscall) fn sys_semget(key: i32, count: i32, flags: u32) -> isize 
             count,
             flags,
             &task.ipc_access(),
-            crate::timer::get_realtime_ns() / 1_000_000_000,
+            crate::execution::timer::get_realtime_ns() / 1_000_000_000,
         )
         .map_or_else(ipc_error, |id| id as isize)
 }
@@ -85,7 +85,7 @@ pub(in crate::syscall) fn sys_semtimedop(
         let duration = (seconds as u64)
             .saturating_mul(1_000_000_000)
             .saturating_add(nanos as u64);
-        crate::timer::get_time_ns()
+        crate::execution::timer::get_time_ns()
             .saturating_add(duration)
             .min(i64::MAX as u64)
     });
@@ -109,7 +109,7 @@ pub(in crate::syscall) fn sys_semtimedop(
     match set.operate(
         &mut operation,
         &task.ipc_access(),
-        crate::timer::get_realtime_ns() / 1_000_000_000,
+        crate::execution::timer::get_realtime_ns() / 1_000_000_000,
     ) {
         Ok(true) => return 0,
         Err(error) => return ipc_error(error),
@@ -120,11 +120,13 @@ pub(in crate::syscall) fn sys_semtimedop(
         return complete.map_or_else(ipc_error, |()| 0);
     }
     match waited {
-        crate::sync::WaitResult::TimedOut => -errno::EAGAIN,
-        crate::sync::WaitResult::OutOfMemory => -errno::ENOMEM,
+        crate::execution::sync::WaitResult::TimedOut => -errno::EAGAIN,
+        crate::execution::sync::WaitResult::OutOfMemory => -errno::ENOMEM,
         // Linux semop/semtimedop 被捕获信号中断始终 EINTR，SA_RESTART 不重放。
-        crate::sync::WaitResult::Interrupted => -errno::EINTR,
-        crate::sync::WaitResult::Woken => panic!("semaphore wake must publish completion"),
+        crate::execution::sync::WaitResult::Interrupted => -errno::EINTR,
+        crate::execution::sync::WaitResult::Woken => {
+            panic!("semaphore wake must publish completion")
+        }
     }
 }
 pub(in crate::syscall) fn sys_semctl(id: i32, index: i32, command: i32, argument: usize) -> isize {
@@ -134,7 +136,7 @@ pub(in crate::syscall) fn sys_semctl(id: i32, index: i32, command: i32, argument
     let task = current_task().expect("semctl requires calling Thread");
     let namespace = task.ipc_namespace();
     let access = task.ipc_access();
-    let now = crate::timer::get_realtime_ns() / 1_000_000_000;
+    let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
     match command {
         IPC_RMID => namespace
             .semaphore_remove(id, &access)

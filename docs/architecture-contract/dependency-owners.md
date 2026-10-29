@@ -22,17 +22,25 @@ IPI 停止检查位于 ack 与 memory-barrier completion 之后；watchdog 由 t
 
 logical `CpuId`/`CpuSet`、hardware identity 映射与 online/active lifecycle 的唯一 owner；不感知 platform，hardware identity 只在 platform/firmware 边界出现
 
-## `hal`
+## `interrupt`
 
-硬件抽象与 platform/driver 共用的最小 seam；唯一的设备寄存器访问路径 `MmioBus`（platform 与 virtio 共用）、设备中断接口、串口 console seam 与只追加设备注册表；位于 `platform` 与 `drivers` 之下，platform 不依赖设备类或 DMA 内存
+位于 `execution::interrupt` 的设备中断处理契约，由平台中断控制器分发、驱动实现；ISA 中断等待与屏障仍由 `arch` 提供。
+
+## `console`
+
+串口 console 设备与唯一 RX 队列；平台 UART handler 只发布已 drain 的字节，TTY 绑定该设备并拥有终端语义。不依赖文件系统或 DMA 内存。
+
+## `device_registry`
+
+设备注册容器提供按发现顺序编号的只追加发布；设备类注册表与 console 各自拥有唯一实例，容器不拥有硬件或 UAPI。
 
 ## `deferred`
 
-per-CPU merged deferred-work bitmap 与设备类 handler 注册表的唯一 owner；空→非空 transition 经 `arch::interrupt::raise_software` 发布 local edge，发布者不认识消费者；独立于 `cpu` 以免 CPU topology 依赖 platform
+per-CPU merged deferred-work bitmap 与设备类 handler 注册表的唯一 owner；空→非空 transition 经 `arch::interrupt::raise_software` 发布 local edge，发布者不认识消费者；独立于 `execution::cpu` 以免 CPU topology 依赖 platform
 
 ## `platform`
 
-编译期选择的 machine/firmware adapter；拥有 DTB、PSCI/SBI、GIC/PLIC、UART 与 TLB shootdown，并向 `virtio` 暴露 transport 表、PCI host、地址映射与 interrupt 注册；不认识设备类，也不依赖 `memory`
+编译期选择的 machine/firmware adapter；拥有 DTB、PSCI/SBI、GIC/PLIC、UART 与 TLB shootdown，并向总线驱动暴露 transport 表、PCI host、地址映射与 interrupt 注册；只实现早期 console 与中断控制契约，不消费设备类 DMA/UAPI，也不依赖 `memory`
 
 ## `fallible_tree`
 
@@ -48,13 +56,22 @@ VMA/frame policy；页表只通过 `arch::mmu` 的静态 frame-owner adapter，�
 
 ## `boot_screen`
 
-内核开机画面的唯一 owner：解码共用 crate `boot-scene` 的 `LBS1` 位图，整数缩放居中后画进 boot scanout，并按启动里程碑推进进度条；只经 `drivers::BootFramebuffer` 触达显示，不认识具体 adapter
+内核开机画面的唯一 owner：解码共用 crate `boot-scene` 的 `LBS1` 位图，整数缩放居中后画进 boot scanout，并按启动里程碑推进进度条；只经 `devices::model::BootFramebuffer` 触达显示，不认识具体 adapter
 
 画面纯属装饰：任何绘制失败只记录警告并停止更新，不得阻止启动。DRM 绑定 completion work 之后 adapter 拒绝同步刷新，进度条改由 compositor 从 `KERNEL_PROGRESS_PERMILLE` 接着画
 
 ## `drivers`
 
-设备类 seam（display、graphics、input、network、PCM output、entropy、named port）、只追加的设备注册表与 driver I/O completion；块 seam 属于 `block`，总线 adapter 属于 `virtio`，MMIO/中断/console 属于 `hal`
+按总线组织硬件实现，入口只声明子模块；设备模型在 `devices::model`；各总线分别受依赖围栏约束。ALSA、DRM、evdev 等用户态 ABI 领域仍独立，通过设备接口调用 adapter。
+
+## `pci`
+
+PCI ECAM 根总线枚举、配置空间与唯一 BAR 资源分配；消费 platform 的 host 窗口与中断路由事实，由 VirtIO PCI 使用；后续 USB host adapter 复用同一资源 owner。具体设备协议不属于 PCI owner。
+
+## `device`
+
+位于 `devices::model` 的设备类 seam（display、graphics、input、network、PCM output、entropy、named port）、只追加的设备注册表与 driver I/O completion；块 seam 属于 `block`，总线 adapter 属于 `drivers::virtio` 等具体总线领域。
+MMIO 属于 `arch::mmio`，中断契约与 console 分别由 `interrupt`、`console` 拥有
 
 ## `block`
 
@@ -62,7 +79,7 @@ VMA/frame policy；页表只通过 `arch::mmu` 的静态 frame-owner adapter，�
 
 ## `virtio`
 
-VirtIO transport（MMIO/PCI）、virtqueue/DMA、各设备类 adapter 与设备装配表 `binding`；只实现 `drivers`/`block` 的 seam，消费 platform 的设备发现事实，不依赖 `arch`
+VirtIO transport（MMIO/PCI）、virtqueue/DMA、各设备类 adapter 与设备装配表 `binding`；只实现设备模型与块层接口，消费 platform 的发现事实；MMIO 与 ISA 机制仅调用静态 arch façade
 
 ## `virtio_port`
 
@@ -91,22 +108,22 @@ audio 不直接访问 task；参考 timestamp 只消费 timer 的公共时钟投
 Pipe byte/endpoint、eventfd 与实际 IPC namespace/System V message queue、semaphore、shared-memory segment、atomic operation 与 SEM_UNDO membership 的对象、权限、IDs/key 和 waiter owner；`memory` 仅供实际共享页 backing，不反向导入 IPC；不感知 fd、task
 、socket 或 syscall，namespace 只读 identity seam 不反向依赖 IPC；`id` 分配 anonymous inode及有序领域publication identity
 
-## `socket`
+## `net`
 
-拥有 socket domain facade、AF_UNIX 与 AF_INET stack；`drivers` 只允许 network-device seam，`id` 分配 anonymous inode及有序领域publication identity
+拥有 socket domain facade、AF_UNIX 与 AF_INET stack；只消费 `devices::model` 的 network-device 接口，`id` 分配 anonymous inode及有序领域publication identity
 
 ## `fs`
 
-VFS、具体文件系统、字符设备注册表、inotify 与 mem/kmsg 设备（kmsg 经 `deferred` 唤醒）；OFD 归 `file`、终端归 `tty`，advisory lock 经 `LockHolder` 识别持锁者。
-FUSE ring 只经 `cpu` 的 logical CpuId/possible/current_id 为标准 qid 路由，不读取 hardware identity 或 arch adapter。
-procfs 经 `socket` 的 NET identity 和只读快照投影 networking 事实，不持有另一份协议/端口/路由状态。
+VFS、具体文件系统、字符设备注册表、inotify 与 mem/kmsg 设备（kmsg 经 `execution::deferred` 唤醒）；OFD 归 `file`、终端归 `devices::tty`，advisory lock 经 `LockHolder` 识别持锁者。
+FUSE ring 只经 `execution::cpu` 的 logical CpuId/possible/current_id 为标准 qid 路由，不读取 hardware identity 或 arch adapter。
+procfs 经 `net` 的 NET identity 和只读快照投影 networking 事实，不持有另一份协议/端口/路由状态。
 
 FUSE 后备文件只通过 `BackingFile`/`BackingOpen` 与 user-copy seam 注入，fd/凭据捕获属于 syscall adapter；
 映射机制沿已有 memory seam 返回，不反向依赖 file 或 task。
 
 ## `file`
 
-open file description、fd table、epoll/timerfd/readiness 与 inode/设备/pipe/socket/eventfd 后端的统一投影；fd 层位于 `fs` 与 `socket` 之上，汇聚完整文件后端生命周期。
+open file description、fd table、epoll/timerfd/readiness 与 inode/设备/pipe/socket/eventfd 后端的统一投影；fd 层位于 `fs` 与 `net` 之上，汇聚完整文件后端生命周期。
 `memory::MappedFileOwner` 只标记实际 OFD 的 mapping pin，不保存另一份 file/mm 状态，也不引入 memory 到 file 的反向依赖。
 
 ## `tty`
@@ -165,7 +182,6 @@ RTC 与 per-CPU deadline 由 timer 唯一拥有
 ## Crate 与目录装配
 
 
-
 - `bootloader` 是独立 firmware domain，不依赖 kernel 或 userspace。
 - `boot-scene` 是供内核和后续用户态共用的 `no_std` crate，唯一实现 `LBS1` 位图的解析校验、逐行解码、整数缩放居中与进度矩形，不依赖其他实现 crate。
 - 内核编入的启动画面由构建环境变量 `LITEOS_BOOT_SCENE` 选择，选择逻辑只在 `scripts/classic_assets.py`。
@@ -173,14 +189,14 @@ RTC 与 per-CPU deadline 由 timer 唯一拥有
 - `kernel/src/main.rs` 是唯一 composition root；初始化顺序和 adapter 装配不得下沉到 driver、filesystem 或 task。
 - binary crate 的跨 module interface 默认使用最窄的 `pub(super)`、`pub(in …)` 或 `pub(crate)`；扩大范围必须说明 production caller。
 
+内核按领域组织，目录与 Rust module 路径一致；`boot`、`execution`、`devices`、`drivers` 入口只声明子领域，不拥有运行时状态。每个子领域仍有独立的正向依赖契约，具体映射由 architecture-check 的 `module_layout` 维护。
 
-module 树保持扁平，目录结构就是 module 路径，全项目没有 `#[path]`：`kernel/src/<module>/mod.rs`（或单文件 `<module>.rs`）声明
-`crate::<module>`，`crate::fs` 就是 `fs/mod.rs`。子 module 用 `<name>.rs` 加同名目录 `<name>/`（标准布局，不用 `mod.rs` 充当子 module）。
-领域分组只是阅读上的归类，不对应目录：
-- 硬件与启动：`arch`、`platform`、`hal`、`cpu`、`deferred`、`entry`。
-- 存储：`block`、`fs`。
-- 设备：`drivers`、`virtio`、`virtio_port`、`audio`、`drm`、`input`、`tty`。
-- 其余是内核领域 module：`task`、`memory`、`socket`、`ipc`、`file`、`sync`、`syscall` 等。
+- `arch` 拥有 ISA/MMU 与 MMIO mechanism，`platform` 提供 machine/firmware 资源事实。
+- `devices::model` 提供设备类接口，`devices::block` 拥有块语义，ALSA/DRM/evdev/TTY 各自拥有设备 UAPI。
+- `drivers` 按实际总线与硬件协议组织实现；设备发现后的绑定顺序由 `main` 装配。
+- `execution` 汇集 CPU、任务、同步、中断与 trap，`boot` 汇集启动参数与启动画面；文件系统、网络、内存等保留独立领域。
+
+子模块可使用 `<name>.rs` 加 `<name>/`，也可使用 `<name>/mod.rs`，遵循 Rust 标准布局，不为行数或测试夹具机械拆目录。
 
 host 夹具把内核文件编译进测试 crate 时，rustc 把被包含的文件当作 mod-rs 文件，到它所在目录找子模块，与标准布局不同。
 内核布局不为此让步：`tools/kernel-view/` 为被夹具包含且带子模块的内核文件生成只含符号链接的“平铺视图”，

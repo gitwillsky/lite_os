@@ -1,9 +1,9 @@
 //! System V message queue 的实际 message/permission/waiter owner；user-copy 和 errno 在 syscall。
 use super::{IpcAccess, IpcError, IpcPermission};
 use crate::{
+    execution::sync::{TaskEvent, WaitResult},
     fallible_tree::{FallibleMap, VacantEntry},
     namespace::{PidIdentity, UserNamespace},
-    sync::{TaskEvent, WaitResult},
 };
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;

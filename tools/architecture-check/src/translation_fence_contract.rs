@@ -9,7 +9,7 @@ const POLICY_PATH: &str = "kernel/src/memory/mm/shootdown.rs";
 const AARCH64_MMU_PATH: &str = "kernel/src/arch/aarch64/mmu.rs";
 const AARCH64_PLATFORM_PATH: &str = "kernel/src/platform/qemu_virt/aarch64/mod.rs";
 const AARCH64_TLB_PATH: &str = "kernel/src/platform/qemu_virt/aarch64/tlb_shootdown.rs";
-const TRAP_PATH: &str = "kernel/src/trap/mod.rs";
+const TRAP_PATH: &str = "kernel/src/execution/trap/mod.rs";
 const RFENCE_PATH: &str = "bootloader/src/rfence.rs";
 const TRAP_VECTOR_PATH: &str = "bootloader/src/trap_vec.rs";
 

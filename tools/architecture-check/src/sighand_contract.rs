@@ -2,11 +2,11 @@
 use super::SourceFile;
 use quote::ToTokens;
 use syn::Item;
-const HANDLERS: &str = "kernel/src/task/model/signal_handlers.rs";
-const MODEL: &str = "kernel/src/task/model.rs";
-const DELIVERY: &str = "kernel/src/task/model/signal_state.rs";
-const EXEC: &str = "kernel/src/task/model/process_exec.rs";
-const EXIT: &str = "kernel/src/task/process_table/process_exit.rs";
+const HANDLERS: &str = "kernel/src/execution/task/model/signal_handlers.rs";
+const MODEL: &str = "kernel/src/execution/task/model.rs";
+const DELIVERY: &str = "kernel/src/execution/task/model/signal_state.rs";
+const EXEC: &str = "kernel/src/execution/task/model/process_exec.rs";
+const EXIT: &str = "kernel/src/execution/task/process_table/process_exit.rs";
 fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a SourceFile {
     sources
         .iter()
@@ -103,7 +103,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             "sighand: one retirable shared table; group pending must remain independent".into(),
         );
     }
-    let queue = source(sources, "kernel/src/task/model/signal_pending.rs");
+    let queue = source(sources, "kernel/src/execution/task/model/signal_pending.rs");
     let queue_shape = queue.syntax.to_token_stream().to_string();
     if field(queue, "SignalRecord", "source").as_deref() != Some("SignalRecordSource")
         || !queue_shape.contains("Dynamic { _charge : crate :: namespace :: RlimitCharge")
@@ -120,7 +120,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     if field(queue, "PendingSignals", "fallback").as_deref() != Some("[SignalFallback ; 65]")
         || field(queue, "PendingSignals", "info").is_some()
-        || !source(sources, "kernel/src/task/model/signal_info.rs")
+        || !source(sources, "kernel/src/execution/task/model/signal_info.rs")
             .text
             .contains("signal < 32 && self.code >= 0")
         || !method_of(queue, "PreparedSignalRecord", "prepare")
@@ -145,7 +145,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors.push("signal-queue: lock-outside preparation, owned consumption and iterative retirement are mandatory".into());
     }
     let dequeue = method(
-        source(sources, "kernel/src/task/model/signal_dequeue.rs"),
+        source(sources, "kernel/src/execution/task/model/signal_dequeue.rs"),
         "take_pending_signal",
     );
     if !matches!((dequeue.find("drop (pending)"), dequeue.find("drop (state)"), dequeue.find("resolve")),
@@ -159,7 +159,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         || !handlers
             .text
             .contains("retired.append(pending.discard(bit))")
-        || !source(sources, "kernel/src/task/process_table/signal.rs")
+        || !source(sources, "kernel/src/execution/task/process_table/signal.rs")
             .text
             .contains("drop(graph);")
     {
@@ -167,7 +167,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     let signal = source(
         sources,
-        "kernel/src/task/process_table/signal/disposition.rs",
+        "kernel/src/execution/task/process_table/signal/disposition.rs",
     );
     // 顶层 free function 的 graph → timer choreography；动态退休必须在 graph 外。
     if !matches!((signal.text.find("drop(graph);\n    if result.is_ok()"), signal.text.find("result.map(|(action, retired)|")),
@@ -180,11 +180,11 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     let posix = source(
         sources,
-        "kernel/src/task/process_table/timer_queue/posix_schedule.rs",
+        "kernel/src/execution/task/process_table/timer_queue/posix_schedule.rs",
     );
     let creator = source(
         sources,
-        "kernel/src/task/process_table/timer_queue/preparation.rs",
+        "kernel/src/execution/task/process_table/timer_queue/preparation.rs",
     );
     let timer_owner = method_of(queue, "PreallocatedSignal", "try_new");
     let checkout = method_of(queue, "PreallocatedSignal", "prepare");
@@ -218,12 +218,18 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         }
     }
     if !method(queue, "discard_timer_notifications").contains("extract_timer_notifications")
-        || !source(sources, "kernel/src/task/model/signal_generation.rs")
-            .text
-            .contains("discard_timer_signals")
-        || !source(sources, "kernel/src/task/process_table/timer_queue.rs")
-            .text
-            .contains("discard_timer_signals(threads.values())")
+        || !source(
+            sources,
+            "kernel/src/execution/task/model/signal_generation.rs",
+        )
+        .text
+        .contains("discard_timer_signals")
+        || !source(
+            sources,
+            "kernel/src/execution/task/process_table/timer_queue.rs",
+        )
+        .text
+        .contains("discard_timer_signals(threads.values())")
     {
         errors.push("posix-signal: exec explicitly retires SI_TIMER records while preserving other pending identities".into());
     }
@@ -244,7 +250,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("sighand: canonical action admission must clear unsupported ABI flags".into());
     }
-    let generation = source(sources, "kernel/src/task/model/signal_generation.rs");
+    let generation = source(
+        sources,
+        "kernel/src/execution/task/model/signal_generation.rs",
+    );
     for name in ["queue_signal", "queue_process_signal_mask"] {
         let body = method(generation, name);
         if !matches!((body.find(if name == "queue_signal" { "signal_mask . lock" } else { "recipient_mask . lock" }), body.find("with_handlers")),
@@ -256,7 +265,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     let retirement = source(
         sources,
-        "kernel/src/task/process_table/process_retirement.rs",
+        "kernel/src/execution/task/process_table/process_retirement.rs",
     );
     let retirement_shape = retirement.syntax.to_token_stream().to_string();
     for fact in [
@@ -272,7 +281,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             errors.push("sighand: one retirement must detach consequences/indexes without final Drop under graph".into());
         }
     }
-    let graph = source(sources, "kernel/src/task/process_table.rs");
+    let graph = source(sources, "kernel/src/execution/task/process_table.rs");
     if field(graph, "ThreadIndex", "vfork_parent").as_deref()
         != Some("Option < Arc < TaskControlBlock > >")
         || field(graph, "ProcessNode", "vfork_parent").is_some()
@@ -289,7 +298,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("sighand: exit must preserve vfork token before index retirement and wake after old-mm cleanup".into());
     }
-    let claims = source(sources, "kernel/src/task/process_table/wait_child/claim.rs");
+    let claims = source(
+        sources,
+        "kernel/src/execution/task/process_table/wait_child/claim.rs",
+    );
     if claims.text.matches("ExitRetirement::AfterClaim").count() != 2
         || !exit.text.contains("ExitRetirement::AfterClaim")
         || claims.text.contains("publish_child_signal")
@@ -306,7 +318,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         || exit.text.contains("send_kernel_process_signal(parent")
         || source(
             sources,
-            "kernel/src/task/process_table/signal/job_control.rs",
+            "kernel/src/execution/task/process_table/signal/job_control.rs",
         )
         .text
         .contains("send_kernel_process_signal(")
@@ -318,7 +330,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     let child_routing = source(
         sources,
-        "kernel/src/task/process_table/signal/child_notification.rs",
+        "kernel/src/execution/task/process_table/signal/child_notification.rs",
     );
     let child_routing_compact: String = child_routing.text.split_whitespace().collect();
     if !child_routing
@@ -332,7 +344,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     let child = source(
         sources,
-        "kernel/src/task/process_table/signal/child_notification.rs",
+        "kernel/src/execution/task/process_table/signal/child_notification.rs",
     );
     if !child.text.contains("prepared.prepare();")
         || !child
@@ -347,11 +359,17 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors.push("sighand: SIGCHLD actual parent/adoption recipients prepare outside graph and revalidate same child Process before publication".into());
     }
     let child_compact: String = child.text.split_whitespace().collect();
-    let graph = source(sources, "kernel/src/task/process_table.rs");
-    let clone = source(sources, "kernel/src/task/process_table/vfork.rs");
-    let identity = source(sources, "kernel/src/task/process_table/exec_identity.rs");
+    let graph = source(sources, "kernel/src/execution/task/process_table.rs");
+    let clone = source(sources, "kernel/src/execution/task/process_table/vfork.rs");
+    let identity = source(
+        sources,
+        "kernel/src/execution/task/process_table/exec_identity.rs",
+    );
     let identity_compact: String = identity.text.split_whitespace().collect();
-    let wait = source(sources, "kernel/src/task/process_table/wait_child.rs");
+    let wait = source(
+        sources,
+        "kernel/src/execution/task/process_table/wait_child.rs",
+    );
     if field(graph, "ProcessNode", "exit_signal").as_deref() != Some("u8")
         || field(graph, "ProcessNode", "exec_generation").as_deref() != Some("u64")
         || !clone.text.contains("creator_node.exit_signal")
@@ -372,7 +390,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors.push("sighand: native clone exit signal, parent exec epoch, orphan/exec reset and wait class must belong to the actual relation".into());
     }
     let delivery = source(sources, DELIVERY);
-    let dequeue = source(sources, "kernel/src/task/model/signal_dequeue.rs");
+    let dequeue = source(sources, "kernel/src/execution/task/model/signal_dequeue.rs");
     let stages = [
         "self.take_pending_signal(!selection_mask)",
         "ptrace::intercept_signal",
@@ -532,7 +550,9 @@ mod tests {
         let mut sources = fixture();
         let source = sources
             .iter_mut()
-            .find(|source| source.relative == "kernel/src/task/process_table/process_retirement.rs")
+            .find(|source| {
+                source.relative == "kernel/src/execution/task/process_table/process_retirement.rs"
+            })
             .unwrap();
         source.text = source.text.replace(
             "unlink_consequence(graph, pid, Consequence::ParentDeath);",
@@ -553,7 +573,8 @@ mod tests {
         let source = sources
             .iter_mut()
             .find(|source| {
-                source.relative == "kernel/src/task/process_table/signal/child_notification.rs"
+                source.relative
+                    == "kernel/src/execution/task/process_table/signal/child_notification.rs"
             })
             .unwrap();
         source.text = source
@@ -604,7 +625,8 @@ mod tests {
         let source = sources
             .iter_mut()
             .find(|source| {
-                source.relative == "kernel/src/task/process_table/signal/child_notification.rs"
+                source.relative
+                    == "kernel/src/execution/task/process_table/signal/child_notification.rs"
             })
             .unwrap();
         source.text = source.text.replace("before.signal == after.signal", "true");
@@ -621,7 +643,9 @@ mod tests {
         let mut sources = fixture();
         let source = sources
             .iter_mut()
-            .find(|source| source.relative == "kernel/src/task/process_table/wait_child/claim.rs")
+            .find(|source| {
+                source.relative == "kernel/src/execution/task/process_table/wait_child/claim.rs"
+            })
             .unwrap();
         source.text =
             source
@@ -660,7 +684,7 @@ mod tests {
         let mut sources = fixture();
         let source = sources
             .iter_mut()
-            .find(|source| source.relative == "kernel/src/task/model/signal_pending.rs")
+            .find(|source| source.relative == "kernel/src/execution/task/model/signal_pending.rs")
             .unwrap();
         source.text = source
             .text
@@ -679,7 +703,7 @@ mod tests {
         let mut sources = fixture();
         let source = sources
             .iter_mut()
-            .find(|source| source.relative == "kernel/src/task/model/signal_dequeue.rs")
+            .find(|source| source.relative == "kernel/src/execution/task/model/signal_dequeue.rs")
             .unwrap();
         assert!(source.text.contains("drop(pending);"));
         source.text = source.text.replace("drop(pending);", "");
@@ -715,7 +739,8 @@ mod tests {
         let source = sources
             .iter_mut()
             .find(|source| {
-                source.relative == "kernel/src/task/process_table/timer_queue/posix_schedule.rs"
+                source.relative
+                    == "kernel/src/execution/task/process_table/timer_queue/posix_schedule.rs"
             })
             .unwrap();
         source.text = source.text.replace(
@@ -737,7 +762,8 @@ mod tests {
         let source = sources
             .iter_mut()
             .find(|source| {
-                source.relative == "kernel/src/task/process_table/timer_queue/posix_schedule.rs"
+                source.relative
+                    == "kernel/src/execution/task/process_table/timer_queue/posix_schedule.rs"
             })
             .unwrap();
         source.text = source.text.replace(

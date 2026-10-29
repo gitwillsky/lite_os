@@ -11,15 +11,15 @@ fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a str {
         .text
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let owner = normalized(source(sources, "kernel/src/socket/net_namespace.rs"));
-    let protocol_owner = normalized(source(sources, "kernel/src/socket/inet/protocol_owner.rs"));
-    let inet = normalized(source(sources, "kernel/src/socket/inet.rs"));
-    let configuration = normalized(source(sources, "kernel/src/socket/inet/configuration.rs"));
-    let timing = normalized(source(sources, "kernel/src/socket/inet/timing.rs"));
+    let owner = normalized(source(sources, "kernel/src/net/net_namespace.rs"));
+    let protocol_owner = normalized(source(sources, "kernel/src/net/inet/protocol_owner.rs"));
+    let inet = normalized(source(sources, "kernel/src/net/inet.rs"));
+    let configuration = normalized(source(sources, "kernel/src/net/inet/configuration.rs"));
+    let timing = normalized(source(sources, "kernel/src/net/inet/timing.rs"));
     let interface = normalized(source(sources, "kernel/src/syscall/socket/interface.rs"));
-    let registry = normalized(source(sources, "kernel/src/socket/unix/namespace.rs"));
-    let unix = normalized(source(sources, "kernel/src/socket/unix.rs"));
-    let lifecycle = normalized(source(sources, "kernel/src/socket/unix/lifecycle.rs"));
+    let registry = normalized(source(sources, "kernel/src/net/unix/namespace.rs"));
+    let unix = normalized(source(sources, "kernel/src/net/unix.rs"));
+    let lifecycle = normalized(source(sources, "kernel/src/net/unix/lifecycle.rs"));
     let proc = normalized(source(sources, "kernel/src/fs/procfs.rs"));
     let opened = normalized(source(sources, "kernel/src/fs/procfs/opened_operations.rs"));
     let nodes = normalized(source(sources, "kernel/src/fs/procfs/node.rs"));
@@ -85,14 +85,14 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors.push("network-namespace: one actual NET lifetime must charge ucounts, partition abstract keys using immutable socket scope, preserve global inode lookup and capture scoped proc policy with readonly global limits".into());
     }
     for path in [
-        "kernel/src/socket/inet/options.rs",
-        "kernel/src/socket/inet/udp.rs",
-        "kernel/src/socket/inet/raw.rs",
-        "kernel/src/socket/inet/tcp.rs",
-        "kernel/src/socket/inet/tcp/io.rs",
-        "kernel/src/socket/inet/tcp/accept.rs",
-        "kernel/src/socket/inet/tcp/lifecycle.rs",
-        "kernel/src/socket/inet/wait.rs",
+        "kernel/src/net/inet/options.rs",
+        "kernel/src/net/inet/udp.rs",
+        "kernel/src/net/inet/raw.rs",
+        "kernel/src/net/inet/tcp.rs",
+        "kernel/src/net/inet/tcp/io.rs",
+        "kernel/src/net/inet/tcp/accept.rs",
+        "kernel/src/net/inet/tcp/lifecycle.rs",
+        "kernel/src/net/inet/wait.rs",
     ] {
         if normalized(source(sources, path)).contains("initial_stack(") {
             errors.push(format!("network-namespace: {path}: existing endpoint operation/loan/readiness must use captured NET, never initial/current Task fallback"));
@@ -113,22 +113,22 @@ mod tests {
     fn unscoped_abstract_missing_quota_and_writable_global_tunables_are_rejected() {
         for (path, old, new) in [
             (
-                "kernel/src/socket/net_namespace.rs",
+                "kernel/src/net/net_namespace.rs",
                 ".try_call_once(|| {",
                 ".call_once(|| {",
             ),
             (
-                "kernel/src/socket/net_namespace.rs",
+                "kernel/src/net/net_namespace.rs",
                 "publish(initial)",
                 "Ok(initial)",
             ),
             (
-                "kernel/src/socket/unix/namespace.rs",
+                "kernel/src/net/unix/namespace.rs",
                 "NamespaceKey::Abstract(net_id, address, socket_type)",
                 "NamespaceKey::Abstract(6, address, socket_type)",
             ),
             (
-                "kernel/src/socket/net_namespace.rs",
+                "kernel/src/net/net_namespace.rs",
                 "_charge: Some(charge)",
                 "_charge: None",
             ),
@@ -138,12 +138,12 @@ mod tests {
                 "target.may_set_limits(authority)",
             ),
             (
-                "kernel/src/socket/net_namespace.rs",
+                "kernel/src/net/net_namespace.rs",
                 "FallibleMap<u64, Weak<NetNamespace>>",
                 "FallibleMap<u64, Arc<NetNamespace>>",
             ),
             (
-                "kernel/src/socket/net_namespace.rs",
+                "kernel/src/net/net_namespace.rs",
                 "directory.deferred_cursor = cursor",
                 "directory.deferred_cursor = 0",
             ),

@@ -113,7 +113,7 @@ fn shm_unevictable_policy_covers_direct_page_and_backing_reclaim_and_does_not_fa
     assert_eq!(bytes, [0x88; 4096]);
     assert!(!page.swap_out());
     drop((page, backing));
-    let mut wait = crate::sync::TaskMutexWaitPreparation;
+    let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
     swap::deactivate(SharedFileId { filesystem: 999, inode: 1 }, &mut wait).unwrap();
 }
 #[test]
@@ -158,7 +158,7 @@ fn shm_lock_waits_for_actual_inflight_swap_io_then_prevents_later_swap() {
     assert_eq!(bytes, [0x31; 4096]);
     assert!(!page.swap_out());
     drop((page, backing));
-    let mut wait = crate::sync::TaskMutexWaitPreparation;
+    let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
     swap::deactivate(SharedFileId { filesystem: 999, inode: 1 }, &mut wait).unwrap();
 }
 #[test]
@@ -250,7 +250,7 @@ fn shared_anonymous_aliases_keep_shared_identity_and_are_excluded_from_vmswap() 
             page.swap_out(),
             "resident alias and stale sibling must share one new slot epoch"
         );
-        let mut wait = crate::sync::TaskMutexWaitPreparation;
+        let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
         swap::deactivate(
             SharedFileId {
                 filesystem: 999,
@@ -330,7 +330,7 @@ fn shared_page_aggregate_follows_actual_publication_failure_and_physical_migrati
     assert_eq!(statistics.snapshot(), (1, 0), "page observer owns only its remaining content");
     drop(first_observer);
     assert_eq!(statistics.snapshot(), (0, 0), "actual last page retirement removes membership");
-    let mut wait = crate::sync::TaskMutexWaitPreparation;
+    let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
     swap::deactivate(SharedFileId { filesystem: 999, inode: 1 }, &mut wait).unwrap();
 }
 

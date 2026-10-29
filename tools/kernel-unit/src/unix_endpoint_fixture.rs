@@ -8,12 +8,12 @@ mod inet {
     // UNIX场景不装配INET；显式未执行类型边界，真实protocol owner由network_endpoint_fixture覆盖。
     pub(crate) struct NetworkStackOwner;
 }
-#[path = "../../../kernel/src/socket/core_buffer_limit.rs"]
+#[path = "../../../kernel/src/net/core_buffer_limit.rs"]
 mod core_buffer_limit;
 pub(crate) use core_buffer_limit::CoreBufferLimit;
-#[path = "../../../kernel/src/socket/core_buffers.rs"]
+#[path = "../../../kernel/src/net/core_buffers.rs"]
 mod core_buffers;
-#[path = "../../../kernel/src/socket/net_namespace.rs"]
+#[path = "../../../kernel/src/net/net_namespace.rs"]
 mod net_namespace;
 pub(crate) use net_namespace::{NetNamespace, initial_net, initialize_net};
 pub(crate) fn boot_net() -> Arc<NetNamespace> {
@@ -65,7 +65,7 @@ pub(crate) struct SocketPollState {
     pub(crate) read_closed: bool,
     pub(crate) error: bool,
 }
-#[path = "../../../kernel/src/socket/wait_source.rs"]
+#[path = "../../../kernel/src/net/wait_source.rs"]
 mod wait_source;
 pub(crate) use wait_source::SocketWaitSource;
 pub(crate) type SocketWaitSources = [Option<SocketWaitSource>; 3];
@@ -80,15 +80,15 @@ pub(crate) struct UnixConnectResources {
     pub(crate) server_notify: (Arc<crate::ipc::PipeEnd>, Arc<crate::ipc::PipeEnd>),
     pub(crate) data: UnixConnectionData,
 }
-#[path = "../../../kernel/src/socket/credentials.rs"]
+#[path = "../../../kernel/src/net/credentials.rs"]
 mod credentials;
 pub(crate) use credentials::{UnixCredentials, UnixSendCredentials};
-#[path = "../../../kernel/src/socket/capacity.rs"]
+#[path = "../../../kernel/src/net/capacity.rs"]
 mod capacity;
 pub(crate) use capacity::{SocketCapacityWait, SocketSendError, SocketWaitGuard};
-#[path = "../../../kernel/src/socket/message_limits.rs"]
+#[path = "../../../kernel/src/net/message_limits.rs"]
 mod message_limits;
-#[path = "../../../tools/kernel-view/socket/unix/unix/unix.rs"]
+#[path = "../../../tools/kernel-view/net/unix/unix/unix.rs"]
 mod unix;
 pub(crate) use unix::{
     UnixAddress, UnixFileLimit, UnixNode, UnixPassedFile, UnixPathIdentity, UnixRights, UnixSocket,

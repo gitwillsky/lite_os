@@ -17,6 +17,7 @@ use super::{
     protocol::{self, Attributes, Entry, Fields},
 };
 use crate::{
+    execution::sync::{TaskMutex, TaskMutexGuard},
     fallible_tree::FallibleMap,
     fs::{
         AccessIdentity, CreateMetadata, DeviceNumber, DirectoryRead, DirectoryVisitor,
@@ -25,7 +26,6 @@ use crate::{
         permission::OwnerModeState,
     },
     memory::SharedFileId,
-    sync::{TaskMutex, TaskMutexGuard},
 };
 
 mod directory;
@@ -39,7 +39,7 @@ use handle::HandleRef;
 const LINK_BUFFER: usize = 4096;
 
 fn now() -> u64 {
-    crate::timer::get_time_ns()
+    crate::execution::timer::get_time_ns()
 }
 
 struct CachedAttributes {
@@ -648,7 +648,7 @@ impl Inode for FuseInode {
 
     /// 内核是大小与 mtime/ctime 的权威（Linux `i_size_write` + `file_update_time`）。
     fn extend_buffered_size(&self, size: u64) {
-        let now = crate::timer::get_realtime_ns();
+        let now = crate::execution::timer::get_realtime_ns();
         let (seconds, nanoseconds) = (now / 1_000_000_000, (now % 1_000_000_000) as u32);
         let mut cached = self.attributes.lock();
         let attributes = &mut cached.attributes;

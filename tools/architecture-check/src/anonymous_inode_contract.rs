@@ -22,7 +22,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let ofd = text(sources, "kernel/src/file/mod.rs");
     let snapshot = text(sources, "kernel/src/fs/procfs/snapshot.rs");
     let link = text(sources, "kernel/src/fs/procfs/link.rs");
-    let producer = text(sources, "kernel/src/task/model/file_table.rs");
+    let producer = text(sources, "kernel/src/execution/task/model/file_table.rs");
     if !ofd.contains("opened: Arc<OpenedFile>")
         || ofd.contains("character_opened")
         || ofd.contains("MemFile(")

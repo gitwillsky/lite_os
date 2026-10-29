@@ -88,17 +88,18 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
   固定 bare-metal `compiler_builtins`：AArch64 为 hard-float AAPCS64 `aarch64-unknown-none`（kernel
   独立使用 `aarch64-unknown-none-softfloat`，两者不得混用），RISC-V 为 lp64d medany
   `riscv64gc-unknown-none-elf`。固定 `compiler_builtins` 只以 `extern "Rust"`
-  导出 f128 complex helper，`scripts/verify_musl.py` 因此从 rustc 同版本 LLVM compiler-rt 逐文件
+  导出 f128 complex helper，`scripts/toolchain/musl.py` 因此从 rustc 同版本 LLVM compiler-rt 逐文件
   校验 `multc3.c` 闭包，编译 C ABI `__multc3` 并与 rlib 合并为唯一 `libcompiler-runtime.a`；
   toolchain 自身再次导出该符号时构建 fail-stop，要求删除补充。任一 runtime 缺失或歧义都必须在
   发布 sysroot 前失败，musl smoke 必须实际验证 `strtod` 返回、FP arithmetic 与
   `long double _Complex` Annex G 重算。Homebrew 裸机 `libgcc` 是 medlow 非 PIC 代码，不能进入
   `libc.so`，因此不作为任一架构的 userspace runtime。
+- 生产构建由 `scripts/toolchain/` 与 `scripts/userland/` 拥有，`verify_*` 只装配门禁；host 检查通过 Python AST 拦截反向依赖与循环依赖。
 - 标准 Rust userspace 由单一 `user/` Cargo workspace/lockfile 构建；产品应用与
   `scripts/verify_rust_std.py` fixture 都使用固定 rust-src。Cargo 直接生成最终 binary，禁用 bundled
   musl CRT，动态链接项目 musl，并静态链接同 revision LLVM libunwind；禁止 staticlib 后手工二次链接。libunwind 是 panic/backtrace
   冷路径且固定 `-O2`；其正确性由双架构 target runtime gate 裁决，不增加失真的 host wall-clock benchmark。
-- BusyBox/OpenSSL 共用 verify_musl 的 `llvm-strip` resolver，从 PATH、Clang 相邻工具及 Homebrew 位置解析；
+- BusyBox/OpenSSL 共用 `toolchain.musl` 的 `llvm-strip` resolver，从 PATH、Clang 相邻工具及 Homebrew 位置解析；
   cache fingerprint 记录实际执行文件的绝对路径与内容摘要，构建直接消费该已选路径。
 - musl PID1 fixture 在 fork consumer 前创建 `/tmp` 并挂载 proc、sysfs、devpts，继承同一初始环境。
   无效 ancillary 指针与只读 msghdr 的故障顺序直接调用标准 syscall，避免 libc 的预复制或写回先崩溃。
@@ -385,9 +386,9 @@ guest 内握手，writer B 才能进入 blocking record-lock 路径。SQLite cra
 已 INSERT、未 COMMIT 的 WAL transaction，再在 guest 内精确 `SIGKILL` sqlite process；
 重新打开后必须 `integrity=ok` 且未提交 row 不可见。它不把只覆盖 metadata 的 ext4 journal 物理掉电恢复
 伪装成 SQLite 能力；QEMU SIGKILL 掉电仍由 filesystem 专项 gate 独立裁决。
-SQLite 第一阶段 `sync` 后由 host 结束 VM，再冷启动同一持久化镜像执行恢复策略；禁止在 HVF
+SQLite 第一阶段 `execution::sync` 后由 host 结束 VM，再冷启动同一持久化镜像执行恢复策略；禁止在 HVF
 进程内用 system reset 串联两阶段，因为 QEMU 的 HVF exception handler 会触发 host `isv`
-assertion。该生命周期边界不替代 guest `sync`、journal integrity 或 SQLite process-crash 门禁。
+assertion。该生命周期边界不替代 guest `execution::sync`、journal integrity 或 SQLite process-crash 门禁。
 任一子门禁失败即整体失败，不能抽样或提前发布成功。
 
 当前图形门禁的覆盖与边界分别见 [Wayland 验证](wayland-ui-verification.md)和[产品桌面验证](desktop-verification.md)；

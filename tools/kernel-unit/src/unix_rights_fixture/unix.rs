@@ -1,24 +1,24 @@
 use super::{SocketError, UnixCredentials};
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
-#[path = "../../../../kernel/src/socket/unix/rights.rs"]
+#[path = "../../../../kernel/src/net/unix/rights.rs"]
 mod rights;
 pub(crate) use rights::{UnixFileLimit, UnixNode, UnixPassedFile, UnixReceivedRights, UnixRights};
-#[path = "../../../../kernel/src/socket/unix/connection_backlog.rs"]
+#[path = "../../../../kernel/src/net/unix/connection_backlog.rs"]
 mod connection_backlog;
-#[path = "../../../../kernel/src/socket/unix/retirement.rs"]
+#[path = "../../../../kernel/src/net/unix/retirement.rs"]
 mod retirement;
-#[path = "../../../../tools/kernel-view/socket/unix/rights_graph/rights_graph/rights_graph.rs"]
+#[path = "../../../../tools/kernel-view/net/unix/rights_graph/rights_graph/rights_graph.rs"]
 mod rights_graph;
-#[path = "../../../../kernel/src/socket/unix/rights_owner.rs"]
+#[path = "../../../../kernel/src/net/unix/rights_owner.rs"]
 mod rights_owner;
-#[path = "../../../../kernel/src/socket/unix/send_memory.rs"]
+#[path = "../../../../kernel/src/net/unix/send_memory.rs"]
 mod send_memory;
 use send_memory::SenderCharge;
-#[path = "../../../../tools/kernel-view/socket/unix/stream/stream/stream.rs"]
+#[path = "../../../../tools/kernel-view/net/unix/stream/stream/stream.rs"]
 mod stream;
 const SCM_MAX_FD: usize = 253;
-#[path = "../../../../kernel/src/socket/unix/receive_mode.rs"]
+#[path = "../../../../kernel/src/net/unix/receive_mode.rs"]
 mod receive_mode;
 use receive_mode::ReceiveMode;
 // 仅生产实际 queued payload/address seam；lifecycle、root 与 backlog 使用生产源码。
@@ -322,7 +322,7 @@ impl UnixSocket {
     pub(crate) fn run_worker(
         clock: impl Fn() -> u64,
         sleep_until: impl FnMut(u64),
-        gate: crate::sync::TaskMutexWaitPreparation,
+        gate: crate::execution::sync::TaskMutexWaitPreparation,
     ) -> ! {
         rights_graph::run_collector(clock, sleep_until, gate)
     }
@@ -353,6 +353,6 @@ impl UnixSocket {
 }
 
 // 本装配仅生产 SCM graph/stream 输入；预算调优必须由完整 endpoint 用例执行，不能返回伪造 floor。
-pub(super) fn minimum_buffer(_: crate::socket::SocketIoDirection) -> usize {
+pub(super) fn minimum_buffer(_: crate::net::SocketIoDirection) -> usize {
     unreachable!("rights-only fixture does not configure endpoint memory limits")
 }

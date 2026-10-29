@@ -89,7 +89,7 @@ impl crate::memory::swap::SwapStorage for SwapDisk {
 }
 type RetirementHook = Box<dyn FnOnce(&MemorySet) + Send>;
 struct SwapMemory {
-    memory: crate::sync::TaskMutex<MemorySet>,
+    memory: crate::execution::sync::TaskMutex<MemorySet>,
     before_restore: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     before_revoke: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
     after_revoke: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -98,7 +98,7 @@ struct SwapMemory {
 impl SwapMemory {
     fn new(memory: MemorySet) -> Self {
         Self {
-            memory: crate::sync::TaskMutex::new(memory),
+            memory: crate::execution::sync::TaskMutex::new(memory),
             before_restore: std::sync::Mutex::new(None),
             before_revoke: std::sync::Mutex::new(None),
             after_revoke: std::sync::Mutex::new(None),
@@ -136,7 +136,7 @@ impl crate::memory::shared_file::MemoryMappingOwner for SwapMemory {
     fn revoke_shared_file_writers(
         &self,
         id: SharedFileId,
-        _: &mut crate::sync::TaskMutexWaitPreparation,
+        _: &mut crate::execution::sync::TaskMutexWaitPreparation,
     ) {
         self.memory.lock().unwrap().revoke_shared_file_writers(id);
     }
@@ -145,7 +145,7 @@ impl crate::memory::shared_file::MemoryMappingOwner for SwapMemory {
         id: SharedFileId,
         first: u64,
         last: u64,
-        _: &mut crate::sync::TaskMutexWaitPreparation,
+        _: &mut crate::execution::sync::TaskMutexWaitPreparation,
     ) {
         self.memory
             .lock()
@@ -156,14 +156,14 @@ impl crate::memory::shared_file::MemoryMappingOwner for SwapMemory {
         &self,
         _: SharedFileId,
         _: u64,
-        _: &mut crate::sync::TaskMutexWaitPreparation,
+        _: &mut crate::execution::sync::TaskMutexWaitPreparation,
     ) {
         panic!("file invalidation outside swap fixture");
     }
     fn restore_swapped_pages(
         &self,
         identity: SharedFileId,
-        _: &mut crate::sync::TaskMutexWaitPreparation,
+        _: &mut crate::execution::sync::TaskMutexWaitPreparation,
     ) -> Result<(), crate::memory::SharedFileError> {
         let action = self.before_restore.lock().unwrap().take();
         if let Some(action) = action {
@@ -263,7 +263,7 @@ fn production_swap_slot_cpu_cost() {
     measure("swap 32-area statistics", || {
         black_box(swap::statistics());
     });
-    let mut wait = crate::sync::TaskMutexWaitPreparation;
+    let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
     for inode in 1..=32 {
         swap::deactivate(
             SharedFileId {
@@ -365,7 +365,7 @@ fn production_swap_reclaim_fork_io_failure_and_drain_keep_one_page_owner() {
                 .is_none()
         );
         disk.read_error.store(true, Ordering::Relaxed);
-        let mut wait = crate::sync::TaskMutexWaitPreparation;
+        let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
         assert_eq!(
             swap::deactivate(
                 SharedFileId {
@@ -499,7 +499,7 @@ fn production_swap_reclaim_fork_io_failure_and_drain_keep_one_page_owner() {
             .all(|page| page.content_snapshot().is_none()),
         "every half must eventually accept swap candidates"
     );
-    let mut wait = crate::sync::TaskMutexWaitPreparation;
+    let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
     swap::deactivate(
         SharedFileId {
             filesystem: 999,
@@ -527,7 +527,7 @@ fn production_swap_reclaim_fork_io_failure_and_drain_keep_one_page_owner() {
     let orphan = swap::reserve().unwrap();
     let (finished, completion) = std::sync::mpsc::channel();
     let drain = std::thread::spawn(move || {
-        let mut wait = crate::sync::TaskMutexWaitPreparation;
+        let mut wait = crate::execution::sync::TaskMutexWaitPreparation;
         let result = swap::deactivate(
             SharedFileId {
                 filesystem: 999,

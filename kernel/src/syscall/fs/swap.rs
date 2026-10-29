@@ -2,10 +2,10 @@
 
 use super::pathname::{ferr, path};
 use crate::{
+    execution::task::{TaskControlBlock, current_task},
     fs::{self, vfs},
     memory::swap::{self, SwapError},
     syscall::errno,
-    task::{TaskControlBlock, current_task},
 };
 
 fn swap_error(error: SwapError) -> isize {
@@ -68,7 +68,7 @@ pub(crate) fn sys_swapoff(address: usize) -> isize {
         Ok(identity) => identity,
         Err(error) => return ferr(error),
     };
-    let mut wait = match crate::sync::TaskMutexWaitPreparation::prepare() {
+    let mut wait = match crate::execution::sync::TaskMutexWaitPreparation::prepare() {
         Ok(wait) => wait,
         Err(_) => return -errno::ENOMEM,
     };

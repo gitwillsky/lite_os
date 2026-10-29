@@ -3,7 +3,7 @@ use alloc::boxed::Box;
 
 use super::*;
 use crate::{
-    cpu::CpuId,
+    execution::cpu::CpuId,
     fs::{
         CompletionNotify,
         chardev::{PendingCommand, UringCommand, UserMemory},
@@ -72,7 +72,7 @@ struct Command {
 
 impl Queue {
     pub(super) fn route(&self, request: &Request) {
-        let cpu = matches!(self.uring.stage, Stage::Active).then(crate::cpu::current_id);
+        let cpu = matches!(self.uring.stage, Stage::Active).then(crate::execution::cpu::current_id);
         *request.phase.lock() = Phase::Queued { cpu };
     }
 
@@ -162,9 +162,9 @@ impl Connection {
             return Err(DeviceError::Errno(errno::EINVAL));
         }
         let result = (|| {
-            let cpu = crate::cpu::id_at(
-                u16::from_ne_bytes(command.data[16..18].try_into().unwrap()) as usize,
-            )
+            let cpu = crate::execution::cpu::id_at(u16::from_ne_bytes(
+                command.data[16..18].try_into().unwrap(),
+            ) as usize)
             .ok_or(DeviceError::Errno(errno::EINVAL))?;
             // 1. 先分配可撤销令牌，再发布登记/认领 commit；OOM 不能留下没有等待者的登记项。
             let mut pending = Box::try_new(Command {
@@ -201,7 +201,7 @@ impl Connection {
                     });
                     pending.entry = Some(id);
                     if queue.uring.registering()
-                        && crate::cpu::possible().iter().all(|cpu| {
+                        && crate::execution::cpu::possible().iter().all(|cpu| {
                             queue.uring.entries.iter().any(|entry| {
                                 entry.cpu == cpu && matches!(entry.state, EntryState::Available(_))
                             })

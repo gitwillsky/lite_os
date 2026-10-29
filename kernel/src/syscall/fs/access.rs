@@ -1,4 +1,4 @@
-use crate::{fs::vfs, syscall::errno, task::current_task};
+use crate::{execution::task::current_task, fs::vfs, syscall::errno};
 
 use super::pathname::{base, ferr, path};
 

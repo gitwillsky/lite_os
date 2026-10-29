@@ -9,8 +9,7 @@ mod device_number;
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../src/sync.rs"]
-mod sync;
+
 mod fs {
     #[derive(Debug)]
     pub(crate) enum FileSystemError {
@@ -18,15 +17,8 @@ mod fs {
     }
     pub(crate) use crate::device_number::DeviceNumber;
 }
-#[path = "../../../kernel/src/tty"]
-mod tty {
-    #[allow(
-        unused_imports,
-        reason = "focused TTY fixture consumes a subset of the terminal facade"
-    )]
-    pub(crate) mod terminal;
-}
-use tty::terminal;
+
+use crate::devices::tty::terminal;
 struct Console;
 impl terminal::Console for Console {
     fn read(&self, _: &mut [u8]) -> Result<usize, fs::FileSystemError> {
@@ -119,4 +111,22 @@ fn retired_control_keeps_historical_pid_alive_only_until_caller_retires_it() {
     assert!(tty.controlling_session().is_none());
     drop(control);
     assert!(observer.upgrade().is_none());
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
+}
+
+#[path = "."]
+pub(crate) mod devices {
+    #[path = "../../../kernel/src/devices/tty"]
+    pub(crate) mod tty {
+        #[allow(
+            unused_imports,
+            reason = "focused TTY fixture consumes a subset of the terminal facade"
+        )]
+        pub(crate) mod terminal;
+    }
 }

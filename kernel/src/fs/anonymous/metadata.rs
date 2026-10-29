@@ -83,5 +83,5 @@ impl Metadata {
     }
 }
 fn now_seconds() -> u64 {
-    crate::timer::get_realtime_ns() / 1_000_000_000
+    crate::execution::timer::get_realtime_ns() / 1_000_000_000
 }

@@ -1,6 +1,6 @@
 //! 生产 Thread restart 记录；捕获 handler 与 ignored/stop 的决定不复制到 fixture。
 #![allow(dead_code)]
-#[path = "../../../kernel/src/task/model/syscall_restart.rs"]
+#[path = "../../../kernel/src/execution/task/model/syscall_restart.rs"]
 mod syscall_restart;
 use syscall_restart::{
     SyscallRestart, SyscallRestartBlock, SyscallRestartPolicy, SyscallRestartState,

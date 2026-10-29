@@ -1,7 +1,7 @@
 use crate::{
+    execution::task::current_task,
     syscall::errno,
     system::{self, ResetKind},
-    task::current_task,
 };
 
 /// 验证 Linux reboot magic/command 并映射到 platform whole-system reset。

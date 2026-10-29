@@ -9,11 +9,11 @@ mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 #[path = "../src/socket_option_memory_fixture.rs"]
-mod socket;
+mod net;
 
 #[test]
 fn net_sysctl_permission_uses_global_root_and_namespace_capability_not_stat_owner() {
-    socket::endpoint();
+    net::endpoint();
     let root = namespace::root_authority();
     let child = namespace::UserNamespace::child(
         &root,
@@ -27,7 +27,7 @@ fn net_sysctl_permission_uses_global_root_and_namespace_capability_not_stat_owne
     child
         .publish_map(true, b"0 1000 1\n", &root, &root)
         .unwrap();
-    let net = socket::NetNamespace::create(child.clone(), 1000).unwrap();
+    let net = net::NetNamespace::create(child.clone(), 1000).unwrap();
     assert_eq!(net.user_namespace().to_kernel(true, 0), Some(1000));
     let mapped_owner = namespace::NamespaceAuthority {
         namespace: child.clone(),
@@ -58,12 +58,12 @@ fn actual_policy_and_concurrent_reservations_preserve_strict_budget_and_refund()
         Arc, Barrier,
         atomic::{AtomicUsize, Ordering},
     };
-    let first = socket::endpoint();
-    let second = socket::endpoint();
-    let owner = socket::initial_net();
+    let first = net::endpoint();
+    let second = net::endpoint();
+    let owner = net::initial_net();
     let root = namespace::root_authority();
     struct Restore(
-        alloc::sync::Arc<socket::NetNamespace>,
+        alloc::sync::Arc<net::NetNamespace>,
         namespace::NamespaceAuthority,
         u32,
     );

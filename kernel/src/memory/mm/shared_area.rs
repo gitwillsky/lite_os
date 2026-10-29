@@ -102,7 +102,7 @@ impl AnonymousSharedBacking {
 }
 
 impl crate::memory::swappable_page::SharedMemorySwapOwner for AnonymousSharedBacking {
-    fn try_shared_swap(&self) -> Option<crate::sync::TaskMutexGuard<'_, ()>> {
+    fn try_shared_swap(&self) -> Option<crate::execution::sync::TaskMutexGuard<'_, ()>> {
         self.swap_policy.try_swap()
     }
 }

@@ -222,7 +222,7 @@ impl MountNamespace {
         &self,
         root: &Arc<OpenedFile>,
         mode: UnmountMode,
-    ) -> Result<Vec<Arc<crate::sync::TaskEvent>>, FileSystemError> {
+    ) -> Result<Vec<Arc<crate::execution::sync::TaskEvent>>, FileSystemError> {
         let view = self.unmount_view(root)?;
         if Arc::ptr_eq(&self.root_view(), view) {
             return Err(FileSystemError::InvalidOperation);

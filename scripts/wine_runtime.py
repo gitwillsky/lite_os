@@ -21,7 +21,7 @@ from pathlib import Path
 from apk_cache import ALPINE_ARCH, download
 from build_cache import cache_lock, sha256, temporary_directory
 from local_inputs import INPUTS
-from verify_busybox import UserlandArtifact
+from userland import UserlandArtifact
 
 ROOT = Path(__file__).resolve().parent.parent
 ARCHIVE = ROOT / "prebuilt/wine/wine-11.16-aarch64-musl.tar.xz"

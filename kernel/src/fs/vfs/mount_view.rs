@@ -33,15 +33,17 @@ impl MountScope {
         Arc::try_new(Self {
             id,
             user,
-            event: AtomicU64::new(crate::sync::next_readiness_generation()),
+            event: AtomicU64::new(crate::execution::sync::next_readiness_generation()),
             mounts: AtomicUsize::new(0),
             notification,
         })
         .map_err(|_| FileSystemError::OutOfMemory)
     }
     pub(super) fn changed(&self) {
-        self.event
-            .store(crate::sync::next_readiness_generation(), Ordering::Release);
+        self.event.store(
+            crate::execution::sync::next_readiness_generation(),
+            Ordering::Release,
+        );
         self.notification.1.signal_readiness();
     }
     pub(super) fn prepare_additions(&self, additional: usize) -> Result<(), FileSystemError> {
@@ -133,7 +135,7 @@ pub(super) struct MountPayload {
     pub(super) root: Arc<Dentry>,
     pub(super) filesystem: Arc<MountedFilesystem>,
     // 普通 umount 的唯一 final resource completion，构造时预留，不依赖退休时 OOM 分配。
-    pub(super) complete: Arc<crate::sync::TaskEvent>,
+    pub(super) complete: Arc<crate::execution::sync::TaskEvent>,
 }
 impl MountPayload {
     /// cleanup_mnt：先 dput root/placement，再 deactivate filesystem；不能依赖字段声明次序。
@@ -220,7 +222,7 @@ impl MountView {
         let attachment = attachment
             .map(super::mount_retirement::Retirement::for_attachment)
             .transpose()?;
-        let complete = Arc::try_new(crate::sync::TaskEvent::new())
+        let complete = Arc::try_new(crate::execution::sync::TaskEvent::new())
             .map_err(|_| FileSystemError::OutOfMemory)?;
         let payload = MountPayload {
             complete,

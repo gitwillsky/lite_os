@@ -29,8 +29,8 @@ from build_cache import (
 from build_target import BuildTarget, acceleration_from_environment, target_from_environment
 from display_gate import display_session
 from ext4_image import find_debugfs, recover_ext4_journal
-from verify_busybox import build_rust_user_program
-from verify_musl import cached_musl_paths, find_compiler, run
+from userland.rust import build_rust_user_program
+from toolchain.musl import cached_musl_paths, find_compiler, run
 
 ROOT = Path(__file__).resolve().parent.parent
 RECIPE_VERSION = 4

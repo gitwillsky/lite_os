@@ -2,7 +2,7 @@ use syn::{Expr, ExprCall, ExprLit, ImplItem, ImplItemFn, Item, Lit, Path, Type, 
 
 use super::SourceFile;
 
-const TTY_PATH: &str = "kernel/src/tty/mod.rs";
+const TTY_PATH: &str = "kernel/src/devices/tty/mod.rs";
 
 /// 校验 TTY user-visible readiness 与 PTY master input batch 的 production 实现。
 ///
@@ -243,7 +243,7 @@ mod tests {
         let clear = "uart.write(INTERRUPT_CLEAR, RX_INTERRUPT);\n";
         let start = source.text.find(clear).expect("handler clear anchor");
         source.text.replace_range(start..start + clear.len(), "");
-        let publish = "crate::hal::console::publish_received(";
+        let publish = "crate::devices::console::publish_received(";
         let at = source.text.find(publish).expect("publish anchor");
         source.text.insert_str(at, clear);
         let mut errors = Vec::new();

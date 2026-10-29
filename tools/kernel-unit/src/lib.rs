@@ -77,21 +77,11 @@ macro_rules! info {
 mod drivers;
 
 #[cfg(test)]
-#[allow(dead_code)]
-mod virtio;
-
-#[cfg(test)]
-mod sync;
-
-/// 与内核 `audio` 领域相同的模块层级：被包含的源文件通过 `super::state` 等路径互相引用，不需要为测试改写。
-#[cfg(test)]
-mod audio;
-#[cfg(test)]
-use audio::state as audio_state;
+use crate::devices::audio::state as audio_state;
 
 #[cfg(test)]
 mod audio_readiness {
-    include!("../../../kernel/src/audio/readiness.rs");
+    include!("../../../kernel/src/devices/audio/readiness.rs");
 
     pub(crate) const fn project(events: i16, writable: bool) -> i16 {
         project_playback_events(events, writable)
@@ -99,15 +89,15 @@ mod audio_readiness {
 }
 
 #[cfg(test)]
-#[path = "../../../kernel/src/virtio/sound/wire.rs"]
+#[path = "../../../kernel/src/drivers/virtio/sound/wire.rs"]
 mod virtio_sound_wire;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/virtio/console/wire.rs"]
+#[path = "../../../kernel/src/drivers/virtio/console/wire.rs"]
 mod virtio_console_wire;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/virtio/sound/lifecycle.rs"]
+#[path = "../../../kernel/src/drivers/virtio/sound/lifecycle.rs"]
 mod virtio_sound_lifecycle;
 
 #[cfg(test)]
@@ -136,19 +126,6 @@ mod id;
 #[path = "pipe_fixture.rs"]
 #[allow(dead_code, unused_imports)]
 mod ipc;
-
-#[cfg(test)]
-mod timer {
-    pub(crate) fn get_realtime_ns() -> u64 {
-        1_800_000_000_000_000_000
-    }
-
-    /// 固定 monotonic 时刻：host 测试中 running transaction 永不因年龄到期，提交只由容量、
-    /// 数据上限或显式 sync 触发，使设备成本可确定复现。
-    pub(crate) fn get_time_ns() -> u64 {
-        1_000_000_000
-    }
-}
 
 #[cfg(test)]
 #[allow(dead_code)]
@@ -214,7 +191,7 @@ mod fallible_tree;
 mod fallible_tree_tests;
 
 #[cfg(test)]
-#[path = "../../../tools/kernel-view/socket/inet/port_namespace/port_namespace/port_namespace.rs"]
+#[path = "../../../tools/kernel-view/net/inet/port_namespace/port_namespace/port_namespace.rs"]
 #[allow(
     dead_code,
     reason = "独立 leaf fixture；组合生命周期接口由完整 endpoint 集成用例覆盖"
@@ -222,7 +199,7 @@ mod fallible_tree_tests;
 mod inet_port_namespace;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/socket/inet/protocol_owner/pending_cleanup.rs"]
+#[path = "../../../kernel/src/net/inet/protocol_owner/pending_cleanup.rs"]
 mod inet_pending_cleanup;
 
 #[cfg(test)]
@@ -233,15 +210,11 @@ mod listen_backlog;
 mod inet_port_namespace_tests;
 
 #[cfg(test)]
-#[allow(dead_code)]
-mod block;
-
-#[cfg(test)]
-#[path = "../../../kernel/src/virtio/blk/policy.rs"]
+#[path = "../../../kernel/src/drivers/virtio/blk/policy.rs"]
 mod virtio_blk_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/virtio/rng/completion_policy.rs"]
+#[path = "../../../kernel/src/drivers/virtio/rng/completion_policy.rs"]
 mod virtio_rng_completion_policy;
 
 #[cfg(test)]
@@ -288,28 +261,28 @@ mod fault_preflight;
 mod memory_retire;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/model/user_context.rs"]
+#[path = "../../../kernel/src/execution/task/model/user_context.rs"]
 mod task_user_context;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/virtio/net/rx_slots.rs"]
+#[path = "../../../kernel/src/drivers/virtio/net/rx_slots.rs"]
 mod virtio_net_rx_slots;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/virtio/gpu/sequence_policy.rs"]
+#[path = "../../../kernel/src/drivers/virtio/gpu/sequence_policy.rs"]
 #[allow(dead_code)]
 mod virtio_gpu_sequence_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/virtio/gpu/scanout_state.rs"]
+#[path = "../../../kernel/src/drivers/virtio/gpu/scanout_state.rs"]
 mod virtio_gpu_scanout_state;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drm/fence_timeline.rs"]
+#[path = "../../../kernel/src/devices/drm/fence_timeline.rs"]
 mod drm_fence_timeline;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/timer/deadline.rs"]
+#[path = "../../../kernel/src/execution/timer/deadline.rs"]
 mod timer_deadline;
 
 #[cfg(test)]
@@ -335,7 +308,7 @@ mod riscv_page_table_fixture;
 mod aarch64_page_table_fixture;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/socket/unix/datagram_queue.rs"]
+#[path = "../../../kernel/src/net/unix/datagram_queue.rs"]
 #[allow(
     dead_code,
     reason = "独立 leaf fixture；组合生命周期接口由完整 endpoint 集成用例覆盖"
@@ -343,7 +316,7 @@ mod aarch64_page_table_fixture;
 mod unix_datagram_queue;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/socket/unix/connection_backlog.rs"]
+#[path = "../../../kernel/src/net/unix/connection_backlog.rs"]
 #[allow(
     dead_code,
     reason = "backlog 的生命周期退休接口由完整 endpoint 回归覆盖"
@@ -359,28 +332,28 @@ mod user_iovec;
 mod user_iovec_tests;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/socket/message_limits.rs"]
+#[path = "../../../kernel/src/net/message_limits.rs"]
 mod socket_message_limits;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drm/publication_order.rs"]
+#[path = "../../../kernel/src/devices/drm/publication_order.rs"]
 mod drm_publication;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/socket/inet/device_error.rs"]
+#[path = "../../../kernel/src/net/inet/device_error.rs"]
 mod network_device_error;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/network.rs"]
+#[path = "../../../kernel/src/devices/model/network.rs"]
 #[allow(dead_code)]
 mod network_transmit;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/tty/terminal/flush.rs"]
+#[path = "../../../kernel/src/devices/tty/terminal/flush.rs"]
 mod terminal_flush;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/tty/terminal/input_batch.rs"]
+#[path = "../../../kernel/src/devices/tty/terminal/input_batch.rs"]
 mod terminal_input_batch;
 
 #[cfg(test)]
@@ -405,19 +378,19 @@ mod getrandom_flags;
 mod getrandom_flags_tests;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/tty/pty/input_notification.rs"]
+#[path = "../../../kernel/src/devices/tty/pty/input_notification.rs"]
 mod pty_input_notification;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/process_table/console_batch.rs"]
+#[path = "../../../kernel/src/execution/task/process_table/console_batch.rs"]
 mod console_batch;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/model/clone_tid_store.rs"]
+#[path = "../../../kernel/src/execution/task/model/clone_tid_store.rs"]
 mod clone_tid_store;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/model/synchronous_fault.rs"]
+#[path = "../../../kernel/src/execution/task/model/synchronous_fault.rs"]
 mod synchronous_fault;
 
 #[cfg(test)]
@@ -448,23 +421,23 @@ mod aarch64_va39;
 mod riscv64_signal_frame;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/process_table/thread_activation.rs"]
+#[path = "../../../kernel/src/execution/task/process_table/thread_activation.rs"]
 mod thread_activation;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/process_table/wait_publication.rs"]
+#[path = "../../../kernel/src/execution/task/process_table/wait_publication.rs"]
 mod wait_publication;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/process_table/snapshot_staging.rs"]
+#[path = "../../../kernel/src/execution/task/process_table/snapshot_staging.rs"]
 mod snapshot_staging;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/process_table/timer_queue/preparation_policy.rs"]
+#[path = "../../../kernel/src/execution/task/process_table/timer_queue/preparation_policy.rs"]
 mod timer_preparation_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/task/process_table/timer_queue/transaction_loop.rs"]
+#[path = "../../../kernel/src/execution/task/process_table/timer_queue/transaction_loop.rs"]
 mod timer_transaction_loop;
 
 #[cfg(test)]
@@ -516,10 +489,6 @@ mod socket_abi_tests;
 mod unix_connection_backlog_tests;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/cmdline.rs"]
-mod cmdline;
-
-#[cfg(test)]
 #[path = "tests/cmdline.rs"]
 mod cmdline_tests;
 
@@ -529,3 +498,48 @@ mod allocation_failure;
 #[cfg(test)]
 #[path = "tests/pipe_admission.rs"]
 mod pipe_admission_tests;
+
+#[cfg(test)]
+#[path = "."]
+pub(crate) mod execution {
+    #[cfg(test)]
+    pub(crate) mod sync;
+    #[cfg(test)]
+    pub(crate) mod timer {
+        pub(crate) fn get_realtime_ns() -> u64 {
+            1_800_000_000_000_000_000
+        }
+
+        /// 固定 monotonic 时刻：host 测试中 running transaction 永不因年龄到期，提交只由容量、
+        /// 数据上限或显式 sync 触发，使设备成本可确定复现。
+        pub(crate) fn get_time_ns() -> u64 {
+            1_000_000_000
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "."]
+pub(crate) mod devices {
+    #[path = "devices/model.rs"]
+    #[allow(
+        dead_code,
+        reason = "host fixture loads only the device leaves used by each production consumer"
+    )]
+    pub(crate) mod model;
+
+    /// 与内核 `audio` 领域相同的模块层级：被包含的源文件通过 `super::state` 等路径互相引用，不需要为测试改写。
+    #[cfg(test)]
+    pub(crate) mod audio;
+
+    #[cfg(test)]
+    #[allow(dead_code)]
+    pub(crate) mod block;
+}
+#[cfg(test)]
+#[path = "."]
+pub(crate) mod boot {
+    #[cfg(test)]
+    #[path = "../../../kernel/src/boot/cmdline.rs"]
+    pub(crate) mod cmdline;
+}

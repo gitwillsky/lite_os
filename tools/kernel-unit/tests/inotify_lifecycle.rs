@@ -12,8 +12,6 @@ mod id;
 mod ipc;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../src/sync.rs"]
-mod sync;
 
 #[path = "../../../kernel/src/fs"]
 mod fs {
@@ -490,4 +488,10 @@ mod fs {
         inotify::notify_dentry_reclaimed(&inode);
         assert_eq!(instance.poll(1), 0);
     }
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
 }

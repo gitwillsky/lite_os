@@ -11,9 +11,8 @@ mod ipc;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 #[path = "../src/unix_rights_fixture/mod.rs"]
-mod socket;
-#[path = "../src/sync.rs"]
-mod sync;
+mod net;
+
 mod id {
     static NEXT: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
     pub(crate) fn next_runtime_object_id() -> u64 {
@@ -23,7 +22,7 @@ mod id {
 #[path = "../src/unix_rights_fixture/file.rs"]
 mod file;
 use alloc::{sync::Arc, vec};
-use socket::{SocketError, UnixPassedFile, UnixRights, UnixSocket};
+use net::{SocketError, UnixPassedFile, UnixRights, UnixSocket};
 // OWNER: 本文件所有测试共用的串行锁。它们操作同一套进程级 SCM 权限图、collector 与 quota 状态；
 // 并行执行时一个测试的 collect/in-flight 引用会让另一个测试的 `weak.upgrade().is_none()` 等断言
 // 概率性失败（单线程 0/600，并行约 1%）。
@@ -31,7 +30,7 @@ static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
 fn endpoint() -> (Arc<UnixSocket>, Arc<file::OpenFileDescription>) {
     let socket = UnixSocket::new();
     let file = Arc::new(file::OpenFileDescription {
-        kind: file::OpenFileKind::Socket(Arc::new(socket::Socket {
+        kind: file::OpenFileKind::Socket(Arc::new(net::Socket {
             endpoint: socket.clone(),
         })),
     });
@@ -44,7 +43,7 @@ fn rights(files: &[Arc<file::OpenFileDescription>], uid: u32) -> UnixRights {
         .cloned()
         .map(|file| -> Arc<dyn UnixPassedFile> { file })
         .collect();
-    UnixRights::new(files, uid, Some(socket::ProducedLimit::new(usize::MAX))).unwrap()
+    UnixRights::new(files, uid, Some(net::ProducedLimit::new(usize::MAX))).unwrap()
 }
 #[test]
 fn prepared_duplicate_edges_publish_without_allocations_and_detach_one_actual_batch() {
@@ -119,7 +118,7 @@ fn normal_worker_reclaims_below_limit_cycles_without_quota_recovery_or_new_alloc
     dead.enqueue(rights(core::slice::from_ref(&file_dead), 8105));
     live.enqueue(rights(core::slice::from_ref(&file_live), 8105));
     drop(file_dead);
-    let gate = sync::TaskMutexWaitPreparation::prepare().unwrap();
+    let gate = crate::execution::sync::TaskMutexWaitPreparation::prepare().unwrap();
     let wait_target = interruptible_target::Target::new();
     let _binding = wait_target.bind();
     allocation_failure::fail_next();
@@ -146,17 +145,13 @@ fn inflight_limit_checks_existing_usage_and_privileged_none_bypasses_the_limit()
     let mut first = UnixRights::new(
         vec![file.clone(), file.clone(), file.clone()],
         8106,
-        Some(socket::ProducedLimit::new(0)),
+        Some(net::ProducedLimit::new(0)),
     )
     .unwrap();
     UnixSocket::prepare(&mut first, &target).unwrap();
     UnixSocket::publish_prepared(&mut first, &target);
-    let mut second = UnixRights::new(
-        vec![file.clone()],
-        8106,
-        Some(socket::ProducedLimit::new(0)),
-    )
-    .unwrap();
+    let mut second =
+        UnixRights::new(vec![file.clone()], 8106, Some(net::ProducedLimit::new(0))).unwrap();
     UnixSocket::prepare(&mut second, &target).unwrap();
     assert!(UnixSocket::quota_rejected(&mut second, &target));
     let mut privileged = UnixRights::new(vec![file.clone()], 8106, None).unwrap();
@@ -226,7 +221,7 @@ fn stream_peek_copies_actual_rights_without_consuming_bytes_quota_or_edges() {
     let _serial = SERIAL.lock().unwrap();
     let (target, file) = endpoint();
     let channel = UnixSocket::stream_channel(&target);
-    let limit = socket::ProducedLimit::new(0);
+    let limit = net::ProducedLimit::new(0);
     let mut first = Some(UnixRights::new(vec![file.clone()], 8116, Some(limit.clone())).unwrap());
     channel.write(b"hello", &mut first).unwrap();
     let mut pending = UnixRights::new(vec![file.clone()], 8116, Some(limit)).unwrap();
@@ -273,7 +268,7 @@ fn stream_peek_copies_actual_rights_without_consuming_bytes_quota_or_edges() {
 
 fn file_for(socket: &Arc<UnixSocket>) -> Arc<file::OpenFileDescription> {
     let file = Arc::new(file::OpenFileDescription {
-        kind: file::OpenFileKind::Socket(Arc::new(socket::Socket {
+        kind: file::OpenFileKind::Socket(Arc::new(net::Socket {
             endpoint: socket.clone(),
         })),
     });
@@ -409,7 +404,7 @@ fn read_shutdown_retires_controls_and_closes_reader_with_cached_receive_arc() {
 fn prepared_scm_commit_reads_current_limit_instead_of_preparation_snapshot() {
     let _serial = SERIAL.lock().unwrap();
     let (target, file) = endpoint();
-    let quota = socket::ProducedLimit::new(0);
+    let quota = net::ProducedLimit::new(0);
     let mut first = UnixRights::new(vec![file.clone()], 8115, Some(quota.clone())).unwrap();
     UnixSocket::prepare(&mut first, &target).unwrap();
     UnixSocket::publish_prepared(&mut first, &target);
@@ -428,7 +423,7 @@ fn prepared_scm_commit_reads_current_limit_instead_of_preparation_snapshot() {
     assert!(!UnixSocket::quota_rejected(&mut third, &target));
 }
 
-fn credential(key: usize, uid: u32) -> (socket::UnixCredentials, namespace::PidRegistration) {
+fn credential(key: usize, uid: u32) -> (net::UnixCredentials, namespace::PidRegistration) {
     namespace::boot();
     let mut pid = namespace::PreparedPid::try_new(
         key,
@@ -440,7 +435,7 @@ fn credential(key: usize, uid: u32) -> (socket::UnixCredentials, namespace::PidR
     pid.publish().unwrap();
     let registration = pid.take_registration();
     (
-        socket::UnixCredentials {
+        net::UnixCredentials {
             pid: pid.identity(),
             uid,
             gid: uid + 1,
@@ -737,4 +732,10 @@ fn partial_stream_control_detach_keeps_charged_storage_until_chunk_retirement() 
     assert!(received.is_none());
     assert_eq!(&rest, b"bc");
     assert_eq!(channel.control_storage_count(), 0);
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
 }

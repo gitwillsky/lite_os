@@ -3,9 +3,9 @@
 use alloc::vec::Vec;
 
 use crate::{
+    execution::task::{TaskControlBlock, current_task},
     fs::{InodeType, MountFlags, MountPropagation, UnmountMode, get_filesystem_type, vfs},
     syscall::errno,
-    task::{TaskControlBlock, current_task},
 };
 
 use super::pathname::{ferr, path};

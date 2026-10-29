@@ -25,7 +25,8 @@ macro_rules! println {
 }
 
 // OWNER: console module owns the unique formatted PL011 output serialization lock.
-static CONSOLE: crate::sync::IrqMutex<ConsoleWriter> = crate::sync::IrqMutex::new(ConsoleWriter);
+static CONSOLE: crate::execution::sync::IrqMutex<ConsoleWriter> =
+    crate::execution::sync::IrqMutex::new(ConsoleWriter);
 
 pub(crate) fn _print_fmt(arguments: core::fmt::Arguments) {
     use core::fmt::Write;
@@ -89,7 +90,7 @@ pub(crate) fn write_byte(byte: u8) -> Result<(), ConsoleError> {
     let (base, size) = super::discovery::info_if_initialized()
         .map(|info| (info.uart.base_addr, info.uart.size))
         .unwrap_or((EARLY_PL011_BASE, EARLY_PL011_SIZE));
-    let bus = crate::hal::MmioBus::new(crate::arch::mmu::physical_to_virtual(base), size)
+    let bus = crate::arch::mmio::MmioBus::new(crate::arch::mmu::physical_to_virtual(base), size)
         .map_err(|_| ConsoleError)?;
     // QEMU virt 固定 early PL011 或 discovery 已验证的永久 direct-mapped PL011。本函数自身不取锁：
     // 正常输出的调用者（`_print_fmt`、`write_bytes`）持 `CONSOLE`，panic 路径有意无锁。

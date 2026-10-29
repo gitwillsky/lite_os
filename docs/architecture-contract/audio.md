@@ -4,15 +4,15 @@
 
 | Owner | 唯一职责与调用者 |
 |---|---|
-| `virtio::sound` | 物理流 command、DMA、queue、completion 与 reset；实现 `drivers::PcmOutput` |
-| `audio::Card` | 唯一卡、adapter observer、completion counter、Engine mutex、control 弱引用 registry 与两条 readiness pipe |
+| `drivers::virtio::sound` | 物理流 command、DMA、queue、completion 与 reset；实现 `devices::model::PcmOutput` |
+| `audio::Card` | 每个实际 adapter 的卡、observer、completion counter、Engine mutex、control 弱引用 registry 与两条 readiness pipe |
 | `audio::engine` | 纯状态机；8 个子流、物理队列、Master/PCM 音量、各流贡献帧数，由 Card 串行调用 |
 | `audio::mixer` | period float accumulation、声道增益与硬削波，由 Engine 调用 |
 | `audio::state` | 单个子流的 ALSA state、应用/hardware 指针、软件参数与 xrun |
 | `audio::codec` / `ioctl` | PCM Linux layout、INFO/HW_REFINE/参数/status/pointer codec 与 user-copy |
 | `audio::control` / `control_file` | control layout、10 个固定元素、每 OFD 的订阅/FIFO/偏好、卡信息和 PCM 枚举 |
 | `audio::pcm_file` | PCM cdev open 与 OFD 的设备操作投影 |
-| `platform` / `fs` | adapter 装配 / 按已注册设备号发布 PCM 与 control 节点 |
+| `platform` / `fs` | machine facts / 按已注册设备号发布 PCM 与 control 节点 |
 
 PCM/control ioctl 的唯一 caller 是已注册 DeviceFile dispatch，不经过 syscall 中的设备专用分支。
 `PcmFile::write_frames` 只由 PCM ioctl 调用，返回实际写入帧数或原生 errno；XRUN 返回 EPIPE，
@@ -21,7 +21,7 @@ PCM/control ioctl 的唯一 caller 是已注册 DeviceFile dispatch，不经过 
 `codec::SNDRV_PCM_IOCTL_STATUS_EXT` 只由 ioctl 分派消费，与 STATUS 共用参考时钟快照。
 `PcmStateOwner::buffer_frames` 独占已协商的软件容量；HW_REFINE 同时约束 period 数、buffer size/bytes/time，
 HW_PARAMS 按 Linux 顺序选择首个 access/format/subformat 和最大可行 buffer，再投影关联参数。
-Engine 混音、WRITEI、mmap 与 status 只消费同一容量。`MAX_BUFFER_FRAMES` 由 state 限定每个 OFD 的 64 KiB 上限，
+Engine 混音、WRITEI、mmap 与 status 只消费同一容量。软件容量由 state 按当前配置限定；共享端点上限 64 KiB，原生端点按最大 PCM period 预留有界 backing，
 open 预留 backing 后不重分配，协商不改变物理 DMA 队列；旧 mmap 保活原 OFD 的 backing，不与新 OFD 共享。
 `PcmInfo`/`CardText` 只向 codec 提供卡与子流快照；`PcmFile::subdevices` 向 INFO 提供槽位、总数和空闲数。
 内核不依赖用户态 mixer 或媒体协议。
@@ -35,9 +35,10 @@ open 预留 backing 后不重分配，协商不改变物理 DMA 队列；旧 mma
    Engine 处理完成事件后必须先补填，再判断物理流是否空闲；TX 批量归还不等于应用欠载，提前 STOP 会打断连续 PCM。
    预送深度为 `PCM_PERIODS - 1`，保留一段应用数据跨越整批 TX 完成；额外缩短深度会使宿主断粮，全部预送会提前耗尽应用数据。
    缺少未来 period 的运行中子流若仍有在途贡献，不得提前混入缺口或置 Xrun；等待补充或在途耗尽后再裁决。
-2. 全局 CARD Once 只在 init 发布一次；初始化 configure/prepare 物理流后安装 observer/completion source。
-   子流不调用物理 release；`PcmOutput` 只保留 configure/prepare/start/stop/submit/writable。
-   init 后物理流持续属于卡，子流 HW_FREE/CLOSE 只回收软件状态。
+2. 全局 `DISCOVERY` 只发布一次，按设备注册表的只追加顺序附加实际 PCM outputs，每张卡独占 observer 与 Engine。
+   共享与原生端点互斥；原生 HW_PARAMS/HW_FREE/CLOSE 经 `Card.configuration` 的 TaskMutex 串行化，
+   Engine spin lock 只保护状态，adapter configure/release 等等待发生在其外。原生提交不经过 Accumulator。
+   缺少卡级配置事务会让共享恢复和独占重配交错，或让 completion 等待自身持有的 Engine 锁。
 3. 每次 open 分配新 DeviceBacking 和 mmap identity，再占槽、发布 OFD；OFD 分配失败回滚槽位。
    每个在途物理 period 保存各子流的有效帧数；短批次补零不增加应用/hardware 指针。
    close/prepare/drop 清除该流的在途帧数，旧 completion 不得推进复用槽位的 hw_ptr。
@@ -57,7 +58,7 @@ open 预留 backing 后不重分配，协商不改变物理 DMA 队列；旧 mma
 `Engine<Ring>` 的窄接口由 Card/PcmFile 使用，host fixture 注入假 ring/output 验证相同状态机；
 `Accumulator` 只由 Engine 消费。steady tick 使用固定栈数组与预分配 ring，不引入 period 级堆分配。
 短帧记账使用固定大小的每流帧数数组，跨 ring 边界至多两次复制；短尾补零不增加锁或分配。
-软件 ring 每 OFD 最多 16 页（64 KiB），八个在用子流共 512 KiB；HW_REFINE 在冷路径最多枚举 29 个配置，
+共享端点的 ring 每 OFD 最多 16 页（64 KiB），八个在用子流共 512 KiB；HW_REFINE 在冷路径最多枚举 29 个配置，
 不增加混音/提交路径的锁、分配或扫描。沿用八路 WAV 门禁，并用真实 libmpv 的协商与欠载行为验证供数余量。
 成本验证沿用八路零 XRUN 与实际 WAV 门禁，不为该分支另设时间阈值；mixer 算法与其 CPU 基准不变。
 逐流增益的新增成本由生产 Accumulator 的 host diagnostic benchmark 与 AArch64/HVF 八路无 XRUN

@@ -12,10 +12,10 @@ use super::{
     wait::Waiter,
 };
 use crate::{
+    execution::task::TaskControlBlock,
     file::{OpenFileDescription, OpenFileKind},
     fs::chardev::{PendingCommand, UringCommand},
     syscall::device::TaskUserMemory,
-    task::TaskControlBlock,
 };
 
 /// 车道与 reactor 间的唯一令牌交接槽。锁内只移动值，不执行设备方法或用户复制。

@@ -10,8 +10,7 @@ mod ipc;
 mod memory;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../src/sync.rs"]
-mod sync;
+
 use alloc::sync::Arc;
 use ipc::{IpcAccess, IpcError, IpcNamespace};
 use syscall_abi::ipc::*;
@@ -420,4 +419,10 @@ fn shm_lock_reads_current_rlimit_after_policy_wait_and_rolls_back_failed_admissi
         .shared_memory_lock(id, true, &access, 591203, || 4096)
         .unwrap();
     owner.shared_memory_remove(id, &access).unwrap();
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
 }

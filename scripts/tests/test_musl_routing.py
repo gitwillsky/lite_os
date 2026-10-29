@@ -16,16 +16,18 @@ sys.path.insert(0, str(SCRIPTS))
 import musl_clang  # noqa: E402
 import musl_ld  # noqa: E402
 import verify_musl  # noqa: E402
+from toolchain import musl
 
 
-def reload_verify_musl(arch: str, accel: str) -> object:
+def reload_verify_musl(arch: str, accel: str, *, gate: bool = False) -> object:
     with patch.dict(os.environ, {"ARCH": arch, "ACCEL": accel}, clear=True):
-        return importlib.reload(verify_musl)
+        importlib.reload(musl)
+        return importlib.reload(verify_musl) if gate else musl
 
 
 class MuslRoutingTests(unittest.TestCase):
     def test_runtime_success_requires_both_cpu_topologies_and_real_swap_disk(self) -> None:
-        module = reload_verify_musl("aarch64", "tcg")
+        module = reload_verify_musl("aarch64", "tcg", gate=True)
         for fail_swap in (False, True):
             with self.subTest(fail_swap=fail_swap), tempfile.TemporaryDirectory() as directory:
                 work = Path(directory)
@@ -71,8 +73,9 @@ class MuslRoutingTests(unittest.TestCase):
                     self.assertEqual(calls, [1, 2, 1, 2])
                     self.assertEqual(publish.call_count, 0 if fail_swap else 1)
 
+
     def test_dynamic_probe_requires_target_interpreter_and_only_bundled_libc(self) -> None:
-        module = reload_verify_musl("aarch64", "tcg")
+        module = reload_verify_musl("aarch64", "tcg", gate=True)
         static = "ELF64 AArch64 EXEC\n LOAD 0x000000 0x10000 0x10000 0x2000 0x2000 R E 0x1000\n GNU_STACK 0x0 0x0 0x0 0x0 0x0 RW 0x10"
         valid = "ELF64 AArch64 EXEC\n [Requesting program interpreter: /lib/ld-musl-aarch64.so.1]\n 0x1 (NEEDED) Shared library: [libc.so]"
         for dynamic, accepted in ((valid, True), (valid.replace("aarch64.so.1", "riscv64.so.1"), False), (valid.replace("[libc.so]", "[/host/libc.so]"), False), (valid + "\n 0x1 (NEEDED) Shared library: [extra.so]", False)):
@@ -83,14 +86,16 @@ class MuslRoutingTests(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         module.verify_elf(Path("/fixture/musl-smoke"), Path("/tool/target-gcc"))
 
+
     def test_smoke_bundle_cache_requires_dynamic_probe_and_matching_libc(self) -> None:
-        module = reload_verify_musl("aarch64", "tcg")
+        module = reload_verify_musl("aarch64", "tcg", gate=True)
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
             with patch.object(module, "WORK", work), patch.object(module, "smoke_payload", return_value={"kind": "test"}), patch.object(module, "manifest_matches", return_value=True) as matches:
                 binary = module.link_smoke(work / "sysroot", work / "clang", "sysroot-id")
                 self.assertEqual(matches.call_args.args[2], ("musl-smoke", "fs-root-dynamic", "libc.so"))
                 self.assertEqual(binary.name, "musl-smoke")
+
 
     def test_musl_download_falls_back_to_verified_release_source(self) -> None:
         module = reload_verify_musl("aarch64", "hvf")

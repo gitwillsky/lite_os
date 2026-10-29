@@ -19,10 +19,10 @@ use spin::{Mutex, Once};
 use syscall_abi::errno;
 
 use crate::{
+    execution::task::{TaskControlBlock, spawn_kernel_thread, wait_for_poll},
     fs::CompletionNotify,
     ipc::{Pipe, PipeEnd},
     syscall::poll::PollWaitKeys,
-    task::{TaskControlBlock, spawn_kernel_thread, wait_for_poll},
 };
 
 /// worker 数量上限；缺失该上限时，大量慢作业会各自创建一个内核线程（每个带内核栈）而耗尽内存。

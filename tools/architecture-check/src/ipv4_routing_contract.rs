@@ -10,17 +10,17 @@ fn source(sources: &[SourceFile], path: &str) -> String {
         .collect()
 }
 pub(super) fn check(root: &std::path::Path, sources: &[SourceFile], errors: &mut Vec<String>) {
-    let inet = source(sources, "kernel/src/socket/inet.rs");
-    let config = source(sources, "kernel/src/socket/inet/configuration.rs");
-    let interface = source(sources, "kernel/src/socket/inet/interface.rs");
-    let fib = source(sources, "kernel/src/socket/inet/route.rs");
-    let poll = source(sources, "kernel/src/socket/inet/poll.rs");
-    let timing = source(sources, "kernel/src/socket/inet/timing.rs");
-    let replies = source(sources, "kernel/src/socket/inet/route_reply.rs");
-    let udp = source(sources, "kernel/src/socket/inet/udp.rs");
-    let raw = source(sources, "kernel/src/socket/inet/raw.rs");
-    let tcp = source(sources, "kernel/src/socket/inet/tcp.rs");
-    let loopback = source(sources, "kernel/src/socket/inet/device/loopback.rs");
+    let inet = source(sources, "kernel/src/net/inet.rs");
+    let config = source(sources, "kernel/src/net/inet/configuration.rs");
+    let interface = source(sources, "kernel/src/net/inet/interface.rs");
+    let fib = source(sources, "kernel/src/net/inet/route.rs");
+    let poll = source(sources, "kernel/src/net/inet/poll.rs");
+    let timing = source(sources, "kernel/src/net/inet/timing.rs");
+    let replies = source(sources, "kernel/src/net/inet/route_reply.rs");
+    let udp = source(sources, "kernel/src/net/inet/udp.rs");
+    let raw = source(sources, "kernel/src/net/inet/raw.rs");
+    let tcp = source(sources, "kernel/src/net/inet/tcp.rs");
+    let loopback = source(sources, "kernel/src/net/inet/device/loopback.rs");
     let ioctl = source(sources, "kernel/src/syscall/socket/interface.rs");
     let opened = source(sources, "kernel/src/fs/procfs/opened_operations.rs");
     let formatter = source(sources, "kernel/src/fs/procfs/networking.rs");
@@ -126,29 +126,29 @@ mod tests {
     fn rejects_route_mirror_half_publication_wrong_local_iif_and_ingress_reply_fallback() {
         for (path, old, new) in [
             (
-                "kernel/src/socket/inet/interface.rs",
+                "kernel/src/net/inet/interface.rs",
                 ".select(destination, bound, &self.interfaces)",
                 ".select(Ipv4Addr::UNSPECIFIED, bound, &self.interfaces)",
             ),
             (
-                "kernel/src/socket/inet/configuration.rs",
+                "kernel/src/net/inet/configuration.rs",
                 "let prepared = RoutingTable::prepare_interface(index, next)?;",
                 "self.interface_mut(index)?.state = next;\n        let prepared = RoutingTable::prepare_interface(index, next)?;",
             ),
             (
-                "kernel/src/socket/inet/poll.rs",
+                "kernel/src/net/inet/poll.rs",
                 "meta.interface_index.unwrap_or(current.index)",
                 "current.index",
             ),
             (
-                "kernel/src/socket/inet/route_reply.rs",
+                "kernel/src/net/inet/route_reply.rs",
                 "reply.bound_interface,",
                 "Some(reply.origin),",
             ),
             (
                 "kernel/src/fs/procfs/opened_operations.rs",
                 "source.route_snapshot(target)?",
-                "source.route_snapshot(&crate::socket::initial_net())?",
+                "source.route_snapshot(&crate::net::initial_net())?",
             ),
         ] {
             let root = super::super::repository_root();

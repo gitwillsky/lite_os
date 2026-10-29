@@ -9,7 +9,7 @@ use core::{
 };
 
 use super::font::{FIRST, GLYPHS, HEIGHT, LAST, WIDTH};
-use crate::drivers::{DisplayError, PanicFramebuffer};
+use crate::devices::model::{DisplayError, PanicFramebuffer};
 
 /// XRGB8888 小端字节序：B、G、R、X。
 const BACKGROUND: [u8; 4] = [0xaa, 0x00, 0x00, 0xff];

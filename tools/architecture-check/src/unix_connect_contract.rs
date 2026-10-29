@@ -2,7 +2,7 @@ use syn::{Expr, ExprCall, ImplItem, Item, spanned::Spanned, visit::Visit};
 
 use super::SourceFile;
 
-const LIFECYCLE_PATH: &str = "kernel/src/socket/unix/lifecycle.rs";
+const LIFECYCLE_PATH: &str = "kernel/src/net/unix/lifecycle.rs";
 
 #[derive(Default)]
 struct ConnectOrder {
@@ -92,7 +92,7 @@ mod tests {
         );
         SourceFile {
             relative: LIFECYCLE_PATH.to_owned(),
-            owner: "socket".to_owned(),
+            owner: "net".to_owned(),
             lines: text.lines().map(str::to_owned).collect(),
             syntax: syn::parse_file(&text).unwrap(),
             text,

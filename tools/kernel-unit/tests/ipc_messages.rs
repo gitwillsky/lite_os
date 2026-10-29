@@ -10,8 +10,7 @@ mod ipc;
 mod memory;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../src/sync.rs"]
-mod sync;
+
 use alloc::sync::Arc;
 use ipc::{
     IpcAccess, IpcError, IpcNamespace, MessageLimit, MessageQueueWait, MessageReceive,
@@ -206,7 +205,7 @@ fn zero_length_messages_are_limited_and_rmid_wakes_exact_registered_waiter() {
             .unwrap()
     );
     owner.message_remove(id, &access).unwrap();
-    assert_eq!(wait.wait(), sync::WaitResult::Woken);
+    assert_eq!(wait.wait(), crate::execution::sync::WaitResult::Woken);
     assert!(matches!(owner.message_queue(id), Err(IpcError::Invalid)));
     assert_eq!(
         queue.send(&mut message, &access, pid.clone(), 3, None),
@@ -405,11 +404,11 @@ fn pipelined_send_obeys_admission_order_and_is_not_revoked_by_rmid() {
     assert_eq!((stat.messages, stat.bytes), (0, 0));
     assert_eq!(stat.receive_time, 12);
     owner.message_remove(id, &access).unwrap();
-    assert_eq!(small.wait(), sync::WaitResult::Woken);
+    assert_eq!(small.wait(), crate::execution::sync::WaitResult::Woken);
     assert!(matches!(small.finish_wait(), Some(Err(IpcError::TooBig))));
-    assert_eq!(first.wait(), sync::WaitResult::Woken);
+    assert_eq!(first.wait(), crate::execution::sync::WaitResult::Woken);
     assert_eq!(first.finish_wait().unwrap().unwrap().bytes, b"seven");
-    assert_eq!(second.wait(), sync::WaitResult::Woken);
+    assert_eq!(second.wait(), crate::execution::sync::WaitResult::Woken);
     assert!(second.finish_wait().is_none());
     assert!(first.finish_wait().is_none());
 }
@@ -468,4 +467,10 @@ fn ipc_group_dac_uses_fsgid_instead_of_effective_gid() {
             .unwrap()
             .is_none()
     );
+}
+
+#[path = "."]
+pub(crate) mod execution {
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
 }

@@ -1,8 +1,8 @@
 use crate::{
+    execution::task::current_task,
     file::PreparedFileDescription,
     fs::{MemFile, O_RDWR},
     memory::UserAccessError,
-    task::current_task,
 };
 
 use super::errno;

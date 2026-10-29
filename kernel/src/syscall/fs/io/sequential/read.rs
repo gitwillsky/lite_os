@@ -87,15 +87,15 @@ pub(super) fn read_descriptor(
             // 2. 一个 sequential read 只消费一次 socket receive operation；逐 chunk 调用
             // backend 会让 datagram 丢失消息边界，并让 stream 的 blocking 语义分裂。
             let deadline = socket
-                .timeout(crate::socket::SocketIoDirection::Receive)
-                .deadline(crate::timer::get_time_ns());
+                .timeout(crate::net::SocketIoDirection::Receive)
+                .deadline(crate::execution::timer::get_time_ns());
             let read = loop {
                 match socket.read(&mut input, nonblocking) {
                     Ok(read) => break read,
-                    Err(crate::socket::SocketError::Again) if nonblocking => {
+                    Err(crate::net::SocketError::Again) if nonblocking => {
                         return -errno::EAGAIN;
                     }
-                    Err(crate::socket::SocketError::Again) => {
+                    Err(crate::net::SocketError::Again) => {
                         match crate::syscall::poll::wait_for_ofd(ofd, 1, deadline) {
                             WaitResult::Woken => {}
                             WaitResult::Interrupted => {

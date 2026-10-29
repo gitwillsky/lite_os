@@ -11,17 +11,17 @@ fn source(sources: &[SourceFile], path: &str) -> String {
         .collect()
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let inet = source(sources, "kernel/src/socket/inet.rs");
-    let poll = source(sources, "kernel/src/socket/inet/poll.rs");
-    let readiness = source(sources, "kernel/src/socket/inet/readiness.rs");
-    let device = source(sources, "kernel/src/socket/inet/device.rs");
+    let inet = source(sources, "kernel/src/net/inet.rs");
+    let poll = source(sources, "kernel/src/net/inet/poll.rs");
+    let readiness = source(sources, "kernel/src/net/inet/readiness.rs");
+    let device = source(sources, "kernel/src/net/inet/device.rs");
     let proc = source(sources, "kernel/src/fs/procfs/networking.rs");
     if inet.contains("take_device_error(")
         || readiness.contains("pending_device_error(")
         || inet.contains("ifletOk(poll)=poll")
         || poll.contains("returnErr(error)")
         || !poll.contains(
-            "pub(super)device_failures:[Option<(u32,crate::drivers::network::NetworkError)>;8]",
+            "pub(super)device_failures:[Option<(u32,crate::devices::model::network::NetworkError)>;8]",
         )
         || !poll.contains("interface.device.take_error()")
         || !inet.contains("forindexinpoll.packet_transmit_ready.into_iter().flatten()")
@@ -53,7 +53,7 @@ mod tests {
     fn rejects_erasing_other_device_backlog_and_counter_facts() {
         for (path, old, new) in [
             (
-                "kernel/src/socket/inet.rs",
+                "kernel/src/net/inet.rs",
                 "poll.backlog || notification_backlog || cleanup_backlog",
                 "notification_backlog || cleanup_backlog",
             ),
@@ -63,9 +63,9 @@ mod tests {
                 "0,",
             ),
             (
-                "kernel/src/socket/inet/poll.rs",
+                "kernel/src/net/inet/poll.rs",
                 "interface.device.take_error()",
-                "None::<crate::drivers::network::NetworkError>",
+                "None::<crate::devices::model::network::NetworkError>",
             ),
         ] {
             let root = super::super::repository_root();

@@ -71,13 +71,13 @@ fn captured_network_owns_transport_ports_errors_close_and_deferred_ingress() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let first =
-        crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89201).unwrap();
+        crate::net::NetNamespace::create(crate::namespace::initial_user(), 89201).unwrap();
     let second =
-        crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89201).unwrap();
-    let a = Arc::new(crate::drivers::WireDevice::new());
-    let b = Arc::new(crate::drivers::WireDevice::new());
-    first.install_protocol(prepare_network(&first, &[a.clone() as Arc<dyn crate::drivers::network::NetworkDevice>], false).unwrap());
-    second.install_protocol(prepare_network(&second, &[b.clone() as Arc<dyn crate::drivers::network::NetworkDevice>], false).unwrap());
+        crate::net::NetNamespace::create(crate::namespace::initial_user(), 89201).unwrap();
+    let a = Arc::new(crate::devices::model::WireDevice::new());
+    let b = Arc::new(crate::devices::model::WireDevice::new());
+    first.install_protocol(prepare_network(&first, &[a.clone() as Arc<dyn crate::devices::model::network::NetworkDevice>], false).unwrap());
+    second.install_protocol(prepare_network(&second, &[b.clone() as Arc<dyn crate::devices::model::network::NetworkDevice>], false).unwrap());
     for net in [&first, &second] {
         configure_address(net, 2, Ipv4Addr::new(10, 0, 2, 15)).unwrap();
         configure_netmask(net, 2, Ipv4Addr::new(255, 255, 255, 0)).unwrap();
@@ -92,12 +92,12 @@ fn captured_network_owns_transport_ports_errors_close_and_deferred_ingress() {
     configure_route(&first, default, false, false, true, false, false).unwrap();
     assert!(route_snapshot(&first).unwrap().iter().any(|snapshot| snapshot.route == default));
     assert!(!route_snapshot(&second).unwrap().iter().any(|snapshot| snapshot.route.gateway.is_some()));
-    let endpoint = |net: &Arc<crate::socket::NetNamespace>, kind| {
+    let endpoint = |net: &Arc<crate::net::NetNamespace>, kind| {
         InetSocket::new(
             kind,
             Pipe::notification_pair().unwrap(),
             Arc::new(SocketTimeouts::new()),
-            crate::socket::SocketMemory::try_new(net.clone()).unwrap(),
+            crate::net::SocketMemory::try_new(net.clone()).unwrap(),
         )
         .unwrap()
     };
@@ -175,8 +175,8 @@ fn captured_network_owns_transport_ports_errors_close_and_deferred_ingress() {
 fn actual_protocol_preparation_oom_does_not_publish_or_copy_an_owner() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89202).unwrap();
-    let nic = Arc::new(crate::drivers::WireDevice::new());
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89202).unwrap();
+    let nic = Arc::new(crate::devices::model::WireDevice::new());
     for boundary in 0..16 {
         let device = nic.clone();
         crate::allocation_failure::fail_after(boundary);
@@ -192,21 +192,21 @@ fn actual_protocol_preparation_oom_does_not_publish_or_copy_an_owner() {
         InetProtocol::Udp,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(net).unwrap(),
+        crate::net::SocketMemory::try_new(net).unwrap(),
     )
     .unwrap();
     socket.close_description();
 }
 
 fn scoped_endpoint(
-    net: &Arc<crate::socket::NetNamespace>,
+    net: &Arc<crate::net::NetNamespace>,
     kind: InetProtocol,
 ) -> Arc<InetSocket> {
     InetSocket::new(
         kind,
         Pipe::notification_pair().unwrap(),
         Arc::new(SocketTimeouts::new()),
-        crate::socket::SocketMemory::try_new(net.clone()).unwrap(),
+        crate::net::SocketMemory::try_new(net.clone()).unwrap(),
     )
     .unwrap()
 }
@@ -220,7 +220,7 @@ fn advance_actual_domains() {
 fn actual_ip_loopback_starts_down_then_delivers_udp_and_tcp_without_a_nic() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89210).unwrap();
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89210).unwrap();
     net.install_protocol(prepare_network(&net, &[], false).unwrap());
     let before = interface_snapshots(&net).unwrap();
     assert_eq!(before.len(), 1);
@@ -290,7 +290,7 @@ fn actual_ip_loopback_starts_down_then_delivers_udp_and_tcp_without_a_nic() {
         .accept(
             Pipe::notification_pair().unwrap(),
             Arc::new(SocketTimeouts::new()),
-            crate::socket::SocketMemory::try_new(net.clone()).unwrap(),
+            crate::net::SocketMemory::try_new(net.clone()).unwrap(),
         )
         .unwrap();
     assert_eq!(accepted.memory.namespace_ref().id(), net.id());
@@ -316,9 +316,9 @@ fn actual_multi_nic_route_freezes_udp_oif_and_filters_bound_ingress_before_enque
     use smoltcp::wire::*;
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89211).unwrap();
-    let a = Arc::new(crate::drivers::WireDevice::new());
-    let b = Arc::new(crate::drivers::WireDevice::new());
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89211).unwrap();
+    let a = Arc::new(crate::devices::model::WireDevice::new());
+    let b = Arc::new(crate::devices::model::WireDevice::new());
     net.install_protocol(prepare_network(&net, &[a.clone(), b.clone()], true).unwrap());
     let local_a = Ipv4Addr::new(10, 0, 2, 15);
     let local_b = Ipv4Addr::new(10, 0, 3, 15);
@@ -469,13 +469,13 @@ fn actual_multi_nic_route_freezes_udp_oif_and_filters_bound_ingress_before_enque
 
 #[test]
 fn actual_pktinfo_keeps_ingress_facts_and_overrides_only_one_transmit() {
-    use crate::socket::{InternetPacketInfo, InternetSendPacketInfo};
+    use crate::net::{InternetPacketInfo, InternetSendPacketInfo};
     use smoltcp::wire::*;
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89212).unwrap();
-    let a = Arc::new(crate::drivers::WireDevice::new());
-    let b = Arc::new(crate::drivers::WireDevice::new());
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89212).unwrap();
+    let a = Arc::new(crate::devices::model::WireDevice::new());
+    let b = Arc::new(crate::devices::model::WireDevice::new());
     net.install_protocol(prepare_network(&net, &[a.clone(), b.clone()], true).unwrap());
     let local_a = Ipv4Addr::new(10, 0, 2, 15);
     let local_b = Ipv4Addr::new(10, 0, 3, 15);
@@ -601,12 +601,12 @@ fn actual_pktinfo_keeps_ingress_facts_and_overrides_only_one_transmit() {
 
 #[test]
 fn actual_raw_local_filter_precedes_queue_and_pktinfo_survives_reconfiguration() {
-    use crate::socket::InternetPacketInfo;
+    use crate::net::InternetPacketInfo;
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89213).unwrap();
-    let a = Arc::new(crate::drivers::WireDevice::new());
-    let b = Arc::new(crate::drivers::WireDevice::new());
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89213).unwrap();
+    let a = Arc::new(crate::devices::model::WireDevice::new());
+    let b = Arc::new(crate::devices::model::WireDevice::new());
     net.install_protocol(prepare_network(&net, &[a.clone(), b.clone()], true).unwrap());
     let local_a = Ipv4Addr::new(10, 0, 2, 15);
     let local_b = Ipv4Addr::new(10, 0, 3, 15);
@@ -665,19 +665,19 @@ fn actual_raw_local_filter_precedes_queue_and_pktinfo_survives_reconfiguration()
 }
 
 fn scoped_packet(
-    net: &Arc<crate::socket::NetNamespace>,
+    net: &Arc<crate::net::NetNamespace>,
     protocol: u16,
 ) -> Arc<super::super::packet::PacketSocket> {
     super::super::packet::PacketSocket::new(
         super::super::SocketType::Datagram,
         protocol.to_be() as usize,
         Pipe::notification_pair().unwrap(),
-        crate::socket::SocketMemory::try_new(net.clone()).unwrap(),
+        crate::net::SocketMemory::try_new(net.clone()).unwrap(),
     )
     .unwrap()
 }
-fn packet_address(index: i32, protocol: u16) -> crate::socket::PacketAddress {
-    crate::socket::PacketAddress {
+fn packet_address(index: i32, protocol: u16) -> crate::net::PacketAddress {
+    crate::net::PacketAddress {
         protocol: protocol.to_be(),
         interface_index: index,
         hardware_type: 1,
@@ -693,14 +693,14 @@ fn actual_packet_socket_uses_captured_domain_link_and_native_rebinding() {
     initialize();
     packet::init();
     let first =
-        crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89214).unwrap();
+        crate::net::NetNamespace::create(crate::namespace::initial_user(), 89214).unwrap();
     let second =
-        crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89215).unwrap();
-    let a = Arc::new(crate::drivers::WireDevice::new());
-    let b = Arc::new(crate::drivers::WireDevice::new());
-    let c = Arc::new(crate::drivers::WireDevice::new());
+        crate::net::NetNamespace::create(crate::namespace::initial_user(), 89215).unwrap();
+    let a = Arc::new(crate::devices::model::WireDevice::new());
+    let b = Arc::new(crate::devices::model::WireDevice::new());
+    let c = Arc::new(crate::devices::model::WireDevice::new());
     first.install_protocol(prepare_network(&first, &[a.clone(), b.clone()], true).unwrap());
-    second.install_protocol(prepare_network(&second, &[c.clone() as Arc<dyn crate::drivers::network::NetworkDevice>], true).unwrap());
+    second.install_protocol(prepare_network(&second, &[c.clone() as Arc<dyn crate::devices::model::network::NetworkDevice>], true).unwrap());
     let local_a = Ipv4Addr::new(10, 0, 2, 15);
     let local_b = Ipv4Addr::new(10, 0, 3, 15);
     for (net, index, address) in [
@@ -794,7 +794,7 @@ fn actual_packet_loopback_and_transmit_edges_stay_in_domain_and_interface() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
     packet::init();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89216).unwrap();
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89216).unwrap();
     net.install_protocol(prepare_network(&net, &[], true).unwrap());
     let observer = scoped_packet(&net, 0x0003); // ETH_P_ALL，不依赖L3是否接受。
     observer.bind(packet_address(1, 0x0003)).unwrap();
@@ -815,7 +815,7 @@ fn actual_packet_loopback_and_transmit_edges_stay_in_domain_and_interface() {
     assert_eq!(received.2.protocol, 0x0806u16.to_be());
     // 清空所有actual pending，然后只发表本域lo的容量变化；initial NET不得被唤醒。
     while packet::take_pending_notification(0).is_some() {}
-    let initial = scoped_packet(&crate::socket::initial_net(), 0x0800);
+    let initial = scoped_packet(&crate::net::initial_net(), 0x0800);
     initial.bind(packet_address(2, 0x0800)).unwrap();
     packet::publish_transmit_ready(net.id(), 1);
     let mut seen = 0;
@@ -836,15 +836,15 @@ fn actual_packet_raw_preserves_link_header_and_excludes_origin_from_outgoing_tap
     let _serial = SERIAL.lock().unwrap();
     initialize();
     packet::init();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89217).unwrap();
-    let nic = Arc::new(crate::drivers::WireDevice::new());
-    net.install_protocol(prepare_network(&net, &[nic.clone() as Arc<dyn crate::drivers::network::NetworkDevice>], true).unwrap());
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89217).unwrap();
+    let nic = Arc::new(crate::devices::model::WireDevice::new());
+    net.install_protocol(prepare_network(&net, &[nic.clone() as Arc<dyn crate::devices::model::network::NetworkDevice>], true).unwrap());
     configure_up(&net, 2, true).unwrap();
     let sender = packet::PacketSocket::new(
         SocketType::Raw,
         0x0800u16.to_be() as usize,
         Pipe::notification_pair().unwrap(),
-        crate::socket::SocketMemory::try_new(net.clone()).unwrap(),
+        crate::net::SocketMemory::try_new(net.clone()).unwrap(),
     )
     .unwrap();
     sender.bind(packet_address(2, 0x0800)).unwrap();
@@ -903,13 +903,13 @@ fn actual_raw_loopback_header_survives_the_single_ip_medium_queue() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
     packet::init();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89218).unwrap();
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89218).unwrap();
     net.install_protocol(prepare_network(&net, &[], true).unwrap());
     let sender = packet::PacketSocket::new(
         SocketType::Raw,
         0x0806u16.to_be() as usize,
         Pipe::notification_pair().unwrap(),
-        crate::socket::SocketMemory::try_new(net.clone()).unwrap(),
+        crate::net::SocketMemory::try_new(net.clone()).unwrap(),
     )
     .unwrap();
     sender.bind(packet_address(1, 0x0806)).unwrap();
@@ -917,7 +917,7 @@ fn actual_raw_loopback_header_survives_the_single_ip_medium_queue() {
         SocketType::Raw,
         0x0003u16.to_be() as usize,
         Pipe::notification_pair().unwrap(),
-        crate::socket::SocketMemory::try_new(net.clone()).unwrap(),
+        crate::net::SocketMemory::try_new(net.clone()).unwrap(),
     )
     .unwrap();
     observer.bind(packet_address(1, 0x0003)).unwrap();
@@ -959,9 +959,9 @@ fn actual_rx_and_tcp_ack_do_not_wait_for_hardware_tx_reservation() {
     use smoltcp::wire::*;
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89219).unwrap();
-    let nic = Arc::new(crate::drivers::WireDevice::new());
-    net.install_protocol(prepare_network(&net, &[nic.clone() as Arc<dyn crate::drivers::network::NetworkDevice>], true).unwrap());
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89219).unwrap();
+    let nic = Arc::new(crate::devices::model::WireDevice::new());
+    net.install_protocol(prepare_network(&net, &[nic.clone() as Arc<dyn crate::devices::model::network::NetworkDevice>], true).unwrap());
     let local = Ipv4Addr::new(10, 0, 2, 15);
     configure_address(&net, 2, local).unwrap();
     configure_netmask(&net, 2, Ipv4Addr::new(255, 255, 255, 0)).unwrap();
@@ -1055,7 +1055,7 @@ fn actual_rx_and_tcp_ack_do_not_wait_for_hardware_tx_reservation() {
         .accept(
             Pipe::notification_pair().unwrap(),
             Arc::new(SocketTimeouts::new()),
-            crate::socket::SocketMemory::try_new(net.clone()).unwrap(),
+            crate::net::SocketMemory::try_new(net.clone()).unwrap(),
         )
         .unwrap();
     assert_eq!(
@@ -1076,14 +1076,14 @@ fn actual_network_snapshot_contains_every_link_and_keeps_domains_separate() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
     let first =
-        crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89220).unwrap();
+        crate::net::NetNamespace::create(crate::namespace::initial_user(), 89220).unwrap();
     let second =
-        crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89220).unwrap();
-    let nic = Arc::new(crate::drivers::WireDevice::new());
+        crate::net::NetNamespace::create(crate::namespace::initial_user(), 89220).unwrap();
+    let nic = Arc::new(crate::devices::model::WireDevice::new());
     first.install_protocol(
         prepare_network(
             &first,
-            &[nic.clone(), Arc::new(crate::drivers::WireDevice::new())],
+            &[nic.clone(), Arc::new(crate::devices::model::WireDevice::new())],
             true,
         )
         .unwrap(),
@@ -1120,9 +1120,9 @@ fn actual_network_snapshot_contains_every_link_and_keeps_domains_separate() {
 fn actual_ipv4_address_record_uses_native_classful_mask_and_explicit_broadcast() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89221).unwrap();
-    let nic = Arc::new(crate::drivers::WireDevice::new());
-    net.install_protocol(prepare_network(&net, &[nic.clone() as Arc<dyn crate::drivers::network::NetworkDevice>], true).unwrap());
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89221).unwrap();
+    let nic = Arc::new(crate::devices::model::WireDevice::new());
+    net.install_protocol(prepare_network(&net, &[nic.clone() as Arc<dyn crate::devices::model::network::NetworkDevice>], true).unwrap());
     assert_eq!(
         configure_netmask(&net, 2, Ipv4Addr::new(255, 0, 0, 0)),
         Err(SocketError::AddressNotAvailable)
@@ -1287,7 +1287,7 @@ fn native_newnet_factory_prepares_real_empty_stack_and_oom_releases_quota() {
         assert_eq!(namespace.kind().flag(), 0x4000_0000);
         assert!(Arc::ptr_eq(&namespace.owning_user().unwrap(), &user));
         assert!(Arc::ptr_eq(
-            &namespace.downcast::<crate::socket::NetNamespace>().unwrap(),
+            &namespace.downcast::<crate::net::NetNamespace>().unwrap(),
             &next
         ));
         assert!(matches!(
@@ -1349,9 +1349,9 @@ fn actual_interface_mtu_changes_packet_admission_and_protocol_segment_mechanism(
     let _serial = SERIAL.lock().unwrap();
     initialize();
     packet::init();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89233).unwrap();
-    let first = Arc::new(crate::drivers::WireDevice::new());
-    let second = Arc::new(crate::drivers::WireDevice::new());
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89233).unwrap();
+    let first = Arc::new(crate::devices::model::WireDevice::new());
+    let second = Arc::new(crate::devices::model::WireDevice::new());
     net.install_protocol(prepare_network(&net, &[first.clone(), second.clone()], true).unwrap());
     for (index, address) in [
         (2, Ipv4Addr::new(10, 0, 2, 15)),
@@ -1453,7 +1453,7 @@ fn actual_interface_mtu_changes_packet_admission_and_protocol_segment_mechanism(
     assert_eq!(second.wire.lock().unwrap().1.last().unwrap().len(), 914);
     sender.close_description();
     assert_eq!(
-        interface_snapshot(&crate::socket::initial_net(), 2)
+        interface_snapshot(&crate::net::initial_net(), 2)
             .unwrap()
             .mtu,
         1500
@@ -1526,7 +1526,7 @@ fn actual_nic_failure_does_not_poison_socket_errors_or_erase_other_link_completi
     }
     let outcome = net.protocol().unwrap().lock().unwrap().poll();
     assert_eq!(outcome.device_failures.into_iter().flatten().collect::<Vec<_>>(),
-        [(2, crate::drivers::network::NetworkError::Device)]);
+        [(2, crate::devices::model::network::NetworkError::Device)]);
     assert!(outcome.packet_transmit_ready.contains(&Some(3)), "NIC A error must not erase NIC B completion");
     assert!(outcome.backlog, "NIC A error must not discard exhausted RX budget");
     assert_eq!(b.wire.lock().unwrap().0.len(), 1);
@@ -1546,7 +1546,7 @@ fn actual_nic_failure_does_not_poison_socket_errors_or_erase_other_link_completi
 fn actual_raw255_header_codec_preserves_wire_and_send_only_admission() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89301).unwrap();
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89301).unwrap();
     net.install_protocol(prepare_network(&net, &[], false).unwrap());
     configure_up(&net, 1, true).unwrap();
     let sender = scoped_endpoint(&net, InetProtocol::Raw);
@@ -1601,9 +1601,9 @@ fn actual_raw255_header_codec_preserves_wire_and_send_only_admission() {
 fn actual_raw_header_preserves_explicit_source_id_df_and_native_protocol() {
     let _serial = SERIAL.lock().unwrap();
     initialize();
-    let net = crate::socket::NetNamespace::create(crate::namespace::initial_user(), 89302).unwrap();
-    let nic = Arc::new(crate::drivers::WireDevice::new());
-    net.install_protocol(prepare_network(&net, &[nic.clone() as Arc<dyn crate::drivers::network::NetworkDevice>], true).unwrap());
+    let net = crate::net::NetNamespace::create(crate::namespace::initial_user(), 89302).unwrap();
+    let nic = Arc::new(crate::devices::model::WireDevice::new());
+    net.install_protocol(prepare_network(&net, &[nic.clone() as Arc<dyn crate::devices::model::network::NetworkDevice>], true).unwrap());
     let local = Ipv4Addr::new(10, 0, 2, 15);
     let peer = InetAddress { address: Ipv4Addr::new(10, 0, 2, 16), port: 0 };
     configure_address(&net, 2, local).unwrap();

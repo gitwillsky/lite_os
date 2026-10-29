@@ -3,23 +3,7 @@
 mod fallible_tree;
 #[path = "../../../kernel/src/id.rs"]
 mod id;
-mod sync {
-    include!(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../kernel-unit/src/sync.rs"
-    ));
-    // Host 没有本地 IRQ；仅替换该 execution adapter，不替换 registry/shard transaction。
-    pub(crate) struct IrqMutex<T>(spin::Mutex<T>);
-    pub(crate) type IrqMutexGuard<'a, T> = spin::MutexGuard<'a, T>;
-    impl<T> IrqMutex<T> {
-        pub(crate) const fn new(value: T) -> Self {
-            Self(spin::Mutex::new(value))
-        }
-        pub(crate) fn lock(&self) -> IrqMutexGuard<'_, T> {
-            self.0.lock()
-        }
-    }
-}
+
 #[path = "pipe_fixture.rs"]
 mod ipc;
 mod fs {
@@ -64,8 +48,31 @@ mod memory {
         futex_atomic::UserAtomicU32(word).update(operation)
     }
 }
-#[path = "../../../kernel/src/task"]
-mod task {
+
+#[path = "../../../kernel/src/syscall/futex/wake_op.rs"]
+mod wake_op;
+
+#[path = "."]
+pub(crate) mod execution {
+pub(crate) mod sync {
+    include!(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/../kernel-unit/src/sync.rs"
+    ));
+    // Host 没有本地 IRQ；仅替换该 execution adapter，不替换 registry/shard transaction。
+    pub(crate) struct IrqMutex<T>(spin::Mutex<T>);
+    pub(crate) type IrqMutexGuard<'a, T> = spin::MutexGuard<'a, T>;
+    impl<T> IrqMutex<T> {
+        pub(crate) const fn new(value: T) -> Self {
+            Self(spin::Mutex::new(value))
+        }
+        pub(crate) fn lock(&self) -> IrqMutexGuard<'_, T> {
+            self.0.lock()
+        }
+    }
+}
+#[path = "../../../kernel/src/execution/task"]
+pub(crate) mod task {
     pub(crate) struct TaskControlBlock(usize);
     impl TaskControlBlock {
         pub(crate) fn tid(&self) -> usize {
@@ -82,7 +89,7 @@ mod task {
     pub(crate) struct WaitMembership;
     #[path = "process_table"]
     pub(crate) mod process_table {
-        use crate::{memory::FutexKey, sync::WaitResult, task::TaskControlBlock};
+        use crate::{memory::FutexKey, execution::sync::WaitResult, execution::task::TaskControlBlock};
         use alloc::sync::Arc;
         mod wait_key;
         use wait_key::{IndexedWaitKind, PollWaitKey};
@@ -91,12 +98,12 @@ mod task {
         mod context_switch {
             pub(super) struct PreparedBlock;
             pub(super) fn prepare_current_block(
-                _: &alloc::sync::Arc<crate::task::TaskControlBlock>,
+                _: &alloc::sync::Arc<crate::execution::task::TaskControlBlock>,
                 _: super::wait_registry::WaitArmGuard<'static>,
                 _: impl FnOnce(
                     &mut super::wait_registry::WaitArmGuard<'static>,
                     (),
-                ) -> crate::task::WaitMembership,
+                ) -> crate::execution::task::WaitMembership,
             ) -> PreparedBlock {
                 panic!("host queue fixture does not context-switch")
             }
@@ -162,5 +169,4 @@ mod task {
         }
     }
 }
-#[path = "../../../kernel/src/syscall/futex/wake_op.rs"]
-mod wake_op;
+}
