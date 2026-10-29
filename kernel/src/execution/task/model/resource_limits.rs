@@ -1,0 +1,270 @@
+use super::TaskControlBlock;
+
+const RLIMIT_CPU: usize = 0;
+pub(super) const RLIMIT_FSIZE: usize = 1;
+pub(crate) const RLIMIT_DATA: usize = 2;
+pub(crate) const RLIMIT_STACK: usize = 3;
+pub(crate) const RLIMIT_CORE: usize = 4;
+pub(crate) const RLIMIT_NPROC: usize = 6;
+pub(super) const RLIMIT_NOFILE: usize = 7;
+pub(crate) const RLIMIT_MEMLOCK: usize = 8;
+pub(crate) const RLIMIT_AS: usize = 9;
+const RLIMIT_LOCKS: usize = 10;
+pub(in crate::execution::task) const RLIMIT_SIGPENDING: usize = 11;
+const RLIMIT_MSGQUEUE: usize = 12;
+pub(in crate::execution::task) const RLIMIT_NICE: usize = 13;
+const RLIMIT_RTPRIO: usize = 14;
+const RLIMIT_RTTIME: usize = 15;
+const RESOURCE_COUNT: usize = RLIMIT_RTTIME + 1;
+
+pub(crate) const RLIM_INFINITY: u64 = u64::MAX;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResourceLimit {
+    pub(crate) soft: u64,
+    pub(crate) hard: u64,
+}
+
+#[derive(Clone)]
+pub(super) struct ResourceLimits {
+    values: [ResourceLimit; RESOURCE_COUNT],
+    // OWNER: Process limits lock 同时拥有最近一次 SIGXCPU 秒数。若放入 Thread，
+    // 多线程 Process 会在同一 CPU 秒重复投递 SIGXCPU。
+    last_cpu_signal_second: Option<u64>,
+}
+
+impl ResourceLimits {
+    pub(super) fn defaults() -> Self {
+        let unlimited = ResourceLimit {
+            soft: RLIM_INFINITY,
+            hard: RLIM_INFINITY,
+        };
+        let mut values = [unlimited; RESOURCE_COUNT];
+        values[RLIMIT_STACK] = ResourceLimit {
+            soft: 8 * 1024 * 1024,
+            hard: RLIM_INFINITY,
+        };
+        values[RLIMIT_CORE] = ResourceLimit {
+            soft: 0,
+            hard: RLIM_INFINITY,
+        };
+        values[RLIMIT_NOFILE] = ResourceLimit {
+            soft: 1024,
+            hard: crate::file::MAX_FILE_DESCRIPTORS as u64,
+        };
+        values[RLIMIT_MEMLOCK] = ResourceLimit {
+            soft: 64 * 1024,
+            hard: 64 * 1024,
+        };
+        values[RLIMIT_LOCKS] = unlimited;
+        values[RLIMIT_SIGPENDING] = unlimited;
+        values[RLIMIT_MSGQUEUE] = unlimited;
+        values[RLIMIT_NICE] = ResourceLimit { soft: 0, hard: 0 };
+        values[RLIMIT_RTPRIO] = ResourceLimit { soft: 0, hard: 0 };
+        values[RLIMIT_RTTIME] = unlimited;
+        Self {
+            values,
+            last_cpu_signal_second: None,
+        }
+    }
+
+    pub(super) fn get(&self, resource: usize) -> Option<ResourceLimit> {
+        self.values.get(resource).copied()
+    }
+
+    pub(super) fn cpu_limit_active(&self) -> bool {
+        let limit = self.values[RLIMIT_CPU];
+        limit.soft != RLIM_INFINITY || limit.hard != RLIM_INFINITY
+    }
+
+    fn replace(
+        &mut self,
+        resource: usize,
+        replacement: ResourceLimit,
+        privileged: bool,
+    ) -> Result<ResourceLimit, ResourceLimitError> {
+        if replacement.soft > replacement.hard {
+            return Err(ResourceLimitError::InvalidLimit);
+        }
+        if resource == RLIMIT_NOFILE && replacement.hard > crate::file::MAX_FILE_DESCRIPTORS as u64
+        {
+            return Err(ResourceLimitError::PermissionDenied);
+        }
+        let current = self
+            .values
+            .get_mut(resource)
+            .ok_or(ResourceLimitError::InvalidResource)?;
+        if !privileged && replacement.hard > current.hard {
+            return Err(ResourceLimitError::PermissionDenied);
+        }
+        let old = *current;
+        *current = replacement;
+        if resource == RLIMIT_CPU {
+            self.last_cpu_signal_second = None;
+        }
+        Ok(old)
+    }
+
+    /// 根据 Process 累计 CPU 时间生成 Linux RLIMIT_CPU 信号决策。
+    ///
+    /// # Parameters
+    ///
+    /// - `runtime_us`: Process 中全部 Thread 累计的 CPU 微秒数。
+    ///
+    /// # Returns
+    ///
+    /// 首次达到 soft limit 及其后每个 CPU 秒返回 SIGXCPU；达到 hard limit 返回 SIGKILL。
+    pub(super) fn cpu_signal(&mut self, runtime_us: u64) -> Option<usize> {
+        let limit = self.values[RLIMIT_CPU];
+        if limit.hard != RLIM_INFINITY && runtime_us >= limit.hard.saturating_mul(1_000_000) {
+            return Some(syscall_abi::signal::SIGKILL);
+        }
+        if limit.soft == RLIM_INFINITY || runtime_us < limit.soft.saturating_mul(1_000_000) {
+            return None;
+        }
+        let elapsed_second = runtime_us / 1_000_000;
+        if self
+            .last_cpu_signal_second
+            .is_some_and(|last| last >= elapsed_second)
+        {
+            return None;
+        }
+        self.last_cpu_signal_second = Some(elapsed_second);
+        Some(syscall_abi::signal::SIGXCPU)
+    }
+
+    /// fork 复制限制值，但 child 的 CPU 消耗与 SIGXCPU cadence 从零开始。
+    pub(super) fn forked(&self) -> Self {
+        Self {
+            values: self.values,
+            last_cpu_signal_second: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ResourceLimitError {
+    NotFound,
+    PermissionDenied,
+    InvalidResource,
+    InvalidLimit,
+}
+
+mod unix_file_limit;
+
+impl TaskControlBlock {
+    /// SCM 只借实际 Process limits allocation；fork 已复制、Thread 共享、exec 保留。
+    /// Arc clone/type erasure 不分配，排队 control 不保活 Process/MM/PID quota。
+    pub(crate) fn unix_file_limit(&self) -> alloc::sync::Arc<dyn crate::net::UnixFileLimit> {
+        self.process().resource_limits.clone()
+    }
+
+    pub(crate) fn file_descriptor_limit(&self) -> usize {
+        usize::try_from(
+            self.resource_limit(RLIMIT_NOFILE)
+                .expect("RLIMIT_NOFILE must exist")
+                .soft,
+        )
+        .unwrap_or(usize::MAX)
+        .min(crate::file::MAX_FILE_DESCRIPTORS)
+    }
+
+    pub(crate) fn file_size_limit(&self) -> u64 {
+        self.resource_limit(RLIMIT_FSIZE)
+            .expect("RLIMIT_FSIZE must exist")
+            .soft
+    }
+
+    pub(in crate::execution::task) fn process_cpu_runtime_us(&self) -> u64 {
+        self.process().process_cpu_runtime_us()
+    }
+
+    /// NEWUSER 的全部已使用 rlimit maxima 由同一实际 Process limits 快照捕获。
+    pub(super) fn namespace_rlimits(&self) -> crate::namespace::NamespaceRlimits {
+        let limits = self.process().resource_limits.lock();
+        crate::namespace::NamespaceRlimits {
+            locked_memory: limits
+                .get(RLIMIT_MEMLOCK)
+                .expect("RLIMIT_MEMLOCK exists")
+                .soft,
+            pending_signals: limits
+                .get(RLIMIT_SIGPENDING)
+                .expect("RLIMIT_SIGPENDING exists")
+                .soft,
+        }
+    }
+
+    /// 同一 actual limits guard 捕获完整 MM admission tuple，不能将并发 prlimit 的两次读取拼接。
+    pub(super) fn mapping_resource_limits(&self) -> crate::memory::MappingResourceLimits {
+        let limits = self.process().resource_limits.lock();
+        crate::memory::MappingResourceLimits::new(
+            limits.get(RLIMIT_AS).expect("RLIMIT_AS exists").soft,
+            limits.get(RLIMIT_DATA).expect("RLIMIT_DATA exists").soft,
+        )
+    }
+
+    /// 同一 actual limits guard 捕获 fault 的 stack/address-space 边界。
+    pub(in crate::execution::task) fn user_fault_limits(&self) -> crate::memory::UserFaultLimits {
+        let limits = self.process().resource_limits.lock();
+        crate::memory::UserFaultLimits::new(
+            limits.get(RLIMIT_STACK).expect("RLIMIT_STACK exists").soft,
+            limits.get(RLIMIT_AS).expect("RLIMIT_AS exists").soft,
+        )
+    }
+
+    pub(crate) fn resource_limit(&self, resource: usize) -> Option<ResourceLimit> {
+        self.process().resource_limit(resource)
+    }
+
+    pub(in crate::execution::task) fn resource_cpu_signal(&self, runtime_us: u64) -> Option<usize> {
+        use core::sync::atomic::Ordering;
+
+        if !self.process().cpu_limit_active.load(Ordering::Acquire) {
+            return None;
+        }
+        self.process().resource_limits.lock().cpu_signal(runtime_us)
+    }
+}
+
+// Process 生命周期内唯一投影；graph/proc observer 不保活任何 TCB。
+impl super::Process {
+    pub(in crate::execution::task) fn process_cpu_runtime_us(&self) -> u64 {
+        self.cpu_runtime_us
+            .load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub(in crate::execution::task) fn resource_limit(
+        &self,
+        resource: usize,
+    ) -> Option<ResourceLimit> {
+        self.resource_limits.lock().get(resource)
+    }
+    pub(in crate::execution::task) fn replace_resource_limit(
+        &self,
+        resource: usize,
+        replacement: ResourceLimit,
+        privileged: bool,
+    ) -> Result<ResourceLimit, ResourceLimitError> {
+        use core::sync::atomic::Ordering;
+
+        let mut limits = self.resource_limits.lock();
+        let previous_cpu_active = limits.cpu_limit_active();
+        let replacement_cpu_active =
+            replacement.soft != RLIM_INFINITY || replacement.hard != RLIM_INFINITY;
+        if resource == RLIMIT_CPU && replacement_cpu_active {
+            // Publish the conservative true state before the finite limit becomes visible. A
+            // concurrent switch may take one harmless extra lock, but cannot skip enforcement.
+            self.cpu_limit_active.store(true, Ordering::Release);
+        }
+        let result = limits.replace(resource, replacement, privileged);
+        if resource == RLIMIT_CPU {
+            let active = if result.is_ok() {
+                replacement_cpu_active
+            } else {
+                previous_cpu_active
+            };
+            self.cpu_limit_active.store(active, Ordering::Release);
+        }
+        result
+    }
+}

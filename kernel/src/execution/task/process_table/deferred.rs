@@ -1,0 +1,184 @@
+use crate::execution::sync::WaitResult;
+use alloc::sync::Arc;
+
+use crate::{
+    execution::deferred::{self, DeferredWork},
+    execution::task::{
+        PendingSignal, TaskControlBlock, current_task, processor::request_tick_reschedule,
+    },
+    execution::timer::get_time_ns,
+};
+
+use super::{
+    PROCESS_TABLE, load_average, process_terminal_input, send_kernel_process_signal,
+    timer_queue::ExpiredTimer, wait_key::IndexedWaitKind, wait_registry::WAIT_REGISTRY,
+    wake_console_waiters,
+};
+
+const TIMER_WORK_BATCH: usize = 32;
+type ExpiredWait = (u64, Arc<TaskControlBlock>, IndexedWaitKind);
+
+fn expire_timers(now_ns: u64) {
+    let mut targets: [Option<ExpiredTimer>; TIMER_WORK_BATCH] = core::array::from_fn(|_| None);
+    // 1. timer owner 锁内只摘取并重装固定 batch，不触碰 ProcessGraph 或分配 target Vec。
+    let backlog = {
+        let mut timers = PROCESS_TABLE.timers.lock();
+        for target in &mut targets {
+            let Some(expired) = timers.pop_expired(now_ns) else {
+                break;
+            };
+            *target = Some(expired);
+        }
+        timers.has_expired(now_ns)
+    };
+    // 2. signal seam 会获取 process graph，必须在释放 timer lock 后调用，避免 timer → graph 反向锁序。
+    for expired in targets.into_iter().flatten() {
+        match expired {
+            ExpiredTimer::Real { tgid, retired } => {
+                drop(retired);
+                let _ = send_kernel_process_signal(
+                    tgid,
+                    syscall_abi::signal::SIGALRM,
+                    PendingSignal::kernel(),
+                );
+            }
+            ExpiredTimer::Posix(timer) => super::signal::publish_posix_timer_signal(timer),
+            ExpiredTimer::File {
+                target,
+                elapsed,
+                generation,
+                retired,
+            } => {
+                drop(retired);
+                target.expire(elapsed, generation);
+            }
+            ExpiredTimer::Kernel(expired) => expired.complete(),
+            ExpiredTimer::Silent(retired) => drop(retired),
+        }
+    }
+    // 3. 超出 batch 的到期项仅合并发布一个 bit；无界循环会饿死 I/O 与 user return。
+    if backlog {
+        deferred::raise(DeferredWork::TIMER_BACKLOG);
+    }
+}
+
+/// 单锁摘取固定数量的到期 wait，锁外完成 wake，并为 backlog 发布续批。
+///
+/// # Parameters
+///
+/// - `now_ns`: 本批次固定的 absolute monotonic 纳秒时刻。
+///
+/// # Returns
+///
+/// 无返回值；超过 batch 的已到期项由当前 CPU 的 timer backlog softirq 继续消费。
+fn wake_expired_tasks(now_ns: u64) {
+    let mut batch: [Option<ExpiredWait>; TIMER_WORK_BATCH] = core::array::from_fn(|_| None);
+    // 1. 每次只锁 deadline 所在 source shard；跨 shard 的 registration 由 claim
+    // 精确摘除，独立 deadline 不再争用单一全局 owner。
+    for slot in &mut batch {
+        let Some(expired) = WAIT_REGISTRY.expire_one(now_ns) else {
+            break;
+        };
+        if let Some(claimed) = expired.claimed {
+            *slot = Some((claimed.id, claimed.task, claimed.kind));
+        }
+    }
+    let backlog = WAIT_REGISTRY.has_expired_deadline(now_ns);
+    // 2. wake 会获取 scheduling/runqueue owner，必须在释放 registry lock 后执行。
+    for (wait_id, task, kind) in batch.into_iter().flatten() {
+        let woke = match kind {
+            IndexedWaitKind::TaskEvent(key) => {
+                crate::execution::task::processor::wake_waiting_task(
+                    task,
+                    super::WaitMembership::TaskWait(key),
+                    Some(WaitResult::TimedOut),
+                )
+            }
+            IndexedWaitKind::Deadline => crate::execution::task::processor::wake_deadline_task(
+                task,
+                wait_id,
+                WaitResult::TimedOut,
+            ),
+            IndexedWaitKind::Futex { .. } => crate::execution::task::processor::wake_futex_task(
+                task,
+                wait_id,
+                WaitResult::TimedOut,
+            ),
+            IndexedWaitKind::Signal { .. } => crate::execution::task::processor::wake_signal_task(
+                task,
+                wait_id,
+                WaitResult::TimedOut,
+            ),
+            IndexedWaitKind::Console => crate::execution::task::processor::wake_console_task(
+                task,
+                wait_id,
+                WaitResult::TimedOut,
+            ),
+            IndexedWaitKind::Pipe { .. } => crate::execution::task::processor::wake_pipe_task(
+                task,
+                wait_id,
+                WaitResult::TimedOut,
+            ),
+            IndexedWaitKind::Poll => crate::execution::task::processor::wake_poll_task(
+                task,
+                wait_id,
+                WaitResult::TimedOut,
+            ),
+            _ => panic!("non-deadline wait carried a deadline"),
+        };
+        assert!(woke, "expired wait diverged from scheduling membership");
+    }
+    // 3. backlog 只发布一个合并 bit；直接无界循环会让 I/O 与 user return 永久饥饿。
+    if backlog {
+        deferred::raise(DeferredWork::TIMER_BACKLOG);
+    }
+}
+
+/// 仅在 user-return 或 local-IRQ-closed scheduler idle safe point 消费 deferred work。
+///
+/// kernel software-interrupt handler 不得调用本函数：它可重入持有普通 VirtIO queue、
+/// DRM completion 或 KERNEL_SPACE lock 的 syscall；在该栈上消费会永久自旋。
+pub(crate) fn dispatch_pending_deferred_work() {
+    let work = deferred::take();
+    if work.is_empty() {
+        return;
+    }
+    if work.contains(DeferredWork::TIMER) {
+        let now_us = crate::execution::timer::get_time_us();
+        if let Some(task) = current_task() {
+            task.scheduling.policy.lock().checkpoint_runtime(now_us);
+            task.charge_timer_tick(work.contains(DeferredWork::TIMER_FROM_USER));
+        }
+        crate::crash::note_deferred_progress();
+        wake_expired_tasks(get_time_ns());
+        load_average::update(now_us);
+        expire_timers(get_time_ns());
+        request_tick_reschedule();
+    } else if work.contains(DeferredWork::TIMER_BACKLOG) {
+        wake_expired_tasks(get_time_ns());
+        expire_timers(get_time_ns());
+    }
+    if work.contains(DeferredWork::CONSOLE) {
+        let input_backlog = process_terminal_input();
+        let waiter_backlog = wake_console_waiters();
+        if input_backlog || waiter_backlog {
+            deferred::raise(DeferredWork::CONSOLE);
+        }
+    }
+    work.run_registered(get_time_ns());
+    if work.contains(DeferredWork::DRIVER_IO)
+        && crate::devices::model::dispatch_io_completion_work()
+    {
+        deferred::raise(DeferredWork::DRIVER_IO);
+    }
+    let network_due = work.contains(DeferredWork::NETWORK)
+        || work.contains(DeferredWork::TIMER) && crate::net::network_work_due();
+    if network_due {
+        // RX budget 用尽时必须再次发布同一 deferred work；否则 used ring 中没有新 IRQ edge
+        // 的 frame 可能永久滞留。timer deadline 同样在此推进 ARP/UDP egress；缺失时丢失
+        // 首个 ARP reply 后将永远不重试。requeue 由 task deferred owner 执行，socket 不反向依赖 arch。
+        if crate::net::dispatch_network_work() {
+            deferred::raise(DeferredWork::NETWORK);
+        }
+    }
+}

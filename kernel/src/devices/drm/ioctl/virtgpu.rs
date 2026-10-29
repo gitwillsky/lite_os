@@ -1,0 +1,403 @@
+use alloc::{sync::Arc, vec::Vec};
+
+use crate::{
+    devices::drm::{
+        DrmFile, DrmSubmission, VIRGL_COMMAND_MAX, VirglBox, VirglCommand, VirglResourceCreate,
+        VirglTransferDirection,
+    },
+    devices::model::VIRGL_COMMAND_EXTENTS_MAX,
+    fs::chardev::UserMemory,
+    memory::{DeviceBacking, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE},
+};
+
+use syscall_abi::errno;
+
+use super::{
+    copy_in, copy_out, drm_errno, read_u32, read_u64, wait_retry, wait_scanout, write_u32,
+    write_u64,
+};
+
+const VIRTGPU_PARAM_3D_FEATURES: u64 = 1;
+const VIRTGPU_PARAM_CAPSET_QUERY_FIX: u64 = 2;
+const VIRTGPU_PARAM_RESOURCE_BLOB: u64 = 3;
+const VIRTGPU_PARAM_HOST_VISIBLE: u64 = 4;
+const VIRTGPU_PARAM_CROSS_DEVICE: u64 = 5;
+const VIRTGPU_PARAM_CONTEXT_INIT: u64 = 6;
+const VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS: u64 = 7;
+const VIRTGPU_PARAM_EXPLICIT_DEBUG_NAME: u64 = 8;
+
+const VIRTGPU_CONTEXT_PARAM_CAPSET_ID: u64 = 1;
+const VIRTGPU_CONTEXT_PARAM_NUM_RINGS: u64 = 2;
+const VIRTGPU_CONTEXT_PARAM_POLL_RINGS_MASK: u64 = 3;
+const VIRTGPU_CONTEXT_PARAM_DEBUG_NAME: u64 = 4;
+const VIRTGPU_WAIT_NOWAIT: u32 = 1;
+const MAX_EXEC_RESOURCES: usize = 1024;
+const MAX_CONTEXT_PARAMS: usize = 4;
+
+pub(super) fn get_param(
+    user: &dyn UserMemory,
+    file: &DrmFile,
+    argument: usize,
+) -> Result<(), isize> {
+    let bytes = copy_in::<16>(user, argument)?;
+    let value = match read_u64(&bytes, 0)? {
+        VIRTGPU_PARAM_3D_FEATURES => u64::from(file.virgl_capset_info().is_ok()),
+        VIRTGPU_PARAM_CAPSET_QUERY_FIX => 1,
+        VIRTGPU_PARAM_CONTEXT_INIT | VIRTGPU_PARAM_EXPLICIT_DEBUG_NAME => {
+            u64::from(file.supports_virgl_context_init())
+        }
+        VIRTGPU_PARAM_SUPPORTED_CAPSET_IDS => file
+            .virgl_capset_info()
+            .ok()
+            .and_then(|capset| 1u64.checked_shl(capset.id))
+            .unwrap_or(0),
+        VIRTGPU_PARAM_RESOURCE_BLOB | VIRTGPU_PARAM_HOST_VISIBLE | VIRTGPU_PARAM_CROSS_DEVICE => 0,
+        _ => return Err(errno::EINVAL),
+    };
+    copy_out(
+        user,
+        usize::try_from(read_u64(&bytes, 8)?).map_err(|_| errno::EFAULT)?,
+        &value.to_ne_bytes(),
+    )
+}
+
+pub(super) fn get_caps(
+    user: &dyn UserMemory,
+    file: &DrmFile,
+    argument: usize,
+) -> Result<(), isize> {
+    let bytes = copy_in::<24>(user, argument)?;
+    let capset = file.virgl_capset_info().map_err(drm_errno)?;
+    if read_u32(&bytes, 0)? != capset.id || read_u32(&bytes, 4)? > capset.version {
+        return Err(errno::EINVAL);
+    }
+    let requested = usize::try_from(read_u32(&bytes, 16)?).map_err(|_| errno::EINVAL)?;
+    let mut capabilities = Vec::new();
+    capabilities
+        .try_reserve_exact(capset.size)
+        .map_err(|_| errno::ENOMEM)?;
+    capabilities.resize(capset.size, 0);
+    file.copy_virgl_capset(read_u32(&bytes, 4)?, &mut capabilities)
+        .map_err(drm_errno)?;
+    let count = requested.min(capabilities.len());
+    if count != 0 {
+        copy_out(
+            user,
+            usize::try_from(read_u64(&bytes, 8)?).map_err(|_| errno::EFAULT)?,
+            &capabilities[..count],
+        )?;
+    }
+    Ok(())
+}
+
+pub(super) fn context_init(
+    user: &dyn UserMemory,
+    file: &DrmFile,
+    argument: usize,
+) -> Result<(), isize> {
+    let bytes = copy_in::<16>(user, argument)?;
+    let count = usize::try_from(read_u32(&bytes, 0)?).map_err(|_| errno::EINVAL)?;
+    if count == 0 || count > MAX_CONTEXT_PARAMS || read_u32(&bytes, 4)? != 0 {
+        return Err(errno::EINVAL);
+    }
+    let pointer = usize::try_from(read_u64(&bytes, 8)?).map_err(|_| errno::EFAULT)?;
+    let mut capset_id = None;
+    let mut name = Vec::new();
+    for index in 0..count {
+        let address = pointer
+            .checked_add(index.checked_mul(16).ok_or(errno::EFAULT)?)
+            .ok_or(errno::EFAULT)?;
+        let parameter = copy_in::<16>(user, address)?;
+        let value = read_u64(&parameter, 8)?;
+        match read_u64(&parameter, 0)? {
+            VIRTGPU_CONTEXT_PARAM_CAPSET_ID => {
+                capset_id = Some(u32::try_from(value).map_err(|_| errno::EINVAL)?);
+            }
+            VIRTGPU_CONTEXT_PARAM_NUM_RINGS if value == 1 => {}
+            VIRTGPU_CONTEXT_PARAM_POLL_RINGS_MASK if value == 0 => {}
+            VIRTGPU_CONTEXT_PARAM_DEBUG_NAME => {
+                name = user
+                    .read_c_string(usize::try_from(value).map_err(|_| errno::EFAULT)?, 65)
+                    .map_err(|_| errno::EFAULT)?;
+                if name.len() > 64 {
+                    return Err(errno::EINVAL);
+                }
+            }
+            _ => return Err(errno::EINVAL),
+        }
+    }
+    let prepared = file
+        .prepare_virgl_context(capset_id.ok_or(errno::EINVAL)?, &name)
+        .map_err(drm_errno)?;
+    submit_only(file, prepared.command())?;
+    prepared.publish();
+    Ok(())
+}
+
+pub(super) fn resource_create(
+    user: &dyn UserMemory,
+    file: &DrmFile,
+    argument: usize,
+) -> Result<(), isize> {
+    let mut bytes = copy_in::<56>(user, argument)?;
+    if read_u32(&bytes, 40)? != 0 {
+        return Err(errno::EINVAL);
+    }
+    if let Some(context) = file.prepare_legacy_virgl_context().map_err(drm_errno)? {
+        submit_only(file, context.command())?;
+        context.publish();
+    }
+    let mut prepared = file
+        .prepare_virgl_resource(VirglResourceCreate {
+            target: read_u32(&bytes, 0)?,
+            format: read_u32(&bytes, 4)?,
+            bind: read_u32(&bytes, 8)?,
+            width: read_u32(&bytes, 12)?,
+            height: read_u32(&bytes, 16)?,
+            depth: read_u32(&bytes, 20)?,
+            array_size: read_u32(&bytes, 24)?,
+            last_level: read_u32(&bytes, 28)?,
+            samples: read_u32(&bytes, 32)?,
+            flags: read_u32(&bytes, 36)?,
+            size: u64::from(read_u32(&bytes, 48)?),
+            stride: read_u32(&bytes, 52)?,
+        })
+        .map_err(drm_errno)?;
+    let command = prepared.create_command();
+    submit_resource(file, &mut prepared, command)?;
+    let command = prepared.attach_command();
+    submit_resource(file, &mut prepared, command)?;
+    let command = prepared.context_attach_command();
+    submit_resource(file, &mut prepared, command)?;
+    let info = prepared.info();
+    write_u32(&mut bytes, 40, info.handle)?;
+    write_u32(&mut bytes, 44, info.resource_id)?;
+    copy_out(user, argument, &bytes)?;
+    prepared.publish();
+    Ok(())
+}
+
+pub(super) fn resource_info(
+    user: &dyn UserMemory,
+    file: &DrmFile,
+    argument: usize,
+) -> Result<(), isize> {
+    let mut bytes = copy_in::<16>(user, argument)?;
+    let info = file
+        .virgl_resource_info(read_u32(&bytes, 0)?)
+        .map_err(drm_errno)?;
+    bytes.fill(0);
+    write_u32(&mut bytes, 0, info.handle)?;
+    write_u32(&mut bytes, 4, info.resource_id)?;
+    write_u32(&mut bytes, 8, info.size)?;
+    copy_out(user, argument, &bytes)
+}
+
+pub(super) fn map(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
+    let mut bytes = copy_in::<16>(user, argument)?;
+    let offset = file.map_virgl(read_u32(&bytes, 8)?).map_err(drm_errno)?;
+    write_u64(&mut bytes, 0, offset)?;
+    copy_out(user, argument, &bytes)
+}
+
+pub(super) fn transfer(
+    user: &dyn UserMemory,
+    file: &DrmFile,
+    argument: usize,
+    direction: VirglTransferDirection,
+) -> Result<(), isize> {
+    let bytes = copy_in::<44>(user, argument)?;
+    let handle = read_u32(&bytes, 0)?;
+    let access = file
+        .access_virgl_resources(core::iter::once(handle))
+        .map_err(drm_errno)?;
+    // Linux virtio-gpu 只锁 reservation 并登记新 fence，不在 CPU 上等旧 fence：
+    // 主机按控制队列顺序执行，先提交的生产者命令必然先于本命令生效。
+    let _reservations = access.reserve().map_err(drm_errno)?;
+    let command = file
+        .transfer_command(crate::devices::drm::VirglTransfer {
+            handle,
+            direction,
+            offset: read_u32(&bytes, 32)?,
+            level: read_u32(&bytes, 28)?,
+            region: VirglBox {
+                x: read_u32(&bytes, 4)?,
+                y: read_u32(&bytes, 8)?,
+                z: read_u32(&bytes, 12)?,
+                width: read_u32(&bytes, 16)?,
+                height: read_u32(&bytes, 20)?,
+                depth: read_u32(&bytes, 24)?,
+            },
+            stride: read_u32(&bytes, 36)?,
+            layer_stride: read_u32(&bytes, 40)?,
+        })
+        .map_err(drm_errno)?;
+    let fence = submit_only(file, command)?;
+    access.record(fence);
+    Ok(())
+}
+
+pub(super) fn execbuffer(
+    user: &dyn UserMemory,
+    file: &DrmFile,
+    argument: usize,
+) -> Result<(), isize> {
+    let bytes = copy_in::<64>(user, argument)?;
+    let flags = read_u32(&bytes, 0)?;
+    let size = usize::try_from(read_u32(&bytes, 4)?).map_err(|_| errno::EINVAL)?;
+    let count = usize::try_from(read_u32(&bytes, 24)?).map_err(|_| errno::EINVAL)?;
+    if flags != 0
+        || size == 0
+        || size > VIRGL_COMMAND_MAX
+        || !size.is_multiple_of(4)
+        || count > MAX_EXEC_RESOURCES
+        || read_u32(&bytes, 40)? != 0
+        || read_u32(&bytes, 44)? != 0
+    {
+        return Err(errno::EINVAL);
+    }
+    let commands = copy_command_stream(
+        user,
+        usize::try_from(read_u64(&bytes, 8)?).map_err(|_| errno::EFAULT)?,
+        size,
+    )?;
+    let mut handles = try_zeroed(count.checked_mul(4).ok_or(errno::EINVAL)?)?;
+    if !handles.is_empty() {
+        user.read(
+            usize::try_from(read_u64(&bytes, 16)?).map_err(|_| errno::EFAULT)?,
+            &mut handles,
+        )
+        .map_err(|_| errno::EFAULT)?;
+    }
+    // Linux 在首个 EXECBUFFER 也惰性创建 context；Mesa 初始化可以先发无 BO 的 capability 命令。
+    // fence_fd/ring_idx 只有对应 flag 才有效；零 syncobj 数量时不解释 stride/pointer。
+    if let Some(context) = file.prepare_legacy_virgl_context().map_err(drm_errno)? {
+        submit_only(file, context.command())?;
+        context.publish();
+    }
+    let access = file
+        .access_virgl_resources(
+            handles
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|bytes| u32::from_ne_bytes(*bytes)),
+        )
+        .map_err(drm_errno)?;
+    // 同 transfer：顺序由主机控制队列保证；CPU 等待会把每次提交量化到主机 fence 通知周期。
+    let _reservations = access.reserve().map_err(drm_errno)?;
+    let fence = submit_only(
+        file,
+        VirglCommand::Submit3d {
+            context_id: access.context_id,
+            commands,
+            length: size,
+        },
+    )?;
+    access.record(fence);
+    Ok(())
+}
+
+pub(super) fn wait(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> Result<(), isize> {
+    let bytes = copy_in::<8>(user, argument)?;
+    let flags = read_u32(&bytes, 4)?;
+    if flags & !VIRTGPU_WAIT_NOWAIT != 0 {
+        return Err(errno::EINVAL);
+    }
+    let Some(wait) = file.virgl_wait(read_u32(&bytes, 0)?).map_err(drm_errno)? else {
+        return Ok(());
+    };
+    if flags == VIRTGPU_WAIT_NOWAIT {
+        return if wait.prepare_to_block().is_none() {
+            Ok(())
+        } else {
+            Err(errno::EBUSY)
+        };
+    }
+    wait_scanout(wait)
+}
+
+pub(super) fn gem_close(
+    user: &dyn UserMemory,
+    file: &DrmFile,
+    argument: usize,
+) -> Result<(), isize> {
+    let bytes = copy_in::<8>(user, argument)?;
+    if read_u32(&bytes, 4)? != 0 {
+        return Err(errno::EINVAL);
+    }
+    let prepared = file
+        .prepare_virgl_close(read_u32(&bytes, 0)?)
+        .map_err(drm_errno)?;
+    prepared.publish();
+    Ok(())
+}
+
+fn submit_resource(
+    file: &DrmFile,
+    prepared: &mut crate::devices::drm::graphics::PreparedVirglResource<'_>,
+    command: VirglCommand<'_>,
+) -> Result<u64, isize> {
+    loop {
+        match file.submit_virgl(command.clone()).map_err(drm_errno)? {
+            DrmSubmission::Wait(wait) => {
+                let fence = wait.fence();
+                // 即使紧接着的等待被信号/OOM 中断，prepared Drop 也保活并异步清理已接受的 resource。
+                prepared.record_submission(fence);
+                wait_scanout(wait)?;
+                return Ok(fence);
+            }
+            DrmSubmission::Retry(retry) => wait_retry(retry)?,
+        }
+    }
+}
+
+pub(super) fn submit_only(file: &DrmFile, command: VirglCommand<'_>) -> Result<u64, isize> {
+    loop {
+        match file.submit_virgl(command.clone()).map_err(drm_errno)? {
+            DrmSubmission::Wait(wait) => return Ok(wait.fence()),
+            DrmSubmission::Retry(retry) => wait_retry(retry)?,
+        }
+    }
+}
+
+/// 在任何提交锁之前把用户命令流直接拷入驱动 DMA backing；其所有权随命令交给 adapter，
+/// 设备完成后才释放，对应 Linux 每次提交复制命令缓冲并单独挂入 sg。
+///
+/// # Errors
+///
+/// 物理页不足或碎片化到超过 [`VIRGL_COMMAND_EXTENTS_MAX`] 个 extent 返回 ENOMEM；用户地址无效返回 EFAULT。
+fn copy_command_stream(
+    user: &dyn UserMemory,
+    address: usize,
+    length: usize,
+) -> Result<Arc<DeviceBacking>, isize> {
+    let backing = DeviceBacking::try_allocate(
+        length.div_ceil(PAGE_SIZE),
+        FrameAllocationClass::Reclaimable,
+        DeviceMemoryKind::Driver,
+    )
+    .filter(|backing| backing.extent_count() <= VIRGL_COMMAND_EXTENTS_MAX)
+    .ok_or(errno::ENOMEM)?;
+    // 经固定小缓冲分段搬运，不为整条命令流再分配一份内核副本。
+    let mut chunk = [0u8; 512];
+    let mut copied = 0;
+    while copied < length {
+        let count = (length - copied).min(chunk.len());
+        let source = address.checked_add(copied).ok_or(errno::EFAULT)?;
+        user.read(source, &mut chunk[..count])
+            .map_err(|_| errno::EFAULT)?;
+        backing
+            .write(copied, &chunk[..count])
+            .map_err(|()| errno::EFAULT)?;
+        copied += count;
+    }
+    Arc::try_new(backing).map_err(|_| errno::ENOMEM)
+}
+
+fn try_zeroed(length: usize) -> Result<Vec<u8>, isize> {
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length).map_err(|_| errno::ENOMEM)?;
+    bytes.resize(length, 0);
+    Ok(bytes)
+}
