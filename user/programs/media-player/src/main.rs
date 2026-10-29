@@ -9,7 +9,7 @@ use liteos_ui::{
     WindowOptions,
 };
 use std::{
-    cell::{Cell, RefCell},
+    cell::RefCell,
     io::Read,
     os::{fd::OwnedFd, unix::net::UnixStream},
     path::PathBuf,
@@ -36,7 +36,8 @@ struct Shell {
     view: View,
     engine: RefCell<Engine>,
     tasks: RefCell<Vec<Task<()>>>,
-    last_click: Cell<Option<Instant>>,
+    // 单击延迟到双击判定完成；否则双击全屏的第一击已经切换了暂停。句柄负责取消未决单击。
+    video_click: RefCell<Option<(Instant, Task<()>)>>,
 }
 
 impl Shell {
@@ -45,6 +46,39 @@ impl Shell {
         if let Err(error) = self.view.apply(&mut engine, changes) {
             eprintln!("mplay: {error}");
         }
+    }
+
+    fn video_click(self: &Rc<Self>, app: &mut Application) -> liteos_ui::Result<Option<Action>> {
+        let previous = self.video_click.borrow_mut().take();
+        if let Some((at, task)) = previous {
+            let finished = task.is_finished();
+            drop(task);
+            if !finished {
+                if at.elapsed() <= DOUBLE_CLICK {
+                    return Ok(Some(Action::Fullscreen));
+                }
+                // 事件积压可能让单击期限已过、定时任务尚未被 poll；先兑现上一单击。
+                self.engine.borrow_mut().toggle_pause();
+                self.sync(Changes {
+                    controls: true,
+                    ..Default::default()
+                });
+            }
+        }
+        let delay = app.sleep(DOUBLE_CLICK)?;
+        let target = Rc::downgrade(self);
+        let task = app.spawn_local(&self.window, async move {
+            delay.await;
+            if let Some(target) = target.upgrade() {
+                target.engine.borrow_mut().toggle_pause();
+                target.sync(Changes {
+                    controls: true,
+                    ..Default::default()
+                });
+            }
+        })?;
+        *self.video_click.borrow_mut() = Some((Instant::now(), task));
+        Ok(None)
     }
 
     fn keep(&self, task: Task<()>) {
@@ -155,6 +189,8 @@ fn perform(
     shell: &Rc<Shell>,
     action: Action,
 ) -> liteos_ui::Result<ControlFlow> {
+    // 菜单/快捷键等显式动作取消尚未判定的画布单击，不能在动作完成后再突然暂停。
+    shell.video_click.borrow_mut().take();
     let dialogs: Dialogs = app.dialogs();
     let mut refresh = Changes {
         controls: true,
@@ -380,7 +416,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         view,
         engine: RefCell::new(engine),
         tasks: RefCell::new(Vec::new()),
-        last_click: Cell::new(None),
+        video_click: RefCell::new(None),
     });
     let mut wake = app.watch(OwnedFd::from(reader.try_clone()?))?;
     let pump = shell.clone();
@@ -441,19 +477,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 code: 0x110,
                 pressed: true,
                 ..
-            } if event.node == view.video.id() => {
-                let now = Instant::now();
-                let double = shell
-                    .last_click
-                    .get()
-                    .is_some_and(|at| now.duration_since(at) <= DOUBLE_CLICK);
-                shell.last_click.set((!double).then_some(now));
-                Some(if double {
-                    Action::Fullscreen
-                } else {
-                    Action::Pause
-                })
-            }
+            } if event.node == view.video.id() => shell.video_click(app)?,
             EventKind::Wheel { vertical, .. } if event.node == view.video.id() => {
                 Some(Action::VolumeStep(if vertical < 0 { 5. } else { -5. }))
             }

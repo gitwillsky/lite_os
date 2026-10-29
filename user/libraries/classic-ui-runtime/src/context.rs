@@ -587,7 +587,8 @@ impl Context {
                     code,
                     pressed,
                     serial,
-                } => {
+                } if !handled => {
+                    // 控件已消费的输入不能再按底层 hit 发送，否则菜单命令会同时点击其下方 Canvas。
                     event.kind = event::BUTTON;
                     event.code = code;
                     event.flags = u32::from(pressed);
@@ -596,12 +597,12 @@ impl Context {
                 EventKind::Wheel {
                     vertical,
                     horizontal,
-                } => {
+                } if !handled => {
                     event.kind = event::WHEEL;
                     event.width = vertical;
                     event.height = horizontal;
                 }
-                EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
+                EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } if !handled => {
                     event.kind = event::POINTER;
                     event.x = x;
                     event.y = y;

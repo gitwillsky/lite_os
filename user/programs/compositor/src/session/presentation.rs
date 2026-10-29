@@ -56,43 +56,58 @@ impl Session {
         for layer in boxes.iter().filter(|layer| layer.layer < Layer::Top) {
             append(layer.client, layer.surface, layer.x, layer.y, None);
         }
-        for placed in self.stack.windows().iter().filter(|placed| {
-            !placed.minimized
-                && !self.animation.as_ref().is_some_and(|animation| {
-                    animation.client == placed.client && animation.surface == placed.surface
+        // 全屏与其对话框属于 Top 之上的窗口组；绘制与 hit_test 使用同一个栈分界。
+        let windows = self.stack.windows();
+        let split = self.stack.fullscreen_start().unwrap_or(windows.len());
+        for above_top in [false, true] {
+            let group = if above_top {
+                &windows[split..]
+            } else {
+                &windows[..split]
+            };
+            for placed in group.iter().filter(|placed| {
+                !placed.minimized
+                    && !self.animation.as_ref().is_some_and(|animation| {
+                        animation.client == placed.client && animation.surface == placed.surface
+                    })
+            }) {
+                append(placed.client, placed.surface, placed.x, placed.y, None);
+            }
+            if let Some(animation) = &self.animation
+                && let Some(placed) = group.iter().find(|placed| {
+                    placed.client == animation.client && placed.surface == animation.surface
                 })
-        }) {
-            append(placed.client, placed.surface, placed.x, placed.y, None);
-        }
-        if let Some(animation) = &self.animation
-            && let Some(placed) = self.stack.placement(animation.client, animation.surface)
-        {
-            let (x, y, width, height) = animation.frame();
-            append(
-                placed.client,
-                placed.surface,
-                placed.x,
-                placed.y,
-                Some(canvas::Rect::new(x, y, width, height)),
-            );
-        }
-        for (client, popup) in &popup_views {
-            if let Some(root) = self
-                .stack
-                .placement(*client, popup.client_root)
-                .filter(|root| !root.minimized)
             {
+                let (x, y, width, height) = animation.frame();
                 append(
-                    *client,
-                    popup.surface,
-                    root.x.saturating_add(popup.x.saturating_mul(output)),
-                    root.y.saturating_add(popup.y.saturating_mul(output)),
-                    None,
+                    placed.client,
+                    placed.surface,
+                    placed.x,
+                    placed.y,
+                    Some(canvas::Rect::new(x, y, width, height)),
                 );
             }
-        }
-        for layer in boxes.iter().filter(|layer| layer.layer >= Layer::Top) {
-            append(layer.client, layer.surface, layer.x, layer.y, None);
+            for (client, popup) in &popup_views {
+                if let Some(root) = group.iter().find(|root| {
+                    root.client == *client && root.surface == popup.client_root && !root.minimized
+                }) {
+                    append(
+                        *client,
+                        popup.surface,
+                        root.x.saturating_add(popup.x.saturating_mul(output)),
+                        root.y.saturating_add(popup.y.saturating_mul(output)),
+                        None,
+                    );
+                }
+            }
+            let layer = if above_top {
+                Layer::Overlay
+            } else {
+                Layer::Top
+            };
+            for layer in boxes.iter().filter(|entry| entry.layer == layer) {
+                append(layer.client, layer.surface, layer.x, layer.y, None);
+            }
         }
         let (theme, scale) = (&self.theme, self.scale as i32);
         let (art, switcher, menu) = (

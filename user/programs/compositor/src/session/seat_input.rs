@@ -63,7 +63,7 @@ impl Session {
                 } else if code == BUTTON_LEFT && pressed {
                     // 点在弹出层之外：持有 grab 的弹出层结束（客户端随后销毁它们）。
                     let point = self.input.pointer().position();
-                    if self.popup_hit(point).is_none() {
+                    if self.popup_hit(point, self.stack.windows()).is_none() {
                         let clients: Vec<ClientId> = self
                             .server
                             .popups()

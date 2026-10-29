@@ -180,6 +180,25 @@ impl Stack {
             .map(|placed| (placed.client, placed.surface))
     }
 
+    /// 返回活动全屏窗口组在栈中的起点；该窗口与其对话框应覆盖 Top 外壳图层。
+    /// 活动窗口及沿 set_parent 向下查找的祖先都不是全屏时返回 None，任务栏仍在普通窗口之上。
+    /// 只查找当前窗口之前的父窗口，使栈内悬空或循环 parent 不会导致遍历不终止。
+    pub fn fullscreen_start(&self) -> Option<usize> {
+        let mut index = self.order.iter().rposition(|placed| !placed.minimized)?;
+        loop {
+            let placed = &self.order[index];
+            if placed.mode == Mode::Fullscreen {
+                return Some(index);
+            }
+            let parent = placed.parent?;
+            index = self.order[..index].iter().rposition(|ancestor| {
+                ancestor.client == placed.client
+                    && ancestor.surface == parent
+                    && !ancestor.minimized
+            })?;
+        }
+    }
+
     /// 激活窗口：恢复最小化、提到最上层；窗口不存在或本来就是活动窗口返回 `false`。
     pub fn raise(&mut self, client: ClientId, surface: ObjectId) -> bool {
         let Some(index) = self

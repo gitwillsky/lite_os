@@ -1,5 +1,6 @@
 //! 按已提交 surface 树的绘制逆序做输入命中；窗口激活与指针焦点使用各自正确的目标。
 use super::*;
+use crate::desktop::Placement;
 
 impl Session {
     /// 返回子 surface 对应的窗口/外壳根；popup 的键盘与窗口管理目标仍为其 xdg_toplevel。
@@ -100,17 +101,17 @@ impl Session {
             })
     }
 
-    pub(super) fn popup_hit(&self, point: (i32, i32)) -> Option<Hit> {
+    /// 命中指定窗口组 `windows` 所属的最上层 popup；没有包含 point 的输入区域时返回 None。
+    pub(super) fn popup_hit(&self, point: (i32, i32), windows: &[Placement]) -> Option<Hit> {
         let scale = self.scale as i32;
         self.server
             .popups()
             .into_iter()
             .rev()
             .find_map(|(client, popup)| {
-                let root = self
-                    .stack
-                    .placement(client, popup.client_root)
-                    .filter(|root| !root.minimized)?;
+                let root = windows.iter().find(|root| {
+                    root.client == client && root.surface == popup.client_root && !root.minimized
+                })?;
                 self.tree_hit(
                     client,
                     popup.surface,
@@ -128,27 +129,33 @@ impl Session {
         if self.secure_pending {
             return None;
         }
-        let layer_hit = |top: bool| {
+        let layer_hit = |layers: std::ops::RangeInclusive<Layer>| {
             boxes
                 .iter()
                 .rev()
-                .filter(|layer| (layer.layer >= Layer::Top) == top)
+                .filter(|layer| layers.contains(&layer.layer))
                 .find_map(|layer| {
                     self.tree_hit(layer.client, layer.surface, (layer.x, layer.y), point)
                 })
         };
-        layer_hit(true)
-            .or_else(|| self.popup_hit(point))
-            .or_else(|| {
-                self.stack
-                    .windows()
-                    .iter()
-                    .rev()
-                    .filter(|placed| !placed.minimized)
-                    .find_map(|placed| {
-                        self.tree_hit(placed.client, placed.surface, (placed.x, placed.y), point)
-                    })
-            })
-            .or_else(|| layer_hit(false))
+        let window_hit = |windows: &[Placement]| {
+            windows
+                .iter()
+                .rev()
+                .filter(|placed| !placed.minimized)
+                .find_map(|placed| {
+                    self.tree_hit(placed.client, placed.surface, (placed.x, placed.y), point)
+                })
+        };
+        let windows = self.stack.windows();
+        let split = self.stack.fullscreen_start().unwrap_or(windows.len());
+        let (below, above) = windows.split_at(split);
+        layer_hit(Layer::Overlay..=Layer::Overlay)
+            .or_else(|| self.popup_hit(point, above))
+            .or_else(|| window_hit(above))
+            .or_else(|| layer_hit(Layer::Top..=Layer::Top))
+            .or_else(|| self.popup_hit(point, below))
+            .or_else(|| window_hit(below))
+            .or_else(|| layer_hit(Layer::Background..=Layer::Bottom))
     }
 }
