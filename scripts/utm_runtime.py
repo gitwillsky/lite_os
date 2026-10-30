@@ -5,13 +5,14 @@ from __future__ import annotations
 
 import os
 import plistlib
-import select
 import shutil
 import socket
 import subprocess
 import time
 from pathlib import Path
 from typing import BinaryIO
+
+from runtime_debug import DebugSession
 
 UTM_APP = Path("/Applications/UTM.app")
 UTM_VERSION = "4.7.5"
@@ -88,6 +89,7 @@ def _configuration(
     rootfs: Path | None = None,
     serial_tcp_port: int | None = None,
     kernel_arguments: str | None = None,
+    debug: DebugSession | None = None,
 ) -> dict[str, object]:
     kernel = kernel or UTM_ARTIFACTS / "kernel"
     rootfs = rootfs or UTM_ARTIFACTS / "rootfs.img"
@@ -129,6 +131,8 @@ def _configuration(
     if kernel_arguments:
         # 经 DTB /chosen/bootargs 进入 /proc/cmdline。
         additional.extend(("-append", f'"{kernel_arguments}"'))
+    if debug is not None:
+        additional.extend(debug.arguments())
     # Sound 统一装配声卡、后端与客户端回放；列表为空时，即使手工添加 QEMU 声卡也不会出声。
     # 原生声卡默认还包含 capture；固定单路 playback，保持当前设备契约。
     additional.extend(("-global", "virtio-sound-device.streams=1"))
@@ -242,6 +246,7 @@ def prepare(
     cpu_count: int,
     serial_tcp_port: int | None = None,
     kernel_arguments: str | None = None,
+    debug: DebugSession | None = None,
 ) -> Path:
     """Publish current artifacts and an exact UTM v4 configuration."""
     _installed_version()
@@ -260,6 +265,7 @@ def prepare(
         rootfs=published_rootfs,
         serial_tcp_port=serial_tcp_port,
         kernel_arguments=kernel_arguments,
+        debug=debug,
     )
     with (VM_PACKAGE / "config.plist").open("wb") as stream:
         plistlib.dump(config, stream, fmt=plistlib.FMT_XML, sort_keys=False)
@@ -582,6 +588,7 @@ def start_gate(
 def run_gui(
     *,
     kernel: Path,
+    kernel_elf: Path,
     rootfs: Path,
     memory: str,
     cpu_count: int,
@@ -595,7 +602,9 @@ def run_gui(
     serial_log = serial_log.resolve()
     serial_log.parent.mkdir(parents=True, exist_ok=True)
     print(f"LiteOS serial log: {serial_log}")
+    debug: DebugSession | None = None
     try:
+        debug = DebugSession(kernel_elf)
         _remove_registered()
         prepare(
             kernel=kernel,
@@ -604,6 +613,7 @@ def run_gui(
             cpu_count=cpu_count,
             serial_tcp_port=serial_port,
             kernel_arguments=kernel_arguments,
+            debug=debug,
         )
         _ensure_registered()
         status = _status()
@@ -626,27 +636,21 @@ def run_gui(
             _stop_managed()
             raise RuntimeError("UTM serial endpoint did not become ready") from error
         serial_socket.setblocking(False)
+        debug.publish(kernel, rootfs, kernel_elf, serial_log)
         with serial_log.open("wb", buffering=0) as output:
             # The capture file is the sole durable serial owner. Reading only
             # UTM's PTY UI loses the first failure as soon as the window closes.
-            while True:
-                # QEMU owns this connection until exit. Polling utmctl for every
-                # read starts foreground macOS applications and churns the Dock.
-                select.select([serial_socket], [], [])
-                chunk = serial_socket.recv(16 * 1024)
-                if not chunk:
-                    status = _status()
-                    if status in ("stopping", "stopped"):
-                        return
-                    if status is None:
-                        raise RuntimeError("UTM removed the managed LiteOS registration while running")
-                    raise RuntimeError("UTM serial stream closed while the VM was running")
-                output.write(chunk)
+            debug.capture(serial_socket, output)
+            status = _status()
+            if status not in ("stopping", "stopped"):
+                raise RuntimeError(f"UTM serial stream closed while VM status={status}")
     except KeyboardInterrupt:
         if _registered():
             _ctl("stop", VM_UUID)
         return
     finally:
+        if debug is not None:
+            debug.close()
         if serial_socket is not None:
             serial_socket.close()
         serial_listener.close()

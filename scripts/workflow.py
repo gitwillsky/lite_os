@@ -779,6 +779,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         paths = target_paths(environment)
         run_utm_gui(
             kernel=paths["boot"],
+            kernel_elf=paths["kernel"],
             rootfs=paths["fs"],
             memory=source.get("QEMU_MEMORY", "2G"),
             cpu_count=int(_qemu_smp(source)),
@@ -795,6 +796,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         paths = target_paths(environment)
         run_utm_gui(
             kernel=paths["boot"],
+            kernel_elf=paths["kernel"],
             rootfs=paths["fs"],
             memory=source.get("AGENT_QEMU_MEMORY", "6G"),
             cpu_count=int(_qemu_smp(source)),

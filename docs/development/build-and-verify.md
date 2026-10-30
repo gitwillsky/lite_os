@@ -74,6 +74,13 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
   UUID 的 UTM v4 配置，通过 UTM public scripting API import 注册，再由同一 API 创建 Metal
   display window。workflow 在 QEMU 启动前预监听 serial TCP，并把该次启动的完整 guest 输出覆盖写入
   `target/logs/run-gui-serial.log`；该文件是桌面退出、hang 或窗口关闭后的持久取证 owner。
+  日常实例同时发布本机 QMP 与串口命令入口；无需重启或切换到 headless 拓扑。
+  `python3 scripts/runtime_debug.py status` 返回当前实例和套接字；`exec '单行命令'` 返回 guest 输出与退出码，
+  `qmp query-cpus-fast` 查询 vCPU，`qmp trace-event-set-state '{"name":"usb_xhci_xfer_*","enable":true}'`
+  按需开启 QEMU 跟踪；用同一命令的 `"enable":false` 关闭。`symbols` 返回并校验启动时保留的内核 ELF 副本。
+  会话索引位于 `target/run/gui-debug.json`，套接字、ELF 副本与 trace 位于权限 0700 的 QEMUHelper 容器临时目录，正常退出时清理；
+  trace 默认关闭，所用 QMP 命令与事件由当前 QEMU 实际能力决定。串口超时不代表命令已取消，未结束前拒绝下一条命令。
+  当前 UTM/HVF 的 GDB 连接会在 `hvf_arch_update_guest_debug` 断言退出，即使先暂停也可复现，因此产品实例不开放 GDB stub。
   Make/Python 前台进程持有生命周期；Ctrl-C 只停止该 managed VM。旧 Cocoa QEMU window、激活脚本
   与 GUI 参数入口均不存在。
 - UTM 产品路径固定 AArch64 `host` CPU、HVF、SPICE `gl=on`、`virtio-gpu-gl-device`、native Retina
@@ -159,6 +166,7 @@ recipe 换代后从同一固定归档解包干净 generation，避免 VPATH 跳�
 - 日常开发保留 Rust incremental；根 workspace 与 `user/` 的 `test` profile 只生成
   `line-tables-only` 调试信息，保留回溯文件/行号，不保留完整类型与局部变量调试信息。
   `dev` 不覆盖，因此 `PROFILE=debug` 内核仍保留完整 GDB 调试能力；release 优化与验证基线不变。
+  内核自身的 release ELF 也保留完整 DWARF，允许在同一优化产物上调试；优化可能消除局部变量，发布的裸机 Image 不包含 DWARF。
 - `build_cache.py` 唯一拥有镜像缓存保留策略：每个架构的 BusyBox rootfs 缓存及 APK 安装镜像
   各保留两份。构建/命中成功时保留本次使用项和最近一份历史，其余完整镜像与关联 stamp 自动删除。
   不完整条目、临时目录和符号链接不参与淘汰；缺失历史缓存只触发按固定输入重建。

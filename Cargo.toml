@@ -56,6 +56,10 @@ opt-level = 3
 lto = "fat"
 codegen-units = 1
 
+# 保留与日常 release 完全相同优化的内核类型/行号；裸机 Image 不携带 ELF 的 DWARF。
+[profile.release.package.kernel]
+debug = "full"
+
 [profile.dev]
 panic = "abort"
 opt-level = "s"

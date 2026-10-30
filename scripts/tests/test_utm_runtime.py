@@ -244,6 +244,8 @@ class UtmRuntimeTests(unittest.TestCase):
         listener = MagicMock()
         serial = MagicMock()
         listener.accept.return_value = (serial, ("127.0.0.1", 1234))
+        debug = MagicMock()
+        debug.capture.side_effect = KeyboardInterrupt
         with tempfile.TemporaryDirectory() as directory:
             with (
                 patch.object(utm_runtime, "_installed_version"),
@@ -257,12 +259,13 @@ class UtmRuntimeTests(unittest.TestCase):
                     "_status",
                     side_effect=["stopped", "started"],
                 ),
-                patch.object(utm_runtime.select, "select", side_effect=KeyboardInterrupt),
+                patch.object(utm_runtime, "DebugSession", return_value=debug),
                 patch.object(utm_runtime, "_registered", return_value=True),
                 patch.object(utm_runtime, "_ctl", return_value="") as ctl,
             ):
                 utm_runtime.run_gui(
                     kernel=Path("kernel"),
+                    kernel_elf=Path("kernel.elf"),
                     rootfs=Path("rootfs"),
                     memory="2G",
                     cpu_count=6,
@@ -274,6 +277,7 @@ class UtmRuntimeTests(unittest.TestCase):
         serial.setblocking.assert_called_once_with(False)
         serial.close.assert_called_once_with()
         listener.close.assert_called_once_with()
+        debug.close.assert_called_once_with()
 
 
 if __name__ == "__main__":

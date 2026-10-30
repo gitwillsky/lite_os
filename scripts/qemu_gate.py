@@ -286,6 +286,8 @@ def send_shell_interaction(
     output_stream: BinaryIO,
     output: bytearray,
     data: bytes,
+    *,
+    deadline: float | None = None,
 ) -> None:
     """Sends one shell command using terminal echo as UART flow control.
 
@@ -294,6 +296,8 @@ def send_shell_interaction(
         output_stream: QEMU stdout, which carries the guest terminal echo.
         output: The gate's complete output buffer; echoed bytes are appended here.
         data: One printable newline-terminated shell command.
+        deadline: Optional monotonic deadline for the whole submission; callers with
+            command timeouts must also bound input pacing, not just command execution.
 
     Returns:
         None after all printable bytes are echoed and the final newline is submitted.
@@ -312,9 +316,11 @@ def send_shell_interaction(
         # goto_new_line 不再输出 LF；命令结果仍由 boot 的真实 marker/deadline 验证。
         if character == "\n":
             return
-        deadline = time.monotonic() + SERIAL_ECHO_TIMEOUT_SECONDS
+        echo_deadline = time.monotonic() + SERIAL_ECHO_TIMEOUT_SECONDS
+        if deadline is not None:
+            echo_deadline = min(echo_deadline, deadline)
         while encoded not in output[echo_cursor:]:
-            remaining = deadline - time.monotonic()
+            remaining = echo_deadline - time.monotonic()
             if remaining <= 0:
                 raise RuntimeError(
                     f"guest stopped echoing UART input at shell character {offset}"
