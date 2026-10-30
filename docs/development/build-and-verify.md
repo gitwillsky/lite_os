@@ -78,7 +78,9 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
   与 GUI 参数入口均不存在。
 - UTM 产品路径固定 AArch64 `host` CPU、HVF、SPICE `gl=on`、`virtio-gpu-gl-device`、native Retina
   dynamic resolution，以及 UTM 自带的唯一 PCI `com.redhat.spice.0` port。kernel/rootfs 以同卷
-  hard link 发布到 UTM app group，QEMU drive 显式 `format=raw`。产品 graphics boot 与 gpu gate
+  hard link 发布到 UTM app group。键鼠只使用 VirtIO；USB 直通独立装配 xHCI/usbredir，不能启用
+  UTM 附带的 USB HID 输入模板，否则输入模式切换会把鼠标路由到 guest 未驱动的设备。QEMU drive
+  显式 `format=raw`。产品 graphics boot 与 gpu gate
   都创建同一 UTM/VirGL 配置的 disposable 实例：gate 先备份开发 VM 的 plist 与已发布 artifact
   inode，使用预监听 TCP client serial 捕获最早 boot marker，
   结束后精确恢复原配置与 inode。`run`/`run-gdb` 只保留无窗口 QEMU/MMIO 拓扑作为非图形验证与调试

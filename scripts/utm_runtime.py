@@ -132,6 +132,20 @@ def _configuration(
     # Sound 统一装配声卡、后端与客户端回放；列表为空时，即使手工添加 QEMU 声卡也不会出声。
     # 原生声卡默认还包含 capture；固定单路 playback，保持当前设备契约。
     additional.extend(("-global", "virtio-sound-device.streams=1"))
+    # UTM 的 USB 模板同时添加 HID tablet/mouse/keyboard；切换输入模式时，
+    # UTM 会选中未由 guest 驱动的 HID tablet，形成光标能移动但桌面无法点击的假死。
+    # 输入只使用上面的 VirtIO 设备；这里单独装配标准 xHCI/usbredir，保留 USB DAC 直通。
+    additional.extend(("-device", "qemu-xhci,id=usb-controller-0"))
+    usb_share_count = 3
+    for index in range(usb_share_count):
+        additional.extend(
+            (
+                "-chardev",
+                f"spicevmc,name=usbredir,id=usbredirchardev{index}",
+                "-device",
+                f"usb-redir,chardev=usbredirchardev{index},id=usbredirdev{index},bus=usb-controller-0.0",
+            )
+        )
     serial = (
         [{"Mode": "Ptty", "Target": "Auto"}]
         if serial_tcp_port is None
@@ -185,9 +199,9 @@ def _configuration(
             "AdditionalArguments": additional,
         },
         "Input": {
-            "UsbBusSupport": "3.0",
+            "UsbBusSupport": "Disabled",
             "UsbSharing": True,
-            "MaximumUsbShare": 3,
+            "MaximumUsbShare": usb_share_count,
         },
         "Sharing": {
             "DirectoryShareMode": "None",

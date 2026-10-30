@@ -355,11 +355,38 @@ impl Session {
             return Ok(());
         }
         let trash = self.availability()?.trash;
+        let home = self.home.clone();
+        let paths = if empty {
+            Vec::new()
+        } else {
+            self.background
+                .run(move || {
+                    paths
+                        .into_iter()
+                        .map(|path| fileops::delete_mode(&home, &path).map(|mode| (path, mode)))
+                        .collect::<std::io::Result<Vec<_>>>()
+                })?
+                .await?
+        };
+        let permanent = paths
+            .iter()
+            .filter(|(_, mode)| *mode == fileops::DeleteMode::Permanent)
+            .count();
         // shell32 67/68 与永久删除确认。
         let message = if empty {
             "确实要永久删除“回收站”中的所有项目吗?".to_owned()
         } else if trash {
             format!("确实要永久删除这 {} 项吗?", paths.len())
+        } else if permanent == paths.len() {
+            format!(
+                "这 {} 项无法移入本地回收站。确实要永久删除它们吗?",
+                paths.len()
+            )
+        } else if permanent != 0 {
+            format!(
+                "其中 {permanent} 项无法移入本地回收站，将永久删除；其余项目将移入回收站。确实要删除这 {} 项吗?",
+                paths.len()
+            )
         } else if paths.len() == 1 {
             "确实要将它移动到回收站吗?".to_owned()
         } else {
@@ -388,7 +415,7 @@ impl Session {
                 } else {
                     paths
                         .iter()
-                        .try_for_each(|path| fileops::delete(&home, path))
+                        .try_for_each(|(path, mode)| fileops::delete(&home, path, *mode))
                 }
             })?
             .await;

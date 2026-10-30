@@ -6,13 +6,13 @@ use std::{
     io::{self, Write},
     os::unix::{
         ffi::{OsStrExt, OsStringExt},
-        fs::DirBuilderExt,
+        fs::{DirBuilderExt, MetadataExt},
     },
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
-/// 当前用户的 home trash；只支持同一文件系统，跨卷失败保留源条目。
+/// 当前用户的 home trash；只支持同一文件系统。
 pub fn trash_files(home: &Path) -> PathBuf {
     trash_root(home).join("files")
 }
@@ -177,11 +177,52 @@ fn deletion_date(value: &str) -> Option<i64> {
     ))
 }
 
-/// 将条目移入 home trash；信息按 Trash 1.0 写入，已在回收站内的条目永久删除。
+/// 删除确认与执行共用的处置方式；永久删除必须先由 UI 明确确认。
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum DeleteMode {
+    /// 原子移入当前用户的 home trash。
+    Trash,
+    /// 不经过本地回收站；包括网络盘等跨文件系统条目。
+    Permanent,
+}
+
+/// 判断 `path` 是否能移入 `home` 对应的回收站，不创建或修改文件。
+///
+/// # Returns
+/// 回收站内部条目与跨文件系统条目使用永久删除，其余使用回收站。
+/// 使用源条目的父目录判断文件系统，避免跟随待删除的符号链接。
+///
+/// # Errors
+/// 源父目录或回收站最近的既存父目录无法读取时返回 I/O 错误。
+pub fn delete_mode(home: &Path, path: &Path) -> io::Result<DeleteMode> {
+    if in_trash(home, path) {
+        return Ok(DeleteMode::Permanent);
+    }
+    let source = fs::metadata(path.parent().unwrap_or_else(|| Path::new("/")))?;
+    let mut ancestor = trash_files(home);
+    let target = loop {
+        match fs::metadata(&ancestor) {
+            Ok(metadata) => break metadata,
+            Err(error) if error.kind() == io::ErrorKind::NotFound && ancestor.pop() => {}
+            Err(error) => return Err(error),
+        }
+    };
+    Ok(if source.dev() == target.dev() {
+        DeleteMode::Trash
+    } else {
+        DeleteMode::Permanent
+    })
+}
+
+/// 按已确认的 `mode` 删除 `path`，`home` 指定当前用户的回收站。
+/// 回收站信息按 Trash 1.0 写入，已在回收站内的条目永久删除。
 /// 原生名称以 URL 字节编码记录，先独占创建信息文件，再原子移动且禁止覆盖。
 /// I/O 或跨卷失败保留源条目并删除本次信息文件；不会覆盖其他进程的同名条目。
-pub fn delete(home: &Path, path: &Path) -> io::Result<()> {
-    if in_trash(home, path) {
+///
+/// # Errors
+/// 文件访问、删除或回收站提交失败时返回 I/O 错误；不会在移动失败后改为永久删除。
+pub fn delete(home: &Path, path: &Path, mode: DeleteMode) -> io::Result<()> {
+    if mode == DeleteMode::Permanent || in_trash(home, path) {
         return purge(home, path);
     }
     let files = trash_files(home);
@@ -448,7 +489,7 @@ mod tests {
         let home = root.join("home");
         let file = home.join("a.txt");
         fs::write(&file, "x").unwrap();
-        delete(&home, &file).unwrap();
+        delete(&home, &file, delete_mode(&home, &file).unwrap()).unwrap();
         assert!(!file.exists());
         let trashed = trash_files(&home).join("a.txt");
         assert_eq!(fs::read_to_string(&trashed).unwrap(), "x");
@@ -468,10 +509,11 @@ mod tests {
         let home = root.join("home");
         for _ in 0..2 {
             fs::write(home.join("same"), "x").unwrap();
-            delete(&home, &home.join("same")).unwrap();
+            delete(&home, &home.join("same"), DeleteMode::Trash).unwrap();
         }
         assert!(trash_files(&home).join("same (2)").exists());
-        delete(&home, &trash_files(&home).join("same")).unwrap();
+        let trashed = trash_files(&home).join("same");
+        delete(&home, &trashed, delete_mode(&home, &trashed).unwrap()).unwrap();
         assert!(!trash_files(&home).join("same").exists());
         assert!(!trash_info(&home).join("same.trashinfo").exists());
         assert_eq!(empty_trash(&home).unwrap(), 1);
