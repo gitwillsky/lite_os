@@ -1,8 +1,8 @@
 //! “拔出或弹出硬件”窗口；后台发现与移除，UI 只持有这次连接的标准 sysfs 句柄。
 use linux_uapi::usb::{self, Device};
 use liteos_ui::{
-    Application, ControlFlow, EventKind, MessageButtons, MessageResult, WidgetKind, WidgetSpec,
-    WindowOptions, state,
+    Application, ControlFlow, EventKind, Layout, MessageButtons, MessageResult, Widget, WidgetKind,
+    WidgetSpec, WindowOptions, state,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -15,26 +15,85 @@ use std::{
 /// UI 或后台任务创建失败返回错误；设备错误在窗口内报告。
 pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut app = Application::new()?;
-    let window = app.window(WindowOptions::new(
-        "拔出或弹出硬件",
-        "org.liteos.device-manager",
-        480,
-        330,
-    ))?;
+    // 原版是固定尺寸对话框：无最大化/最小化，由窗口管理器居中。
+    let mut options = WindowOptions::new("拔出或弹出硬件", "org.liteos.device-manager", 360, 320);
+    options.fixed = true;
+    let window = app.window(options)?;
     let mut spec = WidgetSpec::new(WidgetKind::Column, "");
-    spec.layout.grow = 1;
+    spec.layout = Layout {
+        grow: 1,
+        padding: 10,
+        gap: 6,
+        ..Default::default()
+    };
     let root = window.widget(spec)?;
-    super::child(
+    let node = |parent: &Widget, kind, text: &str, layout| {
+        let mut spec = WidgetSpec::new(kind, text);
+        spec.layout = layout;
+        parent.child(spec)
+    };
+    let intro = node(
         &root,
         WidgetKind::Label,
-        "选择要停止的设备，然后单击“停止”。",
-        0,
+        "选择要拔出或弹出的硬件设备，然后单击“停止”。当 Windows 通知您可以安全地这样做时，请拔出设备。",
+        Layout {
+            height: 48,
+            ..Default::default()
+        },
     )?;
-    let list = super::child(&root, WidgetKind::List, "", 1)?;
-    let stop = super::child(&root, WidgetKind::Button, "停止(S)", 0)?;
-    let status = super::child(&root, WidgetKind::Label, "正在读取设备…", 0)?;
+    intro.set_state(state::WRAP)?;
+    let caption = node(
+        &root,
+        WidgetKind::Label,
+        "硬件设备(H):",
+        Layout::default(),
+    )?;
+    let list = node(
+        &root,
+        WidgetKind::List,
+        "",
+        Layout {
+            grow: 1,
+            ..Default::default()
+        },
+    )?;
+    let status = node(
+        &root,
+        WidgetKind::Label,
+        "正在读取设备…",
+        Layout {
+            height: 32,
+            ..Default::default()
+        },
+    )?;
     status.set_state(state::WRAP)?;
-    let close = super::child(&root, WidgetKind::Button, "关闭", 0)?;
+    let buttons = node(
+        &root,
+        WidgetKind::Row,
+        "",
+        Layout {
+            height: 23,
+            gap: 6,
+            ..Default::default()
+        },
+    )?;
+    let spacer = node(
+        &buttons,
+        WidgetKind::Label,
+        "",
+        Layout {
+            grow: 1,
+            ..Default::default()
+        },
+    )?;
+    let button = Layout {
+        width: 75,
+        ..Default::default()
+    };
+    let stop = node(&buttons, WidgetKind::Button, "停止(S)", button)?;
+    let close = node(&buttons, WidgetKind::Button, "关闭(C)", button)?;
+    // 句柄释放会移除控件，静态文字与容器必须与窗口同寿命。
+    let _held = [&intro, &caption, &spacer, &buttons];
     stop.set_state(state::DISABLED)?;
     let devices = Rc::new(RefCell::new(Vec::<Device>::new()));
     let busy = Rc::new(Cell::new(false));
