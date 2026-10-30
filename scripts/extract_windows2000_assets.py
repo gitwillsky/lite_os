@@ -27,7 +27,7 @@ PE_FILES = (
     "shell32.dll", "explorer.exe", "msgina.dll", "ntoskrnl.exe", "user32.dll",
     "mmsys.cpl", "sysdm.cpl", "main.cpl", "timedate.cpl", "taskmgr.exe",
     "cmd.exe", "sndvol32.exe", "mydocs.dll", "moricons.dll", "comctl32.dll",
-    "desk.cpl", "netplwiz.dll", "mplayer2.exe", "stobject.dll",
+    "desk.cpl", "netplwiz.dll", "mplayer2.exe", "stobject.dll", "hotplug.dll",
     # 资源管理器的工具栏位图、文件夹/搜索/历史图标与菜单位图。
     "browseui.dll", "shdocvw.dll",
     # 设备管理器、网络连接与记事本的专用图标。
@@ -88,6 +88,7 @@ ICONS = {
     "notepad": ("notepad.exe", 1),
     "tray-volume": ("stobject.dll", 230),
     "tray-volume-muted": ("stobject.dll", 231),
+    "tray-usb": ("hotplug.dll", 100),
     "ctrl-alt-del": ("msgina.dll", 109),
 }
 # 资源管理器和应用图标同时用于 16/32 像素；这些外壳专用图标只发布调用者需要的尺寸。

@@ -1409,6 +1409,7 @@ kernel/src/devices/mod.rs :: pub (crate) mod input
 kernel/src/devices/mod.rs :: pub (crate) mod model
 kernel/src/devices/mod.rs :: pub (crate) mod registry
 kernel/src/devices/mod.rs :: pub (crate) mod tty
+kernel/src/devices/mod.rs :: pub (crate) mod usb
 kernel/src/devices/mod.rs :: pub (crate) mod virtio_port
 kernel/src/devices/model/audio_output.rs :: enum PcmOutputError :: # [doc = " adapter 当前所有 period slot 均由 device 持有。"] WouldBlock
 kernel/src/devices/model/audio_output.rs :: enum PcmOutputError :: # [doc = " command 与当前 device lifecycle 不匹配。"] InvalidState
@@ -1608,7 +1609,8 @@ kernel/src/devices/model/mod.rs :: pub (crate) use graphics :: { CursorCommand ,
 kernel/src/devices/model/mod.rs :: pub (crate) use input :: { InputAbsInfo , InputDevice , InputDeviceError , InputId , RawInputEvent }
 kernel/src/devices/model/mod.rs :: pub (crate) use pcm_format :: { MAX_PCM_PERIOD_BYTES , PCM_RATES , PcmCapabilities , PcmConfiguration , PcmFormat , }
 kernel/src/devices/model/mod.rs :: pub (crate) use port :: { PortActivity , PortDevice , PortError }
-kernel/src/devices/model/mod.rs :: pub (crate) use registry :: { dispatch_io_completion_work , display_device , fill_entropy , input_device , input_device_count , network_device , pcm_output , port_device , register_completion_source , register_display_device , register_entropy_source , register_input_device , register_network_device , register_pcm_output , register_port_device , }
+kernel/src/devices/model/mod.rs :: pub (crate) use registry :: { dispatch_io_completion_work , display_device , fill_entropy , input_device , input_device_count , network_device , pcm_output , port_device , register_completion_source , register_display_device , register_entropy_source , register_input_device , register_network_device , register_pcm_output , register_port_device , register_usb_device , usb_device , usb_device_count , }
+kernel/src/devices/model/mod.rs :: pub (crate) use usb :: { UsbDevice , UsbIdentity , UsbRemoveError }
 kernel/src/devices/model/network.rs :: enum NetworkError :: # [doc = " transport、queue 或设备返回了不可恢复错误。"] Device
 kernel/src/devices/model/network.rs :: enum NetworkError :: # [doc = " 帧超过设备或调用方 buffer 能表达的 MTU。"] FrameTooLarge
 kernel/src/devices/model/network.rs :: enum NetworkError :: # [doc = " 设备暂时没有已完成的接收帧。"] WouldBlock
@@ -1689,6 +1691,22 @@ kernel/src/devices/model/registry.rs :: pub (crate) fn register_input_device (de
 kernel/src/devices/model/registry.rs :: pub (crate) fn register_network_device (device : Arc < dyn NetworkDevice > ,) -> Result < usize , Arc < dyn NetworkDevice > >
 kernel/src/devices/model/registry.rs :: pub (crate) fn register_pcm_output (device : Arc < dyn PcmOutput >) -> Result < usize , Arc < dyn PcmOutput > >
 kernel/src/devices/model/registry.rs :: pub (crate) fn register_port_device (device : Arc < dyn PortDevice > ,) -> Result < usize , Arc < dyn PortDevice > >
+kernel/src/devices/model/registry.rs :: pub (crate) fn register_usb_device (device : Arc < dyn UsbDevice >) -> Result < usize , Arc < dyn UsbDevice > >
+kernel/src/devices/model/registry.rs :: pub (crate) fn usb_device (index : usize) -> Option < Arc < dyn UsbDevice > >
+kernel/src/devices/model/registry.rs :: pub (crate) fn usb_device_count () -> usize
+kernel/src/devices/model/usb.rs :: enum UsbRemoveError :: Device
+kernel/src/devices/model/usb.rs :: enum UsbRemoveError :: Disconnected
+kernel/src/devices/model/usb.rs :: pub (crate) UsbIdentity :: bus : usize
+kernel/src/devices/model/usb.rs :: pub (crate) UsbIdentity :: port : usize
+kernel/src/devices/model/usb.rs :: pub (crate) UsbIdentity :: product : u16
+kernel/src/devices/model/usb.rs :: pub (crate) UsbIdentity :: vendor : u16
+kernel/src/devices/model/usb.rs :: pub (crate) enum UsbRemoveError
+kernel/src/devices/model/usb.rs :: pub (crate) struct UsbIdentity
+kernel/src/devices/model/usb.rs :: pub (crate) trait UsbDevice
+kernel/src/devices/model/usb.rs :: trait UsbDevice :: fn connected (& self) -> bool
+kernel/src/devices/model/usb.rs :: trait UsbDevice :: fn identity (& self) -> UsbIdentity
+kernel/src/devices/model/usb.rs :: trait UsbDevice :: fn name (& self) -> & str
+kernel/src/devices/model/usb.rs :: trait UsbDevice :: fn remove (& self) -> Result < () , UsbRemoveError >
 kernel/src/devices/registry.rs :: pub (crate) impl AppendOnlyRegistry < T > :: const fn new () -> Self
 kernel/src/devices/registry.rs :: pub (crate) impl AppendOnlyRegistry < T > :: fn count (& self) -> usize
 kernel/src/devices/registry.rs :: pub (crate) impl AppendOnlyRegistry < T > :: fn get (& self , index : usize) -> Option < Arc < T > >
@@ -1812,6 +1830,7 @@ kernel/src/devices/tty/terminal/input_batch.rs :: pub (crate) const TERMINAL_INP
 kernel/src/devices/tty/terminal/input_batch.rs :: pub (crate) fn character_write_chunk (remaining : usize , pty_master : bool) -> usize
 kernel/src/devices/tty/terminal/input_batch.rs :: pub (crate) fn terminal_input_chunk (consumed : usize , buffer_capacity : usize) -> usize
 kernel/src/devices/tty/terminal/input_batch.rs :: pub (crate) struct TerminalInputBatch
+kernel/src/devices/usb.rs :: pub (crate) fn initialize () -> Result < () , crate :: fs :: FileSystemError >
 kernel/src/devices/virtio_port.rs :: pub (crate) fn init (device : Arc < dyn PortDevice >) -> Result < () , () >
 kernel/src/devices/virtio_port.rs :: pub (crate) struct Port
 kernel/src/drivers/mod.rs :: pub (crate) mod pci
@@ -1911,7 +1930,7 @@ kernel/src/drivers/usb/mod.rs :: pub (crate) fn initialize () -> Result < Vec < 
 kernel/src/drivers/usb/mod.rs :: pub (crate) use xhci :: Host
 kernel/src/drivers/usb/xhci.rs :: pub (crate) struct Host
 kernel/src/drivers/usb/xhci.rs :: pub (super) impl Host :: fn doorbell (& self , slot : u8 , endpoint : u8) -> Result < () >
-kernel/src/drivers/usb/xhci.rs :: pub (super) impl Host :: fn new (function : & crate :: drivers :: pci :: Function) -> Result < Arc < Self > >
+kernel/src/drivers/usb/xhci.rs :: pub (super) impl Host :: fn new (function : & crate :: drivers :: pci :: Function , bus : usize) -> Result < Arc < Self > >
 kernel/src/drivers/usb/xhci/control.rs :: pub (in crate :: drivers :: usb) Setup :: index : u16
 kernel/src/drivers/usb/xhci/control.rs :: pub (in crate :: drivers :: usb) Setup :: kind : u8
 kernel/src/drivers/usb/xhci/control.rs :: pub (in crate :: drivers :: usb) Setup :: request : u8
@@ -1928,6 +1947,7 @@ kernel/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output
 kernel/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output :: control : u8
 kernel/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output :: generation : u64
 kernel/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output :: host : Arc < Host >
+kernel/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output :: identity : crate :: devices :: model :: UsbIdentity
 kernel/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output :: name : String
 kernel/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output :: slot : u8
 kernel/src/drivers/usb/xhci/output.rs :: pub (super) struct Output
@@ -5646,6 +5666,7 @@ kernel/src/fs/mod.rs :: pub (crate) use swap :: { SwapSource , prepare_swap_stor
 kernel/src/fs/mod.rs :: pub (crate) use syscall_abi :: open :: { O_ACCMODE , O_APPEND , O_CLOEXEC , O_NOCTTY , O_NOFOLLOW , O_NONBLOCK , O_PATH , O_RDONLY , O_RDWR , O_WRONLY , }
 kernel/src/fs/mod.rs :: pub (crate) use sysfs_drm :: { GraphicsSysfsSource , register_source as register_graphics_sysfs }
 kernel/src/fs/mod.rs :: pub (crate) use sysfs_net :: { NetLinkSnapshot , NetLinkSource }
+kernel/src/fs/mod.rs :: pub (crate) use sysfs_usb :: { UsbSysfsSource , register_source as register_usb_sysfs }
 kernel/src/fs/mod.rs :: pub (crate) use vfs :: { AdvisoryLockAttempt , AdvisoryLockError , AdvisoryLockKey , AdvisoryLockMode , AdvisoryLockNotifier , ContentWrite , LockHolder , LookupOrigin , MountFlags , MountNamespace , MountPropagation , MountTableKind , OpenedFile , PreparedAdvisoryLock , PreparedLockAttempt , PreparedRecordLock , ReadAccess , RecordLockMode , RecordLockOwner , RecordLockRange , UnmountMode , mount_limit , set_mount_limit , vfs , }
 kernel/src/fs/mod.rs :: pub (crate) use write_access :: { InodeAccessLease , InodeWriteAccess }
 kernel/src/fs/mod.rs :: pub (crate) use xattr :: { XattrChange , XattrError }
@@ -6288,6 +6309,30 @@ kernel/src/fs/sysfs_net.rs :: pub (super) impl NetView :: fn new (source : Arc <
 kernel/src/fs/sysfs_net.rs :: pub (super) struct NetView
 kernel/src/fs/sysfs_net.rs :: trait NetLinkSource :: fn current_net_namespace (& self) -> Result < Arc < crate :: net :: NetNamespace > , FileSystemError >
 kernel/src/fs/sysfs_net.rs :: trait NetLinkSource :: fn link_snapshot (& self , target : & crate :: net :: NetNamespace ,) -> Result < Vec < NetLinkSnapshot > , FileSystemError >
+kernel/src/fs/sysfs_usb.rs :: enum Attribute :: Bus
+kernel/src/fs/sysfs_usb.rs :: enum Attribute :: Name
+kernel/src/fs/sysfs_usb.rs :: enum Attribute :: Port
+kernel/src/fs/sysfs_usb.rs :: enum Attribute :: Product
+kernel/src/fs/sysfs_usb.rs :: enum Attribute :: Remove
+kernel/src/fs/sysfs_usb.rs :: enum Attribute :: Vendor
+kernel/src/fs/sysfs_usb.rs :: enum Node :: Attribute (usize , Attribute)
+kernel/src/fs/sysfs_usb.rs :: enum Node :: Bus
+kernel/src/fs/sysfs_usb.rs :: enum Node :: Device (usize)
+kernel/src/fs/sysfs_usb.rs :: enum Node :: Devices
+kernel/src/fs/sysfs_usb.rs :: pub (crate) fn register_source (source : Arc < dyn UsbSysfsSource >) -> Result < () , FileSystemError >
+kernel/src/fs/sysfs_usb.rs :: pub (crate) trait UsbSysfsSource
+kernel/src/fs/sysfs_usb.rs :: pub (super) enum Attribute
+kernel/src/fs/sysfs_usb.rs :: pub (super) enum Node
+kernel/src/fs/sysfs_usb.rs :: pub (super) fn children (node : Node) -> Result < Vec < (Node , Vec < u8 >) > , FileSystemError >
+kernel/src/fs/sysfs_usb.rs :: pub (super) fn contents (node : Node) -> Result < Vec < u8 > , FileSystemError >
+kernel/src/fs/sysfs_usb.rs :: pub (super) fn lookup (node : Node , name : & [u8]) -> Result < Node , FileSystemError >
+kernel/src/fs/sysfs_usb.rs :: pub (super) fn open (node : Node) -> Result < Arc < dyn super :: chardev :: DeviceFile > , FileSystemError >
+kernel/src/fs/sysfs_usb.rs :: pub (super) fn parent (node : Node) -> Option < Node >
+kernel/src/fs/sysfs_usb.rs :: pub (super) impl Node :: fn inode (self) -> u64
+kernel/src/fs/sysfs_usb.rs :: pub (super) impl Node :: fn kind (self) -> InodeType
+kernel/src/fs/sysfs_usb.rs :: pub (super) impl Node :: fn writable (self) -> bool
+kernel/src/fs/sysfs_usb.rs :: trait UsbSysfsSource :: fn count (& self) -> usize
+kernel/src/fs/sysfs_usb.rs :: trait UsbSysfsSource :: fn device (& self , index : usize) -> Option < Arc < dyn UsbDevice > >
 kernel/src/fs/tmpfs.rs :: pub (crate) struct TmpFileSystem
 kernel/src/fs/tmpfs.rs :: pub (crate) struct TmpInode
 kernel/src/fs/tmpfs.rs :: pub (super) use filesystem :: TmpFileSystemType

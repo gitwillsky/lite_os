@@ -17,6 +17,7 @@ enum SysNode {
     Fuse,
     FuseConnections,
     Drm(super::sysfs_drm::Node),
+    Usb(super::sysfs_usb::Node),
     /// `/sys/class`：`block` 与 `net`。
     ClassRoot,
     /// `/sys/dev`：只有 `block`。
@@ -48,6 +49,7 @@ impl SysNode {
             Self::Fuse => 11,
             Self::FuseConnections => 12,
             Self::Drm(node) => node.inode(),
+            Self::Usb(node) => node.inode(),
             Self::ClassRoot => 8,
             Self::DevRoot => 9,
             Self::Block(node) => node.inode(),
@@ -76,6 +78,7 @@ impl SysNode {
             | Self::CpuRoot
             | Self::Cpu(_) => InodeType::Directory,
             Self::Drm(node) => node.kind(),
+            Self::Usb(node) => node.kind(),
             Self::Block(node) => node.kind(),
             Self::Net(node) => node.kind(),
             Self::CpuSet(_) | Self::CpuOnline(_) => InodeType::File,
@@ -158,6 +161,7 @@ impl SysInode {
                 Ok(bytes)
             }
             SysNode::Drm(node) => super::sysfs_drm::contents(node),
+            SysNode::Usb(node) => super::sysfs_usb::contents(node),
             SysNode::Block(node) => sysfs_block::contents(node),
             SysNode::Net(node) => sysfs_net::contents(&self.network, node),
             _ => Err(FileSystemError::IsDirectory),
@@ -178,6 +182,8 @@ impl SysInode {
             SysNode::Fs => SysNode::Root,
             SysNode::Fuse => SysNode::Fs,
             SysNode::FuseConnections => SysNode::Fuse,
+            SysNode::Usb(node) => super::sysfs_usb::parent(node)
+                .map_or(SysNode::Drm(super::sysfs_drm::Node::Bus), SysNode::Usb),
             SysNode::Drm(node) => match super::sysfs_drm::parent(node) {
                 super::sysfs_drm::Parent::Root => SysNode::Root,
                 super::sysfs_drm::Parent::Class => SysNode::ClassRoot,
@@ -211,6 +217,10 @@ impl SysInode {
             return Ok(parent);
         }
         match self.node {
+            SysNode::Drm(super::sysfs_drm::Node::Bus) if name == b"usb" => {
+                Ok(SysNode::Usb(super::sysfs_usb::Node::Bus))
+            }
+            SysNode::Usb(node) => super::sysfs_usb::lookup(node, name).map(SysNode::Usb),
             SysNode::Drm(node) => super::sysfs_drm::lookup(node, name).map(SysNode::Drm),
             SysNode::Root if name == b"bus" => Ok(SysNode::Drm(super::sysfs_drm::Node::Bus)),
             SysNode::ClassRoot if name == b"drm" => Ok(SysNode::Drm(super::sysfs_drm::Node::Class)),
@@ -280,6 +290,8 @@ impl Inode for SysInode {
                 0o120777
             } else if kind == InodeType::Directory {
                 0o040555
+            } else if matches!(self.node, SysNode::Usb(node) if node.writable()) {
+                0o100200
             } else {
                 0o100444
             },
@@ -321,7 +333,23 @@ impl Inode for SysInode {
     }
 
     fn is_read_only(&self) -> bool {
-        true
+        !matches!(self.node, SysNode::Usb(node) if node.writable())
+    }
+
+    fn open_backend(
+        &self,
+        flags: u32,
+        identity: &super::AccessIdentity,
+        _authority: &crate::namespace::NamespaceAuthority,
+    ) -> Result<super::InodeOpen, super::InodeOpenError> {
+        if let SysNode::Usb(node) = self.node
+            && node.writable()
+        {
+            return super::sysfs_usb::open(node)
+                .map(super::InodeOpen::Device)
+                .map_err(Into::into);
+        }
+        super::inode::open_by_type(self, flags, identity)
     }
 
     fn read_storage(&self, offset: u64, output: &mut [u8]) -> Result<usize, FileSystemError> {
@@ -338,7 +366,7 @@ impl Inode for SysInode {
     fn write_storage(
         &self,
         _offset: u64,
-        _buf: &[u8],
+        _bytes: &[u8],
         _identity: Option<&crate::fs::AccessIdentity>,
     ) -> Result<usize, FileSystemError> {
         Err(FileSystemError::ReadOnly)
@@ -354,10 +382,14 @@ impl Inode for SysInode {
 
     fn truncate_storage(
         &self,
-        _size: u64,
+        size: u64,
         _identity: Option<&crate::fs::AccessIdentity>,
     ) -> Result<(), FileSystemError> {
-        Err(FileSystemError::ReadOnly)
+        if size == 0 && matches!(self.node, SysNode::Usb(node) if node.writable()) {
+            Ok(())
+        } else {
+            Err(FileSystemError::ReadOnly)
+        }
     }
 
     fn sync_storage(&self) -> Result<(), FileSystemError> {
@@ -384,9 +416,17 @@ impl Inode for SysInode {
         emit!(self.node, b".");
         emit!(parent, b"..");
         match self.node {
+            SysNode::Usb(node) => {
+                for (child, name) in super::sysfs_usb::children(node)? {
+                    emit!(SysNode::Usb(child), &name);
+                }
+            }
             SysNode::Drm(node) => {
                 for (child, name) in super::sysfs_drm::children(node)? {
                     emit!(SysNode::Drm(child), &name);
+                }
+                if matches!(node, super::sysfs_drm::Node::Bus) {
+                    emit!(SysNode::Usb(super::sysfs_usb::Node::Bus), b"usb");
                 }
             }
             SysNode::Root => {
@@ -525,7 +565,8 @@ impl FileSystem for SysFileSystem {
     fn superblock(&self) -> SuperblockFacts {
         SuperblockFacts {
             type_name: "sysfs",
-            read_only: true,
+            // sysfs 的写权限由具体属性裁决；USB remove 是 root-only 控制属性。
+            read_only: false,
         }
     }
 

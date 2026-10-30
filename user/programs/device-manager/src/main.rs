@@ -1,5 +1,6 @@
 //! 设备管理器：业务层枚举硬件，共享控件运行库负责树、菜单、属性页与窗口交互。
 mod devices;
+mod usb;
 use devices::Category;
 use liteos_ui::{
     Application, ControlFlow, EventKind, Menu, MenuItem, PropertySheet, TreeRow, Widget,
@@ -68,6 +69,9 @@ fn child(parent: &Widget, kind: Kind, text: &str, grow: u32) -> liteos_ui::Resul
     parent.child(spec)
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args().skip(1).any(|arg| arg == "--eject") {
+        return usb::run();
+    }
     let mut app = Application::new()?;
     let window = app.window(WindowOptions::new("设备管理器", APP_ID, 610, 460))?;
     let mut spec = WidgetSpec::new(Kind::Column, "");

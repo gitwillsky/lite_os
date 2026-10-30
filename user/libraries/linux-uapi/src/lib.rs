@@ -17,6 +17,7 @@ mod raw;
 pub mod shared_memory;
 pub mod time;
 pub mod unix;
+pub mod usb;
 pub mod virtio_port;
 
 pub use process::{Pid, Signal};

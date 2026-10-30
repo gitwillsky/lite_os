@@ -23,6 +23,7 @@
 | `drivers` | 无 | 仅声明具体总线与硬件驱动 |
 | `pci` | `platform`,`arch` | PCI 枚举与 BAR 分配 |
 | `usb` | `arch`,`pci`,`platform`,`memory`,`device`,`sync`,`interrupt`,`deferred`,`timer` | xHCI、USB 枚举与 UAC2 PCM adapter |
+| `usb_device` | `device`,`fs` | USB 连接发现与标准 sysfs 来源装配 |
 | `interrupt` | 无 | 设备中断处理契约 |
 | `device_registry` | 无 | adapter 注册容器 |
 | `console` | `device_registry`,`interrupt`,`sync` | 串口接收队列与设备接口 |
@@ -37,7 +38,7 @@
 | `io_uring` | `fs`,`id`,`ipc`,`memory`,`namespace`,`sync`,`timer` | 领域规则见依赖说明 |
 | `ipc` | `fallible_tree`,`id`,`memory`,`namespace`,`sync` | 领域规则见依赖说明 |
 | `net` | `device`,`fallible_tree`,`id`,`ipc`,`namespace`,`sync`,`timer` | 领域规则见依赖说明 |
-| `fs` | `block`,`cpu`,`deferred`,`fallible_tree`,`id`,`ipc`,`log`,`memory`,`namespace`,`random`,`net`,`sync`,`timer` | 领域规则见依赖说明 |
+| `fs` | `block`,`cpu`,`deferred`,`device`,`fallible_tree`,`id`,`ipc`,`log`,`memory`,`namespace`,`random`,`net`,`sync`,`timer` | USB sysfs 只消费 device seam，不依赖总线驱动；其余规则见依赖说明 |
 | `file` | `fallible_tree`,`fs`,`ipc`,`memory`,`namespace`,`net`,`sync` | 领域规则见依赖说明 |
 | `tty` | `fallible_tree`,`fs`,`ipc`,`namespace`,`sync`,`timer`,`console` | 领域规则见依赖说明 |
 | `namespace` | `fallible_tree` | 领域规则见依赖说明 |

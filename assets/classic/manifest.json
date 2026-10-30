@@ -1126,6 +1126,17 @@
         "conversion": "BMP V4; native dimensions"
       }
     },
+    "ui/tray-usb-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "894d516108a53c3bed8565970e42774974ca7f5f86e9006945ab5bf8c81c0376",
+      "origin": {
+        "source": "hotplug.dll",
+        "resource": 100,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
     "ui/tray-volume-16.bmp": {
       "group": "ui",
       "bytes": 1146,

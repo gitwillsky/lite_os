@@ -52,7 +52,7 @@
 | 61 | `getdents64` | Complete | opaque directory `d_off` cursor、64 KiB bounded batch 与 copyout 后 publication |
 | 62 | `lseek` | Partial | seekable OFD types |
 | 63 | `read` | Partial | 已声明 OFD backend 与 partial/fault ordering |
-| 64 | `write` | Partial | 已声明 OFD backend 与 partial/fault ordering |
+| 64 | `write` | Partial | 已声明 OFD backend 与 partial/fault ordering；USB sysfs `remove` 控制写见[设备契约](../architecture-contract/devices-terminal.md) |
 | 65 | `readv` | Partial | page-batched iovec 与 backend scope |
 | 66 | `writev` | Partial | page-batched iovec 与 backend scope |
 | 67 | `pread64` | Complete | positioned regular-file read |

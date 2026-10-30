@@ -8,6 +8,8 @@ pub(crate) mod network;
 mod pcm_format;
 mod port;
 mod registry;
+mod usb;
+pub(crate) use usb::{UsbDevice, UsbIdentity, UsbRemoveError};
 
 pub(crate) use audio_output::{
     PCM_BUFFER_FRAMES, PCM_CHANNELS, PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES, PCM_PERIODS,
@@ -31,5 +33,5 @@ pub(crate) use registry::{
     dispatch_io_completion_work, display_device, fill_entropy, input_device, input_device_count,
     network_device, pcm_output, port_device, register_completion_source, register_display_device,
     register_entropy_source, register_input_device, register_network_device, register_pcm_output,
-    register_port_device,
+    register_port_device, register_usb_device, usb_device, usb_device_count,
 };

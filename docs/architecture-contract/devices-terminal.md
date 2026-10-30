@@ -343,10 +343,17 @@ render/adapter/display completion 都先推进 reset，再推进 detach/UNREF，
 2. producer 最后 Release 发布 TRB cycle，doorbell 前经过 arch 的 device-ordering 屏障；consumer Acquire 读取 event cycle，核对地址/slot/DCI 后回收。event ring 每次最多处理 128 项，仍有工作则再次投递。
    每个 slot generation 在控制器生命周期内不复用；旧 PCM adapter 即使遇到相同 slot/port，也不能操作新连接。
 3. Disable Slot completion 是 context、ring 与 payload 的释放屏障；Stop Endpoint completion 后才能清 ring、Set TR Dequeue 或重配。command/control 超时后停止控制器并保留注册 Arc 的 DMA，不以超时冒充硬件已停止。
-   设备传输错误断开对应卡，未知 completion/控制器错误隔离整台 host。
+   Ring Underrun/Overrun 是无 TD 完成的等时空队列通知，pointer 可以是下一 dequeue 地址，不得据此回收 TRB 或断开声卡；已停止的流不发布 XRUN 通知。设备传输错误断开对应卡，未知 completion/控制器错误隔离整台 host。
 4. UAC2 从 Type-I PCM alternate、USB streaming terminal、当前 clock selector 与 clock source GET_RANGE 求交能力。异步 OUT 必须配显式 feedback；high-speed feedback 为 16.16 samples/microframe。
+   空、短、零值或越界反馈不更新速率，但完成的反馈 TD 仍须回收并续投；首次有效反馈前使用协商采样率，之后保留上次有效值，不能读残留 DMA 字节或因单包无效隔离控制器。
    反馈只决定完整 PCM frame 的 packet 分布，不做插值、重采样或数字增益；24-in-32 的 USB 左对齐与 ALSA 低位对齐之间仅移动有效位。原生 DSD 不作为 PCM 暴露。
+   连续流的 USB packet 可以跨 ALSA period；下一 period 尚未提交时保留尾部与分数相位，不得在 period 边界人为缩短包并消耗一个完整 service interval。
 5. 当前覆盖 PCI xHCI root-port 上的 USB2 high-speed、单 AudioControl function、双声道 UAC2 Type-I PCM；枚举可选择不同 configuration。UAC1、USB hub/TT、FS/LS/SS 音频、capture 和 native DSD 未实现，遇到时不发布猜测的声卡。
    PCM 能力上限包含 768 kHz，但每一格式仍须满足设备实际 clock range 与 service payload。
 6. 热路径使用预分配的 4 个 PCM periods、128 个 OUT packet slots 和 16 个 feedback slots；没有每 packet 分配、USB control 或睡眠。IOC 至少每 8 个 OUT packets 或 period 边界一次。
    benchmark 决策：分包、整数反馈累加与 staging copy 是新增成本，需用目标 USB 连续播放观察 underrun/CPU；未执行实机门禁时不声明延迟或零丢样已验证。
+7. `devices::model::UsbDevice` 投影每次连接的身份、在线状态和停止操作；`devices::usb` 向 `fs::UsbSysfsSource` 注入注册表。连接状态只有 xHCI slot/generation 一个 owner，注册表只追加并保留旧 identity；sysfs 不查询硬件寄存器。
+   当前只发布成功绑定的 UAC2 连接，未覆盖未支持类别的通用 USB 枚举。`/sys/bus/usb/devices/<bus>-<port>/` 提供 `idVendor`、`idProduct`、`product`、`busnum`、`devpath` 与 root-only `remove`，其余 sysfs 节点保持只读。
+8. `remove` 的 OFD 绑定实际连接 adapter，不能按端口重查新连接。停止由 task-only control 事务串行化：禁止 refill、通知音频断开、等待 Disable Slot completion，再清除 slot/DCBAA 和释放 DMA；失败不得提示可安全拔出。
+   移除后的端口保持 Seen，直到真实断开/重插才重新枚举。用户态设备列表保留打开时的 remove 句柄并检查 inode identity，避免旧窗口或异步确认误停新设备。
+   桌面采样线程由对象停止通道与 join 回收，不执行移除；设备窗口确认后在后台调用标准属性。

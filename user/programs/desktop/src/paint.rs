@@ -68,6 +68,7 @@ impl Art {
             "tray-network-disconnected-16",
             "tray-volume-16",
             "tray-volume-muted-16",
+            "tray-usb-16",
         ] {
             let path = Path::new("/usr/share/liteos/ui").join(format!("{name}.bmp"));
             bitmaps.insert(name.into(), Bitmap::load(&path)?);
@@ -237,11 +238,12 @@ impl Art {
         }
     }
 }
-/// 任务栏命中区域序号：0 开始、1-2 快速启动、3-4 翻页、5 音量、6 时钟、7 网络，其后是任务按钮。
+/// 任务栏命中区域序号：0 开始、1-2 快速启动、3-4 翻页、5 音量、6 时钟、7 网络、8 USB，其后是任务按钮。
 pub const VOLUME: usize = 5;
 pub const CLOCK: usize = 6;
 pub const NETWORK: usize = 7;
-pub const TASKS_FROM: usize = 8;
+pub const USB: usize = 8;
+pub const TASKS_FROM: usize = 9;
 
 /// 通知区、翻页和任务按钮的共同几何；图标出现/消失与隐藏时钟时不保留空槽，不重叠。
 struct TaskbarLayout {
@@ -249,16 +251,19 @@ struct TaskbarLayout {
     volume: Rect,
     clock: Rect,
     network: Rect,
+    usb: Rect,
     tasks: Rect,
     pagers: [Rect; 2],
 }
 fn taskbar_layout(s: &Desktop, d: &Display, width: i32) -> TaskbarLayout {
     let network_width = if s.network.current().is_some() { 24 } else { 0 };
     let clock_width = if s.settings.show_clock { 60 } else { 0 };
-    let tray_width = 4 + network_width + 24 + clock_width;
+    let usb_width = if s.usb.connected() { 24 } else { 0 };
+    let tray_width = 4 + network_width + usb_width + 24 + clock_width;
     let tray = Rect::new((width - 2 - tray_width).max(0), 4, tray_width, 22);
     let network = Rect::new(tray.x + 2, 4, network_width, 22);
-    let volume = Rect::new(network.right(), 4, 24, 22);
+    let usb = Rect::new(network.right(), 4, usb_width, 22);
+    let volume = Rect::new(usb.right(), 4, 24, 22);
     let clock = Rect::new(volume.right(), 4, clock_width, 22);
     let mut tasks = Rect::new(134, 4, (tray.x - 4 - 134).max(0), 22);
     let mut pagers = [Rect::new(0, 0, 0, 0); 2];
@@ -274,6 +279,7 @@ fn taskbar_layout(s: &Desktop, d: &Display, width: i32) -> TaskbarLayout {
         volume,
         clock,
         network,
+        usb,
         tasks,
         pagers,
     }
@@ -303,6 +309,7 @@ pub fn areas(s: &Desktop, d: &Display, id: WindowId, c: Configuration) -> Vec<Re
             layout.volume,
             layout.clock,
             layout.network,
+            layout.usb,
         ];
         let ids = task_ids(s, d, c.width);
         let width = (layout.tasks.width / ids.len().max(1) as i32).clamp(0, 160);
@@ -432,6 +439,9 @@ pub fn frame(
                 rects[NETWORK].x + 4,
                 7,
             );
+        }
+        if s.usb.connected() {
+            art.icon(&mut p, "tray-usb-16", rects[USB].x + 4, 7);
         }
         for (i, id) in task_ids(s, d, c.width).iter().enumerate() {
             if let Some((_, info)) = d.toplevels().find(|(target, _)| target == id) {

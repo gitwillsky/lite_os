@@ -9,12 +9,41 @@ use crate::devices::model::{
 use alloc::string::String;
 
 pub(super) struct Output {
+    pub(in crate::drivers::usb) identity: crate::devices::model::UsbIdentity,
     pub(in crate::drivers::usb) host: Arc<Host>,
     pub(in crate::drivers::usb) slot: u8,
     pub(in crate::drivers::usb) generation: u64,
     pub(in crate::drivers::usb) capabilities: PcmCapabilities,
     pub(in crate::drivers::usb) name: String,
     pub(in crate::drivers::usb) control: u8,
+}
+impl crate::devices::model::UsbDevice for Output {
+    fn identity(&self) -> crate::devices::model::UsbIdentity {
+        self.identity
+    }
+    fn name(&self) -> &str {
+        &self.name
+    }
+    fn connected(&self) -> bool {
+        self.device(&mut self.host.state.lock()).is_ok()
+    }
+    fn remove(&self) -> core::result::Result<(), crate::devices::model::UsbRemoveError> {
+        use crate::devices::model::UsbRemoveError;
+        let transaction = self.host.control().map_err(|_| UsbRemoveError::Device)?;
+        {
+            let mut state = self.host.state.lock();
+            let device = self
+                .device(&mut state)
+                .map_err(|_| UsbRemoveError::Disconnected)?;
+            if let Some(audio) = &mut device.audio {
+                // 禁止继续补 TD；Disable Slot completion 前仍保留全部 DMA backing。
+                audio.disconnect();
+            }
+        }
+        transaction
+            .remove(self.slot)
+            .map_err(|_| UsbRemoveError::Device)
+    }
 }
 impl Output {
     fn device<'a>(&self, state: &'a mut State) -> Result<&'a mut Device> {

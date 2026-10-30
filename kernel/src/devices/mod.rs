@@ -7,4 +7,5 @@ pub(crate) mod input;
 pub(crate) mod model;
 pub(crate) mod registry;
 pub(crate) mod tty;
+pub(crate) mod usb;
 pub(crate) mod virtio_port;

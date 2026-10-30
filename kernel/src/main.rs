@@ -151,6 +151,7 @@ fn kernel_main(context: execution::entry::BootContext) -> ! {
         .expect("TTY initialization failed");
     net::init();
     let root = mount_filesystems(scheduler, &parameters);
+    devices::usb::initialize().expect("USB sysfs initialization failed");
     for host in drivers::usb::initialize().expect("USB host initialization failed") {
         let body =
             alloc::boxed::Box::try_new(move || host.run()).expect("USB worker allocation failed");

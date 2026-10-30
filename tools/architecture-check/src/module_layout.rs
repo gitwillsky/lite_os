@@ -18,6 +18,7 @@ pub(super) const DOMAINS: &[(&str, &str)] = &[
     ("device", "devices::model"),
     ("pci", "drivers::pci"),
     ("usb", "drivers::usb"),
+    ("usb_device", "devices::usb"),
     ("virtio", "drivers::virtio"),
     ("drm", "devices::drm"),
     ("entry", "execution::entry"),

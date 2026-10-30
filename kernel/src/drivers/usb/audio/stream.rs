@@ -167,7 +167,7 @@ impl Stream {
             }
             let phase = self.phase + self.feedback_rate * microframes;
             let frames = (phase >> 16) as usize;
-            let mut bytes = frames.checked_mul(frame_bytes).ok_or(Error::Protocol)?;
+            let bytes = frames.checked_mul(frame_bytes).ok_or(Error::Protocol)?;
             if bytes > alt.output.payload() {
                 return Err(Error::Protocol);
             }
@@ -176,7 +176,10 @@ impl Stream {
             let next = (current + 1) % PCM_PERIODS;
             if bytes > remaining && (!self.periods[next].occupied || self.periods[next].offset != 0)
             {
-                bytes = remaining;
+                // ALSA period 不是 USB service interval：先保留尾部，下一次 submit 继续拼包。
+                // 截短这里会消耗完整时隙却少发 PCM frames；即使应用 ring 未欠载也会周期性断音。
+                // 尚未发布 TD，因此 phase、period offset 和完成记账均不能提前推进。
+                break;
             }
             let index = (self.packet_head + self.packet_len) % PACKETS;
             let first = bytes.min(remaining);
@@ -256,8 +259,16 @@ impl Stream {
             return Ok(());
         }
         let alt = self.selected.ok_or(Error::Protocol)?;
-        if matches!(event.code(), 14 | 15) && event.address() == 0 {
-            if event.endpoint() == alt.output.dci()
+        if matches!(event.code(), 14 | 15) {
+            // xHCI 1.2 4.10.3.1：空等时 ring 的通知不完成任何 TD，不能把 pointer 当作
+            // 已提交 TRB 回收；QEMU 在这里填写下一个 dequeue 地址，而不是零。
+            if event.endpoint() != alt.output.dci()
+                && !alt.feedback.is_some_and(|ep| ep.dci() == event.endpoint())
+            {
+                return Err(Error::Protocol);
+            }
+            if self.state == Lifecycle::Running
+                && event.endpoint() == alt.output.dci()
                 && let Some(observer) = &self.observer
             {
                 observer.xrun();
@@ -274,15 +285,21 @@ impl Stream {
                 .iter()
                 .position(|head| *head == Some(event.address()))
                 .ok_or(Error::Protocol)?;
-            if event.0[2] & 0xffffff != 0 {
+            let remaining = event.0[2] & 0xffffff;
+            if remaining > 4 {
                 return Err(Error::Protocol);
             }
-            let value = u64::from(self.feedback_buffer.word(index * 16)?);
-            let nominal = (u64::from(self.configuration.ok_or(Error::Protocol)?.rate) << 16) / 8000;
-            if value == 0 || value.abs_diff(nominal) > nominal / 16 {
-                return Err(Error::Protocol);
+            // 1. USB 转发预缓冲与设备启动期间可返回空/短反馈包；该 TD 已完成，仍须回收并续投。
+            // 2. 仅完整且合理的 16.16 反馈更新速率，避免读到 DMA slot 上次留下的数据。
+            // 3. 缺少有效反馈时保留上次速率（reset 时为协商的 nominal），不把单包缺失升级为断卡。
+            if remaining == 0 {
+                let value = u64::from(self.feedback_buffer.word(index * 16)?);
+                let nominal =
+                    (u64::from(self.configuration.ok_or(Error::Protocol)?.rate) << 16) / 8000;
+                if value != 0 && value.abs_diff(nominal) <= nominal / 16 {
+                    self.feedback_rate = value;
+                }
             }
-            self.feedback_rate = value;
             self.feedback_heads[index] = None;
             if self.state == Lifecycle::Running {
                 self.fill_feedback(host)?;

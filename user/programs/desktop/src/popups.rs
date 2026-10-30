@@ -5,6 +5,8 @@ use classic_ui::{MenuItemState, Painter, Toplevel, ToplevelId, ToplevelRequest};
 /// 点击菜单项的结果。
 #[derive(Clone, Copy)]
 pub enum Action {
+    /// 打开真实 USB 设备列表与安全移除入口。
+    UsbDevices,
     MinimizeAll,
     TaskManager,
     /// 打开完整的"音量控制"窗口。
@@ -118,6 +120,10 @@ pub fn window_items(id: ToplevelId, info: &Toplevel) -> Vec<Item> {
 
 pub fn tray_volume_items() -> Vec<Item> {
     vec![item("调整音频属性(A)", Action::VolumeProperties)]
+}
+/// USB 设备通知图标的菜单。
+pub fn tray_usb_items() -> Vec<Item> {
+    vec![item("拔出或弹出硬件(O)", Action::UsbDevices)]
 }
 
 /// 桌面图标的右键菜单：文件与文件夹有删除、重命名、属性（交给资源管理器）；“我的电脑”的属性是系统属性，

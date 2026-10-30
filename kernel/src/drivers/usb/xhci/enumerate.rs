@@ -289,6 +289,12 @@ impl Control<'_> {
             u16::from_le_bytes([descriptor[10], descriptor[11]])
         );
         let output = Arc::try_new(Output {
+            identity: crate::devices::model::UsbIdentity {
+                bus: host.bus,
+                port,
+                vendor: u16::from_le_bytes([descriptor[8], descriptor[9]]),
+                product: u16::from_le_bytes([descriptor[10], descriptor[11]]),
+            },
             host: host.clone(),
             slot,
             generation,
@@ -302,6 +308,7 @@ impl Control<'_> {
             .as_mut()
             .ok_or(Error::Disconnected)?
             .audio = Some(audio);
+        crate::devices::model::register_usb_device(output.clone()).map_err(|_| Error::Memory)?;
         crate::devices::model::register_pcm_output(output).map_err(|_| Error::Memory)?;
         crate::info!(
             "USB Audio 2 playback registered: port={}, slot={}",

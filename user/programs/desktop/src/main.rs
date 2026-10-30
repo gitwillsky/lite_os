@@ -7,6 +7,7 @@ mod paint;
 mod popups;
 mod start;
 mod taskbar;
+mod usb;
 use classic_ui::{
     Display, Event, EventKind, KeyboardInteractivity, Layer, LayerSettings, ToplevelRequest,
     WindowId,
@@ -61,6 +62,7 @@ struct Desktop {
     message: String,
     volume: sndvol::Volume,
     network: network::Network,
+    usb: usb::Usb,
     /// 每用户桌面设置（任务栏选项、背景色）与它被读取时的修改时间；控制面板改写文件后据此重新应用。
     settings: desktop_settings::Settings,
     settings_stamp: Option<std::time::SystemTime>,
@@ -127,6 +129,7 @@ impl Desktop {
             message: String::new(),
             volume: sndvol::Volume::open(),
             network: network::Network::new()?,
+            usb: usb::Usb::new()?,
             settings,
             settings_stamp: desktop_settings::Settings::stamp(),
             taskbar_hidden: false,
@@ -302,6 +305,11 @@ impl Desktop {
             Action::IconVerb(index, verb) => self.icon_verb(index, verb),
             Action::DisplayProperties => self.control_panel("display"),
             Action::VolumeProperties => self.launch(Command::new("/bin/sndvol")),
+            Action::UsbDevices => {
+                let mut command = Command::new("/bin/devmgmt");
+                command.arg("--eject");
+                self.launch(command);
+            }
             Action::OpenIcon(index) => self.open_icon(index),
             Action::NewFolder => {
                 if let Err(error) = self.icons.new_folder() {
@@ -406,6 +414,7 @@ impl Desktop {
         let items = if window == self.taskbar {
             match hit {
                 Some(paint::VOLUME) => popups::tray_volume_items(),
+                Some(paint::USB) => popups::tray_usb_items(),
                 Some(paint::NETWORK) => return Ok(()),
                 Some(paint::CLOCK) => return Ok(()),
                 Some(n) if n >= paint::TASKS_FROM => {
@@ -725,6 +734,7 @@ impl Desktop {
                                     self.launch(command);
                                 }
                             }
+                            paint::USB => self.perform(display, popups::Action::UsbDevices)?,
                             paint::VOLUME => {
                                 let rect = paint::areas(self, display, window, c)[paint::VOLUME];
                                 let center = rect.x + rect.width / 2;
@@ -849,6 +859,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
         dirty |= state.volume.poll();
         dirty |= state.network.poll();
+        dirty |= state.usb.poll();
         dirty |= state.poll_settings(&mut display)?;
         if art.update_wallpaper(state.settings.wallpaper.as_deref())? {
             pending.insert(state.background);

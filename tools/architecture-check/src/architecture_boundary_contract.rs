@@ -16,6 +16,8 @@ const DEVICE_MODULES: &[&str] = &[
     "console",
     "drm",
     "input",
+    "usb",
+    "usb_device",
     "tty",
     "virtio",
     "virtio_port",

@@ -10,7 +10,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Once;
 
 use super::{
-    EntropySource, GraphicsDevice, InputDevice, PcmOutput, PortDevice,
+    EntropySource, GraphicsDevice, InputDevice, PcmOutput, PortDevice, UsbDevice,
     io_completion::CompletionSource, network::NetworkDevice,
 };
 use crate::devices::registry::AppendOnlyRegistry;
@@ -26,6 +26,22 @@ static DISPLAY_DEVICES: AppendOnlyRegistry<dyn GraphicsDevice> = AppendOnlyRegis
 static INPUT_DEVICES: AppendOnlyRegistry<dyn InputDevice> = AppendOnlyRegistry::new();
 // OWNER: PCM playback adapter 的唯一发布点；缺失时两个 ALSA owner 可能控制同一 stream。
 static PCM_OUTPUTS: AppendOnlyRegistry<dyn PcmOutput> = AppendOnlyRegistry::new();
+// OWNER: 每次 USB 连接只发布一个 adapter；永久 index 使旧 sysfs remove 不会命中新连接。
+// adapter 查询 host generation，不复制在线状态；缺少此来源则托盘只能猜测声卡名称。
+static USB_DEVICES: AppendOnlyRegistry<dyn UsbDevice> = AppendOnlyRegistry::new();
+
+/// 发布真实 USB 连接；扩容失败时原样返回 adapter。
+pub(crate) fn register_usb_device(device: Arc<dyn UsbDevice>) -> Result<usize, Arc<dyn UsbDevice>> {
+    USB_DEVICES.register(device)
+}
+/// 返回稳定 index 对应的连接；在线状态由 adapter 裁决。
+pub(crate) fn usb_device(index: usize) -> Option<Arc<dyn UsbDevice>> {
+    USB_DEVICES.get(index)
+}
+/// 已发布的连接数；已断开的连接可能仍由旧 sysfs inode 引用。
+pub(crate) fn usb_device_count() -> usize {
+    USB_DEVICES.count()
+}
 // OWNER: entropy source 的唯一发布点；`getrandom` 与 `/dev/random` 共用首个 source。
 static ENTROPY_SOURCES: AppendOnlyRegistry<dyn EntropySource> = AppendOnlyRegistry::new();
 // OWNER: named byte-stream port 的唯一发布点；缺失时两个 byte-stream owner 可能竞争同一 SPICE

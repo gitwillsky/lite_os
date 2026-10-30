@@ -62,6 +62,7 @@ struct State {
 /// State 锁只串行化有界 ring 操作；operations 是 task-only command/control 事务锁。
 /// 两者不嵌套等待。hardirq 只确认硬件并发布 deferred，不取 State 锁。
 pub(crate) struct Host {
+    bus: usize,
     op: MmioBus,
     runtime: MmioBus,
     doors: MmioBus,
@@ -77,7 +78,7 @@ pub(crate) struct Host {
     failed: AtomicBool,
 }
 impl Host {
-    pub(super) fn new(function: &crate::drivers::pci::Function) -> Result<Arc<Self>> {
+    pub(super) fn new(function: &crate::drivers::pci::Function, bus: usize) -> Result<Arc<Self>> {
         let bar = function.bars[0].ok_or(Error::Protocol)?;
         let regs = MmioBus::new(crate::platform::map_device_window(bar.address), bar.size)?;
         let length = usize::from(regs.read_u8(0)?);
@@ -153,6 +154,7 @@ impl Host {
         devices.resize_with(slots + 1, || None);
         // 所有 fallible 分配先完成，控制器接收 DMA 地址后由永久注册 Arc 保活。
         let host = Arc::try_new(Self {
+            bus,
             op,
             runtime,
             doors,
@@ -269,7 +271,8 @@ impl CompletionSource for Host {
         let result = self.drain();
         match result {
             Ok(more) => more,
-            Err(_) => {
+            Err(error) => {
+                crate::error!("USB xHCI event processing failed: {:?}", error);
                 self.fail();
                 false
             }
@@ -348,6 +351,15 @@ impl Host {
                         if let Some(audio) = device.audio.as_mut()
                             && let Err(error) = audio.complete(self, event)
                         {
+                            crate::error!(
+                                "USB audio transfer failed: slot={} endpoint={} code={} pointer={:#x} remaining={} error={:?}",
+                                event.slot(),
+                                event.endpoint(),
+                                event.code(),
+                                event.address(),
+                                event.0[2] & 0xffffff,
+                                error,
+                            );
                             if matches!(error, Error::Controller(_)) {
                                 audio.disconnect();
                                 port = true;

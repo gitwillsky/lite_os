@@ -36,7 +36,7 @@ pub(crate) fn initialize() -> Result<Vec<Arc<Host>>> {
             continue;
         }
         hosts.try_reserve(1).map_err(|_| Error::Memory)?;
-        hosts.push(Host::new(function)?);
+        hosts.push(Host::new(function, hosts.len() + 1)?);
     }
     Ok(hosts)
 }

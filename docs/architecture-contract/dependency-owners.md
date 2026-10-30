@@ -75,8 +75,13 @@ PCI ECAM 根总线枚举、配置空间与唯一 BAR 资源分配；消费 platf
 
 ## `device`
 
-位于 `devices::model` 的设备类 seam（display、graphics、input、network、PCM output、entropy、named port）、只追加的设备注册表与 driver I/O completion；块 seam 属于 `block`，总线 adapter 属于 `drivers::virtio` 等具体总线领域。
+位于 `devices::model` 的设备类 seam（display、graphics、input、network、PCM output、USB connection、entropy、named port）、只追加的设备注册表与 driver I/O completion；块 seam 属于 `block`，总线 adapter 属于 `drivers::virtio` 等具体总线领域。
 MMIO 属于 `arch::mmio`，中断契约与 console 分别由 `interrupt`、`console` 拥有
+
+## `usb_device`
+
+位于 `devices::usb`，将通用 USB connection 注册表装配为 sysfs 来源；不拥有 host 寄存器、DMA 或连接在线状态。
+`fs` 仅通过注入来源消费 `device::UsbDevice` seam，不反向依赖 `drivers::usb`。
 
 ## `block`
 
