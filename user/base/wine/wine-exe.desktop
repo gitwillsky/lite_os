@@ -1,7 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Windows 应用程序
-Exec=/bin/wine %f
-Icon=file-app
-MimeType=application/x-ms-dos-executable;
-NoDisplay=true

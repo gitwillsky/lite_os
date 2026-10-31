@@ -221,9 +221,16 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
 - spice-protocol `0.14.5`；官方 tarball SHA-256
   `baf58449f6e89d19f475899ad5fb9196fdc46c03cc53233f4e39cf2978f9cff7`。来源：
   [官方 tarball](https://www.spice-space.org/download/releases/spice-protocol-0.14.5.tar.xz)。
-- macOS 图形产品固定 [UTM v4.7.5](https://github.com/utmapp/UTM/releases/tag/v4.7.5)，只消费其
-  official signed app、HVF、Metal/virgl 与 native SPICE `com.redhat.spice.0` PCI port；headless
-  QEMU `11.0.2` 只服务验证/调试，不提供第二个 GUI backend。
+- macOS 图形产品使用 UTM `5.0.8` 的开发副本，固定源码
+  [`ebce1808d7507ac03bd43af9d48f2c2e64071e91`](https://github.com/utmapp/UTM/tree/ebce1808d7507ac03bd43af9d48f2c2e64071e91)
+  和同 revision 的 CI run `40995597571` arm64 app/sysroot，沿用官方 fixup、package 与 unsigned entitlements。
+  `scripts/utm_build.py` 拥有输入摘要与构建身份；QEMU `10.0.12-utm` 先应用该 revision 的依赖补丁队列，
+  再应用 `scripts/patches/utm-xhci-iso.patch`（[上游 PR #8029](https://github.com/utmapp/UTM/pull/8029)），
+  修复 host timer 延迟后连续等时输出降速。HVF、Metal/virgl 与 native SPICE port 保持 UTM 实现；
+  headless QEMU `11.0.2` 只服务验证/调试，不提供第二个 GUI backend。
+- USB 捕获使用同一 CI sysroot 的 usbredir `0.14.0` / `usbredirect`，通过标准
+  [usbredir 协议](https://www.spice-space.org/usbredir.html) 连接 QEMU；管理员权限限于本次 USB 转发会话，
+  开发副本不依赖 Apple 特批的 `vm.device-access` 签名权限。
 - SPICE port 的 kernel byte-stream adapter 保留；guest agent 尚待新 compositor 实现。
   后续显示请求仍须通过标准 DRM/KMS modeset，不引入 UTM 私有 guest ABI。
   QEMU/SPICE 不定义窗口策略或 kernel devfs ABI。
@@ -249,11 +256,8 @@ inetdev_event/NETDEV_CHANGEMTU语义：lo允许0..65536，实际Ethernet设备�
   `scripts/apk_apps_cache.py` 唯一维护，下载后校验 `.PKGINFO` 的 name/version/arch。
   来源：[Alpine v3.22 main](https://dl-cdn.alpinelinux.org/alpine/v3.22/main/)；不跨稳定分支取包。
 - 本项目从官方 AArch64 repository 固定的闭包中，`ca-certificates-bundle`、`git-init-template`、
-  `ncurses-terminfo-base` 与 Wine 的 `xkeyboard-config-2.43-r0` 数据包以 `.PKGINFO arch=noarch`
-  发布；其余闭包必须是 `arch=aarch64`，该语义不是通用 `noarch` 豁免。XKB 数据来自同一
-  [Alpine v3.22 main](https://dl-cdn.alpinelinux.org/alpine/v3.22/main/aarch64/)，SHA-256
-  `d0ba36ffc8d6b8614ec6d7ef5a2ef9edbb6f9016473ae9c077df3d0d9de38049`，
-  abuild commit `4f37a562ee62763122c3f5d5060f2ee6ba0d01ea`；固定包名例外由 `apk_cache.py` 校验。
+  `ncurses-terminfo-base` 数据包以 `.PKGINFO arch=noarch` 发布；其余闭包必须是 `arch=aarch64`，
+  该语义不是通用 `noarch` 豁免；固定包名例外由 `apk_cache.py` 校验。
 - OpenSSL `3.5.7`；commit `8cf17aaeb4599f8af87fefd810b5b5fee90fe69e`；tarball SHA-256 `a8c0d28a529ca480f9f36cf5792e2cd21984552a3c8e4aa11a24aa31aeac98e8`。
 - 来源：[Alpine aarch64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/aarch64/)、[Alpine riscv64 repository（中科大镜像）](https://mirrors.ustc.edu.cn/alpine/v3.22/main/riscv64/)、
   [OpenSSL release](https://github.com/openssl/openssl/releases/tag/openssl-3.5.7)；

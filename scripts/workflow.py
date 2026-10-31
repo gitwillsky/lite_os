@@ -179,10 +179,6 @@ def sync_userland(environment: Mapping[str, str] | None = None, *, size_mib: str
     build_musl(environment)
     prepare_rootfs(environment, size_mib=size_mib)
     arguments = ["--image", target_paths(environment)["fs"]]
-    # 只有 AArch64 构建了 Wine 运行时；`LITEOS_WINE=0` 可以跳过它（镜像里已装的 Wine 随之被撤掉）。
-    source = os.environ if environment is None else environment
-    if target_from_environment(source).arch == "aarch64" and source.get("LITEOS_WINE", "1") != "0":
-        arguments.append("--wine")
     run(python_script("sync_userland.py", *arguments), environment=environment)
 
 
@@ -483,11 +479,6 @@ def verify_runtime_network_drive(environment: Mapping[str, str] | None = None) -
     run(python_script("verify_network_drive.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
 
 
-def verify_runtime_wine(environment: Mapping[str, str] | None = None) -> None:
-    """在私有盘验证每用户 Wine 安装、桌面启动、i386 保存和冷启动。"""
-    run(python_script("verify_wine.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
-
-
 def verify_runtime_wayland(environment: Mapping[str, str] | None = None) -> None:
     """用上游 wayland-info 与窗口探针验证 Wayland 服务端；不隐式重建 rootfs。"""
     run(python_script("verify_wayland.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
@@ -742,7 +733,6 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         "verify-runtime-display": verify_runtime_display,
         "verify-runtime-wayland": verify_runtime_wayland,
         "verify-runtime-desktop": verify_runtime_desktop,
-        "verify-runtime-wine": verify_runtime_wine,
         "verify-runtime-network-drive": verify_runtime_network_drive,
         "verify-runtime-scheduler": verify_runtime_scheduler,
         "diagnose-scheduler-latency": diagnose_scheduler_latency,

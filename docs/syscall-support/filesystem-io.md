@@ -197,7 +197,7 @@ WRITEI 支持短帧批次和环形缓冲跨界，XRUN 返回 EPIPE；mmap pointe
 HW_REFINE/HW_PARAMS 联合协商 4..=32 个 256-frame period 的软件 buffer；物理队列容量独立固定。
 SW_PARAMS 限 avail_min≤已协商 buffer、阈值≤boundary；
 阻塞 open 等待、RW 自动启动、REWIND、RESET、DRAIN、trigger timestamp 与 capture 尚未支持。
-固定上游 alsa-lib 的显式启动八路播放和 amixer 已由 AArch64/HVF runtime gate 覆盖；Wine 尚未验证。
+固定上游 alsa-lib 的显式启动八路播放和 amixer 已由 AArch64/HVF runtime gate 覆盖。
 
 FUSE（协议 7.45）：`/dev/fuse`（10:229，0666）每次 open 一个端点，挂载 `fd=` 或 `FUSE_DEV_IOC_CLONE` 绑定连接；
 未绑定端点读写 `EPERM`，读缓冲小于 `max(8192, 80 + max_write)` 为 `EINVAL`，回复须写回读走请求的端点，最后一个端点关闭

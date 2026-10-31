@@ -33,9 +33,14 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
 - Apple Silicon macOS 先安装 Xcode Command Line Tools（`xcode-select --install`）与 Homebrew，
   再执行 `make setup`。`scripts/host_setup.py` 是 host 工具安装的唯一 owner：用 Homebrew 安装
   `llvm`（Clang、`llvm-ar`、`llvm-ranlib`、`llvm-readelf`）、`e2fsprogs`、`qemu`、
-  `openssl@3`；安装 rustup 并按
-  `rust-toolchain.toml` 安装固定 toolchain；按固定 SHA-256 安装 UTM v4.7.5；各步骤幂等；已存在非固定版本 UTM 时 fail-stop，不覆盖用户应用。缺少 `llvm` 会让
+  `openssl@3`、`gh`、`ninja`、`pkgconf`；安装 rustup 并按
+  `rust-toolchain.toml` 安装固定 toolchain；构建带 xHCI 修复的 UTM 开发副本，不覆盖用户应用。缺少 `llvm` 会让
   musl 构建以 `Clang, LLVM archive tools, and the pinned Rust rust-lld are required` 失败。
+- UTM 构建由 `scripts/utm_build.py` 拥有，`make setup` 与 `make run-gui` 共用此入口。
+  首次下载固定 GitHub Actions app/sysroot 需要先 `gh auth login`；SHA-256 校验后的归档保留在
+  `.local/inputs/utm/`，可复制到其他 Apple Silicon Mac 离线重建。CI artifact 有保留期限，过期且无离线归档时
+  必须显式更新基线，不改用滚动输入。源码、SDK 解包与编译中间文件在系统临时目录，完成后清理；
+  `target/host/utm-build.json` 按输入、补丁、构建脚本和产物摘要判定缓存，普通启动不重编宿主 QEMU。
 - Rust 版本、组件和 target 由 `rust-toolchain.toml` 固定；精确 revision 见 [规范基线](../standards-baseline.md)。
   kernel ISA baseline 由 target 定义，不使用 host `target-cpu=native`；跨 ISA 编译时 host CPU
   不属于目标 LLVM backend，native 会造成无效 CPU/codegen，且让同一源码随构建宿主改变指令。
@@ -62,7 +67,8 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
   identity、APK metadata、package database、唯一 `/usr/local/bin` 入口与真实 `--version`
   执行共同决定成功。产品 rootfs 不包含 Agent、Node/npm 或滚动 repository。
 - `sync-userland` 离线同步 UART 基线的 init、rcS、profile、shutdown 与共享启动素材，并移除旧镜像中退休的
-  图形 binary、私有会话脚本和呈现素材；不修改 `/root`、用户安装的 APK 或项目。镜像内内容指纹命中时 no-op。
+  图形 binary、私有会话脚本、呈现素材和退休运行时；旧 stamp 中的专属库随清单撤销，当前清单共享的库保留。
+  不修改 `/root`、用户安装的 APK 或项目。镜像内内容指纹命中时 no-op。
   `run` 与 `run-gui` 自动同步；`reset-rootfs` 才从基线显式重建开发镜像。
 - Rust userspace 以 target、工具链、sysroot、libunwind 与 link flags 隔离 Cargo compilation cache；
   Cargo 拥有源码与构建脚本的依赖新鲜度，系统库和应用按链接方式批量构建，最终 ELF 按内容发布不可变 generation。
@@ -70,7 +76,7 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
 - `run-gui` 进入 logon 与用户桌面，UART 保留恢复 shell；首次账户设置及产品会话门禁见[桌面验证](desktop-verification.md)。
 - UTM 手动删除后若残留注册，启动脚本会检查删除后的列表并停止，避免复用旧串口配置；退出并重新打开 UTM 后再运行。
   开发磁盘 `fs-${ARCH}.img` 独立于生成的虚拟机配置包，恢复注册不需要重建或删除开发磁盘。
-- macOS 的 `run-gui` 是唯一交互图形产品入口：要求固定 `/Applications/UTM.app` v4.7.5，生成确定
+- macOS 的 `run-gui` 是唯一交互图形产品入口：使用固定构建的 `target/host/UTM.app`，生成确定
   UUID 的 UTM v4 配置，通过 UTM public scripting API import 注册，再由同一 API 创建 Metal
   display window。workflow 在 QEMU 启动前预监听 serial TCP，并把该次启动的完整 guest 输出覆盖写入
   `target/logs/run-gui-serial.log`；该文件是桌面退出、hang 或窗口关闭后的持久取证 owner。
@@ -83,9 +89,14 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
   当前 UTM/HVF 的 GDB 连接会在 `hvf_arch_update_guest_debug` 断言退出，即使先暂停也可复现，因此产品实例不开放 GDB stub。
   Make/Python 前台进程持有生命周期；Ctrl-C 只停止该 managed VM。旧 Cocoa QEMU window、激活脚本
   与 GUI 参数入口均不存在。
+- USB DAC 会话启动时由终端执行 `sudo -v` 授权，仅 USB 捕获与上游 `usbredirect` 以管理员身份运行。
+  最多自动转发三个 USB Audio 2 等时输出设备，支持插拔；QEMU 的 usbredir socket 只监听 loopback。
+  workflow 关闭唯一控制管道即释放设备并回收子进程，不安装常驻服务或修改 sudoers。
+  原版 UTM 可保留；有运行中的 VM 时拒绝切换。首次启动开发副本时，macOS 可能要求用户允许访问已有 UTM 容器。
 - UTM 产品路径固定 AArch64 `host` CPU、HVF、SPICE `gl=on`、`virtio-gpu-gl-device`、native Retina
   dynamic resolution，以及 UTM 自带的唯一 PCI `com.redhat.spice.0` port。kernel/rootfs 以同卷
-  hard link 发布到 UTM app group。键鼠只使用 VirtIO；USB 直通独立装配 xHCI/usbredir，不能启用
+  hard link 发布到 QEMUHelper 自身的 Documents 容器，避免临时签名访问原版 app group 被拒绝。
+  键鼠只使用 VirtIO；USB 直通独立装配 xHCI/usbredir，不能启用
   UTM 附带的 USB HID 输入模板，否则输入模式切换会把鼠标路由到 guest 未驱动的设备。QEMU drive
   显式 `format=raw`。产品 graphics boot 与 gpu gate
   都创建同一 UTM/VirGL 配置的 disposable 实例：gate 先备份开发 VM 的 plist 与已发布 artifact
@@ -117,7 +128,7 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
 - ptrace consumer 使用固定 Linux 头文件与真实 libc wrapper，覆盖自愿/外部逐 Thread 附加、NT_PRSTATUS
   前缀与特权状态拒绝、RX/PROT_NONE COW、raw PEEK copyout 故障、signal 抑制/替换、WNOWAIT、exec stop、
   外部 tracer 与 real-parent exit、tracer exit 自动分离、dumpability/SYS_PTRACE 拒绝与 sibling 继续运行。
-  它属于 musl 的双架构 SMP1/SMP2 cold-boot gate；Wine debugger 观察不能替代该原生 ABI 回归。
+  它属于 musl 的双架构 SMP1/SMP2 cold-boot gate。
 - seccomp regression 直接执行生产 BPF verifier/security owner，覆盖 scratch 路径初始化、
   signed action precedence、newest DATA、全部 seccomp_data words、OOM 不发布与 6554-program
   小栈析构；musl 双架构 1/2 CPU gate 覆盖 unprivileged NNP 授权、fork/thread/exec 继承、
@@ -379,11 +390,7 @@ make verify-runtime-network-drive
 - APK 应用的 TLS/HTTP、SQLite journal/lock 和 Git object/ref/worktree vertical slice；
   curl timeout 后连续 64 次 fork 分别改写 parent/child shell state，再成功跨过下一次
   fork/exec，专门约束四 CPU migration 下的 COW remote TLB completion。
-- 音频的真实设备、amixer 和并发流门禁见下文；Wine consumer 与延迟分析不能用 host 测试替代。
-
-可单独执行 `make verify-runtime-wine`（AArch64/HVF）：在私有盘安装固定 Wine/FEX，
-由 Windows ShellLink 生成桌面入口，双击启动明确的 i386 Notepad，编辑保存并在新 QEMU 进程中冷启动回读。
-日志与截图保存在 `target/wine-runtime/acceptance/`；它不纳入跨架构的默认门禁，详情见 [Wine 运行时](wine-runtime.md)。
+- 音频的真实设备、amixer 和并发流门禁见下文；真实设备播放与延迟分析不能用 host 测试替代。
 
 `verify-runtime` 与 `verify` 共用 `verify-runtime-gates`；它是 runtime 编排的唯一 owner，并串行运行各顶层门禁。
 非图形门禁只走 headless QEMU；graphics boot 与 gpu 只走 disposable UTM VirGL，禁止同一能力

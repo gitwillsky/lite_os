@@ -77,7 +77,7 @@ impl From<EncodeError> for Fail {
 pub(super) enum Data {
     None,
     /// 本 wl_keyboard 是否已收到 enter；这是对象的 wire 状态，不是全局键盘焦点。
-    /// 新绑定对象必须先取得 enter/modifiers，否则 Wine 会丢弃没有 focused HWND 的按键。
+    /// 新绑定对象必须先取得 enter/modifiers，否则客户端无法把按键交给当前焦点窗口。
     Keyboard {
         entered: bool,
     },
@@ -123,7 +123,7 @@ const GLOBALS: [(u32, Interface, u32); 12] = [
     // 视口：裁剪与缩放在提交时完成。
     (11, Interface::WpViewporter, 1),
     (12, Interface::WlSubcompositor, 1),
-    // 输出的逻辑位置与尺寸（物理尺寸除以 scale）；Wine 用它决定全屏窗口大小。
+    // 输出的逻辑位置与尺寸（物理尺寸除以 scale）；客户端用它决定全屏窗口大小。
     (13, Interface::ZxdgOutputManagerV1, 3),
     (14, Interface::XdgWmDialogV1, 1),
 ];

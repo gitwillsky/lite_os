@@ -152,13 +152,6 @@ impl Icons {
             .flatten()
             .flatten()
             .filter(|e| !e.file_name().to_string_lossy().starts_with('.'))
-            // Wine 的 Windows ShellLink 仍归 Windows 所有；同目录已有导出的标准入口时只显示后者。
-            .filter(|e| {
-                !(e.path()
-                    .extension()
-                    .is_some_and(|extension| extension == "lnk")
-                    && e.path().with_extension("desktop").is_file())
-            })
             .take(MAX_ENTRIES)
             .map(|e| {
                 let path = e.path();
@@ -303,30 +296,5 @@ impl Icons {
         }
         self.refresh();
         Ok(())
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn wine_shell_link_and_exported_entry_have_one_desktop_icon() {
-        let root = std::env::temp_dir().join(format!("liteos-desktop-wine-{}", std::process::id()));
-        let desktop = root.join("Desktop");
-        fs::create_dir_all(&desktop).unwrap();
-        fs::write(desktop.join("Example.lnk"), b"Windows ShellLink").unwrap();
-        let entry = desktop.join("Example.desktop");
-        fs::write(&entry, "[Desktop Entry]\nType=Application\nName=Installed Example\nExec=wine example.exe\nIcon=example.0\n").unwrap();
-        let mut icons = Icons::load(&root, (75, 75));
-        assert_eq!(icons.items.len(), 5);
-        assert_eq!(icons.items[4].label, "Installed Example");
-        assert_eq!(icons.items[4].art, "example.0-32");
-        assert_eq!(icons.items[4].target, Target::Path(entry.clone()));
-        fs::remove_file(entry).unwrap();
-        icons.refresh();
-        assert_eq!(icons.items.len(), 5);
-        assert_eq!(icons.items[4].label, "Example.lnk");
-        fs::remove_dir_all(root).unwrap();
     }
 }

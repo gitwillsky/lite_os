@@ -6,4 +6,4 @@
 - **对应的 Windows 2000 组件**：系统颜色与度量（user32 的 GetSysColor 等）
 - **依赖**：liteos-runtime
 
-系统颜色、窗口度量、立体边框取色与 Wine 注册表；数据在 `assets/classic/theme/classic.theme`。
+系统颜色、窗口度量与立体边框取色；数据在 `assets/classic/theme/classic.theme`。

@@ -96,7 +96,7 @@ Windows 2000 Professional SP4 简中 ISO。ISO、原始 PE、全部导出资源�
 - `sounds/`：`logon.wav`、`logoff.wav`、`chord.wav`、`recycle.wav`，保持 ISO 的原始 PCM 字节与参数。
 - `fonts/`：原始 `simsun.ttc`、`tahoma.ttf`、`tahomabd.ttf`、`marlett.ttf` 与唯一的 `fontmap.ini` 配置。
   SimSun/NSimSun 两个 face 和 12/13/14/15/16/18 ppem 内嵌点阵全部保留。Tahoma 中文经标准 FontLink 进入宋体；
-  不再安装文泉驿、UMing 或 Wine Tahoma。`fontmap.ini` 是 LiteOS 配置，不冒充 ISO 文件。
+  只安装 manifest 登记的原版字体。`fontmap.ini` 是 LiteOS 配置，不冒充 ISO 文件。
   标题按钮从 Marlett 的 Windows Symbol cmap 读取 U+F030/F031/F032/F072，按物理字号重新 hinting，
   不再手画最小化、最大化、还原和关闭的低分辨率点阵；普通文本不自动转换到符号私用区。
 

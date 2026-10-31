@@ -144,22 +144,6 @@ fn overlay_reports_the_failing_line() {
 }
 
 #[test]
-fn wine_registry_encodes_colors_and_negative_twips() {
-    let registry = Theme::classic().wine_registry(2);
-    assert!(registry.starts_with("Windows Registry Editor Version 5.00\n"));
-    assert!(registry.contains("\"ActiveTitle\"=\"10 36 106\"\n"));
-    assert!(registry.contains("\"GradientInactiveTitle\"=\"192 192 192\"\n"));
-    assert!(registry.contains("\"BorderWidth\"=\"-15\"\n"));
-    assert!(registry.contains("\"CaptionHeight\"=\"-270\"\n"));
-    assert!(registry.contains("\"ScrollWidth\"=\"-240\"\n"));
-    assert!(registry.contains("\"IconSpacing\"=\"-1125\"\n"));
-    assert!(registry.contains("\"LogPixels\"=dword:000000c0\n"));
-    assert!(registry.contains("\"AppliedDPI\"=dword:000000c0\n"));
-    // 任务栏度量只属于 desktop，不能泄漏进 Win32 注册表。
-    assert!(!registry.contains("Taskbar"));
-}
-
-#[test]
 fn load_uses_the_first_existing_file_over_the_default() {
     let directory = std::env::temp_dir().join(format!("classic-theme-load-{}", std::process::id()));
     fs::create_dir_all(&directory).unwrap();

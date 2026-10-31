@@ -58,7 +58,6 @@
 - [网络驱动器验证](development/network-drive-verification.md)
 - [性能验证范围与成本契约](development/performance-coverage.md)
 - [Rust UI SDK 与本机开发](development/ui-sdk.md)
-- [Wine 运行时：构建、打包与安装](development/wine-runtime.md)
 - [Wayland 与经典控件验证](development/wayland-ui-verification.md)
 - [本机登录与桌面验证](development/desktop-verification.md)
 - [生成的 scoped interface baseline](generated/architecture-interface.txt)

@@ -233,8 +233,6 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   原生执行需执行位与 ELF/shebang 文件头同时成立，不能把 SMB 投影的执行位当成文件格式。
   用户目录先于系统目录，递归条目以相对路径中的 `/` 替换为 `-` 得到 ID；Hidden 用户条目遮蔽系统同 ID 条目。
   Exec 按 string 与命令行两层转义解码，不经过 shell；Path 是应用工作目录。NoDisplay 不进入菜单，仍可用于 MIME 关联和窗口图标。
-- `/bin/wine` 只装配当前账户的 `~/.wine`、FEX 和标准 XDG 环境，exec 固定上游运行时。
-  Wine 安装器/注册表/IShellLink/menubuilder 拥有应用安装与快捷方式事实；外壳不复制一份安装数据库。
 - `classic-ui::Bitmap::application_icon` 拥有应用图标加载：绝对 PNG/BMP、XDG hicolor 的 NxN/apps PNG、pixmaps PNG 与经典系统 BMP。
   文件类型图标沿用同一加载器的 `NxN/mimetypes` 上下文；原版资源由 ISO 导入器发布，生成素材由 `file_type_icons.py` 转换并登记摘要。
   行图标来源区分系统资源、应用 app_id 和主题名/绝对路径（RowIcon kind 0/1/2）；不得把 MIME 图标名送入 app_id 查找。
@@ -243,10 +241,9 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   当前只支持此 PNG 查找子集，不声明完整主题继承、SVG 或 XPM 支持。
 - desktop 每秒重读已安装条目，桌面目录变化时重读快捷方式并重建当前图标集合；卸载后不保留旧动态图标像素。
   注册应用变化时同时刷新普通文件的关联图标；类型数据与手工默认值更新可通过刷新重新读取。
-  Windows `.lnk` 与同名导出 `.desktop` 并存时只展示标准入口，原 ShellLink 仍由 Windows 拥有。
   NoDisplay/Hidden 等语义只由 desktop-entry 解释；开始菜单不得静默截断为固定程序数。
 - 成本决策：PNG 解码与目录扫描只在加载/清单刷新发生，不进入逐像素或逐帧合成；不新增失真的渲染 benchmark。
-  以有界解码回归、标准条目样本和真实 Wine 安装/启动验证消费链。
+  以有界解码回归、标准条目样本和原生应用启动验证消费链。
 
 ## 产品资源
 
@@ -260,7 +257,6 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - typeface::FontCatalog 拥有扫描到的字体成员与 `fontmap.ini` 映射；Resources 每进程加载一次并共享，主题重载清空。
   轮廓字体经 linux-uapi `ReadOnlyMapping` 只读 `MAP_PRIVATE` 映射，同一 TTC 成员共享一份映射；页按需载入并跨进程共享页缓存，
   不再每进程整文件读入。字体文件只以 rename 替换，不得原地改写或截断（映射的 unsafe 前置条件）。
-  Wine 安装器从同一映射生成标准 Fontconfig 别名与系统字体目录配置，不维护另一份字体回退清单。
 - OutlineFace 独占每个成员的 fpgm 结果；Typeface 独占本字号各成员的 prep 结果（按成员地址索引，chain 中的 Rc 保活）
   与已光栅化字形（上限 4096，满即清空）。缺少这些缓存会在每个字形重复执行字体程序；None 记录失败，避免反复执行。
 - classic_ui::Fonts 拥有六个系统字体用途、每个 scale 的原版 Marlett 标题按钮字体与最多 16 个应用派生逻辑字体（`set_font`）；Painter 只借用，不复制。
@@ -317,7 +313,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   新资源先取得 keymap/repeat_info；即使 logical focus 未变化，也必须由 Seat 用当前真实状态补发 enter/modifiers。
   已 enter 的旧资源不能重复 enter，尚未 enter 的资源不接收按键；release 删除资源，surface 先销毁时只清理 wire 状态、不发送失效引用。
 - `Server::keyboard_needs_enter` 只读检查资源状态，不 flush socket、不维护另一份焦点或按键表；正常焦点改变仍先 leave 再 enter。
-  成本决策：无新锁、缓存或逐帧分配，查询为现有连接/对象表的有界只读遍历；沿用控件/Wayland 门禁，以 wire 顺序、迟绑定和 Wine 输入验证，不另设 wall-clock 阈值。
+  成本决策：无新锁、缓存或逐帧分配，查询为现有连接/对象表的有界只读遍历；沿用控件/Wayland 门禁，以 wire 顺序和迟绑定输入验证，不另设 wall-clock 阈值。
 
 ## linux-dmabuf / EGL 客户端
 

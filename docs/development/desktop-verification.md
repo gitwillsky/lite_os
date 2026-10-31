@@ -81,8 +81,7 @@ Terminal=true 桌面条目当前不显示；终端应用的使用与待验收范
 | 输入与文件操作 | 已有文本选择传输，未实现标准文件拖放与 IME | 协议支持范围由[设备架构](../architecture/devices-terminal.md)拥有，不以文本剪贴板代替文件拖放或输入法 |
 | 媒体播放 | 当前只播放 16 位 PCM WAV | 压缩音频解码、在线来源与录音尚未实现，不把播放窗口存在视为完整媒体播放器 |
 
-共享框架的生命周期、GPU 缓冲与性能证明范围见[Wayland 验证](wayland-ui-verification.md)；
-Win32 conformance、红警 2 与 D3D 的未完成范围见 [Wine 验证边界](wine-runtime.md#conformance-对照与游戏验收)。
+共享框架的生命周期、GPU 缓冲与性能证明范围见[Wayland 验证](wayland-ui-verification.md)。
 
 ## 门禁
 

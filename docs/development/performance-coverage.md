@@ -31,7 +31,7 @@ whole-machine latency、boot time 与网络吞吐受宿主抖动影响，只作�
 音频逐流增益使用 `cargo run --release -p architecture-bench --bin audio-mixer-bench` 诊断生产
 Accumulator 的单路/八路 period CPU 成本；host 硬件浮点不代表 kernel softfloat，故不设置 host 时间阈值。
 steady period 不分配、不查 control registry；新增乘法的真实可持续性由 AArch64/HVF 八路、六秒、
-零 XRUN 的 workload 和设备 WAV 分析裁决，不声称长时间或 Wine 游戏延迟已经达标。
+零 XRUN 的 workload 和设备 WAV 分析裁决，不声称长时间播放或游戏延迟已经达标。
 swap 的 area/slot CPU 成本以生产模块的 release host fixture 单独诊断：
 `cargo test -p kernel-unit --release --test fork_file_eof production_swap_slot_cpu_cost -- --ignored --nocapture`。
 固定 1/32 area、100,000 次预热和五个样本中位数，测 reserve/retire、clone/retire 与 statistics；

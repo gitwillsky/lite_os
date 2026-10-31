@@ -22,7 +22,7 @@ from toolchain.musl import cached_musl_paths, find_compiler
 
 ROOT = Path(__file__).resolve().parent.parent
 STAMP_PATH = "/usr/share/liteos/.userland-sync.json"
-RECIPE_VERSION = 4
+RECIPE_VERSION = 5
 
 
 # 仅用于离线撤销旧镜像中已退休的产品文件，不参与构建或启动。
@@ -31,16 +31,19 @@ RETIRED_FILES = tuple(f"/bin/{name}" for name in (
     "audio-service", "console", "seatd", "seatctl", "desktop",
     "file-manager", "my-computer", "music-player", "terminal", "session-launch",
     "terminal-session",
-)) + ("/etc/init.d/graphical-session", "/etc/terminfo/l/liteos")
-RETIRED_TREES = ("/usr/lib/lite-runtime", "/usr/share/liteos")
+)) + ("/etc/init.d/graphical-session", "/etc/terminfo/l/liteos", "/bin/wine",
+      "/usr/share/applications/wine-programs.desktop", "/usr/share/applications/wine-exe.desktop",
+      "/usr/share/applications/wine-msi.desktop", "/etc/fonts/conf.d/99-liteos-ui.conf")
+RETIRED_TREES = ("/usr/lib/lite-runtime", "/usr/share/liteos", "/opt/wine",
+                 "/usr/share/fontconfig", "/usr/share/X11/xkb")
 
 
 def managed_path(path: str) -> bool:
     """只接受同步器拥有的规范绝对路径，拒绝父目录跳转。"""
     if not path.startswith("/") or str(PurePosixPath(path)) != path or ".." in PurePosixPath(path).parts:
         return False
-    # 系统 Fontconfig 与 Wine/XKB 运行时由同步器拥有，缺少目录授权时无法撤销退休文件。
-    if path.startswith(("/opt/wine/", "/etc/fonts/", "/usr/share/fontconfig/", "/usr/share/X11/xkb/")):
+    # Fontconfig 主配置与旧镜像中的配置片段由同步器拥有，撤销时仍需接受旧 stamp 路径。
+    if path.startswith("/etc/fonts/"):
         return True
     # libmpv 运行时的 alsa-lib 配置树（scripts/mpv_runtime.py）：缺少它，升级后残留的旧配置撤不掉。
     if path.startswith("/usr/share/alsa/"):
@@ -55,7 +58,7 @@ def managed_path(path: str) -> bool:
     if path == "/usr/share/mime/packages/liteos.xml" or path.startswith("/usr/share/icons/hicolor/"):
         return True
     return path in {
-        *RETIRED_FILES, *(f"/bin/{name}" for name in ACCOUNT_APPLETS), "/bin/shutdown", "/bin/wine", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
+        *RETIRED_FILES, *(f"/bin/{name}" for name in ACCOUNT_APPLETS), "/bin/shutdown", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
         "/etc/init.d/display-service", "/etc/init.d/network-service", "/usr/share/udhcpc/default.script",
         "/etc/profile", "/bin/logon", "/bin/desktop", "/bin/file-explorer", "/bin/smbfs", "/bin/fusermount3", "/etc/fuse.conf", "/bin/control-panel", "/bin/taskmgr", "/bin/sndvol", "/bin/sndplay", "/bin/mplay", "/bin/notepad", "/bin/devmgmt", "/bin/session-launch",
     } or any(path.startswith(root + "/") for root in RETIRED_TREES)
@@ -231,7 +234,7 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
     Raises:
         RuntimeError: 镜像正在使用、journal 恢复或任一文件写入/回读失败。
     """
-    # Mesa 与 Wine 可消费同一上游库；相同安装字节只有一份 manifest，版本冲突必须报错而非覆盖。
+    # 多个运行时可消费同一上游库；相同安装字节只有一份 manifest，版本冲突必须报错而非覆盖。
     installed = {}
     for artifact in artifacts:
         previous = installed.get(artifact.destination)
@@ -347,11 +350,6 @@ def main() -> int:
     """将当前目标的系统文件同步到指定开发镜像。"""
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--image", type=Path, required=True)
-    parser.add_argument(
-        "--wine",
-        action="store_true",
-        help="同时安装 Wine 运行时（/opt/wine 约 770 MiB，会先把镜像扩到足够容量）",
-    )
     arguments = parser.parse_args()
     image = arguments.image.resolve()
     if not image.is_file():
@@ -362,14 +360,6 @@ def main() -> int:
     artifacts = base_userland(cached_musl_paths(compiler))
     # 同一个固定 BusyBox ELF 以标准 applet 名安装，旧开发镜像无需替换 init 或覆盖账户数据。
     artifacts += tuple(UserlandArtifact(binary, f"/bin/{name}", 0o755) for name in ACCOUNT_APPLETS)
-    if arguments.wine:
-        # 同一份清单里要么有 Wine 要么没有：不带 --wine 的同步会按指纹把已安装的 Wine 撤掉，
-        # 所以开发镜像始终用同一个选择同步。
-        from ext4_image import ensure_ext4_capacity
-        from wine_runtime import REQUIRED_CAPACITY_MIB, wine_userland
-
-        ensure_ext4_capacity(image, REQUIRED_CAPACITY_MIB)
-        artifacts += wine_userland()
     synchronize(image, artifacts)
     return 0
 

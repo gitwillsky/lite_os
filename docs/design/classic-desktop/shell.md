@@ -20,7 +20,6 @@
    | 我的文档 | `file-explorer` 定位到用户主目录 | |
    | 我的电脑 | `file-explorer` 的"我的电脑"视图 | 列出各磁盘（挂载点）与"控制面板" |
    | 回收站 | `file-explorer` 的回收站视图 | 空/满两种图标 |
-   | 红色警戒 2 | Wine 启动游戏 | 用户放入游戏文件后由 `.desktop` 条目生成 |
 
    Windows 2000 默认还有"网上邻居""Internet Explorer""连接到 Internet"。LiteOS 没有对应后端，**不提供**
    （范围决策，记录于此）。

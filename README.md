@@ -99,5 +99,5 @@ make run-gui   # 在 UTM 窗口中显示内核启动画面，shell 位于串口
 图形栈使用公开 Wayland/ALSA 协议，产品会话为 display-service → compositor → logon → 用户 desktop；
 普通应用使用共享 UI 运行库与 Rust SDK。旧图形栈、用户态音频服务、显示器文本 VT 与 seat 私有协议已移除，恢复入口为 UART shell。
 
-当前能力与限制分别由[桌面验证](docs/development/desktop-verification.md)、[UI 框架](docs/architecture/ui-framework.md)和
-[Wine 运行时](docs/development/wine-runtime.md)维护；构建和静态检查通过不能替代图形交互、兼容性或游戏验收。
+当前能力与限制分别由[桌面验证](docs/development/desktop-verification.md)和[UI 框架](docs/architecture/ui-framework.md)维护；
+构建和静态检查通过不能替代图形交互与应用验收。

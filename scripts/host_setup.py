@@ -5,34 +5,29 @@
 1. 校验 macOS/arm64 与 Xcode Command Line Tools；
 2. 用 Homebrew 安装 Clang/LLVM archive 工具、e2fsprogs、QEMU 与 OpenSSL；
 3. 安装 rustup 并按 ``rust-toolchain.toml`` 安装固定 nightly、组件与 target；
-4. 按固定 SHA-256 安装 UTM v4.7.5；
+4. 从固定输入构建带 xHCI 修复的 UTM 和 USB 转发程序；
 
 所有步骤幂等；已满足的步骤直接跳过。
 """
 
 from __future__ import annotations
 
-import hashlib
 import os
 import platform
-import plistlib
 import shutil
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 from local_inputs import INPUTS
 from typing import Sequence
 
-from utm_runtime import UTM_APP, UTM_INFO, UTM_VERSION
+from utm_build import ensure_built
 
 ROOT = Path(__file__).resolve().parent.parent
 DOWNLOADS = INPUTS / "host"
 # llvm 与 e2fsprogs 为 keg-only；verify_musl/ext4_image 已固定从 /opt/homebrew/opt 回退定位。
-BREW_FORMULAE = ("llvm", "e2fsprogs", "qemu", "openssl@3")
-UTM_DMG_URL = f"https://github.com/utmapp/UTM/releases/download/v{UTM_VERSION}/UTM.dmg"
-UTM_DMG_SHA256 = "a8435c93cfb5f8bbfeea4b134cfad1ac66b67632b75e438c63b1a8ae043bef0e"
+BREW_FORMULAE = ("llvm", "e2fsprogs", "qemu", "openssl@3", "gh", "ninja", "pkgconf")
 RUSTUP_INIT_URL = "https://static.rust-lang.org/rustup/dist/aarch64-apple-darwin/rustup-init"
 CARGO_BIN = Path.home() / ".cargo" / "bin"
 
@@ -100,42 +95,9 @@ def install_rust_toolchain() -> None:
     run([rustup, "toolchain", "install"], environment=environment)
 
 
-def installed_utm_version() -> str | None:
-    """返回 /Applications/UTM.app 的版本；未安装时返回 ``None``。"""
-    if not UTM_INFO.is_file():
-        return None
-    with UTM_INFO.open("rb") as stream:
-        return plistlib.load(stream).get("CFBundleShortVersionString")
-
-
 def install_utm() -> None:
-    """按固定摘要安装 UTM；已存在其他版本时 fail-stop，不覆盖用户应用。
-
-    Raises:
-        RuntimeError: 已安装非固定版本，或下载产物摘要不匹配。
-    """
-    version = installed_utm_version()
-    if version == UTM_VERSION:
-        return
-    if version is not None or UTM_APP.exists():
-        raise RuntimeError(
-            f"UTM {UTM_VERSION} is required but {UTM_APP} contains {version or 'an unknown version'}; "
-            "remove it and re-run `make setup`"
-        )
-    DOWNLOADS.mkdir(parents=True, exist_ok=True)
-    image = DOWNLOADS / f"UTM-{UTM_VERSION}.dmg"
-    if not image.is_file() or hashlib.sha256(image.read_bytes()).hexdigest() != UTM_DMG_SHA256:
-        run(["curl", "--fail", "--location", "--proto", "=https", "--tlsv1.2", "-o", image, UTM_DMG_URL])
-    digest = hashlib.sha256(image.read_bytes()).hexdigest()
-    if digest != UTM_DMG_SHA256:
-        image.unlink()
-        raise RuntimeError(f"UTM.dmg SHA-256 mismatch: expected {UTM_DMG_SHA256}, got {digest}")
-    with tempfile.TemporaryDirectory(prefix="liteos-utm-") as mountpoint:
-        run(["hdiutil", "attach", "-nobrowse", "-readonly", "-mountpoint", mountpoint, image])
-        try:
-            run(["ditto", Path(mountpoint) / "UTM.app", UTM_APP])
-        finally:
-            run(["hdiutil", "detach", mountpoint])
+    """构建并缓存固定的 UTM 开发副本；不会覆盖 /Applications 中的用户应用。"""
+    ensure_built()
 
 
 def main() -> int:

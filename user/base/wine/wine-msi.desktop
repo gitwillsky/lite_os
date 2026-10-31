@@ -1,7 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=Windows Installer
-Exec=/bin/wine msiexec /i %f
-Icon=file-app
-MimeType=application/x-msi;
-NoDisplay=true

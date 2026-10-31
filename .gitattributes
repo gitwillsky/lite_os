@@ -3,6 +3,3 @@ vendor/smoltcp/CHANGELOG.md whitespace=-blank-at-eol
 vendor/smoltcp/LICENSE-0BSD.txt whitespace=-blank-at-eof
 vendor/smoltcp/examples/sixlowpan_benchmark.rs whitespace=-blank-at-eol
 vendor/smoltcp/tests/snapshots/netsim__netsim.snap whitespace=-blank-at-eol
-
-# 预构建的第三方运行时（见 docs/development/wine-runtime.md）走 Git LFS。
-prebuilt/**/*.tar.xz filter=lfs diff=lfs merge=lfs -text

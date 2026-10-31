@@ -82,7 +82,7 @@ class UtmRuntimeTests(unittest.TestCase):
             with (
                 patch.object(utm_runtime, "VM_PACKAGE", package),
                 patch.object(utm_runtime, "UTM_ARTIFACTS", artifacts),
-                patch.object(utm_runtime, "_installed_version", return_value="4.7.5"),
+                patch.object(utm_runtime, "_installed_version", return_value=utm_runtime.UTM_VERSION),
             ):
                 result = utm_runtime.prepare(
                     kernel=kernel,
@@ -176,7 +176,7 @@ class UtmRuntimeTests(unittest.TestCase):
 
         arguments = run.call_args.args[0]
         self.assertEqual(arguments[:2], ["osascript", "-e"])
-        self.assertIn('application id "com.utmapp.UTM"', arguments[2])
+        self.assertIn(f'application "{utm_runtime.UTM_APP}"', arguments[2])
         self.assertIn(utm_runtime.VM_UUID, arguments[2])
         self.assertIn("start vm", arguments[2])
         self.assertNotIn("utmctl start", arguments[2])
@@ -194,7 +194,7 @@ class UtmRuntimeTests(unittest.TestCase):
             copy = Path(directory) / "LiteOS.utm"
             copy.mkdir()
             with (
-                patch.object(utm_runtime.subprocess, "run"),
+                patch.object(utm_runtime, "_open_application"),
                 patch.object(utm_runtime, "_status", return_value="stopped"),
                 patch.object(utm_runtime, "_ctl", return_value="cannot remove LiteOS.utm"),
                 patch.object(utm_runtime, "VM_DOCUMENT_PACKAGE", copy),
@@ -208,7 +208,7 @@ class UtmRuntimeTests(unittest.TestCase):
             copy = Path(directory) / "LiteOS.utm"
             copy.mkdir()
             with (
-                patch.object(utm_runtime.subprocess, "run"),
+                patch.object(utm_runtime, "_open_application"),
                 patch.object(utm_runtime, "_status", side_effect=["stopped", None]),
                 patch.object(utm_runtime, "_ctl", return_value="") as ctl,
                 patch.object(utm_runtime, "VM_DOCUMENT_PACKAGE", copy),
@@ -220,6 +220,7 @@ class UtmRuntimeTests(unittest.TestCase):
     def test_registration_uses_public_import_instead_of_document_open(self) -> None:
         with (
             patch.object(utm_runtime, "_registered", side_effect=[False, True]),
+            patch.object(utm_runtime, "_open_application"),
             patch.object(utm_runtime.subprocess, "run") as run,
             patch.object(utm_runtime.time, "sleep"),
         ):
@@ -260,8 +261,8 @@ class UtmRuntimeTests(unittest.TestCase):
                     side_effect=["stopped", "started"],
                 ),
                 patch.object(utm_runtime, "DebugSession", return_value=debug),
-                patch.object(utm_runtime, "_registered", return_value=True),
-                patch.object(utm_runtime, "_ctl", return_value="") as ctl,
+                patch.object(utm_runtime, "UsbRedirection") as usb,
+                patch.object(utm_runtime, "_stop_managed") as stop,
             ):
                 utm_runtime.run_gui(
                     kernel=Path("kernel"),
@@ -272,7 +273,8 @@ class UtmRuntimeTests(unittest.TestCase):
                     serial_log=Path(directory) / "serial.log",
                 )
 
-        ctl.assert_called_once_with("stop", utm_runtime.VM_UUID)
+        stop.assert_called_once_with()
+        usb.return_value.close.assert_called_once_with()
         self.assertEqual(prepare.call_args.kwargs["serial_tcp_port"], 4567)
         serial.setblocking.assert_called_once_with(False)
         serial.close.assert_called_once_with()

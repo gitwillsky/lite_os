@@ -1,5 +1,5 @@
 //! comctl32 列表项的绘制：大图标（LVS_ICON）与小图标/列表/详细资料首列的“图标 + 标签”。
-//! 几何取 comctl32 的列表视图常量（Wine listview 同值）：图标距格顶 4，标签距格顶 图标高 + 6，标签框比文字左右各宽 2。
+//! 几何取 comctl32 的列表视图常量：图标距格顶 4，标签距格顶 图标高 + 6，标签框比文字左右各宽 2。
 //! 选中时只高亮标签矩形，控件有焦点时图标按 ILD_BLEND50 与高亮色混合；焦点框只围标签。
 use crate::{Bitmap, Painter, painter::Ink};
 use canvas::Rect;

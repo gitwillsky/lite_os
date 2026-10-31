@@ -283,7 +283,7 @@ fn parse(text: &str) -> Option<Entry> {
         no_display,
     })
 }
-/// Desktop Entry string 层先解码，再由 Exec 层处理双引号与反斜杠；Wine 的 Windows 路径需要这两层。
+/// Desktop Entry string 层先解码，再由 Exec 层处理双引号与反斜杠，保持引号内的反斜杠与字面参数。
 fn unescape(value: &str) -> Option<String> {
     let mut result = String::new();
     let mut chars = value.chars();
@@ -362,51 +362,51 @@ mod tests {
         );
     }
     #[test]
-    fn wine_entry_preserves_two_escape_layers_and_working_directory() {
+    fn entry_preserves_two_escape_layers_and_working_directory() {
         let entry = parse(r#"[Desktop Entry]
 Type=Application
-Name=Win32 Notepad
-Exec=env "WINEPREFIX=/home/alice/.wine" wine "C:\\\\Program Files\\\\Demo\\\\notepad.exe" "--literal=$HOME"
-Path=/home/alice/.wine/drive_c/Program Files/Demo
-Icon=/home/alice/.local/share/icons/notepad.png
-StartupWMClass=notepad.exe
+Name=Demo
+Exec=env "APP_PROFILE=/home/alice/.config/demo" /bin/demo "/home/alice/Demo\\\\data" "--literal=$HOME"
+Path=/home/alice/Demo Workspace
+Icon=/home/alice/.local/share/icons/demo.png
+StartupWMClass=demo
 "#).unwrap();
         assert_eq!(
             entry.arguments(),
             [
                 "env",
-                "WINEPREFIX=/home/alice/.wine",
-                "wine",
-                r"C:\Program Files\Demo\notepad.exe",
+                "APP_PROFILE=/home/alice/.config/demo",
+                "/bin/demo",
+                r"/home/alice/Demo\data",
                 "--literal=$HOME"
             ]
         );
         let command = entry.command();
         assert_eq!(
             command.get_current_dir(),
-            Some(Path::new("/home/alice/.wine/drive_c/Program Files/Demo"))
+            Some(Path::new("/home/alice/Demo Workspace"))
         );
-        assert_eq!(entry.wm_class(), Some("notepad.exe"));
+        assert_eq!(entry.wm_class(), Some("demo"));
     }
 
     #[test]
-    fn user_entries_override_system_and_hidden_masks_nested_wine_entry() {
+    fn user_entries_override_system_and_hidden_masks_nested_entry() {
         let root = std::env::temp_dir().join(format!("liteos-entry-{}", std::process::id()));
         let user = root.join("user");
         let system = root.join("system");
-        fs::create_dir_all(user.join("applications/wine/Programs")).unwrap();
-        fs::create_dir_all(system.join("applications/wine/Programs")).unwrap();
+        fs::create_dir_all(user.join("applications/vendor/tools")).unwrap();
+        fs::create_dir_all(system.join("applications/vendor/tools")).unwrap();
         let app = "[Desktop Entry]\nType=Application\nName=System\nExec=/bin/false\n";
-        fs::write(system.join("applications/wine/Programs/demo.desktop"), app).unwrap();
+        fs::write(system.join("applications/vendor/tools/demo.desktop"), app).unwrap();
         fs::write(
-            user.join("applications/wine-Programs-demo.desktop"),
+            user.join("applications/vendor-tools-demo.desktop"),
             format!("{app}Hidden=true\n"),
         )
         .unwrap();
         assert!(installed_in(&[user.clone(), system.clone()]).is_empty());
-        fs::remove_file(user.join("applications/wine-Programs-demo.desktop")).unwrap();
+        fs::remove_file(user.join("applications/vendor-tools-demo.desktop")).unwrap();
         fs::write(
-            user.join("applications/wine/Programs/demo.desktop"),
+            user.join("applications/vendor/tools/demo.desktop"),
             app.replace("System", "User"),
         )
         .unwrap();

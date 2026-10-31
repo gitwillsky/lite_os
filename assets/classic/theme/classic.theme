@@ -1,6 +1,6 @@
 ; LiteOS 经典主题（Windows 2000 "Windows 标准"配色方案）。
 ; 颜色键名与 Control Panel\Colors、度量键名与 Control Panel\Desktop\WindowMetrics 的注册表值名一致，
-; 因此同一份数据既驱动桌面，也生成 Wine 前缀注册表。颜色为 "R G B"，度量为 96 DPI 下的逻辑像素。
+; 同一份数据驱动原生桌面与控件。颜色为 "R G B"，度量为 96 DPI 下的逻辑像素。
 ; 字体与 WindowMetrics 的 LOGFONT 值同名，值为“字体名,磅值,粗细”（400 常规、700 粗体）。
 
 [Colors]

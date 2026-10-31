@@ -222,7 +222,7 @@ fn original_tahoma_cmap_metrics_and_outlines() {
     let a = tahoma.glyph_id('A').unwrap();
     assert!(tahoma.glyph_id('中').is_none());
     assert!(tahoma.advance_units(a).unwrap() > 0);
-    // 原版 Tahoma 没有 Wine 替代字体的 11 ppem 内嵌点阵；西文走原版轮廓与 hinting。
+    // 原版 Tahoma 没有 11 ppem 内嵌点阵；西文走原版轮廓与 hinting。
     assert!(!tahoma.has_strike(11));
     assert!(tahoma.embedded_bitmap(a, 11).is_none());
     assert!(!tahoma.outline(a).unwrap().contours.is_empty());

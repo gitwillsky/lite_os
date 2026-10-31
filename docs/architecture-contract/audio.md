@@ -74,4 +74,4 @@ workload 分别观察；不以 host 硬件浮点计时宣称 kernel softfloat �
   control write 不开放。偏好为 -1 自动选择，其余值精确匹配；无槽位返回 EBUSY。
 - PCM 部分语义、capture、MIDI 和 sequencer 的范围见[当前架构](../architecture/audio.md)与 ABI 矩阵。
 - host 测试覆盖混音数学、Engine contributor/close/underrun、PCM 与 control codec。
-  runtime fixture 使用真实 Linux UAPI、上游 amixer 与 alsa-lib 八路播放；Wine ALSA consumer 仍待验证。
+  runtime fixture 使用真实 Linux UAPI、上游 amixer 与 alsa-lib 八路播放。

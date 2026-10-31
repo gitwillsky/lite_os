@@ -82,12 +82,12 @@
   由实际 owner 的 OOM、观察者、重开和重复 close 回归用例验证。
 ## Known limits
 
-- 为 Wine（winewayland）补齐的协议：`wl_subcompositor` v1（同步缓存随父提交原子应用，位置与堆叠属于父状态）、
+- 标准客户端协议：`wl_subcompositor` v1（同步缓存随父提交原子应用，位置与堆叠属于父状态）、
   `wp_viewporter` v1（逻辑尺寸与仿射采样元数据，CPU/GPU 直接取样，不预先生成缩放副本）、
   `zxdg_output_manager_v1` v3（逻辑尺寸=物理尺寸/scale）、`xdg_popup` 与 `xdg_positioner`（位置由锚点矩形、锚点、重力与偏移计算，相对父 surface 左上角，
   不使用窗口几何、不做 `constraint_adjustment` 越界调整；`grab` 的弹出层在点击外部时收到 `popup_done`）。
   未实现：`zwp_pointer_constraints_v1`、`zwp_relative_pointer_manager_v1`、`zwp_text_input_manager_v3`、`wp_fractional_scale_manager_v1`、
-  `xdg_toplevel_icon_v1`、`zwlr_data_control_manager_v1`（Wine 的可选项）；全屏缩放的等比与黑边策略尚未设计（现在窗口按视口给出的尺寸整数倍放大）。
+  `xdg_toplevel_icon_v1`、`zwlr_data_control_manager_v1`；全屏缩放的等比与黑边策略尚未设计（现在窗口按视口给出的尺寸整数倍放大）。
 - 所有连接有 `wp_cursor_shape_manager_v1` v2（只支持 `wl_pointer`）：客户端按语义请求形状，compositor 用自己的光标集映射绘制；窗口边框上的调整大小箭头由 `classic-ui` 装饰按此请求。
 - Wayland 外壳支持 layer-shell v5 的背景/任务栏/覆盖层、锚点、边距、独占区与键盘交互，以及 foreign-toplevel v3 的窗口列表和控制。
   `exclusive_zone=0` 的 layer 相对工作区（输出扣除其他图层的正独占区）定位，`-1` 与正值相对整个输出，所以外壳对话框

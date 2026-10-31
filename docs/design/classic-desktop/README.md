@@ -19,9 +19,7 @@
 
 1. Microsoft Learn 的 Win32 文档：`GetSysColor`、`GetSystemMetrics`、`SystemParametersInfo`、`DrawEdge`、
    `DrawFrameControl`、`NONCLIENTMETRICS` 等 API 的语义与默认值说明。
-2. Wine `user32`/`comctl32`（LGPL）作为行为参照实现：只对照语义与数值，不复制代码。
-   Win32 程序与 ABI 的对照范围见 [Wine 验证边界](../../development/wine-runtime.md#conformance-对照与游戏验收)。
-3. 用户提供的 Windows 2000 简中 SP4 安装介质与静态资源。
+2. 用户提供的 Windows 2000 简中 SP4 安装介质与静态资源。
    素材来源与映射见 [assets.md](assets.md)，操作见[构建与验证](../../development/build-and-verify.md#经典桌面素材导入)。
 
 ## 置信度

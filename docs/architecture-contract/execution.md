@@ -41,7 +41,7 @@
   AArch64 UserContext 由 320 增至 336 bytes，既有 assembly 字段 offset 与固定 kernel-stack placement 不变。
 - 成本决策：异常 snapshot 使用现有 ESR/FAR 读取，不给 syscall/IRQ 增加 CSR 读取、分配或全寄存器复制；
   只在实际投递 fault 与 signal frame capture 时保存两个 word/一个 16-byte record。沿用现有 trap/static gate，
-  以实际未对齐读写、signal metadata、sigreturn 和 Wine/FEX 样本验证，不新增该 cold path 的 wall-clock 阈值。
+  以实际未对齐读写、signal metadata与 sigreturn 验证，不新增该 cold path 的 wall-clock 阈值。
 
 ## Interface
 

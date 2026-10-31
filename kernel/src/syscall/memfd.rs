@@ -19,7 +19,7 @@ const MFD_EXEC: u32 = 0x0010;
 /// - `name`: 最多 249 bytes 的 NUL-terminated diagnostic name。
 /// - `flags`: `MFD_CLOEXEC|MFD_ALLOW_SEALING|MFD_NOEXEC_SEAL|MFD_EXEC` 子集；`MFD_EXEC` 与 `MFD_NOEXEC_SEAL` 互斥。
 ///   本内核不按 inode 权限位拒绝 mmap 可执行页，所以 `MFD_EXEC` 只被接受；`MFD_NOEXEC_SEAL` 隐含 `MFD_ALLOW_SEALING`，
-///   但没有 `F_SEAL_EXEC`（exec 权限位不可变）可封。Wine 的 server 用 `MFD_EXEC` 创建共享映射文件。
+///   但没有 `F_SEAL_EXEC`（exec 权限位不可变）可封。
 ///
 /// # Returns
 ///

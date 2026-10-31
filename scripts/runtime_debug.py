@@ -15,6 +15,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import BinaryIO
+from collections.abc import Callable
 
 from qemu_gate import ShellCommand, send_shell_interaction
 
@@ -60,6 +61,7 @@ class DebugSession:
         # UTM helper 受 App Sandbox 约束，普通进程的 /var/folders 临时目录不可访问。
         # 使用 UTM 自己的系统容器 tmp；短目录名还须满足 macOS sockaddr_un 的路径长度。
         scratch = Path.home() / "Library/Containers/com.utmapp.QEMUHelper/Data/tmp"
+        scratch.mkdir(parents=True, exist_ok=True)
         self.temporary = tempfile.TemporaryDirectory(prefix="los-", dir=scratch)
         self.directory = Path(self.temporary.name)
         self.elf = self.directory / "kernel.elf"
@@ -122,12 +124,14 @@ class DebugSession:
         finally:
             client.close()
 
-    def capture(self, serial: socket.socket, output: BinaryIO) -> None:
+    def capture(self, serial: socket.socket, output: BinaryIO, *, check: Callable[[], None] | None = None) -> None:
         """单一 owner 同时落盘 UART 与串行执行命令；超时不会伪称 guest 命令已取消。"""
         clients: dict[socket.socket, tuple[bytearray, float]] = {}
         active = None
         try:
             while True:
+                if check is not None:
+                    check()
                 readable, _, _ = select.select([serial, self.command, *clients], [], [], 0.25)
                 for source in readable:
                     if source is self.command:

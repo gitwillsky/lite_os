@@ -1,13 +1,12 @@
 //! Win2000 视觉事实的唯一 owner：系统颜色、窗口度量与立体边框取色。
 //!
 //! 数据来自 `assets/classic/theme/classic.theme`，编译期嵌入作为默认值，运行时按搜索顺序被覆盖文件部分覆盖。
-//! 键名沿用 `Control Panel\Colors` 与 `WindowMetrics` 的注册表值名，因此同一份数据也生成 Wine 前缀注册表。
+//! 键名沿用 Windows 2000 的系统颜色与窗口度量名称，由原生桌面和控件共同消费。
 //! 所有尺寸是 96 DPI 下的逻辑像素，乘以整数 scale 是调用者（`classic-ui`）的职责。
 
 extern crate liteos_runtime as _;
 mod edge;
 mod parse;
-mod registry;
 
 use std::{fmt, fs, io, path::Path};
 
@@ -81,8 +80,8 @@ macro_rules! metric_table {
         pub struct $name { $(pub $field: i32),* }
 
         impl $name {
-            /// `(键名, 值)` 列表，顺序与数据文件一致。
-            pub fn entries(&self) -> Vec<(&'static str, i32)> {
+            #[cfg(test)]
+            fn entries(&self) -> Vec<(&'static str, i32)> {
                 vec![$(($key, self.$field)),*]
             }
 
@@ -190,18 +189,6 @@ impl SystemFonts {
             "IconFont" => &mut self.icon,
             _ => return None,
         })
-    }
-
-    /// 全部逻辑字体及其注册表值名。
-    pub fn entries(&self) -> [(&'static str, &LogicalFont); 6] {
-        [
-            ("CaptionFont", &self.caption),
-            ("SmCaptionFont", &self.small_caption),
-            ("MenuFont", &self.menu),
-            ("StatusFont", &self.status),
-            ("MessageFont", &self.message),
-            ("IconFont", &self.icon),
-        ]
     }
 }
 

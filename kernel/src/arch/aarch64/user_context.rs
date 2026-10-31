@@ -24,7 +24,7 @@ pub(crate) struct UserContext {
     pub(super) kernel_cpu_id: usize,
     pub(super) thread_pointer: usize,
     // 本 Thread 最后一次实际投递的内存 fault，跟随 clone，exec 重新清零；不从当前 CPU 的易失 ESR 回读。
-    // 缺少它会在 migration 后丢失异常方向/类型，Wine 无法识别未对齐访问。
+    // 缺少它会在 migration 后丢失异常方向/类型，用户态异常处理器无法识别未对齐访问。
     pub(super) fault_syndrome: u64,
     pub(super) fault_address: usize,
 }

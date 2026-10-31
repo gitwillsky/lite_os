@@ -49,7 +49,7 @@ OFD close 清除该子流在所有在途 period 的归属，再归还槽位，�
 
 指定槽位忙时返回 EBUSY，不回退到其他槽；control actual fput 立即撤销偏好与订阅，dup 保留同一 OFD。
 PCM 的阻塞 open 等待、RW 自动启动、REWIND、RESET、DRAIN 等仍未提供；
-这些范围不能由显式启动、整 period 写入的探针通过来替代，Wine consumer 尚待后续验证。
+这些范围不能由显式启动、整 period 写入的探针通过来替代。
 
 AArch64/HVF 是声音 runtime 的目标。`verify-runtime-audio` 使用固定上游 alsa-lib/amixer，
 冷启动私有镜像，运行八路 consumer 并分析设备实际 WAV 的频率、左右增益、静音和硬削波。
@@ -58,7 +58,7 @@ RISC-V 复用源码，只有编译与静态覆盖。
 
 ## UTM USB DAC 使用
 
-`make run-gui` 的 UTM 配置启用 USB 3.0 sharing（3 个转发通道）；在 UTM 的 USB 菜单中把 DAC 连接到 LiteOS，设备需由 guest 独占。USB2 high-speed DAC 仍通过 xHCI 的 USB2 root port 工作。
+`make run-gui` 通过标准 usbredir 自动转发 USB Audio 2 输出设备，设备由 guest 独占；宿主授权和会话清理见[构建与运行](../development/build-and-verify.md)。USB2 high-speed DAC 仍通过 xHCI 的 USB2 root port 工作。
 媒体播放机选择新出现的“原生独占”USB DAC，系统使用对应 `/dev/snd/pcmCND1p`；编号来自实际发现顺序，不固定为 card 1。D&A Alpha 的 24/32 位 PCM 与采样率按描述符及 clock range 发布，不按型号硬编码。
 
-USB 驱动目前只有编译与静态验证；真实 Alpha 播放、切换采样率、长时间无丢样及拔插仍需实机验收。
+Alpha 的 48 kHz 播放已在相同输入的原版/修补 QEMU 原生 libusb 路径对照验收；usbredir 产品链路、切换采样率、长时间无丢样及拔插仍需实机验收。

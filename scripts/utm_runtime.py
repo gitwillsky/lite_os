@@ -13,27 +13,28 @@ from pathlib import Path
 from typing import BinaryIO
 
 from runtime_debug import DebugSession
+from usb_redirection import UsbRedirection
+from utm_build import UTM_APP, UTM_VERSION, ensure_built
 
-UTM_APP = Path("/Applications/UTM.app")
-UTM_VERSION = "4.7.5"
 UTMCTL = UTM_APP / "Contents/MacOS/utmctl"
 UTM_INFO = UTM_APP / "Contents/Info.plist"
 UTM_DOCUMENTS = Path.home() / "Library/Containers/com.utmapp.UTM/Data/Documents"
 UTM_ARTIFACTS = (
     Path.home()
-    / "Library/Group Containers/WDNLXAD4W8.com.utmapp.UTM/LiteOS"
+    / "Library/Containers/com.utmapp.QEMUHelper/Data/Documents/LiteOS"
 )
 VM_NAME = "LiteOS"
 VM_UUID = "11E05A11-7E05-4A11-8E7A-11E05A110001"
-VM_PACKAGE = UTM_ARTIFACTS / f"{VM_NAME}.utm"
+VM_PACKAGE = UTM_DOCUMENTS / "LiteOS-generated" / f"{VM_NAME}.utm"
 VM_DOCUMENT_PACKAGE = UTM_DOCUMENTS / f"{VM_NAME}.utm"
 
 
 def _installed_version() -> str:
+    ensure_built()
     if not UTM_INFO.is_file() or not UTMCTL.is_file():
         raise RuntimeError(
             f"UTM {UTM_VERSION} is required at {UTM_APP}; "
-            "install the pinned release from https://github.com/utmapp/UTM/releases/tag/v4.7.5"
+            "run `make setup` to build the pinned development runtime"
         )
     with UTM_INFO.open("rb") as stream:
         value = plistlib.load(stream).get("CFBundleShortVersionString")
@@ -90,6 +91,7 @@ def _configuration(
     serial_tcp_port: int | None = None,
     kernel_arguments: str | None = None,
     debug: DebugSession | None = None,
+    usb_redirection: UsbRedirection | None = None,
 ) -> dict[str, object]:
     kernel = kernel or UTM_ARTIFACTS / "kernel"
     rootfs = rootfs or UTM_ARTIFACTS / "rootfs.img"
@@ -140,16 +142,9 @@ def _configuration(
     # UTM 会选中未由 guest 驱动的 HID tablet，形成光标能移动但桌面无法点击的假死。
     # 输入只使用上面的 VirtIO 设备；这里单独装配标准 xHCI/usbredir，保留 USB DAC 直通。
     additional.extend(("-device", "qemu-xhci,id=usb-controller-0"))
-    usb_share_count = 3
-    for index in range(usb_share_count):
-        additional.extend(
-            (
-                "-chardev",
-                f"spicevmc,name=usbredir,id=usbredirchardev{index}",
-                "-device",
-                f"usb-redir,chardev=usbredirchardev{index},id=usbredirdev{index},bus=usb-controller-0.0",
-            )
-        )
+    # 物理捕获在管理员会话中；无硬件门禁只保留同一 xHCI，不连接宿主真实设备。
+    if usb_redirection is not None:
+        additional.extend(usb_redirection.arguments())
     serial = (
         [{"Mode": "Ptty", "Target": "Auto"}]
         if serial_tcp_port is None
@@ -204,8 +199,9 @@ def _configuration(
         },
         "Input": {
             "UsbBusSupport": "Disabled",
-            "UsbSharing": True,
-            "MaximumUsbShare": usb_share_count,
+            # 捕获由会话 supervisor 拥有，UTM 的无特批签名 USB 菜单不能再竞争同一设备。
+            "UsbSharing": False,
+            "MaximumUsbShare": 3,
         },
         "Sharing": {
             "DirectoryShareMode": "None",
@@ -247,6 +243,7 @@ def prepare(
     serial_tcp_port: int | None = None,
     kernel_arguments: str | None = None,
     debug: DebugSession | None = None,
+    usb_redirection: UsbRedirection | None = None,
 ) -> Path:
     """Publish current artifacts and an exact UTM v4 configuration."""
     _installed_version()
@@ -266,6 +263,7 @@ def prepare(
         serial_tcp_port=serial_tcp_port,
         kernel_arguments=kernel_arguments,
         debug=debug,
+        usb_redirection=usb_redirection,
     )
     with (VM_PACKAGE / "config.plist").open("wb") as stream:
         plistlib.dump(config, stream, fmt=plistlib.FMT_XML, sort_keys=False)
@@ -293,13 +291,25 @@ def _registered() -> bool:
     return _status() is not None
 
 
+def _listed_vms(listing: str) -> dict[str, str]:
+    """拒绝 CLI 成功退出但 Apple Event 失败的输出，不能据此判定用户 VM 已停止。"""
+    lines = listing.splitlines()
+    if not lines or lines[0].split()[:2] != ["UUID", "Status"]:
+        raise RuntimeError(f"UTM did not return a VM registry snapshot: {listing}")
+    statuses = {}
+    for line in lines[1:]:
+        if not line.strip():
+            continue
+        fields = line.split(maxsplit=2)
+        if len(fields) != 3:
+            raise RuntimeError(f"UTM returned an incomplete VM registry row: {line}")
+        statuses[fields[0]] = fields[1]
+    return statuses
+
+
 def _status() -> str | None:
     """Return status from one registry snapshot without querying a stale VM handle."""
-    for line in _ctl("list").splitlines()[1:]:
-        fields = line.split(maxsplit=2)
-        if len(fields) == 3 and fields[0] == VM_UUID:
-            return fields[1]
-    return None
+    return _listed_vms(_ctl("list")).get(VM_UUID)
 
 
 def _apple_string(value: str) -> str:
@@ -309,7 +319,7 @@ def _apple_string(value: str) -> str:
 def _start_visible() -> None:
     """Start through UTM's public scripting API so the Metal display window is owned by UTM."""
     script = (
-        'tell application id "com.utmapp.UTM"\n'
+        f'tell application "{_apple_string(str(UTM_APP))}"\n'
         f'  set vm to first virtual machine whose id is "{VM_UUID}"\n'
         "  start vm\n"
         "end tell"
@@ -330,8 +340,26 @@ def _start_visible() -> None:
         raise RuntimeError(f"UTM failed to start {VM_NAME}: {detail}") from error
 
 
-def _ensure_registered() -> None:
+def _open_application() -> None:
+    """同 bundle ID 的原版可保留，但只能在其 VM 全部停止后切换到开发副本。"""
+    suffix = "/UTM.app/Contents/MacOS/UTM"
+    processes = subprocess.check_output(["ps", "-axo", "comm="], text=True).splitlines()
+    for command in processes:
+        command = command.strip()
+        if command.endswith(suffix) and Path(command) != UTM_APP / "Contents/MacOS/UTM":
+            other = Path(command).parents[2]
+            status = subprocess.run([str(other / "Contents/MacOS/utmctl"), "list"], check=True, text=True, capture_output=True, timeout=15)
+            if any(value != "stopped" for value in _listed_vms(status.stdout).values()):
+                raise RuntimeError("Stop the running VM in the other UTM application before starting LiteOS")
+            try:
+                subprocess.run(["osascript", "-e", f'tell application "{_apple_string(str(other))}" to quit'], check=True, capture_output=True, timeout=15)
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+                raise RuntimeError(f"Quit {other} before switching to the LiteOS development UTM") from error
     subprocess.run(["open", "-a", str(UTM_APP)], check=True)
+
+
+def _ensure_registered() -> None:
+    _open_application()
     for _ in range(40):
         try:
             if _registered():
@@ -343,7 +371,7 @@ def _ensure_registered() -> None:
         raise RuntimeError("UTM did not become available for managed VM registration")
     package = _apple_string(str(VM_PACKAGE))
     script = (
-        'tell application id "com.utmapp.UTM"\n'
+        f'tell application "{_apple_string(str(UTM_APP))}"\n'
         f'  import new virtual machine from POSIX file "{package}"\n'
         "end tell"
     )
@@ -364,7 +392,7 @@ def _ensure_registered() -> None:
 
 def _remove_registered() -> None:
     """Remove only the generated VM registration before publishing its next config."""
-    subprocess.run(["open", "-a", str(UTM_APP)], check=True)
+    _open_application()
     for _ in range(40):
         try:
             status = _status()
@@ -377,7 +405,7 @@ def _remove_registered() -> None:
                     f"UTM VM {VM_NAME!r} must be stopped before regeneration; status={status}"
                 )
             result = _ctl("delete", VM_UUID)
-            # UTM 4.7.5 may report an Apple Event error while utmctl still exits zero.
+            # An Apple Event error can be reported while utmctl still exits zero.
             # Retaining the old registration would reuse cached config, including a stale UART port.
             if _registered():
                 raise RuntimeError(
@@ -603,9 +631,15 @@ def run_gui(
     serial_log.parent.mkdir(parents=True, exist_ok=True)
     print(f"LiteOS serial log: {serial_log}")
     debug: DebugSession | None = None
+    usb: UsbRedirection | None = None
+    # 只有删除旧的 stopped 注册后才取得本次 VM 的清理权；前置失败不能停止用户已有实例。
+    owns_vm = False
     try:
+        usb = UsbRedirection()
+        usb.authorize()
         debug = DebugSession(kernel_elf)
         _remove_registered()
+        owns_vm = True
         prepare(
             kernel=kernel,
             rootfs=rootfs,
@@ -614,11 +648,13 @@ def run_gui(
             serial_tcp_port=serial_port,
             kernel_arguments=kernel_arguments,
             debug=debug,
+            usb_redirection=usb,
         )
         _ensure_registered()
         status = _status()
         if status != "stopped":
             raise RuntimeError(f"UTM VM {VM_NAME!r} must be stopped before launch; status={status}")
+        usb.release_ports()
         _start_visible()
         for _ in range(40):
             status = _status()
@@ -629,6 +665,7 @@ def run_gui(
             time.sleep(0.25)
         else:
             raise RuntimeError(f"UTM failed to start {VM_NAME}")
+        usb.start()
         serial_listener.settimeout(15.0)
         try:
             serial_socket, _ = serial_listener.accept()
@@ -640,17 +677,30 @@ def run_gui(
         with serial_log.open("wb", buffering=0) as output:
             # The capture file is the sole durable serial owner. Reading only
             # UTM's PTY UI loses the first failure as soon as the window closes.
-            debug.capture(serial_socket, output)
+            def check_usb() -> None:
+                try:
+                    usb.check()
+                except RuntimeError:
+                    # 正常关机也关闭 usbredir；仍由 UART EOF 判定会话结束。
+                    if _status() not in ("stopping", "stopped"):
+                        raise
+            debug.capture(serial_socket, output, check=check_usb)
             status = _status()
             if status not in ("stopping", "stopped"):
                 raise RuntimeError(f"UTM serial stream closed while VM status={status}")
     except KeyboardInterrupt:
-        if _registered():
-            _ctl("stop", VM_UUID)
         return
     finally:
-        if debug is not None:
-            debug.close()
-        if serial_socket is not None:
-            serial_socket.close()
-        serial_listener.close()
+        try:
+            if usb is not None:
+                usb.close()
+        finally:
+            try:
+                if owns_vm:
+                    _stop_managed()
+            finally:
+                if debug is not None:
+                    debug.close()
+                if serial_socket is not None:
+                    serial_socket.close()
+                serial_listener.close()

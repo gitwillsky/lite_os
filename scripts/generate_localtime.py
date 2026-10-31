@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """生成 `user/base/localtime`：固定偏移（UTC+8，CST）的 TZif v1 文件，作为新镜像 `/etc/localtime` 的默认时区。
 
-TZif 是 libc（musl）读取本地时区的标准格式，所以所有程序（BusyBox `date`、桌面时钟、Wine）自动采用它；
+TZif 是 libc（musl）读取本地时区的标准格式，所以所有程序（BusyBox `date`、桌面时钟）自动采用它；
 控制面板"日期/时间 属性"的"时区"页写的是同一格式的同一个文件。
 """
 

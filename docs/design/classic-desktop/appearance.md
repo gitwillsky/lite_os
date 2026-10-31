@@ -1,7 +1,7 @@
 # 外观规格
 
-本文件的数值由 `classic-theme` 独占定义；`classic-ui`、`compositor`（启动画面、Alt+Tab）和 Wine 前缀注册表
-（`Control Panel\Colors`、`Control Panel\Desktop\WindowMetrics`）都从它生成，不各自维护副本。
+本文件的数值由 `classic-theme` 独占定义；`classic-ui` 与 `compositor`（启动画面、Alt+Tab）共同消费，
+不各自维护副本。
 所有尺寸都是**逻辑像素**（96 DPI 基准），HiDPI 规则见文末。置信度定义见 [README.md](README.md)。
 
 ## 系统颜色（"Windows 标准"配色方案）
@@ -54,7 +54,7 @@
 | 最大化与关闭按钮间距 | 2 | 最小化与最大化按钮紧贴 | 确定 |
 | `SM_CYSMCAPTION` | 16 | 工具窗口标题栏（`SmCaptionHeight`=15 + 1） | 待核 |
 | `SM_CYMENU` | 19 | 菜单栏高（`MenuHeight`=18 + 1） | 确定 |
-| 菜单项高度 | 菜单字体行高 + 4 | 普通弹出菜单项 | USER32 / Wine 11.16 |
+| 菜单项高度 | 菜单字体行高 + 4 | 普通弹出菜单项 | USER32 |
 | `SM_CXVSCROLL` / `SM_CYHSCROLL` | 16 | 滚动条宽 | 确定 |
 | `SM_CXICON` | 32 | 大图标 | 确定 |
 | `SM_CXSMICON` | 16 | 小图标 | 确定 |
@@ -85,7 +85,7 @@ LiteOS 系统界面默认使用 Tahoma 9 磅，中文缺字按映射表回退宋
 ## 立体边框
 
 边框由内外两层 1 像素线组成，下表的"左上/右下"指该层线的上边+左边、下边+右边。取色与
-Win32 `DrawEdge` 一致（确定，可在 Wine `uitools.c` 中核对）。
+Win32 `DrawEdge` 一致（确定）。
 
 | 样式 | 外层左上 | 外层右下 | 内层左上 | 内层右下 | 用于 |
 |---|---|---|---|---|---|
@@ -125,8 +125,7 @@ Win32 `DrawEdge` 一致（确定，可在 Wine `uitools.c` 中核对）。
 4. 分隔线为 `EDGE_ETCHED` 的水平线，占用 `MenuHeight / 2` 行高，蚀刻线位于其垂直中部。
 5. 快捷键文字右对齐，与菜单项文字之间预留 12 像素。
 
-弹出菜单的外框、项高和分隔线以固定 [Wine 11.16 USER32 菜单实现](https://github.com/wine-mirror/wine/blob/wine-11.16/dlls/win32u/menu.c)
-的 `calc_menu_item_size`、`calc_popup_menu_size`、`draw_menu_item` 为参照；外壳右键菜单与应用菜单使用同一度量和绘制入口。
+外壳右键菜单与应用菜单使用同一度量和绘制入口，弹出菜单的外框、项高和分隔线均由 `classic-theme` 与共享控件维护。
 
 ## 滚动条
 
@@ -147,4 +146,3 @@ Win32 `DrawEdge` 一致（确定，可在 Wine `uitools.c` 中核对）。
 3. 文字不放大位图：逻辑字体按 磅值 × 96 × 倍率 / 72 的 ppem 直接选择点阵或灰度轮廓（规则见 [assets.md](assets.md)，以清晰为先）。
 4. 图标、光标、位图按 [assets.md](assets.md) 选择对应倍率的素材；缺少对应倍率时用最近邻整数放大，
    禁止非整数缩放。
-5. Wine 前缀的 `LogPixels` 设为 96 × N。

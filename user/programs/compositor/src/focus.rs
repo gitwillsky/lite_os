@@ -266,7 +266,7 @@ impl Seat {
     ) {
         let active = exclusive.or_else(|| stack.active());
         let changed = active != self.keyboard_focus;
-        // 1. logical focus 未变也要检查新对象；Wine 在解析 XKB 后才绑定键盘，可能晚于窗口取得焦点。
+        // 1. logical focus 未变也要检查新对象；客户端绑定键盘可能晚于窗口取得焦点。
         if !changed && !active.is_some_and(|(client, _)| server.keyboard_needs_enter(client)) {
             return;
         }

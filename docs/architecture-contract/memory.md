@@ -35,7 +35,7 @@
   File 永不投影为 exclusive，不取得 shared writer claim；否则首个 private 写者会改坏文件内容。
   read/execute 缺页直接以只读 leaf 映射文件页，首次 write 才沿同一 COW transaction 复制为 User。
   这与固定 Linux `mm/memory.c` 的 `do_read_fault/do_cow_fault` 一致；提前复制会冻结只读映射，
-  Wine 的 session 对象与键盘共享状态会永远停在旧值。
+  使进程间共享对象的只读视图无法观察到文件更新。
   fork 继承相同内容与 epoch，mprotect 保持 File 只读，reclaim/truncate/unmap 在 fence 后释放 alias；
   swap revoke/unuse 经同一 mapping accessor 覆盖 File，VmSwap 不把未 COW 的 shmem 计作匿名私有页。
   OOM/IO 先于 leaf publication 返回；COW 保活 source pin 到完整 revoke→make fence 完成，无新增锁或 unsafe。
