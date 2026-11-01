@@ -1,0 +1,11 @@
+[package]
+name = "service-rpc"
+version = "0.1.0"
+edition = "2024"
+description = "系统服务之间基于 channel_call 的同步请求/回复传输"
+
+[dependencies]
+native-runtime = { path = "../native-runtime" }
+
+[lints]
+workspace = true

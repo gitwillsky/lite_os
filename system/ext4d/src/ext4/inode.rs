@@ -64,11 +64,10 @@ impl Timestamp {
 }
 
 #[derive(Debug)]
-pub(super) struct Ext4Inode {
+pub(crate) struct Ext4Inode {
     pub(super) fs: Arc<Ext4FileSystem>,
     pub(super) inode_num: u32,
     pub(super) disk: Mutex<LiveInode>,
-    pub(super) write_access: crate::fs::InodeWriteAccess,
 }
 
 impl Ext4Inode {
@@ -94,7 +93,6 @@ impl Ext4Inode {
         let inode = Arc::try_new(Self {
             fs,
             inode_num,
-            write_access: crate::fs::InodeWriteAccess::new(),
             disk: Mutex::new(LiveInode {
                 disk,
             }),
@@ -205,12 +203,12 @@ impl Ext4Inode {
         &self,
         mutation: &mut MutationGuard<'_>,
         size: u64,
-        identity: Option<&crate::fs::AccessIdentity>,
+        policy: Option<crate::vfs::WritePolicy>,
     ) -> Result<(), FileSystemError> {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
         }
-        self.remove_write_privileges_locked(mutation, identity)?;
+        self.remove_write_privileges_locked(mutation, policy)?;
         let now = Timestamp::now();
         let mut inode = mutation.inode(self)?;
         if Self::is_fast_symlink(&inode) {

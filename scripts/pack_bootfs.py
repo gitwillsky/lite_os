@@ -2,7 +2,7 @@
 """把系统服务打包为 bootfs（cpio ``newc``），由 QEMU ``-initrd`` 交给内核。
 
 1. 内核从 initrd 取出 ``bin/root-server`` 并启动它；
-2. 根服务再从同一 bootfs 启动 ``bin/devmgr`` 与 ``bin/linuxd``；
+2. 根服务再从同一 bootfs 启动 ``bin/devmgr``、``bin/ext4d`` 与 ``bin/linuxd``；
 3. 成员按路径排序、时间戳与 inode 固定，同样的输入总是得到同样的字节。
 """
 
@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parent.parent
 # bootfs 路径 → 构建产物名（cargo bin 名）；内核与根服务按这些路径查找。
 SERVICES: tuple[tuple[str, str], ...] = (
     ("bin/devmgr", "devmgr"),
+    ("bin/ext4d", "ext4d"),
     ("bin/linuxd", "linuxd"),
     ("bin/root-server", "root-server"),
 )

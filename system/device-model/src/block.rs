@@ -62,6 +62,13 @@ pub trait BlockDevice: Send + Sync {
 
     /// 返回设备的逻辑块总数（`block_size()` 单位）；裸块设备的容量与越界判定以它为准。
     fn block_count(&self) -> u64;
+
+    /// 把本设备的 `[first_block, first_block + block_count)`（本设备块号）交给另一服务直接访问：
+    /// 返回一条服务该范围的块协议连接。不能跨进程共享的设备返回 `None`。
+    fn share_range(&self, first_block: u64, block_count: u64) -> Option<native_runtime::Handle> {
+        let _ = (first_block, block_count);
+        None
+    }
 }
 
 pub const BLOCK_SIZE: usize = 4096;

@@ -5,7 +5,7 @@ use super::journal_layout::JournalLayout;
 use super::*;
 use crate::sync::TaskMutexGuard;
 use fallible_tree::FallibleMap;
-use crate::memory::PAGE_SIZE;
+use native_runtime::native_abi::PAGE_SIZE;
 
 mod codec;
 use codec::*;

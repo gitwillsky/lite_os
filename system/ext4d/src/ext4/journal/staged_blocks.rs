@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 /// image 的持久化方式：metadata 经 JBD2，普通文件数据在 commit record 前写回 home。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::fs::ext4) enum BlockKind {
+pub(in crate::ext4) enum BlockKind {
     Metadata,
     Data,
 }
@@ -18,7 +18,7 @@ struct StagedBlock {
 
 /// 每个物理块只有一个分类/镜像记录；初始化到 metadata 的转换不能留下旧零数据副本。
 #[derive(Default)]
-pub(in crate::fs::ext4) struct StagedBlocks {
+pub(in crate::ext4) struct StagedBlocks {
     entries: FallibleMap<u64, StagedBlock>,
     // OWNER: 与 entries 同一 mutation 更新的 journal credit aggregate；所有字段 private。
     // 缺失会让每次 metadata stage 为容量检查扫描完整 ordered-data 集合。

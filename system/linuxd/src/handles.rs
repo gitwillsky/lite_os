@@ -2,6 +2,7 @@
 
 use alloc::vec::Vec;
 
+use filesystem_protocol::MountClient;
 use native_runtime::sync::Once;
 use native_runtime::{Channel, Job, Process, Resource, Startup};
 
@@ -10,6 +11,7 @@ struct Handles {
     job: Job,
     resource: Resource,
     command_line: Vec<u8>,
+    ext4: MountClient,
 }
 
 // OWNER: 启动时安装一次；之后只读。
@@ -25,6 +27,7 @@ pub(crate) fn install(startup: &mut Startup) -> Channel {
         job: Job::from_handle(startup.take(linuxd::JOB)),
         resource: Resource::from_handle(startup.take(linuxd::RESOURCE)),
         command_line,
+        ext4: MountClient::new(Channel::from_handle(startup.take(linuxd::EXT4))),
     });
     directory
 }
@@ -51,4 +54,9 @@ pub(crate) fn resource() -> &'static Resource {
 /// 根服务转交的启动参数。
 pub(crate) fn command_line() -> &'static [u8] {
     &handles().command_line
+}
+
+/// ext4d 的挂载控制：`ext4` 类型的每次挂载经它打开块设备上的文件系统。
+pub(crate) fn ext4() -> &'static MountClient {
+    &handles().ext4
 }

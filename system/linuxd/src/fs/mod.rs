@@ -4,15 +4,14 @@
 //!
 //! - **VFS 核心**：`vfs/`（路径解析、挂载命名空间、`OpenedFile`）、`inode`/`inode_identity`/`inode_times`、
 //!   `permission`、`xattr`、`mount`/`mount_options`、`directory`、`write_access`、`storage_budget`、`file_information`。
-//! - **磁盘文件系统**：`ext4`（引擎，由 host 单元测试整体包含，因此不依赖设备注册表）与 `tmpfs`。
-//!   ext4 的两个兄弟文件是**刻意**放在引擎之外的接缝：`ext4_type`（`mount(2)` 类型适配，依赖 `devnode` 注册表）
-//!   和 `ext4_identity`（`root=UUID=/LABEL=` 用的超级块纯函数）。把它们收进 `ext4/` 会让引擎依赖注册表。
+//! - **磁盘文件系统**：`tmpfs`；ext4 引擎在 ext4d 服务中，`ext4_type`（`mount(2)` 类型，经块设备型 FUSE
+//!   挂载访问 ext4d）与 `ext4_identity`（`root=UUID=/LABEL=` 与 fsid 用的超级块纯函数）是本地的两个接缝。
 //! - **伪文件系统**：`procfs`、`sysfs`、`devfs`、`nsfs`、`pidfs`、`anonymous`（匿名 inode）、`memfd`、`fifo`。
-//! - **用户态文件系统**：`fuse`（`/dev/fuse` 设备、连接与 inode 翻译）。
+//! - **用户态文件系统**：`fuse`（`/dev/fuse` 设备、系统服务 channel、连接与 inode 翻译）。
 //! - **字符设备**：`devnum`（`dev_t` 编解码）、`chardev`（driver 区间注册表与 `DeviceFile`）、`devnode`
 //!   （devfs 节点与块设备注册表）和 `mem_device`
 //!   （`/dev/null`、`zero`、`random`、`urandom`、`kmsg` 这组 major 1 驱动，不是文件系统）。
-//! - **服务**：`page_cache`、`swap`（swapfile 适配）、`inotify`、`block_claim`/`block_ioctl`/`block_node`
+//! - **服务**：`page_cache`、`inotify`、`block_claim`/`block_ioctl`/`block_node`
 //!   （块设备在 VFS 里的投影）。
 
 mod write_access;
@@ -32,7 +31,6 @@ pub(crate) mod devnode;
 mod devnum;
 pub(crate) use devnum::DeviceNumber;
 mod directory;
-mod ext4;
 mod ext4_identity;
 mod ext4_type;
 mod fifo;
@@ -317,8 +315,6 @@ pub(crate) type SpawnKernelThread = fn(
 pub(crate) struct KernelThreadSupport {
     /// 创建并调度一个内核线程。
     pub(crate) spawn: SpawnKernelThread,
-    /// 阻塞当前 task 到 absolute monotonic deadline。
-    pub(crate) sleep_until: fn(u64),
 }
 
 /// 证明全局 VFS 已创建；只有 [`init_vfs`] 能构造，依赖 VFS 的启动步骤以它为参数。

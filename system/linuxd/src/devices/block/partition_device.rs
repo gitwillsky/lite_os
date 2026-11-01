@@ -62,4 +62,14 @@ impl BlockDevice for PartitionDevice {
     fn block_count(&self) -> u64 {
         self.blocks as u64
     }
+
+    /// 分区内区间平移到整盘块号后由整盘共享；越出分区返回 `None`。
+    fn share_range(&self, first_block: u64, block_count: u64) -> Option<native_runtime::Handle> {
+        let end = first_block.checked_add(block_count)?;
+        if end > self.blocks as u64 {
+            return None;
+        }
+        self.parent
+            .share_range(self.first_block as u64 + first_block, block_count)
+    }
 }

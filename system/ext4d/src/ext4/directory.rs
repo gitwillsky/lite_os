@@ -14,7 +14,7 @@ impl Ext4Inode {
     /// inode reload 的 filesystem、I/O 或 allocation 错误。
     pub(super) fn reload_after_lookup(
         &self,
-        lookup: Arc<dyn Inode>,
+        lookup: Arc<Ext4Inode>,
         number: u32,
     ) -> Result<(Arc<Self>, bool), FileSystemError> {
         drop(lookup);
@@ -211,7 +211,7 @@ impl Ext4Inode {
         &self,
         name: &[u8],
         target: &[u8],
-        metadata: super::super::CreateMetadata,
+        metadata: crate::vfs::CreateMetadata,
     ) -> Result<Arc<Self>, FileSystemError> {
         if self.inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
@@ -278,13 +278,13 @@ impl Ext4Inode {
     pub(super) fn create_hard_link(
         &self,
         name: &[u8],
-        target: Arc<dyn Inode>,
+        target: Arc<Ext4Inode>,
     ) -> Result<(), FileSystemError> {
         if self.inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
         }
         Self::validate_name(name)?;
-        if self.filesystem_id() != target.filesystem_id() {
+        if !Arc::ptr_eq(&self.fs, &target.fs) {
             return Err(FileSystemError::CrossDevice);
         }
         let metadata = target.metadata()?;

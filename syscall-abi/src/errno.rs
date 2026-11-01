@@ -1,4 +1,4 @@
-//! 内核返回、用户态消费的 Linux errno 编号（asm-generic）。
+//! Linux errno 编号（asm-generic）。
 
 /// 操作不允许。
 pub const EPERM: isize = 1;
@@ -66,6 +66,10 @@ pub const ERANGE: isize = 34;
 pub const EDOM: isize = 33;
 /// xattr不存在；与pathname的ENOENT区分。
 pub const ENODATA: isize = 61;
+/// 协议错误。
+pub const EPROTO: isize = 71;
+/// 文件句柄已失效。
+pub const ESTALE: isize = 116;
 /// 路径或参数字符串过长。
 pub const ENAMETOOLONG: isize = 36;
 pub const ENOTEMPTY: isize = 39;

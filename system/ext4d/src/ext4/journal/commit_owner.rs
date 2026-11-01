@@ -3,7 +3,7 @@ use alloc::sync::Arc;
 use super::{Ext4FileSystem, FileSystemError, Journal, RunningTransaction, StagedBlocks};
 
 /// Journal runtime 的唯一状态；commit loan 期间只发布不可变 staged view。
-pub(in crate::fs::ext4) enum JournalOwner {
+pub(in crate::ext4) enum JournalOwner {
     Unavailable,
     Ready(Journal),
     Committing {
@@ -13,30 +13,30 @@ pub(in crate::fs::ext4) enum JournalOwner {
 }
 
 impl JournalOwner {
-    pub(in crate::fs::ext4) const fn unavailable() -> Self {
+    pub(in crate::ext4) const fn unavailable() -> Self {
         Self::Unavailable
     }
 
-    pub(in crate::fs::ext4) fn install(&mut self, journal: Journal) {
+    pub(in crate::ext4) fn install(&mut self, journal: Journal) {
         assert!(matches!(self, Self::Unavailable));
         *self = Self::Ready(journal);
     }
 
-    pub(in crate::fs::ext4) fn ready_mut_ref(&self) -> Result<&Journal, FileSystemError> {
+    pub(in crate::ext4) fn ready_mut_ref(&self) -> Result<&Journal, FileSystemError> {
         match self {
             Self::Ready(journal) => Ok(journal),
             Self::Unavailable | Self::Committing { .. } => Err(FileSystemError::InvalidOperation),
         }
     }
 
-    pub(in crate::fs::ext4) fn ready_mut(&mut self) -> Result<&mut Journal, FileSystemError> {
+    pub(in crate::ext4) fn ready_mut(&mut self) -> Result<&mut Journal, FileSystemError> {
         match self {
             Self::Ready(journal) => Ok(journal),
             Self::Unavailable | Self::Committing { .. } => Err(FileSystemError::InvalidOperation),
         }
     }
 
-    pub(in crate::fs::ext4) fn copy_staged(&self, block: u64, output: &mut [u8]) -> bool {
+    pub(in crate::ext4) fn copy_staged(&self, block: u64, output: &mut [u8]) -> bool {
         let bytes = match self {
             Self::Ready(journal) => {
                 return journal.copy_staged(block, output);

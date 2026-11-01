@@ -1,0 +1,12 @@
+[package]
+name = "filesystem-protocol"
+version = "0.1.0"
+edition = "2024"
+description = "文件系统服务的挂载协议：交出块设备连接，取回挂载的 FUSE channel 与挂载控制"
+
+[dependencies]
+native-runtime = { path = "../native-runtime" }
+service-rpc = { path = "../service-rpc" }
+
+[lints]
+workspace = true

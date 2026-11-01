@@ -16,7 +16,7 @@ use crate::sync::TaskMutex;
 
 /// 挂载新文件系统实例所需、由 composition root 注入的能力。
 pub(crate) struct MountEnvironment {
-    /// ext4 写回线程的创建与睡眠；只能由 `task::kernel_thread_support` 在调度器就绪后取得。
+    /// 挂载回收线程的创建；只能由 `task::kernel_thread_support` 在调度器就绪后取得。
     pub(crate) threads: KernelThreadSupport,
     /// procfs 投影的进程与系统快照来源。
     pub(crate) proc_source: Arc<dyn ProcSource>,

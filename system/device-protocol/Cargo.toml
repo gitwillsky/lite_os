@@ -7,6 +7,7 @@ description = "驱动宿主与设备使用者之间的设备线协议：server �
 [dependencies]
 device-model = { path = "../device-model" }
 native-runtime = { path = "../native-runtime" }
+service-rpc = { path = "../service-rpc" }
 
 [lints]
 workspace = true

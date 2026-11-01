@@ -157,7 +157,7 @@ P2 其余实现事实（P4 迁入对应 owner 文档）：
 ### P3 拆分服务
 
 1. devmgr 与驱动服务（virtio-blk/net/gpu/input/sound/console/rng、PCI、xHCI/USB）——已完成（两架构 clippy 通过）。
-2. `ext4d` 作为 pager，`linuxd` 经 FUSE 协议访问。
+2. `ext4d`，`linuxd` 经 FUSE 协议访问——已完成（两架构 clippy 通过）。
 3. `netd`（smoltcp），`linuxd` 的 INET socket 转发给它。
 4. 设备 UAPI 由 `linuxd` 转发给对应服务。
 
@@ -176,6 +176,13 @@ P3 设计（实现约束）：
   root-server 先启动 devmgr（根 resource、DTB、目录写端），再启动 linuxd（目录读端，启动参数作为 command line）。
   linuxd 的 Linux 线程在设备请求期间阻塞在 `channel_call` 中（/proc 状态显示为运行，信号在返回后处理）。
 - `ext4d`：拥有 ext4 实现与块设备连接；以 FUSE 线协议在 channel 上服务，linuxd 的 FUSE 客户端增加 channel 传输，页缓存补页走 FUSE READ。
+- P3.2 实现事实：`filesystem-protocol`（挂载控制：MOUNT 交出块设备连接，回复 FUSE channel 与挂载控制；`MAX_TRANSFER`
+  48 KiB 使每条 FUSE 消息装进一条 channel 消息）。linuxd 的 `ext4` 类型读超级块取 UUID（fsid），经
+  `BlockDevice::share_range` 把整个源设备（分区平移到整盘）交给 ext4d，再以块设备型 FUSE 挂载（`fuse/service.rs`：
+  `default_permissions`、`allow_other`、卸载同步 DESTROY，请求/回复两个转发线程）访问；ro→rw 经挂载控制。
+  root-server 创建控制 channel 并启动 ext4d。ext4d 依 FUSE 请求头的 uid/gid 执行创建属主与 set-GID 继承。
+  P4 待办：逐项对照旧本地 ext4 inode 操作与 FUSE 路径的语义差异（属性缓存时效、trusted xattr 列举、创建时清除
+  set-GID 等）并写入 ABI 矩阵；ext4 引擎的 host 单元测试为 ext4d 重新托管。
 - `netd`：拥有 smoltcp 与网卡连接；INET socket 操作经 channel 转发，就绪事件经事件 channel 回到 linuxd 的 poll/epoll。
 
 ### P4 收尾与整体验证

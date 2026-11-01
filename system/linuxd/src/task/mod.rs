@@ -57,9 +57,6 @@ pub(crate) fn initialize(_vfs: crate::fs::VfsReady) -> SchedulerReady {
 pub(crate) fn kernel_thread_support(_scheduler: SchedulerReady) -> crate::fs::KernelThreadSupport {
     crate::fs::KernelThreadSupport {
         spawn: spawn_kernel_thread,
-        sleep_until: |deadline| {
-            sleep_until(deadline);
-        },
     }
 }
 

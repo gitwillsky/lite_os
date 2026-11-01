@@ -1,34 +1,20 @@
 use super::*;
-use crate::fs::{FileSystemStatistics, KernelThreadSupport, SuperblockFacts};
+use crate::vfs::FileSystemStatistics;
 use core::sync::atomic::Ordering;
 
-impl FileSystem for Ext4FileSystem {
-    fn show_mount_options(&self) -> Result<alloc::vec::Vec<u8>, FileSystemError> {
-        let mut options = alloc::vec::Vec::new();
-        options
-            .try_reserve_exact(b",data=ordered".len())
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        options.extend_from_slice(b",data=ordered");
-        Ok(options)
-    }
-
-    fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError> {
+impl Ext4FileSystem {
+    /// 根目录 inode。
+    pub(crate) fn root_inode(&self) -> Result<Arc<Ext4Inode>, FileSystemError> {
         let fs_arc = self
             .self_ref
             .lock()
             .upgrade()
             .ok_or(FileSystemError::InvalidFileSystem)?;
-        Ext4Inode::load(fs_arc, EXT4_ROOT_INO).map(|inode| inode as Arc<dyn Inode>)
+        Ext4Inode::load(fs_arc, EXT4_ROOT_INO)
     }
 
-    fn superblock(&self) -> SuperblockFacts {
-        SuperblockFacts {
-            type_name: "ext4",
-            read_only: false,
-        }
-    }
-
-    fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
+    /// statfs。
+    pub(crate) fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError> {
         // 1. 与 allocator mutation 共锁取得 superblock 计数；缺少该锁会观察到
         // group descriptor 与 superblock 更新之间的中间状态。
         let _mutation = self
@@ -47,12 +33,7 @@ impl FileSystem for Ext4FileSystem {
         let journal_blocks =
             self.read_inode_disk(EXT4_JOURNAL_INO)?.size() / self.block_size as u64;
         let overhead = per_group + journal_blocks;
-        // 3. Linux uuid_to_fsid 将两个 little-endian 64-bit half xor 后折叠为 fsid。
-        let first = u64::from_le_bytes(superblock.s_uuid[..8].try_into().unwrap());
-        let second = u64::from_le_bytes(superblock.s_uuid[8..].try_into().unwrap());
-        let fsid = first ^ second;
         Ok(FileSystemStatistics {
-            magic: EXT4_SUPER_MAGIC as u64,
             block_size: self.block_size as u64,
             blocks: superblock.blocks_count().saturating_sub(overhead),
             blocks_free: superblock.free_blocks_count(),
@@ -61,27 +42,18 @@ impl FileSystem for Ext4FileSystem {
                 .saturating_sub(superblock.reserved_blocks_count()),
             files: superblock.s_inodes_count as u64,
             files_free: superblock.s_free_inodes_count as u64,
-            fsid: [fsid as u32, (fsid >> 32) as u32],
             name_length: 255,
             fragment_size: self.block_size as u64,
-            flags: 0,
         })
     }
 
-    fn remount(
-        &self,
-        options: &[u8],
-        _namespace: &crate::namespace::UserNamespace,
-        writable_transition: bool,
-    ) -> Result<(), FileSystemError> {
-        validate_mount_options(options)?;
-        if writable_transition {
-            self.make_writable()?;
-        }
-        Ok(())
+    /// 只读挂载重新挂载为可写（日志恢复后的首次写入准备）。
+    pub(crate) fn remount_writable(&self) -> Result<(), FileSystemError> {
+        self.make_writable()
     }
 
-    fn shutdown(&self) -> Result<(), FileSystemError> {
+    /// 卸载：停止写回线程并提交最后的 transaction；每个挂载恰好一次。
+    pub(crate) fn shutdown(&self) -> Result<(), FileSystemError> {
         // mount lifecycle 的 shutdown 由 MOUNT_TRANSACTION 串行，恰好一次。
         // 先无分配等待所有旧 mutation/I/O 离开，再在同一 owner 内停止 daemon 和最终 drain；
         // 即使 commit Arc 准备 OOM，返回后 daemon 也不再碰已释放的物理租约。
@@ -130,20 +102,24 @@ impl Ext4FileSystem {
         }
     }
 
-    /// 创建本 filesystem 的写回内核线程（对应 Linux 每个 journal 的 jbd2 线程）。
+    /// 创建本 filesystem 的写回线程（对应 Linux 每个 journal 的 jbd2 线程）。
     ///
     /// # Errors
     ///
-    /// 线程主体或内核线程分配失败时返回 `OutOfMemory`。
-    pub(in crate::fs) fn start_writeback(
+    /// 线程创建失败时返回 `OutOfMemory`。
+    pub(crate) fn start_writeback(
         self: &Arc<Self>,
-        threads: KernelThreadSupport,
     ) -> Result<(), FileSystemError> {
         let filesystem = self.clone();
-        let sleep_until = threads.sleep_until;
-        let body = alloc::boxed::Box::try_new(move || filesystem.run_writeback_daemon(sleep_until))
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        (threads.spawn)("ext4-writeback", body).map_err(|_| FileSystemError::OutOfMemory)
+        let thread = native_runtime::thread::spawn(b"ext4-writeback", move || {
+            filesystem.run_writeback_daemon(|deadline| {
+                let _ = native_runtime::system::sleep_until(i64::try_from(deadline).unwrap_or(i64::MAX));
+            });
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+        // 写回线程在卸载时自行结束。
+        drop(thread);
+        Ok(())
     }
 
     /// 写回线程主体：running transaction 出现后，在其年龄达到提交间隔时提交。
@@ -155,9 +131,9 @@ impl Ext4FileSystem {
     ///
     /// # Parameters
     ///
-    /// - `sleep_until`: composition root 注入的 absolute monotonic deadline 睡眠；fs 不依赖 task。
+    /// - `sleep_until`: 睡到 absolute monotonic deadline。
     ///
-    /// umount 置位 `stopping` 并 signal 后返回，内核线程随之终止。
+    /// umount 置位 `stopping` 并 signal 后返回，线程随之终止。
     fn run_writeback_daemon(self: Arc<Self>, sleep_until: fn(u64)) {
         loop {
             self.commit_event.wait();

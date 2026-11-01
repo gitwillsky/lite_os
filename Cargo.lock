@@ -108,6 +108,7 @@ version = "0.1.0"
 dependencies = [
  "device-model",
  "native-runtime",
+ "service-rpc",
 ]
 
 [[package]]
@@ -138,8 +139,30 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
 
 [[package]]
+name = "ext4d"
+version = "0.1.0"
+dependencies = [
+ "device-model",
+ "device-protocol",
+ "fallible-tree",
+ "filesystem-protocol",
+ "launch-protocol",
+ "native-runtime",
+ "service-sync",
+ "syscall-abi",
+]
+
+[[package]]
 name = "fallible-tree"
 version = "0.1.0"
+
+[[package]]
+name = "filesystem-protocol"
+version = "0.1.0"
+dependencies = [
+ "native-runtime",
+ "service-rpc",
+]
 
 [[package]]
 name = "hash32"
@@ -200,6 +223,7 @@ dependencies = [
  "device-model",
  "device-protocol",
  "fallible-tree",
+ "filesystem-protocol",
  "launch-protocol",
  "native-runtime",
  "service-sync",
@@ -293,6 +317,13 @@ dependencies = [
 [[package]]
 name = "scheduler-unit"
 version = "0.1.0"
+
+[[package]]
+name = "service-rpc"
+version = "0.1.0"
+dependencies = [
+ "native-runtime",
+]
 
 [[package]]
 name = "service-sync"

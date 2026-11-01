@@ -212,7 +212,6 @@ impl Ext4FileSystem {
     /// # Parameters
     ///
     /// - `device`: 存放 ext4 卷的块设备。
-    /// - `device_number`: 此设备注册的实际 dev_t，用于所有 inode 的 st_dev。
     /// - `read_only`: 以只读挂载。
     ///
     /// # Returns
@@ -224,7 +223,6 @@ impl Ext4FileSystem {
     /// 设备 I/O 失败、checksum 不符、profile 之外的 feature 或元数据不一致时返回错误。
     pub(crate) fn new(
         device: Arc<dyn BlockDevice>,
-        device_number: crate::fs::DeviceNumber,
         read_only: bool,
     ) -> Result<Arc<Self>, FileSystemError> {
         let device_block_size = device.block_size();
@@ -253,7 +251,6 @@ impl Ext4FileSystem {
         };
         let fs = Arc::try_new(Self {
             device,
-            device_number,
             superblock: Mutex::new(superblock),
             block_size: EXT4_BLOCK_SIZE,
             inode_size: EXT4_INODE_SIZE,

@@ -129,9 +129,61 @@ impl Mount {
 }
 
 /// 一个已挂载的 FUSE superblock。
-struct FuseFileSystem {
+pub(super) struct FuseFileSystem {
     mount: Arc<Mount>,
     root: Arc<FuseInode>,
+    /// 卸载时同步发送 DESTROY（Linux `fc->destroy`，块设备型挂载 `fuseblk` 设置）：服务端在回复前
+    /// 持久化全部状态。缺失时卸载只断开连接，服务端在不知道卸载是否完成的情况下结束挂载，`umount`
+    /// 返回时日志可能尚未提交。
+    destroy: bool,
+}
+
+impl FuseFileSystem {
+    /// 组装挂载：建立 nodeid 索引与根 inode，`bind` 把守护进程端点接到连接，随后发布挂载。
+    ///
+    /// # Parameters
+    ///
+    /// - `connection`: 已排入 INIT 的连接。
+    /// - `options`: 挂载选项；根 inode 用 `rootmode`/`user_id`/`group_id` 合成属性，首次访问前向守护进程取回。
+    /// - `destroy`: 卸载时是否发送 DESTROY。
+    /// - `bind`: 绑定守护进程端点；在所有可失败的分配之后、挂载发布之前调用。
+    ///
+    /// # Errors
+    ///
+    /// 分配失败返回 `OutOfMemory`；`bind` 的失败原样返回。
+    pub(super) fn assemble(
+        connection: &Arc<Connection>,
+        options: Options,
+        destroy: bool,
+        bind: impl FnOnce() -> Result<(), FileSystemError>,
+    ) -> Result<Arc<Self>, FileSystemError> {
+        let root_attributes =
+            Attributes::root(options.root_mode, options.user_id, options.group_id);
+        let mount = Arc::try_new(Mount {
+            connection: connection.clone(),
+            filesystem_id: crate::fs::allocate_filesystem_id(),
+            options,
+            nodes: Mutex::new(FallibleMap::new()),
+            unsupported: AtomicU16::new(0),
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+        let root = FuseInode::root(mount.clone(), &root_attributes)?;
+        mount
+            .nodes
+            .lock()
+            .try_insert(fuse::ROOT_ID, Arc::downgrade(&root))
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let filesystem = Arc::try_new(Self {
+            mount,
+            root,
+            destroy,
+        })
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+        bind()?;
+        connection.attach_mount(&filesystem.mount);
+        super::control::register(&filesystem.mount)?;
+        Ok(filesystem)
+    }
 }
 
 impl Drop for FuseFileSystem {
@@ -230,11 +282,21 @@ impl FileSystem for FuseFileSystem {
     }
 
     /// 卸载（Linux `fuse_sb_destroy` → `fuse_abort_conn`）：守护进程 read 返回 `ENODEV` 后退出。
+    ///
+    /// 块设备型挂载先同步 DESTROY（Linux `fuse_send_destroy`）；其失败在中止连接后返回。
     fn shutdown(&self) -> Result<(), FileSystemError> {
+        let destroyed = if self.destroy {
+            self.mount
+                .connection
+                .call(fuse::DESTROY, 0, &[], ReplyShape::EMPTY)
+                .map(drop)
+        } else {
+            Ok(())
+        };
         super::control::unregister(self.mount.filesystem_id);
         self.mount.connection.abort(false);
         self.root.clear_entries();
-        Ok(())
+        destroyed
     }
 }
 
@@ -268,27 +330,8 @@ impl FileSystemType for FuseFileSystemType {
             requester.thread.namespace(),
             options.max_read.unwrap_or(u32::MAX),
         )?;
-        let root_attributes =
-            Attributes::root(options.root_mode, options.user_id, options.group_id);
-        let mount = Arc::try_new(Mount {
-            connection: connection.clone(),
-            filesystem_id: crate::fs::allocate_filesystem_id(),
-            options,
-            nodes: Mutex::new(FallibleMap::new()),
-            unsupported: AtomicU16::new(0),
-        })
-        .map_err(|_| FileSystemError::OutOfMemory)?;
-        let root = FuseInode::root(mount.clone(), &root_attributes)?;
-        mount
-            .nodes
-            .lock()
-            .try_insert(fuse::ROOT_ID, Arc::downgrade(&root))
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        device.bind(&connection)?;
-        connection.attach_mount(&mount);
-        let filesystem = Arc::try_new(FuseFileSystem { mount, root })
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        super::control::register(&filesystem.mount)?;
+        let filesystem =
+            FuseFileSystem::assemble(&connection, options, false, || device.bind(&connection))?;
         Ok(CreatedFileSystem {
             filesystem,
             user_namespace: request.identity.user_namespace(),

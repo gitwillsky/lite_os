@@ -14,11 +14,12 @@ use core::{
 };
 use crate::sync::Mutex;
 
-use super::{
-    DirectoryEntry, DirectoryRead, DirectoryVisit, DirectoryVisitor, FileSystem, FileSystemError,
-    Inode, InodeMetadata, InodeType, OwnerModeChange, StorageWriter,
+use crate::vfs::{
+    DirectoryEntry, DirectoryRead, DirectoryVisit, DirectoryVisitor, FileSystemError, InodeMetadata,
+    InodeType, OwnerModeChange, StorageWriter,
 };
-use crate::{devices::block::{BLOCK_SIZE, BlockDevice, BlockError}, sync::{TaskEvent, TaskMutex, TaskMutexWaitPreparation}};
+use crate::sync::{TaskEvent, TaskMutex, TaskMutexWaitPreparation};
+use device_model::{BLOCK_SIZE, BlockDevice, BlockError};
 use fallible_tree::FallibleMap;
 
 fn block_error(error: BlockError) -> FileSystemError {
@@ -28,16 +29,6 @@ fn block_error(error: BlockError) -> FileSystemError {
     }
 }
 
-/// 首次挂载与 remount 共用固定 ordered profile；未知 key 或其他 data 模式返回 EINVAL。
-pub(in crate::fs) fn validate_mount_options(options: &[u8]) -> Result<(), FileSystemError> {
-    if super::mount_options::parse(options)
-        .all(|option| option.key == b"data" && option.value == Some(b"ordered".as_slice()))
-    {
-        Ok(())
-    } else {
-        Err(FileSystemError::InvalidOperation)
-    }
-}
 
 mod allocation;
 mod allocation_dirty;
@@ -67,7 +58,7 @@ mod xattr;
 mod xattr_inode;
 use directory_cursor::{DirectoryCursor, RecordPosition};
 use dirhash::HashSignedness;
-use inode::Ext4Inode;
+pub(crate) use inode::Ext4Inode;
 use journal::{BlockKind, Journal, JournalOwner, MutationGuard};
 use metadata_cache::MetadataBlockCache;
 use orphan::OrphanFile;
@@ -96,7 +87,7 @@ impl DirectoryVisitor for NonDotVisitor {
     }
 }
 
-fn directory_not_empty(inode: &dyn Inode) -> Result<bool, FileSystemError> {
+fn directory_not_empty(inode: &Ext4Inode) -> Result<bool, FileSystemError> {
     let mut visitor = NonDotVisitor(false);
     inode.read_directory(0, &mut visitor)?;
     Ok(visitor.0)
@@ -507,8 +498,6 @@ struct Ext4DirEntry2Header {
 /// 单一根挂载的同步读写 ext4 文件系统。
 pub(crate) struct Ext4FileSystem {
     device: Arc<dyn BlockDevice>,
-    // OWNER: 挂载生产者传入实际块设备 dev_t；不能把 internal cache identity 或常量当 st_dev。
-    device_number: crate::fs::DeviceNumber,
     superblock: Mutex<Ext4SuperBlock>,
     block_size: usize,
     inode_size: usize,

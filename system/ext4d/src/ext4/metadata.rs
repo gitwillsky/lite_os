@@ -1,6 +1,6 @@
 use super::inode::Timestamp;
 use super::*;
-use crate::fs::permission::OwnerModeState;
+use crate::vfs::OwnerModeState;
 
 impl Ext4InodeDisk {
     pub(super) fn uid(&self) -> u32 {

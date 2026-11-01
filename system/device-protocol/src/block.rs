@@ -5,7 +5,7 @@ use alloc::vec::Vec;
 
 use device_model::{BlockDevice, BlockError};
 use native_runtime::native_abi::{self, Status};
-use native_runtime::Channel;
+use native_runtime::{Channel, Handle};
 
 use crate::directory::{self, Announcement, Class};
 use crate::{Reader, Writer, call, serve, take_handle};
@@ -13,6 +13,8 @@ use crate::{Reader, Writer, call, serve, take_handle};
 const READ: u32 = 1;
 const WRITE: u32 = 2;
 const FLUSH: u32 = 3;
+const INFO: u32 = 4;
+const CONNECT: u32 = 5;
 
 /// 块请求在驱动内并发等待完成：工作线程数与驱动的请求槽数同量级。
 const WORKERS: usize = 8;
@@ -39,19 +41,53 @@ fn decode_error(status: Status) -> BlockError {
     }
 }
 
-/// 驱动宿主：发布块设备并服务其请求。
-///
-/// # Errors
-///
-/// channel、线程创建或目录写入失败。
-pub fn publish(directory: &Channel, device: Arc<dyn BlockDevice>) -> Result<(), Status> {
+/// 设备的一段块范围（经 CONNECT 交给另一服务的连接只看到这一段）。
+struct BlockRange {
+    device: Arc<dyn BlockDevice>,
+    first: u64,
+    count: u64,
+}
+
+impl BlockDevice for BlockRange {
+    fn disk_name(&self) -> &[u8] {
+        self.device.disk_name()
+    }
+
+    fn read_block(&self, block_id: usize, buf: &mut [u8]) -> Result<usize, BlockError> {
+        self.device.read_block(self.translate(block_id)?, buf)
+    }
+
+    fn write_block(&self, block_id: usize, buf: &[u8]) -> Result<usize, BlockError> {
+        self.device.write_block(self.translate(block_id)?, buf)
+    }
+
+    fn flush(&self) -> Result<(), BlockError> {
+        self.device.flush()
+    }
+
+    fn block_size(&self) -> usize {
+        self.device.block_size()
+    }
+
+    fn block_count(&self) -> u64 {
+        self.count
+    }
+}
+
+impl BlockRange {
+    fn translate(&self, block_id: usize) -> Result<usize, BlockError> {
+        let block = block_id as u64;
+        if block >= self.count {
+            return Err(BlockError::InvalidBlock);
+        }
+        usize::try_from(self.first + block).map_err(|_| BlockError::InvalidBlock)
+    }
+}
+
+/// 以 [`WORKERS`] 个线程服务 `device` 的一条连接，返回客户端一端。
+fn serve_device(device: Arc<dyn BlockDevice>) -> Result<Channel, Status> {
     let (client, server) = Channel::create()?;
     let block_size = device.block_size();
-    let mut description = directory::description();
-    description
-        .bytes(device.disk_name())
-        .u64(block_size as u64)
-        .u64(device.block_count());
     serve(
         server,
         WORKERS,
@@ -70,12 +106,47 @@ pub fn publish(directory: &Channel, device: Arc<dyn BlockDevice>) -> Result<(), 
                     device.write_block(block, data).map_err(encode_error)?;
                 }
                 FLUSH => device.flush().map_err(encode_error)?,
+                INFO => {
+                    reply
+                        .bytes(device.disk_name())
+                        .u64(device.block_size() as u64)
+                        .u64(device.block_count());
+                }
+                CONNECT => {
+                    let first = request.u64()?;
+                    let count = request.u64()?;
+                    if first.checked_add(count).is_none_or(|end| end > device.block_count()) {
+                        return Err(native_abi::ERR_OUT_OF_RANGE);
+                    }
+                    let range: Arc<dyn BlockDevice> = Arc::try_new(BlockRange {
+                        device: device.clone(),
+                        first,
+                        count,
+                    })
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                    return Ok(alloc::vec![serve_device(range)?.into_handle()]);
+                }
                 _ => return Err(native_abi::ERR_NOT_SUPPORTED),
             }
             Ok(Vec::new())
         })
         .map_err(|_| native_abi::ERR_NO_MEMORY)?,
     )?;
+    Ok(client)
+}
+
+/// 驱动宿主：发布块设备并服务其请求。
+///
+/// # Errors
+///
+/// channel、线程创建或目录写入失败。
+pub fn publish(directory: &Channel, device: Arc<dyn BlockDevice>) -> Result<(), Status> {
+    let mut description = directory::description();
+    description
+        .bytes(device.disk_name())
+        .u64(device.block_size() as u64)
+        .u64(device.block_count());
+    let client = serve_device(device)?;
     directory::announce(directory, Class::Block, &description, alloc::vec![client.into_handle()])
 }
 
@@ -85,6 +156,26 @@ pub struct RemoteBlock {
     name: Vec<u8>,
     block_size: usize,
     block_count: u64,
+}
+
+/// 以一条裸块协议连接（另一服务经 [`BlockDevice::share_range`] 交来）构造远端块设备。
+///
+/// # Errors
+///
+/// 设备信息查询失败。
+pub fn from_channel(channel: Channel) -> Result<Arc<RemoteBlock>, Status> {
+    let reply = call(&channel, &Writer::request(INFO), Vec::new())?;
+    let mut reader = reply.reader();
+    let name = reader.bytes()?.to_vec();
+    let block_size = reader.usize()?;
+    let block_count = reader.u64()?;
+    Arc::try_new(RemoteBlock {
+        channel,
+        name,
+        block_size,
+        block_count,
+    })
+    .map_err(|_| native_abi::ERR_NO_MEMORY)
 }
 
 /// 连接目录中的块设备。
@@ -148,5 +239,12 @@ impl BlockDevice for RemoteBlock {
 
     fn block_count(&self) -> u64 {
         self.block_count
+    }
+
+    fn share_range(&self, first_block: u64, block_count: u64) -> Option<Handle> {
+        let mut request = Writer::request(CONNECT);
+        request.u64(first_block).u64(block_count);
+        let mut reply = call(&self.channel, &request, Vec::new()).ok()?;
+        take_handle(&mut reply.handles, 0).ok()
     }
 }

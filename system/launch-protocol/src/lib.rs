@@ -25,6 +25,20 @@ pub mod linuxd {
     pub const RESOURCE: usize = ROLE_HANDLES + 2;
     /// devmgr 设备目录 channel 的读端。
     pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 3;
+    /// ext4d 控制 channel 的客户端（请求挂载 ext4）。
+    pub const EXT4: usize = ROLE_HANDLES + 4;
+}
+
+/// ext4 文件系统服务：按 linuxd 的挂载请求打开块设备上的 ext4，并以 FUSE 线协议服务每个挂载。
+pub mod ext4d {
+    use super::ROLE_HANDLES;
+
+    /// bootfs 中的映像路径。
+    pub const IMAGE: &[u8] = b"bin/ext4d";
+    /// 静态链接基址（普通进程的低地址区）。
+    pub const BASE: usize = 0x40_0000;
+    /// 控制 channel 的服务端。
+    pub const CONTROL: usize = ROLE_HANDLES;
 }
 
 /// 驱动宿主：平台设备发现、全部设备驱动与设备目录的发布者。

@@ -655,11 +655,7 @@ impl Ext4Inode {
         found.ok_or(FileSystemError::NotFound)
     }
 
-    pub(super) fn list_attributes(
-        &self,
-        identity: &crate::fs::AccessIdentity,
-    ) -> Result<Vec<u8>, FileSystemError> {
-        let trusted = identity.has_capability(syscall_abi::capability::Capability::SYS_ADMIN);
+    pub(super) fn list_attributes(&self, trusted: bool) -> Result<Vec<u8>, FileSystemError> {
         let _gate = self
             .fs
             .mutation
@@ -688,7 +684,7 @@ impl Ext4Inode {
 
     pub(super) fn change_attribute(
         &self,
-        mut change: crate::fs::XattrChange<'_>,
+        change: crate::vfs::XattrChange<'_>,
     ) -> Result<(), FileSystemError> {
         if change.flags & !3 != 0
             || change
@@ -700,15 +696,8 @@ impl Ext4Inode {
         }
         let (mut mutation, attributes) = MutationGuard::begin_after(&self.fs, || {
             let disk = self.disk.lock().disk;
-            change.prepare(
-                &crate::fs::permission::OwnerModeState::new(
-                    inode_kind::from_mode(disk.i_mode),
-                    disk.i_mode,
-                    disk.uid(),
-                    disk.gid(),
-                ),
-                Self::xattr_write_allowed(&disk),
-            )?;
+            // 名字空间授权与 capability 值转换已由 linuxd 的 VFS 在发出 SETXATTR 前完成。
+            Self::xattr_write_allowed(&disk)?;
             let (index, suffix) = attribute_name(change.name)?;
             let mut attributes = self.fs.xattr_snapshot(self.inode_num, &disk)?;
             let position = attributes

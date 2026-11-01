@@ -95,11 +95,6 @@ pub(super) fn block_number(path: &[u8]) -> Option<DeviceNumber> {
         .map(|node| node.number)
 }
 
-/// 按块设备号取得 adapter（Linux `blkdev_get_no_open`）。
-pub(super) fn block_device(number: DeviceNumber) -> Option<Arc<dyn BlockDevice>> {
-    block_node(number).map(|node| node.device().clone())
-}
-
 /// 全部已发布块设备（整盘与分区）按发布顺序的快照；索引在注册表只追加的前提下稳定。
 ///
 /// # Errors

@@ -5,6 +5,7 @@
 //! - `protocol`：请求与回复的字节编解码。
 //! - `filesystem`：`fuse` 类型、superblock 与守护进程通知；`options` 解析挂载选项。
 //! - `inode`：VFS inode 操作到 FUSE 请求的翻译，以及 entry/attr 超时缓存与服务器文件句柄。
+//! - `service`：系统服务承载的块设备型挂载（`fuseblk`），守护进程端点是 native channel。
 use super::FileSystemError;
 
 mod connection;
@@ -14,6 +15,9 @@ mod filesystem;
 mod inode;
 mod options;
 mod protocol;
+mod service;
+
+pub(super) use service::mount as mount_service;
 
 /// 登记 `/dev/fuse` 与 `fuse`/`fusectl` 文件系统类型。
 ///

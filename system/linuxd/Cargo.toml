@@ -13,6 +13,7 @@ native-runtime = { path = "../native-runtime" }
 service-sync = { path = "../service-sync" }
 device-model = { path = "../device-model" }
 device-protocol = { path = "../device-protocol" }
+filesystem-protocol = { path = "../filesystem-protocol" }
 launch-protocol = { path = "../launch-protocol" }
 fallible-tree = { path = "../../fallible-tree" }
 syscall-abi = { path = "../../syscall-abi" }

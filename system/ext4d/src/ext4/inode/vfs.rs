@@ -1,45 +1,33 @@
 use super::super::inode::Timestamp;
 use super::*;
 
-impl Inode for Ext4Inode {
-    fn check_xattr_write(&self) -> Result<(), FileSystemError> {
-        Self::xattr_write_allowed(&self.disk.lock())
+impl Ext4Inode {
+    /// ext4 inode 号。
+    pub(crate) fn number(&self) -> u64 {
+        u64::from(self.inode_num)
     }
 
-    fn read_xattr(&self, name: &[u8]) -> Result<Vec<u8>, FileSystemError> {
+    /// 是否为根目录。
+    pub(crate) fn is_root(&self) -> bool {
+        self.inode_num == EXT4_ROOT_INO
+    }
+
+    pub(crate) fn read_xattr(&self, name: &[u8]) -> Result<Vec<u8>, FileSystemError> {
         self.read_attribute(name)
     }
 
-    fn list_xattrs(
-        &self,
-        identity: &crate::fs::AccessIdentity,
-    ) -> Result<Vec<u8>, FileSystemError> {
-        self.list_attributes(identity)
+    /// 列出 xattr 名称；`trusted` 决定是否包含 `trusted.*`（调用者具有 `CAP_SYS_ADMIN`）。
+    pub(crate) fn list_xattrs(&self, trusted: bool) -> Result<Vec<u8>, FileSystemError> {
+        self.list_attributes(trusted)
     }
 
-    fn change_xattr(&self, change: crate::fs::XattrChange<'_>) -> Result<(), FileSystemError> {
+    pub(crate) fn change_xattr(&self, change: crate::vfs::XattrChange<'_>) -> Result<(), FileSystemError> {
         self.change_attribute(change)
     }
 
-    fn write_access(&self) -> Option<&crate::fs::InodeWriteAccess> {
-        (self.inode_type() == InodeType::File).then_some(&self.write_access)
-    }
-
-    fn filesystem_id(&self) -> usize {
-        Arc::as_ptr(&self.fs) as usize
-    }
-
-    fn notification_link_state(&self) -> Option<(u64, u32)> {
-        Some((
-            u64::from(self.inode_num),
-            u32::from(self.disk.lock().i_links_count),
-        ))
-    }
-
-    fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
+    pub(crate) fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
         let inode = self.disk.lock();
         Ok(InodeMetadata {
-            filesystem: self.fs.device_number.encode(),
             inode: self.inode_num as u64,
             kind: inode_kind::from_mode(inode.i_mode),
             mode: inode.i_mode as u32,
@@ -52,7 +40,7 @@ impl Inode for Ext4Inode {
             atime: inode.atime().seconds(),
             mtime: inode.mtime().seconds(),
             ctime: inode.ctime().seconds(),
-            fine_times: crate::fs::FineTimes {
+            fine_times: crate::vfs::FineTimes {
                 atime_nsec: inode.atime().nanoseconds(),
                 mtime_nsec: inode.mtime().nanoseconds(),
                 ctime_nsec: inode.ctime().nanoseconds(),
@@ -64,25 +52,16 @@ impl Inode for Ext4Inode {
         })
     }
 
-    fn device_number(&self) -> Option<crate::fs::DeviceNumber> {
-        Self::rdev(&self.disk.lock())
-    }
-
-    fn inode_type(&self) -> InodeType {
+    pub(crate) fn inode_type(&self) -> InodeType {
         let ino = self.disk.lock();
         inode_kind::from_mode(ino.i_mode)
     }
 
-    fn size(&self) -> u64 {
+    pub(crate) fn size(&self) -> u64 {
         self.disk.lock().size()
     }
 
-    fn is_executable(&self) -> bool {
-        let ino = self.disk.lock();
-        ino.i_mode & 0o111 != 0
-    }
-
-    fn read_storage(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
+    pub(crate) fn read_storage(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
         let mut done = 0usize;
         let size = usize::try_from(self.disk.lock().size())
             .map_err(|_| FileSystemError::InvalidOperation)?;
@@ -120,14 +99,14 @@ impl Inode for Ext4Inode {
         Ok(done)
     }
 
-    fn touch_access(&self, now: u64, relatime: bool) -> Result<(), FileSystemError> {
+    /// 读访问后按 relatime 更新 atime。
+    pub(crate) fn touch_access(&self, now: u64) -> Result<(), FileSystemError> {
         let needs_update = |inode: &Ext4InodeDisk| {
-            crate::fs::inode_times::needs_access_update(
+            crate::vfs::needs_access_update(
                 inode.atime().seconds(),
                 inode.mtime().seconds(),
                 inode.ctime().seconds(),
                 now,
-                relatime,
             )
         };
         if !needs_update(&self.disk.lock()) {
@@ -143,7 +122,7 @@ impl Inode for Ext4Inode {
         mutation.commit()
     }
 
-    fn read_link(&self) -> Result<Vec<u8>, FileSystemError> {
+    pub(crate) fn read_link(&self) -> Result<Vec<u8>, FileSystemError> {
         let inode = self.disk.lock().disk;
         if inode_kind::from_mode(inode.i_mode) != InodeType::SymLink {
             return Err(FileSystemError::InvalidOperation);
@@ -164,67 +143,50 @@ impl Inode for Ext4Inode {
         Ok(target)
     }
 
-    fn write_storage(
+    pub(crate) fn write_storage(
         &self,
         offset: u64,
         buf: &[u8],
-        identity: Option<&crate::fs::AccessIdentity>,
+        policy: Option<crate::vfs::WritePolicy>,
     ) -> Result<usize, FileSystemError> {
-        self.write_bytes(offset, buf, identity)
+        self.write_bytes(offset, buf, policy)
     }
 
-    fn prepare_cached_write(
-        &self,
-        identity: &crate::fs::AccessIdentity,
-    ) -> Result<(), FileSystemError> {
+    /// 写回缓存模式下的写入：数据经页缓存写回，set-ID 清除在写入开始时单独提交。
+    pub(crate) fn prepare_cached_write(&self, policy: crate::vfs::WritePolicy) -> Result<(), FileSystemError> {
         let mut mutation = self.fs.begin_mutation()?;
-        self.remove_write_privileges_locked(&mut mutation, Some(identity))?;
+        self.remove_write_privileges_locked(&mut mutation, Some(policy))?;
         mutation.commit()
     }
 
-    fn writeback_storage_batch(
-        &self,
-        batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
-    ) -> Result<(), FileSystemError> {
-        self.write_batch(None, batch)
-    }
-
-    fn append_storage(
-        &self,
-        buf: &[u8],
-        identity: Option<&crate::fs::AccessIdentity>,
-    ) -> Result<(u64, usize), FileSystemError> {
-        self.append_bytes(buf, identity)
-    }
-
-    fn truncate_storage(
+    pub(crate) fn truncate_storage(
         &self,
         size: u64,
-        identity: Option<&crate::fs::AccessIdentity>,
+        policy: Option<crate::vfs::WritePolicy>,
     ) -> Result<(), FileSystemError> {
         let mut mutation = self.fs.begin_mutation()?;
-        self.truncate_locked(&mut mutation, size, identity)?;
+        self.truncate_locked(&mut mutation, size, policy)?;
         mutation.commit()
     }
 
-    fn allocate_storage(
+    pub(crate) fn allocate_storage(
         &self,
         offset: u64,
         length: u64,
-        identity: Option<&crate::fs::AccessIdentity>,
+        policy: Option<crate::vfs::WritePolicy>,
     ) -> Result<(), FileSystemError> {
-        self.allocate_range(offset, length, identity)
+        self.allocate_range(offset, length, policy)
     }
 
-    fn sync_storage(&self) -> Result<(), FileSystemError> {
+    pub(crate) fn sync_storage(&self) -> Result<(), FileSystemError> {
         self.fs.sync_journal()
     }
 
-    fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {
+    pub(crate) fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {
         self.update_times(atime, mtime)
     }
 
-    fn read_directory(
+    pub(crate) fn read_directory(
         &self,
         cursor: u64,
         visitor: &mut dyn DirectoryVisitor,
@@ -253,24 +215,24 @@ impl Inode for Ext4Inode {
         }
     }
 
-    fn find_child(&self, name: &[u8]) -> Result<Arc<dyn Inode>, FileSystemError> {
+    pub(crate) fn find_child(&self, name: &[u8]) -> Result<Arc<Ext4Inode>, FileSystemError> {
         if !matches!(self.inode_type(), InodeType::Directory) {
             return Err(FileSystemError::NotDirectory);
         }
         match self.lookup_entry(name)? {
             Some((number, _)) => {
-                Ext4Inode::load(self.fs.clone(), number).map(|inode| inode as Arc<dyn Inode>)
+                Ext4Inode::load(self.fs.clone(), number)
             }
             None => Err(FileSystemError::NotFound),
         }
     }
 
-    fn create(
+    pub(crate) fn create(
         &self,
         name: &[u8],
         kind: InodeType,
-        metadata: crate::fs::CreateMetadata,
-    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        metadata: crate::vfs::CreateMetadata,
+    ) -> Result<Arc<Ext4Inode>, FileSystemError> {
         if !matches!(
             kind,
             InodeType::File | InodeType::Directory | InodeType::Socket
@@ -280,13 +242,13 @@ impl Inode for Ext4Inode {
         self.create_node(name, kind, metadata, None)
     }
 
-    fn mknod(
+    pub(crate) fn mknod(
         &self,
         name: &[u8],
         kind: InodeType,
-        metadata: crate::fs::CreateMetadata,
-        device: Option<crate::fs::DeviceNumber>,
-    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        metadata: crate::vfs::CreateMetadata,
+        device: Option<crate::vfs::DeviceNumber>,
+    ) -> Result<Arc<Ext4Inode>, FileSystemError> {
         match (kind, device) {
             (InodeType::Fifo, None)
             | (InodeType::CharacterDevice | InodeType::BlockDevice, Some(_)) => {}
@@ -295,25 +257,24 @@ impl Inode for Ext4Inode {
         self.create_node(name, kind, metadata, device)
     }
 
-    fn change_owner_mode(&self, change: OwnerModeChange) -> Result<(), FileSystemError> {
+    pub(crate) fn change_owner_mode(&self, change: OwnerModeChange) -> Result<(), FileSystemError> {
         self.update_owner_mode(change)
     }
 
-    fn symlink(
+    pub(crate) fn symlink(
         &self,
         name: &[u8],
         target: &[u8],
-        metadata: crate::fs::CreateMetadata,
-    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        metadata: crate::vfs::CreateMetadata,
+    ) -> Result<Arc<Ext4Inode>, FileSystemError> {
         self.create_symlink(name, target, metadata)
-            .map(|inode| inode as Arc<dyn Inode>)
     }
 
-    fn link(&self, name: &[u8], target: Arc<dyn Inode>) -> Result<(), FileSystemError> {
+    pub(crate) fn link(&self, name: &[u8], target: Arc<Ext4Inode>) -> Result<(), FileSystemError> {
         self.create_hard_link(name, target)
     }
 
-    fn unlink(&self, name: &[u8], remove_directory: bool) -> Result<(), FileSystemError> {
+    pub(crate) fn unlink(&self, name: &[u8], remove_directory: bool) -> Result<(), FileSystemError> {
         if self.inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
         }
@@ -325,7 +286,7 @@ impl Inode for Ext4Inode {
             if !remove_directory {
                 return Err(FileSystemError::IsDirectory);
             }
-            if directory_not_empty(child.as_ref())? {
+            if directory_not_empty(&child)? {
                 return Err(FileSystemError::DirectoryNotEmpty);
             }
         } else if remove_directory {
@@ -359,7 +320,7 @@ impl Inode for Ext4Inode {
         mutation.commit()
     }
 
-    fn rename(
+    pub(crate) fn rename(
         &self,
         old_name: &[u8],
         new_parent_inode: u64,
@@ -417,7 +378,7 @@ impl Ext4Inode {
         mutation.commit()
     }
 
-    pub(in crate::fs::ext4) fn reclaim_dropped_orphan_locked(
+    pub(in crate::ext4) fn reclaim_dropped_orphan_locked(
         &self,
         mutation: &mut MutationGuard<'_>,
     ) -> Result<(), FileSystemError> {
@@ -452,9 +413,9 @@ impl Ext4Inode {
         &self,
         name: &[u8],
         kind: InodeType,
-        metadata: crate::fs::CreateMetadata,
-        device: Option<crate::fs::DeviceNumber>,
-    ) -> Result<Arc<dyn Inode>, FileSystemError> {
+        metadata: crate::vfs::CreateMetadata,
+        device: Option<crate::vfs::DeviceNumber>,
+    ) -> Result<Arc<Ext4Inode>, FileSystemError> {
         if self.inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
         }
@@ -495,14 +456,14 @@ impl Ext4Inode {
         self.add_dir_entry_locked(&mut mutation, number, name, kind)?;
         self.touch_parent(&mut mutation, parent_links)?;
         mutation.commit()?;
-        Ok(child as Arc<dyn Inode>)
+        Ok(child as Arc<Ext4Inode>)
     }
 
     /// 设备节点的设备号；非设备 inode 为 `None`。
-    pub(in crate::fs::ext4) fn rdev(disk: &Ext4InodeDisk) -> Option<crate::fs::DeviceNumber> {
+    pub(in crate::ext4) fn rdev(disk: &Ext4InodeDisk) -> Option<crate::vfs::DeviceNumber> {
         matches!(disk.i_mode & 0xF000, 0x2000 | 0x6000).then(|| {
             let (major, minor) = inode_kind::decode_device(&disk.block_bytes());
-            crate::fs::DeviceNumber::new(major, minor)
+            crate::vfs::DeviceNumber::new(major, minor)
         })
     }
 }

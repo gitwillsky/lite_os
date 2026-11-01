@@ -66,10 +66,10 @@ impl Announcement {
 ///
 /// 使用者已关闭目录或消息超限。
 pub fn announce(directory: &Channel, class: Class, description: &Writer, handles: Vec<Handle>) -> Result<(), Status> {
-    let mut message = Writer(Vec::new());
-    message.u32(class as u32);
-    message.0.extend_from_slice(description.as_bytes());
-    directory.write(message.as_bytes(), handles)
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&(class as u32).to_le_bytes());
+    bytes.extend_from_slice(description.as_bytes());
+    directory.write(&bytes, handles)
 }
 
 /// 阻塞读取下一条目录记录。
@@ -90,5 +90,5 @@ pub fn receive(directory: &Channel) -> Result<Announcement, Status> {
 
 /// 描述编码器（不含请求头）。
 pub fn description() -> Writer {
-    Writer(Vec::new())
+    Writer::payload()
 }

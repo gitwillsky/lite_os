@@ -109,7 +109,7 @@ impl Ext4Inode {
         &self,
         offset: u64,
         buf: &[u8],
-        identity: Option<&crate::fs::AccessIdentity>,
+        policy: Option<crate::vfs::WritePolicy>,
     ) -> Result<usize, FileSystemError> {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
@@ -119,7 +119,7 @@ impl Ext4Inode {
             return Ok(0);
         }
         let mut written = 0;
-        self.write_batch(identity, &mut |writer| {
+        self.write_batch(policy, &mut |writer| {
             written = writer.write(offset as u64, buf)?;
             Ok(())
         })?;
@@ -130,17 +130,13 @@ impl Ext4Inode {
     pub(super) fn remove_write_privileges_locked(
         &self,
         mutation: &mut MutationGuard<'_>,
-        identity: Option<&crate::fs::AccessIdentity>,
+        policy: Option<crate::vfs::WritePolicy>,
     ) -> Result<(), FileSystemError> {
-        let Some(identity) = identity else {
+        let Some(policy) = policy else {
             return Ok(());
         };
         let mut inode = mutation.inode(self)?;
-        let kill = identity.write_kill_mask(
-            inode_kind::from_mode(inode.i_mode),
-            inode.i_mode,
-            inode.gid(),
-        );
+        let kill = policy.write_kill_mask(inode_kind::from_mode(inode.i_mode), inode.i_mode);
         // FSETID仅影响set-ID mode；非空file capability始终由实际inode同事务清除。
         let capability_removed = self.kill_capability(&mut inode)?;
         if kill != 0 || capability_removed {
@@ -219,14 +215,14 @@ impl Ext4Inode {
 
     pub(super) fn write_batch(
         &self,
-        identity: Option<&crate::fs::AccessIdentity>,
+        policy: Option<crate::vfs::WritePolicy>,
         batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
     ) -> Result<(), FileSystemError> {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
         }
         let mut mutation = self.fs.begin_mutation()?;
-        self.remove_write_privileges_locked(&mut mutation, identity)?;
+        self.remove_write_privileges_locked(&mut mutation, policy)?;
         let maximum_end = {
             let mut writer = Ext4StorageWriter {
                 inode: self,
@@ -242,39 +238,20 @@ impl Ext4Inode {
         mutation.commit()
     }
 
-    pub(super) fn append_bytes(
-        &self,
-        buf: &[u8],
-        identity: Option<&crate::fs::AccessIdentity>,
-    ) -> Result<(u64, usize), FileSystemError> {
-        if self.inode_type() == InodeType::Directory {
-            return Err(FileSystemError::IsDirectory);
-        }
-        let mut mutation = self.fs.begin_mutation()?;
-        let offset = self.size();
-        let offset_usize = usize::try_from(offset).map_err(|_| FileSystemError::NoSpace)?;
-        if !buf.is_empty() {
-            self.remove_write_privileges_locked(&mut mutation, identity)?;
-        }
-        let written = self.write_at_locked(&mut mutation, offset_usize, buf)?;
-        mutation.commit()?;
-        Ok((offset, written))
-    }
-
     /// 为 range 中的 hole 分配清零 blocks，并在完成后提交新 i_size。
     pub(super) fn allocate_range(
         &self,
         offset: u64,
         length: u64,
-        identity: Option<&crate::fs::AccessIdentity>,
+        policy: Option<crate::vfs::WritePolicy>,
     ) -> Result<(), FileSystemError> {
         const BLOCKS_PER_TRANSACTION: u64 = 64;
         if self.inode_type() != InodeType::File {
             return Err(FileSystemError::InvalidOperation);
         }
         let end = offset.checked_add(length).ok_or(FileSystemError::NoSpace)?;
-        if let Some(identity) = identity {
-            self.prepare_cached_write(identity)?;
+        if let Some(policy) = policy {
+            self.prepare_cached_write(policy)?;
         }
         let block_size = self.fs.block_size as u64;
         let first = offset / block_size;
@@ -283,7 +260,7 @@ impl Ext4Inode {
         while begin < last {
             let finish = (begin + BLOCKS_PER_TRANSACTION).min(last);
             let mut mutation = self.fs.begin_mutation()?;
-            self.remove_write_privileges_locked(&mut mutation, identity)?;
+            self.remove_write_privileges_locked(&mut mutation, policy)?;
             for index in begin..finish {
                 let index = u32::try_from(index).map_err(|_| FileSystemError::NoSpace)?;
                 self.ensure_block_mapped(&mut mutation, index)?;
@@ -292,7 +269,7 @@ impl Ext4Inode {
             begin = finish;
         }
         let mut mutation = self.fs.begin_mutation()?;
-        self.remove_write_privileges_locked(&mut mutation, identity)?;
+        self.remove_write_privileges_locked(&mut mutation, policy)?;
         let mut inode = mutation.inode(self)?;
         if end > inode.size() {
             inode.set_size(end);
