@@ -42,9 +42,7 @@ mod iter;
 mod topology;
 // Iter 已是 iter/iter_from/iter_after 的返回类型；具名 re-export 供领域枚举组合，无新增状态/分配。
 pub(crate) use iter::Iter;
-use topology::{
-    count_nodes, insert_absent, join_ordered, last_key, remove_node, retain_linear, split,
-};
+use topology::{insert_absent, remove_node};
 
 type Link<K, V> = Option<Box<Node<K, V>>>;
 
@@ -125,10 +123,6 @@ impl<K, V> NodeSlot<K, V> {
 }
 
 impl<K, V> VacantEntry<K, V> {
-    /// 实际 node allocation 的布局大小；领域预算计入真实 storage，不猜测 tree 内部字段。
-    pub(crate) const fn allocation_size() -> usize {
-        core::mem::size_of::<Node<K, V>>()
-    }
 
     /// 借用尚未发表的实际key，供多节点transaction在修改现有索引前检查冲突。
     pub(crate) fn key(&self) -> &K {
@@ -159,32 +153,12 @@ impl<K, V> VacantEntry<K, V> {
         value
     }
 
-    /// 回收已摘除 node 的实际 storage，同时转交完整旧 key/value 的析构责任。
-    /// 不分配、不释放；IRQ owner 可复用 slot，把有资源边的旧 value 移给锁外 retirement。
-    pub(crate) fn into_slot(self) -> (NodeSlot<K, V>, K, V) {
-        assert!(self.0.left.is_none() && self.0.right.is_none() && self.0.next.is_none());
-        let pointer = Box::into_raw(self.0);
-        // SAFETY: VacantEntry 独占摘除后的完整 Node，无 topology edges 或外部 iterator。
-        // key/value 各 read 一次并转交 caller；其余字段无拥有的资源。相同 layout 的
-        // MaybeUninit storage 不再析构旧值，未来 fill 完整 write 后才重新 assume_init。
-        unsafe {
-            let key = core::ptr::read(&raw const (*pointer).key);
-            let value = core::ptr::read(&raw const (*pointer).value);
-            let slot = NodeSlot(Box::from_raw(pointer.cast::<MaybeUninit<Node<K, V>>>()));
-            (slot, key, value)
-        }
-    }
 }
 
 impl<K, V> FallibleMap<K, V> {
     /// 构造空表，不分配内存。
     pub(crate) const fn new() -> Self {
         Self { root: None, len: 0 }
-    }
-
-    /// 返回当前 entry 数量。
-    pub(crate) const fn len(&self) -> usize {
-        self.len
     }
 
     /// 判断表是否为空。
@@ -250,33 +224,6 @@ impl<K, V> FallibleMap<K, V> {
         walk(&mut self.root, &mut visit);
     }
 
-    /// 对全部 value 按 key 顺序执行可失败 mutation，不改变树结构。
-    ///
-    /// # Parameters
-    ///
-    /// - `visit`: 每个 entry 的访问逻辑；首个错误终止遍历。
-    ///
-    /// # Returns
-    ///
-    /// 全部访问成功时为空值，否则返回原始错误。
-    pub(crate) fn try_for_each_mut<E>(
-        &mut self,
-        mut visit: impl FnMut(&K, &mut V) -> Result<(), E>,
-    ) -> Result<(), E> {
-        fn walk<K, V, E>(
-            node: &mut Link<K, V>,
-            visit: &mut impl FnMut(&K, &mut V) -> Result<(), E>,
-        ) -> Result<(), E> {
-            let Some(node) = node else {
-                return Ok(());
-            };
-            walk(&mut node.left, visit)?;
-            visit(&node.key, &mut node.value)?;
-            walk(&mut node.right, visit)
-        }
-
-        walk(&mut self.root, &mut visit)
-    }
 }
 
 impl<K: Ord, V> FallibleMap<K, V> {
@@ -359,85 +306,6 @@ impl<K: Ord, V> FallibleMap<K, V> {
             }
         }
         candidate
-    }
-
-    /// 查询严格小于 key 的最大 entry。
-    pub(crate) fn predecessor(&self, key: &K) -> Option<(&K, &V)> {
-        let mut cursor = self.root.as_deref();
-        let mut candidate = None;
-        while let Some(node) = cursor {
-            if node.key < *key {
-                candidate = Some((&node.key, &node.value));
-                cursor = node.right.as_deref();
-            } else {
-                cursor = node.left.as_deref();
-            }
-        }
-        candidate
-    }
-
-    /// 查询不小于 key 的最小 entry。
-    ///
-    /// # Parameters
-    ///
-    /// - `key`: inclusive lower bound。
-    ///
-    /// # Returns
-    ///
-    /// key/value 邻居；不存在时返回 None。
-    pub(crate) fn ceiling(&self, key: &K) -> Option<(&K, &V)> {
-        let mut cursor = self.root.as_deref();
-        let mut candidate = None;
-        while let Some(node) = cursor {
-            match key.cmp(&node.key) {
-                Ordering::Less => {
-                    candidate = Some((&node.key, &node.value));
-                    cursor = node.left.as_deref();
-                }
-                Ordering::Equal => return Some((&node.key, &node.value)),
-                Ordering::Greater => cursor = node.right.as_deref(),
-            }
-        }
-        candidate
-    }
-
-    /// 查询严格大于 key 的最小 entry。
-    ///
-    /// # Parameters
-    ///
-    /// - `key`: exclusive lower bound。
-    ///
-    /// # Returns
-    ///
-    /// key/value 邻居；不存在时返回 None。
-    pub(crate) fn successor(&self, key: &K) -> Option<(&K, &V)> {
-        let mut cursor = self.root.as_deref();
-        let mut candidate = None;
-        while let Some(node) = cursor {
-            if *key < node.key {
-                candidate = Some((&node.key, &node.value));
-                cursor = node.left.as_deref();
-            } else {
-                cursor = node.right.as_deref();
-            }
-        }
-        candidate
-    }
-
-    /// 可变查询不大于 key 的最大 entry。
-    pub(crate) fn floor_mut(&mut self, key: &K) -> Option<(&K, &mut V)> {
-        fn find<'a, K: Ord, V>(node: &'a mut Link<K, V>, key: &K) -> Option<(&'a K, &'a mut V)> {
-            let node = node.as_deref_mut()?;
-            match key.cmp(&node.key) {
-                Ordering::Less => find(&mut node.left, key),
-                Ordering::Equal => Some((&node.key, &mut node.value)),
-                Ordering::Greater => {
-                    find(&mut node.right, key).or(Some((&node.key, &mut node.value)))
-                }
-            }
-        }
-
-        find(&mut self.root, key)
     }
 
     /// 查询全表最小 entry。
@@ -624,88 +492,6 @@ impl<K: Ord, V> FallibleMap<K, V> {
         Some(VacantEntry(removed))
     }
 
-    /// 原地保留满足 predicate 的 entry，不分配遍历快照。
-    ///
-    /// # Parameters
-    ///
-    /// - `keep`: 依次观察 key/value，返回 false 的 entry 会被删除。
-    ///
-    /// # Returns
-    ///
-    /// 无返回值；一次 ownership pass 与一次平衡重建均不分配节点。
-    pub(crate) fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) {
-        (self.root, self.len) = retain_linear(self.root.take(), &mut keep);
-    }
-
-    /// 把 `at..` 的节点移动到新表，不分配节点。
-    ///
-    /// # Parameters
-    ///
-    /// - `at`: 新表的 inclusive lower bound。
-    ///
-    /// # Returns
-    ///
-    /// 拥有全部 `key >= at` entry 的表。
-    pub(crate) fn split_off(&mut self, at: &K) -> Self {
-        let original_len = self.len;
-        let (mut left, right) = split(self.root.take(), at);
-        if let Some(mut left_last) = left.as_deref_mut() {
-            while left_last.right.is_some() {
-                left_last = left_last.right.as_deref_mut().unwrap();
-            }
-            left_last.next = None;
-        }
-        // AVL 节点不携带 subtree cardinality；只线性访问被移出的右树一次，避免让
-        // 每个 lookup/rotation 永久承担 size 字段的维护成本。
-        let right_len = count_nodes(&right);
-        self.root = left;
-        self.len = original_len - right_len;
-        Self {
-            root: right,
-            len: right_len,
-        }
-    }
-
-    /// 把严格位于当前表之后的另一个表整体移动进当前表，不分配节点。
-    ///
-    /// # Parameters
-    ///
-    /// - `other`: 全部 key 必须严格大于当前表的最大 key；成功后为空。
-    ///
-    /// # Returns
-    ///
-    /// 无返回值；重复或无序输入表示 caller contract 损坏并 fail-stop，且两表不变。
-    pub(crate) fn append_ordered_disjoint(&mut self, other: &mut Self) {
-        if let (Some(left_max), Some((right_min, _))) =
-            (last_key(&self.root), other.first_key_value())
-        {
-            assert!(
-                left_max < right_min,
-                "ordered-disjoint AVL join received overlapping or reversed keys"
-            );
-        }
-        let right_first = {
-            let mut cursor = other.root.as_deref();
-            while let Some(left) = cursor.and_then(|node| node.left.as_deref()) {
-                cursor = Some(left);
-            }
-            cursor.map(NonNull::from)
-        };
-        if let Some(right_first) = right_first
-            && let Some(mut left_last) = self.root.as_deref_mut()
-        {
-            while left_last.right.is_some() {
-                left_last = left_last.right.as_deref_mut().unwrap();
-            }
-            left_last.next = Some(right_first);
-        }
-        self.root = join_ordered(self.root.take(), other.root.take());
-        self.len = self
-            .len
-            .checked_add(other.len)
-            .expect("AVL length overflow during ordered join");
-        other.len = 0;
-    }
 }
 
 impl<K, V> Default for FallibleMap<K, V> {

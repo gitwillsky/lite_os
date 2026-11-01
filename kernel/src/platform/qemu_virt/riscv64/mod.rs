@@ -12,12 +12,12 @@ mod rtc;
 mod uart;
 
 pub(crate) use devices::{
-    handle_external_interrupt, initialize as initialize_devices, map_device_window, pci_host,
-    register_device_interrupt, virtio_mmio_transports,
+    bind_interrupt, device_interrupt_range, handle_external_interrupt,
+    initialize as initialize_devices, unbind_interrupt, unmask_interrupt,
 };
 pub(crate) use discovery::{BootInfo, hardware_cpu_ids, initialize, validate_boot_info};
 pub(crate) use firmware::{
-    InstructionFenceError, ResetError, TlbShootdownError, arm_timer, debug_console_write,
+    InstructionFenceError, TlbShootdownError, arm_timer, debug_console_write,
     debug_console_write_bytes, reset_system, send_ipi, start_cpu, synchronize_instruction_cache,
     synchronize_tlb, verify_firmware,
 };
@@ -45,6 +45,11 @@ pub(crate) fn complete_pending_ipi() {}
 /// # Returns
 ///
 /// 已验证 DTB memory range 的 end address。
+/// 平台 RAM 的物理区间。
+pub(crate) fn physical_memory_range() -> core::ops::Range<usize> {
+    discovery::info().memory.clone()
+}
+
 pub(crate) fn physical_memory_end() -> usize {
     discovery::info().memory.end
 }
@@ -62,12 +67,11 @@ pub(crate) fn timebase_frequency() -> u64 {
 ///
 /// # Returns
 ///
-/// UART、VirtIO window、RTC 与 PLIC 的非空区间；concrete device facts 不穿过 seam。
+/// UART、RTC 与 PLIC 的非空区间；concrete device facts 不穿过 seam。
 pub(crate) fn kernel_mmio_regions() -> impl Iterator<Item = core::ops::Range<usize>> {
     let info = discovery::info();
     [
         Some(info.uart.clone()),
-        info.virtio.span(),
         info.rtc.clone(),
         Some(info.plic.clone()),
     ]
@@ -89,6 +93,21 @@ pub(crate) fn read_realtime_ns() -> Option<u64> {
 }
 
 /// firmware 交付的 kernel command line（DTB `/chosen/bootargs`）。
+/// initrd 物理区间（DT `/chosen`）；没有 initrd 时为 `None`。
+pub(crate) fn initrd_range() -> Option<core::ops::Range<usize>> {
+    discovery::info().initrd.clone()
+}
+
+/// 固件提供的启动熵（DT `/chosen/rng-seed`）。
+pub(crate) fn boot_entropy() -> &'static [u8] {
+    &discovery::info().rng_seed
+}
+
+/// DTB 自身占用的物理区间；交给用户态发现其余设备。
+pub(crate) fn dtb_range() -> core::ops::Range<usize> {
+    discovery::info().dtb.clone()
+}
+
 pub(crate) fn kernel_command_line() -> &'static [u8] {
     &discovery::info().bootargs
 }

@@ -8,14 +8,13 @@ use core::{fmt, ops::Range};
 
 use dtb_walker::{Dtb, DtbObj, Property, Str, StrList, WalkOperation};
 
-use super::super::virtio_mmio::{VirtioMmioScan, VirtioMmioTransports};
 
-/// Linux `ns16550a` earlycon/serial 驱动匹配的 QEMU UART。
+/// compatible 为 `ns16550a` 的 QEMU UART。
 const UART_COMPATIBLES: &[&str] = &["ns16550a"];
-/// Linux `irq-sifive-plic` 匹配的 PLIC；QEMU 11 之前节点名为 `plic@…`，之后为
+/// compatible 为 `sifive,plic-1.0.0`/`riscv,plic0` 的 PLIC；QEMU 11 之前节点名为 `plic@…`，之后为
 /// `interrupt-controller@…`，hart-local `riscv,cpu-intc` 也使用后者，因此只能按 compatible 区分。
 const PLIC_COMPATIBLES: &[&str] = &["sifive,plic-1.0.0", "riscv,plic0"];
-/// Linux `rtc-goldfish` 匹配的 QEMU RTC。
+/// compatible 为 `google,goldfish-rtc` 的 QEMU RTC。
 const RTC_COMPATIBLES: &[&str] = &["google,goldfish-rtc"];
 
 /// 由 DTB 一次性解码的 RISC-V QEMU `virt` machine facts。
@@ -28,7 +27,10 @@ pub(crate) struct PlatformInfo {
     pub(crate) uart_irq: u32,
     pub(crate) plic: Range<usize>,
     pub(crate) rtc: Option<Range<usize>>,
-    pub(crate) virtio: VirtioMmioTransports,
+    /// `/chosen` 的 initrd 物理区间（DT chosen 绑定的 `linux,initrd-start/end`）；没有 initrd 时为 `None`。
+    pub(crate) initrd: Option<Range<usize>>,
+    /// `/chosen/rng-seed`：固件提供的启动熵；没有时为空。
+    pub(crate) rng_seed: Vec<u8>,
     /// `/chosen/bootargs`（kernel command line），不含结尾 NUL；没有该属性时为空。
     pub(crate) bootargs: Vec<u8>,
 }
@@ -42,7 +44,7 @@ impl fmt::Display for PlatformInfo {
         writeln!(output, "UART: {:#x?}, IRQ {}", self.uart, self.uart_irq)?;
         writeln!(output, "PLIC: {:#x?}", self.plic)?;
         writeln!(output, "RTC: {:#x?}", self.rtc)?;
-        writeln!(output, "VirtIO-MMIO transports: {}", self.virtio.len())
+        writeln!(output, "initrd: {:#x?}", self.initrd)
     }
 }
 
@@ -82,7 +84,7 @@ impl Devices {
             .filter(valid_range)
             .unwrap_or_else(|| panic!("{kind:?} DTB node lacks a valid reg window"));
         match kind {
-            // QEMU 只公开一个 16550；若出现多个，与 Linux stdout-path 缺省一致取首个。
+            // QEMU 只公开一个 16550；若出现多个，取首个。
             DeviceKind::Uart => {
                 self.uart.get_or_insert((reg, pending.irq));
             }
@@ -122,18 +124,18 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
     let mut memory = None;
     let mut devices = Devices::default();
     let mut pending = PendingDevice::default();
-    let mut virtio = VirtioMmioScan::new();
+    let mut initrd_start = None;
+    let mut initrd_end = None;
+    let mut rng_seed = Vec::new();
     let mut bootargs = Vec::new();
 
     dtb.walk(|context, object| match object {
         DtbObj::SubNode { .. } => {
             devices.commit(core::mem::take(&mut pending));
-            virtio.begin_node();
             WalkOperation::StepInto
         }
         DtbObj::Property(Property::Compatible(values)) => {
             pending.kind = classify(values.clone());
-            virtio.compatible(values);
             WalkOperation::StepOver
         }
         DtbObj::Property(Property::Reg(mut registers)) => {
@@ -147,9 +149,7 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
                     .expect("CPU discovery allocation failed");
                 hardware_cpu_ids.push(hardware_id);
             } else {
-                let first = registers.next();
-                pending.reg = first.clone();
-                virtio.reg(first);
+                pending.reg = registers.next();
             }
             WalkOperation::StepOver
         }
@@ -160,6 +160,15 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
                     .try_reserve_exact(line.len())
                     .expect("bootargs allocation failed");
                 bootargs.extend_from_slice(line);
+            } else if context.name() == Str::from("chosen") && name == Str::from("rng-seed") {
+                rng_seed
+                    .try_reserve_exact(value.len())
+                    .expect("rng-seed allocation failed");
+                rng_seed.extend_from_slice(value);
+            } else if context.name() == Str::from("chosen") && name == Str::from("linux,initrd-start") {
+                initrd_start = Some(be_uint(value) as usize);
+            } else if context.name() == Str::from("chosen") && name == Str::from("linux,initrd-end") {
+                initrd_end = Some(be_uint(value) as usize);
             } else if name == Str::from("timebase-frequency") && context.name() == Str::from("cpus")
             {
                 timebase_frequency = be_uint(value);
@@ -167,7 +176,6 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
                 // PLIC `#interrupt-cells = <1>`：首个 cell 即 source id。
                 let irq = value.get(..4).map(|cell| be_uint(cell) as u32);
                 pending.irq = pending.irq.or(irq);
-                virtio.interrupt(irq);
             }
             WalkOperation::StepOver
         }
@@ -194,8 +202,12 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
             .plic
             .expect("QEMU virt requires a sifive,plic-1.0.0/riscv,plic0 interrupt controller"),
         rtc: devices.rtc,
-        virtio: virtio.finish(),
         bootargs,
+        rng_seed,
+        initrd: match (initrd_start, initrd_end) {
+            (Some(start), Some(end)) if start < end => Some(start..end),
+            _ => None,
+        },
     }
 }
 

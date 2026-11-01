@@ -11,13 +11,13 @@ use qemu_virt as selected;
 compile_error!("LiteOS currently has no platform implementation for this target architecture");
 
 pub(crate) use selected::{
-    BootInfo, ClaimedInterrupt, InstructionFenceError, PciHost, ResetError, TlbShootdownError,
-    VirtioMmioTransport, arm_timer, claim_interrupt, complete_interrupt, complete_pending_ipi,
-    console, hardware_cpu_ids, initialize, initialize_devices, kernel_command_line,
-    kernel_mmio_regions, map_device_window, pci_host, physical_memory_end, read_realtime_ns,
-    register_device_interrupt, reset_system, send_ipi, start_cpu, synchronize_instruction_cache,
-    synchronize_tlb, timebase_frequency, validate_boot_info, verify_firmware,
-    virtio_mmio_transports,
+    BootInfo, ClaimedInterrupt, InstructionFenceError, TlbShootdownError, arm_timer,
+    boot_entropy,
+    bind_interrupt, claim_interrupt, complete_interrupt, complete_pending_ipi, console,
+    device_interrupt_range, dtb_range, hardware_cpu_ids, initialize, initialize_devices,
+    initrd_range, kernel_command_line, kernel_mmio_regions, physical_memory_end, physical_memory_range, read_realtime_ns,
+    reset_system, send_ipi, start_cpu, synchronize_instruction_cache, synchronize_tlb,
+    timebase_frequency, unbind_interrupt, unmask_interrupt, validate_boot_info, verify_firmware,
 };
 
 /// whole-system firmware reset 的目标状态；具体 SBI/PSCI 编码由 platform backend 拥有。

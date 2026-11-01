@@ -3,6 +3,7 @@ members = [
     "kernel",
     "boot-scene",
     "syscall-abi",
+    "native-abi",
     "tools/architecture-check",
     "tools/architecture-bench",
     "tools/kernel-unit",

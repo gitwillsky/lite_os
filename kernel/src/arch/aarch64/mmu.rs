@@ -11,6 +11,11 @@ use spin::Once;
 
 const PHYSICAL_ADDRESS_WIDTH: usize = 48;
 const VIRTUAL_ADDRESS_WIDTH: usize = 39;
+/// MAIR 编码：AttrIdx0 = Normal WBWA（0xff），AttrIdx1 = Device-nGnRnE（0x00）。
+/// CPU 与 SMMU 上下文必须使用同一编码，页表项的 AttrIdx 才在两者中含义一致。
+pub(crate) const MEMORY_ATTRIBUTES: u64 = 0x00ff;
+/// 低半区页表覆盖的虚拟地址位数（TCR/CD 的 T0SZ = 64 - 该值）。
+pub(crate) const TRANSLATION_BITS: usize = VIRTUAL_ADDRESS_WIDTH;
 const PAGE_SHIFT: usize = 12;
 const ASID_BITS_MAX: usize = 16;
 // OWNER: hardware capacity is an immutable probe fact, not an allocation bitmap.
@@ -36,12 +41,8 @@ pub(crate) const KERNEL_STACK_REGION_TOP: usize = KERNEL_MMIO_REGION_START;
 pub(crate) const USER_ADDRESS_END: usize = 1 << (VIRTUAL_ADDRESS_WIDTH - 1);
 pub(crate) const TRAMPOLINE_ADDRESS: usize = USER_ADDRESS_END - PAGE_SIZE;
 pub(crate) const TRAP_CONTEXT_ADDRESS: usize = TRAMPOLINE_ADDRESS - PAGE_SIZE;
-pub(crate) const SIGNAL_TRAMPOLINE_ADDRESS: usize = TRAP_CONTEXT_ADDRESS - PAGE_SIZE;
 /// AArch64 user context 归 kernel stack，不占用 user address space 的 supervisor context VMA。
 pub(crate) const THREAD_TRAP_CONTEXT_RANGE: Option<core::ops::Range<usize>> = None;
-
-/// signal trampoline 下方保留一页 guard 后的初始用户栈 exclusive top。
-pub(crate) const USER_STACK_TOP: usize = SIGNAL_TRAMPOLINE_ADDRESS - PAGE_SIZE;
 
 const _: () =
     assert!(KERNEL_STACK_REGION_TOP - KERNEL_STACK_REGION_START >= (135usize << 30) - PAGE_SIZE);

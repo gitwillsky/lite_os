@@ -1,86 +1,5 @@
 use core::arch::asm;
 
-/// Read one byte from a caller-validated MMIO address with an exact base-register access.
-///
-/// # Safety
-///
-/// `address` must name a readable byte-wide device register in a permanently mapped MMIO range.
-// SAFETY: callers must prove the address is a readable byte-wide device register.
-#[inline(always)]
-pub(crate) unsafe fn read_mmio_u8(address: usize) -> u8 {
-    let value: u32;
-    // SAFETY: the caller owns address validity. Keeping the address in a dedicated base register
-    // prevents LLVM from selecting a post-indexed load whose HVF exit has no valid syndrome.
-    unsafe {
-        asm!(
-            "ldrb {value:w}, [{address}]",
-            value = out(reg) value,
-            address = in(reg) address,
-            options(nostack, preserves_flags)
-        )
-    };
-    value as u8
-}
-
-/// Write one byte to a caller-validated MMIO address with an exact base-register access.
-///
-/// # Safety
-///
-/// `address` must name a writable byte-wide device register in a permanently mapped MMIO range.
-// SAFETY: callers must prove the address is a writable byte-wide device register.
-#[inline(always)]
-pub(crate) unsafe fn write_mmio_u8(address: usize, value: u8) {
-    // SAFETY: the caller owns address validity; one base-only STRB cannot be merged or indexed.
-    unsafe {
-        asm!(
-            "strb {value:w}, [{address}]",
-            value = in(reg) u32::from(value),
-            address = in(reg) address,
-            options(nostack, preserves_flags)
-        )
-    };
-}
-
-/// Read one 16-bit halfword from a caller-validated, aligned MMIO address.
-///
-/// # Safety
-///
-/// `address` must name a readable, 16-bit-aligned device register.
-// SAFETY: callers must prove the address is a readable aligned 16-bit device register.
-#[inline(always)]
-pub(crate) unsafe fn read_mmio_u16(address: usize) -> u16 {
-    let value: u32;
-    // SAFETY: the caller owns range/alignment validity; the template fixes one exact LDRH.
-    unsafe {
-        asm!(
-            "ldrh {value:w}, [{address}]",
-            value = out(reg) value,
-            address = in(reg) address,
-            options(nostack, preserves_flags)
-        )
-    };
-    value as u16
-}
-
-/// Write one 16-bit halfword to a caller-validated, aligned MMIO address.
-///
-/// # Safety
-///
-/// `address` must name a writable, 16-bit-aligned device register.
-// SAFETY: callers must prove the address is a writable aligned 16-bit device register.
-#[inline(always)]
-pub(crate) unsafe fn write_mmio_u16(address: usize, value: u16) {
-    // SAFETY: the caller owns range/alignment validity; the template fixes one exact STRH.
-    unsafe {
-        asm!(
-            "strh {value:w}, [{address}]",
-            value = in(reg) u32::from(value),
-            address = in(reg) address,
-            options(nostack, preserves_flags)
-        )
-    };
-}
-
 /// Read one 32-bit word from a caller-validated, aligned MMIO address.
 ///
 /// # Safety
@@ -161,13 +80,11 @@ pub(crate) unsafe fn write_mmio_u64(address: usize, value: u64) {
     };
 }
 
-/// Order all earlier normal-memory writes before a following MMIO output.
+/// 让此前的普通内存写入先于随后的 MMIO 写入可见（DMA 描述符发布后再敲 doorbell）。
 ///
-/// OWNER: this module owns the AArch64 normal-memory-to-device ordering edge. Without it, a
-/// VirtIO doorbell may become visible before the descriptors it publishes.
+/// OWNER: 本模块拥有普通内存到设备的写入次序边；缺失时设备可能先看到 doorbell、后看到描述符。
 #[inline(always)]
 pub(crate) fn before_mmio_write() {
-    // SAFETY: DMB changes only architectural ordering. The memory clobber implied by omitting
-    // `nomem` also prevents compiler movement across the publication edge.
+    // SAFETY: 屏障只改变架构内存次序；省略 `nomem` 同时阻止编译器跨越发布边移动内存写入。
     unsafe { asm!("dmb oshst", options(nostack, preserves_flags)) }
 }

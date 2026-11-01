@@ -8,19 +8,17 @@ use crate::execution::cpu::{CpuId, current_id};
 
 /// 一个 deferred work vector（per-CPU bitmap 中的一位）。
 ///
-/// 核心向量是具名常量（对应 Linux 固定 softirq）；设备类 vector 由消费者经 [`register`] 分配
-/// 并绑定给 adapter（对应 Linux tasklet），adapter 只发布、不认识消费者。
+/// 核心向量是具名常量；中断对象等动态消费者经 [`register`] 分配 vector 并绑定 handler，
+/// 发布者只发布、不认识消费者。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct DeferredWork(u32);
 
 impl DeferredWork {
     pub(crate) const TIMER: Self = Self(1);
     pub(crate) const CONSOLE: Self = Self(1 << 1);
-    pub(crate) const NETWORK: Self = Self(1 << 2);
     pub(crate) const TIMER_BACKLOG: Self = Self(1 << 3);
-    pub(crate) const DRIVER_IO: Self = Self(1 << 4);
     /// 与 [`Self::TIMER`] 一同发布，表示该 tick 打断的是用户态；缺失时所有 tick 都按内核态计入，
-    /// `getrusage` 的 user/system 拆分退化为全部 system。
+    /// 线程运行时间的用户/内核拆分退化为全部计入内核。
     pub(crate) const TIMER_FROM_USER: Self = Self(1 << 5);
 
     /// 合并两个 vector，使一次 `raise` 同时发布它们。
@@ -75,7 +73,7 @@ static HANDLERS: [Once<DeferredHandler>; REGISTERED_CAPACITY] =
 // OWNER: 下一个未分配的注册下标；`fetch_add` 使并发注册取得互不相同的 vector。
 static NEXT_HANDLER: AtomicUsize = AtomicUsize::new(0);
 
-/// 为设备类 deferred work 分配一个 vector（Linux `tasklet_init`）。
+/// 为动态消费者分配一个 deferred vector。
 ///
 /// # Errors
 ///

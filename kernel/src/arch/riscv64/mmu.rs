@@ -24,16 +24,13 @@ pub(crate) const DIRECT_MAP_BASE: usize = 0;
 pub(crate) const USER_ADDRESS_END: usize = 1 << (VIRTUAL_ADDRESS_WIDTH - 1);
 pub(crate) const TRAMPOLINE_ADDRESS: usize = usize::MAX - PAGE_SIZE + 1;
 pub(crate) const TRAP_CONTEXT_ADDRESS: usize = TRAMPOLINE_ADDRESS - PAGE_SIZE;
-pub(crate) const SIGNAL_TRAMPOLINE_ADDRESS: usize = TRAP_CONTEXT_ADDRESS - PAGE_SIZE;
 /// user page table 中专供 Thread supervisor context 的 canonical high-half 区间；不含 trampoline。
 pub(crate) const THREAD_TRAP_CONTEXT_RANGE: Option<core::ops::Range<usize>> =
-    Some((usize::MAX - USER_ADDRESS_END + 1)..SIGNAL_TRAMPOLINE_ADDRESS);
+    Some((usize::MAX - USER_ADDRESS_END + 1)..TRAP_CONTEXT_ADDRESS);
 
 /// 保留既有 Sv39 kernel-stack virtual layout。
 pub(crate) const KERNEL_STACK_REGION_START: usize = 0;
 pub(crate) const KERNEL_STACK_REGION_TOP: usize = TRAP_CONTEXT_ADDRESS;
-/// 保持既有 Sv39 用户上界 guard 布局的初始用户栈 exclusive top。
-pub(crate) const USER_STACK_TOP: usize = USER_ADDRESS_END - PAGE_SIZE;
 
 /// 将 raw integer 限制到 RISC-V physical-address width。
 ///

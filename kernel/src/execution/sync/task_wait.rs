@@ -11,20 +11,17 @@ pub(crate) enum WaitResult {
     Woken,
     /// absolute deadline 已到期。
     TimedOut,
-    /// 可交付 signal 中断了等待。
+    /// 等待被打断（线程终止等）。
     Interrupted,
     /// wait registration 元数据分配失败。
     OutOfMemory,
 }
 
-/// 同一等待协议的 signal policy；Killable 只响应 SIGKILL，不撤销普通捕获信号下的 PONR。
+/// 同一等待协议的打断策略：Interruptible 在线程被终止时结束等待，Uninterruptible 不受影响。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum TaskWaitMode {
     Uninterruptible,
-    /// Linux TASK_IDLE：不可中断的 daemon 空闲等待，TASK_NOLOAD 排除负载统计。
-    Idle,
     Interruptible,
-    Killable,
 }
 
 /// task-context 阻塞等待的精确 scheduler membership identity。
@@ -36,7 +33,7 @@ pub(crate) struct TaskWaitKey {
     pub(super) ticket: u64,
     // OWNER: 当前这次等待的 absolute monotonic deadline；无 deadline 不建立 timer/source registration。
     pub(super) deadline_ns: Option<u64>,
-    // POLICY: acquisition/maintenance/drain 显式选择 signal policy；DMA/普通 mutex 不取消。
+    // POLICY: 调用者显式选择打断策略；DMA/普通 mutex 不取消。
     pub(super) mode: TaskWaitMode,
 }
 
@@ -44,35 +41,14 @@ impl TaskWaitKey {
     pub(crate) fn deadline(self) -> Option<u64> {
         self.deadline_ns
     }
-    pub(crate) fn event_identity(self) -> (usize, u64) {
-        (self.owner, self.ticket)
-    }
-    /// 实际 native TASK_IDLE wait policy；只读投影，不是另一份 scheduler state。
-    pub(crate) fn idle(self) -> bool {
-        self.mode == TaskWaitMode::Idle
-    }
-    pub(crate) fn killable(self) -> bool {
-        self.mode == TaskWaitMode::Killable
-    }
     pub(crate) fn signal_pending(self, target: &dyn TaskWaitTarget) -> bool {
         match self.mode {
-            TaskWaitMode::Uninterruptible | TaskWaitMode::Idle => false,
+            TaskWaitMode::Uninterruptible => false,
             TaskWaitMode::Interruptible => target.interrupted(),
-            TaskWaitMode::Killable => target.fatal_interrupted(),
         }
     }
-    /// Linux TASK_KILLABLE 也包含 TASK_UNINTERRUPTIBLE，因此 fatal-only wait 仍计入 load。
-    pub(crate) fn contributes_to_load(self) -> bool {
-        matches!(
-            self.mode,
-            TaskWaitMode::Uninterruptible | TaskWaitMode::Killable
-        )
-    }
     pub(crate) fn interruptible(self) -> bool {
-        matches!(
-            self.mode,
-            TaskWaitMode::Interruptible | TaskWaitMode::Killable
-        )
+        self.mode == TaskWaitMode::Interruptible
     }
 }
 
@@ -81,13 +57,8 @@ pub(crate) trait TaskWaitTarget: Send + Sync {
     /// 原子发布 membership，并在 completion 尚未发布时阻塞当前 task。
     fn sleep(self: Arc<Self>, completion: &WaitCompletion, key: TaskWaitKey) -> WaitResult;
 
-    /// 查询当前可交付信号；kernel task 与 host adapter 默认没有信号。
+    /// 当前是否存在可打断等待的原因；内核线程与 host adapter 默认没有。
     fn interrupted(&self) -> bool {
-        false
-    }
-
-    /// SIGKILL 已 pending；killable wait 不受普通捕获信号影响。
-    fn fatal_interrupted(&self) -> bool {
         false
     }
 
@@ -102,11 +73,6 @@ pub(crate) trait TaskWaitTarget: Send + Sync {
 }
 
 type WaitTargetFactory = fn() -> Option<Arc<dyn TaskWaitTarget>>;
-
-/// 可回滚的 task-context maintenance 在 work unit 之间复查可交付信号。
-pub(crate) fn task_interrupted() -> bool {
-    current_wait_target().is_some_and(|target| target.interrupted())
-}
 
 // OWNER: task topology 初始化后只安装一次 scheduler adapter；缺失时启动期竞争必须
 // fail-stop，不能退回 spin/yield polling。
@@ -166,28 +132,5 @@ impl TaskWaitTarget for TestThreadTarget {
 
     fn wake(self: Arc<Self>, _key: TaskWaitKey) {
         self.0.unpark();
-    }
-}
-
-#[cfg(test)]
-mod policy_tests {
-    use super::{TaskWaitKey, TaskWaitMode};
-    #[test]
-    fn native_load_policy_includes_killable_but_excludes_idle_and_interruptible() {
-        for (mode, load, interruptible) in [
-            (TaskWaitMode::Uninterruptible, true, false),
-            (TaskWaitMode::Killable, true, true),
-            (TaskWaitMode::Interruptible, false, true),
-            (TaskWaitMode::Idle, false, false),
-        ] {
-            let key = TaskWaitKey {
-                owner: 1,
-                ticket: 2,
-                deadline_ns: None,
-                mode,
-            };
-            assert_eq!(key.contributes_to_load(), load);
-            assert_eq!(key.interruptible(), interruptible);
-        }
     }
 }

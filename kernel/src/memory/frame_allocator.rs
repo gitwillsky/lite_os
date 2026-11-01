@@ -46,7 +46,7 @@
 //! # 阅读顺序
 //!
 //! `FrameAllocator::new`（如何把任意区间切成对齐块）→ `alloc_order`（切分）→ `dealloc_contiguous`
-//! （合并）→ 文件末尾的公开函数（分配失败时先回收再重试一次，以及清零策略）。
+//! （合并）→ 文件末尾的公开函数（清零策略）。
 
 use core::fmt::Debug;
 
@@ -73,8 +73,6 @@ pub(crate) enum FrameAllocationClass {
     Reclaimable,
     /// 普通 kernel heap extent；可进入 frame reserve，但必须保留 OOM cleanup 页。
     KernelHeap,
-    /// 启动期 DMA；失败会阻止系统完成启动，允许越过最终 progress reserve。
-    KernelCritical,
 }
 
 /// frame allocator 唯一 owner 的瞬时容量与碎片快照。
@@ -84,8 +82,6 @@ pub(crate) struct FrameStatistics {
     pub(crate) capacity_pages: usize,
     /// 所有 order 合计的当前空闲页数。
     pub(crate) free_pages: usize,
-    /// 每个 order 的空闲 block 数；index n 表示 2ⁿ 页。
-    pub(crate) free_blocks: [usize; usize::BITS as usize],
 }
 
 /// 一个或多个连续物理页的唯一 RAII owner。
@@ -198,16 +194,17 @@ struct FrameAllocator {
     order_heads: [Option<PhysicalPageNumber>; ORDER_COUNT],
     nonempty_orders: usize,
     block_state: &'static mut [u8],
-    // free_blocks 是 order lists 的同锁计数 projection；缺失它时 procfs 为了
-    // 观察碎片必须在 IRQ-off 内扫描所有 free block。
-    free_blocks: [usize; ORDER_COUNT],
     // OWNER: free_pages 是上述 buddy metadata 的同锁 projection，只用于低水位
     // 快速判定。缺失同 transaction 加减会使 kernel reserve 被误放行或永久拒绝。
     free_pages: usize,
 }
 
 impl FrameAllocator {
-    fn new(start_addr: PhysicalAddress, end_addr: PhysicalAddress) -> Self {
+    fn new(
+        start_addr: PhysicalAddress,
+        end_addr: PhysicalAddress,
+        reserved: Option<core::ops::Range<PhysicalPageNumber>>,
+    ) -> Self {
         let metadata_start = start_addr.ceil();
         let end = end_addr.floor();
         let total_pages = end
@@ -227,6 +224,12 @@ impl FrameAllocator {
             .checked_mul(super::config::PAGE_SIZE)
             .expect("frame allocator metadata address overflow");
         let metadata_virtual = crate::arch::mmu::physical_to_virtual(metadata_physical);
+        if let Some(range) = &reserved {
+            assert!(
+                range.end <= metadata_start || range.start >= start,
+                "reserved boot region overlaps frame allocator metadata"
+            );
+        }
         // SAFETY: [metadata_start, start) 来自尚未发布的可用物理区间，按布局从 buddy
         // capacity 中永久排除；FRAME_ALLOCATOR 是该 slice 的唯一 owner，内核生命周期内
         // direct map 保持有效，且长度只覆盖已保留 metadata pages。
@@ -240,22 +243,28 @@ impl FrameAllocator {
             order_heads: [None; ORDER_COUNT],
             nonempty_orders: 0,
             block_state,
-            free_blocks: [0; ORDER_COUNT],
             free_pages: layout.allocatable_pages,
         };
 
-        // 将任意起点/长度区间分解为最大的 absolute-PPN-aligned buddy blocks。
-        // 初始化只写每个 block 首页，成本与 block 数而非物理页数成正比。
-        let mut cursor = start.as_usize();
-        while cursor < end.as_usize() {
-            let remaining = end.as_usize() - cursor;
-            let alignment_order = cursor.trailing_zeros() as usize;
-            let size_order = (usize::BITS - 1 - remaining.leading_zeros()) as usize;
-            let order = alignment_order.min(size_order).min(ORDER_COUNT - 1);
-            let block = PhysicalPageNumber::from(cursor);
-            allocator.insert_free(block, order);
-            cursor += 1usize << order;
-        }
+        // 1. 保留区裁剪到可分配区间，其余部分作为空闲块插入；
+        // 2. 保留区按同样的对齐块标记为已分配，之后由 `release_reserved` 逐块归还并参与合并。
+        let (reserved_start, reserved_end) = reserved.map_or((end, end), |range| {
+            (range.start.max(start).min(end), range.end.max(start).min(end))
+        });
+        let reserved_end = reserved_end.max(reserved_start);
+        for_each_aligned_block(start, reserved_start, |block, order| {
+            allocator.insert_free(block, order)
+        });
+        for_each_aligned_block(reserved_start, reserved_end, |block, order| {
+            let index = allocator
+                .state_index(block)
+                .expect("reserved block outside allocator range");
+            allocator.block_state[index] = BLOCK_ALLOCATED | order as u8;
+            allocator.free_pages -= 1usize << order;
+        });
+        for_each_aligned_block(reserved_end, end, |block, order| {
+            allocator.insert_free(block, order)
+        });
         allocator
     }
 
@@ -306,9 +315,6 @@ impl FrameAllocator {
         self.order_heads[order] = Some(block);
         self.nonempty_orders |= 1usize << order;
         self.block_state[index] = order as u8;
-        self.free_blocks[order] = self.free_blocks[order]
-            .checked_add(1)
-            .expect("free buddy block count overflow");
     }
 
     fn remove_free(&mut self, block: PhysicalPageNumber, order: usize) {
@@ -340,16 +346,12 @@ impl FrameAllocator {
             self.nonempty_orders &= !(1usize << order);
         }
         self.block_state[index] = BLOCK_UNUSED;
-        self.free_blocks[order] = self.free_blocks[order]
-            .checked_sub(1)
-            .expect("free buddy block count underflow");
     }
 
     fn has_capacity(&self, pages: usize, class: FrameAllocationClass) -> bool {
         let reserve = match class {
             FrameAllocationClass::Reclaimable => super::KERNEL_HEAP_GROWTH_PAGES,
             FrameAllocationClass::KernelHeap => super::KERNEL_PROGRESS_RESERVE_PAGES,
-            FrameAllocationClass::KernelCritical => 0,
         };
         self.free_pages
             .checked_sub(pages)
@@ -462,7 +464,6 @@ impl FrameAllocator {
         FrameStatistics {
             capacity_pages: self.capacity(),
             free_pages: self.free_pages,
-            free_blocks: self.free_blocks,
         }
     }
 }
@@ -471,13 +472,18 @@ impl FrameAllocator {
 ///
 /// # Parameters
 ///
-/// - `start_addr`: allocator 可用区间起点。
+/// - `start_addr`: allocator 可用区间起点；buddy 元数据从这里开始占用若干页。
 /// - `end_addr`: allocator 可用区间 exclusive end。
+/// - `reserved`: 必须保持原内容直到 [`release_reserved`] 的区间（initrd）；不得与元数据页重叠。
 ///
 /// # Errors
 ///
-/// 空区间、零页或重复初始化时 fail-stop。
-pub(crate) fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
+/// 空区间、零页、保留区与元数据重叠或重复初始化时 fail-stop。
+pub(crate) fn init(
+    start_addr: PhysicalAddress,
+    end_addr: PhysicalAddress,
+    reserved: Option<core::ops::Range<PhysicalAddress>>,
+) {
     assert!(
         FRAME_ALLOCATOR.get().is_none(),
         "frame allocator initialized twice"
@@ -506,8 +512,43 @@ pub(crate) fn init(start_addr: PhysicalAddress, end_addr: PhysicalAddress) {
         );
     }
 
-    FRAME_ALLOCATOR.call_once(|| IrqMutex::new(FrameAllocator::new(start_addr, end_addr)));
+    let reserved = reserved.map(|range| range.start.floor()..range.end.ceil());
+    FRAME_ALLOCATOR.call_once(|| IrqMutex::new(FrameAllocator::new(start_addr, end_addr, reserved)));
 }
+
+/// 归还 `init` 时保留的物理区间；必须与当时传入的区间相同，且只调用一次。
+///
+/// # Panics
+///
+/// 区间中的块不是保留时的已分配状态（重复归还或区间不符）时 fail-stop。
+pub(crate) fn release_reserved(range: core::ops::Range<PhysicalAddress>) {
+    let mut allocator = FRAME_ALLOCATOR.wait().lock();
+    let start = range.start.floor().max(allocator.start_ppn).min(allocator.end_ppn);
+    let end = range.end.ceil().max(start).min(allocator.end_ppn);
+    for_each_aligned_block(start, end, |block, order| {
+        allocator
+            .dealloc_contiguous(block, 1usize << order)
+            .expect("reserved range released twice or mismatched");
+    });
+}
+
+/// 把 `[start, end)` 分解为最大的 absolute-PPN-aligned buddy block；成本与 block 数成正比。
+fn for_each_aligned_block(
+    start: PhysicalPageNumber,
+    end: PhysicalPageNumber,
+    mut visit: impl FnMut(PhysicalPageNumber, usize),
+) {
+    let mut cursor = start.as_usize();
+    while cursor < end.as_usize() {
+        let remaining = end.as_usize() - cursor;
+        let alignment_order = cursor.trailing_zeros() as usize;
+        let size_order = (usize::BITS - 1 - remaining.leading_zeros()) as usize;
+        let order = alignment_order.min(size_order).min(ORDER_COUNT - 1);
+        visit(PhysicalPageNumber::from(cursor), order);
+        cursor += 1usize << order;
+    }
+}
+
 
 fn alloc_raw() -> Option<FrameTracker> {
     let res = FRAME_ALLOCATOR
@@ -525,12 +566,8 @@ fn alloc_unzeroed_raw() -> Option<FrameTracker> {
         .map(|ppn| FrameTracker { ppn, pages: 1 })
 }
 
-/// 从唯一 frame allocator 分配一页；触及 kernel progress 低水位时回收后重试。
+/// 从唯一 frame allocator 分配一页清零页；内核不回收用户态缓存，耗尽时直接失败。
 pub(crate) fn alloc() -> Option<FrameTracker> {
-    if let Some(frame) = alloc_raw() {
-        return Some(frame);
-    }
-    let _ = super::shared_file::reclaim_pages(64);
     alloc_raw()
 }
 
@@ -546,17 +583,14 @@ pub(crate) fn alloc() -> Option<FrameTracker> {
 ///
 /// # Errors
 ///
-/// 内存回收后仍无空闲页时返回 None；长度不是一页表示 caller 破坏安全契约并 fail-stop。
+/// 无空闲页时返回 None；长度不是一页表示 caller 破坏安全契约并 fail-stop。
 pub(crate) fn alloc_copy(source: &[u8]) -> Option<FrameTracker> {
     assert_eq!(
         source.len(),
         super::config::PAGE_SIZE,
         "full-overwrite frame source must be exactly one page"
     );
-    let mut frame = alloc_unzeroed_raw().or_else(|| {
-        let _ = super::shared_file::reclaim_pages(64);
-        alloc_unzeroed_raw()
-    })?;
+    let mut frame = alloc_unzeroed_raw()?;
     // OWNER: frame 尚未进入 page table、Arc 或 allocator free list；完整 copy 是唯一
     // publication 前初始化。若改成 partial copy，旧进程数据会暴露给新映射。
     frame.bytes_mut().copy_from_slice(source);
@@ -573,7 +607,7 @@ pub(crate) fn alloc_copy(source: &[u8]) -> Option<FrameTracker> {
 /// # Returns
 ///
 /// 成功返回唯一 `FrameTracker`，实际页数向上取整为 2ⁿ 以保证
-/// 同尺寸对齐；回收后仍无该 order 区间返回 `None`。
+/// 同尺寸对齐；无该 order 区间返回 `None`。
 pub(crate) fn alloc_contiguous(pages: usize, class: FrameAllocationClass) -> Option<FrameTracker> {
     let mut tracker = alloc_contiguous_uninitialized(pages, class)?;
     tracker.bytes_mut().fill(0);
@@ -596,7 +630,7 @@ pub(crate) fn alloc_contiguous(pages: usize, class: FrameAllocationClass) -> Opt
 ///
 /// # Errors
 ///
-/// 回收后仍没有可用 `KernelHeap` extent 时返回 `None`。
+/// 没有可用 `KernelHeap` extent 时返回 `None`。
 pub(in crate::memory) fn alloc_heap_extent(pages: usize) -> Option<FrameTracker> {
     alloc_contiguous_uninitialized(pages, FrameAllocationClass::KernelHeap)
 }
@@ -608,13 +642,12 @@ fn alloc_contiguous_uninitialized(
     if pages == 0 {
         return None;
     }
-    let allocation_pages = pages.checked_next_power_of_two()?;
-    let mut res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages, class);
-    if res.is_none() {
-        let _ = super::shared_file::reclaim_pages(allocation_pages.max(64));
-        res = FRAME_ALLOCATOR.wait().lock().alloc_contiguous(pages, class);
-    }
-    res.map(|(ppn, pages)| FrameTracker { ppn, pages })
+    pages.checked_next_power_of_two()?;
+    FRAME_ALLOCATOR
+        .wait()
+        .lock()
+        .alloc_contiguous(pages, class)
+        .map(|(ppn, pages)| FrameTracker { ppn, pages })
 }
 
 /// 返回 frame allocator 管辖范围的总页数与当前空闲页数。

@@ -14,7 +14,7 @@ mod tlb_shootdown;
 
 pub(crate) use discovery::{BootInfo, hardware_cpu_ids};
 pub(crate) use gicv3::{claim_interrupt, complete_interrupt, send_ipi};
-pub(crate) use psci::{ResetError, reset_system, start_cpu};
+pub(crate) use psci::{reset_system, start_cpu};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TimerArmError;
@@ -47,9 +47,7 @@ pub(crate) fn initialize(boot: BootInfo) {
 /// # Errors
 ///
 /// controller 或 rendezvous 初始化失败时 fail-stop。
-pub(crate) use devices::{
-    map_device_window, pci_host, register_device_interrupt, virtio_mmio_transports,
-};
+pub(crate) use gicv3::{bind_interrupt, device_interrupt_range, unbind_interrupt, unmask_interrupt};
 
 pub(crate) fn initialize_devices() {
     devices::initialize();
@@ -64,6 +62,11 @@ pub(crate) fn validate_boot_info(boot: BootInfo) {
 
 pub(crate) fn verify_firmware() {
     psci::verify();
+}
+
+/// 平台 RAM 的物理区间。
+pub(crate) fn physical_memory_range() -> core::ops::Range<usize> {
+    discovery::info().memory.clone()
 }
 
 pub(crate) fn physical_memory_end() -> usize {
@@ -81,9 +84,6 @@ pub(crate) fn kernel_mmio_regions() -> impl Iterator<Item = core::ops::Range<usi
         Some(info.rtc.range()),
         Some(info.gic.distributor.range()),
         Some(info.gic.redistributor.range()),
-        info.virtio.span(),
-        Some(info.pci.ecam.clone()),
-        Some(info.pci.mmio32.clone()),
     ]
     .into_iter()
     .flatten()
@@ -154,6 +154,21 @@ pub(crate) fn synchronize_instruction_cache(
 }
 
 /// firmware 交付的 kernel command line（DTB `/chosen/bootargs`）。
+/// initrd 物理区间（DT `/chosen`）；没有 initrd 时为 `None`。
+pub(crate) fn initrd_range() -> Option<core::ops::Range<usize>> {
+    discovery::info().initrd.clone()
+}
+
+/// 固件提供的启动熵（DT `/chosen/rng-seed`）。
+pub(crate) fn boot_entropy() -> &'static [u8] {
+    &discovery::info().rng_seed
+}
+
+/// DTB 自身占用的物理区间；交给用户态发现其余设备。
+pub(crate) fn dtb_range() -> core::ops::Range<usize> {
+    discovery::info().dtb.clone()
+}
+
 pub(crate) fn kernel_command_line() -> &'static [u8] {
     &discovery::info().bootargs
 }

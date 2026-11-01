@@ -28,27 +28,6 @@ pub(crate) fn _print_fmt(args: core::fmt::Arguments) {
     let _ = writer.flush();
 }
 
-/// 在 console 序列化锁内把整段 tty 输出经批量缓冲写到 SBI DBCN。
-///
-/// 与 `_print_fmt` 共用 `CONSOLE`：缺少这把锁时，tty 字节会插进内核日志行的中间。
-/// 经 BSS 批量缓冲而非直接传 `bytes`，因为 DBCN 要求 identity-mapped 物理地址，而调用者的
-/// 缓冲可能在 kernel stack 上。本函数不得记录日志，否则会在持锁状态下重入同一把 `IrqMutex`。
-///
-/// # Parameters
-///
-/// - `bytes`: 一次 tty write 的输出；上界由 tty 层的单次写块（至多 512 字节）决定。
-///
-/// # Errors
-///
-/// 任一批 SBI DBCN 写失败时返回首个 firmware error；其余批次仍会尝试写出。
-pub(crate) fn write_bytes(bytes: &[u8]) -> Result<(), FirmwareError> {
-    let mut writer = CONSOLE.lock();
-    let pushed = writer.push(bytes);
-    // 前一批失败也要冲出剩余尾部；不能让错误短路而把缓冲留给下一次 tty write。
-    let flushed = writer.flush();
-    pushed.and(flushed)
-}
-
 struct ConsoleWriter {
     bytes: [u8; CONSOLE_BATCH_BYTES],
     length: usize,

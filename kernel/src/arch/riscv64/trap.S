@@ -22,7 +22,6 @@
     .globl __alltraps
     .globl __restore
     .globl __kernel_trap
-    .globl __signal_trampoline
     .align 2
 __alltraps:
     csrrw sp, sscratch, sp
@@ -190,10 +189,6 @@ __restore:
     sret
 
     .align 2
-__signal_trampoline:
-    li a7, 139
-    ecall
-    unimp
 
     .align 2
 __save_user_fp:

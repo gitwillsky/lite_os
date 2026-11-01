@@ -32,6 +32,12 @@ impl MmioBus {
         Ok(address)
     }
 
+    /// 读取一个 32-bit 寄存器。
+    ///
+    /// # Errors
+    ///
+    /// offset 越界或未按 32-bit 对齐时返回 `InvalidAddress`。
+    #[cfg(target_arch = "riscv64")]
     /// 从 MMIO window 读取一个 byte。
     ///
     /// # Parameters
@@ -51,6 +57,7 @@ impl MmioBus {
         Ok(unsafe { crate::arch::read_mmio_u8(address) })
     }
 
+    #[cfg(target_arch = "riscv64")]
     /// 向 MMIO window 写入一个 byte。
     ///
     /// # Parameters
@@ -72,51 +79,6 @@ impl MmioBus {
         Ok(())
     }
 
-    /// 从 MMIO window 读取一个 little-endian 16-bit halfword。
-    ///
-    /// # Parameters
-    ///
-    /// - `offset`: 相对 window base 的 byte offset。
-    ///
-    /// # Returns
-    ///
-    /// volatile 读取值。
-    ///
-    /// # Errors
-    ///
-    /// offset 越界或未按 16-bit 对齐时返回 `InvalidAddress`。
-    pub(crate) fn read_u16(&self, offset: usize) -> Result<u16, BusError> {
-        let address = self.address(offset, core::mem::size_of::<u16>())?;
-        // SAFETY: `address` 已完成边界、溢出与 16 位对齐检查。
-        Ok(unsafe { crate::arch::read_mmio_u16(address) })
-    }
-
-    /// 向 MMIO window 写入一个 little-endian 16-bit halfword。
-    ///
-    /// # Parameters
-    ///
-    /// - `offset`: 相对 window base 的 byte offset。
-    /// - `value`: 要发布的 halfword。
-    ///
-    /// # Returns
-    ///
-    /// 写入成功返回 unit。
-    ///
-    /// # Errors
-    ///
-    /// offset 越界或未按 16-bit 对齐时返回 `InvalidAddress`。
-    pub(crate) fn write_u16(&self, offset: usize, value: u16) -> Result<(), BusError> {
-        let address = self.address(offset, core::mem::size_of::<u16>())?;
-        // SAFETY: `address` 已完成边界、溢出与 16 位对齐检查。
-        unsafe { crate::arch::write_mmio_u16(address, value) };
-        Ok(())
-    }
-
-    /// 读取一个 32-bit 寄存器。
-    ///
-    /// # Errors
-    ///
-    /// offset 越界或未按 32-bit 对齐时返回 `InvalidAddress`。
     pub(crate) fn read_u32(&self, offset: usize) -> Result<u32, BusError> {
         let address = self.address(offset, core::mem::size_of::<u32>())?;
         // SAFETY: `address` 已完成边界、溢出与 32 位对齐检查。

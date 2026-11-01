@@ -174,6 +174,11 @@ impl<Page: TablePage> PageTable<Page> {
         })
     }
 
+    /// 根表的物理页号（交给 IOMMU 等硬件页表遍历器）。
+    pub(crate) fn root_physical_page(&self) -> usize {
+        self.root_page
+    }
+
     pub(crate) fn token(&self) -> AddressSpaceToken {
         assert_eq!(
             self.kind,
@@ -288,18 +293,6 @@ impl<Page: TablePage> PageTable<Page> {
             return Ok((parent, indexes[target_level]));
         }
         Ok((table_page, indexes[target_level]))
-    }
-
-    fn find_or_create(&mut self, virtual_page: usize) -> Result<(usize, usize), PageTableError> {
-        self.find_or_create_level(virtual_page, 2)
-    }
-
-    pub(crate) fn reserve(&mut self, virtual_page: usize) -> Result<(), PageTableError> {
-        let (table, index) = self.find_or_create(virtual_page)?;
-        if Self::read_entry(table, index).is_valid() {
-            return Err(PageTableError::AlreadyMapped);
-        }
-        Ok(())
     }
 
     pub(crate) fn map(
@@ -424,26 +417,6 @@ impl<Page: TablePage> PageTable<Page> {
             tables[level + 1] = entry.physical_page();
         }
         Err(PageTableError::InvalidPageTable)
-    }
-
-    /// 撤销一个 4KiB leaf，但保留全部 table owners，供同一独占 transaction 无分配重建。
-    /// caller 必须在重新发布 physical identity 前完成 revoke fence；期间不得修改其他 leaf。
-    pub(crate) fn revoke_leaf(&mut self, virtual_page: usize) -> Result<(), PageTableError> {
-        let indexes = va39::indexes(virtual_page);
-        let mut table = self.root_page;
-        for (level, index) in indexes[..2].iter().enumerate() {
-            let entry = Self::read_entry(table, *index);
-            if !entry.is_next_table_at(level) {
-                return Err(PageTableError::NotMapped);
-            }
-            table = entry.physical_page();
-        }
-        let old = Self::read_entry(table, indexes[2]);
-        if !old.is_leaf_at(2) {
-            return Err(PageTableError::NotMapped);
-        }
-        Self::write_entry(table, indexes[2], PageTableEntry::empty());
-        Ok(())
     }
 
     pub(crate) fn set_flags(

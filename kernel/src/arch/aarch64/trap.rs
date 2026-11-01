@@ -13,7 +13,7 @@ pub(crate) struct UserFault {
 }
 
 impl UserFault {
-    /// 投影通用 memory/signal owner 所需的地址。
+    /// 异常地址（`FAR_EL1`）。
     ///
     /// # Returns
     /// 同一次用户异常的 fault 地址。
@@ -21,18 +21,9 @@ impl UserFault {
         self.address
     }
 
-    /// 返回 Linux 允许暴露给 EL0 的 ESR；kernel 地址只保留访问方向与 translation fault。
-    pub(super) fn signal_syndrome(self) -> u64 {
-        if self.address < super::mmu::USER_ADDRESS_END {
-            self.syndrome
-        } else {
-            let access = if (self.syndrome >> 26) & 0x3f == 0x24 {
-                (1 << 8) | (1 << 6)
-            } else {
-                0
-            };
-            (self.syndrome & ((0x3f << 26) | (1 << 25) | access)) | 4
-        }
+    /// 原始 `ESR_EL1`；异常报告原样交给处理者，由其决定对外暴露哪些位。
+    pub(crate) fn syndrome(self) -> u64 {
+        self.syndrome
     }
 }
 
@@ -108,9 +99,8 @@ pub(crate) fn event() -> TrapEvent {
         syndrome: esr,
     };
     match class {
-        // SVE/SME are intentionally absent from the user context ABI and HWCAP. A CPU can still
-        // recognize a feature-probe instruction and report its access-trap EC instead of Unknown;
-        // route both forms through forced SIGILL so libc/crypto probes can recover normally.
+        // 用户上下文不保存 SVE/SME 状态；CPU 可能把特性探测指令报告为访问陷入而不是 Unknown，
+        // 两者都按非法指令报告，探测方据此判定特性不可用。
         0x00 | 0x19 | 0x1d => TrapEvent::IllegalInstruction,
         0x15 => TrapEvent::UserEnvironmentCall,
         0x20 | 0x21 => TrapEvent::InstructionPageFault { fault },

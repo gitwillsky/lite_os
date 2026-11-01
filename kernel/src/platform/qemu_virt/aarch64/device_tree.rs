@@ -1,17 +1,13 @@
 //! QEMU `virt` AArch64 DTB 到 immutable machine facts 的纯解码。
 //!
-//! PL011/PL031/GICv3/PCI 以节点名选择候选并以 compatible 断言身份；VirtIO-MMIO 只按
-//! `compatible = "virtio,mmio"` 识别。
+//! 只解码内核自身需要的事实（内存、CPU、PL011、PL031、GICv3、timer、PSCI、initrd）；
+//! 其余设备由用户态从同一 DTB 发现。PL011/PL031/GICv3 以节点名选择候选并以 compatible 断言身份。
 
 use alloc::vec::Vec;
 use core::{fmt, ops::Range};
 
 use dtb_walker::{Dtb, DtbObj, Property, Str, WalkOperation};
 
-use super::super::{
-    PciHost,
-    virtio_mmio::{VirtioMmioScan, VirtioMmioTransports},
-};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MmioDevice {
@@ -45,10 +41,12 @@ pub(crate) struct PlatformInfo {
     pub(crate) uart: MmioDevice,
     pub(crate) rtc: RangeValue,
     pub(crate) gic: GicV3Info,
-    pub(crate) pci: PciHost,
-    pub(crate) virtio: VirtioMmioTransports,
     /// `/chosen/bootargs`（kernel command line），不含结尾 NUL；没有该属性时为空。
     pub(crate) bootargs: Vec<u8>,
+    /// `/chosen` 的 initrd 物理区间（DT chosen 绑定的 `linux,initrd-start/end`）；没有 initrd 时为 `None`。
+    pub(crate) initrd: Option<Range<usize>>,
+    /// `/chosen/rng-seed`：固件提供的启动熵；没有时为空。
+    pub(crate) rng_seed: Vec<u8>,
 }
 
 impl fmt::Display for PlatformInfo {
@@ -69,7 +67,7 @@ impl fmt::Display for PlatformInfo {
             self.gic.redistributor.start,
             self.gic.redistributor.size
         )?;
-        writeln!(output, "VirtIO-MMIO transports: {}", self.virtio.len())
+        writeln!(output, "initrd: {:#x?}", self.initrd)
     }
 }
 
@@ -86,8 +84,8 @@ impl fmt::Display for PlatformInfo {
 ///
 /// # Panics
 ///
-/// 缺少 PL011、PL031、GICv3、virtual timer、PSCI HVC、PCI ECAM host、coherent DMA 或 CPU，
-/// 以及 VirtIO-MMIO 节点缺少 window/interrupt 时 fail-stop。
+/// 缺少 PL011、PL031、GICv3、virtual timer、PSCI HVC、coherent DMA 或 CPU 时 fail-stop。
+/// 其余设备由用户态从同一 DTB 发现。
 pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
     {
         let mut hardware_cpu_ids = Vec::new();
@@ -96,11 +94,9 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
         let mut uart_irq = None;
         let mut rtc = None;
         let mut gic = None;
-        let mut pci_ecam = None;
-        let mut pci_mmio32 = None;
-        let mut pci_intx = [[0u32; 4]; 4];
-        let mut pci_compatible = false;
-        let mut virtio = VirtioMmioScan::new();
+        let mut initrd_start = None;
+        let mut initrd_end = None;
+        let mut rng_seed = Vec::new();
         let mut pl011_compatible = false;
         let mut pl031_compatible = false;
         let mut gicv3_compatible = false;
@@ -118,10 +114,7 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
 
         dtb.walk(|context, object| match object {
             DtbObj::SubNode { name, .. } => {
-                virtio.begin_node();
                 let parent = context.name();
-                // 根节点全部进入：VirtIO transport 只按 compatible 识别，按名称筛选会让
-                // QEMU 改名后的 transport 静默消失。
                 if context.is_root()
                     || (parent == Str::from("cpus") && name.starts_with("cpu@"))
                     || (parent == Str::from("soc") && interesting_device_node(name))
@@ -154,16 +147,11 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
                             redistributor,
                         });
                     }
-                } else if is_pci_node(node) {
-                    pci_ecam = registers.next().map(range_value);
-                } else {
-                    virtio.reg(registers.next());
                 }
                 WalkOperation::StepOver
             }
             DtbObj::Property(Property::Compatible(compatible)) => {
                 let node = context.name();
-                virtio.compatible(compatible.clone());
                 pl011_compatible |= is_uart_node(node)
                     && compatible
                         .clone()
@@ -176,10 +164,6 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
                     && compatible
                         .clone()
                         .any(|value| value == Str::from("arm,gic-v3"));
-                pci_compatible |= is_pci_node(node)
-                    && compatible
-                        .clone()
-                        .any(|value| value == Str::from("pci-host-ecam-generic"));
                 timer_compatible |= is_timer_node(node)
                     && compatible
                         .clone()
@@ -202,6 +186,15 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
                         .try_reserve_exact(line.len())
                         .expect("bootargs allocation failed");
                     bootargs.extend_from_slice(line);
+                } else if node == Str::from("chosen") && name == Str::from("rng-seed") {
+                    rng_seed
+                        .try_reserve_exact(value.len())
+                        .expect("rng-seed allocation failed");
+                    rng_seed.extend_from_slice(value);
+                } else if node == Str::from("chosen") && name == Str::from("linux,initrd-start") {
+                    initrd_start = decode_cell(value);
+                } else if node == Str::from("chosen") && name == Str::from("linux,initrd-end") {
+                    initrd_end = decode_cell(value);
                 } else if name == Str::from("method") && is_psci_node(node) {
                     psci_hvc = contains_string(value, "hvc");
                 } else if name == Str::from("interrupts") {
@@ -209,13 +202,7 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
                         uart_irq = decode_first_gic_interrupt(value);
                     } else if is_timer_node(node) {
                         virtual_timer_ppi = contains_gic_interrupt(value, 1, 11);
-                    } else {
-                        virtio.interrupt(decode_first_gic_interrupt(value));
                     }
-                } else if is_pci_node(node) && name == Str::from("ranges") {
-                    pci_mmio32 = decode_pci_mmio32(value);
-                } else if is_pci_node(node) && name == Str::from("interrupt-map") {
-                    decode_pci_interrupt_map(value, &mut pci_intx);
                 }
                 WalkOperation::StepOver
             }
@@ -230,7 +217,6 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
             "virtual timer PPI 27 missing"
         );
         assert!(psci_compatible && psci_hvc, "PSCI HVC 0.2+ is required");
-        assert!(pci_compatible, "QEMU virt requires pci-host-ecam-generic");
         assert!(coherent_dma, "AArch64 QEMU virt requires coherent DMA");
         assert!(!hardware_cpu_ids.is_empty(), "DTB contains no enabled CPUs");
 
@@ -251,21 +237,10 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
             valid_range_value(gic.distributor) && valid_range_value(gic.redistributor),
             "invalid GICv3 MMIO ranges"
         );
-        let pci = PciHost::new(
-            pci_ecam
-                .filter(|range| valid_range_value(*range))
-                .expect("PCI ECAM range missing")
-                .range(),
-            pci_mmio32
-                .filter(|range| valid_range_value(*range))
-                .expect("PCI 32-bit MMIO range missing")
-                .range(),
-            pci_intx,
-        );
-        assert!(
-            pci.interrupt(1, 1).is_some(),
-            "PCI slot 1 INTx route missing"
-        );
+        let initrd = match (initrd_start, initrd_end) {
+            (Some(start), Some(end)) if start < end => Some(start..end),
+            _ => None,
+        };
 
         PlatformInfo {
             dtb: dtb_range,
@@ -274,19 +249,15 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
             uart,
             rtc,
             gic,
-            pci,
-            virtio: virtio.finish(),
             bootargs,
+            initrd,
+            rng_seed,
         }
     }
 }
 
 fn interesting_device_node(name: Str<'_>) -> bool {
-    is_uart_node(name) || is_rtc_node(name) || is_gic_node(name) || is_pci_node(name)
-}
-
-fn is_pci_node(name: Str<'_>) -> bool {
-    name.starts_with("pcie@") || name.starts_with("pci@")
+    is_uart_node(name) || is_rtc_node(name) || is_gic_node(name)
 }
 
 fn is_uart_node(name: Str<'_>) -> bool {
@@ -351,39 +322,12 @@ fn be_u32(bytes: &[u8]) -> u32 {
     u32::from_be_bytes(bytes.try_into().expect("DTB cell must contain four bytes"))
 }
 
-fn decode_pci_mmio32(bytes: &[u8]) -> Option<RangeValue> {
-    for cells in bytes.as_chunks::<28>().0 {
-        let kind = be_u32(&cells[0..4]) & 0x0300_0000;
-        if kind != 0x0200_0000 {
-            continue;
-        }
-        let child = be_u64(&cells[4..12]);
-        let parent = be_u64(&cells[12..20]);
-        let size = be_u64(&cells[20..28]);
-        if child != parent {
-            continue;
-        }
-        return Some(RangeValue {
-            start: usize::try_from(parent).ok()?,
-            size: usize::try_from(size).ok()?,
-        });
-    }
-    None
-}
-
-fn decode_pci_interrupt_map(bytes: &[u8], routes: &mut [[u32; 4]; 4]) {
-    for cells in bytes.as_chunks::<40>().0 {
-        let slot = ((be_u32(&cells[0..4]) >> 11) & 0x1f) as usize;
-        let pin = be_u32(&cells[12..16]) as usize;
-        let Some(vector) = decode_first_gic_interrupt(&cells[28..40]) else {
-            continue;
-        };
-        if let Some(entry) = routes
-            .get_mut(slot)
-            .and_then(|values| values.get_mut(pin.saturating_sub(1)))
-        {
-            *entry = vector;
-        }
+/// 解码 `/chosen` 的 initrd 地址：DT 允许 32 位或 64 位单元。
+fn decode_cell(bytes: &[u8]) -> Option<usize> {
+    match bytes.len() {
+        4 => Some(be_u32(bytes) as usize),
+        8 => Some(be_u64(bytes) as usize),
+        _ => None,
     }
 }
 

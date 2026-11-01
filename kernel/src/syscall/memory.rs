@@ -1,364 +1,302 @@
-use crate::{
-    execution::task::current_task,
-    file::OpenFileKind,
-    fs::{InodeType, O_ACCMODE, O_RDONLY, O_WRONLY},
-    memory::{FileMappingError, FileMappingSource, MapPermission, MemoryAdvice, MemoryError},
-    memory::{MappingPlacement, UserMappingRequest, UserMappingSource},
-};
+//! VMO、VMAR、pager 与跨进程内存调用。
 
-use super::{
-    errno,
-    mmap_flags::{
-        MAP_ANONYMOUS, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_PRIVATE, MAP_SHARED,
-        mmap_flags_supported,
-    },
-};
+use alloc::sync::Arc;
 
-const PROT_READ: usize = 0x1;
-const PROT_WRITE: usize = 0x2;
-const PROT_EXEC: usize = 0x4;
+use native_abi::{Status, rights, vm, vmo};
 
-fn permission_from_prot(prot: usize) -> Result<MapPermission, isize> {
-    if prot & !(PROT_READ | PROT_WRITE | PROT_EXEC) != 0 {
-        return Err(errno::EINVAL);
+use super::Call;
+use crate::object::{Object, Pager, vm_status};
+use crate::vm::page_table::PagePermissions;
+use crate::vm::{CachePolicy, ChildKind, RangeOp, Vmo, VmoOptions};
+
+/// VMO 一次读写的最大字节数；更大的请求按块分次执行，避免一次分配过大的内核缓冲。
+const CHUNK: usize = 64 * 1024;
+
+pub(super) fn vmo_create(call: &Call<'_>) -> Result<(), Status> {
+    let options = call.arg_u32(1);
+    if options & !vmo::RESIZABLE != 0 {
+        return Err(native_abi::ERR_INVALID_ARGS);
     }
-    let mut permission = MapPermission::U;
-    if prot & PROT_READ != 0 || prot & PROT_WRITE != 0 {
-        // RISC-V 不支持 W-only leaf；Linux 的 PROT_WRITE 也允许读取该映射。
-        permission |= MapPermission::R;
-    }
-    if prot & PROT_WRITE != 0 {
-        permission |= MapPermission::W;
-    }
-    if prot & PROT_EXEC != 0 {
-        permission |= MapPermission::X;
-    }
-    Ok(permission)
+    let vmo = Vmo::create(
+        call.arg(0) as u64,
+        VmoOptions {
+            resizable: options & vmo::RESIZABLE != 0,
+        },
+    )
+    .map_err(vm_status)?;
+    call.publish(Object::Vmo(vmo), call.arg(2)).map(|_| ())
 }
 
-fn memory_errno(error: MemoryError) -> isize {
-    if error.is_out_of_memory() {
-        return errno::ENOMEM;
-    }
-    match error {
-        MemoryError::AddressInUse => errno::EEXIST,
-        MemoryError::PermissionDenied => errno::EACCES,
-        MemoryError::TextBusy => errno::ETXTBSY,
-        MemoryError::Io => errno::EIO,
-        MemoryError::InvalidRange | MemoryError::PageTableError(_) | MemoryError::OutOfMemory => {
-            errno::EINVAL
-        }
-    }
-}
-
-/// 查询或设置当前进程的数据段结尾。
-///
-/// # Parameters
-///
-/// - `new_brk`: 新的数据段结尾；为零时查询当前值。
-///
-/// # Returns
-///
-/// Linux `brk` 语义：成功返回新 break，失败返回未改变的旧 break。
-pub(crate) fn sys_brk(new_brk: usize) -> isize {
-    let task = current_task().expect("brk requires a current task");
-    let current = task
-        .set_program_break(0)
-        .expect("user address space must own a heap area");
-    task.set_program_break(new_brk).unwrap_or(current) as isize
-}
-
-/// 建立 Linux 64-bit anonymous/file private 或 shared mapping。
-///
-/// # Parameters
-///
-/// - `address`: 零或地址 hint；`MAP_FIXED_NOREPLACE` 时必须页对齐且非零。
-/// - `length`: 非零映射长度。
-/// - `prot`: `PROT_NONE/READ/WRITE/EXEC` 的任意合法组合。
-/// - `flags`: 必须选择一个 `MAP_PRIVATE/MAP_SHARED`，可附加已声明的 semantic/advisory variants。
-/// - `fd`: anonymous mapping 必须传 `-1`；file mapping 为 readable regular-file fd。
-/// - `offset`: anonymous mapping 必须传零。
-///
-/// # Returns
-///
-/// 成功返回映射地址；失败返回负 Linux errno。
-pub(crate) fn sys_mmap(
-    address: usize,
-    length: usize,
-    prot: usize,
-    flags: usize,
-    fd: isize,
-    offset: usize,
-) -> isize {
-    let sharing = flags & (MAP_PRIVATE | MAP_SHARED);
-    if !mmap_flags_supported(flags) {
-        return -errno::EINVAL;
-    }
-    let permission = match permission_from_prot(prot) {
-        Ok(permission) => permission,
-        Err(error) => return -error,
-    };
-    let fixed = flags & MAP_FIXED != 0;
-    // Reject cheap range errors before regular-file backing acquisition can publish a new
-    // canonical page-cache owner. MemorySet remains the final full-range validator.
-    if length == 0 {
-        return -errno::EINVAL;
-    }
-    if fixed && (address == 0 || !address.is_multiple_of(crate::memory::PAGE_SIZE)) {
-        return -errno::EINVAL;
-    }
-    let task = current_task().expect("mmap requires a current task");
-
-    // Resolve every remaining ABI/backing error before destructive MAP_FIXED replacement.
-    // The prepared value only retains the canonical immutable backing owner.
-    let prepared = if flags & MAP_ANONYMOUS != 0 {
-        if fd != -1 || offset != 0 {
-            return -errno::EINVAL;
-        }
-        if sharing == MAP_SHARED {
-            UserMappingSource::SharedAnonymous
+fn transfer(call: &Call<'_>, write: bool) -> Result<(), Status> {
+    let vmo = call.vmo(call.arg_handle(0), if write { rights::WRITE } else { rights::READ })?;
+    let buffer = call.arg(1);
+    let offset = call.arg(2) as u64;
+    let length = call.arg(3);
+    let mut done = 0;
+    while done < length {
+        let chunk = (length - done).min(CHUNK);
+        let at = offset.checked_add(done as u64).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
+        if write {
+            let bytes = call.read_bytes(buffer + done, chunk)?;
+            vmo.write(at, &bytes).map_err(vm_status)?;
         } else {
-            UserMappingSource::PrivateAnonymous
+            let mut bytes = alloc::vec::Vec::new();
+            bytes.try_reserve_exact(chunk).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            bytes.resize(chunk, 0);
+            vmo.read(at, &mut bytes).map_err(vm_status)?;
+            call.write_bytes(buffer + done, &bytes)?;
         }
-    } else {
-        if fd < 0 || !offset.is_multiple_of(crate::memory::PAGE_SIZE) {
-            return -errno::EINVAL;
-        }
-        let Some(ofd) = task.fd_get(fd as usize) else {
-            return -errno::EBADF;
+        done += chunk;
+    }
+    Ok(())
+}
+
+pub(super) fn vmo_read(call: &Call<'_>) -> Result<(), Status> {
+    transfer(call, false)
+}
+
+pub(super) fn vmo_write(call: &Call<'_>) -> Result<(), Status> {
+    transfer(call, true)
+}
+
+pub(super) fn vmo_get_size(call: &Call<'_>) -> Result<(), Status> {
+    let vmo = call.vmo(call.arg_handle(0), rights::INSPECT)?;
+    call.write(call.arg(1), &vmo.size())
+}
+
+pub(super) fn vmo_set_size(call: &Call<'_>) -> Result<(), Status> {
+    let vmo = call.vmo(call.arg_handle(0), rights::WRITE)?;
+    vmo.set_size(call.arg(1) as u64).map_err(vm_status)
+}
+
+pub(super) fn vmo_op_range(call: &Call<'_>) -> Result<(), Status> {
+    let vmo = call.vmo(call.arg_handle(0), rights::WRITE)?;
+    let op = match call.arg_u32(1) {
+        vmo::OP_COMMIT => RangeOp::Commit,
+        vmo::OP_DECOMMIT => RangeOp::Decommit,
+        vmo::OP_ZERO => RangeOp::Zero,
+        _ => return Err(native_abi::ERR_INVALID_ARGS),
+    };
+    vmo.op_range(op, call.arg(2) as u64, call.arg(3) as u64).map_err(vm_status)
+}
+
+pub(super) fn vmo_create_child(call: &Call<'_>) -> Result<(), Status> {
+    let entry = call.entry(call.arg_handle(0), rights::DUPLICATE | rights::READ)?;
+    let Object::Vmo(parent) = entry.object else {
+        return Err(native_abi::ERR_WRONG_TYPE);
+    };
+    let kind = match call.arg_u32(1) {
+        vmo::CHILD_SNAPSHOT => ChildKind::Snapshot,
+        vmo::CHILD_SNAPSHOT_AT_LEAST_ON_WRITE => ChildKind::AtLeastOnWrite,
+        vmo::CHILD_SLICE => ChildKind::Slice,
+        _ => return Err(native_abi::ERR_INVALID_ARGS),
+    };
+    let child = parent
+        .create_child(call.arg(2) as u64, call.arg(3) as u64, kind)
+        .map_err(vm_status)?;
+    // COW 子对象内容属于子对象自身，可写；slice 只能继承父句柄的写权限。
+    let mut child_rights = entry.rights | rights::WRITE | rights::READ | rights::MAP;
+    if kind == ChildKind::Slice && entry.rights & rights::WRITE == 0 {
+        child_rights &= !rights::WRITE;
+    }
+    let handle = call.process().handles().insert(crate::object::HandleEntry {
+        object: Object::Vmo(child),
+        rights: child_rights,
+    })?;
+    if let Err(status) = call.write(call.arg(4), &handle) {
+        drop(call.process().handles().remove(handle));
+        return Err(status);
+    }
+    Ok(())
+}
+
+pub(super) fn vmo_create_contiguous(call: &Call<'_>) -> Result<(), Status> {
+    let _bti = call.bti(call.arg_handle(0), rights::READ)?;
+    let vmo = Vmo::create_contiguous(call.arg(1) as u64).map_err(vm_status)?;
+    call.publish(Object::Vmo(vmo), call.arg(2)).map(|_| ())
+}
+
+pub(super) fn vmo_create_physical(call: &Call<'_>) -> Result<(), Status> {
+    let resource = call.resource(call.arg_handle(0), 0)?;
+    let (physical, size) = (call.arg(1) as u64, call.arg(2) as u64);
+    if !resource.covers_mmio(physical, size) {
+        return Err(native_abi::ERR_ACCESS_DENIED);
+    }
+    let vmo = Vmo::create_physical(physical, size, CachePolicy::Device).map_err(vm_status)?;
+    call.publish(Object::Vmo(vmo), call.arg(3)).map(|_| ())
+}
+
+fn permissions(options: u32) -> PagePermissions {
+    let mut permissions = PagePermissions::empty();
+    if options & vm::READ != 0 {
+        permissions |= PagePermissions::READ;
+    }
+    if options & vm::WRITE != 0 {
+        permissions |= PagePermissions::WRITE;
+    }
+    if options & vm::EXECUTE != 0 {
+        permissions |= PagePermissions::EXECUTE;
+    }
+    permissions
+}
+
+fn ceiling(handle_rights: u32) -> PagePermissions {
+    let mut ceiling = PagePermissions::empty();
+    if handle_rights & rights::READ != 0 {
+        ceiling |= PagePermissions::READ;
+    }
+    if handle_rights & rights::WRITE != 0 {
+        ceiling |= PagePermissions::WRITE;
+    }
+    if handle_rights & rights::EXECUTE != 0 {
+        ceiling |= PagePermissions::EXECUTE;
+    }
+    ceiling
+}
+
+fn placement(options: u32, offset: usize) -> Result<crate::vm::Placement, Status> {
+    match (options & vm::SPECIFIC != 0, options & vm::SPECIFIC_OVERWRITE != 0) {
+        (false, false) => Ok(crate::vm::Placement::Any),
+        (true, false) => Ok(crate::vm::Placement::Specific(offset)),
+        (false, true) => Ok(crate::vm::Placement::Overwrite(offset)),
+        (true, true) => Err(native_abi::ERR_INVALID_ARGS),
+    }
+}
+
+const MAP_OPTIONS: u32 = vm::READ | vm::WRITE | vm::EXECUTE | vm::SPECIFIC | vm::SPECIFIC_OVERWRITE;
+
+pub(super) fn vmar_map(call: &Call<'_>) -> Result<(), Status> {
+    let options = call.arg_u32(1);
+    if options & !MAP_OPTIONS != 0 {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    let vmar = call.vmar(call.arg_handle(0), rights::MAP)?;
+    let entry = call.entry(call.arg_handle(3), rights::MAP)?;
+    let Object::Vmo(vmo) = &entry.object else {
+        return Err(native_abi::ERR_WRONG_TYPE);
+    };
+    let requested = permissions(options);
+    let ceiling = ceiling(entry.rights);
+    if !ceiling.contains(requested) {
+        return Err(native_abi::ERR_ACCESS_DENIED);
+    }
+    let address = vmar
+        .map(placement(options, call.arg(2))?, vmo, call.arg(4) as u64, call.arg(5), requested, ceiling)
+        .map_err(vm_status)?;
+    if let Err(status) = call.write(call.arg(6), &(address as u64)) {
+        let _ = vmar.unmap(address, call.arg(5));
+        return Err(status);
+    }
+    Ok(())
+}
+
+pub(super) fn vmar_unmap(call: &Call<'_>) -> Result<(), Status> {
+    let vmar = call.vmar(call.arg_handle(0), rights::MAP)?;
+    vmar.unmap(call.arg(1), call.arg(2)).map_err(vm_status)
+}
+
+pub(super) fn vmar_protect(call: &Call<'_>) -> Result<(), Status> {
+    let vmar = call.vmar(call.arg_handle(0), rights::MAP)?;
+    vmar.protect(call.arg(2), call.arg(3), permissions(call.arg_u32(1)))
+        .map_err(vm_status)
+}
+
+pub(super) fn vmar_allocate(call: &Call<'_>) -> Result<(), Status> {
+    let options = call.arg_u32(1);
+    let parent = call.vmar(call.arg_handle(0), rights::MANAGE)?;
+    let child = parent
+        .allocate(placement(options, call.arg(2))?, call.arg(3), permissions(options))
+        .map_err(vm_status)?;
+    let base = child.info().base as u64;
+    let handle = call.publish(Object::Vmar(child.clone()), call.arg(4))?;
+    if let Err(status) = call.write(call.arg(5), &base) {
+        drop(call.process().handles().remove(handle));
+        let _ = child.destroy();
+        return Err(status);
+    }
+    Ok(())
+}
+
+pub(super) fn vmar_destroy(call: &Call<'_>) -> Result<(), Status> {
+    call.vmar(call.arg_handle(0), rights::MANAGE)?
+        .destroy()
+        .map_err(vm_status)
+}
+
+fn cross_process(call: &Call<'_>, write: bool) -> Result<(), Status> {
+    let process = call.process_handle(call.arg_handle(0), if write { rights::WRITE } else { rights::READ })?;
+    let target = process.space().clone();
+    let (address, buffer, length) = (call.arg(1), call.arg(2), call.arg(3));
+    let mut done = 0;
+    while done < length {
+        let chunk = (length - done).min(CHUNK);
+        let result = if write {
+            let bytes = call.read_bytes(buffer + done, chunk)?;
+            target.copy_to_user(address + done, &bytes)
+        } else {
+            let mut bytes = alloc::vec::Vec::new();
+            bytes.try_reserve_exact(chunk).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            bytes.resize(chunk, 0);
+            target
+                .copy_from_user(address + done, &mut bytes)
+                .and_then(|()| call.write_bytes(buffer + done, &bytes).map_err(|_| crate::vm::VmError::AccessDenied))
         };
-        let access_mode = ofd.status_flags() & O_ACCMODE;
-        if access_mode == O_WRONLY {
-            return -errno::EACCES;
+        if result.is_err() {
+            break;
         }
-        if let OpenFileKind::Device(file) = &ofd.kind {
-            let request = super::device::map_request(
-                sharing == MAP_SHARED,
-                permission.contains(MapPermission::W),
-                permission.contains(MapPermission::X),
-                access_mode != O_RDONLY,
-            );
-            match file.mmap(offset as u64, length, request) {
-                Ok(mut source) => {
-                    if source.retain_file(ofd.clone()).is_err() {
-                        return -errno::ENOMEM;
-                    }
-                    UserMappingSource::Device(source)
-                }
-                Err(error) => return super::device::device_error(error),
-            }
-        } else {
-            if !matches!(ofd.kind, OpenFileKind::Inode) {
-                return -errno::ENODEV;
-            }
-            let inode = ofd.inode_ref();
-            if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
-                return -errno::ENODEV;
-            }
-            if sharing == MAP_SHARED
-                && permission.contains(MapPermission::W)
-                && access_mode == O_RDONLY
-            {
-                return -errno::EACCES;
-            }
-            // Linux `mmap_region`：noexec 挂载上的文件不可映射为可执行。
-            if permission.contains(MapPermission::X) && ofd.opened_ref().mount_flags().noexec() {
-                return -errno::EPERM;
-            }
-            // Linux rejects an already-active swapfile before MAP_FIXED replacement begins.
-            if sharing == MAP_SHARED
-                && permission.contains(MapPermission::W)
-                && inode.is_swap_file()
-            {
-                return -errno::ETXTBSY;
-            }
-            if let Err(error) = ofd.prepare_mapping(sharing == MAP_SHARED) {
-                return super::fs::filesystem_error(error);
-            }
-            ofd.opened_ref().touch_access();
-            let mapping = match ofd.clone().mapping(
-                sharing == MAP_SHARED,
-                permission.contains(MapPermission::W),
-                permission.contains(MapPermission::X),
-            ) {
-                Ok(mapping) => mapping,
-                Err(error) => return super::fs::filesystem_error(error),
-            };
-            let source = match FileMappingSource::new(mapping, offset as u64, length) {
-                Ok(source) => source,
-                Err(FileMappingError::Invalid) => return -errno::EINVAL,
-                Err(FileMappingError::Overflow) => return -errno::EOVERFLOW,
-            };
-            if sharing == MAP_SHARED {
-                UserMappingSource::SharedFile(source)
-            } else {
-                UserMappingSource::PrivateFile(source)
-            }
+        done += chunk;
+    }
+    call.write_optional(call.arg(4), &done)?;
+    if done == 0 && length != 0 {
+        return Err(native_abi::ERR_NOT_FOUND);
+    }
+    Ok(())
+}
+
+pub(super) fn process_read_memory(call: &Call<'_>) -> Result<(), Status> {
+    cross_process(call, false)
+}
+
+pub(super) fn process_write_memory(call: &Call<'_>) -> Result<(), Status> {
+    cross_process(call, true)
+}
+
+pub(super) fn pager_create(call: &Call<'_>) -> Result<(), Status> {
+    let pager = Arc::try_new(Pager::new()).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    call.publish(Object::Pager(pager), call.arg(0)).map(|_| ())
+}
+
+pub(super) fn pager_create_vmo(call: &Call<'_>) -> Result<(), Status> {
+    let pager = call.pager(call.arg_handle(0), rights::MANAGE)?;
+    let options = call.arg_u32(1);
+    if options & !vmo::RESIZABLE != 0 {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    let port = call.port(call.arg_handle(2), rights::WRITE)?;
+    let vmo = pager.create_vmo(&port, call.arg(3) as u64, call.arg(4) as u64, options & vmo::RESIZABLE != 0)?;
+    call.publish(Object::Vmo(vmo), call.arg(5)).map(|_| ())
+}
+
+pub(super) fn pager_supply_pages(call: &Call<'_>) -> Result<(), Status> {
+    let _pager = call.pager(call.arg_handle(0), rights::MANAGE)?;
+    let vmo = call.vmo(call.arg_handle(1), rights::WRITE)?;
+    let aux = call.vmo(call.arg_handle(4), rights::READ | rights::WRITE)?;
+    vmo.supply_pages(call.arg(2) as u64, call.arg(3) as u64, &aux, call.arg(5) as u64)
+        .map_err(vm_status)
+}
+
+pub(super) fn pager_op(call: &Call<'_>) -> Result<(), Status> {
+    let _pager = call.pager(call.arg_handle(0), rights::MANAGE)?;
+    let vmo = call.vmo(call.arg_handle(2), rights::WRITE)?;
+    let (offset, length) = (call.arg(3) as u64, call.arg(4) as u64);
+    match call.arg_u32(1) {
+        native_abi::pager::OP_FAIL => vmo.fail_pager().map_err(vm_status),
+        native_abi::pager::OP_WRITEBACK_BEGIN => vmo.begin_writeback(offset, length).map_err(vm_status),
+        native_abi::pager::OP_QUERY_DIRTY => {
+            let range = vmo.first_dirty_range(offset, length).map_err(vm_status)?;
+            let value: [u64; 2] = range.map_or([0, 0], |(start, size)| [start, size]);
+            call.write_array(call.arg(5), &value)
         }
-    };
-
-    let placement = if fixed {
-        MappingPlacement::Fixed
-    } else if flags & MAP_FIXED_NOREPLACE != 0 {
-        MappingPlacement::FixedNoReplace
-    } else {
-        MappingPlacement::Hint
-    };
-    let result = task.install_user_mapping(UserMappingRequest {
-        address,
-        length,
-        permission,
-        placement,
-        source: prepared,
-    });
-    result.map_or_else(|error| -memory_errno(error), |mapped| mapped as isize)
-}
-
-/// 按 Linux 语义同步覆盖区间内的 file-backed MAP_SHARED mappings。
-pub(crate) fn sys_msync(address: usize, length: usize, flags: usize) -> isize {
-    const MS_ASYNC: usize = 1;
-    const MS_INVALIDATE: usize = 2;
-    const MS_SYNC: usize = 4;
-
-    if flags & !(MS_ASYNC | MS_INVALIDATE | MS_SYNC) != 0
-        || flags & MS_ASYNC != 0 && flags & MS_SYNC != 0
-        || !address.is_multiple_of(crate::memory::PAGE_SIZE)
-    {
-        return -errno::EINVAL;
+        _ => Err(native_abi::ERR_INVALID_ARGS),
     }
-    if length == 0 {
-        return 0;
-    }
-    if flags & MS_SYNC == 0 {
-        return current_task()
-            .expect("msync requires a current task")
-            .sync_shared_mapping(address, length, false)
-            .map_or_else(|error| -msync_errno(error), |()| 0);
-    }
-    current_task()
-        .expect("msync requires a current task")
-        .sync_shared_mapping(address, length, true)
-        .map_or_else(|error| -msync_errno(error), |()| 0)
-}
-
-fn msync_errno(error: MemoryError) -> isize {
-    match error {
-        MemoryError::InvalidRange | MemoryError::OutOfMemory => errno::ENOMEM,
-        MemoryError::Io => errno::EIO,
-        other => memory_errno(other),
-    }
-}
-
-/// 解除 Linux 64-bit anonymous private 映射，允许区间包含未映射洞。
-///
-/// # Parameters
-///
-/// - `address`: page-aligned 起始地址。
-/// - `length`: 非零长度，向上取整到整页。
-///
-/// # Returns
-///
-/// 成功返回零；非法范围或触及非 anonymous VMA 返回负 errno。
-pub(crate) fn sys_munmap(address: usize, length: usize) -> isize {
-    current_task()
-        .expect("munmap requires a current task")
-        .unmap_user_mapping(address, length)
-        .map_or_else(|error| -memory_errno(error), |()| 0)
-}
-
-/// 缩小、增长或搬迁一段映射。
-///
-/// # Parameters
-///
-/// - `old_address`: page-aligned 源起始地址。
-/// - `old_size`: 源长度，向上取整到整页；仅共享映射允许为零（创建别名，需要 `MREMAP_MAYMOVE`）。
-/// - `new_size`: 目标长度，必须非零，向上取整到整页。
-/// - `flags`: `MREMAP_MAYMOVE`、`MREMAP_FIXED`（需要 MAYMOVE）、`MREMAP_DONTUNMAP`（需要 MAYMOVE 且
-///   长度不变，仅私有匿名映射）的任意合法组合。
-/// - `new_address`: 仅 `MREMAP_FIXED` 使用的 page-aligned 目标地址。
-///
-/// # Returns
-///
-/// 成功返回调整后的起始地址；源未被单个 VMA 覆盖返回 `-EFAULT`，原地放不下且不允许搬迁或资源不足返回
-/// `-ENOMEM`，非法参数组合返回 `-EINVAL`。
-pub(crate) fn sys_mremap(
-    old_address: usize,
-    old_size: usize,
-    new_size: usize,
-    flags: usize,
-    new_address: usize,
-) -> isize {
-    const MREMAP_MAYMOVE: usize = 1;
-    const MREMAP_FIXED: usize = 2;
-    const MREMAP_DONTUNMAP: usize = 4;
-    if flags & !(MREMAP_MAYMOVE | MREMAP_FIXED | MREMAP_DONTUNMAP) != 0
-        || flags & (MREMAP_FIXED | MREMAP_DONTUNMAP) != 0 && flags & MREMAP_MAYMOVE == 0
-    {
-        return -errno::EINVAL;
-    }
-    let placement = if flags & MREMAP_FIXED != 0 {
-        crate::memory::RemapPlacement::Fixed(new_address)
-    } else if flags & MREMAP_MAYMOVE != 0 {
-        crate::memory::RemapPlacement::MayMove
-    } else {
-        crate::memory::RemapPlacement::InPlace
-    };
-    let result = current_task()
-        .expect("mremap requires a current task")
-        .remap_user_mapping(crate::memory::RemapRequest {
-            address: old_address,
-            old_length: old_size,
-            new_length: new_size,
-            placement,
-            dont_unmap: flags & MREMAP_DONTUNMAP != 0,
-        });
-    match result {
-        Ok(address) => address as isize,
-        Err(crate::memory::RemapError::Unmapped) => -errno::EFAULT,
-        Err(crate::memory::RemapError::Invalid) => -errno::EINVAL,
-        Err(crate::memory::RemapError::NoMemory) => -errno::ENOMEM,
-        Err(crate::memory::RemapError::Memory(error)) => -memory_errno(error),
-    }
-}
-
-/// 修改完整用户 VMA 区间的页权限，保留 Linux 对合法 `PROT_*` 组合的语义。
-///
-/// # Parameters
-///
-/// - `address`: page-aligned 起始地址。
-/// - `length`: 非零长度，向上取整到整页。
-/// - `prot`: `PROT_NONE/READ/WRITE/EXEC` 子集。
-///
-/// # Returns
-///
-/// 成功返回零；缺页、越界或权限策略失败返回负 errno。
-pub(crate) fn sys_mprotect(address: usize, length: usize, prot: usize) -> isize {
-    let permission = match permission_from_prot(prot) {
-        Ok(permission) => permission,
-        Err(error) => return -error,
-    };
-    current_task()
-        .expect("mprotect requires a current task")
-        .protect_user_mapping(address, length, permission)
-        .map_or_else(|error| -memory_errno(error), |()| 0)
-}
-
-/// 应用 Linux 64-bit madvise residency policy，不维护 syscall 层 shadow state。
-pub(crate) fn sys_madvise(address: usize, length: usize, advice: usize) -> isize {
-    if !address.is_multiple_of(crate::memory::PAGE_SIZE) {
-        return -errno::EINVAL;
-    }
-    let advice = match advice {
-        0 => MemoryAdvice::Normal,
-        1 => MemoryAdvice::Random,
-        2 => MemoryAdvice::Sequential,
-        3 => MemoryAdvice::WillNeed,
-        4 => MemoryAdvice::DontNeed,
-        8 => MemoryAdvice::Free,
-        _ => return -errno::EINVAL,
-    };
-    current_task()
-        .expect("madvise requires a current task")
-        .advise_user_mapping(address, length, advice)
-        .map_or_else(|error| -memory_errno(error), |()| 0)
 }

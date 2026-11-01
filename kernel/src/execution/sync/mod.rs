@@ -7,39 +7,21 @@
 use core::{
     marker::PhantomData,
     ops::{Deref, DerefMut},
-    sync::atomic::{AtomicU64, Ordering, compiler_fence},
+    sync::atomic::{Ordering, compiler_fence},
 };
 
+mod spare;
 mod task_event;
 mod task_mutex;
-mod task_rw_semaphore;
 mod task_wait;
 mod wait_completion;
+mod wait_queue;
+pub(crate) use spare::{SpareStorage, lock_with_spare};
+pub(crate) use wait_queue::WaitQueue;
 pub(crate) use task_event::TaskEvent;
-pub(crate) use task_mutex::{
-    TaskMutex, TaskMutexGuard, TaskMutexLockError, TaskMutexWaitPreparation,
-};
-pub(crate) use task_rw_semaphore::{TaskReadGuard, TaskRwSemaphore, TaskWriteGuard};
-pub(crate) use task_wait::task_interrupted;
+pub(crate) use task_mutex::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
 pub(crate) use task_wait::{TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory};
 pub(crate) use wait_completion::WaitCompletion;
-
-// OWNER: 该原子只分配跨 I/O source 可比较的 readiness generation，不发布其他内存。
-// 缺少全局序列时，嵌套 epoll 无法区分不同 source 上数值相同的局部 generation，ET 会漏报。
-static READINESS_GENERATION: AtomicU64 = AtomicU64::new(1);
-
-/// 分配一个跨所有可等待 I/O source 单调递增的 readiness generation。
-///
-/// # Returns
-///
-/// 非零 generation；仅用于事件 identity，不承载数据发布同步。
-pub(crate) fn next_readiness_generation() -> u64 {
-    READINESS_GENERATION
-        .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
-            current.checked_add(1)
-        })
-        .expect("readiness generation exhausted")
-}
 
 /// 当前 CPU 的 architecture local-interrupt 屏蔽 guard。
 ///

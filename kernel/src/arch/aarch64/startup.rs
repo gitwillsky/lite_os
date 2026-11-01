@@ -171,7 +171,7 @@ pub(crate) fn initialize_local_execution() {
         | ips;
     // SAFETY: CPU is not scheduler-visible. MAIR slot 0 and TCR exactly match the page-table
     // codec. CNTKCTL exposes only the read-only virtual counter required by standard runtimes;
-    // SCTLR UCI/UCT/DZE provide the Linux cache-maintenance execution contract. CPACR traps
+    // SCTLR UCI/UCT/DZE provide the EL0 cache-maintenance execution contract. CPACR traps
     // FP/ASIMD in ordinary kernel Rust; bounded assembly windows temporarily enable it only while
     // moving the explicitly owned vector context.
     unsafe {
@@ -189,7 +189,7 @@ pub(crate) fn initialize_local_execution() {
             "msr pan, #1",
             "isb",
             // AttrIdx0=Normal WBWA (0xff), AttrIdx1=Device-nGnRnE (0x00).
-            mair = in(reg) 0x00ffu64,
+            mair = in(reg) super::mmu::MEMORY_ATTRIBUTES,
             tcr = in(reg) tcr,
             counter_access = in(reg) EL0_VIRTUAL_COUNTER_ACCESS,
             cache_access = in(reg) EL0_CACHE_ACCESS,

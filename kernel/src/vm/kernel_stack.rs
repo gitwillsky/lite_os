@@ -1,0 +1,136 @@
+use super::kernel_space::KERNEL_SPACE;
+use super::page_table::PagePermissions;
+use crate::memory::{KERNEL_STACK_SIZE, PAGE_SIZE};
+use crate::id::IdAllocator;
+use spin::Mutex;
+
+#[derive(Debug)]
+pub(crate) struct KernelStack {
+    handle: KernelStackHandle,
+}
+
+impl KernelStack {
+    /// 分配带 guard page 的 kernel stack，供可失败的 process 创建事务使用。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回唯一 stack handle；frame OOM 时回滚映射并归还 handle。
+    pub(crate) fn try_new() -> Result<Self, ()> {
+        let handle = KernelStackHandle(KERNEL_STACK_HANDLE_ALLOCATOR.lock().alloc().map_err(|_| ())?);
+        let (bottom, top) = kernel_stack_position(handle.0);
+
+        // 在栈底预留 1 页守护页，防止向下越界破坏相邻对象导致不可预期行为；
+        // 溢出将立刻触发缺页异常，便于定位问题
+        let mapped_bottom = bottom + PAGE_SIZE;
+
+        KERNEL_SPACE
+            .wait()
+            .lock()
+            .insert_framed(mapped_bottom..top, PagePermissions::READ | PagePermissions::WRITE)?;
+
+        Ok(Self { handle })
+    }
+
+    pub(crate) fn get_top(&self) -> usize {
+        let (_, top) = kernel_stack_position(self.handle.0);
+        top.checked_sub(crate::arch::context::KERNEL_STACK_CONTEXT_RESERVE)
+            .expect("kernel stack context reserve exceeds mapping")
+    }
+
+    /// 返回 architecture 选择的 kernel-stack-owned UserContext 地址。
+    ///
+    /// # Returns
+    ///
+    /// AArch64 为保留顶页 metadata 后的 context；RISC-V 为 None。
+    pub(crate) fn user_context_address(&self) -> Option<usize> {
+        let (_, mapped_top) = kernel_stack_position(self.handle.0);
+        match crate::arch::context::USER_CONTEXT_PLACEMENT {
+            crate::arch::UserContextPlacement::KernelStack { offset } => Some(
+                mapped_top
+                    .checked_sub(crate::arch::context::KERNEL_STACK_CONTEXT_RESERVE)
+                    .and_then(|reserved| reserved.checked_add(offset))
+                    .expect("kernel-stack user-context placement exceeds mapping"),
+            ),
+            crate::arch::UserContextPlacement::AddressSpace => None,
+        }
+    }
+}
+
+impl Drop for KernelStack {
+    fn drop(&mut self) {
+        let (bottom, _) = kernel_stack_position(self.handle.0);
+        let mapped_bottom = bottom + PAGE_SIZE;
+        // 1. 只在 KERNEL_SPACE lock 内摘除 VMA/PTE，并由 retirement token 保活全部 frame。
+        // 2. 先释放 lock 再等待 remote ack；目标 CPU 可能正以 IRQ masked 状态等待同一 lock，
+        //    若持锁 shootdown 会让双方永久互等。
+        // 3. 全部目标越过 broadcast flush point 并发布 ack 后才释放 backing，阻止 HVF
+        //    stale TTBR1 translation 写入已经复用的新 kernel stack。
+        let retirement = KERNEL_SPACE.wait().lock().retire_framed(mapped_bottom);
+        retirement.synchronize();
+    }
+}
+
+/// 已知当前 SP 所在 task stack 的可读范围，排除 guard 与两个槽位间的空隙。
+///
+/// 只供当前 CPU 的 fail-stop 回溯使用；当前栈存活契约由执行上下文保证。
+pub(crate) fn active_range(pointer: usize) -> Option<(usize, usize)> {
+    let start = crate::arch::mmu::KERNEL_STACK_REGION_START;
+    let end = crate::arch::mmu::KERNEL_STACK_REGION_TOP;
+    if !(start..end).contains(&pointer) {
+        return None;
+    }
+    let stride = KERNEL_STACK_SIZE + PAGE_SIZE;
+    let index = (end - 1 - pointer) / stride;
+    let (bottom, top) = kernel_stack_position(index);
+    let mapped_bottom = bottom + PAGE_SIZE;
+    (mapped_bottom..top)
+        .contains(&pointer)
+        .then_some((mapped_bottom, top))
+}
+
+/// 获取应用内核栈的地址范围，返回 (bottom, top)
+fn kernel_stack_position(app_id: usize) -> (usize, usize) {
+    // architecture façade owns the TTBR-visible stack window. AArch64 uses the canonical TTBR1
+    // region above its bounded direct map; RISC-V preserves the Sv39 layout below trap context.
+    let stride = KERNEL_STACK_SIZE
+        .checked_add(PAGE_SIZE)
+        .expect("kernel stack stride overflow");
+    let offset = app_id
+        .checked_mul(stride)
+        .expect("kernel stack handle exceeds virtual window");
+    let top = crate::arch::mmu::KERNEL_STACK_REGION_TOP
+        .checked_sub(offset)
+        .expect("kernel stack virtual window exhausted");
+    let bottom = top
+        .checked_sub(KERNEL_STACK_SIZE)
+        .expect("kernel stack bottom underflow");
+    bottom
+        .checked_sub(crate::arch::mmu::KERNEL_STACK_REGION_START)
+        .expect("kernel stack virtual window exhausted");
+    (bottom, top)
+}
+
+#[derive(Debug)]
+struct KernelStackHandle(usize);
+
+impl Drop for KernelStackHandle {
+    fn drop(&mut self) {
+        KERNEL_STACK_HANDLE_ALLOCATOR.lock().dealloc(self.0);
+    }
+}
+
+// OWNER: kernel-stack module exclusively allocates virtual stack handles.
+static KERNEL_STACK_HANDLE_ALLOCATOR: Mutex<IdAllocator> = Mutex::new(IdAllocator::new(1));
+
+/// 当前 SP 所在栈的精确可读范围（下界含、上界不含）：线程内核栈（排除 guard）、boot 栈或已发布的
+/// 次级 CPU 启动栈；未知范围返回 `None`。不遍历页表、不取锁，供 fail-stop 回溯使用。
+pub(crate) fn kernel_stack_bounds(pointer: usize) -> Option<(usize, usize)> {
+    if let Some(bounds) = active_range(pointer) {
+        return Some(bounds);
+    }
+    let boot = crate::memory::boot_stack_range();
+    if (boot.0..boot.1).contains(&pointer) {
+        return Some(boot);
+    }
+    crate::arch::backtrace::startup_stack_bounds(pointer)
+}

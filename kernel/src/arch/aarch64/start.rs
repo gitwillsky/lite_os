@@ -11,7 +11,7 @@ unsafe extern "C" {
 #[unsafe(naked)]
 #[unsafe(no_mangle)]
 #[cfg_attr(target_os = "none", unsafe(link_section = ".text.entry"))]
-// SAFETY: Linux arm64 Image enters with x0=DTB physical address and MMU off. This low-LMA stub
+// SAFETY: The arm64 Image boot protocol enters with x0=DTB physical address and MMU off. This low-LMA stub
 // touches no Rust storage: it enters EL1, installs temporary identity TTBR0 plus high direct-map
 // TTBR1, enables stage-1 translation, and branches indirectly to the linked high-half entry.
 unsafe extern "C" fn _start() -> ! {

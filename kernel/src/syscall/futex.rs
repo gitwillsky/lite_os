@@ -1,227 +1,146 @@
-use crate::{
-    execution::task::{
-        FutexWaitError, current_task, futex_requeue, futex_wait, futex_wake, futex_wake_op,
-    },
-    execution::timer::{get_realtime_ns, get_time_ns},
-    syscall::errno,
-};
+//! futex：按地址等待与唤醒。
+//!
+//! key 默认是（地址空间, 虚拟地址）；`futex::SHARED` 时解析为（VMO, 字节偏移），共享同一内存的不同
+//! 地址空间因此看到同一个 futex。等待者按登记顺序排列（key 后附递增序号），唤醒按 FIFO。
+//!
+//! 1. wait 在表锁内读取并比较用户值、登记等待者，再在锁外睡眠；waker 在同一把锁内摘除并唤醒，
+//!    因此“比较后、睡眠前”到达的唤醒不会丢失。
+//! 2. 超时或被打断的等待者醒来后在表锁内摘除自身；已被唤醒者已经不在表中。
 
-use super::{
-    INTERNAL_RESTART_BLOCK, INTERNAL_RESTART_SYS,
-    timer::{TimeSpec, decode_timespec},
-};
+use alloc::sync::Arc;
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-const FUTEX_WAIT: usize = 0;
-const FUTEX_WAKE: usize = 1;
-const FUTEX_REQUEUE: usize = 3;
-const FUTEX_CMP_REQUEUE: usize = 4;
-const FUTEX_WAKE_OP: usize = 5;
-const FUTEX_WAIT_BITSET: usize = 9;
-const FUTEX_WAKE_BITSET: usize = 10;
-const FUTEX_PRIVATE_FLAG: usize = 128;
-const FUTEX_CLOCK_REALTIME: usize = 256;
-const FUTEX_CMD_MASK: usize = !(FUTEX_PRIVATE_FLAG | FUTEX_CLOCK_REALTIME);
-const FUTEX_BITSET_MATCH_ANY: u32 = u32::MAX;
-mod wake_op;
+use native_abi::Status;
+use spin::Mutex;
 
-fn read_timeout(
-    task: &crate::execution::task::TaskControlBlock,
-    address: usize,
-) -> Result<Option<u64>, isize> {
-    if address == 0 {
-        return Ok(None);
-    }
-    let mut bytes = [0u8; core::mem::size_of::<TimeSpec>()];
-    task.copy_from_user(address, &mut bytes)
-        .map_err(|_| errno::EFAULT)?;
-    let timeout = decode_timespec(&bytes);
-    if timeout.tv_sec < 0 || !(0..1_000_000_000).contains(&timeout.tv_nsec) {
-        return Err(errno::EINVAL);
-    }
-    Ok(Some(
-        (timeout.tv_sec as u128 * 1_000_000_000 + timeout.tv_nsec as u128).min(i64::MAX as u128)
-            as u64,
-    ))
+use super::Call;
+use crate::execution::sync::{TaskEvent, TaskMutex, WaitResult};
+use crate::fallible_tree::FallibleMap;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum FutexKey {
+    Private { space: u64, address: usize },
+    Shared { vmo: u64, offset: u64 },
 }
 
-fn relative_deadline(
-    task: &crate::execution::task::TaskControlBlock,
-    address: usize,
-) -> Result<Option<u64>, isize> {
-    Ok(read_timeout(task, address)?
-        .map(|duration| get_time_ns().saturating_add(duration).min(i64::MAX as u64)))
+struct Waiter {
+    event: TaskEvent,
+    // FLAG: 已被 waker 摘除；醒来后据此区分唤醒与超时。
+    woken: AtomicBool,
+    // OWNER: 当前登记位置；requeue 在表锁内改写，超时摘除时据此定位。
+    slot: Mutex<(FutexKey, u64)>,
 }
 
-fn absolute_deadline(
-    task: &crate::execution::task::TaskControlBlock,
-    address: usize,
-    realtime: bool,
-) -> Result<Option<u64>, isize> {
-    let Some(absolute) = read_timeout(task, address)? else {
-        return Ok(None);
+// OWNER: 全部 futex 等待者的唯一索引；比较用户值时持有（可能缺页），因此是可睡眠锁。
+static TABLE: TaskMutex<FallibleMap<(FutexKey, u64), Arc<Waiter>>> = TaskMutex::new(FallibleMap::new());
+// OWNER: 登记序号；Relaxed，只提供 FIFO 顺序与唯一性。
+static NEXT_TICKET: AtomicU64 = AtomicU64::new(1);
+
+fn key(call: &Call<'_>, address: usize, options: u32) -> Result<FutexKey, Status> {
+    if !address.is_multiple_of(4) {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    let space = call.thread.address_space().ok_or(native_abi::ERR_BAD_STATE)?;
+    match options {
+        0 => Ok(FutexKey::Private {
+            space: space.koid(),
+            address,
+        }),
+        native_abi::futex::SHARED => {
+            let (vmo, offset) = space
+                .resolve_object(address)
+                .map_err(|_| native_abi::ERR_INVALID_POINTER)?;
+            Ok(FutexKey::Shared { vmo, offset })
+        }
+        _ => Err(native_abi::ERR_INVALID_ARGS),
+    }
+}
+
+pub(super) fn wait(call: &Call<'_>) -> Result<(), Status> {
+    let address = call.arg(0);
+    let key = key(call, address, call.arg_u32(3))?;
+    let ticket = NEXT_TICKET.fetch_add(1, Ordering::Relaxed);
+    let waiter = Arc::try_new(Waiter {
+        event: TaskEvent::new(),
+        woken: AtomicBool::new(false),
+        slot: Mutex::new((key, ticket)),
+    })
+    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    let entry = FallibleMap::try_prepare((key, ticket), waiter.clone()).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    {
+        let mut table = TABLE.lock().map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        let value: u32 = call.read(address)?;
+        if value != call.arg_u32(1) {
+            return Err(native_abi::ERR_BAD_STATE);
+        }
+        table.commit_vacant(entry);
+    }
+    let result = match super::deadline(call.arg(2)) {
+        Some(deadline) => waiter.event.wait_interruptible_until(deadline),
+        None => waiter.event.wait_interruptible(),
     };
-    if !realtime {
-        return Ok(Some(
-            task.time_offsets()
-                .to_host(crate::namespace::TimeClock::Monotonic, absolute),
-        ));
+    if waiter.woken.load(Ordering::Acquire) {
+        return Ok(());
     }
-    // 1. wait registry 只持有 monotonic deadline，避免 realtime epoch 混入 scheduler clock。
-    // 2. 在 syscall 入口把 realtime absolute deadline 转成剩余时长；RTC offset 在当前
-    //    系统生命周期内不可调整，因此转换后不会丢失可观察的 clock-set 语义。
-    let monotonic_now = get_time_ns();
-    let realtime_now = get_realtime_ns();
-    Ok(Some(if absolute <= realtime_now {
-        monotonic_now
-    } else {
-        monotonic_now
-            .saturating_add(absolute - realtime_now)
-            .min(i64::MAX as u64)
-    }))
+    {
+        let mut table = TABLE.lock().map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        let slot = *waiter.slot.lock();
+        drop(table.remove(&slot));
+    }
+    // 摘除前可能刚被唤醒：以 woken 为准，避免把成功的唤醒报告为超时。
+    if waiter.woken.load(Ordering::Acquire) {
+        return Ok(());
+    }
+    Err(match result {
+        WaitResult::TimedOut => native_abi::ERR_TIMED_OUT,
+        WaitResult::OutOfMemory => native_abi::ERR_NO_MEMORY,
+        WaitResult::Woken | WaitResult::Interrupted => native_abi::ERR_CANCELED,
+    })
 }
 
-fn futex_error(error: FutexWaitError) -> isize {
-    match error {
-        FutexWaitError::Again => errno::EAGAIN,
-        FutexWaitError::Fault => errno::EFAULT,
-        FutexWaitError::Invalid => errno::EINVAL,
-        FutexWaitError::TimedOut => errno::ETIMEDOUT,
-        FutexWaitError::Interrupted => errno::EINTR,
-        FutexWaitError::OutOfMemory => errno::ENOMEM,
-        FutexWaitError::Unsupported => errno::ENOSYS,
+/// 在表锁内摘除并唤醒至多 `count` 个等待者。
+fn wake_locked(table: &mut FallibleMap<(FutexKey, u64), Arc<Waiter>>, key: FutexKey, count: usize) -> u32 {
+    let mut woken = 0;
+    while (woken as usize) < count {
+        let next = table.iter_from(&(key, 0)).next().map(|(slot, _)| *slot).filter(|slot| slot.0 == key);
+        let Some(slot) = next else { break };
+        let waiter = table.remove(&slot).expect("futex waiter vanished");
+        waiter.woken.store(true, Ordering::Release);
+        waiter.event.signal();
+        woken += 1;
     }
+    woken
 }
 
-/// 实现 Linux 64-bit 非 PI futex wait/wake/bitset/requeue/WAKE_OP 语义。
-///
-/// # Parameters
-///
-/// - `address`: 4-byte aligned source；private wake/requeue 不要求实际映射。
-/// - `operation`: Linux FUTEX command，可附加 PRIVATE/CLOCK_REALTIME flag。
-/// - `value`: WAIT expected 或 wake count。
-/// - `timeout`: WAIT timespec pointer、REQUEUE 迁移数或 WAKE_OP 第二队列唤醒数。
-/// - `target`: REQUEUE/WAKE_OP target futex word。
-/// - `value3`: WAIT/WAKE bitset、CMP_REQUEUE expected 或标准 FUTEX_OP 编码。
-///
-/// # Returns
-///
-/// 成功返回零或受影响 waiter 数；失败返回负 Linux errno。
-pub(crate) fn sys_futex(
-    address: usize,
-    operation: usize,
-    value: u32,
-    timeout: usize,
-    target: usize,
-    value3: u32,
-) -> isize {
-    let operation = operation as u32 as usize;
-    let command = operation & FUTEX_CMD_MASK;
-    let private = operation & FUTEX_PRIVATE_FLAG != 0;
-    let realtime = operation & FUTEX_CLOCK_REALTIME != 0;
-    if realtime && command != FUTEX_WAIT_BITSET {
-        return -errno::ENOSYS;
-    }
-    let task = current_task().expect("futex syscall requires current task");
-    match command {
-        FUTEX_WAIT | FUTEX_WAIT_BITSET => {
-            let bitset = if command == FUTEX_WAIT_BITSET {
-                value3
-            } else {
-                FUTEX_BITSET_MATCH_ANY
-            };
-            let deadline = if command == FUTEX_WAIT {
-                relative_deadline(&task, timeout)
-            } else {
-                absolute_deadline(&task, timeout, realtime)
-            };
-            let deadline = match deadline {
-                Ok(deadline) => deadline,
-                Err(error) => return -error,
-            };
-            if bitset == 0 {
-                return -errno::EINVAL;
-            }
-            wait_with_deadline(task, address, value, private, deadline, bitset)
-        }
-        FUTEX_WAKE | FUTEX_WAKE_BITSET => {
-            let bitset = if command == FUTEX_WAKE_BITSET {
-                value3
-            } else {
-                FUTEX_BITSET_MATCH_ANY
-            };
-            if bitset == 0 {
-                return -errno::EINVAL;
-            }
-            // legacy FUTEX_WAKE 即使 nr_wake 为零/负数仍消费首个匹配 waiter。
-            futex_wake(
-                &task,
-                address,
-                private,
-                (value as i32).max(1) as usize,
-                bitset,
-            )
-            .map_or_else(|error| -futex_error(error), |count| count as isize)
-        }
-        FUTEX_REQUEUE | FUTEX_CMP_REQUEUE => {
-            if (value as i32) < 0 || (timeout as u32 as i32) < 0 {
-                return -errno::EINVAL;
-            }
-            let compare = (command == FUTEX_CMP_REQUEUE).then_some(value3);
-            futex_requeue(
-                &task,
-                address,
-                target,
-                private,
-                value as usize,
-                timeout as u32 as usize,
-                compare,
-            )
-            .map_or_else(|error| -futex_error(error), |count| count as isize)
-        }
-        FUTEX_WAKE_OP => {
-            let operation = wake_op::WakeOperation::decode(value3);
-            futex_wake_op(
-                &task,
-                address,
-                target,
-                private,
-                [
-                    (value as i32).max(1) as usize,
-                    (timeout as u32 as i32).max(1) as usize,
-                ],
-                operation.update,
-                |old| operation.compare(old),
-            )
-            .map_or_else(|error| -futex_error(error), |count| count as isize)
-        }
-        _ => -errno::ENOSYS,
-    }
+pub(super) fn wake(call: &Call<'_>) -> Result<(), Status> {
+    let key = key(call, call.arg(0), call.arg_u32(2))?;
+    let woken = {
+        let mut table = TABLE.lock().map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        wake_locked(&mut table, key, call.arg(1))
+    };
+    call.write_optional(call.arg(3), &woken)
 }
 
-/// 执行已导入的 WAIT；原始入口与标准 restart_syscall 共用同一期限和 actual wait owner。
-pub(super) fn wait_with_deadline(
-    task: alloc::sync::Arc<crate::execution::task::TaskControlBlock>,
-    address: usize,
-    expected: u32,
-    private: bool,
-    deadline: Option<u64>,
-    bitset: u32,
-) -> isize {
-    match futex_wait(task.clone(), address, expected, private, deadline, bitset) {
-        Ok(()) => 0,
-        Err(FutexWaitError::Interrupted) => {
-            let Some(deadline) = deadline else {
-                return INTERNAL_RESTART_SYS;
-            };
-            task.set_syscall_restart_block(crate::execution::task::SyscallRestartBlock::Futex {
-                address,
-                expected,
-                private,
-                deadline,
-                bitset,
-            });
-            INTERNAL_RESTART_BLOCK
-        }
-        Err(error) => -futex_error(error),
+pub(super) fn requeue(call: &Call<'_>) -> Result<(), Status> {
+    let options = call.arg_u32(5);
+    let source = key(call, call.arg(0), options)?;
+    let target = key(call, call.arg(3), options)?;
+    let mut table = TABLE.lock().map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    let value: u32 = call.read(call.arg(0))?;
+    if value != call.arg_u32(2) {
+        return Err(native_abi::ERR_BAD_STATE);
     }
+    wake_locked(&mut table, source, call.arg(1));
+    let mut moved = 0;
+    while moved < call.arg(4) {
+        let next = table.iter_from(&(source, 0)).next().map(|(slot, _)| *slot).filter(|slot| slot.0 == source);
+        let Some(slot) = next else { break };
+        let mut entry = table.take_entry(&slot).expect("futex waiter vanished");
+        let ticket = NEXT_TICKET.fetch_add(1, Ordering::Relaxed);
+        *entry.value().slot.lock() = (target, ticket);
+        entry.set_key((target, ticket));
+        table.commit_vacant(entry);
+        moved += 1;
+    }
+    Ok(())
 }

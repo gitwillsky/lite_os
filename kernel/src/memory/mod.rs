@@ -1,26 +1,14 @@
-use spin::{Mutex, Once};
+//! 物理内存：buddy frame allocator、内核堆与物理/虚拟地址类型。
+//!
+//! 虚拟地址空间（页表、VMO、VMAR、kernel stack）由 `vm` 拥有；本领域只提供物理页与堆。
 
-use self::mm::MapArea;
 use crate::platform;
 
 mod address;
 mod config;
-mod device_backing;
-mod executable;
-mod frame_allocator;
+pub(crate) mod frame_allocator;
 mod frame_metadata_layout;
 mod heap_allocator;
-mod kernel_stack;
-mod mm;
-mod page_table;
-mod permissions;
-mod pressure;
-mod retire;
-mod shared_file;
-mod shared_memory;
-pub(crate) mod swap;
-mod swappable_page;
-mod vmstat;
 
 // OWNER: memory subsystem reserves one minimum buddy growth extent from single-frame consumers.
 // Without this low watermark, a user fault can consume the final frame before the kernel records
@@ -28,104 +16,37 @@ mod vmstat;
 const KERNEL_HEAP_GROWTH_PAGES: usize = 64;
 // OWNER: frame allocator preserves this final reserve from ordinary kernel-heap growth.
 // Without a distinct lower watermark, a fallible userspace-driven Vec/Arc allocation can consume
-// the same last frames needed to tear down the faulting task after ENOMEM.
+// the same last frames needed to tear down the faulting thread after an out-of-memory failure.
 const KERNEL_PROGRESS_RESERVE_PAGES: usize = 16;
 
 pub(crate) use crate::config::KERNEL_STACK_SIZE;
-pub(crate) use address::{PhysicalAddress, PhysicalPageNumber, VirtualAddress};
+pub(crate) use address::{PhysicalAddress, PhysicalPageNumber, VirtualAddress, VirtualPageNumber};
 pub(crate) use config::*;
-pub(crate) use device_backing::{
-    DeviceBacking, DeviceMemoryKind, MAX_EXTENTS as DEVICE_BACKING_EXTENTS_MAX,
-};
-pub(crate) use executable::{
-    ExecutableImage, ExecutableParseError, ExecutableSource, parse_interpreter_elf, parse_main_elf,
-};
 pub(crate) use frame_allocator::{
     FrameAllocationClass, FrameTracker, alloc_contiguous, statistics as frame_statistics,
 };
-pub(crate) use heap_allocator::statistics as heap_statistics;
-pub(crate) use kernel_stack::{KernelStack, kernel_stack_bytes};
-pub(crate) use mm::SharedMemoryBacking;
-pub(crate) use mm::{
-    DeviceMappingSource, ElfLoadError, FileMappingError, FileMappingSource, FutexAccessError,
-    FutexKey, InitialStack, InitialStackCredentials, MappingPlacement, MappingResourceLimits,
-    MemoryAdvice, MemoryError, MemorySet, PageFaultAccess, PageFaultOutcome, RemapError,
-    RemapPlacement, RemapRequest, SegmentationCause, UserAccessError, UserAtomicU32,
-    UserAtomicU32Op, UserFaultLimits, UserMappingRequest, UserMappingSource, UserPageStatistics,
-    reclaim_address_space,
-};
-pub(crate) use permissions::MapPermission;
-pub(crate) use pressure::run_background_reclaim;
-pub(crate) use shared_file::{
-    MappedFileOwner, MemoryMappingOwner, MemoryReclaimer, PageMapCount, ReclaimRequest,
-    ReclaimResult, SharedFileError, SharedFileId, SharedFileMapping, SharedFrame, SharedPage,
-    SharedPagePin, complete_memory_mapping_owner_initialization, invalidate_cached_file,
-    invalidate_shared_file, reclaim_pages, reclaim_statistics, register_memory_mapping_owner,
-    register_memory_reclaimer, revoke_shared_file_writers,
-};
-pub(crate) use shared_memory::{SharedMemoryMappingSource, SharedMemoryVma};
-pub(crate) use swappable_page::{SwappablePage, cached_pages as swap_cached_pages};
-pub(crate) use vmstat::snapshot as page_state_snapshot;
+
 // SAFETY: every symbol is defined by the fixed kernel linker script; callers use them only as
 // section boundary addresses and never dereference them as Rust values.
 unsafe extern "C" {
-    fn stext();
-    fn etext();
+    pub(crate) fn stext();
+    pub(crate) fn etext();
 
-    fn srodata();
-    fn erodata();
+    pub(crate) fn srodata();
+    pub(crate) fn erodata();
 
-    fn sdata();
-    fn edata();
+    pub(crate) fn sdata();
+    pub(crate) fn edata();
 
-    fn sbss();
-    fn ebss();
+    pub(crate) fn sbss();
+    pub(crate) fn ebss();
 
-    fn boot_stack_bottom();
-    fn boot_stack_top();
+    pub(crate) fn boot_stack_bottom();
+    pub(crate) fn boot_stack_top();
 
-    fn ekernel();
+    pub(crate) fn ekernel();
     pub(crate) fn strampoline();
-    pub(crate) fn __signal_trampoline();
 }
-
-/// 返回当前 kernel SP 所在栈的精确可读范围（下界含、上界不含）。
-///
-/// # Parameters
-/// - `pointer`: 当前 CPU 从 architecture mechanism 读取的真实 SP，不接受损坏的 frame pointer。
-///
-/// # Returns
-/// task stack（排除 guard）、boot 栈或已发布 secondary startup stack；未知范围返回 `None`。
-/// 不遍历页表、不取锁，不把整段 direct-map RAM 或未分配的 stack arena 当成有效栈。
-pub(crate) fn kernel_stack_bounds(pointer: usize) -> Option<(usize, usize)> {
-    if let Some(bounds) = kernel_stack::active_range(pointer) {
-        return Some(bounds);
-    }
-    let boot = (
-        boot_stack_bottom as *const () as usize,
-        boot_stack_top as *const () as usize,
-    );
-    if (boot.0..boot.1).contains(&pointer) {
-        return Some(boot);
-    }
-    crate::arch::backtrace::startup_stack_bounds(pointer)
-}
-
-pub(crate) fn signal_trampoline_entry() -> usize {
-    SIGNAL_TRAMPOLINE
-        + (__signal_trampoline as *const () as usize - strampoline as *const () as usize)
-}
-
-// Deferred safe-point waiters spin here with local IRQs masked and cannot acknowledge a TLB
-// shootdown IPI, so the holder must not wait for a remote translation fence while holding this
-// lock; retire the area first and fence after unlocking, as `KernelStack::drop` does. Missing
-// this ordering lets a holder and a masked waiter on another CPU wait for each other forever.
-// Known exception: the OOM rollback in `KernelStack::try_new` (via `insert_framed_area`) still
-// fences remotely under this lock.
-// OWNER: memory module owns the canonical kernel address space after initialization. VirtIO
-// descriptor translation may take this ordinary lock only from task or deferred safe-point context;
-// hardirq/kernel-SSIP paths must never traverse the page table, or same-CPU reentry will deadlock.
-pub(crate) static KERNEL_SPACE: Once<Mutex<MemorySet>> = Once::new();
 
 /// 初始化构造动态 logical CPU topology 所需的 kernel allocator。
 ///
@@ -136,165 +57,28 @@ pub(crate) fn init_allocator() {
     heap_allocator::init();
 }
 
-/// 建立主内核页表，并把 `allocator_end` 以下未保留的 RAM 交给 frame allocator。
+/// 把 `[kernel end, allocator_end)` 的 RAM 交给 frame allocator，并允许堆从中增长。
 ///
-/// `allocator_end` 由 boot 装配排除崩溃记录等保留区；页表仍覆盖完整 platform RAM。
-pub(crate) fn init(allocator_end: PhysicalAddress) {
+/// # Parameters
+///
+/// - `allocator_end`: boot 装配排除崩溃记录等保留区后的可分配上界。
+/// - `reserved`: 启动期必须保留到显式归还的物理区间（例如 initrd）。
+pub(crate) fn init(allocator_end: PhysicalAddress, reserved: Option<core::ops::Range<PhysicalAddress>>) {
     let kernel_end_addr: PhysicalAddress =
         crate::arch::mmu::virtual_to_physical(ekernel as *const () as usize)
             .expect("kernel end is outside architecture direct map")
             .into();
-    let memory_end_addr: PhysicalAddress = platform::physical_memory_end().into();
     debug!("kernel_end_addr: {:#x}", kernel_end_addr.as_usize());
-    debug!("memory_end_addr: {:#x}", memory_end_addr.as_usize());
-
-    frame_allocator::init(kernel_end_addr, allocator_end);
+    debug!("memory_end_addr: {:#x}", platform::physical_memory_end());
+    frame_allocator::init(kernel_end_addr, allocator_end, reserved);
     heap_allocator::enable_frame_backed_growth();
     heap_allocator::init_cpu_caches();
-
-    KERNEL_SPACE.call_once(|| Mutex::new(init_kernel_space(memory_end_addr)));
-    KERNEL_SPACE.wait().lock().active();
-    debug!("memory initialized");
 }
 
-fn init_kernel_space(memory_end_addr: PhysicalAddress) -> MemorySet {
-    crate::arch::mmu::initialize_kernel_mmio(platform::kernel_mmio_regions());
-    let mut memory_set = MemorySet::new_kernel();
-
-    memory_set
-        .map_trampoline()
-        .expect("Failed to map kernel trampoline");
-
-    for region in platform::kernel_mmio_regions() {
-        debug!("platform MMIO: {region:#x?}");
-        let virtual_range = crate::arch::mmu::physical_range_to_virtual(region);
-        memory_set
-            .push(
-                MapArea::new(
-                    virtual_range.start.into(),
-                    virtual_range.end.into(),
-                    mm::MapType::KernelMapped,
-                    MapPermission::R | MapPermission::W | MapPermission::DEVICE,
-                )
-                .set_global(true),
-                None,
-            )
-            .expect("failed to map platform MMIO region");
-    }
-
-    // kernel text section
-    let stext_addr = stext as *const () as usize;
-    let etext_addr = etext as *const () as usize;
-    debug!(".text section: {:#x} - {:#x}", stext_addr, etext_addr);
-    memory_set
-        .push(
-            MapArea::new(
-                (stext as *const () as usize).into(),
-                (etext as *const () as usize).into(),
-                mm::MapType::KernelMapped,
-                MapPermission::R | MapPermission::X,
-            )
-            .set_global(true),
-            None,
-        )
-        .expect("Failed to map kernel .text section");
-
-    // kernel read only data
-    let srodata_addr = srodata as *const () as usize;
-    let erodata_addr = erodata as *const () as usize;
-    debug!(".rodata section: {:#x} - {:#x}", srodata_addr, erodata_addr);
-    memory_set
-        .push(
-            MapArea::new(
-                (srodata as *const () as usize).into(),
-                (erodata as *const () as usize).into(),
-                mm::MapType::KernelMapped,
-                MapPermission::R,
-            )
-            .set_global(true),
-            None,
-        )
-        .expect("Failed to map kernel .rodata section");
-
-    // kernel data
-    let sdata_addr = sdata as *const () as usize;
-    let edata_addr = edata as *const () as usize;
-    debug!(".data section: {:#x} - {:#x}", sdata_addr, edata_addr);
-    memory_set
-        .push(
-            MapArea::new(
-                (sdata as *const () as usize).into(),
-                (edata as *const () as usize).into(),
-                mm::MapType::KernelMapped,
-                MapPermission::R | MapPermission::W,
-            )
-            .set_global(true),
-            None,
-        )
-        .expect("Failed to map kernel .data section");
-
-    // kernel bss section
-    let sbss_addr = sbss as *const () as usize;
-    let ebss_addr = ebss as *const () as usize;
-    debug!(".bss section: {:#x} - {:#x}", sbss_addr, ebss_addr);
-    memory_set
-        .push(
-            MapArea::new(
-                (sbss as *const () as usize).into(),
-                (ebss as *const () as usize).into(),
-                mm::MapType::KernelMapped,
-                MapPermission::R | MapPermission::W,
-            )
-            .set_global(true),
-            None,
-        )
-        .expect("Failed to map kernel .bss section");
-
-    // boot CPU 独占的 early stack，底部保留一页 guard。
-    // 这样当内核启动栈向下越界时会立即触发缺页，有助于定位随机返回地址被破坏的问题。
-    let boot_stack_bottom_addr = boot_stack_bottom as *const () as usize;
-    let boot_stack_top_addr = boot_stack_top as *const () as usize;
-    let mapped_bottom = boot_stack_bottom_addr + PAGE_SIZE;
-    debug!(
-        "boot stack: {:#x} - {:#x} (guard @ {:#x})",
-        mapped_bottom, boot_stack_top_addr, boot_stack_bottom_addr
-    );
-    memory_set
-        .push(
-            MapArea::new(
-                mapped_bottom.into(),
-                boot_stack_top_addr.into(),
-                mm::MapType::KernelMapped,
-                MapPermission::R | MapPermission::W,
-            )
-            .set_global(true),
-            None,
-        )
-        .expect("Failed to map kernel boot stack");
-
-    // 后续可演进为受控的 physmap/kmap 方案，再逐步去除依赖。
-    {
-        let ekernel_phys = crate::arch::mmu::virtual_to_physical(ekernel as *const () as usize)
-            .expect("kernel end is outside architecture direct map");
-        let direct_map_start = crate::arch::mmu::physical_to_virtual(ekernel_phys);
-        let direct_map_end = crate::arch::mmu::physical_to_virtual(memory_end_addr.as_usize());
-        debug!(
-            "kernel physmap (RW, NX): {:#x} - {:#x}",
-            direct_map_start, direct_map_end
-        );
-        memory_set
-            .push(
-                MapArea::new(
-                    direct_map_start.into(),
-                    direct_map_end.into(),
-                    mm::MapType::KernelMapped,
-                    MapPermission::R | MapPermission::W,
-                )
-                .set_global(true),
-                None,
-            )
-            .expect("Failed to map kernel phys memory area");
-    }
-
-    memory_set
+/// boot CPU early stack 的可读范围（下界含、上界不含）。
+pub(crate) fn boot_stack_range() -> (usize, usize) {
+    (
+        boot_stack_bottom as *const () as usize,
+        boot_stack_top as *const () as usize,
+    )
 }

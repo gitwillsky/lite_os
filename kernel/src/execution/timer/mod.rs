@@ -7,10 +7,8 @@ use crate::{arch, execution::cpu, platform};
 
 mod deadline;
 
-/// scheduler tick 频率（Linux `HZ`）；每个 CPU 以 timebase / HZ 的固定间隔编程 local timer。
+/// scheduler tick 频率（每秒 tick 数）；每个 CPU 以 timebase / HZ 的固定间隔编程 local timer。
 const TICKS_PER_SEC: u64 = 100;
-/// Socket timeval 与实际 scheduler cadence 共用的 tick 时长；禁止在协议层复制 HZ。
-pub(crate) const SCHEDULER_TICK_NS: u64 = 1_000_000_000 / TICKS_PER_SEC;
 const _: () = assert!(TICKS_PER_SEC != 0);
 
 // OWNER: timer module owns the calibrated scheduler tick interval.
@@ -21,7 +19,7 @@ struct CpuTimerState {
     // OWNER: 仅由对应 logical CPU 推进；若从 handler 完成时刻重算，延迟会累积并使 scheduler tick 漂移。
     deadline: AtomicU64,
     // OWNER: 仅由对应 logical CPU 在返回用户态前写入。内核态 IRQ 被屏蔽，到期的 tick 要到返回用户态才被
-    // 响应；缺失这个时刻时所有 tick 都像发生在用户态，`getrusage` 的 system 时间恒为零。
+    // 响应；缺失这个时刻时所有 tick 都像发生在用户态，线程的内核态时间恒为零。
     last_user_return: AtomicU64,
 }
 
@@ -51,7 +49,7 @@ pub(crate) fn get_realtime_ns() -> u64 {
     platform::read_realtime_ns().unwrap_or(1_704_067_200u64 * NSEC_PER_SEC)
 }
 
-/// 设置 `CLOCK_REALTIME`：把 realtime 与 monotonic 之间的偏移改成使当前 realtime 等于 `realtime_ns`。
+/// 设置墙钟时间：把 realtime 与 monotonic 之间的偏移改成使当前 realtime 等于 `realtime_ns`。
 ///
 /// # Parameters
 ///
@@ -61,8 +59,8 @@ pub(crate) fn get_realtime_ns() -> u64 {
 ///
 /// 早于本次启动的 monotonic 时间（偏移会为负）返回 `Err(())`；偏移是无符号量，这样的值无法表示。
 ///
-/// 已经安排的绝对 `CLOCK_REALTIME` 定时器在创建时已换算成 monotonic deadline，不随这次跳变移动
-/// （Linux 会重新求值）；该限制记录在 `docs/syscall-support/signal-time.md`。
+/// 内核定时器只使用 monotonic deadline，墙钟跳变不影响任何已安排的等待；需要随墙钟重新求值的
+/// 绝对定时器由其所属的用户态服务在收到时钟变化后自行重排。
 pub(crate) fn set_realtime_ns(realtime_ns: u64) -> Result<(), ()> {
     assert!(
         REALTIME_INITIALIZED.load(Ordering::Acquire),
@@ -90,27 +88,6 @@ pub(crate) fn boot_epoch_seconds() -> u64 {
     REALTIME_OFFSET_NS.load(Ordering::Relaxed) / NSEC_PER_SEC
 }
 
-/// 将 absolute realtime timestamp 转换为同一启动域的 monotonic deadline。
-///
-/// # Parameters
-///
-/// - `realtime_ns`: Unix epoch 纳秒 timestamp。
-///
-/// # Returns
-///
-/// 减去 immutable boot offset 的 monotonic deadline；已早于 monotonic epoch 时返回零。
-///
-/// # Panics
-///
-/// `init_rtc` 尚未发布 realtime offset 时 panic，避免用未校准时钟安排 sleep。
-pub(crate) fn realtime_deadline_to_monotonic_ns(realtime_ns: u64) -> u64 {
-    assert!(
-        REALTIME_INITIALIZED.load(Ordering::Acquire),
-        "realtime deadline converted before RTC initialization"
-    );
-    realtime_ns.saturating_sub(REALTIME_OFFSET_NS.load(Ordering::Relaxed))
-}
-
 pub(crate) fn get_time_us() -> u64 {
     let current_mtime = arch::time::counter();
     let time_base_freq = platform::timebase_frequency();
@@ -123,41 +100,6 @@ pub(crate) fn get_time_ns() -> u64 {
     let time_base_freq = platform::timebase_frequency();
     // 使用128位运算避免溢出
     ((current_mtime as u128 * NSEC_PER_SEC as u128) / time_base_freq as u128) as u64
-}
-
-/// 返回 DTB time counter 经整数纳秒换算后的最小可观察粒度。
-///
-/// # Returns
-///
-/// 单个 timebase tick 的纳秒数，向上取整且至少为 1ns。
-///
-/// # Panics
-///
-/// DTB `timebase-frequency` 为零时 panic；该平台契约缺失时不能伪造分辨率。
-pub(crate) fn monotonic_resolution_ns() -> u64 {
-    let frequency = platform::timebase_frequency();
-    assert!(frequency != 0, "DTB timebase-frequency must be non-zero");
-    (NSEC_PER_SEC as u128).div_ceil(frequency as u128) as u64
-}
-
-/// 返回 timer owner 实际用于 scheduler preemption 的基础时间片。
-///
-/// # Returns
-///
-/// 已校准 tick interval 对应的纳秒数，向上取整。
-///
-/// # Errors
-///
-/// timer 尚未初始化或 DTB timebase-frequency 为零时 fail-stop。
-pub(crate) fn scheduler_quantum_ns() -> u64 {
-    let interval = TICK_INTERVAL_VALUE.load(Ordering::Acquire);
-    assert_ne!(
-        interval, 0,
-        "scheduler quantum read before timer initialization"
-    );
-    let frequency = platform::timebase_frequency();
-    assert_ne!(frequency, 0, "DTB timebase-frequency must be non-zero");
-    (interval as u128 * NSEC_PER_SEC as u128).div_ceil(frequency as u128) as u64
 }
 
 #[inline(always)]

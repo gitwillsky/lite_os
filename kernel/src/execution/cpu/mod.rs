@@ -27,7 +27,7 @@ impl HardwareCpuId {
 pub(crate) struct CpuId(usize);
 
 impl CpuId {
-    /// 获取只用于数组索引或标准 Linux CPU number 投影的值。
+    /// 获取只用于数组索引或对外 CPU 编号投影的值。
     pub(crate) fn index(self) -> usize {
         self.0
     }
@@ -65,20 +65,7 @@ impl CpuSet {
         CpuSetIter(self.0)
     }
 
-    /// 从 Linux native-word logical CPU bitmap 构造集合。
-    ///
-    /// # Parameters
-    ///
-    /// - `bits`: bit N 表示 logical CPU N。
-    ///
-    /// # Returns
-    ///
-    /// 丢弃 topology 范围外 bit 后的集合。
-    pub(crate) fn from_native_word(bits: usize) -> Self {
-        Self(bits) & possible()
-    }
-
-    /// 投影 Linux native-word CPU mask；只允许 ABI codec 使用。
+    /// 投影为机器字位图（bit N = logical CPU N），供诊断与原生 ABI 编码使用。
     pub(crate) fn native_word(self) -> usize {
         self.0
     }

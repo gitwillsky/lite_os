@@ -177,6 +177,28 @@ impl PlicInterruptController {
         Ok(())
     }
 
+    pub(super) fn unregister_handler(
+        &mut self,
+        vector: InterruptVector,
+    ) -> Option<Arc<dyn InterruptHandler>> {
+        if !valid_interrupt_vector(vector) {
+            return None;
+        }
+        self.disable_interrupt(vector);
+        self.affinities.remove(&vector);
+        self.handlers.remove(&vector)
+    }
+
+    pub(super) fn disable_interrupt(&self, vector: InterruptVector) {
+        for cpu in self.possible_cpus.iter() {
+            self.enable_for_context(vector, Self::context_for(cpu), false);
+        }
+    }
+
+    pub(super) fn has_handler(&self, vector: InterruptVector) -> bool {
+        self.handlers.contains_key(&vector)
+    }
+
     pub(super) fn enable_interrupt(
         &mut self,
         vector: InterruptVector,
@@ -238,11 +260,15 @@ impl PlicInterruptController {
                 if !valid_interrupt_vector(vector) {
                     return Err(InterruptError::InvalidVector);
                 }
-                self.handlers
+                let handler = self
+                    .handlers
                     .get(&vector)
                     .cloned()
-                    .ok_or(InterruptError::HandlerNotSet)
-                    .and_then(|handler| handler.handle_interrupt(vector))
+                    .ok_or(InterruptError::HandlerNotSet)?;
+                if handler.masks_until_ack() {
+                    self.disable_interrupt(vector);
+                }
+                handler.handle_interrupt(vector)
             },
             |vector| self.complete(context, vector),
         )

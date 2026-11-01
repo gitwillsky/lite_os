@@ -265,6 +265,21 @@ impl GicV3 {
         Ok(())
     }
 
+    fn unregister_handler(&mut self, vector: InterruptVector) -> Option<Arc<dyn InterruptHandler>> {
+        if !self.valid_device_vector(vector) {
+            return None;
+        }
+        self.disable_interrupt(vector);
+        self.handlers.remove(&vector)
+    }
+
+    fn disable_interrupt(&self, vector: InterruptVector) {
+        let register = vector as usize / 32;
+        self.distributor
+            .write32(GICD_ICENABLER + register * 4, 1u32 << (vector % 32));
+        self.wait_distributor_write();
+    }
+
     fn enable_interrupt(&self, vector: InterruptVector) -> Result<(), InterruptError> {
         if !self.valid_device_vector(vector) {
             return Err(InterruptError::InvalidVector);
@@ -326,6 +341,9 @@ impl GicV3 {
             SOFTWARE_SGI => ClaimedInterrupt::Software(interrupt),
             device => {
                 if let Some(handler) = self.handlers.get(&device).cloned() {
+                    if handler.masks_until_ack() {
+                        self.disable_interrupt(device);
+                    }
                     if let Err(_error) = handler.handle_interrupt(device) {
                         #[cfg(debug_assertions)]
                         crate::debug!("GIC handler {} failed: {:?}", device, _error);
@@ -369,6 +387,41 @@ pub(crate) fn register_device(
     controller.set_priority(vector)?;
     controller.set_affinity(vector, affinity)?;
     controller.enable_interrupt(vector)
+}
+
+/// 绑定设备中断到 boot CPU；失败时不留下部分状态。
+///
+/// # Errors
+/// 向量非法、已被占用或分配失败。
+pub(crate) fn bind_interrupt(vector: u32, handler: Arc<dyn InterruptHandler>) -> Result<(), InterruptError> {
+    let mut controller = GIC.wait().lock();
+    if controller.handlers.contains_key(&vector) {
+        return Err(InterruptError::InvalidVector);
+    }
+    controller.register_handler(vector, handler)?;
+    let result = controller
+        .set_priority(vector)
+        .and_then(|()| controller.set_affinity(vector, CpuSet::singleton(cpu::boot_id())))
+        .and_then(|()| controller.enable_interrupt(vector));
+    if result.is_err() {
+        drop(controller.unregister_handler(vector));
+    }
+    result
+}
+
+/// 解除绑定；返回的 handler 在锁外释放。
+pub(crate) fn unbind_interrupt(vector: u32) -> Option<Arc<dyn InterruptHandler>> {
+    GIC.wait().lock().unregister_handler(vector)
+}
+
+/// 解除 `masks_until_ack` 留下的屏蔽。
+pub(crate) fn unmask_interrupt(vector: u32) -> Result<(), InterruptError> {
+    GIC.wait().lock().enable_interrupt(vector)
+}
+
+/// 设备中断（SPI）向量区间。
+pub(crate) fn device_interrupt_range() -> core::ops::Range<u32> {
+    32..GIC.wait().lock().max_interrupt + 1
 }
 
 pub(crate) fn claim_interrupt() -> ClaimedInterrupt {

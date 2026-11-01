@@ -61,21 +61,6 @@ impl KernelContext {
         }
     }
 
-    /// 构造 clone/fork/vfork child 的 kernel continuation。
-    ///
-    /// # Parameters
-    ///
-    /// - `kernel_sp`: child 独占 kernel stack top。
-    /// - `trap_return`: child 首次 restore 后进入的 continuation。
-    ///
-    /// # Returns
-    ///
-    /// 与既有 RISC-V clone 行为相同的零 kernel callee-saved context；用户 FP image
-    /// 仍由 clone-only UserContext snapshot 继承。
-    pub(crate) fn clone_for_trap_return(kernel_sp: usize, trap_return: KernelResume) -> Self {
-        Self::goto_trap_return(kernel_sp, trap_return)
-    }
-
     /// 设置 context 首次 restore 后进入的 typed continuation。
     ///
     /// # Parameters

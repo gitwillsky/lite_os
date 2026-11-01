@@ -48,15 +48,6 @@ const _: () = {
 };
 
 impl UserContext {
-    /// RISC-V rt_sigframe 不含 ESR/fault_address metadata；地址已由标准 siginfo 保存。
-    ///
-    /// # Parameters
-    /// - `_fault`: 同一次用户异常的快照；本 backend 不额外保存它。
-    ///
-    /// # Returns
-    /// 无返回值；不改变 RISC-V user context。
-    pub(crate) fn record_user_fault(&mut self, _fault: super::trap::UserFault) {}
-
     /// 设置用户栈指针。
     ///
     /// # Parameters
@@ -119,7 +110,7 @@ impl UserContext {
     ///
     /// # Returns
     ///
-    /// `FS=Off` 时请求 transaction 外解码；其他状态直接形成同步 SIGILL。
+    /// `FS=Off` 时请求 transaction 外解码；其他状态直接报告非法指令异常。
     pub(crate) fn illegal_instruction_probe(&self) -> IllegalInstructionProbe {
         let address = self.sepc;
         if self.sstatus.fs() == sstatus::FS::Off {
@@ -169,72 +160,87 @@ pub(crate) fn inspect_illegal_instruction(
     }
 }
 
-impl UserContext {
-    /// 编解码 Linux RV64 NT_PRSTATUS 的 pc、x1..x31；不暴露 supervisor CSR。
-    ///
-    /// # Parameters
-    /// - `note`: 标准 ELF note，当前支持 NT_PRSTATUS。
-    /// - `bytes`: 八字节倍数的 kernel staging，允许前缀。
-    /// - `write`: true 写入，false 读取。
-    ///
-    /// # Returns
-    /// 实际传输字节数，不超过 256。
-    ///
-    /// # Errors
-    /// 未实现 note 或非 word 长度返回 Err。
-    pub(crate) fn ptrace_registers(
-        &mut self,
-        note: usize,
-        bytes: &mut [u8],
-        write: bool,
-    ) -> Result<usize, ()> {
-        if note != syscall_abi::ptrace::NT_PRSTATUS || !bytes.len().is_multiple_of(8) {
-            return Err(());
-        }
-        let length = bytes.len().min(256);
-        let mut words = self.x;
-        words[0] = self.sepc;
-        for (word, chunk) in words.iter_mut().zip(bytes[..length].as_chunks_mut::<8>().0) {
-            if write {
-                *word = usize::from_ne_bytes(*chunk);
-            } else {
-                chunk.copy_from_slice(&word.to_ne_bytes());
-            }
-        }
-        if write {
-            self.sepc = words[0];
-            self.x[1..].copy_from_slice(&words[1..]);
-        }
-        Ok(length)
-    }
+/// 用户 syscall 指令携带的编号与参数。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct SyscallRequest {
+    pub(crate) number: usize,
+    pub(crate) arguments: [usize; 7],
 }
 
 impl UserContext {
-    /// 完成 tracer 已观察的 restart；PC 被 debugger 修改时不再覆盖它。
+    /// 读取 `a7`/`a0..a6` 并把 `sepc` 推进到 `ecall` 之后。
+    pub(crate) fn take_syscall_request(&mut self) -> SyscallRequest {
+        let request = SyscallRequest {
+            number: self.x[17],
+            arguments: [
+                self.x[10], self.x[11], self.x[12], self.x[13], self.x[14], self.x[15], self.x[16],
+            ],
+        };
+        self.sepc = self
+            .sepc
+            .checked_add(4)
+            .expect("ecall PC exhausted user address space");
+        request
+    }
+
+    /// 写回 syscall 返回值（`a0`）。
+    pub(crate) fn set_syscall_result(&mut self, value: usize) {
+        self.x[10] = value;
+    }
+
+    /// 用户 PC。
+    pub(crate) fn program_counter(&self) -> usize {
+        self.sepc
+    }
+
+    /// 设置用户 PC。
+    pub(crate) fn set_program_counter(&mut self, pc: usize) {
+        self.sepc = pc;
+    }
+
+    /// 设置首次进入用户态时的前两个参数寄存器（`a0`、`a1`）。
+    pub(crate) fn set_entry_arguments(&mut self, first: usize, second: usize) {
+        self.x[10] = first;
+        self.x[11] = second;
+    }
+
+    /// 发布本次返回所在的逻辑 CPU 与 kernel `gp`，供 trampoline 在下次进入时恢复。
+    pub(crate) fn prepare_kernel_return(&mut self, logical_cpu: usize) {
+        let kernel_gp: usize;
+        // SAFETY: reading gp has no memory effect and preserves the kernel global-pointer value
+        // required by the trampoline on the next supervisor entry.
+        unsafe { core::arch::asm!("mv {}, gp", out(reg) kernel_gp, options(nomem, nostack)) };
+        self.kernel_cpu_id = logical_cpu;
+        self.kernel_gp = kernel_gp;
+    }
+
+    /// 导出通用寄存器快照。
+    pub(crate) fn save_registers(&self) -> native_abi::register::RegisterState {
+        let mut x = [0; 31];
+        for (target, source) in x.iter_mut().zip(&self.x[1..]) {
+            *target = *source as u64;
+        }
+        native_abi::register::RegisterState {
+            pc: self.sepc as u64,
+            x,
+        }
+    }
+
+    /// 以快照替换通用寄存器；`x0` 恒为 0，`sstatus` 不受快照影响。
     ///
-    /// # Parameters
-    /// - `instruction`: 原 syscall 指令 PC。
-    /// - `replay_number`: None 恢复 EINTR；Some 保留 tracer 参数，仅 restart-block 选择原生入口。
-    ///
-    /// # Returns
-    /// 无返回值；仅当前 PC 仍在原指令时完成正常的 restart/handler 决议。
-    pub(crate) fn finish_ptrace_restart(
+    /// # Errors
+    /// PC 越出用户地址空间时返回 `Err`，上下文保持不变。
+    pub(crate) fn load_registers(
         &mut self,
-        instruction: usize,
-        replay_number: Option<usize>,
-    ) {
-        if self.sepc != instruction {
-            return;
+        state: &native_abi::register::RegisterState,
+    ) -> Result<(), ()> {
+        if state.pc >= super::mmu::USER_ADDRESS_END as u64 {
+            return Err(());
         }
-        match replay_number {
-            None => {
-                self.sepc += 4;
-                self.x[10] = (-syscall_abi::errno::EINTR) as usize;
-            }
-            Some(syscall_abi::SYSCALL_RESTART_SYSCALL) => {
-                self.x[17] = syscall_abi::SYSCALL_RESTART_SYSCALL
-            }
-            Some(_) => {}
+        self.sepc = state.pc as usize;
+        for (target, source) in self.x[1..].iter_mut().zip(state.x) {
+            *target = source as usize;
         }
+        Ok(())
     }
 }

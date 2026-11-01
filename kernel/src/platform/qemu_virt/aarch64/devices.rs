@@ -6,12 +6,6 @@ use super::{discovery, gicv3, pl011};
 use crate::execution::interrupt::InterruptHandler;
 use crate::info;
 
-use super::super::{PciHost, VirtioMmioTransports};
-
-/// physical device window 在 kernel 地址空间中的映射。
-pub(crate) fn map_device_window(physical: usize) -> usize {
-    crate::arch::mmu::physical_to_virtual(physical)
-}
 
 pub(crate) fn initialize() {
     let platform = discovery::info();
@@ -22,25 +16,10 @@ pub(crate) fn initialize() {
 
 fn initialize_pl011() {
     let platform = discovery::info();
-    // Linux 为该 UART 使用的设备名，`console=` 按它选择。
-    crate::devices::console::register_serial(b"ttyAMA0", |bytes| {
-        super::console::write_bytes(bytes).map_err(|_| crate::devices::console::ConsoleError)
-    })
-    .expect("console registration failed");
     let handler = pl011::initialize(platform.uart.base_addr, platform.uart.size)
         .expect("PL011 RX initialization failed");
     register_device_interrupt(platform.uart.irq, handler, "pl011");
     pl011::enable_receive();
-}
-
-/// DTB 发现的 VirtIO-MMIO transport 表。
-pub(crate) fn virtio_mmio_transports() -> &'static VirtioMmioTransports {
-    &discovery::info().virtio
-}
-
-/// DTB 发现的 PCI ECAM host，UTM 产品拓扑经它暴露 virtio-console。
-pub(crate) fn pci_host() -> Option<&'static PciHost> {
-    Some(&discovery::info().pci)
 }
 
 /// 把设备 handler 注册到 GICv3 并路由到 boot CPU。
@@ -48,7 +27,7 @@ pub(crate) fn pci_host() -> Option<&'static PciHost> {
 /// # Panics
 ///
 /// controller 拒绝时带 label/vector/原因 fail-stop；静默返回会让设备永远收不到 interrupt。
-pub(crate) fn register_device_interrupt(
+pub(super) fn register_device_interrupt(
     vector: u32,
     handler: Arc<dyn InterruptHandler>,
     label: &'static str,

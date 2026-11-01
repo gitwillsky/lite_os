@@ -24,30 +24,6 @@ pub(crate) unsafe fn write_mmio_u8(address: usize, value: u8) {
     unsafe { core::ptr::write_volatile(address as *mut u8, value) };
 }
 
-/// Read one 16-bit halfword from a caller-validated, aligned MMIO address.
-///
-/// # Safety
-///
-/// `address` must name a readable, 16-bit-aligned device register.
-// SAFETY: callers must prove the address is a readable aligned 16-bit device register.
-#[inline(always)]
-pub(crate) unsafe fn read_mmio_u16(address: usize) -> u16 {
-    // SAFETY: the caller owns range and alignment validity.
-    unsafe { core::ptr::read_volatile(address as *const u16) }
-}
-
-/// Write one 16-bit halfword to a caller-validated, aligned MMIO address.
-///
-/// # Safety
-///
-/// `address` must name a writable, 16-bit-aligned device register.
-// SAFETY: callers must prove the address is a writable aligned 16-bit device register.
-#[inline(always)]
-pub(crate) unsafe fn write_mmio_u16(address: usize, value: u16) {
-    // SAFETY: the caller owns range and alignment validity.
-    unsafe { core::ptr::write_volatile(address as *mut u16, value) };
-}
-
 /// Read one 32-bit word from a caller-validated, aligned MMIO address.
 ///
 /// # Safety
@@ -104,21 +80,11 @@ pub(crate) unsafe fn write_mmio_u64(address: usize, value: u64) {
     unsafe { core::ptr::write_volatile(address as *mut u64, value) };
 }
 
-/// Order all earlier normal-memory writes before a following MMIO output.
+/// 让此前的普通内存写入先于随后的 MMIO 写入可见（DMA 描述符发布后再敲 doorbell）。
 ///
-/// OWNER: `arch::io` owns the target-specific normal-memory-to-device ordering mechanism.
-/// Without this `w -> o` edge, a device doorbell can pass the shared-memory state it publishes.
-///
-/// # Returns
-///
-/// No value; later MMIO writes cannot become visible before earlier memory writes.
-///
-/// # Errors
-///
-/// No recoverable error.
+/// OWNER: 本模块拥有普通内存到设备的写入次序边；缺失时设备可能先看到 doorbell、后看到描述符。
 #[inline(always)]
 pub(crate) fn before_mmio_write() {
-    // SAFETY: `fence` changes only architectural ordering.  Omitting `nomem` also makes this a
-    // compiler barrier for the shared-memory writes that must precede the following MMIO access.
+    // SAFETY: 屏障只改变架构内存次序；省略 `nomem` 同时阻止编译器跨越发布边移动内存写入。
     unsafe { asm!("fence w, o", options(nostack, preserves_flags)) }
 }

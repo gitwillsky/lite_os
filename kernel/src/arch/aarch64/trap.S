@@ -203,11 +203,6 @@ __aarch64_restore:
     eret
 
     .align 4
-    .global __signal_trampoline
-__signal_trampoline:
-    mov x8, #139
-    svc #0
-    brk #0
 
     .section .text
     .align 2

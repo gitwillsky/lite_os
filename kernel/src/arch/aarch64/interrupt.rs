@@ -38,18 +38,6 @@ pub(crate) unsafe fn enable_scheduler_interrupts() {
     unsafe { asm!("msr daifclr, #2", options(nomem, nostack, preserves_flags)) };
 }
 
-/// Wait for one IRQ while preserving the caller's local IRQ mask.
-pub(crate) fn wait_for_external_interrupt() {
-    let state = disable_local();
-    // SAFETY: VBAR/GIC initialization is a caller invariant of bootstrap device waits. Assembly
-    // temporarily unmasks IRQ delivery and exposes exact WFI/resume labels; kernel IRQ entry
-    // advances ELR to resume when an IRQ lands in the enable-to-WFI window, so an acknowledged
-    // one-shot device edge cannot return into an unbounded second sleep.
-    wait_once_with_local_irq_masked();
-    // SAFETY: no context switch occurs in the bootstrap wait.
-    unsafe { restore_local(state) };
-}
-
 /// Wait for one IRQ while the caller keeps ownership of an already-masked local IRQ state.
 ///
 /// The linked WFI/resume identity closes the enable-to-WFI lost-edge window. Returning with IRQ

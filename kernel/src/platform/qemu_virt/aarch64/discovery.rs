@@ -9,7 +9,7 @@ use crate::execution::cpu::HardwareCpuId;
 // OWNER: discovery publishes the only immutable AArch64 QEMU machine description.
 static PLATFORM_INFO: Once<PlatformInfo> = Once::new();
 
-/// AArch64 Linux boot protocol 在 `x0` 交付的 DTB physical address。
+/// arm64 Image 启动协议在 `x0` 交付的 DTB 物理地址。
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BootInfo(usize);
@@ -30,7 +30,7 @@ pub(crate) fn initialize(boot: BootInfo) {
     PLATFORM_INFO.call_once(|| {
         assert_ne!(boot.address(), 0, "AArch64 boot requires x0 DTB address");
         let dtb_pointer = crate::arch::mmu::physical_to_virtual(boot.address()) as *const u8;
-        // SAFETY: x0 follows the Linux arm64 boot ABI and the static TTBR1 direct map covers DTB;
+        // SAFETY: x0 follows the arm64 Image boot protocol and the static TTBR1 direct map covers DTB;
         // dtb-walker validates header and structure bounds before exposing properties.
         let dtb = unsafe {
             Dtb::from_raw_parts_filtered(dtb_pointer, |error| {

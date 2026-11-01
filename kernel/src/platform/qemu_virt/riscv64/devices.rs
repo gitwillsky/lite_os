@@ -1,8 +1,7 @@
-//! RISC-V QEMU `virt` PLIC、16550 与 VirtIO-MMIO adapter 静态装配。
+//! RISC-V QEMU `virt` PLIC 与 16550 静态装配；其余设备由用户态驱动经中断对象绑定。
 
 use alloc::sync::Arc;
 
-use super::super::{PciHost, VirtioMmioTransports};
 use super::discovery::info as platform_info;
 use super::plic::PlicInterruptController;
 use super::uart;
@@ -26,7 +25,7 @@ fn interrupt_controller() -> &'static IrqMutex<PlicInterruptController> {
 ///
 /// # Panics
 ///
-/// PLIC 初始化、UART 或任一已识别 VirtIO 设备的 interrupt 注册失败时，带原因 fail-stop。
+/// PLIC 初始化或 UART interrupt 注册失败时，带原因 fail-stop。
 pub(crate) fn initialize() {
     let plic = &platform_info().plic;
     let controller = PlicInterruptController::new(
@@ -42,11 +41,6 @@ pub(crate) fn initialize() {
 
 fn initialize_uart() {
     let board = platform_info();
-    // Linux 为该 UART 使用的设备名，`console=` 按它选择。
-    crate::devices::console::register_serial(b"ttyS0", |bytes| {
-        super::console::write_bytes(bytes).map_err(|_| crate::devices::console::ConsoleError)
-    })
-    .expect("console registration failed");
     let handler = uart::initialize(board.uart.start, board.uart.end - board.uart.start)
         .unwrap_or_else(|error| panic!("16550 UART initialization failed: {error}"));
     register_device_interrupt(board.uart_irq, handler, "uart");
@@ -59,7 +53,7 @@ fn initialize_uart() {
 ///
 /// controller 拒绝 handler、priority、affinity 或 enable 时带 label/vector/原因 fail-stop；
 /// 静默返回会让设备永远收不到 interrupt，并在之后以无上下文的方式卡死。
-pub(crate) fn register_device_interrupt(
+pub(super) fn register_device_interrupt(
     vector: u32,
     handler: Arc<dyn InterruptHandler>,
     label: &'static str,
@@ -83,6 +77,49 @@ fn register_device(vector: u32, handler: Arc<dyn InterruptHandler>) -> Result<()
     controller.enable_interrupt(vector)
 }
 
+/// 绑定设备中断到 boot hart；失败时不留下部分状态。
+///
+/// # Errors
+/// 向量非法、已被占用或分配失败。
+pub(crate) fn bind_interrupt(vector: u32, handler: Arc<dyn InterruptHandler>) -> Result<(), InterruptError> {
+    if vector == 0 {
+        return Err(InterruptError::InvalidVector);
+    }
+    let mut controller = interrupt_controller().lock();
+    if controller.has_handler(vector) {
+        return Err(InterruptError::InvalidVector);
+    }
+    controller.register_handler(vector, handler)?;
+    let result = controller
+        .set_priority(vector)
+        .and_then(|()| {
+            controller.set_affinity(
+                vector,
+                crate::execution::cpu::CpuSet::singleton(crate::execution::cpu::boot_id()),
+            )
+        })
+        .and_then(|()| controller.enable_interrupt(vector));
+    if result.is_err() {
+        drop(controller.unregister_handler(vector));
+    }
+    result
+}
+
+/// 解除绑定；返回的 handler 在锁外释放。
+pub(crate) fn unbind_interrupt(vector: u32) -> Option<Arc<dyn InterruptHandler>> {
+    interrupt_controller().lock().unregister_handler(vector)
+}
+
+/// 解除 `masks_until_ack` 留下的屏蔽。
+pub(crate) fn unmask_interrupt(vector: u32) -> Result<(), InterruptError> {
+    interrupt_controller().lock().enable_interrupt(vector)
+}
+
+/// PLIC 中断源区间（源 0 保留）。
+pub(crate) fn device_interrupt_range() -> core::ops::Range<u32> {
+    1..1024
+}
+
 /// 处理外部中断。
 pub(crate) fn handle_external_interrupt() {
     let result = interrupt_controller().lock().handle_pending_interrupts();
@@ -90,19 +127,4 @@ pub(crate) fn handle_external_interrupt() {
         #[cfg(debug_assertions)]
         debug!("Interrupt handling failed: {:?}", result);
     }
-}
-
-/// RISC-V `virt` 的 MMIO window 由 identity direct map 访问。
-pub(crate) fn map_device_window(physical: usize) -> usize {
-    physical
-}
-
-/// DTB 发现的 VirtIO-MMIO transport 表。
-pub(crate) fn virtio_mmio_transports() -> &'static VirtioMmioTransports {
-    &platform_info().virtio
-}
-
-/// RISC-V `virt` 没有 PCI host 装配。
-pub(crate) fn pci_host() -> Option<&'static PciHost> {
-    None
 }

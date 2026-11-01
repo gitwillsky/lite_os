@@ -1,6 +1,6 @@
-//! panic 的唯一 owner：停住其余 CPU、保存现场、显示蓝屏，然后按策略停机或重启。
+//! panic 的唯一 owner：停住其余 CPU、保存现场、输出到调试串口，然后按策略停机或重启。
 
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, vec::Vec};
 use core::{
     fmt::{self, Write},
     panic::PanicInfo,
@@ -11,11 +11,9 @@ use spin::Once;
 
 use super::{
     backtrace::{self, MAX_FRAMES},
-    bluescreen::{self, Report},
     record::Recorder,
 };
 use crate::{
-    devices::model::PanicFramebuffer,
     execution::cpu::{self, CpuSet},
     execution::timer,
     platform,
@@ -44,11 +42,9 @@ static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 // OWNER: 每颗 logical CPU 一份停止快照，在 `initialize` 按已发布 topology 分配一次；panic 路径不能
 // 分配，缺失时只能在转储里写“无快照”。
 static SNAPSHOTS: Once<Box<[CpuSnapshot]>> = Once::new();
-// OWNER: Linux `panic=` 语义：0 停在蓝屏，正数为秒数后重启，负数立即重启。由 boot CPU 在命令行解析后
+// OWNER: `panic=` 启动参数：0 停在蓝屏，正数为秒数后重启，负数立即重启。由 boot CPU 在命令行解析后
 // 写入一次；默认 0，缺失时坏掉的机器会在无人值守时反复重启而不留下可读现场。
 static REBOOT_SECONDS: AtomicI32 = AtomicI32::new(0);
-// OWNER: boot CPU 在显示设备装配后登记的 panic 帧缓冲；未登记时只输出串口。
-static DISPLAY: Once<Arc<dyn PanicFramebuffer>> = Once::new();
 
 /// 按 logical topology 分配停止快照；必须在 `cpu::initialize` 之后调用。
 ///
@@ -77,16 +73,11 @@ pub(crate) fn initialize() {
 ///
 /// # Parameters
 ///
-/// - `seconds`: Linux `panic=` 的值；`None` 保持默认（停在蓝屏）。
+/// - `seconds`: `panic=` 的值；`None` 保持默认（停在蓝屏）。
 pub(crate) fn configure(seconds: Option<i32>) {
     if let Some(seconds) = seconds {
         REBOOT_SECONDS.store(seconds, Ordering::Relaxed);
     }
-}
-
-/// 登记 panic 时使用的帧缓冲；之后任何 panic 都会在其上绘制蓝屏。
-pub(crate) fn register_display(display: Arc<dyn PanicFramebuffer>) {
-    DISPLAY.call_once(|| display);
 }
 
 /// 核间中断处理中检查并响应停止请求。
@@ -259,19 +250,6 @@ pub(crate) fn handle(info: &PanicInfo) -> ! {
     let _ = writeln!(sink, "kernel log tail:");
     crate::log::write_tail_for_fail_stop(&mut sink, KMSG_TAIL_RECORDS);
     sink.commit();
-
-    if let Some(display) = DISPLAY.get() {
-        bluescreen::show(
-            &**display,
-            &Report {
-                info,
-                cpu: me,
-                uptime_seconds: uptime_us / 1_000_000,
-                frames: &frames[..depth],
-                record_saved: sink.recorder.is_some(),
-            },
-        );
-    }
 
     let seconds = REBOOT_SECONDS.load(Ordering::Relaxed);
     if seconds != 0 {

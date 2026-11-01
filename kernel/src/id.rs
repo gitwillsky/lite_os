@@ -1,21 +1,21 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-// OWNER: id module 唯一分配 kernel runtime object identity；若各 backend 独立计数，
-// `/proc/<pid>/fd` 的 anonymous inode labels 会在不同对象类型间发生 identity collision。
-static NEXT_RUNTIME_OBJECT_ID: AtomicU64 = AtomicU64::new(1);
+// OWNER: 内核对象全局编号（koid）的唯一来源；若各对象类型独立计数，不同类型的对象会共享编号，
+// 用户态以 koid 区分对象身份时发生冲突。
+static NEXT_KOID: AtomicU64 = AtomicU64::new(1);
 
-/// 分配一个本次 boot 内不复用的 kernel object identity。
+/// 分配一个本次启动内不复用的对象全局编号。
 ///
 /// # Returns
 ///
-/// 非零 identity；仅用于对象命名，不承担内存发布同步。
-pub(crate) fn next_runtime_object_id() -> u64 {
-    NEXT_RUNTIME_OBJECT_ID
+/// 非零编号；仅用于身份，不承担内存发布同步。
+pub(crate) fn next_koid() -> u64 {
+    NEXT_KOID
         .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             current.checked_add(1)
         })
-        .expect("runtime object identity exhausted")
+        .expect("object identity exhausted")
 }
 
 pub(crate) struct IdAllocator {
@@ -55,11 +55,6 @@ impl IdAllocator {
             self.current = self.current.checked_add(1).ok_or(())?;
             Ok(id)
         }
-    }
-
-    /// 当前已签发且尚未回收的 ID 数。
-    pub(crate) fn live(&self) -> usize {
-        self.current - self.initial - self.recycled.len()
     }
 
     pub(crate) fn dealloc(&mut self, id: usize) {

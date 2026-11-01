@@ -173,13 +173,6 @@ static HEAP_STATE: Mutex<HeapState> = Mutex::new(HeapState::new());
 // 分别以 Relaxed 原子提交，只提供瞬时统计，不参与 lifetime 判定。
 static DIRECT_PAGES: AtomicUsize = AtomicUsize::new(0);
 
-/// global heap 当前占用的 frame-backed 物理页快照。
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct HeapStatistics {
-    /// live slab 与 direct extent 合计页数；不包含静态 bootstrap arena。
-    pub(crate) resident_pages: usize,
-}
-
 struct CpuHeapCache {
     heads: [usize; CACHE_CLASS_COUNT],
     counts: [u8; CACHE_CLASS_COUNT],
@@ -549,17 +542,4 @@ pub(crate) fn init_cpu_caches() {
 /// 无返回值；重复调用保持启用状态。
 pub(crate) fn enable_frame_backed_growth() {
     FRAME_BACKED_GROWTH.store(true, Ordering::Release);
-}
-
-/// 读取唯一 heap owners 的常数时间 resident page projection。
-///
-/// # Returns
-///
-/// slab 与 direct extent 合计页数，不扫描 slab、cache 或 allocation。
-pub(crate) fn statistics() -> HeapStatistics {
-    let _irq = LocalIrqGuard::disable();
-    let slab_pages = HEAP_STATE.lock().slab_pages;
-    HeapStatistics {
-        resident_pages: slab_pages.saturating_add(DIRECT_PAGES.load(Ordering::Relaxed)),
-    }
 }

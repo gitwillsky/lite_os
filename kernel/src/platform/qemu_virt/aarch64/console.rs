@@ -64,24 +64,6 @@ impl core::fmt::Write for PanicConsoleWriter {
     }
 }
 
-/// 在 console 序列化锁内把整段 tty 输出写到 PL011。
-///
-/// 与 `_print_fmt` 共用 `CONSOLE`：缺少这把锁时，tty 字节会插进内核日志行的中间。
-/// 本函数不得记录日志，否则会在持锁状态下重入同一把 `IrqMutex`。
-///
-/// # Parameters
-///
-/// - `bytes`: 一次 tty write 的输出；上界由 tty 层的单次写块（至多 512 字节）决定，所以
-///   本地中断屏蔽时间与一条内核日志同量级。
-///
-/// # Errors
-///
-/// PL011 窗口访问失败时返回 [`ConsoleError`]，已写出的前缀不回滚。
-pub(crate) fn write_bytes(bytes: &[u8]) -> Result<(), ConsoleError> {
-    let _console = CONSOLE.lock();
-    bytes.iter().try_for_each(|byte| write_byte(*byte))
-}
-
 /// 轮询 PL011 TX FIFO 写出一个 byte。
 ///
 /// discovery publication 前使用 QEMU `virt` 固定 early base；publication 后只消费已验证

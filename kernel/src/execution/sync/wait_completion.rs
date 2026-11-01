@@ -26,11 +26,6 @@ impl WaitCompletion {
         );
     }
 
-    /// 查询 owner 是否已完成本次 wait。
-    pub(crate) fn is_complete(&self) -> bool {
-        self.0.load(Ordering::Acquire) == COMPLETED
-    }
-
     /// 在 scheduler membership publication 前取得 arming ownership。
     pub(crate) fn begin_arming(&self) -> bool {
         self.0

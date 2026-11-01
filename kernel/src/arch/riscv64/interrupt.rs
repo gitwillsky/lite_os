@@ -56,49 +56,6 @@ pub(crate) unsafe fn enable_scheduler_interrupts() {
     }
 }
 
-/// 以不丢唤醒的顺序等待一次启动期外部中断。
-///
-/// architecture assembly 临时打开 SSIE/SIE 并执行带固定 resume label 的 WFI；
-/// hardirq 发布的 pending SSIP 是已确认 device edge 的耐久 wake token。若 external
-/// 或 software trap 命中 enable-to-WFI 窗口，kernel trap entry 把 `sepc` 精确推进到
-/// resume label，禁止确认唯一 IRQ edge 后重新睡眠。返回前精确恢复调用时
-/// 的 SEIE/SSIE/SIE；timer source 始终不变。
-///
-/// # Returns
-///
-/// 一次 WFI 返回后无返回值。
-///
-/// # Errors
-///
-/// local trap vector、interrupt controller 与 membarrier per-CPU state 必须已初始化；
-/// SSIE/timer source 必须在 scheduler owner 尚未初始化时保持关闭。
-pub(crate) fn wait_for_external_interrupt() {
-    let local = disable_local();
-    assert!(
-        !riscv::register::sie::read().ssoft(),
-        "bootstrap external wait requires scheduler software IRQ source disabled"
-    );
-    let external_enabled = riscv::register::sie::read().sext();
-    if !external_enabled {
-        // SAFETY: kernel runs in S-mode and changes only the calling CPU's SEIE source.
-        unsafe { riscv::register::sie::set_sext() };
-    }
-    // SSIP is the durable deferred-work token published by the external handler. Bootstrap owns
-    // this temporary source enable because the scheduler has not reached its permanent enable seam.
-    unsafe { riscv::register::sie::set_ssoft() };
-    // SAFETY: trap.S temporarily owns local SIE and its trap-entry resume fixup; caller established
-    // the trap/PLIC initialization and bootstrap source constraints documented above.
-    wait_once_with_local_irq_masked();
-    // SAFETY: the bootstrap assertion above proved SSIE was disabled on entry.
-    unsafe { riscv::register::sie::clear_ssoft() };
-    if !external_enabled {
-        // SAFETY: kernel restores only the calling CPU's previously disabled SEIE source.
-        unsafe { riscv::register::sie::clear_sext() };
-    }
-    // SAFETY: local was captured on this CPU and no context switch occurs in bootstrap wait.
-    unsafe { restore_local(local) };
-}
-
 /// 在 caller 持有 local IRQ guard 时原子等待一次 interrupt。
 ///
 /// assembly 临时打开 SIE，以固定 WFI/resume PC 关闭 enable-to-WFI 丢边沿窗口，返回前再次

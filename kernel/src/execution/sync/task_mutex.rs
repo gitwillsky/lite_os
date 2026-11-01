@@ -40,7 +40,6 @@
 //! # 阅读顺序
 //!
 //! `Ownership` → `lock_prepared` → `unlock` → `TaskMutexWaitPreparation`。
-mod signal_acquisition;
 use alloc::sync::Arc;
 use core::{
     cell::UnsafeCell,
@@ -48,7 +47,6 @@ use core::{
     ops::{Deref, DerefMut},
     sync::atomic::{AtomicU64, Ordering},
 };
-pub(crate) use signal_acquisition::TaskMutexLockError;
 
 use super::{
     WaitCompletion,
@@ -280,6 +278,11 @@ impl<T> TaskMutex<T> {
             next_ticket: AtomicU64::new(1),
             value: UnsafeCell::new(value),
         }
+    }
+
+    /// 独占借用内部值；`&mut self` 证明没有 guard 存活。
+    pub(crate) fn get_mut(&mut self) -> &mut T {
+        self.value.get_mut()
     }
 }
 

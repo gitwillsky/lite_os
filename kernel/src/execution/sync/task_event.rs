@@ -35,42 +35,9 @@ impl TaskEvent {
         }
     }
 
-    /// 阻塞当前 task，直到事件被 signal，并消费该 signal。
-    ///
-    /// # Panics
-    ///
-    /// 不在 task context 调用，或同一事件出现第二个并发 waiter 时 panic。
-    pub(crate) fn wait(&self) {
-        assert_eq!(
-            self.wait_mode(TaskWaitMode::Uninterruptible, None),
-            WaitResult::Woken
-        );
-    }
-
-    /// 无待处理工作时的 kernel daemon 空闲等待；保持不可中断 handshake，但不计入 load。
-    pub(crate) fn wait_idle(&self) {
-        assert_eq!(self.wait_mode(TaskWaitMode::Idle, None), WaitResult::Woken);
-    }
-
-    /// 不可中断的有界设备事务等待；超时交由设备 owner 停止或隔离 DMA。
-    ///
-    /// # Parameters
-    /// - `deadline_ns`: monotonic 绝对截止时间。
-    /// # Returns
-    /// signal 返回 Woken，到期返回 TimedOut，wait membership 分配失败返回 OutOfMemory。
-    /// 普通信号不取消已提交给硬件的事务。
-    pub(crate) fn wait_until(&self, deadline_ns: u64) -> WaitResult {
-        self.wait_mode(TaskWaitMode::Uninterruptible, Some(deadline_ns))
-    }
-
-    /// 等待事件或可交付信号；不分配 waiter，Interrupted 后事件及 owner 继续有效。
+    /// 等待事件或打断；不分配 waiter，Interrupted 后事件及 owner 继续有效。
     pub(crate) fn wait_interruptible(&self) -> WaitResult {
         self.wait_mode(TaskWaitMode::Interruptible, None)
-    }
-
-    /// PONR cleanup 仅允许致命 signal 取消；普通捕获信号继续等待。
-    pub(crate) fn wait_killable(&self) -> WaitResult {
-        self.wait_mode(TaskWaitMode::Killable, None)
     }
 
     /// 复用实际 event/arming owner 与 scheduler deadline index；到期或 OOM 取消时不消费未来 event。
@@ -84,9 +51,8 @@ impl TaskEvent {
             }
             let target = current_wait_target().expect("TaskEvent::wait requires task context");
             if match mode {
-                TaskWaitMode::Uninterruptible | TaskWaitMode::Idle => false,
+                TaskWaitMode::Uninterruptible => false,
                 TaskWaitMode::Interruptible => target.interrupted(),
-                TaskWaitMode::Killable => target.fatal_interrupted(),
             } {
                 return WaitResult::Interrupted;
             }
@@ -140,11 +106,6 @@ impl TaskEvent {
     /// 发布一次 signal；waiter 已阻塞时将其唤醒。重复 signal 合并为一次。
     pub(crate) fn signal(&self) {
         self.signal_with_placement(false);
-    }
-
-    /// 发布同步通知，向 scheduler 传递当前 CPU 局部性提示；completion 与 cancellation 协议不变。
-    pub(crate) fn signal_on_current_cpu(&self) {
-        self.signal_with_placement(true);
     }
 
     fn signal_with_placement(&self, current_cpu: bool) {

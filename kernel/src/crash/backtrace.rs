@@ -19,7 +19,7 @@ pub(super) const MAX_FRAMES: usize = 32;
 /// 写入 `frames` 的返回地址个数。
 pub(super) fn capture(frame: usize, frames: &mut [usize; MAX_FRAMES]) -> usize {
     let Some((bottom, top)) =
-        crate::memory::kernel_stack_bounds(crate::arch::backtrace::stack_pointer())
+        crate::vm::kernel_stack::kernel_stack_bounds(crate::arch::backtrace::stack_pointer())
     else {
         return 0;
     };

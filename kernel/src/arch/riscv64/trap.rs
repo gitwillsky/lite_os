@@ -10,19 +10,25 @@ use riscv::{
 use super::mmu::AddressSpaceToken;
 
 /// User trampoline 跳转目标的 opaque architecture entry。
-/// 一次用户内存异常的架构快照；RISC-V signal ABI 只暴露 fault 地址。
+/// 一次用户内存异常的架构快照。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct UserFault {
     address: usize,
+    syndrome: u64,
 }
 
 impl UserFault {
-    /// 投影通用 memory/signal owner 所需的地址。
+    /// 异常地址（`stval`）。
     ///
     /// # Returns
     /// 同一次用户异常的 fault 地址。
     pub(crate) fn address(self) -> usize {
         self.address
+    }
+
+    /// 原始 `scause`；异常报告原样交给处理者。
+    pub(crate) fn syndrome(self) -> u64 {
+        self.syndrome
     }
 }
 
@@ -82,9 +88,13 @@ pub(crate) struct KernelException {
 
 /// 解码当前 RISC-V trap CSR 为通用语义事件。
 pub(crate) fn event() -> TrapEvent {
-    let cause = scause::read().cause();
+    let raw_cause = scause::read();
+    let cause = raw_cause.cause();
     let address = stval::read();
-    let fault = UserFault { address };
+    let fault = UserFault {
+        address,
+        syndrome: raw_cause.bits() as u64,
+    };
     match cause {
         Trap::Interrupt(code) => match Interrupt::from_number(code) {
             Ok(Interrupt::SupervisorTimer) => TrapEvent::TimerInterrupt,
