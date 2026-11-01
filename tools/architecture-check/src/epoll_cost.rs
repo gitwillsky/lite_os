@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-const EPOLL_OWNER_SOURCE: &str = "tools/source-view/linuxd/file/epoll/epoll/epoll.rs";
+const EPOLL_OWNER_SOURCE: &str = "system/linuxd/src/file/epoll.rs";
 const EPOLL_READY_SOURCE: &str = "system/linuxd/src/file/epoll/ready.rs";
 const EPOLL_SYSCALL_SOURCE: &str = "system/linuxd/src/syscall/epoll.rs";
 const WAIT_KEY_SOURCE: &str = "system/linuxd/src/syscall/poll/wait_keys.rs";

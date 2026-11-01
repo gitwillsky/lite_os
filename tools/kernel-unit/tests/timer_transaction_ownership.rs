@@ -2,8 +2,7 @@
 #![allow(dead_code)]
 //! 执行实际 borrowed timer executor 和 AVL storage；graph liveness 与 clock 是显式输入 seam。
 extern crate alloc;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 #[path = "../../../system/linuxd/src/task/process_table"]

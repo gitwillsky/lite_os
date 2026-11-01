@@ -5,15 +5,13 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 
 static NOW: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 
-#[path = "."]
-pub(crate) mod execution {
+
     pub(crate) mod timer {
         pub(crate) fn get_time_ns() -> u64 {
             crate::NOW.load(core::sync::atomic::Ordering::Relaxed)
@@ -47,18 +45,18 @@ pub(crate) mod execution {
             mod signal_info;
             mod signal_pending;
             pub(crate) use signal_info::PendingSignal;
-            pub(in crate::execution::task) use signal_pending::{
+            pub(in crate::task) use signal_pending::{
                 PreallocatedSignal, PreparedSignalRecord, TimerSignalDelivery,
             };
-            pub(in crate::execution::task) const RLIMIT_SIGPENDING: usize = 11;
-            pub(in crate::execution::task) struct Pending(
+            pub(in crate::task) const RLIMIT_SIGPENDING: usize = 11;
+            pub(in crate::task) struct Pending(
                 spin::Mutex<signal_pending::PendingSignals>,
             );
             impl Pending {
-                pub(in crate::execution::task) fn new() -> Self {
+                pub(in crate::task) fn new() -> Self {
                     Self(spin::Mutex::new(signal_pending::PendingSignals::new()))
                 }
-                pub(in crate::execution::task) fn publish(
+                pub(in crate::task) fn publish(
                     &self,
                     signal: usize,
                     info: PendingSignal,
@@ -66,7 +64,7 @@ pub(crate) mod execution {
                 ) {
                     self.0.lock().queue(signal, info, prepared);
                 }
-                pub(in crate::execution::task) fn consume(
+                pub(in crate::task) fn consume(
                     &self,
                     mask: u64,
                 ) -> Option<(usize, PendingSignal)> {
@@ -75,10 +73,10 @@ pub(crate) mod execution {
                         selected.resolve(super::process_table::timer_queue::deliver_posix_signal)
                     })
                 }
-                pub(in crate::execution::task) fn bits(&self) -> u64 {
+                pub(in crate::task) fn bits(&self) -> u64 {
                     self.0.lock().bits
                 }
-                pub(in crate::execution::task) fn clear(&self) {
+                pub(in crate::task) fn clear(&self) {
                     let retired = self.0.lock().discard(u64::MAX);
                     drop(retired);
                 }
@@ -93,8 +91,8 @@ pub(crate) mod execution {
                 timers: spin::Mutex::new(timer_queue::TimerQueue::new()),
             };
             #[path = "timer_queue"]
-            pub(in crate::execution::task) mod timer_queue {
-                use crate::execution::task::model::{Pending, PendingSignal};
+            pub(in crate::task) mod timer_queue {
+                use crate::task::model::{Pending, PendingSignal};
                 use crate::fallible_tree::{FallibleMap, VacantEntry};
                 use alloc::sync::{Arc, Weak};
                 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -151,14 +149,14 @@ pub(crate) mod execution {
                 use preparation::{PreparedPosixCreate, PreparedPosixReplacement};
                 mod posix_creation;
                 mod posix_schedule;
-                pub(in crate::execution::task) use posix_schedule::deliver_posix_signal;
+                pub(in crate::task) use posix_schedule::deliver_posix_signal;
                 use posix_schedule::{PosixSchedule, PosixTimer};
                 pub(super) struct ExpiredPosixTimer {
                     tgid: usize,
                     id: i32,
                     notification: PosixTimerNotification,
                     sequence: u64,
-                    owner: Arc<crate::execution::task::model::PreallocatedSignal>,
+                    owner: Arc<crate::task::model::PreallocatedSignal>,
                     thread_target: Option<Arc<crate::namespace::PidIdentity>>,
                 }
                 enum ExpiredTimer {
@@ -179,8 +177,8 @@ pub(crate) mod execution {
                 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
                 fn boot() {
                     crate::namespace::boot();
-                    crate::execution::task::CREATOR
-                        .call_once(|| Arc::new(crate::execution::task::TaskControlBlock));
+                    crate::task::CREATOR
+                        .call_once(|| Arc::new(crate::task::TaskControlBlock));
                     crate::NOW.store(0, core::sync::atomic::Ordering::Relaxed);
                 }
                 fn create(id: i32, notification: PosixTimerNotification) {
@@ -214,7 +212,7 @@ pub(crate) mod execution {
                         .lock()
                         .replace_posix(
                             &mut prepared,
-                            crate::execution::timer::get_time_ns(),
+                            crate::timer::get_time_ns(),
                             crate::namespace::TimeOffsets::ZERO,
                         )
                         .unwrap()
@@ -512,7 +510,5 @@ pub(crate) mod execution {
             }
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

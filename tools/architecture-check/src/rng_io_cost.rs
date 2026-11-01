@@ -1,9 +1,9 @@
 use std::{fs, path::Path};
 
-const RNG_SOURCE: &str = "tools/source-view/devmgr/drivers/virtio/rng/rng/rng.rs";
+const RNG_SOURCE: &str = "system/devmgr/src/drivers/virtio/rng.rs";
 const BLOCK_SOURCE: &str = "kernel/src/devices/block/device.rs";
-const VIRTIO_BLOCK_SOURCE: &str = "tools/source-view/devmgr/drivers/virtio/blk/blk/blk.rs";
-const IO_COMPLETION_SOURCE: &str = "tools/source-view/devmgr/io_completion/io_completion/io_completion.rs";
+const VIRTIO_BLOCK_SOURCE: &str = "system/devmgr/src/drivers/virtio/blk.rs";
+const IO_COMPLETION_SOURCE: &str = "system/devmgr/src/io_completion.rs";
 const WAIT_COMPLETION_SOURCE: &str = "kernel/src/execution/sync/wait_completion.rs";
 const VIRTIO_IRQ_SOURCE: &str = "system/devmgr/src/drivers/virtio/completion_irq.rs";
 const GETRANDOM_SOURCE: &str = "system/linuxd/src/syscall/random.rs";

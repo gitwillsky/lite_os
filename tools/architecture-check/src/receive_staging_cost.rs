@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-const SEQUENTIAL: &str = "tools/source-view/linuxd/syscall/fs/io/sequential/sequential/sequential.rs";
+const SEQUENTIAL: &str = "system/linuxd/src/syscall/fs/io/sequential.rs";
 const SEQUENTIAL_READ: &str = "system/linuxd/src/syscall/fs/io/sequential/read.rs";
 const MESSAGE: &str = "system/linuxd/src/syscall/socket/message.rs";
 const REQUEST_BYTES: usize = 64 * 1024;

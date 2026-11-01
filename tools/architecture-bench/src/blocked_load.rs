@@ -24,11 +24,10 @@ fn measure(name: &str, mut operation: impl FnMut()) {
     );
 }
 fn main() {
-    crate::execution::task::benchmark();
+    crate::task::benchmark();
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     #[path = "../../../kernel/src/execution/task/model/scheduling"]
     pub(crate) mod task {
         mod blocked_load;
@@ -51,7 +50,5 @@ pub(crate) mod execution {
             assert_eq!(uninterruptible_task_count(), 0);
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

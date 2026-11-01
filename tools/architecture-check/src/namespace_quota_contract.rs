@@ -34,7 +34,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("namespace-quota: concrete namespace lifetime must own one creator/ancestor charge and rollback exact successful prefix".into());
     }
-    let proc = source(sources, "tools/source-view/linuxd/fs/procfs/procfs/procfs.rs");
+    let proc = source(sources, "system/linuxd/src/fs/procfs.rs");
     let opened = source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs");
     let node = source(sources, "system/linuxd/src/fs/procfs/node.rs");
     let identity = source(sources, "system/linuxd/src/fs/permission.rs");

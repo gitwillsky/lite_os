@@ -3,8 +3,7 @@
 #![feature(allocator_ext)]
 #![allow(dead_code)]
 extern crate alloc;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 
 mod memory {
     use crate::fallible_tree::FallibleMap;

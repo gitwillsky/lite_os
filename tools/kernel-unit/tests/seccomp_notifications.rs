@@ -3,8 +3,7 @@
 #![allow(dead_code, unused_imports)]
 extern crate alloc;
 #[allow(dead_code, unused_imports)]
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
@@ -129,7 +128,7 @@ impl TaskControlBlock {
         cloexec: bool,
     ) -> Result<usize, file::FileDescriptorError> {
         assert!(
-            crate::execution::task::current_task()
+            crate::task::current_task()
                 .is_some_and(|current| core::ptr::eq(current.as_ref(), self)),
             "observer must not inject by operating another task's table"
         );
@@ -180,12 +179,12 @@ impl ipc::PipeScheduler for PipeScheduler {
         pipe: &Arc<ipc::Pipe>,
         condition: ipc::PipeWaitCondition,
         _: Option<u64>,
-    ) -> crate::execution::sync::WaitResult {
+    ) -> crate::sync::WaitResult {
         let mut epoch = self.epoch.lock().unwrap();
         while !pipe.poll_state(condition.direction()).satisfies(condition) {
             epoch = self.changed.wait(epoch).unwrap();
         }
-        crate::execution::sync::WaitResult::Woken
+        crate::sync::WaitResult::Woken
     }
 }
 fn initialize_pipe_scheduler() {
@@ -778,8 +777,7 @@ fn receive_projects_actual_tid_in_each_receivers_namespace_after_listener_transf
     }
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     #[path = "../src/sync.rs"]
     pub(crate) mod sync;
     pub(crate) mod task {
@@ -787,10 +785,6 @@ pub(crate) mod execution {
             crate::CURRENT.with_borrow(Clone::clone)
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
-use execution::sync;
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

@@ -2,7 +2,7 @@ use std::{fs, path::Path};
 
 use super::SourceFile;
 
-const SYSCALL_SOURCE: &str = "tools/source-view/linuxd/syscall/fs/fs/fs.rs";
+const SYSCALL_SOURCE: &str = "system/linuxd/src/syscall/fs.rs";
 const EXT4_VFS_SOURCE: &str = "system/ext4d/src/ext4/inode/vfs.rs";
 const EXT4_DIRECTORY_SOURCE: &str = "system/ext4d/src/ext4/directory.rs";
 const EXT4_CURSOR_SOURCE: &str = "system/ext4d/src/ext4/directory_cursor.rs";

@@ -5,8 +5,7 @@ extern crate alloc;
 #[path = "../src/ipc_namespace_fixture.rs"]
 mod ipc;
 
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/mount_membership_fixture.rs"]
 mod mount_membership_fixture;
 #[path = "../src/namespace_fixture.rs"]
@@ -43,7 +42,7 @@ unsafe impl GlobalAlloc for FaultAllocator {
                 .unwrap_or(false)
         {
             assert!(
-                crate::execution::task::current_task().is_none_or(|task| task.handle_unlocked())
+                crate::task::current_task().is_none_or(|task| task.handle_unlocked())
             );
             return core::ptr::null_mut();
         }
@@ -295,8 +294,8 @@ mod file {
 #[test]
 fn sharing_unshare_and_exit_do_not_follow_tgid_or_tcb_lifetime() {
     use core::sync::atomic::Ordering;
-    let parent = crate::execution::task::TaskControlBlock::root(1);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(1);
+    crate::task::enter(&parent);
     let shared = parent.child(2, false, true);
     let private = parent.child(3, true, false);
     let ofd = parent.fd_get(0).unwrap();
@@ -317,8 +316,8 @@ fn sharing_unshare_and_exit_do_not_follow_tgid_or_tcb_lifetime() {
 #[test]
 fn file_table_identity_and_reported_pid_are_independent() {
     use fs::{RecordLockMode::Write, RecordLockRange, vfs};
-    let parent = crate::execution::task::TaskControlBlock::root(11);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(11);
+    crate::task::enter(&parent);
     let shared = parent.child(12, false, true);
     let copied = parent.child(13, true, false);
     let ofd = parent.fd_get(0).unwrap();
@@ -370,8 +369,8 @@ fn file_table_identity_and_reported_pid_are_independent() {
 
 #[test]
 fn shared_unshare_oom_preserves_both_fs_and_files_and_unique_is_allocation_free() {
-    let parent = crate::execution::task::TaskControlBlock::root(21);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(21);
+    crate::task::enter(&parent);
     let shared = parent.child(22, true, true);
     let original = parent.file_lock_owner().identity();
     FAIL_NEXT.set(true);
@@ -413,8 +412,8 @@ fn shared_unshare_oom_preserves_both_fs_and_files_and_unique_is_allocation_free(
 #[test]
 fn every_combined_unshare_allocation_failure_preserves_the_original_two_handles() {
     for stage in 0..5 {
-        let parent = crate::execution::task::TaskControlBlock::root(31);
-        crate::execution::task::enter(&parent);
+        let parent = crate::task::TaskControlBlock::root(31);
+        crate::task::enter(&parent);
         let shared = parent.child(32, true, true);
         let original = parent.file_lock_owner().identity();
         let source = parent.fd_get(0).unwrap();
@@ -445,8 +444,8 @@ fn every_combined_unshare_allocation_failure_preserves_the_original_two_handles(
 #[test]
 fn exec_preserves_unique_posix_owner_and_shared_exec_cannot_release_old_owner_locks() {
     use fs::{RecordLockMode::Write, RecordLockRange, vfs};
-    let parent = crate::execution::task::TaskControlBlock::root(41);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(41);
+    crate::task::enter(&parent);
     let ofd = parent.fd_get(0).unwrap();
     let holder = ofd.lock_holder();
     let range = RecordLockRange {
@@ -507,8 +506,8 @@ fn exec_preserves_unique_posix_owner_and_shared_exec_cannot_release_old_owner_lo
 #[test]
 fn scm_single_fd_reservations_use_the_actual_open_owner_and_publish_only_after_scalar_copy() {
     use std::sync::atomic::Ordering;
-    let parent = crate::execution::task::TaskControlBlock::root(51);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(51);
+    crate::task::enter(&parent);
     let ofd = parent.fd_get(0).unwrap();
     let received = parent.fd_prepare_open(true).unwrap();
     let fd = received.descriptors()[0];
@@ -529,8 +528,8 @@ fn scm_single_fd_reservations_use_the_actual_open_owner_and_publish_only_after_s
 
 #[test]
 fn scm_published_prefix_survives_later_scalar_reservation_cancellation() {
-    let owner = crate::execution::task::TaskControlBlock::root(53);
-    crate::execution::task::enter(&owner);
+    let owner = crate::task::TaskControlBlock::root(53);
+    crate::task::enter(&owner);
     let original = owner.fd_get_raw(0).unwrap();
     let first = owner.fd_prepare_open(true).unwrap();
     let fd = first.descriptors()[0];
@@ -546,8 +545,8 @@ fn scm_published_prefix_survives_later_scalar_reservation_cancellation() {
 
 #[test]
 fn descriptor_lookup_and_contended_lookup_use_the_preallocated_waiter() {
-    let parent = crate::execution::task::TaskControlBlock::root(61);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(61);
+    crate::task::enter(&parent);
     FAIL_NEXT.set(true);
     assert!(parent.fd_get(0).is_some());
     assert!(FAIL_NEXT.replace(false));
@@ -558,7 +557,7 @@ fn descriptor_lookup_and_contended_lookup_use_the_preallocated_waiter() {
     let join = std::thread::spawn({
         let target = target.clone();
         move || {
-            crate::execution::task::enter(&child);
+            crate::task::enter(&child);
             let _binding = target.bind();
             ready_tx.send(()).unwrap();
             start_rx.recv().unwrap();
@@ -578,8 +577,8 @@ fn descriptor_lookup_and_contended_lookup_use_the_preallocated_waiter() {
 
 #[test]
 fn proc_descriptor_allocation_failure_is_distinct_from_retirement() {
-    let parent = crate::execution::task::TaskControlBlock::root(70);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(70);
+    crate::task::enter(&parent);
     let mut failures = 0;
     for stage in 0..8 {
         FAIL_AFTER.set(Some(stage));
@@ -600,8 +599,8 @@ fn proc_descriptor_allocation_failure_is_distinct_from_retirement() {
 
 #[test]
 fn proc_thread_descriptors_follow_own_handle_after_private_copy_and_leader_retirement() {
-    let parent = crate::execution::task::TaskControlBlock::root(71);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(71);
+    crate::task::enter(&parent);
     let target = parent.child(72, false, false);
     target.fd_close(0).unwrap().unwrap();
     assert!(
@@ -644,8 +643,8 @@ fn file_table_lookup_snapshot_and_posix_request_cpu_cost() {
         samples.sort_by(f64::total_cmp);
         println!("{name}: median {:.2} ns", samples[2]);
     }
-    let parent = crate::execution::task::TaskControlBlock::root(71);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(71);
+    crate::task::enter(&parent);
     measure("FileTable fd lookup", || {
         black_box(parent.fd_get(black_box(0)));
     });
@@ -678,8 +677,8 @@ fn file_table_lookup_snapshot_and_posix_request_cpu_cost() {
 fn successful_posix_acquisition_rechecks_closed_or_reused_descriptor_identity() {
     use fs::{RecordLockMode::Write, RecordLockRange, vfs};
     for replace in [false, true] {
-        let parent = crate::execution::task::TaskControlBlock::root(81);
-        crate::execution::task::enter(&parent);
+        let parent = crate::task::TaskControlBlock::root(81);
+        crate::task::enter(&parent);
         let sibling = parent.child(82, true, true);
         let original = parent.fd_get(0).unwrap();
         let range = RecordLockRange {
@@ -730,8 +729,8 @@ fn successful_posix_acquisition_rechecks_closed_or_reused_descriptor_identity() 
 #[test]
 fn open_reservation_is_invisible_exclusive_and_copied_tables_skip_it() {
     use core::sync::atomic::Ordering;
-    let parent = crate::execution::task::TaskControlBlock::root(91);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(91);
+    crate::task::enter(&parent);
     let ofd = parent.fd_get(0).unwrap();
     let before = ofd.descriptor_refs.load(Ordering::Relaxed);
     let reservation = parent.fd_prepare_open(true).unwrap();
@@ -764,8 +763,8 @@ fn open_reservation_is_invisible_exclusive_and_copied_tables_skip_it() {
 
 #[test]
 fn open_reservation_rollback_pins_original_owner_across_handle_unshare() {
-    let parent = crate::execution::task::TaskControlBlock::root(94);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(94);
+    crate::task::enter(&parent);
     let shared = parent.child(95, false, true);
     let reservation = parent.fd_prepare_open(false).unwrap();
     parent.exec_files();
@@ -779,8 +778,8 @@ fn open_reservation_rollback_pins_original_owner_across_handle_unshare() {
 
 #[test]
 fn open_reservation_backing_oom_has_no_slot_and_rollback_is_allocation_free() {
-    let parent = crate::execution::task::TaskControlBlock::root(96);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(96);
+    crate::task::enter(&parent);
     // 0..63 在同一已物化 radix leaf；第64个 slot 必须准备下一 leaf。
     let mut reservations = Vec::new();
     for _ in 3..64 {
@@ -802,8 +801,8 @@ fn open_reservation_backing_oom_has_no_slot_and_rollback_is_allocation_free() {
 #[test]
 fn received_actual_ofd_replaces_target_flags_and_retires_old_descriptor_outside_owner() {
     use core::sync::atomic::Ordering;
-    let target = crate::execution::task::TaskControlBlock::root(97);
-    crate::execution::task::enter(&target);
+    let target = crate::task::TaskControlBlock::root(97);
+    crate::task::enter(&target);
     let source = target.fd_get(0).unwrap();
     let old = target.fd_get(1).unwrap();
     let source_refs = source.descriptor_refs.load(Ordering::Relaxed);
@@ -825,8 +824,8 @@ fn received_actual_ofd_replaces_target_flags_and_retires_old_descriptor_outside_
 #[test]
 fn receive_cannot_replace_an_unpublished_reservation_and_lowest_slot_skips_it() {
     use core::sync::atomic::Ordering;
-    let target = crate::execution::task::TaskControlBlock::root(98);
-    crate::execution::task::enter(&target);
+    let target = crate::task::TaskControlBlock::root(98);
+    crate::task::enter(&target);
     let source = target.fd_get(0).unwrap();
     let before = source.descriptor_refs.load(Ordering::Relaxed);
     let reservation = target.fd_prepare_open(false).unwrap();
@@ -846,8 +845,8 @@ fn receive_cannot_replace_an_unpublished_reservation_and_lowest_slot_skips_it() 
 #[test]
 fn receive_backing_oom_preserves_source_and_target_descriptors() {
     use core::sync::atomic::Ordering;
-    let target = crate::execution::task::TaskControlBlock::root(99);
-    crate::execution::task::enter(&target);
+    let target = crate::task::TaskControlBlock::root(99);
+    crate::task::enter(&target);
     let source = target.fd_get(0).unwrap();
     let before = source.descriptor_refs.load(Ordering::Relaxed);
     FAIL_NEXT.set(true);
@@ -863,8 +862,8 @@ fn receive_backing_oom_preserves_source_and_target_descriptors() {
 
 #[test]
 fn paired_open_reservations_remain_invisible_and_publish_without_allocation() {
-    let parent = crate::execution::task::TaskControlBlock::root(121);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(121);
+    crate::task::enter(&parent);
     let first = parent.fd_get(0).unwrap();
     let second = parent.fd_get(1).unwrap();
     let reservation = parent.fd_prepare_opens::<2>(true).unwrap();
@@ -893,8 +892,8 @@ fn paired_open_reservations_remain_invisible_and_publish_without_allocation() {
 
 #[test]
 fn paired_open_second_slot_oom_rolls_back_first_slot_on_original_owner() {
-    let parent = crate::execution::task::TaskControlBlock::root(123);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(123);
+    crate::task::enter(&parent);
     let mut occupied = Vec::new();
     for _ in 3..63 {
         occupied.push(parent.fd_prepare_open(false).unwrap());
@@ -912,8 +911,8 @@ fn paired_open_second_slot_oom_rolls_back_first_slot_on_original_owner() {
 
 #[test]
 fn paired_open_rollback_cannot_cancel_new_owner_reusing_both_numbers() {
-    let parent = crate::execution::task::TaskControlBlock::root(124);
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root(124);
+    crate::task::enter(&parent);
     let shared = parent.child(125, false, true);
     let reservation = parent.fd_prepare_opens::<2>(false).unwrap();
     parent.exec_files();
@@ -931,8 +930,8 @@ fn paired_open_rollback_cannot_cancel_new_owner_reusing_both_numbers() {
 
 #[test]
 fn actual_path_descriptor_is_available_to_raw_lookup_and_dup_but_not_io_lookup() {
-    let owner = crate::execution::task::TaskControlBlock::root(126);
-    crate::execution::task::enter(&owner);
+    let owner = crate::task::TaskControlBlock::root(126);
+    crate::task::enter(&owner);
     let path =
         file::OpenFileDescription::device(0, 0x200000, owner.fd_get(0).unwrap().opened_ref())
             .unwrap();
@@ -956,8 +955,8 @@ fn actual_path_descriptor_is_available_to_raw_lookup_and_dup_but_not_io_lookup()
 
 #[test]
 fn actual_two_descriptor_io_capture_rejects_path_and_releases_table_before_operation() {
-    let owner = crate::execution::task::TaskControlBlock::root(121);
-    crate::execution::task::enter(&owner);
+    let owner = crate::task::TaskControlBlock::root(121);
+    crate::task::enter(&owner);
     let regular = owner.fd_get(0).unwrap();
     let path = file::OpenFileDescription::device(0, 0x200000, regular.opened_ref()).unwrap();
     let fd = owner.fd_allocate(path, 0, false).unwrap();
@@ -983,8 +982,7 @@ fn actual_two_descriptor_io_capture_rejects_path_and_releases_table_before_opera
         .unwrap();
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     #[path = "../../../kernel/src/execution/sync"]
     pub(crate) mod sync {
         mod wait_completion;
@@ -1051,7 +1049,7 @@ pub(crate) mod execution {
             struct Thread {
                 files: FileTableHandle,
                 fs_namespaces: FsNamespaceHandle,
-                file_wait: Mutex<Option<crate::execution::sync::TaskMutexWaitPreparation>>,
+                file_wait: Mutex<Option<crate::sync::TaskMutexWaitPreparation>>,
             }
             struct Execution {
                 tid: core::sync::atomic::AtomicUsize,
@@ -1098,7 +1096,7 @@ pub(crate) mod execution {
                 fn may_inspect_thread(&self, _: &Self) -> bool {
                     unreachable!("FSCREDS inspection belongs to credential/PIDFD fixtures")
                 }
-                fn credential_guard(&self) -> &crate::execution::sync::TaskMutex<()> {
+                fn credential_guard(&self) -> &crate::sync::TaskMutex<()> {
                     unreachable!("exec authorization belongs to credential/PIDFD fixtures")
                 }
                 pub(crate) fn tgid(&self) -> usize {
@@ -1124,7 +1122,7 @@ pub(crate) mod execution {
                 }
                 fn file_wait(
                     &self,
-                ) -> &Mutex<Option<crate::execution::sync::TaskMutexWaitPreparation>>
+                ) -> &Mutex<Option<crate::sync::TaskMutexWaitPreparation>>
                 {
                     &self.thread.file_wait
                 }
@@ -1165,7 +1163,7 @@ pub(crate) mod execution {
                         thread: Thread {
                             files,
                             file_wait: Mutex::new(Some(
-                                crate::execution::sync::TaskMutexWaitPreparation::prepare()
+                                crate::sync::TaskMutexWaitPreparation::prepare()
                                     .unwrap(),
                             )),
                             fs_namespaces: namespaces::initial_fs_namespace_handle(Arc::new(
@@ -1204,7 +1202,7 @@ pub(crate) mod execution {
                             )
                             .unwrap(),
                             file_wait: Mutex::new(Some(
-                                crate::execution::sync::TaskMutexWaitPreparation::prepare()
+                                crate::sync::TaskMutexWaitPreparation::prepare()
                                     .unwrap(),
                             )),
                         },
@@ -1236,7 +1234,7 @@ pub(crate) mod execution {
             }
         }
     }
-}
+
 
 pub(crate) mod devices {
     pub(crate) mod tty {
@@ -1249,5 +1247,3 @@ pub(crate) mod devices {
     }
 }
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;

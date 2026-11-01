@@ -42,7 +42,7 @@ fn ordered(source: &SourceFile, function: &str, clauses: &[&str], errors: &mut V
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     require(
         sources,
-        "tools/source-view/linuxd/task/model/model/model.rs",
+        "system/linuxd/src/task/model.rs",
         &[
             "syscall_restart: Mutex<SyscallRestartState>",
             "restart.arm(SyscallRestart",
@@ -86,7 +86,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/syscall/timer/timer/timer.rs",
+        "system/linuxd/src/syscall/timer.rs",
         &[
             "SyscallRestartBlock::Sleep",
             "deadline: deadline_ns",
@@ -171,7 +171,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/task/process_table/wait_registry/wait_registry/wait_registry.rs",
+        "system/linuxd/src/task/process_table/wait_registry.rs",
         &["futex_operations: [crate::execution::sync::TaskMutex<()>; WAIT_SHARD_COUNT]"],
         errors,
     );

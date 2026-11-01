@@ -3,7 +3,7 @@ use super::SourceFile;
 use quote::ToTokens;
 use syn::Item;
 const HANDLERS: &str = "system/linuxd/src/task/model/signal_handlers.rs";
-const MODEL: &str = "tools/source-view/linuxd/task/model/model/model.rs";
+const MODEL: &str = "system/linuxd/src/task/model.rs";
 const DELIVERY: &str = "system/linuxd/src/task/model/signal_state.rs";
 const EXEC: &str = "system/linuxd/src/task/model/process_exec.rs";
 const EXIT: &str = "system/linuxd/src/task/process_table/process_exit.rs";
@@ -69,7 +69,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let handlers = source(sources, HANDLERS);
     let signal_file = source(sources, "system/linuxd/src/file/signalfd.rs");
     let ofd = source(sources, "system/linuxd/src/file/mod.rs");
-    let epoll = source(sources, "tools/source-view/linuxd/file/epoll/epoll/epoll.rs");
+    let epoll = source(sources, "system/linuxd/src/file/epoll.rs");
     let read = source(sources, "system/linuxd/src/syscall/fs/io/sequential/read.rs");
     let wait = source(sources, "system/linuxd/src/syscall/poll/wait_keys.rs");
     if field(signal_file, "SignalFd", "mask").as_deref() != Some("AtomicU64")
@@ -159,7 +159,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         || !handlers
             .text
             .contains("retired.append(pending.discard(bit))")
-        || !source(sources, "tools/source-view/linuxd/task/process_table/signal/signal/signal.rs")
+        || !source(sources, "system/linuxd/src/task/process_table/signal.rs")
             .text
             .contains("drop(graph);")
     {
@@ -226,7 +226,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         .contains("discard_timer_signals")
         || !source(
             sources,
-            "tools/source-view/linuxd/task/process_table/timer_queue/timer_queue/timer_queue.rs",
+            "system/linuxd/src/task/process_table/timer_queue.rs",
         )
         .text
         .contains("discard_timer_signals(threads.values())")
@@ -281,7 +281,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             errors.push("sighand: one retirement must detach consequences/indexes without final Drop under graph".into());
         }
     }
-    let graph = source(sources, "tools/source-view/linuxd/task/process_table/process_table/process_table.rs");
+    let graph = source(sources, "system/linuxd/src/task/process_table.rs");
     if field(graph, "ThreadIndex", "vfork_parent").as_deref()
         != Some("Option < Arc < TaskControlBlock > >")
         || field(graph, "ProcessNode", "vfork_parent").is_some()
@@ -359,8 +359,8 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors.push("sighand: SIGCHLD actual parent/adoption recipients prepare outside graph and revalidate same child Process before publication".into());
     }
     let child_compact: String = child.text.split_whitespace().collect();
-    let graph = source(sources, "tools/source-view/linuxd/task/process_table/process_table/process_table.rs");
-    let clone = source(sources, "tools/source-view/linuxd/task/process_table/vfork/vfork/vfork.rs");
+    let graph = source(sources, "system/linuxd/src/task/process_table.rs");
+    let clone = source(sources, "system/linuxd/src/task/process_table/vfork.rs");
     let identity = source(
         sources,
         "system/linuxd/src/task/process_table/exec_identity.rs",
@@ -368,7 +368,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let identity_compact: String = identity.text.split_whitespace().collect();
     let wait = source(
         sources,
-        "tools/source-view/linuxd/task/process_table/wait_child/wait_child/wait_child.rs",
+        "system/linuxd/src/task/process_table/wait_child.rs",
     );
     if field(graph, "ProcessNode", "exit_signal").as_deref() != Some("u8")
         || field(graph, "ProcessNode", "exec_generation").as_deref() != Some("u64")
@@ -476,7 +476,7 @@ mod tests {
         let mut sources = fixture();
         let source = sources
             .iter_mut()
-            .find(|source| source.relative == "tools/source-view/linuxd/file/epoll/epoll/epoll.rs")
+            .find(|source| source.relative == "system/linuxd/src/file/epoll.rs")
             .unwrap();
         source.text = source.text.replace(
             "!matches!(&interest.ofd.kind, OpenFileKind::SignalFd(_))",

@@ -3,7 +3,7 @@ use syn::{ImplItem, Item, ItemConst, ItemImpl, Lit, Type};
 
 use super::SourceFile;
 
-const SOURCE: &str = "tools/source-view/devmgr/drivers/virtio/blk/blk/blk.rs";
+const SOURCE: &str = "system/devmgr/src/drivers/virtio/blk.rs";
 const TASK_SOURCE: &str = "system/linuxd/src/task/mod.rs";
 const INTERRUPT_SOURCE: &str = "kernel/src/arch/riscv64/interrupt.rs";
 const DELAYED_POLLS: usize = 64;

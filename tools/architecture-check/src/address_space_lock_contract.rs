@@ -3,7 +3,7 @@ use syn::Item;
 
 use super::SourceFile;
 
-const ADDRESS_SPACE: &str = "tools/source-view/linuxd/task/model/address_space/address_space/address_space.rs";
+const ADDRESS_SPACE: &str = "system/linuxd/src/task/model/address_space.rs";
 const TASK_ACCESS: &str = "system/linuxd/src/task/model/address_space/task_access.rs";
 const EXIT: &str = "system/linuxd/src/task/process_table/process_exit.rs";
 const EXIT_MEMORY: &str = "system/linuxd/src/task/model/process_exit.rs";

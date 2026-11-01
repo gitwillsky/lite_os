@@ -17,7 +17,7 @@ mod system {
 
 #[path = "../../../kernel/src/syscall"]
 mod syscall {
-    pub(crate) use crate::execution::timer;
+    pub(crate) use crate::timer;
     pub(crate) mod signal;
     pub(crate) use syscall_abi::errno;
 }
@@ -28,17 +28,17 @@ use syscall::signal;
     reason = "TLS fixture only observes Arc lifetime on one host thread"
 )]
 fn install(
-    result: Result<usize, crate::execution::task::SignalFrameRestoreError>,
+    result: Result<usize, crate::task::SignalFrameRestoreError>,
     lookup_oom: bool,
-) -> Arc<crate::execution::task::Task> {
-    let task = Arc::new(crate::execution::task::Task {
+) -> Arc<crate::task::Task> {
+    let task = Arc::new(crate::task::Task {
         result,
         restart_pending: Cell::new(true),
         lookup_oom,
         looked_up: RefCell::new(None),
         signal: RefCell::new(None),
     });
-    crate::execution::task::CURRENT.with(|slot| *slot.borrow_mut() = Some(task.clone()));
+    crate::task::CURRENT.with(|slot| *slot.borrow_mut() = Some(task.clone()));
     task
 }
 
@@ -55,7 +55,7 @@ fn restored_return_register_is_preserved_without_fault_lookup() {
 fn bad_frame_forwards_failure_stage_address_and_forces_sigsegv() {
     for address in [None, Some(0x123456)] {
         let task = install(
-            Err(crate::execution::task::SignalFrameRestoreError::Invalid { address }),
+            Err(crate::task::SignalFrameRestoreError::Invalid { address }),
             false,
         );
         assert_eq!(signal::sys_rt_sigreturn(), 0);
@@ -75,11 +75,11 @@ fn bad_frame_forwards_failure_stage_address_and_forces_sigsegv() {
 fn copyin_and_fault_lookup_oom_kill_without_sigsegv_or_arc_leak() {
     for (result, lookup_oom) in [
         (
-            Err(crate::execution::task::SignalFrameRestoreError::OutOfMemory),
+            Err(crate::task::SignalFrameRestoreError::OutOfMemory),
             false,
         ),
         (
-            Err(crate::execution::task::SignalFrameRestoreError::Invalid { address: Some(1) }),
+            Err(crate::task::SignalFrameRestoreError::Invalid { address: Some(1) }),
             true,
         ),
     ] {
@@ -97,7 +97,7 @@ fn copyin_and_fault_lookup_oom_kill_without_sigsegv_or_arc_leak() {
     }
 }
 
-pub(crate) mod execution {
+
     pub(crate) mod sync {
         pub(crate) enum WaitResult {
             OutOfMemory,
@@ -269,7 +269,7 @@ pub(crate) mod execution {
         ) -> Result<(usize, PendingSignal), SignalWaitError> {
             unreachable!("wait_for_signal is outside the signal-return ABI fixture contract")
         }
-        pub(crate) fn wait_for_signal_delivery(_: u64) -> crate::execution::sync::WaitResult {
+        pub(crate) fn wait_for_signal_delivery(_: u64) -> crate::sync::WaitResult {
             unreachable!(
                 "wait_for_signal_delivery is outside the signal-return ABI fixture contract"
             )
@@ -290,7 +290,5 @@ pub(crate) mod execution {
             unreachable!("get_time_ns is outside the signal-return ABI fixture contract")
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

@@ -4,8 +4,7 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/pipe_fixture.rs"]
 mod ipc;
 #[path = "../src/namespace_fixture.rs"]
@@ -118,7 +117,7 @@ fn normal_worker_reclaims_below_limit_cycles_without_quota_recovery_or_new_alloc
     dead.enqueue(rights(core::slice::from_ref(&file_dead), 8105));
     live.enqueue(rights(core::slice::from_ref(&file_live), 8105));
     drop(file_dead);
-    let gate = crate::execution::sync::TaskMutexWaitPreparation::prepare().unwrap();
+    let gate = crate::sync::TaskMutexWaitPreparation::prepare().unwrap();
     let wait_target = interruptible_target::Target::new();
     let _binding = wait_target.bind();
     allocation_failure::fail_next();

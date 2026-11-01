@@ -30,7 +30,7 @@ static ALLOCATOR: FaultAllocator = FaultAllocator;
 #[path = "../src/interruptible_event_target.rs"]
 mod scheduler_target;
 mod memory {
-    pub(crate) use crate::execution::task::model::MemorySet;
+    pub(crate) use crate::task::model::MemorySet;
     #[derive(Clone, Copy)]
     pub(crate) struct UserFaultLimits;
     #[derive(Debug)]
@@ -39,8 +39,7 @@ mod memory {
     }
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     #[path = "../../../kernel/src/execution/sync"]
     pub(crate) mod sync {
         mod wait_completion;
@@ -59,9 +58,9 @@ pub(crate) mod execution {
             pub(crate) fn futex_wake_with_key(
                 count: usize,
                 bitset: u32,
-                preparation: &mut crate::execution::sync::TaskMutexWaitPreparation,
+                preparation: &mut crate::sync::TaskMutexWaitPreparation,
                 with_key: impl FnOnce(
-                    &mut crate::execution::sync::TaskMutexWaitPreparation,
+                    &mut crate::sync::TaskMutexWaitPreparation,
                     &mut dyn FnMut(usize),
                 ) -> Result<(), ()>,
             ) -> Result<usize, ()> {
@@ -120,7 +119,7 @@ pub(crate) mod execution {
                 }
             }
             pub(crate) struct AddressSpace {
-                memory_set: crate::execution::sync::TaskMutex<MemorySet>,
+                memory_set: crate::sync::TaskMutex<MemorySet>,
                 dumpability: dumpability::Dumpability,
             }
             #[path = "address_space/dumpability.rs"]
@@ -139,7 +138,7 @@ pub(crate) mod execution {
             struct Thread {
                 mm: thread_mm::MmHandle,
                 memory_cleanup_wait:
-                    Mutex<Option<crate::execution::sync::TaskMutexWaitPreparation>>,
+                    Mutex<Option<crate::sync::TaskMutexWaitPreparation>>,
                 clear_child_tid: Mutex<Option<usize>>,
             }
             pub(crate) struct TaskControlBlock {
@@ -211,7 +210,7 @@ pub(crate) mod execution {
                         thread: Thread {
                             mm,
                             memory_cleanup_wait: Mutex::new(Some(
-                                crate::execution::sync::TaskMutexWaitPreparation::prepare()
+                                crate::sync::TaskMutexWaitPreparation::prepare()
                                     .unwrap(),
                             )),
                             clear_child_tid: Mutex::new(tid),
@@ -230,7 +229,7 @@ pub(crate) mod execution {
                         thread: Thread {
                             mm,
                             memory_cleanup_wait: Mutex::new(Some(
-                                crate::execution::sync::TaskMutexWaitPreparation::prepare()
+                                crate::sync::TaskMutexWaitPreparation::prepare()
                                     .unwrap(),
                             )),
                             clear_child_tid: Mutex::new(None),
@@ -257,7 +256,7 @@ pub(crate) mod execution {
                 (
                     Arc::new(AddressSpace {
                         dumpability: dumpability::Dumpability::new(true),
-                        memory_set: crate::execution::sync::TaskMutex::new(MemorySet {
+                        memory_set: crate::sync::TaskMutex::new(MemorySet {
                             observations: observations.clone(),
                             writable,
                             readable: true,
@@ -465,7 +464,5 @@ pub(crate) mod execution {
             }
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

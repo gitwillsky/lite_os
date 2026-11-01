@@ -4,8 +4,7 @@
 
 extern crate alloc;
 
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 
 #[path = "../../../kernel/src/arch/riscv64"]
 mod arch {

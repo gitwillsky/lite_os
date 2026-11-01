@@ -5,11 +5,11 @@ use super::SourceFile;
 
 const TRAP_SOURCE: &str = "kernel/src/bootstrap/mod.rs";
 const CPU_DEFERRED_SOURCE: &str = "kernel/src/execution/deferred.rs";
-const PROCESS_TABLE_SOURCE: &str = "tools/source-view/linuxd/task/process_table/process_table/process_table.rs";
+const PROCESS_TABLE_SOURCE: &str = "system/linuxd/src/task/process_table.rs";
 const CONTEXT_SWITCH_SOURCE: &str = "kernel/src/execution/task/process_table/context_switch.rs";
 const VIRTIO_LOCKS: &[(&str, &str, &str, &str)] = &[
     (
-        "tools/source-view/devmgr/drivers/virtio/net/net/net.rs",
+        "system/devmgr/src/drivers/virtio/net.rs",
         "VirtIONetworkDevice",
         "queues",
         "Mutex < QueueState >",
@@ -21,7 +21,7 @@ const VIRTIO_LOCKS: &[(&str, &str, &str, &str)] = &[
         "Mutex < EventQueueState >",
     ),
     (
-        "tools/source-view/devmgr/drivers/virtio/gpu/gpu/gpu.rs",
+        "system/devmgr/src/drivers/virtio/gpu.rs",
         "VirtIOGpuDevice",
         "control",
         "Mutex < ControlQueue >",
@@ -752,7 +752,7 @@ mod tests {
         let mut sources = repository_sources();
         mutate(
             &mut sources,
-            "tools/source-view/devmgr/drivers/virtio/net/net/net.rs",
+            "system/devmgr/src/drivers/virtio/net.rs",
             "        let status = self",
             "        self.queues.lock();\n        let status = self",
         );

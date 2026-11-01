@@ -7,8 +7,7 @@ extern crate alloc;
 #[path = "../src/ipc_namespace_fixture.rs"]
 mod ipc;
 
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/mount_membership_fixture.rs"]
 mod mount_membership_fixture;
 #[path = "../src/namespace_fixture.rs"]
@@ -35,7 +34,7 @@ unsafe impl GlobalAlloc for FaultAllocator {
         {
             PROBE_UNLOCKED.with(|value| {
                 value.set(
-                    crate::execution::task::current_task()
+                    crate::task::current_task()
                         .is_none_or(|task| task.credential_unlocked()),
                 )
             });
@@ -151,12 +150,12 @@ mod credential_syscall;
 #[test]
 fn scheduler_and_proc_use_permitted_and_effective_subset_respectively() {
     use syscall_abi::capability::{Capability, CapabilitySets, VALID_MASK};
-    let target = crate::execution::task::TaskControlBlock::root_with_pid(82);
-    let caller = crate::execution::task::TaskControlBlock::root_with_pid(81);
+    let target = crate::task::TaskControlBlock::root_with_pid(82);
+    let caller = crate::task::TaskControlBlock::root_with_pid(81);
     caller.set_capabilities(CapabilitySets::default()).unwrap();
     assert_eq!(caller.scheduler_permission(&target), None);
     assert!(!caller.proc_permission(&target));
-    let caller = crate::execution::task::TaskControlBlock::root_with_pid(83);
+    let caller = crate::task::TaskControlBlock::root_with_pid(83);
     caller
         .set_capabilities(CapabilitySets {
             effective: 0,
@@ -166,7 +165,7 @@ fn scheduler_and_proc_use_permitted_and_effective_subset_respectively() {
         .unwrap();
     assert_eq!(caller.scheduler_permission(&target), Some(false));
     assert!(!caller.proc_permission(&target));
-    let caller = crate::execution::task::TaskControlBlock::root_with_pid(84);
+    let caller = crate::task::TaskControlBlock::root_with_pid(84);
     caller.capability_prctl(28, 4, [0; 3]).unwrap();
     caller.set_credential_id(true, 1000).unwrap();
     let caps = Capability::SYS_NICE.mask() | Capability::SYS_PTRACE.mask();
@@ -187,13 +186,13 @@ fn scheduler_and_proc_use_permitted_and_effective_subset_respectively() {
 #[test]
 fn exec_prepared_ids_ambient_nnp_secure_and_parent_death_commit_together() {
     use syscall_abi::capability::{Capability, CapabilitySets, VALID_MASK};
-    let root = crate::execution::task::TaskControlBlock::root();
+    let root = crate::task::TaskControlBlock::root();
     root.set_capabilities(CapabilitySets::default()).unwrap();
     let facts = root.exec_facts(0o755, 0, 0);
     assert!(!facts.secure);
     assert_eq!(root.capability_snapshot().sets.permitted, VALID_MASK);
     assert_eq!(root.pdeath(), 0);
-    let root = crate::execution::task::TaskControlBlock::root();
+    let root = crate::task::TaskControlBlock::root();
     root.set_credential_res_ids(true, [1000, 0, 0]).unwrap();
     root.set_capabilities(CapabilitySets::default()).unwrap();
     root.enable_no_new_privileges();
@@ -201,7 +200,7 @@ fn exec_prepared_ids_ambient_nnp_secure_and_parent_death_commit_together() {
     assert_eq!([facts.uid, facts.euid], [1000; 2]);
     assert!(facts.secure);
     assert_eq!(root.credential_res_ids(true), [1000; 3]);
-    let user = crate::execution::task::TaskControlBlock::root();
+    let user = crate::task::TaskControlBlock::root();
     user.set_credential_id(false, 1000).unwrap();
     user.set_credential_id(true, 1000).unwrap();
     user.arm_pdeath();
@@ -209,7 +208,7 @@ fn exec_prepared_ids_ambient_nnp_secure_and_parent_death_commit_together() {
     assert_eq!([facts.gid, facts.egid], [1000; 2]);
     assert!(!facts.secure);
     assert_eq!(user.pdeath(), 9);
-    let user = crate::execution::task::TaskControlBlock::root();
+    let user = crate::task::TaskControlBlock::root();
     let keep = Capability::NET_BIND_SERVICE.mask();
     user.set_supplementary_groups(vec![2000]).unwrap();
     user.set_credential_id(false, 1000).unwrap();
@@ -300,8 +299,8 @@ fn inode_dac_and_sticky_policy_are_capability_based() {
 #[test]
 fn production_capability_syscall_preserves_version_pid_and_copy_error_order() {
     use syscall_abi::capability::{CapabilitySets, VERSION_3};
-    let caller = crate::execution::task::TaskControlBlock::root();
-    crate::execution::task::enter(&caller);
+    let caller = crate::task::TaskControlBlock::root();
+    crate::task::enter(&caller);
     let mut bytes = [0u8; 32];
     let header = bytes.as_mut_ptr() as usize;
     caller.memory(&mut bytes[..4]); // valid version word, inaccessible PID
@@ -367,7 +366,7 @@ fn production_capability_syscall_preserves_version_pid_and_copy_error_order() {
 
 #[test]
 fn raw_credential_transition_does_not_change_siblings_or_shared_fs_context() {
-    let parent = crate::execution::task::TaskControlBlock::root();
+    let parent = crate::task::TaskControlBlock::root();
     parent.set_supplementary_groups(vec![41, 3, 41, 4]).unwrap();
     let sibling = parent.sibling();
     assert_eq!(parent.replace_umask(0o077), 0o022);
@@ -390,15 +389,15 @@ fn raw_credential_transition_does_not_change_siblings_or_shared_fs_context() {
     assert!(sibling.may_signal_thread(&parent));
     assert!(sibling.signal_allowed_for_test(parent.process()));
     assert!(parent.may_signal_thread(&sibling));
-    let other = crate::execution::task::TaskControlBlock::root_with_pid(7);
+    let other = crate::task::TaskControlBlock::root_with_pid(7);
     assert!(!sibling.may_signal_thread(&other));
     assert!(!sibling.signal_allowed_for_test(other.process()));
 }
 
 #[test]
 fn fs_context_sharing_detachment_and_oom_are_one_owner_transaction() {
-    let parent = crate::execution::task::TaskControlBlock::root();
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root();
+    crate::task::enter(&parent);
     let shared = parent.sibling();
     let copied = parent.sibling_with_fs(false);
     shared.set_working_directory(Arc::new(fs::OpenedFile(3)));
@@ -438,7 +437,7 @@ fn fs_context_sharing_detachment_and_oom_are_one_owner_transaction() {
 
 #[test]
 fn fs_root_shares_copies_detaches_and_retires_with_the_same_context_owner() {
-    let parent = crate::execution::task::TaskControlBlock::root();
+    let parent = crate::task::TaskControlBlock::root();
     let shared = parent.sibling();
     let copied = parent.sibling_with_fs(false);
     let root = Arc::new(fs::OpenedFile(8));
@@ -461,7 +460,7 @@ fn fs_root_shares_copies_detaches_and_retires_with_the_same_context_owner() {
 
 #[test]
 fn exited_tcb_observer_does_not_retain_fs_owner_or_shared_reference_count() {
-    let parent = crate::execution::task::TaskControlBlock::root();
+    let parent = crate::task::TaskControlBlock::root();
     let private = parent.sibling_with_fs(false);
     let directory = Arc::new(fs::OpenedFile(3));
     let directory_weak = Arc::downgrade(&directory);
@@ -484,8 +483,8 @@ fn exited_tcb_observer_does_not_retain_fs_owner_or_shared_reference_count() {
 
 #[test]
 fn invalid_ids_groups_sorted_duplicate_projection_and_saved_id_rules_are_atomic() {
-    use crate::execution::task::CredentialUpdateError as Error;
-    let parent = crate::execution::task::TaskControlBlock::root();
+    use crate::task::CredentialUpdateError as Error;
+    let parent = crate::task::TaskControlBlock::root();
     assert_eq!(
         parent.set_credential_id(true, u32::MAX),
         Err(Error::Invalid)
@@ -516,11 +515,11 @@ fn invalid_ids_groups_sorted_duplicate_projection_and_saved_id_rules_are_atomic(
 
 #[test]
 fn proc_thread_directory_permission_uses_actual_target_credentials() {
-    let target = crate::execution::task::TaskControlBlock::root_with_pid(7);
+    let target = crate::task::TaskControlBlock::root_with_pid(7);
     let worker = target.sibling();
     worker.set_credential_id(false, 1000).unwrap();
     worker.set_credential_id(true, 1000).unwrap();
-    let observer = crate::execution::task::TaskControlBlock::root_with_pid(9);
+    let observer = crate::task::TaskControlBlock::root_with_pid(9);
     observer.set_credential_id(false, 1000).unwrap();
     observer.set_credential_id(true, 1000).unwrap();
     worker.set_user_dumpable(true);
@@ -531,8 +530,8 @@ fn proc_thread_directory_permission_uses_actual_target_credentials() {
 
 #[test]
 fn filesystem_identity_is_independent_and_commits_security_without_allocation() {
-    let caller = crate::execution::task::TaskControlBlock::root();
-    crate::execution::task::enter(&caller);
+    let caller = crate::task::TaskControlBlock::root();
+    crate::task::enter(&caller);
     let sibling = caller.sibling();
     caller.set_supplementary_groups(vec![3, 7]).unwrap();
     caller.set_user_dumpable(true);
@@ -569,8 +568,8 @@ fn filesystem_identity_is_independent_and_commits_security_without_allocation() 
 
 #[test]
 fn rejected_identity_update_preserves_dumpability_parent_death_and_all_ids() {
-    use crate::execution::task::CredentialUpdateError as Error;
-    let caller = crate::execution::task::TaskControlBlock::root();
+    use crate::task::CredentialUpdateError as Error;
+    let caller = crate::task::TaskControlBlock::root();
     caller.set_credential_id(true, 1000).unwrap();
     caller.set_user_dumpable(true);
     caller.arm_pdeath();
@@ -590,7 +589,7 @@ fn rejected_identity_update_preserves_dumpability_parent_death_and_all_ids() {
 
 #[test]
 fn exec_fs_only_change_does_not_reenable_dumpability_after_credential_commit() {
-    let caller = crate::execution::task::TaskControlBlock::root();
+    let caller = crate::task::TaskControlBlock::root();
     caller.set_filesystem_id(true, 123);
     caller.set_user_dumpable(true);
     caller.arm_pdeath();
@@ -607,10 +606,10 @@ fn exec_fs_only_change_does_not_reenable_dumpability_after_credential_commit() {
 #[test]
 fn proc_fscreds_uses_caller_fs_ids_and_requires_dumpable_target() {
     use syscall_abi::capability::CapabilitySets;
-    let target = crate::execution::task::TaskControlBlock::root_with_pid(7);
+    let target = crate::task::TaskControlBlock::root_with_pid(7);
     target.set_credential_id(false, 1000).unwrap();
     target.set_credential_id(true, 1000).unwrap();
-    let observer = crate::execution::task::TaskControlBlock::root_with_pid(9);
+    let observer = crate::task::TaskControlBlock::root_with_pid(9);
     observer.set_filesystem_id(false, 1000);
     observer.set_filesystem_id(true, 1000);
     observer
@@ -626,8 +625,8 @@ fn proc_fscreds_uses_caller_fs_ids_and_requires_dumpable_target() {
 #[test]
 fn robust_read_uses_real_ids_and_permitted_capabilities_in_the_actual_authorization_owner() {
     use syscall_abi::capability::{CapabilitySets, VALID_MASK};
-    let target = crate::execution::task::TaskControlBlock::root_with_pid(101);
-    let caller = crate::execution::task::TaskControlBlock::root_with_pid(102);
+    let target = crate::task::TaskControlBlock::root_with_pid(101);
+    let caller = crate::task::TaskControlBlock::root_with_pid(102);
     caller
         .set_capabilities(CapabilitySets {
             effective: 0,
@@ -640,13 +639,13 @@ fn robust_read_uses_real_ids_and_permitted_capabilities_in_the_actual_authorizat
     target.set_credential_id(false, 1000).unwrap();
     target.set_credential_id(true, 1000).unwrap();
     target.set_user_dumpable(true);
-    let fs = crate::execution::task::TaskControlBlock::root_with_pid(103);
+    let fs = crate::task::TaskControlBlock::root_with_pid(103);
     fs.set_filesystem_id(false, 1000);
     fs.set_filesystem_id(true, 1000);
     fs.set_capabilities(CapabilitySets::default()).unwrap();
     assert!(fs.proc_thread_permission(&target));
     assert!(!fs.observed_robust_access(&target));
-    let real = crate::execution::task::TaskControlBlock::root_with_pid(104);
+    let real = crate::task::TaskControlBlock::root_with_pid(104);
     real.set_credential_res_ids(false, [1000, u32::MAX, u32::MAX])
         .unwrap();
     real.set_credential_res_ids(true, [1000, u32::MAX, u32::MAX])
@@ -666,8 +665,8 @@ fn robust_read_uses_real_ids_and_permitted_capabilities_in_the_actual_authorizat
 
 #[test]
 fn retired_nondumpable_mm_requires_initial_namespace_ptrace_instead_of_a_missing_mm_bypass() {
-    let caller = crate::execution::task::TaskControlBlock::root_with_pid(105);
-    let target = crate::execution::task::TaskControlBlock::root_with_pid(106);
+    let caller = crate::task::TaskControlBlock::root_with_pid(105);
+    let target = crate::task::TaskControlBlock::root_with_pid(106);
     let parent = caller.namespace_authority();
     let child = namespace::UserNamespace::child(
         &parent,
@@ -701,9 +700,9 @@ fn retired_nondumpable_mm_requires_initial_namespace_ptrace_instead_of_a_missing
 
 #[test]
 fn group_owner_oom_is_outside_credential_lock_and_preserves_all_old_snapshots() {
-    use crate::execution::task::CredentialUpdateError as Error;
-    let parent = crate::execution::task::TaskControlBlock::root();
-    crate::execution::task::enter(&parent);
+    use crate::task::CredentialUpdateError as Error;
+    let parent = crate::task::TaskControlBlock::root();
+    crate::task::enter(&parent);
     parent.set_supplementary_groups(vec![30, 4]).unwrap();
     let before = parent.observed_credentials();
     let identity = parent.access_identity(true);
@@ -724,7 +723,7 @@ fn group_owner_oom_is_outside_credential_lock_and_preserves_all_old_snapshots() 
 
 #[test]
 fn process_leader_alias_survives_leader_drop_and_is_not_a_sibling_credential_owner() {
-    let parent = crate::execution::task::TaskControlBlock::root();
+    let parent = crate::task::TaskControlBlock::root();
     parent.set_supplementary_groups(vec![4]).unwrap();
     let sibling = parent.sibling();
     parent.set_credential_id(true, 42).unwrap();
@@ -738,7 +737,7 @@ fn process_leader_alias_survives_leader_drop_and_is_not_a_sibling_credential_own
 
 #[test]
 fn exec_setid_and_nnp_use_the_calling_thread_credential_owner() {
-    let parent = crate::execution::task::TaskControlBlock::root();
+    let parent = crate::task::TaskControlBlock::root();
     let sibling = parent.sibling();
     sibling.set_credential_id(false, 1000).unwrap();
     sibling.set_credential_id(true, 1000).unwrap();
@@ -751,8 +750,8 @@ fn exec_setid_and_nnp_use_the_calling_thread_credential_owner() {
 #[test]
 fn getgroups_query_has_no_allocation_and_codec_honors_int_count_and_permission_order() {
     use credential_syscall::*;
-    let parent = crate::execution::task::TaskControlBlock::root();
-    crate::execution::task::enter(&parent);
+    let parent = crate::task::TaskControlBlock::root();
+    crate::task::enter(&parent);
     parent.set_supplementary_groups(vec![10, 3, 10]).unwrap();
     FAIL_NEXT.set(true);
     assert_eq!(sys_getgroups(0, 0), 3);
@@ -808,7 +807,7 @@ fn ordered_group_permission_and_credential_clone_cpu_cost() {
         println!("{name}: median {:.2} ns", samples[2]);
     }
     for count in [0, 32, 65_536] {
-        let parent = crate::execution::task::TaskControlBlock::root();
+        let parent = crate::task::TaskControlBlock::root();
         parent
             .set_supplementary_groups((1..=count).rev().collect())
             .unwrap();
@@ -820,7 +819,7 @@ fn ordered_group_permission_and_credential_clone_cpu_cost() {
             black_box(parent.observed_credentials());
         });
     }
-    let parent = crate::execution::task::TaskControlBlock::root();
+    let parent = crate::task::TaskControlBlock::root();
     measure("credential UID getter", || {
         black_box(parent.credential_id(true, true));
     });
@@ -842,7 +841,7 @@ fn ordered_group_permission_and_credential_clone_cpu_cost() {
 #[test]
 fn actual_user_namespace_identity_projection_and_capabilities_never_authorize_global_inodes() {
     use syscall_abi::capability::Capability;
-    let caller = crate::execution::task::TaskControlBlock::root();
+    let caller = crate::task::TaskControlBlock::root();
     let parent = caller.namespace_authority();
     caller
         .unshare_namespaces(
@@ -890,7 +889,7 @@ fn actual_user_namespace_identity_projection_and_capabilities_never_authorize_gl
     let before = caller.credential_res_ids(true);
     assert_eq!(
         caller.set_credential_res_ids(true, [0, 1, u32::MAX]),
-        Err(crate::execution::task::CredentialUpdateError::Invalid)
+        Err(crate::task::CredentialUpdateError::Invalid)
     );
     assert_eq!(caller.credential_res_ids(true), before);
     assert_eq!(caller.set_filesystem_id(true, 1), 0);
@@ -903,7 +902,7 @@ fn actual_user_namespace_identity_projection_and_capabilities_never_authorize_gl
 
 #[test]
 fn actual_uts_unshare_copies_current_names_without_affecting_existing_membership() {
-    let caller = crate::execution::task::TaskControlBlock::root();
+    let caller = crate::task::TaskControlBlock::root();
     let sibling = caller.sibling();
     let original = caller.uts_namespace();
     original
@@ -932,8 +931,8 @@ fn actual_uts_unshare_copies_current_names_without_affecting_existing_membership
 
 #[test]
 fn nondumpable_proc_access_requires_the_mm_namespace_even_after_user_unshare() {
-    let caller = crate::execution::task::TaskControlBlock::root_with_pid(41);
-    let target = crate::execution::task::TaskControlBlock::root_with_pid(42);
+    let caller = crate::task::TaskControlBlock::root_with_pid(41);
+    let target = crate::task::TaskControlBlock::root_with_pid(42);
     let parent = caller.namespace_authority();
     let child = namespace::UserNamespace::child(
         &parent,
@@ -996,7 +995,7 @@ fn scoped_inode_operations_use_euid_ancestry_and_cannot_borrow_changed_fsuid() {
 
 #[test]
 fn actual_proc_inode_owner_uses_dumpability_and_exact_world_directory_policy() {
-    let target = crate::execution::task::TaskControlBlock::root();
+    let target = crate::task::TaskControlBlock::root();
     target.set_credential_id(false, 1001).unwrap();
     target.set_credential_id(true, 1000).unwrap();
     assert!(!target.user_dumpable());
@@ -1007,15 +1006,14 @@ fn actual_proc_inode_owner_uses_dumpability_and_exact_world_directory_policy() {
     assert_eq!(target.observed_inode_owner(0o100644), (1000, 1001));
     assert_eq!(target.set_filesystem_id(true, 123), 1000);
     assert_eq!(target.observed_inode_owner(0o100644), (1000, 1001));
-    let privileged = crate::execution::task::TaskControlBlock::root();
+    let privileged = crate::task::TaskControlBlock::root();
     privileged.set_user_dumpable(true);
     assert_eq!(privileged.set_filesystem_id(true, 123), 0);
     assert!(!privileged.user_dumpable());
     assert_eq!(privileged.observed_inode_owner(0o100644), (0, 0));
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     #[path = "../src/sync.rs"]
     pub(crate) mod sync;
     #[path = "../../../system/linuxd/src/task"]
@@ -1450,7 +1448,7 @@ pub(crate) mod execution {
             }
         }
     }
-}
+
 
 pub(crate) mod devices {
     pub(crate) mod tty {
@@ -1463,8 +1461,4 @@ pub(crate) mod devices {
     }
 }
 
-#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
-use execution::sync;
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;

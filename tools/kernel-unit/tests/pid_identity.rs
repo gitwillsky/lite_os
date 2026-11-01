@@ -4,12 +4,11 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 
-pub(crate) mod execution {
+
     pub(crate) mod task {
         use crate::namespace::{PidLinkSlot, PreparedPid, RetiredPidRegistrations};
         use crate::{allocation_failure, namespace};
@@ -299,7 +298,5 @@ pub(crate) mod execution {
             ));
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

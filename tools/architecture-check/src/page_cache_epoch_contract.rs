@@ -16,7 +16,7 @@ fn count(text: &str, needle: &str) -> usize {
 }
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let cache = source(sources, "tools/source-view/linuxd/fs/page_cache/page_cache/page_cache.rs");
+    let cache = source(sources, "system/linuxd/src/fs/page_cache.rs");
     let write = source(sources, "system/linuxd/src/fs/page_cache/regular_write.rs");
     let nowait = source(sources, "kernel/src/fs/page_cache/nowait_read.rs");
     let direct = source(sources, "system/linuxd/src/fs/page_cache/direct_write.rs");

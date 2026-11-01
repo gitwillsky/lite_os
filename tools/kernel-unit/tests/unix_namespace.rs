@@ -4,8 +4,7 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../../../system/linuxd/src/net/unix/namespace.rs"]
 mod namespace;
 use alloc::sync::Arc;
@@ -390,3 +389,5 @@ fn automatic_names_are_reusable_in_distinct_network_domains_without_a_second_reg
     namespace::remove_closed(&a.binding.unwrap());
     namespace::remove_closed(&b.binding.unwrap());
 }
+
+mod sync { pub(crate) use spin::Mutex; }

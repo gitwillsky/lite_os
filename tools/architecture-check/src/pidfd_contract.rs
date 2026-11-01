@@ -54,7 +54,7 @@ fn ordered(source: &SourceFile, function: &str, clauses: &[&str], errors: &mut V
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     require(
         sources,
-        "tools/source-view/linuxd/fs/pidfs/pidfs/pidfs.rs",
+        "system/linuxd/src/fs/pidfs.rs",
         &[
             "exit_status: spin::Mutex<Option<i32>>",
             "static INODES: LiveInodes<PidInode, usize>",
@@ -118,7 +118,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/task/process_table/signal/signal/signal.rs",
+        "system/linuxd/src/task/process_table/signal.rs",
         &[
             "sender.may_signal_thread(thread)",
             "super::thread_selector::execution_by_tid(&graph, pid)",

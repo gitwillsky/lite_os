@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-const CURSOR: &str = "tools/source-view/linuxd/syscall/user_iovec/user_iovec/user_iovec.rs";
+const CURSOR: &str = "system/linuxd/src/syscall/user_iovec.rs";
 const STAGING: &str = "system/linuxd/src/syscall/user_iovec/input_staging.rs";
 const SEQUENTIAL: &str = "system/linuxd/src/syscall/fs/io/sequential/write.rs";
 const MESSAGE: &str = "system/linuxd/src/syscall/socket/message.rs";

@@ -6,8 +6,7 @@ extern crate alloc;
 
 #[path = "swap_page/allocation.rs"]
 mod allocation;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 
 #[path = "../../../kernel/src/memory"]
 mod memory {

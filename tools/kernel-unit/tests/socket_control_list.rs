@@ -4,8 +4,7 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../../../system/linuxd/src/syscall/user_iovec/input_staging.rs"]
 mod input_staging;
 #[path = "../src/namespace_fixture.rs"]
@@ -35,7 +34,7 @@ fn one_copy_freezes_header_and_fd_bytes_even_when_user_memory_changes_immediatel
     for count in [1, 8] {
         let data: Vec<_> = (0..count).flat_map(|fd: i32| fd.to_ne_bytes()).collect();
         let bytes = cmsg(&data, 0);
-        let task = crate::execution::task::TaskControlBlock::new(bytes.clone());
+        let task = crate::task::TaskControlBlock::new(bytes.clone());
         task.mutate_after_copy.set(true);
         let snapshot = ControlSnapshot::import(&task, &socket, 1, bytes.len()).unwrap();
         assert_eq!(task.copies.get(), 1);
@@ -51,7 +50,7 @@ fn one_copy_freezes_header_and_fd_bytes_even_when_user_memory_changes_immediatel
 fn short_controls_use_stack_and_large_allocation_failure_never_reads_user_memory() {
     let socket = net::endpoint();
     let bytes = cmsg(&3i32.to_ne_bytes(), 0);
-    let task = crate::execution::task::TaskControlBlock::new(bytes.clone());
+    let task = crate::task::TaskControlBlock::new(bytes.clone());
     allocation_failure::fail_next();
     let snapshot = ControlSnapshot::import(&task, &socket, 1, bytes.len()).unwrap();
     assert!(!allocation_failure::was_consumed());
@@ -65,7 +64,7 @@ fn short_controls_use_stack_and_large_allocation_failure_never_reads_user_memory
 #[test]
 fn oversized_native_length_is_rejected_before_allocation_or_user_access() {
     let socket = net::endpoint();
-    let task = crate::execution::task::TaskControlBlock::new(Vec::new());
+    let task = crate::task::TaskControlBlock::new(Vec::new());
     allocation_failure::fail_next();
     let result = ControlSnapshot::import(&task, &socket, 0, i32::MAX as usize + 1);
     assert!(!allocation_failure::was_consumed());
@@ -75,7 +74,7 @@ fn oversized_native_length_is_rejected_before_allocation_or_user_access() {
 #[test]
 fn zero_control_ignores_pointer_and_partial_copy_fault_publishes_no_snapshot() {
     let socket = net::endpoint();
-    let task = crate::execution::task::TaskControlBlock::new(vec![7; 64]);
+    let task = crate::task::TaskControlBlock::new(vec![7; 64]);
     assert!(
         ControlSnapshot::import(&task, &socket, 0, 0)
             .unwrap()
@@ -94,7 +93,7 @@ fn zero_control_ignores_pointer_and_partial_copy_fault_publishes_no_snapshot() {
 #[test]
 fn heap_snapshot_holds_requested_bytes_until_drop_and_budget_rejects_before_copy() {
     let socket = net::endpoint();
-    let task = crate::execution::task::TaskControlBlock::new(vec![7; 65_536]);
+    let task = crate::task::TaskControlBlock::new(vec![7; 65_536]);
     let first = ControlSnapshot::import(&task, &socket, 1, 65_535).unwrap();
     let second = ControlSnapshot::import(&task, &socket, 1, 65_536).unwrap();
     assert_eq!(task.copies.get(), 2);
@@ -125,7 +124,7 @@ fn heap_snapshot_holds_requested_bytes_until_drop_and_budget_rejects_before_copy
 #[test]
 fn repeated_allocation_failures_and_partial_copy_faults_refund_the_actual_owner() {
     let socket = net::endpoint();
-    let task = crate::execution::task::TaskControlBlock::new(vec![7; 64]);
+    let task = crate::task::TaskControlBlock::new(vec![7; 64]);
     for _ in 0..8 {
         allocation_failure::fail_next();
         assert!(matches!(
@@ -170,7 +169,7 @@ fn malformed_complete_second_header_returns_error_without_reparsing_first_messag
     }
 }
 
-pub(crate) mod execution {
+
     pub(crate) mod task {
         use core::mem::MaybeUninit;
         use std::cell::{Cell, RefCell};
@@ -233,7 +232,5 @@ pub(crate) mod execution {
             }
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

@@ -60,3 +60,11 @@ pub(crate) fn next_readiness_generation() -> u64 {
 
 #[allow(unused_imports, reason = "宿主调度适配替代 native futex 等待；互斥算法仍执行生产实现")]
 pub(crate) use spin::{Mutex, MutexGuard, Once};
+
+// 宿主夹具没有 native 承载线程；未绑定显式 scheduler target 的阻塞属于夹具装配错误。
+pub(crate) struct ServiceThreadTarget;
+impl ServiceThreadTarget {
+    pub(crate) fn current() -> alloc::sync::Arc<dyn TaskWaitTarget> {
+        panic!("host blocking operation requires an installed scheduler target")
+    }
+}

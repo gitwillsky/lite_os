@@ -10,7 +10,7 @@ fn source(sources: &[SourceFile], path: &str) -> String {
         .collect()
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let proc = source(sources, "tools/source-view/linuxd/fs/procfs/procfs/procfs.rs");
+    let proc = source(sources, "system/linuxd/src/fs/procfs.rs");
     let node = source(sources, "system/linuxd/src/fs/procfs/node.rs");
     let link = source(sources, "system/linuxd/src/fs/procfs/link.rs");
     let opened = source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs");

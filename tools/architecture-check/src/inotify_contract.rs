@@ -13,7 +13,7 @@ fn tokens(sources: &[SourceFile], path: &str) -> String {
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let file = tokens(sources, "system/linuxd/src/file/mod.rs");
-    let owner = tokens(sources, "tools/source-view/linuxd/fs/inotify/inotify/inotify.rs");
+    let owner = tokens(sources, "system/linuxd/src/fs/inotify.rs");
     let instance = tokens(sources, "system/linuxd/src/fs/inotify/instance.rs");
     let quota = tokens(sources, "system/linuxd/src/namespace/quota.rs");
     let syscall = tokens(sources, "system/linuxd/src/syscall/fs/inotify.rs");
@@ -50,7 +50,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("inotify-dput: actual canonical path must survive unlink and defer DELETE_SELF to last deleted dentry with zero links".into());
     }
-    let tmpfs = tokens(sources, "tools/source-view/linuxd/fs/tmpfs/tmpfs/tmpfs.rs");
+    let tmpfs = tokens(sources, "system/linuxd/src/fs/tmpfs.rs");
     let ext4 = tokens(sources, "system/ext4d/src/ext4/inode/vfs.rs");
     let cache = tokens(sources, "system/linuxd/src/fs/page_cache/registry.rs");
     if !owner.contains("inode.notification_link_state()")
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn rejects_oom_destroying_oneshot_mark() {
         reject(
-            "tools/source-view/linuxd/fs/inotify/inotify/inotify.rs",
+            "system/linuxd/src/fs/inotify.rs",
             "!allocated || ",
             "",
             "native overflow/oneshot",
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn rejects_full_metadata_dependency_during_dentry_retirement() {
         reject(
-            "tools/source-view/linuxd/fs/inotify/inotify/inotify.rs",
+            "system/linuxd/src/fs/inotify.rs",
             "inode.notification_link_state()",
             "inode.metadata().ok().map(|metadata| (metadata.inode, metadata.links))",
             "must not allocate",

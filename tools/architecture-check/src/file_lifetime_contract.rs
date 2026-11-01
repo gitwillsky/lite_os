@@ -76,7 +76,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors.push("file-lifetime: final dput must alone retire unlinked cache after transient/access inode pins and namespace guards; actual mount writer must outlive path/inode cleanup".into());
     }
     let tty = compact(sources, "system/linuxd/src/devices/tty/mod.rs");
-    let pty = compact(sources, "tools/source-view/linuxd/devices/tty/pty/pty/pty.rs");
+    let pty = compact(sources, "system/linuxd/src/devices/tty/pty.rs");
     let fifo = compact(sources, "system/linuxd/src/fs/fifo.rs");
     if !ofd.contains("OpenFileKind::Device(device)=>device.release()")
         || !tty.contains("implDeviceFileforTerminalFile{fnrelease(&self){ifletSome(slave)=&self.pty{slave.close();}}")
@@ -146,7 +146,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     let inet = compact(sources, "system/linuxd/src/net/inet.rs");
     let options = compact(sources, "system/netd/src/inet/options.rs");
-    let owner = compact(sources, "tools/source-view/netd/inet/protocol_owner/protocol_owner/protocol_owner.rs");
+    let owner = compact(sources, "system/netd/src/inet/protocol_owner.rs");
     let wait = compact(sources, "system/netd/src/inet/wait.rs");
     if !inet.contains("operation:Mutex<Option<InetEndpoint>>")
         || !ordered(
@@ -175,7 +175,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("file-lifetime: actual Inet fput must take one protocol registration, drain retired ports before new task transactions and keep closed observers away from reused handles".into());
     }
-    let tmpfs = compact(sources, "tools/source-view/linuxd/fs/tmpfs/tmpfs/tmpfs.rs");
+    let tmpfs = compact(sources, "system/linuxd/src/fs/tmpfs.rs");
     let rename = tmpfs
         .split("fnrename(")
         .nth(1)
@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn rejects_index_reuse_waiting_for_last_observer() {
         reject(
-            "tools/source-view/linuxd/devices/tty/pty/pty/pty.rs",
+            "system/linuxd/src/devices/tty/pty.rs",
             "!state.master_open && state.slave_opens == 0",
             "false",
             "index reuse",
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn rejects_deferred_inet_ports_surviving_next_task_transaction() {
         reject(
-            "tools/source-view/netd/inet/protocol_owner/protocol_owner/protocol_owner.rs",
+            "system/netd/src/inet/protocol_owner.rs",
             "let endpoint = self.pending_cleanup.lock().pop();",
             "let endpoint = None;",
             "retired ports before new task transactions",
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn rejects_fallible_tmpfs_child_lock_after_namespace_commit() {
         reject(
-            "tools/source-view/linuxd/fs/tmpfs/tmpfs/tmpfs.rs",
+            "system/linuxd/src/fs/tmpfs.rs",
             "let mut child_state = child.state()?;",
             "let mut child_state = unreachable!();",
             "prepare all guards before namespace commit",
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn rejects_tmpfs_directory_replacement_transient_parent_increment() {
         reject(
-            "tools/source-view/linuxd/fs/tmpfs/tmpfs/tmpfs.rs",
+            "system/linuxd/src/fs/tmpfs.rs",
             "moves_directory && crosses_parent && !replaced_directory",
             "moves_directory && crosses_parent",
             "final parent link deltas",

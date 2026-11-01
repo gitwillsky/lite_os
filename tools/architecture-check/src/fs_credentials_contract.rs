@@ -142,7 +142,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fs-credentials: exec private MM disabled, CLOEXEC then old-ID provisional/effects/credentials publication; no final-ID restart".into());
     }
-    let mm = source(sources, "tools/source-view/linuxd/task/model/address_space/address_space/address_space.rs");
+    let mm = source(sources, "system/linuxd/src/task/model/address_space.rs");
     if !mm.contains("dumpability: Dumpability")
         || !mm.contains("self.dumpability.user_dumpable()")
         || !mm.contains(".set_user_dumpable(self.dumpability.user_dumpable())")
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn rejects_fork_rebinding_mm_namespace_to_child_credentials() {
         reject(
-            "tools/source-view/linuxd/task/model/address_space/address_space/address_space.rs",
+            "system/linuxd/src/task/model/address_space.rs",
             "self.user_namespace.clone()",
             "crate::namespace::initial_user()",
             "independent nondumpable MM namespace",
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn rejects_fork_losing_dumpability() {
         reject(
-            "tools/source-view/linuxd/task/model/address_space/address_space/address_space.rs",
+            "system/linuxd/src/task/model/address_space.rs",
             ".set_user_dumpable(self.dumpability.user_dumpable())",
             ".set_user_dumpable(true)",
             "copied on fork",

@@ -1,6 +1,5 @@
 // 直接装配 actual WaitRegistry/TaskMutex/atomic owner；Task、MM key 与本地 IRQ 是 producer seams。
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../../../system/linuxd/src/id.rs"]
 mod id;
 

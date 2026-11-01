@@ -3,8 +3,7 @@
 //! Production tmpfs metadata helper, permission policy and TaskMutex.
 //! Other inode metadata fields and MemoryFile pages are seams; actual pages/resize run in guest.
 extern crate alloc;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 
@@ -37,7 +36,7 @@ static ALLOCATOR: FaultAllocator = FaultAllocator;
 mod target;
 #[path = "../../../system/linuxd/src/fs"]
 mod fs {
-    use crate::execution::sync::{TaskMutex, TaskMutexGuard};
+    use crate::sync::{TaskMutex, TaskMutexGuard};
     use alloc::sync::Arc;
     #[derive(Debug, PartialEq, Eq)]
     pub(crate) enum FileSystemError {
@@ -149,7 +148,7 @@ mod fs {
         let worker_target = target.clone();
         let worker = std::thread::spawn(move || {
             let _binding = worker_target.bind();
-            let mut wait = crate::execution::sync::TaskMutexWaitPreparation::prepare().unwrap();
+            let mut wait = crate::sync::TaskMutexWaitPreparation::prepare().unwrap();
             let identity = AccessIdentity::new(1000, 1000, None, crate::namespace::boot(), 0, 1000);
             crate::FAIL_NEXT.set(true);
             worker_inode.remove_write_privileges_prepared(Some(&identity), &mut wait);

@@ -12,7 +12,7 @@ fn source(sources: &[SourceFile], path: &str) -> String {
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let endpoint = source(sources, "system/linuxd/src/net/kobject.rs");
     let preparation = source(sources, "system/linuxd/src/net/preparation.rs");
-    let bind = source(sources, "tools/source-view/linuxd/syscall/socket/socket/socket.rs");
+    let bind = source(sources, "system/linuxd/src/syscall/socket.rs");
     let observation = source(sources, "system/linuxd/src/net/observation.rs");
     if !endpoint.contains("memory:Arc<SocketMemory>")
         || !endpoint.contains("ports:FallibleMap<(u8,u64,u32),u64>")

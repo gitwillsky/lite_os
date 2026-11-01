@@ -4,8 +4,7 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/unix_rights_fixture/file.rs"]
 mod file;
 #[path = "../../../system/linuxd/src/id.rs"]

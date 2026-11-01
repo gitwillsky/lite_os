@@ -50,9 +50,7 @@ unsafe impl GlobalAlloc for ReclaimingAllocator {
 #[global_allocator]
 static ALLOCATOR: ReclaimingAllocator = ReclaimingAllocator;
 
-#[path = "../../../fallible-tree/src/lib.rs"]
-#[allow(dead_code)]
-mod fallible_tree;
+extern crate fallible_tree;
 
 // 不执行页内容或 MMU 操作；这里只提供生产 shared_file 的独立 registry 所需类型。
 #[path = "../../../kernel/src/memory"]
@@ -147,14 +145,14 @@ impl memory::shared_file::MemoryMappingOwner for Mapping {
     fn revoke_shared_file_writers(
         &self,
         _: memory::shared_file::SharedFileId,
-        _: &mut crate::execution::sync::TaskMutexWaitPreparation,
+        _: &mut crate::sync::TaskMutexWaitPreparation,
     ) {
         self.0.fetch_add(1, Ordering::Relaxed);
     }
     fn restore_swapped_pages(
         &self,
         _: memory::shared_file::SharedFileId,
-        _: &mut crate::execution::sync::TaskMutexWaitPreparation,
+        _: &mut crate::sync::TaskMutexWaitPreparation,
     ) -> Result<(), memory::shared_file::SharedFileError> {
         Ok(())
     }
@@ -163,7 +161,7 @@ impl memory::shared_file::MemoryMappingOwner for Mapping {
         _: memory::shared_file::SharedFileId,
         _: u64,
         _: u64,
-        _: &mut crate::execution::sync::TaskMutexWaitPreparation,
+        _: &mut crate::sync::TaskMutexWaitPreparation,
     ) {
         self.0.fetch_add(1, Ordering::Relaxed);
     }
@@ -171,7 +169,7 @@ impl memory::shared_file::MemoryMappingOwner for Mapping {
         &self,
         _: memory::shared_file::SharedFileId,
         _: u64,
-        _: &mut crate::execution::sync::TaskMutexWaitPreparation,
+        _: &mut crate::sync::TaskMutexWaitPreparation,
     ) {
         self.0.fetch_add(1, Ordering::Relaxed);
     }
@@ -250,7 +248,7 @@ fn registry_preparation_can_reenter_direct_reclaim() {
             inode: 1,
         },
         0,
-        &mut crate::execution::sync::TaskMutexWaitPreparation,
+        &mut crate::sync::TaskMutexWaitPreparation,
     );
     assert_eq!(mapping.0.load(Ordering::Relaxed), 1);
     assert_eq!(another_mapping.0.load(Ordering::Relaxed), 0);
@@ -267,7 +265,7 @@ fn registry_preparation_can_reenter_direct_reclaim() {
             inode: 1,
         },
         0,
-        &mut crate::execution::sync::TaskMutexWaitPreparation,
+        &mut crate::sync::TaskMutexWaitPreparation,
     );
     assert_eq!(another_mapping.0.load(Ordering::Relaxed), 1);
 }

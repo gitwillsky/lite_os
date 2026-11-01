@@ -26,8 +26,7 @@ unsafe impl GlobalAlloc for FaultAllocator {
 }
 #[global_allocator]
 static ALLOCATOR: FaultAllocator = FaultAllocator;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 
@@ -51,8 +50,7 @@ mod fs {
     }
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     #[path = "../src/sync.rs"]
     pub(crate) mod sync;
     #[path = "../../../system/linuxd/src/task"]
@@ -113,10 +111,10 @@ pub(crate) mod execution {
             pub(crate) fn continue_stopped_task(_: alloc::sync::Arc<super::TaskControlBlock>) {}
             pub(crate) fn request_task_reschedule(_: &alloc::sync::Arc<super::TaskControlBlock>) {}
         }
-        static CREDENTIAL_GUARD: crate::execution::sync::TaskMutex<()> =
-            crate::execution::sync::TaskMutex::new(());
+        static CREDENTIAL_GUARD: crate::sync::TaskMutex<()> =
+            crate::sync::TaskMutex::new(());
         impl TaskControlBlock {
-            fn credential_guard(&self) -> &crate::execution::sync::TaskMutex<()> {
+            fn credential_guard(&self) -> &crate::sync::TaskMutex<()> {
                 &CREDENTIAL_GUARD
             }
             fn queue_group_exit_signal(&self) {
@@ -596,10 +594,6 @@ pub(crate) mod execution {
             }
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
-use execution::sync;
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

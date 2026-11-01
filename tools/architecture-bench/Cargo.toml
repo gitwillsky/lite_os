@@ -41,6 +41,7 @@ name = "audio-mixer-bench"
 path = "src/audio_mixer.rs"
 
 [dependencies]
+fallible-tree = { path = "../../fallible-tree" }
 native-runtime = { path = "../../system/native-runtime" }
 device-model = { path = "../../system/device-model" }
 device-protocol = { path = "../../system/device-protocol" }

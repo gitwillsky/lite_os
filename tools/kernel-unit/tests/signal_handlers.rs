@@ -26,8 +26,7 @@ unsafe impl GlobalAlloc for FaultAllocator {
 }
 #[global_allocator]
 static ALLOCATOR: FaultAllocator = FaultAllocator;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 #[path = "../../../system/linuxd/src/arch/riscv64/signal_action.rs"]
@@ -47,8 +46,7 @@ mod memory {
     }
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     pub(crate) mod sync {
         pub(crate) fn next_readiness_generation() -> u64 {
             static GENERATION: core::sync::atomic::AtomicU64 =
@@ -69,17 +67,17 @@ pub(crate) mod execution {
             mod signal_generation;
             mod signal_handlers;
             mod signal_info;
-            pub(in crate::execution::task) mod signal_pending;
-            pub(in crate::execution::task) use signal_info::PendingSignal;
+            pub(in crate::task) mod signal_pending;
+            pub(in crate::task) use signal_info::PendingSignal;
             mod synchronous_fault;
-            pub(in crate::execution::task) use signal_handlers::{
+            pub(in crate::task) use signal_handlers::{
                 ChildSignalKind, ChildSignalPublication,
             };
             use signal_handlers::{ProcessSignalState, SignalAction};
             use signal_pending::PendingSignals;
-            pub(in crate::execution::task) use signal_pending::PreparedSignalRecord;
+            pub(in crate::task) use signal_pending::PreparedSignalRecord;
             use signal_pending::RetiredSignals;
-            pub(in crate::execution::task) fn leader_signal_uid(handle: &u32) -> u32 {
+            pub(in crate::task) fn leader_signal_uid(handle: &u32) -> u32 {
                 *handle
             }
             struct RecipientCredentials {
@@ -127,12 +125,12 @@ pub(crate) mod execution {
                 fn resource_limit(&self, _: usize) -> Option<ResourceLimit> {
                     Some(ResourceLimit { soft: u64::MAX })
                 }
-                pub(in crate::execution::task) fn user_namespace(
+                pub(in crate::task) fn user_namespace(
                     &self,
                 ) -> Arc<crate::namespace::UserNamespace> {
                     crate::namespace::initial_user()
                 }
-                pub(in crate::execution::task) fn pid_namespace(
+                pub(in crate::task) fn pid_namespace(
                     &self,
                 ) -> Arc<crate::namespace::PidNamespace> {
                     crate::namespace::initial_pid()
@@ -140,20 +138,20 @@ pub(crate) mod execution {
                 fn is_namespace_init(&self) -> bool {
                     self.process.tgid == 1
                 }
-                pub(in crate::execution::task) fn set_mask(&self, mask: u64) {
+                pub(in crate::task) fn set_mask(&self, mask: u64) {
                     *self.thread.signal_mask.lock() = mask;
                 }
-                pub(in crate::execution::task) fn accepts_process_signal(
+                pub(in crate::task) fn accepts_process_signal(
                     &self,
                     signal: usize,
                     _: bool,
                 ) -> bool {
                     *self.thread.signal_mask.lock() & (1 << (signal - 1)) == 0
                 }
-                pub(in crate::execution::task) fn tid(&self) -> usize {
+                pub(in crate::task) fn tid(&self) -> usize {
                     self.tgid()
                 }
-                pub(in crate::execution::task) fn tgid(&self) -> usize {
+                pub(in crate::task) fn tgid(&self) -> usize {
                     self.process.tgid
                 }
                 fn process(&self) -> &Process {
@@ -162,7 +160,7 @@ pub(crate) mod execution {
                 fn thread(&self) -> &Thread {
                     &self.thread
                 }
-                pub(in crate::execution::task) fn new() -> Arc<Self> {
+                pub(in crate::task) fn new() -> Arc<Self> {
                     Self::from_owner(ProcessSignalState::new(
                         ProcessSignalState::try_default_handlers().unwrap(),
                     ))
@@ -182,7 +180,7 @@ pub(crate) mod execution {
                         },
                     })
                 }
-                pub(in crate::execution::task) fn sibling(&self) -> Arc<Self> {
+                pub(in crate::task) fn sibling(&self) -> Arc<Self> {
                     Arc::new(Self {
                         process: self.process.clone(),
                         thread: Thread {
@@ -890,8 +888,8 @@ pub(crate) mod execution {
                     false
                 }
             }
-            pub(in crate::execution::task) mod timer_queue {
-                pub(in crate::execution::task) fn deliver_posix_signal(
+            pub(in crate::task) mod timer_queue {
+                pub(in crate::task) fn deliver_posix_signal(
                     _: super::super::model::signal_pending::TimerSignalDelivery,
                     _: &mut super::super::model::PendingSignal,
                 ) -> bool {
@@ -1128,13 +1126,11 @@ pub(crate) mod execution {
             }
         }
         pub(crate) mod processor {
-            pub(in crate::execution::task) fn request_task_reschedule(
+            pub(in crate::task) fn request_task_reschedule(
                 _: &super::model::TaskControlBlock,
             ) {
             }
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

@@ -14,7 +14,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let inet = source(sources, "system/linuxd/src/net/inet.rs");
     let poll = source(sources, "system/netd/src/inet/poll.rs");
     let readiness = source(sources, "system/netd/src/inet/readiness.rs");
-    let device = source(sources, "tools/source-view/netd/inet/device/device/device.rs");
+    let device = source(sources, "system/netd/src/inet/device.rs");
     let proc = source(sources, "system/linuxd/src/fs/procfs/networking.rs");
     if inet.contains("take_device_error(")
         || readiness.contains("pending_device_error(")

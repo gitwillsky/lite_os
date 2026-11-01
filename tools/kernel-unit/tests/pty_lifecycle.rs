@@ -6,8 +6,7 @@ extern crate alloc;
 mod allocation_failure;
 #[path = "../../../system/linuxd/src/fs/devnum.rs"]
 mod device_number;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../../../system/linuxd/src/id.rs"]
 mod id;
 #[path = "../src/pipe_fixture.rs"]

@@ -2,8 +2,7 @@
 #![allow(dead_code, unused_imports)]
 //! 实际 FIFO file/session 与 Pipe admission；user-copy 和 ioctl 内存是显式边界。
 extern crate alloc;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../../../system/linuxd/src/id.rs"]
 mod id;
 #[path = "../src/pipe_fixture.rs"]
@@ -191,3 +190,5 @@ pub(crate) mod execution {
 
 #[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
 use execution::sync;
+
+mod file { pub(crate) use crate::sync::next_readiness_generation; }

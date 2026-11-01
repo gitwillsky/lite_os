@@ -3,8 +3,7 @@
 //! Production graph retirement with actual FallibleMap membership storage. Process lifecycle
 //! admission and credential payload are explicit host seams; deferred consequence routing is real.
 extern crate alloc;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 use std::cell::Cell;
@@ -26,8 +25,7 @@ mod fs {
     }
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     pub(crate) mod sync {
         pub(crate) enum WaitResult {
             Woken,
@@ -37,9 +35,9 @@ pub(crate) mod execution {
     pub(crate) mod task {
         pub(crate) mod pid;
         pub(crate) mod processor {
-            pub(in crate::execution::task) fn wake_child_task(
+            pub(in crate::task) fn wake_child_task(
                 _: alloc::sync::Arc<super::process_table::TaskControlBlock>,
-                _: crate::execution::sync::WaitResult,
+                _: crate::sync::WaitResult,
             ) {
                 assert!(!crate::GRAPH_HELD.with(|held| held.get()));
             }
@@ -50,7 +48,7 @@ pub(crate) mod execution {
             mod group_retirement;
             mod process_retirement;
             use process_retirement::RetiredProcesses;
-            pub(in crate::execution::task) struct TaskControlBlock;
+            pub(in crate::task) struct TaskControlBlock;
             #[derive(Clone, Copy)]
             struct ProcessExitStatus(i32);
             impl ProcessExitStatus {
@@ -194,7 +192,7 @@ pub(crate) mod execution {
             mod wait_child {
                 use super::*;
                 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-                pub(in crate::execution::task::process_table) enum ChildStatusKind {
+                pub(in crate::task::process_table) enum ChildStatusKind {
                     Exited,
                     Stopped,
                     Continued,
@@ -202,9 +200,9 @@ pub(crate) mod execution {
                     TracedExit,
                 }
                 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-                pub(in crate::execution::task::process_table) struct ChildWaitClaim {
-                    pub(in crate::execution::task::process_table) waiter: usize,
-                    pub(in crate::execution::task::process_table) kind: ChildStatusKind,
+                pub(in crate::task::process_table) struct ChildWaitClaim {
+                    pub(in crate::task::process_table) waiter: usize,
+                    pub(in crate::task::process_table) kind: ChildStatusKind,
                 }
                 pub(crate) struct ChildExit {
                     pub(super) pid: usize,
@@ -230,7 +228,7 @@ pub(crate) mod execution {
                     WOKEN.with(|woken| woken.get())
                 }
             }
-            use crate::execution::sync::WaitResult;
+            use crate::sync::WaitResult;
 
             #[test]
             fn actual_reap_notifies_pidfd_outside_graph_and_never_pins_the_process() {
@@ -466,7 +464,5 @@ pub(crate) mod execution {
             }
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

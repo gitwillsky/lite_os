@@ -322,7 +322,7 @@ impl UnixSocket {
     pub(crate) fn run_worker(
         clock: impl Fn() -> u64,
         sleep_until: impl FnMut(u64),
-        gate: crate::execution::sync::TaskMutexWaitPreparation,
+        gate: crate::sync::TaskMutexWaitPreparation,
     ) -> ! {
         rights_graph::run_collector(clock, sleep_until, gate)
     }

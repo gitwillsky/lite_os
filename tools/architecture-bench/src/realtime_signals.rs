@@ -3,19 +3,17 @@
 //! 实际 RT record publication/dequeue 热路径；allocator/ucounts preparation 与最终退款移出计时区。
 extern crate alloc;
 mod cost_policy;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../../../system/linuxd/src/file/signalfd.rs"]
 mod file;
 #[path = "../../kernel-unit/src/namespace_fixture.rs"]
 mod namespace;
 
 fn main() {
-    crate::execution::task::benchmark();
+    crate::task::benchmark();
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     pub(crate) mod sync {
         pub(crate) fn next_readiness_generation() -> u64 {
             static GENERATION: core::sync::atomic::AtomicU64 =
@@ -222,7 +220,5 @@ pub(crate) mod execution {
             }
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

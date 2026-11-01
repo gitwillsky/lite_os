@@ -64,7 +64,7 @@ fn parent_death_signal_codec_remains_available() {
     use process_control::sys_prctl;
     assert_eq!(sys_prctl(1, 9, [0; 3]), 0);
     assert_eq!(sys_prctl(2, 1, [0; 3]), 0);
-    assert_eq!(crate::execution::task::copied_signal(), Some(9));
+    assert_eq!(crate::task::copied_signal(), Some(9));
     assert_eq!(sys_prctl(2, 0, [0; 3]), -14);
     assert_eq!(sys_prctl(1, 65, [0; 3]), -22);
     assert_eq!(sys_prctl(usize::MAX, 0, [0; 3]), -22);
@@ -83,7 +83,7 @@ fn dumpability_codec_accepts_only_zero_one_and_ignores_unused_arguments() {
     assert_eq!(sys_prctl(0xabcd_ef01_0000_0003, 0, [0; 3]), 1);
 }
 
-pub(crate) mod execution {
+
     pub(crate) mod task {
         use crate::Cell;
         use crate::dumpability::Dumpability;
@@ -153,7 +153,5 @@ pub(crate) mod execution {
             COPYOUT.get()
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

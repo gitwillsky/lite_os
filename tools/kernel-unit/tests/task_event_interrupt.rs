@@ -4,7 +4,7 @@ extern crate alloc;
 
 #[path = "../src/interruptible_event_target.rs"]
 mod target;
-use crate::execution::sync::{TaskEvent, WaitResult};
+use crate::sync::{TaskEvent, WaitResult};
 use alloc::sync::Arc;
 use target::Target;
 
@@ -104,7 +104,7 @@ fn task_mutex_style_uninterruptible_event_keeps_its_membership_until_completion(
 
 #[test]
 fn extracted_old_signal_wake_cannot_match_an_event_rebuilt_at_the_same_address() {
-    use crate::execution::sync::TaskWaitTarget;
+    use crate::sync::TaskWaitTarget;
     let target = Target::new();
     let mut event = Arc::new(TaskEvent::new());
     let address = Arc::as_ptr(&event);
@@ -173,7 +173,7 @@ fn timed_event_wake_uses_exact_ticket_and_cannot_wake_later_wait() {
     assert!(key.deadline().is_some());
     event.signal();
     assert_eq!(worker.join().unwrap(), WaitResult::Woken);
-    crate::execution::sync::TaskWaitTarget::wake(target.clone(), key);
+    crate::sync::TaskWaitTarget::wake(target.clone(), key);
     let _binding = target.bind();
     assert_eq!(event.wait_interruptible_until(0), WaitResult::TimedOut);
 }

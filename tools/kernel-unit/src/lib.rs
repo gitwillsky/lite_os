@@ -179,9 +179,7 @@ mod ext4_checksum;
 mod ext4_dirhash;
 
 #[cfg(test)]
-#[path = "../../../fallible-tree/src/lib.rs"]
-#[allow(dead_code)]
-mod fallible_tree;
+extern crate fallible_tree;
 
 #[cfg(test)]
 mod fallible_tree_tests;
@@ -536,5 +534,6 @@ pub(crate) mod boot {
     pub(crate) mod cmdline;
 }
 
+#[cfg(test)]
 #[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
 use execution::sync;

@@ -15,7 +15,7 @@ fn before(source: &str, first: &str, second: &str) -> bool {
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let packet = normalized(source(sources, "system/linuxd/src/net/packet.rs"));
-    let phy = normalized(source(sources, "tools/source-view/netd/inet/device/device/device.rs"));
+    let phy = normalized(source(sources, "system/netd/src/inet/device.rs"));
     let lo = normalized(source(sources, "system/netd/src/inet/device/loopback.rs"));
     let inet = normalized(source(sources, "system/linuxd/src/net/inet.rs"));
     let poll = normalized(source(sources, "system/netd/src/inet/poll.rs"));
@@ -102,7 +102,7 @@ mod tests {
                 "packet::publish_transmit_ready(6, index)",
             ),
             (
-                "tools/source-view/netd/inet/device/device/device.rs",
+                "system/netd/src/inet/device.rs",
                 "self.net_id, self.interface_index, self.mac, frame",
                 "6, 1, self.mac, frame",
             ),
@@ -112,7 +112,7 @@ mod tests {
                 "let _registry_is_still_held = &registry;",
             ),
             (
-                "tools/source-view/netd/inet/device/device/device.rs",
+                "system/netd/src/inet/device.rs",
                 "Ok(reservation) => reservation,",
                 "Ok(reservation) => reservation?,",
             ),

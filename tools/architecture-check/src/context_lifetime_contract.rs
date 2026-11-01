@@ -3,7 +3,7 @@ use quote::ToTokens;
 use syn::Item;
 
 use super::SourceFile;
-const MODEL: &str = "tools/source-view/linuxd/task/model/model/model.rs";
+const MODEL: &str = "system/linuxd/src/task/model.rs";
 const CLONE: &str = "system/linuxd/src/task/model/process_clone.rs";
 const CONTEXT: &str = "kernel/src/execution/task/model/context_storage.rs";
 const EXEC: &str = "system/linuxd/src/task/model/process_exec.rs";

@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-const VFS_SOURCE: &str = "tools/source-view/linuxd/fs/vfs/vfs/vfs.rs";
+const VFS_SOURCE: &str = "system/linuxd/src/fs/vfs.rs";
 const OPENED_SOURCE: &str = "system/linuxd/src/fs/vfs/opened.rs";
 const OPENED_INDEX_SOURCE: &str = "kernel/src/fs/vfs/opened_index.rs";
 const PATH_COMPONENTS: usize = 32;

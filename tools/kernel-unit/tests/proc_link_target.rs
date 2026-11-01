@@ -2,8 +2,7 @@
 #![allow(dead_code)]
 //! Production ProcInode link operations; the upper source and path projector are explicit seams.
 extern crate alloc;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 #[path = "../../../system/linuxd/src/fs"]

@@ -30,7 +30,7 @@ fn rejects_label_proc_target() {
 #[test]
 fn rejects_pipe_endpoint_pin_in_inode() {
     reject(
-        "tools/source-view/linuxd/fs/anonymous/anonymous/anonymous.rs",
+        "system/linuxd/src/fs/anonymous.rs",
         "Mutex<Weak<Pipe>>",
         "Mutex<Arc<Pipe>>",
         "must not pin endpoints",
@@ -57,7 +57,7 @@ fn rejects_named_fifo_hup_suppression_with_existing_writer() {
 #[test]
 fn rejects_seal_race_outside_write_sequence() {
     reject(
-        "tools/source-view/linuxd/fs/memory_file/memory_file/memory_file.rs",
+        "system/linuxd/src/fs/memory_file.rs",
         "let _sequence = self\n            .write_sequence\n            .lock()\n            .map_err(|_| FileSystemError::OutOfMemory)?;\n        let mut state = self.state()?",
         "let _sequence = ();\n        let mut state = self.state()?",
         "seal rejection/data failure",
@@ -66,7 +66,7 @@ fn rejects_seal_race_outside_write_sequence() {
 #[test]
 fn rejects_metadata_commit_before_resize_failure() {
     reject(
-        "tools/source-view/linuxd/fs/memory_file/memory_file/memory_file.rs",
+        "system/linuxd/src/fs/memory_file.rs",
         "let mut metadata = prepare()?;",
         "let mut metadata = prepare()?; commit(&mut metadata);",
         "data failure",
@@ -84,7 +84,7 @@ fn rejects_future_mtime_becoming_ctime() {
 #[test]
 fn rejects_private_anon_fsnotify() {
     reject(
-        "tools/source-view/linuxd/fs/inotify/inotify/inotify.rs",
+        "system/linuxd/src/fs/inotify.rs",
         "!inode.allows_notifications()",
         "false",
         "non-private inode",
@@ -94,7 +94,7 @@ fn rejects_private_anon_fsnotify() {
 #[test]
 fn rejects_write_seal_publication_before_mapping_admission_check() {
     reject(
-        "tools/source-view/linuxd/fs/memory_file/memory_file/memory_file.rs",
+        "system/linuxd/src/fs/memory_file.rs",
         "candidate.add(seals).map_err(seal_error)?;",
         "candidate.add(seals).map_err(seal_error)?; state.seals = candidate;",
         "seal rejection/data failure",

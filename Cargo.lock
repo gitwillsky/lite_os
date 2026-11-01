@@ -9,6 +9,7 @@ dependencies = [
  "bitflags 2.9.1",
  "device-model",
  "device-protocol",
+ "fallible-tree",
  "native-runtime",
  "network-protocol",
  "smoltcp",

@@ -2,8 +2,7 @@
 #![allow(dead_code)]
 //! 实际 PIDFS binding/codec 与真实 PID ladder；Task 查询和 user-copy 是显式窄 seam。
 extern crate alloc;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 use alloc::sync::Arc;

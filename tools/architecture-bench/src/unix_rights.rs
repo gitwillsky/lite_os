@@ -9,8 +9,7 @@ mod cost_policy;
 mod message_identity;
 // 实际 scheduler cadence 为 benchmark 边界；policy/锁/deadline 运算全部来自 production。
 
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../../kernel-unit/src/unix_rights_fixture/file.rs"]
 mod file;
 #[path = "../../../system/linuxd/src/id.rs"]

@@ -12,7 +12,7 @@ fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a SourceFile {
         .expect("fs root source")
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let vfs = source(sources, "tools/source-view/linuxd/fs/vfs/vfs/vfs.rs");
+    let vfs = source(sources, "system/linuxd/src/fs/vfs.rs");
     let namespace = source(sources, "system/linuxd/src/fs/vfs/mount_namespace.rs");
     let vfs_text: String = vfs.text.split_whitespace().collect();
     let namespace_text: String = namespace.text.split_whitespace().collect();
@@ -60,7 +60,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     for path in [
         LOOKUP,
         "system/linuxd/src/fs/vfs/mutation.rs",
-        "tools/source-view/linuxd/fs/vfs/vfs/vfs.rs",
+        "system/linuxd/src/fs/vfs.rs",
     ] {
         let source = source(sources, path);
         for item in &source.syntax.items {
@@ -160,7 +160,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         || !mount
             .text
             .contains("transaction.enter_mount(point.clone())?")
-        || !source(sources, "tools/source-view/linuxd/fs/procfs/procfs/procfs.rs")
+        || !source(sources, "system/linuxd/src/fs/procfs.rs")
             .text
             .contains("size: node.metadata_size(),")
     {
@@ -350,13 +350,13 @@ mod tests {
     #[test]
     fn rejects_initial_mount_membership_waiting_for_root_mount() {
         reject(
-            "tools/source-view/linuxd/fs/vfs/vfs/vfs.rs",
+            "system/linuxd/src/fs/vfs.rs",
             "initial: Arc<MountNamespace>",
             "initial: Once<Arc<MountNamespace>>",
             "before worker creation",
         );
         reject(
-            "tools/source-view/linuxd/fs/vfs/vfs/vfs.rs",
+            "system/linuxd/src/fs/vfs.rs",
             "self.initial.install_root(view)",
             "let _ = view; Ok(())",
             "before worker creation",
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn rejects_proc_metadata_recursive_projection() {
         reject(
-            "tools/source-view/linuxd/fs/procfs/procfs/procfs.rs",
+            "system/linuxd/src/fs/procfs.rs",
             "size: node.metadata_size(),",
             "size: self.read_link()?.len() as u64,",
             "metadata must not reacquire",

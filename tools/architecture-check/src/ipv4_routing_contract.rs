@@ -19,7 +19,7 @@ pub(super) fn check(root: &std::path::Path, sources: &[SourceFile], errors: &mut
     let replies = source(sources, "system/netd/src/inet/route_reply.rs");
     let udp = source(sources, "system/netd/src/inet/udp.rs");
     let raw = source(sources, "system/netd/src/inet/raw.rs");
-    let tcp = source(sources, "tools/source-view/netd/inet/tcp/tcp/tcp.rs");
+    let tcp = source(sources, "system/netd/src/inet/tcp.rs");
     let loopback = source(sources, "system/netd/src/inet/device/loopback.rs");
     let ioctl = source(sources, "system/linuxd/src/syscall/socket/interface.rs");
     let opened = source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs");

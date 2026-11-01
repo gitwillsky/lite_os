@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-const INODE_SOURCE: &str = "tools/source-view/ext4d/ext4/inode/inode/inode.rs";
+const INODE_SOURCE: &str = "system/ext4d/src/ext4/inode.rs";
 const EXTENT_SOURCE: &str = "system/ext4d/src/ext4/extent.rs";
 const EXT4_ROOT: &str = "system/ext4d/src/ext4";
 /// ext2 间接块映射的标识；任何一个重新出现都表示第二套 logical-block mapping。

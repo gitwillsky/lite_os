@@ -193,7 +193,7 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
 
     let gpu_runtime = sources
         .iter()
-        .find(|source| source.relative == "tools/source-view/devmgr/drivers/virtio/gpu/gpu/gpu.rs")
+        .find(|source| source.relative == "system/devmgr/src/drivers/virtio/gpu.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let gpu_damage = sources
@@ -222,17 +222,17 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
 
     let virtqueue = sources
         .iter()
-        .find(|source| source.relative == "tools/source-view/devmgr/drivers/virtio/queue/queue/queue.rs")
+        .find(|source| source.relative == "system/devmgr/src/drivers/virtio/queue.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let ethernet_device = sources
         .iter()
-        .find(|source| source.relative == "tools/source-view/netd/inet/device/device/device.rs")
+        .find(|source| source.relative == "system/netd/src/inet/device.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let socket_syscall = sources
         .iter()
-        .find(|source| source.relative == "tools/source-view/linuxd/syscall/socket/socket/socket.rs")
+        .find(|source| source.relative == "system/linuxd/src/syscall/socket.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let inet = sources

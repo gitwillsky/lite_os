@@ -2,8 +2,7 @@
 #![allow(dead_code)]
 //! 实际 IPC IDs、semaphore array、atomic admission 与 SEM_UNDO owner；未复制操作算法。
 extern crate alloc;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/ipc_namespace_fixture.rs"]
 mod ipc;
 #[path = "../src/shm_backing_fixture.rs"]
@@ -142,7 +141,7 @@ fn blocking_counters_follow_first_unsatisfied_operation_and_complete_atomically(
         1
     );
     set.set_values(Some(1), &[1], &access, &pid, 4).unwrap();
-    assert_eq!(waiter.wait(), crate::execution::sync::WaitResult::Woken);
+    assert_eq!(waiter.wait(), crate::sync::WaitResult::Woken);
     assert_eq!(waiter.finish_wait(), Some(Ok(())));
     assert_eq!(set.values(&access).unwrap(), [0, 0]);
     assert_eq!(
@@ -187,7 +186,7 @@ fn rmid_removes_both_undo_indices_and_wakes_exact_pending_operation() {
     let mut wait = operation(&set, &[change(0, -1, SEM_UNDO)], Some(&handle), &pid);
     assert!(!set.operate(&mut wait, &access, 2).unwrap());
     owner.semaphore_remove(id, &access).unwrap();
-    assert_eq!(wait.wait(), crate::execution::sync::WaitResult::Woken);
+    assert_eq!(wait.wait(), crate::sync::WaitResult::Woken);
     assert_eq!(wait.finish_wait(), Some(Err(IpcError::Removed)));
     assert!(matches!(
         set.snapshot(&access, false),
@@ -227,7 +226,7 @@ fn expired_semaphore_wait_cancels_actual_admission_without_consuming_future_valu
     let _binding = target.bind();
     assert_eq!(
         wait.wait_until(Some(0)),
-        crate::execution::sync::WaitResult::TimedOut
+        crate::sync::WaitResult::TimedOut
     );
     assert!(wait.finish_wait().is_none());
     assert_eq!(
@@ -318,7 +317,7 @@ fn pending_operation_keeps_admitted_permissions_while_new_operations_use_updated
     let mut later = operation(&set, &[change(0, -1, 0)], None, &pid);
     assert_eq!(set.operate(&mut later, &reader, 4), Err(IpcError::Access));
     set.set_values(None, &[1], &admin, &pid, 5).unwrap();
-    assert_eq!(pending.wait(), crate::execution::sync::WaitResult::Woken);
+    assert_eq!(pending.wait(), crate::sync::WaitResult::Woken);
     assert_eq!(pending.finish_wait(), Some(Ok(())));
     assert_eq!(set.values(&admin).unwrap(), [0]);
 }

@@ -39,7 +39,7 @@ fn rejects_rollback_through_replacement_thread_handle() {
 #[test]
 fn rejects_allocating_publication() {
     reject(
-        "tools/source-view/linuxd/file/descriptor_table/descriptor_table/descriptor_table.rs",
+        "system/linuxd/src/file/descriptor_table.rs",
         "entry.ofd = Some(file);",
         "let _allocation = Vec::<u8>::new().try_reserve(8);\n        entry.ofd = Some(file);",
         "allocation-free",
@@ -48,7 +48,7 @@ fn rejects_allocating_publication() {
 #[test]
 fn rejects_copying_unpublished_open_to_fork() {
     reject(
-        "tools/source-view/linuxd/file/descriptor_table/descriptor_table/descriptor_table.rs",
+        "system/linuxd/src/file/descriptor_table.rs",
         "try_clone_where(|entry| entry.published)",
         "try_clone_where(|_| true)",
         "invisible and exclusive",
@@ -57,7 +57,7 @@ fn rejects_copying_unpublished_open_to_fork() {
 #[test]
 fn rejects_exposing_incomplete_descriptor() {
     reject(
-        "tools/source-view/linuxd/file/descriptor_table/descriptor_table/descriptor_table.rs",
+        "system/linuxd/src/file/descriptor_table.rs",
         "entry.published = true;\n    }\n\n    /// 无分配摘除 copyout",
         "entry.published = false;\n    }\n\n    /// 无分配摘除 copyout",
         "allocation-free",
@@ -105,7 +105,7 @@ fn rejects_losing_prepared_writer_at_backend_commit() {
 #[test]
 fn rejects_accept_after_consuming_connection_fd_admission() {
     reject(
-        "tools/source-view/linuxd/syscall/socket/socket/socket.rs",
+        "system/linuxd/src/syscall/socket.rs",
         "let reservation = match task.fd_prepare_open(flags & SOCK_CLOEXEC != 0)",
         "let _early = prepared.accept(&listener, None);\n    let reservation = match task.fd_prepare_open(flags & SOCK_CLOEXEC != 0)",
         "before consuming connection",
@@ -114,7 +114,7 @@ fn rejects_accept_after_consuming_connection_fd_admission() {
 #[test]
 fn rejects_accept_fd_published_before_user_address_copy() {
     reject(
-        "tools/source-view/linuxd/syscall/socket/socket/socket.rs",
+        "system/linuxd/src/syscall/socket.rs",
         "if let Err(error) = socket",
         "let _early = reservation.publish(accepted);\n                if let Err(error) = socket",
         "before consuming connection",
@@ -123,7 +123,7 @@ fn rejects_accept_fd_published_before_user_address_copy() {
 #[test]
 fn rejects_paired_fd_transient_visibility() {
     reject(
-        "tools/source-view/linuxd/syscall/socket/socket/socket.rs",
+        "system/linuxd/src/syscall/socket.rs",
         "if task.copy_to_user(output, &bytes).is_err()",
         "reservation.publish_many([first_ofd, second_ofd]);\n    if task.copy_to_user(output, &bytes).is_err()",
         "atomic paired publication",

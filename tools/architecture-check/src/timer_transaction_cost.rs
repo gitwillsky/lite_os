@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-const QUEUE_SOURCE: &str = "tools/source-view/linuxd/task/process_table/timer_queue/timer_queue/timer_queue.rs";
+const QUEUE_SOURCE: &str = "system/linuxd/src/task/process_table/timer_queue.rs";
 const TRANSACTION_SOURCE: &str =
     "system/linuxd/src/task/process_table/timer_queue/transaction.rs";
 const LOOP_SOURCE: &str = "system/linuxd/src/task/process_table/timer_queue/transaction_loop.rs";

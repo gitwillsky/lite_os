@@ -31,7 +31,7 @@ static ALLOCATOR: FaultAllocator = FaultAllocator;
 mod scheduler_target;
 #[path = "../../../system/linuxd/src/task/model"]
 mod model {
-    use crate::execution::sync::TaskMutex;
+    use crate::sync::TaskMutex;
     use alloc::sync::Arc;
     #[derive(Debug)]
     pub(crate) enum MemoryError {

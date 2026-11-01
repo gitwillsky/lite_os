@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
-const CURSOR_SOURCE: &str = "tools/source-view/linuxd/syscall/user_iovec/user_iovec/user_iovec.rs";
-const POLL_SOURCE: &str = "tools/source-view/linuxd/syscall/poll/poll/poll.rs";
+const CURSOR_SOURCE: &str = "system/linuxd/src/syscall/user_iovec.rs";
+const POLL_SOURCE: &str = "system/linuxd/src/syscall/poll.rs";
 const DEVICE_CURSOR_SOURCE: &str = "system/linuxd/src/syscall/device.rs";
 const ZERO_SOURCE: &str = "system/linuxd/src/fs/mem_device.rs";
 const EVDEV_SOURCE: &str = "system/linuxd/src/devices/input/evdev_file.rs";

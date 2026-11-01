@@ -35,12 +35,12 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     for (path, structure, expected) in [
         (
-            "tools/source-view/linuxd/task/model/model/model.rs",
+            "system/linuxd/src/task/model.rs",
             "Process",
             "LeaderCredentialsHandle",
         ),
         (
-            "tools/source-view/linuxd/task/process_table/process_table/process_table.rs",
+            "system/linuxd/src/task/process_table.rs",
             "ProcessNode",
             "super :: model :: LeaderCredentialsHandle",
         ),
@@ -134,7 +134,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         "tmpfs post-allocation mode commit needs prepared metadata waiting and shared write sequence",
         errors,
     );
-    let mm = source(sources, "tools/source-view/linuxd/fs/memory_file/memory_file/memory_file.rs");
+    let mm = source(sources, "system/linuxd/src/fs/memory_file.rs");
     require(
         mm,
         &["modified: impl FnOnce()", "drop(state);", "modified();"],
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn rejects_copied_zombie_capabilities() {
         reject(
-            "tools/source-view/linuxd/task/process_table/process_table/process_table.rs",
+            "system/linuxd/src/task/process_table.rs",
             "leader_credentials: super::model::LeaderCredentialsHandle,",
             "leader_credentials: CapabilityState,",
             "retargetable",

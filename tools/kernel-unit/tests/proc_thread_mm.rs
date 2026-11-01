@@ -2,8 +2,7 @@
 //! Production proc snapshots/codecs; VFS error/opened entry and wall-clock tick are host seams.
 #![allow(dead_code)]
 extern crate alloc;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 #[path = "../../../system/linuxd/src/fs"]

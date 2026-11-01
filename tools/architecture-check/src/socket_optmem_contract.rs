@@ -54,7 +54,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors.push("socket-optmem: actual per-socket atomic admission must charge requested bytes against captured NET policy before allocation/copy, retain heap token through protocol send and refund exactly once".into());
     }
     let prepare = normalized(source(sources, "system/linuxd/src/net/preparation.rs"));
-    let abi = normalized(source(sources, "tools/source-view/linuxd/syscall/socket/socket/socket.rs"));
+    let abi = normalized(source(sources, "system/linuxd/src/syscall/socket.rs"));
     let proc = normalized(source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs"));
     if !prepare.contains("letmemory=super::SocketMemory::try_new(namespace)?")
         || !prepare.contains("memory:self.memory")
@@ -96,7 +96,7 @@ mod tests {
                 "drop(ancillary.credentials);",
             ),
             (
-                "tools/source-view/linuxd/syscall/socket/socket/socket.rs",
+                "system/linuxd/src/syscall/socket.rs",
                 "listener.net_namespace(),",
                 "task.net_namespace(),",
             ),

@@ -6,7 +6,7 @@ use syn::{Arm, ExprMatch, ImplItem, Item, ItemFn, visit::Visit};
 use super::SourceFile;
 
 const TRAP_SOURCE: &str = "kernel/src/bootstrap/mod.rs";
-const ADDRESS_SPACE_SOURCE: &str = "tools/source-view/linuxd/task/model/address_space/address_space/address_space.rs";
+const ADDRESS_SPACE_SOURCE: &str = "system/linuxd/src/task/model/address_space.rs";
 const USER_CONTEXT_SOURCE: &str = "kernel/src/arch/riscv64/user_context.rs";
 const USER_CONTEXT_BYTES: usize = 72 * core::mem::size_of::<u64>();
 

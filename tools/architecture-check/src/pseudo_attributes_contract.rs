@@ -8,9 +8,9 @@ fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a str {
         .text
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let cache = source(sources, "tools/source-view/linuxd/fs/page_cache/page_cache/page_cache.rs");
+    let cache = source(sources, "system/linuxd/src/fs/page_cache.rs");
     let identity = source(sources, "system/linuxd/src/fs/inode_identity.rs");
-    let proc = source(sources, "tools/source-view/linuxd/fs/procfs/procfs/procfs.rs");
+    let proc = source(sources, "system/linuxd/src/fs/procfs.rs");
     let attributes = source(sources, "system/linuxd/src/fs/procfs/attributes.rs");
     let nsfs = source(sources, "system/linuxd/src/fs/nsfs.rs");
     let opened = source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs");
@@ -67,7 +67,7 @@ mod tests {
     #[test]
     fn rejects_blanket_snapshot_read_only() {
         reject(
-            "tools/source-view/linuxd/fs/page_cache/page_cache/page_cache.rs",
+            "system/linuxd/src/fs/page_cache.rs",
             "DataBacking::Snapshot => return inode.truncate_storage(size, Some(identity))",
             "DataBacking::Snapshot => return Err(FileSystemError::ReadOnly)",
             "every legal size",

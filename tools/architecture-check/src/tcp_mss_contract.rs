@@ -49,7 +49,7 @@ fn check_transport(source: &str, errors: &mut Vec<String>) {
 }
 fn check_kernel(sources: &[SourceFile], errors: &mut Vec<String>) {
     let options = normalized(source(sources, "system/netd/src/inet/options.rs"));
-    let tcp = normalized(source(sources, "tools/source-view/netd/inet/tcp/tcp/tcp.rs"));
+    let tcp = normalized(source(sources, "system/netd/src/inet/tcp.rs"));
     let lifecycle = normalized(source(sources, "system/netd/src/inet/tcp/lifecycle.rs"));
     let abi = normalized(source(sources, "system/linuxd/src/syscall/socket/options.rs"));
     if !options.contains("socket.set_user_mss(self.user_mss)")

@@ -88,7 +88,7 @@ fn requeue_preserves_actual_bitset_deadline_and_same_key_count_without_allocatio
     assert!(owner::expire(100));
     assert_eq!(
         pending.arm(),
-        Err(crate::execution::sync::WaitResult::TimedOut)
+        Err(crate::sync::WaitResult::TimedOut)
     );
     owner::assert_empty();
 }
@@ -106,8 +106,8 @@ fn actual_two_source_wake_consumes_each_wait_once_and_handles_identical_keys() {
             assert_eq!(wake(source, 1, u32::MAX), 1);
             assert_eq!(wake(target, 1, u32::MAX), 1);
         });
-        assert_eq!(first.arm(), Err(crate::execution::sync::WaitResult::Woken));
-        assert_eq!(second.arm(), Err(crate::execution::sync::WaitResult::Woken));
+        assert_eq!(first.arm(), Err(crate::sync::WaitResult::Woken));
+        assert_eq!(second.arm(), Err(crate::sync::WaitResult::Woken));
         assert_eq!(owner::wake(source, 2, u32::MAX), 0);
     }
 }

@@ -2,8 +2,7 @@
 #![allow(dead_code)]
 //! 生产 UserNS/kuid locked-page ucounts、祖先限额与收费 token；不模拟配额算法。
 extern crate alloc;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 use namespace::{NamespaceError, RlimitCharge, RlimitResource, UserNamespace};

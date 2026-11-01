@@ -37,8 +37,7 @@ mod devices {
     }
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     pub(crate) mod cpu {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
         pub(crate) struct CpuId(pub(crate) usize);
@@ -96,7 +95,7 @@ pub(crate) mod execution {
         }
         #[path = "model"]
         pub(crate) mod model {
-            use crate::{execution::cpu::CpuId, execution::sync::IrqMutex};
+            use crate::{execution::cpu::CpuId, sync::IrqMutex};
             use alloc::sync::Arc;
             use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
             use spin::Mutex;
@@ -394,7 +393,5 @@ pub(crate) mod execution {
             }
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

@@ -2,8 +2,7 @@
 #![allow(dead_code)]
 //! Production namespace ancestry/map/identity/permission owner; no copied namespace state.
 extern crate alloc;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 use alloc::sync::Arc;
 use syscall_abi::capability::{Capability, VALID_MASK};
 #[path = "../src/allocation_failure.rs"]

@@ -56,7 +56,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
 
     if let Some(graph) = sources
         .iter()
-        .find(|source| source.relative == "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs")
+        .find(|source| source.relative == "system/linuxd/src/net/unix/rights_graph.rs")
         && (method_tokens(graph, "detach").is_none_or(|body| {
             body.contains("self . nodes . retain") || !body.contains("remove_unreferenced")
         }) || !graph.text.contains("references: usize")
@@ -64,7 +64,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             || !graph.text.contains(".checked_add(state.edges.len())"))
     {
         errors.push(format!(
-            "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs: detach scans every graph node; one edge revocation visits all {COST_SAMPLE_ENTRIES} nodes in the cost sample instead of only affected endpoints"
+            "system/linuxd/src/net/unix/rights_graph.rs: detach scans every graph node; one edge revocation visits all {COST_SAMPLE_ENTRIES} nodes in the cost sample instead of only affected endpoints"
         ));
     }
 }

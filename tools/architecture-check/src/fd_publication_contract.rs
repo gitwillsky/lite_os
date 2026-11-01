@@ -72,7 +72,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fd-publication: reservation publication and rollback must pin the original FileTable owner".into());
     }
-    let table = source(sources, "tools/source-view/linuxd/file/descriptor_table/descriptor_table/descriptor_table.rs");
+    let table = source(sources, "system/linuxd/src/file/descriptor_table.rs");
     let reserve = table
         .split("pub(crate) fn reserve_open")
         .nth(1)
@@ -158,7 +158,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fd-publication: native SCM must copy and publish each FD before its header, retain the installed prefix on later faults, and output name/flags/length afterward".into());
     }
-    let socket = source(sources, "tools/source-view/linuxd/syscall/socket/socket/socket.rs");
+    let socket = source(sources, "system/linuxd/src/syscall/socket.rs");
     let accept = socket
         .split("pub(in crate::syscall) fn accept_once")
         .nth(1)
@@ -195,7 +195,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fd-publication: accept must prepare facade/OFD/inode/fd before consuming connection and copy address before publication".into());
     }
-    let pipe = source(sources, "tools/source-view/linuxd/syscall/fs/fs/fs.rs");
+    let pipe = source(sources, "system/linuxd/src/syscall/fs.rs");
     let pipe = pipe
         .split("pub(crate) fn sys_pipe2")
         .nth(1)

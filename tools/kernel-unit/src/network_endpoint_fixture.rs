@@ -5,8 +5,7 @@ macro_rules! error { ($($message:tt)*) => {{ eprintln!($($message)*); }}; }
 
 #[path = "allocation_failure.rs"]
 pub(crate) mod allocation_failure;
-#[path = "../../../fallible-tree/src/lib.rs"]
-pub(crate) mod fallible_tree;
+pub(crate) extern crate fallible_tree;
 #[path = "../../../system/linuxd/src/id.rs"]
 pub(crate) mod id;
 #[path = "pipe_fixture.rs"]

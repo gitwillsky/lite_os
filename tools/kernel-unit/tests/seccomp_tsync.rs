@@ -2,8 +2,7 @@
 #![feature(allocator_ext)]
 extern crate alloc;
 #[allow(dead_code, unused_imports)]
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
@@ -37,10 +36,10 @@ mod installation;
 pub(crate) struct TaskControlBlock {
     pid: namespace::PidRegistration,
     security: ThreadSecurityOwner,
-    credential_guard: Arc<crate::execution::sync::TaskMutex<()>>,
+    credential_guard: Arc<crate::sync::TaskMutex<()>>,
 }
 impl TaskControlBlock {
-    fn credential_guard(&self) -> &crate::execution::sync::TaskMutex<()> {
+    fn credential_guard(&self) -> &crate::sync::TaskMutex<()> {
         &self.credential_guard
     }
     fn thread(&self) -> &Self {
@@ -172,7 +171,7 @@ fn current_task() -> Option<Arc<TaskControlBlock>> {
 fn table(count: usize) -> (ProcessTable, Vec<Arc<TaskControlBlock>>) {
     let owner = namespace::boot();
     let view = namespace::initial_pid().child(owner, 0).unwrap();
-    let credential_guard = Arc::new(crate::execution::sync::TaskMutex::new(()));
+    let credential_guard = Arc::new(crate::sync::TaskMutex::new(()));
     let tasks: Vec<_> = (1..=count)
         .map(|tid| {
             let mut pid = namespace::PreparedPid::try_new(
@@ -548,8 +547,7 @@ fn facade_strict_installation_uses_the_same_owner() {
     assert!(matches!(ProcessState::Exited(()), ProcessState::Exited(())));
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     #[allow(
         dead_code,
         reason = "TSYNC consumes killable locking; other TaskMutex modes are covered by synchronization fixtures"
@@ -565,10 +563,6 @@ pub(crate) mod execution {
             pub(crate) use crate::model::seccomp::{RetiredSecurity, ValidatedFilter};
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
-use execution::sync;
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

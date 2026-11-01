@@ -2,8 +2,7 @@
 #![allow(dead_code)]
 //! 执行实际 shm ID/key、权限、reservation/VMA nattch 和延迟销毁；物理页生产为输入 seam。
 extern crate alloc;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/ipc_namespace_fixture.rs"]
 mod ipc;
 #[path = "../src/shm_backing_fixture.rs"]

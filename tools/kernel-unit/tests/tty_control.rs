@@ -5,8 +5,7 @@ extern crate alloc;
 use alloc::sync::Arc;
 #[path = "../../../system/linuxd/src/fs/devnum.rs"]
 mod device_number;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 

@@ -3,13 +3,13 @@ use syn::Item;
 
 use super::SourceFile;
 
-const EXT4: &str = "tools/source-view/ext4d/ext4/ext4/ext4.rs";
-const JOURNAL: &str = "tools/source-view/ext4d/ext4/journal/journal/journal.rs";
-const INODE: &str = "tools/source-view/ext4d/ext4/inode/inode/inode.rs";
+const EXT4: &str = "system/ext4d/src/ext4.rs";
+const JOURNAL: &str = "system/ext4d/src/ext4/journal.rs";
+const INODE: &str = "system/ext4d/src/ext4/inode.rs";
 const INODE_MUTATION: &str = "system/ext4d/src/ext4/journal/inode_mutation.rs";
 const MOUNT: &str = "system/ext4d/src/ext4/mount.rs";
-const PAGE_CACHE: &str = "tools/source-view/linuxd/fs/page_cache/page_cache/page_cache.rs";
-const VFS: &str = "tools/source-view/linuxd/fs/vfs/vfs/vfs.rs";
+const PAGE_CACHE: &str = "system/linuxd/src/fs/page_cache.rs";
+const VFS: &str = "system/linuxd/src/fs/vfs.rs";
 const MUTEX: &str = "kernel/src/execution/sync/task_mutex.rs";
 const ADAPTER: &str = "system/linuxd/src/task/process_table/task_wait.rs";
 const EVENT: &str = "kernel/src/execution/sync/task_event.rs";

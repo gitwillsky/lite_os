@@ -2,8 +2,7 @@
 #![allow(dead_code)]
 //! 实际 capacity facade/owner/backlog/FIFO；endpoint transitions 是显式 producer 输入。
 extern crate alloc;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../../../system/linuxd/src/id.rs"]
 mod id;
 #[path = "../src/pipe_fixture.rs"]

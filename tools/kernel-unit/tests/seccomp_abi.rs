@@ -4,8 +4,7 @@
 
 extern crate alloc;
 #[allow(dead_code, unused_imports)]
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
@@ -162,7 +161,7 @@ mod syscall {
     pub(crate) enum SyscallOutcome {
         Return(isize),
         PreserveRegisters,
-        Restart(crate::execution::task::SyscallRestartPolicy),
+        Restart(crate::task::SyscallRestartPolicy),
     }
     pub(crate) fn file_descriptor_error(_: crate::file::FileDescriptorError) -> isize {
         unreachable!("policy-only descriptor errno seam")
@@ -425,8 +424,7 @@ fn notification_sizes_are_fixed_codec_and_flag_combinations_precede_user_copy() 
     );
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     #[allow(dead_code, unused_imports)]
     #[path = "../src/sync.rs"]
     pub(crate) mod sync;
@@ -468,10 +466,6 @@ pub(crate) mod execution {
             panic!("group fatal {signal}")
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
-use execution::sync;
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

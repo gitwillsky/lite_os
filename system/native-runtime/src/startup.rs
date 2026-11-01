@@ -53,6 +53,7 @@ pub fn set_fatal_scope(task: Handle) {
 }
 
 /// 服务无法继续时终止其范围内的全部任务。
+#[cfg(target_os = "none")]
 pub(crate) fn fatal() -> ! {
     if let Some(scope) = FATAL_SCOPE.get() {
         let _ = crate::task::kill(scope);
@@ -113,6 +114,7 @@ extern "C" fn _start(channel: native_abi::Handle, _: usize) -> ! {
     crate::task::exit_process(code)
 }
 
+#[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
     crate::log::write(crate::system::Severity::Error, format_args!("panic: {info}"));

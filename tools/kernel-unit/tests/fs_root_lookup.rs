@@ -5,8 +5,7 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 
@@ -333,13 +332,13 @@ mod fs {
             root: Mutex<Option<Arc<OpenedFile>>>,
             namespace: Mutex<Option<Arc<MountNamespace>>>,
             dentries: DentryIndex,
-            namespace_mutation: crate::execution::sync::TaskMutex<()>,
+            namespace_mutation: crate::sync::TaskMutex<()>,
         }
         static VFS: VirtualFileSystem = VirtualFileSystem {
             root: Mutex::new(None),
             namespace: Mutex::new(None),
             dentries: DentryIndex::new(),
-            namespace_mutation: crate::execution::sync::TaskMutex::new(()),
+            namespace_mutation: crate::sync::TaskMutex::new(()),
         };
         pub(super) fn vfs() -> &'static VirtualFileSystem {
             &VFS
@@ -1018,7 +1017,7 @@ mod fs {
             let jail = f.jail.clone();
             let file = f.file.id;
             let writer = thread::spawn(move || {
-                crate::execution::sync::observe_blocking(blocked_tx);
+                crate::sync::observe_blocking(blocked_tx);
                 let _directory = jail.dentry.lock_exclusive().unwrap();
                 let _namespace = VFS.namespace().unwrap();
                 VFS.dentries.move_entry(
@@ -1075,7 +1074,7 @@ mod fs {
             let (tx, rx) = mpsc::channel();
             let (blocked_tx, blocked_rx) = mpsc::channel();
             let reader = thread::spawn(move || {
-                crate::execution::sync::observe_blocking(blocked_tx);
+                crate::sync::observe_blocking(blocked_tx);
                 tx.send(VFS.current_directory_path(origin).unwrap())
                     .unwrap();
             });

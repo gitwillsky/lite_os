@@ -12,15 +12,15 @@ fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a str {
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let owner = normalized(source(sources, "system/linuxd/src/net/net_namespace.rs"));
-    let protocol_owner = normalized(source(sources, "tools/source-view/netd/inet/protocol_owner/protocol_owner/protocol_owner.rs"));
+    let protocol_owner = normalized(source(sources, "system/netd/src/inet/protocol_owner.rs"));
     let inet = normalized(source(sources, "system/linuxd/src/net/inet.rs"));
     let configuration = normalized(source(sources, "system/netd/src/inet/configuration.rs"));
     let timing = normalized(source(sources, "system/netd/src/inet/timing.rs"));
     let interface = normalized(source(sources, "system/linuxd/src/syscall/socket/interface.rs"));
     let registry = normalized(source(sources, "system/linuxd/src/net/unix/namespace.rs"));
-    let unix = normalized(source(sources, "tools/source-view/linuxd/net/unix/unix/unix.rs"));
+    let unix = normalized(source(sources, "system/linuxd/src/net/unix.rs"));
     let lifecycle = normalized(source(sources, "system/linuxd/src/net/unix/lifecycle.rs"));
-    let proc = normalized(source(sources, "tools/source-view/linuxd/fs/procfs/procfs/procfs.rs"));
+    let proc = normalized(source(sources, "system/linuxd/src/fs/procfs.rs"));
     let opened = normalized(source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs"));
     let nodes = normalized(source(sources, "system/linuxd/src/fs/procfs/node.rs"));
     let generic = nodes
@@ -88,7 +88,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         "system/netd/src/inet/options.rs",
         "system/netd/src/inet/udp.rs",
         "system/netd/src/inet/raw.rs",
-        "tools/source-view/netd/inet/tcp/tcp/tcp.rs",
+        "system/netd/src/inet/tcp.rs",
         "system/netd/src/inet/tcp/io.rs",
         "system/netd/src/inet/tcp/accept.rs",
         "system/netd/src/inet/tcp/lifecycle.rs",

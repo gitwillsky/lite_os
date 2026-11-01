@@ -5,8 +5,7 @@ extern crate alloc;
 #[path = "../../kernel-unit/src/allocation_failure.rs"]
 mod allocation_failure;
 mod cost_policy;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../../kernel-unit/src/namespace_fixture.rs"]
 mod namespace;
 #[path = "../../../system/linuxd/src/fs/inotify/queue.rs"]

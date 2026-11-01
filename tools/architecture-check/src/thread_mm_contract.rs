@@ -2,8 +2,8 @@
 use super::SourceFile;
 use quote::ToTokens;
 use syn::Item;
-const MODEL: &str = "tools/source-view/linuxd/task/model/model/model.rs";
-const MM: &str = "tools/source-view/linuxd/task/model/thread_mm/thread_mm/thread_mm.rs";
+const MODEL: &str = "system/linuxd/src/task/model.rs";
+const MM: &str = "system/linuxd/src/task/model/thread_mm.rs";
 const EXIT: &str = "system/linuxd/src/task/model/process_exit.rs";
 const EXEC: &str = "system/linuxd/src/task/model/process_exec.rs";
 
@@ -67,7 +67,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         sources,
         "system/linuxd/src/task/model/thread_identity.rs",
     );
-    let graph = source(sources, "tools/source-view/linuxd/task/process_table/process_table/process_table.rs");
+    let graph = source(sources, "system/linuxd/src/task/process_table.rs");
     let kernel_exit = source(
         sources,
         "system/linuxd/src/task/process_table/process_exit.rs",
@@ -183,7 +183,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         sources,
         "system/linuxd/src/task/model/thread_retirement.rs",
     );
-    let graph = source(sources, "tools/source-view/linuxd/task/process_table/process_table/process_table.rs");
+    let graph = source(sources, "system/linuxd/src/task/process_table.rs");
     if !retirement.text.contains("completed.wait_killable()")
         || !retirement.text.contains("outstanding.fetch_add(1")
         || !retirement.text.contains("outstanding.fetch_sub(1")

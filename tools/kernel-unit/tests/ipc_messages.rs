@@ -2,8 +2,7 @@
 #![allow(dead_code)]
 //! 实际 IPC namespace、queue、权限与事件 owner；调用者凭据/PID 是显式不可变输入。
 extern crate alloc;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/ipc_namespace_fixture.rs"]
 mod ipc;
 #[path = "../src/shm_backing_fixture.rs"]
@@ -205,7 +204,7 @@ fn zero_length_messages_are_limited_and_rmid_wakes_exact_registered_waiter() {
             .unwrap()
     );
     owner.message_remove(id, &access).unwrap();
-    assert_eq!(wait.wait(), crate::execution::sync::WaitResult::Woken);
+    assert_eq!(wait.wait(), crate::sync::WaitResult::Woken);
     assert!(matches!(owner.message_queue(id), Err(IpcError::Invalid)));
     assert_eq!(
         queue.send(&mut message, &access, pid.clone(), 3, None),
@@ -404,11 +403,11 @@ fn pipelined_send_obeys_admission_order_and_is_not_revoked_by_rmid() {
     assert_eq!((stat.messages, stat.bytes), (0, 0));
     assert_eq!(stat.receive_time, 12);
     owner.message_remove(id, &access).unwrap();
-    assert_eq!(small.wait(), crate::execution::sync::WaitResult::Woken);
+    assert_eq!(small.wait(), crate::sync::WaitResult::Woken);
     assert!(matches!(small.finish_wait(), Some(Err(IpcError::TooBig))));
-    assert_eq!(first.wait(), crate::execution::sync::WaitResult::Woken);
+    assert_eq!(first.wait(), crate::sync::WaitResult::Woken);
     assert_eq!(first.finish_wait().unwrap().unwrap().bytes, b"seven");
-    assert_eq!(second.wait(), crate::execution::sync::WaitResult::Woken);
+    assert_eq!(second.wait(), crate::sync::WaitResult::Woken);
     assert!(second.finish_wait().is_none());
     assert!(first.finish_wait().is_none());
 }

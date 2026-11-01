@@ -98,7 +98,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
+        "system/linuxd/src/net/unix/stream.rs",
         &[
             "read_closed: bool",
             "state.read_closed = true",
@@ -157,7 +157,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
+        "system/linuxd/src/net/unix/stream.rs",
         &[
             "same_credentials(credentials, frame.credentials.as_ref())",
             "mode.is_message()",
@@ -229,7 +229,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/syscall/socket/socket/socket.rs",
+        "system/linuxd/src/syscall/socket.rs",
         &[
             "SocketConnectError::BacklogFull",
             "wait_for_socket_capacity(&capacity, deadline)",
@@ -252,7 +252,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/netd/inet/tcp/tcp/tcp.rs",
+        "system/netd/src/inet/tcp.rs",
         &[
             "struct TcpHandle",
             "passive: Option<PassivePolicy>",
@@ -302,7 +302,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/netd/inet/tcp/tcp/tcp.rs",
+        "system/netd/src/inet/tcp.rs",
         &[
             "struct TcpConnection",
             "self.terminal",
@@ -372,7 +372,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/syscall/poll/poll/poll.rs",
+        "system/linuxd/src/syscall/poll.rs",
         &["wait_for_poll(keys, deadline,"],
         "socket wait must publish the caller-frozen deadline in the actual registry",
         errors,
@@ -617,7 +617,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/ipc/namespace/namespace/namespace.rs",
+        "system/linuxd/src/ipc/namespace.rs",
         &[
             "UserResource::Ipc",
             "messages: Mutex<MessageRegistry>",
@@ -736,7 +736,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs",
+        "system/linuxd/src/net/unix/rights_graph.rs",
         &[
             "edges: FallibleMap<EdgeKey, GraphEdge>",
             "PreparedAttach",
@@ -754,7 +754,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs",
+        "system/linuxd/src/net/unix/rights_graph.rs",
         &[
             "file_reference: uid.is_some()",
             "edge.file_reference",
@@ -768,7 +768,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs",
+        "system/linuxd/src/net/unix/rights_graph.rs",
         &[
             "pub(super) fn pin_description",
             "let _collector = COLLECTOR.lock()",
@@ -778,7 +778,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
+        "system/linuxd/src/net/unix/stream.rs",
         &[
             "pub(super) fn close(&self)",
             "state.read_closed = true",
@@ -790,7 +790,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
+        "system/linuxd/src/net/unix/stream.rs",
         &[
             "if peek {",
             "for frame in state.messages.iter()",
@@ -815,7 +815,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
+        "system/linuxd/src/net/unix/stream.rs",
         &[
             "if peek {",
             "frame.consumed += count",
@@ -864,7 +864,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/task/model/resource_limits/resource_limits/resource_limits.rs",
+        "system/linuxd/src/task/model/resource_limits.rs",
         &[
             "self.process().resource_limits.clone()",
             "mod unix_file_limit",
@@ -894,7 +894,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
+        "system/linuxd/src/net/unix/stream.rs",
         &[
             "messages: FrameQueue",
             "retired.push(state.messages.pop()",
@@ -987,7 +987,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         "concurrent connect must decide only at actual publication and notify rolled-back capacity",
         errors,
     );
-    if let Some(text) = source(sources, "tools/source-view/linuxd/net/unix/unix/unix.rs", errors)
+    if let Some(text) = source(sources, "system/linuxd/src/net/unix.rs", errors)
         && text.contains("    Connecting,")
     {
         errors.push("ipc-owner: unpublished connect cannot replace actual client state with a provisional connected state".into());
@@ -1081,7 +1081,7 @@ mod tests {
     #[test]
     fn rejects_message_controls_ignoring_empty_iterators() {
         reject(
-            "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
+            "system/linuxd/src/net/unix/stream.rs",
             "mode.is_message()",
             "mode.receives_rights()",
             "actual stream frames must preserve",
@@ -1126,7 +1126,7 @@ mod tests {
     #[test]
     fn rejects_socket_deadline_dropped_at_registry_publication() {
         reject(
-            "tools/source-view/linuxd/syscall/poll/poll/poll.rs",
+            "system/linuxd/src/syscall/poll.rs",
             "wait_for_poll(keys, deadline,",
             "wait_for_poll(keys, None,",
             "socket wait must publish the caller-frozen deadline",
@@ -1270,7 +1270,7 @@ mod tests {
     #[test]
     fn rejects_gc_reentrant_self_edge_lock() {
         reject(
-            "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs",
+            "system/linuxd/src/net/unix/rights_graph.rs",
             "Arc::ptr_eq(node, successor)",
             "false",
             "root probe pins outside GRAPH",
@@ -1288,7 +1288,7 @@ mod tests {
     #[test]
     fn rejects_collector_allocating_a_waiter_under_pressure() {
         reject(
-            "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs",
+            "system/linuxd/src/net/unix/rights_graph.rs",
             "COLLECTOR.lock_prepared(&mut gate)",
             "COLLECTOR.lock().unwrap()",
             "preserve actual worker",
@@ -1297,7 +1297,7 @@ mod tests {
     #[test]
     fn rejects_backlog_edges_counted_as_file_references() {
         reject(
-            "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs",
+            "system/linuxd/src/net/unix/rights_graph.rs",
             "file_reference: uid.is_some()",
             "file_reference: true",
             "without UID/OFD reference accounting",
@@ -1342,7 +1342,7 @@ mod tests {
     #[test]
     fn rejects_peek_advancing_actual_chunk_cursor() {
         reject(
-            "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
+            "system/linuxd/src/net/unix/stream.rs",
             "if peek {",
             "if false {",
             "one actual chunk owner",
@@ -1351,7 +1351,7 @@ mod tests {
     #[test]
     fn rejects_stream_head_relookup_after_minimum_selection() {
         reject(
-            "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
+            "system/linuxd/src/net/unix/stream.rs",
             "front_mut()",
             "front()",
             "allocation-free adjacent chunk reads",

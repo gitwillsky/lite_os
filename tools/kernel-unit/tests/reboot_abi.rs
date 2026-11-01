@@ -118,7 +118,7 @@ fn normalization_preserves_invalid_and_unsupported_command_errors() {
     );
 }
 
-pub(crate) mod execution {
+
     pub(crate) mod task {
         pub(crate) struct Task;
 
@@ -136,7 +136,5 @@ pub(crate) mod execution {
             }
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

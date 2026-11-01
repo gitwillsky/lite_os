@@ -4,8 +4,7 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 // 本 fixture 只装配未调度的执行体输入，不获取文件表；KernelThread 仅持有这个预置 waiter 的所有权。
@@ -22,8 +21,7 @@ mod fs {
     }
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     pub(crate) mod sync {
         pub(crate) struct TaskMutexWaitPreparation;
         impl TaskMutexWaitPreparation {
@@ -42,7 +40,7 @@ pub(crate) mod execution {
         pub(crate) mod pid;
         #[path = "model"]
         mod model {
-            use crate::{execution::task::pid::ProcessId, namespace};
+            use crate::{task::pid::ProcessId, namespace};
             use alloc::sync::Arc;
             use spin::Mutex;
             // Credential 值为此 identity-only fixture 的构造边界；实际 root credential 另由 proc guest 验证。
@@ -106,7 +104,7 @@ pub(crate) mod execution {
                     "retire-mm",
                     alloc::boxed::Box::new(|| {}),
                     root.clone(),
-                    crate::execution::sync::TaskMutexWaitPreparation::prepare().unwrap(),
+                    crate::sync::TaskMutexWaitPreparation::prepare().unwrap(),
                 );
                 let task = Arc::new(TaskControlBlock {
                     kind: TaskKind::Kernel(kernel),
@@ -159,7 +157,7 @@ pub(crate) mod execution {
                     "unpublished",
                     alloc::boxed::Box::new(|| {}),
                     root.clone(),
-                    crate::execution::sync::TaskMutexWaitPreparation::prepare().unwrap(),
+                    crate::sync::TaskMutexWaitPreparation::prepare().unwrap(),
                 );
                 assert_eq!(root.lookup(observer.number_in(&root)), None);
                 drop(kernel);
@@ -169,7 +167,5 @@ pub(crate) mod execution {
             }
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

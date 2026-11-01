@@ -35,8 +35,7 @@ unsafe impl GlobalAlloc for FaultAllocator {
 #[global_allocator]
 static ALLOCATOR: FaultAllocator = FaultAllocator;
 
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 
 mod memory {
     #[derive(Debug, PartialEq, Eq)]
@@ -53,9 +52,9 @@ mod id {
 
 #[test]
 fn repeated_sleep_reuses_deadline_and_event_under_total_allocation_failure() {
-    crate::execution::sync::warm_target();
+    crate::sync::warm_target();
     let mut waiter =
-        crate::execution::task::process_table::timer_queue::KernelDeadlineWait::new().unwrap();
+        crate::task::process_table::timer_queue::KernelDeadlineWait::new().unwrap();
     REJECT_ALLOCATIONS.set(true);
     let mut control = alloc::vec::Vec::<u64>::new();
     let control_failed = control.try_reserve_exact(2).is_err();
@@ -73,8 +72,7 @@ fn repeated_sleep_reuses_deadline_and_event_under_total_allocation_failure() {
     assert_eq!(EXPIRATIONS.get(), 100);
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     pub(crate) mod timer {
         pub(crate) fn get_time_ns() -> u64 {
             0
@@ -119,7 +117,7 @@ pub(crate) mod execution {
                     );
                     assert!(completion.begin_arming());
                     // 定时器在 scheduler arming 期间到期；真实 TaskEvent 必须保留 pending 并完成握手。
-                    crate::execution::task::process_table::timer_queue::expire();
+                    crate::task::process_table::timer_queue::expire();
                     assert!(completion.finish_arming());
                     WaitResult::Woken
                 }
@@ -144,10 +142,10 @@ pub(crate) mod execution {
         pub(crate) mod process_table {
             // clock/expiry drive 为测试注入；deadline index 使用生产 AVL 和相同 key/payload。
             struct ProcessTable {
-                timers: crate::execution::sync::IrqMutex<timer_queue::TimerQueue>,
+                timers: crate::sync::IrqMutex<timer_queue::TimerQueue>,
             }
             static PROCESS_TABLE: ProcessTable = ProcessTable {
-                timers: crate::execution::sync::IrqMutex::new(timer_queue::TimerQueue::new()),
+                timers: crate::sync::IrqMutex::new(timer_queue::TimerQueue::new()),
             };
 
             pub(crate) mod timer_queue {
@@ -207,7 +205,5 @@ pub(crate) mod execution {
             }
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

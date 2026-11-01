@@ -17,7 +17,7 @@ fn before(text: &str, first: &str, second: &str) -> bool {
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let value = normalized(source(sources, "system/ext4d/src/ext4/xattr_inode.rs"));
     let xattr = normalized(source(sources, "system/ext4d/src/ext4/xattr.rs"));
-    let inode = normalized(source(sources, "tools/source-view/ext4d/ext4/inode/inode/inode.rs"));
+    let inode = normalized(source(sources, "system/ext4d/src/ext4/inode.rs"));
     if !value.contains("u64::from(disk.i_ctime)<<32")
         || !value.contains("u64::from(disk.i_version_lo)")
         || !value.contains("crc32c(self.checksum_seed,&value)")
@@ -132,7 +132,7 @@ mod tests {
     #[test]
     fn rejects_publishing_hidden_ea_inode() {
         reject(
-            "tools/source-view/ext4d/ext4/inode/inode/inode.rs",
+            "system/ext4d/src/ext4/inode.rs",
             "disk.i_flags & super::xattr_inode::EA_INODE_FLAG != 0",
             "false",
             "ordinary VFS",

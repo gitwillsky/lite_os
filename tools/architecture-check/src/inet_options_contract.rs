@@ -15,7 +15,7 @@ fn before(text: &str, first: &str, second: &str) -> bool {
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let options = normalized(source(sources, "system/netd/src/inet/options.rs"));
-    let tcp = normalized(source(sources, "tools/source-view/netd/inet/tcp/tcp/tcp.rs"));
+    let tcp = normalized(source(sources, "system/netd/src/inet/tcp.rs"));
     let lifecycle = normalized(source(sources, "system/netd/src/inet/tcp/lifecycle.rs"));
     let accept = normalized(source(sources, "system/netd/src/inet/tcp/accept.rs"));
     let io = normalized(source(sources, "system/netd/src/inet/tcp/io.rs"));
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn rejects_modifying_established_passive_child() {
         reject(
-            "tools/source-view/netd/inet/tcp/tcp/tcp.rs",
+            "system/netd/src/inet/tcp.rs",
             "if entry.passive.is_none() {",
             "if true {",
             "frozen passive",

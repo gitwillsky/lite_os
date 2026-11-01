@@ -11,7 +11,7 @@ fn source(sources: &[SourceFile], path: &str) -> String {
 }
 pub(super) fn check(root: &std::path::Path, sources: &[SourceFile], errors: &mut Vec<String>) {
     let config = source(sources, "system/netd/src/inet/configuration.rs");
-    let device = source(sources, "tools/source-view/netd/inet/device/device/device.rs");
+    let device = source(sources, "system/netd/src/inet/device.rs");
     let loopback = source(sources, "system/netd/src/inet/device/loopback.rs");
     let ioctl = source(sources, "system/linuxd/src/syscall/socket/interface.rs");
     let packet = source(sources, "system/linuxd/src/net/packet.rs");

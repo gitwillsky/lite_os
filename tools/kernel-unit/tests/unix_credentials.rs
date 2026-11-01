@@ -4,8 +4,7 @@
 extern crate alloc;
 use alloc::sync::Arc;
 use syscall_abi::errno;
-#[path = "../../../fallible-tree/src/lib.rs"]
-mod fallible_tree;
+extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 #[path = "../../../system/linuxd/src/net/credentials.rs"]
@@ -17,19 +16,19 @@ mod syscall {
         use syscall_abi::errno;
         pub(crate) mod credentials;
         pub(crate) fn prepare(
-            task: &crate::execution::task::TaskControlBlock,
+            task: &crate::task::TaskControlBlock,
             bytes: &[u8],
         ) -> Result<crate::net::UnixCredentials, isize> {
             credentials::prepare(task, bytes)
         }
         pub(crate) fn encode(
-            task: &crate::execution::task::TaskControlBlock,
+            task: &crate::task::TaskControlBlock,
             value: Option<&crate::net::UnixCredentials>,
         ) -> [u8; 12] {
             credentials::encode(task, value)
         }
         pub(crate) fn sender(
-            task: &crate::execution::task::TaskControlBlock,
+            task: &crate::task::TaskControlBlock,
         ) -> crate::net::UnixSendCredentials {
             credentials::sender(task)
         }
@@ -46,7 +45,7 @@ fn bytes(pid: i32, uid: u32, gid: u32) -> [u8; 12] {
 fn caller(
     key: usize,
 ) -> (
-    crate::execution::task::TaskControlBlock,
+    crate::task::TaskControlBlock,
     namespace::PidRegistration,
 ) {
     namespace::boot();
@@ -61,7 +60,7 @@ fn caller(
     pid.publish().unwrap();
     let registration = pid.take_registration();
     (
-        crate::execution::task::TaskControlBlock {
+        crate::task::TaskControlBlock {
             authority: namespace::NamespaceAuthority {
                 namespace: namespace::initial_user(),
                 effective_uid: 1002,
@@ -165,7 +164,7 @@ fn namespace_scoped_capability_cannot_spoof_pid_owned_by_ancestor_user_namespace
     );
     assert!(matches!(
         actor.message_identity().validate_claim(0, 0, false, &root),
-        Err(crate::execution::task::MessageIdentityError::Permission)
+        Err(crate::task::MessageIdentityError::Permission)
     ));
 }
 
@@ -205,8 +204,7 @@ fn receive_codec_projects_actual_namespaces_and_native_missing_credentials() {
     assert_eq!(&native[8..], &2001u32.to_ne_bytes());
 }
 
-#[path = "."]
-pub(crate) mod execution {
+
     #[path = "../../../system/linuxd/src/task/model"]
     pub(crate) mod task {
         use crate::namespace::{NamespaceAuthority, PidIdentity, PidNamespace};
@@ -235,7 +233,5 @@ pub(crate) mod execution {
             }
         }
     }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+

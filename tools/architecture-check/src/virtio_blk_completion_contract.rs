@@ -3,7 +3,7 @@ use syn::{ImplItem, Item, ItemImpl};
 
 use super::SourceFile;
 
-const SOURCE: &str = "tools/source-view/devmgr/drivers/virtio/blk/blk/blk.rs";
+const SOURCE: &str = "system/devmgr/src/drivers/virtio/blk.rs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct BlockCompletionContract {
