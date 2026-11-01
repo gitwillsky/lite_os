@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::{
-    execution::task::TaskControlBlock,
+    task::TaskControlBlock,
     syscall::{errno, user_iovec::UserInputStaging},
 };
 
@@ -152,7 +152,7 @@ pub(super) fn deadline(task: &TaskControlBlock, timeout: usize) -> Result<Option
         .and_then(|seconds| seconds.checked_add(value.tv_nsec))
         .and_then(|value| u64::try_from(value).ok())
         .ok_or(-errno::EINVAL)?;
-    crate::execution::timer::get_time_ns()
+    crate::time::get_time_ns()
         .checked_add(relative)
         .map(Some)
         .ok_or(-errno::EINVAL)

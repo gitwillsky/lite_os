@@ -1,7 +1,7 @@
 use super::*;
 
 impl futex_transaction::FutexTransaction<'_> {
-    pub(in crate::execution::task::process_table) fn requeue(
+    pub(in crate::task::process_table) fn requeue(
         &self,
         source: FutexKey,
         target: FutexKey,

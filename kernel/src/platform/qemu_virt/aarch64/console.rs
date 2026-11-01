@@ -42,6 +42,16 @@ pub(crate) fn panic_println_fmt(arguments: core::fmt::Arguments) {
     panic_print_fmt(format_args!("{arguments}\n"));
 }
 
+/// 原样输出字节（不经格式化，允许非 UTF-8），与格式化日志共用同一把锁。
+pub(crate) fn write_raw(bytes: &[u8]) {
+    let _guard = CONSOLE.lock();
+    for &byte in bytes {
+        if write_byte(byte).is_err() {
+            return;
+        }
+    }
+}
+
 struct ConsoleWriter;
 
 impl core::fmt::Write for ConsoleWriter {
@@ -72,7 +82,7 @@ pub(crate) fn write_byte(byte: u8) -> Result<(), ConsoleError> {
     let (base, size) = super::discovery::info_if_initialized()
         .map(|info| (info.uart.base_addr, info.uart.size))
         .unwrap_or((EARLY_PL011_BASE, EARLY_PL011_SIZE));
-    let bus = crate::arch::mmio::MmioBus::new(crate::arch::mmu::physical_to_virtual(base), size)
+    let bus = mmio::MmioBus::new(crate::arch::mmu::physical_to_virtual(base), size)
         .map_err(|_| ConsoleError)?;
     // QEMU virt 固定 early PL011 或 discovery 已验证的永久 direct-mapped PL011。本函数自身不取锁：
     // 正常输出的调用者（`_print_fmt`、`write_bytes`）持 `CONSOLE`，panic 路径有意无锁。

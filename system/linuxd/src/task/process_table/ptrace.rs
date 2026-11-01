@@ -72,7 +72,7 @@ fn wake_tracer(graph: &mut ProcessGraph, group: usize) {
         let mut waiters = take_child_waiters(node);
         while let Some((&tid, _)) = waiters.first_key_value() {
             let task = waiters.remove(&tid).expect("indexed tracer waiter");
-            crate::execution::task::processor::wake_child_task(task, WaitResult::Woken);
+            crate::task::processor::wake_child_task(task, WaitResult::Woken);
         }
     }
 }
@@ -106,8 +106,8 @@ pub(crate) fn ptrace_attach(pid: Option<usize>) -> Result<usize, PtraceError> {
         .credential_guard()
         .lock_killable()
         .map_err(|error| match error {
-            crate::execution::sync::TaskMutexLockError::OutOfMemory => PtraceError::OutOfMemory,
-            crate::execution::sync::TaskMutexLockError::Interrupted => PtraceError::Interrupted,
+            crate::sync::TaskMutexLockError::OutOfMemory => PtraceError::OutOfMemory,
+            crate::sync::TaskMutexLockError::Interrupted => PtraceError::Interrupted,
         })?;
     // claim token 与 relation 共用同一真实 PID association，wait copyout 不借可被 detach 删除的节点。
     let registration = {
@@ -174,10 +174,10 @@ pub(crate) fn ptrace_attach(pid: Option<usize>) -> Result<usize, PtraceError> {
         // 1. relation 先于 SIGSTOP 发表，避免目标在 stop 到达前按 job-control 处理它。
         // 2. 使用 pending owner 的不可丢失非 RT slot，不在 graph 临界区分配。
         target.queue_ptrace_signal(syscall_abi::signal::SIGSTOP);
-        crate::execution::task::processor::continue_stopped_task(target.clone());
+        crate::task::processor::continue_stopped_task(target.clone());
         drop(graph);
         super::signal::interrupt_waiting_task(&target);
-        crate::execution::task::processor::request_task_reschedule(&target);
+        crate::task::processor::request_task_reschedule(&target);
     }
     Ok(0)
 }
@@ -211,7 +211,7 @@ pub(super) fn group_traced(graph: &ProcessGraph, tgid: usize) -> bool {
 ///
 /// # Returns
 /// 抑制返回 None，否则返回最终信号与载荷；SIGKILL 永不被 tracer 延迟。
-pub(in crate::execution::task) fn intercept_signal(
+pub(in crate::task) fn intercept_signal(
     task: &TaskControlBlock,
     signal: usize,
     info: PendingSignal,
@@ -231,10 +231,10 @@ pub(in crate::execution::task) fn intercept_signal(
         let target = thread_by_tid(&graph, task.tid())
             .expect("current tracee is live")
             .1;
-        crate::execution::task::processor::request_task_stop(&target);
+        crate::task::processor::request_task_stop(&target);
     }
-    // context 保存完成的 post-switch handoff 才发表 stopped，寄存器不能与 running CPU 竞争。
-    crate::execution::task::suspend_current_and_run_next();
+    // 安全点转入 Stopped 后才发表 stopped：寄存器已写回，tracer 读取时不会与用户态执行竞争。
+    crate::task::stop_point(task);
     // 2. 原 signal frame 消费 tracer 唯一移交的决定，fatal signal 仍由退出路径优先处理。
     let resumed = task.take_ptrace_resume();
     if task.has_fatal_signal() {
@@ -439,7 +439,7 @@ pub(crate) fn ptrace_request(
             target.set_ptrace_resume(signal, info);
             tracee.phase = Phase::Running;
             let retired = detach.then(|| unlink_tracee(&mut graph, tid));
-            crate::execution::task::processor::continue_stopped_task(target.clone());
+            crate::task::processor::continue_stopped_task(target.clone());
             drop(graph);
             drop(retired);
             Ok(0)
@@ -652,7 +652,7 @@ pub(super) fn thread_exited(task: &TaskControlBlock, status: i32) {
                 {
                     target.set_ptrace_resume(0, PendingSignal::kernel());
                 }
-                crate::execution::task::processor::continue_stopped_task(target.clone());
+                crate::task::processor::continue_stopped_task(target.clone());
             }
             if let Some(parent) = retired
                 .as_ref()
@@ -702,7 +702,7 @@ pub(super) fn thread_exited(task: &TaskControlBlock, status: i32) {
 }
 
 /// exec 的新 context 已发布；传统 TRACEME/ATTACH 在返回用户态前产生 SIGTRAP。
-pub(in crate::execution::task) fn exec_completed(task: &TaskControlBlock) {
+pub(in crate::task) fn exec_completed(task: &TaskControlBlock) {
     let graph = PROCESS_TABLE.graph.lock();
     if graph.tracees.contains_key(&task.tid()) {
         task.queue_ptrace_signal(syscall_abi::signal::SIGTRAP);
@@ -710,7 +710,7 @@ pub(in crate::execution::task) fn exec_completed(task: &TaskControlBlock) {
 }
 
 /// 未具备目标 UserNS SYS_PTRACE 的 tracer 不能借被跟踪的 set-id/file-capability exec 提权。
-pub(in crate::execution::task) fn restrict_exec(task: &TaskControlBlock) -> bool {
+pub(in crate::task) fn restrict_exec(task: &TaskControlBlock) -> bool {
     let graph = PROCESS_TABLE.graph.lock();
     graph.tracees.get(&task.tid()).is_some_and(|tracee| {
         thread_by_tid(&graph, tracee.tracer).is_none_or(|(_, tracer)| {
@@ -754,7 +754,7 @@ pub(super) fn defer_process_exit(tgid: usize) -> bool {
 }
 
 /// 已持 exec credential guard 时为非 leader tracee 的最终身份准备一个真实 PID link。
-pub(in crate::execution::task) fn prepare_exec_link(
+pub(in crate::task) fn prepare_exec_link(
     task: &TaskControlBlock,
 ) -> Result<Option<Arc<PidRegistration>>, crate::memory::ElfLoadError> {
     if task.tid() == task.tgid() || !PROCESS_TABLE.graph.lock().tracees.contains_key(&task.tid()) {

@@ -1,60 +1,51 @@
-use crate::execution::sync::WaitResult;
+use crate::sync::WaitResult;
 use alloc::sync::Arc;
 
-use crate::arch::context::KernelContext;
-use crate::{
-    execution::cpu,
-    execution::sync::{IrqMutex, LocalIrqGuard},
-    execution::task::{
-        KernelThreadBody, PendingSignal, Processor, RunState, StopResume, TaskControlBlock,
+use crate::{sync::Mutex, task::{
+        KernelThreadBody, PendingSignal, RunState, StopResume, TaskControlBlock,
         WaitMembership,
         pid::{INIT_PID, PidLinkSlot, PidRegistration, PreparedPid, ProcessId},
-        processor::{begin_preempt_running_task, enqueue_new_task},
-        with_current_processor,
-    },
-    execution::timer::{get_time_ns, get_time_us},
-    fallible_tree::{FallibleMap, NodeSlot, VacantEntry},
-    memory::MemoryError,
-};
+    }, time::get_time_ns, memory::MemoryError};
+use crate::task::processor::{current_task, enqueue_new_task, take_current_task};
+use fallible_tree::{FallibleMap, NodeSlot, VacantEntry};
 
-pub(in crate::execution::task) mod advisory_lock;
+pub(in crate::task) mod advisory_lock;
 mod affinity;
 mod capabilities;
 mod console_batch;
 mod console_wait;
 pub(crate) use capabilities::capability_sets;
-pub(super) mod context_switch;
 mod deferred;
 mod exec_drain;
 mod exec_identity;
-pub(in crate::execution::task) use exec_drain::ExecPreparation;
+pub(in crate::task) use exec_drain::ExecPreparation;
 mod futex;
 mod group_retirement;
 mod io_wait;
 mod load_average;
 mod parent_death;
 mod pid_namespace;
-pub(in crate::execution::task) mod pipe_wait;
+pub(in crate::task) mod pipe_wait;
 mod policy;
 mod process_exit;
 mod process_group;
 mod process_retirement;
-pub(in crate::execution::task) mod ptrace;
+pub(in crate::task) mod ptrace;
 pub(crate) use ptrace::{PtraceError, PtraceRequest, ptrace_attach, ptrace_request, ptrace_target};
 mod procfs;
 mod resource_limit;
 mod seccomp;
 mod signal;
-pub(in crate::execution::task) use signal::signal_action_for_group;
-pub(in crate::execution::task) mod pidfd;
+pub(in crate::task) use signal::signal_action_for_group;
+pub(in crate::task) mod pidfd;
 mod snapshot_staging;
-pub(in crate::execution::task) mod task_wait;
+pub(in crate::task) mod task_wait;
 mod terminal_access;
 mod thread_activation;
 mod thread_clone;
 mod thread_selector;
-pub(in crate::execution::task) mod timer_queue;
-pub(in crate::execution::task) mod vfork;
+pub(in crate::task) mod timer_queue;
+pub(in crate::task) mod vfork;
 mod wait_child;
 pub(crate) use pidfd::{PidFdError, open_pidfd, pidfd_get_file, pidfd_identity};
 mod wait_key;
@@ -63,10 +54,9 @@ mod wait_registry;
 
 pub(crate) use affinity::{SchedulerAffinityError, scheduler_affinity};
 use console_wait::{process_terminal_input, wake_console_waiters};
-use context_switch::{schedule_with_task_context, switch_from_idle};
-pub(crate) use deferred::dispatch_pending_deferred_work;
-pub(in crate::execution::task) use exec_identity::mark_process_exec;
-pub(in crate::execution::task) use futex::futex_wake_with_key;
+pub(crate) use deferred::{dispatch_deferred_work, next_deferred_deadline};
+pub(in crate::task) use exec_identity::mark_process_exec;
+pub(in crate::task) use futex::futex_wake_with_key;
 pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake, futex_wake_op};
 pub(super) use io_wait::initialize_driver_io_wait;
 pub(crate) use parent_death::parent_death_signal;
@@ -75,12 +65,12 @@ pub(crate) use policy::{
     SchedulerPolicyError, SchedulerPolicyRequest, scheduler_io_priority, scheduler_policy,
 };
 use process_exit::ProcessExitStatus;
-pub(super) use process_exit::exit_current_kernel_thread;
+pub(crate) use process_exit::exit_current_kernel_thread;
 pub(crate) use process_exit::{
     exit_current_after_exec_failure, exit_current_group, exit_current_group_by_signal,
     exit_current_if_group_exiting, exit_current_thread, exit_current_thread_by_signal,
 };
-pub(in crate::execution::task) use process_group::current_process_group_is_orphaned;
+pub(in crate::task) use process_group::current_process_group_is_orphaned;
 pub(crate) use process_group::{
     ProcessGroupError, SetProcessGroupError, create_session, process_group, session_id,
     set_process_group,
@@ -88,8 +78,8 @@ pub(crate) use process_group::{
 use process_group::{claim_controlling_terminal, set_terminal_foreground_group};
 pub(crate) use procfs::{KernelProcSource, SystemInfoSnapshot, system_info_snapshot};
 pub(crate) use resource_limit::process_resource_limit;
-pub(in crate::execution::task) use resource_limit::with_credential_transition;
-use resource_limit::{ThreadSlotSnapshot, enforce_cpu_limit};
+pub(in crate::task) use resource_limit::with_credential_transition;
+use resource_limit::ThreadSlotSnapshot;
 pub(crate) use seccomp::{enable_strict_seccomp, install_seccomp_filter};
 use signal::{ChildEvents, JobControlState};
 pub(crate) use signal::{
@@ -220,10 +210,10 @@ impl ProcessGraph {
 
 /// parent relation、live task 或最小 exit record 的唯一 process graph owner。
 struct ProcessTable {
-    graph: IrqMutex<ProcessGraph>,
-    timers: IrqMutex<timer_queue::TimerQueue>,
+    graph: Mutex<ProcessGraph>,
+    timers: Mutex<timer_queue::TimerQueue>,
     load_average: load_average::LoadAverage,
-    process_creation: IrqMutex<()>,
+    process_creation: Mutex<()>,
 }
 
 /// 在执行可能发布 thread-owned mapping 的构造前，先取得 TCB Arc storage。
@@ -253,7 +243,7 @@ fn try_allocate_task<E>(
 impl ProcessTable {
     const fn new() -> Self {
         Self {
-            graph: IrqMutex::new(ProcessGraph {
+            graph: Mutex::new(ProcessGraph {
                 tracees: FallibleMap::new(),
                 next_pid: INIT_PID + 1,
                 processes_created: 1,
@@ -265,9 +255,9 @@ impl ProcessTable {
                 exit_effect_heads: [None; 2],
                 pdeath_head: None,
             }),
-            timers: IrqMutex::new(timer_queue::TimerQueue::new()),
+            timers: Mutex::new(timer_queue::TimerQueue::new()),
             load_average: load_average::LoadAverage::new(),
-            process_creation: IrqMutex::new(()),
+            process_creation: Mutex::new(()),
         }
     }
 
@@ -440,7 +430,7 @@ impl ProcessTable {
         match decision.transition {
             thread_activation::ActivationTransition::None => {}
             thread_activation::ActivationTransition::StopNew => {
-                crate::execution::task::processor::request_task_stop(&thread);
+                crate::task::processor::request_task_stop(&thread);
             }
             thread_activation::ActivationTransition::ReadyNew => {
                 // graph owner 覆盖 job-control 决策到 Ready publication；否则并发 stop 可在
@@ -448,7 +438,7 @@ impl ProcessTable {
                 enqueue_new_task(thread);
             }
             thread_activation::ActivationTransition::ResumeStoppedNew => {
-                crate::execution::task::processor::continue_stopped_task(thread.clone());
+                crate::task::processor::continue_stopped_task(thread.clone());
                 enqueue_new_task(thread);
             }
         }
@@ -482,6 +472,12 @@ pub(super) fn add_init_task(task: Arc<TaskControlBlock>, pid: &mut PreparedPid) 
 /// # Errors
 ///
 /// TID 耗尽或 kernel stack 分配失败时返回 `OutOfMemory`，不发布任何 scheduler state。
+/// 线程刚在安全点转入 `Stopped`：交付 ptrace-stop 与 group-stop 的完成通知。
+pub(in crate::task) fn complete_stop_transition(task: &crate::task::TaskControlBlock) {
+    ptrace::complete_stop(task);
+    complete_process_stop(task.tgid());
+}
+
 pub(crate) fn spawn_kernel_thread(
     name: &'static str,
     body: KernelThreadBody,
@@ -664,80 +660,21 @@ pub(crate) fn sleep_until(deadline_ns: u64) -> WaitResult {
     result
 }
 
-/// 获取并移除当前任务
-pub(crate) fn take_current_task() -> Option<Arc<TaskControlBlock>> {
-    with_current_processor(Processor::take_current)
-}
-
-/// 获取当前任务的引用
-pub(crate) fn current_task() -> Option<Arc<TaskControlBlock>> {
-    with_current_processor(|processor| processor.current.clone())
+/// 线程组当前存活线程的快照（在图锁内复制引用，调用者在锁外查询它们）。
+pub(in crate::task) fn live_threads(tgid: usize) -> alloc::vec::Vec<Arc<TaskControlBlock>> {
+    let graph = PROCESS_TABLE.graph.lock();
+    match graph.nodes.get(&tgid).map(|node| &node.state) {
+        Some(ProcessState::Live(threads)) => threads.values().cloned().collect(),
+        _ => alloc::vec::Vec::new(),
+    }
 }
 
 /// 实际 current TGID；Processor 无 scheduled Task 时执行的是 boot/idle PID0。
 /// PID0 在 namespace boot 已构造，绝不是失败路径临时制造的 identity。
-pub(in crate::execution::task) fn current_tgid_identity() -> Arc<crate::namespace::PidIdentity> {
+pub(in crate::task) fn current_tgid_identity() -> Arc<crate::namespace::PidIdentity> {
     current_task().map_or_else(crate::namespace::idle_pid_identity, |task| {
         task.tgid_identity().clone()
     })
-}
-
-pub(crate) fn run_tasks() -> ! {
-    with_current_processor(|_| {
-        // Release 发布 local Processor 初始化；缺失时远端选核可能向尚未开始 drain 的 CPU 投递任务。
-        cpu::mark_active();
-    });
-    // CPU0 保留低成本 housekeeping/liveness tick；其余 CPU 的 tick 只在运行 task 时用于抢占。
-    // timer queue 仍由 ProcessTable 唯一拥有；该 stack-local token 只避免每轮 spurious wake 重写 CSR。
-    let keeps_housekeeping_tick = cpu::current_id() == cpu::boot_id();
-    let mut local_tick_armed = true;
-    loop {
-        // 1. 关中断覆盖 deferred work、mailbox drain 和 task select，保证 idle 决策看到一致状态。
-        let idle_irq = LocalIrqGuard::disable();
-        scheduler_deferred_safe_point();
-        with_current_processor(|processor| processor.drain_inbound_to_local());
-        let task = with_current_processor(Processor::select_task);
-        if let Some(task) = task {
-            if !local_tick_armed {
-                crate::execution::timer::resume_local_idle_tick();
-                local_tick_armed = true;
-            }
-            switch_from_idle(task);
-            // guard 跨切换保活，使 continuation 在 local interrupt disabled 下完成 bookkeeping。
-            drop(idle_irq);
-            continue;
-        }
-
-        // 2. 非 boot idle CPU 不承担 housekeeping liveness；关闭其本地周期 tick，避免 100Hz tick
-        // 把每个空闲 vCPU 都从 HVF 唤醒。远端 runnable publication 的 IPI 仍可唤醒 WFI。
-        if !keeps_housekeeping_tick && local_tick_armed {
-            crate::execution::timer::suspend_local_idle_tick();
-            local_tick_armed = false;
-        }
-
-        // 3. guard 保持 local IRQ 关闭直到 architecture seam 临时开中断并完成 WFI。固定的
-        // WFI/resume PC 使 trap entry 能跳过已消费 edge 对应的 WFI，关闭 enable-to-WFI 窗口。
-        // 4. seam 返回时 IRQ 仍关闭；guard 随后恢复原状态，下一轮再原子复查全部 scheduler state。
-        crate::arch::interrupt::wait_with_local_irq_masked();
-        drop(idle_irq);
-    }
-}
-
-/// IRQ-closed scheduler safe point 的唯一 deferred dispatch seam。
-pub(super) fn scheduler_deferred_safe_point() {
-    dispatch_pending_deferred_work();
-}
-
-/// 挂起当前任务并运行下一个任务
-pub(crate) fn suspend_current_and_run_next() {
-    let Some(task) = current_task() else {
-        return;
-    };
-    // 更新 CFS 使用的运行时间。
-    let end_time = get_time_us();
-    task.scheduling.policy.lock().finish_runtime(end_time);
-    begin_preempt_running_task(&task);
-    schedule_with_task_context(task);
 }
 
 /// 将当前 task 加入 indexed wait registry，并直接 handoff 给 runnable successor；

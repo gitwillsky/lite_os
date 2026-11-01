@@ -50,5 +50,5 @@ pub(crate) trait PortDevice: Send + Sync {
 
     /// 绑定消费者分配的 completion deferred vector；绑定前到达的 completion 由绑定时的一次
     /// 发布补偿。
-    fn bind_completion_work(&self, work: crate::execution::deferred::DeferredWork);
+    fn bind_completion_work(&self, work: crate::deferred::DeferredWork);
 }

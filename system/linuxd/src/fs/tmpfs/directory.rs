@@ -6,7 +6,7 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{borrow::Borrow, cmp::Ordering};
 
-use crate::fallible_tree::{FallibleMap, NodeSlot, OutOfMemory};
+use fallible_tree::{FallibleMap, NodeSlot, OutOfMemory};
 
 /// `.` 与 `..` 占用的 cookie 之后的第一个可分配 cookie。
 pub(super) const FIRST_ENTRY_COOKIE: u64 = 3;

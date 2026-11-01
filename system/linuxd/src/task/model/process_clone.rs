@@ -40,8 +40,8 @@ impl TaskControlBlock {
     ///
     /// # Errors
     ///
-    /// 任一 preparation OOM 不发布 graph；共享 mm 的 trap VMA 在所有前置分配之后准备。
-    pub(in crate::execution::task) fn clone_process(
+    /// 任一 preparation OOM 不发布 graph。
+    pub(in crate::task) fn clone_process(
         &self,
         pid: ProcessId,
         parameters: &CloneParameters,
@@ -53,7 +53,10 @@ impl TaskControlBlock {
         let address_space = if resources.share_memory {
             parent_address_space.clone()
         } else {
-            parent_address_space.try_clone_for_fork()?
+            // 子地址空间的成员进程沿用父线程名（Linux fork 复制 comm），供内核诊断辨认。
+            let comm = self.comm_buffer();
+            let length = comm.iter().position(|&byte| byte == 0).unwrap_or(comm.len());
+            parent_address_space.try_clone_for_fork(&comm[..length])?
         };
         let mm = try_mm_handle(address_space.clone())?;
         let fs_context = resources.namespaces.fs_context(self, resources.share_fs)?;
@@ -76,13 +79,11 @@ impl TaskControlBlock {
             .map_err(|_| MemoryError::OutOfMemory)?;
         let resource_limits = self.process().resource_limits.lock().forked();
         let cpu_limit_active = resource_limits.cpu_limit_active();
-        let kernel_stack = KernelStack::try_new()?;
-        let kernel_stack_top = kernel_stack.get_top();
-        let cpu_runtime_us = Arc::try_new(core::sync::atomic::AtomicU64::new(0))
+        let retired_runtime = Arc::try_new(Mutex::new(super::usage_accounting::CpuUsage::default()))
             .map_err(|_| MemoryError::OutOfMemory)?;
         let io_accounting =
             Arc::try_new(IoAccounting::default()).map_err(|_| MemoryError::OutOfMemory)?;
-        let child_policy = self.scheduling.policy.lock().forked(cpu_runtime_us.clone());
+        let child_policy = self.scheduling.policy.lock().forked();
         let last_cpu = self
             .scheduling
             .last_cpu
@@ -120,8 +121,8 @@ impl TaskControlBlock {
                 .map_err(|_| MemoryError::OutOfMemory)?,
             resource_limits: Arc::try_new(Mutex::new(resource_limits))
                 .map_err(|_| MemoryError::OutOfMemory)?,
-            cpu_limit_active: core::sync::atomic::AtomicBool::new(cpu_limit_active),
-            cpu_runtime_us: cpu_runtime_us.clone(),
+            cpu_limit_active: super::resource_limits::CpuLimitActivity::new(cpu_limit_active),
+            retired_runtime: retired_runtime.clone(),
             usage: UsageAccounting::default(),
             reaped_children: ReapedChildrenUsage::default(),
             io_accounting: io_accounting.clone(),
@@ -130,28 +131,13 @@ impl TaskControlBlock {
             signal_state: Mutex::new(ProcessSignalState::new(signal_handlers)),
         })
         .map_err(|_| MemoryError::OutOfMemory)?;
-        // 2. CLONE_VM child 在共享 mm 中使用实际 MM 空闲位分配的 supervisor trap page；若复用
-        // spawning Thread 的页，仍在运行的 sibling 或 parent 恢复现场会被 child 覆盖。
-        // 该分配放在所有其他 fallible preparation 之后，保证失败不残留 shared-mm VMA。
-        let kernel_context_address = kernel_stack.user_context_address();
         let memory_cleanup_wait =
             Some(TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?);
-        let user_context = if resources.share_memory && kernel_context_address.is_none() {
-            address_space.allocate_thread_context()?
-        } else {
-            address_space.bind_user_context(ContextBinding::for_placement(
-                kernel_context_address,
-                TRAP_CONTEXT,
-            ))?
-        };
-
-        // 3. child 从同一条已前移 syscall PC 返回，但 a0 必须为零且使用自己的 kernel stack。
+        // 2. child 从同一条已前移的 syscall PC 返回，返回值为零；浮点状态继承调用线程此刻的硬件状态。
         let mut child_trap = self.snapshot_user_context_for_clone();
-        child_trap.prepare_clone(
-            (parameters.stack != 0).then_some(parameters.stack),
-            parameters.tls,
-            kernel_stack_top,
-        );
+        child_trap.prepare_clone((parameters.stack != 0).then_some(parameters.stack), parameters.tls);
+        let user_context = UserContextCell::new(child_trap, crate::arch::fp::capture());
+        let prepared_carrier = crate::trap::prepare_user_carrier(address_space.process())?;
         let child = Self {
             kind: TaskKind::User {
                 process,
@@ -159,8 +145,8 @@ impl TaskControlBlock {
                     comm,
                     mm,
                     user_context,
-                    kernel_trap_handler: self.thread().kernel_trap_handler,
-                    kernel_trap_return: self.thread().kernel_trap_return,
+                    restricted: Mutex::new(None),
+                    cpu_time_retired: core::sync::atomic::AtomicBool::new(false),
                     memory_cleanup_wait: Mutex::new(memory_cleanup_wait),
                     clear_child_tid: Mutex::new(parameters.clear_child_tid),
                     robust_list: Mutex::new(None),
@@ -186,15 +172,11 @@ impl TaskControlBlock {
             execution: ExecutionContext {
                 identity: Mutex::new(identity),
                 start_time_us,
-                kernel_stack,
-                kernel_cx: Mutex::new(KernelContext::clone_for_trap_return(
-                    kernel_stack_top,
-                    crate::execution::task::resume_new_task,
-                )),
+                carrier: Mutex::new(None),
+                prepared_carrier: Mutex::new(Some(prepared_carrier)),
             },
             scheduling,
         };
-        child.replace_user_context(child_trap);
         Ok(child)
     }
 }

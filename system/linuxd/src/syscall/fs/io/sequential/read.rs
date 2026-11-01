@@ -88,7 +88,7 @@ pub(super) fn read_descriptor(
             // backend 会让 datagram 丢失消息边界，并让 stream 的 blocking 语义分裂。
             let deadline = socket
                 .timeout(crate::net::SocketIoDirection::Receive)
-                .deadline(crate::execution::timer::get_time_ns());
+                .deadline(crate::time::get_time_ns());
             let read = loop {
                 match socket.read(&mut input, nonblocking) {
                     Ok(read) => break read,

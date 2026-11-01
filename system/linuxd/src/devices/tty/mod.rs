@@ -5,12 +5,12 @@
 //! signal 归 task，经 [`install_job_control`] 安装的 [`JobControl`] 访问。
 
 use alloc::sync::Arc;
-use spin::Once;
+use native_runtime::sync::Once;
 use syscall_abi::errno;
 
 use crate::{
     devices::console::ConsoleDevice,
-    execution::sync::WaitResult,
+    sync::WaitResult,
     fs::{
         FileSystemError,
         {
@@ -380,7 +380,7 @@ impl DeviceFile for TerminalFile {
                 minimum: 0,
                 timeout_ns,
             } if timeout_ns != 0 => {
-                Some(crate::execution::timer::get_time_ns().saturating_add(timeout_ns))
+                Some(crate::time::get_time_ns().saturating_add(timeout_ns))
             }
             _ => None,
         };
@@ -443,7 +443,7 @@ impl DeviceFile for TerminalFile {
                             }
                             if timeout_ns != 0 {
                                 deadline = Some(
-                                    crate::execution::timer::get_time_ns()
+                                    crate::time::get_time_ns()
                                         .saturating_add(timeout_ns),
                                 );
                             }

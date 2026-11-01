@@ -24,7 +24,7 @@ use core::sync::atomic::{AtomicU16, Ordering};
 use native_abi::Status;
 
 use crate::execution::sync::TaskMutex;
-use crate::fallible_tree::FallibleMap;
+use fallible_tree::FallibleMap;
 use crate::memory::{PAGE_SIZE, PhysicalPageNumber};
 use crate::object::IommuBackend;
 use crate::vm::DeviceAddressSpace;

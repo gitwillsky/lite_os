@@ -23,7 +23,7 @@ pub(crate) struct PidFdSource {
     write: Arc<PipeEnd>,
     // Linux pidfs_attr 的 immutable exit information；只在实际 PID association 退休时写入。
     // 不镜像 poll/alive phase，不保活 Task/MM；inode 与 PIDFD observer 共享这一份历史记录。
-    exit_status: spin::Mutex<Option<i32>>,
+    exit_status: crate::sync::Mutex<Option<i32>>,
 }
 impl PidFdSource {
     pub(crate) fn try_new() -> Result<Arc<Self>, FileSystemError> {
@@ -31,7 +31,7 @@ impl PidFdSource {
         Arc::try_new(Self {
             read,
             write,
-            exit_status: spin::Mutex::new(None),
+            exit_status: crate::sync::Mutex::new(None),
         })
         .map_err(|_| FileSystemError::OutOfMemory)
     }
@@ -63,7 +63,7 @@ type OpenedPidFile = (Arc<OpenedFile>, Arc<dyn DeviceFile>, Arc<PidFdSource>);
 struct PidInode {
     target: Arc<dyn PidFdTarget>,
     metadata: Metadata,
-    entry: spin::Mutex<Weak<super::vfs::Dentry>>,
+    entry: crate::sync::Mutex<Weak<super::vfs::Dentry>>,
 }
 impl Drop for PidInode {
     fn drop(&mut self) {
@@ -163,7 +163,7 @@ pub(crate) fn prepare_open(
                     1,
                     super::inode_times::TimeOwner::new(),
                 ),
-                entry: spin::Mutex::new(Weak::new()),
+                entry: crate::sync::Mutex::new(Weak::new()),
             })
             .map_err(|_| FileSystemError::OutOfMemory)?;
             INODES.admit(key, &candidate)?

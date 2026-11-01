@@ -22,7 +22,7 @@ use thread::send_selected_thread_signal;
 pub(crate) use thread::{send_kernel_thread_signal, send_thread_signal, send_tid_signal};
 
 mod disposition;
-pub(in crate::execution::task) use disposition::signal_action_for_group;
+pub(in crate::task) use disposition::signal_action_for_group;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SignalSendError {
@@ -102,7 +102,7 @@ struct GeneratedSignal {
     queued: bool,
     eligible: Option<Arc<TaskControlBlock>>,
     notification: Option<JobNotification>,
-    retired: crate::execution::task::model::RetiredSignals,
+    retired: crate::task::model::RetiredSignals,
 }
 
 struct SelectedProcess {
@@ -223,7 +223,7 @@ fn send_selected_processes(
             && let Some(target) = generated.eligible
             && !interrupt_waiting_task(&target)
         {
-            crate::execution::task::processor::request_task_reschedule(&target);
+            crate::task::processor::request_task_reschedule(&target);
         }
     }
     match result.finish() {
@@ -301,7 +301,7 @@ fn select_and_generate_process_signal(
                 queued: false,
                 eligible: None,
                 notification: None,
-                retired: crate::execution::task::model::RetiredSignals::default(),
+                retired: crate::task::model::RetiredSignals::default(),
             })
         };
         return Some(SelectedProcess { tgid, result });
@@ -372,7 +372,7 @@ fn select_and_generate_process_signal(
         let Some(target) = target else {
             break (
                 None,
-                crate::execution::task::model::PreparedSignalRecord::default(),
+                crate::task::model::PreparedSignalRecord::default(),
                 None,
                 selected_thread,
             );
@@ -604,7 +604,7 @@ pub(super) fn publish_posix_timer_signal(expired: super::timer_queue::ExpiredPos
             unreachable!("normalized notification")
         }
     };
-    let mut retired = crate::execution::task::model::RetiredSignals::default();
+    let mut retired = crate::task::model::RetiredSignals::default();
     let publication = {
         let (mut child_records, mut graph) = if signal == syscall_abi::signal::SIGCONT {
             let Some((records, graph)) =
@@ -697,7 +697,7 @@ pub(super) fn publish_posix_timer_signal(expired: super::timer_queue::ExpiredPos
         wake_process_signal_waiter(expired.tgid)
     };
     if !woke && !interrupt_waiting_task(&target) {
-        crate::execution::task::processor::request_task_reschedule(&target);
+        crate::task::processor::request_task_reschedule(&target);
     }
 }
 
@@ -756,7 +756,7 @@ fn wake_signal_waiter(task: &Arc<TaskControlBlock>) -> bool {
     };
     wake.claimed.is_none_or(|claimed| {
         assert!(Arc::ptr_eq(&claimed.task, task));
-        crate::execution::task::processor::wake_signal_task(
+        crate::task::processor::wake_signal_task(
             claimed.task,
             claimed.id,
             WaitResult::Woken,
@@ -775,7 +775,7 @@ pub(crate) fn notify_signal_waiters(task: &TaskControlBlock) {
     while let Some(wake) = WAIT_REGISTRY.wake_signal_source_one(source.identity()) {
         if let Some(claimed) = wake.claimed {
             assert!(matches!(claimed.kind, IndexedWaitKind::Poll));
-            let _ = crate::execution::task::processor::wake_poll_task(
+            let _ = crate::task::processor::wake_poll_task(
                 claimed.task,
                 claimed.id,
                 WaitResult::Woken,
@@ -806,7 +806,7 @@ pub(super) fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
                 false,
             );
         }
-        return crate::execution::task::processor::wake_waiting_task(
+        return crate::task::processor::wake_waiting_task(
             task.clone(),
             WaitMembership::TaskWait(key),
             Some(WaitResult::Interrupted),
@@ -823,41 +823,41 @@ pub(super) fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
         assert!(Arc::ptr_eq(&entry.task, task));
         return match entry.kind {
             IndexedWaitKind::TaskEvent(key) => {
-                crate::execution::task::processor::wake_waiting_task(
+                crate::task::processor::wake_waiting_task(
                     entry.task,
                     WaitMembership::TaskWait(key),
                     Some(interrupted),
                 )
             }
-            IndexedWaitKind::Deadline => crate::execution::task::processor::wake_deadline_task(
+            IndexedWaitKind::Deadline => crate::task::processor::wake_deadline_task(
                 entry.task,
                 wait_id,
                 WaitResult::Interrupted,
             ),
-            IndexedWaitKind::Futex { .. } => crate::execution::task::processor::wake_futex_task(
+            IndexedWaitKind::Futex { .. } => crate::task::processor::wake_futex_task(
                 entry.task,
                 wait_id,
                 WaitResult::Interrupted,
             ),
-            IndexedWaitKind::Console => crate::execution::task::processor::wake_console_task(
+            IndexedWaitKind::Console => crate::task::processor::wake_console_task(
                 entry.task,
                 wait_id,
                 interrupted,
             ),
-            IndexedWaitKind::Signal { .. } => crate::execution::task::processor::wake_signal_task(
+            IndexedWaitKind::Signal { .. } => crate::task::processor::wake_signal_task(
                 entry.task,
                 wait_id,
                 WaitResult::Interrupted,
             ),
-            IndexedWaitKind::Pipe { .. } => crate::execution::task::processor::wake_pipe_task(
+            IndexedWaitKind::Pipe { .. } => crate::task::processor::wake_pipe_task(
                 entry.task,
                 wait_id,
                 WaitResult::Interrupted,
             ),
             IndexedWaitKind::AdvisoryLock => {
-                crate::execution::task::processor::wake_flock_task(entry.task, wait_id, interrupted)
+                crate::task::processor::wake_flock_task(entry.task, wait_id, interrupted)
             }
-            IndexedWaitKind::Poll => crate::execution::task::processor::wake_poll_task(
+            IndexedWaitKind::Poll => crate::task::processor::wake_poll_task(
                 entry.task,
                 wait_id,
                 WaitResult::Interrupted,
@@ -887,7 +887,7 @@ pub(super) fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
         .flatten()
     };
     child.is_some_and(|waiter| {
-        crate::execution::task::processor::wake_child_task(waiter, WaitResult::Interrupted)
+        crate::task::processor::wake_child_task(waiter, WaitResult::Interrupted)
     })
 }
 

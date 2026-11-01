@@ -92,6 +92,55 @@ P1 已知限制（P4 迁入架构文档的当前限制）：
 3. 驱动以 `linuxd` 内模块运行，使用 Interrupt/MMIO/BTI。
 4. 切换：root-server 启动 `linuxd`，`linuxd` 挂载根文件系统并启动 `/sbin/init`；删除内核中全部 Linux 领域及其契约与 architecture-check 规则。
 
+P2 运行形态（实现约束）：
+
+- 系统服务（`system/`）按无浮点 ABI 编译（AArch64 `aarch64-unknown-none-softfloat`、RISC-V `riscv64imac-unknown-none-elf`），
+  服务代码从不触碰浮点寄存器，Linux 程序的浮点状态跨 restricted 退出保持在硬件中；信号帧读写浮点状态时用内联汇编显式保存/恢复。
+- 启动协议：`native_abi::startup`（`StartupHeader` + 参数，前三个句柄 SELF_PROCESS/SELF_VMAR/SELF_THREAD），角色句柄约定在
+  `system/launch-protocol`。内核启动根服务同样遵循该协议。
+- 共享进程：与 Zircon `ShareableProcessState` 一致，共享进程与成员共用句柄表；共享区地址的私有 futex key 属于共享空间。
+- linuxd：映像链接在 `0x20_0000_0000`，装载在共享进程的共享区；堆与服务线程栈映射在共享区（SELF_VMAR 即共享 VMAR）。
+  每个 Linux 进程是共享进程的成员，Linux 程序只使用私有低半区（Linux 可见的用户地址上限因此为 `SHARED_START`）。
+- Linux 线程 = 成员进程中的 native 线程：绑定 restricted 状态后循环 `enter`；SYSCALL 退出时分派 Linux syscall，
+  EXCEPTION 退出时转换为信号，KICK 退出时检查待处理信号。线程描述符的上下文字保存当前 TCB。
+- linuxd 内的阻塞等待沿用迁移前的 `TaskWaitTarget` 协议：TCB 的 sleep/wake 落到线程 parker（futex），
+  信号投递 = 置 pending + unpark + `restricted_kick`；deadline 由 futex 超时实现。
+- Linux futex 由 linuxd 自己维护（按 mm 与地址/共享对象偏移索引），不使用内核 futex。
+- user-copy：linuxd 线程运行在目标 Linux 进程的成员地址空间中，访问其他 Linux 进程内存使用 `process_read/write_memory`；
+  当前进程内存同样经 `process_read/write_memory` 访问，以获得 EFAULT 语义而不是服务故障。
+
+P2 linuxd 移植映射（旧内核机制 → linuxd）：
+
+| 旧机制 | linuxd |
+|---|---|
+| `execution::sync`（TaskMutex/TaskEvent/RwSemaphore/TaskWaitTarget） | `linuxd::sync` 原样移入；`IrqMutex`/`spin::Mutex` 换为 futex `Mutex` |
+| `processor` 的 RunState、runqueue、context switch | TCB 的执行状态 + native 线程 parker；`prepare_current_block`/`wake_*_task` 保持“发布精确 membership → 比较并消费”协议 |
+| 阻塞截止时间（等待注册表 deadline + tick） | 后台 deferred 线程按注册表/定时器队列最早 deadline 停驻并到期唤醒 |
+| `deferred` 软中断位图 | 同一 `DeferredWork` 位图，由单个后台线程消费 |
+| group stop（Stopped/StopPending） | 停止标志 + kick；返回 restricted 前与阻塞返回前两个安全点停驻至 SIGCONT |
+| 调度策略/nice/affinity | `THREAD_SET_PRIORITY`（nice→权重等级）、`THREAD_SET_AFFINITY`；`getcpu` 用 `CPU_CURRENT` |
+| user/system CPU 时间拆分 | 内核按 restricted/normal 模式分别计时（`TaskRuntime`），restricted = user |
+| 中断处理（`InterruptHandler`） | 每个中断对象一个服务线程：`interrupt_wait` → handler → `interrupt_ack` |
+| 帧分配、DMA、MMIO 映射 | VMO（连续 VMO + BTI pin 取得设备地址）、物理 VMO 映射 MMIO |
+
+P2 linuxd 内存设计（替换旧 `memory` 的帧/页表/COW/swap/回收实现）：
+
+- `MemorySet` = 成员进程句柄 + 私有区根 VMAR + VMA 索引（`FallibleMap<起点, Area>`）。每个 Area 对应 VMAR 中的一个映射，
+  拆分（部分 munmap/mprotect）只改索引，VMAR 原生处理子区间。
+- Area 后备：私有匿名 / brk / 栈 → 可调整大小的匿名 VMO；共享匿名、memfd、tmpfs、SysV shm → 对象自身的 VMO；
+  文件映射 → inode 页缓存 VMO（`MAP_SHARED` 直接映射，`MAP_PRIVATE` 映射 `SNAPSHOT_AT_LEAST_ON_WRITE` 子 VMO）；
+  设备映射（DRM/音频缓冲）→ 设备缓冲的 VMO。
+- fork：私有区 `create_child(SNAPSHOT)`，共享区映射同一 VMO；`MADV_DONTFORK` 跳过、`MADV_WIPEONFORK` 换新零 VMO。
+- 缺页：内核按 VMAR 解决；restricted EXCEPTION 退出时 linuxd 按 VMA 索引分类：`MAP_GROWSDOWN` 扩展、
+  权限不符 SEGV_ACCERR、已映射但无法提供页（pager 失败/越过 EOF）SIGBUS、未映射 SEGV_MAPERR。
+- user copy：持 mm 读锁校验 VMA 后经 `process_read/write_memory` 复制（得到 EFAULT 而不是服务故障）；
+  futex 等原子操作先以 `process_read_memory` 探测并调入页，再在 mm 锁内直接原子访问（服务线程运行在该成员地址空间）。
+- 页缓存：每个 inode 一个 VMO。tmpfs/memfd/shm 用普通 VMO 本身作存储；ext4/FUSE 用 pager VMO，linuxd 的 pager 线程
+  在 `PAGE_REQUEST` 时从后端读入并 `supply_pages`，回写经 `OP_QUERY_DIRTY`/`OP_WRITEBACK_BEGIN`。read/write 走 `vmo_read/write`。
+- 删除：swap、后台回收、内存压力、frame 统计（`/proc/meminfo` 等改由 `SystemBasic` 与 linuxd 自身计数投影）。与未配置 `CONFIG_SWAP` 的 Linux 一致：swapon/swapoff 不注册（ENOSYS），没有 `/proc/swaps`，Swap 字段为 0。
+- 页缓存 pager：分派线程 + 按需增长的工作线程池（存储读可能阻塞在 FUSE 守护进程上，单线程 pager 会与守护进程自身的补页互锁）；NOWAIT 读（RWF_NOWAIT、io_uring 非阻塞读）不再支持，走阻塞路径。
+- 已知性能后续项：user copy 经内核调用；可改为 Starnix 式“直接访问 + 异常恢复”，届时需内核提供异常恢复 PC。
+
 ### P3 拆分服务
 
 1. devmgr 与驱动服务（virtio-blk/net/gpu/input/sound/console/rng、PCI、xHCI/USB）。

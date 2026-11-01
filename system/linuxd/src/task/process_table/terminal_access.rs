@@ -14,7 +14,7 @@ struct TaskJobControl;
 static TASK_JOB_CONTROL: TaskJobControl = TaskJobControl;
 
 /// 在任何 TTY open 之前把 job control 安装到 fs。
-pub(in crate::execution::task) fn install_job_control() {
+pub(in crate::task) fn install_job_control() {
     crate::devices::tty::install_job_control(&TASK_JOB_CONTROL);
 }
 

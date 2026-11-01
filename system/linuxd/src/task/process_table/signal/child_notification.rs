@@ -1,9 +1,9 @@
 use super::*;
 
-use crate::execution::task::model::PreparedSignalRecord;
+use crate::task::model::PreparedSignalRecord;
 
 #[derive(Clone, Copy)]
-pub(in crate::execution::task::process_table) enum ChildNotificationScope {
+pub(in crate::task::process_table) enum ChildNotificationScope {
     Parent,
     Exit,
     ExitAdoption,
@@ -15,12 +15,12 @@ struct PreparedChildRecipient {
 }
 /// child notification 的两个准确 recipient owner；准备在 graph 外，recipient/signal 改变时重试。
 /// 不缓存 disposition，最终 notify/autoreap 与 pending 仍在原 graph/table 事务提交。
-pub(in crate::execution::task::process_table) struct PreparedChildNotifications {
+pub(in crate::task::process_table) struct PreparedChildNotifications {
     parent: Option<PreparedChildRecipient>,
     adoption: Option<PreparedChildRecipient>,
 }
 impl PreparedChildNotifications {
-    pub(in crate::execution::task::process_table) fn capture(
+    pub(in crate::task::process_table) fn capture(
         graph: &ProcessGraph,
         child: usize,
         scope: ChildNotificationScope,
@@ -66,7 +66,7 @@ impl PreparedChildNotifications {
             adoption: adoption.map(|thread| recipient((thread, syscall_abi::signal::SIGCHLD))),
         }
     }
-    pub(in crate::execution::task::process_table) fn prepare(&mut self) {
+    pub(in crate::task::process_table) fn prepare(&mut self) {
         for recipient in [&mut self.parent, &mut self.adoption].into_iter().flatten() {
             if recipient.signal != 0 {
                 recipient.record = recipient
@@ -75,7 +75,7 @@ impl PreparedChildNotifications {
             }
         }
     }
-    pub(in crate::execution::task::process_table) fn matches(
+    pub(in crate::task::process_table) fn matches(
         &self,
         graph: &ProcessGraph,
         child: usize,
@@ -108,7 +108,7 @@ impl PreparedChildNotifications {
 }
 
 /// native parent_exec_id 比較；父映像切换只改变 notification，不把 child 改成普通 wait class。
-pub(in crate::execution::task::process_table) fn exit_notification_signal(
+pub(in crate::task::process_table) fn exit_notification_signal(
     graph: &ProcessGraph,
     child: &ProcessNode,
 ) -> usize {
@@ -125,12 +125,12 @@ pub(in crate::execution::task::process_table) fn exit_notification_signal(
 
 /// 返回 owned preparation 和最终 graph guard；caller 必须先声明 preparation，再声明 guard。
 /// stale preparation/记录 OOM 的 token 始终在 graph 外退款；actual child Process 复用则停止。
-pub(in crate::execution::task::process_table) fn lock_child_notifications(
+pub(in crate::task::process_table) fn lock_child_notifications(
     child: usize,
     scope: ChildNotificationScope,
 ) -> Option<(
     PreparedChildNotifications,
-    crate::execution::sync::IrqMutexGuard<'static, ProcessGraph>,
+    crate::sync::MutexGuard<'static, ProcessGraph>,
 )> {
     let mut graph = PROCESS_TABLE.graph.lock();
     let actual_child = graph.nodes.get(&child)?.process.clone();
@@ -165,24 +165,24 @@ pub(in crate::execution::task::process_table) fn lock_child_notifications(
 }
 
 /// graph 中已发布的 child signal；只保活准确的调度 wake target，不保存 disposition。
-pub(in crate::execution::task::process_table) struct ParentSignalWake {
+pub(in crate::task::process_table) struct ParentSignalWake {
     parent: usize,
     eligible: Option<Arc<TaskControlBlock>>,
 }
 impl ParentSignalWake {
-    pub(in crate::execution::task::process_table) fn publish(self) {
+    pub(in crate::task::process_table) fn publish(self) {
         if !wake_process_signal_waiter(self.parent)
             && let Some(target) = self.eligible
             && !interrupt_waiting_task(&target)
         {
-            crate::execution::task::processor::request_task_reschedule(&target);
+            crate::task::processor::request_task_reschedule(&target);
         }
     }
 }
 
 /// Graph 以 child 的 canonical real-parent/reaper Thread 生成实际 exit signal 或 job SIGCHLD。
 /// 其 blocked mask 决定 DFL-ignore 的 generation；任取 sibling 会错误丢弃 sigwait 通知。
-pub(in crate::execution::task::process_table) fn stage_child_signal(
+pub(in crate::task::process_table) fn stage_child_signal(
     graph: &ProcessGraph,
     child: usize,
     info: PendingSignal,
@@ -210,7 +210,7 @@ pub(in crate::execution::task::process_table) fn stage_child_signal(
 }
 
 /// Pending publication 后、graph 解锁前只复制准确 target Arc；不得在此再生成信号。
-pub(in crate::execution::task::process_table) fn prepare_parent_signal_wake(
+pub(in crate::task::process_table) fn prepare_parent_signal_wake(
     graph: &ProcessGraph,
     parent: usize,
     signal: usize,

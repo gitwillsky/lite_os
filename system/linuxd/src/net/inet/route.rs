@@ -1,6 +1,6 @@
 //! 一个NET的实际IPv4 FIB；所有前缀/metric/自动与用户路由共享同一记录和查找。
 use super::{InterfaceState, interface::NetworkInterface};
-use crate::fallible_tree::{FallibleMap, VacantEntry};
+use fallible_tree::{FallibleMap, VacantEntry};
 use crate::net::SocketError;
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;

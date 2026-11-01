@@ -1,5 +1,5 @@
 use crate::{
-    execution::task::{self, CapabilityError, current_task},
+    task::{self, CapabilityError, current_task},
     syscall::errno,
 };
 use syscall_abi::capability::{CapabilitySets, VERSION_3, data_size};

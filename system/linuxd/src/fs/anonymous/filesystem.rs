@@ -7,7 +7,7 @@ use super::super::{
 };
 use super::PseudoFileSystem;
 use alloc::sync::Arc;
-use spin::Once;
+use native_runtime::sync::Once;
 
 // OWNER: 每个实际 pseudo filesystem 各一个 canonical superblock 和 internal mount。
 // root 只持 filesystem 类型，不持用户对象；magic dentry 的生命周期仍属于各 inode owner。
@@ -56,7 +56,7 @@ impl PseudoMount {
                     let filesystem = Arc::try_new(PseudoFilesystem {
                         root: Arc::try_new(RootInode {
                             filesystem: kind,
-                            created: crate::execution::timer::get_realtime_ns() / 1_000_000_000,
+                            created: crate::time::get_realtime_ns() / 1_000_000_000,
                         })
                         .map_err(|_| FileSystemError::OutOfMemory)?,
                     })

@@ -1,6 +1,6 @@
 //! System V 各对象类型独立的实际 ID/key registry；message/sem/shm 不复制编号算法。
 use super::IpcError;
-use crate::fallible_tree::{FallibleMap, NodeSlot, VacantEntry};
+use fallible_tree::{FallibleMap, NodeSlot, VacantEntry};
 use alloc::sync::Arc;
 use core::mem::MaybeUninit;
 
@@ -60,10 +60,10 @@ impl<T: IpcObject> IpcIds<T> {
     pub(super) fn len(&self) -> usize {
         self.objects.len()
     }
-    pub(super) fn iter(&self) -> crate::fallible_tree::Iter<'_, u16, Arc<T>> {
+    pub(super) fn iter(&self) -> fallible_tree::Iter<'_, u16, Arc<T>> {
         self.objects.iter()
     }
-    pub(super) fn iter_from(&self, slot: u16) -> crate::fallible_tree::Iter<'_, u16, Arc<T>> {
+    pub(super) fn iter_from(&self, slot: u16) -> fallible_tree::Iter<'_, u16, Arc<T>> {
         self.objects.iter_from(&slot)
     }
     /// 单行 proc/IPC 查询直接使用实际 slot neighbor，不构造一次性 iterator。

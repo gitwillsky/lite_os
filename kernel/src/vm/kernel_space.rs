@@ -14,7 +14,7 @@ use spin::{Mutex, Once};
 use super::page_table::{PagePermissions, PageTable};
 use super::translation::TranslationCommit;
 use crate::arch::mmu::AddressSpaceKind;
-use crate::fallible_tree::FallibleMap;
+use fallible_tree::FallibleMap;
 use crate::memory::{self, FrameTracker, PAGE_SIZE, PhysicalAddress, VirtualAddress, VirtualPageNumber};
 
 /// 由 frame 支撑的内核区间（kernel stack）。

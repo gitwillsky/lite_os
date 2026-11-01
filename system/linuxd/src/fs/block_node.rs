@@ -31,7 +31,7 @@ pub(crate) struct BlockNode {
     number: DeviceNumber,
     device: Arc<dyn BlockDevice>,
     /// 整盘节点已发布的分区；分区节点为空。`BLKRRPART` 以它判断分区表是否变化。
-    partitions: spin::Mutex<Vec<crate::devices::block::partition_table::Partition>>,
+    partitions: crate::sync::Mutex<Vec<crate::devices::block::partition_table::Partition>>,
     /// 分区的位置与 `PARTUUID`；整盘为 `None`。
     partition: Option<PartitionInfo>,
     /// physical extent 的唯一盘 claim owner 与稳定节点 key。
@@ -93,7 +93,7 @@ impl BlockNode {
         Arc::try_new(Self {
             number,
             device,
-            partitions: spin::Mutex::new(Vec::new()),
+            partitions: crate::sync::Mutex::new(Vec::new()),
             partition,
             claim,
         })
@@ -213,20 +213,6 @@ impl BlockNode {
             }
         }
         Ok(())
-    }
-
-    /// Swap 与 mount/raw writer 共用排他物理 extent owner；alias cache retirement 失败回滚。
-    pub(super) fn begin_swap(&self) -> Result<(), FileSystemError> {
-        self.claim.begin_swap()?;
-        if let Err(error) = self.evict_aliases(true) {
-            self.claim.end_swap();
-            return Err(error);
-        }
-        Ok(())
-    }
-
-    pub(super) fn end_swap(&self) {
-        self.claim.end_swap();
     }
 
     /// 登记写 OFD，拒绝任何重叠 mount 或其他 bdev writer；不能安全逐出 alias cache 时回滚。

@@ -441,12 +441,6 @@ impl ProcInode {
         &self,
         viewer: &crate::namespace::UserNamespace,
     ) -> Result<Vec<u8>, FileSystemError> {
-        if matches!(self.node, ProcNode::Swaps) {
-            let mut output = ProcText::new();
-            crate::memory::swap::write_snapshot(&mut output)
-                .map_err(|_| FileSystemError::OutOfMemory)?;
-            return Ok(output.finish());
-        }
         if matches!(self.node, ProcNode::Partitions) {
             return format_partitions();
         }
@@ -506,8 +500,7 @@ impl ProcInode {
             ProcNode::Mounts
             | ProcNode::Partitions
             | ProcNode::Cmdline
-            | ProcNode::LastPanic
-            | ProcNode::Swaps => {
+            | ProcNode::LastPanic => {
                 unreachable!(
                     "mount table, partitions and command line handled before task snapshot"
                 )
@@ -869,7 +862,6 @@ impl Inode for ProcInode {
                     (ProcNode::Uptime, InodeType::File, &b"uptime"[..]),
                     (ProcNode::Mounts, InodeType::SymLink, &b"mounts"[..]),
                     (ProcNode::Partitions, InodeType::File, &b"partitions"[..]),
-                    (ProcNode::Swaps, InodeType::File, &b"swaps"[..]),
                     (ProcNode::Cmdline, InodeType::File, &b"cmdline"[..]),
                     (ProcNode::LastPanic, InodeType::File, &b"last_panic"[..]),
                     (ProcNode::NetLink, InodeType::SymLink, &b"net"[..]),
@@ -1159,7 +1151,6 @@ impl Inode for ProcInode {
                 b"." | b".." => ProcNode::Root,
                 b"stat" => ProcNode::Stat,
                 b"meminfo" => ProcNode::MemInfo,
-                b"swaps" => ProcNode::Swaps,
                 b"buddyinfo" => ProcNode::BuddyInfo,
                 b"vmstat" => ProcNode::VmStat,
                 b"loadavg" => ProcNode::LoadAvg,

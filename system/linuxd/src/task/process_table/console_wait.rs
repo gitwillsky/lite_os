@@ -76,14 +76,14 @@ fn wake_claimed_console(claimed: Option<wait_registry::ClaimedWait>) {
     if let Some(claimed) = claimed {
         match claimed.kind {
             IndexedWaitKind::Console => {
-                let _ = crate::execution::task::processor::wake_console_task(
+                let _ = crate::task::processor::wake_console_task(
                     claimed.task,
                     claimed.id,
                     WaitResult::Woken,
                 );
             }
             IndexedWaitKind::Poll => {
-                let _ = crate::execution::task::processor::wake_poll_task(
+                let _ = crate::task::processor::wake_poll_task(
                     claimed.task,
                     claimed.id,
                     WaitResult::Woken,

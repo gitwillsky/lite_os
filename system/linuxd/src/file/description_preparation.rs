@@ -1,7 +1,7 @@
 //! OFD allocation 与成功打开的生命周期分离；失败不能析构尚未成立的 OpenFileDescription。
 use alloc::sync::Arc;
 use core::{mem::MaybeUninit, sync::atomic::AtomicUsize};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use super::{
     EpollMemberships, FilePosition, OpenFileDescription, OpenFileKind, WritableInodeLease,

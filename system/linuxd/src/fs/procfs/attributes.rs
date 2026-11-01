@@ -2,7 +2,8 @@
 use super::{FileSystemError, InodeMetadata, ProcNode};
 use crate::fs::{OwnerModeChange, inode_times::TimeOwner, permission::OwnerModeState};
 use alloc::{sync::Arc, vec::Vec};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
 type Owner = Arc<Mutex<OwnerModeState>>;
 // OWNER: generic proc_dir_entry 属性随注册而存在，跨挂载/最后 inode close 不丢 chmod/chown。
@@ -106,7 +107,7 @@ impl ProcAttributes {
         {
             return Err(FileSystemError::PermissionDenied);
         }
-        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::time::get_realtime_ns() / 1_000_000_000;
         let mut owner = self.owner.lock();
         *owner = change.authorize(OwnerModeState::new(
             owner.kind(),
@@ -118,14 +119,14 @@ impl ProcAttributes {
         Ok(())
     }
     pub(super) fn truncate(&self) {
-        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::time::get_realtime_ns() / 1_000_000_000;
         self.times.lock().touch_at(now);
     }
     pub(super) fn touch_access(&self, now: u64, relatime: bool) {
         self.times.lock().access_at(now, relatime);
     }
     pub(super) fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) {
-        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::time::get_realtime_ns() / 1_000_000_000;
         self.times.lock().set_at(now, atime, mtime);
     }
 }

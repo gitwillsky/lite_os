@@ -2,7 +2,7 @@
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::mem::MaybeUninit;
-use spin::Mutex;
+use crate::sync::Mutex;
 
 mod completion_policy;
 use completion_policy::{CompletionValidity, validate_completion};
@@ -21,8 +21,8 @@ use crate::devices::model::{
     io_completion::{self, CompletionSource, IoCompletion, IoDevice, IoWaitKey, IoWaitTarget},
 };
 use crate::{
-    execution::interrupt::InterruptError, execution::interrupt::InterruptHandler,
-    execution::interrupt::InterruptVector,
+    interrupt::InterruptError, interrupt::InterruptHandler,
+    interrupt::InterruptVector,
 };
 
 const ENTROPY_CHUNK_SIZE: usize = 4096;
@@ -81,7 +81,7 @@ impl VirtIORngDevice {
         if usize::from(queue_size) < RNG_REQUEST_SLOTS {
             return None;
         }
-        let queue = VirtQueue::new(queue_size)?;
+        let queue = VirtQueue::new(queue_size, device.bti())?;
         device
             .configure_queue(0, queue_size, queue.addresses())
             .ok()?;
@@ -91,7 +91,7 @@ impl VirtIORngDevice {
             slots.push(RequestSlot {
                 completion: IoCompletion::new(),
                 data: Mutex::new(RequestData {
-                    buffer: DeviceWriteBuffer::try_uninit().ok()?,
+                    buffer: DeviceWriteBuffer::try_uninit(device.bti()).ok()?,
                     generation: 0,
                     requested: 0,
                     result: None,
@@ -143,13 +143,7 @@ impl VirtIORngDevice {
                 CommitOrWait::Waiting(waiter) => waiter,
             }
         };
-        waiter.wait(|| {
-            // Cold boot builds init's AT_RANDOM before a current task exists. This architecture
-            // seam temporarily enables only external IRQs, executes WFI, then restores both IRQ
-            // states exactly; polling or spin fallback would deadlock an interrupt-driven queue.
-            crate::arch::interrupt::wait_for_external_interrupt();
-            self.reclaim_completions();
-        });
+        waiter.wait();
         waiter.take_outcome().map_err(|_| ())
     }
 
@@ -170,7 +164,7 @@ impl VirtIORngDevice {
         data.generation = identity.generation;
         data.requested = requested;
         data.result = None;
-        data.waiter = waiter;
+        data.waiter = Some(waiter);
         let output = data.buffer.writable_prefix(requested);
         let head = match owner.queue.add_dma(&[output]) {
             Ok(head) => head,
@@ -198,20 +192,8 @@ impl VirtIORngDevice {
     fn wait(&self, identity: RequestIdentity) {
         let slot = &self.slots[identity.slot as usize];
         let waiter = slot.data.lock().waiter.clone();
-        if let Some(waiter) = waiter {
-            waiter.sleep(&slot.completion, self.request_id(identity));
-        } else {
-            while !slot.completion.is_complete() {
-                // Use the same IRQ ack owner before reclaiming a completion that predated
-                // bootstrap external delivery; clearing the line lets the next slow request wake WFI.
-                if self.queue.lock().queue.has_used() {
-                    self.completion_irq.acknowledge_and_defer(&self.device);
-                    self.reclaim_completions();
-                    continue;
-                }
-                crate::arch::interrupt::wait_for_external_interrupt();
-            }
-        }
+        let waiter = waiter.expect("submitted entropy request lost its waiter");
+        waiter.sleep(&slot.completion, self.request_id(identity));
     }
 
     fn finish(
@@ -381,7 +363,7 @@ impl VirtIORngDevice {
             }
         }
         if self.drain_failed_capacity_waiters() {
-            crate::execution::deferred::raise(crate::execution::deferred::DeferredWork::DRIVER_IO);
+            crate::deferred::raise(crate::deferred::DeferredWork::DRIVER_IO);
         }
     }
 

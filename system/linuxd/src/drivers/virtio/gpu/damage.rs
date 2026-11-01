@@ -48,13 +48,13 @@ impl DamageTransition {
     /// # Returns
     ///
     /// clip、batch 与 fence cursor 全部为空的 state。
-    pub(super) fn try_new() -> Option<Self> {
+    pub(super) fn try_new(bti: &native_runtime::Bti) -> Option<Self> {
         let mut commands = Vec::new();
         commands.try_reserve_exact(DAMAGE_BATCH_CAPACITY).ok()?;
         for _ in 0..DAMAGE_BATCH_CAPACITY {
             commands.push(DamageCommand {
-                request: DmaBuffer::try_zeroed().ok()?,
-                response: DmaBuffer::try_zeroed().ok()?,
+                request: DmaBuffer::try_zeroed(bti).ok()?,
+                response: DmaBuffer::try_zeroed(bti).ok()?,
                 fence: 0,
                 head: 0,
                 live: false,

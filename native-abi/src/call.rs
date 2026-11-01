@@ -307,7 +307,7 @@ pub const CLOCK_GET_UTC: usize = 68;
 /// 设置 UTC。参数：`resource`（root）、`utc_ns`。
 pub const CLOCK_SET_UTC: usize = 69;
 
-/// 睡眠到截止时间。参数：`deadline`。错误：`ERR_CANCELED`（线程被终止）。
+/// 睡眠到截止时间；截止时间已过时让出 CPU（yield）。参数：`deadline`。错误：`ERR_CANCELED`（线程被终止）。
 pub const NANOSLEEP: usize = 70;
 
 /// 读取密码学安全随机字节。参数：`buffer`、`length`。
@@ -322,5 +322,20 @@ pub const SYSTEM_GET_INFO: usize = 73;
 /// 关机或重启。参数：`resource`（root）、`action`（[`crate::system`] `POWER_*`）。
 pub const SYSTEM_POWER: usize = 74;
 
+/// 限制线程可运行的逻辑 CPU；未启动的线程在启动时应用。
+///
+/// 参数：`thread`、`mask`（bit N = 逻辑 CPU N）。错误：`ERR_INVALID_ARGS`（与存在的 CPU 不相交）、
+/// `ERR_BAD_STATE`（线程已退出）。
+pub const THREAD_SET_AFFINITY: usize = 75;
+
+/// 调用线程当前所在的逻辑 CPU（返回时可能已迁移，只作提示）。参数：`out: *mut u32`。
+pub const CPU_CURRENT: usize = 76;
+
+/// 原样写调试串口（不经日志格式）。参数：`resource`（root）、`bytes`、`length`。
+pub const SERIAL_WRITE: usize = 77;
+
+/// 返回前每个 CPU 都执行过一次完整内存屏障（进程内存屏障的通用机制）。无参数。
+pub const SYSTEM_BARRIER: usize = 78;
+
 /// 编号上界（不含）。
-pub const COUNT: usize = 75;
+pub const COUNT: usize = 79;

@@ -1,7 +1,8 @@
 //! xHCI DMA 存储；controller 的永久注册引用保活它，reset/Disable Slot 完成之前不得释放。
 use super::{Error, Result};
-use crate::memory::{DeviceBacking, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE};
+use crate::memory::{DeviceBacking, PAGE_SIZE};
 use core::sync::atomic::Ordering;
+use native_runtime::Bti;
 
 pub(super) struct Dma {
     backing: DeviceBacking,
@@ -9,27 +10,19 @@ pub(super) struct Dma {
     pub(super) bytes: usize,
 }
 impl Dma {
-    pub(super) fn allocate(pages: usize) -> Result<Self> {
-        let backing = DeviceBacking::try_allocate(
-            pages,
-            FrameAllocationClass::Reclaimable,
-            DeviceMemoryKind::Driver,
-        )
-        .ok_or(Error::Memory)?;
-        if backing.extent_count() != 1 {
+    /// 分配 `pages` 页零内容、设备地址连续的存储并以控制器的 `bti` 固定。
+    pub(super) fn allocate(pages: usize, bti: &Bti) -> Result<Self> {
+        let backing = DeviceBacking::try_allocate_contiguous(pages, bti)
+            .ok_or(Error::Memory)?;
+        let [extent] = backing.pin(bti).map_err(|_| Error::Memory)? else {
             return Err(Error::Memory);
-        }
-        let physical = (backing.page(0).ok_or(Error::Memory)?.as_usize() * PAGE_SIZE) as u64;
-        let bytes = pages * PAGE_SIZE;
-        let dma = Self {
+        };
+        let physical = extent.device_address;
+        Ok(Self {
             backing,
             physical,
-            bytes,
-        };
-        for offset in (0..bytes).step_by(PAGE_SIZE) {
-            dma.write(offset, &[0; PAGE_SIZE])?;
-        }
-        Ok(dma)
+            bytes: pages * PAGE_SIZE,
+        })
     }
     pub(super) fn write(&self, offset: usize, bytes: &[u8]) -> Result<()> {
         self.backing
@@ -88,9 +81,9 @@ pub(super) struct Ring {
     cycle: bool,
 }
 impl Ring {
-    pub(super) fn new(pages: usize) -> Result<Self> {
+    pub(super) fn new(pages: usize, bti: &Bti) -> Result<Self> {
         Ok(Self {
-            memory: Dma::allocate(pages)?,
+            memory: Dma::allocate(pages, bti)?,
             next: 0,
             head: 0,
             used: 0,

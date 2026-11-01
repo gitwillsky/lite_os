@@ -278,9 +278,9 @@ impl Ext4FileSystem {
             metadata_cache: Mutex::new(MetadataBlockCache::new()),
             inode_cache: Mutex::new(FallibleMap::new()),
             next_generation: AtomicU32::new(
-                (crate::execution::timer::get_realtime_ns() / 1_000_000_000) as u32 | 1,
+                (crate::time::get_realtime_ns() / 1_000_000_000) as u32 | 1,
             ),
-            self_ref: spin::Mutex::new(Weak::new()),
+            self_ref: crate::sync::Mutex::new(Weak::new()),
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
         *fs.self_ref.lock() = Arc::downgrade(&fs);

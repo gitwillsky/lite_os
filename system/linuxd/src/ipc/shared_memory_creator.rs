@@ -1,9 +1,9 @@
 //! creating Thread 的真实 shm clist；Weak observer 不代表仍活着的创建者。
 use super::{IpcError, IpcNamespace, SharedMemorySegment};
-use crate::fallible_tree::{FallibleMap, NodeSlot, VacantEntry};
+use fallible_tree::{FallibleMap, NodeSlot, VacantEntry};
 use crate::namespace::NamespaceOwner;
 use alloc::sync::{Arc, Weak};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 type CreatorKey = (u64, i32);
 struct CreatorRegistration {

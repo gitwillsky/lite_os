@@ -34,6 +34,7 @@ use super::{
 pub(super) fn prepare(
     command: VirglCommand<'_>,
     request: &mut [u8],
+    bti: &native_runtime::Bti,
 ) -> Result<PreparedCommand, DisplayError> {
     let mut stream = None;
     let (opcode, length) = match command {
@@ -102,7 +103,7 @@ pub(super) fn prepare(
             if resource_id == 0 {
                 return Err(DisplayError::Device);
             }
-            let length = prepare_attach(request, resource_id, &backing)?;
+            let length = prepare_attach(request, resource_id, &backing, bti)?;
             (VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, length)
         }
         VirglCommand::ContextAttachResource {
@@ -138,6 +139,8 @@ pub(super) fn prepare(
                 u32::try_from(length).map_err(|_| DisplayError::Device)?,
             )
             .ok_or(DisplayError::Device)?;
+            // 命令流由设备经 DMA 读取：先以 GPU 的 BTI 固定。
+            commands.pin(bti).map_err(|_| DisplayError::Device)?;
             stream = Some((commands, length));
             (VIRTIO_GPU_CMD_SUBMIT_3D, 32)
         }

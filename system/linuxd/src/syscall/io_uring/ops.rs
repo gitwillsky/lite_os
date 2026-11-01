@@ -12,7 +12,7 @@ use super::{
     wait::{Only, Target},
 };
 use crate::{
-    execution::task::TaskControlBlock,
+    task::TaskControlBlock,
     io_uring::{
         Chain, Ring, Submitter,
         abi::{

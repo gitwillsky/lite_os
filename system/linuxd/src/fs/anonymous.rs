@@ -3,7 +3,7 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use super::{
     AccessIdentity, CreateMetadata, DataBacking, DirectoryRead, DirectoryVisitor, FileSystemError,

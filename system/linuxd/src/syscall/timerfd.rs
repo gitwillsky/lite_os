@@ -1,5 +1,5 @@
 use crate::{
-    execution::task::{TimerFileClock, create_timer_fd, current_task},
+    task::{TimerFileClock, create_timer_fd, current_task},
     file::{OpenFileDescription, OpenFileKind, TimerError, TimerFd, TimerSetting},
     fs::{O_CLOEXEC, O_NONBLOCK},
     syscall::errno,
@@ -124,7 +124,7 @@ pub(crate) fn sys_timerfd_settime(
         value_ns,
         interval_ns,
         flags & TFD_TIMER_ABSTIME != 0,
-        crate::execution::timer::get_time_ns(),
+        crate::time::get_time_ns(),
         task.time_offsets(),
     ) {
         Ok(setting) => setting,
@@ -158,7 +158,7 @@ pub(crate) fn sys_timerfd_gettime(fd: usize, output: usize) -> isize {
     if output == 0 {
         return -errno::EFAULT;
     }
-    let setting = match timer.setting(crate::execution::timer::get_time_ns()) {
+    let setting = match timer.setting(crate::time::get_time_ns()) {
         Ok(setting) => setting,
         Err(error) => return timer_error(error),
     };

@@ -12,7 +12,8 @@ use crate::namespace::{
 };
 use alloc::sync::Arc;
 pub(crate) use description::{IpcDescription, IpcTable};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 use syscall_abi::{
     capability::Capability,
     ipc::{IPC_CREAT, IPC_EXCL},

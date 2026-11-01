@@ -17,7 +17,7 @@ use native_abi::Status;
 use spin::Mutex;
 
 use super::{Hardware, descriptor_window, map_registers};
-use crate::arch::mmio::MmioBus;
+use mmio::MmioBus;
 use crate::memory::{FrameAllocationClass, FrameTracker, PAGE_SIZE, PhysicalPageNumber, alloc_contiguous};
 
 const IDR0: usize = 0x00;
@@ -66,7 +66,7 @@ pub(super) struct SmmuV3 {
     output_size: u64,
     // OWNER: stream table 与每个 stream 的 CD 页；绑定后由硬件读取，生命周期等同 IOMMU。
     stream_table: FrameTracker,
-    contexts: Mutex<crate::fallible_tree::FallibleMap<u32, FrameTracker>>,
+    contexts: Mutex<fallible_tree::FallibleMap<u32, FrameTracker>>,
     // OWNER: 命令队列的唯一写者；生产者索引与队列内容同锁发布。
     queue: Mutex<CommandQueue>,
 }
@@ -115,7 +115,7 @@ impl SmmuV3 {
         write64(CMDQ_BASE, READ_ALLOCATE | queue_address | u64::from(command_log2))?;
         write32(CMDQ_PROD, 0)?;
         write32(CMDQ_CONS, 0)?;
-        crate::arch::before_mmio_write();
+        mmio::before_write();
         write32(CR0, CR0_CMDQEN)?;
         poll(|| read(CR0ACK).is_ok_and(|ack| ack == CR0_CMDQEN))?;
 
@@ -125,7 +125,7 @@ impl SmmuV3 {
             command_log2,
             output_size,
             stream_table,
-            contexts: Mutex::new(crate::fallible_tree::FallibleMap::new()),
+            contexts: Mutex::new(fallible_tree::FallibleMap::new()),
             queue: Mutex::new(CommandQueue {
                 frames: queue_frames,
                 producer: 0,
@@ -153,7 +153,7 @@ impl SmmuV3 {
             write_words(queue.frames.ppn, index * 16, command);
             queue.producer = (queue.producer + 1) & (mask | wrap);
         }
-        crate::arch::before_mmio_write();
+        mmio::before_write();
         self.registers
             .write_u32(CMDQ_PROD, queue.producer)
             .map_err(|_| native_abi::ERR_INTERNAL)?;
@@ -209,7 +209,7 @@ impl Hardware for SmmuV3 {
         let offset = stream as usize * STE_BYTES;
         // 先写其余字，最后置 V，硬件不会看到半个 STE。
         write_words(self.stream_table.ppn, offset + 8, &[ste1, 0, 0, 0, 0, 0, 0]);
-        crate::arch::before_mmio_write();
+        mmio::before_write();
         write_words(self.stream_table.ppn, offset, &[ste0]);
         self.contexts
             .lock()

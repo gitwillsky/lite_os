@@ -1,4 +1,4 @@
-use crate::{execution::task::current_task, file::OpenFileKind};
+use crate::{task::current_task, file::OpenFileKind};
 
 const FIONBIO: usize = 0x5421;
 
@@ -50,7 +50,7 @@ pub(crate) fn sys_ioctl(fd: usize, request: usize, argument: usize) -> isize {
 
 /// 匿名管道的 ioctl：只有 `FIONREAD`。
 fn pipe_ioctl(
-    task: &crate::execution::task::TaskControlBlock,
+    task: &crate::task::TaskControlBlock,
     pipe: &alloc::sync::Arc<crate::ipc::Pipe>,
     request: usize,
     argument: usize,

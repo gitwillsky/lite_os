@@ -17,8 +17,8 @@ pub(crate) enum Error {
     Controller(u8),
 }
 type Result<T> = core::result::Result<T, Error>;
-impl From<crate::arch::mmio::BusError> for Error {
-    fn from(_: crate::arch::mmio::BusError) -> Self {
+impl From<mmio::BusError> for Error {
+    fn from(_: mmio::BusError) -> Self {
         Self::Protocol
     }
 }

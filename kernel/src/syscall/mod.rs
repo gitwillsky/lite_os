@@ -78,6 +78,8 @@ unsafe impl Plain for native_abi::TaskRuntime {}
 // SAFETY: 同上。
 unsafe impl Plain for native_abi::VmarRegion {}
 // SAFETY: 同上。
+unsafe impl Plain for native_abi::VmoInfo {}
+// SAFETY: 同上。
 unsafe impl Plain for native_abi::ProcessBasic {}
 // SAFETY: 同上。
 unsafe impl Plain for native_abi::SystemBasic {}
@@ -328,6 +330,10 @@ pub(super) fn dispatch(call: &Call<'_>, number: usize) -> Outcome {
         call::CPRNG_ADD_ENTROPY => system::cprng_add_entropy(call).into(),
         call::SYSTEM_GET_INFO => system::get_info(call).into(),
         call::SYSTEM_POWER => system::power(call).into(),
+        call::THREAD_SET_AFFINITY => task::thread_set_affinity(call).into(),
+        call::CPU_CURRENT => task::cpu_current(call).into(),
+        call::SERIAL_WRITE => system::serial_write(call).into(),
+        call::SYSTEM_BARRIER => system::barrier().into(),
         _ => Outcome::Return(native_abi::ERR_BAD_SYSCALL),
     }
 }

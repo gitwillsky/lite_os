@@ -1,6 +1,6 @@
 //! 空 PGID 的真实 ownership retirement；不保留永远增长的历史 group index。
 use super::*;
-use crate::execution::task::pid::RetiredPidRegistrations;
+use crate::task::pid::RetiredPidRegistrations;
 
 #[derive(Default)]
 pub(super) struct RetiredGroups {

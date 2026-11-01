@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use crate::fs::{DeviceNumber, FileSystemError};
 
@@ -202,7 +202,7 @@ impl Terminal {
                 line: [0; TERMINAL_LINE_CAPACITY],
                 line_len: 0,
                 eof_pending: false,
-                input_generation: crate::execution::sync::next_readiness_generation(),
+                input_generation: crate::sync::next_readiness_generation(),
             }),
         })
         .map_err(|_| ())
@@ -439,7 +439,7 @@ impl Terminal {
                             .push_input(byte)
                             .map_err(|()| FileSystemError::IoError)?;
                         state.input_generation =
-                            crate::execution::sync::next_readiness_generation();
+                            crate::sync::next_readiness_generation();
                     } else if byte == control(2) {
                         if state.line_len != 0 {
                             state.line_len -= 1;
@@ -464,7 +464,7 @@ impl Terminal {
                             state.commit_line().map_err(|()| FileSystemError::IoError)?;
                         }
                         state.input_generation =
-                            crate::execution::sync::next_readiness_generation();
+                            crate::sync::next_readiness_generation();
                         continue;
                     } else {
                         if state.line_len == state.line.len() {
@@ -476,7 +476,7 @@ impl Terminal {
                         if byte == b'\n' {
                             state.commit_line().map_err(|()| FileSystemError::IoError)?;
                             state.input_generation =
-                                crate::execution::sync::next_readiness_generation();
+                                crate::sync::next_readiness_generation();
                         }
                     }
                     if local_flags & ECHO != 0 || byte == b'\n' && local_flags & ECHONL != 0 {
@@ -587,7 +587,7 @@ impl Terminal {
         let cooked = flush::clear_pending(input_head, input_len, line_len, eof_pending);
         state.termios = termios;
         if raw != 0 || cooked {
-            state.input_generation = crate::execution::sync::next_readiness_generation();
+            state.input_generation = crate::sync::next_readiness_generation();
         }
     }
 
@@ -624,7 +624,7 @@ impl Terminal {
         } = &mut *state;
         let cooked = flush::clear_pending(input_head, input_len, line_len, eof_pending);
         if raw != 0 || cooked {
-            state.input_generation = crate::execution::sync::next_readiness_generation();
+            state.input_generation = crate::sync::next_readiness_generation();
         }
     }
 

@@ -47,7 +47,7 @@ pub(super) fn process_name(path: &[u8]) -> [u8; 16] {
 
 impl TaskControlBlock {
     /// exec/TSYNC 共用的实际 Process credential preparation guard。
-    pub(in crate::execution::task) fn credential_guard(&self) -> &TaskMutex<()> {
+    pub(in crate::task) fn credential_guard(&self) -> &TaskMutex<()> {
         &self.process().credential_guard
     }
 
@@ -86,7 +86,7 @@ impl TaskControlBlock {
         let data_limit = self.resource_limit(RLIMIT_DATA).unwrap().soft;
         let exec_pid_link = if self.tid() != self.tgid() {
             Some(
-                crate::execution::task::pid::PidLinkSlot::try_new()
+                crate::task::pid::PidLinkSlot::try_new()
                     .map_err(|_| ExecError::Image(ElfLoadError::OutOfMemory))?,
             )
         } else {
@@ -101,10 +101,11 @@ impl TaskControlBlock {
             data_limit,
         )?;
         let new_address_space = AddressSpace::new(new_memory_set, self.user_namespace())?;
+        // 新地址空间是另一个成员进程：在 PONR 前为它准备承载线程，失败时旧映像保持不变。
+        let new_carrier = crate::trap::prepare_user_carrier(new_address_space.process())
+            .map_err(|error| ExecError::Image(ElfLoadError::from(error)))?;
         // 不可发布可 dump 的新mm；CLOEXEC/credential transaction 再按旧身份设置。
         new_address_space.set_dumpable(false);
-        let prepared_context =
-            new_address_space.prepare_context_rebind(&self.thread().user_context, TRAP_CONTEXT)?;
         let new_comm = process_name(loaded.execfn());
 
         preparation.terminate_siblings(self)?;
@@ -124,13 +125,11 @@ impl TaskControlBlock {
         super::super::process_table::mark_process_exec(self, exec_pid_link, exec_trace_link);
         // POSIX timers 不跨 exec 保留；在旧映像仍唯一运行、且提交已不可失败时清理，
         // 否则新程序会收到由旧 handler/value 创建的异步 signal。
-        crate::execution::task::remove_posix_timers_for_exec(self.tgid());
+        crate::task::remove_posix_timers_for_exec(self.tgid());
         self.enter_exec_time_namespace();
 
         // 步骤2: 单次替换 Process 映像相关状态；vfork child 只替换自己的 Process handle，
         // parent 与 sibling 继续持有旧 AddressSpace，因此不存在共享 handle 被原地清空的窗口。
-        let kernel_stack_top = self.execution.kernel_stack.get_top();
-        let old_context_binding = self.thread().user_context.binding();
         let old_address_space = self.replace_address_space(new_address_space);
         let retired_scheduler_alias = core::mem::replace(
             &mut *self.process().leader_scheduler.lock(),
@@ -147,9 +146,6 @@ impl TaskControlBlock {
             self.thread().mm.clone(),
         );
         drop(retired_mm_alias);
-        if let Some(prepared) = prepared_context {
-            prepared.apply(&self.thread().user_context);
-        }
         *self.thread().comm.lock() = new_comm;
         let retired_comm = core::mem::replace(
             &mut *self.process().leader_comm.lock(),
@@ -183,29 +179,18 @@ impl TaskControlBlock {
         drop(retired_namespaces_alias);
         self.commit_exec_credentials(credentials, loaded.readable());
 
-        // 步骤3: 参数与环境只存在于新初始栈；地址空间由统一 trap return 激活。
-        self.replace_user_context(UserContext::app_init_context(
-            entry_point,
-            user_sp,
-            KERNEL_SPACE.wait().lock().kernel_trap_token(),
-            kernel_stack_top,
-            self.thread().kernel_trap_handler,
-        ));
-        // exec 不继承旧 image 的 live FP/NEON state；AArch64 在显式 asm boundary 清零，
-        // RISC-V state 已由上面的新 UserContext image 覆盖。缺失该 hook 会跨 exec 泄漏寄存器。
-        crate::arch::context::reset_live_floating_point();
-        if old_context_binding.requires_retirement_wait(TRAP_CONTEXT) {
-            // single-thread 只限定当前 Process；CLONE_VM parent/其他 Process 可合法占用旧 mm。
-            // 复用 constructor 预置 waiter，PONR 后不能因 cleanup waiter OOM 失败或竞争 panic。
-            self.with_cleanup_memory(&old_address_space, |memory| {
-                memory.remove_thread_trap_context(old_context_binding.address());
-            });
-        }
+        // 步骤3: 参数与环境只存在于新初始栈。新地址空间属于另一个成员进程：Linux 线程主循环在
+        // 下一次进入前发现承载线程不在新地址空间中，就在新成员进程中换上新的承载线程。
+        self.replace_user_context(UserContext::new(entry_point, user_sp));
+        self.set_prepared_carrier(new_carrier);
+        // exec 不继承旧映像的浮点状态。
+        self.thread()
+            .user_context
+            .set_initial_fp(crate::arch::fp::FpState::default());
         super::process_exit::release_exec_mm(
             self,
             old_address_space,
             self.take_clear_child_tid(),
-            self.user_fault_limits(),
         );
         // vfork parent 只能在完整 exec commit 且 RISC-V child 临时 trap VMA 已删除后恢复；
         // AArch64 context 随独立 KernelStack 保活。提前唤醒会让共享旧 mm 的 detach 顺序失效。

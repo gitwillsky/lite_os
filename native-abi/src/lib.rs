@@ -236,13 +236,13 @@ pub mod vmo {
     pub const OP_COMMIT: u32 = 1;
     /// `vmo_op_range`：释放页（之后读为零或重新向 pager 请求）。
     pub const OP_DECOMMIT: u32 = 2;
-    /// `vmo_op_range`：清零。
+    /// `vmo_op_range`：把字节区间清零（不要求页对齐）。
     pub const OP_ZERO: u32 = 3;
 }
 
 /// pager 操作。
 pub mod pager {
-    /// 区间无法提供：等待者以 `ERR_IO` 失败。
+    /// 区间无法提供：撤销区间内已发出的请求，当前等待者以 `ERR_IO` 失败；之后的访问重新请求。
     pub const OP_FAIL: u32 = 1;
     /// 回写开始：清除脏标记并写保护映射。
     pub const OP_WRITEBACK_BEGIN: u32 = 2;
@@ -318,6 +318,8 @@ pub mod info {
     pub const PROCESS: u32 = 4;
     /// 进程或线程名称（UTF-8 字节，≤ 32）。
     pub const NAME: u32 = 5;
+    /// [`crate::VmoInfo`]。
+    pub const VMO: u32 = 6;
 }
 
 /// `system_get_info` 主题与电源操作。
@@ -328,48 +330,54 @@ pub mod system {
     pub const CPU_BUSY: u32 = 2;
     /// 上一次启动的内核崩溃记录文本；上次正常结束时为空。
     pub const CRASH_LOG: u32 = 3;
+    /// 物理页分配器每个 order 的空闲块数，`u64` 数组（order N 的块为 2^N 页）。
+    pub const FREE_BLOCKS: u32 = 4;
     /// 关机。
     pub const POWER_OFF: u32 = 1;
     /// 重启。
     pub const POWER_REBOOT: u32 = 2;
 }
 
-/// 内核交给根服务的 bootstrap 消息。
+/// 进程启动消息。
 ///
-/// 根服务首个线程的第一个参数是 bootstrap channel 句柄；channel 中恰有一条消息：字节为
-/// [`BootstrapHeader`] 后接内核启动参数文本，句柄按下列下标排列。
-pub mod bootstrap {
-    /// 消息头魔数（`"LTBOOT01"`）。
-    pub const MAGIC: u64 = 0x3130_544f_4f42_544c;
-    /// 根 Job。
-    pub const ROOT_JOB: usize = 0;
-    /// 根 resource（全部硬件访问权）。
-    pub const ROOT_RESOURCE: usize = 1;
-    /// 根服务自身的进程句柄。
-    pub const SELF_PROCESS: usize = 2;
-    /// 根服务的根 VMAR。
-    pub const SELF_VMAR: usize = 3;
-    /// 根服务首个线程。
-    pub const SELF_THREAD: usize = 4;
-    /// bootfs（cpio `newc`）VMO。
-    pub const BOOTFS: usize = 5;
-    /// 平台 DTB 的只读副本 VMO。
-    pub const DEVICE_TREE: usize = 6;
-    /// 句柄数。
-    pub const HANDLE_COUNT: usize = 7;
+/// 每个经启动协议创建的进程，其首个线程的第一个参数是 startup channel 句柄；channel 中恰有一条消息：
+/// 字节为 [`StartupHeader`] 后接参数字节，句柄前 [`startup::ROLE_HANDLES`] 个为通用句柄，其后由
+/// 启动者与被启动者的角色约定。内核启动根服务时同样遵循该协议，参数字节是内核启动参数文本。
+pub mod startup {
+    /// 消息头魔数（`"LTSTART1"`）。
+    pub const MAGIC: u64 = 0x3154_5241_5453_544c;
+    /// 进程自身。
+    pub const SELF_PROCESS: usize = 0;
+    /// 运行时分配（堆、线程栈）所用的 VMAR。
+    pub const SELF_VMAR: usize = 1;
+    /// 首个线程自身。
+    pub const SELF_THREAD: usize = 2;
+    /// 角色句柄的起始下标。
+    pub const ROLE_HANDLES: usize = 3;
+
+    /// 根服务的角色句柄。
+    pub mod root {
+        /// 根 Job。
+        pub const JOB: usize = super::ROLE_HANDLES;
+        /// 根 resource（全部硬件访问权）。
+        pub const RESOURCE: usize = super::ROLE_HANDLES + 1;
+        /// bootfs（cpio `newc`）VMO。
+        pub const BOOTFS: usize = super::ROLE_HANDLES + 2;
+        /// 平台 DTB 的只读副本 VMO。
+        pub const DEVICE_TREE: usize = super::ROLE_HANDLES + 3;
+        /// 句柄总数。
+        pub const HANDLE_COUNT: usize = super::ROLE_HANDLES + 4;
+    }
 }
 
-/// bootstrap 消息头。
+/// 启动消息头。
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
-pub struct BootstrapHeader {
+pub struct StartupHeader {
+    /// [`startup::MAGIC`]。
     pub magic: u64,
-    /// bootfs 字节数（VMO 大小按页取整）。
-    pub bootfs_size: u64,
-    /// DTB 字节数。
-    pub device_tree_size: u64,
-    /// 紧随头部的启动参数文本字节数。
-    pub command_line_length: u64,
+    /// 紧随头部的参数字节数。
+    pub arguments_length: u64,
 }
 
 /// 句柄的对象类型、rights 与对象全局编号。
@@ -385,7 +393,22 @@ pub struct HandleBasic {
 #[repr(C)]
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TaskRuntime {
+    /// 全部 CPU 时间。
     pub cpu_time_ns: u64,
+    /// 其中在 restricted mode 中消耗的部分。
+    pub restricted_time_ns: u64,
+    /// 因阻塞离开 CPU 的次数。
+    pub voluntary_switches: u64,
+    /// 仍可运行时被抢占或让出 CPU 的次数。
+    pub involuntary_switches: u64,
+}
+
+/// VMO 的大小与本对象自己持有的已提交字节（不含从父对象共享的页）。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VmoInfo {
+    pub size: u64,
+    pub committed_bytes: u64,
 }
 
 /// VMAR 覆盖的地址区间。
@@ -415,6 +438,10 @@ pub struct SystemBasic {
     pub total_pages: u64,
     pub free_pages: u64,
     pub boot_utc_ns: i64,
+    /// 单调时钟的最小可观察粒度（纳秒，向上取整）。
+    pub clock_resolution_ns: u64,
+    /// 调度器基础时间片（纳秒）。
+    pub scheduler_quantum_ns: u64,
 }
 
 /// 一条内核日志记录。

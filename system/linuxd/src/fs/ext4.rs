@@ -12,17 +12,14 @@ use core::{
     cmp, mem,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use super::{
     DirectoryEntry, DirectoryRead, DirectoryVisit, DirectoryVisitor, FileSystem, FileSystemError,
     Inode, InodeMetadata, InodeType, OwnerModeChange, StorageWriter,
 };
-use crate::{
-    devices::block::{BLOCK_SIZE, BlockDevice, BlockError},
-    execution::sync::{TaskEvent, TaskMutex, TaskMutexWaitPreparation},
-    fallible_tree::FallibleMap,
-};
+use crate::{devices::block::{BLOCK_SIZE, BlockDevice, BlockError}, sync::{TaskEvent, TaskMutex, TaskMutexWaitPreparation}};
+use fallible_tree::FallibleMap;
 
 fn block_error(error: BlockError) -> FileSystemError {
     match error {
@@ -45,7 +42,6 @@ pub(in crate::fs) fn validate_mount_options(options: &[u8]) -> Result<(), FileSy
 mod allocation;
 mod allocation_dirty;
 mod allocation_metadata;
-mod async_read;
 mod block_io;
 mod checksum;
 mod directory;
@@ -556,7 +552,7 @@ pub(crate) struct Ext4FileSystem {
     // OWNER: 新 inode 的 i_generation 来源；generation 参与 inode checksum seed，复用旧值会让
     // NFS-style handle 与旧 inode 混淆，但不会破坏 checksum 正确性。
     next_generation: AtomicU32,
-    self_ref: spin::Mutex<Weak<Ext4FileSystem>>,
+    self_ref: crate::sync::Mutex<Weak<Ext4FileSystem>>,
     // 写前准备（`RECOVER` 标志与 orphan 回收）已完成。只读挂载为 false，`remount,rw` 时才补做；缺失时
     // 只读挂载会改磁盘，或 `remount,rw` 之后遗留的 orphan 永远不被回收。
     writable: AtomicBool,

@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 
 use super::FileSystemError;
-use crate::execution::sync::IrqMutex;
+use crate::sync::Mutex;
 
 #[derive(Clone, Copy)]
 struct Quota {
@@ -48,7 +48,7 @@ pub(super) struct BudgetSnapshot {
 pub(super) struct StorageBudget {
     // OWNER: reserve/release/set_limits 同一 IRQ-safe 临界区，无 allocation/I/O/callback。
     // 两个独立 Atomic 的检查/CAS 不能排除 remount 已通过后按旧 limit 预留越额。
-    state: IrqMutex<BudgetState>,
+    state: Mutex<BudgetState>,
 }
 
 impl StorageBudget {
@@ -58,7 +58,7 @@ impl StorageBudget {
         inode_limit: Option<u64>,
     ) -> Result<Arc<Self>, FileSystemError> {
         Arc::try_new(Self {
-            state: IrqMutex::new(BudgetState {
+            state: Mutex::new(BudgetState {
                 pages: Quota {
                     limit: page_limit,
                     used: 0,

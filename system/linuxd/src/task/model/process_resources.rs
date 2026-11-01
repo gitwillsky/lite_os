@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 
 use super::TaskControlBlock;
 use crate::{devices::tty::Terminal, fs::OpenedFile, memory::MemoryError};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 pub(super) const DEFAULT_UMASK: u32 = 0o022;
 
@@ -40,7 +40,7 @@ impl TaskControlBlock {
     }
 
     /// proc root/cwd snapshot；已退休的 main Thread 不得重新通过 worker 恢复 fs handle。
-    pub(in crate::execution::task) fn proc_directory(
+    pub(in crate::task) fn proc_directory(
         &self,
         kind: crate::fs::ProcDirectory,
     ) -> Option<Arc<OpenedFile>> {
@@ -149,7 +149,7 @@ impl TaskControlBlock {
     /// # Returns
     ///
     /// 与 `/dev/tty` 当前解析目标相同的 Arc。
-    pub(in crate::execution::task) fn terminal(&self) -> Option<Arc<Terminal>> {
+    pub(in crate::task) fn terminal(&self) -> Option<Arc<Terminal>> {
         self.process().terminal.lock().clone()
     }
 }
@@ -157,7 +157,7 @@ impl TaskControlBlock {
 // Process 生命周期内唯一投影；graph/proc observer 不保活任何 TCB。
 impl super::Process {
     /// graph 拥有 session 事务；只交换实际 controlling handle，旧资源由 caller 在 graph 外释放。
-    pub(in crate::execution::task) fn replace_terminal(
+    pub(in crate::task) fn replace_terminal(
         &self,
         next: Option<Arc<Terminal>>,
     ) -> Option<Arc<Terminal>> {
@@ -165,7 +165,7 @@ impl super::Process {
     }
 
     /// caller 保持 target Terminal 的有效 borrow/pin；只摘同一对象的 handle，Arc 不可能最后释放。
-    pub(in crate::execution::task) fn clear_terminal_if(&self, expected: &Terminal) {
+    pub(in crate::task) fn clear_terminal_if(&self, expected: &Terminal) {
         let retired = {
             let mut owner = self.terminal.lock();
             if owner
@@ -180,7 +180,7 @@ impl super::Process {
         drop(retired);
     }
 
-    pub(in crate::execution::task) fn terminal_proc_identity(
+    pub(in crate::task) fn terminal_proc_identity(
         &self,
         view: &crate::namespace::PidNamespace,
     ) -> (u32, isize) {

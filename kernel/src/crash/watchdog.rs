@@ -27,7 +27,7 @@ pub(crate) fn note_deferred_progress() {
 ///
 /// # Panics
 ///
-/// deferred work 停滞超过 [`STALL_LIMIT_US`] 时 panic，由崩溃流程保存现场并显示蓝屏。
+/// deferred work 停滞超过 [`STALL_LIMIT_US`] 时 panic，由崩溃流程保存现场并按 `panic=` 策略停机或重启。
 pub(crate) fn check_tick() {
     if cpu::current_id() != cpu::boot_id() {
         return;

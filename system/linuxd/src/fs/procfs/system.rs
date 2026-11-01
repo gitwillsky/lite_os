@@ -50,28 +50,16 @@ pub(super) fn format_cpu_stat(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileSy
 }
 
 pub(super) fn format_meminfo(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileSystemError> {
-    let available_pages = snapshot
-        .free_pages
-        .saturating_add(snapshot.reclaimable_cached_pages)
-        .min(snapshot.total_pages);
-    // Linux Cached 来自 NR_FILE_PAGES，含 shmem（tmpfs/memfd/SysV/GEM shmem）页；磁盘页缓存另计。
-    let cached_pages = snapshot.cached_pages + snapshot.shmem_pages;
+    // 1. 内核不回收页缓存，也没有交换设备：MemAvailable 等于 MemFree，交换项为 0。
+    // 2. 匿名/映射/shmem/slab/内核栈/页表页属于内核与各服务私有的分配，没有跨进程汇总的 owner，报告 0
+    //    （范围缩减记录在 docs/plans/microkernel.md）。
     proc_text(format_args!(
-        "MemTotal:       {} kB\nMemFree:        {} kB\nMemAvailable:   {} kB\nBuffers:        0 kB\nCached:         {} kB\nSwapCached:     {} kB\nActive:         0 kB\nInactive:       0 kB\nSwapTotal:      {} kB\nSwapFree:       {} kB\nDirty:          {} kB\nWriteback:      0 kB\nAnonPages:      {} kB\nMapped:         {} kB\nShmem:          {} kB\nSlab:           {} kB\nKernelStack:    {} kB\nPageTables:     {} kB\n",
+        "MemTotal:       {} kB\nMemFree:        {} kB\nMemAvailable:   {} kB\nBuffers:        0 kB\nCached:         {} kB\nSwapCached:     0 kB\nActive:         0 kB\nInactive:       0 kB\nSwapTotal:      0 kB\nSwapFree:       0 kB\nDirty:          {} kB\nWriteback:      0 kB\nAnonPages:      0 kB\nMapped:         0 kB\nShmem:          0 kB\nSlab:           0 kB\nKernelStack:    0 kB\nPageTables:     0 kB\n",
         snapshot.total_pages * 4,
         snapshot.free_pages * 4,
-        available_pages * 4,
-        cached_pages * 4,
-        snapshot.swap_cached_pages * 4,
-        snapshot.swap_total_pages * 4,
-        snapshot.swap_free_pages * 4,
+        snapshot.free_pages.min(snapshot.total_pages) * 4,
+        snapshot.cached_pages * 4,
         snapshot.dirty_pages * 4,
-        snapshot.anon_mapped_pages * 4,
-        snapshot.file_mapped_pages * 4,
-        snapshot.shmem_pages * 4,
-        snapshot.heap_pages * 4,
-        snapshot.kernel_stack_bytes / 1024,
-        snapshot.page_table_pages * 4,
     ))
 }
 
@@ -81,7 +69,8 @@ pub(super) fn format_buddyinfo(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileS
         .write_str("Node 0, zone   Normal ")
         .map_err(|_| FileSystemError::OutOfMemory)?;
     let order_count = (usize::BITS - snapshot.total_pages.max(1).leading_zeros()) as usize;
-    for blocks in snapshot.buddy_free_blocks.iter().take(order_count) {
+    for order in 0..order_count {
+        let blocks = snapshot.buddy_free_blocks.get(order).copied().unwrap_or(0);
         write!(output, " {blocks:>6}").map_err(|_| FileSystemError::OutOfMemory)?;
     }
     output
@@ -91,13 +80,10 @@ pub(super) fn format_buddyinfo(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileS
 }
 
 pub(super) fn format_vmstat(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileSystemError> {
+    // 内核不做页回收：回收计数恒为 0，空闲页来自分配器。
     proc_text(format_args!(
-        "allocstall {}\npgscan_direct {}\npgsteal_direct {}\npgscan_kswapd {}\npgsteal_kswapd {}\n",
-        snapshot.direct_reclaim_attempts,
-        snapshot.direct_reclaim_scanned_pages,
-        snapshot.direct_reclaim_reclaimed_pages,
-        snapshot.background_reclaim_scanned_pages,
-        snapshot.background_reclaim_reclaimed_pages,
+        "nr_free_pages {}\nnr_dirty {}\nallocstall 0\npgscan_direct 0\npgsteal_direct 0\npgscan_kswapd 0\npgsteal_kswapd 0\n",
+        snapshot.free_pages, snapshot.dirty_pages,
     ))
 }
 

@@ -4,14 +4,15 @@
 //! 等由 init 经 `mount(2)` 挂载。
 
 use alloc::{sync::Arc, vec::Vec};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
 use super::vfs::{MountDeviceClaim, MountedFilesystem};
 use super::{
     AccessIdentity, FileSystem, FileSystemError, KernelThreadSupport, MountFlags, MountNamespace,
     OpenedFile, ProcSource, UnmountMode, vfs, {DeviceNumber, devnode},
 };
-use crate::execution::sync::TaskMutex;
+use crate::sync::TaskMutex;
 
 /// 挂载新文件系统实例所需、由 composition root 注入的能力。
 pub(crate) struct MountEnvironment {

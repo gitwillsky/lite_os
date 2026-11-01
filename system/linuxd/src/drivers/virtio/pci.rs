@@ -1,7 +1,8 @@
 //! VirtIO 1.4 modern PCI transport register codec.
 
 use super::transport::VirtQueueAddresses;
-use crate::{arch::mmio::BusError, arch::mmio::MmioBus};
+use mmio::BusError;
+use mmio::MmioBus;
 
 const DEVICE_FEATURE_SELECT: usize = 0x00;
 const DEVICE_FEATURE: usize = 0x04;
@@ -43,10 +44,6 @@ impl PciTransport {
     /// # Returns
     ///
     /// A transport whose accesses stay inside capability windows.
-    #[allow(
-        dead_code,
-        reason = "PCI capability assembly is owned by platform backends that discover PCI"
-    )]
     pub(crate) fn new(
         common: MmioBus,
         notify: MmioBus,
@@ -133,7 +130,7 @@ impl PciTransport {
             .checked_mul(self.notify_multiplier)
             .and_then(|value| usize::try_from(value).ok())
             .ok_or(BusError::InvalidAddress)?;
-        crate::arch::before_mmio_write();
+        mmio::before_write();
         self.notify.write_u16(offset, index)
     }
 

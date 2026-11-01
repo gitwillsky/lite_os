@@ -1,18 +1,13 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::AtomicU8;
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use super::{
     IndexedWaitKind, PollWaitKey, PreparedIndex, PreparedWait, WaitIndexKey, WaitRegistration,
     WaitTicket, pipe_direction, registration::PREPARED,
 };
-use crate::{
-    execution::task::TaskControlBlock,
-    fallible_tree::FallibleMap,
-    fs::AdvisoryLockKey,
-    ipc::{Pipe, PipeWaitCondition},
-    memory::FutexKey,
-};
+use crate::{task::TaskControlBlock, fs::AdvisoryLockKey, ipc::{Pipe, PipeWaitCondition}, memory::FutexKey};
+use fallible_tree::FallibleMap;
 
 impl WaitTicket {
     fn prepare(
@@ -63,7 +58,7 @@ impl WaitTicket {
         Ok(keys)
     }
 
-    pub(in crate::execution::task::process_table) fn prepare_deadline(
+    pub(in crate::task::process_table) fn prepare_deadline(
         self,
         deadline: u64,
         task: Arc<TaskControlBlock>,
@@ -77,9 +72,9 @@ impl WaitTicket {
         )
     }
 
-    pub(in crate::execution::task::process_table) fn prepare_task_event(
+    pub(in crate::task::process_table) fn prepare_task_event(
         self,
-        key: crate::execution::sync::TaskWaitKey,
+        key: crate::sync::TaskWaitKey,
         task: Arc<TaskControlBlock>,
     ) -> Result<PreparedWait, ()> {
         let (owner, ticket) = key.event_identity();
@@ -94,7 +89,7 @@ impl WaitTicket {
         )
     }
 
-    pub(in crate::execution::task::process_table) fn prepare_futex(
+    pub(in crate::task::process_table) fn prepare_futex(
         self,
         key: FutexKey,
         bitset: u32,
@@ -112,7 +107,7 @@ impl WaitTicket {
         )
     }
 
-    pub(in crate::execution::task::process_table) fn prepare_console(
+    pub(in crate::task::process_table) fn prepare_console(
         self,
         deadline: Option<u64>,
         task: Arc<TaskControlBlock>,
@@ -125,7 +120,7 @@ impl WaitTicket {
         self.prepare(task, IndexedWaitKind::Console, deadline, None, keys)
     }
 
-    pub(in crate::execution::task::process_table) fn prepare_signal(
+    pub(in crate::task::process_table) fn prepare_signal(
         self,
         mask: u64,
         deadline: Option<u64>,
@@ -140,7 +135,7 @@ impl WaitTicket {
         )
     }
 
-    pub(in crate::execution::task::process_table) fn prepare_pipe(
+    pub(in crate::task::process_table) fn prepare_pipe(
         self,
         pipe: &Arc<Pipe>,
         condition: PipeWaitCondition,
@@ -167,7 +162,7 @@ impl WaitTicket {
         )
     }
 
-    pub(in crate::execution::task::process_table) fn prepare_advisory_lock(
+    pub(in crate::task::process_table) fn prepare_advisory_lock(
         self,
         key: AdvisoryLockKey,
         task: Arc<TaskControlBlock>,
@@ -177,7 +172,7 @@ impl WaitTicket {
         self.prepare(task, IndexedWaitKind::AdvisoryLock, None, None, keys)
     }
 
-    pub(in crate::execution::task::process_table) fn prepare_poll(
+    pub(in crate::task::process_table) fn prepare_poll(
         self,
         keys: Vec<PollWaitKey>,
         deadline: Option<u64>,

@@ -4,7 +4,7 @@ use alloc::sync::Arc;
 impl TaskControlBlock {
     /// Graph 已提交 group exit；无条件投递内部 SIGKILL，包括 init 的 sibling。
     /// 不走外部 init exemption，也不重新取得 graph；不可屏蔽/改 disposition 的 kill 没有冲突集。
-    pub(in crate::execution::task) fn queue_group_exit_signal(&self) {
+    pub(in crate::task) fn queue_group_exit_signal(&self) {
         self.thread().pending_signals.lock().queue(
             syscall_abi::signal::SIGKILL,
             PendingSignal::kernel(),
@@ -28,7 +28,7 @@ impl TaskControlBlock {
     /// # Errors
     ///
     /// signal 不在 `1..=64`，或需要独立 RT record 而 preparation OOM/限额耗尽时返回 `Err(())`。
-    pub(in crate::execution::task) fn queue_signal<'a>(
+    pub(in crate::task) fn queue_signal<'a>(
         &self,
         threads: impl Iterator<Item = &'a Arc<TaskControlBlock>>,
         signal: usize,
@@ -91,7 +91,7 @@ impl TaskControlBlock {
     /// # Errors
     ///
     /// signal 不在 `1..=64`，或需要独立 RT record 而 preparation OOM/限额耗尽时返回 `Err(())`。
-    pub(in crate::execution::task) fn queue_process_signal<'a>(
+    pub(in crate::task) fn queue_process_signal<'a>(
         &self,
         threads: impl Iterator<Item = &'a Arc<TaskControlBlock>>,
         signal: usize,
@@ -110,7 +110,7 @@ impl TaskControlBlock {
     }
 
     /// PIDTYPE_TGID/PGID 从原 leader 的实际 mask 生成；leader zombie 不借某个 worker 的 mask。
-    pub(in crate::execution::task) fn queue_leader_process_signal<'a>(
+    pub(in crate::task) fn queue_leader_process_signal<'a>(
         &self,
         threads: impl Iterator<Item = &'a Arc<TaskControlBlock>>,
         signal: usize,
@@ -124,7 +124,7 @@ impl TaskControlBlock {
 
     fn queue_process_signal_mask<'a>(
         &self,
-        recipient_mask: &spin::Mutex<u64>,
+        recipient_mask: &crate::sync::Mutex<u64>,
         threads: impl Iterator<Item = &'a Arc<TaskControlBlock>>,
         signal: usize,
         traced: bool,
@@ -186,7 +186,7 @@ fn signal_conflicting_mask(signal: usize) -> u64 {
 
 impl TaskControlBlock {
     /// 原 leader 的 canonical recipient UID/UserNS 决定 RLIMIT_SIGPENDING 收费，不能换成 worker。
-    pub(in crate::execution::task) fn prepare_leader_signal_record(
+    pub(in crate::task) fn prepare_leader_signal_record(
         &self,
         signal: usize,
         info: PendingSignal,
@@ -205,7 +205,7 @@ impl TaskControlBlock {
                 .soft,
         )
     }
-    pub(in crate::execution::task) fn prepare_signal_record(
+    pub(in crate::task) fn prepare_signal_record(
         &self,
         signal: usize,
         info: PendingSignal,
@@ -225,7 +225,7 @@ impl TaskControlBlock {
         )
     }
     /// graph 已冻结 exec group；所有 SI_TIMER 节点仅摘除，不在 guard 内释放原配额。
-    pub(in crate::execution::task) fn discard_timer_signals<'a>(
+    pub(in crate::task) fn discard_timer_signals<'a>(
         &self,
         threads: impl Iterator<Item = &'a Arc<TaskControlBlock>>,
     ) -> RetiredSignals {
@@ -243,7 +243,7 @@ impl TaskControlBlock {
         retired
     }
     /// graph removal 已完成后消费 thread-private pending；TCB/proc observer 不延长收费。
-    pub(in crate::execution::task) fn retire_thread_signals(&self) {
+    pub(in crate::task) fn retire_thread_signals(&self) {
         let retired = self.thread().pending_signals.lock().discard(u64::MAX);
         drop(retired);
     }

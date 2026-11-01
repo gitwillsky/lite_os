@@ -11,7 +11,7 @@ pub(super) struct DmaBuf {
     pub(super) device: Arc<DrmDevice>,
     buffer: Option<Arc<VirglBuffer>>,
     // OWNER: 只弱引用真实共享 OFD，重复 HANDLE_TO_FD 是 dup；强引用会形成 OFD -> DmaBuf -> OFD 环。
-    description: spin::Mutex<Option<alloc::sync::Weak<dyn core::any::Any + Send + Sync>>>,
+    description: crate::sync::Mutex<Option<alloc::sync::Weak<dyn core::any::Any + Send + Sync>>>,
 }
 impl DrmFile {
     pub(super) fn export_prime(&self, handle: u32) -> Result<Arc<DmaBuf>, DrmError> {
@@ -46,7 +46,7 @@ impl DmaBuf {
         let candidate = Arc::try_new(Self {
             device: device.clone(),
             buffer: Some(buffer.clone()),
-            description: spin::Mutex::new(None),
+            description: crate::sync::Mutex::new(None),
         })
         .map_err(|_| DrmError::OutOfMemory)?;
         let mut lifecycle = buffer.lifecycle.lock();
@@ -67,7 +67,7 @@ impl DmaBuf {
 impl DeviceFile for DmaBuf {
     fn shared_description(
         &self,
-    ) -> Option<&spin::Mutex<Option<alloc::sync::Weak<dyn core::any::Any + Send + Sync>>>> {
+    ) -> Option<&crate::sync::Mutex<Option<alloc::sync::Weak<dyn core::any::Any + Send + Sync>>>> {
         Some(&self.description)
     }
     fn supports_read(&self) -> bool {
@@ -124,10 +124,7 @@ impl DeviceFile for DmaBuf {
         if request.writable && !request.fd_writable {
             return Err(DeviceError::Errno(errno::EACCES));
         }
-        Ok(DeviceMappingSource::new(
-            (1u64 << 63) | u64::from(self.buffer().resource_id),
-            self.buffer().backing.clone(),
-        ))
+        Ok(DeviceMappingSource::new(self.buffer().backing.clone()))
     }
     fn ioctl(&self, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {
         // DMA_BUF_IOCTL_SYNC, Linux _IOW('b', 0, __u64)。一致 DMA 平台不增加 cache shadow。
@@ -145,8 +142,8 @@ impl DeviceFile for DmaBuf {
         if flags & 4 == 0 {
             let _reservation = self.buffer().reservation.lock_killable().map_err(|error| {
                 DeviceError::Errno(match error {
-                    crate::execution::sync::TaskMutexLockError::OutOfMemory => errno::ENOMEM,
-                    crate::execution::sync::TaskMutexLockError::Interrupted => errno::EINTR,
+                    crate::sync::TaskMutexLockError::OutOfMemory => errno::ENOMEM,
+                    crate::sync::TaskMutexLockError::Interrupted => errno::EINTR,
                 })
             })?;
             let fence = self.buffer().lifecycle.lock().fence;

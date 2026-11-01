@@ -7,7 +7,7 @@
 use alloc::sync::Arc;
 use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicUsize, Ordering};
-use spin::Once;
+use native_runtime::sync::Once;
 
 use super::{
     EntropySource, GraphicsDevice, InputDevice, PcmOutput, PortDevice, UsbDevice,
@@ -118,7 +118,7 @@ pub(crate) fn input_device_count() -> usize {
 /// 注册表扩容失败时原样返回 adapter。
 pub(crate) fn register_pcm_output(device: Arc<dyn PcmOutput>) -> Result<usize, Arc<dyn PcmOutput>> {
     let index = PCM_OUTPUTS.register(device)?;
-    crate::execution::deferred::raise(crate::execution::deferred::DeferredWork::DRIVER_IO);
+    crate::deferred::raise(crate::deferred::DeferredWork::DRIVER_IO);
     Ok(index)
 }
 

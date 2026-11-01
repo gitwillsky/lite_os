@@ -1,22 +1,20 @@
 //! 标准 fusectl：连接目录是挂载的弱索引，参数与请求状态仍由 Connection 拥有。
 use crate::fs::chardev::DeviceFile;
 use alloc::sync::{Arc, Weak};
-use spin::Mutex;
+use crate::sync::Mutex;
 use syscall_abi::{capability::Capability, errno};
 
 use super::{
     connection::{Connection, Limit, unprivileged_limit},
     filesystem::Mount,
 };
-use crate::{
-    fallible_tree::FallibleMap,
-    fs::{
+use crate::{fs::{
         self, AccessIdentity, CreateMetadata, DataBacking, DirectoryEntry, DirectoryRead,
         DirectoryVisitor, FileSystem, FileSystemError, FileSystemStatistics, IndexedDirectory,
         Inode, InodeMetadata, InodeOpen, InodeOpenError, InodeType, SuperblockFacts, chardev,
         mount_options,
-    },
-};
+    }};
+use fallible_tree::FallibleMap;
 
 struct Registry {
     mounts: FallibleMap<usize, Weak<Mount>>,

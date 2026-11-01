@@ -112,7 +112,7 @@ impl Connection {
 
     fn write_forgets(
         &self,
-        mut queue: spin::MutexGuard<'_, Queue>,
+        mut queue: crate::sync::MutexGuard<'_, Queue>,
         output: &mut dyn UserOutput,
     ) -> Result<(), DeviceError> {
         let unique = self.next_unique.fetch_add(2, Ordering::Relaxed) + 2;

@@ -6,7 +6,7 @@ use notification::{ListenerFile, NotificationQueue};
 
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
-use spin::Mutex;
+use crate::sync::Mutex;
 use syscall_abi::{seccomp::*, signal::SIGKILL};
 
 use super::TaskControlBlock;

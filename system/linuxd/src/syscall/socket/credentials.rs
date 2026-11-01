@@ -1,7 +1,7 @@
 //! Linux ucred 输入验证；PID 只经实际 namespace association 取得 observer，不选择 live TCB。
 use super::errno;
 use crate::{
-    execution::task::{MessageIdentityError, TaskControlBlock},
+    task::{MessageIdentityError, TaskControlBlock},
     net::UnixCredentials,
 };
 

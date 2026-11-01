@@ -329,9 +329,6 @@ impl Ext4Inode {
             return Err(FileSystemError::NotDirectory);
         }
         let child = self.find_child(old_name)?;
-        if child.is_swap_file() {
-            return Err(FileSystemError::PermissionDenied);
-        }
         if self.inode_num == new_parent.inode_num && old_name == new_name {
             return Ok(());
         }
@@ -363,9 +360,6 @@ impl Ext4Inode {
             Err(error) => return Err(error),
         };
         let existing_metadata = if let Some(existing) = existing.as_ref() {
-            if existing.is_swap_file() {
-                return Err(FileSystemError::PermissionDenied);
-            }
             if no_replace {
                 return Err(FileSystemError::AlreadyExists);
             }

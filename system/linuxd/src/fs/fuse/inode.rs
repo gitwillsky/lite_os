@@ -5,7 +5,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use spin::Mutex;
+use crate::sync::Mutex;
 use syscall_abi::{
     errno, fuse,
     open::{O_CREAT, O_EXCL, O_NOCTTY, O_TRUNC},
@@ -16,17 +16,13 @@ use super::{
     filesystem::{Mount, SetAttributes, Unsupported},
     protocol::{self, Attributes, Entry, Fields},
 };
-use crate::{
-    execution::sync::{TaskMutex, TaskMutexGuard},
-    fallible_tree::FallibleMap,
-    fs::{
+use crate::{sync::{TaskMutex, TaskMutexGuard}, fs::{
         AccessIdentity, CreateMetadata, DeviceNumber, DirectoryRead, DirectoryVisitor,
         FileSystemError, FineTimes, Inode, InodeMetadata, InodeOpen, InodeOpenError, InodeType,
         InodeWriteAccess, MAY_ACCESS, MAY_CHDIR, OwnerModeChange, inode::open_by_type,
         permission::OwnerModeState,
-    },
-    memory::SharedFileId,
-};
+    }, memory::SharedFileId};
+use fallible_tree::FallibleMap;
 
 mod directory;
 mod handle;
@@ -39,7 +35,7 @@ use handle::HandleRef;
 const LINK_BUFFER: usize = 4096;
 
 fn now() -> u64 {
-    crate::execution::timer::get_time_ns()
+    crate::time::get_time_ns()
 }
 
 struct CachedAttributes {
@@ -648,7 +644,7 @@ impl Inode for FuseInode {
 
     /// 内核是大小与 mtime/ctime 的权威（Linux `i_size_write` + `file_update_time`）。
     fn extend_buffered_size(&self, size: u64) {
-        let now = crate::execution::timer::get_realtime_ns();
+        let now = crate::time::get_realtime_ns();
         let (seconds, nanoseconds) = (now / 1_000_000_000, (now % 1_000_000_000) as u32);
         let mut cached = self.attributes.lock();
         let attributes = &mut cached.attributes;

@@ -6,7 +6,7 @@ use crate::{
     namespace::{PidIdentity, UserNamespace},
 };
 use alloc::sync::Arc;
-use spin::Mutex;
+use crate::sync::Mutex;
 use syscall_abi::{
     capability::Capability,
     ipc::{SHM_DEST, SHM_LOCKED},

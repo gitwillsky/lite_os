@@ -11,10 +11,10 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll},
 };
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use crate::{
-    execution::task::TaskControlBlock, file::OpenFileDescription, fs::CompletionNotify,
+    task::TaskControlBlock, file::OpenFileDescription, fs::CompletionNotify,
     io_uring::Ring, net::SocketCapacityWait,
 };
 
@@ -390,7 +390,7 @@ impl CompletionNotify for WaiterInner {
 }
 
 fn link_due(deadline: u64) -> bool {
-    deadline <= crate::execution::timer::get_time_ns()
+    deadline <= crate::time::get_time_ns()
 }
 
 pub(super) fn event_count_reached(ring: &Ring, target: u32) -> bool {
@@ -399,5 +399,5 @@ pub(super) fn event_count_reached(ring: &Ring, target: u32) -> bool {
 
 fn timeout_due(ring: &Ring, deadline: u64, target_events: Option<u32>) -> bool {
     target_events.is_some_and(|target| event_count_reached(ring, target))
-        || deadline <= crate::execution::timer::get_time_ns()
+        || deadline <= crate::time::get_time_ns()
 }

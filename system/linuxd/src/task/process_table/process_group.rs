@@ -505,7 +505,7 @@ pub(super) fn process_group_is_orphaned(
 /// # Returns
 ///
 /// group 存在且没有同 session、group 外 live parent connection 时返回 true。
-pub(in crate::execution::task) fn current_process_group_is_orphaned(tgid: usize) -> bool {
+pub(in crate::task) fn current_process_group_is_orphaned(tgid: usize) -> bool {
     let graph = PROCESS_TABLE.graph.lock();
     let Some(node) = graph.nodes.get(&tgid) else {
         return true;

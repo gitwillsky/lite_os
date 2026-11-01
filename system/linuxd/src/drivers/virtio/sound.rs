@@ -1,7 +1,8 @@
 //! VirtIO Sound device ID 25 的单 playback-stream adapter。
 
 use alloc::{sync::Arc, vec::Vec};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
 use super::{
     VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1, VirtIODevice,
@@ -14,8 +15,8 @@ use crate::devices::model::{
     io_completion::CompletionSource,
 };
 use crate::{
-    execution::interrupt::InterruptError, execution::interrupt::InterruptHandler,
-    execution::interrupt::InterruptVector,
+    interrupt::InterruptError, interrupt::InterruptHandler,
+    interrupt::InterruptVector,
 };
 
 mod wire;
@@ -141,19 +142,19 @@ impl VirtIOSoundDevice {
         events.try_reserve_exact(EVENT_SLOTS).ok()?;
         for _ in 0..EVENT_SLOTS {
             events.push(EventSlot {
-                buffer: DmaBuffer::try_zeroed().ok()?,
+                buffer: DmaBuffer::try_zeroed(device.bti()).ok()?,
                 head: 0,
             });
         }
         let mut tx_slots = Vec::new();
         tx_slots.try_reserve_exact(PCM_PERIODS).ok()?;
         for _ in 0..PCM_PERIODS {
-            let mut xfer = DmaBuffer::try_zeroed().ok()?;
+            let mut xfer = DmaBuffer::try_zeroed(device.bti()).ok()?;
             write_u32(xfer.as_mut_slice(), 0, 0)?;
             tx_slots.push(TxSlot {
                 xfer,
-                frames: DmaBuffer::try_zeroed().ok()?,
-                status: DmaBuffer::try_zeroed().ok()?,
+                frames: DmaBuffer::try_zeroed(device.bti()).ok()?,
+                status: DmaBuffer::try_zeroed(device.bti()).ok()?,
                 head: None,
             });
         }
@@ -162,8 +163,8 @@ impl VirtIOSoundDevice {
             event,
             tx,
             _rx: rx,
-            control_request: DmaBuffer::try_zeroed().ok()?,
-            control_response: DmaBuffer::try_zeroed().ok()?,
+            control_request: DmaBuffer::try_zeroed(device.bti()).ok()?,
+            control_response: DmaBuffer::try_zeroed(device.bti()).ok()?,
             events,
             tx_slots,
             state: DeviceState::Setup,
@@ -195,7 +196,7 @@ impl VirtIOSoundDevice {
             return None;
         }
         let size = maximum.min(QUEUE_SIZE);
-        let queue = VirtQueue::new(size)?;
+        let queue = VirtQueue::new(size, device.bti())?;
         device
             .configure_queue(index, size, queue.addresses())
             .ok()?;
@@ -300,8 +301,8 @@ impl VirtIOSoundDevice {
         if status != 0 {
             self.device.interrupt_ack(status).ok()?;
             if polled_control_ack_requires_deferred(status) {
-                crate::execution::deferred::raise(
-                    crate::execution::deferred::DeferredWork::DRIVER_IO,
+                crate::deferred::raise(
+                    crate::deferred::DeferredWork::DRIVER_IO,
                 );
             }
         }

@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use spin::Once;
+use native_runtime::sync::Once;
 use syscall_abi::{errno, fuse};
 
 use super::connection::Connection;

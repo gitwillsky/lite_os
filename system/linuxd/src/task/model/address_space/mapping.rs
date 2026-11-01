@@ -49,9 +49,7 @@ impl TaskControlBlock {
     ) -> Result<PageFaultOutcome, MemoryError> {
         // 缺页期间 calling Thread 完成了存储读取（文件页读入）即为 major fault，否则是 minor。
         let storage_before = self.thread().io_accounting.storage_read_bytes();
-        let outcome =
-            self.address_space()
-                .handle_page_fault(address, access, self.user_fault_limits())?;
+        let outcome = self.address_space().handle_page_fault(address, access)?;
         if matches!(outcome, PageFaultOutcome::Handled) {
             let major = self.thread().io_accounting.storage_read_bytes() != storage_before;
             self.charge_page_fault(major);
@@ -94,33 +92,17 @@ impl AddressSpace {
         request: crate::memory::RemapRequest,
         limits: MappingResourceLimits,
     ) -> Result<usize, crate::memory::RemapError> {
-        let prepared = {
-            let mut memory = self
-                .memory_set
-                .lock()
-                .map_err(|_| crate::memory::RemapError::Memory(MemoryError::OutOfMemory))?;
-            memory.prepare_user_remap(request, limits)
-        };
-        prepared.synchronize()
+        self.memory_set
+            .lock()
+            .map_err(|_| crate::memory::RemapError::Memory(MemoryError::OutOfMemory))?
+            .remap_user_mapping(request, limits)
     }
 
-    fn set_program_break(
-        &self,
-        new_break: usize,
-        address_space_limit: u64,
-        data_limit: u64,
-    ) -> Result<usize, MemoryError> {
-        let (current, retirement) = {
-            let mut memory = self
-                .memory_set
-                .lock()
-                .map_err(|_| MemoryError::OutOfMemory)?;
-            memory.set_program_break(new_break, address_space_limit, data_limit)?
-        };
-        if let Some(retirement) = retirement {
-            retirement.synchronize();
-        }
-        Ok(current)
+    fn set_program_break(&self, new_break: usize, address_space_limit: u64, data_limit: u64) -> Result<usize, MemoryError> {
+        self.memory_set
+            .lock()
+            .map_err(|_| MemoryError::OutOfMemory)?
+            .set_program_break(new_break, address_space_limit, data_limit)
     }
 
     fn install_user_mapping(
@@ -128,16 +110,13 @@ impl AddressSpace {
         request: crate::memory::UserMappingRequest,
         limits: MappingResourceLimits,
     ) -> Result<usize, MemoryError> {
-        // pin 实际 OFD/device/shm preparation，所有错误的最后析构均晚于 MM guard。
+        // 映射来源（打开文件、设备对象）在 mm 锁释放后才析构：其 Drop 可能重新进入文件系统。
         let retained = request.source.clone();
-        let prepared = {
-            let mut memory = self
-                .memory_set
-                .lock()
-                .map_err(|_| MemoryError::OutOfMemory)?;
-            memory.prepare_user_mapping(request, limits)
-        };
-        let result = prepared.and_then(|prepared| prepared.synchronize());
+        let result = self
+            .memory_set
+            .lock()
+            .map_err(|_| MemoryError::OutOfMemory)?
+            .install_user_mapping(request, limits);
         drop(retained);
         result
     }

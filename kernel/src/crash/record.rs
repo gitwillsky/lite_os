@@ -133,7 +133,7 @@ impl Recorder {
 
     /// 让当前已写入的文本成为一份完整记录。
     ///
-    /// 每个 section 写完后调用一次：后续步骤（IPI 等待、绘制蓝屏）若自身再 fault，
+    /// 每个 section 写完后调用一次：后续步骤（IPI 等待）若自身再 fault，
     /// 已经提交的部分仍能在下一次启动读回。
     pub(super) fn commit(&mut self) {
         let sum = checksum(&self.payload[..self.length]);

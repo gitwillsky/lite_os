@@ -108,6 +108,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
 
 [[package]]
+name = "fallible-tree"
+version = "0.1.0"
+
+[[package]]
 name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -132,6 +136,8 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.9.1",
  "dtb-walker",
+ "fallible-tree",
+ "mmio",
  "native-abi",
  "riscv",
  "spin",
@@ -150,14 +156,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "launch-protocol"
+version = "0.1.0"
+dependencies = [
+ "native-abi",
+]
+
+[[package]]
+name = "linuxd"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.9.1",
+ "boot-scene",
+ "dtb-walker",
+ "fallible-tree",
+ "launch-protocol",
+ "mmio",
+ "native-runtime",
+ "smoltcp",
+ "syscall-abi",
+]
+
+[[package]]
 name = "managed"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ca88d725a0a943b096803bd34e73a4437208b6077654cc4ecb2947a5f91618d"
 
 [[package]]
+name = "mmio"
+version = "0.1.0"
+
+[[package]]
 name = "native-abi"
 version = "0.1.0"
+
+[[package]]
+name = "native-runtime"
+version = "0.1.0"
+dependencies = [
+ "native-abi",
+]
 
 [[package]]
 name = "paste"
@@ -212,6 +251,14 @@ name = "riscv-pac"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8188909339ccc0c68cfb5a04648313f09621e8b87dc03095454f1a11f6c5d436"
+
+[[package]]
+name = "root-server"
+version = "0.1.0"
+dependencies = [
+ "launch-protocol",
+ "native-runtime",
+]
 
 [[package]]
 name = "scheduler-unit"

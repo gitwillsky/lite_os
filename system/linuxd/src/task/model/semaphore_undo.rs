@@ -33,16 +33,16 @@ impl TaskControlBlock {
         if let Some(mut retired) = retired {
             retired.retire(
                 self.tgid_identity(),
-                crate::execution::timer::get_realtime_ns() / 1_000_000_000,
+                crate::time::get_realtime_ns() / 1_000_000_000,
             );
         }
     }
-    pub(in crate::execution::task) fn retire_semaphore_undo(&self) {
+    pub(in crate::task) fn retire_semaphore_undo(&self) {
         let retired = self.thread().sem_undo.lock().take();
         if let Some(mut retired) = retired {
             retired.retire(
                 self.tgid_identity(),
-                crate::execution::timer::get_realtime_ns() / 1_000_000_000,
+                crate::time::get_realtime_ns() / 1_000_000_000,
             );
         }
     }

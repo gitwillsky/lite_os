@@ -57,7 +57,7 @@ impl NetworkInterface {
         let mac = nic.mac_address();
         let mut device = ProtocolDevice::Ethernet(EthernetDevice::new(nic, net_id, index));
         let mut config = Config::new(HardwareAddress::Ethernet(EthernetAddress(mac)));
-        config.random_seed = crate::execution::timer::get_time_us()
+        config.random_seed = crate::time::get_time_us()
             ^ u64::from_be_bytes([0, 0, mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]]);
         let mut interface = Interface::new(config, &mut device, now());
         interface.set_interface_index(index);

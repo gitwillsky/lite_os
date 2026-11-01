@@ -31,7 +31,7 @@ use super::vmo::{CachePolicy, ResolvedPage, Vmo};
 use super::{FaultAccess, USER_END, USER_START, VmError, map_trampoline};
 use crate::arch::mmu::{AddressSpaceKind, AddressSpaceToken};
 use crate::execution::sync::{TaskMutex, TaskMutexGuard};
-use crate::fallible_tree::FallibleMap;
+use fallible_tree::FallibleMap;
 use crate::memory::{FrameTracker, PAGE_SIZE, VirtualAddress, VirtualPageNumber, frame_allocator};
 
 /// 共享区起点：用户区间的上半部分，按 1 GiB 对齐，使两区不共享任何中间页表页。
@@ -280,9 +280,15 @@ impl AddressSpace {
         Ok((space, root))
     }
 
-    /// 全局唯一编号（futex 私有 key）。
-    pub(crate) fn koid(&self) -> u64 {
-        self.koid
+    /// `address` 所在地址空间的全局编号（futex 私有 key）。
+    ///
+    /// 成员空间的共享区地址属于共享空间：同一共享区内的 futex 对全部成员是同一个 key，
+    /// 否则在不同成员进程中运行的同一服务线程会在同一把锁上互相看不见。
+    pub(crate) fn futex_owner(&self, address: usize) -> u64 {
+        match &self.shared {
+            Some(shared) if shared.range.contains(&address) => shared.koid,
+            _ => self.koid,
+        }
     }
 
     /// 解析地址所在映射的 VMO 与字节偏移（futex 共享 key）。

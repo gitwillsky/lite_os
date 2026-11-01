@@ -4,7 +4,7 @@ use super::{
     AccessIdentity, FileSystemError, Inode, InodeType, LookupOrigin, OpenedFile, VirtualFileSystem,
     path_lookup::{CreatedEntry, PathLookup},
 };
-use crate::execution::sync::TaskMutexWaitPreparation;
+use crate::sync::TaskMutexWaitPreparation;
 use crate::fs::CreateMetadata;
 use crate::fs::DeviceNumber;
 

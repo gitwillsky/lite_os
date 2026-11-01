@@ -28,7 +28,7 @@ impl VirtIOCompletionIrq {
             self.0.store(true, Ordering::Release);
         }
         // Spurious/config vectors and failed reads still get one bounded safe-point pass.
-        crate::execution::deferred::raise(crate::execution::deferred::DeferredWork::DRIVER_IO);
+        crate::deferred::raise(crate::deferred::DeferredWork::DRIVER_IO);
     }
 
     /// safe point 原子消费 hardirq 观察到的 transport error。

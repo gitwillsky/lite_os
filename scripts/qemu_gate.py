@@ -68,6 +68,7 @@ class QemuRuntime:
     machine: str
     kernel_elf: str
     kernel_boot_artifact: str
+    bootfs: str
     bootloader: str | None
 
 
@@ -95,6 +96,7 @@ def qemu_runtime(
         machine=target.qemu_machine(acceleration),
         kernel_elf=target.kernel_elf(),
         kernel_boot_artifact=target.kernel_boot_artifact(),
+        bootfs=target.bootfs(),
         bootloader=bootloader,
     )
 
@@ -153,6 +155,8 @@ def _qemu_command(
         [
             "-kernel",
             runtime.kernel_boot_artifact,
+            "-initrd",
+            runtime.bootfs,
             *(("-append", kernel_arguments) if kernel_arguments is not None else ()),
             *block_devices,
             "-object",

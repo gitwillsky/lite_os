@@ -7,7 +7,7 @@ impl PublishedWait {
             .expect("published wait already consumed")
     }
 
-    pub(in crate::execution::task::process_table) fn cancel(mut self) -> CancelOutcome {
+    pub(in crate::task::process_table) fn cancel(mut self) -> CancelOutcome {
         loop {
             match self.registration().state() {
                 ARMING => {
@@ -33,7 +33,7 @@ impl PublishedWait {
         }
     }
 
-    pub(in crate::execution::task::process_table) fn prepare_arm(
+    pub(in crate::task::process_table) fn prepare_arm(
         mut self,
     ) -> Result<WaitArmGuard<'static>, WaitResult> {
         loop {

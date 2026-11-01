@@ -16,14 +16,13 @@ use super::{
     worker,
 };
 use crate::{
-    execution::task::TaskControlBlock,
+    task::TaskControlBlock,
     file::{OpenFileDescription, OpenFileKind},
     fs::{O_NONBLOCK, chardev::UringCommand},
     io_uring::Ring,
     net::{SocketCapacityWait, SocketError},
     syscall::{
         fs::{
-            AsyncPositionedRead, AsyncReadStep, begin_current_position_read, begin_positioned_read,
             check_readable, check_writable, open_at, perform_read, perform_write, positioned_read,
             positioned_write, statx_at, statx_request_valid, sync_ofd,
         },
@@ -197,12 +196,6 @@ pub(super) enum Wait {
         length: usize,
         capacity: Arc<SocketCapacityWait>,
     },
-    /// regular-file 读（显式偏移或当前位置）：cache 未命中时开始异步填页并让出，不占用任何线程。
-    FileRead {
-        read: AsyncPositionedRead,
-        vectors: Vec<UserIoVec>,
-        total: usize,
-    },
     /// 会睡眠在磁盘上的作业（regular 文件写、fsync、当前位置读、无法不阻塞的读），交给阻塞车道。
     Lane {
         work: lane::Work,
@@ -234,7 +227,6 @@ impl Wait {
             | Wait::Connect { ofd }
             | Wait::ConnectBacklog { ofd, .. }
             | Wait::Poll { ofd, .. } => Some(ofd.clone()),
-            Wait::FileRead { read, .. } => Some(read.ofd().clone()),
             Wait::Lane { file, .. } => file.clone(),
             Wait::Timeout { .. } => None,
         }
@@ -247,7 +239,6 @@ impl Wait {
             | Wait::Accept { .. }
             | Wait::Connect { .. }
             | Wait::ConnectBacklog { .. }
-            | Wait::FileRead { .. }
             | Wait::Lane { .. } => Kind::Io,
             Wait::Poll { .. } => Kind::Poll,
             Wait::Timeout { .. } => Kind::Timeout,
@@ -412,7 +403,7 @@ impl Op {
                 deadline: if absolute {
                     nanoseconds
                 } else {
-                    crate::execution::timer::get_time_ns().saturating_add(nanoseconds)
+                    crate::time::get_time_ns().saturating_add(nanoseconds)
                 },
                 // 目标序号在 issue 时取（Linux `io_timeout`），而不是 prep 时。
                 target_events: (count != 0).then(|| ring.events_posted().wrapping_add(count)),
@@ -472,19 +463,6 @@ fn issue_read_write(
     if offset >= 0 && positionable(&ofd) {
         // 显式偏移：pread/pwrite 语义，不触碰共享 OFD position。
         if disk_backed(&ofd) {
-            if !write {
-                match begin_positioned_read(&ofd, &vectors, offset) {
-                    Ok(Some(read)) => {
-                        return Issue::Wait(Wait::FileRead {
-                            read,
-                            vectors,
-                            total,
-                        });
-                    }
-                    Ok(None) => {}
-                    Err(error) => return Issue::Done(Outcome::of(error)),
-                }
-            }
             return lane_issue(
                 Some(ofd.clone()),
                 move |task| {
@@ -523,19 +501,6 @@ fn issue_read_write(
         });
     }
     if disk_backed(&ofd) {
-        if !write {
-            match begin_current_position_read(&ofd, &vectors) {
-                Ok(Some(read)) => {
-                    return Issue::Wait(Wait::FileRead {
-                        read,
-                        vectors,
-                        total,
-                    });
-                }
-                Ok(None) => {}
-                Err(error) => return Issue::Done(Outcome::of(error)),
-            }
-        }
         return lane_issue(
             Some(ofd.clone()),
             move |task| {
@@ -719,50 +684,6 @@ pub(super) async fn drive(
                 waiter.ofd_ready(&ofd, mask, &task).await;
             }
         }
-        Wait::FileRead {
-            mut read,
-            vectors,
-            total,
-        } => {
-            let notify = waiter.notifier();
-            loop {
-                if waiter.take_canceled() {
-                    return Outcome::canceled();
-                }
-                let Some(strong) = task.upgrade() else {
-                    return Outcome::canceled();
-                };
-                waiter.clear_notified();
-                let step = read.step(&strong, &vectors, &notify);
-                drop(strong);
-                match step {
-                    AsyncReadStep::Done(result) => {
-                        if read.publish_position(result) {
-                            return Outcome::transfer(result, total);
-                        }
-                        // position 正被同步读写占用：reactor 不能等它，交给车道发布。
-                        let work: lane::Work = match Box::try_new(move |_: &TaskControlBlock| {
-                            read.publish_position_blocking(result);
-                            result
-                        }) {
-                            Ok(work) => work,
-                            Err(_) => return Outcome::of(-errno::ENOMEM),
-                        };
-                        return run_lane(work, Some(total), &task, &waiter).await;
-                    }
-                    AsyncReadStep::Wait => waiter.block().await,
-                    AsyncReadStep::Fallback => {
-                        let work: lane::Work = match Box::try_new(move |task: &TaskControlBlock| {
-                            read.finish_blocking(task, &vectors)
-                        }) {
-                            Ok(work) => work,
-                            Err(_) => return Outcome::of(-errno::ENOMEM),
-                        };
-                        return run_lane(work, Some(total), &task, &waiter).await;
-                    }
-                }
-            }
-        }
         Wait::Lane { work, total, .. } => run_lane(work, total, &task, &waiter).await,
         Wait::Accept {
             ofd,
@@ -846,7 +767,7 @@ pub(super) async fn drive(
             if target_events.is_some_and(|target| event_count_reached(&ring, target)) {
                 return Outcome::of(0);
             }
-            if deadline <= crate::execution::timer::get_time_ns() {
+            if deadline <= crate::time::get_time_ns() {
                 // ETIME_SUCCESS 只让链不断开，CQE 的 res 仍是 -ETIME（Linux `io_timeout_fn`）。
                 return Outcome {
                     res: -(errno::ETIME as i32),

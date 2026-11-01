@@ -11,7 +11,7 @@
 
 use alloc::{sync::Arc, sync::Weak, vec::Vec};
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use spin::Mutex;
+use crate::sync::Mutex;
 use syscall_abi::errno;
 
 use super::{
@@ -19,10 +19,8 @@ use super::{
     chardev::{self, DeviceError, DeviceFile, DeviceWaitSources, IoctlCall, UserFault, UserOutput},
 };
 use crate::namespace::{UserNamespace, UserResource, UserResourceCharge};
-use crate::{
-    fallible_tree::FallibleMap,
-    ipc::{Pipe, PipeEnd},
-};
+use crate::{ipc::{Pipe, PipeEnd}};
+use fallible_tree::FallibleMap;
 use queue::{Event, EventQueue};
 mod instance;
 use instance::WatchMembership;

@@ -46,7 +46,7 @@ fn wake_advisory_lock_waiters(key: AdvisoryLockKey) -> usize {
         count += 1;
         if let Some(claimed) = wake.claimed {
             assert!(matches!(claimed.kind, IndexedWaitKind::AdvisoryLock));
-            crate::execution::task::processor::wake_flock_task(
+            crate::task::processor::wake_flock_task(
                 claimed.task,
                 claimed.id,
                 WaitResult::Woken,
@@ -187,7 +187,7 @@ fn wait_for_file_lock<Prepared>(
             Err(WaitResult::Interrupted) => return Err(AdvisoryLockWaitError::Interrupted),
             Err(WaitResult::TimedOut | WaitResult::OutOfMemory) => unreachable!(),
         };
-        let prepared = super::context_switch::prepare_current_block(&task, arm, |arm, _| {
+        let prepared = crate::task::processor::prepare_current_block(&task, arm, |arm, _| {
             WaitMembership::AdvisoryLock(arm.arm())
         });
         if wake_waiters {

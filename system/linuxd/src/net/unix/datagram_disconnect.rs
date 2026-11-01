@@ -1,9 +1,7 @@
 //! Native datagram disconnect/reconnect 退休；唯一 receive queue 与 peer 在同一 endpoint guard 提交。
 use super::{Datagram, SocketState, UnixSocket};
-use crate::{
-    fallible_tree::FallibleMap,
-    net::{SocketError, SocketSendError},
-};
+use crate::{net::{SocketError, SocketSendError}};
+use fallible_tree::FallibleMap;
 use alloc::sync::Arc;
 impl UnixSocket {
     /// AF_UNSPEC 断开实际 peer，历史 peer credentials/address 值不用于连接判断。

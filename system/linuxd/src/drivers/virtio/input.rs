@@ -1,5 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
 use super::{
     VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,
@@ -8,8 +9,8 @@ use super::{
 };
 use crate::devices::model::{InputAbsInfo, InputDevice, InputDeviceError, InputId, RawInputEvent};
 use crate::{
-    execution::interrupt::InterruptError, execution::interrupt::InterruptHandler,
-    execution::interrupt::InterruptVector,
+    interrupt::InterruptError, interrupt::InterruptHandler,
+    interrupt::InterruptVector,
 };
 
 const EVENT_QUEUE: u32 = 0;
@@ -67,7 +68,7 @@ pub(crate) struct VirtIOInputDevice {
     events: Mutex<EventQueueState>,
     // OWNER: 消费者在初始化时绑定一次的 completion deferred vector；hardirq 与 deferred
     // 续批只发布它。绑定前没有消费者，completion 留在 used ring 由绑定时的补偿发布消费。
-    completion_work: Once<crate::execution::deferred::DeferredWork>,
+    completion_work: Once<crate::deferred::DeferredWork>,
 }
 
 impl VirtIOInputDevice {
@@ -108,7 +109,7 @@ impl VirtIOInputDevice {
         if size < 2 || !size.is_power_of_two() {
             return None;
         }
-        let mut queue = VirtQueue::new(size)?;
+        let mut queue = VirtQueue::new(size, device.bti())?;
         device
             .configure_queue(EVENT_QUEUE, size, queue.addresses())
             .ok()?;
@@ -121,7 +122,7 @@ impl VirtIOInputDevice {
         by_head.try_reserve_exact(size as usize).ok()?;
         by_head.resize(size as usize, None);
         for slot_index in 0..capacity {
-            let bytes = DmaBuffer::try_zeroed().ok()?;
+            let bytes = DmaBuffer::try_zeroed(device.bti()).ok()?;
             let output = bytes.writable_all();
             let head = queue.add_dma(&[output]).ok()?;
             queue.add_to_avail(head);
@@ -291,9 +292,9 @@ fn bit_is_set(bits: &[u8], bit: u16) -> bool {
 }
 
 impl InputDevice for VirtIOInputDevice {
-    fn bind_completion_work(&self, work: crate::execution::deferred::DeferredWork) {
+    fn bind_completion_work(&self, work: crate::deferred::DeferredWork) {
         self.completion_work.call_once(|| work);
-        crate::execution::deferred::raise(work);
+        crate::deferred::raise(work);
     }
 
     fn name(&self) -> &[u8] {
@@ -419,7 +420,7 @@ impl VirtIOInputDevice {
     /// 发布已绑定的 completion vector；未绑定时没有消费者，忽略。
     fn raise_completion(&self) {
         if let Some(work) = self.completion_work.get() {
-            crate::execution::deferred::raise(*work);
+            crate::deferred::raise(*work);
         }
     }
 }

@@ -153,7 +153,7 @@ fn drain_exit_effects() {
 fn drain_staged_child_waiters(mut waiters: FallibleMap<usize, Arc<TaskControlBlock>>) {
     while let Some((&tid, _)) = waiters.first_key_value() {
         let waiter = waiters.remove(&tid).expect("staged child waiter");
-        crate::execution::task::processor::wake_child_task(waiter, WaitResult::Woken);
+        crate::task::processor::wake_child_task(waiter, WaitResult::Woken);
     }
 }
 
@@ -175,7 +175,7 @@ impl ProcessExitStatus {
 fn child_exit_info(
     pid: usize,
     status: ProcessExitStatus,
-    usage: &crate::execution::task::ResourceUsage,
+    usage: &crate::task::ResourceUsage,
 ) -> PendingSignal {
     // si_utime/si_stime 是 USER_HZ（100）的 clock_t，包含 child 已回收的后代。
     const MICROSECONDS_PER_CLOCK_TICK: u64 = 10_000;
@@ -350,9 +350,9 @@ pub(super) fn request_group_exit(
             break;
         };
         cursor = tid;
-        crate::execution::task::processor::continue_stopped_task(thread.clone());
+        crate::task::processor::continue_stopped_task(thread.clone());
         super::signal::interrupt_waiting_task(&thread);
-        crate::execution::task::processor::request_task_reschedule(&thread);
+        crate::task::processor::request_task_reschedule(&thread);
     }
     Some(status)
 }
@@ -361,7 +361,7 @@ pub(super) fn request_group_exit(
 ///
 /// 内核线程没有用户 Process、exit status 或 parent：撤销实际 kernel execution membership 与调度 ownership、交给
 /// deferred reap 并切到 idle。主体持有的资源已随其返回释放。
-pub(in crate::execution::task) fn exit_current_kernel_thread() -> ! {
+pub(crate) fn exit_current_kernel_thread() -> ! {
     // 主体返回已完成所有 mm/IPC 退休；实际 PID membership 不得跟随 deferred TCB observer。
     let current = current_task().expect("exiting kernel thread lost current ownership");
     let source = current.kernel_pidfd_source(None).0;
@@ -382,48 +382,17 @@ pub(in crate::execution::task) fn exit_current_kernel_thread() -> ! {
     // 历史 observer 仍能 pin TCB；实际 graph/namespace admission 已退休，node/TCB Drop 不持 graph。
     drop(retired);
     drop(current);
-    // 内核线程运行时开着调度中断；撤销 current 后、切换前被抢占会让 scheduler 观察到无 owner 的
-    // Running task。退出 context 永不恢复，因此中断状态无需还原。
-    let _masked = crate::arch::interrupt::disable_local();
-    let (task_cx_ptr, idle_task_cx_ptr) = {
-        let task = take_current_task().expect("exiting kernel thread lost current ownership");
-        assert!(
-            task.is_kernel_thread(),
-            "user task took the kernel-thread exit path"
-        );
-        task.scheduling.policy.lock().finish_runtime(get_time_us());
-        {
-            let mut scheduling = task.scheduling.state.lock();
-            assert!(
-                matches!(scheduling.run_state(), RunState::Running { .. }),
-                "only current running kernel thread can exit"
-            );
-            assert!(
-                scheduling.wait.is_none(),
-                "running kernel thread cannot retain wait membership"
-            );
-            scheduling.replace_non_ready_state(RunState::Exited);
-        }
-        let idle = with_current_processor(Processor::idle_context_ptr);
-        let context = {
-            let mut kernel_cx = task.kernel_context().lock();
-            &mut *kernel_cx as *mut KernelContext
-        };
-        crate::execution::task::processor::defer_task_reap(task);
-        (context, idle)
-    };
-    // SAFETY: 调度 owner 已移交 deferred-reap slot；两个 context 由本 CPU 独占，本 frame 不再持有
-    // 指向退出 task 的 Arc。
-    unsafe { crate::arch::context::switch_kernel_context(task_cx_ptr, idle_task_cx_ptr) };
-    panic!("exited kernel thread context resumed")
+    let task = take_current_task().expect("exiting kernel thread lost current ownership");
+    assert!(task.is_kernel_thread(), "user task took the kernel-thread exit path");
+    task.scheduling.state.lock().set_run_state(RunState::Exited);
+    drop(task);
+    native_runtime::task::exit_thread()
 }
 
 fn exit_current(requested: ProcessExitStatus) -> ! {
-    let (kernel_context, idle_context) = prepare_current_exit(requested);
-    // SAFETY: prepare_current_exit 已把退出 task 的唯一调度 owner 移交 deferred-reap slot；
-    // 两个 context 都由该 CPU 独占，且本 frame 不保留任何指向退出 task 的 Arc。
-    unsafe { crate::arch::context::switch_kernel_context(kernel_context, idle_context) };
-    panic!("exited task context resumed")
+    prepare_current_exit(requested);
+    // 本承载线程不再持有任何执行体引用：结束它。
+    native_runtime::task::exit_thread()
 }
 
 /// 最后一个真实 Thread retirement 完成后的唯一 process-exit publication。
@@ -501,17 +470,14 @@ pub(super) fn complete_process_exit(pid: usize) {
 /// # Returns
 ///
 /// 依次为 task/idle raw context 地址；task 由 deferred-reap slot 保活。
-fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *mut KernelContext) {
+fn prepare_current_exit(requested: ProcessExitStatus) {
     // Memory/file cleanup can contend on task-context mutexes. Keep the exiting task installed as
     // current until every blocking consequence completes; removing it earlier leaves no scheduler
     // wait target and turns ordinary same-mm contention into a kernel panic.
     let task = current_task().expect("No current task to exit");
-    // 提交当前时间片：SIGCHLD 的 si_utime/si_stime 与 wait4 的 rusage 在 process exit 发布时读取最终
-    // runtime，缺失这一步会漏掉最后一个不足 tick 的时间片。
-    task.scheduling
-        .policy
-        .lock()
-        .checkpoint_runtime(crate::execution::timer::get_time_us());
+    // 并入本线程 CPU 时间：SIGCHLD 的 si_utime/si_stime 与 wait4 的 rusage 在 process exit 发布时
+    // 读取进程累计，摘图后本线程不再出现在存活线程中。
+    task.retire_cpu_runtime();
     let namespace = task.pid_namespace();
     if let Some(event) = super::pid_namespace::mark_reaper_exit(&task, &namespace) {
         super::pid_namespace::shutdown(&task, &namespace, &event);
@@ -807,25 +773,13 @@ fn prepare_current_exit(requested: ProcessExitStatus) -> (*mut KernelContext, *m
     let current = take_current_task().expect("exiting task lost current ownership");
     assert!(Arc::ptr_eq(&current, &task));
     drop(current);
-    task.scheduling.policy.lock().finish_runtime(get_time_us());
     {
         let mut scheduling = task.scheduling.state.lock();
         assert!(
-            matches!(scheduling.run_state(), RunState::Running { .. }),
+            matches!(scheduling.run_state(), RunState::Running),
             "only current running task can exit"
         );
-        assert!(
-            scheduling.wait.is_none(),
-            "running task cannot retain wait membership"
-        );
-        scheduling.replace_non_ready_state(RunState::Exited);
+        assert!(scheduling.wait.is_none(), "running task cannot retain wait membership");
+        scheduling.set_run_state(RunState::Exited);
     }
-    let idle_task_cx_ptr = with_current_processor(Processor::idle_context_ptr);
-    let task_cx_ptr = {
-        let mut kernel_cx = task.kernel_context().lock();
-        &mut *kernel_cx as *mut KernelContext
-    };
-
-    crate::execution::task::processor::defer_task_reap(task);
-    (task_cx_ptr, idle_task_cx_ptr)
 }

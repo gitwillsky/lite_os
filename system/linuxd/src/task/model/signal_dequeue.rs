@@ -3,7 +3,7 @@ use super::*;
 
 /// 被消费事件的原 pending owner；ptrace 改成 blocked 信号时必须归还同一队列。
 #[derive(Clone, Copy)]
-pub(in crate::execution::task) enum SignalQueue {
+pub(in crate::task) enum SignalQueue {
     Thread,
     Process,
 }
@@ -19,7 +19,7 @@ impl TaskControlBlock {
     /// # Returns
     ///
     /// set 中有 pending signal 时返回操作结果，否则返回 None。
-    pub(in crate::execution::task) fn with_pending_signal<T>(
+    pub(in crate::task) fn with_pending_signal<T>(
         &self,
         mask: u64,
         action: impl FnOnce() -> T,
@@ -41,7 +41,7 @@ impl TaskControlBlock {
     /// # Returns
     ///
     /// signal number、首个 siginfo 与原队列；没有匹配时返回 None。
-    pub(in crate::execution::task) fn take_pending_signal(
+    pub(in crate::task) fn take_pending_signal(
         &self,
         mask: u64,
     ) -> Option<(usize, PendingSignal, SignalQueue)> {
@@ -91,7 +91,7 @@ impl TaskControlBlock {
     /// # Returns
     ///
     /// 至少一个 signal 可在 trap return 交付时返回 true。
-    pub(in crate::execution::task) fn has_deliverable_signal(&self) -> bool {
+    pub(in crate::task) fn has_deliverable_signal(&self) -> bool {
         self.with_deliverable_signal(|| ()).is_some()
     }
 
@@ -104,16 +104,16 @@ impl TaskControlBlock {
     /// # Returns
     ///
     /// signal 仍可交付时返回 action 结果，否则返回 None。
-    pub(in crate::execution::task) fn with_deliverable_signal<T>(
+    pub(in crate::task) fn with_deliverable_signal<T>(
         &self,
         action: impl FnOnce() -> T,
     ) -> Option<T> {
         self.with_deliverable_signal_policy(false, action)
     }
-    pub(in crate::execution::task) fn has_fatal_signal(&self) -> bool {
+    pub(in crate::task) fn has_fatal_signal(&self) -> bool {
         self.with_deliverable_signal_policy(true, || ()).is_some()
     }
-    pub(in crate::execution::task) fn with_deliverable_signal_policy<T>(
+    pub(in crate::task) fn with_deliverable_signal_policy<T>(
         &self,
         fatal_only: bool,
         action: impl FnOnce() -> T,

@@ -4,7 +4,7 @@ use super::{
     DrmError, DrmFile, DumbBuffer, DumbBufferInfo, Framebuffer,
     publication_order::{ReservationError, UnpublishedId, after_copyout},
 };
-use crate::fallible_tree::VacantEntry;
+use fallible_tree::VacantEntry;
 
 fn reservation_error(error: ReservationError) -> DrmError {
     match error {

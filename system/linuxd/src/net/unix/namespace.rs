@@ -1,7 +1,8 @@
 use alloc::sync::{Arc, Weak};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
-use crate::fallible_tree::FallibleMap;
+use fallible_tree::FallibleMap;
 
 use super::{BoundAddress, SocketError, SocketState, SocketType, UnixSocket};
 

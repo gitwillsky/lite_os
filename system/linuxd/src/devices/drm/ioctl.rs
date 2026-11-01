@@ -8,7 +8,7 @@ use crate::{
         DisplayRect, DrmCursorSubmission, DrmCursorWait, DrmError, DrmFile, DrmRetry,
         DrmSubmission, DrmWait, FramebufferRemoval, VirglTransferDirection,
     },
-    execution::sync::WaitResult,
+    sync::WaitResult,
     fs::chardev::{DeviceError, IoctlCall, UserMemory},
     ipc::PipeWaitCondition,
 };

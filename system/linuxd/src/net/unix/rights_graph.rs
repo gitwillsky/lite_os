@@ -1,11 +1,9 @@
 use alloc::{sync::Arc, vec::Vec};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
-use crate::{
-    execution::sync::TaskMutex,
-    fallible_tree::{FallibleMap, VacantEntry},
-    net::SocketError,
-};
+use crate::{sync::TaskMutex, net::SocketError};
+use fallible_tree::{FallibleMap, VacantEntry};
 
 use super::{UnixNode, UnixPassedFile, UnixSocket};
 
@@ -559,12 +557,12 @@ pub(super) fn collect(uid: u32, limit: usize) -> Result<(), SocketError> {
 // OWNER: merged GC request event；actual collector kernel thread 单独消费，不在 IRQ/deferred
 // safe point 运行 Tarjan 或释放 OFD。无请求时 worker 无限休眠；有 live topology 时用已预留 deadline
 // 复查最后 descriptor/active-syscall root 的退休，避免仅在 quota 超限时才释放孤立 cycle。
-static COLLECTION_REQUEST: crate::execution::sync::TaskEvent =
-    crate::execution::sync::TaskEvent::new();
+static COLLECTION_REQUEST: crate::sync::TaskEvent =
+    crate::sync::TaskEvent::new();
 pub(in crate::net::unix) fn request_collection() {
     COLLECTION_REQUEST.signal();
 }
-fn collect_pass(mut state: spin::MutexGuard<'_, RightsGraph>) -> bool {
+fn collect_pass(mut state: crate::sync::MutexGuard<'_, RightsGraph>) -> bool {
     state.collect_cycles();
     let mut scratch = state.take_scratch();
     let found = !scratch.reap.is_empty();
@@ -589,7 +587,7 @@ fn collect_pass(mut state: spin::MutexGuard<'_, RightsGraph>) -> bool {
 pub(in crate::net) fn run_collector(
     clock: impl Fn() -> u64,
     mut sleep_until: impl FnMut(u64),
-    mut gate: crate::execution::sync::TaskMutexWaitPreparation,
+    mut gate: crate::sync::TaskMutexWaitPreparation,
 ) -> ! {
     const ROOT_RECHECK_NS: u64 = 100_000_000;
     loop {

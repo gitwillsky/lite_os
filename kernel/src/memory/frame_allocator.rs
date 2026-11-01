@@ -82,6 +82,8 @@ pub(crate) struct FrameStatistics {
     pub(crate) capacity_pages: usize,
     /// 所有 order 合计的当前空闲页数。
     pub(crate) free_pages: usize,
+    /// 每个 order 的空闲块数（order N 的块为 2^N 页）。
+    pub(crate) free_blocks: [usize; ORDER_COUNT],
 }
 
 /// 一个或多个连续物理页的唯一 RAII owner。
@@ -173,7 +175,7 @@ impl Debug for FrameTracker {
     }
 }
 
-const ORDER_COUNT: usize = usize::BITS as usize;
+pub(crate) const ORDER_COUNT: usize = usize::BITS as usize;
 const BLOCK_UNUSED: u8 = u8::MAX;
 const BLOCK_ALLOCATED: u8 = 1 << 7;
 
@@ -197,6 +199,9 @@ struct FrameAllocator {
     // OWNER: free_pages 是上述 buddy metadata 的同锁 projection，只用于低水位
     // 快速判定。缺失同 transaction 加减会使 kernel reserve 被误放行或永久拒绝。
     free_pages: usize,
+    // OWNER: 每个 order 空闲块数的同锁 projection；缺失时统计只能遍历空闲链（链节点在页内，
+    // 遍历期间持锁时间与空闲页数成正比）。
+    free_blocks: [usize; ORDER_COUNT],
 }
 
 impl FrameAllocator {
@@ -242,6 +247,7 @@ impl FrameAllocator {
             end_ppn: end,
             order_heads: [None; ORDER_COUNT],
             nonempty_orders: 0,
+            free_blocks: [0; ORDER_COUNT],
             block_state,
             free_pages: layout.allocatable_pages,
         };
@@ -315,6 +321,7 @@ impl FrameAllocator {
         self.order_heads[order] = Some(block);
         self.nonempty_orders |= 1usize << order;
         self.block_state[index] = order as u8;
+        self.free_blocks[order] += 1;
     }
 
     fn remove_free(&mut self, block: PhysicalPageNumber, order: usize) {
@@ -346,6 +353,7 @@ impl FrameAllocator {
             self.nonempty_orders &= !(1usize << order);
         }
         self.block_state[index] = BLOCK_UNUSED;
+        self.free_blocks[order] -= 1;
     }
 
     fn has_capacity(&self, pages: usize, class: FrameAllocationClass) -> bool {
@@ -464,6 +472,7 @@ impl FrameAllocator {
         FrameStatistics {
             capacity_pages: self.capacity(),
             free_pages: self.free_pages,
+            free_blocks: self.free_blocks,
         }
     }
 }

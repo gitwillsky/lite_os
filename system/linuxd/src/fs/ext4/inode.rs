@@ -2,21 +2,11 @@ use super::extent::{ExtentTree, Mapping, empty_root};
 use super::layout::INODE_BLOCK_BYTES;
 use super::*;
 
-mod swap;
 mod vfs;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum SwapFilePhase {
-    Free,
-    Preparing,
-    Active,
-}
 
 #[derive(Debug)]
 pub(super) struct LiveInode {
     pub(super) disk: Ext4InodeDisk,
-    // OWNER: lease phase and extent image share the canonical inode lock; hard links cannot bypass it.
-    pub(super) swap: SwapFilePhase,
 }
 
 impl core::ops::Deref for LiveInode {
@@ -35,7 +25,7 @@ pub(super) struct Timestamp {
 
 impl Timestamp {
     pub(super) fn now() -> Self {
-        let nanoseconds = crate::execution::timer::get_realtime_ns();
+        let nanoseconds = crate::time::get_realtime_ns();
         Self {
             seconds: (nanoseconds / 1_000_000_000) as i64,
             nanoseconds: (nanoseconds % 1_000_000_000) as u32,
@@ -107,7 +97,6 @@ impl Ext4Inode {
             write_access: crate::fs::InodeWriteAccess::new(),
             disk: Mutex::new(LiveInode {
                 disk,
-                swap: SwapFilePhase::Free,
             }),
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
@@ -221,7 +210,6 @@ impl Ext4Inode {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
         }
-        self.check_swap_mutation(false)?;
         self.remove_write_privileges_locked(mutation, identity)?;
         let now = Timestamp::now();
         let mut inode = mutation.inode(self)?;

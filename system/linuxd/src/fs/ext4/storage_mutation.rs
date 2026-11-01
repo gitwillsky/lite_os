@@ -119,7 +119,7 @@ impl Ext4Inode {
             return Ok(0);
         }
         let mut written = 0;
-        self.write_batch(false, identity, &mut |writer| {
+        self.write_batch(identity, &mut |writer| {
             written = writer.write(offset as u64, buf)?;
             Ok(())
         })?;
@@ -219,40 +219,13 @@ impl Ext4Inode {
 
     pub(super) fn write_batch(
         &self,
-        writeback: bool,
         identity: Option<&crate::fs::AccessIdentity>,
         batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
     ) -> Result<(), FileSystemError> {
         if self.inode_type() == InodeType::Directory {
             return Err(FileSystemError::IsDirectory);
         }
-        let mutation = self.fs.begin_mutation()?;
-        self.write_batch_with_mutation(mutation, writeback, identity, batch)
-    }
-
-    pub(super) fn try_write_batch(
-        &self,
-        writeback: bool,
-        identity: Option<&crate::fs::AccessIdentity>,
-        batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
-    ) -> Result<(), FileSystemError> {
-        if self.inode_type() == InodeType::Directory {
-            return Err(FileSystemError::IsDirectory);
-        }
-        let Some(mutation) = MutationGuard::try_begin(&self.fs)? else {
-            return Err(FileSystemError::Busy);
-        };
-        self.write_batch_with_mutation(mutation, writeback, identity, batch)
-    }
-
-    fn write_batch_with_mutation(
-        &self,
-        mut mutation: MutationGuard<'_>,
-        writeback: bool,
-        identity: Option<&crate::fs::AccessIdentity>,
-        batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
-    ) -> Result<(), FileSystemError> {
-        self.check_swap_mutation(writeback)?;
+        let mut mutation = self.fs.begin_mutation()?;
         self.remove_write_privileges_locked(&mut mutation, identity)?;
         let maximum_end = {
             let mut writer = Ext4StorageWriter {
@@ -278,7 +251,6 @@ impl Ext4Inode {
             return Err(FileSystemError::IsDirectory);
         }
         let mut mutation = self.fs.begin_mutation()?;
-        self.check_swap_mutation(false)?;
         let offset = self.size();
         let offset_usize = usize::try_from(offset).map_err(|_| FileSystemError::NoSpace)?;
         if !buf.is_empty() {
@@ -311,7 +283,6 @@ impl Ext4Inode {
         while begin < last {
             let finish = (begin + BLOCKS_PER_TRANSACTION).min(last);
             let mut mutation = self.fs.begin_mutation()?;
-            self.check_swap_mutation(false)?;
             self.remove_write_privileges_locked(&mut mutation, identity)?;
             for index in begin..finish {
                 let index = u32::try_from(index).map_err(|_| FileSystemError::NoSpace)?;
@@ -321,7 +292,6 @@ impl Ext4Inode {
             begin = finish;
         }
         let mut mutation = self.fs.begin_mutation()?;
-        self.check_swap_mutation(false)?;
         self.remove_write_privileges_locked(&mut mutation, identity)?;
         let mut inode = mutation.inode(self)?;
         if end > inode.size() {

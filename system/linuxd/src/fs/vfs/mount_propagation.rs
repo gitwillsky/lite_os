@@ -5,7 +5,7 @@ use alloc::{
     vec::Vec,
 };
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 // OWNER: Linux mountinfo 的 peer group identity，不复用以避免旧 snapshot 的 identity ABA。
 static NEXT_GROUP_ID: AtomicU64 = AtomicU64::new(1);

@@ -145,12 +145,25 @@ pub(super) fn task_kill(call: &Call<'_>) -> Outcome {
 pub(super) fn thread_set_priority(call: &Call<'_>) -> Result<(), Status> {
     let thread = call.thread_handle(call.arg_handle(0), rights::MANAGE)?;
     let priority = u8::try_from(call.arg(1)).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-    match thread.execution() {
-        Some(execution) => execution
-            .set_priority(priority)
-            .map_err(|()| native_abi::ERR_INVALID_ARGS),
-        None => Err(native_abi::ERR_BAD_STATE),
+    thread.set_priority(priority)
+}
+
+pub(super) fn thread_set_affinity(call: &Call<'_>) -> Result<(), Status> {
+    let thread = call.thread_handle(call.arg_handle(0), rights::MANAGE)?;
+    let cpus = crate::execution::cpu::CpuSet::from_native_word(call.arg(1));
+    thread.set_affinity(cpus)?;
+    // 调用线程限制了自己且当前 CPU 已不允许：返回前让出 CPU，重新调度时迁移到允许的 CPU。
+    if thread.execution().is_some_and(|execution| Arc::ptr_eq(&execution, call.thread))
+        && !cpus.contains(crate::execution::cpu::current_id())
+    {
+        crate::thread::yield_current();
     }
+    Ok(())
+}
+
+pub(super) fn cpu_current(call: &Call<'_>) -> Result<(), Status> {
+    let cpu = crate::execution::cpu::current_id().index() as u32;
+    call.write(call.arg(0), &cpu)
 }
 
 pub(super) fn create_exception_channel(call: &Call<'_>) -> Result<(), Status> {

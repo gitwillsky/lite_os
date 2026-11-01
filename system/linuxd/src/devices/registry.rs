@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 /// 一个 seam 的全部已发布 adapter，按注册顺序编号，只追加；index 是 adapter 的稳定 identity。
 pub(crate) struct AppendOnlyRegistry<T: ?Sized> {

@@ -1,5 +1,5 @@
 use crate::{
-    execution::task::current_task,
+    task::current_task,
     file::OpenFileKind,
     fs::{InodeType, O_ACCMODE, O_RDONLY, O_WRONLY},
     memory::{FileMappingError, FileMappingSource, MapPermission, MemoryAdvice, MemoryError},
@@ -9,7 +9,7 @@ use crate::{
 use super::{
     errno,
     mmap_flags::{
-        MAP_ANONYMOUS, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_PRIVATE, MAP_SHARED,
+        MAP_ANONYMOUS, MAP_FIXED, MAP_FIXED_NOREPLACE, MAP_GROWSDOWN, MAP_PRIVATE, MAP_SHARED,
         mmap_flags_supported,
     },
 };
@@ -43,11 +43,8 @@ fn memory_errno(error: MemoryError) -> isize {
     match error {
         MemoryError::AddressInUse => errno::EEXIST,
         MemoryError::PermissionDenied => errno::EACCES,
-        MemoryError::TextBusy => errno::ETXTBSY,
         MemoryError::Io => errno::EIO,
-        MemoryError::InvalidRange | MemoryError::PageTableError(_) | MemoryError::OutOfMemory => {
-            errno::EINVAL
-        }
+        MemoryError::InvalidRange | MemoryError::OutOfMemory => errno::EINVAL,
     }
 }
 
@@ -165,13 +162,6 @@ pub(crate) fn sys_mmap(
             if permission.contains(MapPermission::X) && ofd.opened_ref().mount_flags().noexec() {
                 return -errno::EPERM;
             }
-            // Linux rejects an already-active swapfile before MAP_FIXED replacement begins.
-            if sharing == MAP_SHARED
-                && permission.contains(MapPermission::W)
-                && inode.is_swap_file()
-            {
-                return -errno::ETXTBSY;
-            }
             if let Err(error) = ofd.prepare_mapping(sharing == MAP_SHARED) {
                 return super::fs::filesystem_error(error);
             }
@@ -210,6 +200,7 @@ pub(crate) fn sys_mmap(
         permission,
         placement,
         source: prepared,
+        grows_down: flags & MAP_GROWSDOWN != 0,
     });
     result.map_or_else(|error| -memory_errno(error), |mapped| mapped as isize)
 }
@@ -355,6 +346,12 @@ pub(crate) fn sys_madvise(address: usize, length: usize, advice: usize) -> isize
         3 => MemoryAdvice::WillNeed,
         4 => MemoryAdvice::DontNeed,
         8 => MemoryAdvice::Free,
+        10 => MemoryAdvice::DontFork,
+        11 => MemoryAdvice::DoFork,
+        16 => MemoryAdvice::DontDump,
+        17 => MemoryAdvice::DoDump,
+        18 => MemoryAdvice::WipeOnFork,
+        19 => MemoryAdvice::KeepOnFork,
         _ => return -errno::EINVAL,
     };
     current_task()

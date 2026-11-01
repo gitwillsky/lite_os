@@ -1,10 +1,11 @@
 //! QEMU `virt` 16550 RX register adapter。
 
+use mmio::MmioBus;
 use alloc::sync::Arc;
 use spin::Once;
 
 use crate::{
-    arch::mmio::MmioBus, execution::interrupt::InterruptError,
+    execution::interrupt::InterruptError,
     execution::interrupt::InterruptHandler, execution::interrupt::InterruptVector,
 };
 

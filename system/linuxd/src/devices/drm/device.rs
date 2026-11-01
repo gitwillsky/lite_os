@@ -1,4 +1,4 @@
-use spin::Once;
+use native_runtime::sync::Once;
 
 use super::*;
 use crate::devices::model::{DisplayError, DisplayUpdate, VirglCommand};
@@ -602,7 +602,7 @@ pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
     let display = owner.display.clone();
     crate::fs::register_graphics_sysfs(owner.clone()).map_err(|_| ())?;
     PRIMARY_DRM.call_once(|| owner);
-    display.bind_completion_work(crate::execution::deferred::register(display_work)?);
+    display.bind_completion_work(crate::deferred::register(display_work)?);
     let driver = Arc::try_new(super::card_file::CardDriver { render: false }).map_err(|_| ())?;
     crate::fs::chardev::register_driver(super::card_file::CARD_NUMBER, 1, driver)
         .map_err(|_| ())?;
@@ -643,7 +643,7 @@ pub(super) fn open(render_node: bool) -> Result<Arc<DrmFile>, ()> {
         device,
         file_identity,
         render_node,
-        context_creation: crate::execution::sync::TaskMutex::new(()),
+        context_creation: crate::sync::TaskMutex::new(()),
         state: Mutex::new(DrmFileState {
             handle_ids: PublicationIdAllocator::new(1),
             buffers: FallibleMap::new(),

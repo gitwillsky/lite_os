@@ -22,8 +22,8 @@ pub(crate) enum ThreadCloneError {
 ///
 /// 成功返回 child TID；任何验证/分配失败都不发布 graph/runqueue membership。
 pub(crate) fn clone_current_thread(
-    parameters: crate::execution::task::CloneParameters,
-    resources: crate::execution::task::ThreadCloneResources,
+    parameters: crate::task::CloneParameters,
+    resources: crate::task::ThreadCloneResources,
 ) -> Result<usize, ThreadCloneError> {
     let parent = current_task().expect("thread clone requires current task");
     let namespace = resources.namespaces.pid_for_children();
@@ -63,7 +63,6 @@ pub(crate) fn clone_current_thread(
     {
         Ok(prepared) => prepared,
         Err(error) => {
-            child.remove_thread_trap_context();
             return Err(ThreadCloneError::PidFd(error));
         }
     };
@@ -71,7 +70,6 @@ pub(crate) fn clone_current_thread(
     let mut snapshot = match ThreadSlotSnapshot::prepare(minimum_snapshot_capacity) {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            child.remove_thread_trap_context();
             return Err(ThreadCloneError::Memory(error));
         }
     };
@@ -83,7 +81,6 @@ pub(crate) fn clone_current_thread(
             snapshot = match ThreadSlotSnapshot::prepare(minimum_snapshot_capacity) {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
-                    child.remove_thread_trap_context();
                     return Err(ThreadCloneError::Memory(error));
                 }
             };
@@ -91,7 +88,6 @@ pub(crate) fn clone_current_thread(
         }
         if !snapshot.allows_current() {
             drop(creation);
-            child.remove_thread_trap_context();
             return Err(ThreadCloneError::ResourceLimit);
         }
         let membership = graph_slot.fill(tid, child.clone());
@@ -120,7 +116,6 @@ pub(crate) fn clone_current_thread(
         match result {
             Ok(retired) => drop(retired),
             Err(error) => {
-                child.remove_thread_trap_context();
                 return Err(ThreadCloneError::Pid(error));
             }
         }

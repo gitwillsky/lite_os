@@ -53,6 +53,12 @@ impl CpuAffinity {
         Self(cpu::possible())
     }
 
+    /// 与 possible CPU 相交后的集合；交集为空返回 `None`（线程将无处运行）。
+    pub(crate) fn restricted_to(cpus: CpuSet) -> Option<Self> {
+        let cpus = cpus & cpu::possible();
+        (!cpus.is_empty()).then_some(Self(cpus))
+    }
+
     /// 是否允许在 `cpu` 上运行。
     pub(crate) fn allows(self, cpu: CpuId) -> bool {
         self.0.contains(cpu)
@@ -93,6 +99,10 @@ pub(crate) struct SchedulingState {
     pub(crate) wait: Option<WaitMembership>,
     pub(crate) wait_result: Option<WaitResult>,
     pub(crate) cpu_affinity: CpuAffinity,
+    /// 线程因阻塞离开 CPU 的次数（含阻塞发布后、上下文保存前即被唤醒的情形）。
+    pub(crate) voluntary_switches: u64,
+    /// 线程仍可运行却被抢占或主动让出的次数。
+    pub(crate) involuntary_switches: u64,
 }
 
 /// 线程的调度实体。
@@ -112,6 +122,8 @@ impl SchedulingEntity {
                 wait: None,
                 wait_result: None,
                 cpu_affinity: CpuAffinity::all(),
+                voluntary_switches: 0,
+                involuntary_switches: 0,
             }),
             policy: Mutex::new(Policy::new(priority, vruntime)),
             last_cpu: AtomicUsize::new(last_cpu),
@@ -233,6 +245,10 @@ pub(crate) struct Policy {
     /// Q10 微秒 vruntime；1024 单位等于默认权重的 1µs CPU 时间。
     pub(crate) vruntime: u64,
     total_runtime_us: u64,
+    // FLAG: 线程当前在 restricted mode；之后提交的时间同时计入 `restricted_runtime_us`。
+    // 缺失时服务无法区分受限代码与自身代码消耗的时间（例如兼容层的 user/system 时间）。
+    restricted: bool,
+    restricted_runtime_us: u64,
 }
 
 impl Policy {
@@ -244,7 +260,22 @@ impl Policy {
             priority,
             vruntime,
             total_runtime_us: 0,
+            restricted: false,
+            restricted_runtime_us: 0,
         }
+    }
+
+    /// 切换计时桶：先把当前 slice 已消耗的时间按旧模式提交。
+    pub(crate) fn set_restricted(&mut self, now_us: u64, restricted: bool) {
+        if self.active_start.is_some() {
+            self.checkpoint(now_us);
+        }
+        self.restricted = restricted;
+    }
+
+    /// 已提交的 restricted mode CPU 时间（微秒）。
+    pub(crate) fn restricted_runtime_us(&self) -> u64 {
+        self.restricted_runtime_us
     }
 
     /// 替换权重等级；下一个 slice 生效。
@@ -293,6 +324,9 @@ impl Policy {
 
     fn commit(&mut self, runtime_us: u64, priority: usize) {
         self.total_runtime_us = self.total_runtime_us.saturating_add(runtime_us);
+        if self.restricted {
+            self.restricted_runtime_us = self.restricted_runtime_us.saturating_add(runtime_us);
+        }
         super::processor::account_current_cpu_runtime(runtime_us);
         let reciprocal = PRIORITY_WEIGHT_RECIPROCAL[priority] as u64;
         // Q10 vruntime = runtime * 2^20 / weight；倒数已含 2^32。先拆掉低位避免 64-bit 乘法溢出，

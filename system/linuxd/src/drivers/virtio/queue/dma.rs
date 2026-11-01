@@ -1,20 +1,26 @@
+//! virtio descriptor 引用的 DMA 缓冲。
+//!
+//! 1. 每个固定缓冲是一个 VMO，构造时以设备的 BTI 固定一次，得到设备地址区段（恒等映射下按物理
+//!    连续性分段，IOMMU 下为一段连续 IOVA）；CPU 经服务地址空间中的映射访问同一页。
+//! 2. 区段在构造时缓存，提交 descriptor 时只投影、不分配。
+//! 3. 缓冲释放时撤销设备地址；adapter 必须先 reset 设备，保证设备不再访问。
+
 use alloc::{boxed::Box, vec::Vec};
-use core::{
-    mem::MaybeUninit,
-    ops::{Deref, DerefMut, Range},
-};
+use core::ops::{Deref, DerefMut, Range};
 
 #[cfg(not(test))]
-use crate::memory::{DeviceBacking, KERNEL_SPACE, PAGE_SIZE, VirtualAddress};
+use crate::memory::{DeviceBacking, DeviceExtent, PAGE_SIZE};
+#[cfg(not(test))]
+use native_runtime::Bti;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// fixed DMA mapping 在 descriptor publication 前的构造错误。
 pub(in crate::drivers::virtio) enum DmaMappingError {
-    /// bytes 或 segment metadata 无法预留。
+    /// VMO、映射或区段表无法分配。
     OutOfMemory,
-    /// kernel page table 不包含 buffer 的某一页。
+    /// BTI 固定失败（IOVA 耗尽）。
     Unmapped,
-    /// range、长度或 page size 无法形成有效 segment。
+    /// range 或长度无法形成有效 segment。
     InvalidRange,
 }
 
@@ -31,61 +37,89 @@ pub(super) enum DmaChainRequirement {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct DmaSegment {
-    physical: u64,
+    device_address: u64,
     offset: usize,
     length: usize,
 }
 
-/// 固定 bytes 与其 kernel-VA→physical segment proof 的共同 owner。
-///
-/// moving 只移动 Box handle；allocation 在本对象 Drop 前地址稳定。adapter 必须在 Drop 本对象
-/// 前 reset device，并以 slot state 排除 CPU 与 device 对 writable range 的并发访问。
-pub(in crate::drivers::virtio) struct DmaBuffer<const SIZE: usize> {
-    bytes: Box<[u8; SIZE]>,
+/// 把固定区段截成覆盖 `[0, length)` 的 segment 表。
+#[cfg(not(test))]
+fn segments_from_extents(extents: &[DeviceExtent], length: usize) -> Result<Box<[DmaSegment]>, DmaMappingError> {
+    let mut segments = Vec::new();
+    segments.try_reserve_exact(extents.len()).map_err(|_| DmaMappingError::OutOfMemory)?;
+    let mut offset = 0usize;
+    for extent in extents {
+        if offset >= length {
+            break;
+        }
+        let chunk = (extent.pages * PAGE_SIZE).min(length - offset);
+        segments.push(DmaSegment {
+            device_address: extent.device_address,
+            offset,
+            length: chunk,
+        });
+        offset += chunk;
+    }
+    Ok(segments.into_boxed_slice())
+}
+
+/// `SIZE` 字节的固定 DMA 存储：VMO、CPU 映射与设备区段。
+#[cfg(not(test))]
+struct FixedStorage {
+    // OWNER: 持有 VMO 与固定记录：释放即撤销设备地址与 CPU 映射；`base`/`segments` 只在它存活期间有效。
+    _backing: DeviceBacking,
+    base: usize,
     segments: Box<[DmaSegment]>,
 }
 
-/// 由 device 完整初始化的 fixed DMA bytes 与 mapping proof 的共同 owner。
+#[cfg(not(test))]
+impl FixedStorage {
+    fn allocate(size: usize, bti: &Bti) -> Result<Self, DmaMappingError> {
+        if size == 0 {
+            return Err(DmaMappingError::InvalidRange);
+        }
+        let backing = DeviceBacking::try_allocate(size.div_ceil(PAGE_SIZE))
+            .ok_or(DmaMappingError::OutOfMemory)?;
+        let extents = backing.pin(bti).map_err(|_| DmaMappingError::Unmapped)?;
+        let segments = segments_from_extents(extents, size)?;
+        // 映射只经本存储的拥有者访问，借用规则由 DmaBuffer 的 `&`/`&mut` 方法维持。
+        let base = backing.cpu_address().ok_or(DmaMappingError::OutOfMemory)?;
+        Ok(Self { _backing: backing, base, segments })
+    }
+}
+
+/// 固定 bytes 与其设备区段的共同 owner。
 ///
-/// bytes 从未在提交前预零；adapter 只能在 used-ring 验证 descriptor identity 与 returned
-/// length 后投影 initialized prefix。Drop 前必须 reset device，避免 device 写入已释放 allocation。
-pub(in crate::drivers::virtio) struct DeviceWriteBuffer<const SIZE: usize> {
-    bytes: Box<[MaybeUninit<u8>]>,
+/// 内容在 VMO 中，地址在本对象存活期间稳定。adapter 必须在 Drop 本对象前 reset device，
+/// 并以 slot state 排除 CPU 与 device 对 writable range 的并发访问。
+pub(in crate::drivers::virtio) struct DmaBuffer<const SIZE: usize> {
+    #[cfg(not(test))]
+    storage: FixedStorage,
+    #[cfg(test)]
+    bytes: Box<[u8; SIZE]>,
+    #[cfg(test)]
     segments: Box<[DmaSegment]>,
+}
+
+/// 由 device 写入的 fixed DMA bytes 与设备区段的共同 owner。
+///
+/// adapter 只能在 used-ring 验证 descriptor identity 与 returned length 后投影 device 写入的前缀。
+/// Drop 前必须 reset device，避免 device 写入已撤销的地址。
+pub(in crate::drivers::virtio) struct DeviceWriteBuffer<const SIZE: usize> {
+    #[cfg(not(test))]
+    storage: FixedStorage,
 }
 
 impl<const SIZE: usize> DeviceWriteBuffer<SIZE> {
     #[cfg(not(test))]
-    /// 分配未初始化 fixed bytes 并缓存完整 kernel-VA→physical mapping。
-    ///
-    /// # Returns
-    ///
-    /// 成功时返回地址稳定的 DMA owner。
+    /// 分配 fixed bytes 并以设备 `bti` 固定。
     ///
     /// # Errors
     ///
-    /// allocation、mapping、range 或 kernel translation 失败时返回 `DmaMappingError`。
-    pub(in crate::drivers::virtio) fn try_uninit() -> Result<Self, DmaMappingError> {
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(SIZE)
-            .map_err(|_| DmaMappingError::OutOfMemory)?;
-        // SAFETY: `MaybeUninit<u8>` has no initialization invariant. Capacity was reserved for
-        // exactly SIZE elements and no byte is exposed as `u8` until device completion validation.
-        // Omitting this length publication would leave the DMA allocation logically empty.
-        unsafe { bytes.set_len(SIZE) };
-        let bytes = bytes.into_boxed_slice();
-        let start = bytes.as_ptr() as usize;
-        let kernel_space = KERNEL_SPACE.wait().lock();
-        let segments = map_segments_with(start, SIZE, PAGE_SIZE, |address| {
-            kernel_space
-                .translate_kernel_address(VirtualAddress::from(address))
-                .map(|physical| physical.as_usize() as u64)
-        })?;
-        drop(kernel_space);
+    /// 分配、映射或固定失败时返回 `DmaMappingError`。
+    pub(in crate::drivers::virtio) fn try_uninit(bti: &Bti) -> Result<Self, DmaMappingError> {
         Ok(Self {
-            bytes,
-            segments: segments.into_boxed_slice(),
+            storage: FixedStorage::allocate(SIZE, bti)?,
         })
     }
 
@@ -98,68 +132,76 @@ impl<const SIZE: usize> DeviceWriteBuffer<SIZE> {
     /// # Returns
     ///
     /// 借用当前 mapping 的 writable descriptor segments。
+    #[cfg(not(test))]
     pub(in crate::drivers::virtio) fn writable_prefix(&self, length: usize) -> DmaSlice<'_> {
         assert!(length != 0 && length <= SIZE);
         DmaSlice {
-            source: DmaSource::Mapped(&self.segments),
+            source: DmaSource::Mapped(&self.storage.segments),
             range: 0..length,
             device_writable: true,
         }
     }
 
-    /// 投影已由 device 初始化的 prefix。
+    /// 投影已由 device 写入的 prefix。
     ///
     /// # Parameters
     ///
     /// - `length`: used ring 已证明由 device 写入的 prefix 长度。
     ///
-    /// # Returns
-    ///
-    /// 与固定 DMA owner 共同存活的 initialized byte slice。
-    ///
     /// # Safety
     ///
     /// Caller 必须已从 used ring 验证：当前 generation 的同一 descriptor 完成，returned
-    /// length 至少为 `length`，且 CPU 已重新取得 descriptor ownership。若证明缺失，读取
-    /// 未初始化内存会产生 undefined behavior。
-    /// SAFETY: the caller contract above is the only route from device-writable storage to bytes.
+    /// length 至少为 `length`，且 CPU 已重新取得 descriptor ownership；否则读到的是设备仍可能写入的字节。
+    #[cfg(not(test))]
     pub(in crate::drivers::virtio) unsafe fn initialized_prefix(&self, length: usize) -> &[u8] {
         assert!(length <= SIZE);
-        // SAFETY: caller contract proves every projected byte initialized; MaybeUninit and u8 have
-        // identical layout, and the borrow cannot outlive this stable boxed allocation.
-        unsafe { core::slice::from_raw_parts(self.bytes.as_ptr().cast::<u8>(), length) }
+        // SAFETY: VMO 页零初始化且与本对象同寿命；caller 保证设备已交还该前缀。
+        unsafe { core::slice::from_raw_parts(self.storage.base as *const u8, length) }
     }
 }
 
 impl<const SIZE: usize> DmaBuffer<SIZE> {
+    /// 分配零内容 fixed bytes 并以设备 `bti` 固定。
+    ///
+    /// # Errors
+    ///
+    /// 分配、映射或固定失败时返回 `DmaMappingError`。
     #[cfg(not(test))]
-    pub(in crate::drivers::virtio) fn try_zeroed() -> Result<Self, DmaMappingError> {
-        let bytes = Box::try_new([0; SIZE]).map_err(|_| DmaMappingError::OutOfMemory)?;
-        Self::try_from_box(bytes)
-    }
-
-    #[cfg(not(test))]
-    fn try_from_box(bytes: Box<[u8; SIZE]>) -> Result<Self, DmaMappingError> {
-        let start = bytes.as_ptr() as usize;
-        let kernel_space = KERNEL_SPACE.wait().lock();
-        let segments = map_segments_with(start, SIZE, PAGE_SIZE, |address| {
-            kernel_space
-                .translate_kernel_address(VirtualAddress::from(address))
-                .map(|physical| physical.as_usize() as u64)
-        })?;
-        drop(kernel_space);
+    pub(in crate::drivers::virtio) fn try_zeroed(bti: &Bti) -> Result<Self, DmaMappingError> {
         Ok(Self {
-            bytes,
-            segments: segments.into_boxed_slice(),
+            storage: FixedStorage::allocate(SIZE, bti)?,
         })
     }
 
+    fn bytes(&self) -> &[u8; SIZE] {
+        #[cfg(not(test))]
+        // SAFETY: 映射至少 SIZE 字节、与本对象同寿命；`&self` 排除经本对象的并发可变访问。
+        return unsafe { &*(self.storage.base as *const [u8; SIZE]) };
+        #[cfg(test)]
+        return &self.bytes;
+    }
+
+    fn bytes_mut(&mut self) -> &mut [u8; SIZE] {
+        #[cfg(not(test))]
+        // SAFETY: 同上，`&mut self` 保证独占。
+        return unsafe { &mut *(self.storage.base as *mut [u8; SIZE]) };
+        #[cfg(test)]
+        return &mut self.bytes;
+    }
+
+    fn segments(&self) -> &[DmaSegment] {
+        #[cfg(not(test))]
+        return &self.storage.segments;
+        #[cfg(test)]
+        return &self.segments;
+    }
+
     pub(in crate::drivers::virtio) fn as_slice(&self) -> &[u8] {
-        &self.bytes[..]
+        &self.bytes()[..]
     }
 
     pub(in crate::drivers::virtio) fn as_mut_slice(&mut self) -> &mut [u8] {
-        &mut self.bytes[..]
+        &mut self.bytes_mut()[..]
     }
 
     pub(in crate::drivers::virtio) fn readable(
@@ -180,7 +222,7 @@ impl<const SIZE: usize> DmaBuffer<SIZE> {
     fn whole(&self, device_writable: bool) -> DmaSlice<'_> {
         assert!(SIZE != 0, "zero-sized DMA buffer has no descriptor");
         DmaSlice {
-            source: DmaSource::Mapped(&self.segments),
+            source: DmaSource::Mapped(self.segments()),
             range: 0..SIZE,
             device_writable,
         }
@@ -195,7 +237,7 @@ impl<const SIZE: usize> DmaBuffer<SIZE> {
             return Err(DmaMappingError::InvalidRange);
         }
         Ok(DmaSlice {
-            source: DmaSource::Mapped(&self.segments),
+            source: DmaSource::Mapped(self.segments()),
             range,
             device_writable,
         })
@@ -204,13 +246,13 @@ impl<const SIZE: usize> DmaBuffer<SIZE> {
 
 impl<const SIZE: usize> AsRef<[u8; SIZE]> for DmaBuffer<SIZE> {
     fn as_ref(&self) -> &[u8; SIZE] {
-        &self.bytes
+        self.bytes()
     }
 }
 
 impl<const SIZE: usize> AsMut<[u8; SIZE]> for DmaBuffer<SIZE> {
     fn as_mut(&mut self) -> &mut [u8; SIZE] {
-        &mut self.bytes
+        self.bytes_mut()
     }
 }
 
@@ -218,13 +260,13 @@ impl<const SIZE: usize> Deref for DmaBuffer<SIZE> {
     type Target = [u8; SIZE];
 
     fn deref(&self) -> &Self::Target {
-        &self.bytes
+        self.bytes()
     }
 }
 
 impl<const SIZE: usize> DerefMut for DmaBuffer<SIZE> {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.bytes
+        self.bytes_mut()
     }
 }
 
@@ -239,11 +281,11 @@ pub(in crate::drivers::virtio) struct DmaSlice<'mapping> {
     device_writable: bool,
 }
 
-/// descriptor segment 的来源：固定 buffer 的 cached mapping，或 device backing 的物理 extent。
+/// descriptor segment 的来源：固定 buffer 的 cached 区段，或已固定的 device backing 区段。
 #[derive(Clone)]
 enum DmaSource<'mapping> {
     Mapped(&'mapping [DmaSegment]),
-    /// 每个 extent 已是物理连续页；直接按 extent 生成 segment，提交锁内不分配 mapping 表。
+    /// 每个 extent 已是设备地址连续页；直接按 extent 生成 segment，提交锁内不分配 mapping 表。
     #[cfg(not(test))]
     Backing(&'mapping DeviceBacking),
 }
@@ -259,12 +301,10 @@ impl DmaSource<'_> {
             #[cfg(not(test))]
             Self::Backing(backing) => {
                 let mut offset = 0;
-                for (page, pages) in
-                    (0..backing.extent_count()).filter_map(|index| backing.extent(index))
-                {
-                    let length = pages * PAGE_SIZE;
+                for extent in (0..backing.extent_count()).filter_map(|index| backing.extent(index)) {
+                    let length = extent.pages * PAGE_SIZE;
                     visit(DmaSegment {
-                        physical: (page.as_usize() * PAGE_SIZE) as u64,
+                        device_address: extent.device_address,
                         offset,
                         length,
                     });
@@ -277,7 +317,8 @@ impl DmaSource<'_> {
 
 #[cfg(not(test))]
 impl<'mapping> DmaSlice<'mapping> {
-    /// 投影 device backing 的只读前缀；backing 必须由 slot 保活到 used ring 归还 descriptor。
+    /// 投影 device backing 的只读前缀；backing 必须已以本设备 BTI 固定，并由 slot 保活到 used ring
+    /// 归还 descriptor。
     ///
     /// # Errors
     ///
@@ -314,7 +355,7 @@ impl DmaSlice<'_> {
             let start = segment.offset.max(self.range.start);
             let end = (segment.offset + segment.length).min(self.range.end);
             visit(
-                segment.physical + (start - segment.offset) as u64,
+                segment.device_address + (start - segment.offset) as u64,
                 end - start,
                 self.device_writable,
             );
@@ -345,89 +386,37 @@ fn segment_overlaps(segment: &DmaSegment, range: &Range<usize>) -> bool {
     segment.offset < range.end && segment.offset + segment.length > range.start
 }
 
-fn map_segments_with(
-    start: usize,
-    length: usize,
-    page_size: usize,
-    mut translate: impl FnMut(usize) -> Option<u64>,
-) -> Result<Vec<DmaSegment>, DmaMappingError> {
-    if length == 0 || page_size == 0 || !page_size.is_power_of_two() {
-        return Err(DmaMappingError::InvalidRange);
-    }
-    let pages = (start % page_size)
-        .checked_add(length)
-        .ok_or(DmaMappingError::InvalidRange)?
-        .div_ceil(page_size);
-    let mut segments = Vec::new();
-    segments
-        .try_reserve_exact(pages)
-        .map_err(|_| DmaMappingError::OutOfMemory)?;
-    let mut offset = 0usize;
-    while offset < length {
-        let address = start
-            .checked_add(offset)
-            .ok_or(DmaMappingError::InvalidRange)?;
-        let page_offset = address % page_size;
-        let chunk = (length - offset).min(page_size - page_offset);
-        let physical = translate(address).ok_or(DmaMappingError::Unmapped)?;
-        segments.push(DmaSegment {
-            physical,
-            offset,
-            length: chunk,
-        });
-        offset += chunk;
-    }
-    Ok(segments)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{
-        DmaChainRequirement, DmaMappingError, DmaSlice, DmaSource, descriptor_requirement,
-        map_segments_with,
-    };
+    use alloc::vec::Vec;
 
-    #[test]
-    fn cross_page_mapping_preserves_each_physical_segment() {
-        let segments =
-            map_segments_with(4094, 6, 4096, |address| Some(address as u64 + 0x1000)).unwrap();
-        assert_eq!(segments.len(), 2);
-        let slice = DmaSlice {
-            source: DmaSource::Mapped(&segments),
-            range: 0..6,
-            device_writable: false,
-        };
-        let mut observed = Vec::new();
-        slice.for_each_segment(|physical, length, writable| {
-            observed.push((physical, length, writable));
-        });
-        assert_eq!(observed, [(0x1ffe, 2, false), (0x2000, 4, false)]);
+    use super::{DmaChainRequirement, DmaSegment, DmaSlice, DmaSource, descriptor_requirement};
+
+    fn segments() -> [DmaSegment; 3] {
+        [
+            DmaSegment { device_address: 0x1ffe, offset: 0, length: 2 },
+            DmaSegment { device_address: 0x5000, offset: 2, length: 4096 },
+            DmaSegment { device_address: 0x9000, offset: 4098, length: 4098 },
+        ]
     }
 
     #[test]
-    fn translation_failure_discards_the_partial_mapping() {
-        assert_eq!(
-            map_segments_with(4094, 6, 4096, |address| {
-                (address < 4096).then_some(address as u64)
-            }),
-            Err(DmaMappingError::Unmapped)
-        );
-    }
-
-    #[test]
-    fn subrange_counts_only_overlapping_segments() {
-        let segments = map_segments_with(4094, 8196, 4096, |address| Some(address as u64)).unwrap();
+    fn subrange_projects_device_addresses_of_overlapping_segments() {
+        let segments = segments();
         let slice = DmaSlice {
             source: DmaSource::Mapped(&segments),
             range: 1..4099,
             device_writable: true,
         };
         assert_eq!(slice.segment_count(), 3);
+        let mut observed = Vec::new();
+        slice.for_each_segment(|address, length, writable| observed.push((address, length, writable)));
+        assert_eq!(observed, [(0x1fff, 1, true), (0x5000, 4096, true), (0x9000, 1, true)]);
     }
 
     #[test]
     fn descriptor_capacity_is_checked_from_cached_segments() {
-        let segments = map_segments_with(4094, 8196, 4096, |address| Some(address as u64)).unwrap();
+        let segments = segments();
         let first = DmaSlice {
             source: DmaSource::Mapped(&segments),
             range: 0..2,
@@ -439,11 +428,11 @@ mod tests {
             device_writable: true,
         };
         assert_eq!(
-            descriptor_requirement(&[first.clone(), second.clone()], 4),
-            DmaChainRequirement::Required(4)
+            descriptor_requirement(&[first.clone(), second.clone()], 3),
+            DmaChainRequirement::Required(3)
         );
         assert_eq!(
-            descriptor_requirement(&[first, second], 3),
+            descriptor_requirement(&[first, second], 2),
             DmaChainRequirement::ExceedsCapacity
         );
         assert_eq!(descriptor_requirement(&[], 8), DmaChainRequirement::Empty);

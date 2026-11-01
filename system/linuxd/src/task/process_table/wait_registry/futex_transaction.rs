@@ -1,17 +1,17 @@
 //! 单一 futex 操作 transaction；queue 仍只有原 WaitRegistry indexes。
 use super::*;
-use crate::execution::sync::{TaskMutexGuard, TaskMutexWaitPreparation};
+use crate::sync::{TaskMutexGuard, TaskMutexWaitPreparation};
 
 /// 覆盖一或两个实际 futex source 的 task-context guard；不保存 value、queue 或 readiness 副本。
 /// 固定升序避免双地址 ABBA；TaskMutex 允许 MM fault-in 可睡眠，不把 I/O 包在 spin/IRQ guard 中。
-pub(in crate::execution::task::process_table) struct FutexTransaction<'a> {
+pub(in crate::task::process_table) struct FutexTransaction<'a> {
     pub(super) registry: &'a WaitRegistry,
     guards: [Option<TaskMutexGuard<'a, ()>>; WAIT_SHARD_COUNT],
 }
 impl WaitRegistry {
     /// 冻结相关 source 上的 publish/value-confirm/wake/requeue；MM 初始 key 解析必须先归还 guard。
     /// 预置 preparation 用于 mandatory robust/clear-child-tid cleanup，普通 syscall 可返回 OOM。
-    pub(in crate::execution::task::process_table) fn futex_transaction(
+    pub(in crate::task::process_table) fn futex_transaction(
         &self,
         keys: &[FutexKey],
         mut preparation: Option<&mut TaskMutexWaitPreparation>,
@@ -43,7 +43,7 @@ impl FutexTransaction<'_> {
         );
     }
     /// 消费实际 source 上的 waiter，scheduler handoff 必须等全部 guard 归还后进行。
-    pub(in crate::execution::task::process_table) fn wake(
+    pub(in crate::task::process_table) fn wake(
         &self,
         key: FutexKey,
         count: usize,

@@ -4,12 +4,12 @@
 //! drain 的输入。
 
 use alloc::{collections::VecDeque, sync::Arc};
-use spin::Once;
+use native_runtime::sync::Once;
 
-use crate::execution::sync::IrqMutex;
+use crate::sync::Mutex;
 
 use super::registry::AppendOnlyRegistry;
-use crate::execution::interrupt::InterruptError;
+use crate::interrupt::InterruptError;
 
 const RX_CAPACITY: usize = 1024;
 
@@ -19,14 +19,14 @@ struct ConsoleInput {
 
 // OWNER: generic console input domain uniquely owns the fixed-capacity console RX ring. Concrete platform
 // handlers only publish already-drained bytes and never retain a second software queue.
-static CONSOLE_INPUT: Once<IrqMutex<ConsoleInput>> = Once::new();
+static CONSOLE_INPUT: Once<Mutex<ConsoleInput>> = Once::new();
 
 /// 初始化唯一 console RX ring。
 fn init_ring() -> Result<(), InterruptError> {
     let mut rx = VecDeque::new();
     rx.try_reserve_exact(RX_CAPACITY)
         .map_err(|_| InterruptError::NoMemory)?;
-    CONSOLE_INPUT.call_once(|| IrqMutex::new(ConsoleInput { rx }));
+    CONSOLE_INPUT.call_once(|| Mutex::new(ConsoleInput { rx }));
     Ok(())
 }
 

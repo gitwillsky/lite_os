@@ -1,6 +1,6 @@
 //! 句柄与通用对象调用。
 
-use native_abi::{HandleBasic, ProcessBasic, Status, TaskRuntime, VmarRegion, info, rights};
+use native_abi::{HandleBasic, ProcessBasic, Status, TaskRuntime, VmarRegion, VmoInfo, info, rights};
 
 use super::{Call, Plain, bytes_of};
 use crate::object::{HandleEntry, Object, WaitOutcome};
@@ -130,18 +130,31 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
             )
         }
         info::TASK_RUNTIME => {
-            let runtime_us = match &entry.object {
-                Object::Thread(thread) => thread.runtime_us(),
-                Object::Process(process) => process.runtime_us(),
+            let runtime = match &entry.object {
+                Object::Thread(thread) => thread.runtime(),
+                Object::Process(process) => process.runtime(),
                 _ => return Err(native_abi::ERR_WRONG_TYPE),
             };
             write_info(
                 call,
                 &TaskRuntime {
-                    cpu_time_ns: runtime_us.saturating_mul(1000),
+                    cpu_time_ns: runtime.cpu_us.saturating_mul(1000),
+                    restricted_time_ns: runtime.restricted_us.saturating_mul(1000),
+                    voluntary_switches: runtime.voluntary_switches,
+                    involuntary_switches: runtime.involuntary_switches,
                 },
             )
         }
+        info::VMO => match &entry.object {
+            Object::Vmo(vmo) => write_info(
+                call,
+                &VmoInfo {
+                    size: vmo.size(),
+                    committed_bytes: vmo.committed_bytes().map_err(crate::object::vm_status)?,
+                },
+            ),
+            _ => Err(native_abi::ERR_WRONG_TYPE),
+        },
         info::VMAR => match &entry.object {
             Object::Vmar(vmar) => {
                 let region = vmar.info();

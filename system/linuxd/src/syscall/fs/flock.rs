@@ -1,5 +1,5 @@
 use crate::{
-    execution::task::{AdvisoryLockWaitError, current_task, wait_for_advisory_lock},
+    task::{AdvisoryLockWaitError, current_task, wait_for_advisory_lock},
     fs::{AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockMode, vfs},
     syscall::errno,
 };

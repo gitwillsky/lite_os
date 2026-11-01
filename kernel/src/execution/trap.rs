@@ -25,6 +25,7 @@ use crate::vm::FaultAccess;
 fn handle_software_interrupt() {
     // RISC-V SSIP 必须先清除再完成同步请求；两步是唯一的 trap 确认点。
     arch::interrupt::clear_software();
+    crate::execution::barrier::complete_pending();
     crate::crash::stop_if_requested();
 }
 
@@ -55,6 +56,7 @@ fn handle_claimed_interrupt(user_trap: bool) {
     if software {
         // 必须先 EOI/清除本地 pending 边沿，再读取全部 SGI 请求。
         crate::platform::complete_pending_ipi();
+        crate::execution::barrier::complete_pending();
         crate::crash::stop_if_requested();
     }
 }

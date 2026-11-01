@@ -11,7 +11,7 @@ pub(super) fn without_namespace_files(
     selected
         .try_reserve_exact(source.len())
         .map_err(|_| FileSystemError::OutOfMemory)?;
-    let mut included = crate::fallible_tree::FallibleMap::new();
+    let mut included = fallible_tree::FallibleMap::new();
     for (index, view) in source.iter().enumerate() {
         let namespace_file = view
             .root
@@ -64,7 +64,7 @@ pub(super) fn copy_tree(
     views
         .try_reserve_exact(source.len())
         .map_err(|_| FileSystemError::OutOfMemory)?;
-    let mut correspondence = crate::fallible_tree::FallibleMap::new();
+    let mut correspondence = fallible_tree::FallibleMap::new();
     for (index, old) in source.iter().enumerate() {
         let (root, attachment) = if index == 0 {
             (policy.root.clone(), policy.attachment.clone())

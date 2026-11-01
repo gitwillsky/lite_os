@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use crate::ipc::PipeEnd;
 
@@ -36,7 +36,7 @@ pub(crate) const SCM_MAX_FD: usize = 253;
 
 /// native TCP_SKB_MIN_TRUESIZE 公式采用当前真实 packet/frame 元数据 footprint。
 pub(super) fn minimum_buffer(direction: super::SocketIoDirection) -> usize {
-    let overhead = crate::fallible_tree::VacantEntry::<u64, Datagram>::allocation_size()
+    let overhead = fallible_tree::VacantEntry::<u64, Datagram>::allocation_size()
         .max(stream::frame_allocation_size());
     let floor = 2048 + overhead;
     match direction {
@@ -477,7 +477,7 @@ impl UnixSocket {
 pub(super) fn run_rights_collector(
     clock: impl Fn() -> u64,
     sleep_until: impl FnMut(u64),
-    gate: crate::execution::sync::TaskMutexWaitPreparation,
+    gate: crate::sync::TaskMutexWaitPreparation,
 ) -> ! {
     rights_graph::run_collector(clock, sleep_until, gate)
 }

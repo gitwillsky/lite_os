@@ -36,46 +36,40 @@ pub(crate) const fn audit_architecture() -> u32 {
     crate::arch::user::AUDIT_ARCH
 }
 
-/// 返回 platform monotonic counter 的固定频率。
-///
-/// # Returns
-///
-/// DTB/architecture platform owner 已验证的 Hz 值。
+/// 单调时钟计数器频率（RISC-V hwprobe `TIME_CSR_FREQ`）：由内核报告的时钟粒度换算。
 pub(crate) fn time_counter_frequency() -> u64 {
-    crate::platform::timebase_frequency()
+    1_000_000_000 / crate::system_info().clock_resolution_ns.max(1)
 }
 
-/// 返回 calling CPU 对应的紧凑 Linux logical CPU index。
-///
-/// # Returns
-///
-/// 按 platform CPU ID 升序排列的零基 CPU index。
-///
-/// # Panics
-///
-/// calling CPU 不属于已发布 topology 时 fail-stop。
+/// 调用线程当前所在的 CPU（`getcpu`；只是提示）。
 pub(crate) fn current_cpu_index() -> usize {
-    crate::execution::cpu::current_id().index()
+    crate::cpu::current_id().index()
 }
 
-/// 投影 CpuTopology 的 logical online CPU mask，供 Linux userspace ABI 校验 selector。
-///
-/// # Returns
-///
-/// bit N 表示 logical CPU N 已 online。
+/// 在线 CPU 位图。
 pub(crate) fn online_cpu_mask() -> usize {
-    crate::execution::cpu::online().native_word()
+    crate::cpu::online().native_word()
 }
 
-/// 通过唯一 platform reset seam 关闭或冷重启整个 SMP system。
+/// 关机或冷重启整机。
 ///
-/// # Parameters
+/// # Errors
 ///
-/// - `kind`: 已由 syscall UAPI 层验证的 reset 类型。
-///
-/// # Returns
-///
-/// firmware 异常返回时传播 typed platform error；成功通常不返回。
+/// 内核拒绝请求。
 pub(crate) fn reset(kind: ResetKind) -> Result<(), crate::platform::ResetError> {
-    crate::platform::reset_system(kind, crate::platform::ResetReason::Requested)
+    crate::platform::reset_system(kind)
+}
+
+/// 上一次启动的内核崩溃记录（`/proc/last_panic`）；上次正常结束时为 `None`。
+pub(crate) fn previous_panic() -> Option<&'static [u8]> {
+    // OWNER: 启动后读取一次的崩溃记录；内核只在启动时保存它，之后不变。
+    static RECORD: native_runtime::sync::Once<alloc::vec::Vec<u8>> = native_runtime::sync::Once::new();
+    let record = RECORD.call_once(|| {
+        let mut buffer = alloc::vec![0u8; 64 * 1024];
+        let length = native_runtime::system::get_info(native_runtime::native_abi::system::CRASH_LOG, &mut buffer)
+            .unwrap_or(0);
+        buffer.truncate(length);
+        buffer
+    });
+    (!record.is_empty()).then_some(record.as_slice())
 }

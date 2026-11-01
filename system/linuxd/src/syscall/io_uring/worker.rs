@@ -19,12 +19,13 @@ use core::{
     pin::Pin,
     task::{Context, Poll, Waker},
 };
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 use syscall_abi::errno;
 
 use super::wait::{Cancel, Interest, Target, Waiter};
 use crate::{
-    execution::task::{spawn_kernel_thread, wait_for_poll},
+    task::{spawn_kernel_thread, wait_for_poll},
     io_uring::Ring,
     ipc::{Pipe, PipeEnd},
     syscall::poll::{PollWaitKeys, prepare_wait_sources},

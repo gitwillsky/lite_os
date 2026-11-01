@@ -1,9 +1,5 @@
 use super::thread_selector::scheduler_thread;
-use crate::execution::task::{
-    CpuAffinity, current_task,
-    processor::{replace_task_affinity, request_task_reschedule},
-    suspend_current_and_run_next,
-};
+use crate::task::{CpuAffinity, current_task};
 
 /// Linux scheduler affinity operation 的领域错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -40,16 +36,8 @@ pub(crate) fn scheduler_affinity(
         return Err(SchedulerAffinityError::Permission);
     }
     let affinity = CpuAffinity::from_user_bits(bits).ok_or(SchedulerAffinityError::Empty)?;
-    replace_task_affinity(&target, affinity);
-
-    // 1. Ready membership 已在 replace 中换代；这里只等待执行或切出 owner 离开禁止 CPU。
-    // 2. self-target 直接 yield，使 syscall continuation 在允许 CPU 恢复；remote target 先发 IPI。
-    // 3. caller 以正常 CFS membership 轮转等待，不 busy-spin，也不引入第二套 completion owner。
-    while target.scheduling.state.lock().executes_outside_affinity() {
-        if !alloc::sync::Arc::ptr_eq(&caller, &target) {
-            request_task_reschedule(&target);
-        }
-        suspend_current_and_run_next();
-    }
+    target.scheduling.state.lock().cpu_affinity = affinity;
+    // 内核在返回前迁移调用线程自身；其他线程在下一个调度点离开已禁止的 CPU。
+    crate::task::processor::apply_scheduling(&target);
     Ok(target.scheduling.state.lock().cpu_affinity.effective_bits())
 }

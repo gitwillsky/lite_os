@@ -68,8 +68,8 @@ impl CachedWrite<'_> {
             PAGE_SIZE,
             |start, count| write(start, &input[start..start + count]),
             |offset, start, written| {
-                self.file
-                    .update_cached(offset, &input[start..start + written]);
+                // 存储已提交；缓存更新失败只会让之后的读重新从存储补页，不影响已提交的数据。
+                let _ = self.file.update_cached(offset, &input[start..start + written]);
             },
             |error| *error == FileSystemError::NoSpace,
         )
@@ -94,14 +94,9 @@ impl CachedWrite<'_> {
         if input.is_empty() {
             return Ok(0);
         }
-        let _operation = self
-            .file
-            .operation
-            .lock()
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        let _epoch = self.file.begin_mutation();
+        let _operation = self.file.lock(&self.file.operation)?;
         if self.file.inode.buffered_writes() {
-            return self.file.write_buffered(offset, input, &_operation);
+            return self.file.write_buffered(offset, input);
         }
         self.write_batched(input, |start, bytes| {
             let offset = offset
@@ -130,12 +125,7 @@ impl CachedWrite<'_> {
     ///
     /// storage mutation 失败时透传 filesystem error。
     fn append(&self, input: &[u8], size_limit: u64) -> Result<(u64, usize), FileSystemError> {
-        let _operation = self
-            .file
-            .operation
-            .lock()
-            .map_err(|_| FileSystemError::OutOfMemory)?;
-        let _epoch = self.file.begin_mutation();
+        let _operation = self.file.lock(&self.file.operation)?;
         let offset = self.file.inode.size();
         let allowed = usize::try_from(size_limit.saturating_sub(offset))
             .unwrap_or(usize::MAX)
@@ -146,7 +136,7 @@ impl CachedWrite<'_> {
         if self.file.inode.buffered_writes() {
             return self
                 .file
-                .write_buffered(offset, &input[..allowed], &_operation)
+                .write_buffered(offset, &input[..allowed])
                 .map(|written| (offset, written));
         }
         let committed = self.write_batched(&input[..allowed], |_, bytes| {

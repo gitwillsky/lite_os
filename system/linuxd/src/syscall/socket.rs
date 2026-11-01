@@ -1,8 +1,8 @@
-use crate::execution::sync::WaitResult;
+use crate::sync::WaitResult;
 use alloc::sync::Arc;
 
 use crate::{
-    execution::task::{TaskControlBlock, current_task},
+    task::{TaskControlBlock, current_task},
     file::{OpenFileDescription, OpenFileKind, PreparedSocketDescription},
     fs::{O_CLOEXEC, O_NONBLOCK, O_RDWR},
     net::{
@@ -542,7 +542,7 @@ pub(crate) fn sys_connect(fd: usize, address: usize, length: usize) -> isize {
     let task = current_task().unwrap();
     let deadline = client
         .timeout(SocketIoDirection::Send)
-        .deadline(crate::execution::timer::get_time_ns());
+        .deadline(crate::time::get_time_ns());
     let nonblocking = ofd.status_flags() & O_NONBLOCK != 0;
     loop {
         match connect_begin(&task, &client, address, length) {
@@ -634,7 +634,7 @@ pub(crate) fn sys_accept4(fd: usize, address: usize, length: usize, flags: usize
     let task = current_task().unwrap();
     let deadline = listener
         .timeout(SocketIoDirection::Receive)
-        .deadline(crate::execution::timer::get_time_ns());
+        .deadline(crate::time::get_time_ns());
     let nonblocking = ofd.status_flags() & O_NONBLOCK != 0;
     loop {
         let result = accept_once(&task, &listener, flags, address, length);

@@ -5,7 +5,7 @@ use crate::{
     namespace::{NamespaceError, TimeNamespace, UserNamespace, UtsNamespace},
 };
 use alloc::sync::Arc;
-use spin::Mutex;
+use crate::sync::Mutex;
 
 /// Membership tuple 可共享 concrete namespaces，但外层 handle 只属于一个 Thread。
 /// user namespace 独占于 Credentials；不能在这里保留可变的第二份 user membership。
@@ -104,7 +104,7 @@ pub(crate) struct ThreadCloneResources {
     pub(crate) namespaces: PreparedCloneNamespaces,
 }
 impl PreparedCloneNamespaces {
-    pub(in crate::execution::task) fn pid_for_children(
+    pub(in crate::task) fn pid_for_children(
         &self,
     ) -> Arc<crate::namespace::PidNamespace> {
         self.membership.pid_for_children.clone()
@@ -263,7 +263,7 @@ impl TaskControlBlock {
         new_net: bool,
         sysv_sem: bool,
     ) -> Result<(), NamespaceError> {
-        if new_user && !crate::execution::task::process_table::is_single_threaded(self) {
+        if new_user && !crate::task::process_table::is_single_threaded(self) {
             return Err(NamespaceError::Invalid);
         }
         let prepared = self.prepare_clone_namespaces(
@@ -405,7 +405,7 @@ impl TaskControlBlock {
             }
             NamespaceType::Time => {
                 let time = target.downcast::<TimeNamespace>()?;
-                if !crate::execution::task::process_table::is_single_threaded(self) {
+                if !crate::task::process_table::is_single_threaded(self) {
                     return Err(NamespaceError::Multithreaded);
                 }
                 if !authority.capable(
@@ -434,7 +434,7 @@ impl TaskControlBlock {
             NamespaceType::User => {
                 let user = target.downcast::<UserNamespace>()?;
                 if Arc::ptr_eq(&authority.namespace, &user)
-                    || !crate::execution::task::process_table::is_single_threaded(self)
+                    || !crate::task::process_table::is_single_threaded(self)
                     || Arc::strong_count(
                         self.thread()
                             .fs_namespaces
@@ -594,7 +594,7 @@ impl TaskControlBlock {
         }
     }
     /// proc NET lookup 捕获实际 target 的 nsproxy；已退出执行体返回 None。
-    pub(in crate::execution::task) fn proc_net_namespace(
+    pub(in crate::task) fn proc_net_namespace(
         &self,
     ) -> Option<Arc<crate::net::NetNamespace>> {
         self.with_proc_namespaces(|membership| membership.net.clone())
@@ -620,7 +620,7 @@ impl TaskControlBlock {
             .time
             .snapshot()
     }
-    pub(in crate::execution::task) fn proc_time_for_children(&self) -> Option<Arc<TimeNamespace>> {
+    pub(in crate::task) fn proc_time_for_children(&self) -> Option<Arc<TimeNamespace>> {
         self.with_proc_namespaces(|membership| membership.time_for_children.clone())
     }
     /// exec 进入 for_children；只在新映像提交已不可失败、siblings 已退休后调用。
@@ -637,7 +637,7 @@ impl TaskControlBlock {
         drop(retired);
     }
     /// Linux proc mounts open 在同一 task resource lock 下捕获 target namespace 与 target fs root。
-    pub(in crate::execution::task) fn proc_mount_snapshot(
+    pub(in crate::task) fn proc_mount_snapshot(
         &self,
     ) -> Option<(Arc<crate::fs::MountNamespace>, Arc<crate::fs::OpenedFile>)> {
         if self.is_kernel_thread() {
@@ -648,7 +648,7 @@ impl TaskControlBlock {
         let root = state.fs.as_ref()?.lock().root.clone();
         Some((membership.mount.clone(), root))
     }
-    pub(in crate::execution::task) fn proc_namespace(
+    pub(in crate::task) fn proc_namespace(
         &self,
         selector: crate::namespace::NamespaceSelector,
     ) -> Option<crate::namespace::NamespaceReference> {
@@ -668,7 +668,7 @@ impl TaskControlBlock {
     }
     /// PIDFS namespace ioctl 在目标仍有实际 nsproxy membership 时捕获 namespace，再按 FSCREDS 授权。
     /// 与 proc 共享具体 owner，不重建 namespace 或保活已退出 Thread 的旧 membership。
-    pub(in crate::execution::task) fn pidfd_namespace(
+    pub(in crate::task) fn pidfd_namespace(
         &self,
         caller: &TaskControlBlock,
         selector: Option<crate::namespace::NamespaceSelector>,

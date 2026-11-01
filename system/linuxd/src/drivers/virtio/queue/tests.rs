@@ -17,7 +17,7 @@ fn publish_single(queue: &mut VirtQueue) -> u16 {
 
 #[test]
 fn available_batch_preserves_order_and_publishes_one_final_index() {
-    let mut queue = VirtQueue::new(4).expect("host queue allocation must succeed");
+    let mut queue = VirtQueue::new(4, &()).expect("host queue allocation must succeed");
     let first = queue.free_head;
     let second = queue.desc_shadow[first as usize].next;
 
@@ -51,7 +51,7 @@ fn inject_used_id(queue: &mut VirtQueue, id: u32, length: u32) {
 
 #[test]
 fn used_does_not_recycle_before_adapter_owner_claim() {
-    let mut queue = VirtQueue::new(4).expect("host queue allocation must succeed");
+    let mut queue = VirtQueue::new(4, &()).expect("host queue allocation must succeed");
     let head = publish_single(&mut queue);
     assert_eq!(queue.free_descriptor_count(), 3);
     inject_used(&mut queue, head, 64);
@@ -70,7 +70,7 @@ fn used_does_not_recycle_before_adapter_owner_claim() {
 
 #[test]
 fn duplicate_completion_cannot_recycle_the_same_chain_twice() {
-    let mut queue = VirtQueue::new(4).expect("host queue allocation must succeed");
+    let mut queue = VirtQueue::new(4, &()).expect("host queue allocation must succeed");
     let head = publish_single(&mut queue);
     inject_used(&mut queue, head, 64);
     let first = queue.used().unwrap().unwrap();
@@ -92,7 +92,7 @@ fn duplicate_completion_cannot_recycle_the_same_chain_twice() {
 
 #[test]
 fn unknown_completion_preserves_the_live_descriptor_chain() {
-    let mut queue = VirtQueue::new(4).expect("host queue allocation must succeed");
+    let mut queue = VirtQueue::new(4, &()).expect("host queue allocation must succeed");
     let published = publish_single(&mut queue);
     let unknown = (published + 1) & (queue.size - 1);
     inject_used(&mut queue, unknown, 64);
@@ -110,7 +110,7 @@ fn unknown_completion_preserves_the_live_descriptor_chain() {
 
 #[test]
 fn out_of_range_completion_latches_failure_without_recycling() {
-    let mut queue = VirtQueue::new(4).expect("host queue allocation must succeed");
+    let mut queue = VirtQueue::new(4, &()).expect("host queue allocation must succeed");
     publish_single(&mut queue);
     let invalid_id = u32::from(queue.size);
     inject_used_id(&mut queue, invalid_id, 64);

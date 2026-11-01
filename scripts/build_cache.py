@@ -267,6 +267,8 @@ def runtime_gate_payload(
             "machine": runtime.machine,
             "kernel_boot_artifact": runtime.kernel_boot_artifact,
             "kernel_boot_sha256": sha256(boot_artifact),
+            # 系统服务（root-server、linuxd）随 bootfs 交给内核；它们变化同样使门禁结果失效。
+            "bootfs_sha256": sha256(ROOT / runtime.bootfs),
         },
     }
 

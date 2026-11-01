@@ -34,7 +34,7 @@ pub(crate) trait GraphicsSysfsSource: Send + Sync {
 }
 // OWNER: 启动装配仅发布一次实际设备 source；不拥有 renderer/context/资源表。
 // 缺少来源时 DRM sysfs 为空，libdrm 无法把 card/render 节点归到同一设备；重复发布为初始化错误。
-static SOURCE: spin::Once<alloc::sync::Arc<dyn GraphicsSysfsSource>> = spin::Once::new();
+static SOURCE: native_runtime::sync::Once<alloc::sync::Arc<dyn GraphicsSysfsSource>> = native_runtime::sync::Once::new();
 pub(crate) fn register_source(
     source: alloc::sync::Arc<dyn GraphicsSysfsSource>,
 ) -> Result<(), FileSystemError> {

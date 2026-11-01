@@ -10,7 +10,7 @@ pub(in crate::fs::fuse) enum Limit {
 
 /// 固定 Linux 的默认非特权预算：managed RAM / 8192 / 392，封顶 65535。
 pub(in crate::fs::fuse) fn unprivileged_limit() -> u16 {
-    let bytes = crate::memory::frame_statistics().capacity_pages as u64 * PAGE_SIZE as u64;
+    let bytes = crate::system_info().total_pages * PAGE_SIZE as u64;
     (bytes / 8192 / 392).min(u64::from(u16::MAX)) as u16
 }
 

@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use crate::execution::task::pid::ProcessId;
+use crate::task::pid::ProcessId;
 use crate::fs::{AccessIdentity, vfs};
 
 mod loader;
@@ -9,22 +9,18 @@ mod model;
 mod pid;
 mod process_table;
 mod processor;
-mod scheduler;
 
 use loader::LoadedExecutable;
 pub(crate) use loader::{EXEC_ARGUMENT_BYTES_LIMIT, ProgramLoadError, load_executable};
-pub(crate) use memory_barrier::{
-    complete_pending as complete_pending_memory_barrier, register_private_memory_barrier,
-    synchronize_private_memory,
-};
+pub(crate) use memory_barrier::{register_private_memory_barrier, synchronize_private_memory};
 pub(crate) use model::{
     CapabilityError, CloneParameters, CredentialUpdateError, IoStatistics, MessageIdentityError,
     PendingSignal, ProcessCloneResources, RLIM_INFINITY, RLIMIT_NPROC, ResourceLimit,
     ResourceLimitError, RunState, SignalAction, SignalDelivery, SignalFrameRestoreError,
-    SignalStack, SignalStackError, StopResume, StopTransition, TaskControlBlock,
+    SignalStack, SignalStackError, StopResume, TaskControlBlock,
     ThreadCloneResources, WaitMembership,
 };
-pub(in crate::execution::task) use model::{CpuAffinity, ReadyRetirement, ReadyTransition};
+pub(in crate::task) use model::CpuAffinity;
 pub(crate) use model::{ExecError, ResourceUsage, RobustListError, SeccompDecision, SeccompError};
 pub(crate) use model::{KernelThreadBody, SyscallRestartBlock, SyscallRestartPolicy};
 pub(crate) use process_table::advisory_lock::{
@@ -39,42 +35,6 @@ pub(crate) use process_table::timer_queue::{
 pub(crate) use process_table::*;
 pub(crate) use processor::*;
 
-/// 在任何启动期 external/software trap 前构造 membarrier per-CPU state。
-///
-/// # Errors
-///
-/// 重复初始化或 allocation failure 时 fail-stop。
-pub(crate) fn initialize_interrupt_state() {
-    memory_barrier::initialize();
-}
-
-/// 首次 restore 的 task 在进入 architecture trap-return 前完成前一 outgoing
-/// task 的 handoff consequence；已有 task 在 context-switch continuation 中走同一 seam。
-fn resume_new_task() -> ! {
-    process_table::context_switch::complete_pending_handoff();
-    let resume = current_task()
-        .expect("new task resumed without Processor current ownership")
-        .kernel_resume_target();
-    resume()
-}
-
-/// 内核线程首次调度的 continuation：完成 handoff、打开本地中断并运行线程主体。
-///
-/// 新执行体首次恢复时的本地中断状态取决于前一个 outgoing task；内核线程不经过
-/// user trap-return，因此必须在这里显式打开，否则主体会在屏蔽中断下运行并延迟 tick 与 I/O
-/// completion。
-pub(in crate::execution::task) fn run_kernel_thread() -> ! {
-    process_table::context_switch::complete_pending_handoff();
-    let body = current_task()
-        .expect("kernel thread resumed without Processor current ownership")
-        .take_kernel_thread_body();
-    // SAFETY: 内核线程只由 `spawn_kernel_thread` 在 trap vector 与 platform interrupt controller
-    // 初始化完成后创建，满足 scheduler interrupt 的初始化顺序。
-    unsafe { crate::arch::interrupt::enable_scheduler_interrupts() };
-    body();
-    process_table::exit_current_kernel_thread()
-}
-
 /// 证明 processor topology 与全部 scheduler wait adapter 已安装；只有 [`initialize`] 能构造。
 #[derive(Clone, Copy)]
 pub(crate) struct SchedulerReady(());
@@ -86,7 +46,6 @@ pub(crate) struct SchedulerReady(());
 ///    mount 与 executable loading 会在尚无 current task 时发出 block I/O，wait-target factory 需要
 ///    已初始化的 topology 才能安全观察到 `None`，颠倒顺序会让 `current_task()` 永久等待。
 pub(crate) fn initialize(_vfs: crate::fs::VfsReady) -> SchedulerReady {
-    processor::init_topology();
     process_table::initialize_driver_io_wait();
     process_table::task_wait::initialize();
     process_table::pipe_wait::install_pipe_scheduler();
@@ -184,8 +143,6 @@ pub(crate) fn spawn_init(
     _scheduler: SchedulerReady,
     _root: crate::fs::RootMounted,
     _console: crate::devices::tty::ConsoleReady,
-    kernel_trap_handler: crate::arch::trap::UserTrapEntry,
-    kernel_trap_return: crate::arch::context::KernelResume,
     program: InitProgram<'_>,
 ) {
     let InitProgram {
@@ -209,8 +166,6 @@ pub(crate) fn spawn_init(
     let init_proc = TaskControlBlock::new_with_pid(
         &loaded,
         ProcessId::from_identity(pid.identity()),
-        kernel_trap_handler,
-        kernel_trap_return,
         environment,
     );
     match init_proc {

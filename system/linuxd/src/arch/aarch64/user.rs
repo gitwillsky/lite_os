@@ -1,8 +1,7 @@
 //! Linux/AArch64 user register conventions.
 
 use super::{
-    UserContext, fp_state,
-    mmu::USER_ADDRESS_END,
+    UserContext, fp,
     signal_frame::{InvalidSignalFrame, SignalFrame, SignalStack},
 };
 pub(crate) const MACHINE_NAME: &str = "aarch64";
@@ -107,29 +106,15 @@ impl UserContext {
         self.sp
     }
 
-    pub(crate) fn prepare_clone(
-        &mut self,
-        user_stack: Option<usize>,
-        thread_pointer: Option<usize>,
-        kernel_stack: usize,
-    ) {
+    /// 为 clone 创建的 child 准备首次返回：返回值 0，可选新栈与 TLS。
+    pub(crate) fn prepare_clone(&mut self, user_stack: Option<usize>, thread_pointer: Option<usize>) {
         if let Some(stack) = user_stack {
             self.sp = stack;
         }
         if let Some(tls) = thread_pointer {
             self.thread_pointer = tls;
         }
-        self.prepare_child_return(kernel_stack);
-    }
-
-    fn prepare_child_return(&mut self, kernel_stack: usize) {
         self.x[0] = 0;
-        self.kernel_sp = kernel_stack;
-        self.kernel_cpu_id = 0;
-    }
-
-    pub(crate) fn prepare_kernel_return(&mut self, logical_cpu: usize) {
-        self.kernel_cpu_id = logical_cpu;
     }
 
     /// 编码标准 Linux/arm64 `rt_sigframe` 并捕获 live FPSIMD state。
@@ -159,9 +144,8 @@ impl UserContext {
             self.pstate,
         );
         frame.set_fault_context(self.fault_address, self.fault_syndrome);
-        // SAFETY: frame is 16-byte aligned and uniquely owned; helper writes exactly the FPSIMD
-        // body, temporarily opens FPEN, and closes it before returning to Rust.
-        unsafe { fp_state::capture_signal(frame.fpsimd_state_mut_ptr()) };
+        // SAFETY: frame 16 字节对齐且由本函数独占；例程只写 FPSIMD 记录体。
+        unsafe { fp::capture_signal(frame.fpsimd_state_mut_ptr()) };
         frame
     }
 
@@ -182,10 +166,9 @@ impl UserContext {
         &mut self,
         frame: &SignalFrame,
     ) -> Result<(usize, u64, SignalStack), InvalidSignalContext> {
-        let decoded = frame.decode(USER_ADDRESS_END)?;
-        // SAFETY: decode proved one complete, aligned FPSIMD record and rejected malformed trailing
-        // state; frame remains immutable/live while assembly restores the calling CPU's vector file.
-        unsafe { fp_state::restore_signal(frame.fpsimd_state_ptr(&decoded)) };
+        let decoded = frame.decode(crate::memory::user_address_end())?;
+        // SAFETY: decode 已证明存在一个完整、对齐的 FPSIMD 记录；frame 在恢复期间保持不变。
+        unsafe { fp::restore_signal(frame.fpsimd_state_ptr(&decoded)) };
         self.x = decoded.registers;
         self.sp = decoded.stack_pointer;
         self.pc = decoded.program_counter;
@@ -213,5 +196,83 @@ impl UserContext {
         self.x[1] = frame;
         self.x[2] = frame + 128;
         self.pc = handler;
+    }
+}
+
+impl UserContext {
+    /// 编解码 Linux NT_PRSTATUS；只暴露 EL0 通用寄存器，不允许改写 kernel metadata。
+    ///
+    /// # Parameters
+    /// - `note`: ELF note，当前支持 NT_PRSTATUS。
+    /// - `bytes`: 长度为八字节倍数的 kernel staging，可传标准 regset 的前缀。
+    /// - `write`: true 表示以原状态补足前缀后原子校验、提交。
+    ///
+    /// # Returns
+    /// 实际传输字节数，不超过 272。
+    ///
+    /// # Errors
+    /// 未实现 note、非 word 大小或包含特权 PSTATE 的写入返回 Err。
+    pub(crate) fn ptrace_registers(
+        &mut self,
+        note: usize,
+        bytes: &mut [u8],
+        write: bool,
+    ) -> Result<usize, ()> {
+        if note != syscall_abi::ptrace::NT_PRSTATUS || !bytes.len().is_multiple_of(8) {
+            return Err(());
+        }
+        let length = bytes.len().min(272);
+        let mut words = [0usize; 34];
+        words[..31].copy_from_slice(&self.x);
+        words[31] = self.sp;
+        words[32] = self.pc;
+        words[33] = self.pstate;
+        for (word, chunk) in words.iter_mut().zip(bytes[..length].as_chunks_mut::<8>().0) {
+            if write {
+                *word = usize::from_ne_bytes(*chunk);
+            } else {
+                chunk.copy_from_slice(&word.to_ne_bytes());
+            }
+        }
+        if write {
+            // Linux valid_user_regs: EL0t、未屏蔽 DAIF；restricted 状态只承载 NZCV，其余用户位不保留。
+            const USER_PSTATE: usize = 0xf000_1c00;
+            if words[33] & !USER_PSTATE != 0 {
+                return Err(());
+            }
+            self.x.copy_from_slice(&words[..31]);
+            self.sp = words[31];
+            self.pc = words[32];
+            self.pstate = words[33] & super::PSTATE_USER_MASK;
+        }
+        Ok(length)
+    }
+
+    /// 完成 tracer 已观察的 restart；PC 被 debugger 修改时不再覆盖它。
+    ///
+    /// # Parameters
+    /// - `instruction`: 原 syscall 指令 PC。
+    /// - `replay_number`: None 恢复 EINTR；Some 保留 tracer 参数，仅 restart-block 选择原生入口。
+    ///
+    /// # Returns
+    /// 无返回值；仅当前 PC 仍在原指令时完成正常的 restart/handler 决议。
+    pub(crate) fn finish_ptrace_restart(
+        &mut self,
+        instruction: usize,
+        replay_number: Option<usize>,
+    ) {
+        if self.pc != instruction {
+            return;
+        }
+        match replay_number {
+            None => {
+                self.pc += 4;
+                self.x[0] = (-syscall_abi::errno::EINTR) as usize;
+            }
+            Some(syscall_abi::SYSCALL_RESTART_SYSCALL) => {
+                self.x[8] = syscall_abi::SYSCALL_RESTART_SYSCALL
+            }
+            Some(_) => {}
+        }
     }
 }

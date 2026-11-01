@@ -207,7 +207,7 @@ pub(crate) trait NetworkDevice: Send + Sync {
 /// 发布本 CPU 的 network deferred work，由 user-return/idle safe point 消费。
 #[cfg(not(test))]
 pub(crate) fn request_poll() {
-    crate::execution::deferred::raise(crate::execution::deferred::DeferredWork::NETWORK);
+    crate::deferred::raise(crate::deferred::DeferredWork::NETWORK);
 }
 
 #[cfg(test)]
@@ -216,7 +216,7 @@ mod tests {
         NetworkCompletion, NetworkDevice, NetworkError, NetworkStatistics, NetworkTransmit,
     };
     use alloc::sync::Arc;
-    use spin::Mutex;
+    use crate::sync::Mutex;
 
     struct InjectedDevice {
         submit_error: bool,

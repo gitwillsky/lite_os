@@ -1,9 +1,10 @@
 use alloc::{sync::Arc, sync::Weak, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
 use super::terminal::{Console, Terminal, clear_terminal_raw_input};
-use crate::fallible_tree::FallibleMap;
+use fallible_tree::FallibleMap;
 use crate::fs::FileSystemError;
 use crate::ipc::{Pipe, PipeEnd, PipeRead, PipeWrite};
 

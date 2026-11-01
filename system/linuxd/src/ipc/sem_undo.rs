@@ -1,14 +1,12 @@
 //! SEM_UNDO 实际共享 membership、adjustments 与 array/list 交叉注册。
 use super::{IpcError, SemaphoreSet};
-use crate::{
-    fallible_tree::{FallibleMap, VacantEntry},
-    namespace::PidIdentity,
-};
+use crate::{namespace::PidIdentity};
+use fallible_tree::{FallibleMap, VacantEntry};
 use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use spin::Mutex;
+use crate::sync::Mutex;
 
 type UndoKey = (u64, i32);
 pub(super) struct UndoAdjustments {

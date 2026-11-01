@@ -7,7 +7,7 @@ use crate::{
     },
     devices::model::VIRGL_COMMAND_EXTENTS_MAX,
     fs::chardev::UserMemory,
-    memory::{DeviceBacking, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE},
+    memory::{DeviceBacking, PAGE_SIZE},
 };
 
 use syscall_abi::errno;
@@ -374,8 +374,6 @@ fn copy_command_stream(
 ) -> Result<Arc<DeviceBacking>, isize> {
     let backing = DeviceBacking::try_allocate(
         length.div_ceil(PAGE_SIZE),
-        FrameAllocationClass::Reclaimable,
-        DeviceMemoryKind::Driver,
     )
     .filter(|backing| backing.extent_count() <= VIRGL_COMMAND_EXTENTS_MAX)
     .ok_or(errno::ENOMEM)?;

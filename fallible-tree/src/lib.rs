@@ -1,0 +1,747 @@
+#![no_std]
+#![feature(allocator_ext)]
+
+//! 节点分配可失败的有序表：把“可能失败”的那一步提前到事务之外。
+//!
+//! # 它解决什么问题
+//!
+//! 系统代码里到处是“同时改好几个索引”的多步更新（进程图、等待表、VMA……）。更新做到一半内存不足，
+//! 已经改过的部分很难撤销。标准库集合的插入在内部随时可能分配，失败时调用者拿不到可恢复的错误，
+//! 所以不能直接用。
+//!
+//! # 核心想法：准备（可失败）与提交（不会失败）分离
+//!
+//! 一次有序表更新里唯一需要新内存的就是**节点本身**。这里把它拆成两步：
+//!
+//! 1. 准备：`try_prepare` / `try_prepare_vacant` / `try_reserve_node` 先分配好节点，返回
+//!    `VacantEntry`（带 key/value 的节点）或 `NodeSlot`（空节点）。此时表没有任何变化，失败时
+//!    丢掉 token 即可。
+//! 2. 提交：`commit_vacant` 把节点挂进树，只做指针修改和 AVL 旋转，不分配、不失败。key 已经存在
+//!    说明调用者的事务逻辑出错，直接 panic。
+//!
+//! 调用者因此可以先把一个多步事务需要的全部节点准备好，再取锁、依次提交；中途不会再因为内存不足
+//! 而半途而废。`take_entry` 是反向操作：摘出节点但**保留它的内存**作为 token，可以改 key 后提交到
+//! 另一张表，迁移同样不分配；`into_slot` 则回收存储，供下一次 `fill` 复用。
+//!
+//! # 数据结构
+//!
+//! 平衡方式是 AVL：每个节点记录高度，左右子树高度差达到 2 时旋转（见 `topology.rs`），查找、插入、
+//! 删除都是 O(log n)。
+//!
+//! 每个节点还保存一个指向**中序后继**的裸指针 `next`，由提交和删除维护。有序遍历（`iter`、
+//! `iter_from`、`iter_after`）只需沿 `next` 前进，不用递归也不用显式栈，所以遍历本身不分配，
+//! 可以用在不允许分配的上下文里。这个裸指针是本模块 `unsafe` 的来源：它的正确性只由拓扑修改代码
+//! 维护，遍历期间的借用保证了没有并发修改。
+//!
+//! # 阅读顺序
+//!
+//! `topology.rs`（旋转与插入删除，纯算法）→ `commit_vacant`（如何顺手维护 `next`）→ `iter.rs`
+//! （沿 `next` 遍历）。
+
+extern crate alloc;
+#[cfg(test)]
+extern crate std;
+
+use alloc::boxed::Box;
+use core::{borrow::Borrow, cmp::Ordering, fmt, mem::MaybeUninit, ops::Index, ptr::NonNull};
+
+mod iter;
+mod topology;
+// Iter 已是 iter/iter_from/iter_after 的返回类型；具名 re-export 供领域枚举组合，无新增状态/分配。
+pub use iter::Iter;
+use topology::{
+    count_nodes, insert_absent, join_ordered, last_key, remove_node, retain_linear, split,
+};
+
+type Link<K, V> = Option<Box<Node<K, V>>>;
+
+/// 一次有序表节点分配失败。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OutOfMemory;
+
+struct Node<K, V> {
+    key: K,
+    value: V,
+    height: u8,
+    left: Link<K, V>,
+    right: Link<K, V>,
+    // SAFETY OWNER: FallibleMap topology mutation alone maintains the in-order successor pointer.
+    // It never owns the target; immutable Iter lifetime excludes mutation while dereferenced.
+    next: Option<NonNull<Node<K, V>>>,
+}
+
+impl<K, V> Node<K, V> {
+    fn new(key: K, value: V) -> Self {
+        Self {
+            key,
+            value,
+            height: 1,
+            left: None,
+            right: None,
+            next: None,
+        }
+    }
+}
+
+/// 节点分配可失败、其余结构变换不分配的确定性 AVL 有序表。
+pub struct FallibleMap<K, V> {
+    root: Link<K, V>,
+    len: usize,
+}
+
+// SAFETY: next pointers only target Box allocations owned by the same map. Moving the map between
+// threads does not move Box pointees; K/V Send is therefore the complete ownership requirement.
+unsafe impl<K: Send, V: Send> Send for FallibleMap<K, V> {}
+// SAFETY: shared access cannot mutate topology, and Iter only reads next pointers while borrowing
+// the map. K/V Sync is therefore sufficient for concurrent shared traversal.
+unsafe impl<K: Sync, V: Sync> Sync for FallibleMap<K, V> {}
+
+/// 已完成唯一节点分配、尚未发布到有序表的 entry token。
+pub struct VacantEntry<K, V>(Box<Node<K, V>>);
+
+/// 已分配但尚未初始化领域 key/value 的唯一节点 storage。
+pub struct NodeSlot<K, V>(Box<MaybeUninit<Node<K, V>>>);
+
+// SAFETY: unpublished tokens always have next=None; moving their stable Box is equivalent to
+// moving K/V ownership and cannot expose a topology pointer.
+unsafe impl<K: Send, V: Send> Send for VacantEntry<K, V> {}
+// SAFETY: shared token access only exposes &V, and the unpublished next field remains None.
+unsafe impl<K: Sync, V: Sync> Sync for VacantEntry<K, V> {}
+// SAFETY: NodeSlot owns uninitialized Box storage and contains no initialized self-reference.
+unsafe impl<K: Send, V: Send> Send for NodeSlot<K, V> {}
+// SAFETY: shared access to NodeSlot cannot initialize or publish its storage.
+unsafe impl<K: Sync, V: Sync> Sync for NodeSlot<K, V> {}
+
+impl<K, V> NodeSlot<K, V> {
+    /// 用完整领域值初始化预留 storage。
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: 待发布 key。
+    /// - `value`: 待发布 value。
+    ///
+    /// # Returns
+    ///
+    /// 可无分配提交的 entry token。
+    pub fn fill(mut self, key: K, value: V) -> VacantEntry<K, V> {
+        self.0.write(Node::new(key, value));
+        // SAFETY: storage 刚由 `write` 完整初始化为一个 Node，且 self 按值消费，
+        // 此后不再以 MaybeUninit 读取或析构同一 storage。
+        VacantEntry(unsafe { self.0.assume_init() })
+    }
+}
+
+impl<K, V> VacantEntry<K, V> {
+    /// 实际 node allocation 的布局大小；领域预算计入真实 storage，不猜测 tree 内部字段。
+    pub const fn allocation_size() -> usize {
+        core::mem::size_of::<Node<K, V>>()
+    }
+
+    /// 借用尚未发表的实际key，供多节点transaction在修改现有索引前检查冲突。
+    pub fn key(&self) -> &K {
+        &self.0.key
+    }
+    /// 返回 token 中尚未发布 value 的共享引用。
+    pub fn value(&self) -> &V {
+        &self.0.value
+    }
+
+    /// 返回 token 中尚未发布 value 的独占引用。
+    pub fn value_mut(&mut self) -> &mut V {
+        &mut self.0.value
+    }
+
+    /// 修改尚未发布的 key，不执行分配。
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: 新 key；调用者必须在提交前维持唯一性。
+    pub fn set_key(&mut self, key: K) {
+        self.0.key = key;
+    }
+
+    /// 消费 token 并返回领域 value，同时释放节点 storage。
+    pub fn into_value(self) -> V {
+        let Node { value, .. } = *self.0;
+        value
+    }
+
+    /// 回收已摘除 node 的实际 storage，同时转交完整旧 key/value 的析构责任。
+    /// 不分配、不释放；不能分配的上下文可复用 slot，把有资源边的旧 value 移给锁外 retirement。
+    pub fn into_slot(self) -> (NodeSlot<K, V>, K, V) {
+        assert!(self.0.left.is_none() && self.0.right.is_none() && self.0.next.is_none());
+        let pointer = Box::into_raw(self.0);
+        // SAFETY: VacantEntry 独占摘除后的完整 Node，无 topology edges 或外部 iterator。
+        // key/value 各 read 一次并转交 caller；其余字段无拥有的资源。相同 layout 的
+        // MaybeUninit storage 不再析构旧值，未来 fill 完整 write 后才重新 assume_init。
+        unsafe {
+            let key = core::ptr::read(&raw const (*pointer).key);
+            let value = core::ptr::read(&raw const (*pointer).value);
+            let slot = NodeSlot(Box::from_raw(pointer.cast::<MaybeUninit<Node<K, V>>>()));
+            (slot, key, value)
+        }
+    }
+}
+
+impl<K, V> FallibleMap<K, V> {
+    /// 构造空表，不分配内存。
+    pub const fn new() -> Self {
+        Self { root: None, len: 0 }
+    }
+
+    /// 返回当前 entry 数量。
+    pub const fn len(&self) -> usize {
+        self.len
+    }
+
+    /// 判断表是否为空。
+    pub const fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    /// 删除全部 entry；释放节点但不执行新分配。
+    pub fn clear(&mut self) {
+        self.root = None;
+        self.len = 0;
+    }
+
+    /// 以 key 升序迭代，不分配临时栈。
+    pub fn iter(&self) -> Iter<'_, K, V> {
+        Iter::new(self.root.as_deref())
+    }
+
+    /// 以 key 升序迭代 value，不分配临时栈。
+    pub fn values(&self) -> impl Iterator<Item = &V> {
+        self.iter().map(|(_, value)| value)
+    }
+
+    /// 从第一个不小于 `start` 的 key 开始升序迭代。
+    ///
+    /// # Parameters
+    ///
+    /// - `start`: inclusive lower bound。
+    ///
+    /// # Returns
+    ///
+    /// 不分配临时栈的有序迭代器。
+    pub fn iter_from(&self, start: &K) -> Iter<'_, K, V>
+    where
+        K: Ord,
+    {
+        Iter::from_key(self.root.as_deref(), start)
+    }
+
+    /// 从第一个严格大于 `start` 的 key 开始升序迭代。
+    pub fn iter_after(&self, start: &K) -> Iter<'_, K, V>
+    where
+        K: Ord,
+    {
+        Iter::after_key(self.root.as_deref(), start)
+    }
+
+    /// 对全部 value 按 key 顺序执行 mutation，不改变树结构。
+    ///
+    /// # Parameters
+    ///
+    /// - `visit`: 每个 entry 的访问逻辑。
+    pub fn for_each_mut(&mut self, mut visit: impl FnMut(&K, &mut V)) {
+        fn walk<K, V>(node: &mut Link<K, V>, visit: &mut impl FnMut(&K, &mut V)) {
+            let Some(node) = node else {
+                return;
+            };
+            walk(&mut node.left, visit);
+            visit(&node.key, &mut node.value);
+            walk(&mut node.right, visit);
+        }
+
+        walk(&mut self.root, &mut visit);
+    }
+
+    /// 对全部 value 按 key 顺序执行可失败 mutation，不改变树结构。
+    ///
+    /// # Parameters
+    ///
+    /// - `visit`: 每个 entry 的访问逻辑；首个错误终止遍历。
+    ///
+    /// # Returns
+    ///
+    /// 全部访问成功时为空值，否则返回原始错误。
+    pub fn try_for_each_mut<E>(
+        &mut self,
+        mut visit: impl FnMut(&K, &mut V) -> Result<(), E>,
+    ) -> Result<(), E> {
+        fn walk<K, V, E>(
+            node: &mut Link<K, V>,
+            visit: &mut impl FnMut(&K, &mut V) -> Result<(), E>,
+        ) -> Result<(), E> {
+            let Some(node) = node else {
+                return Ok(());
+            };
+            walk(&mut node.left, visit)?;
+            visit(&node.key, &mut node.value)?;
+            walk(&mut node.right, visit)
+        }
+
+        walk(&mut self.root, &mut visit)
+    }
+}
+
+impl<K: Ord, V> FallibleMap<K, V> {
+    /// 查询精确 key。
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: 查询 key。
+    ///
+    /// # Returns
+    ///
+    /// 已存在 value 的共享引用。
+    pub fn get<Q: Ord + ?Sized>(&self, key: &Q) -> Option<&V>
+    where
+        K: Borrow<Q>,
+    {
+        let mut cursor = self.root.as_deref();
+        while let Some(node) = cursor {
+            match key.cmp(node.key.borrow()) {
+                Ordering::Less => cursor = node.left.as_deref(),
+                Ordering::Greater => cursor = node.right.as_deref(),
+                Ordering::Equal => return Some(&node.value),
+            }
+        }
+        None
+    }
+
+    /// 可变查询精确 key。
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: 查询 key。
+    ///
+    /// # Returns
+    ///
+    /// 已存在 value 的独占引用。
+    pub fn get_mut<Q: Ord + ?Sized>(&mut self, key: &Q) -> Option<&mut V>
+    where
+        K: Borrow<Q>,
+    {
+        let mut cursor = self.root.as_deref_mut();
+        while let Some(node) = cursor {
+            match key.cmp(node.key.borrow()) {
+                Ordering::Less => cursor = node.left.as_deref_mut(),
+                Ordering::Greater => cursor = node.right.as_deref_mut(),
+                Ordering::Equal => return Some(&mut node.value),
+            }
+        }
+        None
+    }
+
+    /// 判断精确 key 是否存在。
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: 查询 key。
+    ///
+    /// # Returns
+    ///
+    /// key 存在时为 true。
+    pub fn contains_key<Q: Ord + ?Sized>(&self, key: &Q) -> bool
+    where
+        K: Borrow<Q>,
+    {
+        self.get(key).is_some()
+    }
+
+    /// 查询不大于 key 的最大 entry。
+    pub fn floor(&self, key: &K) -> Option<(&K, &V)> {
+        let mut cursor = self.root.as_deref();
+        let mut candidate = None;
+        while let Some(node) = cursor {
+            match key.cmp(&node.key) {
+                Ordering::Less => cursor = node.left.as_deref(),
+                Ordering::Equal => return Some((&node.key, &node.value)),
+                Ordering::Greater => {
+                    candidate = Some((&node.key, &node.value));
+                    cursor = node.right.as_deref();
+                }
+            }
+        }
+        candidate
+    }
+
+    /// 查询严格小于 key 的最大 entry。
+    pub fn predecessor(&self, key: &K) -> Option<(&K, &V)> {
+        let mut cursor = self.root.as_deref();
+        let mut candidate = None;
+        while let Some(node) = cursor {
+            if node.key < *key {
+                candidate = Some((&node.key, &node.value));
+                cursor = node.right.as_deref();
+            } else {
+                cursor = node.left.as_deref();
+            }
+        }
+        candidate
+    }
+
+    /// 查询不小于 key 的最小 entry。
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: inclusive lower bound。
+    ///
+    /// # Returns
+    ///
+    /// key/value 邻居；不存在时返回 None。
+    pub fn ceiling(&self, key: &K) -> Option<(&K, &V)> {
+        let mut cursor = self.root.as_deref();
+        let mut candidate = None;
+        while let Some(node) = cursor {
+            match key.cmp(&node.key) {
+                Ordering::Less => {
+                    candidate = Some((&node.key, &node.value));
+                    cursor = node.left.as_deref();
+                }
+                Ordering::Equal => return Some((&node.key, &node.value)),
+                Ordering::Greater => cursor = node.right.as_deref(),
+            }
+        }
+        candidate
+    }
+
+    /// 查询严格大于 key 的最小 entry。
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: exclusive lower bound。
+    ///
+    /// # Returns
+    ///
+    /// key/value 邻居；不存在时返回 None。
+    pub fn successor(&self, key: &K) -> Option<(&K, &V)> {
+        let mut cursor = self.root.as_deref();
+        let mut candidate = None;
+        while let Some(node) = cursor {
+            if *key < node.key {
+                candidate = Some((&node.key, &node.value));
+                cursor = node.left.as_deref();
+            } else {
+                cursor = node.right.as_deref();
+            }
+        }
+        candidate
+    }
+
+    /// 可变查询不大于 key 的最大 entry。
+    pub fn floor_mut(&mut self, key: &K) -> Option<(&K, &mut V)> {
+        fn find<'a, K: Ord, V>(node: &'a mut Link<K, V>, key: &K) -> Option<(&'a K, &'a mut V)> {
+            let node = node.as_deref_mut()?;
+            match key.cmp(&node.key) {
+                Ordering::Less => find(&mut node.left, key),
+                Ordering::Equal => Some((&node.key, &mut node.value)),
+                Ordering::Greater => {
+                    find(&mut node.right, key).or(Some((&node.key, &mut node.value)))
+                }
+            }
+        }
+
+        find(&mut self.root, key)
+    }
+
+    /// 查询全表最小 entry。
+    pub fn first_key_value(&self) -> Option<(&K, &V)> {
+        let mut cursor = self.root.as_deref()?;
+        while let Some(left) = cursor.left.as_deref() {
+            cursor = left;
+        }
+        Some((&cursor.key, &cursor.value))
+    }
+
+    /// 原子插入或替换 entry。
+    ///
+    /// 新 key 的 node 在任何结构 mutation 前通过 `Box::try_new_uninit` 完成；失败时表保持不变。
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: entry key。
+    /// - `value`: entry value。
+    ///
+    /// # Returns
+    ///
+    /// 替换时返回旧 value；新 key 返回 None；节点 OOM 返回 `OutOfMemory`。
+    pub fn try_insert(&mut self, key: K, value: V) -> Result<Option<V>, OutOfMemory> {
+        if let Some(current) = self.get_mut(&key) {
+            return Ok(Some(core::mem::replace(current, value)));
+        }
+        let entry = self.try_prepare_vacant(key, value)?;
+        self.commit_vacant(entry);
+        Ok(None)
+    }
+
+    /// 在尚未取得目标 owner lock 时预分配一个 entry node。
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: 待发布 key。
+    /// - `value`: 与 token 同寿命的待发布 value。
+    ///
+    /// # Returns
+    ///
+    /// 可无分配提交的 token；节点 OOM 时返回错误。
+    pub fn try_prepare(key: K, value: V) -> Result<VacantEntry<K, V>, OutOfMemory> {
+        Ok(Self::try_reserve_node()?.fill(key, value))
+    }
+
+    /// 仅预留一个节点 allocation，领域值可在后续 transaction 阶段产生。
+    ///
+    /// # Returns
+    ///
+    /// 成功返回未初始化 storage；OOM 时无任何状态变化。
+    pub fn try_reserve_node() -> Result<NodeSlot<K, V>, OutOfMemory> {
+        Box::<Node<K, V>>::try_new_uninit()
+            .map(NodeSlot)
+            .map_err(|_| OutOfMemory)
+    }
+
+    /// 在任何外部状态提交前分配新 key 的唯一节点。
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: 必须尚不存在的 entry key。
+    /// - `value`: 与节点一起保存在 token 中的 value。
+    ///
+    /// # Returns
+    ///
+    /// 可无分配提交的 token；节点 OOM 时原表不变。
+    pub fn try_prepare_vacant(
+        &self,
+        key: K,
+        value: V,
+    ) -> Result<VacantEntry<K, V>, OutOfMemory> {
+        assert!(!self.contains_key(&key), "prepared AVL key already exists");
+        Self::try_prepare(key, value)
+    }
+
+    /// 无分配发布一个已准备的新 entry。
+    ///
+    /// # Parameters
+    ///
+    /// - `entry`: 同一表在未发生结构 mutation 期间创建的 vacant token。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；重复 key 表示事务不变量损坏并 fail-stop。
+    pub fn commit_vacant(&mut self, entry: VacantEntry<K, V>) {
+        let mut entry = entry;
+        assert!(
+            !self.contains_key(&entry.0.key),
+            "prepared AVL key became occupied before commit"
+        );
+        let entry_pointer = NonNull::from(&mut *entry.0);
+        let mut predecessor = None;
+        let mut successor = None;
+        let mut cursor = self.root.as_deref_mut();
+        while let Some(node) = cursor {
+            if entry.0.key < node.key {
+                successor = Some(NonNull::from(&mut *node));
+                cursor = node.left.as_deref_mut();
+            } else {
+                predecessor = Some(NonNull::from(&mut *node));
+                cursor = node.right.as_deref_mut();
+            }
+        }
+        entry.0.next = successor;
+        if let Some(mut predecessor) = predecessor {
+            // SAFETY: pointer came from this exclusively borrowed map and remains live; entry
+            // publication below preserves both Box allocations and restores the successor chain.
+            unsafe { predecessor.as_mut() }.next = Some(entry_pointer);
+        }
+        self.root = Some(insert_absent(self.root.take(), entry.0));
+        self.len += 1;
+    }
+
+    /// 删除精确 key，不执行分配。
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: 待删除 key。
+    ///
+    /// # Returns
+    ///
+    /// 原 value；key 不存在时为 None。
+    pub fn remove<Q: Ord + ?Sized>(&mut self, key: &Q) -> Option<V>
+    where
+        K: Borrow<Q>,
+    {
+        let entry = self.take_entry(key)?;
+        let Node { value, .. } = *entry.0;
+        Some(value)
+    }
+
+    /// 删除精确 key 并保留其已分配节点作为未发布 token。
+    ///
+    /// # Parameters
+    ///
+    /// - `key`: 待删除 key。
+    ///
+    /// # Returns
+    ///
+    /// 可修改 key/value 后重新提交的 token；不存在时为 None。
+    pub fn take_entry<Q: Ord + ?Sized>(&mut self, key: &Q) -> Option<VacantEntry<K, V>>
+    where
+        K: Borrow<Q>,
+    {
+        let (has_two_children, successor) = {
+            let mut cursor = self.root.as_deref();
+            loop {
+                let node = cursor?;
+                match key.cmp(node.key.borrow()) {
+                    Ordering::Less => cursor = node.left.as_deref(),
+                    Ordering::Greater => cursor = node.right.as_deref(),
+                    Ordering::Equal => {
+                        break (node.left.is_some() && node.right.is_some(), node.next);
+                    }
+                }
+            }
+        };
+        if !has_two_children {
+            let mut predecessor = None;
+            let mut cursor = self.root.as_deref_mut();
+            while let Some(node) = cursor {
+                if node.key.borrow() < key {
+                    predecessor = Some(NonNull::from(&mut *node));
+                    cursor = node.right.as_deref_mut();
+                } else {
+                    cursor = node.left.as_deref_mut();
+                }
+            }
+            if let Some(mut predecessor) = predecessor {
+                // SAFETY: pointer is the live strict predecessor in this exclusively borrowed tree.
+                // The target has at most one child, so removal splices successor after it.
+                unsafe { predecessor.as_mut() }.next = successor;
+            }
+        }
+        let (root, removed) = remove_node(self.root.take(), key);
+        self.root = root;
+        let mut removed = removed.expect("located AVL entry disappeared during removal");
+        // `remove_node` 已把左右子树都从返回节点摘除；高度必须同步归一为叶节点。
+        // 若保留原树高度，token 重新提交后会把伪高度传播给祖先并破坏后续旋转选择。
+        removed.height = 1;
+        removed.next = None;
+        self.len -= 1;
+        Some(VacantEntry(removed))
+    }
+
+    /// 原地保留满足 predicate 的 entry，不分配遍历快照。
+    ///
+    /// # Parameters
+    ///
+    /// - `keep`: 依次观察 key/value，返回 false 的 entry 会被删除。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；一次 ownership pass 与一次平衡重建均不分配节点。
+    pub fn retain(&mut self, mut keep: impl FnMut(&K, &V) -> bool) {
+        (self.root, self.len) = retain_linear(self.root.take(), &mut keep);
+    }
+
+    /// 把 `at..` 的节点移动到新表，不分配节点。
+    ///
+    /// # Parameters
+    ///
+    /// - `at`: 新表的 inclusive lower bound。
+    ///
+    /// # Returns
+    ///
+    /// 拥有全部 `key >= at` entry 的表。
+    pub fn split_off(&mut self, at: &K) -> Self {
+        let original_len = self.len;
+        let (mut left, right) = split(self.root.take(), at);
+        if let Some(mut left_last) = left.as_deref_mut() {
+            while left_last.right.is_some() {
+                left_last = left_last.right.as_deref_mut().unwrap();
+            }
+            left_last.next = None;
+        }
+        // AVL 节点不携带 subtree cardinality；只线性访问被移出的右树一次，避免让
+        // 每个 lookup/rotation 永久承担 size 字段的维护成本。
+        let right_len = count_nodes(&right);
+        self.root = left;
+        self.len = original_len - right_len;
+        Self {
+            root: right,
+            len: right_len,
+        }
+    }
+
+    /// 把严格位于当前表之后的另一个表整体移动进当前表，不分配节点。
+    ///
+    /// # Parameters
+    ///
+    /// - `other`: 全部 key 必须严格大于当前表的最大 key；成功后为空。
+    ///
+    /// # Returns
+    ///
+    /// 无返回值；重复或无序输入表示 caller contract 损坏并 fail-stop，且两表不变。
+    pub fn append_ordered_disjoint(&mut self, other: &mut Self) {
+        if let (Some(left_max), Some((right_min, _))) =
+            (last_key(&self.root), other.first_key_value())
+        {
+            assert!(
+                left_max < right_min,
+                "ordered-disjoint AVL join received overlapping or reversed keys"
+            );
+        }
+        let right_first = {
+            let mut cursor = other.root.as_deref();
+            while let Some(left) = cursor.and_then(|node| node.left.as_deref()) {
+                cursor = Some(left);
+            }
+            cursor.map(NonNull::from)
+        };
+        if let Some(right_first) = right_first
+            && let Some(mut left_last) = self.root.as_deref_mut()
+        {
+            while left_last.right.is_some() {
+                left_last = left_last.right.as_deref_mut().unwrap();
+            }
+            left_last.next = Some(right_first);
+        }
+        self.root = join_ordered(self.root.take(), other.root.take());
+        self.len = self
+            .len
+            .checked_add(other.len)
+            .expect("AVL length overflow during ordered join");
+        other.len = 0;
+    }
+}
+
+impl<K, V> Default for FallibleMap<K, V> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K: fmt::Debug, V: fmt::Debug> fmt::Debug for FallibleMap<K, V> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.debug_map().entries(self.iter()).finish()
+    }
+}
+
+impl<K: Ord, V> Index<&K> for FallibleMap<K, V> {
+    type Output = V;
+
+    fn index(&self, key: &K) -> &Self::Output {
+        self.get(key).expect("no entry found for key")
+    }
+}
+
+impl<'a, K, V> IntoIterator for &'a FallibleMap<K, V> {
+    type Item = (&'a K, &'a V);
+    type IntoIter = Iter<'a, K, V>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+#[cfg(test)]
+mod test_support;

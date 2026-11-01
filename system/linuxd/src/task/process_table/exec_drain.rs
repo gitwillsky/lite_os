@@ -1,6 +1,6 @@
 //! exec preparation claim 与不可回滚 sibling retirement；process graph 是唯一提交 owner。
 use super::*;
-use crate::execution::sync::WaitResult;
+use crate::sync::WaitResult;
 
 /// 不可变 preparation identity；实际 Thread completion 由 Process 跨 exec claim 持续拥有。
 pub(super) struct ExecDrain {
@@ -13,14 +13,14 @@ pub(super) struct ExecState {
 }
 
 /// 唯一 preparation claim；准备失败/成功 commit 后，Drop 在 graph 外退休 claim。
-pub(in crate::execution::task) struct ExecPreparation<'a> {
-    _credentials: Option<crate::execution::sync::TaskMutexGuard<'a, ()>>,
+pub(in crate::task) struct ExecPreparation<'a> {
+    _credentials: Option<crate::sync::TaskMutexGuard<'a, ()>>,
     tgid: usize,
     drain: Arc<ExecDrain>,
 }
 impl<'a> ExecPreparation<'a> {
     /// 领取 calling Process 的唯一 exec preparation；OOM/竞争不修改 Process。
-    pub(in crate::execution::task) fn claim(
+    pub(in crate::task) fn claim(
         task: &'a TaskControlBlock,
     ) -> Result<Self, super::super::model::ExecError> {
         use super::super::model::ExecError;
@@ -48,10 +48,10 @@ impl<'a> ExecPreparation<'a> {
         };
         preparation._credentials = Some(task.credential_guard().lock_interruptible().map_err(
             |error| match error {
-                crate::execution::sync::TaskMutexLockError::OutOfMemory => {
+                crate::sync::TaskMutexLockError::OutOfMemory => {
                     ExecError::Image(crate::memory::ElfLoadError::OutOfMemory)
                 }
-                crate::execution::sync::TaskMutexLockError::Interrupted => ExecError::Interrupted,
+                crate::sync::TaskMutexLockError::Interrupted => ExecError::Interrupted,
             },
         )?);
         Ok(preparation)
@@ -59,7 +59,7 @@ impl<'a> ExecPreparation<'a> {
 
     /// 映像准备成功后开始不可回滚 de_thread；不能在此后产生可恢复错误。
     /// 返回 Busy 时尚未终止 sibling。等待使用已分配事件，包含 graph 摘除后的 MM cleanup。
-    pub(in crate::execution::task) fn terminate_siblings(
+    pub(in crate::task) fn terminate_siblings(
         &self,
         task: &TaskControlBlock,
     ) -> Result<(), super::super::model::ExecError> {
@@ -107,9 +107,9 @@ impl<'a> ExecPreparation<'a> {
                 break;
             };
             cursor = tid;
-            crate::execution::task::processor::continue_stopped_task(sibling.clone());
+            crate::task::processor::continue_stopped_task(sibling.clone());
             super::signal::interrupt_waiting_task(&sibling);
-            crate::execution::task::processor::request_task_reschedule(&sibling);
+            crate::task::processor::request_task_reschedule(&sibling);
         }
         if task.thread_retirements().wait_for_survivor() == WaitResult::Interrupted {
             return Err(super::super::model::ExecError::FatalInterrupted);

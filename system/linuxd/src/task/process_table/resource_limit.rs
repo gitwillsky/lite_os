@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use super::{PROCESS_TABLE, ProcessState};
-use crate::execution::task::{
+use crate::task::{
     PendingSignal, RLIM_INFINITY, RLIMIT_NPROC, ResourceLimit, ResourceLimitError,
     TaskControlBlock, current_task,
 };
@@ -15,7 +15,7 @@ pub(super) struct ThreadSlotSnapshot {
 }
 
 impl ThreadSlotSnapshot {
-    /// 按当前 graph 大小在 IrqMutex 外预留 snapshot backing storage。
+    /// 按当前 graph 大小在 Mutex 外预留 snapshot backing storage。
     ///
     /// # Parameters
     ///
@@ -105,12 +105,12 @@ impl ThreadSlotSnapshot {
 /// graph 已锁定的 calling Thread credential commit capability。
 ///
 /// 只借 canonical ProcessNode，清除 PDEATH 时同时更新其计数；不得递归取得 graph。
-pub(in crate::execution::task) struct CredentialTransition<'a> {
+pub(in crate::task) struct CredentialTransition<'a> {
     node: &'a mut super::ProcessNode,
     task: &'a TaskControlBlock,
 }
 impl CredentialTransition<'_> {
-    pub(in crate::execution::task) fn clear_parent_death(&mut self) {
+    pub(in crate::task) fn clear_parent_death(&mut self) {
         if self.task.parent_death_signal(Some(0)) != 0 {
             self.node.pdeath_enabled_threads -= 1;
         }
@@ -121,7 +121,7 @@ impl CredentialTransition<'_> {
 ///
 /// callback 仅执行无分配、不阻塞的 candidate scalar commit；MM 必须提前 pin，
 /// dumpability 与 PDEATH consequence 先于身份 publication，最终 Arc/组值锁外退休。
-pub(in crate::execution::task) fn with_credential_transition<T>(
+pub(in crate::task) fn with_credential_transition<T>(
     task: &TaskControlBlock,
     commit: impl FnOnce(&mut CredentialTransition<'_>) -> T,
 ) -> T {
@@ -134,7 +134,60 @@ pub(in crate::execution::task) fn with_credential_transition<T>(
     commit(&mut CredentialTransition { node, task })
 }
 
-/// 在 runtime account 后按 Process 级 RLIMIT_CPU 投递 SIGXCPU/SIGKILL。
+/// RLIMIT_CPU 采样周期：SIGXCPU 按 CPU 秒投递，hard limit 的 SIGKILL 至多晚一个周期。
+const CPU_LIMIT_SAMPLE_PERIOD_NS: u64 = 1_000_000_000;
+
+// OWNER: 下一次 RLIMIT_CPU 采样的单调时刻；只由 deferred 线程读写。0 表示尚未排定。
+static NEXT_CPU_LIMIT_SAMPLE_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+
+/// 存在受限 Process 时下一次采样的截止时间。
+pub(super) fn cpu_limit_sample_deadline(now_ns: u64) -> Option<u64> {
+    use core::sync::atomic::Ordering;
+    if !crate::task::model::cpu_limits_active() {
+        NEXT_CPU_LIMIT_SAMPLE_NS.store(0, Ordering::Relaxed);
+        return None;
+    }
+    let next = NEXT_CPU_LIMIT_SAMPLE_NS.load(Ordering::Relaxed);
+    if next != 0 {
+        return Some(next);
+    }
+    let next = now_ns.saturating_add(CPU_LIMIT_SAMPLE_PERIOD_NS);
+    NEXT_CPU_LIMIT_SAMPLE_NS.store(next, Ordering::Relaxed);
+    Some(next)
+}
+
+/// 到期时检查每个受限 Process 的累计 CPU 时间（Linux 在 tick 中由 `check_process_timers` 完成）。
+///
+/// 1. graph 锁内为每个受限 Process 取一个存活 Thread；
+/// 2. 锁外读取 CPU 时间并投递信号（投递会再取 graph 锁）。
+pub(super) fn sample_cpu_limits(now_ns: u64) {
+    use core::sync::atomic::Ordering;
+    let next = NEXT_CPU_LIMIT_SAMPLE_NS.load(Ordering::Relaxed);
+    if next == 0 || now_ns < next {
+        return;
+    }
+    NEXT_CPU_LIMIT_SAMPLE_NS.store(now_ns.saturating_add(CPU_LIMIT_SAMPLE_PERIOD_NS), Ordering::Relaxed);
+    let mut limited = alloc::vec::Vec::new();
+    {
+        let graph = PROCESS_TABLE.graph.lock();
+        for node in graph.nodes.values() {
+            let ProcessState::Live(threads) = &node.state else {
+                continue;
+            };
+            let Some(thread) = threads.values().next() else {
+                continue;
+            };
+            if thread.process().cpu_limited() && limited.try_reserve(1).is_ok() {
+                limited.push(thread.clone());
+            }
+        }
+    }
+    for thread in &limited {
+        enforce_cpu_limit(thread);
+    }
+}
+
+/// 按 Process 级 RLIMIT_CPU 投递 SIGXCPU/SIGKILL。
 pub(super) fn enforce_cpu_limit(task: &Arc<TaskControlBlock>) {
     if task.is_kernel_thread() {
         return;

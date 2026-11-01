@@ -6,12 +6,12 @@ pub(super) use listener::ListenerFile;
 
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use spin::Mutex;
+use crate::sync::Mutex;
 use syscall_abi::{errno, seccomp::*};
 
 use super::{SeccompError, TaskControlBlock};
 use crate::{
-    execution::sync::{TaskEvent, WaitResult},
+    sync::{TaskEvent, WaitResult},
     ipc::{Pipe, PipeEnd},
 };
 use addfd::AddFd;

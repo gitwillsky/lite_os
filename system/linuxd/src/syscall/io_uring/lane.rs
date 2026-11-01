@@ -15,11 +15,12 @@ use alloc::{
     vec::Vec,
 };
 use core::sync::atomic::{AtomicU8, Ordering};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 use syscall_abi::errno;
 
 use crate::{
-    execution::task::{TaskControlBlock, spawn_kernel_thread, wait_for_poll},
+    task::{TaskControlBlock, spawn_kernel_thread, wait_for_poll},
     fs::CompletionNotify,
     ipc::{Pipe, PipeEnd},
     syscall::poll::PollWaitKeys,

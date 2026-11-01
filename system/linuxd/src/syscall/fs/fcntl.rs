@@ -1,6 +1,6 @@
 use super::*;
 use crate::{
-    execution::task::{AdvisoryLockWaitError, wait_for_record_lock},
+    task::{AdvisoryLockWaitError, wait_for_record_lock},
     fs::{AdvisoryLockAttempt, AdvisoryLockError, RecordLockMode, RecordLockRange},
     syscall::INTERNAL_RESTART_SYS,
 };

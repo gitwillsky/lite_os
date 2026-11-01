@@ -3,7 +3,7 @@ use super::{
     pte::{self, PagePermissions, RiscvPteFlags},
     sv39,
 };
-use crate::fallible_tree::{FallibleMap, VacantEntry};
+use fallible_tree::{FallibleMap, VacantEntry};
 use alloc::sync::Arc;
 
 const PTE_FLAGS_WIDTH: usize = 10;

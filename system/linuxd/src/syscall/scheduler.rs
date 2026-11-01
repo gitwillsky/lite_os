@@ -1,10 +1,10 @@
 use core::mem::size_of;
 
 use crate::{
-    execution::task::{
+    task::{
         SchedulerAffinityError, SchedulerNiceSelector, SchedulerPolicyError,
         SchedulerPolicyRequest, current_task, scheduler_affinity, scheduler_io_priority,
-        scheduler_nice, scheduler_policy, scheduler_rr_interval, suspend_current_and_run_next,
+        scheduler_nice, scheduler_policy, scheduler_rr_interval,
     },
     syscall::errno,
 };
@@ -414,6 +414,7 @@ pub(crate) fn sys_sched_getaffinity(tid: i32, length: u32, output: usize) -> isi
 ///
 /// 成功返回零。
 pub(crate) fn sys_sched_yield() -> isize {
-    suspend_current_and_run_next();
+    // 截止时间已过的 nanosleep 即让出 CPU。
+    let _ = native_runtime::system::sleep_until(0);
     0
 }

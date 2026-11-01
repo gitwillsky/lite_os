@@ -6,7 +6,7 @@ use alloc::{
 
 use core::sync::atomic::{AtomicU16, Ordering};
 
-use spin::Mutex;
+use crate::sync::Mutex;
 use syscall_abi::{errno, fuse};
 
 use super::{
@@ -16,13 +16,11 @@ use super::{
     options::Options,
     protocol::{self, Attributes, Fields, Reader},
 };
-use crate::{
-    fallible_tree::FallibleMap,
-    fs::{
+use crate::{fs::{
         FileSystem, FileSystemError, FileSystemStatistics, Inode, SuperblockFacts,
         mount::{CreatedFileSystem, FileSystemType, MountRequest},
-    },
-};
+    }};
+use fallible_tree::FallibleMap;
 
 /// Linux `FUSE_SUPER_MAGIC`。
 const FUSE_SUPER_MAGIC: u64 = 0x6573_5546;

@@ -28,6 +28,13 @@ pub(crate) fn _print_fmt(args: core::fmt::Arguments) {
     let _ = writer.flush();
 }
 
+/// 原样输出字节（不经格式化，允许非 UTF-8），与格式化日志共用同一把锁。
+pub(crate) fn write_raw(bytes: &[u8]) {
+    let mut writer = CONSOLE.lock();
+    let _ = writer.push(bytes);
+    let _ = writer.flush();
+}
+
 struct ConsoleWriter {
     bytes: [u8; CONSOLE_BATCH_BYTES],
     length: usize,

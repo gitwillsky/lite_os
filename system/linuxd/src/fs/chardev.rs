@@ -7,14 +7,14 @@
 
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
-use spin::Mutex;
+use crate::sync::Mutex;
 use syscall_abi::errno;
 
 use super::{AccessIdentity, DeviceNumber, FileSystemError};
 /// fdinfo 所属 proc mount 的 PID 视图，由文件系统传入；设备不反查调用者或持有第二份视图。
 pub(crate) use crate::namespace::PidNamespace as FileInformationView;
 use crate::{
-    execution::sync::WaitResult,
+    sync::WaitResult,
     ipc::{Pipe, PipeDirection, PipeWaitCondition},
     memory::DeviceMappingSource,
 };
@@ -78,6 +78,11 @@ pub(crate) struct UringCommand {
     pub(crate) extended: bool,
 }
 
+/// 等待条件变化时被调用的通知（io_uring reactor 与车道作业完成）；实现不得睡眠。
+pub(crate) trait CompletionNotify: Send + Sync {
+    fn notify(&self);
+}
+
 /// 设备命令的唯一等待/取消令牌。设备不得持有 task 或反向持有 io_uring 对象。
 ///
 /// Drop 撤销尚未完成的登记；已交付给用户的资源由设备自己的协议状态接管。
@@ -89,7 +94,7 @@ pub(crate) trait PendingCommand: Send {
     ///
     /// # Returns
     /// true 表示可在阻塞车道上调用 step；检查条件与登记必须同一事务，防止漏唤醒。
-    fn ready(&self, notify: &Arc<dyn super::CompletionNotify>) -> bool;
+    fn ready(&self, notify: &Arc<dyn CompletionNotify>) -> bool;
 
     /// 尝试完成设备命令，不等待设备请求入队；用户页 fault 允许睡眠，只在阻塞车道调用。
     ///
@@ -105,7 +110,7 @@ pub(crate) trait PendingCommand: Send {
     fn step(
         &mut self,
         user: &dyn UserMemory,
-        notify: &Arc<dyn super::CompletionNotify>,
+        notify: &Arc<dyn CompletionNotify>,
     ) -> Option<Result<isize, DeviceError>>;
 
     /// 取消该命令的 CQE 结果；实际撤销由 Drop 执行。

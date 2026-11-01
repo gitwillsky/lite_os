@@ -1,4 +1,4 @@
-use crate::execution::task::{
+use crate::task::{
     ResourceLimit, ResourceLimitError, current_task, process_resource_limit,
 };
 

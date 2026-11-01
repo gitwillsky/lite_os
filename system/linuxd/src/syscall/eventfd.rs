@@ -1,5 +1,5 @@
 use crate::{
-    execution::task::current_task,
+    task::current_task,
     file::OpenFileDescription,
     fs::{O_CLOEXEC, O_NONBLOCK},
     ipc::EventFd,

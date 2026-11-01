@@ -1,10 +1,11 @@
-use crate::execution::sync::WaitResult;
+use crate::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU8, Ordering};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use super::{IndexedWaitKind, PollWaitKey, key::WaitIndexKey};
-use crate::{execution::task::TaskControlBlock, fallible_tree::VacantEntry};
+use crate::{task::TaskControlBlock};
+use fallible_tree::VacantEntry;
 
 pub(super) const PREPARED: u8 = 0;
 pub(super) const ARMING: u8 = 1;
@@ -51,10 +52,10 @@ impl WaitRegistration {
     }
 }
 
-pub(in crate::execution::task::process_table) struct ClaimedWait {
-    pub(in crate::execution::task::process_table) id: u64,
-    pub(in crate::execution::task::process_table) task: Arc<TaskControlBlock>,
-    pub(in crate::execution::task::process_table) kind: IndexedWaitKind,
+pub(in crate::task::process_table) struct ClaimedWait {
+    pub(in crate::task::process_table) id: u64,
+    pub(in crate::task::process_table) task: Arc<TaskControlBlock>,
+    pub(in crate::task::process_table) kind: IndexedWaitKind,
     pub(super) staging: Option<VacantEntry<WaitIndexKey, Arc<WaitRegistration>>>,
 }
 

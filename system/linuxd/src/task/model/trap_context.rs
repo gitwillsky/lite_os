@@ -1,44 +1,11 @@
 use super::*;
 
 impl TaskControlBlock {
-    /// 将实际投递的内存 fault 快照交给本 Thread 的 architecture context owner。
-    ///
-    /// # Parameters
-    /// - `fault`: 同一次 trap 的不可变架构快照；不回读可能被迁移覆盖的 CPU 寄存器。
-    ///
-    /// # Returns
-    /// 无返回值；由 architecture context 保存所需 metadata。
-    pub(crate) fn record_user_fault(&self, fault: crate::arch::trap::UserFault) {
+    /// 将实际投递的内存 fault 快照交给本 Thread 的寄存器上下文（信号帧的 fault 元数据）。
+    pub(crate) fn record_user_fault(&self, fault: crate::arch::context::UserFault) {
         self.thread()
             .user_context
             .with(|context| context.record_user_fault(fault));
-    }
-
-    /// 取得当前 Thread 的 context-switch 保存区锁。
-    ///
-    /// # Returns
-    ///
-    /// KernelContext mutex；raw pointer 仅可在 TCB Arc 保活期间使用。
-    pub(crate) fn kernel_context(&self) -> &Mutex<KernelContext> {
-        &self.execution.kernel_cx
-    }
-
-    /// 取得首次 scheduler continuation 完成后进入的 architecture trap-return。
-    pub(in crate::execution::task) fn kernel_resume_target(
-        &self,
-    ) -> crate::arch::context::KernelResume {
-        self.thread().kernel_trap_return
-    }
-
-    /// 退休 Thread trap context，并删除非 canonical temporary mapping。
-    pub(in crate::execution::task) fn remove_thread_trap_context(&self) {
-        let binding = self.thread().user_context.retire();
-        if !binding.requires_retirement_wait(TRAP_CONTEXT) {
-            return;
-        }
-        self.with_cleanup_memory(&self.address_space(), |memory| {
-            memory.remove_thread_trap_context(binding.address());
-        });
     }
 
     pub(super) fn replace_user_context(&self, trap_context: UserContext) {
@@ -49,11 +16,45 @@ impl TaskControlBlock {
         self.thread().user_context.snapshot_for_clone()
     }
 
-    /// 读取 syscall input registers 并原地推进 syscall instruction PC。
+    /// 首次进入前需要装入的浮点状态（clone 继承或 exec 清零）。
+    pub(crate) fn take_initial_fp(&self) -> Option<crate::arch::fp::FpState> {
+        self.thread().user_context.take_initial_fp()
+    }
+
+    /// 安装承载线程绑定的 restricted 状态；替换掉的旧映射（exec 前的承载线程）随之解除。
+    pub(crate) fn install_restricted_state(&self, state: native_runtime::restricted::BoundState) {
+        let previous = self.thread().restricted.lock().replace(state);
+        drop(previous);
+    }
+
+    /// 以当前寄存器进入 restricted mode，返回后寄存器已更新为退出时的值。
     ///
     /// # Returns
     ///
-    /// `(number, 六个 argument register, syscall instruction PC)`；不复制其余 UserContext。
+    /// 退出原因；原因为异常时附带异常报告。
+    ///
+    /// # Errors
+    ///
+    /// 内核拒绝进入（寄存器非法或状态未绑定）。
+    pub(crate) fn enter_restricted(
+        &self,
+    ) -> Result<(native_runtime::restricted::Exit, native_runtime::native_abi::ExceptionReport), native_runtime::native_abi::Status> {
+        let mut slot = self.thread().restricted.lock();
+        let state = slot.as_mut().expect("restricted state not installed");
+        state.state().registers = self.thread().user_context.with(|context| context.registers());
+        let exit = state.enter()?;
+        let restricted = *state.state();
+        self.thread()
+            .user_context
+            .with(|context| context.load_registers(&restricted.registers));
+        Ok((exit, restricted.exception))
+    }
+
+    /// 读取 syscall 输入寄存器并推进 syscall 指令 PC。
+    ///
+    /// # Returns
+    ///
+    /// `(number, 六个参数寄存器, syscall 指令 PC)`。
     pub(crate) fn take_syscall_request(&self) -> (usize, [usize; 6], usize) {
         self.thread().user_context.with(|context| {
             let request = context.take_syscall_request();
@@ -61,54 +62,18 @@ impl TaskControlBlock {
         })
     }
 
-    /// 原地发布 syscall a0 completion，不复制其余 UserContext。
+    /// 写入 syscall 返回值。
     pub(crate) fn complete_syscall(&self, completion: crate::arch::context::SyscallCompletion) {
         self.thread()
             .user_context
             .with(|context| context.complete_syscall(completion));
     }
 
-    /// user return 前唯一发布 CPU-local trap metadata。
-    ///
-    /// # Returns
-    ///
-    /// 同一 transaction 配对的 trampoline trap-context VA。
-    pub(crate) fn prepare_user_return(&self, logical_cpu: usize) -> usize {
-        self.thread()
-            .user_context
-            .with_address(|context| context.prepare_kernel_return(logical_cpu))
-            .0
-    }
-
-    /// 投影当前用户 PC，不复制 UserContext。
+    /// 当前用户 PC。
     pub(crate) fn user_program_counter(&self) -> usize {
         self.thread()
             .user_context
             .with(|context| context.program_counter())
-    }
-
-    /// 由静态 architecture backend 检查并处理一次用户 illegal instruction。
-    ///
-    /// # Returns
-    ///
-    /// lazy architecture state 已初始化时 Retry；真正非法时返回带 fault address 的 Signal。
-    pub(crate) fn handle_illegal_instruction(
-        &self,
-    ) -> Result<(), crate::arch::IllegalInstructionFault> {
-        let probe = self
-            .thread()
-            .user_context
-            .with(|context| context.illegal_instruction_probe());
-        let result =
-            crate::arch::context::inspect_illegal_instruction(probe, |address, destination| {
-                let halfword: &mut [u8; 2] = destination
-                    .try_into()
-                    .expect("architecture decoder requests one instruction halfword");
-                self.copy_instruction_halfword(address, halfword).is_ok()
-            });
-        self.thread()
-            .user_context
-            .with(|context| context.finish_illegal_instruction(result))
     }
 
     /// 投影当前用户 SP，不复制 UserContext。
@@ -132,7 +97,7 @@ impl TaskControlBlock {
     ///
     /// # Errors
     /// 不支持的 note 或无效 register image 返回 Io/Invalid。
-    pub(in crate::execution::task) fn ptrace_registers(
+    pub(in crate::task) fn ptrace_registers(
         &self,
         note: usize,
         bytes: &mut [u8],
@@ -149,7 +114,7 @@ impl TaskControlBlock {
 
     /// ATTACH 的不可屏蔽 SIGSTOP 在 relation publication 同一 graph 事务进入真实 pending。
     /// 不分配 RT record，避免建立 relation 后 OOM 导致附加永久等待。
-    pub(in crate::execution::task) fn queue_ptrace_signal(&self, signal: usize) {
+    pub(in crate::task) fn queue_ptrace_signal(&self, signal: usize) {
         self.thread().pending_signals.lock().queue(
             signal,
             PendingSignal::kernel(),
@@ -160,7 +125,7 @@ impl TaskControlBlock {
 
 impl TaskControlBlock {
     /// tracer 在 graph 保护的 stopped relation 内移交一次性 signal-delivery 决定。
-    pub(in crate::execution::task) fn set_ptrace_resume(&self, signal: usize, info: PendingSignal) {
+    pub(in crate::task) fn set_ptrace_resume(&self, signal: usize, info: PendingSignal) {
         assert!(
             self.thread()
                 .ptrace_resume
@@ -170,7 +135,7 @@ impl TaskControlBlock {
         );
     }
     /// 恢复的 signal frame 消费唯一移交；tracer exit/SIGKILL 不伪造新的决定。
-    pub(in crate::execution::task) fn take_ptrace_resume(&self) -> Option<(usize, PendingSignal)> {
+    pub(in crate::task) fn take_ptrace_resume(&self) -> Option<(usize, PendingSignal)> {
         self.thread().ptrace_resume.lock().take()
     }
 }
@@ -180,7 +145,7 @@ impl TaskControlBlock {
     ///
     /// # Returns
     /// 无返回值；同一次 restart 最多重绕一次，CONT 后尊重 debugger 的寄存器改动。
-    pub(in crate::execution::task) fn prepare_ptrace_restart(&self) {
+    pub(in crate::task) fn prepare_ptrace_restart(&self) {
         let restart = self.thread().syscall_restart.lock().prepare_trace();
         if let Some(restart) = restart {
             self.thread().user_context.with(|context| {

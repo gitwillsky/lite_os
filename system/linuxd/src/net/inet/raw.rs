@@ -11,12 +11,8 @@ use smoltcp::{
 };
 
 use super::{InetEndpoint, InetSocket, NetworkStack, from_ip, ipv4, stack, try_allocate_endpoint};
-use crate::{
-    fallible_tree::FallibleMap,
-    ipc::PipeEnd,
-    ipc::ReceiveBuffer,
-    net::{InetAddress, InternetPacketInfo, InternetSendPacketInfo, SocketError, SocketPollState},
-};
+use crate::{ipc::PipeEnd, ipc::ReceiveBuffer, net::{InetAddress, InternetPacketInfo, InternetSendPacketInfo, SocketError, SocketPollState}};
+use fallible_tree::FallibleMap;
 
 const IPV4_HEADER_LENGTH: usize = 20;
 const RAW_PACKET_SLOTS: usize = 8;
@@ -109,7 +105,7 @@ pub(super) fn new(
         Ok(InetSocket {
             memory: memory.clone(),
             endpoint: InetEndpoint::Raw(handle),
-            operation: spin::Mutex::new(Some(InetEndpoint::Raw(handle))),
+            operation: crate::sync::Mutex::new(Some(InetEndpoint::Raw(handle))),
             notify_read: notify.0,
             notify_write: notify.1,
             timeouts,

@@ -278,7 +278,7 @@ impl<'a> Publication<'a> {
             Gray,
             Black,
         }
-        let mut visited = crate::fallible_tree::FallibleMap::new();
+        let mut visited = fallible_tree::FallibleMap::new();
         let mut path = Vec::new();
         for start in self
             .incoming

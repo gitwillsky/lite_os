@@ -1,11 +1,8 @@
 use alloc::sync::{Arc, Weak};
-use spin::Mutex;
+use crate::sync::Mutex;
 
-use crate::{
-    fallible_tree::FallibleMap,
-    file::{TimerError, TimerFdBackend, TimerFdRead, TimerSetting},
-    ipc::{Pipe, PipeEnd},
-};
+use crate::{file::{TimerError, TimerFdBackend, TimerFdRead, TimerSetting}, ipc::{Pipe, PipeEnd}};
+use fallible_tree::FallibleMap;
 
 use super::{RetiredTimers, TimerExpirationRetirement, TimerIdentity, TimerQueue};
 
@@ -156,6 +153,8 @@ impl TimerQueue {
             let mut entry = deadline.take().expect("actual expired file deadline");
             entry.set_key((next, TimerIdentity::File(id)));
             self.deadline_index.commit_vacant(entry);
+            // 新到期时间可能早于 deferred 线程当前停驻的截止时间。
+            crate::deferred::deadline_changed();
         }
         let mut retired = TimerExpirationRetirement::from_deadline(deadline);
         match target {
@@ -213,7 +212,7 @@ impl TimerQueue {
             } else {
                 match current.clock {
                     TimerFileClock::Realtime => {
-                        crate::execution::timer::realtime_deadline_to_monotonic_ns(value_ns)
+                        crate::time::realtime_deadline_to_monotonic_ns(value_ns)
                     }
                     TimerFileClock::Monotonic => {
                         offsets.to_host(crate::namespace::TimeClock::Monotonic, value_ns)
@@ -251,6 +250,8 @@ impl TimerQueue {
                 .expect("armed timerfd deadline node was not prepared");
             entry.set_key((expiration, identity));
             self.deadline_index.commit_vacant(entry);
+            // 新到期时间可能早于 deferred 线程当前停驻的截止时间。
+            crate::deferred::deadline_changed();
         }
         let mut retired = RetiredTimers::default();
         if let Some(deadline) = deadline {

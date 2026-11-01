@@ -69,6 +69,11 @@ impl CpuSet {
     pub(crate) fn native_word(self) -> usize {
         self.0
     }
+
+    /// 由机器字位图构造（原生 ABI 解码）；超出 topology 的位由使用者与 `possible()` 相交剔除。
+    pub(crate) fn from_native_word(word: usize) -> Self {
+        Self(word)
+    }
 }
 
 impl core::ops::BitAnd for CpuSet {

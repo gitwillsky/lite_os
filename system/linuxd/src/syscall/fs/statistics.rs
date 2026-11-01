@@ -1,5 +1,5 @@
 use crate::{
-    execution::task::{TaskControlBlock, current_task},
+    task::{TaskControlBlock, current_task},
     fs::{FileSystemStatistics, vfs},
     syscall::errno,
 };

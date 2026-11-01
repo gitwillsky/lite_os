@@ -45,6 +45,24 @@ use crate::vm::{AddressSpace, KERNEL_SPACE, KernelStack};
 const KILLED: u32 = 1 << 0;
 const KICKED: u32 = 1 << 1;
 
+/// 线程（或进程内全部存活线程之和）的 CPU 时间与上下文切换计数。
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Runtime {
+    pub(crate) cpu_us: u64,
+    pub(crate) restricted_us: u64,
+    pub(crate) voluntary_switches: u64,
+    pub(crate) involuntary_switches: u64,
+}
+
+impl Runtime {
+    pub(crate) fn add(&mut self, other: Self) {
+        self.cpu_us += other.cpu_us;
+        self.restricted_us += other.restricted_us;
+        self.voluntary_switches += other.voluntary_switches;
+        self.involuntary_switches += other.involuntary_switches;
+    }
+}
+
 /// 用户线程返回用户态所经的 trap handler 与首次调度入口；`main` 在启动用户态前安装一次。
 #[derive(Clone, Copy)]
 pub(crate) struct UserEntryPoints {
@@ -265,9 +283,37 @@ impl Thread {
         self.flags.fetch_and(!KICKED, Ordering::AcqRel) & KICKED != 0
     }
 
-    /// 已提交的 CPU 时间（微秒）。
-    pub(crate) fn runtime_us(&self) -> u64 {
-        self.scheduling.policy.lock().total_runtime_us()
+    /// 把线程限制在 `cpus` 上运行。
+    ///
+    /// # Errors
+    /// `cpus` 与 possible CPU 不相交返回 `Err(())`。
+    pub(crate) fn set_affinity(self: &Arc<Self>, cpus: crate::execution::cpu::CpuSet) -> Result<(), ()> {
+        let affinity = scheduling::CpuAffinity::restricted_to(cpus).ok_or(())?;
+        processor::replace_affinity(self, affinity);
+        Ok(())
+    }
+
+    /// CPU 时间与上下文切换计数。
+    pub(crate) fn runtime(&self) -> Runtime {
+        let (cpu_us, restricted_us) = {
+            let policy = self.scheduling.policy.lock();
+            (policy.total_runtime_us(), policy.restricted_runtime_us())
+        };
+        let state = self.scheduling.state.lock();
+        Runtime {
+            cpu_us,
+            restricted_us,
+            voluntary_switches: state.voluntary_switches,
+            involuntary_switches: state.involuntary_switches,
+        }
+    }
+
+    /// 当前线程进入或离开 restricted mode 时切换计时桶。
+    pub(crate) fn set_restricted_accounting(&self, restricted: bool) {
+        self.scheduling
+            .policy
+            .lock()
+            .set_restricted(crate::execution::timer::get_time_us(), restricted);
     }
 
     /// 设置权重等级（`0..PRIORITY_LEVELS`，数值越小权重越大）。

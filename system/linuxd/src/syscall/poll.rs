@@ -1,8 +1,8 @@
-use crate::execution::sync::WaitResult;
+use crate::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    execution::task::{PollWaitKey, TaskControlBlock, current_task, wait_for_poll},
+    task::{PollWaitKey, TaskControlBlock, current_task, wait_for_poll},
     file::{OpenFileDescription, OpenFileKind},
     net::SocketCapacityWait,
     syscall::errno,
@@ -132,7 +132,7 @@ pub(super) fn wait_for_ofd(
     deadline: Option<u64>,
 ) -> WaitResult {
     let task = current_task().expect("OFD wait requires current task");
-    if deadline.is_some_and(|value| value <= crate::execution::timer::get_time_ns()) {
+    if deadline.is_some_and(|value| value <= crate::time::get_time_ns()) {
         return if ofd.poll_events(events, task.as_ref()) != 0 {
             WaitResult::Woken
         } else {
@@ -164,7 +164,7 @@ pub(super) fn wait_for_socket_capacity(
     blocker: &SocketCapacityWait,
     deadline: Option<u64>,
 ) -> WaitResult {
-    if deadline.is_some_and(|value| value <= crate::execution::timer::get_time_ns()) {
+    if deadline.is_some_and(|value| value <= crate::time::get_time_ns()) {
         return if blocker.is_ready() {
             WaitResult::Woken
         } else {
@@ -261,7 +261,7 @@ pub(crate) fn sys_ppoll(
         else {
             return -errno::EINVAL;
         };
-        let Some(deadline) = crate::execution::timer::get_time_ns().checked_add(relative) else {
+        let Some(deadline) = crate::time::get_time_ns().checked_add(relative) else {
             return -errno::EINVAL;
         };
         Some(deadline)
@@ -280,7 +280,7 @@ pub(crate) fn sys_ppoll(
         prepare_descriptors(&descriptors);
         let ready = evaluate(&mut descriptors, &task);
         if ready != 0
-            || deadline.is_some_and(|value| value <= crate::execution::timer::get_time_ns())
+            || deadline.is_some_and(|value| value <= crate::time::get_time_ns())
         {
             if temporary_mask {
                 task.restore_temporary_signal_mask()
@@ -390,7 +390,7 @@ pub(crate) fn sys_pselect6(
         prepare_descriptors(&descriptors);
         evaluate(&mut descriptors, &task);
         if descriptors.iter().any(|descriptor| descriptor.revents != 0)
-            || deadline.is_some_and(|value| value <= crate::execution::timer::get_time_ns())
+            || deadline.is_some_and(|value| value <= crate::time::get_time_ns())
         {
             if temporary_mask {
                 task.restore_temporary_signal_mask()

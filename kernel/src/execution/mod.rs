@@ -1,4 +1,5 @@
 //! CPU 执行：逻辑 CPU、deferred work、启动/trap 入口编解码、中断契约、同步原语、时钟与 trap 分派。
+pub(crate) mod barrier;
 pub(crate) mod cpu;
 pub(crate) mod deferred;
 pub(crate) mod entry;

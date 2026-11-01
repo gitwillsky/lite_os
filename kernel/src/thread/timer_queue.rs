@@ -10,7 +10,7 @@ use super::Thread;
 use super::scheduling::WaitMembership;
 use crate::execution::deferred::{self, DeferredWork};
 use crate::execution::sync::{IrqMutex, WaitResult};
-use crate::fallible_tree::{FallibleMap, VacantEntry};
+use fallible_tree::{FallibleMap, VacantEntry};
 
 const EXPIRE_BATCH: usize = 32;
 

@@ -404,10 +404,10 @@ fn format_task_status(
     if has_mm {
         write!(
             output,
-            "VmSize:\t{} kB\nVmRSS:\t{} kB\nVmSwap:\t{} kB\n",
+            // 没有交换设备：VmSwap 恒为 0。
+            "VmSize:\t{} kB\nVmRSS:\t{} kB\nVmSwap:\t0 kB\n",
             process.virtual_pages.saturating_mul(4),
             process.resident_pages.saturating_mul(4),
-            process.swapped_pages.saturating_mul(4),
         )
         .map_err(|_| FileSystemError::OutOfMemory)?;
     }

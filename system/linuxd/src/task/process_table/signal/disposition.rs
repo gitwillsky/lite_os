@@ -3,11 +3,11 @@ use super::*;
 
 /// 冻结 caller Thread group 后原子修改 disposition 和所有同组 pending。
 /// 查询无需 graph；replacement 不允许取得/保活其他 Process 的 pending owner。
-pub(in crate::execution::task) fn signal_action_for_group(
+pub(in crate::task) fn signal_action_for_group(
     task: &TaskControlBlock,
     signal: usize,
-    replacement: Option<crate::execution::task::SignalAction>,
-) -> Result<crate::execution::task::SignalAction, ()> {
+    replacement: Option<crate::task::SignalAction>,
+) -> Result<crate::task::SignalAction, ()> {
     if replacement.is_none() {
         return task
             .signal_action_for_threads(core::iter::empty(), signal, None, false)

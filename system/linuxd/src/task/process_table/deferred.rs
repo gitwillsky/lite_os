@@ -1,12 +1,10 @@
-use crate::execution::sync::WaitResult;
+use crate::sync::WaitResult;
 use alloc::sync::Arc;
 
 use crate::{
-    execution::deferred::{self, DeferredWork},
-    execution::task::{
-        PendingSignal, TaskControlBlock, current_task, processor::request_tick_reschedule,
-    },
-    execution::timer::get_time_ns,
+    deferred::{self, DeferredWork, DeferredWorkSet},
+    task::{PendingSignal, TaskControlBlock},
+    time::get_time_ns,
 };
 
 use super::{
@@ -88,38 +86,38 @@ fn wake_expired_tasks(now_ns: u64) {
     for (wait_id, task, kind) in batch.into_iter().flatten() {
         let woke = match kind {
             IndexedWaitKind::TaskEvent(key) => {
-                crate::execution::task::processor::wake_waiting_task(
+                crate::task::processor::wake_waiting_task(
                     task,
                     super::WaitMembership::TaskWait(key),
                     Some(WaitResult::TimedOut),
                 )
             }
-            IndexedWaitKind::Deadline => crate::execution::task::processor::wake_deadline_task(
+            IndexedWaitKind::Deadline => crate::task::processor::wake_deadline_task(
                 task,
                 wait_id,
                 WaitResult::TimedOut,
             ),
-            IndexedWaitKind::Futex { .. } => crate::execution::task::processor::wake_futex_task(
+            IndexedWaitKind::Futex { .. } => crate::task::processor::wake_futex_task(
                 task,
                 wait_id,
                 WaitResult::TimedOut,
             ),
-            IndexedWaitKind::Signal { .. } => crate::execution::task::processor::wake_signal_task(
+            IndexedWaitKind::Signal { .. } => crate::task::processor::wake_signal_task(
                 task,
                 wait_id,
                 WaitResult::TimedOut,
             ),
-            IndexedWaitKind::Console => crate::execution::task::processor::wake_console_task(
+            IndexedWaitKind::Console => crate::task::processor::wake_console_task(
                 task,
                 wait_id,
                 WaitResult::TimedOut,
             ),
-            IndexedWaitKind::Pipe { .. } => crate::execution::task::processor::wake_pipe_task(
+            IndexedWaitKind::Pipe { .. } => crate::task::processor::wake_pipe_task(
                 task,
                 wait_id,
                 WaitResult::TimedOut,
             ),
-            IndexedWaitKind::Poll => crate::execution::task::processor::wake_poll_task(
+            IndexedWaitKind::Poll => crate::task::processor::wake_poll_task(
                 task,
                 wait_id,
                 WaitResult::TimedOut,
@@ -134,26 +132,16 @@ fn wake_expired_tasks(now_ns: u64) {
     }
 }
 
-/// 仅在 user-return 或 local-IRQ-closed scheduler idle safe point 消费 deferred work。
-///
-/// kernel software-interrupt handler 不得调用本函数：它可重入持有普通 VirtIO queue、
-/// DRM completion 或 KERNEL_SPACE lock 的 syscall；在该栈上消费会永久自旋。
-pub(crate) fn dispatch_pending_deferred_work() {
-    let work = deferred::take();
-    if work.is_empty() {
-        return;
-    }
+/// 网络协议定时器（TCP 重传、ARP、UDP 出口）的轮询间隔：与原调度 tick 相同的 10ms。
+const NETWORK_POLL_INTERVAL_NS: u64 = 10_000_000;
+
+/// deferred 线程的分派：定时器到期、控制台输入、已注册设备工作、驱动 I/O 完成与网络。
+pub(crate) fn dispatch_deferred_work(work: DeferredWorkSet) {
     if work.contains(DeferredWork::TIMER) {
-        let now_us = crate::execution::timer::get_time_us();
-        if let Some(task) = current_task() {
-            task.scheduling.policy.lock().checkpoint_runtime(now_us);
-            task.charge_timer_tick(work.contains(DeferredWork::TIMER_FROM_USER));
-        }
-        crate::crash::note_deferred_progress();
         wake_expired_tasks(get_time_ns());
-        load_average::update(now_us);
+        load_average::update(crate::time::get_time_us());
         expire_timers(get_time_ns());
-        request_tick_reschedule();
+        super::resource_limit::sample_cpu_limits(get_time_ns());
     } else if work.contains(DeferredWork::TIMER_BACKLOG) {
         wake_expired_tasks(get_time_ns());
         expire_timers(get_time_ns());
@@ -166,19 +154,27 @@ pub(crate) fn dispatch_pending_deferred_work() {
         }
     }
     work.run_registered(get_time_ns());
-    if work.contains(DeferredWork::DRIVER_IO)
-        && crate::devices::model::dispatch_io_completion_work()
-    {
+    if work.contains(DeferredWork::DRIVER_IO) && crate::devices::model::dispatch_io_completion_work() {
         deferred::raise(DeferredWork::DRIVER_IO);
     }
-    let network_due = work.contains(DeferredWork::NETWORK)
-        || work.contains(DeferredWork::TIMER) && crate::net::network_work_due();
-    if network_due {
-        // RX budget 用尽时必须再次发布同一 deferred work；否则 used ring 中没有新 IRQ edge
-        // 的 frame 可能永久滞留。timer deadline 同样在此推进 ARP/UDP egress；缺失时丢失
-        // 首个 ARP reply 后将永远不重试。requeue 由 task deferred owner 执行，socket 不反向依赖 arch。
-        if crate::net::dispatch_network_work() {
-            deferred::raise(DeferredWork::NETWORK);
-        }
+    let network_due =
+        work.contains(DeferredWork::NETWORK) || work.contains(DeferredWork::TIMER) && crate::net::network_work_due();
+    if network_due && crate::net::dispatch_network_work() {
+        // 接收预算用尽：再次发布，used ring 中没有新中断沿的帧不会滞留。
+        deferred::raise(DeferredWork::NETWORK);
     }
+}
+
+/// 全部定时器来源中最早的截止时间：等待截止、间隔/POSIX/timerfd 定时器、负载均值采样、网络轮询
+/// 与 RLIMIT_CPU 采样。
+pub(crate) fn next_deferred_deadline() -> Option<u64> {
+    let waits = WAIT_REGISTRY.next_deadline();
+    let timers = PROCESS_TABLE.timers.lock().next_expiration();
+    let load = PROCESS_TABLE
+        .load_average
+        .next_sample_us()
+        .map(|deadline| deadline.saturating_mul(1000));
+    let network = crate::net::network_active().then(|| get_time_ns().saturating_add(NETWORK_POLL_INTERVAL_NS));
+    let cpu_limits = super::resource_limit::cpu_limit_sample_deadline(get_time_ns());
+    [waits, timers, load, network, cpu_limits].into_iter().flatten().min()
 }

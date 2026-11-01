@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use syscall_abi::open::{O_CREAT, O_DIRECTORY, O_EXCL, O_TRUNC};
 
 use crate::{
-    execution::task::{TaskControlBlock, current_task},
+    task::{TaskControlBlock, current_task},
     file::PreparedFileDescription,
     fs::{
         AccessIdentity, InodeOpenError, InodeType, O_ACCMODE, O_CLOEXEC, O_NOFOLLOW, O_PATH,

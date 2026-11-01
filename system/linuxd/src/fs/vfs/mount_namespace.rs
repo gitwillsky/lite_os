@@ -8,7 +8,7 @@ use crate::namespace::{
 };
 use alloc::boxed::Box;
 use alloc::{sync::Arc, vec::Vec};
-use spin::Once;
+use native_runtime::sync::Once;
 
 /// Namespace 强持唯一 forest root，parent 强持 children、attachment 弱指 parent。
 /// final Drop 只移交预置退休节点；charge 同步释放，实际拓扑/资源统一在 VFS gate 下退休。
@@ -222,7 +222,7 @@ impl MountNamespace {
         &self,
         root: &Arc<OpenedFile>,
         mode: UnmountMode,
-    ) -> Result<Vec<Arc<crate::execution::sync::TaskEvent>>, FileSystemError> {
+    ) -> Result<Vec<Arc<crate::sync::TaskEvent>>, FileSystemError> {
         let view = self.unmount_view(root)?;
         if Arc::ptr_eq(&self.root_view(), view) {
             return Err(FileSystemError::InvalidOperation);

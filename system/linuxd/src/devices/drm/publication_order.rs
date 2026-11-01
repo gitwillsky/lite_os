@@ -1,4 +1,4 @@
-use crate::fallible_tree::{FallibleMap, VacantEntry};
+use fallible_tree::{FallibleMap, VacantEntry};
 
 /// DRM identity reservation 的稳定失败分类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

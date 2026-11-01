@@ -1,8 +1,8 @@
 //! graph 是 policy commit、clone membership 与退出开始的唯一线性化 owner。
 
 use super::*;
-use crate::execution::task::SeccompError;
-use crate::execution::task::model::{RetiredSecurity, ValidatedFilter};
+use crate::task::SeccompError;
+use crate::task::model::{RetiredSecurity, ValidatedFilter};
 use alloc::vec::Vec;
 
 /// 对 calling Thread 启用 strict；与远端 TSYNC 和 clone publication 使用同一提交锁。
@@ -58,10 +58,10 @@ impl ProcessTable {
                     .credential_guard()
                     .lock_killable()
                     .map_err(|error| match error {
-                        crate::execution::sync::TaskMutexLockError::OutOfMemory => {
+                        crate::sync::TaskMutexLockError::OutOfMemory => {
                             SeccompError::OutOfMemory
                         }
-                        crate::execution::sync::TaskMutexLockError::Interrupted => {
+                        crate::sync::TaskMutexLockError::Interrupted => {
                             SeccompError::Interrupted
                         }
                     })?,

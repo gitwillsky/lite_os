@@ -3,7 +3,7 @@ use super::{
     Attachment, FileSystemError, MountView, mount_index, mount_propagation, mount_publication,
     mount_retirement,
 };
-use crate::fallible_tree::FallibleMap;
+use fallible_tree::FallibleMap;
 use alloc::{sync::Arc, vec::Vec};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -155,7 +155,7 @@ fn locked(view: &MountView, unlocked: &[Arc<MountView>]) -> bool {
 pub(super) fn unmount(
     root: &Arc<MountView>,
     synchronous: bool,
-) -> Result<Vec<Arc<crate::execution::sync::TaskEvent>>, FileSystemError> {
+) -> Result<Vec<Arc<crate::sync::TaskEvent>>, FileSystemError> {
     let original = root.snapshot_subtree()?;
     let mut selected = Selection {
         entries: Vec::new(),

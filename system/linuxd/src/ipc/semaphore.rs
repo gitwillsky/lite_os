@@ -1,13 +1,10 @@
 //! System V semaphore array 的唯一 value/PID/operation/wait/undo owner。
 use super::sem_undo::{SemaphoreUndoEntry, UndoRegistration};
 use super::{IpcAccess, IpcError, IpcPermission};
-use crate::{
-    execution::sync::{TaskEvent, WaitResult},
-    fallible_tree::{FallibleMap, VacantEntry},
-    namespace::{PidIdentity, UserNamespace},
-};
+use crate::{sync::{TaskEvent, WaitResult}, namespace::{PidIdentity, UserNamespace}};
+use fallible_tree::{FallibleMap, VacantEntry};
 use alloc::{sync::Arc, vec::Vec};
-use spin::Mutex;
+use crate::sync::Mutex;
 use syscall_abi::ipc::{GETNCNT, GETPID, GETVAL, GETZCNT, IPC_NOWAIT, SEM_UNDO, SEM_VALUE_MAX};
 
 /// Linux sembuf 的语义输入；布局/用户指针只属于 syscall codec。

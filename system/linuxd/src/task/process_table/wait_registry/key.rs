@@ -1,7 +1,7 @@
 use crate::{
     fs::AdvisoryLockKey,
     ipc::PipeDirection,
-    memory::{FutexKey, SharedFileId},
+    memory::FutexKey,
 };
 
 use super::WAIT_SHARD_COUNT;
@@ -71,19 +71,13 @@ fn mix(left: u64, right: u64) -> u64 {
     left.rotate_left(17) ^ right.wrapping_mul(0x9e37_79b9_7f4a_7c15)
 }
 
-fn shared_file(file: SharedFileId) -> u64 {
-    mix(file.filesystem as u64, file.inode)
-}
-
 fn futex_source(key: FutexKey) -> u64 {
     match key {
         FutexKey::Private {
             address_space,
             address,
         } => mix(address_space as u64, address as u64),
-        FutexKey::SharedAnonymous { backing, offset }
-        | FutexKey::SharedDevice { backing, offset } => mix(backing, offset as u64),
-        FutexKey::SharedFile { file, offset } => mix(shared_file(file), offset),
+        FutexKey::Shared { object, offset } => mix(object, offset),
     }
 }
 

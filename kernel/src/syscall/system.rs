@@ -66,6 +66,24 @@ pub(super) fn serial_read(call: &Call<'_>) -> Result<(), Status> {
     call.write_optional(call.arg(4), &count)
 }
 
+pub(super) fn serial_write(call: &Call<'_>) -> Result<(), Status> {
+    require_root(call, call.arg_handle(0))?;
+    let (mut address, mut remaining) = (call.arg(1), call.arg(2));
+    while remaining != 0 {
+        let chunk = remaining.min(4096);
+        let bytes = call.read_bytes(address, chunk)?;
+        crate::platform::console::write_raw(&bytes);
+        address += chunk;
+        remaining -= chunk;
+    }
+    Ok(())
+}
+
+pub(super) fn barrier() -> Result<(), Status> {
+    crate::execution::barrier::synchronize();
+    Ok(())
+}
+
 pub(super) fn clock_get_monotonic(call: &Call<'_>) -> Result<(), Status> {
     call.write(call.arg(0), &(crate::execution::timer::get_time_ns() as i64))
 }
@@ -82,6 +100,11 @@ pub(super) fn clock_set_utc(call: &Call<'_>) -> Result<(), Status> {
 
 pub(super) fn nanosleep(call: &Call<'_>) -> Result<(), Status> {
     let deadline = super::deadline(call.arg(0)).unwrap_or(u64::MAX);
+    if deadline <= crate::execution::timer::get_time_ns() {
+        // 截止时间已过：让出 CPU（与 Zircon `zx_nanosleep(0)` 相同，即 yield）。
+        crate::thread::yield_current();
+        return Ok(());
+    }
     match crate::thread::sleep_until(deadline) {
         WaitResult::TimedOut | WaitResult::Woken => Ok(()),
         other => Err(wait_status(other)),
@@ -122,6 +145,8 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
                 total_pages: frames.capacity_pages as u64,
                 free_pages: frames.free_pages as u64,
                 boot_utc_ns: (crate::execution::timer::boot_epoch_seconds() as i64).saturating_mul(1_000_000_000),
+                clock_resolution_ns: crate::execution::timer::monotonic_resolution_ns(),
+                scheduler_quantum_ns: crate::execution::timer::scheduler_quantum_ns(),
             };
             let bytes = super::bytes_of(&info);
             call.write_optional(actual, &bytes.len())?;
@@ -129,6 +154,16 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
                 return Err(native_abi::ERR_BUFFER_TOO_SMALL);
             }
             call.write_bytes(buffer, bytes)
+        }
+        native_abi::system::FREE_BLOCKS => {
+            let blocks = crate::memory::frame_allocator::statistics().free_blocks;
+            let values: [u64; crate::memory::frame_allocator::ORDER_COUNT] = blocks.map(|count| count as u64);
+            let size = values.len() * 8;
+            call.write_optional(actual, &size)?;
+            if capacity < size {
+                return Err(native_abi::ERR_BUFFER_TOO_SMALL);
+            }
+            call.write_array(buffer, &values)
         }
         native_abi::system::CPU_BUSY => {
             let busy = crate::thread::cpu_busy_snapshot().map_err(|()| native_abi::ERR_NO_MEMORY)?;

@@ -3,14 +3,11 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
-use crate::{
-    devices::model::network::{NetworkError, NetworkTransmit},
-    fallible_tree::FallibleMap,
-    ipc::ReceiveBuffer,
-    ipc::{PipeDirection, PipeEnd},
-};
+use crate::{devices::model::network::{NetworkError, NetworkTransmit}, ipc::ReceiveBuffer, ipc::{PipeDirection, PipeEnd}};
+use fallible_tree::FallibleMap;
 
 use super::{PacketAddress, SocketError, SocketPollState, SocketWaitSource};
 

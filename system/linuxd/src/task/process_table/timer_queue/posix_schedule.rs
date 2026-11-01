@@ -4,7 +4,7 @@ use super::{
     PreparedPosixReplacement, RetiredTimers, TimerError, TimerIdentity, TimerQueue, TimerSetting,
     next_period,
 };
-use crate::execution::task::model::{PreallocatedSignal, TimerSignalDelivery};
+use crate::task::model::{PreallocatedSignal, TimerSignalDelivery};
 use alloc::sync::Arc;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -108,7 +108,7 @@ impl TimerQueue {
                 } else {
                     match current.clock {
                         PosixTimerClock::Realtime => {
-                            crate::execution::timer::realtime_deadline_to_monotonic_ns(
+                            crate::time::realtime_deadline_to_monotonic_ns(
                                 prepared.value_ns,
                             )
                         }
@@ -154,6 +154,8 @@ impl TimerQueue {
                     .expect("prepared POSIX deadline");
                 entry.set_key((expiration, identity));
                 self.deadline_index.commit_vacant(entry);
+                // 新到期时间可能早于 deferred 线程当前停驻的截止时间。
+                crate::deferred::deadline_changed();
                 timer.schedule = PosixSchedule::Armed { expiration };
             } else {
                 timer.schedule = PosixSchedule::Passive { expiration };
@@ -220,10 +222,10 @@ impl TimerQueue {
         ExpiredTimer::Posix(timer.expired(key))
     }
     /// Graph 冻结 process/namespace lifetime；验证真正的 timer Arc，拒绝同 ID 新 lifetime。
-    pub(in crate::execution::task::process_table) fn prepare_posix_notification(
+    pub(in crate::task::process_table) fn prepare_posix_notification(
         &mut self,
         expired: &ExpiredPosixTimer,
-    ) -> Option<crate::execution::task::model::PreparedSignalRecord> {
+    ) -> Option<crate::task::model::PreparedSignalRecord> {
         let timer = self.posix_timers.get_mut(&(expired.tgid, expired.id))?;
         if !Arc::ptr_eq(&timer.signal, &expired.owner) || timer.sequence != expired.sequence {
             return None;
@@ -238,7 +240,7 @@ impl TimerQueue {
         Some(timer.signal.prepare(timer.sequence))
     }
     /// SIG_IGN 先改变 timer 的真实暂停状态，再由 caller 归还 Box；graph 保证 owner 不被删除。
-    pub(in crate::execution::task::process_table) fn ignore_posix_notification(
+    pub(in crate::task::process_table) fn ignore_posix_notification(
         &mut self,
         event: &TimerSignalDelivery,
     ) -> bool {
@@ -257,7 +259,7 @@ impl TimerQueue {
         *phase = NotificationPhase::Ignored;
         true
     }
-    pub(in crate::execution::task::process_table) fn ignore_posix_expiry(
+    pub(in crate::task::process_table) fn ignore_posix_expiry(
         &mut self,
         expired: &ExpiredPosixTimer,
     ) {
@@ -272,7 +274,7 @@ impl TimerQueue {
         }
     }
     /// 只遍历当前 process 的 timer 范围；每个被忽略周期 timer 的实际 schedule 仅迁移一次。
-    pub(in crate::execution::task::process_table) fn resume_ignored_posix(
+    pub(in crate::task::process_table) fn resume_ignored_posix(
         &mut self,
         tgid: usize,
         signal: usize,
@@ -308,7 +310,7 @@ impl TimerQueue {
         &mut self,
         event: &TimerSignalDelivery,
         now_ns: u64,
-        info: &mut crate::execution::task::PendingSignal,
+        info: &mut crate::task::PendingSignal,
     ) -> (bool, Option<DeadlineEntry>) {
         let Some(timer) = self.posix_timers.get_mut(&event.key) else {
             return (false, None);
@@ -343,6 +345,8 @@ impl TimerQueue {
         if let Some(expiration) = next {
             deadline.set_key((expiration, TimerIdentity::Posix(event.key.0, event.key.1)));
             self.deadline_index.commit_vacant(deadline);
+            // 新到期时间可能早于 deferred 线程当前停驻的截止时间。
+            crate::deferred::deadline_changed();
             timer.schedule = PosixSchedule::Armed { expiration };
             (true, None)
         } else {
@@ -353,14 +357,14 @@ impl TimerQueue {
 
 /// pending owner 已归还实际预留 Box 后，统一 sigwait/handler 消费路径验证并重装 timer。
 /// 删除、重设或 ID 复用后返回 false，由 signal consumer 丢弃旧通知继续选择。
-pub(in crate::execution::task) fn deliver_posix_signal(
+pub(in crate::task) fn deliver_posix_signal(
     event: TimerSignalDelivery,
-    info: &mut crate::execution::task::PendingSignal,
+    info: &mut crate::task::PendingSignal,
 ) -> bool {
     let (deliver, retired) = super::super::PROCESS_TABLE
         .timers
         .lock()
-        .deliver_posix_notification(&event, crate::execution::timer::get_time_ns(), info);
+        .deliver_posix_notification(&event, crate::time::get_time_ns(), info);
     drop(retired);
     deliver
 }

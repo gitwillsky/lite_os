@@ -1,7 +1,7 @@
 //! Volatile inode 的唯一时间 tuple；storage/mmap 与 inode attributes 共享同一事实。
 use super::FileSystemError;
 use alloc::sync::Arc;
-use spin::Mutex;
+use crate::sync::Mutex;
 
 /// 一次锁下取得的真实 inode 时间快照；秒精度与当前 filesystem ABI profile 一致。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -108,7 +108,7 @@ impl TimeOwner {
     }
 }
 fn now_seconds() -> u64 {
-    crate::execution::timer::get_realtime_ns() / 1_000_000_000
+    crate::time::get_realtime_ns() / 1_000_000_000
 }
 
 /// 固定 Linux relatime_need_update/atime_needs_update；时钟倒退也可更新，不能用 max 冻结未来 atime。

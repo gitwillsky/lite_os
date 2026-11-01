@@ -1,7 +1,7 @@
 use alloc::vec::Vec;
 
 use crate::{
-    execution::task::{CredentialUpdateError, current_task},
+    task::{CredentialUpdateError, current_task},
     syscall::errno,
 };
 

@@ -206,7 +206,7 @@ impl TaskControlBlock {
             *self.thread().signal_mask.lock() = normalize_signal_mask(new_mask);
             self.thread().user_context.with(|context| {
                 context.enter_signal_handler(
-                    crate::memory::signal_trampoline_entry(),
+                    self.address_space().signal_trampoline(),
                     frame_address,
                     signal,
                     action.handler,

@@ -1,10 +1,8 @@
 use alloc::sync::Arc;
 
 use super::{WAIT_SHARD_COUNT, key::WaitIndexKey, registration::WaitRegistration};
-use crate::{
-    execution::sync::{IrqMutex, IrqMutexGuard},
-    fallible_tree::FallibleMap,
-};
+use crate::{sync::{Mutex, MutexGuard}};
+use fallible_tree::FallibleMap;
 
 pub(super) struct WaitShard {
     pub(super) index: FallibleMap<WaitIndexKey, Arc<WaitRegistration>>,
@@ -19,19 +17,19 @@ impl WaitShard {
 }
 
 pub(super) struct LockedWaitShards<'a> {
-    guards: [Option<IrqMutexGuard<'a, WaitShard>>; WAIT_SHARD_COUNT],
+    guards: [Option<MutexGuard<'a, WaitShard>>; WAIT_SHARD_COUNT],
 }
 
 impl<'a> LockedWaitShards<'a> {
     pub(super) fn lock(
-        shards: &'a [IrqMutex<WaitShard>; WAIT_SHARD_COUNT],
+        shards: &'a [Mutex<WaitShard>; WAIT_SHARD_COUNT],
         keys: &[WaitIndexKey],
     ) -> Self {
         Self::lock_with_extra(shards, keys, None)
     }
 
     pub(super) fn lock_with_extra(
-        shards: &'a [IrqMutex<WaitShard>; WAIT_SHARD_COUNT],
+        shards: &'a [Mutex<WaitShard>; WAIT_SHARD_COUNT],
         keys: &[WaitIndexKey],
         extra: Option<WaitIndexKey>,
     ) -> Self {

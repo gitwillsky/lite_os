@@ -3,9 +3,9 @@ use super::{
     FileSystemError, VirtualFileSystem, mount_index,
     mount_view::{Attachment, MountPayload, MountView},
 };
-use crate::execution::sync::{TaskEvent, TaskMutexWaitPreparation};
+use crate::sync::{TaskEvent, TaskMutexWaitPreparation};
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 pub(super) enum Work {
     Namespace(Option<Arc<MountView>>),
@@ -87,7 +87,7 @@ impl Drop for Retirement {
 // OWNER: intrusive resource retirement queue；short spin 只转移已有 Box，所有 consequential Drop 锁外。
 static PENDING: Mutex<Option<Box<Retirement>>> = Mutex::new(None);
 static READY: TaskEvent = TaskEvent::new();
-static STARTED: spin::Once<()> = spin::Once::new();
+static STARTED: native_runtime::sync::Once<()> = native_runtime::sync::Once::new();
 pub(super) fn has_pending() -> bool {
     PENDING.lock().is_some()
 }

@@ -1,7 +1,7 @@
 //! Linux character-device projection for the selected VirtIO Console byte stream.
 
 use alloc::sync::Arc;
-use spin::Once;
+use native_runtime::sync::Once;
 use syscall_abi::errno;
 
 use crate::{
@@ -82,7 +82,7 @@ pub(crate) fn init(device: Arc<dyn PortDevice>) -> Result<(), ()> {
     })
     .map_err(|_| ())?;
     let driver = Arc::try_new(PortDriver).map_err(|_| ())?;
-    let work = crate::execution::deferred::register(port_work)?;
+    let work = crate::deferred::register(port_work)?;
     let adapter = port.device.clone();
     PORT.call_once(|| port);
     adapter.bind_completion_work(work);

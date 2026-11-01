@@ -1,9 +1,9 @@
 //! Namespace init 的唯一 shutdown event；生命周期与 local member index 仍归 PidNamespace。
 use super::*;
-pub(super) struct NamespaceExit(crate::execution::sync::TaskEvent);
+pub(super) struct NamespaceExit(crate::sync::TaskEvent);
 impl NamespaceExit {
     pub(super) const fn new() -> Self {
-        Self(crate::execution::sync::TaskEvent::new())
+        Self(crate::sync::TaskEvent::new())
     }
 }
 impl crate::namespace::PidExitWake for NamespaceExit {
@@ -65,9 +65,9 @@ pub(super) fn shutdown(
     super::signal::signal_action_for_group(
         task,
         syscall_abi::signal::SIGCHLD,
-        Some(crate::execution::task::SignalAction {
+        Some(crate::task::SignalAction {
             handler: 1,
-            ..crate::execution::task::SignalAction::default()
+            ..crate::task::SignalAction::default()
         }),
     )
     .expect("live namespace init retains signal handlers");

@@ -5,7 +5,7 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use super::{BlockNode, DeviceNumber, FileSystemError};
 use crate::devices::block::BlockDevice;

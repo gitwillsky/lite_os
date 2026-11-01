@@ -10,12 +10,10 @@ use smoltcp::{
     time::Instant,
     wire::IpAddress,
 };
-use spin::Mutex;
+use crate::sync::Mutex;
 
-use crate::{
-    devices::model::network_device, execution::timer::get_time_us, fallible_tree::FallibleMap,
-    ipc::PipeEnd, ipc::ReceiveBuffer,
-};
+use crate::{devices::model::network_device, time::get_time_us, ipc::PipeEnd, ipc::ReceiveBuffer};
+use fallible_tree::FallibleMap;
 
 use self::interface::NetworkInterface;
 use self::options::InetSocketOptions;
@@ -420,7 +418,7 @@ impl InetSocket {
         Ok(endpoint)
     }
 
-    fn open_operation(&self) -> Result<spin::MutexGuard<'_, Option<InetEndpoint>>, SocketError> {
+    fn open_operation(&self) -> Result<crate::sync::MutexGuard<'_, Option<InetEndpoint>>, SocketError> {
         let operation = self.operation.lock();
         if operation.is_none() {
             return Err(SocketError::NotConnected);

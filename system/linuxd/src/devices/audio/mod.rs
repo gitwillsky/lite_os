@@ -10,14 +10,15 @@ use alloc::{
     vec::Vec,
 };
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
 use crate::{
     devices::model::{PcmCompletionObserver, PcmOutput, io_completion::CompletionSource},
-    execution::sync::TaskMutex,
+    sync::TaskMutex,
     ipc::{Pipe, PipeDirection, PipeEnd},
     memory::{
-        DeviceBacking, DeviceMappingSource, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE,
+        DeviceBacking, DeviceMappingSource, PAGE_SIZE,
     },
     namespace::PidIdentity,
 };
@@ -297,7 +298,7 @@ impl PcmCompletionObserver for Card {
     fn period_completed(&self, _frames: usize) {
         self.events.completed.fetch_add(1, Ordering::AcqRel);
         // producer 可在 Discovery 之后运行；重新发布合并位，不能等下一次硬件 IRQ 才推进 hw_ptr。
-        crate::execution::deferred::raise(crate::execution::deferred::DeferredWork::DRIVER_IO);
+        crate::deferred::raise(crate::deferred::DeferredWork::DRIVER_IO);
     }
 
     fn xrun(&self) {
@@ -307,7 +308,7 @@ impl PcmCompletionObserver for Card {
 
     fn disconnected(&self) {
         self.events.disconnected.store(true, Ordering::Release);
-        crate::execution::deferred::raise(crate::execution::deferred::DeferredWork::DRIVER_IO);
+        crate::deferred::raise(crate::deferred::DeferredWork::DRIVER_IO);
         crate::info!("ALSA playback reset");
         self.notification_write.signal_readiness();
     }
@@ -324,10 +325,10 @@ impl PcmClock {
         if !self.enabled {
             0
         } else if self.kind == 0 {
-            crate::execution::timer::get_realtime_ns()
+            crate::time::get_realtime_ns()
         } else {
             // 当前 timer 没有频率校正；MONOTONIC 与 MONOTONIC_RAW 使用同一 counter。
-            crate::execution::timer::get_time_ns()
+            crate::time::get_time_ns()
         }
     }
 }
@@ -340,7 +341,6 @@ pub(crate) struct PcmFile {
     // OWNER: serializes ALSA control/data transitions for one OFD.
     // Without it, concurrent HW_FREE/DROP and period submission can publish stale state.
     operation: Mutex<PcmClock>,
-    mmap_identity: u64,
     ring: Arc<DeviceBacking>,
 }
 
@@ -365,8 +365,6 @@ fn open(card: Arc<Card>, endpoint: PcmEndpoint) -> Result<Arc<PcmFile>, AudioErr
                 PcmEndpoint::Direct => MAX_PCM_PERIOD_BYTES * MAX_BUFFER_PERIODS,
             })
             .div_ceil(PAGE_SIZE),
-            FrameAllocationClass::Reclaimable,
-            DeviceMemoryKind::InsertedPages,
         )
         .ok_or(AudioError::Device)?,
     )
@@ -385,7 +383,6 @@ fn open(card: Arc<Card>, endpoint: PcmEndpoint) -> Result<Arc<PcmFile>, AudioErr
             kind: 0,
             enabled: false,
         }),
-        mmap_identity: crate::id::next_runtime_object_id(),
         ring,
     });
     match file {
@@ -666,10 +663,7 @@ impl PcmFile {
         {
             return Err(AudioError::InvalidState);
         }
-        Ok(DeviceMappingSource::new(
-            self.mmap_identity,
-            self.ring.clone(),
-        ))
+        Ok(DeviceMappingSource::new(self.ring.clone()))
     }
 
     /// 从 ALSA mmap ring 提交 application pointer 的帧增量。数据已经由应用直接写进环形缓冲，

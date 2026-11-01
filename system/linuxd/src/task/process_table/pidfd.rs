@@ -297,7 +297,7 @@ pub(crate) fn pidfd_identity(
 }
 
 /// PF_EXITING 的实际 graph projection；不得从是否还可读 proc 或 PID 号码占用猜测。
-pub(in crate::execution::task) fn file_accessible(target: &TaskControlBlock) -> bool {
+pub(in crate::task) fn file_accessible(target: &TaskControlBlock) -> bool {
     let graph = PROCESS_TABLE.graph.lock();
     graph
         .threads
@@ -331,10 +331,10 @@ pub(crate) fn pidfd_get_file(
     }
     if let Some(retired) = retired {
         retired.authorize(caller).map_err(|error| match error {
-            crate::execution::task::RobustListError::NotFound => PidFdError::NotFound,
-            crate::execution::task::RobustListError::Permission => PidFdError::Permission,
-            crate::execution::task::RobustListError::OutOfMemory => PidFdError::NoMemory,
-            crate::execution::task::RobustListError::Interrupted => PidFdError::Interrupted,
+            crate::task::RobustListError::NotFound => PidFdError::NotFound,
+            crate::task::RobustListError::Permission => PidFdError::Permission,
+            crate::task::RobustListError::OutOfMemory => PidFdError::NoMemory,
+            crate::task::RobustListError::Interrupted => PidFdError::Interrupted,
         })?;
     }
     Err(PidFdError::NotFound)

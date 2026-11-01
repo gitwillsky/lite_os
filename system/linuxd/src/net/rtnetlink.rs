@@ -12,13 +12,10 @@
 //! dump，覆盖 IPv4。修改请求（`NEW/DEL/SET*`）与多播订阅返回 `EOPNOTSUPP`，不伪造成功。
 
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
-use spin::Mutex;
+use crate::sync::Mutex;
 
-use crate::{
-    devices::model::network::NetworkStatistics,
-    fallible_tree::FallibleMap,
-    ipc::{Pipe, PipeDirection, PipeEnd, ReceiveBuffer},
-};
+use crate::{devices::model::network::NetworkStatistics, ipc::{Pipe, PipeDirection, PipeEnd, ReceiveBuffer}};
+use fallible_tree::FallibleMap;
 
 use super::{
     CoreBufferLimit, InterfaceSnapshot, NetlinkAddress, ReceivedMessage, RouteSnapshot,

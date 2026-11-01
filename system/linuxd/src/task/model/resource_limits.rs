@@ -10,9 +10,9 @@ pub(super) const RLIMIT_NOFILE: usize = 7;
 pub(crate) const RLIMIT_MEMLOCK: usize = 8;
 pub(crate) const RLIMIT_AS: usize = 9;
 const RLIMIT_LOCKS: usize = 10;
-pub(in crate::execution::task) const RLIMIT_SIGPENDING: usize = 11;
+pub(in crate::task) const RLIMIT_SIGPENDING: usize = 11;
 const RLIMIT_MSGQUEUE: usize = 12;
-pub(in crate::execution::task) const RLIMIT_NICE: usize = 13;
+pub(in crate::task) const RLIMIT_NICE: usize = 13;
 const RLIMIT_RTPRIO: usize = 14;
 const RLIMIT_RTTIME: usize = 15;
 const RESOURCE_COUNT: usize = RLIMIT_RTTIME + 1;
@@ -175,8 +175,8 @@ impl TaskControlBlock {
             .soft
     }
 
-    pub(in crate::execution::task) fn process_cpu_runtime_us(&self) -> u64 {
-        self.process().process_cpu_runtime_us()
+    pub(in crate::task) fn process_cpu_runtime_us(&self) -> u64 {
+        self.process_cpu_time().0
     }
 
     /// NEWUSER 的全部已使用 rlimit maxima 由同一实际 Process limits 快照捕获。
@@ -203,23 +203,12 @@ impl TaskControlBlock {
         )
     }
 
-    /// 同一 actual limits guard 捕获 fault 的 stack/address-space 边界。
-    pub(in crate::execution::task) fn user_fault_limits(&self) -> crate::memory::UserFaultLimits {
-        let limits = self.process().resource_limits.lock();
-        crate::memory::UserFaultLimits::new(
-            limits.get(RLIMIT_STACK).expect("RLIMIT_STACK exists").soft,
-            limits.get(RLIMIT_AS).expect("RLIMIT_AS exists").soft,
-        )
-    }
-
     pub(crate) fn resource_limit(&self, resource: usize) -> Option<ResourceLimit> {
         self.process().resource_limit(resource)
     }
 
-    pub(in crate::execution::task) fn resource_cpu_signal(&self, runtime_us: u64) -> Option<usize> {
-        use core::sync::atomic::Ordering;
-
-        if !self.process().cpu_limit_active.load(Ordering::Acquire) {
+    pub(in crate::task) fn resource_cpu_signal(&self, runtime_us: u64) -> Option<usize> {
+        if !self.process().cpu_limit_active.get() {
             return None;
         }
         self.process().resource_limits.lock().cpu_signal(runtime_us)
@@ -228,33 +217,30 @@ impl TaskControlBlock {
 
 // Process 生命周期内唯一投影；graph/proc observer 不保活任何 TCB。
 impl super::Process {
-    pub(in crate::execution::task) fn process_cpu_runtime_us(&self) -> u64 {
-        self.cpu_runtime_us
-            .load(core::sync::atomic::Ordering::Relaxed)
+    /// RLIMIT_CPU 是否有限（deferred 采样据此筛选）。
+    pub(in crate::task) fn cpu_limited(&self) -> bool {
+        self.cpu_limit_active.get()
     }
 
-    pub(in crate::execution::task) fn resource_limit(
+    pub(in crate::task) fn resource_limit(
         &self,
         resource: usize,
     ) -> Option<ResourceLimit> {
         self.resource_limits.lock().get(resource)
     }
-    pub(in crate::execution::task) fn replace_resource_limit(
+    pub(in crate::task) fn replace_resource_limit(
         &self,
         resource: usize,
         replacement: ResourceLimit,
         privileged: bool,
     ) -> Result<ResourceLimit, ResourceLimitError> {
-        use core::sync::atomic::Ordering;
-
         let mut limits = self.resource_limits.lock();
         let previous_cpu_active = limits.cpu_limit_active();
         let replacement_cpu_active =
             replacement.soft != RLIM_INFINITY || replacement.hard != RLIM_INFINITY;
         if resource == RLIMIT_CPU && replacement_cpu_active {
-            // Publish the conservative true state before the finite limit becomes visible. A
-            // concurrent switch may take one harmless extra lock, but cannot skip enforcement.
-            self.cpu_limit_active.store(true, Ordering::Release);
+            // 有限 limit 可见之前先发布 true：并发采样最多多取一次锁，不会漏掉检查。
+            self.cpu_limit_active.set(true);
         }
         let result = limits.replace(resource, replacement, privileged);
         if resource == RLIMIT_CPU {
@@ -263,8 +249,59 @@ impl super::Process {
             } else {
                 previous_cpu_active
             };
-            self.cpu_limit_active.store(active, Ordering::Release);
+            self.cpu_limit_active.set(active);
         }
         result
     }
+}
+
+/// Process 的 RLIMIT_CPU 是否有限，并维护全局“有限 Process 数”。
+///
+/// 计数非零时 deferred 线程每秒采样一次各受限 Process 的 CPU 时间；没有受限 Process 时不产生
+/// 周期唤醒。计数随标志的每次翻转与 Process 释放同步更新。
+pub(in crate::task) struct CpuLimitActivity(core::sync::atomic::AtomicBool);
+
+// OWNER: `CpuLimitActivity` 为 true 的存活 Process 数；只由 `CpuLimitActivity` 修改。
+// 缺失时 deferred 线程无法判断是否需要周期采样：要么永远空转唤醒，要么漏掉 RLIMIT_CPU。
+static CPU_LIMITED_PROCESSES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+impl CpuLimitActivity {
+    pub(in crate::task) fn new(active: bool) -> Self {
+        if active {
+            CPU_LIMITED_PROCESSES.fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+        }
+        Self(core::sync::atomic::AtomicBool::new(active))
+    }
+
+    pub(in crate::task) fn get(&self) -> bool {
+        self.0.load(core::sync::atomic::Ordering::Acquire)
+    }
+
+    pub(in crate::task) fn set(&self, active: bool) {
+        use core::sync::atomic::Ordering;
+        match (self.0.swap(active, Ordering::AcqRel), active) {
+            (false, true) => {
+                CPU_LIMITED_PROCESSES.fetch_add(1, Ordering::AcqRel);
+                // deferred 线程可能正无限期停驻：让它重新计算截止时间以排定采样。
+                crate::deferred::deadline_changed();
+            }
+            (true, false) => {
+                CPU_LIMITED_PROCESSES.fetch_sub(1, Ordering::AcqRel);
+            }
+            _ => {}
+        }
+    }
+}
+
+impl Drop for CpuLimitActivity {
+    fn drop(&mut self) {
+        if *self.0.get_mut() {
+            CPU_LIMITED_PROCESSES.fetch_sub(1, core::sync::atomic::Ordering::AcqRel);
+        }
+    }
+}
+
+/// 存在 RLIMIT_CPU 有限的 Process。
+pub(in crate::task) fn cpu_limits_active() -> bool {
+    CPU_LIMITED_PROCESSES.load(core::sync::atomic::Ordering::Acquire) != 0
 }

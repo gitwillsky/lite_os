@@ -1,10 +1,10 @@
 use core::ops::{Deref, DerefMut};
 
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use super::{InetEndpoint, NetworkStack, SOCKET_STORAGE_CAPACITY};
 use crate::{
-    execution::sync::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation},
+    sync::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation},
     net::SocketError,
 };
 

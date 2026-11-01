@@ -4,7 +4,7 @@ use super::*;
 fn wake_rechecking_waiters(mut waiters: FallibleMap<usize, Arc<TaskControlBlock>>) {
     while let Some((&tid, _)) = waiters.first_key_value() {
         let waiter = waiters.remove(&tid).expect("staged child waiter");
-        crate::execution::task::processor::wake_child_task(waiter, WaitResult::Woken);
+        crate::task::processor::wake_child_task(waiter, WaitResult::Woken);
     }
 }
 

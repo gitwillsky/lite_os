@@ -1,6 +1,6 @@
 use super::errno;
 use crate::{
-    execution::task::current_task,
+    task::current_task,
     file::{OpenFileDescription, OpenFileKind},
     fs::{O_CLOEXEC, O_NONBLOCK},
 };
@@ -35,7 +35,7 @@ pub(crate) fn sys_signalfd4(fd: i32, pointer: usize, size: usize, flags: u32) ->
             return -errno::EINVAL;
         };
         signal.replace_mask(mask);
-        crate::execution::task::notify_signal_waiters(&task);
+        crate::task::notify_signal_waiters(&task);
         fd as isize
     }
 }

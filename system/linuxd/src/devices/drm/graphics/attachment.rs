@@ -1,11 +1,9 @@
 //! 每个 DRM context 的资源关联；GEM handle 与提交 pins 共享它，dma-buf 只保活资源本身。
 use super::VirglBuffer;
-use crate::{
-    devices::drm::{DrmDevice, DrmError},
-    fallible_tree::{FallibleMap, VacantEntry},
-};
+use crate::{devices::drm::{DrmDevice, DrmError}};
+use fallible_tree::{FallibleMap, VacantEntry};
 use alloc::sync::{Arc, Weak};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 pub(in crate::devices::drm) struct AttachmentRetirement {
     pub(in crate::devices::drm) context_id: u32,

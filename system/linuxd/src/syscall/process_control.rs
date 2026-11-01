@@ -1,5 +1,5 @@
 use crate::{
-    execution::task::{current_task, parent_death_signal},
+    task::{current_task, parent_death_signal},
     syscall::errno,
 };
 

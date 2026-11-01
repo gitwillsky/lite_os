@@ -1,8 +1,8 @@
 //! Linux rlimit ucounts 的 actual UserNS/kuid/资源与祖先收费；记录的 lifetime token 是唯一配额 owner。
 use super::{NamespaceError, UserNamespace};
-use crate::fallible_tree::FallibleMap;
+use fallible_tree::FallibleMap;
 use alloc::{sync::Arc, vec::Vec};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 /// 已接入的实际 ucounts 资源；计数单位由各领域决定。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -56,7 +56,7 @@ impl RlimitCounters {
         maximum: u64,
         exempt: bool,
     ) -> Result<(), NamespaceError> {
-        let mut prepared: Option<crate::fallible_tree::NodeSlot<(RlimitResource, u32), u64>> = None;
+        let mut prepared: Option<fallible_tree::NodeSlot<(RlimitResource, u32), u64>> = None;
         let key = (resource, uid);
         let result = loop {
             let mut users = self.users.lock();

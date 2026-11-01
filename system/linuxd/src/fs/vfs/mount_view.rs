@@ -7,7 +7,7 @@ use alloc::{
     vec::Vec,
 };
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 // OWNER: 已分配 mount identity 永不复用；namespace copy 创建新 view，bind 也不能沿用 source ID。
 static NEXT_MOUNT_ID: AtomicU64 = AtomicU64::new(1);
@@ -33,7 +33,7 @@ impl MountScope {
         Arc::try_new(Self {
             id,
             user,
-            event: AtomicU64::new(crate::execution::sync::next_readiness_generation()),
+            event: AtomicU64::new(crate::sync::next_readiness_generation()),
             mounts: AtomicUsize::new(0),
             notification,
         })
@@ -41,7 +41,7 @@ impl MountScope {
     }
     pub(super) fn changed(&self) {
         self.event.store(
-            crate::execution::sync::next_readiness_generation(),
+            crate::sync::next_readiness_generation(),
             Ordering::Release,
         );
         self.notification.1.signal_readiness();
@@ -135,7 +135,7 @@ pub(super) struct MountPayload {
     pub(super) root: Arc<Dentry>,
     pub(super) filesystem: Arc<MountedFilesystem>,
     // 普通 umount 的唯一 final resource completion，构造时预留，不依赖退休时 OOM 分配。
-    pub(super) complete: Arc<crate::execution::sync::TaskEvent>,
+    pub(super) complete: Arc<crate::sync::TaskEvent>,
 }
 impl MountPayload {
     /// cleanup_mnt：先 dput root/placement，再 deactivate filesystem；不能依赖字段声明次序。
@@ -222,7 +222,7 @@ impl MountView {
         let attachment = attachment
             .map(super::mount_retirement::Retirement::for_attachment)
             .transpose()?;
-        let complete = Arc::try_new(crate::execution::sync::TaskEvent::new())
+        let complete = Arc::try_new(crate::sync::TaskEvent::new())
             .map_err(|_| FileSystemError::OutOfMemory)?;
         let payload = MountPayload {
             complete,

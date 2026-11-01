@@ -10,7 +10,7 @@ enum RegularFileBackend {
     Cached(Arc<CachedFile>),
     Direct {
         file: Arc<CachedFile>,
-        io: Arc<dyn super::DirectIo>,
+        io: Arc<dyn crate::fs::DirectIo>,
     },
     Snapshot(Arc<dyn Inode>),
     Memory {
@@ -33,7 +33,7 @@ impl RegularFile {
     /// 直接 I/O 只适用于持久 backing；传播 inode/cache 分配与准入错误。
     pub(crate) fn from_open(
         inode: Arc<dyn Inode>,
-        io: Option<Arc<dyn super::DirectIo>>,
+        io: Option<Arc<dyn crate::fs::DirectIo>>,
     ) -> Result<Self, FileSystemError> {
         let file = Self::from_inode(inode)?;
         match (file.0, io) {
@@ -94,27 +94,6 @@ impl RegularFile {
         }
     }
 
-    /// 是否支持现有的非阻塞 cache fill；直接 I/O 交给 io_uring 阻塞 worker，不能从缓存返回。
-    pub(crate) fn supports_nowait(&self) -> bool {
-        matches!(self.0, RegularFileBackend::Cached(_))
-    }
-
-    /// 开始一段不阻塞的 cache 读；其余后端返回 None，由调用者执行阻塞路径。
-    /// 直接 I/O 可能等待服务端，io_uring 必须派给 worker，不能在提交线程调用 read。
-    pub(crate) fn begin_read_nowait(
-        &self,
-        offset: u64,
-        length: usize,
-        notify: Arc<dyn CompletionNotify>,
-    ) -> Option<NowaitRead> {
-        match &self.0 {
-            RegularFileBackend::Cached(file) => {
-                Some(NowaitRead::new(file.clone(), offset, length, notify))
-            }
-            _ => None,
-        }
-    }
-
     /// 返回当前 regular-file byte size。
     ///
     /// # Returns
@@ -169,10 +148,7 @@ impl RegularFile {
                         storage_bytes: 0,
                     });
                 }
-                let _operation = file
-                    .operation
-                    .lock()
-                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                let _operation = file.lock(&file.operation)?;
                 file.writeback_range(offset, output.len() as u64, false)?;
                 // 不看缓存 EOF、不填页、不补零；短读长度与每次打开的 fh 都属于服务端。
                 let bytes = io.read(offset, output)?;
@@ -200,37 +176,13 @@ impl RegularFile {
                 });
             }
         };
-        let size = file.inode.size();
-        let count = usize::try_from(size.saturating_sub(offset))
-            .unwrap_or(usize::MAX)
-            .min(output.len());
-        let mut done = 0;
-        let mut storage_bytes = 0;
-        while done < count {
-            let current = offset + done as u64;
-            let (page, filled) = file.page_with_storage(current / PAGE_SIZE as u64)?;
-            storage_bytes += filled;
-            let page_offset = current as usize % PAGE_SIZE;
-            let part = (PAGE_SIZE - page_offset).min(count - done);
-            page.frame.read(page_offset, &mut output[done..done + part]);
-            done += part;
-        }
+        let bytes = file.read(offset, output)?;
         Ok(RegularFileRead {
-            bytes: done,
-            storage_bytes,
+            bytes,
+            storage_bytes: 0,
         })
     }
 
-    /// 开始一次不可被其他 regular-file mutation 穿插的 write operation。
-    /// `identity` 为实际 caller，`append` 为本次 syscall 冻结的追加语义；直接追加先刷新 i_size。
-    ///
-    /// # Returns
-    ///
-    /// 持有 per-inode write-sequence gate 的 mutation facade；Drop 自动释放。
-    ///
-    /// # Errors
-    ///
-    /// 只读动态 inode 返回 `ReadOnly`。
     pub(crate) fn begin_write(
         &self,
         identity: AccessIdentity,
@@ -242,9 +194,6 @@ impl RegularFile {
                     .write_sequence
                     .lock()
                     .map_err(|_| FileSystemError::OutOfMemory)?;
-                if file.inode.is_swap_file() {
-                    return Err(FileSystemError::TextBusy);
-                }
                 let cached = CachedWrite {
                     file,
                     identity,

@@ -120,26 +120,6 @@ impl Inode for Ext4Inode {
         Ok(done)
     }
 
-    fn begin_storage_read(
-        &self,
-        offset: u64,
-        length: usize,
-        notify: Arc<dyn crate::devices::block::CompletionNotify>,
-    ) -> Result<Option<alloc::boxed::Box<dyn crate::fs::StorageRead>>, FileSystemError> {
-        let disk = self.disk.lock().disk;
-        let read = super::super::async_read::Ext4Read::new(
-            &self.fs,
-            self.inode_num,
-            disk,
-            offset,
-            length,
-            notify,
-        )?;
-        let boxed: alloc::boxed::Box<dyn crate::fs::StorageRead> =
-            alloc::boxed::Box::try_new(read).map_err(|_| FileSystemError::OutOfMemory)?;
-        Ok(Some(boxed))
-    }
-
     fn touch_access(&self, now: u64, relatime: bool) -> Result<(), FileSystemError> {
         let needs_update = |inode: &Ext4InodeDisk| {
             crate::fs::inode_times::needs_access_update(
@@ -198,7 +178,6 @@ impl Inode for Ext4Inode {
         identity: &crate::fs::AccessIdentity,
     ) -> Result<(), FileSystemError> {
         let mut mutation = self.fs.begin_mutation()?;
-        self.check_swap_mutation(false)?;
         self.remove_write_privileges_locked(&mut mutation, Some(identity))?;
         mutation.commit()
     }
@@ -207,14 +186,7 @@ impl Inode for Ext4Inode {
         &self,
         batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
     ) -> Result<(), FileSystemError> {
-        self.write_batch(true, None, batch)
-    }
-
-    fn try_writeback_storage_batch(
-        &self,
-        batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
-    ) -> Result<(), FileSystemError> {
-        self.try_write_batch(true, None, batch)
+        self.write_batch(None, batch)
     }
 
     fn append_storage(
@@ -242,16 +214,6 @@ impl Inode for Ext4Inode {
         identity: Option<&crate::fs::AccessIdentity>,
     ) -> Result<(), FileSystemError> {
         self.allocate_range(offset, length, identity)
-    }
-
-    fn is_swap_file(&self) -> bool {
-        self.disk.lock().swap != super::SwapFilePhase::Free
-    }
-
-    fn pin_swap_file(
-        self: Arc<Self>,
-    ) -> Result<alloc::boxed::Box<dyn crate::fs::swap::SwapFileLease>, FileSystemError> {
-        self.freeze_swap_file()
     }
 
     fn sync_storage(&self) -> Result<(), FileSystemError> {
@@ -358,9 +320,6 @@ impl Inode for Ext4Inode {
         Self::validate_name(name)?;
         let mut mutation = self.fs.begin_mutation()?;
         let child = self.find_child(name)?;
-        if child.is_swap_file() {
-            return Err(FileSystemError::PermissionDenied);
-        }
         let metadata = child.metadata()?;
         if metadata.kind == InodeType::Directory {
             if !remove_directory {

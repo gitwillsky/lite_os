@@ -28,6 +28,7 @@ class BuildTarget:
     requires_bootloader: bool
     target_key: str
     kernel_boot_name: str
+    service_triple: str
 
     def kernel_elf(self, profile: str = "release") -> str:
         """返回保留符号与 ELF metadata 的 kernel 调试产物路径。"""
@@ -36,6 +37,10 @@ class BuildTarget:
     def kernel_boot_artifact(self, profile: str = "release") -> str:
         """返回 QEMU ``-kernel`` 必须消费的架构启动产物路径。"""
         return f"target/{self.kernel_triple}/{profile}/{self.kernel_boot_name}"
+
+    def bootfs(self, profile: str = "release") -> str:
+        """返回 QEMU ``-initrd`` 消费的 bootfs（系统服务 cpio）路径。"""
+        return f"target/{self.kernel_triple}/{profile}/bootfs.cpio"
 
     @property
     def requires_raw_kernel_image(self) -> bool:
@@ -84,6 +89,7 @@ _TARGETS: dict[Architecture, BuildTarget] = {
         requires_bootloader=False,
         target_key="aarch64-unknown-none-softfloat",
         kernel_boot_name="Image",
+        service_triple="aarch64-unknown-none-softfloat",
     ),
     "riscv64": BuildTarget(
         arch="riscv64",
@@ -95,6 +101,8 @@ _TARGETS: dict[Architecture, BuildTarget] = {
         requires_bootloader=True,
         target_key="riscv64gc-unknown-none-elf",
         kernel_boot_name="kernel",
+        # 系统服务不使用浮点：Linux 程序的浮点状态由硬件保持，服务代码不得触碰它。
+        service_triple="riscv64imac-unknown-none-elf",
     ),
 }
 

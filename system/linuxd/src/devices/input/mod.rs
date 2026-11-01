@@ -1,5 +1,6 @@
 use alloc::{sync::Arc, sync::Weak, vec::Vec};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
 use crate::{
     devices::model::{InputDevice, InputId, RawInputEvent},
@@ -545,8 +546,8 @@ fn bit_is_set(bits: &[u8], bit: u16) -> bool {
 
 fn current_times() -> EventTimes {
     EventTimes {
-        realtime_ns: crate::execution::timer::get_realtime_ns(),
-        monotonic_ns: crate::execution::timer::get_time_ns(),
+        realtime_ns: crate::time::get_realtime_ns(),
+        monotonic_ns: crate::time::get_time_ns(),
     }
 }
 
@@ -591,7 +592,7 @@ pub(crate) fn init() -> Result<(), ()> {
     let count = devices.len();
     INPUT_DEVICES.call_once(|| devices);
     if count != 0 {
-        let work = crate::execution::deferred::register(input_work)?;
+        let work = crate::deferred::register(input_work)?;
         for device in INPUT_DEVICES.get().into_iter().flatten() {
             device.adapter.bind_completion_work(work);
         }

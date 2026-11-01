@@ -1,6 +1,6 @@
 //! Driver I/O request completion 与 scheduler wait 的唯一 handshake seam。
 
-use crate::execution::sync::WaitCompletion;
+use crate::sync::WaitCompletion;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
 
@@ -115,8 +115,9 @@ pub(crate) trait IoWaitTarget: Send + Sync {
 type WaitTargetFactory = fn() -> Option<Arc<dyn IoWaitTarget>>;
 
 // OWNER: driver I/O seam 独占 scheduler adapter，task topology 建立后只安装一次。缺失时
-// task I/O 会错误进入 bootstrap wait；重复安装则出现两个 scheduling membership owner。
-static WAIT_TARGET_FACTORY: spin::Once<WaitTargetFactory> = spin::Once::new();
+// Linux 线程的 I/O 等待落到服务线程停驻器，不进入 Linux 调度状态；重复安装则出现两个
+// scheduling membership owner。
+static WAIT_TARGET_FACTORY: native_runtime::sync::Once<WaitTargetFactory> = native_runtime::sync::Once::new();
 
 /// 在 task topology 初始化后安装唯一 scheduler-side adapter。
 ///
@@ -135,13 +136,26 @@ pub(crate) fn install_wait_target_factory(factory: WaitTargetFactory) {
     WAIT_TARGET_FACTORY.call_once(|| factory);
 }
 
-/// 返回 current task 的 opaque driver I/O waiter；冷启动期返回 `None`。
+/// 返回调用线程的 opaque driver I/O waiter。
 ///
 /// # Returns
 ///
-/// task topology 已安装且 current task 存在时返回 target，否则返回 `None`。
-pub(crate) fn current_wait_target() -> Option<Arc<dyn IoWaitTarget>> {
-    WAIT_TARGET_FACTORY.get().and_then(|factory| factory())
+/// 承载 Linux 线程时为该线程的 scheduler waiter，否则为服务线程停驻器。
+pub(crate) fn current_wait_target() -> Arc<dyn IoWaitTarget> {
+    WAIT_TARGET_FACTORY
+        .get()
+        .and_then(|factory| factory())
+        .unwrap_or_else(|| crate::sync::ServiceThreadTarget::current())
+}
+
+impl IoWaitTarget for crate::sync::ServiceThreadTarget {
+    fn sleep(self: Arc<Self>, completion: &IoCompletion, _request: IoWaitKey) {
+        self.park_until(completion, None);
+    }
+
+    fn wake(self: Arc<Self>, _request: IoWaitKey) {
+        self.unpark();
+    }
 }
 
 #[cfg(test)]

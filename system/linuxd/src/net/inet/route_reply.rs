@@ -1,6 +1,6 @@
 //! 原codec产生的实际IP replies；所有回复与transport共享同一NET FIB/neighbor dispatch。
 use super::NetworkStack;
-use crate::fallible_tree::{FallibleMap, VacantEntry};
+use fallible_tree::{FallibleMap, VacantEntry};
 use alloc::vec::Vec;
 use smoltcp::{
     iface::Ipv4Reply,

@@ -9,13 +9,13 @@ pub(crate) enum ProcessCloneError {
 }
 
 struct ChildGraphSlots {
-    thread: crate::fallible_tree::NodeSlot<usize, Arc<TaskControlBlock>>,
-    process: crate::fallible_tree::NodeSlot<usize, ProcessNode>,
-    thread_index: crate::fallible_tree::NodeSlot<usize, ThreadIndex>,
-    parent_child: crate::fallible_tree::NodeSlot<usize, ()>,
-    creator_child: crate::fallible_tree::NodeSlot<usize, ()>,
-    group_member: crate::fallible_tree::NodeSlot<usize, ()>,
-    future_group: crate::fallible_tree::NodeSlot<usize, ProcessGroupIndex>,
+    thread: fallible_tree::NodeSlot<usize, Arc<TaskControlBlock>>,
+    process: fallible_tree::NodeSlot<usize, ProcessNode>,
+    thread_index: fallible_tree::NodeSlot<usize, ThreadIndex>,
+    parent_child: fallible_tree::NodeSlot<usize, ()>,
+    creator_child: fallible_tree::NodeSlot<usize, ()>,
+    group_member: fallible_tree::NodeSlot<usize, ()>,
+    future_group: fallible_tree::NodeSlot<usize, ProcessGroupIndex>,
     thread_pid: PidLinkSlot,
     namespace_exit: Option<Arc<super::pid_namespace::NamespaceExit>>,
     group_links: Option<(PidLinkSlot, PidLinkSlot)>,
@@ -259,8 +259,8 @@ fn publish_child(
 ///
 /// preparation OOM 或 NPROC/PID 耗尽时不发布；所有组合共用唯一 graph transaction。
 pub(crate) fn clone_current_process(
-    parameters: crate::execution::task::CloneParameters,
-    resources: crate::execution::task::ProcessCloneResources,
+    parameters: crate::task::CloneParameters,
+    resources: crate::task::ProcessCloneResources,
 ) -> Result<usize, ProcessCloneError> {
     let parent = current_task().expect("process clone requires current task");
     let mut pid = PROCESS_TABLE
@@ -297,7 +297,6 @@ pub(crate) fn clone_current_process(
     {
         Ok(prepared) => prepared,
         Err(error) => {
-            child.remove_thread_trap_context();
             return Err(ProcessCloneError::PidFd(error));
         }
     };
@@ -307,7 +306,6 @@ pub(crate) fn clone_current_process(
     let mut snapshot = match ThreadSlotSnapshot::prepare(minimum_snapshot_capacity) {
         Ok(snapshot) => snapshot,
         Err(error) => {
-            child.remove_thread_trap_context();
             return Err(ProcessCloneError::Memory(error));
         }
     };
@@ -319,7 +317,6 @@ pub(crate) fn clone_current_process(
             snapshot = match ThreadSlotSnapshot::prepare(minimum_snapshot_capacity) {
                 Ok(snapshot) => snapshot,
                 Err(error) => {
-                    child.remove_thread_trap_context();
                     return Err(ProcessCloneError::Memory(error));
                 }
             };
@@ -327,7 +324,6 @@ pub(crate) fn clone_current_process(
         }
         if !snapshot.allows_current() {
             drop(creation);
-            child.remove_thread_trap_context();
             return Err(ProcessCloneError::ResourceLimit);
         }
         let retired = publish_child(
@@ -346,7 +342,6 @@ pub(crate) fn clone_current_process(
         match retired {
             Ok(retired) => drop(retired),
             Err(error) => {
-                child.remove_thread_trap_context();
                 return Err(ProcessCloneError::Pid(error));
             }
         }
@@ -364,7 +359,7 @@ pub(crate) fn clone_current_process(
 
     if wait_for_child {
         // 在 child 可运行前发布 caller 的 wait membership，防止 child completion 早到丢失。
-        let prepared = super::context_switch::prepare_current_block(&parent, (), |_, _| {
+        let prepared = crate::task::processor::prepare_current_block(&parent, (), |_, _| {
             WaitMembership::Vfork(child_pid)
         });
         enqueue_new_task(child);
@@ -380,7 +375,7 @@ pub(crate) fn clone_current_process(
 }
 
 mod completion;
-pub(in crate::execution::task) use completion::complete_vfork_exec;
+pub(in crate::task) use completion::complete_vfork_exec;
 pub(super) use completion::take_vfork_completion;
 
 /// 消费 child exec/exit 发布的不可中断 vfork wait membership。
@@ -394,7 +389,7 @@ pub(super) use completion::take_vfork_completion;
 ///
 /// 无返回值；重复/stale completion 幂等忽略。
 pub(super) fn wake_parent(parent: Arc<TaskControlBlock>, child_pid: usize) {
-    crate::execution::task::processor::wake_waiting_task(
+    crate::task::processor::wake_waiting_task(
         parent,
         WaitMembership::Vfork(child_pid),
         Some(WaitResult::Woken),

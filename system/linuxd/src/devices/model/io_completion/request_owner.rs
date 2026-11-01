@@ -1,12 +1,10 @@
 //! Fixed driver request slots、descriptor identity 与 capacity wait 的共同 owner。
 
 use alloc::{sync::Arc, vec::Vec};
-use spin::Mutex;
+use crate::sync::Mutex;
 
-use crate::{
-    devices::model::io_completion::{IoCompletion, IoDevice, IoWaitKey, IoWaitTarget},
-    fallible_tree::{FallibleMap, VacantEntry},
-};
+use crate::{devices::model::io_completion::{IoCompletion, IoDevice, IoWaitKey, IoWaitTarget}};
+use fallible_tree::{FallibleMap, VacantEntry};
 
 /// request slot acquisition 的 adapter-independent failure。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,14 +49,14 @@ impl CompletionClaim {
 pub(crate) struct CapacityWait {
     key: IoWaitKey,
     completion: IoCompletion,
-    target: Option<Arc<dyn IoWaitTarget>>,
+    target: Arc<dyn IoWaitTarget>,
     // OWNER: wait node 独占单次 slot handoff/terminal failure result。缺失该 result 会使
     // release/reset race 唤醒一个没有 permit 的 caller。
     outcome: Mutex<Option<Result<RequestIdentity, RequestOwnerError>>>,
 }
 
 impl CapacityWait {
-    fn new(key: IoWaitKey, target: Option<Arc<dyn IoWaitTarget>>) -> Self {
+    fn new(key: IoWaitKey, target: Arc<dyn IoWaitTarget>) -> Self {
         let completion = IoCompletion::new();
         completion.reset();
         Self {
@@ -69,27 +67,11 @@ impl CapacityWait {
         }
     }
 
-    /// 等待 slot handoff；task 通过 scheduler sleep，bootstrap 由 adapter 提供 WFI。
+    /// 在发布时记录的等待目标上睡眠，直到 slot handoff 或 terminal failure。
     ///
-    /// # Parameters
-    ///
-    /// - `bootstrap_wait`: 尚无 current task 时执行一次 architecture-owned WFI wait。
-    ///
-    /// # Returns
-    ///
-    /// 无；返回时 waiter 已收到 slot identity 或 terminal device error。
-    ///
-    /// # Errors
-    ///
-    /// 不返回错误；错误结果由 `take_outcome` 消费。
-    pub(crate) fn wait(&self, mut bootstrap_wait: impl FnMut()) {
-        if let Some(target) = self.target.clone() {
-            target.sleep(&self.completion, self.key);
-        } else {
-            while !self.completion.is_complete() {
-                bootstrap_wait();
-            }
-        }
+    /// 结果由 `take_outcome` 消费。
+    pub(crate) fn wait(&self) {
+        self.target.clone().sleep(&self.completion, self.key);
     }
 
     /// 消费 wake 之前发布的唯一 capacity outcome。
@@ -116,8 +98,7 @@ impl CapacityWait {
     ///
     /// # Returns
     ///
-    /// task waiter 已进入 scheduler sleep 时返回待执行的锁外 wake；bootstrap 或
-    /// completion-before-arm 时返回 `None`。
+    /// waiter 已进入睡眠时返回待执行的锁外 wake；completion-before-arm 时返回 `None`。
     ///
     /// # Errors
     ///
@@ -127,14 +108,10 @@ impl CapacityWait {
         outcome: Result<RequestIdentity, RequestOwnerError>,
     ) -> Option<CapacityWake> {
         assert!(self.outcome.lock().replace(outcome).is_none());
-        if self.completion.complete() {
-            self.target.clone().map(|target| CapacityWake {
-                target,
-                request: self.key,
-            })
-        } else {
-            None
-        }
+        self.completion.complete().then(|| CapacityWake {
+            target: self.target.clone(),
+            request: self.key,
+        })
     }
 }
 
@@ -178,7 +155,7 @@ impl PreparedCapacityWait {
     /// Arc 或 ordered-index node 分配失败返回 `OutOfMemory`；非 capacity key fail-stop。
     pub(crate) fn try_new(
         key: IoWaitKey,
-        target: Option<Arc<dyn IoWaitTarget>>,
+        target: Arc<dyn IoWaitTarget>,
     ) -> Result<Self, RequestOwnerError> {
         let waiter = Arc::try_new(CapacityWait::new(key, target))
             .map_err(|_| RequestOwnerError::OutOfMemory)?;
@@ -258,19 +235,6 @@ impl RequestOwner {
             .checked_add(1)
             .expect("driver request generation exhausted");
         Some(RequestIdentity { slot, generation })
-    }
-
-    /// 无等待地预留空闲 slot；没有容量时返回 `None`，不签发 ticket、不进入 FIFO。
-    ///
-    /// # Returns
-    ///
-    /// 有容量时返回唯一 identity。
-    ///
-    /// # Errors
-    ///
-    /// 不返回错误；generation 耗尽时 fail-stop。
-    pub(crate) fn try_reserve(&mut self) -> Option<RequestIdentity> {
-        self.reserve()
     }
 
     /// 预留空闲 slot，或签发锁外 waiter preparation ticket。
@@ -544,7 +508,7 @@ mod tests {
             panic!("full owner must prepare wait")
         };
         let key = owner.capacity_key(ticket);
-        let prepared = PreparedCapacityWait::try_new(key, None).unwrap();
+        let prepared = PreparedCapacityWait::try_new(key, super::super::current_wait_target()).unwrap();
         let CommitOrWait::Waiting(waiter) = owner.commit_wait_or_reserve(prepared) else {
             panic!("capacity unexpectedly appeared")
         };
@@ -554,7 +518,7 @@ mod tests {
                 .publish(Err(RequestOwnerError::DeviceFailed))
                 .is_none()
         );
-        waiter.wait(|| panic!("pre-completed bootstrap waiter must not WFI"));
+        waiter.wait();
         assert_eq!(waiter.take_outcome(), Err(RequestOwnerError::DeviceFailed));
         owner.release_without_handoff(active);
         assert_eq!(owner.free_slots.len(), 1);

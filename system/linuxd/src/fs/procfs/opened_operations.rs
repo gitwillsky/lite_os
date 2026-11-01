@@ -50,7 +50,7 @@ enum ProcOpenFile {
         viewer: Arc<UserNamespace>,
         pid: Arc<crate::namespace::PidNamespace>,
         // OWNER: 同一 actual open 的 seq cursor；reader TaskMutex 串行 copy，IPC registry 短 guard 不跨 codec/user-copy。
-        reader: Box<crate::execution::sync::TaskMutex<super::ipc_description::IpcReadCursor>>,
+        reader: Box<crate::sync::TaskMutex<super::ipc_description::IpcReadCursor>>,
     },
     IpcLimit {
         target: Arc<crate::ipc::IpcNamespace>,
@@ -139,7 +139,7 @@ pub(super) fn open(
             table,
             viewer: opener.namespace.clone(),
             pid: inode.source.current_pid_namespace(),
-            reader: Box::try_new(crate::execution::sync::TaskMutex::new(
+            reader: Box::try_new(crate::sync::TaskMutex::new(
                 super::ipc_description::IpcReadCursor::new(),
             ))
             .map_err(|_| FileSystemError::OutOfMemory)?,

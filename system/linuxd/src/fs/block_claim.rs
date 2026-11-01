@@ -1,7 +1,7 @@
 //! 一块物理盘上全部 bdev extent 的唯一 claim owner，覆盖整盘/分区别名。
 
 use super::FileSystemError;
-use crate::fallible_tree::FallibleMap;
+use fallible_tree::FallibleMap;
 use alloc::sync::Arc;
 use core::ops::Range;
 
@@ -10,7 +10,6 @@ enum ClaimState {
     Free,
     Writers(usize),
     Mounted,
-    Swap,
 }
 
 struct Extent {
@@ -21,7 +20,7 @@ struct Extent {
 struct DiskClaims {
     // OWNER: physical extent、mount 与 writer 同锁提交；guard 内不分配、不 I/O、
     // 不调用 page-cache/scheduler。所有 caller 为 task context，Drop 只做有界树 mutation。
-    extents: spin::Mutex<FallibleMap<u64, Extent>>,
+    extents: crate::sync::Mutex<FallibleMap<u64, Extent>>,
 }
 
 /// bdev 的稳定 extent claim；持有唯一盘 owner 与节点 identity，不复制 claim state。
@@ -51,7 +50,7 @@ impl BlockClaim {
             )
             .map_err(|_| FileSystemError::OutOfMemory)?;
         let disk = Arc::try_new(DiskClaims {
-            extents: spin::Mutex::new(extents),
+            extents: crate::sync::Mutex::new(extents),
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
         Ok(Self { disk, key })
@@ -109,7 +108,7 @@ impl BlockClaim {
         let own = extents.get(&self.key).expect("bdev claim lost extent");
         if extents.iter().any(|(&key, extent)| {
             overlaps(&own.bytes, &extent.bytes)
-                && (matches!(extent.state, ClaimState::Mounted | ClaimState::Swap)
+                && (extent.state == ClaimState::Mounted
                     || key != self.key && extent.state != ClaimState::Free)
         }) {
             return Err(FileSystemError::Busy);
@@ -118,7 +117,7 @@ impl BlockClaim {
         let count = match own.state {
             ClaimState::Free => 0,
             ClaimState::Writers(count) => count,
-            ClaimState::Mounted | ClaimState::Swap => unreachable!(),
+            ClaimState::Mounted => unreachable!(),
         };
         own.state = ClaimState::Writers(count.checked_add(1).ok_or(FileSystemError::Busy)?);
         Ok(())
@@ -143,10 +142,6 @@ impl BlockClaim {
         self.begin_exclusive(ClaimState::Mounted)
     }
 
-    pub(super) fn begin_swap(&self) -> Result<(), FileSystemError> {
-        self.begin_exclusive(ClaimState::Swap)
-    }
-
     fn begin_exclusive(&self, state: ClaimState) -> Result<(), FileSystemError> {
         let mut extents = self.disk.extents.lock();
         let own = extents.get(&self.key).expect("bdev claim lost extent");
@@ -168,10 +163,6 @@ impl BlockClaim {
         self.end_exclusive(ClaimState::Mounted);
     }
 
-    pub(super) fn end_swap(&self) {
-        self.end_exclusive(ClaimState::Swap);
-    }
-
     fn end_exclusive(&self, expected: ClaimState) {
         let mut extents = self.disk.extents.lock();
         let own = extents.get_mut(&self.key).expect("bdev claim lost extent");
@@ -189,7 +180,7 @@ impl BlockClaim {
         let own = extents.get(&self.key).expect("bdev claim lost extent");
         extents.iter().any(|(&key, extent)| {
             overlaps(&own.bytes, &extent.bytes)
-                && (matches!(extent.state, ClaimState::Mounted | ClaimState::Swap)
+                && (extent.state == ClaimState::Mounted
                     || key != self.key && matches!(extent.state, ClaimState::Writers(_)))
         })
     }

@@ -50,10 +50,8 @@
 //! `TranslationTransition` → `record_range` → `plan`（如何选 fence 范围）→ `synchronize`（本地、远端、
 //! 指令缓存三步）→ `Drop` 与 `revoke_and_commit`（失败路径）。
 
-use crate::{
-    fallible_tree::{FallibleMap, VacantEntry},
-    vm::page_table::TableFrame,
-};
+use crate::vm::page_table::TableFrame;
+use fallible_tree::{FallibleMap, VacantEntry};
 
 const PAGE_SIZE: usize = 4096;
 // Beyond 64 leaf invalidations one full fence is cheaper and, more importantly, keeps a sparse

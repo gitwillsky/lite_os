@@ -14,7 +14,7 @@
 //! - 一次等待是一个 `WaitRegistration`，它在每个来源下各登记一个索引节点（`WaitIndexKey`：来源标识
 //!   加等待者 id）。每次等待还有一个按线程 id 的 `Task` 节点；带超时的再多一个按到期时间排序的
 //!   `Deadline` 节点。
-//! - 索引节点存放在 16 个分片里，每片是 `IrqMutex<FallibleMap<..>>`。分片由来源标识的哈希决定，所以
+//! - 索引节点存放在 16 个分片里，每片是 `Mutex<FallibleMap<..>>`。分片由来源标识的哈希决定，所以
 //!   同一个来源（例如同一个 futex 地址）的等待者落在同一片，且在有序表里相邻，“找出某来源的全部
 //!   等待者”就是一次范围扫描。
 //! - registration 保存自己完整的 key 列表，是跨分片摘除的反向索引。需要同时锁多片时总是按分片编号
@@ -55,7 +55,7 @@
 //! `notify` → `publication.rs`（取消与武装）→ `arm_current`（把以上几步串起来，文件末尾）→
 //! `requeue.rs`（futex requeue）。
 
-use crate::execution::sync::WaitResult;
+use crate::sync::WaitResult;
 use alloc::sync::Arc;
 use core::{
     hint::spin_loop,
@@ -63,13 +63,8 @@ use core::{
 };
 
 use super::{IndexedWaitKind, PollWaitKey};
-use crate::{
-    execution::sync::IrqMutex,
-    fallible_tree::VacantEntry,
-    fs::AdvisoryLockKey,
-    ipc::{PipeDirection, PipePollState},
-    memory::FutexKey,
-};
+use crate::{sync::Mutex, fs::AdvisoryLockKey, ipc::{PipeDirection, PipePollState}, memory::FutexKey};
+use fallible_tree::VacantEntry;
 
 mod batch;
 mod futex_transaction;
@@ -81,7 +76,7 @@ mod requeue;
 mod shard;
 mod task_source;
 
-pub(in crate::execution::task::process_table) use batch::ClaimedBatch;
+pub(in crate::task::process_table) use batch::ClaimedBatch;
 use key::{WaitIndexKey, pipe_direction};
 pub(super) use registration::ClaimedWait;
 use registration::{
@@ -151,17 +146,17 @@ pub(super) struct WaitRegistry {
     next_id: AtomicU64,
     // OWNER: 每个 source key 只进入唯一 shard；registration keys 是跨 shard transaction
     // 的唯一反向 metadata。缺失固定升序会让 poll cancel 与 futex requeue 形成 ABBA。
-    shards: [IrqMutex<WaitShard>; WAIT_SHARD_COUNT],
+    shards: [Mutex<WaitShard>; WAIT_SHARD_COUNT],
     // 复合 futex 操作的唯一排他域；共享同一 source hash，不另建队列或复制等待状态。
-    futex_operations: [crate::execution::sync::TaskMutex<()>; WAIT_SHARD_COUNT],
+    futex_operations: [crate::sync::TaskMutex<()>; WAIT_SHARD_COUNT],
 }
 
 impl WaitRegistry {
     const fn new() -> Self {
         Self {
             next_id: AtomicU64::new(0),
-            shards: [const { IrqMutex::new(WaitShard::new()) }; WAIT_SHARD_COUNT],
-            futex_operations: [const { crate::execution::sync::TaskMutex::new(()) };
+            shards: [const { Mutex::new(WaitShard::new()) }; WAIT_SHARD_COUNT],
+            futex_operations: [const { crate::sync::TaskMutex::new(()) };
                 WAIT_SHARD_COUNT],
         }
     }
@@ -180,6 +175,7 @@ impl WaitRegistry {
     pub(super) fn publish(&'static self, prepared: PreparedWait) -> PublishedWait {
         let registration = prepared.registration;
         let keys = registration.keys.lock();
+        let timed = keys.iter().any(|key| matches!(key, WaitIndexKey::Deadline { .. }));
         let mut shards = LockedWaitShards::lock(&self.shards, &keys);
         for index in prepared.indexes {
             shards
@@ -199,6 +195,10 @@ impl WaitRegistry {
         );
         drop(shards);
         drop(keys);
+        if timed {
+            // 新截止时间可能早于 deferred 线程当前停驻的截止时间。
+            crate::deferred::deadline_changed();
+        }
         PublishedWait {
             registration: Some(registration),
         }
@@ -457,7 +457,7 @@ impl WaitRegistry {
         exclusive: bool,
         ready: i16,
         state: PipePollState,
-        excluded_groups: &crate::fallible_tree::FallibleMap<usize, ()>,
+        excluded_groups: &fallible_tree::FallibleMap<usize, ()>,
     ) -> Option<SourceWake> {
         let lower = WaitIndexKey::Pipe {
             identity,
@@ -548,6 +548,18 @@ impl WaitRegistry {
         }
     }
 
+    /// 全部等待中最早的截止时间。
+    pub(super) fn next_deadline(&self) -> Option<u64> {
+        let lower = WaitIndexKey::Deadline { deadline: 0, id: 0 };
+        self.shards
+            .iter()
+            .filter_map(|shard| match shard.lock().index.ceiling(&lower) {
+                Some((WaitIndexKey::Deadline { deadline, .. }, _)) => Some(*deadline),
+                _ => None,
+            })
+            .min()
+    }
+
     pub(super) fn has_expired_deadline(&self, now: u64) -> bool {
         self.shards.iter().any(|shard| {
             let entries = shard.lock();
@@ -559,12 +571,12 @@ impl WaitRegistry {
     }
 }
 
-pub(in crate::execution::task::process_table) fn arm_current(
-    task: &Arc<crate::execution::task::TaskControlBlock>,
+pub(in crate::task::process_table) fn arm_current(
+    task: &Arc<crate::task::TaskControlBlock>,
     prepared: Result<PreparedWait, ()>,
     recheck: impl FnOnce() -> Option<WaitResult>,
-    membership: impl FnOnce(u64) -> crate::execution::task::WaitMembership,
-) -> Result<super::context_switch::PreparedBlock, WaitResult> {
+    membership: impl FnOnce(u64) -> crate::task::WaitMembership,
+) -> Result<crate::task::processor::PreparedBlock, WaitResult> {
     let prepared = match prepared {
         Ok(prepared) => prepared,
         Err(()) => return Err(recheck().unwrap_or(WaitResult::OutOfMemory)),
@@ -577,7 +589,7 @@ pub(in crate::execution::task::process_table) fn arm_current(
         });
     }
     let arm = published.prepare_arm()?;
-    Ok(super::context_switch::prepare_current_block(
+    Ok(crate::task::processor::prepare_current_block(
         task,
         arm,
         move |arm, _| membership(arm.arm()),

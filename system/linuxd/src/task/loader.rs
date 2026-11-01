@@ -64,6 +64,7 @@ impl LoadedExecutable {
             stack_limit,
             address_space_limit,
             data_limit,
+            self.execfn.rsplit(|&byte| byte == b'/').next().unwrap_or(&self.execfn),
         )
     }
 
@@ -134,6 +135,7 @@ impl crate::memory::MappedFileOwner for ExecutableOpenLease {}
 struct InodeExecutableSource {
     // Storage inode/cache pins retire before the actual path releases its filesystem/view lease.
     file: RegularFile,
+    inode: Arc<dyn crate::fs::Inode>,
     length: usize,
     _opened: Arc<crate::fs::OpenedFile>,
 }
@@ -150,6 +152,11 @@ impl ExecutableSource for InodeExecutableSource {
             .filter(|read| read.bytes == buffer.len())
             .map(|_| ())
             .ok_or(())
+    }
+
+    fn shared_mapping(&self) -> Option<Arc<dyn crate::memory::SharedFileMapping>> {
+        // 段以私有写时复制方式映射页缓存；没有页缓存的文件（快照型）由调用者复制内容。
+        crate::fs::mapping(self.inode.clone(), None, false, false, false).ok()
     }
 }
 
@@ -287,9 +294,10 @@ fn source(
     opened.touch_access();
     let length = usize::try_from(inode.size())
         .map_err(|_| ProgramLoadError::FileSystem(FileSystemError::IoError))?;
-    let file = RegularFile::from_inode(inode).map_err(ProgramLoadError::FileSystem)?;
+    let file = RegularFile::from_inode(inode.clone()).map_err(ProgramLoadError::FileSystem)?;
     let source = Arc::try_new(InodeExecutableSource {
         file,
+        inode,
         length,
         _opened: opened.clone(),
     })

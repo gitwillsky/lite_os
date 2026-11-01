@@ -17,10 +17,10 @@ const FILESYSTEM_ID: usize = PseudoFileSystem::Namespace.id();
 static INODES: LiveInodes<NamespaceInode, u64> = LiveInodes::new();
 struct NamespaceInode {
     namespace: NamespaceReference,
-    attributes: spin::Mutex<Attributes>,
+    attributes: crate::sync::Mutex<Attributes>,
     // OWNER: 同一live inode的实际magic dentry弱cache；bind root仍存活时关闭所有FD不丢失身份。
     // 弱边不形成inode→dentry→inode强环，不另建path身份表。
-    entry: spin::Mutex<Weak<super::vfs::Dentry>>,
+    entry: crate::sync::Mutex<Weak<super::vfs::Dentry>>,
 }
 struct Attributes {
     owner: OwnerModeState,
@@ -44,8 +44,8 @@ pub(crate) fn namespace_opened(
         None => {
             let candidate = Arc::try_new(NamespaceInode {
                 namespace,
-                entry: spin::Mutex::new(Weak::new()),
-                attributes: spin::Mutex::new(Attributes {
+                entry: crate::sync::Mutex::new(Weak::new()),
+                attributes: crate::sync::Mutex::new(Attributes {
                     owner: OwnerModeState::new(InodeType::File, 0o100444, 0, 0),
                     size: 0,
                     times: TimeOwner::new(),
@@ -176,7 +176,7 @@ impl Inode for NamespaceInode {
         size: u64,
         identity: Option<&super::AccessIdentity>,
     ) -> Result<(), FileSystemError> {
-        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::time::get_realtime_ns() / 1_000_000_000;
         let mut attributes = self.attributes.lock();
         if let Some(identity) = identity {
             let kill = identity.write_kill_mask(
@@ -200,12 +200,12 @@ impl Inode for NamespaceInode {
         Ok(())
     }
     fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {
-        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::time::get_realtime_ns() / 1_000_000_000;
         self.attributes.lock().times.set_at(now, atime, mtime);
         Ok(())
     }
     fn change_owner_mode(&self, change: OwnerModeChange) -> Result<(), FileSystemError> {
-        let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
+        let now = crate::time::get_realtime_ns() / 1_000_000_000;
         let mut attributes = self.attributes.lock();
         attributes.owner = change.authorize(OwnerModeState::new(
             InodeType::File,

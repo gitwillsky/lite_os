@@ -1,0 +1,14 @@
+[package]
+name = "native-runtime"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+test = false
+bench = false
+
+[dependencies]
+native-abi = { path = "../../native-abi" }
+
+[lints]
+workspace = true

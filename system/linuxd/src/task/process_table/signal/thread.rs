@@ -111,7 +111,7 @@ pub(super) fn send_selected_thread_signal(
         None
     };
     let mut prepared = prepared_target.as_ref().map_or_else(
-        crate::execution::task::model::PreparedSignalRecord::default,
+        crate::task::model::PreparedSignalRecord::default,
         |target| {
             target.prepare_signal_record(
                 signal,
@@ -280,7 +280,7 @@ pub(super) fn send_selected_thread_signal(
         notify_signal_waiters(&target);
     }
     if queued && !wake_signal_waiter(&target) && !interrupt_waiting_task(&target) {
-        crate::execution::task::processor::request_task_reschedule(&target);
+        crate::task::processor::request_task_reschedule(&target);
     }
     Ok(())
 }

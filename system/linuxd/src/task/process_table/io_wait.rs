@@ -3,12 +3,12 @@ use alloc::sync::Arc;
 use super::{TaskControlBlock, WaitMembership, WaitResult};
 use crate::devices::model::io_completion::{IoCompletion, IoWaitKey, IoWaitTarget};
 
-pub(in crate::execution::task) fn initialize_driver_io_wait() {
+pub(in crate::task) fn initialize_driver_io_wait() {
     crate::devices::model::io_completion::install_wait_target_factory(current_io_wait_target);
 }
 
 fn current_io_wait_target() -> Option<Arc<dyn IoWaitTarget>> {
-    crate::execution::task::current_task().map(|task| task as Arc<dyn IoWaitTarget>)
+    crate::task::current_task().map(|task| task as Arc<dyn IoWaitTarget>)
 }
 
 impl IoWaitTarget for TaskControlBlock {
@@ -16,11 +16,11 @@ impl IoWaitTarget for TaskControlBlock {
         if !completion.begin_arming() {
             return;
         }
-        let prepared = super::context_switch::prepare_current_block(&self, (), |_, _| {
+        let prepared = crate::task::processor::prepare_current_block(&self, (), |_, _| {
             WaitMembership::DriverIo(request)
         });
         if completion.finish_arming() {
-            crate::execution::task::processor::wake_waiting_task(
+            crate::task::processor::wake_waiting_task(
                 self.clone(),
                 WaitMembership::DriverIo(request),
                 Some(WaitResult::Woken),
@@ -30,7 +30,7 @@ impl IoWaitTarget for TaskControlBlock {
     }
 
     fn wake(self: Arc<Self>, request: IoWaitKey) {
-        crate::execution::task::processor::wake_waiting_task(
+        crate::task::processor::wake_waiting_task(
             self,
             WaitMembership::DriverIo(request),
             Some(WaitResult::Woken),

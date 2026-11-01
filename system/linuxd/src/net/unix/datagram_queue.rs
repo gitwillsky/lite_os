@@ -1,4 +1,4 @@
-use crate::fallible_tree::{FallibleMap, VacantEntry};
+use fallible_tree::{FallibleMap, VacantEntry};
 use alloc::sync::Weak;
 
 // Native max_dgram_qlen=10 在 qlen > limit 时阻塞，允许实际第十一条 admission。

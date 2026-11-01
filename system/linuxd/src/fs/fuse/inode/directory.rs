@@ -8,9 +8,7 @@ use syscall_abi::{
 };
 
 use super::{FuseInode, io_in, now};
-use crate::{
-    fallible_tree::FallibleMap,
-    fs::{
+use crate::{fs::{
         CreateMetadata, DeviceNumber, DirectoryEntry, DirectoryRead, DirectoryVisit,
         DirectoryVisitor, FileSystemError, Inode, InodeOpen, InodeType,
         fuse::{
@@ -18,8 +16,8 @@ use crate::{
             filesystem::Unsupported,
             protocol::{self, DirectoryRecords, Entry, Fields},
         },
-    },
-};
+    }};
+use fallible_tree::FallibleMap;
 
 /// READDIR 每次请求的缓冲区（Linux 使用一页）。
 const DIRECTORY_BUFFER: u32 = 4096;

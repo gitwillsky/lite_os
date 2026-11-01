@@ -1,6 +1,6 @@
 //! task-only xHCI/EP0 事务；等待时不持 ring 锁，超时后不重用仍可能被硬件访问的 DMA。
 use super::*;
-use crate::execution::sync::{TaskMutexGuard, WaitResult};
+use crate::sync::{TaskMutexGuard, WaitResult};
 
 pub(super) struct Control<'a> {
     host: &'a Host,

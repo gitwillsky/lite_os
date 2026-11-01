@@ -1,484 +1,186 @@
-use super::*;
+//! 一个 VMA：区间、当前权限、后备对象与 Linux 标志。
 
-/// page table leaf 的物理页来源。
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub(crate) enum MapType {
-    KernelMapped, // VA 经 architecture kernel-mapping façade 唯一还原为 PA
-    Framed,       // 映射到分配的物理页帧
+use alloc::sync::Arc;
+
+use native_runtime::Vmar;
+use native_runtime::native_abi::vm;
+
+use super::request::{DeviceMappingSource, FileMappingSource};
+use crate::memory::{MapPermission, MemoryError, MemoryObject, SharedMemoryMembership};
+
+bitflags::bitflags! {
+    /// VMA 的 Linux 标志。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+    pub(crate) struct AreaFlags: u16 {
+        /// `MAP_GROWSDOWN`：紧邻下方的缺页扩展该区。
+        const GROWS_DOWN = 1 << 0;
+        /// `MADV_DONTFORK`。
+        const DONT_FORK = 1 << 1;
+        /// `MADV_WIPEONFORK`：子进程得到零内容。
+        const WIPE_ON_FORK = 1 << 2;
+        /// `MADV_DONTDUMP`。
+        const DONT_DUMP = 1 << 3;
+    }
 }
 
-/// MemorySet 内部区分 VMA lifecycle 与统计语义的类别。
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub(super) enum VmaKind {
-    System,
-    Anonymous,
+/// 匿名私有区的用途（`/proc/<pid>/maps` 的路径列）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AnonymousRole {
+    Plain,
+    Heap,
     Stack,
-    Elf,
-    File,
-    Device,
 }
 
-/// 单个 VMA 的范围、backing 与 resident frame owner。
-///
-/// `MemorySet::areas` 仍是 MapArea 的唯一集合 owner；字段只向 `memory::mm` sibling
-/// algorithms 开放，使 cow、fault、protect、retire 继续在同一 owner seam 内原子更新。
-#[derive(Debug)]
-pub(crate) struct MapArea {
-    /// VMA 覆盖的半开虚拟页区间。
-    pub(super) vpn_range: Range<VirtualPageNumber>,
-    /// 初始 data 首字节相对首页的偏移。
-    pub(super) data_page_offset: usize,
-    /// private resident page 的唯一 VMA-side owner index。
-    pub(super) data_frames: FallibleMap<VirtualPageNumber, PrivateResident>,
-    /// leaf 物理页来源。
-    pub(super) map_type: MapType,
-    /// 当前 semantic page permissions。
-    pub(super) map_permission: MapPermission,
-    /// 是否标记为全局页（G位）。仅用于内核空间映射。
-    pub(super) global: bool,
-    /// VMA lifecycle 与统计类别。
-    pub(super) kind: VmaKind,
-    /// 可选 anonymous shared backing view。
-    pub(super) shared_anonymous: Option<SharedAnonymousArea>,
-    /// 可选 shared-file backing 与 resident index。
-    pub(super) shared_file: Option<SharedFileArea>,
-    /// 可选 device extent view。
-    pub(super) device: Option<DeviceArea>,
-    /// 可选 private file/ELF fault source。
-    pub(super) private_file: Option<PrivateFileArea>,
-    /// private VMA 只声明地址范围，首次访问才分配物理页。
-    pub(super) lazy_private: bool,
+/// VMA 的后备。`offset` 是区间起点在后备对象中的字节偏移；拆分时右半部分的偏移随之前移。
+#[derive(Debug, Clone)]
+pub(crate) enum Backing {
+    /// 私有匿名：对象只属于本地址空间。
+    Anonymous {
+        object: Arc<MemoryObject>,
+        offset: u64,
+        role: AnonymousRole,
+    },
+    /// 共享匿名：fork 后父子映射同一对象。
+    SharedAnonymous { object: Arc<MemoryObject>, offset: u64 },
+    /// 文件私有映射：对象是页缓存的写时复制子对象，`file_offset` 是区间起点对应的文件偏移。
+    PrivateFile {
+        source: FileMappingSource,
+        object: Arc<MemoryObject>,
+        offset: u64,
+        file_offset: u64,
+    },
+    /// 文件共享映射：直接映射页缓存对象，`offset` 即文件偏移。
+    SharedFile {
+        source: FileMappingSource,
+        object: Arc<MemoryObject>,
+        offset: u64,
+        writable: bool,
+    },
+    /// 设备缓冲。
+    Device { source: DeviceMappingSource, offset: u64 },
+    /// SysV 共享内存段。
+    SystemV { source: SharedMemoryMembership, offset: u64 },
+    /// 信号返回跳板（全部地址空间共享的只读可执行页）。
+    Trampoline { object: Arc<MemoryObject> },
 }
 
-impl MapArea {
-    fn byte_len(&self) -> u64 {
-        let pages = self
-            .vpn_range
-            .end
-            .as_usize()
-            .checked_sub(self.vpn_range.start.as_usize())
-            .expect("VMA end precedes start");
-        u64::try_from(pages)
-            .expect("VMA page count exceeds u64")
-            .checked_mul(config::PAGE_SIZE as u64)
-            .expect("VMA byte length overflow")
-    }
-
-    fn virtual_accounted_bytes(&self) -> u64 {
-        if self.map_permission.contains(MapPermission::U) {
-            self.byte_len()
-        } else {
-            0
+impl Backing {
+    /// 后备对象。
+    pub(crate) fn object(&self) -> &Arc<MemoryObject> {
+        match self {
+            Self::Anonymous { object, .. }
+            | Self::SharedAnonymous { object, .. }
+            | Self::PrivateFile { object, .. }
+            | Self::SharedFile { object, .. }
+            | Self::Trampoline { object } => object,
+            Self::Device { source, .. } => source.backing.object(),
+            Self::SystemV { source, .. } => source.source.backing.object(),
         }
     }
 
-    fn data_accounted_bytes(&self) -> u64 {
-        if self
-            .map_permission
-            .contains(MapPermission::U | MapPermission::W)
-            && self.shared_anonymous.is_none()
-            && self.shared_file.is_none()
-            && matches!(self.kind, VmaKind::Anonymous | VmaKind::Elf | VmaKind::File)
-        {
-            self.byte_len()
-        } else {
-            0
+    /// 区间起点在后备对象中的偏移。
+    pub(crate) fn offset(&self) -> u64 {
+        match self {
+            Self::Anonymous { offset, .. }
+            | Self::SharedAnonymous { offset, .. }
+            | Self::PrivateFile { offset, .. }
+            | Self::SharedFile { offset, .. }
+            | Self::Device { offset, .. }
+            | Self::SystemV { offset, .. } => *offset,
+            Self::Trampoline { .. } => 0,
         }
     }
 
-    /// 返回 structural publication 同步提交的 stack identity 与 RLIMIT contribution。
-    ///
-    /// # Returns
-    ///
-    /// 由当前 range/kind/permission/backing 计算的完整 contribution。
-    pub(super) fn index_contribution(&self) -> VmaContribution {
-        VmaContribution {
-            virtual_bytes: self.virtual_accounted_bytes(),
-            data_bytes: self.data_accounted_bytes(),
-        }
-    }
-
-    /// 判断 semantic permissions 是否发布 leaf PTE。
-    ///
-    /// `permission` 是 VMA 当前或目标权限；返回 false 表示保留 PROT_NONE translation slot。
-    pub(super) fn has_leaf_permission(permission: MapPermission) -> bool {
-        permission.intersects(MapPermission::R | MapPermission::W | MapPermission::X)
-    }
-
-    /// 构造尚未提交到 MemorySet 的基础 VMA。
-    ///
-    /// `start_va..end_va` 是 byte address range；`map_type` 选择物理页来源，`permissions`
-    /// 是 semantic leaf 权限。返回值尚未拥有可见 PTE。
-    pub(crate) fn new(
-        start_va: VirtualAddress,
-        end_va: VirtualAddress,
-        map_type: MapType,
-        permissions: MapPermission,
-    ) -> Self {
-        let start_vpn = start_va.floor();
-        let end_vpn = end_va.ceil();
-        Self {
-            vpn_range: Range {
-                start: start_vpn,
-                end: end_vpn,
-            },
-            data_page_offset: start_va.page_offset(),
-            data_frames: FallibleMap::new(),
-            map_permission: permissions,
-            map_type,
-            global: false,
-            kind: VmaKind::System,
-            shared_anonymous: None,
-            shared_file: None,
-            device: None,
-            private_file: None,
-            lazy_private: false,
-        }
-    }
-
-    /// 构造 lazy private anonymous VMA。
-    ///
-    /// `start_va..end_va` 是 byte address range；`permissions` 是用户页权限。
-    pub(super) fn anonymous(
-        start_va: VirtualAddress,
-        end_va: VirtualAddress,
-        permissions: MapPermission,
-    ) -> Self {
-        let mut area = Self::new(start_va, end_va, MapType::Framed, permissions);
-        area.kind = VmaKind::Anonymous;
-        area.lazy_private = true;
-        area
-    }
-
-    /// 构造 lazy private ELF VMA，并取得不可变 `backing` fault source。
-    pub(super) fn elf(
-        start_va: VirtualAddress,
-        end_va: VirtualAddress,
-        permissions: MapPermission,
-        backing: PrivateFileArea,
-    ) -> Self {
-        let mut area = Self::new(start_va, end_va, MapType::Framed, permissions);
-        area.kind = VmaKind::Elf;
-        area.private_file = Some(backing);
-        area.lazy_private = true;
-        area
-    }
-
-    /// 构造 lazy private file VMA，并取得不可变 `backing` fault source。
-    pub(super) fn file(
-        start_va: VirtualAddress,
-        end_va: VirtualAddress,
-        permissions: MapPermission,
-        backing: PrivateFileArea,
-    ) -> Self {
-        let mut area = Self::new(start_va, end_va, MapType::Framed, permissions);
-        area.kind = VmaKind::File;
-        area.private_file = Some(backing);
-        area.lazy_private = true;
-        area
-    }
-
-    /// 构造以 `top` 为 exclusive end 的单页初始用户栈 VMA。
-    pub(super) fn stack(top: usize) -> Self {
-        let mut area = Self::new(
-            (top - config::PAGE_SIZE).into(),
-            top.into(),
-            MapType::Framed,
-            MapPermission::R | MapPermission::W | MapPermission::U,
-        );
-        area.kind = VmaKind::Stack;
-        area.lazy_private = true;
-        area
-    }
-
-    /// 设置仅供 kernel mapping 使用的 global PTE 属性并返回 area。
-    pub(crate) fn set_global(mut self, global: bool) -> Self {
-        self.global = global;
-        self
-    }
-
-    /// 将初始化数据复制到新建 eager framed area。
-    ///
-    /// 数据超过映射容量、area 非 framed 或 resident owner 不完整时返回 `InvalidRange`。
-    pub(super) fn copy_data(&mut self, data: &[u8]) -> Result<(), MemoryError> {
-        if self.map_type != MapType::Framed {
-            return Err(MemoryError::InvalidRange);
-        }
-        let capacity = self
-            .data_frames
-            .len()
-            .checked_mul(config::PAGE_SIZE)
-            .and_then(|bytes| bytes.checked_sub(self.data_page_offset))
-            .ok_or(MemoryError::InvalidRange)?;
-        if data.len() > capacity {
-            return Err(MemoryError::InvalidRange);
-        }
-
-        let mut copied = 0usize;
-        let mut index = 0usize;
-        self.data_frames.try_for_each_mut(|_, frame| {
-            if copied == data.len() {
-                return Ok(());
+    /// 起点前移 `delta` 字节后的同一后备（拆分右半部分）。
+    pub(crate) fn advanced(&self, delta: u64) -> Self {
+        let mut backing = self.clone();
+        match &mut backing {
+            Self::Anonymous { offset, .. }
+            | Self::SharedAnonymous { offset, .. }
+            | Self::Device { offset, .. }
+            | Self::SystemV { offset, .. } => *offset += delta,
+            Self::PrivateFile { offset, file_offset, .. } => {
+                *offset += delta;
+                *file_offset += delta;
             }
-            let page_offset = if index == 0 { self.data_page_offset } else { 0 };
-            let count = (config::PAGE_SIZE - page_offset).min(data.len() - copied);
-            frame.initialize(page_offset, &data[copied..copied + count])?;
-            copied += count;
-            index += 1;
-            Ok::<(), MemoryError>(())
-        })?;
-        (copied == data.len())
-            .then_some(())
-            .ok_or(MemoryError::InvalidRange)
+            Self::SharedFile { offset, .. } => *offset += delta,
+            Self::Trampoline { .. } => {}
+        }
+        backing
     }
 
-    /// 将 eager backing 提交到 `page_table`；lazy/file mapping 保持未 fault-in。
-    ///
-    /// frame、resident index 或 page-table allocation 失败时返回对应 MemoryError；caller
-    /// 仍拥有 area，并负责撤销已发布的 partial PTE。
-    pub(in crate::memory) fn map(
-        &mut self,
-        page_table: &mut PageTable,
-        commit: &mut TranslationCommit,
-    ) -> Result<(), MemoryError> {
-        if self.device.is_some() {
-            return self.map_device_area(page_table, commit);
-        }
-        if self.shared_file.is_some() {
-            let _ = page_table;
-            return Ok(());
-        }
-        if self.map_shared_anonymous(page_table)? {
-            return Ok(());
-        }
-        if self.lazy_private {
-            return Ok(());
-        }
-        if self.map_type == MapType::KernelMapped {
-            if !Self::has_leaf_permission(self.map_permission) {
-                return Err(MemoryError::InvalidRange);
-            }
-            let mut permissions = self.map_permission.into();
-            if self.global {
-                permissions |= PagePermissions::GLOBAL;
-            }
-            let virtual_start = usize::from(VirtualAddress::from(self.vpn_range.start));
-            let physical_start = crate::arch::mmu::virtual_to_physical(virtual_start)
-                .ok_or(MemoryError::InvalidRange)?;
-            let page_count = self.vpn_range.end.as_usize() - self.vpn_range.start.as_usize();
-            return page_table
-                .map_contiguous_range(
-                    self.vpn_range.start,
-                    PhysicalAddress::from(physical_start).floor(),
-                    page_count,
-                    permissions,
-                    commit,
-                )
-                .map_err(Into::into);
-        }
-        for vpn in self.vpn_range.start.as_usize()..self.vpn_range.end.as_usize() {
-            self.map_one(page_table, VirtualPageNumber::from_vpn(vpn), commit)?;
-        }
-        Ok(())
+    /// 映射对其他地址空间可见（写入对共享者可见、futex 使用共享 key）。
+    pub(crate) fn is_shared(&self) -> bool {
+        matches!(
+            self,
+            Self::SharedAnonymous { .. } | Self::SharedFile { .. } | Self::Device { .. } | Self::SystemV { .. }
+        )
     }
 
-    fn map_one(
-        &mut self,
-        page_table: &mut PageTable,
-        vpn: VirtualPageNumber,
-        commit: &mut TranslationCommit,
-    ) -> Result<(), MemoryError> {
-        let (ppn, frame) = match self.map_type {
-            MapType::Framed => {
-                let frame = alloc().ok_or(MemoryError::OutOfMemory)?;
-                let ppn = frame.ppn;
-                let resident = if self.map_permission.contains(MapPermission::U) {
-                    PrivateResident::user(frame)?
-                } else {
-                    PrivateResident::pinned(try_memory_arc(frame)?)
-                };
-                (ppn, Some(resident))
-            }
-            MapType::KernelMapped => unreachable!("kernel-mapped areas use range leaf selection"),
+    /// 允许的最大权限（共享文件只读打开时不能加写）。
+    pub(crate) fn may(&self, permission: MapPermission) -> bool {
+        match self {
+            Self::SharedFile { writable, .. } => *writable || !permission.contains(MapPermission::W),
+            Self::Trampoline { .. } => !permission.contains(MapPermission::W),
+            Self::SystemV { source, .. } => source.source.may_write || !permission.contains(MapPermission::W),
+            _ => true,
+        }
+    }
+}
+
+/// 一个 VMA。
+#[derive(Debug, Clone)]
+pub(crate) struct Area {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+    pub(crate) permission: MapPermission,
+    pub(crate) backing: Backing,
+    pub(crate) flags: AreaFlags,
+    /// `PR_SET_VMA_ANON_NAME`。
+    pub(crate) name: Option<Arc<[u8]>>,
+}
+
+impl Area {
+    pub(crate) fn len(&self) -> usize {
+        self.end - self.start
+    }
+
+    /// 在 `address` 处切分，返回 `[address, end)` 部分；本区保留 `[start, address)`。
+    pub(crate) fn split_off(&mut self, address: usize) -> Self {
+        debug_assert!(self.start < address && address < self.end);
+        let right = Self {
+            start: address,
+            end: self.end,
+            permission: self.permission,
+            backing: self.backing.advanced((address - self.start) as u64),
+            flags: self.flags,
+            name: self.name.clone(),
         };
-
-        let resident = frame
-            .map(|resident| self.data_frames.try_prepare_vacant(vpn, resident))
-            .transpose()
-            .map_err(|_| MemoryError::OutOfMemory)?;
-
-        if Self::has_leaf_permission(self.map_permission) {
-            let mut pte_flags = self.map_permission.into();
-            if self.global {
-                pte_flags |= PagePermissions::GLOBAL;
-            }
-            page_table.map(vpn, ppn, pte_flags, commit)?;
-        } else if self.map_type == MapType::Framed {
-            // PROT_NONE VMA 仍由 data_frames 唯一持有物理页，但 translation slot 必须保持 reserved。
-            // 若发布无 leaf access 的 entry，部分 architecture 会把它解释成 table pointer。
-            page_table.reserve(vpn)?;
-        } else {
-            return Err(MemoryError::InvalidRange);
-        }
-        if let Some(resident) = resident {
-            self.data_frames.commit_vacant(resident);
-        }
-        Ok(())
+        self.end = address;
+        right
     }
 
-    /// 把整个 VMA 平移到 `new_start`，转移而不复制任何 owner，也不分配。
+    /// 把本区安装到 `vmar`（覆盖区间内已有映射）。
     ///
-    /// 页索引以绝对 VPN 为键，所以 `data_frames` 与 shared-file `resident` 必须同步换键；
-    /// shared anonymous/device 的 `page_offset` 与 shared-file 的页范围都相对 VMA 起点，保持不变。
-    /// caller 已撤销旧 PTE；缺页路径按新地址重新安装，缺失这一步旧地址的 stale 翻译会继续可访问。
-    pub(super) fn rebase(&mut self, new_start: VirtualPageNumber) {
-        let old_start = self.vpn_range.start;
-        let pages = self.vpn_range.end.as_usize() - old_start.as_usize();
-        shift_vpns(&mut self.data_frames, old_start, new_start);
-        if let Some(shared) = &mut self.shared_file {
-            shift_vpns(&mut shared.resident, old_start, new_start);
-        }
-        if let Some(private) = &mut self.private_file {
-            private.rebased(old_start, new_start);
-        }
-        self.vpn_range = new_start..VirtualPageNumber::from_vpn(new_start.as_usize() + pages);
-    }
-
-    /// 判断能否在末尾追加 `extra` 页。device 与 stack 的大小由各自 owner 决定，不可增长。
-    pub(super) fn can_extend_tail(&self, extra: usize) -> bool {
-        let extra = extra as u64;
-        self.device.is_none()
-            && !matches!(self.kind, VmaKind::System | VmaKind::Stack)
-            && self
-                .shared_file
-                .as_ref()
-                .is_none_or(|shared| shared.pages.extended(extra).is_some())
-            && self
-                .private_file
-                .as_ref()
-                .is_none_or(|private| private.can_extend(extra))
-    }
-
-    /// 在末尾追加 `extra` 页；caller 已用 `can_extend_tail` 与资源检查验证。
+    /// # Errors
     ///
-    /// 新页没有 resident owner，首次访问才物化；共享匿名越过 backing 的页缺页时 SIGBUS。
-    pub(super) fn extend_tail(&mut self, extra: usize) {
-        debug_assert!(self.can_extend_tail(extra));
-        if let Some(shared) = &mut self.shared_file {
-            shared.pages = shared
-                .pages
-                .extended(extra as u64)
-                .expect("extension was validated");
-        }
-        if let Some(private) = &mut self.private_file {
-            private.extend(extra as u64);
-        }
-        self.vpn_range.end = VirtualPageNumber::from_vpn(self.vpn_range.end.as_usize() + extra);
+    /// 内核拒绝映射（权限超过句柄上限、内存不足）。
+    pub(crate) fn install(&self, vmar: &Vmar, base: usize) -> Result<(), MemoryError> {
+        let object = self.backing.object();
+        vmar.map(
+            vm::SPECIFIC_OVERWRITE | self.permission.vm_options(),
+            self.start - base,
+            object.vmo(),
+            self.backing.offset(),
+            self.len(),
+        )
+        .map(|_| ())
+        .map_err(MemoryError::from_status)
     }
 
-    /// 按 `[start, end)` 将可保护 VMA 分成 left/middle/right，转移而不复制 resident owner。
-    ///
-    /// caller 已验证区间完全包含于当前 area；返回的 middle 始终存在。
-    pub(super) fn partition_protectable(
-        mut self,
-        start: VirtualPageNumber,
-        end: VirtualPageNumber,
-    ) -> (Option<Self>, Self, Option<Self>) {
-        debug_assert!(matches!(
-            self.kind,
-            VmaKind::Anonymous | VmaKind::Stack | VmaKind::Elf | VmaKind::File | VmaKind::Device
-        ));
-        debug_assert!(self.vpn_range.start <= start && end <= self.vpn_range.end);
-        let original_start = self.vpn_range.start;
-        let original_end = self.vpn_range.end;
-        let right_frames = self.data_frames.split_off(&end);
-        let middle_frames = self.data_frames.split_off(&start);
-        let (left_shared, middle_shared, right_shared) =
-            SharedFileArea::partition(self.shared_file, original_start..original_end, start..end);
-        let (left_anonymous, middle_anonymous, right_anonymous) = SharedAnonymousArea::partition(
-            self.shared_anonymous,
-            original_start..original_end,
-            start,
-            end,
-        );
-        let (left_device, middle_device, right_device) =
-            DeviceArea::partition(self.device, original_start..original_end, start, end);
-        let kind = self.kind;
-        let build = |range: Range<VirtualPageNumber>,
-                     data_frames,
-                     shared_anonymous,
-                     shared_file,
-                     device| Self {
-            vpn_range: range,
-            data_page_offset: 0,
-            data_frames,
-            map_type: MapType::Framed,
-            map_permission: self.map_permission,
-            global: false,
-            kind,
-            shared_anonymous,
-            shared_file,
-            device,
-            private_file: self.private_file.clone(),
-            lazy_private: self.lazy_private,
-        };
-        let left = (original_start < start).then(|| {
-            build(
-                original_start..start,
-                self.data_frames,
-                left_anonymous,
-                left_shared,
-                left_device,
-            )
-        });
-        let middle = build(
-            start..end,
-            middle_frames,
-            middle_anonymous,
-            middle_shared,
-            middle_device,
-        );
-        let right = (end < original_end).then(|| {
-            build(
-                end..original_end,
-                right_frames,
-                right_anonymous,
-                right_shared,
-                right_device,
-            )
-        });
-        (left, middle, right)
+    /// 本区中的数据（可写私有）页数贡献给 `RLIMIT_DATA`。
+    pub(crate) fn counts_as_data(&self) -> bool {
+        self.permission.contains(MapPermission::W) && !self.backing.is_shared()
+            && !matches!(self.backing, Backing::Anonymous { role: AnonymousRole::Stack, .. })
     }
-
-    /// 合并相邻、同权限的 private anonymous area，并转移右侧 resident owner。
-    ///
-    /// caller 已通过 `anonymous_mergeable` 验证 identity 与连续性。
-    pub(super) fn merge_anonymous(&mut self, mut right: Self) {
-        debug_assert_eq!(self.kind, VmaKind::Anonymous);
-        debug_assert_eq!(right.kind, VmaKind::Anonymous);
-        debug_assert_eq!(self.vpn_range.end, right.vpn_range.start);
-        debug_assert_eq!(self.map_permission, right.map_permission);
-        self.vpn_range.end = right.vpn_range.end;
-        self.data_frames
-            .append_ordered_disjoint(&mut right.data_frames);
-    }
-}
-
-/// 把以绝对 VPN 为键的索引整体平移，复用原节点，不分配。
-///
-/// 平移保持键的相对顺序，所以逐个摘出、换键、再提交就得到合法的有序表。
-fn shift_vpns<V>(
-    map: &mut FallibleMap<VirtualPageNumber, V>,
-    old_start: VirtualPageNumber,
-    new_start: VirtualPageNumber,
-) {
-    let mut shifted = FallibleMap::new();
-    while let Some(key) = map.first_key_value().map(|(key, _)| *key) {
-        let mut entry = map.take_entry(&key).expect("first key must be present");
-        entry.set_key(VirtualPageNumber::from_vpn(
-            key.as_usize() - old_start.as_usize() + new_start.as_usize(),
-        ));
-        shifted.commit_vacant(entry);
-    }
-    *map = shifted;
 }

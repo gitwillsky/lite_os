@@ -681,11 +681,16 @@ pub(crate) fn init() {
     inet::init();
 }
 
+/// 存在网络设备：协议定时器需要 deferred 线程周期轮询。
+pub(crate) fn network_active() -> bool {
+    crate::devices::model::network_device(0).is_some()
+}
+
 /// 运行 AF_UNIX cycle collector；worker/deadline reservation 由 composition root 装配。
 pub(crate) fn run_unix_rights_collector(
     clock: impl Fn() -> u64,
     sleep_until: impl FnMut(u64),
-    gate: crate::execution::sync::TaskMutexWaitPreparation,
+    gate: crate::sync::TaskMutexWaitPreparation,
 ) -> ! {
     unix::run_rights_collector(clock, sleep_until, gate)
 }

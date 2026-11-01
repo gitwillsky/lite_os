@@ -7,7 +7,7 @@
 pub(crate) struct KernelParameters {
     /// 日志输出阈值（`loglevel=`，`quiet` 为 4，`debug` 为 10）。
     pub(crate) log_level: Option<u8>,
-    /// `panic=`：0 停在蓝屏，正数为秒数后重启，负数立即重启。
+    /// `panic=`：0 停机，正数为秒数后重启，负数立即重启。
     pub(crate) panic_seconds: Option<i32>,
 }
 

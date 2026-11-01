@@ -2,11 +2,11 @@
 //!
 //! 1. 把 initrd（cpio `newc` bootfs）复制进 VMO，随后把 initrd 占用的物理页归还 frame allocator；
 //! 2. 从 bootfs 取出 `bin/root-server`（静态 ELF）装进新进程，映射栈；
-//! 3. 创建根 Job、根 resource 与 DTB 副本，经 bootstrap channel 交给根服务（布局见
-//!    `native_abi::bootstrap`）；
-//! 4. 以 bootstrap channel 句柄为第一个参数启动首个线程。
+//! 3. 创建根 Job、根 resource 与 DTB 副本，按启动协议（`native_abi::startup`）经 startup channel
+//!    交给根服务，参数字节为内核启动参数文本；
+//! 4. 以 startup channel 句柄为第一个参数启动首个线程。
 //!
-//! 其余服务（驱动、文件系统、网络、`linuxd`）都由根服务从 bootfs 启动。
+//! 其余系统服务都由根服务从 bootfs 启动；内核不认识它们。
 
 mod cpio;
 mod elf;
@@ -14,7 +14,7 @@ mod elf;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use native_abi::{BootstrapHeader, bootstrap, rights};
+use native_abi::{StartupHeader, rights, startup};
 
 use crate::object::{Channel, HandleEntry, Job, Message, Object, Process, ProcessKind, Resource, Thread};
 use crate::thread::UserStart;
@@ -50,7 +50,7 @@ pub(crate) fn start_root_server(command_line: &[u8]) {
         crate::memory::PhysicalAddress::from(initrd.start)..crate::memory::PhysicalAddress::from(initrd.end),
     );
     let device_tree_range = crate::platform::dtb_range();
-    let device_tree = copy_physical(device_tree_range.clone());
+    let device_tree = copy_physical(device_tree_range);
 
     let mut image = Vec::new();
     image
@@ -86,38 +86,36 @@ pub(crate) fn start_root_server(command_line: &[u8]) {
     let kernel_end = Arc::try_new(kernel_end).expect("bootstrap channel allocation failed");
     let user_end = Arc::try_new(user_end).expect("bootstrap channel allocation failed");
 
-    let header = BootstrapHeader {
-        magic: bootstrap::MAGIC,
-        bootfs_size: initrd.len() as u64,
-        device_tree_size: device_tree_range.len() as u64,
-        command_line_length: command_line.len() as u64,
+    let header = StartupHeader {
+        magic: startup::MAGIC,
+        arguments_length: command_line.len() as u64,
     };
     let mut bytes = Vec::new();
     bytes
-        .try_reserve_exact(core::mem::size_of::<BootstrapHeader>() + command_line.len())
+        .try_reserve_exact(core::mem::size_of::<StartupHeader>() + command_line.len())
         .expect("bootstrap message allocation failed");
-    // SAFETY: BootstrapHeader 是 repr(C) 整数结构，按字节复制不违反任何不变量。
+    // SAFETY: StartupHeader 是 repr(C) 整数结构，按字节复制不违反任何不变量。
     bytes.extend_from_slice(unsafe {
         core::slice::from_raw_parts(
-            (&header as *const BootstrapHeader).cast::<u8>(),
-            core::mem::size_of::<BootstrapHeader>(),
+            (&header as *const StartupHeader).cast::<u8>(),
+            core::mem::size_of::<StartupHeader>(),
         )
     });
     bytes.extend_from_slice(command_line);
 
     let mut handles = Vec::new();
     handles
-        .try_reserve_exact(bootstrap::HANDLE_COUNT)
+        .try_reserve_exact(startup::root::HANDLE_COUNT)
         .expect("bootstrap message allocation failed");
     let full = |object: Object| {
         let rights = object.kernel_object().default_rights();
         entry(object, rights)
     };
-    handles.push(full(Object::Job(job)));
-    handles.push(full(Object::Resource(Arc::try_new(Resource::root()).expect("root resource allocation failed"))));
     handles.push(full(Object::Process(process.clone())));
     handles.push(full(Object::Vmar(vmar)));
     handles.push(full(Object::Thread(thread.clone())));
+    handles.push(full(Object::Job(job)));
+    handles.push(full(Object::Resource(Arc::try_new(Resource::root()).expect("root resource allocation failed"))));
     handles.push(entry(
         Object::Vmo(bootfs),
         rights::READ | rights::MAP | rights::DUPLICATE | rights::TRANSFER | rights::INSPECT,

@@ -1,5 +1,4 @@
 use super::{AddressSpace, TaskControlBlock};
-use crate::memory::UserFaultLimits;
 
 const FUTEX_WAITERS: u32 = 0x8000_0000;
 const FUTEX_OWNER_DIED: u32 = 0x4000_0000;
@@ -33,13 +32,13 @@ impl RobustLink {
 
 impl TaskControlBlock {
     /// 旧 mm 的稳定 key 在预置 waiter 的 guard 内取得，实际 wake 在 guard 归还后执行。
-    fn wake_robust_waiter(&self, mm: &AddressSpace, address: usize, limits: UserFaultLimits) {
+    fn wake_robust_waiter(&self, mm: &AddressSpace, address: usize) {
         let mut wait = self.take_memory_cleanup_wait();
         let _ =
-            crate::execution::task::futex_wake_with_key(1, u32::MAX, &mut wait, |wait, consume| {
-                let mut memory = mm.memory_set.lock_prepared(wait);
+            crate::task::futex_wake_with_key(1, u32::MAX, &mut wait, |wait, consume| {
+                let memory = mm.memory_set.lock_prepared(wait);
                 let key =
-                    memory.futex_key(address, core::ptr::from_ref(mm).addr(), false, limits)?;
+                    memory.futex_key(address, core::ptr::from_ref(mm).addr(), false)?;
                 consume(key);
                 Ok(())
             });
@@ -56,7 +55,7 @@ impl TaskControlBlock {
 
     /// 在目标的同一 exec credential owner 下授权并复制 registration scalar。
     /// 不访问目标用户地址；返回的 head 只是 native ABI 的地址值，不保活旧 mm。
-    pub(in crate::execution::task) fn robust_list_head_for(
+    pub(in crate::task) fn robust_list_head_for(
         &self,
         caller: &TaskControlBlock,
     ) -> Result<usize, RobustListError> {
@@ -71,10 +70,10 @@ impl TaskControlBlock {
             .credential_guard()
             .lock_killable()
             .map_err(|error| match error {
-                crate::execution::sync::TaskMutexLockError::OutOfMemory => {
+                crate::sync::TaskMutexLockError::OutOfMemory => {
                     RobustListError::OutOfMemory
                 }
-                crate::execution::sync::TaskMutexLockError::Interrupted => {
+                crate::sync::TaskMutexLockError::Interrupted => {
                     RobustListError::Interrupted
                 }
             })?;
@@ -98,7 +97,6 @@ impl TaskControlBlock {
     fn mark_robust_futex_dead(
         &self,
         address_space: &AddressSpace,
-        fault_limits: UserFaultLimits,
         entry: RobustLink,
         offset: isize,
         pending_operation: bool,
@@ -111,7 +109,7 @@ impl TaskControlBlock {
         }
         let mut observed = self
             .with_cleanup_memory(address_space, |memory| {
-                memory.load_user_u32(address, fault_limits)
+                memory.load_user_u32(address)
             })
             .map_err(|_| ())?;
         loop {
@@ -119,7 +117,7 @@ impl TaskControlBlock {
             // 普通 pending unlock 可在 word 清零后、实际 wake 前退出；不伪造 OWNER_DIED。
             // PI 必须由实际 ownership graph 交接，不能用普通 FUTEX_WAKE 消费它的 waiter。
             if pending_operation && !entry.pi && owner == 0 {
-                self.wake_robust_waiter(address_space, address, fault_limits);
+                self.wake_robust_waiter(address_space, address);
                 return Ok(());
             }
             if owner != self.visible_tid() {
@@ -127,7 +125,7 @@ impl TaskControlBlock {
             }
             let replacement = observed & FUTEX_WAITERS | FUTEX_OWNER_DIED;
             let exchange = self.with_cleanup_memory(address_space, |memory| {
-                memory.compare_exchange_user_u32(address, observed, replacement, fault_limits)
+                memory.compare_exchange_user_u32(address, observed, replacement)
             });
             match exchange {
                 Err(_) => return Err(()),
@@ -135,7 +133,7 @@ impl TaskControlBlock {
                 Ok(Ok(replaced)) => {
                     debug_assert_eq!(replaced, observed);
                     if !entry.pi && replaced & FUTEX_WAITERS != 0 {
-                        self.wake_robust_waiter(address_space, address, fault_limits);
+                        self.wake_robust_waiter(address_space, address);
                     }
                     return Ok(());
                 }
@@ -143,16 +141,15 @@ impl TaskControlBlock {
         }
     }
 
-    pub(in crate::execution::task) fn cleanup_robust_list(&self) {
+    pub(in crate::task) fn cleanup_robust_list(&self) {
         let Some(head) = self.thread().robust_list.lock().take() else {
             return;
         };
-        let fault_limits = self.user_fault_limits();
         let address_space = self.address_space();
         let mut header = [0u8; 3 * core::mem::size_of::<usize>()];
         if self
             .with_cleanup_memory(&address_space, |memory| {
-                memory.copy_from_user(head, &mut header, fault_limits)
+                memory.copy_from_user(head, &mut header)
             })
             .is_err()
         {
@@ -175,12 +172,12 @@ impl TaskControlBlock {
             let mut next = [0u8; core::mem::size_of::<usize>()];
             let next_valid = self
                 .with_cleanup_memory(&address_space, |memory| {
-                    memory.copy_from_user(entry.address, &mut next, fault_limits)
+                    memory.copy_from_user(entry.address, &mut next)
                 })
                 .is_ok();
             if entry.address != pending.address
                 && self
-                    .mark_robust_futex_dead(&address_space, fault_limits, entry, offset, false)
+                    .mark_robust_futex_dead(&address_space, entry, offset, false)
                     .is_err()
             {
                 return;
@@ -192,20 +189,20 @@ impl TaskControlBlock {
         }
         if pending.address != 0 {
             let _ =
-                self.mark_robust_futex_dead(&address_space, fault_limits, pending, offset, true);
+                self.mark_robust_futex_dead(&address_space, pending, offset, true);
         }
     }
 }
 
 /// 查询时取得的实际退休 leader aliases；并发 exec 重指 Process 不改变所查询的旧 Thread。
-pub(in crate::execution::task) struct RetiredThreadInspection {
+pub(in crate::task) struct RetiredThreadInspection {
     process: alloc::sync::Arc<super::Process>,
-    credentials: alloc::sync::Arc<spin::Mutex<super::Credentials>>,
+    credentials: alloc::sync::Arc<crate::sync::Mutex<super::Credentials>>,
     mm: super::MmHandle,
 }
 impl super::Process {
     /// graph lookup 已确定 leader 退出；只 pin 其真实 scalar handles，不保活 TCB 或 MM root。
-    pub(in crate::execution::task) fn retired_inspection_target(
+    pub(in crate::task) fn retired_inspection_target(
         self: &alloc::sync::Arc<Self>,
     ) -> RetiredThreadInspection {
         RetiredThreadInspection {
@@ -217,7 +214,7 @@ impl super::Process {
 }
 impl RetiredThreadInspection {
     /// robust registration 在 leader 退出时已清除；仍按所 pin 目标的退出授权事实查询零 head。
-    pub(in crate::execution::task) fn head_for(
+    pub(in crate::task) fn head_for(
         &self,
         caller: &TaskControlBlock,
     ) -> Result<usize, RobustListError> {
@@ -225,7 +222,7 @@ impl RetiredThreadInspection {
         Ok(0)
     }
     /// 查询时 pin 的已退休 Thread 没有文件表；exec 不能把它变成新 leader 的资源查询。
-    pub(in crate::execution::task) fn authorize(
+    pub(in crate::task) fn authorize(
         &self,
         caller: &TaskControlBlock,
     ) -> Result<(), RobustListError> {
@@ -234,10 +231,10 @@ impl RetiredThreadInspection {
             .credential_guard
             .lock_killable()
             .map_err(|error| match error {
-                crate::execution::sync::TaskMutexLockError::OutOfMemory => {
+                crate::sync::TaskMutexLockError::OutOfMemory => {
                     RobustListError::OutOfMemory
                 }
-                crate::execution::sync::TaskMutexLockError::Interrupted => {
+                crate::sync::TaskMutexLockError::Interrupted => {
                     RobustListError::Interrupted
                 }
             })?;

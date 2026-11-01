@@ -2,7 +2,7 @@ use super::preparation_policy::TimerReplacementNeeds;
 use super::{
     PosixTimer, PosixTimerClock, PosixTimerNotification, RealTimer, TimerError, TimerIdentity,
 };
-use crate::fallible_tree::{FallibleMap, VacantEntry};
+use fallible_tree::{FallibleMap, VacantEntry};
 
 /// 锁外完成 ITIMER_REAL record/deadline node 分配的替换事务。
 ///
@@ -80,13 +80,13 @@ impl PreparedPosixCreate {
                 sequence: 0,
                 signal: {
                     let creator =
-                        crate::execution::task::current_task().ok_or(TimerError::NotFound)?;
+                        crate::task::current_task().ok_or(TimerError::NotFound)?;
                     let (namespace, uid) = creator.user_resource_owner();
-                    crate::execution::task::model::PreallocatedSignal::try_new(
+                    crate::task::model::PreallocatedSignal::try_new(
                         namespace,
                         uid,
                         creator
-                            .resource_limit(crate::execution::task::model::RLIMIT_SIGPENDING)
+                            .resource_limit(crate::task::model::RLIMIT_SIGPENDING)
                             .expect("RLIMIT_SIGPENDING exists")
                             .soft,
                         key,

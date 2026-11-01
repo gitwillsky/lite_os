@@ -1,7 +1,7 @@
 //! Linux/RISC-V 用户执行约定与 raw register context 之间的唯一转换。
 
 use super::{
-    UserContext,
+    UserContext, fp,
     signal_frame::{SignalFrame, SignalMachineContext, SignalStack},
 };
 /// Linux utsname 使用的 architecture machine identity。
@@ -139,39 +139,15 @@ impl UserContext {
         self.x[2]
     }
 
-    /// 为 clone 创建的 child 准备首次 user return。
-    pub(crate) fn prepare_clone(
-        &mut self,
-        user_stack: Option<usize>,
-        thread_pointer: Option<usize>,
-        kernel_stack: usize,
-    ) {
+    /// 为 clone 创建的 child 准备首次返回：返回值 0，可选新栈与 TLS。
+    pub(crate) fn prepare_clone(&mut self, user_stack: Option<usize>, thread_pointer: Option<usize>) {
         if let Some(stack) = user_stack {
             self.x[2] = stack;
         }
         if let Some(tls) = thread_pointer {
             self.x[4] = tls;
         }
-        self.prepare_child_return(kernel_stack);
-    }
-
-    fn prepare_child_return(&mut self, kernel_stack: usize) {
         self.x[10] = 0;
-        self.kernel_sp = kernel_stack;
-        // 这些字段只由实际执行 child 的 CPU 在 user return 前重新发布；若继承 parent
-        // 值，首次 trap 会恢复错误 CPU 的 tp/gp 并破坏 per-CPU state。
-        self.kernel_cpu_id = 0;
-        self.kernel_gp = 0;
-    }
-
-    /// 发布下一次 user trap entry 恢复 kernel tp/gp 所需的 CPU-local metadata。
-    pub(crate) fn prepare_kernel_return(&mut self, logical_cpu: usize) {
-        let kernel_gp: usize;
-        // SAFETY: reading gp has no memory effect and preserves the kernel global-pointer value
-        // required by the trampoline on the next supervisor entry.
-        unsafe { core::arch::asm!("mv {}, gp", out(reg) kernel_gp, options(nomem, nostack)) };
-        self.kernel_cpu_id = logical_cpu;
-        self.kernel_gp = kernel_gp;
     }
 
     /// 编码 byte-for-byte 保持既有 ABI 的 Linux/RISC-V `rt_sigframe`。
@@ -199,11 +175,12 @@ impl UserContext {
         let mut registers = [0usize; 32];
         registers[0] = self.sepc;
         registers[1..].copy_from_slice(&self.x[1..]);
+        let state = fp::capture();
         let mut floating_point = [0u8; 528];
-        for (index, value) in self.f.iter().enumerate() {
+        for (index, value) in state.f.iter().enumerate() {
             floating_point[index * 8..index * 8 + 8].copy_from_slice(&value.to_ne_bytes());
         }
-        floating_point[256..260].copy_from_slice(&(self.fcsr as u32).to_ne_bytes());
+        floating_point[256..260].copy_from_slice(&state.fcsr.to_ne_bytes());
         SignalMachineContext {
             registers,
             floating_point,
@@ -236,21 +213,21 @@ impl UserContext {
 
         self.sepc = machine.registers[0];
         self.x[1..].copy_from_slice(&machine.registers[1..]);
-        for index in 0..32 {
-            self.f[index] = u64::from_ne_bytes(
+        let mut state = fp::FpState::default();
+        for (index, value) in state.f.iter_mut().enumerate() {
+            *value = u64::from_ne_bytes(
                 machine.floating_point[index * 8..index * 8 + 8]
                     .try_into()
                     .expect("fixed signal FP register slice"),
             );
         }
-        self.fcsr = u32::from_ne_bytes(
+        state.fcsr = u32::from_ne_bytes(
             machine.floating_point[256..260]
                 .try_into()
                 .expect("fixed signal FCSR slice"),
-        ) as usize;
-        // Signal frame 明确提供了完整 FP image；标为 Clean 使 restore path 在返回用户态前
-        // 安装它。若保持 Off，sigreturn 会静默丢弃用户修改后的 FP 寄存器。
-        self.sstatus.set_fs(riscv::register::sstatus::FS::Clean);
+        );
+        // 信号帧给出完整浮点状态：直接装入硬件，Linux 程序返回后看到用户修改后的值。
+        fp::restore(&state);
         Ok(self.x[10])
     }
 
@@ -292,5 +269,73 @@ impl UserContext {
         self.x[11] = frame;
         self.x[12] = frame + 128;
         self.sepc = handler;
+    }
+}
+
+impl UserContext {
+    /// 编解码 Linux RV64 NT_PRSTATUS 的 pc、x1..x31；不暴露 supervisor CSR。
+    ///
+    /// # Parameters
+    /// - `note`: 标准 ELF note，当前支持 NT_PRSTATUS。
+    /// - `bytes`: 八字节倍数的 kernel staging，允许前缀。
+    /// - `write`: true 写入，false 读取。
+    ///
+    /// # Returns
+    /// 实际传输字节数，不超过 256。
+    ///
+    /// # Errors
+    /// 未实现 note 或非 word 长度返回 Err。
+    pub(crate) fn ptrace_registers(
+        &mut self,
+        note: usize,
+        bytes: &mut [u8],
+        write: bool,
+    ) -> Result<usize, ()> {
+        if note != syscall_abi::ptrace::NT_PRSTATUS || !bytes.len().is_multiple_of(8) {
+            return Err(());
+        }
+        let length = bytes.len().min(256);
+        let mut words = self.x;
+        words[0] = self.sepc;
+        for (word, chunk) in words.iter_mut().zip(bytes[..length].as_chunks_mut::<8>().0) {
+            if write {
+                *word = usize::from_ne_bytes(*chunk);
+            } else {
+                chunk.copy_from_slice(&word.to_ne_bytes());
+            }
+        }
+        if write {
+            self.sepc = words[0];
+            self.x[1..].copy_from_slice(&words[1..]);
+        }
+        Ok(length)
+    }
+
+    /// 完成 tracer 已观察的 restart；PC 被 debugger 修改时不再覆盖它。
+    ///
+    /// # Parameters
+    /// - `instruction`: 原 syscall 指令 PC。
+    /// - `replay_number`: None 恢复 EINTR；Some 保留 tracer 参数，仅 restart-block 选择原生入口。
+    ///
+    /// # Returns
+    /// 无返回值；仅当前 PC 仍在原指令时完成正常的 restart/handler 决议。
+    pub(crate) fn finish_ptrace_restart(
+        &mut self,
+        instruction: usize,
+        replay_number: Option<usize>,
+    ) {
+        if self.sepc != instruction {
+            return;
+        }
+        match replay_number {
+            None => {
+                self.sepc += 4;
+                self.x[10] = (-syscall_abi::errno::EINTR) as usize;
+            }
+            Some(syscall_abi::SYSCALL_RESTART_SYSCALL) => {
+                self.x[17] = syscall_abi::SYSCALL_RESTART_SYSCALL
+            }
+            Some(_) => {}
+        }
     }
 }

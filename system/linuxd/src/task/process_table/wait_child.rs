@@ -356,7 +356,7 @@ fn wait_selected_child(
             .expect("publication decision requires prepared child waiter")
             .fill(task.tid(), task.clone());
         let prepared =
-            super::context_switch::prepare_current_block(task, graph, move |graph, _| {
+            crate::task::processor::prepare_current_block(task, graph, move |graph, _| {
                 let parent_node = graph
                     .nodes
                     .get_mut(&parent)
@@ -423,12 +423,12 @@ fn absorb_reaped_usage(graph: &ProcessGraph, child: usize, parent: Option<usize>
 /// `wait4`/`waitid` 的 rusage：child 自身加上它已回收的后代（Linux `RUSAGE_BOTH`）。
 ///
 /// Active claim pin 保证 child Node 尚未 reap；必须在 `consume_child_status` 之前读取。
-pub(crate) fn child_resource_usage(record: &ChildExit) -> crate::execution::task::ResourceUsage {
+pub(crate) fn child_resource_usage(record: &ChildExit) -> crate::task::ResourceUsage {
     if matches!(
         record.kind,
         ChildStatusKind::TracedStop | ChildStatusKind::TracedExit
     ) {
-        return crate::execution::task::ResourceUsage::default();
+        return crate::task::ResourceUsage::default();
     }
     PROCESS_TABLE
         .graph

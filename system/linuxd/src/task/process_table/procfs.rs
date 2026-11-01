@@ -1,18 +1,17 @@
 use core::sync::atomic::Ordering;
 
 use crate::{
-    execution::cpu,
-    execution::task::{
+    cpu,
+    task::{
         RunState, current_task,
         processor::{cpu_runtime_snapshot, runnable_task_count},
     },
-    execution::timer::{boot_epoch_seconds, get_time_us},
+    time::{boot_epoch_seconds, get_time_us},
     fs::{
         ProcCpuSnapshot, ProcCredentialSnapshot, ProcFileDescriptorSnapshot, ProcIoSnapshot,
         ProcNetworkSnapshot, ProcProcessSnapshot, ProcRouteSnapshot, ProcSnapshot,
         ProcSnapshotScope, ProcSource, ProcThreadSnapshot, page_cache_statistics,
     },
-    memory::{frame_statistics, reclaim_statistics},
 };
 
 use super::{PROCESS_TABLE, ProcessState};
@@ -22,14 +21,14 @@ struct ProcessSnapshotRow {
     ppid: Option<alloc::sync::Arc<crate::namespace::PidIdentity>>,
     process_group: alloc::sync::Arc<crate::namespace::PidIdentity>,
     session: alloc::sync::Arc<crate::namespace::PidIdentity>,
-    process: alloc::sync::Arc<crate::execution::task::model::Process>,
+    process: alloc::sync::Arc<crate::task::model::Process>,
     threads: core::ops::Range<usize>,
 }
 
 struct GraphSnapshotRows {
     process: Option<ProcessSnapshotRow>,
-    kernel: Option<alloc::sync::Arc<crate::execution::task::TaskControlBlock>>,
-    tasks: alloc::vec::Vec<alloc::sync::Arc<crate::execution::task::TaskControlBlock>>,
+    kernel: Option<alloc::sync::Arc<crate::task::TaskControlBlock>>,
+    tasks: alloc::vec::Vec<alloc::sync::Arc<crate::task::TaskControlBlock>>,
     total_tasks: usize,
     last_pid: usize,
     processes_created: u64,
@@ -107,8 +106,6 @@ pub(crate) struct SystemInfoSnapshot {
     pub(crate) total_memory_bytes: u64,
     /// allocator 当前空闲的物理内存字节数。
     pub(crate) free_memory_bytes: u64,
-    pub(crate) total_swap_bytes: u64,
-    pub(crate) free_swap_bytes: u64,
     /// 实际 user/kernel execution index 的 live task 总数；不计 idle。
     pub(crate) task_count: usize,
     /// ProcessTable 唯一 EWMA owner 投影出的 1/5/15 分钟千分制负载。
@@ -120,7 +117,7 @@ pub(crate) struct KernelProcSource;
 
 impl ProcSource for KernelProcSource {
     fn previous_panic(&self) -> Option<&'static [u8]> {
-        crate::crash::previous_dump()
+        crate::system::previous_panic()
     }
 
     fn process_identity(
@@ -211,7 +208,7 @@ impl ProcSource for KernelProcSource {
     fn current_namespace_authority(
         &self,
     ) -> Result<crate::namespace::NamespaceAuthority, crate::fs::FileSystemError> {
-        crate::execution::task::current_task()
+        crate::task::current_task()
             .map(|task| task.namespace_authority())
             .ok_or(crate::fs::FileSystemError::AccessDenied)
     }
@@ -383,7 +380,7 @@ impl ProcSource for KernelProcSource {
             let graph = PROCESS_TABLE.graph.lock();
             super::thread_selector::execution_by_tid(&graph, tid)
         };
-        let caller = crate::execution::task::current_task()
+        let caller = crate::task::current_task()
             .ok_or(crate::fs::FileSystemError::AccessDenied)?;
         if let Some(target) = target {
             if !caller.may_inspect_thread(&target) {
@@ -430,7 +427,7 @@ impl ProcSource for KernelProcSource {
     fn current_time_offsets(
         &self,
     ) -> Result<crate::namespace::TimeOffsets, crate::fs::FileSystemError> {
-        crate::execution::task::current_task()
+        crate::task::current_task()
             .map(|task| task.time_offsets())
             .ok_or(crate::fs::FileSystemError::AccessDenied)
     }
@@ -488,7 +485,7 @@ impl ProcSource for KernelProcSource {
                 graph.nodes.get(&tid).map(|node| node.process.clone()),
             )
         };
-        let caller = crate::execution::task::current_task()
+        let caller = crate::task::current_task()
             .ok_or(crate::fs::FileSystemError::AccessDenied)?;
         if let Some(thread) = thread {
             if !caller.may_inspect_thread(&thread) {
@@ -535,7 +532,7 @@ impl ProcSource for KernelProcSource {
     }
 
     fn current_root(&self) -> Option<alloc::sync::Arc<crate::fs::OpenedFile>> {
-        crate::execution::task::current_task()
+        crate::task::current_task()
             .filter(|task| !task.is_kernel_thread())
             .map(|task| task.lookup_origin().root())
     }
@@ -552,7 +549,7 @@ impl ProcSource for KernelProcSource {
                 graph.nodes.get(&tid).map(|node| node.process.clone()),
             )
         };
-        let Some(caller) = crate::execution::task::current_task() else {
+        let Some(caller) = crate::task::current_task() else {
             return Err(crate::fs::FileSystemError::AccessDenied);
         };
         if let Some(target) = target {
@@ -582,7 +579,7 @@ impl ProcSource for KernelProcSource {
                 graph.nodes.get(&pid).map(|node| node.process.clone()),
             )
         };
-        let Some(caller) = crate::execution::task::current_task() else {
+        let Some(caller) = crate::task::current_task() else {
             return Err(crate::fs::FileSystemError::AccessDenied);
         };
         if let Some(representative) = representative {
@@ -607,7 +604,6 @@ fn process_snapshot(
     view: &crate::namespace::PidNamespace,
 ) -> Result<ProcSnapshot, crate::fs::FileSystemError> {
     let uptime_us = get_time_us();
-    let current = current_task();
     // graph lock 内只做已预留 Vec 的关系/Arc 快照；后续不得带 graph lock 获取 task 内部锁。
     let GraphSnapshotRows {
         process,
@@ -648,19 +644,9 @@ fn process_snapshot(
             };
             let runnable = matches!(
                 run_state,
-                RunState::New
-                    | RunState::Ready { .. }
-                    | RunState::Running { .. }
-                    | RunState::Preempting { .. }
-                    | RunState::WakePending { .. }
-                    | RunState::StopPending { .. }
+                RunState::New | RunState::Running | RunState::StopPending
             );
-            let active_now_us = current
-                .as_ref()
-                .is_some_and(|current| current.tid() == thread.tid())
-                .then_some(uptime_us);
-            let (start_time_us, nice, priority, runtime_us) =
-                thread.thread_statistics(active_now_us);
+            let (start_time_us, nice, priority, runtime_us) = thread.thread_statistics();
             thread_snapshots.push(ProcThreadSnapshot {
                 tracer: super::ptrace::tracer_identity(thread.tid()),
                 comm: thread.comm_buffer(),
@@ -695,11 +681,10 @@ fn process_snapshot(
         let last_cpu = cpu::id_at(leader_cpu)
             .expect("leader CPU disappeared from topology")
             .index();
-        // 1. Linux 只刷新 same-thread-group 的 current task；其他 running sibling 由下一 tick 提交。
-        // 2. Process counter 保留 exited Thread；改回累加 live Thread 会让 /proc runtime 倒退。
-        let runtime_us = match current.as_ref() {
-            Some(task) if task.tgid() == pid.key() => task.cpu_runtime_snapshot(uptime_us).0,
-            _ => process.process_cpu_runtime_us(),
+        // 进程 CPU 时间 = 已退出 Thread 的累计 + 存活 Thread 的内核记账；全部退出后只剩累计。
+        let runtime_us = match threads.first() {
+            Some(thread) => thread.process_cpu_time().0,
+            None => process.retired_cpu_runtime_us(),
         };
         let statistics = process
             .process_statistics(threads)
@@ -752,7 +737,6 @@ fn process_snapshot(
             start_time_us: statistics.start_time_us,
             virtual_pages: statistics.virtual_pages,
             resident_pages: statistics.resident_pages,
-            swapped_pages: statistics.swapped_pages,
             shared_pages: statistics.shared_pages,
             text_pages: statistics.text_pages,
             data_pages: statistics.data_pages,
@@ -765,17 +749,16 @@ fn process_snapshot(
     if let Some(kernel) = kernel
         && kernel.tgid_identity().number_in(view) != 0
     {
-        processes.push(kernel_snapshot(&kernel, current.as_deref(), uptime_us)?);
+        processes.push(kernel_snapshot(&kernel)?);
     }
 
     processes.sort_unstable_by_key(|process| process.pid.number_in(view));
 
     // 3. allocator 与 per-CPU processor 分别提供其唯一 owner 下的统计。
-    let frame = frame_statistics();
-    let heap = crate::memory::heap_statistics();
-    let reclaim = reclaim_statistics();
+    let memory = native_runtime::system::basic();
+    let buddy_free_blocks =
+        native_runtime::system::free_blocks().map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
     let cache = page_cache_statistics();
-    let page_state = crate::memory::page_state_snapshot();
     let load_milli = PROCESS_TABLE.load_average.values();
     let cpu_runtime =
         cpu_runtime_snapshot().map_err(|()| crate::fs::FileSystemError::OutOfMemory)?;
@@ -787,30 +770,14 @@ fn process_snapshot(
             .into_iter()
             .map(|(cpu, busy_us)| ProcCpuSnapshot { cpu, busy_us }),
     );
-    let (swap_total_pages, swap_free_pages) = crate::memory::swap::statistics();
     Ok(ProcSnapshot {
         uptime_us,
         boot_epoch_seconds: boot_epoch_seconds(),
-        total_pages: frame.capacity_pages,
-        free_pages: frame.free_pages,
-        buddy_free_blocks: frame.free_blocks,
-        direct_reclaim_attempts: reclaim.direct.attempts,
-        direct_reclaim_scanned_pages: reclaim.direct.scanned_pages,
-        direct_reclaim_reclaimed_pages: reclaim.direct.reclaimed_pages,
-        background_reclaim_scanned_pages: reclaim.background.scanned_pages,
-        background_reclaim_reclaimed_pages: reclaim.background.reclaimed_pages,
+        total_pages: memory.total_pages as usize,
+        free_pages: memory.free_pages as usize,
+        buddy_free_blocks,
         cached_pages: cache.resident_pages,
         dirty_pages: cache.dirty_pages,
-        reclaimable_cached_pages: cache.reclaimable_pages,
-        heap_pages: heap.resident_pages,
-        anon_mapped_pages: page_state.anon_mapped,
-        file_mapped_pages: page_state.file_mapped,
-        shmem_pages: page_state.shmem,
-        page_table_pages: page_state.page_tables,
-        kernel_stack_bytes: crate::memory::kernel_stack_bytes(),
-        swap_total_pages,
-        swap_free_pages,
-        swap_cached_pages: crate::memory::swap_cached_pages(),
         runnable_tasks,
         total_tasks,
         processes_created,
@@ -823,9 +790,7 @@ fn process_snapshot(
 
 /// boot worker 的 Linux proc 投影；无用户 Process/mm/file/fs owner，空资源由实际缺失决定。
 fn kernel_snapshot(
-    task: &crate::execution::task::TaskControlBlock,
-    current: Option<&crate::execution::task::TaskControlBlock>,
-    now: u64,
+    task: &crate::task::TaskControlBlock,
 ) -> Result<ProcProcessSnapshot, crate::fs::FileSystemError> {
     let (run_state, uninterruptible, idle) = {
         let state = task.scheduling.state.lock();
@@ -836,22 +801,14 @@ fn kernel_snapshot(
         )
     };
     let state = match run_state {
-        RunState::New
-        | RunState::Ready { .. }
-        | RunState::Running { .. }
-        | RunState::Preempting { .. }
-        | RunState::WakePending { .. }
-        | RunState::StopPending { .. } => b'R',
+        RunState::New | RunState::Running | RunState::StopPending => b'R',
         RunState::Stopped { .. } => b'T',
         RunState::Exited => b'Z',
         _ if uninterruptible => b'D',
         _ if idle => b'I',
         _ => b'S',
     };
-    let active = current
-        .is_some_and(|current| current.tid() == task.tid())
-        .then_some(now);
-    let (start_time_us, nice, priority, runtime_us) = task.thread_statistics(active);
+    let (start_time_us, nice, priority, runtime_us) = task.thread_statistics();
     let last_cpu = task.scheduling.last_cpu.load(Ordering::Relaxed);
     let last_cpu = cpu::id_at(last_cpu)
         .expect("kernel task CPU disappeared")
@@ -905,7 +862,6 @@ fn kernel_snapshot(
         has_mm: false,
         virtual_pages: 0,
         resident_pages: 0,
-        swapped_pages: 0,
         shared_pages: 0,
         text_pages: 0,
         data_pages: 0,
@@ -915,7 +871,7 @@ fn kernel_snapshot(
     })
 }
 
-fn io_snapshot(statistics: crate::execution::task::IoStatistics) -> ProcIoSnapshot {
+fn io_snapshot(statistics: crate::task::IoStatistics) -> ProcIoSnapshot {
     ProcIoSnapshot {
         read_characters: statistics.read_characters,
         written_characters: statistics.written_characters,
@@ -932,16 +888,13 @@ fn io_snapshot(statistics: crate::execution::task::IoStatistics) -> ProcIoSnapsh
 ///
 /// 当前 uptime、内存、任务数与 1/5/15 分钟负载的不可变快照。
 pub(crate) fn system_info_snapshot() -> SystemInfoSnapshot {
-    let frame = frame_statistics();
+    let memory = native_runtime::system::basic();
     let task_count = PROCESS_TABLE.graph.lock().live_task_count();
     let page_size = crate::memory::PAGE_SIZE as u64;
-    let (swap_total, swap_free) = crate::memory::swap::statistics();
     SystemInfoSnapshot {
         uptime_us: get_time_us(),
-        total_memory_bytes: (frame.capacity_pages as u64).saturating_mul(page_size),
-        free_memory_bytes: (frame.free_pages as u64).saturating_mul(page_size),
-        total_swap_bytes: (swap_total as u64).saturating_mul(page_size),
-        free_swap_bytes: (swap_free as u64).saturating_mul(page_size),
+        total_memory_bytes: memory.total_pages.saturating_mul(page_size),
+        free_memory_bytes: memory.free_pages.saturating_mul(page_size),
         task_count,
         load_milli: PROCESS_TABLE.load_average.values(),
     }

@@ -1,17 +1,13 @@
 use alloc::sync::{Arc, Weak};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 pub(crate) use crate::devices::model::{
     DisplayRect, VirglBox, VirglCommand, VirglTransferDirection,
 };
-use crate::{
-    devices::model::{CursorCommand, DisplayMode, GraphicsDevice},
-    fallible_tree::FallibleMap,
-    ipc::{Pipe, PipeEnd},
-    memory::{
-        DeviceBacking, DeviceMappingSource, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE,
-    },
-};
+use crate::{devices::model::{CursorCommand, DisplayMode, GraphicsDevice}, ipc::{Pipe, PipeEnd}, memory::{
+        DeviceBacking, DeviceMappingSource, PAGE_SIZE,
+    }};
+use fallible_tree::FallibleMap;
 
 const DUMB_OFFSET_SHIFT: u32 = 32;
 const DRIVER_NAME: &str = "virtio_gpu";
@@ -184,7 +180,7 @@ pub(crate) struct DrmFile {
     render_node: bool,
     // OWNER: 串行化本 OFD 的 context 创建、PRIME 导入和 GEM 关闭，允许等待 host fence，不持有 spin guard。
     // FAILURE: 缺失时两个 CTX_CREATE 可同时通过“尚未初始化”检查，后发布者覆盖并泄漏前一个 context。
-    context_creation: crate::execution::sync::TaskMutex<()>,
+    context_creation: crate::sync::TaskMutex<()>,
     // OWNER: 每个 OFD 的 handle namespace 与 handle allocator 在同一锁内发布；若放到 device
     // global，两个独立 open 会错误地互相获得或销毁 buffer access。
     state: Mutex<DrmFileState>,
@@ -485,8 +481,6 @@ impl DrmFile {
         //    extent，file namespace 中不存在半初始化 GEM object。
         let backing = DeviceBacking::try_allocate(
             size / PAGE_SIZE,
-            FrameAllocationClass::Reclaimable,
-            DeviceMemoryKind::GemShmem,
         )
         .ok_or(DrmError::OutOfMemory)?;
         let backing = Arc::try_new(backing).map_err(|_| DrmError::OutOfMemory)?;
@@ -582,10 +576,7 @@ impl DrmFile {
             if length > buffer.size {
                 return Err(DrmError::Invalid);
             }
-            return Ok(DeviceMappingSource::new(
-                buffer.identity,
-                buffer.backing.clone(),
-            ));
+            return Ok(DeviceMappingSource::new(buffer.backing.clone()));
         }
         let buffer = self
             .state
@@ -597,10 +588,7 @@ impl DrmFile {
         if length > buffer.size {
             return Err(DrmError::Invalid);
         }
-        let mut source = DeviceMappingSource::new(
-            (1u64 << 63) | u64::from(buffer.resource_id),
-            buffer.backing.clone(),
-        );
+        let mut source = DeviceMappingSource::new(buffer.backing.clone());
         source.retain_object(prime::DmaBuf::from_buffer(
             &self.device,
             buffer.buffer.clone(),

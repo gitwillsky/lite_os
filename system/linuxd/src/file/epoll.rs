@@ -2,16 +2,15 @@ use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
 use super::{
     FileReadinessContext, OpenFileDescription, OpenFileKind, ReadinessSource, ReadinessSources,
     SignalWaitSource,
 };
-use crate::{
-    fallible_tree::{FallibleMap, VacantEntry},
-    ipc::{Pipe, PipeEnd},
-};
+use crate::{ipc::{Pipe, PipeEnd}};
+use fallible_tree::{FallibleMap, VacantEntry};
 
 mod ready;
 

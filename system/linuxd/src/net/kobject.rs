@@ -1,11 +1,9 @@
 use alloc::sync::{Arc, Weak};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
-use crate::{
-    fallible_tree::{FallibleMap, VacantEntry},
-    ipc::ReceiveBuffer,
-    ipc::{Pipe, PipeDirection, PipeEnd},
-};
+use crate::{ipc::ReceiveBuffer, ipc::{Pipe, PipeDirection, PipeEnd}};
+use fallible_tree::{FallibleMap, VacantEntry};
 
 use super::{
     CoreBufferLimit, NetlinkAddress, ReceivedMessage, SocketAddress, SocketError,

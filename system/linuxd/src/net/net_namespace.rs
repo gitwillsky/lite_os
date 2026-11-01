@@ -2,7 +2,8 @@
 use crate::namespace::{NamespaceAuthority, NamespaceError, UserNamespace};
 use alloc::sync::{Arc, Weak};
 use core::sync::atomic::{AtomicU32, Ordering};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
 // 每次safe point最多观察8个域；cursor保留严格后继位置，不从initial域重复开始。
 // 每域仍有64-frame/cleanup/notification budget，因此NET数量不增加单轮无界延迟。
@@ -16,14 +17,14 @@ pub(in crate::net) enum NetworkNamespaceScan {
 
 struct NetworkNamespaceDirectory {
     // OWNER: 仅索引实际域的Weak；不保活namespace、协议、端口或ucounts。
-    entries: crate::fallible_tree::FallibleMap<u64, Weak<NetNamespace>>,
+    entries: fallible_tree::FallibleMap<u64, Weak<NetNamespace>>,
     // OWNER: 每个观察者唯一fairness cursor；不复制协议deadline或ready state。
     deferred_cursor: u64,
     timer_cursor: u64,
 }
 static NETWORK_NAMESPACES: Mutex<NetworkNamespaceDirectory> =
     Mutex::new(NetworkNamespaceDirectory {
-        entries: crate::fallible_tree::FallibleMap::new(),
+        entries: fallible_tree::FallibleMap::new(),
         deferred_cursor: 0,
         timer_cursor: 0,
     });
@@ -72,7 +73,7 @@ pub(in crate::net) fn take_network_namespaces(
 fn publish(namespace: Arc<NetNamespace>) -> Result<Arc<NetNamespace>, NamespaceError> {
     // 1. namespace尚未移交Task；node OOM先退休Arc并退款，不留下半发布的目录项。
     let entry =
-        crate::fallible_tree::FallibleMap::try_prepare(namespace.id, Arc::downgrade(&namespace))
+        fallible_tree::FallibleMap::try_prepare(namespace.id, Arc::downgrade(&namespace))
             .map_err(|_| NamespaceError::OutOfMemory)?;
     // 2. 唯一单调id的vacant commit不分配，目录不保存第二份protocol状态。
     NETWORK_NAMESPACES.lock().entries.commit_vacant(entry);

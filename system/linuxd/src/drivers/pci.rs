@@ -1,11 +1,15 @@
 //! PCI ECAM 根总线的唯一枚举与 BAR 分配 owner；设备协议由各 adapter 解码。
-use crate::{arch::mmio::MmioBus, platform::PciHost};
+use crate::platform::PciHost;
 use alloc::vec::Vec;
-use spin::Once;
+use mmio::MmioBus;
+use native_runtime::Bti;
+use native_runtime::sync::Once;
 
 const BAR0: usize = 0x10;
 const COMMAND: usize = 0x04;
 const PCI_FUNCTIONS_PER_SLOT: usize = 8;
+/// 根总线（bus 0）在 ECAM 中占用的字节数：32 slot × 8 function × 4 KiB。
+const ROOT_BUS_ECAM_BYTES: usize = 32 * PCI_FUNCTIONS_PER_SLOT * 4096;
 
 /// 已分配且互不重叠的 memory BAR。
 #[derive(Clone, Copy)]
@@ -18,6 +22,8 @@ pub(crate) struct Function {
     pub(crate) config: MmioBus,
     pub(crate) bars: [Option<Bar>; 6],
     pub(crate) interrupt: Option<u32>,
+    /// 本 function 发起 DMA 使用的 BTI（requester ID 经 `iommu-map` 换算的 stream）。
+    pub(crate) bti: &'static Bti,
 }
 // OWNER: 初始化后不可变的 PCI inventory；唯一 BAR 分配事务避免不同 adapter 重叠分配。
 // PROOF: main 在总线绑定前串行初始化，Once 发布后只借用；失败时启动 fail-stop，不运行半初始化设备。
@@ -33,17 +39,15 @@ pub(crate) fn initialize(host: Option<&PciHost>) -> Result<(), ()> {
     let mut functions = Vec::new();
     if let Some(host) = host {
         let mut allocation = host.mmio32.start;
+        let ecam_bytes = host.ecam.len().min(ROOT_BUS_ECAM_BYTES);
+        let ecam = crate::platform::map_device_window(host.ecam.start, ecam_bytes);
         for slot in 0..32 {
             for function in 0..PCI_FUNCTIONS_PER_SLOT {
                 let offset = (slot << 15) | (function << 12);
-                if offset + 4096 > host.ecam.len() {
+                if offset + 4096 > ecam_bytes {
                     break;
                 }
-                let config = MmioBus::new(
-                    crate::platform::map_device_window(host.ecam.start + offset),
-                    4096,
-                )
-                .map_err(|_| ())?;
+                let config = MmioBus::new(ecam + offset, 4096).map_err(|_| ())?;
                 let vendor = config.read_u16(0).map_err(|_| ())?;
                 if vendor == 0xffff {
                     if function == 0 {
@@ -67,6 +71,8 @@ pub(crate) fn initialize(host: Option<&PciHost>) -> Result<(), ()> {
                     config,
                     bars,
                     interrupt: host.interrupt(slot, pin),
+                    // 根总线 requester ID = slot << 3 | function（PCIe BDF，bus 0）。
+                    bti: crate::platform::bti(host.stream(((slot << 3) | function) as u32)),
                 });
                 if function == 0 && header & 0x80 == 0 {
                     break;

@@ -3,7 +3,7 @@ use alloc::boxed::Box;
 
 use super::*;
 use crate::{
-    execution::cpu::CpuId,
+    cpu::CpuId,
     fs::{
         CompletionNotify,
         chardev::{PendingCommand, UringCommand, UserMemory},
@@ -72,7 +72,7 @@ struct Command {
 
 impl Queue {
     pub(super) fn route(&self, request: &Request) {
-        let cpu = matches!(self.uring.stage, Stage::Active).then(crate::execution::cpu::current_id);
+        let cpu = matches!(self.uring.stage, Stage::Active).then(crate::cpu::current_id);
         *request.phase.lock() = Phase::Queued { cpu };
     }
 
@@ -162,7 +162,7 @@ impl Connection {
             return Err(DeviceError::Errno(errno::EINVAL));
         }
         let result = (|| {
-            let cpu = crate::execution::cpu::id_at(u16::from_ne_bytes(
+            let cpu = crate::cpu::id_at(u16::from_ne_bytes(
                 command.data[16..18].try_into().unwrap(),
             ) as usize)
             .ok_or(DeviceError::Errno(errno::EINVAL))?;
@@ -201,7 +201,7 @@ impl Connection {
                     });
                     pending.entry = Some(id);
                     if queue.uring.registering()
-                        && crate::execution::cpu::possible().iter().all(|cpu| {
+                        && crate::cpu::possible().iter().all(|cpu| {
                             queue.uring.entries.iter().any(|entry| {
                                 entry.cpu == cpu && matches!(entry.state, EntryState::Available(_))
                             })

@@ -10,7 +10,7 @@ use super::*;
 /// # Returns
 ///
 /// 无失败/分配；两个 Thread 索引和 creator-child relation 在同一 graph guard 下重发布。
-pub(in crate::execution::task) fn mark_process_exec(
+pub(in crate::task) fn mark_process_exec(
     task: &TaskControlBlock,
     link: Option<PidLinkSlot>,
     trace_link: Option<Arc<PidRegistration>>,

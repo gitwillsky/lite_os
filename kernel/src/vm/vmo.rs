@@ -31,7 +31,7 @@ use super::address_space::{Mapping, ZapMode};
 use crate::execution::sync::{
     TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation, WaitQueue, WaitResult,
 };
-use crate::fallible_tree::FallibleMap;
+use fallible_tree::FallibleMap;
 use crate::memory::{
     FrameAllocationClass, FrameTracker, PAGE_SIZE, PhysicalPageNumber, frame_allocator,
 };
@@ -147,10 +147,9 @@ struct State {
     children: Vec<Weak<Vmo>>,
     // OWNER: 映射本对象的地址空间映射；Weak 在映射销毁后失效并被惰性清理。
     mappings: Vec<Weak<Mapping>>,
-    // OWNER: 已发出、尚未补入的 pager 请求页；避免同一页重复请求。
+    // OWNER: 已发出、尚未补入的 pager 请求页；避免同一页重复请求。pager 报告失败时撤销对应项，
+    // 等待者据“请求已撤销而页仍缺失”判定失败；缺失该判定时等待者会无限等待永不到来的补页。
     requested: FallibleMap<usize, ()>,
-    // FLAG: pager 已对整个对象报告失败；缺失时等待者会无限等待永不到来的补页。
-    pager_failed: bool,
 }
 
 /// 内存对象。
@@ -186,7 +185,6 @@ impl Vmo {
                 children: Vec::new(),
                 mappings: Vec::new(),
                 requested: FallibleMap::new(),
-                pager_failed: false,
             }),
             supplied: WaitQueue::new(),
         })
@@ -283,6 +281,21 @@ impl Vmo {
     /// 字节大小。
     pub(crate) fn size(&self) -> u64 {
         (self.state.lock().pages * PAGE_SIZE) as u64
+    }
+
+    /// 本对象自己持有的已提交字节（不含从父对象共享的页）。
+    ///
+    /// # Errors
+    /// 等待者分配失败返回 `NoMemory`。
+    pub(crate) fn committed_bytes(&self) -> Result<u64, VmError> {
+        let _tree = self.lock_tree()?;
+        let state = self.state.lock();
+        let pages = match &self.kind {
+            Kind::Paged { .. } => state.committed.iter().count(),
+            Kind::Contiguous(_) | Kind::Physical { .. } => state.pages,
+            Kind::Slice => 0,
+        };
+        Ok((pages * PAGE_SIZE) as u64)
     }
 
     /// 创建子对象。
@@ -553,9 +566,6 @@ impl Vmo {
             unreachable!("page request on a VMO without pager");
         };
         let mut state = self.state.lock();
-        if state.pager_failed {
-            return Err(VmError::Io);
-        }
         if state.requested.contains_key(&index) {
             return Ok(());
         }
@@ -579,8 +589,9 @@ impl Vmo {
         let result = self.supplied.wait_until(
             || {
                 let state = self.state.lock();
-                failed = state.pager_failed;
-                failed || state.committed.contains_key(&index)
+                let committed = state.committed.contains_key(&index);
+                failed = !committed && !state.requested.contains_key(&index);
+                committed || failed
             },
             None,
         );
@@ -656,9 +667,22 @@ impl Vmo {
     }
 
     /// pager 报告无法提供内容：等待者以 `Io` 失败，之后的缺页同样失败。
-    pub(crate) fn fail_pager(&self) -> Result<(), VmError> {
+    /// pager 无法提供 `[offset, offset + length)`：撤销区间内已发出的请求，当前等待者以 `Io` 失败；
+    /// 之后的访问重新发起请求。
+    ///
+    /// # Errors
+    /// 不是 pager 支撑的 VMO 返回 `NotSupported`；参数未对齐返回 `InvalidArgs`。
+    pub(crate) fn fail_range(&self, offset: u64, length: u64) -> Result<(), VmError> {
+        if !matches!(self.kind, Kind::Paged { pager: Some(_), .. }) {
+            return Err(VmError::NotSupported);
+        }
+        let (first, count) = page_range(offset, length)?;
         let _tree = self.lock_tree()?;
-        self.state.lock().pager_failed = true;
+        let mut state = self.state.lock();
+        for index in first..first + count {
+            state.requested.remove(&index);
+        }
+        drop(state);
         self.supplied.wake_all();
         Ok(())
     }
@@ -759,15 +783,16 @@ impl Vmo {
     /// # Errors
     /// 参数非法、越界、页被固定或类型不支持。
     pub(crate) fn op_range(self: &Arc<Self>, op: RangeOp, offset: u64, length: u64) -> Result<(), VmError> {
-        let (first, count) = page_range(offset, length)?;
         match op {
             RangeOp::Commit => {
+                let (first, count) = page_range(offset, length)?;
                 for index in first..first + count {
                     self.with_resolved(index, true, |_| Ok(()))?;
                 }
                 Ok(())
             }
             RangeOp::Decommit => {
+                let (first, count) = page_range(offset, length)?;
                 if !matches!(self.kind, Kind::Paged { .. }) {
                     return Err(VmError::NotSupported);
                 }
@@ -775,9 +800,15 @@ impl Vmo {
                 self.release_pages(first..first + count)
             }
             RangeOp::Zero => {
+                // 字节精确：首尾部分页只清零区间内的字节。
                 let zero = [0u8; PAGE_SIZE];
-                for index in first..first + count {
-                    self.write((index * PAGE_SIZE) as u64, &zero)?;
+                let end = offset.checked_add(length).ok_or(VmError::OutOfRange)?;
+                let mut cursor = offset;
+                while cursor < end {
+                    let within = (cursor % PAGE_SIZE as u64) as usize;
+                    let chunk = ((PAGE_SIZE - within) as u64).min(end - cursor) as usize;
+                    self.write(cursor, &zero[..chunk])?;
+                    cursor += chunk as u64;
                 }
                 Ok(())
             }

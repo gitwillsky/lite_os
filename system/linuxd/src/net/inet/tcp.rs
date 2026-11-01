@@ -10,7 +10,7 @@ use smoltcp::{
     wire::{IpEndpoint, IpListenEndpoint},
 };
 
-use crate::fallible_tree::FallibleMap;
+use fallible_tree::FallibleMap;
 
 use super::{
     InetEndpoint, InetSocket, InetSocketOptions, NetworkStack, PortLease, SocketError, from_ip,

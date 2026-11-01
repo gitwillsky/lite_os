@@ -6,18 +6,11 @@ use super::{
     Error, Result, audio,
     dma::{Dma, Ring, Trb},
 };
-use crate::{
-    arch::mmio::MmioBus,
-    devices::model::io_completion::CompletionSource,
-    execution::{
-        interrupt::{InterruptError, InterruptHandler, InterruptVector},
-        sync::{TaskEvent, TaskMutex},
-        timer::get_time_ns,
-    },
-};
+use crate::{devices::model::io_completion::CompletionSource, interrupt::{InterruptError, InterruptHandler, InterruptVector}, sync::{TaskEvent, TaskMutex}, time::get_time_ns};
+use mmio::MmioBus;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 const EVENT_COUNT: usize = 256;
 const PORT_CHANGE: u32 = 0x00fe0000;
@@ -76,11 +69,13 @@ pub(crate) struct Host {
     // OWNER: IRQ/MMIO/timeout 的永久错误状态；Acquire/Release 使所有入口拒绝继续发布 DMA。
     // 缺失时超时请求可与下一次重用的 ring 共享身份。注册的 IRQ 与 completion Arc 保活隔离的 DMA。
     failed: AtomicBool,
+    /// 控制器发起 DMA 的 BTI；全部 ring、context 与传输缓冲固定在它上面。
+    bti: &'static native_runtime::Bti,
 }
 impl Host {
     pub(super) fn new(function: &crate::drivers::pci::Function, bus: usize) -> Result<Arc<Self>> {
         let bar = function.bars[0].ok_or(Error::Protocol)?;
-        let regs = MmioBus::new(crate::platform::map_device_window(bar.address), bar.size)?;
+        let regs = MmioBus::new(crate::platform::map_device_window(bar.address, bar.size), bar.size)?;
         let length = usize::from(regs.read_u8(0)?);
         let hcs = regs.read_u32(4)?;
         let slots = (hcs & 255) as usize;
@@ -118,10 +113,10 @@ impl Host {
         }
         let runtime = regs.subwindow((regs.read_u32(0x18)? & !31) as usize, 0x40)?;
         let doors = regs.subwindow((regs.read_u32(0x14)? & !3) as usize, (slots + 1) * 4)?;
-        let dcbaa = Dma::allocate(1)?;
-        let commands = Ring::new(1)?;
-        let events = Dma::allocate(1)?;
-        let erst = Dma::allocate(1)?;
+        let dcbaa = Dma::allocate(1, function.bti)?;
+        let commands = Ring::new(1, function.bti)?;
+        let events = Dma::allocate(1, function.bti)?;
+        let erst = Dma::allocate(1, function.bti)?;
         erst.pointer(0, events.physical)?;
         erst.set_word(8, EVENT_COUNT as u32)?;
         let scratch = regs.read_u32(8)?;
@@ -131,9 +126,9 @@ impl Host {
             .try_reserve_exact(count)
             .map_err(|_| Error::Memory)?;
         let scratchpad_array = if count != 0 {
-            let array = Dma::allocate((count * 8).div_ceil(4096))?;
+            let array = Dma::allocate((count * 8).div_ceil(4096), function.bti)?;
             for index in 0..count {
-                let page = Dma::allocate(1)?;
+                let page = Dma::allocate(1, function.bti)?;
                 array.pointer(index * 8, page.physical)?;
                 scratchpads.push(page);
             }
@@ -180,6 +175,7 @@ impl Host {
             transfer_event: TaskEvent::new(),
             port_event: TaskEvent::new(),
             failed: AtomicBool::new(false),
+            bti: function.bti,
         })
         .map_err(|_| Error::Memory)?;
         let irq = function.interrupt.ok_or(Error::Unsupported)?;
@@ -197,7 +193,7 @@ impl Host {
         drop(state);
         host.runtime.write_u32(0x24, 1000)?; // 250us IRQ moderation；没有它会在每个 125us packet 中断 CPU。
         host.runtime.write_u32(0x20, 3)?;
-        crate::arch::before_mmio_write();
+        mmio::before_write();
         host.op.write_u32(0, 1 | 4)?;
         wait_register(&host.op, 4, 1, 0)?;
         crate::info!("USB xHCI ready: ports={}, slots={}", ports, slots);
@@ -207,7 +203,7 @@ impl Host {
         if self.failed.load(Ordering::Acquire) {
             return Err(Error::Disconnected);
         }
-        crate::arch::before_mmio_write();
+        mmio::before_write();
         self.doors
             .write_u32(usize::from(slot) * 4, u32::from(endpoint))?;
         Ok(())
@@ -249,7 +245,7 @@ impl InterruptHandler for Host {
         if !matches!(failed, Ok(false)) {
             self.failed.store(true, Ordering::Release);
         }
-        crate::execution::deferred::raise(crate::execution::deferred::DeferredWork::DRIVER_IO);
+        crate::deferred::raise(crate::deferred::DeferredWork::DRIVER_IO);
         Ok(())
     }
 }

@@ -1,10 +1,10 @@
 //! Thread 当前执行 identity 与 Process TGID 的投影；编号归 PID namespace，graph links 决定占用。
 use super::{Arc, TaskControlBlock, TaskKind};
-use crate::{execution::task::pid::PidIdentity, namespace::PidNamespace};
+use crate::{task::pid::PidIdentity, namespace::PidNamespace};
 
 impl super::Process {
     /// 只借用该 Process 的同一 TGID observer，供退出 leader 的组信号 view 投影。
-    pub(in crate::execution::task) fn tgid_identity(&self) -> &Arc<PidIdentity> {
+    pub(in crate::task) fn tgid_identity(&self) -> &Arc<PidIdentity> {
         self.tgid.identity()
     }
 }
@@ -42,7 +42,7 @@ impl TaskControlBlock {
     pub(crate) fn tid_identity(&self) -> Arc<PidIdentity> {
         self.execution.identity.lock().clone()
     }
-    pub(in crate::execution::task) fn is_namespace_init(&self) -> bool {
+    pub(in crate::task) fn is_namespace_init(&self) -> bool {
         !self.is_kernel_thread() && self.tgid_identity().is_namespace_init()
     }
     /// calling Thread 可见 PID/TID；namespace 编号不会被拿来索引 kernel graph。
@@ -55,7 +55,7 @@ impl TaskControlBlock {
         self.tgid_identity().number_in(&namespace)
     }
     /// 必须在 graph 无失败重发布两个 Thread index 的同一 guard 下调用；旧 pin 锁外退休。
-    pub(in crate::execution::task) fn promote_exec_identity(&self) -> Arc<PidIdentity> {
+    pub(in crate::task) fn promote_exec_identity(&self) -> Arc<PidIdentity> {
         assert!(!self.is_kernel_thread());
         let mut current = self.execution.identity.lock();
         core::mem::replace(&mut *current, self.process().tgid.identity().clone())

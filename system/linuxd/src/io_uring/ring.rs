@@ -6,7 +6,7 @@
 
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use super::abi::{
     CQ_HEAD, CQ_OVERFLOW, CQ_RING_ENTRIES, CQ_RING_MASK, CQ_TAIL, CQE_BYTES, CQES_OFFSET, Cqe,
@@ -14,9 +14,9 @@ use super::abi::{
     SQ_TAIL, SQE_BYTES, Sqe,
 };
 use crate::{
-    execution::sync::{TaskMutex, WaitResult},
+    sync::{TaskMutex, WaitResult},
     ipc::{Pipe, PipeEnd, PipeWaitCondition},
-    memory::{DeviceBacking, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE},
+    memory::{DeviceBacking, PAGE_SIZE},
 };
 
 /// 内核侧溢出链表相对 CQ 容量的倍数上限。超过后 CQE 被丢弃并计入 `cq_overflow`；缺少上限，
@@ -63,8 +63,6 @@ pub(crate) struct Ring {
     geometry: Geometry,
     ring: Arc<DeviceBacking>,
     sqes: Arc<DeviceBacking>,
-    ring_identity: u64,
-    sqes_identity: u64,
     // OWNER: 串行化 SQ 消费与 head 提交；缺失时两个线程同时 enter 会重复提交同一个 SQE。
     submit_lock: TaskMutex<()>,
     // OWNER: CQ 发布与溢出链表；缺失时并发 post 会覆盖同一个 CQE 槽。
@@ -126,8 +124,6 @@ fn allocate_zeroed(bytes: usize) -> Result<Arc<DeviceBacking>, RingError> {
     // Linux io_region_mmap 用 vm_insert_pages 映射 ring 页。
     let backing = DeviceBacking::try_allocate(
         bytes.div_ceil(PAGE_SIZE).max(1),
-        FrameAllocationClass::Reclaimable,
-        DeviceMemoryKind::InsertedPages,
     )
     .ok_or(RingError::OutOfMemory)?;
     // 帧可能含旧内核数据；映射给用户态前必须清零，否则 ring 页泄露其他对象的残留字节。
@@ -171,15 +167,13 @@ impl Ring {
             geometry,
             ring,
             sqes,
-            ring_identity: crate::id::next_runtime_object_id(),
-            sqes_identity: crate::id::next_runtime_object_id(),
             submit_lock: TaskMutex::new(()),
             cq: Mutex::new(CqState {
                 overflow: VecDeque::new(),
                 dropped_unreported: false,
             }),
             readiness,
-            generation: AtomicU64::new(crate::execution::sync::next_readiness_generation()),
+            generation: AtomicU64::new(crate::sync::next_readiness_generation()),
             closed: AtomicBool::new(false),
             posted: AtomicU32::new(0),
             timeouts_posted: AtomicU32::new(0),
@@ -208,13 +202,11 @@ impl Ring {
             .expect("ring header offsets are inside the zero-initialised ring region")
     }
 
-    /// 返回 mmap 偏移对应的 backing 与 futex identity；偏移必须精确等于 Linux 的三个魔数之一。
-    pub(crate) fn region(&self, offset: u64) -> Option<(Arc<DeviceBacking>, u64)> {
+    /// 返回 mmap 偏移对应的 backing；偏移必须精确等于 Linux 的三个魔数之一。
+    pub(crate) fn region(&self, offset: u64) -> Option<Arc<DeviceBacking>> {
         match offset {
-            super::abi::OFF_SQ_RING | super::abi::OFF_CQ_RING => {
-                Some((self.ring.clone(), self.ring_identity))
-            }
-            super::abi::OFF_SQES => Some((self.sqes.clone(), self.sqes_identity)),
+            super::abi::OFF_SQ_RING | super::abi::OFF_CQ_RING => Some(self.ring.clone()),
+            super::abi::OFF_SQES => Some(self.sqes.clone()),
             _ => None,
         }
     }
@@ -311,7 +303,7 @@ impl Ring {
 
     fn advance_generation(&self) {
         self.generation.fetch_max(
-            crate::execution::sync::next_readiness_generation(),
+            crate::sync::next_readiness_generation(),
             Ordering::AcqRel,
         );
     }
@@ -494,7 +486,7 @@ impl Ring {
             if self.cq_ready() >= minimum {
                 return CqWait::Satisfied;
             }
-            if deadline.is_some_and(|value| value <= crate::execution::timer::get_time_ns()) {
+            if deadline.is_some_and(|value| value <= crate::time::get_time_ns()) {
                 return CqWait::TimedOut;
             }
             self.readiness.0.drain_readiness();

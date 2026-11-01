@@ -52,7 +52,6 @@ pub(super) enum ProcNode {
     UserResourceLimit(crate::namespace::UserResource),
     Stat,
     MemInfo,
-    Swaps,
     BuddyInfo,
     VmStat,
     LoadAvg,
@@ -134,7 +133,7 @@ impl ProcNode {
         }
     }
 
-    pub(super) const GENERIC_ENTRY_COUNT: usize = 22;
+    pub(super) const GENERIC_ENTRY_COUNT: usize = 21;
     pub(super) fn generic_entries() -> [Self; Self::GENERIC_ENTRY_COUNT] {
         [
             Self::Root,
@@ -150,7 +149,6 @@ impl ProcNode {
             Self::Cmdline,
             Self::LastPanic,
             Self::Partitions,
-            Self::Swaps,
             Self::SysDir,
             Self::FsSysctlDir,
             Self::InotifySysctlDir,

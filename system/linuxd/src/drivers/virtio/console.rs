@@ -4,7 +4,8 @@ mod byte_ring;
 mod wire;
 
 use alloc::{sync::Arc, vec::Vec};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
 use super::{
     PciTransport, VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,
@@ -13,8 +14,8 @@ use super::{
 };
 use crate::devices::model::{PortActivity, PortDevice, PortError};
 use crate::{
-    execution::interrupt::InterruptError, execution::interrupt::InterruptHandler,
-    execution::interrupt::InterruptVector,
+    interrupt::InterruptError, interrupt::InterruptHandler,
+    interrupt::InterruptVector,
 };
 use byte_ring::ByteRing;
 use wire::{data_queue_indices, is_spice_port_name};
@@ -87,14 +88,14 @@ pub(crate) struct VirtIOConsoleDevice {
     state: Mutex<State>,
     // OWNER: 消费者在初始化时绑定一次的 completion deferred vector；hardirq 与 deferred
     // 续批只发布它。绑定前没有消费者，completion 留在 used ring 由绑定时的补偿发布消费。
-    completion_work: Once<crate::execution::deferred::DeferredWork>,
+    completion_work: Once<crate::deferred::DeferredWork>,
 }
 
 impl VirtIOConsoleDevice {
     /// 发布已绑定的 completion vector；未绑定时没有消费者，忽略。
     fn raise_completion(&self) {
         if let Some(work) = self.completion_work.get() {
-            crate::execution::deferred::raise(*work);
+            crate::deferred::raise(*work);
         }
     }
 
@@ -120,12 +121,8 @@ impl VirtIOConsoleDevice {
     /// # Returns
     ///
     /// The same named-port adapter used by VirtIO MMIO, or `None` on negotiation failure.
-    #[allow(
-        dead_code,
-        reason = "PCI console assembly is owned by platform backends that discover PCI"
-    )]
-    pub(crate) fn from_pci(transport: PciTransport) -> Option<Arc<Self>> {
-        Self::from_device(VirtIODevice::from_pci(3, transport))
+    pub(crate) fn from_pci(transport: PciTransport, bti: &'static native_runtime::Bti) -> Option<Arc<Self>> {
+        Self::from_device(VirtIODevice::from_pci(3, transport, bti))
     }
 
     fn from_device(mut device: VirtIODevice) -> Option<Arc<Self>> {
@@ -192,7 +189,7 @@ impl VirtIOConsoleDevice {
         if size < slots as u16 || !size.is_power_of_two() {
             return None;
         }
-        let queue = VirtQueue::new(size)?;
+        let queue = VirtQueue::new(size, device.bti())?;
         device
             .configure_queue(index, size, queue.addresses())
             .ok()?;
@@ -200,7 +197,7 @@ impl VirtIOConsoleDevice {
         values.try_reserve_exact(slots).ok()?;
         for _ in 0..slots {
             values.push(ReceiveSlot {
-                bytes: DmaBuffer::try_zeroed().ok()?,
+                bytes: DmaBuffer::try_zeroed(device.bti()).ok()?,
             });
         }
         let mut by_head = Vec::new();
@@ -224,7 +221,7 @@ impl VirtIOConsoleDevice {
         if size < slots as u16 || !size.is_power_of_two() {
             return None;
         }
-        let queue = VirtQueue::new(size)?;
+        let queue = VirtQueue::new(size, device.bti())?;
         device
             .configure_queue(index, size, queue.addresses())
             .ok()?;
@@ -232,7 +229,7 @@ impl VirtIOConsoleDevice {
         values.try_reserve_exact(slots).ok()?;
         for _ in 0..slots {
             values.push(TransmitSlot {
-                bytes: DmaBuffer::try_zeroed().ok()?,
+                bytes: DmaBuffer::try_zeroed(device.bti()).ok()?,
                 busy: false,
             });
         }
@@ -662,9 +659,9 @@ impl PortDevice for VirtIOConsoleDevice {
 
     /// 绑定消费者分配的 completion deferred vector；绑定前到达的 completion 由绑定时的一次
     /// 发布补偿。
-    fn bind_completion_work(&self, work: crate::execution::deferred::DeferredWork) {
+    fn bind_completion_work(&self, work: crate::deferred::DeferredWork) {
         self.completion_work.call_once(|| work);
-        crate::execution::deferred::raise(work);
+        crate::deferred::raise(work);
     }
 }
 

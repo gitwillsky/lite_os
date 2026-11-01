@@ -102,16 +102,18 @@ def setup_host(environment: Mapping[str, str] | None = None) -> None:
 
 
 def build_kernel(environment: Mapping[str, str] | None = None) -> None:
-    """构建所选架构 kernel，并生成其启动 artifact。"""
+    """构建所选架构 kernel 与系统服务，生成启动 artifact 与 bootfs。"""
     profile = _profile(environment)
     target = target_from_environment(environment)
     cargo_profile = ["--release"] if profile == "release" else []
+    run(["cargo", "build", "--target", target.kernel_triple, *cargo_profile], cwd=ROOT / "kernel", environment=environment)
     run(
-        ["cargo", "build", "--target", target.kernel_triple, *cargo_profile],
-        cwd=ROOT / "kernel",
-        # 启动画面随内核编入；受 Git 管理的素材由 classic_assets 校验，cargo 会跟踪该环境变量与文件内容。
+        ["cargo", "build", "-p", "root-server", "-p", "linuxd", "--target", target.service_triple, *cargo_profile],
+        cwd=ROOT,
+        # 启动画面编入 linuxd；受 Git 管理的素材由 classic_assets 校验，cargo 会跟踪该环境变量与文件内容。
         environment=_env_with(environment, LITEOS_BOOT_SCENE=str(boot_scene())),
     )
+    run(python_script("pack_bootfs.py", "--profile", profile), environment=environment)
     run(python_script("verify_artifacts.py", "--build-boot-artifact", "--profile", profile), environment=environment)
 
 
@@ -260,6 +262,8 @@ def _qemu_command(
         (
             "-kernel",
             str(ROOT / target.kernel_boot_artifact(_profile(source))),
+            "-initrd",
+            str(ROOT / target.bootfs(_profile(source))),
             "-drive",
             f"file={image},if=none,format=raw,id=x0",
             "-device",

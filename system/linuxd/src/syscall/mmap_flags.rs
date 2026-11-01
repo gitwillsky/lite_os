@@ -2,6 +2,8 @@ pub(super) const MAP_SHARED: usize = 0x01;
 pub(super) const MAP_PRIVATE: usize = 0x02;
 pub(super) const MAP_FIXED: usize = 0x10;
 pub(super) const MAP_ANONYMOUS: usize = 0x20;
+/// 私有匿名区紧邻下方的缺页向下扩展该区（Linux `VM_GROWSDOWN`）。
+pub(super) const MAP_GROWSDOWN: usize = 0x100;
 /// Linux advisory：不预留 swap/commit；LiteOS 没有 reservation accounting owner。
 pub(super) const MAP_NORESERVE: usize = 0x4000;
 /// Linux advisory：mapping 预期作为 Thread stack；LiteOS 不需要保存该 VMA hint。
@@ -16,6 +18,7 @@ const SUPPORTED_FLAGS: usize = MAP_PRIVATE
     | MAP_SHARED
     | MAP_FIXED
     | MAP_ANONYMOUS
+    | MAP_GROWSDOWN
     | MAP_NORESERVE
     | MAP_POPULATE
     | MAP_STACK
@@ -29,10 +32,12 @@ const SUPPORTED_FLAGS: usize = MAP_PRIVATE
 ///
 /// # Returns
 ///
-/// 恰有一个 sharing mode、没有未知 bit 且 fixed variants 不冲突时为 true。
+/// 恰有一个 sharing mode、没有未知 bit、fixed variants 不冲突且 `MAP_GROWSDOWN` 只用于私有匿名
+/// 映射（Linux `do_mmap` 对共享与文件映射的 `VM_GROWSDOWN` 返回 `EINVAL`）时为 true。
 pub(super) const fn mmap_flags_supported(flags: usize) -> bool {
     let sharing = flags & (MAP_PRIVATE | MAP_SHARED);
     matches!(sharing, MAP_PRIVATE | MAP_SHARED)
         && flags & !SUPPORTED_FLAGS == 0
         && !(flags & MAP_FIXED != 0 && flags & MAP_FIXED_NOREPLACE != 0)
+        && (flags & MAP_GROWSDOWN == 0 || sharing == MAP_PRIVATE && flags & MAP_ANONYMOUS != 0)
 }

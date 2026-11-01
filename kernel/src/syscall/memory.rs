@@ -290,7 +290,7 @@ pub(super) fn pager_op(call: &Call<'_>) -> Result<(), Status> {
     let vmo = call.vmo(call.arg_handle(2), rights::WRITE)?;
     let (offset, length) = (call.arg(3) as u64, call.arg(4) as u64);
     match call.arg_u32(1) {
-        native_abi::pager::OP_FAIL => vmo.fail_pager().map_err(vm_status),
+        native_abi::pager::OP_FAIL => vmo.fail_range(offset, length).map_err(vm_status),
         native_abi::pager::OP_WRITEBACK_BEGIN => vmo.begin_writeback(offset, length).map_err(vm_status),
         native_abi::pager::OP_QUERY_DIRTY => {
             let range = vmo.first_dirty_range(offset, length).map_err(vm_status)?;

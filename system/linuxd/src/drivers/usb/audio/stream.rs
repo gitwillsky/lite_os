@@ -52,14 +52,14 @@ pub(in crate::drivers::usb) struct Stream {
     phase: u64,
 }
 impl Stream {
-    pub(in crate::drivers::usb) fn new(slot: u8, alternates: Vec<Alternate>) -> Result<Self> {
+    pub(in crate::drivers::usb) fn new(slot: u8, alternates: Vec<Alternate>, bti: &native_runtime::Bti) -> Result<Self> {
         let mut periods = Vec::new();
         periods
             .try_reserve_exact(PCM_PERIODS)
             .map_err(|_| Error::Memory)?;
         for _ in 0..PCM_PERIODS {
             periods.push(Period {
-                memory: Dma::allocate(MAX_PCM_PERIOD_BYTES.div_ceil(4096).next_power_of_two())?,
+                memory: Dma::allocate(MAX_PCM_PERIOD_BYTES.div_ceil(4096).next_power_of_two(), bti)?,
                 occupied: false,
                 offset: 0,
             });
@@ -69,7 +69,7 @@ impl Stream {
             .try_reserve_exact(PACKETS)
             .map_err(|_| Error::Memory)?;
         for _ in 0..PACKETS {
-            buffers.push(Dma::allocate(1)?);
+            buffers.push(Dma::allocate(1, bti)?);
         }
         Ok(Self {
             slot,
@@ -78,11 +78,11 @@ impl Stream {
             configuration: None,
             state: Lifecycle::Unconfigured,
             observer: None,
-            output: Ring::new(1)?,
-            feedback: Ring::new(1)?,
+            output: Ring::new(1, bti)?,
+            feedback: Ring::new(1, bti)?,
             periods,
             buffers,
-            feedback_buffer: Dma::allocate(1)?,
+            feedback_buffer: Dma::allocate(1, bti)?,
             packets: [None; PACKETS],
             feedback_heads: [None; FEEDBACK_PACKETS],
             packet_head: 0,

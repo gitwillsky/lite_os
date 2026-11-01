@@ -15,7 +15,7 @@ use spin::Mutex;
 
 use super::Call;
 use crate::execution::sync::{TaskEvent, TaskMutex, WaitResult};
-use crate::fallible_tree::FallibleMap;
+use fallible_tree::FallibleMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum FutexKey {
@@ -43,7 +43,7 @@ fn key(call: &Call<'_>, address: usize, options: u32) -> Result<FutexKey, Status
     let space = call.thread.address_space().ok_or(native_abi::ERR_BAD_STATE)?;
     match options {
         0 => Ok(FutexKey::Private {
-            space: space.koid(),
+            space: space.futex_owner(address),
             address,
         }),
         native_abi::futex::SHARED => {

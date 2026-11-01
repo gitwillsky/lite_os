@@ -1,6 +1,6 @@
 use core::net::Ipv4Addr;
 
-use crate::fallible_tree::FallibleMap;
+use fallible_tree::FallibleMap;
 
 mod bitmap;
 use bitmap::EphemeralPorts;
@@ -180,14 +180,14 @@ impl Occupancy {
 /// token 析构不改变 namespace，因此 accept 可在 replacement socket 发布前安全返回 OOM。
 pub(super) struct PreparedPortLease {
     lease: PortLease,
-    address_slot: Option<crate::fallible_tree::NodeSlot<Ipv4Addr, AddressOccupancy>>,
+    address_slot: Option<fallible_tree::NodeSlot<Ipv4Addr, AddressOccupancy>>,
 }
 
 /// active TCP connect 所需 exact-address storage 与尚未发布的 membership 迁移。
 pub(super) struct PreparedPortReaddress {
     previous: PortLease,
     lease: PortLease,
-    address_slot: Option<crate::fallible_tree::NodeSlot<Ipv4Addr, AddressOccupancy>>,
+    address_slot: Option<fallible_tree::NodeSlot<Ipv4Addr, AddressOccupancy>>,
 }
 
 /// UDP 或 TCP local-port namespace 的唯一占用 owner。

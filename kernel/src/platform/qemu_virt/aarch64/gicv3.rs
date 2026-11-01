@@ -1,5 +1,6 @@
 //! QEMU `virt` GICv3 distributor、redistributor 与 ICC system-register owner。
 
+use mmio::MmioBus;
 use alloc::sync::Arc;
 use core::arch::asm;
 
@@ -7,14 +8,13 @@ use spin::Once;
 
 use crate::{
     arch::interrupt::SOFTWARE_SGI,
-    arch::mmio::MmioBus,
     execution::cpu::{self, CpuSet},
     execution::interrupt::InterruptError,
     execution::interrupt::InterruptHandler,
     execution::interrupt::InterruptVector,
     execution::sync::IrqMutex,
-    fallible_tree::FallibleMap,
 };
+use fallible_tree::FallibleMap;
 
 use super::{super::ClaimedInterrupt, device_tree::GicV3Info};
 

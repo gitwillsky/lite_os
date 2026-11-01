@@ -19,6 +19,8 @@ from utm_build import UTM_APP, UTM_VERSION, ensure_built
 UTMCTL = UTM_APP / "Contents/MacOS/utmctl"
 UTM_INFO = UTM_APP / "Contents/Info.plist"
 UTM_DOCUMENTS = Path.home() / "Library/Containers/com.utmapp.UTM/Data/Documents"
+# 系统服务 bootfs（cpio）的文件名：构建目录与 UTM 发布目录都把它放在内核启动产物旁边。
+BOOTFS_NAME = "bootfs.cpio"
 UTM_ARTIFACTS = (
     Path.home()
     / "Library/Containers/com.utmapp.QEMUHelper/Data/Documents/LiteOS"
@@ -95,6 +97,7 @@ def _configuration(
 ) -> dict[str, object]:
     kernel = kernel or UTM_ARTIFACTS / "kernel"
     rootfs = rootfs or UTM_ARTIFACTS / "rootfs.img"
+    bootfs = kernel.with_name(BOOTFS_NAME)
     # UTM's generated SPICE server enables vdagent mouse delivery by default.
     # Disable it explicitly so the attached virtio-tablet remains the sole
     # pointer source; otherwise SPICE diverts host motion into mouse-state
@@ -119,6 +122,8 @@ def _configuration(
         + '"',
         "-kernel",
         f'"{kernel}"',
+        "-initrd",
+        f'"{bootfs}"',
         "-device",
         "virtio-blk-device,drive=driverootfs",
         "-object",
@@ -254,6 +259,8 @@ def prepare(
     published_kernel = UTM_ARTIFACTS / "kernel"
     _publish_file(rootfs, published_rootfs)
     _publish_file(kernel, published_kernel)
+    # bootfs 与内核启动产物同目录构建；发布后与 `kernel` 同目录，`_configuration` 据此找到它。
+    _publish_file(kernel.with_name(BOOTFS_NAME), UTM_ARTIFACTS / BOOTFS_NAME)
     VM_PACKAGE.mkdir(parents=True, exist_ok=True)
     config = _configuration(
         memory_mib=_memory_mib(memory),
@@ -458,7 +465,7 @@ class GateRuntime:
         rootfs: Path,
         memory: str,
         cpu_count: int,
-        restore: tuple[bytes | None, Path | None, Path | None],
+        restore: tuple[bytes | None, Path | None, Path | None, Path | None],
     ) -> None:
         self._serial_socket = serial_socket
         self.stdout: BinaryIO = serial_socket.makefile("rb", buffering=0)
@@ -506,12 +513,12 @@ class GateRuntime:
         _ensure_registered()
 
 
-def _backup_for_gate() -> tuple[bytes | None, Path | None, Path | None]:
+def _backup_for_gate() -> tuple[bytes | None, Path | None, Path | None, Path | None]:
     """Preserve the exact generated development VM while a gate is disposable."""
     config_path = VM_PACKAGE / "config.plist"
     config = config_path.read_bytes() if config_path.is_file() else None
     backups: list[Path | None] = []
-    for name in ("kernel", "rootfs.img"):
+    for name in ("kernel", "rootfs.img", BOOTFS_NAME):
         source = UTM_ARTIFACTS / name
         backup = UTM_ARTIFACTS / f".gate-backup-{name}-{os.getpid()}"
         backup.unlink(missing_ok=True)
@@ -520,11 +527,11 @@ def _backup_for_gate() -> tuple[bytes | None, Path | None, Path | None]:
             backups.append(backup)
         else:
             backups.append(None)
-    return config, backups[0], backups[1]
+    return config, backups[0], backups[1], backups[2]
 
 
 def _restore_after_gate(
-    restore: tuple[bytes | None, Path | None, Path | None],
+    restore: tuple[bytes | None, Path | None, Path | None, Path | None],
     *,
     kernel: Path,
     rootfs: Path,
@@ -532,20 +539,21 @@ def _restore_after_gate(
     cpu_count: int,
 ) -> None:
     """Restore the pre-gate VM config and published artifact inodes exactly."""
-    config, kernel_backup, rootfs_backup = restore
-    if config is None or kernel_backup is None or rootfs_backup is None:
+    config, kernel_backup, rootfs_backup, bootfs_backup = restore
+    if config is None or kernel_backup is None or rootfs_backup is None or bootfs_backup is None:
         prepare(
             kernel=kernel,
             rootfs=rootfs,
             memory=memory,
             cpu_count=cpu_count,
         )
-        for backup in (kernel_backup, rootfs_backup):
+        for backup in (kernel_backup, rootfs_backup, bootfs_backup):
             if backup is not None:
                 backup.unlink(missing_ok=True)
         return
     _publish_file(kernel_backup, UTM_ARTIFACTS / "kernel")
     _publish_file(rootfs_backup, UTM_ARTIFACTS / "rootfs.img")
+    _publish_file(bootfs_backup, UTM_ARTIFACTS / BOOTFS_NAME)
     config_path = VM_PACKAGE / "config.plist"
     with config_path.open("wb") as stream:
         stream.write(config)
@@ -553,6 +561,7 @@ def _restore_after_gate(
         os.fsync(stream.fileno())
     kernel_backup.unlink()
     rootfs_backup.unlink()
+    bootfs_backup.unlink()
 
 
 def start_gate(

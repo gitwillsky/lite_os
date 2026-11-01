@@ -88,6 +88,16 @@ pub(crate) fn boot_epoch_seconds() -> u64 {
     REALTIME_OFFSET_NS.load(Ordering::Relaxed) / NSEC_PER_SEC
 }
 
+/// 单个 timebase tick 的纳秒数，向上取整且至少为 1ns。
+pub(crate) fn monotonic_resolution_ns() -> u64 {
+    (NSEC_PER_SEC as u128).div_ceil(u128::from(platform::timebase_frequency())) as u64
+}
+
+/// 调度器 tick 间隔（纳秒）：每个 tick 都可能触发抢占，即基础时间片。
+pub(crate) fn scheduler_quantum_ns() -> u64 {
+    NSEC_PER_SEC / TICKS_PER_SEC
+}
+
 pub(crate) fn get_time_us() -> u64 {
     let current_mtime = arch::time::counter();
     let time_base_freq = platform::timebase_frequency();

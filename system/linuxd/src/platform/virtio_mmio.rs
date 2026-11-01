@@ -1,4 +1,4 @@
-//! QEMU `virt` VirtIO-MMIO transport 的 DTB 发现结果。
+//! VirtIO-MMIO transport 的 DTB 发现结果。
 //!
 //! transport 身份只由 `compatible = "virtio,mmio"` 裁决。节点名只是 QEMU 的命名约定：QEMU 11 已把
 //! PLIC 改名为 `interrupt-controller@…`，按名称前缀匹配会让设备在升级后静默消失。
@@ -35,20 +35,6 @@ impl VirtioMmioTransports {
         self.count
     }
 
-    /// 覆盖全部 transport window 的最小 physical 区间；没有 transport 时返回 `None`。
-    pub(crate) fn span(&self) -> Option<Range<usize>> {
-        let start = self.iter().map(|device| device.base_addr).min()?;
-        let end = self
-            .iter()
-            .map(|device| {
-                device
-                    .base_addr
-                    .checked_add(device.size)
-                    .expect("validated VirtIO MMIO range overflowed")
-            })
-            .max()?;
-        Some(start..end)
-    }
 }
 
 /// 当前 DTB 节点的 VirtIO 候选属性。
@@ -62,7 +48,7 @@ struct PendingNode {
     irq: Option<u32>,
 }
 
-/// 由各架构 DTB parser 驱动的 VirtIO-MMIO 识别器。
+/// 由 DTB 遍历驱动的 VirtIO-MMIO 识别器。
 ///
 /// 1. 每个 `SubNode` 事件调用 [`Self::begin_node`]，提交上一个节点并清空候选；
 /// 2. 节点的 `compatible`、首个 `reg` 与首个已解码 interrupt 依次喂入；

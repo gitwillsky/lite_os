@@ -1,15 +1,13 @@
 use alloc::sync::{Arc, Weak};
 
-use crate::{
-    fallible_tree::{FallibleMap, VacantEntry},
-    file::{TimerError, TimerFdBackend, TimerSetting},
-};
+use crate::{file::{TimerError, TimerFdBackend, TimerSetting}};
+use fallible_tree::{FallibleMap, VacantEntry};
 
 mod kernel_wait;
 mod period;
 mod posix_creation;
 mod posix_schedule;
-pub(in crate::execution::task) use posix_schedule::deliver_posix_signal;
+pub(in crate::task) use posix_schedule::deliver_posix_signal;
 use posix_schedule::{PosixSchedule, PosixTimer};
 mod preparation;
 mod preparation_policy;
@@ -84,7 +82,7 @@ pub(super) struct ExpiredPosixTimer {
     pub(super) id: i32,
     pub(super) notification: PosixTimerNotification,
     pub(super) sequence: u64,
-    pub(super) owner: Arc<crate::execution::task::model::PreallocatedSignal>,
+    pub(super) owner: Arc<crate::task::model::PreallocatedSignal>,
     pub(super) thread_target: Option<Arc<crate::namespace::PidIdentity>>,
 }
 
@@ -241,6 +239,8 @@ impl TimerQueue {
                 entry
             };
             self.deadline_index.commit_vacant(entry);
+            // 新到期时间可能早于 deferred 线程当前停驻的截止时间。
+            crate::deferred::deadline_changed();
         }
         if let Some(deadline) = deadline {
             retired.deadlines.commit_vacant(deadline);
@@ -307,6 +307,8 @@ impl TimerQueue {
                     let mut entry = deadline.take().expect("actual expired deadline");
                     entry.set_key((next, identity));
                     self.deadline_index.commit_vacant(entry);
+                    // 新到期时间可能早于 deferred 线程当前停驻的截止时间。
+                    crate::deferred::deadline_changed();
                 }
                 Some(ExpiredTimer::Real {
                     tgid,
@@ -330,6 +332,11 @@ impl TimerQueue {
         }
     }
 
+    /// 最早的到期时间。
+    pub(super) fn next_expiration(&self) -> Option<u64> {
+        self.deadline_index.first_key_value().map(|(&(expiration, _), _)| expiration)
+    }
+
     pub(super) fn has_expired(&self, now_ns: u64) -> bool {
         self.deadline_index
             .first_key_value()
@@ -341,7 +348,7 @@ fn live_process(
     graph: &super::ProcessGraph,
     tgid: usize,
 ) -> Result<
-    &FallibleMap<usize, alloc::sync::Arc<crate::execution::task::TaskControlBlock>>,
+    &FallibleMap<usize, alloc::sync::Arc<crate::task::TaskControlBlock>>,
     TimerError,
 > {
     match graph.nodes.get(&tgid).map(|node| &node.state) {
@@ -390,7 +397,7 @@ pub(crate) fn create_posix_timer(
     clock: PosixTimerClock,
     notification: PosixTimerNotification,
 ) -> Result<i32, TimerError> {
-    let creator = crate::execution::task::current_task().ok_or(TimerError::NotFound)?;
+    let creator = crate::task::current_task().ok_or(TimerError::NotFound)?;
     let (notification, target) = match notification {
         PosixTimerNotification::Thread { tid, signal, value } => {
             let internal = creator.resolve_pid(tid).ok_or(TimerError::NotFound)?;

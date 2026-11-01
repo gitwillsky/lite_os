@@ -3,16 +3,16 @@ use alloc::sync::Arc;
 use super::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(in crate::execution::task::process_table) enum JobControlState {
+pub(in crate::task::process_table) enum JobControlState {
     Running,
     Stopping(usize),
     Stopped,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub(in crate::execution::task::process_table) struct ChildEvents {
-    pub(in crate::execution::task::process_table) stopped: Option<usize>,
-    pub(in crate::execution::task::process_table) continued: bool,
+pub(in crate::task::process_table) struct ChildEvents {
+    pub(in crate::task::process_table) stopped: Option<usize>,
+    pub(in crate::task::process_table) continued: bool,
 }
 
 pub(super) struct JobNotification {
@@ -34,7 +34,7 @@ enum JobEvent {
 ///
 /// # Returns
 ///
-/// SIGCONT 恢复当前 Thread 后返回；停止期间不占用 CPU。
+/// 已向全部线程发出停止请求时返回；调用者随后在安全点停驻，SIGCONT 后继续。
 pub(crate) fn stop_current_process(signal: usize) {
     let task = current_task().expect("group stop requires current task");
     let tgid = task.tgid();
@@ -49,11 +49,11 @@ pub(crate) fn stop_current_process(signal: usize) {
         };
         node.job_control = JobControlState::Stopping(signal);
         for thread in threads.values() {
-            crate::execution::task::processor::request_task_stop(thread);
+            crate::task::processor::request_task_stop(thread);
         }
     }
+    // 调用者（返回用户态前的安全点循环）随即进入 `stop_point` 停驻，并在那里交付完成通知。
     drop(task);
-    crate::execution::task::suspend_current_and_run_next();
 }
 
 /// 最后一个 StopPending Thread 的 post-switch handoff 完成后提交 parent-visible stopped event。
@@ -65,7 +65,7 @@ pub(crate) fn stop_current_process(signal: usize) {
 /// # Returns
 ///
 /// stop 尚未完成或已通知时不执行操作。
-pub(in crate::execution::task::process_table) fn complete_process_stop(tgid: usize) {
+pub(in crate::task::process_table) fn complete_process_stop(tgid: usize) {
     let notification = {
         let Some((mut child_records, mut graph)) =
             lock_child_notifications(tgid, ChildNotificationScope::Parent)
@@ -146,7 +146,7 @@ pub(super) fn continue_process_locked(
         if super::super::ptrace::is_stopped(graph, thread.tid()) {
             continue;
         }
-        crate::execution::task::processor::continue_stopped_task(thread.clone());
+        crate::task::processor::continue_stopped_task(thread.clone());
     }
     event.and_then(|event| {
         let info = match event {
@@ -175,7 +175,7 @@ pub(super) fn resume_for_fatal_signal_locked(graph: &mut ProcessGraph, tgid: usi
         panic!("fatal-resumed process stopped being live");
     };
     for thread in threads.values() {
-        crate::execution::task::processor::continue_stopped_task(thread.clone());
+        crate::task::processor::continue_stopped_task(thread.clone());
     }
 }
 
@@ -210,7 +210,7 @@ pub(super) fn publish_job_notification(notification: Option<JobNotification>) {
     let mut waiters = notification.waiters;
     while let Some((&tid, _)) = waiters.first_key_value() {
         let waiter = waiters.remove(&tid).expect("staged child waiter");
-        crate::execution::task::processor::wake_child_task(waiter, WaitResult::Woken);
+        crate::task::processor::wake_child_task(waiter, WaitResult::Woken);
     }
     if let Some(wake) = notification.signal_wake {
         wake.publish();

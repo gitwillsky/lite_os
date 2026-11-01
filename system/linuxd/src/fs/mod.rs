@@ -24,10 +24,9 @@ pub(crate) use write_access::{InodeAccessLease, InodeWriteAccess};
 mod block_claim;
 mod block_ioctl;
 mod block_node;
-mod swap;
-pub(crate) use swap::{SwapSource, prepare_swap_storage};
 mod anonymous;
 pub(crate) mod chardev;
+pub(crate) use chardev::CompletionNotify;
 mod devfs;
 pub(crate) mod devnode;
 mod devnum;
@@ -69,7 +68,6 @@ mod sysfs_net;
 mod tmpfs;
 mod vfs;
 
-pub(crate) use crate::devices::block::CompletionNotify;
 pub(crate) use anonymous::{anonymous_opened, pipe_opened, socket_opened};
 pub(crate) use block_node::BlockNode;
 pub(crate) use directory::{
@@ -80,7 +78,7 @@ pub(crate) use fifo::{FifoAccess, FifoOpenError, open as open_fifo};
 mod storage_open;
 pub(crate) use inode::{
     DataBacking, FineTimes, Inode, InodeMetadata, InodeOpen, InodeOpenError, InodeType, LinkTarget,
-    StorageRead, StorageStep, StorageWriter,
+    StorageWriter,
 };
 pub(crate) use inotify::{
     IN_ACCESS, IN_ATTRIB, IN_CLOEXEC, IN_CLOSE_NOWRITE, IN_CLOSE_WRITE, IN_CREATE, IN_DELETE,
@@ -96,7 +94,7 @@ pub(crate) use mount::{
     unmount, unmount_root_read_only,
 };
 pub(crate) use page_cache::{
-    NowaitRead, ReadStep, RegularFile, RegularFileWrite, allocate, mapping,
+    RegularFile, RegularFileWrite, allocate, mapping,
     statistics as page_cache_statistics, sync_all, sync_inode, truncate,
 };
 pub(crate) use permission::{

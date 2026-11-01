@@ -3,7 +3,7 @@ use alloc::{
     boxed::Box,
     sync::{Arc, Weak},
 };
-use spin::Mutex;
+use crate::sync::Mutex;
 use syscall_abi::errno;
 
 use super::{
@@ -12,7 +12,7 @@ use super::{
     wait::Waiter,
 };
 use crate::{
-    execution::task::TaskControlBlock,
+    task::TaskControlBlock,
     file::{OpenFileDescription, OpenFileKind},
     fs::chardev::{PendingCommand, UringCommand},
     syscall::device::TaskUserMemory,

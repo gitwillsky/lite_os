@@ -5,7 +5,7 @@ use crate::fs::{
     CreateMetadata, FileSystemError, InodeMetadata, InodeType, OwnerModeChange,
     permission::OwnerModeState,
 };
-use spin::Mutex;
+use crate::sync::Mutex;
 
 struct MetadataState {
     owner: OwnerModeState,
@@ -83,5 +83,5 @@ impl Metadata {
     }
 }
 fn now_seconds() -> u64 {
-    crate::execution::timer::get_realtime_ns() / 1_000_000_000
+    crate::time::get_realtime_ns() / 1_000_000_000
 }

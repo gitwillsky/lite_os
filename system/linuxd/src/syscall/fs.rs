@@ -1,4 +1,4 @@
-use crate::execution::sync::WaitResult;
+use crate::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 use core::mem;
 
@@ -13,9 +13,7 @@ pub(crate) mod mount;
 mod namespace;
 mod open;
 mod pathname;
-mod swap;
 pub(crate) mod xattr;
-pub(crate) use swap::{sys_swapoff, sys_swapon};
 mod readlink;
 pub(crate) mod statistics;
 pub(crate) mod statx;
@@ -25,7 +23,6 @@ pub(crate) use fcntl::sys_fcntl;
 pub(crate) use flock::sys_flock;
 pub(crate) use inotify::{sys_inotify_add_watch, sys_inotify_init1, sys_inotify_rm_watch};
 pub(in crate::syscall) use io::{
-    AsyncPositionedRead, AsyncReadStep, begin_current_position_read, begin_positioned_read,
     check_readable, check_writable, import_iovecs, perform_read, perform_write, positioned_read,
     positioned_write,
 };
@@ -47,7 +44,7 @@ pub(in crate::syscall) use statx::{
 };
 
 use crate::{
-    execution::task::{
+    task::{
         TaskControlBlock, current_task, send_kernel_thread_signal, send_thread_signal,
     },
     file::{OpenFileDescription, OpenFileKind},
@@ -188,7 +185,7 @@ pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
             task.tgid(),
             task.tid(),
             syscall_abi::signal::SIGXFSZ,
-            crate::execution::task::PendingSignal::kernel(),
+            crate::task::PendingSignal::kernel(),
         )
         .expect("current ftruncate caller must exist");
         return -errno::EFBIG;
@@ -250,7 +247,7 @@ pub(crate) fn sys_truncate(path: *const u8, size: i64) -> isize {
             task.tgid(),
             task.tid(),
             syscall_abi::signal::SIGXFSZ,
-            crate::execution::task::PendingSignal::kernel(),
+            crate::task::PendingSignal::kernel(),
         )
         .expect("current truncate caller must exist");
         return -errno::EFBIG;
@@ -332,7 +329,7 @@ pub(crate) fn sys_fallocate(fd: usize, mode: usize, offset: i64, length: i64) ->
             task.tgid(),
             task.tid(),
             syscall_abi::signal::SIGXFSZ,
-            crate::execution::task::PendingSignal::kernel(),
+            crate::task::PendingSignal::kernel(),
         )
         .expect("current fallocate caller must exist");
         return -errno::EFBIG;
@@ -570,7 +567,7 @@ pub(crate) fn sys_utimensat(
     };
     let inode = opened.inode();
 
-    let now = crate::execution::timer::get_realtime_ns() / 1_000_000_000;
+    let now = crate::time::get_realtime_ns() / 1_000_000_000;
     let owner_only =
         encoded_times.is_some_and(|values| !values.iter().all(|value| value.tv_nsec == UTIME_NOW));
     let values = if let Some(encoded) = encoded_times {

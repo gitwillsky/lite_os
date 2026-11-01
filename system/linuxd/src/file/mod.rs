@@ -19,7 +19,7 @@ pub(crate) use timerfd::{TimerError, TimerFd, TimerFdBackend, TimerFdRead, Timer
 
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicUsize;
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use position::FilePosition;
 pub(crate) use position::PositionError;
@@ -157,13 +157,8 @@ impl OpenFileDescription {
             return Err(FileSystemError::PermissionDenied);
         }
         let writable = self.status_flags() & crate::fs::O_ACCMODE != crate::fs::O_RDONLY;
-        if shared && write {
-            if !writable {
-                return Err(FileSystemError::AccessDenied);
-            }
-            if self.inode_ref().is_swap_file() {
-                return Err(FileSystemError::TextBusy);
-            }
+        if shared && write && !writable {
+            return Err(FileSystemError::AccessDenied);
         }
         crate::fs::mapping(self.inode_ref(), Some(self), writable, shared, write)
     }
@@ -299,11 +294,6 @@ impl OpenFileDescription {
         operation: impl FnOnce(&mut u64) -> R,
     ) -> Result<R, PositionError> {
         self.position.with(operation)
-    }
-
-    /// 不等待的 [`OpenFileDescription::with_position`]：position 被占用时返回 `None`。
-    pub(crate) fn try_with_position<R>(&self, operation: impl FnOnce(&mut u64) -> R) -> Option<R> {
-        self.position.try_with(operation)
     }
 
     /// 返回该 OFD 共享 position 的瞬时快照，不推进 position。

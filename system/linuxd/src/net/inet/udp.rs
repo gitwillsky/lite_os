@@ -10,11 +10,8 @@ use smoltcp::{
 use super::{
     EndpointState, InetSocket, InetSocketOptions, NetworkStack, from_ip, ipv4, port_error,
 };
-use crate::{
-    fallible_tree::FallibleMap,
-    ipc::ReceiveBuffer,
-    net::{InetAddress, InternetPacketInfo, InternetSendPacketInfo, SocketError, SocketPollState},
-};
+use crate::{ipc::ReceiveBuffer, net::{InetAddress, InternetPacketInfo, InternetSendPacketInfo, SocketError, SocketPollState}};
+use fallible_tree::FallibleMap;
 
 // Linux SOCK_BINDADDR_LOCK/SOCK_BINDPORT_LOCK；只冻结用户 bind policy，不另存 tuple。
 const BIND_ADDRESS: u8 = 1;

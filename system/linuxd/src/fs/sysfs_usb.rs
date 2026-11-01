@@ -12,7 +12,7 @@ pub(crate) trait UsbSysfsSource: Send + Sync {
 }
 // OWNER: composition root 只装配一次；source 只有注册表访问权，不拥有 USB 连接状态。
 // 缺少来源时目录为空；重复发布必须失败，避免旧 inode 被重新绑定到另一份注册表。
-static SOURCE: spin::Once<Arc<dyn UsbSysfsSource>> = spin::Once::new();
+static SOURCE: native_runtime::sync::Once<Arc<dyn UsbSysfsSource>> = native_runtime::sync::Once::new();
 /// 注册唯一 USB sysfs 来源；重复装配返回 AlreadyExists。
 pub(crate) fn register_source(source: Arc<dyn UsbSysfsSource>) -> Result<(), FileSystemError> {
     if SOURCE.get().is_some() {

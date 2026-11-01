@@ -1,6 +1,4 @@
-use crate::memory::{
-    FrameAllocationClass, FrameTracker, PAGE_SIZE, PhysicalAddress, alloc_contiguous,
-};
+use crate::memory::PAGE_SIZE;
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU16, Ordering};
@@ -97,12 +95,50 @@ pub(super) struct VirtQueue {
     failed: bool,
     // OWNER: driver-private descriptor shadow；device 可写的 descriptor table 不作为 free-list 真相源。
     desc_shadow: Vec<VirtqDesc>,
-    _frame_tracker: FrameTracker,
+    _ring: RingStorage,
     addresses: VirtQueueAddresses,
 }
 
+/// 三段 ring 所在的内存：生产路径是固定在设备 BTI 上的连续 VMO；host 单元测试用普通分配
+/// （设备地址等于虚拟地址，测试从不把它交给设备）。
+#[cfg(not(test))]
+type RingStorage = crate::memory::DeviceBacking;
+#[cfg(test)]
+type RingStorage = Vec<u64>;
+
+/// ring 内存的 CPU 虚拟基址与设备地址基址。
+#[cfg(not(test))]
+fn allocate_ring(pages: usize, bti: &native_runtime::Bti) -> Option<(RingStorage, usize, u64)> {
+    use crate::memory::DeviceBacking;
+    let ring = DeviceBacking::try_allocate_contiguous(pages, bti)?;
+    // 连续 VMO 在恒等映射与 IOMMU 下都只产生一个设备地址区段；三段地址由同一基址加偏移得到。
+    let extents = ring.pin(bti).ok()?;
+    let [extent] = extents else {
+        return None;
+    };
+    let device = extent.device_address;
+    // ring 只经本队列的裸指针访问；构造完成前设备尚未得到地址。
+    let base = ring.cpu_address()?;
+    Some((ring, base, device))
+}
+
+#[cfg(test)]
+fn allocate_ring(pages: usize, _bti: &()) -> Option<(RingStorage, usize, u64)> {
+    let mut ring = Vec::new();
+    ring.try_reserve_exact(pages * PAGE_SIZE / 8).ok()?;
+    ring.resize(pages * PAGE_SIZE / 8, 0);
+    let base = ring.as_mut_ptr() as usize;
+    Some((ring, base, base as u64))
+}
+
+#[cfg(not(test))]
+type QueueBti = native_runtime::Bti;
+#[cfg(test)]
+type QueueBti = ();
+
 impl VirtQueue {
-    pub(super) fn new(size: u16) -> Option<Self> {
+    /// 分配一条 `size` 项的 split virtqueue，ring 内存固定在设备的 `bti` 上。
+    pub(super) fn new(size: u16, bti: &QueueBti) -> Option<Self> {
         // VirtIO 1.x split virtqueue 的 queue size 必须是非零 2 的幂。
         if !size.is_power_of_two() {
             error!("invalid virtqueue size {size}: must be a non-zero power of two");
@@ -113,7 +149,7 @@ impl VirtQueue {
         desc_shadow.try_reserve_exact(size as usize).ok()?;
 
         // VirtIO 1.x §2.7 split virtqueue 三段分别对齐 descriptor 16、driver 2、device 4 byte；
-        // transport 独立发布三段物理地址，因此不采用 legacy 单一 PFN 的 queue_align 布局。
+        // transport 独立发布三段设备地址，因此不采用 legacy 单一 PFN 的 queue_align 布局。
         // 1. descriptor table 位于页首，满足 16-byte 对齐；
         // 2. driver area：flags + idx + ring[size] + used_event，紧随 descriptor table（16 的倍数）；
         // 3. device area：flags + idx + ring[size] of 8-byte elem + avail_event，向上对齐到 4。
@@ -123,17 +159,14 @@ impl VirtQueue {
         let used_offset = (avail_offset + avail_size).next_multiple_of(4);
         let used_size = 2 + 2 + 8 * size as usize + 2;
         let pages_needed = (used_offset + used_size).div_ceil(PAGE_SIZE);
-        let frame_tracker = alloc_contiguous(pages_needed, FrameAllocationClass::KernelCritical)?;
-
-        let base_pa = PhysicalAddress::from(frame_tracker.ppn.as_usize() * PAGE_SIZE);
-        let base_va = base_pa.as_mut_ptr::<u8>() as usize;
+        let (ring, base_va, base_device) = allocate_ring(pages_needed, bti)?;
 
         let desc = base_va as *mut VirtqDesc;
         let avail = (base_va + avail_offset) as *mut VirtqAvail;
         let used = (base_va + used_offset) as *mut VirtqUsed;
 
-        // SAFETY: 连续帧数按 `total_size` 向上取整，desc/avail/used 的偏移均在该区间内；
-        // frame tracker 在队列生命周期内保持页存活，初始化期间设备尚未获得 PFN，不存在并发 DMA。
+        // SAFETY: ring 页数按总大小向上取整，desc/avail/used 的偏移均在该区间内；
+        // ring 在队列生命周期内保持页存活，初始化期间设备尚未获得地址，不存在并发 DMA。
         unsafe {
             for i in 0..size {
                 let shadow_desc = VirtqDesc {
@@ -173,20 +206,20 @@ impl VirtQueue {
             pending_used: None,
             failed: false,
             desc_shadow,
-            _frame_tracker: frame_tracker,
+            _ring: ring,
             addresses: VirtQueueAddresses {
-                descriptor: base_pa.as_usize() as u64,
-                driver: (base_pa.as_usize() + avail_offset) as u64,
-                device: (base_pa.as_usize() + used_offset) as u64,
+                descriptor: base_device,
+                driver: base_device + avail_offset as u64,
+                device: base_device + used_offset as u64,
             },
         })
     }
 
-    /// 返回 MMIO v2 queue publication 所需的三段物理地址。
+    /// 返回 queue publication 所需的三段设备地址。
     ///
     /// # Returns
     ///
-    /// descriptor、available 与 used ring 的稳定物理基址。
+    /// descriptor、available 与 used ring 的稳定设备地址。
     pub(super) fn addresses(&self) -> VirtQueueAddresses {
         self.addresses
     }
@@ -204,7 +237,7 @@ impl VirtQueue {
     fn write_desc(&mut self, index: u16) {
         let index = index as usize;
         // SAFETY: 所有调用者的 index 来自长度为 `size` 的 free chain，
-        // desc 指向 `_frame_tracker` 保持存活的描述符表。
+        // desc 指向 `_ring` 保持存活的描述符表。
         unsafe {
             (*self.desc.add(index)) = self.desc_shadow[index];
         }
@@ -296,7 +329,7 @@ impl VirtQueue {
 
         // 2. 只提升一次 shared idx，使 device 首次观察该 transaction 时两条 command 已同时可见。
         self.avail_idx = self.avail_idx.wrapping_add(heads.len() as u16);
-        // SAFETY: `avail` 指向 `_frame_tracker` 保活的 queue pages；producer 由 `&mut self`
+        // SAFETY: `avail` 指向 `_ring` 保活的 queue pages；producer 由 `&mut self`
         // 串行化。Release store 在暴露新 idx 前发布 descriptor table 与整个 ring batch。
         unsafe {
             (*self.avail).idx.store(self.avail_idx, Ordering::Release);
@@ -316,7 +349,7 @@ impl VirtQueue {
         if self.failed || self.pending_used.is_some() {
             return Err(());
         }
-        // SAFETY: used ring 完整位于 `_frame_tracker` 保持存活的共享页内；
+        // SAFETY: used ring 完整位于 `_ring` 保持存活的共享页内；
         // Acquire 读 used.idx 后才读取对应 ring slot，slot 通过 power-of-two size 限制。
         unsafe {
             let used_idx = (*self.used).idx.load(Ordering::Acquire);
@@ -390,7 +423,7 @@ impl VirtQueue {
     ///
     /// device 发布的 used index 领先当前 consumer 时返回 `true`。
     pub(super) fn has_used(&self) -> bool {
-        // SAFETY: used ring 在 `_frame_tracker` 生命周期内有效；Acquire 与 device 的
+        // SAFETY: used ring 在 `_ring` 生命周期内有效；Acquire 与 device 的
         // used publication 配对，本方法不读取 ring payload。
         unsafe { (*self.used).idx.load(Ordering::Acquire) != self.last_used_idx }
     }
@@ -461,7 +494,7 @@ impl VirtQueue {
     }
 }
 
-// SAFETY: 队列指针都指向 `_frame_tracker` 独占且在对象销毁前有效的连续页；
+// SAFETY: 队列指针都指向 `_ring` 独占且在对象销毁前有效的连续页；
 // 所有可变队列操作都要求 `&mut self`，设备实例又使用 `Mutex<VirtQueue>` 串行化访问。
 unsafe impl Send for VirtQueue {}
 

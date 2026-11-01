@@ -24,6 +24,11 @@ pub(crate) trait ExecutableSource: Send + Sync {
     ///
     /// source I/O error、越界或 short read 返回错误。
     fn read_exact_at(&self, offset: usize, buffer: &mut [u8]) -> Result<(), ()>;
+
+    /// 文件的页缓存接口：提供时段映射共享缓存页（写时复制），否则段内容被复制进匿名对象。
+    fn shared_mapping(&self) -> Option<Arc<dyn super::SharedFileMapping>> {
+        None
+    }
 }
 
 /// ELF object type；只保留当前 loader 接受的 ET_EXEC 与 ET_DYN。

@@ -1,7 +1,7 @@
 //! Linux `inotify_init1`、`inotify_add_watch` 与 `inotify_rm_watch`。
 
 use crate::{
-    execution::task::current_task,
+    task::current_task,
     file::{OpenFileKind, PreparedDeviceDescription},
     fs::{
         IN_CLOEXEC, IN_NONBLOCK, InitError, InodeType, Inotify, WatchError, add_watch_flags, vfs,

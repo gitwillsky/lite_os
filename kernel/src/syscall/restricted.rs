@@ -79,6 +79,7 @@ pub(super) fn enter(call: &Call<'_>) -> Outcome {
         context,
         normal,
     }));
+    call.thread.set_restricted_accounting(true);
     Outcome::Preserve
 }
 
@@ -106,6 +107,7 @@ pub(super) fn exit(
 ) -> bool {
     let registers = thread.with_user_context(|context| context.save_registers());
     owner.set_mode(Mode::Normal);
+    thread.set_restricted_accounting(false);
     let state = RestrictedState {
         registers,
         exception: exception.unwrap_or_default(),

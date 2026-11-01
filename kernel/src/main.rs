@@ -21,7 +21,6 @@ mod boot;
 mod bootstrap;
 mod crash;
 mod execution;
-mod fallible_tree;
 mod id;
 mod iommu;
 mod lang_item;
@@ -49,6 +48,7 @@ fn kernel_main(context: execution::entry::BootContext) -> ! {
     execution::cpu::initialize(platform::hardware_cpu_ids(), context.hardware_cpu());
     arch::mmu::initialize_asid_allocator(execution::cpu::count());
     execution::deferred::initialize(execution::cpu::count());
+    execution::barrier::initialize();
     crash::initialize();
     info!(
         "logical CPU topology initialized: count={}, boot={:?}",

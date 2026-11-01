@@ -2,7 +2,7 @@
 use crate::namespace::{PidAllocationError, PidKey, PidNamespace, PidReservation};
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::mem::MaybeUninit;
-use spin::Mutex;
+use crate::sync::Mutex;
 
 struct Number {
     namespace: Arc<PidNamespace>,

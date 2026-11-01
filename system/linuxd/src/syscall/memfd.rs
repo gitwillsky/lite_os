@@ -1,5 +1,5 @@
 use crate::{
-    execution::task::current_task,
+    task::current_task,
     file::PreparedFileDescription,
     fs::{MemFile, O_RDWR},
     memory::UserAccessError,

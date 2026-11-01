@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    execution::task::PollWaitKey,
+    task::PollWaitKey,
     file::{Epoll, OpenFileDescription, OpenFileKind},
     net::{SocketWaitGuard, SocketWaitSource},
 };
@@ -110,7 +110,7 @@ impl PollWaitKeys {
             OpenFileKind::SignalFd(_) => {
                 use crate::file::FileReadinessContext;
                 if let Some(source) =
-                    crate::execution::task::current_task().and_then(|task| task.signal_source())
+                    crate::task::current_task().and_then(|task| task.signal_source())
                 {
                     self.guards.try_reserve(1).map_err(|_| ())?;
                     self.push(PollWaitKey::signal(source.identity(), events))?;

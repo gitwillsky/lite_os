@@ -1,5 +1,4 @@
 mod address_space_id;
-pub(crate) mod mmio;
 
 #[cfg(target_arch = "aarch64")]
 mod aarch64;
@@ -85,12 +84,7 @@ pub(crate) enum UserContextPlacement {
     AddressSpace,
 }
 
-pub(crate) use selected::{
-    before_mmio_write, read_mmio_u32, read_mmio_u64, secondary_entry, write_mmio_u32,
-    write_mmio_u64,
-};
-#[cfg(target_arch = "riscv64")]
-pub(crate) use selected::{read_mmio_u8, write_mmio_u8};
+pub(crate) use selected::secondary_entry;
 
 /// Local interrupt mechanism selected at compile time.
 pub(crate) mod interrupt {

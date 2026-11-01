@@ -42,7 +42,7 @@ static STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 // OWNER: 每颗 logical CPU 一份停止快照，在 `initialize` 按已发布 topology 分配一次；panic 路径不能
 // 分配，缺失时只能在转储里写“无快照”。
 static SNAPSHOTS: Once<Box<[CpuSnapshot]>> = Once::new();
-// OWNER: `panic=` 启动参数：0 停在蓝屏，正数为秒数后重启，负数立即重启。由 boot CPU 在命令行解析后
+// OWNER: `panic=` 启动参数：0 停机，正数为秒数后重启，负数立即重启。由 boot CPU 在命令行解析后
 // 写入一次；默认 0，缺失时坏掉的机器会在无人值守时反复重启而不留下可读现场。
 static REBOOT_SECONDS: AtomicI32 = AtomicI32::new(0);
 
@@ -73,7 +73,7 @@ pub(crate) fn initialize() {
 ///
 /// # Parameters
 ///
-/// - `seconds`: `panic=` 的值；`None` 保持默认（停在蓝屏）。
+/// - `seconds`: `panic=` 的值；`None` 保持默认（停机）。
 pub(crate) fn configure(seconds: Option<i32>) {
     if let Some(seconds) = seconds {
         REBOOT_SECONDS.store(seconds, Ordering::Relaxed);
@@ -168,11 +168,10 @@ impl Sink {
 /// kernel panic 的入口，由 `#[panic_handler]` 调用。
 ///
 /// 1. 关本地中断并争夺 panic 所有权；失败者（其他 CPU 或本 CPU 嵌套 panic）直接停机。
-/// 2. 停止其余 CPU，使 kmsg 环、记录区与帧缓冲不再被并发修改。
+/// 2. 停止其余 CPU，使 kmsg 环与记录区不再被并发修改。
 /// 3. 依次写入 panic 原因 + 回溯、各 CPU 位置、kmsg 尾部；每段写完即提交，后续步骤再 fault
 ///    也不会丢掉前面的现场。
-/// 4. 在显示设备上绘制蓝屏。
-/// 5. 按 `panic=` 策略停在蓝屏或重启；重启走 PSCI/SBI warm-reset 路径，RAM 中的记录随之保留。
+/// 4. 按 `panic=` 策略停机或重启；重启走 PSCI/SBI warm-reset 路径，RAM 中的记录随之保留。
 pub(crate) fn handle(info: &PanicInfo) -> ! {
     crate::arch::interrupt::disable_for_fail_stop();
     let me = if cpu::is_initialized() {

@@ -1,7 +1,8 @@
 //! VirtIO PCI function selection and vendor-capability decoding; PCI resources belong to drivers::pci.
 
 use super::PciTransport;
-use crate::{arch::mmio::MmioBus, drivers::pci::Bar};
+use crate::drivers::pci::Bar;
+use mmio::MmioBus;
 
 const CONFIG_BYTES: usize = 4096;
 const VENDOR_ID: usize = 0x00;
@@ -28,6 +29,7 @@ pub(super) struct VirtioPciFunction {
     pub(super) device_id: u32,
     pub(super) interrupt: u32,
     pub(super) transport: PciTransport,
+    pub(super) bti: &'static native_runtime::Bti,
 }
 
 pub(super) fn find_console() -> Option<VirtioPciFunction> {
@@ -51,6 +53,7 @@ pub(super) fn find_console() -> Option<VirtioPciFunction> {
             device_id,
             interrupt: function.interrupt?,
             transport: capabilities(config, &function.bars)?,
+            bti: function.bti,
         });
     }
     None
@@ -112,7 +115,7 @@ fn capability_bus(bars: &[Option<Bar>; 6], capability: Capability) -> Option<Mmi
     }
     let physical = bar.address.checked_add(capability.offset)?;
     MmioBus::new(
-        crate::platform::map_device_window(physical),
+        crate::platform::map_device_window(physical, capability.length),
         capability.length,
     )
     .ok()

@@ -1,9 +1,9 @@
 //! 可共享文件表的单 owner；Thread handle 与表内容的生命周期相互独立。
 use alloc::sync::Arc;
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use super::TaskControlBlock;
-use crate::{execution::sync::TaskMutex, file::FileDescriptorTable, fs::vfs, memory::MemoryError};
+use crate::{sync::TaskMutex, file::FileDescriptorTable, fs::vfs, memory::MemoryError};
 
 /// Thread 私有的可脱离 handle；Process 仅别名保活原 leader 的同一 handle。
 pub(super) type FileTableHandle = Arc<Mutex<Option<Arc<FileTableOwner>>>>;
@@ -106,7 +106,7 @@ impl FileTableOwner {
     /// 取得 table guard 后立即归还 waiter；closure 不得重新取同一表或完成 FD 最终析构。
     fn with_table<R>(&self, operation: impl FnOnce(&mut FileDescriptorTable) -> R) -> R {
         let caller =
-            crate::execution::task::current_task().expect("file table requires current Thread");
+            crate::task::current_task().expect("file table requires current Thread");
         let mut preparation = caller
             .file_wait()
             .lock()
@@ -144,12 +144,12 @@ pub(super) fn try_file_handle(owner: Arc<FileTableOwner>) -> Result<FileTableHan
 impl TaskControlBlock {
     /// pidfd_getfd 在目标现有 exec guard 下执行 native REALCREDS 授权和 actual file-table capture。
     /// OOM/interrupt 不进入 descriptor publication；退出目标返回 ESRCH，无效目标 fd 为 EBADF。
-    pub(in crate::execution::task) fn capture_pidfd_file(
+    pub(in crate::task) fn capture_pidfd_file(
         &self,
         caller: &TaskControlBlock,
         descriptor: usize,
-    ) -> Result<Arc<crate::file::OpenFileDescription>, crate::execution::task::PidFdError> {
-        use crate::execution::task::PidFdError;
+    ) -> Result<Arc<crate::file::OpenFileDescription>, crate::task::PidFdError> {
+        use crate::task::PidFdError;
         if self.is_kernel_thread() {
             return Err(if caller.may_inspect_thread_real(self) {
                 PidFdError::NotFound
@@ -161,13 +161,13 @@ impl TaskControlBlock {
             .credential_guard()
             .lock_killable()
             .map_err(|error| match error {
-                crate::execution::sync::TaskMutexLockError::OutOfMemory => PidFdError::NoMemory,
-                crate::execution::sync::TaskMutexLockError::Interrupted => PidFdError::Interrupted,
+                crate::sync::TaskMutexLockError::OutOfMemory => PidFdError::NoMemory,
+                crate::sync::TaskMutexLockError::Interrupted => PidFdError::Interrupted,
             })?;
         if !caller.may_inspect_thread_real(self) {
             return Err(PidFdError::Permission);
         }
-        if !crate::execution::task::process_table::pidfd::file_accessible(self) {
+        if !crate::task::process_table::pidfd::file_accessible(self) {
             return Err(PidFdError::NotFound);
         }
         let table = self.file_table().ok_or(PidFdError::NotFound)?;
@@ -234,7 +234,7 @@ impl TaskControlBlock {
     }
 
     /// 原 Thread 自己的实际文件表；exit_files 后返回空，不借其他 Thread 的表。
-    pub(in crate::execution::task) fn proc_file_descriptors(
+    pub(in crate::task) fn proc_file_descriptors(
         &self,
     ) -> Result<alloc::vec::Vec<crate::fs::ProcFileDescriptorSnapshot>, crate::fs::FileSystemError>
     {
@@ -245,7 +245,7 @@ impl TaskControlBlock {
     }
 
     /// fdinfo 只捕获该 Thread 的实际文件表，并在 guard 外读取 OFD；退出后不借 sibling 的表。
-    pub(in crate::execution::task) fn proc_file_information(
+    pub(in crate::task) fn proc_file_information(
         &self,
         fd: usize,
         view: &crate::namespace::PidNamespace,
@@ -260,7 +260,7 @@ impl TaskControlBlock {
     }
 
     /// proc Thread FDSize 读取自身 handle，退出已退休时返回0；不借用 Process leader 的表。
-    pub(in crate::execution::task) fn file_table_capacity(&self) -> usize {
+    pub(in crate::task) fn file_table_capacity(&self) -> usize {
         self.file_table()
             .map_or(0, |owner| owner.with_table(|files| files.slot_capacity()))
     }
@@ -304,7 +304,7 @@ impl TaskControlBlock {
 // Process 生命周期内唯一投影；graph/proc observer 不保活任何 TCB。
 impl super::Process {
     /// zombie leader 的 outer handle 仍属于实际 Process；退休为空目录，observer 不保活资源。
-    pub(in crate::execution::task) fn proc_file_descriptors(
+    pub(in crate::task) fn proc_file_descriptors(
         &self,
     ) -> Result<alloc::vec::Vec<crate::fs::ProcFileDescriptorSnapshot>, crate::fs::FileSystemError>
     {

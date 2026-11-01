@@ -21,7 +21,7 @@ mod uts;
 use alloc::sync::Arc;
 pub(crate) use id_map::IdMap;
 pub(crate) use reference::{NamespaceOwner, NamespaceReference, NamespaceSelector, NamespaceType};
-use spin::Once;
+use native_runtime::sync::Once;
 pub(crate) use time::{TimeClock, TimeNamespace, TimeOffset, TimeOffsetError, TimeOffsets};
 pub(crate) use user::{NamespaceAuthority, UserNamespace, UserNamespaceMap};
 pub(crate) use uts::UtsNamespace;

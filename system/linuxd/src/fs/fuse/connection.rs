@@ -12,7 +12,8 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 use syscall_abi::{errno, fuse};
 
 use super::{
@@ -20,7 +21,7 @@ use super::{
     protocol::{self, Caller, Fields, Reader},
 };
 use crate::{
-    execution::sync::{TaskEvent, WaitResult},
+    sync::{TaskEvent, WaitResult},
     fs::{
         CurrentRequester, FileSystemError,
         chardev::{DeviceError, UserFault, UserInput, UserOutput},
@@ -183,18 +184,18 @@ impl ReplyShape {
 
 enum Phase {
     Queued {
-        cpu: Option<crate::execution::cpu::CpuId>,
+        cpu: Option<crate::cpu::CpuId>,
     },
     Sent {
         device: u64,
     },
     /// 已认领但用户复制尚未成功；不能先发 INTERRUPT，守护进程还不知道请求。
     RingCopying {
-        cpu: crate::execution::cpu::CpuId,
+        cpu: crate::cpu::CpuId,
         entry: u64,
     },
     Ring {
-        cpu: crate::execution::cpu::CpuId,
+        cpu: crate::cpu::CpuId,
         entry: u64,
     },
     Done(Result<Vec<u8>, FileSystemError>),

@@ -1,10 +1,10 @@
 //! 每个 Thread 独立的 mm handle；其 root Arc 是实际映射 user，而非结构观察引用。
 use alloc::sync::Arc;
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use super::{AddressSpace, TaskControlBlock};
 use crate::memory::MemoryError;
-use crate::{execution::sync::TaskMutexWaitPreparation, memory::MemorySet};
+use crate::{sync::TaskMutexWaitPreparation, memory::MemorySet};
 
 mod membership;
 pub(super) use membership::MmMembership;
@@ -71,7 +71,7 @@ impl TaskControlBlock {
         }
     }
     /// namespace 的 single-threaded 检查先在 graph 锁外 pin 调用者的实际 mm。
-    pub(in crate::execution::task) fn namespace_mm(&self) -> Option<Arc<AddressSpace>> {
+    pub(in crate::task) fn namespace_mm(&self) -> Option<Arc<AddressSpace>> {
         if self.is_kernel_thread() {
             None
         } else {
@@ -79,7 +79,7 @@ impl TaskControlBlock {
         }
     }
     /// graph 锁内仅借用 mm handle 比较，不 clone/drop mm user，不进入 memory mutation。
-    pub(in crate::execution::task) fn shares_namespace_mm(&self, mm: &Arc<AddressSpace>) -> bool {
+    pub(in crate::task) fn shares_namespace_mm(&self, mm: &Arc<AddressSpace>) -> bool {
         !self.is_kernel_thread()
             && self
                 .thread()
@@ -89,7 +89,7 @@ impl TaskControlBlock {
                 .is_some_and(|own| Arc::ptr_eq(own, mm))
     }
 
-    pub(in crate::execution::task) fn has_mm(&self) -> bool {
+    pub(in crate::task) fn has_mm(&self) -> bool {
         !self.is_kernel_thread() && self.thread().mm.lock().live().is_some()
     }
 

@@ -9,7 +9,7 @@ use super::{
     VirtIOBlockDevice, VirtIOConsoleDevice, VirtIOGpuDevice, VirtIOInputDevice,
     VirtIONetworkDevice, VirtIORngDevice, VirtIOSoundDevice, pci_discovery,
 };
-use crate::arch::mmio::MmioBus;
+use mmio::MmioBus;
 use crate::devices::model::{BootFramebuffer, DisplayDevice, InputDevice};
 use crate::platform::{VirtioMmioTransport, map_device_window, register_device_interrupt};
 
@@ -35,11 +35,6 @@ pub(crate) struct EarlyDisplay {
 }
 
 impl EarlyDisplay {
-    /// panic 蓝屏用的帧缓冲；与 DRM 是否接管无关，随时可用。
-    pub(crate) fn panic_framebuffer(&self) -> Arc<dyn crate::devices::model::PanicFramebuffer> {
-        self.device.clone()
-    }
-
     /// 启动期同步帧缓冲接口；DRM 绑定 completion work 之后它拒绝所有调用。
     pub(crate) fn framebuffer(&self) -> &dyn BootFramebuffer {
         &*self.device
@@ -60,7 +55,7 @@ impl EarlyDisplay {
 /// 已识别的 GPU adapter 初始化或 registry 发布失败时 fail-stop，与 [`bind_gpu`] 的既有语义一致。
 pub(crate) fn bind_display() -> Option<EarlyDisplay> {
     for transport in crate::platform::virtio_mmio_transports().iter() {
-        let base = map_device_window(transport.base_addr);
+        let base = map_device_window(transport.base_addr, transport.size);
         let device_id = MmioBus::new(base, transport.size)
             .ok()
             .and_then(|bus| bus.read_u32(0x08).ok());
@@ -102,7 +97,7 @@ fn bind_pci_console() {
         "PCI transport returned a non-console device"
     );
     let device =
-        VirtIOConsoleDevice::from_pci(function.transport).expect("virtio-console PCI init failed");
+        VirtIOConsoleDevice::from_pci(function.transport, function.bti).expect("virtio-console PCI init failed");
     publish_console(device, function.interrupt);
     info!("VirtIO console PCI transport on IRQ {}", function.interrupt);
 }
@@ -111,7 +106,7 @@ fn bind_mmio_transports(display: Option<&EarlyDisplay>) {
     let transports = crate::platform::virtio_mmio_transports();
     info!("Scanning {} VirtIO-MMIO transports", transports.len());
     for transport in transports.iter() {
-        let base = map_device_window(transport.base_addr);
+        let base = map_device_window(transport.base_addr, transport.size);
         let Some(device_id) = MmioBus::new(base, transport.size)
             .ok()
             .and_then(|bus| bus.read_u32(0x08).ok())

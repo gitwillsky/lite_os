@@ -6,7 +6,7 @@ use super::{
     write_address,
 };
 use crate::{
-    execution::task::{current_task, send_thread_signal},
+    task::{current_task, send_thread_signal},
     file::OpenFileDescription,
     net::{Socket, SocketIoDirection, SocketSendError},
     syscall::{
@@ -443,7 +443,7 @@ pub(in crate::syscall) fn write_vectors(
             nonblocking: nonblocking || ofd.status_flags() & O_NONBLOCK != 0,
             deadline: socket
                 .timeout(SocketIoDirection::Send)
-                .deadline(crate::execution::timer::get_time_ns()),
+                .deadline(crate::time::get_time_ns()),
             credentials: super::credentials::sender(task),
             packet_info: None,
         },
@@ -504,7 +504,7 @@ pub(crate) fn sys_sendmsg(fd: usize, message: usize, flags: usize) -> isize {
             nonblocking: flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0,
             deadline: socket
                 .timeout(SocketIoDirection::Send)
-                .deadline(crate::execution::timer::get_time_ns()),
+                .deadline(crate::time::get_time_ns()),
         },
         &iovecs,
         total_length,
@@ -558,7 +558,7 @@ pub(crate) fn sys_sendto(
             nonblocking: flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0,
             deadline: socket
                 .timeout(SocketIoDirection::Send)
-                .deadline(crate::execution::timer::get_time_ns()),
+                .deadline(crate::time::get_time_ns()),
         },
         &vectors,
         length,
@@ -596,7 +596,7 @@ pub(crate) fn sys_recvfrom(
     };
     let deadline = socket
         .timeout(SocketIoDirection::Receive)
-        .deadline(crate::execution::timer::get_time_ns());
+        .deadline(crate::time::get_time_ns());
     let nonblocking = flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0;
     loop {
         match socket.receive_message(&mut output, flags & MSG_PEEK != 0, false, nonblocking) {
@@ -653,7 +653,7 @@ pub(crate) fn sys_recvmsg(fd: usize, message: usize, flags: usize) -> isize {
     let nonblocking = flags & MSG_DONTWAIT != 0 || ofd.status_flags() & O_NONBLOCK != 0;
     let deadline = socket
         .timeout(SocketIoDirection::Receive)
-        .deadline(crate::execution::timer::get_time_ns());
+        .deadline(crate::time::get_time_ns());
     loop {
         match socket.receive_message(&mut output, flags & MSG_PEEK != 0, true, nonblocking) {
             Ok(received) => {

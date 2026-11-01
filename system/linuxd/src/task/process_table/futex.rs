@@ -1,5 +1,5 @@
 use super::*;
-use crate::execution::sync::TaskMutexWaitPreparation;
+use crate::sync::TaskMutexWaitPreparation;
 use crate::memory::{FutexKey, UserAccessError};
 
 /// futex WAIT 在 task layer 的精确结果分类。
@@ -115,7 +115,7 @@ pub(crate) fn futex_wait(
                     Err(result) => return futex_notification(result),
                 };
                 let prepared =
-                    super::context_switch::prepare_current_block(&task, arm, |arm, _| {
+                    crate::task::processor::prepare_current_block(&task, arm, |arm, _| {
                         WaitMembership::Futex(arm.arm())
                     });
                 return futex_notification(prepared.suspend());
@@ -145,7 +145,7 @@ fn futex_notification(result: WaitResult) -> Result<(), FutexWaitError> {
 /// # Returns
 ///
 /// 实际消费的 waiter 数；key 解析 fault 或非法 bitset 返回错误。
-pub(in crate::execution::task) fn futex_wake_with_key(
+pub(in crate::task) fn futex_wake_with_key(
     count: usize,
     bitset: u32,
     preparation: &mut TaskMutexWaitPreparation,
@@ -273,7 +273,7 @@ pub(crate) fn futex_requeue(
 
 fn wake_claimed(waiters: &mut wait_registry::ClaimedBatch) {
     while let Some(entry) = waiters.pop() {
-        crate::execution::task::processor::wake_futex_task(entry.task, entry.id, WaitResult::Woken);
+        crate::task::processor::wake_futex_task(entry.task, entry.id, WaitResult::Woken);
     }
 }
 
@@ -291,7 +291,6 @@ pub(crate) fn futex_wake_op(
     if source & 3 != 0 {
         return Err(FutexWaitError::Invalid);
     }
-    let limits = task.user_fault_limits();
     loop {
         let keys = task
             .with_futex_wake_op(source, target, private, |source, target, _| {
@@ -310,7 +309,7 @@ pub(crate) fn futex_wake_op(
                 }
                 let update = update.ok_or(FutexWaitError::Unsupported)?;
                 let word: crate::memory::UserAtomicU32<'_> = memory
-                    .futex_atomic_word(target, limits)
+                    .user_atomic_u32(target, true)
                     .map_err(|_| FutexWaitError::Fault)?;
                 let old = word.update(update);
                 Ok(Some(old))

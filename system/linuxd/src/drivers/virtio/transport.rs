@@ -1,5 +1,6 @@
 use super::pci::PciTransport;
-use crate::{arch::mmio::BusError, arch::mmio::MmioBus};
+use mmio::BusError;
+use mmio::MmioBus;
 
 const MAGIC: usize = 0x000;
 const VERSION: usize = 0x004;
@@ -32,7 +33,7 @@ pub(in crate::drivers::virtio) const VIRTIO_MMIO_INT_CONFIG: u32 = 2;
 
 const VIRTIO_MMIO_MAGIC: u32 = 0x7472_6976;
 
-/// VirtIO MMIO v2 split-queue 的三段物理地址。
+/// VirtIO MMIO v2 split-queue 的三段设备地址。
 #[derive(Clone, Copy)]
 pub(in crate::drivers::virtio) struct VirtQueueAddresses {
     pub(in crate::drivers::virtio) descriptor: u64,
@@ -44,14 +45,12 @@ pub(in crate::drivers::virtio) struct VirtQueueAddresses {
 pub(in crate::drivers::virtio) struct VirtIODevice {
     transport: Transport,
     device_id: u32,
+    /// 设备发起 DMA 的 BTI；ring 与全部 DMA 缓冲都固定在它上面，得到的地址才是设备可见地址。
+    bti: &'static native_runtime::Bti,
 }
 
 enum Transport {
     Mmio(MmioBus),
-    #[allow(
-        dead_code,
-        reason = "PCI transport is constructed only by platform backends that discover PCI"
-    )]
     Pci(PciTransport),
 }
 
@@ -83,6 +82,8 @@ impl VirtIODevice {
         Ok(Self {
             transport: Transport::Mmio(bus),
             device_id,
+            // DTB 不为 virtio-mmio 声明 IOMMU 路由：设备直接访问物理地址。
+            bti: crate::platform::bti(None),
         })
     }
 
@@ -92,19 +93,22 @@ impl VirtIODevice {
     ///
     /// - `device_id`: VirtIO device type derived from the PCI identity.
     /// - `transport`: Common/notify/ISR capability owner.
+    /// - `bti`: the function's DMA initiator.
     ///
     /// # Returns
     ///
     /// A transport-neutral device consumed by the existing adapter.
-    #[allow(
-        dead_code,
-        reason = "PCI transport is constructed only by platform backends that discover PCI"
-    )]
-    pub(crate) fn from_pci(device_id: u32, transport: PciTransport) -> Self {
+    pub(crate) fn from_pci(device_id: u32, transport: PciTransport, bti: &'static native_runtime::Bti) -> Self {
         Self {
             transport: Transport::Pci(transport),
             device_id,
+            bti,
         }
+    }
+
+    /// 设备的 DMA 发起者。
+    pub(in crate::drivers::virtio) fn bti(&self) -> &'static native_runtime::Bti {
+        self.bti
     }
 
     pub(in crate::drivers::virtio) fn device_id(&self) -> u32 {
@@ -244,7 +248,7 @@ impl VirtIODevice {
     ///
     /// - `index`: device-defined queue index。
     /// - `requested`: driver 选择的二次幂 queue size。
-    /// - `addresses`: descriptor、available 和 used ring 的物理基址。
+    /// - `addresses`: descriptor、available 和 used ring 的设备地址。
     ///
     /// # Returns
     ///
@@ -288,7 +292,7 @@ impl VirtIODevice {
         // device observes its queue doorbell.
         match &self.transport {
             Transport::Mmio(bus) => {
-                crate::arch::before_mmio_write();
+                mmio::before_write();
                 bus.write_u32(QUEUE_NOTIFY, queue)
             }
             Transport::Pci(pci) => pci.notify_queue(queue),

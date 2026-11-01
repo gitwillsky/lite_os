@@ -4,7 +4,6 @@ pub(crate) mod backtrace;
 mod fp_instruction;
 mod instruction_cache;
 pub(crate) mod interrupt;
-mod io;
 mod kernel_context;
 mod mmu;
 mod page_table;
@@ -18,10 +17,6 @@ mod trap;
 mod user_context;
 
 pub(crate) use instruction_cache::publish_range as publish_instruction_range;
-pub(crate) use io::{
-    before_mmio_write,
-    read_mmio_u8, read_mmio_u32, read_mmio_u64, write_mmio_u8, write_mmio_u32, write_mmio_u64,
-};
 pub(crate) use kernel_context::{KernelContext, KernelResume, switch_kernel_context};
 pub(crate) use mmu::{
     AddressSpaceToken, KERNEL_STACK_REGION_START, KERNEL_STACK_REGION_TOP, KernelTrapToken,

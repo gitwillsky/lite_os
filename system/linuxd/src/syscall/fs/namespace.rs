@@ -1,5 +1,5 @@
 use crate::{
-    execution::task::current_task,
+    task::current_task,
     fs::{DeviceNumber, InodeType, vfs},
     syscall::errno,
 };

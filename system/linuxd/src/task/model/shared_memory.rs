@@ -17,16 +17,16 @@ impl SharedMemoryVma for Attachment {
     fn open(&self) {
         self.namespace.shared_memory_open(
             &self.segment,
-            crate::execution::task::current_tgid_identity(),
-            crate::execution::timer::get_realtime_ns() / 1_000_000_000,
+            crate::task::current_tgid_identity(),
+            crate::time::get_realtime_ns() / 1_000_000_000,
         );
     }
     fn close(&self) {
         self.namespace.shared_memory_close(
             &self.segment,
             Some((
-                crate::execution::task::current_tgid_identity(),
-                crate::execution::timer::get_realtime_ns() / 1_000_000_000,
+                crate::task::current_tgid_identity(),
+                crate::time::get_realtime_ns() / 1_000_000_000,
             )),
         );
     }
@@ -70,11 +70,11 @@ impl TaskControlBlock {
             flags,
             &self.ipc_access(),
             self.tgid_identity().clone(),
-            crate::execution::timer::get_realtime_ns() / 1_000_000_000,
+            crate::time::get_realtime_ns() / 1_000_000_000,
             &creator,
         )
     }
-    pub(in crate::execution::task) fn retire_shared_memory_creator(&self) {
+    pub(in crate::task) fn retire_shared_memory_creator(&self) {
         let creator = self.thread().shm_creator.lock().take();
         if let Some(creator) = creator {
             creator.retire();
@@ -111,6 +111,7 @@ impl TaskControlBlock {
                 crate::memory::MappingPlacement::Hint
             },
             source: crate::memory::UserMappingSource::SystemV(source),
+            grows_down: false,
         });
         drop(reservation);
         result
@@ -118,11 +119,9 @@ impl TaskControlBlock {
     /// 原始 shmat 起点选中同一次挂接的 fragments；先摘除，guard 外 fence/实际 close。
     pub(crate) fn detach_shared_memory(&self, address: usize) -> Result<(), MemoryError> {
         let mm = self.address_space();
-        let retirement = {
-            let mut memory = mm.memory_set.lock().map_err(|_| MemoryError::OutOfMemory)?;
-            memory.prepare_shared_memory_detach(address)?
-        };
-        retirement.synchronize();
-        Ok(())
+        // 片段的成员关系在释放时调用 close 并取得 IPC 命名空间锁；锁序固定为 mm → IPC 命名空间
+        // （shmat 的 open 同样在 mm 锁内），IPC 侧从不反向取得 mm 锁。
+        let mut memory = mm.memory_set.lock().map_err(|_| MemoryError::OutOfMemory)?;
+        memory.detach_shared_memory(address)
     }
 }

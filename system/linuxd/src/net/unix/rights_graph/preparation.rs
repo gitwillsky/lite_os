@@ -1,6 +1,6 @@
 //! SCM graph 的锁外 storage preparation；不复制实际 topology、counter 或 membership。
 use super::*;
-use crate::fallible_tree::NodeSlot;
+use fallible_tree::NodeSlot;
 #[derive(Default)]
 pub(super) struct GraphScratch {
     pub(super) scan: Vec<Arc<GraphNode>>,

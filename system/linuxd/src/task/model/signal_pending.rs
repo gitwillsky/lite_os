@@ -2,7 +2,7 @@
 use super::{PendingSignal, signal_info::SignalFallback};
 use alloc::{boxed::Box, sync::Arc};
 use core::ptr::NonNull;
-use spin::Mutex;
+use crate::sync::Mutex;
 
 const REALTIME_MIN: usize = 32;
 
@@ -33,21 +33,21 @@ struct PreallocatedSignalSlot {
 /// POSIX timer 创建时的唯一预留节点及 ucounts owner；queued observer 保留原收费 lifetime。
 /// slot 锁只移动实际 Box，不分配、不进入 pending/graph/timer registry。
 #[derive(Debug)]
-pub(in crate::execution::task) struct PreallocatedSignal {
+pub(in crate::task) struct PreallocatedSignal {
     slot: Mutex<PreallocatedSignalSlot>,
     _charge: crate::namespace::RlimitCharge,
 }
 
 /// 离开 pending guard 后交给 timer coordinator 的真实队列来源。
-pub(in crate::execution::task) struct TimerSignalDelivery {
-    pub(in crate::execution::task) owner: Arc<PreallocatedSignal>,
-    pub(in crate::execution::task) sequence: u64,
-    pub(in crate::execution::task) key: (usize, i32),
+pub(in crate::task) struct TimerSignalDelivery {
+    pub(in crate::task) owner: Arc<PreallocatedSignal>,
+    pub(in crate::task) sequence: u64,
+    pub(in crate::task) key: (usize, i32),
 }
 impl PreallocatedSignal {
     /// 创建一个 POSIX timer 的实际预留节点，以 creator real UID/UserNS 和 soft limit 收费。
     /// 包括 SIGEV_NONE；配额/Box/Arc preparation 失败返回 Err，调用方映射 Linux EAGAIN。
-    pub(in crate::execution::task) fn try_new(
+    pub(in crate::task) fn try_new(
         namespace: Arc<crate::namespace::UserNamespace>,
         uid: u32,
         limit: u64,
@@ -79,13 +79,13 @@ impl PreallocatedSignal {
         .map_err(|_| ())
     }
     /// 仅 unpublished creation retry 可更改候选 key；已排队节点不得绑定新 ID lifetime。
-    pub(in crate::execution::task) fn retarget(&self, key: (usize, i32)) {
+    pub(in crate::task) fn retarget(&self, key: (usize, i32)) {
         let mut slot = self.slot.lock();
         assert!(slot.available.is_some());
         slot.key = key;
     }
     /// 每次实际 expiry 更新 queued sequence；已有节点排队时不再生成第二个通知。
-    pub(in crate::execution::task) fn prepare(
+    pub(in crate::task) fn prepare(
         self: &Arc<Self>,
         sequence: u64,
     ) -> PreparedSignalRecord {
@@ -137,7 +137,7 @@ impl SignalRecord {
 
 /// 单一 owned 链；tail 只借用链内最后一个节点，不拥有另一份 membership。
 #[derive(Debug, Default)]
-pub(in crate::execution::task) struct RetiredSignals {
+pub(in crate::task) struct RetiredSignals {
     head: Option<Box<SignalRecord>>,
     tail: Option<NonNull<SignalRecord>>,
 }
@@ -166,7 +166,7 @@ impl RetiredSignals {
     }
     /// SIG_IGN coordinator 持 graph 且 predicate 只接受 registry 内的周期 timer。
     /// 接受项归还其真实预留 Box；无效/单次项保留到锁外退休。
-    pub(in crate::execution::task) fn recycle_timers(
+    pub(in crate::task) fn recycle_timers(
         &mut self,
         mut accept: impl FnMut(&TimerSignalDelivery) -> bool,
     ) {
@@ -194,7 +194,7 @@ impl RetiredSignals {
         self.append(remaining);
         timers
     }
-    pub(in crate::execution::task) fn append(&mut self, mut other: Self) {
+    pub(in crate::task) fn append(&mut self, mut other: Self) {
         if other.head.is_none() {
             return;
         }
@@ -218,11 +218,11 @@ impl Drop for RetiredSignals {
 
 /// generation 的锁外 preparation；没有 storage 表示 OOM/限额，commit 按来源决定失败或兜底。
 #[derive(Default)]
-pub(in crate::execution::task) struct PreparedSignalRecord {
+pub(in crate::task) struct PreparedSignalRecord {
     record: Option<Box<SignalRecord>>,
 }
 impl PreparedSignalRecord {
-    pub(in crate::execution::task) fn prepare(
+    pub(in crate::task) fn prepare(
         signal: usize,
         info: PendingSignal,
         namespace: alloc::sync::Arc<crate::namespace::UserNamespace>,
@@ -251,7 +251,7 @@ impl PreparedSignalRecord {
         })();
         Self { record }
     }
-    pub(in crate::execution::task) fn has_record(&self) -> bool {
+    pub(in crate::task) fn has_record(&self) -> bool {
         self.record.is_some()
     }
     fn is_timer(&self) -> bool {
@@ -260,7 +260,7 @@ impl PreparedSignalRecord {
             .is_some_and(|record| matches!(record.source, SignalRecordSource::Timer(_)))
     }
     /// coordinator 保证 registry 仍持有 owner，故归还不会在 graph 内释放配额或 storage。
-    pub(in crate::execution::task) fn recycle_timer(&mut self) {
+    pub(in crate::task) fn recycle_timer(&mut self) {
         if let Some(record) = self.record.take() {
             drop(SignalRecord::retire(record));
         }

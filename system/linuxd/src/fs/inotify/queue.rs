@@ -2,7 +2,7 @@
 //!
 //! 纯数据结构，不依赖 VFS 或调度器，可在 host 上单测。
 
-use crate::fallible_tree::{FallibleMap, VacantEntry};
+use fallible_tree::{FallibleMap, VacantEntry};
 use alloc::boxed::Box;
 
 pub(super) const IN_Q_OVERFLOW: u32 = 0x4000;

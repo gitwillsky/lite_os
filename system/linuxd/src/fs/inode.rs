@@ -5,27 +5,6 @@ use super::{
     StorageOpen,
 };
 
-/// [`StorageRead::step`] 的进展。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum StorageStep {
-    /// 读完，值是写入 `output` 前缀的字节数（到 EOF 为止）。
-    Done(usize),
-    /// 有块读在途；完成通知触发后再次调用 `step`。
-    Wait,
-    /// 无法继续异步读（请求槽暂满、映射不受支持、元数据反复失效）：丢弃本次读，改走阻塞路径。
-    Fallback,
-}
-
-/// 一段已开始的不阻塞存储读：可恢复的状态机，丢弃它即取消（在途块读由块层自行回收）。
-pub(crate) trait StorageRead: Send {
-    /// 推进读取；`output` 每次都是同一个缓冲区，前缀是已完成的数据。
-    ///
-    /// # Errors
-    ///
-    /// 元数据损坏、设备失败或内存不足。
-    fn step(&mut self, output: &mut [u8]) -> Result<StorageStep, FileSystemError>;
-}
-
 #[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum InodeType {
@@ -269,19 +248,6 @@ pub(crate) trait Inode: Send + Sync {
         None
     }
 
-    /// Live inode swap lease projection; shared writable admission and normal writes consult it.
-    fn is_swap_file(&self) -> bool {
-        false
-    }
-
-    /// Freeze this regular inode before mapped-writer retirement and cache/journal drain.
-    /// Unsupported backing returns InvalidOperation; lease cleanup is infallible and allocation-free.
-    fn pin_swap_file(
-        self: Arc<Self>,
-    ) -> Result<alloc::boxed::Box<dyn super::swap::SwapFileLease>, FileSystemError> {
-        Err(FileSystemError::InvalidOperation)
-    }
-
     fn is_executable(&self) -> bool;
 
     /// 在通用 permission 检查之后打开实际操作后端。
@@ -440,25 +406,6 @@ pub(crate) trait Inode: Send + Sync {
         Ok(total)
     }
 
-    /// 开始一段不阻塞调用者的存储读；块读完成时调用 `notify`。
-    ///
-    /// # Returns
-    ///
-    /// `None` 表示这个 inode 不支持异步读，调用者必须改走阻塞的 [`Inode::read_storage`]。
-    ///
-    /// # Errors
-    ///
-    /// 元数据损坏或内存不足。
-    fn begin_storage_read(
-        &self,
-        offset: u64,
-        length: usize,
-        notify: Arc<dyn crate::devices::block::CompletionNotify>,
-    ) -> Result<Option<alloc::boxed::Box<dyn StorageRead>>, FileSystemError> {
-        let _ = (offset, length, notify);
-        Ok(None)
-    }
-
     /// 读取 symbolic-link 的原始 target bytes，不追加 NUL。
     ///
     /// # Returns
@@ -513,26 +460,6 @@ pub(crate) trait Inode: Send + Sync {
     ) -> Result<(), FileSystemError> {
         let mut writer = DirectStorageWriter(self);
         batch(&mut writer)
-    }
-
-    /// 尝试在不等待 filesystem mutation owner 的前提下提交回收写回批次。
-    ///
-    /// # Parameters
-    ///
-    /// - `batch`: 短生命周期 producer；仅在 adapter 成功取得 mutation ownership 时消费。
-    ///
-    /// # Returns
-    ///
-    /// 批次完整提交后返回。
-    ///
-    /// # Errors
-    ///
-    /// owner 正忙时返回 Busy 且 batch 未执行；其他 journal、存储或容量错误原样返回。
-    fn try_writeback_storage_batch(
-        &self,
-        _batch: &mut dyn FnMut(&mut dyn StorageWriter) -> Result<(), FileSystemError>,
-    ) -> Result<(), FileSystemError> {
-        Err(FileSystemError::Busy)
     }
 
     /// Memory facade 已持有该 MemoryFile 的 write sequence；这里只更新 canonical inode mode。

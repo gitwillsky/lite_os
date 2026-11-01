@@ -17,7 +17,7 @@ impl UnixSocket {
         let mut charge = source
             .reserve_packet(
                 input.len(),
-                crate::fallible_tree::VacantEntry::<u64, Datagram>::allocation_size(),
+                fallible_tree::VacantEntry::<u64, Datagram>::allocation_size(),
             )?
             .ok_or_else(|| {
                 SocketSendError::Capacity(SocketCapacityWait::new(

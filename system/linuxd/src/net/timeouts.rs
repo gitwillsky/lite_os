@@ -1,5 +1,5 @@
 //! 唯一 socket 收发超时 policy；阻塞操作在上层冻结一次 host-monotonic deadline。
-use spin::Mutex;
+use crate::sync::Mutex;
 
 /// 需要冻结超时的收发方向。
 #[derive(Clone, Copy)]
@@ -18,7 +18,7 @@ impl SocketTimeout {
     /// 将有限时长向 scheduler tick 上取整；极大合法输入在 KTIME_MAX 饱和。
     /// `duration_ns == 0` 是立即超时，禁用必须显式传 Infinite。
     pub(crate) fn finite(duration_ns: u128) -> Self {
-        let tick = u128::from(crate::execution::timer::SCHEDULER_TICK_NS);
+        let tick = u128::from(crate::time::scheduler_quantum_ns());
         Self::Finite(
             duration_ns
                 .div_ceil(tick)

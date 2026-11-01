@@ -1,7 +1,8 @@
 use alloc::{sync::Arc, vec::Vec};
-use spin::{Mutex, Once};
+use crate::sync::Mutex;
+use native_runtime::sync::Once;
 
-use crate::memory::{DeviceBacking, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE};
+use crate::memory::{DeviceBacking, PAGE_SIZE};
 
 use super::{
     VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,
@@ -13,8 +14,8 @@ use crate::devices::model::{
     GraphicsDevice, VirglCapsetInfo, VirglCommand,
 };
 use crate::{
-    execution::interrupt::InterruptError, execution::interrupt::InterruptHandler,
-    execution::interrupt::InterruptVector,
+    interrupt::InterruptError, interrupt::InterruptHandler,
+    interrupt::InterruptVector,
 };
 
 mod wire;
@@ -140,24 +141,14 @@ pub(crate) struct VirtIOGpuDevice {
     cursor: Mutex<CursorQueue>,
     // OWNER: 消费者在初始化时绑定一次的 completion deferred vector；hardirq 与 deferred
     // 续批只发布它。绑定前没有消费者，completion 留在 used ring 由绑定时的补偿发布消费。
-    completion_work: Once<crate::execution::deferred::DeferredWork>,
-    // OWNER: panic 蓝屏专用的 scanout resource 与 backing，初始化时一次建立，之后只被
-    // `PanicFramebuffer` 读写。DRM 不会触碰它的 id，所以无论 compositor 正占用哪个 resource，
-    // panic 都能整体切换到它；缺失时 DRM 接管之后 panic 无法上屏。
-    panic_screen: Once<PanicScreen>,
-}
-
-/// panic 蓝屏专用的帧缓冲。
-struct PanicScreen {
-    backing: Arc<DeviceBacking>,
-    mode: DisplayMode,
+    completion_work: Once<crate::deferred::DeferredWork>,
 }
 
 impl VirtIOGpuDevice {
     /// 发布已绑定的 completion vector；未绑定时没有消费者，忽略。
     fn raise_completion(&self) {
         if let Some(work) = self.completion_work.get() {
-            crate::execution::deferred::raise(*work);
+            crate::deferred::raise(*work);
         }
     }
 
@@ -197,7 +188,7 @@ impl VirtIOGpuDevice {
 
         let maximum = device.queue_max_size(CONTROL_QUEUE).ok()?;
         let size = maximum.min(QUEUE_SIZE);
-        let queue = VirtQueue::new(size)?;
+        let queue = VirtQueue::new(size, device.bti())?;
         device
             .configure_queue(CONTROL_QUEUE, size, queue.addresses())
             .ok()?;
@@ -205,13 +196,13 @@ impl VirtIOGpuDevice {
             queue,
             failed: false,
             next_fence: 1,
-            commands: CommandSlots::try_new()?,
+            commands: CommandSlots::try_new(device.bti())?,
             capset: None,
             resources: ResourceSet::empty(),
             scanout: ScanoutState::disabled(),
             cursor_resource: CursorResourceSet::empty(),
             operation: None,
-            damage: DamageTransition::try_new()?,
+            damage: DamageTransition::try_new(device.bti())?,
             config_change_pending: false,
             mode: DisplayMode {
                 width: 0,
@@ -221,13 +212,13 @@ impl VirtIOGpuDevice {
         });
         let cursor_maximum = device.queue_max_size(CURSOR_QUEUE).ok()?;
         let cursor_size = cursor_maximum.min(QUEUE_SIZE);
-        let cursor_queue = VirtQueue::new(cursor_size)?;
+        let cursor_queue = VirtQueue::new(cursor_size, device.bti())?;
         device
             .configure_queue(CURSOR_QUEUE, cursor_size, cursor_queue.addresses())
             .ok()?;
         let cursor = Mutex::new(CursorQueue {
             queue: cursor_queue,
-            request: DmaBuffer::try_zeroed().ok()?,
+            request: DmaBuffer::try_zeroed(device.bti()).ok()?,
             pending: None,
             latest_move: None,
             visible: false,
@@ -243,7 +234,6 @@ impl VirtIOGpuDevice {
             control,
             cursor,
             completion_work: Once::new(),
-            panic_screen: Once::new(),
         };
         if features & VIRTIO_GPU_F_VIRGL != 0 {
             let capset = Self::load_virgl_capset(&adapter.device, &adapter.control)?;
@@ -256,29 +246,9 @@ impl VirtIOGpuDevice {
             .checked_mul(usize::try_from(mode.height).ok()?)?;
         let framebuffer = Arc::try_new(DeviceBacking::try_allocate(
             framebuffer_bytes.div_ceil(PAGE_SIZE),
-            FrameAllocationClass::KernelCritical,
-            DeviceMemoryKind::Driver,
         )?)
         .ok()?;
         Self::initialize_scanout(&adapter.device, &adapter.control, mode, &framebuffer)?;
-        // panic 蓝屏的专用 resource：只建立、绑定 backing，不设为 scanout，直到 panic 才被呈现。
-        let panic_backing = Arc::try_new(DeviceBacking::try_allocate(
-            framebuffer_bytes.div_ceil(PAGE_SIZE),
-            FrameAllocationClass::KernelCritical,
-            DeviceMemoryKind::Driver,
-        )?)
-        .ok()?;
-        Self::create_attached_resource(
-            &adapter.device,
-            &adapter.control,
-            PANIC_RESOURCE_ID,
-            mode,
-            &panic_backing,
-        )?;
-        adapter.panic_screen.call_once(|| PanicScreen {
-            backing: panic_backing,
-            mode,
-        });
         let mut control = adapter.control.lock();
         control.resources = ResourceSet::with_boot(framebuffer, mode);
         control.scanout.presented(mode);
@@ -300,7 +270,7 @@ impl VirtIOGpuDevice {
             .commands
             .idle_index()
             .ok_or(DisplayError::WouldBlock)?;
-        let prepared = command.prepare(control.commands.request_mut(slot).as_mut_slice())?;
+        let prepared = command.prepare(control.commands.request_mut(slot).as_mut_slice(), self.device.bti())?;
         self.publish_prepared(control, slot, prepared, operation_fence)
     }
 
@@ -530,9 +500,9 @@ impl InterruptHandler for VirtIOGpuIrqHandler {
 }
 
 impl DisplayDevice for VirtIOGpuDevice {
-    fn bind_completion_work(&self, work: crate::execution::deferred::DeferredWork) {
+    fn bind_completion_work(&self, work: crate::deferred::DeferredWork) {
         self.completion_work.call_once(|| work);
-        crate::execution::deferred::raise(work);
+        crate::deferred::raise(work);
     }
 
     fn mode(&self) -> DisplayMode {
@@ -792,7 +762,7 @@ impl GraphicsDevice for VirtIOGpuDevice {
             .idle_index()
             .ok_or(DisplayError::WouldBlock)?;
         let prepared =
-            graphics_command::prepare(command, control.commands.request_mut(slot).as_mut_slice())?;
+            graphics_command::prepare(command, control.commands.request_mut(slot).as_mut_slice(), self.device.bti())?;
         self.publish_prepared(&mut control, slot, prepared, None)
     }
 
@@ -826,6 +796,7 @@ impl GraphicsDevice for VirtIOGpuDevice {
         let mut set_scanout = graphics_command::prepare(
             VirglCommand::SetScanout { mode, resource_id },
             control.commands.request_mut(set_slot).as_mut_slice(),
+            self.device.bti(),
         )?;
         set_scanout.stage = sequence_policy::RuntimeStage::VirglSetScanout;
         let mut flush = graphics_command::prepare(
@@ -839,6 +810,7 @@ impl GraphicsDevice for VirtIOGpuDevice {
                 },
             },
             control.commands.request_mut(flush_slot).as_mut_slice(),
+            self.device.bti(),
         )?;
         flush.stage = sequence_policy::RuntimeStage::VirglFlush;
         set_scanout

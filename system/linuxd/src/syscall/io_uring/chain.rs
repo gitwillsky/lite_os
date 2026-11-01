@@ -13,7 +13,7 @@ use super::{
     worker,
 };
 use crate::{
-    execution::task::TaskControlBlock,
+    task::TaskControlBlock,
     io_uring::{Chain, Link, Member, Members, Ring, Step, Unit, cancel_rest},
 };
 
@@ -105,7 +105,7 @@ fn advance(
                         let Step::LinkTimeout(op) = timeout.step else {
                             return None;
                         };
-                        let deadline = op.link_deadline(crate::execution::timer::get_time_ns())?;
+                        let deadline = op.link_deadline(crate::time::get_time_ns())?;
                         Some((timeout.user_data, deadline))
                     });
                     return Some((wait, meta));

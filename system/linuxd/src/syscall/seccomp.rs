@@ -3,7 +3,7 @@
 use syscall_abi::{errno, seccomp::*, signal::SIGSYS};
 
 use super::{SyscallOutcome, user_iovec::UserInputStaging};
-use crate::execution::task::{
+use crate::task::{
     PendingSignal, SeccompDecision, SeccompError, TaskControlBlock, current_task,
 };
 use alloc::sync::Arc;
@@ -32,7 +32,7 @@ fn result(result: Result<Option<usize>, SeccompError>, flags: u32) -> isize {
 pub(super) fn set_mode(mode: usize, filter: usize) -> isize {
     match mode {
         value if value == MODE_STRICT as usize => result(
-            crate::execution::task::enable_strict_seccomp().map(|()| None),
+            crate::task::enable_strict_seccomp().map(|()| None),
             0,
         ),
         value if value == MODE_FILTER as usize => install_filter(filter, 0),
@@ -78,7 +78,7 @@ fn install_filter(address: usize, flags: u32) -> isize {
     // SAFETY: 完整 copy_from_user_uninit 成功证明 prepared destination 的全部 size bytes 已初始化。
     unsafe { input.publish(size) };
     result(
-        crate::execution::task::install_seccomp_filter(input.initialized(), flags),
+        crate::task::install_seccomp_filter(input.initialized(), flags),
         flags,
     )
 }
@@ -151,7 +151,7 @@ pub(super) fn enforce(
             Ok(None) => None,
             Ok(Some(value)) => Some(SyscallOutcome::Return(value)),
             Err(SeccompError::Interrupted) => Some(SyscallOutcome::Restart(
-                crate::execution::task::SyscallRestartPolicy::WithRestartHandler,
+                crate::task::SyscallRestartPolicy::WithRestartHandler,
             )),
             Err(SeccompError::OutOfMemory) => Some(SyscallOutcome::Return(-errno::ENOMEM)),
             Err(_) => unreachable!("notification has only interrupt/OOM failures"),
@@ -170,11 +170,11 @@ pub(super) fn enforce(
         }
         SeccompDecision::KillThread(signal) => {
             drop(current);
-            crate::execution::task::exit_current_thread_by_signal(signal)
+            crate::task::exit_current_thread_by_signal(signal)
         }
         SeccompDecision::KillProcess => {
             drop(current);
-            crate::execution::task::exit_current_group_by_signal(SIGSYS)
+            crate::task::exit_current_group_by_signal(SIGSYS)
         }
         SeccompDecision::Log => None,
     }

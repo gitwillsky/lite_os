@@ -17,7 +17,6 @@ pub(crate) use audio_output::{
 };
 pub(crate) use display::{
     BootFramebuffer, DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate,
-    PanicFramebuffer,
 };
 pub(crate) use entropy::EntropySource;
 pub(crate) use graphics::{

@@ -2,7 +2,7 @@
 use super::{RLIMIT_NOFILE, ResourceLimits};
 
 // 唯一 ResourceLimits allocation 的 scalar observer；没有 Process/PID/namespace membership。
-impl crate::net::UnixFileLimit for spin::Mutex<ResourceLimits> {
+impl crate::net::UnixFileLimit for crate::sync::Mutex<ResourceLimits> {
     fn max_files(&self) -> usize {
         usize::try_from(self.lock().values[RLIMIT_NOFILE].soft)
             .unwrap_or(usize::MAX)

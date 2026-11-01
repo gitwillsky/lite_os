@@ -1,15 +1,15 @@
-//! `getrusage`/`wait4` 的资源使用记账：tick 采样的 user/system 拆分、缺页、上下文切换与 RSS 峰值。
+//! `getrusage`/`wait4` 的资源使用记账：CPU 时间、缺页、上下文切换与 RSS 峰值。
 //!
-//! # user/system 拆分
+//! # CPU 时间
 //!
-//! 调度器精确记录总 CPU runtime，但不知道其中多少花在内核里。与 Linux 的 tick 采样一致：每个 timer tick
-//! 按被打断的是用户态还是内核态计入 `user_ticks` 或 `system_ticks`，读取时用两者比例把精确总 runtime
-//! 切开（Linux `cputime_adjust`）。比例按 tick 采样，所以只在统计意义上准确；`system` 不单调的风险由
-//! `prev_system_us` 钳制。
+//! 内核按线程精确记录总 CPU 时间与其中在 restricted mode（Linux 程序自身）消耗的部分：
+//! 前者减后者即 system 时间（linuxd 代表线程处理 syscall 与异常的时间）。线程退出时把它的时间并入
+//! 进程累计；进程时间 = 已退出线程累计 + 存活线程当前查询值。上下文切换计数同样来自内核对承载线程的
+//! 记录（阻塞离开 CPU 为自愿，可运行时被抢占或让出为非自愿），按同一口径累计。
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use super::{AddressSpace, IoStatistics, TaskControlBlock, cputime_split};
+use super::{AddressSpace, IoStatistics, TaskControlBlock};
 
 /// 一次 `getrusage` 能报告的全部有记账字段；微秒与计数均已合并 user/system 拆分。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -42,35 +42,38 @@ impl ResourceUsage {
     }
 }
 
+/// 内核记账的一份 CPU 使用量：线程的当前值，或进程中已退出线程的累计。
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct CpuUsage {
+    total_us: u64,
+    user_us: u64,
+    voluntary_switches: u64,
+    involuntary_switches: u64,
+}
+
+impl CpuUsage {
+    fn add(&mut self, other: Self) {
+        self.total_us += other.total_us;
+        self.user_us += other.user_us;
+        self.voluntary_switches += other.voluntary_switches;
+        self.involuntary_switches += other.involuntary_switches;
+    }
+}
+
 /// 一个 Thread 或 Process 的并发使用量 counter owner。
 ///
 /// 每个事件同步递增当前 Thread 与所属 Process；缺少 Process 份额会在 worker 退出后丢失它的历史，
 /// 缺少 Thread 份额则无法回答 `RUSAGE_THREAD`。全部 Relaxed：计数之间没有需要发布的数据。
 #[derive(Debug, Default)]
 pub(super) struct UsageAccounting {
-    user_ticks: AtomicU64,
-    system_ticks: AtomicU64,
     minor_faults: AtomicU64,
     major_faults: AtomicU64,
-    voluntary_switches: AtomicU64,
-    involuntary_switches: AtomicU64,
     // 采样得到的 RSS 峰值（页）。RSS 由 installed 状态派生，页换出没有事件，无法逐页维护精确峰值，
     // 所以只在 exec、退出与读取时采样。
     peak_rss_pages: AtomicU64,
-    // OWNER: 本结构独占；已经报告过的最大 system 时间，钳制拆分比例波动造成的回退。
-    prev_system_us: AtomicU64,
 }
 
 impl UsageAccounting {
-    pub(super) fn charge_tick(&self, user: bool) {
-        let ticks = if user {
-            &self.user_ticks
-        } else {
-            &self.system_ticks
-        };
-        ticks.fetch_add(1, Ordering::Relaxed);
-    }
-
     pub(super) fn charge_fault(&self, major: bool) {
         let faults = if major {
             &self.major_faults
@@ -78,15 +81,6 @@ impl UsageAccounting {
             &self.minor_faults
         };
         faults.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(super) fn charge_switch(&self, voluntary: bool) {
-        let switches = if voluntary {
-            &self.voluntary_switches
-        } else {
-            &self.involuntary_switches
-        };
-        switches.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(super) fn observe_rss(&self, pages: u64) {
@@ -97,36 +91,31 @@ impl UsageAccounting {
     ///
     /// # Parameters
     ///
-    /// - `runtime_us`: 同一对象的精确总 CPU runtime。
+    /// - `cpu`: 同一对象的内核 CPU 记账。
     /// - `io`: 同一对象的 I/O 快照，提供块输入/输出。
     /// - `current_rss_pages`: 读取时刻的 RSS；与已记录的峰值取最大。
     pub(super) fn snapshot(
         &self,
-        runtime_us: u64,
+        cpu: CpuUsage,
         io: IoStatistics,
         current_rss_pages: u64,
     ) -> ResourceUsage {
-        let user_ticks = self.user_ticks.load(Ordering::Relaxed);
-        let system_ticks = self.system_ticks.load(Ordering::Relaxed);
-        let raw_system_us = cputime_split::estimate_system_us(runtime_us, user_ticks, system_ticks);
-        let reported = self
-            .prev_system_us
-            .fetch_max(raw_system_us, Ordering::Relaxed);
-        let system_us = cputime_split::clamp_system_us(raw_system_us, reported, runtime_us);
+        let user_us = cpu.user_us.min(cpu.total_us);
+        let system_us = cpu.total_us - user_us;
         let peak_pages = self
             .peak_rss_pages
             .fetch_max(current_rss_pages, Ordering::Relaxed)
             .max(current_rss_pages);
         ResourceUsage {
-            user_us: runtime_us - system_us,
+            user_us,
             system_us,
             max_rss_kib: peak_pages * (crate::memory::PAGE_SIZE as u64 / 1024),
             minor_faults: self.minor_faults.load(Ordering::Relaxed),
             major_faults: self.major_faults.load(Ordering::Relaxed),
             input_blocks: io.read_bytes / 512,
             output_blocks: io.write_bytes / 512,
-            voluntary_switches: self.voluntary_switches.load(Ordering::Relaxed),
-            involuntary_switches: self.involuntary_switches.load(Ordering::Relaxed),
+            voluntary_switches: cpu.voluntary_switches,
+            involuntary_switches: cpu.involuntary_switches,
         }
     }
 }
@@ -185,16 +174,6 @@ impl ReapedChildrenUsage {
 
 impl TaskControlBlock {
     /// 把一个 timer tick 记给 calling Thread 与所属 Process；`user` 表示 tick 打断的是用户态。
-    pub(crate) fn charge_timer_tick(&self, user: bool) {
-        // 内核线程没有 user Thread/Process 份额，其 tick 不属于任何 rusage。
-        if self.is_kernel_thread() {
-            return;
-        }
-        self.thread().usage.charge_tick(user);
-        self.process().usage.charge_tick(user);
-    }
-
-    /// 把一次已处理的缺页记给 calling Thread 与所属 Process；`major` 表示缺页期间发生了存储读取。
     pub(crate) fn charge_page_fault(&self, major: bool) {
         if self.is_kernel_thread() {
             return;
@@ -203,27 +182,68 @@ impl TaskControlBlock {
         self.process().usage.charge_fault(major);
     }
 
-    /// 记录该 Thread 让出 CPU：`voluntary` 为真是自己阻塞，否则是被抢占。
-    pub(crate) fn charge_context_switch(&self, voluntary: bool) {
-        if self.is_kernel_thread() {
-            return;
-        }
-        self.thread().usage.charge_switch(voluntary);
-        self.process().usage.charge_switch(voluntary);
-    }
-
     fn current_rss_pages(&self) -> u64 {
         self.address_space()
             .page_statistics()
             .map_or(0, |statistics| statistics.resident_pages as u64)
     }
 
+    /// 本线程承载线程的内核记账；尚未启动或已结束时为零。
+    fn thread_cpu_usage(&self) -> CpuUsage {
+        self.carrier()
+            .and_then(|carrier| carrier.handle().runtime().ok())
+            .map_or_else(CpuUsage::default, |runtime| CpuUsage {
+                total_us: runtime.cpu_time_ns / 1000,
+                user_us: runtime.restricted_time_ns / 1000,
+                voluntary_switches: runtime.voluntary_switches,
+                involuntary_switches: runtime.involuntary_switches,
+            })
+    }
+
+    /// 已退出线程累计加全部未退休存活线程的当前值。
+    fn process_cpu_usage(&self) -> CpuUsage {
+        let mut usage = *self.process().retired_runtime.lock();
+        for thread in super::super::process_table::live_threads(self.tgid()) {
+            if !thread.thread().cpu_time_retired.load(Ordering::Acquire) {
+                usage.add(thread.thread_cpu_usage());
+            }
+        }
+        usage
+    }
+
+    /// 本线程的 `(全部, user)` CPU 时间（微秒），由承载线程的内核记账得到。
+    pub(crate) fn thread_cpu_time(&self) -> (u64, u64) {
+        let usage = self.thread_cpu_usage();
+        (usage.total_us, usage.user_us)
+    }
+
+    /// 所属进程的 `(全部, user)` CPU 时间（微秒）。
+    pub(crate) fn process_cpu_time(&self) -> (u64, u64) {
+        let usage = self.process_cpu_usage();
+        (usage.total_us, usage.user_us)
+    }
+
+    /// `(进程全部, 线程全部)` CPU 时间（微秒），供 CPU-time 时钟与 `/proc`。
+    pub(crate) fn cpu_runtime_snapshot(&self, _now_us: u64) -> (u64, u64) {
+        (self.process_cpu_time().0, self.thread_cpu_time().0)
+    }
+
+    /// 线程退出、发布进程退出状态之前：把它的 CPU 时间并入进程累计（承载线程仍存活，查询有效）。
+    /// 此后的少量退出清理时间不再计入。
+    pub(in crate::task) fn retire_cpu_runtime(&self) {
+        if self.is_kernel_thread() {
+            return;
+        }
+        let usage = self.thread_cpu_usage();
+        self.scheduling.retired_runtime_us.store(usage.total_us, Ordering::Release);
+        self.process().retired_runtime.lock().add(usage);
+        self.thread().cpu_time_retired.store(true, Ordering::Release);
+    }
+
     /// `RUSAGE_THREAD`：calling Thread 自己的使用量；峰值 RSS 是整个 Process 的（共享地址空间）。
     pub(crate) fn thread_resource_usage(&self) -> ResourceUsage {
-        let (_, thread_runtime_us) =
-            self.cpu_runtime_snapshot(crate::execution::timer::get_time_us());
         let mut usage = self.thread().usage.snapshot(
-            thread_runtime_us,
+            self.thread_cpu_usage(),
             self.thread().io_accounting.snapshot(),
             0,
         );
@@ -233,10 +253,8 @@ impl TaskControlBlock {
 
     /// `RUSAGE_SELF`：calling Process 全部 Thread 的使用量。
     pub(crate) fn process_resource_usage(&self) -> ResourceUsage {
-        let (process_runtime_us, _) =
-            self.cpu_runtime_snapshot(crate::execution::timer::get_time_us());
         self.process().usage.snapshot(
-            process_runtime_us,
+            self.process_cpu_usage(),
             self.process().io_accounting.snapshot(),
             self.current_rss_pages(),
         )
@@ -250,7 +268,7 @@ impl TaskControlBlock {
     /// 退出时，若 calling Thread 是映像的最后一个 user，把它的 RSS 并入 Process 峰值。
     ///
     /// 其他 Thread 还在用同一映像时不采样：它们退出时最后一个会采到完整的 RSS，避免每个 Thread 退出都扫描。
-    pub(in crate::execution::task) fn record_exit_peak_rss(&self) {
+    pub(in crate::task) fn record_exit_peak_rss(&self) {
         let address_space = self.address_space();
         // Thread 句柄持有一份，本函数克隆的一份是第二份；超过两份说明还有别的 user。
         if alloc::sync::Arc::strong_count(&address_space) == 2 {
@@ -259,7 +277,7 @@ impl TaskControlBlock {
     }
 
     /// 在 exec 或退出丢弃映像之前，把它的 RSS 并入 Process 峰值。
-    pub(in crate::execution::task) fn record_peak_rss(&self, address_space: &AddressSpace) {
+    pub(in crate::task) fn record_peak_rss(&self, address_space: &AddressSpace) {
         if let Ok(statistics) = address_space.page_statistics() {
             self.process()
                 .usage
@@ -270,9 +288,9 @@ impl TaskControlBlock {
 
 impl super::Process {
     /// 已退出 Process 的最终使用量（自身加上它已回收的后代），供 parent 回收时累加与 `wait4` 报告。
-    pub(in crate::execution::task) fn final_resource_usage(&self) -> ResourceUsage {
+    pub(in crate::task) fn final_resource_usage(&self) -> ResourceUsage {
         let mut usage = self.usage.snapshot(
-            self.process_cpu_runtime_us(),
+            *self.retired_runtime.lock(),
             self.io_accounting.snapshot(),
             0,
         );
@@ -280,7 +298,12 @@ impl super::Process {
         usage
     }
 
-    pub(in crate::execution::task) fn absorb_reaped_child(&self, child: &ResourceUsage) {
+    /// 已退出 Thread 累计的 CPU 时间（微秒）；全部 Thread 退出后即进程总时间。
+    pub(in crate::task) fn retired_cpu_runtime_us(&self) -> u64 {
+        self.retired_runtime.lock().total_us
+    }
+
+    pub(in crate::task) fn absorb_reaped_child(&self, child: &ResourceUsage) {
         self.reaped_children.absorb(child);
     }
 }

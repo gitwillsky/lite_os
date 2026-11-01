@@ -1,14 +1,14 @@
 use alloc::sync::Arc;
 
 use super::{TaskControlBlock, WaitMembership, WaitResult};
-use crate::execution::sync::{TaskWaitKey, TaskWaitTarget, WaitCompletion};
+use crate::sync::{TaskWaitKey, TaskWaitTarget, WaitCompletion};
 
-pub(in crate::execution::task) fn initialize() {
-    crate::execution::sync::install_wait_target_factory(current_wait_target);
+pub(in crate::task) fn initialize() {
+    crate::sync::install_wait_target_factory(current_wait_target);
 }
 
 fn current_wait_target() -> Option<Arc<dyn TaskWaitTarget>> {
-    crate::execution::task::current_task().map(|task| task as Arc<dyn TaskWaitTarget>)
+    crate::task::current_task().map(|task| task as Arc<dyn TaskWaitTarget>)
 }
 
 impl TaskWaitTarget for TaskControlBlock {
@@ -25,7 +25,7 @@ impl TaskWaitTarget for TaskControlBlock {
                 || {
                     if completion.is_complete() {
                         Some(WaitResult::Woken)
-                    } else if deadline <= crate::execution::timer::get_time_ns() {
+                    } else if deadline <= crate::time::get_time_ns() {
                         Some(WaitResult::TimedOut)
                     } else if key.signal_pending(self.as_ref()) {
                         Some(WaitResult::Interrupted)
@@ -45,11 +45,11 @@ impl TaskWaitTarget for TaskControlBlock {
             }
             return prepared.suspend();
         }
-        let prepared = super::context_switch::prepare_current_block(&self, (), |_, _| {
+        let prepared = crate::task::processor::prepare_current_block(&self, (), |_, _| {
             WaitMembership::TaskWait(key)
         });
         if completion.finish_arming() {
-            crate::execution::task::processor::wake_waiting_task(
+            crate::task::processor::wake_waiting_task(
                 self.clone(),
                 WaitMembership::TaskWait(key),
                 Some(WaitResult::Woken),
@@ -57,7 +57,7 @@ impl TaskWaitTarget for TaskControlBlock {
         } else if key.signal_pending(self.as_ref()) {
             // membership 已发布后复查，覆盖信号先于 publication 到达的窗口。
             // event completion 与 signal 仅通过同一精确 membership 竞争一次 wake。
-            crate::execution::task::processor::wake_waiting_task(
+            crate::task::processor::wake_waiting_task(
                 self.clone(),
                 WaitMembership::TaskWait(key),
                 Some(WaitResult::Interrupted),
@@ -78,7 +78,7 @@ impl TaskWaitTarget for TaskControlBlock {
             wake_timed_task_event(&self, key, WaitResult::Woken, true);
             return;
         }
-        let woken = crate::execution::task::processor::wake_waiting_task_on_current_cpu(
+        let woken = crate::task::processor::wake_waiting_task_on_current_cpu(
             self,
             WaitMembership::TaskWait(key),
             Some(WaitResult::Woken),
@@ -95,7 +95,7 @@ impl TaskWaitTarget for TaskControlBlock {
             return;
         }
         // Interrupted 可先消费 membership；迟到的 event wake 不能命中下一 ticket。
-        let woken = crate::execution::task::processor::wake_waiting_task(
+        let woken = crate::task::processor::wake_waiting_task(
             self,
             WaitMembership::TaskWait(key),
             Some(WaitResult::Woken),
@@ -122,13 +122,13 @@ pub(super) fn wake_timed_task_event(
     };
     assert!(Arc::ptr_eq(task, &claimed.task));
     if current_cpu {
-        crate::execution::task::processor::wake_waiting_task_on_current_cpu(
+        crate::task::processor::wake_waiting_task_on_current_cpu(
             claimed.task,
             WaitMembership::TaskWait(key),
             Some(result),
         )
     } else {
-        crate::execution::task::processor::wake_waiting_task(
+        crate::task::processor::wake_waiting_task(
             claimed.task,
             WaitMembership::TaskWait(key),
             Some(result),

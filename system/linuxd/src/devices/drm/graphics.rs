@@ -5,13 +5,10 @@ pub(super) use retirement::{VirglCleanup, VirglCleanupAction, VirglCleanupComple
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use spin::Mutex;
+use crate::sync::Mutex;
 
-use crate::{
-    devices::model::{VirglBox, VirglCapsetInfo, VirglCommand, VirglTransferDirection},
-    fallible_tree::{FallibleMap, VacantEntry},
-    memory::{DeviceBacking, DeviceMemoryKind, FrameAllocationClass, PAGE_SIZE},
-};
+use crate::{devices::model::{VirglBox, VirglCapsetInfo, VirglCommand, VirglTransferDirection}, memory::{DeviceBacking, PAGE_SIZE}};
+use fallible_tree::{FallibleMap, VacantEntry};
 
 use super::{
     DrmError, DrmFile, DrmRetry, DrmSubmission, DrmWait, DumbBuffer,
@@ -101,7 +98,7 @@ pub(super) struct VirglBuffer {
     pub(super) lifecycle: Mutex<VirglLifecycle>,
     // OWNER: 等价 dma_resv 的提交保留锁；跨 context 的隐式 wait、queue publication 与 fence 记录不可被插入。
     // 多资源提交按 resource_id 排序并去重获取，防止 ABBA；只用 task mutex，不持 spin guard 睡眠。
-    pub(super) reservation: crate::execution::sync::TaskMutex<()>,
+    pub(super) reservation: crate::sync::TaskMutex<()>,
 }
 
 pub(super) struct VirglLifecycle {
@@ -129,7 +126,7 @@ pub(super) struct VirglAccess {
 impl VirglAccess {
     pub(super) fn reserve(
         &self,
-    ) -> Result<Vec<crate::execution::sync::TaskMutexGuard<'_, ()>>, DrmError> {
+    ) -> Result<Vec<crate::sync::TaskMutexGuard<'_, ()>>, DrmError> {
         let mut guards = Vec::new();
         guards
             .try_reserve_exact(self.buffers.len())
@@ -140,10 +137,10 @@ impl VirglAccess {
                     .reservation
                     .lock_killable()
                     .map_err(|error| match error {
-                        crate::execution::sync::TaskMutexLockError::OutOfMemory => {
+                        crate::sync::TaskMutexLockError::OutOfMemory => {
                             DrmError::OutOfMemory
                         }
-                        crate::execution::sync::TaskMutexLockError::Interrupted => {
+                        crate::sync::TaskMutexLockError::Interrupted => {
                             DrmError::Interrupted
                         }
                     })?,
@@ -164,7 +161,7 @@ impl VirglAccess {
 /// 尚未发布、但已预留 device context identity 的 transaction。
 pub(crate) struct PreparedVirglContext<'file> {
     file: &'file DrmFile,
-    _admission: crate::execution::sync::TaskMutexGuard<'file, ()>,
+    _admission: crate::sync::TaskMutexGuard<'file, ()>,
     reservation: Option<UnpublishedId<u32>>,
     id: u32,
     capset_id: u32,
@@ -242,7 +239,7 @@ pub(crate) struct PreparedVirglResource<'file> {
 /// 未发布时 Drop 用原 AVL node 无分配恢复 handle，不对 host 提交 UNREF。
 pub(crate) struct PreparedVirglClose<'file> {
     file: &'file DrmFile,
-    _admission: crate::execution::sync::TaskMutexGuard<'file, ()>,
+    _admission: crate::sync::TaskMutexGuard<'file, ()>,
     entry: Option<VacantEntry<u32, Arc<VirglAttachment>>>,
 }
 impl PreparedVirglClose<'_> {
@@ -588,7 +585,7 @@ impl DrmFile {
         &'file self,
         capset_id: u32,
         name: &[u8],
-        admission: crate::execution::sync::TaskMutexGuard<'file, ()>,
+        admission: crate::sync::TaskMutexGuard<'file, ()>,
     ) -> Result<PreparedVirglContext<'file>, DrmError> {
         if self.state.lock().context.is_some() {
             return Err(DrmError::AlreadyExists);
@@ -685,8 +682,6 @@ impl DrmFile {
         let backing = Arc::try_new(
             DeviceBacking::try_allocate(
                 pages,
-                FrameAllocationClass::Reclaimable,
-                DeviceMemoryKind::GemShmem,
             )
             .ok_or(DrmError::OutOfMemory)?,
         )
@@ -699,7 +694,7 @@ impl DrmFile {
             width: create.width,
             height: create.height,
             backing,
-            reservation: crate::execution::sync::TaskMutex::new(()),
+            reservation: crate::sync::TaskMutex::new(()),
             lifecycle: Mutex::new(VirglLifecycle {
                 fence: 0,
                 exported: alloc::sync::Weak::new(),

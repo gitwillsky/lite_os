@@ -1,6 +1,6 @@
 use super::thread_selector::scheduler_thread;
 use super::{PROCESS_TABLE, ProcessGraph, ProcessNode, ProcessState};
-use crate::execution::task::{
+use crate::task::{
     TaskControlBlock, current_task, model::RLIMIT_NICE, processor::request_task_reschedule,
 };
 use alloc::{sync::Arc, vec::Vec};
@@ -50,10 +50,10 @@ pub(crate) enum SchedulerNiceSelector {
 
 // 单次 selector 的实际 graph iterator；group 从 membership owner 迭代，不扫描无关进程。
 enum NiceProcesses<'a> {
-    All(crate::fallible_tree::Iter<'a, usize, ProcessNode>),
+    All(fallible_tree::Iter<'a, usize, ProcessNode>),
     Group {
         graph: &'a ProcessGraph,
-        members: crate::fallible_tree::Iter<'a, usize, ()>,
+        members: fallible_tree::Iter<'a, usize, ()>,
     },
 }
 impl<'a> Iterator for NiceProcesses<'a> {
@@ -339,5 +339,5 @@ pub(crate) fn scheduler_policy(
 pub(crate) fn scheduler_rr_interval(tid: usize) -> Result<u64, SchedulerPolicyError> {
     let caller = current_task().ok_or(SchedulerPolicyError::NotFound)?;
     scheduler_thread(tid, &caller).ok_or(SchedulerPolicyError::NotFound)?;
-    Ok(crate::execution::timer::scheduler_quantum_ns())
+    Ok(crate::time::scheduler_quantum_ns())
 }

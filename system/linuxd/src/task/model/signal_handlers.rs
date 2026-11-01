@@ -1,6 +1,6 @@
 //! 可跨 Process 共享的 disposition owner；pending 仍属于各自的 Thread/Process。
 use alloc::sync::Arc;
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use super::{
     PendingSignals, PreparedSignalRecord, RetiredSignals, TaskControlBlock, normalize_signal_mask,
@@ -27,14 +27,14 @@ struct ChildSignalPolicy {
 
 /// child notification 的 lifecycle 来源；job 始终 SIGCHLD，exit 使用真实关系上的 signal。
 #[derive(Clone, Copy)]
-pub(in crate::execution::task) enum ChildSignalKind {
+pub(in crate::task) enum ChildSignalKind {
     Exit,
     Job,
 }
 /// 同锁完成的回收决定与 pending publication 结果；锁外只处理调度唤醒。
-pub(in crate::execution::task) struct ChildSignalPublication {
-    pub(in crate::execution::task) autoreap: bool,
-    pub(in crate::execution::task) queued: bool,
+pub(in crate::task) struct ChildSignalPublication {
+    pub(in crate::task) autoreap: bool,
+    pub(in crate::task) queued: bool,
 }
 
 /// 唯一 disposition table；不拥有 mask、pending 或 Task 引用。
@@ -180,7 +180,7 @@ impl TaskControlBlock {
 impl TaskControlBlock {
     /// 与 SIG_IGN/NOCLD transition 同一 owner 事务完成 policy 和 pending 发布。
     /// 不能缓存 notify 后到锁外重新进入 generation，否则 IGN 清队列之后会重插入旧事件。
-    pub(in crate::execution::task) fn publish_child_signal(
+    pub(in crate::task) fn publish_child_signal(
         &self,
         info: super::PendingSignal,
         kind: ChildSignalKind,
@@ -287,7 +287,7 @@ impl TaskControlBlock {
     }
 
     /// 仅最后一个 Thread 退出调用；graph/state guard 之外析构最后一份表。
-    pub(in crate::execution::task) fn retire_signal_handlers(&self) {
+    pub(in crate::task) fn retire_signal_handlers(&self) {
         let retired = {
             let mut state = self.process().signal_state.lock();
             (state.handlers.take(), state.pending.discard(u64::MAX))
@@ -296,7 +296,7 @@ impl TaskControlBlock {
     }
 
     /// Graph 冻结同组全部 live Thread；忽略 transition 与 pending 丢弃在同一锁事务。
-    pub(in crate::execution::task) fn signal_action_for_threads<'a>(
+    pub(in crate::task) fn signal_action_for_threads<'a>(
         &self,
         threads: impl Iterator<Item = &'a Arc<TaskControlBlock>>,
         signal: usize,

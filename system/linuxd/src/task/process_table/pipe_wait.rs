@@ -7,7 +7,7 @@ struct TaskPipeScheduler;
 static TASK_PIPE_SCHEDULER: TaskPipeScheduler = TaskPipeScheduler;
 
 /// 把 task wait registry 安装为全部 Pipe 的唤醒与阻塞实现。
-pub(in crate::execution::task) fn install_pipe_scheduler() {
+pub(in crate::task) fn install_pipe_scheduler() {
     crate::ipc::install_pipe_scheduler(&TASK_PIPE_SCHEDULER);
 }
 
@@ -91,7 +91,7 @@ fn wake_claimed_pipe(claimed: Option<wait_registry::ClaimedWait>, current_cpu: b
                 IndexedWaitKind::Poll => WaitMembership::Poll(claimed.id),
                 _ => panic!("pipe index contains non-pipe wait"),
             };
-            crate::execution::task::processor::wake_waiting_task_on_current_cpu(
+            crate::task::processor::wake_waiting_task_on_current_cpu(
                 claimed.task,
                 expected,
                 Some(WaitResult::Woken),
@@ -100,14 +100,14 @@ fn wake_claimed_pipe(claimed: Option<wait_registry::ClaimedWait>, current_cpu: b
         }
         match claimed.kind {
             IndexedWaitKind::Pipe { .. } => {
-                crate::execution::task::processor::wake_pipe_task(
+                crate::task::processor::wake_pipe_task(
                     claimed.task,
                     claimed.id,
                     WaitResult::Woken,
                 );
             }
             IndexedWaitKind::Poll => {
-                crate::execution::task::processor::wake_poll_task(
+                crate::task::processor::wake_poll_task(
                     claimed.task,
                     claimed.id,
                     WaitResult::Woken,
@@ -152,7 +152,7 @@ fn wait_for_pipe_until(
         || {
             if pipe.wait_ready(condition) {
                 Some(WaitResult::Woken)
-            } else if deadline.is_some_and(|value| value <= crate::execution::timer::get_time_ns())
+            } else if deadline.is_some_and(|value| value <= crate::time::get_time_ns())
             {
                 Some(WaitResult::TimedOut)
             } else if task.has_deliverable_signal() {

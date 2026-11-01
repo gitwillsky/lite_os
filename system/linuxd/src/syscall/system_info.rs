@@ -1,5 +1,5 @@
 use crate::{
-    execution::task::{SystemInfoSnapshot, current_task, system_info_snapshot},
+    task::{SystemInfoSnapshot, current_task, system_info_snapshot},
     syscall::errno,
 };
 
@@ -74,11 +74,9 @@ fn encode_system_info(snapshot: &SystemInfoSnapshot) -> [u8; SYSINFO_BYTES] {
         );
     }
     // 3. LP64 可直接用 byte-valued RAM 字段，因此 mem_unit 固定为 1；未实现的
-    // highmem/shared/buffer 字段保持零；swap 从唯一 area owner 投影。
+    // highmem/shared/buffer 字段保持零；没有交换设备，swap 字段为零。
     write_u64(&mut bytes, 32, snapshot.total_memory_bytes);
     write_u64(&mut bytes, 40, snapshot.free_memory_bytes);
-    write_u64(&mut bytes, 64, snapshot.total_swap_bytes);
-    write_u64(&mut bytes, 72, snapshot.free_swap_bytes);
     write_u16(
         &mut bytes,
         80,

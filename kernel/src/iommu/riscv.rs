@@ -16,8 +16,8 @@ use native_abi::Status;
 use spin::Mutex;
 
 use super::{Hardware, descriptor_window, map_registers};
-use crate::arch::mmio::MmioBus;
-use crate::fallible_tree::FallibleMap;
+use mmio::MmioBus;
+use fallible_tree::FallibleMap;
 use crate::memory::{FrameAllocationClass, FrameTracker, PAGE_SIZE, PhysicalPageNumber, alloc_contiguous};
 
 const CAPABILITIES: usize = 0x00;
@@ -99,7 +99,7 @@ impl RiscvIommu {
         registers.write_u32(CQT, 0).map_err(error)?;
         registers.write_u32(CQCSR, CQCSR_CQEN).map_err(error)?;
         poll(|| registers.read_u32(CQCSR).is_ok_and(|csr| csr & CQCSR_CQON != 0))?;
-        crate::arch::before_mmio_write();
+        mmio::before_write();
         registers
             .write_u64(DDTP, ppn_field(root.ppn) | DDTP_MODE_2LVL)
             .map_err(error)?;
@@ -126,7 +126,7 @@ impl RiscvIommu {
             write_words(queue.frames.ppn, (queue.tail & mask) as usize * 16, command);
             queue.tail = (queue.tail + 1) & mask;
         }
-        crate::arch::before_mmio_write();
+        mmio::before_write();
         self.registers
             .write_u32(CQT, queue.tail)
             .map_err(|_| native_abi::ERR_INTERNAL)?;
@@ -149,7 +149,7 @@ impl RiscvIommu {
         let leaf = alloc_contiguous(1, FrameAllocationClass::Reclaimable).ok_or(native_abi::ERR_NO_MEMORY)?;
         let page = leaf.ppn;
         leaves.try_insert(root_index, leaf).map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        crate::arch::before_mmio_write();
+        mmio::before_write();
         write_words(self.root.ppn, root_index * 8, &[ppn_field(page) | 1]);
         Ok((page, offset))
     }
@@ -162,7 +162,7 @@ impl Hardware for RiscvIommu {
         let first_stage = FSC_MODE_SV39 | (root.as_usize() as u64);
         // 先写 iohgatp（Bare）、ta 与 fsc，最后置 tc.V。
         write_words(leaf, offset + 8, &[0, translation, first_stage]);
-        crate::arch::before_mmio_write();
+        mmio::before_write();
         write_words(leaf, offset, &[1]);
         let invalidate_directory = OPCODE_IODIR | (1 << 33) | (u64::from(stream) << 40);
         self.submit(&[[invalidate_directory, 0]])

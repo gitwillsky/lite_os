@@ -2,11 +2,9 @@ mod address_space;
 mod alternate_signal_stack;
 mod capabilities;
 mod clone_tid_store;
-mod context_storage;
 mod credentials;
 mod message_identity;
 pub(crate) use message_identity::{MessageIdentity, MessageIdentityError};
-mod cputime_split;
 mod debug;
 mod file_descriptions;
 mod file_table;
@@ -41,37 +39,34 @@ mod thread_retirement;
 mod trap_context;
 mod user_context;
 
-use core::sync::atomic::{AtomicBool, AtomicU64};
+use core::sync::atomic::AtomicBool;
 
 use alloc::{sync::Arc, vec::Vec};
-use spin::Mutex;
 
 use crate::{
-    arch::context::{KernelContext, UserContext},
+    arch::context::UserContext,
     devices::tty::Terminal,
-    execution::sync::{IrqMutex, TaskMutex, TaskMutexWaitPreparation},
-    execution::task::{loader::LoadedExecutable, pid::ProcessId},
-    execution::timer::get_time_us,
+    sync::{Mutex, TaskMutex, TaskMutexWaitPreparation},
+    task::{loader::LoadedExecutable, pid::ProcessId},
+    time::get_time_us,
     file::FileDescriptorTable,
     fs::vfs,
     memory::{
-        ElfLoadError, FutexKey, KERNEL_SPACE, KernelStack, MapPermission, MappingResourceLimits,
-        MemoryError, MemoryMappingOwner, MemoryReclaimer, MemorySet, PageFaultAccess,
-        PageFaultOutcome, SharedFileId, TRAP_CONTEXT, UserAccessError, UserFaultLimits,
-        VirtualAddress,
+        ElfLoadError, FutexKey, MapPermission, MappingResourceLimits, MemoryError, MemorySet,
+        PageFaultAccess, PageFaultOutcome, UserAccessError,
     },
 };
 
-pub(in crate::execution::task) use address_space::AddressSpace;
+pub(in crate::task) use address_space::AddressSpace;
 use alternate_signal_stack::AlternateSignalStack;
 pub(crate) use alternate_signal_stack::{SignalStack, SignalStackError};
 pub(crate) use capabilities::CapabilityError;
 pub(crate) use credentials::CredentialUpdateError;
 use credentials::Credentials;
-pub(in crate::execution::task) use credentials::{
+pub(in crate::task) use credentials::{
     LeaderCredentialsHandle, leader_credential_snapshot, leader_signal_uid,
 };
-pub(in crate::execution::task) use file_table::OpenFdReservation;
+pub(in crate::task) use file_table::OpenFdReservation;
 use file_table::{FileTableHandle, FileTableOwner, try_file_handle};
 use io_accounting::IoAccounting;
 pub(crate) use io_accounting::IoStatistics;
@@ -81,26 +76,24 @@ pub(crate) use process_clone::{CloneParameters, ProcessCloneResources};
 pub(crate) use process_exec::ExecError;
 use process_exec::{process_name, try_elf_arc};
 use process_resources::FsContext;
-pub(in crate::execution::task) use resource_limits::RLIMIT_MEMLOCK;
+pub(in crate::task) use resource_limits::RLIMIT_MEMLOCK;
 use resource_limits::ResourceLimits;
 pub(crate) use resource_limits::{
     RLIM_INFINITY, RLIMIT_AS, RLIMIT_DATA, RLIMIT_NPROC, RLIMIT_STACK, ResourceLimit,
     ResourceLimitError,
 };
-pub(in crate::execution::task) use resource_limits::{RLIMIT_NICE, RLIMIT_SIGPENDING};
-pub(in crate::execution::task) use scheduling::{
-    CpuAffinity, ReadyRetirement, ReadyTransition, uninterruptible_task_count,
-};
-pub(crate) use scheduling::{Sched, SchedulingEntity, WaitMembership};
+pub(in crate::task) use resource_limits::{RLIMIT_NICE, RLIMIT_SIGPENDING, cpu_limits_active};
+pub(in crate::task) use scheduling::{CpuAffinity, runnable_task_count, uninterruptible_task_count};
+pub(crate) use scheduling::{RunState, Sched, SchedulingEntity, StopResume, WaitMembership};
 pub(super) use seccomp::{RetiredSecurity, ThreadSecurityOwner, ValidatedFilter};
 pub(crate) use seccomp::{SeccompDecision, SeccompError};
-pub(in crate::execution::task) use signal_dequeue::SignalQueue;
+pub(in crate::task) use signal_dequeue::SignalQueue;
 use signal_handlers::ProcessSignalState;
 pub(crate) use signal_handlers::SignalAction;
-pub(in crate::execution::task) use signal_handlers::{ChildSignalKind, ChildSignalPublication};
+pub(in crate::task) use signal_handlers::{ChildSignalKind, ChildSignalPublication};
 pub(crate) use signal_info::PendingSignal;
 use signal_pending::PendingSignals;
-pub(in crate::execution::task) use signal_pending::{
+pub(in crate::task) use signal_pending::{
     PreallocatedSignal, PreparedSignalRecord, RetiredSignals, TimerSignalDelivery,
 };
 pub(crate) use signal_state::{SignalDelivery, SignalFrameRestoreError};
@@ -111,66 +104,23 @@ use thread_mm::{MmHandle, try_mm_handle};
 use thread_retirement::ThreadRetirements;
 pub(crate) use usage_accounting::ResourceUsage;
 use usage_accounting::{ReapedChildrenUsage, UsageAccounting};
-use user_context::{ContextBacking, ContextBinding, ContextOwner};
+use user_context::UserContextCell;
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum RunState {
-    New,
-    Ready {
-        cpu: crate::execution::cpu::CpuId,
-        generation: u64,
-    },
-    Running {
-        cpu: crate::execution::cpu::CpuId,
-    },
-    Preempting {
-        cpu: crate::execution::cpu::CpuId,
-    },
-    Blocking {
-        cpu: crate::execution::cpu::CpuId,
-    },
-    Blocked,
-    WakePending {
-        cpu: crate::execution::cpu::CpuId,
-    },
-    StopPending {
-        cpu: crate::execution::cpu::CpuId,
-        transition: StopTransition,
-    },
-    Stopped {
-        resume: StopResume,
-    },
-    Exited,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum StopTransition {
-    Running,
-    Preempting,
-    Blocking,
-    WakePending,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub(crate) enum StopResume {
-    New,
-    Runnable,
-    Blocked,
-}
-#[derive(Debug)]
 struct ThreadContext {
     // OWNER: 此 Thread 独占 16 字节 Linux comm；clone 拷贝 caller 的值，不共享 sibling 的可变名称。
     // Process 只保留 leader 的同一 Arc，退出保留名称而不 pin TCB/mm；exec 重指 survivor。
     // FAILURE: 进程级可变名称会被 pthread_setname_np 覆盖，使 /proc 把后台 worker 当成应用名称。
     comm: Arc<Mutex<[u8; 16]>>,
-    // OWNER: binding 先于 TaskControlBlock.execution 中的 kernel stack backing 析构；正常退出/
-    // rollback 还会显式 retire，字段顺序保证兜底 drop 也先销毁裸 pointer wrapper，再解除
-    // AArch64 kernel-stack mapping。
-    user_context: ContextOwner<UserContext>,
-    // OWNER: 在 context binding 之后析构；root Arc 计入实际 mm_users，exit 显式移交旧 mm token。
+    // OWNER: 线程独占的用户寄存器与首次进入时装入的浮点状态。
+    user_context: UserContextCell,
+    // OWNER: 承载线程绑定的 restricted 状态映射；承载线程启动时安装，exec 换承载线程时替换，
+    // 随 Thread 释放解除映射。缺失时每个退出的线程在服务共享区泄漏一页映射。
+    restricted: Mutex<Option<native_runtime::restricted::BoundState>>,
+    // OWNER: 退出路径已把本线程的 CPU 时间并入进程累计；此后进程口径不再计入本线程的实时值。
+    // 缺失时线程从并入到摘图之间被重复计算，SIGCHLD/wait4 的 rusage 偏大。
+    cpu_time_retired: AtomicBool,
+    // OWNER: root Arc 计入实际 mm_users，exit 显式移交旧 mm token。
     mm: MmHandle,
-    kernel_trap_handler: crate::arch::trap::UserTrapEntry,
-    kernel_trap_return: crate::arch::context::KernelResume,
     // OWNER: 所有 Thread 预留唯一可复用 mm cleanup waiter；context/robust/clearTid 共用，
     // 退出显式移交 token。缺失它会在 PONR 后因同 mm sibling 争用和 waiter OOM 漏清理。
     memory_cleanup_wait: Mutex<Option<TaskMutexWaitPreparation>>,
@@ -223,7 +173,7 @@ struct ParentDeathState {
 }
 
 /// Process 级资源 owner；graph 保留至 reap，各 Thread 的可退休 handle 仍决定实际资源 lifetime。
-pub(in crate::execution::task) struct Process {
+pub(in crate::task) struct Process {
     tgid: ProcessId,
     // OWNER: 只别名原 leader 的同一 comm owner；读取先 clone Arc 再释放外锁，不嵌套名称锁。
     // 原 leader 退出仍保留 16 字节名称；exec 将只读别名重指 survivor，不复制可变状态。
@@ -254,11 +204,11 @@ pub(in crate::execution::task) struct Process {
     // AddressSpace，vfork parent/child 的独立 prlimit policy 会被错误合并。
     resource_limits: Arc<Mutex<ResourceLimits>>,
     // CACHE: ResourceLimits 仍是唯一 limit owner；false 只在 RLIMIT_CPU soft/hard 都无限时
-    // 发布。有限 limit 发布前先置 true，缺失该顺序会让 context switch 漏发 SIGXCPU/SIGKILL。
-    cpu_limit_active: AtomicBool,
-    // OWNER: Process 的全部 Thread 只累计到这一份 CPU runtime；缺失时 RLIMIT_CPU 会被
-    // 每个 Thread 单独计算，使多线程程序实际获得 limit 的倍数时间。
-    cpu_runtime_us: Arc<AtomicU64>,
+    // 发布。有限 limit 发布前先置 true，缺失该顺序会让 deferred 采样漏发 SIGXCPU/SIGKILL。
+    cpu_limit_active: resource_limits::CpuLimitActivity,
+    // OWNER: 已退出 Thread 的 CPU 时间与切换计数之和；存活 Thread 的值按需向内核查询。
+    // 缺失时已退出 worker 的时间会从 RLIMIT_CPU 与 getrusage 的进程口径中消失。
+    retired_runtime: Arc<Mutex<usage_accounting::CpuUsage>>,
     // OWNER: Process 的全部 Thread 同步累计到这一份使用量 counters（`RUSAGE_SELF`）；
     // 缺失时已退出 worker 的 fault/切换历史会从进程口径消失。
     usage: UsageAccounting,
@@ -275,19 +225,23 @@ pub(in crate::execution::task) struct Process {
     signal_state: Mutex<ProcessSignalState>,
 }
 
-/// 用户任务与内核线程共有的执行体：调度身份、内核栈与内核上下文。
-#[derive(Debug)]
+/// 用户任务与内核线程共有的执行体：调度身份、创建时刻与承载线程。
 struct ExecutionContext {
     // OWNER: 当前 identity 只有一个 Arc；exec 同 graph publication guard 替换，不镜像 raw TID。
     identity: Mutex<Arc<crate::namespace::PidIdentity>>,
     // OWNER: 执行体独占创建时刻；若复用 Process 创建时刻，后建 pthread 的
     // `/proc/<tgid>/task/<tid>/stat` starttime 会错误回退到主线程启动时间。
     start_time_us: u64,
-    kernel_stack: KernelStack,
-    kernel_cx: Mutex<KernelContext>,
+    // OWNER: 承载本执行体的 native 线程；启动时发布，exec 换承载线程时替换。唤醒者经它 unpark，
+    // 信号投递经它 kick；缺失时阻塞中的线程无法被唤醒。
+    carrier: Mutex<Option<Arc<native_runtime::thread::Descriptor>>>,
+    // OWNER: 已创建、尚未启动的承载线程：新执行体在发布前准备（失败即 ENOMEM），入队时启动；
+    // exec 在 PONR 前为新地址空间准备，Linux 线程主循环在安全点交接。缺失时发布后才创建线程，
+    // 失败将无处报告。
+    prepared_carrier: Mutex<Option<native_runtime::thread::PreparedThread<()>>>,
 }
 
-/// 内核线程主体；首次调度时由 `run_kernel_thread` 取走并运行一次，返回即终止该线程。
+/// 内核线程主体；承载线程首次运行时取走并运行一次，返回即终止该线程。
 pub(crate) type KernelThreadBody = alloc::boxed::Box<dyn FnOnce() + Send>;
 
 /// 调度实体承载的执行种类。
@@ -338,16 +292,9 @@ impl TaskControlBlock {
         let identity = pid.identity().clone();
         let file_wait =
             TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?;
-        let kernel_stack = KernelStack::try_new()?;
-        let kernel_stack_top = kernel_stack.get_top();
-        let cpu_runtime_us =
-            Arc::try_new(AtomicU64::new(0)).map_err(|_| MemoryError::OutOfMemory)?;
-        let scheduling = SchedulingEntity::try_new(
-            Sched::new(0, 0, cpu_runtime_us),
-            CpuAffinity::all_possible(),
-            crate::execution::cpu::current_id().index(),
-        )
-        .map_err(|_| MemoryError::OutOfMemory)?;
+        let scheduling = SchedulingEntity::try_new(Sched::new(0), CpuAffinity::all_possible(), 0)
+            .map_err(|_| MemoryError::OutOfMemory)?;
+        let prepared_carrier = crate::trap::prepare_kernel_carrier(name)?;
         Ok(Self {
             kind: TaskKind::Kernel(KernelThread::new(
                 pid,
@@ -359,18 +306,15 @@ impl TaskControlBlock {
             execution: ExecutionContext {
                 identity: Mutex::new(identity),
                 start_time_us: get_time_us(),
-                kernel_stack,
-                kernel_cx: Mutex::new(KernelContext::goto_trap_return(
-                    kernel_stack_top,
-                    crate::execution::task::run_kernel_thread,
-                )),
+                carrier: Mutex::new(None),
+                prepared_carrier: Mutex::new(Some(prepared_carrier)),
             },
             scheduling,
         })
     }
 
     /// 主体已返回后归还实际 PID 编号；必须在撤销 Processor current 之前、所有 guard 外完成。
-    pub(in crate::execution::task) fn retire_kernel_pid(&self) {
+    pub(in crate::task) fn retire_kernel_pid(&self) {
         let TaskKind::Kernel(thread) = &self.kind else {
             panic!("only kernel-thread exit retires kernel PID");
         };
@@ -378,7 +322,7 @@ impl TaskControlBlock {
     }
 
     /// graph guard 内的 kernel execution source；返回旧 Weak，由 caller 在 guard 外释放。
-    pub(in crate::execution::task) fn kernel_pidfd_source(
+    pub(in crate::task) fn kernel_pidfd_source(
         &self,
         replacement: Option<&Arc<crate::fs::pidfs::PidFdSource>>,
     ) -> (
@@ -400,13 +344,37 @@ impl TaskControlBlock {
         (source, retired)
     }
 
+    /// 承载本执行体的 native 线程。
+    pub(crate) fn carrier(&self) -> Option<Arc<native_runtime::thread::Descriptor>> {
+        self.execution.carrier.lock().clone()
+    }
+
+    /// 发布（或在 exec 换承载线程时替换）承载线程，返回旧的承载线程。
+    pub(crate) fn set_carrier(
+        &self,
+        carrier: Option<Arc<native_runtime::thread::Descriptor>>,
+    ) -> Option<Arc<native_runtime::thread::Descriptor>> {
+        core::mem::replace(&mut *self.execution.carrier.lock(), carrier)
+    }
+
+    /// 取出已准备的承载线程（入队启动或 exec 交接）。
+    pub(crate) fn take_prepared_carrier(&self) -> Option<native_runtime::thread::PreparedThread<()>> {
+        self.execution.prepared_carrier.lock().take()
+    }
+
+    /// 安装 exec 为新地址空间准备的承载线程。
+    pub(in crate::task) fn set_prepared_carrier(&self, carrier: native_runtime::thread::PreparedThread<()>) {
+        let previous = self.execution.prepared_carrier.lock().replace(carrier);
+        assert!(previous.is_none(), "carrier prepared twice");
+    }
+
     /// 返回该实体是否为内核线程。
-    pub(in crate::execution::task) fn is_kernel_thread(&self) -> bool {
+    pub(in crate::task) fn is_kernel_thread(&self) -> bool {
         matches!(self.kind, TaskKind::Kernel(_))
     }
 
     /// 已知 kernel execution 的实际 diagnostic comm；不从用户 Process 构造名称。
-    pub(in crate::execution::task) fn kernel_thread_name(&self) -> &'static str {
+    pub(in crate::task) fn kernel_thread_name(&self) -> &'static str {
         let TaskKind::Kernel(thread) = &self.kind else {
             panic!("kernel comm requires kernel execution");
         };
@@ -418,7 +386,7 @@ impl TaskControlBlock {
     /// # Panics
     ///
     /// 用户任务或主体已被取走时 panic。
-    pub(in crate::execution::task) fn take_kernel_thread_body(&self) -> KernelThreadBody {
+    pub(crate) fn take_kernel_thread_body(&self) -> KernelThreadBody {
         let TaskKind::Kernel(thread) = &self.kind else {
             panic!("user task {} has no kernel thread body", self.tid());
         };
@@ -429,7 +397,7 @@ impl TaskControlBlock {
     ///
     /// 内核线程只运行 `run_kernel_thread` 主体，从不进入 user trap、syscall、signal delivery
     /// 或 process lifecycle，这些是本访问器的全部调用方；因此内核线程分支不可达。
-    pub(in crate::execution::task) fn process(&self) -> &Arc<Process> {
+    pub(in crate::task) fn process(&self) -> &Arc<Process> {
         match &self.kind {
             TaskKind::User { process, .. } => process,
             TaskKind::Kernel(thread) => {
@@ -459,8 +427,6 @@ impl TaskControlBlock {
     pub(super) fn new_with_pid(
         loaded: &LoadedExecutable,
         pid: ProcessId,
-        kernel_trap_handler: crate::arch::trap::UserTrapEntry,
-        kernel_trap_return: crate::arch::context::KernelResume,
         environment: &[Vec<u8>],
     ) -> Result<Self, ElfLoadError> {
         let resource_limits = ResourceLimits::defaults();
@@ -486,17 +452,18 @@ impl TaskControlBlock {
             address_space_limit,
             data_limit,
         )?;
-        let kernel_stack = KernelStack::try_new()?;
-        let kernel_stack_top = kernel_stack.get_top();
-        let context_binding =
-            ContextBinding::for_placement(kernel_stack.user_context_address(), TRAP_CONTEXT);
         let identity = pid.identity().clone();
         let address_space = AddressSpace::new(memory_set, crate::namespace::initial_user())?;
         let mm = try_mm_handle(address_space.clone())?;
-        let user_context = address_space.bind_user_context(context_binding)?;
+        let user_context = UserContextCell::new(
+            UserContext::new(entry_point, user_sp),
+            crate::arch::fp::FpState::default(),
+        );
+        let prepared_carrier =
+            crate::trap::prepare_user_carrier(address_space.process()).map_err(ElfLoadError::from)?;
         let memory_cleanup_wait =
             Some(TaskMutexWaitPreparation::prepare().map_err(|_| ElfLoadError::OutOfMemory)?);
-        let cpu_runtime_us = try_elf_arc(AtomicU64::new(0))?;
+        let retired_runtime = try_elf_arc(Mutex::new(usage_accounting::CpuUsage::default()))?;
         let io_accounting = try_elf_arc(IoAccounting::default())?;
         let thread_io = try_elf_arc(IoAccounting::default())?;
         let start_time_us = get_time_us();
@@ -521,12 +488,8 @@ impl TaskControlBlock {
             TaskMutexWaitPreparation::prepare().map_err(|_| ElfLoadError::OutOfMemory)?;
         let sem_undo =
             crate::ipc::SemaphoreUndoHandle::new().map_err(|_| ElfLoadError::OutOfMemory)?;
-        let scheduling = SchedulingEntity::try_new(
-            Sched::new(0, 0, cpu_runtime_us.clone()),
-            CpuAffinity::all_possible(),
-            crate::execution::cpu::current_id().index(),
-        )
-        .map_err(|_| ElfLoadError::OutOfMemory)?;
+        let scheduling = SchedulingEntity::try_new(Sched::new(0), CpuAffinity::all_possible(), 0)
+            .map_err(|_| ElfLoadError::OutOfMemory)?;
         let leader_credentials = try_elf_arc(Mutex::new(credentials.clone()))?;
         let signal_handlers =
             ProcessSignalState::try_default_handlers().map_err(|_| ElfLoadError::OutOfMemory)?;
@@ -546,8 +509,8 @@ impl TaskControlBlock {
             credential_guard: TaskMutex::new(()),
             retirements: try_elf_arc(ThreadRetirements::new())?,
             resource_limits: try_elf_arc(Mutex::new(resource_limits))?,
-            cpu_limit_active: AtomicBool::new(cpu_limit_active),
-            cpu_runtime_us: cpu_runtime_us.clone(),
+            cpu_limit_active: resource_limits::CpuLimitActivity::new(cpu_limit_active),
+            retired_runtime: retired_runtime.clone(),
             usage: UsageAccounting::default(),
             reaped_children: ReapedChildrenUsage::default(),
             io_accounting: io_accounting.clone(),
@@ -561,8 +524,8 @@ impl TaskControlBlock {
                     comm,
                     mm,
                     user_context,
-                    kernel_trap_handler,
-                    kernel_trap_return,
+                    restricted: Mutex::new(None),
+                    cpu_time_retired: AtomicBool::new(false),
                     memory_cleanup_wait: Mutex::new(memory_cleanup_wait),
                     clear_child_tid: Mutex::new(None),
                     robust_list: Mutex::new(None),
@@ -587,23 +550,11 @@ impl TaskControlBlock {
             execution: ExecutionContext {
                 identity: Mutex::new(identity),
                 start_time_us,
-                kernel_stack,
-                kernel_cx: Mutex::new(KernelContext::goto_trap_return(
-                    kernel_stack_top,
-                    crate::execution::task::resume_new_task,
-                )),
+                carrier: Mutex::new(None),
+                prepared_carrier: Mutex::new(Some(prepared_carrier)),
             },
             scheduling,
         };
-
-        // prepare UserContext in user space
-        tcb.replace_user_context(UserContext::app_init_context(
-            entry_point,
-            user_sp,
-            KERNEL_SPACE.wait().lock().kernel_trap_token(),
-            kernel_stack_top,
-            kernel_trap_handler,
-        ));
         Ok(tcb)
     }
 
@@ -621,7 +572,7 @@ impl TaskControlBlock {
     /// 成功返回 New Thread；任何映射失败都不发布 scheduler membership。
     pub(super) fn clone_thread(
         &self,
-        identity: Arc<crate::execution::task::pid::PidIdentity>,
+        identity: Arc<crate::task::pid::PidIdentity>,
         parameters: &CloneParameters,
         resources: &ThreadCloneResources,
     ) -> Result<Self, MemoryError> {
@@ -641,42 +592,27 @@ impl TaskControlBlock {
         let sem_undo = self
             .prepare_semaphore_undo(resources.share_sem_undo)
             .map_err(|_| MemoryError::OutOfMemory)?;
-        let kernel_stack = KernelStack::try_new()?;
-        let kernel_stack_top = kernel_stack.get_top();
         let address_space = self.address_space();
         let mm = try_mm_handle(address_space.clone())?;
-        let policy = self
-            .scheduling
-            .policy
-            .lock()
-            .forked(self.process().cpu_runtime_us.clone());
+        let policy = self.scheduling.policy.lock().forked();
         let cpu_affinity = self.scheduling.state.lock().cpu_affinity;
         let scheduling = SchedulingEntity::try_new(
             policy,
             cpu_affinity,
-            self.scheduling
-                .last_cpu
-                .load(core::sync::atomic::Ordering::Relaxed),
+            self.scheduling.last_cpu.load(core::sync::atomic::Ordering::Relaxed),
         )
         .map_err(|_| MemoryError::OutOfMemory)?;
         let thread_io =
             Arc::try_new(IoAccounting::default()).map_err(|_| MemoryError::OutOfMemory)?;
         let signal_mask = Arc::try_new(Mutex::new(*self.thread().signal_mask.lock()))
             .map_err(|_| MemoryError::OutOfMemory)?;
-        let kernel_context_address = kernel_stack.user_context_address();
         let memory_cleanup_wait =
             Some(TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?);
-        let user_context = if let Some(address) = kernel_context_address {
-            address_space.bind_user_context(ContextBinding::kernel_stack(address))?
-        } else {
-            address_space.allocate_thread_context()?
-        };
         let mut child_trap = self.snapshot_user_context_for_clone();
-        child_trap.prepare_clone(
-            (parameters.stack != 0).then_some(parameters.stack),
-            parameters.tls,
-            kernel_stack_top,
-        );
+        child_trap.prepare_clone((parameters.stack != 0).then_some(parameters.stack), parameters.tls);
+        // clone 在调用线程上执行：此刻硬件浮点寄存器就是父线程的状态，子线程继承它。
+        let user_context = UserContextCell::new(child_trap, crate::arch::fp::capture());
+        let prepared_carrier = crate::trap::prepare_user_carrier(address_space.process())?;
         let child = Self {
             kind: TaskKind::User {
                 process: self.process().clone(),
@@ -684,8 +620,8 @@ impl TaskControlBlock {
                     comm,
                     mm,
                     user_context,
-                    kernel_trap_handler: self.thread().kernel_trap_handler,
-                    kernel_trap_return: self.thread().kernel_trap_return,
+                    restricted: Mutex::new(None),
+                    cpu_time_retired: AtomicBool::new(false),
                     memory_cleanup_wait: Mutex::new(memory_cleanup_wait),
                     clear_child_tid: Mutex::new(parameters.clear_child_tid),
                     robust_list: Mutex::new(None),
@@ -711,15 +647,11 @@ impl TaskControlBlock {
             execution: ExecutionContext {
                 identity: Mutex::new(identity),
                 start_time_us: get_time_us(),
-                kernel_stack,
-                kernel_cx: Mutex::new(KernelContext::clone_for_trap_return(
-                    kernel_stack_top,
-                    crate::execution::task::resume_new_task,
-                )),
+                carrier: Mutex::new(None),
+                prepared_carrier: Mutex::new(Some(prepared_carrier)),
             },
             scheduling,
         };
-        child.replace_user_context(child_trap);
         Ok(child)
     }
 
@@ -737,7 +669,7 @@ impl TaskControlBlock {
     /// # Returns
     ///
     /// 修改前的 signal；调用者在 process-graph lock 内完成 parent-exit 排序。
-    pub(in crate::execution::task) fn parent_death_signal(
+    pub(in crate::task) fn parent_death_signal(
         &self,
         replacement: Option<usize>,
     ) -> usize {
@@ -758,7 +690,7 @@ impl TaskControlBlock {
     /// # Returns
     ///
     /// 无返回值；signal 为零时不生成事件。
-    pub(in crate::execution::task) fn mark_parent_death(&self, info: PendingSignal) {
+    pub(in crate::task) fn mark_parent_death(&self, info: PendingSignal) {
         let mut state = self.thread().parent_death.lock();
         if state.signal != 0 {
             state.pending = Some((state.signal, info));
@@ -770,7 +702,7 @@ impl TaskControlBlock {
     /// # Returns
     ///
     /// `(signal,info)`；没有待投递事件时为 `None`。
-    pub(in crate::execution::task) fn take_parent_death(&self) -> Option<(usize, PendingSignal)> {
+    pub(in crate::task) fn take_parent_death(&self) -> Option<(usize, PendingSignal)> {
         self.thread().parent_death.lock().pending.take()
     }
 

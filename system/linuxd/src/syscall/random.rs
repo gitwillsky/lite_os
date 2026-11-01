@@ -1,4 +1,4 @@
-use crate::{execution::task::current_task, random::EntropyBatch, syscall::errno};
+use crate::{task::current_task, random::EntropyBatch, syscall::errno};
 
 use super::getrandom_flags::getrandom_flags_supported;
 

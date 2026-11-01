@@ -2,7 +2,7 @@
 use super::quota::{UserQuotas, UserResource, UserResourceCharge};
 use super::{IdMap, NamespaceError};
 use alloc::sync::Arc;
-use spin::Mutex;
+use crate::sync::Mutex;
 use syscall_abi::capability::Capability;
 
 /// proc map 控制文件种类；不把 UID/GID 与 setgroups 写成另一路 credential policy。

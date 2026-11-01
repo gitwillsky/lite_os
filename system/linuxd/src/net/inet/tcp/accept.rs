@@ -2,7 +2,8 @@ use alloc::{sync::Arc, vec::Vec};
 
 use smoltcp::socket::tcp;
 
-use crate::{fallible_tree::FallibleMap, ipc::PipeEnd};
+use crate::{ipc::PipeEnd};
+use fallible_tree::FallibleMap;
 
 use super::*;
 
@@ -134,7 +135,7 @@ pub(in crate::net::inet) fn accept(
         .write(InetSocket {
             memory,
             endpoint: InetEndpoint::Tcp(id),
-            operation: spin::Mutex::new(Some(InetEndpoint::Tcp(id))),
+            operation: crate::sync::Mutex::new(Some(InetEndpoint::Tcp(id))),
             notify_read: notify.0,
             notify_write: notify.1,
             timeouts,

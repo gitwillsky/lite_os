@@ -75,12 +75,12 @@ impl DeviceFile for Ring {
         if !request.shared || request.executable || !request.writable {
             return Err(DeviceError::Errno(errno::EINVAL));
         }
-        let (backing, identity) = self
+        let backing = self
             .region(offset)
             .ok_or(DeviceError::Errno(errno::EINVAL))?;
         if length == 0 || length > backing.pages() * PAGE_SIZE {
             return Err(DeviceError::Errno(errno::EINVAL));
         }
-        Ok(DeviceMappingSource::new(identity, backing))
+        Ok(DeviceMappingSource::new(backing))
     }
 }

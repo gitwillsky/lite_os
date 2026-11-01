@@ -24,11 +24,8 @@ use super::{
     mount::{FileSystemType, MountRequest},
     permission::OwnerModeState,
 };
-use crate::{
-    execution::sync::{TaskMutex, TaskMutexGuard},
-    fallible_tree::FallibleMap,
-    memory::SharedFileId,
-};
+use crate::{sync::{TaskMutex, TaskMutexGuard}, memory::SharedFileId};
+use fallible_tree::FallibleMap;
 use directory::{Directory, FIRST_ENTRY_COOKIE};
 
 mod directory;
@@ -109,7 +106,7 @@ pub(crate) struct TmpInode {
     parent: AtomicU64,
     state: TaskMutex<State>,
     // 目录拆除链的下一个节点，只在 `Drop` 的拆除循环里使用；见 `Drop for TmpInode`。
-    next_reap: spin::Mutex<Option<Arc<TmpInode>>>,
+    next_reap: crate::sync::Mutex<Option<Arc<TmpInode>>>,
 }
 
 impl Drop for TmpInode {
@@ -130,7 +127,7 @@ impl Drop for TmpInode {
 }
 
 fn now_seconds() -> u64 {
-    crate::execution::timer::get_realtime_ns() / 1_000_000_000
+    crate::time::get_realtime_ns() / 1_000_000_000
 }
 
 fn lock_error<T>(_: T) -> FileSystemError {
@@ -202,7 +199,7 @@ impl TmpInode {
             body,
             write_access: super::InodeWriteAccess::new(),
             parent: AtomicU64::new(parent),
-            next_reap: spin::Mutex::new(None),
+            next_reap: crate::sync::Mutex::new(None),
             state: TaskMutex::new(State {
                 xattrs: super::xattr::Xattrs::new(),
                 mode,
@@ -510,7 +507,7 @@ impl Inode for TmpInode {
     ) -> Result<(), FileSystemError> {
         // Success has already published pages/length: reserve the metadata waiter before mutation.
         let mut wait =
-            crate::execution::sync::TaskMutexWaitPreparation::prepare().map_err(lock_error)?;
+            crate::sync::TaskMutexWaitPreparation::prepare().map_err(lock_error)?;
         self.file()?.allocate_with_metadata(offset, length, || {
             self.remove_write_privileges_prepared(identity, &mut wait)
         })

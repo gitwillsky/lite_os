@@ -1,104 +1,117 @@
-//! System V 共享映射的实际 VMA membership；backing Arc 本身不表示挂接。
-mod statistics;
-pub(in crate::memory) use statistics::{SharedPageResidency, SharedPageStatistics};
+//! SysV 共享内存：段的后备对象，以及映射对段附加计数（`shm_nattch`）的成员关系。
 
-use super::MemoryError;
-use crate::execution::sync::{TaskMutex, TaskMutexGuard};
 use alloc::sync::Arc;
 use core::fmt::Debug;
 use core::sync::atomic::{AtomicBool, Ordering};
 
-use super::SharedMemoryBacking;
+use super::{MemoryError, MemoryObject, PAGE_SIZE};
+use crate::sync::{TaskMutex, TaskMutexGuard};
 
-/// 一个实际 anonymous shared backing 的 swap admission；与 IPC 元数据/配额分属不同事实。
-/// PageOp→此 gate，SHM_LOCK 在 namespace/segment guard 外等待此 gate，随后短事务发布。
-pub(in crate::memory) struct SharedMemorySwapPolicy {
-    gate: TaskMutex<()>,
-    // OWNER: 唯一 unevictable fact。Acquire/Release 只用于 stat 投影，mutation 必须同时持 gate。
+/// 一个段的内容：匿名 VMO 与 `SHM_LOCK` 状态。
+#[derive(Debug)]
+pub(crate) struct SharedMemoryBacking {
+    object: Arc<MemoryObject>,
+    // OWNER: 串行化 SHM_LOCK/SHM_UNLOCK 与配额收费；`locked` 只在持有它时修改。
+    lock_gate: TaskMutex<()>,
     locked: AtomicBool,
 }
-impl Debug for SharedMemorySwapPolicy {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("SharedMemorySwapPolicy")
-            .finish_non_exhaustive()
-    }
-}
-pub(crate) struct SharedMemorySwapPolicyGuard<'a> {
-    policy: &'a SharedMemorySwapPolicy,
+
+/// 持有 `SHM_LOCK` 修改权的凭证。
+pub(crate) struct SharedMemoryLockGuard<'a> {
+    backing: &'a SharedMemoryBacking,
     _gate: TaskMutexGuard<'a, ()>,
 }
-impl SharedMemorySwapPolicy {
-    pub(in crate::memory) fn new() -> Self {
-        Self {
-            gate: TaskMutex::new(()),
-            locked: AtomicBool::new(false),
-        }
-    }
-    pub(in crate::memory) fn locked(&self) -> bool {
-        self.locked.load(Ordering::Acquire)
-    }
-    pub(in crate::memory) fn freeze(&self) -> Result<SharedMemorySwapPolicyGuard<'_>, MemoryError> {
-        Ok(SharedMemorySwapPolicyGuard {
-            policy: self,
-            _gate: self.gate.lock().map_err(|_| MemoryError::OutOfMemory)?,
-        })
-    }
-    pub(in crate::memory) fn try_swap(&self) -> Option<TaskMutexGuard<'_, ()>> {
-        let guard = self.gate.try_lock()?;
-        (!self.locked()).then_some(guard)
-    }
-}
-impl SharedMemorySwapPolicyGuard<'_> {
-    /// caller 在实际 segment guard 内同时移交配额 capability；本 guard 封闭在途 swap。
+
+impl SharedMemoryLockGuard<'_> {
+    /// 记录锁定状态（内核不换出页，锁定只影响 `SHM_LOCKED` 与配额）。
     pub(crate) fn set_locked(&self, value: bool) {
-        self.policy.locked.store(value, Ordering::Release);
+        self.backing.locked.store(value, Ordering::Release);
     }
 }
 
-/// task 装配的标准 shm VMA 生命周期；每次调用取得实际执行者的 PID 与 realtime。
-/// 实现不得持有 Task/mm；open 不分配，close 的最终 backing 退休须在 MM guard 外。
+impl SharedMemoryBacking {
+    /// 分配 `pages` 页零内容段。
+    ///
+    /// # Errors
+    ///
+    /// 内存不足。
+    pub(crate) fn allocate(pages: usize) -> Result<Arc<Self>, MemoryError> {
+        let bytes = pages.checked_mul(PAGE_SIZE).ok_or(MemoryError::OutOfMemory)?;
+        Arc::try_new(Self {
+            object: MemoryObject::anonymous(bytes, false)?,
+            lock_gate: TaskMutex::new(()),
+            locked: AtomicBool::new(false),
+        })
+        .map_err(|_| MemoryError::OutOfMemory)
+    }
+
+    /// 后备对象。
+    pub(crate) fn object(&self) -> &Arc<MemoryObject> {
+        &self.object
+    }
+
+    /// `SHM_LOCKED`。
+    pub(crate) fn locked(&self) -> bool {
+        self.locked.load(Ordering::Acquire)
+    }
+
+    /// 取得锁定状态的修改权。
+    ///
+    /// # Errors
+    ///
+    /// 等待者分配失败。
+    pub(crate) fn freeze_lock_state(&self) -> Result<SharedMemoryLockGuard<'_>, MemoryError> {
+        Ok(SharedMemoryLockGuard {
+            backing: self,
+            _gate: self.lock_gate.lock().map_err(|_| MemoryError::OutOfMemory)?,
+        })
+    }
+
+    /// `(驻留页, 换出页)`；内核不换出页，后者恒为 0。
+    pub(crate) fn shared_memory_statistics(&self) -> (usize, usize) {
+        (self.object.committed_bytes().unwrap_or(0) as usize / PAGE_SIZE, 0)
+    }
+}
+
+/// 一次 `shmat` 的附加身份：每个实际 VMA 新增时 `open`，释放时 `close`（维护 nattch、atime/dtime）。
 pub(crate) trait SharedMemoryVma: Debug + Send + Sync {
-    /// 一个实际 VMA 新增（初始映射、fork 或 split）。
     fn open(&self);
-    /// 一个实际 VMA 在 translation fence 后释放。
     fn close(&self);
 }
 
-/// 已通过 IPC DAC 和临时 nattch reservation 的映射输入；clone 只保活准备资源。
+/// 已授权的映射输入。
 #[derive(Clone, Debug)]
 pub(crate) struct SharedMemoryMappingSource {
     pub(crate) backing: Arc<SharedMemoryBacking>,
     pub(crate) lifetime: Arc<dyn SharedMemoryVma>,
-    /// SHM_RDONLY 的 VM_MAYWRITE ceiling 不随 IPC_SET 或 mprotect 改变。
+    /// `SHM_RDONLY` 决定的写权限上限。
     pub(crate) may_write: bool,
 }
 
-/// 每个实际 MapArea 恰好拥有一个计数；临时 source/observer Arc 不进入 nattch。
+/// 一个 VMA 对段的成员关系：克隆（拆分、fork）时 `open`，释放时 `close`。
 #[derive(Debug)]
-pub(in crate::memory) struct SharedMemoryVmaMembership {
-    pub(in crate::memory) lifetime: Arc<dyn SharedMemoryVma>,
-    pub(in crate::memory) may_write: bool,
+pub(crate) struct SharedMemoryMembership {
+    pub(crate) source: SharedMemoryMappingSource,
 }
-impl SharedMemoryVmaMembership {
-    pub(in crate::memory) fn new(source: SharedMemoryMappingSource) -> Self {
+
+impl SharedMemoryMembership {
+    pub(crate) fn new(source: SharedMemoryMappingSource) -> Self {
         source.lifetime.open();
-        Self {
-            lifetime: source.lifetime,
-            may_write: source.may_write,
-        }
+        Self { source }
     }
 }
-impl Clone for SharedMemoryVmaMembership {
+
+impl Clone for SharedMemoryMembership {
     fn clone(&self) -> Self {
-        self.lifetime.open();
+        self.source.lifetime.open();
         Self {
-            lifetime: self.lifetime.clone(),
-            may_write: self.may_write,
+            source: self.source.clone(),
         }
     }
 }
-impl Drop for SharedMemoryVmaMembership {
+
+impl Drop for SharedMemoryMembership {
     fn drop(&mut self) {
-        self.lifetime.close();
+        self.source.lifetime.close();
     }
 }

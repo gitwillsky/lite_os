@@ -3,7 +3,7 @@ use super::*;
 impl WaitRegistry {
     /// signalfd 的原生 sighand wait queue 唤醒全部直接 poll/read wait；不过滤 blocked mask。
     /// epoll 的 wake-one/exclusive 由持久 source index 和 epoll notification 自己处理。
-    pub(in crate::execution::task::process_table) fn wake_signal_source_one(
+    pub(in crate::task::process_table) fn wake_signal_source_one(
         &self,
         identity: usize,
     ) -> Option<SourceWake> {
@@ -41,9 +41,9 @@ impl WaitRegistry {
         }
     }
 
-    pub(in crate::execution::task::process_table) fn wake_task_event(
+    pub(in crate::task::process_table) fn wake_task_event(
         &self,
-        key: crate::execution::sync::TaskWaitKey,
+        key: crate::sync::TaskWaitKey,
         result: WaitResult,
     ) -> Option<SourceWake> {
         let (owner, ticket) = key.event_identity();
@@ -68,9 +68,9 @@ impl WaitRegistry {
         }
     }
 
-    pub(in crate::execution::task::process_table) fn wake_signal_registration(
+    pub(in crate::task::process_table) fn wake_signal_registration(
         &self,
-        task: &Arc<crate::execution::task::TaskControlBlock>,
+        task: &Arc<crate::task::TaskControlBlock>,
     ) -> Option<SourceWake> {
         let lower = WaitIndexKey::Task {
             tid: task.tid(),
@@ -110,9 +110,9 @@ impl WaitRegistry {
         }
     }
 
-    pub(in crate::execution::task::process_table) fn interrupt_task(
+    pub(in crate::task::process_table) fn interrupt_task(
         &self,
-        task: &Arc<crate::execution::task::TaskControlBlock>,
+        task: &Arc<crate::task::TaskControlBlock>,
     ) -> Option<SourceWake> {
         let lower = WaitIndexKey::Task {
             tid: task.tid(),

@@ -5,13 +5,13 @@ use core::sync::atomic::Ordering;
 // 退休后返回 Fault，不能把仍可 upgrade 的 TCB Arc 当成 MM 存活证明，否则后台 completion 会 panic。
 
 impl TaskControlBlock {
-    pub(in crate::execution::task) fn register_private_memory_barrier(&self) {
+    pub(in crate::task) fn register_private_memory_barrier(&self) {
         self.address_space()
             .private_memory_barrier_registered
             .store(true, Ordering::Release);
     }
 
-    pub(in crate::execution::task) fn private_memory_barrier_registered(&self) -> bool {
+    pub(in crate::task) fn private_memory_barrier_registered(&self) -> bool {
         self.address_space()
             .private_memory_barrier_registered
             .load(Ordering::Acquire)
@@ -24,7 +24,7 @@ impl TaskControlBlock {
     ) -> Result<(), UserAccessError> {
         self.mm_snapshot()
             .ok_or(UserAccessError::Fault)?
-            .copy_from_user(user_address, destination, self.user_fault_limits())
+            .copy_from_user(user_address, destination)
     }
 
     /// 直接初始化 syscall-owned staging；成功前 caller 不得读取 destination。
@@ -35,17 +35,7 @@ impl TaskControlBlock {
     ) -> Result<(), UserAccessError> {
         self.mm_snapshot()
             .ok_or(UserAccessError::Fault)?
-            .copy_from_user_uninit(user_address, destination, self.user_fault_limits())
-    }
-
-    pub(crate) fn copy_instruction_halfword(
-        &self,
-        user_address: usize,
-        destination: &mut [u8; 2],
-    ) -> Result<(), UserAccessError> {
-        self.mm_snapshot()
-            .ok_or(UserAccessError::Fault)?
-            .copy_instruction_halfword(user_address, destination, self.user_fault_limits())
+            .copy_from_user_uninit(user_address, destination)
     }
 
     pub(crate) fn copy_to_user(
@@ -55,7 +45,7 @@ impl TaskControlBlock {
     ) -> Result<(), UserAccessError> {
         self.mm_snapshot()
             .ok_or(UserAccessError::Fault)?
-            .copy_to_user(user_address, source, self.user_fault_limits())
+            .copy_to_user(user_address, source)
     }
 
     pub(crate) fn zero_user(
@@ -66,7 +56,6 @@ impl TaskControlBlock {
         self.mm_snapshot().ok_or(UserAccessError::Fault)?.zero_user(
             user_address,
             length,
-            self.user_fault_limits(),
         )
     }
 
@@ -77,24 +66,24 @@ impl TaskControlBlock {
     ) -> Result<(), UserAccessError> {
         self.mm_snapshot()
             .ok_or(UserAccessError::Fault)?
-            .validate_user_write(user_address, length, self.user_fault_limits())
+            .validate_user_write(user_address, length)
     }
 
     /// proc cmdline 从此实际 Thread 的 MM 读取；leader 退出不能让 sibling 借已退休 leader 的 MM。
-    pub(in crate::execution::task) fn proc_arguments(
+    pub(in crate::task) fn proc_arguments(
         &self,
     ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
         self.mm_snapshot()
             .map_or_else(|| Ok(alloc::vec::Vec::new()), |mm| mm.process_arguments())
     }
 
-    pub(in crate::execution::task) fn write_clone_tid_values(
+    pub(in crate::task) fn write_clone_tid_values(
         &self,
         addresses: [Option<usize>; 2],
         tid: i32,
     ) {
         self.address_space()
-            .write_clone_tid_values(addresses, tid, self.user_fault_limits())
+            .write_clone_tid_values(addresses, tid)
     }
 
     pub(crate) fn copy_user_c_string(
@@ -104,12 +93,7 @@ impl TaskControlBlock {
     ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
         self.mm_snapshot()
             .ok_or(UserAccessError::Fault)?
-            .copy_user_c_string(user_address, max_len, self.user_fault_limits())
-    }
-
-    /// 返回当前 AddressSpace 生命周期内不变的 arch token。
-    pub(crate) fn user_token(&self) -> crate::arch::mmu::AddressSpaceToken {
-        self.address_space().token.clone()
+            .copy_user_c_string(user_address, max_len)
     }
 
     pub(crate) fn with_futex_key<R>(
@@ -119,7 +103,7 @@ impl TaskControlBlock {
         consume: impl FnOnce(FutexKey) -> R,
     ) -> Result<R, UserAccessError> {
         self.address_space()
-            .with_futex_key(address, private, self.user_fault_limits(), consume)
+            .with_futex_key(address, private, consume)
     }
 
     pub(crate) fn with_futex_word<R>(
@@ -129,7 +113,7 @@ impl TaskControlBlock {
         consume: impl FnOnce(FutexKey, u32) -> R,
     ) -> Result<R, UserAccessError> {
         self.address_space()
-            .with_futex_word(address, private, self.user_fault_limits(), consume)
+            .with_futex_word(address, private, consume)
     }
 
     pub(crate) fn with_futex_requeue<R>(
@@ -144,25 +128,23 @@ impl TaskControlBlock {
             source,
             target,
             private,
-            self.user_fault_limits(),
             read_source,
             consume,
         )
     }
 
     /// task futex owner 的 scoped MM transaction；不向 syscall 暴露 MemorySet guard。
-    pub(in crate::execution::task) fn with_futex_wake_op<R>(
+    pub(in crate::task) fn with_futex_wake_op<R>(
         &self,
         source: usize,
         target: usize,
         private: bool,
-        consume: impl FnOnce(FutexKey, FutexKey, &mut MemorySet) -> R,
+        consume: impl FnOnce(FutexKey, FutexKey, &MemorySet) -> R,
     ) -> Result<R, crate::memory::FutexAccessError> {
         self.address_space().with_futex_wake_op(
             source,
             target,
             private,
-            self.user_fault_limits(),
             consume,
         )
     }
@@ -170,7 +152,7 @@ impl TaskControlBlock {
 
 // Process 生命周期内唯一投影；graph/proc observer 不保活任何 TCB。
 impl super::Process {
-    pub(in crate::execution::task) fn process_statistics(
+    pub(in crate::task) fn process_statistics(
         &self,
         threads: &[Arc<TaskControlBlock>],
     ) -> Result<ProcessStatistics, ()> {
@@ -192,7 +174,6 @@ impl super::Process {
             shared_pages: pages.shared_pages,
             text_pages: pages.text_pages,
             data_pages: pages.data_pages,
-            swapped_pages: pages.swapped_pages,
             fd_size: self
                 .with_process_files(|files| files.slot_capacity())
                 .unwrap_or(0),
@@ -213,16 +194,16 @@ impl TaskControlBlock {
     ///
     /// # Errors
     /// MM 退休、waiter OOM、地址或 backing 失败。
-    pub(in crate::execution::task) fn ptrace_word(
+    pub(in crate::task) fn ptrace_word(
         &self,
         address: usize,
         bytes: &mut [u8; 8],
         write: bool,
     ) -> Result<(), UserAccessError> {
         let mm = self.mm_snapshot().ok_or(UserAccessError::Fault)?;
-        mm.memory_set
-            .lock()
-            .map_err(|_| UserAccessError::OutOfMemory)?
-            .ptrace_word(address, bytes, write, self.user_fault_limits())
+        if mm.access_forced(address, bytes, write)? != bytes.len() {
+            return Err(UserAccessError::Fault);
+        }
+        Ok(())
     }
 }

@@ -1,7 +1,7 @@
 //! VirtIO 1.4 transport（MMIO/PCI）、virtqueue 与各设备类 adapter。
 //!
 //! 实现 devices::model 与 devices::block 的接口；平台提供发现事实，main 串接启动装配。
-//! MMIO 只经 arch::mmio::MmioBus 访问，ISA 机制只调用静态 arch façade，不访问具体 backend。
+//! MMIO 只经 mmio::MmioBus 访问，ISA 机制只调用静态 arch façade，不访问具体 backend。
 
 mod binding;
 mod blk;

@@ -2,11 +2,8 @@
 
 use alloc::sync::{Arc, Weak};
 
-use crate::{
-    execution::sync::{IrqMutex, TaskEvent},
-    fallible_tree::FallibleMap,
-    memory::MemoryError,
-};
+use crate::{sync::{Mutex, TaskEvent}, memory::MemoryError};
+use fallible_tree::FallibleMap;
 
 use super::{DeadlineEntry, ExpiredTimer, TimerIdentity};
 
@@ -19,7 +16,7 @@ struct KernelTimerState {
 
 pub(super) struct KernelTimer {
     id: u64,
-    state: IrqMutex<KernelTimerState>,
+    state: Mutex<KernelTimerState>,
     event: TaskEvent,
 }
 
@@ -40,7 +37,7 @@ impl KernelDeadlineWait {
     pub(crate) fn new() -> Result<Self, MemoryError> {
         let timer = Arc::try_new(KernelTimer {
             id: crate::id::next_runtime_object_id(),
-            state: IrqMutex::new(KernelTimerState {
+            state: Mutex::new(KernelTimerState {
                 entry: None,
                 expiration: None,
             }),
@@ -66,7 +63,7 @@ impl KernelDeadlineWait {
     ///
     /// 当前没有 task context，或同一 owner 的上一次等待尚未完成时 fail-stop。
     pub(crate) fn sleep_until(&mut self, deadline: u64) {
-        if deadline <= crate::execution::timer::get_time_ns() {
+        if deadline <= crate::time::get_time_ns() {
             return;
         }
         {
@@ -91,7 +88,7 @@ impl KernelDeadlineWait {
     }
 }
 
-pub(in crate::execution::task::process_table) struct KernelTimerExpiration {
+pub(in crate::task::process_table) struct KernelTimerExpiration {
     timer: Arc<KernelTimer>,
     entry: DeadlineEntry,
 }
@@ -107,7 +104,7 @@ impl KernelTimerExpiration {
     }
 
     /// timer queue 锁外归还同一 node，然后唤醒唯一 waiter。
-    pub(in crate::execution::task::process_table) fn complete(self) {
+    pub(in crate::task::process_table) fn complete(self) {
         {
             let mut state = self.timer.state.lock();
             assert!(state.entry.is_none(), "kernel deadline node duplicated");

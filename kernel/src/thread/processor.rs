@@ -9,7 +9,7 @@ use core::{
 
 use super::Thread;
 use super::scheduler::cfs_scheduler::{CfsRunQueue, RunQueueEntry};
-use super::scheduling::{RunState, WaitMembership};
+use super::scheduling::{CpuAffinity, RunState, WaitMembership};
 use crate::arch::context::KernelContext;
 use crate::execution::cpu::{self, CpuId, CpuSet};
 use crate::execution::sync::{IrqMutex, LocalIrqGuard, LocalIrqTransfer, WaitResult};
@@ -310,6 +310,32 @@ fn deliver_ready_entry(cpu_id: CpuId, entry: RunQueueEntry) {
     ready_queue::deliver_ready_entry(cpu_id, entry);
 }
 
+/// 原子替换线程 affinity，并迁移位于已禁止 CPU 的 Ready membership。
+///
+/// 正在已禁止 CPU 上运行的线程被请求重新调度：抢占后的 CPU 选择遵守新 affinity。
+pub(super) fn replace_affinity(thread: &Arc<Thread>, affinity: CpuAffinity) {
+    let mut replacement = None;
+    let mut running_elsewhere = None;
+    {
+        let mut scheduling = thread.scheduling.state.lock();
+        scheduling.cpu_affinity = affinity;
+        match scheduling.run_state() {
+            RunState::Ready { cpu, .. } if !affinity.allows(cpu) => {
+                let target = select_cpu(thread, affinity);
+                replacement = Some((target, commit_ready_transition(scheduling.transition_to_ready(target))));
+            }
+            RunState::Running { cpu } if !affinity.allows(cpu) => running_elsewhere = Some(cpu),
+            _ => {}
+        }
+    }
+    if let Some((cpu, generation)) = replacement {
+        deliver_ready_entry(cpu, ready_entry(thread.clone(), generation));
+    }
+    if let Some(cpu) = running_elsewhere {
+        publish_reschedule_at(cpu);
+    }
+}
+
 /// 消费精确等待身份并使线程可运行。
 ///
 /// # Returns
@@ -369,11 +395,13 @@ pub(super) fn finish_deschedule(thread: &Arc<Thread>) {
         match scheduling.run_state() {
             RunState::Blocking { cpu: owner } => {
                 assert_eq!(owner, cpu, "blocking thread returned on another CPU");
+                scheduling.voluntary_switches += 1;
                 scheduling.replace_non_ready_state(RunState::Blocked);
                 None
             }
             RunState::WakePending { cpu: owner } => {
                 assert_eq!(owner, cpu, "wake-pending thread returned on another CPU");
+                scheduling.voluntary_switches += 1;
                 let target = if scheduling.cpu_affinity.allows(cpu) {
                     cpu
                 } else {
@@ -383,6 +411,7 @@ pub(super) fn finish_deschedule(thread: &Arc<Thread>) {
             }
             RunState::Preempting { cpu: owner } => {
                 assert_eq!(owner, cpu, "preempting thread returned on another CPU");
+                scheduling.involuntary_switches += 1;
                 let target = select_cpu_after_preemption(thread, scheduling.cpu_affinity);
                 Some((target, commit_ready_transition(scheduling.transition_to_ready(target))))
             }

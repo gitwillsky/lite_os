@@ -1,5 +1,5 @@
 use alloc::{sync::Arc, vec::Vec};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 mod rx_slots;
 
@@ -12,8 +12,8 @@ use super::{
 };
 use crate::devices::model::network::{NetworkDevice, NetworkError, NetworkStatistics};
 use crate::{
-    execution::interrupt::InterruptError, execution::interrupt::InterruptHandler,
-    execution::interrupt::InterruptVector,
+    interrupt::InterruptError, interrupt::InterruptHandler,
+    interrupt::InterruptVector,
 };
 
 const VIRTIO_NET_F_MAC: u64 = 1 << 5;
@@ -102,7 +102,7 @@ impl VirtIONetworkDevice {
         let mut receive_slots =
             ReceiveSlots::try_new(receive_capacity as usize, receive.size as usize)?;
         for _ in 0..receive_capacity {
-            let bytes = DmaBuffer::try_zeroed().ok()?;
+            let bytes = DmaBuffer::try_zeroed(device.bti()).ok()?;
             let output = bytes.writable_all();
             let Ok(head) = receive.add_dma(&[output]) else {
                 break;
@@ -125,7 +125,7 @@ impl VirtIONetworkDevice {
         for slot_index in 0..transmit_capacity {
             let next = (slot_index + 1 < transmit_capacity).then_some(slot_index + 1);
             transmit_slots.push(TransmitSlot {
-                bytes: DmaBuffer::try_zeroed().ok()?,
+                bytes: DmaBuffer::try_zeroed(device.bti()).ok()?,
                 state: TransmitSlotState::Free { next },
             });
         }
@@ -165,7 +165,7 @@ impl VirtIONetworkDevice {
         if size == 0 || !size.is_power_of_two() {
             return None;
         }
-        let queue = VirtQueue::new(size)?;
+        let queue = VirtQueue::new(size, device.bti())?;
         device
             .configure_queue(index, size, queue.addresses())
             .ok()?;
@@ -346,7 +346,7 @@ impl NetworkDevice for VirtIONetworkDevice {
         }
         drop(queues);
         if was_full {
-            crate::execution::deferred::raise(crate::execution::deferred::DeferredWork::NETWORK);
+            crate::deferred::raise(crate::deferred::DeferredWork::NETWORK);
         }
     }
 
@@ -473,7 +473,7 @@ impl InterruptHandler for VirtIONetworkIrqHandler {
             .interrupt_ack(status & (VIRTIO_MMIO_INT_VRING | VIRTIO_MMIO_INT_CONFIG))
             .map_err(|_| InterruptError::DeviceFailure)?;
         if status & VIRTIO_MMIO_INT_VRING != 0 {
-            crate::execution::deferred::raise(crate::execution::deferred::DeferredWork::NETWORK);
+            crate::deferred::raise(crate::deferred::DeferredWork::NETWORK);
         }
         Ok(())
     }

@@ -9,15 +9,15 @@ use crate::fs::AccessIdentity;
 use syscall_abi::capability::Capability;
 
 /// 原 leader owner 的可重定向只读 alias；Process/graph 共用同一 handle。
-pub(in crate::execution::task) type LeaderCredentialsHandle =
-    Arc<spin::Mutex<Arc<spin::Mutex<Credentials>>>>;
+pub(in crate::task) type LeaderCredentialsHandle =
+    Arc<crate::sync::Mutex<Arc<crate::sync::Mutex<Credentials>>>>;
 
 /// SIGCHLD 在 graph 的 generation 事务中读取原 leader 的 canonical real UID。
-pub(in crate::execution::task) fn leader_signal_uid(handle: &LeaderCredentialsHandle) -> u32 {
+pub(in crate::task) fn leader_signal_uid(handle: &LeaderCredentialsHandle) -> u32 {
     handle.lock().lock().real_uid
 }
 /// PIDFS 的退休 leader 查询捕获同一个原凭据 tuple；不借新 exec survivor 的 TCB。
-pub(in crate::execution::task) fn leader_credential_snapshot(
+pub(in crate::task) fn leader_credential_snapshot(
     handle: &LeaderCredentialsHandle,
 ) -> crate::fs::ProcCredentialSnapshot {
     handle.lock().lock().snapshot()
@@ -28,7 +28,7 @@ const UNCHANGED_ID: u32 = u32::MAX;
 
 impl super::Process {
     /// 实际原 leader credential owner 的 UserNS；组信号投影不借 worker 的凭据。
-    pub(in crate::execution::task) fn leader_user_namespace(
+    pub(in crate::task) fn leader_user_namespace(
         &self,
     ) -> Arc<crate::namespace::UserNamespace> {
         self.leader_credentials.lock().lock().user_namespace.clone()
@@ -43,7 +43,7 @@ enum InspectionCredentials {
 
 /// Calling Thread 唯一拥有的 Linux 用户与组；group 值不可变，clone 只共享其内容。
 #[derive(Debug, Clone)]
-pub(in crate::execution::task) struct Credentials {
+pub(in crate::task) struct Credentials {
     real_uid: u32,
     effective_uid: u32,
     saved_uid: u32,
@@ -194,7 +194,7 @@ impl TaskControlBlock {
     }
 
     /// Process-directed signal 使用原 leader owner，不能随 live sibling 的退出顺序换身份。
-    pub(in crate::execution::task) fn may_signal_process(&self, target: &super::Process) -> bool {
+    pub(in crate::task) fn may_signal_process(&self, target: &super::Process) -> bool {
         self.tgid() == target.tgid.key() || {
             let (ids, namespace) = target.process_credential_uids();
             self.may_signal_identity(ids, &namespace)
@@ -217,7 +217,7 @@ impl TaskControlBlock {
     }
 
     /// proc exe/fd 使用原 leader credential handle；同线程组免检。
-    pub(in crate::execution::task) fn may_inspect_process(&self, target: &super::Process) -> bool {
+    pub(in crate::task) fn may_inspect_process(&self, target: &super::Process) -> bool {
         self.tgid() == target.tgid.key() || {
             let credentials = target.process_credential_snapshot();
             let mm = target.process_memory_inspection();
@@ -226,7 +226,7 @@ impl TaskControlBlock {
     }
 
     /// proc root/cwd 的指定 Thread 使用实际 credential owner，不能借另一 leader 的身份。
-    pub(in crate::execution::task) fn may_inspect_thread(&self, target: &TaskControlBlock) -> bool {
+    pub(in crate::task) fn may_inspect_thread(&self, target: &TaskControlBlock) -> bool {
         self.tgid() == target.tgid() || {
             let credentials = target.credential_snapshot();
             let mm = target.memory_inspection();
@@ -276,7 +276,7 @@ impl TaskControlBlock {
 
     /// Linux cap_ptrace_traceme：parent 的 permitted 子集或目标 UserNS 的 SYS_PTRACE。
     /// 自愿跟踪不复用 ATTACH 的 UID/dumpability 检查。
-    pub(in crate::execution::task) fn may_trace_me(&self, target: &TaskControlBlock) -> bool {
+    pub(in crate::task) fn may_trace_me(&self, target: &TaskControlBlock) -> bool {
         let caller = self.credential_snapshot();
         let target = target.credential_snapshot();
         (Arc::ptr_eq(&caller.user_namespace, &target.user_namespace)
@@ -287,7 +287,7 @@ impl TaskControlBlock {
     }
 
     /// native REALCREDS ptrace credential policy；READ/ATTACH 调用方串行化目标的完整 exec commit。
-    pub(in crate::execution::task) fn may_inspect_thread_real(
+    pub(in crate::task) fn may_inspect_thread_real(
         &self,
         target: &TaskControlBlock,
     ) -> bool {
@@ -316,7 +316,7 @@ impl TaskControlBlock {
     /// # Returns
     ///
     /// 无权限返回 `None`；同 UID 且 permitted 足够返回 `Some(false)`；SYS_NICE 返回 true。
-    pub(in crate::execution::task) fn scheduler_privilege_for(
+    pub(in crate::task) fn scheduler_privilege_for(
         &self,
         target: &TaskControlBlock,
     ) -> Option<bool> {
@@ -340,7 +340,7 @@ impl TaskControlBlock {
         update: impl FnOnce(&mut Credentials) -> Result<u32, CredentialUpdateError>,
     ) -> Result<u32, CredentialUpdateError> {
         let mm = self.mm_snapshot(); // 不带 creation/graph/credential guard 取得 mmget。
-        let (result, retired) = crate::execution::task::process_table::with_credential_transition(
+        let (result, retired) = crate::task::process_table::with_credential_transition(
             self,
             |transition| {
                 let mut live = self.thread().credentials.lock();
@@ -426,7 +426,7 @@ impl TaskControlBlock {
     }
 
     /// 同一锁下捕获当前 Thread 的 UID/GID/group tuple，供 procfs 投影。
-    pub(in crate::execution::task) fn credential_snapshot(
+    pub(in crate::task) fn credential_snapshot(
         &self,
     ) -> crate::fs::ProcCredentialSnapshot {
         match &self.kind {
@@ -436,7 +436,7 @@ impl TaskControlBlock {
     }
 
     /// 固定 Linux task_dump_owner；仅返回 scalar，不把 MM 或 credential guard 交给 FS。
-    pub(in crate::execution::task) fn proc_inode_owner(&self, mode: u32) -> (u32, u32) {
+    pub(in crate::task) fn proc_inode_owner(&self, mode: u32) -> (u32, u32) {
         if self.is_kernel_thread() {
             return (0, 0);
         }
@@ -514,7 +514,7 @@ impl TaskControlBlock {
     ) {
         let mm = self.address_space();
         let retired =
-            crate::execution::task::process_table::with_credential_transition(self, |transition| {
+            crate::task::process_table::with_credential_transition(self, |transition| {
                 let mut live = self.thread().credentials.lock();
                 // Linux setup_new_exec 用旧 current R/E，随后 commit_creds 仍可因 E/FS/newP
                 // 变化再次禁用。不能在 commit 后用最终 IDs 或 AT_SECURE 重新启用。
@@ -559,7 +559,7 @@ impl Credentials {
         }
     }
 
-    pub(in crate::execution::task) fn capability_snapshot(
+    pub(in crate::task) fn capability_snapshot(
         &self,
     ) -> syscall_abi::capability::CapabilitySnapshot {
         self.capabilities.snapshot()
@@ -867,7 +867,7 @@ impl super::Process {
         let credentials = leader.lock();
         (credentials.resuids(), credentials.user_namespace.clone())
     }
-    pub(in crate::execution::task) fn process_credential_snapshot(
+    pub(in crate::task) fn process_credential_snapshot(
         &self,
     ) -> crate::fs::ProcCredentialSnapshot {
         let leader = self.leader_credentials.lock();

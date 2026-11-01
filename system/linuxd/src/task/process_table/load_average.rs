@@ -1,8 +1,8 @@
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::{
-    execution::sync::IrqMutex,
-    execution::task::{model::uninterruptible_task_count, processor::runnable_task_count},
+    sync::Mutex,
+    task::{model::uninterruptible_task_count, processor::runnable_task_count},
 };
 
 use super::PROCESS_TABLE;
@@ -25,7 +25,7 @@ pub(super) struct LoadAverage {
     sample_deadline_us: AtomicU64,
     // OWNER: 本锁原子发布同一次 sample 的三个 EWMA value；拆锁会让 procfs/sysinfo
     // 观察到跨 sample 的撕裂组合。
-    fixed: IrqMutex<[u64; 3]>,
+    fixed: Mutex<[u64; 3]>,
 }
 
 impl LoadAverage {
@@ -37,8 +37,13 @@ impl LoadAverage {
     pub(super) const fn new() -> Self {
         Self {
             sample_deadline_us: AtomicU64::new(INTERVAL_US),
-            fixed: IrqMutex::new([0; 3]),
+            fixed: Mutex::new([0; 3]),
         }
+    }
+
+    /// 下一次采样的单调时刻（微秒）；另一采样正在提交时为 `None`。
+    pub(super) fn next_sample_us(&self) -> Option<u64> {
+        Some(self.sample_deadline_us.load(Ordering::Relaxed)).filter(|&deadline| deadline != 0)
     }
 
     fn claim(&self, now_us: u64) -> Option<SampleClaim> {

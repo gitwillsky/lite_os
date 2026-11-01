@@ -143,7 +143,7 @@ impl GpuCommand {
     }
 
     /// 编码 wire payload，并一次返回与其不可分离的 opcode、长度和 next-stage。
-    pub(super) fn prepare(self, request: &mut [u8]) -> Result<PreparedCommand, DisplayError> {
+    pub(super) fn prepare(self, request: &mut [u8], bti: &native_runtime::Bti) -> Result<PreparedCommand, DisplayError> {
         let stage = self.stage();
         let (opcode, length) = match self {
             Self::DisplayInfo => {
@@ -159,7 +159,7 @@ impl GpuCommand {
                 backing,
             } => (
                 VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
-                prepare_attach(request, resource_id, &backing)?,
+                prepare_attach(request, resource_id, &backing, bti)?,
             ),
             Self::CreateCursor { resource_id } => {
                 prepare_create_cursor(request, resource_id)?;
@@ -170,7 +170,7 @@ impl GpuCommand {
                 backing,
             } => (
                 VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
-                prepare_attach(request, resource_id, &backing)?,
+                prepare_attach(request, resource_id, &backing, bti)?,
             ),
             Self::TransferCursor { resource_id } => {
                 let mode = DisplayMode {
@@ -279,13 +279,13 @@ impl CompletedCommand {
 }
 
 impl CommandSlots {
-    pub(super) fn try_new() -> Option<Self> {
+    pub(super) fn try_new(bti: &native_runtime::Bti) -> Option<Self> {
         let mut slots = Vec::new();
         slots.try_reserve_exact(CONTROL_COMMAND_CAPACITY).ok()?;
         for _ in 0..CONTROL_COMMAND_CAPACITY {
             slots.push(CommandSlot {
-                request: DmaBuffer::try_zeroed().ok()?,
-                response: DmaBuffer::try_zeroed().ok()?,
+                request: DmaBuffer::try_zeroed(bti).ok()?,
+                response: DmaBuffer::try_zeroed(bti).ok()?,
                 pending: None,
                 stream: None,
             });

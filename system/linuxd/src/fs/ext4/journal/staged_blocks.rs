@@ -1,7 +1,7 @@
 //! 单个 transaction 层的 home-block image owner；分类和字节始终由同一节点提交。
 
 use super::FileSystemError;
-use crate::fallible_tree::FallibleMap;
+use fallible_tree::FallibleMap;
 use alloc::vec::Vec;
 
 /// image 的持久化方式：metadata 经 JBD2，普通文件数据在 commit record 前写回 home。

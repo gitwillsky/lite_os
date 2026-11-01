@@ -1,14 +1,11 @@
-use spin::Mutex;
+use crate::sync::Mutex;
 
-use crate::memory::{DeviceBacking, PAGE_SIZE};
+use crate::memory::DeviceBacking;
 
 use super::{
     CONTROL_QUEUE, CONTROL_REQUEST_SIZE, ControlQueue, DisplayError, DisplayMode, DisplayRect,
     VirtIODevice, VirtIOGpuDevice, wire::*,
 };
-
-/// panic 路径等待一条命令 completion 的轮询次数上限；host 无响应时不能让蓝屏本身卡死。
-const FAIL_STOP_SPIN_LIMIT: u32 = 50_000_000;
 
 impl VirtIOGpuDevice {
     pub(super) fn display_mode(
@@ -133,7 +130,7 @@ impl VirtIOGpuDevice {
         framebuffer: &DeviceBacking,
     ) -> Option<()> {
         Self::create_attached_resource(device, control, BOOT_RESOURCE_ID, mode, framebuffer)?;
-        Self::present_resource(device, control, BOOT_RESOURCE_ID, mode, false)
+        Self::present_resource(device, control, BOOT_RESOURCE_ID, mode)
     }
 
     /// 建立 2D resource 并把 `framebuffer` 的 scatter/gather extent 绑定为它的 backing。
@@ -161,32 +158,11 @@ impl VirtIOGpuDevice {
         }
         Self::execute_ok(device, control, VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, 40)?;
 
-        let attach_length = 32 + framebuffer.extent_count() * 16;
-        {
+        let attach_length = {
             let mut control = control.lock();
             let request = &mut control.commands.boot_slot_mut().request;
-            request[..attach_length].fill(0);
-            write_u32(request.as_mut_slice(), 24, id)?;
-            write_u32(
-                request.as_mut_slice(),
-                28,
-                u32::try_from(framebuffer.extent_count()).ok()?,
-            )?;
-            for index in 0..framebuffer.extent_count() {
-                let (ppn, pages) = framebuffer.extent(index)?;
-                let offset = 32 + index * 16;
-                write_u64(
-                    request.as_mut_slice(),
-                    offset,
-                    (ppn.as_usize() * PAGE_SIZE) as u64,
-                )?;
-                write_u32(
-                    request.as_mut_slice(),
-                    offset + 8,
-                    u32::try_from(pages.checked_mul(PAGE_SIZE)?).ok()?,
-                )?;
-            }
-        }
+            super::wire::prepare_attach(request.as_mut_slice(), id, framebuffer, device.bti()).ok()?
+        };
         Self::execute_ok(
             device,
             control,
@@ -196,14 +172,11 @@ impl VirtIOGpuDevice {
     }
 
     /// 把 resource `id` 设为 scanout 0，并整幅传输、刷新到 host。
-    ///
-    /// `fail_stop` 选择 [`Self::execute_polled`] 的 panic 语义（容忍在途 completion、有界轮询）。
     pub(super) fn present_resource(
         device: &VirtIODevice,
         control: &Mutex<ControlQueue>,
         id: u32,
         mode: DisplayMode,
-        fail_stop: bool,
     ) -> Option<()> {
         let execute = |command, length| {
             Self::execute_polled(
@@ -213,15 +186,10 @@ impl VirtIOGpuDevice {
                 length,
                 VIRTIO_GPU_RESP_OK_NODATA,
                 CONTROL_HEADER_SIZE,
-                fail_stop,
             )
         };
         {
-            let mut control = if fail_stop {
-                control.try_lock()?
-            } else {
-                control.lock()
-            };
+            let mut control = control.lock();
             let request = &mut control.commands.boot_slot_mut().request;
             request[..48].fill(0);
             write_rect(request.as_mut_slice(), 24, mode)?;
@@ -231,11 +199,7 @@ impl VirtIOGpuDevice {
         execute(VIRTIO_GPU_CMD_SET_SCANOUT, 48)?;
 
         {
-            let mut control = if fail_stop {
-                control.try_lock()?
-            } else {
-                control.lock()
-            };
+            let mut control = control.lock();
             let request = &mut control.commands.boot_slot_mut().request;
             request[..56].fill(0);
             write_rect(request.as_mut_slice(), 24, mode)?;
@@ -245,11 +209,7 @@ impl VirtIOGpuDevice {
         execute(VIRTIO_GPU_CMD_TRANSFER_TO_HOST_2D, 56)?;
 
         {
-            let mut control = if fail_stop {
-                control.try_lock()?
-            } else {
-                control.lock()
-            };
+            let mut control = control.lock();
             let request = &mut control.commands.boot_slot_mut().request;
             request[..48].fill(0);
             write_rect(request.as_mut_slice(), 24, mode)?;
@@ -332,15 +292,12 @@ impl VirtIOGpuDevice {
             request_length,
             expected_response,
             response_length,
-            false,
         )
     }
 
     /// 同步提交一条 boot-slot 命令并轮询 used ring 直到它完成。
     ///
-    /// `fail_stop` 为 false 是启动期语义：used ring 里出现任何不属于本命令的 completion 都是
-    /// 协议错误。`fail_stop` 为 true 是 panic 语义：DRM 的在途命令可能先于本命令完成，
-    /// 这些 completion 被回收丢弃，轮询有上限，超时返回 `None` 而不是永久等待。
+    /// 只在启动期、中断注册之前使用：used ring 里出现任何不属于本命令的 completion 都是协议错误。
     fn execute_polled(
         device: &VirtIODevice,
         control: &Mutex<ControlQueue>,
@@ -348,16 +305,11 @@ impl VirtIOGpuDevice {
         request_length: usize,
         expected_response: u32,
         response_length: usize,
-        fail_stop: bool,
     ) -> Option<()> {
         if !(CONTROL_HEADER_SIZE..=CONTROL_REQUEST_SIZE).contains(&request_length) {
             return None;
         }
-        let mut control = if fail_stop {
-            control.try_lock()?
-        } else {
-            control.lock()
-        };
+        let mut control = control.lock();
         let fence = control.next_fence;
         control.next_fence = control.next_fence.checked_add(1)?;
 
@@ -379,13 +331,8 @@ impl VirtIOGpuDevice {
         control.queue.add_to_avail(head);
         device.notify_queue(CONTROL_QUEUE).ok()?;
 
-        // 2. 这是 scheduler/IRQ publication 前的 bootstrap spin path，也是 panic 的 fail-stop 路径。
-        let mut spins = 0u32;
+        // 2. 中断注册之前的启动期轮询路径。
         loop {
-            spins += 1;
-            if fail_stop && spins > FAIL_STOP_SPIN_LIMIT {
-                return None;
-            }
             match control.queue.used() {
                 Ok(Some(completion))
                     if completion.head() == head
@@ -399,9 +346,6 @@ impl VirtIOGpuDevice {
                 {
                     control.queue.recycle_used(completion).ok()?;
                     break;
-                }
-                Ok(Some(stale)) if fail_stop => {
-                    control.queue.recycle_used(stale).ok()?;
                 }
                 Ok(Some(_)) | Err(()) => return None,
                 Ok(None) => core::hint::spin_loop(),
@@ -463,41 +407,5 @@ impl crate::devices::model::BootFramebuffer for VirtIOGpuDevice {
             return Err(DisplayError::InvalidRectangle);
         }
         Self::flush_boot_rect(&self.device, &self.control, mode, rect).ok_or(DisplayError::Device)
-    }
-}
-
-impl crate::devices::model::PanicFramebuffer for VirtIOGpuDevice {
-    fn mode(&self) -> DisplayMode {
-        self.panic_screen.get().map_or(
-            DisplayMode {
-                width: 0,
-                height: 0,
-                pitch: 0,
-            },
-            |screen| screen.mode,
-        )
-    }
-
-    fn write(&self, offset: usize, bytes: &[u8]) -> Result<(), DisplayError> {
-        self.panic_screen
-            .get()
-            .ok_or(DisplayError::Device)?
-            .backing
-            .write(offset, bytes)
-            .map_err(|()| DisplayError::InvalidRectangle)
-    }
-
-    fn present(&self) -> Result<(), DisplayError> {
-        let screen = self.panic_screen.get().ok_or(DisplayError::Device)?;
-        // 停止 IPI 无响应不代表 holder 已停止；fail-stop 命令逐次 try_lock，忙则放弃蓝屏，
-        // 保留串口/崩溃记录，绝不强行解除另一个执行流的互斥所有权。
-        Self::present_resource(
-            &self.device,
-            &self.control,
-            PANIC_RESOURCE_ID,
-            screen.mode,
-            true,
-        )
-        .ok_or(DisplayError::Device)
     }
 }

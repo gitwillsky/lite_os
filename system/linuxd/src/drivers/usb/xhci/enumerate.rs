@@ -67,8 +67,8 @@ impl Host {
                 stable = get_time_ns().saturating_add(100_000_000);
             }
             match self.port_event.wait_until(stable) {
-                crate::execution::sync::WaitResult::Woken => {}
-                crate::execution::sync::WaitResult::TimedOut => break,
+                crate::sync::WaitResult::Woken => {}
+                crate::sync::WaitResult::TimedOut => break,
                 _ => return Err(Error::Memory),
             }
         }
@@ -82,7 +82,7 @@ impl Host {
             if value & 2 != 0 && value & 16 == 0 {
                 break;
             }
-            if self.port_event.wait_until(deadline) != crate::execution::sync::WaitResult::Woken {
+            if self.port_event.wait_until(deadline) != crate::sync::WaitResult::Woken {
                 return Err(Error::Timeout);
             }
         }
@@ -90,7 +90,7 @@ impl Host {
         self.op
             .write_u32(offset, (status & 0x0e00) | (status & PORT_CHANGE))?;
         let recovery = get_time_ns().saturating_add(10_000_000);
-        while self.port_event.wait_until(recovery) == crate::execution::sync::WaitResult::Woken {}
+        while self.port_event.wait_until(recovery) == crate::sync::WaitResult::Woken {}
         // 当前 UAC2 数据/反馈 codec 对应 USB2 high-speed（125us，16.16 feedback）。
         // FS/LS 需要 TT/10.14，SuperSpeed 需要 companion/extended burst，不能套用 HS 布局。
         if status >> 10 & 15 != 3 {
@@ -117,10 +117,10 @@ impl Control<'_> {
         };
         let device = Device {
             generation,
-            output: Dma::allocate(1)?,
-            input: Dma::allocate(1)?,
-            ep0: Ring::new(1)?,
-            control: Dma::allocate(1)?,
+            output: Dma::allocate(1, host.bti)?,
+            input: Dma::allocate(1, host.bti)?,
+            ep0: Ring::new(1, host.bti)?,
+            control: Dma::allocate(1, host.bti)?,
             audio: None,
         };
         device.input.set_word(4, 3)?;
@@ -303,7 +303,7 @@ impl Control<'_> {
             control: config.control,
         })
         .map_err(|_| Error::Memory)?;
-        let audio = audio::Stream::new(slot, config.alternates)?;
+        let audio = audio::Stream::new(slot, config.alternates, host.bti)?;
         host.state.lock().devices[usize::from(slot)]
             .as_mut()
             .ok_or(Error::Disconnected)?
@@ -315,7 +315,7 @@ impl Control<'_> {
             port,
             slot
         );
-        crate::execution::deferred::raise(crate::execution::deferred::DeferredWork::DRIVER_IO);
+        crate::deferred::raise(crate::deferred::DeferredWork::DRIVER_IO);
         Ok(())
     }
 }

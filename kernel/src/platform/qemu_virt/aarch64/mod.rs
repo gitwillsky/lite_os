@@ -93,7 +93,7 @@ pub(crate) fn read_realtime_ns() -> Option<u64> {
     let rtc = discovery::info().rtc;
     // discovery 已验证 PL031 compatibility；RTCDR 位于 window 偏移 0。
     let bus =
-        crate::arch::mmio::MmioBus::new(crate::arch::mmu::physical_to_virtual(rtc.start), rtc.size)
+        mmio::MmioBus::new(crate::arch::mmu::physical_to_virtual(rtc.start), rtc.size)
             .ok()?;
     let seconds = bus.read_u32(0).ok()?;
     Some((seconds as u64).saturating_mul(1_000_000_000))

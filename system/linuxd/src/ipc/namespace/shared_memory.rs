@@ -26,7 +26,7 @@ impl IpcNamespace {
             (segment, backing)
         };
         let policy = backing
-            .freeze_swap_policy()
+            .freeze_lock_state()
             .map_err(|_| IpcError::NoMemory)?;
         // policy 等待允许 prlimit 改变实际 owner；收费读取等待结束后的当前 soft limit。
         let limit = read_limit();

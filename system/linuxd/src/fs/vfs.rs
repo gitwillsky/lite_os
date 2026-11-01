@@ -1,8 +1,8 @@
 use alloc::{sync::Arc, vec::Vec};
-use spin::Mutex;
+use crate::sync::Mutex;
 
 use super::{AccessIdentity, FileSystemError, FileSystemStatistics, Inode, InodeType};
-use crate::execution::sync::TaskMutex;
+use crate::sync::TaskMutex;
 
 mod lookup_origin;
 mod mount_flags;
@@ -39,7 +39,7 @@ pub(crate) use mount_view::WriteOpen;
 use mount_view::{Attachment, MountRestrictions, MountScope, MountView};
 pub(in crate::fs) use mounted_filesystem::{MountDeviceClaim, MountedFilesystem};
 pub(crate) use opened::{ContentWrite, OpenedFile, ReadAccess};
-use spin::Once;
+use native_runtime::sync::Once;
 /// pseudo filesystem 唯一internal mount producer；不加入任何namespace森林或quota/count/index。
 /// scope ID 0只用于未加入namespace的内部mount，live namespace identity从1开始；空root不pin namespace。
 /// 与用户mount共用真实view/FS/writer/retirement owner，失败按同一RAII释放，不发表另一份flags。
@@ -136,7 +136,7 @@ impl VirtualFileSystem {
         namespace: &Arc<MountNamespace>,
         root: &Arc<OpenedFile>,
         mode: UnmountMode,
-    ) -> Result<Vec<Arc<crate::execution::sync::TaskEvent>>, FileSystemError> {
+    ) -> Result<Vec<Arc<crate::sync::TaskEvent>>, FileSystemError> {
         let _transaction = self.namespace()?;
         namespace.remove(root, mode)
     }
@@ -242,56 +242,6 @@ impl VirtualFileSystem {
         super::sync_all()?;
         mounted_filesystem::sync_all()
     }
-    /// 从 root namespace 打开并保留标准 opened-entry identity。
-    ///
-    /// # Parameters
-    ///
-    /// - `path`: 绝对 pathname。
-    ///
-    /// # Returns
-    ///
-    /// VFS-owned opened entry。
-    ///
-    /// # Errors
-    ///
-    /// pathname、权限或内存失败时返回明确错误。
-    pub(crate) fn open_swap_at(
-        &self,
-        origin: LookupOrigin,
-        path: &[u8],
-        identity: &AccessIdentity,
-    ) -> Result<super::swap::SwapSource, FileSystemError> {
-        let opened = self.open_file_at(origin, path, identity)?;
-        let inode = opened.inode();
-        let metadata = inode.metadata()?;
-        identity.require(metadata, 6)?;
-        let write_open = match inode.inode_type() {
-            InodeType::File => Some(opened.begin_write()?),
-            InodeType::BlockDevice => {
-                if opened.mount_flags().nodev() {
-                    return Err(FileSystemError::AccessDenied);
-                }
-                None
-            }
-            _ => return Err(FileSystemError::InvalidOperation),
-        };
-        Ok(super::swap::SwapSource {
-            opened,
-            _write_open: write_open,
-        })
-    }
-
-    pub(in crate::fs) fn pin_swap_file(
-        &self,
-        opened: &Arc<OpenedFile>,
-    ) -> Result<alloc::boxed::Box<dyn super::swap::SwapFileLease>, FileSystemError> {
-        let _namespace = self.namespace()?;
-        if opened.is_unlinked() {
-            return Err(FileSystemError::NotFound);
-        }
-        opened.inode().pin_swap_file()
-    }
-
     /// 投影 procfs fd symlink 使用的 opened pathname。
     ///
     /// # Parameters

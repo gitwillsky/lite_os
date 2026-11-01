@@ -7,7 +7,7 @@ use crate::memory::FutexKey;
 #[derive(Clone, Copy)]
 pub(super) enum IndexedWaitKind {
     Deadline,
-    TaskEvent(crate::execution::sync::TaskWaitKey),
+    TaskEvent(crate::sync::TaskWaitKey),
     Futex {
         key: FutexKey,
         bitset: u32,
