@@ -1,9 +1,9 @@
 use std::{fs, path::Path};
 
-const MODEL_SOURCE: &str = "kernel/src/execution/task/model.rs";
-const LIMIT_SOURCE: &str = "kernel/src/execution/task/model/resource_limits.rs";
-const READY_QUEUE_SOURCE: &str = "kernel/src/execution/task/processor/ready_queue.rs";
-const PREEMPTION_POLICY_SOURCE: &str = "kernel/src/execution/task/scheduler/preemption_policy.rs";
+const MODEL_SOURCE: &str = "tools/source-view/linuxd/task/model/model/model.rs";
+const LIMIT_SOURCE: &str = "tools/source-view/linuxd/task/model/resource_limits/resource_limits/resource_limits.rs";
+const READY_QUEUE_SOURCE: &str = "kernel/src/thread/processor/ready_queue.rs";
+const PREEMPTION_POLICY_SOURCE: &str = "kernel/src/thread/scheduler/preemption_policy.rs";
 const SWITCHES: usize = 1_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

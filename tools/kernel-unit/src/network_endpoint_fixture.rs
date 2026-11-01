@@ -5,9 +5,9 @@ macro_rules! error { ($($message:tt)*) => {{ eprintln!($($message)*); }}; }
 
 #[path = "allocation_failure.rs"]
 pub(crate) mod allocation_failure;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 pub(crate) mod fallible_tree;
-#[path = "../../../kernel/src/id.rs"]
+#[path = "../../../system/linuxd/src/id.rs"]
 pub(crate) mod id;
 #[path = "pipe_fixture.rs"]
 pub(crate) mod ipc;
@@ -27,7 +27,7 @@ pub(crate) mod devices {
     pub(crate) mod network {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../kernel/src/devices/model/network.rs"
+            "/../../system/device-model/src/network.rs"
         ));
         // deferred delivery 为边界；真实 protocol cleanup/ring 仍由 production owner 执行。
         pub(crate) static POLL_REQUESTS: core::sync::atomic::AtomicUsize =
@@ -166,7 +166,7 @@ pub(crate) mod devices {
 
     }
 }
-#[path = "../../../kernel/src/net"]
+#[path = "../../../system/linuxd/src/net"]
 pub(crate) mod net {
     use alloc::sync::Arc;
     // OWNER: 本 fixture 内所有 socket 测试共用的串行锁。这些测试都会重置同一套进程级全局状态
@@ -195,7 +195,7 @@ pub(crate) mod net {
     pub(crate) mod inet {
         include!(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../tools/kernel-view/net/inet/inet/inet.rs"
+            "/../../system/linuxd/src/net/inet.rs"
         ));
         // fixture composition的显式initial入口，不存在于production IO/deferred代码。
         fn initial_stack() -> Option<&'static NetworkStackOwner> {
@@ -786,3 +786,6 @@ pub(crate) mod timer {
 #[path = "sync.rs"]
 pub(crate) mod sync;
 }
+
+#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+use execution::sync;

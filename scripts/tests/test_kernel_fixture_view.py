@@ -10,7 +10,7 @@ from unittest.mock import patch
 SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
-import kernel_fixture_view as view  # noqa: E402
+import fixture_source_view as view  # noqa: E402
 
 
 class KernelFixtureViewTests(unittest.TestCase):

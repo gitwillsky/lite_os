@@ -12,11 +12,11 @@ fn tokens(sources: &[SourceFile], path: &str) -> String {
 }
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let file = tokens(sources, "kernel/src/file/mod.rs");
-    let owner = tokens(sources, "kernel/src/fs/inotify.rs");
-    let instance = tokens(sources, "kernel/src/fs/inotify/instance.rs");
-    let quota = tokens(sources, "kernel/src/namespace/quota.rs");
-    let syscall = tokens(sources, "kernel/src/syscall/fs/inotify.rs");
+    let file = tokens(sources, "system/linuxd/src/file/mod.rs");
+    let owner = tokens(sources, "tools/source-view/linuxd/fs/inotify/inotify/inotify.rs");
+    let instance = tokens(sources, "system/linuxd/src/fs/inotify/instance.rs");
+    let quota = tokens(sources, "system/linuxd/src/namespace/quota.rs");
+    let syscall = tokens(sources, "system/linuxd/src/syscall/fs/inotify.rs");
     if !file.contains("OpenFileKind::Device(device)=>device.release()")
         || !owner.contains("fnrelease(&self){self.release_instance();}")
         || !instance.contains("letmembership=self.watches.lock().take()")
@@ -39,8 +39,8 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("inotify-owner: one real-UID/UserNS ancestor ledger must charge the original instance creator, without a global/per-instance substitute".into());
     }
-    let dentry = tokens(sources, "kernel/src/fs/vfs/dentry.rs");
-    let mutation = tokens(sources, "kernel/src/fs/vfs/mutation.rs");
+    let dentry = tokens(sources, "system/linuxd/src/fs/vfs/dentry.rs");
+    let mutation = tokens(sources, "system/linuxd/src/fs/vfs/mutation.rs");
     if !dentry.contains("crate::fs::notify_dentry_reclaimed(self.inode.as_ref())")
         || !owner.contains("iflinks==0{")
         || !mutation.contains(
@@ -50,9 +50,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("inotify-dput: actual canonical path must survive unlink and defer DELETE_SELF to last deleted dentry with zero links".into());
     }
-    let tmpfs = tokens(sources, "kernel/src/fs/tmpfs.rs");
-    let ext4 = tokens(sources, "kernel/src/fs/ext4/inode/vfs.rs");
-    let cache = tokens(sources, "kernel/src/fs/page_cache/registry.rs");
+    let tmpfs = tokens(sources, "tools/source-view/linuxd/fs/tmpfs/tmpfs/tmpfs.rs");
+    let ext4 = tokens(sources, "system/ext4d/src/ext4/inode/vfs.rs");
+    let cache = tokens(sources, "system/linuxd/src/fs/page_cache/registry.rs");
     if !owner.contains("inode.notification_link_state()")
         || !cache.contains("inode.notification_link_state()")
         || !tmpfs.contains("links:AtomicU32")
@@ -70,8 +70,8 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         .split("fnpoll(")
         .next()
         .unwrap();
-    let device = tokens(sources, "kernel/src/syscall/device.rs");
-    let queue = tokens(sources, "kernel/src/fs/inotify/queue.rs");
+    let device = tokens(sources, "system/linuxd/src/syscall/device.rs");
+    let queue = tokens(sources, "system/linuxd/src/fs/inotify/queue.rs");
     if !read.contains(".pop(output.remaining())")
         || !read.contains("record.copy_with(|bytes|output.write(bytes))")
         || !read.contains("DeviceError::ReadFault")
@@ -116,7 +116,7 @@ mod tests {
     #[test]
     fn rejects_backend_observer_delaying_actual_fput() {
         reject(
-            "kernel/src/file/mod.rs",
+            "system/linuxd/src/file/mod.rs",
             "device.release()",
             "let _ = device",
             "actual OFD fput",
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn rejects_watches_using_a_different_resource_pool() {
         reject(
-            "kernel/src/fs/inotify/instance.rs",
+            "system/linuxd/src/fs/inotify/instance.rs",
             "UserResource::InotifyWatches",
             "UserResource::InotifyInstances",
             "one real-UID/UserNS",
@@ -134,7 +134,7 @@ mod tests {
     #[test]
     fn rejects_partial_progress_hiding_native_record_fault() {
         reject(
-            "kernel/src/syscall/device.rs",
+            "system/linuxd/src/syscall/device.rs",
             " || error == DeviceError::ReadFault",
             "",
             "fatal EFAULT",
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn rejects_dentry_final_close_without_inode_notifications() {
         reject(
-            "kernel/src/fs/vfs/dentry.rs",
+            "system/linuxd/src/fs/vfs/dentry.rs",
             "crate::fs::notify_dentry_reclaimed(self.inode.as_ref());",
             "",
             "inotify-dput",
@@ -152,7 +152,7 @@ mod tests {
     #[test]
     fn rejects_oom_destroying_oneshot_mark() {
         reject(
-            "kernel/src/fs/inotify.rs",
+            "tools/source-view/linuxd/fs/inotify/inotify/inotify.rs",
             "!allocated || ",
             "",
             "native overflow/oneshot",
@@ -161,7 +161,7 @@ mod tests {
     #[test]
     fn rejects_full_metadata_dependency_during_dentry_retirement() {
         reject(
-            "kernel/src/fs/inotify.rs",
+            "tools/source-view/linuxd/fs/inotify/inotify/inotify.rs",
             "inode.notification_link_state()",
             "inode.metadata().ok().map(|metadata| (metadata.inode, metadata.links))",
             "must not allocate",
@@ -170,7 +170,7 @@ mod tests {
     #[test]
     fn rejects_page_cache_retirement_requiring_full_metadata() {
         reject(
-            "kernel/src/fs/page_cache/registry.rs",
+            "system/linuxd/src/fs/page_cache/registry.rs",
             "inode.notification_link_state()",
             "inode.metadata().ok().map(|metadata| (metadata.inode, metadata.links))",
             "must not allocate",

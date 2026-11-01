@@ -11,11 +11,11 @@ fn source(sources: &[SourceFile], path: &str) -> String {
         .collect()
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let inet = source(sources, "kernel/src/net/inet.rs");
-    let poll = source(sources, "kernel/src/net/inet/poll.rs");
-    let readiness = source(sources, "kernel/src/net/inet/readiness.rs");
-    let device = source(sources, "kernel/src/net/inet/device.rs");
-    let proc = source(sources, "kernel/src/fs/procfs/networking.rs");
+    let inet = source(sources, "system/linuxd/src/net/inet.rs");
+    let poll = source(sources, "system/netd/src/inet/poll.rs");
+    let readiness = source(sources, "system/netd/src/inet/readiness.rs");
+    let device = source(sources, "tools/source-view/netd/inet/device/device/device.rs");
+    let proc = source(sources, "system/linuxd/src/fs/procfs/networking.rs");
     if inet.contains("take_device_error(")
         || readiness.contains("pending_device_error(")
         || inet.contains("ifletOk(poll)=poll")
@@ -53,17 +53,17 @@ mod tests {
     fn rejects_erasing_other_device_backlog_and_counter_facts() {
         for (path, old, new) in [
             (
-                "kernel/src/net/inet.rs",
+                "system/linuxd/src/net/inet.rs",
                 "poll.backlog || notification_backlog || cleanup_backlog",
                 "notification_backlog || cleanup_backlog",
             ),
             (
-                "kernel/src/fs/procfs/networking.rs",
+                "system/linuxd/src/fs/procfs/networking.rs",
                 "interface.received_errors,",
                 "0,",
             ),
             (
-                "kernel/src/net/inet/poll.rs",
+                "system/netd/src/inet/poll.rs",
                 "interface.device.take_error()",
                 "None::<crate::devices::model::network::NetworkError>",
             ),

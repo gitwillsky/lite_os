@@ -4,19 +4,19 @@
 mod device;
 pub(crate) use device::{BLOCK_SIZE, BlockDevice, BlockError, CompletionNotify, PendingRead};
 
-#[path = "../../../kernel/src/devices/block/identity.rs"]
+#[path = "../../../system/linuxd/src/devices/block/identity.rs"]
 pub(crate) mod identity;
 
 #[path = "tests/block_identity.rs"]
 mod identity_tests;
 
-#[path = "../../../kernel/src/devices/block/partition_table.rs"]
+#[path = "../../../system/linuxd/src/devices/block/partition_table.rs"]
 pub(crate) mod partition_table;
 
 #[path = "tests/partition_table.rs"]
 mod partition_table_tests;
 
-#[path = "../../../kernel/src/devices/block/range.rs"]
+#[path = "../../../system/linuxd/src/devices/block/range.rs"]
 pub(crate) mod range;
 
 #[path = "tests/block_range.rs"]

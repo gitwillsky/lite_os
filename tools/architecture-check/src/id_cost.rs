@@ -1,6 +1,6 @@
 use std::{fs, path::Path};
 
-const SOURCE: &str = "kernel/src/id.rs";
+const SOURCE: &str = "system/linuxd/src/id.rs";
 const RECYCLED_IDS: usize = 65_536;
 
 pub(super) fn check(root: &Path, errors: &mut Vec<String>) {

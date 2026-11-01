@@ -32,7 +32,7 @@ fn measure(root: &Path) -> Result<MemoryCopyCost, String> {
     let allocator = read(root, ALLOCATOR_SOURCE)?;
     let heap = read(root, "kernel/src/memory/heap_allocator.rs")?;
     let page = read(root, "kernel/src/memory/swappable_page.rs")?;
-    let shared = read(root, "kernel/src/memory/shared_file.rs")?;
+    let shared = read(root, "system/linuxd/src/memory/shared_file.rs")?;
     let cow_bytes_written = cow_copy_cost(&cow, &page, &shared, &allocator)?;
     let heap_dead_zero_bytes = if heap.matches("frame_allocator::alloc_heap_extent(").count() == 2
         && !heap.contains("frame_allocator::alloc_contiguous(")
@@ -78,7 +78,7 @@ mod tests {
         let root = super::super::repository_root();
         let cow = read(&root, COW_SOURCE).unwrap();
         let page = read(&root, "kernel/src/memory/swappable_page.rs").unwrap();
-        let shared = read(&root, "kernel/src/memory/shared_file.rs").unwrap();
+        let shared = read(&root, "system/linuxd/src/memory/shared_file.rs").unwrap();
         let allocator = read(&root, ALLOCATOR_SOURCE).unwrap();
         assert!(
             cow_copy_cost(

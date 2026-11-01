@@ -7,7 +7,7 @@ extern crate alloc;
 #[path = "../src/ipc_namespace_fixture.rs"]
 mod ipc;
 
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../src/mount_membership_fixture.rs"]
 mod mount_membership_fixture;
@@ -50,7 +50,7 @@ unsafe impl GlobalAlloc for FaultAllocator {
 #[global_allocator]
 static ALLOCATOR: FaultAllocator = FaultAllocator;
 
-#[path = "../../../kernel/src/fs"]
+#[path = "../../../system/linuxd/src/fs"]
 mod fs {
     pub(crate) mod chardev {
         pub(crate) enum DeviceError {
@@ -143,9 +143,9 @@ mod syscall {
         pub(crate) const ESRCH: isize = 3;
     }
 }
-#[path = "../../../kernel/src/syscall/capabilities.rs"]
+#[path = "../../../system/linuxd/src/syscall/capabilities.rs"]
 mod capability_syscall;
-#[path = "../../../kernel/src/syscall/credentials.rs"]
+#[path = "../../../system/linuxd/src/syscall/credentials.rs"]
 mod credential_syscall;
 
 #[test]
@@ -1018,7 +1018,7 @@ fn actual_proc_inode_owner_uses_dumpability_and_exact_world_directory_policy() {
 pub(crate) mod execution {
     #[path = "../src/sync.rs"]
     pub(crate) mod sync;
-    #[path = "../../../kernel/src/execution/task"]
+    #[path = "../../../system/linuxd/src/task"]
     pub(crate) mod task {
         use crate::{Arc, RefCell};
         thread_local! { static CURRENT: RefCell<Option<Arc<model::TaskControlBlock>>> = const { RefCell::new(None) }; }
@@ -1462,3 +1462,9 @@ pub(crate) mod devices {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+use execution::sync;
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

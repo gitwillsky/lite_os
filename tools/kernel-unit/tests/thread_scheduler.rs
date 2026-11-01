@@ -89,7 +89,7 @@ pub(crate) mod execution {
             Woken,
         }
     }
-    #[path = "../../../kernel/src/execution/task"]
+    #[path = "../../../system/linuxd/src/task"]
     pub(crate) mod task {
         pub(crate) mod processor {
             pub(crate) fn account_current_cpu_runtime(_: u64) {}
@@ -395,3 +395,6 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

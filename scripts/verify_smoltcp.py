@@ -35,7 +35,7 @@ def verify(root: Path = ROOT) -> None:
         relative = path.relative_to(vendor).as_posix()
         if relative not in manifest["files"] and relative not in LOCAL_FILES:
             raise ValueError(f"smoltcp: untracked source outside inventory: {relative}")
-    for relative, expected in [("kernel/Cargo.toml", "../vendor/smoltcp"),
+    for relative, expected in [("system/netd/Cargo.toml", "../../vendor/smoltcp"),
                                ("tools/kernel-unit/Cargo.toml", "../../vendor/smoltcp"),
                                ("tools/architecture-bench/Cargo.toml", "../../vendor/smoltcp")]:
         dependency = tomllib.loads((root / relative).read_text())["dependencies"]["smoltcp"]

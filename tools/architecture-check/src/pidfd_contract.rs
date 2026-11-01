@@ -2,9 +2,9 @@
 use super::SourceFile;
 use quote::ToTokens;
 
-const PIDFD: &str = "kernel/src/execution/task/process_table/pidfd.rs";
-const EXIT: &str = "kernel/src/execution/task/process_table/process_exit.rs";
-const PROCESS: &str = "kernel/src/syscall/process.rs";
+const PIDFD: &str = "system/linuxd/src/task/process_table/pidfd.rs";
+const EXIT: &str = "system/linuxd/src/task/process_table/process_exit.rs";
+const PROCESS: &str = "system/linuxd/src/syscall/process.rs";
 fn normalized(source: &str) -> String {
     source.split_whitespace().collect()
 }
@@ -54,7 +54,7 @@ fn ordered(source: &SourceFile, function: &str, clauses: &[&str], errors: &mut V
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     require(
         sources,
-        "kernel/src/fs/pidfs.rs",
+        "tools/source-view/linuxd/fs/pidfs/pidfs/pidfs.rs",
         &[
             "exit_status: spin::Mutex<Option<i32>>",
             "static INODES: LiveInodes<PidInode, usize>",
@@ -70,7 +70,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/fs/pidfs/ioctl.rs",
+        "system/linuxd/src/fs/pidfs/ioctl.rs",
         &[
             "target.namespace(selector, call.argument != 0)?",
             "target.source().exit_status()",
@@ -83,19 +83,19 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/execution/task/model/file_descriptions.rs",
+        "system/linuxd/src/task/model/file_descriptions.rs",
         &["self.fd_get_raw(fd).filter(|file| !file.is_path())"],
         errors,
     );
     require(
         sources,
-        "kernel/src/file/description_preparation.rs",
+        "system/linuxd/src/file/description_preparation.rs",
         &["self.initialize(OpenFileKind::Inode, opened, flags, None, None)"],
         errors,
     );
     require(
         sources,
-        "kernel/src/execution/task/model/file_table.rs",
+        "system/linuxd/src/task/model/file_table.rs",
         &[
             "self.credential_guard().lock_killable()",
             "caller.may_inspect_thread_real(self)",
@@ -118,7 +118,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/execution/task/process_table/signal.rs",
+        "tools/source-view/linuxd/task/process_table/signal/signal/signal.rs",
         &[
             "sender.may_signal_thread(thread)",
             "super::thread_selector::execution_by_tid(&graph, pid)",
@@ -127,7 +127,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/execution/task/process_table/signal/pidfd.rs",
+        "system/linuxd/src/task/process_table/signal/pidfd.rs",
         &["ProcessSelector::ThreadGroupOfPid(identity.key())"],
         errors,
     );
@@ -195,7 +195,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     if let Some(source) = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/file/mod.rs")
+        .find(|source| source.relative == "system/linuxd/src/file/mod.rs")
     {
         for item in &source.syntax.items {
             if let syn::Item::Enum(item) = item
@@ -243,7 +243,7 @@ mod tests {
     #[test]
     fn path_descriptor_cannot_acquire_device_operations() {
         reject(
-            "kernel/src/execution/task/model/file_descriptions.rs",
+            "system/linuxd/src/task/model/file_descriptions.rs",
             ".filter(|file| !file.is_path())",
             ".filter(|_| true)",
             "fd_get_raw(fd)",

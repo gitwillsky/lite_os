@@ -14,14 +14,14 @@ fn before(source: &str, first: &str, second: &str) -> bool {
     matches!((source.find(first),source.find(second)),(Some(a),Some(b)) if a < b)
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let packet = normalized(source(sources, "kernel/src/net/packet.rs"));
-    let phy = normalized(source(sources, "kernel/src/net/inet/device.rs"));
-    let lo = normalized(source(sources, "kernel/src/net/inet/device/loopback.rs"));
-    let inet = normalized(source(sources, "kernel/src/net/inet.rs"));
-    let poll = normalized(source(sources, "kernel/src/net/inet/poll.rs"));
-    let config = normalized(source(sources, "kernel/src/net/inet/configuration.rs"));
-    let prepare = normalized(source(sources, "kernel/src/net/preparation.rs"));
-    let observe = normalized(source(sources, "kernel/src/net/observation.rs"));
+    let packet = normalized(source(sources, "system/linuxd/src/net/packet.rs"));
+    let phy = normalized(source(sources, "tools/source-view/netd/inet/device/device/device.rs"));
+    let lo = normalized(source(sources, "system/netd/src/inet/device/loopback.rs"));
+    let inet = normalized(source(sources, "system/linuxd/src/net/inet.rs"));
+    let poll = normalized(source(sources, "system/netd/src/inet/poll.rs"));
+    let config = normalized(source(sources, "system/netd/src/inet/configuration.rs"));
+    let prepare = normalized(source(sources, "system/linuxd/src/net/preparation.rs"));
+    let observe = normalized(source(sources, "system/linuxd/src/net/observation.rs"));
     let packet_poll = packet
         .split("fntry_poll_state(")
         .nth(1)
@@ -95,29 +95,29 @@ mod tests {
     #[test]
     fn rejects_cross_domain_delivery_and_unscoped_capacity_edge() {
         for (path, old, new) in [
-            ("kernel/src/net/packet.rs", "state.net_id == net_id", "true"),
+            ("system/linuxd/src/net/packet.rs", "state.net_id == net_id", "true"),
             (
-                "kernel/src/net/inet.rs",
+                "system/linuxd/src/net/inet.rs",
                 "packet::publish_transmit_ready(namespace.id(), index)",
                 "packet::publish_transmit_ready(6, index)",
             ),
             (
-                "kernel/src/net/inet/device.rs",
+                "tools/source-view/netd/inet/device/device/device.rs",
                 "self.net_id, self.interface_index, self.mac, frame",
                 "6, 1, self.mac, frame",
             ),
             (
-                "kernel/src/net/packet.rs",
+                "system/linuxd/src/net/packet.rs",
                 "drop(registry);",
                 "let _registry_is_still_held = &registry;",
             ),
             (
-                "kernel/src/net/inet/device.rs",
+                "tools/source-view/netd/inet/device/device/device.rs",
                 "Ok(reservation) => reservation,",
                 "Ok(reservation) => reservation?,",
             ),
             (
-                "kernel/src/net/packet.rs",
+                "system/linuxd/src/net/packet.rs",
                 "if sender == Some(id) ||",
                 "if false ||",
             ),

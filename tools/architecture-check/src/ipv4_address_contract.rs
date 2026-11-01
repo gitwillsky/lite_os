@@ -10,12 +10,12 @@ fn source(sources: &[SourceFile], path: &str) -> String {
         .collect()
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let iface = source(sources, "kernel/src/net/inet/interface.rs");
-    let fib = source(sources, "kernel/src/net/inet/route.rs");
-    let config = source(sources, "kernel/src/net/inet/configuration.rs");
-    let ioctl = source(sources, "kernel/src/syscall/socket/interface.rs");
-    let raw = source(sources, "kernel/src/net/inet/raw.rs");
-    let udp = source(sources, "kernel/src/net/inet/udp.rs");
+    let iface = source(sources, "system/netd/src/inet/interface.rs");
+    let fib = source(sources, "system/netd/src/inet/route.rs");
+    let config = source(sources, "system/netd/src/inet/configuration.rs");
+    let ioctl = source(sources, "system/linuxd/src/syscall/socket/interface.rs");
+    let raw = source(sources, "system/netd/src/inet/raw.rs");
+    let udp = source(sources, "system/netd/src/inet/udp.rs");
     if !config.contains("broadcast:interface.state.broadcast")
         || !config.contains("ifinterface.state.address==next{returnOk(());}")
         || !config.contains("first<240{returnErr(SocketError::Invalid);}")
@@ -46,17 +46,17 @@ mod tests {
     fn rejects_broadcast_noop_reconstruction_and_protocol_disconnect() {
         for (path, old, new) in [
             (
-                "kernel/src/net/inet/configuration.rs",
+                "system/netd/src/inet/configuration.rs",
                 "state.broadcast = address;",
                 "let _ = address;",
             ),
             (
-                "kernel/src/syscall/socket/interface.rs",
+                "system/linuxd/src/syscall/socket/interface.rs",
                 "snapshot.broadcast",
                 "core::net::Ipv4Addr::BROADCAST",
             ),
             (
-                "kernel/src/net/inet/udp.rs",
+                "system/netd/src/inet/udp.rs",
                 "route.kind == super::route::Ipv4RouteKind::Broadcast",
                 "peer.address.is_broadcast()",
             ),

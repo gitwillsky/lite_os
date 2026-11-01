@@ -29,18 +29,18 @@ fn require(source: &SourceFile, facts: &[&str], message: &str, errors: &mut Vec<
     }
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let credentials = source(sources, "kernel/src/execution/task/model/credentials.rs");
+    let credentials = source(sources, "system/linuxd/src/task/model/credentials.rs");
     if field(credentials, "Credentials", "capabilities").as_deref() != Some("CapabilityState") {
         errors.push("Credentials must own capabilities under the same credential lock".into());
     }
     for (path, structure, expected) in [
         (
-            "kernel/src/execution/task/model.rs",
+            "tools/source-view/linuxd/task/model/model/model.rs",
             "Process",
             "LeaderCredentialsHandle",
         ),
         (
-            "kernel/src/execution/task/process_table.rs",
+            "tools/source-view/linuxd/task/process_table/process_table/process_table.rs",
             "ProcessNode",
             "super :: model :: LeaderCredentialsHandle",
         ),
@@ -70,7 +70,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         "credential authorization and prepared exec must retain commoncap subset/ID rules",
         errors,
     );
-    let exec = source(sources, "kernel/src/execution/task/model/process_exec.rs");
+    let exec = source(sources, "system/linuxd/src/task/model/process_exec.rs");
     let stages = [
         "prepare_exec_credentials(",
         "credentials.stack_credentials()",
@@ -88,7 +88,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     let reap = source(
         sources,
-        "kernel/src/execution/task/process_table/wait_child/claim.rs",
+        "system/linuxd/src/task/process_table/wait_child/claim.rs",
     );
     require(
         reap,
@@ -96,7 +96,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         "zombie credential owner must retire outside the IRQ graph guard",
         errors,
     );
-    let permission = source(sources, "kernel/src/fs/permission.rs");
+    let permission = source(sources, "system/linuxd/src/fs/permission.rs");
     require(
         permission,
         &[
@@ -111,20 +111,20 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     if permission.text.contains("self.uid == 0") {
         errors.push("inode permissions cannot grant privilege solely from UID zero".into());
     }
-    let regular = source(sources, "kernel/src/syscall/fs/io/regular.rs");
+    let regular = source(sources, "system/linuxd/src/syscall/fs/io/regular.rs");
     if !matches!((regular.text.find("file.prepare_content_write()"),regular.text.find("cursor.stage_from_user_pagewise_into")),(Some(prepare),Some(copy)) if prepare<copy)
     {
         errors.push("regular write killpriv must commit before actual user-copy".into());
     }
     let sendfile = source(
         sources,
-        "kernel/src/syscall/fs/io/sendfile/regular_transfer.rs",
+        "system/linuxd/src/syscall/fs/io/sendfile/regular_transfer.rs",
     );
     if !matches!((sendfile.text.find("if read == 0"),sendfile.text.find("writer.prepare_content_write()"),sendfile.text.find("writer.write(")),(Some(read),Some(prepare),Some(write)) if read<prepare && prepare<write)
     {
         errors.push("sendfile must read a positive input prefix before output killpriv".into());
     }
-    let tmp = source(sources, "kernel/src/fs/tmpfs/content_mutation.rs");
+    let tmp = source(sources, "system/linuxd/src/fs/tmpfs/content_mutation.rs");
     require(
         tmp,
         &[
@@ -134,7 +134,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         "tmpfs post-allocation mode commit needs prepared metadata waiting and shared write sequence",
         errors,
     );
-    let mm = source(sources, "kernel/src/fs/memory_file.rs");
+    let mm = source(sources, "tools/source-view/linuxd/fs/memory_file/memory_file/memory_file.rs");
     require(
         mm,
         &["modified: impl FnOnce()", "drop(state);", "modified();"],
@@ -171,7 +171,7 @@ mod tests {
     #[test]
     fn rejects_copied_zombie_capabilities() {
         reject(
-            "kernel/src/execution/task/process_table.rs",
+            "tools/source-view/linuxd/task/process_table/process_table/process_table.rs",
             "leader_credentials: super::model::LeaderCredentialsHandle,",
             "leader_credentials: CapabilityState,",
             "retargetable",
@@ -180,7 +180,7 @@ mod tests {
     #[test]
     fn rejects_scheduler_subset_bypass() {
         reject(
-            "kernel/src/execution/task/model/credentials.rs",
+            "system/linuxd/src/task/model/credentials.rs",
             "target.capabilities.snapshot().sets.permitted & !caller_permitted == 0",
             "true",
             "commoncap subset",
@@ -189,7 +189,7 @@ mod tests {
     #[test]
     fn rejects_uid_zero_dac_grant() {
         reject(
-            "kernel/src/fs/permission.rs",
+            "system/linuxd/src/fs/permission.rs",
             "self.capabilities & capability.mask() != 0",
             "self.uid == 0 || self.capabilities & capability.mask() != 0",
             "solely from UID zero",
@@ -198,7 +198,7 @@ mod tests {
     #[test]
     fn rejects_exec_recomputing_after_stack() {
         reject(
-            "kernel/src/execution/task/model/process_exec.rs",
+            "system/linuxd/src/task/model/process_exec.rs",
             "self.commit_exec_credentials(credentials, loaded.readable());",
             "self.apply_exec_setid(0,0,0);",
             "same prepared",
@@ -207,7 +207,7 @@ mod tests {
     #[test]
     fn rejects_first_copy_fault_skipping_killpriv() {
         reject(
-            "kernel/src/syscall/fs/io/regular.rs",
+            "system/linuxd/src/syscall/fs/io/regular.rs",
             "file.prepare_content_write()",
             "Ok::<(), FileSystemError>(())",
             "before actual user-copy",
@@ -216,7 +216,7 @@ mod tests {
     #[test]
     fn rejects_post_allocation_metadata_waiter_oom() {
         reject(
-            "kernel/src/fs/tmpfs/content_mutation.rs",
+            "system/linuxd/src/fs/tmpfs/content_mutation.rs",
             "self.state.lock_prepared(wait)",
             "self.state.lock().unwrap()",
             "prepared metadata",

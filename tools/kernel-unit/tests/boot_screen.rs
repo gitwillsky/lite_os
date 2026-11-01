@@ -326,6 +326,6 @@ fn kernel_to_compositor_handoff_preserves_every_pixel_at_both_product_scales() {
 
 #[path = "."]
 pub(crate) mod boot {
-    #[path = "../../../kernel/src/boot/boot_screen.rs"]
+    #[path = "../../../system/devmgr/src/boot_screen.rs"]
     pub(crate) mod boot_screen;
 }

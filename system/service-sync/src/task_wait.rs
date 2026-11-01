@@ -105,7 +105,7 @@ type WaitTargetFactory = fn() -> Option<Arc<dyn TaskWaitTarget>>;
 
 // OWNER: task topology 初始化后只安装一次的 Linux 线程 adapter；缺失时 Linux 线程的等待会落到
 // 服务线程停驻器上，信号无法打断等待，也不进入 Linux 调度状态。
-static WAIT_TARGET_FACTORY: native_runtime::sync::Once<WaitTargetFactory> = native_runtime::sync::Once::new();
+static WAIT_TARGET_FACTORY: super::Once<WaitTargetFactory> = super::Once::new();
 
 /// 安装 task-context 阻塞等待的唯一 scheduler adapter。
 #[cfg_attr(test, allow(dead_code))]

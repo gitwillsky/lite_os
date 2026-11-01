@@ -316,15 +316,7 @@ pub(crate) fn apply_scheduling(task: &TaskControlBlock) {
 ///
 /// 执行体没有已准备的承载线程，或承载线程所属进程已终止（地址空间已被销毁，不变量破坏）。
 pub(in crate::task) fn enqueue_new_task(task: Arc<TaskControlBlock>) {
-    {
-        static DIAG_COUNT: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
-        let n = DIAG_COUNT.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
-        if n % 128 == 0 {
-            let blocks = native_runtime::system::free_blocks().unwrap_or_default();
-            let free: u64 = blocks.iter().enumerate().map(|(order, count)| count << order).sum();
-            error!("DIAG tasks={} free_pages={} basic={:?}", n, free, native_runtime::system::basic());
-        }
-    }
+
     let prepared = task
         .take_prepared_carrier()
         .expect("new task has no prepared carrier thread");

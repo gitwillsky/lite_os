@@ -2,7 +2,7 @@
 
 use std::cell::Cell;
 
-#[path = "../../../kernel/src/execution/task/model/address_space/dumpability.rs"]
+#[path = "../../../system/linuxd/src/task/model/address_space/dumpability.rs"]
 mod dumpability;
 
 mod syscall {
@@ -30,7 +30,7 @@ mod capabilities {
     }
 }
 
-#[path = "../../../kernel/src/syscall/process_control.rs"]
+#[path = "../../../system/linuxd/src/syscall/process_control.rs"]
 mod process_control;
 
 #[test]
@@ -154,3 +154,6 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

@@ -23,7 +23,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
 
     let Some(iterator) = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/fallible_tree/iter.rs")
+        .find(|source| source.relative == "fallible-tree/src/iter.rs")
     else {
         errors.push("FallibleMap iterator owner disappeared".to_owned());
         return;
@@ -41,7 +41,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
 
     if let Some(tree) = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/fallible_tree/mod.rs")
+        .find(|source| source.relative == "fallible-tree/src/lib.rs")
         && method_tokens(tree, "retain").is_none_or(|body| {
             body.contains("join_with_root")
                 || body.contains("join_ordered")
@@ -49,14 +49,14 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         })
     {
         errors.push(
-            "kernel/src/fallible_tree/mod.rs: retain rebuilds at every node through AVL joins; require one linear ownership pass plus one linear balanced rebuild"
+            "fallible-tree/src/lib.rs: retain rebuilds at every node through AVL joins; require one linear ownership pass plus one linear balanced rebuild"
                 .to_owned(),
         );
     }
 
     if let Some(graph) = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/net/unix/rights_graph.rs")
+        .find(|source| source.relative == "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs")
         && (method_tokens(graph, "detach").is_none_or(|body| {
             body.contains("self . nodes . retain") || !body.contains("remove_unreferenced")
         }) || !graph.text.contains("references: usize")
@@ -64,7 +64,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             || !graph.text.contains(".checked_add(state.edges.len())"))
     {
         errors.push(format!(
-            "kernel/src/net/unix/rights_graph.rs: detach scans every graph node; one edge revocation visits all {COST_SAMPLE_ENTRIES} nodes in the cost sample instead of only affected endpoints"
+            "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs: detach scans every graph node; one edge revocation visits all {COST_SAMPLE_ENTRIES} nodes in the cost sample instead of only affected endpoints"
         ));
     }
 }

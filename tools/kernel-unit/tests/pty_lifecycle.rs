@@ -4,11 +4,11 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../kernel/src/fs/devnum.rs"]
+#[path = "../../../system/linuxd/src/fs/devnum.rs"]
 mod device_number;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
-#[path = "../../../kernel/src/id.rs"]
+#[path = "../../../system/linuxd/src/id.rs"]
 mod id;
 #[path = "../src/pipe_fixture.rs"]
 mod ipc;
@@ -156,7 +156,7 @@ pub(crate) mod execution {
 
 #[path = "."]
 pub(crate) mod devices {
-    #[path = "../../../kernel/src/devices/tty"]
+    #[path = "../../../system/linuxd/src/devices/tty"]
     pub(crate) mod tty {
         pub(crate) mod pty;
         #[allow(
@@ -188,3 +188,6 @@ pub(crate) mod devices {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+use execution::sync;

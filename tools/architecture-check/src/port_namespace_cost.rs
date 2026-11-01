@@ -1,9 +1,9 @@
 use std::{fs, path::Path};
 
-const NAMESPACE: &str = "kernel/src/net/inet/port_namespace.rs";
-const BITMAP: &str = "kernel/src/net/inet/port_namespace/bitmap.rs";
-const TCP: &str = "kernel/src/net/inet/tcp.rs";
-const UDP: &str = "kernel/src/net/inet/udp.rs";
+const NAMESPACE: &str = "tools/source-view/netd/inet/port_namespace/port_namespace/port_namespace.rs";
+const BITMAP: &str = "system/netd/src/inet/port_namespace/bitmap.rs";
+const TCP: &str = "tools/source-view/netd/inet/tcp/tcp/tcp.rs";
+const UDP: &str = "system/netd/src/inet/udp.rs";
 const EPHEMERAL_PORTS: usize = 16_384;
 const SAMPLE_ENDPOINTS: usize = 1_024;
 const MAX_WORD_READS: usize = 257;

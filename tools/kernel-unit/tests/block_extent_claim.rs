@@ -26,9 +26,9 @@ unsafe impl GlobalAlloc for FaultAllocator {
 }
 #[global_allocator]
 static ALLOCATOR: FaultAllocator = FaultAllocator;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
-#[path = "../../../kernel/src/fs"]
+#[path = "../../../system/linuxd/src/fs"]
 mod fs {
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     enum FileSystemError {

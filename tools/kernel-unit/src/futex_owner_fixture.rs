@@ -1,7 +1,7 @@
 // 直接装配 actual WaitRegistry/TaskMutex/atomic owner；Task、MM key 与本地 IRQ 是 producer seams。
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
-#[path = "../../../kernel/src/id.rs"]
+#[path = "../../../system/linuxd/src/id.rs"]
 mod id;
 
 #[path = "pipe_fixture.rs"]
@@ -15,7 +15,7 @@ mod fs {
         }
     }
 }
-#[path = "../../../kernel/src/memory/mm"]
+#[path = "../../../system/linuxd/src/memory/mm"]
 mod memory {
     mod futex_atomic;
     pub(crate) use futex_atomic::UserAtomicU32Op;
@@ -49,7 +49,7 @@ mod memory {
     }
 }
 
-#[path = "../../../kernel/src/syscall/futex/wake_op.rs"]
+#[path = "../../../system/linuxd/src/syscall/futex/wake_op.rs"]
 mod wake_op;
 
 #[path = "."]
@@ -71,7 +71,7 @@ pub(crate) mod sync {
         }
     }
 }
-#[path = "../../../kernel/src/execution/task"]
+#[path = "../../../system/linuxd/src/task"]
 pub(crate) mod task {
     pub(crate) struct TaskControlBlock(usize);
     impl TaskControlBlock {
@@ -170,3 +170,6 @@ pub(crate) mod task {
     }
 }
 }
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

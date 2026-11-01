@@ -10,13 +10,13 @@ fn source(sources: &[SourceFile], path: &str) -> String {
         .collect()
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let task = source(sources, "kernel/src/execution/task/model/namespaces.rs");
-    let inet = source(sources, "kernel/src/net/inet.rs");
-    let reference = source(sources, "kernel/src/namespace/reference.rs");
-    let owner = source(sources, "kernel/src/net/net_namespace.rs");
-    let clone = source(sources, "kernel/src/syscall/process.rs");
-    let unshare = source(sources, "kernel/src/syscall/process_context.rs");
-    let pidfd = source(sources, "kernel/src/fs/pidfs/ioctl.rs");
+    let task = source(sources, "system/linuxd/src/task/model/namespaces.rs");
+    let inet = source(sources, "system/linuxd/src/net/inet.rs");
+    let reference = source(sources, "system/linuxd/src/namespace/reference.rs");
+    let owner = source(sources, "system/linuxd/src/net/net_namespace.rs");
+    let clone = source(sources, "system/linuxd/src/syscall/process.rs");
+    let unshare = source(sources, "system/linuxd/src/syscall/process_context.rs");
+    let pidfd = source(sources, "system/linuxd/src/fs/pidfs/ioctl.rs");
     let factory = inet
         .split("fncreate_net_namespace(")
         .nth(1)
@@ -62,17 +62,17 @@ mod tests {
     fn rejects_protocol_free_namespace_and_initial_owner_selection() {
         for (path, old, new) in [
             (
-                "kernel/src/net/inet.rs",
+                "system/linuxd/src/net/inet.rs",
                 "prepare_network(&namespace, &[], false)",
                 "prepare_network(&namespace, &[], true)",
             ),
             (
-                "kernel/src/execution/task/model/namespaces.rs",
+                "system/linuxd/src/task/model/namespaces.rs",
                 "NamespaceReference::new(self.net.clone())",
                 "NamespaceReference::new(crate::net::initial_net())",
             ),
             (
-                "kernel/src/fs/pidfs/ioctl.rs",
+                "system/linuxd/src/fs/pidfs/ioctl.rs",
                 "0xff04 => Some(Selector::Namespace(Kind::Net))",
                 "0xff04 => None",
             ),

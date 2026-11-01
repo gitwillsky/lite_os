@@ -217,7 +217,6 @@ impl AddressSpace {
                 },
             )
             .map_err(|_| VmError::NoMemory)?;
-        DIAG_SPACES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let space = Arc::try_new(Self {
             koid: crate::id::next_koid(),
             token: page_table.token(),
@@ -1027,10 +1026,8 @@ impl Vmar {
     }
 }
 
-pub(crate) static DIAG_SPACES: core::sync::atomic::AtomicIsize = core::sync::atomic::AtomicIsize::new(0);
 impl Drop for AddressSpace {
     fn drop(&mut self) {
-        DIAG_SPACES.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
         // 1. 映射与页框仍由 inner 保活；先让全部 CPU 清除本空间的翻译，ASID 才能复用。
         // 2. fence 完成后释放 ASID；字段随后析构并释放页表页、映射与页框。
         synchronize_address_space_retirement()

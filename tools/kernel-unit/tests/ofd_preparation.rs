@@ -98,7 +98,7 @@ mod fs {
         }
     }
 }
-#[path = "../../../kernel/src/file"]
+#[path = "../../../system/linuxd/src/file"]
 mod file {
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};

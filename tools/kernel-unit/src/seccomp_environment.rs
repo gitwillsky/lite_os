@@ -1,6 +1,6 @@
 //! seccomp-focused host seams: actual Pipe/ID producers; OFD payload and user-copy routing adapters.
 //! No filter, request, notification state, cancellation or injection algorithm is implemented here.
-#[path = "../../../kernel/src/id.rs"]
+#[path = "../../../system/linuxd/src/id.rs"]
 pub(crate) mod id;
 #[path = "pipe_fixture.rs"]
 pub(crate) mod ipc;

@@ -112,7 +112,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let bypasses = sources
         .iter()
         .filter(|source| {
-            (source.relative.starts_with("kernel/src/memory/mm/") || source.relative == MM_PATH)
+            (source.relative.starts_with("system/linuxd/src/memory/mm/") || source.relative == MM_PATH)
                 && source.relative != INDEX_STATE_PATH
                 && source.relative != PUBLICATION_PATH
         })

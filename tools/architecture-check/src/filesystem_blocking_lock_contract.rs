@@ -3,15 +3,15 @@ use syn::Item;
 
 use super::SourceFile;
 
-const EXT4: &str = "kernel/src/fs/ext4.rs";
-const JOURNAL: &str = "kernel/src/fs/ext4/journal.rs";
-const INODE: &str = "kernel/src/fs/ext4/inode.rs";
-const INODE_MUTATION: &str = "kernel/src/fs/ext4/journal/inode_mutation.rs";
-const MOUNT: &str = "kernel/src/fs/ext4/mount.rs";
-const PAGE_CACHE: &str = "kernel/src/fs/page_cache.rs";
-const VFS: &str = "kernel/src/fs/vfs.rs";
+const EXT4: &str = "tools/source-view/ext4d/ext4/ext4/ext4.rs";
+const JOURNAL: &str = "tools/source-view/ext4d/ext4/journal/journal/journal.rs";
+const INODE: &str = "tools/source-view/ext4d/ext4/inode/inode/inode.rs";
+const INODE_MUTATION: &str = "system/ext4d/src/ext4/journal/inode_mutation.rs";
+const MOUNT: &str = "system/ext4d/src/ext4/mount.rs";
+const PAGE_CACHE: &str = "tools/source-view/linuxd/fs/page_cache/page_cache/page_cache.rs";
+const VFS: &str = "tools/source-view/linuxd/fs/vfs/vfs/vfs.rs";
 const MUTEX: &str = "kernel/src/execution/sync/task_mutex.rs";
-const ADAPTER: &str = "kernel/src/execution/task/process_table/task_wait.rs";
+const ADAPTER: &str = "system/linuxd/src/task/process_table/task_wait.rs";
 const EVENT: &str = "kernel/src/execution/sync/task_event.rs";
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
@@ -59,7 +59,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require_field(
         sources,
-        "kernel/src/fs/vfs/dentry.rs",
+        "system/linuxd/src/fs/vfs/dentry.rs",
         "Dentry",
         "lock",
         "TaskRwSemaphore",
@@ -67,14 +67,14 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require_field(
         sources,
-        "kernel/src/fs/vfs/mounted_filesystem.rs",
+        "system/linuxd/src/fs/vfs/mounted_filesystem.rs",
         "MountedFilesystem",
         "rename",
         "TaskMutex < () >",
         errors,
     );
 
-    if let Some(position) = source(sources, "kernel/src/file/position.rs", errors)
+    if let Some(position) = source(sources, "system/linuxd/src/file/position.rs", errors)
         && (!position
             .text
             .contains("struct FilePosition(TaskMutex<u64>)")

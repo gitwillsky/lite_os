@@ -31,7 +31,7 @@ fn require(
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     require(
         sources,
-        "kernel/src/net/unix/stream/write.rs",
+        "system/linuxd/src/net/unix/stream/write.rs",
         &[
             "sender.reserve_stream(",
             "message.prepare_attach(",
@@ -52,7 +52,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/packet_send.rs",
+        "system/linuxd/src/net/unix/packet_send.rs",
         &[
             "VacantEntry::<u64, Datagram>::allocation_size()",
             "CapacityKind::SendMemory",
@@ -62,7 +62,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/send_memory.rs",
+        "system/linuxd/src/net/unix/send_memory.rs",
         &[
             "buffers.used >= buffers.send_limit",
             "buffers.send_limit / 4",
@@ -74,7 +74,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/receive.rs",
+        "system/linuxd/src/net/unix/receive.rs",
         &[
             "output.prepared_remaining() >= bytes_needed",
             "output.prepare_append(bytes_needed)",
@@ -85,7 +85,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/retirement.rs",
+        "system/linuxd/src/net/unix/retirement.rs",
         &[
             "self.is_backlog_owned()",
             "self.peer_retirement(&retired, embryo)",
@@ -98,7 +98,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/stream.rs",
+        "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
         &[
             "read_closed: bool",
             "state.read_closed = true",
@@ -109,7 +109,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/datagram_disconnect.rs",
+        "system/linuxd/src/net/unix/datagram_disconnect.rs",
         &[
             "peer.take()",
             "messages.take_all()",
@@ -122,7 +122,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/execution/task/model/credentials.rs",
+        "system/linuxd/src/task/model/credentials.rs",
         &[
             "fn message_identity(&self)",
             "self.namespace_authority(), self.resuids(), self.resgids()",
@@ -132,7 +132,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/execution/task/model/message_identity.rs",
+        "system/linuxd/src/task/model/message_identity.rs",
         &[
             "self.authority.capable(pid_owner, Capability::SYS_ADMIN)",
             "self.uids.contains(&uid)",
@@ -145,7 +145,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/syscall/socket/credentials.rs",
+        "system/linuxd/src/syscall/socket/credentials.rs",
         &[
             "bytes.len() != 12",
             "let ids = task\n        .message_identity()\n        .validate_claim(",
@@ -157,7 +157,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/stream.rs",
+        "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
         &[
             "same_credentials(credentials, frame.credentials.as_ref())",
             "mode.is_message()",
@@ -173,7 +173,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/credentials.rs",
+        "system/linuxd/src/net/credentials.rs",
         &[
             "Arc::ptr_eq(&self.pid, &other.pid)",
             "self.claimed.as_ref()",
@@ -183,7 +183,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/syscall/socket/control.rs",
+        "system/linuxd/src/syscall/socket/control.rs",
         &[
             "credentials.claimed = Some(super::credentials::prepare(task, message.data)?)",
             "control_length.saturating_sub(written)",
@@ -196,21 +196,21 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/rights_owner.rs",
+        "system/linuxd/src/net/unix/rights_owner.rs",
         &["RightsOwner::Creator | RightsOwner::Backlog(_)"],
         "automatic credentials must follow actual unopened/backlog ownership rather than a second accepted flag",
         errors,
     );
     require(
         sources,
-        "kernel/src/net/unix/lifecycle.rs",
+        "system/linuxd/src/net/unix/lifecycle.rs",
         &[".set_pass_credentials(self.listener.pass_credentials())"],
         "accepted UNIX child must inherit listener SCM policy at actual connect publication",
         errors,
     );
     require(
         sources,
-        "kernel/src/net/unix/capacity.rs",
+        "system/linuxd/src/net/unix/capacity.rs",
         &[
             "CapacityKind::PacketQueue",
             "CapacityKind::Backlog",
@@ -222,14 +222,14 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/connection_backlog.rs",
+        "system/linuxd/src/net/unix/connection_backlog.rs",
         &["limit.saturating_add(1)", "self.capacity_available()"],
         "UNIX backlog admission must include native plus-one and unpublished reservations in one ledger",
         errors,
     );
     require(
         sources,
-        "kernel/src/syscall/socket.rs",
+        "tools/source-view/linuxd/syscall/socket/socket/socket.rs",
         &[
             "SocketConnectError::BacklogFull",
             "wait_for_socket_capacity(&capacity, deadline)",
@@ -240,7 +240,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/timeouts.rs",
+        "system/linuxd/src/net/timeouts.rs",
         &[
             "struct SocketTimeouts(Mutex<TimeoutValues>)",
             "SocketTimeout::Infinite",
@@ -252,7 +252,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/inet/tcp.rs",
+        "tools/source-view/netd/inet/tcp/tcp/tcp.rs",
         &[
             "struct TcpHandle",
             "passive: Option<PassivePolicy>",
@@ -264,7 +264,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/inet/tcp/io.rs",
+        "system/netd/src/inet/tcp/io.rs",
         &[
             "State::Established | State::CloseWait if entry.passive.is_none()",
             "timeouts: state.timeouts.snapshot()",
@@ -278,7 +278,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/inet/tcp/accept.rs",
+        "system/netd/src/inet/tcp/accept.rs",
         &[
             "entry.passive.take()",
             "timeouts.initialize(policy.timeouts)",
@@ -290,7 +290,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/inet/poll.rs",
+        "system/netd/src/inet/poll.rs",
         &[
             "PollIngressSingleResult::SocketStateChanged",
             "take_ingress_reset()",
@@ -302,7 +302,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/inet/tcp.rs",
+        "tools/source-view/netd/inet/tcp/tcp/tcp.rs",
         &[
             "struct TcpConnection",
             "self.terminal",
@@ -316,7 +316,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/inet/tcp/io.rs",
+        "system/netd/src/inet/tcp/io.rs",
         &[
             "state.pending_error.take()",
             "else if connection.peer_closed",
@@ -328,7 +328,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/inet/tcp/io.rs",
+        "system/netd/src/inet/tcp/io.rs",
         &[
             "connection.shutdown_read = *shutdown_read",
             "connection.shutdown_write = *shutdown_write",
@@ -340,7 +340,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/inet/tcp/lifecycle.rs",
+        "system/netd/src/inet/tcp/lifecycle.rs",
         &[
             "fn prepare_closed_transport(",
             "fn disconnect_locked(",
@@ -354,14 +354,14 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/inet/tcp/io.rs",
+        "system/netd/src/inet/tcp/io.rs",
         &["tcp.state() != State::Closed || tcp.remote_endpoint().is_some()"],
         "TCP orphan retirement must retain actual FIN/TIME_WAIT lifetime, while reset payloads hold no transport identity",
         errors,
     );
     require(
         sources,
-        "kernel/src/syscall/socket/timeout.rs",
+        "system/linuxd/src/syscall/socket/timeout.rs",
         &[
             "!(0..1_000_000).contains(&micros)",
             "-errno::EDOM",
@@ -372,14 +372,14 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/syscall/poll.rs",
+        "tools/source-view/linuxd/syscall/poll/poll/poll.rs",
         &["wait_for_poll(keys, deadline,"],
         "socket wait must publish the caller-frozen deadline in the actual registry",
         errors,
     );
     for path in [
-        "kernel/src/syscall/socket/message.rs",
-        "kernel/src/syscall/fs/io/sequential/read.rs",
+        "system/linuxd/src/syscall/socket/message.rs",
+        "system/linuxd/src/syscall/fs/io/sequential/read.rs",
     ] {
         require(
             sources,
@@ -395,7 +395,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     require(
         sources,
-        "kernel/src/syscall/fs/io/sequential/write.rs",
+        "system/linuxd/src/syscall/fs/io/sequential/write.rs",
         &[
             "crate::syscall::socket::write_vectors(task, ofd, socket, vectors, total_length, nonblocking, 0)",
         ],
@@ -404,7 +404,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/ipc/namespace/description.rs",
+        "system/linuxd/src/ipc/namespace/description.rs",
         &[
             "cursor >= super::super::ids::IPC_ID_SLOTS",
             "registry.ids.at_or_after(first)?",
@@ -417,7 +417,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/fs/procfs/opened_operations.rs",
+        "system/linuxd/src/fs/procfs/opened_operations.rs",
         &[
             "ProcOpenFile::IpcTable",
             "target: inode.source.current_ipc_namespace()?",
@@ -429,7 +429,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/fs/procfs/ipc_description.rs",
+        "system/linuxd/src/fs/procfs/ipc_description.rs",
         &[
             "const RECORD_BYTES: usize = 512",
             "bytes: [u8; RECORD_BYTES]",
@@ -442,7 +442,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         "sysvipc sequential reads must retain one fixed record and actual slot cursor without whole-table rerendering",
         errors,
     );
-    if let Some(text) = source(sources, "kernel/src/fs/procfs/ipc_description.rs", errors)
+    if let Some(text) = source(sources, "system/linuxd/src/fs/procfs/ipc_description.rs", errors)
         && (text.contains("Vec<") || text.contains("ProcText") || text.contains("try_reserve"))
     {
         errors.push(
@@ -452,7 +452,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     require(
         sources,
-        "kernel/src/ipc/namespace/shared_memory.rs",
+        "system/linuxd/src/ipc/namespace/shared_memory.rs",
         &[
             "PreparedCreator::new()?",
             "pending.take().expect(\"unpublished shm preparation\")",
@@ -472,7 +472,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/ipc/shared_memory.rs",
+        "system/linuxd/src/ipc/shared_memory.rs",
         &[
             "state.permission.mode |= SHM_DEST",
             "state.permission.key = 0",
@@ -491,7 +491,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/ipc/namespace/shared_memory.rs",
+        "system/linuxd/src/ipc/namespace/shared_memory.rs",
         &[
             "let limit = read_limit()",
             "segment.require_lock(access, locking, limit)?",
@@ -508,7 +508,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/namespace/rlimit_counts.rs",
+        "system/linuxd/src/namespace/rlimit_counts.rs",
         &[
             "current_uid = parent_uid",
             "maximum = namespace.rlimit_counts.parent_maxima.maximum(resource)",
@@ -532,7 +532,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/ipc/shared_memory_creator.rs",
+        "system/linuxd/src/ipc/shared_memory_creator.rs",
         &[
             "state: Mutex<Option<FallibleMap<CreatorKey, CreatorRegistration>>>",
             "self.state.lock().take()",
@@ -546,7 +546,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/memory/shared_memory.rs",
+        "system/linuxd/src/memory/shared_memory.rs",
         &[
             "source.lifetime.open()",
             "self.lifetime.open()",
@@ -596,7 +596,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     require(
         sources,
-        "kernel/src/execution/task/model/shared_memory.rs",
+        "system/linuxd/src/task/model/shared_memory.rs",
         &[
             "crate::execution::task::current_tgid_identity()",
             "retirement.synchronize()",
@@ -610,14 +610,14 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/execution/task/model/process_exit.rs",
+        "system/linuxd/src/task/model/process_exit.rs",
         &["self.retire_shared_memory_creator()"],
         "real Thread exit must retire shm creator before namespace leave",
         errors,
     );
     require(
         sources,
-        "kernel/src/ipc/namespace.rs",
+        "tools/source-view/linuxd/ipc/namespace/namespace/namespace.rs",
         &[
             "UserResource::Ipc",
             "messages: Mutex<MessageRegistry>",
@@ -636,7 +636,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/ipc/ids.rs",
+        "system/linuxd/src/ipc/ids.rs",
         &[
             "Arc<MaybeUninit<T>>",
             "NodeSlot<u16, Arc<T>>",
@@ -650,7 +650,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/ipc/permissions.rs",
+        "system/linuxd/src/ipc/permissions.rs",
         &[
             "access.filesystem_gid == gid",
             "let uid = access.authority.effective_uid",
@@ -662,7 +662,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/ipc/semaphore.rs",
+        "system/linuxd/src/ipc/semaphore.rs",
         &[
             "operation.changes[..position].iter().rev()",
             "AtomicAttempt::Blocked(position)",
@@ -679,7 +679,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/ipc/sem_undo.rs",
+        "system/linuxd/src/ipc/sem_undo.rs",
         &[
             "members: usize",
             "set: Weak<SemaphoreSet>",
@@ -697,14 +697,14 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/execution/task/model/process_exit.rs",
+        "system/linuxd/src/task/model/process_exit.rs",
         &["retire_semaphore_undo()"],
         "actual exit must retire membership before namespace leaves",
         errors,
     );
     require(
         sources,
-        "kernel/src/execution/task/process_table/task_wait.rs",
+        "system/linuxd/src/task/process_table/task_wait.rs",
         &[
             "ticket.prepare_task_event(key, self.clone())",
             "super::arm_indexed_wait(",
@@ -717,7 +717,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/namespace.rs",
+        "system/linuxd/src/net/unix/namespace.rs",
         &[
             "let mut prepared =",
             "let mut bound = socket.address.lock()",
@@ -736,7 +736,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/rights_graph.rs",
+        "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs",
         &[
             "edges: FallibleMap<EdgeKey, GraphEdge>",
             "PreparedAttach",
@@ -754,7 +754,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/rights_graph.rs",
+        "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs",
         &[
             "file_reference: uid.is_some()",
             "edge.file_reference",
@@ -768,7 +768,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/rights_graph.rs",
+        "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs",
         &[
             "pub(super) fn pin_description",
             "let _collector = COLLECTOR.lock()",
@@ -778,7 +778,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/stream.rs",
+        "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
         &[
             "pub(super) fn close(&self)",
             "state.read_closed = true",
@@ -790,7 +790,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/stream.rs",
+        "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
         &[
             "if peek {",
             "for frame in state.messages.iter()",
@@ -803,7 +803,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/rights.rs",
+        "system/linuxd/src/net/unix/rights.rs",
         &[
             "pub(crate) struct UnixReceivedRights(Vec<Arc<dyn UnixPassedFile>>)",
             "prepared.capacity() >= self.files.len()",
@@ -815,7 +815,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/stream.rs",
+        "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
         &[
             "if peek {",
             "frame.consumed += count",
@@ -827,7 +827,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/rights_owner.rs",
+        "system/linuxd/src/net/unix/rights_owner.rs",
         &[
             "Backlog(super::rights_graph::BacklogOwnership)",
             "RightsOwner::Retired",
@@ -840,7 +840,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/retirement.rs",
+        "system/linuxd/src/net/unix/retirement.rs",
         &[
             "core::mem::replace(&mut *state, SocketState::Closed)",
             "self.retire_rights_owner()",
@@ -854,7 +854,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/rights.rs",
+        "system/linuxd/src/net/unix/rights.rs",
         &[
             "limit: Option<Arc<dyn UnixFileLimit>>",
             "self.limit.as_ref().map(|limit| limit.max_files())",
@@ -864,7 +864,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/execution/task/model/resource_limits.rs",
+        "tools/source-view/linuxd/task/model/resource_limits/resource_limits/resource_limits.rs",
         &[
             "self.process().resource_limits.clone()",
             "mod unix_file_limit",
@@ -874,7 +874,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/execution/task/model/resource_limits/unix_file_limit.rs",
+        "system/linuxd/src/task/model/resource_limits/unix_file_limit.rs",
         &[
             "impl crate::net::UnixFileLimit for spin::Mutex<ResourceLimits>",
             "self.lock().values[RLIMIT_NOFILE].soft",
@@ -884,7 +884,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/file/unix_passed.rs",
+        "system/linuxd/src/file/unix_passed.rs",
         &[
             "let rooted = Arc::strong_count(&self) > inflight.saturating_add(1)",
             "(rooted, self)",
@@ -894,7 +894,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/stream.rs",
+        "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
         &[
             "messages: FrameQueue",
             "retired.push(state.messages.pop()",
@@ -905,7 +905,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/stream/queue.rs",
+        "system/linuxd/src/net/unix/stream/queue.rs",
         &[
             "self.head = frame.next.take();",
             "self.tail = None;",
@@ -917,7 +917,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/datagram_queue.rs",
+        "system/linuxd/src/net/unix/datagram_queue.rs",
         &[
             "PreparedDatagram<T>(VacantEntry<u64, T>)",
             "FallibleMap::try_reserve_node()",
@@ -928,7 +928,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/packet_send.rs",
+        "system/linuxd/src/net/unix/packet_send.rs",
         &[
             "message.prepare_attach(self)?",
             "source: charge",
@@ -940,7 +940,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/syscall/socket/control_list.rs",
+        "system/linuxd/src/syscall/socket/control_list.rs",
         &[
             "ControlSnapshot",
             "length > i32::MAX as usize",
@@ -954,7 +954,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/syscall/socket/control.rs",
+        "system/linuxd/src/syscall/socket/control.rs",
         &[
             "snapshot: &ControlSnapshot",
             "ControlList::new(snapshot.bytes())",
@@ -965,7 +965,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/syscall/socket/message.rs",
+        "system/linuxd/src/syscall/socket/message.rs",
         &[
             "ControlSnapshot::import(",
             "socket.check_seqpacket_send()",
@@ -977,7 +977,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/net/unix/lifecycle.rs",
+        "system/linuxd/src/net/unix/lifecycle.rs",
         &[
             "connectable_shutdown(&client_state",
             "backlog.rollback(reservation)",
@@ -987,12 +987,12 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         "concurrent connect must decide only at actual publication and notify rolled-back capacity",
         errors,
     );
-    if let Some(text) = source(sources, "kernel/src/net/unix.rs", errors)
+    if let Some(text) = source(sources, "tools/source-view/linuxd/net/unix/unix/unix.rs", errors)
         && text.contains("    Connecting,")
     {
         errors.push("ipc-owner: unpublished connect cannot replace actual client state with a provisional connected state".into());
     }
-    if let Some(text) = source(sources, "kernel/src/net/unix/namespace.rs", errors) {
+    if let Some(text) = source(sources, "system/linuxd/src/net/unix/namespace.rs", errors) {
         if text.contains("namespace.retain(") || text.contains("namespace.remove(") {
             errors.push("ipc-owner: UNIX registry cannot scan unrelated bindings or destroy nodes under its guard".into());
         }
@@ -1036,7 +1036,7 @@ mod tests {
     #[test]
     fn rejects_orphan_retired_before_pending_reset_is_consumed() {
         reject(
-            "kernel/src/net/inet/tcp/io.rs",
+            "system/netd/src/inet/tcp/io.rs",
             "tcp.state() != State::Closed || tcp.remote_endpoint().is_some()",
             "tcp.state() != State::Closed",
             "TCP orphan retirement must retain actual FIN/TIME_WAIT lifetime",
@@ -1045,7 +1045,7 @@ mod tests {
     #[test]
     fn rejects_handshake_shutdown_permission_lost_at_final_ack() {
         reject(
-            "kernel/src/net/inet/tcp/io.rs",
+            "system/netd/src/inet/tcp/io.rs",
             "connection.shutdown_write = *shutdown_write",
             "connection.shutdown_write = false",
             "SYN_RECV shutdown permissions must move only at the actual final ACK",
@@ -1054,7 +1054,7 @@ mod tests {
     #[test]
     fn rejects_cancelled_tcp_facade_releasing_its_last_actual_slot() {
         reject(
-            "kernel/src/net/inet/tcp/lifecycle.rs",
+            "system/netd/src/inet/tcp/lifecycle.rs",
             "*tcp = placeholder_socket()",
             "tcp.abort()",
             "TCP disconnect must preserve one actual facade slot",
@@ -1063,7 +1063,7 @@ mod tests {
     #[test]
     fn rejects_message_ids_from_separate_credential_publications() {
         reject(
-            "kernel/src/execution/task/model/credentials.rs",
+            "system/linuxd/src/task/model/credentials.rs",
             "self.namespace_authority(), self.resuids(), self.resgids()",
             "self.namespace_authority(), [0; 3], self.resgids()",
             "message credentials must freeze IDs",
@@ -1072,7 +1072,7 @@ mod tests {
     #[test]
     fn rejects_pid_override_capability_checked_in_sender_user_namespace() {
         reject(
-            "kernel/src/execution/task/model/message_identity.rs",
+            "system/linuxd/src/task/model/message_identity.rs",
             "self.authority.capable(pid_owner, Capability::SYS_ADMIN)",
             "self.authority.capable(namespace, Capability::SYS_ADMIN)",
             "SCM credential claims must use native",
@@ -1081,7 +1081,7 @@ mod tests {
     #[test]
     fn rejects_message_controls_ignoring_empty_iterators() {
         reject(
-            "kernel/src/net/unix/stream.rs",
+            "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
             "mode.is_message()",
             "mode.receives_rights()",
             "actual stream frames must preserve",
@@ -1090,7 +1090,7 @@ mod tests {
     #[test]
     fn rejects_stream_coalescing_reused_numeric_pid() {
         reject(
-            "kernel/src/net/credentials.rs",
+            "system/linuxd/src/net/credentials.rs",
             "Arc::ptr_eq(&self.pid, &other.pid)",
             "true",
             "message credentials must pin actual",
@@ -1099,7 +1099,7 @@ mod tests {
     #[test]
     fn rejects_rights_using_space_already_taken_by_credentials() {
         reject(
-            "kernel/src/syscall/socket/control.rs",
+            "system/linuxd/src/syscall/socket/control.rs",
             "control_length.saturating_sub(written)",
             "control_length",
             "native credentials precede rights",
@@ -1108,7 +1108,7 @@ mod tests {
     #[test]
     fn rejects_closed_socket_capacity_wait_staying_unready() {
         reject(
-            "kernel/src/net/unix/capacity.rs",
+            "system/linuxd/src/net/unix/capacity.rs",
             "_ => true",
             "_ => false",
             "socket capacity wait must recheck actual",
@@ -1117,7 +1117,7 @@ mod tests {
     #[test]
     fn rejects_native_unix_backlog_plus_one_removed() {
         reject(
-            "kernel/src/net/unix/connection_backlog.rs",
+            "system/linuxd/src/net/unix/connection_backlog.rs",
             "limit.saturating_add(1)",
             "limit.max(1)",
             "UNIX backlog admission must include native plus-one",
@@ -1126,7 +1126,7 @@ mod tests {
     #[test]
     fn rejects_socket_deadline_dropped_at_registry_publication() {
         reject(
-            "kernel/src/syscall/poll.rs",
+            "tools/source-view/linuxd/syscall/poll/poll/poll.rs",
             "wait_for_poll(keys, deadline,",
             "wait_for_poll(keys, None,",
             "socket wait must publish the caller-frozen deadline",
@@ -1135,7 +1135,7 @@ mod tests {
     #[test]
     fn rejects_socket_timeout_usec_validation_using_wrong_errno() {
         reject(
-            "kernel/src/syscall/socket/timeout.rs",
+            "system/linuxd/src/syscall/socket/timeout.rs",
             "-errno::EDOM",
             "-errno::EINVAL",
             "socket timeout codec must preserve native",
@@ -1144,7 +1144,7 @@ mod tests {
     #[test]
     fn rejects_autobind_without_closed_state_revalidation() {
         reject(
-            "kernel/src/net/unix/namespace.rs",
+            "system/linuxd/src/net/unix/namespace.rs",
             "matches!(*state, SocketState::Closed)",
             "false",
             "UNIX bind must publish endpoint/binding once",
@@ -1153,7 +1153,7 @@ mod tests {
     #[test]
     fn rejects_autobind_without_socket_type_namespace() {
         reject(
-            "kernel/src/net/unix/namespace.rs",
+            "system/linuxd/src/net/unix/namespace.rs",
             "NamespaceKey::Abstract(net_id, address, socket_type)",
             "NamespaceKey::Abstract(net_id, address, SocketType::Stream)",
             "UNIX bind must publish endpoint/binding once",
@@ -1162,7 +1162,7 @@ mod tests {
     #[test]
     fn rejects_sysvipc_pid_view_from_proc_mount_instead_of_opener() {
         reject(
-            "kernel/src/fs/procfs/opened_operations.rs",
+            "system/linuxd/src/fs/procfs/opened_operations.rs",
             "pid: inode.source.current_pid_namespace()",
             "pid: inode.pid_namespace.clone()",
             "sysvipc open must pin actual IPC/PID namespace",
@@ -1171,7 +1171,7 @@ mod tests {
     #[test]
     fn rejects_effective_gid_substitution_for_fsgid() {
         reject(
-            "kernel/src/ipc/permissions.rs",
+            "system/linuxd/src/ipc/permissions.rs",
             "access.filesystem_gid == gid",
             "access.authority.effective_gid == gid",
             "DAC must use EUID, fsgid",
@@ -1180,7 +1180,7 @@ mod tests {
     #[test]
     fn rejects_shm_id_removal_instead_of_key_only_rmid() {
         reject(
-            "kernel/src/ipc/namespace/shared_memory.rs",
+            "system/linuxd/src/ipc/namespace/shared_memory.rs",
             "registry.ids.withdraw_key(id)?",
             "registry.ids.remove(id)?",
             "key-only RMID",
@@ -1189,7 +1189,7 @@ mod tests {
     #[test]
     fn rejects_shm_arc_observers_as_nattch() {
         reject(
-            "kernel/src/ipc/shared_memory.rs",
+            "system/linuxd/src/ipc/shared_memory.rs",
             "state.attaches == 0",
             "Arc::strong_count(&self.user) == 0",
             "actual VMA/reservation members",
@@ -1207,7 +1207,7 @@ mod tests {
     #[test]
     fn rejects_frozen_shm_creator_as_later_vma_actor() {
         reject(
-            "kernel/src/execution/task/model/shared_memory.rs",
+            "system/linuxd/src/task/model/shared_memory.rs",
             "crate::execution::task::current_tgid_identity()",
             "self.segment.creator.clone()",
             "current executor",
@@ -1216,7 +1216,7 @@ mod tests {
     #[test]
     fn rejects_frozen_memlock_limit_after_policy_wait() {
         reject(
-            "kernel/src/ipc/namespace/shared_memory.rs",
+            "system/linuxd/src/ipc/namespace/shared_memory.rs",
             "let limit = read_limit()",
             "let limit = initial_limit",
             "SHM_LOCK must use actual current limit",
@@ -1234,7 +1234,7 @@ mod tests {
     #[test]
     fn rejects_non_atomic_semop_rollback() {
         reject(
-            "kernel/src/ipc/semaphore.rs",
+            "system/linuxd/src/ipc/semaphore.rs",
             "operation.changes[..position].iter().rev()",
             "operation.changes[..position].iter()",
             "atomic rollback",
@@ -1243,7 +1243,7 @@ mod tests {
     #[test]
     fn rejects_counting_undo_observers_as_participants() {
         reject(
-            "kernel/src/ipc/sem_undo.rs",
+            "system/linuxd/src/ipc/sem_undo.rs",
             "(state.members == 0).then",
             "(Arc::strong_count(&self.state) == 0).then",
             "actual Thread members",
@@ -1252,7 +1252,7 @@ mod tests {
     #[test]
     fn rejects_abandoning_the_actual_timed_event_registry() {
         reject(
-            "kernel/src/execution/task/process_table/task_wait.rs",
+            "system/linuxd/src/task/process_table/task_wait.rs",
             "super::WAIT_REGISTRY.wake_task_event(key, result)",
             "None",
             "one actual registry membership",
@@ -1261,7 +1261,7 @@ mod tests {
     #[test]
     fn rejects_id_generation_exhaustion_instead_of_standard_wrap() {
         reject(
-            "kernel/src/ipc/ids.rs",
+            "system/linuxd/src/ipc/ids.rs",
             "sequence = (sequence + 1) & u32::from(u16::MAX)",
             "sequence = sequence.checked_add(1).ok_or(IpcError::NoSpace)?",
             "standard IPC64 sequence",
@@ -1270,7 +1270,7 @@ mod tests {
     #[test]
     fn rejects_gc_reentrant_self_edge_lock() {
         reject(
-            "kernel/src/net/unix/rights_graph.rs",
+            "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs",
             "Arc::ptr_eq(node, successor)",
             "false",
             "root probe pins outside GRAPH",
@@ -1279,7 +1279,7 @@ mod tests {
     #[test]
     fn rejects_destroying_ofd_probe_under_graph_guard() {
         reject(
-            "kernel/src/file/unix_passed.rs",
+            "system/linuxd/src/file/unix_passed.rs",
             "(rooted, self)",
             "(rooted, unreachable!())",
             "one actual OFD root probe",
@@ -1288,7 +1288,7 @@ mod tests {
     #[test]
     fn rejects_collector_allocating_a_waiter_under_pressure() {
         reject(
-            "kernel/src/net/unix/rights_graph.rs",
+            "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs",
             "COLLECTOR.lock_prepared(&mut gate)",
             "COLLECTOR.lock().unwrap()",
             "preserve actual worker",
@@ -1297,7 +1297,7 @@ mod tests {
     #[test]
     fn rejects_backlog_edges_counted_as_file_references() {
         reject(
-            "kernel/src/net/unix/rights_graph.rs",
+            "tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs",
             "file_reference: uid.is_some()",
             "file_reference: true",
             "without UID/OFD reference accounting",
@@ -1306,7 +1306,7 @@ mod tests {
     #[test]
     fn rejects_keeping_pending_children_open_for_observer_arcs() {
         reject(
-            "kernel/src/net/unix/retirement.rs",
+            "system/linuxd/src/net/unix/retirement.rs",
             "server.close_description()",
             "drop(server)",
             "retire pending children",
@@ -1315,7 +1315,7 @@ mod tests {
     #[test]
     fn rejects_retired_roots_treated_as_creator() {
         reject(
-            "kernel/src/net/unix/rights_owner.rs",
+            "system/linuxd/src/net/unix/rights_owner.rs",
             "RightsOwner::Retired",
             "RightsOwner::Creator",
             "actual lifecycle capabilities",
@@ -1324,7 +1324,7 @@ mod tests {
     #[test]
     fn rejects_second_user_control_fetch_after_snapshot() {
         reject(
-            "kernel/src/syscall/socket/control.rs",
+            "system/linuxd/src/syscall/socket/control.rs",
             "ControlList::new(snapshot.bytes())",
             "ControlList::new(&header)",
             "frozen control data",
@@ -1333,7 +1333,7 @@ mod tests {
     #[test]
     fn rejects_peek_without_actual_ofd_root_clones() {
         reject(
-            "kernel/src/net/unix/rights.rs",
+            "system/linuxd/src/net/unix/rights.rs",
             "prepared.extend(self.files.iter().cloned())",
             "let _ = prepared;",
             "peek copies must not attach or refund",
@@ -1342,7 +1342,7 @@ mod tests {
     #[test]
     fn rejects_peek_advancing_actual_chunk_cursor() {
         reject(
-            "kernel/src/net/unix/stream.rs",
+            "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
             "if peek {",
             "if false {",
             "one actual chunk owner",
@@ -1351,7 +1351,7 @@ mod tests {
     #[test]
     fn rejects_stream_head_relookup_after_minimum_selection() {
         reject(
-            "kernel/src/net/unix/stream.rs",
+            "tools/source-view/linuxd/net/unix/stream/stream/stream.rs",
             "front_mut()",
             "front()",
             "allocation-free adjacent chunk reads",
@@ -1360,7 +1360,7 @@ mod tests {
     #[test]
     fn rejects_stream_fifo_tail_retaining_a_retired_node() {
         reject(
-            "kernel/src/net/unix/stream/queue.rs",
+            "system/linuxd/src/net/unix/stream/queue.rs",
             "self.tail = None;",
             "let _ = self.tail;",
             "clear retired tail",
@@ -1369,7 +1369,7 @@ mod tests {
     #[test]
     fn rejects_unbilled_stream_rights_storage() {
         reject(
-            "kernel/src/net/unix/stream/write.rs",
+            "system/linuxd/src/net/unix/stream/write.rs",
             "core::mem::size_of::<Option<UnixRights>>()",
             "0",
             "stream must prepare actual barrier",
@@ -1378,7 +1378,7 @@ mod tests {
     #[test]
     fn rejects_frozen_scm_sender_quota_at_commit() {
         reject(
-            "kernel/src/net/unix/rights.rs",
+            "system/linuxd/src/net/unix/rights.rs",
             "self.limit.as_ref().map(|limit| limit.max_files())",
             "Some(1024)",
             "frozen syscall quota",
@@ -1387,7 +1387,7 @@ mod tests {
     #[test]
     fn rejects_sysvipc_continuations_discarding_the_cached_record_suffix() {
         reject(
-            "kernel/src/fs/procfs/ipc_description.rs",
+            "system/linuxd/src/fs/procfs/ipc_description.rs",
             "if self.consumed < self.length",
             "if false",
             "sysvipc sequential reads",

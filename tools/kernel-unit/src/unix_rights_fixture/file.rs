@@ -6,7 +6,7 @@ pub(crate) enum OpenFileKind {
 pub(crate) struct OpenFileDescription {
     pub(crate) kind: OpenFileKind,
 }
-#[path = "../../../../kernel/src/file/unix_passed.rs"]
+#[path = "../../../../system/linuxd/src/file/unix_passed.rs"]
 mod unix_passed;
 
 impl Drop for OpenFileDescription {
@@ -17,6 +17,6 @@ impl Drop for OpenFileDescription {
     }
 }
 
-#[path = "../../../../tools/kernel-view/file/descriptor_table/indexed_slots/indexed_slots/indexed_slots.rs"]
+#[path = "../../../../tools/source-view/linuxd/file/descriptor_table/indexed_slots/indexed_slots/indexed_slots.rs"]
 mod indexed_slots;
 pub(crate) const MAX_FILE_DESCRIPTORS: usize = indexed_slots::MAX_FILE_DESCRIPTORS;

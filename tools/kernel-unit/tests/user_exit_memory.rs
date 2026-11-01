@@ -53,7 +53,7 @@ pub(crate) mod execution {
         mod task_mutex;
         pub(crate) use task_mutex::{TaskMutex, TaskMutexWaitPreparation};
     }
-    #[path = "../../../kernel/src/execution/task"]
+    #[path = "../../../system/linuxd/src/task"]
     pub(crate) mod task {
         pub(crate) mod process_table {
             pub(crate) fn futex_wake_with_key(
@@ -466,3 +466,6 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

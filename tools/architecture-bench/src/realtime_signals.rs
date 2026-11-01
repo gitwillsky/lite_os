@@ -3,9 +3,9 @@
 //! 实际 RT record publication/dequeue 热路径；allocator/ucounts preparation 与最终退款移出计时区。
 extern crate alloc;
 mod cost_policy;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
-#[path = "../../../kernel/src/file/signalfd.rs"]
+#[path = "../../../system/linuxd/src/file/signalfd.rs"]
 mod file;
 #[path = "../../kernel-unit/src/namespace_fixture.rs"]
 mod namespace;
@@ -23,7 +23,7 @@ pub(crate) mod execution {
             GENERATION.fetch_add(1, core::sync::atomic::Ordering::Relaxed)
         }
     }
-    #[path = "../../../kernel/src/execution/task/model"]
+    #[path = "../../../system/linuxd/src/task/model"]
     pub(crate) mod task {
         mod signal_info;
         use signal_info::PendingSignal;
@@ -223,3 +223,6 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

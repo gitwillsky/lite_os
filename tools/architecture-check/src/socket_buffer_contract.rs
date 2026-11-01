@@ -11,10 +11,10 @@ fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a str {
         .text
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let owner = normalized(source(sources, "kernel/src/net/core_buffers.rs"));
-    let ledger = normalized(source(sources, "kernel/src/net/unix/send_memory.rs"));
-    let proc = normalized(source(sources, "kernel/src/fs/procfs/opened_operations.rs"));
-    let abi = normalized(source(sources, "kernel/src/syscall/socket/options.rs"));
+    let owner = normalized(source(sources, "system/linuxd/src/net/core_buffers.rs"));
+    let ledger = normalized(source(sources, "system/linuxd/src/net/unix/send_memory.rs"));
+    let proc = normalized(source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs"));
+    let abi = normalized(source(sources, "system/linuxd/src/syscall/socket/options.rs"));
     if !owner.contains("staticLIMITS:[AtomicU32;4]")
         || owner.matches("AtomicU32::new(212_992)").count() != 2
         || owner.matches("AtomicU32::new(4<<20)").count() != 2
@@ -61,17 +61,17 @@ mod tests {
     fn copied_maximum_and_missing_writer_recheck_are_rejected() {
         for (path, old, new) in [
             (
-                "kernel/src/net/unix/send_memory.rs",
+                "system/linuxd/src/net/unix/send_memory.rs",
                 ".min(maximum.value() as usize)",
                 ".min(212_992)",
             ),
             (
-                "kernel/src/fs/procfs/opened_operations.rs",
+                "system/linuxd/src/fs/procfs/opened_operations.rs",
                 "if !may_set_core_buffers(target, writer)",
                 "if false",
             ),
             (
-                "kernel/src/syscall/socket/options.rs",
+                "system/linuxd/src/syscall/socket/options.rs",
                 "if forced",
                 "if false",
             ),

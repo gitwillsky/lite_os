@@ -4,9 +4,9 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
-#[path = "../../../kernel/src/net/unix/namespace.rs"]
+#[path = "../../../system/linuxd/src/net/unix/namespace.rs"]
 mod namespace;
 use alloc::sync::Arc;
 use namespace::{BindingRequest, NamespaceKey, UnixAddress, UnixPathIdentity};

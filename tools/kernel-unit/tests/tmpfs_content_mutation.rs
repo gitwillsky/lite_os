@@ -3,7 +3,7 @@
 //! Production tmpfs metadata helper, permission policy and TaskMutex.
 //! Other inode metadata fields and MemoryFile pages are seams; actual pages/resize run in guest.
 extern crate alloc;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
@@ -35,7 +35,7 @@ static ALLOCATOR: FaultAllocator = FaultAllocator;
 
 #[path = "../src/interruptible_event_target.rs"]
 mod target;
-#[path = "../../../kernel/src/fs"]
+#[path = "../../../system/linuxd/src/fs"]
 mod fs {
     use crate::execution::sync::{TaskMutex, TaskMutexGuard};
     use alloc::sync::Arc;

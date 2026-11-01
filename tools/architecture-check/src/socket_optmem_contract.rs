@@ -14,10 +14,10 @@ fn before(source: &str, first: &str, second: &str) -> bool {
     matches!((source.find(first), source.find(second)), (Some(a), Some(b)) if a < b)
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let memory = normalized(source(sources, "kernel/src/net/control_memory.rs"));
-    let network = normalized(source(sources, "kernel/src/net/net_namespace.rs"));
-    let import = normalized(source(sources, "kernel/src/syscall/socket/control_list.rs"));
-    let message = normalized(source(sources, "kernel/src/syscall/socket/message.rs"));
+    let memory = normalized(source(sources, "system/linuxd/src/net/control_memory.rs"));
+    let network = normalized(source(sources, "system/linuxd/src/net/net_namespace.rs"));
+    let import = normalized(source(sources, "system/linuxd/src/syscall/socket/control_list.rs"));
+    let message = normalized(source(sources, "system/linuxd/src/syscall/socket/message.rs"));
     let send = message
         .split("pub(crate)fnsys_sendmsg(")
         .nth(1)
@@ -53,9 +53,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("socket-optmem: actual per-socket atomic admission must charge requested bytes against captured NET policy before allocation/copy, retain heap token through protocol send and refund exactly once".into());
     }
-    let prepare = normalized(source(sources, "kernel/src/net/preparation.rs"));
-    let abi = normalized(source(sources, "kernel/src/syscall/socket.rs"));
-    let proc = normalized(source(sources, "kernel/src/fs/procfs/opened_operations.rs"));
+    let prepare = normalized(source(sources, "system/linuxd/src/net/preparation.rs"));
+    let abi = normalized(source(sources, "tools/source-view/linuxd/syscall/socket/socket/socket.rs"));
+    let proc = normalized(source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs"));
     if !prepare.contains("letmemory=super::SocketMemory::try_new(namespace)?")
         || !prepare.contains("memory:self.memory")
         || !abi.contains("task.net_namespace()")
@@ -81,22 +81,22 @@ mod tests {
     fn overshoot_unmetered_copy_early_refund_and_accept_redirection_are_rejected() {
         for (path, old, new) in [
             (
-                "kernel/src/net/control_memory.rs",
+                "system/linuxd/src/net/control_memory.rs",
                 "next >= maximum",
                 "next > maximum",
             ),
             (
-                "kernel/src/syscall/socket/control_list.rs",
+                "system/linuxd/src/syscall/socket/control_list.rs",
                 ".reserve_control_memory(length)",
                 ".reserve_control_memory(0)",
             ),
             (
-                "kernel/src/syscall/socket/message.rs",
+                "system/linuxd/src/syscall/socket/message.rs",
                 "drop(snapshot);",
                 "drop(ancillary.credentials);",
             ),
             (
-                "kernel/src/syscall/socket.rs",
+                "tools/source-view/linuxd/syscall/socket/socket/socket.rs",
                 "listener.net_namespace(),",
                 "task.net_namespace(),",
             ),

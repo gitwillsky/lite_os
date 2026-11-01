@@ -3,7 +3,7 @@
 //! Production graph retirement with actual FallibleMap membership storage. Process lifecycle
 //! admission and credential payload are explicit host seams; deferred consequence routing is real.
 extern crate alloc;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
@@ -33,7 +33,7 @@ pub(crate) mod execution {
             Woken,
         }
     }
-    #[path = "../../../kernel/src/execution/task"]
+    #[path = "../../../system/linuxd/src/task"]
     pub(crate) mod task {
         pub(crate) mod pid;
         pub(crate) mod processor {
@@ -467,3 +467,6 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

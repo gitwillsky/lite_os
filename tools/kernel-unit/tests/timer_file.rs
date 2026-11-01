@@ -4,22 +4,22 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
-#[path = "../../../kernel/src/id.rs"]
+#[path = "../../../system/linuxd/src/id.rs"]
 mod id;
 #[path = "../src/pipe_fixture.rs"]
 mod ipc;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 
-#[path = "../../../kernel/src/file"]
+#[path = "../../../system/linuxd/src/file"]
 mod file {
     mod timerfd;
     pub(crate) use timerfd::{TimerError, TimerFdBackend, TimerFdRead, TimerSetting};
 }
 
-#[path = "../../../kernel/src/execution/task/process_table"]
+#[path = "../../../system/linuxd/src/task/process_table"]
 mod task_table {
     use alloc::sync::Arc;
     struct ProcessTable {
@@ -239,3 +239,6 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+use execution::sync;

@@ -4,7 +4,7 @@
 
 extern crate alloc;
 
-#[path = "../../../kernel/src/fs"]
+#[path = "../../../system/linuxd/src/fs"]
 mod fs {
     #[derive(Debug, PartialEq, Eq)]
     enum FileSystemError {

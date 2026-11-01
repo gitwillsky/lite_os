@@ -20,8 +20,8 @@ fn ordered(source: &str, facts: &[&str]) -> bool {
     true
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let ofd = compact(sources, "kernel/src/file/mod.rs");
-    let mutation = compact(sources, "kernel/src/fs/vfs/mutation.rs");
+    let ofd = compact(sources, "system/linuxd/src/file/mod.rs");
+    let mutation = compact(sources, "system/linuxd/src/fs/vfs/mutation.rs");
     let unlink = mutation
         .split("fnunlink_at(")
         .nth(1)
@@ -36,9 +36,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         .split("implVirtualFileSystem{")
         .next()
         .unwrap();
-    let opened = compact(sources, "kernel/src/fs/vfs/opened.rs");
-    let dentry = compact(sources, "kernel/src/fs/vfs/dentry.rs");
-    let registry = compact(sources, "kernel/src/fs/page_cache/registry.rs");
+    let opened = compact(sources, "system/linuxd/src/fs/vfs/opened.rs");
+    let dentry = compact(sources, "system/linuxd/src/fs/vfs/dentry.rs");
+    let registry = compact(sources, "system/linuxd/src/fs/page_cache/registry.rs");
     if mutation.contains("evict_if_unlinked")
         || !ordered(
             unlink,
@@ -75,9 +75,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("file-lifetime: final dput must alone retire unlinked cache after transient/access inode pins and namespace guards; actual mount writer must outlive path/inode cleanup".into());
     }
-    let tty = compact(sources, "kernel/src/devices/tty/mod.rs");
-    let pty = compact(sources, "kernel/src/devices/tty/pty.rs");
-    let fifo = compact(sources, "kernel/src/fs/fifo.rs");
+    let tty = compact(sources, "system/linuxd/src/devices/tty/mod.rs");
+    let pty = compact(sources, "tools/source-view/linuxd/devices/tty/pty/pty/pty.rs");
+    let fifo = compact(sources, "system/linuxd/src/fs/fifo.rs");
     if !ofd.contains("OpenFileKind::Device(device)=>device.release()")
         || !tty.contains("implDeviceFileforTerminalFile{fnrelease(&self){ifletSome(slave)=&self.pty{slave.close();}}")
         || !tty.contains("implDeviceFileforPtyMasterFile{fnrelease(&self){self.0.close();}")
@@ -116,9 +116,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("file-lifetime: PTY index publication and devpts snapshot must prepare allocations outside registry spin guards and revalidate actual membership".into());
     }
-    let socket = compact(sources, "kernel/src/net/retirement.rs");
-    let packet = compact(sources, "kernel/src/net/packet.rs");
-    let kobject = compact(sources, "kernel/src/net/kobject.rs");
+    let socket = compact(sources, "system/linuxd/src/net/retirement.rs");
+    let packet = compact(sources, "system/linuxd/src/net/packet.rs");
+    let kobject = compact(sources, "system/linuxd/src/net/kobject.rs");
     if !ofd.contains("OpenFileKind::Socket(socket)=>socket.close_description()")
         || !socket.contains("SocketBackend::Packet(socket)=>socket.close_description()")
         || !socket.contains("SocketBackend::Kobject(socket)=>socket.close_description()")
@@ -144,10 +144,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("file-lifetime: actual socket fput must retire packet/netlink registrations, reject closed observers and avoid backend Drop reentering broadcast guards".into());
     }
-    let inet = compact(sources, "kernel/src/net/inet.rs");
-    let options = compact(sources, "kernel/src/net/inet/options.rs");
-    let owner = compact(sources, "kernel/src/net/inet/protocol_owner.rs");
-    let wait = compact(sources, "kernel/src/net/inet/wait.rs");
+    let inet = compact(sources, "system/linuxd/src/net/inet.rs");
+    let options = compact(sources, "system/netd/src/inet/options.rs");
+    let owner = compact(sources, "tools/source-view/netd/inet/protocol_owner/protocol_owner/protocol_owner.rs");
+    let wait = compact(sources, "system/netd/src/inet/wait.rs");
     if !inet.contains("operation:Mutex<Option<InetEndpoint>>")
         || !ordered(
             &inet,
@@ -175,7 +175,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("file-lifetime: actual Inet fput must take one protocol registration, drain retired ports before new task transactions and keep closed observers away from reused handles".into());
     }
-    let tmpfs = compact(sources, "kernel/src/fs/tmpfs.rs");
+    let tmpfs = compact(sources, "tools/source-view/linuxd/fs/tmpfs/tmpfs/tmpfs.rs");
     let rename = tmpfs
         .split("fnrename(")
         .nth(1)
@@ -206,9 +206,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("file-lifetime: tmpfs rename must prepare all guards before namespace commit, apply final parent link deltas and retire victim backing outside guards; deleted directory reads must reject its actual zero-link phase".into());
     }
-    let inode = compact(sources, "kernel/src/fs/ext4/inode/vfs.rs");
-    let directory = compact(sources, "kernel/src/fs/ext4/directory.rs");
-    let orphan = compact(sources, "kernel/src/fs/ext4/orphan.rs");
+    let inode = compact(sources, "system/ext4d/src/ext4/inode/vfs.rs");
+    let directory = compact(sources, "system/ext4d/src/ext4/directory.rs");
+    let orphan = compact(sources, "system/ext4d/src/ext4/orphan.rs");
     if !inode.contains("}elseifexternally_held{drop(disk);self.fs.defer_reclaim_locked(&mutmutation,&child)?;")
         || !directory.contains("}elseifexternally_held{drop(disk);self.fs.defer_reclaim_locked(&mutmutation,&existing)?;")
         || inode.contains("disk.i_mode&0xF000!=0x4000")
@@ -247,10 +247,10 @@ mod tests {
     #[test]
     fn rejects_unlink_and_rename_dput_before_temporary_inode_retirement() {
         for token in ["drop(target_inode);", "drop(target);"] {
-            reject("kernel/src/fs/vfs/mutation.rs", token, "", "final dput");
+            reject("system/linuxd/src/fs/vfs/mutation.rs", token, "", "final dput");
         }
         reject(
-            "kernel/src/fs/vfs/mutation.rs",
+            "system/linuxd/src/fs/vfs/mutation.rs",
             "drop(target_inode);",
             "super::super::page_cache::evict_if_unlinked(&target_inode); drop(target_inode);",
             "final dput",
@@ -259,13 +259,13 @@ mod tests {
     #[test]
     fn rejects_fput_access_pin_surviving_final_dput() {
         reject(
-            "kernel/src/file/mod.rs",
+            "system/linuxd/src/file/mod.rs",
             "write._content.release_inode_access();",
             "",
             "final dput",
         );
         reject(
-            "kernel/src/fs/vfs/opened.rs",
+            "system/linuxd/src/fs/vfs/opened.rs",
             "drop(self._inode.take());",
             "",
             "final dput",
@@ -274,7 +274,7 @@ mod tests {
     #[test]
     fn rejects_temporary_cache_io_pin_blocking_registry_retirement() {
         reject(
-            "kernel/src/fs/page_cache/registry.rs",
+            "system/linuxd/src/fs/page_cache/registry.rs",
             "Arc::strong_count(&file.inode) == 2",
             "Arc::strong_count(file) == 1 && Arc::strong_count(&file.inode) == 2",
             "final dput",
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn rejects_backend_observer_delaying_close() {
         reject(
-            "kernel/src/devices/tty/mod.rs",
+            "system/linuxd/src/devices/tty/mod.rs",
             "self.0.close();",
             "",
             "actual device fput",
@@ -292,7 +292,7 @@ mod tests {
     #[test]
     fn rejects_index_reuse_waiting_for_last_observer() {
         reject(
-            "kernel/src/devices/tty/pty.rs",
+            "tools/source-view/linuxd/devices/tty/pty/pty/pty.rs",
             "!state.master_open && state.slave_opens == 0",
             "false",
             "index reuse",
@@ -301,7 +301,7 @@ mod tests {
     #[test]
     fn rejects_open_directory_bypassing_orphan_admission() {
         reject(
-            "kernel/src/fs/ext4/inode/vfs.rs",
+            "system/ext4d/src/ext4/inode/vfs.rs",
             "} else if externally_held {",
             "} else if metadata.kind != InodeType::Directory && externally_held {",
             "open directories",
@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn rejects_rename_directory_bypassing_orphan_admission() {
         reject(
-            "kernel/src/fs/ext4/directory.rs",
+            "system/ext4d/src/ext4/directory.rs",
             "} else if externally_held {",
             "} else if existing_meta.kind != InodeType::Directory && externally_held {",
             "open directories",
@@ -319,7 +319,7 @@ mod tests {
     #[test]
     fn rejects_closed_netlink_observer_rebinding() {
         reject(
-            "kernel/src/net/kobject.rs",
+            "system/linuxd/src/net/kobject.rs",
             "let state = state_guard.as_mut().ok_or(SocketError::NotConnected)?;",
             "let state = state_guard.as_mut().get_or_insert_with(|| unreachable!());",
             "reject closed observers",
@@ -328,7 +328,7 @@ mod tests {
     #[test]
     fn rejects_inet_close_waiting_for_backend_arc_drop() {
         reject(
-            "kernel/src/net/inet.rs",
+            "system/linuxd/src/net/inet.rs",
             "let retired = self.operation.lock().take();",
             "let retired = None;",
             "actual Inet fput",
@@ -337,7 +337,7 @@ mod tests {
     #[test]
     fn rejects_deferred_inet_ports_surviving_next_task_transaction() {
         reject(
-            "kernel/src/net/inet/protocol_owner.rs",
+            "tools/source-view/netd/inet/protocol_owner/protocol_owner/protocol_owner.rs",
             "let endpoint = self.pending_cleanup.lock().pop();",
             "let endpoint = None;",
             "retired ports before new task transactions",
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn rejects_fallible_tmpfs_child_lock_after_namespace_commit() {
         reject(
-            "kernel/src/fs/tmpfs.rs",
+            "tools/source-view/linuxd/fs/tmpfs/tmpfs/tmpfs.rs",
             "let mut child_state = child.state()?;",
             "let mut child_state = unreachable!();",
             "prepare all guards before namespace commit",
@@ -355,7 +355,7 @@ mod tests {
     #[test]
     fn rejects_tmpfs_directory_replacement_transient_parent_increment() {
         reject(
-            "kernel/src/fs/tmpfs.rs",
+            "tools/source-view/linuxd/fs/tmpfs/tmpfs/tmpfs.rs",
             "moves_directory && crosses_parent && !replaced_directory",
             "moves_directory && crosses_parent",
             "final parent link deltas",

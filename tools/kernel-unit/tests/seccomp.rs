@@ -3,7 +3,7 @@
 
 extern crate alloc;
 #[allow(dead_code, unused_imports)]
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/namespace_fixture.rs"]
@@ -422,3 +422,9 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+use execution::sync;
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

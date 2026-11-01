@@ -3,25 +3,25 @@ use syn::{Arm, Expr, ExprCall, ExprMatch, ImplItem, ImplItemFn, Item, ItemFn, Pa
 
 use super::SourceFile;
 
-const TRAP_SOURCE: &str = "kernel/src/execution/trap/mod.rs";
+const TRAP_SOURCE: &str = "kernel/src/bootstrap/mod.rs";
 const CPU_DEFERRED_SOURCE: &str = "kernel/src/execution/deferred.rs";
-const PROCESS_TABLE_SOURCE: &str = "kernel/src/execution/task/process_table.rs";
+const PROCESS_TABLE_SOURCE: &str = "tools/source-view/linuxd/task/process_table/process_table/process_table.rs";
 const CONTEXT_SWITCH_SOURCE: &str = "kernel/src/execution/task/process_table/context_switch.rs";
 const VIRTIO_LOCKS: &[(&str, &str, &str, &str)] = &[
     (
-        "kernel/src/drivers/virtio/net.rs",
+        "tools/source-view/devmgr/drivers/virtio/net/net/net.rs",
         "VirtIONetworkDevice",
         "queues",
         "Mutex < QueueState >",
     ),
     (
-        "kernel/src/drivers/virtio/input.rs",
+        "system/devmgr/src/drivers/virtio/input.rs",
         "VirtIOInputDevice",
         "events",
         "Mutex < EventQueueState >",
     ),
     (
-        "kernel/src/drivers/virtio/gpu.rs",
+        "tools/source-view/devmgr/drivers/virtio/gpu/gpu/gpu.rs",
         "VirtIOGpuDevice",
         "control",
         "Mutex < ControlQueue >",
@@ -56,7 +56,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     check_driver_io_dispatch_lock_free(sources, errors);
 }
 
-const DRIVER_REGISTRY_SOURCE: &str = "kernel/src/devices/model/registry.rs";
+const DRIVER_REGISTRY_SOURCE: &str = "system/device-model/src/registry.rs";
 
 /// 方法调用名称计数器。
 #[derive(Default)]
@@ -752,7 +752,7 @@ mod tests {
         let mut sources = repository_sources();
         mutate(
             &mut sources,
-            "kernel/src/drivers/virtio/net.rs",
+            "tools/source-view/devmgr/drivers/virtio/net/net/net.rs",
             "        let status = self",
             "        self.queues.lock();\n        let status = self",
         );
@@ -768,7 +768,7 @@ mod tests {
         let mut sources = repository_sources();
         mutate(
             &mut sources,
-            "kernel/src/drivers/virtio/input.rs",
+            "system/devmgr/src/drivers/virtio/input.rs",
             "events: Mutex<EventQueueState>",
             "events: IrqMutex<EventQueueState>",
         );

@@ -1,4 +1,4 @@
-#[path = "../../../kernel/src/execution/sync/wait_completion.rs"]
+#[path = "../../../system/service-sync/src/wait_completion.rs"]
 mod wait_completion;
 #[allow(
     unused_imports,
@@ -6,7 +6,7 @@ mod wait_completion;
 )]
 pub(crate) use wait_completion::WaitCompletion;
 
-#[path = "../../../kernel/src/execution/sync/task_wait.rs"]
+#[path = "../../../system/service-sync/src/task_wait.rs"]
 #[allow(
     dead_code,
     reason = "host tests never construct scheduler wait outcomes"
@@ -18,7 +18,7 @@ mod task_wait;
 )]
 pub(crate) use task_wait::{TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory};
 
-#[path = "../../../tools/kernel-view/execution/sync/task_mutex/task_mutex/task_mutex.rs"]
+#[path = "../../../tools/source-view/service-sync/task_mutex/task_mutex/task_mutex.rs"]
 mod task_mutex;
 #[allow(
     unused_imports,
@@ -28,10 +28,10 @@ pub(crate) use task_mutex::{
     TaskMutex, TaskMutexGuard, TaskMutexLockError, TaskMutexWaitPreparation,
 };
 
-#[path = "../../../kernel/src/execution/sync/task_rw_semaphore.rs"]
+#[path = "../../../system/service-sync/src/task_rw_semaphore.rs"]
 mod task_rw_semaphore;
 
-#[path = "../../../kernel/src/execution/sync/task_event.rs"]
+#[path = "../../../system/service-sync/src/task_event.rs"]
 #[allow(
     dead_code,
     reason = "interruptible events are exercised by separate production-owner integration fixtures"
@@ -57,3 +57,6 @@ static READINESS_GENERATION: AtomicU64 = AtomicU64::new(1);
 pub(crate) fn next_readiness_generation() -> u64 {
     READINESS_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
+
+#[allow(unused_imports, reason = "宿主调度适配替代 native futex 等待；互斥算法仍执行生产实现")]
+pub(crate) use spin::{Mutex, MutexGuard, Once};

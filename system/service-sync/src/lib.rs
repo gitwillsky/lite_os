@@ -15,6 +15,7 @@ extern crate alloc;
 extern crate std;
 
 pub use native_runtime::sync::{Mutex, MutexGuard};
+use native_runtime::sync::Once;
 
 mod service_thread;
 mod task_event;

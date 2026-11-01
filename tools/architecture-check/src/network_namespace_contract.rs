@@ -11,18 +11,18 @@ fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a str {
         .text
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let owner = normalized(source(sources, "kernel/src/net/net_namespace.rs"));
-    let protocol_owner = normalized(source(sources, "kernel/src/net/inet/protocol_owner.rs"));
-    let inet = normalized(source(sources, "kernel/src/net/inet.rs"));
-    let configuration = normalized(source(sources, "kernel/src/net/inet/configuration.rs"));
-    let timing = normalized(source(sources, "kernel/src/net/inet/timing.rs"));
-    let interface = normalized(source(sources, "kernel/src/syscall/socket/interface.rs"));
-    let registry = normalized(source(sources, "kernel/src/net/unix/namespace.rs"));
-    let unix = normalized(source(sources, "kernel/src/net/unix.rs"));
-    let lifecycle = normalized(source(sources, "kernel/src/net/unix/lifecycle.rs"));
-    let proc = normalized(source(sources, "kernel/src/fs/procfs.rs"));
-    let opened = normalized(source(sources, "kernel/src/fs/procfs/opened_operations.rs"));
-    let nodes = normalized(source(sources, "kernel/src/fs/procfs/node.rs"));
+    let owner = normalized(source(sources, "system/linuxd/src/net/net_namespace.rs"));
+    let protocol_owner = normalized(source(sources, "tools/source-view/netd/inet/protocol_owner/protocol_owner/protocol_owner.rs"));
+    let inet = normalized(source(sources, "system/linuxd/src/net/inet.rs"));
+    let configuration = normalized(source(sources, "system/netd/src/inet/configuration.rs"));
+    let timing = normalized(source(sources, "system/netd/src/inet/timing.rs"));
+    let interface = normalized(source(sources, "system/linuxd/src/syscall/socket/interface.rs"));
+    let registry = normalized(source(sources, "system/linuxd/src/net/unix/namespace.rs"));
+    let unix = normalized(source(sources, "tools/source-view/linuxd/net/unix/unix/unix.rs"));
+    let lifecycle = normalized(source(sources, "system/linuxd/src/net/unix/lifecycle.rs"));
+    let proc = normalized(source(sources, "tools/source-view/linuxd/fs/procfs/procfs/procfs.rs"));
+    let opened = normalized(source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs"));
+    let nodes = normalized(source(sources, "system/linuxd/src/fs/procfs/node.rs"));
     let generic = nodes
         .split("fngeneric_entries()")
         .nth(1)
@@ -85,14 +85,14 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors.push("network-namespace: one actual NET lifetime must charge ucounts, partition abstract keys using immutable socket scope, preserve global inode lookup and capture scoped proc policy with readonly global limits".into());
     }
     for path in [
-        "kernel/src/net/inet/options.rs",
-        "kernel/src/net/inet/udp.rs",
-        "kernel/src/net/inet/raw.rs",
-        "kernel/src/net/inet/tcp.rs",
-        "kernel/src/net/inet/tcp/io.rs",
-        "kernel/src/net/inet/tcp/accept.rs",
-        "kernel/src/net/inet/tcp/lifecycle.rs",
-        "kernel/src/net/inet/wait.rs",
+        "system/netd/src/inet/options.rs",
+        "system/netd/src/inet/udp.rs",
+        "system/netd/src/inet/raw.rs",
+        "tools/source-view/netd/inet/tcp/tcp/tcp.rs",
+        "system/netd/src/inet/tcp/io.rs",
+        "system/netd/src/inet/tcp/accept.rs",
+        "system/netd/src/inet/tcp/lifecycle.rs",
+        "system/netd/src/inet/wait.rs",
     ] {
         if normalized(source(sources, path)).contains("initial_stack(") {
             errors.push(format!("network-namespace: {path}: existing endpoint operation/loan/readiness must use captured NET, never initial/current Task fallback"));
@@ -113,42 +113,42 @@ mod tests {
     fn unscoped_abstract_missing_quota_and_writable_global_tunables_are_rejected() {
         for (path, old, new) in [
             (
-                "kernel/src/net/net_namespace.rs",
+                "system/linuxd/src/net/net_namespace.rs",
                 ".try_call_once(|| {",
                 ".call_once(|| {",
             ),
             (
-                "kernel/src/net/net_namespace.rs",
+                "system/linuxd/src/net/net_namespace.rs",
                 "publish(initial)",
                 "Ok(initial)",
             ),
             (
-                "kernel/src/net/unix/namespace.rs",
+                "system/linuxd/src/net/unix/namespace.rs",
                 "NamespaceKey::Abstract(net_id, address, socket_type)",
                 "NamespaceKey::Abstract(6, address, socket_type)",
             ),
             (
-                "kernel/src/net/net_namespace.rs",
+                "system/linuxd/src/net/net_namespace.rs",
                 "_charge: Some(charge)",
                 "_charge: None",
             ),
             (
-                "kernel/src/fs/procfs/opened_operations.rs",
+                "system/linuxd/src/fs/procfs/opened_operations.rs",
                 "target.is_initial() && target.may_set_limits(authority)",
                 "target.may_set_limits(authority)",
             ),
             (
-                "kernel/src/net/net_namespace.rs",
+                "system/linuxd/src/net/net_namespace.rs",
                 "FallibleMap<u64, Weak<NetNamespace>>",
                 "FallibleMap<u64, Arc<NetNamespace>>",
             ),
             (
-                "kernel/src/net/net_namespace.rs",
+                "system/linuxd/src/net/net_namespace.rs",
                 "directory.deferred_cursor = cursor",
                 "directory.deferred_cursor = 0",
             ),
             (
-                "kernel/src/syscall/socket/interface.rs",
+                "system/linuxd/src/syscall/socket/interface.rs",
                 "&scope.user_namespace()",
                 "&crate::namespace::initial_user()",
             ),

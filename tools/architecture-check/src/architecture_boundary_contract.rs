@@ -244,7 +244,7 @@ mod tests {
         assert!(
             violations(
                 "arch",
-                "kernel/src/arch/mmio.rs",
+                "mmio/src/lib.rs",
                 "fn f() { unsafe { crate::arch::read_mmio_u32(0) }; }"
             )
             .is_empty()

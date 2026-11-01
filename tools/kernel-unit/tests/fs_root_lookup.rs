@@ -5,7 +5,7 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
@@ -39,7 +39,7 @@ mod ipc {
 // Blocking mutex implementation is a host scheduler adapter; actual namespace guard,
 // traversal/admission/projection ownership is loaded from production.
 
-#[path = "../../../kernel/src/fs"]
+#[path = "../../../system/linuxd/src/fs"]
 mod fs {
     // notification 子系统边界只记录 actual last-dput 的调用事实，不复制判断 links/投递算法。
     static RECLAIMED_DENTRY_COUNT: core::sync::atomic::AtomicU64 =
@@ -200,7 +200,7 @@ mod fs {
             DeviceNumber::new(0, 0)
         }
     }
-    #[path = "../../../kernel/src/fs/devnum.rs"]
+    #[path = "../../../system/linuxd/src/fs/devnum.rs"]
     mod devnum;
     pub(crate) use devnum::DeviceNumber;
     mod devnode {

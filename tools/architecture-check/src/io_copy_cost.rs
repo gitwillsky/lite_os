@@ -1,11 +1,11 @@
 use std::{fs, path::Path};
 
-const CURSOR_SOURCE: &str = "kernel/src/syscall/user_iovec.rs";
-const POLL_SOURCE: &str = "kernel/src/syscall/poll.rs";
-const DEVICE_CURSOR_SOURCE: &str = "kernel/src/syscall/device.rs";
-const ZERO_SOURCE: &str = "kernel/src/fs/mem_device.rs";
-const EVDEV_SOURCE: &str = "kernel/src/devices/input/evdev_file.rs";
-const DRM_SOURCE: &str = "kernel/src/devices/drm/card_file.rs";
+const CURSOR_SOURCE: &str = "tools/source-view/linuxd/syscall/user_iovec/user_iovec/user_iovec.rs";
+const POLL_SOURCE: &str = "tools/source-view/linuxd/syscall/poll/poll/poll.rs";
+const DEVICE_CURSOR_SOURCE: &str = "system/linuxd/src/syscall/device.rs";
+const ZERO_SOURCE: &str = "system/linuxd/src/fs/mem_device.rs";
+const EVDEV_SOURCE: &str = "system/linuxd/src/devices/input/evdev_file.rs";
+const DRM_SOURCE: &str = "system/linuxd/src/devices/drm/card_file.rs";
 const BYTES: usize = 1024 * 1024;
 const POLL_FDS: usize = 1024;
 const EVENT_BATCH: usize = 16;

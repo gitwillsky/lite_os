@@ -1,24 +1,24 @@
 use super::{SocketError, UnixCredentials};
 use alloc::{sync::Arc, vec::Vec};
 use spin::Mutex;
-#[path = "../../../../kernel/src/net/unix/rights.rs"]
+#[path = "../../../../system/linuxd/src/net/unix/rights.rs"]
 mod rights;
 pub(crate) use rights::{UnixFileLimit, UnixNode, UnixPassedFile, UnixReceivedRights, UnixRights};
-#[path = "../../../../kernel/src/net/unix/connection_backlog.rs"]
+#[path = "../../../../system/linuxd/src/net/unix/connection_backlog.rs"]
 mod connection_backlog;
-#[path = "../../../../kernel/src/net/unix/retirement.rs"]
+#[path = "../../../../system/linuxd/src/net/unix/retirement.rs"]
 mod retirement;
-#[path = "../../../../tools/kernel-view/net/unix/rights_graph/rights_graph/rights_graph.rs"]
+#[path = "../../../../tools/source-view/linuxd/net/unix/rights_graph/rights_graph/rights_graph.rs"]
 mod rights_graph;
-#[path = "../../../../kernel/src/net/unix/rights_owner.rs"]
+#[path = "../../../../system/linuxd/src/net/unix/rights_owner.rs"]
 mod rights_owner;
-#[path = "../../../../kernel/src/net/unix/send_memory.rs"]
+#[path = "../../../../system/linuxd/src/net/unix/send_memory.rs"]
 mod send_memory;
 use send_memory::SenderCharge;
-#[path = "../../../../tools/kernel-view/net/unix/stream/stream/stream.rs"]
+#[path = "../../../../tools/source-view/linuxd/net/unix/stream/stream/stream.rs"]
 mod stream;
 const SCM_MAX_FD: usize = 253;
-#[path = "../../../../kernel/src/net/unix/receive_mode.rs"]
+#[path = "../../../../system/linuxd/src/net/unix/receive_mode.rs"]
 mod receive_mode;
 use receive_mode::ReceiveMode;
 // 仅生产实际 queued payload/address seam；lifecycle、root 与 backlog 使用生产源码。

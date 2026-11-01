@@ -81,7 +81,7 @@ use crate::devices::audio::state as audio_state;
 
 #[cfg(test)]
 mod audio_readiness {
-    include!("../../../kernel/src/devices/audio/readiness.rs");
+    include!("../../../system/linuxd/src/devices/audio/readiness.rs");
 
     pub(crate) const fn project(events: i16, writable: bool) -> i16 {
         project_playback_events(events, writable)
@@ -89,36 +89,32 @@ mod audio_readiness {
 }
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio/sound/wire.rs"]
+#[path = "../../../system/devmgr/src/drivers/virtio/sound/wire.rs"]
 mod virtio_sound_wire;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio/console/wire.rs"]
+#[path = "../../../system/devmgr/src/drivers/virtio/console/wire.rs"]
 mod virtio_console_wire;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio/sound/lifecycle.rs"]
+#[path = "../../../system/devmgr/src/drivers/virtio/sound/lifecycle.rs"]
 mod virtio_sound_lifecycle;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/memory_file/seals.rs"]
+#[path = "../../../system/linuxd/src/fs/memory_file/seals.rs"]
 mod memory_seals;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/memory_file/sparse.rs"]
-mod memory_sparse;
-
-#[cfg(test)]
-#[path = "../../../kernel/src/log/kmsg_wire.rs"]
+#[path = "../../../system/linuxd/src/log/kmsg_wire.rs"]
 mod kmsg_wire;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/ipc/receive_buffer.rs"]
+#[path = "../../../system/linuxd/src/ipc/receive_buffer.rs"]
 #[allow(dead_code)]
 mod receive_buffer;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/id.rs"]
+#[path = "../../../system/linuxd/src/id.rs"]
 #[allow(dead_code)]
 mod id;
 
@@ -166,24 +162,24 @@ mod qemu_virt {
 mod platform_device_tree_tests;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/directory.rs"]
+#[path = "../../../system/linuxd/src/fs/directory.rs"]
 #[allow(dead_code)]
 mod directory_stream;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/ext4/directory_cursor.rs"]
+#[path = "../../../system/ext4d/src/ext4/directory_cursor.rs"]
 mod ext4_directory_cursor;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/ext4/checksum.rs"]
+#[path = "../../../system/ext4d/src/ext4/checksum.rs"]
 mod ext4_checksum;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/ext4/dirhash.rs"]
+#[path = "../../../system/ext4d/src/ext4/dirhash.rs"]
 mod ext4_dirhash;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 #[allow(dead_code)]
 mod fallible_tree;
 
@@ -191,7 +187,7 @@ mod fallible_tree;
 mod fallible_tree_tests;
 
 #[cfg(test)]
-#[path = "../../../tools/kernel-view/net/inet/port_namespace/port_namespace/port_namespace.rs"]
+#[path = "../../../tools/source-view/netd/inet/port_namespace/port_namespace/port_namespace.rs"]
 #[allow(
     dead_code,
     reason = "独立 leaf fixture；组合生命周期接口由完整 endpoint 集成用例覆盖"
@@ -199,42 +195,42 @@ mod fallible_tree_tests;
 mod inet_port_namespace;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/net/inet/protocol_owner/pending_cleanup.rs"]
+#[path = "../../../system/netd/src/inet/protocol_owner/pending_cleanup.rs"]
 mod inet_pending_cleanup;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/syscall/socket/listen.rs"]
+#[path = "../../../system/linuxd/src/syscall/socket/listen.rs"]
 mod listen_backlog;
 
 #[cfg(test)]
 mod inet_port_namespace_tests;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio/blk/policy.rs"]
+#[path = "../../../system/devmgr/src/drivers/virtio/blk/policy.rs"]
 mod virtio_blk_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio/rng/completion_policy.rs"]
+#[path = "../../../system/devmgr/src/drivers/virtio/rng/completion_policy.rs"]
 mod virtio_rng_completion_policy;
 
 #[cfg(test)]
-#[path = "../../../tools/kernel-view/file/descriptor_table/indexed_slots/indexed_slots/indexed_slots.rs"]
+#[path = "../../../tools/source-view/linuxd/file/descriptor_table/indexed_slots/indexed_slots/indexed_slots.rs"]
 mod indexed_slots;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/file/position.rs"]
+#[path = "../../../system/linuxd/src/file/position.rs"]
 mod file_position;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/ext4/journal_layout.rs"]
+#[path = "../../../system/ext4d/src/ext4/journal_layout.rs"]
 mod journal_layout;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/page_cache/writeback_batch.rs"]
+#[path = "../../../system/linuxd/src/fs/page_cache/writeback_batch.rs"]
 mod writeback_batch;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/syscall/fs/io/write_limit.rs"]
+#[path = "../../../system/linuxd/src/syscall/fs/io/write_limit.rs"]
 mod regular_write_policy;
 
 #[cfg(test)]
@@ -250,7 +246,7 @@ mod frame_metadata_layout;
 mod file_page_range;
 #[cfg(test)]
 #[allow(dead_code)]
-#[path = "../../../kernel/src/io_uring/abi.rs"]
+#[path = "../../../system/linuxd/src/io_uring/abi.rs"]
 mod io_uring_abi;
 
 #[cfg(test)]
@@ -261,24 +257,24 @@ mod fault_preflight;
 mod memory_retire;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/execution/task/model/user_context.rs"]
+#[path = "../../../system/linuxd/src/task/model/user_context.rs"]
 mod task_user_context;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio/net/rx_slots.rs"]
+#[path = "../../../system/devmgr/src/drivers/virtio/net/rx_slots.rs"]
 mod virtio_net_rx_slots;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio/gpu/sequence_policy.rs"]
+#[path = "../../../system/devmgr/src/drivers/virtio/gpu/sequence_policy.rs"]
 #[allow(dead_code)]
 mod virtio_gpu_sequence_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/drivers/virtio/gpu/scanout_state.rs"]
+#[path = "../../../system/devmgr/src/drivers/virtio/gpu/scanout_state.rs"]
 mod virtio_gpu_scanout_state;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/devices/drm/fence_timeline.rs"]
+#[path = "../../../system/linuxd/src/devices/drm/fence_timeline.rs"]
 mod drm_fence_timeline;
 
 #[cfg(test)]
@@ -308,7 +304,7 @@ mod riscv_page_table_fixture;
 mod aarch64_page_table_fixture;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/net/unix/datagram_queue.rs"]
+#[path = "../../../system/linuxd/src/net/unix/datagram_queue.rs"]
 #[allow(
     dead_code,
     reason = "独立 leaf fixture；组合生命周期接口由完整 endpoint 集成用例覆盖"
@@ -316,7 +312,7 @@ mod aarch64_page_table_fixture;
 mod unix_datagram_queue;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/net/unix/connection_backlog.rs"]
+#[path = "../../../system/linuxd/src/net/unix/connection_backlog.rs"]
 #[allow(
     dead_code,
     reason = "backlog 的生命周期退休接口由完整 endpoint 回归覆盖"
@@ -324,7 +320,7 @@ mod unix_datagram_queue;
 mod unix_connection_backlog;
 
 #[cfg(test)]
-#[path = "../../../tools/kernel-view/syscall/user_iovec/user_iovec/user_iovec.rs"]
+#[path = "../../../tools/source-view/linuxd/syscall/user_iovec/user_iovec/user_iovec.rs"]
 #[allow(dead_code)]
 mod user_iovec;
 
@@ -332,69 +328,69 @@ mod user_iovec;
 mod user_iovec_tests;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/net/message_limits.rs"]
+#[path = "../../../system/linuxd/src/net/message_limits.rs"]
 mod socket_message_limits;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/devices/drm/publication_order.rs"]
+#[path = "../../../system/linuxd/src/devices/drm/publication_order.rs"]
 mod drm_publication;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/net/inet/device_error.rs"]
+#[path = "../../../system/netd/src/inet/device_error.rs"]
 mod network_device_error;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/devices/model/network.rs"]
+#[path = "../../../system/device-model/src/network.rs"]
 #[allow(dead_code)]
 mod network_transmit;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/devices/tty/terminal/flush.rs"]
+#[path = "../../../system/linuxd/src/devices/tty/terminal/flush.rs"]
 mod terminal_flush;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/devices/tty/terminal/input_batch.rs"]
+#[path = "../../../system/linuxd/src/devices/tty/terminal/input_batch.rs"]
 mod terminal_input_batch;
 
 #[cfg(test)]
 use syscall_abi::errno;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/syscall/clone_errno.rs"]
+#[path = "../../../system/linuxd/src/syscall/clone_errno.rs"]
 mod clone_errno;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/syscall/mmap_flags.rs"]
+#[path = "../../../system/linuxd/src/syscall/mmap_flags.rs"]
 mod mmap_flags;
 
 #[cfg(test)]
 mod mmap_flags_tests;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/syscall/getrandom_flags.rs"]
+#[path = "../../../system/linuxd/src/syscall/getrandom_flags.rs"]
 mod getrandom_flags;
 
 #[cfg(test)]
 mod getrandom_flags_tests;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/devices/tty/pty/input_notification.rs"]
+#[path = "../../../system/linuxd/src/devices/tty/pty/input_notification.rs"]
 mod pty_input_notification;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/execution/task/process_table/console_batch.rs"]
+#[path = "../../../system/linuxd/src/task/process_table/console_batch.rs"]
 mod console_batch;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/execution/task/model/clone_tid_store.rs"]
+#[path = "../../../system/linuxd/src/task/model/clone_tid_store.rs"]
 mod clone_tid_store;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/execution/task/model/synchronous_fault.rs"]
+#[path = "../../../system/linuxd/src/task/model/synchronous_fault.rs"]
 mod synchronous_fault;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/arch/aarch64/signal_frame.rs"]
+#[path = "../../../system/linuxd/src/arch/aarch64/signal_frame.rs"]
 #[allow(dead_code)]
 mod aarch64_signal_frame;
 
@@ -416,28 +412,28 @@ mod aarch64_kernel_context;
 mod aarch64_va39;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/arch/riscv64/signal_frame.rs"]
+#[path = "../../../system/linuxd/src/arch/riscv64/signal_frame.rs"]
 #[allow(dead_code)]
 mod riscv64_signal_frame;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/execution/task/process_table/thread_activation.rs"]
+#[path = "../../../system/linuxd/src/task/process_table/thread_activation.rs"]
 mod thread_activation;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/execution/task/process_table/wait_publication.rs"]
+#[path = "../../../system/linuxd/src/task/process_table/wait_publication.rs"]
 mod wait_publication;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/execution/task/process_table/snapshot_staging.rs"]
+#[path = "../../../system/linuxd/src/task/process_table/snapshot_staging.rs"]
 mod snapshot_staging;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/execution/task/process_table/timer_queue/preparation_policy.rs"]
+#[path = "../../../system/linuxd/src/task/process_table/timer_queue/preparation_policy.rs"]
 mod timer_preparation_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/execution/task/process_table/timer_queue/transaction_loop.rs"]
+#[path = "../../../system/linuxd/src/task/process_table/timer_queue/transaction_loop.rs"]
 mod timer_transaction_loop;
 
 #[cfg(test)]
@@ -445,7 +441,7 @@ mod timer_transaction_loop;
 mod terminal_output_order;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/fs/ext4/link_count.rs"]
+#[path = "../../../system/ext4d/src/ext4/link_count.rs"]
 mod ext4_link_count;
 
 #[cfg(test)]
@@ -463,10 +459,6 @@ mod filesystem_storage_tests;
 #[cfg(test)]
 #[path = "tests/memory.rs"]
 mod memory_tests;
-
-#[cfg(test)]
-#[path = "tests/memory_file.rs"]
-mod memory_file_tests;
 
 #[cfg(test)]
 #[path = "tests/kmsg.rs"]
@@ -543,3 +535,6 @@ pub(crate) mod boot {
     #[path = "../../../kernel/src/boot/cmdline.rs"]
     pub(crate) mod cmdline;
 }
+
+#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+use execution::sync;

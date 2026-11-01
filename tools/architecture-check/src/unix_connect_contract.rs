@@ -2,7 +2,7 @@ use syn::{Expr, ExprCall, ImplItem, Item, spanned::Spanned, visit::Visit};
 
 use super::SourceFile;
 
-const LIFECYCLE_PATH: &str = "kernel/src/net/unix/lifecycle.rs";
+const LIFECYCLE_PATH: &str = "system/linuxd/src/net/unix/lifecycle.rs";
 
 #[derive(Default)]
 struct ConnectOrder {

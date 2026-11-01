@@ -8,14 +8,14 @@ fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a str {
         .text
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let cache = source(sources, "kernel/src/fs/page_cache.rs");
-    let identity = source(sources, "kernel/src/fs/inode_identity.rs");
-    let proc = source(sources, "kernel/src/fs/procfs.rs");
-    let attributes = source(sources, "kernel/src/fs/procfs/attributes.rs");
-    let nsfs = source(sources, "kernel/src/fs/nsfs.rs");
-    let opened = source(sources, "kernel/src/fs/procfs/opened_operations.rs");
-    let node = source(sources, "kernel/src/fs/procfs/node.rs");
-    let credentials = source(sources, "kernel/src/execution/task/model/credentials.rs");
+    let cache = source(sources, "tools/source-view/linuxd/fs/page_cache/page_cache/page_cache.rs");
+    let identity = source(sources, "system/linuxd/src/fs/inode_identity.rs");
+    let proc = source(sources, "tools/source-view/linuxd/fs/procfs/procfs/procfs.rs");
+    let attributes = source(sources, "system/linuxd/src/fs/procfs/attributes.rs");
+    let nsfs = source(sources, "system/linuxd/src/fs/nsfs.rs");
+    let opened = source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs");
+    let node = source(sources, "system/linuxd/src/fs/procfs/node.rs");
+    let credentials = source(sources, "system/linuxd/src/task/model/credentials.rs");
     if !cache
         .contains("DataBacking::Snapshot => return inode.truncate_storage(size, Some(identity))")
     {
@@ -67,7 +67,7 @@ mod tests {
     #[test]
     fn rejects_blanket_snapshot_read_only() {
         reject(
-            "kernel/src/fs/page_cache.rs",
+            "tools/source-view/linuxd/fs/page_cache/page_cache/page_cache.rs",
             "DataBacking::Snapshot => return inode.truncate_storage(size, Some(identity))",
             "DataBacking::Snapshot => return Err(FileSystemError::ReadOnly)",
             "every legal size",
@@ -76,7 +76,7 @@ mod tests {
     #[test]
     fn rejects_late_old_inode_drop_deleting_new_winner() {
         reject(
-            "kernel/src/fs/inode_identity.rs",
+            "system/linuxd/src/fs/inode_identity.rs",
             "core::ptr::eq(live.as_ptr(), owner)",
             "true",
             "identity retirement",
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn rejects_truncated_fd_identity() {
         reject(
-            "kernel/src/fs/procfs/node.rs",
+            "system/linuxd/src/fs/procfs/node.rs",
             "TaskFd(usize, usize)",
             "TaskFd(usize, u16)",
             "full FD identity",

@@ -10,20 +10,20 @@ fn source(sources: &[SourceFile], path: &str) -> String {
         .collect()
 }
 pub(super) fn check(root: &std::path::Path, sources: &[SourceFile], errors: &mut Vec<String>) {
-    let inet = source(sources, "kernel/src/net/inet.rs");
-    let config = source(sources, "kernel/src/net/inet/configuration.rs");
-    let interface = source(sources, "kernel/src/net/inet/interface.rs");
-    let fib = source(sources, "kernel/src/net/inet/route.rs");
-    let poll = source(sources, "kernel/src/net/inet/poll.rs");
-    let timing = source(sources, "kernel/src/net/inet/timing.rs");
-    let replies = source(sources, "kernel/src/net/inet/route_reply.rs");
-    let udp = source(sources, "kernel/src/net/inet/udp.rs");
-    let raw = source(sources, "kernel/src/net/inet/raw.rs");
-    let tcp = source(sources, "kernel/src/net/inet/tcp.rs");
-    let loopback = source(sources, "kernel/src/net/inet/device/loopback.rs");
-    let ioctl = source(sources, "kernel/src/syscall/socket/interface.rs");
-    let opened = source(sources, "kernel/src/fs/procfs/opened_operations.rs");
-    let formatter = source(sources, "kernel/src/fs/procfs/networking.rs");
+    let inet = source(sources, "system/linuxd/src/net/inet.rs");
+    let config = source(sources, "system/netd/src/inet/configuration.rs");
+    let interface = source(sources, "system/netd/src/inet/interface.rs");
+    let fib = source(sources, "system/netd/src/inet/route.rs");
+    let poll = source(sources, "system/netd/src/inet/poll.rs");
+    let timing = source(sources, "system/netd/src/inet/timing.rs");
+    let replies = source(sources, "system/netd/src/inet/route_reply.rs");
+    let udp = source(sources, "system/netd/src/inet/udp.rs");
+    let raw = source(sources, "system/netd/src/inet/raw.rs");
+    let tcp = source(sources, "tools/source-view/netd/inet/tcp/tcp/tcp.rs");
+    let loopback = source(sources, "system/netd/src/inet/device/loopback.rs");
+    let ioctl = source(sources, "system/linuxd/src/syscall/socket/interface.rs");
+    let opened = source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs");
+    let formatter = source(sources, "system/linuxd/src/fs/procfs/networking.rs");
     let mechanism = std::fs::read_to_string(root.join("vendor/smoltcp/src/iface/interface/mod.rs"))
         .unwrap()
         .split_whitespace()
@@ -126,27 +126,27 @@ mod tests {
     fn rejects_route_mirror_half_publication_wrong_local_iif_and_ingress_reply_fallback() {
         for (path, old, new) in [
             (
-                "kernel/src/net/inet/interface.rs",
+                "system/netd/src/inet/interface.rs",
                 ".select(destination, bound, &self.interfaces)",
                 ".select(Ipv4Addr::UNSPECIFIED, bound, &self.interfaces)",
             ),
             (
-                "kernel/src/net/inet/configuration.rs",
+                "system/netd/src/inet/configuration.rs",
                 "let prepared = RoutingTable::prepare_interface(index, next)?;",
                 "self.interface_mut(index)?.state = next;\n        let prepared = RoutingTable::prepare_interface(index, next)?;",
             ),
             (
-                "kernel/src/net/inet/poll.rs",
+                "system/netd/src/inet/poll.rs",
                 "meta.interface_index.unwrap_or(current.index)",
                 "current.index",
             ),
             (
-                "kernel/src/net/inet/route_reply.rs",
+                "system/netd/src/inet/route_reply.rs",
                 "reply.bound_interface,",
                 "Some(reply.origin),",
             ),
             (
-                "kernel/src/fs/procfs/opened_operations.rs",
+                "system/linuxd/src/fs/procfs/opened_operations.rs",
                 "source.route_snapshot(target)?",
                 "source.route_snapshot(&crate::net::initial_net())?",
             ),

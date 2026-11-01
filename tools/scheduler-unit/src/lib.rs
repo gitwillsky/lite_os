@@ -2,23 +2,19 @@
 extern crate alloc;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/execution/task/scheduler/preallocated_heap.rs"]
+#[path = "../../../kernel/src/thread/scheduler/preallocated_heap.rs"]
 mod preallocated_heap;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/execution/task/scheduler/preemption_policy.rs"]
+#[path = "../../../kernel/src/thread/scheduler/preemption_policy.rs"]
 mod preemption_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/execution/task/scheduler/placement_policy.rs"]
+#[path = "../../../kernel/src/thread/scheduler/placement_policy.rs"]
 mod placement_policy;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/execution/task/model/cputime_split.rs"]
-mod cputime_split;
-
-#[cfg(test)]
-#[path = "../../../kernel/src/execution/task/process_table/signal/selection_result.rs"]
+#[path = "../../../system/linuxd/src/task/process_table/signal/selection_result.rs"]
 mod signal_selection_result;
 
 #[cfg(test)]
@@ -283,35 +279,3 @@ mod placement_policy_tests {
     }
 }
 
-#[cfg(test)]
-mod cputime_split_tests {
-    use super::cputime_split::{clamp_system_us, estimate_system_us};
-
-    #[test]
-    fn no_samples_means_all_user_time() {
-        assert_eq!(estimate_system_us(5_000, 0, 0), 0);
-    }
-
-    #[test]
-    fn estimate_follows_the_tick_ratio() {
-        assert_eq!(estimate_system_us(1_000_000, 3, 1), 250_000);
-        assert_eq!(estimate_system_us(1_000_000, 0, 7), 1_000_000);
-        assert_eq!(estimate_system_us(1_000_000, 7, 0), 0);
-    }
-
-    #[test]
-    fn estimate_never_overflows_for_large_runtimes_and_tick_counts() {
-        let runtime = u64::MAX / 2;
-        assert_eq!(
-            estimate_system_us(runtime, u64::MAX / 2, u64::MAX / 2),
-            runtime / 2
-        );
-    }
-
-    #[test]
-    fn reported_system_time_never_goes_backwards_or_exceeds_runtime() {
-        assert_eq!(clamp_system_us(100, 400, 1_000), 400);
-        assert_eq!(clamp_system_us(900, 400, 1_000), 900);
-        assert_eq!(clamp_system_us(5_000, 0, 1_000), 1_000);
-    }
-}

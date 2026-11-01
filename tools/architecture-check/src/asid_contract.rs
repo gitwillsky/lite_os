@@ -82,7 +82,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     if let Some(trap) = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/execution/trap/mod.rs")
+        .find(|source| source.relative == "kernel/src/bootstrap/mod.rs")
     {
         let body = trap
             .text
@@ -99,7 +99,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     if let Some(trap) = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/execution/trap/mod.rs")
+        .find(|source| source.relative == "kernel/src/bootstrap/mod.rs")
     {
         let body = trap
             .text
@@ -193,7 +193,7 @@ mod tests {
         let mut sources = super::super::load_sources(&super::super::repository_root()).unwrap();
         let trap = sources
             .iter_mut()
-            .find(|source| source.relative == "kernel/src/execution/trap/mod.rs")
+            .find(|source| source.relative == "kernel/src/bootstrap/mod.rs")
             .unwrap();
         trap.text = trap
             .text
@@ -216,7 +216,7 @@ mod tests {
         let mut sources = super::super::load_sources(&super::super::repository_root()).unwrap();
         let trap = sources
             .iter_mut()
-            .find(|source| source.relative == "kernel/src/execution/trap/mod.rs")
+            .find(|source| source.relative == "kernel/src/bootstrap/mod.rs")
             .unwrap();
         trap.text = trap.text.replace("let user_address_space = current_task.user_token();",
             "let _ = current_task.prepare_signal_delivery();\nlet user_address_space = current_task.user_token();");

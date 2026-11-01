@@ -2,14 +2,14 @@
 #![allow(dead_code)]
 //! 实际 capacity facade/owner/backlog/FIFO；endpoint transitions 是显式 producer 输入。
 extern crate alloc;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
-#[path = "../../../kernel/src/id.rs"]
+#[path = "../../../system/linuxd/src/id.rs"]
 mod id;
 #[path = "../src/pipe_fixture.rs"]
 mod ipc;
 
-#[path = "../../../kernel/src/net"]
+#[path = "../../../system/linuxd/src/net"]
 mod net {
     use alloc::sync::Arc;
     #[derive(Clone, Copy)]
@@ -171,3 +171,6 @@ pub(crate) mod execution {
     #[path = "../src/sync.rs"]
     pub(crate) mod sync;
 }
+
+#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+use execution::sync;

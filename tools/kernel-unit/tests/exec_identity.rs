@@ -26,7 +26,7 @@ unsafe impl GlobalAlloc for FaultAllocator {
 }
 #[global_allocator]
 static ALLOCATOR: FaultAllocator = FaultAllocator;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
@@ -55,7 +55,7 @@ mod fs {
 pub(crate) mod execution {
     #[path = "../src/sync.rs"]
     pub(crate) mod sync;
-    #[path = "../../../kernel/src/execution/task"]
+    #[path = "../../../system/linuxd/src/task"]
     pub(crate) mod task {
         use crate::fallible_tree::FallibleMap;
         use alloc::sync::Arc;
@@ -597,3 +597,9 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+use execution::sync;
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

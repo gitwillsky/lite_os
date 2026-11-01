@@ -1,1 +1,0 @@
-../../../../../kernel/src/ipc/namespace/description.rs

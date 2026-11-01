@@ -1,7 +1,7 @@
 //! actual futex source transaction、不可失败 cleanup 与 RMW-before-compare 围栏。
 use super::SourceFile;
 use quote::ToTokens;
-const FUTEX: &str = "kernel/src/execution/task/process_table/futex.rs";
+const FUTEX: &str = "system/linuxd/src/task/process_table/futex.rs";
 fn normalized(source: &str) -> String {
     source.split_whitespace().collect()
 }
@@ -42,7 +42,7 @@ fn ordered(source: &SourceFile, function: &str, clauses: &[&str], errors: &mut V
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     require(
         sources,
-        "kernel/src/execution/task/model.rs",
+        "tools/source-view/linuxd/task/model/model/model.rs",
         &[
             "syscall_restart: Mutex<SyscallRestartState>",
             "restart.arm(SyscallRestart",
@@ -53,7 +53,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/execution/task/model/syscall_restart.rs",
+        "system/linuxd/src/task/model/syscall_restart.rs",
         &[
             "block: Option<SyscallRestartBlock>",
             "self.block.take()",
@@ -75,7 +75,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/syscall/restart.rs",
+        "system/linuxd/src/syscall/restart.rs",
         &[
             "task.take_syscall_restart_block()",
             "Some(deadline)",
@@ -86,7 +86,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/syscall/timer.rs",
+        "tools/source-view/linuxd/syscall/timer/timer/timer.rs",
         &[
             "SyscallRestartBlock::Sleep",
             "deadline: deadline_ns",
@@ -96,19 +96,19 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/syscall/signal.rs",
+        "system/linuxd/src/syscall/signal.rs",
         &["task.clear_syscall_restart()"],
         errors,
     );
     require(
         sources,
-        "kernel/src/execution/task/model/process_exec.rs",
+        "system/linuxd/src/task/model/process_exec.rs",
         &["self.clear_syscall_restart()"],
         errors,
     );
     if let Some(source) = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/execution/task/model/signal_state.rs")
+        .find(|source| source.relative == "system/linuxd/src/task/model/signal_state.rs")
     {
         let text = normalized(&source.text);
         let stop = text.find("ifsignal_is_default_stop");
@@ -124,7 +124,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     require(
         sources,
-        "kernel/src/execution/task/model/robust_list.rs",
+        "system/linuxd/src/task/model/robust_list.rs",
         &[
             "RobustLink::decode",
             "pointer & !1",
@@ -140,7 +140,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/execution/task/model/credentials.rs",
+        "system/linuxd/src/task/model/credentials.rs",
         &[
             "InspectionCredentials::Real => (caller.uids[0], caller.gids[0], caller.capabilities.sets.permitted,)",
             "self.may_inspect_real_identity(target.tgid(), credentials, mm)",
@@ -150,7 +150,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     if let Some(source) = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/syscall/process.rs")
+        .find(|source| source.relative == "system/linuxd/src/syscall/process.rs")
     {
         ordered(
             source,
@@ -171,13 +171,13 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/execution/task/process_table/wait_registry.rs",
+        "tools/source-view/linuxd/task/process_table/wait_registry/wait_registry/wait_registry.rs",
         &["futex_operations: [crate::execution::sync::TaskMutex<()>; WAIT_SHARD_COUNT]"],
         errors,
     );
     require(
         sources,
-        "kernel/src/execution/task/process_table/wait_registry/futex_transaction.rs",
+        "system/linuxd/src/task/process_table/wait_registry/futex_transaction.rs",
         &[
             "needed[WaitIndexKey::Futex { key, id: 0 }.shard()] = true",
             "needed.into_iter().enumerate()",
@@ -189,7 +189,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/execution/task/process_table/wait_registry/requeue.rs",
+        "system/linuxd/src/task/process_table/wait_registry/requeue.rs",
         &[
             "self.covers(source)",
             "self.covers(target)",
@@ -202,7 +202,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     );
     require(
         sources,
-        "kernel/src/execution/task/process_table/wait_registry/publication.rs",
+        "system/linuxd/src/task/process_table/wait_registry/publication.rs",
         &["REQUEUEING | CLAIMING => spin_loop()"],
         errors,
     );
@@ -285,7 +285,7 @@ mod tests {
     }
     #[test]
     fn removing_old_value_comparison_fails_the_atomic_operation_order_proof() {
-        let actual = include_str!("../../../kernel/src/execution/task/process_table/futex.rs");
+        let actual = include_str!("../../../system/linuxd/src/task/process_table/futex.rs");
         let mut errors = Vec::new();
         ordered(
             &source(actual.into()),
@@ -333,7 +333,7 @@ mod tests {
     #[test]
     fn robust_query_rejects_authorization_without_target_exec_serialization() {
         reject_registration_query(
-            "kernel/src/execution/task/model/robust_list.rs",
+            "system/linuxd/src/task/model/robust_list.rs",
             ".credential_guard()",
             ".other_guard()",
             "self.credential_guard().lock_killable()",
@@ -343,7 +343,7 @@ mod tests {
     #[test]
     fn robust_query_rejects_effective_uid_in_real_credentials_mode() {
         reject_registration_query(
-            "kernel/src/execution/task/model/credentials.rs",
+            "system/linuxd/src/task/model/credentials.rs",
             "InspectionCredentials::Real => (\n                caller.uids[0],",
             "InspectionCredentials::Real => (\n                caller.uids[1],",
             "InspectionCredentials::Real =>",
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn robust_query_rejects_head_copyout_before_length() {
         reject_registration_query(
-            "kernel/src/syscall/process.rs",
+            "system/linuxd/src/syscall/process.rs",
             ".copy_to_user(length_pointer, &length.to_ne_bytes())",
             ".copy_to_user(head_pointer, &head.to_ne_bytes())",
             "sys_get_robust_list: lost ordered stage",

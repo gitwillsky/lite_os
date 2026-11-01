@@ -16,10 +16,10 @@ fn count(text: &str, needle: &str) -> usize {
 }
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let cache = source(sources, "kernel/src/fs/page_cache.rs");
-    let write = source(sources, "kernel/src/fs/page_cache/regular_write.rs");
+    let cache = source(sources, "tools/source-view/linuxd/fs/page_cache/page_cache/page_cache.rs");
+    let write = source(sources, "system/linuxd/src/fs/page_cache/regular_write.rs");
     let nowait = source(sources, "kernel/src/fs/page_cache/nowait_read.rs");
-    let direct = source(sources, "kernel/src/fs/page_cache/direct_write.rs");
+    let direct = source(sources, "system/linuxd/src/fs/page_cache/direct_write.rs");
     // 直接写也必须在 operation 内推进 epoch；MM alias 撤销只能发生在 operation 外，避免 fault 反向锁序。
     let direct_invalidation_before_lock = direct
         .find("crate::memory::invalidate_cached_file(")
@@ -81,7 +81,7 @@ mod tests {
     fn rejects_unmarked_mutation_and_unchecked_publication() {
         for (path, old, new) in [
             (
-                "kernel/src/fs/page_cache/regular_write.rs",
+                "system/linuxd/src/fs/page_cache/regular_write.rs",
                 "let _epoch = self.file.begin_mutation();\n        let offset = self.file.inode.size();",
                 "let offset = self.file.inode.size();",
             ),

@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 #[path = "../../../kernel/src/arch/aarch64/pte.rs"]
 mod aarch64_pte;
 #[allow(dead_code)]
-#[path = "../../../kernel/src/execution/task/model/syscall_restart.rs"]
+#[path = "../../../system/linuxd/src/task/model/syscall_restart.rs"]
 mod syscall_restart;
 #[path = "../../../kernel/src/execution/timer/deadline.rs"]
 mod timer_deadline;
@@ -22,7 +22,7 @@ mod namespace;
 #[path = "mmio_fixture.rs"]
 mod arch;
 #[allow(dead_code)]
-#[path = "../../../kernel/src/arch/mmio.rs"]
+#[path = "../../../mmio/src/lib.rs"]
 mod mmio_bus;
 
 macro_rules! info { ($($args:tt)*) => { let _ = format_args!($($args)*); }; }
@@ -65,11 +65,11 @@ impl TaskControlBlock {
 }
 
 #[allow(dead_code)]
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 
 #[allow(dead_code)]
-#[path = "../../../kernel/src/fs"]
+#[path = "../../../system/linuxd/src/fs"]
 mod fs {
     pub(crate) mod chardev {
         pub(crate) use crate::seccomp_environment::chardev::*;
@@ -397,3 +397,9 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+use execution::sync;
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

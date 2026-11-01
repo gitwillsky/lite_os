@@ -4,7 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+native-runtime = { path = "../../system/native-runtime" }
+device-model = { path = "../../system/device-model" }
+device-protocol = { path = "../../system/device-protocol" }
+network-protocol = { path = "../../system/network-protocol" }
 bitflags = "2.4"
+fallible-tree = { path = "../../fallible-tree" }
 dtb-walker = "=0.2.0-alpha.3"
 syscall-abi = { path = "../../syscall-abi" }
 boot-scene = { path = "../../boot-scene" }

@@ -1,11 +1,11 @@
 use std::{fs, path::Path};
 
-const CURSOR: &str = "kernel/src/syscall/user_iovec.rs";
-const STAGING: &str = "kernel/src/syscall/user_iovec/input_staging.rs";
-const SEQUENTIAL: &str = "kernel/src/syscall/fs/io/sequential/write.rs";
-const MESSAGE: &str = "kernel/src/syscall/socket/message.rs";
-const REGULAR: &str = "kernel/src/syscall/fs/io/regular.rs";
-const SELECT: &str = "kernel/src/syscall/poll/select.rs";
+const CURSOR: &str = "tools/source-view/linuxd/syscall/user_iovec/user_iovec/user_iovec.rs";
+const STAGING: &str = "system/linuxd/src/syscall/user_iovec/input_staging.rs";
+const SEQUENTIAL: &str = "system/linuxd/src/syscall/fs/io/sequential/write.rs";
+const MESSAGE: &str = "system/linuxd/src/syscall/socket/message.rs";
+const REGULAR: &str = "system/linuxd/src/syscall/fs/io/regular.rs";
+const SELECT: &str = "system/linuxd/src/syscall/poll/select.rs";
 const SOCKET_BYTES: usize = 64 * 1024;
 const REGULAR_BYTES: usize = 1024 * 1024;
 const SELECT_SET_BYTES: usize = 1024usize.div_ceil(8);

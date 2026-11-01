@@ -4,7 +4,7 @@
 
 extern crate alloc;
 #[allow(dead_code, unused_imports)]
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/namespace_fixture.rs"]
@@ -39,16 +39,16 @@ mod arch {
 
 #[path = "seccomp/security.rs"]
 mod model;
-#[path = "../../../kernel/src/syscall/process_control.rs"]
+#[path = "../../../system/linuxd/src/syscall/process_control.rs"]
 pub(crate) mod process_control;
-#[path = "../../../kernel/src/syscall/seccomp.rs"]
+#[path = "../../../system/linuxd/src/syscall/seccomp.rs"]
 pub(crate) mod seccomp;
 
 use model::seccomp as security;
-#[path = "../../../kernel/src/execution/task/model/signal_info.rs"]
+#[path = "../../../system/linuxd/src/task/model/signal_info.rs"]
 #[allow(dead_code)]
 mod signal_info;
-#[path = "../../../kernel/src/syscall/user_iovec/input_staging.rs"]
+#[path = "../../../system/linuxd/src/syscall/user_iovec/input_staging.rs"]
 #[allow(dead_code)]
 mod user_iovec;
 use syscall::SyscallOutcome;
@@ -469,3 +469,9 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+use execution::sync;
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

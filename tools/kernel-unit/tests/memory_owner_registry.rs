@@ -50,7 +50,7 @@ unsafe impl GlobalAlloc for ReclaimingAllocator {
 #[global_allocator]
 static ALLOCATOR: ReclaimingAllocator = ReclaimingAllocator;
 
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 #[allow(dead_code)]
 mod fallible_tree;
 

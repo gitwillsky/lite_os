@@ -2,11 +2,11 @@
 #![allow(dead_code)]
 //! Production ProcInode link operations; the upper source and path projector are explicit seams.
 extern crate alloc;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../../../kernel/src/fs"]
+#[path = "../../../system/linuxd/src/fs"]
 mod fs {
     use alloc::{sync::Arc, vec::Vec};
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]

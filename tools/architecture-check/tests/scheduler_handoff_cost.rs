@@ -48,11 +48,11 @@ fn function_body<'a>(source: &'a str, signature: &str) -> Option<&'a str> {
 }
 
 fn measure() -> HandoffCost {
-    let process_table = read("kernel/src/execution/task/process_table.rs");
+    let process_table = read("tools/source-view/linuxd/task/process_table/process_table/process_table.rs");
     let context_switch = read("kernel/src/execution/task/process_table/context_switch.rs");
-    let handoff = read("kernel/src/execution/task/processor/handoff.rs");
+    let handoff = read("kernel/src/thread/processor/handoff.rs");
     let sync = read("kernel/src/execution/sync/mod.rs");
-    let task = read("kernel/src/execution/task/mod.rs");
+    let task = read("system/linuxd/src/task/mod.rs");
     let legacy_deschedule =
         function_body(&context_switch, "pub(super) fn schedule_with_task_context(").is_some_and(
             |body| body.contains("switch_kernel_context(task_cx_ptr, idle_task_cx_ptr)"),

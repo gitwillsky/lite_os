@@ -1,8 +1,8 @@
 use std::{fs, path::Path};
 
-const SEQUENTIAL: &str = "kernel/src/syscall/fs/io/sequential.rs";
-const SEQUENTIAL_READ: &str = "kernel/src/syscall/fs/io/sequential/read.rs";
-const MESSAGE: &str = "kernel/src/syscall/socket/message.rs";
+const SEQUENTIAL: &str = "tools/source-view/linuxd/syscall/fs/io/sequential/sequential/sequential.rs";
+const SEQUENTIAL_READ: &str = "system/linuxd/src/syscall/fs/io/sequential/read.rs";
+const MESSAGE: &str = "system/linuxd/src/syscall/socket/message.rs";
 const REQUEST_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,8 +26,8 @@ fn measure(root: &Path) -> Result<StagingCost, String> {
     let sequential = read(root, SEQUENTIAL)?;
     let sequential_read = read(root, SEQUENTIAL_READ)?;
     let message = read(root, MESSAGE)?;
-    let socket = read(root, "kernel/src/net/mod.rs")?;
-    let buffer = read(root, "kernel/src/ipc/receive_buffer.rs")?;
+    let socket = read(root, "system/linuxd/src/net/mod.rs")?;
+    let buffer = read(root, "system/linuxd/src/ipc/receive_buffer.rs")?;
     let legacy = usize::from(
         sequential.contains("bytes.resize(length, 0)")
             && sequential.contains("fn buffer(length: usize)"),

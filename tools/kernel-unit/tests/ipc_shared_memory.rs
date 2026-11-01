@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 //! 执行实际 shm ID/key、权限、reservation/VMA nattch 和延迟销毁；物理页生产为输入 seam。
 extern crate alloc;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../src/ipc_namespace_fixture.rs"]
 mod ipc;
@@ -426,3 +426,6 @@ pub(crate) mod execution {
     #[path = "../src/sync.rs"]
     pub(crate) mod sync;
 }
+
+#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+use execution::sync;

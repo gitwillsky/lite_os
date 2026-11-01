@@ -4,11 +4,11 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../../../kernel/src/net"]
+#[path = "../../../system/linuxd/src/net"]
 mod net {
     mod inet {
         // 未安装protocol的类型边界：本binary只覆盖实际目录和namespace lifetime。

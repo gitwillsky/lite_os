@@ -8,7 +8,7 @@ use native_abi::{RestrictedState, Status, call};
 
 use crate::{Handle, Vmar, Vmo};
 
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_os = "none", target_arch = "aarch64"))]
 core::arch::global_asm!(
     ".text",
     ".global native_restricted_enter",
@@ -42,7 +42,7 @@ core::arch::global_asm!(
     enter = const call::RESTRICTED_ENTER,
 );
 
-#[cfg(target_arch = "riscv64")]
+#[cfg(all(target_os = "none", target_arch = "riscv64"))]
 core::arch::global_asm!(
     ".text",
     ".global native_restricted_enter",

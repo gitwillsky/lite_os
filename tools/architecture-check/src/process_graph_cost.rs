@@ -3,13 +3,13 @@ use syn::{ExprCall, ExprForLoop, ExprMethodCall, Item, ItemFn, visit::Visit};
 
 use super::SourceFile;
 
-const PROCESS_EXIT: &str = "kernel/src/execution/task/process_table/process_exit.rs";
-const PARENT_DEATH: &str = "kernel/src/execution/task/process_table/parent_death.rs";
-const PROCESS_GROUP: &str = "kernel/src/execution/task/process_table/process_group.rs";
-const WAIT_CHILD: &str = "kernel/src/execution/task/process_table/wait_child.rs";
-const THREAD_SELECTOR: &str = "kernel/src/execution/task/process_table/thread_selector.rs";
-const PROCFS: &str = "kernel/src/execution/task/process_table/procfs.rs";
-const LOAD_AVERAGE: &str = "kernel/src/execution/task/process_table/load_average.rs";
+const PROCESS_EXIT: &str = "system/linuxd/src/task/process_table/process_exit.rs";
+const PARENT_DEATH: &str = "system/linuxd/src/task/process_table/parent_death.rs";
+const PROCESS_GROUP: &str = "system/linuxd/src/task/process_table/process_group.rs";
+const WAIT_CHILD: &str = "tools/source-view/linuxd/task/process_table/wait_child/wait_child/wait_child.rs";
+const THREAD_SELECTOR: &str = "system/linuxd/src/task/process_table/thread_selector.rs";
+const PROCFS: &str = "system/linuxd/src/task/process_table/procfs.rs";
+const LOAD_AVERAGE: &str = "system/linuxd/src/task/process_table/load_average.rs";
 
 const PROCESSES: usize = 1024;
 const THREADS_PER_PROCESS: usize = 8;
@@ -53,7 +53,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         )),
         Err(error) => errors.push(error),
     }
-    match source(sources, "kernel/src/execution/task/process_table.rs") {
+    match source(sources, "tools/source-view/linuxd/task/process_table/process_table/process_table.rs") {
         Ok(owner) => {
             let compact: String = owner.text.split_whitespace().collect();
             let exit: String = source(sources, PROCESS_EXIT)
@@ -83,7 +83,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         }
         Err(error) => errors.push(error),
     }
-    let scheduling: String = source(sources, "kernel/src/execution/task/model/scheduling.rs")
+    let scheduling: String = source(sources, "system/linuxd/src/task/model/scheduling.rs")
         .unwrap()
         .text
         .split_whitespace()
@@ -113,7 +113,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         .collect();
     let daemon: String = source(
         sources,
-        "kernel/src/execution/task/process_table/timer_queue/kernel_wait.rs",
+        "system/linuxd/src/task/process_table/timer_queue/kernel_wait.rs",
     )
     .unwrap()
     .text
@@ -135,7 +135,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("scheduler load must include actual noncopy blocked admissions through deschedule/wake/stop/exit and native D state, excluding idle/interruptible waits".into());
     }
-    let kernel: String = source(sources, "kernel/src/execution/task/model/kernel_thread.rs")
+    let kernel: String = source(sources, "system/linuxd/src/task/model/kernel_thread.rs")
         .unwrap()
         .text
         .split_whitespace()
@@ -145,7 +145,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         .text
         .split_whitespace()
         .collect();
-    let credentials: String = source(sources, "kernel/src/execution/task/model/credentials.rs")
+    let credentials: String = source(sources, "system/linuxd/src/task/model/credentials.rs")
         .unwrap()
         .text
         .split_whitespace()
@@ -163,14 +163,14 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("kernel proc must use actual kernel execution/PID/credential/scheduler owners without a fake user Process or a global task scan".into());
     }
-    let signal: String = source(sources, "kernel/src/execution/task/process_table/signal.rs")
+    let signal: String = source(sources, "tools/source-view/linuxd/task/process_table/signal/signal/signal.rs")
         .unwrap()
         .text
         .split_whitespace()
         .collect();
     let thread_signal: String = source(
         sources,
-        "kernel/src/execution/task/process_table/signal/thread.rs",
+        "system/linuxd/src/task/process_table/signal/thread.rs",
     )
     .unwrap()
     .text
@@ -499,7 +499,7 @@ mod tests {
         let mut sources = super::super::load_sources(&super::super::repository_root()).unwrap();
         let source = sources
             .iter_mut()
-            .find(|source| source.relative == "kernel/src/execution/task/process_table.rs")
+            .find(|source| source.relative == "tools/source-view/linuxd/task/process_table/process_table/process_table.rs")
             .unwrap();
         let original = "self.threads.len() + self.kernel_threads.len()";
         assert!(source.text.contains(original));
@@ -539,7 +539,7 @@ mod tests {
         let mut sources = super::super::load_sources(&super::super::repository_root()).unwrap();
         let source = sources
             .iter_mut()
-            .find(|source| source.relative == "kernel/src/execution/task/model/scheduling.rs")
+            .find(|source| source.relative == "system/linuxd/src/task/model/scheduling.rs")
             .unwrap();
         source.text = source.text.replace("self.blocked_load.take();", "");
         source.syntax = syn::parse_file(&source.text).unwrap();
@@ -663,7 +663,7 @@ mod tests {
             .iter_mut()
             .find(|source| {
                 source.relative
-                    == "kernel/src/execution/task/process_table/timer_queue/kernel_wait.rs"
+                    == "system/linuxd/src/task/process_table/timer_queue/kernel_wait.rs"
             })
             .unwrap();
         assert!(source.text.contains("self.timer.event.wait_idle();"));
@@ -685,7 +685,7 @@ mod tests {
         let mut sources = super::super::load_sources(&super::super::repository_root()).unwrap();
         let source = sources
             .iter_mut()
-            .find(|source| source.relative == "kernel/src/execution/task/model/credentials.rs")
+            .find(|source| source.relative == "system/linuxd/src/task/model/credentials.rs")
             .unwrap();
         assert!(source.text.contains("thread.credentials.snapshot()"));
         source.text = source

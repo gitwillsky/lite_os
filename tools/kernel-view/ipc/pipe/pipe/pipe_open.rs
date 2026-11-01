@@ -1,1 +1,0 @@
-../../../../../kernel/src/ipc/pipe/pipe_open.rs

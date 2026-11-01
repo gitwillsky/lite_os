@@ -2,7 +2,7 @@
 #[path = "../../architecture-bench/src/mmio_fixture.rs"]
 mod arch;
 #[allow(dead_code)]
-#[path = "../../../kernel/src/arch/mmio.rs"]
+#[path = "../../../mmio/src/lib.rs"]
 mod bus;
 
 use bus::{BusError, MmioBus};

@@ -10,16 +10,16 @@ fn source(sources: &[SourceFile], path: &str) -> String {
         .collect()
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let proc = source(sources, "kernel/src/fs/procfs.rs");
-    let node = source(sources, "kernel/src/fs/procfs/node.rs");
-    let link = source(sources, "kernel/src/fs/procfs/link.rs");
-    let opened = source(sources, "kernel/src/fs/procfs/opened_operations.rs");
-    let provider = source(sources, "kernel/src/execution/task/process_table/procfs.rs");
-    let snapshot = source(sources, "kernel/src/fs/procfs/snapshot.rs");
-    let config = source(sources, "kernel/src/net/inet/configuration.rs");
-    let task = source(sources, "kernel/src/execution/task/model/namespaces.rs");
-    let kernel = source(sources, "kernel/src/execution/task/model/kernel_thread.rs");
-    let table = source(sources, "kernel/src/fs/procfs/networking.rs");
+    let proc = source(sources, "tools/source-view/linuxd/fs/procfs/procfs/procfs.rs");
+    let node = source(sources, "system/linuxd/src/fs/procfs/node.rs");
+    let link = source(sources, "system/linuxd/src/fs/procfs/link.rs");
+    let opened = source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs");
+    let provider = source(sources, "system/linuxd/src/task/process_table/procfs.rs");
+    let snapshot = source(sources, "system/linuxd/src/fs/procfs/snapshot.rs");
+    let config = source(sources, "system/netd/src/inet/configuration.rs");
+    let task = source(sources, "system/linuxd/src/task/model/namespaces.rs");
+    let kernel = source(sources, "system/linuxd/src/task/model/kernel_thread.rs");
+    let table = source(sources, "system/linuxd/src/fs/procfs/networking.rs");
     let generic = node
         .split("fngeneric_entries()")
         .nth(1)
@@ -87,22 +87,22 @@ mod tests {
     fn rejects_caller_selection_first_link_and_unretired_kernel_proxy() {
         for (path, old, new) in [
             (
-                "kernel/src/execution/task/process_table/procfs.rs",
+                "system/linuxd/src/task/process_table/procfs.rs",
                 "target.proc_net_namespace()",
                 "Some(crate::net::initial_net())",
             ),
             (
-                "kernel/src/fs/procfs/opened_operations.rs",
+                "system/linuxd/src/fs/procfs/opened_operations.rs",
                 "source.network_snapshot(target)?",
                 "source.network_snapshot(&crate::net::initial_net())?",
             ),
             (
-                "kernel/src/net/inet/configuration.rs",
+                "system/netd/src/inet/configuration.rs",
                 "network.interfaces.iter().map(|interface| NetworkSnapshot",
                 "network.interfaces.iter().take(1).map(|interface| NetworkSnapshot",
             ),
             (
-                "kernel/src/execution/task/model/kernel_thread.rs",
+                "system/linuxd/src/task/model/kernel_thread.rs",
                 ".take()\n            .expect(\"kernel nsproxy retired twice\")",
                 ".clone()\n            .expect(\"kernel nsproxy retired twice\")",
             ),

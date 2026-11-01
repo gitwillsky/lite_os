@@ -11,7 +11,7 @@ fn before(body: &str, first: &str, second: &str) -> bool {
     matches!((body.find(first), body.find(second)), (Some(a), Some(b)) if a < b)
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let open = source(sources, "kernel/src/syscall/fs/open.rs");
+    let open = source(sources, "system/linuxd/src/syscall/fs/open.rs");
     let open = open.split("pub(crate) fn sys_openat").nth(1).unwrap_or("");
     if ![
         "base(task",
@@ -26,8 +26,8 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fd-publication: open must reserve fd before every filesystem/device side effect and consume it on success".into());
     }
-    let prepared = source(sources, "kernel/src/file/description_preparation.rs");
-    let ofd = source(sources, "kernel/src/file/mod.rs");
+    let prepared = source(sources, "system/linuxd/src/file/description_preparation.rs");
+    let ofd = source(sources, "system/linuxd/src/file/mod.rs");
     if !before(open, "PreparedFileDescription::try_new", "base(task")
         || !before(
             open,
@@ -55,7 +55,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fd-publication: named storage/device backends must share pre-open writer admission and a single no-fail lifecycle commit".into());
     }
-    let owner = source(sources, "kernel/src/execution/task/model/file_table.rs");
+    let owner = source(sources, "system/linuxd/src/task/model/file_table.rs");
     let reservation = owner
         .split("pub(crate) struct OpenFdReservation")
         .nth(1)
@@ -72,7 +72,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fd-publication: reservation publication and rollback must pin the original FileTable owner".into());
     }
-    let table = source(sources, "kernel/src/file/descriptor_table.rs");
+    let table = source(sources, "tools/source-view/linuxd/file/descriptor_table/descriptor_table/descriptor_table.rs");
     let reserve = table
         .split("pub(crate) fn reserve_open")
         .nth(1)
@@ -110,7 +110,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fd-publication: unpublished reservations must remain invisible and exclusive through fork/proc/close/dup".into());
     }
-    let control = source(sources, "kernel/src/syscall/socket/control.rs");
+    let control = source(sources, "system/linuxd/src/syscall/socket/control.rs");
     let rights = control
         .split("fn write_rights(")
         .nth(1)
@@ -158,7 +158,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fd-publication: native SCM must copy and publish each FD before its header, retain the installed prefix on later faults, and output name/flags/length afterward".into());
     }
-    let socket = source(sources, "kernel/src/syscall/socket.rs");
+    let socket = source(sources, "tools/source-view/linuxd/syscall/socket/socket/socket.rs");
     let accept = socket
         .split("pub(in crate::syscall) fn accept_once")
         .nth(1)
@@ -166,8 +166,8 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         .split("pub(crate) fn sys_accept4")
         .next()
         .unwrap();
-    let socket_prepared = source(sources, "kernel/src/net/preparation.rs");
-    let socket_ofd = source(sources, "kernel/src/file/socket_preparation.rs");
+    let socket_prepared = source(sources, "system/linuxd/src/net/preparation.rs");
+    let socket_ofd = source(sources, "system/linuxd/src/file/socket_preparation.rs");
     if !before(accept, "task.fd_prepare_open", "prepared.accept(")
         || !before(
             accept,
@@ -195,7 +195,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fd-publication: accept must prepare facade/OFD/inode/fd before consuming connection and copy address before publication".into());
     }
-    let pipe = source(sources, "kernel/src/syscall/fs.rs");
+    let pipe = source(sources, "tools/source-view/linuxd/syscall/fs/fs/fs.rs");
     let pipe = pipe
         .split("pub(crate) fn sys_pipe2")
         .nth(1)

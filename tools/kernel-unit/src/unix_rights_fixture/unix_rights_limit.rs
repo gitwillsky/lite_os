@@ -10,7 +10,7 @@ struct ResourceLimits {
     values: [ResourceLimit; 16],
     last_cpu_signal_second: Option<u64>,
 }
-#[path = "../../../../kernel/src/execution/task/model/resource_limits/unix_file_limit.rs"]
+#[path = "../../../../system/linuxd/src/task/model/resource_limits/unix_file_limit.rs"]
 mod limits_owner;
 /// Host producer 只设置当前 limits 输入，不实现检查、clamp、quota 或恢复算法。
 pub(crate) struct ProducedLimit {

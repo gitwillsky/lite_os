@@ -2,11 +2,11 @@
 //! Production proc snapshots/codecs; VFS error/opened entry and wall-clock tick are host seams.
 #![allow(dead_code)]
 extern crate alloc;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../../../kernel/src/fs"]
+#[path = "../../../system/linuxd/src/fs"]
 mod fs {
     pub(crate) struct OpenedFile;
     #[path = "procfs"]

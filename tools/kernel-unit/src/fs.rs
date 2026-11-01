@@ -64,13 +64,13 @@ pub(crate) struct InodeMetadata {
 }
 
 // 加载实际 dev_t codec；块设备注册表是 host storage adapter，不复制编号算法。
-#[path = "../../../kernel/src/fs/devnum.rs"]
+#[path = "../../../system/linuxd/src/fs/devnum.rs"]
 mod device_number;
 pub(crate) use device_number::DeviceNumber;
 
 pub(crate) use crate::devices::block::CompletionNotify;
 
-/// 与 `kernel/src/fs/inode.rs` 的 `StorageStep`/`StorageRead` 同形；ext4 的步进读实现它们。
+/// 与 `system/linuxd/src/fs/inode.rs` 的 `StorageStep`/`StorageRead` 同形；ext4 的步进读实现它们。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StorageStep {
     Done(usize),
@@ -274,10 +274,10 @@ pub(crate) struct FileSystemStatistics {
     pub(crate) flags: u64,
 }
 
-#[path = "../../../kernel/src/fs/permission.rs"]
+#[path = "../../../system/linuxd/src/fs/permission.rs"]
 pub(crate) mod permission;
 pub(crate) use permission::{AccessIdentity, OwnerModeChange};
-#[path = "../../../kernel/src/fs/xattr.rs"]
+#[path = "../../../system/linuxd/src/fs/xattr.rs"]
 mod xattr;
 pub(crate) use xattr::XattrChange;
 // Host ext4 never consumes a memory-backed write token; volatile data owner is tested separately.
@@ -285,36 +285,36 @@ pub(crate) mod memory_file {
     pub(crate) struct MemoryWrite<'a>(core::marker::PhantomData<&'a ()>);
 }
 
-#[path = "../../../kernel/src/fs/inotify/queue.rs"]
+#[path = "../../../system/linuxd/src/fs/inotify/queue.rs"]
 pub(crate) mod inotify_queue;
 
-#[path = "../../../kernel/src/fs/ext4_identity.rs"]
+#[path = "../../../system/linuxd/src/fs/ext4_identity.rs"]
 pub(crate) mod ext4_identity;
 
-#[path = "../../../kernel/src/fs/mount_options.rs"]
+#[path = "../../../system/linuxd/src/fs/mount_options.rs"]
 pub(crate) mod mount_options;
 
 // FUSE 协议与挂载选项的纯编解码；连接与 inode 由 guest 探针在真实 `/dev/fuse` 上覆盖。
-#[path = "../../../kernel/src/fs/fuse/options.rs"]
+#[path = "../../../system/linuxd/src/fs/fuse/options.rs"]
 #[allow(
     dead_code,
     reason = "host 只运行选项解析用例，生产调用者在 fuse 文件系统类型中"
 )]
 mod fuse_options;
-#[path = "../../../kernel/src/fs/fuse/protocol.rs"]
+#[path = "../../../system/linuxd/src/fs/fuse/protocol.rs"]
 #[allow(
     dead_code,
     reason = "host 只运行编解码用例，生产调用者在连接与 inode 中"
 )]
 mod protocol;
 
-#[path = "../../../kernel/src/fs/tmpfs/options.rs"]
+#[path = "../../../system/linuxd/src/fs/tmpfs/options.rs"]
 pub(crate) mod tmpfs_options;
 
-#[path = "../../../kernel/src/fs/tmpfs/directory.rs"]
+#[path = "../../../system/linuxd/src/fs/tmpfs/directory.rs"]
 pub(crate) mod tmpfs_directory;
 
-#[path = "../../../tools/kernel-view/fs/ext4/ext4/ext4.rs"]
+#[path = "../../../tools/source-view/ext4d/ext4/ext4/ext4.rs"]
 pub(crate) mod ext4;
 
 /// 与 kernel `fs::SpawnKernelThread` 相同的注入签名；host 测试不创建内核线程。
@@ -330,20 +330,14 @@ pub(crate) struct KernelThreadSupport {
     pub(crate) sleep_until: fn(u64),
 }
 
-#[path = "../../../kernel/src/fs/swap/file_lease.rs"]
-pub(crate) mod swap;
-
-#[path = "tests/ext4_swap.rs"]
-mod swap_tests;
-
 #[allow(
     dead_code,
     reason = "host storage loads actual atime policy; volatile tuple owners have separate integration fixtures"
 )]
-#[path = "../../../kernel/src/fs/inode_times.rs"]
+#[path = "../../../system/linuxd/src/fs/inode_times.rs"]
 pub(crate) mod inode_times;
 
-#[path = "../../../kernel/src/fs/write_access.rs"]
+#[path = "../../../system/linuxd/src/fs/write_access.rs"]
 mod write_access;
 pub(crate) use write_access::{InodeAccessLease, InodeWriteAccess};
 

@@ -41,6 +41,10 @@ name = "audio-mixer-bench"
 path = "src/audio_mixer.rs"
 
 [dependencies]
+native-runtime = { path = "../../system/native-runtime" }
+device-model = { path = "../../system/device-model" }
+device-protocol = { path = "../../system/device-protocol" }
+network-protocol = { path = "../../system/network-protocol" }
 bitflags = "2.4"
 spin = { version = "0.10.0", default-features = false, features = ["mutex", "spin_mutex", "once"] }
 syscall-abi = { path = "../../syscall-abi" }

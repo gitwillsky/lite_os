@@ -69,7 +69,7 @@ pub(super) struct Waiter {
     // 导致 preparation 无法重新取得唯一 waiter ownership。
     completion: Arc<WaitCompletion>,
     target: Option<Arc<dyn TaskWaitTarget>>,
-    pub(super) next: crate::Mutex<Option<Arc<Waiter>>>,
+    pub(super) next: super::Mutex<Option<Arc<Waiter>>>,
 }
 
 impl Waiter {
@@ -85,7 +85,7 @@ impl Waiter {
             exclusive: true,
             completion,
             target: None,
-            next: crate::Mutex::new(None),
+            next: super::Mutex::new(None),
         })
         .map_err(|_| TaskMutexOutOfMemory)
     }
@@ -196,7 +196,7 @@ impl TaskMutexWaitPreparation {
         waiter.exclusive = exclusive;
         waiter.target = Some(current_wait_target());
         waiter.completion.reset();
-        waiter.next = crate::Mutex::new(None);
+        waiter.next = super::Mutex::new(None);
         self.waiter.clone()
     }
 
@@ -266,7 +266,7 @@ impl LockState {
 /// task 发布精确 scheduler membership 后进入 Blocked，unlock 摘取一个 FIFO waiter 并在
 /// state lock 外唤醒。`Handoff(ticket)` 禁止新 caller 越过已选择 waiter。
 pub struct TaskMutex<T: ?Sized> {
-    state: crate::Mutex<LockState>,
+    state: super::Mutex<LockState>,
     next_ticket: AtomicU64,
     value: UnsafeCell<T>,
 }
@@ -275,7 +275,7 @@ impl<T> TaskMutex<T> {
     /// 创建未锁定的 task mutex。
     pub const fn new(value: T) -> Self {
         Self {
-            state: crate::Mutex::new(LockState::new()),
+            state: super::Mutex::new(LockState::new()),
             next_ticket: AtomicU64::new(1),
             value: UnsafeCell::new(value),
         }

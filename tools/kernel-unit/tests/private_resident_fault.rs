@@ -33,7 +33,7 @@ unsafe impl GlobalAlloc for FaultAllocator {
 #[global_allocator]
 static ALLOCATOR: FaultAllocator = FaultAllocator;
 
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 
 #[path = "../../../kernel/src/arch/riscv64"]

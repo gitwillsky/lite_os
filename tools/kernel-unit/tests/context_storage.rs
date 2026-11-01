@@ -29,7 +29,7 @@ static ALLOCATOR: FaultAllocator = FaultAllocator;
 
 #[path = "../src/interruptible_event_target.rs"]
 mod scheduler_target;
-#[path = "../../../kernel/src/execution/task/model"]
+#[path = "../../../system/linuxd/src/task/model"]
 mod model {
     use crate::execution::sync::TaskMutex;
     use alloc::sync::Arc;

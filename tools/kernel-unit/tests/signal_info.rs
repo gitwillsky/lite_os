@@ -2,7 +2,7 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 #[allow(dead_code, reason = "本用例只覆盖实际 signal queue 采用的 AVL API")]
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
@@ -10,7 +10,7 @@ mod namespace;
 
 #[path = "."]
 pub(crate) mod execution {
-    #[path = "../../../kernel/src/execution/task/model"]
+    #[path = "../../../system/linuxd/src/task/model"]
     pub(crate) mod task {
         // 生产 siginfo codec 的 layout 回归，覆盖已有 union 与新 seccomp payload。
 
@@ -610,3 +610,6 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

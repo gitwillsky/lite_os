@@ -5,11 +5,11 @@ extern crate alloc;
 #[path = "../../kernel-unit/src/allocation_failure.rs"]
 mod allocation_failure;
 mod cost_policy;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../../kernel-unit/src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../../../kernel/src/fs/inotify/queue.rs"]
+#[path = "../../../system/linuxd/src/fs/inotify/queue.rs"]
 mod queue;
 use alloc::{boxed::Box, vec::Vec};
 use namespace::{UserResource, UserResourceCharge};

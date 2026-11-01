@@ -3,9 +3,9 @@
 //! 实际 Terminal control/foreground/retirement owner；物理 Console 是显式无输入 adapter seam。
 extern crate alloc;
 use alloc::sync::Arc;
-#[path = "../../../kernel/src/fs/devnum.rs"]
+#[path = "../../../system/linuxd/src/fs/devnum.rs"]
 mod device_number;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
@@ -121,7 +121,7 @@ pub(crate) mod execution {
 
 #[path = "."]
 pub(crate) mod devices {
-    #[path = "../../../kernel/src/devices/tty"]
+    #[path = "../../../system/linuxd/src/devices/tty"]
     pub(crate) mod tty {
         #[allow(
             unused_imports,
@@ -130,3 +130,6 @@ pub(crate) mod devices {
         pub(crate) mod terminal;
     }
 }
+
+#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+use execution::sync;

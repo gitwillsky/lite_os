@@ -1,7 +1,7 @@
 use std::{fs, path::Path};
 
 const ARCH_TABLE: &str = "kernel/src/arch/riscv64/page_table.rs";
-const MEMORY_TABLE: &str = "kernel/src/memory/page_table.rs";
+const MEMORY_TABLE: &str = "kernel/src/vm/page_table.rs";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct UnmapCost {

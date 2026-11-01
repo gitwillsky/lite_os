@@ -323,12 +323,12 @@ fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
 fn check_graphics_device_path(root: &Path, errors: &mut Vec<String>) {
     let required = [
         (
-            "kernel/src/drivers/virtio/gpu.rs",
+            "tools/source-view/devmgr/drivers/virtio/gpu/gpu/gpu.rs",
             "notify_queue(CURSOR_QUEUE)",
             "hardware cursor commands must use the dedicated VirtIO-GPU cursor queue",
         ),
         (
-            "kernel/src/drivers/virtio/gpu.rs",
+            "tools/source-view/devmgr/drivers/virtio/gpu/gpu/gpu.rs",
             "cursor.latest_move = Some((x, y));",
             "cursor motion must coalesce in the adapter instead of blocking userspace",
         ),

@@ -64,7 +64,7 @@ pub(crate) mod page_table {
     pub(crate) type TableFrame = super::FrameTracker;
 }
 
-#[path = "../../../kernel/src/memory/mm/shootdown.rs"]
+#[path = "../../../kernel/src/vm/translation.rs"]
 #[allow(dead_code)]
 pub(crate) mod shootdown;
 

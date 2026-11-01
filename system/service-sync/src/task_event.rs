@@ -21,7 +21,7 @@ pub struct TaskEvent {
     // OWNER: 未被消费的 signal；缺失时 wait 登记前发生的 signal 会丢失并让 owner 永久阻塞。
     pending: AtomicBool,
     // OWNER: 当前唯一已登记 waiter；signal 只通过 take 取得，保证每次 wait 至多被唤醒一次。
-    waiter: crate::Mutex<Option<(Arc<dyn TaskWaitTarget>, TaskWaitKey)>>,
+    waiter: super::Mutex<Option<(Arc<dyn TaskWaitTarget>, TaskWaitKey)>>,
     // OWNER: 唯一 waiter 的 arming 握手；事件只允许单等待者，因此可以内嵌而无需分配。
     completion: WaitCompletion,
 }
@@ -36,7 +36,7 @@ impl TaskEvent {
     pub const fn new() -> Self {
         Self {
             pending: AtomicBool::new(false),
-            waiter: crate::Mutex::new(None),
+            waiter: super::Mutex::new(None),
             completion: WaitCompletion::new(),
         }
     }

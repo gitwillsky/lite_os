@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 //! 实际 IPC IDs、semaphore array、atomic admission 与 SEM_UNDO owner；未复制操作算法。
 extern crate alloc;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../src/ipc_namespace_fixture.rs"]
 mod ipc;
@@ -352,3 +352,6 @@ pub(crate) mod execution {
     #[path = "../src/sync.rs"]
     pub(crate) mod sync;
 }
+
+#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+use execution::sync;

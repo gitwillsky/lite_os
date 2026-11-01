@@ -1,14 +1,14 @@
-//! 内核 `audio` 领域里纯逻辑部分的宿主测试入口；子模块层级与 `kernel/src/devices/audio/` 一致。
+//! 内核 `audio` 领域里纯逻辑部分的宿主测试入口；子模块层级与 `system/linuxd/src/devices/audio/` 一致。
 
-#[path = "../../../kernel/src/devices/audio/codec.rs"]
+#[path = "../../../system/linuxd/src/devices/audio/codec.rs"]
 pub(crate) mod codec;
-#[path = "../../../kernel/src/devices/audio/control.rs"]
+#[path = "../../../system/linuxd/src/devices/audio/control.rs"]
 pub(crate) mod control;
-#[path = "../../../kernel/src/devices/audio/engine.rs"]
+#[path = "../../../system/linuxd/src/devices/audio/engine.rs"]
 pub(crate) mod engine;
-#[path = "../../../kernel/src/devices/audio/mixer.rs"]
+#[path = "../../../system/linuxd/src/devices/audio/mixer.rs"]
 pub(crate) mod mixer;
-#[path = "../../../kernel/src/devices/audio/state.rs"]
+#[path = "../../../system/linuxd/src/devices/audio/state.rs"]
 pub(crate) mod state;
 
 #[cfg(test)]

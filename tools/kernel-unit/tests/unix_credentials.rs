@@ -4,11 +4,11 @@
 extern crate alloc;
 use alloc::sync::Arc;
 use syscall_abi::errno;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
-#[path = "../../../kernel/src/net/credentials.rs"]
+#[path = "../../../system/linuxd/src/net/credentials.rs"]
 mod net;
 
 #[path = "../../../kernel/src/syscall"]
@@ -207,7 +207,7 @@ fn receive_codec_projects_actual_namespaces_and_native_missing_credentials() {
 
 #[path = "."]
 pub(crate) mod execution {
-    #[path = "../../../kernel/src/execution/task/model"]
+    #[path = "../../../system/linuxd/src/task/model"]
     pub(crate) mod task {
         use crate::namespace::{NamespaceAuthority, PidIdentity, PidNamespace};
         use alloc::sync::Arc;
@@ -236,3 +236,6 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

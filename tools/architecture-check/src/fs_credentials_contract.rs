@@ -1,8 +1,8 @@
 //! Filesystem credentials 与 mm dumpability 的 publication/permission owner 围栏。
 use super::SourceFile;
-const CREDENTIALS: &str = "kernel/src/execution/task/model/credentials.rs";
-const EXEC: &str = "kernel/src/execution/task/model/process_exec.rs";
-const TRANSITION: &str = "kernel/src/execution/task/process_table/resource_limit.rs";
+const CREDENTIALS: &str = "system/linuxd/src/task/model/credentials.rs";
+const EXEC: &str = "system/linuxd/src/task/model/process_exec.rs";
+const TRANSITION: &str = "system/linuxd/src/task/process_table/resource_limit.rs";
 fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a str {
     &sources
         .iter()
@@ -142,7 +142,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fs-credentials: exec private MM disabled, CLOEXEC then old-ID provisional/effects/credentials publication; no final-ID restart".into());
     }
-    let mm = source(sources, "kernel/src/execution/task/model/address_space.rs");
+    let mm = source(sources, "tools/source-view/linuxd/task/model/address_space/address_space/address_space.rs");
     if !mm.contains("dumpability: Dumpability")
         || !mm.contains("self.dumpability.user_dumpable()")
         || !mm.contains(".set_user_dumpable(self.dumpability.user_dumpable())")
@@ -160,7 +160,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("fs-credentials: independent nondumpable MM namespace authorization must survive fork and credential unshare".into());
     }
-    let loader = source(sources, "kernel/src/execution/task/loader.rs");
+    let loader = source(sources, "system/linuxd/src/task/loader.rs");
     if !loader.contains("let mut readable = identity.permits(metadata, 4)")
         || !loader.contains("readable &= identity.permits(interpreter_metadata, 4)")
     {
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn rejects_fork_rebinding_mm_namespace_to_child_credentials() {
         reject(
-            "kernel/src/execution/task/model/address_space.rs",
+            "tools/source-view/linuxd/task/model/address_space/address_space/address_space.rs",
             "self.user_namespace.clone()",
             "crate::namespace::initial_user()",
             "independent nondumpable MM namespace",
@@ -291,7 +291,7 @@ mod tests {
     #[test]
     fn rejects_fork_losing_dumpability() {
         reject(
-            "kernel/src/execution/task/model/address_space.rs",
+            "tools/source-view/linuxd/task/model/address_space/address_space/address_space.rs",
             ".set_user_dumpable(self.dumpability.user_dumpable())",
             ".set_user_dumpable(true)",
             "copied on fork",
@@ -300,7 +300,7 @@ mod tests {
     #[test]
     fn rejects_unreadable_dynamic_interpreter_becoming_dumpable() {
         reject(
-            "kernel/src/execution/task/loader.rs",
+            "system/linuxd/src/task/loader.rs",
             "readable &= identity.permits(interpreter_metadata, 4)",
             "readable = true",
             "PT_INTERP readability",

@@ -6,9 +6,9 @@ use std::{
     sync::Arc,
 };
 
-#[path = "../../../kernel/src/arch/aarch64/signal_action.rs"]
+#[path = "../../../system/linuxd/src/arch/aarch64/signal_action.rs"]
 mod signal_action;
-#[path = "../../../kernel/src/execution/task/model/signal_info.rs"]
+#[path = "../../../system/linuxd/src/task/model/signal_info.rs"]
 mod signal_info;
 
 mod system {
@@ -291,3 +291,6 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

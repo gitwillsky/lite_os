@@ -28,7 +28,7 @@ mod system {
     }
 }
 
-#[path = "../../../kernel/src/syscall/reboot.rs"]
+#[path = "../../../system/linuxd/src/syscall/reboot.rs"]
 mod reboot;
 
 #[test]
@@ -137,3 +137,6 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

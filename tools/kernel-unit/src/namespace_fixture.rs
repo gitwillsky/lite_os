@@ -1,5 +1,5 @@
 //! 显式 host boot composition：生产 namespace owner 原样加载，无初始身份 fallback 或 mock map。
-#[path = "../../../kernel/src/namespace/mod.rs"]
+#[path = "../../../system/linuxd/src/namespace/mod.rs"]
 #[allow(
     dead_code,
     unused_imports,

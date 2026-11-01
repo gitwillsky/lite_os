@@ -3,7 +3,7 @@
 #![feature(allocator_ext)]
 #![allow(dead_code)]
 extern crate alloc;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 
 mod memory {

@@ -35,7 +35,7 @@ unsafe impl GlobalAlloc for FaultAllocator {
 #[global_allocator]
 static ALLOCATOR: FaultAllocator = FaultAllocator;
 
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 
 mod memory {
@@ -138,7 +138,7 @@ pub(crate) mod execution {
             INSTALL.call_once(|| task_wait::install_wait_target_factory(target::factory));
         }
     }
-    #[path = "../../../kernel/src/execution/task"]
+    #[path = "../../../system/linuxd/src/task"]
     pub(crate) mod task {
         #[path = "process_table"]
         pub(crate) mod process_table {
@@ -208,3 +208,6 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

@@ -2,7 +2,7 @@ use syn::{Expr, ExprCall, ExprLit, ImplItem, ImplItemFn, Item, Lit, Path, Type, 
 
 use super::SourceFile;
 
-const TTY_PATH: &str = "kernel/src/devices/tty/mod.rs";
+const TTY_PATH: &str = "system/linuxd/src/devices/tty/mod.rs";
 
 /// 校验 TTY user-visible readiness 与 PTY master input batch 的 production 实现。
 ///

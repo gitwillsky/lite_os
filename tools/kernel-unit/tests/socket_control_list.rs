@@ -4,9 +4,9 @@
 extern crate alloc;
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
-#[path = "../../../kernel/src/syscall/user_iovec/input_staging.rs"]
+#[path = "../../../system/linuxd/src/syscall/user_iovec/input_staging.rs"]
 mod input_staging;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
@@ -18,7 +18,7 @@ mod syscall {
     }
 }
 
-#[path = "../../../kernel/src/syscall/socket/control_list.rs"]
+#[path = "../../../system/linuxd/src/syscall/socket/control_list.rs"]
 mod control_list;
 use control_list::{ControlList, ControlSnapshot, ImportError};
 fn cmsg(data: &[u8], padding: usize) -> Vec<u8> {
@@ -234,3 +234,6 @@ pub(crate) mod execution {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

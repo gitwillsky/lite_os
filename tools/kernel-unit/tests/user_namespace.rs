@@ -2,13 +2,13 @@
 #![allow(dead_code)]
 //! Production namespace ancestry/map/identity/permission owner; no copied namespace state.
 extern crate alloc;
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 use alloc::sync::Arc;
 use syscall_abi::capability::{Capability, VALID_MASK};
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
-#[path = "../../../kernel/src/namespace/mod.rs"]
+#[path = "../../../system/linuxd/src/namespace/mod.rs"]
 #[allow(
     unused_imports,
     reason = "本用例只覆盖实际 user namespace owner，其他导出由独立集成用例覆盖"

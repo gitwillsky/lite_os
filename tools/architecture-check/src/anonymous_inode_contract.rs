@@ -19,10 +19,10 @@ fn ordered(body: &str, facts: &[&str]) -> bool {
     true
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let ofd = text(sources, "kernel/src/file/mod.rs");
-    let snapshot = text(sources, "kernel/src/fs/procfs/snapshot.rs");
-    let link = text(sources, "kernel/src/fs/procfs/link.rs");
-    let producer = text(sources, "kernel/src/execution/task/model/file_table.rs");
+    let ofd = text(sources, "system/linuxd/src/file/mod.rs");
+    let snapshot = text(sources, "system/linuxd/src/fs/procfs/snapshot.rs");
+    let link = text(sources, "system/linuxd/src/fs/procfs/link.rs");
+    let producer = text(sources, "system/linuxd/src/task/model/file_table.rs");
     if !ofd.contains("opened: Arc<OpenedFile>")
         || ofd.contains("character_opened")
         || ofd.contains("MemFile(")
@@ -34,8 +34,8 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("anonymous-inode: every OFD/proc target must retain one actual opened identity without label fallback".into());
     }
-    let opened = text(sources, "kernel/src/fs/vfs/opened.rs");
-    let dentry = text(sources, "kernel/src/fs/vfs/dentry.rs");
+    let opened = text(sources, "system/linuxd/src/fs/vfs/opened.rs");
+    let dentry = text(sources, "system/linuxd/src/fs/vfs/dentry.rs");
     if !dentry.contains("Anonymous(Vec<u8>)")
         || !ordered(
             opened,
@@ -60,10 +60,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("anonymous-inode: display/location must bypass namespace registration projection and deletion cleanup".into());
     }
-    let anonymous = text(sources, "kernel/src/fs/anonymous.rs");
+    let anonymous = text(sources, "tools/source-view/linuxd/fs/anonymous/anonymous/anonymous.rs");
     let fields = sources
         .iter()
-        .find(|s| s.relative == "kernel/src/fs/anonymous.rs")
+        .find(|s| s.relative == "tools/source-view/linuxd/fs/anonymous/anonymous/anonymous.rs")
         .unwrap()
         .syntax
         .items
@@ -85,8 +85,8 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("anonymous-inode: pseudo inode must not pin endpoints, reopen singleton or invent normal type/private notification facts".into());
     }
-    let ipc = text(sources, "kernel/src/ipc/pipe.rs");
-    let admission = text(sources, "kernel/src/ipc/pipe/pipe_open.rs");
+    let ipc = text(sources, "tools/source-view/linuxd/ipc/pipe/pipe/pipe.rs");
+    let admission = text(sources, "system/linuxd/src/ipc/pipe/pipe_open.rs");
     if !ordered(
         admission,
         &[
@@ -110,7 +110,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("anonymous-inode: endpoint admission peer facts and last-close retirement must share one state transaction".into());
     }
-    let fifo = text(sources, "kernel/src/fs/fifo.rs");
+    let fifo = text(sources, "system/linuxd/src/fs/fifo.rs");
     if !fifo.contains("static FIFOS: TaskMutex<Vec<Slot>>")
         || !ordered(
             fifo,
@@ -128,7 +128,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("anonymous-inode: FIFO must prepare outside spin locks and restrict HUP suppression to no-writer nonblocking named readers".into());
     }
-    let memory = text(sources, "kernel/src/fs/memory_file.rs");
+    let memory = text(sources, "tools/source-view/linuxd/fs/memory_file/memory_file/memory_file.rs");
     let resize = memory
         .split("pub(super) fn truncate_with_metadata")
         .nth(1)
@@ -172,9 +172,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("anonymous-inode: seal rejection/data failure must precede metadata commit and all guards must retire before MM invalidation".into());
     }
-    let times = text(sources, "kernel/src/fs/inode_times.rs");
-    let metadata = text(sources, "kernel/src/fs/anonymous/metadata.rs");
-    let tmp = text(sources, "kernel/src/fs/tmpfs.rs");
+    let times = text(sources, "system/linuxd/src/fs/inode_times.rs");
+    let metadata = text(sources, "system/linuxd/src/fs/anonymous/metadata.rs");
+    let tmp = text(sources, "tools/source-view/linuxd/fs/tmpfs/tmpfs/tmpfs.rs");
     if !memory.contains("times: Arc<super::inode_times::InodeTimes>")
         || memory.contains("modified_ns")
         || memory.contains("modified_seconds:")
@@ -188,7 +188,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("anonymous-inode: volatile times must have one shared tuple with content touch and explicit mtime distinct from ctime".into());
     }
-    let seals = text(sources, "kernel/src/syscall/fs/fcntl.rs");
+    let seals = text(sources, "system/linuxd/src/syscall/fs/fcntl.rs");
     let seals = seals
         .split("F_ADD_SEALS | F_GET_SEALS =>")
         .nth(1)
@@ -201,7 +201,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             "return -errno::EPERM",
             "u32::try_from(argument)",
         ],
-    ) || !text(sources, "kernel/src/syscall/fs/open.rs")
+    ) || !text(sources, "system/linuxd/src/syscall/fs/open.rs")
         .contains("inode.open_backend(flags, &identity, &task.namespace_authority())")
         || !text(sources, "kernel/src/syscall/memory.rs")
             .contains("matches!(ofd.kind, OpenFileKind::Inode)")
@@ -210,7 +210,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     // 通知收敛在 `perform_read`/`perform_write` 各一处；read/readv/write/writev 与 io_uring 都经它们，
     // 所以这里要求：通知各出现一次，且四个 syscall 入口加 helper 本身共调用三次（定义 + 两个入口）。
-    let sequential = text(sources, "kernel/src/syscall/fs/io/sequential.rs");
+    let sequential = text(sources, "tools/source-view/linuxd/syscall/fs/io/sequential/sequential/sequential.rs");
     if !ofd.contains("self.notify(if writable")
         || sequential
             .matches("ofd.notify(crate::fs::IN_ACCESS)")
@@ -222,7 +222,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             != 1
         || sequential.matches("perform_read(").count() != 3
         || sequential.matches("perform_write(").count() != 3
-        || !text(sources, "kernel/src/fs/inotify.rs").contains("!inode.allows_notifications()")
+        || !text(sources, "tools/source-view/linuxd/fs/inotify/inotify/inotify.rs").contains("!inode.allows_notifications()")
     {
         errors.push("anonymous-inode: generic successful I/O and final close must notify actual non-private inode identities".into());
     }

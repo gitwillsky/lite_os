@@ -5,7 +5,7 @@ extern crate alloc;
 #[path = "../src/ipc_namespace_fixture.rs"]
 mod ipc;
 
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../src/mount_membership_fixture.rs"]
 mod mount_membership_fixture;
@@ -69,7 +69,7 @@ mod memory {
     }
 }
 
-#[path = "../../../kernel/src/fs"]
+#[path = "../../../system/linuxd/src/fs"]
 mod fs {
     pub(crate) use crate::mount_membership_fixture::MountNamespace;
     use alloc::{sync::Arc, vec::Vec};
@@ -208,7 +208,7 @@ mod fs {
     }
 }
 
-#[path = "../../../kernel/src/file"]
+#[path = "../../../system/linuxd/src/file"]
 mod file {
     use alloc::sync::Arc;
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -1004,7 +1004,7 @@ pub(crate) mod execution {
             TaskMutex, TaskMutexGuard, TaskMutexLockError, TaskMutexWaitPreparation,
         };
     }
-    #[path = "../../../kernel/src/execution/task"]
+    #[path = "../../../system/linuxd/src/task"]
     pub(crate) mod task {
         use crate::{Arc, RefCell};
         thread_local! { static CURRENT: RefCell<Option<Arc<TaskControlBlock>>> = const { RefCell::new(None) }; }
@@ -1248,3 +1248,6 @@ pub(crate) mod devices {
         }
     }
 }
+
+#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
+use execution::task;

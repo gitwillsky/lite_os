@@ -103,7 +103,7 @@ impl Writer<'_> {
         }
     }
 }
-#[path = "../../../kernel/src/syscall/fs/io/sendfile/regular_transfer.rs"]
+#[path = "../../../system/linuxd/src/syscall/fs/io/sendfile/regular_transfer.rs"]
 mod regular_transfer;
 #[test]
 fn first_input_failure_or_eof_does_not_touch_output_privileges() {

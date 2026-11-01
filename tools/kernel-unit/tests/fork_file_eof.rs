@@ -4,7 +4,7 @@
 
 extern crate alloc;
 
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 
 #[path = "../../../kernel/src/arch/riscv64"]
@@ -555,7 +555,7 @@ mod memory {
     }
 }
 
-#[path = "../../../kernel/src/fs"]
+#[path = "../../../system/linuxd/src/fs"]
 mod fs {
     #[derive(Debug, PartialEq, Eq)]
     pub(crate) enum FileSystemError {

@@ -5,15 +5,15 @@ extern crate alloc;
 #[path = "../../kernel-unit/src/allocation_failure.rs"]
 mod allocation_failure;
 mod cost_policy;
-#[path = "../../../kernel/src/execution/task/model/message_identity.rs"]
+#[path = "../../../system/linuxd/src/task/model/message_identity.rs"]
 mod message_identity;
 // 实际 scheduler cadence 为 benchmark 边界；policy/锁/deadline 运算全部来自 production。
 
-#[path = "../../../kernel/src/fallible_tree/mod.rs"]
+#[path = "../../../fallible-tree/src/lib.rs"]
 mod fallible_tree;
 #[path = "../../kernel-unit/src/unix_rights_fixture/file.rs"]
 mod file;
-#[path = "../../../kernel/src/id.rs"]
+#[path = "../../../system/linuxd/src/id.rs"]
 mod id;
 #[path = "../../kernel-unit/src/pipe_fixture.rs"]
 mod ipc;
@@ -21,7 +21,7 @@ mod ipc;
 mod namespace;
 #[path = "../../kernel-unit/src/unix_rights_fixture/mod.rs"]
 mod net;
-#[path = "../../../kernel/src/net/timeouts.rs"]
+#[path = "../../../system/linuxd/src/net/timeouts.rs"]
 mod socket_timeouts;
 
 use alloc::{sync::Arc, vec};
@@ -271,3 +271,6 @@ pub(crate) mod execution {
     #[path = "../../kernel-unit/src/sync.rs"]
     pub(crate) mod sync;
 }
+
+#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+use execution::sync;

@@ -83,7 +83,7 @@ impl State {
 /// 可跨调度与可睡眠 I/O 持有的 task-context 读写信号量；竞争只能发生在 task 上下文。
 pub struct TaskRwSemaphore {
     // OWNER: 共享计数、写者与 FIFO 队列在同一短锁内转移；拆开会让新读者越过排队写者。
-    state: crate::Mutex<State>,
+    state: super::Mutex<State>,
     // 每次阻塞都签发新的 (owner, ticket)；否则迟到 wake 可命中同一任务的下一次等待。
     next_ticket: AtomicU64,
 }
@@ -98,7 +98,7 @@ impl TaskRwSemaphore {
     /// 创建空闲的信号量。
     pub const fn new() -> Self {
         Self {
-            state: crate::Mutex::new(State {
+            state: super::Mutex::new(State {
                 readers: 0,
                 writer: false,
                 head: None,

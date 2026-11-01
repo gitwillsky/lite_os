@@ -8,8 +8,8 @@ fn source<'a>(sources: &'a [SourceFile], path: &str) -> &'a str {
         .text
 }
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let pid = source(sources, "kernel/src/namespace/pid.rs");
-    let identity = source(sources, "kernel/src/namespace/pid_identity.rs");
+    let pid = source(sources, "system/linuxd/src/namespace/pid.rs");
+    let identity = source(sources, "system/linuxd/src/namespace/pid_identity.rs");
     if !pid.contains("identity: Weak<PidIdentity>")
         || !pid.contains("association.identity.upgrade()")
         || !pid.contains("pub(crate) fn lookup_identity(")
@@ -19,9 +19,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         errors.push("namespace-quota: PID namespace must publish and look up the same actual immutable identity without another registry or number-lifetime pin".into());
     }
 
-    let user = source(sources, "kernel/src/namespace/user.rs");
-    let uts = source(sources, "kernel/src/namespace/uts.rs");
-    let quota = source(sources, "kernel/src/namespace/quota.rs");
+    let user = source(sources, "system/linuxd/src/namespace/user.rs");
+    let uts = source(sources, "system/linuxd/src/namespace/uts.rs");
+    let quota = source(sources, "system/linuxd/src/namespace/quota.rs");
     if !user.contains("quotas: UserQuotas")
         || !user.contains("_charge: Option<UserResourceCharge>")
         || !uts.contains("_charge: Option<UserResourceCharge>")
@@ -34,11 +34,11 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("namespace-quota: concrete namespace lifetime must own one creator/ancestor charge and rollback exact successful prefix".into());
     }
-    let proc = source(sources, "kernel/src/fs/procfs.rs");
-    let opened = source(sources, "kernel/src/fs/procfs/opened_operations.rs");
-    let node = source(sources, "kernel/src/fs/procfs/node.rs");
-    let identity = source(sources, "kernel/src/fs/permission.rs");
-    let credentials = source(sources, "kernel/src/execution/task/model/credentials.rs");
+    let proc = source(sources, "tools/source-view/linuxd/fs/procfs/procfs/procfs.rs");
+    let opened = source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs");
+    let node = source(sources, "system/linuxd/src/fs/procfs/node.rs");
+    let identity = source(sources, "system/linuxd/src/fs/permission.rs");
+    let credentials = source(sources, "system/linuxd/src/task/model/credentials.rs");
     let proc_tokens: String = proc.split_whitespace().collect();
     let opened_tokens: String = opened.split_whitespace().collect();
     let node_tokens: String = node.split_whitespace().collect();
@@ -53,9 +53,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("namespace-quota: sysctl fd must pin lookup namespace and scoped permission use EUID ancestry independently of FSUID and stat mode".into());
     }
-    let inode = source(sources, "kernel/src/fs/inode.rs");
-    let open = source(sources, "kernel/src/syscall/fs/open.rs");
-    let access = source(sources, "kernel/src/syscall/fs/access.rs");
+    let inode = source(sources, "system/linuxd/src/fs/inode.rs");
+    let open = source(sources, "system/linuxd/src/syscall/fs/open.rs");
+    let access = source(sources, "system/linuxd/src/syscall/fs/access.rs");
     if !inode.contains("fn require_access(")
         || !open.contains("inode.require_access(&identity, requested)")
         || !access.contains(".require_access(&identity, mode as u8 | crate::fs::MAY_ACCESS)")
@@ -84,7 +84,7 @@ mod tests {
     #[test]
     fn rejects_pid_lookup_pinning_namespace_registration_instead_of_observer() {
         reject(
-            "kernel/src/namespace/pid.rs",
+            "system/linuxd/src/namespace/pid.rs",
             "identity: Weak<PidIdentity>",
             "identity: Arc<PidIdentity>",
             "PID namespace must publish and look up the same actual",
@@ -93,7 +93,7 @@ mod tests {
     #[test]
     fn rejects_pid_association_publication_without_actual_identity() {
         reject(
-            "kernel/src/namespace/pid_identity.rs",
+            "system/linuxd/src/namespace/pid_identity.rs",
             ".publish(&self.identity)",
             ".publish()",
             "PID namespace must publish and look up the same actual",
@@ -109,7 +109,7 @@ mod tests {
     #[test]
     fn rejects_free_without_releasing_ancestor_charges() {
         reject(
-            "kernel/src/namespace/quota.rs",
+            "system/linuxd/src/namespace/quota.rs",
             "namespace.quotas.decrement(*uid, self.resource)",
             "let _ = (uid, namespace)",
             "exact successful prefix",
@@ -118,7 +118,7 @@ mod tests {
     #[test]
     fn rejects_fsuid_substitution_for_namespace_capability_owner() {
         reject(
-            "kernel/src/fs/permission.rs",
+            "system/linuxd/src/fs/permission.rs",
             "effective_uid: self.capability_uid",
             "effective_uid: self.uid",
             "EUID ancestry",
@@ -127,7 +127,7 @@ mod tests {
     #[test]
     fn rejects_uts_bypassing_actual_resource_admission() {
         reject(
-            "kernel/src/namespace/uts.rs",
+            "system/linuxd/src/namespace/uts.rs",
             "UserResource::Uts",
             "UserResource::User",
             "concrete namespace lifetime",

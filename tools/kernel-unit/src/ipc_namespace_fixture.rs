@@ -1,7 +1,7 @@
 // 实际 IPC namespace/queue/permission/error owner 的 host 装配；不复制 IPC 状态或实现。
-#[path = "../../../kernel/src/ipc/sem_undo.rs"]
+#[path = "../../../system/linuxd/src/ipc/sem_undo.rs"]
 mod sem_undo;
-#[path = "../../../kernel/src/ipc/semaphore.rs"]
+#[path = "../../../system/linuxd/src/ipc/semaphore.rs"]
 mod semaphore;
 #[allow(
     unused_imports,
@@ -13,13 +13,13 @@ pub(crate) use sem_undo::{SemaphoreUndoHandle, SemaphoreUndoList};
     reason = "独立 IPC fixture 只使用完整 owner 的部分导出"
 )]
 pub(crate) use semaphore::{SemaphoreChange, SemaphoreOperation, SemaphoreSet, SemaphoreSnapshot};
-#[path = "../../../kernel/src/ipc/error.rs"]
+#[path = "../../../system/linuxd/src/ipc/error.rs"]
 mod error;
-#[path = "../../../kernel/src/ipc/ids.rs"]
+#[path = "../../../system/linuxd/src/ipc/ids.rs"]
 mod ids;
-#[path = "../../../kernel/src/ipc/shared_memory.rs"]
+#[path = "../../../system/linuxd/src/ipc/shared_memory.rs"]
 mod shared_memory;
-#[path = "../../../kernel/src/ipc/shared_memory_creator.rs"]
+#[path = "../../../system/linuxd/src/ipc/shared_memory_creator.rs"]
 mod shared_memory_creator;
 #[allow(
     unused_imports,
@@ -38,14 +38,14 @@ pub(crate) use shared_memory::{
     reason = "独立 IPC fixture 只使用完整 owner 的部分导出"
 )]
 pub(crate) use shared_memory_creator::SharedMemoryCreatorList;
-#[path = "../../../kernel/src/ipc/permissions.rs"]
+#[path = "../../../system/linuxd/src/ipc/permissions.rs"]
 mod permissions;
 #[allow(
     unused_imports,
     reason = "独立 IPC fixture 只使用完整 owner 的部分导出"
 )]
 pub(crate) use permissions::{IpcAccess, IpcPermission};
-#[path = "../../../kernel/src/ipc/message_queue.rs"]
+#[path = "../../../system/linuxd/src/ipc/message_queue.rs"]
 mod message_queue;
 #[allow(
     unused_imports,
@@ -54,7 +54,7 @@ mod message_queue;
 pub(crate) use message_queue::{
     MessageQueue, MessageQueueSnapshot, MessageQueueWait, MessageReceive, PreparedMessage,
 };
-#[path = "../../../tools/kernel-view/ipc/namespace/namespace/namespace.rs"]
+#[path = "../../../tools/source-view/linuxd/ipc/namespace/namespace/namespace.rs"]
 mod namespace;
 #[allow(
     unused_imports,

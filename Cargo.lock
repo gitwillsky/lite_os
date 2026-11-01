@@ -7,6 +7,10 @@ name = "architecture-bench"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.9.1",
+ "device-model",
+ "device-protocol",
+ "native-runtime",
+ "network-protocol",
  "smoltcp",
  "spin",
  "syscall-abi",
@@ -202,7 +206,12 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.9.1",
  "boot-scene",
+ "device-model",
+ "device-protocol",
  "dtb-walker",
+ "fallible-tree",
+ "native-runtime",
+ "network-protocol",
  "smoltcp",
  "spin",
  "syscall-abi",
