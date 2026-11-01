@@ -20,3 +20,5 @@ impl Drop for OpenFileDescription {
 #[path = "../../../../tools/source-view/linuxd/file/descriptor_table/indexed_slots/indexed_slots/indexed_slots.rs"]
 mod indexed_slots;
 pub(crate) const MAX_FILE_DESCRIPTORS: usize = indexed_slots::MAX_FILE_DESCRIPTORS;
+
+pub(crate) use crate::sync::next_readiness_generation;

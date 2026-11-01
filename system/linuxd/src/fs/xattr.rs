@@ -1,9 +1,9 @@
 //! 内存型inode的实际xattr内容；锁与ctime归inode现有state，不另建属性锁或影子权限表。
 use super::permission::OwnerModeState;
 use super::{AccessIdentity, FileSystemError, Inode, InodeMetadata, InodeType};
-use fallible_tree::FallibleMap;
 use crate::namespace::UserNamespace;
 use alloc::{sync::Arc, vec::Vec};
+use fallible_tree::FallibleMap;
 use syscall_abi::{
     capability::Capability,
     file_capability::{self, FileCapabilityData},

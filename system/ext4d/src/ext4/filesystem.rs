@@ -107,13 +107,13 @@ impl Ext4FileSystem {
     /// # Errors
     ///
     /// 线程创建失败时返回 `OutOfMemory`。
-    pub(crate) fn start_writeback(
-        self: &Arc<Self>,
-    ) -> Result<(), FileSystemError> {
+    pub(crate) fn start_writeback(self: &Arc<Self>) -> Result<(), FileSystemError> {
         let filesystem = self.clone();
         let thread = native_runtime::thread::spawn(b"ext4-writeback", move || {
             filesystem.run_writeback_daemon(|deadline| {
-                let _ = native_runtime::system::sleep_until(i64::try_from(deadline).unwrap_or(i64::MAX));
+                let _ = native_runtime::system::sleep_until(
+                    i64::try_from(deadline).unwrap_or(i64::MAX),
+                );
             });
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;

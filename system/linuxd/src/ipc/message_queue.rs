@@ -1,9 +1,12 @@
 //! System V message queue 的实际 message/permission/waiter owner；user-copy 和 errno 在 syscall。
 use super::{IpcAccess, IpcError, IpcPermission};
-use crate::{sync::{TaskEvent, WaitResult}, namespace::{PidIdentity, UserNamespace}};
-use fallible_tree::{FallibleMap, VacantEntry};
-use alloc::{sync::Arc, vec::Vec};
 use crate::sync::Mutex;
+use crate::{
+    namespace::{PidIdentity, UserNamespace},
+    sync::{TaskEvent, WaitResult},
+};
+use alloc::{sync::Arc, vec::Vec};
+use fallible_tree::{FallibleMap, VacantEntry};
 use syscall_abi::ipc::{IPC_NOWAIT, MSG_COPY, MSG_EXCEPT, MSG_NOERROR};
 
 /// 一次 receive 的不可变选择与容量输入；MSG_COPY 的预备容量来自进入 syscall 时的 msgmax。

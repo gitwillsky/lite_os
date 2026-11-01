@@ -6,8 +6,8 @@ use smoltcp::{
 };
 
 use super::{TcpConnection, TcpEndpointState, TcpMode, endpoint_id};
-use crate::receive::ReceiveBuffer;
 use crate::inet::{InetSocket, NetworkStack};
+use crate::receive::ReceiveBuffer;
 use network_protocol::{InetAddress, SocketError, SocketPollState};
 
 /// 向 TCP send buffer 排队 partial stream bytes，并有界推进 egress。

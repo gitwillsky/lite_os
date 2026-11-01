@@ -47,7 +47,10 @@ fn decode_error(status: Status) -> PcmOutputError {
 }
 
 fn format(value: u8) -> Result<PcmFormat, Status> {
-    PcmFormat::ALL.get(usize::from(value)).copied().ok_or(native_abi::ERR_INVALID_ARGS)
+    PcmFormat::ALL
+        .get(usize::from(value))
+        .copied()
+        .ok_or(native_abi::ERR_INVALID_ARGS)
 }
 
 /// 驱动宿主侧观察者：把回调写成事件消息。
@@ -95,28 +98,32 @@ pub fn publish(directory: &Channel, device: Arc<dyn PcmOutput>) -> Result<(), St
         server,
         1,
         b"pcm-server",
-        Arc::try_new(move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
-            match ordinal {
-                CONFIGURE => {
-                    let configuration = PcmConfiguration {
-                        rate: request.u32()?,
-                        format: format(request.u8()?)?,
-                        period_frames: request.usize()?,
-                    };
-                    device.configure(configuration).map_err(encode_error)?;
+        Arc::try_new(
+            move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
+                match ordinal {
+                    CONFIGURE => {
+                        let configuration = PcmConfiguration {
+                            rate: request.u32()?,
+                            format: format(request.u8()?)?,
+                            period_frames: request.usize()?,
+                        };
+                        device.configure(configuration).map_err(encode_error)?;
+                    }
+                    RELEASE => device.release().map_err(encode_error)?,
+                    PREPARE => device.prepare().map_err(encode_error)?,
+                    START => device.start().map_err(encode_error)?,
+                    STOP => device.stop().map_err(encode_error)?,
+                    SUBMIT => device
+                        .submit_period(request.bytes()?)
+                        .map_err(encode_error)?,
+                    WRITABLE => {
+                        reply.bool(device.writable());
+                    }
+                    _ => return Err(native_abi::ERR_NOT_SUPPORTED),
                 }
-                RELEASE => device.release().map_err(encode_error)?,
-                PREPARE => device.prepare().map_err(encode_error)?,
-                START => device.start().map_err(encode_error)?,
-                STOP => device.stop().map_err(encode_error)?,
-                SUBMIT => device.submit_period(request.bytes()?).map_err(encode_error)?,
-                WRITABLE => {
-                    reply.bool(device.writable());
-                }
-                _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-            }
-            Ok(Vec::new())
-        })
+                Ok(Vec::new())
+            },
+        )
         .map_err(|_| native_abi::ERR_NO_MEMORY)?,
     )?;
     directory::announce(
@@ -141,11 +148,15 @@ pub struct RemotePcm {
 /// # Errors
 ///
 /// 描述或句柄不完整，或事件登记失败。
-pub fn connect(mut announcement: Announcement, hub: &Arc<EventHub>) -> Result<Arc<RemotePcm>, Status> {
+pub fn connect(
+    mut announcement: Announcement,
+    hub: &Arc<EventHub>,
+) -> Result<Arc<RemotePcm>, Status> {
     let channel = Channel::from_handle(take_handle(&mut announcement.handles, 0)?);
     let events = Channel::from_handle(take_handle(&mut announcement.handles, 1)?);
     let mut reader = announcement.reader();
-    let name = String::from_utf8(reader.bytes()?.to_vec()).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+    let name =
+        String::from_utf8(reader.bytes()?.to_vec()).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
     let mut capabilities = PcmCapabilities::EMPTY;
     for rates in &mut capabilities.rates {
         *rates = reader.u32()?;

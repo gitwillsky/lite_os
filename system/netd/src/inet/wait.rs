@@ -1,7 +1,7 @@
 //! endpoint 的就绪投影与通知：使用者等待就绪 Event，被唤醒后经 [`InetSocket::poll_state`] 重新查询电平状态。
 
-use network_protocol::SocketPollState;
 use native_runtime::native_abi::signals;
+use network_protocol::SocketPollState;
 
 use super::{InetEndpoint, InetSocket, raw, tcp, udp};
 

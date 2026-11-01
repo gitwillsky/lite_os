@@ -6,15 +6,19 @@ use super::{
     Error, Result, audio,
     dma::{Dma, Ring, Trb},
 };
-use crate::{io_completion::CompletionSource, interrupt::{InterruptError, InterruptHandler, InterruptVector}, sync::{TaskEvent, TaskMutex}};
+use crate::{
+    interrupt::{InterruptError, InterruptHandler, InterruptVector},
+    io_completion::CompletionSource,
+    sync::{TaskEvent, TaskMutex},
+};
 
 fn get_time_ns() -> u64 {
     native_runtime::system::monotonic() as u64
 }
-use mmio::MmioBus;
+use crate::sync::Mutex;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
-use crate::sync::Mutex;
+use mmio::MmioBus;
 
 const EVENT_COUNT: usize = 256;
 const PORT_CHANGE: u32 = 0x00fe0000;
@@ -79,7 +83,10 @@ pub(crate) struct Host {
 impl Host {
     pub(super) fn new(function: &crate::drivers::pci::Function, bus: usize) -> Result<Arc<Self>> {
         let bar = function.bars[0].ok_or(Error::Protocol)?;
-        let regs = MmioBus::new(crate::platform::map_device_window(bar.address, bar.size), bar.size)?;
+        let regs = MmioBus::new(
+            crate::platform::map_device_window(bar.address, bar.size),
+            bar.size,
+        )?;
         let length = usize::from(regs.read_u8(0)?);
         let hcs = regs.read_u32(4)?;
         let slots = (hcs & 255) as usize;

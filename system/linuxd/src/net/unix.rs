@@ -1,6 +1,6 @@
+use crate::sync::Mutex;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
-use crate::sync::Mutex;
 
 use crate::ipc::PipeEnd;
 

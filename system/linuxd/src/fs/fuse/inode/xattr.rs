@@ -105,7 +105,8 @@ impl FuseInode {
             )?;
         }
         // 3. ctime 由服务端的下一次 GETATTR 提供，不制造另一份属性时钟或本地 xattr 缓存。
-        self.no_privileges.store(false, core::sync::atomic::Ordering::Release);
+        self.no_privileges
+            .store(false, core::sync::atomic::Ordering::Release);
         self.invalidate_attributes();
         Ok(())
     }

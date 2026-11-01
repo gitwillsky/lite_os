@@ -55,7 +55,10 @@ impl TaskControlBlock {
         } else {
             // 子地址空间的成员进程沿用父线程名（Linux fork 复制 comm），供内核诊断辨认。
             let comm = self.comm_buffer();
-            let length = comm.iter().position(|&byte| byte == 0).unwrap_or(comm.len());
+            let length = comm
+                .iter()
+                .position(|&byte| byte == 0)
+                .unwrap_or(comm.len());
             parent_address_space.try_clone_for_fork(&comm[..length])?
         };
         let mm = try_mm_handle(address_space.clone())?;
@@ -79,8 +82,9 @@ impl TaskControlBlock {
             .map_err(|_| MemoryError::OutOfMemory)?;
         let resource_limits = self.process().resource_limits.lock().forked();
         let cpu_limit_active = resource_limits.cpu_limit_active();
-        let retired_runtime = Arc::try_new(Mutex::new(super::usage_accounting::CpuUsage::default()))
-            .map_err(|_| MemoryError::OutOfMemory)?;
+        let retired_runtime =
+            Arc::try_new(Mutex::new(super::usage_accounting::CpuUsage::default()))
+                .map_err(|_| MemoryError::OutOfMemory)?;
         let io_accounting =
             Arc::try_new(IoAccounting::default()).map_err(|_| MemoryError::OutOfMemory)?;
         let child_policy = self.scheduling.policy.lock().forked();
@@ -135,7 +139,10 @@ impl TaskControlBlock {
             Some(TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?);
         // 2. child 从同一条已前移的 syscall PC 返回，返回值为零；浮点状态继承调用线程此刻的硬件状态。
         let mut child_trap = self.snapshot_user_context_for_clone();
-        child_trap.prepare_clone((parameters.stack != 0).then_some(parameters.stack), parameters.tls);
+        child_trap.prepare_clone(
+            (parameters.stack != 0).then_some(parameters.stack),
+            parameters.tls,
+        );
         let user_context = UserContextCell::new(child_trap, crate::arch::fp::capture());
         let prepared_carrier = crate::trap::prepare_user_carrier(address_space.process())?;
         let child = Self {

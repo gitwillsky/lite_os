@@ -1,7 +1,4 @@
-use alloc::{
-    sync::Weak,
-    vec::Vec,
-};
+use alloc::{sync::Weak, vec::Vec};
 use core::net::Ipv4Addr;
 
 use smoltcp::{

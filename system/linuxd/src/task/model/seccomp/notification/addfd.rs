@@ -120,8 +120,7 @@ impl NotificationQueue {
         {
             return Err(error(errno::EINVAL));
         }
-        let caller =
-            crate::task::current_task().expect("seccomp listener requires task context");
+        let caller = crate::task::current_task().expect("seccomp listener requires task context");
         let file = caller.fd_get(source).ok_or_else(|| error(errno::EBADF))?;
         let command = Arc::try_new(AddFd {
             file,

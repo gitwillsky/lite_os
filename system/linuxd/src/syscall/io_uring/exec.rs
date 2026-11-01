@@ -16,7 +16,6 @@ use super::{
     worker,
 };
 use crate::{
-    task::TaskControlBlock,
     file::{OpenFileDescription, OpenFileKind},
     fs::{O_NONBLOCK, chardev::UringCommand},
     io_uring::Ring,
@@ -32,6 +31,7 @@ use crate::{
         },
         user_iovec::UserIoVec,
     },
+    task::TaskControlBlock,
 };
 
 const POLLIN: i16 = 0x001;

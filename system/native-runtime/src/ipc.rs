@@ -51,7 +51,12 @@ impl Channel {
             )
         })?;
         // SAFETY: 内核刚创建的句柄由调用者独占。
-        unsafe { Ok((Self(Handle::from_raw(first)), Self(Handle::from_raw(second)))) }
+        unsafe {
+            Ok((
+                Self(Handle::from_raw(first)),
+                Self(Handle::from_raw(second)),
+            ))
+        }
     }
 
     /// 写入消息；`handles` 无论成功与否都被消费。
@@ -65,7 +70,13 @@ impl Channel {
         check(unsafe {
             invoke(
                 call::CHANNEL_WRITE,
-                &[self.raw() as usize, bytes.as_ptr() as usize, bytes.len(), raw.as_ptr() as usize, raw.len()],
+                &[
+                    self.raw() as usize,
+                    bytes.as_ptr() as usize,
+                    bytes.len(),
+                    raw.as_ptr() as usize,
+                    raw.len(),
+                ],
             )
         })
     }
@@ -95,7 +106,11 @@ impl Channel {
                 ],
             )
         };
-        if status == native_abi::OK { Ok(actual) } else { Err((status, actual)) }
+        if status == native_abi::OK {
+            Ok(actual)
+        } else {
+            Err((status, actual))
+        }
     }
 
     /// 读取队首消息，按需扩大缓冲区。
@@ -134,7 +149,10 @@ impl Channel {
         loop {
             match self.read() {
                 Err(native_abi::ERR_SHOULD_WAIT) => {
-                    self.wait_one(native_abi::signals::READABLE | native_abi::signals::PEER_CLOSED, deadline)?;
+                    self.wait_one(
+                        native_abi::signals::READABLE | native_abi::signals::PEER_CLOSED,
+                        deadline,
+                    )?;
                 }
                 result => return result,
             }
@@ -146,10 +164,17 @@ impl Channel {
     /// # Errors
     ///
     /// 见 `CHANNEL_CALL`。
-    pub fn call(&self, request: &[u8], handles: Vec<Handle>, reply_capacity: usize, deadline: i64) -> Result<Message, Status> {
+    pub fn call(
+        &self,
+        request: &[u8],
+        handles: Vec<Handle>,
+        reply_capacity: usize,
+        deadline: i64,
+    ) -> Result<Message, Status> {
         let raw: Vec<native_abi::Handle> = handles.into_iter().map(Handle::into_raw).collect();
         let mut reply = alloc::vec![0u8; reply_capacity];
-        let mut reply_handles = alloc::vec![native_abi::HANDLE_INVALID; native_abi::CHANNEL_MAX_HANDLES];
+        let mut reply_handles =
+            alloc::vec![native_abi::HANDLE_INVALID; native_abi::CHANNEL_MAX_HANDLES];
         let arguments = ChannelCallArgs {
             write_bytes: request.as_ptr() as u64,
             write_handles: raw.as_ptr() as u64,
@@ -222,7 +247,11 @@ impl Port {
         check(unsafe {
             invoke(
                 call::PORT_WAIT,
-                &[self.raw() as usize, deadline as usize, (&raw mut packet) as usize],
+                &[
+                    self.raw() as usize,
+                    deadline as usize,
+                    (&raw mut packet) as usize,
+                ],
             )
         })?;
         Ok(packet)
@@ -235,6 +264,11 @@ impl Port {
     /// 缺少 `WRITE` 或内存不足。
     pub fn queue(&self, key: u64, payload: u64) -> Result<(), Status> {
         // SAFETY: 无指针参数。
-        check(unsafe { invoke(call::PORT_QUEUE, &[self.raw() as usize, key as usize, payload as usize]) })
+        check(unsafe {
+            invoke(
+                call::PORT_QUEUE,
+                &[self.raw() as usize, key as usize, payload as usize],
+            )
+        })
     }
 }

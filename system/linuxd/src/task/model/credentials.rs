@@ -28,9 +28,7 @@ const UNCHANGED_ID: u32 = u32::MAX;
 
 impl super::Process {
     /// 实际原 leader credential owner 的 UserNS；组信号投影不借 worker 的凭据。
-    pub(in crate::task) fn leader_user_namespace(
-        &self,
-    ) -> Arc<crate::namespace::UserNamespace> {
+    pub(in crate::task) fn leader_user_namespace(&self) -> Arc<crate::namespace::UserNamespace> {
         self.leader_credentials.lock().lock().user_namespace.clone()
     }
 }
@@ -287,10 +285,7 @@ impl TaskControlBlock {
     }
 
     /// native REALCREDS ptrace credential policy；READ/ATTACH 调用方串行化目标的完整 exec commit。
-    pub(in crate::task) fn may_inspect_thread_real(
-        &self,
-        target: &TaskControlBlock,
-    ) -> bool {
+    pub(in crate::task) fn may_inspect_thread_real(&self, target: &TaskControlBlock) -> bool {
         let credentials = target.credential_snapshot();
         let mm = target.memory_inspection();
         self.may_inspect_real_identity(target.tgid(), credentials, mm)
@@ -340,9 +335,8 @@ impl TaskControlBlock {
         update: impl FnOnce(&mut Credentials) -> Result<u32, CredentialUpdateError>,
     ) -> Result<u32, CredentialUpdateError> {
         let mm = self.mm_snapshot(); // 不带 creation/graph/credential guard 取得 mmget。
-        let (result, retired) = crate::task::process_table::with_credential_transition(
-            self,
-            |transition| {
+        let (result, retired) =
+            crate::task::process_table::with_credential_transition(self, |transition| {
                 let mut live = self.thread().credentials.lock();
                 let mut next = live.clone(); // 只 clone immutable group Arc，不分配。
                 let result = update(&mut next)?;
@@ -353,8 +347,7 @@ impl TaskControlBlock {
                     transition.clear_parent_death();
                 }
                 Ok((result, core::mem::replace(&mut *live, next)))
-            },
-        )?;
+            })?;
         drop(retired);
         Ok(result)
     }
@@ -426,9 +419,7 @@ impl TaskControlBlock {
     }
 
     /// 同一锁下捕获当前 Thread 的 UID/GID/group tuple，供 procfs 投影。
-    pub(in crate::task) fn credential_snapshot(
-        &self,
-    ) -> crate::fs::ProcCredentialSnapshot {
+    pub(in crate::task) fn credential_snapshot(&self) -> crate::fs::ProcCredentialSnapshot {
         match &self.kind {
             super::TaskKind::Kernel(thread) => thread.credentials.snapshot(),
             super::TaskKind::User { .. } => self.thread().credentials.lock().snapshot(),
@@ -513,20 +504,19 @@ impl TaskControlBlock {
         readable: bool,
     ) {
         let mm = self.address_space();
-        let retired =
-            crate::task::process_table::with_credential_transition(self, |transition| {
-                let mut live = self.thread().credentials.lock();
-                // Linux setup_new_exec 用旧 current R/E，随后 commit_creds 仍可因 E/FS/newP
-                // 变化再次禁用。不能在 commit 后用最终 IDs 或 AT_SECURE 重新启用。
-                mm.set_dumpable(readable && prepared.provisional_dumpable);
-                if live.changes_security(&prepared.credentials) {
-                    mm.set_dumpable(false);
-                }
-                if prepared.clear_parent_death {
-                    transition.clear_parent_death();
-                }
-                core::mem::replace(&mut *live, prepared.credentials)
-            });
+        let retired = crate::task::process_table::with_credential_transition(self, |transition| {
+            let mut live = self.thread().credentials.lock();
+            // Linux setup_new_exec 用旧 current R/E，随后 commit_creds 仍可因 E/FS/newP
+            // 变化再次禁用。不能在 commit 后用最终 IDs 或 AT_SECURE 重新启用。
+            mm.set_dumpable(readable && prepared.provisional_dumpable);
+            if live.changes_security(&prepared.credentials) {
+                mm.set_dumpable(false);
+            }
+            if prepared.clear_parent_death {
+                transition.clear_parent_death();
+            }
+            core::mem::replace(&mut *live, prepared.credentials)
+        });
         drop(retired);
     }
 
@@ -867,9 +857,7 @@ impl super::Process {
         let credentials = leader.lock();
         (credentials.resuids(), credentials.user_namespace.clone())
     }
-    pub(in crate::task) fn process_credential_snapshot(
-        &self,
-    ) -> crate::fs::ProcCredentialSnapshot {
+    pub(in crate::task) fn process_credential_snapshot(&self) -> crate::fs::ProcCredentialSnapshot {
         let leader = self.leader_credentials.lock();
         leader.lock().snapshot()
     }

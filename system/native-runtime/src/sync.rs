@@ -89,7 +89,10 @@ impl<T: Default> Default for Mutex<T> {
 impl<T: ?Sized + core::fmt::Debug> core::fmt::Debug for Mutex<T> {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self.try_lock() {
-            Some(guard) => formatter.debug_struct("Mutex").field("value", &&*guard).finish(),
+            Some(guard) => formatter
+                .debug_struct("Mutex")
+                .field("value", &&*guard)
+                .finish(),
             None => formatter.write_str("Mutex { <locked> }"),
         }
     }
@@ -177,10 +180,12 @@ impl<T> Once<T> {
     /// 本线程执行的 `init` 返回的错误。
     pub fn try_call_once<E>(&self, init: impl FnOnce() -> Result<T, E>) -> Result<&T, E> {
         loop {
-            match self
-                .state
-                .compare_exchange(INCOMPLETE, RUNNING, Ordering::Acquire, Ordering::Acquire)
-            {
+            match self.state.compare_exchange(
+                INCOMPLETE,
+                RUNNING,
+                Ordering::Acquire,
+                Ordering::Acquire,
+            ) {
                 Ok(_) => {
                     let value = match init() {
                         Ok(value) => value,

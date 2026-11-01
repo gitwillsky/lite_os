@@ -1,5 +1,5 @@
-use native_runtime::native_abi::PAGE_SIZE;
 use device_model::{DisplayError, VirglCommand, VirglTransferDirection};
+use native_runtime::native_abi::PAGE_SIZE;
 
 use super::{
     command::PreparedCommand,

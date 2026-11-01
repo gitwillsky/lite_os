@@ -1,12 +1,12 @@
 //! System V segment 的权限、实际 VMA nattch 与延迟销毁 owner；观察者 Arc 不计挂接。
 use super::shared_memory_creator::{CreatorMembership, RetiredCreator};
 use super::{IpcAccess, IpcError, IpcNamespace, IpcPermission};
+use crate::sync::Mutex;
 use crate::{
     memory::SharedMemoryBacking,
     namespace::{PidIdentity, UserNamespace},
 };
 use alloc::sync::Arc;
-use crate::sync::Mutex;
 use syscall_abi::{
     capability::Capability,
     ipc::{SHM_DEST, SHM_LOCKED},

@@ -1,6 +1,6 @@
+use crate::sync::Mutex;
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicUsize, Ordering};
-use crate::sync::Mutex;
 
 mod policy;
 use policy::{
@@ -21,10 +21,7 @@ use crate::io_completion::{
         ReserveOrWait,
     },
 };
-use crate::{
-    interrupt::InterruptError, interrupt::InterruptHandler,
-    interrupt::InterruptVector,
-};
+use crate::{interrupt::InterruptError, interrupt::InterruptHandler, interrupt::InterruptVector};
 
 const VIRTIO_BLK_T_IN: u32 = 0;
 const VIRTIO_BLK_T_OUT: u32 = 1;

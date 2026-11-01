@@ -8,8 +8,8 @@ use alloc::sync::Arc;
 use core::mem::MaybeUninit;
 
 use crate::{
-    EntropyError, EntropySource, GraphicsDevice, InputDevice, PcmOutput, PortDevice, UsbDevice,
-    AppendOnlyRegistry,
+    AppendOnlyRegistry, EntropyError, EntropySource, GraphicsDevice, InputDevice, PcmOutput,
+    PortDevice, UsbDevice,
 };
 
 // OWNER: display adapter 的唯一发布点；IRQ handler 与 DRM 持有同一 Arc，缺失时 scanout backing
@@ -63,9 +63,7 @@ pub fn display_device(index: usize) -> Option<Arc<dyn GraphicsDevice>> {
 /// # Errors
 ///
 /// 注册表扩容失败时原样返回 adapter。
-pub fn register_input_device(
-    device: Arc<dyn InputDevice>,
-) -> Result<usize, Arc<dyn InputDevice>> {
+pub fn register_input_device(device: Arc<dyn InputDevice>) -> Result<usize, Arc<dyn InputDevice>> {
     INPUT_DEVICES.register(device)
 }
 
@@ -118,9 +116,7 @@ pub fn fill_entropy(bytes: &mut [MaybeUninit<u8>]) -> Result<(), EntropyError> {
 /// # Errors
 ///
 /// 注册表扩容失败时原样返回 adapter。
-pub fn register_port_device(
-    device: Arc<dyn PortDevice>,
-) -> Result<usize, Arc<dyn PortDevice>> {
+pub fn register_port_device(device: Arc<dyn PortDevice>) -> Result<usize, Arc<dyn PortDevice>> {
     PORT_DEVICES.register(device)
 }
 

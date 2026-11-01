@@ -34,7 +34,12 @@ impl Vmo {
     pub fn create(size: u64, options: u32) -> Result<Self, Status> {
         let mut out = native_abi::HANDLE_INVALID;
         // SAFETY: 输出位置有效。
-        let status = unsafe { invoke(call::VMO_CREATE, &[size as usize, options as usize, (&raw mut out) as usize]) };
+        let status = unsafe {
+            invoke(
+                call::VMO_CREATE,
+                &[size as usize, options as usize, (&raw mut out) as usize],
+            )
+        };
         new_handle(status, out).map(Self)
     }
 
@@ -66,7 +71,12 @@ impl Vmo {
         let status = unsafe {
             invoke(
                 call::VMO_CREATE_PHYSICAL,
-                &[resource.raw() as usize, physical as usize, size as usize, (&raw mut out) as usize],
+                &[
+                    resource.raw() as usize,
+                    physical as usize,
+                    size as usize,
+                    (&raw mut out) as usize,
+                ],
             )
         };
         new_handle(status, out).map(Self)
@@ -82,7 +92,12 @@ impl Vmo {
         check(unsafe {
             invoke(
                 call::VMO_READ,
-                &[self.raw() as usize, buffer.as_mut_ptr() as usize, offset as usize, buffer.len()],
+                &[
+                    self.raw() as usize,
+                    buffer.as_mut_ptr() as usize,
+                    offset as usize,
+                    buffer.len(),
+                ],
             )
         })
     }
@@ -97,7 +112,12 @@ impl Vmo {
         check(unsafe {
             invoke(
                 call::VMO_WRITE,
-                &[self.raw() as usize, buffer.as_ptr() as usize, offset as usize, buffer.len()],
+                &[
+                    self.raw() as usize,
+                    buffer.as_ptr() as usize,
+                    offset as usize,
+                    buffer.len(),
+                ],
             )
         })
     }
@@ -110,7 +130,12 @@ impl Vmo {
     pub fn size(&self) -> Result<u64, Status> {
         let mut size = 0u64;
         // SAFETY: 输出位置有效。
-        check(unsafe { invoke(call::VMO_GET_SIZE, &[self.raw() as usize, (&raw mut size) as usize]) })?;
+        check(unsafe {
+            invoke(
+                call::VMO_GET_SIZE,
+                &[self.raw() as usize, (&raw mut size) as usize],
+            )
+        })?;
         Ok(size)
     }
 
@@ -143,7 +168,12 @@ impl Vmo {
         check(unsafe {
             invoke(
                 call::VMO_OP_RANGE,
-                &[self.raw() as usize, op as usize, offset as usize, length as usize],
+                &[
+                    self.raw() as usize,
+                    op as usize,
+                    offset as usize,
+                    length as usize,
+                ],
             )
         })
     }
@@ -159,7 +189,13 @@ impl Vmo {
         let status = unsafe {
             invoke(
                 call::VMO_CREATE_CHILD,
-                &[self.raw() as usize, options as usize, offset as usize, size as usize, (&raw mut out) as usize],
+                &[
+                    self.raw() as usize,
+                    options as usize,
+                    offset as usize,
+                    size as usize,
+                    (&raw mut out) as usize,
+                ],
             )
         };
         new_handle(status, out).map(Self)
@@ -174,7 +210,14 @@ impl Vmar {
     /// # Errors
     ///
     /// 见 `VMAR_MAP`。
-    pub fn map(&self, options: u32, vmar_offset: usize, vmo: &Vmo, vmo_offset: u64, length: usize) -> Result<usize, Status> {
+    pub fn map(
+        &self,
+        options: u32,
+        vmar_offset: usize,
+        vmo: &Vmo,
+        vmo_offset: u64,
+        length: usize,
+    ) -> Result<usize, Status> {
         let mut address = 0u64;
         // SAFETY: 输出位置有效。
         check(unsafe {
@@ -215,7 +258,12 @@ impl Vmar {
     /// 权限超出映射上限或区间非法。
     pub fn protect(&self, options: u32, address: usize, length: usize) -> Result<(), Status> {
         // SAFETY: 无指针参数（区间由内核校验）。
-        check(unsafe { invoke(call::VMAR_PROTECT, &[self.raw() as usize, options as usize, address, length]) })
+        check(unsafe {
+            invoke(
+                call::VMAR_PROTECT,
+                &[self.raw() as usize, options as usize, address, length],
+            )
+        })
     }
 
     /// 分配子 VMAR，返回子 VMAR 与其基址。
@@ -223,7 +271,12 @@ impl Vmar {
     /// # Errors
     ///
     /// 没有足够空隙或区间冲突。
-    pub fn allocate(&self, options: u32, offset: usize, size: usize) -> Result<(Self, usize), Status> {
+    pub fn allocate(
+        &self,
+        options: u32,
+        offset: usize,
+        size: usize,
+    ) -> Result<(Self, usize), Status> {
         let mut out = native_abi::HANDLE_INVALID;
         let mut address = 0u64;
         // SAFETY: 输出位置有效。
@@ -282,7 +335,13 @@ impl Pager {
     /// # Errors
     ///
     /// 选项非法或内存不足。
-    pub fn create_vmo(&self, options: u32, port: &Port, key: u64, size: u64) -> Result<Vmo, Status> {
+    pub fn create_vmo(
+        &self,
+        options: u32,
+        port: &Port,
+        key: u64,
+        size: u64,
+    ) -> Result<Vmo, Status> {
         let mut out = native_abi::HANDLE_INVALID;
         // SAFETY: 输出位置有效。
         let status = unsafe {
@@ -306,7 +365,14 @@ impl Pager {
     /// # Errors
     ///
     /// 区间未对齐或越界。
-    pub fn supply_pages(&self, vmo: &Vmo, offset: u64, length: u64, aux: &Vmo, aux_offset: u64) -> Result<(), Status> {
+    pub fn supply_pages(
+        &self,
+        vmo: &Vmo,
+        offset: u64,
+        length: u64,
+        aux: &Vmo,
+        aux_offset: u64,
+    ) -> Result<(), Status> {
         // SAFETY: 无指针参数。
         check(unsafe {
             invoke(

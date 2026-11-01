@@ -45,9 +45,10 @@ impl ServiceThreadTarget {
 
     #[cfg(not(test))]
     fn park(&self, deadline_ns: Option<u64>) {
-        let deadline = deadline_ns.map_or(native_runtime::native_abi::DEADLINE_INFINITE, |deadline| {
-            i64::try_from(deadline).unwrap_or(i64::MAX)
-        });
+        let deadline = deadline_ns
+            .map_or(native_runtime::native_abi::DEADLINE_INFINITE, |deadline| {
+                i64::try_from(deadline).unwrap_or(i64::MAX)
+            });
         let _ = self.thread.park(deadline);
     }
 

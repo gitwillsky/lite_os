@@ -163,7 +163,9 @@ impl Executor {
             .lock()
             .timers
             .first_key_value()
-            .map_or(native_abi::DEADLINE_INFINITE, |(&(deadline, _), _)| deadline);
+            .map_or(native_abi::DEADLINE_INFINITE, |(&(deadline, _), _)| {
+                deadline
+            });
         if let Ok(packet) = self.port.wait(deadline) {
             self.dispatch(packet);
         }
@@ -178,7 +180,10 @@ impl Executor {
     }
 
     /// 运行直到 `future` 完成，期间也推进其他任务。
-    pub fn block_on<T: Send + 'static>(&'static self, future: impl Future<Output = T> + Send + 'static) -> T {
+    pub fn block_on<T: Send + 'static>(
+        &'static self,
+        future: impl Future<Output = T> + Send + 'static,
+    ) -> T {
         let result = Arc::new(Mutex::new(None));
         let slot = result.clone();
         self.spawn(async move {
@@ -262,7 +267,10 @@ impl Future for OnSignals<'_> {
             Some(key) => key,
             None => {
                 let key = self.executor.allocate_key(true);
-                if let Err(status) = self.handle.wait_async(&self.executor.port, key, self.signals) {
+                if let Err(status) = self
+                    .handle
+                    .wait_async(&self.executor.port, key, self.signals)
+                {
                     self.executor.state.lock().slots.remove(&key);
                     return Poll::Ready(Err(status));
                 }
@@ -326,7 +334,11 @@ impl Future for NextPacket<'_> {
     type Output = PortPacket;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<PortPacket> {
-        match self.packets.executor.take_packet(self.packets.key, context.waker()) {
+        match self
+            .packets
+            .executor
+            .take_packet(self.packets.key, context.waker())
+        {
             Some(packet) => Poll::Ready(packet),
             None => Poll::Pending,
         }
@@ -346,7 +358,11 @@ impl Future for Sleep {
     fn poll(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
         if crate::system::monotonic() >= self.deadline {
             if let Some(id) = self.id.take() {
-                self.executor.state.lock().timers.remove(&(self.deadline, id));
+                self.executor
+                    .state
+                    .lock()
+                    .timers
+                    .remove(&(self.deadline, id));
             }
             return Poll::Ready(());
         }
@@ -367,7 +383,11 @@ impl Future for Sleep {
 impl Drop for Sleep {
     fn drop(&mut self) {
         if let Some(id) = self.id {
-            self.executor.state.lock().timers.remove(&(self.deadline, id));
+            self.executor
+                .state
+                .lock()
+                .timers
+                .remove(&(self.deadline, id));
         }
     }
 }

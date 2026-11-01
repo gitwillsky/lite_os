@@ -3,9 +3,9 @@ use super::{
     NamespaceAuthority, NamespaceError, PidIdentity, UserNamespace, UserResource,
     UserResourceCharge,
 };
-use fallible_tree::FallibleMap;
-use alloc::sync::{Arc, Weak};
 use crate::sync::Mutex;
+use alloc::sync::{Arc, Weak};
+use fallible_tree::FallibleMap;
 
 const RESERVED_PIDS: u32 = 300;
 pub(crate) const PID_MAX_LIMIT: u32 = 4 * 1024 * 1024;

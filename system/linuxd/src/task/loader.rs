@@ -64,7 +64,10 @@ impl LoadedExecutable {
             stack_limit,
             address_space_limit,
             data_limit,
-            self.execfn.rsplit(|&byte| byte == b'/').next().unwrap_or(&self.execfn),
+            self.execfn
+                .rsplit(|&byte| byte == b'/')
+                .next()
+                .unwrap_or(&self.execfn),
         )
     }
 
@@ -133,7 +136,9 @@ pub(super) struct MappedExecutable {
 }
 impl core::fmt::Debug for MappedExecutable {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.debug_struct("MappedExecutable").finish_non_exhaustive()
+        formatter
+            .debug_struct("MappedExecutable")
+            .finish_non_exhaustive()
     }
 }
 impl crate::memory::MappedFileOwner for MappedExecutable {}
@@ -315,9 +320,13 @@ fn source(
     let storage = match inode.open_backend(O_RDONLY, identity, authority) {
         Ok(crate::fs::InodeOpen::Storage(storage)) => storage,
         Ok(crate::fs::InodeOpen::Device(_)) => return Err(ProgramLoadError::NotRegularFile),
-        Err(crate::fs::InodeOpenError::Filesystem(error)) => return Err(ProgramLoadError::FileSystem(error)),
+        Err(crate::fs::InodeOpenError::Filesystem(error)) => {
+            return Err(ProgramLoadError::FileSystem(error));
+        }
         Err(crate::fs::InodeOpenError::Interrupted) => {
-            return Err(ProgramLoadError::FileSystem(FileSystemError::Errno(syscall_abi::errno::EINTR as u16)));
+            return Err(ProgramLoadError::FileSystem(FileSystemError::Errno(
+                syscall_abi::errno::EINTR as u16,
+            )));
         }
     };
     let file = Arc::try_new(MappedExecutable {

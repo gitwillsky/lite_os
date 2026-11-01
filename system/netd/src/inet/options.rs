@@ -282,10 +282,7 @@ impl InetSocket {
     }
 
     /// 从同一 operation/stack guard 查询真实值；不保存 socket façade 的 option 镜像。
-    pub(crate) fn option(
-        &self,
-        option: InternetOption,
-    ) -> Result<i32, SocketError> {
+    pub(crate) fn option(&self, option: InternetOption) -> Result<i32, SocketError> {
         let _operation = self.open_operation()?;
         let network = self.stack()?.lock()?;
         if let InternetOption::MaxSegment = option {

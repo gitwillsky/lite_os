@@ -3,8 +3,8 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use native_runtime::native_abi::{self, Status};
 use native_runtime::Channel;
+use native_runtime::native_abi::{self, Status};
 
 use crate::directory::{self, Announcement, Class};
 use crate::{Reader, Writer, call, serve, take_handle};
@@ -42,22 +42,32 @@ impl Milestone {
 /// # Errors
 ///
 /// channel、线程创建或目录写入失败。
-pub fn publish(directory: &Channel, advance: Arc<dyn Fn(Milestone) + Send + Sync>) -> Result<(), Status> {
+pub fn publish(
+    directory: &Channel,
+    advance: Arc<dyn Fn(Milestone) + Send + Sync>,
+) -> Result<(), Status> {
     let (client, server) = Channel::create()?;
     serve(
         server,
         1,
         b"boot-progress",
-        Arc::try_new(move |ordinal: u32, request: &mut Reader<'_>, _, _: &mut Writer| {
-            if ordinal != ADVANCE {
-                return Err(native_abi::ERR_NOT_SUPPORTED);
-            }
-            advance(Milestone::decode(request.u32()?)?);
-            Ok(Vec::new())
-        })
+        Arc::try_new(
+            move |ordinal: u32, request: &mut Reader<'_>, _, _: &mut Writer| {
+                if ordinal != ADVANCE {
+                    return Err(native_abi::ERR_NOT_SUPPORTED);
+                }
+                advance(Milestone::decode(request.u32()?)?);
+                Ok(Vec::new())
+            },
+        )
         .map_err(|_| native_abi::ERR_NO_MEMORY)?,
     )?;
-    directory::announce(directory, Class::Boot, &directory::description(), alloc::vec![client.into_handle()])
+    directory::announce(
+        directory,
+        Class::Boot,
+        &directory::description(),
+        alloc::vec![client.into_handle()],
+    )
 }
 
 /// 使用者端的进度通道。

@@ -1,8 +1,8 @@
 use alloc::vec::Vec;
 
 use crate::{
-    task::{CredentialUpdateError, current_task},
     syscall::errno,
+    task::{CredentialUpdateError, current_task},
 };
 
 /// 返回calling Thread 的 real/effective UID/GID。

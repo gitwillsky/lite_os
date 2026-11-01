@@ -46,15 +46,15 @@ use alloc::{sync::Arc, vec::Vec};
 use crate::{
     arch::context::UserContext,
     devices::tty::Terminal,
-    sync::{Mutex, TaskMutex, TaskMutexWaitPreparation},
-    task::{loader::LoadedExecutable, pid::ProcessId},
-    time::get_time_us,
     file::FileDescriptorTable,
     fs::vfs,
     memory::{
         ElfLoadError, FutexKey, MapPermission, MappingResourceLimits, MemoryError, MemorySet,
         PageFaultAccess, PageFaultOutcome, UserAccessError,
     },
+    sync::{Mutex, TaskMutex, TaskMutexWaitPreparation},
+    task::{loader::LoadedExecutable, pid::ProcessId},
+    time::get_time_us,
 };
 
 pub(in crate::task) use address_space::AddressSpace;
@@ -83,7 +83,9 @@ pub(crate) use resource_limits::{
     ResourceLimitError,
 };
 pub(in crate::task) use resource_limits::{RLIMIT_NICE, RLIMIT_SIGPENDING, cpu_limits_active};
-pub(in crate::task) use scheduling::{CpuAffinity, runnable_task_count, uninterruptible_task_count};
+pub(in crate::task) use scheduling::{
+    CpuAffinity, runnable_task_count, uninterruptible_task_count,
+};
 pub(crate) use scheduling::{RunState, Sched, SchedulingEntity, StopResume, WaitMembership};
 pub(super) use seccomp::{RetiredSecurity, ThreadSecurityOwner, ValidatedFilter};
 pub(crate) use seccomp::{SeccompDecision, SeccompError};
@@ -358,12 +360,17 @@ impl TaskControlBlock {
     }
 
     /// 取出已准备的承载线程（入队启动或 exec 交接）。
-    pub(crate) fn take_prepared_carrier(&self) -> Option<native_runtime::thread::PreparedThread<()>> {
+    pub(crate) fn take_prepared_carrier(
+        &self,
+    ) -> Option<native_runtime::thread::PreparedThread<()>> {
         self.execution.prepared_carrier.lock().take()
     }
 
     /// 安装 exec 为新地址空间准备的承载线程。
-    pub(in crate::task) fn set_prepared_carrier(&self, carrier: native_runtime::thread::PreparedThread<()>) {
+    pub(in crate::task) fn set_prepared_carrier(
+        &self,
+        carrier: native_runtime::thread::PreparedThread<()>,
+    ) {
         let previous = self.execution.prepared_carrier.lock().replace(carrier);
         assert!(previous.is_none(), "carrier prepared twice");
     }
@@ -459,8 +466,8 @@ impl TaskControlBlock {
             UserContext::new(entry_point, user_sp),
             crate::arch::fp::FpState::default(),
         );
-        let prepared_carrier =
-            crate::trap::prepare_user_carrier(address_space.process()).map_err(ElfLoadError::from)?;
+        let prepared_carrier = crate::trap::prepare_user_carrier(address_space.process())
+            .map_err(ElfLoadError::from)?;
         let memory_cleanup_wait =
             Some(TaskMutexWaitPreparation::prepare().map_err(|_| ElfLoadError::OutOfMemory)?);
         let retired_runtime = try_elf_arc(Mutex::new(usage_accounting::CpuUsage::default()))?;
@@ -599,7 +606,9 @@ impl TaskControlBlock {
         let scheduling = SchedulingEntity::try_new(
             policy,
             cpu_affinity,
-            self.scheduling.last_cpu.load(core::sync::atomic::Ordering::Relaxed),
+            self.scheduling
+                .last_cpu
+                .load(core::sync::atomic::Ordering::Relaxed),
         )
         .map_err(|_| MemoryError::OutOfMemory)?;
         let thread_io =
@@ -609,7 +618,10 @@ impl TaskControlBlock {
         let memory_cleanup_wait =
             Some(TaskMutexWaitPreparation::prepare().map_err(|_| MemoryError::OutOfMemory)?);
         let mut child_trap = self.snapshot_user_context_for_clone();
-        child_trap.prepare_clone((parameters.stack != 0).then_some(parameters.stack), parameters.tls);
+        child_trap.prepare_clone(
+            (parameters.stack != 0).then_some(parameters.stack),
+            parameters.tls,
+        );
         // clone 在调用线程上执行：此刻硬件浮点寄存器就是父线程的状态，子线程继承它。
         let user_context = UserContextCell::new(child_trap, crate::arch::fp::capture());
         let prepared_carrier = crate::trap::prepare_user_carrier(address_space.process())?;
@@ -669,10 +681,7 @@ impl TaskControlBlock {
     /// # Returns
     ///
     /// 修改前的 signal；调用者在 process-graph lock 内完成 parent-exit 排序。
-    pub(in crate::task) fn parent_death_signal(
-        &self,
-        replacement: Option<usize>,
-    ) -> usize {
+    pub(in crate::task) fn parent_death_signal(&self, replacement: Option<usize>) -> usize {
         let mut state = self.thread().parent_death.lock();
         let previous = state.signal;
         if let Some(signal) = replacement {

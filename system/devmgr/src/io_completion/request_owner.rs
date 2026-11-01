@@ -1,7 +1,7 @@
 //! Fixed driver request slots、descriptor identity 与 capacity wait 的共同 owner。
 
-use alloc::{sync::Arc, vec::Vec};
 use crate::sync::Mutex;
+use alloc::{sync::Arc, vec::Vec};
 
 use crate::io_completion::{IoCompletion, IoDevice, IoWaitKey, IoWaitTarget};
 use fallible_tree::{FallibleMap, VacantEntry};
@@ -508,7 +508,8 @@ mod tests {
             panic!("full owner must prepare wait")
         };
         let key = owner.capacity_key(ticket);
-        let prepared = PreparedCapacityWait::try_new(key, super::super::current_wait_target()).unwrap();
+        let prepared =
+            PreparedCapacityWait::try_new(key, super::super::current_wait_target()).unwrap();
         let CommitOrWait::Waiting(waiter) = owner.commit_wait_or_reserve(prepared) else {
             panic!("capacity unexpectedly appeared")
         };

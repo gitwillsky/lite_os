@@ -1,9 +1,9 @@
 //! xHCI DMA 存储；controller 的永久注册引用保活它，reset/Disable Slot 完成之前不得释放。
 use super::{Error, Result};
-use native_runtime::native_abi::PAGE_SIZE;
-use device_model::DeviceBacking;
 use core::sync::atomic::Ordering;
+use device_model::DeviceBacking;
 use native_runtime::Bti;
+use native_runtime::native_abi::PAGE_SIZE;
 
 pub(super) struct Dma {
     backing: DeviceBacking,
@@ -13,8 +13,7 @@ pub(super) struct Dma {
 impl Dma {
     /// 分配 `pages` 页零内容、设备地址连续的存储并以控制器的 `bti` 固定。
     pub(super) fn allocate(pages: usize, bti: &Bti) -> Result<Self> {
-        let backing = DeviceBacking::try_allocate_contiguous(pages, bti)
-            .ok_or(Error::Memory)?;
+        let backing = DeviceBacking::try_allocate_contiguous(pages, bti).ok_or(Error::Memory)?;
         let [extent] = backing.pin(bti).map_err(|_| Error::Memory)? else {
             return Err(Error::Memory);
         };

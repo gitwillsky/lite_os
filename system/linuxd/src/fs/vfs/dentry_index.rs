@@ -3,9 +3,9 @@ use super::{
     FileSystemError,
     dentry::{Dentry, FileName},
 };
-use fallible_tree::FallibleMap;
-use alloc::sync::{Arc, Weak};
 use crate::sync::Mutex;
+use alloc::sync::{Arc, Weak};
+use fallible_tree::FallibleMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) struct DentryKey {

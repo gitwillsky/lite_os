@@ -1,8 +1,11 @@
 //! PRIME UAPI transaction：fd/handle 在 copyout 前不可见；同一个 dma-buf 在同一 OFD 只对应一个 handle。
 use super::{copy_in, copy_out, drm_errno, read_u32, wait_scanout, write_u32};
-use crate::{devices::drm::{DrmFile, graphics::VirglAttachment}, fs::chardev::UserMemory};
-use fallible_tree::FallibleMap;
+use crate::{
+    devices::drm::{DrmFile, graphics::VirglAttachment},
+    fs::chardev::UserMemory,
+};
 use alloc::sync::Arc;
+use fallible_tree::FallibleMap;
 use syscall_abi::errno;
 
 pub(super) fn handle_to_fd(

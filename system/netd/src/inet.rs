@@ -4,13 +4,13 @@ use alloc::{
 };
 use core::net::Ipv4Addr;
 
+use crate::sync::Mutex;
 use smoltcp::{
     iface::{SocketHandle, SocketSet},
     socket::AnySocket,
     time::Instant,
     wire::IpAddress,
 };
-use crate::sync::Mutex;
 
 use crate::{namespace::Namespace, packet, receive::ReceiveBuffer, time::get_time_us};
 use fallible_tree::FallibleMap;
@@ -362,7 +362,9 @@ impl InetSocket {
         Ok(endpoint)
     }
 
-    fn open_operation(&self) -> Result<crate::sync::MutexGuard<'_, Option<InetEndpoint>>, SocketError> {
+    fn open_operation(
+        &self,
+    ) -> Result<crate::sync::MutexGuard<'_, Option<InetEndpoint>>, SocketError> {
         let operation = self.operation.lock();
         if operation.is_none() {
             return Err(SocketError::NotConnected);

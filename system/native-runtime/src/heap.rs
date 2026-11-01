@@ -2,8 +2,8 @@
 //!
 //! 系统服务目标使用 [`allocator`] 的分级分配器，宿主测试由宿主拥有分配和 panic。
 
-use crate::sync::Once;
 use crate::Vmar;
+use crate::sync::Once;
 
 #[cfg(target_os = "none")]
 mod allocator;

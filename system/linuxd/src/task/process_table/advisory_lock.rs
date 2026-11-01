@@ -46,11 +46,7 @@ fn wake_advisory_lock_waiters(key: AdvisoryLockKey) -> usize {
         count += 1;
         if let Some(claimed) = wake.claimed {
             assert!(matches!(claimed.kind, IndexedWaitKind::AdvisoryLock));
-            crate::task::processor::wake_flock_task(
-                claimed.task,
-                claimed.id,
-                WaitResult::Woken,
-            );
+            crate::task::processor::wake_flock_task(claimed.task, claimed.id, WaitResult::Woken);
         }
     }
     count

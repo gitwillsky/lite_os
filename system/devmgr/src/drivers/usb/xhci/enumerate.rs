@@ -309,8 +309,10 @@ impl Control<'_> {
             .ok_or(Error::Disconnected)?
             .audio = Some(audio);
         // 热插拔：沿设备目录发布 USB 连接与它的 PCM 输出，使用者在枚举完成之后同样接收。
-        device_protocol::usb::publish(crate::handles::directory(), output.clone()).map_err(|_| Error::Memory)?;
-        device_protocol::pcm::publish(crate::handles::directory(), output).map_err(|_| Error::Memory)?;
+        device_protocol::usb::publish(crate::handles::directory(), output.clone())
+            .map_err(|_| Error::Memory)?;
+        device_protocol::pcm::publish(crate::handles::directory(), output)
+            .map_err(|_| Error::Memory)?;
         crate::info!(
             "USB Audio 2 playback published: port={}, slot={}",
             port,

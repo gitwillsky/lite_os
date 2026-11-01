@@ -142,8 +142,7 @@ impl Logger {
     }
 
     fn oldest_sequence(&self) -> u64 {
-        self.next_sequence
-            .saturating_sub(RECORD_CAPACITY as u64)
+        self.next_sequence.saturating_sub(RECORD_CAPACITY as u64)
     }
 
     /// 发布一条系统服务写入的记录；消息直接写入环槽位（调用者可能在中断栈上）。

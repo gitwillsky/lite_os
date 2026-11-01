@@ -16,7 +16,8 @@ const DEVICE_NAME: &[u8] = b"ttyS0";
 const READ_BATCH: usize = 64;
 
 fn write(bytes: &[u8]) -> Result<(), ConsoleError> {
-    native_runtime::system::serial_write(crate::handles::resource(), bytes).map_err(|_| ConsoleError)
+    native_runtime::system::serial_write(crate::handles::resource(), bytes)
+        .map_err(|_| ConsoleError)
 }
 
 /// 注册串口 console 并启动输入线程。
@@ -29,7 +30,11 @@ pub(crate) fn register_console() {
     let reader = native_runtime::thread::spawn(b"serial-rx", || {
         let mut bytes = [0u8; READ_BATCH];
         loop {
-            match native_runtime::system::serial_read(crate::handles::resource(), &mut bytes, DEADLINE_INFINITE) {
+            match native_runtime::system::serial_read(
+                crate::handles::resource(),
+                &mut bytes,
+                DEADLINE_INFINITE,
+            ) {
                 Ok(0) => {}
                 Ok(count) => {
                     console::publish_received(&bytes[..count]);

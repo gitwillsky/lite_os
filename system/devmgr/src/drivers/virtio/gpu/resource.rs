@@ -1,8 +1,8 @@
 use alloc::sync::Arc;
 
-use native_runtime::native_abi::PAGE_SIZE;
 use device_model::DeviceBacking;
 use device_model::{DisplayError, DisplayMode};
+use native_runtime::native_abi::PAGE_SIZE;
 
 use super::{
     VirtIOGpuDevice,

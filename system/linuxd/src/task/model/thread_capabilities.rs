@@ -29,9 +29,7 @@ impl TaskControlBlock {
         self.thread().credentials.lock().capabilities.snapshot()
     }
     /// Process 与 graph 只读共享同一 retargetable leader alias；不保活 TCB/mm/files。
-    pub(in crate::task) fn leader_credentials_handle(
-        &self,
-    ) -> super::LeaderCredentialsHandle {
+    pub(in crate::task) fn leader_credentials_handle(&self) -> super::LeaderCredentialsHandle {
         self.process().leader_credentials.clone()
     }
     /// 只更新 calling Thread；capset 校验全部成功后一次提交。

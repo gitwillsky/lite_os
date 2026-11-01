@@ -1,9 +1,9 @@
 //! Linux native64 shm UAPI；对象、挂接计数与映射生命周期不在 codec 中维护。
 use super::{encode_permission, ipc_error};
 use crate::{
-    task::current_task,
     ipc::IpcError,
     memory::{MapPermission, MemoryError, PAGE_SIZE},
+    task::current_task,
 };
 use syscall_abi::{errno, ipc::*};
 

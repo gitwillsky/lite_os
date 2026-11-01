@@ -42,7 +42,9 @@ impl ThreadOwner for crate::object::Thread {
         };
         match super::dispatch(&call, request.number) {
             Outcome::Return(status) => {
-                thread.with_user_context(|context| context.set_syscall_result(status as isize as usize));
+                thread.with_user_context(|context| {
+                    context.set_syscall_result(status as isize as usize)
+                });
                 Disposition::Continue
             }
             Outcome::Preserve => Disposition::Continue,
@@ -53,7 +55,9 @@ impl ThreadOwner for crate::object::Thread {
     fn exception(self: Arc<Self>, thread: &Arc<Thread>, exception: UserException) -> Disposition {
         // 缺页先由地址空间解析；解析失败的原因随未处理异常一并记录。
         let fault = match exception {
-            UserException::PageFault { address, access, .. } => thread
+            UserException::PageFault {
+                address, access, ..
+            } => thread
                 .address_space()
                 .map(|space| space.fault(address, access)),
             _ => None,
@@ -134,7 +138,11 @@ fn continue_unless(written: bool) -> Disposition {
     }
 }
 
-fn report(thread: &Arc<Thread>, owner: &crate::object::Thread, exception: UserException) -> ExceptionReport {
+fn report(
+    thread: &Arc<Thread>,
+    owner: &crate::object::Thread,
+    exception: UserException,
+) -> ExceptionReport {
     use native_abi::exception as kind;
     let (kind, access, address, syndrome) = match exception {
         UserException::PageFault {
@@ -151,7 +159,9 @@ fn report(thread: &Arc<Thread>, owner: &crate::object::Thread, exception: UserEx
             address,
             syndrome,
         ),
-        UserException::AccessFault { address, syndrome } => (kind::ACCESS_FAULT, 0, address, syndrome),
+        UserException::AccessFault { address, syndrome } => {
+            (kind::ACCESS_FAULT, 0, address, syndrome)
+        }
         UserException::Alignment { address, syndrome } => (kind::ALIGNMENT, 0, address, syndrome),
         UserException::IllegalInstruction { pc } => (kind::ILLEGAL_INSTRUCTION, 0, pc, 0),
         UserException::Breakpoint { pc } => (kind::BREAKPOINT, 0, pc, 0),

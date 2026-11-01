@@ -1,19 +1,19 @@
-use alloc::{sync::Arc, vec::Vec};
 use crate::sync::Mutex;
+use alloc::{sync::Arc, vec::Vec};
 use native_runtime::sync::Once;
 
-use native_runtime::native_abi::PAGE_SIZE;
 use device_model::DeviceBacking;
+use native_runtime::native_abi::PAGE_SIZE;
 
 use super::{
     VIRTIO_CONFIG_S_DRIVER_OK, VIRTIO_CONFIG_S_FEATURES_OK, VIRTIO_F_VERSION_1,
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
     queue::{DmaBuffer, DmaSlice, VirtQueue, VirtQueueError},
 };
-use device_model::{CursorCommand, DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate, GraphicsDevice, VirglCapsetInfo, VirglCommand};
-use crate::{
-    interrupt::InterruptError, interrupt::InterruptHandler,
-    interrupt::InterruptVector,
+use crate::{interrupt::InterruptError, interrupt::InterruptHandler, interrupt::InterruptVector};
+use device_model::{
+    CursorCommand, DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate,
+    GraphicsDevice, VirglCapsetInfo, VirglCommand,
 };
 
 mod wire;
@@ -268,7 +268,10 @@ impl VirtIOGpuDevice {
             .commands
             .idle_index()
             .ok_or(DisplayError::WouldBlock)?;
-        let prepared = command.prepare(control.commands.request_mut(slot).as_mut_slice(), self.device.bti())?;
+        let prepared = command.prepare(
+            control.commands.request_mut(slot).as_mut_slice(),
+            self.device.bti(),
+        )?;
         self.publish_prepared(control, slot, prepared, operation_fence)
     }
 
@@ -758,8 +761,11 @@ impl GraphicsDevice for VirtIOGpuDevice {
             .commands
             .idle_index()
             .ok_or(DisplayError::WouldBlock)?;
-        let prepared =
-            graphics_command::prepare(command, control.commands.request_mut(slot).as_mut_slice(), self.device.bti())?;
+        let prepared = graphics_command::prepare(
+            command,
+            control.commands.request_mut(slot).as_mut_slice(),
+            self.device.bti(),
+        )?;
         self.publish_prepared(&mut control, slot, prepared, None)
     }
 

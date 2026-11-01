@@ -1,9 +1,9 @@
 //! proc registration 拥有 mode/UID/GID；live inode 只另拥有自己的时间，不复制注册属性。
 use super::{FileSystemError, InodeMetadata, ProcNode};
 use crate::fs::{OwnerModeChange, inode_times::TimeOwner, permission::OwnerModeState};
-use alloc::{sync::Arc, vec::Vec};
 use crate::sync::Mutex;
-use native_runtime::sync::Once;
+use crate::sync::Once;
+use alloc::{sync::Arc, vec::Vec};
 
 type Owner = Arc<Mutex<OwnerModeState>>;
 // OWNER: generic proc_dir_entry 属性随注册而存在，跨挂载/最后 inode close 不丢 chmod/chown。

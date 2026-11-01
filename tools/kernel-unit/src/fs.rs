@@ -314,9 +314,6 @@ pub(crate) mod tmpfs_options;
 #[path = "../../../system/linuxd/src/fs/tmpfs/directory.rs"]
 pub(crate) mod tmpfs_directory;
 
-#[path = "../../../tools/source-view/ext4d/ext4/ext4/ext4.rs"]
-pub(crate) mod ext4;
-
 /// 与 kernel `fs::SpawnKernelThread` 相同的注入签名；host 测试不创建内核线程。
 #[allow(dead_code)]
 pub(crate) type SpawnKernelThread =

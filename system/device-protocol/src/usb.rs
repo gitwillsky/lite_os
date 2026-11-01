@@ -5,8 +5,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use device_model::{UsbDevice, UsbIdentity, UsbRemoveError};
-use native_runtime::native_abi::{self, Status};
 use native_runtime::Channel;
+use native_runtime::native_abi::{self, Status};
 
 use crate::directory::{self, Announcement, Class};
 use crate::{Reader, Writer, call, serve, take_handle};
@@ -35,22 +35,29 @@ pub fn publish(directory: &Channel, device: Arc<dyn UsbDevice>) -> Result<(), St
         server,
         1,
         b"usb-server",
-        Arc::try_new(move |ordinal: u32, _: &mut Reader<'_>, _, reply: &mut Writer| {
-            match ordinal {
-                CONNECTED => {
-                    reply.bool(device.connected());
+        Arc::try_new(
+            move |ordinal: u32, _: &mut Reader<'_>, _, reply: &mut Writer| {
+                match ordinal {
+                    CONNECTED => {
+                        reply.bool(device.connected());
+                    }
+                    REMOVE => device.remove().map_err(|error| match error {
+                        UsbRemoveError::Disconnected => ERROR_DISCONNECTED,
+                        UsbRemoveError::Device => native_abi::ERR_IO,
+                    })?,
+                    _ => return Err(native_abi::ERR_NOT_SUPPORTED),
                 }
-                REMOVE => device.remove().map_err(|error| match error {
-                    UsbRemoveError::Disconnected => ERROR_DISCONNECTED,
-                    UsbRemoveError::Device => native_abi::ERR_IO,
-                })?,
-                _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-            }
-            Ok(Vec::new())
-        })
+                Ok(Vec::new())
+            },
+        )
         .map_err(|_| native_abi::ERR_NO_MEMORY)?,
     )?;
-    directory::announce(directory, Class::Usb, &description, alloc::vec![client.into_handle()])
+    directory::announce(
+        directory,
+        Class::Usb,
+        &description,
+        alloc::vec![client.into_handle()],
+    )
 }
 
 /// 使用者端的远端 USB 设备。
@@ -74,8 +81,14 @@ pub fn connect(mut announcement: Announcement) -> Result<Arc<RemoteUsb>, Status>
         vendor: reader.u16()?,
         product: reader.u16()?,
     };
-    let name = String::from_utf8(reader.bytes()?.to_vec()).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-    Arc::try_new(RemoteUsb { channel, identity, name }).map_err(|_| native_abi::ERR_NO_MEMORY)
+    let name =
+        String::from_utf8(reader.bytes()?.to_vec()).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+    Arc::try_new(RemoteUsb {
+        channel,
+        identity,
+        name,
+    })
+    .map_err(|_| native_abi::ERR_NO_MEMORY)
 }
 
 impl UsbDevice for RemoteUsb {

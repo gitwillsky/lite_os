@@ -9,9 +9,9 @@ use super::{
     VirtIOBlockDevice, VirtIOConsoleDevice, VirtIOGpuDevice, VirtIOInputDevice,
     VirtIONetworkDevice, VirtIORngDevice, VirtIOSoundDevice, pci_discovery,
 };
-use mmio::MmioBus;
-use device_model::{BootFramebuffer, DisplayDevice, InputDevice};
 use crate::platform::{VirtioMmioTransport, map_device_window, register_device_interrupt};
+use device_model::{BootFramebuffer, DisplayDevice, InputDevice};
+use mmio::MmioBus;
 
 /// VirtIO 1.2 §5 device ID。
 const NETWORK: u32 = 1;
@@ -95,8 +95,8 @@ fn bind_pci_console() {
         function.device_id, CONSOLE,
         "PCI transport returned a non-console device"
     );
-    let device =
-        VirtIOConsoleDevice::from_pci(function.transport, function.bti).expect("virtio-console PCI init failed");
+    let device = VirtIOConsoleDevice::from_pci(function.transport, function.bti)
+        .expect("virtio-console PCI init failed");
     publish_console(device, function.interrupt);
     info!("VirtIO console PCI transport on IRQ {}", function.interrupt);
 }

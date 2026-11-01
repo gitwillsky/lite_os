@@ -222,10 +222,7 @@ impl super::Process {
         self.cpu_limit_active.get()
     }
 
-    pub(in crate::task) fn resource_limit(
-        &self,
-        resource: usize,
-    ) -> Option<ResourceLimit> {
+    pub(in crate::task) fn resource_limit(&self, resource: usize) -> Option<ResourceLimit> {
         self.resource_limits.lock().get(resource)
     }
     pub(in crate::task) fn replace_resource_limit(
@@ -263,7 +260,8 @@ pub(in crate::task) struct CpuLimitActivity(core::sync::atomic::AtomicBool);
 
 // OWNER: `CpuLimitActivity` 为 true 的存活 Process 数；只由 `CpuLimitActivity` 修改。
 // 缺失时 deferred 线程无法判断是否需要周期采样：要么永远空转唤醒，要么漏掉 RLIMIT_CPU。
-static CPU_LIMITED_PROCESSES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+static CPU_LIMITED_PROCESSES: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
 
 impl CpuLimitActivity {
     pub(in crate::task) fn new(active: bool) -> Self {

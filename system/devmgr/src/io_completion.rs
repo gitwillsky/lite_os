@@ -1,10 +1,10 @@
 //! 驱动 I/O 请求完成与等待者之间的唯一握手协议，以及经完成线程分派的 completion 源。
 
 use crate::sync::WaitCompletion;
-use native_runtime::sync::Once;
-use core::sync::atomic::AtomicUsize;
 use alloc::sync::Arc;
+use core::sync::atomic::AtomicUsize;
 use core::sync::atomic::{AtomicU32, Ordering};
+use native_runtime::sync::Once;
 
 pub(crate) mod request_owner;
 

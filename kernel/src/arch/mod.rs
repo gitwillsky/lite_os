@@ -92,8 +92,7 @@ pub(crate) mod interrupt {
     pub(crate) use super::selected::interrupt::{
         LocalInterruptState, clear_software, disable_for_fail_stop, disable_for_transfer,
         disable_local, disable_timer_source, enable_scheduler_interrupts, enable_timer_source,
-        restore_local, wait_for_interrupt as wait,
-        wait_with_local_irq_masked,
+        restore_local, wait_for_interrupt as wait, wait_with_local_irq_masked,
     };
     #[cfg(target_arch = "aarch64")]
     pub(crate) use super::selected::interrupt::{SOFTWARE_SGI, send_software_sgi};
@@ -108,8 +107,8 @@ pub(crate) mod backtrace {
 /// Kernel/user execution context selected at compile time.
 pub(crate) mod context {
     pub(crate) use super::selected::{
-        KERNEL_STACK_CONTEXT_RESERVE, KernelContext, KernelResume,
-        USER_CONTEXT_PLACEMENT, UserContext, inspect_illegal_instruction, switch_kernel_context,
+        KERNEL_STACK_CONTEXT_RESERVE, KernelContext, KernelResume, USER_CONTEXT_PLACEMENT,
+        UserContext, inspect_illegal_instruction, switch_kernel_context,
     };
 }
 
@@ -133,13 +132,12 @@ pub(crate) mod mmu {
     pub(crate) use super::selected::{
         AddressSpaceKind, AddressSpaceToken, ArchitecturePageTable, ArchitecturePageTableEntry,
         KERNEL_STACK_REGION_START, KERNEL_STACK_REGION_TOP, KernelTrapToken, PAGE_SIZE,
-        PagePermissions, PageTableError, THREAD_TRAP_CONTEXT_RANGE,
-        TRAMPOLINE_ADDRESS, TRAP_CONTEXT_ADDRESS, TablePage, USER_ADDRESS_END,
-        canonicalize_virtual_address, flush_local_tlb as flush_local,
-        flush_local_tlb_range as flush_local_range, initialize_asid_allocator,
-        initialize_kernel_mmio, normalize_physical_address, normalize_physical_page,
-        normalize_virtual_page, physical_range_to_virtual, physical_to_virtual,
-        virtual_to_physical,
+        PagePermissions, PageTableError, THREAD_TRAP_CONTEXT_RANGE, TRAMPOLINE_ADDRESS,
+        TRAP_CONTEXT_ADDRESS, TablePage, USER_ADDRESS_END, canonicalize_virtual_address,
+        flush_local_tlb as flush_local, flush_local_tlb_range as flush_local_range,
+        initialize_asid_allocator, initialize_kernel_mmio, normalize_physical_address,
+        normalize_physical_page, normalize_virtual_page, physical_range_to_virtual,
+        physical_to_virtual, virtual_to_physical,
     };
     #[cfg(target_arch = "aarch64")]
     pub(crate) use super::selected::{

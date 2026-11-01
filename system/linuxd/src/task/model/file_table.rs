@@ -1,9 +1,9 @@
 //! 可共享文件表的单 owner；Thread handle 与表内容的生命周期相互独立。
-use alloc::sync::Arc;
 use crate::sync::Mutex;
+use alloc::sync::Arc;
 
 use super::TaskControlBlock;
-use crate::{sync::TaskMutex, file::FileDescriptorTable, fs::vfs, memory::MemoryError};
+use crate::{file::FileDescriptorTable, fs::vfs, memory::MemoryError, sync::TaskMutex};
 
 /// Thread 私有的可脱离 handle；Process 仅别名保活原 leader 的同一 handle。
 pub(super) type FileTableHandle = Arc<Mutex<Option<Arc<FileTableOwner>>>>;
@@ -105,8 +105,7 @@ impl FileTableOwner {
     /// caller 的预置 waiter 令查找与不可失败 cleanup 不因临时 OOM 返回伪造 EBADF。
     /// 取得 table guard 后立即归还 waiter；closure 不得重新取同一表或完成 FD 最终析构。
     fn with_table<R>(&self, operation: impl FnOnce(&mut FileDescriptorTable) -> R) -> R {
-        let caller =
-            crate::task::current_task().expect("file table requires current Thread");
+        let caller = crate::task::current_task().expect("file table requires current Thread");
         let mut preparation = caller
             .file_wait()
             .lock()

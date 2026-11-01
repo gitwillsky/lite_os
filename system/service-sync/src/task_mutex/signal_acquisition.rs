@@ -1,6 +1,6 @@
 //! TASK_KILLABLE acquisition；沿既有 FIFO queue 取消，不另设锁/等待 owner。
-use super::*;
 use super::super::task_wait::TaskWaitMode;
+use super::*;
 
 /// killable mutex acquisition 在进入 protected operation 前的失败。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

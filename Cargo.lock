@@ -144,6 +144,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "361a90feb7004eca4019fb28352a9465666b24f840f5c3cddf0ff13920590b89"
 
 [[package]]
+name = "ext4-unit"
+version = "0.1.0"
+dependencies = [
+ "device-model",
+ "fallible-tree",
+ "native-runtime",
+ "spin",
+ "syscall-abi",
+]
+
+[[package]]
 name = "ext4d"
 version = "0.1.0"
 dependencies = [

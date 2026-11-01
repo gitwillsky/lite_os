@@ -1,5 +1,5 @@
-use alloc::{sync::Arc, vec::Vec};
 use crate::sync::Mutex;
+use alloc::{sync::Arc, vec::Vec};
 
 use super::{AccessIdentity, FileSystemError, FileSystemStatistics, Inode, InodeType};
 use crate::sync::TaskMutex;
@@ -28,6 +28,7 @@ mod mount_unmount;
 mod mount_view;
 mod mounted_filesystem;
 mod namespace_access;
+use crate::sync::Once;
 pub(in crate::fs) use dentry::Dentry;
 use dentry_index::DentryIndex;
 pub(crate) use mount_flags::MountFlags;
@@ -39,7 +40,6 @@ pub(crate) use mount_view::WriteOpen;
 use mount_view::{Attachment, MountRestrictions, MountScope, MountView};
 pub(in crate::fs) use mounted_filesystem::{MountDeviceClaim, MountedFilesystem};
 pub(crate) use opened::{ContentWrite, OpenedFile, ReadAccess};
-use native_runtime::sync::Once;
 /// pseudo filesystem 唯一internal mount producer；不加入任何namespace森林或quota/count/index。
 /// scope ID 0只用于未加入namespace的内部mount，live namespace identity从1开始；空root不pin namespace。
 /// 与用户mount共用真实view/FS/writer/retirement owner，失败按同一RAII释放，不发表另一份flags。

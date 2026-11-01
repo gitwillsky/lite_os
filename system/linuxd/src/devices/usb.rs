@@ -1,6 +1,6 @@
 //! USB sysfs 只读发现来源；不另存连接状态。
-use device_model::UsbDevice;
 use alloc::sync::Arc;
+use device_model::UsbDevice;
 struct Source;
 impl crate::fs::UsbSysfsSource for Source {
     fn count(&self) -> usize {

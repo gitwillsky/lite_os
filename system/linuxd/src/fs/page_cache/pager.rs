@@ -17,8 +17,8 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
-use native_runtime::native_abi::{self, PortPacket, pager as pager_op, packet};
-use native_runtime::sync::{Mutex, Once};
+use crate::sync::{Mutex, Once};
+use native_runtime::native_abi::{self, PortPacket, packet, pager as pager_op};
 use native_runtime::thread::{Descriptor, Park};
 use native_runtime::{Pager, Port, Vmo};
 
@@ -71,7 +71,9 @@ fn shared() -> &'static Shared {
 /// # Errors
 ///
 /// VMO 创建失败。
-pub(super) fn create_object(size: u64) -> Result<(Arc<MemoryObject>, u64), crate::fs::FileSystemError> {
+pub(super) fn create_object(
+    size: u64,
+) -> Result<(Arc<MemoryObject>, u64), crate::fs::FileSystemError> {
     let shared = shared();
     let key = {
         let mut next = shared.next_key.lock();
@@ -81,7 +83,12 @@ pub(super) fn create_object(size: u64) -> Result<(Arc<MemoryObject>, u64), crate
     };
     let vmo = shared
         .pager
-        .create_vmo(native_abi::vmo::RESIZABLE, &shared.port, key, size.next_multiple_of(PAGE_SIZE as u64))
+        .create_vmo(
+            native_abi::vmo::RESIZABLE,
+            &shared.port,
+            key,
+            size.next_multiple_of(PAGE_SIZE as u64),
+        )
         .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
     let object = MemoryObject::new(vmo).map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
     Ok((object, key))
@@ -162,7 +169,11 @@ fn work() {
 fn serve(shared: &Shared, request: &PortPacket, aux: &mut Option<Vmo>) {
     let offset = request.payload;
     let length = u64::from(request.observed) * PAGE_SIZE as u64;
-    let file = shared.files.lock().get(&request.key).and_then(Weak::upgrade);
+    let file = shared
+        .files
+        .lock()
+        .get(&request.key)
+        .and_then(Weak::upgrade);
     let Some(file) = file else {
         return;
     };
@@ -188,7 +199,13 @@ fn serve(shared: &Shared, request: &PortPacket, aux: &mut Option<Vmo>) {
 }
 
 /// 读入并补入 `[offset, offset + pages * PAGE_SIZE)`。
-fn supply(shared: &Shared, file: &CachedFile, offset: u64, pages: usize, aux: &mut Option<Vmo>) -> Result<(), ()> {
+fn supply(
+    shared: &Shared,
+    file: &CachedFile,
+    offset: u64,
+    pages: usize,
+    aux: &mut Option<Vmo>,
+) -> Result<(), ()> {
     let length = pages * PAGE_SIZE;
     let size = file.inode.size();
     let mut buffer = Vec::new();
@@ -205,7 +222,10 @@ fn supply(shared: &Shared, file: &CachedFile, offset: u64, pages: usize, aux: &m
             slices.push(head);
             rest = tail;
         }
-        let read = file.inode.read_storage_pages(offset, &mut slices).map_err(|_| ())?;
+        let read = file
+            .inode
+            .read_storage_pages(offset, &mut slices)
+            .map_err(|_| ())?;
         if read != valid {
             return Err(());
         }

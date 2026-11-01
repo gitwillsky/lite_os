@@ -1,8 +1,8 @@
 //! System V 各对象类型独立的实际 ID/key registry；message/sem/shm 不复制编号算法。
 use super::IpcError;
-use fallible_tree::{FallibleMap, NodeSlot, VacantEntry};
 use alloc::sync::Arc;
 use core::mem::MaybeUninit;
+use fallible_tree::{FallibleMap, NodeSlot, VacantEntry};
 
 pub(super) const IPC_ID_SLOTS: u32 = 32768;
 

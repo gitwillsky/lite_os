@@ -69,7 +69,9 @@ impl CachedWrite<'_> {
             |start, count| write(start, &input[start..start + count]),
             |offset, start, written| {
                 // 存储已提交；缓存更新失败只会让之后的读重新从存储补页，不影响已提交的数据。
-                let _ = self.file.update_cached(offset, &input[start..start + written]);
+                let _ = self
+                    .file
+                    .update_cached(offset, &input[start..start + written]);
             },
             |error| *error == FileSystemError::NoSpace,
         )

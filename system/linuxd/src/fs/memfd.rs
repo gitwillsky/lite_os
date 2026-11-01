@@ -7,8 +7,8 @@ use super::{
     FileSystemStatistics, Inode, InodeMetadata, InodeType, MemoryFile, OpenedFile, OwnerModeChange,
     StorageBudget, anonymous::PseudoFileSystem, permission::OwnerModeState, xattr::Xattrs,
 };
-use crate::sync::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
 use crate::memory::SharedFileId;
+use crate::sync::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
 
 /// 实际memfd inode的唯一attribute owner。沿MemoryFile write sequence→state→times锁序；
 /// 属性分配/namespace授权只在task mutex内进行，不在旧pseudo metadata spin临界区执行。
@@ -299,11 +299,9 @@ impl Inode for MemFile {
     }
     fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {
         let _writer = self.file.begin_write()?;
-        self.state()?.times.set_at(
-            crate::time::get_realtime_ns() / 1_000_000_000,
-            atime,
-            mtime,
-        );
+        self.state()?
+            .times
+            .set_at(crate::time::get_realtime_ns() / 1_000_000_000, atime, mtime);
         Ok(())
     }
 

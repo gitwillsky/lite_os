@@ -1,8 +1,8 @@
 //! UAC2 Type-I PCM descriptor、clock topology 与实际 rate 集合；不猜测 VID/PID 的音频能力。
 pub(super) mod stream;
 use super::{Error, Result};
-use device_model::{PCM_RATES, PcmCapabilities, PcmFormat};
 use alloc::vec::Vec;
+use device_model::{PCM_RATES, PcmCapabilities, PcmFormat};
 pub(super) use stream::Stream;
 
 #[derive(Clone, Copy)]

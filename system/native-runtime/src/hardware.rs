@@ -47,7 +47,13 @@ impl Resource {
         let status = unsafe {
             invoke(
                 call::RESOURCE_CREATE,
-                &[parent.raw() as usize, kind as usize, base as usize, size as usize, (&raw mut out) as usize],
+                &[
+                    parent.raw() as usize,
+                    kind as usize,
+                    base as usize,
+                    size as usize,
+                    (&raw mut out) as usize,
+                ],
             )
         };
         new_handle(status, out).map(Self)
@@ -66,7 +72,12 @@ impl Interrupt {
         let status = unsafe {
             invoke(
                 call::INTERRUPT_CREATE,
-                &[resource.raw() as usize, vector as usize, options as usize, (&raw mut out) as usize],
+                &[
+                    resource.raw() as usize,
+                    vector as usize,
+                    options as usize,
+                    (&raw mut out) as usize,
+                ],
             )
         };
         new_handle(status, out).map(Self)
@@ -83,7 +94,11 @@ impl Interrupt {
         check(unsafe {
             invoke(
                 call::INTERRUPT_WAIT,
-                &[self.raw() as usize, deadline as usize, (&raw mut timestamp) as usize],
+                &[
+                    self.raw() as usize,
+                    deadline as usize,
+                    (&raw mut timestamp) as usize,
+                ],
             )
         })?;
         Ok(timestamp)
@@ -106,7 +121,12 @@ impl Interrupt {
     /// 已绑定。
     pub fn bind(&self, port: &Port, key: u64) -> Result<(), Status> {
         // SAFETY: 无指针参数。
-        check(unsafe { invoke(call::INTERRUPT_BIND, &[self.raw() as usize, port.raw() as usize, key as usize]) })
+        check(unsafe {
+            invoke(
+                call::INTERRUPT_BIND,
+                &[self.raw() as usize, port.raw() as usize, key as usize],
+            )
+        })
     }
 }
 
@@ -147,7 +167,11 @@ impl Bti {
         let status = unsafe {
             invoke(
                 call::BTI_CREATE,
-                &[iommu.raw() as usize, stream_id as usize, (&raw mut out) as usize],
+                &[
+                    iommu.raw() as usize,
+                    stream_id as usize,
+                    (&raw mut out) as usize,
+                ],
             )
         };
         new_handle(status, out).map(Self)
@@ -158,7 +182,13 @@ impl Bti {
     /// # Errors
     ///
     /// 区间未对齐、越界或 IOVA 空间耗尽。
-    pub fn pin(&self, options: u32, vmo: &Vmo, offset: u64, length: u64) -> Result<(Vec<u64>, Pmt), Status> {
+    pub fn pin(
+        &self,
+        options: u32,
+        vmo: &Vmo,
+        offset: u64,
+        length: u64,
+    ) -> Result<(Vec<u64>, Pmt), Status> {
         let pages = (length as usize).div_ceil(native_abi::PAGE_SIZE);
         let mut addresses = alloc::vec![0u64; pages];
         let mut out = native_abi::HANDLE_INVALID;

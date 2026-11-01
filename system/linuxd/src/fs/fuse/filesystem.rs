@@ -16,10 +16,10 @@ use super::{
     options::Options,
     protocol::{self, Attributes, Fields, Reader},
 };
-use crate::{fs::{
-        FileSystem, FileSystemError, FileSystemStatistics, Inode, SuperblockFacts,
-        mount::{CreatedFileSystem, FileSystemType, MountRequest},
-    }};
+use crate::fs::{
+    FileSystem, FileSystemError, FileSystemStatistics, Inode, SuperblockFacts,
+    mount::{CreatedFileSystem, FileSystemType, MountRequest},
+};
 use fallible_tree::FallibleMap;
 
 /// Linux `FUSE_SUPER_MAGIC`。

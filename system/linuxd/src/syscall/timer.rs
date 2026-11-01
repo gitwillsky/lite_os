@@ -1,7 +1,7 @@
 use crate::sync::WaitResult;
 use crate::{
-    task::current_task,
     syscall::errno::{EFAULT, EINVAL, ENOMEM, EOPNOTSUPP, EPERM},
+    task::current_task,
 };
 
 mod posix;
@@ -115,9 +115,7 @@ pub(crate) fn sys_settimeofday(timeval: usize, timezone: usize) -> isize {
         }
     }
     match value {
-        Some(nanoseconds) => {
-            crate::time::set_realtime_ns(nanoseconds).map_or(-EINVAL, |()| 0)
-        }
+        Some(nanoseconds) => crate::time::set_realtime_ns(nanoseconds).map_or(-EINVAL, |()| 0),
         None => 0,
     }
 }
@@ -163,10 +161,7 @@ pub(crate) fn sys_getitimer(which: usize, output: usize) -> isize {
     if output == 0 {
         return -EFAULT;
     }
-    let setting = match crate::task::real_timer(
-        task.tgid(),
-        crate::time::get_time_ns(),
-    ) {
+    let setting = match crate::task::real_timer(task.tgid(), crate::time::get_time_ns()) {
         Ok(value) => value,
         Err(_) => return -EINVAL,
     };
@@ -255,8 +250,7 @@ fn finish_sleep(result: WaitResult, deadline_ns: u64, remaining: usize, relative
                 return -EFAULT;
             };
             if remaining != 0 {
-                let nanoseconds =
-                    deadline_ns.saturating_sub(crate::time::get_time_ns());
+                let nanoseconds = deadline_ns.saturating_sub(crate::time::get_time_ns());
                 let value = TimeSpec {
                     tv_sec: (nanoseconds / 1_000_000_000) as i64,
                     tv_nsec: (nanoseconds % 1_000_000_000) as i64,

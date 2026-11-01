@@ -235,9 +235,13 @@ impl TaskControlBlock {
             return;
         }
         let usage = self.thread_cpu_usage();
-        self.scheduling.retired_runtime_us.store(usage.total_us, Ordering::Release);
+        self.scheduling
+            .retired_runtime_us
+            .store(usage.total_us, Ordering::Release);
         self.process().retired_runtime.lock().add(usage);
-        self.thread().cpu_time_retired.store(true, Ordering::Release);
+        self.thread()
+            .cpu_time_retired
+            .store(true, Ordering::Release);
     }
 
     /// `RUSAGE_THREAD`：calling Thread 自己的使用量；峰值 RSS 是整个 Process 的（共享地址空间）。

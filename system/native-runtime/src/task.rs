@@ -65,7 +65,12 @@ impl Job {
     pub fn create(parent: &Self) -> Result<Self, Status> {
         let mut out = native_abi::HANDLE_INVALID;
         // SAFETY: 输出位置有效。
-        let status = unsafe { invoke(call::JOB_CREATE, &[parent.raw() as usize, (&raw mut out) as usize]) };
+        let status = unsafe {
+            invoke(
+                call::JOB_CREATE,
+                &[parent.raw() as usize, (&raw mut out) as usize],
+            )
+        };
         new_handle(status, out).map(Self)
     }
 }
@@ -94,7 +99,10 @@ impl Process {
         };
         let process = new_handle(status, process)?;
         // SAFETY: 成功时两个句柄都已写入。
-        Ok((Self(process), Vmar::from_handle(unsafe { Handle::from_raw(vmar) })))
+        Ok((
+            Self(process),
+            Vmar::from_handle(unsafe { Handle::from_raw(vmar) }),
+        ))
     }
 
     /// 创建与共享进程 `self` 共享高半区的成员进程，返回进程与其私有区根 VMAR。
@@ -119,7 +127,10 @@ impl Process {
         };
         let process = new_handle(status, process)?;
         // SAFETY: 成功时两个句柄都已写入。
-        Ok((Self(process), Vmar::from_handle(unsafe { Handle::from_raw(vmar) })))
+        Ok((
+            Self(process),
+            Vmar::from_handle(unsafe { Handle::from_raw(vmar) }),
+        ))
     }
 
     /// 启动首个线程；`argument` 转移进目标进程作为第一个参数。
@@ -127,7 +138,14 @@ impl Process {
     /// # Errors
     ///
     /// `ERR_BAD_STATE`（已启动或已终止）。
-    pub fn start(&self, thread: &Thread, entry: usize, stack: usize, argument: Handle, second: usize) -> Result<(), Status> {
+    pub fn start(
+        &self,
+        thread: &Thread,
+        entry: usize,
+        stack: usize,
+        argument: Handle,
+        second: usize,
+    ) -> Result<(), Status> {
         // SAFETY: 无用户指针；参数句柄所有权交给内核。
         check(unsafe {
             invoke(
@@ -228,7 +246,12 @@ impl Thread {
         let status = unsafe {
             invoke(
                 call::THREAD_CREATE,
-                &[process.raw() as usize, name.as_ptr() as usize, name.len(), (&raw mut out) as usize],
+                &[
+                    process.raw() as usize,
+                    name.as_ptr() as usize,
+                    name.len(),
+                    (&raw mut out) as usize,
+                ],
             )
         };
         new_handle(status, out).map(Self)
@@ -239,9 +262,20 @@ impl Thread {
     /// # Errors
     ///
     /// `ERR_BAD_STATE`。
-    pub fn start(&self, entry: usize, stack: usize, first: usize, second: usize) -> Result<(), Status> {
+    pub fn start(
+        &self,
+        entry: usize,
+        stack: usize,
+        first: usize,
+        second: usize,
+    ) -> Result<(), Status> {
         // SAFETY: 无用户指针。
-        check(unsafe { invoke(call::THREAD_START, &[self.raw() as usize, entry, stack, first, second]) })
+        check(unsafe {
+            invoke(
+                call::THREAD_START,
+                &[self.raw() as usize, entry, stack, first, second],
+            )
+        })
     }
 
     /// 设置权重等级（`0..40`，小者权重大）。
@@ -251,7 +285,12 @@ impl Thread {
     /// 等级越界。
     pub fn set_priority(&self, priority: u32) -> Result<(), Status> {
         // SAFETY: 无指针参数。
-        check(unsafe { invoke(call::THREAD_SET_PRIORITY, &[self.raw() as usize, priority as usize]) })
+        check(unsafe {
+            invoke(
+                call::THREAD_SET_PRIORITY,
+                &[self.raw() as usize, priority as usize],
+            )
+        })
     }
 
     /// 限制可运行的逻辑 CPU（bit N = CPU N）；未启动的线程在启动时应用。
@@ -297,9 +336,18 @@ impl Exception {
     /// # Errors
     ///
     /// 寄存器状态非法。
-    pub fn resolve(self, resume: bool, state: Option<&native_abi::register::RegisterState>) -> Result<(), Status> {
+    pub fn resolve(
+        self,
+        resume: bool,
+        state: Option<&native_abi::register::RegisterState>,
+    ) -> Result<(), Status> {
         let state = state.map_or(0, |state| core::ptr::from_ref(state) as usize);
         // SAFETY: 状态指针为 0 或指向有效的寄存器快照。
-        check(unsafe { invoke(call::EXCEPTION_RESOLVE, &[self.raw() as usize, usize::from(resume), state]) })
+        check(unsafe {
+            invoke(
+                call::EXCEPTION_RESOLVE,
+                &[self.raw() as usize, usize::from(resume), state],
+            )
+        })
     }
 }

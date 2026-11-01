@@ -1,8 +1,4 @@
-use crate::{
-    fs::AdvisoryLockKey,
-    ipc::PipeDirection,
-    memory::FutexKey,
-};
+use crate::{fs::AdvisoryLockKey, ipc::PipeDirection, memory::FutexKey};
 
 use super::WAIT_SHARD_COUNT;
 

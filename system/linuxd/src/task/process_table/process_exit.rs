@@ -383,7 +383,10 @@ pub(crate) fn exit_current_kernel_thread() -> ! {
     drop(retired);
     drop(current);
     let task = take_current_task().expect("exiting kernel thread lost current ownership");
-    assert!(task.is_kernel_thread(), "user task took the kernel-thread exit path");
+    assert!(
+        task.is_kernel_thread(),
+        "user task took the kernel-thread exit path"
+    );
     task.scheduling.state.lock().set_run_state(RunState::Exited);
     drop(task);
     native_runtime::task::exit_thread()
@@ -779,7 +782,10 @@ fn prepare_current_exit(requested: ProcessExitStatus) {
             matches!(scheduling.run_state(), RunState::Running),
             "only current running task can exit"
         );
-        assert!(scheduling.wait.is_none(), "running task cannot retain wait membership");
+        assert!(
+            scheduling.wait.is_none(),
+            "running task cannot retain wait membership"
+        );
         scheduling.set_run_state(RunState::Exited);
     }
 }

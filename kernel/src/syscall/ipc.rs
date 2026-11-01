@@ -46,12 +46,22 @@ fn take_message_handles(
     }
     let entries = table.remove_all(&handles)?;
     for (&handle, entry) in handles.iter().zip(&entries) {
-        entry.object.kernel_object().cancel(table.cancel_key(handle));
+        entry
+            .object
+            .kernel_object()
+            .cancel(table.cancel_key(handle));
     }
     Ok(entries)
 }
 
-fn build_message(call: &Call<'_>, channel: &Arc<Channel>, bytes: usize, length: usize, handles: usize, count: usize) -> Result<Message, Status> {
+fn build_message(
+    call: &Call<'_>,
+    channel: &Arc<Channel>,
+    bytes: usize,
+    length: usize,
+    handles: usize,
+    count: usize,
+) -> Result<Message, Status> {
     if length > native_abi::CHANNEL_MAX_BYTES {
         return Err(native_abi::ERR_OUT_OF_RANGE);
     }
@@ -62,7 +72,14 @@ fn build_message(call: &Call<'_>, channel: &Arc<Channel>, bytes: usize, length: 
 
 pub(super) fn channel_write(call: &Call<'_>) -> Result<(), Status> {
     let channel = call.channel(call.arg_handle(0), rights::WRITE)?;
-    let message = build_message(call, &channel, call.arg(1), call.arg(2), call.arg(3), call.arg(4))?;
+    let message = build_message(
+        call,
+        &channel,
+        call.arg(1),
+        call.arg(2),
+        call.arg(3),
+        call.arg(4),
+    )?;
     // 失败时消息（含已移出的句柄）在这里释放，与 Zircon“句柄总是被消费”的语义一致。
     channel.write(message).map_err(|(status, message)| {
         drop(message);
@@ -71,8 +88,17 @@ pub(super) fn channel_write(call: &Call<'_>) -> Result<(), Status> {
 }
 
 /// 把消息句柄放进调用者表并写出；失败时句柄随消息一起释放。
-fn deliver(call: &Call<'_>, message: Message, bytes: usize, handles: usize, actual: usize) -> Result<(), Status> {
-    let Message { bytes: payload, handles: entries } = message;
+fn deliver(
+    call: &Call<'_>,
+    message: Message,
+    bytes: usize,
+    handles: usize,
+    actual: usize,
+) -> Result<(), Status> {
+    let Message {
+        bytes: payload,
+        handles: entries,
+    } = message;
     let counts = ChannelActual {
         bytes: payload.len() as u32,
         handles: entries.len() as u32,
@@ -124,7 +150,9 @@ pub(super) fn channel_call(call: &Call<'_>) -> Result<(), Status> {
             drop(message);
             status
         })?;
-    if reply.bytes.len() > args.read_num_bytes as usize || reply.handles.len() > args.read_num_handles as usize {
+    if reply.bytes.len() > args.read_num_bytes as usize
+        || reply.handles.len() > args.read_num_handles as usize
+    {
         let actual = ChannelActual {
             bytes: reply.bytes.len() as u32,
             handles: reply.handles.len() as u32,
@@ -132,7 +160,13 @@ pub(super) fn channel_call(call: &Call<'_>) -> Result<(), Status> {
         call.write_optional(call.arg(3), &actual)?;
         return Err(native_abi::ERR_BUFFER_TOO_SMALL);
     }
-    deliver(call, reply, args.read_bytes as usize, args.read_handles as usize, call.arg(3))
+    deliver(
+        call,
+        reply,
+        args.read_bytes as usize,
+        args.read_handles as usize,
+        call.arg(3),
+    )
 }
 
 pub(super) fn event_create(call: &Call<'_>) -> Result<(), Status> {

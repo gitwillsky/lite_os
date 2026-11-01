@@ -1,8 +1,8 @@
-use alloc::{sync::Arc, vec::Vec};
 use crate::sync::Mutex;
-use native_runtime::sync::Once;
+use crate::sync::Once;
+use alloc::{sync::Arc, vec::Vec};
 
-use crate::{sync::TaskMutex, net::SocketError};
+use crate::{net::SocketError, sync::TaskMutex};
 use fallible_tree::{FallibleMap, VacantEntry};
 
 use super::{UnixNode, UnixPassedFile, UnixSocket};
@@ -557,8 +557,7 @@ pub(super) fn collect(uid: u32, limit: usize) -> Result<(), SocketError> {
 // OWNER: merged GC request event；actual collector kernel thread 单独消费，不在 IRQ/deferred
 // safe point 运行 Tarjan 或释放 OFD。无请求时 worker 无限休眠；有 live topology 时用已预留 deadline
 // 复查最后 descriptor/active-syscall root 的退休，避免仅在 quota 超限时才释放孤立 cycle。
-static COLLECTION_REQUEST: crate::sync::TaskEvent =
-    crate::sync::TaskEvent::new();
+static COLLECTION_REQUEST: crate::sync::TaskEvent = crate::sync::TaskEvent::new();
 pub(in crate::net::unix) fn request_collection() {
     COLLECTION_REQUEST.signal();
 }

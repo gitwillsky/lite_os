@@ -187,11 +187,7 @@ impl TaskControlBlock {
         self.thread()
             .user_context
             .set_initial_fp(crate::arch::fp::FpState::default());
-        super::process_exit::release_exec_mm(
-            self,
-            old_address_space,
-            self.take_clear_child_tid(),
-        );
+        super::process_exit::release_exec_mm(self, old_address_space, self.take_clear_child_tid());
         // vfork parent 只能在完整 exec commit 且 RISC-V child 临时 trap VMA 已删除后恢复；
         // AArch64 context 随独立 KernelStack 保活。提前唤醒会让共享旧 mm 的 detach 顺序失效。
         super::super::process_table::vfork::complete_vfork_exec(self.tid());

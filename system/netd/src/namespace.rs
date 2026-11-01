@@ -30,12 +30,13 @@ struct NetworkNamespaceDirectory {
     next_id: u64,
 }
 
-static NETWORK_NAMESPACES: Mutex<NetworkNamespaceDirectory> = Mutex::new(NetworkNamespaceDirectory {
-    entries: fallible_tree::FallibleMap::new(),
-    deferred_cursor: 0,
-    timer_cursor: 0,
-    next_id: 1,
-});
+static NETWORK_NAMESPACES: Mutex<NetworkNamespaceDirectory> =
+    Mutex::new(NetworkNamespaceDirectory {
+        entries: fallible_tree::FallibleMap::new(),
+        deferred_cursor: 0,
+        timer_cursor: 0,
+        next_id: 1,
+    });
 
 /// 目录锁外保活本轮实际域；最后Arc及其protocol只在所有guard外退休。
 pub(crate) struct NetworkNamespaceBatch {
@@ -85,7 +86,9 @@ pub(crate) struct Namespace {
 
 impl core::fmt::Debug for Namespace {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("Namespace").field("id", &self.id).finish_non_exhaustive()
+        f.debug_struct("Namespace")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
     }
 }
 
@@ -106,7 +109,8 @@ impl Namespace {
         })
         .map_err(|_| ())?;
         // 1. 唯一单调 id 的目录节点在锁外准备；OOM 先退休 Arc，不留下半发布的目录项。
-        let entry = fallible_tree::FallibleMap::try_prepare(id, Arc::downgrade(&namespace)).map_err(|_| ())?;
+        let entry = fallible_tree::FallibleMap::try_prepare(id, Arc::downgrade(&namespace))
+            .map_err(|_| ())?;
         // 2. vacant commit 不分配，目录不保存第二份protocol状态。
         NETWORK_NAMESPACES.lock().entries.commit_vacant(entry);
         Ok(namespace)

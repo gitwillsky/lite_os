@@ -1,4 +1,3 @@
-#![feature(allocator_ext)]
 #![allow(dead_code)]
 //! 直接装配实际 AF_UNIX registry；endpoint seam 仅提供 address owner。
 extern crate alloc;
@@ -390,4 +389,4 @@ fn automatic_names_are_reusable_in_distinct_network_domains_without_a_second_reg
     namespace::remove_closed(&b.binding.unwrap());
 }
 
-mod sync { pub(crate) use spin::Mutex; }
+mod sync { pub(crate) use spin::{Mutex, Once}; }

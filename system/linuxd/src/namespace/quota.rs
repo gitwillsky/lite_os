@@ -1,8 +1,8 @@
 //! 标准 ucounts：namespace 与 inotify admission 按 UserNS、创建者 kuid 和祖先 owner 链收费。
 use super::{NamespaceAuthority, NamespaceError, UserNamespace};
-use fallible_tree::FallibleMap;
-use alloc::{sync::Arc, vec::Vec};
 use crate::sync::Mutex;
+use alloc::{sync::Arc, vec::Vec};
+use fallible_tree::FallibleMap;
 use syscall_abi::capability::Capability;
 
 /// 当前具体 namespace owner 支持的标准 user sysctl resource；不能为未实现 owner 虚报计数。
@@ -68,8 +68,7 @@ impl UserQuotas {
     }
     fn increment(&self, uid: u32, resource: UserResource) -> Result<(), NamespaceError> {
         let kind = resource.index();
-        let mut prepared: Option<fallible_tree::NodeSlot<u32, [u32; UserResource::COUNT]>> =
-            None;
+        let mut prepared: Option<fallible_tree::NodeSlot<u32, [u32; UserResource::COUNT]>> = None;
         let result = loop {
             let mut state = self.0.lock();
             let count = state.users.get(&uid).map_or(0, |counts| counts[kind]);

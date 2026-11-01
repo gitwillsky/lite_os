@@ -142,7 +142,11 @@ impl GpuCommand {
     }
 
     /// 编码 wire payload，并一次返回与其不可分离的 opcode、长度和 next-stage。
-    pub(super) fn prepare(self, request: &mut [u8], bti: &native_runtime::Bti) -> Result<PreparedCommand, DisplayError> {
+    pub(super) fn prepare(
+        self,
+        request: &mut [u8],
+        bti: &native_runtime::Bti,
+    ) -> Result<PreparedCommand, DisplayError> {
         let stage = self.stage();
         let mut stream = None;
         let (opcode, length) = match self {

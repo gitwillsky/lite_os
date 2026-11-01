@@ -1,6 +1,6 @@
 //! Thread 当前执行 identity 与 Process TGID 的投影；编号归 PID namespace，graph links 决定占用。
 use super::{Arc, TaskControlBlock, TaskKind};
-use crate::{task::pid::PidIdentity, namespace::PidNamespace};
+use crate::{namespace::PidNamespace, task::pid::PidIdentity};
 
 impl super::Process {
     /// 只借用该 Process 的同一 TGID observer，供退出 leader 的组信号 view 投影。

@@ -43,7 +43,9 @@ pub(in crate::task) struct AddressSpace {
 
 impl core::fmt::Debug for AddressSpace {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.debug_struct("AddressSpace").finish_non_exhaustive()
+        formatter
+            .debug_struct("AddressSpace")
+            .finish_non_exhaustive()
     }
 }
 
@@ -52,8 +54,12 @@ impl AddressSpace {
         self.memory_set.lock().map_err(|_| MemoryError::OutOfMemory)
     }
 
-    fn lock_for_access(&self) -> Result<crate::sync::TaskMutexGuard<'_, MemorySet>, UserAccessError> {
-        self.memory_set.lock().map_err(|_| UserAccessError::OutOfMemory)
+    fn lock_for_access(
+        &self,
+    ) -> Result<crate::sync::TaskMutexGuard<'_, MemorySet>, UserAccessError> {
+        self.memory_set
+            .lock()
+            .map_err(|_| UserAccessError::OutOfMemory)
     }
 
     /// 承载本地址空间的成员进程。
@@ -62,7 +68,9 @@ impl AddressSpace {
     }
 
     /// 主程序打开租约（`/proc/<pid>/exe`）。
-    pub(super) fn executable(&self) -> Result<Option<Arc<crate::fs::OpenedFile>>, crate::fs::FileSystemError> {
+    pub(super) fn executable(
+        &self,
+    ) -> Result<Option<Arc<crate::fs::OpenedFile>>, crate::fs::FileSystemError> {
         let owner = self
             .lock()
             .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?
@@ -89,7 +97,10 @@ impl AddressSpace {
         &self.user_namespace
     }
 
-    pub(super) fn new(memory_set: MemorySet, user_namespace: Arc<crate::namespace::UserNamespace>) -> Result<Arc<Self>, MemoryError> {
+    pub(super) fn new(
+        memory_set: MemorySet,
+        user_namespace: Arc<crate::namespace::UserNamespace>,
+    ) -> Result<Arc<Self>, MemoryError> {
         let process = memory_set.process().clone();
         Arc::try_new(Self {
             memory_set: TaskMutex::new(memory_set),
@@ -109,7 +120,9 @@ impl AddressSpace {
     pub(super) fn try_clone_for_fork(&self, name: &[u8]) -> Result<Arc<Self>, MemoryError> {
         let child = self.lock()?.try_clone_for_fork(name)?;
         let child = Self::new(child, self.user_namespace.clone())?;
-        child.dumpability.set_user_dumpable(self.dumpability.user_dumpable());
+        child
+            .dumpability
+            .set_user_dumpable(self.dumpability.user_dumpable());
         Ok(child)
     }
 
@@ -125,7 +138,9 @@ impl AddressSpace {
         let Ok(memory) = self.memory_set.lock() else {
             return;
         };
-        super::clone_tid_store::store_clone_tid_values(addresses, |address| memory.copy_to_user(address, &tid.to_ne_bytes()));
+        super::clone_tid_store::store_clone_tid_values(addresses, |address| {
+            memory.copy_to_user(address, &tid.to_ne_bytes())
+        });
     }
 
     /// 在地址空间锁内生成 futex key。
@@ -174,7 +189,11 @@ impl AddressSpace {
             return Err(crate::memory::FutexAccessError::Unaligned);
         }
         let target_key = memory.futex_key(target, identity, private)?;
-        let value = if read_source { Some(memory.load_user_u32(source)?) } else { None };
+        let value = if read_source {
+            Some(memory.load_user_u32(source)?)
+        } else {
+            None
+        };
         Ok(consume(source_key, target_key, value))
     }
 
@@ -204,28 +223,57 @@ impl AddressSpace {
         crate::memory::user_address_end() - crate::memory::PAGE_SIZE
     }
 
-    pub(super) fn sync_shared_mapping(&self, address: usize, length: usize, writeback: bool) -> Result<(), MemoryError> {
+    pub(super) fn sync_shared_mapping(
+        &self,
+        address: usize,
+        length: usize,
+        writeback: bool,
+    ) -> Result<(), MemoryError> {
         self.lock()?.sync_shared_mapping(address, length, writeback)
     }
 
-    pub(super) fn handle_page_fault(&self, address: usize, access: PageFaultAccess) -> Result<PageFaultOutcome, MemoryError> {
+    pub(super) fn handle_page_fault(
+        &self,
+        address: usize,
+        access: PageFaultAccess,
+    ) -> Result<PageFaultOutcome, MemoryError> {
         self.lock()?.handle_page_fault(address, access)
     }
 
-    pub(super) fn unmap_user_mapping(&self, address: usize, length: usize) -> Result<(), MemoryError> {
+    pub(super) fn unmap_user_mapping(
+        &self,
+        address: usize,
+        length: usize,
+    ) -> Result<(), MemoryError> {
         self.lock()?.unmap_user_mapping(address, length)
     }
 
-    pub(super) fn protect_user_mapping(&self, address: usize, length: usize, permission: MapPermission) -> Result<(), MemoryError> {
-        self.lock()?.protect_user_mapping(address, length, permission)
+    pub(super) fn protect_user_mapping(
+        &self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+    ) -> Result<(), MemoryError> {
+        self.lock()?
+            .protect_user_mapping(address, length, permission)
     }
 
-    pub(super) fn advise_user_mapping(&self, address: usize, length: usize, advice: crate::memory::MemoryAdvice) -> Result<(), MemoryError> {
+    pub(super) fn advise_user_mapping(
+        &self,
+        address: usize,
+        length: usize,
+        advice: crate::memory::MemoryAdvice,
+    ) -> Result<(), MemoryError> {
         self.lock()?.advise_user_mapping(address, length, advice)
     }
 
-    pub(super) fn copy_from_user(&self, user_address: usize, destination: &mut [u8]) -> Result<(), UserAccessError> {
-        self.lock_for_access()?.copy_from_user(user_address, destination)
+    pub(super) fn copy_from_user(
+        &self,
+        user_address: usize,
+        destination: &mut [u8],
+    ) -> Result<(), UserAccessError> {
+        self.lock_for_access()?
+            .copy_from_user(user_address, destination)
     }
 
     /// 复制到未初始化的缓冲区：先清零再复制，成功后整个缓冲区已初始化。
@@ -242,24 +290,49 @@ impl AddressSpace {
         self.copy_from_user(user_address, initialized)
     }
 
-    pub(super) fn copy_to_user(&self, user_address: usize, source: &[u8]) -> Result<(), UserAccessError> {
+    pub(super) fn copy_to_user(
+        &self,
+        user_address: usize,
+        source: &[u8],
+    ) -> Result<(), UserAccessError> {
         self.lock_for_access()?.copy_to_user(user_address, source)
     }
 
-    pub(super) fn zero_user(&self, user_address: usize, length: usize) -> Result<(), UserAccessError> {
+    pub(super) fn zero_user(
+        &self,
+        user_address: usize,
+        length: usize,
+    ) -> Result<(), UserAccessError> {
         self.lock_for_access()?.zero_user(user_address, length)
     }
 
-    pub(super) fn validate_user_write(&self, user_address: usize, length: usize) -> Result<(), UserAccessError> {
-        self.lock_for_access()?.validate_user_write(user_address, length)
+    pub(super) fn validate_user_write(
+        &self,
+        user_address: usize,
+        length: usize,
+    ) -> Result<(), UserAccessError> {
+        self.lock_for_access()?
+            .validate_user_write(user_address, length)
     }
 
-    pub(super) fn copy_user_c_string(&self, user_address: usize, max_len: usize) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
-        self.lock_for_access()?.copy_user_c_string(user_address, max_len)
+    pub(super) fn copy_user_c_string(
+        &self,
+        user_address: usize,
+        max_len: usize,
+    ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
+        self.lock_for_access()?
+            .copy_user_c_string(user_address, max_len)
     }
 
     /// 调试访问（ptrace、`/proc/<pid>/mem`）：返回实际传输字节数。
-    pub(super) fn access_forced(&self, address: usize, buffer: &mut [u8], write: bool) -> Result<usize, UserAccessError> {
-        Ok(self.lock_for_access()?.access_forced(address, buffer, write))
+    pub(super) fn access_forced(
+        &self,
+        address: usize,
+        buffer: &mut [u8],
+        write: bool,
+    ) -> Result<usize, UserAccessError> {
+        Ok(self
+            .lock_for_access()?
+            .access_forced(address, buffer, write))
     }
 }

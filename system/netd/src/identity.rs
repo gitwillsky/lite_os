@@ -11,6 +11,8 @@ static NEXT: AtomicU64 = AtomicU64::new(1);
 ///
 /// 64 位空间耗尽。
 pub(crate) fn next() -> u64 {
-    NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| current.checked_add(1))
-        .expect("object identity exhausted")
+    NEXT.try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        current.checked_add(1)
+    })
+    .expect("object identity exhausted")
 }

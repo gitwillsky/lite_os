@@ -5,8 +5,8 @@ use alloc::vec::Vec;
 use core::mem::MaybeUninit;
 
 use device_model::{EntropyError, EntropySource};
-use native_runtime::native_abi::{self, Status};
 use native_runtime::Channel;
+use native_runtime::native_abi::{self, Status};
 
 use crate::directory::{self, Announcement, Class};
 use crate::{Reader, Writer, call, serve, take_handle};
@@ -26,21 +26,32 @@ pub fn publish(directory: &Channel, device: Arc<dyn EntropySource>) -> Result<()
         server,
         1,
         b"entropy-server",
-        Arc::try_new(move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
-            if ordinal != FILL {
-                return Err(native_abi::ERR_NOT_SUPPORTED);
-            }
-            let length = request.usize()?.min(CHUNK);
-            let mut bytes = alloc::vec![MaybeUninit::<u8>::uninit(); length];
-            device.fill(&mut bytes).map_err(|EntropyError| native_abi::ERR_IO)?;
-            // SAFETY: `fill` 成功即完整初始化了全部字节。
-            let bytes = unsafe { &*(core::ptr::from_ref::<[MaybeUninit<u8>]>(bytes.as_slice()) as *const [u8]) };
-            reply.bytes(bytes);
-            Ok(Vec::new())
-        })
+        Arc::try_new(
+            move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
+                if ordinal != FILL {
+                    return Err(native_abi::ERR_NOT_SUPPORTED);
+                }
+                let length = request.usize()?.min(CHUNK);
+                let mut bytes = alloc::vec![MaybeUninit::<u8>::uninit(); length];
+                device
+                    .fill(&mut bytes)
+                    .map_err(|EntropyError| native_abi::ERR_IO)?;
+                // SAFETY: `fill` 成功即完整初始化了全部字节。
+                let bytes = unsafe {
+                    &*(core::ptr::from_ref::<[MaybeUninit<u8>]>(bytes.as_slice()) as *const [u8])
+                };
+                reply.bytes(bytes);
+                Ok(Vec::new())
+            },
+        )
         .map_err(|_| native_abi::ERR_NO_MEMORY)?,
     )?;
-    directory::announce(directory, Class::Entropy, &directory::description(), alloc::vec![client.into_handle()])
+    directory::announce(
+        directory,
+        Class::Entropy,
+        &directory::description(),
+        alloc::vec![client.into_handle()],
+    )
 }
 
 /// 使用者端的远端 entropy 设备。

@@ -107,7 +107,11 @@ impl MemorySet {
             .checked_mul(WORD)
             .ok_or(ElfLoadError::InvalidElf)?;
         let stack_pointer = stack_top
-            .checked_sub(pointers.checked_add(strings).ok_or(ElfLoadError::InvalidElf)?)
+            .checked_sub(
+                pointers
+                    .checked_add(strings)
+                    .ok_or(ElfLoadError::InvalidElf)?,
+            )
             .ok_or(ElfLoadError::InvalidElf)?
             & !15;
         let size = stack_top - stack_pointer;
@@ -115,7 +119,9 @@ impl MemorySet {
             return Err(ElfLoadError::InvalidElf);
         }
         let mut image = Vec::new();
-        image.try_reserve_exact(size).map_err(|_| ElfLoadError::OutOfMemory)?;
+        image
+            .try_reserve_exact(size)
+            .map_err(|_| ElfLoadError::OutOfMemory)?;
         image.resize(size, 0);
         // 字符串区从指针区之后开始；对齐填充落在两区之间。
         let mut string = stack_pointer + pointers;

@@ -3,8 +3,8 @@
 mod byte_ring;
 mod wire;
 
-use alloc::{sync::Arc, vec::Vec};
 use crate::sync::Mutex;
+use alloc::{sync::Arc, vec::Vec};
 use native_runtime::sync::Once;
 
 use super::{
@@ -12,12 +12,9 @@ use super::{
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
     queue::{DmaBuffer, UsedDescriptor, VirtQueue},
 };
-use device_model::{PortActivity, PortDevice, PortError};
-use crate::{
-    interrupt::InterruptError, interrupt::InterruptHandler,
-    interrupt::InterruptVector,
-};
+use crate::{interrupt::InterruptError, interrupt::InterruptHandler, interrupt::InterruptVector};
 use byte_ring::ByteRing;
+use device_model::{PortActivity, PortDevice, PortError};
 use wire::{data_queue_indices, is_spice_port_name};
 
 const VIRTIO_CONSOLE_F_MULTIPORT: u64 = 1 << 1;
@@ -121,7 +118,10 @@ impl VirtIOConsoleDevice {
     /// # Returns
     ///
     /// The same named-port adapter used by VirtIO MMIO, or `None` on negotiation failure.
-    pub(crate) fn from_pci(transport: PciTransport, bti: &'static native_runtime::Bti) -> Option<Arc<Self>> {
+    pub(crate) fn from_pci(
+        transport: PciTransport,
+        bti: &'static native_runtime::Bti,
+    ) -> Option<Arc<Self>> {
         Self::from_device(VirtIODevice::from_pci(3, transport, bti))
     }
 

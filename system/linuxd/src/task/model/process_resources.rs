@@ -1,8 +1,8 @@
 use alloc::sync::Arc;
 
 use super::TaskControlBlock;
-use crate::{devices::tty::Terminal, fs::OpenedFile, memory::MemoryError};
 use crate::sync::Mutex;
+use crate::{devices::tty::Terminal, fs::OpenedFile, memory::MemoryError};
 
 pub(super) const DEFAULT_UMASK: u32 = 0o022;
 

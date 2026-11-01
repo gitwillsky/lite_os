@@ -28,13 +28,18 @@ impl DeviceDirectory {
     }
 }
 
-fn attach(announcement: Announcement, hub: &Arc<EventHub>, boot: &mut Option<BootProgress>) -> Result<(), Status> {
+fn attach(
+    announcement: Announcement,
+    hub: &Arc<EventHub>,
+    boot: &mut Option<BootProgress>,
+) -> Result<(), Status> {
     match announcement.class {
         Class::Block => {
             let _ = super::block::register(block::connect(announcement)?);
         }
         Class::Network => {
-            crate::handles::network().attach_device(&announcement.description, announcement.handles)?;
+            crate::handles::network()
+                .attach_device(&announcement.description, announcement.handles)?;
         }
         Class::Display => {
             let _ = device_model::register_display_device(display::connect(announcement, hub)?);
@@ -44,7 +49,10 @@ fn attach(announcement: Announcement, hub: &Arc<EventHub>, boot: &mut Option<Boo
             let name = device.name().to_vec();
             // 注册顺序即 evdev minor：`/dev/input/event<index>` 绑定到这个设备。
             if let Ok(index) = device_model::register_input_device(device) {
-                info!("input event{index}: {}", core::str::from_utf8(&name).unwrap_or("<non-utf8>"));
+                info!(
+                    "input event{index}: {}",
+                    core::str::from_utf8(&name).unwrap_or("<non-utf8>")
+                );
             }
         }
         Class::Pcm => {
@@ -75,7 +83,8 @@ pub(crate) fn connect(channel: Channel) -> DeviceDirectory {
     let hub = EventHub::start().expect("device event hub");
     let mut boot = None;
     loop {
-        let announcement = directory::receive(&channel).expect("device directory closed during enumeration");
+        let announcement =
+            directory::receive(&channel).expect("device directory closed during enumeration");
         if announcement.class == Class::EnumerationComplete {
             break;
         }

@@ -1,11 +1,11 @@
 //! Calling Thread 的可退休 namespace membership；namespace 内容仍属于各具体 lower owner。
 use super::{TaskControlBlock, TaskKind};
+use crate::sync::Mutex;
 use crate::{
     memory::MemoryError,
     namespace::{NamespaceError, TimeNamespace, UserNamespace, UtsNamespace},
 };
 use alloc::sync::Arc;
-use crate::sync::Mutex;
 
 /// Membership tuple 可共享 concrete namespaces，但外层 handle 只属于一个 Thread。
 /// user namespace 独占于 Credentials；不能在这里保留可变的第二份 user membership。
@@ -104,9 +104,7 @@ pub(crate) struct ThreadCloneResources {
     pub(crate) namespaces: PreparedCloneNamespaces,
 }
 impl PreparedCloneNamespaces {
-    pub(in crate::task) fn pid_for_children(
-        &self,
-    ) -> Arc<crate::namespace::PidNamespace> {
+    pub(in crate::task) fn pid_for_children(&self) -> Arc<crate::namespace::PidNamespace> {
         self.membership.pid_for_children.clone()
     }
     pub(super) fn fs_context(
@@ -594,9 +592,7 @@ impl TaskControlBlock {
         }
     }
     /// proc NET lookup 捕获实际 target 的 nsproxy；已退出执行体返回 None。
-    pub(in crate::task) fn proc_net_namespace(
-        &self,
-    ) -> Option<Arc<crate::net::NetNamespace>> {
+    pub(in crate::task) fn proc_net_namespace(&self) -> Option<Arc<crate::net::NetNamespace>> {
         self.with_proc_namespaces(|membership| membership.net.clone())
     }
     pub(crate) fn mount_namespace(&self) -> Arc<crate::fs::MountNamespace> {

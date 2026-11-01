@@ -133,9 +133,9 @@ impl Channel {
     /// `ERR_PEER_CLOSED`、`ERR_NO_RESOURCES`、`ERR_NO_MEMORY`；失败时消息交还调用者在锁外释放。
     pub(crate) fn write(&self, message: Message) -> Result<(), (Status, Message)> {
         let peer = self.peer();
-        let Ok(mut state) = lock_with_spare(&self.shared.state, |_| 1, |state| {
-            &mut state[peer].inbound
-        }) else {
+        let Ok(mut state) =
+            lock_with_spare(&self.shared.state, |_| 1, |state| &mut state[peer].inbound)
+        else {
             return Err((native_abi::ERR_NO_MEMORY, message));
         };
         self.publish(&mut state, message)
@@ -166,7 +166,11 @@ impl Channel {
     ///
     /// # Errors
     /// `ERR_SHOULD_WAIT`（空）、`ERR_PEER_CLOSED`（空且对端关闭）、`ERR_BUFFER_TOO_SMALL`（消息保留）。
-    pub(crate) fn read(&self, bytes_capacity: usize, handles_capacity: usize) -> Result<Message, ReadError> {
+    pub(crate) fn read(
+        &self,
+        bytes_capacity: usize,
+        handles_capacity: usize,
+    ) -> Result<Message, ReadError> {
         let mut state = self.shared.state.lock();
         let peer_open = state[self.peer()].open;
         let side = &mut state[self.side];
@@ -225,18 +229,18 @@ impl Channel {
         let own = self.side;
         // 请求入队与事务登记需要两处空位；交替扩容直到同一临界区内两者都满足。
         let mut state = loop {
-            let Ok(state) = lock_with_spare(&self.shared.state, |_| 1, |state| {
-                &mut state[own].calls
-            }) else {
+            let Ok(state) =
+                lock_with_spare(&self.shared.state, |_| 1, |state| &mut state[own].calls)
+            else {
                 return Err((native_abi::ERR_NO_MEMORY, Some(message)));
             };
             if has_spare(&state[peer].inbound) {
                 break state;
             }
             drop(state);
-            let Ok(state) = lock_with_spare(&self.shared.state, |_| 1, |state| {
-                &mut state[peer].inbound
-            }) else {
+            let Ok(state) =
+                lock_with_spare(&self.shared.state, |_| 1, |state| &mut state[peer].inbound)
+            else {
                 return Err((native_abi::ERR_NO_MEMORY, Some(message)));
             };
             if has_spare(&state[own].calls) {

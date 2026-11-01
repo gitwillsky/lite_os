@@ -30,7 +30,9 @@ fn decimal(value: &[u8]) -> Option<i64> {
     }
     let mut number: i64 = 0;
     for digit in digits {
-        number = number.checked_mul(10)?.checked_add(i64::from(digit - b'0'))?;
+        number = number
+            .checked_mul(10)?
+            .checked_add(i64::from(digit - b'0'))?;
     }
     Some(if negative { -number } else { number })
 }
@@ -41,7 +43,10 @@ fn decimal(value: &[u8]) -> Option<i64> {
 /// 选项值非法时返回 [`CommandLineError`]。
 pub(crate) fn parse(line: &[u8]) -> Result<KernelParameters, CommandLineError> {
     let mut parameters = KernelParameters::default();
-    for word in line.split(u8::is_ascii_whitespace).filter(|word| !word.is_empty()) {
+    for word in line
+        .split(u8::is_ascii_whitespace)
+        .filter(|word| !word.is_empty())
+    {
         if word == b"quiet" {
             parameters.log_level = Some(4);
         } else if word == b"debug" {

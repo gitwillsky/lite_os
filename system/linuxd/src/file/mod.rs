@@ -17,9 +17,9 @@ pub(crate) use readiness::{ReadinessSource, ReadinessSources};
 pub(crate) use signalfd::{FileReadinessContext, SignalFd, SignalWaitSource};
 pub(crate) use timerfd::{TimerError, TimerFd, TimerFdBackend, TimerFdRead, TimerSetting};
 
+use crate::sync::Mutex;
 use alloc::sync::Arc;
 use core::sync::atomic::AtomicUsize;
-use crate::sync::Mutex;
 
 use position::FilePosition;
 pub(crate) use position::PositionError;
@@ -645,8 +645,10 @@ static READINESS_GENERATION: core::sync::atomic::AtomicU64 = core::sync::atomic:
 /// 非零 generation；仅用于事件 identity，不承载数据发布同步。
 pub(crate) fn next_readiness_generation() -> u64 {
     READINESS_GENERATION
-        .try_update(core::sync::atomic::Ordering::Relaxed, core::sync::atomic::Ordering::Relaxed, |current| {
-            current.checked_add(1)
-        })
+        .try_update(
+            core::sync::atomic::Ordering::Relaxed,
+            core::sync::atomic::Ordering::Relaxed,
+            |current| current.checked_add(1),
+        )
         .expect("readiness generation exhausted")
 }

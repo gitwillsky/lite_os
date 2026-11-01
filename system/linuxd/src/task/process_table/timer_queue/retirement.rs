@@ -1,7 +1,7 @@
 //! 真实 timer/deadline AVL node 的锁外退休；复用已摘 storage，不分配 cleanup snapshot。
 use super::{KernelTimer, PosixTimer, RealTimer, TimerFile, TimerIdentity};
-use fallible_tree::FallibleMap;
 use alloc::sync::Weak;
+use fallible_tree::FallibleMap;
 
 /// 唯一已摘除的 owned records；不保存 active mirror 或手动同步计数。
 #[derive(Default)]

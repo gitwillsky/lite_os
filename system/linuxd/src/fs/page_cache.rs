@@ -32,8 +32,10 @@ mod writeback;
 mod writeback_batch;
 
 use registry::cached_file;
-pub(crate) use registry::{evict_cached, evict_filesystem, invalidate, statistics, sync_all, write_back, writeback_cached};
 pub(super) use registry::evict_if_unlinked;
+pub(crate) use registry::{
+    evict_cached, evict_filesystem, invalidate, statistics, sync_all, write_back, writeback_cached,
+};
 pub(crate) use regular_file::RegularFile;
 
 /// 页缓存的全局页统计。
@@ -58,7 +60,10 @@ pub(crate) struct CachedFile {
 
 impl core::fmt::Debug for CachedFile {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.debug_struct("CachedFile").field("id", &self.id).finish_non_exhaustive()
+        formatter
+            .debug_struct("CachedFile")
+            .field("id", &self.id)
+            .finish_non_exhaustive()
     }
 }
 
@@ -70,7 +75,10 @@ fn status_error(status: native_runtime::native_abi::Status) -> FileSystemError {
 }
 
 impl CachedFile {
-    fn lock<'a>(&self, mutex: &'a TaskMutex<()>) -> Result<TaskMutexGuard<'a, ()>, FileSystemError> {
+    fn lock<'a>(
+        &self,
+        mutex: &'a TaskMutex<()>,
+    ) -> Result<TaskMutexGuard<'a, ()>, FileSystemError> {
         mutex.lock().map_err(|_| FileSystemError::OutOfMemory)
     }
 
@@ -79,7 +87,9 @@ impl CachedFile {
         let needed = size.next_multiple_of(PAGE_SIZE as u64);
         let current = self.object.size().map_err(|_| FileSystemError::IoError)?;
         if needed > current {
-            self.object.set_size(needed).map_err(|_| FileSystemError::OutOfMemory)?;
+            self.object
+                .set_size(needed)
+                .map_err(|_| FileSystemError::OutOfMemory)?;
         }
         Ok(())
     }
@@ -101,9 +111,14 @@ impl CachedFile {
 
     /// 缓冲写：只写入缓存，推进 EOF；脏页由回写交给存储。
     fn write_buffered(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
-        let end = offset.checked_add(input.len() as u64).ok_or(FileSystemError::NoSpace)?;
+        let end = offset
+            .checked_add(input.len() as u64)
+            .ok_or(FileSystemError::NoSpace)?;
         self.cover(end)?;
-        self.object.vmo().write(input, offset).map_err(status_error)?;
+        self.object
+            .vmo()
+            .write(input, offset)
+            .map_err(status_error)?;
         if end > self.inode.size() {
             self.inode.extend_buffered_size(end);
         }
@@ -117,7 +132,10 @@ impl CachedFile {
         }
         let end = offset + input.len() as u64;
         self.cover(end)?;
-        self.object.vmo().write(input, offset).map_err(status_error)?;
+        self.object
+            .vmo()
+            .write(input, offset)
+            .map_err(status_error)?;
         let first = offset & !(PAGE_SIZE as u64 - 1);
         let last = end.next_multiple_of(PAGE_SIZE as u64);
         pager::begin_writeback(&self.object, first, last - first);
@@ -128,7 +146,10 @@ impl CachedFile {
     fn drop_range(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
         let first = offset & !(PAGE_SIZE as u64 - 1);
         let size = self.object.size().map_err(|_| FileSystemError::IoError)?;
-        let end = offset.saturating_add(length).next_multiple_of(PAGE_SIZE as u64).min(size);
+        let end = offset
+            .saturating_add(length)
+            .next_multiple_of(PAGE_SIZE as u64)
+            .min(size);
         if first >= end {
             return Ok(());
         }
@@ -221,7 +242,10 @@ struct MappedFile {
 
 impl core::fmt::Debug for MappedFile {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.debug_struct("MappedFile").field("inner", &self.inner).finish_non_exhaustive()
+        formatter
+            .debug_struct("MappedFile")
+            .field("inner", &self.inner)
+            .finish_non_exhaustive()
     }
 }
 
@@ -244,13 +268,19 @@ impl SharedFileMapping for MappedFile {
 /// # Errors
 ///
 /// 存储截断失败。
-pub(crate) fn truncate(inode: Arc<dyn Inode>, size: u64, identity: &AccessIdentity) -> Result<(), FileSystemError> {
+pub(crate) fn truncate(
+    inode: Arc<dyn Inode>,
+    size: u64,
+    identity: &AccessIdentity,
+) -> Result<(), FileSystemError> {
     if inode.inode_type() != InodeType::File {
         return inode.truncate_storage(size, Some(identity));
     }
     let file = match inode.data_backing() {
         DataBacking::PageCache => cached_file(inode)?.ok_or(FileSystemError::InvalidOperation)?,
-        DataBacking::Memory(_) | DataBacking::Snapshot => return inode.truncate_storage(size, Some(identity)),
+        DataBacking::Memory(_) | DataBacking::Snapshot => {
+            return inode.truncate_storage(size, Some(identity));
+        }
     };
     let _sequence = file.lock(&file.write_sequence)?;
     let _operation = file.lock(&file.operation)?;
@@ -259,7 +289,9 @@ pub(crate) fn truncate(inode: Arc<dyn Inode>, size: u64, identity: &AccessIdenti
     file.inode.truncate_storage(size, Some(identity))?;
     let rounded = size.next_multiple_of(PAGE_SIZE as u64);
     if file.object.size().map_err(|_| FileSystemError::IoError)? > rounded {
-        file.object.set_size(rounded).map_err(|_| FileSystemError::IoError)?;
+        file.object
+            .set_size(rounded)
+            .map_err(|_| FileSystemError::IoError)?;
     }
     if size < previous && size < rounded {
         // 新末页中越过 EOF 的字节此后必须读到零；存储已截断，这些字节不需要回写。
@@ -276,7 +308,12 @@ pub(crate) fn truncate(inode: Arc<dyn Inode>, size: u64, identity: &AccessIdenti
 /// # Errors
 ///
 /// 存储分配失败。
-pub(crate) fn allocate(inode: Arc<dyn Inode>, offset: u64, length: u64, identity: &AccessIdentity) -> Result<(), FileSystemError> {
+pub(crate) fn allocate(
+    inode: Arc<dyn Inode>,
+    offset: u64,
+    length: u64,
+    identity: &AccessIdentity,
+) -> Result<(), FileSystemError> {
     if inode.inode_type() != InodeType::File {
         return inode.allocate_storage(offset, length, Some(identity));
     }

@@ -114,19 +114,27 @@ impl<'a> Reader<'a> {
     }
 
     pub fn u16(&mut self) -> Result<u16, Status> {
-        Ok(u16::from_le_bytes(self.take(2)?.try_into().expect("two bytes")))
+        Ok(u16::from_le_bytes(
+            self.take(2)?.try_into().expect("two bytes"),
+        ))
     }
 
     pub fn u32(&mut self) -> Result<u32, Status> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().expect("four bytes")))
+        Ok(u32::from_le_bytes(
+            self.take(4)?.try_into().expect("four bytes"),
+        ))
     }
 
     pub fn i32(&mut self) -> Result<i32, Status> {
-        Ok(i32::from_le_bytes(self.take(4)?.try_into().expect("four bytes")))
+        Ok(i32::from_le_bytes(
+            self.take(4)?.try_into().expect("four bytes"),
+        ))
     }
 
     pub fn u64(&mut self) -> Result<u64, Status> {
-        Ok(u64::from_le_bytes(self.take(8)?.try_into().expect("eight bytes")))
+        Ok(u64::from_le_bytes(
+            self.take(8)?.try_into().expect("eight bytes"),
+        ))
     }
 
     pub fn usize(&mut self) -> Result<usize, Status> {
@@ -165,7 +173,12 @@ impl Reply {
 ///
 /// 传输失败（对端已关闭为 `ERR_PEER_CLOSED`），或驱动宿主报告的状态。
 pub fn call(channel: &Channel, request: &Writer, handles: Vec<Handle>) -> Result<Reply, Status> {
-    let message = channel.call(request.as_bytes(), handles, REPLY_CAPACITY, DEADLINE_INFINITE)?;
+    let message = channel.call(
+        request.as_bytes(),
+        handles,
+        REPLY_CAPACITY,
+        DEADLINE_INFINITE,
+    )?;
     let mut header = Reader::new(&message.bytes);
     let _transaction = header.u32()?;
     let status = header.i32()?;
@@ -179,7 +192,10 @@ pub fn call(channel: &Channel, request: &Writer, handles: Vec<Handle>) -> Result
 }
 
 /// 服务端处理一条请求：`ordinal` 与参数解码器、请求句柄、回复编码器。
-pub type Handler<'a> = dyn Fn(u32, &mut Reader<'_>, Vec<Handle>, &mut Writer) -> Result<Vec<Handle>, Status> + Send + Sync + 'a;
+pub type Handler<'a> = dyn Fn(u32, &mut Reader<'_>, Vec<Handle>, &mut Writer) -> Result<Vec<Handle>, Status>
+    + Send
+    + Sync
+    + 'a;
 
 /// 以 `workers` 个线程服务 `channel`；对端关闭时线程退出。
 ///
@@ -190,7 +206,12 @@ pub type Handler<'a> = dyn Fn(u32, &mut Reader<'_>, Vec<Handle>, &mut Writer) ->
 /// # Errors
 ///
 /// 线程创建失败。
-pub fn serve(channel: Channel, workers: usize, name: &[u8], handler: Arc<Handler<'static>>) -> Result<(), Status> {
+pub fn serve(
+    channel: Channel,
+    workers: usize,
+    name: &[u8],
+    handler: Arc<Handler<'static>>,
+) -> Result<(), Status> {
     let channel = Arc::try_new(channel).map_err(|_| native_abi::ERR_NO_MEMORY)?;
     for _ in 0..workers.max(1) {
         let channel = channel.clone();

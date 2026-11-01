@@ -3,8 +3,8 @@
 //! 注册表持有强引用：脏的 `MAP_SHARED` 页在最后一个映射消失后仍须保留到写回。
 
 use super::*;
+use crate::sync::{Mutex, Once};
 use fallible_tree::FallibleMap;
-use native_runtime::sync::{Mutex, Once};
 
 // OWNER: 全部缓存文件；查询与发布同锁，同一 inode 不会出现两个缓存文件。
 static FILES: Once<Mutex<FallibleMap<SharedFileId, Arc<CachedFile>>>> = Once::new();
@@ -19,7 +19,9 @@ impl Drop for CachedFile {
     }
 }
 
-pub(super) fn cached_file(inode: Arc<dyn Inode>) -> Result<Option<Arc<CachedFile>>, FileSystemError> {
+pub(super) fn cached_file(
+    inode: Arc<dyn Inode>,
+) -> Result<Option<Arc<CachedFile>>, FileSystemError> {
     if !matches!(inode.inode_type(), InodeType::File | InodeType::BlockDevice) {
         return Err(FileSystemError::InvalidOperation);
     }
@@ -30,7 +32,8 @@ pub(super) fn cached_file(inode: Arc<dyn Inode>) -> Result<Option<Arc<CachedFile
     if let Some(file) = files().lock().get(&id) {
         return Ok(Some(file.clone()));
     }
-    let slot = FallibleMap::<SharedFileId, Arc<CachedFile>>::try_reserve_node().map_err(|_| FileSystemError::OutOfMemory)?;
+    let slot = FallibleMap::<SharedFileId, Arc<CachedFile>>::try_reserve_node()
+        .map_err(|_| FileSystemError::OutOfMemory)?;
     let (object, key) = pager::create_object(inode.size())?;
     let file = Arc::try_new(CachedFile {
         id,
@@ -80,7 +83,11 @@ fn writeback_file(file: &CachedFile, durable: bool) -> Result<(), FileSystemErro
 fn remove_if_unused(id: SharedFileId, file: &Arc<CachedFile>) {
     let removed = {
         let mut files = files().lock();
-        if files.get(&id).is_some_and(|current| Arc::ptr_eq(current, file)) && Arc::strong_count(file) == 2 {
+        if files
+            .get(&id)
+            .is_some_and(|current| Arc::ptr_eq(current, file))
+            && Arc::strong_count(file) == 2
+        {
             files.remove(&id)
         } else {
             None
@@ -103,7 +110,10 @@ pub(crate) fn evict_filesystem(filesystem_id: usize) -> Result<(), FileSystemErr
         }
         let removed = {
             let mut files = files().lock();
-            if files.get(&id).is_some_and(|current| Arc::ptr_eq(current, &file)) {
+            if files
+                .get(&id)
+                .is_some_and(|current| Arc::ptr_eq(current, &file))
+            {
                 files.remove(&id)
             } else {
                 None
@@ -116,7 +126,9 @@ pub(crate) fn evict_filesystem(filesystem_id: usize) -> Result<(), FileSystemErr
 
 /// 最后一个链接被删除的 inode 不再需要缓存。
 pub(in crate::fs) fn evict_if_unlinked(inode: &Arc<dyn Inode>) {
-    if inode.inode_type() != InodeType::File || !matches!(inode.data_backing(), DataBacking::PageCache) {
+    if inode.inode_type() != InodeType::File
+        || !matches!(inode.data_backing(), DataBacking::PageCache)
+    {
         return;
     }
     let Some((number, 0)) = inode.notification_link_state() else {
@@ -128,7 +140,9 @@ pub(in crate::fs) fn evict_if_unlinked(inode: &Arc<dyn Inode>) {
     };
     let evicted = {
         let mut files = files().lock();
-        let removable = files.get(&id).is_some_and(|file| Arc::strong_count(&file.inode) == 2);
+        let removable = files
+            .get(&id)
+            .is_some_and(|file| Arc::strong_count(&file.inode) == 2);
         if removable { files.remove(&id) } else { None }
     };
     drop(evicted);
@@ -148,10 +162,15 @@ pub(crate) fn invalidate(id: SharedFileId, wait: bool) -> Result<(), FileSystemE
         return Ok(());
     };
     let (_sequence, _operation) = if wait {
-        (file.lock(&file.write_sequence)?, file.lock(&file.operation)?)
+        (
+            file.lock(&file.write_sequence)?,
+            file.lock(&file.operation)?,
+        )
     } else {
         (
-            file.write_sequence.try_lock().ok_or(FileSystemError::Busy)?,
+            file.write_sequence
+                .try_lock()
+                .ok_or(FileSystemError::Busy)?,
             file.operation.try_lock().ok_or(FileSystemError::Busy)?,
         )
     };
@@ -197,9 +216,12 @@ pub(crate) fn statistics() -> PageCacheStatistics {
     let mut cursor = None;
     while let Some((id, file)) = next_cached(cursor) {
         cursor = Some(id);
-        statistics.resident_pages += file.object.committed_bytes().unwrap_or(0) as usize / PAGE_SIZE;
+        statistics.resident_pages +=
+            file.object.committed_bytes().unwrap_or(0) as usize / PAGE_SIZE;
         let mut offset = 0;
-        while let Some((start, length)) = pager::first_dirty(&file.object, offset, u64::MAX - offset) {
+        while let Some((start, length)) =
+            pager::first_dirty(&file.object, offset, u64::MAX - offset)
+        {
             statistics.dirty_pages += (length / PAGE_SIZE as u64) as usize;
             offset = start + length;
         }

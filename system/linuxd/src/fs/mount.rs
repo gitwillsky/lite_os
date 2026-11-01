@@ -3,9 +3,9 @@
 //! 内核只挂载根文件系统与 `/dev`（Linux `CONFIG_DEVTMPFS_MOUNT`）；`/proc`、`/sys`、`/dev/pts`
 //! 等由 init 经 `mount(2)` 挂载。
 
-use alloc::{sync::Arc, vec::Vec};
 use crate::sync::Mutex;
-use native_runtime::sync::Once;
+use crate::sync::Once;
+use alloc::{sync::Arc, vec::Vec};
 
 use super::vfs::{MountDeviceClaim, MountedFilesystem};
 use super::{

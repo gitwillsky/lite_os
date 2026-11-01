@@ -24,9 +24,12 @@ use super::{
     mount::{FileSystemType, MountRequest},
     permission::OwnerModeState,
 };
-use crate::{sync::{TaskMutex, TaskMutexGuard}, memory::SharedFileId};
-use fallible_tree::FallibleMap;
+use crate::{
+    memory::SharedFileId,
+    sync::{TaskMutex, TaskMutexGuard},
+};
 use directory::{Directory, FIRST_ENTRY_COOKIE};
+use fallible_tree::FallibleMap;
 
 mod directory;
 mod options;
@@ -506,8 +509,7 @@ impl Inode for TmpInode {
         identity: Option<&crate::fs::AccessIdentity>,
     ) -> Result<(), FileSystemError> {
         // Success has already published pages/length: reserve the metadata waiter before mutation.
-        let mut wait =
-            crate::sync::TaskMutexWaitPreparation::prepare().map_err(lock_error)?;
+        let mut wait = crate::sync::TaskMutexWaitPreparation::prepare().map_err(lock_error)?;
         self.file()?.allocate_with_metadata(offset, length, || {
             self.remove_write_privileges_prepared(identity, &mut wait)
         })

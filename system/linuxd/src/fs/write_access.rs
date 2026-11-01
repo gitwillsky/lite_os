@@ -1,7 +1,7 @@
 //! Canonical inode 的唯一 Linux i_writecount；路径别名、OFD 与 exec 共用 actual inode owner。
 use super::{FileSystemError, Inode};
-use alloc::sync::Arc;
 use crate::sync::Mutex;
+use alloc::sync::Arc;
 
 /// 正数是写访问租约，负数是执行 deny-write 租约；两种准入在同一短锁下互斥。
 /// 不分配、不回调；只 pin actual inode 的 lease 在锁外执行最后 resource Drop。

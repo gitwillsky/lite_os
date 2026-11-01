@@ -25,7 +25,9 @@ pub(super) fn install() {
 /// kill 时打断可中断等待。
 pub(super) fn interrupt(thread: &Arc<Thread>) {
     let interruptible = match processor::waiting_membership(thread) {
-        Some(WaitMembership::Event(key)) => key.interruptible().then_some(WaitMembership::Event(key)),
+        Some(WaitMembership::Event(key)) => {
+            key.interruptible().then_some(WaitMembership::Event(key))
+        }
         Some(membership @ WaitMembership::Sleep(_)) => Some(membership),
         None => None,
     };
@@ -81,7 +83,9 @@ impl TaskWaitTarget for Thread {
             processor::wake_waiting(self.clone(), membership, WaitResult::Woken, false);
         } else if key.signal_pending(self.as_ref()) {
             processor::wake_waiting(self.clone(), membership, WaitResult::Interrupted, false);
-        } else if token.is_some_and(|(deadline, _)| deadline <= crate::execution::timer::get_time_ns()) {
+        } else if token
+            .is_some_and(|(deadline, _)| deadline <= crate::execution::timer::get_time_ns())
+        {
             processor::wake_waiting(self.clone(), membership, WaitResult::TimedOut, false);
         }
         let result = prepared.suspend();

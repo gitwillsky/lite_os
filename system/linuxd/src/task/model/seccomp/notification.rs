@@ -4,15 +4,15 @@ mod addfd;
 mod listener;
 pub(super) use listener::ListenerFile;
 
+use crate::sync::Mutex;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use crate::sync::Mutex;
 use syscall_abi::{errno, seccomp::*};
 
 use super::{SeccompError, TaskControlBlock};
 use crate::{
-    sync::{TaskEvent, WaitResult},
     ipc::{Pipe, PipeEnd},
+    sync::{TaskEvent, WaitResult},
 };
 use addfd::AddFd;
 

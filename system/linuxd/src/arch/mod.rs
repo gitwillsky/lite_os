@@ -18,16 +18,18 @@ pub(crate) use selected::fp;
 
 /// 用户寄存器上下文与 syscall 编解码。
 pub(crate) mod context {
-    pub(crate) use super::selected::signal_frame::{MIN_SIGNAL_STACK_SIZE, SIGNAL_FRAME_SIZE, SignalFrame, SignalStack};
+    pub(crate) use super::selected::signal_frame::{
+        MIN_SIGNAL_STACK_SIZE, SIGNAL_FRAME_SIZE, SignalFrame, SignalStack,
+    };
     pub(crate) use super::selected::user::SyscallCompletion;
     pub(crate) use super::selected::{UserContext, UserFault};
 }
 
 /// Linux 架构常量与 sigaction 布局。
 pub(crate) mod user {
+    pub(crate) use super::selected::SIGRETURN_TRAMPOLINE;
     pub(crate) use super::selected::signal_action::SignalActionBytes;
     pub(crate) use super::selected::user::{
         AUDIT_ARCH, ELF_HWCAP, ELF_MACHINE, MACHINE_NAME, decode_private_syscall, valid_elf_flags,
     };
-    pub(crate) use super::selected::SIGRETURN_TRAMPOLINE;
 }

@@ -49,7 +49,12 @@ impl Handle {
     pub fn duplicate(&self, rights: u32) -> Result<Self, Status> {
         let mut out = native_abi::HANDLE_INVALID;
         // SAFETY: `out` 是有效的输出位置。
-        check(unsafe { invoke(call::HANDLE_DUPLICATE, &[self.0 as usize, rights as usize, (&raw mut out) as usize]) })?;
+        check(unsafe {
+            invoke(
+                call::HANDLE_DUPLICATE,
+                &[self.0 as usize, rights as usize, (&raw mut out) as usize],
+            )
+        })?;
         Ok(Self(out))
     }
 
@@ -62,7 +67,12 @@ impl Handle {
         let mut out = native_abi::HANDLE_INVALID;
         let raw = self.into_raw();
         // SAFETY: `out` 是有效的输出位置。
-        check(unsafe { invoke(call::HANDLE_REPLACE, &[raw as usize, rights as usize, (&raw mut out) as usize]) })?;
+        check(unsafe {
+            invoke(
+                call::HANDLE_REPLACE,
+                &[raw as usize, rights as usize, (&raw mut out) as usize],
+            )
+        })?;
         Ok(Self(out))
     }
 
@@ -77,7 +87,12 @@ impl Handle {
         check(unsafe {
             invoke(
                 call::OBJECT_WAIT_ONE,
-                &[self.0 as usize, signals as usize, deadline as usize, (&raw mut observed) as usize],
+                &[
+                    self.0 as usize,
+                    signals as usize,
+                    deadline as usize,
+                    (&raw mut observed) as usize,
+                ],
             )
         })?;
         Ok(observed)
@@ -93,7 +108,12 @@ impl Handle {
         check(unsafe {
             invoke(
                 call::OBJECT_WAIT_ASYNC,
-                &[self.0 as usize, port.0 as usize, key as usize, signals as usize],
+                &[
+                    self.0 as usize,
+                    port.0 as usize,
+                    key as usize,
+                    signals as usize,
+                ],
             )
         })
     }
@@ -105,7 +125,12 @@ impl Handle {
     /// 包含不可由用户修改的位。
     pub fn signal(&self, clear: u32, set: u32) -> Result<(), Status> {
         // SAFETY: 无指针参数。
-        check(unsafe { invoke(call::OBJECT_SIGNAL, &[self.0 as usize, clear as usize, set as usize]) })
+        check(unsafe {
+            invoke(
+                call::OBJECT_SIGNAL,
+                &[self.0 as usize, clear as usize, set as usize],
+            )
+        })
     }
 
     /// 读取 `topic` 信息到 `buffer`，返回实际字节数。

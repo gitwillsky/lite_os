@@ -4,7 +4,7 @@
 use alloc::sync::Arc;
 
 use crate::vm::page_table::PagePermissions;
-use crate::vm::{Placement, Vmar, Vmo, VmError, VmoOptions};
+use crate::vm::{Placement, VmError, Vmar, Vmo, VmoOptions};
 
 const PT_LOAD: u32 = 1;
 const PF_X: u32 = 1;
@@ -53,7 +53,10 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, ElfError> {
 /// # Errors
 /// 见 [`ElfError`]。
 pub(super) fn load(image: &[u8], vmar: &Arc<Vmar>) -> Result<usize, ElfError> {
-    if image.get(..4) != Some(b"\x7fELF".as_slice()) || image.get(4) != Some(&2) || image.get(5) != Some(&1) {
+    if image.get(..4) != Some(b"\x7fELF".as_slice())
+        || image.get(4) != Some(&2)
+        || image.get(5) != Some(&1)
+    {
         return Err(ElfError::Unsupported);
     }
     if read_u16(image, 16)? != ET_EXEC || read_u16(image, 18)? != EXPECTED_MACHINE {
@@ -89,7 +92,12 @@ pub(super) fn load(image: &[u8], vmar: &Arc<Vmar>) -> Result<usize, ElfError> {
             .ok_or(ElfError::Malformed)?
             .next_multiple_of(page);
         let content = image
-            .get(file_offset..file_offset.checked_add(file_size).ok_or(ElfError::Malformed)?)
+            .get(
+                file_offset
+                    ..file_offset
+                        .checked_add(file_size)
+                        .ok_or(ElfError::Malformed)?,
+            )
             .ok_or(ElfError::Malformed)?;
         let vmo = Vmo::create((end - start) as u64, VmoOptions::default())?;
         vmo.write((address - start) as u64, content)?;

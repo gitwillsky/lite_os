@@ -31,8 +31,7 @@ impl GoldfishRTCDevice {
         if size < RTC_TIME_HIGH + core::mem::size_of::<u32>() {
             return Err(RtcError::InvalidRange);
         }
-        let bus =
-            mmio::MmioBus::new(base_addr, size).map_err(|_| RtcError::InvalidRange)?;
+        let bus = mmio::MmioBus::new(base_addr, size).map_err(|_| RtcError::InvalidRange)?;
         Ok(Self { bus })
     }
 

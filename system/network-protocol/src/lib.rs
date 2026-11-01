@@ -131,7 +131,8 @@ pub trait NetworkService: Send + Sync {
 /// 服务端：一个网络域。
 pub trait NamespaceService: Send + Sync {
     fn socket(&self, protocol: InetProtocol) -> Result<SocketEndpoint, SocketError>;
-    fn packet_socket(&self, kind: PacketKind, protocol: u16) -> Result<SocketEndpoint, SocketError>;
+    fn packet_socket(&self, kind: PacketKind, protocol: u16)
+    -> Result<SocketEndpoint, SocketError>;
     fn interface_index(&self, name: &[u8]) -> Result<u32, SocketError>;
     fn interface_snapshot(&self, index: u32) -> Result<InterfaceSnapshot, SocketError>;
     fn interface_snapshots(&self) -> Result<Vec<InterfaceSnapshot>, SocketError>;
@@ -142,7 +143,11 @@ pub trait NamespaceService: Send + Sync {
     fn configure_netmask(&self, index: u32, netmask: Ipv4Addr) -> Result<(), SocketError>;
     fn configure_broadcast(&self, index: u32, broadcast: Ipv4Addr) -> Result<(), SocketError>;
     fn configure_up(&self, index: u32, up: bool) -> Result<(), SocketError>;
-    fn configure_route(&self, request: Ipv4RouteRequest, change: RouteChange) -> Result<(), Ipv4RouteError>;
+    fn configure_route(
+        &self,
+        request: Ipv4RouteRequest,
+        change: RouteChange,
+    ) -> Result<(), Ipv4RouteError>;
 }
 
 /// 服务端：一个 INET socket；全部操作不阻塞。
@@ -344,7 +349,13 @@ fn put_interface(writer: &mut Writer, snapshot: &InterfaceSnapshot) {
     writer.u8(snapshot.prefix_length);
     put_ipv4(writer, snapshot.broadcast);
     writer.bool(snapshot.up);
-    writer.bytes(snapshot.driver.as_ref().map_or("", DriverName::as_str).as_bytes());
+    writer.bytes(
+        snapshot
+            .driver
+            .as_ref()
+            .map_or("", DriverName::as_str)
+            .as_bytes(),
+    );
     writer.bool(snapshot.driver.is_some());
 }
 
@@ -393,7 +404,9 @@ fn put_statistics(writer: &mut Writer, statistics: &device_model::network::Netwo
         .u64(statistics.transmitted_dropped);
 }
 
-fn get_statistics(reader: &mut Reader<'_>) -> Result<device_model::network::NetworkStatistics, Status> {
+fn get_statistics(
+    reader: &mut Reader<'_>,
+) -> Result<device_model::network::NetworkStatistics, Status> {
     Ok(device_model::network::NetworkStatistics {
         received_bytes: reader.u64()?,
         received_packets: reader.u64()?,
@@ -454,8 +467,13 @@ fn put_payload(writer: &mut Writer, handles: &mut Vec<Handle>, data: &[u8]) -> R
     }
     let vmo = Vmo::create(data.len() as u64, 0)?;
     vmo.write(data, 0)?;
-    handles.try_reserve(1).map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    writer.bool(true).u64(data.len() as u64).u32(handles.len() as u32);
+    handles
+        .try_reserve(1)
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    writer
+        .bool(true)
+        .u64(data.len() as u64)
+        .u32(handles.len() as u32);
     handles.push(vmo.into_handle());
     Ok(())
 }
@@ -496,12 +514,17 @@ fn put_result<T>(writer: &mut Writer, result: Result<T, SocketError>) -> Option<
 fn get_result(reader: &mut Reader<'_>) -> Result<Result<(), SocketError>, Status> {
     match reader.u8()? {
         0 => Ok(Ok(())),
-        code => Ok(Err(SocketError::from_code(code).ok_or(native_abi::ERR_INVALID_ARGS)?)),
+        code => Ok(Err(
+            SocketError::from_code(code).ok_or(native_abi::ERR_INVALID_ARGS)?
+        )),
     }
 }
 
 fn endpoint_handles(endpoint: SocketEndpoint) -> Vec<Handle> {
-    alloc::vec![endpoint.channel.into_handle(), endpoint.readiness.into_handle()]
+    alloc::vec![
+        endpoint.channel.into_handle(),
+        endpoint.readiness.into_handle()
+    ]
 }
 
 // ---- 服务端分派 ----
@@ -564,9 +587,14 @@ pub fn dispatch_namespace(
             Ok(put_result(reply, service.socket(protocol)).map_or_else(Vec::new, endpoint_handles))
         }
         ordinal::PACKET_SOCKET => {
-            let kind = if request.bool()? { PacketKind::Raw } else { PacketKind::Datagram };
+            let kind = if request.bool()? {
+                PacketKind::Raw
+            } else {
+                PacketKind::Datagram
+            };
             let protocol = request.u16()?;
-            Ok(put_result(reply, service.packet_socket(kind, protocol)).map_or_else(Vec::new, endpoint_handles))
+            Ok(put_result(reply, service.packet_socket(kind, protocol))
+                .map_or_else(Vec::new, endpoint_handles))
         }
         ordinal::INTERFACE_INDEX => {
             if let Some(index) = put_result(reply, service.interface_index(request.bytes()?)) {
@@ -623,7 +651,10 @@ pub fn dispatch_namespace(
         }
         ordinal::CONFIGURE_BROADCAST => {
             let index = request.u32()?;
-            unit(reply, service.configure_broadcast(index, get_ipv4(request)?))
+            unit(
+                reply,
+                service.configure_broadcast(index, get_ipv4(request)?),
+            )
         }
         ordinal::CONFIGURE_UP => {
             let index = request.u32()?;
@@ -638,7 +669,10 @@ pub fn dispatch_namespace(
                 exclusive: request.bool()?,
                 append: request.bool()?,
             };
-            reply.u8(service.configure_route(route, change).err().map_or(0, Ipv4RouteError::code));
+            reply.u8(service
+                .configure_route(route, change)
+                .err()
+                .map_or(0, Ipv4RouteError::code));
             Ok(Vec::new())
         }
         _ => Err(native_abi::ERR_NOT_SUPPORTED),
@@ -764,7 +798,8 @@ pub fn dispatch_inet(
             put_result(reply, service.bind_to_device(name, request.bool()?));
         }
         ordinal::OPTION => {
-            let option = InternetOption::from_code(request.u8()?).ok_or(native_abi::ERR_INVALID_ARGS)?;
+            let option =
+                InternetOption::from_code(request.u8()?).ok_or(native_abi::ERR_INVALID_ARGS)?;
             if let Some(value) = put_result(reply, service.option(option)) {
                 reply.i32(value);
             }
@@ -925,7 +960,11 @@ impl RemoteNamespace {
         take_endpoint(request(&self.channel, &writer, Vec::new())?)
     }
 
-    pub fn packet_socket(&self, kind: PacketKind, protocol: u16) -> Result<SocketEndpoint, SocketError> {
+    pub fn packet_socket(
+        &self,
+        kind: PacketKind,
+        protocol: u16,
+    ) -> Result<SocketEndpoint, SocketError> {
         let mut writer = Writer::request(ordinal::PACKET_SOCKET);
         writer.bool(kind == PacketKind::Raw).u16(protocol);
         take_endpoint(request(&self.channel, &writer, Vec::new())?)
@@ -984,7 +1023,12 @@ impl RemoteNamespace {
         })
     }
 
-    fn configure(&self, ordinal: u32, index: u32, encode: impl FnOnce(&mut Writer)) -> Result<(), SocketError> {
+    fn configure(
+        &self,
+        ordinal: u32,
+        index: u32,
+        encode: impl FnOnce(&mut Writer),
+    ) -> Result<(), SocketError> {
         let mut writer = Writer::request(ordinal);
         writer.u32(index);
         encode(&mut writer);
@@ -998,15 +1042,21 @@ impl RemoteNamespace {
     }
 
     pub fn configure_address(&self, index: u32, address: Ipv4Addr) -> Result<(), SocketError> {
-        self.configure(ordinal::CONFIGURE_ADDRESS, index, |writer| put_ipv4(writer, address))
+        self.configure(ordinal::CONFIGURE_ADDRESS, index, |writer| {
+            put_ipv4(writer, address)
+        })
     }
 
     pub fn configure_netmask(&self, index: u32, netmask: Ipv4Addr) -> Result<(), SocketError> {
-        self.configure(ordinal::CONFIGURE_NETMASK, index, |writer| put_ipv4(writer, netmask))
+        self.configure(ordinal::CONFIGURE_NETMASK, index, |writer| {
+            put_ipv4(writer, netmask)
+        })
     }
 
     pub fn configure_broadcast(&self, index: u32, broadcast: Ipv4Addr) -> Result<(), SocketError> {
-        self.configure(ordinal::CONFIGURE_BROADCAST, index, |writer| put_ipv4(writer, broadcast))
+        self.configure(ordinal::CONFIGURE_BROADCAST, index, |writer| {
+            put_ipv4(writer, broadcast)
+        })
     }
 
     pub fn configure_up(&self, index: u32, up: bool) -> Result<(), SocketError> {
@@ -1018,7 +1068,11 @@ impl RemoteNamespace {
     /// # Errors
     ///
     /// FIB 准入失败；服务不可用时为 `NetworkUnreachable`，内存不足为 `NoMemory`。
-    pub fn configure_route(&self, route: Ipv4RouteRequest, change: RouteChange) -> Result<(), Ipv4RouteError> {
+    pub fn configure_route(
+        &self,
+        route: Ipv4RouteRequest,
+        change: RouteChange,
+    ) -> Result<(), Ipv4RouteError> {
         let mut writer = Writer::request(ordinal::CONFIGURE_ROUTE);
         put_route(&mut writer, &route);
         writer
@@ -1077,12 +1131,20 @@ impl RemoteInetSocket {
     }
 
     pub fn address(&self) -> Result<InetAddress, SocketError> {
-        let reply = request(&self.channel, &Writer::request(ordinal::ADDRESS), Vec::new())?;
+        let reply = request(
+            &self.channel,
+            &Writer::request(ordinal::ADDRESS),
+            Vec::new(),
+        )?;
         get_inet(&mut body(&reply)).map_err(transport)
     }
 
     pub fn peer_address(&self) -> Result<InetAddress, SocketError> {
-        let reply = request(&self.channel, &Writer::request(ordinal::PEER_ADDRESS), Vec::new())?;
+        let reply = request(
+            &self.channel,
+            &Writer::request(ordinal::PEER_ADDRESS),
+            Vec::new(),
+        )?;
         get_inet(&mut body(&reply)).map_err(transport)
     }
 
@@ -1098,7 +1160,10 @@ impl RemoteInetSocket {
         let mut handles = Vec::new();
         put_payload(&mut writer, &mut handles, input).map_err(transport)?;
         let reply = request(&self.channel, &writer, handles)?;
-        body(&reply).u64().map(|count| count as usize).map_err(transport)
+        body(&reply)
+            .u64()
+            .map(|count| count as usize)
+            .map_err(transport)
     }
 
     pub fn receive(&self, limit: usize, peek: bool) -> Result<InetReceived, SocketError> {
@@ -1123,7 +1188,11 @@ impl RemoteInetSocket {
     }
 
     pub fn is_listening(&self) -> Result<bool, SocketError> {
-        let reply = request(&self.channel, &Writer::request(ordinal::IS_LISTENING), Vec::new())?;
+        let reply = request(
+            &self.channel,
+            &Writer::request(ordinal::IS_LISTENING),
+            Vec::new(),
+        )?;
         body(&reply).bool().map_err(transport)
     }
 
@@ -1134,7 +1203,11 @@ impl RemoteInetSocket {
     }
 
     pub fn accept(&self) -> Result<SocketEndpoint, SocketError> {
-        take_endpoint(request(&self.channel, &Writer::request(ordinal::ACCEPT), Vec::new())?)
+        take_endpoint(request(
+            &self.channel,
+            &Writer::request(ordinal::ACCEPT),
+            Vec::new(),
+        )?)
     }
 
     pub fn connection_result(&self) -> Result<(), SocketError> {
@@ -1142,7 +1215,11 @@ impl RemoteInetSocket {
     }
 
     pub fn take_error(&self) -> Option<SocketError> {
-        match call(&self.channel, &Writer::request(ordinal::TAKE_ERROR), Vec::new()) {
+        match call(
+            &self.channel,
+            &Writer::request(ordinal::TAKE_ERROR),
+            Vec::new(),
+        ) {
             Ok(reply) => get_error(&reply),
             Err(status) => Some(transport(status)),
         }
@@ -1156,9 +1233,13 @@ impl RemoteInetSocket {
 
     /// 服务不可用时报告错误状态。
     pub fn poll_state(&self) -> SocketPollState {
-        request(&self.channel, &Writer::request(ordinal::POLL_STATE), Vec::new())
-            .and_then(|reply| get_poll_state(&mut body(&reply)).map_err(transport))
-            .unwrap_or_else(|_| SocketPollState::error())
+        request(
+            &self.channel,
+            &Writer::request(ordinal::POLL_STATE),
+            Vec::new(),
+        )
+        .and_then(|reply| get_poll_state(&mut body(&reply)).map_err(transport))
+        .unwrap_or_else(|_| SocketPollState::error())
     }
 
     pub fn set_option(&self, change: InetOptionChange) -> Result<(), SocketError> {
@@ -1203,11 +1284,19 @@ impl RemotePacketSocket {
     }
 
     pub fn address(&self) -> Result<PacketAddress, SocketError> {
-        let reply = request(&self.channel, &Writer::request(ordinal::ADDRESS), Vec::new())?;
+        let reply = request(
+            &self.channel,
+            &Writer::request(ordinal::ADDRESS),
+            Vec::new(),
+        )?;
         get_packet_address(&mut body(&reply)).map_err(transport)
     }
 
-    pub fn send_to(&self, input: &[u8], target: Option<PacketAddress>) -> Result<usize, SocketError> {
+    pub fn send_to(
+        &self,
+        input: &[u8],
+        target: Option<PacketAddress>,
+    ) -> Result<usize, SocketError> {
         let mut writer = Writer::request(ordinal::SEND);
         writer.bool(target.is_some());
         if let Some(target) = target {
@@ -1216,7 +1305,10 @@ impl RemotePacketSocket {
         let mut handles = Vec::new();
         put_payload(&mut writer, &mut handles, input).map_err(transport)?;
         let reply = request(&self.channel, &writer, handles)?;
-        body(&reply).u64().map(|count| count as usize).map_err(transport)
+        body(&reply)
+            .u64()
+            .map(|count| count as usize)
+            .map_err(transport)
     }
 
     pub fn receive(&self, limit: usize, peek: bool) -> Result<PacketReceived, SocketError> {
@@ -1236,16 +1328,24 @@ impl RemotePacketSocket {
     }
 
     pub fn take_error(&self) -> Option<SocketError> {
-        match call(&self.channel, &Writer::request(ordinal::TAKE_ERROR), Vec::new()) {
+        match call(
+            &self.channel,
+            &Writer::request(ordinal::TAKE_ERROR),
+            Vec::new(),
+        ) {
             Ok(reply) => get_error(&reply),
             Err(status) => Some(transport(status)),
         }
     }
 
     pub fn poll_state(&self) -> SocketPollState {
-        request(&self.channel, &Writer::request(ordinal::POLL_STATE), Vec::new())
-            .and_then(|reply| get_poll_state(&mut body(&reply)).map_err(transport))
-            .unwrap_or_else(|_| SocketPollState::error())
+        request(
+            &self.channel,
+            &Writer::request(ordinal::POLL_STATE),
+            Vec::new(),
+        )
+        .and_then(|reply| get_poll_state(&mut body(&reply)).map_err(transport))
+        .unwrap_or_else(|_| SocketPollState::error())
     }
 
     /// 关闭 socket（使用者最后一次文件关闭）；服务已终止时无事可做。

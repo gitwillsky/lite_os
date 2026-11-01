@@ -1,8 +1,8 @@
 //! 唯一 Thread/Process pending owner；普通信号保留首个来源，实时信号按号 FIFO。
 use super::{PendingSignal, signal_info::SignalFallback};
+use crate::sync::Mutex;
 use alloc::{boxed::Box, sync::Arc};
 use core::ptr::NonNull;
-use crate::sync::Mutex;
 
 const REALTIME_MIN: usize = 32;
 
@@ -85,10 +85,7 @@ impl PreallocatedSignal {
         slot.key = key;
     }
     /// 每次实际 expiry 更新 queued sequence；已有节点排队时不再生成第二个通知。
-    pub(in crate::task) fn prepare(
-        self: &Arc<Self>,
-        sequence: u64,
-    ) -> PreparedSignalRecord {
+    pub(in crate::task) fn prepare(self: &Arc<Self>, sequence: u64) -> PreparedSignalRecord {
         let mut slot = self.slot.lock();
         slot.queued_sequence = sequence;
         let record = slot.available.take().map(|mut record| {

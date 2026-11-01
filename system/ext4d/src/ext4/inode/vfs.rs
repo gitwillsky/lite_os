@@ -21,7 +21,10 @@ impl Ext4Inode {
         self.list_attributes(trusted)
     }
 
-    pub(crate) fn change_xattr(&self, change: crate::vfs::XattrChange<'_>) -> Result<(), FileSystemError> {
+    pub(crate) fn change_xattr(
+        &self,
+        change: crate::vfs::XattrChange<'_>,
+    ) -> Result<(), FileSystemError> {
         self.change_attribute(change)
     }
 
@@ -61,7 +64,11 @@ impl Ext4Inode {
         self.disk.lock().size()
     }
 
-    pub(crate) fn read_storage(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError> {
+    pub(crate) fn read_storage(
+        &self,
+        offset: u64,
+        buf: &mut [u8],
+    ) -> Result<usize, FileSystemError> {
         let mut done = 0usize;
         let size = usize::try_from(self.disk.lock().size())
             .map_err(|_| FileSystemError::InvalidOperation)?;
@@ -153,7 +160,10 @@ impl Ext4Inode {
     }
 
     /// 写回缓存模式下的写入：数据经页缓存写回，set-ID 清除在写入开始时单独提交。
-    pub(crate) fn prepare_cached_write(&self, policy: crate::vfs::WritePolicy) -> Result<(), FileSystemError> {
+    pub(crate) fn prepare_cached_write(
+        &self,
+        policy: crate::vfs::WritePolicy,
+    ) -> Result<(), FileSystemError> {
         let mut mutation = self.fs.begin_mutation()?;
         self.remove_write_privileges_locked(&mut mutation, Some(policy))?;
         mutation.commit()
@@ -182,7 +192,11 @@ impl Ext4Inode {
         self.fs.sync_journal()
     }
 
-    pub(crate) fn set_times(&self, atime: Option<u64>, mtime: Option<u64>) -> Result<(), FileSystemError> {
+    pub(crate) fn set_times(
+        &self,
+        atime: Option<u64>,
+        mtime: Option<u64>,
+    ) -> Result<(), FileSystemError> {
         self.update_times(atime, mtime)
     }
 
@@ -220,9 +234,7 @@ impl Ext4Inode {
             return Err(FileSystemError::NotDirectory);
         }
         match self.lookup_entry(name)? {
-            Some((number, _)) => {
-                Ext4Inode::load(self.fs.clone(), number)
-            }
+            Some((number, _)) => Ext4Inode::load(self.fs.clone(), number),
             None => Err(FileSystemError::NotFound),
         }
     }
@@ -274,7 +286,11 @@ impl Ext4Inode {
         self.create_hard_link(name, target)
     }
 
-    pub(crate) fn unlink(&self, name: &[u8], remove_directory: bool) -> Result<(), FileSystemError> {
+    pub(crate) fn unlink(
+        &self,
+        name: &[u8],
+        remove_directory: bool,
+    ) -> Result<(), FileSystemError> {
         if self.inode_type() != InodeType::Directory {
             return Err(FileSystemError::NotDirectory);
         }

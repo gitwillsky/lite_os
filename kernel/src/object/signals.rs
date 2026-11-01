@@ -150,7 +150,8 @@ impl SignalState {
             if inner.active & trigger != 0 {
                 return Ok(WaitOutcome::Satisfied(inner.active));
             }
-            if deadline_ns.is_some_and(|deadline| deadline <= crate::execution::timer::get_time_ns())
+            if deadline_ns
+                .is_some_and(|deadline| deadline <= crate::execution::timer::get_time_ns())
             {
                 return Ok(WaitOutcome::TimedOut(inner.active));
             }

@@ -11,11 +11,11 @@
 //! 只支持查询：`RTM_GETLINK`（dump 与按 index/name 的单设备查询）、`RTM_GETADDR` 与 `RTM_GETROUTE` 的
 //! dump，覆盖 IPv4。修改请求（`NEW/DEL/SET*`）与多播订阅返回 `EOPNOTSUPP`，不伪造成功。
 
-use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 use crate::sync::Mutex;
+use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 
+use crate::ipc::{Pipe, PipeDirection, PipeEnd, ReceiveBuffer};
 use device_model::network::NetworkStatistics;
-use crate::{ipc::{Pipe, PipeDirection, PipeEnd, ReceiveBuffer}};
 use fallible_tree::FallibleMap;
 
 use super::{

@@ -20,7 +20,10 @@ mod vfs;
 // 可睡眠同步原语在系统服务间共享；ext4 引擎经 `crate::sync` 使用它们。
 use service_sync as sync;
 
-#[allow(unused_imports, reason = "日志宏经 `crate::` 路径调用的地方需要根级名字")]
+#[allow(
+    unused_imports,
+    reason = "日志宏经 `crate::` 路径调用的地方需要根级名字"
+)]
 pub(crate) use native_runtime::{debug, error, info, warn};
 
 use native_runtime::Startup;
@@ -28,6 +31,7 @@ use native_runtime::Startup;
 native_runtime::entry!(main);
 
 fn main(mut startup: Startup) -> i64 {
-    let control = native_runtime::Channel::from_handle(startup.take(launch_protocol::ext4d::CONTROL));
+    let control =
+        native_runtime::Channel::from_handle(startup.take(launch_protocol::ext4d::CONTROL));
     fuse_server::serve_control(control)
 }

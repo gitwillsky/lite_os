@@ -1,8 +1,8 @@
 //! Live pseudo inode admission：同一 filesystem/inode 的 alias 只读取一个属性 owner。
 use super::FileSystemError;
-use fallible_tree::FallibleMap;
-use alloc::sync::{Arc, Weak};
 use crate::sync::Mutex;
+use alloc::sync::{Arc, Weak};
+use fallible_tree::FallibleMap;
 
 /// Weak 表只保留 live inode identity，不延长 namespace、Task 或打开文件的寿命。
 /// 节点与 candidate 在锁外分配；摘除节点、loser 和最后一个 Weak 都在锁外析构。

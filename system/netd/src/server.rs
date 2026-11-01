@@ -11,10 +11,11 @@ use native_runtime::native_abi::{self, Status, rights};
 use native_runtime::sync::Once;
 use native_runtime::{Channel, Event, Handle};
 use network_protocol::{
-    InetAddress, InetOptionChange, InetProtocol, InetReceived, InetSocketService, InterfaceSnapshot,
-    InternetOption, InternetSendPacketInfo, Ipv4RouteError, Ipv4RouteRequest, NamespaceService,
-    NetworkService, NetworkSnapshot, PacketAddress, PacketKind, PacketReceived, PacketSocketService,
-    RouteChange, RouteSnapshot, ServedSocket, SocketEndpoint, SocketError, SocketPollState,
+    InetAddress, InetOptionChange, InetProtocol, InetReceived, InetSocketService,
+    InterfaceSnapshot, InternetOption, InternetSendPacketInfo, Ipv4RouteError, Ipv4RouteRequest,
+    NamespaceService, NetworkService, NetworkSnapshot, PacketAddress, PacketKind, PacketReceived,
+    PacketSocketService, RouteChange, RouteSnapshot, ServedSocket, SocketEndpoint, SocketError,
+    SocketPollState,
 };
 
 use crate::dispatcher::{self, Served};
@@ -46,7 +47,10 @@ pub(crate) fn serve_control(control: Channel) -> Result<(), Status> {
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     let handler = Arc::try_new(
-        move |ordinal: u32, request: &mut network_protocol::Reader<'_>, handles: Vec<Handle>, reply: &mut network_protocol::Writer| {
+        move |ordinal: u32,
+              request: &mut network_protocol::Reader<'_>,
+              handles: Vec<Handle>,
+              reply: &mut network_protocol::Writer| {
             network_protocol::dispatch_control(&*network, ordinal, request, handles, reply)
         },
     )
@@ -66,7 +70,9 @@ impl NetworkService for Network {
         )?;
         device.bind_activity(crate::worker::device_activity()?);
         let mut devices = self.devices.lock();
-        devices.try_reserve(1).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        devices
+            .try_reserve(1)
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         devices.push(device);
         Ok(())
     }
@@ -81,7 +87,8 @@ impl NetworkService for Network {
         } else {
             Vec::new()
         };
-        let owner = inet::prepare_network(&namespace, &devices, initial).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        let owner = inet::prepare_network(&namespace, &devices, initial)
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         namespace.install_protocol(owner);
         if initial {
             self.initial.call_once(|| ());
@@ -93,7 +100,10 @@ impl NetworkService for Network {
 }
 
 /// 为新 socket 建立 channel 与就绪 Event，并登记到分派器。
-pub(crate) fn publish(socket: ServedSocket, readiness: &Event) -> Result<SocketEndpoint, SocketError> {
+pub(crate) fn publish(
+    socket: ServedSocket,
+    readiness: &Event,
+) -> Result<SocketEndpoint, SocketError> {
     let readiness = readiness
         .duplicate(rights::SAME)
         .map_err(|_| SocketError::NoMemory)?;
@@ -107,7 +117,8 @@ pub(crate) fn publish(socket: ServedSocket, readiness: &Event) -> Result<SocketE
 
 /// 新 socket 的就绪 Event：服务端置位 `USER_0`，使用者等待并清除它的副本。
 pub(crate) fn readiness() -> Result<Arc<Event>, SocketError> {
-    Arc::try_new(Event::create().map_err(|_| SocketError::NoMemory)?).map_err(|_| SocketError::NoMemory)
+    Arc::try_new(Event::create().map_err(|_| SocketError::NoMemory)?)
+        .map_err(|_| SocketError::NoMemory)
 }
 
 /// 域 channel 服务的对象：新 socket 各持该域的一个引用。
@@ -120,7 +131,11 @@ impl NamespaceService for NamespaceServer {
         publish(ServedSocket::Inet(socket), &readiness)
     }
 
-    fn packet_socket(&self, kind: PacketKind, protocol: u16) -> Result<SocketEndpoint, SocketError> {
+    fn packet_socket(
+        &self,
+        kind: PacketKind,
+        protocol: u16,
+    ) -> Result<SocketEndpoint, SocketError> {
         let readiness = readiness()?;
         let socket = PacketSocket::new(kind, protocol, readiness.clone(), self.0.clone())?;
         publish(ServedSocket::Packet(socket), &readiness)
@@ -166,7 +181,11 @@ impl NamespaceService for NamespaceServer {
         inet::configure_up(&self.0, index, up)
     }
 
-    fn configure_route(&self, request: Ipv4RouteRequest, change: RouteChange) -> Result<(), Ipv4RouteError> {
+    fn configure_route(
+        &self,
+        request: Ipv4RouteRequest,
+        change: RouteChange,
+    ) -> Result<(), Ipv4RouteError> {
         inet::configure_route(&self.0, request, change)
     }
 }

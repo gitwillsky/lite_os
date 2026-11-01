@@ -1,1 +1,0 @@
-../../../../../../../system/devmgr/src/drivers/virtio/gpu/resource.rs

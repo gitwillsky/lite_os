@@ -2,7 +2,10 @@
 
 use alloc::sync::{Arc, Weak};
 
-use crate::{sync::{Mutex, TaskEvent}, memory::MemoryError};
+use crate::{
+    memory::MemoryError,
+    sync::{Mutex, TaskEvent},
+};
 use fallible_tree::FallibleMap;
 
 use super::{DeadlineEntry, ExpiredTimer, TimerIdentity};

@@ -1,5 +1,5 @@
-use alloc::sync::Arc;
 use crate::sync::Mutex;
+use alloc::sync::Arc;
 
 use super::{Pipe, PipeEnd};
 

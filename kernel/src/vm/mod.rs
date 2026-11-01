@@ -61,13 +61,12 @@ pub(crate) enum VmError {
 }
 
 /// 用户可映射地址区间的结束（不含）：其上保留 trampoline 与 trap context。
-pub(crate) const USER_END: usize = if crate::arch::mmu::USER_ADDRESS_END
-    < crate::arch::mmu::TRAP_CONTEXT_ADDRESS
-{
-    crate::arch::mmu::USER_ADDRESS_END
-} else {
-    crate::arch::mmu::TRAP_CONTEXT_ADDRESS
-};
+pub(crate) const USER_END: usize =
+    if crate::arch::mmu::USER_ADDRESS_END < crate::arch::mmu::TRAP_CONTEXT_ADDRESS {
+        crate::arch::mmu::USER_ADDRESS_END
+    } else {
+        crate::arch::mmu::TRAP_CONTEXT_ADDRESS
+    };
 /// 用户可映射地址区间的起点；零页永不映射，空指针访问总是缺页。
 pub(crate) const USER_START: usize = crate::memory::PAGE_SIZE;
 
@@ -76,8 +75,9 @@ fn map_trampoline(
     page_table: &mut PageTable,
     commit: &mut TranslationCommit,
 ) -> Result<(), VmError> {
-    let physical = crate::arch::mmu::virtual_to_physical(crate::memory::strampoline as *const () as usize)
-        .expect("kernel trampoline is outside the architecture direct map");
+    let physical =
+        crate::arch::mmu::virtual_to_physical(crate::memory::strampoline as *const () as usize)
+            .expect("kernel trampoline is outside the architecture direct map");
     page_table
         .map(
             crate::memory::VirtualAddress::from(crate::arch::mmu::TRAMPOLINE_ADDRESS).floor(),

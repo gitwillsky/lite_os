@@ -20,9 +20,11 @@ use native_abi::register::RegisterState;
 use native_abi::{ObjectType, Status, rights, signals};
 use spin::Mutex;
 
-use super::{Channel, HandleTable, KernelObject, SignalState, WAITABLE_RIGHTS, next_koid, vm_status};
-use fallible_tree::FallibleMap;
+use super::{
+    Channel, HandleTable, KernelObject, SignalState, WAITABLE_RIGHTS, next_koid, vm_status,
+};
 use crate::vm::{AddressSpace, Vmar, Vmo};
+use fallible_tree::FallibleMap;
 
 const NAME_CAPACITY: usize = 32;
 
@@ -40,7 +42,6 @@ impl Name {
         bytes[..length].copy_from_slice(&name[..length]);
         Self { bytes, length }
     }
-
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -177,8 +178,14 @@ impl Job {
         let finished = {
             let state = self.state.lock();
             state.killed
-                && state.processes.values().all(|process| process.strong_count() == 0)
-                && state.children.values().all(|child| child.strong_count() == 0)
+                && state
+                    .processes
+                    .values()
+                    .all(|process| process.strong_count() == 0)
+                && state
+                    .children
+                    .values()
+                    .all(|child| child.strong_count() == 0)
         };
         if finished && self.signals.active() & signals::TERMINATED == 0 {
             self.signals.update(0, signals::TERMINATED);
@@ -210,7 +217,10 @@ impl Job {
 fn bind_exception(slot: &Mutex<Option<Arc<Channel>>>, channel: Arc<Channel>) -> Result<(), Status> {
     let mut slot = slot.lock();
     // 处理者关闭其端点后旧绑定失效，可以重新绑定。
-    if slot.as_ref().is_some_and(|existing| existing.signals_active() & signals::PEER_CLOSED == 0) {
+    if slot
+        .as_ref()
+        .is_some_and(|existing| existing.signals_active() & signals::PEER_CLOSED == 0)
+    {
         return Err(native_abi::ERR_ALREADY_BOUND);
     }
     *slot = Some(channel);
@@ -318,7 +328,11 @@ impl Process {
     ///
     /// # Errors
     /// 成员进程的 `shared` 不是共享进程返回 `ERR_INVALID_ARGS`；Job 已被 kill 返回 `ERR_BAD_STATE`。
-    pub(crate) fn create(job: &Arc<Job>, name: &[u8], kind: ProcessKind<'_>) -> Result<Arc<Self>, Status> {
+    pub(crate) fn create(
+        job: &Arc<Job>,
+        name: &[u8],
+        kind: ProcessKind<'_>,
+    ) -> Result<Arc<Self>, Status> {
         let (space, root_vmar, shared_root, state) = match kind {
             ProcessKind::Plain => {
                 let (space, vmar) = AddressSpace::create().map_err(vm_status)?;
@@ -332,7 +346,8 @@ impl Process {
                 if !shared.shared_root {
                     return Err(native_abi::ERR_INVALID_ARGS);
                 }
-                let (space, vmar) = AddressSpace::create_member(&shared.space).map_err(vm_status)?;
+                let (space, vmar) =
+                    AddressSpace::create_member(&shared.space).map_err(vm_status)?;
                 shared.state.join()?;
                 (space, vmar, false, shared.state.clone())
             }
@@ -369,12 +384,19 @@ impl Process {
 
     /// 放弃对句柄表的共享；最后一个共享者关闭句柄表并取消其上的等待。
     fn release_handles(&self) {
-        if self.left_state.swap(true, core::sync::atomic::Ordering::AcqRel) || !self.state.leave() {
+        if self
+            .left_state
+            .swap(true, core::sync::atomic::Ordering::AcqRel)
+            || !self.state.leave()
+        {
             return;
         }
         let handles = &self.state.handles;
         for (handle, entry) in handles.close().into_entries() {
-            entry.object.kernel_object().cancel(handles.cancel_key(handle));
+            entry
+                .object
+                .kernel_object()
+                .cancel(handles.cancel_key(handle));
             drop(entry);
         }
     }
@@ -413,7 +435,10 @@ impl Process {
     /// `(已终止, 退出码)`；被 kill 时退出码为 -1。
     pub(crate) fn exit_status(&self) -> (bool, i64) {
         let lifecycle = self.lifecycle.lock();
-        (lifecycle.phase == Phase::Dead, lifecycle.exit_code.unwrap_or(-1))
+        (
+            lifecycle.phase == Phase::Dead,
+            lifecycle.exit_code.unwrap_or(-1),
+        )
     }
 
     /// 是否已启动首个线程。
@@ -501,7 +526,10 @@ impl Process {
         self.release_handles();
         // 根 VMAR 销毁释放进程的全部映射；进程对象（与句柄）仍可存活以读取退出状态。
         if let Err(error) = self.root_vmar.destroy() {
-            warn!("process {} address space teardown failed: {error:?}", self.koid);
+            warn!(
+                "process {} address space teardown failed: {error:?}",
+                self.koid
+            );
         }
         self.signals.update(0, signals::TERMINATED);
         self.job.member_finished(Some(self.koid), None);
@@ -678,17 +706,14 @@ impl Thread {
             }
         }
         self.process.register_thread(self)?;
-        let thread = match crate::thread::Thread::create_user(
-            self.process.space.clone(),
-            owner,
-            start,
-        ) {
-            Ok(thread) => thread,
-            Err(()) => {
-                self.process.unregister_thread(self.koid);
-                return Err(native_abi::ERR_NO_MEMORY);
-            }
-        };
+        let thread =
+            match crate::thread::Thread::create_user(self.process.space.clone(), owner, start) {
+                Ok(thread) => thread,
+                Err(()) => {
+                    self.process.unregister_thread(self.koid);
+                    return Err(native_abi::ERR_NO_MEMORY);
+                }
+            };
         {
             let mut execution = self.execution.lock();
             let Execution::Created(pending) = *execution else {
@@ -699,10 +724,14 @@ impl Thread {
             };
             // 入队前应用：线程第一次运行时已遵守这些设置。
             if let Some(priority) = pending.priority {
-                thread.set_priority(priority).expect("pending priority validated when stored");
+                thread
+                    .set_priority(priority)
+                    .expect("pending priority validated when stored");
             }
             if let Some(affinity) = pending.affinity {
-                thread.set_affinity(affinity).expect("pending affinity validated when stored");
+                thread
+                    .set_affinity(affinity)
+                    .expect("pending affinity validated when stored");
             }
             *execution = Execution::Running(thread.clone());
         }
@@ -760,7 +789,9 @@ impl Thread {
         }
         match &mut *self.execution.lock() {
             Execution::Created(pending) => pending.priority = Some(priority),
-            Execution::Running(thread) => thread.set_priority(priority).map_err(|()| native_abi::ERR_INVALID_ARGS)?,
+            Execution::Running(thread) => thread
+                .set_priority(priority)
+                .map_err(|()| native_abi::ERR_INVALID_ARGS)?,
             Execution::Exited => return Err(native_abi::ERR_BAD_STATE),
         }
         Ok(())
@@ -784,14 +815,17 @@ impl Thread {
         };
         // 迁移在执行状态锁外进行：调度器锁不嵌套在对象锁内。
         if let Some(thread) = running {
-            thread.set_affinity(cpus).map_err(|()| native_abi::ERR_INVALID_ARGS)?;
+            thread
+                .set_affinity(cpus)
+                .map_err(|()| native_abi::ERR_INVALID_ARGS)?;
         }
         Ok(())
     }
 
     /// 已消耗的 CPU 时间。
     pub(crate) fn runtime(&self) -> crate::thread::Runtime {
-        self.execution().map_or_else(Default::default, |thread| thread.runtime())
+        self.execution()
+            .map_or_else(Default::default, |thread| thread.runtime())
     }
 
     /// 绑定 restricted 状态 VMO。

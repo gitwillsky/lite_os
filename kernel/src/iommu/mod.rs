@@ -24,10 +24,10 @@ use core::sync::atomic::{AtomicU16, Ordering};
 use native_abi::Status;
 
 use crate::execution::sync::TaskMutex;
-use fallible_tree::FallibleMap;
 use crate::memory::{PAGE_SIZE, PhysicalPageNumber};
 use crate::object::IommuBackend;
 use crate::vm::DeviceAddressSpace;
+use fallible_tree::FallibleMap;
 
 /// IOMMU 硬件：绑定 stream 与失效翻译。
 trait Hardware: Send + Sync {
@@ -72,8 +72,16 @@ impl<H: Hardware> Iommu<H> {
 }
 
 impl<H: Hardware> IommuBackend for Iommu<H> {
-    fn map(&self, stream: u32, pages: &[PhysicalPageNumber], writable: bool, output: &mut Vec<u64>) -> Result<(), Status> {
-        output.try_reserve_exact(pages.len()).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    fn map(
+        &self,
+        stream: u32,
+        pages: &[PhysicalPageNumber],
+        writable: bool,
+        output: &mut Vec<u64>,
+    ) -> Result<(), Status> {
+        output
+            .try_reserve_exact(pages.len())
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         let mut domains = self.domains.lock().map_err(|_| native_abi::ERR_NO_MEMORY)?;
         if !domains.contains_key(&stream) {
             let id = self.next_domain.fetch_add(1, Ordering::Relaxed);
@@ -95,7 +103,8 @@ impl<H: Hardware> IommuBackend for Iommu<H> {
         }
         let domain = domains.get_mut(&stream).expect("domain inserted above");
         let first = Self::allocate(domain, pages.len()).ok_or(native_abi::ERR_NO_RESOURCES)?;
-        let record = FallibleMap::try_prepare(first, pages.len()).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        let record =
+            FallibleMap::try_prepare(first, pages.len()).map_err(|_| native_abi::ERR_NO_MEMORY)?;
         domain
             .space
             .map(first, pages, writable)
@@ -114,7 +123,9 @@ impl<H: Hardware> IommuBackend for Iommu<H> {
             .domains
             .lock()
             .unwrap_or_else(|_| panic!("IOMMU unmap cannot allocate a waiter"));
-        let domain = domains.get_mut(&stream).expect("unmapped stream has no domain");
+        let domain = domains
+            .get_mut(&stream)
+            .expect("unmapped stream has no domain");
         let retired = domain.space.unmap(first, addresses.len());
         self.hardware.invalidate(domain.id, first, addresses.len());
         retired.release();

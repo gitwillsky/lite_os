@@ -85,11 +85,17 @@ pub(super) fn barrier() -> Result<(), Status> {
 }
 
 pub(super) fn clock_get_monotonic(call: &Call<'_>) -> Result<(), Status> {
-    call.write(call.arg(0), &(crate::execution::timer::get_time_ns() as i64))
+    call.write(
+        call.arg(0),
+        &(crate::execution::timer::get_time_ns() as i64),
+    )
 }
 
 pub(super) fn clock_get_utc(call: &Call<'_>) -> Result<(), Status> {
-    call.write(call.arg(0), &(crate::execution::timer::get_realtime_ns() as i64))
+    call.write(
+        call.arg(0),
+        &(crate::execution::timer::get_realtime_ns() as i64),
+    )
 }
 
 pub(super) fn clock_set_utc(call: &Call<'_>) -> Result<(), Status> {
@@ -144,7 +150,8 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
                 page_size: native_abi::PAGE_SIZE as u32,
                 total_pages: frames.capacity_pages as u64,
                 free_pages: frames.free_pages as u64,
-                boot_utc_ns: (crate::execution::timer::boot_epoch_seconds() as i64).saturating_mul(1_000_000_000),
+                boot_utc_ns: (crate::execution::timer::boot_epoch_seconds() as i64)
+                    .saturating_mul(1_000_000_000),
                 clock_resolution_ns: crate::execution::timer::monotonic_resolution_ns(),
                 scheduler_quantum_ns: crate::execution::timer::scheduler_quantum_ns(),
             };
@@ -157,7 +164,8 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
         }
         native_abi::system::FREE_BLOCKS => {
             let blocks = crate::memory::frame_allocator::statistics().free_blocks;
-            let values: [u64; crate::memory::frame_allocator::ORDER_COUNT] = blocks.map(|count| count as u64);
+            let values: [u64; crate::memory::frame_allocator::ORDER_COUNT] =
+                blocks.map(|count| count as u64);
             let size = values.len() * 8;
             call.write_optional(actual, &size)?;
             if capacity < size {
@@ -166,7 +174,8 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
             call.write_array(buffer, &values)
         }
         native_abi::system::CPU_BUSY => {
-            let busy = crate::thread::cpu_busy_snapshot().map_err(|()| native_abi::ERR_NO_MEMORY)?;
+            let busy =
+                crate::thread::cpu_busy_snapshot().map_err(|()| native_abi::ERR_NO_MEMORY)?;
             let mut values = alloc::vec::Vec::new();
             values
                 .try_reserve_exact(busy.len())

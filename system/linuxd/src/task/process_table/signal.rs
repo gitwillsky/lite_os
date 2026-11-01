@@ -756,11 +756,7 @@ fn wake_signal_waiter(task: &Arc<TaskControlBlock>) -> bool {
     };
     wake.claimed.is_none_or(|claimed| {
         assert!(Arc::ptr_eq(&claimed.task, task));
-        crate::task::processor::wake_signal_task(
-            claimed.task,
-            claimed.id,
-            WaitResult::Woken,
-        )
+        crate::task::processor::wake_signal_task(claimed.task, claimed.id, WaitResult::Woken)
     })
 }
 
@@ -775,11 +771,8 @@ pub(crate) fn notify_signal_waiters(task: &TaskControlBlock) {
     while let Some(wake) = WAIT_REGISTRY.wake_signal_source_one(source.identity()) {
         if let Some(claimed) = wake.claimed {
             assert!(matches!(claimed.kind, IndexedWaitKind::Poll));
-            let _ = crate::task::processor::wake_poll_task(
-                claimed.task,
-                claimed.id,
-                WaitResult::Woken,
-            );
+            let _ =
+                crate::task::processor::wake_poll_task(claimed.task, claimed.id, WaitResult::Woken);
         }
     }
 }
@@ -822,13 +815,11 @@ pub(super) fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
         let interrupted = WaitResult::Interrupted;
         assert!(Arc::ptr_eq(&entry.task, task));
         return match entry.kind {
-            IndexedWaitKind::TaskEvent(key) => {
-                crate::task::processor::wake_waiting_task(
-                    entry.task,
-                    WaitMembership::TaskWait(key),
-                    Some(interrupted),
-                )
-            }
+            IndexedWaitKind::TaskEvent(key) => crate::task::processor::wake_waiting_task(
+                entry.task,
+                WaitMembership::TaskWait(key),
+                Some(interrupted),
+            ),
             IndexedWaitKind::Deadline => crate::task::processor::wake_deadline_task(
                 entry.task,
                 wait_id,
@@ -839,29 +830,23 @@ pub(super) fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
                 wait_id,
                 WaitResult::Interrupted,
             ),
-            IndexedWaitKind::Console => crate::task::processor::wake_console_task(
-                entry.task,
-                wait_id,
-                interrupted,
-            ),
+            IndexedWaitKind::Console => {
+                crate::task::processor::wake_console_task(entry.task, wait_id, interrupted)
+            }
             IndexedWaitKind::Signal { .. } => crate::task::processor::wake_signal_task(
                 entry.task,
                 wait_id,
                 WaitResult::Interrupted,
             ),
-            IndexedWaitKind::Pipe { .. } => crate::task::processor::wake_pipe_task(
-                entry.task,
-                wait_id,
-                WaitResult::Interrupted,
-            ),
+            IndexedWaitKind::Pipe { .. } => {
+                crate::task::processor::wake_pipe_task(entry.task, wait_id, WaitResult::Interrupted)
+            }
             IndexedWaitKind::AdvisoryLock => {
                 crate::task::processor::wake_flock_task(entry.task, wait_id, interrupted)
             }
-            IndexedWaitKind::Poll => crate::task::processor::wake_poll_task(
-                entry.task,
-                wait_id,
-                WaitResult::Interrupted,
-            ),
+            IndexedWaitKind::Poll => {
+                crate::task::processor::wake_poll_task(entry.task, wait_id, WaitResult::Interrupted)
+            }
         };
     }
 

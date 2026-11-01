@@ -19,10 +19,17 @@ use crate::vm::{Vmo, VmoOptions};
 pub(super) fn bind_state(call: &Call<'_>) -> Result<(), Status> {
     let size = core::mem::size_of::<RestrictedState>().next_multiple_of(native_abi::PAGE_SIZE);
     let vmo = Vmo::create(size as u64, VmoOptions::default()).map_err(crate::object::vm_status)?;
-    let handle = call.process().handles().insert(crate::object::HandleEntry {
-        object: Object::Vmo(vmo.clone()),
-        rights: rights::READ | rights::WRITE | rights::MAP | rights::DUPLICATE | rights::INSPECT,
-    })?;
+    let handle = call
+        .process()
+        .handles()
+        .insert(crate::object::HandleEntry {
+            object: Object::Vmo(vmo.clone()),
+            rights: rights::READ
+                | rights::WRITE
+                | rights::MAP
+                | rights::DUPLICATE
+                | rights::INSPECT,
+        })?;
     if let Err(status) = call.write(call.arg(0), &handle) {
         drop(call.process().handles().remove(handle));
         return Err(status);
@@ -67,7 +74,9 @@ pub(super) fn enter(call: &Call<'_>) -> Outcome {
         Ok(state) => state,
         Err(status) => return Outcome::Return(status),
     };
-    let normal = call.thread.with_user_context(|registers| registers.save_registers());
+    let normal = call
+        .thread
+        .with_user_context(|registers| registers.save_registers());
     let loaded = call
         .thread
         .with_user_context(|registers| registers.load_registers(&state.registers));

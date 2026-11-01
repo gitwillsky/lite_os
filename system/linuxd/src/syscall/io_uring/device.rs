@@ -1,9 +1,9 @@
 //! 标准设备命令的异步驱动：协议属于 DeviceFile，用户页 fault 属于阻塞车道。
+use crate::sync::Mutex;
 use alloc::{
     boxed::Box,
     sync::{Arc, Weak},
 };
-use crate::sync::Mutex;
 use syscall_abi::errno;
 
 use super::{
@@ -12,10 +12,10 @@ use super::{
     wait::Waiter,
 };
 use crate::{
-    task::TaskControlBlock,
     file::{OpenFileDescription, OpenFileKind},
     fs::chardev::{PendingCommand, UringCommand},
     syscall::device::TaskUserMemory,
+    task::TaskControlBlock,
 };
 
 /// 车道与 reactor 间的唯一令牌交接槽。锁内只移动值，不执行设备方法或用户复制。

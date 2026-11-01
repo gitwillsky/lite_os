@@ -1,6 +1,6 @@
 use crate::{
-    task::{SystemInfoSnapshot, current_task, system_info_snapshot},
     syscall::errno,
+    task::{SystemInfoSnapshot, current_task, system_info_snapshot},
 };
 
 const SYSINFO_BYTES: usize = 112;

@@ -14,11 +14,11 @@ use super::{
         devnode,
     },
 };
+use crate::sync::Once;
 use crate::{
     ipc::{Pipe, PipeEnd},
     log::{KmsgRead, KmsgReader, bind_publish_work, publish_user_message},
 };
-use native_runtime::sync::Once;
 
 const POLLIN: i16 = 0x001;
 const POLLOUT: i16 = 0x004;
@@ -42,8 +42,8 @@ fn fault(_: UserFault) -> DeviceError {
 /// 注册表分配失败或重复注册返回对应 filesystem error。
 pub(super) fn register() -> Result<(), FileSystemError> {
     let notification = Pipe::notification_pair().map_err(|_| FileSystemError::OutOfMemory)?;
-    let work = crate::deferred::register(kmsg_published)
-        .map_err(|()| FileSystemError::OutOfMemory)?;
+    let work =
+        crate::deferred::register(kmsg_published).map_err(|()| FileSystemError::OutOfMemory)?;
     KMSG_NOTIFICATION.call_once(|| notification);
     bind_publish_work(work);
     let driver = Arc::try_new(MemDriver).map_err(|_| FileSystemError::OutOfMemory)?;

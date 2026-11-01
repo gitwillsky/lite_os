@@ -6,8 +6,8 @@ use super::super::{
     vfs::{Dentry, MountedFilesystem, internal_mount},
 };
 use super::PseudoFileSystem;
+use crate::sync::Once;
 use alloc::sync::Arc;
-use native_runtime::sync::Once;
 
 // OWNER: 每个实际 pseudo filesystem 各一个 canonical superblock 和 internal mount。
 // root 只持 filesystem 类型，不持用户对象；magic dentry 的生命周期仍属于各 inode owner。

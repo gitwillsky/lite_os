@@ -24,7 +24,10 @@ mod platform;
 // 可睡眠同步原语在系统服务间共享；驱动经 `crate::sync` 使用它们。
 use service_sync as sync;
 
-#[allow(unused_imports, reason = "日志宏经 `crate::` 路径调用的地方需要根级名字")]
+#[allow(
+    unused_imports,
+    reason = "日志宏经 `crate::` 路径调用的地方需要根级名字"
+)]
 pub(crate) use native_runtime::{debug, error, info, warn};
 
 use native_runtime::Startup;
@@ -53,7 +56,9 @@ fn main(mut startup: Startup) -> i64 {
     let display: &'static Option<drivers::virtio::EarlyDisplay> =
         alloc::boxed::Box::leak(alloc::boxed::Box::new(display));
     let screen = boot_screen::BootScreen::start(
-        display.as_ref().map(drivers::virtio::EarlyDisplay::framebuffer),
+        display
+            .as_ref()
+            .map(drivers::virtio::EarlyDisplay::framebuffer),
         BOOT_SCENE,
     );
     // OWNER: 开机画面状态只由进度通道的服务线程推进。

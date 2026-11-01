@@ -221,8 +221,13 @@ fn normalize_reserved(
             .map(|range| range.start.max(start).min(end)..range.end.max(start).min(end))
             .filter(|range| range.start < range.end)
     });
-    ranges.sort_by_key(|range| range.as_ref().map_or(usize::MAX, |range| range.start.as_usize()));
-    let mut merged: [Option<core::ops::Range<PhysicalPageNumber>>; BOOT_RESERVED_CAPACITY] = [None, None];
+    ranges.sort_by_key(|range| {
+        range
+            .as_ref()
+            .map_or(usize::MAX, |range| range.start.as_usize())
+    });
+    let mut merged: [Option<core::ops::Range<PhysicalPageNumber>>; BOOT_RESERVED_CAPACITY] =
+        [None, None];
     let mut count = 0usize;
     for range in ranges.into_iter().flatten() {
         match count.checked_sub(1).and_then(|last| merged[last].as_mut()) {
@@ -302,7 +307,9 @@ impl FrameAllocator {
             });
             cursor = range.end;
         }
-        for_each_aligned_block(cursor, end, |block, order| allocator.insert_free(block, order));
+        for_each_aligned_block(cursor, end, |block, order| {
+            allocator.insert_free(block, order)
+        });
         allocator
     }
 
@@ -555,7 +562,8 @@ pub(crate) fn init(
     }
 
     let reserved = reserved.map(|range| range.map(|range| range.start.floor()..range.end.ceil()));
-    FRAME_ALLOCATOR.call_once(|| IrqMutex::new(FrameAllocator::new(start_addr, end_addr, reserved)));
+    FRAME_ALLOCATOR
+        .call_once(|| IrqMutex::new(FrameAllocator::new(start_addr, end_addr, reserved)));
 }
 
 /// 归还 `init` 时保留的全部启动期区间（根服务已复制出 bootfs 与 DTB）。
@@ -591,7 +599,6 @@ fn for_each_aligned_block(
         cursor += 1usize << order;
     }
 }
-
 
 fn alloc_raw() -> Option<FrameTracker> {
     let res = FRAME_ALLOCATOR

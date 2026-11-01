@@ -61,8 +61,7 @@ impl PreparedPipeEnd {
                     PipeDirection::Read => {
                         state.readers += 1;
                         state.reader_opens += 1;
-                        state.write_generation =
-                            crate::file::next_readiness_generation();
+                        state.write_generation = crate::file::next_readiness_generation();
                     }
                     PipeDirection::Write => {
                         state.writers += 1;

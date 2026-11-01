@@ -337,6 +337,10 @@ def main() -> int:
                     "LiteOS musl consumer exit=0",
                 ),
                 forbidden_markers=("LiteOS musl consumer failed", "LiteOS musl ASID failed", "LiteOS musl mmap placement failed", " fail step="),
+                # 65536 次真实进程根切换仍完整执行。共享成员的映射退休会等待同步 fence，
+                # 微内核路径已测得 15 分钟内持续推进但不足一个完整硬件 generation；
+                # 此功能测试用 50 分钟硬上限，60 秒无进度看门狗保持原值。
+                timeout_seconds=100,
             )
         publish_runtime_gate(stamp, payload)
     except (RuntimeError, subprocess.CalledProcessError) as error:

@@ -1,8 +1,8 @@
 //! 全部 live mount attachment 的精确 lookup/lifecycle index；namespace topology 不复制这里的内容。
 use super::{FileSystemError, dentry::Dentry, mount_view::MountView};
-use fallible_tree::{FallibleMap, VacantEntry};
-use alloc::sync::{Arc, Weak};
 use crate::sync::Mutex;
+use alloc::sync::{Arc, Weak};
+use fallible_tree::{FallibleMap, VacantEntry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(super) enum AttachmentKey {

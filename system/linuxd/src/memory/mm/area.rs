@@ -41,7 +41,10 @@ pub(crate) enum Backing {
         role: AnonymousRole,
     },
     /// 共享匿名：fork 后父子映射同一对象。
-    SharedAnonymous { object: Arc<MemoryObject>, offset: u64 },
+    SharedAnonymous {
+        object: Arc<MemoryObject>,
+        offset: u64,
+    },
     /// 文件私有映射：对象是页缓存的写时复制子对象，`file_offset` 是区间起点对应的文件偏移。
     PrivateFile {
         source: FileMappingSource,
@@ -57,9 +60,15 @@ pub(crate) enum Backing {
         writable: bool,
     },
     /// 设备缓冲。
-    Device { source: DeviceMappingSource, offset: u64 },
+    Device {
+        source: DeviceMappingSource,
+        offset: u64,
+    },
     /// SysV 共享内存段。
-    SystemV { source: SharedMemoryMembership, offset: u64 },
+    SystemV {
+        source: SharedMemoryMembership,
+        offset: u64,
+    },
     /// 信号返回跳板（全部地址空间共享的只读可执行页）。
     Trampoline { object: Arc<MemoryObject> },
 }
@@ -99,7 +108,11 @@ impl Backing {
             | Self::SharedAnonymous { offset, .. }
             | Self::Device { offset, .. }
             | Self::SystemV { offset, .. } => *offset += delta,
-            Self::PrivateFile { offset, file_offset, .. } => {
+            Self::PrivateFile {
+                offset,
+                file_offset,
+                ..
+            } => {
                 *offset += delta;
                 *file_offset += delta;
             }
@@ -113,16 +126,23 @@ impl Backing {
     pub(crate) fn is_shared(&self) -> bool {
         matches!(
             self,
-            Self::SharedAnonymous { .. } | Self::SharedFile { .. } | Self::Device { .. } | Self::SystemV { .. }
+            Self::SharedAnonymous { .. }
+                | Self::SharedFile { .. }
+                | Self::Device { .. }
+                | Self::SystemV { .. }
         )
     }
 
     /// 允许的最大权限（共享文件只读打开时不能加写）。
     pub(crate) fn may(&self, permission: MapPermission) -> bool {
         match self {
-            Self::SharedFile { writable, .. } => *writable || !permission.contains(MapPermission::W),
+            Self::SharedFile { writable, .. } => {
+                *writable || !permission.contains(MapPermission::W)
+            }
             Self::Trampoline { .. } => !permission.contains(MapPermission::W),
-            Self::SystemV { source, .. } => source.source.may_write || !permission.contains(MapPermission::W),
+            Self::SystemV { source, .. } => {
+                source.source.may_write || !permission.contains(MapPermission::W)
+            }
             _ => true,
         }
     }
@@ -180,7 +200,14 @@ impl Area {
 
     /// 本区中的数据（可写私有）页数贡献给 `RLIMIT_DATA`。
     pub(crate) fn counts_as_data(&self) -> bool {
-        self.permission.contains(MapPermission::W) && !self.backing.is_shared()
-            && !matches!(self.backing, Backing::Anonymous { role: AnonymousRole::Stack, .. })
+        self.permission.contains(MapPermission::W)
+            && !self.backing.is_shared()
+            && !matches!(
+                self.backing,
+                Backing::Anonymous {
+                    role: AnonymousRole::Stack,
+                    ..
+                }
+            )
     }
 }

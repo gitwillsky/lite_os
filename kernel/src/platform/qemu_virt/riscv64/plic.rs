@@ -1,6 +1,5 @@
 use alloc::sync::Arc;
 
-use mmio::MmioBus;
 use super::plic_policy::{
     MAX_INTERRUPT_VECTOR, dispatch_claim_batch, enable_word_offset, valid_interrupt_vector,
 };
@@ -11,6 +10,7 @@ use crate::{
     execution::interrupt::InterruptVector,
 };
 use fallible_tree::FallibleMap;
+use mmio::MmioBus;
 
 /// QEMU virt PLIC adapter。hardware context 编码仅存在于 platform backend。
 pub(super) struct PlicInterruptController {

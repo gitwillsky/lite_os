@@ -38,13 +38,16 @@ mod trap;
 // 可睡眠同步原语在系统服务间共享；linuxd 经 `crate::sync` 使用它们，并安装 Linux 线程的等待目标。
 use service_sync as sync;
 
-#[allow(unused_imports, reason = "日志宏经 `crate::` 路径调用的地方需要根级名字")]
+#[allow(
+    unused_imports,
+    reason = "日志宏经 `crate::` 路径调用的地方需要根级名字"
+)]
 pub(crate) use native_runtime::{debug, error, info, warn};
 
+use crate::sync::Once;
 use device_protocol::boot::Milestone;
 use native_runtime::Startup;
 use native_runtime::native_abi::SystemBasic;
-use native_runtime::sync::Once;
 
 native_runtime::entry!(main);
 
@@ -72,7 +75,10 @@ fn main(mut startup: Startup) -> i64 {
     );
     info!("linuxd started on {} CPUs", cpu::count());
     if let Some(record) = system::previous_panic() {
-        warn!("previous boot ended in a kernel panic:\n{}", core::str::from_utf8(record).unwrap_or("<non-utf8>"));
+        warn!(
+            "previous boot ended in a kernel panic:\n{}",
+            core::str::from_utf8(record).unwrap_or("<non-utf8>")
+        );
     }
 
     let parameters = cmdline::parse(platform::kernel_command_line())
@@ -145,7 +151,8 @@ fn start_kernel_init(
         );
     })
     .expect("kernel_init body allocation failed");
-    task::spawn_kernel_thread("kernel_init", body).expect("kernel_init thread initialization failed");
+    task::spawn_kernel_thread("kernel_init", body)
+        .expect("kernel_init thread initialization failed");
 }
 
 /// 初始 user/UTS/PID/time/IPC/NET 命名空间。
@@ -208,12 +215,17 @@ fn start_background_threads() {
     syscall::start_io_uring_worker().expect("io_uring worker initialization failed");
 }
 
-fn mount_filesystems(scheduler: task::SchedulerReady, parameters: &cmdline::KernelParameters) -> fs::RootMounted {
+fn mount_filesystems(
+    scheduler: task::SchedulerReady,
+    parameters: &cmdline::KernelParameters,
+) -> fs::RootMounted {
     let environment = fs::MountEnvironment {
         threads: task::kernel_thread_support(scheduler),
-        proc_source: alloc::sync::Arc::try_new(task::KernelProcSource).expect("proc source allocation failed"),
+        proc_source: alloc::sync::Arc::try_new(task::KernelProcSource)
+            .expect("proc source allocation failed"),
         cpu_count: cpu::count(),
-        net_links: alloc::sync::Arc::try_new(task::KernelProcSource).expect("net link source allocation failed"),
+        net_links: alloc::sync::Arc::try_new(task::KernelProcSource)
+            .expect("net link source allocation failed"),
         requester: task::current_requester,
     };
     // 没有 `root=` 时以首块盘为根（Linux 由构建期 ROOT_DEV 给出缺省）。
@@ -221,7 +233,8 @@ fn mount_filesystems(scheduler: task::SchedulerReady, parameters: &cmdline::Kern
     let root = match &parameters.root {
         Some(root) => root.as_slice(),
         None => {
-            let disk = devices::block::device(0).expect("boot requires a block device for the root filesystem");
+            let disk = devices::block::device(0)
+                .expect("boot requires a block device for the root filesystem");
             let mut path = alloc::vec::Vec::new();
             path.try_reserve_exact(b"/dev/".len() + disk.disk_name().len())
                 .expect("root path allocation failed");

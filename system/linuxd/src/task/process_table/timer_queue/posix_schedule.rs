@@ -108,9 +108,7 @@ impl TimerQueue {
                 } else {
                     match current.clock {
                         PosixTimerClock::Realtime => {
-                            crate::time::realtime_deadline_to_monotonic_ns(
-                                prepared.value_ns,
-                            )
+                            crate::time::realtime_deadline_to_monotonic_ns(prepared.value_ns)
                         }
                         PosixTimerClock::Monotonic => offsets
                             .to_host(crate::namespace::TimeClock::Monotonic, prepared.value_ns),

@@ -34,7 +34,6 @@ impl VirtioMmioTransports {
     pub(crate) fn len(&self) -> usize {
         self.count
     }
-
 }
 
 /// 当前 DTB 节点的 VirtIO 候选属性。

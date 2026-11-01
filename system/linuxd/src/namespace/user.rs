@@ -1,8 +1,8 @@
 //! User namespace 的 immutable ancestry 与唯一 map/setgroups publication owner。
 use super::quota::{UserQuotas, UserResource, UserResourceCharge};
 use super::{IdMap, NamespaceError};
-use alloc::sync::Arc;
 use crate::sync::Mutex;
+use alloc::sync::Arc;
 use syscall_abi::capability::Capability;
 
 /// proc map 控制文件种类；不把 UID/GID 与 setgroups 写成另一路 credential policy。

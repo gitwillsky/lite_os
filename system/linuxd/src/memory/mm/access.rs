@@ -15,11 +15,18 @@ const CHUNK: usize = 64 * 1024;
 
 impl MemorySet {
     /// `[address, address + length)` 是否被具有 `permission` 的 VMA 连续覆盖。
-    fn check_access(&self, address: usize, length: usize, permission: MapPermission) -> Result<(), UserAccessError> {
+    fn check_access(
+        &self,
+        address: usize,
+        length: usize,
+        permission: MapPermission,
+    ) -> Result<(), UserAccessError> {
         if length == 0 {
             return Ok(());
         }
-        let end = address.checked_add(length).ok_or(UserAccessError::Overflow)?;
+        let end = address
+            .checked_add(length)
+            .ok_or(UserAccessError::Overflow)?;
         if end > self.trampoline() || address < self.base.max(PAGE_SIZE) {
             return Err(UserAccessError::Fault);
         }
@@ -71,7 +78,11 @@ impl MemorySet {
     /// # Errors
     ///
     /// 区间不可读或溢出。
-    pub(crate) fn copy_from_user(&self, address: usize, output: &mut [u8]) -> Result<(), UserAccessError> {
+    pub(crate) fn copy_from_user(
+        &self,
+        address: usize,
+        output: &mut [u8],
+    ) -> Result<(), UserAccessError> {
         self.check_access(address, output.len(), MapPermission::R)?;
         self.read_raw(address, output)
     }
@@ -81,9 +92,15 @@ impl MemorySet {
     /// # Errors
     ///
     /// 区间不可读、溢出或内存不足。
-    pub(crate) fn read_user_bytes(&self, address: usize, length: usize) -> Result<Vec<u8>, UserAccessError> {
+    pub(crate) fn read_user_bytes(
+        &self,
+        address: usize,
+        length: usize,
+    ) -> Result<Vec<u8>, UserAccessError> {
         let mut bytes = Vec::new();
-        bytes.try_reserve_exact(length).map_err(|_| UserAccessError::OutOfMemory)?;
+        bytes
+            .try_reserve_exact(length)
+            .map_err(|_| UserAccessError::OutOfMemory)?;
         bytes.resize(length, 0);
         self.copy_from_user(address, &mut bytes)?;
         Ok(bytes)
@@ -121,7 +138,11 @@ impl MemorySet {
     /// # Errors
     ///
     /// 区间不可写或溢出。
-    pub(crate) fn validate_user_write(&self, address: usize, length: usize) -> Result<(), UserAccessError> {
+    pub(crate) fn validate_user_write(
+        &self,
+        address: usize,
+        length: usize,
+    ) -> Result<(), UserAccessError> {
         self.check_access(address, length, MapPermission::W)
     }
 
@@ -130,26 +151,39 @@ impl MemorySet {
     /// # Errors
     ///
     /// 不可读（`Fault`）、超过上限仍未结束（`Unterminated`）、内存不足。
-    pub(crate) fn copy_user_c_string(&self, address: usize, limit: usize) -> Result<Vec<u8>, UserAccessError> {
+    pub(crate) fn copy_user_c_string(
+        &self,
+        address: usize,
+        limit: usize,
+    ) -> Result<Vec<u8>, UserAccessError> {
         let mut string = Vec::new();
         let mut cursor = address;
         let mut chunk = [0u8; 256];
         loop {
             // 每段不跨页：页之后可能未映射，而字符串在本页内已经结束。
             let page_remaining = PAGE_SIZE - (cursor % PAGE_SIZE);
-            let length = chunk.len().min(page_remaining).min(limit.saturating_sub(string.len()).max(1));
+            let length = chunk
+                .len()
+                .min(page_remaining)
+                .min(limit.saturating_sub(string.len()).max(1));
             self.copy_from_user(cursor, &mut chunk[..length])?;
             if let Some(end) = chunk[..length].iter().position(|&byte| byte == 0) {
-                string.try_reserve(end).map_err(|_| UserAccessError::OutOfMemory)?;
+                string
+                    .try_reserve(end)
+                    .map_err(|_| UserAccessError::OutOfMemory)?;
                 string.extend_from_slice(&chunk[..end]);
                 return Ok(string);
             }
             if string.len() + length > limit {
                 return Err(UserAccessError::Unterminated);
             }
-            string.try_reserve(length).map_err(|_| UserAccessError::OutOfMemory)?;
+            string
+                .try_reserve(length)
+                .map_err(|_| UserAccessError::OutOfMemory)?;
             string.extend_from_slice(&chunk[..length]);
-            cursor = cursor.checked_add(length).ok_or(UserAccessError::Overflow)?;
+            cursor = cursor
+                .checked_add(length)
+                .ok_or(UserAccessError::Overflow)?;
             if string.len() >= limit {
                 return Err(UserAccessError::Unterminated);
             }
@@ -178,7 +212,11 @@ impl MemorySet {
     /// # Errors
     ///
     /// 未对齐、不可读或（`write` 时）不可写。
-    pub(crate) fn user_atomic_u32(&self, address: usize, write: bool) -> Result<UserAtomicU32<'_>, UserAccessError> {
+    pub(crate) fn user_atomic_u32(
+        &self,
+        address: usize,
+        write: bool,
+    ) -> Result<UserAtomicU32<'_>, UserAccessError> {
         if !address.is_multiple_of(4) {
             return Err(UserAccessError::Fault);
         }
@@ -198,8 +236,15 @@ impl MemorySet {
     /// # Errors
     ///
     /// 同 [`Self::user_atomic_u32`]。
-    pub(crate) fn compare_exchange_user_u32(&self, address: usize, current: u32, replacement: u32) -> Result<Result<u32, u32>, UserAccessError> {
-        Ok(self.user_atomic_u32(address, true)?.compare_exchange(current, replacement))
+    pub(crate) fn compare_exchange_user_u32(
+        &self,
+        address: usize,
+        current: u32,
+        replacement: u32,
+    ) -> Result<Result<u32, u32>, UserAccessError> {
+        Ok(self
+            .user_atomic_u32(address, true)?
+            .compare_exchange(current, replacement))
     }
 
     /// 为 futex 地址生成等待身份。
@@ -207,7 +252,12 @@ impl MemorySet {
     /// # Errors
     ///
     /// 未对齐、越界或（共享 key 时）不可读。
-    pub(crate) fn futex_key(&self, address: usize, address_space: usize, private: bool) -> Result<FutexKey, UserAccessError> {
+    pub(crate) fn futex_key(
+        &self,
+        address: usize,
+        address_space: usize,
+        private: bool,
+    ) -> Result<FutexKey, UserAccessError> {
         if private {
             return FutexKey::private(address, address_space);
         }
@@ -222,7 +272,10 @@ impl MemorySet {
                 offset: area.backing.offset() + (address - area.start) as u64,
             });
         }
-        Ok(FutexKey::Private { address_space, address })
+        Ok(FutexKey::Private {
+            address_space,
+            address,
+        })
     }
 
     /// 调试访问（ptrace、`/proc/<pid>/mem`）：忽略 Linux 权限，只要求已映射；写只读私有映射时内核为本进程
@@ -230,7 +283,9 @@ impl MemorySet {
     pub(crate) fn access_forced(&self, address: usize, buffer: &mut [u8], write: bool) -> usize {
         let mut done = 0;
         while done < buffer.len() {
-            let Some(area) = self.area_at(address + done) else { break };
+            let Some(area) = self.area_at(address + done) else {
+                break;
+            };
             let chunk = (buffer.len() - done).min(area.end - (address + done));
             let result = if write {
                 self.write_raw(address + done, &buffer[done..done + chunk])

@@ -1,8 +1,8 @@
 //! QEMU `virt` GICv3 distributor、redistributor 与 ICC system-register owner。
 
-use mmio::MmioBus;
 use alloc::sync::Arc;
 use core::arch::asm;
+use mmio::MmioBus;
 
 use spin::Once;
 
@@ -393,7 +393,10 @@ pub(crate) fn register_device(
 ///
 /// # Errors
 /// 向量非法、已被占用或分配失败。
-pub(crate) fn bind_interrupt(vector: u32, handler: Arc<dyn InterruptHandler>) -> Result<(), InterruptError> {
+pub(crate) fn bind_interrupt(
+    vector: u32,
+    handler: Arc<dyn InterruptHandler>,
+) -> Result<(), InterruptError> {
     let mut controller = GIC.wait().lock();
     if controller.handlers.contains_key(&vector) {
         return Err(InterruptError::InvalidVector);

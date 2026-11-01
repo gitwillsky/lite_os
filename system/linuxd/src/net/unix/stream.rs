@@ -3,12 +3,12 @@ use super::rights::{UnixReceivedRights, UnixRights};
 use super::{ReceiveMode, SenderCharge};
 use crate::ipc::{PipeDirection, PipeEnd, ReceiveBuffer};
 use crate::net::{SocketError, UnixCredentials};
+use crate::sync::Mutex;
 use alloc::{
     boxed::Box,
     sync::{Arc, Weak},
     vec::Vec,
 };
-use crate::sync::Mutex;
 
 mod queue;
 use queue::FrameQueue;

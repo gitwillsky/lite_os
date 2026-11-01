@@ -122,12 +122,58 @@ pub(super) fn current_wait_target() -> Arc<dyn TaskWaitTarget> {
     WAIT_TARGET_FACTORY
         .get()
         .and_then(|factory| factory())
-        .unwrap_or_else(|| super::ServiceThreadTarget::current())
+        .unwrap_or_else(|| {
+            #[cfg(test)]
+            {
+                tests::current()
+            }
+            #[cfg(not(test))]
+            {
+                super::ServiceThreadTarget::current()
+            }
+        })
 }
 
 #[cfg(test)]
-mod policy_tests {
-    use super::{TaskWaitKey, TaskWaitMode};
+mod tests {
+    use super::{TaskWaitKey, TaskWaitMode, TaskWaitTarget, WaitCompletion, WaitResult};
+    use alloc::sync::Arc;
+
+    pub(super) fn current() -> Arc<dyn TaskWaitTarget> {
+        Arc::new(HostThread(std::thread::current()))
+    }
+
+    struct HostThread(std::thread::Thread);
+    impl TaskWaitTarget for HostThread {
+        fn sleep(self: Arc<Self>, completion: &WaitCompletion, key: TaskWaitKey) -> WaitResult {
+            if !completion.begin_arming() || completion.finish_arming() {
+                return WaitResult::Woken;
+            }
+            while !completion.is_complete() {
+                if let Some(deadline) = key.deadline() {
+                    static CLOCK: std::sync::OnceLock<std::time::Instant> =
+                        std::sync::OnceLock::new();
+                    let now = CLOCK
+                        .get_or_init(std::time::Instant::now)
+                        .elapsed()
+                        .as_nanos()
+                        .min(u128::from(u64::MAX)) as u64;
+                    let remaining = deadline.saturating_sub(now);
+                    if remaining == 0 {
+                        return WaitResult::TimedOut;
+                    }
+                    std::thread::park_timeout(std::time::Duration::from_nanos(remaining));
+                } else {
+                    std::thread::park();
+                }
+            }
+            WaitResult::Woken
+        }
+        fn wake(self: Arc<Self>, _: TaskWaitKey) {
+            self.0.unpark();
+        }
+    }
+
     #[test]
     fn native_load_policy_includes_killable_but_excludes_idle_and_interruptible() {
         for (mode, load, interruptible) in [

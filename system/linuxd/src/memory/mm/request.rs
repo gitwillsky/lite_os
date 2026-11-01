@@ -42,7 +42,11 @@ impl FileMappingSource {
     /// # Errors
     ///
     /// 偏移未对齐（`Invalid`）或 `offset + length` 超过 `i64::MAX`（`Overflow`）。
-    pub(crate) fn new(mapping: Arc<dyn SharedFileMapping>, offset: u64, length: usize) -> Result<Self, FileMappingError> {
+    pub(crate) fn new(
+        mapping: Arc<dyn SharedFileMapping>,
+        offset: u64,
+        length: usize,
+    ) -> Result<Self, FileMappingError> {
         if !offset.is_multiple_of(PAGE_SIZE as u64) {
             return Err(FileMappingError::Invalid);
         }
@@ -52,10 +56,7 @@ impl FileMappingSource {
         if end > i64::MAX as u64 {
             return Err(FileMappingError::Overflow);
         }
-        Ok(Self {
-            mapping,
-            offset,
-        })
+        Ok(Self { mapping, offset })
     }
 }
 
@@ -93,8 +94,13 @@ impl DeviceMappingSource {
     /// # Errors
     ///
     /// 内存不足。
-    pub(crate) fn retain_file(&mut self, file: Arc<dyn MappedFileOwner>) -> Result<(), alloc::alloc::AllocError> {
-        self.owners.try_reserve(1).map_err(|_| alloc::alloc::AllocError)?;
+    pub(crate) fn retain_file(
+        &mut self,
+        file: Arc<dyn MappedFileOwner>,
+    ) -> Result<(), alloc::alloc::AllocError> {
+        self.owners
+            .try_reserve(1)
+            .map_err(|_| alloc::alloc::AllocError)?;
         self.owners.push(file);
         Ok(())
     }
@@ -114,7 +120,10 @@ pub(crate) struct MappingResourceLimits {
 
 impl MappingResourceLimits {
     pub(crate) const fn new(address_space: u64, data: u64) -> Self {
-        Self { address_space, data }
+        Self {
+            address_space,
+            data,
+        }
     }
 }
 

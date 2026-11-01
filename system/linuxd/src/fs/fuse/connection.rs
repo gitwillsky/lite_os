@@ -13,7 +13,7 @@ use alloc::{
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crate::sync::Mutex;
-use native_runtime::sync::Once;
+use crate::sync::Once;
 use syscall_abi::{errno, fuse};
 
 use super::{
@@ -21,13 +21,13 @@ use super::{
     protocol::{self, Caller, Fields, Reader},
 };
 use crate::{
-    sync::{TaskEvent, WaitResult},
     fs::{
         CurrentRequester, FileSystemError,
         chardev::{DeviceError, UserFault, UserInput, UserOutput},
     },
     ipc::{Pipe, PipeEnd, PipeWaitCondition},
     namespace::PidNamespace,
+    sync::{TaskEvent, WaitResult},
 };
 
 mod background;

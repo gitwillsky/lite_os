@@ -2,10 +2,10 @@
 
 use alloc::vec::Vec;
 
+use crate::sync::Once;
 use filesystem_protocol::MountClient;
-use network_protocol::NetworkClient;
-use native_runtime::sync::Once;
 use native_runtime::{Channel, Job, Process, Resource, Startup};
+use network_protocol::NetworkClient;
 
 struct Handles {
     shared_process: Process,

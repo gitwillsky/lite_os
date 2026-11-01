@@ -2,10 +2,10 @@ use crate::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    task::{PollWaitKey, TaskControlBlock, current_task, wait_for_poll},
     file::{OpenFileDescription, OpenFileKind},
     net::SocketCapacityWait,
     syscall::errno,
+    task::{PollWaitKey, TaskControlBlock, current_task, wait_for_poll},
 };
 
 use super::timer::{TimeSpec, decode_timespec};
@@ -279,9 +279,7 @@ pub(crate) fn sys_ppoll(
     loop {
         prepare_descriptors(&descriptors);
         let ready = evaluate(&mut descriptors, &task);
-        if ready != 0
-            || deadline.is_some_and(|value| value <= crate::time::get_time_ns())
-        {
+        if ready != 0 || deadline.is_some_and(|value| value <= crate::time::get_time_ns()) {
             if temporary_mask {
                 task.restore_temporary_signal_mask()
                     .expect("ppoll temporary mask disappeared");

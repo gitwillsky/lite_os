@@ -44,37 +44,44 @@ pub fn publish(directory: &Channel, device: Arc<dyn PortDevice>) -> Result<(), S
     let (client, server) = Channel::create()?;
     let event = Event::create()?;
     let peer_event = event.duplicate(rights::SAME)?;
-    device.bind_activity(activity_signal(Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?)?);
+    device.bind_activity(activity_signal(
+        Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?,
+    )?);
     serve(
         server,
         1,
         b"port-server",
-        Arc::try_new(move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
-            match ordinal {
-                READ => {
-                    let length = request.usize()?.min(CHUNK);
-                    let mut data = alloc::vec![0u8; length];
-                    let count = device.read(&mut data).map_err(encode_error)?;
-                    reply.bytes(&data[..count]);
+        Arc::try_new(
+            move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
+                match ordinal {
+                    READ => {
+                        let length = request.usize()?.min(CHUNK);
+                        let mut data = alloc::vec![0u8; length];
+                        let count = device.read(&mut data).map_err(encode_error)?;
+                        reply.bytes(&data[..count]);
+                    }
+                    WRITE => {
+                        let count = device.write(request.bytes()?).map_err(encode_error)?;
+                        reply.u64(count as u64);
+                    }
+                    STATE => {
+                        reply
+                            .bool(device.readable())
+                            .bool(device.writable())
+                            .bool(device.connected());
+                    }
+                    DISPATCH => {
+                        let activity = device.dispatch();
+                        reply
+                            .bool(activity.readable_changed)
+                            .bool(activity.writable_changed)
+                            .bool(activity.backlog);
+                    }
+                    _ => return Err(native_abi::ERR_NOT_SUPPORTED),
                 }
-                WRITE => {
-                    let count = device.write(request.bytes()?).map_err(encode_error)?;
-                    reply.u64(count as u64);
-                }
-                STATE => {
-                    reply.bool(device.readable()).bool(device.writable()).bool(device.connected());
-                }
-                DISPATCH => {
-                    let activity = device.dispatch();
-                    reply
-                        .bool(activity.readable_changed)
-                        .bool(activity.writable_changed)
-                        .bool(activity.backlog);
-                }
-                _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-            }
-            Ok(Vec::new())
-        })
+                Ok(Vec::new())
+            },
+        )
         .map_err(|_| native_abi::ERR_NO_MEMORY)?,
     )?;
     directory::announce(
@@ -96,9 +103,15 @@ pub struct RemotePort {
 /// # Errors
 ///
 /// 句柄缺失或事件登记失败。
-pub fn connect(mut announcement: Announcement, hub: &Arc<EventHub>) -> Result<Arc<RemotePort>, Status> {
+pub fn connect(
+    mut announcement: Announcement,
+    hub: &Arc<EventHub>,
+) -> Result<Arc<RemotePort>, Status> {
     let channel = Channel::from_handle(take_handle(&mut announcement.handles, 0)?);
-    let activity = hub.activity(Event::from_handle(take_handle(&mut announcement.handles, 1)?))?;
+    let activity = hub.activity(Event::from_handle(take_handle(
+        &mut announcement.handles,
+        1,
+    )?))?;
     Arc::try_new(RemotePort { channel, activity }).map_err(|_| native_abi::ERR_NO_MEMORY)
 }
 
@@ -118,7 +131,10 @@ impl PortDevice for RemotePort {
         let mut request = Writer::request(READ);
         request.u64(output.len().min(CHUNK) as u64);
         let reply = call(&self.channel, &request, Vec::new()).map_err(decode_error)?;
-        let data = reply.reader().bytes().map_err(|_| PortError::Disconnected)?;
+        let data = reply
+            .reader()
+            .bytes()
+            .map_err(|_| PortError::Disconnected)?;
         let count = data.len().min(output.len());
         output[..count].copy_from_slice(&data[..count]);
         Ok(count)

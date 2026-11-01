@@ -58,12 +58,8 @@ impl ProcessTable {
                     .credential_guard()
                     .lock_killable()
                     .map_err(|error| match error {
-                        crate::sync::TaskMutexLockError::OutOfMemory => {
-                            SeccompError::OutOfMemory
-                        }
-                        crate::sync::TaskMutexLockError::Interrupted => {
-                            SeccompError::Interrupted
-                        }
+                        crate::sync::TaskMutexLockError::OutOfMemory => SeccompError::OutOfMemory,
+                        crate::sync::TaskMutexLockError::Interrupted => SeccompError::Interrupted,
                     })?,
             )
         } else {

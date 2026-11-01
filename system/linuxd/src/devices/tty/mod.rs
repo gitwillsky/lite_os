@@ -4,13 +4,12 @@
 //! 设备文件，并拥有读写阻塞、poll 唤醒源与 termios/session ioctl。session、process group 与
 //! signal 归 task，经 [`install_job_control`] 安装的 [`JobControl`] 访问。
 
+use crate::sync::Once;
 use alloc::sync::Arc;
-use native_runtime::sync::Once;
 use syscall_abi::errno;
 
 use crate::{
     devices::console::ConsoleDevice,
-    sync::WaitResult,
     fs::{
         FileSystemError,
         {
@@ -23,6 +22,7 @@ use crate::{
         },
     },
     ipc::{Pipe, PipeDirection, PipeRead, PipeWaitCondition},
+    sync::WaitResult,
 };
 
 mod devpts;
@@ -379,9 +379,7 @@ impl DeviceFile for TerminalFile {
             TerminalReadMode::Noncanonical {
                 minimum: 0,
                 timeout_ns,
-            } if timeout_ns != 0 => {
-                Some(crate::time::get_time_ns().saturating_add(timeout_ns))
-            }
+            } if timeout_ns != 0 => Some(crate::time::get_time_ns().saturating_add(timeout_ns)),
             _ => None,
         };
         loop {
@@ -442,10 +440,8 @@ impl DeviceFile for TerminalFile {
                                 break;
                             }
                             if timeout_ns != 0 {
-                                deadline = Some(
-                                    crate::time::get_time_ns()
-                                        .saturating_add(timeout_ns),
-                                );
+                                deadline =
+                                    Some(crate::time::get_time_ns().saturating_add(timeout_ns));
                             }
                         }
                     }

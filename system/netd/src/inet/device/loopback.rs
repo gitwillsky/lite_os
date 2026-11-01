@@ -1,9 +1,9 @@
 //! 实际IP-medium loopback队列；没有伪Ethernet/ARP或第二份transport owner。
 use super::TcpReset;
-use network_protocol::SocketError;
-use device_model::network::NetworkStatistics;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
+use device_model::network::NetworkStatistics;
+use network_protocol::SocketError;
 use smoltcp::{
     phy::{Device, DeviceCapabilities, Medium, RxToken, TxToken},
     storage::{PacketBuffer, PacketMetadata},

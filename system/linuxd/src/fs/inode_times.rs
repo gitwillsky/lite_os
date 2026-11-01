@@ -1,7 +1,7 @@
 //! Volatile inode 的唯一时间 tuple；storage/mmap 与 inode attributes 共享同一事实。
 use super::FileSystemError;
-use alloc::sync::Arc;
 use crate::sync::Mutex;
+use alloc::sync::Arc;
 
 /// 一次锁下取得的真实 inode 时间快照；秒精度与当前 filesystem ABI profile 一致。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

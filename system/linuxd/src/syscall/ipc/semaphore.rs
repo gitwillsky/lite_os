@@ -1,8 +1,8 @@
 //! asm-generic semaphore syscall codec；操作、等待、权限与撤销均由实际 IPC owner 完成。
 use super::{encode_permission, ipc_error};
 use crate::{
-    task::current_task,
     ipc::{SemaphoreChange, SemaphoreOperation},
+    task::current_task,
 };
 use alloc::vec::Vec;
 use syscall_abi::{errno, ipc::*};

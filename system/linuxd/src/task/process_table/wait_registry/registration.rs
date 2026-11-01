@@ -1,10 +1,10 @@
+use crate::sync::Mutex;
 use crate::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicU8, Ordering};
-use crate::sync::Mutex;
 
 use super::{IndexedWaitKind, PollWaitKey, key::WaitIndexKey};
-use crate::{task::TaskControlBlock};
+use crate::task::TaskControlBlock;
 use fallible_tree::VacantEntry;
 
 pub(super) const PREPARED: u8 = 0;

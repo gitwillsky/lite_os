@@ -1,5 +1,5 @@
-use alloc::{sync::Arc, vec::Vec};
 use crate::sync::Mutex;
+use alloc::{sync::Arc, vec::Vec};
 
 mod rx_slots;
 
@@ -10,11 +10,8 @@ use super::{
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
     queue::{DmaBuffer, VirtQueue},
 };
+use crate::{interrupt::InterruptError, interrupt::InterruptHandler, interrupt::InterruptVector};
 use device_model::network::{NetworkDevice, NetworkError, NetworkStatistics};
-use crate::{
-    interrupt::InterruptError, interrupt::InterruptHandler,
-    interrupt::InterruptVector,
-};
 
 const VIRTIO_NET_F_MAC: u64 = 1 << 5;
 const RX_QUEUE: u32 = 0;

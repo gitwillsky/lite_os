@@ -1,6 +1,6 @@
 //! linuxd 的时间源：内核单调时钟与 UTC。
 
-use native_runtime::sync::Once;
+use crate::sync::Once;
 
 use crate::system_info;
 

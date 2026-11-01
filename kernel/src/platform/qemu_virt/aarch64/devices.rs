@@ -6,7 +6,6 @@ use super::{discovery, gicv3, pl011};
 use crate::execution::interrupt::InterruptHandler;
 use crate::info;
 
-
 pub(crate) fn initialize() {
     let platform = discovery::info();
     gicv3::initialize(platform.gic).expect("GICv3 initialization failed");

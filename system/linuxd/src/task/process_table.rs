@@ -1,12 +1,16 @@
 use crate::sync::WaitResult;
 use alloc::sync::Arc;
 
-use crate::{sync::Mutex, task::{
-        KernelThreadBody, PendingSignal, RunState, StopResume, TaskControlBlock,
-        WaitMembership,
-        pid::{INIT_PID, PidLinkSlot, PidRegistration, PreparedPid, ProcessId},
-    }, time::get_time_ns, memory::MemoryError};
 use crate::task::processor::{current_task, enqueue_new_task, take_current_task};
+use crate::{
+    memory::MemoryError,
+    sync::Mutex,
+    task::{
+        KernelThreadBody, PendingSignal, RunState, StopResume, TaskControlBlock, WaitMembership,
+        pid::{INIT_PID, PidLinkSlot, PidRegistration, PreparedPid, ProcessId},
+    },
+    time::get_time_ns,
+};
 use fallible_tree::{FallibleMap, NodeSlot, VacantEntry};
 
 pub(in crate::task) mod advisory_lock;
@@ -75,9 +79,9 @@ pub(crate) use process_group::{
 };
 use process_group::{claim_controlling_terminal, set_terminal_foreground_group};
 pub(crate) use procfs::{KernelProcSource, SystemInfoSnapshot, system_info_snapshot};
+use resource_limit::ThreadSlotSnapshot;
 pub(crate) use resource_limit::process_resource_limit;
 pub(in crate::task) use resource_limit::with_credential_transition;
-use resource_limit::ThreadSlotSnapshot;
 pub(crate) use seccomp::{enable_strict_seccomp, install_seccomp_filter};
 use signal::{ChildEvents, JobControlState};
 pub(crate) use signal::{

@@ -48,7 +48,8 @@ fn handle_claimed_interrupt(user_trap: bool) {
             crate::crash::watchdog_tick();
             deferred::raise(timer_work(user_trap, fired));
         }
-        crate::platform::ClaimedInterrupt::Device(_) | crate::platform::ClaimedInterrupt::Software(_) => {}
+        crate::platform::ClaimedInterrupt::Device(_)
+        | crate::platform::ClaimedInterrupt::Software(_) => {}
         crate::platform::ClaimedInterrupt::Spurious => return,
     }
     // 设备 handler 已在 claim 内完成；token 必须恰好一次交还同一控制器。
@@ -117,7 +118,10 @@ pub(crate) fn handle_user_trap() -> ! {
     trap_return()
 }
 
-fn user_exception(current: &alloc::sync::Arc<thread::Thread>, event: TrapEvent) -> Option<UserException> {
+fn user_exception(
+    current: &alloc::sync::Arc<thread::Thread>,
+    event: TrapEvent,
+) -> Option<UserException> {
     match event {
         TrapEvent::IllegalInstruction => illegal_instruction(current),
         TrapEvent::Breakpoint => Some(UserException::Breakpoint {
@@ -136,7 +140,9 @@ fn user_exception(current: &alloc::sync::Arc<thread::Thread>, event: TrapEvent) 
             address: fault.address(),
             syndrome: fault.syndrome(),
         }),
-        TrapEvent::UnsupportedException { address } => Some(UserException::Unsupported { pc: address }),
+        TrapEvent::UnsupportedException { address } => {
+            Some(UserException::Unsupported { pc: address })
+        }
         TrapEvent::UserEnvironmentCall
         | TrapEvent::TimerInterrupt
         | TrapEvent::ExternalInterrupt
@@ -164,7 +170,9 @@ fn illegal_instruction(current: &alloc::sync::Arc<thread::Thread>) -> Option<Use
     });
     match current.with_user_context(|context| context.finish_illegal_instruction(result)) {
         Ok(()) => None,
-        Err(fault) => Some(UserException::IllegalInstruction { pc: fault.address() }),
+        Err(fault) => Some(UserException::IllegalInstruction {
+            pc: fault.address(),
+        }),
     }
 }
 

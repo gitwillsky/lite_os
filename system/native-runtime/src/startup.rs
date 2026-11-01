@@ -27,7 +27,10 @@ impl Startup {
             .get_mut(index - startup::ROLE_HANDLES)
             .expect("startup handle index out of range");
         let handle = core::mem::replace(slot, Handle::invalid());
-        assert!(!handle.is_invalid(), "startup handle {index} missing or taken twice");
+        assert!(
+            !handle.is_invalid(),
+            "startup handle {index} missing or taken twice"
+        );
         handle
     }
 }
@@ -117,6 +120,9 @@ extern "C" fn _start(channel: native_abi::Handle, _: usize) -> ! {
 #[cfg(target_os = "none")]
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo<'_>) -> ! {
-    crate::log::write(crate::system::Severity::Error, format_args!("panic: {info}"));
+    crate::log::write(
+        crate::system::Severity::Error,
+        format_args!("panic: {info}"),
+    );
     fatal()
 }

@@ -534,7 +534,16 @@ def boot(
     hard_deadline = now + timeout_seconds * HARD_DEADLINE_MULTIPLE
     monitor = None
     protocol = None
+    serial_log = None
+    logged = 0
     try:
+        log_directory = ROOT / "target/logs"
+        log_directory.mkdir(parents=True, exist_ok=True)
+        log_path = log_directory / f"qemu-{qemu_runtime().arch}-smp{smp}-{process.pid}.log"
+        serial_log = log_path.open("wb")
+        serial_log.write(("QEMU argv: " + shlex.join(command) + "\n").encode())
+        serial_log.flush()
+        print(f"QEMU serial log: {log_path}", file=sys.stderr, flush=True)
         if qmp_socket is not None:
             monitor = socket.socket(socket.AF_UNIX)
             monitor.settimeout(3)
@@ -566,6 +575,9 @@ def boot(
                 if not chunk:
                     break
                 output.extend(chunk)
+                serial_log.write(output[logged:])
+                serial_log.flush()
+                logged = len(output)
                 last_progress = time.monotonic()
                 text = ANSI.sub("", output.decode(errors="replace"))
                 found = [marker for marker in forbidden_markers if marker in text]
@@ -634,6 +646,9 @@ def boot(
                 _qmp_execute(protocol, "quit")
                 process.wait(timeout=3)
         finally:
+            if serial_log is not None:
+                serial_log.write(output[logged:])
+                serial_log.close()
             if protocol is not None:
                 protocol.close()
             if monitor is not None:

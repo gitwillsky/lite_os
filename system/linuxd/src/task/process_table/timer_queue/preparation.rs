@@ -79,8 +79,7 @@ impl PreparedPosixCreate {
                 overrun: 0,
                 sequence: 0,
                 signal: {
-                    let creator =
-                        crate::task::current_task().ok_or(TimerError::NotFound)?;
+                    let creator = crate::task::current_task().ok_or(TimerError::NotFound)?;
                     let (namespace, uid) = creator.user_resource_owner();
                     crate::task::model::PreallocatedSignal::try_new(
                         namespace,

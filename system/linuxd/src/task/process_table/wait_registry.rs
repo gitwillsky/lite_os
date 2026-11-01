@@ -63,7 +63,12 @@ use core::{
 };
 
 use super::{IndexedWaitKind, PollWaitKey};
-use crate::{sync::Mutex, fs::AdvisoryLockKey, ipc::{PipeDirection, PipePollState}, memory::FutexKey};
+use crate::{
+    fs::AdvisoryLockKey,
+    ipc::{PipeDirection, PipePollState},
+    memory::FutexKey,
+    sync::Mutex,
+};
 use fallible_tree::VacantEntry;
 
 mod batch;
@@ -156,8 +161,7 @@ impl WaitRegistry {
         Self {
             next_id: AtomicU64::new(0),
             shards: [const { Mutex::new(WaitShard::new()) }; WAIT_SHARD_COUNT],
-            futex_operations: [const { crate::sync::TaskMutex::new(()) };
-                WAIT_SHARD_COUNT],
+            futex_operations: [const { crate::sync::TaskMutex::new(()) }; WAIT_SHARD_COUNT],
         }
     }
 
@@ -175,7 +179,9 @@ impl WaitRegistry {
     pub(super) fn publish(&'static self, prepared: PreparedWait) -> PublishedWait {
         let registration = prepared.registration;
         let keys = registration.keys.lock();
-        let timed = keys.iter().any(|key| matches!(key, WaitIndexKey::Deadline { .. }));
+        let timed = keys
+            .iter()
+            .any(|key| matches!(key, WaitIndexKey::Deadline { .. }));
         let mut shards = LockedWaitShards::lock(&self.shards, &keys);
         for index in prepared.indexes {
             shards

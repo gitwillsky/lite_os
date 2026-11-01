@@ -2,7 +2,6 @@ use crate::sync::WaitResult;
 use alloc::sync::Arc;
 
 use crate::{
-    task::{TaskControlBlock, current_task},
     file::{OpenFileDescription, OpenFileKind, PreparedSocketDescription},
     fs::{O_CLOEXEC, O_NONBLOCK, O_RDWR},
     net::{
@@ -12,6 +11,7 @@ use crate::{
         configure_netmask, configure_route, configure_up, interface_index, interface_snapshot,
         interface_snapshots,
     },
+    task::{TaskControlBlock, current_task},
 };
 
 use super::{errno, poll::wait_for_ofd};

@@ -60,7 +60,10 @@ pub(crate) fn serial_input_ready() {
 ///
 /// # Errors
 /// 等待超时、被打断或分配失败时返回对应 [`WaitResult`]。
-pub(crate) fn serial_read(output: &mut [u8], deadline_ns: Option<u64>) -> Result<usize, WaitResult> {
+pub(crate) fn serial_read(
+    output: &mut [u8],
+    deadline_ns: Option<u64>,
+) -> Result<usize, WaitResult> {
     loop {
         {
             let mut ring = INPUT.lock();

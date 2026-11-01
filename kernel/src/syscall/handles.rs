@@ -1,6 +1,8 @@
 //! 句柄与通用对象调用。
 
-use native_abi::{HandleBasic, ProcessBasic, Status, TaskRuntime, VmarRegion, VmoInfo, info, rights};
+use native_abi::{
+    HandleBasic, ProcessBasic, Status, TaskRuntime, VmarRegion, VmoInfo, info, rights,
+};
 
 use super::{Call, Plain, bytes_of};
 use crate::object::{HandleEntry, Object, WaitOutcome};
@@ -12,7 +14,10 @@ pub(super) fn close(call: &Call<'_>) -> Result<(), Status> {
     }
     let handles = call.process().handles();
     let entry = handles.remove(handle)?;
-    entry.object.kernel_object().cancel(handles.cancel_key(handle));
+    entry
+        .object
+        .kernel_object()
+        .cancel(handles.cancel_key(handle));
     drop(entry);
     Ok(())
 }
@@ -56,7 +61,10 @@ pub(super) fn replace(call: &Call<'_>) -> Result<(), Status> {
         return Err(status);
     }
     let removed = handles.remove(old)?;
-    removed.object.kernel_object().cancel(handles.cancel_key(old));
+    removed
+        .object
+        .kernel_object()
+        .cancel(handles.cancel_key(old));
     Ok(())
 }
 
@@ -69,13 +77,18 @@ pub(super) fn wait_one(call: &Call<'_>) -> Result<(), Status> {
         .signals()
         .ok_or(native_abi::ERR_NOT_SUPPORTED)?;
     let key = call.process().handles().cancel_key(handle);
-    let (status, observed) = match signals.wait(call.arg_u32(1), key, super::deadline(call.arg(2)))? {
-        WaitOutcome::Satisfied(observed) => (native_abi::OK, observed),
-        WaitOutcome::TimedOut(observed) => (native_abi::ERR_TIMED_OUT, observed),
-        WaitOutcome::Canceled | WaitOutcome::Interrupted => (native_abi::ERR_CANCELED, 0),
-    };
+    let (status, observed) =
+        match signals.wait(call.arg_u32(1), key, super::deadline(call.arg(2)))? {
+            WaitOutcome::Satisfied(observed) => (native_abi::OK, observed),
+            WaitOutcome::TimedOut(observed) => (native_abi::ERR_TIMED_OUT, observed),
+            WaitOutcome::Canceled | WaitOutcome::Interrupted => (native_abi::ERR_CANCELED, 0),
+        };
     call.write_optional(call.arg(3), &observed)?;
-    if status == native_abi::OK { Ok(()) } else { Err(status) }
+    if status == native_abi::OK {
+        Ok(())
+    } else {
+        Err(status)
+    }
 }
 
 pub(super) fn wait_async(call: &Call<'_>) -> Result<(), Status> {

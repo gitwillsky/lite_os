@@ -92,44 +92,49 @@ fn serve_device(device: Arc<dyn BlockDevice>) -> Result<Channel, Status> {
         server,
         WORKERS,
         b"block-server",
-        Arc::try_new(move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
-            match ordinal {
-                READ => {
-                    let block = request.usize()?;
-                    let mut data = alloc::vec![0u8; block_size];
-                    device.read_block(block, &mut data).map_err(encode_error)?;
-                    reply.bytes(&data);
-                }
-                WRITE => {
-                    let block = request.usize()?;
-                    let data = request.bytes()?;
-                    device.write_block(block, data).map_err(encode_error)?;
-                }
-                FLUSH => device.flush().map_err(encode_error)?,
-                INFO => {
-                    reply
-                        .bytes(device.disk_name())
-                        .u64(device.block_size() as u64)
-                        .u64(device.block_count());
-                }
-                CONNECT => {
-                    let first = request.u64()?;
-                    let count = request.u64()?;
-                    if first.checked_add(count).is_none_or(|end| end > device.block_count()) {
-                        return Err(native_abi::ERR_OUT_OF_RANGE);
+        Arc::try_new(
+            move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
+                match ordinal {
+                    READ => {
+                        let block = request.usize()?;
+                        let mut data = alloc::vec![0u8; block_size];
+                        device.read_block(block, &mut data).map_err(encode_error)?;
+                        reply.bytes(&data);
                     }
-                    let range: Arc<dyn BlockDevice> = Arc::try_new(BlockRange {
-                        device: device.clone(),
-                        first,
-                        count,
-                    })
-                    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-                    return Ok(alloc::vec![serve_device(range)?.into_handle()]);
+                    WRITE => {
+                        let block = request.usize()?;
+                        let data = request.bytes()?;
+                        device.write_block(block, data).map_err(encode_error)?;
+                    }
+                    FLUSH => device.flush().map_err(encode_error)?,
+                    INFO => {
+                        reply
+                            .bytes(device.disk_name())
+                            .u64(device.block_size() as u64)
+                            .u64(device.block_count());
+                    }
+                    CONNECT => {
+                        let first = request.u64()?;
+                        let count = request.u64()?;
+                        if first
+                            .checked_add(count)
+                            .is_none_or(|end| end > device.block_count())
+                        {
+                            return Err(native_abi::ERR_OUT_OF_RANGE);
+                        }
+                        let range: Arc<dyn BlockDevice> = Arc::try_new(BlockRange {
+                            device: device.clone(),
+                            first,
+                            count,
+                        })
+                        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                        return Ok(alloc::vec![serve_device(range)?.into_handle()]);
+                    }
+                    _ => return Err(native_abi::ERR_NOT_SUPPORTED),
                 }
-                _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-            }
-            Ok(Vec::new())
-        })
+                Ok(Vec::new())
+            },
+        )
         .map_err(|_| native_abi::ERR_NO_MEMORY)?,
     )?;
     Ok(client)
@@ -147,7 +152,12 @@ pub fn publish(directory: &Channel, device: Arc<dyn BlockDevice>) -> Result<(), 
         .u64(device.block_size() as u64)
         .u64(device.block_count());
     let client = serve_device(device)?;
-    directory::announce(directory, Class::Block, &description, alloc::vec![client.into_handle()])
+    directory::announce(
+        directory,
+        Class::Block,
+        &description,
+        alloc::vec![client.into_handle()],
+    )
 }
 
 /// 使用者端的远端块设备。
@@ -210,7 +220,10 @@ impl BlockDevice for RemoteBlock {
         let mut request = Writer::request(READ);
         request.u64(block_id as u64);
         let reply = call(&self.channel, &request, Vec::new()).map_err(decode_error)?;
-        let data = reply.reader().bytes().map_err(|_| BlockError::DeviceError)?;
+        let data = reply
+            .reader()
+            .bytes()
+            .map_err(|_| BlockError::DeviceError)?;
         if data.len() != buf.len() {
             return Err(BlockError::DeviceError);
         }

@@ -1,5 +1,5 @@
-use alloc::{sync::Arc, vec::Vec};
 use crate::sync::Mutex;
+use alloc::{sync::Arc, vec::Vec};
 use native_runtime::sync::Once;
 
 use super::{
@@ -7,11 +7,8 @@ use super::{
     VIRTIO_MMIO_INT_CONFIG, VIRTIO_MMIO_INT_VRING, VirtIODevice,
     queue::{DmaBuffer, VirtQueue},
 };
+use crate::{interrupt::InterruptError, interrupt::InterruptHandler, interrupt::InterruptVector};
 use device_model::{InputAbsInfo, InputDevice, InputDeviceError, InputId, RawInputEvent};
-use crate::{
-    interrupt::InterruptError, interrupt::InterruptHandler,
-    interrupt::InterruptVector,
-};
 
 const EVENT_QUEUE: u32 = 0;
 const QUEUE_SIZE: u16 = 64;

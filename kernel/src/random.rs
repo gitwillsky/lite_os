@@ -110,5 +110,7 @@ pub(crate) fn fill(output: &mut [u8]) {
 
 /// 混入外部熵（≤ [`MAX_ENTROPY_INPUT`] 字节）。
 pub(crate) fn add_entropy(input: &[u8]) {
-    GENERATOR.lock().mix(&input[..input.len().min(MAX_ENTROPY_INPUT)]);
+    GENERATOR
+        .lock()
+        .mix(&input[..input.len().min(MAX_ENTROPY_INPUT)]);
 }

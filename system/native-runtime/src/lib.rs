@@ -80,11 +80,18 @@ plain!(
 /// 值的字节视图。
 pub fn bytes_of<T: Plain>(value: &T) -> &[u8] {
     // SAFETY: `Plain` 保证按字节读取合法。
-    unsafe { core::slice::from_raw_parts(core::ptr::from_ref(value).cast(), core::mem::size_of::<T>()) }
+    unsafe {
+        core::slice::from_raw_parts(core::ptr::from_ref(value).cast(), core::mem::size_of::<T>())
+    }
 }
 
 /// 值的可写字节视图。
 pub fn bytes_of_mut<T: Plain>(value: &mut T) -> &mut [u8] {
     // SAFETY: `Plain` 保证任意字节模式合法。
-    unsafe { core::slice::from_raw_parts_mut(core::ptr::from_mut(value).cast(), core::mem::size_of::<T>()) }
+    unsafe {
+        core::slice::from_raw_parts_mut(
+            core::ptr::from_mut(value).cast(),
+            core::mem::size_of::<T>(),
+        )
+    }
 }

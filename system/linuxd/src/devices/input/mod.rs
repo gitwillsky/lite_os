@@ -1,8 +1,8 @@
-use alloc::{sync::Arc, sync::Weak, vec::Vec};
 use crate::sync::Mutex;
-use native_runtime::sync::Once;
+use crate::sync::Once;
+use alloc::{sync::Arc, sync::Weak, vec::Vec};
 
-use crate::{ipc::{Pipe, PipeDirection, PipeEnd}};
+use crate::ipc::{Pipe, PipeDirection, PipeEnd};
 use device_model::{InputDevice, InputId, RawInputEvent};
 
 mod client_queue;
@@ -592,7 +592,9 @@ pub(crate) fn init() -> Result<(), ()> {
     if count != 0 {
         let work = crate::deferred::register(input_work)?;
         for device in INPUT_DEVICES.get().into_iter().flatten() {
-            device.adapter.bind_activity(crate::deferred::activity(work)?);
+            device
+                .adapter
+                .bind_activity(crate::deferred::activity(work)?);
         }
     }
     let driver = Arc::try_new(evdev_file::EvdevDriver).map_err(|_| ())?;

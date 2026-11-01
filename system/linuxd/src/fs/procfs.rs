@@ -497,10 +497,7 @@ impl ProcInode {
             ProcNode::LoadAvg => format_loadavg(&snapshot),
             ProcNode::Uptime => format_uptime(&snapshot, self.source.current_time_offsets()?),
 
-            ProcNode::Mounts
-            | ProcNode::Partitions
-            | ProcNode::Cmdline
-            | ProcNode::LastPanic => {
+            ProcNode::Mounts | ProcNode::Partitions | ProcNode::Cmdline | ProcNode::LastPanic => {
                 unreachable!(
                     "mount table, partitions and command line handled before task snapshot"
                 )

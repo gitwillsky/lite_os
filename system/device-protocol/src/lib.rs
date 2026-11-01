@@ -89,7 +89,9 @@ impl EventHub {
                 sources[index] = Some(source.clone());
                 index as u64
             } else {
-                sources.try_reserve(1).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                sources
+                    .try_reserve(1)
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
                 sources.push(Some(source.clone()));
                 (sources.len() - 1) as u64
             }
@@ -125,7 +127,13 @@ impl EventHub {
         let removed = {
             let mut sources = self.sources.lock();
             match sources.get_mut(binding.key as usize) {
-                Some(slot) if slot.as_ref().is_some_and(|source| Arc::ptr_eq(source, &binding.source)) => slot.take(),
+                Some(slot)
+                    if slot
+                        .as_ref()
+                        .is_some_and(|source| Arc::ptr_eq(source, &binding.source)) =>
+                {
+                    slot.take()
+                }
                 _ => None,
             }
         };
@@ -138,7 +146,11 @@ impl EventHub {
     /// # Errors
     ///
     /// 分配或等待登记失败。
-    pub fn events(self: &Arc<Self>, channel: Channel, handler: Box<dyn Fn(native_runtime::Message) + Send + Sync>) -> Result<(), Status> {
+    pub fn events(
+        self: &Arc<Self>,
+        channel: Channel,
+        handler: Box<dyn Fn(native_runtime::Message) + Send + Sync>,
+    ) -> Result<(), Status> {
         self.add(Source::Events(channel, handler)).map(drop)
     }
 
@@ -148,7 +160,13 @@ impl EventHub {
                 Ok(packet) => packet,
                 Err(_) => continue,
             };
-            let Some(source) = self.sources.lock().get(packet.key as usize).cloned().flatten() else {
+            let Some(source) = self
+                .sources
+                .lock()
+                .get(packet.key as usize)
+                .cloned()
+                .flatten()
+            else {
                 continue;
             };
             match &*source {

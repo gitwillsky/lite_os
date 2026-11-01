@@ -8,6 +8,8 @@
 //! worker，写与 fsync 可以重叠。同一条链内的成员本来就串行（链同一时刻至多一个成员在等待）；不同链之间
 //! io_uring 不保证顺序，因此不需要 per-inode 排序，文件内部的一致性由 inode 锁保证。
 
+use crate::sync::Mutex;
+use crate::sync::Once;
 use alloc::{
     boxed::Box,
     collections::VecDeque,
@@ -15,15 +17,13 @@ use alloc::{
     vec::Vec,
 };
 use core::sync::atomic::{AtomicU8, Ordering};
-use crate::sync::Mutex;
-use native_runtime::sync::Once;
 use syscall_abi::errno;
 
 use crate::{
-    task::{TaskControlBlock, spawn_kernel_thread, wait_for_poll},
     fs::CompletionNotify,
     ipc::{Pipe, PipeEnd},
     syscall::poll::PollWaitKeys,
+    task::{TaskControlBlock, spawn_kernel_thread, wait_for_poll},
 };
 
 /// worker 数量上限；缺失该上限时，大量慢作业会各自创建一个内核线程（每个带内核栈）而耗尽内存。

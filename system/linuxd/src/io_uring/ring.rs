@@ -4,9 +4,9 @@
 //! SQ 的 tail 由用户态写、head 由内核写；CQ 的 tail 由内核写、head 由用户态写。head/tail 一律经
 //! atomic 访问：内核先写 CQE 再 release-store tail，用户态 acquire-load tail 后才读 CQE；SQE 同理。
 
+use crate::sync::Mutex;
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use crate::sync::Mutex;
 
 use super::abi::{
     CQ_HEAD, CQ_OVERFLOW, CQ_RING_ENTRIES, CQ_RING_MASK, CQ_TAIL, CQE_BYTES, CQES_OFFSET, Cqe,
@@ -14,9 +14,10 @@ use super::abi::{
     SQ_TAIL, SQE_BYTES, Sqe,
 };
 use crate::{
-    sync::{TaskMutex, WaitResult},
     ipc::{Pipe, PipeEnd, PipeWaitCondition},
-    memory::PAGE_SIZE};
+    memory::PAGE_SIZE,
+    sync::{TaskMutex, WaitResult},
+};
 use device_model::DeviceBacking;
 
 /// 内核侧溢出链表相对 CQ 容量的倍数上限。超过后 CQE 被丢弃并计入 `cq_overflow`；缺少上限，
@@ -122,10 +123,8 @@ impl Unit {
 
 fn allocate_zeroed(bytes: usize) -> Result<Arc<DeviceBacking>, RingError> {
     // Linux io_region_mmap 用 vm_insert_pages 映射 ring 页。
-    let backing = DeviceBacking::try_allocate(
-        bytes.div_ceil(PAGE_SIZE).max(1),
-    )
-    .ok_or(RingError::OutOfMemory)?;
+    let backing = DeviceBacking::try_allocate(bytes.div_ceil(PAGE_SIZE).max(1))
+        .ok_or(RingError::OutOfMemory)?;
     // 帧可能含旧内核数据；映射给用户态前必须清零，否则 ring 页泄露其他对象的残留字节。
     let zeros = [0u8; ZERO_CHUNK];
     for offset in (0..backing.pages() * PAGE_SIZE).step_by(ZERO_CHUNK) {
@@ -302,10 +301,8 @@ impl Ring {
     }
 
     fn advance_generation(&self) {
-        self.generation.fetch_max(
-            crate::file::next_readiness_generation(),
-            Ordering::AcqRel,
-        );
+        self.generation
+            .fetch_max(crate::file::next_readiness_generation(), Ordering::AcqRel);
     }
 
     pub(crate) fn readiness_generation(&self) -> u64 {

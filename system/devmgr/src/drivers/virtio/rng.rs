@@ -1,8 +1,8 @@
 //! VirtIO entropy adapter with fixed DMA ownership and deferred IRQ completion.
 
+use crate::sync::Mutex;
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::mem::MaybeUninit;
-use crate::sync::Mutex;
 
 mod completion_policy;
 use completion_policy::{CompletionValidity, validate_completion};
@@ -19,11 +19,8 @@ use crate::io_completion::{
         ReserveOrWait,
     },
 };
+use crate::{interrupt::InterruptError, interrupt::InterruptHandler, interrupt::InterruptVector};
 use device_model::EntropySource;
-use crate::{
-    interrupt::InterruptError, interrupt::InterruptHandler,
-    interrupt::InterruptVector,
-};
 
 const ENTROPY_CHUNK_SIZE: usize = 4096;
 const RNG_REQUEST_SLOTS: usize = 4;
@@ -377,7 +374,8 @@ impl VirtIORngDevice {
 
 impl EntropySource for VirtIORngDevice {
     fn fill(&self, bytes: &mut [MaybeUninit<u8>]) -> Result<(), device_model::EntropyError> {
-        self.fill_requests(bytes).map_err(|()| device_model::EntropyError)
+        self.fill_requests(bytes)
+            .map_err(|()| device_model::EntropyError)
     }
 }
 

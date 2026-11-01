@@ -212,7 +212,11 @@ impl Thread {
             }),
             _kernel_stack: kernel_stack,
             kernel_context: Mutex::new(KernelContext::goto_trap_return(top, run_user_thread)),
-            scheduling: SchedulingEntity::new(DEFAULT_PRIORITY, 0, crate::execution::cpu::current_id().index()),
+            scheduling: SchedulingEntity::new(
+                DEFAULT_PRIORITY,
+                0,
+                crate::execution::cpu::current_id().index(),
+            ),
             flags: AtomicU32::new(0),
         });
         match thread {
@@ -256,7 +260,8 @@ impl Thread {
     /// 返回用户态前发布本 CPU 信息并取得 trampoline 使用的上下文地址。
     pub(crate) fn prepare_user_return(&self, logical_cpu: usize) -> usize {
         let user = self.user();
-        user.context.with(|context| context.prepare_kernel_return(logical_cpu));
+        user.context
+            .with(|context| context.prepare_kernel_return(logical_cpu));
         user.context.address()
     }
 
@@ -287,7 +292,10 @@ impl Thread {
     ///
     /// # Errors
     /// `cpus` 与 possible CPU 不相交返回 `Err(())`。
-    pub(crate) fn set_affinity(self: &Arc<Self>, cpus: crate::execution::cpu::CpuSet) -> Result<(), ()> {
+    pub(crate) fn set_affinity(
+        self: &Arc<Self>,
+        cpus: crate::execution::cpu::CpuSet,
+    ) -> Result<(), ()> {
         let affinity = scheduling::CpuAffinity::restricted_to(cpus).ok_or(())?;
         processor::replace_affinity(self, affinity);
         Ok(())
@@ -383,7 +391,10 @@ pub(crate) fn exit_current() -> ! {
                 matches!(scheduling.run_state(), RunState::Running { .. }),
                 "only the running thread can exit"
             );
-            assert!(scheduling.wait.is_none(), "running thread retains wait membership");
+            assert!(
+                scheduling.wait.is_none(),
+                "running thread retains wait membership"
+            );
             scheduling.replace_non_ready_state(RunState::Exited);
         }
         let idle = processor::with_current_processor(processor::Processor::idle_context_ptr);

@@ -40,9 +40,11 @@ impl Port {
 
     /// 为一次异步等待预留队列空位。
     pub(super) fn reserve(&self) -> Result<(), Status> {
-        let mut queue = lock_with_spare(&self.queue, |queue| queue.reserved + 1, |queue| {
-            &mut queue.packets
-        })
+        let mut queue = lock_with_spare(
+            &self.queue,
+            |queue| queue.reserved + 1,
+            |queue| &mut queue.packets,
+        )
         .map_err(|()| native_abi::ERR_NO_MEMORY)?;
         queue.reserved += 1;
         Ok(())

@@ -63,11 +63,14 @@ pub(crate) fn reset(kind: ResetKind) -> Result<(), crate::platform::ResetError> 
 /// 上一次启动的内核崩溃记录（`/proc/last_panic`）；上次正常结束时为 `None`。
 pub(crate) fn previous_panic() -> Option<&'static [u8]> {
     // OWNER: 启动后读取一次的崩溃记录；内核只在启动时保存它，之后不变。
-    static RECORD: native_runtime::sync::Once<alloc::vec::Vec<u8>> = native_runtime::sync::Once::new();
+    static RECORD: crate::sync::Once<alloc::vec::Vec<u8>> = crate::sync::Once::new();
     let record = RECORD.call_once(|| {
         let mut buffer = alloc::vec![0u8; 64 * 1024];
-        let length = native_runtime::system::get_info(native_runtime::native_abi::system::CRASH_LOG, &mut buffer)
-            .unwrap_or(0);
+        let length = native_runtime::system::get_info(
+            native_runtime::native_abi::system::CRASH_LOG,
+            &mut buffer,
+        )
+        .unwrap_or(0);
         buffer.truncate(length);
         buffer
     });

@@ -93,9 +93,7 @@ impl Ext4Inode {
         let inode = Arc::try_new(Self {
             fs,
             inode_num,
-            disk: Mutex::new(LiveInode {
-                disk,
-            }),
+            disk: Mutex::new(LiveInode { disk }),
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
         let mut cache = inode.fs.inode_cache.lock();

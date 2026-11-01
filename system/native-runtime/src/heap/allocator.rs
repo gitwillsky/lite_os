@@ -1,10 +1,10 @@
 //! 系统服务目标的 VMAR 分配器；宿主夹具使用宿主分配器。
 
+use super::{VMAR, vmar};
+use crate::Vmo;
+use crate::sync::Mutex;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::{NonNull, null_mut};
-use crate::sync::Mutex;
-use crate::Vmo;
-use super::{VMAR, vmar};
 
 const MIN_CLASS_SHIFT: u32 = 4;
 const CLASS_COUNT: usize = 8;
@@ -27,7 +27,6 @@ static CLASSES: Mutex<Classes> = Mutex::new(Classes {
     free: [None; CLASS_COUNT],
 });
 
-
 fn class_of(layout: Layout) -> Option<usize> {
     let size = layout.size().max(layout.align()).max(1 << MIN_CLASS_SHIFT);
     if size > LARGEST_CLASS {
@@ -45,7 +44,13 @@ fn map(size: usize, align: usize) -> Option<usize> {
     let total = size.checked_add(extra)?;
     let vmo = Vmo::create(total as u64, 0).ok()?;
     let base = vmar
-        .map(native_abi::vm::READ | native_abi::vm::WRITE, 0, &vmo, 0, total)
+        .map(
+            native_abi::vm::READ | native_abi::vm::WRITE,
+            0,
+            &vmo,
+            0,
+            total,
+        )
         .ok()?;
     let start = base.next_multiple_of(align.max(page));
     // SAFETY: 头尾富余区间刚映射、从未交给任何调用者。
@@ -67,7 +72,8 @@ struct Heap;
 unsafe impl GlobalAlloc for Heap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         let Some(class) = class_of(layout) else {
-            return map(layout.size(), layout.align()).map_or(null_mut(), |address| address as *mut u8);
+            return map(layout.size(), layout.align())
+                .map_or(null_mut(), |address| address as *mut u8);
         };
         let block_size = 1usize << (class as u32 + MIN_CLASS_SHIFT);
         let mut classes = CLASSES.lock();
@@ -79,7 +85,11 @@ unsafe impl GlobalAlloc for Heap {
             for index in (0..CHUNK_SIZE / block_size).rev() {
                 let block = (chunk + index * block_size) as *mut FreeBlock;
                 // SAFETY: 块位于刚映射的可写区块内，按块大小对齐。
-                unsafe { block.write(FreeBlock { next: classes.free[class] }) };
+                unsafe {
+                    block.write(FreeBlock {
+                        next: classes.free[class],
+                    })
+                };
                 classes.free[class] = NonNull::new(block);
             }
         }
@@ -99,7 +109,11 @@ unsafe impl GlobalAlloc for Heap {
         let mut classes = CLASSES.lock();
         let block = pointer.cast::<FreeBlock>();
         // SAFETY: 调用者归还的块至少有一个 `FreeBlock` 大小且按其对齐。
-        unsafe { block.write(FreeBlock { next: classes.free[class] }) };
+        unsafe {
+            block.write(FreeBlock {
+                next: classes.free[class],
+            })
+        };
         classes.free[class] = NonNull::new(block);
     }
 }

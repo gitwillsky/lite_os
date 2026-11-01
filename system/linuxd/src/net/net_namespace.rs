@@ -1,9 +1,9 @@
 //! 网络域的实际 namespace policy；socket 捕获对象，控制消息不从当前 Task 重新取 policy。
 //! 协议状态（接口、FIB、endpoint）在 netd 的对应实例中，经域 channel 访问。
 use crate::namespace::{NamespaceAuthority, NamespaceError, UserNamespace};
+use crate::sync::Once;
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, Ordering};
-use native_runtime::sync::Once;
 use network_protocol::RemoteNamespace;
 
 /// 网络域 owning UserNS 与 optmem policy；initial owner 在用户 Task 构造前装配。

@@ -1,7 +1,7 @@
 //! 标准 PIDFD raw flags/int codec 与 errno；实际 identity、权限、文件及生命周期归对应 owner。
 use crate::{
-    task::{PidFdError, current_task},
     syscall::errno,
+    task::{PidFdError, current_task},
 };
 
 pub(in crate::syscall) fn error(error: PidFdError) -> isize {
@@ -46,11 +46,10 @@ pub(crate) fn sys_pidfd_getfd(pidfd: i32, descriptor: i32, flags: u32) -> isize 
         },
         _ => return -errno::EBADF,
     };
-    let captured =
-        match crate::task::pidfd_get_file(identity, descriptor as usize, &task) {
-            Ok(file) => file,
-            Err(failure) => return error(failure),
-        };
+    let captured = match crate::task::pidfd_get_file(identity, descriptor as usize, &task) {
+        Ok(file) => file,
+        Err(failure) => return error(failure),
+    };
     task.fd_receive(captured, None, true)
         .map_or_else(super::file_descriptor_error, |fd| fd as isize)
 }

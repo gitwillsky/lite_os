@@ -1,6 +1,6 @@
-use alloc::sync::{Arc, Weak};
 use crate::sync::Mutex;
-use native_runtime::sync::Once;
+use crate::sync::Once;
+use alloc::sync::{Arc, Weak};
 
 use fallible_tree::FallibleMap;
 

@@ -4,9 +4,9 @@ mod filter;
 mod notification;
 use notification::{ListenerFile, NotificationQueue};
 
+use crate::sync::Mutex;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
-use crate::sync::Mutex;
 use syscall_abi::{seccomp::*, signal::SIGKILL};
 
 use super::TaskControlBlock;

@@ -13,11 +13,11 @@ use super::chardev::{
     UserOutput,
 };
 use crate::{
-    sync::WaitResult,
     ipc::{
         PIPE_BUF, Pipe, PipeDirection, PipeEnd, PipeOpenAccess, PipeOpenError, PipeRead,
         PipeWaitCondition, PipeWrite, ReceiveBuffer,
     },
+    sync::WaitResult,
 };
 
 /// FIFO open 的失败原因。

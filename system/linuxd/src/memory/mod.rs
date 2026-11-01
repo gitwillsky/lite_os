@@ -21,7 +21,7 @@ mod object;
 mod shared_file;
 mod shared_memory;
 
-use native_runtime::sync::Once;
+use crate::sync::Once;
 
 pub(crate) use executable::{
     ExecutableImage, ExecutableParseError, ExecutableSource, parse_interpreter_elf, parse_main_elf,
@@ -29,9 +29,10 @@ pub(crate) use executable::{
 pub(crate) use futex::{FutexAccessError, FutexKey, UserAtomicU32, UserAtomicU32Op};
 pub(crate) use initial_stack::{InitialStack, InitialStackCredentials};
 pub(crate) use mm::{
-    DeviceMappingSource, FileMappingError, FileMappingSource, MappingPlacement, MappingResourceLimits,
-    MemoryAdvice, MemorySet, PageFaultAccess, PageFaultOutcome, RemapError, RemapPlacement, RemapRequest,
-    SegmentationCause, UserMappingRequest, UserMappingSource, UserPageStatistics,
+    DeviceMappingSource, FileMappingError, FileMappingSource, MappingPlacement,
+    MappingResourceLimits, MemoryAdvice, MemorySet, PageFaultAccess, PageFaultOutcome, RemapError,
+    RemapPlacement, RemapRequest, SegmentationCause, UserMappingRequest, UserMappingSource,
+    UserPageStatistics,
 };
 pub(crate) use object::MemoryObject;
 pub(crate) use shared_file::{MappedFileOwner, SharedFileError, SharedFileId, SharedFileMapping};
@@ -195,10 +196,16 @@ static USER_RANGE: Once<core::ops::Range<usize>> = Once::new();
 ///
 /// 尚未创建任何 Linux 地址空间时调用。
 pub(crate) fn user_address_end() -> usize {
-    USER_RANGE.get().expect("user address range read before the first address space").end
+    USER_RANGE
+        .get()
+        .expect("user address range read before the first address space")
+        .end
 }
 
 fn publish_user_range(range: core::ops::Range<usize>) {
     let published = USER_RANGE.call_once(|| range.clone());
-    assert_eq!(*published, range, "member address spaces disagree on the private range");
+    assert_eq!(
+        *published, range,
+        "member address spaces disagree on the private range"
+    );
 }

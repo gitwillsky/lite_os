@@ -11,8 +11,10 @@ use super::{
     EndpointState, InetSocket, InetSocketOptions, NetworkStack, from_ip, ipv4, port_error,
 };
 use crate::receive::ReceiveBuffer;
-use network_protocol::{InetAddress, InternetPacketInfo, InternetSendPacketInfo, SocketError, SocketPollState};
 use fallible_tree::FallibleMap;
+use network_protocol::{
+    InetAddress, InternetPacketInfo, InternetSendPacketInfo, SocketError, SocketPollState,
+};
 
 // Linux SOCK_BINDADDR_LOCK/SOCK_BINDPORT_LOCK；只冻结用户 bind policy，不另存 tuple。
 const BIND_ADDRESS: u8 = 1;

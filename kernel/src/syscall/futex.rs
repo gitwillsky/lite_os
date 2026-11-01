@@ -32,7 +32,8 @@ struct Waiter {
 }
 
 // OWNER: 全部 futex 等待者的唯一索引；比较用户值时持有（可能缺页），因此是可睡眠锁。
-static TABLE: TaskMutex<FallibleMap<(FutexKey, u64), Arc<Waiter>>> = TaskMutex::new(FallibleMap::new());
+static TABLE: TaskMutex<FallibleMap<(FutexKey, u64), Arc<Waiter>>> =
+    TaskMutex::new(FallibleMap::new());
 // OWNER: 登记序号；Relaxed，只提供 FIFO 顺序与唯一性。
 static NEXT_TICKET: AtomicU64 = AtomicU64::new(1);
 
@@ -40,7 +41,10 @@ fn key(call: &Call<'_>, address: usize, options: u32) -> Result<FutexKey, Status
     if !address.is_multiple_of(4) {
         return Err(native_abi::ERR_INVALID_ARGS);
     }
-    let space = call.thread.address_space().ok_or(native_abi::ERR_BAD_STATE)?;
+    let space = call
+        .thread
+        .address_space()
+        .ok_or(native_abi::ERR_BAD_STATE)?;
     match options {
         0 => Ok(FutexKey::Private {
             space: space.futex_owner(address),
@@ -66,7 +70,8 @@ pub(super) fn wait(call: &Call<'_>) -> Result<(), Status> {
         slot: Mutex::new((key, ticket)),
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    let entry = FallibleMap::try_prepare((key, ticket), waiter.clone()).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    let entry = FallibleMap::try_prepare((key, ticket), waiter.clone())
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     {
         let mut table = TABLE.lock().map_err(|_| native_abi::ERR_NO_MEMORY)?;
         let value: u32 = call.read(address)?;
@@ -99,10 +104,18 @@ pub(super) fn wait(call: &Call<'_>) -> Result<(), Status> {
 }
 
 /// 在表锁内摘除并唤醒至多 `count` 个等待者。
-fn wake_locked(table: &mut FallibleMap<(FutexKey, u64), Arc<Waiter>>, key: FutexKey, count: usize) -> u32 {
+fn wake_locked(
+    table: &mut FallibleMap<(FutexKey, u64), Arc<Waiter>>,
+    key: FutexKey,
+    count: usize,
+) -> u32 {
     let mut woken = 0;
     while (woken as usize) < count {
-        let next = table.iter_from(&(key, 0)).next().map(|(slot, _)| *slot).filter(|slot| slot.0 == key);
+        let next = table
+            .iter_from(&(key, 0))
+            .next()
+            .map(|(slot, _)| *slot)
+            .filter(|slot| slot.0 == key);
         let Some(slot) = next else { break };
         let waiter = table.remove(&slot).expect("futex waiter vanished");
         waiter.woken.store(true, Ordering::Release);
@@ -133,7 +146,11 @@ pub(super) fn requeue(call: &Call<'_>) -> Result<(), Status> {
     wake_locked(&mut table, source, call.arg(1));
     let mut moved = 0;
     while moved < call.arg(4) {
-        let next = table.iter_from(&(source, 0)).next().map(|(slot, _)| *slot).filter(|slot| slot.0 == source);
+        let next = table
+            .iter_from(&(source, 0))
+            .next()
+            .map(|(slot, _)| *slot)
+            .filter(|slot| slot.0 == source);
         let Some(slot) = next else { break };
         let mut entry = table.take_entry(&slot).expect("futex waiter vanished");
         let ticket = NEXT_TICKET.fetch_add(1, Ordering::Relaxed);

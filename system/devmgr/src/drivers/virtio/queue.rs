@@ -1,7 +1,7 @@
-use native_runtime::native_abi::PAGE_SIZE;
 use alloc::vec::Vec;
 use core::mem::size_of;
 use core::sync::atomic::{AtomicU16, Ordering};
+use native_runtime::native_abi::PAGE_SIZE;
 
 use super::transport::VirtQueueAddresses;
 

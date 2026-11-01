@@ -1,8 +1,8 @@
 use crate::{
-    task::{TimerFileClock, create_timer_fd, current_task},
     file::{OpenFileDescription, OpenFileKind, TimerError, TimerFd, TimerSetting},
     fs::{O_CLOEXEC, O_NONBLOCK},
     syscall::errno,
+    task::{TimerFileClock, create_timer_fd, current_task},
 };
 
 use super::timer::{TimeSpec, decode_timespec, encode_timespec, timespec_ns};

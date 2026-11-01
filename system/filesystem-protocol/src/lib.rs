@@ -108,30 +108,38 @@ pub fn serve_mounts(control: Channel, service: Arc<dyn MountService>) -> Result<
         control,
         1,
         b"mount-control",
-        Arc::try_new(move |ordinal: u32, request: &mut Reader<'_>, mut handles: Vec<Handle>, _: &mut Writer| {
-            if ordinal != MOUNT {
-                return Err(native_abi::ERR_NOT_SUPPORTED);
-            }
-            let read_only = request.bool()?;
-            let block = Channel::from_handle(take_handle(&mut handles, 0)?);
-            let mounted = service.mount(block, read_only)?;
-            let (client, server) = Channel::create()?;
-            let control = mounted.control;
-            serve(
-                server,
-                1,
-                b"mount",
-                Arc::try_new(move |ordinal: u32, _: &mut Reader<'_>, _, _: &mut Writer| {
-                    match ordinal {
-                        MAKE_WRITABLE => control.make_writable()?,
-                        _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-                    }
-                    Ok(Vec::new())
-                })
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-            )?;
-            Ok(alloc::vec![mounted.fuse.into_handle(), client.into_handle()])
-        })
+        Arc::try_new(
+            move |ordinal: u32,
+                  request: &mut Reader<'_>,
+                  mut handles: Vec<Handle>,
+                  _: &mut Writer| {
+                if ordinal != MOUNT {
+                    return Err(native_abi::ERR_NOT_SUPPORTED);
+                }
+                let read_only = request.bool()?;
+                let block = Channel::from_handle(take_handle(&mut handles, 0)?);
+                let mounted = service.mount(block, read_only)?;
+                let (client, server) = Channel::create()?;
+                let control = mounted.control;
+                serve(
+                    server,
+                    1,
+                    b"mount",
+                    Arc::try_new(move |ordinal: u32, _: &mut Reader<'_>, _, _: &mut Writer| {
+                        match ordinal {
+                            MAKE_WRITABLE => control.make_writable()?,
+                            _ => return Err(native_abi::ERR_NOT_SUPPORTED),
+                        }
+                        Ok(Vec::new())
+                    })
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                )?;
+                Ok(alloc::vec![
+                    mounted.fuse.into_handle(),
+                    client.into_handle()
+                ])
+            },
+        )
         .map_err(|_| native_abi::ERR_NO_MEMORY)?,
     )
 }

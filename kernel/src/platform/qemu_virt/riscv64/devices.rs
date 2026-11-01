@@ -81,7 +81,10 @@ fn register_device(vector: u32, handler: Arc<dyn InterruptHandler>) -> Result<()
 ///
 /// # Errors
 /// 向量非法、已被占用或分配失败。
-pub(crate) fn bind_interrupt(vector: u32, handler: Arc<dyn InterruptHandler>) -> Result<(), InterruptError> {
+pub(crate) fn bind_interrupt(
+    vector: u32,
+    handler: Arc<dyn InterruptHandler>,
+) -> Result<(), InterruptError> {
     if vector == 0 {
         return Err(InterruptError::InvalidVector);
     }

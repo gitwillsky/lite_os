@@ -1,11 +1,11 @@
 //! mount peer/slave 关系的实际 owner；与 attachment 森林正交，所有变更持 VFS mutation gate。
 use super::{FileSystemError, MountView};
+use crate::sync::Mutex;
 use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
 use core::sync::atomic::{AtomicU64, Ordering};
-use crate::sync::Mutex;
 
 // OWNER: Linux mountinfo 的 peer group identity，不复用以避免旧 snapshot 的 identity ABA。
 static NEXT_GROUP_ID: AtomicU64 = AtomicU64::new(1);

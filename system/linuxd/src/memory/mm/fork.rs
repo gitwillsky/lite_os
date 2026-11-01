@@ -29,11 +29,17 @@ impl MemorySet {
             Ok(copy)
         };
         for (_, area) in self.areas.iter() {
-            if area.flags.contains(AreaFlags::DONT_FORK) || matches!(area.backing, Backing::Trampoline { .. }) {
+            if area.flags.contains(AreaFlags::DONT_FORK)
+                || matches!(area.backing, Backing::Trampoline { .. })
+            {
                 continue;
             }
             let backing = match &area.backing {
-                Backing::Anonymous { object, offset, role } => {
+                Backing::Anonymous {
+                    object,
+                    offset,
+                    role,
+                } => {
                     if area.flags.contains(AreaFlags::WIPE_ON_FORK) {
                         Backing::Anonymous {
                             object: MemoryObject::anonymous(area.len(), true)?,
@@ -88,5 +94,4 @@ impl MemorySet {
     }
 }
 
-impl Backing {
-}
+impl Backing {}

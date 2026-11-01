@@ -60,7 +60,10 @@ impl<T> ContextSlot<T> {
     /// 退休绑定；之后的访问 fail-stop。必须在支撑存储释放前调用。
     pub(super) fn retire(&self) {
         assert!(
-            !self.pointer.swap(core::ptr::null_mut(), Ordering::AcqRel).is_null(),
+            !self
+                .pointer
+                .swap(core::ptr::null_mut(), Ordering::AcqRel)
+                .is_null(),
             "user context retired twice"
         );
     }

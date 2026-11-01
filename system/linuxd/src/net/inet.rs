@@ -11,11 +11,11 @@ use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 
 use device_protocol::ActivityBinding;
+pub(super) use network_protocol::InetProtocol;
 use network_protocol::{
     InetOptionChange, InterfaceSnapshot, Ipv4RouteError, Ipv4RouteRequest, NetworkSnapshot,
     RemoteInetSocket, RouteChange, RouteSnapshot, SocketEndpoint, TRANSFER_LIMIT,
 };
-pub(super) use network_protocol::InetProtocol;
 
 use super::{
     InetAddress, InternetOption, InternetPacketInfo, InternetSendPacketInfo, NetNamespace,
@@ -122,13 +122,26 @@ impl InetSocket {
         &self,
         output: &mut ReceiveBuffer<'_>,
         peek: bool,
-    ) -> Result<(usize, usize, Option<InetAddress>, Option<InternetPacketInfo>), SocketError> {
+    ) -> Result<
+        (
+            usize,
+            usize,
+            Option<InetAddress>,
+            Option<InternetPacketInfo>,
+        ),
+        SocketError,
+    > {
         let received = self.remote.receive(output.remaining(), peek)?;
         output
             .prepare_append(received.data.len())
             .map_err(|()| SocketError::NoMemory)?;
         let count = output.append(&received.data);
-        Ok((count, received.full_length, received.source, received.packet_info))
+        Ok((
+            count,
+            received.full_length,
+            received.source,
+            received.packet_info,
+        ))
     }
 
     pub(super) fn is_listening(&self) -> Result<bool, SocketError> {
@@ -144,7 +157,10 @@ impl InetSocket {
     /// # Errors
     ///
     /// 暂无连接为 `Again`；非 listener、netd 资源不足或就绪登记失败返回对应错误。
-    pub(super) fn accept(&self, notify: (Arc<PipeEnd>, Arc<PipeEnd>)) -> Result<Arc<Self>, SocketError> {
+    pub(super) fn accept(
+        &self,
+        notify: (Arc<PipeEnd>, Arc<PipeEnd>),
+    ) -> Result<Arc<Self>, SocketError> {
         let endpoint = self.remote.accept()?;
         Self::attach(endpoint, true, notify, self.namespace.clone())
     }
@@ -190,15 +206,18 @@ impl InetSocket {
     }
 
     pub(super) fn set_header_included(&self, enabled: bool) -> Result<(), SocketError> {
-        self.remote.set_option(InetOptionChange::HeaderIncluded(enabled))
+        self.remote
+            .set_option(InetOptionChange::HeaderIncluded(enabled))
     }
 
     pub(super) fn set_packet_info(&self, enabled: bool) -> Result<(), SocketError> {
-        self.remote.set_option(InetOptionChange::PacketInfo(enabled))
+        self.remote
+            .set_option(InetOptionChange::PacketInfo(enabled))
     }
 
     pub(super) fn set_reuse_address(&self, enabled: bool) -> Result<(), SocketError> {
-        self.remote.set_option(InetOptionChange::ReuseAddress(enabled))
+        self.remote
+            .set_option(InetOptionChange::ReuseAddress(enabled))
     }
 
     pub(super) fn set_broadcast(&self, enabled: bool) -> Result<(), SocketError> {
@@ -226,8 +245,13 @@ impl InetSocket {
         self.remote.set_option(InetOptionChange::NoDelay(enabled))
     }
 
-    pub(super) fn set_timer_option(&self, option: InternetOption, value: i32) -> Result<(), SocketError> {
-        self.remote.set_option(InetOptionChange::Timer(option, value))
+    pub(super) fn set_timer_option(
+        &self,
+        option: InternetOption,
+        value: i32,
+    ) -> Result<(), SocketError> {
+        self.remote
+            .set_option(InetOptionChange::Timer(option, value))
     }
 
     pub(super) fn set_max_segment(&self, value: i32) -> Result<(), SocketError> {
@@ -256,11 +280,16 @@ pub(crate) fn interface_index(scope: &NetNamespace, name: &[u8]) -> Result<u32, 
     netd::protocol(scope)?.interface_index(name)
 }
 
-pub(crate) fn interface_snapshot(scope: &NetNamespace, index: u32) -> Result<InterfaceSnapshot, SocketError> {
+pub(crate) fn interface_snapshot(
+    scope: &NetNamespace,
+    index: u32,
+) -> Result<InterfaceSnapshot, SocketError> {
     netd::protocol(scope)?.interface_snapshot(index)
 }
 
-pub(crate) fn interface_snapshots(scope: &NetNamespace) -> Result<Vec<InterfaceSnapshot>, SocketError> {
+pub(crate) fn interface_snapshots(
+    scope: &NetNamespace,
+) -> Result<Vec<InterfaceSnapshot>, SocketError> {
     netd::protocol(scope)?.interface_snapshots()
 }
 
@@ -278,15 +307,27 @@ pub(crate) fn configure_mtu(scope: &NetNamespace, index: u32, mtu: i32) -> Resul
 }
 
 /// SIOCSIFADDR / RTM_NEWADDR；`0.0.0.0` 删除地址。
-pub(crate) fn configure_address(scope: &NetNamespace, index: u32, address: Ipv4Addr) -> Result<(), SocketError> {
+pub(crate) fn configure_address(
+    scope: &NetNamespace,
+    index: u32,
+    address: Ipv4Addr,
+) -> Result<(), SocketError> {
     netd::protocol(scope)?.configure_address(index, address)
 }
 
-pub(crate) fn configure_netmask(scope: &NetNamespace, index: u32, netmask: Ipv4Addr) -> Result<(), SocketError> {
+pub(crate) fn configure_netmask(
+    scope: &NetNamespace,
+    index: u32,
+    netmask: Ipv4Addr,
+) -> Result<(), SocketError> {
     netd::protocol(scope)?.configure_netmask(index, netmask)
 }
 
-pub(crate) fn configure_broadcast(scope: &NetNamespace, index: u32, broadcast: Ipv4Addr) -> Result<(), SocketError> {
+pub(crate) fn configure_broadcast(
+    scope: &NetNamespace,
+    index: u32,
+    broadcast: Ipv4Addr,
+) -> Result<(), SocketError> {
     netd::protocol(scope)?.configure_broadcast(index, broadcast)
 }
 

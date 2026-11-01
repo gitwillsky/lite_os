@@ -1,11 +1,11 @@
 //! 有界 PCM staging、显式反馈与等时 TD；播放热路径不分配、不执行 USB control request。
 use super::*;
-use device_model::{MAX_PCM_PERIOD_BYTES, PCM_PERIODS, PcmCompletionObserver, PcmConfiguration};
 use crate::drivers::usb::{
     dma::{Dma, Ring, Trb},
     xhci::Host,
 };
 use alloc::sync::Arc;
+use device_model::{MAX_PCM_PERIOD_BYTES, PCM_PERIODS, PcmCompletionObserver, PcmConfiguration};
 const PACKETS: usize = 128;
 const FEEDBACK_PACKETS: usize = 16;
 
@@ -50,14 +50,21 @@ pub(in crate::drivers::usb) struct Stream {
     phase: u64,
 }
 impl Stream {
-    pub(in crate::drivers::usb) fn new(slot: u8, alternates: Vec<Alternate>, bti: &native_runtime::Bti) -> Result<Self> {
+    pub(in crate::drivers::usb) fn new(
+        slot: u8,
+        alternates: Vec<Alternate>,
+        bti: &native_runtime::Bti,
+    ) -> Result<Self> {
         let mut periods = Vec::new();
         periods
             .try_reserve_exact(PCM_PERIODS)
             .map_err(|_| Error::Memory)?;
         for _ in 0..PCM_PERIODS {
             periods.push(Period {
-                memory: Dma::allocate(MAX_PCM_PERIOD_BYTES.div_ceil(4096).next_power_of_two(), bti)?,
+                memory: Dma::allocate(
+                    MAX_PCM_PERIOD_BYTES.div_ceil(4096).next_power_of_two(),
+                    bti,
+                )?,
                 occupied: false,
                 offset: 0,
             });

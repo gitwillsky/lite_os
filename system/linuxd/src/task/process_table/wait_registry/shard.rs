@@ -1,7 +1,7 @@
 use alloc::sync::Arc;
 
 use super::{WAIT_SHARD_COUNT, key::WaitIndexKey, registration::WaitRegistration};
-use crate::{sync::{Mutex, MutexGuard}};
+use crate::sync::{Mutex, MutexGuard};
 use fallible_tree::FallibleMap;
 
 pub(super) struct WaitShard {

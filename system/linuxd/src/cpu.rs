@@ -3,7 +3,7 @@
 //! linuxd 不拥有 CPU：逻辑 CPU 编号与内核一致（`0..count`），当前 CPU 由 `CPU_CURRENT` 查询，
 //! 只作提示（返回时线程可能已迁移），与 Linux `getcpu` 的语义相同。
 
-use native_runtime::sync::Once;
+use crate::sync::Once;
 
 /// 逻辑 CPU 编号。
 #[repr(transparent)]
@@ -23,7 +23,6 @@ impl CpuId {
 pub(crate) struct CpuSet(usize);
 
 impl CpuSet {
-
     pub(crate) fn is_empty(self) -> bool {
         self.0 == 0
     }

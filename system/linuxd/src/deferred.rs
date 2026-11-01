@@ -9,8 +9,8 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
+use crate::sync::Once;
 use native_runtime::native_abi::DEADLINE_INFINITE;
-use native_runtime::sync::Once;
 use native_runtime::thread::{Descriptor, Park};
 
 /// 一类后台工作（位图中的一位）。
@@ -74,7 +74,8 @@ impl DeferredWorkSet {
 }
 
 // OWNER: 启动期注册的设备类处理函数；下标 i 对应位 `REGISTERED_BASE + i`，只追加。
-static HANDLERS: [Once<DeferredHandler>; REGISTERED_CAPACITY] = [const { Once::new() }; REGISTERED_CAPACITY];
+static HANDLERS: [Once<DeferredHandler>; REGISTERED_CAPACITY] =
+    [const { Once::new() }; REGISTERED_CAPACITY];
 // OWNER: 下一个未分配的注册下标。
 static NEXT_HANDLER: AtomicUsize = AtomicUsize::new(0);
 // OWNER: 待处理工作位图；发布者 fetch_or，deferred 线程 swap 取走。

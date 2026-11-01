@@ -3,8 +3,8 @@ use super::{
     pte::{self, PagePermissions},
     va39,
 };
-use fallible_tree::{FallibleMap, VacantEntry};
 use alloc::sync::Arc;
+use fallible_tree::{FallibleMap, VacantEntry};
 
 const PAGE_SHIFT: usize = 12;
 const VA39_LEVELS: usize = 3;

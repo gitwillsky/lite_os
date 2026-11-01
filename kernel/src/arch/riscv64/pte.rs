@@ -40,7 +40,9 @@ bitflags! {
 /// 合法编码；write-without-read 在 RISC-V 上不可表达时返回 `None`。
 pub(super) fn encode(permissions: PagePermissions) -> Option<RiscvPteFlags> {
     // 设备映射可以交给用户态驱动（经 MMIO resource 授权的物理 VMO），但永不可执行。
-    if permissions.contains(PagePermissions::DEVICE) && permissions.contains(PagePermissions::EXECUTE) {
+    if permissions.contains(PagePermissions::DEVICE)
+        && permissions.contains(PagePermissions::EXECUTE)
+    {
         return None;
     }
     if permissions.contains(PagePermissions::WRITE) && !permissions.contains(PagePermissions::READ)

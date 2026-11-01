@@ -32,7 +32,6 @@ impl CpuAffinity {
     pub(in crate::task) fn effective_bits(self) -> usize {
         (self.0 & cpu::active()).native_word()
     }
-
 }
 
 /// 阻塞线程的唯一等待身份。
@@ -80,7 +79,9 @@ pub(crate) enum RunState {
     Blocked,
     /// 运行中被要求停止：在下一个安全点停驻。
     StopPending,
-    Stopped { resume: StopResume },
+    Stopped {
+        resume: StopResume,
+    },
     Exited,
 }
 
@@ -138,8 +139,13 @@ impl SchedulingState {
             }
             _ => {}
         }
-        let blocked = matches!(state, RunState::Blocked | RunState::Stopped { resume: StopResume::Blocked })
-            && self.wait.is_some_and(WaitMembership::contributes_to_load);
+        let blocked = matches!(
+            state,
+            RunState::Blocked
+                | RunState::Stopped {
+                    resume: StopResume::Blocked
+                }
+        ) && self.wait.is_some_and(WaitMembership::contributes_to_load);
         if blocked != self.counted_blocked {
             if blocked {
                 BLOCKED.fetch_add(1, Ordering::Relaxed);
@@ -153,12 +159,14 @@ impl SchedulingState {
 
     /// 不可中断等待（`/proc` 的 D 状态）。
     pub(in crate::task) fn is_uninterruptible(&self) -> bool {
-        matches!(self.run_state, RunState::Blocked) && self.wait.is_some_and(WaitMembership::contributes_to_load)
+        matches!(self.run_state, RunState::Blocked)
+            && self.wait.is_some_and(WaitMembership::contributes_to_load)
     }
 
     /// 空闲等待（`/proc` 的 I 状态）。
     pub(in crate::task) fn is_idle_wait(&self) -> bool {
-        matches!(self.run_state, RunState::Blocked) && matches!(self.wait, Some(WaitMembership::TaskWait(key)) if key.idle())
+        matches!(self.run_state, RunState::Blocked)
+            && matches!(self.wait, Some(WaitMembership::TaskWait(key)) if key.idle())
     }
 }
 
@@ -188,7 +196,11 @@ impl Sched {
     /// Linux `sched_fork`：reset-on-fork 时负 nice 归零，子线程清除该标志。
     pub(super) fn forked(&self) -> Self {
         Self {
-            nice: if self.reset_on_fork { self.nice.max(0) } else { self.nice },
+            nice: if self.reset_on_fork {
+                self.nice.max(0)
+            } else {
+                self.nice
+            },
             reset_on_fork: false,
             io_priority: self.io_priority,
         }
@@ -243,7 +255,11 @@ pub(crate) struct SchedulingEntity {
 }
 
 impl SchedulingEntity {
-    pub(super) fn try_new(policy: Sched, cpu_affinity: CpuAffinity, last_cpu: usize) -> Result<Arc<Self>, alloc::alloc::AllocError> {
+    pub(super) fn try_new(
+        policy: Sched,
+        cpu_affinity: CpuAffinity,
+        last_cpu: usize,
+    ) -> Result<Arc<Self>, alloc::alloc::AllocError> {
         Arc::try_new(Self {
             state: Mutex::new(SchedulingState::new(cpu_affinity)),
             policy: Mutex::new(policy),

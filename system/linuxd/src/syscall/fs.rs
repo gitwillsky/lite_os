@@ -13,10 +13,10 @@ pub(crate) mod mount;
 mod namespace;
 mod open;
 mod pathname;
-pub(crate) mod xattr;
 mod readlink;
 pub(crate) mod statistics;
 pub(crate) mod statx;
+pub(crate) mod xattr;
 pub(crate) use access::sys_faccessat;
 pub(crate) use attributes::{sys_fchmod, sys_fchmodat, sys_fchown, sys_fchownat};
 pub(crate) use fcntl::sys_fcntl;
@@ -44,9 +44,6 @@ pub(in crate::syscall) use statx::{
 };
 
 use crate::{
-    task::{
-        TaskControlBlock, current_task, send_kernel_thread_signal, send_thread_signal,
-    },
     file::{OpenFileDescription, OpenFileKind},
     fs::{
         Dirent64Batch, InodeMetadata, InodeType, MAX_GETDENTS_BATCH_BYTES, O_ACCMODE, O_APPEND,
@@ -54,6 +51,7 @@ use crate::{
     },
     ipc::{PIPE_BUF, Pipe, PipeDirection, PipeRead, PipeWaitCondition, PipeWrite},
     syscall::errno,
+    task::{TaskControlBlock, current_task, send_kernel_thread_signal, send_thread_signal},
 };
 
 const AT_FDCWD: isize = -100;

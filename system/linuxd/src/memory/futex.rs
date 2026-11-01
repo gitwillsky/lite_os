@@ -21,7 +21,10 @@ impl From<UserAccessError> for FutexAccessError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum FutexKey {
     /// 私有映射：只在同一地址空间内匹配。
-    Private { address_space: usize, address: usize },
+    Private {
+        address_space: usize,
+        address: usize,
+    },
     /// 共享映射（匿名共享、文件、设备缓冲）：以后备 VMO 编号与字节偏移跨地址空间匹配。
     Shared { object: u64, offset: u64 },
 }
@@ -33,10 +36,17 @@ impl FutexKey {
     ///
     /// 未对齐或越过用户地址空间。
     pub(crate) fn private(address: usize, address_space: usize) -> Result<Self, UserAccessError> {
-        if address & 3 != 0 || address.checked_add(4).is_none_or(|end| end > super::user_address_end()) {
+        if address & 3 != 0
+            || address
+                .checked_add(4)
+                .is_none_or(|end| end > super::user_address_end())
+        {
             return Err(UserAccessError::Fault);
         }
-        Ok(Self::Private { address_space, address })
+        Ok(Self::Private {
+            address_space,
+            address,
+        })
     }
 }
 
@@ -56,7 +66,8 @@ pub(crate) struct UserAtomicU32<'a>(pub(super) &'a AtomicU32);
 impl UserAtomicU32<'_> {
     /// 原子比较交换；冲突返回实际旧值。
     pub(crate) fn compare_exchange(&self, current: u32, replacement: u32) -> Result<u32, u32> {
-        self.0.compare_exchange(current, replacement, Ordering::SeqCst, Ordering::SeqCst)
+        self.0
+            .compare_exchange(current, replacement, Ordering::SeqCst, Ordering::SeqCst)
     }
 
     /// 原子更新并返回旧值。
@@ -69,5 +80,4 @@ impl UserAtomicU32<'_> {
             UserAtomicU32Op::Xor(value) => self.0.fetch_xor(value, Ordering::SeqCst),
         }
     }
-
 }

@@ -72,7 +72,6 @@ pub(crate) enum SocketType {
     Raw,
 }
 
-
 /// Linux `sockaddr_nl` 中与 KOBJECT_UEVENT 有关的语义字段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NetlinkAddress {

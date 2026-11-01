@@ -1,9 +1,9 @@
 use alloc::{sync::Arc, vec::Vec};
 
 use crate::{
-    task::PollWaitKey,
     file::{Epoll, OpenFileDescription, OpenFileKind},
     net::{SocketWaitGuard, SocketWaitSource},
+    task::PollWaitKey,
 };
 
 use super::{POLLIN, POLLOUT};

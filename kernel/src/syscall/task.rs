@@ -23,7 +23,12 @@ pub(super) fn job_create(call: &Call<'_>) -> Result<(), Status> {
     call.publish(Object::Job(child), call.arg(1)).map(|_| ())
 }
 
-fn publish_process(call: &Call<'_>, process: Arc<Process>, process_out: usize, vmar_out: usize) -> Result<(), Status> {
+fn publish_process(
+    call: &Call<'_>,
+    process: Arc<Process>,
+    process_out: usize,
+    vmar_out: usize,
+) -> Result<(), Status> {
     let vmar = process.root_vmar().clone();
     let handle = call.publish(Object::Process(process.clone()), process_out)?;
     if let Err(status) = call.publish(Object::Vmar(vmar), vmar_out) {
@@ -53,7 +58,12 @@ pub(super) fn process_create_shared(call: &Call<'_>) -> Result<(), Status> {
     publish_process(call, process, call.arg(3), call.arg(4))
 }
 
-fn start_thread(thread: &Arc<Thread>, entry: usize, stack: usize, arguments: [usize; 2]) -> Result<(), Status> {
+fn start_thread(
+    thread: &Arc<Thread>,
+    entry: usize,
+    stack: usize,
+    arguments: [usize; 2],
+) -> Result<(), Status> {
     thread.start(
         thread.clone(),
         UserStart {
@@ -76,7 +86,10 @@ pub(super) fn process_start(call: &Call<'_>) -> Result<(), Status> {
         handle => {
             let table = call.process().handles();
             let entry = table.remove(handle)?;
-            entry.object.kernel_object().cancel(table.cancel_key(handle));
+            entry
+                .object
+                .kernel_object()
+                .cancel(table.cancel_key(handle));
             if entry.rights & rights::TRANSFER == 0 {
                 return Err(native_abi::ERR_ACCESS_DENIED);
             }
@@ -107,12 +120,18 @@ pub(super) fn thread_create(call: &Call<'_>) -> Result<(), Status> {
     let process = call.process_handle(call.arg_handle(0), rights::MANAGE)?;
     let name = name(call, call.arg(1), call.arg(2))?;
     let thread = Thread::create(&process, &name)?;
-    call.publish(Object::Thread(thread), call.arg(3)).map(|_| ())
+    call.publish(Object::Thread(thread), call.arg(3))
+        .map(|_| ())
 }
 
 pub(super) fn thread_start(call: &Call<'_>) -> Result<(), Status> {
     let thread = call.thread_handle(call.arg_handle(0), rights::MANAGE)?;
-    start_thread(&thread, call.arg(1), call.arg(2), [call.arg(3), call.arg(4)])
+    start_thread(
+        &thread,
+        call.arg(1),
+        call.arg(2),
+        [call.arg(3), call.arg(4)],
+    )
 }
 
 pub(super) fn task_kill(call: &Call<'_>) -> Outcome {
@@ -153,7 +172,9 @@ pub(super) fn thread_set_affinity(call: &Call<'_>) -> Result<(), Status> {
     let cpus = crate::execution::cpu::CpuSet::from_native_word(call.arg(1));
     thread.set_affinity(cpus)?;
     // 调用线程限制了自己且当前 CPU 已不允许：返回前让出 CPU，重新调度时迁移到允许的 CPU。
-    if thread.execution().is_some_and(|execution| Arc::ptr_eq(&execution, call.thread))
+    if thread
+        .execution()
+        .is_some_and(|execution| Arc::ptr_eq(&execution, call.thread))
         && !cpus.contains(crate::execution::cpu::current_id())
     {
         crate::thread::yield_current();
@@ -176,10 +197,13 @@ pub(super) fn create_exception_channel(call: &Call<'_>) -> Result<(), Status> {
         Object::Job(job) => job.bind_exception_channel(kernel)?,
         _ => return Err(native_abi::ERR_WRONG_TYPE),
     }
-    let handle = call.process().handles().insert(crate::object::HandleEntry {
-        object: Object::Channel(user),
-        rights: rights::READ | rights::WAIT | rights::TRANSFER | rights::INSPECT,
-    })?;
+    let handle = call
+        .process()
+        .handles()
+        .insert(crate::object::HandleEntry {
+            object: Object::Channel(user),
+            rights: rights::READ | rights::WAIT | rights::TRANSFER | rights::INSPECT,
+        })?;
     if let Err(status) = call.write(call.arg(1), &handle) {
         drop(call.process().handles().remove(handle));
         return Err(status);
@@ -193,7 +217,8 @@ pub(super) fn exception_resolve(call: &Call<'_>) -> Result<(), Status> {
         let state = match call.arg(2) {
             0 => None,
             address => Some(
-                alloc::boxed::Box::try_new(call.read(address)?).map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                alloc::boxed::Box::try_new(call.read(address)?)
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?,
             ),
         };
         ExceptionResolution::Resume(state)

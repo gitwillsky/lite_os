@@ -3,8 +3,8 @@
 //! 与具体 UART register ABI 无关；platform 只提供 Linux 设备名与同步输出，串口输入线程发布已
 //! drain 的输入。
 
+use crate::sync::Once;
 use alloc::{collections::VecDeque, sync::Arc};
-use native_runtime::sync::Once;
 
 use crate::sync::Mutex;
 
@@ -140,8 +140,7 @@ pub(crate) fn register_serial(
     output: SerialOutput,
 ) -> Result<(), ConsoleError> {
     init_ring()?;
-    let console =
-        Arc::try_new(SerialConsole { name, output }).map_err(|_| ConsoleError)?;
+    let console = Arc::try_new(SerialConsole { name, output }).map_err(|_| ConsoleError)?;
     CONSOLE_DEVICES
         .register(console)
         .map_err(|_| ConsoleError)?;

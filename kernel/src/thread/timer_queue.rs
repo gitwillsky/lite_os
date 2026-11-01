@@ -75,7 +75,9 @@ pub(super) fn expire(now_ns: u64) {
             }
             *slot = timers.take_entry(&key);
         }
-        timers.first_key_value().is_some_and(|(key, _)| key.0 <= now_ns)
+        timers
+            .first_key_value()
+            .is_some_and(|(key, _)| key.0 <= now_ns)
     };
     // 唤醒会取得调度锁，必须在释放定时队列锁之后进行。
     for entry in batch.into_iter().flatten() {

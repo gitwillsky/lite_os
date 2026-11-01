@@ -1,7 +1,7 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use crate::task::pid::ProcessId;
 use crate::fs::{AccessIdentity, vfs};
+use crate::task::pid::ProcessId;
 
 mod loader;
 mod memory_barrier;
@@ -13,14 +13,14 @@ mod processor;
 use loader::LoadedExecutable;
 pub(crate) use loader::{EXEC_ARGUMENT_BYTES_LIMIT, ProgramLoadError, load_executable};
 pub(crate) use memory_barrier::{register_private_memory_barrier, synchronize_private_memory};
+pub(in crate::task) use model::CpuAffinity;
 pub(crate) use model::{
     CapabilityError, CloneParameters, CredentialUpdateError, IoStatistics, MessageIdentityError,
     PendingSignal, ProcessCloneResources, RLIM_INFINITY, RLIMIT_NPROC, ResourceLimit,
     ResourceLimitError, RunState, SignalAction, SignalDelivery, SignalFrameRestoreError,
-    SignalStack, SignalStackError, StopResume, TaskControlBlock,
-    ThreadCloneResources, WaitMembership,
+    SignalStack, SignalStackError, StopResume, TaskControlBlock, ThreadCloneResources,
+    WaitMembership,
 };
-pub(in crate::task) use model::CpuAffinity;
 pub(crate) use model::{ExecError, ResourceUsage, RobustListError, SeccompDecision, SeccompError};
 pub(crate) use model::{KernelThreadBody, SyscallRestartBlock, SyscallRestartPolicy};
 pub(crate) use process_table::advisory_lock::{
@@ -165,7 +165,10 @@ pub(crate) fn spawn_init(
             .find_map(|path| {
                 load_init(path, arguments, environment)
                     .inspect_err(|error| {
-                        if !matches!(error, ProgramLoadError::FileSystem(crate::fs::FileSystemError::NotFound)) {
+                        if !matches!(
+                            error,
+                            ProgramLoadError::FileSystem(crate::fs::FileSystemError::NotFound)
+                        ) {
                             error!(
                                 "Starting init: {} exists but couldn't execute it ({error:?})",
                                 core::str::from_utf8(path).unwrap_or("<non-utf8>")

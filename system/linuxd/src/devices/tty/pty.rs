@@ -1,12 +1,12 @@
+use crate::sync::Mutex;
+use crate::sync::Once;
 use alloc::{sync::Arc, sync::Weak, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
-use crate::sync::Mutex;
-use native_runtime::sync::Once;
 
 use super::terminal::{Console, Terminal, clear_terminal_raw_input};
-use fallible_tree::FallibleMap;
 use crate::fs::FileSystemError;
 use crate::ipc::{Pipe, PipeEnd, PipeRead, PipeWrite};
+use fallible_tree::FallibleMap;
 
 mod input_notification;
 

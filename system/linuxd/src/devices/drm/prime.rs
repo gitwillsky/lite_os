@@ -67,7 +67,8 @@ impl DmaBuf {
 impl DeviceFile for DmaBuf {
     fn shared_description(
         &self,
-    ) -> Option<&crate::sync::Mutex<Option<alloc::sync::Weak<dyn core::any::Any + Send + Sync>>>> {
+    ) -> Option<&crate::sync::Mutex<Option<alloc::sync::Weak<dyn core::any::Any + Send + Sync>>>>
+    {
         Some(&self.description)
     }
     fn supports_read(&self) -> bool {
@@ -124,7 +125,8 @@ impl DeviceFile for DmaBuf {
         if request.writable && !request.fd_writable {
             return Err(DeviceError::Errno(errno::EACCES));
         }
-        DeviceMappingSource::new(self.buffer().backing.clone()).map_err(|_| DeviceError::Errno(errno::ENOMEM))
+        DeviceMappingSource::new(self.buffer().backing.clone())
+            .map_err(|_| DeviceError::Errno(errno::ENOMEM))
     }
     fn ioctl(&self, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {
         // DMA_BUF_IOCTL_SYNC, Linux _IOW('b', 0, __u64)。一致 DMA 平台不增加 cache shadow。

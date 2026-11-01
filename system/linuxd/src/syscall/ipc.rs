@@ -2,9 +2,9 @@
 mod semaphore;
 mod shared_memory;
 use crate::{
+    ipc::{IpcError, MessageLimit, MessageQueueWait, MessageReceive, PreparedMessage},
     sync::WaitResult,
     task::current_task,
-    ipc::{IpcError, MessageLimit, MessageQueueWait, MessageReceive, PreparedMessage},
 };
 use alloc::vec::Vec;
 pub(super) use semaphore::{sys_semctl, sys_semget, sys_semop, sys_semtimedop};

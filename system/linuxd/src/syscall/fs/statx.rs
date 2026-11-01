@@ -1,7 +1,7 @@
 //! `statx`：按 Linux `struct statx` 布局报告 inode metadata。
 
 use super::{AT_SYMLINK_NOFOLLOW, copy_stat_path, errno, resolve_stat_path};
-use crate::{task::current_task, fs::DeviceNumber, fs::InodeMetadata};
+use crate::{fs::DeviceNumber, fs::InodeMetadata, task::current_task};
 
 const AT_NO_AUTOMOUNT: u32 = 0x800;
 pub(in crate::syscall) const AT_EMPTY_PATH: u32 = 0x1000;

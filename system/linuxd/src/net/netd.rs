@@ -6,9 +6,9 @@
 
 use alloc::sync::Arc;
 
+use crate::sync::Once;
 use device_protocol::{ActivityBinding, EventHub};
 use native_runtime::Event;
-use native_runtime::sync::Once;
 use network_protocol::{RemoteNamespace, SocketError};
 
 use super::NetNamespace;
@@ -57,7 +57,10 @@ pub(super) fn protocol(scope: &NetNamespace) -> Result<&RemoteNamespace, SocketE
 /// # Errors
 ///
 /// 分派登记或闭包分配失败返回 `NoMemory`。
-pub(super) fn bind_readiness(event: Event, notify: &Arc<PipeEnd>) -> Result<ActivityBinding, SocketError> {
+pub(super) fn bind_readiness(
+    event: Event,
+    notify: &Arc<PipeEnd>,
+) -> Result<ActivityBinding, SocketError> {
     let hub = EVENTS.get().ok_or(SocketError::NetworkDown)?;
     let binding = hub.activity(event).map_err(|_| SocketError::NoMemory)?;
     let notify = notify.clone();

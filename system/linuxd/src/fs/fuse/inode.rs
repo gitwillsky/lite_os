@@ -16,12 +16,16 @@ use super::{
     filesystem::{Mount, SetAttributes, Unsupported},
     protocol::{self, Attributes, Entry, Fields},
 };
-use crate::{sync::{TaskMutex, TaskMutexGuard}, fs::{
+use crate::{
+    fs::{
         AccessIdentity, CreateMetadata, DeviceNumber, DirectoryRead, DirectoryVisitor,
         FileSystemError, FineTimes, Inode, InodeMetadata, InodeOpen, InodeOpenError, InodeType,
         InodeWriteAccess, MAY_ACCESS, MAY_CHDIR, OwnerModeChange, inode::open_by_type,
         permission::OwnerModeState,
-    }, memory::SharedFileId};
+    },
+    memory::SharedFileId,
+    sync::{TaskMutex, TaskMutexGuard},
+};
 use fallible_tree::FallibleMap;
 
 mod directory;

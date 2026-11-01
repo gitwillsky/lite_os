@@ -3,9 +3,11 @@ use alloc::{sync::Arc, vec::Vec};
 use crate::{
     devices::drm::{
         DrmFile, DrmSubmission, VIRGL_COMMAND_MAX, VirglBox, VirglCommand, VirglResourceCreate,
-        VirglTransferDirection},
+        VirglTransferDirection,
+    },
     fs::chardev::UserMemory,
-    memory::PAGE_SIZE};
+    memory::PAGE_SIZE,
+};
 use device_model::DeviceBacking;
 
 use syscall_abi::errno;

@@ -1,9 +1,11 @@
 //! 一个域的实际IPv4 FIB；所有前缀/metric/自动与用户路由共享同一记录和查找。
 use super::{InterfaceState, interface::NetworkInterface};
-use fallible_tree::{FallibleMap, VacantEntry};
-use network_protocol::{Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest, SocketError};
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
+use fallible_tree::{FallibleMap, VacantEntry};
+use network_protocol::{
+    Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest, SocketError,
+};
 
 pub(super) const TABLE_MAIN: u32 = 254;
 pub(super) const TABLE_LOCAL: u32 = 255;

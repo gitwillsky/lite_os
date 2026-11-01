@@ -93,12 +93,16 @@ unsafe impl Plain for native_abi::RiscvIommuDescriptor {}
 /// 把 `Plain` 值视为字节。
 pub(super) fn bytes_of<T: Plain>(value: &T) -> &[u8] {
     // SAFETY: `Plain` 保证按字节读取不违反不变量；切片长度等于类型大小且生命周期绑定到 `value`。
-    unsafe { core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>()) }
+    unsafe {
+        core::slice::from_raw_parts((value as *const T).cast::<u8>(), core::mem::size_of::<T>())
+    }
 }
 
 fn bytes_of_mut<T: Plain>(value: &mut T) -> &mut [u8] {
     // SAFETY: `Plain` 保证任意字节写入后仍是合法值。
-    unsafe { core::slice::from_raw_parts_mut((value as *mut T).cast::<u8>(), core::mem::size_of::<T>()) }
+    unsafe {
+        core::slice::from_raw_parts_mut((value as *mut T).cast::<u8>(), core::mem::size_of::<T>())
+    }
 }
 
 impl Call<'_> {
@@ -160,7 +164,11 @@ impl Call<'_> {
     }
 
     /// 读取用户内存中的值数组。
-    pub(super) fn read_array<T: Plain>(&self, address: usize, count: usize) -> Result<Vec<T>, Status> {
+    pub(super) fn read_array<T: Plain>(
+        &self,
+        address: usize,
+        count: usize,
+    ) -> Result<Vec<T>, Status> {
         let mut values = Vec::new();
         values
             .try_reserve_exact(count)
@@ -169,7 +177,10 @@ impl Call<'_> {
         if count != 0 {
             // SAFETY: Plain 数组按字节连续，长度为 count * size_of::<T>()。
             let bytes = unsafe {
-                core::slice::from_raw_parts_mut(values.as_mut_ptr().cast::<u8>(), count * core::mem::size_of::<T>())
+                core::slice::from_raw_parts_mut(
+                    values.as_mut_ptr().cast::<u8>(),
+                    count * core::mem::size_of::<T>(),
+                )
             };
             self.space()?
                 .copy_from_user(address, bytes)
@@ -189,7 +200,10 @@ impl Call<'_> {
     pub(super) fn write_array<T: Plain>(&self, address: usize, values: &[T]) -> Result<(), Status> {
         // SAFETY: Plain 数组按字节连续。
         let bytes = unsafe {
-            core::slice::from_raw_parts(values.as_ptr().cast::<u8>(), core::mem::size_of_val(values))
+            core::slice::from_raw_parts(
+                values.as_ptr().cast::<u8>(),
+                core::mem::size_of_val(values),
+            )
         };
         self.write_bytes(address, bytes)
     }

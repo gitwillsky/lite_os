@@ -1,8 +1,8 @@
 //! proc_fill_cache 等价的目录 child-inode 生命周期；canonical admission 仍归 ProcIdentities。
 use super::{DirectoryEntry, FileSystemError, ProcInode, ProcNode};
-use fallible_tree::FallibleMap;
-use alloc::sync::Arc;
 use crate::sync::Mutex;
+use alloc::sync::Arc;
+use fallible_tree::FallibleMap;
 
 // 一批 getdents 可表达的最大 entry 数作为目录缓存窗口；它只限制可回收 cache pins，
 // 不限制目录内容。超额移除最早签发的 inode；打开的 OFD/live alias 仍 pin canonical inode。

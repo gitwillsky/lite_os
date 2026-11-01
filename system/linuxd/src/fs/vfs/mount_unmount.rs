@@ -3,8 +3,8 @@ use super::{
     Attachment, FileSystemError, MountView, mount_index, mount_propagation, mount_publication,
     mount_retirement,
 };
-use fallible_tree::FallibleMap;
 use alloc::{sync::Arc, vec::Vec};
+use fallible_tree::FallibleMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Status {

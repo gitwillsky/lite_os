@@ -1,12 +1,12 @@
 use crate::sync::WaitResult;
 use crate::{
+    syscall::errno,
     task::{
         PendingSignal, SignalAction, SignalSendError, SignalStack, SignalStackError,
         SignalWaitError, current_task, send_process_signal, send_queued_process_signal,
         send_queued_thread_signal, send_thread_signal, send_tid_signal, wait_for_signal,
         wait_for_signal_delivery,
     },
-    syscall::errno,
 };
 
 use super::timer::{TimeSpec, decode_timespec, timespec_ns};
@@ -381,9 +381,7 @@ pub(crate) fn sys_rt_sigreturn() -> isize {
                 Ok(info) => info,
                 Err(_) => {
                     drop(task);
-                    crate::task::exit_current_group_by_signal(
-                        syscall_abi::signal::SIGKILL,
-                    );
+                    crate::task::exit_current_group_by_signal(syscall_abi::signal::SIGKILL);
                 }
             };
             task.queue_synchronous_fault(syscall_abi::signal::SIGSEGV, info)

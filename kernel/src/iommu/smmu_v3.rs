@@ -17,8 +17,10 @@ use native_abi::Status;
 use spin::Mutex;
 
 use super::{Hardware, descriptor_window, map_registers};
+use crate::memory::{
+    FrameAllocationClass, FrameTracker, PAGE_SIZE, PhysicalPageNumber, alloc_contiguous,
+};
 use mmio::MmioBus;
-use crate::memory::{FrameAllocationClass, FrameTracker, PAGE_SIZE, PhysicalPageNumber, alloc_contiguous};
 
 const IDR0: usize = 0x00;
 const IDR1: usize = 0x04;
@@ -83,8 +85,13 @@ impl SmmuV3 {
     pub(super) fn create(descriptor: &[u8]) -> Result<Self, Status> {
         let (base, size) = descriptor_window(descriptor)?;
         let virtual_base = map_registers(base, size)?;
-        let registers = MmioBus::new(virtual_base, size).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-        let read = |offset| registers.read_u32(offset).map_err(|_| native_abi::ERR_INVALID_ARGS);
+        let registers =
+            MmioBus::new(virtual_base, size).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+        let read = |offset| {
+            registers
+                .read_u32(offset)
+                .map_err(|_| native_abi::ERR_INVALID_ARGS)
+        };
         let idr0 = read(IDR0)?;
         if idr0 & (1 << 1) == 0 {
             // 不支持 stage-1。
@@ -96,23 +103,38 @@ impl SmmuV3 {
         let output_size = u64::from(read(IDR5)? & 0x7);
 
         // 关闭后再配置，等待 CR0ACK 确认。
-        registers.write_u32(CR0, 0).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+        registers
+            .write_u32(CR0, 0)
+            .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
         poll(|| read(CR0ACK).is_ok_and(|ack| ack == 0))?;
 
         let stream_pages = ((1usize << stream_bits) * STE_BYTES).div_ceil(PAGE_SIZE);
-        let stream_table = alloc_contiguous(stream_pages, FrameAllocationClass::Reclaimable).ok_or(native_abi::ERR_NO_MEMORY)?;
+        let stream_table = alloc_contiguous(stream_pages, FrameAllocationClass::Reclaimable)
+            .ok_or(native_abi::ERR_NO_MEMORY)?;
         let queue_pages = ((1usize << command_log2) * 16).div_ceil(PAGE_SIZE);
-        let queue_frames = alloc_contiguous(queue_pages, FrameAllocationClass::Reclaimable).ok_or(native_abi::ERR_NO_MEMORY)?;
+        let queue_frames = alloc_contiguous(queue_pages, FrameAllocationClass::Reclaimable)
+            .ok_or(native_abi::ERR_NO_MEMORY)?;
         let stream_address = (stream_table.ppn.as_usize() * PAGE_SIZE) as u64;
         let queue_address = (queue_frames.ppn.as_usize() * PAGE_SIZE) as u64;
 
-        let write32 = |offset, value| registers.write_u32(offset, value).map_err(|_| native_abi::ERR_INVALID_ARGS);
-        let write64 = |offset, value| registers.write_u64(offset, value).map_err(|_| native_abi::ERR_INVALID_ARGS);
+        let write32 = |offset, value| {
+            registers
+                .write_u32(offset, value)
+                .map_err(|_| native_abi::ERR_INVALID_ARGS)
+        };
+        let write64 = |offset, value| {
+            registers
+                .write_u64(offset, value)
+                .map_err(|_| native_abi::ERR_INVALID_ARGS)
+        };
         write32(CR1, CR1_ATTRIBUTES)?;
         write32(CR2, CR2_RECINVSID)?;
         write64(STRTAB_BASE, READ_ALLOCATE | stream_address)?;
         write32(STRTAB_BASE_CFG, stream_bits)?;
-        write64(CMDQ_BASE, READ_ALLOCATE | queue_address | u64::from(command_log2))?;
+        write64(
+            CMDQ_BASE,
+            READ_ALLOCATE | queue_address | u64::from(command_log2),
+        )?;
         write32(CMDQ_PROD, 0)?;
         write32(CMDQ_CONS, 0)?;
         mmio::before_write();
@@ -181,7 +203,8 @@ impl Hardware for SmmuV3 {
         if stream >= 1 << self.stream_bits {
             return Err(native_abi::ERR_OUT_OF_RANGE);
         }
-        let context = alloc_contiguous(1, FrameAllocationClass::Reclaimable).ok_or(native_abi::ERR_NO_MEMORY)?;
+        let context = alloc_contiguous(1, FrameAllocationClass::Reclaimable)
+            .ok_or(native_abi::ERR_NO_MEMORY)?;
         let context_address = (context.ppn.as_usize() * PAGE_SIZE) as u64;
         let t0sz = 64 - crate::arch::mmu::TRANSLATION_BITS as u64;
         let cd0 = t0sz
@@ -198,7 +221,20 @@ impl Hardware for SmmuV3 {
             | (1 << 47) // ASET：非共享 ASID 集
             | (u64::from(domain) << 48);
         let ttb0 = (root.as_usize() * PAGE_SIZE) as u64;
-        write_words(context.ppn, 0, &[cd0, ttb0, 0, crate::arch::mmu::MEMORY_ATTRIBUTES, 0, 0, 0, 0]);
+        write_words(
+            context.ppn,
+            0,
+            &[
+                cd0,
+                ttb0,
+                0,
+                crate::arch::mmu::MEMORY_ATTRIBUTES,
+                0,
+                0,
+                0,
+                0,
+            ],
+        );
         let ste0 = 1 // V
             | (0b101 << 1) // Config：stage-1 translate，stage-2 bypass
             | (context_address & 0x000f_ffff_ffff_ffc0); // S1ContextPtr，S1CDMax = 0
@@ -225,7 +261,10 @@ impl Hardware for SmmuV3 {
         } else {
             let mut commands = [[0u64; 2]; RANGE_INVALIDATE_LIMIT];
             for (index, command) in commands.iter_mut().take(pages).enumerate() {
-                *command = [CMD_TLBI_NH_VA | asid, (((first_page + index) * PAGE_SIZE) as u64) | 1];
+                *command = [
+                    CMD_TLBI_NH_VA | asid,
+                    (((first_page + index) * PAGE_SIZE) as u64) | 1,
+                ];
             }
             self.submit(&commands[..pages])
         };

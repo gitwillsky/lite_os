@@ -38,10 +38,19 @@ impl TaskControlBlock {
     /// 内核拒绝进入（寄存器非法或状态未绑定）。
     pub(crate) fn enter_restricted(
         &self,
-    ) -> Result<(native_runtime::restricted::Exit, native_runtime::native_abi::ExceptionReport), native_runtime::native_abi::Status> {
+    ) -> Result<
+        (
+            native_runtime::restricted::Exit,
+            native_runtime::native_abi::ExceptionReport,
+        ),
+        native_runtime::native_abi::Status,
+    > {
         let mut slot = self.thread().restricted.lock();
         let state = slot.as_mut().expect("restricted state not installed");
-        state.state().registers = self.thread().user_context.with(|context| context.registers());
+        state.state().registers = self
+            .thread()
+            .user_context
+            .with(|context| context.registers());
         let exit = state.enter()?;
         let restricted = *state.state();
         self.thread()

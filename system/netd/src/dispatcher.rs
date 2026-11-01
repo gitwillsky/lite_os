@@ -84,7 +84,9 @@ pub(crate) fn start() -> Result<(), Status> {
 }
 
 fn dispatcher() -> &'static Dispatcher {
-    DISPATCHER.get().expect("dispatcher started before serving channels")
+    DISPATCHER
+        .get()
+        .expect("dispatcher started before serving channels")
 }
 
 /// 登记 `channel`，以 `served` 处理它的请求。
@@ -111,9 +113,11 @@ pub(crate) fn serve(channel: Channel, served: Served) -> Result<(), Status> {
 }
 
 fn arm(dispatcher: &Dispatcher, entry: &Entry, key: u64) -> Result<(), Status> {
-    entry
-        .channel
-        .wait_async(&dispatcher.port, key, signals::READABLE | signals::PEER_CLOSED)
+    entry.channel.wait_async(
+        &dispatcher.port,
+        key,
+        signals::READABLE | signals::PEER_CLOSED,
+    )
 }
 
 fn retire(dispatcher: &Dispatcher, key: u64) {
@@ -135,7 +139,10 @@ fn run() {
         let open = loop {
             match entry.channel.read() {
                 Ok(message) => {
-                    let handler = |ordinal: u32, request: &mut Reader<'_>, handles: Vec<Handle>, reply: &mut Writer| {
+                    let handler = |ordinal: u32,
+                                   request: &mut Reader<'_>,
+                                   handles: Vec<Handle>,
+                                   reply: &mut Writer| {
                         entry.served.dispatch(ordinal, request, handles, reply)
                     };
                     if service_rpc::respond(&entry.channel, message, &handler).is_err() {

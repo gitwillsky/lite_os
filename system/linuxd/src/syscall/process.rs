@@ -1,6 +1,9 @@
 use alloc::vec::Vec;
 
 use crate::{
+    fs::FileSystemError,
+    memory::{ElfLoadError, UserAccessError},
+    syscall::errno,
     task::{
         EXEC_ARGUMENT_BYTES_LIMIT, ProcessCloneError, ProcessCloneResources, ProcessGroupError,
         ProgramLoadError, SetProcessGroupError, TaskControlBlock, ThreadCloneError, WaitChildError,
@@ -8,9 +11,6 @@ use crate::{
         create_session, current_task, exit_current_group, exit_current_thread, load_executable,
         parent_pid, process_group, session_id, set_process_group, wait_child,
     },
-    fs::FileSystemError,
-    memory::{ElfLoadError, UserAccessError},
-    syscall::errno,
 };
 
 use super::INTERNAL_RESTART_SYS;
@@ -281,11 +281,7 @@ pub(crate) fn sys_clone3(address: usize, size: usize) -> isize {
     )
 }
 
-fn create_clone(
-    flags: u64,
-    exit_signal: u64,
-    parameters: crate::task::CloneParameters,
-) -> isize {
+fn create_clone(flags: u64, exit_signal: u64, parameters: crate::task::CloneParameters) -> isize {
     use syscall_abi::clone::*;
     const SUPPORTED: u64 = VM
         | FS

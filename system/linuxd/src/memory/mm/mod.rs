@@ -27,19 +27,19 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::ops::Range;
 
+use crate::sync::Once;
 use fallible_tree::FallibleMap;
-use native_runtime::sync::Once;
 use native_runtime::{Process, Vmar};
 
 pub(crate) use area::{AnonymousRole, Area, AreaFlags, Backing};
 pub(crate) use fault::{PageFaultAccess, PageFaultOutcome, SegmentationCause};
 pub(crate) use request::{
-    DeviceMappingSource, FileMappingError, FileMappingSource, MappingPlacement, MappingResourceLimits, MemoryAdvice,
-    RemapError, RemapPlacement, RemapRequest, UserMappingRequest, UserMappingSource,
+    DeviceMappingSource, FileMappingError, FileMappingSource, MappingPlacement,
+    MappingResourceLimits, MemoryAdvice, RemapError, RemapPlacement, RemapRequest,
+    UserMappingRequest, UserMappingSource,
 };
 
 use super::{MapPermission, MappedFileOwner, MemoryError, MemoryObject, PAGE_SIZE};
-
 
 /// `/proc/<pid>/status` 与 `statm` 使用的页统计。
 #[derive(Debug, Clone, Copy, Default)]
@@ -97,10 +97,18 @@ fn trampoline() -> Result<Arc<MemoryObject>, MemoryError> {
     }
     let object = MemoryObject::anonymous(PAGE_SIZE, false)?;
     let mut code = [0u8; 8];
-    for (chunk, word) in code.as_chunks_mut::<4>().0.iter_mut().zip(crate::arch::user::SIGRETURN_TRAMPOLINE) {
+    for (chunk, word) in code
+        .as_chunks_mut::<4>()
+        .0
+        .iter_mut()
+        .zip(crate::arch::user::SIGRETURN_TRAMPOLINE)
+    {
         chunk.copy_from_slice(&word.to_le_bytes());
     }
-    object.vmo().write(&code, 0).map_err(MemoryError::from_status)?;
+    object
+        .vmo()
+        .write(&code, 0)
+        .map_err(MemoryError::from_status)?;
     Ok(TRAMPOLINE.call_once(|| object).clone())
 }
 
@@ -136,7 +144,9 @@ impl MemorySet {
             start: end - PAGE_SIZE,
             end,
             permission: MapPermission::U | MapPermission::R | MapPermission::X,
-            backing: Backing::Trampoline { object: trampoline()? },
+            backing: Backing::Trampoline {
+                object: trampoline()?,
+            },
             flags: AreaFlags::DONT_DUMP,
             name: None,
         })?;
@@ -183,12 +193,17 @@ impl MemorySet {
     fn range_is_free(&self, start: usize, end: usize) -> bool {
         start >= self.base.max(PAGE_SIZE)
             && end <= self.end
-            && self.area_at_or_after(start).is_none_or(|area| area.start >= end)
+            && self
+                .area_at_or_after(start)
+                .is_none_or(|area| area.start >= end)
     }
 
     /// 自上而下在 `[floor, top)` 中寻找 `length` 字节空隙。
     fn find_free(&self, length: usize, top: usize) -> Option<usize> {
-        let floor = self.heap.as_ref().map_or_else(|| self.base.max(PAGE_SIZE), |heap| heap.mapped.max(heap.start));
+        let floor = self.heap.as_ref().map_or_else(
+            || self.base.max(PAGE_SIZE),
+            |heap| heap.mapped.max(heap.start),
+        );
         let mut ceiling = top;
         let mut areas: Vec<(usize, usize)> = self
             .areas
@@ -210,7 +225,10 @@ impl MemorySet {
     fn place(&self, hint: usize, length: usize) -> Result<usize, MemoryError> {
         if hint != 0 {
             let hint = hint & !(PAGE_SIZE - 1);
-            if hint.checked_add(length).is_some_and(|end| self.range_is_free(hint, end)) {
+            if hint
+                .checked_add(length)
+                .is_some_and(|end| self.range_is_free(hint, end))
+            {
                 return Ok(hint);
             }
         }
@@ -221,7 +239,8 @@ impl MemorySet {
 
     /// 安装并登记一个 VMA；调用者保证区间未被占用。
     pub(super) fn insert(&mut self, area: Area) -> Result<(), MemoryError> {
-        let entry = FallibleMap::try_prepare(area.start, area.clone()).map_err(|_| MemoryError::OutOfMemory)?;
+        let entry = FallibleMap::try_prepare(area.start, area.clone())
+            .map_err(|_| MemoryError::OutOfMemory)?;
         area.install(&self.root, self.base)?;
         self.areas.commit_vacant(entry);
         Ok(())
@@ -229,10 +248,15 @@ impl MemorySet {
 
     /// 使 `address` 成为 VMA 边界（必要时切分覆盖它的 VMA）。
     fn split_at(&mut self, address: usize) -> Result<(), MemoryError> {
-        let Some(start) = self.area_at(address).filter(|area| area.start != address).map(|area| area.start) else {
+        let Some(start) = self
+            .area_at(address)
+            .filter(|area| area.start != address)
+            .map(|area| area.start)
+        else {
             return Ok(());
         };
-        let slot = FallibleMap::<usize, Area>::try_reserve_node().map_err(|_| MemoryError::OutOfMemory)?;
+        let slot =
+            FallibleMap::<usize, Area>::try_reserve_node().map_err(|_| MemoryError::OutOfMemory)?;
         let area = self.areas.get_mut(&start).expect("area found above");
         let right = area.split_off(address);
         self.areas.commit_vacant(slot.fill(address, right));
@@ -322,7 +346,13 @@ impl MemorySet {
             if area.counts_as_data() {
                 statistics.data_pages += pages;
             }
-            if matches!(area.backing, Backing::Anonymous { role: AnonymousRole::Stack, .. }) {
+            if matches!(
+                area.backing,
+                Backing::Anonymous {
+                    role: AnonymousRole::Stack,
+                    ..
+                }
+            ) {
                 statistics.stack_pages += pages;
             }
         }

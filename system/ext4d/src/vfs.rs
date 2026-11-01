@@ -168,7 +168,11 @@ pub(crate) struct DirectoryRead {
 
 /// 目录遍历的访问者；`next_cursor` 是读完本项后继续读取的位置。
 pub(crate) trait DirectoryVisitor {
-    fn visit(&mut self, next_cursor: u64, entry: DirectoryEntry<'_>) -> Result<DirectoryVisit, FileSystemError>;
+    fn visit(
+        &mut self,
+        next_cursor: u64,
+        entry: DirectoryEntry<'_>,
+    ) -> Result<DirectoryVisit, FileSystemError>;
 }
 
 /// 一次写入事务的数据写入端。
@@ -194,7 +198,12 @@ pub(crate) struct OwnerModeState {
 
 impl OwnerModeState {
     pub(crate) const fn new(kind: InodeType, mode: u16, uid: u32, gid: u32) -> Self {
-        Self { kind, mode, uid, gid }
+        Self {
+            kind,
+            mode,
+            uid,
+            gid,
+        }
     }
 
     pub(crate) const fn mode(&self) -> u16 {
@@ -231,7 +240,10 @@ impl OwnerModeChange {
     /// # Errors
     ///
     /// 不返回错误；签名保留给 mutation 事务的统一错误路径。
-    pub(crate) fn authorize(&self, mut current: OwnerModeState) -> Result<OwnerModeState, FileSystemError> {
+    pub(crate) fn authorize(
+        &self,
+        mut current: OwnerModeState,
+    ) -> Result<OwnerModeState, FileSystemError> {
         if let Some(mode) = self.mode {
             current.mode = current.mode & !0o7777 | (mode as u16 & 0o7777);
         }

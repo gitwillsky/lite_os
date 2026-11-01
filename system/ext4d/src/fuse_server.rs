@@ -13,15 +13,15 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use filesystem_protocol::{MAX_TRANSFER, MountControl, MountService, Mounted};
+use native_runtime::Channel;
 use native_runtime::native_abi::{self, DEADLINE_INFINITE, Status};
 use native_runtime::sync::Mutex;
-use native_runtime::Channel;
 use syscall_abi::{errno, fuse};
 
 use crate::ext4::{Ext4FileSystem, Ext4Inode};
 use crate::vfs::{
-    CreateMetadata, DeviceNumber, DirectoryEntry, DirectoryVisit, DirectoryVisitor, FileSystemError, InodeMetadata,
-    InodeType, OwnerModeChange, WritePolicy, XattrChange,
+    CreateMetadata, DeviceNumber, DirectoryEntry, DirectoryVisit, DirectoryVisitor,
+    FileSystemError, InodeMetadata, InodeType, OwnerModeChange, WritePolicy, XattrChange,
 };
 
 /// 每个挂载的工作线程数：请求在 ext4 内部按 mutation owner 串行，多个线程让读与元数据查询并行。
@@ -41,7 +41,9 @@ fn status(error: FileSystemError) -> Status {
     match error {
         FileSystemError::OutOfMemory => native_abi::ERR_NO_MEMORY,
         FileSystemError::NotFound => native_abi::ERR_NOT_FOUND,
-        FileSystemError::InvalidOperation | FileSystemError::InvalidFileSystem => native_abi::ERR_INVALID_ARGS,
+        FileSystemError::InvalidOperation | FileSystemError::InvalidFileSystem => {
+            native_abi::ERR_INVALID_ARGS
+        }
         _ => native_abi::ERR_IO,
     }
 }
@@ -63,7 +65,13 @@ impl MountService for Ext4Service {
             destroyed: AtomicBool::new(false),
         })
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        mount.nodes.lock().insert(fuse::ROOT_ID, Node { inode: root, lookups: 1 });
+        mount.nodes.lock().insert(
+            fuse::ROOT_ID,
+            Node {
+                inode: root,
+                lookups: 1,
+            },
+        );
         let (client, server) = Channel::create()?;
         let server = Arc::try_new(server).map_err(|_| native_abi::ERR_NO_MEMORY)?;
         for _ in 0..WORKERS {
@@ -74,7 +82,10 @@ impl MountService for Ext4Service {
         }
         let control: Arc<dyn MountControl> =
             Arc::try_new(Ext4Control { filesystem }).map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        Ok(Mounted { fuse: client, control })
+        Ok(Mounted {
+            fuse: client,
+            control,
+        })
     }
 }
 
@@ -138,16 +149,24 @@ impl<'a> Input<'a> {
     }
 
     fn u32(&mut self) -> Result<u32, i32> {
-        Ok(u32::from_ne_bytes(self.take(4)?.try_into().expect("four bytes")))
+        Ok(u32::from_ne_bytes(
+            self.take(4)?.try_into().expect("four bytes"),
+        ))
     }
 
     fn u64(&mut self) -> Result<u64, i32> {
-        Ok(u64::from_ne_bytes(self.take(8)?.try_into().expect("eight bytes")))
+        Ok(u64::from_ne_bytes(
+            self.take(8)?.try_into().expect("eight bytes"),
+        ))
     }
 
     /// NUL 结尾的名字。
     fn name(&mut self) -> Result<&'a [u8], i32> {
-        let end = self.bytes.iter().position(|&byte| byte == 0).ok_or(errno::EINVAL as i32)?;
+        let end = self
+            .bytes
+            .iter()
+            .position(|&byte| byte == 0)
+            .ok_or(errno::EINVAL as i32)?;
         let name = &self.bytes[..end];
         self.bytes = &self.bytes[end + 1..];
         Ok(name)
@@ -213,7 +232,13 @@ impl Output {
 
     /// `fuse_entry_out`。
     fn entry(&mut self, nodeid: u64, metadata: &InodeMetadata) -> &mut Self {
-        self.u64(nodeid).u64(0).u64(VALID_SECONDS).u64(VALID_SECONDS).u32(0).u32(0).attr(nodeid, metadata)
+        self.u64(nodeid)
+            .u64(0)
+            .u64(VALID_SECONDS)
+            .u64(VALID_SECONDS)
+            .u32(0)
+            .u32(0)
+            .attr(nodeid, metadata)
     }
 
     /// `fuse_attr_out`。
@@ -252,7 +277,10 @@ impl Mount {
                 continue;
             };
             let reply = self.dispatch(&header, &mut input);
-            if matches!(header.opcode, fuse::FORGET | fuse::BATCH_FORGET | fuse::INTERRUPT) {
+            if matches!(
+                header.opcode,
+                fuse::FORGET | fuse::BATCH_FORGET | fuse::INTERRUPT
+            ) {
                 continue;
             }
             let mut message = Output::new();
@@ -266,7 +294,10 @@ impl Mount {
                         .bytes(&body);
                 }
                 Err(code) => {
-                    message.u32(fuse::OUT_HEADER_SIZE as u32).u32((-code) as u32).u64(header.unique);
+                    message
+                        .u32(fuse::OUT_HEADER_SIZE as u32)
+                        .u32((-code) as u32)
+                        .u64(header.unique);
                 }
             }
             if filesystem_protocol::send_fuse(channel, &message.0).is_err() {
@@ -306,7 +337,11 @@ impl Mount {
     }
 
     fn handle(&self, handle: u64) -> Result<Arc<Ext4Inode>, i32> {
-        self.handles.lock().get(&handle).cloned().ok_or(errno::EBADF as i32)
+        self.handles
+            .lock()
+            .get(&handle)
+            .cloned()
+            .ok_or(errno::EBADF as i32)
     }
 
     fn nodeid_of(inode: &Ext4Inode) -> u64 {
@@ -338,7 +373,12 @@ impl Mount {
     }
 
     /// 新建 inode 的属主与模式：父目录带 set-GID 时继承组（目录同时继承 set-GID 位）。
-    fn create_metadata(parent: &Ext4Inode, header: &Header, mode: u32, umask: u32) -> Result<CreateMetadata, i32> {
+    fn create_metadata(
+        parent: &Ext4Inode,
+        header: &Header,
+        mode: u32,
+        umask: u32,
+    ) -> Result<CreateMetadata, i32> {
         let parent_metadata = parent.metadata().map_err(fs_error)?;
         let mut permissions = mode & 0o7777 & !umask;
         let gid = if parent_metadata.mode & S_ISGID != 0 {
@@ -367,7 +407,10 @@ impl Mount {
             }
             fuse::LOOKUP => {
                 let name = input.name()?;
-                let child = self.node(header.nodeid)?.find_child(name).map_err(fs_error)?;
+                let child = self
+                    .node(header.nodeid)?
+                    .find_child(name)
+                    .map_err(fs_error)?;
                 self.entry(child)
             }
             fuse::FORGET => {
@@ -420,8 +463,18 @@ impl Mount {
                     0o100000 => parent.create(name, InodeType::File, metadata),
                     0o140000 => parent.create(name, InodeType::Socket, metadata),
                     0o010000 => parent.mknod(name, InodeType::Fifo, metadata, None),
-                    0o020000 => parent.mknod(name, InodeType::CharacterDevice, metadata, Some(DeviceNumber::decode(rdev))),
-                    0o060000 => parent.mknod(name, InodeType::BlockDevice, metadata, Some(DeviceNumber::decode(rdev))),
+                    0o020000 => parent.mknod(
+                        name,
+                        InodeType::CharacterDevice,
+                        metadata,
+                        Some(DeviceNumber::decode(rdev)),
+                    ),
+                    0o060000 => parent.mknod(
+                        name,
+                        InodeType::BlockDevice,
+                        metadata,
+                        Some(DeviceNumber::decode(rdev)),
+                    ),
                     _ => return Err(errno::EINVAL as i32),
                 }
                 .map_err(fs_error)?;
@@ -433,7 +486,9 @@ impl Mount {
                 let name = input.name()?;
                 let parent = self.node(header.nodeid)?;
                 let metadata = Self::create_metadata(&parent, header, mode | 0o040000, umask)?;
-                let inode = parent.create(name, InodeType::Directory, metadata).map_err(fs_error)?;
+                let inode = parent
+                    .create(name, InodeType::Directory, metadata)
+                    .map_err(fs_error)?;
                 self.entry(inode)
             }
             fuse::UNLINK | fuse::RMDIR => {
@@ -460,7 +515,12 @@ impl Mount {
                 let new_name = input.name()?;
                 let target = self.node(new_parent)?;
                 self.node(header.nodeid)?
-                    .rename(old_name, target.number(), new_name, flags & fuse::RENAME_NOREPLACE != 0)
+                    .rename(
+                        old_name,
+                        target.number(),
+                        new_name,
+                        flags & fuse::RENAME_NOREPLACE != 0,
+                    )
                     .map_err(fs_error)?;
                 Ok(None)
             }
@@ -468,7 +528,9 @@ impl Mount {
                 let old = input.u64()?;
                 let name = input.name()?;
                 let target = self.node(old)?;
-                self.node(header.nodeid)?.link(name, target.clone()).map_err(fs_error)?;
+                self.node(header.nodeid)?
+                    .link(name, target.clone())
+                    .map_err(fs_error)?;
                 self.entry(target)
             }
             fuse::OPEN | fuse::OPENDIR => {
@@ -485,7 +547,9 @@ impl Mount {
                 let name = input.name()?;
                 let parent = self.node(header.nodeid)?;
                 let metadata = Self::create_metadata(&parent, header, mode | 0o100000, umask)?;
-                let inode = parent.create(name, InodeType::File, metadata).map_err(fs_error)?;
+                let inode = parent
+                    .create(name, InodeType::File, metadata)
+                    .map_err(fs_error)?;
                 let handle = self.open_handle(inode.clone());
                 let mut output = self.entry(inode)?.expect("entry reply has a body");
                 output.u64(handle).u32(0).u32(0);
@@ -557,7 +621,9 @@ impl Mount {
                 let name = input.name()?;
                 let value = input.rest().get(..size).ok_or(errno::EINVAL as i32)?;
                 let mut owned = Vec::new();
-                owned.try_reserve_exact(value.len()).map_err(|_| errno::ENOMEM as i32)?;
+                owned
+                    .try_reserve_exact(value.len())
+                    .map_err(|_| errno::ENOMEM as i32)?;
                 owned.extend_from_slice(value);
                 self.node(header.nodeid)?
                     .change_xattr(XattrChange {
@@ -610,7 +676,9 @@ impl Mount {
                     output: Output::new(),
                     capacity: size,
                 };
-                inode.read_directory(offset, &mut visitor).map_err(fs_error)?;
+                inode
+                    .read_directory(offset, &mut visitor)
+                    .map_err(fs_error)?;
                 Ok(Some(visitor.output))
             }
             fuse::FALLOCATE => {
@@ -635,7 +703,11 @@ impl Mount {
         let minor = input.u32()?;
         let _readahead = input.u32()?;
         let flags = u64::from(input.u32()?);
-        let flags2 = if input.bytes.len() >= 4 { u64::from(input.u32()?) } else { 0 };
+        let flags2 = if input.bytes.len() >= 4 {
+            u64::from(input.u32()?)
+        } else {
+            0
+        };
         let offered = flags | flags2 << 32;
         if major != fuse::KERNEL_VERSION {
             return Err(errno::EPROTO as i32);
@@ -714,8 +786,16 @@ impl Mount {
                 .map_err(fs_error)?;
         }
         let now = crate::time::get_realtime_ns() / 1_000_000_000;
-        let atime = (valid & fuse::FATTR_ATIME != 0).then_some(if valid & FATTR_ATIME_NOW != 0 { now } else { atime });
-        let mtime = (valid & fuse::FATTR_MTIME != 0).then_some(if valid & FATTR_MTIME_NOW != 0 { now } else { mtime });
+        let atime = (valid & fuse::FATTR_ATIME != 0).then_some(if valid & FATTR_ATIME_NOW != 0 {
+            now
+        } else {
+            atime
+        });
+        let mtime = (valid & fuse::FATTR_MTIME != 0).then_some(if valid & FATTR_MTIME_NOW != 0 {
+            now
+        } else {
+            mtime
+        });
         if atime.is_some() || mtime.is_some() {
             inode.set_times(atime, mtime).map_err(fs_error)?;
         }
@@ -733,7 +813,11 @@ struct DirentWriter {
 }
 
 impl DirectoryVisitor for DirentWriter {
-    fn visit(&mut self, next_cursor: u64, entry: DirectoryEntry<'_>) -> Result<DirectoryVisit, FileSystemError> {
+    fn visit(
+        &mut self,
+        next_cursor: u64,
+        entry: DirectoryEntry<'_>,
+    ) -> Result<DirectoryVisit, FileSystemError> {
         let record = (fuse::DIRENT_NAME_OFFSET + entry.name.len()).next_multiple_of(8);
         if self.output.0.len() + record > self.capacity {
             return Ok(DirectoryVisit::Stop);

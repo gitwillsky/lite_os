@@ -5,7 +5,7 @@ use alloc::sync::{Arc, Weak};
 use native_abi::{ObjectType, PortPacket, Status, rights};
 
 use super::{KernelObject, Port, next_koid};
-use crate::vm::{PagerRequest, PagerSink, Vmar, Vmo, VmError};
+use crate::vm::{PagerRequest, PagerSink, VmError, Vmar, Vmo};
 
 /// `VmError` 到 native status 的唯一映射。
 pub(crate) fn vm_status(error: VmError) -> Status {

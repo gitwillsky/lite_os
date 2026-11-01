@@ -8,7 +8,6 @@ use core::{fmt, ops::Range};
 
 use dtb_walker::{Dtb, DtbObj, Property, Str, WalkOperation};
 
-
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct MmioDevice {
     pub(crate) base_addr: usize,

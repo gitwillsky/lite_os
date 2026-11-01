@@ -1,9 +1,9 @@
 //! 一块物理盘上全部 bdev extent 的唯一 claim owner，覆盖整盘/分区别名。
 
 use super::FileSystemError;
-use fallible_tree::FallibleMap;
 use alloc::sync::Arc;
 use core::ops::Range;
+use fallible_tree::FallibleMap;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ClaimState {

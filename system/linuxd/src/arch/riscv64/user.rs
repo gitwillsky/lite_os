@@ -140,7 +140,11 @@ impl UserContext {
     }
 
     /// 为 clone 创建的 child 准备首次返回：返回值 0，可选新栈与 TLS。
-    pub(crate) fn prepare_clone(&mut self, user_stack: Option<usize>, thread_pointer: Option<usize>) {
+    pub(crate) fn prepare_clone(
+        &mut self,
+        user_stack: Option<usize>,
+        thread_pointer: Option<usize>,
+    ) {
         if let Some(stack) = user_stack {
             self.x[2] = stack;
         }

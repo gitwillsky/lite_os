@@ -3,8 +3,8 @@
 //! 内核先按 VMAR 解决缺页（按需提交、写时复制、pager 补页）；只有映射缺失、权限不符或后备无法提供页时，
 //! Linux 线程才以 EXCEPTION 原因退出 restricted mode，由这里决定扩展 `MAP_GROWSDOWN` 区或投递信号。
 
-use super::area::{AnonymousRole, Area, AreaFlags, Backing};
 use super::MemorySet;
+use super::area::{AnonymousRole, Area, AreaFlags, Backing};
 use crate::memory::{MapPermission, MemoryError, MemoryObject, PAGE_SIZE};
 
 /// 缺页访问类型。
@@ -53,7 +53,11 @@ impl MemorySet {
     /// # Errors
     ///
     /// 扩展栈时内存不足。
-    pub(crate) fn handle_page_fault(&mut self, address: usize, access: PageFaultAccess) -> Result<PageFaultOutcome, MemoryError> {
+    pub(crate) fn handle_page_fault(
+        &mut self,
+        address: usize,
+        access: PageFaultAccess,
+    ) -> Result<PageFaultOutcome, MemoryError> {
         if let Some(area) = self.area_at(address) {
             return Ok(if area.permission.contains(access.permission()) {
                 PageFaultOutcome::BusError
@@ -69,17 +73,23 @@ impl MemorySet {
             .map(|(_, area)| area.clone())
             .filter(|area| area.flags.contains(AreaFlags::GROWS_DOWN))
         else {
-            return Ok(PageFaultOutcome::SegmentationFault(SegmentationCause::Unmapped));
+            return Ok(PageFaultOutcome::SegmentationFault(
+                SegmentationCause::Unmapped,
+            ));
         };
         let below_end = self
             .areas
             .floor(&address)
             .map_or(self.base, |(_, area)| area.end);
         if page < below_end.saturating_add(STACK_GUARD_GAP) || page < self.base.max(PAGE_SIZE) {
-            return Ok(PageFaultOutcome::SegmentationFault(SegmentationCause::Unmapped));
+            return Ok(PageFaultOutcome::SegmentationFault(
+                SegmentationCause::Unmapped,
+            ));
         }
         if !above.permission.contains(access.permission()) {
-            return Ok(PageFaultOutcome::SegmentationFault(SegmentationCause::AccessDenied));
+            return Ok(PageFaultOutcome::SegmentationFault(
+                SegmentationCause::AccessDenied,
+            ));
         }
         // 新扩展部分接管 GROWS_DOWN，原最低区成为普通栈区。
         self.insert(Area {

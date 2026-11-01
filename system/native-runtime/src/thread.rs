@@ -174,9 +174,10 @@ impl<T> JoinHandle<T> {
     /// 等待线程结束并取得返回值；线程被终止（未正常返回）时为 `None`。
     pub fn join(mut self) -> Option<T> {
         let descriptor = self.descriptor.take().expect("join handle consumed");
-        let _ = descriptor
-            .handle
-            .wait_one(native_abi::signals::TERMINATED, native_abi::DEADLINE_INFINITE);
+        let _ = descriptor.handle.wait_one(
+            native_abi::signals::TERMINATED,
+            native_abi::DEADLINE_INFINITE,
+        );
         reap(&descriptor);
         self.result.lock().take()
     }
@@ -238,9 +239,12 @@ impl<T> PreparedThread<T> {
     ///
     /// 线程所属进程已终止；此时线程资源随本对象释放。
     pub fn start(mut self) -> Result<JoinHandle<T>, Status> {
-        self.descriptor
-            .handle
-            .start(thread_entry as *const () as usize, self.stack_top, self.raw, 0)?;
+        self.descriptor.handle.start(
+            thread_entry as *const () as usize,
+            self.stack_top,
+            self.raw,
+            0,
+        )?;
         self.started = true;
         Ok(JoinHandle {
             descriptor: Some(self.descriptor.clone()),
@@ -282,9 +286,19 @@ pub fn prepare_in<T: Send + 'static>(
     let page = native_abi::PAGE_SIZE;
     let stack_size = stack_size.next_multiple_of(page);
     let handle = Thread::create(process, name)?;
-    let (vmar, _) = crate::heap::vmar().allocate(native_abi::vm::READ | native_abi::vm::WRITE, 0, stack_size + page)?;
+    let (vmar, _) = crate::heap::vmar().allocate(
+        native_abi::vm::READ | native_abi::vm::WRITE,
+        0,
+        stack_size + page,
+    )?;
     let vmo = Vmo::create(stack_size as u64, 0)?;
-    let stack_top = match vmar.map(native_abi::vm::READ | native_abi::vm::WRITE | native_abi::vm::SPECIFIC, page, &vmo, 0, stack_size) {
+    let stack_top = match vmar.map(
+        native_abi::vm::READ | native_abi::vm::WRITE | native_abi::vm::SPECIFIC,
+        page,
+        &vmo,
+        0,
+        stack_size,
+    ) {
         Ok(stack_base) => stack_base + stack_size,
         Err(status) => {
             let _ = vmar.destroy();
@@ -335,5 +349,10 @@ pub fn spawn<T: Send + 'static>(
     name: &[u8],
     body: impl FnOnce() -> T + Send + 'static,
 ) -> Result<JoinHandle<T>, Status> {
-    spawn_in(crate::startup::self_process(), name, DEFAULT_STACK_SIZE, body)
+    spawn_in(
+        crate::startup::self_process(),
+        name,
+        DEFAULT_STACK_SIZE,
+        body,
+    )
 }

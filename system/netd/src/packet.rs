@@ -1,9 +1,9 @@
+use crate::sync::Mutex;
 use alloc::{
     collections::VecDeque,
     sync::{Arc, Weak},
     vec::Vec,
 };
-use crate::sync::Mutex;
 use native_runtime::Event;
 use native_runtime::native_abi::signals;
 use native_runtime::sync::Once;
@@ -167,12 +167,9 @@ impl PacketSocket {
                 return Err(SocketError::NoDevice);
             }
             Some(
-                crate::inet::packet_interface(
-                    &self.namespace,
-                    address.interface_index as u32,
-                )?
-                .0
-                .up,
+                crate::inet::packet_interface(&self.namespace, address.interface_index as u32)?
+                    .0
+                    .up,
             )
         } else {
             None
@@ -278,17 +275,16 @@ impl PacketSocket {
         if target.interface_index <= 0 {
             return Err(SocketError::DeviceNotAvailable);
         }
-        let (interface, device) = crate::inet::packet_interface(
-            &self.namespace,
-            target.interface_index as u32,
-        )
-        .map_err(|error| {
-            if error == SocketError::NoDevice {
-                SocketError::DeviceNotAvailable
-            } else {
-                error
-            }
-        })?;
+        let (interface, device) =
+            crate::inet::packet_interface(&self.namespace, target.interface_index as u32).map_err(
+                |error| {
+                    if error == SocketError::NoDevice {
+                        SocketError::DeviceNotAvailable
+                    } else {
+                        error
+                    }
+                },
+            )?;
         if !interface.up {
             return Err(SocketError::NetworkDown);
         }
@@ -314,13 +310,8 @@ impl PacketSocket {
             input
         };
         if interface.loopback {
-            return crate::inet::inject_loopback(
-                &self.namespace,
-                link_header,
-                payload,
-                self.id,
-            )
-            .map(|()| input.len());
+            return crate::inet::inject_loopback(&self.namespace, link_header, payload, self.id)
+                .map(|()| input.len());
         }
         if !raw && !explicit {
             return Err(SocketError::Invalid);

@@ -7,7 +7,9 @@ use alloc::sync::Arc;
 use device_protocol::ActivityBinding;
 use network_protocol::{PacketKind, RemotePacketSocket};
 
-use super::{NetNamespace, PacketAddress, SocketError, SocketPollState, SocketType, SocketWaitSource, netd};
+use super::{
+    NetNamespace, PacketAddress, SocketError, SocketPollState, SocketType, SocketWaitSource, netd,
+};
 use crate::ipc::{PipeDirection, PipeEnd, ReceiveBuffer};
 
 /// 一个 AF_PACKET socket 的本地端。
@@ -65,7 +67,11 @@ impl PacketSocket {
         self.remote.address()
     }
 
-    pub(super) fn send_to(&self, input: &[u8], target: Option<PacketAddress>) -> Result<usize, SocketError> {
+    pub(super) fn send_to(
+        &self,
+        input: &[u8],
+        target: Option<PacketAddress>,
+    ) -> Result<usize, SocketError> {
         self.remote.send_to(input, target)
     }
 

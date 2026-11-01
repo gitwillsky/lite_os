@@ -8,7 +8,6 @@ use core::{fmt, ops::Range};
 
 use dtb_walker::{Dtb, DtbObj, Property, Str, StrList, WalkOperation};
 
-
 /// compatible 为 `ns16550a` 的 QEMU UART。
 const UART_COMPATIBLES: &[&str] = &["ns16550a"];
 /// compatible 为 `sifive,plic-1.0.0`/`riscv,plic0` 的 PLIC；QEMU 11 之前节点名为 `plic@…`，之后为
@@ -165,9 +164,12 @@ pub(crate) fn parse(dtb: Dtb<'_>, physical: usize) -> PlatformInfo {
                     .try_reserve_exact(value.len())
                     .expect("rng-seed allocation failed");
                 rng_seed.extend_from_slice(value);
-            } else if context.name() == Str::from("chosen") && name == Str::from("linux,initrd-start") {
+            } else if context.name() == Str::from("chosen")
+                && name == Str::from("linux,initrd-start")
+            {
                 initrd_start = Some(be_uint(value) as usize);
-            } else if context.name() == Str::from("chosen") && name == Str::from("linux,initrd-end") {
+            } else if context.name() == Str::from("chosen") && name == Str::from("linux,initrd-end")
+            {
                 initrd_end = Some(be_uint(value) as usize);
             } else if name == Str::from("timebase-frequency") && context.name() == Str::from("cpus")
             {

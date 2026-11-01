@@ -3,4 +3,3 @@
 pub(crate) const BOOTSTRAP_HEAP_SIZE: usize = 2 * 1024 * 1024;
 
 pub(crate) use crate::arch::mmu::PAGE_SIZE;
-

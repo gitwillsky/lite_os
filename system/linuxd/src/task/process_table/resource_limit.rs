@@ -1,11 +1,11 @@
 use alloc::sync::Arc;
 
 use super::{PROCESS_TABLE, ProcessState};
+use crate::memory::MemoryError;
 use crate::task::{
     PendingSignal, RLIM_INFINITY, RLIMIT_NPROC, ResourceLimit, ResourceLimitError,
     TaskControlBlock, current_task,
 };
-use crate::memory::MemoryError;
 
 /// 锁外预留 RLIMIT_NPROC 复检所需的逐 Thread snapshot。
 ///
@@ -138,7 +138,8 @@ pub(in crate::task) fn with_credential_transition<T>(
 const CPU_LIMIT_SAMPLE_PERIOD_NS: u64 = 1_000_000_000;
 
 // OWNER: 下一次 RLIMIT_CPU 采样的单调时刻；只由 deferred 线程读写。0 表示尚未排定。
-static NEXT_CPU_LIMIT_SAMPLE_NS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static NEXT_CPU_LIMIT_SAMPLE_NS: core::sync::atomic::AtomicU64 =
+    core::sync::atomic::AtomicU64::new(0);
 
 /// 存在受限 Process 时下一次采样的截止时间。
 pub(super) fn cpu_limit_sample_deadline(now_ns: u64) -> Option<u64> {
@@ -166,7 +167,10 @@ pub(super) fn sample_cpu_limits(now_ns: u64) {
     if next == 0 || now_ns < next {
         return;
     }
-    NEXT_CPU_LIMIT_SAMPLE_NS.store(now_ns.saturating_add(CPU_LIMIT_SAMPLE_PERIOD_NS), Ordering::Relaxed);
+    NEXT_CPU_LIMIT_SAMPLE_NS.store(
+        now_ns.saturating_add(CPU_LIMIT_SAMPLE_PERIOD_NS),
+        Ordering::Relaxed,
+    );
     let mut limited = alloc::vec::Vec::new();
     {
         let graph = PROCESS_TABLE.graph.lock();

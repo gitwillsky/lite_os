@@ -27,7 +27,8 @@ const NETD_STACK_SIZE: usize = 256 * 1024;
 
 fn main(mut startup: Startup) -> i64 {
     let job = Job::from_handle(startup.take(startup::root::JOB));
-    let resource = ROOT_RESOURCE.call_once(|| Resource::from_handle(startup.take(startup::root::RESOURCE)));
+    let resource =
+        ROOT_RESOURCE.call_once(|| Resource::from_handle(startup.take(startup::root::RESOURCE)));
     let bootfs_vmo = Vmo::from_handle(startup.take(startup::root::BOOTFS));
     let device_tree = startup.take(startup::root::DEVICE_TREE);
     native_runtime::set_fatal_scope(
@@ -36,14 +37,29 @@ fn main(mut startup: Startup) -> i64 {
             .into_handle(),
     );
 
-    let exceptions = native_runtime::task::create_exception_channel(&job).expect("root exception channel");
+    let exceptions =
+        native_runtime::task::create_exception_channel(&job).expect("root exception channel");
     let bootfs = native_runtime::bootfs::Bootfs::map(&bootfs_vmo).expect("bootfs mapping");
     let (directory_reader, directory_writer) = Channel::create().expect("device directory channel");
     let (ext4_client, ext4_server) = Channel::create().expect("ext4d control channel");
     let (network_client, network_server) = Channel::create().expect("netd control channel");
     let devices = start_devmgr(&job, resource, &bootfs, device_tree, directory_writer);
-    let filesystems = start_service(&job, &bootfs, ext4d::IMAGE, b"ext4d", ext4_server, EXT4D_STACK_SIZE);
-    let network = start_service(&job, &bootfs, netd::IMAGE, b"netd", network_server, NETD_STACK_SIZE);
+    let filesystems = start_service(
+        &job,
+        &bootfs,
+        ext4d::IMAGE,
+        b"ext4d",
+        ext4_server,
+        EXT4D_STACK_SIZE,
+    );
+    let network = start_service(
+        &job,
+        &bootfs,
+        netd::IMAGE,
+        b"netd",
+        network_server,
+        NETD_STACK_SIZE,
+    );
     let linux = start_linuxd(
         &job,
         resource,
@@ -140,13 +156,20 @@ fn start_linuxd(
 ) -> Process {
     let image = bootfs
         .find(linuxd::IMAGE)
-        .unwrap_or_else(|| panic!("bootfs lacks {}", core::str::from_utf8(linuxd::IMAGE).unwrap_or("")))
+        .unwrap_or_else(|| {
+            panic!(
+                "bootfs lacks {}",
+                core::str::from_utf8(linuxd::IMAGE).unwrap_or("")
+            )
+        })
         .data;
     let job = Job::create(root).expect("linuxd job");
     let (shared, shared_vmar) = Process::create(&job, b"linuxd-image", native_abi::process::SHARED)
         .expect("linuxd shared process");
     let (process, _private) = shared.create_shared(b"linuxd").expect("linuxd process");
-    let runtime_vmar: Vmar = shared_vmar.duplicate(rights::SAME).expect("linuxd vmar duplicate");
+    let runtime_vmar: Vmar = shared_vmar
+        .duplicate(rights::SAME)
+        .expect("linuxd vmar duplicate");
     native_runtime::launch::launch(native_runtime::launch::Launch {
         process: &process,
         image_vmar: &shared_vmar,
@@ -156,8 +179,13 @@ fn start_linuxd(
         arguments: command_line,
         handles: vec![
             shared.into_handle(),
-            job.duplicate(rights::SAME).expect("job duplicate").into_handle(),
-            resource.duplicate(rights::SAME).expect("resource duplicate").into_handle(),
+            job.duplicate(rights::SAME)
+                .expect("job duplicate")
+                .into_handle(),
+            resource
+                .duplicate(rights::SAME)
+                .expect("resource duplicate")
+                .into_handle(),
             directory.into_handle(),
             ext4.into_handle(),
             network.into_handle(),
@@ -179,7 +207,12 @@ fn start_devmgr(
 ) -> Process {
     let image = bootfs
         .find(devmgr::IMAGE)
-        .unwrap_or_else(|| panic!("bootfs lacks {}", core::str::from_utf8(devmgr::IMAGE).unwrap_or("")))
+        .unwrap_or_else(|| {
+            panic!(
+                "bootfs lacks {}",
+                core::str::from_utf8(devmgr::IMAGE).unwrap_or("")
+            )
+        })
         .data;
     let job = Job::create(root).expect("devmgr job");
     let (process, vmar) = Process::create(&job, b"devmgr", 0).expect("devmgr process");
@@ -192,7 +225,10 @@ fn start_devmgr(
         image,
         arguments: &[],
         handles: vec![
-            resource.duplicate(rights::SAME).expect("resource duplicate").into_handle(),
+            resource
+                .duplicate(rights::SAME)
+                .expect("resource duplicate")
+                .into_handle(),
             device_tree,
             directory.into_handle(),
         ],
@@ -218,7 +254,8 @@ fn start_service(
         .unwrap_or_else(|| panic!("bootfs lacks {}", core::str::from_utf8(image).unwrap_or("")))
         .data;
     let job = Job::create(root).unwrap_or_else(|status| panic!("{label} job: {status}"));
-    let (process, vmar) = Process::create(&job, name, 0).unwrap_or_else(|status| panic!("{label} process: {status}"));
+    let (process, vmar) =
+        Process::create(&job, name, 0).unwrap_or_else(|status| panic!("{label} process: {status}"));
     let runtime_vmar: Vmar = vmar
         .duplicate(rights::SAME)
         .unwrap_or_else(|status| panic!("{label} vmar duplicate: {status}"));

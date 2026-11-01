@@ -36,7 +36,9 @@ impl SharedMemoryBacking {
     ///
     /// 内存不足。
     pub(crate) fn allocate(pages: usize) -> Result<Arc<Self>, MemoryError> {
-        let bytes = pages.checked_mul(PAGE_SIZE).ok_or(MemoryError::OutOfMemory)?;
+        let bytes = pages
+            .checked_mul(PAGE_SIZE)
+            .ok_or(MemoryError::OutOfMemory)?;
         Arc::try_new(Self {
             object: MemoryObject::anonymous(bytes, false)?,
             lock_gate: TaskMutex::new(()),
@@ -63,13 +65,19 @@ impl SharedMemoryBacking {
     pub(crate) fn freeze_lock_state(&self) -> Result<SharedMemoryLockGuard<'_>, MemoryError> {
         Ok(SharedMemoryLockGuard {
             backing: self,
-            _gate: self.lock_gate.lock().map_err(|_| MemoryError::OutOfMemory)?,
+            _gate: self
+                .lock_gate
+                .lock()
+                .map_err(|_| MemoryError::OutOfMemory)?,
         })
     }
 
     /// `(驻留页, 换出页)`；内核不换出页，后者恒为 0。
     pub(crate) fn shared_memory_statistics(&self) -> (usize, usize) {
-        (self.object.committed_bytes().unwrap_or(0) as usize / PAGE_SIZE, 0)
+        (
+            self.object.committed_bytes().unwrap_or(0) as usize / PAGE_SIZE,
+            0,
+        )
     }
 }
 

@@ -31,7 +31,9 @@ impl MemoryObject {
     ///
     /// 内存不足。
     pub(crate) fn anonymous(size: usize, resizable: bool) -> Result<Arc<Self>, MemoryError> {
-        let size = size.checked_next_multiple_of(PAGE_SIZE).ok_or(MemoryError::OutOfMemory)?;
+        let size = size
+            .checked_next_multiple_of(PAGE_SIZE)
+            .ok_or(MemoryError::OutOfMemory)?;
         let options = if resizable { vmo::RESIZABLE } else { 0 };
         Self::new(Vmo::create(size as u64, options).map_err(MemoryError::from_status)?)
     }
@@ -101,5 +103,4 @@ impl MemoryObject {
                 .map_err(MemoryError::from_status)?,
         )
     }
-
 }

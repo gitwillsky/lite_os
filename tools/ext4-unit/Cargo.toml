@@ -1,0 +1,14 @@
+[package]
+name = "ext4-unit"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fallible-tree = { path = "../../fallible-tree" }
+device-model = { path = "../../system/device-model" }
+native-runtime = { path = "../../system/native-runtime" }
+syscall-abi = { path = "../../syscall-abi" }
+spin = { version = "0.10.0", default-features = false, features = ["mutex", "spin_mutex", "once"] }
+
+[lints]
+workspace = true

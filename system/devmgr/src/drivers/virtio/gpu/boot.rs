@@ -162,7 +162,8 @@ impl VirtIOGpuDevice {
         let (attach_length, (entries, entries_length)) = {
             let mut control = control.lock();
             let request = &mut control.commands.boot_slot_mut().request;
-            super::wire::prepare_attach(request.as_mut_slice(), id, framebuffer, device.bti()).ok()?
+            super::wire::prepare_attach(request.as_mut_slice(), id, framebuffer, device.bti())
+                .ok()?
         };
         Self::execute_polled(
             device,

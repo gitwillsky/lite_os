@@ -3,11 +3,11 @@ mod retirement;
 pub(super) use attachment::{AttachmentRetirement, VirglAttachment};
 pub(super) use retirement::{VirglCleanup, VirglCleanupAction, VirglCleanupCompletion};
 
+use crate::sync::Mutex;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use crate::sync::Mutex;
 
-use crate::{memory::PAGE_SIZE};
+use crate::memory::PAGE_SIZE;
 use device_model::DeviceBacking;
 use device_model::{VirglBox, VirglCapsetInfo, VirglCommand, VirglTransferDirection};
 use fallible_tree::{FallibleMap, VacantEntry};
@@ -126,9 +126,7 @@ pub(super) struct VirglAccess {
     buffers: Vec<Arc<VirglAttachment>>,
 }
 impl VirglAccess {
-    pub(super) fn reserve(
-        &self,
-    ) -> Result<Vec<crate::sync::TaskMutexGuard<'_, ()>>, DrmError> {
+    pub(super) fn reserve(&self) -> Result<Vec<crate::sync::TaskMutexGuard<'_, ()>>, DrmError> {
         let mut guards = Vec::new();
         guards
             .try_reserve_exact(self.buffers.len())
@@ -139,12 +137,8 @@ impl VirglAccess {
                     .reservation
                     .lock_killable()
                     .map_err(|error| match error {
-                        crate::sync::TaskMutexLockError::OutOfMemory => {
-                            DrmError::OutOfMemory
-                        }
-                        crate::sync::TaskMutexLockError::Interrupted => {
-                            DrmError::Interrupted
-                        }
+                        crate::sync::TaskMutexLockError::OutOfMemory => DrmError::OutOfMemory,
+                        crate::sync::TaskMutexLockError::Interrupted => DrmError::Interrupted,
                     })?,
             );
         }
@@ -681,13 +675,9 @@ impl DrmFile {
         let requested = usize::try_from(create.size).map_err(|_| DrmError::Invalid)?;
         let pages = requested.max(1).div_ceil(PAGE_SIZE);
         let size = pages.checked_mul(PAGE_SIZE).ok_or(DrmError::Invalid)?;
-        let backing = Arc::try_new(
-            DeviceBacking::try_allocate(
-                pages,
-            )
-            .ok_or(DrmError::OutOfMemory)?,
-        )
-        .map_err(|_| DrmError::OutOfMemory)?;
+        let backing =
+            Arc::try_new(DeviceBacking::try_allocate(pages).ok_or(DrmError::OutOfMemory)?)
+                .map_err(|_| DrmError::OutOfMemory)?;
         let buffer = Arc::try_new(VirglBuffer {
             resource_id,
             size,

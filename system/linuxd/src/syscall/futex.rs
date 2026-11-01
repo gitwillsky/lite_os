@@ -1,9 +1,7 @@
 use crate::{
-    task::{
-        FutexWaitError, current_task, futex_requeue, futex_wait, futex_wake, futex_wake_op,
-    },
-    time::{get_realtime_ns, get_time_ns},
     syscall::errno,
+    task::{FutexWaitError, current_task, futex_requeue, futex_wait, futex_wake, futex_wake_op},
+    time::{get_realtime_ns, get_time_ns},
 };
 
 use super::{

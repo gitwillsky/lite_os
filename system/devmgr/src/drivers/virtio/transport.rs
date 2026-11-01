@@ -98,7 +98,11 @@ impl VirtIODevice {
     /// # Returns
     ///
     /// A transport-neutral device consumed by the existing adapter.
-    pub(crate) fn from_pci(device_id: u32, transport: PciTransport, bti: &'static native_runtime::Bti) -> Self {
+    pub(crate) fn from_pci(
+        device_id: u32,
+        transport: PciTransport,
+        bti: &'static native_runtime::Bti,
+    ) -> Self {
         Self {
             transport: Transport::Pci(transport),
             device_id,

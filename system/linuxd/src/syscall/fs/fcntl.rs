@@ -1,8 +1,8 @@
 use super::*;
 use crate::{
-    task::{AdvisoryLockWaitError, wait_for_record_lock},
     fs::{AdvisoryLockAttempt, AdvisoryLockError, RecordLockMode, RecordLockRange},
     syscall::INTERNAL_RESTART_SYS,
+    task::{AdvisoryLockWaitError, wait_for_record_lock},
 };
 
 const F_DUPFD: u32 = 0;

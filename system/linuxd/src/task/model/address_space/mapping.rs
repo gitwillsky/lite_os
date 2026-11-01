@@ -98,7 +98,12 @@ impl AddressSpace {
             .remap_user_mapping(request, limits)
     }
 
-    fn set_program_break(&self, new_break: usize, address_space_limit: u64, data_limit: u64) -> Result<usize, MemoryError> {
+    fn set_program_break(
+        &self,
+        new_break: usize,
+        address_space_limit: u64,
+        data_limit: u64,
+    ) -> Result<usize, MemoryError> {
         self.memory_set
             .lock()
             .map_err(|_| MemoryError::OutOfMemory)?

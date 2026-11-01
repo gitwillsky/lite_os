@@ -512,11 +512,7 @@ impl<K: Ord, V> FallibleMap<K, V> {
     /// # Returns
     ///
     /// 可无分配提交的 token；节点 OOM 时原表不变。
-    pub fn try_prepare_vacant(
-        &self,
-        key: K,
-        value: V,
-    ) -> Result<VacantEntry<K, V>, OutOfMemory> {
+    pub fn try_prepare_vacant(&self, key: K, value: V) -> Result<VacantEntry<K, V>, OutOfMemory> {
         assert!(!self.contains_key(&key), "prepared AVL key already exists");
         Self::try_prepare(key, value)
     }

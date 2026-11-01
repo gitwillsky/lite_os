@@ -43,14 +43,20 @@ pub(crate) fn initialize(device_tree: &Vmo) {
         matches!(error, dtb_walker::HeaderError::LastCompVersion(_))
     })
     .unwrap_or_else(|error| match error {
-        dtb_walker::ConvertError::Header(error) => panic!("platform device tree header is invalid: {error:?}"),
-        dtb_walker::ConvertError::Truncated => panic!("platform device tree is truncated ({size} bytes mapped)"),
+        dtb_walker::ConvertError::Header(error) => {
+            panic!("platform device tree header is invalid: {error:?}")
+        }
+        dtb_walker::ConvertError::Truncated => {
+            panic!("platform device tree is truncated ({size} bytes mapped)")
+        }
     });
     FACTS.call_once(|| device_tree::parse(dtb));
 }
 
 fn facts() -> &'static device_tree::DeviceFacts {
-    FACTS.get().expect("platform facts read before initialization")
+    FACTS
+        .get()
+        .expect("platform facts read before initialization")
 }
 
 /// DTB 发现的 VirtIO-MMIO transport 表。
@@ -72,12 +78,23 @@ pub(crate) fn map_device_window(physical: usize, size: usize) -> usize {
     let page = native_abi::PAGE_SIZE;
     let start = physical & !(page - 1);
     let end = (physical + size).next_multiple_of(page);
-    let resource = Resource::create(crate::handles::resource(), native_abi::resource::MMIO, start as u64, (end - start) as u64)
-        .unwrap_or_else(|status| panic!("MMIO resource {start:#x}+{:#x}: {status}", end - start));
+    let resource = Resource::create(
+        crate::handles::resource(),
+        native_abi::resource::MMIO,
+        start as u64,
+        (end - start) as u64,
+    )
+    .unwrap_or_else(|status| panic!("MMIO resource {start:#x}+{:#x}: {status}", end - start));
     let vmo = Vmo::create_physical(&resource, start as u64, (end - start) as u64)
         .unwrap_or_else(|status| panic!("MMIO VMO {start:#x}: {status}"));
     let base = native_runtime::heap::vmar()
-        .map(native_abi::vm::READ | native_abi::vm::WRITE, 0, &vmo, 0, end - start)
+        .map(
+            native_abi::vm::READ | native_abi::vm::WRITE,
+            0,
+            &vmo,
+            0,
+            end - start,
+        )
         .unwrap_or_else(|status| panic!("MMIO mapping {start:#x}: {status}"));
     base + (physical - start)
 }
@@ -87,9 +104,18 @@ pub(crate) fn map_device_window(physical: usize, size: usize) -> usize {
 /// # Panics
 ///
 /// 中断对象创建或线程启动失败时带 label/vector fail-stop：静默返回会让设备永远收不到中断。
-pub(crate) fn register_device_interrupt(vector: InterruptVector, handler: Arc<dyn InterruptHandler>, label: &'static str) {
-    let resource = Resource::create(crate::handles::resource(), native_abi::resource::IRQ, u64::from(vector), 1)
-        .unwrap_or_else(|status| panic!("{label} IRQ {vector} resource: {status}"));
+pub(crate) fn register_device_interrupt(
+    vector: InterruptVector,
+    handler: Arc<dyn InterruptHandler>,
+    label: &'static str,
+) {
+    let resource = Resource::create(
+        crate::handles::resource(),
+        native_abi::resource::IRQ,
+        u64::from(vector),
+        1,
+    )
+    .unwrap_or_else(|status| panic!("{label} IRQ {vector} resource: {status}"));
     let interrupt = Interrupt::create(&resource, vector, native_abi::interrupt::LEVEL)
         .unwrap_or_else(|status| panic!("{label} IRQ {vector} registration failed: {status}"));
     let mut name = alloc::vec::Vec::from(b"irq:".as_slice());
@@ -126,7 +152,8 @@ fn iommu() -> &'static Iommu {
                 let mut descriptor = [0u8; 16];
                 descriptor[..8].copy_from_slice(&(base as u64).to_le_bytes());
                 descriptor[8..].copy_from_slice(&(size as u64).to_le_bytes());
-                Iommu::create(root, kind, &descriptor).unwrap_or_else(|status| panic!("IOMMU creation failed: {status}"))
+                Iommu::create(root, kind, &descriptor)
+                    .unwrap_or_else(|status| panic!("IOMMU creation failed: {status}"))
             }
             None => Iommu::create(root, native_abi::iommu::IDENTITY, &[])
                 .unwrap_or_else(|status| panic!("identity IOMMU creation failed: {status}")),
@@ -146,7 +173,8 @@ pub(crate) fn bti(stream: Option<u32>) -> &'static Bti {
         return bti;
     }
     let bti: &'static Bti = alloc::boxed::Box::leak(alloc::boxed::Box::new(
-        Bti::create(iommu(), key.unwrap_or(0)).unwrap_or_else(|status| panic!("BTI creation failed: {status}")),
+        Bti::create(iommu(), key.unwrap_or(0))
+            .unwrap_or_else(|status| panic!("BTI creation failed: {status}")),
     ));
     btis.insert(key, bti);
     bti

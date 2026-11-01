@@ -1,7 +1,10 @@
-use alloc::sync::{Arc, Weak};
 use crate::sync::Mutex;
+use alloc::sync::{Arc, Weak};
 
-use crate::{file::{TimerError, TimerFdBackend, TimerFdRead, TimerSetting}, ipc::{Pipe, PipeEnd}};
+use crate::{
+    file::{TimerError, TimerFdBackend, TimerFdRead, TimerSetting},
+    ipc::{Pipe, PipeEnd},
+};
 use fallible_tree::FallibleMap;
 
 use super::{RetiredTimers, TimerExpirationRetirement, TimerIdentity, TimerQueue};

@@ -8,14 +8,16 @@ use native_runtime::native_abi::{vm, vmo};
 
 use super::area::{AnonymousRole, Area, AreaFlags, Backing};
 use super::request::{
-    MappingPlacement, MappingResourceLimits, MemoryAdvice, RemapError, RemapPlacement, RemapRequest,
-    UserMappingRequest, UserMappingSource,
+    MappingPlacement, MappingResourceLimits, MemoryAdvice, RemapError, RemapPlacement,
+    RemapRequest, UserMappingRequest, UserMappingSource,
 };
 use super::{Heap, MemorySet};
 use crate::memory::{MapPermission, MemoryError, MemoryObject, PAGE_SIZE};
 
 fn page_round(length: usize) -> Result<usize, MemoryError> {
-    length.checked_next_multiple_of(PAGE_SIZE).ok_or(MemoryError::OutOfMemory)
+    length
+        .checked_next_multiple_of(PAGE_SIZE)
+        .ok_or(MemoryError::OutOfMemory)
 }
 
 impl MemorySet {
@@ -23,7 +25,12 @@ impl MemorySet {
         start >= self.base.max(PAGE_SIZE) && start < end && end <= self.trampoline()
     }
 
-    fn check_limits(&self, length: usize, data: bool, limits: MappingResourceLimits) -> Result<(), MemoryError> {
+    fn check_limits(
+        &self,
+        length: usize,
+        data: bool,
+        limits: MappingResourceLimits,
+    ) -> Result<(), MemoryError> {
         let length = length as u64;
         if self.virtual_bytes().saturating_add(length) > limits.address_space {
             return Err(MemoryError::OutOfMemory);
@@ -66,7 +73,8 @@ impl MemorySet {
                 MemoryError::InvalidRange
             });
         }
-        if request.placement == MappingPlacement::FixedNoReplace && !self.range_is_free(start, end) {
+        if request.placement == MappingPlacement::FixedNoReplace && !self.range_is_free(start, end)
+        {
             return Err(MemoryError::AddressInUse);
         }
         let backing = match request.source {
@@ -147,11 +155,17 @@ impl MemorySet {
     /// # Errors
     ///
     /// 地址未对齐、越界或长度为零（`InvalidRange`）。
-    pub(crate) fn unmap_user_mapping(&mut self, address: usize, length: usize) -> Result<(), MemoryError> {
+    pub(crate) fn unmap_user_mapping(
+        &mut self,
+        address: usize,
+        length: usize,
+    ) -> Result<(), MemoryError> {
         if !address.is_multiple_of(PAGE_SIZE) || length == 0 {
             return Err(MemoryError::InvalidRange);
         }
-        let end = address.checked_add(page_round(length)?).ok_or(MemoryError::InvalidRange)?;
+        let end = address
+            .checked_add(page_round(length)?)
+            .ok_or(MemoryError::InvalidRange)?;
         if !self.user_range_valid(address, end) {
             return Err(MemoryError::InvalidRange);
         }
@@ -172,7 +186,9 @@ impl MemorySet {
         if !address.is_multiple_of(PAGE_SIZE) {
             return Err(MemoryError::InvalidRange);
         }
-        let end = address.checked_add(page_round(length)?).ok_or(MemoryError::OutOfMemory)?;
+        let end = address
+            .checked_add(page_round(length)?)
+            .ok_or(MemoryError::OutOfMemory)?;
         if address == end {
             return Ok(());
         }
@@ -223,7 +239,11 @@ impl MemorySet {
             if !self.range_is_free(heap.mapped, new_mapped) {
                 return Err(MemoryError::OutOfMemory);
             }
-            self.check_limits(grow, true, MappingResourceLimits::new(address_space_limit, data_limit))?;
+            self.check_limits(
+                grow,
+                true,
+                MappingResourceLimits::new(address_space_limit, data_limit),
+            )?;
             heap.object.set_size((new_mapped - heap.start) as u64)?;
             self.extend_heap(&heap, new_mapped)?;
         }
@@ -239,7 +259,13 @@ impl MemorySet {
             .area_at(heap.mapped.wrapping_sub(1))
             .filter(|area| {
                 area.end == heap.mapped
-                    && matches!(area.backing, Backing::Anonymous { role: AnonymousRole::Heap, .. })
+                    && matches!(
+                        area.backing,
+                        Backing::Anonymous {
+                            role: AnonymousRole::Heap,
+                            ..
+                        }
+                    )
                     && area.permission == MapPermission::U | MapPermission::R | MapPermission::W
                     && area.flags.is_empty()
             })
@@ -256,7 +282,10 @@ impl MemorySet {
                         new_mapped - heap.mapped,
                     )
                     .map_err(MemoryError::from_status)?;
-                self.areas.get_mut(&start).expect("heap area found above").end = new_mapped;
+                self.areas
+                    .get_mut(&start)
+                    .expect("heap area found above")
+                    .end = new_mapped;
                 Ok(())
             }
             None => self.insert(Area {
@@ -330,7 +359,10 @@ impl MemorySet {
                 return Err(RemapError::Invalid);
             }
         }
-        if new_length <= old_length && old_length != 0 && !matches!(placement, RemapPlacement::Fixed(_)) && !dont_unmap
+        if new_length <= old_length
+            && old_length != 0
+            && !matches!(placement, RemapPlacement::Fixed(_))
+            && !dont_unmap
         {
             if new_length < old_length {
                 self.remove_range(address + new_length, old_end)?;
@@ -373,7 +405,9 @@ impl MemorySet {
                 self.remove_range(target, target + new_length)?;
                 target
             }
-            _ => self.place(0, new_length).map_err(|_| RemapError::NoMemory)?,
+            _ => self
+                .place(0, new_length)
+                .map_err(|_| RemapError::NoMemory)?,
         };
         let delta = (address - source.start) as u64;
         self.ensure_backing_size(&source, (address - source.start) + new_length)?;
@@ -436,7 +470,9 @@ impl MemorySet {
         if !address.is_multiple_of(PAGE_SIZE) {
             return Err(MemoryError::InvalidRange);
         }
-        let end = address.checked_add(page_round(length)?).ok_or(MemoryError::InvalidRange)?;
+        let end = address
+            .checked_add(page_round(length)?)
+            .ok_or(MemoryError::InvalidRange)?;
         if address == end {
             return Ok(());
         }
@@ -465,7 +501,11 @@ impl MemorySet {
             self.split_at(address)?;
             self.split_at(end)?;
             for start in self.starts_within(address, end) {
-                self.areas.get_mut(&start).expect("area listed above").flags.set(flag, set);
+                self.areas
+                    .get_mut(&start)
+                    .expect("area listed above")
+                    .flags
+                    .set(flag, set);
             }
             return Ok(());
         }
@@ -499,11 +539,18 @@ impl MemorySet {
     /// # Errors
     ///
     /// 区间有空洞（`OutOfMemory`）、写回失败（`Io`）。
-    pub(crate) fn sync_shared_mapping(&self, address: usize, length: usize, writeback: bool) -> Result<(), MemoryError> {
+    pub(crate) fn sync_shared_mapping(
+        &self,
+        address: usize,
+        length: usize,
+        writeback: bool,
+    ) -> Result<(), MemoryError> {
         if !address.is_multiple_of(PAGE_SIZE) {
             return Err(MemoryError::InvalidRange);
         }
-        let end = address.checked_add(page_round(length)?).ok_or(MemoryError::OutOfMemory)?;
+        let end = address
+            .checked_add(page_round(length)?)
+            .ok_or(MemoryError::OutOfMemory)?;
         self.require_mapped(address, end)?;
         if !writeback {
             return Ok(());

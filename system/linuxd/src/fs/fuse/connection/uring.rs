@@ -162,9 +162,9 @@ impl Connection {
             return Err(DeviceError::Errno(errno::EINVAL));
         }
         let result = (|| {
-            let cpu = crate::cpu::id_at(u16::from_ne_bytes(
-                command.data[16..18].try_into().unwrap(),
-            ) as usize)
+            let cpu = crate::cpu::id_at(
+                u16::from_ne_bytes(command.data[16..18].try_into().unwrap()) as usize,
+            )
             .ok_or(DeviceError::Errno(errno::EINVAL))?;
             // 1. 先分配可撤销令牌，再发布登记/认领 commit；OOM 不能留下没有等待者的登记项。
             let mut pending = Box::try_new(Command {

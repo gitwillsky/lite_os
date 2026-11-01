@@ -65,7 +65,12 @@ impl Announcement {
 /// # Errors
 ///
 /// 使用者已关闭目录或消息超限。
-pub fn announce(directory: &Channel, class: Class, description: &Writer, handles: Vec<Handle>) -> Result<(), Status> {
+pub fn announce(
+    directory: &Channel,
+    class: Class,
+    description: &Writer,
+    handles: Vec<Handle>,
+) -> Result<(), Status> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(&(class as u32).to_le_bytes());
     bytes.extend_from_slice(description.as_bytes());

@@ -54,7 +54,11 @@ impl KernelThread {
 
     /// 主体返回后归还 PID 与 nsproxy。
     pub(super) fn retire_pid(&self) {
-        let namespaces = self.namespaces.lock().take().expect("kernel nsproxy retired twice");
+        let namespaces = self
+            .namespaces
+            .lock()
+            .take()
+            .expect("kernel nsproxy retired twice");
         drop(namespaces);
         let retired = self.pid.lock().take().expect("kernel PID retired twice");
         drop(retired);

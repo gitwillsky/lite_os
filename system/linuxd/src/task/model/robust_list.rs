@@ -34,14 +34,12 @@ impl TaskControlBlock {
     /// 旧 mm 的稳定 key 在预置 waiter 的 guard 内取得，实际 wake 在 guard 归还后执行。
     fn wake_robust_waiter(&self, mm: &AddressSpace, address: usize) {
         let mut wait = self.take_memory_cleanup_wait();
-        let _ =
-            crate::task::futex_wake_with_key(1, u32::MAX, &mut wait, |wait, consume| {
-                let memory = mm.memory_set.lock_prepared(wait);
-                let key =
-                    memory.futex_key(address, core::ptr::from_ref(mm).addr(), false)?;
-                consume(key);
-                Ok(())
-            });
+        let _ = crate::task::futex_wake_with_key(1, u32::MAX, &mut wait, |wait, consume| {
+            let memory = mm.memory_set.lock_prepared(wait);
+            let key = memory.futex_key(address, core::ptr::from_ref(mm).addr(), false)?;
+            consume(key);
+            Ok(())
+        });
         self.restore_memory_cleanup_wait(wait);
     }
 
@@ -70,12 +68,8 @@ impl TaskControlBlock {
             .credential_guard()
             .lock_killable()
             .map_err(|error| match error {
-                crate::sync::TaskMutexLockError::OutOfMemory => {
-                    RobustListError::OutOfMemory
-                }
-                crate::sync::TaskMutexLockError::Interrupted => {
-                    RobustListError::Interrupted
-                }
+                crate::sync::TaskMutexLockError::OutOfMemory => RobustListError::OutOfMemory,
+                crate::sync::TaskMutexLockError::Interrupted => RobustListError::Interrupted,
             })?;
         if !caller.may_inspect_thread_real(self) {
             return Err(RobustListError::Permission);
@@ -108,9 +102,7 @@ impl TaskControlBlock {
             return Err(());
         }
         let mut observed = self
-            .with_cleanup_memory(address_space, |memory| {
-                memory.load_user_u32(address)
-            })
+            .with_cleanup_memory(address_space, |memory| memory.load_user_u32(address))
             .map_err(|_| ())?;
         loop {
             let owner = observed & FUTEX_TID_MASK;
@@ -188,8 +180,7 @@ impl TaskControlBlock {
             entry = RobustLink::decode(usize::from_ne_bytes(next));
         }
         if pending.address != 0 {
-            let _ =
-                self.mark_robust_futex_dead(&address_space, pending, offset, true);
+            let _ = self.mark_robust_futex_dead(&address_space, pending, offset, true);
         }
     }
 }
@@ -231,12 +222,8 @@ impl RetiredThreadInspection {
             .credential_guard
             .lock_killable()
             .map_err(|error| match error {
-                crate::sync::TaskMutexLockError::OutOfMemory => {
-                    RobustListError::OutOfMemory
-                }
-                crate::sync::TaskMutexLockError::Interrupted => {
-                    RobustListError::Interrupted
-                }
+                crate::sync::TaskMutexLockError::OutOfMemory => RobustListError::OutOfMemory,
+                crate::sync::TaskMutexLockError::Interrupted => RobustListError::Interrupted,
             })?;
         let credentials = self.credentials.lock().snapshot();
         let mm = self.mm.lock().clone();

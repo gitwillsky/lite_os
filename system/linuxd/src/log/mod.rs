@@ -9,8 +9,8 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use crate::sync::Once;
 use native_runtime::native_abi::{self, DebuglogRecord};
-use native_runtime::sync::Once;
 
 use crate::deferred::DeferredWork;
 use crate::sync::TaskMutex;
@@ -82,7 +82,11 @@ impl KmsgReader {
     }
 
     /// 读取并消费恰好一条记录（Linux `devkmsg_read` 文本格式）。
-    pub(crate) fn read<E>(&self, capacity: usize, emit: &mut dyn FnMut(&[u8]) -> Result<(), E>) -> KmsgRead<E> {
+    pub(crate) fn read<E>(
+        &self,
+        capacity: usize,
+        emit: &mut dyn FnMut(&[u8]) -> Result<(), E>,
+    ) -> KmsgRead<E> {
         let Ok(_gate) = self.gate.lock() else {
             return KmsgRead::OutOfMemory;
         };
@@ -126,7 +130,8 @@ impl KmsgReader {
 
     /// 跳到末尾，只读取此后的记录（`SEEK_END`/`SEEK_HOLE`）。
     pub(crate) fn seek_newest(&self) {
-        self.cursor.store(NEXT_SEQUENCE.load(Ordering::Acquire), Ordering::Release);
+        self.cursor
+            .store(NEXT_SEQUENCE.load(Ordering::Acquire), Ordering::Release);
     }
 
     /// 每出现一条记录严格递增的就绪代号。

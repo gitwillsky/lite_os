@@ -2,16 +2,16 @@ use core::sync::atomic::Ordering;
 
 use crate::{
     cpu,
-    task::{
-        RunState, current_task,
-        processor::{cpu_runtime_snapshot, runnable_task_count},
-    },
-    time::{boot_epoch_seconds, get_time_us},
     fs::{
         ProcCpuSnapshot, ProcCredentialSnapshot, ProcFileDescriptorSnapshot, ProcIoSnapshot,
         ProcNetworkSnapshot, ProcProcessSnapshot, ProcRouteSnapshot, ProcSnapshot,
         ProcSnapshotScope, ProcSource, ProcThreadSnapshot, page_cache_statistics,
     },
+    task::{
+        RunState, current_task,
+        processor::{cpu_runtime_snapshot, runnable_task_count},
+    },
+    time::{boot_epoch_seconds, get_time_us},
 };
 
 use super::{PROCESS_TABLE, ProcessState};
@@ -380,8 +380,7 @@ impl ProcSource for KernelProcSource {
             let graph = PROCESS_TABLE.graph.lock();
             super::thread_selector::execution_by_tid(&graph, tid)
         };
-        let caller = crate::task::current_task()
-            .ok_or(crate::fs::FileSystemError::AccessDenied)?;
+        let caller = crate::task::current_task().ok_or(crate::fs::FileSystemError::AccessDenied)?;
         if let Some(target) = target {
             if !caller.may_inspect_thread(&target) {
                 return Err(crate::fs::FileSystemError::AccessDenied);
@@ -485,8 +484,7 @@ impl ProcSource for KernelProcSource {
                 graph.nodes.get(&tid).map(|node| node.process.clone()),
             )
         };
-        let caller = crate::task::current_task()
-            .ok_or(crate::fs::FileSystemError::AccessDenied)?;
+        let caller = crate::task::current_task().ok_or(crate::fs::FileSystemError::AccessDenied)?;
         if let Some(thread) = thread {
             if !caller.may_inspect_thread(&thread) {
                 return Err(crate::fs::FileSystemError::AccessDenied);
@@ -756,8 +754,8 @@ fn process_snapshot(
 
     // 3. allocator 与 per-CPU processor 分别提供其唯一 owner 下的统计。
     let memory = native_runtime::system::basic();
-    let buddy_free_blocks =
-        native_runtime::system::free_blocks().map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
+    let buddy_free_blocks = native_runtime::system::free_blocks()
+        .map_err(|_| crate::fs::FileSystemError::OutOfMemory)?;
     let cache = page_cache_statistics();
     let load_milli = PROCESS_TABLE.load_average.values();
     let cpu_runtime =

@@ -1,7 +1,7 @@
 //! 时间 namespace 只拥有 monotonic/boottime offset；host clock 与 deadline queue 不复制。
 use super::{NamespaceAuthority, NamespaceError, UserNamespace, UserResource, UserResourceCharge};
-use alloc::sync::Arc;
 use crate::sync::Mutex;
+use alloc::sync::Arc;
 use syscall_abi::capability::Capability;
 
 const SECOND: i128 = 1_000_000_000;

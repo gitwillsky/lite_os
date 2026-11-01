@@ -1209,6 +1209,36 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "诊断生产快照/退休成本，不设置宿主时间阈值"]
+    fn snapshot_retirement_cpu_cost() {
+        let parent = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
+        parent.write(0, &[37]).unwrap();
+        let siblings: Vec<_> = (0..272)
+            .map(|_| {
+                parent
+                    .create_child(0, parent.size(), ChildKind::Snapshot)
+                    .unwrap()
+            })
+            .collect();
+        let mut pending = parent
+            .create_child(0, parent.size(), ChildKind::Snapshot)
+            .unwrap();
+        let started = std::time::Instant::now();
+        for _ in 0..4096 {
+            let next = parent
+                .create_child(0, parent.size(), ChildKind::Snapshot)
+                .unwrap();
+            drop(pending);
+            pending = next;
+        }
+        println!(
+            "snapshot/retirement with {} resident siblings: {:.2} us/op",
+            siblings.len(),
+            started.elapsed().as_secs_f64() * 1_000_000.0 / 4096.0
+        );
+    }
+
+    #[test]
     fn fork_exit_churn_releases_hidden_ancestors() {
         let parent = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
         parent.write(0, &[37]).unwrap();
@@ -1235,35 +1265,59 @@ mod tests {
     fn fork_exit_churn_with_resident_siblings_releases_transient_ancestors() {
         let parent = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
         parent.write(0, &[37]).unwrap();
-        let siblings: Vec<_> = (0..8).map(|_| parent.create_child(0, parent.size(), ChildKind::Snapshot).unwrap()).collect();
+        let siblings: Vec<_> = (0..8)
+            .map(|_| {
+                parent
+                    .create_child(0, parent.size(), ChildKind::Snapshot)
+                    .unwrap()
+            })
+            .collect();
         for _ in 0..64 {
-            let child = parent.create_child(0, parent.size(), ChildKind::Snapshot).unwrap();
+            let child = parent
+                .create_child(0, parent.size(), ChildKind::Snapshot)
+                .unwrap();
             let hidden = match &parent.state.lock().relation {
                 Some(Relation::Cow { parent, .. }) => Arc::downgrade(parent),
                 _ => panic!("snapshot must freeze the original contents"),
             };
             drop(child);
-            let next = parent.create_child(0, parent.size(), ChildKind::Snapshot).unwrap();
-            assert!(hidden.upgrade().is_none(), "transient child retained a hidden ancestor");
+            let next = parent
+                .create_child(0, parent.size(), ChildKind::Snapshot)
+                .unwrap();
+            assert!(
+                hidden.upgrade().is_none(),
+                "transient child retained a hidden ancestor"
+            );
             drop(next);
         }
-        for sibling in siblings { assert_eq!(byte(&sibling, 0), 37); }
+        for sibling in siblings {
+            assert_eq!(byte(&sibling, 0), 37);
+        }
     }
 
     #[test]
     fn snapshot_prunes_ancestors_when_exit_notification_precedes_mapping_retirement() {
         let parent = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
         parent.write(0, &[37]).unwrap();
-        let retired = parent.create_child(0, parent.size(), ChildKind::Snapshot).unwrap();
+        let retired = parent
+            .create_child(0, parent.size(), ChildKind::Snapshot)
+            .unwrap();
         let hidden = match &parent.state.lock().relation {
             Some(Relation::Cow { parent, .. }) => Arc::downgrade(parent),
             _ => panic!("snapshot must freeze the original contents"),
         };
         // 新快照先于上一个子进程的映射退休，直接父节点暂时有两个存活子对象。
-        let pending = parent.create_child(0, parent.size(), ChildKind::Snapshot).unwrap();
+        let pending = parent
+            .create_child(0, parent.size(), ChildKind::Snapshot)
+            .unwrap();
         drop(retired);
-        let next = parent.create_child(0, parent.size(), ChildKind::Snapshot).unwrap();
-        assert!(hidden.upgrade().is_none(), "retired mapping retained an intermediate ancestor");
+        let next = parent
+            .create_child(0, parent.size(), ChildKind::Snapshot)
+            .unwrap();
+        assert!(
+            hidden.upgrade().is_none(),
+            "retired mapping retained an intermediate ancestor"
+        );
         assert_eq!(byte(&pending, 0), 37);
         assert_eq!(byte(&next, 0), 37);
         assert_eq!(byte(&parent, 0), 37);

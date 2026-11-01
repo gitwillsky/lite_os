@@ -1,13 +1,13 @@
 //! 一个 namespace 中的实际 mount view；路径 pin 此 owner，不按 filesystem ID 猜挂载。
 use super::mount_index::AttachmentKey;
 use super::{FileSystemError, MountFlags, dentry::Dentry, mounted_filesystem::MountedFilesystem};
+use crate::sync::Mutex;
 use alloc::{
     boxed::Box,
     sync::{Arc, Weak},
     vec::Vec,
 };
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use crate::sync::Mutex;
 
 // OWNER: 已分配 mount identity 永不复用；namespace copy 创建新 view，bind 也不能沿用 source ID。
 static NEXT_MOUNT_ID: AtomicU64 = AtomicU64::new(1);
@@ -40,10 +40,8 @@ impl MountScope {
         .map_err(|_| FileSystemError::OutOfMemory)
     }
     pub(super) fn changed(&self) {
-        self.event.store(
-            crate::file::next_readiness_generation(),
-            Ordering::Release,
-        );
+        self.event
+            .store(crate::file::next_readiness_generation(), Ordering::Release);
         self.notification.1.signal_readiness();
     }
     pub(super) fn prepare_additions(&self, additional: usize) -> Result<(), FileSystemError> {

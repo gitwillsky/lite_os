@@ -69,10 +69,15 @@ impl Resource {
     /// # Errors
     /// 超出父范围、区间为空或 MMIO 覆盖 RAM 时返回 `ERR_INVALID_ARGS`/`ERR_ACCESS_DENIED`。
     pub(crate) fn create_child(&self, kind: u32, base: u64, size: u64) -> Result<Self, Status> {
-        let end = base.checked_add(size).filter(|_| size != 0).ok_or(native_abi::ERR_INVALID_ARGS)?;
+        let end = base
+            .checked_add(size)
+            .filter(|_| size != 0)
+            .ok_or(native_abi::ERR_INVALID_ARGS)?;
         let kind = match kind {
             native_abi::resource::MMIO => {
-                if !base.is_multiple_of(native_abi::PAGE_SIZE as u64) || !size.is_multiple_of(native_abi::PAGE_SIZE as u64) {
+                if !base.is_multiple_of(native_abi::PAGE_SIZE as u64)
+                    || !size.is_multiple_of(native_abi::PAGE_SIZE as u64)
+                {
                     return Err(native_abi::ERR_INVALID_ARGS);
                 }
                 let ram = crate::platform::physical_memory_range();
@@ -251,7 +256,8 @@ impl Interrupt {
             port: Mutex::new(None),
         })
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        let binding = Arc::try_new(InterruptBinding(shared.clone())).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        let binding = Arc::try_new(InterruptBinding(shared.clone()))
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         // 预留在锁外分配：先扩出新存储，再在锁内交换，硬中断路径永不分配。
         let target = PENDING.lock().reserved + 1;
         let mut replacement = VecDeque::new();
@@ -291,11 +297,16 @@ impl Interrupt {
         }
         let shared = &self.shared;
         let result = shared.waiters.wait_until(
-            || shared.destroyed.load(Ordering::Acquire) || shared.triggered.load(Ordering::Acquire) != 0,
+            || {
+                shared.destroyed.load(Ordering::Acquire)
+                    || shared.triggered.load(Ordering::Acquire) != 0
+            },
             deadline_ns,
         );
         match result {
-            WaitResult::Woken if shared.destroyed.load(Ordering::Acquire) => Err(native_abi::ERR_CANCELED),
+            WaitResult::Woken if shared.destroyed.load(Ordering::Acquire) => {
+                Err(native_abi::ERR_CANCELED)
+            }
             WaitResult::Woken => Ok(shared.triggered.load(Ordering::Acquire)),
             WaitResult::TimedOut => Err(native_abi::ERR_TIMED_OUT),
             WaitResult::Interrupted => Err(native_abi::ERR_CANCELED),
@@ -310,7 +321,8 @@ impl Interrupt {
     pub(crate) fn ack(&self) -> Result<(), Status> {
         self.shared.triggered.store(0, Ordering::Release);
         if self.shared.level {
-            crate::platform::unmask_interrupt(self.shared.vector).map_err(|_| native_abi::ERR_INTERNAL)?;
+            crate::platform::unmask_interrupt(self.shared.vector)
+                .map_err(|_| native_abi::ERR_INTERNAL)?;
         }
         Ok(())
     }
@@ -365,7 +377,13 @@ pub(crate) trait IommuBackend: Send + Sync {
     ///
     /// # Errors
     /// 设备地址空间耗尽或分配失败。
-    fn map(&self, stream: u32, pages: &[PhysicalPageNumber], writable: bool, output: &mut Vec<u64>) -> Result<(), Status>;
+    fn map(
+        &self,
+        stream: u32,
+        pages: &[PhysicalPageNumber],
+        writable: bool,
+        output: &mut Vec<u64>,
+    ) -> Result<(), Status>;
     /// 撤销映射并在返回前完成设备侧 TLB 失效。
     fn unmap(&self, stream: u32, addresses: &[u64]);
 }
@@ -374,9 +392,21 @@ pub(crate) trait IommuBackend: Send + Sync {
 struct IdentityIommu;
 
 impl IommuBackend for IdentityIommu {
-    fn map(&self, _stream: u32, pages: &[PhysicalPageNumber], _writable: bool, output: &mut Vec<u64>) -> Result<(), Status> {
-        output.try_reserve_exact(pages.len()).map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        output.extend(pages.iter().map(|page| (page.as_usize() * native_abi::PAGE_SIZE) as u64));
+    fn map(
+        &self,
+        _stream: u32,
+        pages: &[PhysicalPageNumber],
+        _writable: bool,
+        output: &mut Vec<u64>,
+    ) -> Result<(), Status> {
+        output
+            .try_reserve_exact(pages.len())
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        output.extend(
+            pages
+                .iter()
+                .map(|page| (page.as_usize() * native_abi::PAGE_SIZE) as u64),
+        );
         Ok(())
     }
 
@@ -396,7 +426,9 @@ impl Iommu {
     /// 类型未知或硬件初始化失败。
     pub(crate) fn create(kind: u32, descriptor: &[u8]) -> Result<Self, Status> {
         let backend: Arc<dyn IommuBackend> = match kind {
-            native_abi::iommu::IDENTITY => Arc::try_new(IdentityIommu).map_err(|_| native_abi::ERR_NO_MEMORY)?,
+            native_abi::iommu::IDENTITY => {
+                Arc::try_new(IdentityIommu).map_err(|_| native_abi::ERR_NO_MEMORY)?
+            }
             native_abi::iommu::ARM_SMMU_V3 | native_abi::iommu::RISCV => {
                 crate::iommu::create(kind, descriptor)?
             }
@@ -442,10 +474,17 @@ impl Bti {
     ///
     /// # Errors
     /// 参数非法、越界、pager 失败或设备地址空间耗尽。
-    pub(crate) fn pin(self: &Arc<Self>, vmo: &Arc<Vmo>, offset: u64, length: u64, writable: bool) -> Result<Pmt, Status> {
+    pub(crate) fn pin(
+        self: &Arc<Self>,
+        vmo: &Arc<Vmo>,
+        offset: u64,
+        length: u64,
+        writable: bool,
+    ) -> Result<Pmt, Status> {
         let pinned = vmo.pin(offset, length).map_err(vm_status)?;
         let mut addresses = Vec::new();
-        self.backend.map(self.stream, pinned.pages(), writable, &mut addresses)?;
+        self.backend
+            .map(self.stream, pinned.pages(), writable, &mut addresses)?;
         Ok(Pmt {
             koid: next_koid(),
             bti: self.clone(),

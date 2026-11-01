@@ -1,6 +1,6 @@
 //! 可跨 Process 共享的 disposition owner；pending 仍属于各自的 Thread/Process。
-use alloc::sync::Arc;
 use crate::sync::Mutex;
+use alloc::sync::Arc;
 
 use super::{
     PendingSignals, PreparedSignalRecord, RetiredSignals, TaskControlBlock, normalize_signal_mask,

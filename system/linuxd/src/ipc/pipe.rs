@@ -1,11 +1,11 @@
 //! Pipe 的实际 byte ring、endpoint admission、wait/readiness 与最后 close owner。
+use crate::sync::Mutex;
 use crate::sync::WaitResult;
 use alloc::{sync::Arc, vec::Vec};
 use core::{
     num::NonZeroUsize,
     sync::atomic::{AtomicBool, Ordering},
 };
-use crate::sync::Mutex;
 
 use super::ReceiveBuffer;
 
@@ -149,7 +149,7 @@ pub(crate) trait PipeScheduler: Send + Sync {
 
 // OWNER: task 初始化时安装的唯一 Pipe scheduler。全部 Pipe 共用它，任何层都能直接创建并阻塞
 // 等待 Pipe 而无需依赖 task；缺失时状态变化无法唤醒阻塞的 reader/writer/poller。
-static PIPE_SCHEDULER: native_runtime::sync::Once<&'static dyn PipeScheduler> = native_runtime::sync::Once::new();
+static PIPE_SCHEDULER: crate::sync::Once<&'static dyn PipeScheduler> = crate::sync::Once::new();
 
 /// 安装 Pipe 的唯一 scheduler。
 ///

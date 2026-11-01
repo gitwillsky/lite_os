@@ -2,8 +2,8 @@
 //!
 //! 纯数据结构，不依赖 VFS 或调度器，可在 host 上单测。
 
-use fallible_tree::{FallibleMap, VacantEntry};
 use alloc::boxed::Box;
+use fallible_tree::{FallibleMap, VacantEntry};
 
 pub(super) const IN_Q_OVERFLOW: u32 = 0x4000;
 /// 队列最多容纳的事件数（Linux `max_queued_events` 缺省）；之后只追加一个溢出事件。

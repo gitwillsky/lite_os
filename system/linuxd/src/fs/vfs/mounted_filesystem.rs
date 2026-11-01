@@ -2,10 +2,10 @@
 use super::super::FileSystem;
 use super::super::{BlockNode, DeviceNumber, devnode};
 use super::{FileSystemError, Inode};
-use crate::{sync::TaskMutex};
-use fallible_tree::FallibleMap;
-use alloc::sync::{Arc, Weak};
 use crate::sync::Mutex;
+use crate::sync::TaskMutex;
+use alloc::sync::{Arc, Weak};
+use fallible_tree::FallibleMap;
 
 // OWNER: 只索引已取得的实际 filesystem，供 sync 精确访问；弱 membership 不延长其寿命。
 // 注册节点预分配、最后实例析构/节点释放均在短锁外；不存在每 namespace 的重复 filesystem。

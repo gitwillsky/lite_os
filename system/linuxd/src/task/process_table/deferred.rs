@@ -85,43 +85,29 @@ fn wake_expired_tasks(now_ns: u64) {
     // 2. wake 会获取 scheduling/runqueue owner，必须在释放 registry lock 后执行。
     for (wait_id, task, kind) in batch.into_iter().flatten() {
         let woke = match kind {
-            IndexedWaitKind::TaskEvent(key) => {
-                crate::task::processor::wake_waiting_task(
-                    task,
-                    super::WaitMembership::TaskWait(key),
-                    Some(WaitResult::TimedOut),
-                )
+            IndexedWaitKind::TaskEvent(key) => crate::task::processor::wake_waiting_task(
+                task,
+                super::WaitMembership::TaskWait(key),
+                Some(WaitResult::TimedOut),
+            ),
+            IndexedWaitKind::Deadline => {
+                crate::task::processor::wake_deadline_task(task, wait_id, WaitResult::TimedOut)
             }
-            IndexedWaitKind::Deadline => crate::task::processor::wake_deadline_task(
-                task,
-                wait_id,
-                WaitResult::TimedOut,
-            ),
-            IndexedWaitKind::Futex { .. } => crate::task::processor::wake_futex_task(
-                task,
-                wait_id,
-                WaitResult::TimedOut,
-            ),
-            IndexedWaitKind::Signal { .. } => crate::task::processor::wake_signal_task(
-                task,
-                wait_id,
-                WaitResult::TimedOut,
-            ),
-            IndexedWaitKind::Console => crate::task::processor::wake_console_task(
-                task,
-                wait_id,
-                WaitResult::TimedOut,
-            ),
-            IndexedWaitKind::Pipe { .. } => crate::task::processor::wake_pipe_task(
-                task,
-                wait_id,
-                WaitResult::TimedOut,
-            ),
-            IndexedWaitKind::Poll => crate::task::processor::wake_poll_task(
-                task,
-                wait_id,
-                WaitResult::TimedOut,
-            ),
+            IndexedWaitKind::Futex { .. } => {
+                crate::task::processor::wake_futex_task(task, wait_id, WaitResult::TimedOut)
+            }
+            IndexedWaitKind::Signal { .. } => {
+                crate::task::processor::wake_signal_task(task, wait_id, WaitResult::TimedOut)
+            }
+            IndexedWaitKind::Console => {
+                crate::task::processor::wake_console_task(task, wait_id, WaitResult::TimedOut)
+            }
+            IndexedWaitKind::Pipe { .. } => {
+                crate::task::processor::wake_pipe_task(task, wait_id, WaitResult::TimedOut)
+            }
+            IndexedWaitKind::Poll => {
+                crate::task::processor::wake_poll_task(task, wait_id, WaitResult::TimedOut)
+            }
             _ => panic!("non-deadline wait carried a deadline"),
         };
         assert!(woke, "expired wait diverged from scheduling membership");
@@ -162,5 +148,8 @@ pub(crate) fn next_deferred_deadline() -> Option<u64> {
         .next_sample_us()
         .map(|deadline| deadline.saturating_mul(1000));
     let cpu_limits = super::resource_limit::cpu_limit_sample_deadline(get_time_ns());
-    [waits, timers, load, cpu_limits].into_iter().flatten().min()
+    [waits, timers, load, cpu_limits]
+        .into_iter()
+        .flatten()
+        .min()
 }

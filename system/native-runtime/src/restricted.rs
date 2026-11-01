@@ -123,11 +123,19 @@ impl BoundState {
     pub fn bind(vmar: &'static Vmar) -> Result<Self, Status> {
         let mut out = native_abi::HANDLE_INVALID;
         // SAFETY: 输出位置有效。
-        crate::syscall::check(unsafe { crate::syscall::invoke(call::RESTRICTED_BIND_STATE, &[(&raw mut out) as usize]) })?;
+        crate::syscall::check(unsafe {
+            crate::syscall::invoke(call::RESTRICTED_BIND_STATE, &[(&raw mut out) as usize])
+        })?;
         // SAFETY: 成功时内核写入的新句柄由调用者独占。
         let vmo = Vmo::from_handle(unsafe { Handle::from_raw(out) });
         let size = core::mem::size_of::<RestrictedState>().next_multiple_of(native_abi::PAGE_SIZE);
-        let address = match vmar.map(native_abi::vm::READ | native_abi::vm::WRITE, 0, &vmo, 0, size) {
+        let address = match vmar.map(
+            native_abi::vm::READ | native_abi::vm::WRITE,
+            0,
+            &vmo,
+            0,
+            size,
+        ) {
             Ok(address) => address,
             Err(status) => {
                 // SAFETY: 无指针参数；绑定刚建立，解除失败没有可恢复动作。
@@ -135,7 +143,11 @@ impl BoundState {
                 return Err(status);
             }
         };
-        Ok(Self { _vmo: vmo, vmar, address })
+        Ok(Self {
+            _vmo: vmo,
+            vmar,
+            address,
+        })
     }
 
     /// 寄存器与异常状态。

@@ -4,9 +4,9 @@
 //! first-stage 与 Sv39 相同）。CPU 从不激活这张表，因此撤销映射只需设备侧失效：调用者先完成
 //! IOMMU 的 TLB 失效，再调用 [`Retired::release`] 释放被摘下的页表页。
 
+use super::VmError;
 use super::page_table::{PagePermissions, PageTable};
 use super::translation::TranslationCommit;
-use super::VmError;
 use crate::arch::mmu::AddressSpaceKind;
 use crate::memory::{PhysicalPageNumber, VirtualPageNumber};
 
@@ -46,7 +46,12 @@ impl DeviceAddressSpace {
     ///
     /// # Errors
     /// 页表页分配失败返回 `NoMemory`，已映射部分全部撤销。
-    pub(crate) fn map(&mut self, first: usize, pages: &[PhysicalPageNumber], writable: bool) -> Result<(), VmError> {
+    pub(crate) fn map(
+        &mut self,
+        first: usize,
+        pages: &[PhysicalPageNumber],
+        writable: bool,
+    ) -> Result<(), VmError> {
         let mut permissions = PagePermissions::READ | PagePermissions::USER;
         if writable {
             permissions |= PagePermissions::WRITE;
@@ -55,11 +60,18 @@ impl DeviceAddressSpace {
         for (index, &page) in pages.iter().enumerate() {
             if self
                 .table
-                .map(VirtualPageNumber::from_vpn(first + index), page, permissions, &mut commit)
+                .map(
+                    VirtualPageNumber::from_vpn(first + index),
+                    page,
+                    permissions,
+                    &mut commit,
+                )
                 .is_err()
             {
                 for mapped in 0..index {
-                    let _ = self.table.unmap(VirtualPageNumber::from_vpn(first + mapped), &mut commit);
+                    let _ = self
+                        .table
+                        .unmap(VirtualPageNumber::from_vpn(first + mapped), &mut commit);
                 }
                 // 这些翻译从未交给设备使用。
                 commit.finish_unpublished();
@@ -74,7 +86,9 @@ impl DeviceAddressSpace {
     pub(crate) fn unmap(&mut self, first: usize, count: usize) -> Retired {
         let mut commit = TranslationCommit::new();
         for page in first..first + count {
-            let _ = self.table.unmap(VirtualPageNumber::from_vpn(page), &mut commit);
+            let _ = self
+                .table
+                .unmap(VirtualPageNumber::from_vpn(page), &mut commit);
         }
         Retired(commit)
     }

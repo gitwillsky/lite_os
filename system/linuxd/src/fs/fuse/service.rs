@@ -80,7 +80,8 @@ fn start_transport(
     threads: KernelThreadSupport,
 ) -> Result<(), FileSystemError> {
     let no_memory = |_| FileSystemError::OutOfMemory;
-    let port = Arc::try_new(Port::create().map_err(|_| FileSystemError::OutOfMemory)?).map_err(no_memory)?;
+    let port = Arc::try_new(Port::create().map_err(|_| FileSystemError::OutOfMemory)?)
+        .map_err(no_memory)?;
     let channel = Arc::try_new(channel).map_err(no_memory)?;
     let mut buffer = Vec::new();
     buffer
@@ -237,4 +238,7 @@ impl UserInput for MessageInput<'_> {
 }
 
 // READ/WRITE 的请求与回复总能内联在一条 channel 消息中：数据路径从不经 VMO。
-const _: () = assert!(fuse::IN_HEADER_SIZE + 80 + filesystem_protocol::MAX_TRANSFER as usize <= native_abi::CHANNEL_MAX_BYTES);
+const _: () = assert!(
+    fuse::IN_HEADER_SIZE + 80 + filesystem_protocol::MAX_TRANSFER as usize
+        <= native_abi::CHANNEL_MAX_BYTES
+);

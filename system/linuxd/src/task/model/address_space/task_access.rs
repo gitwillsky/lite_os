@@ -53,10 +53,9 @@ impl TaskControlBlock {
         user_address: usize,
         length: usize,
     ) -> Result<(), UserAccessError> {
-        self.mm_snapshot().ok_or(UserAccessError::Fault)?.zero_user(
-            user_address,
-            length,
-        )
+        self.mm_snapshot()
+            .ok_or(UserAccessError::Fault)?
+            .zero_user(user_address, length)
     }
 
     pub(crate) fn validate_user_write(
@@ -70,20 +69,13 @@ impl TaskControlBlock {
     }
 
     /// proc cmdline 从此实际 Thread 的 MM 读取；leader 退出不能让 sibling 借已退休 leader 的 MM。
-    pub(in crate::task) fn proc_arguments(
-        &self,
-    ) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
+    pub(in crate::task) fn proc_arguments(&self) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
         self.mm_snapshot()
             .map_or_else(|| Ok(alloc::vec::Vec::new()), |mm| mm.process_arguments())
     }
 
-    pub(in crate::task) fn write_clone_tid_values(
-        &self,
-        addresses: [Option<usize>; 2],
-        tid: i32,
-    ) {
-        self.address_space()
-            .write_clone_tid_values(addresses, tid)
+    pub(in crate::task) fn write_clone_tid_values(&self, addresses: [Option<usize>; 2], tid: i32) {
+        self.address_space().write_clone_tid_values(addresses, tid)
     }
 
     pub(crate) fn copy_user_c_string(
@@ -124,13 +116,8 @@ impl TaskControlBlock {
         read_source: bool,
         consume: impl FnOnce(FutexKey, FutexKey, Option<u32>) -> R,
     ) -> Result<R, crate::memory::FutexAccessError> {
-        self.address_space().with_futex_requeue(
-            source,
-            target,
-            private,
-            read_source,
-            consume,
-        )
+        self.address_space()
+            .with_futex_requeue(source, target, private, read_source, consume)
     }
 
     /// task futex owner 的 scoped MM transaction；不向 syscall 暴露 MemorySet guard。
@@ -141,12 +128,8 @@ impl TaskControlBlock {
         private: bool,
         consume: impl FnOnce(FutexKey, FutexKey, &MemorySet) -> R,
     ) -> Result<R, crate::memory::FutexAccessError> {
-        self.address_space().with_futex_wake_op(
-            source,
-            target,
-            private,
-            consume,
-        )
+        self.address_space()
+            .with_futex_wake_op(source, target, private, consume)
     }
 }
 

@@ -1,7 +1,7 @@
 //! `/dev/snd/controlC0` 字符设备：声卡的 ALSA 控制接口（Master、逐流音量与事件）。
 
-use alloc::sync::Arc;
 use crate::sync::Mutex;
+use alloc::sync::Arc;
 use syscall_abi::errno;
 
 use super::codec::{PCM_INFO_BYTES, PcmInfo, encode_pcm_info, read_u32};

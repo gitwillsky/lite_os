@@ -2,8 +2,11 @@
 use super::super::audio::{Endpoint, stream::Lifecycle};
 use super::control::Setup;
 use super::*;
-use device_model::{MAX_PCM_PERIOD_BYTES, PCM_RATES, PcmCapabilities, PcmCompletionObserver, PcmConfiguration, PcmOutput, PcmOutputError};
 use alloc::string::String;
+use device_model::{
+    MAX_PCM_PERIOD_BYTES, PCM_RATES, PcmCapabilities, PcmCompletionObserver, PcmConfiguration,
+    PcmOutput, PcmOutputError,
+};
 
 pub(super) struct Output {
     pub(in crate::drivers::usb) identity: device_model::UsbIdentity,

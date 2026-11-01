@@ -1,5 +1,5 @@
-use alloc::sync::Arc;
 use crate::sync::Mutex;
+use alloc::sync::Arc;
 
 use crate::fs::{DeviceNumber, FileSystemError};
 
@@ -438,8 +438,7 @@ impl Terminal {
                         state
                             .push_input(byte)
                             .map_err(|()| FileSystemError::IoError)?;
-                        state.input_generation =
-                            crate::file::next_readiness_generation();
+                        state.input_generation = crate::file::next_readiness_generation();
                     } else if byte == control(2) {
                         if state.line_len != 0 {
                             state.line_len -= 1;
@@ -463,8 +462,7 @@ impl Terminal {
                         } else {
                             state.commit_line().map_err(|()| FileSystemError::IoError)?;
                         }
-                        state.input_generation =
-                            crate::file::next_readiness_generation();
+                        state.input_generation = crate::file::next_readiness_generation();
                         continue;
                     } else {
                         if state.line_len == state.line.len() {
@@ -475,8 +473,7 @@ impl Terminal {
                         state.line_len += 1;
                         if byte == b'\n' {
                             state.commit_line().map_err(|()| FileSystemError::IoError)?;
-                            state.input_generation =
-                                crate::file::next_readiness_generation();
+                            state.input_generation = crate::file::next_readiness_generation();
                         }
                     }
                     if local_flags & ECHO != 0 || byte == b'\n' && local_flags & ECHONL != 0 {

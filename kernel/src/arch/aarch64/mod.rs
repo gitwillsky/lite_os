@@ -21,8 +21,8 @@ pub(crate) use kernel_context::{KernelContext, KernelResume, switch_kernel_conte
 pub(crate) use mmu::{
     AddressSpaceToken, KERNEL_STACK_REGION_START, KERNEL_STACK_REGION_TOP, KernelTrapToken,
     MEMORY_ATTRIBUTES, PAGE_SIZE, THREAD_TRAP_CONTEXT_RANGE, TRAMPOLINE_ADDRESS, TRANSLATION_BITS,
-    TRAP_CONTEXT_ADDRESS, USER_ADDRESS_END, acknowledge_broadcast_tlb,
-    broadcast_tlb, canonicalize_virtual_address, flush_local as flush_local_tlb,
+    TRAP_CONTEXT_ADDRESS, USER_ADDRESS_END, acknowledge_broadcast_tlb, broadcast_tlb,
+    canonicalize_virtual_address, flush_local as flush_local_tlb,
     flush_local_range as flush_local_tlb_range, initialize_asid_allocator, initialize_kernel_mmio,
     normalize_physical_address, normalize_physical_page, normalize_virtual_page,
     physical_range_to_virtual, physical_to_virtual, virtual_to_physical,
@@ -44,10 +44,8 @@ pub(crate) use trap::{
     kernel_exception, return_to_user, user_entry,
 };
 pub(crate) use user_context::{
-    KERNEL_STACK_CONTEXT_RESERVE, USER_CONTEXT_PLACEMENT, UserContext,
-    inspect_illegal_instruction,
+    KERNEL_STACK_CONTEXT_RESERVE, USER_CONTEXT_PLACEMENT, UserContext, inspect_illegal_instruction,
 };
 
 global_asm!(include_str!("trap.S"));
 global_asm!(include_str!("switch.S"));
-

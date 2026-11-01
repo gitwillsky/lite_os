@@ -16,9 +16,11 @@ use native_abi::Status;
 use spin::Mutex;
 
 use super::{Hardware, descriptor_window, map_registers};
-use mmio::MmioBus;
+use crate::memory::{
+    FrameAllocationClass, FrameTracker, PAGE_SIZE, PhysicalPageNumber, alloc_contiguous,
+};
 use fallible_tree::FallibleMap;
-use crate::memory::{FrameAllocationClass, FrameTracker, PAGE_SIZE, PhysicalPageNumber, alloc_contiguous};
+use mmio::MmioBus;
 
 const CAPABILITIES: usize = 0x00;
 const DDTP: usize = 0x10;
@@ -84,32 +86,48 @@ impl RiscvIommu {
     pub(super) fn create(descriptor: &[u8]) -> Result<Self, Status> {
         let (base, size) = descriptor_window(descriptor)?;
         let virtual_base = map_registers(base, size)?;
-        let registers = MmioBus::new(virtual_base, size).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-        let capabilities = registers.read_u64(CAPABILITIES).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+        let registers =
+            MmioBus::new(virtual_base, size).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+        let capabilities = registers
+            .read_u64(CAPABILITIES)
+            .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
         if capabilities & CAPABILITY_SV39 == 0 {
             return Err(native_abi::ERR_NOT_SUPPORTED);
         }
-        let root = alloc_contiguous(1, FrameAllocationClass::Reclaimable).ok_or(native_abi::ERR_NO_MEMORY)?;
+        let root = alloc_contiguous(1, FrameAllocationClass::Reclaimable)
+            .ok_or(native_abi::ERR_NO_MEMORY)?;
         let queue_pages = ((1usize << COMMAND_LOG2) * 16).div_ceil(PAGE_SIZE);
-        let queue = alloc_contiguous(queue_pages, FrameAllocationClass::Reclaimable).ok_or(native_abi::ERR_NO_MEMORY)?;
+        let queue = alloc_contiguous(queue_pages, FrameAllocationClass::Reclaimable)
+            .ok_or(native_abi::ERR_NO_MEMORY)?;
         let error = |_| native_abi::ERR_INVALID_ARGS;
         registers
             .write_u64(CQB, ppn_field(queue.ppn) | u64::from(COMMAND_LOG2 - 1))
             .map_err(error)?;
         registers.write_u32(CQT, 0).map_err(error)?;
         registers.write_u32(CQCSR, CQCSR_CQEN).map_err(error)?;
-        poll(|| registers.read_u32(CQCSR).is_ok_and(|csr| csr & CQCSR_CQON != 0))?;
+        poll(|| {
+            registers
+                .read_u32(CQCSR)
+                .is_ok_and(|csr| csr & CQCSR_CQON != 0)
+        })?;
         mmio::before_write();
         registers
             .write_u64(DDTP, ppn_field(root.ppn) | DDTP_MODE_2LVL)
             .map_err(error)?;
-        poll(|| registers.read_u64(DDTP).is_ok_and(|ddtp| ddtp & DDTP_BUSY == 0))?;
+        poll(|| {
+            registers
+                .read_u64(DDTP)
+                .is_ok_and(|ddtp| ddtp & DDTP_BUSY == 0)
+        })?;
         Ok(Self {
             registers,
             extended: capabilities & CAPABILITY_MSI_FLAT != 0,
             root,
             leaves: Mutex::new(FallibleMap::new()),
-            queue: Mutex::new(CommandQueue { frames: queue, tail: 0 }),
+            queue: Mutex::new(CommandQueue {
+                frames: queue,
+                tail: 0,
+            }),
         })
     }
 
@@ -117,7 +135,10 @@ impl RiscvIommu {
     fn submit(&self, commands: &[[u64; 2]]) -> Result<(), Status> {
         let mut queue = self.queue.lock();
         let mask = (1u32 << COMMAND_LOG2) - 1;
-        for command in commands.iter().chain(core::iter::once(&[OPCODE_IOFENCE, 0])) {
+        for command in commands
+            .iter()
+            .chain(core::iter::once(&[OPCODE_IOFENCE, 0]))
+        {
             poll(|| {
                 self.registers
                     .read_u32(CQH)
@@ -131,7 +152,11 @@ impl RiscvIommu {
             .write_u32(CQT, queue.tail)
             .map_err(|_| native_abi::ERR_INTERNAL)?;
         let tail = queue.tail;
-        poll(|| self.registers.read_u32(CQH).is_ok_and(|head| head & mask == tail))
+        poll(|| {
+            self.registers
+                .read_u32(CQH)
+                .is_ok_and(|head| head & mask == tail)
+        })
     }
 
     /// 返回设备上下文所在叶页与页内偏移；叶页按需分配并挂入根目录。
@@ -146,9 +171,12 @@ impl RiscvIommu {
         if let Some(leaf) = leaves.get(&root_index) {
             return Ok((leaf.ppn, offset));
         }
-        let leaf = alloc_contiguous(1, FrameAllocationClass::Reclaimable).ok_or(native_abi::ERR_NO_MEMORY)?;
+        let leaf = alloc_contiguous(1, FrameAllocationClass::Reclaimable)
+            .ok_or(native_abi::ERR_NO_MEMORY)?;
         let page = leaf.ppn;
-        leaves.try_insert(root_index, leaf).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        leaves
+            .try_insert(root_index, leaf)
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         mmio::before_write();
         write_words(self.root.ppn, root_index * 8, &[ppn_field(page) | 1]);
         Ok((page, offset))

@@ -44,7 +44,6 @@ impl core::fmt::Debug for PageTable {
 }
 
 impl PageTable {
-
     pub(crate) fn try_new(kind: AddressSpaceKind) -> Result<Self, PageTableError> {
         ArchitecturePageTable::try_new(kind).map(Self)
     }

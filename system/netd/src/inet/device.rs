@@ -7,8 +7,8 @@ use smoltcp::{
     wire::{EthernetFrame, EthernetProtocol, IpEndpoint, IpProtocol, Ipv4Packet, TcpPacket},
 };
 
-use crate::packet;
 use super::device_error;
+use crate::packet;
 use device_model::network::{
     NetworkCompletion, NetworkDevice, NetworkError, NetworkStatistics, NetworkTransmit,
 };

@@ -64,5 +64,9 @@ pub unsafe fn invoke(number: usize, arguments: &[usize]) -> Status {
 ///
 /// 非 [`native_abi::OK`] 的状态原样返回。
 pub fn check(status: Status) -> Result<(), Status> {
-    if status == native_abi::OK { Ok(()) } else { Err(status) }
+    if status == native_abi::OK {
+        Ok(())
+    } else {
+        Err(status)
+    }
 }

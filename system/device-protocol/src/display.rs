@@ -64,7 +64,11 @@ fn get_mode(reader: &mut Reader<'_>) -> Result<DisplayMode, Status> {
 }
 
 fn put_rect(writer: &mut Writer, rect: DisplayRect) {
-    writer.u32(rect.x).u32(rect.y).u32(rect.width).u32(rect.height);
+    writer
+        .u32(rect.x)
+        .u32(rect.y)
+        .u32(rect.width)
+        .u32(rect.height);
 }
 
 fn get_rect(reader: &mut Reader<'_>) -> Result<DisplayRect, Status> {
@@ -145,14 +149,20 @@ pub fn publish(directory: &Channel, device: Arc<dyn GraphicsDevice>) -> Result<(
     description.u32(device.first_dynamic_resource_id());
     match device.virgl_capset_info() {
         Some(info) => {
-            description.bool(true).u32(info.id).u32(info.version).u64(info.size as u64);
+            description
+                .bool(true)
+                .u32(info.id)
+                .u32(info.version)
+                .u64(info.size as u64);
         }
         None => {
             description.bool(false);
         }
     }
     description.bool(device.supports_virgl_context_init());
-    device.bind_activity(activity_signal(Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?)?);
+    device.bind_activity(activity_signal(
+        Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?,
+    )?);
     let cache = Arc::try_new(BackingCache {
         entries: Mutex::new(BTreeMap::new()),
     })
@@ -161,10 +171,15 @@ pub fn publish(directory: &Channel, device: Arc<dyn GraphicsDevice>) -> Result<(
         server,
         2,
         b"display-server",
-        Arc::try_new(move |ordinal: u32, request: &mut Reader<'_>, mut handles: Vec<Handle>, reply: &mut Writer| {
-            handle(&*device, &cache, ordinal, request, &mut handles, reply)?;
-            Ok(Vec::new())
-        })
+        Arc::try_new(
+            move |ordinal: u32,
+                  request: &mut Reader<'_>,
+                  mut handles: Vec<Handle>,
+                  reply: &mut Writer| {
+                handle(&*device, &cache, ordinal, request, &mut handles, reply)?;
+                Ok(Vec::new())
+            },
+        )
         .map_err(|_| native_abi::ERR_NO_MEMORY)?,
     )?;
     directory::announce(
@@ -189,7 +204,9 @@ fn handle(
         SUBMIT_SCANOUT => {
             let identity = request.u64()?;
             let mode = get_mode(request)?;
-            let fence = device.submit_scanout(identity, mode, backing(0)?).map_err(encode_error)?;
+            let fence = device
+                .submit_scanout(identity, mode, backing(0)?)
+                .map_err(encode_error)?;
             reply.u64(fence);
         }
         SUBMIT_DAMAGE => {
@@ -197,7 +214,9 @@ fn handle(
             let mode = get_mode(request)?;
             let count = request.u32()? as usize;
             let mut rectangles = Vec::new();
-            rectangles.try_reserve_exact(count).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            rectangles
+                .try_reserve_exact(count)
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
             for _ in 0..count {
                 rectangles.push(get_rect(request)?);
             }
@@ -206,7 +225,10 @@ fn handle(
                 .map_err(encode_error)?;
             reply.u64(fence);
         }
-        RELEASE_BUFFER => match device.release_buffer(request.u64()?).map_err(encode_error)? {
+        RELEASE_BUFFER => match device
+            .release_buffer(request.u64()?)
+            .map_err(encode_error)?
+        {
             Some(fence) => {
                 reply.bool(true).u64(fence);
             }
@@ -240,7 +262,11 @@ fn handle(
         },
         SUBMIT_CURSOR_UPLOAD => {
             let identity = request.u64()?;
-            reply.u64(device.submit_cursor_upload(identity, backing(0)?).map_err(encode_error)?);
+            reply.u64(
+                device
+                    .submit_cursor_upload(identity, backing(0)?)
+                    .map_err(encode_error)?,
+            );
         }
         SUBMIT_CURSOR => {
             let x = request.u32()?;
@@ -268,7 +294,9 @@ fn handle(
             let version = request.u32()?;
             let capacity = request.usize()?.min(native_abi::CHANNEL_MAX_BYTES / 2);
             let mut output = alloc::vec![0u8; capacity];
-            let length = device.copy_virgl_capset(version, &mut output).map_err(encode_error)?;
+            let length = device
+                .copy_virgl_capset(version, &mut output)
+                .map_err(encode_error)?;
             reply.bytes(&output[..length]);
         }
         SUBMIT_VIRGL => {
@@ -278,7 +306,11 @@ fn handle(
         SUBMIT_VIRGL_SCANOUT => {
             let mode = get_mode(request)?;
             let resource_id = request.u32()?;
-            reply.u64(device.submit_virgl_scanout(mode, resource_id).map_err(encode_error)?);
+            reply.u64(
+                device
+                    .submit_virgl_scanout(mode, resource_id)
+                    .map_err(encode_error)?,
+            );
         }
         _ => return Err(native_abi::ERR_NOT_SUPPORTED),
     }
@@ -385,9 +417,15 @@ pub struct RemoteDisplay {
 /// # Errors
 ///
 /// 描述或句柄不完整，或事件登记失败。
-pub fn connect(mut announcement: Announcement, hub: &Arc<EventHub>) -> Result<Arc<RemoteDisplay>, Status> {
+pub fn connect(
+    mut announcement: Announcement,
+    hub: &Arc<EventHub>,
+) -> Result<Arc<RemoteDisplay>, Status> {
     let channel = Channel::from_handle(take_handle(&mut announcement.handles, 0)?);
-    let activity = hub.activity(Event::from_handle(take_handle(&mut announcement.handles, 1)?))?;
+    let activity = hub.activity(Event::from_handle(take_handle(
+        &mut announcement.handles,
+        1,
+    )?))?;
     let mut reader = announcement.reader();
     let platform_identity = if reader.bool()? {
         Some((reader.u64()?, reader.u32()?))
@@ -438,7 +476,12 @@ impl DisplayDevice for RemoteDisplay {
             })
     }
 
-    fn submit_scanout(&self, identity: u64, mode: DisplayMode, backing: Arc<DeviceBacking>) -> Result<u64, DisplayError> {
+    fn submit_scanout(
+        &self,
+        identity: u64,
+        mode: DisplayMode,
+        backing: Arc<DeviceBacking>,
+    ) -> Result<u64, DisplayError> {
         let mut request = Writer::request(SUBMIT_SCANOUT);
         request.u64(identity);
         put_mode(&mut request, mode);
@@ -479,7 +522,8 @@ impl DisplayDevice for RemoteDisplay {
     }
 
     fn poll_update(&self) -> Result<Option<DisplayUpdate>, DisplayError> {
-        let reply = call(&self.channel, &Writer::request(POLL_UPDATE), Vec::new()).map_err(decode_error)?;
+        let reply =
+            call(&self.channel, &Writer::request(POLL_UPDATE), Vec::new()).map_err(decode_error)?;
         let mut reader = reply.reader();
         let decode = |reader: &mut Reader<'_>| -> Result<Option<DisplayUpdate>, Status> {
             Ok(match reader.u8()? {
@@ -496,14 +540,22 @@ impl DisplayDevice for RemoteDisplay {
     }
 }
 
-fn put_virgl(request: &mut Writer, command: &VirglCommand<'_>, handles: &mut Vec<Handle>) -> Result<(), DisplayError> {
+fn put_virgl(
+    request: &mut Writer,
+    command: &VirglCommand<'_>,
+    handles: &mut Vec<Handle>,
+) -> Result<(), DisplayError> {
     match command {
         VirglCommand::ContextCreate {
             context_id,
             context_init,
             name,
         } => {
-            request.u8(VIRGL_CONTEXT_CREATE).u32(*context_id).u32(*context_init).bytes(name);
+            request
+                .u8(VIRGL_CONTEXT_CREATE)
+                .u32(*context_id)
+                .u32(*context_init)
+                .bytes(name);
         }
         VirglCommand::ContextDestroy { context_id } => {
             request.u8(VIRGL_CONTEXT_DESTROY).u32(*context_id);
@@ -538,7 +590,10 @@ fn put_virgl(request: &mut Writer, command: &VirglCommand<'_>, handles: &mut Vec
                 request.u32(value);
             }
         }
-        VirglCommand::ResourceAttachBacking { resource_id, backing } => {
+        VirglCommand::ResourceAttachBacking {
+            resource_id,
+            backing,
+        } => {
             request.u8(VIRGL_ATTACH_BACKING).u32(*resource_id);
             handles.push(backing_handle(backing)?);
         }
@@ -546,20 +601,29 @@ fn put_virgl(request: &mut Writer, command: &VirglCommand<'_>, handles: &mut Vec
             context_id,
             resource_id,
         } => {
-            request.u8(VIRGL_CONTEXT_ATTACH).u32(*context_id).u32(*resource_id);
+            request
+                .u8(VIRGL_CONTEXT_ATTACH)
+                .u32(*context_id)
+                .u32(*resource_id);
         }
         VirglCommand::ContextDetachResource {
             context_id,
             resource_id,
         } => {
-            request.u8(VIRGL_CONTEXT_DETACH).u32(*context_id).u32(*resource_id);
+            request
+                .u8(VIRGL_CONTEXT_DETACH)
+                .u32(*context_id)
+                .u32(*resource_id);
         }
         VirglCommand::Submit3d {
             context_id,
             commands,
             length,
         } => {
-            request.u8(VIRGL_SUBMIT).u32(*context_id).u64(*length as u64);
+            request
+                .u8(VIRGL_SUBMIT)
+                .u32(*context_id)
+                .u64(*length as u64);
             handles.push(backing_handle(commands)?);
         }
         VirglCommand::Transfer3d {
@@ -579,7 +643,14 @@ fn put_virgl(request: &mut Writer, command: &VirglCommand<'_>, handles: &mut Vec
                 .u64(*offset)
                 .u32(*resource_id)
                 .u32(*level);
-            for value in [region.x, region.y, region.z, region.width, region.height, region.depth] {
+            for value in [
+                region.x,
+                region.y,
+                region.z,
+                region.width,
+                region.height,
+                region.depth,
+            ] {
                 request.u32(value);
             }
             request.u32(*stride).u32(*layer_stride);
@@ -589,7 +660,10 @@ fn put_virgl(request: &mut Writer, command: &VirglCommand<'_>, handles: &mut Vec
             put_mode(request, *mode);
             request.u32(*resource_id);
         }
-        VirglCommand::Flush { resource_id, rectangle } => {
+        VirglCommand::Flush {
+            resource_id,
+            rectangle,
+        } => {
             request.u8(VIRGL_FLUSH).u32(*resource_id);
             put_rect(request, *rectangle);
         }
@@ -605,7 +679,11 @@ impl GraphicsDevice for RemoteDisplay {
         self.platform_identity
     }
 
-    fn submit_cursor_upload(&self, identity: u64, backing: Arc<DeviceBacking>) -> Result<u64, DisplayError> {
+    fn submit_cursor_upload(
+        &self,
+        identity: u64,
+        backing: Arc<DeviceBacking>,
+    ) -> Result<u64, DisplayError> {
         let mut request = Writer::request(SUBMIT_CURSOR_UPLOAD);
         request.u64(identity);
         self.fence(&request, alloc::vec![backing_handle(&backing)?])
@@ -624,7 +702,13 @@ impl GraphicsDevice for RemoteDisplay {
                 hot_x,
                 hot_y,
             } => {
-                request.u32(x).u32(y).bool(visible).bool(true).u32(hot_x).u32(hot_y);
+                request
+                    .u32(x)
+                    .u32(y)
+                    .bool(visible)
+                    .bool(true)
+                    .u32(hot_x)
+                    .u32(hot_y);
             }
         }
         self.fence(&request, Vec::new())
@@ -666,7 +750,11 @@ impl GraphicsDevice for RemoteDisplay {
         self.fence(&request, handles)
     }
 
-    fn submit_virgl_scanout(&self, mode: DisplayMode, resource_id: u32) -> Result<u64, DisplayError> {
+    fn submit_virgl_scanout(
+        &self,
+        mode: DisplayMode,
+        resource_id: u32,
+    ) -> Result<u64, DisplayError> {
         let mut request = Writer::request(SUBMIT_VIRGL_SCANOUT);
         put_mode(&mut request, mode);
         request.u32(resource_id);

@@ -42,7 +42,10 @@ impl PreparedBlock {
 
 impl Drop for PreparedBlock {
     fn drop(&mut self) {
-        assert!(self.thread.is_none(), "prepared block dropped before context switch");
+        assert!(
+            self.thread.is_none(),
+            "prepared block dropped before context switch"
+        );
     }
 }
 
@@ -51,7 +54,9 @@ pub(super) fn prepare_block(thread: &Arc<Thread>, membership: WaitMembership) ->
     let cpu = cpu::current_id();
     thread.scheduling.policy.lock().finish(get_time_us());
     with_current_processor(|processor| {
-        let current = processor.take_current().expect("blocking requires current thread");
+        let current = processor
+            .take_current()
+            .expect("blocking requires current thread");
         assert!(Arc::ptr_eq(&current, thread));
         let mut scheduling = thread.scheduling.state.lock();
         assert_eq!(scheduling.run_state(), RunState::Running { cpu });
@@ -90,7 +95,9 @@ fn schedule(thread: Arc<Thread>) {
         let mut context = thread.kernel_context.lock();
         &mut *context as *mut KernelContext
     };
-    let restore = next.unwrap_or_else(|| with_current_processor(Processor::idle_context_ptr) as *const KernelContext);
+    let restore = next.unwrap_or_else(|| {
+        with_current_processor(Processor::idle_context_ptr) as *const KernelContext
+    });
     publish_pending_handoff(thread, handoff_irq);
     // SAFETY: pending handoff 保活 save 目标；current 或 idle owner 保活 restore 目标。
     unsafe { crate::arch::context::switch_kernel_context(save, restore) }
@@ -121,7 +128,10 @@ fn begin_runtime(thread: &Arc<Thread>) -> *const KernelContext {
         "selected thread must be Running on this CPU"
     );
     thread.scheduling.policy.lock().begin(get_time_us());
-    thread.scheduling.last_cpu.store(cpu.index(), Ordering::Relaxed);
+    thread
+        .scheduling
+        .last_cpu
+        .store(cpu.index(), Ordering::Relaxed);
     let context = thread.kernel_context.lock();
     &*context as *const KernelContext
 }

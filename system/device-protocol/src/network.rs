@@ -51,54 +51,66 @@ pub fn publish(directory: &Channel, device: Arc<dyn NetworkDevice>) -> Result<()
     let event = Event::create()?;
     let peer_event = event.duplicate(rights::SAME)?;
     let mut description = directory::description();
-    description.bytes(&device.mac_address()).bytes(device.driver().as_bytes());
-    device.bind_activity(activity_signal(Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?)?);
+    description
+        .bytes(&device.mac_address())
+        .bytes(device.driver().as_bytes());
+    device.bind_activity(activity_signal(
+        Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?,
+    )?);
     serve(
         server,
         2,
         b"net-server",
-        Arc::try_new(move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
-            match ordinal {
-                RECEIVE => {
-                    let mut frame = [0u8; MAX_FRAME];
-                    let length = device.receive(&mut frame).map_err(encode_error)?;
-                    reply.bytes(&frame[..length]);
-                }
-                RESERVE => {
-                    reply.u16(device.reserve_transmit().map_err(encode_error)?);
-                }
-                SUBMIT => {
-                    let reservation = request.u16()?;
-                    device.submit_transmit(reservation, request.bytes()?).map_err(encode_error)?;
-                }
-                CANCEL => device.cancel_transmit(request.u16()?),
-                TRANSMIT_AVAILABLE => {
-                    reply.bool(device.transmit_available());
-                }
-                POLL => {
-                    let completion = device.poll_completions(request.usize()?).map_err(encode_error)?;
-                    reply.bool(completion.backlog).bool(completion.transmit_became_available);
-                }
-                FINISH_RECEIVE => device.finish_receive_batch().map_err(encode_error)?,
-                STATISTICS => {
-                    let statistics = device.statistics();
-                    for value in [
-                        statistics.received_bytes,
-                        statistics.received_packets,
-                        statistics.received_errors,
-                        statistics.received_dropped,
-                        statistics.transmitted_bytes,
-                        statistics.transmitted_packets,
-                        statistics.transmitted_errors,
-                        statistics.transmitted_dropped,
-                    ] {
-                        reply.u64(value);
+        Arc::try_new(
+            move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
+                match ordinal {
+                    RECEIVE => {
+                        let mut frame = [0u8; MAX_FRAME];
+                        let length = device.receive(&mut frame).map_err(encode_error)?;
+                        reply.bytes(&frame[..length]);
                     }
+                    RESERVE => {
+                        reply.u16(device.reserve_transmit().map_err(encode_error)?);
+                    }
+                    SUBMIT => {
+                        let reservation = request.u16()?;
+                        device
+                            .submit_transmit(reservation, request.bytes()?)
+                            .map_err(encode_error)?;
+                    }
+                    CANCEL => device.cancel_transmit(request.u16()?),
+                    TRANSMIT_AVAILABLE => {
+                        reply.bool(device.transmit_available());
+                    }
+                    POLL => {
+                        let completion = device
+                            .poll_completions(request.usize()?)
+                            .map_err(encode_error)?;
+                        reply
+                            .bool(completion.backlog)
+                            .bool(completion.transmit_became_available);
+                    }
+                    FINISH_RECEIVE => device.finish_receive_batch().map_err(encode_error)?,
+                    STATISTICS => {
+                        let statistics = device.statistics();
+                        for value in [
+                            statistics.received_bytes,
+                            statistics.received_packets,
+                            statistics.received_errors,
+                            statistics.received_dropped,
+                            statistics.transmitted_bytes,
+                            statistics.transmitted_packets,
+                            statistics.transmitted_errors,
+                            statistics.transmitted_dropped,
+                        ] {
+                            reply.u64(value);
+                        }
+                    }
+                    _ => return Err(native_abi::ERR_NOT_SUPPORTED),
                 }
-                _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-            }
-            Ok(Vec::new())
-        })
+                Ok(Vec::new())
+            },
+        )
         .map_err(|_| native_abi::ERR_NO_MEMORY)?,
     )?;
     directory::announce(
@@ -124,11 +136,20 @@ pub struct RemoteNetwork {
 /// # Errors
 ///
 /// 描述或句柄不完整，或事件登记失败。
-pub fn connect(mut announcement: Announcement, hub: &Arc<EventHub>) -> Result<Arc<RemoteNetwork>, Status> {
+pub fn connect(
+    mut announcement: Announcement,
+    hub: &Arc<EventHub>,
+) -> Result<Arc<RemoteNetwork>, Status> {
     let channel = Channel::from_handle(take_handle(&mut announcement.handles, 0)?);
-    let activity = hub.activity(Event::from_handle(take_handle(&mut announcement.handles, 1)?))?;
+    let activity = hub.activity(Event::from_handle(take_handle(
+        &mut announcement.handles,
+        1,
+    )?))?;
     let mut reader = announcement.reader();
-    let mac: [u8; 6] = reader.bytes()?.try_into().map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+    let mac: [u8; 6] = reader
+        .bytes()?
+        .try_into()
+        .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
     let driver = core::str::from_utf8(reader.bytes()?).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
     let driver: &'static str = alloc::boxed::Box::leak(alloc::boxed::Box::<str>::from(driver));
     Arc::try_new(RemoteNetwork {
@@ -154,15 +175,19 @@ impl NetworkDevice for RemoteNetwork {
     }
 
     fn receive(&self, frame: &mut [u8]) -> Result<usize, NetworkError> {
-        let reply = call(&self.channel, &Writer::request(RECEIVE), Vec::new()).map_err(decode_error)?;
+        let reply =
+            call(&self.channel, &Writer::request(RECEIVE), Vec::new()).map_err(decode_error)?;
         let data = reply.reader().bytes().map_err(|_| NetworkError::Device)?;
-        let target = frame.get_mut(..data.len()).ok_or(NetworkError::FrameTooLarge)?;
+        let target = frame
+            .get_mut(..data.len())
+            .ok_or(NetworkError::FrameTooLarge)?;
         target.copy_from_slice(data);
         Ok(data.len())
     }
 
     fn reserve_transmit(&self) -> Result<u16, NetworkError> {
-        let reply = call(&self.channel, &Writer::request(RESERVE), Vec::new()).map_err(decode_error)?;
+        let reply =
+            call(&self.channel, &Writer::request(RESERVE), Vec::new()).map_err(decode_error)?;
         reply.reader().u16().map_err(|_| NetworkError::Device)
     }
 
@@ -180,9 +205,13 @@ impl NetworkDevice for RemoteNetwork {
     }
 
     fn transmit_available(&self) -> bool {
-        call(&self.channel, &Writer::request(TRANSMIT_AVAILABLE), Vec::new())
-            .and_then(|reply| reply.reader().bool())
-            .unwrap_or(false)
+        call(
+            &self.channel,
+            &Writer::request(TRANSMIT_AVAILABLE),
+            Vec::new(),
+        )
+        .and_then(|reply| reply.reader().bool())
+        .unwrap_or(false)
     }
 
     fn poll_completions(&self, budget: usize) -> Result<NetworkCompletion, NetworkError> {

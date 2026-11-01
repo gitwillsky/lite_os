@@ -1,10 +1,11 @@
 //! Linux character-device projection for the selected VirtIO Console byte stream.
 
+use crate::sync::Once;
 use alloc::sync::Arc;
-use native_runtime::sync::Once;
 use syscall_abi::errno;
 
-use crate::{fs::{
+use crate::{
+    fs::{
         FileSystemError,
         {
             DeviceNumber,
@@ -14,7 +15,9 @@ use crate::{fs::{
             },
             devnode,
         },
-    }, ipc::{Pipe, PipeDirection, PipeEnd}};
+    },
+    ipc::{Pipe, PipeDirection, PipeEnd},
+};
 use device_model::{PortDevice, PortError};
 
 const POLLIN: i16 = 0x001;

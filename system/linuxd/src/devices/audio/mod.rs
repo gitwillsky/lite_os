@@ -3,6 +3,8 @@
 //! 每个 PCM output 对应一张卡，提供共享混音与原生格式独占两个互斥端点。
 //! 共享端点按 control 偏好或首个空闲槽分配 [`SUBSTREAMS`] 个子流；原生端点直接提交协商格式的 PCM。
 
+use crate::sync::Mutex;
+use crate::sync::Once;
 use alloc::{
     format,
     string::String,
@@ -10,16 +12,14 @@ use alloc::{
     vec::Vec,
 };
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use crate::sync::Mutex;
 use device_model::{PcmCompletionObserver, PcmOutput};
-use native_runtime::sync::Once;
 
 use crate::{
-    sync::TaskMutex,
     ipc::{Pipe, PipeDirection, PipeEnd},
-    memory::{
-        DeviceMappingSource, PAGE_SIZE},
-    namespace::PidIdentity};
+    memory::{DeviceMappingSource, PAGE_SIZE},
+    namespace::PidIdentity,
+    sync::TaskMutex,
+};
 use device_model::DeviceBacking;
 
 mod codec;

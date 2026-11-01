@@ -1,9 +1,9 @@
 //! 不可挂载的 pseudo inode、诊断 dentry 和真实打开操作；不按显示标签解析 pathname。
+use crate::sync::Mutex;
 use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
 };
-use crate::sync::Mutex;
 
 use super::{
     AccessIdentity, CreateMetadata, DataBacking, DirectoryRead, DirectoryVisitor, FileSystemError,

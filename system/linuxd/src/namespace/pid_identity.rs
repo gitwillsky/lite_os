@@ -1,8 +1,8 @@
 //! 实际 PID identity 与 graph registration；observer Arc 不拥有 namespace 编号占用。
 use crate::namespace::{PidAllocationError, PidKey, PidNamespace, PidReservation};
+use crate::sync::Mutex;
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::mem::MaybeUninit;
-use crate::sync::Mutex;
 
 struct Number {
     namespace: Arc<PidNamespace>,

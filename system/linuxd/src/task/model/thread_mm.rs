@@ -1,10 +1,10 @@
 //! 每个 Thread 独立的 mm handle；其 root Arc 是实际映射 user，而非结构观察引用。
-use alloc::sync::Arc;
 use crate::sync::Mutex;
+use alloc::sync::Arc;
 
 use super::{AddressSpace, TaskControlBlock};
 use crate::memory::MemoryError;
-use crate::{sync::TaskMutexWaitPreparation, memory::MemorySet};
+use crate::{memory::MemorySet, sync::TaskMutexWaitPreparation};
 
 mod membership;
 pub(super) use membership::MmMembership;

@@ -20,10 +20,10 @@ use alloc::vec::Vec;
 use core::fmt::{self, Write};
 pub(crate) use write_access::{InodeAccessLease, InodeWriteAccess};
 
+mod anonymous;
 mod block_claim;
 mod block_ioctl;
 mod block_node;
-mod anonymous;
 pub(crate) mod chardev;
 pub(crate) use chardev::CompletionNotify;
 mod devfs;
@@ -92,8 +92,8 @@ pub(crate) use mount::{
     unmount, unmount_root_read_only,
 };
 pub(crate) use page_cache::{
-    RegularFile, RegularFileWrite, allocate, mapping,
-    statistics as page_cache_statistics, sync_all, sync_inode, truncate,
+    RegularFile, RegularFileWrite, allocate, mapping, statistics as page_cache_statistics,
+    sync_all, sync_inode, truncate,
 };
 pub(crate) use permission::{
     AccessIdentity, CreateMetadata, MAY_ACCESS, MAY_CHDIR, OwnerModeChange,

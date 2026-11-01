@@ -4,6 +4,7 @@
 //! 就绪来源没有回调（readiness 是 task 睡眠/唤醒式的 `WAIT_REGISTRY`），所以这里没有 `Waker` 可唤醒：
 //! [`Interest::attention`] 由 worker 轮询判定。
 
+use crate::sync::Mutex;
 use alloc::sync::{Arc, Weak};
 use core::{
     future::Future,
@@ -11,11 +12,10 @@ use core::{
     sync::atomic::{AtomicBool, Ordering},
     task::{Context, Poll},
 };
-use crate::sync::Mutex;
 
 use crate::{
-    task::TaskControlBlock, file::OpenFileDescription, fs::CompletionNotify,
-    io_uring::Ring, net::SocketCapacityWait,
+    file::OpenFileDescription, fs::CompletionNotify, io_uring::Ring, net::SocketCapacityWait,
+    task::TaskControlBlock,
 };
 
 /// 请求种类：只用于取消匹配和决定 CQE 的发布方式（timeout 的完成不计入事件数）。

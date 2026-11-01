@@ -94,7 +94,11 @@ pub(in crate::task) fn wake_waiting_task_on_current_cpu(
     wake_waiting_task(task, expected, result)
 }
 
-pub(super) fn wake_deadline_task(task: Arc<TaskControlBlock>, wait_id: u64, result: WaitResult) -> bool {
+pub(super) fn wake_deadline_task(
+    task: Arc<TaskControlBlock>,
+    wait_id: u64,
+    result: WaitResult,
+) -> bool {
     wake_waiting_task(task, WaitMembership::Deadline(wait_id), Some(result))
 }
 
@@ -102,27 +106,51 @@ pub(super) fn wake_child_task(task: Arc<TaskControlBlock>, result: WaitResult) -
     wake_waiting_task(task, WaitMembership::Child, Some(result))
 }
 
-pub(super) fn wake_futex_task(task: Arc<TaskControlBlock>, wait_id: u64, result: WaitResult) -> bool {
+pub(super) fn wake_futex_task(
+    task: Arc<TaskControlBlock>,
+    wait_id: u64,
+    result: WaitResult,
+) -> bool {
     wake_waiting_task(task, WaitMembership::Futex(wait_id), Some(result))
 }
 
-pub(super) fn wake_console_task(task: Arc<TaskControlBlock>, wait_id: u64, result: WaitResult) -> bool {
+pub(super) fn wake_console_task(
+    task: Arc<TaskControlBlock>,
+    wait_id: u64,
+    result: WaitResult,
+) -> bool {
     wake_waiting_task(task, WaitMembership::Console(wait_id), Some(result))
 }
 
-pub(super) fn wake_signal_task(task: Arc<TaskControlBlock>, wait_id: u64, result: WaitResult) -> bool {
+pub(super) fn wake_signal_task(
+    task: Arc<TaskControlBlock>,
+    wait_id: u64,
+    result: WaitResult,
+) -> bool {
     wake_waiting_task(task, WaitMembership::Signal(wait_id), Some(result))
 }
 
-pub(super) fn wake_pipe_task(task: Arc<TaskControlBlock>, wait_id: u64, result: WaitResult) -> bool {
+pub(super) fn wake_pipe_task(
+    task: Arc<TaskControlBlock>,
+    wait_id: u64,
+    result: WaitResult,
+) -> bool {
     wake_waiting_task(task, WaitMembership::Pipe(wait_id), Some(result))
 }
 
-pub(super) fn wake_flock_task(task: Arc<TaskControlBlock>, wait_id: u64, result: WaitResult) -> bool {
+pub(super) fn wake_flock_task(
+    task: Arc<TaskControlBlock>,
+    wait_id: u64,
+    result: WaitResult,
+) -> bool {
     wake_waiting_task(task, WaitMembership::AdvisoryLock(wait_id), Some(result))
 }
 
-pub(super) fn wake_poll_task(task: Arc<TaskControlBlock>, wait_id: u64, result: WaitResult) -> bool {
+pub(super) fn wake_poll_task(
+    task: Arc<TaskControlBlock>,
+    wait_id: u64,
+    result: WaitResult,
+) -> bool {
     wake_waiting_task(task, WaitMembership::Poll(wait_id), Some(result))
 }
 
@@ -160,13 +188,17 @@ pub(in crate::task) fn prepare_current_block<Owner>(
     mut owner: Owner,
     publish: impl FnOnce(&mut Owner, Arc<TaskControlBlock>) -> WaitMembership,
 ) -> PreparedBlock {
-    task.scheduling
-        .last_cpu
-        .store(crate::cpu::current_id().index(), core::sync::atomic::Ordering::Relaxed);
+    task.scheduling.last_cpu.store(
+        crate::cpu::current_id().index(),
+        core::sync::atomic::Ordering::Relaxed,
+    );
     {
         let mut scheduling = task.scheduling.state.lock();
         assert!(scheduling.wait.is_none(), "task blocks twice");
-        assert!(scheduling.wait_result.is_none(), "stale wake result before blocking");
+        assert!(
+            scheduling.wait_result.is_none(),
+            "stale wake result before blocking"
+        );
         scheduling.wait = Some(publish(&mut owner, task.clone()));
         match scheduling.run_state() {
             RunState::Running => scheduling.set_run_state(RunState::Blocked),
@@ -208,7 +240,10 @@ pub(crate) fn stop_point(task: &TaskControlBlock) {
     }
     let carrier = task.carrier().expect("stopping task has no carrier thread");
     loop {
-        if !matches!(task.scheduling.state.lock().run_state(), RunState::Stopped { .. }) {
+        if !matches!(
+            task.scheduling.state.lock().run_state(),
+            RunState::Stopped { .. }
+        ) {
             return;
         }
         while carrier.park(native_runtime::native_abi::DEADLINE_INFINITE) != Park::Unparked {}
@@ -295,8 +330,13 @@ pub(crate) fn cpu_runtime_snapshot() -> Result<Vec<(usize, u64)>, ()> {
     let bytes = core::mem::size_of_val(busy.as_slice());
     // SAFETY: `u64` 数组的字节视图，长度与对齐都正确。
     let buffer = unsafe { core::slice::from_raw_parts_mut(busy.as_mut_ptr().cast::<u8>(), bytes) };
-    native_runtime::system::get_info(native_runtime::native_abi::system::CPU_BUSY, buffer).map_err(|_| ())?;
-    Ok(busy.into_iter().enumerate().map(|(cpu, ns)| (cpu, ns / 1000)).collect())
+    native_runtime::system::get_info(native_runtime::native_abi::system::CPU_BUSY, buffer)
+        .map_err(|_| ())?;
+    Ok(busy
+        .into_iter()
+        .enumerate()
+        .map(|(cpu, ns)| (cpu, ns / 1000))
+        .collect())
 }
 
 /// 把线程的 nice 与亲和性下发到承载线程。
@@ -316,7 +356,6 @@ pub(crate) fn apply_scheduling(task: &TaskControlBlock) {
 ///
 /// 执行体没有已准备的承载线程，或承载线程所属进程已终止（地址空间已被销毁，不变量破坏）。
 pub(in crate::task) fn enqueue_new_task(task: Arc<TaskControlBlock>) {
-
     let prepared = task
         .take_prepared_carrier()
         .expect("new task has no prepared carrier thread");

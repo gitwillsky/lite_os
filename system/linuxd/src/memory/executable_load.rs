@@ -31,7 +31,9 @@ fn align_down(value: usize) -> usize {
 }
 
 fn align_up(value: usize) -> Result<usize, ElfLoadError> {
-    value.checked_next_multiple_of(PAGE_SIZE).ok_or(ElfLoadError::InvalidElf)
+    value
+        .checked_next_multiple_of(PAGE_SIZE)
+        .ok_or(ElfLoadError::InvalidElf)
 }
 
 impl MemorySet {
@@ -61,7 +63,10 @@ impl MemorySet {
                 if interpreter.kind != ElfKind::SharedObject {
                     return Err(ElfLoadError::InvalidElf);
                 }
-                (memory.map_elf_image(interpreter, INTERPRETER_BASE)?.entry, INTERPRETER_BASE)
+                (
+                    memory.map_elf_image(interpreter, INTERPRETER_BASE)?.entry,
+                    INTERPRETER_BASE,
+                )
             }
             None => (main.entry, 0),
         };
@@ -79,7 +84,9 @@ impl MemorySet {
             .clamp(STACK_RESERVE_MIN, STACK_RESERVE_MAX)
             & !(PAGE_SIZE - 1);
         let stack_top = memory.trampoline() - PAGE_SIZE;
-        let stack_bottom = stack_top.checked_sub(stack_size).ok_or(ElfLoadError::InvalidElf)?;
+        let stack_bottom = stack_top
+            .checked_sub(stack_size)
+            .ok_or(ElfLoadError::InvalidElf)?;
         memory.insert(Area {
             start: stack_bottom,
             end: stack_top,
@@ -93,7 +100,11 @@ impl MemorySet {
             name: None,
         })?;
         memory.stack = stack_bottom..stack_top;
-        memory.mmap_top = align_down(memory.end.saturating_sub(stack_size.max(MMAP_GAP_MIN) + PAGE_SIZE));
+        memory.mmap_top = align_down(
+            memory
+                .end
+                .saturating_sub(stack_size.max(MMAP_GAP_MIN) + PAGE_SIZE),
+        );
         memory.initialize_heap(align_up(main.max_end)?)?;
 
         let aux = ElfAuxInfo {
@@ -120,8 +131,12 @@ impl MemorySet {
         let mut max_end = 0usize;
         let mut phdr = None;
         for segment in &image.load_segments {
-            let start = bias.checked_add(segment.virtual_address).ok_or(ElfLoadError::InvalidElf)?;
-            let end = start.checked_add(segment.memory_size).ok_or(ElfLoadError::InvalidElf)?;
+            let start = bias
+                .checked_add(segment.virtual_address)
+                .ok_or(ElfLoadError::InvalidElf)?;
+            let end = start
+                .checked_add(segment.memory_size)
+                .ok_or(ElfLoadError::InvalidElf)?;
             if start < PAGE_SIZE || start >= end || end > self.trampoline() {
                 return Err(ElfLoadError::InvalidElf);
             }
@@ -147,13 +162,18 @@ impl MemorySet {
                 let length = file_pages_end - page_start;
                 let backing = match &mapping {
                     Some(shared) => {
-                        let object = shared.object()?.private_view(file_page_offset as u64, length as u64)?;
+                        let object = shared
+                            .object()?
+                            .private_view(file_page_offset as u64, length as u64)?;
                         // 最后一个文件页中越过 p_filesz 的部分属于 bss：在私有副本中清零。
                         if segment.memory_size > segment.file_size && file_end < file_pages_end {
                             let zeros = [0u8; PAGE_SIZE];
                             object
                                 .vmo()
-                                .write(&zeros[..file_pages_end - file_end], (file_end - page_start) as u64)
+                                .write(
+                                    &zeros[..file_pages_end - file_end],
+                                    (file_end - page_start) as u64,
+                                )
                                 .map_err(|_| ElfLoadError::Io)?;
                         }
                         Backing::PrivateFile {
@@ -197,7 +217,11 @@ impl MemorySet {
                     name: None,
                 })?;
             }
-            let anonymous_start = if segment.file_size == 0 { page_start } else { file_pages_end };
+            let anonymous_start = if segment.file_size == 0 {
+                page_start
+            } else {
+                file_pages_end
+            };
             if page_end > anonymous_start {
                 self.replace_with(Area {
                     start: anonymous_start,
@@ -213,11 +237,15 @@ impl MemorySet {
                 })?;
             }
             max_end = max_end.max(end);
-            if segment.file_offset <= image.program_header_offset && header_end <= segment.file_offset + segment.file_size {
+            if segment.file_offset <= image.program_header_offset
+                && header_end <= segment.file_offset + segment.file_size
+            {
                 phdr = start.checked_add(image.program_header_offset - segment.file_offset);
             }
         }
-        let entry = bias.checked_add(image.entry).ok_or(ElfLoadError::InvalidElf)?;
+        let entry = bias
+            .checked_add(image.entry)
+            .ok_or(ElfLoadError::InvalidElf)?;
         if self
             .area_at(entry)
             .is_none_or(|area| !area.permission.contains(MapPermission::X))

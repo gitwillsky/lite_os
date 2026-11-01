@@ -107,17 +107,18 @@ impl DeviceBacking {
     /// 固定失败（IOVA 耗尽或内存不足）。
     pub fn pin(&self, bti: &Bti) -> Result<&[DeviceExtent], Status> {
         let pinned = self.pinned.call_once(|| {
-            let (addresses, pmt) = bti
-                .pin(
-                    bti::READ | bti::WRITE,
-                    &self.vmo,
-                    0,
-                    (self.pages * PAGE_SIZE) as u64,
-                )?;
+            let (addresses, pmt) = bti.pin(
+                bti::READ | bti::WRITE,
+                &self.vmo,
+                0,
+                (self.pages * PAGE_SIZE) as u64,
+            )?;
             let mut extents: Vec<DeviceExtent> = Vec::new();
             for address in addresses {
                 match extents.last_mut() {
-                    Some(last) if last.device_address + (last.pages * PAGE_SIZE) as u64 == address => {
+                    Some(last)
+                        if last.device_address + (last.pages * PAGE_SIZE) as u64 == address =>
+                    {
                         last.pages += 1;
                     }
                     _ => extents.push(DeviceExtent {
@@ -128,7 +129,10 @@ impl DeviceBacking {
             }
             Ok(Pinned { extents, _pmt: pmt })
         });
-        pinned.as_ref().map(|pinned| pinned.extents.as_slice()).map_err(|error| *error)
+        pinned
+            .as_ref()
+            .map(|pinned| pinned.extents.as_slice())
+            .map_err(|error| *error)
     }
 
     /// 已固定的区段数。

@@ -91,7 +91,9 @@ impl SocketError {
 
     /// 线解码；未知编码为 `None`。
     pub fn from_code(code: u8) -> Option<Self> {
-        SOCKET_ERRORS.get(usize::from(code).checked_sub(1)?).copied()
+        SOCKET_ERRORS
+            .get(usize::from(code).checked_sub(1)?)
+            .copied()
     }
 }
 

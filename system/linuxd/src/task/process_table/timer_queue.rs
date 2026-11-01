@@ -1,6 +1,6 @@
 use alloc::sync::{Arc, Weak};
 
-use crate::{file::{TimerError, TimerFdBackend, TimerSetting}};
+use crate::file::{TimerError, TimerFdBackend, TimerSetting};
 use fallible_tree::{FallibleMap, VacantEntry};
 
 mod kernel_wait;
@@ -334,7 +334,9 @@ impl TimerQueue {
 
     /// 最早的到期时间。
     pub(super) fn next_expiration(&self) -> Option<u64> {
-        self.deadline_index.first_key_value().map(|(&(expiration, _), _)| expiration)
+        self.deadline_index
+            .first_key_value()
+            .map(|(&(expiration, _), _)| expiration)
     }
 
     pub(super) fn has_expired(&self, now_ns: u64) -> bool {
@@ -347,10 +349,7 @@ impl TimerQueue {
 fn live_process(
     graph: &super::ProcessGraph,
     tgid: usize,
-) -> Result<
-    &FallibleMap<usize, alloc::sync::Arc<crate::task::TaskControlBlock>>,
-    TimerError,
-> {
+) -> Result<&FallibleMap<usize, alloc::sync::Arc<crate::task::TaskControlBlock>>, TimerError> {
     match graph.nodes.get(&tgid).map(|node| &node.state) {
         Some(super::ProcessState::Live(threads)) => Ok(threads),
         _ => Err(TimerError::NotFound),

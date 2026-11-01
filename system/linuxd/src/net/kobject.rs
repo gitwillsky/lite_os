@@ -1,8 +1,11 @@
-use alloc::sync::{Arc, Weak};
 use crate::sync::Mutex;
-use native_runtime::sync::Once;
+use crate::sync::Once;
+use alloc::sync::{Arc, Weak};
 
-use crate::{ipc::ReceiveBuffer, ipc::{Pipe, PipeDirection, PipeEnd}};
+use crate::{
+    ipc::ReceiveBuffer,
+    ipc::{Pipe, PipeDirection, PipeEnd},
+};
 use fallible_tree::{FallibleMap, VacantEntry};
 
 use super::{

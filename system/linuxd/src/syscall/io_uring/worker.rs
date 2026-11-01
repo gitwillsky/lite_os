@@ -13,22 +13,22 @@
 //!
 //! 不用线程池：N 个阻塞读都在等同一个后续写时，固定大小的池会死锁；一个多路复用线程没有这个上限。
 
+use crate::sync::Mutex;
+use crate::sync::Once;
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use core::{
     future::Future,
     pin::Pin,
     task::{Context, Poll, Waker},
 };
-use crate::sync::Mutex;
-use native_runtime::sync::Once;
 use syscall_abi::errno;
 
 use super::wait::{Cancel, Interest, Target, Waiter};
 use crate::{
-    task::{spawn_kernel_thread, wait_for_poll},
     io_uring::Ring,
     ipc::{Pipe, PipeEnd},
     syscall::poll::{PollWaitKeys, prepare_wait_sources},
+    task::{spawn_kernel_thread, wait_for_poll},
 };
 
 type ChainFuture = Pin<Box<dyn Future<Output = ()> + Send>>;

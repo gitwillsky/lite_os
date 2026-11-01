@@ -28,20 +28,27 @@ pub(super) fn vmo_create(call: &Call<'_>) -> Result<(), Status> {
 }
 
 fn transfer(call: &Call<'_>, write: bool) -> Result<(), Status> {
-    let vmo = call.vmo(call.arg_handle(0), if write { rights::WRITE } else { rights::READ })?;
+    let vmo = call.vmo(
+        call.arg_handle(0),
+        if write { rights::WRITE } else { rights::READ },
+    )?;
     let buffer = call.arg(1);
     let offset = call.arg(2) as u64;
     let length = call.arg(3);
     let mut done = 0;
     while done < length {
         let chunk = (length - done).min(CHUNK);
-        let at = offset.checked_add(done as u64).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
+        let at = offset
+            .checked_add(done as u64)
+            .ok_or(native_abi::ERR_OUT_OF_RANGE)?;
         if write {
             let bytes = call.read_bytes(buffer + done, chunk)?;
             vmo.write(at, &bytes).map_err(vm_status)?;
         } else {
             let mut bytes = alloc::vec::Vec::new();
-            bytes.try_reserve_exact(chunk).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            bytes
+                .try_reserve_exact(chunk)
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
             bytes.resize(chunk, 0);
             vmo.read(at, &mut bytes).map_err(vm_status)?;
             call.write_bytes(buffer + done, &bytes)?;
@@ -77,7 +84,8 @@ pub(super) fn vmo_op_range(call: &Call<'_>) -> Result<(), Status> {
         vmo::OP_ZERO => RangeOp::Zero,
         _ => return Err(native_abi::ERR_INVALID_ARGS),
     };
-    vmo.op_range(op, call.arg(2) as u64, call.arg(3) as u64).map_err(vm_status)
+    vmo.op_range(op, call.arg(2) as u64, call.arg(3) as u64)
+        .map_err(vm_status)
 }
 
 pub(super) fn vmo_create_child(call: &Call<'_>) -> Result<(), Status> {
@@ -99,10 +107,13 @@ pub(super) fn vmo_create_child(call: &Call<'_>) -> Result<(), Status> {
     if kind == ChildKind::Slice && entry.rights & rights::WRITE == 0 {
         child_rights &= !rights::WRITE;
     }
-    let handle = call.process().handles().insert(crate::object::HandleEntry {
-        object: Object::Vmo(child),
-        rights: child_rights,
-    })?;
+    let handle = call
+        .process()
+        .handles()
+        .insert(crate::object::HandleEntry {
+            object: Object::Vmo(child),
+            rights: child_rights,
+        })?;
     if let Err(status) = call.write(call.arg(4), &handle) {
         drop(call.process().handles().remove(handle));
         return Err(status);
@@ -155,7 +166,10 @@ fn ceiling(handle_rights: u32) -> PagePermissions {
 }
 
 fn placement(options: u32, offset: usize) -> Result<crate::vm::Placement, Status> {
-    match (options & vm::SPECIFIC != 0, options & vm::SPECIFIC_OVERWRITE != 0) {
+    match (
+        options & vm::SPECIFIC != 0,
+        options & vm::SPECIFIC_OVERWRITE != 0,
+    ) {
         (false, false) => Ok(crate::vm::Placement::Any),
         (true, false) => Ok(crate::vm::Placement::Specific(offset)),
         (false, true) => Ok(crate::vm::Placement::Overwrite(offset)),
@@ -181,7 +195,14 @@ pub(super) fn vmar_map(call: &Call<'_>) -> Result<(), Status> {
         return Err(native_abi::ERR_ACCESS_DENIED);
     }
     let address = vmar
-        .map(placement(options, call.arg(2))?, vmo, call.arg(4) as u64, call.arg(5), requested, ceiling)
+        .map(
+            placement(options, call.arg(2))?,
+            vmo,
+            call.arg(4) as u64,
+            call.arg(5),
+            requested,
+            ceiling,
+        )
         .map_err(vm_status)?;
     if let Err(status) = call.write(call.arg(6), &(address as u64)) {
         let _ = vmar.unmap(address, call.arg(5));
@@ -205,7 +226,11 @@ pub(super) fn vmar_allocate(call: &Call<'_>) -> Result<(), Status> {
     let options = call.arg_u32(1);
     let parent = call.vmar(call.arg_handle(0), rights::MANAGE)?;
     let child = parent
-        .allocate(placement(options, call.arg(2))?, call.arg(3), permissions(options))
+        .allocate(
+            placement(options, call.arg(2))?,
+            call.arg(3),
+            permissions(options),
+        )
         .map_err(vm_status)?;
     let base = child.info().base as u64;
     let handle = call.publish(Object::Vmar(child.clone()), call.arg(4))?;
@@ -225,7 +250,10 @@ pub(super) fn vmar_destroy(call: &Call<'_>) -> Result<(), Status> {
 
 /// 调试器的跨进程访问：按目标映射背后的 VMO 读写（见 [`crate::vm::AddressSpace::access_debug`]）。
 fn cross_process(call: &Call<'_>, write: bool) -> Result<(), Status> {
-    let process = call.process_handle(call.arg_handle(0), if write { rights::WRITE } else { rights::READ })?;
+    let process = call.process_handle(
+        call.arg_handle(0),
+        if write { rights::WRITE } else { rights::READ },
+    )?;
     let target = process.space().clone();
     let (address, buffer, length) = (call.arg(1), call.arg(2), call.arg(3));
     let mut done = 0;
@@ -235,7 +263,9 @@ fn cross_process(call: &Call<'_>, write: bool) -> Result<(), Status> {
             call.read_bytes(buffer + done, chunk)?
         } else {
             let mut bytes = alloc::vec::Vec::new();
-            bytes.try_reserve_exact(chunk).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            bytes
+                .try_reserve_exact(chunk)
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
             bytes.resize(chunk, 0);
             bytes
         };
@@ -278,7 +308,12 @@ pub(super) fn pager_create_vmo(call: &Call<'_>) -> Result<(), Status> {
         return Err(native_abi::ERR_INVALID_ARGS);
     }
     let port = call.port(call.arg_handle(2), rights::WRITE)?;
-    let vmo = pager.create_vmo(&port, call.arg(3) as u64, call.arg(4) as u64, options & vmo::RESIZABLE != 0)?;
+    let vmo = pager.create_vmo(
+        &port,
+        call.arg(3) as u64,
+        call.arg(4) as u64,
+        options & vmo::RESIZABLE != 0,
+    )?;
     call.publish(Object::Vmo(vmo), call.arg(5)).map(|_| ())
 }
 
@@ -286,8 +321,13 @@ pub(super) fn pager_supply_pages(call: &Call<'_>) -> Result<(), Status> {
     let _pager = call.pager(call.arg_handle(0), rights::MANAGE)?;
     let vmo = call.vmo(call.arg_handle(1), rights::WRITE)?;
     let aux = call.vmo(call.arg_handle(4), rights::READ | rights::WRITE)?;
-    vmo.supply_pages(call.arg(2) as u64, call.arg(3) as u64, &aux, call.arg(5) as u64)
-        .map_err(vm_status)
+    vmo.supply_pages(
+        call.arg(2) as u64,
+        call.arg(3) as u64,
+        &aux,
+        call.arg(5) as u64,
+    )
+    .map_err(vm_status)
 }
 
 pub(super) fn pager_op(call: &Call<'_>) -> Result<(), Status> {
@@ -296,7 +336,9 @@ pub(super) fn pager_op(call: &Call<'_>) -> Result<(), Status> {
     let (offset, length) = (call.arg(3) as u64, call.arg(4) as u64);
     match call.arg_u32(1) {
         native_abi::pager::OP_FAIL => vmo.fail_range(offset, length).map_err(vm_status),
-        native_abi::pager::OP_WRITEBACK_BEGIN => vmo.begin_writeback(offset, length).map_err(vm_status),
+        native_abi::pager::OP_WRITEBACK_BEGIN => {
+            vmo.begin_writeback(offset, length).map_err(vm_status)
+        }
         native_abi::pager::OP_QUERY_DIRTY => {
             let range = vmo.first_dirty_range(offset, length).map_err(vm_status)?;
             let value: [u64; 2] = range.map_or([0, 0], |(start, size)| [start, size]);

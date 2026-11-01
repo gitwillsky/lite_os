@@ -49,7 +49,8 @@ pub fn launch(launch: Launch<'_>) -> Result<(), Status> {
         magic: startup::MAGIC,
         arguments_length: launch.arguments.len() as u64,
     };
-    let mut bytes = Vec::with_capacity(core::mem::size_of::<StartupHeader>() + launch.arguments.len());
+    let mut bytes =
+        Vec::with_capacity(core::mem::size_of::<StartupHeader>() + launch.arguments.len());
     bytes.extend_from_slice(crate::bytes_of(&header));
     bytes.extend_from_slice(launch.arguments);
 
@@ -59,7 +60,11 @@ pub fn launch(launch: Launch<'_>) -> Result<(), Status> {
     handles.push(thread.duplicate(rights::SAME)?.into_handle());
     handles.extend(launch.handles);
     local.write(&bytes, handles)?;
-    launch
-        .process
-        .start(&thread, entry, stack_base + stack_size, remote.into_handle(), 0)
+    launch.process.start(
+        &thread,
+        entry,
+        stack_base + stack_size,
+        remote.into_handle(),
+        0,
+    )
 }

@@ -347,13 +347,11 @@ pub(super) fn route(
             exclusive,
             append,
         };
-        return configure_route(scope, request, change)
-            .map_err(|error| error.errno());
+        return configure_route(scope, request, change).map_err(|error| error.errno());
     }
     if kind != 0 {
         request.kind = route_kind(kind)?;
-        return configure_route(scope, request, DELETE)
-            .map_err(|error| error.errno());
+        return configure_route(scope, request, DELETE).map_err(|error| error.errno());
     }
     // RTN_UNSPEC 删除：FIB 按类型精确匹配，依次尝试每种类型，全部不存在才算 ESRCH。
     for candidate in [

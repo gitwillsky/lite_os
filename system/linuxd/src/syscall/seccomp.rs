@@ -3,9 +3,7 @@
 use syscall_abi::{errno, seccomp::*, signal::SIGSYS};
 
 use super::{SyscallOutcome, user_iovec::UserInputStaging};
-use crate::task::{
-    PendingSignal, SeccompDecision, SeccompError, TaskControlBlock, current_task,
-};
+use crate::task::{PendingSignal, SeccompDecision, SeccompError, TaskControlBlock, current_task};
 use alloc::sync::Arc;
 
 fn result(result: Result<Option<usize>, SeccompError>, flags: u32) -> isize {
@@ -31,10 +29,9 @@ fn result(result: Result<Option<usize>, SeccompError>, flags: u32) -> isize {
 /// prctl STRICT 忽略 filter 参数；277 的 NULL/flags 检查由其独立 codec 执行。
 pub(super) fn set_mode(mode: usize, filter: usize) -> isize {
     match mode {
-        value if value == MODE_STRICT as usize => result(
-            crate::task::enable_strict_seccomp().map(|()| None),
-            0,
-        ),
+        value if value == MODE_STRICT as usize => {
+            result(crate::task::enable_strict_seccomp().map(|()| None), 0)
+        }
         value if value == MODE_FILTER as usize => install_filter(filter, 0),
         _ => -errno::EINVAL,
     }

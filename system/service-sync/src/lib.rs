@@ -14,8 +14,7 @@ extern crate alloc;
 #[cfg(test)]
 extern crate std;
 
-pub use native_runtime::sync::{Mutex, MutexGuard};
-use native_runtime::sync::Once;
+pub use native_runtime::sync::{Mutex, MutexGuard, Once};
 
 mod service_thread;
 mod task_event;
@@ -25,9 +24,7 @@ mod task_wait;
 mod wait_completion;
 pub use service_thread::ServiceThreadTarget;
 pub use task_event::TaskEvent;
-pub use task_mutex::{
-    TaskMutex, TaskMutexGuard, TaskMutexLockError, TaskMutexWaitPreparation,
-};
+pub use task_mutex::{TaskMutex, TaskMutexGuard, TaskMutexLockError, TaskMutexWaitPreparation};
 pub use task_rw_semaphore::{TaskReadGuard, TaskRwSemaphore, TaskWriteGuard};
 
 pub use task_wait::{TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory};

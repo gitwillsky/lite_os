@@ -9,7 +9,9 @@ impl DirectWrite<'_> {
             return Ok(0);
         }
         let file = self.cached.file;
-        let end = offset.checked_add(input.len() as u64).ok_or(FileSystemError::InvalidOperation)?;
+        let end = offset
+            .checked_add(input.len() as u64)
+            .ok_or(FileSystemError::InvalidOperation)?;
         let first = offset & !(PAGE_SIZE as u64 - 1);
         let last = end.next_multiple_of(PAGE_SIZE as u64);
         let _operation = file.lock(&file.operation)?;
@@ -23,7 +25,10 @@ impl DirectWrite<'_> {
 
     pub(super) fn append(&self, input: &[u8], limit: u64) -> Result<(u64, usize), FileSystemError> {
         let offset = self.cached.file.inode.size();
-        let count = usize::try_from(limit.saturating_sub(offset)).unwrap_or(usize::MAX).min(input.len());
-        self.write(offset, &input[..count]).map(|written| (offset, written))
+        let count = usize::try_from(limit.saturating_sub(offset))
+            .unwrap_or(usize::MAX)
+            .min(input.len());
+        self.write(offset, &input[..count])
+            .map(|written| (offset, written))
     }
 }

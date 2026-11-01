@@ -1,7 +1,7 @@
 //! VirtIO Sound device ID 25 的单 playback-stream adapter。
 
-use alloc::{sync::Arc, vec::Vec};
 use crate::sync::Mutex;
+use alloc::{sync::Arc, vec::Vec};
 use native_runtime::sync::Once;
 
 use super::{
@@ -10,13 +10,10 @@ use super::{
     queue::{DmaBuffer, VirtQueue},
 };
 use crate::io_completion::CompletionSource;
+use crate::{interrupt::InterruptError, interrupt::InterruptHandler, interrupt::InterruptVector};
 use device_model::{
     MAX_PCM_PERIOD_BYTES, PCM_CHANNELS, PCM_PERIODS, PCM_RATES, PcmCapabilities,
     PcmCompletionObserver, PcmConfiguration, PcmFormat, PcmOutput, PcmOutputError,
-};
-use crate::{
-    interrupt::InterruptError, interrupt::InterruptHandler,
-    interrupt::InterruptVector,
 };
 
 mod wire;

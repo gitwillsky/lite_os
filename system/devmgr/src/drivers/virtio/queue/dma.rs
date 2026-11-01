@@ -8,11 +8,11 @@
 use alloc::{boxed::Box, vec::Vec};
 use core::ops::{Deref, DerefMut, Range};
 
-#[cfg(not(test))]
-use native_runtime::native_abi::PAGE_SIZE;
 use device_model::{DeviceBacking, DeviceExtent};
 #[cfg(not(test))]
 use native_runtime::Bti;
+#[cfg(not(test))]
+use native_runtime::native_abi::PAGE_SIZE;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 /// fixed DMA mapping 在 descriptor publication 前的构造错误。
@@ -45,9 +45,14 @@ struct DmaSegment {
 
 /// 把固定区段截成覆盖 `[0, length)` 的 segment 表。
 #[cfg(not(test))]
-fn segments_from_extents(extents: &[DeviceExtent], length: usize) -> Result<Box<[DmaSegment]>, DmaMappingError> {
+fn segments_from_extents(
+    extents: &[DeviceExtent],
+    length: usize,
+) -> Result<Box<[DmaSegment]>, DmaMappingError> {
     let mut segments = Vec::new();
-    segments.try_reserve_exact(extents.len()).map_err(|_| DmaMappingError::OutOfMemory)?;
+    segments
+        .try_reserve_exact(extents.len())
+        .map_err(|_| DmaMappingError::OutOfMemory)?;
     let mut offset = 0usize;
     for extent in extents {
         if offset >= length {
@@ -85,7 +90,11 @@ impl FixedStorage {
         let segments = segments_from_extents(extents, size)?;
         // 映射只经本存储的拥有者访问，借用规则由 DmaBuffer 的 `&`/`&mut` 方法维持。
         let base = backing.cpu_address().ok_or(DmaMappingError::OutOfMemory)?;
-        Ok(Self { _backing: backing, base, segments })
+        Ok(Self {
+            _backing: backing,
+            base,
+            segments,
+        })
     }
 }
 
@@ -302,7 +311,8 @@ impl DmaSource<'_> {
             #[cfg(not(test))]
             Self::Backing(backing) => {
                 let mut offset = 0;
-                for extent in (0..backing.extent_count()).filter_map(|index| backing.extent(index)) {
+                for extent in (0..backing.extent_count()).filter_map(|index| backing.extent(index))
+                {
                     let length = extent.pages * PAGE_SIZE;
                     visit(DmaSegment {
                         device_address: extent.device_address,
@@ -395,9 +405,21 @@ mod tests {
 
     fn segments() -> [DmaSegment; 3] {
         [
-            DmaSegment { device_address: 0x1ffe, offset: 0, length: 2 },
-            DmaSegment { device_address: 0x5000, offset: 2, length: 4096 },
-            DmaSegment { device_address: 0x9000, offset: 4098, length: 4098 },
+            DmaSegment {
+                device_address: 0x1ffe,
+                offset: 0,
+                length: 2,
+            },
+            DmaSegment {
+                device_address: 0x5000,
+                offset: 2,
+                length: 4096,
+            },
+            DmaSegment {
+                device_address: 0x9000,
+                offset: 4098,
+                length: 4098,
+            },
         ]
     }
 
@@ -411,8 +433,13 @@ mod tests {
         };
         assert_eq!(slice.segment_count(), 3);
         let mut observed = Vec::new();
-        slice.for_each_segment(|address, length, writable| observed.push((address, length, writable)));
-        assert_eq!(observed, [(0x1fff, 1, true), (0x5000, 4096, true), (0x9000, 1, true)]);
+        slice.for_each_segment(|address, length, writable| {
+            observed.push((address, length, writable))
+        });
+        assert_eq!(
+            observed,
+            [(0x1fff, 1, true), (0x5000, 4096, true), (0x9000, 1, true)]
+        );
     }
 
     #[test]

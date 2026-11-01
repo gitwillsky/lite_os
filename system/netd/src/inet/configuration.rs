@@ -1,8 +1,5 @@
 use super::{
-    InterfaceState, NetworkStack,
-    interface::NetworkInterface,
-    route::RoutingTable,
-    stack,
+    InterfaceState, NetworkStack, interface::NetworkInterface, route::RoutingTable, stack,
 };
 use crate::namespace::Namespace;
 use alloc::vec::Vec;
@@ -202,7 +199,14 @@ pub(crate) fn configure_route(
     if change.delete {
         routing.remove(request)
     } else {
-        routing.insert(request, interfaces.as_slice(), change.replace, change.create, change.exclusive, change.append)
+        routing.insert(
+            request,
+            interfaces.as_slice(),
+            change.replace,
+            change.create,
+            change.exclusive,
+            change.append,
+        )
     }
 }
 /// 当前实际 FIB 及设备名字；快照没有可写路由权，也不派生缺省路由。

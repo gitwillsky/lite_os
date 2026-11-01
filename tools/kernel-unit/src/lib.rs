@@ -127,15 +127,6 @@ mod ipc;
 #[allow(dead_code)]
 mod fs;
 
-#[cfg(test)]
-mod ext4_cost_tests;
-
-#[cfg(test)]
-mod ext4_recovery_tests;
-
-#[cfg(test)]
-mod ext4_conformance_tests;
-
 // 与 kernel `platform::qemu_virt` 相同的模块形状，使生产 DTB 解码器的 `super::super` 路径成立。
 // inline module 上的 `#[path]` 把其子模块的基准目录设为 kernel 的真实 `qemu_virt/`。
 #[cfg(test)]

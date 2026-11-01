@@ -9,17 +9,17 @@
 //! 在锁外逐个入队并唤醒 reader，所以不会在持有注册表锁时取队列锁或调度器锁。锁顺序：实例的 watch
 //! 列表 → 注册表；任何路径都不在持有注册表锁时再取实例的 watch 列表。
 
+use crate::sync::Mutex;
 use alloc::{sync::Arc, sync::Weak, vec::Vec};
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use crate::sync::Mutex;
 use syscall_abi::errno;
 
 use super::{
     Inode, InodeType, OpenedFile,
     chardev::{self, DeviceError, DeviceFile, DeviceWaitSources, IoctlCall, UserFault, UserOutput},
 };
+use crate::ipc::{Pipe, PipeEnd};
 use crate::namespace::{UserNamespace, UserResource, UserResourceCharge};
-use crate::{ipc::{Pipe, PipeEnd}};
 use fallible_tree::FallibleMap;
 use queue::{Event, EventQueue};
 mod instance;

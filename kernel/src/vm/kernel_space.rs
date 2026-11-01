@@ -14,8 +14,10 @@ use spin::{Mutex, Once};
 use super::page_table::{PagePermissions, PageTable};
 use super::translation::TranslationCommit;
 use crate::arch::mmu::AddressSpaceKind;
+use crate::memory::{
+    self, FrameTracker, PAGE_SIZE, PhysicalAddress, VirtualAddress, VirtualPageNumber,
+};
 use fallible_tree::FallibleMap;
-use crate::memory::{self, FrameTracker, PAGE_SIZE, PhysicalAddress, VirtualAddress, VirtualPageNumber};
 
 /// 由 frame 支撑的内核区间（kernel stack）。
 struct FramedRegion {
@@ -60,8 +62,9 @@ impl KernelSpace {
         if end <= start {
             return;
         }
-        let physical = crate::arch::mmu::virtual_to_physical(usize::from(VirtualAddress::from(start)))
-            .expect("kernel range is outside the architecture direct map");
+        let physical =
+            crate::arch::mmu::virtual_to_physical(usize::from(VirtualAddress::from(start)))
+                .expect("kernel range is outside the architecture direct map");
         let mut commit = TranslationCommit::new();
         self.page_table
             .map_contiguous_range(
@@ -93,13 +96,19 @@ impl KernelSpace {
         for _ in 0..pages {
             frames.push(memory::frame_allocator::alloc().ok_or(())?);
         }
-        let entry = FallibleMap::try_prepare(start, FramedRegion { end, frames }).map_err(|_| ())?;
+        let entry =
+            FallibleMap::try_prepare(start, FramedRegion { end, frames }).map_err(|_| ())?;
         let mut commit = TranslationCommit::new();
         for (index, frame) in entry.value().frames.iter().enumerate() {
             let page = VirtualPageNumber::from_vpn(start.as_usize() + index);
             if self
                 .page_table
-                .map(page, frame.ppn, permissions | PagePermissions::GLOBAL, &mut commit)
+                .map(
+                    page,
+                    frame.ppn,
+                    permissions | PagePermissions::GLOBAL,
+                    &mut commit,
+                )
                 .is_err()
             {
                 for mapped in 0..index {
@@ -156,7 +165,8 @@ impl KernelSpace {
         }
         let start = PhysicalAddress::from(range.start).floor();
         let end = PhysicalAddress::from(range.end).ceil();
-        let virtual_start = crate::arch::mmu::physical_to_virtual(usize::from(PhysicalAddress::from(start)));
+        let virtual_start =
+            crate::arch::mmu::physical_to_virtual(usize::from(PhysicalAddress::from(start)));
         let mut commit = TranslationCommit::new();
         for (index, page) in (start.as_usize()..end.as_usize()).enumerate() {
             let vpn = VirtualAddress::from(virtual_start).floor();
@@ -168,7 +178,10 @@ impl KernelSpace {
                 .map(
                     vpn,
                     page.into(),
-                    PagePermissions::READ | PagePermissions::WRITE | PagePermissions::DEVICE | PagePermissions::GLOBAL,
+                    PagePermissions::READ
+                        | PagePermissions::WRITE
+                        | PagePermissions::DEVICE
+                        | PagePermissions::GLOBAL,
                     &mut commit,
                 )
                 .map_err(|_| ())?;
@@ -197,7 +210,10 @@ impl KernelSpace {
 ///
 /// 启动期映射失败或重复初始化时 fail-stop。
 pub(crate) fn initialize() {
-    assert!(KERNEL_SPACE.get().is_none(), "kernel space initialized twice");
+    assert!(
+        KERNEL_SPACE.get().is_none(),
+        "kernel space initialized twice"
+    );
     crate::arch::mmu::initialize_kernel_mmio(crate::platform::kernel_mmio_regions());
     let mut space = KernelSpace {
         page_table: PageTable::try_new(AddressSpaceKind::Kernel)

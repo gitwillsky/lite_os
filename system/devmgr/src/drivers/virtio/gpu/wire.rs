@@ -1,6 +1,6 @@
-use native_runtime::native_abi::PAGE_SIZE;
 use device_model::DeviceBacking;
 use native_runtime::Bti;
+use native_runtime::native_abi::PAGE_SIZE;
 
 use super::{DisplayError, DisplayMode, DisplayRect};
 
@@ -153,17 +153,28 @@ pub(super) fn prepare_attach(
         u32::try_from(extents.len()).map_err(|_| DisplayError::Device)?,
     )
     .ok_or(DisplayError::Device)?;
-    let length = extents.len().checked_mul(ENTRY_SIZE).ok_or(DisplayError::Device)?;
+    let length = extents
+        .len()
+        .checked_mul(ENTRY_SIZE)
+        .ok_or(DisplayError::Device)?;
     let mut bytes = alloc::vec::Vec::new();
-    bytes.try_reserve_exact(length).map_err(|_| DisplayError::Device)?;
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| DisplayError::Device)?;
     for extent in extents {
-        let size = u32::try_from(extent.pages.checked_mul(PAGE_SIZE).ok_or(DisplayError::Device)?)
-            .map_err(|_| DisplayError::InvalidRectangle)?;
+        let size = u32::try_from(
+            extent
+                .pages
+                .checked_mul(PAGE_SIZE)
+                .ok_or(DisplayError::Device)?,
+        )
+        .map_err(|_| DisplayError::InvalidRectangle)?;
         bytes.extend_from_slice(&extent.device_address.to_le_bytes());
         bytes.extend_from_slice(&size.to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes());
     }
-    let entries = DeviceBacking::try_allocate_contiguous(length.div_ceil(PAGE_SIZE), bti).ok_or(DisplayError::Device)?;
+    let entries = DeviceBacking::try_allocate_contiguous(length.div_ceil(PAGE_SIZE), bti)
+        .ok_or(DisplayError::Device)?;
     entries.write(0, &bytes).map_err(|_| DisplayError::Device)?;
     entries.pin(bti).map_err(|_| DisplayError::Device)?;
     let entries = alloc::sync::Arc::try_new(entries).map_err(|_| DisplayError::Device)?;

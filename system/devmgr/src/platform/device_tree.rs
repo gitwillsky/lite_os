@@ -43,7 +43,11 @@ fn be_u32(bytes: &[u8]) -> u32 {
 }
 
 fn be_u64(bytes: &[u8]) -> u64 {
-    u64::from_be_bytes(bytes.try_into().expect("DTB value must contain eight bytes"))
+    u64::from_be_bytes(
+        bytes
+            .try_into()
+            .expect("DTB value must contain eight bytes"),
+    )
 }
 
 /// 解码一个中断说明符为平台中断向量。
@@ -90,7 +94,10 @@ fn decode_pci_interrupt_map(bytes: &[u8], routes: &mut [[u32; 4]; 4]) {
         let Some(vector) = decode_interrupt(&cells[(5 + PARENT_ADDRESS_CELLS) * 4..]) else {
             continue;
         };
-        if let Some(route) = routes.get_mut(slot).and_then(|pins| pins.get_mut(pin.wrapping_sub(1))) {
+        if let Some(route) = routes
+            .get_mut(slot)
+            .and_then(|pins| pins.get_mut(pin.wrapping_sub(1)))
+        {
             *route = vector;
         }
     }
@@ -179,7 +186,11 @@ pub(crate) fn parse(dtb: Dtb<'_>) -> DeviceFacts {
             } else if name == Str::from("interrupt-map") {
                 decode_pci_interrupt_map(value, &mut pci.intx);
             } else if name == Str::from("iommu-map") && value.len() >= 16 {
-                pci.stream_map = Some((be_u32(&value[0..4]), be_u32(&value[8..12]), be_u32(&value[12..16])));
+                pci.stream_map = Some((
+                    be_u32(&value[0..4]),
+                    be_u32(&value[8..12]),
+                    be_u32(&value[12..16]),
+                ));
             }
             WalkOperation::StepOver
         }

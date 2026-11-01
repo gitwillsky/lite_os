@@ -100,18 +100,10 @@ fn wake_claimed_pipe(claimed: Option<wait_registry::ClaimedWait>, current_cpu: b
         }
         match claimed.kind {
             IndexedWaitKind::Pipe { .. } => {
-                crate::task::processor::wake_pipe_task(
-                    claimed.task,
-                    claimed.id,
-                    WaitResult::Woken,
-                );
+                crate::task::processor::wake_pipe_task(claimed.task, claimed.id, WaitResult::Woken);
             }
             IndexedWaitKind::Poll => {
-                crate::task::processor::wake_poll_task(
-                    claimed.task,
-                    claimed.id,
-                    WaitResult::Woken,
-                );
+                crate::task::processor::wake_poll_task(claimed.task, claimed.id, WaitResult::Woken);
             }
             _ => panic!("pipe index contains non-pipe wait"),
         }
@@ -152,8 +144,7 @@ fn wait_for_pipe_until(
         || {
             if pipe.wait_ready(condition) {
                 Some(WaitResult::Woken)
-            } else if deadline.is_some_and(|value| value <= crate::time::get_time_ns())
-            {
+            } else if deadline.is_some_and(|value| value <= crate::time::get_time_ns()) {
                 Some(WaitResult::TimedOut)
             } else if task.has_deliverable_signal() {
                 Some(WaitResult::Interrupted)

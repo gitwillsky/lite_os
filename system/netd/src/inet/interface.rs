@@ -4,10 +4,10 @@ use super::{
     device::{EthernetDevice, ProtocolDevice},
     ipv4, now,
 };
-use network_protocol::SocketError;
-use device_model::network::NetworkDevice;
 use alloc::sync::Arc;
 use core::net::Ipv4Addr;
+use device_model::network::NetworkDevice;
+use network_protocol::SocketError;
 use smoltcp::{
     iface::{Config, Interface},
     wire::{EthernetAddress, HardwareAddress, IpCidr},

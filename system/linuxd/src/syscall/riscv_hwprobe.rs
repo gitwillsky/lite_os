@@ -1,4 +1,4 @@
-use crate::{task::current_task, system};
+use crate::{system, task::current_task};
 
 use super::errno;
 

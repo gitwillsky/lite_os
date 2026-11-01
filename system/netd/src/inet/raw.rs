@@ -12,9 +12,11 @@ use smoltcp::{
 
 use super::{InetEndpoint, InetSocket, NetworkStack, from_ip, ipv4, stack, try_allocate_endpoint};
 use crate::{namespace::Namespace, receive::ReceiveBuffer};
-use native_runtime::Event;
-use network_protocol::{InetAddress, InternetPacketInfo, InternetSendPacketInfo, SocketError, SocketPollState};
 use fallible_tree::FallibleMap;
+use native_runtime::Event;
+use network_protocol::{
+    InetAddress, InternetPacketInfo, InternetSendPacketInfo, SocketError, SocketPollState,
+};
 
 const IPV4_HEADER_LENGTH: usize = 20;
 const RAW_PACKET_SLOTS: usize = 8;

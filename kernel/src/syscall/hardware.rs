@@ -11,7 +11,8 @@ pub(super) fn resource_create(call: &Call<'_>) -> Result<(), Status> {
     let parent = call.resource(call.arg_handle(0), 0)?;
     let child = parent.create_child(call.arg_u32(1), call.arg(2) as u64, call.arg(3) as u64)?;
     let child = Arc::try_new(child).map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    call.publish(Object::Resource(child), call.arg(4)).map(|_| ())
+    call.publish(Object::Resource(child), call.arg(4))
+        .map(|_| ())
 }
 
 pub(super) fn interrupt_create(call: &Call<'_>) -> Result<(), Status> {
@@ -26,7 +27,8 @@ pub(super) fn interrupt_create(call: &Call<'_>) -> Result<(), Status> {
     }
     let interrupt = Interrupt::create(vector, options & native_abi::interrupt::LEVEL != 0)?;
     let interrupt = Arc::try_new(interrupt).map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    call.publish(Object::Interrupt(interrupt), call.arg(3)).map(|_| ())
+    call.publish(Object::Interrupt(interrupt), call.arg(3))
+        .map(|_| ())
 }
 
 pub(super) fn interrupt_wait(call: &Call<'_>) -> Result<(), Status> {
@@ -62,7 +64,8 @@ pub(super) fn iommu_create(call: &Call<'_>) -> Result<(), Status> {
 
 pub(super) fn bti_create(call: &Call<'_>) -> Result<(), Status> {
     let iommu = call.iommu(call.arg_handle(0), 0)?;
-    let bti = Arc::try_new(Bti::create(&iommu, call.arg_u32(1))).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    let bti = Arc::try_new(Bti::create(&iommu, call.arg_u32(1)))
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     call.publish(Object::Bti(bti), call.arg(2)).map(|_| ())
 }
 
@@ -72,8 +75,16 @@ pub(super) fn bti_pin(call: &Call<'_>) -> Result<(), Status> {
         return Err(native_abi::ERR_INVALID_ARGS);
     }
     let writable = options & native_abi::bti::WRITE != 0;
-    let bti = call.bti(call.arg_handle(0), rights::READ | if writable { rights::WRITE } else { 0 })?;
-    let vmo_rights = rights::MAP | if writable { rights::WRITE } else { rights::READ };
+    let bti = call.bti(
+        call.arg_handle(0),
+        rights::READ | if writable { rights::WRITE } else { 0 },
+    )?;
+    let vmo_rights = rights::MAP
+        | if writable {
+            rights::WRITE
+        } else {
+            rights::READ
+        };
     let vmo = call.vmo(call.arg_handle(2), vmo_rights)?;
     let pmt = bti.pin(&vmo, call.arg(3) as u64, call.arg(4) as u64, writable)?;
     let addresses = pmt.addresses();
@@ -94,7 +105,10 @@ pub(super) fn pmt_unpin(call: &Call<'_>) -> Result<(), Status> {
 }
 
 /// 根 resource 检查。
-pub(super) fn require_root(call: &Call<'_>, handle: native_abi::Handle) -> Result<Arc<Resource>, Status> {
+pub(super) fn require_root(
+    call: &Call<'_>,
+    handle: native_abi::Handle,
+) -> Result<Arc<Resource>, Status> {
     let resource = call.resource(handle, 0)?;
     if resource.is_root() {
         Ok(resource)

@@ -42,7 +42,10 @@ fn u64_at(image: &[u8], offset: usize) -> Result<usize, Status> {
 /// 不是当前架构的静态可执行文件（`ERR_NOT_SUPPORTED`）、格式损坏或地址不在 `vmar` 内
 /// （`ERR_INVALID_ARGS`），以及映射失败。
 pub fn load(image: &[u8], vmar: &Vmar) -> Result<usize, Status> {
-    if image.get(..4) != Some(b"\x7fELF".as_slice()) || image.get(4) != Some(&2) || image.get(5) != Some(&1) {
+    if image.get(..4) != Some(b"\x7fELF".as_slice())
+        || image.get(4) != Some(&2)
+        || image.get(5) != Some(&1)
+    {
         return Err(native_abi::ERR_NOT_SUPPORTED);
     }
     if u16_at(image, 16)? != ET_EXEC || u16_at(image, 18)? != EXPECTED_MACHINE {
@@ -78,7 +81,12 @@ pub fn load(image: &[u8], vmar: &Vmar) -> Result<usize, Status> {
             .ok_or(native_abi::ERR_INVALID_ARGS)?
             .next_multiple_of(page);
         let content = image
-            .get(file_offset..file_offset.checked_add(file_size).ok_or(native_abi::ERR_INVALID_ARGS)?)
+            .get(
+                file_offset
+                    ..file_offset
+                        .checked_add(file_size)
+                        .ok_or(native_abi::ERR_INVALID_ARGS)?,
+            )
             .ok_or(native_abi::ERR_INVALID_ARGS)?;
         let vmo = Vmo::create((end - start) as u64, 0)?;
         vmo.write(content, (address - start) as u64)?;
@@ -92,7 +100,9 @@ pub fn load(image: &[u8], vmar: &Vmar) -> Result<usize, Status> {
         if flags & PF_X != 0 {
             options |= native_abi::vm::EXECUTE;
         }
-        let offset = start.checked_sub(base).ok_or(native_abi::ERR_INVALID_ARGS)?;
+        let offset = start
+            .checked_sub(base)
+            .ok_or(native_abi::ERR_INVALID_ARGS)?;
         vmar.map(options, offset, &vmo, 0, end - start)?;
     }
     Ok(entry)

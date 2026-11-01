@@ -61,7 +61,9 @@ pub(super) fn find<'a>(archive: &'a [u8], path: &[u8]) -> Result<Option<Entry<'a
     let path = normalize(path);
     let mut offset = 0;
     loop {
-        let header = archive.get(offset..offset + HEADER).ok_or(CpioError::Truncated)?;
+        let header = archive
+            .get(offset..offset + HEADER)
+            .ok_or(CpioError::Truncated)?;
         if &header[..6] != MAGIC {
             return Err(CpioError::Malformed);
         }

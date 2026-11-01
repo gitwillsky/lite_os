@@ -6,7 +6,6 @@ use super::{
     write_address,
 };
 use crate::{
-    task::{current_task, send_thread_signal},
     file::OpenFileDescription,
     net::{Socket, SocketIoDirection, SocketSendError},
     syscall::{
@@ -16,6 +15,7 @@ use crate::{
             bounded_staging_capacity, import_iovecs, project_total_length, validate_user_buffers,
         },
     },
+    task::{current_task, send_thread_signal},
 };
 
 const MESSAGE_HEADER_SIZE: usize = 56;

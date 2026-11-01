@@ -34,7 +34,10 @@ static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 ///
 /// 重复初始化或分配失败。
 pub(crate) fn initialize() {
-    assert!(CPU_STATES.get().is_none(), "memory barrier initialized twice");
+    assert!(
+        CPU_STATES.get().is_none(),
+        "memory barrier initialized twice"
+    );
     let mut states = Vec::new();
     states
         .try_reserve_exact(cpu::count())
@@ -52,7 +55,9 @@ fn states() -> &'static [BarrierCpuState] {
 
 fn next_generation() -> u64 {
     NEXT_GENERATION
-        .try_update(Ordering::Relaxed, Ordering::Relaxed, |generation| generation.checked_add(1))
+        .try_update(Ordering::Relaxed, Ordering::Relaxed, |generation| {
+            generation.checked_add(1)
+        })
         .expect("memory barrier generation exhausted")
 }
 

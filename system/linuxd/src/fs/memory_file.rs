@@ -62,7 +62,11 @@ fn pages_for(length: u64) -> u64 {
 }
 
 impl MemoryFile {
-    pub(super) fn new(id: SharedFileId, budget: Arc<StorageBudget>, allow_sealing: bool) -> Result<Arc<Self>, FileSystemError> {
+    pub(super) fn new(
+        id: SharedFileId,
+        budget: Arc<StorageBudget>,
+        allow_sealing: bool,
+    ) -> Result<Arc<Self>, FileSystemError> {
         Arc::try_new(Self {
             id,
             budget,
@@ -84,7 +88,9 @@ impl MemoryFile {
     }
 
     fn sequence(&self) -> Result<TaskMutexGuard<'_, ()>, FileSystemError> {
-        self.write_sequence.lock().map_err(|_| FileSystemError::OutOfMemory)
+        self.write_sequence
+            .lock()
+            .map_err(|_| FileSystemError::OutOfMemory)
     }
 
     pub(crate) fn id(&self) -> SharedFileId {
@@ -213,7 +219,10 @@ impl MemoryFile {
     ) -> Result<(), FileSystemError> {
         let _sequence = self.sequence()?;
         let mut state = self.state()?;
-        state.seals.check_truncate(self.size(), size).map_err(seal_error)?;
+        state
+            .seals
+            .check_truncate(self.size(), size)
+            .map_err(seal_error)?;
         let mut metadata = prepare()?;
         self.resize_locked(&mut state, size)?;
         drop(state);
@@ -222,9 +231,16 @@ impl MemoryFile {
         Ok(())
     }
 
-    pub(super) fn allocate_with_metadata(&self, offset: u64, length: u64, modified: impl FnOnce()) -> Result<(), FileSystemError> {
+    pub(super) fn allocate_with_metadata(
+        &self,
+        offset: u64,
+        length: u64,
+        modified: impl FnOnce(),
+    ) -> Result<(), FileSystemError> {
         let _sequence = self.sequence()?;
-        let end = offset.checked_add(length).ok_or(FileSystemError::InvalidOperation)?;
+        let end = offset
+            .checked_add(length)
+            .ok_or(FileSystemError::InvalidOperation)?;
         let mut state = self.state()?;
         let current = self.size();
         state.seals.check_growth(current, end).map_err(seal_error)?;
@@ -257,7 +273,9 @@ impl MemoryFile {
             }
             mode = if may_write && allowed {
                 self.writable_mappings
-                    .try_update(Ordering::AcqRel, Ordering::Acquire, |count| count.checked_add(1))
+                    .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                        count.checked_add(1)
+                    })
                     .map_err(|_| FileSystemError::OutOfMemory)?;
                 MappingWrite::SharedWritable
             } else {
@@ -271,7 +289,6 @@ impl MemoryFile {
         .map_err(|_| FileSystemError::OutOfMemory)?;
         Ok(mapping as Arc<dyn SharedFileMapping>)
     }
-
 }
 
 impl Drop for MemoryFile {
@@ -297,7 +314,11 @@ impl MemoryWrite<'_> {
         self.file.write_locked(offset, input)
     }
 
-    pub(crate) fn append(&self, input: &[u8], size_limit: u64) -> Result<(u64, usize), FileSystemError> {
+    pub(crate) fn append(
+        &self,
+        input: &[u8],
+        size_limit: u64,
+    ) -> Result<(u64, usize), FileSystemError> {
         let offset = self.file.size();
         let allowed = usize::try_from(size_limit.saturating_sub(offset))
             .unwrap_or(usize::MAX)
@@ -325,14 +346,19 @@ struct MemoryMapping {
 impl Drop for MemoryMapping {
     fn drop(&mut self) {
         if matches!(self.write, MappingWrite::SharedWritable) {
-            assert!(self.file.writable_mappings.fetch_sub(1, Ordering::AcqRel) != 0, "mapping lease underflow");
+            assert!(
+                self.file.writable_mappings.fetch_sub(1, Ordering::AcqRel) != 0,
+                "mapping lease underflow"
+            );
         }
     }
 }
 
 impl core::fmt::Debug for MemoryMapping {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        formatter.debug_struct("MemoryMapping").finish_non_exhaustive()
+        formatter
+            .debug_struct("MemoryMapping")
+            .finish_non_exhaustive()
     }
 }
 

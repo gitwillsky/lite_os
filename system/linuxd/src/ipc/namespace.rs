@@ -10,10 +10,10 @@ use super::{
 use crate::namespace::{
     NamespaceError, NamespaceOwner, NamespaceType, UserNamespace, UserResource, UserResourceCharge,
 };
+use crate::sync::Mutex;
+use crate::sync::Once;
 use alloc::sync::Arc;
 pub(crate) use description::{IpcDescription, IpcTable};
-use crate::sync::Mutex;
-use native_runtime::sync::Once;
 use syscall_abi::{
     capability::Capability,
     ipc::{IPC_CREAT, IPC_EXCL},

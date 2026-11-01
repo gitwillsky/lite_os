@@ -150,7 +150,10 @@ impl ReadyTransition<'_> {
 
 impl Drop for ReadyTransition<'_> {
     fn drop(&mut self) {
-        assert!(self.committed, "Ready state published without per-CPU membership commit");
+        assert!(
+            self.committed,
+            "Ready state published without per-CPU membership commit"
+        );
     }
 }
 
@@ -171,7 +174,10 @@ impl ReadyRetirement<'_> {
 
 impl Drop for ReadyRetirement<'_> {
     fn drop(&mut self) {
-        assert!(self.committed, "Ready state retired without per-CPU membership commit");
+        assert!(
+            self.committed,
+            "Ready state retired without per-CPU membership commit"
+        );
     }
 }
 
@@ -193,7 +199,10 @@ impl SchedulingState {
 
     /// 发布新的 Ready generation，使此前所有队列 entry 失效。
     pub(crate) fn transition_to_ready(&mut self, cpu: CpuId) -> ReadyTransition<'_> {
-        assert!(self.cpu_affinity.allows(cpu), "Ready transition selected a disallowed CPU");
+        assert!(
+            self.cpu_affinity.allows(cpu),
+            "Ready transition selected a disallowed CPU"
+        );
         let previous_cpu = match self.run_state {
             RunState::Ready { cpu, .. } => Some(cpu),
             RunState::New
@@ -291,8 +300,14 @@ impl Policy {
 
     /// 开始一个 active slice。
     pub(crate) fn begin(&mut self, now_us: u64) {
-        let encoded = now_us.checked_add(1).and_then(NonZeroU64::new).expect("runtime clock exhausted");
-        assert!(self.active_start.replace(encoded).is_none(), "thread dispatched with an active slice");
+        let encoded = now_us
+            .checked_add(1)
+            .and_then(NonZeroU64::new)
+            .expect("runtime clock exhausted");
+        assert!(
+            self.active_start.replace(encoded).is_none(),
+            "thread dispatched with an active slice"
+        );
         assert_eq!(
             core::mem::replace(&mut self.active_priority, self.priority),
             PRIORITY_LEVELS,
@@ -302,7 +317,12 @@ impl Policy {
 
     /// 恰好一次结束 active slice 并提交时间。
     pub(crate) fn finish(&mut self, now_us: u64) {
-        let start = self.active_start.take().expect("thread slice finished twice").get() - 1;
+        let start = self
+            .active_start
+            .take()
+            .expect("thread slice finished twice")
+            .get()
+            - 1;
         let priority = self.active_priority();
         self.active_priority = PRIORITY_LEVELS;
         self.commit(now_us.saturating_sub(start), priority);
@@ -310,15 +330,26 @@ impl Policy {
 
     /// 不结束 slice 地提交 tick 前已消耗的时间。
     pub(crate) fn checkpoint(&mut self, now_us: u64) {
-        let encoded = now_us.checked_add(1).and_then(NonZeroU64::new).expect("runtime clock exhausted");
-        let start = self.active_start.replace(encoded).expect("checkpoint without an active slice").get() - 1;
+        let encoded = now_us
+            .checked_add(1)
+            .and_then(NonZeroU64::new)
+            .expect("runtime clock exhausted");
+        let start = self
+            .active_start
+            .replace(encoded)
+            .expect("checkpoint without an active slice")
+            .get()
+            - 1;
         let priority = self.active_priority();
         self.commit(now_us.saturating_sub(start), priority);
     }
 
     fn active_priority(&self) -> usize {
         let priority = self.active_priority as usize;
-        assert!(priority < PRIORITY_LEVELS as usize, "active slice lost its priority snapshot");
+        assert!(
+            priority < PRIORITY_LEVELS as usize,
+            "active slice lost its priority snapshot"
+        );
         priority
     }
 
@@ -332,8 +363,8 @@ impl Policy {
         // Q10 vruntime = runtime * 2^20 / weight；倒数已含 2^32。先拆掉低位避免 64-bit 乘法溢出，
         // 真正超出 u64 时饱和，保持 vruntime 单调。
         let whole = (runtime_us >> VRUNTIME_RECIPROCAL_SHIFT).saturating_mul(reciprocal);
-        let fraction = ((runtime_us & VRUNTIME_RECIPROCAL_MASK) * reciprocal) >> VRUNTIME_RECIPROCAL_SHIFT;
+        let fraction =
+            ((runtime_us & VRUNTIME_RECIPROCAL_MASK) * reciprocal) >> VRUNTIME_RECIPROCAL_SHIFT;
         self.vruntime = self.vruntime.saturating_add(whole.saturating_add(fraction));
     }
 }
-

@@ -3,9 +3,9 @@ use super::{
     CLOCK_THREAD_CPUTIME_ID, TIMER_ABSTIME, TimeSpec, decode_timespec, encode_timespec,
 };
 use crate::{
-    task::{PosixTimerClock, PosixTimerNotification, current_task},
     file::{TimerError, TimerSetting},
     syscall::errno::{EAGAIN, EFAULT, EINVAL, ENOMEM, EOPNOTSUPP},
+    task::{PosixTimerClock, PosixTimerNotification, current_task},
 };
 
 const SIGEV_SIGNAL: i32 = 0;
@@ -117,11 +117,7 @@ pub(crate) fn sys_timer_gettime(id: i32, output: usize) -> isize {
     let Some(task) = current_task() else {
         return -EFAULT;
     };
-    let setting = match crate::task::posix_timer(
-        task.tgid(),
-        id,
-        crate::time::get_time_ns(),
-    ) {
+    let setting = match crate::task::posix_timer(task.tgid(), id, crate::time::get_time_ns()) {
         Ok(setting) => setting,
         Err(error) => return timer_error(error, false),
     };

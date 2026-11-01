@@ -3,8 +3,8 @@ use super::{
     pte::{self, PagePermissions, RiscvPteFlags},
     sv39,
 };
-use fallible_tree::{FallibleMap, VacantEntry};
 use alloc::sync::Arc;
+use fallible_tree::{FallibleMap, VacantEntry};
 
 const PTE_FLAGS_WIDTH: usize = 10;
 const PAGE_SHIFT: usize = 12;

@@ -4,6 +4,7 @@
 //! checksum seed）、htree directory、orphan_file 与 JBD2 `CSUM_V3` journal。profile 之外的
 //! feature 在 mount 时拒绝，不存在 ext2 间接块或 legacy orphan chain 路径。
 
+use crate::sync::Mutex;
 use alloc::{
     sync::{Arc, Weak},
     vec::Vec,
@@ -12,13 +13,12 @@ use core::{
     cmp, mem,
     sync::atomic::{AtomicBool, AtomicU32, Ordering},
 };
-use crate::sync::Mutex;
 
-use crate::vfs::{
-    DirectoryEntry, DirectoryRead, DirectoryVisit, DirectoryVisitor, FileSystemError, InodeMetadata,
-    InodeType, OwnerModeChange, StorageWriter,
-};
 use crate::sync::{TaskEvent, TaskMutex, TaskMutexWaitPreparation};
+use crate::vfs::{
+    DirectoryEntry, DirectoryRead, DirectoryVisit, DirectoryVisitor, FileSystemError,
+    InodeMetadata, InodeType, OwnerModeChange, StorageWriter,
+};
 use device_model::{BLOCK_SIZE, BlockDevice, BlockError};
 use fallible_tree::FallibleMap;
 
@@ -28,7 +28,6 @@ fn block_error(error: BlockError) -> FileSystemError {
         _ => FileSystemError::IoError,
     }
 }
-
 
 mod allocation;
 mod allocation_dirty;

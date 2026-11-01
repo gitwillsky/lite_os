@@ -8,15 +8,15 @@ use syscall_abi::{
 };
 
 use super::{FuseInode, io_in, now};
-use crate::{fs::{
-        CreateMetadata, DeviceNumber, DirectoryEntry, DirectoryRead, DirectoryVisit,
-        DirectoryVisitor, FileSystemError, Inode, InodeOpen, InodeType,
-        fuse::{
-            connection::ReplyShape,
-            filesystem::Unsupported,
-            protocol::{self, DirectoryRecords, Entry, Fields},
-        },
-    }};
+use crate::fs::{
+    CreateMetadata, DeviceNumber, DirectoryEntry, DirectoryRead, DirectoryVisit, DirectoryVisitor,
+    FileSystemError, Inode, InodeOpen, InodeType,
+    fuse::{
+        connection::ReplyShape,
+        filesystem::Unsupported,
+        protocol::{self, DirectoryRecords, Entry, Fields},
+    },
+};
 use fallible_tree::FallibleMap;
 
 /// READDIR 每次请求的缓冲区（Linux 使用一页）。

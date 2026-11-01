@@ -1,6 +1,6 @@
 use super::*;
-use crate::sync::TaskMutexWaitPreparation;
 use crate::memory::{FutexKey, UserAccessError};
+use crate::sync::TaskMutexWaitPreparation;
 
 /// futex WAIT 在 task layer 的精确结果分类。
 #[derive(Debug, Clone, Copy)]

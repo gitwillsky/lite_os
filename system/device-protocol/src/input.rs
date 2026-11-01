@@ -68,36 +68,42 @@ pub fn publish(directory: &Channel, device: Arc<dyn InputDevice>) -> Result<(), 
     for code in 0..ABS_AXES {
         put_abs(&mut description, device.abs_info(code));
     }
-    device.bind_activity(activity_signal(Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?)?);
+    device.bind_activity(activity_signal(
+        Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?,
+    )?);
     serve(
         server,
         1,
         b"input-server",
-        Arc::try_new(move |ordinal: u32, _: &mut Reader<'_>, _, reply: &mut Writer| {
-            match ordinal {
-                RECEIVE => {
-                    let mut events = Vec::new();
-                    while events.len() < BATCH {
-                        match device.receive_event().map_err(|_| native_abi::ERR_IO)? {
-                            Some(event) => events.push(event),
-                            None => break,
+        Arc::try_new(
+            move |ordinal: u32, _: &mut Reader<'_>, _, reply: &mut Writer| {
+                match ordinal {
+                    RECEIVE => {
+                        let mut events = Vec::new();
+                        while events.len() < BATCH {
+                            match device.receive_event().map_err(|_| native_abi::ERR_IO)? {
+                                Some(event) => events.push(event),
+                                None => break,
+                            }
+                        }
+                        if !events.is_empty() {
+                            device
+                                .finish_receive_batch()
+                                .map_err(|_| native_abi::ERR_IO)?;
+                        }
+                        reply.u32(events.len() as u32);
+                        for event in events {
+                            reply.u16(event.event_type).u16(event.code).i32(event.value);
                         }
                     }
-                    if !events.is_empty() {
-                        device.finish_receive_batch().map_err(|_| native_abi::ERR_IO)?;
+                    HAS_PENDING => {
+                        reply.bool(device.has_pending_event());
                     }
-                    reply.u32(events.len() as u32);
-                    for event in events {
-                        reply.u16(event.event_type).u16(event.code).i32(event.value);
-                    }
+                    _ => return Err(native_abi::ERR_NOT_SUPPORTED),
                 }
-                HAS_PENDING => {
-                    reply.bool(device.has_pending_event());
-                }
-                _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-            }
-            Ok(Vec::new())
-        })
+                Ok(Vec::new())
+            },
+        )
         .map_err(|_| native_abi::ERR_NO_MEMORY)?,
     )?;
     directory::announce(
@@ -129,9 +135,15 @@ pub struct RemoteInput {
 /// # Errors
 ///
 /// 描述或句柄不完整，或事件登记失败。
-pub fn connect(mut announcement: Announcement, hub: &Arc<EventHub>) -> Result<Arc<RemoteInput>, Status> {
+pub fn connect(
+    mut announcement: Announcement,
+    hub: &Arc<EventHub>,
+) -> Result<Arc<RemoteInput>, Status> {
     let channel = Channel::from_handle(take_handle(&mut announcement.handles, 0)?);
-    let activity = hub.activity(Event::from_handle(take_handle(&mut announcement.handles, 1)?))?;
+    let activity = hub.activity(Event::from_handle(take_handle(
+        &mut announcement.handles,
+        1,
+    )?))?;
     let mut reader = announcement.reader();
     let name = reader.bytes()?.to_vec();
     let physical_path = reader.bytes()?.to_vec();
@@ -180,10 +192,13 @@ pub fn connect(mut announcement: Announcement, hub: &Arc<EventHub>) -> Result<Ar
 
 impl RemoteInput {
     fn fetch(&self, pending: &mut VecDeque<RawInputEvent>) -> Result<(), InputDeviceError> {
-        let reply = call(&self.channel, &Writer::request(RECEIVE), Vec::new()).map_err(|_| InputDeviceError::Device)?;
+        let reply = call(&self.channel, &Writer::request(RECEIVE), Vec::new())
+            .map_err(|_| InputDeviceError::Device)?;
         let mut reader = reply.reader();
         let count = reader.u32().map_err(|_| InputDeviceError::Device)?;
-        pending.try_reserve(count as usize).map_err(|_| InputDeviceError::Device)?;
+        pending
+            .try_reserve(count as usize)
+            .map_err(|_| InputDeviceError::Device)?;
         for _ in 0..count {
             let decode = |reader: &mut Reader<'_>| -> Result<RawInputEvent, Status> {
                 Ok(RawInputEvent {
@@ -228,7 +243,9 @@ impl InputDevice for RemoteInput {
     }
 
     fn event_codes(&self, event_type: u16) -> &[u8] {
-        self.event_codes.get(usize::from(event_type)).map_or(&[], Vec::as_slice)
+        self.event_codes
+            .get(usize::from(event_type))
+            .map_or(&[], Vec::as_slice)
     }
 
     fn abs_info(&self, code: u16) -> Option<InputAbsInfo> {

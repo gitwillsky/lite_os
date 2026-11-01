@@ -31,8 +31,8 @@ use super::vmo::{CachePolicy, ResolvedPage, Vmo};
 use super::{FaultAccess, USER_END, USER_START, VmError, map_trampoline};
 use crate::arch::mmu::{AddressSpaceKind, AddressSpaceToken};
 use crate::execution::sync::{TaskMutex, TaskMutexGuard};
-use fallible_tree::FallibleMap;
 use crate::memory::{FrameTracker, PAGE_SIZE, VirtualAddress, VirtualPageNumber, frame_allocator};
+use fallible_tree::FallibleMap;
 
 /// 共享区起点：用户区间的上半部分，按 1 GiB 对齐，使两区不共享任何中间页表页。
 pub(crate) const SHARED_START: usize = (USER_END / 2) & !((1 << 30) - 1);
@@ -199,8 +199,12 @@ pub(crate) enum Placement {
 }
 
 impl AddressSpace {
-    fn create_with(range: Range<usize>, shared: Option<Arc<AddressSpace>>) -> Result<(Arc<Self>, Arc<Vmar>), VmError> {
-        let mut page_table = PageTable::try_new(AddressSpaceKind::User).map_err(|_| VmError::NoMemory)?;
+    fn create_with(
+        range: Range<usize>,
+        shared: Option<Arc<AddressSpace>>,
+    ) -> Result<(Arc<Self>, Arc<Vmar>), VmError> {
+        let mut page_table =
+            PageTable::try_new(AddressSpaceKind::User).map_err(|_| VmError::NoMemory)?;
         let mut commit = TranslationCommit::new();
         map_trampoline(&mut page_table, &mut commit)?;
         commit.finish_unpublished();
@@ -340,7 +344,12 @@ impl AddressSpace {
     /// # Returns
     ///
     /// 已访问的字节数；遇到未映射、超出权限上限或 VMO 访问失败时提前结束。
-    pub(crate) fn access_debug(self: &Arc<Self>, address: usize, buffer: &mut [u8], write: bool) -> usize {
+    pub(crate) fn access_debug(
+        self: &Arc<Self>,
+        address: usize,
+        buffer: &mut [u8],
+        write: bool,
+    ) -> usize {
         let required = if write {
             PagePermissions::WRITE
         } else {
@@ -384,16 +393,23 @@ impl AddressSpace {
     ///
     /// # Errors
     /// 地址未映射返回 `NotMapped`，权限不足返回 `AccessDenied`；其余为 VMO 解析错误。
-    pub(crate) fn fault(self: &Arc<Self>, address: usize, access: FaultAccess) -> Result<(), VmError> {
+    pub(crate) fn fault(
+        self: &Arc<Self>,
+        address: usize,
+        access: FaultAccess,
+    ) -> Result<(), VmError> {
         let (owner, mapping) = self.lookup(address)?;
         if !mapping.permissions.contains(access.required()) {
             return Err(VmError::AccessDenied);
         }
         let page_address = address & !(PAGE_SIZE - 1);
         let index = mapping.vmo_page + (page_address - mapping.base) / PAGE_SIZE;
-        let mut commit = mapping.vmo.with_resolved(index, access == FaultAccess::Write, |page| {
-            self.install(&owner, &mapping, page_address, page)
-        })?;
+        let mut commit =
+            mapping
+                .vmo
+                .with_resolved(index, access == FaultAccess::Write, |page| {
+                    self.install(&owner, &mapping, page_address, page)
+                })?;
         commit
             .synchronize()
             .unwrap_or_else(|error| panic!("user translation fence failed: {error}"));
@@ -431,7 +447,9 @@ impl AddressSpace {
         match table.translate(vpn) {
             Some(entry) if entry.ppn() == page.ppn && entry.permissions() == permissions => {}
             Some(_) => {
-                table.unmap(vpn, &mut commit).map_err(|_| VmError::NoMemory)?;
+                table
+                    .unmap(vpn, &mut commit)
+                    .map_err(|_| VmError::NoMemory)?;
                 table
                     .map(vpn, page.ppn, permissions, &mut commit)
                     .map_err(|_| VmError::NoMemory)?;
@@ -482,24 +500,43 @@ impl AddressSpace {
     ///
     /// # Errors
     /// 任一字节不可读返回 `NotMapped`/`AccessDenied`。
-    pub(crate) fn copy_from_user(self: &Arc<Self>, address: usize, output: &mut [u8]) -> Result<(), VmError> {
-        self.for_each_user_chunk(address, output.len(), FaultAccess::Read, |page, offset, range| {
-            // SAFETY: `page` 是持地址空间锁期间已验证可读的用户页在 direct map 中的地址。
-            let source = unsafe { core::slice::from_raw_parts(page.add(offset), range.len()) };
-            output[range].copy_from_slice(source);
-        })
+    pub(crate) fn copy_from_user(
+        self: &Arc<Self>,
+        address: usize,
+        output: &mut [u8],
+    ) -> Result<(), VmError> {
+        self.for_each_user_chunk(
+            address,
+            output.len(),
+            FaultAccess::Read,
+            |page, offset, range| {
+                // SAFETY: `page` 是持地址空间锁期间已验证可读的用户页在 direct map 中的地址。
+                let source = unsafe { core::slice::from_raw_parts(page.add(offset), range.len()) };
+                output[range].copy_from_slice(source);
+            },
+        )
     }
 
     /// 向当前地址空间复制用户内存。
     ///
     /// # Errors
     /// 任一字节不可写返回 `NotMapped`/`AccessDenied`。
-    pub(crate) fn copy_to_user(self: &Arc<Self>, address: usize, input: &[u8]) -> Result<(), VmError> {
-        self.for_each_user_chunk(address, input.len(), FaultAccess::Write, |page, offset, range| {
-            // SAFETY: 同 `copy_from_user`；页已验证可写且写解析保证属于本映射的 VMO。
-            let target = unsafe { core::slice::from_raw_parts_mut(page.add(offset), range.len()) };
-            target.copy_from_slice(&input[range]);
-        })
+    pub(crate) fn copy_to_user(
+        self: &Arc<Self>,
+        address: usize,
+        input: &[u8],
+    ) -> Result<(), VmError> {
+        self.for_each_user_chunk(
+            address,
+            input.len(),
+            FaultAccess::Write,
+            |page, offset, range| {
+                // SAFETY: 同 `copy_from_user`；页已验证可写且写解析保证属于本映射的 VMO。
+                let target =
+                    unsafe { core::slice::from_raw_parts_mut(page.add(offset), range.len()) };
+                target.copy_from_slice(&input[range]);
+            },
+        )
     }
 
     fn for_each_user_chunk(
@@ -521,7 +558,10 @@ impl AddressSpace {
             let start = cursor - address;
             let copied = {
                 let inner = self.lock()?;
-                match inner.page_table.translate(VirtualAddress::from(cursor).floor()) {
+                match inner
+                    .page_table
+                    .translate(VirtualAddress::from(cursor).floor())
+                {
                     Some(entry) if entry.permissions().contains(required) => {
                         operation(entry.ppn().as_page_mut_ptr(), offset, start..start + chunk);
                         true
@@ -553,7 +593,10 @@ impl AddressSpace {
         let mut inner = self.lock()?;
         let mut address = range.end;
         let vpn = loop {
-            address = address.checked_sub(PAGE_SIZE).filter(|address| *address >= range.start).ok_or(VmError::NoMemory)?;
+            address = address
+                .checked_sub(PAGE_SIZE)
+                .filter(|address| *address >= range.start)
+                .ok_or(VmError::NoMemory)?;
             let vpn = VirtualAddress::from(address).floor();
             if !inner.contexts.contains_key(&vpn) {
                 break vpn;
@@ -566,7 +609,12 @@ impl AddressSpace {
         let mut commit = TranslationCommit::new();
         if inner
             .page_table
-            .map(vpn, ppn, PagePermissions::READ | PagePermissions::WRITE, &mut commit)
+            .map(
+                vpn,
+                ppn,
+                PagePermissions::READ | PagePermissions::WRITE,
+                &mut commit,
+            )
             .is_err()
         {
             drop(inner.contexts.remove(&vpn));
@@ -593,7 +641,10 @@ impl AddressSpace {
                 .page_table
                 .unmap(vpn, &mut commit)
                 .expect("thread context page was not mapped");
-            inner.contexts.remove(&vpn).expect("thread context page untracked")
+            inner
+                .contexts
+                .remove(&vpn)
+                .expect("thread context page untracked")
         };
         commit
             .synchronize()
@@ -697,7 +748,12 @@ impl Vmar {
         Ok(())
     }
 
-    fn place(&self, inner: &SpaceInner, placement: Placement, size: usize) -> Result<usize, VmError> {
+    fn place(
+        &self,
+        inner: &SpaceInner,
+        placement: Placement,
+        size: usize,
+    ) -> Result<usize, VmError> {
         let node = inner.nodes.get(&self.id).ok_or(VmError::BadState)?;
         match placement {
             Placement::Any => inner.find_gap(node, size).ok_or(VmError::NoMemory),
@@ -737,13 +793,18 @@ impl Vmar {
         permissions: PagePermissions,
         ceiling: PagePermissions,
     ) -> Result<usize, VmError> {
-        if size == 0 || !size.is_multiple_of(PAGE_SIZE) || !vmo_offset.is_multiple_of(PAGE_SIZE as u64) {
+        if size == 0
+            || !size.is_multiple_of(PAGE_SIZE)
+            || !vmo_offset.is_multiple_of(PAGE_SIZE as u64)
+        {
             return Err(VmError::InvalidArgs);
         }
         if !self.permissions.contains(permissions) || !ceiling.contains(permissions) {
             return Err(VmError::AccessDenied);
         }
-        let end = vmo_offset.checked_add(size as u64).ok_or(VmError::OutOfRange)?;
+        let end = vmo_offset
+            .checked_add(size as u64)
+            .ok_or(VmError::OutOfRange)?;
         if end > vmo.size() {
             return Err(VmError::OutOfRange);
         }
@@ -751,7 +812,8 @@ impl Vmar {
             let start = self.base.checked_add(offset).ok_or(VmError::InvalidArgs)?;
             self.unmap(start, size)?;
         }
-        let vmo_page = usize::try_from(vmo_offset / PAGE_SIZE as u64).map_err(|_| VmError::OutOfRange)?;
+        let vmo_page =
+            usize::try_from(vmo_offset / PAGE_SIZE as u64).map_err(|_| VmError::OutOfRange)?;
         // 地址在锁内确定；映射对象先以占位地址构造并登记，锁内再确定最终地址会改变不可变对象，
         // 因此按“先选址、后构造、再复查”的顺序重试。
         loop {
@@ -799,7 +861,10 @@ impl Vmar {
         size: usize,
         permissions: PagePermissions,
     ) -> Result<Arc<Vmar>, VmError> {
-        if size == 0 || !size.is_multiple_of(PAGE_SIZE) || matches!(placement, Placement::Overwrite(_)) {
+        if size == 0
+            || !size.is_multiple_of(PAGE_SIZE)
+            || matches!(placement, Placement::Overwrite(_))
+        {
             return Err(VmError::InvalidArgs);
         }
         if !self.permissions.contains(permissions) {
@@ -818,7 +883,8 @@ impl Vmar {
             },
         )
         .map_err(|_| VmError::NoMemory)?;
-        let child = FallibleMap::try_prepare(start, Child::Vmar { id, size }).map_err(|_| VmError::NoMemory)?;
+        let child = FallibleMap::try_prepare(start, Child::Vmar { id, size })
+            .map_err(|_| VmError::NoMemory)?;
         let vmar = Arc::try_new(Vmar {
             koid: crate::id::next_koid(),
             space: self.space.clone(),
@@ -852,7 +918,12 @@ impl Vmar {
     ///
     /// # Errors
     /// 参数非法、越界、权限超出 VMAR 或映射可写上限。
-    pub(crate) fn protect(&self, address: usize, size: usize, permissions: PagePermissions) -> Result<(), VmError> {
+    pub(crate) fn protect(
+        &self,
+        address: usize,
+        size: usize,
+        permissions: PagePermissions,
+    ) -> Result<(), VmError> {
         self.check_range(address, size)?;
         if !self.permissions.contains(permissions) {
             return Err(VmError::AccessDenied);
@@ -865,7 +936,11 @@ impl Vmar {
     /// 1. 锁内收集与区间重叠的直接子映射；
     /// 2. 锁外构造剩余部分与改写部分的新映射并登记到 VMO；
     /// 3. 锁内复查收集的映射仍在，原子替换并撤销区间翻译；fence 后释放旧映射。
-    fn rewrite(&self, range: Range<usize>, permissions: Option<PagePermissions>) -> Result<(), VmError> {
+    fn rewrite(
+        &self,
+        range: Range<usize>,
+        permissions: Option<PagePermissions>,
+    ) -> Result<(), VmError> {
         loop {
             let affected = {
                 let inner = self.space.lock()?;
@@ -940,7 +1015,10 @@ impl Vmar {
                 if !unchanged {
                     continue;
                 }
-                let node = inner.nodes.get_mut(&self.id).expect("VMAR node checked above");
+                let node = inner
+                    .nodes
+                    .get_mut(&self.id)
+                    .expect("VMAR node checked above");
                 for mapping in &affected {
                     mapping.live.store(false, Ordering::Release);
                     if let Some(Child::Mapping(old)) = node.children.remove(&mapping.base) {

@@ -1,11 +1,13 @@
-use alloc::sync::{Arc, Weak};
 use crate::sync::Mutex;
+use alloc::sync::{Arc, Weak};
 
-pub(crate) use device_model::{DisplayRect, VirglBox, VirglCommand, VirglTransferDirection};
-use crate::{ipc::{Pipe, PipeEnd}, memory::{
-        DeviceMappingSource, PAGE_SIZE}};
+use crate::{
+    ipc::{Pipe, PipeEnd},
+    memory::{DeviceMappingSource, PAGE_SIZE},
+};
 use device_model::DeviceBacking;
 use device_model::{CursorCommand, DisplayMode, GraphicsDevice};
+pub(crate) use device_model::{DisplayRect, VirglBox, VirglCommand, VirglTransferDirection};
 use fallible_tree::FallibleMap;
 
 const DUMB_OFFSET_SHIFT: u32 = 32;
@@ -478,10 +480,7 @@ impl DrmFile {
 
         // 2. backing 与 Arc/node 全部在 handle publication 前分配；任一失败由 RAII 回收
         //    extent，file namespace 中不存在半初始化 GEM object。
-        let backing = DeviceBacking::try_allocate(
-            size / PAGE_SIZE,
-        )
-        .ok_or(DrmError::OutOfMemory)?;
+        let backing = DeviceBacking::try_allocate(size / PAGE_SIZE).ok_or(DrmError::OutOfMemory)?;
         let backing = Arc::try_new(backing).map_err(|_| DrmError::OutOfMemory)?;
         let buffer = Arc::try_new(DumbBuffer {
             identity: identity.identity,
@@ -575,7 +574,8 @@ impl DrmFile {
             if length > buffer.size {
                 return Err(DrmError::Invalid);
             }
-            return DeviceMappingSource::new(buffer.backing.clone()).map_err(|_| DrmError::OutOfMemory);
+            return DeviceMappingSource::new(buffer.backing.clone())
+                .map_err(|_| DrmError::OutOfMemory);
         }
         let buffer = self
             .state
@@ -587,7 +587,8 @@ impl DrmFile {
         if length > buffer.size {
             return Err(DrmError::Invalid);
         }
-        let mut source = DeviceMappingSource::new(buffer.backing.clone()).map_err(|_| DrmError::OutOfMemory)?;
+        let mut source =
+            DeviceMappingSource::new(buffer.backing.clone()).map_err(|_| DrmError::OutOfMemory)?;
         source.retain_object(prime::DmaBuf::from_buffer(
             &self.device,
             buffer.buffer.clone(),
@@ -904,12 +905,10 @@ fn classify_cursor_submission(
             sequence,
             _resource: resource,
         })),
-        Err(device_model::DisplayError::WouldBlock) => {
-            Ok(DrmCursorSubmission::Retry(DrmRetry {
-                device: file.device.clone(),
-                generation,
-            }))
-        }
+        Err(device_model::DisplayError::WouldBlock) => Ok(DrmCursorSubmission::Retry(DrmRetry {
+            device: file.device.clone(),
+            generation,
+        })),
         Err(error) => Err(device::display_error(error)),
     }
 }

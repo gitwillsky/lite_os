@@ -1,12 +1,17 @@
+use crate::sync::Mutex;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::AtomicU8;
-use crate::sync::Mutex;
 
 use super::{
     IndexedWaitKind, PollWaitKey, PreparedIndex, PreparedWait, WaitIndexKey, WaitRegistration,
     WaitTicket, pipe_direction, registration::PREPARED,
 };
-use crate::{task::TaskControlBlock, fs::AdvisoryLockKey, ipc::{Pipe, PipeWaitCondition}, memory::FutexKey};
+use crate::{
+    fs::AdvisoryLockKey,
+    ipc::{Pipe, PipeWaitCondition},
+    memory::FutexKey,
+    task::TaskControlBlock,
+};
 use fallible_tree::FallibleMap;
 
 impl WaitTicket {

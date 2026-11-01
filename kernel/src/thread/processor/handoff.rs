@@ -16,10 +16,7 @@ pub(super) struct PendingHandoff {
 /// # Panics
 ///
 /// 当前 CPU 已有未消费 handoff 时 fail-stop。
-pub(in crate::thread) fn publish_pending_handoff(
-    task: Arc<Thread>,
-    irq: LocalIrqGuard,
-) {
+pub(in crate::thread) fn publish_pending_handoff(task: Arc<Thread>, irq: LocalIrqGuard) {
     with_current_processor(|processor| {
         assert!(
             processor.pending_handoff.is_none(),
@@ -41,8 +38,7 @@ pub(in crate::thread) fn publish_pending_handoff(
 /// # Panics
 ///
 /// 无。
-pub(in crate::thread) fn take_pending_handoff()
--> Option<(Arc<Thread>, LocalIrqTransfer)> {
+pub(in crate::thread) fn take_pending_handoff() -> Option<(Arc<Thread>, LocalIrqTransfer)> {
     with_current_processor(|processor| {
         processor
             .pending_handoff

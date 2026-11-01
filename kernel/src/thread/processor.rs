@@ -71,7 +71,9 @@ impl Processor {
     /// 撤销 current 与 Running 负载计数。
     pub(super) fn take_current(&mut self) -> Option<Arc<Thread>> {
         let current = self.current.take()?;
-        let previous = current_per_cpu().running_entries.fetch_sub(1, Ordering::Relaxed);
+        let previous = current_per_cpu()
+            .running_entries
+            .fetch_sub(1, Ordering::Relaxed);
         assert_eq!(previous, 1, "running load counter lost current ownership");
         Some(current)
     }
@@ -138,7 +140,9 @@ impl PerCpuProcessor {
 unsafe impl Sync for PerCpuProcessor {}
 
 pub(super) fn account_current_cpu_runtime(runtime_us: u64) {
-    current_per_cpu().busy_us.fetch_add(runtime_us, Ordering::Relaxed);
+    current_per_cpu()
+        .busy_us
+        .fetch_add(runtime_us, Ordering::Relaxed);
 }
 
 /// 每个 CPU 的累计忙碌时间（微秒），按逻辑 CPU 序。
@@ -149,7 +153,11 @@ pub(crate) fn cpu_busy_snapshot() -> Result<Vec<u64>, ()> {
     let slots = &PROCESSOR_TOPOLOGY.wait().slots;
     let mut snapshot = Vec::new();
     snapshot.try_reserve_exact(slots.len()).map_err(|_| ())?;
-    snapshot.extend(slots.iter().map(|slot| slot.processor.busy_us.load(Ordering::Relaxed)));
+    snapshot.extend(
+        slots
+            .iter()
+            .map(|slot| slot.processor.busy_us.load(Ordering::Relaxed)),
+    );
     Ok(snapshot)
 }
 
@@ -167,12 +175,18 @@ static PROCESSOR_TOPOLOGY: spin::Once<ProcessorTopology> = spin::Once::new();
 
 /// 按逻辑 CPU 序构造调度状态；队列容量按“物理页最多容纳的 kernel stack 数”预留，运行期入队不分配。
 pub(super) fn init_topology() {
-    assert!(PROCESSOR_TOPOLOGY.get().is_none(), "processor topology initialized twice");
+    assert!(
+        PROCESSOR_TOPOLOGY.get().is_none(),
+        "processor topology initialized twice"
+    );
     let stack_pages = crate::memory::KERNEL_STACK_SIZE / crate::memory::PAGE_SIZE;
     let queue_capacity = crate::memory::frame_statistics()
         .capacity_pages
         .div_ceil(stack_pages);
-    assert!(queue_capacity != 0, "physical memory cannot host one thread stack");
+    assert!(
+        queue_capacity != 0,
+        "physical memory cannot host one thread stack"
+    );
     let mut slots = Vec::new();
     slots
         .try_reserve_exact(cpu::count())
@@ -294,7 +308,8 @@ pub(super) fn request_thread_reschedule(thread: &Arc<Thread>) {
 /// 把当前 Running 线程转为 Preempting。
 pub(super) fn begin_preempt_current(thread: &Arc<Thread>) {
     let source_cpu = cpu::current_id();
-    let current = with_current_processor(Processor::take_current).expect("preemption requires current thread");
+    let current = with_current_processor(Processor::take_current)
+        .expect("preemption requires current thread");
     assert!(Arc::ptr_eq(&current, thread));
     let mut scheduling = thread.scheduling.state.lock();
     match scheduling.run_state() {
@@ -322,7 +337,10 @@ pub(super) fn replace_affinity(thread: &Arc<Thread>, affinity: CpuAffinity) {
         match scheduling.run_state() {
             RunState::Ready { cpu, .. } if !affinity.allows(cpu) => {
                 let target = select_cpu(thread, affinity);
-                replacement = Some((target, commit_ready_transition(scheduling.transition_to_ready(target))));
+                replacement = Some((
+                    target,
+                    commit_ready_transition(scheduling.transition_to_ready(target)),
+                ));
             }
             RunState::Running { cpu } if !affinity.allows(cpu) => running_elsewhere = Some(cpu),
             _ => {}
@@ -407,13 +425,19 @@ pub(super) fn finish_deschedule(thread: &Arc<Thread>) {
                 } else {
                     select_cpu(thread, scheduling.cpu_affinity)
                 };
-                Some((target, commit_ready_transition(scheduling.transition_to_ready(target))))
+                Some((
+                    target,
+                    commit_ready_transition(scheduling.transition_to_ready(target)),
+                ))
             }
             RunState::Preempting { cpu: owner } => {
                 assert_eq!(owner, cpu, "preempting thread returned on another CPU");
                 scheduling.involuntary_switches += 1;
                 let target = select_cpu_after_preemption(thread, scheduling.cpu_affinity);
-                Some((target, commit_ready_transition(scheduling.transition_to_ready(target))))
+                Some((
+                    target,
+                    commit_ready_transition(scheduling.transition_to_ready(target)),
+                ))
             }
             _ => None,
         }

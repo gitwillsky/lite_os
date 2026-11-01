@@ -47,7 +47,9 @@ pub(crate) fn initialize(boot: BootInfo) {
 /// # Errors
 ///
 /// controller 或 rendezvous 初始化失败时 fail-stop。
-pub(crate) use gicv3::{bind_interrupt, device_interrupt_range, unbind_interrupt, unmask_interrupt};
+pub(crate) use gicv3::{
+    bind_interrupt, device_interrupt_range, unbind_interrupt, unmask_interrupt,
+};
 
 pub(crate) fn initialize_devices() {
     devices::initialize();
@@ -93,8 +95,7 @@ pub(crate) fn read_realtime_ns() -> Option<u64> {
     let rtc = discovery::info().rtc;
     // discovery 已验证 PL031 compatibility；RTCDR 位于 window 偏移 0。
     let bus =
-        mmio::MmioBus::new(crate::arch::mmu::physical_to_virtual(rtc.start), rtc.size)
-            .ok()?;
+        mmio::MmioBus::new(crate::arch::mmu::physical_to_virtual(rtc.start), rtc.size).ok()?;
     let seconds = bus.read_u32(0).ok()?;
     Some((seconds as u64).saturating_mul(1_000_000_000))
 }

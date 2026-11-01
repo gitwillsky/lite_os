@@ -1,7 +1,7 @@
 use super::kernel_space::KERNEL_SPACE;
 use super::page_table::PagePermissions;
-use crate::memory::{KERNEL_STACK_SIZE, PAGE_SIZE};
 use crate::id::IdAllocator;
+use crate::memory::{KERNEL_STACK_SIZE, PAGE_SIZE};
 use spin::Mutex;
 
 #[derive(Debug)]
@@ -16,17 +16,22 @@ impl KernelStack {
     ///
     /// 成功返回唯一 stack handle；frame OOM 时回滚映射并归还 handle。
     pub(crate) fn try_new() -> Result<Self, ()> {
-        let handle = KernelStackHandle(KERNEL_STACK_HANDLE_ALLOCATOR.lock().alloc().map_err(|_| ())?);
+        let handle = KernelStackHandle(
+            KERNEL_STACK_HANDLE_ALLOCATOR
+                .lock()
+                .alloc()
+                .map_err(|_| ())?,
+        );
         let (bottom, top) = kernel_stack_position(handle.0);
 
         // 在栈底预留 1 页守护页，防止向下越界破坏相邻对象导致不可预期行为；
         // 溢出将立刻触发缺页异常，便于定位问题
         let mapped_bottom = bottom + PAGE_SIZE;
 
-        KERNEL_SPACE
-            .wait()
-            .lock()
-            .insert_framed(mapped_bottom..top, PagePermissions::READ | PagePermissions::WRITE)?;
+        KERNEL_SPACE.wait().lock().insert_framed(
+            mapped_bottom..top,
+            PagePermissions::READ | PagePermissions::WRITE,
+        )?;
 
         Ok(Self { handle })
     }

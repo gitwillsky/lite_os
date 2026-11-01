@@ -20,7 +20,6 @@ pub(crate) fn start_worker() -> Result<(), ()> {
 }
 
 use crate::{
-    task::current_task,
     file::OpenFileKind,
     io_uring::{
         CqWait, Ring, SetupFailure,
@@ -29,6 +28,7 @@ use crate::{
             PROBE_OP_BYTES, REGISTER_PROBE, SUPPORTED_ENTER_FLAGS, encode_probe, probe_ops,
         },
     },
+    task::current_task,
 };
 
 /// 创建 ring 与对应 fd；fd 恒带 `O_CLOEXEC`（Linux `get_unused_fd_flags(O_RDWR | O_CLOEXEC)`）。
@@ -184,10 +184,7 @@ fn get_events(
 }
 
 /// 读取用户 `__kernel_timespec` 并换算成绝对 monotonic 纳秒 deadline。
-fn relative_deadline(
-    task: &crate::task::TaskControlBlock,
-    pointer: usize,
-) -> Result<u64, isize> {
+fn relative_deadline(task: &crate::task::TaskControlBlock, pointer: usize) -> Result<u64, isize> {
     let mut raw = [0u8; 16];
     if task.copy_from_user(pointer, &mut raw).is_err() {
         return Err(-errno::EFAULT);
