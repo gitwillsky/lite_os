@@ -3,12 +3,10 @@ use alloc::{sync::Arc, vec::Vec};
 use crate::{
     devices::drm::{
         DrmFile, DrmSubmission, VIRGL_COMMAND_MAX, VirglBox, VirglCommand, VirglResourceCreate,
-        VirglTransferDirection,
-    },
-    devices::model::VIRGL_COMMAND_EXTENTS_MAX,
+        VirglTransferDirection},
     fs::chardev::UserMemory,
-    memory::{DeviceBacking, PAGE_SIZE},
-};
+    memory::PAGE_SIZE};
+use device_model::DeviceBacking;
 
 use syscall_abi::errno;
 
@@ -366,17 +364,13 @@ pub(super) fn submit_only(file: &DrmFile, command: VirglCommand<'_>) -> Result<u
 ///
 /// # Errors
 ///
-/// 物理页不足或碎片化到超过 [`VIRGL_COMMAND_EXTENTS_MAX`] 个 extent 返回 ENOMEM；用户地址无效返回 EFAULT。
+/// 内存不足返回 ENOMEM；用户地址无效返回 EFAULT。设备地址区段数在提交时由 GPU 驱动检查。
 fn copy_command_stream(
     user: &dyn UserMemory,
     address: usize,
     length: usize,
 ) -> Result<Arc<DeviceBacking>, isize> {
-    let backing = DeviceBacking::try_allocate(
-        length.div_ceil(PAGE_SIZE),
-    )
-    .filter(|backing| backing.extent_count() <= VIRGL_COMMAND_EXTENTS_MAX)
-    .ok_or(errno::ENOMEM)?;
+    let backing = DeviceBacking::try_allocate(length.div_ceil(PAGE_SIZE)).ok_or(errno::ENOMEM)?;
     // 经固定小缓冲分段搬运，不为整条命令流再分配一份内核副本。
     let mut chunk = [0u8; 512];
     let mut copied = 0;
@@ -387,7 +381,7 @@ fn copy_command_stream(
             .map_err(|_| errno::EFAULT)?;
         backing
             .write(copied, &chunk[..count])
-            .map_err(|()| errno::EFAULT)?;
+            .map_err(|_| errno::EFAULT)?;
         copied += count;
     }
     Arc::try_new(backing).map_err(|_| errno::ENOMEM)

@@ -1,5 +1,5 @@
 //! OFD 退出只销毁 context；共享资源与关联的回收分别由设备的 UNREF/detach 队列拥有。
-use crate::devices::model::VirglCommand;
+use device_model::VirglCommand;
 
 pub(in crate::devices::drm) struct VirglCleanup {
     context_id: u32,

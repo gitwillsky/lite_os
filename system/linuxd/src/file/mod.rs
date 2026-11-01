@@ -633,3 +633,20 @@ impl OpenFileDescription {
         vfs().statistics(&self.opened)
     }
 }
+
+// OWNER: 该原子只分配跨 I/O source 可比较的 readiness generation，不发布其他内存。
+// 缺少全局序列时，嵌套 epoll 无法区分不同 source 上数值相同的局部 generation，ET 会漏报。
+static READINESS_GENERATION: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);
+
+/// 分配一个跨所有可等待 I/O source 单调递增的 readiness generation。
+///
+/// # Returns
+///
+/// 非零 generation；仅用于事件 identity，不承载数据发布同步。
+pub(crate) fn next_readiness_generation() -> u64 {
+    READINESS_GENERATION
+        .try_update(core::sync::atomic::Ordering::Relaxed, core::sync::atomic::Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .expect("readiness generation exhausted")
+}

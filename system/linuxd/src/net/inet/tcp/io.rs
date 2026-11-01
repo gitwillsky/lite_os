@@ -73,7 +73,7 @@ pub(in crate::net::inet) fn send(socket: &InetSocket, input: &[u8]) -> Result<us
             debug_assert_eq!(placeholder.state(), State::Closed);
         },
     )?;
-    crate::devices::model::network::request_poll();
+    crate::net::request_poll();
     Ok(written)
 }
 
@@ -588,6 +588,6 @@ pub(in crate::net::inet) fn shutdown(socket: &InetSocket, how: usize) -> Result<
         }
     };
     drop(network);
-    crate::devices::model::network::request_poll();
+    crate::net::request_poll();
     result
 }

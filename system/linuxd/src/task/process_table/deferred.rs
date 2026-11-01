@@ -135,7 +135,7 @@ fn wake_expired_tasks(now_ns: u64) {
 /// 网络协议定时器（TCP 重传、ARP、UDP 出口）的轮询间隔：与原调度 tick 相同的 10ms。
 const NETWORK_POLL_INTERVAL_NS: u64 = 10_000_000;
 
-/// deferred 线程的分派：定时器到期、控制台输入、已注册设备工作、驱动 I/O 完成与网络。
+/// deferred 线程的分派：定时器到期、控制台输入、已注册设备工作与网络。
 pub(crate) fn dispatch_deferred_work(work: DeferredWorkSet) {
     if work.contains(DeferredWork::TIMER) {
         wake_expired_tasks(get_time_ns());
@@ -154,9 +154,6 @@ pub(crate) fn dispatch_deferred_work(work: DeferredWorkSet) {
         }
     }
     work.run_registered(get_time_ns());
-    if work.contains(DeferredWork::DRIVER_IO) && crate::devices::model::dispatch_io_completion_work() {
-        deferred::raise(DeferredWork::DRIVER_IO);
-    }
     let network_due =
         work.contains(DeferredWork::NETWORK) || work.contains(DeferredWork::TIMER) && crate::net::network_work_due();
     if network_due && crate::net::dispatch_network_work() {

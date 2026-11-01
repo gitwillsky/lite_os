@@ -16,8 +16,8 @@ use super::abi::{
 use crate::{
     sync::{TaskMutex, WaitResult},
     ipc::{Pipe, PipeEnd, PipeWaitCondition},
-    memory::{DeviceBacking, PAGE_SIZE},
-};
+    memory::PAGE_SIZE};
+use device_model::DeviceBacking;
 
 /// 内核侧溢出链表相对 CQ 容量的倍数上限。超过后 CQE 被丢弃并计入 `cq_overflow`；缺少上限，
 /// 一个不消费 CQ 的进程可以让内核无限增长。
@@ -131,7 +131,7 @@ fn allocate_zeroed(bytes: usize) -> Result<Arc<DeviceBacking>, RingError> {
     for offset in (0..backing.pages() * PAGE_SIZE).step_by(ZERO_CHUNK) {
         backing
             .write(offset, &zeros)
-            .map_err(|()| RingError::OutOfMemory)?;
+            .map_err(|_| RingError::OutOfMemory)?;
     }
     Arc::try_new(backing).map_err(|_| RingError::OutOfMemory)
 }
@@ -161,7 +161,7 @@ impl Ring {
         .map_err(|_| RingError::OutOfMemory)?;
         let ring = allocate_zeroed(geometry.ring_bytes)?;
         let sqes = allocate_zeroed(geometry.sqes_bytes)?;
-        let readiness = Pipe::notification_pair().map_err(|()| RingError::OutOfMemory)?;
+        let readiness = Pipe::notification_pair().map_err(|_| RingError::OutOfMemory)?;
         let this = Arc::try_new(Self {
             _quota: quota,
             geometry,
@@ -173,7 +173,7 @@ impl Ring {
                 dropped_unreported: false,
             }),
             readiness,
-            generation: AtomicU64::new(crate::sync::next_readiness_generation()),
+            generation: AtomicU64::new(crate::file::next_readiness_generation()),
             closed: AtomicBool::new(false),
             posted: AtomicU32::new(0),
             timeouts_posted: AtomicU32::new(0),
@@ -303,7 +303,7 @@ impl Ring {
 
     fn advance_generation(&self) {
         self.generation.fetch_max(
-            crate::sync::next_readiness_generation(),
+            crate::file::next_readiness_generation(),
             Ordering::AcqRel,
         );
     }

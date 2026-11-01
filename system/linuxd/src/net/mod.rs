@@ -681,9 +681,14 @@ pub(crate) fn init() {
     inet::init();
 }
 
+/// 请求协议栈尽快处理一轮收发（新数据待发送、连接状态变化）。
+pub(crate) fn request_poll() {
+    crate::deferred::raise(crate::deferred::DeferredWork::NETWORK);
+}
+
 /// 存在网络设备：协议定时器需要 deferred 线程周期轮询。
 pub(crate) fn network_active() -> bool {
-    crate::devices::model::network_device(0).is_some()
+    device_model::network_device(0).is_some()
 }
 
 /// 运行 AF_UNIX cycle collector；worker/deadline reservation 由 composition root 装配。

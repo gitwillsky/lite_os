@@ -1,4 +1,4 @@
-use crate::devices::model::{PCM_BUFFER_FRAMES, PCM_PERIOD_FRAMES, PcmConfiguration};
+use device_model::{PCM_BUFFER_FRAMES, PCM_PERIOD_FRAMES, PcmConfiguration};
 
 /// 软件 ring 最多 32 个已协商 period；共享格式上限 64 KiB，可覆盖约 100ms 调度余量。
 /// 物理 DMA 队列仍由 adapter 固定；若软件 ring 也限为它的 21ms，普通调度抖动即可耗尽音频。

@@ -96,6 +96,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "device-model"
+version = "0.1.0"
+dependencies = [
+ "native-runtime",
+]
+
+[[package]]
+name = "device-protocol"
+version = "0.1.0"
+dependencies = [
+ "device-model",
+ "native-runtime",
+]
+
+[[package]]
+name = "devmgr"
+version = "0.1.0"
+dependencies = [
+ "boot-scene",
+ "device-model",
+ "device-protocol",
+ "dtb-walker",
+ "fallible-tree",
+ "launch-protocol",
+ "mmio",
+ "native-runtime",
+ "service-sync",
+]
+
+[[package]]
 name = "dtb-walker"
 version = "0.2.0-alpha.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -167,12 +197,12 @@ name = "linuxd"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.9.1",
- "boot-scene",
- "dtb-walker",
+ "device-model",
+ "device-protocol",
  "fallible-tree",
  "launch-protocol",
- "mmio",
  "native-runtime",
+ "service-sync",
  "smoltcp",
  "syscall-abi",
 ]
@@ -263,6 +293,13 @@ dependencies = [
 [[package]]
 name = "scheduler-unit"
 version = "0.1.0"
+
+[[package]]
+name = "service-sync"
+version = "0.1.0"
+dependencies = [
+ "native-runtime",
+]
 
 [[package]]
 name = "smoltcp"

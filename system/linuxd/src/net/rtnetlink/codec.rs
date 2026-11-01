@@ -3,7 +3,7 @@
 //! 不读取任何内核状态；调用者传入已冻结的 interface/route 快照。每条消息先写进固定大小的栈缓冲再
 //! 整体复制，所以编码不分配、不会写出半条消息。
 
-use crate::devices::model::network::NetworkStatistics;
+use device_model::network::NetworkStatistics;
 use crate::net::{InterfaceSnapshot, Ipv4RouteKind, RouteSnapshot};
 
 pub(super) const NLMSG_ERROR: u16 = 2;

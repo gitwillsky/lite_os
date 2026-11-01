@@ -4,10 +4,8 @@ use super::{
     route::{Ipv4RouteError, Ipv4RouteRequest, RoutingTable},
     stack,
 };
-use crate::{
-    devices::model::network::NetworkStatistics,
-    net::{NetNamespace, SocketError},
-};
+use crate::net::{NetNamespace, SocketError};
+use device_model::network::NetworkStatistics;
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
 
@@ -299,7 +297,7 @@ pub(in crate::net) fn packet_interface(
 ) -> Result<
     (
         InterfaceSnapshot,
-        Option<alloc::sync::Arc<dyn crate::devices::model::network::NetworkDevice>>,
+        Option<alloc::sync::Arc<dyn device_model::network::NetworkDevice>>,
     ),
     SocketError,
 > {

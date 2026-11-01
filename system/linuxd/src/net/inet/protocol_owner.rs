@@ -231,7 +231,7 @@ impl NetworkStackOwner {
             .publish(endpoint)
             .expect("final network cleanup identity exceeds unique socket capacity");
         drop(pending);
-        crate::devices::model::network::request_poll();
+        crate::net::request_poll();
     }
 
     fn drain_cleanup(&self, stack: &mut NetworkStack) -> bool {

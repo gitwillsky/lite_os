@@ -4,7 +4,8 @@ use super::{
     device::{EthernetDevice, ProtocolDevice},
     ipv4, now,
 };
-use crate::{devices::model::network::NetworkDevice, net::SocketError};
+use crate::net::SocketError;
+use device_model::network::NetworkDevice;
 use alloc::sync::Arc;
 use core::net::Ipv4Addr;
 use smoltcp::{

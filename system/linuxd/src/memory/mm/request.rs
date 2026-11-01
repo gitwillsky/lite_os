@@ -2,7 +2,8 @@
 
 use alloc::sync::Arc;
 
-use crate::memory::{DeviceBacking, MapPermission, MappedFileOwner, MemoryError, PAGE_SIZE, SharedFileMapping};
+use crate::memory::{MapPermission, MappedFileOwner, MemoryError, PAGE_SIZE, SharedFileMapping};
+use device_model::DeviceBacking;
 
 /// `madvise` 的语义。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,18 +63,29 @@ impl FileMappingSource {
 #[derive(Clone, Debug)]
 pub(crate) struct DeviceMappingSource {
     pub(crate) backing: Arc<DeviceBacking>,
+    /// 映射用的内存对象：与 `backing` 同一 VMO（同 koid，共享 futex key 跨映射一致）。
+    pub(crate) object: Arc<crate::memory::MemoryObject>,
     pub(crate) page_offset: usize,
     pub(crate) owners: alloc::vec::Vec<Arc<dyn MappedFileOwner>>,
 }
 
 impl DeviceMappingSource {
     /// 从缓冲首页开始的映射来源。
-    pub(crate) fn new(backing: Arc<DeviceBacking>) -> Self {
-        Self {
+    ///
+    /// # Errors
+    ///
+    /// 复制 VMO 句柄或分配内存对象失败。
+    pub(crate) fn new(backing: Arc<DeviceBacking>) -> Result<Self, MemoryError> {
+        let vmo = backing
+            .vmo()
+            .duplicate(native_runtime::native_abi::rights::SAME)
+            .map_err(MemoryError::from_status)?;
+        Ok(Self {
+            object: crate::memory::MemoryObject::new(vmo)?,
             backing,
             page_offset: 0,
             owners: alloc::vec::Vec::new(),
-        }
+        })
     }
 
     /// 保活映射所用的打开文件。

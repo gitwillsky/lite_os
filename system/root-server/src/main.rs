@@ -5,25 +5,26 @@
 //!
 //! 1. 从启动消息取得根 Job、根 resource、bootfs 与 DTB；
 //! 2. 为根 Job 建立异常 channel：任何系统服务未处理的异常都在这里记录，随后交还内核终止该进程；
-//! 3. 启动 linuxd（共享进程 + 首个成员进程，见 `launch_protocol::linuxd`）；
-//! 4. linuxd 终止即系统无法继续服务：记录退出状态并关机。
+//! 3. 创建设备目录 channel，启动 devmgr（持有 DTB 与写端）与 linuxd（共享进程 + 首个成员进程，持有读端）；
+//! 4. 任一服务终止即系统无法继续服务：记录退出状态并关机。
 
 extern crate alloc;
 
 use alloc::vec;
 
-use launch_protocol::linuxd;
+use launch_protocol::{devmgr, linuxd};
 use native_runtime::executor::Executor;
 use native_runtime::native_abi::{self, ExceptionReport, rights, signals, startup};
-use native_runtime::{Handle, Job, Process, Resource, Startup, Vmar, Vmo, error, info};
+use native_runtime::{Channel, Handle, Job, Process, Resource, Startup, Vmar, Vmo, error, info};
 
 native_runtime::entry!(main);
 
 const LINUXD_STACK_SIZE: usize = 512 * 1024;
+const DEVMGR_STACK_SIZE: usize = 256 * 1024;
 
 fn main(mut startup: Startup) -> i64 {
     let job = Job::from_handle(startup.take(startup::root::JOB));
-    let resource = Resource::from_handle(startup.take(startup::root::RESOURCE));
+    let resource = ROOT_RESOURCE.call_once(|| Resource::from_handle(startup.take(startup::root::RESOURCE)));
     let bootfs_vmo = Vmo::from_handle(startup.take(startup::root::BOOTFS));
     let device_tree = startup.take(startup::root::DEVICE_TREE);
     native_runtime::set_fatal_scope(
@@ -34,7 +35,9 @@ fn main(mut startup: Startup) -> i64 {
 
     let exceptions = native_runtime::task::create_exception_channel(&job).expect("root exception channel");
     let bootfs = native_runtime::bootfs::Bootfs::map(&bootfs_vmo).expect("bootfs mapping");
-    let linux = start_linuxd(&job, &resource, &bootfs, device_tree, &startup.arguments);
+    let (directory_reader, directory_writer) = Channel::create().expect("device directory channel");
+    let devices = start_devmgr(&job, resource, &bootfs, device_tree, directory_writer);
+    let linux = start_linuxd(&job, resource, &bootfs, directory_reader, &startup.arguments);
 
     let executor = Executor::create().expect("root executor");
     executor.spawn(async move {
@@ -53,15 +56,27 @@ fn main(mut startup: Startup) -> i64 {
             }
         }
     });
-    let linux = executor.block_on(async move {
-        let _ = executor.on_signals(&linux, signals::TERMINATED).await;
-        linux
+    executor.spawn(async move {
+        let _ = executor.on_signals(&devices, signals::TERMINATED).await;
+        native_runtime::task::exit_process(power_off(&devices, "devmgr"));
     });
-    let status = linux.basic().map_or(-1, |basic| basic.return_code);
-    error!("linuxd terminated with status {status}; powering off");
-    let _ = native_runtime::system::power(&resource, native_abi::system::POWER_OFF);
+    executor.block_on(async move {
+        let _ = executor.on_signals(&linux, signals::TERMINATED).await;
+        power_off(&linux, "linuxd")
+    })
+}
+
+/// 系统服务终止后无法继续：记录退出状态并关机；关机请求被拒绝时返回根服务的退出码。
+fn power_off(process: &Process, name: &str) -> i64 {
+    let status = process.basic().map_or(-1, |basic| basic.return_code);
+    error!("{name} terminated with status {status}; powering off");
+    let resource = ROOT_RESOURCE.get().expect("root resource installed");
+    let _ = native_runtime::system::power(resource, native_abi::system::POWER_OFF);
     -1
 }
+
+// OWNER: 根 resource；关机路径从任一服务的终止观察者使用它。
+static ROOT_RESOURCE: native_runtime::sync::Once<Resource> = native_runtime::sync::Once::new();
 
 fn report_exception(bytes: &[u8]) {
     let mut report = ExceptionReport::default();
@@ -97,7 +112,7 @@ fn start_linuxd(
     root: &Job,
     resource: &Resource,
     bootfs: &native_runtime::bootfs::Bootfs,
-    device_tree: Handle,
+    directory: Channel,
     command_line: &[u8],
 ) -> Process {
     let image = bootfs
@@ -120,11 +135,45 @@ fn start_linuxd(
             shared.into_handle(),
             job.duplicate(rights::SAME).expect("job duplicate").into_handle(),
             resource.duplicate(rights::SAME).expect("resource duplicate").into_handle(),
-            device_tree,
+            directory.into_handle(),
         ],
         stack_size: LINUXD_STACK_SIZE,
     })
     .expect("linuxd launch");
     info!("linuxd started");
+    process
+}
+
+/// 启动 devmgr：普通进程，持有根 resource、DTB 与设备目录写端。
+fn start_devmgr(
+    root: &Job,
+    resource: &Resource,
+    bootfs: &native_runtime::bootfs::Bootfs,
+    device_tree: Handle,
+    directory: Channel,
+) -> Process {
+    let image = bootfs
+        .find(devmgr::IMAGE)
+        .unwrap_or_else(|| panic!("bootfs lacks {}", core::str::from_utf8(devmgr::IMAGE).unwrap_or("")))
+        .data;
+    let job = Job::create(root).expect("devmgr job");
+    let (process, vmar) = Process::create(&job, b"devmgr", 0).expect("devmgr process");
+    let runtime_vmar: Vmar = vmar.duplicate(rights::SAME).expect("devmgr vmar duplicate");
+    native_runtime::launch::launch(native_runtime::launch::Launch {
+        process: &process,
+        image_vmar: &vmar,
+        runtime_vmar,
+        name: b"devmgr",
+        image,
+        arguments: &[],
+        handles: vec![
+            resource.duplicate(rights::SAME).expect("resource duplicate").into_handle(),
+            device_tree,
+            directory.into_handle(),
+        ],
+        stack_size: DEVMGR_STACK_SIZE,
+    })
+    .expect("devmgr launch");
+    info!("devmgr started");
     process
 }

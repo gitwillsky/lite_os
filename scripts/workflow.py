@@ -108,9 +108,9 @@ def build_kernel(environment: Mapping[str, str] | None = None) -> None:
     cargo_profile = ["--release"] if profile == "release" else []
     run(["cargo", "build", "--target", target.kernel_triple, *cargo_profile], cwd=ROOT / "kernel", environment=environment)
     run(
-        ["cargo", "build", "-p", "root-server", "-p", "linuxd", "--target", target.service_triple, *cargo_profile],
+        ["cargo", "build", "-p", "root-server", "-p", "devmgr", "-p", "linuxd", "--target", target.service_triple, *cargo_profile],
         cwd=ROOT,
-        # 启动画面编入 linuxd；受 Git 管理的素材由 classic_assets 校验，cargo 会跟踪该环境变量与文件内容。
+        # 启动画面编入 devmgr；受 Git 管理的素材由 classic_assets 校验，cargo 会跟踪该环境变量与文件内容。
         environment=_env_with(environment, LITEOS_BOOT_SCENE=str(boot_scene())),
     )
     run(python_script("pack_bootfs.py", "--profile", profile), environment=environment)

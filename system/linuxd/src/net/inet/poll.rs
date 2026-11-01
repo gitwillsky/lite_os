@@ -10,7 +10,7 @@ pub(super) struct NetworkPoll {
     pub(super) backlog: bool,
     pub(super) packet_transmit_ready: [Option<u32>; 8],
     /// 每个实际设备本轮首个诊断；硬件错误不覆盖其他设备的edges/backlog，也不伪造socket错误。
-    pub(super) device_failures: [Option<(u32, crate::devices::model::network::NetworkError)>; 8],
+    pub(super) device_failures: [Option<(u32, device_model::network::NetworkError)>; 8],
 }
 impl NetworkStack {
     /// poll/timer在同一actual owner guard准备临时route事实，queue/source不移交或改写。

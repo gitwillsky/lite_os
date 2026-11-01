@@ -2,10 +2,8 @@ use alloc::{sync::Arc, sync::Weak, vec::Vec};
 use crate::sync::Mutex;
 use native_runtime::sync::Once;
 
-use crate::{
-    devices::model::{InputDevice, InputId, RawInputEvent},
-    ipc::{Pipe, PipeDirection, PipeEnd},
-};
+use crate::{ipc::{Pipe, PipeDirection, PipeEnd}};
+use device_model::{InputDevice, InputId, RawInputEvent};
 
 mod client_queue;
 mod evdev_file;
@@ -568,11 +566,11 @@ pub(crate) fn init() -> Result<(), ()> {
     if INPUT_DEVICES.get().is_some() {
         return Err(());
     }
-    let count = crate::devices::model::input_device_count();
+    let count = device_model::input_device_count();
     let mut devices = Vec::new();
     devices.try_reserve_exact(count).map_err(|_| ())?;
     for index in 0..count {
-        let adapter = crate::devices::model::input_device(index).ok_or(())?;
+        let adapter = device_model::input_device(index).ok_or(())?;
         let notification = crate::ipc::Pipe::notification_pair()?;
         devices.push(
             Arc::try_new(EvdevDevice {
@@ -594,7 +592,7 @@ pub(crate) fn init() -> Result<(), ()> {
     if count != 0 {
         let work = crate::deferred::register(input_work)?;
         for device in INPUT_DEVICES.get().into_iter().flatten() {
-            device.adapter.bind_completion_work(work);
+            device.adapter.bind_activity(crate::deferred::activity(work)?);
         }
     }
     let driver = Arc::try_new(evdev_file::EvdevDriver).map_err(|_| ())?;

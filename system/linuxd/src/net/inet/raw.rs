@@ -314,7 +314,7 @@ pub(super) fn send(
             debug_assert!(!placeholder.can_send());
         },
     )?;
-    crate::devices::model::network::request_poll();
+    crate::net::request_poll();
     Ok(input.len())
 }
 

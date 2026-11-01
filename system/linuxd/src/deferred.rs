@@ -1,9 +1,9 @@
 //! 合并发布的后台工作：由唯一的 deferred 线程消费。
 //!
-//! 1. 发布者（驱动中断线程、定时器登记、控制台输入）以 [`raise`] 置位并唤醒 deferred 线程；
+//! 1. 发布者（设备事件分派线程、定时器登记、控制台输入）以 [`raise`] 置位并唤醒 deferred 线程；
 //!    多次发布合并为一次处理。
 //! 2. deferred 线程取走全部位并分派；没有待处理位时停驻到各定时器来源的最早截止时间，
-//!    到期即按 [`DeferredWork::TIMER`] 处理——这取代了内核中的周期 tick。
+//!    到期即按 [`DeferredWork::TIMER`] 处理——这取代了周期 tick。
 //! 3. 新登记的截止时间早于线程当前停驻的截止时间时，登记者调用 [`deadline_changed`] 让线程重新计算。
 
 use alloc::sync::Arc;
@@ -24,8 +24,16 @@ impl DeferredWork {
     pub(crate) const NETWORK: Self = Self(1 << 2);
     /// 一批到期项未处理完。
     pub(crate) const TIMER_BACKLOG: Self = Self(1 << 3);
-    pub(crate) const DRIVER_IO: Self = Self(1 << 4);
+}
 
+/// 设备活动通知：设备有活动时发布 `work`。
+///
+/// # Errors
+///
+/// 通知闭包分配失败。
+pub(crate) fn activity(work: DeferredWork) -> Result<device_model::Activity, ()> {
+    let activity: device_model::Activity = Arc::try_new(move || raise(work)).map_err(|_| ())?;
+    Ok(activity)
 }
 
 /// 首个可注册工作的位；低位保留给固定工作。

@@ -141,7 +141,7 @@ pub(in crate::net::inet) fn disconnect(socket: &InetSocket) -> Result<(), Socket
     }
     disconnect_locked(&mut network, id);
     drop(network);
-    crate::devices::model::network::request_poll();
+    crate::net::request_poll();
     Ok(())
 }
 
@@ -185,7 +185,7 @@ pub(in crate::net::inet) fn drop_endpoint(network: &mut NetworkStack, id: usize)
         }
         network.queue_tcp_resets(super::super::now());
         super::io::reap_orphans(network);
-        crate::devices::model::network::request_poll();
+        crate::net::request_poll();
         return;
     }
     disconnect_locked(network, id);

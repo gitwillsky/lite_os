@@ -1,6 +1,6 @@
-//! 平台串口 console：hardirq 发布的 RX ring 与 platform 提供的同步输出原语组成 `ConsoleDevice`。
+//! 平台串口 console：串口输入线程发布的 RX ring 与 platform 提供的同步输出原语组成 `ConsoleDevice`。
 //!
-//! 与具体 UART register ABI 无关；platform 只提供 Linux 设备名与单字节输出，并从 hardirq 发布已
+//! 与具体 UART register ABI 无关；platform 只提供 Linux 设备名与同步输出，串口输入线程发布已
 //! drain 的输入。
 
 use alloc::{collections::VecDeque, sync::Arc};
@@ -8,8 +8,7 @@ use native_runtime::sync::Once;
 
 use crate::sync::Mutex;
 
-use super::registry::AppendOnlyRegistry;
-use crate::interrupt::InterruptError;
+use device_model::AppendOnlyRegistry;
 
 const RX_CAPACITY: usize = 1024;
 
@@ -22,10 +21,10 @@ struct ConsoleInput {
 static CONSOLE_INPUT: Once<Mutex<ConsoleInput>> = Once::new();
 
 /// 初始化唯一 console RX ring。
-fn init_ring() -> Result<(), InterruptError> {
+fn init_ring() -> Result<(), ConsoleError> {
     let mut rx = VecDeque::new();
     rx.try_reserve_exact(RX_CAPACITY)
-        .map_err(|_| InterruptError::NoMemory)?;
+        .map_err(|_| ConsoleError)?;
     CONSOLE_INPUT.call_once(|| Mutex::new(ConsoleInput { rx }));
     Ok(())
 }
@@ -54,7 +53,7 @@ fn read(bytes: &mut [u8]) -> usize {
     count
 }
 
-/// ring 非空；hardirq 据此决定是否发布 console deferred work。
+/// ring 非空；串口输入线程据此决定是否发布 console deferred work。
 pub(crate) fn input_ready() -> bool {
     !CONSOLE_INPUT.wait().lock().rx.is_empty()
 }
@@ -66,7 +65,7 @@ fn discard_input() -> usize {
     count
 }
 
-/// console 写出失败（底层 UART/firmware 拒绝）。
+/// console 写出失败（底层串口拒绝），或注册时内存不足。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ConsoleError;
 
@@ -135,17 +134,17 @@ impl ConsoleDevice for SerialConsole {
 ///
 /// # Errors
 ///
-/// ring 或注册表分配失败返回 `NoMemory`。
+/// ring 或注册表分配失败返回 [`ConsoleError`]。
 pub(crate) fn register_serial(
     name: &'static [u8],
     output: SerialOutput,
-) -> Result<(), InterruptError> {
+) -> Result<(), ConsoleError> {
     init_ring()?;
     let console =
-        Arc::try_new(SerialConsole { name, output }).map_err(|_| InterruptError::NoMemory)?;
+        Arc::try_new(SerialConsole { name, output }).map_err(|_| ConsoleError)?;
     CONSOLE_DEVICES
         .register(console)
-        .map_err(|_| InterruptError::NoMemory)?;
+        .map_err(|_| ConsoleError)?;
     Ok(())
 }
 

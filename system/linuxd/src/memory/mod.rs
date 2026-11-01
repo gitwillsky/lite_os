@@ -12,7 +12,6 @@
 //! 文件映射使用 inode 页缓存 VMO（私有映射为其写时复制子 VMO）；设备映射使用设备缓冲的 VMO。
 //! fork 时私有映射取 `SNAPSHOT` 子 VMO，共享映射映射同一 VMO。
 
-mod device_backing;
 mod executable;
 mod executable_load;
 mod futex;
@@ -24,7 +23,6 @@ mod shared_memory;
 
 use native_runtime::sync::Once;
 
-pub(crate) use device_backing::{DEVICE_BACKING_EXTENTS_MAX, DeviceBacking, DeviceExtent};
 pub(crate) use executable::{
     ExecutableImage, ExecutableParseError, ExecutableSource, parse_interpreter_elf, parse_main_elf,
 };

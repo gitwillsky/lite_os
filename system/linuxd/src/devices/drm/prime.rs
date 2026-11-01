@@ -124,7 +124,7 @@ impl DeviceFile for DmaBuf {
         if request.writable && !request.fd_writable {
             return Err(DeviceError::Errno(errno::EACCES));
         }
-        Ok(DeviceMappingSource::new(self.buffer().backing.clone()))
+        DeviceMappingSource::new(self.buffer().backing.clone()).map_err(|_| DeviceError::Errno(errno::ENOMEM))
     }
     fn ioctl(&self, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {
         // DMA_BUF_IOCTL_SYNC, Linux _IOW('b', 0, __u64)。一致 DMA 平台不增加 cache shadow。

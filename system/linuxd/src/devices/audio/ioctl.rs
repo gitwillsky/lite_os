@@ -110,7 +110,7 @@ fn write_frames(
         .map_err(|_| errno::EINVAL)?;
     let configuration = file.transfer_configuration();
     let frame_bytes = configuration.frame_bytes();
-    let mut period = [0u8; crate::devices::model::MAX_PCM_PERIOD_BYTES];
+    let mut period = [0u8; device_model::MAX_PCM_PERIOD_BYTES];
     let mut completed = 0usize;
     'transfer: while completed < frames {
         let count = (frames - completed).min(configuration.period_frames);

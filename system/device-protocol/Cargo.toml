@@ -1,0 +1,12 @@
+[package]
+name = "device-protocol"
+version = "0.1.0"
+edition = "2024"
+description = "驱动宿主与设备使用者之间的设备线协议：server 适配与实现设备 trait 的远端 client"
+
+[dependencies]
+device-model = { path = "../device-model" }
+native-runtime = { path = "../native-runtime" }
+
+[lints]
+workspace = true

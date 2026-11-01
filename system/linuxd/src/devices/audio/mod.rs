@@ -11,17 +11,16 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use crate::sync::Mutex;
+use device_model::{PcmCompletionObserver, PcmOutput};
 use native_runtime::sync::Once;
 
 use crate::{
-    devices::model::{PcmCompletionObserver, PcmOutput, io_completion::CompletionSource},
     sync::TaskMutex,
     ipc::{Pipe, PipeDirection, PipeEnd},
     memory::{
-        DeviceBacking, DeviceMappingSource, PAGE_SIZE,
-    },
-    namespace::PidIdentity,
-};
+        DeviceMappingSource, PAGE_SIZE},
+    namespace::PidIdentity};
+use device_model::DeviceBacking;
 
 mod codec;
 mod control;
@@ -31,13 +30,13 @@ mod ioctl;
 mod mixer;
 mod pcm_file;
 mod state;
-use crate::devices::model::{MAX_PCM_PERIOD_BYTES, PcmConfiguration};
+use device_model::{MAX_PCM_PERIOD_BYTES, PcmConfiguration};
 use engine::{Engine, Events, PcmEndpoint, SUBSTREAMS};
 use state::MAX_BUFFER_PERIODS;
 pub(crate) use state::PcmState;
 include!("readiness.rs");
 
-pub(crate) use crate::devices::model::PcmOutputError as AudioError;
+pub(crate) use device_model::PcmOutputError as AudioError;
 
 /// ALSA PCM hardware 参数的唯一受支持领域值。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -76,7 +75,7 @@ pub(crate) struct PcmStatus {
 /// 子流环形缓冲：引擎按字节偏移读取整个 period。
 impl engine::Ring for Arc<DeviceBacking> {
     fn read(&self, offset: usize, output: &mut [u8]) -> Result<(), ()> {
-        DeviceBacking::read(self, offset, output)
+        DeviceBacking::read(self, offset, output).map_err(|_| ())
     }
 }
 
@@ -125,19 +124,37 @@ struct Card {
     control_notification_write: Arc<PipeEnd>,
 }
 
-// OWNER: discovery 是 drivers PCM index → ALSA card 的唯一绑定者。next 只在本锁下推进；
-// 硬件热插入发布 DRIVER_IO 后在 task/idle safe point 绑定，IRQ 不分配、不发布 devfs 节点。
+// OWNER: discovery 是 PCM 输出 index → ALSA card 的唯一绑定者。next 只在本锁下推进；
+// 新 PCM 输出（含热插拔）登记后由音频 deferred 工作绑定，事件分派线程不分配、不发布 devfs 节点。
 struct Discovery {
     next: Mutex<usize>,
-    // OWNER: 每卡 completion 的只追加索引；固定 DRIVER_IO 只登记 Discovery，拔插不消耗额外硬件源槽位。
-    // get 克隆 Arc 后立即释放 registry 锁，Card.process 不在 discovery/registry 锁下运行。
-    cards: crate::devices::registry::AppendOnlyRegistry<Card>,
+    // OWNER: 每卡的只追加索引；get 克隆 Arc 后立即释放 registry 锁，Card.process 不在
+    // discovery/registry 锁下运行。
+    cards: device_model::AppendOnlyRegistry<Card>,
     caller: fn() -> Option<Arc<PidIdentity>>,
 }
-// OWNER: 唯一音频发现游标及 caller 绑定，init 发布后由 DRIVER_IO 处理新增 adapter；缺失时热插拔设备不能发布 ALSA 节点。
+// OWNER: 唯一音频发现游标及 caller 绑定，init 发布后由音频 deferred 工作处理新增 adapter；缺失时
+// 热插拔设备不能发布 ALSA 节点。
 static DISCOVERY: Once<Arc<Discovery>> = Once::new();
+// OWNER: 音频 deferred 工作：period 完成、断开与新 PCM 输出登记时发布，处理全部卡。init 前的发布被忽略，
+// init 自身会处理一轮。
+static AUDIO_WORK: Once<crate::deferred::DeferredWork> = Once::new();
 
-/// 安装 ALSA 设备发现并发布已存在的 PCM adapter；之后的新 adapter 经 DRIVER_IO 发现。
+/// 请求一轮音频处理（发现新 PCM 输出并推进各卡）。
+pub(crate) fn request_processing() {
+    if let Some(work) = AUDIO_WORK.get() {
+        crate::deferred::raise(*work);
+    }
+}
+
+fn audio_work(_now_ns: u64) -> bool {
+    if let Some(discovery) = DISCOVERY.get() {
+        discovery.process();
+    }
+    false
+}
+
+/// 安装 ALSA 设备发现并发布已存在的 PCM adapter；之后的新 adapter 经音频 deferred 工作发现。
 ///
 /// # Parameters
 /// - `caller`: task owner 的实际 TID observer。
@@ -150,20 +167,21 @@ pub(crate) fn init(caller: fn() -> Option<Arc<PidIdentity>>) -> Result<(), ()> {
     }
     let discovery = Arc::try_new(Discovery {
         next: Mutex::new(0),
-        cards: crate::devices::registry::AppendOnlyRegistry::new(),
+        cards: device_model::AppendOnlyRegistry::new(),
         caller,
     })
     .map_err(|_| ())?;
-    crate::devices::model::register_completion_source(discovery.clone()).map_err(|_| ())?;
     DISCOVERY.call_once(|| discovery.clone());
-    discovery.dispatch_completions();
+    let work = crate::deferred::register(audio_work)?;
+    AUDIO_WORK.call_once(|| work);
+    discovery.process();
     Ok(())
 }
 
-impl CompletionSource for Discovery {
-    fn dispatch_completions(&self) -> bool {
+impl Discovery {
+    fn process(&self) {
         let mut next = self.next.lock();
-        while let Some(output) = crate::devices::model::pcm_output(*next) {
+        while let Some(output) = device_model::pcm_output(*next) {
             let index = *next;
             *next += 1;
             if attach(index, output, self.caller, &self.cards).is_err() {
@@ -177,7 +195,6 @@ impl CompletionSource for Discovery {
                 card.process();
             }
         }
-        false
     }
 }
 
@@ -185,7 +202,7 @@ fn attach(
     index: usize,
     output: Arc<dyn PcmOutput>,
     caller: fn() -> Option<Arc<PidIdentity>>,
-    cards: &crate::devices::registry::AppendOnlyRegistry<Card>,
+    cards: &device_model::AppendOnlyRegistry<Card>,
 ) -> Result<(), ()> {
     let index = u32::try_from(index).map_err(|_| ())?;
     let minor = index.checked_mul(32).ok_or(())?;
@@ -298,7 +315,7 @@ impl PcmCompletionObserver for Card {
     fn period_completed(&self, _frames: usize) {
         self.events.completed.fetch_add(1, Ordering::AcqRel);
         // producer 可在 Discovery 之后运行；重新发布合并位，不能等下一次硬件 IRQ 才推进 hw_ptr。
-        crate::deferred::raise(crate::deferred::DeferredWork::DRIVER_IO);
+        request_processing();
     }
 
     fn xrun(&self) {
@@ -308,7 +325,7 @@ impl PcmCompletionObserver for Card {
 
     fn disconnected(&self) {
         self.events.disconnected.store(true, Ordering::Release);
-        crate::deferred::raise(crate::deferred::DeferredWork::DRIVER_IO);
+        request_processing();
         crate::info!("ALSA playback reset");
         self.notification_write.signal_readiness();
     }
@@ -441,7 +458,7 @@ impl PcmFile {
             .engine
             .lock()
             .configure(self.index, parameters.buffer_frames, configuration)
-            .map_err(|()| AudioError::InvalidState)?;
+            .map_err(|_| AudioError::InvalidState)?;
         crate::info!("ALSA playback substream {} configured", self.index);
         Ok(())
     }
@@ -472,7 +489,7 @@ impl PcmFile {
                 parameters.stop_threshold,
                 parameters.boundary,
             )
-            .map_err(|()| errno::EINVAL)?;
+            .map_err(|_| errno::EINVAL)?;
         clock.enabled = parameters.timestamp_mode == 1;
         if let Some(kind) = parameters.timestamp_type {
             clock.kind = kind;
@@ -501,7 +518,7 @@ impl PcmFile {
             let restart = self.endpoint == PcmEndpoint::Direct && engine.running();
             engine
                 .prepare(self.index)
-                .map_err(|()| AudioError::InvalidState)?;
+                .map_err(|_| AudioError::InvalidState)?;
             (engine.state(self.index).configuration, restart)
         };
         if restart {
@@ -522,7 +539,7 @@ impl PcmFile {
             .engine
             .lock()
             .free_hardware(self.index)
-            .map_err(|()| AudioError::InvalidState)
+            .map_err(|_| AudioError::InvalidState)
     }
 
     pub(crate) fn start(&self) -> Result<(), AudioError> {
@@ -531,7 +548,7 @@ impl PcmFile {
             .engine
             .lock()
             .start(self.index)
-            .map_err(|()| AudioError::InvalidState)?;
+            .map_err(|_| AudioError::InvalidState)?;
         crate::info!("ALSA playback substream {} started", self.index);
         self.card.process();
         Ok(())
@@ -548,7 +565,7 @@ impl PcmFile {
             let mut engine = self.card.engine.lock();
             engine
                 .drop_stream(self.index)
-                .map_err(|()| AudioError::InvalidState)?;
+                .map_err(|_| AudioError::InvalidState)?;
             engine.state(self.index).configuration
         };
         if self.endpoint == PcmEndpoint::Direct {
@@ -613,15 +630,15 @@ impl PcmFile {
                 .min((state.buffer_frames as usize - frame) * frame_bytes);
             self.ring
                 .write(frame * frame_bytes, &bytes[..first])
-                .map_err(|()| errno::EIO)?;
+                .map_err(|_| errno::EIO)?;
             if first < bytes.len() {
                 self.ring
                     .write(0, &bytes[first..])
-                    .map_err(|()| errno::EIO)?;
+                    .map_err(|_| errno::EIO)?;
             }
             engine
                 .application_frames(self.index, frames as u64)
-                .map_err(|()| errno::EBADFD)?;
+                .map_err(|_| errno::EBADFD)?;
         }
         self.card.process();
         Ok(frames)
@@ -663,7 +680,7 @@ impl PcmFile {
         {
             return Err(AudioError::InvalidState);
         }
-        Ok(DeviceMappingSource::new(self.ring.clone()))
+        DeviceMappingSource::new(self.ring.clone()).map_err(|_| AudioError::Device)
     }
 
     /// 从 ALSA mmap ring 提交 application pointer 的帧增量。数据已经由应用直接写进环形缓冲，
@@ -695,7 +712,7 @@ impl PcmFile {
             if delta != 0 {
                 engine
                     .application_frames(self.index, delta)
-                    .map_err(|()| AudioError::InvalidState)?;
+                    .map_err(|_| AudioError::InvalidState)?;
             }
         }
         self.card.process();

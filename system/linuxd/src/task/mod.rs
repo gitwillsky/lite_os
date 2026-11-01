@@ -46,7 +46,6 @@ pub(crate) struct SchedulerReady(());
 ///    mount 与 executable loading 会在尚无 current task 时发出 block I/O，wait-target factory 需要
 ///    已初始化的 topology 才能安全观察到 `None`，颠倒顺序会让 `current_task()` 永久等待。
 pub(crate) fn initialize(_vfs: crate::fs::VfsReady) -> SchedulerReady {
-    process_table::initialize_driver_io_wait();
     process_table::task_wait::initialize();
     process_table::pipe_wait::install_pipe_scheduler();
     process_table::install_job_control();

@@ -21,7 +21,6 @@ mod exec_identity;
 pub(in crate::task) use exec_drain::ExecPreparation;
 mod futex;
 mod group_retirement;
-mod io_wait;
 mod load_average;
 mod parent_death;
 mod pid_namespace;
@@ -58,7 +57,6 @@ pub(crate) use deferred::{dispatch_deferred_work, next_deferred_deadline};
 pub(in crate::task) use exec_identity::mark_process_exec;
 pub(in crate::task) use futex::futex_wake_with_key;
 pub(crate) use futex::{FutexWaitError, futex_requeue, futex_wait, futex_wake, futex_wake_op};
-pub(super) use io_wait::initialize_driver_io_wait;
 pub(crate) use parent_death::parent_death_signal;
 pub(crate) use policy::{SchedulerNiceSelector, scheduler_nice, scheduler_rr_interval};
 pub(crate) use policy::{
@@ -467,7 +465,7 @@ pub(super) fn add_init_task(task: Arc<TaskControlBlock>, pid: &mut PreparedPid) 
 /// # Parameters
 ///
 /// - `name`: 诊断名称。
-/// - `body`: 永不返回的线程主体；可以阻塞在 `TaskMutex`、`TaskEvent`、DriverIo 与 `sleep_until`。
+/// - `body`: 永不返回的线程主体；可以阻塞在 `TaskMutex`、`TaskEvent` 与 `sleep_until`。
 ///
 /// # Errors
 ///

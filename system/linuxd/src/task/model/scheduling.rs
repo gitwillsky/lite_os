@@ -47,7 +47,6 @@ pub(crate) enum WaitMembership {
     Pipe(u64),
     AdvisoryLock(u64),
     Poll(u64),
-    DriverIo(crate::devices::model::io_completion::IoWaitKey),
     TaskWait(crate::sync::TaskWaitKey),
 }
 
@@ -55,7 +54,7 @@ impl WaitMembership {
     /// 计入负载均值的不可中断等待（Linux TASK_UNINTERRUPTIBLE）。
     fn contributes_to_load(self) -> bool {
         match self {
-            Self::DriverIo(_) | Self::Vfork(_) => true,
+            Self::Vfork(_) => true,
             Self::TaskWait(key) => key.contributes_to_load(),
             _ => false,
         }

@@ -7,7 +7,9 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use crate::sync::Mutex;
 
-use crate::{devices::model::{VirglBox, VirglCapsetInfo, VirglCommand, VirglTransferDirection}, memory::{DeviceBacking, PAGE_SIZE}};
+use crate::{memory::PAGE_SIZE};
+use device_model::DeviceBacking;
+use device_model::{VirglBox, VirglCapsetInfo, VirglCommand, VirglTransferDirection};
 use fallible_tree::{FallibleMap, VacantEntry};
 
 use super::{
@@ -477,7 +479,7 @@ impl DrmFile {
             .submit_cursor_upload(resource.identity, resource.backing.clone())
         {
             Ok(fence) => fence,
-            Err(crate::devices::model::DisplayError::WouldBlock) => {
+            Err(device_model::DisplayError::WouldBlock) => {
                 return Ok(DrmSubmission::Retry(DrmRetry {
                     device: self.device.clone(),
                     generation,
@@ -745,7 +747,7 @@ impl DrmFile {
         let generation = completion.adapter_generation;
         let fence = match self.device.display.submit_virgl(command) {
             Ok(fence) => fence,
-            Err(crate::devices::model::DisplayError::WouldBlock) => {
+            Err(device_model::DisplayError::WouldBlock) => {
                 return Ok(DrmSubmission::Retry(DrmRetry {
                     device: self.device.clone(),
                     generation,

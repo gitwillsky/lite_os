@@ -13,17 +13,14 @@ extern crate alloc;
 extern crate native_runtime;
 
 mod arch;
-mod boot_screen;
 mod cmdline;
 mod cpu;
 mod deferred;
 mod devices;
-mod drivers;
 mod file;
 mod fs;
 mod handles;
 mod id;
-mod interrupt;
 mod io_uring;
 mod ipc;
 mod log;
@@ -32,16 +29,19 @@ mod namespace;
 mod net;
 mod platform;
 mod random;
-mod sync;
 mod syscall;
 mod system;
 mod task;
 mod time;
 mod trap;
 
+// 可睡眠同步原语在系统服务间共享；linuxd 经 `crate::sync` 使用它们，并安装 Linux 线程的等待目标。
+use service_sync as sync;
+
 #[allow(unused_imports, reason = "日志宏经 `crate::` 路径调用的地方需要根级名字")]
 pub(crate) use native_runtime::{debug, error, info, warn};
 
+use device_protocol::boot::Milestone;
 use native_runtime::Startup;
 use native_runtime::native_abi::SystemBasic;
 use native_runtime::sync::Once;
@@ -55,37 +55,26 @@ pub(crate) fn system_info() -> &'static SystemBasic {
     INFO.call_once(native_runtime::system::basic)
 }
 
-/// linuxd 编入的启动画面位图（`LBS1`）：根文件系统挂载之前 GPU 就要显示它；具体文件由构建环境变量
-/// `LITEOS_BOOT_SCENE` 选择（默认值在根目录 `.cargo/config.toml`），缺失时编译失败。
-static BOOT_SCENE: &[u8] = include_bytes!(env!("LITEOS_BOOT_SCENE"));
-
 /// 装配顺序：
 ///
-/// 1. 取回启动句柄、平台设备事实与 command line；
-/// 2. 早期显示与开机画面；
-/// 3. Linux 命名空间、VFS 与任务表，然后启动 deferred 线程（驱动完成、定时器与控制台输入都经它分派）；
-/// 4. 绑定设备、注册 console，挂载根文件系统，启动后台线程；
-/// 5. 发布 init。main 线程随后退出，linuxd 由各服务线程与 Linux 线程继续运行。
+/// 1. 取回启动句柄与 command line；
+/// 2. Linux 命名空间、VFS 与任务表，然后启动 deferred 线程（定时器、控制台输入与设备活动都经它分派）；
+/// 3. 读取 devmgr 设备目录并连接全部设备，注册 console；
+/// 4. 装配块设备、音频、DRM、输入与 tty，挂载根文件系统，启动后台线程；
+/// 5. 发布 init。main 线程随后退出（只结束本线程），linuxd 由各服务线程与 Linux 线程继续运行。
 fn main(mut startup: Startup) -> i64 {
-    let device_tree = handles::install(&mut startup);
+    let directory = handles::install(&mut startup);
     native_runtime::set_fatal_scope(
         handles::job()
             .duplicate(native_runtime::native_abi::rights::SAME)
             .expect("linuxd job duplicate")
             .into_handle(),
     );
-    platform::initialize(&device_tree);
-    drop(device_tree);
     info!("linuxd started on {} CPUs", cpu::count());
     if let Some(record) = system::previous_panic() {
         warn!("previous boot ended in a kernel panic:\n{}", core::str::from_utf8(record).unwrap_or("<non-utf8>"));
     }
 
-    let display = drivers::virtio::bind_display();
-    let mut boot_screen = boot_screen::BootScreen::start(
-        display.as_ref().map(drivers::virtio::EarlyDisplay::framebuffer),
-        BOOT_SCENE,
-    );
     let parameters = cmdline::parse(platform::kernel_command_line())
         .unwrap_or_else(|error| panic!("invalid kernel command line: {error:?}"));
     info!(
@@ -94,31 +83,30 @@ fn main(mut startup: Startup) -> i64 {
     );
 
     initialize_namespaces();
-    boot_screen.advance(boot_screen::Milestone::Namespaces);
     let vfs = fs::init_vfs();
     let scheduler = task::initialize(vfs);
     start_deferred_worker();
-    boot_screen.advance(boot_screen::Milestone::Scheduler);
+    let devices = devices::directory::connect(directory);
+    devices.advance(Milestone::Namespaces);
+    devices.advance(Milestone::Scheduler);
 
     platform::register_console();
-    drivers::pci::initialize(platform::pci_host()).expect("PCI root bus initialization failed");
-    drivers::virtio::bind_platform_devices(display.as_ref());
     let mut disk_index = 0;
     while let Some(disk) = devices::block::device(disk_index) {
         fs::publish_block_device(disk).expect("block device publication failed");
         disk_index += 1;
     }
-    boot_screen.advance(boot_screen::Milestone::Devices);
+    devices.advance(Milestone::Devices);
     devices::audio::init(|| task::current_task().map(|thread| thread.tid_identity()))
         .expect("ALSA discovery initialization failed");
-    // 最后一次 linuxd 绘制：DRM 初始化会绑定 completion work，此后 boot scanout 的同步刷新被拒绝，
+    // 最后一次开机画面推进：DRM 初始化会绑定显示活动，此后 boot scanout 的同步刷新被拒绝，
     // 进度条由 compositor 从 `KERNEL_PROGRESS_PERMILLE` 接着画。
-    boot_screen.advance(boot_screen::Milestone::Audio);
-    if let Some(display) = devices::model::display_device(0) {
+    devices.advance(Milestone::Audio);
+    if let Some(display) = device_model::display_device(0) {
         devices::drm::device::init(display).expect("primary DRM initialization failed");
     }
     devices::input::init().expect("evdev input initialization failed");
-    if let Some(port) = devices::model::port_device(0) {
+    if let Some(port) = device_model::port_device(0) {
         devices::virtio_port::init(port).expect("VirtIO port initialization failed");
     }
     let console = devices::tty::init(select_console(parameters.console.as_deref()))
@@ -136,7 +124,8 @@ fn main(mut startup: Startup) -> i64 {
             environment: &parameters.init_environment,
         },
     );
-    0
+    // 装配完成：只结束主线程。从 main 返回会结束整个进程，连同已启动的 init 与全部服务线程。
+    native_runtime::task::exit_thread()
 }
 
 /// 初始 user/UTS/PID/time/IPC/NET 命名空间。
@@ -173,17 +162,13 @@ fn start_deferred_worker() {
     drop(worker);
 }
 
-/// USB 枚举、AF_UNIX 回收与 io_uring 后台线程。
+/// USB sysfs、AF_UNIX 回收与 io_uring 后台线程（USB 主控与枚举在 devmgr）。
 ///
 /// # Panics
 ///
 /// 任一线程或其等待资源分配失败。
 fn start_background_threads() {
     devices::usb::initialize().expect("USB sysfs initialization failed");
-    for host in drivers::usb::initialize().expect("USB host initialization failed") {
-        let body = alloc::boxed::Box::try_new(move || host.run()).expect("USB worker allocation failed");
-        task::spawn_kernel_thread("usb-enumerate", body).expect("USB worker initialization failed");
-    }
     let mut unix_gc_wait =
         task::KernelDeadlineWait::new().expect("UNIX collector deadline reservation failed");
     let unix_gc_gate =

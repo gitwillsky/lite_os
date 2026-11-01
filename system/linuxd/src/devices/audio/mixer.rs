@@ -3,7 +3,7 @@
 //! 只做算术，不认识子流、设备或锁，因此可以在宿主上逐值测试。内核目标是 softfloat，浮点由编译器内建函数
 //! 软件实现；host benchmark 只裁决数学实现成本，实际设备路径另由 runtime gate 验证。
 
-use crate::devices::model::{PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES};
+use device_model::{PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES};
 
 /// 一个 period 内的样本总数（立体声交错）。
 const SAMPLES: usize = PCM_PERIOD_FRAMES * 2;

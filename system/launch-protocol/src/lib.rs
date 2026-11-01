@@ -21,10 +21,26 @@ pub mod linuxd {
     pub const SHARED_PROCESS: usize = ROLE_HANDLES;
     /// 容纳全部 Linux 进程的 Job；服务 panic 时整体终止。
     pub const JOB: usize = ROLE_HANDLES + 1;
-    /// 根 resource（设备驱动在服务内运行）。
+    /// 根 resource（串口、debuglog、时钟与电源）。
     pub const RESOURCE: usize = ROLE_HANDLES + 2;
+    /// devmgr 设备目录 channel 的读端。
+    pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 3;
+}
+
+/// 驱动宿主：平台设备发现、全部设备驱动与设备目录的发布者。
+pub mod devmgr {
+    use super::ROLE_HANDLES;
+
+    /// bootfs 中的映像路径。
+    pub const IMAGE: &[u8] = b"bin/devmgr";
+    /// 静态链接基址（普通进程的低地址区，与根服务不重叠）。
+    pub const BASE: usize = 0x40_0000;
+    /// 根 resource（切出 MMIO、IRQ resource，创建 IOMMU）。
+    pub const RESOURCE: usize = ROLE_HANDLES;
     /// 平台 DTB VMO。
-    pub const DEVICE_TREE: usize = ROLE_HANDLES + 3;
+    pub const DEVICE_TREE: usize = ROLE_HANDLES + 1;
+    /// 设备目录 channel 的写端。
+    pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 2;
 }
 
 /// 根服务。

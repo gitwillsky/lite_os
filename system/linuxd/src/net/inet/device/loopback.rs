@@ -1,6 +1,7 @@
 //! 实际IP-medium loopback队列；没有伪Ethernet/ARP或第二份transport owner。
 use super::TcpReset;
-use crate::{devices::model::network::NetworkStatistics, net::SocketError};
+use crate::net::SocketError;
+use device_model::network::NetworkStatistics;
 use alloc::vec::Vec;
 use core::cell::{Cell, RefCell};
 use smoltcp::{
@@ -157,7 +158,7 @@ impl LoopbackDevice {
         statistics.transmitted_bytes = statistics.transmitted_bytes.saturating_add(length as u64);
         statistics.transmitted_packets = statistics.transmitted_packets.saturating_add(1);
         self.statistics.set(statistics);
-        crate::devices::model::network::request_poll();
+        crate::net::request_poll();
         result
     }
 }

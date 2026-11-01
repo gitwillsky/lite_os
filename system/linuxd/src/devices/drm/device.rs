@@ -1,7 +1,7 @@
 use native_runtime::sync::Once;
 
 use super::*;
-use crate::devices::model::{DisplayError, DisplayUpdate, VirglCommand};
+use device_model::{DisplayError, DisplayUpdate, VirglCommand};
 
 enum ScanoutBacking {
     Dumb(Arc<DeviceBacking>),
@@ -382,7 +382,7 @@ pub(super) fn advance_graphics_cleanup(device: &DrmDevice, completion: &mut Comp
     };
     if let Some((key, context_id, resource_id)) = detachment {
         let fence = match device.display.submit_virgl(
-            crate::devices::model::VirglCommand::ContextDetachResource {
+            device_model::VirglCommand::ContextDetachResource {
                 context_id,
                 resource_id,
             },
@@ -423,7 +423,7 @@ pub(super) fn advance_graphics_cleanup(device: &DrmDevice, completion: &mut Comp
     if let Some(resource_id) = retirement {
         let fence = match device
             .display
-            .submit_virgl(crate::devices::model::VirglCommand::ResourceUnref { resource_id })
+            .submit_virgl(device_model::VirglCommand::ResourceUnref { resource_id })
         {
             Ok(fence) => fence,
             Err(DisplayError::WouldBlock) => return,
@@ -602,7 +602,7 @@ pub(crate) fn init(display: Arc<dyn GraphicsDevice>) -> Result<(), ()> {
     let display = owner.display.clone();
     crate::fs::register_graphics_sysfs(owner.clone()).map_err(|_| ())?;
     PRIMARY_DRM.call_once(|| owner);
-    display.bind_completion_work(crate::deferred::register(display_work)?);
+    display.bind_activity(crate::deferred::activity(crate::deferred::register(display_work)?)?);
     let driver = Arc::try_new(super::card_file::CardDriver { render: false }).map_err(|_| ())?;
     crate::fs::chardev::register_driver(super::card_file::CARD_NUMBER, 1, driver)
         .map_err(|_| ())?;

@@ -1,19 +1,18 @@
-//! 块层：块设备 trait、设备注册表、分区表解析与分区视图。
+//! 块层：块设备注册表、分区表解析与分区视图（块设备 trait 在 `device_model`）。
 //!
 //! 硬件驱动实现 BlockDevice 并注册，fs 只消费块 I/O 与分区视图。
 //! 分区表与字节范围属于块设备层；inode、目录、挂载及文件系统格式属于 fs。
 
 use alloc::sync::Arc;
 
-use crate::devices::registry::AppendOnlyRegistry;
+use device_model::AppendOnlyRegistry;
 
-mod device;
 pub(crate) mod identity;
 pub(crate) mod partition_device;
 pub(crate) mod partition_table;
 pub(crate) mod range;
 
-pub(crate) use device::{BLOCK_SIZE, BlockDevice, BlockError};
+pub(crate) use device_model::{BLOCK_SIZE, BlockDevice, BlockError};
 
 // OWNER: 块设备 adapter 的唯一发布点，只追加；index 是 adapter 的稳定 identity，根文件系统与 `fs`
 // 的 `/dev` 发布都按它选择。缺失时第二块盘只能 panic 或被丢弃。

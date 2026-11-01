@@ -12,7 +12,8 @@ use smoltcp::{
 };
 use crate::sync::Mutex;
 
-use crate::{devices::model::network_device, time::get_time_us, ipc::PipeEnd, ipc::ReceiveBuffer};
+use device_model::network_device;
+use crate::{time::get_time_us, ipc::PipeEnd, ipc::ReceiveBuffer};
 use fallible_tree::FallibleMap;
 
 use self::interface::NetworkInterface;
@@ -182,7 +183,7 @@ impl NetworkStack {
 /// 在publication前准备一个实际IPv4 owner；全部fallible allocation不留下注册/端口副作用。
 fn prepare_network(
     scope: &super::NetNamespace,
-    devices: &[Arc<dyn crate::devices::model::network::NetworkDevice>],
+    devices: &[Arc<dyn device_model::network::NetworkDevice>],
     loopback_up: bool,
 ) -> Result<Arc<NetworkStackOwner>, SocketError> {
     let mut interfaces = Vec::new();
@@ -255,6 +256,13 @@ pub(crate) fn init() {
     // 学习型内核装配首张物理网卡和 lo；设备容器服务共同路径，不扩展多网卡支持目标。
     // 栈上 Option slice 避免额外 discovery allocation；没有 NIC 仍有真实回环协议。
     let device = network_device(0);
+    if let Some(device) = &device {
+        // 网卡的收发完成与 TX 槽恢复经 NETWORK deferred 工作推进协议栈。
+        match crate::deferred::activity(crate::deferred::DeferredWork::NETWORK) {
+            Ok(activity) => device.bind_activity(activity),
+            Err(()) => error!("network activity allocation failed"),
+        }
+    }
     let owner = prepare_network(scope, device.as_slice(), true);
     match owner {
         Ok(owner) => scope.install_protocol(owner),

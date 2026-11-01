@@ -4,9 +4,7 @@ use alloc::sync::Arc;
 use native_runtime::sync::Once;
 use syscall_abi::errno;
 
-use crate::{
-    devices::model::{PortDevice, PortError},
-    fs::{
+use crate::{fs::{
         FileSystemError,
         {
             DeviceNumber,
@@ -16,9 +14,8 @@ use crate::{
             },
             devnode,
         },
-    },
-    ipc::{Pipe, PipeDirection, PipeEnd},
-};
+    }, ipc::{Pipe, PipeDirection, PipeEnd}};
+use device_model::{PortDevice, PortError};
 
 const POLLIN: i16 = 0x001;
 const POLLOUT: i16 = 0x004;
@@ -85,7 +82,7 @@ pub(crate) fn init(device: Arc<dyn PortDevice>) -> Result<(), ()> {
     let work = crate::deferred::register(port_work)?;
     let adapter = port.device.clone();
     PORT.call_once(|| port);
-    adapter.bind_completion_work(work);
+    adapter.bind_activity(crate::deferred::activity(work)?);
     chardev::register_driver(PORT_NUMBER, 1, driver).map_err(|_| ())?;
     devnode::register_node(PORT_PATH, PORT_NUMBER, 0o600).map_err(|_| ())
 }

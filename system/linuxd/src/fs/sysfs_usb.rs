@@ -1,6 +1,6 @@
 //! 标准 USB sysfs 发现与 remove 属性；sysfs 不复制在线状态或直接操作 host 寄存器。
 use super::{FileSystemError, InodeType, try_format_bytes};
-use crate::devices::model::{UsbDevice, UsbRemoveError};
+use device_model::{UsbDevice, UsbRemoveError};
 use alloc::{sync::Arc, vec::Vec};
 
 /// USB 设备领域注入的发现来源；稳定 index 标识一次连接。

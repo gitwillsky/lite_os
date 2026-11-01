@@ -80,12 +80,12 @@ linuxd（normal mode，共享区）           现 syscall、task、file、fs、i
 
 P1 已知限制（P4 迁入架构文档的当前限制）：
 
-- 内核蓝屏已删除，panic 只走串口；图形化 crash 显示需在 gpud 就绪后由用户态重新提供（待用户决策）。
+- 内核与 linuxd 的蓝屏均已删除，panic 只走串口与崩溃记录；图形化 crash 显示若需要，由显示服务在用户态重新提供（待用户决策）。
 - SMMUv3 使用线性 stream table（≤ 4096 stream），RISC-V IOMMU 使用两级设备目录；两者都未启用事件/故障队列。
 - 内核不做页面换出；内存压力与换出策略属于 pager 服务。
 - 内核 user-copy 只在 syscall 参数上做缺页解析；`linuxd` 访问 Linux 程序内存使用共享地址空间直接访问或 `process_read/write_memory`。
 
-### P2 linuxd（移动现有 Linux 实现）
+### P2 linuxd（已完成：两架构 clippy 通过；构建打包 bootfs 并经 `-initrd` 启动，待整体验证）
 
 1. `system/` workspace：`native-runtime`（入口、分配器、panic、syscall 封装、async executor）、`root-server`。
 2. `linuxd`：把 P1 未留下的 Linux 领域移入，把内核 API 调用改成 native 调用：MemorySet→VMAR/VMO，TaskMutex/TaskEvent→futex/port，trap→restricted exit 循环，user-copy→直接访问共享地址空间中的 restricted 区。
@@ -139,14 +139,44 @@ P2 linuxd 内存设计（替换旧 `memory` 的帧/页表/COW/swap/回收实现�
   在 `PAGE_REQUEST` 时从后端读入并 `supply_pages`，回写经 `OP_QUERY_DIRTY`/`OP_WRITEBACK_BEGIN`。read/write 走 `vmo_read/write`。
 - 删除：swap、后台回收、内存压力、frame 统计（`/proc/meminfo` 等改由 `SystemBasic` 与 linuxd 自身计数投影）。与未配置 `CONFIG_SWAP` 的 Linux 一致：swapon/swapoff 不注册（ENOSYS），没有 `/proc/swaps`，Swap 字段为 0。
 - 页缓存 pager：分派线程 + 按需增长的工作线程池（存储读可能阻塞在 FUSE 守护进程上，单线程 pager 会与守护进程自身的补页互锁）；NOWAIT 读（RWF_NOWAIT、io_uring 非阻塞读）不再支持，走阻塞路径。
+- 页缓存补页按 `Inode::readahead_pages` 扩展为预读窗口（FUSE 协商的 `max_readahead`）；已驻留页由内核保持不变。
 - 已知性能后续项：user copy 经内核调用；可改为 Starnix 式“直接访问 + 异常恢复”，届时需内核提供异常恢复 PC。
+
+P2 其余实现事实（P4 迁入对应 owner 文档）：
+
+- 驱动 DMA：virtqueue ring 与 xHCI 结构用连续 VMO，其余 DMA 缓冲用普通 VMO；全部以设备 BTI 固定（virtio-mmio 用恒等 BTI，
+  PCI function 按 requester ID 经 `iommu-map` 取 stream）。GPU 在编码 ATTACH_BACKING/SUBMIT_3D 时固定 GEM 与命令流缓冲。
+- 没有当前 Linux 线程的服务线程（启动线程、pager、deferred、中断线程）阻塞时使用 `ServiceThreadTarget`（停驻在自身线程描述符上），
+  不再有“启动期轮询中断”路径。
+- group stop / ptrace stop 的完成通知在返回用户态前的安全点转入 `Stopped` 时交付。
+- RLIMIT_CPU：存在受限进程时 deferred 线程每秒采样一次（SIGXCPU 按 CPU 秒、hard limit 至多晚一秒 SIGKILL）。
+- getrusage 的自愿/非自愿切换数来自内核对承载线程的记录（`TaskRuntime`）。
+- `MADV_DONTFORK/DOFORK/WIPEONFORK/KEEPONFORK/DONTDUMP/DODUMP` 与私有匿名 `MAP_GROWSDOWN` 已实现（ABI 矩阵 P4 更新）。
+- `/proc/meminfo` 中 AnonPages/Mapped/Shmem/Slab/KernelStack/PageTables 为 0（没有跨进程汇总 owner），MemAvailable = MemFree。
 
 ### P3 拆分服务
 
-1. devmgr 与驱动服务（virtio-blk/net/gpu/input/sound/console/rng、PCI、xHCI/USB）。
+1. devmgr 与驱动服务（virtio-blk/net/gpu/input/sound/console/rng、PCI、xHCI/USB）——已完成（两架构 clippy 通过）。
 2. `ext4d` 作为 pager，`linuxd` 经 FUSE 协议访问。
 3. `netd`（smoltcp），`linuxd` 的 INET socket 转发给它。
 4. 设备 UAPI 由 `linuxd` 转发给对应服务。
+
+P3 设计（实现约束）：
+
+- 设备模型 trait（`BlockDevice`、`NetworkDevice`、`DisplayDevice`/`GraphicsDevice`、`InputDevice`、`PcmOutput`、`PortDevice`、
+  `EntropySource`、`UsbDevice`）是 devmgr 与 linuxd 之间的契约：devmgr 中驱动实现它们，server 适配层把请求映射到驱动；
+  linuxd 中 remote client 实现同一 trait，UAPI 层（tty/drm/input/audio/块设备节点）不变。trait 定义与线协议放在共享协议 crate。
+- 传输：每个设备一条 channel。同步请求用 `channel_call`（txid 匹配，调用线程直接阻塞）；设备主动事件（完成、输入、接收帧、
+  热插拔）由 devmgr 写入事件 channel，linuxd 的接收线程分派到原有通知路径。大块数据经 VMO：块 I/O 与 PCM 使用连接时建立的共享缓冲，
+  GEM/DMA-BUF 以 VMO 句柄传递，由 devmgr 以设备 BTI 固定。
+- 平台资源（DTB 设备事实、MMIO/IRQ resource、IOMMU/BTI）随驱动迁到 devmgr；linuxd 不再持有根 resource 的设备权限，只保留串口与电源。
+- P3.1 实现事实：共享 crate `service-sync`（可睡眠同步原语）、`device-model`（设备类 trait、注册表、`DeviceBacking`、
+  `Activity` 通知）、`device-protocol`（每类一个模块，含 server 适配与远端 client；目录、`EventHub`）。devmgr 拥有 DTB、
+  MMIO/IRQ、IOMMU/BTI、全部驱动与开机画面（linuxd 经 `boot` 类推进进度）；中断线程只确认设备并请求完成线程分派。
+  root-server 先启动 devmgr（根 resource、DTB、目录写端），再启动 linuxd（目录读端，启动参数作为 command line）。
+  linuxd 的 Linux 线程在设备请求期间阻塞在 `channel_call` 中（/proc 状态显示为运行，信号在返回后处理）。
+- `ext4d`：拥有 ext4 实现与块设备连接；以 FUSE 线协议在 channel 上服务，linuxd 的 FUSE 客户端增加 channel 传输，页缓存补页走 FUSE READ。
+- `netd`：拥有 smoltcp 与网卡连接；INET socket 操作经 channel 转发，就绪事件经事件 channel 回到 linuxd 的 poll/epoll。
 
 ### P4 收尾与整体验证
 

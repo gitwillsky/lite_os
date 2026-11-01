@@ -9,7 +9,7 @@ use smoltcp::{
 
 use super::super::packet;
 use super::device_error;
-use crate::devices::model::network::{
+use device_model::network::{
     NetworkCompletion, NetworkDevice, NetworkError, NetworkStatistics, NetworkTransmit,
 };
 

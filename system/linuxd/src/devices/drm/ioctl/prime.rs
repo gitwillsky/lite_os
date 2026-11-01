@@ -93,7 +93,7 @@ pub(super) fn fd_to_handle(
         // 可中断等待前 arm，EINTR/copyout fault 通过 attachment 的预分配节点安全 detach。
         loop {
             match file
-                .submit_virgl(crate::devices::model::VirglCommand::ContextAttachResource {
+                .submit_virgl(device_model::VirglCommand::ContextAttachResource {
                     context_id,
                     resource_id: buffer.buffer().resource_id,
                 })

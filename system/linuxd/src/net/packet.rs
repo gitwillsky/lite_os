@@ -6,7 +6,8 @@ use alloc::{
 use crate::sync::Mutex;
 use native_runtime::sync::Once;
 
-use crate::{devices::model::network::{NetworkError, NetworkTransmit}, ipc::ReceiveBuffer, ipc::{PipeDirection, PipeEnd}};
+use device_model::network::{NetworkError, NetworkTransmit};
+use crate::{ipc::ReceiveBuffer, ipc::{PipeDirection, PipeEnd}};
 use fallible_tree::FallibleMap;
 
 use super::{PacketAddress, SocketError, SocketPollState, SocketWaitSource};

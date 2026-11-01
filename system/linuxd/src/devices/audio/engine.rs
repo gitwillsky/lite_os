@@ -11,10 +11,7 @@
 use super::control::Element;
 use super::mixer::{Accumulator, VOLUME_MAX, volume_gain};
 use super::state::{PcmState, PcmStateOwner};
-use crate::devices::model::{
-    MAX_PCM_PERIOD_BYTES, PCM_PERIOD_BYTES, PCM_PERIODS, PcmConfiguration, PcmOutput,
-    PcmOutputError,
-};
+use device_model::{MAX_PCM_PERIOD_BYTES, PCM_PERIOD_BYTES, PCM_PERIODS, PcmConfiguration, PcmOutput, PcmOutputError};
 
 /// 同时可打开的 playback 子流数量，即 `snd_pcm_info.subdevices_count`。
 pub(super) const SUBSTREAMS: usize = 8;

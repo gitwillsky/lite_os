@@ -1,4 +1,4 @@
-use crate::devices::model::RawInputEvent;
+use device_model::RawInputEvent;
 
 use super::{EV_SYN, InputEvent, SYN_DROPPED, SYN_REPORT};
 

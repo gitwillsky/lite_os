@@ -395,7 +395,7 @@ pub(super) fn send(
             debug_assert!(!placeholder.is_open());
         },
     )?;
-    crate::devices::model::network::request_poll();
+    crate::net::request_poll();
     Ok(written)
 }
 

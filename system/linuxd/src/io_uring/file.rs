@@ -81,6 +81,6 @@ impl DeviceFile for Ring {
         if length == 0 || length > backing.pages() * PAGE_SIZE {
             return Err(DeviceError::Errno(errno::EINVAL));
         }
-        Ok(DeviceMappingSource::new(backing))
+        DeviceMappingSource::new(backing).map_err(|_| DeviceError::Errno(errno::ENOMEM))
     }
 }

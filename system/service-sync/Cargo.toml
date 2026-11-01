@@ -1,0 +1,11 @@
+[package]
+name = "service-sync"
+version = "0.1.0"
+edition = "2024"
+description = "系统服务的可睡眠同步原语：task mutex、event、读写信号量与等待目标协议"
+
+[dependencies]
+native-runtime = { path = "../native-runtime" }
+
+[lints]
+workspace = true

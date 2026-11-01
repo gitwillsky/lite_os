@@ -115,6 +115,8 @@ pub mod signals {
     pub const CANCELED: u32 = 1 << 5;
     /// 用户可置位的 8 个 signal（`object_signal`）。
     pub const USER_ALL: u32 = 0xff << 24;
+    /// 第一个用户 signal。
+    pub const USER_0: u32 = 1 << 24;
 }
 
 /// 句柄对应的对象类型。

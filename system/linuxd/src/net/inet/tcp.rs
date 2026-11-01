@@ -700,7 +700,7 @@ pub(super) fn connect(socket: &InetSocket, peer: InetAddress) -> Result<(), Sock
     state.pending_error = None;
     state.port_lease = Some(connected_lease);
     drop(network);
-    crate::devices::model::network::request_poll();
+    crate::net::request_poll();
     Err(SocketError::InProgress)
 }
 

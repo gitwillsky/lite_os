@@ -1,12 +1,11 @@
 use alloc::sync::{Arc, Weak};
 use crate::sync::Mutex;
 
-pub(crate) use crate::devices::model::{
-    DisplayRect, VirglBox, VirglCommand, VirglTransferDirection,
-};
-use crate::{devices::model::{CursorCommand, DisplayMode, GraphicsDevice}, ipc::{Pipe, PipeEnd}, memory::{
-        DeviceBacking, DeviceMappingSource, PAGE_SIZE,
-    }};
+pub(crate) use device_model::{DisplayRect, VirglBox, VirglCommand, VirglTransferDirection};
+use crate::{ipc::{Pipe, PipeEnd}, memory::{
+        DeviceMappingSource, PAGE_SIZE}};
+use device_model::DeviceBacking;
+use device_model::{CursorCommand, DisplayMode, GraphicsDevice};
 use fallible_tree::FallibleMap;
 
 const DUMB_OFFSET_SHIFT: u32 = 32;
@@ -576,7 +575,7 @@ impl DrmFile {
             if length > buffer.size {
                 return Err(DrmError::Invalid);
             }
-            return Ok(DeviceMappingSource::new(buffer.backing.clone()));
+            return DeviceMappingSource::new(buffer.backing.clone()).map_err(|_| DrmError::OutOfMemory);
         }
         let buffer = self
             .state
@@ -588,7 +587,7 @@ impl DrmFile {
         if length > buffer.size {
             return Err(DrmError::Invalid);
         }
-        let mut source = DeviceMappingSource::new(buffer.backing.clone());
+        let mut source = DeviceMappingSource::new(buffer.backing.clone()).map_err(|_| DrmError::OutOfMemory)?;
         source.retain_object(prime::DmaBuf::from_buffer(
             &self.device,
             buffer.buffer.clone(),
@@ -897,7 +896,7 @@ fn classify_cursor_submission(
     file: &DrmFile,
     generation: u64,
     resource: Option<Arc<DumbBuffer>>,
-    result: Result<u64, crate::devices::model::DisplayError>,
+    result: Result<u64, device_model::DisplayError>,
 ) -> Result<DrmCursorSubmission, DrmError> {
     match result {
         Ok(sequence) => Ok(DrmCursorSubmission::Wait(DrmCursorWait {
@@ -905,7 +904,7 @@ fn classify_cursor_submission(
             sequence,
             _resource: resource,
         })),
-        Err(crate::devices::model::DisplayError::WouldBlock) => {
+        Err(device_model::DisplayError::WouldBlock) => {
             Ok(DrmCursorSubmission::Retry(DrmRetry {
                 device: file.device.clone(),
                 generation,

@@ -33,7 +33,7 @@ impl MountScope {
         Arc::try_new(Self {
             id,
             user,
-            event: AtomicU64::new(crate::sync::next_readiness_generation()),
+            event: AtomicU64::new(crate::file::next_readiness_generation()),
             mounts: AtomicUsize::new(0),
             notification,
         })
@@ -41,7 +41,7 @@ impl MountScope {
     }
     pub(super) fn changed(&self) {
         self.event.store(
-            crate::sync::next_readiness_generation(),
+            crate::file::next_readiness_generation(),
             Ordering::Release,
         );
         self.notification.1.signal_readiness();

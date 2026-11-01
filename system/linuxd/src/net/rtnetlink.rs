@@ -14,7 +14,8 @@
 use alloc::{collections::VecDeque, sync::Arc, vec::Vec};
 use crate::sync::Mutex;
 
-use crate::{devices::model::network::NetworkStatistics, ipc::{Pipe, PipeDirection, PipeEnd, ReceiveBuffer}};
+use device_model::network::NetworkStatistics;
+use crate::{ipc::{Pipe, PipeDirection, PipeEnd, ReceiveBuffer}};
 use fallible_tree::FallibleMap;
 
 use super::{

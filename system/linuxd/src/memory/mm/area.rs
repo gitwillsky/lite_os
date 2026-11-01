@@ -73,7 +73,7 @@ impl Backing {
             | Self::PrivateFile { object, .. }
             | Self::SharedFile { object, .. }
             | Self::Trampoline { object } => object,
-            Self::Device { source, .. } => source.backing.object(),
+            Self::Device { source, .. } => &source.object,
             Self::SystemV { source, .. } => source.source.backing.object(),
         }
     }
