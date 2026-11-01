@@ -18,6 +18,8 @@ from typing import Iterator
 from qemu_gate import qemu_runtime, validate_kernel_boot_artifact
 
 CACHE_MANIFEST = ".liteos-cache.json"
+# 仓库根；运行时产物路径（如 bootfs）相对它给出。
+ROOT = Path(__file__).resolve().parent.parent
 
 
 def sha256(path: Path) -> str:
@@ -267,7 +269,7 @@ def runtime_gate_payload(
             "machine": runtime.machine,
             "kernel_boot_artifact": runtime.kernel_boot_artifact,
             "kernel_boot_sha256": sha256(boot_artifact),
-            # 系统服务（root-server、linuxd）随 bootfs 交给内核；它们变化同样使门禁结果失效。
+            # 系统服务（root-server、devmgr、ext4d、netd、linuxd）随 bootfs 交给内核；它们变化同样使门禁结果失效。
             "bootfs_sha256": sha256(ROOT / runtime.bootfs),
         },
     }

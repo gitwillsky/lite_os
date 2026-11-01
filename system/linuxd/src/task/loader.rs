@@ -19,7 +19,7 @@ pub(crate) struct LoadedExecutable {
     credentials: InodeMetadata,
     file_capability: Option<syscall_abi::file_capability::FileCapabilityData>,
     readable: bool,
-    // interpreter deny-write 持续到 image 构造完成；其 VMA 不延长这份加载期租约。
+    // interpreter deny-write 持续到 image 构造完成；其映射只延长打开（[`MappedExecutable`]），不延长这份加载期租约。
     _interpreter_access: Option<Arc<ExecutableOpenLease>>,
 }
 
@@ -116,13 +116,27 @@ pub(crate) enum ProgramLoadError {
 /// Actual executable-open lease；与随机读取 source 分离，只有 main mm 长期持有 deny-write。
 pub(super) struct ExecutableOpenLease {
     _denial: crate::fs::InodeAccessLease,
-    _opened: Arc<crate::fs::OpenedFile>,
+    file: Arc<MappedExecutable>,
 }
 impl ExecutableOpenLease {
     pub(super) fn opened(&self) -> Arc<OpenedFile> {
-        self._opened.clone()
+        self.file.opened.clone()
     }
 }
+
+/// exec 映射的文件打开（Linux 映射的 `vma->vm_file`）：路径打开与 backend open 的 per-open 状态。
+pub(super) struct MappedExecutable {
+    opened: Arc<crate::fs::OpenedFile>,
+    // OWNER: exec 的 backend open（Linux `do_open_execat` 的 `f_op->open`）产生的 per-open 状态，与映射同寿命。
+    // 缺失时有服务端文件句柄的 filesystem（FUSE）读取与补页找不到句柄而以 EBADF 失败。
+    _storage: Option<Arc<dyn crate::fs::StorageOpen>>,
+}
+impl core::fmt::Debug for MappedExecutable {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.debug_struct("MappedExecutable").finish_non_exhaustive()
+    }
+}
+impl crate::memory::MappedFileOwner for MappedExecutable {}
 impl core::fmt::Debug for ExecutableOpenLease {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter
@@ -194,6 +208,7 @@ pub(crate) fn load_executable(
     mut arguments: Vec<Vec<u8>>,
     mut argument_bytes: usize,
     identity: &AccessIdentity,
+    authority: &crate::namespace::NamespaceAuthority,
 ) -> Result<LoadedExecutable, ProgramLoadError> {
     const MAX_SCRIPT_REWRITES: usize = 5;
 
@@ -209,7 +224,7 @@ pub(crate) fn load_executable(
         identity
             .require(inode.metadata().map_err(ProgramLoadError::FileSystem)?, 1)
             .map_err(ProgramLoadError::FileSystem)?;
-        let (executable_source, execution_owner) = source(&executable)?;
+        let (executable_source, execution_owner) = source(&executable, identity, authority)?;
         // Writer 在初次检查后仍可能清除 set-ID 并关闭；此处重取同一 canonical owner 的 live tuple。
         let mut metadata = inode.metadata().map_err(ProgramLoadError::FileSystem)?;
         identity
@@ -245,7 +260,7 @@ pub(crate) fn load_executable(
                 identity
                     .require(interpreter_metadata, 1)
                     .map_err(ProgramLoadError::FileSystem)?;
-                let (source, access) = source(&opened)?;
+                let (source, access) = source(&opened, identity, authority)?;
                 let interpreter_metadata =
                     inode.metadata().map_err(ProgramLoadError::FileSystem)?;
                 identity
@@ -258,7 +273,14 @@ pub(crate) fn load_executable(
             })
             .transpose()?;
         return Ok(LoadedExecutable {
-            image: ExecutableImage::new(main, interpreter, execution_owner),
+            image: ExecutableImage::new(
+                main,
+                interpreter,
+                execution_owner,
+                interpreter_access
+                    .as_ref()
+                    .map(|access| access.file.clone() as Arc<dyn crate::memory::MappedFileOwner>),
+            ),
             _interpreter_access: interpreter_access,
             arguments,
             execfn,
@@ -272,6 +294,8 @@ pub(crate) fn load_executable(
 
 fn source(
     opened: &Arc<crate::fs::OpenedFile>,
+    identity: &AccessIdentity,
+    authority: &crate::namespace::NamespaceAuthority,
 ) -> Result<(Arc<dyn ExecutableSource>, Arc<ExecutableOpenLease>), ProgramLoadError> {
     let inode = opened.inode();
     if inode.inode_type() != InodeType::File {
@@ -286,9 +310,24 @@ fn source(
     }
     let denial = crate::fs::InodeAccessLease::execute(inode.clone())
         .map_err(ProgramLoadError::FileSystem)?;
+    // Linux `do_open_execat` 以 O_RDONLY 真正打开文件；regular file 的打开不会等待 peer。
+    const O_RDONLY: u32 = 0;
+    let storage = match inode.open_backend(O_RDONLY, identity, authority) {
+        Ok(crate::fs::InodeOpen::Storage(storage)) => storage,
+        Ok(crate::fs::InodeOpen::Device(_)) => return Err(ProgramLoadError::NotRegularFile),
+        Err(crate::fs::InodeOpenError::Filesystem(error)) => return Err(ProgramLoadError::FileSystem(error)),
+        Err(crate::fs::InodeOpenError::Interrupted) => {
+            return Err(ProgramLoadError::FileSystem(FileSystemError::Errno(syscall_abi::errno::EINTR as u16)));
+        }
+    };
+    let file = Arc::try_new(MappedExecutable {
+        opened: opened.clone(),
+        _storage: storage,
+    })
+    .map_err(|_| ProgramLoadError::OutOfMemory)?;
     let owner = Arc::try_new(ExecutableOpenLease {
         _denial: denial,
-        _opened: opened.clone(),
+        file,
     })
     .map_err(|_| ProgramLoadError::OutOfMemory)?;
     opened.touch_access();

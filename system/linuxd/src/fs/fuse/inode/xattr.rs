@@ -105,6 +105,19 @@ impl FuseInode {
             )?;
         }
         // 3. ctime 由服务端的下一次 GETATTR 提供，不制造另一份属性时钟或本地 xattr 缓存。
+        self.no_privileges.store(false, core::sync::atomic::Ordering::Release);
+        self.invalidate_attributes();
+        Ok(())
+    }
+
+    /// 删除 `security.capability`（killpriv）；不经调用者的 xattr 权限检查。属性不存在返回 `NotFound`。
+    pub(super) fn remove_capability(&self) -> Result<(), FileSystemError> {
+        self.xattr_call(
+            fuse::REMOVEXATTR,
+            Unsupported::RemoveXattr,
+            &[b"security.capability", &[0]],
+            ReplyShape::EMPTY,
+        )?;
         self.invalidate_attributes();
         Ok(())
     }

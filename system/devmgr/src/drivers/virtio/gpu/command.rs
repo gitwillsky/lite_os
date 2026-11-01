@@ -88,7 +88,8 @@ pub(super) struct PreparedCommand {
     pub(super) opcode: u32,
     pub(super) length: usize,
     pub(super) stage: RuntimeStage,
-    /// SUBMIT_3D 的命令流 backing 与字节数；作为请求头之后的第二个 descriptor 发布。
+    /// 请求头之后的第二个 driver-readable descriptor 与其字节数：SUBMIT_3D 的命令流，或
+    /// ATTACH_BACKING 的 entry 数组。
     pub(super) stream: Option<(Arc<DeviceBacking>, usize)>,
 }
 
@@ -143,6 +144,7 @@ impl GpuCommand {
     /// 编码 wire payload，并一次返回与其不可分离的 opcode、长度和 next-stage。
     pub(super) fn prepare(self, request: &mut [u8], bti: &native_runtime::Bti) -> Result<PreparedCommand, DisplayError> {
         let stage = self.stage();
+        let mut stream = None;
         let (opcode, length) = match self {
             Self::DisplayInfo => {
                 request.fill(0);
@@ -155,10 +157,11 @@ impl GpuCommand {
             Self::Attach {
                 resource_id,
                 backing,
-            } => (
-                VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
-                prepare_attach(request, resource_id, &backing, bti)?,
-            ),
+            } => {
+                let (length, entries) = prepare_attach(request, resource_id, &backing, bti)?;
+                stream = Some(entries);
+                (VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, length)
+            }
             Self::CreateCursor { resource_id } => {
                 prepare_create_cursor(request, resource_id)?;
                 (VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, 40)
@@ -166,10 +169,11 @@ impl GpuCommand {
             Self::AttachCursor {
                 resource_id,
                 backing,
-            } => (
-                VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
-                prepare_attach(request, resource_id, &backing, bti)?,
-            ),
+            } => {
+                let (length, entries) = prepare_attach(request, resource_id, &backing, bti)?;
+                stream = Some(entries);
+                (VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, length)
+            }
             Self::TransferCursor { resource_id } => {
                 let mode = DisplayMode {
                     width: 64,
@@ -226,7 +230,7 @@ impl GpuCommand {
             opcode,
             length,
             stage,
-            stream: None,
+            stream,
         })
     }
 }

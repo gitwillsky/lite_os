@@ -268,6 +268,16 @@ pub(crate) trait FileSystem: Send + Sync {
     /// snapshot 所需的 owner wait metadata 分配失败时返回 `OutOfMemory`。
     fn statistics(&self) -> Result<FileSystemStatistics, FileSystemError>;
 
+    /// 持久化全部已提交的修改（Linux `sync_filesystem` → `s_op->sync_fs`）；缺省经根 inode 的
+    /// `sync_storage`（磁盘文件系统在那里提交整个日志）。
+    ///
+    /// # Errors
+    ///
+    /// 持久化失败返回对应错误。
+    fn sync(&self) -> Result<(), FileSystemError> {
+        self.root_inode()?.sync_storage()
+    }
+
     /// 卸载的最后一步（Linux `kill_sb`）：持久化剩余状态并停止后台工作。调用时 VFS 已摘下挂载、
     /// page cache 已写回并逐出，此后不再有新访问。
     ///

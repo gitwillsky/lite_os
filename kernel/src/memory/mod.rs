@@ -62,8 +62,11 @@ pub(crate) fn init_allocator() {
 /// # Parameters
 ///
 /// - `allocator_end`: boot 装配排除崩溃记录等保留区后的可分配上界。
-/// - `reserved`: 启动期必须保留到显式归还的物理区间（例如 initrd）。
-pub(crate) fn init(allocator_end: PhysicalAddress, reserved: Option<core::ops::Range<PhysicalAddress>>) {
+/// - `reserved`: 启动期必须保留到显式归还的物理区间（initrd 与 DTB）。
+pub(crate) fn init(
+    allocator_end: PhysicalAddress,
+    reserved: [Option<core::ops::Range<PhysicalAddress>>; frame_allocator::BOOT_RESERVED_CAPACITY],
+) {
     let kernel_end_addr: PhysicalAddress =
         crate::arch::mmu::virtual_to_physical(ekernel as *const () as usize)
             .expect("kernel end is outside architecture direct map")

@@ -46,12 +46,8 @@ impl Socket {
         direction: SocketIoDirection,
         value: SocketTimeout,
     ) -> Result<(), SocketError> {
-        if let SocketBackend::Inet(socket) = &self.backend {
-            socket.set_timeout(direction, value)
-        } else {
-            self.timeouts.set(direction, value);
-            Ok(())
-        }
+        self.timeouts.set(direction, value);
+        Ok(())
     }
     /// 从实际 socket policy 冻结一次阻塞操作的超时。
     pub(crate) fn timeout(&self, direction: SocketIoDirection) -> SocketTimeout {

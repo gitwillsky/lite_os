@@ -152,6 +152,11 @@ impl Reply {
     pub fn reader(&self) -> Reader<'_> {
         Reader::new(&self.bytes[HEADER..])
     }
+
+    /// 同时取得结果解码器与句柄：解码过程中按消息约定的位置取出句柄。
+    pub fn split(&mut self) -> (Reader<'_>, &mut Vec<Handle>) {
+        (Reader::new(&self.bytes[HEADER..]), &mut self.handles)
+    }
 }
 
 /// 同步发出请求并等待回复。
@@ -174,7 +179,7 @@ pub fn call(channel: &Channel, request: &Writer, handles: Vec<Handle>) -> Result
 }
 
 /// 服务端处理一条请求：`ordinal` 与参数解码器、请求句柄、回复编码器。
-pub type Handler = dyn Fn(u32, &mut Reader<'_>, Vec<Handle>, &mut Writer) -> Result<Vec<Handle>, Status> + Send + Sync;
+pub type Handler<'a> = dyn Fn(u32, &mut Reader<'_>, Vec<Handle>, &mut Writer) -> Result<Vec<Handle>, Status> + Send + Sync + 'a;
 
 /// 以 `workers` 个线程服务 `channel`；对端关闭时线程退出。
 ///
@@ -185,7 +190,7 @@ pub type Handler = dyn Fn(u32, &mut Reader<'_>, Vec<Handle>, &mut Writer) -> Res
 /// # Errors
 ///
 /// 线程创建失败。
-pub fn serve(channel: Channel, workers: usize, name: &[u8], handler: Arc<Handler>) -> Result<(), Status> {
+pub fn serve(channel: Channel, workers: usize, name: &[u8], handler: Arc<Handler<'static>>) -> Result<(), Status> {
     let channel = Arc::try_new(channel).map_err(|_| native_abi::ERR_NO_MEMORY)?;
     for _ in 0..workers.max(1) {
         let channel = channel.clone();
@@ -197,29 +202,42 @@ pub fn serve(channel: Channel, workers: usize, name: &[u8], handler: Arc<Handler
     Ok(())
 }
 
-fn serve_loop(channel: &Channel, handler: &Handler) {
+fn serve_loop(channel: &Channel, handler: &Handler<'_>) {
     loop {
         let message = match channel.read_wait(DEADLINE_INFINITE) {
             Ok(message) => message,
             Err(_) => return,
         };
-        let mut reader = Reader::new(&message.bytes);
-        let (Ok(transaction), Ok(ordinal)) = (reader.u32(), reader.u32()) else {
-            continue;
-        };
-        let mut reply = Writer::reply(transaction);
-        let handles = match handler(ordinal, &mut reader, message.handles, &mut reply) {
-            Ok(handles) => handles,
-            Err(status) => {
-                reply = Writer::reply(transaction);
-                reply.0[4..8].copy_from_slice(&status.to_le_bytes());
-                Vec::new()
-            }
-        };
-        if channel.write(reply.as_bytes(), handles).is_err() {
+        if respond(channel, message, handler).is_err() {
             return;
         }
     }
+}
+
+/// 处理一条已读出的请求并写回同一事务号的回复；格式错误的请求被丢弃。
+///
+/// # Errors
+///
+/// 回复写入失败（对端已关闭）。
+pub fn respond(
+    channel: &Channel,
+    message: native_runtime::Message,
+    handler: &Handler<'_>,
+) -> Result<(), Status> {
+    let mut reader = Reader::new(&message.bytes);
+    let (Ok(transaction), Ok(ordinal)) = (reader.u32(), reader.u32()) else {
+        return Ok(());
+    };
+    let mut reply = Writer::reply(transaction);
+    let handles = match handler(ordinal, &mut reader, message.handles, &mut reply) {
+        Ok(handles) => handles,
+        Err(status) => {
+            reply = Writer::reply(transaction);
+            reply.0[4..8].copy_from_slice(&status.to_le_bytes());
+            Vec::new()
+        }
+    };
+    channel.write(reply.as_bytes(), handles)
 }
 
 /// 取出句柄集合中第 `index` 个句柄（消息按约定位置携带句柄）。

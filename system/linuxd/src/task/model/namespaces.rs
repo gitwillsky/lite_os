@@ -200,7 +200,7 @@ impl TaskControlBlock {
             {
                 return Err(NamespaceError::Permission);
             }
-            membership.net = crate::net::create_net_namespace(owner, authority.effective_uid)?;
+            membership.net = crate::net::NetNamespace::create(owner, authority.effective_uid)?;
         }
         if new_time {
             let owner = user.as_ref().unwrap_or(&authority.namespace).clone();

@@ -41,9 +41,9 @@ pub(super) const VIRTIO_GPU_NUM_CAPSETS: usize = 12;
 pub(super) const CONTROL_QUEUE: u32 = 0;
 pub(super) const CURSOR_QUEUE: u32 = 1;
 pub(super) const QUEUE_SIZE: u16 = 64;
-/// 除 SUBMIT_3D 外最大的请求是 ATTACH_BACKING：32 字节头加每个 extent 16 字节条目。
-/// SUBMIT_3D 的命令流不进槽位，作为独立 descriptor 从其 backing 读取。
-pub(super) const CONTROL_REQUEST_SIZE: usize = 32 + 16 * device_model::DEVICE_BACKING_EXTENTS_MAX;
+/// 最大的定长请求是 CTX_CREATE（含 64 字节调试名）。SUBMIT_3D 的命令流与 ATTACH_BACKING 的 entry
+/// 数组不进槽位，作为独立 descriptor 从各自的 backing 读取。
+pub(super) const CONTROL_REQUEST_SIZE: usize = 96;
 pub(super) const CONTROL_HEADER_SIZE: usize = 24;
 pub(super) const CURSOR_REQUEST_SIZE: usize = 56;
 pub(super) const DISPLAY_INFO_SIZE: usize = CONTROL_HEADER_SIZE + 16 * 24;
@@ -125,13 +125,25 @@ pub(super) fn prepare_create_cursor(
     write_u32(request, 36, 64).ok_or(DisplayError::Device)
 }
 
-/// 编码 RESOURCE_ATTACH_BACKING：`backing` 先以 GPU 的 `bti` 固定，条目是设备地址区段。
+/// ATTACH_BACKING 的 entry 数组：作为请求头之后的第二个 descriptor 发布（Linux
+/// `virtio_gpu_cmd_resource_attach_backing` 的 data buffer），entry 数因此不受请求槽大小限制。
+pub(super) type AttachEntries = (alloc::sync::Arc<DeviceBacking>, usize);
+
+/// 编码 ATTACH_BACKING：请求头携带 resource 与 entry 数，返回请求长度与 entry 数组。
+///
+/// `backing` 以设备 BTI 固定，每个设备地址区段是一个 `virtio_gpu_mem_entry`；entry 数组放在一段
+/// 物理连续、同样固定的存储中，只占一个 descriptor。
+///
+/// # Errors
+///
+/// 固定或分配失败、区段长度超出 u32 返回 `Device`/`InvalidRectangle`。
 pub(super) fn prepare_attach(
     request: &mut [u8],
     resource_id: u32,
     backing: &DeviceBacking,
     bti: &Bti,
-) -> Result<usize, DisplayError> {
+) -> Result<(usize, AttachEntries), DisplayError> {
+    const ENTRY_SIZE: usize = 16;
     let extents = backing.pin(bti).map_err(|_| DisplayError::Device)?;
     request.fill(0);
     write_u32(request, 24, resource_id).ok_or(DisplayError::Device)?;
@@ -141,18 +153,21 @@ pub(super) fn prepare_attach(
         u32::try_from(extents.len()).map_err(|_| DisplayError::Device)?,
     )
     .ok_or(DisplayError::Device)?;
-    for (index, extent) in extents.iter().enumerate() {
-        let offset = 32 + index * 16;
-        write_u64(request, offset, extent.device_address).ok_or(DisplayError::Device)?;
-        write_u32(
-            request,
-            offset + 8,
-            u32::try_from(extent.pages.checked_mul(PAGE_SIZE).ok_or(DisplayError::Device)?)
-                .map_err(|_| DisplayError::InvalidRectangle)?,
-        )
-        .ok_or(DisplayError::Device)?;
+    let length = extents.len().checked_mul(ENTRY_SIZE).ok_or(DisplayError::Device)?;
+    let mut bytes = alloc::vec::Vec::new();
+    bytes.try_reserve_exact(length).map_err(|_| DisplayError::Device)?;
+    for extent in extents {
+        let size = u32::try_from(extent.pages.checked_mul(PAGE_SIZE).ok_or(DisplayError::Device)?)
+            .map_err(|_| DisplayError::InvalidRectangle)?;
+        bytes.extend_from_slice(&extent.device_address.to_le_bytes());
+        bytes.extend_from_slice(&size.to_le_bytes());
+        bytes.extend_from_slice(&0u32.to_le_bytes());
     }
-    Ok(32 + extents.len() * 16)
+    let entries = DeviceBacking::try_allocate_contiguous(length.div_ceil(PAGE_SIZE), bti).ok_or(DisplayError::Device)?;
+    entries.write(0, &bytes).map_err(|_| DisplayError::Device)?;
+    entries.pin(bti).map_err(|_| DisplayError::Device)?;
+    let entries = alloc::sync::Arc::try_new(entries).map_err(|_| DisplayError::Device)?;
+    Ok((32, (entries, length)))
 }
 
 pub(super) fn prepare_transfer(

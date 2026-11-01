@@ -137,16 +137,15 @@ fn configure_route(
                 u32::from(u16::from_ne_bytes(route[112..114].try_into().unwrap())) << 3;
         }
     }
-    configure_ipv4_route(
-        scope,
-        request,
-        operation == SIOCDELRT,
-        false,
-        true,
-        false,
-        false,
-    )
-    .map_or_else(route_error, |()| 0)
+    // SIOCADDRT 等价于 RTM_NEWROUTE|NLM_F_CREATE（Linux `ip_rt_ioctl` → `fib_table_insert`）。
+    let change = crate::net::RouteChange {
+        delete: operation == SIOCDELRT,
+        replace: false,
+        create: true,
+        exclusive: false,
+        append: false,
+    };
+    configure_ipv4_route(scope, request, change).map_or_else(route_error, |()| 0)
 }
 
 fn copy_ifconf(

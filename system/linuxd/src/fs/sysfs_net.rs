@@ -37,7 +37,7 @@ pub(crate) struct NetLinkSnapshot {
     pub(crate) mtu: i32,
     pub(crate) mac: [u8; 6],
     pub(crate) up: bool,
-    pub(crate) driver: Option<&'static str>,
+    pub(crate) driver: Option<network_protocol::DriverName>,
 }
 
 impl NetLinkSnapshot {
@@ -226,7 +226,7 @@ pub(super) fn contents(view: &NetView, node: NetSysNode) -> Result<Vec<u8>, File
     let link = view.link(index)?;
     let name = core::str::from_utf8(link.name()).unwrap_or("?");
     let Some(attr) = attr else {
-        return try_format_bytes(format_args!("DRIVER={}\n", link.driver.unwrap_or("")));
+        return try_format_bytes(format_args!("DRIVER={}\n", link.driver.as_ref().map_or("", network_protocol::DriverName::as_str)));
     };
     match attr {
         Attr::Ifindex => try_format_bytes(format_args!("{}\n", link.index)),

@@ -86,8 +86,9 @@ def boot_product_graphics(image: Path, kernel: Path) -> None:
         (
             "VirtIO Sound capability ready",
             "VirtIO console PCI transport on IRQ",
-            "VirtIO input event0",
-            "VirtIO input event1",
+            # devmgr 绑定 VirtIO input 驱动，linuxd 按注册顺序分配 evdev 节点。
+            "input event0:",
+            "input event1:",
             "VirtIO GPU",
             "init started: BusyBox v1.37.0",
             # compositor 接管 scanout：DRM master、modeset 与启动画面续画都已成功。

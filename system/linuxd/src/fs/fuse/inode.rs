@@ -75,6 +75,9 @@ pub(super) struct FuseInode {
     // OWNER: 正在释放的可写句柄写出剩余脏页时的临时句柄；只在 [`FuseInode::drain_writes`] 期间存在。
     // 缺失时最后一个句柄 Drop 中的写回找不到句柄（Weak 已不可升级）而以 EBADF 丢弃数据。
     draining: Mutex<Option<HandleRef>>,
+    // CACHE: Linux `S_NOSEC`：上次检查时既无 set-ID 位也无 `security.capability`，内容修改无需 killpriv。
+    // 属性变更（SETATTR、刷新改变 mode）与任何 xattr 修改清除它；缺失时每次写入都多一次 REMOVEXATTR 往返。
+    no_privileges: AtomicBool,
     write_access: InodeWriteAccess,
 }
 
@@ -101,6 +104,7 @@ impl FuseInode {
             advise_plus: AtomicBool::new(false),
             stale_data: AtomicBool::new(false),
             draining: Mutex::new(None),
+            no_privileges: AtomicBool::new(false),
             write_access: InodeWriteAccess::new(),
         })
         .map_err(|_| FileSystemError::OutOfMemory)
@@ -183,6 +187,9 @@ impl FuseInode {
             };
             previous
         };
+        if previous.mode != attributes.mode {
+            self.no_privileges.store(false, Ordering::Release);
+        }
         if buffered {
             return;
         }
@@ -315,7 +322,35 @@ impl FuseInode {
             || identity.uid() == options.user_id && identity.gid() == options.group_id
     }
 
+    /// Linux `file_remove_privs`（未协商 HANDLE_KILLPRIV_V2）：内容修改前由内核清除特权。
+    ///
+    /// 1. set-ID 位以 SETATTR 清除，清除哪些位由共同的 [`AccessIdentity::write_kill_mask`] 决定
+    ///    （ATTR_FORCE：不要求调用者拥有 inode）；
+    /// 2. `security.capability` 不论调用者能力都删除（Linux `cap_inode_killpriv`）；
+    /// 3. 两者都不存在时记录 `no_privileges`，之后的写入不再往返。
+    fn remove_privileges(&self, identity: &AccessIdentity) -> Result<(), FileSystemError> {
+        if self.kind != InodeType::File || self.no_privileges.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        let attributes = self.attributes()?;
+        let kill = identity.write_kill_mask(self.kind, attributes.mode as u16, attributes.gid);
+        if kill != 0 {
+            let mut set = SetAttributes::new(fuse::FATTR_MODE);
+            set.mode = attributes.mode & !u32::from(kill);
+            self.set_attributes(set)?;
+        }
+        match self.remove_capability() {
+            Ok(()) | Err(FileSystemError::NotFound | FileSystemError::NotSupported) => {}
+            Err(error) => return Err(error),
+        }
+        if (attributes.mode & !u32::from(kill)) & 0o6000 == 0 {
+            self.no_privileges.store(true, Ordering::Release);
+        }
+        Ok(())
+    }
+
     fn set_attributes(&self, set: SetAttributes) -> Result<(), FileSystemError> {
+        self.no_privileges.store(false, Ordering::Release);
         let reply = self.call(
             fuse::SETATTR,
             &[&set.encode()],
@@ -630,8 +665,10 @@ impl Inode for FuseInode {
         self.write_handle(handle.reference, offset, buffer, write_flags)
     }
 
-    fn prepare_cached_write(&self, _identity: &AccessIdentity) -> Result<(), FileSystemError> {
-        Ok(())
+    /// 写回缓存模式的写入只进页缓存：set-ID 位在写入前由内核经 SETATTR 清除（Linux `fuse_cache_write_iter`
+    /// → `file_remove_privs`）。
+    fn prepare_cached_write(&self, identity: &AccessIdentity) -> Result<(), FileSystemError> {
+        self.remove_privileges(identity)
     }
 
     /// 协商了 WRITEBACK_CACHE 的普通文件：写入只进页缓存，由写回、close 与最后句柄释放交给守护进程。
@@ -664,13 +701,22 @@ impl Inode for FuseInode {
             .map(|written| (offset, written))
     }
 
+    /// Linux `do_truncate`：调用者需要清除 set-ID 位时与大小在同一次 SETATTR 中提交。
     fn truncate_storage(
         &self,
         size: u64,
-        _identity: Option<&AccessIdentity>,
+        identity: Option<&AccessIdentity>,
     ) -> Result<(), FileSystemError> {
         let mut set = SetAttributes::new(fuse::FATTR_SIZE);
         set.size = size;
+        if let Some(identity) = identity {
+            let attributes = self.attributes()?;
+            let kill = identity.write_kill_mask(self.kind, attributes.mode as u16, attributes.gid);
+            if kill != 0 {
+                set.valid |= fuse::FATTR_MODE;
+                set.mode = attributes.mode & !u32::from(kill);
+            }
+        }
         if let Ok(handle) = self.handle(true) {
             set.valid |= fuse::FATTR_FH;
             set.handle = handle.reference.handle;
@@ -686,10 +732,14 @@ impl Inode for FuseInode {
         &self,
         offset: u64,
         length: u64,
-        _identity: Option<&AccessIdentity>,
+        identity: Option<&AccessIdentity>,
     ) -> Result<(), FileSystemError> {
         if self.mount.unsupported(Unsupported::Fallocate) {
             return Err(FileSystemError::NotSupported);
+        }
+        // Linux `vfs_fallocate` → `file_modified`：分配前清除 set-ID 位。
+        if let Some(identity) = identity {
+            self.remove_privileges(identity)?;
         }
         let handle = self.handle(true)?;
         let body = Fields::<32>::new()

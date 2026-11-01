@@ -37,8 +37,15 @@ pub(crate) fn initialize(device_tree: &Vmo) {
         .expect("device tree mapping");
     // SAFETY: 映射只读、永不解除；DTB 在服务存活期间不变。
     let bytes = unsafe { core::slice::from_raw_parts(address as *const u8, size) };
-    let dtb = dtb_walker::Dtb::from_slice(bytes)
-        .unwrap_or_else(|_| panic!("platform device tree is invalid"));
+    // DTSpec v17 blob 的 last_comp_version 为 16（QEMU 如此生成）；dtb-walker 要求 17，与内核解码同样放行。
+    // 映射按页对齐，不会出现对齐错误。
+    let dtb = dtb_walker::Dtb::from_slice_filtered(bytes, |error| {
+        matches!(error, dtb_walker::HeaderError::LastCompVersion(_))
+    })
+    .unwrap_or_else(|error| match error {
+        dtb_walker::ConvertError::Header(error) => panic!("platform device tree header is invalid: {error:?}"),
+        dtb_walker::ConvertError::Truncated => panic!("platform device tree is truncated ({size} bytes mapped)"),
+    });
     FACTS.call_once(|| device_tree::parse(dtb));
 }
 

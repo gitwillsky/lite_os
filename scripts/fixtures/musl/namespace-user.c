@@ -114,7 +114,8 @@ static int namespace_child(int ready, int proceed, int inherited_map, int parent
     if (uname(&names) < 0 || strcmp(names.nodename, "ns-child") || strcmp(names.domainname, "ns-domain")) return 28;
     /* 全局特权资源必须仍授权 initial user namespace，不能借 child UID0 绕过。 */
     if (syscall(SYS_reboot, 0, 0, 0, 0) != -1 || errno != EPERM) return 29;
-    if (syscall(SYS_swapon, 0, 0) != -1 || errno != EPERM) return 30;
+    /* swapon 未注册（CONFIG_SWAP=n）。 */
+    if (syscall(SYS_swapon, 0, 0) != -1 || errno != ENOSYS) return 30;
     int quota = open("/proc/sys/user/max_user_namespaces", O_RDWR | O_TRUNC);
     struct stat quota_stat;
     if (quota < 0 || fstat(quota, &quota_stat) < 0 || (quota_stat.st_mode & 0777) != 0644) return 40;
@@ -368,7 +369,8 @@ static int verify_kernel_proc_tasks(void)
         char path[512], text[4096];
         snprintf(path, sizeof path, "/proc/%s/comm", entry->d_name);
         if (pid_proc_read(path, text, sizeof text) < 0) { closedir(directory); return 2; }
-        unsigned worker = !strcmp(text, "memory-reclaim\n") ? 1 : !strcmp(text, "unix-rights-gc\n") ? 2 : 0;
+        /* 内核线程只剩 AF_UNIX rights 回收；后台内存回收已不存在（无 swap/回收，见 ABI 矩阵）。 */
+        unsigned worker = !strcmp(text, "unix-rights-gc\n") ? 2 : 0;
         if (!worker) continue;
         if (seen & worker) { closedir(directory); return 3; }
         seen |= worker;
@@ -420,8 +422,8 @@ static int verify_kernel_proc_tasks(void)
         if (!empty) { closedir(directory); return 11; }
     }
     closedir(directory);
-    if (seen != 3) dprintf(2, "kernel proc missing workers seen=%u\n", seen);
-    return seen == 3 ? 0 : 12;
+    if (seen != 2) dprintf(2, "kernel proc missing workers seen=%u\n", seen);
+    return seen == 2 ? 0 : 12;
 }
 
 /* total_forks 的 thread publication 与系统 live task count 使用实际不同事实。 */

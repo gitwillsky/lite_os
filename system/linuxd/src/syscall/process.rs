@@ -664,6 +664,7 @@ pub(crate) fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *
         argv,
         argument_bytes,
         &task.access_identity(true),
+        &task.namespace_authority(),
     ) {
         Ok(loaded) => loaded,
         Err(error) => return program_load_errno(error),

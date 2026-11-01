@@ -223,6 +223,7 @@ pub(super) fn vmar_destroy(call: &Call<'_>) -> Result<(), Status> {
         .map_err(vm_status)
 }
 
+/// 调试器的跨进程访问：按目标映射背后的 VMO 读写（见 [`crate::vm::AddressSpace::access_debug`]）。
 fn cross_process(call: &Call<'_>, write: bool) -> Result<(), Status> {
     let process = call.process_handle(call.arg_handle(0), if write { rights::WRITE } else { rights::READ })?;
     let target = process.space().clone();
@@ -230,21 +231,25 @@ fn cross_process(call: &Call<'_>, write: bool) -> Result<(), Status> {
     let mut done = 0;
     while done < length {
         let chunk = (length - done).min(CHUNK);
-        let result = if write {
-            let bytes = call.read_bytes(buffer + done, chunk)?;
-            target.copy_to_user(address + done, &bytes)
+        let mut bytes = if write {
+            call.read_bytes(buffer + done, chunk)?
         } else {
             let mut bytes = alloc::vec::Vec::new();
             bytes.try_reserve_exact(chunk).map_err(|_| native_abi::ERR_NO_MEMORY)?;
             bytes.resize(chunk, 0);
-            target
-                .copy_from_user(address + done, &mut bytes)
-                .and_then(|()| call.write_bytes(buffer + done, &bytes).map_err(|_| crate::vm::VmError::AccessDenied))
+            bytes
         };
-        if result.is_err() {
+        let Some(start) = address.checked_add(done) else {
+            break;
+        };
+        let accessed = target.access_debug(start, &mut bytes, write);
+        if !write {
+            call.write_bytes(buffer + done, &bytes[..accessed])?;
+        }
+        done += accessed;
+        if accessed < chunk {
             break;
         }
-        done += chunk;
     }
     call.write_optional(call.arg(4), &done)?;
     if done == 0 && length != 0 {

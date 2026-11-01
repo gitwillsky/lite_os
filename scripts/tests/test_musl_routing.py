@@ -3,7 +3,6 @@ from __future__ import annotations
 import importlib
 import os
 import subprocess
-import struct
 import sys
 import tempfile
 import unittest
@@ -26,10 +25,10 @@ def reload_verify_musl(arch: str, accel: str, *, gate: bool = False) -> object:
 
 
 class MuslRoutingTests(unittest.TestCase):
-    def test_runtime_success_requires_both_cpu_topologies_and_real_swap_disk(self) -> None:
+    def test_runtime_success_requires_both_cpu_topologies(self) -> None:
         module = reload_verify_musl("aarch64", "tcg", gate=True)
-        for fail_swap in (False, True):
-            with self.subTest(fail_swap=fail_swap), tempfile.TemporaryDirectory() as directory:
+        for fail_second in (False, True):
+            with self.subTest(fail_second=fail_second), tempfile.TemporaryDirectory() as directory:
                 work = Path(directory)
                 calls = []
 
@@ -37,21 +36,10 @@ class MuslRoutingTests(unittest.TestCase):
                     calls.append(cpu_count)
                     self.assertIn("LiteOS musl consumer exit=0", markers)
                     self.assertIn("LiteOS musl consumer failed", options["forbidden_markers"])
-                    if "scratch_disk" not in options:
-                        self.assertIn("LiteOS musl pthread signal ok", markers)
-                        self.assertIn("LiteOS musl ASID ok", markers)
-                        return
-                    self.assertIn("LiteOS musl swap ok", markers)
-                    self.assertEqual(options["kernel_arguments"], "init=/bin/init -- swap-smoke")
-                    self.assertEqual(options["memory"], "128M")
-                    disk = options["scratch_disk"]
-                    self.assertEqual(disk.stat().st_size, 64 * 1024 * 1024)
-                    with disk.open("rb") as source:
-                        header = source.read(4096)
-                    self.assertEqual(header[4086:], b"SWAPSPACE2")
-                    self.assertEqual(struct.unpack_from("<III", header, 1024), (1, 16383, 0))
-                    if fail_swap and cpu_count == 2:
-                        raise RuntimeError("swap regression")
+                    self.assertIn("LiteOS musl pthread signal ok", markers)
+                    self.assertIn("LiteOS musl ASID ok", markers)
+                    if fail_second and cpu_count == 2:
+                        raise RuntimeError("SMP regression")
 
                 with (
                     patch.dict(os.environ, {"ARCH": "aarch64", "ACCEL": "tcg"}),
@@ -69,9 +57,9 @@ class MuslRoutingTests(unittest.TestCase):
                     patch.object(module, "boot", side_effect=boot),
                     patch.object(module, "publish_runtime_gate") as publish,
                 ):
-                    self.assertEqual(module.main(), int(fail_swap))
-                    self.assertEqual(calls, [1, 2, 1, 2])
-                    self.assertEqual(publish.call_count, 0 if fail_swap else 1)
+                    self.assertEqual(module.main(), int(fail_second))
+                    self.assertEqual(calls, [1, 2])
+                    self.assertEqual(publish.call_count, 0 if fail_second else 1)
 
 
     def test_dynamic_probe_requires_target_interpreter_and_only_bundled_libc(self) -> None:

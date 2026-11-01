@@ -111,6 +111,12 @@ fn load_init(
         argv,
         argument_bytes,
         &AccessIdentity::root(),
+        &crate::namespace::NamespaceAuthority {
+            namespace: crate::namespace::initial_user(),
+            effective_uid: 0,
+            effective_gid: 0,
+            effective_capabilities: u64::MAX,
+        },
     )
 }
 
@@ -153,9 +159,21 @@ pub(crate) fn spawn_init(
                 core::str::from_utf8(path).unwrap_or("<non-utf8>")
             )
         }),
+        // Linux `try_to_run_init_process`：不存在的候选静默跳过，存在却无法执行的候选报告原因；全部失败才 panic。
         None => DEFAULT_INIT_PROGRAMS
             .iter()
-            .find_map(|path| load_init(path, arguments, environment).ok())
+            .find_map(|path| {
+                load_init(path, arguments, environment)
+                    .inspect_err(|error| {
+                        if !matches!(error, ProgramLoadError::FileSystem(crate::fs::FileSystemError::NotFound)) {
+                            error!(
+                                "Starting init: {} exists but couldn't execute it ({error:?})",
+                                core::str::from_utf8(path).unwrap_or("<non-utf8>")
+                            );
+                        }
+                    })
+                    .ok()
+            })
             .expect("No working init found"),
     };
     let mut pid = pid::PreparedPid::initial().expect("init PID identity allocation failed");

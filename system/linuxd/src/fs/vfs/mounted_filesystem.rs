@@ -178,10 +178,7 @@ pub(super) fn sync_all() -> Result<(), FileSystemError> {
         };
         cursor = Some(id);
         if let Some(owner) = owner.upgrade()
-            && let Err(error) = owner
-                .filesystem
-                .root_inode()
-                .and_then(|root| root.sync_storage())
+            && let Err(error) = owner.filesystem.sync()
         {
             result = result.and(Err(error));
         }

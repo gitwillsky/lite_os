@@ -3,6 +3,7 @@
 use alloc::vec::Vec;
 
 use filesystem_protocol::MountClient;
+use network_protocol::NetworkClient;
 use native_runtime::sync::Once;
 use native_runtime::{Channel, Job, Process, Resource, Startup};
 
@@ -12,6 +13,7 @@ struct Handles {
     resource: Resource,
     command_line: Vec<u8>,
     ext4: MountClient,
+    network: NetworkClient,
 }
 
 // OWNER: 启动时安装一次；之后只读。
@@ -28,6 +30,7 @@ pub(crate) fn install(startup: &mut Startup) -> Channel {
         resource: Resource::from_handle(startup.take(linuxd::RESOURCE)),
         command_line,
         ext4: MountClient::new(Channel::from_handle(startup.take(linuxd::EXT4))),
+        network: NetworkClient::new(Channel::from_handle(startup.take(linuxd::NETWORK))),
     });
     directory
 }
@@ -59,4 +62,9 @@ pub(crate) fn command_line() -> &'static [u8] {
 /// ext4d 的挂载控制：`ext4` 类型的每次挂载经它打开块设备上的文件系统。
 pub(crate) fn ext4() -> &'static MountClient {
     &handles().ext4
+}
+
+/// netd 的控制：转交网卡、创建网络域。
+pub(crate) fn network() -> &'static NetworkClient {
+    &handles().network
 }

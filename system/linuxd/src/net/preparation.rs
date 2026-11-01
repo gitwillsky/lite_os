@@ -117,17 +117,14 @@ impl PreparedSocket {
                 self.object_id,
                 self.memory.namespace(),
             )?),
-            BackendRequest::Ipv4(protocol) => SocketBackend::Inet(InetSocket::new(
-                protocol,
-                notify,
-                self.timeouts.clone(),
-                self.memory.clone(),
-            )?),
+            BackendRequest::Ipv4(protocol) => {
+                SocketBackend::Inet(InetSocket::new(protocol, notify, self.memory.namespace())?)
+            }
             BackendRequest::Packet(kind, protocol) => SocketBackend::Packet(PacketSocket::new(
                 kind,
                 protocol,
                 notify,
-                self.memory.clone(),
+                self.memory.namespace(),
             )?),
             BackendRequest::Uevent(_) => {
                 SocketBackend::Kobject(KobjectSocket::new(notify, self.memory.clone())?)
@@ -146,13 +143,15 @@ impl PreparedSocket {
         listener: &Socket,
         notify: Option<(Arc<PipeEnd>, Arc<PipeEnd>)>,
     ) -> Result<Arc<Socket>, (SocketError, Self)> {
-        // Linux unix_create1 使用已准备的默认 policy；TCP 从实际 pending handle 取握手快照。
+        // Linux unix_create1 使用已准备的默认 policy；TCP 子 socket 继承 listener 的超时 policy
+        // （取 accept 时的值，Linux 取握手完成时的值）。
         let result = match &listener.backend {
             SocketBackend::Unix(socket) => socket.accept().map(SocketBackend::Unix),
             SocketBackend::Inet(socket) => match notify {
-                Some(notify) => socket
-                    .accept(notify, self.timeouts.clone(), self.memory.clone())
-                    .map(SocketBackend::Inet),
+                Some(notify) => socket.accept(notify).map(|accepted| {
+                    self.timeouts.initialize(listener.timeouts.snapshot());
+                    SocketBackend::Inet(accepted)
+                }),
                 None => Err(SocketError::NoMemory),
             },
             _ => Err(SocketError::OperationNotSupported),

@@ -202,6 +202,7 @@ impl Thread {
         user_context.set_entry_arguments(start.arguments[0], start.arguments[1]);
         // SAFETY: 上下文存储尚未被任何人使用；整体写入初始值后才通过 slot 访问。
         unsafe { pointer.as_ptr().write(user_context) };
+        DIAG_THREADS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let thread = Arc::try_new(Self {
             id: crate::id::next_koid(),
             user: Some(UserState {
@@ -329,8 +330,10 @@ impl Thread {
     }
 }
 
+pub(crate) static DIAG_THREADS: core::sync::atomic::AtomicIsize = core::sync::atomic::AtomicIsize::new(0);
 impl Drop for Thread {
     fn drop(&mut self) {
+        DIAG_THREADS.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
         // 从未启动的用户线程也必须先退休上下文，再释放内核栈或上下文页。
         if let Some(user) = &self.user
             && user.context.is_live()

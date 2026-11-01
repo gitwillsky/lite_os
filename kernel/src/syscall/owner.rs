@@ -51,11 +51,14 @@ impl ThreadOwner for crate::object::Thread {
     }
 
     fn exception(self: Arc<Self>, thread: &Arc<Thread>, exception: UserException) -> Disposition {
-        if let UserException::PageFault { address, access, .. } = exception
-            && thread
+        // 缺页先由地址空间解析；解析失败的原因随未处理异常一并记录。
+        let fault = match exception {
+            UserException::PageFault { address, access, .. } => thread
                 .address_space()
-                .is_some_and(|space| space.fault(address, access).is_ok())
-        {
+                .map(|space| space.fault(address, access)),
+            _ => None,
+        };
+        if matches!(fault, Some(Ok(()))) {
             return Disposition::Continue;
         }
         if thread.is_killed() {
@@ -87,10 +90,11 @@ impl ThreadOwner for crate::object::Thread {
             Delivery::Unhandled => {
                 let (name, length) = self.process().name();
                 warn!(
-                    "unhandled exception kind={} at {:#x} (syndrome {:#x}) in process {}; terminating",
+                    "unhandled exception kind={} at {:#x} (syndrome {:#x}, fault {:?}) in process {}; terminating",
                     report.kind,
                     report.address,
                     report.syndrome,
+                    fault,
                     core::str::from_utf8(&name[..length]).unwrap_or("<non-utf8>")
                 );
                 self.process().terminate(None);

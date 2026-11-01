@@ -13,9 +13,6 @@ use native_runtime::native_abi::{self, PAGE_SIZE, Status, bti};
 use native_runtime::sync::Once;
 use native_runtime::{Bti, Pmt, Vmo};
 
-/// 一次 DMA attach 的最多区段数。
-pub const DEVICE_BACKING_EXTENTS_MAX: usize = 256;
-
 /// 设备地址连续的一段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DeviceExtent {
@@ -128,9 +125,6 @@ impl DeviceBacking {
                         pages: 1,
                     }),
                 }
-            }
-            if extents.len() > DEVICE_BACKING_EXTENTS_MAX {
-                return Err(native_abi::ERR_NO_MEMORY);
             }
             Ok(Pinned { extents, _pmt: pmt })
         });

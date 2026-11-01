@@ -101,7 +101,8 @@ pub(super) fn prepare(
             if resource_id == 0 {
                 return Err(DisplayError::Device);
             }
-            let length = prepare_attach(request, resource_id, &backing, bti)?;
+            let (length, entries) = prepare_attach(request, resource_id, &backing, bti)?;
+            stream = Some(entries);
             (VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING, length)
         }
         VirglCommand::ContextAttachResource {

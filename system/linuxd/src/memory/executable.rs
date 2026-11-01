@@ -63,6 +63,7 @@ pub(crate) struct ExecutableImage {
     pub(super) main: ParsedElf,
     pub(super) interpreter: Option<ParsedElf>,
     pub(super) owner: Arc<dyn super::MappedFileOwner>,
+    pub(super) interpreter_owner: Option<Arc<dyn super::MappedFileOwner>>,
 }
 
 impl ExecutableImage {
@@ -73,6 +74,7 @@ impl ExecutableImage {
     /// - `main`: 已校验的主程序映射计划。
     /// - `interpreter`: PT_INTERP 指向且已独立校验的动态解释器映射计划。
     /// - `owner`: 实际主程序打开/deny-write 的无回调生命周期；新 mm 独占引用并供 fork 继承。
+    /// - `interpreter_owner`: 动态解释器的打开生命周期；与主程序同样由新 mm 持有。
     ///
     /// # Returns
     ///
@@ -81,11 +83,13 @@ impl ExecutableImage {
         main: ParsedElf,
         interpreter: Option<ParsedElf>,
         owner: Arc<dyn super::MappedFileOwner>,
+        interpreter_owner: Option<Arc<dyn super::MappedFileOwner>>,
     ) -> Self {
         Self {
             main,
             interpreter,
             owner,
+            interpreter_owner,
         }
     }
 }

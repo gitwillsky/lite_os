@@ -13,13 +13,61 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use native_runtime::native_abi::{self, Status};
-use native_runtime::{Channel, Handle};
+use native_runtime::{Channel, Handle, Message, Vmo};
 use service_rpc::{Reader, Writer, call, serve, take_handle};
 
 /// 一条 FUSE READ/WRITE 的最大数据量：请求与回复都必须装进一条 channel 消息（64 KiB），留出
 /// 头部空间。服务端在 INIT 中以它为 `max_write`，使用者以它为 `max_read`；任一端更大都会让
 /// 消息写入以 `ERR_OUT_OF_RANGE` 失败。
 pub const MAX_TRANSFER: u32 = 12 * 4096;
+
+/// 一条 FUSE 消息的上限：最大的是携带 64 KiB 值的 SETXATTR 请求与 GETXATTR 回复（Linux
+/// `XATTR_SIZE_MAX`）。超过单条 channel 消息的 FUSE 消息经 VMO 传递，见 [`send_fuse`]。
+pub const FUSE_MESSAGE_MAX: usize = 128 * 1024;
+
+/// 在 FUSE channel 上发送一条 FUSE 消息：不超过单条 channel 消息时原样发送字节；更大的消息写入 VMO，
+/// channel 消息只携带该 VMO（不含字节），消息长度由 FUSE 头部的 `len` 给出。
+///
+/// # Errors
+///
+/// VMO 创建或写入失败，或 channel 写入失败（对端已关闭）。
+pub fn send_fuse(channel: &Channel, bytes: &[u8]) -> Result<(), Status> {
+    if bytes.len() <= native_abi::CHANNEL_MAX_BYTES {
+        return channel.write(bytes, Vec::new());
+    }
+    let vmo = Vmo::create(bytes.len() as u64, 0)?;
+    vmo.write(bytes, 0)?;
+    channel.write(&[], alloc::vec![vmo.into_handle()])
+}
+
+/// 取出 [`send_fuse`] 发送的 FUSE 消息字节。
+///
+/// # Errors
+///
+/// 帧格式错误（VMO 消息带字节、长度越界）或 VMO 读取失败。
+pub fn receive_fuse(mut message: Message) -> Result<Vec<u8>, Status> {
+    if message.handles.is_empty() {
+        return Ok(message.bytes);
+    }
+    if !message.bytes.is_empty() || message.handles.len() != 1 {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    let vmo = Vmo::from_handle(take_handle(&mut message.handles, 0)?);
+    let mut header = [0u8; 4];
+    vmo.read(&mut header, 0)?;
+    // FUSE 头部按主机字节序编码（Linux `fuse_in_header`/`fuse_out_header`）。
+    let length = u32::from_ne_bytes(header) as usize;
+    if !(native_abi::CHANNEL_MAX_BYTES + 1..=FUSE_MESSAGE_MAX).contains(&length) {
+        return Err(native_abi::ERR_OUT_OF_RANGE);
+    }
+    let mut bytes = Vec::new();
+    bytes
+        .try_reserve_exact(length)
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    bytes.resize(length, 0);
+    vmo.read(&mut bytes, 0)?;
+    Ok(bytes)
+}
 
 const MOUNT: u32 = 1;
 const MAKE_WRITABLE: u32 = 1;

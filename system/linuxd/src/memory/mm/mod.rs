@@ -70,6 +70,9 @@ pub(crate) struct MemorySet {
     // OWNER: 唯一的 VMA 索引（起点 → VMA）；与 VMAR 中的实际映射在同一锁内一致修改。
     areas: FallibleMap<usize, Area>,
     pub(super) executable_owner: Option<Arc<dyn MappedFileOwner>>,
+    // OWNER: 动态解释器的打开生命周期（Linux 解释器 VMA 的 `vm_file`）；与主程序租约同样随 mm 存活、
+    // fork 继承。缺失时解释器映射的后续缺页在有服务端句柄的 filesystem 上找不到打开而失败。
+    pub(super) interpreter_owner: Option<Arc<dyn MappedFileOwner>>,
     heap: Option<Heap>,
     pub(super) stack: Range<usize>,
     pub(super) mmap_top: usize,
@@ -123,6 +126,7 @@ impl MemorySet {
             end,
             areas: FallibleMap::new(),
             executable_owner: None,
+            interpreter_owner: None,
             heap: None,
             stack: end..end,
             mmap_top: end,

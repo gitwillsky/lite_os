@@ -50,6 +50,7 @@ impl MemorySet {
     ) -> Result<(Self, usize, usize), ElfLoadError> {
         let mut memory = Self::try_new(name)?;
         memory.executable_owner = Some(image.owner.clone());
+        memory.interpreter_owner = image.interpreter_owner.clone();
         let main_bias = match image.main.kind {
             ElfKind::Executable => 0,
             ElfKind::SharedObject => MAIN_PIE_BASE,

@@ -34,6 +34,8 @@ const FATTR_MTIME_NOW: u32 = 1 << 8;
 const FATTR_KILL_SUIDGID: u32 = 1 << 11;
 const S_IFMT: u32 = 0o170000;
 const S_ISGID: u32 = 0o2000;
+/// `XATTR_REPLACE`：属性必须已存在。
+const XATTR_REPLACE: u32 = 2;
 
 fn status(error: FileSystemError) -> Status {
     match error {
@@ -226,6 +228,14 @@ fn fs_error(error: FileSystemError) -> i32 {
     error.errno()
 }
 
+/// xattr 操作的失败：属性不存在是 `ENODATA`（Linux getxattr/removexattr/XATTR_REPLACE），不是 `ENOENT`。
+fn xattr_error(error: FileSystemError) -> i32 {
+    match error {
+        FileSystemError::NotFound => errno::ENODATA as i32,
+        other => fs_error(other),
+    }
+}
+
 impl Mount {
     fn serve(&self, channel: &Channel) {
         loop {
@@ -233,7 +243,11 @@ impl Mount {
                 Ok(message) => message,
                 Err(_) => break,
             };
-            let mut input = Input { bytes: &message.bytes };
+            // 格式错误的帧没有可回复的请求头，丢弃（对应 Linux 读不出完整请求）。
+            let Ok(bytes) = filesystem_protocol::receive_fuse(message) else {
+                continue;
+            };
+            let mut input = Input { bytes: &bytes };
             let Some(header) = Self::header(&mut input) else {
                 continue;
             };
@@ -255,7 +269,7 @@ impl Mount {
                     message.u32(fuse::OUT_HEADER_SIZE as u32).u32((-code) as u32).u64(header.unique);
                 }
             }
-            if channel.write(&message.0, Vec::new()).is_err() {
+            if filesystem_protocol::send_fuse(channel, &message.0).is_err() {
                 break;
             }
         }
@@ -531,7 +545,8 @@ impl Mount {
                 drop(released);
                 Ok(None)
             }
-            fuse::FSYNC | fuse::FSYNCDIR => {
+            // FSYNC/FSYNCDIR 与 SYNCFS 都提交整个日志：ext4 的持久化边界是日志事务。
+            fuse::FSYNC | fuse::FSYNCDIR | fuse::SYNCFS => {
                 self.node(header.nodeid)?.sync_storage().map_err(fs_error)?;
                 Ok(None)
             }
@@ -550,18 +565,19 @@ impl Mount {
                         value: Some(owned),
                         flags,
                     })
-                    .map_err(fs_error)?;
+                    .map_err(xattr_error)?;
                 Ok(None)
             }
             fuse::REMOVEXATTR => {
                 let name = input.name()?;
                 self.node(header.nodeid)?
+                    // 删除不存在的属性是 ENODATA（Linux removexattr）：按 XATTR_REPLACE 要求属性存在。
                     .change_xattr(XattrChange {
                         name,
                         value: None,
-                        flags: 0,
+                        flags: XATTR_REPLACE,
                     })
-                    .map_err(fs_error)?;
+                    .map_err(xattr_error)?;
                 Ok(None)
             }
             fuse::GETXATTR | fuse::LISTXATTR => {
@@ -570,10 +586,7 @@ impl Mount {
                 let inode = self.node(header.nodeid)?;
                 let value = if header.opcode == fuse::GETXATTR {
                     let name = input.name()?;
-                    inode.read_xattr(name).map_err(|error| match error {
-                        FileSystemError::NotFound => errno::ENODATA as i32,
-                        other => fs_error(other),
-                    })?
+                    inode.read_xattr(name).map_err(xattr_error)?
                 } else {
                     // 请求头不携带 capability：根用户视为可见 `trusted.*`（Linux 按 CAP_SYS_ADMIN）。
                     inode.list_xattrs(header.uid == 0).map_err(fs_error)?

@@ -53,6 +53,7 @@ pub(super) enum Unsupported {
     SetXattr = 1 << 8,
     ListXattr = 1 << 9,
     RemoveXattr = 1 << 10,
+    SyncFs = 1 << 11,
 }
 
 impl Mount {
@@ -132,10 +133,10 @@ impl Mount {
 pub(super) struct FuseFileSystem {
     mount: Arc<Mount>,
     root: Arc<FuseInode>,
-    /// 卸载时同步发送 DESTROY（Linux `fc->destroy`，块设备型挂载 `fuseblk` 设置）：服务端在回复前
-    /// 持久化全部状态。缺失时卸载只断开连接，服务端在不知道卸载是否完成的情况下结束挂载，`umount`
-    /// 返回时日志可能尚未提交。
-    destroy: bool,
+    /// 守护进程自己持有缓存与日志的系统服务挂载：卸载时同步发送 DESTROY（Linux `fc->destroy`），
+    /// sync 时发送 SYNCFS（Linux `fc->sync_fs`，virtiofs 同样设置）。缺失时 `sync`/`umount` 返回后服务端
+    /// 的日志可能尚未提交，随后的断电丢失已确认的修改。
+    server_durability: bool,
 }
 
 impl FuseFileSystem {
@@ -145,7 +146,7 @@ impl FuseFileSystem {
     ///
     /// - `connection`: 已排入 INIT 的连接。
     /// - `options`: 挂载选项；根 inode 用 `rootmode`/`user_id`/`group_id` 合成属性，首次访问前向守护进程取回。
-    /// - `destroy`: 卸载时是否发送 DESTROY。
+    /// - `server_durability`: 卸载时发送 DESTROY、sync 时发送 SYNCFS。
     /// - `bind`: 绑定守护进程端点；在所有可失败的分配之后、挂载发布之前调用。
     ///
     /// # Errors
@@ -154,7 +155,7 @@ impl FuseFileSystem {
     pub(super) fn assemble(
         connection: &Arc<Connection>,
         options: Options,
-        destroy: bool,
+        server_durability: bool,
         bind: impl FnOnce() -> Result<(), FileSystemError>,
     ) -> Result<Arc<Self>, FileSystemError> {
         let root_attributes =
@@ -176,7 +177,7 @@ impl FuseFileSystem {
         let filesystem = Arc::try_new(Self {
             mount,
             root,
-            destroy,
+            server_durability,
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
         bind()?;
@@ -281,11 +282,30 @@ impl FileSystem for FuseFileSystem {
         Ok(statistics)
     }
 
+    /// Linux `fuse_sync_fs`：服务端声明不支持（ENOSYS）后不再发送。
+    fn sync(&self) -> Result<(), FileSystemError> {
+        if !self.server_durability || self.mount.unsupported(Unsupported::SyncFs) {
+            return Ok(());
+        }
+        let body = [0u8; fuse::SYNCFS_IN_SIZE];
+        match self
+            .mount
+            .connection
+            .call(fuse::SYNCFS, fuse::ROOT_ID, &[&body], ReplyShape::EMPTY)
+        {
+            Err(FileSystemError::Errno(code)) if code == errno::ENOSYS as u16 => {
+                self.mount.mark_unsupported(Unsupported::SyncFs);
+                Ok(())
+            }
+            result => result.map(drop),
+        }
+    }
+
     /// 卸载（Linux `fuse_sb_destroy` → `fuse_abort_conn`）：守护进程 read 返回 `ENODEV` 后退出。
     ///
     /// 块设备型挂载先同步 DESTROY（Linux `fuse_send_destroy`）；其失败在中止连接后返回。
     fn shutdown(&self) -> Result<(), FileSystemError> {
-        let destroyed = if self.destroy {
+        let destroyed = if self.server_durability {
             self.mount
                 .connection
                 .call(fuse::DESTROY, 0, &[], ReplyShape::EMPTY)

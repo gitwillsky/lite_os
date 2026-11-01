@@ -1,6 +1,8 @@
 use crate::sync::Mutex;
 use device_model::DeviceBacking;
 
+use crate::drivers::virtio::queue::DmaSlice;
+
 use super::{
     CONTROL_QUEUE, CONTROL_REQUEST_SIZE, ControlQueue, DisplayError, DisplayMode, DisplayRect,
     VirtIODevice, VirtIOGpuDevice, wire::*,
@@ -157,16 +159,19 @@ impl VirtIOGpuDevice {
         }
         Self::execute_ok(device, control, VIRTIO_GPU_CMD_RESOURCE_CREATE_2D, 40)?;
 
-        let attach_length = {
+        let (attach_length, (entries, entries_length)) = {
             let mut control = control.lock();
             let request = &mut control.commands.boot_slot_mut().request;
             super::wire::prepare_attach(request.as_mut_slice(), id, framebuffer, device.bti()).ok()?
         };
-        Self::execute_ok(
+        Self::execute_polled(
             device,
             control,
             VIRTIO_GPU_CMD_RESOURCE_ATTACH_BACKING,
             attach_length,
+            Some((&entries, entries_length)),
+            VIRTIO_GPU_RESP_OK_NODATA,
+            CONTROL_HEADER_SIZE,
         )
     }
 
@@ -183,6 +188,7 @@ impl VirtIOGpuDevice {
                 control,
                 command,
                 length,
+                None,
                 VIRTIO_GPU_RESP_OK_NODATA,
                 CONTROL_HEADER_SIZE,
             )
@@ -289,6 +295,7 @@ impl VirtIOGpuDevice {
             control,
             command,
             request_length,
+            None,
             expected_response,
             response_length,
         )
@@ -297,11 +304,13 @@ impl VirtIOGpuDevice {
     /// 同步提交一条 boot-slot 命令并轮询 used ring 直到它完成。
     ///
     /// 只在启动期、中断注册之前使用：used ring 里出现任何不属于本命令的 completion 都是协议错误。
+    /// `data` 是请求头之后的 driver-readable descriptor（ATTACH_BACKING 的 entry 数组），在完成前保持有效。
     fn execute_polled(
         device: &VirtIODevice,
         control: &Mutex<ControlQueue>,
         command: u32,
         request_length: usize,
+        data: Option<(&DeviceBacking, usize)>,
         expected_response: u32,
         response_length: usize,
     ) -> Option<()> {
@@ -325,7 +334,12 @@ impl VirtIOGpuDevice {
             let slot = commands.boot_slot_mut();
             let request = slot.request.readable(0..request_length).ok()?;
             let response = slot.response.writable_all();
-            queue.add_dma(&[request, response]).ok()?
+            match data {
+                Some((backing, length)) => queue
+                    .add_dma(&[request, DmaSlice::backing(backing, length).ok()?, response])
+                    .ok()?,
+                None => queue.add_dma(&[request, response]).ok()?,
+            }
         };
         control.queue.add_to_avail(head);
         device.notify_queue(CONTROL_QUEUE).ok()?;

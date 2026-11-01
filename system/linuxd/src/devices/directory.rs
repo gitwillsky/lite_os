@@ -1,4 +1,5 @@
-//! devmgr 设备目录的使用者端：连接目录中的每个设备，把远端 client 登记到对应的设备类注册表。
+//! devmgr 设备目录的使用者端：连接目录中的每个设备，把远端 client 登记到对应的设备类注册表；
+//! 网卡属于 netd，其目录记录原样转交给 netd。
 //!
 //! 1. 启动时读取目录直到“枚举完成”，此后的块设备、console、显示、输入与音频装配都看到完整设备集；
 //! 2. 之后由目录线程继续接收热插拔设备（USB 连接与其 PCM 输出），登记后请求一轮音频发现；
@@ -6,9 +7,10 @@
 
 use alloc::sync::Arc;
 
+use device_model::InputDevice;
 use device_protocol::boot::{BootProgress, Milestone};
 use device_protocol::directory::{self, Announcement, Class};
-use device_protocol::{EventHub, block, display, entropy, input, network, pcm, port, usb};
+use device_protocol::{EventHub, block, display, entropy, input, pcm, port, usb};
 use native_runtime::Channel;
 use native_runtime::native_abi::Status;
 
@@ -32,13 +34,18 @@ fn attach(announcement: Announcement, hub: &Arc<EventHub>, boot: &mut Option<Boo
             let _ = super::block::register(block::connect(announcement)?);
         }
         Class::Network => {
-            let _ = device_model::register_network_device(network::connect(announcement, hub)?);
+            crate::handles::network().attach_device(&announcement.description, announcement.handles)?;
         }
         Class::Display => {
             let _ = device_model::register_display_device(display::connect(announcement, hub)?);
         }
         Class::Input => {
-            let _ = device_model::register_input_device(input::connect(announcement, hub)?);
+            let device = input::connect(announcement, hub)?;
+            let name = device.name().to_vec();
+            // 注册顺序即 evdev minor：`/dev/input/event<index>` 绑定到这个设备。
+            if let Ok(index) = device_model::register_input_device(device) {
+                info!("input event{index}: {}", core::str::from_utf8(&name).unwrap_or("<non-utf8>"));
+            }
         }
         Class::Pcm => {
             let _ = device_model::register_pcm_output(pcm::connect(announcement, hub)?);

@@ -217,6 +217,7 @@ impl AddressSpace {
                 },
             )
             .map_err(|_| VmError::NoMemory)?;
+        DIAG_SPACES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let space = Arc::try_new(Self {
             koid: crate::id::next_koid(),
             token: page_table.token(),
@@ -329,6 +330,55 @@ impl AddressSpace {
             .find_mapping(address)
             .ok_or(VmError::NotMapped)?;
         Ok((owner, mapping))
+    }
+
+    /// 调试访问（`process_read_memory`/`process_write_memory`）：经映射背后的 VMO 读写，按映射建立时的
+    /// 权限上限而非当前保护属性授权——调试器可以读不可访问页、写只读代码页（写时复制的子对象只改变
+    /// 本进程的私有副本）。
+    ///
+    /// 写入可执行映射后撤销其翻译：下一次取指缺页重新安装翻译并发布指令。
+    ///
+    /// # Returns
+    ///
+    /// 已访问的字节数；遇到未映射、超出权限上限或 VMO 访问失败时提前结束。
+    pub(crate) fn access_debug(self: &Arc<Self>, address: usize, buffer: &mut [u8], write: bool) -> usize {
+        let required = if write {
+            PagePermissions::WRITE
+        } else {
+            PagePermissions::READ
+        };
+        let mut done = 0;
+        while done < buffer.len() {
+            let Some(cursor) = address.checked_add(done) else {
+                break;
+            };
+            let Ok((_, mapping)) = self.lookup(cursor) else {
+                break;
+            };
+            if !mapping.ceiling.contains(required) {
+                break;
+            }
+            let chunk = (buffer.len() - done).min(mapping.base + mapping.size - cursor);
+            let offset = (mapping.vmo_page * PAGE_SIZE + (cursor - mapping.base)) as u64;
+            let bytes = &mut buffer[done..done + chunk];
+            let result = if write {
+                mapping.vmo.write(offset, bytes).and_then(|()| {
+                    if !mapping.permissions.contains(PagePermissions::EXECUTE) {
+                        return Ok(());
+                    }
+                    let first = offset as usize / PAGE_SIZE;
+                    let last = (offset as usize + chunk).div_ceil(PAGE_SIZE);
+                    mapping.zap_vmo_pages(first..last, ZapMode::Unmap)
+                })
+            } else {
+                mapping.vmo.read(offset, bytes)
+            };
+            if result.is_err() {
+                break;
+            }
+            done += chunk;
+        }
+        done
     }
 
     /// 处理一次用户缺页。
@@ -977,8 +1027,10 @@ impl Vmar {
     }
 }
 
+pub(crate) static DIAG_SPACES: core::sync::atomic::AtomicIsize = core::sync::atomic::AtomicIsize::new(0);
 impl Drop for AddressSpace {
     fn drop(&mut self) {
+        DIAG_SPACES.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
         // 1. 映射与页框仍由 inner 保活；先让全部 CPU 清除本空间的翻译，ASID 才能复用。
         // 2. fence 完成后释放 ASID；字段随后析构并释放页表页、映射与页框。
         synchronize_address_space_retirement()

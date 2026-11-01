@@ -60,8 +60,8 @@ pub(crate) fn system_info() -> &'static SystemBasic {
 /// 1. 取回启动句柄与 command line；
 /// 2. Linux 命名空间、VFS 与任务表，然后启动 deferred 线程（定时器、控制台输入与设备活动都经它分派）；
 /// 3. 读取 devmgr 设备目录并连接全部设备，注册 console；
-/// 4. 装配块设备、音频、DRM、输入与 tty，挂载根文件系统，启动后台线程；
-/// 5. 发布 init。main 线程随后退出（只结束本线程），linuxd 由各服务线程与 Linux 线程继续运行。
+/// 4. 装配块设备、音频、DRM、输入与 tty，创建初始网络域，启动后台线程；
+/// 5. `kernel_init` 内核线程挂载根文件系统并发布 init。main 线程随后退出（只结束本线程），linuxd 由各服务线程与 Linux 线程继续运行。
 fn main(mut startup: Startup) -> i64 {
     let directory = handles::install(&mut startup);
     native_runtime::set_fatal_scope(
@@ -112,20 +112,40 @@ fn main(mut startup: Startup) -> i64 {
     let console = devices::tty::init(select_console(parameters.console.as_deref()))
         .expect("TTY initialization failed");
     net::init();
-    let root = mount_filesystems(scheduler, &parameters);
     start_background_threads();
-    task::spawn_init(
-        scheduler,
-        root,
-        console,
-        task::InitProgram {
-            path: parameters.init.as_deref(),
-            arguments: &parameters.init_arguments,
-            environment: &parameters.init_environment,
-        },
-    );
+    start_kernel_init(scheduler, console, parameters);
     // 装配完成：只结束主线程。从 main 返回会结束整个进程，连同已启动的 init 与全部服务线程。
     native_runtime::task::exit_thread()
+}
+
+/// 启动 `kernel_init` 内核线程（Linux `kernel_init` → `prepare_namespace`）：挂载根文件系统，然后发布 init。
+///
+/// 根挂载必须在 task 上下文中进行：块设备型 FUSE 挂载在守护进程完成 INIT 前经 task wait registry
+/// 阻塞，装配主线程不是 task，在那里等待会 fail-stop。
+///
+/// # Panics
+///
+/// 线程创建失败；线程内根挂载或 init 装载失败同样 fail-stop。
+fn start_kernel_init(
+    scheduler: task::SchedulerReady,
+    console: devices::tty::ConsoleReady,
+    parameters: cmdline::KernelParameters,
+) {
+    let body = alloc::boxed::Box::try_new(move || {
+        let root = mount_filesystems(scheduler, &parameters);
+        task::spawn_init(
+            scheduler,
+            root,
+            console,
+            task::InitProgram {
+                path: parameters.init.as_deref(),
+                arguments: &parameters.init_arguments,
+                environment: &parameters.init_environment,
+            },
+        );
+    })
+    .expect("kernel_init body allocation failed");
+    task::spawn_kernel_thread("kernel_init", body).expect("kernel_init thread initialization failed");
 }
 
 /// 初始 user/UTS/PID/time/IPC/NET 命名空间。
@@ -149,7 +169,7 @@ fn initialize_namespaces() {
     net::initialize_net().expect("initial NET namespace allocation failed");
 }
 
-/// 启动唯一 deferred 线程：它取代内核 tick，分派定时器、驱动完成、控制台与网络工作。
+/// 启动唯一 deferred 线程：它取代内核 tick，分派定时器、驱动完成与控制台工作。
 ///
 /// # Panics
 ///

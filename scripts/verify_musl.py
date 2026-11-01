@@ -3,10 +3,8 @@ from __future__ import annotations
 
 import argparse
 import shutil
-import struct
 import subprocess
 import sys
-import tempfile
 from build_cache import (
     build_jobs_override,
     cache_lock,
@@ -74,7 +72,6 @@ def smoke_payload(install: Path, compiler: Path, sysroot_fingerprint: str) -> di
         "seccomp_notification_sha256": sha256(ROOT / "scripts/fixtures/musl/seccomp_notification.c"),
         "ptrace_sha256": sha256(ROOT / "scripts/fixtures/musl/ptrace.c"),
         "signal_frame_sha256": sha256(ROOT / "scripts/fixtures/musl/signal-frame.c"),
-        "swap_sha256": sha256(ROOT / "scripts/fixtures/musl/swap.c"),
         "address_space_sha256": sha256(ROOT / "scripts/fixtures/musl/address-space.c"),
         "netlink_route_sha256": sha256(ROOT / "scripts/fixtures/musl/netlink-route.c"),
         "copy_file_range_sha256": sha256(ROOT / "scripts/fixtures/musl/copy-file-range.c"),
@@ -82,7 +79,6 @@ def smoke_payload(install: Path, compiler: Path, sysroot_fingerprint: str) -> di
         "statx_sha256": sha256(ROOT / "scripts/fixtures/musl/statx.c"),
         "mremap_sha256": sha256(ROOT / "scripts/fixtures/musl/mremap.c"),
         "resource_usage_sha256": sha256(ROOT / "scripts/fixtures/musl/resource-usage.c"),
-        "memory_pressure_sha256": sha256(ROOT / "scripts/fixtures/musl/memory-pressure.c"),
         "link_arguments": list(SMOKE_LINK_ARGUMENTS),
         "compiler_runtime": {
             "path": str(compiler_runtime),
@@ -149,14 +145,12 @@ def link_smoke(
                 str(ROOT / "scripts/fixtures/musl/signal-frame.c"),
                 str(ROOT / "scripts/fixtures/musl/ptrace.c"),
                 str(ROOT / "scripts/fixtures/musl/address-space.c"),
-                str(ROOT / "scripts/fixtures/musl/memory-pressure.c"),
                 str(ROOT / "scripts/fixtures/musl/resource-usage.c"),
                 str(ROOT / "scripts/fixtures/musl/mremap.c"),
                 str(ROOT / "scripts/fixtures/musl/statx.c"),
                 str(ROOT / "scripts/fixtures/musl/copy-file-range.c"),
                 str(ROOT / "scripts/fixtures/musl/io-uring.c"),
                 str(ROOT / "scripts/fixtures/musl/netlink-route.c"),
-                str(ROOT / "scripts/fixtures/musl/swap.c"),
                 f"-L{install / 'usr/lib'}",
                 "-Wl,--start-group",
                 str(install / "usr/lib/libc.a"),
@@ -316,7 +310,7 @@ def main() -> int:
         )
         image = WORK / "fs.img"
         if runtime_gate_hit(stamp, payload, (image,)):
-            print(f"musl {MUSL_VERSION} pthread signal swap verification cache hit")
+            print(f"musl {MUSL_VERSION} pthread signal verification cache hit")
             return 0
         image = create_image(binary)
         for cpu_count in (1, 2):
@@ -344,31 +338,11 @@ def main() -> int:
                 ),
                 forbidden_markers=("LiteOS musl consumer failed", "LiteOS musl ASID failed", "LiteOS musl mmap placement failed", " fail step="),
             )
-        with tempfile.TemporaryDirectory(prefix="liteos-swap-") as directory:
-            scratch = Path(directory) / "swap.img"
-            # Linux v1 4KiB header，磁盘格式与坏页/边界裁决另由生产 parser host 回归覆盖。
-            pages = 64 * 1024 * 1024 // 4096
-            header = bytearray(4096)
-            struct.pack_into("<III", header, 1024, 1, pages - 1, 0)
-            header[4086:] = b"SWAPSPACE2"
-            with scratch.open("wb") as disk:
-                disk.write(header)
-                disk.truncate(pages * 4096)
-            for cpu_count in (1, 2):
-                boot(
-                    image, cpu_count,
-                    (*cpu_topology_markers(cpu_count), "LiteOS musl swapoff EINTR retry ok", "LiteOS musl swap ok", "LiteOS musl consumer exit=0"),
-                    timeout_seconds=120,
-                    forbidden_markers=("LiteOS musl swap failed", "LiteOS musl consumer failed"),
-                    memory="128M",
-                    kernel_arguments="init=/bin/init -- swap-smoke",
-                    scratch_disk=scratch,
-                )
         publish_runtime_gate(stamp, payload)
     except (RuntimeError, subprocess.CalledProcessError) as error:
         print(f"musl verification failed: {error}", file=sys.stderr)
         return 1
-    print(f"musl {MUSL_VERSION} pthread signal swap verification passed")
+    print(f"musl {MUSL_VERSION} pthread signal verification passed")
     return 0
 
 if __name__ == "__main__":

@@ -9,12 +9,9 @@ use core::mem::MaybeUninit;
 
 use crate::{
     EntropyError, EntropySource, GraphicsDevice, InputDevice, PcmOutput, PortDevice, UsbDevice,
-    network::NetworkDevice, AppendOnlyRegistry,
+    AppendOnlyRegistry,
 };
 
-// OWNER: Ethernet adapter 的唯一发布点；协议栈与 AF_PACKET 按 index 绑定同一接口，缺失时两者
-// 可能持有不同 adapter 而分裂 MAC 与 RX ownership。
-static NETWORK_DEVICES: AppendOnlyRegistry<dyn NetworkDevice> = AppendOnlyRegistry::new();
 // OWNER: display adapter 的唯一发布点；IRQ handler 与 DRM 持有同一 Arc，缺失时 scanout backing
 // 生命周期由两方各自决定。
 static DISPLAY_DEVICES: AppendOnlyRegistry<dyn GraphicsDevice> = AppendOnlyRegistry::new();
@@ -44,22 +41,6 @@ static ENTROPY_SOURCES: AppendOnlyRegistry<dyn EntropySource> = AppendOnlyRegist
 // OWNER: named byte-stream port 的唯一发布点；缺失时两个 byte-stream owner 可能竞争同一 SPICE
 // channel。
 static PORT_DEVICES: AppendOnlyRegistry<dyn PortDevice> = AppendOnlyRegistry::new();
-
-/// 发布一个 Ethernet 设备。
-///
-/// # Errors
-///
-/// 注册表扩容失败时原样返回 adapter。
-pub fn register_network_device(
-    device: Arc<dyn NetworkDevice>,
-) -> Result<usize, Arc<dyn NetworkDevice>> {
-    NETWORK_DEVICES.register(device)
-}
-
-/// 第 `index` 个 Ethernet 设备。
-pub fn network_device(index: usize) -> Option<Arc<dyn NetworkDevice>> {
-    NETWORK_DEVICES.get(index)
-}
 
 /// 发布一个 display adapter。
 ///

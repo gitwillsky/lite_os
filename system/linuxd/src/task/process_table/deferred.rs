@@ -132,10 +132,7 @@ fn wake_expired_tasks(now_ns: u64) {
     }
 }
 
-/// 网络协议定时器（TCP 重传、ARP、UDP 出口）的轮询间隔：与原调度 tick 相同的 10ms。
-const NETWORK_POLL_INTERVAL_NS: u64 = 10_000_000;
-
-/// deferred 线程的分派：定时器到期、控制台输入、已注册设备工作与网络。
+/// deferred 线程的分派：定时器到期、控制台输入与已注册设备工作。
 pub(crate) fn dispatch_deferred_work(work: DeferredWorkSet) {
     if work.contains(DeferredWork::TIMER) {
         wake_expired_tasks(get_time_ns());
@@ -154,16 +151,9 @@ pub(crate) fn dispatch_deferred_work(work: DeferredWorkSet) {
         }
     }
     work.run_registered(get_time_ns());
-    let network_due =
-        work.contains(DeferredWork::NETWORK) || work.contains(DeferredWork::TIMER) && crate::net::network_work_due();
-    if network_due && crate::net::dispatch_network_work() {
-        // 接收预算用尽：再次发布，used ring 中没有新中断沿的帧不会滞留。
-        deferred::raise(DeferredWork::NETWORK);
-    }
 }
 
-/// 全部定时器来源中最早的截止时间：等待截止、间隔/POSIX/timerfd 定时器、负载均值采样、网络轮询
-/// 与 RLIMIT_CPU 采样。
+/// 全部定时器来源中最早的截止时间：等待截止、间隔/POSIX/timerfd 定时器、负载均值采样与 RLIMIT_CPU 采样。
 pub(crate) fn next_deferred_deadline() -> Option<u64> {
     let waits = WAIT_REGISTRY.next_deadline();
     let timers = PROCESS_TABLE.timers.lock().next_expiration();
@@ -171,7 +161,6 @@ pub(crate) fn next_deferred_deadline() -> Option<u64> {
         .load_average
         .next_sample_us()
         .map(|deadline| deadline.saturating_mul(1000));
-    let network = crate::net::network_active().then(|| get_time_ns().saturating_add(NETWORK_POLL_INTERVAL_NS));
     let cpu_limits = super::resource_limit::cpu_limit_sample_deadline(get_time_ns());
-    [waits, timers, load, network, cpu_limits].into_iter().flatten().min()
+    [waits, timers, load, cpu_limits].into_iter().flatten().min()
 }

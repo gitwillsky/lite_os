@@ -226,8 +226,8 @@ dependencies = [
  "filesystem-protocol",
  "launch-protocol",
  "native-runtime",
+ "network-protocol",
  "service-sync",
- "smoltcp",
  "syscall-abi",
 ]
 
@@ -250,6 +250,30 @@ name = "native-runtime"
 version = "0.1.0"
 dependencies = [
  "native-abi",
+]
+
+[[package]]
+name = "netd"
+version = "0.1.0"
+dependencies = [
+ "device-model",
+ "device-protocol",
+ "fallible-tree",
+ "launch-protocol",
+ "native-runtime",
+ "network-protocol",
+ "service-rpc",
+ "service-sync",
+ "smoltcp",
+]
+
+[[package]]
+name = "network-protocol"
+version = "0.1.0"
+dependencies = [
+ "device-model",
+ "native-runtime",
+ "service-rpc",
 ]
 
 [[package]]

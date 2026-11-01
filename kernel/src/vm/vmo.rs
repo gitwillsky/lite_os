@@ -174,6 +174,7 @@ pub(crate) struct ResolvedPage {
 
 impl Vmo {
     fn new_in(tree: Arc<Tree>, kind: Kind, pages: usize, relation: Option<Relation>) -> Result<Arc<Self>, VmError> {
+        DIAG_VMOS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         Arc::try_new(Self {
             id: crate::id::next_koid(),
             kind,
@@ -501,7 +502,12 @@ impl Vmo {
                 let frame = frame_allocator::alloc_copy(page.frame.bytes())
                     .ok_or(Resolve::Error(VmError::NoMemory))?;
                 drop(ancestor_state);
-                return commit_page(&mut state, index, frame);
+                let page = commit_page(&mut state, index, frame)?;
+                drop(state);
+                // 本对象与子孙的映射可能仍只读指向祖先页框；不撤销时它们在复制后继续读到旧内容
+                // （缺页路径只替换发生缺页的那一条翻译，VMO 写入与调试写入不经缺页）。
+                self.zap(index..index + 1, ZapMode::Unmap).map_err(Resolve::Error)?;
+                return Ok(page);
             }
             let next = match &ancestor_state.relation {
                 Some(Relation::Cow { parent, offset }) => Some((parent.clone(), ancestor_index + offset)),
@@ -1032,4 +1038,11 @@ fn page_range(offset: u64, length: u64) -> Result<(usize, usize), VmError> {
         usize::try_from(offset / PAGE_SIZE as u64).map_err(|_| VmError::OutOfRange)?,
         usize::try_from(length / PAGE_SIZE as u64).map_err(|_| VmError::OutOfRange)?,
     ))
+}
+
+pub(crate) static DIAG_VMOS: core::sync::atomic::AtomicIsize = core::sync::atomic::AtomicIsize::new(0);
+impl Drop for Vmo {
+    fn drop(&mut self) {
+        DIAG_VMOS.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+    }
 }

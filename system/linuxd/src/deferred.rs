@@ -21,7 +21,6 @@ impl DeferredWork {
     /// 定时器到期：等待截止、POSIX/间隔定时器、负载均值。
     pub(crate) const TIMER: Self = Self(1);
     pub(crate) const CONSOLE: Self = Self(1 << 1);
-    pub(crate) const NETWORK: Self = Self(1 << 2);
     /// 一批到期项未处理完。
     pub(crate) const TIMER_BACKLOG: Self = Self(1 << 3);
 }

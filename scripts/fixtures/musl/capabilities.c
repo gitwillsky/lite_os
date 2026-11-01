@@ -93,7 +93,8 @@ static int privilege_drop(void)
 		errno = 0;
 		if (syscall(SYS_reboot, 0, 0, 0, 0) != -1 || errno != EPERM) fail(62);
 		errno = 0;
-		if (syscall(SYS_swapon, 1, 0) != -1 || errno != EPERM || mount(0,0,0,0,0) != -1 || errno != EPERM) fail(63);
+		/* swapon 未注册（CONFIG_SWAP=n，ENOSYS）；mount 仍先检查 CAP_SYS_ADMIN。 */
+		if (syscall(SYS_swapon, 1, 0) != -1 || errno != ENOSYS || mount(0,0,0,0,0) != -1 || errno != EPERM) fail(63);
 		errno = 0;
 		if (syscall(SYS_setuid, 1000) != -1 || errno != EPERM || syscall(SYS_setgid, 1000) != -1 || errno != EPERM) fail(64);
 		errno = 0;

@@ -9,7 +9,7 @@ use core::net::Ipv4Addr;
 use super::codec::{self, NLM_F_APPEND, NLM_F_CREATE, NLM_F_EXCL, NLM_F_REPLACE};
 use crate::net::{
     InterfaceSnapshot, Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest,
-    NetNamespace, SocketError, configure_address, configure_broadcast, configure_mtu,
+    NetNamespace, RouteChange, SocketError, configure_address, configure_broadcast, configure_mtu,
     configure_netmask, configure_route, configure_up, interface_snapshot, interface_snapshots,
 };
 
@@ -24,6 +24,14 @@ const EAFNOSUPPORT: i32 = 97;
 pub(super) const EOPNOTSUPP: i32 = 95;
 
 const AF_INET: u8 = 2;
+/// 删除路由：其余 netlink 标志对删除无意义。
+const DELETE: RouteChange = RouteChange {
+    delete: true,
+    replace: false,
+    create: false,
+    exclusive: false,
+    append: false,
+};
 const IFF_UP: u32 = 0x1;
 /// Linux `dev_change_flags` 允许用户改变的位（`IFF_DEBUG|NOTRAILERS|NOARP|PROMISC|ALLMULTI|MULTICAST|…|UP`）。
 const CHANGEABLE_FLAGS: u32 =
@@ -332,12 +340,19 @@ pub(super) fn route(
     if !delete {
         // 新增必须指明类型；RTN_UNSPEC 只在删除时表示“任意类型”。
         request.kind = route_kind(kind)?;
-        return configure_route(scope, request, false, replace, create, exclusive, append)
+        let change = RouteChange {
+            delete: false,
+            replace,
+            create,
+            exclusive,
+            append,
+        };
+        return configure_route(scope, request, change)
             .map_err(|error| error.errno());
     }
     if kind != 0 {
         request.kind = route_kind(kind)?;
-        return configure_route(scope, request, true, false, false, false, false)
+        return configure_route(scope, request, DELETE)
             .map_err(|error| error.errno());
     }
     // RTN_UNSPEC 删除：FIB 按类型精确匹配，依次尝试每种类型，全部不存在才算 ESRCH。
@@ -349,7 +364,7 @@ pub(super) fn route(
         Ipv4RouteKind::Throw,
     ] {
         request.kind = candidate;
-        match configure_route(scope, request, true, false, false, false, false) {
+        match configure_route(scope, request, DELETE) {
             Err(Ipv4RouteError::NotFound) => {}
             other => return other.map_err(|error| error.errno()),
         }

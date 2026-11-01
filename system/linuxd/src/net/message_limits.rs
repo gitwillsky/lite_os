@@ -1,5 +1,6 @@
 #[cfg(not(test))]
 use super::{SocketDomain, SocketType};
+use network_protocol::MAX_IPV4_UDP_BYTES;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum MessageProtocol {
@@ -12,7 +13,6 @@ pub(super) enum MessageProtocol {
     Unsupported,
 }
 
-pub(super) const MAX_IPV4_UDP_BYTES: usize = 65_507;
 // HDRINCL 输入包含完整 IPv4 header；具体 codec/MTU 上限由实际 RAW owner 校验。
 pub(super) const MAX_IPV4_RAW_BYTES: usize = u16::MAX as usize;
 pub(super) const MAX_PACKET_BYTES: usize = 65_536 + 14;

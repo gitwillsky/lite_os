@@ -71,6 +71,7 @@ impl MemorySet {
             })?;
         }
         child.executable_owner = self.executable_owner.clone();
+        child.interpreter_owner = self.interpreter_owner.clone();
         child.heap = match &self.heap {
             Some(heap) => Some(Heap {
                 start: heap.start,

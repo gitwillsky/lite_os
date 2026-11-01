@@ -202,13 +202,45 @@ struct FrameAllocator {
     // OWNER: 每个 order 空闲块数的同锁 projection；缺失时统计只能遍历空闲链（链节点在页内，
     // 遍历期间持锁时间与空闲页数成正比）。
     free_blocks: [usize; ORDER_COUNT],
+    // OWNER: 启动期保留、尚未归还的固件交付区间（页对齐、裁剪到可分配区间、按起点排序且互不重叠）。
+    // 缺失时归还只能依赖调用者重述区间；两个区间共享边界页时会被重复归还。
+    boot_reserved: [Option<core::ops::Range<PhysicalPageNumber>>; BOOT_RESERVED_CAPACITY],
+}
+
+/// 启动期保留区间的上限：bootfs（initrd）与 DTB。
+pub(crate) const BOOT_RESERVED_CAPACITY: usize = 2;
+
+/// 把启动期保留区间页对齐、裁剪到 `[start, end)`、按起点排序并合并相交或相邻的区间。
+fn normalize_reserved(
+    reserved: [Option<core::ops::Range<PhysicalPageNumber>>; BOOT_RESERVED_CAPACITY],
+    start: PhysicalPageNumber,
+    end: PhysicalPageNumber,
+) -> [Option<core::ops::Range<PhysicalPageNumber>>; BOOT_RESERVED_CAPACITY] {
+    let mut ranges = reserved.map(|range| {
+        range
+            .map(|range| range.start.max(start).min(end)..range.end.max(start).min(end))
+            .filter(|range| range.start < range.end)
+    });
+    ranges.sort_by_key(|range| range.as_ref().map_or(usize::MAX, |range| range.start.as_usize()));
+    let mut merged: [Option<core::ops::Range<PhysicalPageNumber>>; BOOT_RESERVED_CAPACITY] = [None, None];
+    let mut count = 0usize;
+    for range in ranges.into_iter().flatten() {
+        match count.checked_sub(1).and_then(|last| merged[last].as_mut()) {
+            Some(last) if range.start <= last.end => last.end = last.end.max(range.end),
+            _ => {
+                merged[count] = Some(range);
+                count += 1;
+            }
+        }
+    }
+    merged
 }
 
 impl FrameAllocator {
     fn new(
         start_addr: PhysicalAddress,
         end_addr: PhysicalAddress,
-        reserved: Option<core::ops::Range<PhysicalPageNumber>>,
+        reserved: [Option<core::ops::Range<PhysicalPageNumber>>; BOOT_RESERVED_CAPACITY],
     ) -> Self {
         let metadata_start = start_addr.ceil();
         let end = end_addr.floor();
@@ -229,12 +261,13 @@ impl FrameAllocator {
             .checked_mul(super::config::PAGE_SIZE)
             .expect("frame allocator metadata address overflow");
         let metadata_virtual = crate::arch::mmu::physical_to_virtual(metadata_physical);
-        if let Some(range) = &reserved {
+        for range in reserved.iter().flatten() {
             assert!(
                 range.end <= metadata_start || range.start >= start,
                 "reserved boot region overlaps frame allocator metadata"
             );
         }
+        let boot_reserved = normalize_reserved(reserved, start, end);
         // SAFETY: [metadata_start, start) 来自尚未发布的可用物理区间，按布局从 buddy
         // capacity 中永久排除；FRAME_ALLOCATOR 是该 slice 的唯一 owner，内核生命周期内
         // direct map 保持有效，且长度只覆盖已保留 metadata pages。
@@ -250,27 +283,26 @@ impl FrameAllocator {
             free_blocks: [0; ORDER_COUNT],
             block_state,
             free_pages: layout.allocatable_pages,
+            boot_reserved: boot_reserved.clone(),
         };
 
-        // 1. 保留区裁剪到可分配区间，其余部分作为空闲块插入；
-        // 2. 保留区按同样的对齐块标记为已分配，之后由 `release_reserved` 逐块归还并参与合并。
-        let (reserved_start, reserved_end) = reserved.map_or((end, end), |range| {
-            (range.start.max(start).min(end), range.end.max(start).min(end))
-        });
-        let reserved_end = reserved_end.max(reserved_start);
-        for_each_aligned_block(start, reserved_start, |block, order| {
-            allocator.insert_free(block, order)
-        });
-        for_each_aligned_block(reserved_start, reserved_end, |block, order| {
-            let index = allocator
-                .state_index(block)
-                .expect("reserved block outside allocator range");
-            allocator.block_state[index] = BLOCK_ALLOCATED | order as u8;
-            allocator.free_pages -= 1usize << order;
-        });
-        for_each_aligned_block(reserved_end, end, |block, order| {
-            allocator.insert_free(block, order)
-        });
+        // 1. 保留区之间的部分作为空闲块插入；
+        // 2. 保留区按同样的对齐块标记为已分配，之后由 `release_boot_reserved` 逐块归还并参与合并。
+        let mut cursor = start;
+        for range in boot_reserved.into_iter().flatten() {
+            for_each_aligned_block(cursor, range.start, |block, order| {
+                allocator.insert_free(block, order)
+            });
+            for_each_aligned_block(range.start, range.end, |block, order| {
+                let index = allocator
+                    .state_index(block)
+                    .expect("reserved block outside allocator range");
+                allocator.block_state[index] = BLOCK_ALLOCATED | order as u8;
+                allocator.free_pages -= 1usize << order;
+            });
+            cursor = range.end;
+        }
+        for_each_aligned_block(cursor, end, |block, order| allocator.insert_free(block, order));
         allocator
     }
 
@@ -483,7 +515,8 @@ impl FrameAllocator {
 ///
 /// - `start_addr`: allocator 可用区间起点；buddy 元数据从这里开始占用若干页。
 /// - `end_addr`: allocator 可用区间 exclusive end。
-/// - `reserved`: 必须保持原内容直到 [`release_reserved`] 的区间（initrd）；不得与元数据页重叠。
+/// - `reserved`: 必须保持原内容直到 [`release_boot_reserved`] 的固件交付区间（initrd、DTB）；不得与
+///   元数据页重叠。区间可以落在可分配区间之外（被裁剪），也可以相交（被合并）。
 ///
 /// # Errors
 ///
@@ -491,7 +524,7 @@ impl FrameAllocator {
 pub(crate) fn init(
     start_addr: PhysicalAddress,
     end_addr: PhysicalAddress,
-    reserved: Option<core::ops::Range<PhysicalAddress>>,
+    reserved: [Option<core::ops::Range<PhysicalAddress>>; BOOT_RESERVED_CAPACITY],
 ) {
     assert!(
         FRAME_ALLOCATOR.get().is_none(),
@@ -521,24 +554,25 @@ pub(crate) fn init(
         );
     }
 
-    let reserved = reserved.map(|range| range.start.floor()..range.end.ceil());
+    let reserved = reserved.map(|range| range.map(|range| range.start.floor()..range.end.ceil()));
     FRAME_ALLOCATOR.call_once(|| IrqMutex::new(FrameAllocator::new(start_addr, end_addr, reserved)));
 }
 
-/// 归还 `init` 时保留的物理区间；必须与当时传入的区间相同，且只调用一次。
+/// 归还 `init` 时保留的全部启动期区间（根服务已复制出 bootfs 与 DTB）。
 ///
 /// # Panics
 ///
-/// 区间中的块不是保留时的已分配状态（重复归还或区间不符）时 fail-stop。
-pub(crate) fn release_reserved(range: core::ops::Range<PhysicalAddress>) {
+/// 重复归还（区间已不在保留表中时无事可做，不会 panic）以外，区间中的块不是保留时的已分配状态时 fail-stop。
+pub(crate) fn release_boot_reserved() {
     let mut allocator = FRAME_ALLOCATOR.wait().lock();
-    let start = range.start.floor().max(allocator.start_ppn).min(allocator.end_ppn);
-    let end = range.end.ceil().max(start).min(allocator.end_ppn);
-    for_each_aligned_block(start, end, |block, order| {
-        allocator
-            .dealloc_contiguous(block, 1usize << order)
-            .expect("reserved range released twice or mismatched");
-    });
+    let ranges = core::mem::take(&mut allocator.boot_reserved);
+    for range in ranges.into_iter().flatten() {
+        for_each_aligned_block(range.start, range.end, |block, order| {
+            allocator
+                .dealloc_contiguous(block, 1usize << order)
+                .expect("boot reserved block was not allocated");
+        });
+    }
 }
 
 /// 把 `[start, end)` 分解为最大的 absolute-PPN-aligned buddy block；成本与 block 数成正比。

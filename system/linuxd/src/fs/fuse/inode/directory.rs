@@ -246,6 +246,8 @@ impl FuseInode {
         let permissions = metadata.mode & 0o7777;
         match kind {
             InodeType::File => self.create_node(name, 0o100_000 | permissions, 0),
+            // AF_UNIX pathname bind 的 socket inode（Linux `unix_bind` → `vfs_mknod(S_IFSOCK)` → MKNOD）。
+            InodeType::Socket => self.create_node(name, 0o140_000 | permissions, 0),
             InodeType::Directory => {
                 let _serial = self.serialize()?;
                 let body = Fields::<8>::new().u32(permissions).finish();

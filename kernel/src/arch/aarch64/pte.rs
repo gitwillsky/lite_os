@@ -27,14 +27,16 @@ pub(super) const UXN: u64 = 1 << 54;
 
 /// Encode generic permissions as AArch64 stage-1 leaf attributes.
 ///
-/// Write-only mappings are rejected because stage-1 AP cannot independently remove read access.
+/// Write-only mappings are rejected because stage-1 AP cannot independently remove read access;
+/// executable device mappings are rejected (instruction fetch from Device memory is unpredictable).
 pub(super) fn encode(permissions: PagePermissions) -> Option<u64> {
     let device = permissions.contains(PagePermissions::DEVICE);
     if !permissions
         .intersects(PagePermissions::READ | PagePermissions::WRITE | PagePermissions::EXECUTE)
         || permissions.contains(PagePermissions::WRITE)
             && !permissions.contains(PagePermissions::READ)
-        || device && permissions.intersects(PagePermissions::EXECUTE | PagePermissions::USER)
+        // 设备映射可以交给用户态驱动（经 MMIO resource 授权的物理 VMO），但永不可执行。
+        || device && permissions.contains(PagePermissions::EXECUTE)
     {
         return None;
     }

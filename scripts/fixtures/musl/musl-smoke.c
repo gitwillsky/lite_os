@@ -62,7 +62,6 @@ int verify_seccomp(void);
 int verify_seccomp_exec_image(void);
 int verify_signal_frame_errors(void);
 int verify_ptrace(void);
-int verify_memory_pressure(void);
 int verify_address_space_rollover(void);
 int verify_mapping_placement(void);
 int verify_resource_usage(void);
@@ -164,7 +163,6 @@ static int verify_exec_file_status(void)
 	return 0;
 }
 
-extern int verify_swap(void);
 int verify_clone_parent_exec_image(pid_t child, int release);
 
 static int run_smoke(int argc, char **argv, char **envp)
@@ -175,7 +173,6 @@ static int run_smoke(int argc, char **argv, char **envp)
     if (argc == 4 && argv && argv[1] && strcmp(argv[1], "clone-parent-exec-image") == 0)
         return verify_clone_parent_exec_image((pid_t)strtol(argv[2], 0, 10), (int)strtol(argv[3], 0, 10));
 	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "asid-smoke") == 0) return verify_address_space_rollover();
-	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "swap-smoke") == 0) return verify_swap();
 	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "process-security-smoke") == 0) return verify_process_security();
 	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "file-table-smoke") == 0) return verify_file_table();
 	if (argc == 2 && argv && argv[1] && strcmp(argv[1], "thread-mm-smoke") == 0) return verify_thread_mm();
@@ -661,10 +658,8 @@ static int run_smoke(int argc, char **argv, char **envp)
 	}
 	if (verify_mapping_placement() != 0) return 22;
 	if (verify_address_space_rollover() != 0) return 21;
-	/* 新建 NET 需要一整套网络栈缓冲，必须排在吃光内存的压力用例之前。 */
 	int route_result = verify_netlink_route();
 	if (route_result != 0) return 100 + route_result;
-	if (verify_memory_pressure() != 0) return 20;
 	/* 这两个用例有几十个检查点：失败时把检查点编号放进退出码（128 + 编号），不然只能看到“失败”。 */
 	int resource_usage_result = verify_resource_usage();
 	if (resource_usage_result != 0) return 128 + resource_usage_result;

@@ -56,7 +56,7 @@ impl FileSystemType for Ext4FileSystemType {
         let (channel, control) = crate::handles::ext4()
             .mount(block, request.read_only)
             .map_err(status_error)?;
-        let inner = super::fuse::mount_service(channel, request.environment.requester)?;
+        let inner = super::fuse::mount_service(channel, request.environment)?;
         let filesystem = Arc::try_new(Ext4Mount {
             inner,
             control,
@@ -132,6 +132,10 @@ impl FileSystem for Ext4Mount {
         statistics.magic = EXT4_SUPER_MAGIC;
         statistics.fsid = self.fsid;
         Ok(statistics)
+    }
+
+    fn sync(&self) -> Result<(), FileSystemError> {
+        self.inner.sync()
     }
 
     fn shutdown(&self) -> Result<(), FileSystemError> {

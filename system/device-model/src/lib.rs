@@ -28,7 +28,7 @@ pub use audio_output::{
     PCM_BUFFER_FRAMES, PCM_CHANNELS, PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES, PCM_PERIODS,
     PcmCompletionObserver, PcmOutput, PcmOutputError,
 };
-pub use backing::{DEVICE_BACKING_EXTENTS_MAX, DeviceBacking, DeviceExtent};
+pub use backing::{DeviceBacking, DeviceExtent};
 pub use block::{BLOCK_SIZE, BlockDevice, BlockError};
 pub use display::{
     BootFramebuffer, DisplayDevice, DisplayError, DisplayMode, DisplayRect, DisplayUpdate,
@@ -44,10 +44,9 @@ pub use pcm_format::{
 };
 pub use port::{PortActivity, PortDevice, PortError};
 pub use registry::{
-    display_device, fill_entropy, input_device, input_device_count, network_device, pcm_output,
-    port_device, register_display_device, register_entropy_source, register_input_device,
-    register_network_device, register_pcm_output, register_port_device, register_usb_device,
-    usb_device, usb_device_count,
+    display_device, fill_entropy, input_device, input_device_count, pcm_output, port_device,
+    register_display_device, register_entropy_source, register_input_device, register_pcm_output,
+    register_port_device, register_usb_device, usb_device, usb_device_count,
 };
 pub use usb::{UsbDevice, UsbIdentity, UsbRemoveError};
 

@@ -54,10 +54,13 @@ enum Source {
     Events(Channel, Box<dyn Fn(native_runtime::Message) + Send + Sync>),
 }
 
-/// 使用者端的设备事件分派：一个线程在 port 上等待全部活动 Event 与事件 channel。
+/// 使用者端的事件分派：一个线程在 port 上等待全部活动 Event 与事件 channel。
+///
+/// 登记项以表中位置为 port key；[`EventHub::retire`] 摘除的位置由之后的登记复用。迟到的 packet 可能
+/// 落到复用该位置的新登记项上，只会多触发一次通知（通知本身幂等）。
 pub struct EventHub {
     port: Port,
-    sources: Mutex<Vec<Arc<Source>>>,
+    sources: Mutex<Vec<Option<Arc<Source>>>>,
 }
 
 impl EventHub {
@@ -78,16 +81,24 @@ impl EventHub {
         Ok(hub)
     }
 
-    fn add(&self, source: Source) -> Result<Arc<Source>, Status> {
+    fn add(&self, source: Source) -> Result<(Arc<Source>, u64), Status> {
         let source = Arc::try_new(source).map_err(|_| native_abi::ERR_NO_MEMORY)?;
         let key = {
             let mut sources = self.sources.lock();
-            sources.try_reserve(1).map_err(|_| native_abi::ERR_NO_MEMORY)?;
-            sources.push(source.clone());
-            (sources.len() - 1) as u64
+            if let Some(index) = sources.iter().position(Option::is_none) {
+                sources[index] = Some(source.clone());
+                index as u64
+            } else {
+                sources.try_reserve(1).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                sources.push(Some(source.clone()));
+                (sources.len() - 1) as u64
+            }
         };
-        self.arm(&source, key)?;
-        Ok(source)
+        if let Err(status) = self.arm(&source, key) {
+            self.sources.lock()[key as usize] = None;
+            return Err(status);
+        }
+        Ok((source, key))
     }
 
     fn arm(&self, source: &Source, key: u64) -> Result<(), Status> {
@@ -105,8 +116,21 @@ impl EventHub {
     ///
     /// 分配或等待登记失败。
     pub fn activity(self: &Arc<Self>, event: Event) -> Result<ActivityBinding, Status> {
-        let source = self.add(Source::Activity(event, Mutex::new(None)))?;
-        Ok(ActivityBinding { source })
+        let (source, key) = self.add(Source::Activity(event, Mutex::new(None)))?;
+        Ok(ActivityBinding { source, key })
+    }
+
+    /// 摘除活动 Event 的登记：之后不再调用其通知，Event 随最后一个引用关闭（取消挂起的等待）。
+    pub fn retire(&self, binding: &ActivityBinding) {
+        let removed = {
+            let mut sources = self.sources.lock();
+            match sources.get_mut(binding.key as usize) {
+                Some(slot) if slot.as_ref().is_some_and(|source| Arc::ptr_eq(source, &binding.source)) => slot.take(),
+                _ => None,
+            }
+        };
+        // 在表锁外释放：Event 关闭不在持锁时发生。
+        drop(removed);
     }
 
     /// 登记事件 channel 与处理函数。
@@ -115,7 +139,7 @@ impl EventHub {
     ///
     /// 分配或等待登记失败。
     pub fn events(self: &Arc<Self>, channel: Channel, handler: Box<dyn Fn(native_runtime::Message) + Send + Sync>) -> Result<(), Status> {
-        self.add(Source::Events(channel, handler)).map(|_| ())
+        self.add(Source::Events(channel, handler)).map(drop)
     }
 
     fn run(&self) {
@@ -124,7 +148,7 @@ impl EventHub {
                 Ok(packet) => packet,
                 Err(_) => continue,
             };
-            let Some(source) = self.sources.lock().get(packet.key as usize).cloned() else {
+            let Some(source) = self.sources.lock().get(packet.key as usize).cloned().flatten() else {
                 continue;
             };
             match &*source {
@@ -163,6 +187,7 @@ impl EventHub {
 #[derive(Clone)]
 pub struct ActivityBinding {
     source: Arc<Source>,
+    key: u64,
 }
 
 impl ActivityBinding {

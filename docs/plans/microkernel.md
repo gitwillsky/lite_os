@@ -158,8 +158,8 @@ P2 其余实现事实（P4 迁入对应 owner 文档）：
 
 1. devmgr 与驱动服务（virtio-blk/net/gpu/input/sound/console/rng、PCI、xHCI/USB）——已完成（两架构 clippy 通过）。
 2. `ext4d`，`linuxd` 经 FUSE 协议访问——已完成（两架构 clippy 通过）。
-3. `netd`（smoltcp），`linuxd` 的 INET socket 转发给它。
-4. 设备 UAPI 由 `linuxd` 转发给对应服务。
+3. `netd`（smoltcp），`linuxd` 的 INET 与 AF_PACKET socket 转发给它——已完成（两架构 clippy 通过）。
+4. 设备 UAPI 由 `linuxd` 转发给对应服务——随 P3.1 完成（UAPI 层经 `device_model` trait 调用远端 client）。
 
 P3 设计（实现约束）：
 
@@ -184,6 +184,18 @@ P3 设计（实现约束）：
   P4 待办：逐项对照旧本地 ext4 inode 操作与 FUSE 路径的语义差异（属性缓存时效、trusted xattr 列举、创建时清除
   set-GID 等）并写入 ABI 矩阵；ext4 引擎的 host 单元测试为 ext4d 重新托管。
 - `netd`：拥有 smoltcp 与网卡连接；INET socket 操作经 channel 转发，就绪事件经事件 channel 回到 linuxd 的 poll/epoll。
+- P3.3 实现事实：`network-protocol`（词汇类型 `SocketError`/`SocketPollState`/地址/选项/路由/接口快照，控制、域与
+  socket 三类 channel 的线格式、服务 trait 与远端 client；超过 48 KiB 的数据经 VMO）。netd 拥有 IPv4 协议栈、
+  接口、FIB、端口空间与 AF_PACKET tap/队列；每个网络域一个协议实例（域 channel），每个 socket 一条 channel 与
+  一个就绪 Event（`USER_0`）；全部 socket 操作不阻塞，域与 socket channel 由一个 port 上的分派线程组服务，
+  协议推进线程由网卡活动与操作请求唤醒，有以太网卡时每 10ms 检查协议定时器。linuxd 的 `net/inet.rs`、
+  `net/packet.rs` 是转发 facade：阻塞、超时、信号与 SO_RCVTIMEO/SNDTIMEO 留在 linuxd；`net/netd.rs` 把就绪 Event
+  经 `EventHub`（支持摘除登记）接到本地 wait Pipe；网卡目录记录由 linuxd 原样转交 netd；NEWNET 在 netd 创建
+  只有 DOWN 回环的实例。root-server 创建控制 channel 并启动 netd。linuxd 不再依赖 smoltcp，deferred 线程
+  不再承担网络工作。
+  P4 写入 ABI 矩阵的语义差异：accept 的子 socket 在 accept 时（Linux 在握手完成时）继承 listener 的超时 policy；
+  INET/PACKET socket 在 epoll 的无等待通知路径中总是作为候选，在任务上下文中经 RPC 精确复查；流式 send 每次
+  至多传递 256 KiB（部分发送）。
 
 ### P4 收尾与整体验证
 

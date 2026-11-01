@@ -49,6 +49,9 @@ pub const BATCH_FORGET: u32 = 42;
 pub const FALLOCATE: u32 = 43;
 pub const READDIRPLUS: u32 = 44;
 pub const RENAME2: u32 = 45;
+/// 持久化整个文件系统（`struct fuse_syncfs_in`：8 字节填充），协议 7.34。
+pub const SYNCFS: u32 = 50;
+pub const SYNCFS_IN_SIZE: usize = 8;
 
 pub const NOTIFY_INVAL_INODE: i32 = 2;
 pub const NOTIFY_INVAL_ENTRY: i32 = 3;

@@ -337,6 +337,11 @@ impl Process {
                 (space, vmar, false, shared.state.clone())
             }
         };
+        DIAG_PROCESSES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        let created = DIAG_CREATED.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        if created % 128 == 0 {
+            warn!("DIAG kernel processes live={} spaces live={} threads={} vmos={} created={}", DIAG_PROCESSES.load(core::sync::atomic::Ordering::Relaxed), crate::vm::address_space::DIAG_SPACES.load(core::sync::atomic::Ordering::Relaxed), crate::thread::DIAG_THREADS.load(core::sync::atomic::Ordering::Relaxed), crate::vm::vmo::DIAG_VMOS.load(core::sync::atomic::Ordering::Relaxed), created);
+        }
         let process = Arc::try_new(Self {
             koid: next_koid(),
             name: Mutex::new(Name::new(name)),
@@ -543,8 +548,11 @@ impl Process {
     }
 }
 
+pub(crate) static DIAG_PROCESSES: core::sync::atomic::AtomicIsize = core::sync::atomic::AtomicIsize::new(0);
+pub(crate) static DIAG_CREATED: core::sync::atomic::AtomicIsize = core::sync::atomic::AtomicIsize::new(0);
 impl Drop for Process {
     fn drop(&mut self) {
+        DIAG_PROCESSES.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
         self.release_handles();
     }
 }

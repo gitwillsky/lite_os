@@ -1,5 +1,4 @@
 use alloc::sync::Arc;
-use core::net::Ipv4Addr;
 
 use crate::ipc::PipeEnd;
 use crate::ipc::ReceiveBuffer;
@@ -25,6 +24,7 @@ pub(crate) use net_namespace::{NetNamespace, initial_net, initialize_net};
 mod credentials;
 pub(crate) use core_buffer_limit::CoreBufferLimit;
 pub(crate) use credentials::{UnixCredentials, UnixSendCredentials};
+mod netd;
 mod packet;
 mod retirement;
 mod rights;
@@ -45,10 +45,15 @@ pub(crate) use unix::{
 };
 
 pub(crate) use inet::{
-    InterfaceSnapshot, Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest,
-    RouteSnapshot, configure_address, configure_broadcast, configure_mtu, configure_netmask,
-    configure_route, configure_up, create_net_namespace, dispatch_network_work, interface_index,
-    interface_snapshot, interface_snapshots, network_snapshot, network_work_due, route_snapshot,
+    configure_address, configure_broadcast, configure_mtu, configure_netmask, configure_route,
+    configure_up, interface_index, interface_snapshot, interface_snapshots, network_snapshot,
+    route_snapshot,
+};
+pub(crate) use netd::init;
+pub(crate) use network_protocol::{
+    InetAddress, InterfaceSnapshot, InternetOption, InternetPacketInfo, InternetSendPacketInfo,
+    Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest, PacketAddress, RouteChange,
+    RouteSnapshot, SocketError, SocketPollState,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,45 +72,12 @@ pub(crate) enum SocketType {
     Raw,
 }
 
-pub(crate) use inet::InternetOption;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct InetAddress {
-    pub(crate) address: Ipv4Addr,
-    pub(crate) port: u16,
-}
-
-/// Linux `sockaddr_ll` 的 domain value，不暴露 userspace padding。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct PacketAddress {
-    pub(crate) protocol: u16,
-    pub(crate) interface_index: i32,
-    pub(crate) hardware_type: u16,
-    pub(crate) packet_type: u8,
-    pub(crate) address_length: u8,
-    pub(crate) address: [u8; 8],
-}
 
 /// Linux `sockaddr_nl` 中与 KOBJECT_UEVENT 有关的语义字段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct NetlinkAddress {
     pub(crate) port_id: u32,
     pub(crate) groups: u32,
-}
-
-/// sendmsg单次IPv4源地址/出口选择；只随请求持有，不改变endpoint binding。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct InternetSendPacketInfo {
-    pub(crate) interface_index: Option<u32>,
-    pub(crate) source_address: Option<core::net::Ipv4Addr>,
-}
-
-/// 接收队列在实际ingress冻结的原生IP_PKTINFO事实；recvmsg只编解码，不重新查路由。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct InternetPacketInfo {
-    pub(crate) interface_index: u32,
-    pub(crate) specific_address: Ipv4Addr,
-    pub(crate) destination: Ipv4Addr,
 }
 
 pub(crate) struct ReceivedMessage {
@@ -129,80 +101,6 @@ pub(crate) enum SocketAddress {
 pub(crate) enum SocketSendDestination {
     Address(SocketAddress),
     UnixPath(UnixPathIdentity),
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum SocketError {
-    Invalid,
-    NoMemory,
-    /// 实际接收队列过载；netlink错误一次消费后保留已排队datagram。
-    NoBuffer,
-    /// Linux AF_UNIX autobind 已搜索全部 2^20 名称且无空位。
-    NoSpace,
-    AddressInUse,
-    AddressNotAvailable,
-    NotConnected,
-    AlreadyConnected,
-    /// active connect 已启动，调用方应进入 writable/error wait。
-    InProgress,
-    /// 同一 endpoint 已有尚未完成的 active connect。
-    AlreadyInProgress,
-    ConnectionRefused,
-    /// established stream 被 peer reset。
-    ConnectionReset,
-    ConnectionAborted,
-    TimedOut,
-    /// Ethernet adapter 在异步协议推进期间报告设备 I/O failure。
-    Device,
-    NetworkUnreachable,
-    HostUnreachable,
-    DestinationRequired,
-    MessageTooLarge,
-    ProtocolNotSupported,
-    OperationNotSupported,
-    Again,
-    BrokenPipe,
-    PermissionDenied,
-    OperationNotPermitted,
-    NoDevice,
-    /// packet send查不到实际出口（ENXIO），与bind的ENODEV不同。
-    DeviceNotAvailable,
-    NetworkDown,
-    WrongType,
-    /// real-UID SCM_RIGHTS inflight 超过 sender RLIMIT_NOFILE。
-    TooManyReferences,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct SocketPollState {
-    pub(crate) readable: bool,
-    pub(crate) writable: bool,
-    pub(crate) hangup: bool,
-    pub(crate) read_closed: bool,
-    pub(crate) error: bool,
-}
-
-impl SocketPollState {
-    /// 已退休 backend observer 的终态；不再访问可能复用的协议 slot。
-    pub(crate) const fn closed() -> Self {
-        Self {
-            readable: true,
-            writable: false,
-            hangup: true,
-            read_closed: true,
-            error: false,
-        }
-    }
-
-    pub(crate) const fn error() -> Self {
-        Self {
-            readable: false,
-            writable: false,
-            hangup: false,
-            read_closed: false,
-            error: true,
-        }
-    }
 }
 
 enum SocketBackend {
@@ -674,21 +572,6 @@ impl Socket {
             }
         }
     }
-}
-
-pub(crate) fn init() {
-    packet::init();
-    inet::init();
-}
-
-/// 请求协议栈尽快处理一轮收发（新数据待发送、连接状态变化）。
-pub(crate) fn request_poll() {
-    crate::deferred::raise(crate::deferred::DeferredWork::NETWORK);
-}
-
-/// 存在网络设备：协议定时器需要 deferred 线程周期轮询。
-pub(crate) fn network_active() -> bool {
-    device_model::network_device(0).is_some()
 }
 
 /// 运行 AF_UNIX cycle collector；worker/deadline reservation 由 composition root 装配。

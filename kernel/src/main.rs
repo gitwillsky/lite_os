@@ -55,12 +55,16 @@ fn kernel_main(context: execution::entry::BootContext) -> ! {
         execution::cpu::count(),
         execution::cpu::boot_id()
     );
-    // 崩溃记录区与 initrd 都必须在 frame allocator 发布前排除：前者跨重启保留，后者在根服务
-    // 复制出 bootfs 之前不得被覆盖。
+    // 崩溃记录区、initrd 与 DTB 都必须在 frame allocator 发布前排除：前者跨重启保留，后两者在根服务
+    // 复制出 bootfs 与 DTB 之前不得被覆盖（固件可能把它们放在内核之后的可分配 RAM 中）。
     let allocator_end = crash::reserve_region(platform::physical_memory_end().into());
+    let device_tree = platform::dtb_range();
     memory::init(
         allocator_end,
-        platform::initrd_range().map(|range| range.start.into()..range.end.into()),
+        [
+            platform::initrd_range().map(|range| range.start.into()..range.end.into()),
+            Some(device_tree.start.into()..device_tree.end.into()),
+        ],
     );
     vm::initialize_kernel_space();
     crash::recover();

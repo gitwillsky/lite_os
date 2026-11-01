@@ -46,11 +46,8 @@ fn entry(object: Object, rights: u32) -> HandleEntry {
 pub(crate) fn start_root_server(command_line: &[u8]) {
     let initrd = crate::platform::initrd_range().expect("boot requires an initrd carrying the bootfs");
     let bootfs = copy_physical(initrd.clone());
-    crate::memory::frame_allocator::release_reserved(
-        crate::memory::PhysicalAddress::from(initrd.start)..crate::memory::PhysicalAddress::from(initrd.end),
-    );
-    let device_tree_range = crate::platform::dtb_range();
-    let device_tree = copy_physical(device_tree_range);
+    let device_tree = copy_physical(crate::platform::dtb_range());
+    crate::memory::frame_allocator::release_boot_reserved();
 
     let mut image = Vec::new();
     image

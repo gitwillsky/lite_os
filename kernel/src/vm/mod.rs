@@ -13,14 +13,14 @@
 //! 撤销翻译后，被摘下的页框与映射对象保活到 TLB fence 完成之后才释放，
 //! 否则其他 CPU 的旧翻译可能访问已被复用的物理页。
 
-mod address_space;
+pub(crate) mod address_space;
 mod device_space;
 mod fault;
 mod kernel_space;
 pub(crate) mod kernel_stack;
 pub(crate) mod page_table;
 pub(crate) mod translation;
-mod vmo;
+pub(crate) mod vmo;
 
 pub(crate) use address_space::{AddressSpace, Placement, Vmar};
 pub(crate) use device_space::DeviceAddressSpace;
