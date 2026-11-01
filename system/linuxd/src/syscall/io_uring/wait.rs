@@ -296,6 +296,7 @@ impl Waiter {
         let mut state = self.0.state.lock();
         state.running = None;
         state.lane = None;
+        state.interest = Interest::None;
     }
 
     /// 正在等待的成员是一个车道作业：之后的取消要先问它是否还能取消。

@@ -389,4 +389,6 @@ fn automatic_names_are_reusable_in_distinct_network_domains_without_a_second_reg
     namespace::remove_closed(&b.binding.unwrap());
 }
 
-mod sync { pub(crate) use spin::{Mutex, Once}; }
+mod sync {
+    pub(crate) use spin::{Mutex, Once};
+}

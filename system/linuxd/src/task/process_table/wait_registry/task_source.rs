@@ -1,46 +1,6 @@
 use super::*;
 
 impl WaitRegistry {
-    /// signalfd 的原生 sighand wait queue 唤醒全部直接 poll/read wait；不过滤 blocked mask。
-    /// epoll 的 wake-one/exclusive 由持久 source index 和 epoll notification 自己处理。
-    pub(in crate::task::process_table) fn wake_signal_source_one(
-        &self,
-        identity: usize,
-    ) -> Option<SourceWake> {
-        let lower = WaitIndexKey::SignalSource { identity, id: 0 };
-        let mut cursor = None;
-        loop {
-            let (index, registration) = self.source_candidate(lower, cursor)?;
-            let WaitIndexKey::SignalSource {
-                identity: candidate,
-                ..
-            } = index
-            else {
-                return None;
-            };
-            if candidate != identity {
-                return None;
-            }
-            cursor = Some(index);
-            assert!(matches!(*registration.kind.lock(), IndexedWaitKind::Poll));
-            match self.notify(&registration, WaitResult::Woken) {
-                NotifyOutcome::BeforeArm => {
-                    return Some(SourceWake {
-                        claimed: None,
-                        group: None,
-                    });
-                }
-                NotifyOutcome::Armed(claimed) => {
-                    return Some(SourceWake {
-                        claimed: Some(claimed),
-                        group: None,
-                    });
-                }
-                NotifyOutcome::Stale => {}
-            }
-        }
-    }
-
     pub(in crate::task::process_table) fn wake_task_event(
         &self,
         key: crate::sync::TaskWaitKey,

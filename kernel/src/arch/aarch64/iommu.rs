@@ -24,6 +24,9 @@ const IDR0: usize = 0x00;
 const IDR1: usize = 0x04;
 const IDR5: usize = 0x14;
 const CR0: usize = 0x20;
+const GBPA: usize = 0x44;
+const GBPA_UPDATE: u32 = 1 << 31;
+const GBPA_ABORT: u32 = 1 << 20;
 const CR0ACK: usize = 0x24;
 const CR1: usize = 0x28;
 const CR2: usize = 0x2c;
@@ -81,7 +84,9 @@ fn write_words(page: usize, offset: usize, words: &[u64]) {
 
 impl<F: DmaFrame> Backend<F> {
     pub(crate) fn create(kind: u32, virtual_base: usize, size: usize) -> Result<Self, Status> {
-        if kind != native_abi::iommu::ARM_SMMU_V3 { return Err(native_abi::ERR_NOT_SUPPORTED); }
+        if kind != native_abi::iommu::ARM_SMMU_V3 {
+            return Err(native_abi::ERR_NOT_SUPPORTED);
+        }
         let registers =
             MmioBus::new(virtual_base, size).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
         let read = |offset| {
@@ -99,18 +104,13 @@ impl<F: DmaFrame> Backend<F> {
         let command_log2 = ((idr1 >> 21) & 0x1f).min(COMMAND_LOG2);
         let output_size = u64::from(read(IDR5)? & 0x7);
 
-        // 关闭后再配置，等待 CR0ACK 确认。
-        registers
-            .write_u32(CR0, 0)
-            .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-        poll(|| read(CR0ACK).is_ok_and(|ack| ack == 0))?;
+        // 配置期间拒绝未翻译事务，关闭并确认后才发布 owned 表。
+        disable(registers)?;
 
         let stream_pages = ((1usize << stream_bits) * STE_BYTES).div_ceil(PAGE_SIZE);
-        let stream_table = F::allocate_zeroed(stream_pages)
-            .ok_or(native_abi::ERR_NO_MEMORY)?;
+        let stream_table = F::allocate_zeroed(stream_pages).ok_or(native_abi::ERR_NO_MEMORY)?;
         let queue_pages = ((1usize << command_log2) * 16).div_ceil(PAGE_SIZE);
-        let queue_frames = F::allocate_zeroed(queue_pages)
-            .ok_or(native_abi::ERR_NO_MEMORY)?;
+        let queue_frames = F::allocate_zeroed(queue_pages).ok_or(native_abi::ERR_NO_MEMORY)?;
         let stream_address = (stream_table.physical_page() * PAGE_SIZE) as u64;
         let queue_address = (queue_frames.physical_page() * PAGE_SIZE) as u64;
 
@@ -134,10 +134,6 @@ impl<F: DmaFrame> Backend<F> {
         )?;
         write32(CMDQ_PROD, 0)?;
         write32(CMDQ_CONS, 0)?;
-        mmio::before_write();
-        write32(CR0, CR0_CMDQEN)?;
-        poll(|| read(CR0ACK).is_ok_and(|ack| ack == CR0_CMDQEN))?;
-
         let smmu = Self {
             registers,
             stream_bits,
@@ -150,6 +146,10 @@ impl<F: DmaFrame> Backend<F> {
                 producer: 0,
             }),
         };
+        mmio::before_write();
+        write32(CR0, CR0_CMDQEN)?;
+        poll(|| read(CR0ACK).is_ok_and(|ack| ack == CR0_CMDQEN))?;
+
         smmu.submit(&[[CMD_CFGI_ALL, 31], [CMD_TLBI_NSNH_ALL, 0]])?;
         write32(CR0, CR0_CMDQEN | CR0_SMMUEN)?;
         poll(|| read(CR0ACK).is_ok_and(|ack| ack == CR0_CMDQEN | CR0_SMMUEN))?;
@@ -195,14 +195,46 @@ fn poll(mut done: impl FnMut() -> bool) -> Result<(), Status> {
     Err(native_abi::ERR_TIMED_OUT)
 }
 
+fn disable(registers: MmioBus) -> Result<(), Status> {
+    poll(|| {
+        registers
+            .read_u32(GBPA)
+            .is_ok_and(|value| value & GBPA_UPDATE == 0)
+    })?;
+    let attributes = registers
+        .read_u32(GBPA)
+        .map_err(|_| native_abi::ERR_INTERNAL)?;
+    registers
+        .write_u32(GBPA, attributes | GBPA_ABORT | GBPA_UPDATE)
+        .map_err(|_| native_abi::ERR_INTERNAL)?;
+    poll(|| {
+        registers
+            .read_u32(GBPA)
+            .is_ok_and(|value| value & GBPA_UPDATE == 0 && value & GBPA_ABORT != 0)
+    })?;
+    registers
+        .write_u32(CR0, 0)
+        .map_err(|_| native_abi::ERR_INTERNAL)?;
+    poll(|| registers.read_u32(CR0ACK).is_ok_and(|value| value == 0))
+}
+
+impl<F> Drop for Backend<F> {
+    fn drop(&mut self) {
+        // 先封闭 disabled bypass，再关闭表遍历和命令队列；确认后字段才可释放 DMA 表页。
+        disable(self.registers).unwrap_or_else(|status| panic!("SMMUv3 shutdown failed: {status}"));
+    }
+}
+
 impl<F: DmaFrame> Translation for Backend<F> {
     fn attach(&self, stream: u32, domain: u16, root: usize) -> Result<(), Status> {
         if stream >= 1 << self.stream_bits {
             return Err(native_abi::ERR_OUT_OF_RANGE);
         }
-        let context = F::allocate_zeroed(1)
-            .ok_or(native_abi::ERR_NO_MEMORY)?;
+        let context = F::allocate_zeroed(1).ok_or(native_abi::ERR_NO_MEMORY)?;
         let context_address = (context.physical_page() * PAGE_SIZE) as u64;
+        let prepared = fallible_tree::FallibleMap::try_prepare(stream, context)
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        let context = prepared.value();
         let t0sz = 64 - crate::arch::mmu::TRANSLATION_BITS as u64;
         let cd0 = t0sz
             | (1 << 8) // IR0 WBWA
@@ -241,14 +273,18 @@ impl<F: DmaFrame> Translation for Backend<F> {
             | (1 << 44); // SHCFG：使用设备给出的共享属性
         let offset = stream as usize * STE_BYTES;
         // 先写其余字，最后置 V，硬件不会看到半个 STE。
-        write_words(self.stream_table.physical_page(), offset + 8, &[ste1, 0, 0, 0, 0, 0, 0]);
+        write_words(
+            self.stream_table.physical_page(),
+            offset + 8,
+            &[ste1, 0, 0, 0, 0, 0, 0],
+        );
         mmio::before_write();
         write_words(self.stream_table.physical_page(), offset, &[ste0]);
-        self.contexts
-            .lock()
-            .try_insert(stream, context)
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        self.contexts.lock().commit_vacant(prepared);
+        // STE.V 已公布：失效失败不能返回并让 caller 释放根表。
         self.submit(&[[CMD_CFGI_STE | (u64::from(stream) << 32), 1]])
+            .unwrap_or_else(|status| panic!("SMMUv3 stream publication failed: {status}"));
+        Ok(())
     }
 
     fn invalidate(&self, domain: u16, first_page: usize, pages: usize) {

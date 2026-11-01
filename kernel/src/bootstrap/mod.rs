@@ -87,7 +87,12 @@ pub(crate) fn start_root_server(command_line: &[u8]) {
             &stack,
             0,
             STACK_SIZE,
-            MapOptions { placement: Placement::Any, permissions: PagePermissions::READ | PagePermissions::WRITE, ceiling: PagePermissions::READ | PagePermissions::WRITE, allow_faults: false },
+            MapOptions {
+                placement: Placement::Any,
+                permissions: PagePermissions::READ | PagePermissions::WRITE,
+                ceiling: PagePermissions::READ | PagePermissions::WRITE,
+                allow_faults: false,
+            },
         )
         .expect("root stack mapping failed");
 

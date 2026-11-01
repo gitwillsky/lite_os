@@ -170,6 +170,14 @@ fn start_linuxd(
     let runtime_vmar: Vmar = shared_vmar
         .duplicate(rights::SAME)
         .expect("linuxd vmar duplicate");
+    // linuxd 只需要系统操作，不交付设备 MMIO/IRQ/IOMMU 的根 authority。
+    let system_resource = Resource::create(
+        resource,
+        native_abi::resource::SYSTEM,
+        native_abi::resource::system::DEBUGLOG,
+        native_abi::resource::system::COUNT,
+    )
+    .expect("linuxd system resource");
     native_runtime::launch::launch(native_runtime::launch::Launch {
         process: &process,
         image_vmar: &shared_vmar,
@@ -182,10 +190,7 @@ fn start_linuxd(
             job.duplicate(rights::SAME)
                 .expect("job duplicate")
                 .into_handle(),
-            resource
-                .duplicate(rights::SAME)
-                .expect("resource duplicate")
-                .into_handle(),
+            system_resource.into_handle(),
             directory.into_handle(),
             ext4.into_handle(),
             network.into_handle(),

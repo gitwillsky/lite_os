@@ -289,7 +289,6 @@ def main() -> int:
         stamp = ROOT / f"target/verify-gates/musl-{TARGET.arch}.json"
         runtime_inputs = [
             ROOT / f"target/{TARGET.kernel_triple}/release/kernel",
-            ROOT / f"target/{TARGET.kernel_triple}/release/bootfs.cpio",
             binary,
             binary.parent / "fs-root-dynamic",
             binary.parent / "libc.so",
@@ -321,6 +320,7 @@ def main() -> int:
                 (
                     *cpu_topology_markers(cpu_count),
                     "LiteOS musl mmap placement ok",
+                    "LiteOS musl restricted service memory isolation ok",
                     "LiteOS musl RAW255 header ownership and send only delivery ok",
                     "LiteOS musl ASID ok",
                     "LiteOS musl raw thread credentials and NPROC ok",
@@ -338,10 +338,9 @@ def main() -> int:
                     "LiteOS musl consumer exit=0",
                 ),
                 forbidden_markers=("LiteOS musl consumer failed", "LiteOS musl ASID failed", "LiteOS musl mmap placement failed", " fail step="),
-                # 65536 次真实进程根切换仍完整执行。共享成员的映射退休会等待同步 fence，
-                # 微内核路径已测得 15 分钟内持续推进但不足一个完整硬件 generation；
-                # 此功能测试用 50 分钟硬上限，60 秒无进度看门狗保持原值。
-                timeout_seconds=100,
+                # 保留完整硬件 generation；稀疏 VMAR 退休与通知边界修复后恢复原 15 分钟硬上限。
+                # 无串口进展看门狗仍为 60 秒，不以放宽超时掩盖停顿。
+                timeout_seconds=30,
             )
         publish_runtime_gate(stamp, payload)
     except (RuntimeError, subprocess.CalledProcessError) as error:

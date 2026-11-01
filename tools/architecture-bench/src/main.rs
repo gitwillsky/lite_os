@@ -382,15 +382,11 @@ fn main() {
     });
 }
 
-
-    #[allow(dead_code, unused_imports)]
-    #[path = "../../kernel-unit/src/sync.rs"]
-    pub(crate) mod sync;
-    pub(crate) mod task {
-        pub(crate) fn current_task() -> Option<alloc::sync::Arc<crate::TaskControlBlock>> {
-            None
-        }
+#[allow(dead_code, unused_imports)]
+#[path = "../../kernel-unit/src/sync.rs"]
+pub(crate) mod sync;
+pub(crate) mod task {
+    pub(crate) fn current_task() -> Option<alloc::sync::Arc<crate::TaskControlBlock>> {
+        None
     }
-
-
-
+}

@@ -50,7 +50,7 @@ impl DeviceAddressSpace {
         first: usize,
         pages: &[PhysicalPageNumber],
         writable: bool,
-    ) -> Result<(), ()> {
+    ) -> Result<(), Retired> {
         let mut permissions = PagePermissions::READ | PagePermissions::USER;
         if writable {
             permissions |= PagePermissions::WRITE;
@@ -72,9 +72,8 @@ impl DeviceAddressSpace {
                         .table
                         .unmap(VirtualPageNumber::from_vpn(first + mapped), &mut commit);
                 }
-                // 这些翻译从未交给设备使用。
-                commit.finish_unpublished();
-                return Err(());
+                // 页表已绑定设备；caller 完成设备侧失效前不能释放已摘下的表页。
+                return Err(Retired(commit));
             }
         }
         commit.finish_unpublished();

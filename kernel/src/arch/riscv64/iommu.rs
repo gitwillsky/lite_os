@@ -82,7 +82,9 @@ fn poll(mut done: impl FnMut() -> bool) -> Result<(), Status> {
 
 impl<F: DmaFrame> Backend<F> {
     pub(crate) fn create(kind: u32, virtual_base: usize, size: usize) -> Result<Self, Status> {
-        if kind != native_abi::iommu::RISCV { return Err(native_abi::ERR_NOT_SUPPORTED); }
+        if kind != native_abi::iommu::RISCV {
+            return Err(native_abi::ERR_NOT_SUPPORTED);
+        }
         let registers =
             MmioBus::new(virtual_base, size).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
         let capabilities = registers
@@ -91,14 +93,26 @@ impl<F: DmaFrame> Backend<F> {
         if capabilities & CAPABILITY_SV39 == 0 {
             return Err(native_abi::ERR_NOT_SUPPORTED);
         }
-        let root = F::allocate_zeroed(1)
-            .ok_or(native_abi::ERR_NO_MEMORY)?;
+        disable(registers)?;
+        let root = F::allocate_zeroed(1).ok_or(native_abi::ERR_NO_MEMORY)?;
         let queue_pages = ((1usize << COMMAND_LOG2) * 16).div_ceil(PAGE_SIZE);
-        let queue = F::allocate_zeroed(queue_pages)
-            .ok_or(native_abi::ERR_NO_MEMORY)?;
+        let queue = F::allocate_zeroed(queue_pages).ok_or(native_abi::ERR_NO_MEMORY)?;
+        let root_page = root.physical_page();
+        let queue_page = queue.physical_page();
+        let backend = Self {
+            registers,
+            extended: capabilities & CAPABILITY_MSI_FLAT != 0,
+            root,
+            leaves: Mutex::new(FallibleMap::new()),
+            queue: Mutex::new(CommandQueue {
+                frames: queue,
+                tail: 0,
+            }),
+        };
+
         let error = |_| native_abi::ERR_INVALID_ARGS;
         registers
-            .write_u64(CQB, ppn_field(queue.physical_page()) | u64::from(COMMAND_LOG2 - 1))
+            .write_u64(CQB, ppn_field(queue_page) | u64::from(COMMAND_LOG2 - 1))
             .map_err(error)?;
         registers.write_u32(CQT, 0).map_err(error)?;
         registers.write_u32(CQCSR, CQCSR_CQEN).map_err(error)?;
@@ -109,23 +123,14 @@ impl<F: DmaFrame> Backend<F> {
         })?;
         mmio::before_write();
         registers
-            .write_u64(DDTP, ppn_field(root.physical_page()) | DDTP_MODE_2LVL)
+            .write_u64(DDTP, ppn_field(root_page) | DDTP_MODE_2LVL)
             .map_err(error)?;
         poll(|| {
             registers
                 .read_u64(DDTP)
                 .is_ok_and(|ddtp| ddtp & DDTP_BUSY == 0)
         })?;
-        Ok(Self {
-            registers,
-            extended: capabilities & CAPABILITY_MSI_FLAT != 0,
-            root,
-            leaves: Mutex::new(FallibleMap::new()),
-            queue: Mutex::new(CommandQueue {
-                frames: queue,
-                tail: 0,
-            }),
-        })
+        Ok(backend)
     }
 
     /// 写入命令并以 `IOFENCE.C` 等待全部完成。
@@ -141,7 +146,11 @@ impl<F: DmaFrame> Backend<F> {
                     .read_u32(CQH)
                     .is_ok_and(|head| (queue.tail + 1) & mask != head & mask)
             })?;
-            write_words(queue.frames.physical_page(), (queue.tail & mask) as usize * 16, command);
+            write_words(
+                queue.frames.physical_page(),
+                (queue.tail & mask) as usize * 16,
+                command,
+            );
             queue.tail = (queue.tail + 1) & mask;
         }
         mmio::before_write();
@@ -168,15 +177,48 @@ impl<F: DmaFrame> Backend<F> {
         if let Some(leaf) = leaves.get(&root_index) {
             return Ok((leaf.physical_page(), offset));
         }
-        let leaf = F::allocate_zeroed(1)
-            .ok_or(native_abi::ERR_NO_MEMORY)?;
+        let leaf = F::allocate_zeroed(1).ok_or(native_abi::ERR_NO_MEMORY)?;
         let page = leaf.physical_page();
         leaves
             .try_insert(root_index, leaf)
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         mmio::before_write();
-        write_words(self.root.physical_page(), root_index * 8, &[ppn_field(page) | 1]);
+        write_words(
+            self.root.physical_page(),
+            root_index * 8,
+            &[ppn_field(page) | 1],
+        );
         Ok((page, offset))
+    }
+}
+
+fn disable(registers: MmioBus) -> Result<(), Status> {
+    let error = |_| native_abi::ERR_INTERNAL;
+    poll(|| {
+        registers
+            .read_u64(DDTP)
+            .is_ok_and(|value| value & DDTP_BUSY == 0)
+    })?;
+    // Off（0）拒绝事务，不能用会绕过翻译的 Bare（1）代替。
+    registers.write_u64(DDTP, 0).map_err(error)?;
+    poll(|| {
+        registers
+            .read_u64(DDTP)
+            .is_ok_and(|value| value & (DDTP_BUSY | 0xf) == 0)
+    })?;
+    registers.write_u32(CQCSR, 0).map_err(error)?;
+    poll(|| {
+        registers
+            .read_u32(CQCSR)
+            .is_ok_and(|value| value & CQCSR_CQON == 0)
+    })
+}
+
+impl<F> Drop for Backend<F> {
+    fn drop(&mut self) {
+        // DDTP Off 与 CQON 清除确认之前，root/leaf/queue 字段必须保持存活。
+        disable(self.registers)
+            .unwrap_or_else(|status| panic!("RISC-V IOMMU shutdown failed: {status}"));
     }
 }
 
@@ -191,6 +233,8 @@ impl<F: DmaFrame> Translation for Backend<F> {
         write_words(leaf, offset, &[1]);
         let invalidate_directory = OPCODE_IODIR | (1 << 33) | (u64::from(stream) << 40);
         self.submit(&[[invalidate_directory, 0]])
+            .unwrap_or_else(|status| panic!("RISC-V IOMMU stream publication failed: {status}"));
+        Ok(())
     }
 
     fn invalidate(&self, domain: u16, first_page: usize, pages: usize) {

@@ -46,12 +46,26 @@ impl<'ast> Visit<'ast> for DisplayCompletionLogVisitor {
     }
 }
 
+fn test_only(attributes: &[syn::Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        attribute.path().is_ident("cfg")
+            && attribute
+                .parse_args::<syn::Ident>()
+                .is_ok_and(|name| name == "test")
+    })
+}
+
 impl<'ast> Visit<'ast> for PatternVisitor {
+    fn visit_file(&mut self, file: &'ast syn::File) {
+        let previous = self.test_context;
+        self.test_context |= test_only(&file.attrs);
+        syn::visit::visit_file(self, file);
+        self.test_context = previous;
+    }
+
     fn visit_item_mod(&mut self, module: &'ast syn::ItemMod) {
         let previous = self.test_context;
-        self.test_context |= module.attrs.iter().any(|attribute| {
-            attribute.path().is_ident("cfg") && attribute.parse_args::<syn::Ident>().is_ok_and(|name| name == "test")
-        });
+        self.test_context |= test_only(&module.attrs);
         syn::visit::visit_item_mod(self, module);
         self.test_context = previous;
     }
@@ -333,5 +347,13 @@ mod range_tests {
         visitor.visit_file(&syntax);
         assert_eq!(visitor.dense_eight_ranges.len(), 1);
     }
-
+    #[test]
+    fn separate_test_file_retains_safety_checks_without_cpu_shape_false_positives() {
+        let syntax = syn::parse_file("#![cfg(test)] fn siblings() { for n in 0..8 {} unimplemented!(); } static mut UNSAFE: usize = 0;").unwrap();
+        let mut visitor = PatternVisitor::default();
+        visitor.visit_file(&syntax);
+        assert!(visitor.dense_eight_ranges.is_empty());
+        assert_eq!(visitor.unfinished.len(), 1);
+        assert_eq!(visitor.static_mut.len(), 1);
+    }
 }

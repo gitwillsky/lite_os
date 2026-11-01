@@ -7,15 +7,21 @@ thread_local! {
     static STACK: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
 }
 
-mod memory { pub(crate) const KERNEL_STACK_SIZE: usize = 128 * 1024; }
+mod memory {
+    pub(crate) const KERNEL_STACK_SIZE: usize = 128 * 1024;
+}
 mod vm {
     pub(crate) mod kernel_stack {
-        pub(crate) fn kernel_stack_bounds(_: usize) -> Option<(usize, usize)> { Some(crate::STACK.get()) }
+        pub(crate) fn kernel_stack_bounds(_: usize) -> Option<(usize, usize)> {
+            Some(crate::STACK.get())
+        }
     }
 }
 mod arch {
     pub(crate) mod backtrace {
-        pub(crate) fn stack_pointer() -> usize { crate::STACK.get().0 }
+        pub(crate) fn stack_pointer() -> usize {
+            crate::STACK.get().0
+        }
         pub(crate) unsafe fn read_frame(frame: usize) -> (usize, usize) {
             let record = frame as *const usize;
             // SAFETY: the production walker checks that both words lie in the owned arena.

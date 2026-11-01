@@ -32,31 +32,33 @@ pub(super) struct VirtioPciFunction {
     pub(super) bti: &'static native_runtime::Bti,
 }
 
-pub(super) fn find_console() -> Option<VirtioPciFunction> {
-    for function in crate::drivers::pci::functions() {
-        let config = &function.config;
-        if config.read_u16(VENDOR_ID).ok()? != PCI_VENDOR_VIRTIO {
-            continue;
-        }
-        let pci_device = config.read_u16(DEVICE_ID).ok()?;
-        let device_id = if (0x1040..=0x107f).contains(&pci_device) {
-            u32::from(pci_device - 0x1040)
-        } else if (0x1000..=0x103f).contains(&pci_device) {
-            u32::from(config.read_u16(SUBSYSTEM_DEVICE_ID).ok()?)
-        } else {
-            continue;
-        };
-        if device_id != 3 {
-            continue;
-        }
-        return Some(VirtioPciFunction {
-            device_id,
-            interrupt: function.interrupt?,
-            transport: capabilities(config, &function.bars)?,
-            bti: function.bti,
-        });
-    }
-    None
+/// 按标准 device type 借用 PCI inventory，校验 capability 后逐个返回；不复制 inventory。
+pub(super) fn devices(wanted: u32) -> impl Iterator<Item = VirtioPciFunction> {
+    crate::drivers::pci::functions()
+        .iter()
+        .filter_map(move |function| {
+            let config = &function.config;
+            if config.read_u16(VENDOR_ID).ok()? != PCI_VENDOR_VIRTIO {
+                return None;
+            }
+            let pci_device = config.read_u16(DEVICE_ID).ok()?;
+            let device_id = if (0x1040..=0x107f).contains(&pci_device) {
+                u32::from(pci_device - 0x1040)
+            } else if (0x1000..=0x103f).contains(&pci_device) {
+                u32::from(config.read_u16(SUBSYSTEM_DEVICE_ID).ok()?)
+            } else {
+                return None;
+            };
+            if device_id != wanted {
+                return None;
+            }
+            Some(VirtioPciFunction {
+                device_id,
+                interrupt: function.interrupt?,
+                transport: capabilities(config, &function.bars)?,
+                bti: function.bti,
+            })
+        })
 }
 
 fn capabilities(config: &MmioBus, bars: &[Option<Bar>; 6]) -> Option<PciTransport> {

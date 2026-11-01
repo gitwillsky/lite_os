@@ -161,7 +161,7 @@ impl BoundState {
     ///
     /// # Errors
     ///
-    /// `ERR_BAD_STATE`（未绑定）、`ERR_INVALID_ARGS`（寄存器非法）。
+    /// `ERR_BAD_STATE`（未绑定或调用线程不属于共享进程成员）、`ERR_INVALID_ARGS`（寄存器非法）。
     pub fn enter(&mut self) -> Result<Exit, Status> {
         // SAFETY: 汇编遵守 C ABI：callee-saved 寄存器与栈在返回时恢复。
         let result = unsafe { native_restricted_enter() };

@@ -16,8 +16,14 @@ fn before(source: &str, first: &str, second: &str) -> bool {
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let memory = normalized(source(sources, "system/linuxd/src/net/control_memory.rs"));
     let network = normalized(source(sources, "system/linuxd/src/net/net_namespace.rs"));
-    let import = normalized(source(sources, "system/linuxd/src/syscall/socket/control_list.rs"));
-    let message = normalized(source(sources, "system/linuxd/src/syscall/socket/message.rs"));
+    let import = normalized(source(
+        sources,
+        "system/linuxd/src/syscall/socket/control_list.rs",
+    ));
+    let message = normalized(source(
+        sources,
+        "system/linuxd/src/syscall/socket/message.rs",
+    ));
     let send = message
         .split("pub(crate)fnsys_sendmsg(")
         .nth(1)
@@ -55,7 +61,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     let prepare = normalized(source(sources, "system/linuxd/src/net/preparation.rs"));
     let abi = normalized(source(sources, "system/linuxd/src/syscall/socket.rs"));
-    let proc = normalized(source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs"));
+    let proc = normalized(source(
+        sources,
+        "system/linuxd/src/fs/procfs/opened_operations.rs",
+    ));
     if !prepare.contains("letmemory=super::SocketMemory::try_new(namespace)?")
         || !prepare.contains("memory:self.memory")
         || !abi.contains("task.net_namespace()")

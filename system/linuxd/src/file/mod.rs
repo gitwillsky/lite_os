@@ -296,6 +296,19 @@ impl OpenFileDescription {
         self.position.with(operation)
     }
 
+    /// 不等待地取得本次完整 I/O 的 position owner。
+    ///
+    /// # Parameters
+    ///
+    /// - `operation`: 持有共享 position 时执行一次的操作；争用时不调用。
+    ///
+    /// # Returns
+    ///
+    /// 操作结果，或未取得 position 的 None。
+    pub(crate) fn try_with_position<R>(&self, operation: impl FnOnce(&mut u64) -> R) -> Option<R> {
+        self.position.try_with(operation)
+    }
+
     /// 返回该 OFD 共享 position 的瞬时快照，不推进 position。
     ///
     /// # Returns

@@ -346,11 +346,70 @@ static int traced_worker_exec_promotes_identity(void)
     return 0;
 }
 
+/* 1. tracer 抑制唤醒 sigsuspend 的信号并重定向 PC；2. 无 handler 返回必须撤销临时 mask；
+ * 3. 下一次 sigsuspend 的 handler 使用临时 mask，sigreturn 才恢复原 mask。 */
+static int suspend_ready;
+static uint64_t suspend_original, suspend_temporary;
+static volatile sig_atomic_t suspend_handler_mask;
+static void suspended_signal(int signal)
+{
+    uint64_t current = 0;
+    if (signal == SIGUSR2 && syscall(SYS_rt_sigprocmask, SIG_SETMASK, 0, &current, 8) == 0)
+        suspend_handler_mask = current == (suspend_temporary | (UINT64_C(1) << (SIGUSR2 - 1)));
+}
+__attribute__((noreturn)) static void suspend_after_suppression(void)
+{
+    uint64_t current = 0;
+    if (syscall(SYS_rt_sigprocmask, SIG_SETMASK, 0, &current, 8) || current != suspend_original)
+        _exit(81);
+    if (write(suspend_ready, "R", 1) != 1) _exit(82);
+    if (syscall(SYS_rt_sigsuspend, &suspend_temporary, 8) != -1 || errno != EINTR
+        || !suspend_handler_mask) _exit(83);
+    if (syscall(SYS_rt_sigprocmask, SIG_SETMASK, 0, &current, 8) || current != suspend_original)
+        _exit(84);
+    _exit(0);
+}
+static int suppressed_suspend_mask(void)
+{
+    int ready[2]; CHECK(pipe(ready) == 0);
+    pid_t child = fork(); CHECK(child >= 0);
+    if (!child) {
+        close(ready[0]); suspend_ready = ready[1];
+        struct sigaction action = { .sa_handler = suspended_signal };
+        suspend_original = (UINT64_C(1) << (SIGUSR1 - 1)) | (UINT64_C(1) << (SIGUSR2 - 1))
+            | (UINT64_C(1) << (SIGTERM - 1));
+        suspend_temporary = UINT64_C(1) << (SIGTERM - 1);
+        if (sigaction(SIGUSR1, &action, 0) || sigaction(SIGUSR2, &action, 0)
+            || syscall(SYS_rt_sigprocmask, SIG_SETMASK, &suspend_original, 0, 8)
+            || ptrace(PTRACE_TRACEME, 0, 0, 0)) _exit(80);
+        raise(SIGSTOP);
+        syscall(SYS_rt_sigsuspend, &suspend_temporary, 8);
+        _exit(85);
+    }
+    close(ready[1]); int status;
+    CHECK(waitpid(child, &status, 0) == child && WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP);
+    CHECK(kill(child, SIGUSR1) == 0 && ptrace(PTRACE_CONT, child, 0, 0) == 0);
+    CHECK(waitpid(child, &status, 0) == child && WIFSTOPPED(status) && WSTOPSIG(status) == SIGUSR1);
+    unsigned long registers[34]; struct iovec iov = {registers, sizeof registers};
+    CHECK(ptrace(PTRACE_GETREGSET, child, (void *)1, &iov) == 0);
+#if defined(__aarch64__)
+    registers[32] = (uintptr_t)suspend_after_suppression;
+#else
+    registers[0] = (uintptr_t)suspend_after_suppression;
+#endif
+    CHECK(ptrace(PTRACE_SETREGSET, child, (void *)1, &iov) == 0);
+    CHECK(ptrace(PTRACE_DETACH, child, 0, 0) == 0);
+    char byte; CHECK(read(ready[0], &byte, 1) == 1 && byte == 'R'); close(ready[0]);
+    CHECK(kill(child, SIGUSR2) == 0);
+    CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+    return 0;
+}
+
 int verify_ptrace(void)
 {
     int result;
 #define RUN(test) do { printf("ptrace %s\n", #test); if ((result = test())) return result; } while (0)
-    RUN(redirect_blocked_syscall); RUN(trace_me); RUN(blocked_signal_info); RUN(attach_exit); RUN(trace_exec);
+    RUN(suppressed_suspend_mask); RUN(redirect_blocked_syscall); RUN(trace_me); RUN(blocked_signal_info); RUN(attach_exit); RUN(trace_exec);
     RUN(external_tracer); RUN(tracer_exit); RUN(credential_denial); RUN(thread_attach); RUN(concurrent_tracer_exit); RUN(traced_worker_exec_promotes_identity);
 #undef RUN
     return 0;

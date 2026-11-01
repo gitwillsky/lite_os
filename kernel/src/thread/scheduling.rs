@@ -304,6 +304,16 @@ impl Policy {
         self.total_runtime_us
     }
 
+    /// 限制睡眠后可保留的虚拟时间优势，不把未运行的睡眠记为 CPU 使用。
+    ///
+    /// # Parameters
+    /// - `floor`: 目标 CPU 已发布、单调前进的 Q10 微秒下限。
+    /// - `credit_us`: 默认权重归一化的最大睡眠额度（微秒）；较早的历史优势在这里截断。
+    pub(super) fn place_waking(&mut self, floor: u64, credit_us: u64) {
+        let credit = credit_us.saturating_mul(1 << VRUNTIME_FRACTION_BITS);
+        self.vruntime = self.vruntime.max(floor.saturating_sub(credit));
+    }
+
     /// 开始一个 active slice。
     pub(crate) fn begin(&mut self, now_us: u64) {
         let encoded = now_us

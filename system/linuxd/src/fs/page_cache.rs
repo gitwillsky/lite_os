@@ -24,7 +24,8 @@ use super::memory_file::{MemoryFile, MemoryWrite};
 use super::{AccessIdentity, DataBacking, FileSystemError, Inode, InodeType};
 
 mod direct_write;
-mod pager;
+mod fill;
+use super::pager;
 mod registry;
 mod regular_file;
 mod regular_write;
@@ -146,10 +147,11 @@ impl CachedFile {
     fn drop_range(&self, offset: u64, length: u64) -> Result<(), FileSystemError> {
         let first = offset & !(PAGE_SIZE as u64 - 1);
         let size = self.object.size().map_err(|_| FileSystemError::IoError)?;
+        // 全文件失效用 u64::MAX 长度；先裁剪到 page-aligned VMO 大小，避免向上取整溢出成 0。
         let end = offset
             .saturating_add(length)
-            .next_multiple_of(PAGE_SIZE as u64)
-            .min(size);
+            .min(size)
+            .next_multiple_of(PAGE_SIZE as u64);
         if first >= end {
             return Ok(());
         }

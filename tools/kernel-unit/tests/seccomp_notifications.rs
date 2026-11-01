@@ -776,14 +776,10 @@ fn receive_projects_actual_tid_in_each_receivers_namespace_after_listener_transf
     }
 }
 
-
-    #[path = "../src/sync.rs"]
-    pub(crate) mod sync;
-    pub(crate) mod task {
-        pub(crate) fn current_task() -> Option<alloc::sync::Arc<crate::TaskControlBlock>> {
-            crate::CURRENT.with_borrow(Clone::clone)
-        }
+#[path = "../src/sync.rs"]
+pub(crate) mod sync;
+pub(crate) mod task {
+    pub(crate) fn current_task() -> Option<alloc::sync::Arc<crate::TaskControlBlock>> {
+        crate::CURRENT.with_borrow(Clone::clone)
     }
-
-
-
+}

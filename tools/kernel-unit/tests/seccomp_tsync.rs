@@ -546,22 +546,18 @@ fn facade_strict_installation_uses_the_same_owner() {
     assert!(matches!(ProcessState::Exited(()), ProcessState::Exited(())));
 }
 
-
-    #[allow(
-        dead_code,
-        reason = "TSYNC consumes killable locking; other TaskMutex modes are covered by synchronization fixtures"
-    )]
-    #[path = "../src/sync.rs"]
-    pub(crate) mod sync;
-    pub(crate) mod task {
-        pub(crate) fn current_task() -> Option<alloc::sync::Arc<crate::TaskControlBlock>> {
-            unreachable!("descriptor notification processing belongs to seccomp_notifications")
-        }
-        pub(crate) use crate::SeccompError;
-        pub(crate) mod model {
-            pub(crate) use crate::model::seccomp::{RetiredSecurity, ValidatedFilter};
-        }
+#[allow(
+    dead_code,
+    reason = "TSYNC consumes killable locking; other TaskMutex modes are covered by synchronization fixtures"
+)]
+#[path = "../src/sync.rs"]
+pub(crate) mod sync;
+pub(crate) mod task {
+    pub(crate) fn current_task() -> Option<alloc::sync::Arc<crate::TaskControlBlock>> {
+        unreachable!("descriptor notification processing belongs to seccomp_notifications")
     }
-
-
-
+    pub(crate) use crate::SeccompError;
+    pub(crate) mod model {
+        pub(crate) use crate::model::seccomp::{RetiredSecurity, ValidatedFilter};
+    }
+}

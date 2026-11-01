@@ -241,4 +241,6 @@ fn shutdown_waits_for_pending_reservation_and_weak_wake_cannot_keep_event_alive(
     drop(init);
 }
 
-mod sync { pub(crate) use spin::{Mutex, Once}; }
+mod sync {
+    pub(crate) use spin::{Mutex, Once};
+}

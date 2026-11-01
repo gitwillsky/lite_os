@@ -36,10 +36,7 @@ unsafe impl GlobalAlloc for FaultAllocator {
             .unwrap_or(false)
         {
             PROBE_UNLOCKED.with(|value| {
-                value.set(
-                    crate::task::current_task()
-                        .is_none_or(|task| task.credential_unlocked()),
-                )
+                value.set(crate::task::current_task().is_none_or(|task| task.credential_unlocked()))
             });
             return core::ptr::null_mut();
         }
@@ -1016,442 +1013,436 @@ fn actual_proc_inode_owner_uses_dumpability_and_exact_world_directory_policy() {
     assert_eq!(privileged.observed_inode_owner(0o100644), (0, 0));
 }
 
-
-    #[path = "../src/sync.rs"]
-    pub(crate) mod sync;
-    #[path = "../../../system/linuxd/src/task"]
-    pub(crate) mod task {
-        use crate::{Arc, RefCell};
-        thread_local! { static CURRENT: RefCell<Option<Arc<model::TaskControlBlock>>> = const { RefCell::new(None) }; }
-        pub(crate) use model::CapabilityError;
-        pub(crate) use model::{CredentialUpdateError, TaskControlBlock};
-        pub(crate) fn capability_sets(
-            pid: usize,
-        ) -> Option<syscall_abi::capability::CapabilitySets> {
-            let caller = current_task()?;
-            (pid == 0 || pid == caller.tid()).then(|| caller.capability_snapshot().sets)
+#[path = "../src/sync.rs"]
+pub(crate) mod sync;
+#[path = "../../../system/linuxd/src/task"]
+pub(crate) mod task {
+    use crate::{Arc, RefCell};
+    thread_local! { static CURRENT: RefCell<Option<Arc<model::TaskControlBlock>>> = const { RefCell::new(None) }; }
+    pub(crate) use model::CapabilityError;
+    pub(crate) use model::{CredentialUpdateError, TaskControlBlock};
+    pub(crate) fn capability_sets(pid: usize) -> Option<syscall_abi::capability::CapabilitySets> {
+        let caller = current_task()?;
+        (pid == 0 || pid == caller.tid()).then(|| caller.capability_snapshot().sets)
+    }
+    pub(crate) fn current_task() -> Option<Arc<TaskControlBlock>> {
+        CURRENT.with(|task| task.borrow().clone())
+    }
+    pub(crate) fn enter(task: &Arc<TaskControlBlock>) {
+        CURRENT.with(|current| *current.borrow_mut() = Some(task.clone()));
+    }
+    pub(crate) mod process_table {
+        pub(crate) mod ptrace {
+            pub(crate) fn restrict_exec(_: &super::super::TaskControlBlock) -> bool {
+                false
+            }
         }
-        pub(crate) fn current_task() -> Option<Arc<TaskControlBlock>> {
-            CURRENT.with(|task| task.borrow().clone())
+        // Graph membership is an explicit fixture seam; actual single-thread check runs in guest.
+        pub(crate) fn is_single_threaded(_: &super::TaskControlBlock) -> bool {
+            true
         }
-        pub(crate) fn enter(task: &Arc<TaskControlBlock>) {
-            CURRENT.with(|current| *current.borrow_mut() = Some(task.clone()));
+        static CREATION: spin::Mutex<()> = spin::Mutex::new(());
+        pub(crate) struct CredentialTransition<'a>(&'a super::TaskControlBlock);
+        impl CredentialTransition<'_> {
+            pub(crate) fn clear_parent_death(&mut self) {
+                self.0.clear_parent_death();
+            }
         }
-        pub(crate) mod process_table {
-            pub(crate) mod ptrace {
-                pub(crate) fn restrict_exec(_: &super::super::TaskControlBlock) -> bool {
-                    false
+        // Graph/PDEATH count is an explicit host seam; the real graph transaction runs in guest.
+        pub(crate) fn with_credential_transition<T>(
+            task: &super::TaskControlBlock,
+            commit: impl FnOnce(&mut CredentialTransition<'_>) -> T,
+        ) -> T {
+            let _creation = CREATION.lock();
+            commit(&mut CredentialTransition(task))
+        }
+    }
+    pub(crate) mod model {
+        use alloc::sync::Arc;
+        use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        use spin::Mutex;
+        mod capabilities;
+        mod credentials;
+        mod message_identity;
+        pub(crate) use message_identity::MessageIdentity;
+        mod thread_capabilities;
+        mod address_space {
+            mod dumpability;
+            pub(super) struct AddressSpace {
+                dumpability: dumpability::Dumpability,
+                user_namespace: alloc::sync::Arc<crate::namespace::UserNamespace>,
+            }
+            impl AddressSpace {
+                pub(super) fn user_namespace(
+                    &self,
+                ) -> &alloc::sync::Arc<crate::namespace::UserNamespace> {
+                    &self.user_namespace
                 }
-            }
-            // Graph membership is an explicit fixture seam; actual single-thread check runs in guest.
-            pub(crate) fn is_single_threaded(_: &super::TaskControlBlock) -> bool {
-                true
-            }
-            static CREATION: spin::Mutex<()> = spin::Mutex::new(());
-            pub(crate) struct CredentialTransition<'a>(&'a super::TaskControlBlock);
-            impl CredentialTransition<'_> {
-                pub(crate) fn clear_parent_death(&mut self) {
-                    self.0.clear_parent_death();
-                }
-            }
-            // Graph/PDEATH count is an explicit host seam; the real graph transaction runs in guest.
-            pub(crate) fn with_credential_transition<T>(
-                task: &super::TaskControlBlock,
-                commit: impl FnOnce(&mut CredentialTransition<'_>) -> T,
-            ) -> T {
-                let _creation = CREATION.lock();
-                commit(&mut CredentialTransition(task))
-            }
-        }
-        pub(crate) mod model {
-            use alloc::sync::Arc;
-            use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-            use spin::Mutex;
-            mod capabilities;
-            mod credentials;
-            mod message_identity;
-            pub(crate) use message_identity::MessageIdentity;
-            mod thread_capabilities;
-            mod address_space {
-                mod dumpability;
-                pub(super) struct AddressSpace {
-                    dumpability: dumpability::Dumpability,
+                pub(super) fn new(
+                    user: bool,
                     user_namespace: alloc::sync::Arc<crate::namespace::UserNamespace>,
-                }
-                impl AddressSpace {
-                    pub(super) fn user_namespace(
-                        &self,
-                    ) -> &alloc::sync::Arc<crate::namespace::UserNamespace> {
-                        &self.user_namespace
-                    }
-                    pub(super) fn new(
-                        user: bool,
-                        user_namespace: alloc::sync::Arc<crate::namespace::UserNamespace>,
-                    ) -> Self {
-                        Self {
-                            dumpability: dumpability::Dumpability::new(user),
-                            user_namespace,
-                        }
-                    }
-                    pub(super) fn dumpable(&self) -> bool {
-                        self.dumpability.user_dumpable()
-                    }
-                    pub(super) fn set_dumpable(&self, user: bool) {
-                        self.dumpability.set_user_dumpable(user);
+                ) -> Self {
+                    Self {
+                        dumpability: dumpability::Dumpability::new(user),
+                        user_namespace,
                     }
                 }
-            }
-            use address_space::AddressSpace;
-            mod thread_mm {
-                use super::AddressSpace;
-                mod membership;
-                pub(super) use membership::MmMembership;
-            }
-            use thread_mm::MmMembership;
-            type MmHandle = Arc<Mutex<MmMembership>>;
-            pub(crate) use capabilities::CapabilityError;
-            pub(crate) use credentials::CredentialUpdateError;
-            use credentials::Credentials;
-            use credentials::LeaderCredentialsHandle;
-            mod namespaces;
-            mod process_resources;
-            use namespaces::FsNamespaceHandle;
-            use process_resources::FsContext;
-            struct Security(AtomicBool);
-            impl Security {
-                fn enable_no_new_privileges(&self) {
-                    self.0.store(true, Ordering::Release);
+                pub(super) fn dumpable(&self) -> bool {
+                    self.dumpability.user_dumpable()
                 }
-                fn no_new_privileges(&self) -> bool {
-                    self.0.load(Ordering::Acquire)
+                pub(super) fn set_dumpable(&self, user: bool) {
+                    self.dumpability.set_user_dumpable(user);
                 }
             }
-            struct Thread {
-                mm: MmHandle,
-                credentials: Arc<Mutex<Credentials>>,
-                security: Security,
-                fs_namespaces: FsNamespaceHandle,
+        }
+        use address_space::AddressSpace;
+        mod thread_mm {
+            use super::AddressSpace;
+            mod membership;
+            pub(super) use membership::MmMembership;
+        }
+        use thread_mm::MmMembership;
+        type MmHandle = Arc<Mutex<MmMembership>>;
+        pub(crate) use capabilities::CapabilityError;
+        pub(crate) use credentials::CredentialUpdateError;
+        use credentials::Credentials;
+        use credentials::LeaderCredentialsHandle;
+        mod namespaces;
+        mod process_resources;
+        use namespaces::FsNamespaceHandle;
+        use process_resources::FsContext;
+        struct Security(AtomicBool);
+        impl Security {
+            fn enable_no_new_privileges(&self) {
+                self.0.store(true, Ordering::Release);
             }
-            struct ProcessId(usize);
-            impl ProcessId {
-                fn key(&self) -> usize {
-                    self.0
+            fn no_new_privileges(&self) -> bool {
+                self.0.load(Ordering::Acquire)
+            }
+        }
+        struct Thread {
+            mm: MmHandle,
+            credentials: Arc<Mutex<Credentials>>,
+            security: Security,
+            fs_namespaces: FsNamespaceHandle,
+        }
+        struct ProcessId(usize);
+        impl ProcessId {
+            fn key(&self) -> usize {
+                self.0
+            }
+        }
+        pub(crate) struct Process {
+            leader_mm: Mutex<MmHandle>,
+            tgid: ProcessId,
+            leader_credentials: LeaderCredentialsHandle,
+            terminal: Mutex<Option<Arc<crate::devices::tty::Terminal>>>,
+        }
+        impl Process {
+            fn process_address_space(&self) -> Option<Arc<AddressSpace>> {
+                self.leader_mm.lock().lock().live().cloned()
+            }
+            fn process_memory_inspection(&self) -> MmMembership {
+                self.leader_mm.lock().lock().clone()
+            }
+        }
+        struct Execution {
+            tid: core::sync::atomic::AtomicUsize,
+        }
+        // Execution kind 是显式构造 seam；credential projection/mutation 使用生产实现。
+        struct KernelCredentials {
+            credentials: Credentials,
+            namespaces: Mutex<Option<namespaces::NamespaceMembership>>,
+        }
+        enum TaskKind {
+            User {},
+            Kernel(KernelCredentials),
+        }
+        pub(crate) struct TaskControlBlock {
+            kind: TaskKind,
+            thread: Thread,
+            process: Arc<Process>,
+            execution: Execution,
+            parent_death: AtomicUsize,
+            user_memory: Mutex<Option<(usize, usize)>>,
+        }
+        #[test]
+        fn actual_kernel_credentials_project_root_and_enforce_signal_dac() {
+            let mut kernel = TaskControlBlock::root_with_pid(65_000);
+            Arc::get_mut(&mut kernel).unwrap().kind = TaskKind::Kernel(KernelCredentials {
+                credentials: Credentials::root(),
+                namespaces: Mutex::new(Some(namespaces::initial_membership())),
+            });
+            let facts = kernel.credential_snapshot();
+            assert_eq!(facts.uids, [0; 3]);
+            assert_eq!(facts.gids, [0; 3]);
+            assert_eq!(facts.fsids, [0; 2]);
+            assert!(Arc::ptr_eq(
+                &facts.user_namespace,
+                &crate::namespace::initial_user()
+            ));
+            assert_eq!(
+                facts.capabilities.sets.effective,
+                syscall_abi::capability::VALID_MASK
+            );
+            assert_eq!(kernel.proc_inode_owner(0o40555), (0, 0));
+            let authority = kernel.namespace_authority();
+            assert!(Arc::ptr_eq(&authority.namespace, &facts.user_namespace));
+            assert_eq!(authority.effective_uid, 0);
+            assert_eq!(authority.effective_gid, 0);
+            let caller = TaskControlBlock::root_with_pid(65_001);
+            assert!(caller.may_signal_thread(&kernel));
+            caller.set_credential_id(true, 1000).unwrap();
+            assert!(!caller.may_signal_thread(&kernel));
+            assert_eq!(kernel.credential_snapshot().uids, [0; 3]);
+        }
+        impl TaskControlBlock {
+            pub(crate) fn signal_allowed_for_test(&self, target: &Process) -> bool {
+                self.may_signal_process(target)
+            }
+            pub(crate) fn retire_namespaces_for_test(&self) {
+                self.retire_namespaces();
+            }
+            pub(crate) fn tgid(&self) -> usize {
+                self.process.tgid.0
+            }
+            pub(crate) fn tid(&self) -> usize {
+                self.execution
+                    .tid
+                    .load(core::sync::atomic::Ordering::Acquire)
+            }
+            pub(crate) fn visible_tid(&self) -> u32 {
+                self.tid() as u32
+            }
+            pub(crate) fn pid_namespace(&self) -> Arc<crate::namespace::PidNamespace> {
+                crate::namespace::initial_pid()
+            }
+            // 这里只装配 fs/credential namespace；SEM_UNDO 由实际 ipc owner fixture 与 guest 覆盖。
+            fn replace_semaphore_undo(&self, _: crate::ipc::SemaphoreUndoHandle) {
+                unreachable!("SEM_UNDO lifecycle is outside this producer seam")
+            }
+            fn thread(&self) -> &Thread {
+                &self.thread
+            }
+            pub(crate) fn process(&self) -> &Arc<Process> {
+                &self.process
+            }
+            fn is_kernel_thread(&self) -> bool {
+                matches!(self.kind, TaskKind::Kernel(_))
+            }
+            pub(crate) fn clear_parent_death(&self) {
+                self.parent_death.store(0, Ordering::Release);
+            }
+            pub(crate) fn root() -> Arc<Self> {
+                Self::root_with_pid(1)
+            }
+            pub(crate) fn root_with_pid(pid: usize) -> Arc<Self> {
+                crate::namespace::boot();
+                crate::ipc::initialize_namespaces().unwrap();
+                crate::net::boot_net();
+                let credentials = Arc::new(Mutex::new(Credentials::root()));
+                let mm = Arc::new(Mutex::new(MmMembership::Live(Arc::new(AddressSpace::new(
+                    true,
+                    crate::namespace::initial_user(),
+                )))));
+                Arc::new(Self {
+                    kind: TaskKind::User {},
+                    thread: Thread {
+                        mm: mm.clone(),
+                        credentials: credentials.clone(),
+                        security: Security(false.into()),
+                        fs_namespaces: namespaces::initial_fs_namespace_handle(Arc::new(
+                            Mutex::new(FsContext {
+                                cwd: Arc::new(crate::fs::OpenedFile(1)),
+                                root: Arc::new(crate::fs::OpenedFile(1)),
+                                umask: process_resources::DEFAULT_UMASK,
+                            }),
+                        ))
+                        .unwrap(),
+                    },
+                    process: Arc::new(Process {
+                        leader_mm: Mutex::new(mm),
+                        tgid: ProcessId(pid),
+                        leader_credentials: Arc::new(Mutex::new(credentials)),
+                        terminal: Mutex::new(None),
+                    }),
+                    execution: Execution {
+                        tid: core::sync::atomic::AtomicUsize::new(pid),
+                    },
+                    parent_death: 9.into(),
+                    user_memory: Mutex::new(None),
+                })
+            }
+            pub(crate) fn sibling(&self) -> Arc<Self> {
+                self.sibling_with_fs(true)
+            }
+            pub(crate) fn sibling_with_fs(&self, share: bool) -> Arc<Self> {
+                let inherited = self.thread.credentials.lock().clone();
+                Arc::new(Self {
+                    kind: TaskKind::User {},
+                    thread: Thread {
+                        mm: Arc::new(Mutex::new(self.thread.mm.lock().clone())),
+                        credentials: Arc::new(Mutex::new(inherited)),
+                        security: Security(self.no_new_privileges().into()),
+                        fs_namespaces: namespaces::try_fs_namespace_handle(
+                            self.namespace_snapshot(),
+                            self.clone_fs_context(share).unwrap(),
+                        )
+                        .unwrap(),
+                    },
+                    process: self.process.clone(),
+                    execution: Execution {
+                        tid: core::sync::atomic::AtomicUsize::new(self.tid() + 1),
+                    },
+                    parent_death: 9.into(),
+                    user_memory: Mutex::new(None),
+                })
+            }
+            // Process limits constructor seam；实际 rlimit mutation 由 resource-limit guest 覆盖。
+            fn namespace_rlimits(&self) -> crate::namespace::NamespaceRlimits {
+                crate::namespace::NamespaceRlimits {
+                    locked_memory: u64::MAX,
+                    pending_signals: u64::MAX,
                 }
             }
-            pub(crate) struct Process {
-                leader_mm: Mutex<MmHandle>,
-                tgid: ProcessId,
-                leader_credentials: LeaderCredentialsHandle,
-                terminal: Mutex<Option<Arc<crate::devices::tty::Terminal>>>,
+            fn mm_snapshot(&self) -> Option<Arc<AddressSpace>> {
+                self.thread.mm.lock().live().cloned()
             }
-            impl Process {
-                fn process_address_space(&self) -> Option<Arc<AddressSpace>> {
-                    self.leader_mm.lock().lock().live().cloned()
-                }
-                fn process_memory_inspection(&self) -> MmMembership {
-                    self.leader_mm.lock().lock().clone()
+            fn memory_inspection(&self) -> MmMembership {
+                if self.is_kernel_thread() {
+                    MmMembership::Retired {
+                        user_dumpable: false,
+                    }
+                } else {
+                    self.thread.mm.lock().clone()
                 }
             }
-            struct Execution {
-                tid: core::sync::atomic::AtomicUsize,
+            fn address_space(&self) -> Arc<AddressSpace> {
+                self.mm_snapshot().unwrap()
             }
-            // Execution kind 是显式构造 seam；credential projection/mutation 使用生产实现。
-            struct KernelCredentials {
-                credentials: Credentials,
-                namespaces: Mutex<Option<namespaces::NamespaceMembership>>,
+            fn process_address_space(&self) -> Option<Arc<AddressSpace>> {
+                self.process.leader_mm.lock().lock().live().cloned()
             }
-            enum TaskKind {
-                User {},
-                Kernel(KernelCredentials),
+            pub(crate) fn user_dumpable(&self) -> bool {
+                self.address_space().dumpable()
             }
-            pub(crate) struct TaskControlBlock {
-                kind: TaskKind,
-                thread: Thread,
-                process: Arc<Process>,
-                execution: Execution,
-                parent_death: AtomicUsize,
-                user_memory: Mutex<Option<(usize, usize)>>,
+            pub(crate) fn set_user_dumpable(&self, user: bool) {
+                self.address_space().set_dumpable(user);
             }
-            #[test]
-            fn actual_kernel_credentials_project_root_and_enforce_signal_dac() {
-                let mut kernel = TaskControlBlock::root_with_pid(65_000);
-                Arc::get_mut(&mut kernel).unwrap().kind = TaskKind::Kernel(KernelCredentials {
-                    credentials: Credentials::root(),
-                    namespaces: Mutex::new(Some(namespaces::initial_membership())),
+            pub(crate) fn observed_inode_owner(&self, mode: u32) -> (u32, u32) {
+                self.proc_inode_owner(mode)
+            }
+            fn new_exec_mm(&self) {
+                let replacement = Arc::new(AddressSpace::new(false, self.user_namespace()));
+                let retired = self.thread.mm.lock().replace_live(replacement);
+                drop(retired);
+                *self.process.leader_mm.lock() = self.thread.mm.clone();
+            }
+            pub(crate) fn observed_credentials(&self) -> crate::fs::ProcCredentialSnapshot {
+                self.credential_snapshot()
+            }
+            pub(crate) fn observed_process_credentials(&self) -> crate::fs::ProcCredentialSnapshot {
+                self.process().process_credential_snapshot()
+            }
+            pub(crate) fn observed_robust_access(&self, target: &Self) -> bool {
+                self.may_inspect_thread_real(target)
+            }
+            pub(crate) fn retire_mm_for_inspection(&self) -> bool {
+                let weak = Arc::downgrade(self.thread.mm.lock().live().unwrap());
+                drop(self.thread.mm.lock().retire());
+                weak.upgrade().is_none()
+            }
+            pub(crate) fn credential_unlocked(&self) -> bool {
+                self.thread.credentials.try_lock().is_some()
+                    && self.thread.fs_namespaces.try_lock().is_some_and(|state| {
+                        state
+                            .fs
+                            .as_ref()
+                            .is_none_or(|context| context.try_lock().is_some())
+                    })
+            }
+            // Files owner 单独由 file-table fixture 执行；此 fixture 只请求 fs 脱离。
+            fn prepare_file_table_unshare(
+                &self,
+            ) -> Result<Option<usize>, crate::memory::MemoryError> {
+                unreachable!("files seam")
+            }
+            fn commit_file_table_unshare(&self, prepared: Option<usize>) {
+                assert!(prepared.is_none());
+            }
+            pub(crate) fn exit_fs(&self) {
+                self.retire_fs_context();
+            }
+            pub(crate) fn pdeath(&self) -> usize {
+                self.parent_death.load(Ordering::Acquire)
+            }
+            pub(crate) fn exec_setid(&self, mode: u32, uid: u32, gid: u32) {
+                let prepared = self.prepare_exec_credentials(mode, uid, gid, None).unwrap();
+                self.new_exec_mm();
+                self.commit_exec_credentials(prepared, true);
+            }
+            pub(crate) fn exec_facts(
+                &self,
+                mode: u32,
+                uid: u32,
+                gid: u32,
+            ) -> crate::memory::InitialStackCredentials {
+                let prepared = self.prepare_exec_credentials(mode, uid, gid, None).unwrap();
+                let facts = prepared.stack_credentials();
+                self.new_exec_mm();
+                self.commit_exec_credentials(prepared, true);
+                facts
+            }
+            pub(crate) fn arm_pdeath(&self) {
+                self.parent_death.store(9, Ordering::Release);
+            }
+            pub(crate) fn scheduler_permission(&self, target: &Self) -> Option<bool> {
+                self.scheduler_privilege_for(target)
+            }
+            pub(crate) fn proc_thread_permission(&self, target: &Self) -> bool {
+                self.may_inspect_thread(target)
+            }
+            pub(crate) fn proc_permission(&self, target: &Self) -> bool {
+                self.may_inspect_process(target.process())
+            }
+            pub(crate) fn memory(&self, bytes: &mut [u8]) {
+                *self.user_memory.lock() = Some((bytes.as_mut_ptr() as usize, bytes.len()));
+            }
+            fn valid_memory(&self, address: usize, length: usize) -> bool {
+                self.user_memory.lock().is_some_and(|(start, capacity)| {
+                    address >= start
+                        && address
+                            .checked_add(length)
+                            .zip(start.checked_add(capacity))
+                            .is_some_and(|(end, limit)| end <= limit)
+                })
+            }
+            pub(crate) fn copy_from_user(
+                &self,
+                address: usize,
+                bytes: &mut [u8],
+            ) -> Result<(), ()> {
+                if !self.valid_memory(address, bytes.len()) {
+                    return Err(());
+                }
+                // SAFETY: the test caller retains the registered live slice through the syscall.
+                bytes.copy_from_slice(unsafe {
+                    core::slice::from_raw_parts(address as *const u8, bytes.len())
                 });
-                let facts = kernel.credential_snapshot();
-                assert_eq!(facts.uids, [0; 3]);
-                assert_eq!(facts.gids, [0; 3]);
-                assert_eq!(facts.fsids, [0; 2]);
-                assert!(Arc::ptr_eq(
-                    &facts.user_namespace,
-                    &crate::namespace::initial_user()
-                ));
-                assert_eq!(
-                    facts.capabilities.sets.effective,
-                    syscall_abi::capability::VALID_MASK
-                );
-                assert_eq!(kernel.proc_inode_owner(0o40555), (0, 0));
-                let authority = kernel.namespace_authority();
-                assert!(Arc::ptr_eq(&authority.namespace, &facts.user_namespace));
-                assert_eq!(authority.effective_uid, 0);
-                assert_eq!(authority.effective_gid, 0);
-                let caller = TaskControlBlock::root_with_pid(65_001);
-                assert!(caller.may_signal_thread(&kernel));
-                caller.set_credential_id(true, 1000).unwrap();
-                assert!(!caller.may_signal_thread(&kernel));
-                assert_eq!(kernel.credential_snapshot().uids, [0; 3]);
+                Ok(())
             }
-            impl TaskControlBlock {
-                pub(crate) fn signal_allowed_for_test(&self, target: &Process) -> bool {
-                    self.may_signal_process(target)
+            pub(crate) fn copy_to_user(&self, address: usize, bytes: &[u8]) -> Result<(), ()> {
+                if !self.valid_memory(address, bytes.len()) {
+                    return Err(());
                 }
-                pub(crate) fn retire_namespaces_for_test(&self) {
-                    self.retire_namespaces();
-                }
-                pub(crate) fn tgid(&self) -> usize {
-                    self.process.tgid.0
-                }
-                pub(crate) fn tid(&self) -> usize {
-                    self.execution
-                        .tid
-                        .load(core::sync::atomic::Ordering::Acquire)
-                }
-                pub(crate) fn visible_tid(&self) -> u32 {
-                    self.tid() as u32
-                }
-                pub(crate) fn pid_namespace(&self) -> Arc<crate::namespace::PidNamespace> {
-                    crate::namespace::initial_pid()
-                }
-                // 这里只装配 fs/credential namespace；SEM_UNDO 由实际 ipc owner fixture 与 guest 覆盖。
-                fn replace_semaphore_undo(&self, _: crate::ipc::SemaphoreUndoHandle) {
-                    unreachable!("SEM_UNDO lifecycle is outside this producer seam")
-                }
-                fn thread(&self) -> &Thread {
-                    &self.thread
-                }
-                pub(crate) fn process(&self) -> &Arc<Process> {
-                    &self.process
-                }
-                fn is_kernel_thread(&self) -> bool {
-                    matches!(self.kind, TaskKind::Kernel(_))
-                }
-                pub(crate) fn clear_parent_death(&self) {
-                    self.parent_death.store(0, Ordering::Release);
-                }
-                pub(crate) fn root() -> Arc<Self> {
-                    Self::root_with_pid(1)
-                }
-                pub(crate) fn root_with_pid(pid: usize) -> Arc<Self> {
-                    crate::namespace::boot();
-                    crate::ipc::initialize_namespaces().unwrap();
-                    crate::net::boot_net();
-                    let credentials = Arc::new(Mutex::new(Credentials::root()));
-                    let mm = Arc::new(Mutex::new(MmMembership::Live(Arc::new(AddressSpace::new(
-                        true,
-                        crate::namespace::initial_user(),
-                    )))));
-                    Arc::new(Self {
-                        kind: TaskKind::User {},
-                        thread: Thread {
-                            mm: mm.clone(),
-                            credentials: credentials.clone(),
-                            security: Security(false.into()),
-                            fs_namespaces: namespaces::initial_fs_namespace_handle(Arc::new(
-                                Mutex::new(FsContext {
-                                    cwd: Arc::new(crate::fs::OpenedFile(1)),
-                                    root: Arc::new(crate::fs::OpenedFile(1)),
-                                    umask: process_resources::DEFAULT_UMASK,
-                                }),
-                            ))
-                            .unwrap(),
-                        },
-                        process: Arc::new(Process {
-                            leader_mm: Mutex::new(mm),
-                            tgid: ProcessId(pid),
-                            leader_credentials: Arc::new(Mutex::new(credentials)),
-                            terminal: Mutex::new(None),
-                        }),
-                        execution: Execution {
-                            tid: core::sync::atomic::AtomicUsize::new(pid),
-                        },
-                        parent_death: 9.into(),
-                        user_memory: Mutex::new(None),
-                    })
-                }
-                pub(crate) fn sibling(&self) -> Arc<Self> {
-                    self.sibling_with_fs(true)
-                }
-                pub(crate) fn sibling_with_fs(&self, share: bool) -> Arc<Self> {
-                    let inherited = self.thread.credentials.lock().clone();
-                    Arc::new(Self {
-                        kind: TaskKind::User {},
-                        thread: Thread {
-                            mm: Arc::new(Mutex::new(self.thread.mm.lock().clone())),
-                            credentials: Arc::new(Mutex::new(inherited)),
-                            security: Security(self.no_new_privileges().into()),
-                            fs_namespaces: namespaces::try_fs_namespace_handle(
-                                self.namespace_snapshot(),
-                                self.clone_fs_context(share).unwrap(),
-                            )
-                            .unwrap(),
-                        },
-                        process: self.process.clone(),
-                        execution: Execution {
-                            tid: core::sync::atomic::AtomicUsize::new(self.tid() + 1),
-                        },
-                        parent_death: 9.into(),
-                        user_memory: Mutex::new(None),
-                    })
-                }
-                // Process limits constructor seam；实际 rlimit mutation 由 resource-limit guest 覆盖。
-                fn namespace_rlimits(&self) -> crate::namespace::NamespaceRlimits {
-                    crate::namespace::NamespaceRlimits {
-                        locked_memory: u64::MAX,
-                        pending_signals: u64::MAX,
-                    }
-                }
-                fn mm_snapshot(&self) -> Option<Arc<AddressSpace>> {
-                    self.thread.mm.lock().live().cloned()
-                }
-                fn memory_inspection(&self) -> MmMembership {
-                    if self.is_kernel_thread() {
-                        MmMembership::Retired {
-                            user_dumpable: false,
-                        }
-                    } else {
-                        self.thread.mm.lock().clone()
-                    }
-                }
-                fn address_space(&self) -> Arc<AddressSpace> {
-                    self.mm_snapshot().unwrap()
-                }
-                fn process_address_space(&self) -> Option<Arc<AddressSpace>> {
-                    self.process.leader_mm.lock().lock().live().cloned()
-                }
-                pub(crate) fn user_dumpable(&self) -> bool {
-                    self.address_space().dumpable()
-                }
-                pub(crate) fn set_user_dumpable(&self, user: bool) {
-                    self.address_space().set_dumpable(user);
-                }
-                pub(crate) fn observed_inode_owner(&self, mode: u32) -> (u32, u32) {
-                    self.proc_inode_owner(mode)
-                }
-                fn new_exec_mm(&self) {
-                    let replacement = Arc::new(AddressSpace::new(false, self.user_namespace()));
-                    let retired = self.thread.mm.lock().replace_live(replacement);
-                    drop(retired);
-                    *self.process.leader_mm.lock() = self.thread.mm.clone();
-                }
-                pub(crate) fn observed_credentials(&self) -> crate::fs::ProcCredentialSnapshot {
-                    self.credential_snapshot()
-                }
-                pub(crate) fn observed_process_credentials(
-                    &self,
-                ) -> crate::fs::ProcCredentialSnapshot {
-                    self.process().process_credential_snapshot()
-                }
-                pub(crate) fn observed_robust_access(&self, target: &Self) -> bool {
-                    self.may_inspect_thread_real(target)
-                }
-                pub(crate) fn retire_mm_for_inspection(&self) -> bool {
-                    let weak = Arc::downgrade(self.thread.mm.lock().live().unwrap());
-                    drop(self.thread.mm.lock().retire());
-                    weak.upgrade().is_none()
-                }
-                pub(crate) fn credential_unlocked(&self) -> bool {
-                    self.thread.credentials.try_lock().is_some()
-                        && self.thread.fs_namespaces.try_lock().is_some_and(|state| {
-                            state
-                                .fs
-                                .as_ref()
-                                .is_none_or(|context| context.try_lock().is_some())
-                        })
-                }
-                // Files owner 单独由 file-table fixture 执行；此 fixture 只请求 fs 脱离。
-                fn prepare_file_table_unshare(
-                    &self,
-                ) -> Result<Option<usize>, crate::memory::MemoryError> {
-                    unreachable!("files seam")
-                }
-                fn commit_file_table_unshare(&self, prepared: Option<usize>) {
-                    assert!(prepared.is_none());
-                }
-                pub(crate) fn exit_fs(&self) {
-                    self.retire_fs_context();
-                }
-                pub(crate) fn pdeath(&self) -> usize {
-                    self.parent_death.load(Ordering::Acquire)
-                }
-                pub(crate) fn exec_setid(&self, mode: u32, uid: u32, gid: u32) {
-                    let prepared = self.prepare_exec_credentials(mode, uid, gid, None).unwrap();
-                    self.new_exec_mm();
-                    self.commit_exec_credentials(prepared, true);
-                }
-                pub(crate) fn exec_facts(
-                    &self,
-                    mode: u32,
-                    uid: u32,
-                    gid: u32,
-                ) -> crate::memory::InitialStackCredentials {
-                    let prepared = self.prepare_exec_credentials(mode, uid, gid, None).unwrap();
-                    let facts = prepared.stack_credentials();
-                    self.new_exec_mm();
-                    self.commit_exec_credentials(prepared, true);
-                    facts
-                }
-                pub(crate) fn arm_pdeath(&self) {
-                    self.parent_death.store(9, Ordering::Release);
-                }
-                pub(crate) fn scheduler_permission(&self, target: &Self) -> Option<bool> {
-                    self.scheduler_privilege_for(target)
-                }
-                pub(crate) fn proc_thread_permission(&self, target: &Self) -> bool {
-                    self.may_inspect_thread(target)
-                }
-                pub(crate) fn proc_permission(&self, target: &Self) -> bool {
-                    self.may_inspect_process(target.process())
-                }
-                pub(crate) fn memory(&self, bytes: &mut [u8]) {
-                    *self.user_memory.lock() = Some((bytes.as_mut_ptr() as usize, bytes.len()));
-                }
-                fn valid_memory(&self, address: usize, length: usize) -> bool {
-                    self.user_memory.lock().is_some_and(|(start, capacity)| {
-                        address >= start
-                            && address
-                                .checked_add(length)
-                                .zip(start.checked_add(capacity))
-                                .is_some_and(|(end, limit)| end <= limit)
-                    })
-                }
-                pub(crate) fn copy_from_user(
-                    &self,
-                    address: usize,
-                    bytes: &mut [u8],
-                ) -> Result<(), ()> {
-                    if !self.valid_memory(address, bytes.len()) {
-                        return Err(());
-                    }
-                    // SAFETY: the test caller retains the registered live slice through the syscall.
-                    bytes.copy_from_slice(unsafe {
-                        core::slice::from_raw_parts(address as *const u8, bytes.len())
-                    });
-                    Ok(())
-                }
-                pub(crate) fn copy_to_user(&self, address: usize, bytes: &[u8]) -> Result<(), ()> {
-                    if !self.valid_memory(address, bytes.len()) {
-                        return Err(());
-                    }
-                    // SAFETY: the test caller retains exclusive ownership of the registered live slice.
-                    unsafe { core::slice::from_raw_parts_mut(address as *mut u8, bytes.len()) }
-                        .copy_from_slice(bytes);
-                    Ok(())
-                }
+                // SAFETY: the test caller retains exclusive ownership of the registered live slice.
+                unsafe { core::slice::from_raw_parts_mut(address as *mut u8, bytes.len()) }
+                    .copy_from_slice(bytes);
+                Ok(())
             }
         }
     }
-
+}
 
 pub(crate) mod devices {
     pub(crate) mod tty {
@@ -1463,5 +1454,3 @@ pub(crate) mod devices {
         }
     }
 }
-
-

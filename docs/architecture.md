@@ -9,9 +9,11 @@ AArch64 和 RISC-V64 共用这些机制，具体指令与 machine 装配通过�
 1. `kernel/src/main.rs` 装配内核机制；`bootstrap` 从 bootfs 装载唯一的 `root-server`，交付根 Job、
    resource、bootfs 与 DTB。内核不解释服务目录、文件系统、网络和应用启动策略。
 2. `system/root-server` 启动 `devmgr`、`ext4d`、`netd` 和 `linuxd`，按角色交付句柄。
+   `devmgr` 接收硬件根 resource，`linuxd` 只接收日志、串口、UTC 设置与电源的 system resource 范围。
    `devmgr` 拥有硬件驱动，`ext4d` 拥有 ext4 引擎，`netd` 拥有协议栈；`linuxd` 挂载根文件系统并启动 PID1。
 3. 每个 Linux 进程对应一个共享进程的成员：低地址区属于应用，高地址区共享 `linuxd` 映像、堆与服务栈。
-   每个 Linux 线程有一个原生承载线程；restricted syscall/未解决异常/kick 使其回到 normal mode 的兼容服务。
+   每个 Linux 线程有一个原生承载线程；restricted 使用不含服务区 USER 映射的 private 页表根，
+   syscall/未解决异常/kick 使其回到 normal 页表根的兼容服务。
 4. `native-abi` 只连接内核与系统服务；Linux 应用的 syscall 总是先退出 restricted mode，不能调用该接口。
    应用继续只消费 Linux UAPI。设备 UAPI、文件描述符、namespace 与 errno 都由 `linuxd` 拥有。
 5. 每个复合状态有唯一 owner。跨服务只通过 channel、VMO 和明确的协议 crate 传递所有权或数据；

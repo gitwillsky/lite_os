@@ -74,6 +74,7 @@ use fallible_tree::VacantEntry;
 mod batch;
 mod futex_transaction;
 mod key;
+mod notification;
 mod preparation;
 mod publication;
 mod registration;
@@ -157,6 +158,18 @@ pub(super) struct WaitRegistry {
 }
 
 impl WaitRegistry {
+    /// 捕获本次 source 通知可消费的最大等待 ticket。
+    ///
+    /// # Returns
+    ///
+    /// 无分配、无锁的通知范围；必须在第一轮唤醒前创建并在整轮重复使用。
+    pub(super) fn notification(&self) -> notification::SourceNotification<'_> {
+        notification::SourceNotification {
+            registry: self,
+            last_ticket: self.next_id.load(Ordering::Acquire),
+        }
+    }
+
     const fn new() -> Self {
         Self {
             next_id: AtomicU64::new(0),
@@ -374,139 +387,6 @@ impl WaitRegistry {
                     return Some(SourceWake {
                         claimed: Some(claimed),
                         group: None,
-                    });
-                }
-                NotifyOutcome::Stale => {}
-            }
-        }
-    }
-
-    pub(super) fn wake_advisory_one(&self, key: AdvisoryLockKey) -> Option<SourceWake> {
-        let lower = WaitIndexKey::AdvisoryLock { key, id: 0 };
-        let mut cursor = None;
-        loop {
-            let (index, registration) = self.source_candidate(lower, cursor)?;
-            let WaitIndexKey::AdvisoryLock { key: candidate, .. } = index else {
-                return None;
-            };
-            if candidate != key {
-                return None;
-            }
-            cursor = Some(index);
-            match self.notify(&registration, WaitResult::Woken) {
-                NotifyOutcome::BeforeArm => {
-                    return Some(SourceWake {
-                        claimed: None,
-                        group: None,
-                    });
-                }
-                NotifyOutcome::Armed(claimed) => {
-                    return Some(SourceWake {
-                        claimed: Some(claimed),
-                        group: None,
-                    });
-                }
-                NotifyOutcome::Stale => {}
-            }
-        }
-    }
-
-    pub(super) fn wake_console_one(
-        &self,
-        exclusive: bool,
-        ready: i16,
-        excluded_groups: &[Option<usize>],
-    ) -> Option<SourceWake> {
-        let lower = WaitIndexKey::Console { exclusive, id: 0 };
-        let mut cursor = None;
-        loop {
-            let (index, registration) = self.source_candidate(lower, cursor)?;
-            let WaitIndexKey::Console {
-                exclusive: candidate,
-                ..
-            } = index
-            else {
-                return None;
-            };
-            if candidate != exclusive {
-                return None;
-            }
-            cursor = Some(index);
-            let Some(group) = Self::console_group(&registration, ready) else {
-                continue;
-            };
-            if group.is_some_and(|group| excluded_groups.contains(&Some(group))) {
-                continue;
-            }
-            match self.notify(&registration, WaitResult::Woken) {
-                NotifyOutcome::BeforeArm => {
-                    return Some(SourceWake {
-                        claimed: None,
-                        group,
-                    });
-                }
-                NotifyOutcome::Armed(claimed) => {
-                    return Some(SourceWake {
-                        claimed: Some(claimed),
-                        group,
-                    });
-                }
-                NotifyOutcome::Stale => {}
-            }
-        }
-    }
-
-    pub(super) fn wake_pipe_one(
-        &self,
-        identity: usize,
-        direction: PipeDirection,
-        exclusive: bool,
-        ready: i16,
-        state: PipePollState,
-        excluded_groups: &fallible_tree::FallibleMap<usize, ()>,
-    ) -> Option<SourceWake> {
-        let lower = WaitIndexKey::Pipe {
-            identity,
-            direction: pipe_direction(direction),
-            exclusive,
-            id: 0,
-        };
-        let mut cursor = None;
-        loop {
-            let (index, registration) = self.source_candidate(lower, cursor)?;
-            let WaitIndexKey::Pipe {
-                identity: candidate_identity,
-                direction: candidate_direction,
-                exclusive: candidate_exclusive,
-                ..
-            } = index
-            else {
-                return None;
-            };
-            if (candidate_identity, candidate_direction, candidate_exclusive)
-                != (identity, pipe_direction(direction), exclusive)
-            {
-                return None;
-            }
-            cursor = Some(index);
-            let Some(group) = Self::pipe_group(&registration, identity, direction, ready, state)
-            else {
-                continue;
-            };
-            if group.is_some_and(|group| excluded_groups.contains_key(&group)) {
-                continue;
-            }
-            match self.notify(&registration, WaitResult::Woken) {
-                NotifyOutcome::BeforeArm => {
-                    return Some(SourceWake {
-                        claimed: None,
-                        group,
-                    });
-                }
-                NotifyOutcome::Armed(claimed) => {
-                    return Some(SourceWake {
-                        claimed: Some(claimed),
-                        group,
                     });
                 }
                 NotifyOutcome::Stale => {}

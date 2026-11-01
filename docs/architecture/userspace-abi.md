@@ -5,7 +5,8 @@
 
 ## 当前设计
 
-- linuxd 通过 restricted mode 提供固定 Linux 64-bit asm-generic UAPI 子集；native kernel 仅向系统服务提供 native-abi。syscall dispatcher 使用共享编号 crate；寄存器调用约定、signal frame、ELF machine/flags/HWCAP 与 architecture-specific query 由编译期静态 userspace ABI backend 提供，未接入编号返回 `ENOSYS`。
+- linuxd 通过 restricted mode 提供固定 Linux 64-bit asm-generic UAPI 子集；native kernel 仅向系统服务提供 native-abi。syscall dispatcher 使用共享编号 crate；寄存器调用约定、signal frame、ELF machine/flags/HWCAP 与
+  architecture-specific query 由编译期静态 userspace ABI backend 提供，未接入编号返回 `ENOSYS`。
 - ELF loader 支持当前声明的 AArch64 与 RV64 静态/动态 ET_EXEC、动态 PIE、PT_INTERP、TLS、RELRO、
   auxv 与 Linux script rewrite；filesystem 只提供 executable source seam，memory 拥有映射
   与 initial stack。AArch64 只接受 `EM_AARCH64`（183），向 auxv 公布 FP 与 ASIMD HWCAP；

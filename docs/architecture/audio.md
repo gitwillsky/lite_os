@@ -3,8 +3,11 @@
 ## 生产链路
 
 用户态通过 Linux ALSA 访问每张声卡：`pcmCND0p` 提供桌面共享混音，`pcmCND1p` 提供原生格式独占输出。
-`kernel::devices::audio::engine` 经 `devices::model::PcmOutput` 消费实际 adapter 能力；硬件实现包括 VirtIO Sound 与 xHCI/UAC2 USB DAC。
-媒体播放机经 libmpv/FFmpeg 解码、alsa-lib 写入同一 PCM；没有用户态混音服务或私有音频 IPC。
+`linuxd::devices::audio::engine` 经 `device_model::PcmOutput` 消费远端设备能力；
+`device-protocol` 连接 devmgr 内的 VirtIO Sound 与 xHCI/UAC2 adapter。应用 mmap ring 由 linuxd 的 VMO 支撑，
+混音后的固定 period 经 PCM 请求 channel 传给设备服务；
+DMA 固定、硬件 queue 与 reset 由 devmgr 独占。
+媒体播放机经 libmpv/FFmpeg 解码、alsa-lib 写入同一 PCM；混音由 linuxd 的 ALSA engine 完成，应用只使用标准 ALSA UAPI。
 桌面的系统提示音由 `user/libraries/sound` 直接写同一个 PCM：登录完成、注销、清空回收站各播一段，只有本地提取了原版素材时才安装，
 设备不可用（例如非 root 账户没有 `/dev/snd` 权限）时静默跳过。
 
@@ -21,7 +24,7 @@ UTM 只在 `Sound` 非空时启用客户端音频；空列表配合手工 QEMU �
   物理 DMA 队列仍为 4 个 period；软件 ring 不再受其 21ms 容量限制，普通播放器可申请约 100ms 缓冲。
 - 每个 adapter 对应一张卡；共享端点与独占端点互斥。独占端点的 HW_REFINE/HW_PARAMS 与实际设备能力求交，
   按协商采样率、位深、声道与 period 配置物理流，提交原始 PCM bytes，不经过软件混音、增益或重采样。
-  configure/release 等冷路径由可睡眠的卡级配置锁串行化，不持 Engine spin lock 等待设备。
+  configure/release 等冷路径由可睡眠的卡级配置锁串行化，不持 Engine 短锁 等待设备。
 - 应用提交或设备完成触发 tick，最多预送物理缓冲容量减一的 3 个 period（16 ms），保留一段应用数据跨越批量完成；
   完成时只推进实际贡献子流的 hw_ptr。全部预送会在整批 TX 完成、写进程尚未补充时提前耗尽应用数据并报告 XRUN。
   批量完成后先补填队列，补填后仍为空才停止并重新 prepare；否则连续播放会随每批完成反复停启物理流。

@@ -2,55 +2,31 @@
 
 ## 当前设计
 
-- `platform` 提供设备发现事实，`main` 装配具体 adapter；`devices::model` 提供 network、display、input、PCM output、
-  entropy 与 named byte-stream port 等设备类接口，块语义属于 `devices::block`，硬件实现属于 `drivers`。`devices::model::registry` 为每个设备类保存一个
-  按发现顺序编号、只追加的多实例注册表，注册只接受 trait 对象；选择实例是消费领域的策略：根文件
-  系统、IPv4/AF_PACKET、DRM、SPICE port 与 entropy 当前绑定 index 0；ALSA 发布全部 PCM output，evdev 发布全部 input。
-- VirtIO queue 与 DMA payload 由各 adapter 拥有；block/RNG 的 request slot、descriptor identity、
-  lost-wake handshake 与 capacity wait 由 `devices::model::io_completion` 统一拥有。hardirq 共用
-  transport-error latch，只确认 MMIO 并发布 `DriverIo` deferred bit，不进入 ordinary adapter lock；使用该
-  vector 的 adapter 构造成功时自报为 `CompletionSource`，completion 在统一
-  user-return/idle safe point 消费；VirtIO-net RX 由单一 slot lifecycle owner 原子
-  claim/repost/retire。
-- split virtqueue 摘取 used entry 只产生一个 `UsedDescriptor` capability，不立即回收 chain；
-  concrete adapter 必须先 claim slot/generation/head 并验证 device-written length/response，随后才
-  exactly-once recycle。duplicate、unknown、非法 length 或 sequence completion 永久关闭 queue 并
-  reset device。真实 VirtQueue 回归测试固定：单 descriptor completion 在 claim 前 free count 保持
-  3/4，合法 recycle 后恢复 4/4，duplicate 保持 4/4、unknown/out-of-range 保持 3/4，均不得二次回收。
-- net RX/TX、input、GPU control/damage、block request 与 RNG 固定 buffer 初始化时建立并持有
-  `DmaBuffer` 物理 segment mapping；steady-state virtqueue submission 只投影 cached ranges，地址
-  空间锁与 page walk 均为 0。adapter drop 写 reset 并等到 status 读回 0 后，再释放这些 mapping。
-- QEMU `virt` backend 把 DTB `dma-coherent` 作为必需 machine fact；VirtIO 不维护 non-coherent shadow buffer 或运行时 cache-maintenance fallback。
-- VirtIO Console adapter 只协商 modern multiport，固定选择 `com.redhat.spice.0`；同一个 transport-neutral adapter 在 UTM 产品路径消费 modern VirtIO PCI common/notify/ISR capabilities，在 headless gate 消费 modern MMIO，绝不复制 queue 或 port state。它拥有 control
-  RX/TX、exact-name 命中后按 port id 选择的唯一 data RX/TX pair、named-port open state 与 64 KiB
-  byte ring。UTM 可以先枚举 `org.qemu.guest_agent.0`，因此 data queue 不得固定为 port 1 的 4/5；
-  port 0 使用 0/1，port N 使用 `2N+2`/`2N+3`。hardirq 只 ack 并发布 `devices::virtio_port` 注册绑定的
-  deferred vector；safe point 验证 completion、repost RX、通知 queue 并经 `devices::virtio_port` domain
-  唤醒 task。`devices::virtio_port` 经字符设备注册表把该 stream 发布为
-  `/dev/virtio-ports/com.redhat.spice.0`。
-- GPU runtime completion 由独立 sequence owner 验证 fence/response 与 stage 顺序，阶段分支只选择
-  下一条 `GpuCommand`；统一 command seam 负责 wire encoding、长度与 queue publication。
-  DRM readiness generation 在同一次 completion lock 内前进。该层只增加 fixed enum dispatch 与整数
-  increment，不增加 lock、allocation 或 descriptor 数；MMIO completion 主导实际 latency，因此不新增
-  微基准，改由 architecture cost gate 固定 `poll_update` 的 direct assembly 与 direct publication
-  为 0、sequence submission 出口至多 1 个。
-- VirtIO-block 使用 16 个固定 DMA request slots，允许乱序 multi-outstanding；同步 caller 在
-  task context 睡眠，bootstrap caller 以 trap-PC-resumed external IRQ/WFI 原子等待同一
-  completion owner；第 17 个
-  caller 进入 FIFO capacity wait，slot release 直接 handoff，不伪造设备故障。
-- block completion 消费 used `len`：4 KiB Read 只接受 4097（data+status），Write/Flush 只接受 1
-  （status）。短/超长 completion 在接触 status 或返回 read data 前 fail-stop reset，并由 request
-  claim owner 的 reject→drain 路径 exactly once 完成和释放所有受影响 slot。
-- VirtIO-RNG 使用 4 个固定、提交前不预零的 4 KiB device-write DMA slots；task caller 睡眠，
-  创建 init `AT_RANDOM` 的唯一 cold-boot caller WFI。64 KiB `getrandom` 或 entropy-device read 从
-  256 个 256-byte batch 降为 16 个 heap-backed 4 KiB batch；固定 64-poll 模型的 MMIO polling/
-  spin 从 64/64 降为 0/0，output/DMA 覆盖前预零从 131072/4096 bytes 降为 0/0。
+1. 内核 `platform` 只发现 machine facts、路由中断并发布受权限约束的 MMIO/IRQ resource；
+   不装配设备驱动。`devmgr::platform` 解码 DTB，`devmgr::drivers` 装配 VirtIO、PCI 与 xHCI。
+2. devmgr 拥有全部硬件 adapter、queue、DMA、descriptor、completion 与 reset state。
+   `device-model` 定义设备类接口；`device-protocol` 通过目录、channel 与 VMO 发布设备，
+   linuxd 的 `devices::directory` 接入这些设备并建立 Linux 设备语义。netd 消费网络设备，ext4d 消费块设备。
+3. 内核只把中断交给 Interrupt 对象。devmgr 的中断服务线程等待、确认设备再 ack；
+   独立完成线程消费合并通知并分派 completion。请求线程睡在同一完成 owner 上，
+   启动期也使用服务线程，不保留内核 bootstrap WFI 或 user-return deferred 驱动路径。
+4. VirtIO ring 与固定 payload 用 VMO 分配，以对应 BTI 固定并持有 PMT；descriptor 使用设备地址，
+   不能假定它等于 CPU 虚拟地址或物理地址。提交前预留完整 segment mapping，稳态只投影已缓存范围。
+   reset 读回完成后才退休 descriptor、PMT 与 backing；设备仍可 DMA 时不得释放固定页。
+5. `kernel::iommu` 独占 domain、IOVA 分配与设备页表，静态 `arch::dma` 后端编码 SMMUv3/RISC-V IOMMU。
+   撤销或部分映射失败均先完成设备侧失效再回收表页和 pin；具体寿命契约见设备契约。
+6. VirtIO block 与 Console 都由同一个 adapter 支持 modern MMIO/PCI；Console 按 exact port name 选择
+   `com.redhat.spice.0`；port N 使用标准 data queue 编号，不能固定假设 host 分配 port 1。
+   split virtqueue 的 used capability 必须先验证 identity、generation 与长度，再 exactly once 回收。
+   非法 completion 关闭 adapter 并 reset，不能修补 free list 后继续运行。
+7. QEMU `virt` 的 DMA 必须 coherent；不提供 non-coherent shadow buffer 或运行时 cache fallback。
+
 - DRM owner 组合 display operation、GEM/framebuffer、KMS、damage fence、master 与 event，并经 `dri/card0` 设备文件拥有 Linux DRM UAPI。
   VirtIO-GPU config change 更新唯一 connector preferred mode，并只通过标准 DRM kobject hotplug
   uevent 通知 userspace；preferred mode 与已完成的 active CRTC mode 独立，旧 CRTC 在 userspace
   modeset 新 generation 前仍可 page-flip。同步 DRM ioctl 遇到 adapter 内部 display-info transaction
   时等待统一 readiness edge 后重提，不把 controlq 的实现级串行化泄漏成 `EBUSY`。动态 mode 的
-  userspace transaction 由用户态 `compositor` 拥有：它是唯一 DRM master 与 evdev 读者，接管内核启动画面，
+  userspace transaction 由用户态 `compositor` 拥有：它是唯一 DRM master 与 evdev 读者，接管 devmgr 启动画面，
   以硬件光标跟随输入，并作为 Wayland 服务端把客户端窗口整帧合成到 scanout（`$XDG_RUNTIME_DIR/wayland-0`；
   `wl_seat` 有指针与键盘，特权连接有 layer-shell，所有连接有 foreign-toplevel）。键盘 keymap 由 `keyboard::xkb` 从同一张键码表生成，
   自包含、不依赖客户端的 xkeyboard-config。
@@ -69,7 +45,7 @@
   open 按 inode 设备号找到 driver，返回的 `DeviceFile` 拥有读写、poll、ioctl 与 mmap；fs、devfs 与 syscall
   不认识具体设备。mem（`null`/`zero`/`random`/`urandom`/`kmsg`）与 TTY（`devices::tty`/`console`/`ptmx`/`pts/N`）
   分别由 fs 与 `devices::tty` 自身注册；pts 设备号为 Linux `(136, index)`。
-- 系统 console Terminal 是 `devices::tty` 持有的单例，`/dev/console`、init 的 fd 0/1/2 与 deferred UART 输入共享它；
+- 系统 console Terminal 是 `devices::tty` 持有的单例，`/dev/console`、init 的 fd 0/1/2 与 linuxd 串口接收线程共享它；
   `/dev/tty` 按调用者 controlling terminal 的设备号重开底层设备。PTY registry、pair 与 Terminal
   session/foreground/winsize 各守自己的 seam；job control 只经 task 安装的 `JobControl`；控制面使用标准
   PTY、termios、ANSI/ECMA-48。

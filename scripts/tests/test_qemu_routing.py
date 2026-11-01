@@ -38,14 +38,25 @@ class QemuRoutingTests(unittest.TestCase):
                 os.environ, {"ARCH": arch, "ACCEL": "tcg"}, clear=True
             ):
                 command = qemu_gate._qemu_command(
-                    Path("root.img"), 1, scratch_disk=Path("swap.img")
+                    Path("root.img"), 1, scratch_disk=Path("extra.img")
                 )
                 self.assertEqual(
                     [argument for argument in command if argument.startswith("virtio-blk-device")],
                     expected,
                 )
                 self.assertIn("file=root.img,if=none,format=raw,id=x0", command)
-                self.assertIn("file=swap.img,if=none,format=raw,id=x1", command)
+                self.assertIn("file=extra.img,if=none,format=raw,id=x1", command)
+
+    @patch("qemu_gate.shutil.which", return_value="/opt/qemu")
+    def test_iommu_gate_translates_pci_root_and_retains_identity_mmio_devices(self, _: Mock) -> None:
+        for arch, machine_option in (("aarch64", "iommu=smmuv3"), ("riscv64", "iommu-sys=on")):
+            with self.subTest(arch=arch), patch.dict(os.environ, {"ARCH": arch, "ACCEL": "tcg"}, clear=True):
+                command = qemu_gate._qemu_command(Path("root.img"), 2, iommu=True)
+                self.assertIn(machine_option, argument_after(command, "-machine"))
+                self.assertIn("virtio-blk-pci,disable-legacy=on,iommu_platform=on,drive=x0", command)
+                self.assertIn("virtio-rng-device,rng=rng0", command)
+                self.assertIn("virtio-net-device,netdev=net0", command)
+                self.assertNotIn("virtio-blk-device,drive=x0", command)
 
     @patch("qemu_gate.shutil.which", return_value="/opt/qemu")
     def test_audio_capture_attaches_one_physical_playback_device(self, _: Mock) -> None:
@@ -341,7 +352,11 @@ class QemuRoutingTests(unittest.TestCase):
             input_path = Path(directory) / "kernel"
             input_path.write_bytes(b"kernel")
             environment = {"ARCH": "aarch64", "ACCEL": "tcg"}
+            bootfs = Path(directory) / "target/aarch64-unknown-none-softfloat/release/bootfs.cpio"
+            bootfs.parent.mkdir(parents=True)
+            bootfs.write_bytes(b"services")
             with (
+                patch("build_cache.ROOT", Path(directory)),
                 patch.dict(os.environ, environment, clear=True),
                 patch(
                     "build_cache.shutil.which",
@@ -351,6 +366,9 @@ class QemuRoutingTests(unittest.TestCase):
                 patch("build_cache.validate_kernel_boot_artifact", return_value=input_path),
             ):
                 payload = build_cache.runtime_gate_payload("boot", 4, (input_path,))
+                bootfs.write_bytes(b"new services")
+                updated = build_cache.runtime_gate_payload("boot", 4, (input_path,))
+                self.assertNotEqual(payload["qemu"]["bootfs_sha256"], updated["qemu"]["bootfs_sha256"])
 
         self.assertEqual(
             payload["qemu"],
@@ -368,6 +386,7 @@ class QemuRoutingTests(unittest.TestCase):
                     "target/aarch64-unknown-none-softfloat/release/Image"
                 ),
                 "kernel_boot_sha256": hashlib.sha256(b"kernel").hexdigest(),
+                "bootfs_sha256": hashlib.sha256(b"services").hexdigest(),
             },
         )
 

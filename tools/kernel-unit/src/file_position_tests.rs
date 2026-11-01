@@ -153,3 +153,26 @@ fn actual_file_position_uncontended_cpu_cost() {
         core::mem::size_of::<FilePosition>()
     );
 }
+
+#[test]
+fn nonwaiting_position_attempt_skips_io_during_contention() {
+    let position = FilePosition::new();
+    position
+        .with(|value| {
+            *value = 17;
+            assert!(
+                position
+                    .try_with(|_| panic!("contended attempt entered I/O"))
+                    .is_none()
+            );
+        })
+        .unwrap();
+    assert_eq!(
+        position.try_with(|value| {
+            *value += 3;
+            *value
+        }),
+        Some(20)
+    );
+    assert_eq!(position.snapshot().unwrap(), 20);
+}

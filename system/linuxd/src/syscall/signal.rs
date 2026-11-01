@@ -291,7 +291,9 @@ pub(crate) fn sys_rt_sigsuspend(mask: usize, signal_set_size: usize) -> isize {
                 .expect("sigsuspend temporary mask disappeared");
             -errno::ENOMEM
         }
-        WaitResult::Woken | WaitResult::Interrupted => -errno::EINTR,
+        // 等待被唤醒不保证最终交付 handler（ptrace/忽略/其他接收者可撤销候选）。
+        // 唯一 trap-return owner 据实际选择决定 EINTR 或恢复旧 mask 后重放。
+        WaitResult::Woken | WaitResult::Interrupted => super::INTERNAL_RESTART_NO_HANDLER,
         _ => unreachable!("sigsuspend has no timeout completion"),
     }
 }

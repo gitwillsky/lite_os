@@ -27,7 +27,8 @@ pub(crate) fn endpoint() -> Socket {
 }
 
 mod netd {
-    pub(super) fn create_namespace() -> Result<network_protocol::RemoteNamespace, super::SocketError> {
+    pub(super) fn create_namespace() -> Result<network_protocol::RemoteNamespace, super::SocketError>
+    {
         Ok(network_protocol::RemoteNamespace)
     }
 }

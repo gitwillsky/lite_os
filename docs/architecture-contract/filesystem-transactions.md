@@ -90,6 +90,8 @@
   取得或发布一个完整 `Ext4InodeDisk` snapshot，不得跨 journal/block I/O。working copy 的类型
   lifetime 必须借用 `MutationGuard`，所以全部 live inode 发布必然发生在 commit 消费并释放
   filesystem mutation owner 之前；禁止恢复返回 `MutexGuard` 或依赖函数退出后的延迟发布。
+- directory rename 的祖先检查只复制 inode 数量上限；不得在遍历期间持有 superblock guard，
+  否则祖先缓存未命中的 read_inode_disk 会重入同一锁并死锁。
 - mount consistency scan 每轮只在短 spin 临界区复制一个 group descriptor，再在锁外读取
   block/inode bitmap；即使 filesystem 尚未发布，也不得让普通 spin guard 跨 DriverIo sleep。
 - logical-block mapping 只能由 `ExtentTree` 拥有：`lookup` 不分配，`map_block_sparse` 唯一委托
@@ -212,10 +214,8 @@ failure seam验证order，Ext4/tmpfs真实inode权限在owner测试与两ISA gue
   仍只读取相同实际 stable TID。cmdline 改由 thread_arguments 读取该 Thread 的 MM；原 leader
   退休为空，live sibling 仍读自己的 MM，argument range 不可读为空而非伪造 Task 消失。
   graph_snapshot_rows 只 pin目标 Process 的详细关系与 group/session identities；System 不创建
-  Process rows。全局 runnable 数及到期 load-average 样本直接读取 ProcessorTopology 已有的
-  Ready/Running membership，包含内核线程，排除 idle、未激活 New 与 stale queue token；采样
-  与 Linux nr_running 一样不是跨 CPU 原子快照。total_tasks/sysinfo 当前按实际用户 TID index
-  的 O(1) len 投影，内核线程尚未进入用户 graph，不能宣称它是完整 Linux nr_threads。
+  Process rows。runnable、blocked、load average 与 total_tasks 由 Linux 调度状态及实际 graph indexes
+  投影；原生 runqueue 不能替代 Linux task 统计，具体 owner 与采样边界见[进程与调度契约](process-scheduling.md)。
   benchmark 决策：系统采集不随进程/线程数量增长，不分配 TCB 快照；单进程采集为
   O(log P + T_target)，只有目标线程数组在 graph 外 fallibly 预留，竞态容量增长重试。
   process_graph_cost 对固定 P=1024/T=8 约束无关 Process 访问为零，并含退化扫描 mutation；

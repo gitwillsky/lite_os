@@ -169,7 +169,6 @@ mod ext4_dirhash;
 #[cfg(test)]
 extern crate fallible_tree;
 
-
 #[cfg(test)]
 #[path = "../../../tools/source-view/netd/inet/port_namespace/port_namespace/port_namespace.rs"]
 #[allow(
@@ -229,9 +228,6 @@ mod frame_metadata_layout;
 #[allow(dead_code)]
 #[path = "../../../system/linuxd/src/io_uring/abi.rs"]
 mod io_uring_abi;
-
-
-
 
 #[cfg(test)]
 #[path = "../../../system/devmgr/src/drivers/virtio/net/rx_slots.rs"]
@@ -422,7 +418,6 @@ mod regular_write_batch_tests;
 #[path = "tests/filesystem_storage.rs"]
 mod filesystem_storage_tests;
 
-
 #[cfg(test)]
 #[path = "tests/kmsg.rs"]
 mod kmsg_tests;
@@ -464,8 +459,6 @@ pub(crate) mod execution {
         pub(crate) fn get_realtime_ns() -> u64 {
             1_800_000_000_000_000_000
         }
-
-
     }
 }
 
@@ -496,11 +489,16 @@ pub(crate) mod boot {
 }
 
 #[cfg(test)]
-#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+#[allow(
+    unused_imports,
+    reason = "装配当前服务的同步 facade，具体用例使用其部分接口"
+)]
 use execution::sync;
 
 #[cfg(test)]
-mod file { pub(crate) use crate::sync::next_readiness_generation; }
+mod file {
+    pub(crate) use crate::sync::next_readiness_generation;
+}
 #[cfg(test)]
 use devices::model::io_completion;
 #[cfg(test)]

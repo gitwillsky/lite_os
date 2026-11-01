@@ -28,6 +28,10 @@ pub(super) fn vmo_create(call: &Call<'_>) -> Result<(), Status> {
 }
 
 fn transfer(call: &Call<'_>, write: bool) -> Result<(), Status> {
+    let options = call.arg_u32(4);
+    if options & !vmo::READ_DONT_WAIT != 0 || write && options != 0 {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
     let vmo = call.vmo(
         call.arg_handle(0),
         if write { rights::WRITE } else { rights::READ },
@@ -50,7 +54,13 @@ fn transfer(call: &Call<'_>, write: bool) -> Result<(), Status> {
                 .try_reserve_exact(chunk)
                 .map_err(|_| native_abi::ERR_NO_MEMORY)?;
             bytes.resize(chunk, 0);
-            vmo.read(at, &mut bytes).map_err(vm_status)?;
+            if options & vmo::READ_DONT_WAIT != 0 {
+                if !vmo.read_available(at, &mut bytes).map_err(vm_status)? {
+                    return Err(native_abi::ERR_SHOULD_WAIT);
+                }
+            } else {
+                vmo.read(at, &mut bytes).map_err(vm_status)?;
+            }
             call.write_bytes(buffer + done, &bytes)?;
         }
         done += chunk;
@@ -177,7 +187,8 @@ fn placement(options: u32, offset: usize) -> Result<crate::vm::Placement, Status
     }
 }
 
-const MAP_OPTIONS: u32 = vm::READ | vm::WRITE | vm::EXECUTE | vm::SPECIFIC | vm::SPECIFIC_OVERWRITE | vm::ALLOW_FAULTS;
+const MAP_OPTIONS: u32 =
+    vm::READ | vm::WRITE | vm::EXECUTE | vm::SPECIFIC | vm::SPECIFIC_OVERWRITE | vm::ALLOW_FAULTS;
 
 pub(super) fn vmar_map(call: &Call<'_>) -> Result<(), Status> {
     let options = call.arg_u32(1);
@@ -199,7 +210,12 @@ pub(super) fn vmar_map(call: &Call<'_>) -> Result<(), Status> {
             vmo,
             call.arg(4) as u64,
             call.arg(5),
-            MapOptions { placement: placement(options, call.arg(2))?, permissions: requested, ceiling, allow_faults: options & vm::ALLOW_FAULTS != 0 },
+            MapOptions {
+                placement: placement(options, call.arg(2))?,
+                permissions: requested,
+                ceiling,
+                allow_faults: options & vm::ALLOW_FAULTS != 0,
+            },
         )
         .map_err(vm_status)?;
     if let Err(status) = call.write(call.arg(6), &(address as u64)) {

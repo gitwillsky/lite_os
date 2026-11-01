@@ -172,70 +172,65 @@ fn malformed_complete_second_header_returns_error_without_reparsing_first_messag
     }
 }
 
-
-    pub(crate) mod task {
-        use core::mem::MaybeUninit;
-        use std::cell::{Cell, RefCell};
-        pub(crate) struct TaskControlBlock {
-            pub(crate) bytes: RefCell<Vec<u8>>,
-            pub(crate) copies: Cell<usize>,
-            pub(crate) fault: Cell<bool>,
-            pub(crate) mutate_after_copy: Cell<bool>,
+pub(crate) mod task {
+    use core::mem::MaybeUninit;
+    use std::cell::{Cell, RefCell};
+    pub(crate) struct TaskControlBlock {
+        pub(crate) bytes: RefCell<Vec<u8>>,
+        pub(crate) copies: Cell<usize>,
+        pub(crate) fault: Cell<bool>,
+        pub(crate) mutate_after_copy: Cell<bool>,
+    }
+    impl TaskControlBlock {
+        pub(crate) fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                bytes: RefCell::new(bytes),
+                copies: Cell::new(0),
+                fault: Cell::new(false),
+                mutate_after_copy: Cell::new(false),
+            }
         }
-        impl TaskControlBlock {
-            pub(crate) fn new(bytes: Vec<u8>) -> Self {
-                Self {
-                    bytes: RefCell::new(bytes),
-                    copies: Cell::new(0),
-                    fault: Cell::new(false),
-                    mutate_after_copy: Cell::new(false),
-                }
+        pub(crate) fn copy_from_user(&self, pointer: usize, output: &mut [u8]) -> Result<(), ()> {
+            self.copies.set(self.copies.get() + 1);
+            if pointer == 0 || self.fault.get() {
+                return Err(());
             }
-            pub(crate) fn copy_from_user(
-                &self,
-                pointer: usize,
-                output: &mut [u8],
-            ) -> Result<(), ()> {
-                self.copies.set(self.copies.get() + 1);
-                if pointer == 0 || self.fault.get() {
-                    return Err(());
-                }
-                let mut input = self.bytes.borrow_mut();
-                let source = input.get(..output.len()).ok_or(())?;
-                output.copy_from_slice(source);
-                if self.mutate_after_copy.get() {
-                    input.fill(0xff);
-                }
-                Ok(())
+            let mut input = self.bytes.borrow_mut();
+            let source = input.get(..output.len()).ok_or(())?;
+            output.copy_from_slice(source);
+            if self.mutate_after_copy.get() {
+                input.fill(0xff);
             }
-            pub(crate) fn copy_from_user_uninit(
-                &self,
-                pointer: usize,
-                output: &mut [MaybeUninit<u8>],
-            ) -> Result<(), ()> {
-                self.copies.set(self.copies.get() + 1);
-                if pointer == 0 {
-                    return Err(());
-                }
-                let mut input = self.bytes.borrow_mut();
-                let source = input.get(..output.len()).ok_or(())?;
-                if self.fault.get() {
-                    for (target, byte) in output.iter_mut().zip(source.iter()).take(3) {
-                        target.write(*byte);
-                    }
-                    return Err(());
-                }
-                for (target, byte) in output.iter_mut().zip(source.iter()) {
+            Ok(())
+        }
+        pub(crate) fn copy_from_user_uninit(
+            &self,
+            pointer: usize,
+            output: &mut [MaybeUninit<u8>],
+        ) -> Result<(), ()> {
+            self.copies.set(self.copies.get() + 1);
+            if pointer == 0 {
+                return Err(());
+            }
+            let mut input = self.bytes.borrow_mut();
+            let source = input.get(..output.len()).ok_or(())?;
+            if self.fault.get() {
+                for (target, byte) in output.iter_mut().zip(source.iter()).take(3) {
                     target.write(*byte);
                 }
-                if self.mutate_after_copy.get() {
-                    input.fill(0xff);
-                }
-                Ok(())
+                return Err(());
             }
+            for (target, byte) in output.iter_mut().zip(source.iter()) {
+                target.write(*byte);
+            }
+            if self.mutate_after_copy.get() {
+                input.fill(0xff);
+            }
+            Ok(())
         }
     }
+}
 
-
-
-mod sync { pub(crate) use spin::{Mutex, Once}; }
+mod sync {
+    pub(crate) use spin::{Mutex, Once};
+}

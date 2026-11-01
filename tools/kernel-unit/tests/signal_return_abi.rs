@@ -17,6 +17,7 @@ mod system {
 
 #[path = "../../../system/linuxd/src/syscall"]
 mod syscall {
+    const INTERNAL_RESTART_NO_HANDLER: isize = isize::MIN + 1;
     pub(crate) use crate::timer;
     pub(crate) mod signal;
     pub(crate) use syscall_abi::errno;
@@ -97,200 +98,181 @@ fn copyin_and_fault_lookup_oom_kill_without_sigsegv_or_arc_leak() {
     }
 }
 
-
-    pub(crate) mod sync {
-        pub(crate) enum WaitResult {
-            OutOfMemory,
-            Woken,
-            Interrupted,
-            TimedOut,
-        }
+pub(crate) mod sync {
+    pub(crate) enum WaitResult {
+        OutOfMemory,
+        Woken,
+        Interrupted,
+        TimedOut,
     }
-    pub(crate) mod task {
-        pub(crate) use crate::signal_info::PendingSignal;
-        use crate::{Arc, Cell, RefCell};
-        #[derive(Clone, Copy)]
-        pub(crate) enum SignalFrameRestoreError {
-            OutOfMemory,
-            Invalid { address: Option<usize> },
-        }
-        pub(crate) struct SignalAction {
-            pub handler: usize,
-            pub flags: usize,
-            pub restorer: usize,
-            pub mask: u64,
-        }
-        pub(crate) struct SignalStack {
-            pub sp: usize,
-            pub flags: i32,
-            pub size: usize,
-        }
-        pub(crate) enum SignalStackError {
-            Active,
-            InvalidFlags,
-            TooSmall,
-        }
-        pub(crate) enum SignalSendError {
-            InvalidSignal,
-            NotFound,
-            Permission,
-            Again,
-        }
-        pub(crate) enum SignalWaitError {
-            Again,
-            Interrupted,
-            OutOfMemory,
-        }
+}
+pub(crate) mod task {
+    pub(crate) use crate::signal_info::PendingSignal;
+    use crate::{Arc, Cell, RefCell};
+    #[derive(Clone, Copy)]
+    pub(crate) enum SignalFrameRestoreError {
+        OutOfMemory,
+        Invalid { address: Option<usize> },
+    }
+    pub(crate) struct SignalAction {
+        pub handler: usize,
+        pub flags: usize,
+        pub restorer: usize,
+        pub mask: u64,
+    }
+    pub(crate) struct SignalStack {
+        pub sp: usize,
+        pub flags: i32,
+        pub size: usize,
+    }
+    pub(crate) enum SignalStackError {
+        Active,
+        InvalidFlags,
+        TooSmall,
+    }
+    pub(crate) enum SignalSendError {
+        InvalidSignal,
+        NotFound,
+        Permission,
+        Again,
+    }
+    pub(crate) enum SignalWaitError {
+        Again,
+        Interrupted,
+        OutOfMemory,
+    }
 
-        pub(crate) struct Task {
-            pub result: Result<usize, SignalFrameRestoreError>,
-            pub restart_pending: Cell<bool>,
-            pub lookup_oom: bool,
-            pub looked_up: RefCell<Option<Option<usize>>>,
-            pub signal: RefCell<Option<(usize, PendingSignal)>>,
-        }
-        thread_local! { pub static CURRENT: RefCell<Option<Arc<Task>>> = const { RefCell::new(None) }; }
-        pub(crate) fn current_task() -> Option<Arc<Task>> {
-            CURRENT.with(|slot| slot.borrow().clone())
-        }
-        pub(crate) fn exit_current_group_by_signal(signal: usize) -> ! {
-            // Fatal transfer 之前必须释放 syscall 的 TCB Arc，防止退出路径泄漏 mm/Thread。
-            assert_eq!(Arc::strong_count(&current_task().unwrap()), 3);
-            panic!("group fatal {signal}");
-        }
-        impl Task {
-            pub(crate) fn resolve_pid(&self, _: usize) -> Option<usize> {
-                unreachable!(
-                    "signal number lookup belongs to PID/kill fixtures; this fixture exercises sigreturn"
-                )
-            }
-            pub(crate) fn clear_syscall_restart(&self) {
-                self.restart_pending.set(false);
-            }
-            pub fn restore_signal_frame(&self) -> Result<usize, SignalFrameRestoreError> {
-                self.result
-            }
-            pub fn signal_frame_fault(&self, address: Option<usize>) -> Result<PendingSignal, ()> {
-                *self.looked_up.borrow_mut() = Some(address);
-                if self.lookup_oom {
-                    return Err(());
-                }
-                Ok(PendingSignal::synchronous_fault(
-                    if address.is_some() {
-                        syscall_abi::signal::SEGV_ACCERR
-                    } else {
-                        syscall_abi::signal::SI_KERNEL
-                    },
-                    address.unwrap_or(0),
-                ))
-            }
-            pub fn queue_synchronous_fault(
-                &self,
-                number: usize,
-                info: PendingSignal,
-            ) -> Result<(), ()> {
-                *self.signal.borrow_mut() = Some((number, info));
-                Ok(())
-            }
-            pub fn copy_from_user(&self, _: usize, _: &mut [u8]) -> Result<(), ()> {
-                unreachable!("copy_from_user is outside the signal-return ABI fixture contract")
-            }
-            pub fn copy_to_user(&self, _: usize, _: &[u8]) -> Result<(), ()> {
-                unreachable!("copy_to_user is outside the signal-return ABI fixture contract")
-            }
-            pub fn signal_action(
-                &self,
-                _: usize,
-                _: Option<SignalAction>,
-            ) -> Result<SignalAction, ()> {
-                unreachable!("signal_action is outside the signal-return ABI fixture contract")
-            }
-            pub fn signal_mask(&self, _: usize, _: Option<u64>) -> Result<u64, ()> {
-                unreachable!("signal_mask is outside the signal-return ABI fixture contract")
-            }
-            pub fn signal_stack(
-                &self,
-                _: Option<SignalStack>,
-            ) -> Result<SignalStack, SignalStackError> {
-                unreachable!("signal_stack is outside the signal-return ABI fixture contract")
-            }
-            pub fn begin_signal_suspend(&self, _: u64) {
-                unreachable!(
-                    "begin_signal_suspend is outside the signal-return ABI fixture contract"
-                )
-            }
-            pub fn pending_signal_set(&self) -> u64 {
-                unreachable!("pending_signal_set is outside the signal-return ABI fixture contract")
-            }
-            pub fn caught_signal_set(&self, _: u64) -> u64 {
-                unreachable!("caught_signal_set is outside the signal-return ABI fixture contract")
-            }
-            pub fn restore_temporary_signal_mask(&self) -> Option<u64> {
-                unreachable!(
-                    "restore_temporary_signal_mask is outside the signal-return ABI fixture contract"
-                )
-            }
-        }
-        pub(crate) fn send_process_signal(_: i32, _: usize) -> Result<(), SignalSendError> {
-            unreachable!("send_process_signal is outside the signal-return ABI fixture contract")
-        }
-        pub(crate) fn send_thread_signal(
-            _: usize,
-            _: usize,
-            _: usize,
-        ) -> Result<(), SignalSendError> {
-            unreachable!("send_thread_signal is outside the signal-return ABI fixture contract")
-        }
-        pub(crate) fn send_tid_signal(_: usize, _: usize) -> Result<(), SignalSendError> {
-            unreachable!("send_tid_signal is outside the signal-return ABI fixture contract")
-        }
-        pub(crate) fn send_queued_process_signal(
-            _: i32,
-            _: usize,
-            _: PendingSignal,
-        ) -> Result<(), SignalSendError> {
+    pub(crate) struct Task {
+        pub result: Result<usize, SignalFrameRestoreError>,
+        pub restart_pending: Cell<bool>,
+        pub lookup_oom: bool,
+        pub looked_up: RefCell<Option<Option<usize>>>,
+        pub signal: RefCell<Option<(usize, PendingSignal)>>,
+    }
+    thread_local! { pub static CURRENT: RefCell<Option<Arc<Task>>> = const { RefCell::new(None) }; }
+    pub(crate) fn current_task() -> Option<Arc<Task>> {
+        CURRENT.with(|slot| slot.borrow().clone())
+    }
+    pub(crate) fn exit_current_group_by_signal(signal: usize) -> ! {
+        // Fatal transfer 之前必须释放 syscall 的 TCB Arc，防止退出路径泄漏 mm/Thread。
+        assert_eq!(Arc::strong_count(&current_task().unwrap()), 3);
+        panic!("group fatal {signal}");
+    }
+    impl Task {
+        pub(crate) fn resolve_pid(&self, _: usize) -> Option<usize> {
             unreachable!(
-                "send_queued_process_signal is outside the signal-return ABI fixture contract"
+                "signal number lookup belongs to PID/kill fixtures; this fixture exercises sigreturn"
             )
         }
-        pub(crate) fn send_queued_thread_signal(
-            _: i32,
-            _: i32,
-            _: usize,
-            _: PendingSignal,
-        ) -> Result<(), SignalSendError> {
-            unreachable!(
-                "send_queued_thread_signal is outside the signal-return ABI fixture contract"
-            )
+        pub(crate) fn clear_syscall_restart(&self) {
+            self.restart_pending.set(false);
         }
-        pub(crate) fn wait_for_signal(
-            _: u64,
-            _: Option<u64>,
-        ) -> Result<(usize, PendingSignal), SignalWaitError> {
-            unreachable!("wait_for_signal is outside the signal-return ABI fixture contract")
+        pub fn restore_signal_frame(&self) -> Result<usize, SignalFrameRestoreError> {
+            self.result
         }
-        pub(crate) fn wait_for_signal_delivery(_: u64) -> crate::sync::WaitResult {
+        pub fn signal_frame_fault(&self, address: Option<usize>) -> Result<PendingSignal, ()> {
+            *self.looked_up.borrow_mut() = Some(address);
+            if self.lookup_oom {
+                return Err(());
+            }
+            Ok(PendingSignal::synchronous_fault(
+                if address.is_some() {
+                    syscall_abi::signal::SEGV_ACCERR
+                } else {
+                    syscall_abi::signal::SI_KERNEL
+                },
+                address.unwrap_or(0),
+            ))
+        }
+        pub fn queue_synchronous_fault(
+            &self,
+            number: usize,
+            info: PendingSignal,
+        ) -> Result<(), ()> {
+            *self.signal.borrow_mut() = Some((number, info));
+            Ok(())
+        }
+        pub fn copy_from_user(&self, _: usize, _: &mut [u8]) -> Result<(), ()> {
+            unreachable!("copy_from_user is outside the signal-return ABI fixture contract")
+        }
+        pub fn copy_to_user(&self, _: usize, _: &[u8]) -> Result<(), ()> {
+            unreachable!("copy_to_user is outside the signal-return ABI fixture contract")
+        }
+        pub fn signal_action(&self, _: usize, _: Option<SignalAction>) -> Result<SignalAction, ()> {
+            unreachable!("signal_action is outside the signal-return ABI fixture contract")
+        }
+        pub fn signal_mask(&self, _: usize, _: Option<u64>) -> Result<u64, ()> {
+            unreachable!("signal_mask is outside the signal-return ABI fixture contract")
+        }
+        pub fn signal_stack(
+            &self,
+            _: Option<SignalStack>,
+        ) -> Result<SignalStack, SignalStackError> {
+            unreachable!("signal_stack is outside the signal-return ABI fixture contract")
+        }
+        pub fn begin_signal_suspend(&self, _: u64) {
+            unreachable!("begin_signal_suspend is outside the signal-return ABI fixture contract")
+        }
+        pub fn pending_signal_set(&self) -> u64 {
+            unreachable!("pending_signal_set is outside the signal-return ABI fixture contract")
+        }
+        pub fn caught_signal_set(&self, _: u64) -> u64 {
+            unreachable!("caught_signal_set is outside the signal-return ABI fixture contract")
+        }
+        pub fn restore_temporary_signal_mask(&self) -> Option<u64> {
             unreachable!(
-                "wait_for_signal_delivery is outside the signal-return ABI fixture contract"
+                "restore_temporary_signal_mask is outside the signal-return ABI fixture contract"
             )
         }
     }
-    pub(crate) mod timer {
-        pub(crate) struct TimeSpec {
-            pub tv_sec: i64,
-            pub tv_nsec: i64,
-        }
-        pub(crate) fn decode_timespec(_: &[u8]) -> TimeSpec {
-            unreachable!("decode_timespec is outside the signal-return ABI fixture contract")
-        }
-        pub(crate) fn timespec_ns(_: TimeSpec) -> Result<u64, isize> {
-            unreachable!("timespec_ns is outside the signal-return ABI fixture contract")
-        }
-        pub(crate) fn get_time_ns() -> u64 {
-            unreachable!("get_time_ns is outside the signal-return ABI fixture contract")
-        }
+    pub(crate) fn send_process_signal(_: i32, _: usize) -> Result<(), SignalSendError> {
+        unreachable!("send_process_signal is outside the signal-return ABI fixture contract")
     }
-
-
+    pub(crate) fn send_thread_signal(_: usize, _: usize, _: usize) -> Result<(), SignalSendError> {
+        unreachable!("send_thread_signal is outside the signal-return ABI fixture contract")
+    }
+    pub(crate) fn send_tid_signal(_: usize, _: usize) -> Result<(), SignalSendError> {
+        unreachable!("send_tid_signal is outside the signal-return ABI fixture contract")
+    }
+    pub(crate) fn send_queued_process_signal(
+        _: i32,
+        _: usize,
+        _: PendingSignal,
+    ) -> Result<(), SignalSendError> {
+        unreachable!("send_queued_process_signal is outside the signal-return ABI fixture contract")
+    }
+    pub(crate) fn send_queued_thread_signal(
+        _: i32,
+        _: i32,
+        _: usize,
+        _: PendingSignal,
+    ) -> Result<(), SignalSendError> {
+        unreachable!("send_queued_thread_signal is outside the signal-return ABI fixture contract")
+    }
+    pub(crate) fn wait_for_signal(
+        _: u64,
+        _: Option<u64>,
+    ) -> Result<(usize, PendingSignal), SignalWaitError> {
+        unreachable!("wait_for_signal is outside the signal-return ABI fixture contract")
+    }
+    pub(crate) fn wait_for_signal_delivery(_: u64) -> crate::sync::WaitResult {
+        unreachable!("wait_for_signal_delivery is outside the signal-return ABI fixture contract")
+    }
+}
+pub(crate) mod timer {
+    pub(crate) struct TimeSpec {
+        pub tv_sec: i64,
+        pub tv_nsec: i64,
+    }
+    pub(crate) fn decode_timespec(_: &[u8]) -> TimeSpec {
+        unreachable!("decode_timespec is outside the signal-return ABI fixture contract")
+    }
+    pub(crate) fn timespec_ns(_: TimeSpec) -> Result<u64, isize> {
+        unreachable!("timespec_ns is outside the signal-return ABI fixture contract")
+    }
+    pub(crate) fn get_time_ns() -> u64 {
+        unreachable!("get_time_ns is outside the signal-return ABI fixture contract")
+    }
+}
 
 use timer as time;

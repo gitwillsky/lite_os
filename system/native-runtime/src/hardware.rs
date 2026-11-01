@@ -9,7 +9,7 @@ use crate::syscall::{check, invoke};
 use crate::{Handle, Port, Vmo};
 
 object!(
-    /// 硬件访问权（根、MMIO 区间、中断向量区间）。
+    /// 不可变访问权（根、MMIO、中断向量或系统操作区间）。
     Resource
 );
 object!(
@@ -36,11 +36,19 @@ fn new_handle(status: Status, out: native_abi::Handle) -> Result<Handle, Status>
 }
 
 impl Resource {
-    /// 从父 resource 切出子 resource。
+    /// 从父 resource 的同类范围切出不可扩权的子 resource。
+    ///
+    /// # Parameters
+    /// - `parent`: 授权来源，其句柄必须具有 WRITE。
+    /// - `kind`: MMIO、IRQ 或 SYSTEM；根 resource 可创建任一种，其余父对象只能细分同类范围。
+    /// - `base`/`size`: 非空授权区间；SYSTEM 使用操作编号，MMIO 使用页对齐的物理字节。
+    ///
+    /// # Returns
+    /// 新的独立资源句柄；父对象的范围不变。
     ///
     /// # Errors
-    ///
-    /// 区间不在父 resource 内。
+    /// 越过父范围、跨 kind 或覆盖 RAM 返回 ACCESS_DENIED；空/溢出/非法 kind 返回 INVALID_ARGS；
+    /// 对象或句柄分配失败返回 NO_MEMORY。
     pub fn create(parent: &Self, kind: u32, base: u64, size: u64) -> Result<Self, Status> {
         let mut out = native_abi::HANDLE_INVALID;
         // SAFETY: 输出位置有效。

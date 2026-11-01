@@ -32,18 +32,20 @@ path = "src/realtime_signals.rs"
 name = "audio-mixer-bench"
 path = "src/audio_mixer.rs"
 
+[[bin]]
+name = "blocked-load-bench"
+path = "src/blocked_load.rs"
+
 [dependencies]
 mmio = { path = "../../mmio" }
 netd-unit = { path = "../netd-unit" }
 fallible-tree = { path = "../../fallible-tree" }
 native-runtime = { path = "../../system/native-runtime" }
 device-model = { path = "../../system/device-model" }
-device-protocol = { path = "../../system/device-protocol" }
 network-protocol = { path = "../../system/network-protocol" }
 bitflags = "2.4"
 spin = { version = "0.10.0", default-features = false, features = ["mutex", "spin_mutex", "once"] }
 syscall-abi = { path = "../../syscall-abi" }
-smoltcp = { version = "=0.13.1", path = "../../vendor/smoltcp", default-features = false, features = ["alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-raw", "socket-tcp", "socket-tcp-reno", "socket-udp"] }
 
 [lints]
 workspace = true

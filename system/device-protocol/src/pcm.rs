@@ -21,7 +21,6 @@ const PREPARE: u32 = 3;
 const START: u32 = 4;
 const STOP: u32 = 5;
 const SUBMIT: u32 = 6;
-const WRITABLE: u32 = 7;
 
 const EVENT_PERIOD: u32 = 1;
 const EVENT_XRUN: u32 = 2;
@@ -99,7 +98,7 @@ pub fn publish(directory: &Channel, device: Arc<dyn PcmOutput>) -> Result<(), St
         1,
         b"pcm-server",
         Arc::try_new(
-            move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
+            move |ordinal: u32, request: &mut Reader<'_>, _, _: &mut Writer| {
                 match ordinal {
                     CONFIGURE => {
                         let configuration = PcmConfiguration {
@@ -116,9 +115,6 @@ pub fn publish(directory: &Channel, device: Arc<dyn PcmOutput>) -> Result<(), St
                     SUBMIT => device
                         .submit_period(request.bytes()?)
                         .map_err(encode_error)?,
-                    WRITABLE => {
-                        reply.bool(device.writable());
-                    }
                     _ => return Err(native_abi::ERR_NOT_SUPPORTED),
                 }
                 Ok(Vec::new())
@@ -244,11 +240,5 @@ impl PcmOutput for RemotePcm {
         request.bytes(bytes);
         call(&self.channel, &request, Vec::new()).map_err(decode_error)?;
         Ok(())
-    }
-
-    fn writable(&self) -> bool {
-        call(&self.channel, &Writer::request(WRITABLE), Vec::new())
-            .and_then(|reply| reply.reader().bool())
-            .unwrap_or(false)
     }
 }

@@ -70,7 +70,7 @@ pub(crate) fn bind_display() -> Option<EarlyDisplay> {
     None
 }
 
-/// 装配 platform 发现的全部 VirtIO 设备：先 PCI console（UTM 产品拓扑），再按 DTB 顺序装配 MMIO transport。
+/// 装配 platform 发现的全部 VirtIO 设备：先 PCI console/block，再按 DTB 顺序装配 MMIO transport。
 ///
 /// # Parameters
 ///
@@ -79,26 +79,34 @@ pub(crate) fn bind_display() -> Option<EarlyDisplay> {
 ///
 /// # Panics
 ///
-/// 已识别设备的 adapter 初始化或 registry 发布失败时 fail-stop；block 设备注册失败只记录错误，
-/// 与 rootfs 缺失由 kernel 装配层统一报告的既有语义一致。
+/// 已识别设备的 adapter 初始化或 registry 发布失败时 fail-stop。
 pub(crate) fn bind_platform_devices(display: Option<&EarlyDisplay>) {
     bind_pci_console();
+    bind_pci_block();
     bind_mmio_transports(display);
 }
 
 /// UTM 产品路径通过 PCI transport 暴露 virtio-console；QEMU 门禁使用 MMIO transport。
 fn bind_pci_console() {
-    let Some(function) = pci_discovery::find_console() else {
-        return;
-    };
-    assert_eq!(
-        function.device_id, CONSOLE,
-        "PCI transport returned a non-console device"
-    );
-    let device = VirtIOConsoleDevice::from_pci(function.transport, function.bti)
-        .expect("virtio-console PCI init failed");
-    publish_console(device, function.interrupt);
-    info!("VirtIO console PCI transport on IRQ {}", function.interrupt);
+    for function in pci_discovery::devices(CONSOLE) {
+        let device = VirtIOConsoleDevice::from_pci(function.transport, function.bti)
+            .expect("virtio-console PCI init failed");
+        publish_console(device, function.interrupt);
+        info!("VirtIO console PCI transport on IRQ {}", function.interrupt);
+    }
+}
+
+fn bind_pci_block() {
+    for function in pci_discovery::devices(BLOCK) {
+        let device = VirtIOBlockDevice::from_device(super::VirtIODevice::from_pci(
+            function.device_id,
+            function.transport,
+            function.bti,
+        ))
+        .expect("virtio-block PCI init failed");
+        publish_block(device, function.interrupt);
+        info!("VirtIO block PCI transport on IRQ {}", function.interrupt);
+    }
 }
 
 fn bind_mmio_transports(display: Option<&EarlyDisplay>) {
@@ -216,9 +224,12 @@ fn bind_block(transport: &VirtioMmioTransport, base: usize) {
         );
         return;
     };
-    register_device_interrupt(transport.irq, device.irq_handler_for(), "virtio-block");
-    match device_protocol::block::publish(crate::handles::directory(), device) {
-        Ok(()) => info!("VirtIO block at {:#x}", transport.base_addr),
-        Err(status) => error!("VirtIO block publication failed: {status}"),
-    }
+    publish_block(device, transport.irq);
+    info!("VirtIO block at {:#x}", transport.base_addr);
+}
+
+fn publish_block(device: Arc<VirtIOBlockDevice>, irq: u32) {
+    register_device_interrupt(irq, device.irq_handler_for(), "virtio-block");
+    device_protocol::block::publish(crate::handles::directory(), device)
+        .unwrap_or_else(|status| panic!("VirtIO block publication failed: {status}"));
 }

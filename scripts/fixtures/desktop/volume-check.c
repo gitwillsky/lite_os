@@ -51,10 +51,10 @@ int main(void) {
     long lo = volume.value.integer.min, hi = volume.value.integer.max;
     check(lo >= 0 && hi > lo && hi <= 0x7fffffffL, "gain range");
     write_pair(fd, &volume, hi, hi); write_pair(fd, &sw, 1, 1);
-    puts("VOLUME_CONTROL_OK"); fflush(stdout);
+    fputs("VOLUME_CONTROL_OK\n", stderr);
     wait_state(fd, &volume, &sw, lo + (hi - lo) / 2, 1);
-    puts("VOLUME_UI_50"); fflush(stdout);
+    fputs("VOLUME_UI_50\n", stderr);
     wait_state(fd, &volume, &sw, lo + (hi - lo) / 2, 0);
-    puts("VOLUME_UI_MUTED"); fflush(stdout);
+    fputs("VOLUME_UI_MUTED\n", stderr);
     close(fd); return 0;
 }

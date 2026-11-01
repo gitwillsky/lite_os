@@ -246,4 +246,6 @@ fn actual_path_preparation_never_acquires_a_writer_or_device_backend() {
     assert_eq!(fs::writers(), 0);
 }
 
-mod sync { pub(crate) use spin::Mutex; }
+mod sync {
+    pub(crate) use spin::Mutex;
+}

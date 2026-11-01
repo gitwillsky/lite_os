@@ -136,6 +136,35 @@ pub(crate) mod task {
         pub(crate) fn expire(now: u64) -> bool {
             WAIT_REGISTRY.expire_one(now).is_some()
         }
+        pub(crate) fn empty_pipe_notification(pipe: &Arc<crate::ipc::Pipe>) -> bool {
+            use crate::ipc::{Pipe, PipeDirection};
+            WAIT_REGISTRY.notification().wake_pipe_one(
+                Pipe::identity(pipe), PipeDirection::Read, false, 1,
+                pipe.poll_state(PipeDirection::Read), &fallible_tree::FallibleMap::new(),
+            ).is_some()
+        }
+        pub(crate) fn notification_does_not_wake_a_rearmed_poll() {
+            use crate::ipc::{Pipe, PipeDirection};
+            use fallible_tree::FallibleMap;
+            let (reader, _writer) = Pipe::notification_pair().unwrap();
+            let pipe = reader.pipe();
+            let wait = || Waiting(WAIT_REGISTRY.publish(WAIT_REGISTRY.allocate_ticket()
+                .prepare_poll(alloc::vec![PollWaitKey::pipe(&pipe, PipeDirection::Read, 1, false, None)],
+                    None, Arc::new(TaskControlBlock(21))).unwrap()));
+            let first = wait();
+            let notification = WAIT_REGISTRY.notification();
+            let groups = FallibleMap::new();
+            let state = pipe.poll_state(PipeDirection::Read);
+            assert!(notification.wake_pipe_one(Pipe::identity(&pipe), PipeDirection::Read,
+                false, 1, state, &groups).is_some());
+            assert_eq!(first.arm(), Err(WaitResult::Woken));
+            let rearmed = wait();
+            assert!(notification.wake_pipe_one(Pipe::identity(&pipe), PipeDirection::Read,
+                false, 1, state, &groups).is_none(), "old readiness snapshot woke a new registration");
+            assert!(WAIT_REGISTRY.notification().wake_pipe_one(Pipe::identity(&pipe), PipeDirection::Read,
+                false, 1, state, &groups).is_some());
+            assert_eq!(rearmed.arm(), Err(WaitResult::Woken));
+        }
         pub(crate) fn assert_empty() {
             assert!(!WAIT_REGISTRY.has_expired_deadline(u64::MAX));
         }

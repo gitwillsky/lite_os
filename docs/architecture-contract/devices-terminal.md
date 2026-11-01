@@ -2,75 +2,56 @@
 
 ## Owner
 
-- concrete VirtIO adapter 独占 queue、DMA、descriptor、completion 与 reset state；`devices::model` 只发布通用设备类接口。
-- VirtIO Console adapter 独占 control RX/TX 与 exact-name 命中的唯一 data RX/TX pair、fixed RX/TX slot、named-port control state、
-  byte ring 与 terminal reset；`devices::virtio_port` domain 独占自己创建的 notification Pipe。`drivers` 只发布
-  唯一物理 byte-stream seam，devfs 不复制 connected/readable/writable state。`VirtIODevice` 的
-  transport enum 是 MMIO 与 PCI 的唯一分派点；两种 transport 不得各自实现 console adapter。
-- `VirtQueue` 独占 split-ring cursor、descriptor free list 与单一 pending-used latch；`used()` 只摘取
-  ring entry 并返回不可复制的 `UsedDescriptor`，`recycle_used()` 只消费当前 queue 的唯一 token。
-  adapter slot/generation/head、device length 与 response 尚未验证前，free list 不得改变。
-- `drivers::virtio::queue::DmaBuffer` 是 fixed bytes 与初始化时 kernel-VA→physical segments 的唯一共同
-  owner；adapter slot 从映射建立保持到 completion 或 reset，`VirtQueue` 只消费带 lifetime 的
-  cached `DmaSlice`，不拥有、翻译或延长 backing 生命周期。
-- VirtIO-GPU `GpuCommand` 是 runtime opcode、wire length 与 completion stage 的唯一共同 owner；
-  `sequence` 只从已验证 completion 选择一个后继领域 command 或 terminal retirement，随后由
-  `submit_command` 单一出口编码并发布。`poll_update` 不得自行组合 prepare/opcode/length/stage。
-- VirtIO-GPU cursorq 独占一个 DMA-stable 56-byte request slot、descriptor head 与单调 completion
-  sequence；`MOVE_CURSOR`/`UPDATE_CURSOR` 不得进入 controlq 或复用 render fence。纯 move 在 slot
-  占用时只覆盖尚未发布的 latest position，并携带 cursorq 当前 resource 可见性，ioctl 不等待 used
-  completion；shape update 必须等待 slot readiness，且 DRM cursor2 wait token 在 exact used completion
-  前保活 64×64 B8G8R8A8 dumb backing。
-- `devices::model::io_completion` 是 block/RNG 共用的唯一 request slot、descriptor identity、completion
-  handshake 与 capacity membership owner；typed `IoWaitKey { device, kind }` 保留完整 slot、
-  generation 与 ticket，不位打包或复制 adapter 私有 wait ABI。`device` 是每个 adapter 构造时分配的
-  实例 identity，而非设备种类；同类多实例按种类区分会让 completion 唤醒另一设备的 waiter。block 的 16 个 fixed slots 独占
-  request/data/status DMA，RNG 的 4 个 fixed slots 独占 device-write DMA；scheduler 只通过
-  `IoWaitTarget` callback 拥有 `WaitMembership::DriverIo`。
-- `devices::console` 独占 console RX ring 与通用串口 `ConsoleDevice`（platform 提供设备名与同步输出原语）；
-  `devices::tty` 经它读写 raw 字节。输出原语接收整段字节，platform 必须在与内核日志相同的 console 序列化锁内
-  写完整段（aarch64/riscv64 各自的 `CONSOLE`）；逐字节输出会让 tty 数据插进一条内核日志的中间，
-  日志行被撕裂，依赖串口提示符的 runtime gate 在多核下概率性失败。单次写入至多 512 字节，所以
-  锁内的本地中断屏蔽时间与一条内核日志同量级；原语不得记录日志，否则会重入同一把 `IrqMutex`。
-  RISC-V 批量 console 即使先前写失败也必须继续 flush 完整批次与尾部，并返回首个错误；
-  flush 复位批量长度，错误短路会令满缓冲无法推进。host 故障注入直接执行同一生产 console owner。
-  Benchmark 决策：不新增 benchmark。每次 tty write 只多一次无竞争取锁，被其后逐字节的 UART MMIO
-  轮询淹没；riscv64 的 SBI 调用数反而从逐字节降为 `ceil(n/256)`，日志批量成本由既有 `log_cost` 围栏继续约束。
-  块设备 seam 属于 `block`，`fs` 不依赖 `drivers`。
-- `devices::model::registry` 独占各设备类 adapter Arc 与 `DRIVER_IO` completion 源的发布；只追加，index 是
-  稳定 identity，不区分“主设备”。platform 只经 trait 对象注册，消费领域不得持有具体 VirtIO 类型；具体 adapter 位于 `virtio`，块设备注册表归 `block`。
-- `drm::DrmDevice`/`DrmFile` 独占 display/KMS/GEM/framebuffer/master/event state；`input::EvdevDevice`/`InputFile` 独占 input/client state。
-- `fs::chardev` 独占字符设备 driver 注册表，`fs::devnode` 独占 devfs 节点与块设备注册表：driver 按单 major 内的 minor 区间登记（Linux `cdev_add`），
-  devfs 节点按路径登记（devtmpfs）；devpts 等动态节点只登记 driver 区间。设备子系统以
-  `DeviceFile` 拥有记录边界、阻塞、poll 唤醒源、ioctl UAPI 与 mmap 裁决，fs/devfs/syscall 不认识
-  具体设备种类。
-- `devices::tty` 独占系统 console Terminal 单例、TTY/pts 设备文件与 termios/session ioctl；`fs::mem` 独占
-  `null`/`zero`/`random`/`urandom`/`kmsg`。`tty::pty` 独占 PTY registry/pair；Terminal 独占
-  session/foreground/termios/winsize 与创建时绑定的实际设备号。用户态终端只消费标准 PTY，
-  图形窗口由共享 UI 运行库拥有。
-- userspace `linux-uapi` 独占 DRM/evdev/PTY/process/poll ancillary 的 raw musl FFI；`OwnedFd`、
-  `DumbBuffer`、`InputDevice`、`PtySession` 与 `SessionChild` 独占对应资源 cleanup。应用不得复制
-  layout、constant、extern block 或裸 owner。
+| Owner | 唯一状态与边界 |
+|---|---|
+| `kernel::serial` / `kernel::log` | 串口 RX ring / 日志记录与输出；日志不拥有串口输入 |
+| `kernel::object::resource` | 不可变 MMIO/IRQ/system 授权范围与中断投递、屏蔽、ack |
+| `kernel::iommu` / `kernel::vm::device_space` | stream domain、IOVA / 设备页表及 retirement |
+| `arch::dma` | 静态硬件后端、设备表编码与同步失效 |
+| `devmgr::platform` / `devmgr::drivers` | 设备事实解码、装配 / 全部硬件 adapter、DMA、queue、reset |
+| `devmgr::io_completion` / `devmgr::completion` | 请求槽与 capacity handshake / 合并完成通知与服务线程 |
+| `device-model` / `device-protocol` | 设备类接口 / 设备目录、channel、共享 VMO 的传输契约 |
+| `linuxd::devices` | DRM、evdev、ALSA、TTY、USB sysfs、virtio-port 的 Linux 语义 |
+| `linuxd::fs::chardev` / `devnode` | cdev minor 区间注册 / devfs inode identity |
+| `netd` / `ext4d` | 网络设备消费与协议栈 / 块设备消费与文件系统 |
+| `user/linux-uapi` 与 compositor | 应用 Linux UAPI 资源封装 / DRM master、evdev、标准 Wayland |
 
-- 实际 OFD 最后 fput 通过 `DeviceFile::release` 消费 PTY/FIFO admission；backend Arc 观察者
-  只保活已退休 allocation，不推迟 peer EOF/HUP、PTY hangup 或索引复用。master 与独立 slave
-  的失败构造和最终 Drop 消费同一 close 路径，不另设回滚 owner。
-- `PtyRegistry.slots` 是唯一 weak AVL index；Terminal/pair/node allocation 和 devpts capacity
-  准备在 registry spin guard 外，发布重验可复用索引，loser/旧 weak storage 锁外释放。
-  Pair 的实际 `master_open/slave_opens` 决定可复用性；不得以 Weak 是否还能 upgrade 代替 admission。
+adapter 的 queue、slot generation 与设备地址只在 devmgr 有一份权威；Linux 文件壳和 RPC client
+只持有协议能力，不复制硬件 state。DMABUF/GEM/framebuffer、TTY session 与 evdev per-open queue
+分别留在 linuxd 的相应领域。用户态终端只消费标准 PTY，不使用私有显示或 console ABI。
+
+## DMA 与 IOMMU 寿命
+
+1. BTI 绑定设备 stream，PMT 保活固定页和设备映射；固定期间不得 decommit、替换或 COW 冻结该页。
+   恒等 BTI 只提供物理设备地址和 pin，不提供设备隔离。
+   root-server 保留初始根 authority，并只向可信 devmgr 委派根副本；linuxd 仅获得 system 子范围，
+   覆盖 debuglog 读取、串口、UTC 设置和电源。system resource 不能创建 MMIO/IRQ/IOMMU、不能扩大父范围或恢复根。
+   Resource authority 属于不可变 kind/range，创建子 resource 另要求句柄 WRITE；普通应用不接触 native resource。
+   devmgr 按 DTB 路由分别持有恒等/硬件 IOMMU；MMIO 设备不借 PCI stream 0。
+   PCI iommu-map 的全部区间经 phandle、重叠与溢出校验，应用 iommu-map-mask 后选择 stream；
+   声明映射但 requester 未覆盖时 fail-stop，不隐式绕过。当前只支持一个平台 IOMMU。
+   VirtIO transport 对平台提供的 ACCESS_PLATFORM 统一协商，全部 adapter 继续使用同一 BTI DMA 接口。
+2. domain 索引与 ARM context storage 必须先预留，再发布硬件根指针。发布后不得因可恢复分配失败
+   析构根表；命令队列失效失败只能保活 owner 并 fail-stop。domain tag 单调分配，耗尽返回错误且不回绕。
+3. 新映射先完成 coherent 页表写入屏障，再交付 IOVA。撤销及部分映射回滚先移除 PTE，再完成设备
+   TLB 失效，最后释放页表页、IOVA 与 VMO pin。CPU translation fence 不能代替设备失效。
+4. IOMMU owner 退休先使 ARM GBPA abort / CR0 disable 完成，或使 RISC-V DDTP Off / command queue
+   停止完成，再释放硬件表、队列和 domain 根表。构造中启用硬件后的失败遵循同一顺序；禁止退到 bypass/Bare。
+5. `DmaFrame` 保证 table/queue 物理连续、清零、驻留到 owner drop；后端只使用 physical page number
+   和 arch direct-map，不反向依赖通用内存分配实现。
+
+当前 ARM 使用线性 stream table，最多 4096 streams；RISC-V 使用两级设备目录，basic/extended
+context 分别覆盖 16/15 位设备号。两者尚未启用事件/故障队列。host OOM 回归执行实际 domain owner，
+验证发布前预留与 tag 耗尽。boot gate 分别开启 SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和
+MMIO net/RNG 验证混合 DMA 的真实读写、同步与网络；不宣称设备热移除、硬件错误队列或物理机验收。
 
 ## Interface
 
-- 设备类 deferred vector 由消费领域（drm、input、virtio_port）以 `deferred::register` 分配并经
-  device seam 的 `bind_completion_work` 绑定给 adapter；adapter 只经 `raise_completion` 发布，绑定时补发
-  一次以消费绑定前已到达的 completion。核心向量（timer、console、network、driver I/O）是固定常量。
-- VirtIO hardirq handler 只读写 interrupt status/ack 并发布合并 deferred bit，不得取得
-  queue/control/event lock、遍历 `KERNEL_SPACE` 或回收 descriptor。net、GPU、input 的 ordinary
-  adapter lock 只允许 task context 与统一 user-return/idle deferred safe point 进入；禁止为个别
-  adapter 增设 IRQ-lock 兼容路径。
-- VirtIO Console hardirq 只发布 `devices::virtio_port` 绑定的 deferred vector；deferred pass 必须先 claim/validate/recycle completion，
-  再 repost RX descriptor，并按每次 repost 通知对应 queue。用“used ring 仍有数据”代替 repost
-  notification 会在恰好 drain 完一批后永久停止 host→guest stream，禁止这种近似。
+- devmgr 的中断线程只确认设备并请求完成分派；电平中断在设备侧清除后才 ack。
+  `completion::raise` 是可合并通知，完成线程清除 pending 后分派全部已注册 source；
+  新完成必须重新置位，不能依赖下一次无关中断。普通 adapter lock 不跨等待持有。
+- VirtIO Console completion 必须先 claim/validate/recycle，再 repost RX 并通知对应 queue；
+  used ring 有数据不能代替 repost notification。
 - `PORT_OPEN` 与 `PORT_NAME` 顺序没有领域保证；adapter 必须分别保存 host-open 与 exact-name match，
   `PORT_NAME` payload 必须先消费 QEMU 发布的单个尾随 NUL 再做 exact match；漏掉该 wire terminator
   会使标准 `com.redhat.spice.0` 永远无法命中。
@@ -81,29 +62,17 @@
   name match 后 exactly once 回复 guest `PORT_OPEN=1`，并只在 guest acknowledgement 已发布且
   host-open 同时成立时发布 connected。缺少 guest open 会让 QEMU 保留 channel 却不投递 byte
   stream；`PORT_REMOVE` 或 transport failure 必须使 read/write/poll 同时观察 terminal disconnect。
-- 同步 block 与 entropy request 在 task context 通过 `IoCompletion` handshake 发布
-  `WaitMembership::DriverIo` 后睡眠；只有启动期 block I/O 与创建 init `AT_RANDOM` 尚无 current
-  task，经 architecture assembly seam 临时补开 SEIE/SSIE/SIE 并执行带固定 resume
-  label 的 WFI。hardirq 已发布的 SSIP 作为已确认 device edge 的耐久 wake token；
-  external/software trap 若命中 enable-to-WFI 窗口，kernel trap entry 必须把 `sepc`
-  从 WFI 精确推进到 resume label，避免唯一 device edge 已确认后重新睡眠；这个
-  PC identity 是唯一 race owner，不得增加平行 flag/poll path。精确恢复原状态后调用
-  同一 completion consumer。两条路径都不得轮询 MMIO/used ring 或持有 queue lock 等待。
-  scheduler processor topology 必须先于 wait-target factory 建立；随后加载 `/bin/init` 的 block I/O
-  才能安全观察“无 current task”并选择 bootstrap WFI。反序会让 `current_task()` 永久等待尚未建立
-  的 topology。bootstrap wait 每次睡眠前必须检查一次 used ring；若 completion 已在 S-mode external
-  delivery 启用前发布，必须经同一 `VirtIOCompletionIrq` owner 先 ack 已断言的 device line 再 reclaim，
-  使下一次慢 completion 能产生可唤醒 WFI 的新中断。enable-to-WFI 窗口
-  由上述 trap-PC resume 规则关闭；这不是 MMIO polling 或 spin fallback。
-- block/RNG hardirq 共用 `VirtIOCompletionIrq`：status/ack 成功时精确确认 bits，读取或 ack 失败时
-  发布 transport-error latch，并无条件发布一次 `DriverIo` deferred work；safe point 消费 error 后
-  reset/fail 全部 request。吞掉 MMIO error 会让已 claim 的唯一 IRQ edge 后 waiter 永久睡眠。
-- `main` 决定装配顺序，`drivers::virtio::binding` 拥有具体 VirtIO 绑定表；driver、DRM、input、filesystem 与 syscall 不得依赖 QEMU machine types。
+- block 与 entropy request 使用 `IoCompletion` 的统一先复查、登记、睡眠握手，
+  经服务线程描述符 park/unpark；不轮询 MMIO/used ring，也不在 queue lock 内等待。
+  `devmgr::io_completion` 的 typed device/slot/generation/ticket 是唯一请求身份，不交给内核解释。
+- block/RNG 中断处理共用 `VirtIOCompletionIrq`；transport error 锁存后仍须请求完成分派，
+  使 completion owner reset 并唤醒全部 outstanding request，不能吞掉已确认的唯一设备边沿。
+- `devmgr::main` 决定装配顺序，`devmgr::drivers::virtio::binding` 拥有具体 VirtIO 绑定表；driver、DRM、input、filesystem 与 syscall 不得依赖 QEMU machine types。
 - VirtIO PCI discovery 必须从 vendor capabilities 得到 modern common/notify/ISR/device windows，按
   `cap.offset + queue_notify_off * notify_off_multiplier` 计算 doorbell，禁用 MSI-X 并只消费 DTB
   `interrupt-map` 给出的 INTx。BAR、capability chain、queue size 或 route 非法时不得发布半初始化 adapter。
 - QEMU `virt` 必须在任何 VirtIO queue publication 前证明 root `dma-coherent`；缺失时 fail-stop，禁止增加 bounce buffer、每次提交 cache flush 或“先运行再探测”的兼容路径。
-- DRM/evdev/ALSA/TTY ioctl UAPI 由各设备子系统经 `DeviceFile::ioctl` 编解码；syscall 只提供
+- DRM/evdev/ALSA/TTY ioctl UAPI 由各设备子系统经 linuxd 的 `DeviceFile::ioctl` 编解码；syscall 只提供
   `UserMemory`、`O_NONBLOCK` 与调用者特权位。devfs 只按注册表发布 node identity，不拥有 device state。
 - 设备读写经 `UserOutput`/`UserInput` 游标（Linux `iov_iter` 子集）直接交付：破坏性出队（evdev/DRM
   event、PTY master、virtio port）前必须先 `reserve` 整批目标，出队后的 copy 才不会因 fault 丢数据；
@@ -113,9 +82,9 @@
   pts，读写与唤醒源与直接打开一致；caller session 没有 controlling TTY 时返回 `ENXIO`。
 - `/dev/virtio-ports/com.redhat.spice.0` 是 mode `0600` 的 character byte stream：read/write 支持
   blocking 与 `O_NONBLOCK`，poll/epoll 只投影 adapter level readiness 与 disconnect。它不是私有
-  clipboard syscall；SPICE agent framing 属于用户态，当前没有 consumer。后续 agent 必须在单一 owner
+  clipboard syscall；SPICE agent framing 属于用户态，agent 必须在单一 owner
   解析 capability/消息，并把 resize 只提交到标准 DRM/KMS seam。
-- display completion、input packet 与 PTY byte readiness 统一投递 semantic event；hardirq 不执行 renderer、filesystem 或 task logic。
+- display/input completion 经设备协议投递，PTY byte readiness 在 linuxd 的 Pipe owner 内投递；内核 IRQ 路径不执行这些领域逻辑。
 - terminal userspace 只能使用标准 PTY、termios、signal、ANSI/ECMA-48；禁止私有 console syscall/protocol。用户态显示协议不进入内核 ABI。
 - 动态 client/window/child/config 集合必须使用 fallible `Vec`/`String` reserve 后发布，不得恢复任意
   8-slot 上限；damage、wire frame、input batch 与 renderer row 是协议或热路径 bounded buffer，继续
@@ -145,7 +114,7 @@
 ### UART 基线
 
 - init 只监督网络服务、`display-service`（有 `/dev/dri/card0` 时 exec `/bin/compositor`，否则安静待命）与 UART shell，不建立 seat socket、显示器文本 VT 或旧图形会话。
-- `compositor` 独占 DRM master 与 evdev 读取；其首帧必须与内核 `boot::boot_screen` 的最后一帧逐像素一致（`verify_display.py` 以 `LBS1` 参考解码器裁决），光标素材是 `LCS1` 数据文件，不内置常量。
+- `compositor` 独占 DRM master 与 evdev 读取；其首帧必须与devmgr 的 `boot_screen` 的最后一帧逐像素一致（`verify_display.py` 以 `LBS1` 参考解码器裁决），光标素材是 `LCS1` 数据文件，不内置常量。
 - 指针焦点跟随光标下的窗口，键盘焦点跟随栈顶（活动）窗口；带描述符的消息（`wl_keyboard.keymap`）按段发送，fd 总先于引用它的消息到达。
 - `input::Decoder` 先累积原始相对位移并映射、钳制绝对坐标；会话仅原地合并同批相邻的语义指针位置，
   保留最新位置。按钮、按键和滚轮均为顺序屏障，不跨越屏障合并，不增加队列或分配。
@@ -222,7 +191,7 @@
   归还 allocator；device 不完成 reset 时只能保活 owner 并 fail-stop 等待。
 - block request slots 与 head index 在 device ready 前一次预留，uncontended 提交不分配；slot
   exhaustion 是 capacity backpressure，不是 device error。contended caller 在 queue lock 外准备
-  唯一 capacity wait node，OOM 不发布 membership 并返回 `OutOfMemory`；task 睡眠、bootstrap WFI，
+  唯一 capacity wait node，OOM 不发布 membership 并返回 `OutOfMemory`；请求服务线程睡眠，
   slot 在完成结果/读数据消费后 release 并直接 FIFO handoff，随后锁外精确唤醒。同步调用不可由
   signal 中途取消，request DMA owner 必须保留到 completion 或 device reset；reset 原子发布 failed、
   完成固定 outstanding 并清除 head mapping，capacity waiters 以固定 batch 续投 deferred work，最终
@@ -338,9 +307,9 @@ render/adapter/display completion 都先推进 reset，再推进 detach/UNREF，
 
 ## USB host 与 UAC2 playback
 
-1. `drivers::usb::xhci::Host` 独占控制器 DMA 与 slot generation。hardirq 只 ack/发布 `DRIVER_IO`；State spin lock 只覆盖有界 ring 操作，task-only operations mutex 串行化 command、EP0、时钟与 alternate setting。枚举线程由 `main` 创建，驱动不反向依赖 task。
+1. `drivers::usb::xhci::Host` 独占控制器 DMA 与 slot generation。中断服务线程只 ack/请求完成分派；State 短锁 只覆盖有界 ring 操作，task-only operations mutex 串行化 command、EP0、时钟与 alternate setting。枚举线程由 `devmgr::main` 创建，驱动不反向依赖 task。
    端口的 Empty/Seen/Addressed 状态同时覆盖未绑定的 HID 等设备，避免 reset 事件自激重枚举。
-2. producer 最后 Release 发布 TRB cycle，doorbell 前经过 arch 的 device-ordering 屏障；consumer Acquire 读取 event cycle，核对地址/slot/DCI 后回收。event ring 每次最多处理 128 项，仍有工作则再次投递。
+2. producer 最后 Release 发布 TRB cycle，doorbell 前经过 `mmio` 的 device-ordering 屏障；consumer Acquire 读取 event cycle，核对地址/slot/DCI 后回收。event ring 每次最多处理 128 项，仍有工作则再次投递。
    每个 slot generation 在控制器生命周期内不复用；旧 PCM adapter 即使遇到相同 slot/port，也不能操作新连接。
 3. Disable Slot completion 是 context、ring 与 payload 的释放屏障；Stop Endpoint completion 后才能清 ring、Set TR Dequeue 或重配。command/control 超时后停止控制器并保留注册 Arc 的 DMA，不以超时冒充硬件已停止。
    Ring Underrun/Overrun 是无 TD 完成的等时空队列通知，pointer 可以是下一 dequeue 地址，不得据此回收 TRB 或断开声卡；已停止的流不发布 XRUN 通知。设备传输错误断开对应卡，未知 completion/控制器错误隔离整台 host。
@@ -352,8 +321,17 @@ render/adapter/display completion 都先推进 reset，再推进 detach/UNREF，
    PCM 能力上限包含 768 kHz，但每一格式仍须满足设备实际 clock range 与 service payload。
 6. 热路径使用预分配的 4 个 PCM periods、128 个 OUT packet slots 和 16 个 feedback slots；没有每 packet 分配、USB control 或睡眠。IOC 至少每 8 个 OUT packets 或 period 边界一次。
    benchmark 决策：分包、整数反馈累加与 staging copy 是新增成本，需用目标 USB 连续播放观察 underrun/CPU；未执行实机门禁时不声明延迟或零丢样已验证。
-7. `devices::model::UsbDevice` 投影每次连接的身份、在线状态和停止操作；`devices::usb` 向 `fs::UsbSysfsSource` 注入注册表。连接状态只有 xHCI slot/generation 一个 owner，注册表只追加并保留旧 identity；sysfs 不查询硬件寄存器。
+7. `device_model::UsbDevice` 投影每次连接的身份、在线状态和停止操作；`devices::usb` 向 `fs::UsbSysfsSource` 注入注册表。连接状态只有 xHCI slot/generation 一个 owner，注册表只追加并保留旧 identity；sysfs 不查询硬件寄存器。
    当前只发布成功绑定的 UAC2 连接，未覆盖未支持类别的通用 USB 枚举。`/sys/bus/usb/devices/<bus>-<port>/` 提供 `idVendor`、`idProduct`、`product`、`busnum`、`devpath` 与 root-only `remove`，其余 sysfs 节点保持只读。
+   sysfs 挂载为 rw，属性 owner 单独裁决写入，不能把整个挂载设成 ro 使 remove 永远不可用。
 8. `remove` 的 OFD 绑定实际连接 adapter，不能按端口重查新连接。停止由 task-only control 事务串行化：禁止 refill、通知音频断开、等待 Disable Slot completion，再清除 slot/DCBAA 和释放 DMA；失败不得提示可安全拔出。
    移除后的端口保持 Seen，直到真实断开/重插才重新枚举。用户态设备列表保留打开时的 remove 句柄并检查 inode identity，避免旧窗口或异步确认误停新设备。
    桌面采样线程由对象停止通道与 join 回收，不执行移除；设备窗口确认后在后台调用标准属性。
+
+## 日志传输
+
+native debuglog 是唯一有界记录环，拥有 sequence、timestamp、severity、opaque annotation 与原始消息。
+服务只能附带自己的 annotation，内核不解释 Linux priority；读取和环覆盖按整条记录传递该标签，
+内核自身记录及普通 native-runtime 日志使用 0，复用槽位必须清除旧标签。
+linuxd 拥有 `/dev/kmsg` facility/level 的 schema 与转换；四档显示 severity 不能替代八档原始 level。
+沿用同一环、锁和等待队列，只增加每记录固定整数拷贝，不新增分配；实际 guest kmsg 读写和环复用 host fixture 验证信息保真。

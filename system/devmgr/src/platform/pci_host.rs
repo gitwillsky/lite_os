@@ -1,3 +1,5 @@
+use alloc::vec::Vec;
+
 /// 通用 PCI ECAM host 的设备发现事实。
 ///
 /// 配置空间枚举与 BAR 分配属于 `pci`，具体 transport 由 adapter 解码；这里只给出窗口、INTx 路由
@@ -9,8 +11,9 @@ pub(crate) struct PciHost {
     /// 32-bit MMIO BAR 分配窗口。
     pub(crate) mmio32: core::ops::Range<usize>,
     intx: [[u32; 4]; 4],
-    /// `iommu-map` 首项：(RID 基址, stream 基址, 长度)；没有 IOMMU 时为 `None`。
-    stream_map: Option<(u32, u32, u32)>,
+    /// 已验证指向平台唯一 IOMMU 的映射：(RID 基址, stream 基址, 长度)。
+    stream_map: Vec<(u32, u32, u32)>,
+    stream_mask: u32,
 }
 
 impl PciHost {
@@ -18,13 +21,15 @@ impl PciHost {
         ecam: core::ops::Range<usize>,
         mmio32: core::ops::Range<usize>,
         intx: [[u32; 4]; 4],
-        stream_map: Option<(u32, u32, u32)>,
+        stream_map: Vec<(u32, u32, u32)>,
+        stream_mask: u32,
     ) -> Self {
         Self {
             ecam,
             mmio32,
             intx,
             stream_map,
+            stream_mask,
         }
     }
 
@@ -35,10 +40,19 @@ impl PciHost {
     }
 
     /// 请求者 ID（`bus << 8 | device << 3 | function`）对应的 IOMMU stream；
-    /// 不经 IOMMU 时返回 `None`。
+    /// 没有 iommu-map 时返回 `None`；声明了映射却未覆盖 requester 时 fail-stop，禁止隐式绕过。
     pub(crate) fn stream(&self, requester: u32) -> Option<u32> {
-        let (base, stream_base, length) = self.stream_map?;
-        let offset = requester.checked_sub(base)?;
-        (offset < length).then(|| stream_base + offset)
+        if self.stream_map.is_empty() {
+            return None;
+        }
+        let requester = requester & self.stream_mask;
+        self.stream_map
+            .iter()
+            .find_map(|&(base, stream_base, length)| {
+                let offset = requester.checked_sub(base)?;
+                (offset < length).then(|| stream_base + offset)
+            })
+            .map(Some)
+            .expect("PCI requester is not covered by iommu-map")
     }
 }

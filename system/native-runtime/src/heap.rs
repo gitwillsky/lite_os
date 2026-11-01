@@ -8,6 +8,10 @@ use crate::sync::Once;
 #[cfg(target_os = "none")]
 mod allocator;
 
+#[cfg(target_os = "none")]
+#[global_allocator]
+static HEAP: allocator::Heap = allocator::Heap;
+
 // OWNER: 启动消息唯一安装；缺失时服务不能映射工作内存。
 static VMAR: Once<Vmar> = Once::new();
 

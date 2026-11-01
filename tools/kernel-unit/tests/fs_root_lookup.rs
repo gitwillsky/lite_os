@@ -177,7 +177,9 @@ mod fs {
             Ok(Vec::new())
         }
         fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError>;
-        fn sync(&self) -> Result<(), FileSystemError> { Ok(()) }
+        fn sync(&self) -> Result<(), FileSystemError> {
+            Ok(())
+        }
         fn shutdown(&self) -> Result<(), FileSystemError> {
             Ok(())
         }
@@ -1250,4 +1252,6 @@ use execution::timer as time;
 
 use execution::sync;
 
-mod file { pub(crate) use crate::sync::next_readiness_generation; }
+mod file {
+    pub(crate) use crate::sync::next_readiness_generation;
+}

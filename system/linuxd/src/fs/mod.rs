@@ -53,6 +53,7 @@ mod file_information;
 pub(crate) mod mount_options;
 pub(crate) use file_information::format_file_information;
 mod page_cache;
+mod pager;
 mod permission;
 mod procfs;
 mod storage_budget;
@@ -180,7 +181,7 @@ pub(crate) enum FileSystemError {
     /// Two-pass mount expiry has been armed; caller retries after observing EAGAIN.
     Retry,
     TooManyLinks,
-    /// Active swap inode rejects writes/truncate/allocation (ETXTBSY).
+    /// Executing inode rejects writes; an open writer rejects executable admission (ETXTBSY).
     TextBusy,
     /// 设备号没有 driver，或 driver 当前不提供该设备（`ENXIO`）。
     NoDevice,

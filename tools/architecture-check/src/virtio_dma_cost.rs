@@ -101,17 +101,26 @@ fn cached_dma_only(sources: &[SourceFile]) -> bool {
 }
 
 fn reset_before_dma_drop(sources: &[SourceFile]) -> bool {
-    let transport_waits =
-        source(sources, "system/devmgr/src/drivers/virtio/transport.rs").is_ok_and(|source| {
+    let transport_waits = source(sources, "system/devmgr/src/drivers/virtio/transport.rs")
+        .is_ok_and(|source| {
             method_text(source, "reset")
                 .is_ok_and(|method| method.contains("while self . get_status () ? != 0"))
         });
     transport_waits
         && [
-            ("system/devmgr/src/drivers/virtio/net.rs", "VirtIONetworkDevice"),
-            ("system/devmgr/src/drivers/virtio/input.rs", "VirtIOInputDevice"),
+            (
+                "system/devmgr/src/drivers/virtio/net.rs",
+                "VirtIONetworkDevice",
+            ),
+            (
+                "system/devmgr/src/drivers/virtio/input.rs",
+                "VirtIOInputDevice",
+            ),
             ("system/devmgr/src/drivers/virtio/gpu.rs", "VirtIOGpuDevice"),
-            ("system/devmgr/src/drivers/virtio/blk.rs", "VirtIOBlockDevice"),
+            (
+                "system/devmgr/src/drivers/virtio/blk.rs",
+                "VirtIOBlockDevice",
+            ),
             ("system/devmgr/src/drivers/virtio/rng.rs", "VirtIORngDevice"),
         ]
         .into_iter()

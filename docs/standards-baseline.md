@@ -20,6 +20,26 @@ ptrace 的 request、access policy、stop/wait、exec/exit 与 regset 布局取�
 `kernel/signal.c`、`kernel/exit.c`、`security/commoncap.c`、`arch/arm64/kernel/ptrace.c` 与
 `arch/riscv/kernel/ptrace.c`；musl `src/linux/ptrace.c` 只负责 raw PEEK 的 libc 返回值转换。
 
+### 原生公平调度
+
+- 虚拟时间下限参照固定 Linux revision 的 [CFS 设计](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/Documentation/scheduler/sched-design-CFS.rst)。
+- 睡眠额度必须有界的成熟语义参照同树 [fair.c 的 entity_lag](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/fair.c)。
+  LiteOS 使用自己的加权 vruntime 队列与一个时间片的归一化唤醒额度，不声明实现 Linux EEVDF 或实时调度 class。
+
+### 原生 resource 授权
+
+- immutable kind/range、同类子范围与创建所需 WRITE 参照 [固定 Zircon resource_create 规范](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/reference/syscalls/resource_create.md)。
+- system resource 以操作编号隔离特权的参照：[同一固定 revision 的资源授权 RFC](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/contribute/governance/rfcs/0123_cpu_performance_info.md)。
+  LiteOS 的操作编号与启动角色分配由 native ABI 与设备契约拥有，不承诺 Zircon ABI 兼容。
+
+### 原生 VM 与 IOMMU
+
+- VMO COW 与 hidden-parent collapse 的成熟内核参照：[Zircon VmCowPages 固定源码](https://fuchsia.googlesource.com/fuchsia/+/2f4a80e20d0dab1b08e1b2c85f2719c99df6f689/zircon/kernel/vm/vm_cow_pages.cc)。只参照所有权/页可见性语义，不导入 Linux 对象政策。
+- VMAR 允许将缺 backing 的页留到访问时故障的语义：[固定 vmar_map 规范](https://fuchsia.googlesource.com/fuchsia/+/118359eadf6aabbd11106f12df9a1e95c8d0847b/docs/reference/syscalls/vmar_map.md)。
+- Arm SMMU architecture v3，ARM IHI 0070 G.a（2024-08-15）：[Arm 固定 PDF](https://documentation-service.arm.com/static/66c5c097882fec713ef4a8ff)。
+- RISC-V IOMMU Base Architecture 1.0.0：[官方固定 release](https://github.com/riscv-non-isa/riscv-iommu/releases/tag/v1.0.0) 与 [PDF](https://github.com/riscv-non-isa/riscv-iommu/releases/download/v1.0.0/riscv-iommu.pdf)。
+- BTI/PMT 的设备地址、页固定与完成失效后的退休，以对应 IOMMU 规范和固定 Linux `drivers/iommu/arm/arm-smmu-v3/`、`drivers/iommu/riscv/` 为参照；实际支持范围由设备契约维护。
+
 ### RISC-V ELF psABI
 
 - `1.1` pre-release；tag `draft-20260701-e03d44ae2f0e1144f9498c2896b5ae25b0449398`；commit `e03d44ae2f0e1144f9498c2896b5ae25b0449398`。
@@ -98,13 +118,13 @@ ptrace 的 request、access policy、stop/wait、exec/exit 与 regset 布局取�
 
 - crate `0.13.1`；source commit `e347a1e2d3ac33c5ce2c0c114e24b85ae23c4897`。
 - 来源：[release 文档](https://docs.rs/crate/smoltcp/0.13.1)、[固定源码](https://github.com/smoltcp-rs/smoltcp/tree/e347a1e2d3ac33c5ce2c0c114e24b85ae23c4897)。
-- kernel/host/benchmark 的唯一编译来源是 `vendor/smoltcp`；原 release 每个文件的 SHA-256
+- netd、netd-unit 与 architecture-bench 的唯一协议栈源码是 `vendor/smoltcp`；原 release 每个文件的 SHA-256
   记录于 `UPSTREAM.sha256.json`，保留原许可证与 upstream commit。Cargo 不保留 registry 备选路径。
 - 本地变化限定UDP/TCP/raw transport、UDP ingress及interface dispatch与IPv4地址mechanism十个文件（第十个只是 `wire/udp.rs` 里 6LoWPAN 专用函数的 feature 门控）：connected peer 在 ingress admission 前匹配，canonical local
   endpoint 修改保留已有 queue，bind/rehash order 选择单播目标，广播/组播交付实际匹配集合，
   TX packet 在 enqueue 时冻结source port/address/TTL/oif；TCP实际MSS cache约束广告及分段。
   bound device在ingress准入前筛选，kernel唯一route selector在dispatch前选设备；IPv4
-  weak-host tuple不因当前iface source列表而reset。Linux bind/shutdown/rlimit/netns UAPI仍归kernel owner。
+  weak-host tuple不因当前iface source列表而reset。Linux bind/shutdown/rlimit/netns UAPI 归 linuxd；netd 只拥有协议机制与 endpoint 状态。
 - 只启用alloc、Ethernet、IP-medium实际loopback、IPv4、raw、UDP、TCP与Reno；Linux socket UAPI不由smoltcp定义，IPv6仍延期。
 
 原生IPv4地址/proc NET归属补充依据同一固定Linux commit的

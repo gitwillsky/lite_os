@@ -8,13 +8,11 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.9.1",
  "device-model",
- "device-protocol",
  "fallible-tree",
  "mmio",
  "native-runtime",
  "netd-unit",
  "network-protocol",
- "smoltcp",
  "spin",
  "syscall-abi",
 ]
@@ -225,6 +223,8 @@ dependencies = [
  "device-protocol",
  "dtb-walker",
  "fallible-tree",
+ "mmio",
+ "native-abi",
  "native-runtime",
  "network-protocol",
  "spin",

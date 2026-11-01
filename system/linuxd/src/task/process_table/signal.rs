@@ -21,6 +21,14 @@ mod thread;
 use thread::send_selected_thread_signal;
 pub(crate) use thread::{send_kernel_thread_signal, send_thread_signal, send_tid_signal};
 
+mod wait;
+pub(super) use wait::interrupt_waiting_task;
+pub(crate) use wait::notify_signal_waiters;
+
+mod timer;
+pub(super) use timer::publish_posix_timer_signal;
+use timer::resume_ignored_posix_timers;
+
 mod disposition;
 pub(in crate::task) use disposition::signal_action_for_group;
 
@@ -103,6 +111,7 @@ struct GeneratedSignal {
     eligible: Option<Arc<TaskControlBlock>>,
     notification: Option<JobNotification>,
     retired: crate::task::model::RetiredSignals,
+    group_exit_started: bool,
 }
 
 struct SelectedProcess {
@@ -217,6 +226,10 @@ fn send_selected_processes(
         result.record(SelectionAttempt::Generated);
         drop(generated.retired);
         publish_job_notification(generated.notification);
+        if generated.group_exit_started {
+            super::process_exit::wake_exiting_group(selected.tgid, None);
+            continue;
+        }
         // 2. process-directed signal 选择的 Running Thread 遵循同一显式抢占协议。
         if generated.queued
             && !wake_process_signal_waiter(selected.tgid)
@@ -302,6 +315,7 @@ fn select_and_generate_process_signal(
                 eligible: None,
                 notification: None,
                 retired: crate::task::model::RetiredSignals::default(),
+                group_exit_started: false,
             })
         };
         return Some(SelectedProcess { tgid, result });
@@ -463,7 +477,7 @@ fn select_and_generate_process_signal(
         |thread| thread.user_namespace(),
     );
     let recipient_pid_namespace = actual_process.tgid_identity().namespace();
-    let (eligible, queued, mut retired) = {
+    let (eligible, queued, mut retired, default_fatal) = {
         let node = graph
             .nodes
             .get(&tgid)
@@ -555,7 +569,7 @@ fn select_and_generate_process_signal(
                 &mut prepared,
             )
         };
-        let (queued, retired) = match generation {
+        let (queued, retired, default_fatal) = match generation {
             Ok(queued) => queued,
             Err(()) => {
                 // prepared storage 必须晚于 graph guard 析构；含原 recipient quota token。
@@ -566,8 +580,12 @@ fn select_and_generate_process_signal(
                 });
             }
         };
-        (eligible, queued, retired)
+        (eligible, queued, retired, default_fatal)
     };
+    let group_exit_started = queued
+        && eligible.as_ref().is_some_and(|target| {
+            complete_fatal_signal_locked(&mut graph, target, signal, default_fatal)
+        });
     retired.recycle_timers(|event| PROCESS_TABLE.timers.lock().ignore_posix_notification(event));
     let notification = if signal == syscall_abi::signal::SIGCONT {
         continue_process_locked(
@@ -589,138 +607,26 @@ fn select_and_generate_process_signal(
             eligible,
             notification,
             retired,
+            group_exit_started,
         }),
     })
 }
 
-/// POSIX expiry 只移动创建时的实际预留 record；不走动态 RT preparation 或 kill fallback。
-/// graph → timer 复查后释放 timer guard，才进入 disposition/pending owner。
-pub(super) fn publish_posix_timer_signal(expired: super::timer_queue::ExpiredPosixTimer) {
-    use super::timer_queue::PosixTimerNotification;
-    let (signal, value, directed_tid) = match expired.notification {
-        PosixTimerNotification::Process { signal, value } => (signal, value, None),
-        PosixTimerNotification::Thread { tid, signal, value } => (signal, value, Some(tid)),
-        PosixTimerNotification::Default | PosixTimerNotification::None => {
-            unreachable!("normalized notification")
-        }
-    };
-    let mut retired = crate::task::model::RetiredSignals::default();
-    let publication = {
-        let (mut child_records, mut graph) = if signal == syscall_abi::signal::SIGCONT {
-            let Some((records, graph)) =
-                lock_child_notifications(expired.tgid, ChildNotificationScope::Parent)
-            else {
-                return;
-            };
-            (Some(records), graph)
-        } else {
-            (None, PROCESS_TABLE.graph.lock())
-        };
-        let Some(ProcessState::Live(threads)) =
-            graph.nodes.get(&expired.tgid).map(|node| &node.state)
-        else {
-            return;
-        };
-        let target = match directed_tid {
-            Some(tid) => threads.get(&tid).filter(|target| {
-                expired
-                    .thread_target
-                    .as_ref()
-                    .is_some_and(|expected| Arc::ptr_eq(expected, &target.tid_identity()))
-            }),
-            None => threads.values().next(),
-        }
-        .cloned();
-        let Some(target) = target else { return };
-        let Some(mut prepared) = PROCESS_TABLE
-            .timers
-            .lock()
-            .prepare_posix_notification(&expired)
-        else {
-            return;
-        };
-        // 同一 timer 的旧 record 尚在 pending：只更新其有效 sequence，不增加第二个事件。
-        if !prepared.has_record() {
-            return;
-        }
-        let info = PendingSignal::timer(expired.id, 0, value);
-        let (queued, discarded) = match directed_tid {
-            Some(_) => target.queue_signal(
-                threads.values(),
-                signal,
-                super::ptrace::thread_traced(&graph, target.tid()),
-                info,
-                &mut prepared,
-            ),
-            None => target.queue_leader_process_signal(
-                threads.values(),
-                signal,
-                super::ptrace::group_traced(&graph, target.tgid()),
-                info,
-                &mut prepared,
-            ),
-        }
-        .expect("preallocated timer record is present");
-        retired.append(discarded);
-        retired
-            .recycle_timers(|event| PROCESS_TABLE.timers.lock().ignore_posix_notification(event));
-        if !queued {
-            PROCESS_TABLE.timers.lock().ignore_posix_expiry(&expired);
-            // graph 保活实际 timer registry Arc；这里只归还 Box，不收费/析构最后 owner。
-            prepared.recycle_timer();
-        }
-        let notification = if signal == syscall_abi::signal::SIGCONT {
-            continue_process_locked(
-                &mut graph,
-                expired.tgid,
-                child_records.as_mut().expect("SIGCONT child preparation"),
-            )
-        } else {
-            if signal == syscall_abi::signal::SIGKILL {
-                resume_for_fatal_signal_locked(&mut graph, expired.tgid);
-            }
-            None
-        };
-        // prepared 已全部转移或归还；其 Drop 不触碰 allocator/rlimit。
-        (target, queued, notification)
-    };
-    drop(retired);
-    let (target, queued, notification) = publication;
-    publish_job_notification(notification);
-    if !queued {
-        return;
-    }
-    let woke = if directed_tid.is_some() {
-        notify_signal_waiters(&target);
-        wake_signal_waiter(&target)
-    } else {
-        wake_process_signal_waiter(expired.tgid)
-    };
-    if !woke && !interrupt_waiting_task(&target) {
-        crate::task::processor::request_task_reschedule(&target);
-    }
-}
-
-fn resume_ignored_posix_timers(tgid: usize, signal: usize) {
-    let mut cursor = -1;
-    loop {
-        let expired = {
-            let graph = PROCESS_TABLE.graph.lock();
-            if !matches!(
-                graph.nodes.get(&tgid).map(|node| &node.state),
-                Some(ProcessState::Live(_))
-            ) {
-                return;
-            }
-            PROCESS_TABLE
-                .timers
-                .lock()
-                .resume_ignored_posix(tgid, signal, cursor)
-        };
-        let Some(expired) = expired else { return };
-        cursor = expired.id;
-        publish_posix_timer_signal(expired);
-    }
+/// 在同一 generation graph 事务中提交默认致命原因；锁外调用唯一 group wake 路径。
+fn complete_fatal_signal_locked(
+    graph: &mut ProcessGraph,
+    target: &TaskControlBlock,
+    signal: usize,
+    default_fatal: bool,
+) -> bool {
+    default_fatal
+        && super::process_exit::commit_group_exit(
+            graph,
+            target.tgid(),
+            ProcessExitStatus::Signaled(signal as u8),
+            None,
+        )
+        .is_some_and(|(_, initiated)| initiated)
 }
 
 fn wake_process_signal_waiter(tgid: usize) -> bool {
@@ -757,122 +663,6 @@ fn wake_signal_waiter(task: &Arc<TaskControlBlock>) -> bool {
     wake.claimed.is_none_or(|claimed| {
         assert!(Arc::ptr_eq(&claimed.task, task));
         crate::task::processor::wake_signal_task(claimed.task, claimed.id, WaitResult::Woken)
-    })
-}
-
-/// signal publication 或 signalfd mask change 后，在 Graph/pending guard 外唤醒真实 sighand 源。
-pub(crate) fn notify_signal_waiters(task: &TaskControlBlock) {
-    use crate::file::FileReadinessContext;
-    let Some(source) = task.signal_source() else {
-        return;
-    };
-    source.changed();
-    crate::file::Epoll::notify_signal_source(&source);
-    while let Some(wake) = WAIT_REGISTRY.wake_signal_source_one(source.identity()) {
-        if let Some(claimed) = wake.claimed {
-            assert!(matches!(claimed.kind, IndexedWaitKind::Poll));
-            let _ =
-                crate::task::processor::wake_poll_task(claimed.task, claimed.id, WaitResult::Woken);
-        }
-    }
-}
-
-/// 从当前唯一 wait owner 取消目标 task 的 interruptible wait。
-pub(super) fn interrupt_waiting_task(task: &Arc<TaskControlBlock>) -> bool {
-    let key = match task.scheduling.state.lock().wait {
-        Some(WaitMembership::TaskWait(key)) if key.interruptible() => Some(key),
-        _ => None,
-    };
-    let event_wait = key.and_then(|key| {
-        task.with_deliverable_signal_policy(key.killable(), || {
-            (task.scheduling.state.lock().wait == Some(WaitMembership::TaskWait(key)))
-                .then_some(key)
-        })
-        .flatten()
-    });
-    if let Some(key) = event_wait {
-        if key.deadline().is_some() {
-            return super::task_wait::wake_timed_task_event(
-                task,
-                key,
-                WaitResult::Interrupted,
-                false,
-            );
-        }
-        return crate::task::processor::wake_waiting_task(
-            task.clone(),
-            WaitMembership::TaskWait(key),
-            Some(WaitResult::Interrupted),
-        );
-    }
-    if task.has_deliverable_signal()
-        && let Some(wake) = WAIT_REGISTRY.interrupt_task(task)
-    {
-        let Some(entry) = wake.claimed else {
-            return true;
-        };
-        let wait_id = entry.id;
-        let interrupted = WaitResult::Interrupted;
-        assert!(Arc::ptr_eq(&entry.task, task));
-        return match entry.kind {
-            IndexedWaitKind::TaskEvent(key) => crate::task::processor::wake_waiting_task(
-                entry.task,
-                WaitMembership::TaskWait(key),
-                Some(interrupted),
-            ),
-            IndexedWaitKind::Deadline => crate::task::processor::wake_deadline_task(
-                entry.task,
-                wait_id,
-                WaitResult::Interrupted,
-            ),
-            IndexedWaitKind::Futex { .. } => crate::task::processor::wake_futex_task(
-                entry.task,
-                wait_id,
-                WaitResult::Interrupted,
-            ),
-            IndexedWaitKind::Console => {
-                crate::task::processor::wake_console_task(entry.task, wait_id, interrupted)
-            }
-            IndexedWaitKind::Signal { .. } => crate::task::processor::wake_signal_task(
-                entry.task,
-                wait_id,
-                WaitResult::Interrupted,
-            ),
-            IndexedWaitKind::Pipe { .. } => {
-                crate::task::processor::wake_pipe_task(entry.task, wait_id, WaitResult::Interrupted)
-            }
-            IndexedWaitKind::AdvisoryLock => {
-                crate::task::processor::wake_flock_task(entry.task, wait_id, interrupted)
-            }
-            IndexedWaitKind::Poll => {
-                crate::task::processor::wake_poll_task(entry.task, wait_id, WaitResult::Interrupted)
-            }
-        };
-    }
-
-    let child = {
-        let mut graph = PROCESS_TABLE.graph.lock();
-        task.with_deliverable_signal(|| {
-            let scheduling = task.scheduling.state.lock();
-            if scheduling.wait != Some(WaitMembership::Child) {
-                None
-            } else {
-                let waiter = graph
-                    .nodes
-                    .get_mut(&task.tgid())
-                    .expect("waiting process disappeared from graph")
-                    .child_waiters
-                    .remove(&task.tid());
-                if let Some(waiter) = &waiter {
-                    assert!(Arc::ptr_eq(waiter, task));
-                }
-                waiter
-            }
-        })
-        .flatten()
-    };
-    child.is_some_and(|waiter| {
-        crate::task::processor::wake_child_task(waiter, WaitResult::Interrupted)
     })
 }
 

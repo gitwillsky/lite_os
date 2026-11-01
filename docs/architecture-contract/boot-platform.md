@@ -24,3 +24,7 @@ DTB、initrd 和崩溃保留区必须先从 frame allocator 排除；缺失时 b
 缺失 CPU、RAM、firmware、中断控制器或必需串口事实时 fail-stop；不猜测 machine 地址。
 设备初始化、MMIO/IRQ/BTI 失败由 devmgr 拒绝相应设备，不能伪造 DMA 隔离或驱动能力。
 host DTB/MMIO fixture 验证解码与边界；release ELF 检查固定 ISA façade；双架构冷启动才验证真实装配与中断活性。
+
+root-server 的 role 句柄交付保留最小设备边界：devmgr 接收根 resource；linuxd 接收可再细分的 system
+操作范围（日志读取、串口、UTC 设置、电源），ext4d/netd 只接收其服务和设备连接。
+resource::authorization 是 immutable kind/range 的唯一 owner；同类子范围不能扩大，hardware/system 不互相转换。

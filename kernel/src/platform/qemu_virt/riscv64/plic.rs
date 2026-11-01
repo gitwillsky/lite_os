@@ -190,9 +190,10 @@ impl PlicInterruptController {
     }
 
     pub(super) fn disable_interrupt(&self, vector: InterruptVector) {
-        for cpu in self.possible_cpus.iter() {
-            self.enable_for_context(vector, Self::context_for(cpu), false);
-        }
+        // 以 priority 0 屏蔽，保留 context enable/affinity，保证已领取中断仍能完成。
+        // 1. 已 claim 的源在 complete 时必须仍启用，否则真实 PLIC 可忽略完成写入。
+        // 2. QEMU 在 priority 写入时重算外部线；只恢复 enable bitmap 会遗留 pending 而不触发 SEIP。
+        self.set_interrupt_priority_raw(vector, 0);
     }
 
     pub(super) fn has_handler(&self, vector: InterruptVector) -> bool {
@@ -217,6 +218,7 @@ impl PlicInterruptController {
         for cpu in self.possible_cpus.iter() {
             self.enable_for_context(vector, Self::context_for(cpu), affinity.contains(cpu));
         }
+        self.set_interrupt_priority_raw(vector, 1);
         Ok(())
     }
 
@@ -242,9 +244,12 @@ impl PlicInterruptController {
         self.affinities
             .try_insert(vector, cpus)
             .map_err(|_| InterruptError::NoMemory)?;
+        let priority = self.read_register(self.priority_offset(vector));
         for cpu in self.possible_cpus.iter() {
             self.enable_for_context(vector, Self::context_for(cpu), cpus.contains(cpu));
         }
+        // 保持唯一硬件 mask 状态，并在新 affinity 上重新裁决已 pending 的外部线。
+        self.set_interrupt_priority_raw(vector, priority);
         Ok(())
     }
 

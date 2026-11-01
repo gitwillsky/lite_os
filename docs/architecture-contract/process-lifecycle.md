@@ -49,9 +49,9 @@
 
 ## Failure and cleanup
 
-- `task::spawn_kernel_thread` 在 TID、kernel stack 或主体分配失败时返回 `OutOfMemory` 且不发布任何
-  scheduler state。内核线程首次运行时显式打开本地中断：新执行体首次恢复时的中断状态取决于前一个
-  outgoing task，缺失时主体会在屏蔽中断下运行并延迟 tick 与 I/O completion。
+- linuxd 的 `task::spawn_kernel_thread` 创建用户态服务执行体；TID、服务栈或主体准备失败时不发布
+  Linux graph membership。实际 native 线程上下文、中断恢复与 stack 退休由[执行域契约](execution.md)约束，
+  linuxd 不操作本地 IRQ 状态。
 
 - wait ID 由单一 AtomicU64 无锁签发；全部 source node 与 registration storage 在 shard
   lock 外准备。publication 先进入 `Arming`，readiness/backend/signal 复查只在 shard lock
@@ -60,8 +60,13 @@
   task nodes，禁止 lazy stale membership 或恢复全局 queue。claimed wake 必须把自身 wait ID
   原样交给 SchedulingState 校验；signal wake 不得重读 task 的当前 membership，否则延迟完成
   会消费下一代 signal wait。`sigsuspend` 的匹配 signal 产生 `Woken`，另一可投递 signal 经
-  通用 cancellation 产生 `Interrupted`；两者都保留 pending bit 给 trap delivery 并返回 `EINTR`，
-  只有 timeout/OOM completion 属于不变量破坏。
+  通用 cancellation 产生 `Interrupted`；两者都保留 pending bit 给 trap delivery，并提交无 handler 重启策略。
+  唯一 signal-return owner 在实际交付 handler 时返回 `EINTR`，没有 handler 时撤销临时 mask 后重放。
+  handler 的屏蔽规则以临时 mask 加 action mask/当前 signal 为基础，frame 则保存调用前 mask；
+  tracer 抑制/改向、忽略或其他接收者消费候选不能把临时 mask 泄漏到用户态。共用返回路径也负责
+  ppoll/pselect/epoll/io_uring 的无 handler 临时 mask 清理；不增加锁、分配或 replay 状态。
+  既有实际 ptrace fixture 固定抑制/改向顺序并验证再次等待与 handler/sigreturn 两种 mask。
+  timeout/OOM completion 属于等待发布后的不变量破坏。
 - clone/fork/vfork 的 TCB、graph node 与 RLIMIT snapshot storage 在 `process_creation` 外准备；
   最终 guard 内只捕获已预留逐 Thread snapshot、复检 limit 并提交 graph；
   UID scalar transition 共用 process_creation，count 到 publication 期间身份不变，

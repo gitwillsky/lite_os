@@ -15,7 +15,7 @@ import signal
 import subprocess
 import tempfile
 
-# guest 只执行一个自检脚本的 inittab 仍须先运行 rootfs 的 rcS：内核只挂载 / 与 /dev，
+# guest 只执行一个自检脚本的 inittab 仍须先运行 rootfs 的 rcS：linuxd 只挂载 / 与 /dev，
 # /proc、/sys、/dev/pts 由 rcS 经 mount(2) 挂载。
 GUEST_MOUNT_SYSINIT = "::sysinit:/etc/init.d/rcS\n"
 
@@ -109,6 +109,7 @@ def _qemu_command(
     scratch_disk: Path | None = None,
     audio_wav: Path | None = None,
     display_qmp: Path | None = None,
+    iommu: bool = False,
 ) -> list[str]:
     runtime = qemu_runtime()
     qemu = shutil.which(runtime.binary)
@@ -118,7 +119,7 @@ def _qemu_command(
     command = [
         qemu,
         "-machine",
-        runtime.machine,
+        runtime.machine + ((",iommu=smmuv3" if runtime.arch == "aarch64" else ",iommu-sys=on") if iommu else ""),
         "-cpu",
         runtime.cpu,
     ]
@@ -137,9 +138,10 @@ def _qemu_command(
         command.extend(("-m", memory))
     if runtime.bootloader is not None:
         command.extend(["-bios", runtime.bootloader])
+    block_transport = "virtio-blk-pci,disable-legacy=on,iommu_platform=on" if iommu else "virtio-blk-device"
     root_device = (
         "-drive", f"file={image},if=none,format=raw,id=x0",
-        "-device", "virtio-blk-device,drive=x0",
+        "-device", f"{block_transport},drive=x0",
     )
     scratch_device = (
         "-drive", f"file={scratch_disk},if=none,format=raw,id=x1",
@@ -463,6 +465,7 @@ def boot(
     kernel_arguments: str | None = None,
     scratch_disk: Path | None = None,
     audio_wav: Path | None = None,
+    iommu: bool = False,
 ) -> str:
     """冷启动指定镜像，按 marker 注入输入，直到全部结果出现或 fail-stop。
 
@@ -478,6 +481,7 @@ def boot(
         memory: 显式 Guest RAM；None 保留既有 runtime gate 的 QEMU 默认值。
         kernel_arguments: 经 `-append` 写入 DTB `/chosen/bootargs` 的 kernel command line。
         audio_wav: 启用固定 VirtIO Sound playback 与 WAV 抓取；None 不添加声卡。
+        iommu: PCI 根盘经硬件翻译，其他 MMIO 设备使用物理 DMA，用于混合路由验收。
         scratch_disk: 作为第二块 virtio 盘（guest 内 `vdb`）附加的裸镜像；None 表示只有 root 盘。
 
     Returns:
@@ -504,6 +508,7 @@ def boot(
         kernel_arguments=kernel_arguments,
         scratch_disk=scratch_disk,
         audio_wav=audio_wav,
+        iommu=iommu,
     )
     # 通过 monitor 显式开始/结束 recorder：当前 QEMU WAV backend 在 voice 未关闭时退出
     # 不补写 RIFF 长度。暂停启动保证 recorder 先于 guest，stopcapture 保证文件完整封口。

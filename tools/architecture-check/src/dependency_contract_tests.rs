@@ -47,8 +47,16 @@ fn macro_paths_cannot_bypass_dependency_or_concrete_facade_rules() {
 
 #[test]
 fn grouping_preserves_child_owner_boundaries() {
-    assert!(violations("use crate::execution as mechanisms;").iter().any(|error| error.contains("not a grouping")));
-    assert!(violations("fn probe() { crate::execution::timer::probe(); }").iter().any(|error| error.contains("is absent")));
+    assert!(
+        violations("use crate::execution as mechanisms;")
+            .iter()
+            .any(|error| error.contains("not a grouping"))
+    );
+    assert!(
+        violations("fn probe() { crate::execution::timer::probe(); }")
+            .iter()
+            .any(|error| error.contains("is absent"))
+    );
 }
 
 #[test]

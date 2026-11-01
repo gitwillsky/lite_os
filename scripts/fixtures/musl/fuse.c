@@ -16,6 +16,7 @@
 #include <linux/fuse.h>
 #include <linux/io_uring.h>
 #include <poll.h>
+#include <pthread.h>
 #include <sys/syscall.h>
 #include <sys/uio.h>
 #include <signal.h>
@@ -73,6 +74,10 @@ static int report;
 static uint64_t slow_unique;
 /* 第二个挂载的守护进程协商 WRITEBACK_CACHE。 */
 static int writeback_mode;
+/* 补页持有旧 fh 时关闭旧 OFD；分别放行 FLUSH/READ，固定最后引用的释放顺序。 */
+static int read_lease_mode, hold_lease_flush, hold_lease_read;
+static uint64_t lease_flush, lease_read, lease_node, lease_offset;
+static uint32_t lease_size;
 /* 控制阶段分别协商/不协商 ABORT_ERROR，核对实际 errno 与后台预算。 */
 static int control_mode;
 static int uring_mode;
@@ -369,6 +374,25 @@ static void serve(void)
 		}
 		case FUSE_LOOKUP: {
 			const char *name = body;
+			if (read_lease_mode && strncmp(name, "lease-", 6) == 0) {
+				if (strcmp(name, "lease-arm") == 0) {
+					hold_lease_flush = hold_lease_read = 1;
+				} else if (strcmp(name, "lease-flush") == 0) {
+					if (!lease_flush) _exit(112);
+					send_reply(lease_flush, 0, NULL, 0);
+					lease_flush = 0;
+				} else {
+					if (!lease_read) _exit(113);
+					size_t count = nodes[lease_node].size - lease_offset;
+					if (count > lease_size) count = lease_size;
+					int failed = strcmp(name, "lease-error") == 0;
+					send_reply(lease_read, failed ? -EIO : 0,
+						failed ? NULL : nodes[lease_node].data + lease_offset, failed ? 0 : count);
+					lease_read = 0;
+				}
+				send_reply(in->unique, -ENOENT, NULL, 0);
+				break;
+			}
             if (passthrough_mode && strcmp(name, "unregister") == 0) {
                 if (ioctl(device, FUSE_DEV_IOC_BACKING_CLOSE, &backing_id) != 0) _exit(109);
                 send_reply(in->unique, -ENOENT, NULL, 0);
@@ -552,6 +576,15 @@ static void serve(void)
 		}
 		case FUSE_READ: {
 			struct fuse_read_in *read_in = body;
+			if (read_lease_mode && hold_lease_read) {
+				hold_lease_read = 0;
+				lease_read = in->unique;
+				lease_node = id;
+				lease_offset = read_in->offset;
+				lease_size = read_in->size;
+				write(report, "r", 1);
+				break;
+			}
 			size_t count = 0;
 			if (read_in->size > 4096)
 				write(report, "R", 1); /* 页缓存预读把多页合成一个 READ */
@@ -666,6 +699,12 @@ static void serve(void)
 			break;
 		}
 		case FUSE_FLUSH:
+			if (read_lease_mode && hold_lease_flush) {
+				hold_lease_flush = 0;
+				lease_flush = in->unique;
+				write(report, "f", 1);
+				break;
+			}
 			write(report, "L", 1);
 			send_reply(in->unique, strcmp(nodes[id].name, "flushfail") == 0 ? -EIO : 0, NULL, 0);
 			break;
@@ -784,6 +823,78 @@ static void writeback_phase(void)
 	CHECK(226, umount("/tmp/fuse-wb") == 0);
 }
 
+struct lease_io {
+	int fd;
+	int closed;
+	ssize_t result;
+	int error;
+};
+
+static void *close_lease(void *argument)
+{
+	struct lease_io *io = argument;
+	io->result = close(io->fd);
+	io->error = errno;
+	if (write(io->closed, "C", 1) != 1) _exit(1);
+	return NULL;
+}
+
+static void *write_lease(void *argument)
+{
+	struct lease_io *io = argument;
+	io->result = pwrite(io->fd, "X", 1, 1);
+	io->error = errno;
+	return NULL;
+}
+
+static int lease_event(int events, char wanted)
+{
+	for (int attempt = 0; attempt < 200; attempt++) {
+		if (drain(events, wanted)) return 1;
+		usleep(10000);
+	}
+	return 0;
+}
+
+/* 1. 旧关闭在 FLUSH 停住；2. 新写入的 READ pin 住旧 fh；3. 交错释放 FLUSH 与 READ/错误。
+ * close 可能在最终写回中等待 READ，所以不能先 join close。给已能返回的 close 一个有界通知窗口，
+ * 再回复 READ；无论 close 先后完成，I/O 最后引用都不得重入等待写线程持有的写序列。 */
+static void read_lease_phase(int failed)
+{
+	struct stat info;
+	int events;
+	read_lease_mode = writeback_mode = 1;
+	pid_t daemon = start("/tmp/fuse-lease", &events);
+	int closed[2];
+	CHECK(234, pipe2(closed, O_CLOEXEC | O_NONBLOCK) == 0);
+	struct lease_io older = {
+		.fd = open("/tmp/fuse-lease/leased", O_CREAT | O_RDWR, 0600), .closed = closed[1]
+	};
+	CHECK(235, older.fd >= 0 && write(older.fd, "init", 4) == 4 && fsync(older.fd) == 0);
+	struct lease_io writer = { .fd = open("/tmp/fuse-lease/leased", O_RDWR) };
+	CHECK(236, writer.fd >= 0);
+	CHECK(237, stat("/tmp/fuse-lease/lease-arm", &info) == -1 && errno == ENOENT);
+	pthread_t closer, writing;
+	CHECK(238, pthread_create(&closer, NULL, close_lease, &older) == 0);
+	CHECK(239, lease_event(events, 'f'));
+	CHECK(240, pthread_create(&writing, NULL, write_lease, &writer) == 0);
+	CHECK(241, lease_event(events, 'r'));
+	CHECK(242, stat("/tmp/fuse-lease/lease-flush", &info) == -1 && errno == ENOENT);
+	(void)lease_event(closed[0], 'C');
+	CHECK(244, stat(failed ? "/tmp/fuse-lease/lease-error" : "/tmp/fuse-lease/lease-read", &info) == -1 && errno == ENOENT);
+	CHECK(245, pthread_join(writing, NULL) == 0 &&
+		(failed ? writer.result == -1 && writer.error == EIO : writer.result == 1));
+	CHECK(243, pthread_join(closer, NULL) == 0 && older.result == 0);
+	CHECK(246, close(writer.fd) == 0 && close(closed[0]) == 0 && close(closed[1]) == 0);
+	int verify = open("/tmp/fuse-lease/leased", O_RDONLY);
+	char bytes[4];
+	CHECK(247, verify >= 0 && read(verify, bytes, sizeof bytes) == sizeof bytes &&
+		memcmp(bytes, failed ? "init" : "iXit", sizeof bytes) == 0 && close(verify) == 0);
+	CHECK(248, kill(daemon, SIGKILL) == 0 && waitpid(daemon, NULL, 0) == daemon);
+	CHECK(249, umount("/tmp/fuse-lease") == 0 && close(events) == 0);
+	read_lease_mode = 0;
+}
+
 /* 同一挂载启用 WRITEBACK_CACHE：DIRECT_IO 必须仍立即使用本次打开的 fh，不缓冲、不钳制 EOF。 */
 static void direct_phase(void)
 {
@@ -843,6 +954,17 @@ static long control_waiting(const char *path)
 	return strtol(number, NULL, 10);
 }
 
+/* Linux num_waiting 到请求最后一个引用释放才归还；回复先唤醒调用者，回复线程可能尚未 put。
+ * 等待真实计数转换，不能把 syscall 返回误当作其他线程已完成析构；永久积压仍在两秒内失败。 */
+static int control_waiting_equals(const char *path, long expected)
+{
+	for (int attempt = 0; attempt < 2000; attempt++) {
+		if (control_waiting(path) == expected) return 1;
+		usleep(1000);
+	}
+	return 0;
+}
+
 /* 对真实控制 fd 调参、积压/放行 RELEASE，再 abort 在途 LOOKUP；旧 fd 不延长挂载可见性。 */
 static void control_phase(int mode)
 {
@@ -867,10 +989,10 @@ static void control_phase(int mode)
 	CHECK(175, limit >= 0 && read(limit, number, sizeof number) == 2 && memcmp(number, "7\n", 2) == 0);
 	CHECK(176, lseek(limit, 0, SEEK_SET) == 0 && write(limit, "0", 1) == 1 && write(limit, "0", 1) == 1);
 	int fd = open("/tmp/fuse-control/file", O_CREAT | O_RDWR, 0644);
-	CHECK(177, fd >= 0 && control_waiting(waiting) == 0);
-	CHECK(178, close(fd) == 0 && control_waiting(waiting) == 1);
+	CHECK(177, fd >= 0 && control_waiting_equals(waiting, 0));
+	CHECK(178, close(fd) == 0 && control_waiting_equals(waiting, 1));
 	CHECK(179, write(limit, "2", 1) == 1 && stat("/tmp/fuse-control/missing", &info) == -1 && errno == ENOENT);
-	CHECK(180, control_waiting(waiting) == 0);
+	CHECK(180, control_waiting_equals(waiting, 0));
 	CHECK(181, pwrite(limit, "3", 1, 1) == -1 && errno == EINVAL);
 	CHECK(182, pwrite(limit, "65536", 5, 0) == -1 && errno == EINVAL);
 	CHECK(183, pwrite(limit, "0x3\n", 4, 0) == 4);
@@ -883,7 +1005,7 @@ static void control_phase(int mode)
 	fd = open(waiting, O_RDONLY);
 	CHECK(187, fd >= 0 && pread(fd, number, 1, 0) == -1 && errno == ESPIPE);
 	CHECK(188, lseek(fd, 0, SEEK_SET) == -1 && errno == ESPIPE && close(fd) == 0);
-	CHECK(199, stat("/tmp/fuse-control/missing", &info) == -1 && errno == ENOENT && control_waiting(waiting) == 0);
+	CHECK(199, stat("/tmp/fuse-control/missing", &info) == -1 && errno == ENOENT && control_waiting_equals(waiting, 0));
 	pid_t caller = fork();
 	CHECK(189, caller >= 0);
 	if (caller == 0) {
@@ -901,7 +1023,7 @@ static void control_phase(int mode)
 	CHECK(193, waitpid(caller, &status, 0) == caller && WIFEXITED(status) && WEXITSTATUS(status) == 0);
 	CHECK(194, waitpid(daemon, &status, 0) == daemon && WIFEXITED(status) && WEXITSTATUS(status) == 0);
 	fd = open(waiting, O_RDONLY);
-	CHECK(195, fd >= 0 && control_waiting(waiting) == 0 && umount("/tmp/fuse-control") == 0);
+	CHECK(195, fd >= 0 && control_waiting_equals(waiting, 0) && umount("/tmp/fuse-control") == 0);
 	CHECK(196, read(fd, number, sizeof number) == 0 && pwrite(limit, "4", 1, 0) == 1 && write(abort_fd, "1", 1) == 1);
 	CHECK(197, stat(directory, &info) == -1 && errno == ENOENT);
 	CHECK(198, close(fd) == 0 && close(limit) == 0 && close(abort_fd) == 0 && close(events) == 0);
@@ -1142,6 +1264,8 @@ int main(void)
 	CHECK(103, umount(MOUNTPOINT) == 0);
 	CHECK(104, !mounts_contains("fuse.probe"));
 	writeback_phase();
+	read_lease_phase(0);
+	read_lease_phase(1);
 	direct_phase();
 	control_phase(1);
 	control_phase(2);

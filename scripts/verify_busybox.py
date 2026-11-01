@@ -50,6 +50,9 @@ ROOT = Path(__file__).resolve().parent.parent
 TARGET = target_from_environment()
 WORK = ROOT / "target" / "busybox-runtime" / TARGET.arch
 
+# C fixture 的失败是立即裁决条件；不能等缺失成功 marker 的无进度看门狗才报告。
+FORBIDDEN_RUNTIME_MARKERS = (*FORBIDDEN_BOOT_MARKERS, "_FAILED step=")
+
 # 主 BusyBox gate 以完整 kernel command line 冷启动：root/rootfstype/rootwait/console 由内核消费，
 # LITEOS_BOOT_ENV 按 Linux 规则转交 init 环境并由 init 派生的 shell 继承，/proc/cmdline 原样回显。
 # `root=LABEL=` 经超级块卷标解析根设备（不依赖设备枚举顺序）。
@@ -882,7 +885,7 @@ def main() -> int:
                 # 完整记录应包含实际 relatime 和 ext4 data=ordered；proc 可写策略由节点权限约束。
                 (
                     "LITEOS_OBSERVABILITY_42",
-                    ShellCommand(b"/bin/grep -q '^/dev/vda / ext4 rw,relatime,data=ordered 0 0$' /proc/mounts && /bin/grep -q '^devtmpfs /dev devtmpfs ro,relatime 0 0$' /proc/mounts && /bin/grep -q '^proc /proc proc rw,relatime 0 0$' /proc/mounts && /bin/grep -q '^sysfs /sys sysfs ro,relatime 0 0$' /proc/mounts && /bin/grep -q '^devpts /dev/pts devpts rw,relatime 0 0$' /proc/mounts && /bin/df -Pk > /df.before; set -- $(/bin/awk 'NR==2 {print $2, $4, $6}' /df.before); total=$1; before=$2; mounted=$3; /bin/dd if=/dev/zero of=/df-space bs=4096 count=2 2>/dev/null; after=$(/bin/df -Pk / | /bin/awk 'NR==2 {print $4}'); inodes=$(/bin/df -Pi / | /bin/awk 'NR==2 {print $2}'); /bin/rm -f /df-space; [ ! -e /df-space ] && [ \"$total\" -gt 0 ] && [ \"$before\" -gt \"$after\" ] && [ \"$inodes\" -gt 0 ] && [ \"$mounted\" = / ] && echo LITEOS_FILESYSTEM_CAPACITY_$((6*7))\n"),
+                    ShellCommand(b"/bin/grep -q '^/dev/vda / ext4 rw,relatime,data=ordered 0 0$' /proc/mounts && /bin/grep -q '^devtmpfs /dev devtmpfs ro,relatime 0 0$' /proc/mounts && /bin/grep -q '^proc /proc proc rw,relatime 0 0$' /proc/mounts && /bin/grep -q '^sysfs /sys sysfs rw,relatime 0 0$' /proc/mounts && ! /bin/mkdir /sys/liteos-gate-probe 2>/dev/null && ! /bin/sh -c 'echo 1 > /sys/devices/system/cpu/cpu0/online' 2>/dev/null && /bin/grep -q '^devpts /dev/pts devpts rw,relatime 0 0$' /proc/mounts && /bin/df -Pk > /df.before; set -- $(/bin/awk 'NR==2 {print $2, $4, $6}' /df.before); total=$1; before=$2; mounted=$3; /bin/dd if=/dev/zero of=/df-space bs=4096 count=2 2>/dev/null; after=$(/bin/df -Pk / | /bin/awk 'NR==2 {print $4}'); inodes=$(/bin/df -Pi / | /bin/awk 'NR==2 {print $2}'); /bin/rm -f /df-space; [ ! -e /df-space ] && [ \"$total\" -gt 0 ] && [ \"$before\" -gt \"$after\" ] && [ \"$inodes\" -gt 0 ] && [ \"$mounted\" = / ] && echo LITEOS_FILESYSTEM_CAPACITY_$((6*7))\n"),
                 ),
                 (
                     "LITEOS_FILESYSTEM_CAPACITY_42",
@@ -1231,7 +1234,7 @@ def main() -> int:
                     ShellCommand(b'echo preserved >/root-umount-canary && /bin/umount / && /bin/grep -q \'^/dev/vda / ext4 ro,relatime,data=ordered 0 0$\' /proc/mounts && /bin/awk \'$5=="/" && $6=="rw,relatime" && $NF=="ro,data=ordered" {ok=1} END {exit !ok}\' /proc/self/mountinfo && ! echo changed >/root-umount-canary 2>/dev/null && [ "$(/bin/cat /root-umount-canary)" = preserved ] && /bin/mount -o remount,rw / && /bin/grep -q \'^/dev/vda / ext4 rw,relatime,data=ordered 0 0$\' /proc/mounts && /bin/rm /root-umount-canary && echo LITEOS_ROOT_REMOUNT_$((6*10))\n'),
                 ),
             ),
-            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            forbidden_markers=FORBIDDEN_RUNTIME_MARKERS,
             persistent_writes=True,
             timeout_seconds=90,
             kernel_arguments=BUSYBOX_KERNEL_ARGUMENTS,
@@ -1245,7 +1248,7 @@ def main() -> int:
                 "init started: BusyBox v1.37.0",
                 "LITEOS_PROCESS_TOOLS_55",
             ),
-            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            forbidden_markers=FORBIDDEN_RUNTIME_MARKERS,
             timeout_seconds=45,
         )
         boot(
@@ -1256,7 +1259,7 @@ def main() -> int:
                 "init started: BusyBox v1.37.0",
                 "LITEOS_IDENTITY_56",
             ),
-            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            forbidden_markers=FORBIDDEN_RUNTIME_MARKERS,
             timeout_seconds=30,
         )
         boot(
@@ -1267,7 +1270,7 @@ def main() -> int:
                 "init started: BusyBox v1.37.0",
                 "LITEOS_OPENED_FD_57",
             ),
-            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            forbidden_markers=FORBIDDEN_RUNTIME_MARKERS,
             timeout_seconds=30,
         )
         boot(
@@ -1278,7 +1281,7 @@ def main() -> int:
                 "init started: BusyBox v1.37.0",
                 "LITEOS_KERNEL_STACK_CHURN_42",
             ),
-            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            forbidden_markers=FORBIDDEN_RUNTIME_MARKERS,
             timeout_seconds=90,
         )
         boot(
@@ -1329,7 +1332,7 @@ def main() -> int:
                     ShellCommand(b"kill $pids; wait; /var/tmp/fs-stress-probe\n"),
                 ),
             ),
-            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            forbidden_markers=FORBIDDEN_RUNTIME_MARKERS,
             timeout_seconds=90,
             persistent_writes=True,
         )
@@ -1366,7 +1369,7 @@ def main() -> int:
                     ).encode()),
                 ),
             ),
-            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            forbidden_markers=FORBIDDEN_RUNTIME_MARKERS,
             persistent_writes=True,
         )
         crash_image = Path(runtime_directory.name) / "crash.img"
@@ -1416,7 +1419,7 @@ def main() -> int:
                     ShellCommand(b"/bin/rm -rf /crash; /bin/mkdir /crash; echo recovered >/crash/state; sync; [ \"$(/bin/cat /crash/state)\" = recovered ] && echo LITEOS_JOURNAL_RECOVERY_$((6*7+1))\n"),
                 ),
             ),
-            forbidden_markers=FORBIDDEN_BOOT_MARKERS,
+            forbidden_markers=FORBIDDEN_RUNTIME_MARKERS,
             persistent_writes=True,
         )
         e2fsck = next(

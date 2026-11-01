@@ -141,23 +141,29 @@ pub(crate) fn register_device_interrupt(
 
 // OWNER: 按 stream 缓存的 BTI；IOMMU 与 BTI 在服务存活期间不销毁。
 static BTIS: Mutex<BTreeMap<Option<u32>, &'static Bti>> = Mutex::new(BTreeMap::new());
-// OWNER: 平台 IOMMU（有则为硬件后端，否则为恒等映射）。
-static IOMMU: Once<Iommu> = Once::new();
+// OWNER: 恒等映射与硬件翻译属于不同 DMA 路由，各 Once 与服务同寿命。
+// PROOF: DTB stream map 决定路由；不经 IOMMU 的 MMIO 设备不能使用硬件 domain 的 IOVA。
+// FAILURE: 混用会使 MMIO 设备把 IOVA 当成物理地址，读写错误内存或永远不完成请求。
+static IDENTITY_IOMMU: Once<Iommu> = Once::new();
+static HARDWARE_IOMMU: Once<Iommu> = Once::new();
 
-fn iommu() -> &'static Iommu {
-    IOMMU.call_once(|| {
-        let root = crate::handles::resource();
-        match facts().iommu {
-            Some(IommuFacts { kind, base, size }) => {
-                let mut descriptor = [0u8; 16];
-                descriptor[..8].copy_from_slice(&(base as u64).to_le_bytes());
-                descriptor[8..].copy_from_slice(&(size as u64).to_le_bytes());
-                Iommu::create(root, kind, &descriptor)
-                    .unwrap_or_else(|status| panic!("IOMMU creation failed: {status}"))
-            }
-            None => Iommu::create(root, native_abi::iommu::IDENTITY, &[])
-                .unwrap_or_else(|status| panic!("identity IOMMU creation failed: {status}")),
-        }
+fn iommu(stream: Option<u32>) -> &'static Iommu {
+    let root = crate::handles::resource();
+    if stream.is_none() {
+        return IDENTITY_IOMMU.call_once(|| {
+            Iommu::create(root, native_abi::iommu::IDENTITY, &[])
+                .unwrap_or_else(|status| panic!("identity IOMMU creation failed: {status}"))
+        });
+    }
+    HARDWARE_IOMMU.call_once(|| {
+        let IommuFacts {
+            kind, base, size, ..
+        } = facts().iommu.expect("DMA stream lacks IOMMU");
+        let mut descriptor = [0u8; 16];
+        descriptor[..8].copy_from_slice(&(base as u64).to_le_bytes());
+        descriptor[8..].copy_from_slice(&(size as u64).to_le_bytes());
+        Iommu::create(root, kind, &descriptor)
+            .unwrap_or_else(|status| panic!("IOMMU creation failed: {status}"))
     })
 }
 
@@ -167,13 +173,13 @@ fn iommu() -> &'static Iommu {
 ///
 /// BTI 创建失败时 fail-stop。
 pub(crate) fn bti(stream: Option<u32>) -> &'static Bti {
-    let key = stream.filter(|_| facts().iommu.is_some());
+    let key = stream;
     let mut btis = BTIS.lock();
     if let Some(bti) = btis.get(&key) {
         return bti;
     }
     let bti: &'static Bti = alloc::boxed::Box::leak(alloc::boxed::Box::new(
-        Bti::create(iommu(), key.unwrap_or(0))
+        Bti::create(iommu(key), key.unwrap_or(0))
             .unwrap_or_else(|status| panic!("BTI creation failed: {status}")),
     ));
     btis.insert(key, bti);

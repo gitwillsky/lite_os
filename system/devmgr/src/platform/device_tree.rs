@@ -1,9 +1,10 @@
-//! 从平台 DTB 提取 linuxd 驱动所需的设备事实。
+//! 从平台 DTB 提取 devmgr 驱动所需的设备事实。
 //!
 //! 只关心由用户态驱动拥有的设备：VirtIO-MMIO transport、通用 PCI ECAM host 与 IOMMU。
 //! 中断控制器、串口、RTC 与定时器由内核拥有，这里不解析。中断说明符按架构解码：
 //! AArch64 为 GICv3 三 cell（SPI 号 + 32），RISC-V 为 PLIC 单 cell（source 号）。
 
+use alloc::vec::Vec;
 use core::ops::Range;
 
 use dtb_walker::{Dtb, DtbObj, Property, Str, WalkOperation};
@@ -18,9 +19,10 @@ pub(crate) struct IommuFacts {
     pub(crate) kind: u32,
     pub(crate) base: usize,
     pub(crate) size: usize,
+    phandle: u32,
 }
 
-/// linuxd 使用的设备事实。
+/// devmgr 使用的设备事实。
 pub(crate) struct DeviceFacts {
     pub(crate) virtio: VirtioMmioTransports,
     pub(crate) pci: Option<PciHost>,
@@ -121,12 +123,14 @@ struct PciScan {
     ecam: Option<Range<usize>>,
     mmio32: Option<Range<usize>>,
     intx: [[u32; 4]; 4],
-    /// `iommu-map` 首项：(RID 基址, stream 基址, 长度)。
-    stream_map: Option<(u32, u32, u32)>,
+    /// (RID 基址, IOMMU phandle, stream 基址, 长度)。
+    stream_map: Vec<(u32, u32, u32, u32)>,
+    stream_mask: Option<u32>,
 }
 
 #[derive(Default)]
 struct IommuScan {
+    phandle: Option<u32>,
     kind: Option<u32>,
     reg: Option<Range<usize>>,
 }
@@ -135,7 +139,7 @@ struct IommuScan {
 ///
 /// # Panics
 ///
-/// VirtIO-MMIO 节点缺少 window/interrupt，或 IOMMU 节点缺少 `reg` 时 fail-stop。
+/// 设备窗口、中断或 IOMMU 引用非法时 fail-stop；当前只接受一个平台 IOMMU。
 pub(crate) fn parse(dtb: Dtb<'_>) -> DeviceFacts {
     let mut virtio = VirtioMmioScan::new();
     let mut pci = PciScan::default();
@@ -150,10 +154,15 @@ pub(crate) fn parse(dtb: Dtb<'_>) -> DeviceFacts {
         let pending = core::mem::take(iommu);
         if let Some(kind) = pending.kind {
             let reg = pending.reg.expect("IOMMU node lacks reg");
-            iommu_found.get_or_insert(IommuFacts {
+            assert!(
+                iommu_found.is_none(),
+                "multiple platform IOMMUs are not supported"
+            );
+            iommu_found = Some(IommuFacts {
                 kind,
                 base: reg.start,
                 size: reg.end - reg.start,
+                phandle: pending.phandle.expect("IOMMU lacks phandle"),
             });
         }
     };
@@ -178,6 +187,10 @@ pub(crate) fn parse(dtb: Dtb<'_>) -> DeviceFacts {
             iommu.kind = iommu.kind.or_else(|| iommu_kind(compatible));
             WalkOperation::StepOver
         }
+        DtbObj::Property(Property::PHandle(phandle)) => {
+            iommu.phandle = Some(phandle.value());
+            WalkOperation::StepOver
+        }
         DtbObj::Property(Property::General { name, value }) => {
             if name == Str::from("interrupts") {
                 virtio.interrupt(decode_interrupt(value));
@@ -185,12 +198,22 @@ pub(crate) fn parse(dtb: Dtb<'_>) -> DeviceFacts {
                 pci.mmio32 = pci.mmio32.take().or_else(|| decode_pci_mmio32(value));
             } else if name == Str::from("interrupt-map") {
                 decode_pci_interrupt_map(value, &mut pci.intx);
-            } else if name == Str::from("iommu-map") && value.len() >= 16 {
-                pci.stream_map = Some((
-                    be_u32(&value[0..4]),
-                    be_u32(&value[8..12]),
-                    be_u32(&value[12..16]),
-                ));
+            } else if name == Str::from("iommu-map-mask") {
+                assert_eq!(value.len(), 4, "invalid iommu-map-mask");
+                pci.stream_mask = Some(be_u32(value));
+            } else if name == Str::from("iommu-map") {
+                assert!(
+                    !value.is_empty() && value.len().is_multiple_of(16),
+                    "invalid iommu-map"
+                );
+                for row in value.as_chunks::<16>().0 {
+                    pci.stream_map.push((
+                        be_u32(&row[0..4]),
+                        be_u32(&row[4..8]),
+                        be_u32(&row[8..12]),
+                        be_u32(&row[12..16]),
+                    ));
+                }
             }
             WalkOperation::StepOver
         }
@@ -198,11 +221,33 @@ pub(crate) fn parse(dtb: Dtb<'_>) -> DeviceFacts {
     });
     commit(&mut pci, &mut iommu);
     let pci = pci_found.and_then(|scan| {
+        let mut stream_map = Vec::new();
+        for (base, phandle, stream_base, length) in scan.stream_map {
+            assert!(
+                iommu_found.is_some_and(|iommu| iommu.phandle == phandle),
+                "PCI map references an unknown IOMMU"
+            );
+            assert!(
+                length != 0
+                    && base.checked_add(length - 1).is_some()
+                    && stream_base.checked_add(length - 1).is_some(),
+                "invalid IOMMU stream range"
+            );
+            assert!(
+                !stream_map.iter().any(|&(old_base, _, old_length)| {
+                    (old_base..=old_base + old_length - 1).contains(&base)
+                        || (base..=base + length - 1).contains(&old_base)
+                }),
+                "overlapping iommu-map ranges"
+            );
+            stream_map.push((base, stream_base, length));
+        }
         Some(PciHost::new(
             scan.ecam.filter(|range| range.end > range.start)?,
             scan.mmio32?,
             scan.intx,
-            scan.stream_map,
+            stream_map,
+            scan.stream_mask.unwrap_or(u32::MAX),
         ))
     });
     DeviceFacts {

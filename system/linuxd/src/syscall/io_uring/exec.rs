@@ -23,7 +23,7 @@ use crate::{
     syscall::{
         fs::{
             check_readable, check_writable, open_at, perform_read, perform_write, positioned_read,
-            positioned_write, statx_at, statx_request_valid, sync_ofd,
+            positioned_write, read_regular_available, statx_at, statx_request_valid, sync_ofd,
         },
         socket::{
             ConnectBegin, MSG_NOSIGNAL, accept_once, connect_begin, socket_error, socket_of,
@@ -459,6 +459,12 @@ fn issue_read_write(
     }
     if offset < -1 {
         return Issue::Done(Outcome::of(-errno::EINVAL));
+    }
+    if !write
+        && disk_backed(&ofd)
+        && let Some(result) = read_regular_available(task, &ofd, &vectors, total, offset)
+    {
+        return done(result);
     }
     if offset >= 0 && positionable(&ofd) {
         // 显式偏移：pread/pwrite 语义，不触碰共享 OFD position。

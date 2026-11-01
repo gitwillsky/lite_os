@@ -65,7 +65,7 @@ pub(super) struct FuseInode {
     // 失效通知立即摘除对应项。缺失时每个路径分量每次解析都要一次 LOOKUP 往返。
     entries: Mutex<FallibleMap<Vec<u8>, CachedEntry>>,
     // OWNER: 打开本 inode 的服务器句柄（Linux `fi->write_files` 等）；页缓存读写与 fsync 没有 file
-    // 上下文，从这里取任一可用句柄。只存 Weak，句柄寿命归 OFD。
+    // 上下文，从这里取任一可用句柄。只存 Weak，服务器句柄由打开对象与在途 I/O 保活。
     handles: Mutex<Vec<handle::RegisteredHandle>>,
     // OWNER: 守护进程未声明 FUSE_PARALLEL_DIROPS 时串行化本目录的查找、读目录与变更（Linux 对
     // 目录 i_rwsem 取排他）。缺失时不支持并发目录操作的守护进程会看到交错请求。
@@ -76,9 +76,6 @@ pub(super) struct FuseInode {
     // POLICY: 页缓存内容可能已落后于服务器（属性刷新发现 size/mtime 变化、失效通知遇到忙锁）；
     // 读入口与打开时重试作废。缺失时作废一旦因锁忙跳过，旧内容就一直留在缓存里。
     stale_data: AtomicBool,
-    // OWNER: 正在释放的可写句柄写出剩余脏页时的临时句柄；只在 [`FuseInode::drain_writes`] 期间存在。
-    // 缺失时最后一个句柄 Drop 中的写回找不到句柄（Weak 已不可升级）而以 EBADF 丢弃数据。
-    draining: Mutex<Option<HandleRef>>,
     // CACHE: Linux `S_NOSEC`：上次检查时既无 set-ID 位也无 `security.capability`，内容修改无需 killpriv。
     // 属性变更（SETATTR、刷新改变 mode）与任何 xattr 修改清除它；缺失时每次写入都多一次 REMOVEXATTR 往返。
     no_privileges: AtomicBool,
@@ -107,7 +104,6 @@ impl FuseInode {
             directory_operations: TaskMutex::new(()),
             advise_plus: AtomicBool::new(false),
             stale_data: AtomicBool::new(false),
-            draining: Mutex::new(None),
             no_privileges: AtomicBool::new(false),
             write_access: InodeWriteAccess::new(),
         })
@@ -575,6 +571,13 @@ impl Inode for FuseInode {
             InodeType::CharacterDevice | InodeType::BlockDevice
         )
         .then(|| DeviceNumber::decode(u64::from(self.cached().rdev)))
+    }
+
+    fn data_cache_valid(&self) -> bool {
+        !self.stale_data.load(Ordering::Acquire)
+            && self.negotiated().is_ok_and(|negotiated| {
+                !negotiated.has(fuse::AUTO_INVAL_DATA) || now() < self.attributes.lock().valid_until
+            })
     }
 
     /// AUTO_INVAL_DATA 时先刷新过期属性（可能标记过期），再处理尚未完成的作废（Linux

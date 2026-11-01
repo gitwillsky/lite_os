@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""显示服务运行时门禁：compositor 接管内核启动画面，并从 evdev 读到指针与按键。
+"""显示服务运行时门禁：compositor 接管驱动服务启动画面，并从 evdev 读到指针与按键。
 
 在 QEMU（virtio-gpu、键盘、平板，无窗口）的私有产品镜像中，让 logon fixture 保持存活且尚不绘制，以固定交接观察点：
 
 1. 串口出现 compositor 的首帧与输入就绪标记。
 2. 经 QMP `screendump` 取回 scanout，与 `LBS1` 参考解码器按同一整数缩放居中规则算出的帧逐像素比对；
-   两端（内核 `boot_screen` 与 compositor）任何一方的缩放、居中或填充规则漂移，这里都会失败。
+   两端（devmgr `boot_screen` 与 compositor）任何一方的缩放、居中或填充规则漂移，这里都会失败。
 3. 经 QMP 注入一次平板移动与一次按键，要求 compositor 报告各自的首个事件。
 """
 
@@ -27,7 +27,7 @@ from verify_wayland import install_files
 
 ROOT = Path(__file__).resolve().parent.parent
 RECIPE_VERSION = 2
-# 与 boot-scene crate 的 KERNEL_PROGRESS_PERMILLE 一致：内核交接给 compositor 时的进度。
+# 与 boot-scene crate 的 KERNEL_PROGRESS_PERMILLE 一致：驱动服务交接给 compositor 时的进度。
 HANDOFF_PERMILLE = 400
 STARTUP_MARKERS = ("compositor: first frame presented", "compositor: input ready")
 
@@ -51,7 +51,7 @@ def gate_inputs(target: BuildTarget, image: Path) -> tuple[Path, ...]:
 
 
 def expected_frame(scene: bytes, width: int, height: int) -> list[tuple[int, int, int]]:
-    """按内核与 compositor 共同的规则算出接管后的整屏 RGB。
+    """按 devmgr 与 compositor 共同的规则算出接管后的整屏 RGB。
 
     整数倍 `min(W/640, H/480)` 放大并居中，位图外为黑；进度条从槽内部左端涂到 `HANDOFF_PERMILLE`。
     """

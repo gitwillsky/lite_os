@@ -44,13 +44,13 @@ pub(super) fn cached_file(
         write_sequence: TaskMutex::new(()),
     })
     .map_err(|_| FileSystemError::OutOfMemory)?;
+    pager::register(key, &file)?;
     let admitted = {
         let mut files = files().lock();
         match files.get(&id) {
             Some(existing) => existing.clone(),
             None => {
                 files.commit_vacant(slot.fill(id, file.clone()));
-                pager::register(key, &file);
                 file.clone()
             }
         }

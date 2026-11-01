@@ -461,6 +461,32 @@ impl<Page: TablePage> PageTable<Page> {
         None
     }
 
+    /// Find the first mapped page in `[start, end)`, skipping absent table branches.
+    /// Returns its virtual page and decoded leaf, or `None` for an empty range.
+    /// The caller keeps the page-table owner locked across lookup and mutation.
+    pub(crate) fn next_mapped(&self, start: usize, end: usize) -> Option<(usize, PageTableEntry)> {
+        let mut cursor = start;
+        'search: while cursor < end {
+            let indexes = sv39::indexes(cursor);
+            let mut table = self.root_page;
+            for (level, index) in indexes.into_iter().enumerate() {
+                let entry = Self::read_entry(table, index);
+                if entry.is_leaf() {
+                    return self.translate(cursor).map(|entry| (cursor, entry));
+                }
+                if !entry.is_next_table() {
+                    // An absent entry excludes its entire level span, not just this 4KiB page.
+                    let span = Self::leaf_span(level);
+                    cursor = cursor.checked_add(span - cursor % span)?;
+                    continue 'search;
+                }
+                table = entry.physical_page();
+            }
+            return None;
+        }
+        None
+    }
+
     #[cfg(test)]
     pub(crate) fn table_page_count(&self) -> usize {
         self.table_pages.len()

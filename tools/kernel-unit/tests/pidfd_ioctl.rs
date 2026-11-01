@@ -264,4 +264,6 @@ fn actual_namespace_codec_forwards_selector_and_argument_presence() {
     );
 }
 
-mod sync { pub(crate) use spin::{Mutex, Once}; }
+mod sync {
+    pub(crate) use spin::{Mutex, Once};
+}

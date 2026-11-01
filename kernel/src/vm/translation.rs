@@ -434,7 +434,8 @@ mod tests {
 
     #[test]
     fn permission_relax_is_local_but_restriction_dominates_batch() {
-        let mut commit = TranslationCommit::stale_fault(10);
+        let mut commit = TranslationCommit::new();
+        commit.record(10, TranslationTransition::Relax);
         assert_eq!(commit.plan(4).remote_targets, 0);
         commit.record(12, TranslationTransition::Revoke);
         assert_eq!(

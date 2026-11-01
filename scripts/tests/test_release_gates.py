@@ -22,7 +22,7 @@ from build_target import target_from_environment  # noqa: E402
 class TrapCostTests(unittest.TestCase):
     @staticmethod
     def fp_helper(operation: str) -> list[str]:
-        lines = ["msr cpacr_el1, x9", "isb"]
+        lines = []
         lines.extend(
             f"{operation} q{register}, q{register + 1}, [x0]"
             for register in range(0, 32, 2)
@@ -31,7 +31,6 @@ class TrapCostTests(unittest.TestCase):
             lines.extend(("mrs x9, fpcr", "mrs x10, fpsr"))
         else:
             lines.extend(("msr fpcr, x9", "msr fpsr, x10"))
-        lines.extend(("msr cpacr_el1, x9", "isb"))
         return lines
 
     @staticmethod
@@ -52,12 +51,15 @@ class TrapCostTests(unittest.TestCase):
             "sub sp, sp, #0x20",
             "sub sp, sp, #0x20",
             "add sp, sp, #0x20",
-            "msr tpidr_el0, x9",
-            "msr tpidrro_el0, xzr",
-            "msr ttbr0_el1, x1",
+            "mrs x10, ttbr1_el1",
+            "msr ttbr0_el1, x10",
             "isb",
             "add x11, sp, #0x30",
         ]
+
+    @staticmethod
+    def user_restore() -> list[str]:
+        return ["msr tpidr_el0, x9", "msr tpidrro_el0, xzr", "msr ttbr0_el1, x1", "isb"]
 
     @staticmethod
     def kernel_irq() -> list[str]:
@@ -69,7 +71,7 @@ class TrapCostTests(unittest.TestCase):
         ]
 
     @staticmethod
-    def bootstrap_wait() -> list[str]:
+    def idle_wait() -> list[str]:
         return ["msr daifclr, #0x2", "wfi", "msr daifset, #0x2"]
 
     def test_riscv_limits_preserve_existing_contract(self) -> None:
@@ -88,11 +90,10 @@ class TrapCostTests(unittest.TestCase):
             ["stp x0, x1, [sp]", "ldr x0, [x1]"],
             self.user_trap_assembly(),
             self.kernel_irq(),
-            self.bootstrap_wait(),
+            self.idle_wait(),
             [],
             self.context_switch(),
-            self.fp_helper("stp"),
-            self.fp_helper("ldp"),
+            self.user_restore(),
             self.fp_helper("stp"),
             self.fp_helper("ldp"),
         )
@@ -105,11 +106,10 @@ class TrapCostTests(unittest.TestCase):
             [],
             self.user_trap_assembly(),
             self.kernel_irq(),
-            self.bootstrap_wait(),
+            self.idle_wait(),
             [],
             context_switch,
-            self.fp_helper("stp"),
-            self.fp_helper("ldp"),
+            self.user_restore(),
             self.fp_helper("stp"),
             self.fp_helper("ldp"),
         )
@@ -134,11 +134,10 @@ class TrapCostTests(unittest.TestCase):
             [],
             user_trap,
             self.kernel_irq(),
-            self.bootstrap_wait(),
+            self.idle_wait(),
             [],
             self.context_switch(),
-            self.fp_helper("stp"),
-            self.fp_helper("ldp"),
+            self.user_restore(),
             self.fp_helper("stp"),
             self.fp_helper("ldp"),
         )
@@ -154,14 +153,12 @@ class TrapCostTests(unittest.TestCase):
 
 
 class AArch64InstructionContainmentTests(unittest.TestCase):
-    def test_only_explicit_helpers_may_touch_fp_state(self) -> None:
+    def test_only_context_switch_may_touch_kernel_fp_state(self) -> None:
         disassembly = "\n".join(
             (
                 "00000010 <__switch>:",
                 "  10: stp q0, q1, [x0]",
                 "  14: mrs x9, FPCR",
-                "00000018 <__aarch64_signal_fp_capture>:",
-                "  18: stp q0, q1, [x0]",
                 "00000020 <kernel::trap::ordinary>:",
                 "  20: stp x0, x1, [sp]",
             )
@@ -173,6 +170,20 @@ class AArch64InstructionContainmentTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "escapes explicit boundary"):
             verify_architecture_release.verify_aarch64_instruction_containment(
                 disassembly
+            )
+
+    def test_service_fp_permission_does_not_authorize_ordinary_service_code(self) -> None:
+        owners = frozenset({"linuxd_fp_capture", "linuxd_fp_restore"})
+        verify_architecture_release.verify_aarch64_instruction_containment(
+            "00000010 <linuxd_fp_capture>:\n  10: stp q0, q1, [x1]", owners
+        )
+        with self.assertRaisesRegex(RuntimeError, "escapes explicit boundary"):
+            verify_architecture_release.verify_aarch64_instruction_containment(
+                "00000010 <linuxd::ordinary>:\n  10: str q0, [x1]", owners
+            )
+        with self.assertRaisesRegex(RuntimeError, "escapes explicit boundary"):
+            verify_architecture_release.verify_aarch64_instruction_containment(
+                "00000010 <linuxd_fp_capture>:\n  10: stp q0, q1, [x1]"
             )
 
     def test_optional_memory_and_control_extensions_are_rejected(self) -> None:
@@ -206,7 +217,7 @@ class AArch64InstructionContainmentTests(unittest.TestCase):
 class ArtifactRoutingTests(unittest.TestCase):
     def test_aarch64_uses_release_kernel_without_bootloader(self) -> None:
         target = target_from_environment({"ARCH": "aarch64"})
-        specs = kernel_image.target_artifacts(target, Path("/cache/busybox"))
+        specs = verify_artifacts.target_artifacts(target, Path("/cache/busybox"))
         self.assertEqual(len(specs), 2)
         self.assertEqual(
             specs[0].path,

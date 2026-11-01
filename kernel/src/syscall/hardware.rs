@@ -5,10 +5,10 @@ use alloc::sync::Arc;
 use native_abi::{Status, rights};
 
 use super::Call;
-use crate::object::{Bti, Interrupt, Iommu, Object, Resource};
+use crate::object::{Bti, Interrupt, Iommu, Object};
 
 pub(super) fn resource_create(call: &Call<'_>) -> Result<(), Status> {
-    let parent = call.resource(call.arg_handle(0), 0)?;
+    let parent = call.resource(call.arg_handle(0), rights::WRITE)?;
     let child = parent.create_child(call.arg_u32(1), call.arg(2) as u64, call.arg(3) as u64)?;
     let child = Arc::try_new(child).map_err(|_| native_abi::ERR_NO_MEMORY)?;
     call.publish(Object::Resource(child), call.arg(4))
@@ -102,17 +102,4 @@ pub(super) fn pmt_unpin(call: &Call<'_>) -> Result<(), Status> {
     }
     drop(handles.remove(handle)?);
     Ok(())
-}
-
-/// 根 resource 检查。
-pub(super) fn require_root(
-    call: &Call<'_>,
-    handle: native_abi::Handle,
-) -> Result<Arc<Resource>, Status> {
-    let resource = call.resource(handle, 0)?;
-    if resource.is_root() {
-        Ok(resource)
-    } else {
-        Err(native_abi::ERR_ACCESS_DENIED)
-    }
 }

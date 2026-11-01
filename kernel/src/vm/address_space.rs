@@ -2,8 +2,8 @@
 //!
 //! # 结构
 //!
-//! 每个地址空间拥有一张页表和一棵 VMAR 树：根 VMAR 覆盖该空间管理的地址区间，子节点是子 VMAR
-//! （地址区间预留）或映射。树与页表由同一把地址空间锁保护。
+//! 每个地址空间拥有一棵 VMAR 树：根 VMAR 覆盖该空间管理的地址区间，子节点是子 VMAR
+//! （地址区间预留）或映射。成员的 normal/private 硬件页表视图与树由同一把地址空间锁保护。
 //!
 //! # 共享地址空间
 //!
@@ -25,11 +25,12 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use spin::Mutex;
 
-use super::page_table::{PagePermissions, PageTable};
+use super::execution_views::{ExecutionView, ExecutionViews};
+use super::page_table::PagePermissions;
 use super::translation::{TranslationCommit, synchronize_address_space_retirement};
 use super::vmo::{CachePolicy, FaultSource, ResolvedPage, Vmo};
-use super::{FaultAccess, USER_END, USER_START, VmError, map_trampoline};
-use crate::arch::mmu::{AddressSpaceKind, AddressSpaceToken};
+use super::{FaultAccess, USER_END, USER_START, VmError};
+use crate::arch::mmu::AddressSpaceToken;
 use crate::execution::sync::{TaskMutex, TaskMutexGuard};
 use crate::memory::{FrameTracker, PAGE_SIZE, VirtualAddress, VirtualPageNumber, frame_allocator};
 use fallible_tree::FallibleMap;
@@ -151,7 +152,7 @@ struct VmarNode {
 }
 
 struct SpaceInner {
-    page_table: PageTable,
+    views: ExecutionViews,
     nodes: FallibleMap<u64, VmarNode>,
     next_id: u64,
     // OWNER: RISC-V 线程 trap context 页（supervisor-only）；AArch64 不使用。
@@ -163,6 +164,9 @@ pub(crate) struct AddressSpace {
     koid: u64,
     range: Range<usize>,
     token: AddressSpaceToken,
+    // OWNER: private 根的不变身份；最终 IRQ-masked transfer 不取可睡眠的地址空间锁。
+    // 两 token 仅保活各根的 ASID context，映射与页表生命周期仍由 inner 唯一管理。
+    private_token: Option<AddressSpaceToken>,
     shared: Option<Arc<AddressSpace>>,
     // OWNER: 共享空间登记的成员；共享区撤销翻译时逐个处理。Weak 不延长成员寿命。
     members: Mutex<Vec<Weak<AddressSpace>>>,
@@ -215,11 +219,7 @@ impl AddressSpace {
         range: Range<usize>,
         shared: Option<Arc<AddressSpace>>,
     ) -> Result<(Arc<Self>, Arc<Vmar>), VmError> {
-        let mut page_table =
-            PageTable::try_new(AddressSpaceKind::User).map_err(|_| VmError::NoMemory)?;
-        let mut commit = TranslationCommit::new();
-        map_trampoline(&mut page_table, &mut commit)?;
-        commit.finish_unpublished();
+        let views = ExecutionViews::new(shared.is_some())?;
         let permissions = PagePermissions::READ | PagePermissions::WRITE | PagePermissions::EXECUTE;
         let mut nodes = FallibleMap::new();
         nodes
@@ -235,12 +235,13 @@ impl AddressSpace {
             .map_err(|_| VmError::NoMemory)?;
         let space = Arc::try_new(Self {
             koid: crate::id::next_koid(),
-            token: page_table.token(),
+            token: views.normal.token(),
+            private_token: views.private_token(),
             range: range.clone(),
             shared,
             members: Mutex::new(Vec::new()),
             inner: TaskMutex::new(SpaceInner {
-                page_table,
+                views,
                 nodes,
                 next_id: ROOT + 1,
                 contexts: FallibleMap::new(),
@@ -318,8 +319,32 @@ impl AddressSpace {
     }
 
     /// 返回用户态时激活的页表 token。
-    pub(crate) fn token(&self) -> AddressSpaceToken {
-        self.token.clone()
+    pub(crate) fn token(&self, view: ExecutionView) -> AddressSpaceToken {
+        match view {
+            ExecutionView::Normal => self.token.clone(),
+            ExecutionView::Private => self
+                .private_token
+                .as_ref()
+                .expect("restricted mode requires a shared-process member")
+                .clone(),
+        }
+    }
+
+    /// 共享进程成员具有独立 private 硬件根；普通/共享模板进程不能进入受限模式。
+    pub(crate) fn has_private_view(&self) -> bool {
+        self.private_token.is_some()
+    }
+
+    /// 受限缺页不能解析共享区；否则隐藏区会在下一次重试前被错误补入或无限重试。
+    pub(crate) fn fault_private(
+        self: &Arc<Self>,
+        address: usize,
+        access: FaultAccess,
+    ) -> Result<FaultSource, VmError> {
+        if !self.has_private_view() || !self.range.contains(&address) {
+            return Err(VmError::AccessDenied);
+        }
+        self.fault(address, access)
     }
 
     fn lock(&self) -> Result<TaskMutexGuard<'_, SpaceInner>, VmError> {
@@ -450,27 +475,13 @@ impl AddressSpace {
             Some(owner.lock()?)
         };
         let mut inner = self.lock()?;
-        let mut commit = TranslationCommit::new();
+        let commit = TranslationCommit::new();
         if !mapping.live.load(Ordering::Acquire) {
             drop(owner_guard);
             return Ok(commit);
         }
         let vpn = VirtualAddress::from(address).floor();
-        let table = &mut inner.page_table;
-        match table.translate(vpn) {
-            Some(entry) if entry.ppn() == page.ppn && entry.permissions() == permissions => {}
-            Some(_) => {
-                table
-                    .unmap(vpn, &mut commit)
-                    .map_err(|_| VmError::NoMemory)?;
-                table
-                    .map(vpn, page.ppn, permissions, &mut commit)
-                    .map_err(|_| VmError::NoMemory)?;
-            }
-            None => table
-                .map(vpn, page.ppn, permissions, &mut commit)
-                .map_err(|_| VmError::NoMemory)?,
-        }
+        let commit = inner.views.install(vpn, page.ppn, permissions)?;
         drop(inner);
         drop(owner_guard);
         Ok(commit)
@@ -572,7 +583,8 @@ impl AddressSpace {
             let copied = {
                 let inner = self.lock()?;
                 match inner
-                    .page_table
+                    .views
+                    .normal
                     .translate(VirtualAddress::from(cursor).floor())
                 {
                     Some(entry) if entry.permissions().contains(required) => {
@@ -620,24 +632,19 @@ impl AddressSpace {
             .try_insert(vpn, frame)
             .map_err(|_| VmError::NoMemory)?;
         let mut commit = TranslationCommit::new();
-        if inner
-            .page_table
-            .map(
-                vpn,
-                ppn,
-                PagePermissions::READ | PagePermissions::WRITE,
-                &mut commit,
-            )
-            .is_err()
-        {
-            drop(inner.contexts.remove(&vpn));
-            commit.finish_unpublished();
-            return Err(VmError::NoMemory);
-        }
+        let result = inner.views.map_context(vpn, ppn, &mut commit);
+        let retired = if result.is_err() {
+            inner.views.unmap_context(vpn, &mut commit);
+            inner.contexts.remove(&vpn)
+        } else {
+            None
+        };
         drop(inner);
         commit
             .synchronize()
             .unwrap_or_else(|error| panic!("user translation fence failed: {error}"));
+        drop(retired);
+        result?;
         Ok((address, pointer))
     }
 
@@ -650,10 +657,7 @@ impl AddressSpace {
                 .inner
                 .lock()
                 .unwrap_or_else(|_| panic!("context release cannot allocate a waiter"));
-            inner
-                .page_table
-                .unmap(vpn, &mut commit)
-                .expect("thread context page was not mapped");
+            inner.views.unmap_context(vpn, &mut commit);
             inner
                 .contexts
                 .remove(&vpn)
@@ -683,28 +687,7 @@ impl SpaceInner {
     }
 
     fn zap(&mut self, range: Range<usize>, mode: ZapMode) -> Result<TranslationCommit, VmError> {
-        let mut commit = TranslationCommit::new();
-        for page in range.start / PAGE_SIZE..range.end.div_ceil(PAGE_SIZE) {
-            let vpn = VirtualPageNumber::from_vpn(page);
-            let Some(entry) = self.page_table.translate(vpn) else {
-                continue;
-            };
-            match mode {
-                ZapMode::Unmap => self
-                    .page_table
-                    .unmap(vpn, &mut commit)
-                    .map_err(|_| VmError::NoMemory)?,
-                ZapMode::RemoveWrite => {
-                    let permissions = entry.permissions();
-                    if permissions.contains(PagePermissions::WRITE) {
-                        self.page_table
-                            .set_flags(vpn, permissions - PagePermissions::WRITE, &mut commit)
-                            .map_err(|_| VmError::NoMemory)?;
-                    }
-                }
-            }
-        }
-        Ok(commit)
+        self.views.zap(range, mode)
     }
 
     /// 在 `node` 的子节点中找出 `[start, start + size)` 是否空闲。
@@ -788,6 +771,7 @@ impl Vmar {
     /// # Parameters
     /// - `options`: 放置方式、权限上限与 faultable mapping 准入。
     /// - `vmo_offset`/`size`: 页对齐的 VMO 字节区间。
+    ///
     /// `options.permissions` 必须是本 VMAR 权限与句柄 ceiling 的子集；之后 protect 仍受 ceiling 限制。
     ///
     /// # Returns
@@ -802,7 +786,12 @@ impl Vmar {
         size: usize,
         options: MapOptions,
     ) -> Result<usize, VmError> {
-        let MapOptions { placement, permissions, ceiling, allow_faults } = options;
+        let MapOptions {
+            placement,
+            permissions,
+            ceiling,
+            allow_faults,
+        } = options;
         if size == 0
             || !size.is_multiple_of(PAGE_SIZE)
             || !vmo_offset.is_multiple_of(PAGE_SIZE as u64)
@@ -1120,9 +1109,6 @@ impl Drop for AddressSpace {
         // 2. fence 完成后释放 ASID；字段随后析构并释放页表页、映射与页框。
         synchronize_address_space_retirement()
             .expect("platform TLB synchronization failed while retiring address space");
-        self.inner
-            .get_mut()
-            .page_table
-            .release_address_space_id_after_global_fence();
+        self.inner.get_mut().views.retire();
     }
 }

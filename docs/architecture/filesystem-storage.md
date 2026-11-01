@@ -33,12 +33,12 @@
 - ext4 写路径是 Linux `data=ordered` + group commit：`write`/`create`/`rename` 等 mutation 只把
   staged metadata 与文件数据并入内存中的 running transaction 后返回；metadata 经 JBD2 原子提交，
   数据不进 journal、在 commit record 之前直接写回 home。running transaction 由 `fsync`/`execution::sync`、
-  journal 容量、16 MiB 数据上限或 5 秒年龄触发提交；每个 ext4 filesystem 的写回内核线程负责空闲期的
+  journal 容量、16 MiB 数据上限或 5 秒年龄触发提交；每个 ext4 filesystem 在 ext4d 内的写回线程负责空闲期的
   5 秒上限。backup superblock/GDT 保持 mkfs 时的内容，由 e2fsck 维护。
 - JBD2 commit 在 commit record 前持久化 dirty marker、descriptor 与 data image；mount replay 后先从
   primary home blocks 重新发布 superblock/GDT runtime owner，再执行 orphan recovery 与一致性扫描。
 - page cache 唯一拥有 shared file page identity、dirty/writeback 状态和 reclaim cursor；VMA 与 filesystem 通过 shared-page seam 交互。
-- 内核只挂载根文件系统（`fs::mount_root`，source 为 `/dev/<disk>`）与 `/dev` 上的 devtmpfs（Linux
+- linuxd 在启动时挂载根文件系统（`fs::mount_root`，source 为 `/dev/<disk>`）与 `/dev` 上的 devtmpfs（Linux
   `CONFIG_DEVTMPFS_MOUNT`）；`/proc`、`/sys`、`/dev/pts`、`/run`、`/tmp`、`/dev/shm` 由 init 的
   `/etc/init.d/rcS` 经 `mount(2)` 挂载。文件系统类型是 `fs::FileSystemType` 注册表中的成员
   （Linux `register_filesystem`）：`ext4`、`proc`、`sysfs`、`devpts`、`devtmpfs`、`tmpfs` 在 `init_vfs`
@@ -87,7 +87,7 @@
 
 - 持久存储是固定 ext4/JBD2 profile；附加块设备与分区可经 `mount(2)` 挂载；分区表解析见 `block::partition_table`（纯函数，host 单测覆盖 MBR 逻辑分区链、GPT CRC 与备份表回退）。
 - FIFO、字符/块设备节点由 `Inode::mknod` 创建（ext4 把设备号按 Linux 旧/新编码存入 `i_block`，无 extent tree；
-  tmpfs 存为 `Body::Special`）。FIFO 的内核 Pipe 由 `fs::fifo` 按 `(filesystem, inode)` 绑定，只持 `Weak`，
+  tmpfs 存为 `Body::Special`）。FIFO 的 linuxd Pipe 由 `fs::fifo` 按 `(filesystem, inode)` 绑定，只持 `Weak`，
   registry 使用可跨 allocation 的 TaskMutex。真实 endpoint admission 与最后 close 在 PipeState 同锁更新 Fresh/Live/Retired，临时 Arc/Weak pin 不复活旧 ring，最后 close 锁外释放 ring；重开取得新 session、保留 inode identity。打开的 FIFO
   是一个持有 0~2 个 endpoint 的 `DeviceFile`，所以双向读写、
   两路 poll/epoll source 与阻塞都走设备 seam，写入无 reader 时经 `DeviceError::BrokenPipe` 投递 `SIGPIPE`。VFS 发布 opened entry 时把任何文件系统里的块设备节点包装成 `BlockSpecial`：
@@ -110,7 +110,7 @@
   身份独立；领取 writer 时逐出其他重叠别名且阻止它们重新缓存，只读别名
   绕过 cache 读取已写回的块层内容，不能看到 writer 自有 cache 中尚未写回的内容。
 - tmpfs 没有 swap：数据页只受 `size=` 与物理内存限制，`MAP_SHARED` 触碰超出配额的洞得到 `SIGBUS`
-  （与 Linux 一致）；可写映射建立时更新 `st_mtime`，之后的 store 不再经过内核。
+  （与 Linux 一致）；可写映射建立时更新 `st_mtime`，之后的 store 经 native pager 的 dirty/writeback 机制追踪。
 - 不支持 `huge=`、`mpol=`（没有大页与 NUMA 子系统）与 xattr/ACL。bind/move/propagation 挂载、`MS_SYNCHRONOUS`、
   `MS_MANDLOCK`、`MS_NOSYMFOLLOW` 与同目录堆叠挂载返回 `EINVAL`/`EBUSY`。
 - tmpfs 目录树释放（umount 或最后一个引用消失）用常数栈的循环拆除，深度不受限。

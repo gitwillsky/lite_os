@@ -45,7 +45,8 @@ TCP/UDP/raw 当前使用固定有界协议缓冲，INET 的 SO_SNDBUF/SO_RCVBUF 
 归。SO_PASSCRED/SCM_CREDENTIALS 已接通源码（包括 actual PID/real IDs、显式 claim、namespace 输出、partial control、零长度 Message 与 MSG_PEEK）；NEWNET 保留独立 protocol/ports/lo 的声明范围；IPv6 和多网卡不支持。
 
 SO_RCVTIMEO/SO_SNDTIMEO 的 LP64 OLD/NEW option、标准 timeval 错误、getter 短缓冲区、实际收发/accept/TCP connect deadline 与 signal restart policy 已改源码。AF_UNIX listener 满时的 blocking connect、native backlog + 1
-admission、关闭竞态与固定调用 flags/deadline 已补源码和回归；SeqPacket 生命周期已补源码与回归。TCP 协议 options 在最终 ACK 建立 child 时冻结，accept OOM 保留快照；收发 timeout 当前在 accept 时继承，与 Linux 握手时冻结存在差异；无限/有限/重新禁用超
+admission、关闭竞态与固定调用 flags/deadline 已补源码和回归；SeqPacket 生命周期已补源码与回归。TCP 协议 options 在最终 ACK 建立 child 时冻结，accept OOM 保留快照；收发 timeout 当前在 accept 时继承，与
+  Linux 握手时冻结存在差异；无限/有限/重新禁用超
 时的 SA_RESTART 回归已补源码。
 
 完整 108-byte 非 NUL pathname 的 getsockname/recvmsg address 输出按 Linux 追加终止 NUL，storage 容纳标准 111-byte 输出，短 name buffer 仍回报完整长度。此前该场景可导致内核 slice 越界；原 codec 已根修并补 guest 绑定/连接/accept/短输

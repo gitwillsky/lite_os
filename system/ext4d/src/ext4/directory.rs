@@ -337,7 +337,9 @@ impl Ext4Inode {
             let child_number = metadata.inode as u32;
             let mut ancestor = new_parent.clone();
             let mut reached_root = false;
-            for _ in 0..self.fs.superblock.lock().s_inodes_count {
+            // Ancestor cache misses read the superblock again; release its guard before traversal.
+            let inode_limit = self.fs.superblock.lock().s_inodes_count;
+            for _ in 0..inode_limit {
                 if ancestor.inode_num == child_number {
                     return Err(FileSystemError::InvalidOperation);
                 }

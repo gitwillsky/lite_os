@@ -79,8 +79,8 @@ impl engine::Ring for Arc<DeviceBacking> {
     }
 }
 
-/// 设备回调累计的事件。回调运行在设备 `reclaim` 内部，而 `reclaim` 又会被引擎自己的 `submit_period`/`writable`
-/// 触发，所以回调只能写这些原子量，不能取引擎的锁——否则就是持锁自等的死锁。
+/// 设备协议事件线程累计的完成；回调只发布计数和 deferred 工作，不等待引擎锁。
+/// 引擎持锁调用设备 RPC 时，设备仍可产生完成；阻塞事件接收会阻断后续完成与供数通知。
 #[derive(Default)]
 struct EventCounters {
     completed: AtomicUsize,
@@ -93,10 +93,6 @@ impl EventCounters {
             completed: self.completed.swap(0, Ordering::AcqRel),
             disconnected: self.disconnected.load(Ordering::Acquire),
         }
-    }
-
-    fn pending(&self) -> bool {
-        self.completed.load(Ordering::Acquire) != 0
     }
 }
 
@@ -294,17 +290,14 @@ impl Card {
 
     /// 让引擎消化设备事件并补填队列；有变化时唤醒所有等待者。
     ///
-    /// 补填期间设备 reclaim 可能又累计出新的完成事件，所以循环到事件取空为止。
+    /// 1. 先取得引擎锁再提取完成计数，避免并发调用把较新的完成批次先交给引擎。
+    /// 2. 每次只处理一个快照并立即通知写者；追赶后续完成会延迟应用补数并导致 underrun。
+    /// 3. 补填期间的新完成已发布 AUDIO 工作位，由 deferred 下一轮处理，不在本调用内追赶。
     fn process(&self) {
-        let mut changed = false;
-        for _ in 0..16 {
-            let events = self.events.take();
-            let tick_changed = self.engine.lock().tick(events, &*self.output);
-            changed |= tick_changed;
-            if !self.events.pending() {
-                break;
-            }
-        }
+        let changed = {
+            let mut engine = self.engine.lock();
+            engine.tick(self.events.take(), &*self.output)
+        };
         if changed {
             self.notification_write.signal_readiness();
         }

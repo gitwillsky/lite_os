@@ -21,10 +21,7 @@ use crate::ext4::Ext4FileSystem;
 use crate::{
     InodeType,
     ext4_cost_tests::{COST_TEST_LOCK, ext4_fixture_path},
-    vfs::{
-        CreateMetadata, DirectoryEntry, DirectoryVisit, DirectoryVisitor,
-        FileSystemError,
-    },
+    vfs::{CreateMetadata, DirectoryEntry, DirectoryVisit, DirectoryVisitor, FileSystemError},
 };
 
 const FILE: CreateMetadata = CreateMetadata {
@@ -46,7 +43,7 @@ mod xattr;
 
 #[test]
 fn content_mutation_applies_fuse_policy_to_live_inode_mode() {
-    use crate::vfs::{OwnerModeChange};
+    use crate::vfs::OwnerModeChange;
     let _serial = COST_TEST_LOCK.lock().unwrap();
     let path = scratch_copy("write-capabilities.img");
     let fs = mount(&path);
@@ -64,10 +61,15 @@ fn content_mutation_applies_fuse_policy_to_live_inode_mode() {
         .unwrap();
     let writer = crate::vfs::WritePolicy { kill_suidgid: true };
     let outsider = writer;
-    let privileged = crate::vfs::WritePolicy { kill_suidgid: false };
+    let privileged = crate::vfs::WritePolicy {
+        kill_suidgid: false,
+    };
     let mode = |value| {
         inode
-            .change_owner_mode(OwnerModeChange { mode: Some(value), ..Default::default() })
+            .change_owner_mode(OwnerModeChange {
+                mode: Some(value),
+                ..Default::default()
+            })
             .unwrap()
     };
     let special = || inode.metadata().unwrap().mode & 0o6000;
@@ -75,7 +77,9 @@ fn content_mutation_applies_fuse_policy_to_live_inode_mode() {
     assert_eq!(inode.write_storage(0, b"a", Some(writer)), Ok(1));
     assert_eq!(special(), 0); // non-owner writer must not need FOWNER
     mode(0o2600);
-    inode.write_storage(inode.size(), b"b", Some(writer)).unwrap();
+    inode
+        .write_storage(inode.size(), b"b", Some(writer))
+        .unwrap();
     assert_eq!(special(), 0o2000); // no IXGRP and writer belongs to inode group
 
     mode(0o6777);
@@ -90,9 +94,7 @@ fn content_mutation_applies_fuse_policy_to_live_inode_mode() {
     mode(0o6777);
     inode.truncate_storage(0, Some(privileged)).unwrap();
     assert_eq!(special(), 0o6000);
-    inode
-        .write_storage(0, b"e", None)
-        .unwrap();
+    inode.write_storage(0, b"e", None).unwrap();
     assert_eq!(special(), 0o6000); // background owner is never a caller policy
     inode.allocate_storage(8192, 4096, Some(outsider)).unwrap();
     assert_eq!(special(), 0);
@@ -115,7 +117,7 @@ fn content_mutation_applies_fuse_policy_to_live_inode_mode() {
 
 #[test]
 fn first_extent_allocation_no_space_preserves_committed_killpriv() {
-    use crate::vfs::{OwnerModeChange};
+    use crate::vfs::OwnerModeChange;
     let _serial = COST_TEST_LOCK.lock().unwrap();
     let path = scratch_copy("fallocate-killpriv-full.img");
     let fs = mount(&path);
@@ -138,7 +140,10 @@ fn first_extent_allocation_no_space_preserves_committed_killpriv() {
     }
     assert!(exhausted);
     target
-        .change_owner_mode(OwnerModeChange { mode: Some(0o6777), ..Default::default() })
+        .change_owner_mode(OwnerModeChange {
+            mode: Some(0o6777),
+            ..Default::default()
+        })
         .unwrap();
     let caller = crate::vfs::WritePolicy { kill_suidgid: true };
     assert_eq!(
@@ -218,10 +223,7 @@ fn ext4_remount_retries_failed_writable_preparation() {
     let fs = Ext4FileSystem::new(disk.clone(), true).unwrap();
     let flushes = disk.flushes.load(Ordering::Relaxed);
     disk.fail_flush.store(true, Ordering::Relaxed);
-    assert_eq!(
-        fs.remount_writable(),
-        Err(FileSystemError::IoError)
-    );
+    assert_eq!(fs.remount_writable(), Err(FileSystemError::IoError));
     assert_eq!(disk.flushes.load(Ordering::Relaxed), flushes + 1);
     fs.remount_writable().unwrap();
     let completed = disk.flushes.load(Ordering::Relaxed);
@@ -317,11 +319,7 @@ fn mount(path: &PathBuf) -> Arc<Ext4FileSystem> {
         .write(true)
         .open(path)
         .expect("open writable ext4 image");
-    Ext4FileSystem::new(
-        Arc::new(WritableImage(Mutex::new(file))),
-        false,
-    )
-    .expect("mount ext4 image")
+    Ext4FileSystem::new(Arc::new(WritableImage(Mutex::new(file))), false).expect("mount ext4 image")
 }
 
 pub(crate) fn e2fsck_clean(path: &PathBuf) {
@@ -604,7 +602,10 @@ fn fifo_and_device_nodes_persist_and_pass_e2fsck() {
     assert_eq!(pipe.metadata().unwrap().device, None);
     let null = child(&root, b"null");
     assert_eq!(null.inode_type(), InodeType::CharacterDevice);
-    assert_eq!(null.metadata().unwrap().device, Some(DeviceNumber::new(1, 3)));
+    assert_eq!(
+        null.metadata().unwrap().device,
+        Some(DeviceNumber::new(1, 3))
+    );
     let disk = child(&root, b"disk");
     assert_eq!(disk.inode_type(), InodeType::BlockDevice);
     assert_eq!(
@@ -623,8 +624,6 @@ fn fifo_and_device_nodes_persist_and_pass_e2fsck() {
     drop(fs);
     e2fsck_clean(&path);
 }
-
-
 
 #[test]
 fn storage_reads_do_not_mutate_atime_and_path_touch_preserves_ctime() {

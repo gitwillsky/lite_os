@@ -39,7 +39,8 @@ pub(crate) fn create_net_namespace(
 
 pub(crate) use network_wire::SocketError;
 mod netd {
-    pub(super) fn create_namespace() -> Result<network_protocol::RemoteNamespace, super::SocketError> {
+    pub(super) fn create_namespace() -> Result<network_protocol::RemoteNamespace, super::SocketError>
+    {
         Ok(network_protocol::RemoteNamespace)
     }
 }

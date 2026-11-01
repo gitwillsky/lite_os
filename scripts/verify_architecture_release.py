@@ -66,13 +66,7 @@ AARCH64_FORBIDDEN_INSTRUCTION = re.compile(
 AARCH64_FORBIDDEN_OPERAND = re.compile(
     r"\b(?:gva|gzva|tco|svcr(?:sm|za)?)\b", re.IGNORECASE
 )
-AARCH64_FP_OWNER_SYMBOLS = {
-    "__switch",
-    "__aarch64_signal_fp_capture",
-    "__aarch64_signal_fp_restore",
-    "__aarch64_clone_fp_capture",
-    "__aarch64_exec_fp_reset",
-}
+AARCH64_FP_OWNER_SYMBOLS = {"__switch"}
 
 
 def llvm_tool(name: str) -> str:
@@ -127,7 +121,9 @@ def aarch64_instructions(disassembly: str) -> list[tuple[str, str, str]]:
     return records
 
 
-def verify_aarch64_instruction_containment(disassembly: str) -> None:
+def verify_aarch64_instruction_containment(
+    disassembly: str, fp_owners: frozenset[str] = frozenset(AARCH64_FP_OWNER_SYMBOLS)
+) -> None:
     """Reject accidental use of optional AArch64 execution state in kernel code.
 
     ``__switch`` is the sole owner of Q0-Q31 and FPCR/FPSR save/restore. The
@@ -152,7 +148,7 @@ def verify_aarch64_instruction_containment(disassembly: str) -> None:
                 f"AArch64 release ELF uses forbidden SVE/SME state in {symbol}: "
                 f"{instruction}"
             )
-        if AARCH64_FP_SIMD_REGISTER.search(instruction) and symbol not in AARCH64_FP_OWNER_SYMBOLS:
+        if AARCH64_FP_SIMD_REGISTER.search(instruction) and symbol not in fp_owners:
             raise RuntimeError(
                 f"AArch64 FP/NEON state escapes explicit boundary helpers in {symbol}: "
                 f"{instruction}"
@@ -200,6 +196,13 @@ def main() -> int:
 
         if target.arch == "aarch64":
             verify_aarch64_instruction_containment(disassembly)
+            # linuxd shares live SIMD state with restricted code. Its softfloat service text
+            # may access that state only through the two explicit EL0 capture/restore helpers.
+            service = ROOT / "target" / target.service_triple / "release/linuxd"
+            service_disassembly = run(llvm_tool("llvm-objdump"), service, "-d", "-C", "--no-show-raw-insn")
+            verify_aarch64_instruction_containment(
+                service_disassembly, frozenset({"linuxd_fp_capture", "linuxd_fp_restore"})
+            )
     except (RuntimeError, subprocess.CalledProcessError) as error:
         print(f"architecture release gate failed: {error}", file=sys.stderr)
         return 1

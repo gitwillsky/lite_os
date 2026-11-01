@@ -81,10 +81,14 @@ fn dup_shares_actual_policy_while_frozen_wait_and_accepted_owner_are_independent
 
 pub(crate) mod execution {
     pub(crate) mod timer {
-        pub(crate) fn scheduler_quantum_ns() -> u64 { 10_000_000 }
+        pub(crate) fn scheduler_quantum_ns() -> u64 {
+            10_000_000
+        }
     }
 }
 
 use execution::timer as time;
 
-mod sync { pub(crate) use spin::{Mutex}; }
+mod sync {
+    pub(crate) use spin::Mutex;
+}

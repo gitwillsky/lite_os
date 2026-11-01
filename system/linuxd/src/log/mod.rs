@@ -55,16 +55,6 @@ fn oldest_sequence() -> u64 {
     }
 }
 
-/// debuglog 级别（0 debug..3 error）到 Linux level。
-fn linux_level(severity: u32) -> u8 {
-    match severity {
-        0 => 7,
-        1 => 6,
-        2 => 4,
-        _ => 3,
-    }
-}
-
 /// `/dev/kmsg` 打开文件独占的序号游标。
 pub(crate) struct KmsgReader {
     cursor: AtomicU64,
@@ -102,7 +92,7 @@ impl KmsgReader {
         }
         let length = (record.length as usize).min(record.message.len());
         match kmsg_wire::encode(
-            linux_level(record.severity),
+            kmsg_wire::record_priority(record.severity, record.annotation),
             record.sequence,
             record.timestamp_ns / 1000,
             &record.message[..length],
@@ -183,5 +173,9 @@ pub(crate) fn publish_user_message(input: &[u8]) {
         5 | 6 => native_runtime::system::Severity::Info,
         _ => native_runtime::system::Severity::Debug,
     };
-    native_runtime::system::debuglog_write(severity, text);
+    native_runtime::system::debuglog_write(
+        severity,
+        kmsg_wire::priority_annotation(priority),
+        text,
+    );
 }

@@ -2,11 +2,11 @@
 #![allow(dead_code, unused_imports)]
 //! 实际 inotify event codec/queue 与 UserNS ucounts 的 CPU 测量；不复制生产算法。
 extern crate alloc;
-#[path = "../../kernel-unit/src/sync.rs"]
-mod sync;
 #[path = "../../kernel-unit/src/allocation_failure.rs"]
 mod allocation_failure;
 mod cost_policy;
+#[path = "../../kernel-unit/src/sync.rs"]
+mod sync;
 extern crate fallible_tree;
 #[path = "../../kernel-unit/src/namespace_fixture.rs"]
 mod namespace;

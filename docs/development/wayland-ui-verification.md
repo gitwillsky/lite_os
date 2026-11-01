@@ -22,13 +22,13 @@
 
 ## 显示性能与帧交接
 
-内核显示/GPU gate（`scripts/verify_gpu.py`）是上述“宿主墙钟不作 blocking gate”原则的唯一显式例外，因为它不测量
-宿主墙钟：帧间隔取自 guest 内核单调 vblank 时钟。该时间戳由内核在 deferred display 完成路径以
-`get_time_ns()`（DTB timebase 单调计数）写入 DRM page-flip 事件（seconds/microseconds 与 sequence），与 Python
-宿主时钟、HVF 调度抖动完全无关。gate 在固定 UTM VirGL 产品实例中启动 rootfs 的私有副本，先以固定上游 `eglinfo -B -p gbm -a gles` 创建 VirGL GLES context，再运行
+显示/GPU gate（`scripts/verify_gpu.py`）是上述“宿主墙钟不作 blocking gate”原则的唯一显式例外，因为它不测量
+宿主墙钟：帧间隔取自 guest 的单调 vblank 时钟。该时间戳由 linuxd 的 DRM display 完成 owner 以
+`get_time_ns()`（DTB timebase 单调计数）写入 DRM page-flip 事件（seconds/microseconds 与 sequence），不使用 Python
+宿主计时器；guest 完成延迟仍会受到宿主调度影响，门禁串行执行并沿用固定宽阈值。gate 在固定 UTM VirGL 产品实例中启动 rootfs 的私有副本，先以固定上游 `eglinfo -B -p gbm -a gles` 创建 VirGL GLES context，再运行
 `drm-flip-probe`（`user/libraries/linux-uapi/src/bin/drm-flip-probe/main.rs`；只安装在私有镜像）。
 随后通过真实 display-service 启动 compositor，并运行上游 Weston simple-egl；它会实际创建窗口和共享 GPU 缓冲。
-探针走产品同一内核路径：VirGL2 能力、render target、EXECBUFFER 清屏、PAGE_FLIP。它先对清屏结果做像素读回比对
+探针走产品同一 DRM/device-protocol/devmgr 路径：VirGL2 能力、render target、EXECBUFFER 清屏、PAGE_FLIP。它先对清屏结果做像素读回比对
 （功能裁决），再连续翻页，丢弃 60 帧 warmup 后测量 600 次完成间隔。`dropped` 取设备 vblank sequence 间隙，严格要求
 为 0；p95/p99 按“宽但真实的绝对上限”设阈值，不在文档记录本机测量值。样本不足、读回像素不符、flip 事件与提交帧
 不对应都使 gate 变红。此 gate 只在 AArch64+HVF 承担；RISC-V TCG 没有 VirGL 显示路径，脚本在该目标自跳过。
@@ -36,7 +36,7 @@
 
 显示服务门禁（`scripts/verify_display.py`，`make verify-runtime-display`）在 QEMU（virtio-gpu、键盘、平板，无窗口）冷启动产品 rootfs：
 先等 compositor 的首帧与输入就绪标记，再经 QMP `screendump` 取回 scanout，与 `LBS1` 参考解码器按同一整数缩放居中规则算出的整帧逐像素
-比对；内核 `boot::boot_screen` 与 compositor 任一方的缩放、居中或进度填充规则漂移都会失败。随后注入一次平板移动与一次按键，要求
+比对；`devmgr::boot_screen` 与 compositor 任一方的缩放、居中或进度填充规则漂移都会失败。随后注入一次平板移动与一次按键，要求
 compositor 报告各自的首个事件。它不测量时间，参考帧与比对函数由 `scripts/tests/test_verify_display.py` 约束；只在 AArch64+HVF 承担。
 
 ## classic-ui 消费者
@@ -95,8 +95,8 @@ macOS 没有相同 SO_ACCEPTCONN getter，宿主 metadata/所有权测试从 std
 | surface 状态机 | compositor host 测试 | 初始 configure、显式 null attach、sync/desync 子树、输入 region、在途 callback 与角色错误 |
 | CPU 仿射采样 | viewport 的真实 Canvas 测试 | 八种 buffer transform、buffer scale、分数源裁剪；保留同一像素 owner |
 | dma-buf 参数 | dmabuf 协议测试 | 重复/缺失平面、非法尺寸、真实 FD 越界、可表示但平台不支持的布局，错误与 failed 路由不同 |
-| 内核共享寿命 | GPU 私有镜像探针 | self/repeated import、ARGB/XRGB 同 handle 视图、生产者 context/OFD 和全部 dma-buf FD 关闭后消费者仍能等待隐式 fence、读回正确像素 |
-| GEM VMA lease | mapping_retirement host 测试 | 映射保活设备对象与实际 OFD；最后 descendant 释放，退休路径保持先撤销、TLB fence、再析构 |
+| 跨服务共享寿命 | GPU 私有镜像探针 | self/repeated import、ARGB/XRGB 同 handle 视图、生产者 context/OFD 和全部 dma-buf FD 关闭后消费者仍能等待隐式 fence、读回正确像素 |
+| GEM VMA lease | native VMO 退休与 guest DRM/GEM 映射验收 | 映射保活设备对象与实际 OFD；最后 descendant 释放，退休路径保持先撤销、TLB fence、再析构 |
 | 不可变 feedback | memory-file guest fixture 与 host seals 测试 | WRITE/FUTURE_WRITE、EBUSY 原子失败、新旧共享写映射、mprotect、拆分/fork、私有 COW |
 | 第三方 EGL | GPU 私有镜像中的未修改 Mesa/Weston | GBM GLES renderer 必须为 VirGL；Wayland 不透明和 alpha 两种窗口均实际 create_immed，至少三次 buffer.release，正常客户端退出 |
 | 显示节拍 | GPU 探针既有 600 帧 gate | 像素读回、exact flip sequence、零 dropped，沿用原 p95/p99 阈值 |

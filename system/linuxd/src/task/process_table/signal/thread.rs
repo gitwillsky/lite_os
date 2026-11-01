@@ -119,7 +119,7 @@ pub(super) fn send_selected_thread_signal(
             )
         },
     );
-    let (target, queued, notification, retired) = {
+    let (target, queued, notification, retired, group_exit_started) = {
         let (mut child_records, mut graph) = if let Some(target) = prepared_target
             .as_ref()
             .filter(|_| signal == syscall_abi::signal::SIGCONT)
@@ -247,7 +247,7 @@ pub(super) fn send_selected_thread_signal(
                 )
             }
         };
-        let (queued, mut retired) = target
+        let (queued, mut retired, default_fatal) = target
             .queue_signal(
                 threads.values(),
                 signal,
@@ -270,10 +270,16 @@ pub(super) fn send_selected_thread_signal(
             }
             None
         };
-        (target, queued, notification, retired)
+        let group_exit_started =
+            queued && complete_fatal_signal_locked(&mut graph, &target, signal, default_fatal);
+        (target, queued, notification, retired, group_exit_started)
     };
     drop(retired);
     publish_job_notification(notification);
+    if group_exit_started {
+        super::super::process_exit::wake_exiting_group(target.tgid(), None);
+        return Ok(());
+    }
     // 1. 未命中 wait membership 的 Running target 必须显式进入调度点；否则移除周期性
     // tick yield 后，纯用户态远端线程可能无限期不观察 pending signal。
     if queued {

@@ -65,27 +65,25 @@ impl TaskControlBlock {
             return Err(());
         }
         let mut prepared = self.prepare_signal_record(signal, info);
+        let mut state = self.process().signal_state.lock();
         let mut signal_mask = self.thread().signal_mask.lock();
-        self.process()
-            .signal_state
-            .lock()
-            .with_handlers(|handlers, _| {
-                let policy = super::synchronous_fault::force_synchronous_fault(
-                    signal,
-                    handlers.action(signal).handler,
-                    *signal_mask,
-                );
-                if policy.reset_to_default {
-                    let mut action = handlers.action(signal);
-                    action.handler = 0;
-                    handlers.replace(signal, action);
-                }
-                *signal_mask = policy.signal_mask;
-                self.thread()
-                    .pending_signals
-                    .lock()
-                    .queue(signal, info, &mut prepared);
-            });
+        state.with_handlers(|handlers, _| {
+            let policy = super::synchronous_fault::force_synchronous_fault(
+                signal,
+                handlers.action(signal).handler,
+                *signal_mask,
+            );
+            if policy.reset_to_default {
+                let mut action = handlers.action(signal);
+                action.handler = 0;
+                handlers.replace(signal, action);
+            }
+            *signal_mask = policy.signal_mask;
+            self.thread()
+                .pending_signals
+                .lock()
+                .queue(signal, info, &mut prepared);
+        });
         Ok(())
     }
 }
@@ -128,6 +126,9 @@ impl TaskControlBlock {
             let selection_mask = *self.thread().signal_mask.lock();
             let selected = self.take_pending_signal(!selection_mask);
             let Some((signal, signal_info, queue)) = selected else {
+                // 信号可被 tracer 抑制、被其他等待者消费或转为忽略；无 frame 接管旧 mask 时在这里撤销。
+                // 缺失会让下一次临时 mask 安装遇到残留状态，并把临时屏蔽规则泄漏给应用。
+                let _ = self.restore_temporary_signal_mask();
                 self.thread()
                     .user_context
                     .with(|context| self.apply_syscall_restart(context, None));
@@ -199,11 +200,13 @@ impl TaskControlBlock {
             });
             self.copy_to_user(frame_address, frame.as_bytes())?;
             self.commit_signal_stack_delivery();
-            let mut new_mask = old_mask | action.mask;
+            // frame 保存调用前 mask；handler 执行期间仍以本次选择使用的临时 mask 为基础。
+            let mut new_mask = selection_mask | action.mask;
             if action.flags & SA_NODEFER == 0 {
                 new_mask |= 1u64 << (signal - 1);
             }
-            *self.thread().signal_mask.lock() = normalize_signal_mask(new_mask);
+            self.signal_mask(2, Some(new_mask))
+                .expect("SIG_SETMASK is valid");
             self.thread().user_context.with(|context| {
                 context.enter_signal_handler(
                     self.address_space().signal_trampoline(),
@@ -244,7 +247,8 @@ impl TaskControlBlock {
             })?;
         // Linux 在 machine/extension validation 前恢复 mask；坏 frame 中 blocked SIGSEGV
         // 必须参与 force_sig 的 disposition 决策，不能只在成功路径发布。
-        *self.thread().signal_mask.lock() = normalize_signal_mask(frame.signal_mask());
+        self.signal_mask(2, Some(frame.signal_mask()))
+            .expect("SIG_SETMASK is valid");
         let (result, _signal_mask, signal_stack, restored_sp) =
             self.thread().user_context.with(|context| {
                 let (result, signal_mask, signal_stack) = context

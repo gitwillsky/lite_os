@@ -25,7 +25,7 @@ pub fn utc() -> i64 {
 ///
 /// # Errors
 ///
-/// 不是根 resource 或时间早于本次启动。
+/// resource 不授权 UTC 设置，或时间早于本次启动。
 pub fn set_utc(resource: &Resource, utc_ns: i64) -> Result<(), Status> {
     // SAFETY: 无指针参数。
     check(unsafe {
@@ -62,12 +62,27 @@ pub enum Severity {
 }
 
 /// 向内核日志写入一条记录（超出上限截断）。
-pub fn debuglog_write(severity: Severity, message: &[u8]) {
+///
+/// # Parameters
+///
+/// - `severity`: native 日志过滤/显示级别。
+/// - `annotation`: 由写入者解释的记录标签；内核不解析，普通日志传 0。
+/// - `message`: 原始消息字节。
+///
+/// # Returns
+///
+/// 尽力写入；日志错误没有可恢复动作，不返回状态。
+pub fn debuglog_write(severity: Severity, annotation: u64, message: &[u8]) {
     // SAFETY: 消息缓冲区有效；写日志失败没有可恢复动作。
     let _ = unsafe {
         invoke(
             call::DEBUGLOG_WRITE,
-            &[severity as usize, message.as_ptr() as usize, message.len()],
+            &[
+                severity as usize,
+                message.as_ptr() as usize,
+                message.len(),
+                annotation as usize,
+            ],
         )
     };
 }
@@ -76,6 +91,7 @@ pub fn debuglog_write(severity: Severity, message: &[u8]) {
 ///
 /// # Errors
 ///
+/// 未授权 DEBUGLOG 时返回 `ERR_ACCESS_DENIED`；无记录/记录覆盖/等待到期分别为
 /// `ERR_SHOULD_WAIT`、`ERR_OUT_OF_RANGE`（记录头写回最老可读序号）、`ERR_TIMED_OUT`。
 pub fn debuglog_read(
     resource: &Resource,
@@ -101,7 +117,7 @@ pub fn debuglog_read(
 ///
 /// # Errors
 ///
-/// `ERR_TIMED_OUT`、`ERR_SHOULD_WAIT`。
+/// 未授权 SERIAL 时返回 `ERR_ACCESS_DENIED`；等待到期/无输入为 `ERR_TIMED_OUT`/`ERR_SHOULD_WAIT`。
 pub fn serial_read(resource: &Resource, buffer: &mut [u8], deadline: i64) -> Result<usize, Status> {
     let mut actual = 0usize;
     // SAFETY: 缓冲区与输出位置有效。
@@ -132,7 +148,7 @@ pub fn current_cpu() -> u32 {
 ///
 /// # Errors
 ///
-/// 不是根 resource。
+/// resource 不授权串口写入。
 pub fn serial_write(resource: &Resource, bytes: &[u8]) -> Result<(), Status> {
     // SAFETY: 缓冲区有效。
     check(unsafe {
@@ -235,7 +251,7 @@ pub fn free_blocks() -> Result<alloc::vec::Vec<u64>, Status> {
 ///
 /// # Errors
 ///
-/// 不是根 resource 或操作非法。
+/// resource 不授权电源操作，或操作非法。
 pub fn power(resource: &Resource, action: u32) -> Result<(), Status> {
     // SAFETY: 无指针参数。
     check(unsafe {

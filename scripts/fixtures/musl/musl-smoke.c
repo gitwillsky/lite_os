@@ -163,7 +163,70 @@ static int verify_exec_file_status(void)
 	return 0;
 }
 
+/* 真实 FUSE inode 的执行/写租约：路径别名必须使用同一 owner，关闭 writer 后必须允许 exec。 */
+static int verify_exec_write_access(void)
+{
+    const char *alias = "/tmp/musl-exec-alias";
+    const char *copy = "/tmp/musl-write-exec";
+    unlink(alias);
+    if (link("/bin/init", alias) != 0) return 1;
+    /* 1. 两个 pathname 指向同一个正在执行的 inode，写打开和截断均被拒绝。 */
+    const int flags[] = { O_WRONLY, O_RDWR, O_WRONLY | O_TRUNC };
+    for (unsigned i = 0; i < sizeof flags / sizeof flags[0]; i++) {
+        errno = 0;
+        int descriptor = open(alias, flags[i]);
+        if (descriptor >= 0) { close(descriptor); return 2; }
+        if (errno != ETXTBSY) return 3;
+    }
+    errno = 0;
+    if (truncate(alias, 0) != -1 || errno != ETXTBSY || unlink(alias) != 0) return 4;
+    /* 2. 准备另一实际 inode，保持写 OFD，验证 exec 不能绕过 writer。 */
+    unlink(copy);
+    int source = open("/bin/init", O_RDONLY);
+    int writer = open(copy, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC, 0700);
+    if (source < 0 || writer < 0) return 5;
+    char buffer[4096];
+    ssize_t count;
+    while ((count = read(source, buffer, sizeof buffer)) > 0)
+        if (write(writer, buffer, (size_t)count) != count) return 6;
+    if (count != 0 || close(source) != 0) return 7;
+    pid_t child = fork();
+    if (child == 0) {
+        execl(copy, copy, "clone-exit-image", (char *)0);
+        _exit(errno == ETXTBSY ? 0 : 1);
+    }
+    int status;
+    if (child < 0 || waitpid(child, &status, 0) != child
+        || !WIFEXITED(status) || WEXITSTATUS(status) != 0) return 8;
+    /* 3. 最后一个 writer 的 fput 归还 admission，同一文件随即能够执行。 */
+    if (close(writer) != 0) return 9;
+    child = fork();
+    if (child == 0) { execl(copy, copy, "clone-exit-image", (char *)0); _exit(1); }
+    if (child < 0 || waitpid(child, &status, 0) != child
+        || !WIFEXITED(status) || WEXITSTATUS(status) != 31 || unlink(copy) != 0) return 10;
+    return 0;
+}
+
 int verify_clone_parent_exec_image(pid_t child, int release);
+
+/* The reserved normal-mode service image is not part of the Linux application address space.
+ * A direct load must fault even when the service can resolve that same shared mapping. */
+static int verify_service_isolation(void)
+{
+    pid_t child = fork();
+    if (child == 0) {
+        volatile const unsigned char *service = (volatile const unsigned char *)(uintptr_t)UINT64_C(0x2000000000);
+        _exit(*service ? 61 : 62);
+    }
+    int status = 0;
+    if (child <= 0 || waitpid(child, &status, 0) != child
+        || !WIFSIGNALED(status) || WTERMSIG(status) != SIGSEGV) {
+        dprintf(2, "LiteOS musl service isolation failed pid=%d status=%#x\n", child, status);
+        return 1;
+    }
+    puts("LiteOS musl restricted service memory isolation ok");
+    return 0;
+}
 
 static int run_smoke(int argc, char **argv, char **envp)
 {
@@ -292,6 +355,7 @@ static int run_smoke(int argc, char **argv, char **envp)
 	if (udp_result != 0) return udp_result;
 	int fs_credentials_result = verify_fs_credentials();
 	if (fs_credentials_result != 0) return fs_credentials_result;
+    if (verify_service_isolation() != 0) return 23;
 	int fs_root_result = verify_fs_root();
 	if (fs_root_result != 0) return fs_root_result;
 	int sighand_result = verify_sighand();
@@ -330,6 +394,11 @@ static int run_smoke(int argc, char **argv, char **envp)
 		write(2, failed, sizeof failed - 1);
 		return 19;
 	}
+    int exec_write_result = verify_exec_write_access();
+    if (exec_write_result != 0) {
+        dprintf(2, "LiteOS musl exec write access fail step=%d\n", exec_write_result);
+        return 15;
+    }
 	int exec_file_status_result = verify_exec_file_status();
 	if (exec_file_status_result != 0) {
 		static const char failed[] = "LiteOS musl exec/OFD/CAD failed step=";
@@ -412,6 +481,8 @@ static int run_smoke(int argc, char **argv, char **envp)
 		else if (waited != child || !WIFSIGNALED(child_status)
 		         || WTERMSIG(child_status) != SIGKILL) failure = exec_group_wait_failed;
 		if (failure) {
+            dprintf(2, "exec-setpgid pid=%d sync=%d setpgid=%d errno=%d kill=%d waited=%d status=%#x\n",
+                child, synchronized, group_result, group_errno, kill_result, waited, child_status);
 			write(STDOUT_FILENO, failure, strlen(failure));
 			return 4;
 		}
@@ -620,31 +691,39 @@ static int run_smoke(int argc, char **argv, char **envp)
 		write(STDOUT_FILENO, sigwait_failed, sizeof sigwait_failed - 1);
 		return 11;
 	}
-	child = fork();
-	if (child == 0) {
-		if (pthread_create(&thread, 0, group_exit_worker, 0) != 0) _exit(40);
-		_exit(42);
+	/* Alternate normal and fatal group exit so SMP exercises the status publication race. */
+	for (unsigned iteration = 0; iteration < 32; iteration++) {
+		child = fork();
+		if (child == 0) {
+			if (pthread_create(&thread, 0, group_exit_worker, 0) != 0) _exit(40);
+			_exit(42);
+		}
+		if (child <= 0 || sigwaitinfo(&wait_set, &signal_info) != SIGCHLD
+		    || signal_info.si_code != CLD_EXITED || signal_info.si_pid != child
+		    || signal_info.si_status != 42 || waitpid(child, &child_status, 0) != child
+		    || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 42) {
+	        dprintf(2, "group-exit phase=exit expected_pid=%d signal_code=%d signal_pid=%d signal_status=%d wait_status=%#x\n",
+	            child, signal_info.si_code, signal_info.si_pid, signal_info.si_status, child_status);
+			write(STDOUT_FILENO, group_exit_failed, sizeof group_exit_failed - 1);
+			return 12;
+		}
+		child = fork();
+		if (child == 0) {
+			if (pthread_create(&thread, 0, group_exit_worker, 0) != 0) _exit(40);
+			if (kill(getpid(), SIGTERM) != 0) _exit(41);
+			_exit(43);
+		}
+		if (child <= 0 || sigwaitinfo(&wait_set, &signal_info) != SIGCHLD
+		    || signal_info.si_code != CLD_KILLED || signal_info.si_pid != child
+		    || signal_info.si_status != SIGTERM || waitpid(child, &child_status, 0) != child
+		    || !WIFSIGNALED(child_status) || WTERMSIG(child_status) != SIGTERM) {
+	        dprintf(2, "group-exit phase=signal expected_pid=%d signal_code=%d signal_pid=%d signal_status=%d wait_status=%#x\n",
+	            child, signal_info.si_code, signal_info.si_pid, signal_info.si_status, child_status);
+			write(STDOUT_FILENO, group_exit_failed, sizeof group_exit_failed - 1);
+			return 12;
+		}
 	}
-	if (child <= 0 || sigwaitinfo(&wait_set, &signal_info) != SIGCHLD
-	    || signal_info.si_code != CLD_EXITED || signal_info.si_pid != child
-	    || signal_info.si_status != 42 || waitpid(child, &child_status, 0) != child
-	    || !WIFEXITED(child_status) || WEXITSTATUS(child_status) != 42) {
-		write(STDOUT_FILENO, group_exit_failed, sizeof group_exit_failed - 1);
-		return 12;
-	}
-	child = fork();
-	if (child == 0) {
-		if (pthread_create(&thread, 0, group_exit_worker, 0) != 0) _exit(40);
-		if (kill(getpid(), SIGTERM) != 0) _exit(41);
-		_exit(43);
-	}
-	if (child <= 0 || sigwaitinfo(&wait_set, &signal_info) != SIGCHLD
-	    || signal_info.si_code != CLD_KILLED || signal_info.si_pid != child
-	    || signal_info.si_status != SIGTERM || waitpid(child, &child_status, 0) != child
-	    || !WIFSIGNALED(child_status) || WTERMSIG(child_status) != SIGTERM) {
-		write(STDOUT_FILENO, group_exit_failed, sizeof group_exit_failed - 1);
-		return 12;
-	}
+
 	int shared_sync_result = verify_shared_sync();
 	if (shared_sync_result != 0) {
 		char result_code[3] = {
@@ -684,7 +763,7 @@ static int run_smoke(int argc, char **argv, char **envp)
 int main(int argc, char **argv, char **envp)
 {
     if (getpid() != 1) return run_smoke(argc, argv, envp);
-    /* kernel 只装配 / 与 /dev；此处由唯一 PID1 准备临时目录及 proc/sysfs/devpts。
+    /* linuxd 只装配 / 与 /dev；此处由唯一 PID1 准备临时目录及 proc/sysfs/devpts。
      * exec 子镜像继承同一 mount namespace，不重复执行该初始化。 */
     pid_t consumer = -1;
     if (mkdir("/tmp", 01777) == 0 && chmod("/tmp", 01777) == 0

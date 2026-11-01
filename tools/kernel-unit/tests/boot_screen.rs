@@ -73,7 +73,8 @@ impl BootFramebuffer for FakeScanout {
         let mut flushes = self.flushes.lock().unwrap();
         let refuse = self
             .refuse_flush_from
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .is_some_and(|from| flushes.len() >= from);
         if !refuse {
             flushes.push(rect);
@@ -94,7 +95,6 @@ fn flush_count(scanout: &FakeScanout) -> usize {
 
 fn last_flush(scanout: &FakeScanout) -> DisplayRect {
     let flushes = scanout.flushes.lock().unwrap();
-    
 
     *flushes.last().expect("a flush")
 }
@@ -269,7 +269,8 @@ fn kernel_to_compositor_handoff_preserves_every_pixel_at_both_product_scales() {
         compositor_boot::paint(&mut handoff, SCENE, boot_scene::KERNEL_PROGRESS_PERMILLE).unwrap();
         for (index, (bytes, pixel)) in scanout
             .memory
-            .lock().unwrap()
+            .lock()
+            .unwrap()
             .as_chunks::<4>()
             .0
             .iter()

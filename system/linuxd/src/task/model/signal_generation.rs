@@ -23,7 +23,7 @@ impl TaskControlBlock {
     ///
     /// # Returns
     ///
-    /// queued/coalesced 返回 true；未屏蔽 ignored disposition 返回 false；owned conflict retirement 随结果移出 graph。
+    /// queued/coalesced、owned conflict retirement 与本次 disposition/mask 的 default-fatal 投影；ignored 返回 false。
     ///
     /// # Errors
     ///
@@ -35,15 +35,14 @@ impl TaskControlBlock {
         traced: bool,
         info: PendingSignal,
         prepared: &mut PreparedSignalRecord,
-    ) -> Result<(bool, RetiredSignals), ()> {
+    ) -> Result<(bool, RetiredSignals, bool), ()> {
         if signal == 0 || signal > 64 {
             return Err(());
         }
         let info = info.for_ptrace(traced);
+        let mut state = self.process().signal_state.lock();
         let mask = self.thread().signal_mask.lock();
-        self.process()
-            .signal_state
-            .lock()
+        state
             .with_handlers(|handlers, pending| {
                 let conflicting = signal_conflicting_mask(signal);
                 let mut retired = pending.discard(conflicting);
@@ -59,7 +58,7 @@ impl TaskControlBlock {
                         info.is_forced(),
                     )
                 {
-                    return Ok((false, retired));
+                    return Ok((false, retired, false));
                 }
                 if prepared.unavailable_for(signal, info) {
                     // RT 不属于 stop/continue 冲突集，retired 必为空，不在此释放收费节点。
@@ -70,9 +69,21 @@ impl TaskControlBlock {
                     .pending_signals
                     .lock()
                     .queue(signal, info, prepared);
-                Ok((true, retired))
+                // default_fatal 是本次 publication 同锁捕获的 disposition，不在 graph 层重读。
+                // 否则另一个 delivery 的 SA_RESETHAND 会把已接纳的 handler 信号变成默认致命信号。
+                Ok((
+                    true,
+                    retired,
+                    *mask & (1u64 << (signal - 1)) == 0
+                        && default_fatal_action(
+                            signal,
+                            handlers.action(signal),
+                            traced,
+                            self.is_namespace_init(),
+                        ),
+                ))
             })
-            .unwrap_or_else(|| Ok((false, RetiredSignals::default())))
+            .unwrap_or_else(|| Ok((false, RetiredSignals::default(), false)))
     }
 
     /// 将信号发布进当前 Process 的 shared pending owner；普通同号合并，实时逐个排队。
@@ -86,7 +97,7 @@ impl TaskControlBlock {
     ///
     /// # Returns
     ///
-    /// queued/已 coalesce 返回 true；未屏蔽的 ignored/default-init 返回 false；owned conflict retirement 随结果移出 graph。
+    /// queued/coalesced、owned conflict retirement 与本次 disposition/mask 的 default-fatal 投影；ignored/default-init 返回 false。
     ///
     /// # Errors
     ///
@@ -98,7 +109,7 @@ impl TaskControlBlock {
         traced: bool,
         info: PendingSignal,
         prepared: &mut PreparedSignalRecord,
-    ) -> Result<(bool, RetiredSignals), ()> {
+    ) -> Result<(bool, RetiredSignals, bool), ()> {
         self.queue_process_signal_mask(
             &self.thread().signal_mask,
             threads,
@@ -117,7 +128,7 @@ impl TaskControlBlock {
         traced: bool,
         info: PendingSignal,
         prepared: &mut PreparedSignalRecord,
-    ) -> Result<(bool, RetiredSignals), ()> {
+    ) -> Result<(bool, RetiredSignals, bool), ()> {
         let mask = self.process().leader_signal_mask.lock().clone();
         self.queue_process_signal_mask(&mask, threads, signal, traced, info, prepared)
     }
@@ -130,19 +141,26 @@ impl TaskControlBlock {
         traced: bool,
         info: PendingSignal,
         prepared: &mut PreparedSignalRecord,
-    ) -> Result<(bool, RetiredSignals), ()> {
+    ) -> Result<(bool, RetiredSignals, bool), ()> {
         if signal == 0 || signal > 64 {
             return Err(());
         }
         let info = info.for_ptrace(traced);
+        let mut state = self.process().signal_state.lock();
         let mask = recipient_mask.lock();
-        self.process()
-            .signal_state
-            .lock()
+        state
             .with_handlers(|handlers, pending| {
                 let conflicting = signal_conflicting_mask(signal);
                 let mut retired = pending.discard(conflicting);
+                let mut unblocked = false;
                 for thread in threads {
+                    let thread_mask = &*thread.thread().signal_mask;
+                    let blocked = if core::ptr::eq(thread_mask, recipient_mask) {
+                        *mask
+                    } else {
+                        *thread_mask.lock()
+                    };
+                    unblocked |= blocked & (1u64 << (signal - 1)) == 0;
                     retired.append(thread.thread().pending_signals.lock().discard(conflicting));
                 }
                 if (!traced || signal == syscall_abi::signal::SIGKILL)
@@ -154,7 +172,7 @@ impl TaskControlBlock {
                         info.is_forced(),
                     )
                 {
-                    return Ok((false, retired));
+                    return Ok((false, retired, false));
                 }
                 if prepared.unavailable_for(signal, info) {
                     // RT 不属于 stop/continue 冲突集，retired 必为空，不在此释放收费节点。
@@ -162,10 +180,36 @@ impl TaskControlBlock {
                     return Err(());
                 }
                 pending.queue(signal, info, prepared);
-                Ok((true, retired))
+                // default_fatal 是本次 publication 同锁捕获的 disposition，不在 graph 层重读。
+                // 否则另一个 delivery 的 SA_RESETHAND 会把已接纳的 handler 信号变成默认致命信号。
+                Ok((
+                    true,
+                    retired,
+                    unblocked
+                        && default_fatal_action(
+                            signal,
+                            handlers.action(signal),
+                            traced,
+                            self.is_namespace_init(),
+                        ),
+                ))
             })
-            .unwrap_or_else(|| Ok((false, RetiredSignals::default())))
+            .unwrap_or_else(|| Ok((false, RetiredSignals::default(), false)))
     }
+}
+
+/// 在 publication 事务内投影 default-fatal disposition，与同锁捕获的接收 mask 合并。
+fn default_fatal_action(
+    signal: usize,
+    action: SignalAction,
+    traced: bool,
+    namespace_init: bool,
+) -> bool {
+    action.handler == 0
+        && (!traced || signal == syscall_abi::signal::SIGKILL)
+        && (!namespace_init || signal == syscall_abi::signal::SIGKILL)
+        && !super::signal_is_ignored(signal, action)
+        && !matches!(signal, 3..=8 | 11 | 19..=22 | 24 | 25 | 31)
 }
 
 fn signal_conflicting_mask(signal: usize) -> u64 {

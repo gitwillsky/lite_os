@@ -229,6 +229,9 @@ pub mod vm {
 
 /// VMO 选项与操作。
 pub mod vmo {
+    /// VMO_READ：缺页或树锁争用返回 ERR_SHOULD_WAIT，不请求 pager 或等待补页。
+    pub const READ_DONT_WAIT: u32 = 1;
+
     /// `vmo_create`：允许 `vmo_set_size`。
     pub const RESIZABLE: u32 = 1 << 0;
     /// `vmo_create_child`：写时复制快照，父子都看不到对方之后的写入。
@@ -267,7 +270,7 @@ pub mod futex {
     pub const SHARED: u32 = 1 << 0;
 }
 
-/// restricted mode 退出原因（`vector` 的第二个参数）。
+/// restricted mode 退出原因（`vector` 的第二个参数）；进入只允许共享进程成员，private 根隐藏共享服务区。
 pub mod restricted {
     /// restricted 代码执行了 syscall 指令；状态中的 PC 指向该指令之后。
     pub const REASON_SYSCALL: u64 = 0;
@@ -285,6 +288,22 @@ pub mod resource {
     pub const MMIO: u32 = 1;
     /// 一段中断向量。
     pub const IRQ: u32 = 2;
+    /// 一段系统操作授权；不能用于 MMIO、IRQ 或 IOMMU 创建。
+    pub const SYSTEM: u32 = 3;
+
+    /// system resource 的单项操作；每项占一个编号，可再切出同类子范围。
+    pub mod system {
+        /// 按序读取 native debuglog。
+        pub const DEBUGLOG: u64 = 0;
+        /// 调试串口输入/输出。
+        pub const SERIAL: u64 = 1;
+        /// 设置 UTC；单调时钟与 UTC 读取无需此授权。
+        pub const UTC: u64 = 2;
+        /// 电源关闭与重启。
+        pub const POWER: u64 = 3;
+        /// 有效 system operation 范围的结束（不含）。
+        pub const COUNT: u64 = 4;
+    }
 }
 
 /// 中断选项。
@@ -364,7 +383,7 @@ pub mod startup {
     pub mod root {
         /// 根 Job。
         pub const JOB: usize = super::ROLE_HANDLES;
-        /// 根 resource（全部硬件访问权）。
+        /// 根 resource（硬件与系统操作的授权来源）。
         pub const RESOURCE: usize = super::ROLE_HANDLES + 1;
         /// bootfs（cpio `newc`）VMO。
         pub const BOOTFS: usize = super::ROLE_HANDLES + 2;
@@ -462,8 +481,13 @@ pub struct DebuglogRecord {
     /// 0 debug..3 error。
     pub severity: u32,
     pub length: u32,
+    /// 写入者定义的记录标签；内核原样保存，不解释其 schema。内核自身记录为 0。
+    pub annotation: u64,
     pub message: [u8; DEBUGLOG_MESSAGE_CAPACITY],
 }
+
+// 整条记录按字节 copyout，header 字段必须填满 32 字节，不能把未初始化的结构体 padding 暴露给服务。
+const _: () = assert!(core::mem::size_of::<DebuglogRecord>() == 32 + DEBUGLOG_MESSAGE_CAPACITY);
 
 impl Default for DebuglogRecord {
     fn default() -> Self {
@@ -471,6 +495,7 @@ impl Default for DebuglogRecord {
             sequence: 0,
             timestamp_ns: 0,
             severity: 0,
+            annotation: 0,
             length: 0,
             message: [0; DEBUGLOG_MESSAGE_CAPACITY],
         }

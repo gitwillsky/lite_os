@@ -15,7 +15,6 @@ pub(super) fn add_ready_entry(processor: &mut Processor, entry: RunQueueEntry) -
     make_runqueue_room(processor, 1);
     processor.runqueue.push(entry);
     discard_stale_ready_roots(processor);
-    publish_vruntime_floor(processor, slot);
     // Ready publication 与抢占 policy 是两个事实：handoff completion 会把高 vruntime
     // outgoing 重新发布为 Ready，但它不得立刻反抢刚选中的低 vruntime successor。
     // 比较清除 stale generation 后的真实 heap root，避免失效 delivery 产生伪抢占。
@@ -23,6 +22,9 @@ pub(super) fn add_ready_entry(processor: &mut Processor, entry: RunQueueEntry) -
         .current
         .as_ref()
         .map(|current| current.scheduling.policy.lock().vruntime);
+    if let Some(floor) = processor.runqueue.minimum_vruntime() {
+        slot.advance_placement_floor(current_vruntime.map_or(floor, |current| current.min(floor)));
+    }
     crate::thread::scheduler::preemption_policy::local_ready_preempts(
         current_vruntime,
         processor.runqueue.minimum_vruntime(),
@@ -43,12 +45,6 @@ fn discard_stale_ready_roots(processor: &mut Processor) {
     processor
         .runqueue
         .discard_stale_roots(|candidate| candidate.is_current_ready(cpu));
-}
-
-fn publish_vruntime_floor(processor: &Processor, slot: &PerCpuProcessor) {
-    if let Some(floor) = processor.runqueue.minimum_vruntime() {
-        slot.placement_vruntime.store(floor, Ordering::Release);
-    }
 }
 
 #[cold]
@@ -90,12 +86,11 @@ pub(super) fn select(processor: &mut Processor) -> Option<Arc<Thread>> {
                 drop(scheduling);
                 processor.current = Some(entry.thread.clone());
                 discard_stale_ready_roots(processor);
-                if let Some(floor) = processor.runqueue.minimum_vruntime() {
-                    slot.placement_vruntime.store(floor, Ordering::Release);
-                } else {
-                    slot.placement_vruntime
-                        .store(entry.vruntime, Ordering::Release);
-                }
+                let floor = processor
+                    .runqueue
+                    .minimum_vruntime()
+                    .map_or(entry.vruntime, |ready| entry.vruntime.min(ready));
+                slot.advance_placement_floor(floor);
                 slot.running_entries.fetch_add(1, Ordering::Relaxed);
                 return Some(entry.thread);
             }
@@ -137,7 +132,12 @@ pub(super) fn drain_inbound(processor: &mut Processor) {
         );
     }
     discard_stale_ready_roots(processor);
-    publish_vruntime_floor(processor, slot);
+    // Running 的时钟由 select/本地 admission 依据实际 current 前移；不可只按远端 Ready 抬高。
+    if processor.current.is_none()
+        && let Some(floor) = processor.runqueue.minimum_vruntime()
+    {
+        slot.advance_placement_floor(floor);
+    }
 }
 
 /// 投递 Ready entry；本地按 CFS policy 抢占，远端只发布 mailbox wake edge。

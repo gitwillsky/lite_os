@@ -102,6 +102,32 @@ impl Vmo {
         })
     }
 
+    /// 只读取当前无需补页的内容；不等待 pager。
+    ///
+    /// # Parameters
+    ///
+    /// - `buffer`: 目标缓冲；失败时不能消费其中已修改的前缀。
+    /// - `offset`: 首字节偏移。
+    ///
+    /// # Errors
+    ///
+    /// `ERR_SHOULD_WAIT` 表示页缺失或树锁正忙；其余错误同 [`Self::read`]。
+    pub fn read_available(&self, buffer: &mut [u8], offset: u64) -> Result<(), Status> {
+        // SAFETY: 调用期间缓冲区有效且独占；内核校验 VMO 权限与全部地址边界。
+        check(unsafe {
+            invoke(
+                call::VMO_READ,
+                &[
+                    self.raw() as usize,
+                    buffer.as_mut_ptr() as usize,
+                    offset as usize,
+                    buffer.len(),
+                    native_abi::vmo::READ_DONT_WAIT as usize,
+                ],
+            )
+        })
+    }
+
     /// 写入到 `offset`。
     ///
     /// # Errors

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""在 AArch64/HVF 上通过标准 ALSA consumer 验证内核混音与实际 WAV 输出。"""
+"""在 AArch64/HVF 上通过标准 ALSA consumer 验证用户态混音与实际 WAV 输出。"""
 from __future__ import annotations
 
 import argparse

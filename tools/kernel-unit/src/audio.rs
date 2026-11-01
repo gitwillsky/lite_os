@@ -297,10 +297,6 @@ mod engine_tests {
             self.submitted.borrow_mut().push(bytes.try_into().unwrap());
             Ok(())
         }
-
-        fn writable(&self) -> bool {
-            *self.queued.borrow() < PCM_PERIODS
-        }
     }
 
     fn level(period: &[u8; PCM_PERIOD_BYTES]) -> (f32, f32) {

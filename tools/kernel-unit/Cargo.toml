@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2024"
 
 [dev-dependencies]
+native-abi = { path = "../../native-abi" }
+mmio = { path = "../../mmio" }
 native-runtime = { path = "../../system/native-runtime" }
 device-model = { path = "../../system/device-model" }
 device-protocol = { path = "../../system/device-protocol" }

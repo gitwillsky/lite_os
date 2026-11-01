@@ -103,7 +103,7 @@ struct PerCpuProcessor {
     running_entries: AtomicUsize,
     // OWNER: 远端可发布的 reschedule 请求，本 CPU 返回用户态前唯一消费。
     reschedule_requested: AtomicBool,
-    // OWNER: 本地 Ready 队列的 vruntime 下限；新线程 placement 不得低于它，否则可插队饿死已就绪线程。
+    // OWNER: 本 CPU 单调前进的虚拟时间下限；New 不得插队，真实睡眠者只保留有界信用。
     placement_vruntime: AtomicU64,
     // OWNER: 本 CPU 已提交的线程运行时间。
     busy_us: AtomicU64,
@@ -115,6 +115,14 @@ struct PerCpuProcessor {
 }
 
 impl PerCpuProcessor {
+    /// 只有所属 CPU 在 IRQ-masked scheduler 事务中前移下限；远端只读取。
+    /// 旧睡眠者重新进入队列不得倒退该时钟，否则下一次唤醒又能领取无限旧额度。
+    fn advance_placement_floor(&self, floor: u64) {
+        if floor > self.placement_vruntime.load(Ordering::Relaxed) {
+            self.placement_vruntime.store(floor, Ordering::Release);
+        }
+    }
+
     fn new(queue_capacity: usize) -> Self {
         let mut inbound = VecDeque::new();
         inbound
@@ -387,6 +395,13 @@ pub(super) fn wake_waiting(
                 } else {
                     select_cpu(&thread, scheduling.cpu_affinity)
                 };
+                // 实际睡眠才获得有界 I/O 响应额度；早到 wake 不曾离开 CPU，不走此分支。
+                thread.scheduling.policy.lock().place_waking(
+                    processor_at(target.index())
+                        .placement_vruntime
+                        .load(Ordering::Acquire),
+                    crate::execution::timer::scheduler_quantum_ns() / 1000,
+                );
                 let generation = commit_ready_transition(scheduling.transition_to_ready(target));
                 Some((target, generation))
             }

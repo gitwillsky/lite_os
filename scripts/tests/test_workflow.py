@@ -68,10 +68,14 @@ class WorkflowTests(unittest.TestCase):
                 commands = [call.args[0] for call in run.call_args_list]
                 self.assertEqual(commands[0][:2], ["cargo", "build"])
                 self.assertIn("--release", commands[0])
-                self.assertEqual(Path(commands[1][1]).name, "verify_artifacts.py")
-                self.assertEqual(commands[1][2:], ["--build-boot-artifact", "--profile", "release"])
-                self.assertEqual(Path(commands[2][1]).name, "verify_architecture_release.py")
-                self.assertEqual(Path(commands[3][1]).name, "check_trap_cost.py")
+                self.assertEqual(commands[1][:2], ["cargo", "build"])
+                for service in ("root-server", "devmgr", "ext4d", "netd", "linuxd"):
+                    self.assertIn(service, commands[1])
+                self.assertEqual(Path(commands[2][1]).name, "pack_bootfs.py")
+                self.assertEqual(Path(commands[3][1]).name, "verify_artifacts.py")
+                self.assertEqual(commands[3][2:], ["--build-boot-artifact", "--profile", "release"])
+                self.assertEqual(Path(commands[4][1]).name, "verify_architecture_release.py")
+                self.assertEqual(Path(commands[5][1]).name, "check_trap_cost.py")
                 for call in run.call_args_list:
                     self.assertEqual(call.kwargs["environment"]["PROFILE"], "release")
 
@@ -79,7 +83,7 @@ class WorkflowTests(unittest.TestCase):
         fixture = Path("fixture")
         with (
             patch.object(workflow, "run", return_value="assets") as run,
-            patch.object(workflow, "kernel_unit_ext4_fixture", return_value=fixture),
+            patch.object(workflow, "ext4_unit_fixture", return_value=fixture),
             patch.object(workflow, "kernel_unit_dtb_fixtures", return_value={}),
             patch.object(workflow, "find_e2fsck", return_value=fixture),
             patch.object(workflow, "find_debugfs", return_value=fixture),

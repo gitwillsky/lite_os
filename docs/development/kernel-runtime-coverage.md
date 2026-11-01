@@ -1,50 +1,9 @@
-# 内核运行时回归覆盖
+# 内核运行时与服务覆盖
 
-通用后台压力回收由 musl consumer 实际制造低水位：清洁文件 cache 与不可回收匿名页共同施压，
-`pgscan_kswapd`/`pgsteal_kswapd` 增长且 `allocstall` 不增长；随后完整校验匿名页与文件内容。
-生产 policy 的 host 测试验证 hysteresis、64 页 batch、精确补齐和无进展退避；统计分类测试
-直接执行唯一 registry，不能将这些有界策略检查外推为 swap 或完整 Linux kswapd 支持。
-
-musl 另以标准 swapon/swapoff 启动第二块 64MiB SWAPSPACE2 盘，双架构各执行 1/2 CPU
-冷启动，实际施压换出并逐页验证 canary，检查权限、重复 activation、raw writer/mount 排斥、
-proc/sysinfo、drain 与立即重新启用。QEMU 的两个 virt machine DTB transport 顺序不同，
-命令声明顺序分别保证 root=vda、scratch=vdb；全部四次启动成功后才发布该 runtime stamp。
-同一 pressure consumer 依次覆盖 block/file swap；swapfile 另裁决失败激活后的 fork、旧共享映射 SIGBUS、
-PROT_NONE→WRITE、private COW、只读 fd VM_MAYWRITE、MAP_FIXED 拒绝不改旧 mapping、hardlink
-排他、readonly/remount 与成功 close。共享 COW、共享匿名、memfd 与 tmpfs 另建立8MiB
-种子并 fork 休眠子进程，要求其自身 VmRSS 至少下降2MiB；父进程恢复全部 canary 后，
-子进程的 RSS 仍保持独立，随后验证共享写入/COW隔离、mprotect与文件截断尾页。
-共享页 consumer 纳入双 backend 各 1/2 CPU TCG 的 musl 门禁。双 CPU 时父/子分别
-固定在首/末可用 CPU；父恢复种子后 SwapCached 必须至少覆盖种子大小减子当前 RSS，
-而子 RSS 至少下降 2MiB。RSS 同时包含代码和栈，不能将其全部下降误认为种子页数。
-完整产品验证入口与执行环境限制见 [build-and-verify](build-and-verify.md)。
-
-`kernel_deadline_wait` 在启动时准备 timer storage 后拒绝当前线程的一切 allocation，执行生产
-KernelDeadlineWait、TaskEvent、WaitCompletion 与 AVL；100 次等待必须使用同一 node，
-同时用 Vec reserve 控制确认故障注入有效。scheduler target 的 host stub 固定到期发生于
-arming，仅证明该交错和无分配；真实 sleeping、timer delivery 与多 CPU 调度由上述 guest
-压力 consumer 验证，不声称 host 穷尽 Drop 或所有唤醒交错。标准 timer deadline node 额外
-携带一个 pointer-sized Option<Weak>（None）；有界 timer benchmark/expiry batch 保持原门禁，
-不为后台能力放宽时序阈值或增加每轮 allocation。
-
-Swap extent 二分定位与 writer event 无 waiter signal 的 CPU 诊断：
-`cargo test -p kernel-unit --release --lib production_swap_extent_and_writer_retirement_cpu_cost -- --ignored --nocapture`。
-固定10万次 warmup、5次 median，分别测1/512 extent；仅生产 lookup 与 TaskEvent signal 路径，
-不把 host CPU 数值外推为 VirtIO 延迟、scheduler wake 或竞争 waiter 成本，不改变门槛。
-
-Swapoff consumer 的第五种共享 COW 场景，在休眠 child 自身 RSS 已下降至少2MiB后，
-由另一进程反复发送 SIGUSR1。要求真实 swapoff 返回 EINTR、仍然激活的 area 让
-swapon 返回 EBUSY、停止信号源后重试 drain 成功，并重新启用、校验全部 canary。
-单/双 CPU、双 backend 均执行该 consumer，完整 musl 门禁通过后才发布产品 stamp。
-TaskEvent 的取消协议 host fixture 另外覆盖同地址重建 event 的迟到旧 key、signal/event
-同时完成、非可中断等待、空 area/最终槽已释放优先成功。调度和 signal source 为显式
-host seam，实际 TCB 的信号入口由 musl consumer 验证。
-新增 event 全局唯一 ticket 的性能决策：Atomic 只在阻塞登记时领取，不进入 normal
-syscall/trap、page resident pin 或无 waiter 的 event signal；不开宿主时序阈值。
-预置 KernelDeadlineWait 的无分配回归及实际双 CPU signal/drain consumer 必须保持通过。
+内存机制由实际 VMO/ASID/translation owner 的 host fixture 与 musl guest 共同验证。没有 swap/pressure consumer 或已删除页回收账本的验证声明。host fixture 不执行硬件页表或设备 DMA。
 
 `verify-architecture-benchmark` 同时运行原 architecture-bench 与实际 SCM owner 的
-unix-rights-bench、inotify-bench、blocked-load-bench、shared-page-stats-bench 与 realtime-signals-bench。共用原 2,000,000 次、5 个样本、200 ns hot-path policy；新增
+unix-rights-bench、inotify-bench 与 realtime-signals-bench。共用原 2,000,000 次、5 个样本、200 ns hot-path policy；新增
 SCM exact-UID quota rejection 适用同一阈值。实际 cold preparation/publication/retirement
 与 16/256 node Tarjan pass 单独输出 ns/op，用于评估分配、AVL 与 O(v+e) collector 成本，
 不把这些冷 transaction 伪装成纯 policy lookup，也不放宽任何原门禁。
@@ -57,15 +16,6 @@ CPU 成本，随 architecture benchmark 统一执行；结果不表示用户缺�
 architecture-bench 还原样装配 IPC namespace IDs/metadata 与 proc IpcReadCursor，报告16/1024个对象的
 完整 native64 行格式化/连续读取成本；固定512字节记录不分配输出 Vec，标准 UID/PID view 取真实
 namespace owner。该诊断耗时不适用纯200ns policy gate；分段读取和EFAULT suffix另由实际 per-open fixture验证。
-
-- `blocked-load-bench` 在实际 1024 个 blocked tokens 下测量 register/retire 与 aggregate read，
-  沿用 `cost_policy` 的次数、样本与 200 ns 热路径预算；纳入 architecture benchmark。
-  TaskWait mode、early wake、跨 CPU ready、stop/resume 和 exit 的 owner 用例随 kernel-unit 执行。
-
-- `shared-page-stats-bench` 原样加载 production 共享页账本，对 1/1024/1048576 个 membership
-  测量 O(1) 一致快照、同锁 swap/fault 状态变更及 admission/retirement，沿用同一 200ns policy。
-  actual backing/page fixture 覆盖并发 fault 胜出、物理分配失败、读写 IO 失败和准备期间未提交，
-  以及 backing/observer 最后退休；随统一单元测试与 architecture benchmark 执行。
 
 - `realtime-signals-bench` 加载实际 native record/UserNS rlimit owner，对 1/1024 个 RT records
   测量批量 publication/dequeue。使用原 2,000,000 次、5 样本、200 ns policy；record allocation、

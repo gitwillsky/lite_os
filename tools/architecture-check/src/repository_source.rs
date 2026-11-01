@@ -20,23 +20,74 @@ const SOURCE_DOMAINS: &[SourceDomain] = &[
         root: "bootloader/src",
         binary_crate: true,
     },
-    SourceDomain { root: "native-abi/src", binary_crate: false },
-    SourceDomain { root: "syscall-abi/src", binary_crate: false },
-    SourceDomain { root: "fallible-tree/src", binary_crate: false },
-    SourceDomain { root: "mmio/src", binary_crate: false },
-    SourceDomain { root: "system/device-model/src", binary_crate: false },
-    SourceDomain { root: "system/device-protocol/src", binary_crate: false },
-    SourceDomain { root: "system/devmgr/src", binary_crate: true },
-    SourceDomain { root: "system/ext4d/src", binary_crate: true },
-    SourceDomain { root: "system/filesystem-protocol/src", binary_crate: false },
-    SourceDomain { root: "system/launch-protocol/src", binary_crate: false },
-    SourceDomain { root: "system/linuxd/src", binary_crate: true },
-    SourceDomain { root: "system/native-runtime/src", binary_crate: false },
-    SourceDomain { root: "system/netd/src", binary_crate: true },
-    SourceDomain { root: "system/network-protocol/src", binary_crate: false },
-    SourceDomain { root: "system/root-server/src", binary_crate: true },
-    SourceDomain { root: "system/service-rpc/src", binary_crate: false },
-    SourceDomain { root: "system/service-sync/src", binary_crate: false },
+    SourceDomain {
+        root: "native-abi/src",
+        binary_crate: false,
+    },
+    SourceDomain {
+        root: "syscall-abi/src",
+        binary_crate: false,
+    },
+    SourceDomain {
+        root: "fallible-tree/src",
+        binary_crate: false,
+    },
+    SourceDomain {
+        root: "mmio/src",
+        binary_crate: false,
+    },
+    SourceDomain {
+        root: "system/device-model/src",
+        binary_crate: false,
+    },
+    SourceDomain {
+        root: "system/device-protocol/src",
+        binary_crate: false,
+    },
+    SourceDomain {
+        root: "system/devmgr/src",
+        binary_crate: true,
+    },
+    SourceDomain {
+        root: "system/ext4d/src",
+        binary_crate: true,
+    },
+    SourceDomain {
+        root: "system/filesystem-protocol/src",
+        binary_crate: false,
+    },
+    SourceDomain {
+        root: "system/launch-protocol/src",
+        binary_crate: false,
+    },
+    SourceDomain {
+        root: "system/linuxd/src",
+        binary_crate: true,
+    },
+    SourceDomain {
+        root: "system/native-runtime/src",
+        binary_crate: false,
+    },
+    SourceDomain {
+        root: "system/netd/src",
+        binary_crate: true,
+    },
+    SourceDomain {
+        root: "system/network-protocol/src",
+        binary_crate: false,
+    },
+    SourceDomain {
+        root: "system/root-server/src",
+        binary_crate: true,
+    },
+    SourceDomain {
+        root: "system/service-rpc/src",
+        binary_crate: false,
+    },
+    SourceDomain {
+        root: "system/service-sync/src",
+        binary_crate: false,
+    },
 ];
 
 /// 返回 architecture-check 实际加载的源码根，避免目录约束复制 domain 清单。

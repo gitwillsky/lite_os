@@ -8,11 +8,7 @@ use std::{
 };
 
 use super::{DIRECTORY, FILE, FS_BLOCK, mount, scratch_copy};
-use crate::{
-    InodeType,
-    ext4_cost_tests::COST_TEST_LOCK,
-    vfs::FileSystemError,
-};
+use crate::{InodeType, ext4_cost_tests::COST_TEST_LOCK, vfs::FileSystemError};
 
 /// 用 debugfs 取目录第 0 个逻辑块的物理块号。
 fn leaf_block(image: &PathBuf, name: &str) -> u64 {

@@ -1,5 +1,8 @@
 # 音频契约
 
+本文 `audio`、Card、PCM/control 文件均指 `linuxd::devices::audio`。硬件 adapter 位于 devmgr，
+`PcmOutput` 的 client/server 由 device-protocol 的 PCM channel 连接；应用不调用系统服务协议。
+
 ## Owner 与依赖
 
 | Owner | 唯一职责与调用者 |
@@ -25,7 +28,7 @@ HW_PARAMS 按 Linux 顺序选择首个 access/format/subformat 和最大可行 b
 Engine 混音、WRITEI、mmap 与 status 只消费同一容量。软件容量由 state 按当前配置限定；共享端点上限 64 KiB，原生端点按最大 PCM period 预留有界 backing，
 open 预留 backing 后不重分配，协商不改变物理 DMA 队列；旧 mmap 保活原 OFD 的 backing，不与新 OFD 共享。
 `PcmInfo`/`CardText` 只向 codec 提供卡与子流快照；`PcmFile::subdevices` 向 INFO 提供槽位、总数和空闲数。
-内核不依赖用户态 mixer 或媒体协议。
+通用内核不包含 ALSA、mixer 或媒体协议。
 
 ## 接口与所有权证明
 
@@ -36,15 +39,15 @@ open 预留 backing 后不重分配，协商不改变物理 DMA 队列；旧 mma
    Engine 处理完成事件后必须先补填，再判断物理流是否空闲；TX 批量归还不等于应用欠载，提前 STOP 会打断连续 PCM。
    预送深度为 `PCM_PERIODS - 1`，保留一段应用数据跨越整批 TX 完成；额外缩短深度会使宿主断粮，全部预送会提前耗尽应用数据。
    缺少未来 period 的运行中子流若仍有在途贡献，不得提前混入缺口或置 Xrun；等待补充或在途耗尽后再裁决。
-2. 全局 `DISCOVERY` 只发布一次，按设备注册表的只追加顺序附加实际 PCM outputs，每张卡独占 observer 与 Engine。Discovery 聚合卡级 completion，只占一个固定 DRIVER_IO 槽位；重复 USB 拔插不会耗尽硬件源表。
+2. 全局 `DISCOVERY` 只发布一次，按设备注册表的只追加顺序附加实际 PCM outputs，每张卡独占 observer 与 Engine。Discovery 聚合远端卡级 completion，由 linuxd 的 deferred 服务线程分派；重复 USB 拔插不会耗尽硬件源表。
    共享与原生端点互斥；原生 HW_PARAMS/HW_FREE/CLOSE 经 `Card.configuration` 的 TaskMutex 串行化，
-   Engine spin lock 只保护状态，adapter configure/release 等等待发生在其外。原生提交不经过 Accumulator。
+   Engine 短锁 只保护状态，adapter configure/release 等等待发生在其外。原生提交不经过 Accumulator。
    缺少卡级配置事务会让共享恢复和独占重配交错，或让 completion 等待自身持有的 Engine 锁。
 3. 每次 open 分配新 DeviceBacking 和 mmap identity，再占槽、发布 OFD；OFD 分配失败回滚槽位。
    每个在途物理 period 保存各子流的有效帧数；短批次补零不增加应用/hardware 指针。
    close/prepare/drop 清除该流的在途帧数，旧 completion 不得推进复用槽位的 hw_ptr。
    backing 在 Engine 锁外销毁，旧映射可继续持有原 backing，但不能访问新 open 的音频。
-4. `main` 装配实际调用 TID observer，audio 不依赖 task；control open 保存 `Arc<PidIdentity>`，
+4. `linuxd::main` 装配实际调用 TID observer，audio 不依赖 task；control open 保存 `Arc<PidIdentity>`，
    偏好只匹配原 opener 的 identity，数字 TID 复用、fd 传递或其他线程不能继承它。
    `Card.controls` 只存 Weak，锁序 registry → OFD state；不得跨它们持 Engine 或调用 readiness。
    actual fput 的 closed 状态立即撤销观察能力，backend Arc 或 wait observer 不得延长偏好生命期。
@@ -54,7 +57,7 @@ open 预留 backing 后不重分配，协商不改变物理 DMA 队列；旧 mma
    先释放 registry/state/Engine 再通过 control 专用 pipe 唤醒；否则 poll 回调可重入死锁。
    事件出队前预检用户输出，实际 user-copy 不持音频锁；空队列的 EAGAIN 优先于无效目标地址。
    control/PCM prepare_wait 都必须先查 level、排空旧 token、再查 level；否则阻塞 read/WRITEI
-   可在 kernel 中因 stale token 自旋，阻止同 CPU writer 或 completion 所需的调度。
+   可在服务线程中因 stale token 自旋，阻止同 CPU writer 或 completion 所需的调度。
 
 `Engine<Ring>` 的窄接口由 Card/PcmFile 使用，host fixture 注入假 ring/output 验证相同状态机；
 `Accumulator` 只由 Engine 消费。steady tick 使用固定栈数组与预分配 ring，不引入 period 级堆分配。
@@ -63,7 +66,15 @@ open 预留 backing 后不重分配，协商不改变物理 DMA 队列；旧 mma
 不增加混音/提交路径的锁、分配或扫描。沿用八路 WAV 门禁，并用真实 libmpv 的协商与欠载行为验证供数余量。
 成本验证沿用八路零 XRUN 与实际 WAV 门禁，不为该分支另设时间阈值；mixer 算法与其 CPU 基准不变。
 逐流增益的新增成本由生产 Accumulator 的 host diagnostic benchmark 与 AArch64/HVF 八路无 XRUN
-workload 分别观察；不以 host 硬件浮点计时宣称 kernel softfloat 延迟达标。门禁和证据范围见构建验证文档。
+workload 分别观察；不以 host 硬件浮点计时宣称 linuxd softfloat 延迟达标。门禁和证据范围见构建验证文档。
+
+完成计数的消费与 Engine 状态推进属于同一引擎锁事务；每次只消费一个快照，锁外立即通知写者。
+新的设备完成由回调发布的 AUDIO 工作位保活，不能恢复同步追赶循环，延迟应用补数直至 underrun。
+本改动不新增队列、锁或分配；八路 ALSA 实际播放与 WAV 门禁验证供数和混音，宿主数学 benchmark 不替代该验证。
+
+物理 period 只由 `PcmOutput::submit_period` 原子准入：无 slot 返回 WouldBlock，Engine 不推进 mixed/queue。
+不保留 writable 预查 RPC 或客户端容量镜像；提交完成前的环读取与混音不消费应用指针，拒绝后可安全重试。
+此路径减少一次跨服务往返，成本与实际八路 ALSA/WAV 运行时一起验证。
 
 ## 失败、范围与验证
 

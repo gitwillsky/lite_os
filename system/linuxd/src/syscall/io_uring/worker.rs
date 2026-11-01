@@ -36,7 +36,7 @@ type ChainFuture = Pin<Box<dyn Future<Output = ()> + Send>>;
 /// 一条挂起的链：它的等待登记和 future。
 struct Slot {
     waiter: Waiter,
-    // OWNER: 链的 future。只有 worker（以及登记前的提交者）poll 它；取消者与等待构造者只碰 `waiter`，
+    // OWNER: 链的 future。worker 与执行首次 poll 的提交者经本锁串行 poll 它；取消者与等待构造者只碰 `waiter`，
     // 所以持有此锁 poll 时可以安全地回头取消别的链。
     future: Mutex<Option<ChainFuture>>,
 }
@@ -51,6 +51,8 @@ impl Slot {
         let mut context = Context::from_waker(Waker::noop());
         match running.as_mut().poll(&mut context) {
             Poll::Ready(()) => {
+                // 完成也撤下 Starting/旧 interest，让唯一 reactor 退休同步完成的 slot。
+                self.waiter.end();
                 *future = None;
                 true
             }
@@ -129,14 +131,10 @@ where
         // 登记时 interest 是 `Starting`：worker 在提交者完成首次 poll 之前不会 poll 它。
         slots.push(slot.clone());
     }
-    if slot.poll() {
-        let mut slots = shared.slots.lock();
-        if let Some(index) = slots.iter().rposition(|entry| Arc::ptr_eq(entry, &slot)) {
-            slots.swap_remove(index);
-        }
-    } else {
-        shared.wake.1.signal_readiness();
-    }
+    slot.poll();
+    // 只有 reactor 移除 slots。提交者若在这里 swap_remove，会改变 reactor 在锁外 poll
+    // 时保存的下标：它随后可能退休另一条链或越界。同步完成只清 future，再通知唯一退休者。
+    shared.wake.1.signal_readiness();
     Ok(())
 }
 

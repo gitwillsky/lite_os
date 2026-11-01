@@ -118,7 +118,12 @@ impl VirtIOBlockDevice {
     }
 
     pub(crate) fn new(base_addr: usize) -> Option<Arc<Self>> {
-        let mut device = VirtIODevice::new(base_addr, 0x1000).ok()?;
+        Self::from_device(VirtIODevice::new(base_addr, 0x1000).ok()?)
+    }
+
+    /// 使用已发现的 MMIO/PCI transport 初始化同一 block queue、DMA 与 completion owner。
+    /// 必要 feature、队列或 DMA 分配缺失时返回 None，不发布部分 adapter。
+    pub(super) fn from_device(mut device: VirtIODevice) -> Option<Arc<Self>> {
         if device.device_id() != 2 {
             return None;
         }

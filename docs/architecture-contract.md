@@ -71,7 +71,7 @@
 | `kernel/src/vm/kernel_space.rs :: KernelSpace.framed` | `FallibleMap < VirtualPageNumber , FramedRegion >` |
 | `kernel/src/vm/translation.rs :: TranslationCommit.retired_table_pages` | `FallibleMap < usize , TableFrame >` |
 | `kernel/src/vm/vmo.rs :: State.committed` | `FallibleMap < usize , Page >` |
-| `kernel/src/vm/vmo.rs :: State.requested` | `FallibleMap < usize , () >` |
+| `kernel/src/vm/vmo.rs :: State.requested` | `FallibleMap < usize , Arc < PageRequestCompletion > >` |
 
 ## 4. Source size contract
 
@@ -79,12 +79,12 @@
 
 | Source | Reviewed max lines | Owner | Reason | Exit criterion |
 |---|---:|---|---|---|
-| `system/linuxd/src/fs/tmpfs.rs` | 985 | `fs` | inode 权限与通知事务 | 新增 metadata family 前拆分 |
-| `system/linuxd/src/task/process_table/signal.rs` | 948 | `task` | graph 下的生成与子进程通知事务 | 新增独立 signal producer 前拆分 |
-| `system/linuxd/src/fs/procfs.rs` | 1411 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
-| `kernel/src/vm/vmo.rs` | 1500 | `vm` | COW tree 与 pager 共用的唯一页寿命事务 | 增加新的 backing kind 前按 COW/pager 职责拆分 |
-| `kernel/src/vm/address_space.rs` | 1500 | `vm` | VMAR 树与页表修改同锁裁决 | 新增 mapping operation 前拆出独立 transaction |
-| `system/network-protocol/src/lib.rs` | 1500 | `network-protocol` | 域与 socket 的共享线格式及类型词汇 | 增加 wire family 前按控制/域/socket 边界拆分 |
+| `system/linuxd/src/fs/tmpfs.rs` | 984 | `fs` | inode 权限与通知事务 | 新增 metadata family 前拆分 |
+| `system/linuxd/src/task/process_table/signal.rs` | 723 | `task` | graph 下的生成与子进程通知事务 | 新增独立 signal producer 前拆分 |
+| `system/linuxd/src/fs/procfs.rs` | 1399 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
+| `kernel/src/vm/vmo.rs` | 1080 | `vm` | COW tree、页解析与映射退休；pager 请求、页移交与脏页事务归 vmo/pager | 增加新的 backing kind 前审查页解析职责 |
+| `kernel/src/vm/address_space.rs` | 1114 | `vm` | VMAR 树与页表修改同锁裁决 | 新增 mapping operation 前拆出独立 transaction |
+| `system/network-protocol/src/lib.rs` | 1389 | `lib` | 域与 socket 的共享线格式及类型词汇 | 增加 wire family 前按控制/域/socket 边界拆分 |
 
 ## Change contract
 

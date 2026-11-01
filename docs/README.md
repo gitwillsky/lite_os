@@ -19,7 +19,7 @@
 - [设备与终端](architecture/devices-terminal.md)
 - [音频](architecture/audio.md)
 - [io_uring](architecture/io-uring.md)
-- [内核崩溃与蓝屏](architecture/crash-dump.md)
+- [内核崩溃与现场保存](architecture/crash-dump.md)
 - [用户态与 ABI](architecture/userspace-abi.md)
 - [用户态 UI 运行库与 Rust SDK](architecture/ui-framework.md)
 
@@ -79,9 +79,8 @@
 ## 设计决策与术语
 
 - [首个声音里程碑只支持播放](decisions/audio-output-scope.md)
-- [Native 音频边界使用 Linux ALSA PCM UAPI](decisions/alsa-pcm-native-abi.md)
+- [应用音频接口使用 Linux ALSA PCM UAPI](decisions/alsa-pcm-uapi.md)
 - [首期音频硬件只使用 VirtIO Sound](decisions/virtio-sound-backend.md)
-- [UI 交互类 runtime gate 在 UI 重构前移除](decisions/ui-interaction-gates-deferred.md)
 - [术语表](glossary.md)
 
 完成的计划、阶段快照和已被当前文档吸收的设计草案不保留在工作树中；需要追溯时使用 Git 历史。

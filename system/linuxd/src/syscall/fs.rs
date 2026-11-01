@@ -8,6 +8,7 @@ mod fcntl;
 mod flock;
 mod inotify;
 mod io;
+pub(in crate::syscall) use io::read_regular_available;
 mod links;
 pub(crate) mod mount;
 mod namespace;

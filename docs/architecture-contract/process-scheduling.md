@@ -28,7 +28,10 @@ fallible user-copy 必须持有实际 `mm_snapshot` mmget；TCB observer 可在�
 
 ## ptrace
 
-`signal::thread` 拥有逐 Thread generation/授权/唤醒事务；Process 选择和子进程通知仍由 `signal` 拥有。
+`signal::thread` 拥有逐 Thread generation/授权/唤醒事务，`signal::timer` 拥有 POSIX timer generation；Process 选择和子进程通知仍由 `signal` 拥有。
+默认致命且未屏蔽的非 core-dump 信号在 generation 的 graph 事务内提交唯一 group-exit 原因，
+再在锁外唤醒全部成员；不能延后至某个线程 dequeue，否则 sibling 的 exit_group 会覆盖已发送的致命原因。
+handler、blocked、ptrace 与 core-dump 信号仍走 pending/dequeue。
 
 - `process_table::ptrace` 是逐 Thread tracing relation、stop event、resume 和 wait claim 的唯一 owner。
   `ProcessGraph.tracees` 按实际内部 TID 索引；每个 tracer Process 的 `ptracees` 只保存 membership，
@@ -364,7 +367,9 @@ fallible user-copy 必须持有实际 `mm_snapshot` mmget；TCB observer 可在�
 - `ProcessSignalState` 独占 group pending 与可退休的 `Option<Arc<Mutex<SignalHandlers>>>`；
   disposition 只属于 SignalHandlers，CLONE_SIGHAND 跨 Process 共享表且要求 CLONE_VM，
   不共享 pending/mask。普通 fork 锁外可失败复制；Thread group 始终同一 Process handle。
-  锁序 graph（冻结成员时）→mask（需要时）→group state→handler table→Thread pending；
+  锁序 graph（冻结成员时）→group state→mask/handler table→Thread pending；
+  全部已发表 mask 写入先持 group state；generation 同事务捕获 disposition 与实际可接收成员，
+  不在解锁后重读 mask/disposition，避免 SA_RESETHAND 或全组 mask handoff 改写致命判定。
   handler guard 内不得进入 graph、MM、allocator 或其他 group state。SIG_IGN/default-ignore
   transition 同锁清掉 caller group 全部 pending；不清跨 Process 共享者的 pending。
   SA_RESETHAND 在选择时只清 handler，不能在 frame user-copy 后延迟重置。
@@ -444,28 +449,30 @@ fallible user-copy 必须持有实际 `mm_snapshot` mmget；TCB observer 可在�
   producer fixture、guest 与 realtime-signals-bench 随统一门禁执行；普通/实时 native
   ucounts 和 POSIX lifetime 共用实际 owner，接口、并发 producer 与运行时行为均需验证，
   仅声明 ABI 矩阵已开放的 signal 能力。
-- SchedulingState 独占 run membership；ProcessorTopology 独占 per-CPU runqueue/current/mailbox projection。
-- `scheduler::placement_policy` 独占选核的纯决策与轮转节拍；`PerCpuProcessor::preemptions_since_rotation` 只由所属 CPU 读写。
+- 原生内核 SchedulingState 独占 run membership；ProcessorTopology 独占 per-CPU runqueue/current/mailbox projection。
+  placement_vruntime 只由所属 CPU 在 IRQ-masked 事务中单调前移，同时考虑 current 与 Ready 最小值；远端仅读取。
+  New 不读取 inbound 队列另造下限；真实 Blocked 唤醒只保留一个调度时间片的默认权重归一化信用，早到 wake 不领奖。
+  放置不改变 user/system CPU 计费，不降低已消耗的虚拟时间；缺少截断时旧睡眠者会获得无界运行优势。
+  复用既有 policy 锁与 per-CPU 原子量，无新状态；新增唤醒锁访问及下限比较由真实音频/公平性门禁验证。
+- 内核 `scheduler::placement_policy` 独占选核的纯决策与轮转节拍；`PerCpuProcessor::preemptions_since_rotation` 只由所属 CPU 读写。
   缺失轮转时，N+1 个任务在 N 个 CPU 上的分布会因并列保留 last-CPU 而永久锁死。轮转只发生在被抢占任务重新入队的选核，
   且只在本 CPU 还有别的可运行任务时放宽；不新增锁、分配或跨 CPU 访问 runqueue。
-- `processor::runnable_task_count` 只按 possible logical CPU 扫描现有 Ready/Running
-  membership；proc 全局统计和到期 load-average 共用该实际 producer，不获取任何 TCB 或
-  ProcessGraph，也不按物理 runqueue/mailbox 的 stale token 计数。跨 CPU 瞬时采样与 Linux
-  nr_running 一样允许转换期间短暂误差，不能新增另一组 runnable counter。
-  benchmark 决策：冷 proc 与五秒采样由 O(global Tasks) 降为 O(CPU)，零分配/锁；非到期
-  timer 仍只读原 cadence atomic。load-average 加入实际 TASK_UNINTERRUPTIBLE memberships 的
-  O(1) aggregate，见同一 SchedulingState BlockedLoad owner；不能把所有睡眠任务混入负载。
-- ProcessorTopology 的 per-CPU pending handoff slot 独占已经保存 context、尚未提交
+- linuxd 的 `model::SchedulingState` 在 run-state 转换中维护 `RUNNING`/`BLOCKED` 聚合，
+  Drop 归还所属计数；`processor::runnable_task_count` 与 load-average/proc 共用该投影。
+  原生 Ready/Running membership 与 per-CPU queue 属于内核调度器，不能作为 Linux blocked/stopped
+  状态的另一份权威。聚合采样为 O(1)，实际 state admission/retirement 与采样由 blocked-load-bench
+  约束，保留原 200 ns 阈值。
+
+- 原生内核 ProcessorTopology 的 per-CPU pending handoff slot 独占已经保存 context、尚未提交
   Ready/Blocked/Stopped consequence 的 outgoing owner。slot 同时携带原 logical CPU 的 IRQ
   restore token；next task 或 idle continuation 必须恰好消费一次，禁止从 task identity 重建。
 - ProcessTable process graph 独占 identity、parent/child、creator-Thread、group/session、exit/wait
   与 process timer relation；`parent.children`、global `TID -> TGID`、creator children 与
   `(SID, PGID) -> members` 是同一 graph owner 的 projection，不得复制成第二套 lifecycle state。
-- `TaskControlBlock` 由共有 `ExecutionContext`（TID、kernel stack、kernel context）与
-  `TaskKind::{User, Kernel}` 组成。只有 `User` 拥有 Process 与 user-mode thread state；内核线程只运行
-  `run_kernel_thread` 主体，从不进入 user trap、syscall、signal delivery 或 process lifecycle，因此
-  `process()`/`thread()` 对内核线程不可达。`kind` 必须先于 `execution` 声明，使 user context binding
-  先于 kernel stack backing 析构。
+- linuxd 的 `TaskControlBlock` 由共有 `ExecutionContext`（PID identity、创建时刻、当前与预备 native 承载线程）
+  与 `TaskKind::{User, Kernel}` 组成。只有 `User` 拥有 Process 与 user-mode thread state；内核线程只运行
+  服务主体，从不进入 restricted Linux syscall、signal delivery 或用户进程生命周期，
+  `process()`/`thread()` 对它不可达。实际 kernel stack/context 由原生内核 Thread 独占。
 - 内核线程稳定 key 与用户共用 graph allocator，实际编号共用 initial PID namespace cyclic
   allocator；它没有用户 Process，actual kernel execution index 供 proc/kill 精确选择；没有用户
   wait child 关系、CPU rlimit 与用户地址空间，boot worker 信号 disposition 全部忽略；
@@ -478,23 +485,14 @@ fallible user-copy 必须持有实际 `mm_snapshot` mmget；TCB observer 可在�
   association/registration，不能被 cyclic allocator 分配或进入用户 graph。
   benchmark 决策：已有用户 hot identity 读取不新增分支或分配；只有冷内核线程创建/退出
   增加相同 PID allocator transaction，纳入最终 PID/资源退休回归。
+- `WaitRegistry::notification` 从现有单调 ticket 序列捕获本轮上界；Pipe、console、signalfd 与
+  advisory-lock 的整轮广播使用同一个 `SourceNotification`。claim 之后立即重登记的 waiter 不属于旧
+  readiness 快照，必须等待新通知或由 publication 后的真实条件复查完成，不能被旧广播反复唤醒。
+  此范围不保留锁、registration 副本或额外全局状态；每个候选只增加一次 ticket 比较。
+  futex-transactions-bench 同时测实际 notification snapshot 与空 Pipe source 唤醒，沿用现有热路径阈值。
 - `WaitRegistry` 独占全部 wait registration 与 source index；固定 16 个 shard 只按稳定
   source identity 路由，registration 的 exact key list 是跨 shard claim/cancel 的唯一反向
   metadata。pending 分别由 Process/Thread 独占；disposition 只属于可跨 Process 共享的表。
-- `sync::TaskMutex` 独占 task-only blocking owner 的 FIFO ticket、wait chain 与 handoff；
-  `sync::TaskEvent` 独占单等待者自动复位事件的 pending/waiter/completion。两者共用
-  `sync::task_wait` 的唯一 scheduler adapter：task domain 只实现 opaque `TaskWaitTarget`，把完整
-  `(owner address, ticket)` 投影为唯一 `WaitMembership::TaskWait`。`TaskEvent` 先登记 waiter 再复查
-  pending，signal 先发布 pending 再取走 waiter，任一交错都不丢失唤醒。event 的 signal/cancel
-  必须在同一 waiter lock 内 complete，锁外才 exact wake，不能让迟到 completion 污染新等待。
-  TaskWaitMode 明确区分普通、可中断与仅致命信号中断；event 与 mutex 复用相同
-  signal predicate 和 exact membership，DMA 与普通 mutex lock 永不中断。
-  scheduler membership 发布后再复查 signal，signal/event 都只消费同一 membership 一次；
-  中断后已提取的旧 wake 可合法失败，但不能命中新等待。event ticket 从唯一全局
-  EVENT_TICKETS 领取，跨同地址对象重建也不复用，不分配、不承载内容 ordering；否则
-  仅保活 TCB 的迟到信号会形成生命周期 ABA。此 Atomic 只在阻塞登记时使用。
-  scheduler adapter 在 processor topology 后只安装一次；缺失、重复安装、ticket 耗尽或
-  非可中断 key 的 exact wake mismatch 必须 fail-stop，不能退回 runnable polling。
 
 
 补充契约见 [进程接口、等待与退休契约](process-lifecycle.md)。

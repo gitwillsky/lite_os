@@ -13,11 +13,9 @@ pub(in crate::task) fn install_pipe_scheduler() {
 
 impl PipeScheduler for TaskPipeScheduler {
     fn notify(&self, pipe: &Arc<Pipe>) {
-        crate::file::Epoll::notify_pipe_source(pipe);
         wake_pipe_waiters(pipe, false);
     }
     fn notify_on_current_cpu(&self, pipe: &Arc<Pipe>) {
-        crate::file::Epoll::notify_pipe_source(pipe);
         wake_pipe_waiters(pipe, true);
     }
 
@@ -32,6 +30,8 @@ impl PipeScheduler for TaskPipeScheduler {
 }
 
 fn wake_pipe_waiters(pipe: &Arc<Pipe>, current_cpu: bool) -> usize {
+    let notification = WAIT_REGISTRY.notification();
+    crate::file::Epoll::notify_pipe_source(pipe);
     const INPUT: i16 = 0x001;
     const OUTPUT: i16 = 0x004;
     const ERROR: i16 = 0x008;
@@ -56,7 +56,7 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>, current_cpu: bool) -> usize {
             continue;
         }
         while let Some(wake) =
-            WAIT_REGISTRY.wake_pipe_one(identity, direction, false, ready, state, &wake_groups)
+            notification.wake_pipe_one(identity, direction, false, ready, state, &wake_groups)
         {
             let group_error = wake
                 .group
@@ -68,7 +68,7 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>, current_cpu: bool) -> usize {
             }
         }
         if let Some(wake) =
-            WAIT_REGISTRY.wake_pipe_one(identity, direction, true, ready, state, &wake_groups)
+            notification.wake_pipe_one(identity, direction, true, ready, state, &wake_groups)
         {
             let group_error = wake
                 .group
@@ -111,15 +111,6 @@ fn wake_claimed_pipe(claimed: Option<wait_registry::ClaimedWait>, current_cpu: b
 }
 
 /// 在统一 wait registry 阻塞到精确 pipe I/O 条件成立或 signal interruption。
-///
-/// # Parameters
-///
-/// - `pipe`: anonymous pipe owner。
-/// - `condition`: read 等待 data/EOF；write 等待完整原子写容量/broken reader。
-///
-/// # Returns
-///
-/// 阻塞到 pipe 条件满足、absolute deadline 到期或 signal interruption。
 ///
 /// # Parameters
 ///

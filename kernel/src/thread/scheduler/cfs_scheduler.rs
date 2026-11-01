@@ -9,7 +9,8 @@
 //!
 //! 任务每结束一段 CPU 时间片，就把运行时间按权重等级对应的权重折算后加到 vruntime 上（默认权重时
 //! 1 µs 对应 1024 个单位，权重越大涨得越慢，见 `thread/scheduling.rs`）。新建任务放置到某个
-//! CPU 时，vruntime 不得低于该 CPU 队列当前的下限，否则新任务会凭空领先已有任务。
+//! CPU 时，vruntime 不得低于该 CPU 已发布的单调下限；真实睡眠唤醒最多保留一个时间片的归一化信用。
+//! 不截断旧信用会让长睡眠的服务重新唤醒后压过已经运行的线程，信用调整不计入 CPU 使用时间。
 //!
 //! # 数据结构：堆 + 惰性删除
 //!
@@ -42,7 +43,7 @@
 //!
 //! 每个 CPU 一个队列，任务被抢占后重新入队时按各 CPU 的负载重新选核，所以大的负载差会被自动修正。负载并列时
 //! 倾向留在原 CPU，这会把 N+1 个任务在 N 个 CPU 上的分布锁死；因此每隔固定次数的抢占会放宽这个倾向，让任务在
-//! 并列的 CPU 之间轮转（见 `placement_policy`）。已知局限：没有跨 CPU 拉取或推送 Ready 任务，。
+//! 并列的 CPU 之间轮转（见 `placement_policy`）。已知局限：没有跨 CPU 拉取或推送 Ready 任务。
 //!
 //! # 阅读顺序
 //!
@@ -57,7 +58,7 @@ use crate::thread::Thread;
 
 use super::preallocated_heap::PreallocatedHeap;
 
-/// 唯一生效的 cooperative vruntime runqueue。
+/// 每 CPU 的 vruntime runqueue。
 pub(crate) struct CfsRunQueue {
     tasks: PreallocatedHeap<RunQueueEntry>,
 }

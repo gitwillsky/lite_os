@@ -24,7 +24,7 @@
 | 192 | `semtimedop` | Complete | 与 semop 同一 operation、relative monotonic deadline、EAGAIN/EINTR、timeout 不回写 |
 | 193 | `semop` | Complete | 多项/重复 index 原子回滚、zero/decrement 等待、NOWAIT、SEM_UNDO |
 | 194 | `shmget` | Partial | per-IPCNS key/ID、实际共享页 backing、shmmax/shmall/shmmni；未配置 hugetlb hstate，HUGETLB 新建返回 EINVAL |
-| 195 | `shmctl` | Partial | RMID 延迟销毁、SET/STAT、IPC_INFO/SHM_INFO、SHM_STAT/ANY，112-byte native64；实际 creator exit/shm_rmid_forced；LOCK/UNLOCK 的实际 UID/祖先配额与 unevictable backing |
+| 195 | `shmctl` | Partial | RMID 延迟销毁、SET/STAT、IPC_INFO/SHM_INFO、SHM_STAT/ANY，112-byte native64；实际 creator exit/shm_rmid_forced；LOCK/UNLOCK 的实际 UID/祖先配额与 SHM_LOCKED；无换出机制 |
 | 196 | `shmat` | Complete | READONLY/RND/EXEC/REMAP、DAC、原 ID 对 DEST segment 再挂接、fork/split 实际 VMA nattch |
 | 197 | `shmdt` | Complete | 原始挂接地址与同次 shmat 的 fragments，guard 外 fence/close |
 

@@ -12,7 +12,6 @@
 //! 2. `unmap`：撤销页表项，硬件失效完成后才释放页表页与 IOVA 区间；调用者（PMT）随后才解除页固定，
 //!    设备因此不可能访问已释放的物理页。
 
-
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU16, Ordering};
@@ -72,7 +71,9 @@ impl DmaFrame for crate::memory::FrameTracker {
     fn allocate_zeroed(pages: usize) -> Option<Self> {
         crate::memory::alloc_contiguous(pages, crate::memory::FrameAllocationClass::Reclaimable)
     }
-    fn physical_page(&self) -> usize { self.ppn.as_usize() }
+    fn physical_page(&self) -> usize {
+        self.ppn.as_usize()
+    }
 }
 
 struct Domain {
@@ -87,10 +88,12 @@ const FIRST_PAGE: usize = 1;
 const END_PAGE: usize = crate::arch::mmu::USER_ADDRESS_END / PAGE_SIZE;
 
 struct Iommu<H> {
+    // 字段按声明顺序退休：硬件先停止遍历并释放设备表，domain 根表随后才能释放。
     hardware: H,
     // OWNER: stream → domain 的唯一索引；映射与撤销在同一把锁内修改页表与 IOVA 记录。
     domains: TaskMutex<FallibleMap<u32, Domain>>,
-    next_domain: AtomicU16,
+    // OWNER: 单调 domain tag，不回绕或复用；耗尽保持错误，避免旧设备翻译命中新 domain。
+    last_domain: AtomicU16,
 }
 
 impl<H: Hardware> Iommu<H> {
@@ -119,31 +122,41 @@ impl<H: Hardware> IommuBackend for Iommu<H> {
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         let mut domains = self.domains.lock().map_err(|_| native_abi::ERR_NO_MEMORY)?;
         if !domains.contains_key(&stream) {
-            let id = self.next_domain.fetch_add(1, Ordering::Relaxed);
-            if id == 0 {
-                return Err(native_abi::ERR_NO_RESOURCES);
-            }
+            let id = self
+                .last_domain
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |last| {
+                    last.checked_add(1)
+                })
+                .map_err(|_| native_abi::ERR_NO_RESOURCES)?
+                + 1;
             let space = DeviceAddressSpace::create().map_err(|()| native_abi::ERR_NO_MEMORY)?;
-            self.hardware.attach(stream, id, space.root().as_usize())?;
-            domains
-                .try_insert(
-                    stream,
-                    Domain {
-                        id,
-                        space,
-                        allocated: FallibleMap::new(),
-                    },
-                )
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            // 所有 fallible storage 必须在硬件取得根表指针前准备；失败不能留下悬空 DC/STE。
+            let prepared = FallibleMap::try_prepare(
+                stream,
+                Domain {
+                    id,
+                    space,
+                    allocated: FallibleMap::new(),
+                },
+            )
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            self.hardware
+                .attach(stream, id, prepared.value().space.root().as_usize())?;
+            domains.commit_vacant(prepared);
         }
+
         let domain = domains.get_mut(&stream).expect("domain inserted above");
         let first = Self::allocate(domain, pages.len()).ok_or(native_abi::ERR_NO_RESOURCES)?;
         let record =
             FallibleMap::try_prepare(first, pages.len()).map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        domain
-            .space
-            .map(first, pages, writable)
-            .map_err(|()| native_abi::ERR_NO_MEMORY)?;
+        if let Err(retired) = domain.space.map(first, pages, writable) {
+            // 已绑定的设备可以遍历任意 IOVA：失败前的部分发布也必须先失效再释放表页/固定页。
+            self.hardware.invalidate(domain.id, first, pages.len());
+            retired.release();
+            return Err(native_abi::ERR_NO_MEMORY);
+        }
+        // 新映射无需无效→有效的设备 TLB shootdown；先发布 coherent 表写入，再交付地址。
+        crate::arch::dma::publish_table_changes();
         domain.allocated.commit_vacant(record);
         output.extend((first..first + pages.len()).map(|page| (page * PAGE_SIZE) as u64));
         Ok(())
@@ -181,11 +194,12 @@ pub(crate) fn create(kind: u32, descriptor: &[u8]) -> Result<Arc<dyn IommuBacken
 
     let (base, size) = descriptor_window(descriptor)?;
     let virtual_base = map_registers(base, size)?;
-    let hardware = crate::arch::dma::Backend::<crate::memory::FrameTracker>::create(kind, virtual_base, size)?;
+    let hardware =
+        crate::arch::dma::Backend::<crate::memory::FrameTracker>::create(kind, virtual_base, size)?;
     let iommu = Arc::try_new(Iommu {
         hardware,
         domains: TaskMutex::new(FallibleMap::new()),
-        next_domain: AtomicU16::new(1),
+        last_domain: AtomicU16::new(0),
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     Ok(iommu)
@@ -212,3 +226,6 @@ fn map_registers(base: usize, size: usize) -> Result<usize, Status> {
         .map_device(base..base.checked_add(size).ok_or(native_abi::ERR_INVALID_ARGS)?)
         .map_err(|()| native_abi::ERR_INVALID_ARGS)
 }
+
+#[cfg(test)]
+mod tests;

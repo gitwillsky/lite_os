@@ -14,17 +14,13 @@ use alloc::{format, sync::Arc};
 
 use crate::{
     InodeType,
-    vfs::{
-        CreateMetadata, DirectoryEntry, DirectoryVisit, DirectoryVisitor,
-        FileSystemError,
-        },
     ext4::{
-            Ext4FileSystem, TestMappedInode, clear_test_metadata_cache,
-            fail_next_test_metadata_owner, reset_test_allocation_attempts,
-            reset_test_stage_capacity, reset_test_write_costs, set_test_stage_capacity,
-            test_allocation_attempts, test_read_logical_block, test_read_metadata,
-            test_run_writeback_daemon, test_stage_metadata, test_write_costs,
-        },
+        Ext4FileSystem, TestMappedInode, clear_test_metadata_cache, fail_next_test_metadata_owner,
+        reset_test_allocation_attempts, reset_test_stage_capacity, reset_test_write_costs,
+        set_test_stage_capacity, test_allocation_attempts, test_read_logical_block,
+        test_read_metadata, test_run_writeback_daemon, test_stage_metadata, test_write_costs,
+    },
+    vfs::{CreateMetadata, DirectoryEntry, DirectoryVisit, DirectoryVisitor, FileSystemError},
 };
 
 pub(crate) static COST_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -228,8 +224,7 @@ impl BlockDevice for CountingImage {
 
 pub(crate) fn mounted() -> (Arc<CountingImage>, Arc<Ext4FileSystem>) {
     let image = CountingImage::open();
-    let fs = Ext4FileSystem::new(image.clone(), false)
-        .expect("mount ext4 fixture image");
+    let fs = Ext4FileSystem::new(image.clone(), false).expect("mount ext4 fixture image");
     (image, fs)
 }
 
@@ -752,8 +747,7 @@ fn failed_commit_fails_stop_and_recovery_ignores_it() {
     drop(fs);
 
     // 未写出 commit record 的事务在 replay 时整体丢弃。
-    let recovered = Ext4FileSystem::new(image, false)
-        .expect("remount after failed commit");
+    let recovered = Ext4FileSystem::new(image, false).expect("remount after failed commit");
     assert!(matches!(
         recovered
             .root_inode()
@@ -838,7 +832,10 @@ struct WorkloadCost {
     flushes: usize,
 }
 
-fn measure_workload(name: &str, workload: impl FnOnce(&Arc<crate::ext4::Ext4Inode>)) -> WorkloadCost {
+fn measure_workload(
+    name: &str,
+    workload: impl FnOnce(&Arc<crate::ext4::Ext4Inode>),
+) -> WorkloadCost {
     let (image, fs) = mounted();
     let root = fs.root_inode().unwrap();
     image.reset_writes();

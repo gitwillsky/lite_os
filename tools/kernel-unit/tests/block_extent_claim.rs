@@ -164,7 +164,8 @@ mod fs {
         });
         assert_eq!(winners.load(Ordering::Relaxed), 1);
     }
-
 }
 
-mod sync { pub(crate) use spin::Mutex; }
+mod sync {
+    pub(crate) use spin::Mutex;
+}

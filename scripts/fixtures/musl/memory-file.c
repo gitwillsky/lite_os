@@ -192,6 +192,11 @@ static void quota_semantics(void)
 	for (int page = 0; page < 4; page++) map[page * PAGE] = 1;
 	CHECK(55, touch_in_child(map + 4 * PAGE, 1) == 1);
 	CHECK(56, pwrite(fd, "x", 1, 6 * PAGE) == -1 && errno == ENOSPC);
+	/* 洞读不扣配额；失败的全范围预分配不改变 EOF 或已占用页。 */
+	char hole = 1; struct stat sparse;
+	CHECK(70, pread(fd, &hole, 1, 6 * PAGE) == 1 && hole == 0 && free_blocks("/mnt/quota") == 0);
+	CHECK(71, syscall(SYS_fallocate, fd, 0, 8 * PAGE, 4 * PAGE) == -1 && errno == ENOSPC);
+	CHECK(72, fstat(fd, &sparse) == 0 && sparse.st_size == 8 * PAGE && free_blocks("/mnt/quota") == 0);
 	/* 两类配额一起提交；一类不够时不能改变另一类上限。 */
 	struct statfs quota;
 	CHECK(60, mount("tmpfs", "/mnt/quota", "tmpfs", MS_REMOUNT, "size=8k,nr_inodes=10") == -1 && errno == EINVAL);
@@ -200,6 +205,14 @@ static void quota_semantics(void)
 	CHECK(63, open("/mnt/quota/extra", O_CREAT | O_WRONLY, 0600) == -1 && errno == ENOSPC);
 	CHECK(64, mount("tmpfs", "/mnt/quota", "tmpfs", MS_REMOUNT, "size=64k,nr_inodes=1") == -1 && errno == EINVAL);
 	CHECK(65, statfs("/mnt/quota", &quota) == 0 && quota.f_blocks == 8 && quota.f_files == 2);
+	/* 新增四页后限额耗尽，write 返回真实前缀，不能把请求末尾扩成 EOF。 */
+	char tail[6 * PAGE]; memset(tail, 'Q', sizeof tail);
+	CHECK(73, pwrite(fd, tail, sizeof tail, 4 * PAGE) == 4 * PAGE);
+	CHECK(74, fstat(fd, &sparse) == 0 && sparse.st_size == 8 * PAGE && free_blocks("/mnt/quota") == 0);
+	CHECK(75, ftruncate(fd, PAGE) == 0 && free_blocks("/mnt/quota") == 7);
+	CHECK(76, ftruncate(fd, 8 * PAGE) == 0 && free_blocks("/mnt/quota") == 7);
+	CHECK(77, syscall(SYS_fallocate, fd, 0, 2 * PAGE, 2 * PAGE) == 0 && free_blocks("/mnt/quota") == 5);
+	CHECK(78, fstat(fd, &sparse) == 0 && sparse.st_blocks == 24);
 	CHECK(57, munmap(map, 8 * PAGE) == 0 && close(fd) == 0);
 	CHECK(58, unlink("/mnt/quota/file") == 0);
 	CHECK(59, umount("/mnt/quota") == 0);

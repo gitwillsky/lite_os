@@ -82,24 +82,20 @@ pub(crate) enum SyscallCompletion {
 pub(crate) struct InvalidSignalContext;
 
 impl UserContext {
-    /// 读取 syscall registers 并把 PC 推进到 ecall 之后。
+    /// 读取 native restricted 退出保存的 syscall registers；PC 已由内核推进到 ecall 之后。
     ///
     /// # Returns
     ///
     /// owned request；返回后 context 已准备写入 syscall completion。
     pub(crate) fn take_syscall_request(&mut self) -> SyscallRequest {
-        let request = SyscallRequest {
+        // 再推进会跳过用户态的首条返回处理指令，并使 seccomp/restart 的原始 PC 错位。
+        SyscallRequest {
             number: self.x[17],
             arguments: [
                 self.x[10], self.x[11], self.x[12], self.x[13], self.x[14], self.x[15],
             ],
-            instruction: self.sepc,
-        };
-        self.sepc = self
-            .sepc
-            .checked_add(4)
-            .expect("ecall PC exhausted user address space");
-        request
+            instruction: self.sepc.checked_sub(4).expect("ecall return PC underflow"),
+        }
     }
 
     /// 将 syscall completion 写入 RISC-V return register。

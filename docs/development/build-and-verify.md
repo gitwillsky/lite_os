@@ -300,19 +300,21 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
 `verify-fast` 的 unit scope（也可直接执行 `make verify-unit`）必须包含：
 
 - `architecture-check`：dependency、owner、interface、文档索引/链接/事实归属与退化模式的纯函数测试。
-- `kernel-unit`：复用 production path 的内存、文件、IPC、socket、codec、数据结构与错误边界测试。
-  ext4 cost/recovery 用例只读取 `verify_unit` 每次经 `create_fs.py` 重新生成的
-  `target/kernel-unit/ext4-fixture.img`（`LITEOS_EXT4_FIXTURE`），写入只进入内存 overlay；不读取产品
+- `kernel-unit`：复用实际 native VMO/ASID、Linuxd 文件/IPC/socket/安全 owner、设备队列、codec 与错误清理。
+- `ext4-unit`：直接装配 ext4d 磁盘引擎；ext4 cost/recovery 用例只读取 `verify_unit` 每次经 `create_fs.py` 重新生成的
+  `target/ext4-unit/ext4-fixture.img`（`LITEOS_EXT4_FIXTURE`），写入只进入内存 overlay；不读取产品
   rootfs 或开发实例，因此 `verify-fast` 无需先构建 rootfs，直接 `cargo test` 会以变量未设置失败。
   ext4 conformance 用例在 fixture 的临时副本上写入，再以 Homebrew e2fsprogs 的 `e2fsck -fn`
   （`LITEOS_E2FSCK`）裁决零错误；PATH 上的其他 mke2fs/e2fsck 不参与解析。
   ext4 写路径门禁在 sync 后裁决三类代表负载的 transaction/flush/设备写入上界，崩溃矩阵在提交的每个
   barrier 后崩溃并以 `e2fsck -fn` 裁决恢复结果。
   platform DTB 解码用例读取 `verify_unit` 以 runtime gate 相同 machine 配置（TCG、2 CPU）经 QEMU
-  `dumpdtb` 现场生成的 `target/kernel-unit/qemu-virt-{aarch64,riscv64}.dtb`（`LITEOS_<ARCH>_DTB`）。
-- `scheduler-unit`：preallocated ready heap 的 capacity/compaction/fail-stop 与 signal selection/generation 测试。
+  `dumpdtb` 现场生成的 `target/kernel-unit/qemu-virt-{aarch64,riscv64}.dtb`（`LITEOS_<ARCH>_DTB`）；AArch64 另生成开启 SMMUv3 的 DTB，验证实际 phandle 与 stream 路由。
+- `netd-unit`：直接装配 netd 协议、FIB、端口和 packet 队列；NIC/event 是边界输入，Linux 策略另由 kernel-unit/guest 验证。
+- `fallible-tree`：实际 AVL 拓扑、fallible publication、节点迁移与 OOM。
+- `scheduler-unit`：实际 native SchedulingState 的 Ready token/generation、退出约束和 Policy 计时；另测 ready heap 与 placement/preemption。
 - `user/` Cargo workspace：linux-uapi、keyboard、terminal-model、terminal-font、canvas、classic-theme、classic-ui、typeface、wayland-scanner 与 wayland-wire 的单元测试。
-- run membership/CPU projection 由 `architecture-check` 静态围栏，wait/deferred 边界由 `kernel-unit`，完整 lifecycle 由对应 runtime smoke 覆盖；不得把这些范围虚报为 `scheduler-unit` 用例。
+- native 线性 Ready token 同时由 production-path 单测与唯一 committer 结构约束；wait registry 的取消、跨 source 排他与独立 publication 由真实 owner fixture 验证，禁止复制测试版调度器/等待队列。
 - filesystem 可睡眠 owner 由静态字段/adapter contract 与真实 `TaskMutex` FIFO handoff host
   test 共同约束：两个排队 waiter 必须按 ticket 获取，handoff 期间 `try_lock` 不得插队，
   completion-before-arm/arming/sleeping 三种顺序均不得丢 wake。
@@ -322,20 +324,17 @@ kernel-unit 的 ASID 用例直接执行生产 generation owner，用 host local-
 root canary，覆盖 8/64/128/256/65536 容量的零号保留/耗尽换代、并发切换、准备 OOM、
 退休拒绝、跨多代 idle CPU、同 mm 多 reservation 续代与 CAS 后迟到 seen 的确定交错。
 local IRQ/fence adapter 不证明硬件 TLB；musl 在各架构 1/2CPU 建立 272 个同时 live 且
-实际 activated 的 private root，在相同 VA 保留不同 canary 并交错 yield。AArch64 TCG
-另以标准 cortex-a72 CPU、128MiB RAM 在 1/2CPU 冷启动同一 kernel，要求实际 probe
-capacity=256 的 boot marker，272 live roots 因而覆盖硬件换代；默认 max/host 的 16-bit
-结果不冒充 8-bit 换代证据。RISC-V 16-bit 的换代边界由同一生产算法 host 回归覆盖。
+实际 activated 的 private root，在相同 VA 保留不同 canary 并交错 yield；随后创建并退休 65,536 个暂态 root，覆盖硬件 ASID 换代和 COW 分支退休。
+硬件容量以启动 probe 为准；Cortex-A72 不能被当作已经证明 8-bit ASID 的固定输入。
+8-bit 等容量边界由同一生产 allocator 的 host 回归覆盖，不能外推为对应硬件 TLB 已验证。
 热路径另测 token clone/activate/drop 的固定 warmup 与五次 median，不设置宿主阈值。
-registry 用例在独立 child allocator 中重入生产 reclaim，并用 watchdog
-裁决自锁，验证两个 registry 的 OOM 不发布与 dead slot 无分配复用。退出 token 用例
-交错 Process mm replacement，验证旧 backing pin、clear-tid 和 futex key 不触及新映像。
+VMO 回归覆盖 ancestor 折叠、偏移/缩短后增长与退出通知早于映射退休的交错。Linux 退出/exec guest 交错验证旧 backing、clear-tid 和 futex key 不触及新映像。
 reboot/prctl 用例直接执行生产 syscall codec，验证权限优先级、严格参数和单向状态。
 这些均为冷路径行为，不添加宿主时序性能阈值。
 
 musl smoke 在 1 CPU 和 2 CPU 各冷启动一次。PID1 fork/wait 实际 consumer，只有
 真实 exit=0 才发布最终 marker，再调用标准 poweroff；不允许 PID1 return 成功后 panic
-依赖宿主 UART chunk 时序蒙混通过。normal/swap 均要求该最终 marker。安全 fixture 通过标准 prctl/clone/fork/exec
+依赖宿主 UART chunk 时序蒙混通过。每次冷启动均要求该最终 marker。安全 fixture 通过标准 prctl/clone/fork/exec
 检查 no_new_privs 的线程范围、继承和 set-ID 提权抑制，并验证非 root reboot 不进入 reset。
 exit/exec fixture 的 worker 将 clear-child-tid 指向 ET_EXEC 的非零初始化全局变量，直接
 SYS_exit，主线程不 join 而立即重试 exec；新映像必须保持该变量不被旧退出清零。
@@ -367,15 +366,15 @@ make verify-runtime-network-drive
 
 完整验证从同一个只读 rootfs baseline 派生相互隔离的可写镜像，并覆盖：
 
-- boot、CPU topology、interrupt、timer 与基础 filesystem；
+- boot、CPU topology、interrupt、timer 与基础 filesystem；SMMUv3/RISC-V IOMMU 的 PCI 根盘与恒等 DMA 的 MMIO net/RNG 混合拓扑，实际读写、sync/比较与 ping；
 - AArch64/HVF UTM VirGL 产品 GPU、keyboard、tablet、SPICE VirtIO Console 拓扑，以及空桌面启动链路：
-  kernel GPU、输入、音频与 SPICE port 拓扑逐条发布 marker；当前不验证真实登录或桌面交互；
+  devmgr 的 GPU、输入、音频与 SPICE port 拓扑逐条发布 marker；当前不验证真实登录或桌面交互；
   首帧后继续要求固定启动的 Files 与 Terminal 各自完成连接、PTY shell 和应用首帧。gate 使用隐藏的
   disposable 一 CPU UTM 产品实例；无窗口 plain QEMU 不再承担图形通过判定，真实 11-CPU 全拓扑由
   headless SMP gate 与同一静态路径覆盖；
 - 多 CPU 调度公平性：2 CPU 上 3 个、4 CPU 上 5 个忙循环，要求每个配置里最少者的 utime 至少达到最多者的 70%；
   任务被锁死在 100% / 50% / 50% 的分布比值约为 50%，公平分布接近 100%。计时取自 guest 内核的 `/proc/<pid>/stat`；
-- AArch64/HVF 内核显示/GPU（不依赖 UI，见性能测试段）：VirGL2 能力、host GPU 清屏的像素读回，以及连续
+- AArch64/HVF 显示/GPU 服务（不依赖 UI，见性能测试段）：VirGL2 能力、host GPU 清屏的像素读回，以及连续
   page-flip 的 vblank 间隔与丢帧；
 - musl ELF/TLS/thread/signal/process consumer；process phase 在 sibling pthread 保持 runnable
   时执行普通 fork，并继续覆盖 wait、posix_spawn file actions 与并发 child waiter；
@@ -436,3 +435,16 @@ artifact/static-call gate、全部 runtime gate 与 `git diff --check`。最后�
 该 secondary 保留 backend 可构建与可启动契约，不冒充 AArch64 完整 runtime consumer 覆盖。
 
 内核 consumer 的逐项覆盖见 [运行时回归覆盖](kernel-runtime-coverage.md)。
+
+## 微内核验证边界
+
+kernel 与系统服务分别按 kernel/service target 执行严格 Clippy；系统服务随 bootfs 构建，所有 runtime success payload 由共用 build_cache owner 摘要 kernel boot artifact 与 bootfs，服务变动必须失效。
+source-view 只是 host fixture 的 symlink 装配，不复制产品源码；fixture_source_view --check 拒绝缺失/过期/孤儿链接。
+旧内核 syscall/驱动 bootstrap WFI/swap 的源码形状检查随对应实现退役；文件/网络/等待/退出语义由实际 owner fixture 和原 guest 成功条件保护。
+release trap 成本直接反汇编 native kernel 与 linuxd：普通内核 trap 的 FP 访问仍为零，
+context switch 必须完整保存/恢复 32 个 Q 寄存器；用户入口的 TTBR0 隔离和返回的 TTBR0 恢复分别校验。
+旧内核 Linux signal/clone/exec FP helper 已删除，对应检查转到 linuxd 两个 EL0 capture/restore helper，
+其寄存器完整性不变且禁止特权 CPACR 写入；两份 ELF 的其余普通代码不得访问向量状态。
+架构检查保留 kernel DAG、concrete façade、Linux 禁入内核、scoped interface、unsafe/全局 owner、ABI、源码布局和硬件 ASID/FP/TLB 返回窗口约束。
+性能 benchmark 测实际 owner，既有有效 workload 的阈值不变；已删除物理页账本的旧基准退役；blocked-load 基准直接测量 linuxd 的 SchedulingState 转换与聚合采样，保留原 200 ns 阈值。
+musl 全量 root churn 每个 topology 的 hard deadline 为 15 分钟；无串口进展超时仍为 60 秒。失败日志记录实际 QEMU argv、连续串口输出与退出/停滞原因，不以清理 QMP quit 的返回码冒充 guest 成功。

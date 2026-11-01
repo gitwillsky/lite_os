@@ -49,7 +49,7 @@ pub(crate) fn job() -> &'static Job {
     &handles().job
 }
 
-/// 根 resource。
+/// 仅覆盖日志、串口、UTC 设置和电源的 system resource，不含设备 authority。
 pub(crate) fn resource() -> &'static Resource {
     &handles().resource
 }

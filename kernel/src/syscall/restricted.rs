@@ -60,6 +60,13 @@ pub(super) fn enter(call: &Call<'_>) -> Outcome {
     let Some(vmo) = call.owner.restricted_state() else {
         return Outcome::Return(native_abi::ERR_BAD_STATE);
     };
+    if call
+        .thread
+        .address_space()
+        .is_none_or(|space| !space.has_private_view())
+    {
+        return Outcome::Return(native_abi::ERR_BAD_STATE);
+    }
     let vector = call.arg(0);
     let context = call.arg(1);
     if call.thread.take_kick() {

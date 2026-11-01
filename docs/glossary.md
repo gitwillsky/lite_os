@@ -34,8 +34,8 @@
 
 | 术语 | 定义 |
 |---|---|
-| Audio output | 用户态向 ALSA PCM 写入音频帧，由内核混音后经设备 seam 播放到 host 的单向能力。 |
+| Audio output | 用户态向 ALSA PCM 写入音频帧，由 linuxd 混音后经设备 seam 播放到 host 的单向能力。 |
 | Audio capture | 从 microphone 等设备采集音频帧；当前不支持。 |
 | PCM substream | 每个 ALSA playback open 独占的状态、应用指针和环形缓冲，关闭后归还子流槽位。 |
-| Master | 卡级左右声道音量与开关，由 ALSA control UAPI 访问，内核混音引擎独占状态。 |
+| Master | 卡级左右声道音量与开关，由 ALSA control UAPI 访问，linuxd 混音引擎独占状态。 |
 | Period | 硬件提交与完成的记账单位；当前为 256 帧、48 kHz、双声道 F32_LE。 |

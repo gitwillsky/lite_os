@@ -13,7 +13,6 @@ use crate::{
     println,
 };
 
-
 /// 按严重程度递增排列的日志级别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[repr(u8)]
@@ -61,6 +60,7 @@ struct Record {
     sequence: u64,
     timestamp_us: u64,
     level: LogLevel,
+    annotation: u64,
     length: u16,
     message: [u8; MESSAGE_CAPACITY],
 }
@@ -70,6 +70,7 @@ impl Record {
         sequence: 0,
         timestamp_us: 0,
         level: LogLevel::Debug,
+        annotation: 0,
         length: 0,
         message: [0; MESSAGE_CAPACITY],
     };
@@ -80,6 +81,8 @@ pub(crate) struct RecordCopy {
     pub(crate) sequence: u64,
     pub(crate) timestamp_us: u64,
     pub(crate) level: LogLevel,
+    /// 写入者的 opaque 标签；logger 不解释也不改变它。
+    pub(crate) annotation: u64,
     pub(crate) length: usize,
     pub(crate) message: [u8; MESSAGE_CAPACITY],
 }
@@ -144,13 +147,14 @@ impl Logger {
     }
 
     /// 发布一条系统服务写入的记录；消息直接写入环槽位（调用者可能在中断栈上）。
-    fn log_external(&mut self, level: LogLevel, text: &[u8]) {
+    fn log_external(&mut self, level: LogLevel, annotation: u64, text: &[u8]) {
         let length = text.len().min(MESSAGE_CAPACITY);
         let sequence = self.next_sequence;
         let slot = &mut self.records[sequence as usize % RECORD_CAPACITY];
         slot.sequence = sequence;
         slot.timestamp_us = crate::execution::timer::get_time_us();
         slot.level = level;
+        slot.annotation = annotation;
         slot.length = length as u16;
         slot.message[..length].copy_from_slice(&text[..length]);
         self.next_sequence = sequence.checked_add(1).expect("log sequence exhausted");
@@ -170,6 +174,7 @@ impl Logger {
         slot.sequence = sequence;
         slot.timestamp_us = crate::execution::timer::get_time_us();
         slot.level = level;
+        slot.annotation = 0;
         slot.length = length as u16;
         self.next_sequence = sequence.checked_add(1).expect("log sequence exhausted");
         println!(
@@ -271,12 +276,13 @@ fn publish_notification() {
     }
 }
 
-/// 发布一条系统服务写入的记录；通过阈值时同时输出到调试串口。
-pub(crate) fn write_external(level: LogLevel, text: &[u8]) {
+/// 发布服务记录与其 opaque annotation；通过阈值时同时输出到调试串口。
+/// annotation 仅随当前记录保留，不能影响过滤、排序、等待或串口格式。
+pub(crate) fn write_external(level: LogLevel, annotation: u64, text: &[u8]) {
     let cpu = crate::execution::cpu::current_id().index();
     {
         let mut logger = LOGGER.lock();
-        logger.log_external(level, text);
+        logger.log_external(level, annotation, text);
         if enabled(level) {
             // 输出与入环在同一把锁内，保证串口与环的顺序一致。
             println!(
@@ -299,6 +305,7 @@ pub(crate) fn read_record(cursor: u64, deadline_ns: Option<u64>) -> Result<ReadR
         sequence: 0,
         timestamp_us: 0,
         level: LogLevel::Debug,
+        annotation: 0,
         length: 0,
         message: [0; MESSAGE_CAPACITY],
     })
@@ -315,6 +322,7 @@ pub(crate) fn read_record(cursor: u64, deadline_ns: Option<u64>) -> Result<ReadR
                 copy.sequence = record.sequence;
                 copy.timestamp_us = record.timestamp_us;
                 copy.level = record.level;
+                copy.annotation = record.annotation;
                 copy.length = usize::from(record.length);
                 copy.message.copy_from_slice(&record.message);
                 return Ok(ReadRecord::Record(copy));

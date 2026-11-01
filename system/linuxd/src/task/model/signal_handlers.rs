@@ -114,6 +114,11 @@ impl SignalHandlers {
 }
 
 /// Group pending 与其可退休 handle 的 owner；共享表不共享 group pending。
+///
+/// Process state 先于 Thread mask/shared handlers，pending 最后；持 state 时同组 mask
+/// 不再被其他事务修改。所有已发表 Thread mask 的写入均先持本 state，让 generation
+/// 能原子检查全组 mask、disposition 与 pending；
+/// 缺失此事务会在 mask handoff 或 SA_RESETHAND 并发时丢失或误提交默认致命 group exit。
 #[derive(Debug)]
 pub(super) struct ProcessSignalState {
     handlers: Option<Arc<Mutex<SignalHandlers>>>,
@@ -187,35 +192,33 @@ impl TaskControlBlock {
         signal: usize,
         prepared: &mut PreparedSignalRecord,
     ) -> Option<ChildSignalPublication> {
+        let mut state = self.process().signal_state.lock();
         let mask = self.thread().signal_mask.lock();
-        self.process()
-            .signal_state
-            .lock()
-            .with_handlers(|handlers, pending| {
-                let policy = handlers.child_policy();
-                let ordinary = signal == syscall_abi::signal::SIGCHLD;
-                let notify = signal != 0
-                    && (!ordinary
-                        || match kind {
-                            ChildSignalKind::Exit => policy.notify_exit,
-                            ChildSignalKind::Job => policy.notify_job,
-                        });
-                let queued = notify
-                    && !handlers.ignores_generation(
-                        signal,
-                        *mask,
-                        self.is_namespace_init(),
-                        self.tgid() == 1,
-                        false,
-                    );
-                if queued {
-                    pending.queue(signal, info, prepared);
-                }
-                ChildSignalPublication {
-                    autoreap: ordinary && policy.autoreap,
-                    queued,
-                }
-            })
+        state.with_handlers(|handlers, pending| {
+            let policy = handlers.child_policy();
+            let ordinary = signal == syscall_abi::signal::SIGCHLD;
+            let notify = signal != 0
+                && (!ordinary
+                    || match kind {
+                        ChildSignalKind::Exit => policy.notify_exit,
+                        ChildSignalKind::Job => policy.notify_job,
+                    });
+            let queued = notify
+                && !handlers.ignores_generation(
+                    signal,
+                    *mask,
+                    self.is_namespace_init(),
+                    self.tgid() == 1,
+                    false,
+                );
+            if queued {
+                pending.queue(signal, info, prepared);
+            }
+            ChildSignalPublication {
+                autoreap: ordinary && policy.autoreap,
+                queued,
+            }
+        })
     }
 
     pub(super) fn clone_signal_handlers(

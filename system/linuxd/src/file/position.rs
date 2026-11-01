@@ -46,6 +46,20 @@ impl FilePosition {
         Ok(operation(&mut guard))
     }
 
+    /// 不排队尝试持有 position；争用时不执行操作，调用者可交给阻塞执行者。
+    ///
+    /// # Parameters
+    ///
+    /// - `operation`: 仅在持有 position 时执行一次的操作。
+    ///
+    /// # Returns
+    ///
+    /// 已持锁操作的结果，或尚未取得 position 的 None。
+    pub(super) fn try_with<R>(&self, operation: impl FnOnce(&mut u64) -> R) -> Option<R> {
+        let mut guard = self.0.try_lock()?;
+        Some(operation(&mut guard))
+    }
+
     /// 返回不推进 position 的瞬时快照；等待元数据 OOM 时不返回伪造 offset。
     ///
     /// # Returns

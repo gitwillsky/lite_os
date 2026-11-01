@@ -23,6 +23,9 @@
 //! 一棵 COW 树（根与全部子孙、隐藏节点）共享一把 [`Tree`] 锁；任何 VMO 状态访问都必须持有它，
 //! 因此父子之间不需要锁序。持树锁时可以再取地址空间锁（见 `vm` 模块文档）。
 
+mod pager;
+use pager::PageRequestCompletion;
+
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 
@@ -153,9 +156,8 @@ struct State {
     children: Vec<Weak<Vmo>>,
     // OWNER: 映射本对象的地址空间映射；Weak 在映射销毁后失效并被惰性清理。
     mappings: Vec<Weak<Mapping>>,
-    // OWNER: 已发出、尚未补入的 pager 请求页；避免同一页重复请求。pager 报告失败时撤销对应项，
-    // 等待者据“请求已撤销而页仍缺失”判定失败；缺失该判定时等待者会无限等待永不到来的补页。
-    requested: FallibleMap<usize, ()>,
+    // OWNER: 未完成补页的唯一登记；等待者保活本次结果，不从页是否仍驻留推断成功/失败。
+    requested: FallibleMap<usize, Arc<PageRequestCompletion>>,
 }
 
 /// 内存对象。
@@ -389,7 +391,7 @@ impl Vmo {
         let _tree = self.lock_tree()?;
         let state = self.state.lock();
         let pages = match &self.kind {
-            Kind::Paged { .. } | Kind::Hidden => state.committed.iter().count(),
+            Kind::Paged { .. } | Kind::Hidden => state.committed.len(),
             Kind::Contiguous(_) | Kind::Physical { .. } => state.pages,
             Kind::Slice => 0,
         };
@@ -603,7 +605,8 @@ impl Vmo {
             return Ok(ResolvedPage {
                 source: FaultSource::Memory,
                 ppn: page.frame.ppn,
-                writable: true,
+                // pager 的干净页只能安装只读翻译；否则 read fault 后的硬件写入绕过置脏，回写丢数据。
+                writable: page.dirty || !matches!(self.kind, Kind::Paged { pager: Some(_), .. }),
                 cache: CachePolicy::Cached,
             });
         }
@@ -694,203 +697,14 @@ impl Vmo {
                     }
                     Err(Resolve::Error(error)) => return Err(error),
                     Err(Resolve::NeedPage { vmo, index }) => {
-                        vmo.request_page(index)?;
-                        (vmo, index)
+                        let request = vmo.request_page(index)?;
+                        (vmo, request)
                     }
                 }
             };
-            pending.0.wait_for_page(pending.1)?;
+            pending.0.wait_for_page(&pending.1)?;
             source = FaultSource::Pager;
         }
-    }
-
-    /// 调用者持有树锁。
-    fn request_page(&self, index: usize) -> Result<(), VmError> {
-        let Kind::Paged {
-            pager: Some(pager), ..
-        } = &self.kind
-        else {
-            unreachable!("page request on a VMO without pager");
-        };
-        let mut state = self.state.lock();
-        if state.requested.contains_key(&index) {
-            return Ok(());
-        }
-        state
-            .requested
-            .try_insert(index, ())
-            .map_err(|_| VmError::NoMemory)?;
-        drop(state);
-        pager
-            .sink
-            .request(PagerRequest {
-                key: pager.key,
-                offset: (index * PAGE_SIZE) as u64,
-                length: PAGE_SIZE as u64,
-            })
-            .map_err(|()| VmError::Io)
-    }
-
-    fn wait_for_page(&self, index: usize) -> Result<(), VmError> {
-        let mut failed = false;
-        let result = self.supplied.wait_until(
-            || {
-                let state = self.state.lock();
-                let committed = state.committed.contains_key(&index);
-                failed = !committed && !state.requested.contains_key(&index);
-                committed || failed
-            },
-            None,
-        );
-        match result {
-            WaitResult::Woken if failed => Err(VmError::Io),
-            WaitResult::Woken => Ok(()),
-            WaitResult::OutOfMemory => Err(VmError::NoMemory),
-            WaitResult::TimedOut | WaitResult::Interrupted => Err(VmError::Interrupted),
-        }
-    }
-
-    /// pager 补页：把 `source` 中 `[source_offset, +length)` 的已提交页移入本对象
-    /// `[offset, +length)` 中尚未提交的位置，然后唤醒等待者。
-    ///
-    /// # Errors
-    /// 本对象不是 pager 支撑、参数未对齐或越界、`source` 页缺失或被固定。
-    pub(crate) fn supply_pages(
-        self: &Arc<Self>,
-        offset: u64,
-        length: u64,
-        source: &Arc<Vmo>,
-        source_offset: u64,
-    ) -> Result<(), VmError> {
-        if !matches!(self.kind, Kind::Paged { pager: Some(_), .. }) {
-            return Err(VmError::NotSupported);
-        }
-        let (first, count) = page_range(offset, length)?;
-        let (source_first, _) = page_range(source_offset, length)?;
-        if Arc::ptr_eq(&self.tree, &source.tree)
-            || !matches!(source.kind, Kind::Paged { pager: None, .. })
-        {
-            return Err(VmError::InvalidArgs);
-        }
-        let _target = self.lock_tree()?;
-        let _source = source.lock_tree()?;
-        let mut source_state = source.state.lock();
-        let mut state = self.state.lock();
-        if first.checked_add(count).is_none_or(|end| end > state.pages)
-            || source_first
-                .checked_add(count)
-                .is_none_or(|end| end > source_state.pages)
-        {
-            return Err(VmError::OutOfRange);
-        }
-        if (0..count).any(|page| {
-            source_state
-                .committed
-                .get(&(source_first + page))
-                .is_none_or(|page| page.pins != 0)
-        }) {
-            return Err(VmError::BadState);
-        }
-        for page in 0..count {
-            let moved = source_state
-                .committed
-                .take_entry(&(source_first + page))
-                .expect("validated source page disappeared");
-            let index = first + page;
-            state.requested.remove(&index);
-            if state.committed.contains_key(&index) {
-                // 已有页（并发补入或已写入）保持不变；多余的源页随 moved 释放。
-                continue;
-            }
-            let mut moved = moved;
-            moved.set_key(index);
-            moved.value_mut().dirty = false;
-            state.committed.commit_vacant(moved);
-        }
-        drop(state);
-        drop(source_state);
-        // 源 VMO 的映射仍可能指向被移走的页框，必须撤销。
-        source.zap(source_first..source_first + count, ZapMode::Unmap)?;
-        self.supplied.wake_all();
-        Ok(())
-    }
-
-    /// pager 报告无法提供内容：等待者以 `Io` 失败，之后的缺页同样失败。
-    /// pager 无法提供 `[offset, offset + length)`：撤销区间内已发出的请求，当前等待者以 `Io` 失败；
-    /// 之后的访问重新发起请求。
-    ///
-    /// # Errors
-    /// 不是 pager 支撑的 VMO 返回 `NotSupported`；参数未对齐返回 `InvalidArgs`。
-    pub(crate) fn fail_range(&self, offset: u64, length: u64) -> Result<(), VmError> {
-        if !matches!(self.kind, Kind::Paged { pager: Some(_), .. }) {
-            return Err(VmError::NotSupported);
-        }
-        let (first, count) = page_range(offset, length)?;
-        let _tree = self.lock_tree()?;
-        let mut state = self.state.lock();
-        for index in first..first + count {
-            state.requested.remove(&index);
-        }
-        drop(state);
-        self.supplied.wake_all();
-        Ok(())
-    }
-
-    /// 返回 `[offset, offset + length)` 中第一段连续脏页的字节区间。
-    ///
-    /// # Errors
-    /// 不是 pager 支撑的 VMO 返回 `NotSupported`。
-    pub(crate) fn first_dirty_range(
-        &self,
-        offset: u64,
-        length: u64,
-    ) -> Result<Option<(u64, u64)>, VmError> {
-        if !matches!(self.kind, Kind::Paged { pager: Some(_), .. }) {
-            return Err(VmError::NotSupported);
-        }
-        let (first, count) = page_range(offset, length)?;
-        let _tree = self.lock_tree()?;
-        let state = self.state.lock();
-        let mut start = None;
-        let mut end = first;
-        for (&index, page) in state.committed.iter_from(&first) {
-            if index >= first + count {
-                break;
-            }
-            match start {
-                None if page.dirty => {
-                    start = Some(index);
-                    end = index + 1;
-                }
-                Some(_) if page.dirty && index == end => end = index + 1,
-                Some(_) => break,
-                None => {}
-            }
-        }
-        Ok(start.map(|start| {
-            (
-                (start * PAGE_SIZE) as u64,
-                ((end - start) * PAGE_SIZE) as u64,
-            )
-        }))
-    }
-
-    /// 回写开始：清除区间脏标记并写保护映射，之后的写入重新置脏。
-    ///
-    /// # Errors
-    /// 不是 pager 支撑的 VMO 返回 `NotSupported`。
-    pub(crate) fn begin_writeback(&self, offset: u64, length: u64) -> Result<(), VmError> {
-        if !matches!(self.kind, Kind::Paged { pager: Some(_), .. }) {
-            return Err(VmError::NotSupported);
-        }
-        let (first, count) = page_range(offset, length)?;
-        let _tree = self.lock_tree()?;
-        self.state.lock().committed.for_each_mut(|&index, page| {
-            if (first..first + count).contains(&index) {
-                page.dirty = false;
-            }
-        });
-        self.zap(first..first + count, ZapMode::RemoveWrite)
     }
 
     /// 读取字节；未提交页按零（或从祖先/pager）解析。
@@ -901,6 +715,50 @@ impl Vmo {
         self.for_each_chunk(offset, output.len(), false, |frame, page_offset, range| {
             frame.read(page_offset, &mut output[range]);
         })
+    }
+
+    /// 读取无需等待 pager 的内容；树锁正忙或任一页需要补入时返回 `false`。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 首字节偏移。
+    /// - `output`: 目标缓冲；返回 `false` 或错误时前缀可能已修改，调用者不得发布这些字节。
+    ///
+    /// # Returns
+    ///
+    /// 全部字节已复制为 `true`；不会发出 pager 请求，也不登记树锁等待者。
+    ///
+    /// # Errors
+    ///
+    /// 越界、匿名页分配失败或对象不支持读取。
+    pub(crate) fn read_available(
+        self: &Arc<Self>,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<bool, VmError> {
+        let Some(_tree) = self.tree.lock.try_lock() else {
+            return Ok(false);
+        };
+        let offset = usize::try_from(offset).map_err(|_| VmError::OutOfRange)?;
+        let end = offset
+            .checked_add(output.len())
+            .ok_or(VmError::OutOfRange)?;
+        let mut cursor = offset;
+        while cursor < end {
+            let page = match self.resolve_locked(cursor / PAGE_SIZE, false) {
+                Ok(page) => page,
+                Err(Resolve::NeedPage { .. }) => return Ok(false),
+                Err(Resolve::Error(error)) => return Err(error),
+            };
+            let page_offset = cursor % PAGE_SIZE;
+            let chunk = (PAGE_SIZE - page_offset).min(end - cursor);
+            PageAccess(page.ppn).read(
+                page_offset,
+                &mut output[cursor - offset..cursor - offset + chunk],
+            );
+            cursor += chunk;
+        }
+        Ok(true)
     }
 
     /// 写入字节（必要时写时复制）。
@@ -1219,171 +1077,4 @@ fn page_range(offset: u64, length: u64) -> Result<(usize, usize), VmError> {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn byte(vmo: &Arc<Vmo>, offset: u64) -> u8 {
-        let mut value = [0];
-        vmo.read(offset, &mut value).unwrap();
-        value[0]
-    }
-
-    #[test]
-    #[ignore = "诊断生产快照/退休成本，不设置宿主时间阈值"]
-    fn snapshot_retirement_cpu_cost() {
-        let parent = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
-        parent.write(0, &[37]).unwrap();
-        let siblings: Vec<_> = (0..272)
-            .map(|_| {
-                parent
-                    .create_child(0, parent.size(), ChildKind::Snapshot)
-                    .unwrap()
-            })
-            .collect();
-        let mut pending = parent
-            .create_child(0, parent.size(), ChildKind::Snapshot)
-            .unwrap();
-        let started = std::time::Instant::now();
-        for _ in 0..4096 {
-            let next = parent
-                .create_child(0, parent.size(), ChildKind::Snapshot)
-                .unwrap();
-            drop(pending);
-            pending = next;
-        }
-        println!(
-            "snapshot/retirement with {} resident siblings: {:.2} us/op",
-            siblings.len(),
-            started.elapsed().as_secs_f64() * 1_000_000.0 / 4096.0
-        );
-    }
-
-    #[test]
-    fn fork_exit_churn_releases_hidden_ancestors() {
-        let parent = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
-        parent.write(0, &[37]).unwrap();
-        for _ in 0..64 {
-            let child = parent
-                .create_child(0, parent.size(), ChildKind::Snapshot)
-                .unwrap();
-            let hidden = match &parent.state.lock().relation {
-                Some(Relation::Cow { parent, .. }) => Arc::downgrade(parent),
-                _ => panic!("snapshot must freeze the original contents"),
-            };
-            child.write(0, &[91]).unwrap();
-            assert_eq!(byte(&parent, 0), 37);
-            drop(child);
-            assert_eq!(byte(&parent, 0), 37);
-            assert!(
-                hidden.upgrade().is_none(),
-                "exited child retained a hidden ancestor"
-            );
-        }
-    }
-
-    #[test]
-    fn fork_exit_churn_with_resident_siblings_releases_transient_ancestors() {
-        let parent = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
-        parent.write(0, &[37]).unwrap();
-        let siblings: Vec<_> = (0..8)
-            .map(|_| {
-                parent
-                    .create_child(0, parent.size(), ChildKind::Snapshot)
-                    .unwrap()
-            })
-            .collect();
-        for _ in 0..64 {
-            let child = parent
-                .create_child(0, parent.size(), ChildKind::Snapshot)
-                .unwrap();
-            let hidden = match &parent.state.lock().relation {
-                Some(Relation::Cow { parent, .. }) => Arc::downgrade(parent),
-                _ => panic!("snapshot must freeze the original contents"),
-            };
-            drop(child);
-            let next = parent
-                .create_child(0, parent.size(), ChildKind::Snapshot)
-                .unwrap();
-            assert!(
-                hidden.upgrade().is_none(),
-                "transient child retained a hidden ancestor"
-            );
-            drop(next);
-        }
-        for sibling in siblings {
-            assert_eq!(byte(&sibling, 0), 37);
-        }
-    }
-
-    #[test]
-    fn snapshot_prunes_ancestors_when_exit_notification_precedes_mapping_retirement() {
-        let parent = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
-        parent.write(0, &[37]).unwrap();
-        let retired = parent
-            .create_child(0, parent.size(), ChildKind::Snapshot)
-            .unwrap();
-        let hidden = match &parent.state.lock().relation {
-            Some(Relation::Cow { parent, .. }) => Arc::downgrade(parent),
-            _ => panic!("snapshot must freeze the original contents"),
-        };
-        // 新快照先于上一个子进程的映射退休，直接父节点暂时有两个存活子对象。
-        let pending = parent
-            .create_child(0, parent.size(), ChildKind::Snapshot)
-            .unwrap();
-        drop(retired);
-        let next = parent
-            .create_child(0, parent.size(), ChildKind::Snapshot)
-            .unwrap();
-        assert!(
-            hidden.upgrade().is_none(),
-            "retired mapping retained an intermediate ancestor"
-        );
-        assert_eq!(byte(&pending, 0), 37);
-        assert_eq!(byte(&next, 0), 37);
-        assert_eq!(byte(&parent, 0), 37);
-    }
-
-    #[test]
-    fn surviving_offset_snapshot_keeps_contents_and_live_sibling_isolation() {
-        let original = Vmo::create((4 * PAGE_SIZE) as u64, VmoOptions::default()).unwrap();
-        original.write(PAGE_SIZE as u64, &[11]).unwrap();
-        original.write((2 * PAGE_SIZE) as u64, &[22]).unwrap();
-        let survivor = original
-            .create_child(
-                PAGE_SIZE as u64,
-                (2 * PAGE_SIZE) as u64,
-                ChildKind::Snapshot,
-            )
-            .unwrap();
-        let sibling = survivor
-            .create_child(0, survivor.size(), ChildKind::Snapshot)
-            .unwrap();
-        survivor.write(0, &[33]).unwrap();
-        drop(original);
-        assert_eq!(byte(&survivor, 0), 33);
-        assert_eq!(byte(&survivor, PAGE_SIZE as u64), 22);
-        assert_eq!(byte(&sibling, 0), 11);
-        drop(survivor);
-        assert_eq!(byte(&sibling, 0), 11);
-        assert_eq!(byte(&sibling, PAGE_SIZE as u64), 22);
-    }
-
-    #[test]
-    fn collapse_preserves_truncated_inheritance_after_regrowth() {
-        let parent = Vmo::create((4 * PAGE_SIZE) as u64, VmoOptions { resizable: true }).unwrap();
-        parent.write(0, &[7]).unwrap();
-        parent.write((2 * PAGE_SIZE) as u64, &[99]).unwrap();
-        let snapshot = parent
-            .create_child(0, parent.size(), ChildKind::Snapshot)
-            .unwrap();
-        parent.set_size(PAGE_SIZE as u64).unwrap();
-        let child = parent
-            .create_child(0, (4 * PAGE_SIZE) as u64, ChildKind::Snapshot)
-            .unwrap();
-        drop(parent);
-        assert_eq!(byte(&child, 0), 7);
-        assert_eq!(byte(&child, (2 * PAGE_SIZE) as u64), 0);
-        assert_eq!(byte(&snapshot, 0), 7);
-        assert_eq!(byte(&snapshot, (2 * PAGE_SIZE) as u64), 99);
-    }
-}
+mod tests;

@@ -585,12 +585,6 @@ impl PcmOutput for VirtIOSoundDevice {
         }
         Ok(())
     }
-
-    fn writable(&self) -> bool {
-        self.reclaim();
-        let owner = self.queues.lock();
-        owner.state != DeviceState::Failed && owner.tx_slots.iter().any(|slot| slot.head.is_none())
-    }
 }
 
 impl CompletionSource for VirtIOSoundDevice {

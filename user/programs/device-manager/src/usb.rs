@@ -42,12 +42,7 @@ pub(super) fn run() -> Result<(), Box<dyn std::error::Error>> {
         },
     )?;
     intro.set_state(state::WRAP)?;
-    let caption = node(
-        &root,
-        WidgetKind::Label,
-        "硬件设备(H):",
-        Layout::default(),
-    )?;
+    let caption = node(&root, WidgetKind::Label, "硬件设备(H):", Layout::default())?;
     let list = node(
         &root,
         WidgetKind::List,

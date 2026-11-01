@@ -123,6 +123,81 @@ pub(in crate::syscall) fn read_vectors_from(
     progress.total()
 }
 
+/// 尝试在提交者上完成已驻留的 regular read；需要存储、争用 position 或大请求时不发布进度。
+///
+/// # Parameters
+///
+/// - `task`: 输出地址与记账 owner。
+/// - `ofd`: 已通过 readable 检查的 inode OFD。
+/// - `vectors`: 已校验的输出 buffers。
+/// - `total`: buffers 的完整长度。
+/// - `offset`: 非负为 pread；-1 为共享 position。
+///
+/// # Returns
+///
+/// 完成的 byte count/errno；None 保持 position 与用户 buffers 不变，交给阻塞车道。
+pub(in crate::syscall) fn read_available(
+    task: &TaskControlBlock,
+    ofd: &Arc<OpenFileDescription>,
+    vectors: &[UserIoVec],
+    total: usize,
+    offset: i64,
+) -> Option<isize> {
+    // BUDGET: 只在 64KiB 暂存预算内内联；不完整的缓存副本不能交付，避免重试时复制一半用户结果。
+    // 大请求沿同一个 blocking read owner 执行，不截断 I/O，也不为探测申请任意大小的内存。
+    if total > 64 * 1024 {
+        return None;
+    }
+    if ofd.inode_ref().inode_type() == InodeType::Directory {
+        return Some(-errno::EISDIR);
+    }
+    let file = match ofd.regular_file() {
+        Ok(file) => file,
+        Err(error) => return Some(ferr(error)),
+    };
+    let mut staging = Vec::new();
+    staging.try_reserve_exact(total).ok()?;
+    staging.resize(total, 0);
+    let mut read = |position: &mut u64| {
+        let result = match file.read_available(*position, &mut staging) {
+            Ok(None) => return None,
+            Ok(Some(read)) => Ok(read),
+            Err(error) => Err(error),
+        };
+        let _access = (file.tracks_access_time() && total != 0).then(|| ofd.read_access());
+        let read = match result {
+            Ok(read) => read,
+            Err(error) => return Some(ferr(error)),
+        };
+        let mut progress = ReadProgress::default();
+        while let Some(count) = progress.next_count(vectors) {
+            let start = progress.total() as usize;
+            let bytes = (read.bytes - start).min(count);
+            if let Some(result) = progress.deliver(
+                task,
+                vectors,
+                position,
+                &staging[start..start + bytes],
+                bytes,
+                count,
+            ) {
+                return Some(result);
+            }
+        }
+        Some(progress.total())
+    };
+    let result = if offset >= 0 {
+        read(&mut (offset as u64))
+    } else {
+        ofd.try_with_position(read).flatten()
+    }?;
+    task.account_read_result(result);
+    if result > 0 {
+        ofd.notify(crate::fs::IN_ACCESS);
+    }
+    Some(result)
+}
+
 /// regular write 的 syscall-local transient staging owner。
 ///
 /// `prepare` 必须在 OFD position/write-sequence gate 外调用，`with_prepared_staging`

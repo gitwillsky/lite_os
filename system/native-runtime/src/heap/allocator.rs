@@ -7,9 +7,12 @@ use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::{NonNull, null_mut};
 
 const MIN_CLASS_SHIFT: u32 = 4;
-const CLASS_COUNT: usize = 8;
-const LARGEST_CLASS: usize = 1 << (MIN_CLASS_SHIFT as usize + CLASS_COUNT - 1);
-const CHUNK_SIZE: usize = 64 * 1024;
+const SMALL_CLASS_COUNT: usize = 8;
+const SMALL_MAX_SIZE: usize = 1 << (MIN_CLASS_SHIFT as usize + SMALL_CLASS_COUNT - 1);
+// 只额外复用完整的 channel 缓冲；中等尺寸不保留并发峰值，避免挤占小内存机器的承载线程。
+const CHUNK_SIZE: usize = native_abi::CHANNEL_MAX_BYTES;
+const CLASS_COUNT: usize = SMALL_CLASS_COUNT + 1;
+const _: () = assert!(CHUNK_SIZE.is_power_of_two() && CHUNK_SIZE >= native_abi::PAGE_SIZE);
 
 struct FreeBlock {
     next: Option<NonNull<FreeBlock>>,
@@ -29,10 +32,13 @@ static CLASSES: Mutex<Classes> = Mutex::new(Classes {
 
 fn class_of(layout: Layout) -> Option<usize> {
     let size = layout.size().max(layout.align()).max(1 << MIN_CLASS_SHIFT);
-    if size > LARGEST_CLASS {
-        return None;
+    if size <= SMALL_MAX_SIZE {
+        Some((size.next_power_of_two().trailing_zeros() - MIN_CLASS_SHIFT) as usize)
+    } else if size == CHUNK_SIZE {
+        Some(SMALL_CLASS_COUNT)
+    } else {
+        None
     }
-    Some((size.next_power_of_two().trailing_zeros() - MIN_CLASS_SHIFT) as usize)
 }
 
 /// 映射 `size` 字节的新匿名内存，地址按 `align` 对齐。
@@ -53,20 +59,33 @@ fn map(size: usize, align: usize) -> Option<usize> {
         )
         .ok()?;
     let start = base.next_multiple_of(align.max(page));
-    // SAFETY: 头尾富余区间刚映射、从未交给任何调用者。
-    unsafe {
-        if start > base {
-            let _ = vmar.unmap(base, start - base);
-        }
-        let end = start + size;
-        if base + total > end {
-            let _ = vmar.unmap(end, base + total - end);
-        }
+    let end = start + size;
+    // SAFETY: 整段映射尚未发表；头尾均在其内，不存在调用者别名。
+    let trimmed = unsafe {
+        let prefix = if start > base {
+            vmar.unmap(base, start - base)
+        } else {
+            Ok(())
+        };
+        prefix.and_then(|()| {
+            if base + total > end {
+                vmar.unmap(end, base + total - end)
+            } else {
+                Ok(())
+            }
+        })
+    };
+    if trimmed.is_err() {
+        // SAFETY: 仍独占未发表区间；unmap 允许覆盖已裁掉的洞，撤销剩余映射后才能报告分配失败。
+        unsafe { vmar.unmap(base, total) }
+            .expect("unpublished heap mapping rollback must complete");
+        return None;
     }
     Some(start)
 }
 
-struct Heap;
+/// 父 heap 模块注册的服务分配器；各实例只访问同一个进程内 Classes owner。
+pub(super) struct Heap;
 
 // SAFETY: 小块来自独占的空闲链，大块来自独立映射；同一地址不会同时交给两个调用者。
 unsafe impl GlobalAlloc for Heap {
@@ -75,10 +94,14 @@ unsafe impl GlobalAlloc for Heap {
             return map(layout.size(), layout.align())
                 .map_or(null_mut(), |address| address as *mut u8);
         };
-        let block_size = 1usize << (class as u32 + MIN_CLASS_SHIFT);
+        let block_size = if class == SMALL_CLASS_COUNT {
+            CHUNK_SIZE
+        } else {
+            1usize << (class as u32 + MIN_CLASS_SHIFT)
+        };
         let mut classes = CLASSES.lock();
         if classes.free[class].is_none() {
-            let Some(chunk) = map(CHUNK_SIZE, native_abi::PAGE_SIZE) else {
+            let Some(chunk) = map(CHUNK_SIZE, block_size.max(native_abi::PAGE_SIZE)) else {
                 return null_mut();
             };
             // 把新区块切成块并串入空闲链（逆序，使低地址先被取出）。
@@ -103,10 +126,20 @@ unsafe impl GlobalAlloc for Heap {
         let Some(class) = class_of(layout) else {
             let size = layout.size().next_multiple_of(native_abi::PAGE_SIZE);
             // SAFETY: 大块是独立映射，调用者保证不再使用。
-            let _ = unsafe { vmar().unmap(pointer as usize, size) };
+            unsafe { vmar().unmap(pointer as usize, size) }
+                .expect("heap deallocation must retire its mapping");
             return;
         };
         let mut classes = CLASSES.lock();
+        if class == SMALL_CLASS_COUNT && classes.free[class].is_some() {
+            // 1. 完整缓冲独占一个 chunk，不与小块共享映射。2. 已有一个备用缓冲时直接退休
+            // 当前映射；必须先释放 Classes 锁，再执行可能等待翻译 fence 的 unmap。
+            drop(classes);
+            // SAFETY: 调用者归还独占完整 chunk，地址已按 chunk 对齐，没有其他活跃块。
+            unsafe { vmar().unmap(pointer as usize, CHUNK_SIZE) }
+                .expect("surplus channel buffer must retire its mapping");
+            return;
+        }
         let block = pointer.cast::<FreeBlock>();
         // SAFETY: 调用者归还的块至少有一个 `FreeBlock` 大小且按其对齐。
         unsafe {
@@ -117,6 +150,3 @@ unsafe impl GlobalAlloc for Heap {
         classes.free[class] = NonNull::new(block);
     }
 }
-
-#[global_allocator]
-static HEAP: Heap = Heap;

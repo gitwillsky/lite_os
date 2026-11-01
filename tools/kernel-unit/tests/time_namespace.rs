@@ -195,4 +195,6 @@ fn enter_and_update_linearize_on_one_owner_lock() {
     );
 }
 
-mod sync { pub(crate) use spin::{Mutex, Once}; }
+mod sync {
+    pub(crate) use spin::{Mutex, Once};
+}

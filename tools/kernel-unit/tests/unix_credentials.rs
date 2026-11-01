@@ -42,12 +42,7 @@ fn bytes(pid: i32, uid: u32, gid: u32) -> [u8; 12] {
     bytes[8..].copy_from_slice(&gid.to_ne_bytes());
     bytes
 }
-fn caller(
-    key: usize,
-) -> (
-    crate::task::TaskControlBlock,
-    namespace::PidRegistration,
-) {
+fn caller(key: usize) -> (crate::task::TaskControlBlock, namespace::PidRegistration) {
     namespace::boot();
     let view = namespace::initial_pid();
     let mut pid = namespace::PreparedPid::try_new(
@@ -204,36 +199,35 @@ fn receive_codec_projects_actual_namespaces_and_native_missing_credentials() {
     assert_eq!(&native[8..], &2001u32.to_ne_bytes());
 }
 
-
-    #[path = "../../../system/linuxd/src/task/model"]
-    pub(crate) mod task {
-        use crate::namespace::{NamespaceAuthority, PidIdentity, PidNamespace};
-        use alloc::sync::Arc;
-        mod message_identity;
-        pub(crate) use message_identity::MessageIdentityError;
-        pub(crate) struct TaskControlBlock {
-            pub(crate) authority: NamespaceAuthority,
-            pub(crate) uids: [u32; 3],
-            pub(crate) gids: [u32; 3],
-            pub(crate) tgid: Arc<PidIdentity>,
-            pub(crate) namespace: Arc<PidNamespace>,
+#[path = "../../../system/linuxd/src/task/model"]
+pub(crate) mod task {
+    use crate::namespace::{NamespaceAuthority, PidIdentity, PidNamespace};
+    use alloc::sync::Arc;
+    mod message_identity;
+    pub(crate) use message_identity::MessageIdentityError;
+    pub(crate) struct TaskControlBlock {
+        pub(crate) authority: NamespaceAuthority,
+        pub(crate) uids: [u32; 3],
+        pub(crate) gids: [u32; 3],
+        pub(crate) tgid: Arc<PidIdentity>,
+        pub(crate) namespace: Arc<PidNamespace>,
+    }
+    impl TaskControlBlock {
+        pub(crate) fn message_identity(&self) -> message_identity::MessageIdentity {
+            message_identity::MessageIdentity::new(self.authority.clone(), self.uids, self.gids)
         }
-        impl TaskControlBlock {
-            pub(crate) fn message_identity(&self) -> message_identity::MessageIdentity {
-                message_identity::MessageIdentity::new(self.authority.clone(), self.uids, self.gids)
-            }
-            pub(crate) fn user_namespace(&self) -> Arc<crate::namespace::UserNamespace> {
-                self.authority.namespace.clone()
-            }
-            pub(crate) fn pid_namespace(&self) -> Arc<PidNamespace> {
-                self.namespace.clone()
-            }
-            pub(crate) fn tgid_identity(&self) -> &Arc<PidIdentity> {
-                &self.tgid
-            }
+        pub(crate) fn user_namespace(&self) -> Arc<crate::namespace::UserNamespace> {
+            self.authority.namespace.clone()
+        }
+        pub(crate) fn pid_namespace(&self) -> Arc<PidNamespace> {
+            self.namespace.clone()
+        }
+        pub(crate) fn tgid_identity(&self) -> &Arc<PidIdentity> {
+            &self.tgid
         }
     }
+}
 
-
-
-mod sync { pub(crate) use spin::{Mutex, Once}; }
+mod sync {
+    pub(crate) use spin::{Mutex, Once};
+}

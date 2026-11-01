@@ -270,10 +270,10 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   1040 B、64-slot FileDescriptor chunk 1024 B；仅 fd 0 与 1,048,575 时 heap payload 为 5168 B，
   全物化时 metadata/chunk payload 上限分别为 134,160 B/16,777,216 B（不含 allocator header）。
 - ext4 owner 独占 inode/directory/link/allocation mutation；packed disk value 定义与字段保持
-  `fs::ext4` parent-private，`fs::ext4::layout` 只封装定长 decode/encode 与 raw byte access，
-  `fs::ext4::block_io` 封装 filesystem/device block 换算，`fs::ext4::inode` 独占 inode identity 与
-  VFS projection，`fs::ext4::extent` 独占 logical-block mapping，`fs::ext4::htree` 独占 dx index，
-  `fs::ext4::metadata_csum` 独占全部 metadata checksum 公式；`Ext4FileSystem` 的 64-entry metadata
+  `ext4d::ext4` parent-private，`ext4d::ext4::layout` 只封装定长 decode/encode 与 raw byte access，
+  `ext4d::ext4::block_io` 封装 filesystem/device block 换算，`ext4d::ext4::inode` 独占 inode identity 与
+  VFS projection，`ext4d::ext4::extent` 独占 logical-block mapping，`ext4d::ext4::htree` 独占 dx index，
+  `ext4d::ext4::metadata_csum` 独占全部 metadata checksum 公式；`Ext4FileSystem` 的 64-entry metadata
   block cache 独占 directory/htree/extent/orphan block identity 与 LRU reclaim；JBD2 journal 独占
   transaction/commit/replay；page cache 独占 cached page lifecycle。
 - ext4 写路径固定为 Linux `data=ordered` + group commit：每次 mutation 的 handle overlay 独占本次
@@ -293,7 +293,7 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   未提交事务释放的 block 在提交前不得重新分配，否则崩溃后旧文件会指向新文件已写回的数据。
 - running transaction 只在以下时机提交：handle 并入后 metadata 超过单个 journal transaction 容量
   （先提交 running，再并入）、staged data 超过 16 MiB、年龄超过 5 秒、`fsync`/`fdatasync`/`execution::sync`。
-  每个 ext4 filesystem 在 mount 时创建一个写回内核线程（对应 Linux jbd2）：running transaction
+  每个 ext4 filesystem 在 mount 时由 ext4d 创建原生写回服务线程（对应 Linux jbd2）：running transaction
   由空变非空时经 `TaskEvent` 唤醒，睡到开始时刻加 5 秒后在 mutation owner 下提交；没有未提交
   mutation 时线程无限期阻塞，不产生周期唤醒。mount 发布前预备唯一 shutdown waiter；
   `shutdown` 消费它无分配取得 mutation owner，同锁先发布 `stopping` 再最终 drain 并 signal。
@@ -330,24 +330,25 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   零write保留set-ID，等长truncate仍清位；CAP_FSETID保留write/resize特殊位，chown规则独立。
 - `page_cache::regular_file::RegularFile` 拥有单次 I/O 的 backend pin；CachedWrite 的
   write-sequence guard 留在 page-cache owner，read/backend selection 只经该 facade。
-- `page_cache::registry::FILES` 独占 cache membership；node/Arc/reclaimer registration 在锁外
-  fallible prepare，发布时重查 winner 与 backing policy。reclaimer 只持 Weak，竞争败者锁外
+- `page_cache::registry::FILES` 独占 cache membership；node/Arc registration 在锁外
+  fallible prepare，发布时重查 winner 与 backing policy。registry 只持 Weak，竞争败者锁外
   析构，dead slot 可复用。sync/umount 每次只 pin 一个有序 owner，不在 FILES 内分配全局快照、
   执行 I/O 或析构最终 inode；并发新 mutation 不属于本轮 sync 的保证。
 - page-cache `operation`/`write_sequence` 同样是可跨 cache fill、writeback 与 storage mutation
   保活的 task-only blocking owner；只有 resident page map 与全局 registry 的短临界区使用 spin。
 - volatile inode 的 atime/mtime/ctime 只属于 `TimeOwner`：非 content inode inline，MemoryFile、tmpfs/MemFile metadata 与 resident mmap page 共用 Arc<InodeTimes>。短锁只保存三个 scalar，所有 clock reads 在 times 锁外，绝不反入
   metadata；metadata→times 是唯一锁序。content touch 一次更新 mtime/ctime；显式过去/未来 mtime 不改变 ctime 为该值，ctime 始终取变更时刻，不保留 max(mtime) 影子路径。
-- 每个 `MemoryFile`（memfd 与 tmpfs regular file 共用）的 `state` 同时拥有文件长度、稀疏页与 seal mask；
-  `ftruncate`/write/fallocate 和 `F_ADD_SEALS` 必须在该 owner 内线性化，禁止用独立 atomic seal 留出
-  seal 与 resize 的竞态窗口。`write_sequence`（外层，整次 write/append/truncate/fallocate，持有期间会做用户
-  态拷贝）先于 `state`（内层，page fault 只取它）；`published_length` 是 `state` 的无锁只读投影，只在持有
-  `state` 时更新。页在最后一个 `Arc` 释放时归还配额。`allocated_pages` 包含所有已分配内容页，
-  不等于 RAM residency。稀疏 page-byte seam 传播访问错误；单页错误不修改该页/目标 slice，
-  已完成的前缀按短读写返回。truncate 先完成保留尾页的 fallible zero，再无失败移出整页/
-  发布长度；任何前置错误保持旧长度与其他页。state/页 operation 释放后才广播 MM invalidation。
-  内容由唯一匿名 VMO 持有；文件 read/write 与 mmap 使用同一 backing。没有 weak page reclaimer、swap admission 或物理镜像。
-- `StorageBudget` 的单个 IrqMutex state 拥有 tmpfs 的 page/inode limits 与占用；memfd 只使用
+- 每个 `MemoryFile`（memfd 与 tmpfs regular file 共用）的 state 拥有稀疏 PageCharge 索引与 seal mask；
+  length 是该 state 下发布的 AtomicU64 只读投影。write_sequence 串行整次 write/append/truncate/fallocate，
+  先于 state；后台补页只取 state，不能等待持有 write_sequence 的 faulting 线程。
+  逻辑增长不扣页限额，普通洞读补零且不实例化 VMO 页；write/fallocate 或 mmap 的实际缺页先取得
+  quota lease、准备索引节点，native supply 成功后才发表该节点。失败自动归还尚未发表的 lease。
+  连续已分配区间的读写保留批量 native copy，配额耗尽的 write 返回已准入前缀，不把请求尾部发表成 EOF。
+  fallocate 在改变 backing 前准入全部新页；补页中途失败先撤销新页并完成 fence，再归还 lease，保留既有内容。
+  truncate 先清零实际末页尾部，再由 native VMO 缩小并撤销越界页，成功后释放对应 lease/发表长度。
+  内容由唯一 pager VMO 持有，文件 read/write 与 mmap 使用同一 backing；quota 索引只拥有存储准入，
+  不复制物理页或 dirty 状态。st_blocks 读取 native VMO 实际 committed bytes；没有 swap/reclaimer。
+- `StorageBudget` 的单个 Mutex state 拥有 tmpfs 的 page/inode limits 与占用；memfd 只使用
   无限页配额。reserve/release/set_limits 同锁，remount 对两类上限一起验证并提交，任一不足
   都保持旧值；statfs 读取同锁 snapshot。禁止独立 limit/used Atomics 留出按旧上限预留的窗口。
   固定 Linux `mm/shmem.c::shmem_reconfigure` 的 unlimited→有限 remount 必须拒绝；初次挂载
@@ -413,9 +414,12 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
 
 ## Pager 页缓存
 
-每个持久 inode 一个 pager VMO；linuxd 分派缺页给可增长的 worker 池，worker 通过 FUSE/设备服务读取并 supply pages。
-缺页、文件 read/write、映射 dirty 与回写以同一 VMO 为事实来源，不维护旧 StorageEpoch/NowaitRead/PendingRead 的第二条 cache-fill 路径。
-NOWAIT 文件读取当前仍可能阻塞，不声明异步磁盘并行；该边界见内存与文件 I/O 矩阵。
+`fs::pager` 拥有唯一 native pager、port、可失败的 key→Weak<PageSource> 注册表与可增长 worker 池。
+持久文件的 PageSource（page_cache/fill）从 FUSE/设备读取并按窗口预读；MemoryFile 的 PageSource
+按稀疏文件页配额补零。worker 的辅助 VMO 可跨两种来源复用，提供者须检查容量，不能假定前一请求大小。
+注册在对象构造完成后进行，失败不发表；最终对象释放时注销，registry 不延长内容 owner 的寿命。
+页与 dirty 状态由同一 VMO 拥有，read/write、映射和回写不建立第二份内容缓存。
+io_uring 的缓存探测及回退边界由[文件 I/O 矩阵](../syscall-support/filesystem-io.md)维护。
 
 补充契约见 [文件系统接口、事务与退休契约](filesystem-transactions.md)。
 

@@ -41,8 +41,9 @@ pub(crate) fn install_advisory_lock_notifier() {
 }
 
 fn wake_advisory_lock_waiters(key: AdvisoryLockKey) -> usize {
+    let notification = WAIT_REGISTRY.notification();
     let mut count = 0;
-    while let Some(wake) = WAIT_REGISTRY.wake_advisory_one(key) {
+    while let Some(wake) = notification.wake_advisory_one(key) {
         count += 1;
         if let Some(claimed) = wake.claimed {
             assert!(matches!(claimed.kind, IndexedWaitKind::AdvisoryLock));

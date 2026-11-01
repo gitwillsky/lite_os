@@ -25,7 +25,7 @@
   exit 显式退休；Process 只读别名原 leader 的 handle，非 leader exec retarget，不能读任意 worker。
   User namespace 只属于同一 Credentials owner；UTS name tuple 属于 UtsNamespace，系统构建字段
   immutable。UID/GID maps 在 namespace owner 只发布一次，所有分配和排序先于短锁 publication；
-  target namespace 的 capability 必须沿 immutable ancestry 授权，不把 child pE 用于全局设备/swap/reboot。
+  target namespace 的 capability 必须沿 immutable ancestry 授权，不把 child pE 用于全局设备/reboot。
 - TimeNamespace 统一拥有 monotonic/boottime offset 与进入后的冻结状态；每个 Thread 的 active
   time 和 time_for_children 归同一个 FsNamespaceState。unshare 只改后者，普通 fork/exec 进入它，
   共享 VM 的 clone 保留 active；setns 一次替换两者。clock_gettime、absolute sleep/timer、
@@ -44,7 +44,8 @@
   leader handle，leader 退出后 procFD 不改读 sibling。每个 Thread 预置复用 waiter，
   查找与退出不在争用时临时分配；表内 allocation 不持 spin guard。
   unshare 的 fs/files 全部准备后才提交；exec 独占表保留 identity，共享表先复制再 CLOEXEC。
-- SchedulingState 是 runnable/blocking/stopped membership 的唯一事实；Ready transition token 在同一 lock lifetime 内更新 per-CPU runqueue projection。
+- linuxd 的 SchedulingState 拥有 Linux running/blocked/stopped 与聚合计数；内核的 SchedulingState
+  拥有原生线程运行状态，Ready transition token 在同一锁生命周期内更新 per-CPU runqueue projection。
 - 每个 Thread 独立持有 Live/Retired mm membership，Process 只别名原 leader handle；exit 移交 root 后
   TCB observer 不保活映射。root Arc 是 mmget user，Weak registries 不保活 VMA；最后一个
   user release 不写 clearTid，多个 users 时即使零写失败仍尝试 futex wake。所有 context、
@@ -106,17 +107,17 @@
   Thread 退出在 graph 注销前退休 user context 并移交旧 AddressSpace，随后 mm release
   使用旧 root；最后一个 sibling exec 改换自身 mm handle 不影响退出 token。
 
-- 内核线程与用户 Thread 共用调度器、kernel context 切换、DriverIo/`TaskMutex`/`TaskEvent` 阻塞与
-  deadline 睡眠；它们没有 Process，不出现在 process graph。主体返回即终止：关本地中断、撤销调度
-  ownership、交给 deferred reap 后切到 idle。boot 装配 memory-reclaim 与 unix-rights-gc 两个后台
-  worker；空闲 deadline/event 使用 TASK_IDLE，不计入 load。
+- linuxd 的后台工作使用原生承载线程，通过 ServiceThreadTarget 与服务 parker 等待；没有 Linux
+  Process 的后台工作不进入 process graph。deferred、pager 与 unix-rights-gc 的状态分别由对应
+  服务 owner 持有，不保留 memory-reclaim worker。真正的调度、上下文切换与 kernel stack
+  退休属于 native kernel 的 thread owner。
 
 ## Known limits
 
 - scheduler 当前提供 Linux `SCHED_OTHER`/nice 语义子集，不包含实时调度 class。
 - 负载均衡只有抢占时的重新选核：没有跨 CPU 拉取或推送 Ready 任务，空闲 CPU 不会主动从别的 runqueue 取任务。
   Ready 任务只有在所在 CPU 的 current 被抢占或阻塞时才有机会迁走，内核态长时间不返回用户态的 current 会延迟这一点。
-  迁移不重新归一化 vruntime，沿用既有的跨核放置语义；公平性只验证了等权重的 CPU 密集任务，nice 混合负载未验证。
+  Ready 迁移不重新归一化 vruntime；真实睡眠唤醒仅按目标 CPU 的单调下限截断旧信用，公平性只验证了等权重的 CPU 密集任务，nice 混合负载未验证。
 - 一个 CPU 刚变空闲时，排队在别处的任务要等到它所在 CPU 的下一次抢占才会被重新放置，延迟以 tick（10 ms）为量级，
   尾部可达数个 tick。`make diagnose-scheduler-latency` 量化该延迟及其在突发 CPU 密集负载下相对理想公平调度的
   额外耗时；是否补“空闲 CPU 请求推送”应以该数据为依据。

@@ -20,7 +20,6 @@ use crate::iommu::IommuBackend;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::ops::Range;
 use core::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 use native_abi::{ObjectType, PortPacket, Status, rights, signals};
@@ -36,118 +35,8 @@ use crate::vm::{PinnedRange, Vmo};
 // Resource
 // ---------------------------------------------------------------------------------------------
 
-/// resource 授权的范围。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ResourceKind {
-    Root,
-    Mmio(Range<u64>),
-    Irq(Range<u32>),
-}
-
-/// 硬件访问授权。
-pub(crate) struct Resource {
-    koid: u64,
-    kind: ResourceKind,
-}
-
-impl Resource {
-    /// 根 resource；内核启动时创建一次交给根服务。
-    pub(crate) fn root() -> Self {
-        Self {
-            koid: next_koid(),
-            kind: ResourceKind::Root,
-        }
-    }
-
-    /// 是否为根 resource。
-    pub(crate) fn is_root(&self) -> bool {
-        self.kind == ResourceKind::Root
-    }
-
-    /// 切出子 resource。
-    ///
-    /// # Errors
-    /// 超出父范围、区间为空或 MMIO 覆盖 RAM 时返回 `ERR_INVALID_ARGS`/`ERR_ACCESS_DENIED`。
-    pub(crate) fn create_child(&self, kind: u32, base: u64, size: u64) -> Result<Self, Status> {
-        let end = base
-            .checked_add(size)
-            .filter(|_| size != 0)
-            .ok_or(native_abi::ERR_INVALID_ARGS)?;
-        let kind = match kind {
-            native_abi::resource::MMIO => {
-                if !base.is_multiple_of(native_abi::PAGE_SIZE as u64)
-                    || !size.is_multiple_of(native_abi::PAGE_SIZE as u64)
-                {
-                    return Err(native_abi::ERR_INVALID_ARGS);
-                }
-                let ram = crate::platform::physical_memory_range();
-                if base < ram.end as u64 && end > ram.start as u64 {
-                    return Err(native_abi::ERR_ACCESS_DENIED);
-                }
-                ResourceKind::Mmio(base..end)
-            }
-            native_abi::resource::IRQ => {
-                let start = u32::try_from(base).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-                let end = u32::try_from(end).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-                ResourceKind::Irq(start..end)
-            }
-            _ => return Err(native_abi::ERR_INVALID_ARGS),
-        };
-        let allowed = match (&self.kind, &kind) {
-            (ResourceKind::Root, _) => true,
-            (ResourceKind::Mmio(parent), ResourceKind::Mmio(child)) => {
-                parent.start <= child.start && child.end <= parent.end
-            }
-            (ResourceKind::Irq(parent), ResourceKind::Irq(child)) => {
-                parent.start <= child.start && child.end <= parent.end
-            }
-            _ => false,
-        };
-        if !allowed {
-            return Err(native_abi::ERR_ACCESS_DENIED);
-        }
-        Ok(Self {
-            koid: next_koid(),
-            kind,
-        })
-    }
-
-    /// 是否授权 MMIO 区间。
-    pub(crate) fn covers_mmio(&self, base: u64, size: u64) -> bool {
-        let Some(end) = base.checked_add(size) else {
-            return false;
-        };
-        match &self.kind {
-            ResourceKind::Root => {
-                let ram = crate::platform::physical_memory_range();
-                !(base < ram.end as u64 && end > ram.start as u64)
-            }
-            ResourceKind::Mmio(range) => range.start <= base && end <= range.end,
-            ResourceKind::Irq(_) => false,
-        }
-    }
-
-    /// 是否授权中断向量。
-    pub(crate) fn covers_irq(&self, vector: u32) -> bool {
-        match &self.kind {
-            ResourceKind::Root => crate::platform::device_interrupt_range().contains(&vector),
-            ResourceKind::Irq(range) => range.contains(&vector),
-            ResourceKind::Mmio(_) => false,
-        }
-    }
-}
-
-impl KernelObject for Resource {
-    fn object_type(&self) -> ObjectType {
-        ObjectType::Resource
-    }
-    fn koid(&self) -> u64 {
-        self.koid
-    }
-    fn default_rights(&self) -> u32 {
-        rights::DUPLICATE | rights::TRANSFER | rights::INSPECT
-    }
-}
+mod authorization;
+pub(crate) use authorization::Resource;
 
 // ---------------------------------------------------------------------------------------------
 // Interrupt

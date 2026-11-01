@@ -196,12 +196,17 @@ static void fifo_many_writers(const char *base)
 	unlink(path);
 	CHECK(70, mknod(path, S_IFIFO | 0600, 0) == 0);
 	enum { WRITERS = 4, MESSAGES = 200, SIZE = 32 };
+	int opened[2];
+	CHECK(70, pipe2(opened, O_CLOEXEC) == 0);
 	pid_t children[WRITERS];
 	for (int writer = 0; writer < WRITERS; writer++) {
 		children[writer] = fork();
 		if (children[writer] == 0) {
+			close(opened[0]);
 			int fd = open(path, O_WRONLY);
 			if (fd < 0) _exit(1);
+			if (write(opened[1], "R", 1) != 1) _exit(4);
+			close(opened[1]);
 			char message[SIZE];
 			for (int index = 0; index < MESSAGES; index++) {
 				memset(message, 'A' + writer, SIZE);
@@ -211,10 +216,18 @@ static void fifo_many_writers(const char *base)
 		}
 		CHECK(71, children[writer] > 0);
 	}
+	close(opened[1]);
 	stage("fifo-reader-open");
 	int reader = open(path, O_RDONLY);
 	stage("fifo-reader-opened");
 	CHECK(72, reader >= 0);
+	/* fork 完成不等于 FIFO 已打开。先确认全部写者入场，避免早期写者关闭后、较晚写者
+	 * 尚未 open 时出现合法 EOF；随后仍完整验证 800 条原子消息和最终 EOF。 */
+	for (int writer = 0; writer < WRITERS; writer++) {
+		char ready;
+		CHECK(72, read(opened[0], &ready, 1) == 1 && ready == 'R');
+	}
+	close(opened[0]);
 	int counts[WRITERS] = { 0 };
 	char message[SIZE];
 	ssize_t got;

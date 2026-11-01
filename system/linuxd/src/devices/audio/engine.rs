@@ -458,7 +458,8 @@ impl<R: Ring> Engine<R> {
         let period_frames = configuration.period_frames;
         let period_bytes = configuration.period_bytes();
         let mut changed = false;
-        while self.queue.len < LEAD_PERIODS && output.writable() {
+        // submit_period 在设备 owner 内原子准入；先查询 writable 既不能预留 slot，又会多做一次 RPC。
+        while self.queue.len < LEAD_PERIODS {
             let mut running = 0u8;
             let mut ready = 0u8;
             for (index, slot) in self.slots.iter().enumerate() {

@@ -183,6 +183,55 @@ impl RegularFile {
         })
     }
 
+    /// 读取已驻留且仍有效的缓存；需补页、重新验证或直接 I/O 时返回 None。
+    ///
+    /// # Parameters
+    ///
+    /// - `offset`: 首字节文件偏移。
+    /// - `output`: 暂存区；返回 None 时其前缀不可交付。
+    ///
+    /// # Returns
+    ///
+    /// EOF 或完整缓存命中的字节结果；None 由调用者交给可阻塞执行者重试。
+    ///
+    /// # Errors
+    ///
+    /// VMO 读取失败透传；不会登记另一份 residency 索引。
+    pub(crate) fn read_available(
+        &self,
+        offset: u64,
+        output: &mut [u8],
+    ) -> Result<Option<RegularFileRead>, FileSystemError> {
+        let RegularFileBackend::Cached(file) = &self.0 else {
+            return Ok(None);
+        };
+        if !file.inode.data_cache_valid() {
+            return Ok(None);
+        }
+        let size = file.inode.size();
+        let count = output.len().min(size.saturating_sub(offset) as usize);
+        if count != 0 {
+            if offset.saturating_add(count as u64)
+                > file.object.size().map_err(|_| FileSystemError::IoError)?
+            {
+                return Ok(None);
+            }
+            match file
+                .object
+                .vmo()
+                .read_available(&mut output[..count], offset)
+            {
+                Ok(()) => {}
+                Err(native_runtime::native_abi::ERR_SHOULD_WAIT) => return Ok(None),
+                Err(status) => return Err(status_error(status)),
+            }
+        }
+        Ok(Some(RegularFileRead {
+            bytes: count,
+            storage_bytes: 0,
+        }))
+    }
+
     pub(crate) fn begin_write(
         &self,
         identity: AccessIdentity,

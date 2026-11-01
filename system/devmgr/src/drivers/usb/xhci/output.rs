@@ -392,10 +392,4 @@ impl PcmOutput for Output {
         })()
         .map_err(pcm_error)
     }
-    fn writable(&self) -> bool {
-        self.device(&mut self.host.state.lock())
-            .ok()
-            .and_then(|device| device.audio.as_ref())
-            .is_some_and(audio::Stream::writable)
-    }
 }

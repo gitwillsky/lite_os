@@ -3,6 +3,7 @@
 #include <fcntl.h>
 #include <linux/io_uring.h>
 #include <poll.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <signal.h>
 #include <stdint.h>
@@ -2062,8 +2063,70 @@ int verify_io_uring_link_timeout(void)
 	return 0;
 }
 
+/* ---- 多提交者与唯一 reactor 的 slot 退休 ----------------------------------------------------- */
+struct retirement_probe {
+    struct ring ring;
+    int pipe[2];
+    pthread_barrier_t *barrier;
+    int result;
+};
+
+static void *retirement_submitter(void *argument)
+{
+    struct retirement_probe *probe = argument;
+    pthread_barrier_wait(probe->barrier);
+    for (unsigned iteration = 0; iteration < 256; iteration++) {
+        char byte = 0;
+        struct io_uring_cqe cqe;
+        /* 1. 就绪读在提交者首次 poll 中完成，同时其他提交者让 reactor 处理异步完成。 */
+        if (write(probe->pipe[1], "x", 1) != 1) { probe->result = 1; return NULL; }
+        fill_read(next_sqe(&probe->ring), probe->pipe[0], &byte, 1, iteration * 2);
+        if (submit_one(&probe->ring) != 1 || !wait_cqe(&probe->ring, &cqe)
+            || cqe.res != 1 || cqe.user_data != iteration * 2 || byte != 'x') {
+            probe->result = 2; return NULL;
+        }
+        /* 2. 空 pipe 读先挂起，后续写使同一条链由 reactor 完成。 */
+        byte = 0;
+        fill_read(next_sqe(&probe->ring), probe->pipe[0], &byte, 1, iteration * 2 + 1);
+        if (submit_one(&probe->ring) != 1 || write(probe->pipe[1], "y", 1) != 1
+            || !wait_cqe(&probe->ring, &cqe) || cqe.res != 1
+            || cqe.user_data != iteration * 2 + 1 || byte != 'y') {
+            probe->result = 3; return NULL;
+        }
+    }
+    return NULL;
+}
+
+static int verify_io_uring_concurrent_retirement(void)
+{
+    /* 四个独立提交者是并发 workload，不假定 guest CPU 数。 */
+    enum { SUBMITTERS = 4 };
+    struct retirement_probe probes[SUBMITTERS];
+    pthread_t threads[SUBMITTERS];
+    pthread_barrier_t barrier;
+    CHECK(1, pthread_barrier_init(&barrier, NULL, SUBMITTERS + 1) == 0);
+    for (unsigned i = 0; i < SUBMITTERS; i++) {
+        memset(&probes[i], 0, sizeof probes[i]);
+        probes[i].barrier = &barrier;
+        CHECK(2, map_ring(&probes[i].ring, 4, 0, 0) == 0 && pipe(probes[i].pipe) == 0);
+    }
+    for (unsigned i = 0; i < SUBMITTERS; i++)
+        CHECK(3, pthread_create(&threads[i], NULL, retirement_submitter, &probes[i]) == 0);
+    pthread_barrier_wait(&barrier);
+    for (unsigned i = 0; i < SUBMITTERS; i++) {
+        CHECK(4, pthread_join(threads[i], NULL) == 0 && probes[i].result == 0);
+        close(probes[i].pipe[0]);
+        close(probes[i].pipe[1]);
+        unmap_ring(&probes[i].ring);
+    }
+    CHECK(5, pthread_barrier_destroy(&barrier) == 0);
+    return 0;
+}
+
 int verify_io_uring(void)
 {
+    int retirement = verify_io_uring_concurrent_retirement();
+    if (retirement != 0) return 1400 + retirement;
 	int core = verify_io_uring_core();
 	if (core != 0) return core;
 	int io = verify_io_uring_io();

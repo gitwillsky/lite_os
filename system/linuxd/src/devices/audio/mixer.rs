@@ -1,6 +1,6 @@
 //! 子流混音数学：把若干 period 的 F32_LE 立体声相加，施加主音量，再限幅成一个硬件 period。
 //!
-//! 只做算术，不认识子流、设备或锁，因此可以在宿主上逐值测试。内核目标是 softfloat，浮点由编译器内建函数
+//! 只做算术，不认识子流、设备或锁，因此可以在宿主上逐值测试。linuxd 服务目标是 softfloat，浮点由编译器内建函数
 //! 软件实现；host benchmark 只裁决数学实现成本，实际设备路径另由 runtime gate 验证。
 
 use device_model::{PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES};

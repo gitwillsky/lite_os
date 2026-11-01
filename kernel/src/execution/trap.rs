@@ -180,20 +180,21 @@ fn illegal_instruction(current: &alloc::sync::Arc<thread::Thread>) -> Option<Use
 pub(crate) fn trap_return() -> ! {
     // owner 的返回前处理可能阻塞或要求退出，因此在建立最终 transfer window 之前完成；
     // 退出前释放本帧引用。
-    let disposition = {
+    let user_return = {
         let current = thread::current().expect("trap return without a current thread");
         let owner = current.owner().clone();
         owner.before_user_return(&current)
     };
-    if disposition == Disposition::Exit {
-        thread::exit_current();
-    }
+    let view = match user_return {
+        thread::UserReturn::Enter(view) => view,
+        thread::UserReturn::Exit => thread::exit_current(),
+    };
     arch::interrupt::disable_for_transfer();
     let current = thread::current().expect("trap return lost its current thread");
     let token = current
         .address_space()
         .expect("returning thread has no address space")
-        .token();
+        .token(view);
     let context = current.prepare_user_return(crate::execution::cpu::current_id().index());
     // noreturn trampoline 不展开 Rust frame；不显式释放会把线程引用永久留在内核栈上。
     drop(current);

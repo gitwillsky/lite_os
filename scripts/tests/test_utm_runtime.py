@@ -76,6 +76,7 @@ class UtmRuntimeTests(unittest.TestCase):
             kernel = root / "kernel"
             rootfs = root / "rootfs"
             kernel.write_bytes(b"kernel")
+            kernel.with_name(utm_runtime.BOOTFS_NAME).write_bytes(b"services")
             rootfs.write_bytes(b"rootfs")
             package = root / "LiteOS.utm"
             artifacts = root / "group" / "LiteOS"
@@ -136,6 +137,9 @@ class UtmRuntimeTests(unittest.TestCase):
             published_rootfs = artifacts / "rootfs.img"
             published_kernel.write_bytes(b"development kernel")
             published_rootfs.write_bytes(b"development rootfs")
+            published_bootfs = artifacts / utm_runtime.BOOTFS_NAME
+            published_bootfs.write_bytes(b"development services")
+            bootfs_inode = published_bootfs.stat().st_ino
             kernel_inode = published_kernel.stat().st_ino
             rootfs_inode = published_rootfs.stat().st_ino
 
@@ -148,6 +152,8 @@ class UtmRuntimeTests(unittest.TestCase):
                 published_kernel.write_bytes(b"gate kernel")
                 published_rootfs.unlink()
                 published_rootfs.write_bytes(b"gate rootfs")
+                published_bootfs.unlink()
+                published_bootfs.write_bytes(b"gate services")
                 config_path.write_bytes(b"gate config")
                 utm_runtime._restore_after_gate(
                     restore,
@@ -162,6 +168,8 @@ class UtmRuntimeTests(unittest.TestCase):
             self.assertEqual(published_rootfs.read_bytes(), b"development rootfs")
             self.assertEqual(published_kernel.stat().st_ino, kernel_inode)
             self.assertEqual(published_rootfs.stat().st_ino, rootfs_inode)
+            self.assertEqual(published_bootfs.read_bytes(), b"development services")
+            self.assertEqual(published_bootfs.stat().st_ino, bootfs_inode)
             self.assertFalse(any(artifacts.glob(".gate-backup-*")))
 
     def test_memory_requires_an_explicit_binary_unit(self) -> None:

@@ -53,10 +53,11 @@ pub(super) fn wait_for_console(
 
 pub(super) fn wake_console_waiters() -> bool {
     const INPUT: i16 = 0x001;
+    let notification = WAIT_REGISTRY.notification();
     crate::file::Epoll::notify_console_source();
     let mut batch = console_batch::ConsoleWakeBatch::new();
     while !batch.is_full() {
-        let Some(wake) = WAIT_REGISTRY.wake_console_one(false, INPUT, batch.groups()) else {
+        let Some(wake) = notification.wake_console_one(false, INPUT, batch.groups()) else {
             break;
         };
         batch.record(wake.group);
@@ -65,7 +66,7 @@ pub(super) fn wake_console_waiters() -> bool {
     if batch.is_full() {
         return true;
     }
-    if let Some(wake) = WAIT_REGISTRY.wake_console_one(true, INPUT, batch.groups()) {
+    if let Some(wake) = notification.wake_console_one(true, INPUT, batch.groups()) {
         batch.record(wake.group);
         wake_claimed_console(wake.claimed);
     }

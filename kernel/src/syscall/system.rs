@@ -3,8 +3,19 @@
 use native_abi::{DebuglogRecord, Status, SystemBasic};
 
 use super::Call;
-use super::hardware::require_root;
 use crate::execution::sync::WaitResult;
+use native_abi::resource::system as authority;
+
+fn require_resource(call: &Call<'_>, operation: u64) -> Result<(), Status> {
+    if call
+        .resource(call.arg_handle(0), 0)?
+        .covers_system(operation)
+    {
+        Ok(())
+    } else {
+        Err(native_abi::ERR_ACCESS_DENIED)
+    }
+}
 
 fn wait_status(result: WaitResult) -> Status {
     match result {
@@ -18,12 +29,16 @@ fn wait_status(result: WaitResult) -> Status {
 pub(super) fn debuglog_write(call: &Call<'_>) -> Result<(), Status> {
     let length = call.arg(2).min(crate::log::MESSAGE_CAPACITY);
     let text = call.read_bytes(call.arg(1), length)?;
-    crate::log::write_external(crate::log::LogLevel::from_raw(call.arg(0) as u8), &text);
+    crate::log::write_external(
+        crate::log::LogLevel::from_raw(call.arg(0) as u8),
+        call.arg(3) as u64,
+        &text,
+    );
     Ok(())
 }
 
 pub(super) fn debuglog_read(call: &Call<'_>) -> Result<(), Status> {
-    require_root(call, call.arg_handle(0))?;
+    require_resource(call, authority::DEBUGLOG)?;
     let deadline = match call.arg(3) as i64 {
         0 => None,
         _ => Some(super::deadline(call.arg(3)).unwrap_or(u64::MAX)),
@@ -35,6 +50,7 @@ pub(super) fn debuglog_read(call: &Call<'_>) -> Result<(), Status> {
                 sequence: record.sequence,
                 timestamp_ns: record.timestamp_us.saturating_mul(1000),
                 severity: record.level as u32,
+                annotation: record.annotation,
                 length: record.length as u32,
                 message: [0; native_abi::DEBUGLOG_MESSAGE_CAPACITY],
             };
@@ -50,7 +66,7 @@ pub(super) fn debuglog_read(call: &Call<'_>) -> Result<(), Status> {
 }
 
 pub(super) fn serial_read(call: &Call<'_>) -> Result<(), Status> {
-    require_root(call, call.arg_handle(0))?;
+    require_resource(call, authority::SERIAL)?;
     let capacity = call.arg(2).min(4096);
     let mut buffer = alloc::vec::Vec::new();
     buffer
@@ -67,7 +83,7 @@ pub(super) fn serial_read(call: &Call<'_>) -> Result<(), Status> {
 }
 
 pub(super) fn serial_write(call: &Call<'_>) -> Result<(), Status> {
-    require_root(call, call.arg_handle(0))?;
+    require_resource(call, authority::SERIAL)?;
     let (mut address, mut remaining) = (call.arg(1), call.arg(2));
     while remaining != 0 {
         let chunk = remaining.min(4096);
@@ -99,7 +115,7 @@ pub(super) fn clock_get_utc(call: &Call<'_>) -> Result<(), Status> {
 }
 
 pub(super) fn clock_set_utc(call: &Call<'_>) -> Result<(), Status> {
-    require_root(call, call.arg_handle(0))?;
+    require_resource(call, authority::UTC)?;
     let utc = u64::try_from(call.arg(1) as i64).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
     crate::execution::timer::set_realtime_ns(utc).map_err(|()| native_abi::ERR_INVALID_ARGS)
 }
@@ -201,7 +217,7 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
 }
 
 pub(super) fn power(call: &Call<'_>) -> Result<(), Status> {
-    require_root(call, call.arg_handle(0))?;
+    require_resource(call, authority::POWER)?;
     let kind = match call.arg_u32(1) {
         native_abi::system::POWER_OFF => crate::platform::ResetKind::Shutdown,
         native_abi::system::POWER_REBOOT => crate::platform::ResetKind::ColdReboot,

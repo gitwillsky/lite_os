@@ -15,6 +15,7 @@
 
 mod address_space;
 mod device_space;
+mod execution_views;
 mod fault;
 mod kernel_space;
 pub(crate) mod kernel_stack;
@@ -24,6 +25,7 @@ mod vmo;
 
 pub(crate) use address_space::{AddressSpace, MapOptions, Placement, Vmar};
 pub(crate) use device_space::DeviceAddressSpace;
+pub(crate) use execution_views::ExecutionView;
 pub(crate) use fault::FaultAccess;
 pub(crate) use kernel_space::{KERNEL_SPACE, initialize as initialize_kernel_space};
 pub(crate) use kernel_stack::KernelStack;

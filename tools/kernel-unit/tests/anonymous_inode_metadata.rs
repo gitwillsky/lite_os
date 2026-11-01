@@ -244,6 +244,8 @@ pub(crate) mod execution {
     }
 }
 
-mod sync { pub(crate) use spin::{Mutex, Once}; }
+mod sync {
+    pub(crate) use spin::{Mutex, Once};
+}
 
 use execution::timer as time;

@@ -9,7 +9,7 @@ from pathlib import Path
 
 from build_cache import publish_runtime_gate, runtime_gate_hit, runtime_gate_payload
 from build_target import BuildTarget, acceleration_from_environment, target_from_environment
-from qemu_gate import boot as boot_image, cpu_topology_markers
+from qemu_gate import ShellCommand, boot as boot_image, cpu_topology_markers
 from utm_gate import boot_graphics
 from userland.busybox import cached_busybox_binary
 from toolchain.musl import cached_musl_paths, find_compiler
@@ -98,6 +98,18 @@ def boot_product_graphics(image: Path, kernel: Path) -> None:
     )
 
 
+def boot_iommu(image: Path) -> None:
+    """PCI 根盘经 IOMMU，MMIO net/RNG 直达物理地址；验证真实读写、同步与网络 DMA。"""
+    boot_image(
+        image, 2,
+        ("VirtIO block PCI transport on IRQ", "init started: BusyBox v1.37.0", "LITEOS_IOMMU_MIXED_42"),
+        iommu=True,
+        interactions=(("init started: BusyBox v1.37.0", ShellCommand(
+            b"dd if=/dev/urandom of=/iommu-dma bs=4096 count=16 && cp /iommu-dma /iommu-copy && sync && cmp /iommu-dma /iommu-copy && (attempt=0; while ! route -n | grep -q '^0.0.0.0 .*10.0.2.2'; do attempt=$((attempt+1)); [ $attempt -lt 20 ] || break; sleep 1; done) && ping -c 2 -W 3 10.0.2.2 && rm /iommu-dma /iommu-copy && echo LITEOS_IOMMU_MIXED_$((6*7))\n"
+        )),),
+    )
+
+
 def main() -> int:
     target = target_from_environment()
     parser = argparse.ArgumentParser(description=__doc__)
@@ -118,7 +130,7 @@ def main() -> int:
         stamp = ROOT / "target" / "verify-gates" / f"boot-{target.arch}.json"
         payload = runtime_gate_payload(
             "boot-topology",
-            9,
+            10,
             gate_inputs(target, image, busybox, musl.install),
         )
         if runtime_gate_hit(stamp, payload, (image,)):
@@ -127,6 +139,8 @@ def main() -> int:
         for smp in SMP_CONFIGURATIONS:
             boot(image, smp)
             print(f"QEMU -smp {smp} boot verification passed")
+        boot_iommu(image)
+        print(f"QEMU {target.arch} mixed IOMMU/identity DMA verification passed")
         if (
             target.arch == "aarch64"
             and acceleration_from_environment() == "hvf"

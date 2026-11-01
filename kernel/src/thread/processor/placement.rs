@@ -94,20 +94,8 @@ pub(super) fn ready_entry(task: Arc<Thread>, generation: u64) -> RunQueueEntry {
     }
 }
 
-fn new_task_placement_floor(cpu: CpuId) -> u64 {
-    let slot = processor_at(cpu.index());
-    let mut floor = slot.placement_vruntime.load(Ordering::Acquire);
-    let inbound = slot.inbound.lock();
-    for entry in inbound.iter() {
-        if floor == 0 || entry.vruntime < floor {
-            floor = entry.vruntime;
-        }
-    }
-    floor
-}
-
 /// 将新建 Task 从 New 转换为唯一 Ready membership，并按目标 CPU 的
-/// Ready/inbound vruntime floor 完成公平 placement。
+/// 已发布的单调 vruntime floor 完成公平 placement。
 ///
 /// # Parameters
 ///
@@ -124,7 +112,9 @@ pub(in crate::thread) fn enqueue_new(task: Arc<Thread>) -> CpuId {
         "task must start in New"
     );
     let cpu = select_cpu(&task, scheduling.cpu_affinity);
-    let floor = new_task_placement_floor(cpu);
+    let floor = processor_at(cpu.index())
+        .placement_vruntime
+        .load(Ordering::Acquire);
     if floor != 0 {
         let mut policy = task.scheduling.policy.lock();
         policy.vruntime = policy.vruntime.max(floor);

@@ -192,8 +192,19 @@ fn run(worker: &Arc<Worker>) {
             core::hint::spin_loop();
             continue;
         }
-        let (keys, guards) = keys.finish();
-        let _ = wait_for_poll(keys, None, || guards.changed());
+        let (keys, _) = keys.finish();
+        let _ = wait_for_poll(keys, None, || {
+            // submit 可在发布 idle 后、登记 wait 前认领本 worker 并发出 edge。
+            // publication 后必须复查同一 Pool 的认领状态，否则这个早到 edge 没有等待者，
+            // 作业留在 FIFO 而 worker 永久停驻。即使作业被别的 worker 取走也先回环归还认领。
+            let pool = pool().lock();
+            !pool
+                .workers
+                .iter()
+                .find(|(candidate, _)| Arc::ptr_eq(candidate, worker))
+                .expect("a running worker is registered in the pool")
+                .1
+        });
     }
 }
 

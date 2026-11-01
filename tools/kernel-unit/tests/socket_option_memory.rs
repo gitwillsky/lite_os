@@ -150,4 +150,6 @@ fn actual_policy_and_concurrent_reservations_preserve_strict_budget_and_refund()
     );
 }
 
-mod sync { pub(crate) use spin::{Mutex, Once}; }
+mod sync {
+    pub(crate) use spin::{Mutex, Once};
+}

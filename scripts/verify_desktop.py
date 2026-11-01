@@ -86,6 +86,7 @@ def type_text(session, text: str) -> None:
         if char.islower() or char.isdigit(): tap(session, char)
         elif char == ' ': tap(session, 'spc')
         elif char == '/': tap(session, 'slash')
+        elif char == '-': tap(session, 'minus')
         else: raise RuntimeError(f'unsupported gate character: {char!r}')
 
 
@@ -96,7 +97,7 @@ def install(image: Path, directory: Path, volume_probe: Path) -> None:
         '/etc/group': (ROOT / 'user/base/group').read_text() + 'users:x:100:\nvideo:x:44:alice\n',
         # 产品默认的 root 没有口令，开机即自动登录；本门禁要走完整的密码登录，所以给 root 设同一口令。
         '/etc/shadow': (ROOT / 'user/base/shadow').read_text().replace('root::', f'root:{HASH}:') + f'alice:{HASH}:1:0:99999:7:::\nbob:{HASH}:1:0:99999:7:::\n',
-        '/etc/inittab': (ROOT / 'user/base/inittab').read_text() + '\n::once:/bin/sh /var/tmp/check-desktop\n::once:/bin/volume-check\n',
+        '/etc/inittab': (ROOT / 'user/base/inittab').read_text() + '\n::once:/bin/sh /var/tmp/check-desktop\n',
         '/home/alice/readme.txt': 'Desktop session fixture\n',
     }
     for index, (destination, text) in enumerate(files.items()):
@@ -182,14 +183,7 @@ def check_session(session) -> None:
     tap(session, 'esc')
     wait_screen(session, [(VOLUME_WINDOW_SAMPLE, DESKTOP_BACKGROUND)], 'restricted volume close')
     # 实际 Run 对话框启动后台进程；随后注销必须终止它。
-    click(session, 25, 786)
-    wait_screen(session, [((180, 620), (212, 208, 200))], 'start menu mapped')
-    # 开始菜单自上而下：程序、文档、设置、运行；运行行 36 高，菜单贴在任务栏上方。
-    click(session, 110, START_MENU_RUN)
-    console.wait_for(('compositor: layer "org.liteos.run" Top',))
-    wait_screen(session, [((100, 650), (255, 255, 255)), ((200, 700), (212, 208, 200))], 'run dialog presented')
-    type_text(session, '/bin/sleep 9999')
-    tap(session, 'ret')
+    run_command(session, '/bin/sleep 9999')
     console.wait_for(('DESKTOP_CHILD_RUNNING',))
     mark = console.mark()
     tap(session, 'ctrl', 'alt', 'delete')
@@ -271,6 +265,17 @@ def check_session(session) -> None:
     wait_screen(session, [((200, 200), DESKTOP_BACKGROUND), ((1279, 790), DESKTOP_BACKGROUND)], 'logout clears desktop')
 
 
+def run_command(session, command: str) -> None:
+    """从实际开始菜单打开 Run，以当前桌面身份启动命令。"""
+    click(session, 25, 786)
+    wait_screen(session, [((180, 620), (212, 208, 200))], 'start menu mapped')
+    click(session, 110, START_MENU_RUN)
+    session.console.wait_for(('compositor: layer "org.liteos.run" Top',))
+    wait_screen(session, [((100, 650), (255, 255, 255)), ((200, 700), (212, 208, 200))], 'run dialog presented')
+    type_text(session, command)
+    tap(session, 'ret')
+
+
 def check_volume_popup_drag(session) -> None:
     """真实托盘滑块：边缘抓取不跳位，连续 motion 与移出控件保持隐式抓取。"""
     click(session, TRAY_VOLUME_X, 786)
@@ -325,8 +330,10 @@ def check_volume(session) -> None:
     type_text(session, 'desktop42')
     tap(session, 'ret')
     console.wait_for(('logon: authenticated uid=0', 'logon: desktop ready'), after=mark)
-    console.wait_for(('VOLUME_CONTROL_OK',))
     wait_screen(session, [((1000, 780), (212, 208, 200)), ((1200, 400), DESKTOP_BACKGROUND)], 'root desktop first frame')
+    # 观察期限只覆盖本阶段，不从更早的身份/锁屏验收开始消耗；Run 的 stdout 为 /dev/null，探针记录到 stderr。
+    run_command(session, '/bin/volume-check')
+    console.wait_for(('VOLUME_CONTROL_OK',), after=mark)
     check_volume_popup_drag(session)
     right_click(session, TRAY_VOLUME_X, 786)
     wait_screen(session, [(TRAY_CONTEXT_ITEM, (212, 208, 200))], 'root tray context menu')

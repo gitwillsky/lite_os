@@ -29,7 +29,9 @@ impl UnsafeVisitor {
             let syn::Expr::Lit(literal) = &meta.value else { return false };
             matches!(&literal.lit, syn::Lit::Str(text) if meta.path.is_ident("doc") && text.value().trim() == "# Safety")
         });
-        if documented { return; }
+        if documented {
+            return;
+        }
         if let Some(unsafety) = signature.unsafety {
             self.lines.push(unsafety.span.start().line);
         }
@@ -135,10 +137,18 @@ mod tests {
         let syntax = syn::parse_file("/// # Safety\n/// The caller owns the pointer.\nunsafe fn access(p: *const u8) -> u8 { unsafe { *p } }").unwrap();
         let mut visitor = UnsafeVisitor::default();
         visitor.visit_file(&syntax);
-        assert_eq!(visitor.lines.len(), 1, "the body still requires a local proof");
+        assert_eq!(
+            visitor.lines.len(),
+            1,
+            "the body still requires a local proof"
+        );
         let syntax = syn::parse_file("unsafe fn undocumented() {}").unwrap();
         let mut visitor = UnsafeVisitor::default();
         visitor.visit_file(&syntax);
-        assert_eq!(visitor.lines.len(), 1, "undocumented unsafe API must be rejected");
+        assert_eq!(
+            visitor.lines.len(),
+            1,
+            "undocumented unsafe API must be rejected"
+        );
     }
 }

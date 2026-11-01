@@ -1,50 +1,40 @@
-# io_uring
+# io_uring 当前架构
 
-本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/devmgr/src/drivers/`。
+io_uring 的 Linux UAPI、共享 ring 与请求执行全部位于 `system/linuxd`；内核只提供 VMO、
+承载线程、futex 和等待机制。能力与限制以[文件 I/O ABI 矩阵](../syscall-support/filesystem-io.md)为准，
+具体所有权见[io_uring 契约](../architecture-contract/io-uring.md)。
 
+## 提交与完成
 
-## 当前设计
+1. `io_uring::ring` 拥有 SQ 消费、CQ 发布、溢出链表与接纳序号；`DeviceBacking` 以 VMO 保存
+   ring/SQE 页。mmap 持有实际 backing 与 OFD，关闭 fd 不撤销已有映射。
+2. SQ/CQ 的 head、tail、flags 经原子访问；producer 先写记录再 release 发布 tail，consumer
+   acquire 读取 tail 后才消费。SQE 在发布 head 前复制到 linuxd，后续执行不再读取用户改动的槽。
+3. `syscall::io_uring` 解码请求、取得提交者能力并执行链。已完成的操作直接发布 CQE；会等待的链
+   是一个 future，先在提交者上 poll，之后由唯一 reactor 推进。取消者只修改等待状态，不 poll future。
+4. reactor 的 slots 只由 reactor 退休。首次 poll 同步完成时提交者清除 future 并通知 reactor，
+   不改变它在锁外遍历时保存的下标。future 的锁串行化首次 poll 与后续推进，完成时撤下旧 interest。
+5. 合并 Pipe 只表示状态可能变化；等待前排空通知并复查实际状态。一次 source 通知使用同一 ticket
+   边界，新登记不能被旧的 readiness 快照反复唤醒。具体协议属于 WaitRegistry。
 
-io_uring 是 Linux ABI 里对应 Windows NT 完成端口的接口：用户态把请求写进提交队列（SQ），内核把结果投到完成队列（CQ），
-已支持 SQE64/SQE128 与单次设备 `URING_CMD`（当前 `/dev/fuse`）；CQE 为标准 16 字节。
-双方只通过共享内存里的 head/tail 交接，不必为每个请求进内核。已实现骨架、`NOP`、读写类 opcode、`FSYNC`、`OPENAT`、`STATX`、`CLOSE` 以及阻塞请求的异步完成，
-其余 opcode 的接入按 [io_uring 契约](../architecture-contract/io-uring.md)分期进行。
+## 文件 I/O 与阻塞边界
 
-1. `io_uring_setup` 分配两块清零的 `DeviceBacking`：ring 区域（头部、CQE 数组、SQ array）与 SQE 数组，返回恒带
-   `O_CLOEXEC` 的匿名 ring fd。三个魔数 mmap 偏移（`IORING_OFF_SQ_RING/CQ_RING/SQES`）只在 ring fd 的 `DeviceFile::mmap`
-   里解释；映射持有 backing，因此关闭 fd 后已映射的页仍然有效。
-2. 内存序遵循 Linux 约定：SQ 的 tail 由用户态 release 写、内核 acquire 读，head 反向；CQ 同理。内核先写 CQE 再 release
-   写 tail，用户态 acquire 读 tail 后才读 CQE；head/tail/flags 全部经 `AtomicU32` 访问。
-3. `io_uring_enter` 先提交再等待。提交在 `submit_lock` 下批量消费 SQE：下标越界的条目记入 `sq_dropped`，init/prep 失败的 SQE
-   产生错误 CQE 并停止本次提交（Linux 在没有 `SUBMIT_ALL` 时同样如此），整批处理完后一次 release 写 head。
-4. CQ 环满时 CQE 按序进入内核溢出链表并置 `IORING_SQ_CQ_OVERFLOW`，用户态下次 `GETEVENTS` 时搬回环；链表有 8 倍 CQ 容量
-   的上限，超出后丢弃并以一次 `EBADR` 通知。链表非空时新 CQE 必须排在其后，保持完成顺序。
-5. 等待用合并 readiness Pipe：先排空再复查条件再睡眠，发布 CQE 的一方重新置位，因此不会丢唤醒。同一个 Pipe 也是 poll/epoll 的
-   唤醒源，ring fd 在 CQ 有完成时可读、SQ 有空位时可写。
-6. `fs` 不依赖 `io_uring`：`syscall` 从 `Arc<dyn DeviceFile>` 经 `Any` 向下转型取回 ring。
-7. 请求在 prep 后解码成 `Now`（不会等待，直接执行）或 `Wait`（一个 future，先在 `io_uring_enter` 内 poll 一次，未完成才交给 worker）；读写复用 `read(2)`/`write(2)` 的同一个核心（多一个 `nowait`，不改共享 OFD 的 `O_NONBLOCK`）。
-   完成就发布 CQE；仍会等待（空 pipe、尚未触发的 poll/timeout 等）就写成一个 `async fn` future 交给 `io_uring` 内核线程：读写是“尝试一次，`EAGAIN` 就 `await` 就绪”，
-   `POLL_ADD` 是“探测 revents，没有就 `await`”，`TIMEOUT` 是“计数或 deadline 到了就返回，否则 `await`”。一个多路复用线程而不是线程池：N 个阻塞读都在等同一个后续写时，固定大小的池会死锁。
-8. readiness 来源没有回调（是 task 睡眠/唤醒式的），所以该线程是 reactor 而不是 waker 驱动的执行器：future 在 `await` 时把等待条件登记到自己的 interest 槽
-   （目标 OFD 的事件、deadline、CQE 计数），线程据此构造 `wait_for_poll` 的 key，条件满足后才重新 `poll`，`Context` 使用 `Waker::noop()`。
-9. 持久文件（`OpenFileKind::Inode`）的读写可能睡眠在磁盘上，不在提交线程或 reactor 上执行：读（显式偏移或 `off == -1` 的当前位置）走 `Wait::FileRead`——cache 命中同步复制，
-   未命中开始异步填页（块层 `begin_read` + page-cache 版本协议）并以 `Interest::Block` 让出，块读完成时通知该链的 `Waiter`；写、fsync 与回退的读走 `Wait::Lane`，
-   交给 `io_uring_lane` worker 池：共享一个 FIFO，没有空闲 worker 且未达上限 `MAX_WORKERS` 时新建内核线程，所以一个慢作业只占一个 worker，写与 fsync 可以重叠
-   （Linux 的 ext4 缓冲写与 fsync 同样由 io-wq 执行）。reactor 因此从不睡眠。
-   当前位置读不在读期间持有 OFD position（同步 `read(2)` 才持有，reactor 不能睡眠在它上面）：发起时快照 position，完成时发布 `起点 + 读到的字节`，与 Linux io_uring 相同；
-   position 此刻被同步读写占用时，发起与发布都改走车道。
-10. 一条请求链（单个 SQE 是长度为 1 的链）同一时刻至多一个成员在等待，所以整条链是一个 future：成员按序 issue，失败的成员取消后继。`IOSQE_IO_DRAIN` 通过 ring 上的接纳序号表达，
-   被延迟的链作为 future 的第一个 `await` 等待被接纳。取消经登记表给正在等待的成员置位取消标记，不经命令队列，因此取消也是普通的链成员，可以出现在链里。
-   丢弃 future（ring 关闭）会释放它捕获的目标 OFD 和 iovec。ring fd 的最后一个引用释放时 `DeviceFile::release` 置关闭标志并唤醒该线程，它丢弃这个 ring 的全部请求（例如 pipe 读端被释放，使写者得到 `EPIPE`）。
+- pipe、socket 等流式 I/O 先作 per-operation NOWAIT 尝试；需等待时登记 OFD readiness，
+  不修改共享 OFD 的 O_NONBLOCK。一个 reactor 同时驱动全部等待链，避免有限线程池被互相依赖的读占满。
+- regular buffered read 先经统一文件读取 owner 尝试有效、已驻留的缓存。VMO 的非等待读取与撤销
+  受同一树锁保护；完整成功后才交付暂存数据，缺页不发 pager 请求，缓存有效性仍属于 inode。
+- 缺页、重新验证、direct I/O、position 争用与超出 inline 暂存预算的请求，以及 write/fsync，
+  交给有界阻塞车道。车道的普通读取触发同一个 pager VMO，由 linuxd pager 经文件系统服务补页。
+- sequential read 在一次完整 I/O 的 OFD position 临界区中复制并推进；显式偏移不改变 position。
+  缓存探测失败不发布用户数据或 position，不另建缓存页索引。
+- 作业结果槽先发布结果再通知链；future 先清通知再取结果，防止清掉已经完成作业的唯一唤醒。
+  排队取消与开始执行争夺同一次原子状态转换，已开始的作业返回真实结果。
 
-## Known limits
+## 生命周期与验证
 
-- 未开放：multishot 的 poll/timeout、其余 opcode、`BUFFER_SELECT`、固定文件/缓冲区注册、SQPOLL/IOPOLL、CQE32。
-- 阻塞车道最多 `MAX_WORKERS`（8）个线程：超过后作业在共享 FIFO 里排队（有界并发），空闲 worker 不退出。regular 文件的写与 fsync 在 worker 上同步执行，不是真异步（Linux io-wq 同样）。
-- regular 文件读只在 page cache 未命中且后端支持异步读（ext4；其固定 4 KiB profile 保证文件系统块恒等于设备块）时不占线程，其余后端与请求槽暂满时回退车道。
-- 同时发起的两个当前位置读读取同一区间（Linux 相同）：需要顺序语义的用户应使用链。
-- signalfd 读无信号时返回 `-EAGAIN`，不挂起。
-- SQ 上限 32768、CQ 上限 65536，与 Linux 相同（最大的 ring 约 3.2 MB，每 UID 约 20 个）。
-  ring 页按真实 UID（沿 UserNS 祖先链）计入 `RlimitResource::IoUringBytes`，每 UID 预算 `IO_URING_BYTES_PER_UID`（64 MiB，本内核的策略值，不是 Linux ABI；Linux ≥5.12 用 memcg，这里没有）；
-  超出时 `io_uring_setup` 返回 `ENOMEM`。收费随 `Ring` 存活，mmap 保活实际 OFD 进而保活 `Ring`，所以只要还有映射配额就不归还。没有 `CAP_SYS_RESOURCE`/root 豁免。
-- `io_uring_enter` 的 `min_wait_usec` 与 `REGISTERED_RING` 未实现，返回 `EINVAL`。
+ring final fput 关闭并唤醒 reactor，它丢弃挂起链及其 OFD/向量引用；已开始的车道作业持有自己的
+资源到完成。通知引用环由作用域守卫拆除，旁观 Arc 不延长设备或文件 admission。
+DRAIN、LINK/HARDLINK、取消和超时在同一链状态中实现，不用平行命令队列同步另一份状态。
+
+musl runtime 执行真实共享 ring，覆盖冷读/缓存命中、溢出、链接、取消、设备命令、进程退出，以及
+多个提交者的同步首次完成与 reactor 异步退休交错；宿主 fixture 负责实际 owner 的事务和寿命边界。

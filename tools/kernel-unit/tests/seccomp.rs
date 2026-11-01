@@ -409,15 +409,11 @@ fn maximum_filter_set_drop_is_bounded_on_a_small_stack() {
         .unwrap();
 }
 
-
-    #[allow(dead_code, unused_imports)]
-    #[path = "../src/sync.rs"]
-    pub(crate) mod sync;
-    pub(crate) mod task {
-        pub(crate) fn current_task() -> Option<alloc::sync::Arc<crate::TaskControlBlock>> {
-            None
-        }
+#[allow(dead_code, unused_imports)]
+#[path = "../src/sync.rs"]
+pub(crate) mod sync;
+pub(crate) mod task {
+    pub(crate) fn current_task() -> Option<alloc::sync::Arc<crate::TaskControlBlock>> {
+        None
     }
-
-
-
+}

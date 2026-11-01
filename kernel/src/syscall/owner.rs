@@ -21,7 +21,7 @@ use native_abi::ExceptionReport;
 
 use super::{Call, Outcome, bytes_of, restricted};
 use crate::object::{Channel, Exception, ExceptionResolution, HandleEntry, Message, Mode, Object};
-use crate::thread::{Disposition, Thread, ThreadOwner, UserException};
+use crate::thread::{Disposition, Thread, ThreadOwner, UserException, UserReturn};
 
 impl ThreadOwner for crate::object::Thread {
     fn syscall(self: Arc<Self>, thread: &Arc<Thread>) -> Disposition {
@@ -53,13 +53,14 @@ impl ThreadOwner for crate::object::Thread {
     }
 
     fn exception(self: Arc<Self>, thread: &Arc<Thread>, exception: UserException) -> Disposition {
-        // 缺页先由地址空间解析；解析失败的原因随未处理异常一并记录。
+        // 缺页先由地址空间解析；未解决时保留原始硬件异常，交给进程异常处理者。
         let fault = match exception {
             UserException::PageFault {
                 address, access, ..
-            } => thread
-                .address_space()
-                .map(|space| space.fault(address, access)),
+            } => thread.address_space().map(|space| match self.mode() {
+                Mode::Normal => space.fault(address, access),
+                Mode::Restricted(_) => space.fault_private(address, access),
+            }),
             _ => None,
         };
         if let Some(Ok(source)) = fault {
@@ -110,22 +111,29 @@ impl ThreadOwner for crate::object::Thread {
         }
     }
 
-    fn before_user_return(self: Arc<Self>, thread: &Arc<Thread>) -> Disposition {
+    fn before_user_return(self: Arc<Self>, thread: &Arc<Thread>) -> UserReturn {
         if thread.is_killed() {
-            return Disposition::Exit;
+            return UserReturn::Exit;
         }
-        if let Mode::Restricted(entry) = self.mode()
-            && thread.take_kick()
-        {
-            return continue_unless(restricted::exit(
-                &self,
-                thread,
-                entry,
-                native_abi::restricted::REASON_KICK,
-                None,
-            ));
+        match self.mode() {
+            Mode::Normal => UserReturn::Enter(crate::vm::ExecutionView::Normal),
+            Mode::Restricted(entry) => {
+                if !thread.take_kick() {
+                    return UserReturn::Enter(crate::vm::ExecutionView::Private);
+                }
+                if restricted::exit(
+                    &self,
+                    thread,
+                    entry,
+                    native_abi::restricted::REASON_KICK,
+                    None,
+                ) {
+                    UserReturn::Enter(crate::vm::ExecutionView::Normal)
+                } else {
+                    UserReturn::Exit
+                }
+            }
         }
-        Disposition::Continue
     }
 
     fn exited(self: Arc<Self>, _thread: &Arc<Thread>) {

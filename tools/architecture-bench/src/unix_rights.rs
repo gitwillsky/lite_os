@@ -22,7 +22,11 @@ mod namespace;
 mod net;
 #[path = "../../../system/linuxd/src/net/timeouts.rs"]
 mod socket_timeouts;
-mod time { pub(crate) fn scheduler_quantum_ns() -> u64 { 10_000_000 } }
+mod time {
+    pub(crate) fn scheduler_quantum_ns() -> u64 {
+        10_000_000
+    }
+}
 
 use alloc::{sync::Arc, vec};
 use net::{UnixPassedFile, UnixRights, UnixSocket};
@@ -272,5 +276,8 @@ pub(crate) mod execution {
     pub(crate) mod sync;
 }
 
-#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+#[allow(
+    unused_imports,
+    reason = "装配当前服务的同步 facade，具体用例使用其部分接口"
+)]
 use execution::sync;

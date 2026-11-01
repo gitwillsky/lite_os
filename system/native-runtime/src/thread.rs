@@ -44,7 +44,9 @@ pub struct Descriptor {
     // 服务自定的线程上下文字（例如当前服务任务的指针）。
     context: AtomicUsize,
     stack: Mutex<Option<Stack>>,
-    start: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    // OWNER: 启动闭包留在描述符中，不能搬到线程栈。body 可经 THREAD_EXIT 永不返回，
+    // 栈上的 Box/result Arc 不会析构；reaper 必须在 TERMINATED 后释放这些捕获。
+    start: Mutex<Option<Box<dyn FnMut() + Send>>>,
 }
 
 impl Descriptor {
@@ -154,8 +156,11 @@ pub(crate) fn install_main(handle: Thread) {
 
 extern "C" fn thread_entry(descriptor: *const Descriptor, _: usize) -> ! {
     set_thread_pointer(descriptor);
-    let start = current().start.lock().take().expect("thread started twice");
-    start();
+    let mut start = current().start.lock();
+    start.as_mut().expect("thread started twice")();
+    // 正常返回时立即释放捕获；不返回的 body 则由终止后的 descriptor Drop 负责。
+    start.take();
+    drop(start);
     crate::task::exit_thread();
 }
 
@@ -196,6 +201,8 @@ static ZOMBIES: Mutex<Vec<Arc<Descriptor>>> = Mutex::new(Vec::new());
 
 /// 释放已终止线程的栈与它持有的描述符引用。
 fn reap(descriptor: &Arc<Descriptor>) {
+    // THREAD_EXIT 可留下持有 start guard 的栈；TERMINATED 保证它不再执行。
+    // 不重新锁 start，描述符最终析构直接销毁内部闭包，释放仍由它持有的结果引用。
     if let Some(stack) = descriptor.stack.lock().take() {
         let _ = stack.vmar.destroy();
     }
@@ -286,12 +293,13 @@ pub fn prepare_in<T: Send + 'static>(
     let page = native_abi::PAGE_SIZE;
     let stack_size = stack_size.next_multiple_of(page);
     let handle = Thread::create(process, name)?;
+    // 先完成可失败的 backing 创建；否则 OOM 会留下尚未由 Stack 接管的空子 VMAR。
+    let vmo = Vmo::create(stack_size as u64, 0)?;
     let (vmar, _) = crate::heap::vmar().allocate(
         native_abi::vm::READ | native_abi::vm::WRITE,
         0,
         stack_size + page,
     )?;
-    let vmo = Vmo::create(stack_size as u64, 0)?;
     let stack_top = match vmar.map(
         native_abi::vm::READ | native_abi::vm::WRITE | native_abi::vm::SPECIFIC,
         page,
@@ -307,12 +315,14 @@ pub fn prepare_in<T: Send + 'static>(
     };
     let result = Arc::new(Mutex::new(None));
     let slot = result.clone();
+    let mut body = Some(body);
     let descriptor = Arc::new(Descriptor {
         handle,
         token: AtomicU32::new(0),
         context: AtomicUsize::new(0),
         stack: Mutex::new(Some(Stack { vmar })),
         start: Mutex::new(Some(Box::new(move || {
+            let body = body.take().expect("thread body started twice");
             *slot.lock() = Some(body());
         }))),
     });

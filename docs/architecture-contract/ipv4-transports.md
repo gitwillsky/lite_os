@@ -32,7 +32,7 @@ default gateway；绑定保存真实设备index。UDP/raw准入metadata固定出
 completion预算，持续lo/eth0流量不饿死其他设备。配置/IFCONF/GETNAME/INDEX/MTU/
 SO_BINDTODEVICE getter查询实际设备，删除syscall eth0/index常量。raw创建按实际NET
 owning UserNS NET_RAW授权，普通NETLINK RAW不能按INET raw类型误授权。
-固定 smoltcp 的十个明确修改文件及三个相同consumer加入medium-ip，
+固定 smoltcp 的修改清单由 verify_smoltcp 管理，netd 与 netd-unit 使用相同 medium-ip features；
 原inventory不变，其余upstream文件仍禁止漂移。真实无NIC LO UDP/TCP握手/数据、独立
 双NIC frozen-oif/bound ingress/LOCAL source/weak-host SYN回归源码已写。
 route selector 使用同一 FIB 的 33 个 prefix AVL roots，查找不扫描全部 route records。
@@ -58,7 +58,8 @@ SocketPollState.read_closed 是实际协议/transport 半关闭的只读投影�
 知，不消费实际 chunks。无 requested data events 时仍观察 error/HUP 的实际 endpoint notification。
 
 TCP passive child 的不可变 policy 属于实际 TcpHandle.passive；标准最终 ACK 将 smoltcp handle 转入 Established/CloseWait 时冻结 InetSocketOptions。accept 消耗该 handle，移交协议选项与端口引用；accept OOM 不
-摘取 child。linuxd 的收发 timeout 在 accept 时继承，尚未在握手时冻结。TCP_NODELAY setter 不重写已经冻结的 pending child；未完成握手的失败复用实际监听 slot；已经建立的 child 即使随后 RST 仍留在该 handle 的 accept queue，连同握手地址与一次性 pending error 一起移交，无
+摘取 child。linuxd 的收发 timeout 在 accept 时继承，尚未在握手时冻结。TCP_NODELAY setter 不重写已经冻结的 pending child；未完成握手的失败复用实际监听 slot；已经建立的 child 即使随后 RST 仍留在该 handle
+  的 accept queue，连同握手地址与一次性 pending error 一起移交，无
 平行 pending index。每次实际 ingress state change 后立即观察生命周期，保证同轮 ACK→RST 不丢 child；EthernetRxToken 只交付当前帧的 typed RST endpoints，只有协议库确实接受并转入 Closed 才消费终止事件。TcpConnection 的不可变
 local/peer 是实际连接身份，协议库清除路由 tuple 不释放 local 绑定；peer 查询仍检查实际 TCP phase。terminal 记录唯一 Closed 事件已交付，防止 SO_ERROR 或 I/O 消费后重复重建 RESET。SHUT_RD 保留已排队字节；接收顺序为数据、
 已收到 FIN 的 EOF、消费 pending error、半关闭 EOF，TCP recvmsg 不返回源 sockaddr。依据固定 Linux tcp_check_req → tcp_v4_syn_recv_sock → inet_csk_clone_lock/ sk_clone_lock。bench 决策：policy copy 无分配，沿用实际 timeout

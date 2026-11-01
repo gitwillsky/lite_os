@@ -118,23 +118,20 @@ fn normalization_preserves_invalid_and_unsupported_command_errors() {
     );
 }
 
+pub(crate) mod task {
+    pub(crate) struct Task;
 
-    pub(crate) mod task {
-        pub(crate) struct Task;
-
-        pub(crate) fn current_task() -> Option<Task> {
-            Some(Task)
-        }
-
-        impl Task {
-            pub(crate) fn has_initial_capability(
-                &self,
-                cap: syscall_abi::capability::Capability,
-            ) -> bool {
-                assert_eq!(cap, syscall_abi::capability::Capability::SYS_BOOT);
-                crate::EFFECTIVE_UID.get() == 0 // injected authorization, not production UID policy
-            }
-        }
+    pub(crate) fn current_task() -> Option<Task> {
+        Some(Task)
     }
 
-
+    impl Task {
+        pub(crate) fn has_initial_capability(
+            &self,
+            cap: syscall_abi::capability::Capability,
+        ) -> bool {
+            assert_eq!(cap, syscall_abi::capability::Capability::SYS_BOOT);
+            crate::EFFECTIVE_UID.get() == 0 // injected authorization, not production UID policy
+        }
+    }
+}

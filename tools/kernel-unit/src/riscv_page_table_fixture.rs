@@ -163,4 +163,34 @@ mod tests {
         assert_eq!(retired.len(), 1);
         assert_eq!(table.table_page_count(), 1);
     }
+    #[test]
+    fn sparse_range_lookup_skips_absent_branches_and_survives_retirement() {
+        let _serial = PAGE_TABLE_TEST.lock().unwrap();
+        let mut table = PageTable::<HostTablePage>::try_new(AddressSpaceKind::User).unwrap();
+        let far = (1usize << 25) - 1;
+        let permissions = PagePermissions::READ | PagePermissions::USER;
+        table.map(far, 1234, permissions).unwrap();
+        let (page, entry) = table.next_mapped(0, far + 1).unwrap();
+        assert_eq!(
+            (page, entry.physical_page(), entry.permissions()),
+            (far, 1234, permissions)
+        );
+        assert!(table.next_mapped(0, far).is_none());
+        let (_, _, retired) = table.unmap(far).unwrap().into_parts();
+        assert!(table.next_mapped(0, far + 1).is_none());
+        drop(retired);
+    }
+
+    #[test]
+    fn sparse_lookup_inside_a_large_leaf_preserves_offset_and_end_bound() {
+        let _serial = PAGE_TABLE_TEST.lock().unwrap();
+        let mut table = PageTable::<HostTablePage>::try_new(AddressSpaceKind::User).unwrap();
+        let first = 1 << 18;
+        table
+            .map_contiguous_range(first, first * 2, 512, PagePermissions::READ)
+            .unwrap();
+        let (page, entry) = table.next_mapped(first + 37, first + 38).unwrap();
+        assert_eq!((page, entry.physical_page()), (first + 37, first * 2 + 37));
+        assert!(table.next_mapped(first, first).is_none());
+    }
 }

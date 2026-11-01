@@ -219,8 +219,10 @@ mod tests {
             .iter_mut()
             .find(|source| source.relative == "kernel/src/execution/trap.rs")
             .unwrap();
-        trap.text = trap.text.replace("let token = current",
-            "let _ = current.prepare_signal_delivery();\nlet token = current");
+        trap.text = trap.text.replace(
+            "let token = current",
+            "let _ = current.prepare_signal_delivery();\nlet token = current",
+        );
         let mut errors = Vec::new();
         check(&sources, &mut errors);
         assert!(

@@ -112,7 +112,12 @@ pub(super) fn load(image: &[u8], vmar: &Arc<Vmar>) -> Result<usize, ElfError> {
             &vmo,
             0,
             end - start,
-            MapOptions { placement: Placement::Specific(offset), permissions, ceiling: PagePermissions::READ | PagePermissions::WRITE | PagePermissions::EXECUTE, allow_faults: false },
+            MapOptions {
+                placement: Placement::Specific(offset),
+                permissions,
+                ceiling: PagePermissions::READ | PagePermissions::WRITE | PagePermissions::EXECUTE,
+                allow_faults: false,
+            },
         )?;
     }
     Ok(entry)

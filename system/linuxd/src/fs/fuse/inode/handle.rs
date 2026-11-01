@@ -1,5 +1,6 @@
 //! OPEN/OPENDIR/CREATE 得到的服务器文件句柄：per-open 状态、FLUSH/RELEASE，以及页缓存 I/O 的句柄选择。
 use alloc::sync::{Arc, Weak};
+use core::ops::Deref;
 
 use syscall_abi::{errno, fuse};
 
@@ -16,8 +17,22 @@ use crate::{
     memory::SharedFileId,
 };
 
-/// OPEN/OPENDIR 得到的服务器文件句柄（Linux `fuse_file`）；随 OFD 最后释放发出 RELEASE/RELEASEDIR。
+/// 应用打开对象；最后一个 OFD/映射引用负责写回，I/O 临时引用不执行打开对象的清理。
 pub(super) struct Handle {
+    remote: Arc<RemoteHandle>,
+}
+
+impl Deref for Handle {
+    type Target = RemoteHandle;
+
+    fn deref(&self) -> &Self::Target {
+        &self.remote
+    }
+}
+
+/// 服务器 fh 与预留 RELEASE；由打开对象及在途 I/O 保活，最后释放只发送 RELEASE。
+/// 独立引用使页缓存 READ/WRITE 的清理不会重入它们正在等待的写序列。
+pub(super) struct RemoteHandle {
     mount: Arc<Mount>,
     nodeid: u64,
     handle: u64,
@@ -187,18 +202,17 @@ impl Handle {
     }
 }
 
-/// 一次请求持有的句柄：打开中的句柄被 pin 到请求结束（Linux I/O 持有 `fuse_file` 引用），RELEASE
-/// 不能越过在途的 READ/WRITE；正在释放、写出剩余脏页的句柄没有 pin。
+/// 在途 READ/WRITE 的 fh 引用；保证 RELEASE 不越过请求，析构不写回或等待页缓存。
 pub(super) struct HandleLease {
     pub(super) reference: HandleRef,
-    _pin: Option<Arc<Handle>>,
+    _pin: Arc<RemoteHandle>,
 }
 
 /// inode 句柄表的一项：访问方向随登记保存，挑选时不必在锁内升级 Weak。
 pub(super) struct RegisteredHandle {
     registration: Option<Weak<dyn crate::fs::BackingFile>>,
     direct: bool,
-    handle: Weak<Handle>,
+    handle: Weak<RemoteHandle>,
     readable: bool,
     writable: bool,
 }
@@ -211,19 +225,20 @@ pub(super) struct HandleRef {
 }
 
 impl Drop for Handle {
-    /// 最后一个引用释放：可写普通文件先用本句柄写出剩余脏页（缓冲写与 mmap 脏页；Linux 由
-    /// `fuse_flush`/`fuse_vma_close` 保证），再发 RELEASE。缺失时脏页在句柄消失后写回只能得到 EBADF，
-    /// 数据丢失。写回失败无法报告，页保持 dirty。
+    /// 打开对象退休前写回缓冲写与 mmap 脏页；其 remote 强引用仍可由 inode 升级。
+    /// 写回失败无法从 Drop 报告，页保持 dirty；flush/fsync 的错误正常返回调用者。
     fn drop(&mut self) {
-        if self.writable
-            && self.file
-            && let Some(inode) = self.mount.node(self.nodeid)
-        {
-            inode.drain_writes(HandleRef {
-                handle: self.handle,
-                flags: self.flags,
+        if self.writable && self.file {
+            let _ = crate::fs::page_cache::write_back(SharedFileId {
+                filesystem: self.mount.filesystem_id,
+                inode: self.nodeid,
             });
         }
+    }
+}
+
+impl Drop for RemoteHandle {
+    fn drop(&mut self) {
         if let Some(release) = self.release.take() {
             release.send();
         }
@@ -231,22 +246,11 @@ impl Drop for Handle {
 }
 
 impl FuseInode {
-    /// 用即将释放的可写句柄写出本文件剩余脏页（见 [`Handle`] 的 Drop）。
-    pub(super) fn drain_writes(&self, handle: HandleRef) {
-        let previous = self.draining.lock().replace(handle);
-        let _ = crate::fs::page_cache::write_back(SharedFileId {
-            filesystem: self.mount.filesystem_id,
-            inode: self.nodeid,
-        });
-        *self.draining.lock() = previous;
-    }
-
-    /// 页缓存读写与 fsync 使用的服务器句柄：任一满足访问方向的存活句柄；都没有时用正在释放、
-    /// 写出剩余脏页的那个可写句柄。
+    /// 页缓存读写与 fsync 选择满足访问方向的存活服务器句柄。
+    /// 返回值保活 fh，但不持有会执行同步写回的应用打开对象；无可用句柄返回 EBADF。
     pub(super) fn handle(&self, writable: bool) -> Result<HandleLease, FileSystemError> {
         loop {
-            // 锁内只按登记的访问方向挑选 Weak，升级在锁外：临时 Arc 若成为最后引用，其 Drop 会写回
-            // 脏页并再次进入本函数取同一把锁。
+            // 锁内只挑选 Weak，升级在锁外，最后一个临时引用的 RELEASE 也不在句柄表锁内发送。
             let candidate = self
                 .handles
                 .lock()
@@ -260,15 +264,7 @@ impl FuseInode {
                         }
                 })
                 .map(|entry| entry.handle.clone());
-            let Some(candidate) = candidate else {
-                return (*self.draining.lock())
-                    .filter(|_| writable)
-                    .map(|reference| HandleLease {
-                        reference,
-                        _pin: None,
-                    })
-                    .ok_or(FileSystemError::Errno(errno::EBADF as u16));
-            };
+            let candidate = candidate.ok_or(FileSystemError::Errno(errno::EBADF as u16))?;
             // 挑选后到升级前它可能已被释放；重新挑选。
             if let Some(handle) = candidate.upgrade() {
                 return Ok(HandleLease {
@@ -276,7 +272,7 @@ impl FuseInode {
                         handle: handle.handle,
                         flags: handle.flags,
                     },
-                    _pin: Some(handle),
+                    _pin: handle,
                 });
             }
         }
@@ -284,7 +280,7 @@ impl FuseInode {
 
     /// 把 OPEN/OPENDIR/CREATE 得到的服务器句柄登记为本 inode 的 per-open 状态。
     ///
-    /// `release` 是打开前预留的 RELEASE；任何失败都让它随 Handle 或自身 Drop 发出，服务器句柄不泄漏。
+    /// `release` 是打开前预留的 RELEASE；任何失败都让它随 RemoteHandle 或自身 Drop 发出，服务器句柄不泄漏。
     pub(super) fn attach_handle(
         &self,
         opened: &protocol::Opened,
@@ -310,7 +306,7 @@ impl FuseInode {
             None
         };
         let access = flags & crate::fs::O_ACCMODE;
-        let handle = Arc::try_new(Handle {
+        let remote = Arc::try_new(RemoteHandle {
             mount: self.mount.clone(),
             nodeid: self.nodeid,
             handle: opened.handle,
@@ -323,11 +319,12 @@ impl FuseInode {
             release: Some(release),
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
-        self.register_handle(&handle)?;
-        Ok(handle)
+        // 多一份可失败的冷路径 Arc，把应用清理与 I/O fh 寿命分开；失败仍由 remote 释放预留 RELEASE。
+        self.register_handle(&remote)?;
+        Arc::try_new(Handle { remote }).map_err(|_| FileSystemError::OutOfMemory)
     }
 
-    pub(super) fn register_handle(&self, handle: &Arc<Handle>) -> Result<(), FileSystemError> {
+    fn register_handle(&self, handle: &Arc<RemoteHandle>) -> Result<(), FileSystemError> {
         let mut handles = self.handles.lock();
         handles.retain(|entry| entry.handle.strong_count() != 0);
         let registration = handle

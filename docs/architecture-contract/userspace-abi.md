@@ -50,7 +50,7 @@ root-server 只分发初始 capability 和服务连接。linuxd 在 normal mode 
   copyin/copyout 布局：AArch64 为 handler/flags/restorer/mask 共 32 bytes，RISC-V 无
   restorer 字段共 24 bytes。Process signal disposition 唯一保存 restorer；Thread context
   的 enter_signal_handler 接收 flags/restorer，由 AArch64 backend 按 SA_RESTORER 选择
-  用户 restorer，否则使用内核 trampoline；RISC-V 始终使用 trampoline。
+  用户 restorer，否则使用 linuxd 安装的 signal trampoline；RISC-V 始终使用 trampoline。
   该控制路径 codec 不分配、不增加锁，runtime 验证标准 mask、旧 action copyout canary
   与 AArch64 自定义 restorer，故不增加热路径 benchmark。
 - SignalFrame::signal_mask 只在完整 copyin 后投影 saved mask；mask 在 machine restore 前
@@ -266,6 +266,6 @@ root-server 只分发初始 capability 和服务连接。linuxd 在 normal mode 
 - `alsa::control::MasterControl` 独占 card0 control fd，INFO 验证固定 stereo Master 的类型与范围，READ 返回只读快照，WRITE 后重新读取实际量化值。
   Linux 7.1 LP64 的 ID/INFO/VALUE 布局与 ioctl 编号只在 linux-uapi 中编码；两个 control 分别写入，不伪装成原子事务。
   GUI 不代理或扩大设备权限，默认 0600 节点只有有权账户可用；无权限/无设备显示禁用状态。
-- desktop 的 Volume 是任务栏与音量窗口共用的唯一 UI 投影，不复制第二份 mixer owner；内核仍拥有真实 gain/switch。
+- desktop 的 Volume 是任务栏与音量窗口共用的唯一 UI 投影，不复制第二份 mixer owner；linuxd 的 audio::Engine 仍拥有真实 gain/switch。
   外部变化最多每 100ms 采样，防止指针频率放大 ioctl；slider gesture 仅在按住至 release/leave/focus-loss/close 期间有效，避免悬停修改音量。
 - 解锁只允许认证后的 UID 等于会话 owner 或为本机 UID 0；管理员解锁不替换既有 SessionUser、进程身份或设备权限。

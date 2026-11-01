@@ -1,11 +1,13 @@
 //! 内存型文件（tmpfs、memfd）：内容就是一个可调整大小的 VMO，没有后端存储。
 //!
 //! 1. 文件长度单独发布；VMO 大小是长度按页取整，页在首次写入时由内核提交。
-//! 2. 配额（`StorageBudget`）按逻辑长度的页数预留：增长前预留、截断后归还。
+//! 2. 配额属于实际文件页：稀疏增长不预留，write/fallocate/pager 补页先准入，截断与最后释放归还。
 //! 3. 共享映射直接映射该 VMO，因此 read/write 与 mmap 看到同一页；截断缩小 VMO 时内核撤销越界映射。
 
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use fallible_tree::{FallibleMap, VacantEntry};
+use native_runtime::{Pager, Vmo};
 
 use native_runtime::native_abi::vmo;
 
@@ -18,8 +20,17 @@ use seals::{SealError, Seals};
 
 struct State {
     seals: Seals,
-    /// 已向配额预留的页数（等于逻辑长度按页取整）。
-    reserved_pages: u64,
+    // OWNER: 稀疏文件页的配额 lease；只有 supply 成功才发表，VMO 只拥有物理页机制。
+    // read 的洞判定也借此索引，不为读取洞创建页；截断先退休 VMO 页再释放相应 lease。
+    pages: FallibleMap<u64, PageCharge>,
+}
+
+struct PageCharge(Arc<StorageBudget>);
+
+impl Drop for PageCharge {
+    fn drop(&mut self) {
+        self.0.release_page();
+    }
 }
 
 /// tmpfs/memfd 文件内容。
@@ -27,6 +38,7 @@ pub(crate) struct MemoryFile {
     id: SharedFileId,
     budget: Arc<StorageBudget>,
     object: Arc<MemoryObject>,
+    key: u64,
     // OWNER: 写入、截断与封印修改的唯一串行化点；长度发布与 VMO 大小调整在其中一致完成。
     write_sequence: TaskMutex<()>,
     state: TaskMutex<State>,
@@ -67,20 +79,24 @@ impl MemoryFile {
         budget: Arc<StorageBudget>,
         allow_sealing: bool,
     ) -> Result<Arc<Self>, FileSystemError> {
-        Arc::try_new(Self {
+        let (object, key) = super::pager::create_object(0)?;
+        let file = Arc::try_new(Self {
             id,
             budget,
-            object: MemoryObject::anonymous(0, true).map_err(object_error)?,
+            object,
+            key,
             write_sequence: TaskMutex::new(()),
             state: TaskMutex::new(State {
                 seals: Seals::new(allow_sealing),
-                reserved_pages: 0,
+                pages: FallibleMap::new(),
             }),
             writable_mappings: AtomicUsize::new(0),
             length: AtomicU64::new(0),
             times: super::inode_times::InodeTimes::new()?,
         })
-        .map_err(|_| FileSystemError::OutOfMemory)
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+        super::pager::register(key, &file)?;
+        Ok(file)
     }
 
     fn state(&self) -> Result<TaskMutexGuard<'_, State>, FileSystemError> {
@@ -127,15 +143,48 @@ impl MemoryFile {
     }
 
     pub(crate) fn read(&self, offset: u64, output: &mut [u8]) -> Result<usize, FileSystemError> {
+        let state = self.state()?;
         let length = self.size();
         if offset >= length {
             return Ok(0);
         }
         let count = output.len().min((length - offset) as usize);
-        self.object
-            .vmo()
-            .read(&mut output[..count], offset)
-            .map_err(|_| FileSystemError::IoError)?;
+        let mut cursor = offset;
+        let end = offset + count as u64;
+        let mut pages = state
+            .pages
+            .iter_from(&(offset / PAGE_SIZE as u64))
+            .peekable();
+        while cursor < end {
+            let start = (cursor - offset) as usize;
+            let Some(&(&index, _)) = pages.peek() else {
+                output[start..count].fill(0);
+                break;
+            };
+            let page_start = index * PAGE_SIZE as u64;
+            if cursor < page_start {
+                let hole_end = page_start.min(end);
+                output[start..(hole_end - offset) as usize].fill(0);
+                cursor = hole_end;
+                continue;
+            }
+            pages.next();
+            let mut run_end = page_start + PAGE_SIZE as u64;
+            while run_end < end
+                && pages
+                    .peek()
+                    .is_some_and(|&(&next, _)| next == run_end / PAGE_SIZE as u64)
+            {
+                pages.next();
+                run_end += PAGE_SIZE as u64;
+            }
+            let run_end = run_end.min(end);
+            self.object
+                .vmo()
+                .read(&mut output[start..(run_end - offset) as usize], cursor)
+                .map_err(|_| FileSystemError::IoError)?;
+            cursor = run_end;
+        }
         Ok(count)
     }
 
@@ -146,41 +195,78 @@ impl MemoryFile {
         })
     }
 
-    /// 把逻辑长度改为 `length`：调整配额预留与 VMO 大小；缩小时清零新末页的尾部。
-    /// 调用者持有写串行化锁。
+    /// 调整逻辑 EOF 和按页取整的 VMO，不因稀疏增长消耗存储配额。
+    /// 调用者持有写串行化与 state；缩小先清零实际末页，再退休越界物理页与 quota lease。
     fn resize_locked(&self, state: &mut State, length: u64) -> Result<(), FileSystemError> {
-        let pages = pages_for(length);
-        while state.reserved_pages < pages {
-            if !self.budget.reserve_page() {
-                self.release_extra(state, pages_for(self.size()));
-                return Err(FileSystemError::NoSpace);
-            }
-            state.reserved_pages += 1;
-        }
-        let vmo_size = pages * PAGE_SIZE as u64;
-        if self.object.size().map_err(object_error)? != vmo_size
-            && let Err(error) = self.object.set_size(vmo_size)
+        let vmo_size = length
+            .checked_next_multiple_of(PAGE_SIZE as u64)
+            .ok_or(FileSystemError::InvalidOperation)?;
+        if length < self.size()
+            && length < vmo_size
+            && state.pages.contains_key(&(length / PAGE_SIZE as u64))
         {
-            self.release_extra(state, pages_for(self.size()));
-            return Err(object_error(error));
-        }
-        if length < vmo_size {
-            // 页内越过长度的字节必须读到零（之后增长时不能重新暴露旧内容）。
             self.object
                 .vmo()
                 .op_range(vmo::OP_ZERO, length, vmo_size - length)
                 .map_err(|_| FileSystemError::IoError)?;
         }
-        self.release_extra(state, pages);
+        let old_size = self.object.size().map_err(object_error)?;
+        if old_size != vmo_size {
+            self.object.set_size(vmo_size).map_err(object_error)?;
+        }
+        if vmo_size < old_size {
+            state.pages.retain(|index, _| *index < pages_for(length));
+        }
         self.length.store(length, Ordering::Release);
         Ok(())
     }
 
-    fn release_extra(&self, state: &mut State, pages: u64) {
-        while state.reserved_pages > pages {
-            self.budget.release_page();
-            state.reserved_pages -= 1;
+    fn prepare_page(&self, index: u64) -> Result<VacantEntry<u64, PageCharge>, FileSystemError> {
+        if !self.budget.reserve_page() {
+            return Err(FileSystemError::NoSpace);
         }
+        FallibleMap::try_prepare(index, PageCharge(self.budget.clone()))
+            .map_err(|_| FileSystemError::OutOfMemory)
+    }
+
+    fn supply_zero(
+        &self,
+        pager: &Pager,
+        index: u64,
+        aux: &mut Option<Vmo>,
+    ) -> Result<(), FileSystemError> {
+        if aux.is_none() {
+            *aux =
+                Some(Vmo::create(PAGE_SIZE as u64, 0).map_err(|_| FileSystemError::OutOfMemory)?);
+        }
+        let aux = aux.as_ref().expect("auxiliary VMO created above");
+        aux.write(&[0; PAGE_SIZE], 0)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        pager
+            .supply_pages(
+                self.object.vmo(),
+                index * PAGE_SIZE as u64,
+                PAGE_SIZE as u64,
+                aux,
+                0,
+            )
+            .map_err(|_| FileSystemError::OutOfMemory)
+    }
+
+    fn commit_page(
+        &self,
+        state: &mut State,
+        pager: &Pager,
+        index: u64,
+        aux: &mut Option<Vmo>,
+    ) -> Result<(), FileSystemError> {
+        if state.pages.contains_key(&index) {
+            return Ok(());
+        }
+        let entry = self.prepare_page(index)?;
+        self.supply_zero(pager, index, aux)?;
+        state.pages.commit_vacant(entry);
+        Ok(())
     }
 
     fn write_locked(&self, offset: u64, input: &[u8]) -> Result<usize, FileSystemError> {
@@ -194,21 +280,56 @@ impl MemoryFile {
         let length = self.size();
         state.seals.check_write(length, end).map_err(seal_error)?;
         if end > length {
-            self.resize_locked(&mut state, end)?;
+            let size = end
+                .checked_next_multiple_of(PAGE_SIZE as u64)
+                .ok_or(FileSystemError::InvalidOperation)?;
+            self.object.set_size(size).map_err(object_error)?;
         }
-        if let Err(status) = self.object.vmo().write(input, offset) {
-            if end > length {
-                let _ = self.resize_locked(&mut state, length);
+        let mut done = 0;
+        let mut aux = None;
+        let mut failure = None;
+        while done < input.len() {
+            let cursor = offset + done as u64;
+            let chunk = (PAGE_SIZE - (cursor % PAGE_SIZE as u64) as usize).min(input.len() - done);
+            let result = self.commit_page(
+                &mut state,
+                super::pager::handle(),
+                cursor / PAGE_SIZE as u64,
+                &mut aux,
+            );
+            if let Err(error) = result {
+                failure = Some(error);
+                break;
             }
-            return Err(if status == native_runtime::native_abi::ERR_NO_MEMORY {
+            done += chunk;
+        }
+        // 稳态连续写仍只有一次 native copy；配额准入失败时只复制已准入的前缀。
+        if done > 0
+            && let Err(status) = self.object.vmo().write(&input[..done], offset)
+        {
+            done = 0;
+            failure = Some(if status == native_runtime::native_abi::ERR_NO_MEMORY {
                 FileSystemError::OutOfMemory
             } else {
                 FileSystemError::IoError
             });
         }
+        // quota 失败可返回已写前缀；不能把尚未写入的请求尾部发表成 EOF。
+        let final_length = if done == 0 {
+            length
+        } else {
+            length.max(offset + done as u64)
+        };
+        if end > length {
+            self.resize_locked(&mut state, final_length)?;
+        }
         drop(state);
-        self.times.touch();
-        Ok(input.len())
+        if done > 0 {
+            self.times.touch();
+            Ok(done)
+        } else {
+            Err(failure.expect("nonempty write without progress must fail"))
+        }
     }
 
     pub(super) fn truncate_with_metadata<G>(
@@ -244,15 +365,45 @@ impl MemoryFile {
         let mut state = self.state()?;
         let current = self.size();
         state.seals.check_growth(current, end).map_err(seal_error)?;
-        if end > current {
-            self.resize_locked(&mut state, end)?;
+        let mut pending = FallibleMap::new();
+        // 先准入全部缺页；限额/metadata OOM 不改变文件或既有页。
+        for index in offset / PAGE_SIZE as u64..pages_for(end) {
+            if !state.pages.contains_key(&index) {
+                pending.commit_vacant(self.prepare_page(index)?);
+            }
         }
-        let start = offset & !(PAGE_SIZE as u64 - 1);
-        let commit_end = end.next_multiple_of(PAGE_SIZE as u64);
-        self.object
-            .vmo()
-            .op_range(vmo::OP_COMMIT, start, commit_end - start)
-            .map_err(|_| FileSystemError::NoSpace)?;
+        let old_size = self.object.size().map_err(object_error)?;
+        let size = end
+            .checked_next_multiple_of(PAGE_SIZE as u64)
+            .ok_or(FileSystemError::InvalidOperation)?
+            .max(old_size);
+        if size != old_size {
+            self.object.set_size(size).map_err(object_error)?;
+        }
+        let mut aux = None;
+        for (&index, _) in pending.iter() {
+            if let Err(error) = self.supply_zero(super::pager::handle(), index, &mut aux) {
+                // 所有 pending key 原来都是洞；保留 lease 到撤销/fence 完成，不碰既有内容。
+                for (&index, _) in pending.iter() {
+                    self.object
+                        .vmo()
+                        .op_range(vmo::OP_DECOMMIT, index * PAGE_SIZE as u64, PAGE_SIZE as u64)
+                        .expect("failed file allocation rollback must retire supplied pages");
+                }
+                if size != old_size {
+                    self.object.set_size(old_size).map_err(object_error)?;
+                }
+                return Err(error);
+            }
+        }
+        while let Some((&index, _)) = pending.first_key_value() {
+            state.pages.commit_vacant(
+                pending
+                    .take_entry(&index)
+                    .expect("prepared file page disappeared"),
+            );
+        }
+        self.length.store(current.max(end), Ordering::Release);
         drop(state);
         modified();
         self.times.touch();
@@ -293,10 +444,31 @@ impl MemoryFile {
 
 impl Drop for MemoryFile {
     fn drop(&mut self) {
-        let state = self.state.get_mut();
-        while state.reserved_pages > 0 {
-            self.budget.release_page();
-            state.reserved_pages -= 1;
+        super::pager::unregister(self.key);
+        // object 先于 state 析构：物理 VMO 退休后才由 PageCharge Drop 归还存储名额。
+    }
+}
+
+impl super::pager::PageSource for MemoryFile {
+    fn page_request(&self, pager: &Pager, offset: u64, length: u64, aux: &mut Option<Vmo>) {
+        let result = self.state().and_then(|mut state| {
+            for index in offset / PAGE_SIZE as u64..pages_for(offset + length) {
+                if index >= pages_for(self.size()) {
+                    return Err(FileSystemError::InvalidOperation);
+                }
+                self.commit_page(&mut state, pager, index, aux)?;
+            }
+            Ok(())
+        });
+        if result.is_err() {
+            pager
+                .op(
+                    native_runtime::native_abi::pager::OP_FAIL,
+                    self.object.vmo(),
+                    offset,
+                    length,
+                )
+                .expect("failed memory page must retire its pager request");
         }
     }
 }

@@ -31,6 +31,9 @@ pub(in crate::drivers::virtio) const VIRTIO_F_VERSION_1: u64 = 1 << 32;
 pub(in crate::drivers::virtio) const VIRTIO_MMIO_INT_VRING: u32 = 1;
 pub(in crate::drivers::virtio) const VIRTIO_MMIO_INT_CONFIG: u32 = 2;
 
+/// 通过平台 BTI 返回的 DMA 地址访问内存；缺失时设备可能绕过 IOMMU，把 IOVA 当物理地址。
+const VIRTIO_F_ACCESS_PLATFORM: u64 = 1 << 33;
+
 const VIRTIO_MMIO_MAGIC: u32 = 0x7472_6976;
 
 /// VirtIO MMIO v2 split-queue 的三段设备地址。
@@ -172,6 +175,8 @@ impl VirtIODevice {
         if features & VIRTIO_F_VERSION_1 == 0 {
             return Err(BusError::InvalidAddress);
         }
+        // 所有 adapter 的 DMA 都经 BTI，包含恒等映射；平台 feature 在唯一 transport owner 协商。
+        let features = features | self.device_features()? & VIRTIO_F_ACCESS_PLATFORM;
         match &self.transport {
             Transport::Mmio(bus) => {
                 bus.write_u32(DRIVER_FEATURES_SEL, 0)?;

@@ -5,14 +5,22 @@
 
 本文件是 [文件系统与存储契约](filesystem-storage.md) 的 FUSE 部分。
 
-`fs/fuse` 实现 Linux FUSE（协议 7.45）的 `/dev/fuse` 与 `fuse` 类型；守护进程的回复是唯一事实来源，内核只持有
+`fs/fuse` 实现 Linux FUSE（协议 7.45）的 `/dev/fuse` 与 `fuse` 类型；守护进程的回复是唯一事实来源，linuxd 只持有
 带超时的缓存。
 
 - **owner**：`Connection` 独占请求队列（pending/interrupts/forgets/processing）、INIT 协商结果、请求 unique
   计数与绑定设备数；`Mount` 独占 nodeid → `Weak<FuseInode>` 索引（`Mount.nodes`）与守护进程以 ENOSYS 声明
   不实现的可选操作位；`FuseInode` 独占查找计数、属性缓存、名字缓存（`FuseInode.entries`，强持子 inode 到
-  entry 超时）与本 inode 打开句柄的 Weak 列表；`Handle` 是 OFD 的 `StorageOpen`，Drop 发 RELEASE。
+  entry 超时）与本 inode 打开句柄的 Weak 列表；`Handle` 是 OFD 的 `StorageOpen`，负责最终写回；
+  `RemoteHandle` 独占 fh 与预留 RELEASE，由打开对象和在途 I/O 共同保活，最后释放只发送 RELEASE。
   `/dev/fuse` 的 `FuseDevice` 只持连接绑定与设备标识。连接持 `Weak<Mount>` 处理通知，不形成环。
+- **句柄寿命**：应用打开对象在 Drop 中持有 remote 强引用，写回仍能从 inode 升级该 fh；页缓存 READ/WRITE
+  只持 remote，析构不能同步写回，否则可能等待持写序列、又等待本次补页的线程。所有存储调用方共用这一边界，
+  不要求 pager 包装结果或维护临时释放句柄。mmap 的 mapping owner 与执行映射的打开 lease 保留应用打开对象。
+  与固定 Linux `fuse_file_put` 的最后 I/O 引用仅退休 fh、打开/映射层承担写回责任一致；不复制 Linux 的 folio 层。
+  一次 OPEN 多一个可失败 Arc 分配，无新锁或常驻缓存；任一步失败均发送已预留 RELEASE。该冷路径成本由现有
+  文件并发压力与完整 BusyBox 门禁验证，不增加逐页分配。实际 FUSE fixture 固定关闭/READ 回复顺序，覆盖成功与
+  READ 错误；pager 的 OP_FAIL 发布失败须 fail-stop，不能丢弃请求退休责任。
 - **请求生命周期**：INIT 在挂载时入队，其余请求在一次性 latch 上等 INIT；守护进程读取后请求移入
   读取设备的 processing，回复只接受同一设备写回。等待依次为可中断（被打断即标记并补发 INTERRUPT）、
   仅 SIGKILL（仍在队列中则撤回返回 EINTR）、不可中断。最后一个设备关闭或卸载中止连接：已入队请求以
@@ -21,13 +29,13 @@
   只消费预留，不分配。READDIRPLUS 按一页回复的最大项数预留，未用部分退还；守护进程为每个非 `.`/`..`
   项计了一次查找，即使 visitor 中途停止也全部接管。查找回复建 inode 失败时立即 FORGET 该次查找。
 - **数据与页缓存**：普通文件经全局 page cache（mmap/exec 可用）；未协商 WRITEBACK_CACHE 时 write 为
-  write-through，协商后写只进页缓存（`Inode::buffered_writes`），大小与 mtime/ctime 以内核为准，只写打开
+  write-through，协商后写只进页缓存（`Inode::buffered_writes`），大小与 mtime/ctime 以 linuxd 页缓存为准，只写打开
   对服务器升级为读写，close 在 FLUSH 前写回，最后一个可写句柄在 RELEASE 前用自己的 fh 写出剩余脏页
-  （`draining`，同样保护 write-through 模式下的 mmap 脏页）；未带
+  （同样保护 write-through 模式下的 mmap 脏页）；未带
   FOPEN_KEEP_CACHE 的 OPEN 与守护进程 INVAL_INODE 调用 `page_cache::invalidate`，写回脏页并丢弃只被缓存
   持有的干净页，映射中的页保留到解除。属性刷新发现大小变化、或 AUTO_INVAL_DATA 下 mtime 变化时标记
   `stale_data`，读入口与打开时完成作废。短读把缓存大小收缩到实际 EOF 并补零。
-- **权限**：未 `allow_other` 时只允许挂载用户；`default_permissions` 按缓存属性做内核 DAC；否则
+- **权限**：未 `allow_other` 时只允许挂载用户；`default_permissions` 按缓存属性做 linuxd VFS DAC；否则
   access(2)/chdir/chroot 发 FUSE_ACCESS，执行普通文件要求执行位，其余由服务器判定，chmod/chown 以
   `OwnerModeChange::requested` 原样交给服务器。
 - **身份**：`st_ino` 取 nodeid（VFS 以 inode 号区分同一 filesystem 内的 inode），`d_ino` 取守护进程报告值；
@@ -37,6 +45,17 @@
   PARALLEL_DIROPS 时取 `directory_operations`，持有期间只发请求，不取其他 inode 的锁。
   VFS 只在实际父目录锁内等待 LOOKUP/目录变更；全局 topology gate 不跨 FUSE 请求、页缓存同步或 remount。
   等待中的请求必须允许守护进程访问不相关目录并投影路径；目录与 mount 锁序由[存储契约](filesystem-storage.md)拥有。
+
+## ext4 服务传输
+
+`fs/fuse/service` 为内置 ext4 挂载装配 native channel 传输，复用同一 Connection、请求、回复和页缓存 owner。
+请求/回复线程只转发标准 FUSE 消息；挂载控制由 filesystem-protocol 交付块设备连接和 remount 操作，
+不得在 native 内核重建文件系统状态。端点关闭与卸载中止连接，线程结束后关闭 channel；失败路径沿同一请求退休机制。
+ext4d 的 lookup/attr lease 当前为 60 秒；linuxd 修改后作废 canonical inode 缓存，外部磁盘修改不在 coherence 范围。
+LISTXATTR 名称遵从 FUSE 服务端；ext4d 仅能从请求头按 UID 0 决定 trusted 名称可见性，
+不能等价于 Linux CAP_SYS_ADMIN 判定，具体应用限制由[文件 ABI](../syscall-support/filesystem-io.md)维护。
+
+## VFS 接口
 
 本域引入的 VFS 接口与调用者：
 
@@ -59,7 +78,7 @@
 - `StorageOpen::prepare_mapping(shared)` 由 mmap 在 MAP_FIXED 替换前调用。未协商 DIRECT_IO_ALLOW_MMAP，
   direct MAP_SHARED（含只读）返回 ENODEV；MAP_PRIVATE 经现有 cache fault/COW 路径，打开与映射均可作废旧缓存。
   Benchmark 决策：复用既有锁/epoch，无新全局状态；direct 不分配内容页，失效只在相关 cache 页有 pin 时遍历 MM。
-  waiter/请求分配与混合 mmap 的 fence 属新增成本；按用户要求不运行 benchmark，不调整基线或阈值。
+  waiter/请求分配与混合 mmap 的 fence 由实际 guest direct-I/O/mmap workload 裁决；沿用既有基线和阈值。
 - `StorageOpen::flush(owner)` 与 `OpenFileDescription::flush`：任务层 `close_detached` 是 Linux `filp_close`
   的唯一实现（flush → descriptor cleanup → 本表 POSIX 锁释放），close/dup2 替换/CLOEXEC/ADDFD 替换共用；
   `FileTableOwner` 最后 Drop 对剩余 fd 逐个 flush（Linux `close_files`）。只有 `close(2)` 返回 flush 错误。
@@ -119,6 +138,8 @@
   卸载后旧 fd 的 read 返回 EOF（waiting 已捕获的分段尾部仍可读），写返回原 count，不复活已移除连接。
 - waiting 由每次实际请求的 RAII 令牌计数，包括 INIT 前等待；未发送 RELEASE 预留与无回复 FORGET 不计数。
   原子仅是诊断投影，Relaxed 不承担同步；令牌持独立 Arc<AtomicUsize>，不能反向持 Connection 形成队列环。
+  与 Linux num_waiting 一致，到 request 最后引用释放才减计数；回复先唤醒调用者，syscall 返回不保证
+  回复线程已释放自己的引用。guest 等待计数的有界转换，不能以即时快照断言不存在合法的短暂引用。
 - `Connection.queue.background` 独占 deferred 请求、活动预算与两个阈值；活动数包括 pending/processing 的后台请求。
   默认 12/9，INIT 7.13 起接受非零协商值；非特权上限沿固定 Linux 默认 RAM/8192/392（封顶 65535），
   未实现可写的 fuse module 参数。传统传输设置 max_background=0 可暂停后台发出；ring 允许每个空闲 CPU 队列至少一个后台请求，前台不受限。
@@ -129,7 +150,7 @@
   `PositionedFile` 由 syscall/device 消费 nonseekable 与 write-position 规则：waiting/abort 禁止 pread/pwrite/lseek，
   控制写不推进唯一 OFD position，参数 fd 支持重新定位；没有 backend offset 副本。
 - Benchmark 决策：每个实际请求新增一次原子计入/归还，不新增请求分配；后台操作复用 queue 锁、两队列容量预留。
-  fusectl 索引、数字渲染与控制快照仅在冷路径分配/加锁。按用户要求只做静态检查，不运行 benchmark 或调整阈值。
+  fusectl 索引、数字渲染与控制快照仅在冷路径分配/加锁，由实际 guest 请求/abort 探针验证；不调整阈值。
 
 ## FUSE over io_uring
 
@@ -160,7 +181,7 @@
 - Benchmark 决策：使用同一短 queue 锁与 Vec 登记表，按 CPU 筛选 pending，未为 CPU 另设锁或队列缓存；
   空闲 ring CPU 的后台预算从真实 pending/processing 推导。额外扫描、车道复制与唤醒开销需后续实测，
   不声明与 Linux 分队列实现等吞吐。guest 探针已扩展 SQE128、每 CPU 登记、读写/xattr/rename、
-  legacy INTERRUPT 与卸载；按用户要求不运行回归、QEMU 或 benchmark。
+  legacy INTERRUPT 与卸载；由 BusyBox runtime 的实际 FUSE 探针验证，不以 host 模型替代。
 
 ## Passthrough
 
@@ -168,9 +189,9 @@
   INIT 的 max_stack_depth 只接受 1–2，且不与 WRITEBACK_CACHE 同时启用；后备文件须低于协商深度，超出 ELOOP。
   BACKING_OPEN/CLOSE 要求 initial CAP_SYS_ADMIN，普通用户的 SMB 挂载不需要或获得该权限。
 - `Connection.queue` 独占正 backing_id 与登记文件的 Arc。`UserMemory::backing_file` 经 syscall adapter
-  捕获真实 regular OFD、登记时的凭据与 namespace authority；`fs` 不依赖 `file`/`execution::task`/syscall。
+  捕获真实 regular OFD、登记时的凭据与 namespace authority；`fs` 不依赖 `file`/`task`/syscall。
   目录 EISDIR、非普通文件 EINVAL、无效 fd EBADF；登记分配失败不发布 ID，注销在锁内摘除、锁外析构。
-- `fs::BackingFile::reopen` 用保存的凭据重开独立下层 OFD，不与登记 fd 共享 offset；每个 `Handle` 成对拥有
+- `fs::BackingFile::reopen` 用保存的凭据重开独立下层 OFD，不与登记 fd 共享 offset；每个 `RemoteHandle` 成对拥有
   登记 identity 与下层 `BackingOpen`，同 inode 的并行打开必须使用同一后备 identity，避免两套内容事实。
   注销只撤销未来 OPEN，已打开句柄继续保活后备文件。无效 OPEN 回复仍发送预留 RELEASE，不能泄漏 daemon fh。
 - read/write/vector/positioned I/O 通过 per-open DirectIo 到下层 regular-file owner，不建立 FUSE 内容缓存。
@@ -178,4 +199,4 @@
   noexec 与只读准入；VMA 持有下层 OFD，关闭上层 fd 或注销登记不撤销已有映射。
   FOPEN_DIRECT_IO 优先保留 daemon 的直接读写，mmap 仍使用后备文件；flush/fsync/release 保留标准 FUSE 请求语义。
 - Benchmark 决策：登记表复用原 queue 锁，clone、reopen、最终 Drop 均在锁外；不新增全局锁或内容副本。
-  已扩展 production-path guest 探针，按用户要求未运行回归、QEMU 或 benchmark，不声明已验证加速收益。
+  production-path guest 探针由 BusyBox runtime 执行；正确性覆盖不代表已证明加速收益。

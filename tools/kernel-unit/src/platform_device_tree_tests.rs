@@ -60,7 +60,6 @@ fn riscv64_qemu_virt_dtb_decodes_every_boot_fact() {
     assert_eq!(info.uart_irq, 10);
     assert_eq!(info.plic.start, 0x0c00_0000);
     assert_eq!(info.rtc, Some(0x0010_1000..0x0010_2000));
-
 }
 
 #[test]
@@ -123,6 +122,4 @@ fn aarch64_qemu_virt_dtb_decodes_every_boot_fact() {
     // PL011 是 SPI 1，GIC INTID = 32 + 1。
     assert_eq!(info.uart.irq, 33);
     assert_eq!(info.gic.distributor.start, 0x0800_0000);
-
 }
-

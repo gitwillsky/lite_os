@@ -150,6 +150,17 @@ impl PageTable {
         Ok(())
     }
 
+    /// 查找范围中首个已安装的页，空页表分支整体跳过；不分配或复制页表状态。
+    pub(in crate::vm) fn next_mapped(
+        &self,
+        first: usize,
+        end: usize,
+    ) -> Option<(usize, PageTableEntry)> {
+        self.0
+            .next_mapped(first, end)
+            .map(|(page, entry)| (page, PageTableEntry(entry)))
+    }
+
     pub(crate) fn translate(&self, vpn: VirtualPageNumber) -> Option<PageTableEntry> {
         self.0.translate(usize::from(vpn)).map(PageTableEntry)
     }

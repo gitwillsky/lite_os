@@ -52,7 +52,6 @@ impl IoAccounting {
         self.write_bytes.fetch_add(bytes as u64, Ordering::Relaxed);
     }
 
-
     pub(super) fn snapshot(&self) -> IoStatistics {
         IoStatistics {
             read_characters: self.read_characters.load(Ordering::Relaxed),

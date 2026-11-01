@@ -78,8 +78,8 @@ impl TaskControlBlock {
         if self.is_kernel_thread() {
             return 0;
         }
-        let mask = self.thread().signal_mask.lock();
         let shared = self.process().signal_state.lock();
+        let mask = self.thread().signal_mask.lock();
         let private = self.thread().pending_signals.lock();
         (private.bits | shared.pending.bits) & *mask
     }
@@ -121,10 +121,9 @@ impl TaskControlBlock {
         if self.is_kernel_thread() {
             return None;
         }
+        let mut state = self.process().signal_state.lock();
         let mask = self.thread().signal_mask.lock();
-        self.process()
-            .signal_state
-            .lock()
+        state
             .with_handlers(|handlers, shared_pending| {
                 let pending = self.thread().pending_signals.lock();
                 let available = (pending.bits | shared_pending.bits) & !*mask;

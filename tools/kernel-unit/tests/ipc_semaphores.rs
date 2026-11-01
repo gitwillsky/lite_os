@@ -224,10 +224,7 @@ fn expired_semaphore_wait_cancels_actual_admission_without_consuming_future_valu
     assert!(!set.operate(&mut wait, &access, 2).unwrap());
     let target = timed_target::Target::new();
     let _binding = target.bind();
-    assert_eq!(
-        wait.wait_until(Some(0)),
-        crate::sync::WaitResult::TimedOut
-    );
+    assert_eq!(wait.wait_until(Some(0)), crate::sync::WaitResult::TimedOut);
     assert!(wait.finish_wait().is_none());
     assert_eq!(
         set.scalar(0, GETNCNT, &access, &pid.namespace()).unwrap(),
@@ -352,5 +349,8 @@ pub(crate) mod execution {
     pub(crate) mod sync;
 }
 
-#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+#[allow(
+    unused_imports,
+    reason = "装配当前服务的同步 facade，具体用例使用其部分接口"
+)]
 use execution::sync;

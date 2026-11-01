@@ -344,18 +344,19 @@ def kernel_unit_dtb_fixtures(environment: Mapping[str, str] | None = None) -> di
     directory = ROOT / "target" / "kernel-unit"
     directory.mkdir(parents=True, exist_ok=True)
     variables = {}
-    for arch in ("aarch64", "riscv64"):
+    for arch, iommu in (("aarch64", False), ("riscv64", False), ("aarch64", True)):
         target = target_from_environment({"ARCH": arch})
         qemu = shutil.which(target.qemu_binary)
         if qemu is None:
             raise RuntimeError(f"{target.qemu_binary} is required; run `make setup`")
-        fixture = directory / f"qemu-virt-{arch}.dtb"
+        suffix = "_IOMMU" if iommu else ""
+        fixture = directory / f"qemu-virt-{arch}{suffix.lower()}.dtb"
         fixture.unlink(missing_ok=True)
         run(
             [
                 qemu,
                 "-machine",
-                f"{target.qemu_machine('tcg')},dumpdtb={fixture}",
+                f"{target.qemu_machine('tcg')}{',iommu=smmuv3' if iommu else ''},dumpdtb={fixture}",
                 "-cpu",
                 target.qemu_cpu("tcg"),
                 "-smp",
@@ -367,7 +368,7 @@ def kernel_unit_dtb_fixtures(environment: Mapping[str, str] | None = None) -> di
             environment=environment,
             capture=True,
         )
-        variables[f"LITEOS_{arch.upper()}_DTB"] = str(fixture)
+        variables[f"LITEOS_{arch.upper()}{suffix}_DTB"] = str(fixture)
     return variables
 
 
@@ -431,6 +432,7 @@ def verify_architecture_benchmark(environment: Mapping[str, str] | None = None) 
     run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "tcp-lifecycle-bench"], environment=environment)
     run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "inotify-bench"], environment=environment)
     run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "realtime-signals-bench"], environment=environment)
+    run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "blocked-load-bench"], environment=environment)
 
 
 def verify_architecture_release(environment: Mapping[str, str] | None = None) -> None:
@@ -628,6 +630,7 @@ def verify_host(environment: Mapping[str, str] | None = None) -> None:
         ],
         environment=environment,
     )
+    run(["cargo", "clippy", "-p", "root-server", "-p", "devmgr", "-p", "ext4d", "-p", "netd", "-p", "linuxd", "--target", target.service_triple, "--bins", "--", "-D", "warnings"], environment=environment)
     if target.requires_bootloader:
         run(["cargo", "clippy", "--release", "--", "-D", "warnings"], cwd=ROOT / "bootloader", environment=environment)
     verify_unit(environment)

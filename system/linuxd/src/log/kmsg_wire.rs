@@ -10,6 +10,29 @@ const HEADER_CAPACITY: usize = 64;
 /// 每次交给 `emit` 的消息体分片上限；转义在这个栈缓冲里完成，不分配。
 const CHUNK: usize = 256;
 
+// OWNER: linuxd 独占该服务日志 schema；kernel 仅保存 opaque annotation。
+// 带命名标签才能区分 kmsg 原 priority 与其他服务将来定义的 annotation，避免误解释普通日志。
+const PRIORITY_SCHEMA: u64 = u64::from_be_bytes(*b"KMSGPRI\0");
+
+/// 把完整 Linux facility/level 随 native 记录带回，不能从四档 severity 反推八档 level。
+pub(super) fn priority_annotation(priority: u8) -> u64 {
+    PRIORITY_SCHEMA | u64::from(priority)
+}
+
+/// 读取自己发布的 priority；普通 native 日志只按 severity 投影为 facility 0 的 Linux level。
+pub(super) fn record_priority(severity: u32, annotation: u64) -> u8 {
+    if annotation & !0xff == PRIORITY_SCHEMA {
+        annotation as u8
+    } else {
+        match severity {
+            0 => 7,
+            1 => 6,
+            2 => 4,
+            _ => 3,
+        }
+    }
+}
+
 struct Header {
     bytes: [u8; HEADER_CAPACITY],
     length: usize,

@@ -2,7 +2,7 @@
 
 | Number | Syscall | Status | 当前范围 |
 |---:|---|---|---|
-| 5 | `setxattr` | Partial | tmpfs/ext4/memfd 与 FUSE user/trusted/security 属性及 file-cap rootid 转换；新增 FUSE 运行验证待执行 |
+| 5 | `setxattr` | Partial | tmpfs/ext4/memfd 与 FUSE user/trusted/security 属性及 file-cap rootid 转换 |
 | 6 | `lsetxattr` | Partial | 同一mutation路径，最终symlink不跟随；user属性类型约束 |
 | 7 | `fsetxattr` | Partial | 实际OFD path writer，按当前caller授权，不使用opener凭据 |
 | 8 | `getxattr` | Partial | 属性快照与security.capability当前namespace rootid投影 |
@@ -105,9 +105,11 @@ io_uring 已实现的 opcode：`NOP`、`READV`/`WRITEV`/`READ`/`WRITE`、`FSYNC`
 超出返回 `ENOMEM`；有 mmap 映射时关闭 fd 不归还，munmap 之后才归还。
 读写：`off == -1` 用并推进当前 position，`off >= 0` 对 regular/可定位文件是 pread/pwrite 语义，对 pipe/socket 等流式文件忽略；`ioprio`、`rw_flags`、
 `personality` 非零分别返回 `EINVAL`/`EOPNOTSUPP`/`EINVAL`，请求使用提交者提交时刻的凭据。会阻塞的 pipe/socket/eventfd/timerfd/tty 请求不占用提交线程：
-先做一次 NOWAIT 尝试，仍会阻塞则由 `io_uring` 内核线程等待就绪后在提交线程的地址空间中完成，用户态自己设置了 `O_NONBLOCK` 的 fd 如实返回 `-EAGAIN`；
+先做一次非阻塞 issue，仍需等待则由 linuxd reactor 登记就绪，在提交线程的地址空间中完成，用户态自己设置了 `O_NONBLOCK` 的 fd 如实返回 `-EAGAIN`；
 signalfd 读无信号时返回 `-EAGAIN`（worker 无法代表提交线程登记信号等待）。regular 文件的读写不在 `io_uring_enter` 内睡眠：读（显式偏移与 `off == -1` 的当前位置）在 page cache 未命中时异步填页（ext4）；
-当前位置读完成时发布新 position，发起时 position 被占用则回退车道。
+有效、驻留且不超过 64 KiB 暂存预算的缓冲读直接完成；需要重新验证、缺页、direct I/O 或更大请求
+交给阻塞车道，不能以探测缓存为由阻塞 reactor。当前位置读在同一 OFD position 临界区内复制并推进，
+争用或缓存探测未完成时不发布 position 或用户数据。
 写、fsync 与回退的读交给阻塞车道的 worker 池（最多 8 个线程，共享 FIFO，写与 fsync 可以重叠；Linux 同样由 io-wq 执行 ext4 缓冲写与 fsync）。
 `POLL_ADD`：一次性语义，提交时先 poll 一次，已就绪同步完成，否则挂起；res 是 revents，`ERR`/`HUP` 总是报告；`IORING_POLL_ADD_MULTI` 返回 `-EOPNOTSUPP`。
 `TIMEOUT`：相对或绝对（`CLOCK_MONOTONIC`，`BOOTTIME` 视同单调），到期 `-ETIME`（`ETIME_SUCCESS` 的 CQE 仍是 `-ETIME`，只是不使链断开）；`off` 非零时等“除 timeout 自身外又发布 N 个 CQE”，满足则以 0 完成；
@@ -209,6 +211,9 @@ INIT 失败（请求 `ECONNREFUSED`）。按 entry/attr 超时缓存查找与属
 INVAL_INODE（作废属性与整个文件的页缓存）、INVAL_ENTRY、DELETE，其余通知 `ENOSYS`。
 支持 GETXATTR/SETXATTR/LISTXATTR/REMOVEXATTR：零缓冲查询、空值、CREATE/REPLACE、64 KiB 上限、
 列表格式校验与独立 ENOSYS 缓存；通用 namespace/capability policy 仍由 VFS 拥有，普通权限由实际 FUSE 判定。
+内置 ext4 同样经 FUSE 服务；其属性/目录项 lease 为 60 秒，客户端修改会使缓存过期，不支持外部磁盘修改的即时一致性。
+ext4d 的 trusted 名称列举以请求 UID 0 判定，不能表达已降 CAP_SYS_ADMIN 的 root 或持该 capability 的非 root；
+GET/SET/REMOVE 的 namespace 授权仍由 linuxd VFS 实施。
 POSIX ACL 的 system.* handler 尚未实现。新增 xattr guest 探针已编写，未宣称运行通过。
 FOPEN_DIRECT_IO 按 per-open fh 绕过内容页缓存，覆盖 vector/positioned I/O、sendfile/copy 与 io_uring worker；
 短读不收缩 EOF，分块写后续失败保留已提交前缀，WRITEBACK_CACHE 不改变 direct 写语义。
@@ -234,7 +239,7 @@ FUSE over io_uring：INIT 选择 OVER_IO_URING，SQE128 的每 CPU REGISTER 完�
   最后一个引用发 RELEASE。
 - 不转发 POSIX/flock 锁（锁在本地 VFS 生效）、ioctl、poll、lseek、copy_file_range、tmpfile、statx。
 - `st_ino` 取 nodeid，`d_ino` 取守护进程报告值；非 initial user namespace 不能挂载（无 FS_USERNS_MOUNT），普通用户经 setuid `fusermount3`。
-- 不支持 fuseblk、CUSE 与 virtio-fs。
+- 不支持由 `/dev/fuse` 挂载的 fuseblk、CUSE 与 virtio-fs；内置 ext4 的块设备型服务传输见 FUSE 契约。
 
 `statx` 的时间戳精度取决于 filesystem 实际记录的内容：ext4 保存纳秒与创建时间并如实报告；其余 filesystem 的
 `Inode::set_times`/`touch_access` 以秒为单位，纳秒恒为 0、不报告 `BTIME`（Linux 对不记录创建时间的 filesystem 同样不设该位）。

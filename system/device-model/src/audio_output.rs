@@ -51,7 +51,7 @@ pub trait PcmOutput: Send + Sync {
     ///
     /// # Parameters
     ///
-    /// - `observer`: `kernel::audio` 拥有的 position/readiness sink。
+    /// - `observer`: 消费服务拥有的 position/readiness sink。
     ///
     /// # Errors
     ///
@@ -87,7 +87,4 @@ pub trait PcmOutput: Send + Sync {
     ///
     /// 无空闲 slot 返回 `WouldBlock`；device/lifecycle 错误按类别返回。
     fn submit_period(&self, bytes: &[u8]) -> Result<(), PcmOutputError>;
-
-    /// 当前至少有一个可提交 period slot 时返回 true。
-    fn writable(&self) -> bool;
 }

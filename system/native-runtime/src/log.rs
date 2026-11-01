@@ -27,7 +27,7 @@ pub fn write(severity: Severity, arguments: fmt::Arguments<'_>) {
         length: 0,
     };
     let _ = line.write_fmt(arguments);
-    debuglog_write(severity, &line.bytes[..line.length]);
+    debuglog_write(severity, 0, &line.bytes[..line.length]);
 }
 
 /// 写一条 debug 日志。

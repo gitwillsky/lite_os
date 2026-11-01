@@ -70,7 +70,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let signal_file = source(sources, "system/linuxd/src/file/signalfd.rs");
     let ofd = source(sources, "system/linuxd/src/file/mod.rs");
     let epoll = source(sources, "system/linuxd/src/file/epoll.rs");
-    let read = source(sources, "system/linuxd/src/syscall/fs/io/sequential/read.rs");
+    let read = source(
+        sources,
+        "system/linuxd/src/syscall/fs/io/sequential/read.rs",
+    );
     let wait = source(sources, "system/linuxd/src/syscall/poll/wait_keys.rs");
     if field(signal_file, "SignalFd", "mask").as_deref() != Some("AtomicU64")
         || field(signal_file, "SignalWaitSource", "generation").as_deref() != Some("AtomicU64")
@@ -218,12 +221,9 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         }
     }
     if !method(queue, "discard_timer_notifications").contains("extract_timer_notifications")
-        || !source(
-            sources,
-            "system/linuxd/src/task/model/signal_generation.rs",
-        )
-        .text
-        .contains("discard_timer_signals")
+        || !source(sources, "system/linuxd/src/task/model/signal_generation.rs")
+            .text
+            .contains("discard_timer_signals")
         || !source(
             sources,
             "system/linuxd/src/task/process_table/timer_queue.rs",
@@ -250,17 +250,14 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     {
         errors.push("sighand: canonical action admission must clear unsupported ABI flags".into());
     }
-    let generation = source(
-        sources,
-        "system/linuxd/src/task/model/signal_generation.rs",
-    );
+    let generation = source(sources, "system/linuxd/src/task/model/signal_generation.rs");
     for name in ["queue_signal", "queue_process_signal_mask"] {
         let body = method(generation, name);
-        if !matches!((body.find(if name == "queue_signal" { "signal_mask . lock" } else { "recipient_mask . lock" }), body.find("with_handlers")),
-            (Some(mask), Some(owner)) if mask < owner)
+        if !matches!((body.find("signal_state . lock"), body.find(if name == "queue_signal" { "signal_mask . lock" } else { "recipient_mask . lock" }), body.find("with_handlers")),
+            (Some(state), Some(mask), Some(owner)) if state < mask && mask < owner)
             || !body.contains("ignores_generation")
         {
-            errors.push("sighand: generation must read blocked mask before group/table, with canonical ignored policy".into());
+            errors.push("sighand: group state must freeze mask updates before generation reads mask/table with canonical ignored policy".into());
         }
     }
     let retirement = source(

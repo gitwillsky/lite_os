@@ -764,6 +764,7 @@ impl TaskControlBlock {
         const SIG_BLOCK: usize = 0;
         const SIG_UNBLOCK: usize = 1;
         const SIG_SETMASK: usize = 2;
+        let _state = self.process().signal_state.lock();
         let mut mask = self.thread().signal_mask.lock();
         let old = *mask;
         if let Some(value) = replacement {
@@ -788,6 +789,7 @@ impl TaskControlBlock {
     ///
     /// 修改前 mask。
     pub(crate) fn begin_signal_suspend(&self, temporary: u64) -> u64 {
+        let _state = self.process().signal_state.lock();
         let mut mask = self.thread().signal_mask.lock();
         let old = *mask;
         let mut restore = self.thread().suspend_restore_mask.lock();
@@ -803,6 +805,7 @@ impl TaskControlBlock {
     ///
     /// 成功恢复返回 `Ok(())`；没有 active 临时 mask 返回 `Err(())`。
     pub(crate) fn restore_temporary_signal_mask(&self) -> Result<(), ()> {
+        let _state = self.process().signal_state.lock();
         let mut mask = self.thread().signal_mask.lock();
         let old = self.thread().suspend_restore_mask.lock().take().ok_or(())?;
         *mask = old;
@@ -836,10 +839,9 @@ impl TaskControlBlock {
     ///
     /// 未屏蔽且 disposition 不忽略时返回 true。
     pub(super) fn accepts_process_signal(&self, signal: usize, traced: bool) -> bool {
+        let mut state = self.process().signal_state.lock();
         let mask = self.thread().signal_mask.lock();
-        self.process()
-            .signal_state
-            .lock()
+        state
             .with_handlers(|handlers, _| {
                 *mask & (1u64 << (signal - 1)) == 0
                     && (traced || !signal_is_ignored(signal, handlers.action(signal)))

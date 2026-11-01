@@ -28,6 +28,17 @@ fn measure(name: &str, mut operation: impl FnMut()) {
     );
 }
 fn main() {
+    let (reader, _writer) = ipc::Pipe::notification_pair().unwrap();
+    let pipe = reader.pipe();
+    measure(
+        "actual notification snapshot and empty Pipe source wake",
+        || {
+            black_box(crate::task::process_table::empty_pipe_notification(
+                black_box(&pipe),
+            ));
+        },
+    );
+
     let first = memory::FutexKey::Private {
         address_space: 1,
         address: 0x1000,

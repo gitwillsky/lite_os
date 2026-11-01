@@ -1,4 +1,4 @@
-//! 执行内核 VMO 的真实 COW 路径；仅用宿主页与互斥锁替代物理内存和调度器。
+//! 执行内核 VMO 的真实 COW 与 pager 完成路径；仅替换物理内存和调度边界。
 #![feature(allocator_ext)]
 
 extern crate alloc;
@@ -12,7 +12,7 @@ mod id {
 
 #[expect(
     dead_code,
-    reason = "完整生产 VMO 需要 pager/DMA 类型；本 fixture 只执行 COW 生命周期"
+    reason = "完整生产 VMO 需要 DMA 与等待错误类型；本 fixture 执行 COW 与已完成的 pager 等待"
 )]
 mod execution {
     pub(crate) mod sync {
@@ -29,6 +29,9 @@ mod execution {
         impl<T> TaskMutex<T> {
             pub(crate) fn new(value: T) -> Self {
                 Self(std::sync::Mutex::new(value))
+            }
+            pub(crate) fn try_lock(&self) -> Option<TaskMutexGuard<'_, T>> {
+                self.0.try_lock().ok()
             }
             pub(crate) fn lock(&self) -> Result<TaskMutexGuard<'_, T>, ()> {
                 Ok(self.0.lock().unwrap())
@@ -58,7 +61,7 @@ mod execution {
                 mut ready: impl FnMut() -> bool,
                 _: Option<u64>,
             ) -> WaitResult {
-                assert!(ready(), "COW fixture must not issue pager requests");
+                assert!(ready(), "host VMO fixture only observes completed waits");
                 WaitResult::Woken
             }
         }
@@ -169,5 +172,5 @@ mod vm {
 
 use vm::{VmError, address_space};
 #[expect(dead_code, reason = "本 fixture 只执行 COW 生命周期")]
-#[path = "../../../kernel/src/vm/vmo.rs"]
+#[path = "../../../tools/source-view/kernel/vm/vmo/vmo/vmo.rs"]
 mod vmo;

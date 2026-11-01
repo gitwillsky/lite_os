@@ -240,9 +240,14 @@ pub(crate) mod execution {
     }
 }
 
-#[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
+#[allow(
+    unused_imports,
+    reason = "装配当前服务的同步 facade，具体用例使用其部分接口"
+)]
 use execution::sync;
 
 use execution::timer as time;
 
-mod deferred { pub(crate) fn deadline_changed() {} }
+mod deferred {
+    pub(crate) fn deadline_changed() {}
+}

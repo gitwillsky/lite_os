@@ -66,7 +66,10 @@ def symbols(tool: str, elf: Path) -> list[Symbol]:
 
 
 def find_symbol(table: list[Symbol], name: str) -> Symbol:
-    return next(symbol for symbol in table if symbol.name == name)
+    for symbol in table:
+        if symbol.name == name:
+            return symbol
+    raise RuntimeError(f"required release symbol is missing: {name}")
 
 
 def parse_instructions(output: str) -> list[str]:
@@ -141,15 +144,16 @@ def aarch64_measurements(
     ordinary_trap: list[str],
     user_trap_assembly: list[str],
     kernel_irq: list[str],
-    bootstrap_wait: list[str],
+    idle_wait: list[str],
     user_return: list[str],
     context_switch: list[str],
-    signal_capture: list[str],
-    signal_restore: list[str],
-    clone_capture: list[str],
-    exec_reset: list[str],
+    user_restore: list[str],
+    service_fp_capture: list[str],
+    service_fp_restore: list[str],
 ) -> tuple[dict[str, int], dict[str, int]]:
     """量化 AArch64 普通 trap 与唯一完整 FP context-switch seam。"""
+    user_entry = user_trap_assembly
+    user_trap_assembly = user_entry + user_restore
     fp_register = re.compile(
         r"\b(?:[bhsdqv](?:[0-9]|[12][0-9]|3[01])|"
         r"z(?:[0-9]|[12][0-9]|3[01])|p(?:[0-9]|1[0-5])|fpcr|fpsr)\b"
@@ -161,12 +165,6 @@ def aarch64_measurements(
     )
     saved = q_registers(context_switch, "st")
     restored = q_registers(context_switch, "ld")
-    helper_registers = {
-        "signal_capture": q_registers(signal_capture, "st"),
-        "signal_restore": q_registers(signal_restore, "ld"),
-        "clone_capture": q_registers(clone_capture, "st"),
-        "exec_reset": q_registers(exec_reset, "ld"),
-    }
     measured = {
         "ordinary_fp_load_store": ordinary_fp_load_store,
         "ordinary_q_instructions": count_matching(
@@ -205,8 +203,9 @@ def aarch64_measurements(
         "user_scratch_stack_releases": count_matching(
             user_trap_assembly, r"^add\s+sp,\s*sp,\s*#0x20$"
         ),
+        "user_entry_ttbr0_writes": count_matching(user_entry, r"^msr\s+ttbr0_el1\b"),
         "user_restore_ttbr0_writes": count_matching(
-            user_trap_assembly, r"^msr\s+ttbr0_el1\b"
+            user_restore, r"^msr\s+ttbr0_el1\b"
         ),
         "user_restore_vbar_writes": count_matching(
             user_trap_assembly, r"^msr\s+vbar_el1\b"
@@ -218,9 +217,9 @@ def aarch64_measurements(
         "kernel_irq_wfi_label_addresses": sum(
             "__local_irq_wait_wfi" in line for line in kernel_irq
         ),
-        "bootstrap_wait_wfi": count_matching(bootstrap_wait, r"^wfi$"),
-        "bootstrap_wait_daif_writes": count_matching(
-            bootstrap_wait, r"^msr\s+daif(?:clr|set)\b"
+        "idle_wait_wfi": count_matching(idle_wait, r"^wfi$"),
+        "idle_wait_daif_writes": count_matching(
+            idle_wait, r"^msr\s+daif(?:clr|set)\b"
         ),
         "switch_q_store_instructions": count_matching(
             context_switch, r"^stp\s+q(?:[0-9]|[12][0-9]|3[01]),\s*q"
@@ -250,13 +249,14 @@ def aarch64_measurements(
         "user_tpidr_el0_writes": 1,
         "user_scratch_stack_reserves": 2,
         "user_scratch_stack_releases": 1,
+        "user_entry_ttbr0_writes": 1,
         "user_restore_ttbr0_writes": 1,
         "user_restore_vbar_writes": 0,
         "pre_restore_vbar_writes": 0,
         "kernel_irq_elr_system": 2,
         "kernel_irq_wfi_label_addresses": 2,
-        "bootstrap_wait_wfi": 1,
-        "bootstrap_wait_daif_writes": 2,
+        "idle_wait_wfi": 1,
+        "idle_wait_daif_writes": 2,
         "switch_q_store_instructions": 16,
         "switch_q_load_instructions": 16,
         "switch_saved_q_registers": 32,
@@ -267,28 +267,25 @@ def aarch64_measurements(
         "switch_cpacr_writes": 2,
         "switch_isb": 2,
     }
-    helper_lines = {
-        "signal_capture": (signal_capture, "stp"),
-        "signal_restore": (signal_restore, "ldp"),
-        "clone_capture": (clone_capture, "stp"),
-        "exec_reset": (exec_reset, "ldp"),
-    }
-    for name, (lines, operation) in helper_lines.items():
-        registers = helper_registers[name]
+    # Linux signal/clone/exec state now uses two EL0 service helpers. Keep the complete
+    # vector shape, and require zero privileged FP enable/disable operations there.
+    for name, lines, operation in (
+        ("service_fp_capture", service_fp_capture, "stp"),
+        ("service_fp_restore", service_fp_restore, "ldp"),
+    ):
+        registers = q_registers(lines, operation[:2])
         measured[f"{name}_q_instructions"] = count_matching(lines, rf"^{operation}\s+q")
         measured[f"{name}_q_registers"] = len(registers)
         measured[f"{name}_q_register_set"] = int(sorted(registers) == list(range(32)))
         measured[f"{name}_fp_system"] = count_matching(lines, r"\b(?:fpcr|fpsr)\b")
-        measured[f"{name}_cpacr_writes"] = count_matching(
-            lines, r"^msr\s+cpacr_el1\b"
-        )
+        measured[f"{name}_cpacr_writes"] = count_matching(lines, r"^msr\s+cpacr_el1\b")
         measured[f"{name}_isb"] = count_matching(lines, r"^isb$")
         expected[f"{name}_q_instructions"] = 16
         expected[f"{name}_q_registers"] = 32
         expected[f"{name}_q_register_set"] = 1
         expected[f"{name}_fp_system"] = 2
-        expected[f"{name}_cpacr_writes"] = 2
-        expected[f"{name}_isb"] = 2
+        expected[f"{name}_cpacr_writes"] = 0
+        expected[f"{name}_isb"] = 0
     return measured, expected
 
 
@@ -314,34 +311,26 @@ def inspect_target(
         "__aarch64_user_sync",
         "__aarch64_user_irq",
         "__aarch64_user_common",
-        "__aarch64_restore",
     ):
         user_trap_assembly += instructions(tool, elf, table, symbol)
     kernel_irq = instructions(tool, elf, table, "__aarch64_kernel_irq")
-    bootstrap_wait = []
+    idle_wait = []
     for symbol in (
         "__wait_with_local_irq_masked",
         "__local_irq_wait_wfi",
         "__local_irq_wait_wfi_resume",
     ):
-        bootstrap_wait += instructions(tool, elf, table, symbol)
-    user_return = instructions(tool, elf, table, "kernel::trap::trap_return")
+        idle_wait += instructions(tool, elf, table, symbol)
+    user_return = instructions(tool, elf, table, "kernel::execution::trap::trap_return")
     context_switch = instructions(tool, elf, table, "__switch")
-    signal_capture = instructions(tool, elf, table, "__aarch64_signal_fp_capture")
-    signal_restore = instructions(tool, elf, table, "__aarch64_signal_fp_restore")
-    clone_capture = instructions(tool, elf, table, "__aarch64_clone_fp_capture")
-    exec_reset = instructions(tool, elf, table, "__aarch64_exec_fp_reset")
+    user_restore = instructions(tool, elf, table, "__aarch64_restore")
+    service = ROOT / "target" / target.service_triple / "release/linuxd"
+    service_table = symbols(tool, service)
+    capture = instructions(tool, service, service_table, "linuxd_fp_capture")
+    restore = instructions(tool, service, service_table, "linuxd_fp_restore")
     measured, expected = aarch64_measurements(
-        ordinary,
-        user_trap_assembly,
-        kernel_irq,
-        bootstrap_wait,
-        user_return,
-        context_switch,
-        signal_capture,
-        signal_restore,
-        clone_capture,
-        exec_reset,
+        ordinary, user_trap_assembly, kernel_irq, idle_wait, user_return,
+        context_switch, user_restore, capture, restore,
     )
     return "release AArch64 trap/context-switch path", measured, expected
 
@@ -357,6 +346,10 @@ def main() -> int:
             ["cargo", "build", "--release", "--target", target.kernel_triple],
             cwd=ROOT / "kernel",
             check=True,
+        )
+        subprocess.run(
+            ["cargo", "build", "--release", "-p", "linuxd", "--target", target.service_triple],
+            cwd=ROOT, check=True,
         )
     if not elf.exists():
         parser.error(f"missing release kernel: {elf}")

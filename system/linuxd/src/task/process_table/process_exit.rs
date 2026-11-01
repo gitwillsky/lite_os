@@ -295,66 +295,74 @@ pub(super) fn request_group_exit(
     let current_tid = current.tid();
     let (status, initiated) = {
         let mut graph = PROCESS_TABLE.graph.lock();
-        let node = graph.nodes.get_mut(&current.tgid())?;
-        let ProcessState::Live(threads) = &node.state else {
-            return None;
-        };
-        if let Some(status) = node.group_exit {
-            (status, false)
+        // 与 signal publication 共用 graph 边界；PONR OOM 不覆盖先到达的 SIGKILL。
+        let requested = if preserve_pending_fatal && current.has_fatal_signal() {
+            ProcessExitStatus::Signaled(syscall_abi::signal::SIGKILL as u8)
         } else {
-            // 与 signal publication 共用 graph 边界；PONR OOM 不覆盖先到达的 SIGKILL。
-            let requested = if preserve_pending_fatal && current.has_fatal_signal() {
-                ProcessExitStatus::Signaled(syscall_abi::signal::SIGKILL as u8)
-            } else {
-                requested
-            };
-            // 首个发起者唯一决定 parent-visible status；缺少该 owner 会让并发 fatal signal
-            // 与 exit_group 互相覆盖，最终 wait4 结果取决于竞态。
-            node.group_exit = Some(requested);
-            node.job_control = JobControlState::Running;
-            // SIGKILL 没有 stop/continue 冲突集，可在 graph owner 内直接逐 Thread
-            // publication；因此无需为 exit 这条不可失败路径分配 Arc snapshot。
-            for thread in threads
-                .values()
-                .filter(|thread| include_initiator || thread.tid() != current_tid)
-            {
-                thread.queue_group_exit_signal();
-            }
-            (requested, true)
-        }
+            requested
+        };
+        commit_group_exit(
+            &mut graph,
+            current.tgid(),
+            requested,
+            (!include_initiator).then_some(current_tid),
+        )?
     };
 
     if !initiated {
         return Some(status);
     }
 
-    // 1. group_exit 禁止新增 sibling；按 TID cursor 每次只 clone 一个 Arc，锁外进入
-    // scheduler/wait seam，既不分配 snapshot，也不持 graph lock 反转锁序。
-    // 2. 并发已退出 sibling 会从下一次 graph lookup 自然消失。
+    wake_exiting_group(current.tgid(), (!include_initiator).then_some(current_tid));
+    Some(status)
+}
+
+/// 唯一 group status 提交事务；caller 已持 graph，不能在提交后再允许 sibling 正常退出抢占原因。
+pub(super) fn commit_group_exit(
+    graph: &mut ProcessGraph,
+    tgid: usize,
+    requested: ProcessExitStatus,
+    excluded_tid: Option<usize>,
+) -> Option<(ProcessExitStatus, bool)> {
+    let node = graph.nodes.get_mut(&tgid)?;
+    let ProcessState::Live(threads) = &node.state else {
+        return None;
+    };
+    if let Some(status) = node.group_exit {
+        return Some((status, false));
+    }
+    node.group_exit = Some(requested);
+    node.job_control = JobControlState::Running;
+    // SIGKILL 不可屏蔽且没有 stop/continue 冲突集；无需分配 snapshot 或重新取得 graph。
+    for thread in threads
+        .values()
+        .filter(|thread| Some(thread.tid()) != excluded_tid)
+    {
+        thread.queue_group_exit_signal();
+    }
+    Some((requested, true))
+}
+
+/// graph 外按 TID cursor 唤醒已提交退出的 group；无 snapshot 分配，只有实际成员会被访问。
+pub(super) fn wake_exiting_group(tgid: usize, excluded_tid: Option<usize>) {
     let mut cursor = 0;
     loop {
         let next = {
             let graph = PROCESS_TABLE.graph.lock();
-            graph
-                .nodes
-                .get(&current.tgid())
-                .and_then(|node| match &node.state {
-                    ProcessState::Live(threads) => threads
-                        .iter_after(&cursor)
-                        .find(|(tid, _)| include_initiator || **tid != current_tid)
-                        .map(|(&tid, thread)| (tid, thread.clone())),
-                    ProcessState::Exited(..) => None,
-                })
+            graph.nodes.get(&tgid).and_then(|node| match &node.state {
+                ProcessState::Live(threads) => threads
+                    .iter_after(&cursor)
+                    .find(|(tid, _)| Some(**tid) != excluded_tid)
+                    .map(|(&tid, thread)| (tid, thread.clone())),
+                ProcessState::Exited(..) => None,
+            })
         };
-        let Some((tid, thread)) = next else {
-            break;
-        };
+        let Some((tid, thread)) = next else { break };
         cursor = tid;
         crate::task::processor::continue_stopped_task(thread.clone());
         super::signal::interrupt_waiting_task(&thread);
         crate::task::processor::request_task_reschedule(&thread);
     }
-    Some(status)
 }
 
 /// 终止主体已返回的当前内核线程。

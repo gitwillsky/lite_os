@@ -44,9 +44,7 @@ unsafe impl GlobalAlloc for FaultAllocator {
                 .try_with(|flag| flag.replace(false))
                 .unwrap_or(false)
         {
-            assert!(
-                crate::task::current_task().is_none_or(|task| task.handle_unlocked())
-            );
+            assert!(crate::task::current_task().is_none_or(|task| task.handle_unlocked()));
             return core::ptr::null_mut();
         }
         unsafe { System.alloc(layout) }
@@ -985,242 +983,234 @@ fn actual_two_descriptor_io_capture_rejects_path_and_releases_table_before_opera
         .unwrap();
 }
 
-
-    #[path = "../src/sync.rs"]
-    pub(crate) mod sync;
-    #[path = "../../../system/linuxd/src/task"]
-    pub(crate) mod task {
-        use crate::{Arc, RefCell};
-        thread_local! { static CURRENT: RefCell<Option<Arc<TaskControlBlock>>> = const { RefCell::new(None) }; }
-        pub(crate) use model::TaskControlBlock;
-        pub(crate) fn current_task() -> Option<Arc<TaskControlBlock>> {
-            CURRENT.with(|value| value.borrow().clone())
-        }
-        pub(crate) fn enter(task: &Arc<TaskControlBlock>) {
-            CURRENT.with(|value| *value.borrow_mut() = Some(task.clone()));
-        }
-        pub(crate) enum PidFdError {
-            NotFound,
-            Permission,
-            NoMemory,
-            Interrupted,
-            BadDescriptor,
-        }
-        pub(crate) mod process_table {
-            pub(crate) mod pidfd {
-                pub(crate) fn file_accessible(_: &super::super::TaskControlBlock) -> bool {
-                    unreachable!("PIDFD graph eligibility belongs to PIDFD fixtures")
-                }
-            }
-            pub(crate) fn is_single_threaded(_: &super::TaskControlBlock) -> bool {
-                true
+#[path = "../src/sync.rs"]
+pub(crate) mod sync;
+#[path = "../../../system/linuxd/src/task"]
+pub(crate) mod task {
+    use crate::{Arc, RefCell};
+    thread_local! { static CURRENT: RefCell<Option<Arc<TaskControlBlock>>> = const { RefCell::new(None) }; }
+    pub(crate) use model::TaskControlBlock;
+    pub(crate) fn current_task() -> Option<Arc<TaskControlBlock>> {
+        CURRENT.with(|value| value.borrow().clone())
+    }
+    pub(crate) fn enter(task: &Arc<TaskControlBlock>) {
+        CURRENT.with(|value| *value.borrow_mut() = Some(task.clone()));
+    }
+    pub(crate) enum PidFdError {
+        NotFound,
+        Permission,
+        NoMemory,
+        Interrupted,
+        BadDescriptor,
+    }
+    pub(crate) mod process_table {
+        pub(crate) mod pidfd {
+            pub(crate) fn file_accessible(_: &super::super::TaskControlBlock) -> bool {
+                unreachable!("PIDFD graph eligibility belongs to PIDFD fixtures")
             }
         }
-        pub(crate) mod model {
-            use alloc::sync::Arc;
-            use spin::Mutex;
-            mod file_table;
-            use file_table::{FileTableHandle, FileTableOwner, try_file_handle};
-            mod file_descriptions;
-            mod namespaces;
-            mod process_resources;
-            use namespaces::FsNamespaceHandle;
-            use process_resources::FsContext;
-            struct ProcessId(usize);
-            pub(crate) struct Process {
-                tgid: ProcessId,
-                leader_files: Mutex<FileTableHandle>,
-                terminal: Mutex<Option<Arc<crate::devices::tty::Terminal>>>,
+        pub(crate) fn is_single_threaded(_: &super::TaskControlBlock) -> bool {
+            true
+        }
+    }
+    pub(crate) mod model {
+        use alloc::sync::Arc;
+        use spin::Mutex;
+        mod file_table;
+        use file_table::{FileTableHandle, FileTableOwner, try_file_handle};
+        mod file_descriptions;
+        mod namespaces;
+        mod process_resources;
+        use namespaces::FsNamespaceHandle;
+        use process_resources::FsContext;
+        struct ProcessId(usize);
+        pub(crate) struct Process {
+            tgid: ProcessId,
+            leader_files: Mutex<FileTableHandle>,
+            terminal: Mutex<Option<Arc<crate::devices::tty::Terminal>>>,
+        }
+        struct Thread {
+            files: FileTableHandle,
+            fs_namespaces: FsNamespaceHandle,
+            file_wait: Mutex<Option<crate::sync::TaskMutexWaitPreparation>>,
+        }
+        struct Execution {
+            tid: core::sync::atomic::AtomicUsize,
+        }
+        // execution variant是显式constructor边界；namespace tuple/retirement全部使用production。
+        struct KernelNamespaces {
+            namespaces: Mutex<Option<namespaces::NamespaceMembership>>,
+        }
+        enum TaskKind {
+            User {},
+            Kernel(KernelNamespaces),
+        }
+        pub(crate) struct TaskControlBlock {
+            kind: TaskKind,
+            process: Arc<Process>,
+            thread: Thread,
+            execution: Execution,
+        }
+        impl Process {
+            pub(crate) fn snapshot_descriptors(
+                &self,
+            ) -> Result<
+                alloc::vec::Vec<crate::fs::ProcFileDescriptorSnapshot>,
+                crate::fs::FileSystemError,
+            > {
+                self.proc_file_descriptors()
             }
-            struct Thread {
-                files: FileTableHandle,
-                fs_namespaces: FsNamespaceHandle,
-                file_wait: Mutex<Option<crate::sync::TaskMutexWaitPreparation>>,
+        }
+        impl TaskControlBlock {
+            pub(crate) fn snapshot_descriptors(
+                &self,
+            ) -> Result<
+                alloc::vec::Vec<crate::fs::ProcFileDescriptorSnapshot>,
+                crate::fs::FileSystemError,
+            > {
+                self.proc_file_descriptors()
             }
-            struct Execution {
-                tid: core::sync::atomic::AtomicUsize,
+            fn namespace_rlimits(&self) -> crate::namespace::NamespaceRlimits {
+                unreachable!("new user namespace admission belongs to credential fixtures")
             }
-            // execution variant是显式constructor边界；namespace tuple/retirement全部使用production。
-            struct KernelNamespaces {
-                namespaces: Mutex<Option<namespaces::NamespaceMembership>>,
+            fn may_inspect_thread_real(&self, _: &Self) -> bool {
+                unreachable!("REALCREDS inspection belongs to credential/PIDFD fixtures")
             }
-            enum TaskKind {
-                User {},
-                Kernel(KernelNamespaces),
+            fn may_inspect_thread(&self, _: &Self) -> bool {
+                unreachable!("FSCREDS inspection belongs to credential/PIDFD fixtures")
             }
-            pub(crate) struct TaskControlBlock {
-                kind: TaskKind,
-                process: Arc<Process>,
-                thread: Thread,
-                execution: Execution,
+            fn credential_guard(&self) -> &crate::sync::TaskMutex<()> {
+                unreachable!("exec authorization belongs to credential/PIDFD fixtures")
             }
-            impl Process {
-                pub(crate) fn snapshot_descriptors(
-                    &self,
-                ) -> Result<
-                    alloc::vec::Vec<crate::fs::ProcFileDescriptorSnapshot>,
-                    crate::fs::FileSystemError,
-                > {
-                    self.proc_file_descriptors()
+            pub(crate) fn tgid(&self) -> usize {
+                self.process.tgid.0
+            }
+            pub(crate) fn tid(&self) -> usize {
+                self.execution
+                    .tid
+                    .load(core::sync::atomic::Ordering::Acquire)
+            }
+            pub(crate) fn pid_namespace(&self) -> Arc<crate::namespace::PidNamespace> {
+                crate::namespace::initial_pid()
+            }
+            pub(crate) fn process(&self) -> &Arc<Process> {
+                &self.process
+            }
+            // 这里只装配 fs/credential namespace；SEM_UNDO 由实际 ipc owner fixture 与 guest 覆盖。
+            fn replace_semaphore_undo(&self, _: crate::ipc::SemaphoreUndoHandle) {
+                unreachable!("SEM_UNDO lifecycle is outside this producer seam")
+            }
+            fn thread(&self) -> &Thread {
+                &self.thread
+            }
+            fn file_wait(&self) -> &Mutex<Option<crate::sync::TaskMutexWaitPreparation>> {
+                &self.thread.file_wait
+            }
+            fn is_kernel_thread(&self) -> bool {
+                matches!(self.kind, TaskKind::Kernel(_))
+            }
+            // Credential contents are outside the FileTable fixture's assertions.
+            fn namespace_authority(&self) -> crate::namespace::NamespaceAuthority {
+                crate::namespace::NamespaceAuthority {
+                    namespace: crate::namespace::initial_user(),
+                    effective_uid: 0,
+                    effective_gid: 0,
+                    effective_capabilities: syscall_abi::capability::VALID_MASK,
                 }
             }
-            impl TaskControlBlock {
-                pub(crate) fn snapshot_descriptors(
-                    &self,
-                ) -> Result<
-                    alloc::vec::Vec<crate::fs::ProcFileDescriptorSnapshot>,
-                    crate::fs::FileSystemError,
-                > {
-                    self.proc_file_descriptors()
-                }
-                fn namespace_rlimits(&self) -> crate::namespace::NamespaceRlimits {
-                    unreachable!("new user namespace admission belongs to credential fixtures")
-                }
-                fn may_inspect_thread_real(&self, _: &Self) -> bool {
-                    unreachable!("REALCREDS inspection belongs to credential/PIDFD fixtures")
-                }
-                fn may_inspect_thread(&self, _: &Self) -> bool {
-                    unreachable!("FSCREDS inspection belongs to credential/PIDFD fixtures")
-                }
-                fn credential_guard(&self) -> &crate::sync::TaskMutex<()> {
-                    unreachable!("exec authorization belongs to credential/PIDFD fixtures")
-                }
-                pub(crate) fn tgid(&self) -> usize {
-                    self.process.tgid.0
-                }
-                pub(crate) fn tid(&self) -> usize {
-                    self.execution
-                        .tid
-                        .load(core::sync::atomic::Ordering::Acquire)
-                }
-                pub(crate) fn pid_namespace(&self) -> Arc<crate::namespace::PidNamespace> {
-                    crate::namespace::initial_pid()
-                }
-                pub(crate) fn process(&self) -> &Arc<Process> {
-                    &self.process
-                }
-                // 这里只装配 fs/credential namespace；SEM_UNDO 由实际 ipc owner fixture 与 guest 覆盖。
-                fn replace_semaphore_undo(&self, _: crate::ipc::SemaphoreUndoHandle) {
-                    unreachable!("SEM_UNDO lifecycle is outside this producer seam")
-                }
-                fn thread(&self) -> &Thread {
-                    &self.thread
-                }
-                fn file_wait(
-                    &self,
-                ) -> &Mutex<Option<crate::sync::TaskMutexWaitPreparation>>
-                {
-                    &self.thread.file_wait
-                }
-                fn is_kernel_thread(&self) -> bool {
-                    matches!(self.kind, TaskKind::Kernel(_))
-                }
-                // Credential contents are outside the FileTable fixture's assertions.
-                fn namespace_authority(&self) -> crate::namespace::NamespaceAuthority {
-                    crate::namespace::NamespaceAuthority {
-                        namespace: crate::namespace::initial_user(),
-                        effective_uid: 0,
-                        effective_gid: 0,
-                        effective_capabilities: syscall_abi::capability::VALID_MASK,
-                    }
-                }
-                fn user_namespace(&self) -> Arc<crate::namespace::UserNamespace> {
-                    crate::namespace::initial_user()
-                }
-                fn enter_user_namespace(&self, _: Arc<crate::namespace::UserNamespace>) {
-                    unreachable!("credential seam")
-                }
-                fn file_descriptor_limit(&self) -> usize {
-                    1_048_576
-                }
-                pub(crate) fn root(pid: usize) -> Arc<Self> {
-                    crate::namespace::boot();
-                    crate::ipc::initialize_namespaces().unwrap();
-                    crate::net::boot_net();
-                    let table = crate::file::FileDescriptorTable::with_console().unwrap();
-                    let files = try_file_handle(FileTableOwner::try_new(table).unwrap()).unwrap();
-                    Arc::new(Self {
-                        kind: TaskKind::User {},
-                        process: Arc::new(Process {
-                            tgid: ProcessId(pid),
-                            leader_files: Mutex::new(files.clone()),
-                            terminal: Mutex::new(None),
-                        }),
-                        thread: Thread {
-                            files,
-                            file_wait: Mutex::new(Some(
-                                crate::sync::TaskMutexWaitPreparation::prepare()
-                                    .unwrap(),
-                            )),
-                            fs_namespaces: namespaces::initial_fs_namespace_handle(Arc::new(
-                                Mutex::new(FsContext {
-                                    cwd: crate::fs::vfs().open_file(b"/").unwrap(),
-                                    root: crate::fs::vfs().open_file(b"/").unwrap(),
-                                    umask: 0o022,
-                                }),
-                            ))
-                            .unwrap(),
-                        },
-                        execution: Execution {
-                            tid: core::sync::atomic::AtomicUsize::new(pid),
-                        },
+            fn user_namespace(&self) -> Arc<crate::namespace::UserNamespace> {
+                crate::namespace::initial_user()
+            }
+            fn enter_user_namespace(&self, _: Arc<crate::namespace::UserNamespace>) {
+                unreachable!("credential seam")
+            }
+            fn file_descriptor_limit(&self) -> usize {
+                1_048_576
+            }
+            pub(crate) fn root(pid: usize) -> Arc<Self> {
+                crate::namespace::boot();
+                crate::ipc::initialize_namespaces().unwrap();
+                crate::net::boot_net();
+                let table = crate::file::FileDescriptorTable::with_console().unwrap();
+                let files = try_file_handle(FileTableOwner::try_new(table).unwrap()).unwrap();
+                Arc::new(Self {
+                    kind: TaskKind::User {},
+                    process: Arc::new(Process {
+                        tgid: ProcessId(pid),
+                        leader_files: Mutex::new(files.clone()),
+                        terminal: Mutex::new(None),
+                    }),
+                    thread: Thread {
+                        files,
+                        file_wait: Mutex::new(Some(
+                            crate::sync::TaskMutexWaitPreparation::prepare().unwrap(),
+                        )),
+                        fs_namespaces: namespaces::initial_fs_namespace_handle(Arc::new(
+                            Mutex::new(FsContext {
+                                cwd: crate::fs::vfs().open_file(b"/").unwrap(),
+                                root: crate::fs::vfs().open_file(b"/").unwrap(),
+                                umask: 0o022,
+                            }),
+                        ))
+                        .unwrap(),
+                    },
+                    execution: Execution {
+                        tid: core::sync::atomic::AtomicUsize::new(pid),
+                    },
+                })
+            }
+            pub(crate) fn child(&self, pid: usize, same_group: bool, share: bool) -> Arc<Self> {
+                let files = self.clone_file_table(share).unwrap();
+                let process = if same_group {
+                    self.process.clone()
+                } else {
+                    Arc::new(Process {
+                        tgid: ProcessId(pid),
+                        leader_files: Mutex::new(files.clone()),
+                        terminal: Mutex::new(self.process.terminal.lock().clone()),
                     })
-                }
-                pub(crate) fn child(&self, pid: usize, same_group: bool, share: bool) -> Arc<Self> {
-                    let files = self.clone_file_table(share).unwrap();
-                    let process = if same_group {
-                        self.process.clone()
-                    } else {
-                        Arc::new(Process {
-                            tgid: ProcessId(pid),
-                            leader_files: Mutex::new(files.clone()),
-                            terminal: Mutex::new(self.process.terminal.lock().clone()),
-                        })
-                    };
-                    Arc::new(Self {
-                        kind: TaskKind::User {},
-                        process,
-                        thread: Thread {
-                            files,
-                            fs_namespaces: namespaces::try_fs_namespace_handle(
-                                self.namespace_snapshot(),
-                                self.clone_fs_context(true).unwrap(),
-                            )
-                            .unwrap(),
-                            file_wait: Mutex::new(Some(
-                                crate::sync::TaskMutexWaitPreparation::prepare()
-                                    .unwrap(),
-                            )),
-                        },
-                        execution: Execution {
-                            tid: core::sync::atomic::AtomicUsize::new(pid),
-                        },
-                    })
-                }
-                pub(crate) fn exit_files(&self) {
-                    self.retire_file_table();
-                }
-                pub(crate) fn exec_files(&self) {
-                    let prepared = self.prepare_file_table_unshare().unwrap();
-                    self.commit_file_table_unshare(prepared);
-                    let retired = core::mem::replace(
-                        &mut *self.process.leader_files.lock(),
-                        self.thread.files.clone(),
-                    );
-                    drop(retired);
-                    self.close_cloexec_files();
-                }
-                pub(crate) fn handle_unlocked(&self) -> bool {
-                    self.thread.files.try_lock().is_some()
-                        && self.thread.file_wait.try_lock().is_some()
-                }
-                pub(crate) fn hold_table(&self, operation: impl FnOnce()) {
-                    self.with_files(|_| operation());
-                }
+                };
+                Arc::new(Self {
+                    kind: TaskKind::User {},
+                    process,
+                    thread: Thread {
+                        files,
+                        fs_namespaces: namespaces::try_fs_namespace_handle(
+                            self.namespace_snapshot(),
+                            self.clone_fs_context(true).unwrap(),
+                        )
+                        .unwrap(),
+                        file_wait: Mutex::new(Some(
+                            crate::sync::TaskMutexWaitPreparation::prepare().unwrap(),
+                        )),
+                    },
+                    execution: Execution {
+                        tid: core::sync::atomic::AtomicUsize::new(pid),
+                    },
+                })
+            }
+            pub(crate) fn exit_files(&self) {
+                self.retire_file_table();
+            }
+            pub(crate) fn exec_files(&self) {
+                let prepared = self.prepare_file_table_unshare().unwrap();
+                self.commit_file_table_unshare(prepared);
+                let retired = core::mem::replace(
+                    &mut *self.process.leader_files.lock(),
+                    self.thread.files.clone(),
+                );
+                drop(retired);
+                self.close_cloexec_files();
+            }
+            pub(crate) fn handle_unlocked(&self) -> bool {
+                self.thread.files.try_lock().is_some() && self.thread.file_wait.try_lock().is_some()
+            }
+            pub(crate) fn hold_table(&self, operation: impl FnOnce()) {
+                self.with_files(|_| operation());
             }
         }
     }
-
+}
 
 pub(crate) mod devices {
     pub(crate) mod tty {
@@ -1232,4 +1222,3 @@ pub(crate) mod devices {
         }
     }
 }
-

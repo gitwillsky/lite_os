@@ -13,6 +13,7 @@ mod sendfile;
 pub(crate) use sendfile::{sys_copy_file_range, sys_sendfile};
 
 mod regular;
+pub(in crate::syscall) use regular::read_available as read_regular_available;
 use regular::{
     PreparedRegularWriteStaging, read_vectors as read_regular_vectors,
     write_vectors as write_regular_vectors,

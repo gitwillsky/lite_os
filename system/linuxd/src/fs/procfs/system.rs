@@ -52,7 +52,7 @@ pub(super) fn format_cpu_stat(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileSy
 pub(super) fn format_meminfo(snapshot: &ProcSnapshot) -> Result<Vec<u8>, FileSystemError> {
     // 1. 内核不回收页缓存，也没有交换设备：MemAvailable 等于 MemFree，交换项为 0。
     // 2. 匿名/映射/shmem/slab/内核栈/页表页属于内核与各服务私有的分配，没有跨进程汇总的 owner，报告 0
-    //    （范围缩减记录在 docs/plans/microkernel.md）。
+    //    （统计范围记录在 docs/syscall-support/memory.md）。
     proc_text(format_args!(
         "MemTotal:       {} kB\nMemFree:        {} kB\nMemAvailable:   {} kB\nBuffers:        0 kB\nCached:         {} kB\nSwapCached:     0 kB\nActive:         0 kB\nInactive:       0 kB\nSwapTotal:      0 kB\nSwapFree:       0 kB\nDirty:          {} kB\nWriteback:      0 kB\nAnonPages:      0 kB\nMapped:         0 kB\nShmem:          0 kB\nSlab:           0 kB\nKernelStack:    0 kB\nPageTables:     0 kB\n",
         snapshot.total_pages * 4,

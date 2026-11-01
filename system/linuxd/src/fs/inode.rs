@@ -350,6 +350,15 @@ pub(crate) trait Inode: Send + Sync {
 
     fn read_storage(&self, offset: u64, buf: &mut [u8]) -> Result<usize, FileSystemError>;
 
+    /// 当前缓存是否无需后端重新验证即可读取；不发起存储请求。
+    ///
+    /// # Returns
+    ///
+    /// 普通本地 inode 为 true；有外部失效/属性租期的 inode 必须查询自己的现有权威状态。
+    fn data_cache_valid(&self) -> bool {
+        true
+    }
+
     /// regular read 开始前、未持该文件页缓存锁时的数据重新验证（Linux FUSE 在 `read_iter` 中的
     /// `fuse_update_attributes`）。缺省无事可做；内容可被其他客户端改动的 filesystem 在此刷新过期属性，
     /// 发现 mtime/size 变化时作废页缓存，缺失时长期打开的文件一直读到旧内容。
@@ -385,11 +394,7 @@ pub(crate) trait Inode: Send + Sync {
     ///
     /// # Returns
     ///
-    /// 读到的总字节数；少于各切片总长时调用者按 I/O 错误处理。
-    ///
-    /// # Errors
-    ///
-    /// 透传存储错误。缺省逐页调用 [`Inode::read_storage`]；FUSE 覆盖为单个 READ 请求。
+    /// 返回实际读取的字节数；存储错误直接传播。缺省逐页读，FUSE 覆盖为批量 READ。
     fn read_storage_pages(
         &self,
         offset: u64,

@@ -116,9 +116,15 @@ pub(crate) enum Disposition {
     Exit,
 }
 
+/// owner 完成可阻塞的返回前处理后，移交一次硬件视图选择；不复制持久执行模式。
+pub(crate) enum UserReturn {
+    Enter(crate::vm::ExecutionView),
+    Exit,
+}
+
 /// 用户线程的 trap 语义；由进程层实现。
 ///
-/// 方法都返回 [`Disposition`] 而不是自行退出：退出不返回，若在 owner 内部直接退出，
+/// 方法返回 [`Disposition`] 或 [`UserReturn`]，不自行退出：退出不返回，若在 owner 内部直接退出，
 /// 调用栈上持有的线程与 owner 引用将永久泄漏。
 pub(crate) trait ThreadOwner: Send + Sync {
     /// 处理一次 syscall 指令；寄存器在 `thread` 的用户上下文中。
@@ -126,7 +132,7 @@ pub(crate) trait ThreadOwner: Send + Sync {
     /// 处理一次同步异常。
     fn exception(self: Arc<Self>, thread: &Arc<Thread>, exception: UserException) -> Disposition;
     /// 返回用户态前的最后处理（kill、kick、模式切换）。
-    fn before_user_return(self: Arc<Self>, thread: &Arc<Thread>) -> Disposition;
+    fn before_user_return(self: Arc<Self>, thread: &Arc<Thread>) -> UserReturn;
     /// 线程执行体已退休、仍为 current 时调用一次。
     fn exited(self: Arc<Self>, thread: &Arc<Thread>);
 }

@@ -135,10 +135,11 @@ P2 linuxd 内存设计（替换旧 `memory` 的帧/页表/COW/swap/回收实现�
   权限不符 SEGV_ACCERR、已映射但无法提供页（pager 失败/越过 EOF）SIGBUS、未映射 SEGV_MAPERR。
 - user copy：持 mm 读锁校验 VMA 后经 `process_read/write_memory` 复制（得到 EFAULT 而不是服务故障）；
   futex 等原子操作先以 `process_read_memory` 探测并调入页，再在 mm 锁内直接原子访问（服务线程运行在该成员地址空间）。
-- 页缓存：每个 inode 一个 VMO。tmpfs/memfd/shm 用普通 VMO 本身作存储；ext4/FUSE 用 pager VMO，linuxd 的 pager 线程
+- 页缓存：每个 inode 一个 VMO。tmpfs/memfd/shm 使用按实际驻留页收费的 pager VMO；ext4/FUSE 用存储 pager VMO，linuxd 的 pager 线程
   在 `PAGE_REQUEST` 时从后端读入并 `supply_pages`，回写经 `OP_QUERY_DIRTY`/`OP_WRITEBACK_BEGIN`。read/write 走 `vmo_read/write`。
 - 删除：swap、后台回收、内存压力、frame 统计（`/proc/meminfo` 等改由 `SystemBasic` 与 linuxd 自身计数投影）。与未配置 `CONFIG_SWAP` 的 Linux 一致：swapon/swapoff 不注册（ENOSYS），没有 `/proc/swaps`，Swap 字段为 0。
-- 页缓存 pager：分派线程 + 按需增长的工作线程池（存储读可能阻塞在 FUSE 守护进程上，单线程 pager 会与守护进程自身的补页互锁）；NOWAIT 读（RWF_NOWAIT、io_uring 非阻塞读）不再支持，走阻塞路径。
+- 页缓存 pager：分派线程 + 按需增长的工作线程池（存储读可能阻塞在 FUSE 守护进程上，单线程 pager 会与守护进程自身的补页互锁）；
+  io_uring 的已驻留非阻塞读不提交 pager 请求，缓存未命中时回退至阻塞车道；preadv2 的 RWF_NOWAIT 仍返回 EOPNOTSUPP。
 - 页缓存补页按 `Inode::readahead_pages` 扩展为预读窗口（FUSE 协商的 `max_readahead`）；已驻留页由内核保持不变。
 - 已知性能后续项：user copy 经内核调用；可改为 Starnix 式“直接访问 + 异常恢复”，届时需内核提供异常恢复 PC。
 
@@ -167,9 +168,9 @@ P3 设计（实现约束）：
   `EntropySource`、`UsbDevice`）是 devmgr 与 linuxd 之间的契约：devmgr 中驱动实现它们，server 适配层把请求映射到驱动；
   linuxd 中 remote client 实现同一 trait，UAPI 层（tty/drm/input/audio/块设备节点）不变。trait 定义与线协议放在共享协议 crate。
 - 传输：每个设备一条 channel。同步请求用 `channel_call`（txid 匹配，调用线程直接阻塞）；设备主动事件（完成、输入、接收帧、
-  热插拔）由 devmgr 写入事件 channel，linuxd 的接收线程分派到原有通知路径。大块数据经 VMO：块 I/O 与 PCM 使用连接时建立的共享缓冲，
+  热插拔）由 devmgr 写入事件 channel，linuxd 的接收线程分派到原有通知路径。大块数据经 VMO：块 I/O 使用连接时建立的共享缓冲，PCM 固定 period 随请求传递，
   GEM/DMA-BUF 以 VMO 句柄传递，由 devmgr 以设备 BTI 固定。
-- 平台资源（DTB 设备事实、MMIO/IRQ resource、IOMMU/BTI）随驱动迁到 devmgr；linuxd 不再持有根 resource 的设备权限，只保留串口与电源。
+- 平台资源（DTB 设备事实、MMIO/IRQ resource、IOMMU/BTI）随驱动迁到 devmgr；linuxd 不再持有根 resource 的设备权限，只保留日志读取、串口、UTC 设置与电源的 system resource。
 - P3.1 实现事实：共享 crate `service-sync`（可睡眠同步原语）、`device-model`（设备类 trait、注册表、`DeviceBacking`、
   `Activity` 通知）、`device-protocol`（每类一个模块，含 server 适配与远端 client；目录、`EventHub`）。devmgr 拥有 DTB、
   MMIO/IRQ、IOMMU/BTI、全部驱动与开机画面（linuxd 经 `boot` 类推进进度）；中断线程只确认设备并请求完成线程分派。

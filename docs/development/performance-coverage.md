@@ -29,20 +29,18 @@ whole-machine latency、boot time 与网络吞吐受宿主抖动影响，只作�
 以实际分辨率、多窗口和缩放 workload 比较，不能由宿主微基准直接宣称 guest FPS。
 
 音频逐流增益使用 `cargo run --release -p architecture-bench --bin audio-mixer-bench` 诊断生产
-Accumulator 的单路/八路 period CPU 成本；host 硬件浮点不代表 kernel softfloat，故不设置 host 时间阈值。
+Accumulator 的单路/八路 period CPU 成本；host 硬件浮点不代表 linuxd softfloat，故不设置 host 时间阈值。
 steady period 不分配、不查 control registry；新增乘法的真实可持续性由 AArch64/HVF 八路、六秒、
 零 XRUN 的 workload 和设备 WAV 分析裁决，不声称长时间播放或游戏延迟已经达标。
-swap 的 area/slot CPU 成本以生产模块的 release host fixture 单独诊断：
-`cargo test -p kernel-unit --release --test fork_file_eof production_swap_slot_cpu_cost -- --ignored --nocapture`。
-固定 1/32 area、100,000 次预热和五个样本中位数，测 reserve/retire、clone/retire 与 statistics；
-不代表设备 I/O 或竞争，不沿用 syscall 整数投影的纳秒门槛。32 area publication 上限和有界 scan
-由生产结构与功能回归约束。canonical resident pin 与 weak page registry 的成本使用
-`cargo test -p kernel-unit --release --test fork_file_eof canonical_page_pin_and_bounded_registry_cpu_cost -- --ignored --nocapture`
-单独诊断：pin固定10万次预热、五次中位数；registry保留512/4096活页，每批512个新owner，
-物理输入在计时前准备。host TaskMutex/物理分配 seam 不代表 native 调度或设备 I/O；
-每次最多八个 tombstone probes 的结构界限与故障回归约束复杂度，不放宽时序门槛。
-System proc projection 的 resident 遍历从全部页降为零，
-通过 scope guard 保证；不引入并行 RSS cache，guest 压力回归验证统计与回收行为。
+VMO snapshot/hidden-parent 退休成本由实际生产 owner 的 release host fixture 作诊断：
+`cargo test -p kernel-unit --release --test vmo snapshot_retirement_cpu_cost -- --ignored --nocapture`。
+覆盖多个存活 sibling 与重叠的暂态分支；复用 AVL 节点折叠不分配，宿主锁/frame adapter 不代表目标 TLB 或调度延迟，不设置时间阈值。
+
+MemoryFile 的稀疏补页复用唯一文件 pager 工作池，每次真实 page request 增加一次 PageSource 调用；
+quota lease 与 AVL 节点只在首次文件页提交时分配，普通洞读不分配，连续驻留读写仍批量调用 native copy。
+冷补页的 IPC/调度成本由实际 guest 稀疏、映射、配额失败与回收 workload 诊断，不用 host 虚构 native syscall 延迟，
+既有原生 VMO/translation 和 regular-write 门槛保持原值。
+
 StorageBudget 新锁只用于页/inode 创建、最后释放及 remount/statfs，不进入已有内容的 read/write；
 critical section 仅固定整数运算，无分配/回调。生产 quota 的同类 release fixture 单独测
 `production_storage_quota_cpu_cost`（`--test storage_budget --ignored --nocapture`），其 host IRQ
@@ -56,22 +54,26 @@ idle tick suppression 不增加 host microbenchmark：收益来自 HVF/TCG 的 w
 host unit loop 无法代表它。改动必须通过双 architecture compile/static gate，并以单 QEMU、完整 SMP
 拓扑的多窗口 host CPU 采样作诊断；secondary idle→IPI→task 与 timeout runtime gate 负责活性语义。
 
-资源使用记账（`getrusage`）不新增 benchmark：用户态 trap 返回多一次 counter 读和一次本 CPU 私有 Relaxed 存储，
-缺页多一次 Relaxed 读和一次原子加，上下文切换多两次原子加，tick 多一次原子加，都没有新增锁或分配。
-host 微基准无法代表 trap 往返；user/system 拆分的纯算术由 `scheduler-unit` 单测，
-端到端由 musl smoke 的 `resource-usage.c` 裁决。
+资源记账不新增独立锁/atomic：native SchedulingState 同锁投影成功 restricted fault，Policy 提交 normal/restricted CPU 时间。
+host 生产 Policy 回归验证 checkpoint/mode 切换恰好计费一次；musl resource-usage.c 验证应用可见投影。
+计数边界由 ABI 文档声明，不能用 host 计时替代 trap 往返。
 
-io_uring 当前切片不新增 blocking benchmark：同步路径是对共享页的有界内存循环加一次无竞争的 `TaskMutex` 快路径，CQE 发布是一次 `spin::Mutex` 内的
-16 字节写与一次 release 存储，稳态没有分配（溢出链表只在 CQ 满时增长，且有硬上限）。读写类 opcode 的成本由已有的 `read(2)`/`write(2)` 核心决定，新增部分只有
-一次 NOWAIT 尝试。阻塞路径每次唤醒重新登记一次 `wait_for_poll`（O(挂起请求数) 个 key），挂起数量大时这是线性成本，但它只在请求真的阻塞时发生，
-host key 构造微基准无法衡量批量提交的 syscall 摊销或块层异步重叠；blocking benchmark 需要可比较的实际 I/O 工作负载。
-每条挂起的链是一个 `Box`ed future（fallible 分配）：不会等待的 op（普通文件、显式偏移、fsync、close、cancel、NOP）直接同步完成、不分配；
-会等待的 op（pipe/socket 流式读写、poll、timeout）无论是否真的阻塞都分配一次 future，因为 future 必须在首次 poll 之前就位于堆上（poll 过的 future 不能搬动）。
-持久文件读的新增成本：page cache 命中路径只多一次 `storage_epoch` 读取与一次 `NowaitRead` 状态构造（无分配）；
-未命中每页多一个 `Box`ed `StorageRead`、一个 `PendingRead` 与预留的 cache 节点和页，这些原本也要分配。阻塞车道每个作业一次 `Box` 与一个结果槽 `Arc`。
-正确性由 host 单测与 guest 冷读检查点裁决。
-链新增的热路径成本是每个 SQE 一次 `Member` 构造与每条链一次 `Ring::admit`（`spin::Mutex` 内的有序 `Vec` 追加，链完成时 `binary_search` 加 `remove`），
-批内 SQE 不分配；提交/完成顺序、溢出、阻塞唤醒、取消、读写与 epoll 通知由 `io-uring.c` 烟测与 `abi.rs` 单测裁决，尚无吞吐测量。
+io_uring 不新增 host blocking benchmark：inline regular read 最多暂存 64 KiB，经同一个 VMO tree owner
+确认完整驻留后再交付用户数据；暂存有分配与额外复制，不能仅凭绕开 worker 声称吞吐提高。
+页缺失、缓存失效、direct I/O、position 争用与 write/fsync 仍使用有界阻塞车道；流式请求由 reactor
+按 readiness 推进，不要求应用调整共享 OFD flags。成本边界与能力由实际 guest `io-uring.c` 验证：
+缓存命中须在 enter 返回前完成，冷读不能卡住无关请求，多个提交者可同时首次完成与退休。
+完整 I/O 延迟与吞吐需要同一 guest workload 比较，不用只测 host key 构造的数值替代；当前不声明磁盘吞吐收益。
+lane 停驻复查只在 idle wait publication 后取得已有 Pool 锁，扫描至多八个 worker 的认领状态；
+没有新增锁对象、分配或逐字节路径。确定性生产车道 fixture 强制早到通知窗口，guest FUSE/SQE128
+验证实际停驻与完成，不以 host 微秒阈值代替调度/IPC 延迟。
+链 admission、CQ 发布和等待通知沿用同一 owner；通知 ticket 边界的 CPU 成本由实际 WaitRegistry 的
+futex-transactions benchmark 报告，阈值不变。致命 signal 的 generation 复用原 group-exit 的成员遍历与唤醒，
+无新增锁对象或分配；mask 更新先取得既有 group-state guard，冻结实际接收集合。
+退出状态竞态以真实 SMP fork/pthread/kill/exit_group 回归裁决，不设宿主时序门槛。
+原生线程启动闭包只在创建/退出时调用，改由 Descriptor 保活到 TERMINATED，不改变 syscall/trap 热路径，
+不新增分配或锁对象；启动 guard 不再跨 body 释放。已有双核 65,536 次 carrier churn 同时验证有界内存和回收，
+不以 host 闭包微基准代替实际直接退出路径。
 
 选核轮转不新增 benchmark：每次抢占只多一次本 CPU 私有计数的 Relaxed 读写和一次 Ready/Running 计数读取，选核仍是
 O(CPU 数) 的单趟扫描，没有新增锁、分配或跨 CPU 访问；收益是公平性而非延迟，由 `verify-runtime-scheduler` 与
@@ -107,9 +109,9 @@ runtime gate 裁决，不用失真的 host wall-clock 阈值掩盖。
 - 设备类 deferred vector 每个已发布 bit 一次函数指针调用，handler 表为只追加的 `Once` 槽位，无锁无分配。
 - mmap 的 `MappedFile` 在每次映射建立时分配一次；page fault 是一次 `dyn SharedFileMapping` 调用，进入
   page cache 或 `MemoryFile`（按 `Inode::data_backing` 在建立映射时选定）。
-- 私有文件 read/execute fault 保留 canonical 文件页，省去原来的每页私有 frame、SwappablePage
+- 私有文件 read/execute fault 保留 canonical 文件页，省去原来的每页私有 frame、VMO 私有页
   分配与 4KiB 复制；首次 write 沿既有 COW copy/fence 路径提交。File resident 只增加页 owner
-  与可选 swap alias 的记录，不增加锁、全局状态或逐字节间接层。沿用 translation/COW 成本门禁，
+  的记录，不增加锁、全局状态或逐字节间接层。沿用 translation/COW 成本门禁，
   用实际 memfd/磁盘文件、fork、mprotect 与 truncate workload 验证，不新增墙钟阈值。
 
 inotify 的变更点不增加 benchmark：没有 watch 时每个 `notify_*` 是一次 Relaxed 原子读取；有 watch 时才做 inode
@@ -141,3 +143,12 @@ UDP/TCP ephemeral allocator 使用 16,384-bit 占用投影；固定 N=1,024 endp
 未初始化 input staging gate 以两个 64 KiB socket buffer、一个 1 MiB regular-write
 buffer 和三个 1,024-fd pselect bitmap 为代表样本：copyin 前死写由 1,180,032 bytes 降为 0；
 publication 必须经过同一 `UserInputStaging` initialized-prefix proof，禁止恢复预清零双轨。
+
+PLIC level mask 不增加 benchmark：以一次 priority 写入替代逐 CPU enable bitmap 修改，
+unmask 保留原 affinity 装配并写回有效 priority。MMIO 时序不由 host 数值模拟；实际寄存器 owner
+回归固定 mask/complete 的 enable 不变量，RISC-V 混合 DMA 冷启动与持续 I/O 裁决活性。
+
+受限硬件视图使成员创建及私有区 first-touch 多分配一份页表，normal/private 的叶项在同一事务内更新；
+返回只从已有 ThreadOwner 安全点移交 transient view，最终 token 获取不加锁、不分配、不新增 runtime dispatch。
+两根具有独立 ASID，已有全 ASID fence 同时覆盖，撤销不增加第二轮 IPI。成本由原双架构 trap/release
+门禁、完整 65536-root churn 与实际桌面帧门禁裁决，不放宽阈值；host fixture 只验证映射和 OOM 退休。

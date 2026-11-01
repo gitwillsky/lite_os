@@ -53,7 +53,7 @@ fn caps() -> Vec<u8> {
 #[test]
 fn body_external_attributes_survive_replacement_remount_and_failed_capacity_admission() {
     let _serial = COST_TEST_LOCK.lock().unwrap();
-    
+
     let path = std::env::temp_dir().join(format!("{}-xattr-storage.img", std::process::id()));
     // 原生工具只能在创建时关闭 ea_inode；禁止修改已格式化卷的 feature bit。
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
@@ -141,42 +141,64 @@ fn body_external_attributes_survive_replacement_remount_and_failed_capacity_admi
 #[test]
 fn file_cap_killpriv_is_atomic_with_write_truncate_and_noop_chown() {
     let _serial = COST_TEST_LOCK.lock().unwrap();
-    
+
     let path = scratch_copy("xattr-killpriv.img");
     let fs = mount(&path);
     let root = fs.root_inode().unwrap();
     let inode = root.create(b"capability", InodeType::File, FILE).unwrap();
     inode
-        .change_owner_mode(OwnerModeChange { mode: Some(0o6777), ..Default::default() })
+        .change_owner_mode(OwnerModeChange {
+            mode: Some(0o6777),
+            ..Default::default()
+        })
         .unwrap();
     change(&inode, NAME, Some(caps()), 0).unwrap();
     change(&inode, b"user.keep", Some(vec![0x33; 2100]), 0).unwrap();
     inode
-        .write_storage(0, b"written", Some(crate::vfs::WritePolicy { kill_suidgid: false }))
+        .write_storage(
+            0,
+            b"written",
+            Some(crate::vfs::WritePolicy {
+                kill_suidgid: false,
+            }),
+        )
         .unwrap();
     assert_eq!(inode.metadata().unwrap().mode & 0o6000, 0o6000); // FSETID豁免mode，不豁免capability。
     assert_eq!(inode.read_xattr(NAME), Err(FileSystemError::NotFound));
     assert_eq!(inode.read_xattr(b"user.keep").unwrap(), vec![0x33; 2100]);
     change(&inode, NAME, Some(caps()), 0).unwrap();
     inode
-        .truncate_storage(inode.size(), Some(crate::vfs::WritePolicy { kill_suidgid: false }))
+        .truncate_storage(
+            inode.size(),
+            Some(crate::vfs::WritePolicy {
+                kill_suidgid: false,
+            }),
+        )
         .unwrap();
     assert_eq!(inode.read_xattr(NAME), Err(FileSystemError::NotFound));
     change(&inode, NAME, Some(caps()), 0).unwrap();
     inode
-        .change_owner_mode(OwnerModeChange { uid: Some(0), gid: Some(0), ..Default::default() })
+        .change_owner_mode(OwnerModeChange {
+            uid: Some(0),
+            gid: Some(0),
+            ..Default::default()
+        })
         .unwrap();
     assert_eq!(inode.read_xattr(NAME), Err(FileSystemError::NotFound));
     change(&inode, NAME, Some(Vec::new()), 0).unwrap();
     inode
-        .write_storage(0, b"again", Some(crate::vfs::WritePolicy { kill_suidgid: false }))
+        .write_storage(
+            0,
+            b"again",
+            Some(crate::vfs::WritePolicy {
+                kill_suidgid: false,
+            }),
+        )
         .unwrap();
     assert_eq!(inode.read_xattr(NAME).unwrap(), b"");
     // 后台writeback从不伪装成caller去权限。
     change(&inode, NAME, Some(caps()), 0).unwrap();
-    inode
-        .write_storage(0, b"cache", None)
-        .unwrap();
+    inode.write_storage(0, b"cache", None).unwrap();
     assert_eq!(inode.read_xattr(NAME).unwrap(), caps());
     inode.sync_storage().unwrap();
     drop((inode, root, fs));
@@ -198,7 +220,7 @@ fn file_cap_killpriv_is_atomic_with_write_truncate_and_noop_chown() {
 #[test]
 fn native_ea_inode_import_and_service_maximum_value_replacement_and_final_reclaim() {
     let _serial = COST_TEST_LOCK.lock().unwrap();
-    
+
     let path = scratch_copy("xattr-value-inodes.img");
     let payload = path.with_extension("value");
     let native_value: Vec<u8> = (0..4096).map(|index| (index % 251) as u8).collect();
@@ -314,7 +336,7 @@ fn native_ea_inode_import_and_service_maximum_value_replacement_and_final_reclai
 #[test]
 fn ea_inode_staging_failure_refunds_allocation_and_preserves_old_value() {
     let _serial = COST_TEST_LOCK.lock().unwrap();
-    
+
     let path = scratch_copy("xattr-value-rollback.img");
     let fs = mount(&path);
     let root = fs.root_inode().unwrap();
@@ -355,7 +377,7 @@ fn ea_inode_staging_failure_refunds_allocation_and_preserves_old_value() {
 #[test]
 fn shared_external_block_counts_one_value_holder_and_cow_adds_one_physical_holder() {
     let _serial = COST_TEST_LOCK.lock().unwrap();
-    
+
     let path = scratch_copy("xattr-shared-ea-block.img");
     let name = format!("user.{}", "x".repeat(200));
     let fs = mount(&path);

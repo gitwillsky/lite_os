@@ -73,3 +73,21 @@ fn user_prefix_selects_facility_and_level_and_newline_is_stripped() {
     // 只去掉一个结尾换行。
     assert_eq!(parse_user_message(b"a\n\n", 4).1, b"a\n");
 }
+
+#[test]
+fn native_record_preserves_full_user_priority_and_rejects_unrelated_annotations() {
+    use crate::kmsg_wire::{priority_annotation, record_priority};
+    for (message, expected, severity) in [
+        (b"<5>x".as_slice(), 13, 1),
+        (b"<26>x", 26, 3),
+        (b"<255>x", 255, 0),
+    ] {
+        let (priority, _) = parse_user_message(message, 4);
+        assert_eq!(
+            record_priority(severity, priority_annotation(priority)),
+            expected
+        );
+    }
+    assert_eq!(record_priority(1, 0), 6);
+    assert_eq!(record_priority(2, u64::MAX), 4);
+}

@@ -86,10 +86,7 @@ fn requeue_preserves_actual_bitset_deadline_and_same_key_count_without_allocatio
     assert_eq!(owner::wake(target, 1, 1), 0);
     assert!(!owner::expire(99));
     assert!(owner::expire(100));
-    assert_eq!(
-        pending.arm(),
-        Err(crate::sync::WaitResult::TimedOut)
-    );
+    assert_eq!(pending.arm(), Err(crate::sync::WaitResult::TimedOut));
     owner::assert_empty();
 }
 #[test]
@@ -169,6 +166,18 @@ fn an_independent_source_can_publish_while_another_operation_is_held() {
         (worker, pending)
     });
     worker.0.join().unwrap();
-    assert_eq!(worker.1.expect("independent source publication was serialized").cancel(), None);
+    assert_eq!(
+        worker
+            .1
+            .expect("independent source publication was serialized")
+            .cancel(),
+        None
+    );
     owner::assert_empty();
+}
+
+#[test]
+fn one_notification_cannot_chase_a_rearmed_poller() {
+    let _serial = SERIAL.lock().unwrap();
+    owner::notification_does_not_wake_a_rearmed_poll();
 }
