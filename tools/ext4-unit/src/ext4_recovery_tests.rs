@@ -22,7 +22,6 @@ use crate::{
             test_mount_allocation_state, test_orphan_drop_admitted,
             wait_test_orphan_drop_admission, with_test_mutation_lock,
         },
-    },
 };
 
 const JBD2_MAGIC: u32 = 0xC03B_3998;
@@ -162,7 +161,7 @@ impl BlockDevice for RecoveryImage {
 
 fn mounted() -> (Arc<RecoveryImage>, Arc<Ext4FileSystem>) {
     let image = RecoveryImage::open();
-    let fs = Ext4FileSystem::new(image.clone(), crate::vfs::DeviceNumber::new(8, 0), false)
+    let fs = Ext4FileSystem::new(image.clone(), false)
         .expect("mount repository ext image");
     (image, fs)
 }
@@ -214,7 +213,7 @@ fn recovery_reloads_allocation_metadata_owners_after_replay() {
     drop(fs);
     image.restore_crash_snapshot();
 
-    let recovered = Ext4FileSystem::new(image, crate::vfs::DeviceNumber::new(8, 0), false)
+    let recovered = Ext4FileSystem::new(image, false)
         .expect("mount committed journal crash snapshot");
     recovered
         .root_inode()
@@ -225,7 +224,7 @@ fn recovery_reloads_allocation_metadata_owners_after_replay() {
 
 #[test]
 fn ea_inode_value_reference_and_bitmap_recover_as_one_transaction() {
-    use crate::vfs::{AccessIdentity, XattrChange};
+    use crate::vfs::{XattrChange};
     let _serial = COST_TEST_LOCK.lock().unwrap();
     for action in 0..3 {
         for barrier in 1..=3 {
@@ -243,24 +242,17 @@ fn ea_inode_value_reference_and_bitmap_recover_as_one_transaction() {
                     },
                 )
                 .unwrap();
-            let identity = AccessIdentity::root();
-            let set = |file: &dyn crate::vfs::Inode, value| {
-                file.change_xattr(XattrChange::new(
-                    b"user.atomic",
-                    value,
-                    0,
-                    &identity,
-                    crate::namespace::boot(),
-                ))
+            let set = |file: &crate::ext4::Ext4Inode, value| {
+                file.change_xattr(XattrChange { name: b"user.atomic", value, flags: 0 })
             };
-            set(&*file, Some(vec![0x19; 8192])).unwrap();
+            set(&file, Some(vec![0x19; 8192])).unwrap();
             root.sync_storage().unwrap();
             let before = fs.statistics().unwrap();
             // 1 为 descriptor/value 已 durable、无 commit；2 为 commit；3 为 home checkpoint。
             image.snapshot_after_flushes(barrier);
             match action {
-                0 => set(&*file, Some(vec![0x83; 65536])).unwrap(),
-                1 => set(&*file, None).unwrap(),
+                0 => set(&file, Some(vec![0x83; 65536])).unwrap(),
+                1 => set(&file, None).unwrap(),
                 2 => root.unlink(b"crash-ea", false).unwrap(),
                 _ => unreachable!(),
             }
@@ -268,7 +260,6 @@ fn ea_inode_value_reference_and_bitmap_recover_as_one_transaction() {
             root.sync_storage().unwrap();
             let recovered = Ext4FileSystem::new(
                 image.crash_clone(),
-                crate::vfs::DeviceNumber::new(8, 0),
                 false,
             )
             .expect("recover EA inode crash snapshot");
@@ -353,7 +344,6 @@ fn recovery_publishes_replayed_orphan_head_before_reclaim() {
     root.sync_storage().unwrap();
     let recovered = Ext4FileSystem::new(
         image.crash_clone(),
-        crate::vfs::DeviceNumber::new(8, 0),
         false,
     )
     .expect("mount replayed orphan transaction");
@@ -565,7 +555,7 @@ fn torn_uncommitted_transaction_is_discarded_instead_of_failing_mount() {
             .expect("descriptor reached the crash snapshot");
         overlay.insert(descriptor + 1, vec![0; BLOCK_SIZE]);
     }
-    let recovered = Ext4FileSystem::new(crashed, crate::vfs::DeviceNumber::new(8, 0), false)
+    let recovered = Ext4FileSystem::new(crashed, false)
         .expect("uncommitted torn transaction must be discarded");
     assert!(matches!(
         recovered
@@ -657,7 +647,7 @@ fn crash_at_every_commit_barrier_recovers_old_or_new_state() {
         drop(fs);
 
         let recovered =
-            Ext4FileSystem::new(crashed.clone(), crate::vfs::DeviceNumber::new(8, 0), false)
+            Ext4FileSystem::new(crashed.clone(), false)
                 .unwrap_or_else(|error| panic!("crash point {crash_after_flush}: mount {error:?}"));
         let root = recovered.root_inode().unwrap();
         let committed = crash_after_flush >= 2;
@@ -723,7 +713,7 @@ fn read_only_mount_defers_orphan_reclaim_until_remount_writable() {
     root.sync_storage().unwrap();
 
     let crashed = image.crash_clone();
-    let recovered = Ext4FileSystem::new(crashed.clone(), crate::vfs::DeviceNumber::new(8, 0), true)
+    let recovered = Ext4FileSystem::new(crashed.clone(), true)
         .expect("read-only mount");
     // 只读：journal 已重放（目录项消失），但 orphan 的 inode 与数据块没有被回收。
     assert!(matches!(
@@ -739,18 +729,12 @@ fn read_only_mount_defers_orphan_reclaim_until_remount_writable() {
         "a read-only mount must not reclaim orphans"
     );
     // remount,rw 补做写前准备，之后与可写挂载得到相同的 allocation state；重复调用是空操作。
-    let readonly_state = test_mount_allocation_state(&recovered);
-    assert_eq!(
-        recovered.remount(b"data=journal", &crate::namespace::boot(), true),
-        Err(FileSystemError::InvalidOperation)
-    );
-    assert_eq!(test_mount_allocation_state(&recovered), readonly_state);
     recovered
-        .remount(b"data=ordered", &crate::namespace::boot(), true)
+        .remount_writable()
         .unwrap();
     assert_eq!(test_mount_allocation_state(&recovered), before);
     recovered
-        .remount(b"", &crate::namespace::boot(), true)
+        .remount_writable()
         .unwrap();
 }
 
@@ -897,7 +881,7 @@ fn mount_recovery_reclaims_crashed_open_directory_orphan() {
     root.sync_storage().unwrap();
     let crashed = image.crash_clone();
     let recovered =
-        Ext4FileSystem::new(crashed, crate::vfs::DeviceNumber::new(8, 0), false).unwrap();
+        Ext4FileSystem::new(crashed, false).unwrap();
     assert!(matches!(
         recovered
             .root_inode()

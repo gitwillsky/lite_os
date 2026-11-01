@@ -10,7 +10,7 @@ use super::{SourceFile, normalized};
 const READY_TRANSITION_CONSUMER: &str = "consume_ready_projection_parts";
 const READY_RETIREMENT_CONSUMER: &str = "consume_ready_projection_cpu";
 const READY_MEMBERSHIP_PATH: &str = "kernel/src/thread/processor/ready_membership.rs";
-const PROCESSOR_PATH: &str = "system/linuxd/src/task/processor.rs";
+const PROCESSOR_PATH: &str = "kernel/src/thread/processor.rs";
 const READY_TRANSITION_COMMIT: &str = "commit_ready_transition";
 const READY_RETIREMENT_COMMIT: &str = "commit_ready_retirement";
 const READY_COMMIT_IMPORT: &str =

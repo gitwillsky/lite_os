@@ -29,6 +29,7 @@ fn option_items_split_on_commas_and_skip_empty_items() {
 
 #[test]
 fn tmpfs_defaults_follow_linux_and_options_override_them() {
+    crate::namespace::boot();
     assert_eq!(
         parse(
             b"",
@@ -91,6 +92,7 @@ fn tmpfs_defaults_follow_linux_and_options_override_them() {
 
 #[test]
 fn tmpfs_rejects_unknown_or_malformed_options_instead_of_ignoring_them() {
+    crate::namespace::boot();
     for bad in [
         &b"huge=always"[..],
         b"size",
@@ -167,6 +169,7 @@ fn pop_first_drains_in_cookie_order_and_keeps_indexes_consistent() {
 
 #[test]
 fn remount_options_keep_unmentioned_parameters() {
+    crate::namespace::boot();
     let current = parse(
         b"size=64k,nr_inodes=10,mode=755,uid=7",
         RAM_PAGES,

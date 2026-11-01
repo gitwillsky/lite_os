@@ -36,8 +36,12 @@ mod arch {
         pub(crate) use crate::signal_action::SignalActionBytes;
     }
 }
-#[path = "../../../system/linuxd/src/file/signalfd.rs"]
-mod file;
+#[path = "../../../system/linuxd/src/file"]
+mod file {
+    mod signalfd;
+    pub(crate) use signalfd::{SignalWaitSource, SignalFd, FileReadinessContext};
+    pub(crate) use crate::sync::next_readiness_generation;
+}
 
 mod memory {
     #[derive(Debug)]
@@ -48,6 +52,7 @@ mod memory {
 
 
     pub(crate) mod sync {
+        pub(crate) use spin::{Mutex, MutexGuard, Once};
         pub(crate) fn next_readiness_generation() -> u64 {
             static GENERATION: core::sync::atomic::AtomicU64 =
                 core::sync::atomic::AtomicU64::new(1);

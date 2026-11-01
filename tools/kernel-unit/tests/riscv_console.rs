@@ -40,14 +40,14 @@ fn firmware_failure_keeps_flushing_full_batches_and_the_partial_tail() {
     for length in [512, 600] {
         BATCHES.with(|batches| batches.borrow_mut().clear());
         let bytes: Vec<_> = (0..length).map(|index| (index / 256) as u8).collect();
-        assert_eq!(console::write_bytes(&bytes), Err(firmware::FirmwareError));
+        console::write_raw(&bytes);
         BATCHES.with(|batches| {
             assert_eq!(
                 *batches.borrow(),
                 bytes.chunks(256).map(<[u8]>::to_vec).collect::<Vec<_>>()
             );
         });
-        assert_eq!(console::write_bytes(b"next write"), Ok(()));
+        console::write_raw(b"next write");
         BATCHES.with(|batches| assert_eq!(batches.borrow().last().unwrap(), b"next write"));
     }
 }

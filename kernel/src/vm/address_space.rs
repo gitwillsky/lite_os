@@ -27,7 +27,7 @@ use spin::Mutex;
 
 use super::page_table::{PagePermissions, PageTable};
 use super::translation::{TranslationCommit, synchronize_address_space_retirement};
-use super::vmo::{CachePolicy, ResolvedPage, Vmo};
+use super::vmo::{CachePolicy, FaultSource, ResolvedPage, Vmo};
 use super::{FaultAccess, USER_END, USER_START, VmError, map_trampoline};
 use crate::arch::mmu::{AddressSpaceKind, AddressSpaceToken};
 use crate::execution::sync::{TaskMutex, TaskMutexGuard};
@@ -196,6 +196,18 @@ pub(crate) enum Placement {
     Specific(usize),
     /// 放在 VMAR 内指定偏移，先解除区间内已有映射。
     Overwrite(usize),
+}
+
+/// 映射的放置、权限上限与缺页准入；只用于创建事务，不复制到另一份映射状态。
+pub(crate) struct MapOptions {
+    /// VMAR 内的放置方式。
+    pub(crate) placement: Placement,
+    /// 当前映射权限。
+    pub(crate) permissions: PagePermissions,
+    /// VMO 句柄允许的最大权限。
+    pub(crate) ceiling: PagePermissions,
+    /// 允许窗口超出当前 backing，访问时再产生缺页。
+    pub(crate) allow_faults: bool,
 }
 
 impl AddressSpace {
@@ -397,23 +409,24 @@ impl AddressSpace {
         self: &Arc<Self>,
         address: usize,
         access: FaultAccess,
-    ) -> Result<(), VmError> {
+    ) -> Result<FaultSource, VmError> {
         let (owner, mapping) = self.lookup(address)?;
         if !mapping.permissions.contains(access.required()) {
             return Err(VmError::AccessDenied);
         }
         let page_address = address & !(PAGE_SIZE - 1);
         let index = mapping.vmo_page + (page_address - mapping.base) / PAGE_SIZE;
-        let mut commit =
+        let (mut commit, source) =
             mapping
                 .vmo
                 .with_resolved(index, access == FaultAccess::Write, |page| {
                     self.install(&owner, &mapping, page_address, page)
+                        .map(|commit| (commit, page.source))
                 })?;
         commit
             .synchronize()
             .unwrap_or_else(|error| panic!("user translation fence failed: {error}"));
-        Ok(())
+        Ok(source)
     }
 
     /// 由 VMO 解析回调调用（持树锁）：装入一条翻译。
@@ -706,8 +719,7 @@ impl SpaceInner {
             return false;
         }
         node.children
-            .iter_from(&start)
-            .next()
+            .ceiling(&start)
             .is_none_or(|(&base, _)| base >= end)
     }
 
@@ -774,10 +786,9 @@ impl Vmar {
     /// 映射 VMO 区间。
     ///
     /// # Parameters
-    /// - `placement`: VMAR 内的放置方式。
+    /// - `options`: 放置方式、权限上限与 faultable mapping 准入。
     /// - `vmo_offset`/`size`: 页对齐的 VMO 字节区间。
-    /// - `permissions`: 必须是本 VMAR 权限与 `ceiling` 的子集。
-    /// - `ceiling`: VMO 句柄 rights 允许的最高权限，之后的 `protect` 不得超出。
+    /// `options.permissions` 必须是本 VMAR 权限与句柄 ceiling 的子集；之后 protect 仍受 ceiling 限制。
     ///
     /// # Returns
     /// 映射起始地址。
@@ -786,13 +797,12 @@ impl Vmar {
     /// 参数非法、越界、地址冲突、权限超出或分配失败。
     pub(crate) fn map(
         &self,
-        placement: Placement,
         vmo: &Arc<Vmo>,
         vmo_offset: u64,
         size: usize,
-        permissions: PagePermissions,
-        ceiling: PagePermissions,
+        options: MapOptions,
     ) -> Result<usize, VmError> {
+        let MapOptions { placement, permissions, ceiling, allow_faults } = options;
         if size == 0
             || !size.is_multiple_of(PAGE_SIZE)
             || !vmo_offset.is_multiple_of(PAGE_SIZE as u64)
@@ -805,7 +815,7 @@ impl Vmar {
         let end = vmo_offset
             .checked_add(size as u64)
             .ok_or(VmError::OutOfRange)?;
-        if end > vmo.size() {
+        if !allow_faults && end > vmo.size() {
             return Err(VmError::OutOfRange);
         }
         if let Placement::Overwrite(offset) = placement {

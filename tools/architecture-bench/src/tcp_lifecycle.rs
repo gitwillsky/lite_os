@@ -1,11 +1,8 @@
-#![feature(allocator_ext)]
 #![allow(dead_code, unused_imports)]
 //! 实际 INET owner 的 TCP lifecycle、UDP ingress/readiness/loan 与有界扫描成本。
-extern crate alloc;
-include!("../../kernel-unit/src/network_endpoint_fixture.rs");
 mod cost_policy;
 fn main() {
-    lifecycle_benchmark(|name, iterations, handles, gated, operation| {
+    netd_unit::benchmark_lifecycle(|name, iterations, handles, gated, operation| {
         for _ in 0..iterations {
             operation();
         }

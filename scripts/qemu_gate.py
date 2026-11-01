@@ -527,6 +527,7 @@ def boot(
     # 后台输出顺序不决定 shell 是否已有 prompt，缺失该边界会重复等待或重用旧 prompt。
     shell_cursor = 0
     success_seen_at: float | None = None
+    failure_reason = "serial stream closed"
     # 进度看门狗：last_progress 每次读到新字节就刷新；只有连续 STALL_SECONDS 无新输出才判死。
     # hard_deadline 是失控兜底，正常路径永远够用。
     now = time.monotonic()
@@ -567,7 +568,11 @@ def boot(
             _qmp_execute(protocol, "cont")
         while True:
             now = time.monotonic()
-            if now - last_progress >= STALL_SECONDS or now >= hard_deadline:
+            if now - last_progress >= STALL_SECONDS:
+                failure_reason = f"no serial progress for {now - last_progress:.1f}s"
+                break
+            if now >= hard_deadline:
+                failure_reason = f"hard deadline reached after {timeout_seconds * HARD_DEADLINE_MULTIPLE}s"
                 break
             ready, _, _ = select.select([process.stdout], [], [], 0.25)
             if ready:
@@ -636,6 +641,7 @@ def boot(
             ):
                 return ANSI.sub("", output.decode(errors="replace"))
             if process.poll() is not None:
+                failure_reason = "guest process exited"
                 break
     finally:
         try:
@@ -646,22 +652,28 @@ def boot(
                 _qmp_execute(protocol, "quit")
                 process.wait(timeout=3)
         finally:
-            if serial_log is not None:
-                serial_log.write(output[logged:])
-                serial_log.close()
-            if protocol is not None:
-                protocol.close()
-            if monitor is not None:
-                monitor.close()
-            terminate(process)
-            if private_directory is not None:
-                private_directory.cleanup()
+            try:
+                if serial_log is not None:
+                    try:
+                        serial_log.write(output[logged:])
+                    finally:
+                        serial_log.close()
+            finally:
+                try:
+                    if protocol is not None:
+                        protocol.close()
+                    if monitor is not None:
+                        monitor.close()
+                finally:
+                    terminate(process)
+                    if private_directory is not None:
+                        private_directory.cleanup()
 
     text = ANSI.sub("", output.decode(errors="replace"))
     missing = [marker for marker in markers if marker not in text]
     tail = "\n".join(text.splitlines()[-40:])
     raise RuntimeError(
-        f"QEMU -smp {smp} boot gate failed; returncode={process.returncode!r};"
+        f"QEMU -smp {smp} boot gate failed; reason={failure_reason}; returncode={process.returncode!r};"
         f" missing={missing!r}\n--- output tail ---\n{tail}"
     )
 

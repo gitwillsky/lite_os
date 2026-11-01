@@ -2,7 +2,7 @@
 
 extern crate alloc;
 
-use crate::devices::model::{BootFramebuffer, DisplayError, DisplayMode, DisplayRect};
+use device_model::{BootFramebuffer, DisplayError, DisplayMode, DisplayRect};
 use std::cell::RefCell;
 
 macro_rules! warn {
@@ -15,43 +15,10 @@ thread_local! {
     static WARNINGS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
 }
 
-/// 内核 `drivers` seam 里 boot_screen 用到的那一部分；字段与语义和生产类型一致。
-mod devices {
-    pub(crate) mod model {
+use std::sync::Mutex;
 
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub(crate) struct DisplayMode {
-            pub(crate) width: u32,
-            pub(crate) height: u32,
-            pub(crate) pitch: u32,
-        }
-
-        #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-        pub(crate) struct DisplayRect {
-            pub(crate) x: u32,
-            pub(crate) y: u32,
-            pub(crate) width: u32,
-            pub(crate) height: u32,
-        }
-
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub(crate) enum DisplayError {
-            WouldBlock,
-            InvalidRectangle,
-            Device,
-        }
-
-        pub(crate) trait BootFramebuffer {
-            fn mode(&self) -> DisplayMode;
-            fn write(&self, offset: usize, bytes: &[u8]) -> Result<(), DisplayError>;
-            fn flush(&self, rect: DisplayRect) -> Result<(), DisplayError>;
-        }
-    }
-}
-
-use std::cell::Cell;
-
-use crate::boot::boot_screen::{BootScreen, Milestone};
+use crate::boot::boot_screen::BootScreen;
+use device_protocol::boot::Milestone;
 
 /// 仓库提交的默认画面，与内核实际编入的格式一致。
 const SCENE: &[u8] = include_bytes!("../../../assets/classic/boot-scene.lbs");
@@ -59,9 +26,9 @@ const SCENE: &[u8] = include_bytes!("../../../assets/classic/boot-scene.lbs");
 /// 把写入落在一块内存里的假 scanout，并记录每次 flush；可以在第 N 次 flush 起模拟 DRM 已接管。
 struct FakeScanout {
     mode: DisplayMode,
-    memory: Cell<Vec<u8>>,
-    flushes: Cell<Vec<DisplayRect>>,
-    refuse_flush_from: Cell<Option<usize>>,
+    memory: Mutex<Vec<u8>>,
+    flushes: Mutex<Vec<DisplayRect>>,
+    refuse_flush_from: Mutex<Option<usize>>,
 }
 
 impl FakeScanout {
@@ -73,18 +40,16 @@ impl FakeScanout {
                 height,
                 pitch,
             },
-            memory: Cell::new(vec![0xAA; (pitch * height) as usize]),
-            flushes: Cell::new(Vec::new()),
-            refuse_flush_from: Cell::new(None),
+            memory: Mutex::new(vec![0xAA; (pitch * height) as usize]),
+            flushes: Mutex::new(Vec::new()),
+            refuse_flush_from: Mutex::new(None),
         }
     }
 
     fn pixel(&self, x: usize, y: usize) -> u32 {
-        let memory = self.memory.take();
+        let memory = self.memory.lock().unwrap();
         let offset = y * self.mode.pitch as usize + x * 4;
-        let value = u32::from_le_bytes(memory[offset..offset + 4].try_into().unwrap());
-        self.memory.set(memory);
-        value
+        u32::from_le_bytes(memory[offset..offset + 4].try_into().unwrap())
     }
 }
 
@@ -94,28 +59,26 @@ impl BootFramebuffer for FakeScanout {
     }
 
     fn write(&self, offset: usize, bytes: &[u8]) -> Result<(), DisplayError> {
-        let mut memory = self.memory.take();
-        let result = match memory.get_mut(offset..offset + bytes.len()) {
+        let mut memory = self.memory.lock().unwrap();
+        match memory.get_mut(offset..offset + bytes.len()) {
             Some(target) => {
                 target.copy_from_slice(bytes);
                 Ok(())
             }
             None => Err(DisplayError::InvalidRectangle),
-        };
-        self.memory.set(memory);
-        result
+        }
     }
 
     fn flush(&self, rect: DisplayRect) -> Result<(), DisplayError> {
-        let mut flushes = self.flushes.take();
+        let mut flushes = self.flushes.lock().unwrap();
         let refuse = self
             .refuse_flush_from
-            .get()
+            .lock().unwrap()
             .is_some_and(|from| flushes.len() >= from);
         if !refuse {
             flushes.push(rect);
         }
-        self.flushes.set(flushes);
+
         if refuse {
             Err(DisplayError::WouldBlock)
         } else {
@@ -125,17 +88,15 @@ impl BootFramebuffer for FakeScanout {
 }
 
 fn flush_count(scanout: &FakeScanout) -> usize {
-    let flushes = scanout.flushes.take();
-    let count = flushes.len();
-    scanout.flushes.set(flushes);
-    count
+    let flushes = scanout.flushes.lock().unwrap();
+    flushes.len()
 }
 
 fn last_flush(scanout: &FakeScanout) -> DisplayRect {
-    let flushes = scanout.flushes.take();
-    let last = *flushes.last().expect("a flush");
-    scanout.flushes.set(flushes);
-    last
+    let flushes = scanout.flushes.lock().unwrap();
+    
+
+    *flushes.last().expect("a flush")
 }
 
 #[test]
@@ -260,7 +221,7 @@ fn once_the_display_refuses_updates_progress_stops_for_good() {
     let mut screen = BootScreen::start(Some(&scanout), SCENE);
     screen.advance(Milestone::Namespaces);
     // 模拟 DRM 接管：此后所有 flush 返回 WouldBlock。
-    scanout.refuse_flush_from.set(Some(flush_count(&scanout)));
+    *scanout.refuse_flush_from.lock().unwrap() = Some(flush_count(&scanout));
     screen.advance(Milestone::Scheduler);
     let seen = flush_count(&scanout);
     screen.advance(Milestone::Audio); // 已经停止，不再尝试
@@ -308,7 +269,7 @@ fn kernel_to_compositor_handoff_preserves_every_pixel_at_both_product_scales() {
         compositor_boot::paint(&mut handoff, SCENE, boot_scene::KERNEL_PROGRESS_PERMILLE).unwrap();
         for (index, (bytes, pixel)) in scanout
             .memory
-            .take()
+            .lock().unwrap()
             .as_chunks::<4>()
             .0
             .iter()

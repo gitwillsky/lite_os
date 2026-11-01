@@ -1,11 +1,5 @@
 //! Validate the production HAL window against host-owned aligned storage.
-#[path = "../../architecture-bench/src/mmio_fixture.rs"]
-mod arch;
-#[allow(dead_code)]
-#[path = "../../../mmio/src/lib.rs"]
-mod bus;
-
-use bus::{BusError, MmioBus};
+use mmio::{BusError, MmioBus};
 
 #[test]
 fn invalid_windows_and_subwindows_are_rejected() {

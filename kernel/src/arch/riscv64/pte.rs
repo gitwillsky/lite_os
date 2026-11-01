@@ -124,11 +124,12 @@ mod tests {
     }
 
     #[test]
-    fn riscv_accepts_kernel_device_semantic_without_private_pte_bits() {
+    fn riscv_accepts_user_device_semantic_without_private_pte_bits() {
         let permissions = PagePermissions::READ | PagePermissions::WRITE | PagePermissions::DEVICE;
         let encoded = encode(permissions).unwrap();
         assert_eq!(decode(encoded), permissions);
         assert!(encode(permissions | PagePermissions::EXECUTE).is_none());
-        assert!(encode(permissions | PagePermissions::USER).is_none());
+        let user = permissions | PagePermissions::USER;
+        assert_eq!(decode(encode(user).unwrap()), user);
     }
 }

@@ -132,8 +132,7 @@ impl Job {
                 let state = self.state.lock();
                 state
                     .processes
-                    .iter_after(&cursor)
-                    .next()
+                    .successor(&cursor)
                     .map(|(&koid, process)| (koid, process.upgrade()))
             };
             let Some((koid, process)) = next else { break };
@@ -148,8 +147,7 @@ impl Job {
                 let state = self.state.lock();
                 state
                     .children
-                    .iter_after(&cursor)
-                    .next()
+                    .successor(&cursor)
                     .map(|(&koid, child)| (koid, child.upgrade()))
             };
             let Some((koid, child)) = next else { break };
@@ -509,8 +507,7 @@ impl Process {
                 let lifecycle = self.lifecycle.lock();
                 lifecycle
                     .threads
-                    .iter_after(&cursor)
-                    .next()
+                    .successor(&cursor)
                     .map(|(&koid, thread)| (koid, thread.upgrade()))
             };
             let Some((koid, thread)) = next else { break };
@@ -557,8 +554,7 @@ impl Process {
                 let lifecycle = self.lifecycle.lock();
                 lifecycle
                     .threads
-                    .iter_after(&cursor)
-                    .next()
+                    .successor(&cursor)
                     .map(|(&koid, thread)| (koid, thread.upgrade()))
             };
             let Some((koid, thread)) = next else { break };

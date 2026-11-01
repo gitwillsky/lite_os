@@ -5,7 +5,11 @@ extern crate alloc;
 mod cost_policy;
 extern crate fallible_tree;
 #[path = "../../../system/linuxd/src/file/signalfd.rs"]
-mod file;
+mod signal_file;
+mod file {
+    pub(crate) use crate::signal_file::*;
+    pub(crate) use crate::sync::next_readiness_generation;
+}
 #[path = "../../kernel-unit/src/namespace_fixture.rs"]
 mod namespace;
 
@@ -15,6 +19,7 @@ fn main() {
 
 
     pub(crate) mod sync {
+        pub(crate) use spin::{Mutex, Once};
         pub(crate) fn next_readiness_generation() -> u64 {
             static GENERATION: core::sync::atomic::AtomicU64 =
                 core::sync::atomic::AtomicU64::new(1);

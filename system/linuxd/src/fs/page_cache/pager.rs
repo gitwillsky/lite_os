@@ -46,6 +46,7 @@ struct Queue {
     workers: usize,
 }
 
+// OWNER: 本进程唯一文件 pager、key 注册表与工作队列，由 Once 完整发布。
 static SHARED: Once<Shared> = Once::new();
 
 fn shared() -> &'static Shared {

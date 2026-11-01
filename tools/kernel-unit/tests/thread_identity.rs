@@ -23,6 +23,7 @@ mod fs {
 
 
     pub(crate) mod sync {
+        pub(crate) use spin::{Mutex, Once};
         pub(crate) struct TaskMutexWaitPreparation;
         impl TaskMutexWaitPreparation {
             pub(crate) fn prepare() -> Result<Self, ()> {

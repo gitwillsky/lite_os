@@ -636,3 +636,5 @@ fn io_uring_ring_bytes_are_charged_per_uid_and_through_ancestor_namespaces() {
     drop(again);
     drop(acquire(child, 0, 4096).unwrap());
 }
+
+mod sync { pub(crate) use spin::{Mutex, Once}; }

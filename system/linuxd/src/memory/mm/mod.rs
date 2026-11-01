@@ -186,7 +186,7 @@ impl MemorySet {
         if let Some(area) = self.area_at(address) {
             return Some(area);
         }
-        self.areas.iter_after(&address).next().map(|(_, area)| area)
+        self.areas.successor(&address).map(|(_, area)| area)
     }
 
     /// `[start, end)` 是否完全未映射。

@@ -188,6 +188,7 @@ impl core::fmt::Display for ElfLoadError {
 impl core::error::Error for ElfLoadError {}
 
 /// Linux 可见的用户地址区间：成员进程私有区。所有成员布局相同，首次创建地址空间时记录。
+// OWNER: 本 linuxd 实例共享的私有区几何，只在首个地址空间建立时发布一次。
 static USER_RANGE: Once<core::ops::Range<usize>> = Once::new();
 
 /// Linux 用户地址空间的结束地址（不含），即 `TASK_SIZE`。

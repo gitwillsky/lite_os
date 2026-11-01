@@ -1,6 +1,9 @@
 #![feature(allocator_ext)]
 #![allow(dead_code)]
 extern crate alloc;
+extern crate network_protocol as network_wire;
+extern crate self as network_protocol;
+include!("../src/network_policy_transport.rs");
 #[path = "../src/shm_backing_fixture.rs"]
 mod memory;
 #[path = "../src/socket_core_fixture.rs"]

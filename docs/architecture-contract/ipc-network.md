@@ -1,5 +1,8 @@
 # IPC 与网络契约
 
+Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system/linuxd`；IPv4/TCP/UDP/RAW、FIB、端口与 AF_PACKET 队列属于 `system/netd`。下述协议 owner 通过 `network-protocol` 交互，不共享内核状态。
+
+
 ## Owner
 
 - `ipc::Pipe` 独占 byte ring、endpoint count、atomicity 与 readiness generation。Fresh/Live/Retired 与 endpoint counts 在同 state 锁线性化；端点锁外预分配，typed open

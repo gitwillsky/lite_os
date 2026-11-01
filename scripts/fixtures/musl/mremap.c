@@ -83,8 +83,10 @@ int verify_mremap(void)
 	munmap(moved, 3 * PAGE);
 
 	/* 搬迁转移已物化页的 owner：稀疏映射里写过的页保持，没碰过的页仍为零。 */
-	unsigned char *d = map(64);
+	unsigned char *d = map(65);
 	if (d == MAP_FAILED) return 14;
+	/* 先拥有阻挡页的位置，不能假定任意 mmap 的尾部是空洞。 */
+	if (munmap(d + 64 * PAGE, PAGE) != 0) return 15;
 	d[0] = 11;
 	d[17 * PAGE + 5] = 22;
 	d[63 * PAGE + PAGE - 1] = 33;
@@ -147,12 +149,14 @@ int verify_mremap(void)
 	munmap(f, 2 * PAGE);
 
 	/* 共享匿名：搬迁转移 backing 而不是复制，fork 出来的子进程仍与新地址共享同一批页。 */
-	unsigned char *shared = mmap(NULL, 2 * PAGE, PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-	if (shared == MAP_FAILED) return 35;
+	unsigned char *shared_region = map(3);
+	if (shared_region == MAP_FAILED) return 35;
+	unsigned char *shared = mmap(shared_region, 2 * PAGE, PROT_READ | PROT_WRITE,
+	                             MAP_SHARED | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
+	if (shared != shared_region) return 35;
 	shared[0] = 1;
-	/* 紧挨着放一页，迫使增长走搬迁路径。 */
-	if (mmap(shared + 2 * PAGE, PAGE, PROT_READ,
-	         MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0) != (void *)(shared + 2 * PAGE)) return 59;
+	/* 第三页保留为独立私有阻挡映射，共享后备本身仍只有两页。 */
+	if (mprotect(shared + 2 * PAGE, PAGE, PROT_READ) != 0) return 59;
 	int ready[2], done[2];
 	if (pipe(ready) != 0 || pipe(done) != 0) return 36;
 	pid_t child = fork();
@@ -205,8 +209,10 @@ int verify_mremap(void)
 	unsigned char *file = mmap(NULL, 2 * PAGE, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (file == MAP_FAILED) return 47;
 	file[0] = 'Z';
-	unsigned char *file_moved = mremap(file, 2 * PAGE, 4 * PAGE, MREMAP_MAYMOVE | MREMAP_FIXED, file + 16 * PAGE);
-	if (file_moved != file + 16 * PAGE) return 48;
+	unsigned char *file_target = map(4);
+	if (file_target == MAP_FAILED) return 48;
+	unsigned char *file_moved = mremap(file, 2 * PAGE, 4 * PAGE, MREMAP_MAYMOVE | MREMAP_FIXED, file_target);
+	if (file_moved != file_target) return 48;
 	if (file_moved[0] != 'Z' || file_moved[PAGE] != 'b' || file_moved[3 * PAGE] != 'd') return 49;
 	file_moved[2 * PAGE] = 'Y';
 	if (pread(fd, block, 1, 0) != 1 || block[0] != 'Z') return 50;
@@ -217,9 +223,11 @@ int verify_mremap(void)
 	unsigned char *priv = mmap(NULL, 3 * PAGE, PROT_READ | PROT_WRITE, MAP_PRIVATE, fd, 0);
 	if (priv == MAP_FAILED) return 52;
 	priv[0] = 'Q';
+	unsigned char *priv_target = map(3);
+	if (priv_target == MAP_FAILED) return 53;
 	unsigned char *priv_moved =
-		mremap(priv, 3 * PAGE, 3 * PAGE, MREMAP_MAYMOVE | MREMAP_FIXED, priv + 32 * PAGE);
-	if (priv_moved != priv + 32 * PAGE) return 53;
+		mremap(priv, 3 * PAGE, 3 * PAGE, MREMAP_MAYMOVE | MREMAP_FIXED, priv_target);
+	if (priv_moved != priv_target) return 53;
 	if (priv_moved[0] != 'Q' || priv_moved[PAGE] != 'b' || priv_moved[2 * PAGE] != 'Y') return 54;
 	if (pread(fd, block, 1, 0) != 1 || block[0] != 'Z') return 55; /* 私有写不污染文件 */
 	munmap(priv_moved, 3 * PAGE);

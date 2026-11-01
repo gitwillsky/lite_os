@@ -37,6 +37,7 @@ native_runtime::entry!(main);
 
 /// devmgr 编入的启动画面位图（`LBS1`）：任何文件系统挂载之前 GPU 就要显示它；具体文件由构建环境变量
 /// `LITEOS_BOOT_SCENE` 选择（默认值在根目录 `.cargo/config.toml`），缺失时编译失败。
+// OWNER: 进程映像内唯一只读启动位图；编译期嵌入，整个进程寿命内有效。
 static BOOT_SCENE: &[u8] = include_bytes!(env!("LITEOS_BOOT_SCENE"));
 
 /// 装配顺序：

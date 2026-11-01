@@ -1,5 +1,8 @@
 # 文件系统接口、事务与退休契约
 
+本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/devmgr/src/drivers/`。
+
+
 ## Interface
 
 - `ProcSource::snapshot(ProcSnapshotScope, &PidNamespace)` 只投影既有 task/memory/CPU owner。
@@ -154,30 +157,6 @@
   data 内容），且 `e2fsck -fn` 零错误。
 - ext4 conformance gate 在 fixture 副本上执行 htree 转换/两层 index、深层 extent、截断、跨目录
   rename、symlink、hard link 与 orphan crash recovery，最后要求 `e2fsck -fn` 零错误。
-
-- block swap adapter 在同一 physical extent claim 下直接执行4KiB block I/O，绕过 page cache
-  和 byte-range scratch；activation 失败由 lease Drop 回滚，成功 swapoff 显式 close 后才返回。
-  现有 snapshot/raw read 只访问已提交块内容，不能建立独立 swap alias cache。
-
-- `fs::swap::SwapDisk` 是 block/file 共用的 immutable page→device extent I/O adapter；
-  `SwapSource` 保留 O_RDWR mount writer lease 与原 OpenedFile，成功 close 才交还。
-  VFS `WriteOpen` 是 OFD/swap 共用的 mount admission RAII；file 层只额外持 bdev writer claim。
-- ext4 canonical `LiveInode` 同锁持有 disk image 与 Free/Preparing/Active swap phase；
-  journal working-copy/abort 仅更新 image，不能覆盖 lease。普通 data/layout mutation 在 FS
-  mutation 域拒绝非 Free；只有 `writeback_storage_batch` 可排空 Preparing，Active 禁 dirty write。
-  unlink/rename source/target 在修改前按同一 inode phase 拒绝；VFS namespace 域复查原 entry
-  尚 linked 后冻结，mount writer 与 remount,ro 同锁准入，OpenedFile lifetime pin umount。
-- 激活顺序为 write_sequence→operation→namespace/FS freeze，释放 operation/FS 后维护 mm；
-  fault 既有 mm→operation 锁序不能反转。统一 shared leaf projection 保留 VMA W，但冻结时屏蔽
-  PTE W；fork/fault/mprotect 共用，post-fence claim release 按实际 leaf，不重读变化的 gate。
-  `MappedFile.may_write` 只保存原 fd 的 VM_MAYWRITE，不由现在的 fd 或 swap phase 重算。
-- cache writer 最后一次 release 在实际 page CAS 后 signal 单 CachedFile 预备 Arc<TaskEvent>；
-  write_sequence 排除第二 activation waiter。generation-aware mm revocation 后按同一 pages
-  中真实 writer bits 等待已失 Weak identity 的退出字段，再 flush dirty/checkpoint/barrier。
-  cache operation 内读原逻辑 header；最终 export 接受 allocated unwritten extent，拒绝 hole。
-  当前唯一4KiB ext4 profile无需物理裁剪/页重新编号；header 与 swap page I/O seam 独立。
-  lease Option take 幂等解除 phase，失败 Box/Arc preparation 与显式 close 都锁外析构，
-  旧 snapshot Drop 不得解除后来取得的 lease。
 
 POSIX byte-range lock 的 owner identity 是稳定 FileTableOwner Arc value 地址，l_pid 独立
 保存请求者 TGID。最后 table Drop 在地址释放前清除全部锁，避免地址复用 ABA；lock entries

@@ -1,4 +1,4 @@
-use crate::{ext4_link_count, file_page_range, journal_layout, writeback_batch};
+use crate::{ext4_link_count, journal_layout, writeback_batch};
 
 #[cfg(test)]
 mod ext4_link_count_tests {
@@ -58,107 +58,6 @@ mod ext4_link_count_tests {
         assert_eq!(
             plan_rename_parent_links(7, 7, false, true),
             Ok(Some(ParentLinkPlan::SameParent { parent: 6 }))
-        );
-    }
-}
-
-#[cfg(test)]
-mod file_page_range_tests {
-    use super::file_page_range::{FilePageRange, FilePageRangeError};
-
-    #[test]
-    fn first_file_byte_maps_one_page() {
-        let range = FilePageRange::new(0, 1).unwrap();
-
-        assert_eq!(range.page(0), Some(0));
-        assert_eq!(range.count(), 1);
-    }
-
-    #[test]
-    fn linux_signed_file_ceiling_rejects_the_next_page() {
-        let last = FilePageRange::new(0x7fff_ffff_ffff_e000, 4096).unwrap();
-
-        assert_eq!(last.page(0), Some(0x7_ffff_ffff_fffe));
-        assert_eq!(last.count(), 1);
-        assert_eq!(
-            FilePageRange::new(0x7fff_ffff_ffff_f000, 4096),
-            Err(FilePageRangeError::Overflow)
-        );
-    }
-
-    #[test]
-    fn split_views_preserve_each_file_page_identity() {
-        let original = FilePageRange::new(0x2000, 3 * 4096).unwrap();
-
-        assert_eq!(original.subrange(0, 1).unwrap().page(0), Some(2));
-        assert_eq!(original.subrange(1, 1).unwrap().page(0), Some(3));
-        assert_eq!(original.subrange(2, 1).unwrap().page(0), Some(4));
-        assert_eq!(original.subrange(3, 1), None);
-    }
-
-    #[test]
-    fn extension_keeps_start_and_stops_at_the_signed_file_ceiling() {
-        let range = FilePageRange::new(0x2000, 4096).unwrap();
-        let grown = range.extended(2).unwrap();
-
-        assert_eq!(grown.count(), 3);
-        assert_eq!(grown.page(2), Some(4));
-        let last = FilePageRange::new(0x7fff_ffff_ffff_e000, 4096).unwrap();
-        assert_eq!(last.extended(0), Some(last));
-        assert_eq!(last.extended(1), None);
-        assert_eq!(range.extended(u64::MAX), None);
-    }
-
-    #[test]
-    fn only_a_page_start_below_eof_contains_file_bytes() {
-        let range = FilePageRange::new(0, 2 * 4096).unwrap();
-
-        assert_eq!(range.page(1), Some(1));
-        assert_eq!(range.byte_offset(1), Some(4096));
-        assert_eq!(range.has_file_bytes(1, 4097), Some(true));
-        assert_eq!(range.has_file_bytes(1, 4096), Some(false));
-        assert_eq!(range.has_file_bytes(2, u64::MAX), None);
-    }
-
-    #[test]
-    fn byte_projections_and_truncate_prefix_share_the_validated_range() {
-        let range = FilePageRange::new(0x2000, 3 * 4096).unwrap();
-
-        assert_eq!(range.byte_range(), Some((0x2000, 3 * 4096)));
-        assert_eq!(range.byte_within(1, 12), Some(0x300c));
-        assert_eq!(range.byte_within(1, 4096), None);
-        assert_eq!(range.prefix_before(0x2000), Some(0));
-        assert_eq!(range.prefix_before(0x2001), Some(1));
-        assert_eq!(range.prefix_before(0x4001), Some(3));
-    }
-
-    #[test]
-    fn truncate_projection_keeps_the_original_origin_after_vma_split() {
-        let range = FilePageRange::new(0, 3 * 4096).unwrap();
-
-        assert_eq!(range.stale_resident_start(100, 100, 4096), Some(101));
-        assert_eq!(range.stale_resident_start(100, 101, 4096), Some(101));
-        assert_eq!(range.stale_resident_start(100, 102, 4096), Some(102));
-    }
-
-    #[test]
-    fn invalid_and_unrepresentable_file_ranges_are_rejected() {
-        assert_eq!(FilePageRange::new(0, 0), Err(FilePageRangeError::Invalid));
-        assert_eq!(
-            FilePageRange::new(1, 4096),
-            Err(FilePageRangeError::Invalid)
-        );
-        assert_eq!(
-            FilePageRange::new(0, 1usize << 63),
-            Err(FilePageRangeError::Overflow)
-        );
-        assert_eq!(
-            FilePageRange::new(0, usize::MAX),
-            Err(FilePageRangeError::Overflow)
-        );
-        assert_eq!(
-            FilePageRange::new(u64::MAX - 4095, 4096),
-            Err(FilePageRangeError::Overflow)
         );
     }
 }

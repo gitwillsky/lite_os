@@ -65,6 +65,7 @@ core::arch::global_asm!(
     "ret",
 );
 
+// SAFETY: 本模块汇编定义两个例程，签名对应 control[2] 与 vregs[32]，调用点保证布局与对齐。
 unsafe extern "C" {
     fn linuxd_fp_capture(control: *mut u32, vregs: *mut u128);
     fn linuxd_fp_restore(control: *const u32, vregs: *const u128);

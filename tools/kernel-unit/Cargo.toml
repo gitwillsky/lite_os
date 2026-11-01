@@ -3,7 +3,7 @@ name = "kernel-unit"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[dev-dependencies]
 native-runtime = { path = "../../system/native-runtime" }
 device-model = { path = "../../system/device-model" }
 device-protocol = { path = "../../system/device-protocol" }
@@ -14,7 +14,6 @@ dtb-walker = "=0.2.0-alpha.3"
 syscall-abi = { path = "../../syscall-abi" }
 boot-scene = { path = "../../boot-scene" }
 spin = { version = "0.10.0", default-features = false, features = ["mutex", "once", "spin_mutex"] }
-smoltcp = { version = "=0.13.1", path = "../../vendor/smoltcp", default-features = false, features = ["alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-raw", "socket-tcp", "socket-tcp-reno", "socket-udp"] }
 
 [lints]
 workspace = true

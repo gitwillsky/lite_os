@@ -41,6 +41,8 @@ struct RequestData {
     // completion 误用 status 后的 stale 4 KiB data。
     operation: RequestOperation,
     result: Option<Result<(), BlockError>>,
+    // 完成可能早于调用者进入 wait；waiter 保留到 finish，完成路径只克隆唤醒引用。
+    // 提前 take 会使已完成的请求在 wait 中丢失等待者并 panic。
     waiter: Option<Arc<dyn IoWaitTarget>>,
 }
 
@@ -413,7 +415,7 @@ impl VirtIOBlockDevice {
                     let identity = owner.requests.accept_completion(claim);
                     data.result = Some(Self::decode_status(data.status.as_slice()[0]));
                     let armed = slot.completion.complete();
-                    if let Some(waiter) = data.waiter.take()
+                    if let Some(waiter) = data.waiter.clone()
                         && armed
                     {
                         *wake = Some((waiter, self.request_id(identity)));
@@ -471,7 +473,7 @@ impl VirtIOBlockDevice {
                     );
                     data.result = Some(Err(BlockError::DeviceError));
                     let armed = slot.completion.complete();
-                    if let Some(waiter) = data.waiter.take()
+                    if let Some(waiter) = data.waiter.clone()
                         && armed
                     {
                         wakes[identity.slot as usize] = Some((waiter, self.request_id(identity)));

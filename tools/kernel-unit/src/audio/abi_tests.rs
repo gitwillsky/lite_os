@@ -229,8 +229,8 @@ fn alsa_short_transfer_publishes_progress_before_later_fault() {
 }
 
 #[test]
-fn virtio_sound_lifecycle_is_single_track_and_reset_is_idempotent() {
-    // 物理流只配置一次（Setup → Configured），之后只在 Prepared / Running / Stopped 间循环，永不回到 Setup。
+fn virtio_sound_lifecycle_release_respects_state_and_failure_is_sticky() {
+    // 每次配置在 Setup 完成；正常 release 才能回到 Setup，设备失败必须由设备重置恢复。
     let mut state = DeviceState::Setup;
     assert!(state.after_prepare().is_none(), "prepare before configure");
     state = state.after_configure().unwrap();
@@ -250,12 +250,13 @@ fn virtio_sound_lifecycle_is_single_track_and_reset_is_idempotent() {
         state = state.after_start().unwrap();
         state = state.after_stop().unwrap();
     }
+    let released = state.after_release().unwrap();
+    assert_eq!(released.after_configure(), Some(DeviceState::Configured));
     assert!(state.fail());
     assert_eq!(state, DeviceState::Failed);
     assert!(!state.fail());
     assert!(state.after_start().is_none());
-    let released = state.after_release().unwrap();
-    assert_eq!(released.after_configure(), Some(DeviceState::Configured));
+    assert!(state.after_release().is_none());
 }
 
 #[test]
@@ -459,6 +460,8 @@ mod hw_refine {
         )
         .unwrap();
         let first = bytes;
+        // Linux cmask 累积调用者已有位；清零后才能观察本次 refine 是否新增收窄。
+        bytes[516..520].fill(0);
         refine_hardware(
             &mut bytes,
             crate::devices::model::PcmCapabilities::SHARED,

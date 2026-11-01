@@ -1,4 +1,4 @@
-//! 以 e2fsprogs `e2fsck -fn` 为裁决者，验证 kernel 写出的 ext4 结构符合固定 profile。
+//! 以 e2fsprogs `e2fsck -fn` 为裁决者，验证 ext4d 写出的 ext4 结构符合固定 profile。
 //!
 //! 测试在 fixture 的可写副本上执行 htree 转换与分裂、深层 extent tree、截断、跨目录 rename、
 //! fast/slow symlink、hard link 与 orphan file crash recovery，最后要求 e2fsck 报告零错误。
@@ -45,9 +45,8 @@ mod directory_leaf;
 mod xattr;
 
 #[test]
-fn content_mutation_uses_live_inode_mode_and_current_writer_capabilities() {
-    use crate::vfs::{AccessIdentity, OwnerModeChange};
-    use syscall_abi::capability::Capability;
+fn content_mutation_applies_fuse_policy_to_live_inode_mode() {
+    use crate::vfs::{OwnerModeChange};
     let _serial = COST_TEST_LOCK.lock().unwrap();
     let path = scratch_copy("write-capabilities.img");
     let fs = mount(&path);
@@ -63,54 +62,46 @@ fn content_mutation_uses_live_inode_mode_and_current_writer_capabilities() {
             },
         )
         .unwrap();
-    let writer = AccessIdentity::new(1000, 1000, None, crate::namespace::boot(), 0, 1000);
-    let outsider = AccessIdentity::new(3000, 3000, None, crate::namespace::boot(), 0, 3000);
-    let privileged = AccessIdentity::new(
-        3000,
-        3000,
-        None,
-        crate::namespace::boot(),
-        Capability::FSETID.mask(),
-        3000,
-    );
+    let writer = crate::vfs::WritePolicy { kill_suidgid: true };
+    let outsider = writer;
+    let privileged = crate::vfs::WritePolicy { kill_suidgid: false };
     let mode = |value| {
         inode
-            .change_owner_mode(OwnerModeChange::chmod(AccessIdentity::root(), value))
+            .change_owner_mode(OwnerModeChange { mode: Some(value), ..Default::default() })
             .unwrap()
     };
     let special = || inode.metadata().unwrap().mode & 0o6000;
     mode(0o6777);
-    assert_eq!(inode.write_storage(0, b"a", Some(&writer)), Ok(1));
+    assert_eq!(inode.write_storage(0, b"a", Some(writer)), Ok(1));
     assert_eq!(special(), 0); // non-owner writer must not need FOWNER
     mode(0o2600);
-    inode.append_storage(b"b", Some(&writer)).unwrap();
+    inode.write_storage(inode.size(), b"b", Some(writer)).unwrap();
     assert_eq!(special(), 0o2000); // no IXGRP and writer belongs to inode group
-    inode.write_storage(0, b"c", Some(&outsider)).unwrap();
-    assert_eq!(special(), 0);
+
     mode(0o6777);
-    inode.write_storage(0, b"d", Some(&privileged)).unwrap();
+    inode.write_storage(0, b"d", Some(privileged)).unwrap();
     assert_eq!(special(), 0o6000);
-    inode.write_storage(0, &[], Some(&outsider)).unwrap();
+    inode.write_storage(0, &[], Some(outsider)).unwrap();
     assert_eq!(special(), 0o6000);
     inode
-        .truncate_storage(inode.size(), Some(&outsider))
+        .truncate_storage(inode.size(), Some(outsider))
         .unwrap();
     assert_eq!(special(), 0); // equal-size truncate still removes privilege
     mode(0o6777);
-    inode.truncate_storage(0, Some(&privileged)).unwrap();
+    inode.truncate_storage(0, Some(privileged)).unwrap();
     assert_eq!(special(), 0o6000);
     inode
-        .writeback_storage_batch(&mut |storage| storage.write(0, b"e").map(|_| ()))
+        .write_storage(0, b"e", None)
         .unwrap();
     assert_eq!(special(), 0o6000); // background owner is never a caller policy
-    inode.allocate_storage(8192, 4096, Some(&outsider)).unwrap();
+    inode.allocate_storage(8192, 4096, Some(outsider)).unwrap();
     assert_eq!(special(), 0);
     mode(0o6777);
-    inode.prepare_cached_write(&outsider).unwrap();
+    inode.prepare_cached_write(outsider).unwrap();
     assert_eq!(special(), 0); // pre-copy commit survives a later content failure
     let before = inode.metadata().unwrap();
     assert_eq!(
-        inode.write_storage(u64::MAX, b"f", Some(&outsider)),
+        inode.write_storage(u64::MAX, b"f", Some(outsider)),
         Err(FileSystemError::NoSpace)
     );
     assert_eq!(inode.metadata().unwrap().mode, before.mode); // journal abort restores the same inode preimage
@@ -124,7 +115,7 @@ fn content_mutation_uses_live_inode_mode_and_current_writer_capabilities() {
 
 #[test]
 fn first_extent_allocation_no_space_preserves_committed_killpriv() {
-    use crate::vfs::{AccessIdentity, OwnerModeChange};
+    use crate::vfs::{OwnerModeChange};
     let _serial = COST_TEST_LOCK.lock().unwrap();
     let path = scratch_copy("fallocate-killpriv-full.img");
     let fs = mount(&path);
@@ -147,11 +138,11 @@ fn first_extent_allocation_no_space_preserves_committed_killpriv() {
     }
     assert!(exhausted);
     target
-        .change_owner_mode(OwnerModeChange::chmod(AccessIdentity::root(), 0o6777))
+        .change_owner_mode(OwnerModeChange { mode: Some(0o6777), ..Default::default() })
         .unwrap();
-    let caller = AccessIdentity::new(1000, 1000, None, crate::namespace::boot(), 0, 1000);
+    let caller = crate::vfs::WritePolicy { kill_suidgid: true };
     assert_eq!(
-        target.allocate_storage(0, FS_BLOCK as u64, Some(&caller)),
+        target.allocate_storage(0, FS_BLOCK as u64, Some(caller)),
         Err(FileSystemError::NoSpace)
     );
     assert_eq!(target.metadata().unwrap().mode & 0o6000, 0);
@@ -208,7 +199,7 @@ impl BlockDevice for RemountImage {
 }
 
 #[test]
-fn ext4_remount_roundtrips_reported_options_and_retries_failed_writable_preparation() {
+fn ext4_remount_retries_failed_writable_preparation() {
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     let _case = COST_TEST_LOCK.lock().unwrap();
     let path = scratch_copy("remount-options.img");
@@ -224,39 +215,21 @@ fn ext4_remount_roundtrips_reported_options_and_retries_failed_writable_preparat
         flushes: AtomicUsize::new(0),
         fail_flush: AtomicBool::new(false),
     });
-    let fs = Ext4FileSystem::new(disk.clone(), crate::vfs::DeviceNumber::new(8, 0), true).unwrap();
-    let namespace = crate::namespace::boot();
-    let writes = disk.writes.load(Ordering::Relaxed);
+    let fs = Ext4FileSystem::new(disk.clone(), true).unwrap();
     let flushes = disk.flushes.load(Ordering::Relaxed);
-    for invalid in [
-        b"data=writeback".as_slice(),
-        b"data=journal",
-        b"data",
-        b"unknown=1",
-    ] {
-        assert_eq!(
-            fs.remount(invalid, &namespace, true),
-            Err(FileSystemError::InvalidOperation)
-        );
-        assert_eq!(disk.writes.load(Ordering::Relaxed), writes);
-        assert_eq!(disk.flushes.load(Ordering::Relaxed), flushes);
-    }
-    let reported = fs.show_mount_options().unwrap();
-    fs.remount(&reported, &namespace, false).unwrap();
-    assert_eq!(disk.writes.load(Ordering::Relaxed), writes);
     disk.fail_flush.store(true, Ordering::Relaxed);
     assert_eq!(
-        fs.remount(&reported, &namespace, true),
+        fs.remount_writable(),
         Err(FileSystemError::IoError)
     );
     assert_eq!(disk.flushes.load(Ordering::Relaxed), flushes + 1);
-    fs.remount(&reported, &namespace, true).unwrap();
+    fs.remount_writable().unwrap();
     let completed = disk.flushes.load(Ordering::Relaxed);
     assert!(
         completed > flushes + 1,
         "failed preparation must perform I/O again"
     );
-    fs.remount(&reported, &namespace, true).unwrap();
+    fs.remount_writable().unwrap();
     assert_eq!(disk.flushes.load(Ordering::Relaxed), completed);
     drop(fs);
     e2fsck_clean(&path);
@@ -338,12 +311,6 @@ fn scratch_copy(name: &str) -> PathBuf {
     path
 }
 
-/// 以任意块设备挂载（异步读测试用手动完成的设备）。
-fn mount_with(device: Arc<dyn BlockDevice>) -> Arc<Ext4FileSystem> {
-    Ext4FileSystem::new(device, crate::vfs::DeviceNumber::new(8, 0), false)
-        .expect("mount ext4 image")
-}
-
 fn mount(path: &PathBuf) -> Arc<Ext4FileSystem> {
     let file = OpenOptions::new()
         .read(true)
@@ -352,7 +319,6 @@ fn mount(path: &PathBuf) -> Arc<Ext4FileSystem> {
         .expect("open writable ext4 image");
     Ext4FileSystem::new(
         Arc::new(WritableImage(Mutex::new(file))),
-        crate::vfs::DeviceNumber::new(8, 0),
         false,
     )
     .expect("mount ext4 image")
@@ -374,18 +340,18 @@ pub(crate) fn e2fsck_clean(path: &PathBuf) {
     );
 }
 
-fn child(parent: &Arc<dyn Inode>, name: &[u8]) -> Arc<dyn Inode> {
+fn child(parent: &Arc<crate::ext4::Ext4Inode>, name: &[u8]) -> Arc<crate::ext4::Ext4Inode> {
     parent.find_child(name).expect("child exists")
 }
 
-fn read_all(directory: &Arc<dyn Inode>) -> Vec<Vec<u8>> {
+fn read_all(directory: &Arc<crate::ext4::Ext4Inode>) -> Vec<Vec<u8>> {
     let mut names = Names(Vec::new());
     directory.read_directory(0, &mut names).unwrap();
     names.0
 }
 
 #[test]
-fn kernel_written_htree_extents_and_orphans_pass_e2fsck() {
+fn service_written_htree_extents_and_orphans_pass_e2fsck() {
     let _serial = COST_TEST_LOCK.lock().unwrap();
     let path = scratch_copy("ext4-conformance.img");
     let fs = mount(&path);
@@ -635,10 +601,10 @@ fn fifo_and_device_nodes_persist_and_pass_e2fsck() {
     let pipe = child(&root, b"pipe");
     assert_eq!(pipe.inode_type(), InodeType::Fifo);
     assert_eq!(pipe.metadata().unwrap().mode & 0o7777, 0o600);
-    assert_eq!(pipe.device_number(), None);
+    assert_eq!(pipe.metadata().unwrap().device, None);
     let null = child(&root, b"null");
     assert_eq!(null.inode_type(), InodeType::CharacterDevice);
-    assert_eq!(null.device_number(), Some(DeviceNumber::new(1, 3)));
+    assert_eq!(null.metadata().unwrap().device, Some(DeviceNumber::new(1, 3)));
     let disk = child(&root, b"disk");
     assert_eq!(disk.inode_type(), InodeType::BlockDevice);
     assert_eq!(
@@ -658,60 +624,7 @@ fn fifo_and_device_nodes_persist_and_pass_e2fsck() {
     e2fsck_clean(&path);
 }
 
-#[test]
-fn inode_stat_device_is_explicit_disk_identity_not_cache_key() {
-    let _serial = COST_TEST_LOCK.lock().unwrap();
-    let (image, _) = crate::ext4_cost_tests::mounted();
-    let number = crate::vfs::DeviceNumber::new(0x1234, 0x56789);
-    let filesystem =
-        Ext4FileSystem::new(image, number, true).expect("mount fixture with explicit device");
-    let root = filesystem.root_inode().expect("root inode");
-    assert_eq!(root.metadata().unwrap().filesystem, number.encode());
-    assert_eq!(
-        crate::vfs::DeviceNumber::decode(root.metadata().unwrap().filesystem),
-        number
-    );
-}
 
-#[test]
-fn canonical_ext4_inode_excludes_exec_and_writers_across_hard_links() {
-    let _case = COST_TEST_LOCK.lock().unwrap();
-    let path = scratch_copy("exec-write-exclusion");
-    let filesystem = mount(&path);
-    let root = filesystem.root_inode().unwrap();
-    let inode = root
-        .create(
-            b"program",
-            InodeType::File,
-            CreateMetadata {
-                mode: 0o100755,
-                uid: 0,
-                gid: 0,
-            },
-        )
-        .unwrap();
-    root.link(b"alias", inode.clone()).unwrap();
-    let alias = root.find_child(b"alias").unwrap();
-    let writer = crate::vfs::InodeAccessLease::write(inode.clone()).unwrap();
-    assert!(matches!(
-        crate::vfs::InodeAccessLease::execute(alias.clone()),
-        Err(FileSystemError::TextBusy)
-    ));
-    drop(writer);
-    let execution = crate::vfs::InodeAccessLease::execute(inode.clone()).unwrap();
-    let same_execution = crate::vfs::InodeAccessLease::execute(alias.clone()).unwrap();
-    assert!(matches!(
-        crate::vfs::InodeAccessLease::write(alias.clone()),
-        Err(FileSystemError::TextBusy)
-    ));
-    drop(execution);
-    assert!(matches!(
-        crate::vfs::InodeAccessLease::write(inode.clone()),
-        Err(FileSystemError::TextBusy)
-    ));
-    drop(same_execution);
-    drop(crate::vfs::InodeAccessLease::write(alias).unwrap());
-}
 
 #[test]
 fn storage_reads_do_not_mutate_atime_and_path_touch_preserves_ctime() {
@@ -738,12 +651,12 @@ fn storage_reads_do_not_mutate_atime_and_path_touch_preserves_ctime() {
     assert_eq!(data, *b"data");
     assert_eq!(inode.metadata().unwrap().atime, before.atime);
     let now = before.mtime.max(before.ctime).saturating_add(10);
-    inode.touch_access(now, true).unwrap();
+    inode.touch_access(now).unwrap();
     let after = inode.metadata().unwrap();
     assert_eq!(after.atime, now);
     assert_eq!((after.mtime, after.ctime), (before.mtime, before.ctime));
-    inode.touch_access(now + 1, true).unwrap();
+    inode.touch_access(now + 1).unwrap();
     assert_eq!(inode.metadata().unwrap().atime, now);
-    inode.touch_access(now + 1, false).unwrap();
-    assert_eq!(inode.metadata().unwrap().atime, now + 1);
+    inode.touch_access(now + 86400).unwrap();
+    assert_eq!(inode.metadata().unwrap().atime, now + 86400);
 }

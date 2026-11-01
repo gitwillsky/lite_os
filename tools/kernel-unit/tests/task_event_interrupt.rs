@@ -1,3 +1,4 @@
+#![feature(allocator_ext)]
 //! Production event/completion protocol with a host scheduler and deliverable-signal seam.
 #![allow(dead_code)]
 extern crate alloc;
@@ -180,15 +181,8 @@ fn timed_event_wake_uses_exact_ticket_and_cannot_wake_later_wait() {
 
 #[path = "."]
 pub(crate) mod execution {
-    #[path = "../../../kernel/src/execution/sync"]
-    pub(crate) mod sync {
-        mod task_event;
-        mod task_wait;
-        mod wait_completion;
-        pub(crate) use task_event::TaskEvent;
-        pub(crate) use task_wait::{
-            TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory,
-        };
-        pub(crate) use wait_completion::WaitCompletion;
-    }
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
 }
+
+use execution::sync;

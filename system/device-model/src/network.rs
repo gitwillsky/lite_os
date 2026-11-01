@@ -221,6 +221,7 @@ mod tests {
     }
 
     impl NetworkDevice for InjectedDevice {
+        fn bind_activity(&self, _: crate::Activity) {}
         fn mac_address(&self) -> [u8; 6] {
             [0; 6]
         }

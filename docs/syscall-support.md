@@ -12,7 +12,7 @@ extension；其中 RISC-V backend 的矩阵包含 219 个 Linux/riscv64 syscall�
 - syscall handler 只负责编解码、user-copy、errno 与领域 façade 调用，不拥有 process、memory、file、socket 或 device state。
 - 未接入的 number 返回 `ENOSYS`，不得逐调用打印或伪造成功。
 - `riscv_hwprobe`（258）只在 RISC-V backend 按既有矩阵工作；AArch64 必须返回 `ENOSYS`。
-- `Complete` 表示当前表中声明的对象/flag/并发范围完整；不外推到未声明对象。`Partial` 必须明确已开放范围和缺口。
+- `Complete` 表示当前表中声明的对象/flag/并发范围完整；不外推到未声明对象。`Partial` 必须明确已开放范围和缺口。`Unsupported` 表示该编号明确返回 ENOSYS，不声明实现。
 
 ## 领域矩阵
 
@@ -29,7 +29,7 @@ extension；其中 RISC-V backend 的矩阵包含 219 个 Linux/riscv64 syscall�
 
 ## 全局已知缺口
 
-当前矩阵不声明 futex PI/PI-requeue、完整 clone flags、所有 syscall restart、IPv6、多网卡、完整容器网络、完整 DRM/evdev UAPI 或完整 Linux reclaim/zone policy。普通 futex WAKE_OP、queued realtime signal、有限 network namespace 和 block/file swap
+当前矩阵不声明 futex PI/PI-requeue、完整 clone flags、所有 syscall restart、IPv6、多网卡、完整容器网络、完整 DRM/evdev UAPI 或完整 Linux reclaim/zone policy。普通 futex WAKE_OP、queued realtime signal、有限 network namespace 
 已补源码，范围由各领域矩阵定义。
 
 本轮以学习型内核的基础正确性为目标：不新增 POSIX mqueue、cgroup、splice、文件系统配额或实时调度。未开放 syscall 返回 ENOSYS，已支持调用的未开放选项按领域矩阵明确拒绝，不伪造成功。

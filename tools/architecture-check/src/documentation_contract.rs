@@ -331,7 +331,7 @@ fn check_syscall_documentation(
             };
             let name = columns[2].trim_matches(char::from(96)).to_owned();
             let status = columns[3];
-            if !matches!(status, "Complete" | "Partial") {
+            if !matches!(status, "Complete" | "Partial" | "Unsupported") {
                 errors.push(format!(
                     "{path}: syscall {number}/{name} has invalid status {status}"
                 ));

@@ -62,7 +62,10 @@ impl ThreadOwner for crate::object::Thread {
                 .map(|space| space.fault(address, access)),
             _ => None,
         };
-        if matches!(fault, Some(Ok(()))) {
+        if let Some(Ok(source)) = fault {
+            if matches!(self.mode(), Mode::Restricted(_)) {
+                thread.record_restricted_fault(source);
+            }
             return Disposition::Continue;
         }
         if thread.is_killed() {

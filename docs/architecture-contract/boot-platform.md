@@ -1,65 +1,26 @@
 # 启动与平台契约
 
-## Owner
+## Owner 与接口
 
-- RISC-V `bootloader` 独占 M-mode firmware state、machine trap stack、PMP 与 RustSBI service；AArch64 不得依赖该 domain。
-- `bootloader::rfence` 独占每 hart 的 request/range/ack mailbox 与 broadcast serialization lock；`STARTS`/`SIZES` 只由持锁 sender 在 request Release 前写，并由目标 hart 在 request Acquire 后读。
-- `platform::qemu_virt::riscv64` 独占 SBI/PLIC machine codec；`platform::qemu_virt::aarch64` 独占 PSCI/GICv3/PL011/PL031 machine codec。共同 façade 独占 DTB machine facts 与中断控制器、早期串口装配。
-- 各架构 `device_tree` 独占 DTB 到 `PlatformInfo` 的纯解码；`discovery` 只独占 boot handoff 指针、
-  一次性 publication 与 hardware CPU 投影。`qemu_virt::virtio_mmio` 独占 VirtIO-MMIO transport 识别与
-  有界 transport 表；`drivers::virtio::binding` 是 device ID 到 driver adapter 的唯一装配表，只消费 platform 给出的 transport 表、
-  PCI host、physical→virtual 映射与 interrupt 注册入口；platform 不消费通用设备类的 DMA、队列或 UAPI，禁止恢复各架构自带的 `init_virtio_*` 分派。
-- 显示设备分两步装配：`drivers::virtio::bind_display` 在 `memory::init` 之后立即初始化首个 GPU（只需内存分配器、窗口地址转换
-  与 DTB 结果），让 `boot::boot_screen` 在其余设备、文件系统与 scheduler 之前上屏；返回的 `EarlyDisplay` 令牌交给
-  `bind_platform_devices`，由它在 interrupt controller 就绪后补注册 GPU 中断。缺少这一步 GPU 永远收不到 completion。
-  `devices::model::BootFramebuffer` 只在 DRM 绑定 completion work 之前接受同步写入与刷新，之后一律返回 `WouldBlock`。
-- `arch::<target>::io` 独占 MMIO 指令与 normal-memory/device ordering mechanism；通用
-  `arch::mmio::MmioBus` 只做 window 边界/对齐验证并通过静态 façade 访问，具体 adapter
-  不得直接选择 target 指令形态。
-- platform 的设备寄存器（GICv3、PL011、PL031、16550、PLIC、Goldfish RTC）与 VirtIO 一样只经 `arch::mmio::MmioBus`：
-  构造时验证 window 的非空与地址上界，每次访问检查范围与实际地址对齐；子窗口必须包含于父窗口。
-  architecture-check 禁止 platform/devices 出现裸 volatile 访问，所有 owner（除 arch）禁止直接
-  引用 raw MMIO primitive，包括分组/别名导入、指针方法与宏体。越界/未对齐访问由 adapter 报错或 fail-stop。
-- GIC claim/EOI 使用 ICC system register，不经过 MMIO window；PLIC claim/complete 使用检查后的 MMIO。
-  `architecture-bench` 直接复用 production `MmioBus`，在 host-owned aligned buffer 上测量有界 read/write
-  检查的 CPU 成本并使用既有宽阈值；不把 host buffer 测量当作目标硬件或中断延迟。双架构 release 与
-  boot gate 继续裁决实际 adapter 路径与活性。
-- 各 `arch::<target>::startup` 独占 secondary entry 前的 stack 和 raw identity projection；`cpu::CpuTopology` 独占进入 generic kernel 后的 identity mapping 与 lifecycle。
+- `arch` 独占 raw register/context/MMU 编码；`execution::entry` 只构造 typed boot/trap 输入。AArch64 只接受 Image/x0 DTB/PSCI，RISC-V 只接受独立 bootloader 的 handoff/DTB/SBI。
+- `platform` 发布 immutable RAM/CPU/interrupt/serial facts；hardware identity 在 `execution::cpu` 投影为 logical identity。通用领域不得引用 concrete platform/arch adapter。
+- kernel platform DTB decoder 只解析内核启动所需事实；devmgr 的 DTB decoder 独占通用设备、PCI 与 IOMMU 装配。各 decoder 按 compatible 判断设备身份，不依赖任意节点标签。
+- `mmio::MmioBus` 验证非空、地址溢出、子窗口包含、每次访问边界和对齐。寄存器实际访问形态只属于静态 ISA backend；adapter 不使用裸 volatile 或自选 target 指令。
+- GIC claim/EOI 是线性 token；PLIC source 编码拒绝 0 哨兵与越过 enable bitmap 的编号。external hardirq 单次有界处理，不为探测 backlog 提前消费下一 claim。
+- RISC-V RFENCE sender 在 request Release 前写 start/size，target 在 Acquire 后读取，执行范围 fence 后 Release ack。sender 等待 Acquire completion 后才允许 backing 退休。
 
-## Interface
+## 启动所有权
 
-- RISC-V bootloader 与 kernel 只通过 entry ABI、DTB opaque 和 SBI 交互；AArch64 只通过 Linux Image header、x0 DTB 与 PSCI HVC 交互。两者都不得共享 Rust state。
-- platform 向上只公开 typed `BootInfo`、`PlatformInfo`、firmware operation、linear interrupt token 与通用 device façade。GIC/PLIC claim backend 必须直接构造 `Timer/Device/Software/Spurious`
-  语义 variant；禁止用 `u8 kind` 私有 ABI 再做第二次运行时翻译。
-- hardware address、hart ID、SBI status、PLIC context 和 concrete VirtIO adapter 不得进入 generic domain。
-- DTB 设备身份只由 `compatible` 裁决；只有 DTB 规范强制的 `memory`、`cpus`、`cpu@` 节点名可作为身份。
-  AArch64 的 PL011/PL031/GICv3/PCI 以节点名选择候选并以 compatible 断言。QEMU 11 已把 PLIC 改名为
-  `interrupt-controller@…`，按名称前缀识别会让设备在升级后静默消失。节点属性在下一个 `SubNode`
-  事件或遍历结束时提交，与属性顺序无关。
-- `device_tree::parse` 与 `virtio_mmio` 为 `pub(crate)`，唯一的 crate 外调用方是 kernel-unit 的 host
-  DTB fixture 测试；generic domain 不得引用。
-- `platform::qemu_virt` 的 PLIC register codec 只编码 source ID `1..=1023`；`0` 是 claim 哨兵，越过单个 context `0x80` enable bitmap 的 ID 必须在 MMIO 前拒绝。
-- 新 machine 必须作为独立 compile-time platform backend 接入；禁止在 generic code 追加 target 分支。
-- AArch64 backend 必须验证 GICv3、PSCI HVC、PL011、PL031 与 `dma-coherent`。PCI host
-  存在时还必须从 DTB 验证 ECAM、32-bit MMIO range 与 `interrupt-map`，由 `drivers::pci`
-  扫描 bus 0 并唯一分配 memory BAR，platform 把 INTx route 投影为 GIC vector；不支持的 GICv2/ITS/MSI、
-  PCI bridge/hotplug、SMC、ACPI 或 guessed address 必须拒绝。
-- AArch64 byte/word/doubleword MMIO 必须分别固定为 exact base-register
-  `LDRB/STRB/LDR/STR`；禁止 LLVM 生成 post-index、unscaled、pair 或 SIMD device access。
-  缺失此 seam 时 VirtIO input 的连续 config byte 读取会合并成 writeback `LDRB`，QEMU HVF
-  无有效 access syndrome 并在 host `hvf_handle_exception` 中 fail-stop。
-- PL011 必须在清 pending/unmask RX 与 receive-timeout IRQ 前启用 FIFO，并把 RX threshold 设为最低
-  architected level；保持 reset character mode 会把接收缓冲缩成 1 byte，在并发 device IRQ 下丢失
-  QEMU stdio 批量输入。handler 仍须按固定 hardirq budget drain，禁止在 IRQ 中等待后续字符。
-- SBI RFENCE 必须保留 `[start_addr, start_addr + size)` 语义并逐页执行 range `SFENCE.VMA`；仅 `(start,size) == (0,0)` 或 `size == usize::MAX` 表示 whole address space，非零 start 的零 size 是空操作。
+1. 内核 `main` 在发布 secondary-ready 前完成全局对象和 root-server 装配；secondary 只消费已发布状态。
+2. kernel bootstrap loader 只载入 root-server；root-server 唯一装配系统服务连接和初始 capability。
+3. devmgr 独占设备权限；linuxd 通过设备/文件系统/网络服务初始化 Linux 环境并执行 init。服务间不共享 Rust 全局状态。
 
-## Failure and cleanup
+DTB、initrd 和崩溃保留区必须先从 frame allocator 排除；缺失时 bootstrap 尚未复制的输入可能被覆盖。
+设备 IRQ thread 只确认设备并请求完成分派；可以阻塞的队列事务在服务线程中执行，不允许恢复启动期 MMIO polling/WFI 双轨。
+服务失败由启动监督者处理，不以伪造 ready marker 或无设备假成功继续启动。
 
-- boot capability、DTB、CPU mapping 或 required device 初始化失败时 fail-stop，禁止以默认 topology 或 guessed address 继续。
-- RISC-V 缺少 PLIC/UART/UART interrupt、任一 `virtio,mmio` 节点缺少 window 或 interrupt、transport 超过 32
-  个，或 interrupt controller 拒绝注册时，必须带设备/vector/原因 fail-stop；静默返回会让设备永远收不到
-  interrupt。VirtIO device ID 0 表示空 transport，不是错误。
-- PLIC handler 返回错误或 source 未注册时，platform 仍须对每个已 claim vector 恰好 complete 一次。
-- secondary publication 使用 Release/Acquire；未完成全局 publication 的 CPU 不得观察或修改 generic state。
-- GICv3 claim 产生的 opaque token 必须在同一 CPU exactly-once EOI；timer PPI 必须在 EOI 前重新 arm，software SGI 必须在 EOI 后消费同步 request。
-- request Release/range Relaxed publication 与目标 request Acquire 配对；ack Release 与 sender Acquire 配对。缺失 range mailbox 会把每次 page revoke 退化为 whole-address-space flush；缺失任一配对会使 sender 在 fence 未完成时释放 translation owner。
+## 失败与验证
+
+缺失 CPU、RAM、firmware、中断控制器或必需串口事实时 fail-stop；不猜测 machine 地址。
+设备初始化、MMIO/IRQ/BTI 失败由 devmgr 拒绝相应设备，不能伪造 DMA 隔离或驱动能力。
+host DTB/MMIO fixture 验证解码与边界；release ELF 检查固定 ISA façade；双架构冷启动才验证真实装配与中断活性。

@@ -155,6 +155,8 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
                     restricted_time_ns: runtime.restricted_us.saturating_mul(1000),
                     voluntary_switches: runtime.voluntary_switches,
                     involuntary_switches: runtime.involuntary_switches,
+                    restricted_faults: runtime.restricted_faults,
+                    restricted_pager_waits: runtime.restricted_pager_waits,
                 },
             )
         }

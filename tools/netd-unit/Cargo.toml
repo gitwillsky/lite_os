@@ -1,0 +1,15 @@
+[package]
+name = "netd-unit"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+fallible-tree = { path = "../../fallible-tree" }
+device-model = { path = "../../system/device-model" }
+network-protocol = { path = "../../system/network-protocol" }
+native-abi = { path = "../../native-abi" }
+spin = { version = "0.10.0", default-features = false, features = ["mutex", "spin_mutex", "once"] }
+smoltcp = { path = "../../vendor/smoltcp", default-features = false, features = ["alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-tcp", "socket-tcp-reno", "socket-udp", "socket-icmp", "socket-raw"] }
+
+[lints]
+workspace = true

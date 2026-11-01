@@ -1,9 +1,5 @@
 // 块层的纯叶子：trait、分区表、范围 I/O 与身份文本（注册表依赖 spin，不在 host 测试范围）。
 
-#[path = "../../../kernel/src/devices/block/device.rs"]
-mod device;
-pub(crate) use device::{BLOCK_SIZE, BlockDevice, BlockError, CompletionNotify, PendingRead};
-
 #[path = "../../../system/linuxd/src/devices/block/identity.rs"]
 pub(crate) mod identity;
 

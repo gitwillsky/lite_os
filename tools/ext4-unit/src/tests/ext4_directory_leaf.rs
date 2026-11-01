@@ -11,7 +11,7 @@ use super::{DIRECTORY, FILE, FS_BLOCK, mount, scratch_copy};
 use crate::{
     InodeType,
     ext4_cost_tests::COST_TEST_LOCK,
-    fs::{FileSystem, FileSystemError},
+    vfs::FileSystemError,
 };
 
 /// 用 debugfs 取目录第 0 个逻辑块的物理块号。

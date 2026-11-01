@@ -7,7 +7,7 @@ mod allocation_failure;
 include!("../src/futex_owner_fixture.rs");
 #[path = "../src/interruptible_event_target.rs"]
 mod scheduler_target;
-use crate::execution::task::process_table as owner;
+use crate::task::process_table as owner;
 use core::sync::atomic::{AtomicU32, Ordering};
 use memory::{FutexKey, UserAtomicU32Op};
 static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -67,7 +67,7 @@ fn actual_rmw_uses_signed_operands_wrapping_add_and_old_signed_comparison() {
     );
     assert_eq!(
         wake_op::WakeOperation::decode(encoded(1, 1, 15, 0)).compare(0),
-        Err(crate::execution::task::FutexWaitError::Unsupported)
+        Err(crate::task::FutexWaitError::Unsupported)
     );
 }
 #[test]
@@ -150,5 +150,25 @@ fn wait_publication_cannot_cross_actual_two_source_operation() {
     });
     let waiting = thread.join().unwrap();
     assert_eq!(waiting.cancel(), None);
+    owner::assert_empty();
+}
+
+#[test]
+fn an_independent_source_can_publish_while_another_operation_is_held() {
+    let _serial = SERIAL.lock().unwrap();
+    let first = key(0x5000);
+    let independent = key(0x5004);
+    let (sent, received) = std::sync::mpsc::channel();
+    let worker = owner::with_operation(&[first], |_| {
+        let worker = std::thread::spawn(move || {
+            let waiting = owner::wait(independent, u32::MAX, None, 32);
+            sent.send(waiting).unwrap();
+        });
+        let pending = received.recv_timeout(std::time::Duration::from_secs(2));
+        // Release the first source even on failure, so a regressed global lock cannot hang the test.
+        (worker, pending)
+    });
+    worker.0.join().unwrap();
+    assert_eq!(worker.1.expect("independent source publication was serialized").cancel(), None);
     owner::assert_empty();
 }

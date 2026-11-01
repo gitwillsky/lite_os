@@ -14,45 +14,22 @@ mod fs {
         }
     }
 }
-#[path = "../../../system/linuxd/src/memory/mm"]
+#[path = "../../../system/linuxd/src/memory"]
 mod memory {
-    mod futex_atomic;
-    pub(crate) use futex_atomic::UserAtomicU32Op;
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-    pub(crate) struct SharedFileId {
-        pub(crate) filesystem: usize,
-        pub(crate) inode: u64,
-    }
-    // MM seam 只提供不可变 key；shared-page/key 解析另由实际 MM guest 回归覆盖。
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-    pub(crate) enum FutexKey {
-        Private {
-            address_space: usize,
-            address: usize,
-        },
-        SharedAnonymous {
-            backing: u64,
-            offset: usize,
-        },
-        SharedFile {
-            file: SharedFileId,
-            offset: u64,
-        },
-        SharedDevice {
-            backing: u64,
-            offset: usize,
-        },
-    }
+    mod futex;
+    pub(crate) use futex::{FutexKey, UserAtomicU32Op};
+    #[derive(Debug)]
+    pub(crate) enum UserAccessError { Fault }
+    pub(crate) fn user_address_end() -> usize { usize::MAX }
     pub(crate) fn update(word: &core::sync::atomic::AtomicU32, operation: UserAtomicU32Op) -> u32 {
-        futex_atomic::UserAtomicU32(word).update(operation)
+        futex::UserAtomicU32(word).update(operation)
     }
 }
 
 #[path = "../../../system/linuxd/src/syscall/futex/wake_op.rs"]
 mod wake_op;
 
-#[path = "."]
-pub(crate) mod execution {
+
 pub(crate) mod sync {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
@@ -72,6 +49,14 @@ pub(crate) mod sync {
 }
 #[path = "../../../system/linuxd/src/task"]
 pub(crate) mod task {
+    pub(crate) mod processor {
+        pub(crate) struct PreparedBlock;
+        pub(crate) fn prepare_current_block<G>(
+            _: &alloc::sync::Arc<super::TaskControlBlock>, _: G,
+            _: impl FnOnce(&mut G, ()) -> super::WaitMembership,
+        ) -> PreparedBlock { panic!("host queue fixture does not context-switch") }
+    }
+
     pub(crate) struct TaskControlBlock(usize);
     impl TaskControlBlock {
         pub(crate) fn tid(&self) -> usize {
@@ -88,25 +73,13 @@ pub(crate) mod task {
     pub(crate) struct WaitMembership;
     #[path = "process_table"]
     pub(crate) mod process_table {
-        use crate::{memory::FutexKey, execution::sync::WaitResult, execution::task::TaskControlBlock};
+        use crate::{memory::FutexKey, sync::WaitResult, task::TaskControlBlock};
         use alloc::sync::Arc;
         mod wait_key;
         use wait_key::{IndexedWaitKind, PollWaitKey};
         mod wait_registry;
         use wait_registry::{ClaimedBatch, WAIT_REGISTRY};
-        mod context_switch {
-            pub(super) struct PreparedBlock;
-            pub(super) fn prepare_current_block(
-                _: &alloc::sync::Arc<crate::execution::task::TaskControlBlock>,
-                _: super::wait_registry::WaitArmGuard<'static>,
-                _: impl FnOnce(
-                    &mut super::wait_registry::WaitArmGuard<'static>,
-                    (),
-                ) -> crate::execution::task::WaitMembership,
-            ) -> PreparedBlock {
-                panic!("host queue fixture does not context-switch")
-            }
-        }
+
         pub(crate) struct Waiting(wait_registry::PublishedWait);
         impl Waiting {
             pub(crate) fn arm(self) -> Result<u64, WaitResult> {
@@ -168,7 +141,8 @@ pub(crate) mod task {
         }
     }
 }
-}
 
-#[allow(unused_imports, reason = "装配当前 linuxd 的 task facade")]
-use execution::task;
+
+
+mod file { pub(crate) use crate::sync::next_readiness_generation; }
+mod deferred { pub(crate) fn deadline_changed() {} }

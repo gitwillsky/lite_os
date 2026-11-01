@@ -159,3 +159,12 @@ pub(crate) mod instruction {
     pub(crate) use super::selected::broadcast_instruction_cache;
     pub(crate) use super::selected::publish_instruction_range as publish_range;
 }
+
+/// Device translation register/table encoding and allocation seam.
+pub(crate) mod dma;
+
+/// ELF machine identifier accepted by the native loader.
+#[cfg(target_arch = "aarch64")]
+pub(crate) const ELF_MACHINE: u16 = 183;
+#[cfg(target_arch = "riscv64")]
+pub(crate) const ELF_MACHINE: u16 = 243;

@@ -136,9 +136,6 @@ mod fs;
     reason = "host tests read only the decoded facts they assert; boot-only fields stay unused"
 )]
 mod qemu_virt {
-    pub(crate) mod pci_host;
-    pub(crate) use pci_host::PciHost;
-    pub(crate) mod virtio_mmio;
 
     pub(crate) mod aarch64 {
         pub(crate) mod device_tree;
@@ -172,8 +169,6 @@ mod ext4_dirhash;
 #[cfg(test)]
 extern crate fallible_tree;
 
-#[cfg(test)]
-mod fallible_tree_tests;
 
 #[cfg(test)]
 #[path = "../../../tools/source-view/netd/inet/port_namespace/port_namespace/port_namespace.rs"]
@@ -231,23 +226,12 @@ mod memory;
 mod frame_metadata_layout;
 
 #[cfg(test)]
-#[path = "../../../kernel/src/memory/mm/file_page_range.rs"]
-mod file_page_range;
-#[cfg(test)]
 #[allow(dead_code)]
 #[path = "../../../system/linuxd/src/io_uring/abi.rs"]
 mod io_uring_abi;
 
-#[cfg(test)]
-#[path = "../../../kernel/src/memory/mm/fault_preflight.rs"]
-mod fault_preflight;
 
-#[cfg(test)]
-mod memory_retire;
 
-#[cfg(test)]
-#[path = "../../../system/linuxd/src/task/model/user_context.rs"]
-mod task_user_context;
 
 #[cfg(test)]
 #[path = "../../../system/devmgr/src/drivers/virtio/net/rx_slots.rs"]
@@ -384,13 +368,6 @@ mod synchronous_fault;
 mod aarch64_signal_frame;
 
 #[cfg(test)]
-mod fp_state {
-    use super::aarch64_kernel_context::KernelContext;
-
-    pub(super) unsafe fn capture_clone(_context: *mut KernelContext) {}
-}
-
-#[cfg(test)]
 #[path = "../../../kernel/src/arch/aarch64/kernel_context.rs"]
 #[allow(dead_code)]
 mod aarch64_kernel_context;
@@ -445,9 +422,6 @@ mod regular_write_batch_tests;
 #[path = "tests/filesystem_storage.rs"]
 mod filesystem_storage_tests;
 
-#[cfg(test)]
-#[path = "tests/memory.rs"]
-mod memory_tests;
 
 #[cfg(test)]
 #[path = "tests/kmsg.rs"]
@@ -491,11 +465,7 @@ pub(crate) mod execution {
             1_800_000_000_000_000_000
         }
 
-        /// 固定 monotonic 时刻：host 测试中 running transaction 永不因年龄到期，提交只由容量、
-        /// 数据上限或显式 sync 触发，使设备成本可确定复现。
-        pub(crate) fn get_time_ns() -> u64 {
-            1_000_000_000
-        }
+
     }
 }
 
@@ -521,10 +491,19 @@ pub(crate) mod devices {
 #[path = "."]
 pub(crate) mod boot {
     #[cfg(test)]
-    #[path = "../../../kernel/src/boot/cmdline.rs"]
+    #[path = "../../../system/linuxd/src/cmdline.rs"]
     pub(crate) mod cmdline;
 }
 
 #[cfg(test)]
 #[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
 use execution::sync;
+
+#[cfg(test)]
+mod file { pub(crate) use crate::sync::next_readiness_generation; }
+#[cfg(test)]
+use devices::model::io_completion;
+#[cfg(test)]
+use execution::timer as time;
+#[cfg(test)]
+type Activity = device_model::Activity;

@@ -1,0 +1,28 @@
+//! Device translation mechanism; allocation and mapping policy stay with the caller.
+use native_abi::Status;
+
+#[cfg(target_arch = "aarch64")]
+#[path = "aarch64/iommu.rs"]
+mod backend;
+#[cfg(target_arch = "riscv64")]
+#[path = "riscv64/iommu.rs"]
+mod backend;
+pub(crate) use backend::Backend;
+
+/// A zeroed, physically contiguous allocation retained for hardware table/queue access.
+/// Implementations must keep every page resident and stable until the frame owner is dropped.
+pub(crate) trait DmaFrame: Send + Sync + Sized {
+    /// Allocate `pages` zeroed pages; returns `None` when allocation fails.
+    fn allocate_zeroed(pages: usize) -> Option<Self>;
+    /// First physical page number, stable for this allocation's entire lifetime.
+    fn physical_page(&self) -> usize;
+}
+
+/// Device page-table binding and synchronous translation invalidation.
+pub(crate) trait Translation: Send + Sync {
+    /// Bind `stream` to `root` (physical page number), tagged by `domain`.
+    /// Returns an error for unsupported stream IDs or allocation/hardware failure.
+    fn attach(&self, stream: u32, domain: u16, root: usize) -> Result<(), Status>;
+    /// Invalidate the page range; completion precedes return and frame retirement.
+    fn invalidate(&self, domain: u16, first_page: usize, pages: usize);
+}

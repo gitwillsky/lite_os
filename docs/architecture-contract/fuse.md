@@ -1,5 +1,8 @@
 # FUSE 契约
 
+本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/devmgr/src/drivers/`。
+
+
 本文件是 [文件系统与存储契约](filesystem-storage.md) 的 FUSE 部分。
 
 `fs/fuse` 实现 Linux FUSE（协议 7.45）的 `/dev/fuse` 与 `fuse` 类型；守护进程的回复是唯一事实来源，内核只持有
@@ -172,7 +175,7 @@
   注销只撤销未来 OPEN，已打开句柄继续保活后备文件。无效 OPEN 回复仍发送预留 RELEASE，不能泄漏 daemon fh。
 - read/write/vector/positioned I/O 通过 per-open DirectIo 到下层 regular-file owner，不建立 FUSE 内容缓存。
   `OpenFileDescription::mapping` 同时承接普通文件与后备文件的映射，传播 shared/write/execute 与下层
-  noexec、只读和 swapfile 准入；VMA 持有下层 OFD，关闭上层 fd 或注销登记不撤销已有映射。
+  noexec 与只读准入；VMA 持有下层 OFD，关闭上层 fd 或注销登记不撤销已有映射。
   FOPEN_DIRECT_IO 优先保留 daemon 的直接读写，mmap 仍使用后备文件；flush/fsync/release 保留标准 FUSE 请求语义。
 - Benchmark 决策：登记表复用原 queue 锁，clone、reopen、最终 Drop 均在锁外；不新增全局锁或内容副本。
   已扩展 production-path guest 探针，按用户要求未运行回归、QEMU 或 benchmark，不声明已验证加速收益。

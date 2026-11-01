@@ -68,8 +68,7 @@ impl MemorySet {
         let page = address & !(PAGE_SIZE - 1);
         let Some(above) = self
             .areas
-            .iter_after(&address)
-            .next()
+            .successor(&address)
             .map(|(_, area)| area.clone())
             .filter(|area| area.flags.contains(AreaFlags::GROWS_DOWN))
         else {

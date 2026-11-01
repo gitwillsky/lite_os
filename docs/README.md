@@ -62,6 +62,10 @@
 - [本机登录与桌面验证](development/desktop-verification.md)
 - [生成的 scoped interface baseline](generated/architecture-interface.txt)
 
+## 进行中的迁移
+
+- [微内核迁移与验收清单](plans/microkernel.md)
+
 ## 设计规格
 
 - [经典桌面外观与交互规格（简体中文 Windows 2000 风格）](design/classic-desktop/README.md)

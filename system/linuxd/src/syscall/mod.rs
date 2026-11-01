@@ -537,6 +537,7 @@ pub(crate) fn syscall(
             }
             SYSCALL_GETRUSAGE => sys_getrusage(args[0] as i32, args[1]),
             SYSCALL_ACCEPT4 => sys_accept4(args[0], args[1], args[2], args[3]),
+            SYSCALL_SWAPON | SYSCALL_SWAPOFF => -38, // ENOSYS：没有交换设备或交换页机制。
             _ => {
                 unimplemented_report::report(syscall_id);
                 -errno::ENOSYS

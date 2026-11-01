@@ -4,17 +4,13 @@
 use alloc::sync::Arc;
 
 use crate::vm::page_table::PagePermissions;
-use crate::vm::{Placement, VmError, Vmar, Vmo, VmoOptions};
+use crate::vm::{MapOptions, Placement, VmError, Vmar, Vmo, VmoOptions};
 
 const PT_LOAD: u32 = 1;
 const PF_X: u32 = 1;
 const PF_W: u32 = 2;
 const PF_R: u32 = 4;
 const ET_EXEC: u16 = 2;
-#[cfg(target_arch = "aarch64")]
-const EXPECTED_MACHINE: u16 = 183;
-#[cfg(target_arch = "riscv64")]
-const EXPECTED_MACHINE: u16 = 243;
 
 /// 装载失败的原因。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,7 +55,7 @@ pub(super) fn load(image: &[u8], vmar: &Arc<Vmar>) -> Result<usize, ElfError> {
     {
         return Err(ElfError::Unsupported);
     }
-    if read_u16(image, 16)? != ET_EXEC || read_u16(image, 18)? != EXPECTED_MACHINE {
+    if read_u16(image, 16)? != ET_EXEC || read_u16(image, 18)? != crate::arch::ELF_MACHINE {
         return Err(ElfError::Unsupported);
     }
     let entry = read_u64(image, 24)? as usize;
@@ -113,12 +109,10 @@ pub(super) fn load(image: &[u8], vmar: &Arc<Vmar>) -> Result<usize, ElfError> {
         }
         let offset = start.checked_sub(base).ok_or(ElfError::Malformed)?;
         vmar.map(
-            Placement::Specific(offset),
             &vmo,
             0,
             end - start,
-            permissions,
-            PagePermissions::READ | PagePermissions::WRITE | PagePermissions::EXECUTE,
+            MapOptions { placement: Placement::Specific(offset), permissions, ceiling: PagePermissions::READ | PagePermissions::WRITE | PagePermissions::EXECUTE, allow_faults: false },
         )?;
     }
     Ok(entry)

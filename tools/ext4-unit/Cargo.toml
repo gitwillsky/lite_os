@@ -3,7 +3,7 @@ name = "ext4-unit"
 version = "0.1.0"
 edition = "2024"
 
-[dependencies]
+[dev-dependencies]
 fallible-tree = { path = "../../fallible-tree" }
 device-model = { path = "../../system/device-model" }
 native-runtime = { path = "../../system/native-runtime" }

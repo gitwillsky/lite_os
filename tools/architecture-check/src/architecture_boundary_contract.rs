@@ -53,6 +53,12 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
         .iter()
         .filter(|source| source.relative.starts_with("kernel/src/"))
     {
+        if contains_identifier(source.syntax.to_token_stream(), |name| {
+            let lower = name.to_ascii_lowercase();
+            lower.contains("linux") || matches!(name, "syscall_abi" | "Errno" | "SyscallRestartBlock")
+        }) {
+            errors.push(format!("{}: Linux ABI and policy belong to system/linuxd, not native kernel mechanisms", source.relative));
+        }
         if source.owner != "arch"
             && (source.text.contains("riscv::") || source.text.contains("use riscv::{"))
         {
@@ -272,4 +278,12 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn native_kernel_cannot_import_linux_policy() {
+        for text in ["use syscall_abi::errno;", "struct LinuxProcess;", "enum SyscallRestartBlock {}"] {
+            assert!(violations("object", "kernel/src/object/probe.rs", text).iter().any(|error| error.contains("Linux ABI and policy")));
+        }
+        assert!(violations("object", "kernel/src/object/probe.rs", "const PROPERTY: &str = \"linux,initrd-start\";").is_empty());
+    }
+
 }

@@ -188,7 +188,7 @@ impl Area {
     pub(crate) fn install(&self, vmar: &Vmar, base: usize) -> Result<(), MemoryError> {
         let object = self.backing.object();
         vmar.map(
-            vm::SPECIFIC_OVERWRITE | self.permission.vm_options(),
+            vm::SPECIFIC_OVERWRITE | vm::ALLOW_FAULTS | self.permission.vm_options(),
             self.start - base,
             object.vmo(),
             self.backing.offset(),

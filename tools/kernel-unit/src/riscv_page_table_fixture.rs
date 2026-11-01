@@ -82,34 +82,6 @@ mod tests {
     }
 
     #[test]
-    fn replacement_revoke_keeps_the_leaf_path_and_rejects_huge_leaves() {
-        let _serial = PAGE_TABLE_TEST.lock().unwrap();
-        let mut table = PageTable::<HostTablePage>::try_new(AddressSpaceKind::User).unwrap();
-        let vpn = 0x4_0201;
-        table.map(vpn, 0xabc, PagePermissions::READ).unwrap();
-        table.revoke_leaf(vpn).unwrap();
-        assert!(table.translate(vpn).is_none());
-        assert_eq!(table.table_page_count(), 3);
-        assert_eq!(LIVE_TABLE_PAGES.load(Ordering::Relaxed), 3);
-        table.map(vpn, 0xdef, PagePermissions::READ).unwrap();
-        assert_eq!(table.translate(vpn).unwrap().physical_page(), 0xdef);
-        assert_eq!(table.table_page_count(), 3);
-        assert!(matches!(
-            table.revoke_leaf(vpn + 1),
-            Err(super::page_table::PageTableError::NotMapped)
-        ));
-        let huge = 0x10_0000;
-        table
-            .map_contiguous_range(huge, huge, 512, PagePermissions::READ)
-            .unwrap();
-        assert!(matches!(
-            table.revoke_leaf(huge),
-            Err(super::page_table::PageTableError::NotMapped)
-        ));
-        assert!(table.translate(huge).is_some());
-    }
-
-    #[test]
     fn isolated_leaf_detaches_empty_tables_but_retains_frames_for_fence() {
         let _serial = PAGE_TABLE_TEST.lock().unwrap();
         assert_eq!(LIVE_TABLE_PAGES.load(Ordering::Relaxed), 0);

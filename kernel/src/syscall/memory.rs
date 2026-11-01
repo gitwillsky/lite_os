@@ -7,7 +7,7 @@ use native_abi::{Status, rights, vm, vmo};
 use super::Call;
 use crate::object::{Object, Pager, vm_status};
 use crate::vm::page_table::PagePermissions;
-use crate::vm::{CachePolicy, ChildKind, RangeOp, Vmo, VmoOptions};
+use crate::vm::{CachePolicy, ChildKind, MapOptions, RangeOp, Vmo, VmoOptions};
 
 /// VMO 一次读写的最大字节数；更大的请求按块分次执行，避免一次分配过大的内核缓冲。
 const CHUNK: usize = 64 * 1024;
@@ -177,7 +177,7 @@ fn placement(options: u32, offset: usize) -> Result<crate::vm::Placement, Status
     }
 }
 
-const MAP_OPTIONS: u32 = vm::READ | vm::WRITE | vm::EXECUTE | vm::SPECIFIC | vm::SPECIFIC_OVERWRITE;
+const MAP_OPTIONS: u32 = vm::READ | vm::WRITE | vm::EXECUTE | vm::SPECIFIC | vm::SPECIFIC_OVERWRITE | vm::ALLOW_FAULTS;
 
 pub(super) fn vmar_map(call: &Call<'_>) -> Result<(), Status> {
     let options = call.arg_u32(1);
@@ -196,12 +196,10 @@ pub(super) fn vmar_map(call: &Call<'_>) -> Result<(), Status> {
     }
     let address = vmar
         .map(
-            placement(options, call.arg(2))?,
             vmo,
             call.arg(4) as u64,
             call.arg(5),
-            requested,
-            ceiling,
+            MapOptions { placement: placement(options, call.arg(2))?, permissions: requested, ceiling, allow_faults: options & vm::ALLOW_FAULTS != 0 },
         )
         .map_err(vm_status)?;
     if let Err(status) = call.write(call.arg(6), &(address as u64)) {

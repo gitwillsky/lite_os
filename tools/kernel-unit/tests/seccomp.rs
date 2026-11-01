@@ -2,7 +2,6 @@
 #![feature(allocator_ext)]
 
 extern crate alloc;
-#[allow(dead_code, unused_imports)]
 extern crate fallible_tree;
 #[allow(dead_code, unused_imports)]
 #[path = "../src/namespace_fixture.rs"]

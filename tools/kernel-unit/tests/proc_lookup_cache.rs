@@ -2,6 +2,9 @@
 #![allow(dead_code)]
 //! 实际 proc child cache、完整 node parent context 和 dirent codec；inode 壳是显式输入 seam。
 extern crate alloc;
+extern crate network_protocol as network_wire;
+extern crate self as network_protocol;
+include!("../src/network_policy_transport.rs");
 #[path = "../src/shm_backing_fixture.rs"]
 mod memory;
 #[path = "../src/socket_core_fixture.rs"]

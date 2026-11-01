@@ -67,7 +67,7 @@ fn lookup_cached(id: SharedFileId) -> Option<Arc<CachedFile>> {
 fn next_cached(after: Option<SharedFileId>) -> Option<(SharedFileId, Arc<CachedFile>)> {
     let files = files().lock();
     let next = match after {
-        Some(id) => files.iter_after(&id).next(),
+        Some(id) => files.successor(&id),
         None => files.first_key_value(),
     };
     next.map(|(&id, file)| (id, file.clone()))

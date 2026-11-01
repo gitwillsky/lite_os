@@ -169,9 +169,20 @@ pub(crate) struct Vmo {
     supplied: WaitQueue,
 }
 
+/// 本次解析是否等待了 pager；不把对象的已有驻留页归类为新补页。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FaultSource {
+    /// 已驻留、零页提交或写时复制，不需要 pager 响应。
+    Memory,
+    /// 本次解析等待了 pager 请求完成。
+    Pager,
+}
+
 /// 一次页解析的结果。
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ResolvedPage {
+    /// 本次解析的内容来源；只描述此次访问，不保存第二份驻留状态。
+    pub(crate) source: FaultSource,
     pub(crate) ppn: PhysicalPageNumber,
     /// 解析出的页可以写入；为假时页属于祖先，只能只读映射。
     pub(crate) writable: bool,
@@ -549,6 +560,7 @@ impl Vmo {
                     return Err(Resolve::Error(VmError::OutOfRange));
                 }
                 return Ok(ResolvedPage {
+                    source: FaultSource::Memory,
                     ppn: PhysicalPageNumber::from(base.as_usize() + index),
                     writable: true,
                     cache: *cache,
@@ -559,6 +571,7 @@ impl Vmo {
                     return Err(Resolve::Error(VmError::OutOfRange));
                 }
                 return Ok(ResolvedPage {
+                    source: FaultSource::Memory,
                     ppn: PhysicalPageNumber::from(frames.ppn.as_usize() + index),
                     writable: true,
                     cache: CachePolicy::Cached,
@@ -588,6 +601,7 @@ impl Vmo {
                 page.dirty = true;
             }
             return Ok(ResolvedPage {
+                source: FaultSource::Memory,
                 ppn: page.frame.ppn,
                 writable: true,
                 cache: CachePolicy::Cached,
@@ -610,6 +624,7 @@ impl Vmo {
             if let Some(page) = ancestor_state.committed.get(&ancestor_index) {
                 if !write {
                     return Ok(ResolvedPage {
+                        source: FaultSource::Memory,
                         ppn: page.frame.ppn,
                         writable: false,
                         cache: CachePolicy::Cached,
@@ -668,11 +683,15 @@ impl Vmo {
         write: bool,
         mut with_page: impl FnMut(ResolvedPage) -> Result<R, VmError>,
     ) -> Result<R, VmError> {
+        let mut source = FaultSource::Memory;
         loop {
             let pending = {
                 let _tree = self.lock_tree()?;
                 match self.resolve_locked(index, write) {
-                    Ok(page) => return with_page(page),
+                    Ok(mut page) => {
+                        page.source = source;
+                        return with_page(page);
+                    }
                     Err(Resolve::Error(error)) => return Err(error),
                     Err(Resolve::NeedPage { vmo, index }) => {
                         vmo.request_page(index)?;
@@ -681,6 +700,7 @@ impl Vmo {
                 }
             };
             pending.0.wait_for_page(pending.1)?;
+            source = FaultSource::Pager;
         }
     }
 
@@ -976,8 +996,7 @@ impl Vmo {
         loop {
             let next = state
                 .committed
-                .iter_from(&range.start)
-                .next()
+                .ceiling(&range.start)
                 .map(|(&index, _)| index)
                 .filter(|index| *index < range.end);
             let Some(index) = next else { break };
@@ -1175,6 +1194,7 @@ fn commit_page(
         )
         .map_err(|_| Resolve::Error(VmError::NoMemory))?;
     Ok(ResolvedPage {
+        source: FaultSource::Memory,
         ppn,
         writable: true,
         cache: CachePolicy::Cached,

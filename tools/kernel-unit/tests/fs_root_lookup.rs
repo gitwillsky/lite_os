@@ -177,6 +177,7 @@ mod fs {
             Ok(Vec::new())
         }
         fn root_inode(&self) -> Result<Arc<dyn Inode>, FileSystemError>;
+        fn sync(&self) -> Result<(), FileSystemError> { Ok(()) }
         fn shutdown(&self) -> Result<(), FileSystemError> {
             Ok(())
         }
@@ -199,7 +200,7 @@ mod fs {
             DeviceNumber::new(0, 0)
         }
     }
-    #[path = "../../../system/linuxd/src/fs/devnum.rs"]
+    #[path = "devnum.rs"]
     mod devnum;
     pub(crate) use devnum::DeviceNumber;
     mod devnode {
@@ -1096,9 +1097,9 @@ mod fs {
             );
             assert_eq!(path, b"/after");
         }
-        #[path = "../../../../tools/kernel-unit/tests/fs_root_lookup/mounts.rs"]
+        #[path = "../../../../../tools/kernel-unit/tests/fs_root_lookup/mounts.rs"]
         mod mount_tests;
-        #[path = "../../../../tools/kernel-unit/tests/fs_root_lookup/propagation.rs"]
+        #[path = "../../../../../tools/kernel-unit/tests/fs_root_lookup/propagation.rs"]
         mod propagation_tests;
         #[test]
         #[ignore = "diagnostic host benchmark; run alone in release"]
@@ -1152,6 +1153,7 @@ pub(crate) mod execution {
         }
     }
     pub(crate) mod sync {
+        pub(crate) use spin::{Mutex, Once};
         pub(crate) struct TaskEvent;
         impl TaskEvent {
             pub(crate) const fn new() -> Self {
@@ -1243,3 +1245,9 @@ pub(crate) mod execution {
         }
     }
 }
+
+use execution::timer as time;
+
+use execution::sync;
+
+mod file { pub(crate) use crate::sync::next_readiness_generation; }

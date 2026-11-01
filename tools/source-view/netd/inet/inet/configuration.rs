@@ -1,0 +1,1 @@
+../../../../../system/netd/src/inet/configuration.rs

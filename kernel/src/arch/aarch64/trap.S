@@ -75,6 +75,14 @@ __aarch64_user_common:
     str x10, [x11, #256]
     mrs x10, spsr_el1
     str x10, [x11, #264]
+    // Software privileged-access isolation for every supported ARMv8-A CPU:
+    // TTBR1 owns the immutable kernel root, whose lower user-address half is empty. Selecting it
+    // as TTBR0 also selects reserved ASID 0, so cached user translations cannot match. This takes
+    // effect before Rust can consume untrusted pointers; user-copy resolves/pins VMO pages and
+    // accesses their high direct-map aliases. __aarch64_return restores the authorized user token.
+    mrs x10, ttbr1_el1
+    msr ttbr0_el1, x10
+    isb
     // Vector state remains live and is owned exclusively by KernelContext on a real task switch.
     // Ordinary traps close FPEN before entering Rust without copying q0-q31.
     mrs x10, cpacr_el1

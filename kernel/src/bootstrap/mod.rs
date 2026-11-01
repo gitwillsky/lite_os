@@ -21,7 +21,7 @@ use crate::object::{
 };
 use crate::thread::UserStart;
 use crate::vm::page_table::PagePermissions;
-use crate::vm::{Placement, Vmo, VmoOptions};
+use crate::vm::{MapOptions, Placement, Vmo, VmoOptions};
 
 const ROOT_SERVER: &[u8] = b"bin/root-server";
 const STACK_SIZE: usize = 256 * 1024;
@@ -84,12 +84,10 @@ pub(crate) fn start_root_server(command_line: &[u8]) {
         .expect("root stack allocation failed");
     let stack_base = vmar
         .map(
-            Placement::Any,
             &stack,
             0,
             STACK_SIZE,
-            PagePermissions::READ | PagePermissions::WRITE,
-            PagePermissions::READ | PagePermissions::WRITE,
+            MapOptions { placement: Placement::Any, permissions: PagePermissions::READ | PagePermissions::WRITE, ceiling: PagePermissions::READ | PagePermissions::WRITE, allow_faults: false },
         )
         .expect("root stack mapping failed");
 

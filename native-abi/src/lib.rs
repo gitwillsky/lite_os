@@ -222,6 +222,9 @@ pub mod vm {
     pub const SPECIFIC: u32 = 1 << 3;
     /// 放在 `vmar_offset` 处，先解除区间内已有映射。
     pub const SPECIFIC_OVERWRITE: u32 = 1 << 4;
+    /// 允许映射超出 VMO 当前大小的区间；未获后备的页在访问时产生可交付的缺页。
+    /// 未设置时 map 拒绝越界区间，服务可依赖已验证的 backing 窗口。
+    pub const ALLOW_FAULTS: u32 = 1 << 5;
 }
 
 /// VMO 选项与操作。
@@ -403,6 +406,10 @@ pub struct TaskRuntime {
     pub voluntary_switches: u64,
     /// 仍可运行时被抢占或让出 CPU 的次数。
     pub involuntary_switches: u64,
+    /// restricted mode 中成功解决的缺页次数。
+    pub restricted_faults: u64,
+    /// 其中本次解析等待了 pager 响应的次数。
+    pub restricted_pager_waits: u64,
 }
 
 /// VMO 的大小与本对象自己持有的已提交字节（不含从父对象共享的页）。

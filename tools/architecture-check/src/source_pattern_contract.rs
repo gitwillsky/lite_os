@@ -11,6 +11,7 @@ struct PatternVisitor {
     static_mut: Vec<usize>,
     dense_eight_ranges: Vec<usize>,
     unfinished: Vec<usize>,
+    test_context: bool,
 }
 
 #[derive(Default)]
@@ -46,6 +47,15 @@ impl<'ast> Visit<'ast> for DisplayCompletionLogVisitor {
 }
 
 impl<'ast> Visit<'ast> for PatternVisitor {
+    fn visit_item_mod(&mut self, module: &'ast syn::ItemMod) {
+        let previous = self.test_context;
+        self.test_context |= module.attrs.iter().any(|attribute| {
+            attribute.path().is_ident("cfg") && attribute.parse_args::<syn::Ident>().is_ok_and(|name| name == "test")
+        });
+        syn::visit::visit_item_mod(self, module);
+        self.test_context = previous;
+    }
+
     fn visit_expr_index(&mut self, index: &'ast syn::ExprIndex) {
         self.visit_expr(&index.expr);
         if let Expr::Range(range) = &*index.index {
@@ -74,7 +84,7 @@ impl<'ast> Visit<'ast> for PatternVisitor {
                 matches!(expression, Expr::Lit(ExprLit { lit: Lit::Int(value), .. }) if value.base10_parse::<u64>().is_ok_and(|value| value == expected))
             })
         };
-        if integer(&range.start, 0) && integer(&range.end, 8) {
+        if !self.test_context && integer(&range.start, 0) && integer(&range.end, 8) {
             self.dense_eight_ranges
                 .push(range.limits.span().start().line);
         }
@@ -316,4 +326,12 @@ mod range_tests {
             assert_eq!(visitor.dense_eight_ranges.len(), violations, "{body}");
         }
     }
+    #[test]
+    fn fixed_sibling_inputs_do_not_disable_production_cpu_checks() {
+        let syntax = syn::parse_file("#[cfg(test)] mod tests { fn siblings() { for n in 0..8 {} } } fn dispatch() { for cpu in 0..8 {} }").unwrap();
+        let mut visitor = PatternVisitor::default();
+        visitor.visit_file(&syntax);
+        assert_eq!(visitor.dense_eight_ranges.len(), 1);
+    }
+
 }

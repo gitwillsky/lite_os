@@ -6,6 +6,7 @@ pub(crate) mod id;
 pub(crate) mod ipc;
 
 pub(crate) mod file {
+    pub(crate) use crate::sync::next_readiness_generation;
     use alloc::sync::Arc;
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
     pub(crate) enum FileDescriptorError {

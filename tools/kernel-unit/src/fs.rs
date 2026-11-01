@@ -68,7 +68,7 @@ pub(crate) struct InodeMetadata {
 mod device_number;
 pub(crate) use device_number::DeviceNumber;
 
-pub(crate) use crate::devices::block::CompletionNotify;
+
 
 /// 与 `system/linuxd/src/fs/inode.rs` 的 `StorageStep`/`StorageRead` 同形；ext4 的步进读实现它们。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -122,14 +122,6 @@ pub(crate) trait Inode: Send + Sync {
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError>;
     fn inode_type(&self) -> InodeType;
     fn size(&self) -> u64;
-    fn is_swap_file(&self) -> bool {
-        false
-    }
-    fn pin_swap_file(
-        self: Arc<Self>,
-    ) -> Result<alloc::boxed::Box<dyn swap::SwapFileLease>, FileSystemError> {
-        Err(FileSystemError::InvalidOperation)
-    }
     fn is_executable(&self) -> bool;
     fn device_number(&self) -> Option<DeviceNumber>;
     fn mknod(
@@ -140,14 +132,6 @@ pub(crate) trait Inode: Send + Sync {
         device: Option<DeviceNumber>,
     ) -> Result<Arc<dyn Inode>, FileSystemError>;
     fn read_storage(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, FileSystemError>;
-    fn begin_storage_read(
-        &self,
-        _offset: u64,
-        _length: usize,
-        _notify: Arc<dyn CompletionNotify>,
-    ) -> Result<Option<alloc::boxed::Box<dyn StorageRead>>, FileSystemError> {
-        Ok(None)
-    }
     fn read_link(&self) -> Result<Vec<u8>, FileSystemError>;
     fn write_storage(
         &self,
@@ -336,7 +320,7 @@ pub(crate) mod inode_times;
 
 #[path = "../../../system/linuxd/src/fs/write_access.rs"]
 mod write_access;
-pub(crate) use write_access::{InodeAccessLease, InodeWriteAccess};
+pub(crate) use write_access::InodeWriteAccess;
 
 #[cfg(test)]
 #[path = "tests/inotify_queue.rs"]

@@ -1,28 +1,17 @@
-# 内核崩溃：现场保存与蓝屏
+# 内核崩溃与现场保存
 
-owner 模块：`kernel/src/crash/`。`lang_item.rs` 的 `#[panic_handler]` 只转交 `crash::handle_panic`。
+owner 为 `kernel/src/crash/`，panic handler 只转交它。
 
-## 流程
+1. panic 关本地 IRQ，以 CAS 确立唯一写者；嵌套或竞争失败者停机。
+2. 对其余 online CPU 发停止 IPI，有界等待现场；无响应不视为已停止。
+3. 写 panic 原因、回溯、CPU 快照和日志尾部，并镜像到串口。
+4. 按 `panic=N` 停机或 warm reset：0 停机，正数延迟，负数立即重启。
 
-1. panic 关本地中断并争夺所有权（CAS）；失败者与嵌套 panic 直接停机。
-2. 向其余在线 CPU 发停止 IPI（既有 platform `send_ipi`），目标在核间中断 handler 中采集 fp 回溯并停机；最多等 200 ms，不响应的 CPU 记为“无响应”。
-3. 依次写入 panic 原因 + 回溯、各 CPU 回溯、kmsg 尾部（128 条）；同时镜像到串口。每段写完提交一次。
-4. 尝试在 panic 专用 scanout resource 上绘制蓝屏；设备锁忙或命令超时则保留串口与记录。
-5. 按 `panic=N`（Linux 语义）停机或重启：默认 0，停在蓝屏；正数 N 秒后 warm reset；负数立即 warm reset。
+RAM 顶端保留记录区在 frame allocator 发布前排除，包含版本、长度和校验。下一次 boot 校验、复制后作废原区。
+内核经 native system-info `CRASH_LOG` 提供只读摘要；linuxd 缓存读取结果并经 `/proc/last_panic` 呈现。
+当前内核无 GPU/scanout owner，不绘制蓝屏。设备/服务失败与内核 panic 的监督路径不同。
 
-## 崩溃记录区
+boot CPU 的硬中断 tick 检查内核 deferred 进展；有 tick 而工作长时间不前进触发软 watchdog。
+全部 CPU 屏蔽 IRQ 的死锁无法由该机制发现。记录只跨 warm reset 存活，宿主销毁 VM 会丢失 RAM；它是文本摘要，不是完整内存转储。
 
-RAM 顶端 512 KiB，由 boot 装配在 `memory::init` 之前划出并排除在分配之外，仍在 direct map。布局 `[Header 32B][UTF-8 文本]`，Header 含魔数、版本、长度与 FNV-1a 校验。下一次启动 `crash::recover` 校验后拷贝并作废记录，
-经 `/proc/last_panic` 提供（无记录时为空文件）。回溯地址用 `addr2line -e <kernel ELF>` 解析。
-
-## 看门狗
-
-boot CPU 硬中断 tick 仍到达、但其 deferred TIMER work 超过 30 s 未被消费时 panic。所有 CPU 同时屏蔽 IRQ 的死锁无法被软件发现（需要 pseudo-NMI 或硬件 watchdog），属当前限制。
-
-## 当前限制
-
-- 记录只跨 warm reset 存活；宿主销毁虚拟机进程会丢失 RAM。
-- 记录是文本摘要，不是完整内存转储；没有寄存器全集与进程/页表视图。
-- 蓝屏只含 ASCII。
-
-owner、公开接口与失败路径由[崩溃契约](../architecture-contract/crash.md)维护。
+安全与清理见[崩溃契约](../architecture-contract/crash.md)。

@@ -289,6 +289,7 @@ def main() -> int:
         stamp = ROOT / f"target/verify-gates/musl-{TARGET.arch}.json"
         runtime_inputs = [
             ROOT / f"target/{TARGET.kernel_triple}/release/kernel",
+            ROOT / f"target/{TARGET.kernel_triple}/release/bootfs.cpio",
             binary,
             binary.parent / "fs-root-dynamic",
             binary.parent / "libc.so",

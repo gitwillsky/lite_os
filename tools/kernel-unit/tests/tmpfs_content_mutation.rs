@@ -469,8 +469,9 @@ pub(crate) mod execution {
             1_000_000_000
         }
     }
-    #[path = "../../../kernel/src/execution/sync"]
+    #[path = "../../../system/service-sync/src"]
     pub(crate) mod sync {
+        pub(crate) use spin::{Mutex, Once};
         mod wait_completion;
         pub(crate) use wait_completion::WaitCompletion;
         mod task_wait;
@@ -485,3 +486,8 @@ pub(crate) mod execution {
         pub(crate) use task_mutex::{TaskMutex, TaskMutexGuard, TaskMutexWaitPreparation};
     }
 }
+
+use execution::timer as time;
+
+use execution::sync;
+

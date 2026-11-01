@@ -608,3 +608,5 @@ mod namespace;
     }
 
 
+
+mod sync { pub(crate) use spin::{Mutex, Once}; }

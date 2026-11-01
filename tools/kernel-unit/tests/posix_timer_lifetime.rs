@@ -512,3 +512,9 @@ static NOW: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0
     }
 
 
+
+mod sync { pub(crate) use spin::{Mutex, Once}; }
+
+use timer as time;
+
+mod deferred { pub(crate) fn deadline_changed() {} }

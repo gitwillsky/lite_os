@@ -23,7 +23,7 @@ pub(crate) use exception::{Exception, ExceptionResolution};
 pub(crate) use handle_table::{HandleEntry, HandleTable};
 pub(crate) use memory::{Pager, vm_status};
 pub(crate) use port::Port;
-pub(crate) use resource::{Bti, Interrupt, Iommu, IommuBackend, Pmt, Resource};
+pub(crate) use resource::{Bti, Interrupt, Iommu, Pmt, Resource};
 pub(crate) use signals::{CancelKey, SignalState, WaitOutcome};
 pub(crate) use task::{Job, Mode, Process, ProcessKind, RestrictedEntry, Thread};
 

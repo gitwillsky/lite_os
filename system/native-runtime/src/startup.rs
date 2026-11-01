@@ -64,6 +64,7 @@ pub(crate) fn fatal() -> ! {
     crate::task::exit_process(-1)
 }
 
+// SAFETY: entry! 在同一映像定义此符号并使用完全一致的 Rust 签名，Startup 按值移交一次。
 unsafe extern "Rust" {
     /// 服务入口，由 [`crate::entry!`] 定义。
     fn __native_runtime_main(startup: Startup) -> i64;

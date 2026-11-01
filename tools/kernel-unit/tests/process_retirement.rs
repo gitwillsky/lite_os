@@ -27,6 +27,7 @@ mod fs {
 
 
     pub(crate) mod sync {
+        pub(crate) use spin::{Mutex, Once};
         pub(crate) enum WaitResult {
             Woken,
         }

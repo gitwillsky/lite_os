@@ -2,6 +2,9 @@
 #![allow(dead_code)]
 //! 完整实际 endpoint/namespace/backlog/packet/frame/graph owners 的事务与生命周期回归。
 extern crate alloc;
+extern crate network_protocol as network_wire;
+extern crate self as network_protocol;
+include!("../src/network_policy_transport.rs");
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
 extern crate fallible_tree;

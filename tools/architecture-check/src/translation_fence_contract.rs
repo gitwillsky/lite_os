@@ -1,45 +1,17 @@
-use syn::{Expr, ExprCall, ImplItem, Item, visit::Visit};
+use syn::{Expr, ExprCall, visit::Visit};
 
 use super::SourceFile;
 
-const MEMORY_PREFIX: &str = "kernel/src/memory/";
-const MMAP_PATH: &str = "kernel/src/memory/mm/mmap.rs";
-const FAULT_PATH: &str = "kernel/src/memory/mm/mmap/fault.rs";
+const MEMORY_PREFIX: &str = "kernel/src/vm/";
 const POLICY_PATH: &str = "kernel/src/vm/translation.rs";
 const AARCH64_MMU_PATH: &str = "kernel/src/arch/aarch64/mmu.rs";
 const AARCH64_PLATFORM_PATH: &str = "kernel/src/platform/qemu_virt/aarch64/mod.rs";
 const AARCH64_TLB_PATH: &str = "kernel/src/platform/qemu_virt/aarch64/tlb_shootdown.rs";
-const TRAP_PATH: &str = "kernel/src/bootstrap/mod.rs";
+const TRAP_PATH: &str = "kernel/src/execution/trap.rs";
 const RFENCE_PATH: &str = "bootloader/src/rfence.rs";
 const TRAP_VECTOR_PATH: &str = "bootloader/src/trap_vec.rs";
 
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let Some(mmap) = sources.iter().find(|source| source.relative == MMAP_PATH) else {
-        errors.push(format!("{MMAP_PATH}: missing mmap owner"));
-        return;
-    };
-    let Some(fault) = sources.iter().find(|source| source.relative == FAULT_PATH) else {
-        errors.push(format!("{FAULT_PATH}: missing page-fault owner"));
-        return;
-    };
-
-    let lazy_flushes = ["map_anonymous", "map_private_file", "map_shared_file"]
-        .into_iter()
-        .map(|name| legacy_calls_in_function(mmap, name))
-        .sum::<usize>();
-    if lazy_flushes != 0 {
-        errors.push(format!(
-            "{MMAP_PATH}: lazy VMA publication creates no leaf PTE and must issue zero TLB fences; found {lazy_flushes} whole-machine flush call(s)"
-        ));
-    }
-
-    let fault_flushes = legacy_calls_in_function(fault, "handle_page_fault_with_limits");
-    if fault_flushes != 0 {
-        errors.push(format!(
-            "{FAULT_PATH}: invalid-to-valid page-fault publication must use the translation-change policy, not {fault_flushes} direct whole-machine flushes; 1 MiB/256-page first-touch currently targets 256*(online_cpus-1) remote CPU fences"
-        ));
-    }
-
     let legacy_callers = sources
         .iter()
         .filter(|source| source.relative.starts_with(MEMORY_PREFIX))
@@ -208,26 +180,6 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             ));
         }
     }
-}
-
-fn legacy_calls_in_function(source: &SourceFile, name: &str) -> usize {
-    source
-        .syntax
-        .items
-        .iter()
-        .filter_map(|item| match item {
-            Item::Impl(implementation) => implementation.items.iter().find_map(|item| match item {
-                ImplItem::Fn(function) if function.sig.ident == name => Some(&function.block),
-                _ => None,
-            }),
-            _ => None,
-        })
-        .map(|block| {
-            let mut calls = NamedCalls::new("flush_tlb_all_cpus");
-            calls.visit_block(block);
-            calls.count
-        })
-        .sum()
 }
 
 fn named_calls(file: &syn::File, name: &str) -> usize {

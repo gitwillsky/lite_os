@@ -2,8 +2,8 @@ use super::*;
 
 fn violations(text: &str) -> Vec<String> {
     let source = SourceFile {
-        relative: "kernel/src/devices/model/probe.rs".to_owned(),
-        owner: "device".to_owned(),
+        relative: "kernel/src/serial/probe.rs".to_owned(),
+        owner: "serial".to_owned(),
         lines: text.lines().map(str::to_owned).collect(),
         syntax: syn::parse_file(text).unwrap(),
         text: text.to_owned(),
@@ -21,17 +21,17 @@ fn violations(text: &str) -> Vec<String> {
 #[test]
 fn macro_paths_cannot_bypass_dependency_or_concrete_facade_rules() {
     for text in [
-        "fn probe() { crate::execution::task::current_task(); }",
-        "macro_rules! probe { () => { crate::execution::task::current_task() }; }",
-        "macro_rules! probe { () => { $crate::execution::task::current_task() }; }",
-        "macro_rules! probe { () => { use crate::{execution::task as t}; t::current_task() }; }",
-        "macro_rules! probe { () => { use crate::{execution::task::{current_task as t}}; t() }; }",
+        "fn probe() { crate::thread::current_task(); }",
+        "macro_rules! probe { () => { crate::thread::current_task() }; }",
+        "macro_rules! probe { () => { $crate::thread::current_task() }; }",
+        "macro_rules! probe { () => { use crate::{thread as t}; t::current_task() }; }",
+        "macro_rules! probe { () => { use crate::{thread::{current_task as t}}; t() }; }",
     ] {
         let errors = violations(text);
         assert!(
             errors
                 .iter()
-                .any(|error| error.contains("crate::task is absent")),
+                .any(|error| error.contains("crate::thread is absent")),
             "{text}: {errors:?}"
         );
     }
@@ -46,30 +46,16 @@ fn macro_paths_cannot_bypass_dependency_or_concrete_facade_rules() {
 }
 
 #[test]
-fn driver_grouping_preserves_child_owner_boundaries() {
-    for text in [
-        "fn probe() { crate::drivers::virtio::probe(); }",
-        "macro_rules! probe { () => { crate::drivers::pci::probe() }; }",
-    ] {
-        assert!(
-            violations(text)
-                .iter()
-                .any(|error| error.contains("is absent")),
-            "{text}"
-        );
-    }
-    assert!(
-        violations("use crate::drivers as implementations;")
-            .iter()
-            .any(|error| error.contains("not a grouping"))
-    );
+fn grouping_preserves_child_owner_boundaries() {
+    assert!(violations("use crate::execution as mechanisms;").iter().any(|error| error.contains("not a grouping")));
+    assert!(violations("fn probe() { crate::execution::timer::probe(); }").iter().any(|error| error.contains("is absent")));
 }
 
 #[test]
 fn old_root_paths_cannot_hide_conditional_dependencies() {
     for text in [
-        "#[cfg(target_arch = \"other\")] fn probe() { crate::task::current_task(); }",
-        "macro_rules! probe { () => { $crate::audio::probe() }; }",
+        "#[cfg(target_arch = \"other\")] fn probe() { crate::cpu::current_id(); }",
+        "macro_rules! probe { () => { $crate::sync::probe() }; }",
     ] {
         assert!(
             violations(text)
@@ -104,8 +90,8 @@ fn macro_and_grouped_imports_cannot_alias_the_crate_root() {
 fn literals_comments_and_allowed_macro_paths_do_not_add_dependencies() {
     let errors = violations(
         r#"
-        // crate::execution::task::current_task()
-        macro_rules! probe { () => { println!("crate::execution::task::current_task()"); crate::arch::probe() }; }
+        // crate::thread::current_task()
+        macro_rules! probe { () => { println!("crate::thread::current_task()"); crate::execution::sync::probe() }; }
     "#,
     );
     assert!(errors.is_empty(), "{errors:?}");

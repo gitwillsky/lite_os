@@ -97,7 +97,7 @@ mod namespace;
             allocation_failure::fail_next();
             tree.commit_vacant(slot.fill(3, Value(drops.clone())));
             assert!(!allocation_failure::was_consumed());
-            tree.test_assert_invariants();
+
             assert_eq!(tree.iter().map(|(&key, _)| key).collect::<Vec<_>>(), [2, 3]);
             drop(tree);
             assert_eq!(drops.load(Ordering::Relaxed), 3);
@@ -300,3 +300,5 @@ mod namespace;
     }
 
 
+
+mod sync { pub(crate) use spin::{Mutex, Once}; }

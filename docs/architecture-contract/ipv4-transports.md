@@ -1,5 +1,8 @@
 # IPv4 与 TCP/UDP 传输契约
 
+Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system/linuxd`；IPv4/TCP/UDP/RAW、FIB、端口与 AF_PACKET 队列属于 `system/netd`。下述协议 owner 通过 `network-protocol` 交互，不共享内核状态。
+
+
 - TCP shutdown/AF_UNSPEC 源码：SYN_SENT 取消不分配、不发送 RST；listener SHUT_WR
   保留 accept，SHUT_RD 停止监听并移除实际 child policy。disconnect 恢复原 bind，清除 shutdown，
   删除无需RST的transport；RST仅在唯一RouteReplies预算内保存实际payload，不保留handles、
@@ -46,16 +49,16 @@ NET、packet、uevent 捕获创建域；NEWNET publication 提供声明范围内
   NIC、时钟与 deferred raise 是显式边界，protocol/port/ring 是生产实现；
 
 SocketIoDirection/SocketTimeout 是向 syscall/文件 I/O caller 的语义超时接口。SocketTimeouts 的唯一 Mutex 只持 native receive/send policy，不持 backend state、wait membership 或 deadline cache；PreparedSocket 在 endpoint 副作用前 fallibly 预留该 Arc，OFD
-façade、INET façade 与 TCP registry 引用同一个实际 owner。INET setter 按 operation → stack → policy 加锁，协议 poll 在 stack guard 下冻结 passive child 的值。wait_for_ofd/wait_for_socket_capacity 的 deadline 必须由 caller 在重试循环外冻结，
+façade 与 INET façade 引用同一个 linuxd owner；该 policy 不传入 netd。wait_for_ofd/wait_for_socket_capacity 的 deadline 必须由 caller 在重试循环外冻结，
 None 保留其他文件无限等待。已到期先无分配复查 level readiness，再返回 TimedOut；普通期限发布原有 WaitRegistry membership。socket::interrupted_wait 只根据本次期限决定内部 RestartSys 或用户 EINTR，不能重读后来改变的 policy。
-timer::SCHEDULER_TICK_NS 是实际 timer cadence 的唯一投影，socket 禁止复制 HZ。native codec、owner、deadline、getter、guest 收发/accept 及既有 CPU benchmark 纳入集中门禁。
+time::scheduler_quantum_ns() 是 native scheduler cadence 的唯一投影，socket 禁止复制 HZ。native codec、owner、deadline、getter、guest 收发/accept 及既有 CPU benchmark 纳入集中门禁。
 
 SocketPollState.read_closed 是实际协议/transport 半关闭的只读投影；file poll 仅按请求输出 POLLRDHUP，不从双向 HUP 猜测。TCP 使用实际 protocol FIN/closed state 和已有 shutdown_read，UDP 从实际 EndpointState.shutdown 投影 half close，raw/packet
 不伪造。socket 与 OFD readiness 固定容量为三项，stream 观察两个实际 direction notifications 与 endpoint error/lifecycle notification；epoll 为这些实际 sources 预留三个 membership nodes，无 readiness cache。consume_wait_notifications 只排空三路通
 知，不消费实际 chunks。无 requested data events 时仍观察 error/HUP 的实际 endpoint notification。
 
-TCP passive child 的不可变 policy 属于实际 TcpHandle.passive；标准最终 ACK 将 smoltcp handle 转入 Established/CloseWait 时冻结 listener timeout 与 InetSocketOptions。accept 消耗该 handle，初始化已预留的新 policy 并移交端口引用；accept OOM 不
-摘取 child 或重读 listener。TCP_NODELAY setter 不重写已经冻结的 pending child；未完成握手的失败复用实际监听 slot；已经建立的 child 即使随后 RST 仍留在该 handle 的 accept queue，连同握手地址与一次性 pending error 一起移交，无
+TCP passive child 的不可变 policy 属于实际 TcpHandle.passive；标准最终 ACK 将 smoltcp handle 转入 Established/CloseWait 时冻结 InetSocketOptions。accept 消耗该 handle，移交协议选项与端口引用；accept OOM 不
+摘取 child。linuxd 的收发 timeout 在 accept 时继承，尚未在握手时冻结。TCP_NODELAY setter 不重写已经冻结的 pending child；未完成握手的失败复用实际监听 slot；已经建立的 child 即使随后 RST 仍留在该 handle 的 accept queue，连同握手地址与一次性 pending error 一起移交，无
 平行 pending index。每次实际 ingress state change 后立即观察生命周期，保证同轮 ACK→RST 不丢 child；EthernetRxToken 只交付当前帧的 typed RST endpoints，只有协议库确实接受并转入 Closed 才消费终止事件。TcpConnection 的不可变
 local/peer 是实际连接身份，协议库清除路由 tuple 不释放 local 绑定；peer 查询仍检查实际 TCP phase。terminal 记录唯一 Closed 事件已交付，防止 SO_ERROR 或 I/O 消费后重复重建 RESET。SHUT_RD 保留已排队字节；接收顺序为数据、
 已收到 FIN 的 EOF、消费 pending error、半关闭 EOF，TCP recvmsg 不返回源 sockaddr。依据固定 Linux tcp_check_req → tcp_v4_syn_recv_sock → inet_csk_clone_lock/ sk_clone_lock。bench 决策：policy copy 无分配，沿用实际 timeout

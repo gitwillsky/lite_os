@@ -32,6 +32,8 @@ struct RequestData {
     generation: u64,
     requested: usize,
     result: Option<Result<usize, ()>>,
+    // 完成可能早于调用者进入 wait；waiter 保留到 finish，完成路径只克隆唤醒引用。
+    // 提前 take 会使已完成的请求在 wait 中丢失等待者并 panic。
     waiter: Option<Arc<dyn IoWaitTarget>>,
 }
 
@@ -284,7 +286,7 @@ impl VirtIORngDevice {
                     }
                     let identity = owner.requests.accept_completion(claim);
                     data.result = Some(Ok(length));
-                    let waiter = data.waiter.take();
+                    let waiter = data.waiter.clone();
                     if slot.completion.complete()
                         && let Some(waiter) = waiter
                     {
@@ -342,7 +344,7 @@ impl VirtIORngDevice {
                         "entropy outstanding request already has result"
                     );
                     data.result = Some(Err(()));
-                    let waiter = data.waiter.take();
+                    let waiter = data.waiter.clone();
                     if slot.completion.complete()
                         && let Some(waiter) = waiter
                     {

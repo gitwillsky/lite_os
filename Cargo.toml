@@ -23,6 +23,7 @@ members = [
     "tools/architecture-bench",
     "tools/kernel-unit",
     "tools/ext4-unit",
+    "tools/netd-unit",
     "tools/scheduler-unit",
 ]
 exclude = [

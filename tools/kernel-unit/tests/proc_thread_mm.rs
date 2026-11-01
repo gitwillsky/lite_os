@@ -99,7 +99,6 @@ mod fs {
                         start_time_us: 10_000,
                         virtual_pages: 31,
                         resident_pages: 17,
-                        swapped_pages: 4,
                         shared_pages: 3,
                         text_pages: 5,
                         data_pages: 23,
@@ -145,7 +144,7 @@ mod fs {
                 assert!(worker.contains("FDSize:\t64\n"));
                 assert!(worker.contains("Uid:\t1\t2\t3\t7\n"));
                 assert!(worker.contains("Gid:\t4\t5\t6\t8\n"));
-                assert!(worker.contains("VmSize:\t124 kB\nVmRSS:\t68 kB\nVmSwap:\t16 kB\n"));
+                assert!(worker.contains("VmSize:\t124 kB\nVmRSS:\t68 kB\nVmSwap:\t0 kB\n"));
                 assert!(worker.contains("Tgid:\t1\nNgid:\t0\nPid:\t2\n"));
             }
             #[test]
@@ -383,3 +382,5 @@ mod fs {
         }
     }
 }
+
+mod sync { pub(crate) use spin::{Mutex, Once}; }

@@ -52,6 +52,8 @@ pub(crate) struct Runtime {
     pub(crate) restricted_us: u64,
     pub(crate) voluntary_switches: u64,
     pub(crate) involuntary_switches: u64,
+    pub(crate) restricted_faults: u64,
+    pub(crate) restricted_pager_waits: u64,
 }
 
 impl Runtime {
@@ -60,6 +62,8 @@ impl Runtime {
         self.restricted_us += other.restricted_us;
         self.voluntary_switches += other.voluntary_switches;
         self.involuntary_switches += other.involuntary_switches;
+        self.restricted_faults += other.restricted_faults;
+        self.restricted_pager_waits += other.restricted_pager_waits;
     }
 }
 
@@ -313,6 +317,17 @@ impl Thread {
             restricted_us,
             voluntary_switches: state.voluntary_switches,
             involuntary_switches: state.involuntary_switches,
+            restricted_faults: state.restricted_faults,
+            restricted_pager_waits: state.restricted_pager_waits,
+        }
+    }
+
+    /// 记录一次已成功解决的 restricted 缺页；失败的解析与 normal mode 的服务缺页不计入。
+    pub(crate) fn record_restricted_fault(&self, source: crate::vm::FaultSource) {
+        let mut state = self.scheduling.state.lock();
+        state.restricted_faults += 1;
+        if source == crate::vm::FaultSource::Pager {
+            state.restricted_pager_waits += 1;
         }
     }
 
@@ -435,7 +450,7 @@ pub(crate) fn dispatch_deferred() {
         timer_queue::expire(get_time_ns());
     }
     if work.contains(DeferredWork::CONSOLE) {
-        crate::log::serial_input_ready();
+        crate::serial::input_ready();
     }
     work.run_registered(get_time_ns());
 }

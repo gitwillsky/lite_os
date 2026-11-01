@@ -3,6 +3,9 @@
 //! Production Thread credential/group/fs-context transitions and syscall codec.
 //! Filesystem object identity, signal security, constructors and user-copy are explicit host seams.
 extern crate alloc;
+extern crate network_protocol as network_wire;
+extern crate self as network_protocol;
+include!("../src/network_policy_transport.rs");
 
 #[path = "../src/ipc_namespace_fixture.rs"]
 mod ipc;

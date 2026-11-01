@@ -11,3 +11,6 @@ syn = { version = "=2.0.101", features = ["full", "parsing", "visit"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+mmio = { path = "../../mmio" }

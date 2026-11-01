@@ -37,14 +37,14 @@ fn main() {
         address: 0x1004,
     };
     measure("actual futex one-source empty wake transaction", || {
-        black_box(crate::execution::task::process_table::wake(
+        black_box(crate::task::process_table::wake(
             black_box(first),
             1,
             u32::MAX,
         ));
     });
     measure("actual futex two-source empty wake transaction", || {
-        crate::execution::task::process_table::with_operation(
+        crate::task::process_table::with_operation(
             &[black_box(first), black_box(second)],
             |wake| {
                 black_box(wake(first, 1, u32::MAX));

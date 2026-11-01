@@ -7,7 +7,7 @@ use std::{env, fs, panic};
 
 use dtb_walker::{Dtb, DtbObj, HeaderError, Property, Str, WalkOperation};
 
-use crate::qemu_virt::{aarch64, riscv64, virtio_mmio::VirtioMmioTransport};
+use crate::qemu_virt::{aarch64, riscv64};
 
 /// fixture 生成时使用的 `-smp`；验证 CPU 枚举不是只看第一个 hart。
 const FIXTURE_CPUS: usize = 2;
@@ -49,12 +49,6 @@ fn replace_all(bytes: &mut [u8], needle: &[u8], replacement: &[u8]) {
     );
 }
 
-fn riscv_transport_irqs(transports: impl Iterator<Item = VirtioMmioTransport>) -> Vec<u32> {
-    let mut irqs: Vec<u32> = transports.map(|transport| transport.irq).collect();
-    irqs.sort_unstable();
-    irqs
-}
-
 #[test]
 fn riscv64_qemu_virt_dtb_decodes_every_boot_fact() {
     let bytes = fixture("LITEOS_RISCV64_DTB");
@@ -66,12 +60,7 @@ fn riscv64_qemu_virt_dtb_decodes_every_boot_fact() {
     assert_eq!(info.uart_irq, 10);
     assert_eq!(info.plic.start, 0x0c00_0000);
     assert_eq!(info.rtc, Some(0x0010_1000..0x0010_2000));
-    // QEMU virt 固定 8 个 VirtIO-MMIO slot，PLIC source 1..=8。
-    assert_eq!(
-        riscv_transport_irqs(info.virtio.iter().copied()),
-        (1..=8).collect::<Vec<_>>()
-    );
-    assert_eq!(info.virtio.span(), Some(0x1000_1000..0x1000_9000));
+
 }
 
 #[test]
@@ -97,12 +86,10 @@ fn riscv64_device_identity_does_not_depend_on_node_names() {
     let replacement = vec![b'x'; name.len()];
     replace_all(&mut bytes, &name, &replacement);
     replace_all(&mut bytes, b"serial@10000000", b"tty000@10000000");
-    replace_all(&mut bytes, b"virtio_mmio@", b"transport-x@");
     replace_all(&mut bytes, b"rtc@101000", b"clk@101000");
     let info = riscv64::device_tree::parse(dtb(&bytes), 0x8700_0000);
     assert_eq!(info.plic.start, 0x0c00_0000);
     assert_eq!(info.uart_irq, 10);
-    assert_eq!(info.virtio.len(), 8);
     assert!(info.rtc.is_some());
 }
 
@@ -136,18 +123,6 @@ fn aarch64_qemu_virt_dtb_decodes_every_boot_fact() {
     // PL011 是 SPI 1，GIC INTID = 32 + 1。
     assert_eq!(info.uart.irq, 33);
     assert_eq!(info.gic.distributor.start, 0x0800_0000);
-    assert!(info.pci.interrupt(1, 1).is_some());
-    // QEMU virt 固定 32 个 VirtIO-MMIO slot，SPI 16..=47（INTID 48..=79）。
-    let mut irqs: Vec<u32> = info.virtio.iter().map(|transport| transport.irq).collect();
-    irqs.sort_unstable();
-    assert_eq!(irqs, (48..80).collect::<Vec<_>>());
-    assert_eq!(info.virtio.span(), Some(0x0a00_0000..0x0a00_4000));
+
 }
 
-#[test]
-fn aarch64_virtio_identity_does_not_depend_on_node_names() {
-    let mut bytes = fixture("LITEOS_AARCH64_DTB");
-    replace_all(&mut bytes, b"virtio_mmio@", b"transport-x@");
-    let info = aarch64::device_tree::parse(dtb(&bytes), 0x4000_0000);
-    assert_eq!(info.virtio.len(), 32);
-}

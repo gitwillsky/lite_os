@@ -2,6 +2,9 @@
 #![allow(dead_code)]
 //! 实际 native control import/codec；task seam 只生产 user-copy、fault 与调用次数。
 extern crate alloc;
+extern crate network_protocol as network_wire;
+extern crate self as network_protocol;
+include!("../src/network_policy_transport.rs");
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
 extern crate fallible_tree;
@@ -234,3 +237,5 @@ fn malformed_complete_second_header_returns_error_without_reparsing_first_messag
     }
 
 
+
+mod sync { pub(crate) use spin::{Mutex, Once}; }

@@ -2,6 +2,9 @@
 #![allow(dead_code)]
 //! Actual FileTable/IndexedSlots/POSIX owners. Device, OFD payload and scheduler are host seams.
 extern crate alloc;
+extern crate network_protocol as network_wire;
+extern crate self as network_protocol;
+include!("../src/network_policy_transport.rs");
 #[path = "../src/ipc_namespace_fixture.rs"]
 mod ipc;
 
@@ -983,25 +986,8 @@ fn actual_two_descriptor_io_capture_rejects_path_and_releases_table_before_opera
 }
 
 
-    #[path = "../../../kernel/src/execution/sync"]
-    pub(crate) mod sync {
-        mod wait_completion;
-        pub(crate) use wait_completion::WaitCompletion;
-        mod task_wait;
-        pub(crate) use task_wait::{
-            TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory,
-        };
-        mod task_event;
-        pub(crate) use task_event::TaskEvent;
-        #[allow(
-            unused_imports,
-            reason = "focused fixture does not consume every TaskMutex lock mode"
-        )]
-        mod task_mutex;
-        pub(crate) use task_mutex::{
-            TaskMutex, TaskMutexGuard, TaskMutexLockError, TaskMutexWaitPreparation,
-        };
-    }
+    #[path = "../src/sync.rs"]
+    pub(crate) mod sync;
     #[path = "../../../system/linuxd/src/task"]
     pub(crate) mod task {
         use crate::{Arc, RefCell};

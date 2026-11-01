@@ -21,9 +21,7 @@ mod namespace;
 
 #[path = "mmio_fixture.rs"]
 mod arch;
-#[allow(dead_code)]
-#[path = "../../../mmio/src/lib.rs"]
-mod mmio_bus;
+use mmio as mmio_bus;
 
 macro_rules! info { ($($args:tt)*) => { let _ = format_args!($($args)*); }; }
 #[allow(dead_code, unused_imports)]
@@ -64,7 +62,6 @@ impl TaskControlBlock {
     }
 }
 
-#[allow(dead_code)]
 extern crate fallible_tree;
 
 #[allow(dead_code)]

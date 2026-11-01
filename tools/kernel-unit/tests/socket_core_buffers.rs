@@ -2,6 +2,9 @@
 #![allow(dead_code)]
 //! 调优写入真实 global owner；独立 binary 避免其他 endpoint 回归并行改变默认预算。
 extern crate alloc;
+extern crate network_protocol as network_wire;
+extern crate self as network_protocol;
+include!("../src/network_policy_transport.rs");
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
 extern crate fallible_tree;

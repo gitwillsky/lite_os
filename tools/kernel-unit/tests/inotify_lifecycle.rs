@@ -497,3 +497,5 @@ pub(crate) mod execution {
 
 #[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
 use execution::sync;
+
+mod file { pub(crate) use crate::sync::next_readiness_generation; }

@@ -177,3 +177,5 @@ mod task_table {
         }
     }
 }
+
+mod sync { pub(crate) use spin::{Mutex, Once}; }

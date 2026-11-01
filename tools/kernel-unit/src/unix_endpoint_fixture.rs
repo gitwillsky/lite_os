@@ -140,3 +140,9 @@ pub(crate) fn receive(
 pub(crate) fn close_description(endpoint: &UnixSocket) {
     endpoint.close_description();
 }
+
+mod netd {
+    pub(super) fn create_namespace() -> Result<network_protocol::RemoteNamespace, super::SocketError> {
+        Ok(network_protocol::RemoteNamespace)
+    }
+}

@@ -164,29 +164,7 @@ mod fs {
         });
         assert_eq!(winners.load(Ordering::Relaxed), 1);
     }
-    #[test]
-    fn swap_uses_the_same_exclusive_physical_extent_owner() {
-        let whole = BlockClaim::whole(1, 1000).unwrap();
-        let left = whole.partition(2, 0, 400).unwrap();
-        let right = whole.partition(3, 600, 400).unwrap();
-        left.begin_swap().unwrap();
-        assert!(whole.bypass_cache());
-        assert!(left.bypass_cache());
-        assert!(!right.bypass_cache());
-        assert!(matches!(whole.begin_writer(), Err(FileSystemError::Busy)));
-        assert!(matches!(left.begin_writer(), Err(FileSystemError::Busy)));
-        assert!(matches!(whole.begin_mount(), Err(FileSystemError::Busy)));
-        assert!(matches!(left.begin_mount(), Err(FileSystemError::Busy)));
-        right.begin_mount().unwrap();
-        right.end_mount();
-        left.end_swap();
-        whole.begin_writer().unwrap();
-        assert!(matches!(left.begin_swap(), Err(FileSystemError::Busy)));
-        whole.end_writer();
-        whole.begin_mount().unwrap();
-        assert!(matches!(left.begin_swap(), Err(FileSystemError::Busy)));
-        whole.end_mount();
-        left.begin_swap().unwrap();
-        left.end_swap();
-    }
+
 }
+
+mod sync { pub(crate) use spin::Mutex; }

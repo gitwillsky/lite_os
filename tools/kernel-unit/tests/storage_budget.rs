@@ -143,3 +143,5 @@ pub(crate) mod execution {
         }
     }
 }
+
+mod sync { pub(crate) use spin::Mutex; }

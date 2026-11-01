@@ -113,12 +113,13 @@ mod tests {
     }
 
     #[test]
-    fn device_mapping_uses_device_attr_and_rejects_user_or_execute() {
+    fn device_mapping_preserves_user_access_and_rejects_execute() {
         let permissions = PagePermissions::READ | PagePermissions::WRITE | PagePermissions::DEVICE;
         let descriptor = encode(permissions).unwrap();
         assert_eq!(descriptor & (7 << 2), super::ATTR_DEVICE_NGNRNE);
         assert_eq!(decode(descriptor), permissions);
         assert!(encode(permissions | PagePermissions::EXECUTE).is_none());
-        assert!(encode(permissions | PagePermissions::USER).is_none());
+        let user = permissions | PagePermissions::USER;
+        assert_eq!(decode(encode(user).unwrap()), user);
     }
 }

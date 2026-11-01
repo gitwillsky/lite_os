@@ -741,3 +741,6 @@ impl<'a, K, V> IntoIterator for &'a FallibleMap<K, V> {
 }
 #[cfg(test)]
 mod test_support;
+
+#[cfg(test)]
+mod tests;

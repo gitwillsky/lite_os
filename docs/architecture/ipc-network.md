@@ -1,5 +1,8 @@
 # IPC 与网络当前架构
 
+Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system/linuxd`；IPv4/TCP/UDP/RAW、FIB、端口与 AF_PACKET 队列属于 `system/netd`。下述协议 owner 通过 `network-protocol` 交互，不共享内核状态。
+
+
 ## 当前设计
 
 - `ipc::IpcNamespace` 拥有实际 System V message/semaphore/shared-memory registry、标准 key/ID/权限与限额；
@@ -7,8 +10,7 @@
   撤销；共享内存复用 memory 共享页和 VMA 退休，RMID 撤销 key 后按最后挂接延迟销毁。
   创建线程实际退出会退休独立 clist，`shm_rmid_forced` 按 orphan/VMA lifetime 清理。
   SHM_LOCK/UNLOCK 按实际 UserNS real UID/祖先限额收费，重复锁不重复计费，解锁/销毁
-  归还原收费者。backing 的唯一 unevictable policy 封闭全部 swap admission，等待在途迁移，
-  不强制 fault-in。其余 POSIX IPC 接口未开放，支持范围见 syscall 矩阵。
+  归还原收费者。当前没有换出；backing 的唯一 lock policy 只维护 SHM_LOCKED/配额，不强制 fault-in。其余 POSIX IPC 接口未开放，支持范围见 syscall 矩阵。
 - `ipc::Pipe` 唯一拥有 byte ring、endpoint、atomic write 与 readiness generation；notification pipe 只传递合并 edge，不复制 data readiness。
 - epoll 在 ctl 阶段以持久 source index 精确更新 ready membership，wait 只向
   sharded WaitRegistry 发布单个 epoll notification key；ppoll/pselect 与 blocking I/O
@@ -64,9 +66,9 @@ AF_UNIX 显式 bind 与 family-only autobind 共用 namespace::register publicat
 不另建占用计数或地址缓存。abstract key 包含 socket type，pathname key 仍是实际 VFS inode identity。预留一个 AVL node 后碰撞复用，重复 autobind 不分配；全部名称耗尽返回 ENOSPC。最终提交持实际 endpoint state guard，关闭后的
 observer 无法重新发布 binding。
 
-SocketTimeouts 是收发超时唯一 owner；OFD 与 INET registry 的 Arc 引用同一个 policy Mutex。Linux LP64 old/new timeval 在 syscall codec 验证：非法 usec 为 EDOM，零禁用，负秒立即到期，合法有限时长按实际 scheduler tick 上取整并在 KTIME_MAX
+SocketTimeouts 是收发超时唯一 owner；linuxd OFD 与 INET facade 引用同一个 policy Mutex。Linux LP64 old/new timeval 在 syscall codec 验证：非法 usec 为 EDOM，零禁用，负秒立即到期，合法有限时长按实际 scheduler tick 上取整并在 KTIME_MAX
 饱和。操作冻结一次 host-monotonic deadline，read/write/send/recv/accept/TCP connect 的实际等待全部交给已有 wait registry；源唤醒、队列容量变化和 option 后续修改不重置原期限。无限等待的 signal interruption 允许 SA_RESTART，有限超
-时保持 EINTR。UNIX accepted endpoint 按 unix_create1 默认禁用超时；TCP passive child 在最终 ACK 建立连接时冻结 listener policy；accept 只移交该快照，listener 后续修改不影响已建立的 pending child。短 getsockopt 返回实际复制长度，负
+时保持 EINTR。UNIX accepted endpoint 按 unix_create1 默认禁用超时；TCP 协议选项由 netd 在握手完成时冻结；Linux 收发超时目前在 accept 时继承 listener，存在固定 Linux 语义差异，见 socket ABI。短 getsockopt 返回实际复制长度，负
 容量拒绝且不消费 SO_ERROR。
 
 AF_UNIX blocking connect 与 datagram send 共用 SocketCapacityWait 和既有 wait registry。Backlog/PacketQueue 是实际 owner 的等待条件，拒绝保留第二份容量缓存；终态或类型变化视为可重新检查，避免最后关闭的 edge 在注册前被消费后永

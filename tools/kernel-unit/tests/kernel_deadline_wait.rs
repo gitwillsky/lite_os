@@ -78,8 +78,9 @@ fn repeated_sleep_reuses_deadline_and_event_under_total_allocation_failure() {
             0
         }
     }
-    #[path = "../../../kernel/src/execution/sync"]
+    #[path = "../../../system/service-sync/src"]
     pub(crate) mod sync {
+        pub(crate) use spin::{Mutex, Once};
         pub(crate) struct IrqMutex<T>(spin::Mutex<T>);
         impl<T> IrqMutex<T> {
             pub(crate) const fn new(value: T) -> Self {
@@ -207,3 +208,7 @@ fn repeated_sleep_reuses_deadline_and_event_under_total_allocation_failure() {
     }
 
 
+
+
+
+use timer as time;

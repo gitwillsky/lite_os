@@ -1,5 +1,8 @@
 # io_uring
 
+本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/devmgr/src/drivers/`。
+
+
 ## 当前设计
 
 io_uring 是 Linux ABI 里对应 Windows NT 完成端口的接口：用户态把请求写进提交队列（SQ），内核把结果投到完成队列（CQ），

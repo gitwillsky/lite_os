@@ -112,8 +112,7 @@ fn wake_locked(
     let mut woken = 0;
     while (woken as usize) < count {
         let next = table
-            .iter_from(&(key, 0))
-            .next()
+            .ceiling(&(key, 0))
             .map(|(slot, _)| *slot)
             .filter(|slot| slot.0 == key);
         let Some(slot) = next else { break };
@@ -147,8 +146,7 @@ pub(super) fn requeue(call: &Call<'_>) -> Result<(), Status> {
     let mut moved = 0;
     while moved < call.arg(4) {
         let next = table
-            .iter_from(&(source, 0))
-            .next()
+            .ceiling(&(source, 0))
             .map(|(slot, _)| *slot)
             .filter(|slot| slot.0 == source);
         let Some(slot) = next else { break };

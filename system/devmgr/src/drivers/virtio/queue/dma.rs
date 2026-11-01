@@ -5,9 +5,12 @@
 //! 2. 区段在构造时缓存，提交 descriptor 时只投影、不分配。
 //! 3. 缓冲释放时撤销设备地址；adapter 必须先 reset 设备，保证设备不再访问。
 
-use alloc::{boxed::Box, vec::Vec};
+use alloc::boxed::Box;
+#[cfg(not(test))]
+use alloc::vec::Vec;
 use core::ops::{Deref, DerefMut, Range};
 
+#[cfg(not(test))]
 use device_model::{DeviceBacking, DeviceExtent};
 #[cfg(not(test))]
 use native_runtime::Bti;

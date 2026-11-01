@@ -22,6 +22,7 @@ mod namespace;
 mod net;
 #[path = "../../../system/linuxd/src/net/timeouts.rs"]
 mod socket_timeouts;
+mod time { pub(crate) fn scheduler_quantum_ns() -> u64 { 10_000_000 } }
 
 use alloc::{sync::Arc, vec};
 use net::{UnixPassedFile, UnixRights, UnixSocket};

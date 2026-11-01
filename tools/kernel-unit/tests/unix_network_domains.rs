@@ -2,6 +2,9 @@
 #![allow(dead_code)]
 //! 实际NET policy/ucounts和完整UNIX endpoint；接口与Task publication仍在其专用owner继续装配。
 extern crate alloc;
+extern crate network_protocol as network_wire;
+extern crate self as network_protocol;
+include!("../src/network_policy_transport.rs");
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
 extern crate fallible_tree;

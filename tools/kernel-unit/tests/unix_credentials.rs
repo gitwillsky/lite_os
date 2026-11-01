@@ -10,7 +10,7 @@ mod namespace;
 #[path = "../../../system/linuxd/src/net/credentials.rs"]
 mod net;
 
-#[path = "../../../kernel/src/syscall"]
+#[path = "../../../system/linuxd/src/syscall"]
 mod syscall {
     pub(crate) mod socket {
         use syscall_abi::errno;
@@ -235,3 +235,5 @@ fn receive_codec_projects_actual_namespaces_and_native_missing_credentials() {
     }
 
 
+
+mod sync { pub(crate) use spin::{Mutex, Once}; }

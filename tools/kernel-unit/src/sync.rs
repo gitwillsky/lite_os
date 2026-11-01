@@ -19,6 +19,7 @@ mod task_wait;
 pub(crate) use task_wait::{TaskWaitKey, TaskWaitTarget, WaitResult, install_wait_target_factory};
 
 #[path = "../../../tools/source-view/service-sync/task_mutex/task_mutex/task_mutex.rs"]
+#[expect(dead_code, reason = "partial scheduler assembly; get_mut and signal-aware locking run in dedicated integration fixtures")]
 mod task_mutex;
 #[allow(
     unused_imports,
@@ -61,3 +62,24 @@ pub(crate) fn next_readiness_generation() -> u64 {
 #[allow(unused_imports, reason = "宿主调度适配替代 native futex 等待；互斥算法仍执行生产实现")]
 pub(crate) use spin::{Mutex, MutexGuard, Once};
 
+
+/// Host scheduler seam for the driver's real completion owner; no native syscalls on the host.
+pub(crate) struct ServiceThreadTarget(std::thread::Thread);
+impl ServiceThreadTarget {
+    pub(crate) fn current() -> alloc::sync::Arc<Self> {
+        alloc::sync::Arc::new(Self(std::thread::current()))
+    }
+    pub(crate) fn park_until(&self, completion: &WaitCompletion, _: Option<u64>) {
+        while !completion.is_complete() { std::thread::park(); }
+    }
+    pub(crate) fn unpark(&self) { self.0.unpark(); }
+}
+
+impl TaskWaitTarget for ServiceThreadTarget {
+    fn sleep(self: alloc::sync::Arc<Self>, completion: &WaitCompletion, key: TaskWaitKey) -> WaitResult {
+        assert!(key.deadline().is_none(), "untimed host mutex seam does not emulate a guest clock");
+        self.park_until(completion, None);
+        WaitResult::Woken
+    }
+    fn wake(self: alloc::sync::Arc<Self>, _: TaskWaitKey) { self.unpark(); }
+}

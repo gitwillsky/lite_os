@@ -1,5 +1,8 @@
 # 进程接口、等待与退休契约
 
+本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/devmgr/src/drivers/`。
+
+
 ## Interface
 
 - 调度路径只使用 logical `CpuId`/`CpuSet`；不得把 hardware identity 保存为 affinity、processor 或 mask。

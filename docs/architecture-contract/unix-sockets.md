@@ -1,5 +1,8 @@
 # UNIX socket 与辅助数据契约
 
+本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/devmgr/src/drivers/`。
+
+
 - send/receive publication 在 payload、control、fd reservation 与 queue capacity 全部验证后提交；partial stream progress 与 atomic message 失败必须区分。
 - receive 失败或短读只能保留已 append 的 prefix；未初始化 capacity 永不成为 slice，也不得因错误路径或错误 byte count 被 copyout。
 - epoll_ctl ADD 的任一节点预分配失败都返回 ENOMEM 且不留半发布
@@ -198,7 +201,7 @@ Atomic/固定常量代替生产 Mutex/clamp。hot graph quota、真实 getter �
   next_description 沿真实 ID slot cursor 每次提取一条 metadata；snapshot/native stat/proc
   共用同一对象字段投影，文本与 UID/PID munging 在 proc codec 完成，formatter 不持 registry
   guard、不取得全局 Task snapshot。查询不检查对象 DAC，SHM DEST 对象仍在实际 registry
-  中时继续可见，rss/swap 输出实际 backing 的字节数。
+  中时继续可见，rss 读取实际 VMO committed bytes，swap 字段为零。
   每个 actual open 的 IpcReadCursor 拥有 next actual slot、固定512字节记录与未交付 suffix；OFD position
   仍归 file owner。打开对应 IPC 表时通过 Box::try_new 预留其唯一 cursor，OOM 不发表文件；其他 proc OFD 不为该 cursor 预留空间。reader TaskMutex 串行化连续 read/pread 的 seq buffer，metadata registry guard
   不跨格式化/user-copy。顺序小 read 不重新渲染已消费行，且 record codec 无 heap allocation；

@@ -1,51 +1,37 @@
 # Virtual memory syscall
 
+Linux VMA/映射政策由 `system/linuxd/src/memory` 拥有，native VMO/VMAR 只提供机制。
+
 | Number | Syscall | Status | 当前范围 |
 |---:|---|---|---|
-| 214 | `brk` | Complete | program break 与 anonymous VMA 统一 owner |
-| 215 | `munmap` | Complete | VMA split、shared writeback 与 TLB cleanup |
-| 216 | `mremap` | Partial | 私有/共享匿名、私有/共享文件与 device 映射的缩小、增长、`MAYMOVE`/`FIXED`/`DONTUNMAP` 搬迁和共享映射别名（`old_size == 0`）；stack 与 loader System VMA 返回 EFAULT |
-| 222 | `mmap` | Partial | anonymous/regular-file/memfd/ALSA PCM、private/shared、fixed，以及 noreserve/stack/populate advisory（populate 不预取，按需缺页）；ALSA 只接受 writable `MAP_SHARED` playback buffer |
-| 224 | `swapon` | Partial | SWAPSPACE2 v1 block/file swap、priority flags、统一 private/sharedAnon/tmpfs/COW 页 owner；共享页双架构1/2CPU阶段验证通过，完整产品门禁待执行 |
-| 225 | `swapoff` | Partial | 预备 waiter、禁止新槽、恢复物理 backing 与已登记 mm 的逻辑 epoch，失败保留 lease；page/MM work unit 之间及最终槽退休等待支持 EINTR 重试 |
-| 226 | `mprotect` | Complete | Linux protection combinations 与 VMA split |
-| 227 | `msync` | Partial | shared regular-file mapping 的同步范围 |
-| 233 | `madvise` | Partial | 已声明 advice、discard/reclaim 与 residency 语义 |
+| 214 | `brk` | Complete | program break 与匿名 VMA 统一 owner |
+| 215 | `munmap` | Complete | VMA split、共享写回、native 翻译撤销与清理 |
+| 216 | `mremap` | Partial | 私有/共享匿名、文件及 device 映射缩小、增长、MAYMOVE/FIXED/DONTUNMAP、old_size=0 共享别名；stack/loader System VMA 返回 EFAULT |
+| 222 | `mmap` | Partial | anonymous、regular file、memfd、ALSA PCM；private/shared/fixed；populate/noreserve/stack 为 advisory，按需补页 |
+| 224 | `swapon` | Unsupported | ENOSYS，无交换设备或页迁移机制 |
+| 225 | `swapoff` | Unsupported | ENOSYS，无交换设备或页迁移机制 |
+| 226 | `mprotect` | Complete | protection combinations、VMA split 与最大权限约束 |
+| 227 | `msync` | Partial | 共享文件映射同步写回，无通用脏页压力控制 |
+| 233 | `madvise` | Partial | 下述映射 flags、discard 与访问提示；无后台回收 |
 
-## 已知缺口
+## 映射与寿命
 
-`mmap(MAP_PRIVATE)` 的 regular-file/memfd 读缺页共享 canonical 文件页；首次写入才 COW，
-之后不再反映文件更新。mprotect/fork 保持这一写隔离，truncate 撤销新 EOF 外的 clean 与 COW 页。
+`MAP_PRIVATE` 文件读页来自 canonical pager VMO，写入使用 snapshot COW。fork 生成 VMO snapshot，
+子分支退出后内核合并只剩一个存活子分支的 hidden parent；truncate 退休范围外页与映射。
+`mremap` 迁移 VMA owner/backing，不复制物理页；旧翻译同步撤销后才退休资源。
+共享匿名映射增长只扩展映射，不能扩展原 backing；新增页访问得到 SIGBUS。共享文件增长至 EOF 外同样 SIGBUS，device 映射不能增长。
+`old_size == 0` 只允许共享源，且必须 MAYMOVE；缺失时按固定 Linux v7.1 返回 ENOMEM。
+普通源须由单个 VMA 覆盖；stack 大小由 stack owner 管理，不可 remap。
 
-`mremap` 搬迁转移 VMA 的全部 owner（resident 页、共享 backing、文件范围）并整体换到新地址，不复制页；旧地址的翻译由同步 fence 封闭，新地址在首次访问时按已有 owner 重新安装。
-共享匿名与共享文件映射增长出的页没有 backing，访问得到 SIGBUS，与 Linux 一致；device 映射不可增长（EFAULT）。
-源范围必须被单个 VMA 完整覆盖，否则 EFAULT；stack 的大小由 stack owner 管理，不可 remap。
+native `ALLOW_FAULTS` 允许映射覆盖尚无 backing 的范围，实际访问再失败；Linuxd 负责把该故障转换成 SIGBUS。
+此服务 flag 不对 Linux 应用暴露新的 ABI。私有匿名 MAP_GROWSDOWN 按相邻 VMA 与地址限制扩展。
 
-swapon(224)/swapoff(225) 已接入标准 Linux v1 block/file swap，用户 private、共享 COW、
-共享匿名与 tmpfs/memfd 统一迁移；共享页路径已通过双架构各1/2CPU TCG阶段验证；完整产品门禁待全部范围完成后执行。没有 commit accounting、huge page、NUMA 或 `userfaultfd`。通用后台压力回收已实现，
-采用有界采样与低/高水位，不声明完整 Linux kswapd/zone policy。
-ext4 已有定期 journal/page-cache 写回线程；它不提供通用脏页压力控制。
-当前 backend 的 Sv39/ASID 细节不属于本 ABI contract。
+## Advice 与当前边界
 
-- `swapon`/`swapoff`：要求 calling Thread 的 CAP_SYS_ADMIN；当前 initial user namespace，尚未实现跨 user namespace 的 scoping。
-  `swapon` 验证 SWAPSPACE2 v1 header、实际容量、坏页及标准 priority flags；discard 是可选
-  advisory，未伪造块设备 discard 支持。最多32个 active area，同 priority 轮转分配。
-  mount/raw writer/swap 共用物理 extent exclusion。`swapoff` 先禁止新槽，再恢复全部已登记
-  canonical 物理 backing 和 mm 的对应 logical epoch；ENOMEM/EIO 保留剩余槽和设备占用，
-  成功返回前同步归还 claim。`/proc/swaps`、meminfo 与 sysinfo 从同一 area owner 投影。
-  page-in 缓存一份 Resident 与未恢复 alias 所需的唯一 retained slot，全部 alias 恢复后释放；
-  `/proc/meminfo` 的 SwapCached 按唯一 Resident+retained slot capability 计数，提供近似
-  vmstat 快照；`/proc/PID/status` 的 VmSwap 只计 private anonymous，排除 shared anonymous/tmpfs。
-  `/proc/meminfo` 的 AnonPages、Mapped、Shmem、KernelStack、PageTables 按 Linux 7.1 `fs/proc/meminfo.c`
-  的 NR_ANON_MAPPED/NR_FILE_MAPPED/NR_SHMEM/NR_KERNEL_STACK_KB/NR_PAGETABLE 语义精确投影；物理页按 mapcount
-  只计一次。Cached 与 Linux NR_FILE_PAGES 一致包含 Shmem（含 GEM shmem）。KernelStack 只含 task stack，
-  启动期每 CPU 的 boot stack 不经 KernelStack 分配，不计入。Active/Inactive/Writeback 仍报告 0。
-
-- ext4 swapfile 使用4KiB固定profile、非稀疏 allocated extents（含 unwritten），先撤共享 writer、
-  排空 cache/journal，再直接 extent I/O。O_RDWR 来源阻 readonly/remount,ro，opened pin umount；
-  write/truncate/fallocate、新 shared W mmap 返回 ETXTBSY，unlink/rename source/target EPERM。
-  mprotect 保留原 fd VM_MAYWRITE；冻结后的旧 shared write SIGBUS，private/read-only 仍可映射。
-
-swapoff 的可交付信号在 physical page/MM work unit 之间检查，最后槽退休使用可中断
-TaskEvent；空 area 或最后槽已经释放优先成功。EINTR 恢复 Active、保留已恢复内容与
-剩余槽/storage lease；PageOp/MM lock 与单次同步 I/O 内部等待不会提前中断。
+- NORMAL/RANDOM/SEQUENTIAL/WILLNEED 是 advisory，不预取、不建立后台回收状态。
+- DONTFORK/DOFORK、WIPEONFORK/KEEPONFORK、DONTDUMP/DODUMP 保存在实际 VMA；WIPEONFORK 只接受私有匿名映射。
+- DONTNEED/FREE 当前对私有页同步 decommit；FREE 不提供延迟回收的内容保留期。共享对象保持内容；没有物理 swap 或通用压力回收。
+- 没有 commit accounting、NUMA、userfaultfd、应用 huge page 或通用脏页压力政策。
+- 页缓存位于 linuxd，每个 inode 一个 VMO；外部文件通过 pager 线程池补页、dirty 查询与写回。NOWAIT 读当前仍可能阻塞，不声明非阻塞磁盘读取。
+- `/proc/swaps` 不存在，Swap 字段为 0。meminfo 的跨进程 AnonPages/Mapped/Shmem/Slab/KernelStack/PageTables 缺少汇总 owner，当前报告 0；MemAvailable=MemFree。
+- getrusage 的缺页计数来自成功 restricted-mode trap：minor=全部成功故障减 pager 等待，major=pager 等待。normal-mode user-copy 不在该计数中；不以块设备读取量伪造缺页次数。

@@ -36,3 +36,10 @@ pub(crate) fn create_net_namespace(
         "full native protocol constructor is covered by actual network endpoint fixture and guest"
     )
 }
+
+pub(crate) use network_wire::SocketError;
+mod netd {
+    pub(super) fn create_namespace() -> Result<network_protocol::RemoteNamespace, super::SocketError> {
+        Ok(network_protocol::RemoteNamespace)
+    }
+}

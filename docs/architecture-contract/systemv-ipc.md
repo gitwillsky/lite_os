@@ -1,5 +1,8 @@
 # System V IPC 对象与资源契约
 
+本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/devmgr/src/drivers/`。
+
+
 - IpcNamespace 独占 actual System V message registry（slot/sequence IDs、key index 与 msgmax/msgmnb/
   msgmni），UserResourceCharge 按 owning UserNS/kuid ancestry 收费；NEWIPC 新建标准空初态，clone
   默认共享同一 Arc。Task 的 fs/namespace tuple 只保存 membership，setns 校验两侧 owning UserNS
@@ -46,17 +49,11 @@
   最后实际 VMA/reservation close 才摘除 ID 和 backing；segment observer 不延长页 lifetime。
   registry→segment 是唯一锁序，PID/AVL/backing 最终析构在两个 guard 外。shmmax/shmall/shmmni
   在 owning IPC namespace 限制 admission；使用标准 unsigned long/int sysctl codec。
-  SHM_INFO 聚合实际 backing 的 O(1) resident/swapped 投影；实际 PageState admission、physical replacement 和最终 Drop 更新同一账本，不再逐页扫描或保存第二份页状态。
-  benchmark 决策：fault/swap/futex 复用原共享 backing，无新层；冷 VMA open/close 增加一次
-  registry/segment transaction，split 只为非空 fragment 计数，纳入最终 VMA/IPC 性能门禁。
-  SHM_LOCK/UNLOCK 使用实际 backing 的唯一 unevictable
-  policy；所有共享页 swap admission 持同一 gate，LOCK 等待在途迁移完成但不 fault-in。
-  real UID 的 locked-page quota 属于实际 UserNS/祖先 ucounts，当前限额在 policy 等待后
-  重新读取；initial CAP_IPC_LOCK 才豁免配额，child capability 只决定 target IPCNS 控制权限。
-  重复 LOCK 不重复收费，UNLOCK/destroy 归还原付费者；统计 mode 从实际 policy 投影。
-  policy 等待/charge preparation 不持 registry/segment，最终退休在短 guard 外。
-  benchmark 决策：private/file swap 不增加 policy gate；shared swap 增加 Weak owner pin 和
-  try gate，纳入最终 swap/VMA 成本验证；在途 IO、quota rollback 与锁后换入保持锁定均有新增回归。
+  SHM_INFO 遍历实际 segment，读取其 VMO committed bytes；换出页与历史 swap 计数为零。
+  SHM_LOCK/UNLOCK 由 backing 的 task mutex 串行化状态和 real UID/祖先限额收费，不 fault-in；
+  当前没有换出机制，因此锁定只影响 SHM_LOCKED 与 quota。重复 LOCK 不重复收费，UNLOCK/destroy 归还原收费者。
+  initial CAP_IPC_LOCK 才豁免配额，child capability 只决定目标 IPCNS 控制权限。
+  VMA split/fork 通过实际 membership open，退休通过 close 更新 nattch；最后挂接退休才销毁 backing。
   SharedMemoryCreatorList 的真实 clist 属于 creating Thread，fork/CLONE_THREAD 不继承，
   exec 保留，实际 exit 显式退为 None；TCB/list observer Arc 不延长 creator phase。
   segment 仅保存 Weak clist identity，clist 中的 namespace/segment 也为 Weak；双方不会

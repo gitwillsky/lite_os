@@ -2,108 +2,38 @@
 
 ## Owner
 
-- `arch` 独占寄存器布局、context switch、trap decode、MMU encoding、local interrupt 与 architecture fail-stop。
-- `execution::entry` 独占 raw boot/trap callback ABI；`execution::cpu` 独占 logical identity/lifecycle/deferred bitset。
-- `execution::timer` 独占 per-CPU deadline；`TimerQueue` 独占 Process timer record/deadline index；
-  `WaitRegistry` 独占 wait ID、registration 与 sharded source/deadline indexes。
-- boot CPU 保留 always-armed housekeeping/liveness timer source；`TimerQueue` owner 不变，运行中的
-  CPU 仍可消费 timer deferred work。非 boot timer source 只在 task execution 期间开启。
-  scheduler idle 的 stack-local armed 状态只是 hardware source transition token，不是
-  第二份 deadline/source 状态；缺失时每个 idle vCPU 都会以固定 tick 频率退出虚拟化运行。
-- `ProcessorTopology` 独占 current/runqueue/mailbox；`task::memory_barrier` 独占 request/completion generation；`ProcessGraph` 独占 proc snapshot 与 creation publication。
-- 每个 Thread 的 `ContextOwner<UserContext>` 独占稳定 pointer 与 mutable transaction
-  capability，并在创建时固定记录 typed `KernelStack/AddressSpace` backing。AArch64 pointer
-  绑定到同一 Thread `KernelStack` 顶部保留页，生命周期随 stack owner，不建立 user
-  page-table mapping；RISC-V 继续独占 supervisor trap-context VA，AddressSpace 只在
-  create/exec/retire seam bind、rebind 或 unmap。后续 lifecycle 禁止从地址范围反推 backing。
-- RISC-V `sstatus.FS` 是用户 FP register image 的唯一 ownership state；不得增加平行 lazy flag/cache。Off 首用只能由精确 F/D/FP-CSR instruction decode 激活，Dirty entry 必须在 kernel 使用 FP 前保存为 Clean image。
-- user trap entry 必须先把用户 `sstatus` 及 Dirty FP image 固化到 `UserContext`，再把 live
-  `sstatus.FS` 设为 Dirty 交给 kernel LP64D execution owner。kernel trap 与 context switch 都会
-  保存 FP callee state；若让用户 Off 状态进入 kernel，首条 FP save 会再次陷入同一
-  kernel trap entry，形成无法记录的递归异常。
-- `__kernel_trap` 是 `stvec` direct-mode 的唯一 kernel entry，必须在 assembly 源中
-  4-byte aligned。RVC 只保证普通 label 2-byte aligned；若 entry 落在 `address % 4 == 2`，
-  `stvec` 会清除低两位并跳到前一条 compressed instruction，使任意首次 interrupt 进入
-  不可恢复的递归 exception。
-- AArch64 live q0-q31/FPCR/FPSR 由当前 Thread 的 `KernelContext` 唯一拥有；普通
-  user/kernel trap 必须零 vector load/store。signal capture/restore、clone inheritance 与
-  exec reset 是仅有的额外边界，必须在固定 assembly symbol 中临时开启 FPEN、完成单次
-  传输并在返回 Rust 前关闭，禁止 lazy flag、每 trap copy 或 kernel Rust FP/NEON codegen。
-- AArch64 lower-EL trap 只在常驻 TTBR1 kernel stack 上暂存 x9-x11，并以 effective
-  `SP_EL1` 加编译期固定 offset 直接取得 `UserContext`；普通入口恰好执行一次 integer
-  `ADD`，不得读写 metadata pointer 或 `CONTEXTIDR_EL1`。`TPIDR_EL0` 是唯一 thread
-  pointer owner，user restore 把未开放的 `TPIDRRO_EL0` 固定为零。
+- `arch` 独占 register layout、trap decode、context switch、MMU/ASID、本地 IRQ 与架构等待；generic trap 不读 CSR 或解释 ESR。
+- `execution::entry` 只解码 raw ABI；`execution::cpu` 独占 topology/lifecycle；`execution::deferred` 独占内核 merged work bitmap；`execution::barrier` 独占 CPU rendezvous generation。
+- native `thread::SchedulingState` 独占 run state、Ready generation、等待身份、切换计数及 restricted fault 计数；`Policy` 独占 active slice、权重快照与 normal/restricted CPU 时间。
+- `thread::processor` 独占 per-CPU current/runqueue/mailbox/pending handoff；Ready projection 不另存一份可人工同步的运行状态。
+- Linux signal/restart、进程 graph、wait registry 和 process timers 只属于 linuxd；设备完成工作只属于 devmgr。service-sync 不消费内核可变 Rust 状态。
 
-- `arch::trap::UserFault` 是同一次内存异常的不可变快照；通用 trap 只消费地址并转交 architecture context，
-  不解释 ESR。只有真正投递 signal 的 fault 才更新 Thread UserContext 的最后 fault address/syndrome，
-  resolved lazy fault 不覆盖它；AArch64 过滤 kernel 地址的 syndrome 后编码标准 ESR record，sigreturn 不恢复该诊断数据。
-  两个字段由原 UserContext 独占、随 clone 继承、exec 清零；没有 CPU-local/global 副本或新锁。
-  AArch64 UserContext 由 320 增至 336 bytes，既有 assembly 字段 offset 与固定 kernel-stack placement 不变。
-- 成本决策：异常 snapshot 使用现有 ESR/FAR 读取，不给 syscall/IRQ 增加 CSR 读取、分配或全寄存器复制；
-  只在实际投递 fault 与 signal frame capture 时保存两个 word/一个 16-byte record。沿用现有 trap/static gate，
-  以实际未对齐读写、signal metadata与 sigreturn 验证，不新增该 cold path 的 wall-clock 阈值。
+## 上下文与返回
 
-## Interface
+1. native thread 创建时绑定 context 与 typed stack/address-space backing；普通 trap 只做短寄存器 transaction。
+2. `ThreadOwner::before_user_return` 在最终 IRQ mask 前完成，允许阻塞或要求退出。
+3. `disable_for_transfer` 之后只允许非阻塞 snapshot、ASID activation 和硬件安装；所有 Arc 必须在 noreturn 前显式释放。
 
-- generic callers 只能使用 typed `BootContext`、`UserContext`、`KernelContext`、`TrapEvent`、`UserFault`、`CpuId`、`CpuSet` 与 semantic MMU permissions。
-- `execution::trap` 只做事件投递和 user-return orchestration；不得读取 CSR、计算 interrupt-controller context 或拥有 syscall state。
-- steady user return/trampoline 不得执行 `fence.i` 或 full `sfence.vma`；instruction publication 属于 executable mapping transaction，translation reuse 属于 ASID generation owner。换代后首次 activation 的 full local fence 只由该 owner 的 pending consequence 触发。
-- syscall trap 只通过窄 transaction 读取 `a7/a0..a5/sepc`、写 completion `a0`，并在最终
-  user-return 唯一发布 CPU-local metadata；禁止恢复 `load/set_user_context` 全量复制路径。
-- user-return 先完成可 fault/等待 mm 的 signal preparation，再通过唯一
-  `disable_for_transfer` 建立 root/context snapshot 到 hardware installation 的最终窗口；
-  preparation 的 TaskMutex handoff 可恢复另一 outgoing task 的 IRQ，不能沿用之前的 mask。
-  最终窗口只能进行非阻塞 owner transaction、ASID local activation 和 noreturn transfer。
-- local IRQ guard 不可跨 CPU 移动。interrupt-safe lock 内禁止阻塞、调度、可失败分配或等待 remote
-  completion；无锁 scheduler idle 是唯一允许持有纯 local IRQ guard 进入 guarded WFI 的路径。
-- boot CPU 必须在设备初始化前建立 membarrier per-CPU state；否则启动期 SSIP handler
-  会永久等待未发布的 `Once`。随后同步 root block completion 可临时补开
-  architecture-local external/software source 并执行 architecture-owned WFI。scheduler idle
-  必须让 local IRQ guard 跨过同一 WFI seam：状态复查与 task select 全程关中断，assembly
-  临时开中断等待并在返回前再次关闭，最后才由 guard 恢复旧状态。hardirq 发布的
-  deferred software interrupt 是已确认 device edge 的耐久 wake token，但领域 deferred consumer
-  仍只能在 user-return/idle safe point 执行。可确认一次性 edge 的 guarded WFI 具有唯一 linked
-  PC/resume identity；IRQ 若在
-  enable 后、WFI 前被确认，kernel trap entry 必须将 RISC-V `sepc` 或 AArch64 `ELR_EL1`
-  精确推进到 resume PC，禁止返回后消费已经不存在的 edge 而永久睡眠。不使用 flag、MMIO
-  poll 或第二个 IRQ owner。assembly 返回时 local IRQ 必须仍关闭；bootstrap wrapper 或 scheduler
-  guard 随后精确恢复原 local IRQ mask/source，并保持 timer source 不变，
-  直到既有 scheduler enable seam 完成其 owner 初始化。
-- wait/timer/process creation 只允许锁内签发 ID、捕获已预留快照与无失败 commit；
-  `Vec::try_reserve`、`FallibleMap::try_prepare`、TCB/address-space 构造必须在 owner guard 外完成。
-- ITIMER_REAL replace、POSIX create 与 POSIX replace 只能使用同一个 timer transaction protocol：
-  timer owner lock 内 plan 后必须先解锁，prepared storage 在锁外创建，publication 固定取得
-  `ProcessGraph → TimerQueue` 并复查 Process/thread lifecycle。OOM、lifecycle 失败与不可复用 retry
-  直接 Drop prepared owner；POSIX ID collision 只允许 retarget 并复用同一未发布 node。
-  blocking advisory/record lock acquisition 以零 storage 先复查 conflict，只有 `NeedsStorage`
-  才释放 registry/VFS owner 锁外扩容并重入验证。
-- target-specific façade 必须保持静态分派；禁止 trait object、runtime table 或 parallel compatibility implementation。
-- AArch64 普通 user return 只切换 TTBR0/ASID，TTBR1 kernel root 固定；不得增加 KPTI 兼容路径。SVE/SME、PAuth 与 MTE state 不在 context ABI 中，因此不得向 EL0 公布对应能力。
+RISC-V supervisor trap-context mapping 退休必须完成 translation fence；AArch64 context 随 kernel stack owner 退休。
+illegal-instruction 分类与最终提交使用短 context transaction，读取用户指令在两者之间，禁止持有 context claim 获取可阻塞的 VM 锁。
 
-## Failure and cleanup
+AArch64 lower-EL entry 必须在进入 Rust 前以 TTBR1 kernel root 替换 TTBR0 并执行 ISB；ASID 0 保留，kernel root 的低用户地址范围为空。
+返回只安装 owner 授权的 user token，TTBR1/stack 保持永久映射。boot identity 翻译在 kernel root 激活时全量撤销，不能留下 ASID 0 的用户全局映射。
+该统一软件隔离不要求 PAN；禁止恢复未经 baseline 验证的 `msr PAN` 或 feature fallback 双轨。
+用户地址复制只能经过 VMO/backing 固定与高 direct-map 别名，不借助临时关闭隔离直接解引用。
 
-- context、CPU index、trap class 或 queue ownership 不一致时 fail-stop；不能回退到 boot CPU 或丢弃错误。
-- context transaction 并发 claim 或 retire 后访问必须 fail-stop；clone/fork 是唯一允许的完整
-  UserContext snapshot，signal/restart/sigreturn 必须在同一 owner 上原地完成且 copy fault 不发布 handler。
-- illegal-instruction 首次分类与最终 state commit 各使用一个短 context transaction；可能取得
-  AddressSpace lock 的 instruction copy 必须位于两者之间，禁止持有 context claim 跨阻塞锁。
-- deferred consumer 必须有界并可续批；hardirq 只确认硬件与发布 work，不执行无界领域逻辑。
-- `execution::deferred` 对每个 logical CPU 的 bitmap 只在空→非空 transition 调用一次
-  `arch::interrupt::raise_software`；bitmap 非空时已有 edge 或当前 hardirq continuation 负责抵达 safe point，
-  重复发布只能合并 bit。缺少 transition 条件会让 AArch64 self-SGI 在 console raw ring 尚可读时
-  无限重入，idle safe point 永远不能消费输入。
-- supervisor software interrupt 只负责先确认 local SSIP、再完成同步 memory-barrier request；这是
-  共享 deferred wake 与 remote membarrier IPI 的唯一 SSIP acknowledgement owner，deferred bitmap
-  consumer 不得清除 SSIP。kernel-trap 不得消费任何领域 deferred work。唯一 consumer safe point
-  是所有 event handler 已返回后的 user-return 与 local IRQ 已关闭的 scheduler idle loop；否则 SSIP 可在 syscall 持有
-  普通 driver/KERNEL_SPACE lock 时同 CPU 重入并永久自旋。
-- console deferred input 从无界 drain 收紧为每批最多 256 bytes，console waiter wake 每批最多 32 个；任一预算耗尽都重新发布合并 `Console` bit，下一批重新复查 owner 状态。
-- 未提交 wait/timer node、proc snapshot Arc 与 creation TCB 分别由 prepared transaction 唯一拥有；
-  OOM、key/lifecycle 复查失败直接 Drop。wait ticket/PID 失败只烧掉唯一 ID，不留下
-  registry/graph membership；RISC-V 共享 mm child 失败必须显式删除临时 trap-context
-  mapping，AArch64 由未发布的 KernelStack owner 一并回收 context page。
-- armed timer reset 必须复用现存 record/deadline node；staging 与 final owner 间 deadline 到期时只能零 mutation 返回 retry，再锁外补 node，不能把原本零分配的 reset 退化为虚假 ENOMEM。
-- timer transaction structure gate 要求 duplicated skeleton/executor/explicit policy/final recheck 为
-  `0/1/3/1`；host protocol tests 必须覆盖 prepare-window lifecycle race、prepare OOM 与 collision reuse。
-- external hardirq 每次最多处理固定 64 个 claim，且不得为探测 backlog 预读第 65 个；预算外 source 保持由 interrupt controller pending，并在返回后自然重触发。
-- 同步 remote translation fence 失败必须在 backing owner 仍被保留时 fail-stop；执行域不得把未确认完成的 fence 当作 cleanup completion。
+RISC-V 先固化用户 sstatus/Dirty FP，再启用 kernel FP；kernel trap label 4-byte aligned。
+AArch64 live q0-q31/FPCR/FPSR 由 KernelContext 唯一拥有，ordinary trap 零 vector copy；扩展状态不在 ABI 中就不得向用户公布。
+
+## 等待、IRQ 与清理
+
+- Ready publication/retirement token 必须在同一 SchedulingState transaction 中交给唯一 per-CPU committer；旧 generation 不可 dispatch，遗失 token fail-stop。
+- Blocking/Preempting 到 Blocked/Ready 的提交只在 outgoing context 保存后执行；pending slot 保活 outgoing owner，next/idle continuation 恰好消费一次。
+- IRQ guard 不可跨 logical CPU，持有 spin/IRQ-safe guard 时禁止阻塞、可失败分配或等待 remote completion。
+- software interrupt 先确认，再完成同步 barrier/TLB 请求；kernel trap 不消费普通 deferred 领域工作。consumer 只在 user-return/IRQ-closed idle safe point 执行。
+- deferred bitmap 空→非空才发送 edge；缺失该条件会反复 self-IPI，饿死真正 consumer。预算耗尽必须重新发布工作。
+- guarded WFI 的 enable→WFI 已确认 edge 必须跳到唯一 resume PC；返回时 IRQ 仍关闭，外层 guard 恢复原 mask。
+- 服务等待使用 native thread park/unpark 与 `WaitCompletion` arming 握手；完成早于 arming/睡眠仍必须返回，不能靠下一 tick 或 polling 兜底。
+- fault/trap、OOM、exit 和 kill 只能由对应 owner 退休 context、wait membership 与 observer；同步 fence 未确认时不得回收 backing。
+
+Linux timer transaction、权限锁序和进程退休的具体契约分别由[进程契约](process-scheduling.md)及[生命周期](process-lifecycle.md)维护。

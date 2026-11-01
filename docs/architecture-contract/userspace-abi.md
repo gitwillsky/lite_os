@@ -1,5 +1,10 @@
 # 用户态与 ABI 契约
 
+原生服务边界由 `native-abi`/`native-runtime` 拥有，应用 ABI 由 `system/linuxd` 拥有；二者不共享 syscall 编号或寄存器政策。
+root-server 只分发初始 capability 和服务连接。linuxd 在 normal mode 运行兼容层、restricted mode 执行应用；设备 UAPI 只经服务协议访问。
+原生 `TaskRuntime` 只投影承载线程 CPU 时间、切换数和 restricted fault/pager-wait 计数，不解释 Linux rusage。
+
+
 ## Owner
 
 - `syscall-abi` 独占已接入 Linux 64-bit asm-generic number 与 RISC-V 扩展编号；dispatcher 独占 number-to-handler mapping。

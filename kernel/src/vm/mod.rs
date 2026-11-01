@@ -22,14 +22,14 @@ pub(crate) mod page_table;
 pub(crate) mod translation;
 mod vmo;
 
-pub(crate) use address_space::{AddressSpace, Placement, Vmar};
+pub(crate) use address_space::{AddressSpace, MapOptions, Placement, Vmar};
 pub(crate) use device_space::DeviceAddressSpace;
 pub(crate) use fault::FaultAccess;
 pub(crate) use kernel_space::{KERNEL_SPACE, initialize as initialize_kernel_space};
 pub(crate) use kernel_stack::KernelStack;
 pub(crate) use vmo::{
-    CachePolicy, ChildKind, PagerBinding, PagerRequest, PagerSink, PinnedRange, RangeOp, Vmo,
-    VmoOptions,
+    CachePolicy, ChildKind, FaultSource, PagerBinding, PagerRequest, PagerSink, PinnedRange,
+    RangeOp, Vmo, VmoOptions,
 };
 
 use page_table::{PagePermissions, PageTable};

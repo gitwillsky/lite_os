@@ -27,6 +27,7 @@ mod lang_item;
 mod memory;
 mod object;
 mod random;
+mod serial;
 mod syscall;
 mod thread;
 mod vm;

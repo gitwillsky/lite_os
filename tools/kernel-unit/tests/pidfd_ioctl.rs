@@ -263,3 +263,5 @@ fn actual_namespace_codec_forwards_selector_and_argument_presence() {
         Err(DeviceError::Errno(syscall_abi::errno::ENOTTY))
     );
 }
+
+mod sync { pub(crate) use spin::{Mutex, Once}; }

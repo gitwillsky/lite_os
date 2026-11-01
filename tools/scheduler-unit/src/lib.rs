@@ -18,7 +18,10 @@ mod placement_policy;
 mod signal_selection_result;
 
 #[cfg(test)]
-mod handoff_model;
+mod native_scheduling;
+
+#[cfg(test)]
+use native_scheduling::{arch, execution};
 
 #[cfg(test)]
 mod tests {

@@ -3,7 +3,7 @@
 //! # 分工
 //!
 //! - 本模块：domain（stream → 设备页表 + IOVA 分配）与 `IommuBackend` 语义；
-//! - [`Hardware`] 实现：把设备页表绑定到 stream，并完成设备侧 TLB 失效。AArch64 使用 Arm SMMUv3
+//! - [`crate::arch::dma::Translation`] 实现：把设备页表绑定到 stream，并完成设备侧 TLB 失效。AArch64 使用 Arm SMMUv3
 //!   stage-1（与 CPU 相同的 VMSAv8-64 页表），RISC-V 使用 RISC-V IOMMU first-stage（Sv39）。
 //!
 //! # 映射与撤销
@@ -12,10 +12,6 @@
 //! 2. `unmap`：撤销页表项，硬件失效完成后才释放页表页与 IOVA 区间；调用者（PMT）随后才解除页固定，
 //!    设备因此不可能访问已释放的物理页。
 
-#[cfg(target_arch = "riscv64")]
-mod riscv;
-#[cfg(target_arch = "aarch64")]
-mod smmu_v3;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -25,19 +21,58 @@ use native_abi::Status;
 
 use crate::execution::sync::TaskMutex;
 use crate::memory::{PAGE_SIZE, PhysicalPageNumber};
-use crate::object::IommuBackend;
 use crate::vm::DeviceAddressSpace;
 use fallible_tree::FallibleMap;
 
-/// IOMMU 硬件：绑定 stream 与失效翻译。
-trait Hardware: Send + Sync {
-    /// 把以 `root` 为根的设备页表绑定到 `stream`，`domain` 是硬件 TLB 标签（ASID/PSCID）。
+/// IOMMU 硬件后端：为一个 stream 建立与撤销设备地址翻译。
+pub(crate) trait IommuBackend: Send + Sync {
+    /// 把 `pages` 映射到该 stream 的设备地址空间，返回逐页设备地址。
     ///
     /// # Errors
-    /// stream 超出硬件支持范围或分配失败。
-    fn attach(&self, stream: u32, domain: u16, root: PhysicalPageNumber) -> Result<(), Status>;
-    /// 失效 `domain` 中 `[first_page, first_page + pages)` 的翻译，返回前完成。
-    fn invalidate(&self, domain: u16, first_page: usize, pages: usize);
+    /// 设备地址空间耗尽或分配失败。
+    fn map(
+        &self,
+        stream: u32,
+        pages: &[PhysicalPageNumber],
+        writable: bool,
+        output: &mut Vec<u64>,
+    ) -> Result<(), Status>;
+    /// 撤销映射并在返回前完成设备侧 TLB 失效。
+    fn unmap(&self, stream: u32, addresses: &[u64]);
+}
+
+/// 无 IOMMU：设备地址等于物理地址。
+struct IdentityIommu;
+
+impl IommuBackend for IdentityIommu {
+    fn map(
+        &self,
+        _stream: u32,
+        pages: &[PhysicalPageNumber],
+        _writable: bool,
+        output: &mut Vec<u64>,
+    ) -> Result<(), Status> {
+        output
+            .try_reserve_exact(pages.len())
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        output.extend(
+            pages
+                .iter()
+                .map(|page| (page.as_usize() * native_abi::PAGE_SIZE) as u64),
+        );
+        Ok(())
+    }
+
+    fn unmap(&self, _stream: u32, _addresses: &[u64]) {}
+}
+
+use crate::arch::dma::{DmaFrame, Translation as Hardware};
+
+impl DmaFrame for crate::memory::FrameTracker {
+    fn allocate_zeroed(pages: usize) -> Option<Self> {
+        crate::memory::alloc_contiguous(pages, crate::memory::FrameAllocationClass::Reclaimable)
+    }
+    fn physical_page(&self) -> usize { self.ppn.as_usize() }
 }
 
 struct Domain {
@@ -88,8 +123,8 @@ impl<H: Hardware> IommuBackend for Iommu<H> {
             if id == 0 {
                 return Err(native_abi::ERR_NO_RESOURCES);
             }
-            let space = DeviceAddressSpace::create().map_err(crate::object::vm_status)?;
-            self.hardware.attach(stream, id, space.root())?;
+            let space = DeviceAddressSpace::create().map_err(|()| native_abi::ERR_NO_MEMORY)?;
+            self.hardware.attach(stream, id, space.root().as_usize())?;
             domains
                 .try_insert(
                     stream,
@@ -108,7 +143,7 @@ impl<H: Hardware> IommuBackend for Iommu<H> {
         domain
             .space
             .map(first, pages, writable)
-            .map_err(crate::object::vm_status)?;
+            .map_err(|()| native_abi::ERR_NO_MEMORY)?;
         domain.allocated.commit_vacant(record);
         output.extend((first..first + pages.len()).map(|page| (page * PAGE_SIZE) as u64));
         Ok(())
@@ -138,16 +173,15 @@ impl<H: Hardware> IommuBackend for Iommu<H> {
 /// # Errors
 /// 类型与当前架构不符、描述符非法或硬件初始化失败。
 pub(crate) fn create(kind: u32, descriptor: &[u8]) -> Result<Arc<dyn IommuBackend>, Status> {
-    #[cfg(target_arch = "aarch64")]
-    let hardware = match kind {
-        native_abi::iommu::ARM_SMMU_V3 => smmu_v3::SmmuV3::create(descriptor)?,
-        _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-    };
-    #[cfg(target_arch = "riscv64")]
-    let hardware = match kind {
-        native_abi::iommu::RISCV => riscv::RiscvIommu::create(descriptor)?,
-        _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-    };
+    if kind == native_abi::iommu::IDENTITY {
+        return Arc::try_new(IdentityIommu)
+            .map(|backend| backend as Arc<dyn IommuBackend>)
+            .map_err(|_| native_abi::ERR_NO_MEMORY);
+    }
+
+    let (base, size) = descriptor_window(descriptor)?;
+    let virtual_base = map_registers(base, size)?;
+    let hardware = crate::arch::dma::Backend::<crate::memory::FrameTracker>::create(kind, virtual_base, size)?;
     let iommu = Arc::try_new(Iommu {
         hardware,
         domains: TaskMutex::new(FallibleMap::new()),
@@ -175,6 +209,6 @@ fn map_registers(base: usize, size: usize) -> Result<usize, Status> {
     crate::vm::KERNEL_SPACE
         .wait()
         .lock()
-        .map_device(base..base + size)
+        .map_device(base..base.checked_add(size).ok_or(native_abi::ERR_INVALID_ARGS)?)
         .map_err(|()| native_abi::ERR_INVALID_ARGS)
 }

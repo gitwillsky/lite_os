@@ -1,7 +1,7 @@
-//! 内核 debuglog：有界日志环、调试串口输出与输入。
+//! 内核 debuglog：有界日志环与调试串口输出。
 //!
 //! 日志记录同时进入环与调试串口；系统服务经 native `debuglog_read` 按序号读取原始记录，
-//! 自行决定对外格式。调试串口的输入字节进入有界输入环，由 `serial_read` 阻塞读取。
+//! 自行决定对外格式。调试串口输入由独立的 `serial` 领域拥有。
 
 use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicU8, Ordering};
@@ -13,8 +13,6 @@ use crate::{
     println,
 };
 
-mod serial;
-pub(crate) use serial::{publish_received, serial_input_pending, serial_input_ready, serial_read};
 
 /// 按严重程度递增排列的日志级别。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

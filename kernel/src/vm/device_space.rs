@@ -4,7 +4,6 @@
 //! first-stage 与 Sv39 相同）。CPU 从不激活这张表，因此撤销映射只需设备侧失效：调用者先完成
 //! IOMMU 的 TLB 失效，再调用 [`Retired::release`] 释放被摘下的页表页。
 
-use super::VmError;
 use super::page_table::{PagePermissions, PageTable};
 use super::translation::TranslationCommit;
 use crate::arch::mmu::AddressSpaceKind;
@@ -31,9 +30,9 @@ impl DeviceAddressSpace {
     ///
     /// # Errors
     /// 根表分配失败返回 `NoMemory`。
-    pub(crate) fn create() -> Result<Self, VmError> {
+    pub(crate) fn create() -> Result<Self, ()> {
         Ok(Self {
-            table: PageTable::try_new(AddressSpaceKind::User).map_err(|_| VmError::NoMemory)?,
+            table: PageTable::try_new(AddressSpaceKind::User).map_err(|_| ())?,
         })
     }
 
@@ -51,7 +50,7 @@ impl DeviceAddressSpace {
         first: usize,
         pages: &[PhysicalPageNumber],
         writable: bool,
-    ) -> Result<(), VmError> {
+    ) -> Result<(), ()> {
         let mut permissions = PagePermissions::READ | PagePermissions::USER;
         if writable {
             permissions |= PagePermissions::WRITE;
@@ -75,7 +74,7 @@ impl DeviceAddressSpace {
                 }
                 // 这些翻译从未交给设备使用。
                 commit.finish_unpublished();
-                return Err(VmError::NoMemory);
+                return Err(());
             }
         }
         commit.finish_unpublished();

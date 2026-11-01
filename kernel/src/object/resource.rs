@@ -16,6 +16,7 @@
 //! BTI 代表一个 DMA 发起者；`pin` 固定 VMO 页并经所属 IOMMU 建立设备地址，PMT 析构时先撤销设备
 //! 映射再解除固定，设备不可能访问已释放的页。
 
+use crate::iommu::IommuBackend;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -29,7 +30,6 @@ use super::{KernelObject, Port, SignalState, WAITABLE_RIGHTS, next_koid, vm_stat
 use crate::execution::deferred::{self, DeferredWork};
 use crate::execution::interrupt::{InterruptError, InterruptHandler, InterruptVector};
 use crate::execution::sync::{IrqMutex, WaitQueue, WaitResult};
-use crate::memory::PhysicalPageNumber;
 use crate::vm::{PinnedRange, Vmo};
 
 // ---------------------------------------------------------------------------------------------
@@ -371,48 +371,6 @@ impl KernelObject for Interrupt {
 // IOMMU / BTI / PMT
 // ---------------------------------------------------------------------------------------------
 
-/// IOMMU 硬件后端：为一个 stream 建立与撤销设备地址翻译。
-pub(crate) trait IommuBackend: Send + Sync {
-    /// 把 `pages` 映射到该 stream 的设备地址空间，返回逐页设备地址。
-    ///
-    /// # Errors
-    /// 设备地址空间耗尽或分配失败。
-    fn map(
-        &self,
-        stream: u32,
-        pages: &[PhysicalPageNumber],
-        writable: bool,
-        output: &mut Vec<u64>,
-    ) -> Result<(), Status>;
-    /// 撤销映射并在返回前完成设备侧 TLB 失效。
-    fn unmap(&self, stream: u32, addresses: &[u64]);
-}
-
-/// 无 IOMMU：设备地址等于物理地址。
-struct IdentityIommu;
-
-impl IommuBackend for IdentityIommu {
-    fn map(
-        &self,
-        _stream: u32,
-        pages: &[PhysicalPageNumber],
-        _writable: bool,
-        output: &mut Vec<u64>,
-    ) -> Result<(), Status> {
-        output
-            .try_reserve_exact(pages.len())
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        output.extend(
-            pages
-                .iter()
-                .map(|page| (page.as_usize() * native_abi::PAGE_SIZE) as u64),
-        );
-        Ok(())
-    }
-
-    fn unmap(&self, _stream: u32, _addresses: &[u64]) {}
-}
-
 /// IOMMU 对象。
 pub(crate) struct Iommu {
     koid: u64,
@@ -425,15 +383,13 @@ impl Iommu {
     /// # Errors
     /// 类型未知或硬件初始化失败。
     pub(crate) fn create(kind: u32, descriptor: &[u8]) -> Result<Self, Status> {
-        let backend: Arc<dyn IommuBackend> = match kind {
-            native_abi::iommu::IDENTITY => {
-                Arc::try_new(IdentityIommu).map_err(|_| native_abi::ERR_NO_MEMORY)?
-            }
-            native_abi::iommu::ARM_SMMU_V3 | native_abi::iommu::RISCV => {
-                crate::iommu::create(kind, descriptor)?
-            }
-            _ => return Err(native_abi::ERR_INVALID_ARGS),
-        };
+        if !matches!(
+            kind,
+            native_abi::iommu::IDENTITY | native_abi::iommu::ARM_SMMU_V3 | native_abi::iommu::RISCV
+        ) {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
+        let backend = crate::iommu::create(kind, descriptor)?;
         Ok(Self {
             koid: next_koid(),
             backend,

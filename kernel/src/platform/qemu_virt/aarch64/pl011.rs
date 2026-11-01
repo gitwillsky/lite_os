@@ -56,7 +56,7 @@ impl InterruptHandler for Pl011InterruptHandler {
             bytes[count] = uart.read(DATA) as u8;
             count += 1;
         }
-        crate::log::publish_received(&bytes[..count]);
+        crate::serial::publish_received(&bytes[..count]);
         Ok(())
     }
 }

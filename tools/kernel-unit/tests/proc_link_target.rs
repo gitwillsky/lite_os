@@ -210,3 +210,5 @@ mod fs {
         }
     }
 }
+
+mod sync { pub(crate) use spin::{Mutex, Once}; }

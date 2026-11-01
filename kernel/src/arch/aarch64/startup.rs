@@ -176,7 +176,6 @@ pub(crate) fn initialize_local_execution() {
     // moving the explicitly owned vector context.
     unsafe {
         core::arch::asm!(
-            ".arch_extension pan",
             "msr mair_el1, {mair}",
             "msr tcr_el1, {tcr}",
             "msr cntkctl_el1, {counter_access}",
@@ -186,7 +185,6 @@ pub(crate) fn initialize_local_execution() {
             "mrs x9, cpacr_el1",
             "bic x9, x9, #(3 << 20)",
             "msr cpacr_el1, x9",
-            "msr pan, #1",
             "isb",
             // AttrIdx0=Normal WBWA (0xff), AttrIdx1=Device-nGnRnE (0x00).
             mair = in(reg) super::mmu::MEMORY_ATTRIBUTES,

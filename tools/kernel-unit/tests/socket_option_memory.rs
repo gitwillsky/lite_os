@@ -2,6 +2,9 @@
 #![allow(dead_code)]
 //! 完整实际 memory/NET policy；独立 binary 的调优、并发收费及成本诊断，不运行 transport 模型。
 extern crate alloc;
+extern crate network_protocol as network_wire;
+extern crate self as network_protocol;
+include!("../src/network_policy_transport.rs");
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
 extern crate fallible_tree;
@@ -146,3 +149,5 @@ fn actual_policy_and_concurrent_reservations_preserve_strict_budget_and_refund()
         durations[2] / 200_000
     );
 }
+
+mod sync { pub(crate) use spin::{Mutex, Once}; }

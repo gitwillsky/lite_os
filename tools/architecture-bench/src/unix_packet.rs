@@ -2,6 +2,9 @@
 #![allow(dead_code, unused_imports)]
 //! 完整实际 AF_UNIX endpoint 的内存/queue owner 测量，producer 只提供原生调用输入。
 extern crate alloc;
+extern crate network_protocol as network_wire;
+extern crate self as network_protocol;
+include!("../../kernel-unit/src/network_policy_transport.rs");
 #[path = "../../kernel-unit/src/allocation_failure.rs"]
 mod allocation_failure;
 mod cost_policy;

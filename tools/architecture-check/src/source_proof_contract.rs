@@ -22,7 +22,14 @@ struct UnsafeVisitor {
 }
 
 impl UnsafeVisitor {
-    fn signature(&mut self, signature: &Signature) {
+    fn signature(&mut self, signature: &Signature, attributes: &[syn::Attribute]) {
+        // An unsafe API states caller obligations in RustDoc; its body still needs local proofs.
+        let documented = attributes.iter().any(|attribute| {
+            let syn::Meta::NameValue(meta) = &attribute.meta else { return false };
+            let syn::Expr::Lit(literal) = &meta.value else { return false };
+            matches!(&literal.lit, syn::Lit::Str(text) if meta.path.is_ident("doc") && text.value().trim() == "# Safety")
+        });
+        if documented { return; }
         if let Some(unsafety) = signature.unsafety {
             self.lines.push(unsafety.span.start().line);
         }
@@ -43,17 +50,17 @@ impl<'ast> Visit<'ast> for UnsafeVisitor {
     }
 
     fn visit_item_fn(&mut self, item: &'ast ItemFn) {
-        self.signature(&item.sig);
+        self.signature(&item.sig, &item.attrs);
         syn::visit::visit_item_fn(self, item);
     }
 
     fn visit_impl_item_fn(&mut self, item: &'ast ImplItemFn) {
-        self.signature(&item.sig);
+        self.signature(&item.sig, &item.attrs);
         syn::visit::visit_impl_item_fn(self, item);
     }
 
     fn visit_foreign_item_fn(&mut self, item: &'ast ForeignItemFn) {
-        self.signature(&item.sig);
+        self.signature(&item.sig, &item.attrs);
         syn::visit::visit_foreign_item_fn(self, item);
     }
 
@@ -117,5 +124,21 @@ fn check_unsafe_proofs(sources: &[SourceFile], errors: &mut Vec<String>) {
                 ));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn rustdoc_proves_the_api_but_not_an_unsafe_body() {
+        let syntax = syn::parse_file("/// # Safety\n/// The caller owns the pointer.\nunsafe fn access(p: *const u8) -> u8 { unsafe { *p } }").unwrap();
+        let mut visitor = UnsafeVisitor::default();
+        visitor.visit_file(&syntax);
+        assert_eq!(visitor.lines.len(), 1, "the body still requires a local proof");
+        let syntax = syn::parse_file("unsafe fn undocumented() {}").unwrap();
+        let mut visitor = UnsafeVisitor::default();
+        visitor.visit_file(&syntax);
+        assert_eq!(visitor.lines.len(), 1, "undocumented unsafe API must be rejected");
     }
 }

@@ -26,7 +26,7 @@ fn publish(cpu: CpuId) {
 /// 本次 Ready generation，供同一 transaction 构造物理 queue token。
 #[inline(always)]
 pub(super) fn commit_ready_transition(transition: ReadyTransition<'_>) -> u64 {
-    let (previous, target, generation) = transition.consume();
+    let (previous, target, generation) = transition.consume_ready_projection_parts();
     match previous {
         Some(source) if source == target => {}
         Some(source) => {
@@ -55,5 +55,5 @@ fn retire(cpu: CpuId) {
 /// - `retirement`: SchedulingState lock 内刚产生且尚未消费的 token。
 #[inline(always)]
 pub(super) fn commit_ready_retirement(retirement: ReadyRetirement<'_>) {
-    retire(retirement.consume());
+    retire(retirement.consume_ready_projection_cpu());
 }

@@ -25,14 +25,6 @@ name = "inotify-bench"
 path = "src/inotify.rs"
 
 [[bin]]
-name = "blocked-load-bench"
-path = "src/blocked_load.rs"
-
-[[bin]]
-name = "shared-page-stats-bench"
-path = "src/shared_page_statistics.rs"
-
-[[bin]]
 name = "realtime-signals-bench"
 path = "src/realtime_signals.rs"
 
@@ -41,6 +33,8 @@ name = "audio-mixer-bench"
 path = "src/audio_mixer.rs"
 
 [dependencies]
+mmio = { path = "../../mmio" }
+netd-unit = { path = "../netd-unit" }
 fallible-tree = { path = "../../fallible-tree" }
 native-runtime = { path = "../../system/native-runtime" }
 device-model = { path = "../../system/device-model" }

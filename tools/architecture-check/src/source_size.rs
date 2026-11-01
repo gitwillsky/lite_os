@@ -8,7 +8,7 @@ use super::{SourceFile, rust_files};
 
 const REVIEW_LINE_THRESHOLD: usize = 1_000;
 const DEFAULT_REJECTION_LIMIT: usize = 1_500;
-const UNIT_SOURCE_ROOTS: [&str; 2] = ["tools/kernel-unit/src", "tools/scheduler-unit/src"];
+const UNIT_SOURCE_ROOTS: [&str; 4] = ["tools/kernel-unit/src", "tools/scheduler-unit/src", "tools/ext4-unit/src", "tools/netd-unit/src"];
 const UNIT_TEST_MODULE_ROOTS: [&str; 1] = ["tools/architecture-check/src"];
 
 struct SourceSizeReview {
@@ -48,7 +48,7 @@ fn reviews(root: &Path) -> Result<BTreeMap<String, SourceSizeReview>, String> {
             continue;
         }
         let relative = columns[1].trim_matches('`');
-        if !relative.starts_with("kernel/src/") && !relative.starts_with("bootloader/src/") {
+        if !relative.starts_with("kernel/src/") && !relative.starts_with("bootloader/src/") && !relative.starts_with("system/") {
             continue;
         }
         let Ok(limit) = columns[2].parse::<usize>() else {

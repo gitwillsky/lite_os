@@ -61,7 +61,7 @@ pub(super) fn serial_read(call: &Call<'_>) -> Result<(), Status> {
         0 => None,
         _ => Some(super::deadline(call.arg(3)).unwrap_or(u64::MAX)),
     };
-    let count = crate::log::serial_read(&mut buffer, deadline).map_err(wait_status)?;
+    let count = crate::serial::read(&mut buffer, deadline).map_err(wait_status)?;
     call.write_bytes(call.arg(1), &buffer[..count])?;
     call.write_optional(call.arg(4), &count)
 }

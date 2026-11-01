@@ -15,7 +15,7 @@ mod system {
     pub(crate) use super::signal_action::SignalActionBytes;
 }
 
-#[path = "../../../kernel/src/syscall"]
+#[path = "../../../system/linuxd/src/syscall"]
 mod syscall {
     pub(crate) use crate::timer;
     pub(crate) mod signal;
@@ -292,3 +292,5 @@ fn copyin_and_fault_lookup_oom_kill_without_sigsegv_or_arc_leak() {
     }
 
 
+
+use timer as time;

@@ -103,6 +103,10 @@ pub(crate) struct SchedulingState {
     pub(crate) voluntary_switches: u64,
     /// 线程仍可运行却被抢占或主动让出的次数。
     pub(crate) involuntary_switches: u64,
+    // OWNER: 成功解决的 restricted 缺页及其中的 pager 等待；与调度状态同锁投影，
+    // 不保存页驻留状态。缺失时用户态执行服务无法观察由 VMO 直接解决的缺页。
+    pub(crate) restricted_faults: u64,
+    pub(crate) restricted_pager_waits: u64,
 }
 
 /// 线程的调度实体。
@@ -124,6 +128,8 @@ impl SchedulingEntity {
                 cpu_affinity: CpuAffinity::all(),
                 voluntary_switches: 0,
                 involuntary_switches: 0,
+                restricted_faults: 0,
+                restricted_pager_waits: 0,
             }),
             policy: Mutex::new(Policy::new(priority, vruntime)),
             last_cpu: AtomicUsize::new(last_cpu),
@@ -142,7 +148,7 @@ pub(crate) struct ReadyTransition<'owner> {
 }
 
 impl ReadyTransition<'_> {
-    pub(super) fn consume(mut self) -> (Option<CpuId>, CpuId, u64) {
+    pub(super) fn consume_ready_projection_parts(mut self) -> (Option<CpuId>, CpuId, u64) {
         self.committed = true;
         (self.previous_cpu, self.target_cpu, self.generation)
     }
@@ -166,7 +172,7 @@ pub(crate) struct ReadyRetirement<'owner> {
 }
 
 impl ReadyRetirement<'_> {
-    pub(super) fn consume(mut self) -> CpuId {
+    pub(super) fn consume_ready_projection_cpu(mut self) -> CpuId {
         self.committed = true;
         self.cpu
     }

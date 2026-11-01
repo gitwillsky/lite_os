@@ -1,5 +1,8 @@
 # 文件系统与存储当前架构
 
+本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/devmgr/src/drivers/`。
+
+
 ## 当前设计
 
 - OFD allocation 在 filesystem 打开副作用前准备，完整初始化才进入打开/关闭生命周期；
@@ -129,7 +132,7 @@
 - runtime 只更新 primary superblock/GDT；backup 副本由 e2fsck 修复，没有在线 resize。
 
 用户 pathname 使用 Thread fs context 的同锁 root/cwd snapshot。VFS 的 LookupOrigin 显式携带
-root 与 relative start，所有解析/修改、AF_UNIX、swap、exec 的脚本与 ELF interpreter 都走同一
+root 与 relative start，所有解析/修改、AF_UNIX、exec 的脚本与 ELF interpreter 都走同一
 path_lookup；绝对 symlink 重新从 caller root 开始，dotdot 在 mount escape 之前 clamp。
 chroot 更改共享 root，保留 cwd 和已有 FD。getcwd 投影 root-relative 链，不可达时保留 raw
 `(unreachable)`；proc fd/exe/root/cwd 使用 viewer root，main Thread 退出后 root/cwd 不再可读。

@@ -1,8 +1,11 @@
 # 用户态与 ABI 当前架构
 
+本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/devmgr/src/drivers/`。
+
+
 ## 当前设计
 
-- kernel 暴露固定 Linux 64-bit asm-generic UAPI 子集。syscall dispatcher 使用共享编号 crate；寄存器调用约定、signal frame、ELF machine/flags/HWCAP 与 architecture-specific query 由编译期静态 userspace ABI backend 提供，未接入编号返回 `ENOSYS`。
+- linuxd 通过 restricted mode 提供固定 Linux 64-bit asm-generic UAPI 子集；native kernel 仅向系统服务提供 native-abi。syscall dispatcher 使用共享编号 crate；寄存器调用约定、signal frame、ELF machine/flags/HWCAP 与 architecture-specific query 由编译期静态 userspace ABI backend 提供，未接入编号返回 `ENOSYS`。
 - ELF loader 支持当前声明的 AArch64 与 RV64 静态/动态 ET_EXEC、动态 PIE、PT_INTERP、TLS、RELRO、
   auxv 与 Linux script rewrite；filesystem 只提供 executable source seam，memory 拥有映射
   与 initial stack。AArch64 只接受 `EM_AARCH64`（183），向 auxv 公布 FP 与 ASIMD HWCAP；

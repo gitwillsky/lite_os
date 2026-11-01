@@ -346,8 +346,12 @@ impl MemorySet {
         }
         if old_length == 0 {
             // 共享映射的别名：只对共享后备有意义。
-            if !source.backing.is_shared() || placement == RemapPlacement::InPlace {
+            if !source.backing.is_shared() {
                 return Err(RemapError::Invalid);
+            }
+            // Linux v7.1 的零长度共享别名必须搬迁；未允许搬迁时走 ENOMEM。
+            if placement == RemapPlacement::InPlace {
+                return Err(RemapError::NoMemory);
             }
         }
         if let RemapPlacement::Fixed(target) = placement {
@@ -386,7 +390,7 @@ impl MemorySet {
             let offset = source.backing.offset() + (old_end - source.start) as u64;
             self.root
                 .map(
-                    vm::SPECIFIC | source.permission.vm_options(),
+                    vm::SPECIFIC | vm::ALLOW_FAULTS | source.permission.vm_options(),
                     old_end - self.base,
                     source.backing.object().vmo(),
                     offset,
@@ -449,7 +453,8 @@ impl MemorySet {
             return Ok(());
         }
         match area.backing {
-            Backing::Anonymous { .. } | Backing::SharedAnonymous { .. } => object.set_size(needed),
+            Backing::Anonymous { .. } => object.set_size(needed),
+            Backing::SharedAnonymous { .. } => Ok(()),
             // 文件映射越过文件尾的部分访问时得到 SIGBUS；设备与段的大小固定。
             Backing::PrivateFile { .. } | Backing::SharedFile { .. } => Ok(()),
             _ => Err(MemoryError::InvalidRange),

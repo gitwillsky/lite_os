@@ -71,7 +71,7 @@ fn handle_interrupt(event: TrapEvent, user_trap: bool) -> bool {
         }
         TrapEvent::ExternalInterrupt => {
             handle_claimed_interrupt(user_trap);
-            if crate::log::serial_input_pending() {
+            if crate::serial::input_pending() {
                 deferred::raise(DeferredWork::CONSOLE);
             }
         }

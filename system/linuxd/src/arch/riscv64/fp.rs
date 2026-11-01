@@ -95,6 +95,7 @@ core::arch::global_asm!(
     ".option pop",
 );
 
+// SAFETY: 本模块汇编定义两个例程，唯一参数指向完整 FpState，调用点保活并保证对齐。
 unsafe extern "C" {
     fn linuxd_fp_capture(words: *mut u64);
     fn linuxd_fp_restore(words: *const u64);

@@ -2,6 +2,9 @@
 #![allow(dead_code)]
 //! Actual nsfs/proc per-open operations and namespace owners; dentry, task lookup and user-copy are seams.
 extern crate alloc;
+extern crate network_protocol as network_wire;
+extern crate self as network_protocol;
+include!("../src/network_policy_transport.rs");
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
 extern crate fallible_tree;
@@ -2355,3 +2358,5 @@ pub(crate) mod execution {
 
 #[allow(unused_imports, reason = "装配当前服务的同步 facade，具体用例使用其部分接口")]
 use execution::sync;
+
+use execution::timer as time;

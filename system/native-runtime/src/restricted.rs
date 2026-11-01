@@ -92,6 +92,7 @@ core::arch::global_asm!(
     enter = const call::RESTRICTED_ENTER,
 );
 
+// SAFETY: 上方汇编以本平台 C 调用约定保存寄存器；无参数，返回 native Status。
 unsafe extern "C" {
     fn native_restricted_enter() -> i64;
 }

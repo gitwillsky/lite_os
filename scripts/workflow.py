@@ -309,8 +309,8 @@ def run_qemu(mode: str, environment: Mapping[str, str] | None = None, *, memory:
         raise subprocess.CalledProcessError(process.returncode, command)
 
 
-def kernel_unit_ext4_fixture(environment: Mapping[str, str] | None = None) -> Path:
-    """用 ``create_fs.py`` 的唯一 ext4 layout 重新生成 kernel-unit 只读测试镜像。
+def ext4_unit_fixture(environment: Mapping[str, str] | None = None) -> Path:
+    """用 ``create_fs.py`` 的唯一 ext4 layout 重新生成 ext4-unit 只读测试镜像。
 
     1. ``/bin/init`` 写入 64 个 4K block 的固定 payload，供 extent mapping 成本测试读取；
     2. 镜像携带 create_fs 的 4 MiB JBD2 journal，64 MiB 容量覆盖 1 MiB 单事务写入；
@@ -318,7 +318,7 @@ def kernel_unit_ext4_fixture(environment: Mapping[str, str] | None = None) -> Pa
 
     缺少该 fixture 时 ext4 cost/recovery 测试以 ``LITEOS_EXT4_FIXTURE`` 未设置失败。
     """
-    directory = ROOT / "target" / "kernel-unit"
+    directory = ROOT / "target" / "ext4-unit"
     directory.mkdir(parents=True, exist_ok=True)
     payload = directory / "ext4-init-payload"
     payload.write_bytes(bytes(range(256)) * (64 * 4096 // 256))
@@ -375,7 +375,7 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
     """执行 kernel/architecture/syscall 与 user workspace 单元测试。"""
     # host 夹具包含内核文件的“平铺视图”必须与内核布局一致，否则夹具可能静默缺失子模块。
     run([sys.executable, "scripts/fixture_source_view.py", "--check"], environment=environment)
-    fixture = kernel_unit_ext4_fixture(environment)
+    fixture = ext4_unit_fixture(environment)
     dtb_fixtures = kernel_unit_dtb_fixtures(environment)
     run(
         [
@@ -387,6 +387,12 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
             "boot-scene",
             "-p",
             "kernel-unit",
+            "-p",
+            "ext4-unit",
+            "-p",
+            "netd-unit",
+            "-p",
+            "fallible-tree",
             "-p",
             "scheduler-unit",
             "-p",
@@ -424,8 +430,6 @@ def verify_architecture_benchmark(environment: Mapping[str, str] | None = None) 
     run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "futex-transactions-bench"], environment=environment)
     run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "tcp-lifecycle-bench"], environment=environment)
     run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "inotify-bench"], environment=environment)
-    run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "blocked-load-bench"], environment=environment)
-    run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "shared-page-stats-bench"], environment=environment)
     run(["cargo", "run", "--quiet", "--release", "-p", "architecture-bench", "--bin", "realtime-signals-bench"], environment=environment)
 
 
@@ -588,6 +592,12 @@ def verify_host(environment: Mapping[str, str] | None = None) -> None:
             "architecture-bench",
             "-p",
             "kernel-unit",
+            "-p",
+            "ext4-unit",
+            "-p",
+            "netd-unit",
+            "-p",
+            "fallible-tree",
             "-p",
             "scheduler-unit",
             "--all-targets",

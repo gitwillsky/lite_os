@@ -1,5 +1,8 @@
 # 进程与调度契约
 
+本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/devmgr/src/drivers/`。
+
+
 - get_robust_list 的跨 Thread 查询先在 calling PID namespace 取得实际 live Thread Arc，再于 graph 外
   取得目标已有 Process credential_guard 的 killable guard，与 exec 的准备/commit 串行化。
   同组免检；跨组按 REAL UID/GID、permitted capability 子集、目标 mm dumpability/owner namespace
@@ -252,7 +255,7 @@ fallible user-copy 必须持有实际 `mm_snapshot` mmget；TCB observer 可在�
   LSM_SETID_FS按固定CAP_FS_SET清/从P恢复E，普通RES policy独立。
   canonical UID/GID 保持全局 kernel IDs；syscall/proc/stat/peer credentials 按 caller/opener namespace
   映射，不可映射显示 overflow IDs。具名 capability 按 owning/target user namespace 授权，
-  新 namespace 的能力不能获得 initial namespace 的 swap/reboot/device 权限。
+  新 namespace 的能力不能获得 initial namespace 的 reboot/device 权限。
 - `CredentialTransition` 借creation→graph guard中的canonical ProcessNode，callback再取credential
   guard；candidate验证后先MM dumpability Release置0、PDEATH字段/count同graph清除，再publish。
   最终retired组/Arc在全部短锁外Drop，禁止旧递归/后补clear路径。query先target凭据再MM Acquire。
@@ -320,11 +323,8 @@ fallible user-copy 必须持有实际 `mm_snapshot` mmget；TCB observer 可在�
 - 独立 Process 的 fork/VM/FS/FILES/VFORK 组合共用唯一 constructor 与 graph publication；
   VFORK 仅决定 caller 完成等待，资源共享分别按标准 bits 选择。VM 且非 VFORK 的
   child 清除 alternate stack；VFORK 保留。禁止另建 namespace-only clone/旧 fork publication。
-  context_storage 唯一分配/解析 trap backing：临时 VMA 先准备 retirement waiter，再在同一
-  mm guard 内完成 mapping 与 ContextOwner bind；不得在 mapping 成功后再分配 binding/waiter。
-  exec 的新 mm 已注册 mapping/reclaimer，PONR 前准备 Arc 保活的 canonical pointer token，
-  commit 只应用已准备 pointer；旧 mm 可被 CLONE_VM parent/其他 Process 占用，临时 VMA
-  清理必须消费 constructor 预置 waiter，禁止依据 child single-thread 推导 mm 独占。
+  linuxd 保存 RestrictedState 与 native 线程/成员地址空间 handle；native thread 独占 kernel context/backing。
+  exec 在 PONR 前准备新的映像与受限寄存器状态，提交后退休旧 native 映射/句柄；共享旧 mm 的其他执行者不被提前销毁。
 - `ThreadSecurityOwner` 同锁拥有 NNP/seccomp mode；既有 process graph 独占 strict/filter、TSYNC
   与 clone/fork/vfork policy inheritance 的提交顺序。New child 在 graph publication 前保持 disabled，
   publication 在同一锁内从真实 creator 重取 state；没有准备期继承后人工追赶的第二条路径。

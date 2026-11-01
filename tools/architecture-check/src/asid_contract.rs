@@ -82,16 +82,16 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     if let Some(trap) = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/bootstrap/mod.rs")
+        .find(|source| source.relative == "kernel/src/execution/trap.rs")
     {
         let body = trap
             .text
             .split("pub(crate) fn trap_return()")
             .nth(1)
             .unwrap_or("");
-        let preparation = body.find("delivery_task.prepare_signal_delivery()");
+        let preparation = body.find("owner.before_user_return(&current)");
         let masking = body.find("arch::interrupt::disable_for_transfer();");
-        let snapshot = body.find("let user_address_space = current_task.user_token();");
+        let snapshot = body.find("let token = current");
         if !matches!((preparation, masking, snapshot), (Some(p), Some(m), Some(s)) if p < m && m < s)
         {
             errors.push("trap_return: final IRQ mask must follow blocking signal preparation and precede root snapshot".into());
@@ -99,7 +99,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     }
     if let Some(trap) = sources
         .iter()
-        .find(|source| source.relative == "kernel/src/bootstrap/mod.rs")
+        .find(|source| source.relative == "kernel/src/execution/trap.rs")
     {
         let body = trap
             .text
@@ -119,6 +119,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
             != 1
             || [
                 "prepare_signal_delivery",
+                "before_user_return",
                 "copy_to_user",
                 "copy_from_user",
                 "memory_set.lock",
@@ -193,7 +194,7 @@ mod tests {
         let mut sources = super::super::load_sources(&super::super::repository_root()).unwrap();
         let trap = sources
             .iter_mut()
-            .find(|source| source.relative == "kernel/src/bootstrap/mod.rs")
+            .find(|source| source.relative == "kernel/src/execution/trap.rs")
             .unwrap();
         trap.text = trap
             .text
@@ -216,10 +217,10 @@ mod tests {
         let mut sources = super::super::load_sources(&super::super::repository_root()).unwrap();
         let trap = sources
             .iter_mut()
-            .find(|source| source.relative == "kernel/src/bootstrap/mod.rs")
+            .find(|source| source.relative == "kernel/src/execution/trap.rs")
             .unwrap();
-        trap.text = trap.text.replace("let user_address_space = current_task.user_token();",
-            "let _ = current_task.prepare_signal_delivery();\nlet user_address_space = current_task.user_token();");
+        trap.text = trap.text.replace("let token = current",
+            "let _ = current.prepare_signal_delivery();\nlet token = current");
         let mut errors = Vec::new();
         check(&sources, &mut errors);
         assert!(

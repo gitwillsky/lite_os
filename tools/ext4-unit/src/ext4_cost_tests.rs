@@ -25,10 +25,6 @@ use crate::{
             test_allocation_attempts, test_read_logical_block, test_read_metadata,
             test_run_writeback_daemon, test_stage_metadata, test_write_costs,
         },
-    },
-    regular_write_policy::regular_write_chunk,
-    user_iovec::fallible_staging_capacity,
-    writeback_batch::REGULAR_WRITE_BATCH_PAGES,
 };
 
 pub(crate) static COST_TEST_LOCK: Mutex<()> = Mutex::new(());
@@ -232,7 +228,7 @@ impl BlockDevice for CountingImage {
 
 pub(crate) fn mounted() -> (Arc<CountingImage>, Arc<Ext4FileSystem>) {
     let image = CountingImage::open();
-    let fs = Ext4FileSystem::new(image.clone(), crate::vfs::DeviceNumber::new(8, 0), false)
+    let fs = Ext4FileSystem::new(image.clone(), false)
         .expect("mount ext4 fixture image");
     (image, fs)
 }
@@ -654,28 +650,10 @@ fn one_mibibyte_write_has_bounded_transaction_barriers() {
         )
         .unwrap();
     let input = vec![0x5a; 1024 * 1024];
-    let staging_capacity = fallible_staging_capacity(
-        input
-            .len()
-            .min(REGULAR_WRITE_BATCH_PAGES * crate::memory::PAGE_SIZE),
-        crate::memory::PAGE_SIZE,
-        true,
-    );
     image.reset_writes();
     reset_test_write_costs();
-    let mut completed = 0usize;
-    let mut storage_calls = 0usize;
-    while completed < input.len() {
-        let count = regular_write_chunk(input.len(), completed, staging_capacity);
-        assert_ne!(count, 0, "regular syscall staging made no progress");
-        assert_eq!(
-            file.write_storage(completed as u64, &input[completed..completed + count], None)
-                .unwrap(),
-            count
-        );
-        completed += count;
-        storage_calls += 1;
-    }
+    // One FUSE storage request is one engine transaction; linuxd owns syscall staging.
+    assert_eq!(file.write_storage(0, &input, None).unwrap(), input.len());
     root.sync_storage().unwrap();
     let costs = test_write_costs();
     let checkpoint_writes = costs.home_writes - costs.journal_writes;
@@ -686,10 +664,6 @@ fn one_mibibyte_write_has_bounded_transaction_barriers() {
         image.writes(),
         costs.journal_writes,
         checkpoint_writes
-    );
-    assert_eq!(
-        storage_calls, 1,
-        "1 MiB syscall staging split storage calls"
     );
     assert_eq!(costs.transactions, 1);
     assert!(
@@ -778,7 +752,7 @@ fn failed_commit_fails_stop_and_recovery_ignores_it() {
     drop(fs);
 
     // 未写出 commit record 的事务在 replay 时整体丢弃。
-    let recovered = Ext4FileSystem::new(image, crate::vfs::DeviceNumber::new(8, 0), false)
+    let recovered = Ext4FileSystem::new(image, false)
         .expect("remount after failed commit");
     assert!(matches!(
         recovered

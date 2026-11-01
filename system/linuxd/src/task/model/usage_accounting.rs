@@ -49,6 +49,8 @@ pub(super) struct CpuUsage {
     user_us: u64,
     voluntary_switches: u64,
     involuntary_switches: u64,
+    faults: u64,
+    pager_waits: u64,
 }
 
 impl CpuUsage {
@@ -57,6 +59,8 @@ impl CpuUsage {
         self.user_us += other.user_us;
         self.voluntary_switches += other.voluntary_switches;
         self.involuntary_switches += other.involuntary_switches;
+        self.faults += other.faults;
+        self.pager_waits += other.pager_waits;
     }
 }
 
@@ -66,23 +70,12 @@ impl CpuUsage {
 /// 缺少 Thread 份额则无法回答 `RUSAGE_THREAD`。全部 Relaxed：计数之间没有需要发布的数据。
 #[derive(Debug, Default)]
 pub(super) struct UsageAccounting {
-    minor_faults: AtomicU64,
-    major_faults: AtomicU64,
     // 采样得到的 RSS 峰值（页）。RSS 由 installed 状态派生，页换出没有事件，无法逐页维护精确峰值，
     // 所以只在 exec、退出与读取时采样。
     peak_rss_pages: AtomicU64,
 }
 
 impl UsageAccounting {
-    pub(super) fn charge_fault(&self, major: bool) {
-        let faults = if major {
-            &self.major_faults
-        } else {
-            &self.minor_faults
-        };
-        faults.fetch_add(1, Ordering::Relaxed);
-    }
-
     pub(super) fn observe_rss(&self, pages: u64) {
         self.peak_rss_pages.fetch_max(pages, Ordering::Relaxed);
     }
@@ -110,8 +103,8 @@ impl UsageAccounting {
             user_us,
             system_us,
             max_rss_kib: peak_pages * (crate::memory::PAGE_SIZE as u64 / 1024),
-            minor_faults: self.minor_faults.load(Ordering::Relaxed),
-            major_faults: self.major_faults.load(Ordering::Relaxed),
+            minor_faults: cpu.faults.saturating_sub(cpu.pager_waits),
+            major_faults: cpu.pager_waits,
             input_blocks: io.read_bytes / 512,
             output_blocks: io.write_bytes / 512,
             voluntary_switches: cpu.voluntary_switches,
@@ -173,15 +166,6 @@ impl ReapedChildrenUsage {
 }
 
 impl TaskControlBlock {
-    /// 把一个 timer tick 记给 calling Thread 与所属 Process；`user` 表示 tick 打断的是用户态。
-    pub(crate) fn charge_page_fault(&self, major: bool) {
-        if self.is_kernel_thread() {
-            return;
-        }
-        self.thread().usage.charge_fault(major);
-        self.process().usage.charge_fault(major);
-    }
-
     fn current_rss_pages(&self) -> u64 {
         self.address_space()
             .page_statistics()
@@ -197,6 +181,8 @@ impl TaskControlBlock {
                 user_us: runtime.restricted_time_ns / 1000,
                 voluntary_switches: runtime.voluntary_switches,
                 involuntary_switches: runtime.involuntary_switches,
+                faults: runtime.restricted_faults,
+                pager_waits: runtime.restricted_pager_waits,
             })
     }
 

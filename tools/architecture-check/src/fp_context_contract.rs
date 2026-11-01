@@ -26,6 +26,10 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
             "{TRAP_SOURCE}: __kernel_trap must be 4-byte aligned before publication through stvec"
         ));
     }
+    let arm = fs::read_to_string(root.join("kernel/src/arch/aarch64/trap.S")).unwrap_or_default();
+    if !privileged_user_address_isolation(&arm) {
+        errors.push("AArch64: TTBR0 isolation must precede Rust and authorized restore must precede eret".into());
+    }
     if !bootstrap_interrupt_state_precedes_devices(root) {
         errors.push(
             "kernel/src/main.rs: membarrier interrupt state must precede device initialization and task loading"
@@ -79,12 +83,19 @@ fn bootstrap_interrupt_state_precedes_devices(root: &Path) -> bool {
     let Ok(main) = fs::read_to_string(root.join("kernel/src/main.rs")) else {
         return false;
     };
-    main.find("task::initialize_interrupt_state();")
+    main.find("execution::barrier::initialize();")
         .zip(main.find("platform::initialize_devices();"))
-        .zip(main.find("task::spawn_init("))
+        .zip(main.find("bootstrap::start_root_server("))
         .is_some_and(|((interrupt_state, devices), task)| {
             interrupt_state < devices && devices < task
         })
+}
+
+fn privileged_user_address_isolation(source: &str) -> bool {
+    let entry = source.split("__aarch64_user_common:").nth(1).unwrap_or("").split("__aarch64_kernel_sync:").next().unwrap_or("");
+    let restore = source.split("__aarch64_restore:").nth(1).unwrap_or("");
+    matches!((entry.find("mrs x10, ttbr1_el1"), entry.find("msr ttbr0_el1, x10"), entry.find("isb"), entry.find("br x13")), (Some(root), Some(install), Some(barrier), Some(rust)) if root < install && install < barrier && barrier < rust)
+        && matches!((restore.find("msr ttbr0_el1, x1"), restore.find("isb"), restore.find("eret")), (Some(install), Some(barrier), Some(ret)) if install < barrier && barrier < ret)
 }
 
 #[cfg(test)]
@@ -115,4 +126,14 @@ mod tests {
         let source = std::fs::read_to_string(root.join(super::TRAP_SOURCE)).expect("trap assembly");
         assert!(source.contains("    .align 2\n__kernel_trap:"));
     }
+    #[test]
+    fn user_address_isolation_cannot_be_removed_from_entry_or_return() {
+        let root = super::super::repository_root();
+        let source = std::fs::read_to_string(root.join("kernel/src/arch/aarch64/trap.S")).unwrap();
+        assert!(super::privileged_user_address_isolation(&source));
+        for instruction in ["msr ttbr0_el1, x10", "msr ttbr0_el1, x1\n"] {
+            assert!(!super::privileged_user_address_isolation(&source.replace(instruction, "")));
+        }
+    }
+
 }

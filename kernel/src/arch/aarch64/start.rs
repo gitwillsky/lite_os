@@ -130,8 +130,6 @@ __boot_ttbr1:
 unsafe extern "C" fn __liteos_high_entry() -> ! {
     naked_asm!(
         "
-        .arch_extension pan
-        msr     pan, #1
         adrp    x9, {table_address}
         add     x9, x9, :lo12:{table_address}
         ldr     x10, [x9]
