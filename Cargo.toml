@@ -1,7 +1,7 @@
 [workspace]
 members = [
     "kernel",
-    "boot-scene",
+    "libraries/boot-scene",
     "abi/linux-abi",
     "abi/native-abi",
     "libraries/fallible-tree",

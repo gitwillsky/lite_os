@@ -35,6 +35,7 @@ AArch64 和 RISC-V64 共用这些机制，具体指令与 machine 装配通过�
 | `system/task-observer-protocol` | 原生系统服务观测的只读消息；KOID 不混入 Linux PID |
 | `abi/native-abi`、`abi/linux-abi` | 系统服务接口与 Linux UAPI，边界分别固定 |
 | `libraries/fallible-tree`、`libraries/mmio` | 唯一的可失败有序存储与有界 MMIO 访问实现 |
+| `libraries/boot-scene` | 启动画面位图的唯一解码与布局；driver-host 与 compositor 据此保证接管时逐像素一致 |
 | `user` | Linux 应用、桌面、运行库与 UI SDK |
 
 ## 领域导航

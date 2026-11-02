@@ -6,7 +6,7 @@ publish.workspace = true
 
 [dependencies]
 liteos-runtime = { path = "../../libraries/liteos-runtime" }
-boot-scene = { path = "../../../boot-scene" }
+boot-scene = { path = "../../../libraries/boot-scene" }
 canvas = { path = "../../libraries/canvas" }
 classic-theme = { path = "../../libraries/classic-theme" }
 classic-ui = { path = "../../libraries/classic-ui" }

@@ -5,7 +5,7 @@ use std::vec::Vec;
 use super::*;
 
 /// 仓库提交的默认画面，用来保证打包器与解码器对真实数据达成一致。
-const DEFAULT_SCENE: &[u8] = include_bytes!("../../assets/classic/boot-scene.lbs");
+const DEFAULT_SCENE: &[u8] = include_bytes!("../../../assets/classic/boot-scene.lbs");
 
 /// 按 `LBS1` 规则手工编码：整幅 `index` 色，可附加额外 RLE 对与自定义文件头字段。
 fn encode(colors: u16, fill: [u16; 4], rle: &[(u8, u8)]) -> Vec<u8> {

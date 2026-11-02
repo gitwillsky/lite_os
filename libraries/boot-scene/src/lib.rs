@@ -1,6 +1,6 @@
-//! `LBS1` 启动画面位图的唯一解码与布局 owner，内核与 compositor 共用。
+//! `LBS1` 启动画面位图的唯一解码与布局 owner，driver-host 与 compositor 共用。
 //!
-//! 内核在文件系统挂载之前就要画启动画面，compositor 随后接着画同一张图；两端必须对缩放、居中与进度槽
+//! driver-host 在文件系统挂载之前就要画启动画面，compositor 随后接着画同一张图；两端必须对缩放、居中与进度槽
 //! 位置给出完全相同的答案，否则接管瞬间画面会跳动。因此解码、整数缩放居中和进度填充矩形只在这里实现。
 //! 文件格式由 `scripts/pack_boot_scene.py` 生成并在其文档中定义；本 crate 不分配内存，不依赖 `std`。
 
@@ -11,9 +11,9 @@ pub const WIDTH: usize = 640;
 /// 位图固定高度（像素）。
 pub const HEIGHT: usize = 480;
 
-/// 内核阶段把进度条推进到的千分比，compositor 从这个值接着往后画。
+/// driver-host 阶段把进度条推进到的千分比，compositor 从这个值接着往后画。
 ///
-/// 内核在 DRM 接管 scanout 之前只能同步刷新，所以它的最后一个里程碑固定落在这里；若两端各存一份，
+/// driver-host 在 DRM 接管 scanout 之前只能同步刷新，所以它的最后一个里程碑固定落在这里；若两端各存一份，
 /// 接管瞬间进度条会倒退或跳变。
 pub const KERNEL_PROGRESS_PERMILLE: u16 = 400;
 

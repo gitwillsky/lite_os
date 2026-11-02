@@ -14,7 +14,7 @@ bitflags = "2.4"
 fallible-tree = { path = "../../libraries/fallible-tree" }
 dtb-walker = "=0.2.0-alpha.3"
 linux-abi = { path = "../../abi/linux-abi" }
-boot-scene = { path = "../../boot-scene" }
+boot-scene = { path = "../../libraries/boot-scene" }
 spin = { version = "0.10.0", default-features = false, features = ["mutex", "once", "spin_mutex"] }
 
 [lints]
