@@ -1,7 +1,7 @@
 //! Linux DRM/KMS 与 virtio-gpu ioctl UAPI 子集。
 
 use alloc::sync::Arc;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use crate::{
     devices::drm::{

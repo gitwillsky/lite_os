@@ -176,7 +176,7 @@ impl super::chardev::PositionedFile for RemoveFile {
         _: &crate::namespace::NamespaceAuthority,
     ) -> Result<(), super::chardev::DeviceError> {
         use super::chardev::DeviceError;
-        use syscall_abi::errno;
+        use linux_abi::errno;
         let count = input.remaining().min(crate::memory::PAGE_SIZE);
         if count == 0 {
             return Ok(());
@@ -206,11 +206,11 @@ impl super::chardev::PositionedFile for RemoveFile {
         let base = match whence {
             0 => 0,
             1 => current,
-            _ => return Err(DeviceError::Errno(syscall_abi::errno::EINVAL)),
+            _ => return Err(DeviceError::Errno(linux_abi::errno::EINVAL)),
         };
         let next = i128::from(base) + i128::from(offset);
         if !(0..=i128::from(i64::MAX)).contains(&next) {
-            return Err(DeviceError::Errno(syscall_abi::errno::EINVAL));
+            return Err(DeviceError::Errno(linux_abi::errno::EINVAL));
         }
         Ok(next as u64)
     }

@@ -8,7 +8,7 @@ pub(crate) struct ProcCredentialSnapshot {
     /// 同一 credential snapshot 的 filesystem UID/GID，供 proc 第四列与FSCREDS。
     pub(crate) fsids: [u32; 2],
     pub(crate) groups: Option<Arc<Vec<u32>>>,
-    pub(crate) capabilities: syscall_abi::capability::CapabilitySnapshot,
+    pub(crate) capabilities: linux_abi::capability::CapabilitySnapshot,
     /// 权限使用目标实际 user namespace；显示由 reader 的 namespace 决定。
     pub(crate) user_namespace: Arc<crate::namespace::UserNamespace>,
 }

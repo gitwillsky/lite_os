@@ -5,7 +5,7 @@ use super::PidFdTarget;
 /// PIDFS 是标准 ioctl UAPI owner；Task binding 只选择实际 association/namespace 和授权。
 pub(super) fn ioctl(target: &dyn PidFdTarget, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {
     use crate::namespace::{NamespaceSelector as Selector, NamespaceType as Kind};
-    use syscall_abi::errno;
+    use linux_abi::errno;
     if call.request == 0x8008_7601 {
         if call.argument == 0 {
             return Err(DeviceError::Errno(errno::EINVAL));
@@ -41,7 +41,7 @@ pub(super) fn ioctl(target: &dyn PidFdTarget, call: &IoctlCall<'_>) -> Result<is
 /// 原生 extensible GET_INFO：只读 input mask，短结构裁掉无法容纳的 flag，未知输出尾部清零。
 /// 历史退出字段从唯一 PIDFS retirement record 读取，不维持 Task 的 alive cache。
 fn pidfd_information(target: &dyn PidFdTarget, call: &IoctlCall<'_>) -> Result<isize, DeviceError> {
-    use syscall_abi::errno;
+    use linux_abi::errno;
     if call.argument == 0 {
         return Err(DeviceError::Errno(errno::EINVAL));
     }

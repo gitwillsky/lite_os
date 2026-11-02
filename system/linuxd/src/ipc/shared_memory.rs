@@ -7,7 +7,7 @@ use crate::{
     namespace::{PidIdentity, UserNamespace},
 };
 use alloc::sync::Arc;
-use syscall_abi::{
+use linux_abi::{
     capability::Capability,
     ipc::{SHM_DEST, SHM_LOCKED},
 };

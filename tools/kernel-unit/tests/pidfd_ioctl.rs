@@ -193,7 +193,7 @@ fn actual_retired_pid_info_requires_exit_request_and_keeps_native_empty_mask() {
     let memory = Memory::new(0);
     assert_eq!(
         info(&target, &memory, 88),
-        Err(DeviceError::Errno(syscall_abi::errno::ESRCH))
+        Err(DeviceError::Errno(linux_abi::errno::ESRCH))
     );
     let memory = Memory::new(8);
     assert_eq!(info(&target, &memory, 88), Ok(0));
@@ -260,7 +260,7 @@ fn actual_namespace_codec_forwards_selector_and_argument_presence() {
                 user: &memory
             }
         ),
-        Err(DeviceError::Errno(syscall_abi::errno::ENOTTY))
+        Err(DeviceError::Errno(linux_abi::errno::ENOTTY))
     );
 }
 

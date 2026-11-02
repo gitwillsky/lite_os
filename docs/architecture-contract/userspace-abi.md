@@ -7,8 +7,8 @@ root-server 只分发初始 capability 和服务连接。linuxd 在 normal mode 
 
 ## Owner
 
-- `syscall-abi` 独占已接入 Linux 64-bit asm-generic number 与 RISC-V 扩展编号；dispatcher 独占 number-to-handler mapping。
-- `syscall-abi::open` 独占 native open/fcntl flag 编码，在编译期选择 arm64 或
+- `linux-abi` 独占已接入 Linux 64-bit asm-generic number 与 RISC-V 扩展编号；dispatcher 独占 number-to-handler mapping。
+- `linux-abi::open` 独占 native open/fcntl flag 编码，在编译期选择 arm64 或
   asm-generic UAPI 的 DIRECTORY/NOFOLLOW/DIRECT/LARGEFILE 位。VFS/OFD 直接使用同一
   编码并保留实际 status；不能把 AArch64 musl 隐式加入的 LARGEFILE 当成 NOFOLLOW，
   也不屏蔽该位来绕过错误。guest 验证普通跟随、NOFOLLOW、目录约束及 O_PATH 链接 identity。
@@ -227,11 +227,11 @@ root-server 只分发初始 capability 和服务连接。linuxd 在 normal mode 
   child 在变为 Ready 前继承 kernel SIGKILL，parent-visible exit status 仍由首次
   group-exit owner 决定。
 
-- `syscall_abi::capability` 独占41个固定Linux capability编号及v1/v2/v3的12/24-byte数据codec，
+- `linux_abi::capability` 独占41个固定Linux capability编号及v1/v2/v3的12/24-byte数据codec，
   decode屏蔽未定义高位。capget NULL data只读version、unknown version写回V3后成功；
   capset先version/PID权限后data copy，foreign target EPERM不变更任何credential。
   InitialStackCredentials只投影已准备的UID/EUID/GID/EGID/secureexec；memory不重算权限。
-- `syscall_abi::file_capability`只编解码标准security.capability的12/20/24-byte little-endian
+- `linux_abi::file_capability`只编解码标准security.capability的12/20/24-byte little-endian
   revision1/2/3。disk reader按固定commoncap保留未知非revision标志和全部64-bit capability bits；
   setxattr header只接受revision2/3与EFFECTIVE标志，两者不能共用更严格的read validator。
   encode拒绝不能由较旧revision表示的rootid/high words；不静默丢权限数据。inode xattr、

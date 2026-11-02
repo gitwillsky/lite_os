@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use syscall_abi::errno;
+use linux_abi::errno;
 
 /// ext4 操作的失败；FUSE 回复按 [`FileSystemError::errno`] 编码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

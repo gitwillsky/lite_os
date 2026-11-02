@@ -8,7 +8,7 @@
 //! 或需要等待就绪的 [`Wait`]（管道/socket 的流式读写、poll、timeout），后者由 [`drive`] 驱动。
 
 use alloc::{boxed::Box, sync::Arc, sync::Weak, vec::Vec};
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::{
     lane,

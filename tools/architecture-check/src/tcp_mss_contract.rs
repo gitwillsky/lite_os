@@ -48,9 +48,9 @@ fn check_transport(source: &str, errors: &mut Vec<String>) {
     }
 }
 fn check_kernel(sources: &[SourceFile], errors: &mut Vec<String>) {
-    let options = normalized(source(sources, "system/netd/src/inet/options.rs"));
-    let tcp = normalized(source(sources, "system/netd/src/inet/tcp.rs"));
-    let lifecycle = normalized(source(sources, "system/netd/src/inet/tcp/lifecycle.rs"));
+    let options = normalized(source(sources, "system/netstack/src/inet/options.rs"));
+    let tcp = normalized(source(sources, "system/netstack/src/inet/tcp.rs"));
+    let lifecycle = normalized(source(sources, "system/netstack/src/inet/tcp/lifecycle.rs"));
     let abi = normalized(source(
         sources,
         "system/linuxd/src/syscall/socket/options.rs",
@@ -144,7 +144,7 @@ mod tests {
         let mut sources = fixture();
         let file = sources
             .iter_mut()
-            .find(|file| file.relative == "system/netd/src/inet/tcp/lifecycle.rs")
+            .find(|file| file.relative == "system/netstack/src/inet/tcp/lifecycle.rs")
             .unwrap();
         assert!(file.text.contains("state.options.user_mss = None;"));
         file.text = file.text.replace(

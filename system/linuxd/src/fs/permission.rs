@@ -1,6 +1,6 @@
 use alloc::{sync::Arc, vec::Vec};
 
-use syscall_abi::capability::{Capability, VALID_MASK};
+use linux_abi::capability::{Capability, VALID_MASK};
 
 use super::{FileSystemError, InodeMetadata, InodeType};
 

@@ -1,7 +1,7 @@
 //! Linux evdev ioctl UAPI 子集：query、clock、exclusive grab 与 revoke。
 
 use alloc::sync::Arc;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::{InputError, InputFile, InputString};
 use crate::fs::chardev::{DeviceError, IoctlCall, UserMemory};

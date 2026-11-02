@@ -114,8 +114,8 @@ pub(super) fn parse_send(
     );
     let authority = task.namespace_authority();
     let initial = crate::namespace::initial_user();
-    let exempt = authority.capable(&initial, syscall_abi::capability::Capability::SYS_RESOURCE)
-        || authority.capable(&initial, syscall_abi::capability::Capability::SYS_ADMIN);
+    let exempt = authority.capable(&initial, linux_abi::capability::Capability::SYS_RESOURCE)
+        || authority.capable(&initial, linux_abi::capability::Capability::SYS_ADMIN);
     UnixRights::new(
         passed,
         task.credential_id(true, false),

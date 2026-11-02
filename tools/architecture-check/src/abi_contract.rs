@@ -90,7 +90,7 @@ impl<'ast> Visit<'ast> for DispatchVisitor {
 }
 
 pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
-    let abi_path = root.join("syscall-abi/src/lib.rs");
+    let abi_path = root.join("abi/linux-abi/src/lib.rs");
     let dispatch_path = root.join("system/linuxd/src/syscall/mod.rs");
     let abi_text = fs::read_to_string(&abi_path).expect("syscall ABI source must exist");
     let dispatch_text = fs::read_to_string(&dispatch_path).expect("syscall dispatch must exist");
@@ -104,7 +104,7 @@ pub(super) fn check(root: &Path, errors: &mut Vec<String>) {
     }
     for name in visitor.constants.difference(&constants) {
         errors.push(format!(
-            "dispatcher uses a syscall absent from syscall-abi: {name}"
+            "dispatcher uses a syscall absent from linux-abi: {name}"
         ));
     }
     for line in visitor.numeric_arms {

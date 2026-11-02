@@ -15,7 +15,7 @@ use ipc::{
     IpcAccess, IpcError, IpcNamespace, MessageLimit, MessageQueueWait, MessageReceive,
     PreparedMessage,
 };
-use syscall_abi::ipc::*;
+use linux_abi::ipc::*;
 
 fn access() -> IpcAccess {
     namespace::boot();
@@ -260,7 +260,7 @@ fn group_access_and_namespace_capabilities_do_not_grant_ancestor_access() {
             namespace: child,
             effective_uid: 40,
             effective_gid: 50,
-            effective_capabilities: syscall_abi::capability::VALID_MASK,
+            effective_capabilities: linux_abi::capability::VALID_MASK,
         },
         groups: None,
     };

@@ -1,7 +1,7 @@
 //! `/dev/dri/card0` 字符设备：每次 open 一个独立 DRM file identity。
 
 use alloc::sync::Arc;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::{DrmEvent, DrmFile, ioctl};
 use crate::{

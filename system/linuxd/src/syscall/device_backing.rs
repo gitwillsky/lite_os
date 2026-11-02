@@ -10,7 +10,7 @@ use crate::{
 };
 use alloc::sync::Arc;
 use fs::chardev::DeviceError;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 struct Registered {
     file: Arc<OpenFileDescription>,
@@ -53,9 +53,9 @@ impl BackingFile for Registered {
     }
     fn reopen(&self, flags: u32) -> Result<Arc<dyn BackingOpen>, FileSystemError> {
         let flags = flags
-            & !(syscall_abi::open::O_CREAT
-                | syscall_abi::open::O_EXCL
-                | syscall_abi::open::O_TRUNC
+            & !(linux_abi::open::O_CREAT
+                | linux_abi::open::O_EXCL
+                | linux_abi::open::O_TRUNC
                 | fs::O_NOCTTY);
         let opened = self.file.opened_ref();
         let inode = opened.inode();

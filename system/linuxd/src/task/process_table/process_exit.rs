@@ -208,7 +208,7 @@ pub(crate) fn exit_current_if_group_exiting() {
                 node.exec
                     .as_ref()
                     .filter(|exec| exec.kills(task.tid()))
-                    .map(|_| ProcessExitStatus::Signaled(syscall_abi::signal::SIGKILL as u8))
+                    .map(|_| ProcessExitStatus::Signaled(linux_abi::signal::SIGKILL as u8))
             })
         });
     drop(task);
@@ -271,7 +271,7 @@ pub(crate) fn exit_current_group_by_signal(signal: usize) -> ! {
 /// syscall 必须先退休新映像/参数/TCB Arc，再调用此不返回入口。
 pub(crate) fn exit_current_after_exec_failure() -> ! {
     let status = begin_group_exit(
-        ProcessExitStatus::Signaled(syscall_abi::signal::SIGSEGV as u8),
+        ProcessExitStatus::Signaled(linux_abi::signal::SIGSEGV as u8),
         true,
     );
     exit_current(status)
@@ -297,7 +297,7 @@ pub(super) fn request_group_exit(
         let mut graph = PROCESS_TABLE.graph.lock();
         // 与 signal publication 共用 graph 边界；PONR OOM 不覆盖先到达的 SIGKILL。
         let requested = if preserve_pending_fatal && current.has_fatal_signal() {
-            ProcessExitStatus::Signaled(syscall_abi::signal::SIGKILL as u8)
+            ProcessExitStatus::Signaled(linux_abi::signal::SIGKILL as u8)
         } else {
             requested
         };
@@ -619,7 +619,7 @@ fn prepare_current_exit(requested: ProcessExitStatus) {
                         debug_assert_eq!(node.parent, Some(exiting_pid));
                         node.parent = Some(reaper.0);
                         // real parent 换成另一个 process：native orphan 一律成为普通 SIGCHLD child。
-                        node.exit_signal = syscall_abi::signal::SIGCHLD as u8;
+                        node.exit_signal = linux_abi::signal::SIGCHLD as u8;
                         let child_status = match node.state {
                             ProcessState::Exited(
                                 _,
@@ -655,7 +655,7 @@ fn prepare_current_exit(requested: ProcessExitStatus) {
                             init_signal_wake = Some(super::signal::prepare_parent_signal_wake(
                                 &graph,
                                 reaper.0,
-                                syscall_abi::signal::SIGCHLD,
+                                linux_abi::signal::SIGCHLD,
                             ));
                         }
                         if init_publication.is_some_and(|publication| publication.autoreap) {

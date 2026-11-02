@@ -4,7 +4,7 @@
 //! （见 `exec`）。执行与链的推进见 `chain`。
 
 use alloc::sync::Arc;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::{
     chain::launch,

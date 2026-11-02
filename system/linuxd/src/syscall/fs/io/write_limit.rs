@@ -6,7 +6,7 @@ pub(super) fn file_size_exceeded(task: &TaskControlBlock) -> isize {
     send_kernel_thread_signal(
         task.tgid(),
         task.tid(),
-        syscall_abi::signal::SIGXFSZ,
+        linux_abi::signal::SIGXFSZ,
         crate::task::PendingSignal::kernel(),
     )
     .expect("current file writer must exist");

@@ -10,7 +10,7 @@ use crate::{
 };
 use device_model::DeviceBacking;
 
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::{
     copy_in, copy_out, drm_errno, read_u32, read_u64, wait_retry, wait_scanout, write_u32,

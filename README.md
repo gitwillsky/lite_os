@@ -66,8 +66,10 @@ make run-gui   # 在 UTM 窗口中显示内核启动画面，shell 位于串口
 
 | 路径 | 内容 |
 |---|---|
-| `kernel/` | `no_std` kernel：`arch`/`platform` backend、内存、进程调度、VFS/ext4、IPC/socket、DRM/evdev/音频驱动、syscall |
-| `syscall-abi/` | Linux 64-bit syscall 编号与 UAPI 定义 |
+| `kernel/` | `no_std` 通用微内核：`arch`/`platform` backend、对象与句柄、线程调度、VMO/VMAR、中断与 IOMMU，见[当前架构](docs/architecture.md) |
+| `abi/` | `native-abi`（内核与系统服务的接口）、`linux-abi`（Linux 64-bit syscall 编号与 UAPI 定义） |
+| `system/` | 系统服务与跨服务协议：`root-server`、`driver-host`、`ext4d`、`netstack`、`linuxd` |
+| `libraries/` | 内核与系统服务共用的基础库：`fallible-tree`、`mmio` |
 | `bootloader/` | RISC-V 启动链；AArch64 不需要 |
 | `user/` | 基础 Rust 库、BusyBox init 配置与 diagnostics，见 [user/README.md](user/README.md) |
 | `tools/` | `architecture-check`（架构/依赖/文档围栏）、`architecture-bench`、`kernel-unit`、`scheduler-unit` |

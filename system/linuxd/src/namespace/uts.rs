@@ -3,7 +3,7 @@ use super::quota::{UserResource, UserResourceCharge};
 use super::{NamespaceAuthority, NamespaceError, UserNamespace};
 use crate::sync::Mutex;
 use alloc::sync::Arc;
-use syscall_abi::capability::Capability;
+use linux_abi::capability::Capability;
 
 /// 标准 new_utsname 两个 namespace-owned 字段；每列65字节，输入可含非 UTF-8 与内嵌 NUL。
 #[derive(Clone, Copy)]

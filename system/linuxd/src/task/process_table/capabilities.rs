@@ -1,5 +1,5 @@
 use super::*;
-use syscall_abi::capability::CapabilitySets;
+use linux_abi::capability::CapabilitySets;
 
 /// 标准 capget PID/TID selector；已退出 leader 与 zombie 共用原 credential owner 到 reap。
 pub(crate) fn capability_sets(pid: usize) -> Option<CapabilitySets> {

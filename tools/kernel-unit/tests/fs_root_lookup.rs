@@ -217,7 +217,7 @@ mod fs {
         fn namespace_capable(
             &self,
             _: &crate::namespace::UserNamespace,
-            _: syscall_abi::capability::Capability,
+            _: linux_abi::capability::Capability,
         ) -> bool {
             true
         }

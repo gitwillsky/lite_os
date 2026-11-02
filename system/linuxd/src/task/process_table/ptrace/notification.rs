@@ -21,7 +21,7 @@ impl Notification {
             )
         };
         let record = tracer.prepare_signal_record(
-            syscall_abi::signal::SIGCHLD,
+            linux_abi::signal::SIGCHLD,
             PendingSignal::child_exited(0, 0),
         );
         Some(Self {
@@ -60,13 +60,13 @@ impl Notification {
         kind: ChildSignalKind,
     ) -> Option<super::super::signal::ParentSignalWake> {
         self.tracer
-            .publish_child_signal(info, kind, syscall_abi::signal::SIGCHLD, &mut self.record)
+            .publish_child_signal(info, kind, linux_abi::signal::SIGCHLD, &mut self.record)
             .is_some_and(|publication| publication.queued)
             .then(|| {
                 super::super::signal::prepare_parent_signal_wake(
                     graph,
                     self.group,
-                    syscall_abi::signal::SIGCHLD,
+                    linux_abi::signal::SIGCHLD,
                 )
             })
     }

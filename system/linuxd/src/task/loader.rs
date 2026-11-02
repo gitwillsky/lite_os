@@ -17,7 +17,7 @@ pub(crate) struct LoadedExecutable {
     arguments: Vec<Vec<u8>>,
     execfn: Vec<u8>,
     credentials: InodeMetadata,
-    file_capability: Option<syscall_abi::file_capability::FileCapabilityData>,
+    file_capability: Option<linux_abi::file_capability::FileCapabilityData>,
     readable: bool,
     // interpreter deny-write 持续到 image 构造完成；其映射只延长打开（[`MappedExecutable`]），不延长这份加载期租约。
     _interpreter_access: Option<Arc<ExecutableOpenLease>>,
@@ -90,9 +90,7 @@ impl LoadedExecutable {
     }
 
     /// 最终main ELF实际path上的immutable file-cap快照；script与PT_INTERP不提供exec凭据。
-    pub(super) fn file_capability(
-        &self,
-    ) -> Option<syscall_abi::file_capability::FileCapabilityData> {
+    pub(super) fn file_capability(&self) -> Option<linux_abi::file_capability::FileCapabilityData> {
         self.file_capability
     }
 }
@@ -325,7 +323,7 @@ fn source(
         }
         Err(crate::fs::InodeOpenError::Interrupted) => {
             return Err(ProgramLoadError::FileSystem(FileSystemError::Errno(
-                syscall_abi::errno::EINTR as u16,
+                linux_abi::errno::EINTR as u16,
             )));
         }
     };

@@ -7,11 +7,11 @@ mod allocation_failure;
 extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
+use linux_abi::capability::{Capability, VALID_MASK};
 use namespace::{
     NamespaceAuthority, NamespaceError, PidAllocationError, PidKey, PidNamespace, PidRegistration,
     PreparedPid, UserNamespace, UserResource,
 };
-use syscall_abi::capability::{Capability, VALID_MASK};
 
 fn caller() -> NamespaceAuthority {
     NamespaceAuthority {

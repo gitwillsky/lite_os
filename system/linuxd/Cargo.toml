@@ -9,7 +9,7 @@ test = false
 bench = false
 
 [dependencies]
-task-observer-protocol = { path = "../../task-observer-protocol" }
+task-observer-protocol = { path = "../task-observer-protocol" }
 native-runtime = { path = "../native-runtime" }
 service-sync = { path = "../service-sync" }
 device-model = { path = "../device-model" }
@@ -17,8 +17,8 @@ device-protocol = { path = "../device-protocol" }
 filesystem-protocol = { path = "../filesystem-protocol" }
 network-protocol = { path = "../network-protocol" }
 launch-protocol = { path = "../launch-protocol" }
-fallible-tree = { path = "../../fallible-tree" }
-syscall-abi = { path = "../../syscall-abi" }
+fallible-tree = { path = "../../libraries/fallible-tree" }
+linux-abi = { path = "../../abi/linux-abi" }
 bitflags = "2.9.1"
 
 [build-dependencies]

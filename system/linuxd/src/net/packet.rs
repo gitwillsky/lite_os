@@ -1,6 +1,6 @@
-//! AF_PACKET：链路层 tap、接收队列与发送属于 netd（帧在协议栈解析前镜像给匹配的 endpoint）。
+//! AF_PACKET：链路层 tap、接收队列与发送属于 netstack（帧在协议栈解析前镜像给匹配的 endpoint）。
 //!
-//! 操作经 socket channel 转发；就绪经 netd 置位的 Event 唤醒本地 notification，见 [`super::netd`]。
+//! 操作经 socket channel 转发；就绪经 netstack 置位的 Event 唤醒本地 notification，见 [`super::netstack`]。
 
 use alloc::sync::Arc;
 
@@ -8,25 +8,26 @@ use device_protocol::ActivityBinding;
 use network_protocol::{PacketKind, RemotePacketSocket};
 
 use super::{
-    NetNamespace, PacketAddress, SocketError, SocketPollState, SocketType, SocketWaitSource, netd,
+    NetNamespace, PacketAddress, SocketError, SocketPollState, SocketType, SocketWaitSource,
+    netstack,
 };
 use crate::ipc::{PipeDirection, PipeEnd, ReceiveBuffer};
 
 /// 一个 AF_PACKET socket 的本地端。
 pub(super) struct PacketSocket {
     remote: RemotePacketSocket,
-    // OWNER: netd 就绪 Event 在分派表中的登记；最后一次文件关闭时摘除，缺失时分派表随 socket 数增长。
+    // OWNER: netstack 就绪 Event 在分派表中的登记；最后一次文件关闭时摘除，缺失时分派表随 socket 数增长。
     readiness: ActivityBinding,
     notify_read: Arc<PipeEnd>,
     notify_write: Arc<PipeEnd>,
 }
 
 impl PacketSocket {
-    /// 在 `namespace` 的 netd 协议实例中创建绑定 `protocol`（network-byte-order EtherType）的 endpoint。
+    /// 在 `namespace` 的 netstack 协议实例中创建绑定 `protocol`（network-byte-order EtherType）的 endpoint。
     ///
     /// # Errors
     ///
-    /// protocol 不能表示为 EtherType 返回 `ProtocolNotSupported`；netd 拒绝或就绪登记失败返回对应错误。
+    /// protocol 不能表示为 EtherType 返回 `ProtocolNotSupported`；netstack 拒绝或就绪登记失败返回对应错误。
     pub(super) fn new(
         socket_type: SocketType,
         protocol: usize,
@@ -39,9 +40,9 @@ impl PacketSocket {
         } else {
             PacketKind::Datagram
         };
-        let endpoint = netd::protocol(&namespace)?.packet_socket(kind, protocol)?;
-        // 失败时 channel 随之关闭，netd 关闭该 endpoint。
-        let readiness = netd::bind_readiness(endpoint.readiness, &notify.1)?;
+        let endpoint = netstack::protocol(&namespace)?.packet_socket(kind, protocol)?;
+        // 失败时 channel 随之关闭，netstack 关闭该 endpoint。
+        let readiness = netstack::bind_readiness(endpoint.readiness, &notify.1)?;
         Arc::try_new(Self {
             remote: RemotePacketSocket::new(endpoint.channel),
             readiness,
@@ -51,10 +52,10 @@ impl PacketSocket {
         .map_err(|_| SocketError::NoMemory)
     }
 
-    /// 最后一次文件关闭：netd 摘除 binding 与队列，本地 notification 关闭。
+    /// 最后一次文件关闭：netstack 摘除 binding 与队列，本地 notification 关闭。
     pub(super) fn close_description(&self) {
         self.remote.close();
-        netd::retire_readiness(&self.readiness);
+        netstack::retire_readiness(&self.readiness);
         self.notify_read.close();
         self.notify_write.close();
     }
@@ -93,7 +94,7 @@ impl PacketSocket {
         self.remote.poll_state()
     }
 
-    /// 状态在 netd 中：无等待的投影不可得，epoll 把它作为候选并在任务上下文中精确复查。
+    /// 状态在 netstack 中：无等待的投影不可得，epoll 把它作为候选并在任务上下文中精确复查。
     pub(super) fn try_poll_state(&self) -> Option<SocketPollState> {
         None
     }
@@ -125,6 +126,6 @@ impl PacketSocket {
 impl Drop for PacketSocket {
     /// 未发布（构造失败）的 socket 也摘除就绪登记；摘除是幂等的。
     fn drop(&mut self) {
-        netd::retire_readiness(&self.readiness);
+        netstack::retire_readiness(&self.readiness);
     }
 }

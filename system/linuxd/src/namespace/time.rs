@@ -2,7 +2,7 @@
 use super::{NamespaceAuthority, NamespaceError, UserNamespace, UserResource, UserResourceCharge};
 use crate::sync::Mutex;
 use alloc::sync::Arc;
-use syscall_abi::capability::Capability;
+use linux_abi::capability::Capability;
 
 const SECOND: i128 = 1_000_000_000;
 const MAX_SECONDS: i64 = i64::MAX / SECOND as i64;

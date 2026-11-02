@@ -64,7 +64,7 @@ pub(crate) fn ext4() -> &'static MountClient {
     &handles().ext4
 }
 
-/// netd 的控制：转交网卡、创建网络域。
+/// netstack 的控制：转交网卡、创建网络域。
 pub(crate) fn network() -> &'static NetworkClient {
     &handles().network
 }

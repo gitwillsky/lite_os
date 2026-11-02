@@ -7,7 +7,7 @@ use alloc::{
 use core::sync::atomic::{AtomicU16, Ordering};
 
 use crate::sync::Mutex;
-use syscall_abi::{errno, fuse};
+use linux_abi::{errno, fuse};
 
 use super::{
     connection::{Connection, ReplyShape},

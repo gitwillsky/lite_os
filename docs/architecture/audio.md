@@ -4,9 +4,9 @@
 
 用户态通过 Linux ALSA 访问每张声卡：`pcmCND0p` 提供桌面共享混音，`pcmCND1p` 提供原生格式独占输出。
 `linuxd::devices::audio::engine` 经 `device_model::PcmOutput` 消费远端设备能力；
-`device-protocol` 连接 devmgr 内的 VirtIO Sound 与 xHCI/UAC2 adapter。应用 mmap ring 由 linuxd 的 VMO 支撑，
+`device-protocol` 连接 driver-host 内的 VirtIO Sound 与 xHCI/UAC2 adapter。应用 mmap ring 由 linuxd 的 VMO 支撑，
 混音后的固定 period 经 PCM 请求 channel 传给设备服务；
-DMA 固定、硬件 queue 与 reset 由 devmgr 独占。
+DMA 固定、硬件 queue 与 reset 由 driver-host 独占。
 媒体播放机经 libmpv/FFmpeg 解码、alsa-lib 写入同一 PCM；混音由 linuxd 的 ALSA engine 完成，应用只使用标准 ALSA UAPI。
 桌面的系统提示音由 `user/libraries/sound` 直接写同一个 PCM：登录完成、注销、清空回收站各播一段，只有本地提取了原版素材时才安装，
 设备不可用（例如非 root 账户没有 `/dev/snd` 权限）时静默跳过。

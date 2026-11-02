@@ -1,7 +1,7 @@
 //! Linux 逐线程跟踪关系；graph 是 relation、stop、resume 与 wait claim 的唯一 owner。
 use super::thread_selector::thread_by_tid;
 use super::*;
-use syscall_abi::signal::SIGKILL;
+use linux_abi::signal::SIGKILL;
 
 mod notification;
 pub(super) use notification::{complete_stop, defer_process_exit};
@@ -176,7 +176,7 @@ pub(crate) fn ptrace_attach(pid: Option<usize>) -> Result<usize, PtraceError> {
     if pid.is_some() {
         // 1. relation 先于 SIGSTOP 发表，避免目标在 stop 到达前按 job-control 处理它。
         // 2. 使用 pending owner 的不可丢失非 RT slot，不在 graph 临界区分配。
-        target.queue_ptrace_signal(syscall_abi::signal::SIGSTOP);
+        target.queue_ptrace_signal(linux_abi::signal::SIGSTOP);
         crate::task::processor::continue_stopped_task(target.clone());
         drop(graph);
         super::signal::interrupt_waiting_task(&target);
@@ -659,7 +659,7 @@ pub(super) fn thread_exited(task: &TaskControlBlock, status: i32) {
 pub(in crate::task) fn exec_completed(task: &TaskControlBlock) {
     let graph = PROCESS_TABLE.graph.lock();
     if graph.tracees.contains_key(&task.tid()) {
-        task.queue_ptrace_signal(syscall_abi::signal::SIGTRAP);
+        task.queue_ptrace_signal(linux_abi::signal::SIGTRAP);
     }
 }
 
@@ -670,7 +670,7 @@ pub(in crate::task) fn restrict_exec(task: &TaskControlBlock) -> bool {
         thread_by_tid(&graph, tracee.tracer).is_none_or(|(_, tracer)| {
             !tracer.namespace_authority().capable(
                 &task.user_namespace(),
-                syscall_abi::capability::Capability::SYS_PTRACE,
+                linux_abi::capability::Capability::SYS_PTRACE,
             )
         })
     })

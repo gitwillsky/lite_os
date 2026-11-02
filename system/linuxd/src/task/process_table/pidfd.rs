@@ -66,7 +66,7 @@ impl PidFdTarget for PidTarget {
         has_argument: bool,
     ) -> Result<crate::namespace::NamespaceReference, fs::chardev::DeviceError> {
         use fs::chardev::DeviceError;
-        use syscall_abi::errno;
+        use linux_abi::errno;
         let target = {
             let graph = PROCESS_TABLE.graph.lock();
             super::thread_selector::execution_by_tid(&graph, self.identity.key())

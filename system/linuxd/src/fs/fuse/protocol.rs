@@ -1,7 +1,7 @@
 //! FUSE 消息的字节编解码：请求是 `fuse_in_header` 加参数，回复按定长结构逐字段读取（原生字节序）。
 use alloc::vec::Vec;
 
-use syscall_abi::{errno, fuse};
+use linux_abi::{errno, fuse};
 
 use crate::fs::{FileSystemError, InodeType};
 

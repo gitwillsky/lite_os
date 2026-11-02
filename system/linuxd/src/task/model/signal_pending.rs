@@ -227,7 +227,7 @@ impl PreparedSignalRecord {
         limit: u64,
     ) -> Self {
         let record = (|| {
-            if !(1..=64).contains(&signal) || signal == syscall_abi::signal::SIGKILL {
+            if !(1..=64).contains(&signal) || signal == linux_abi::signal::SIGKILL {
                 return None;
             }
             let charge = crate::namespace::RlimitCharge::acquire(

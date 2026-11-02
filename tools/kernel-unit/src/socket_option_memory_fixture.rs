@@ -1,6 +1,6 @@
 //! 实际 NET policy 与 socket memory owner；轻量 facade 只转发实际 owner，不复制 admission 算法。
 mod inet {
-    // 本fixture只执行未发布NET policy；不会安装此类型，真实 transport 在 netd-unit 与 guest 中覆盖。
+    // 本fixture只执行未发布NET policy；不会安装此类型，真实 transport 在 netstack-unit 与 guest 中覆盖。
     pub(crate) struct NetworkStackOwner;
 }
 #[path = "../../../system/linuxd/src/net/net_namespace.rs"]
@@ -26,7 +26,7 @@ pub(crate) fn endpoint() -> Socket {
     }
 }
 
-mod netd {
+mod netstack {
     pub(super) fn create_namespace() -> Result<network_protocol::RemoteNamespace, super::SocketError>
     {
         Ok(network_protocol::RemoteNamespace)

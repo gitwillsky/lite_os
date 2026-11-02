@@ -244,7 +244,7 @@ fn namespace_final_drop_is_prepared_and_quota_release_does_not_wait_for_old_path
         namespace: user.clone(),
         effective_uid: 0,
         effective_gid: 0,
-        effective_capabilities: syscall_abi::capability::Capability::SYS_RESOURCE.mask(),
+        effective_capabilities: linux_abi::capability::Capability::SYS_RESOURCE.mask(),
     };
     let resource = crate::namespace::UserResource::Mount;
     let previous = user.resource_limit(resource);

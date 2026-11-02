@@ -30,7 +30,7 @@
   留在另一忙 CPU 等下一 tick。该提示复用 TaskEvent/TaskWaitTarget，仍验证精确 wait membership、active 与 affinity，
   不强置抢占或改变权重。peer close 与普通 event 维持正常选核，未保存的 Blocking context 仍沿原 handoff 完成。
   没有额外线程、队列、锁或状态；实际音频的原始四 CPU/八路、1024-frame 软件缓冲门禁验证端到端延迟。
-- Linux signal/restart、进程 graph、wait registry 和 process timers 只属于 linuxd；设备完成工作只属于 devmgr。service-sync 不消费内核可变 Rust 状态。
+- Linux signal/restart、进程 graph、wait registry 和 process timers 只属于 linuxd；设备完成工作只属于 driver-host。service-sync 不消费内核可变 Rust 状态。
 
 ## 上下文与返回
 
@@ -130,7 +130,7 @@ chunk 基址按 max(page, block) 对齐；较大对齐的 prefix/suffix 在发�
   不丢失已退出线程，也不与并发查询重复计费。启动失败只回滚登记，不改变未启动执行体的状态。
 - `TASK_RUNTIME` 查询包括已退出线程；`TASK_STATS` 返回映射字节、映射驻留字节和存活线程数，均要求 INSPECT。
   统计由实际 task/VM owner 提供，不在 root-server 或桌面另建人工同步计数。
-- root-server 启动 linuxd 时只交付自身与 devmgr/ext4d/netd 的 INSPECT/TRANSFER 观察句柄；没有 MANAGE、READ、WRITE。
+- root-server 启动 linuxd 时只交付自身与 driver-host/ext4d/netstack 的 INSPECT/TRANSFER 观察句柄；没有 MANAGE、READ、WRITE。
   linuxd 的观测 adapter 读取这些对象及自身，发布只读系统观测消息，不向应用传递原生句柄。
 - `task-observer-protocol` 拥有版本化查询/回复格式，Linuxd 的 `system::task_observer` 只适配初始 NET 中的 AF_UNIX datagram。
   所有该 NET 内的用户都可读这些服务名称/运行状态/汇总资源量；不返回地址、寄存器、凭据、映射明细或管理 capability。

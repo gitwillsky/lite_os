@@ -86,7 +86,7 @@ def boot_product_graphics(image: Path, kernel: Path) -> None:
         (
             "VirtIO Sound capability ready",
             "VirtIO console PCI transport on IRQ",
-            # devmgr 绑定 VirtIO input 驱动，linuxd 按注册顺序分配 evdev 节点。
+            # driver-host 绑定 VirtIO input 驱动，linuxd 按注册顺序分配 evdev 节点。
             "input event0:",
             "input event1:",
             "VirtIO GPU",

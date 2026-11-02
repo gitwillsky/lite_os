@@ -36,7 +36,7 @@ fn expire_timers(now_ns: u64) {
                 drop(retired);
                 let _ = send_kernel_process_signal(
                     tgid,
-                    syscall_abi::signal::SIGALRM,
+                    linux_abi::signal::SIGALRM,
                     PendingSignal::kernel(),
                 );
             }

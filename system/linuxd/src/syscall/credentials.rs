@@ -88,7 +88,7 @@ pub(crate) fn sys_getgroups(size: usize, list: usize) -> isize {
 pub(crate) fn sys_setgroups(size: usize, list: usize) -> isize {
     const NGROUPS_MAX: usize = 65_536;
     let task = current_task().expect("setgroups requires current task");
-    if !task.has_capability(syscall_abi::capability::Capability::SETGID)
+    if !task.has_capability(linux_abi::capability::Capability::SETGID)
         || !task.user_namespace().may_setgroups()
     {
         return -errno::EPERM;

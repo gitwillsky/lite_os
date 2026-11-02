@@ -1115,7 +1115,7 @@ pub(crate) mod task {
                     namespace: crate::namespace::initial_user(),
                     effective_uid: 0,
                     effective_gid: 0,
-                    effective_capabilities: syscall_abi::capability::VALID_MASK,
+                    effective_capabilities: linux_abi::capability::VALID_MASK,
                 }
             }
             fn user_namespace(&self) -> Arc<crate::namespace::UserNamespace> {

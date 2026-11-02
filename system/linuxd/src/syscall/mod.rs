@@ -4,7 +4,7 @@ mod credentials;
 mod device;
 mod device_backing;
 mod epoll;
-use syscall_abi::errno;
+use linux_abi::errno;
 mod eventfd;
 mod fs;
 mod futex;
@@ -48,13 +48,13 @@ use crate::syscall::{
 use eventfd::sys_eventfd2;
 pub(crate) use io_uring::start_worker as start_io_uring_worker;
 use io_uring::{sys_io_uring_enter, sys_io_uring_register, sys_io_uring_setup};
+use linux_abi::*;
 use membarrier::sys_membarrier;
 use memfd::sys_memfd_create;
 use process_control::sys_prctl;
 use resource_limit::sys_prlimit64;
 use resource_usage::sys_getrusage;
 use riscv_hwprobe::sys_riscv_hwprobe;
-use syscall_abi::*;
 use timerfd::{sys_timerfd_create, sys_timerfd_gettime, sys_timerfd_settime};
 
 const INTERNAL_RESTART_SYS: isize = isize::MIN;

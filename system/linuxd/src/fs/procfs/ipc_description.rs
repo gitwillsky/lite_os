@@ -6,7 +6,7 @@ use crate::{
 };
 use alloc::sync::Arc;
 use core::fmt::{self, Write};
-use syscall_abi::errno;
+use linux_abi::errno;
 
 // 标准 native64 shm 是最长行：16 个固定宽度 scalar，总长小于512；不随对象数量增长。
 const RECORD_BYTES: usize = 512;

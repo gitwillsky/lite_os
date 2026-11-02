@@ -1,6 +1,6 @@
 //! Credentials 的同锁 scalar capability owner；固定 Linux commoncap 的 set/UID/exec/prctl policy。
-use syscall_abi::capability::{Capability, CapabilitySets, CapabilitySnapshot, VALID_MASK};
-use syscall_abi::file_capability::{self, FileCapabilityData};
+use linux_abi::capability::{Capability, CapabilitySets, CapabilitySnapshot, VALID_MASK};
+use linux_abi::file_capability::{self, FileCapabilityData};
 
 const NOROOT: u32 = 1;
 const NO_SETUID_FIXUP: u32 = 1 << 2;

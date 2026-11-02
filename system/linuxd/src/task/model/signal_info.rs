@@ -115,7 +115,7 @@ impl PendingSignal {
     }
     /// 固定 Linux known_siginfo_layout；未知 layout 才要求扩展区全零。
     pub(crate) fn known_user_layout(self, signal: usize) -> bool {
-        if self.code == syscall_abi::signal::SI_KERNEL {
+        if self.code == linux_abi::signal::SI_KERNEL {
             return true;
         }
         if self.code > 0 {
@@ -138,7 +138,7 @@ impl PendingSignal {
         if self.code < 0 {
             return !matches!(self.code, -2 | -5);
         }
-        if self.code == 0 || self.code >= syscall_abi::signal::SI_KERNEL {
+        if self.code == 0 || self.code >= linux_abi::signal::SI_KERNEL {
             return true;
         }
         if Self::specific_code_limit(signal).is_some_and(|limit| self.code <= limit) {
@@ -171,7 +171,7 @@ impl PendingSignal {
             if ancestor {
                 body[..4].fill(0);
             }
-            if ancestor || self.code == syscall_abi::signal::SI_KERNEL {
+            if ancestor || self.code == linux_abi::signal::SI_KERNEL {
                 self.force = SignalForce::Namespace;
             }
         }
@@ -215,12 +215,12 @@ impl PendingSignal {
 
     /// 构造 CLD_CONTINUED，status 为 SIGCONT。
     pub(crate) fn child_continued(pid: usize) -> Self {
-        Self::identity(6, pid, syscall_abi::signal::SIGCONT as i32)
+        Self::identity(6, pid, linux_abi::signal::SIGCONT as i32)
     }
 
     /// 构造无 sender identity 的 SI_KERNEL 来源。
     pub(crate) fn kernel() -> Self {
-        let mut info = Self::identity(syscall_abi::signal::SI_KERNEL, 0, 0);
+        let mut info = Self::identity(linux_abi::signal::SI_KERNEL, 0, 0);
         info.force = SignalForce::Namespace;
         info
     }
@@ -352,7 +352,7 @@ impl PendingSignal {
             copy(&mut output, 48, 24, 8); // ssi_ptr
         } else if self.code == -5
             || self.code > 0
-                && self.code < syscall_abi::signal::SI_KERNEL
+                && self.code < linux_abi::signal::SI_KERNEL
                 && (signal == 29 && self.code <= 6
                     || !Self::specific_code_limit(signal).is_some_and(|limit| self.code <= limit)
                         && self.code <= 6)
@@ -360,7 +360,7 @@ impl PendingSignal {
             copy(&mut output, 28, 16, 4); // ssi_band 是 native long 的 low u32
             copy(&mut output, 20, 24, 4); // ssi_fd
         } else if self.code > 0
-            && self.code < syscall_abi::signal::SI_KERNEL
+            && self.code < linux_abi::signal::SI_KERNEL
             && Self::specific_code_limit(signal).is_some_and(|limit| self.code <= limit)
         {
             match signal {
@@ -401,7 +401,7 @@ impl PendingSignal {
     }
     pub(super) fn allows_queue_fallback(self) -> bool {
         self.code == 0
-            || self.code == syscall_abi::signal::SI_KERNEL
+            || self.code == linux_abi::signal::SI_KERNEL
                 && matches!(self.payload, SignalPayload::Identity { .. })
     }
 

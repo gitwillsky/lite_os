@@ -2,7 +2,7 @@
 use alloc::sync::{Arc, Weak};
 use core::ops::Deref;
 
-use syscall_abi::{errno, fuse};
+use linux_abi::{errno, fuse};
 
 use super::FuseInode;
 use crate::{
@@ -166,7 +166,7 @@ impl DirectIo for Handle {
             }
             return Ok(written);
         }
-        let flags = if identity.has_capability(syscall_abi::capability::Capability::FSETID) {
+        let flags = if identity.has_capability(linux_abi::capability::Capability::FSETID) {
             0
         } else {
             fuse::WRITE_KILL_SUIDGID

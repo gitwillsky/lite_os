@@ -3,7 +3,7 @@ use super::{NamespaceAuthority, NamespaceError, UserNamespace};
 use crate::sync::Mutex;
 use alloc::{sync::Arc, vec::Vec};
 use fallible_tree::FallibleMap;
-use syscall_abi::capability::Capability;
+use linux_abi::capability::Capability;
 
 /// 当前具体 namespace owner 支持的标准 user sysctl resource；不能为未实现 owner 虚报计数。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

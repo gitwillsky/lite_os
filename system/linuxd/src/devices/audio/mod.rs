@@ -462,7 +462,7 @@ impl PcmFile {
     ///
     /// Open/Disconnected 返回 EBADFD；已配置流的非法参数返回 EINVAL。
     pub(crate) fn software_parameters(&self, parameters: SoftwareParameters) -> Result<(), isize> {
-        use syscall_abi::errno;
+        use linux_abi::errno;
         let mut clock = self.operation.lock();
         let mut engine = self.card.engine.lock();
         if matches!(
@@ -493,7 +493,7 @@ impl PcmFile {
     /// 选择 Linux timestamp clock；0 为 realtime，1/2 为本平台未校频的 monotonic counter。
     fn timestamp_type(&self, kind: u32) -> Result<(), isize> {
         if kind > 2 {
-            return Err(syscall_abi::errno::EINVAL);
+            return Err(linux_abi::errno::EINVAL);
         }
         self.operation.lock().kind = kind;
         Ok(())
@@ -586,7 +586,7 @@ impl PcmFile {
         bytes: &[u8],
         configuration: PcmConfiguration,
     ) -> Result<usize, isize> {
-        use syscall_abi::errno;
+        use linux_abi::errno;
         let frame_bytes = configuration.frame_bytes();
         if bytes.is_empty()
             || bytes.len() > configuration.period_bytes()

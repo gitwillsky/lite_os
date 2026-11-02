@@ -195,7 +195,7 @@ fn take_parent_notification(
     )?;
     let signal_wake = publication
         .queued
-        .then(|| prepare_parent_signal_wake(graph, parent, syscall_abi::signal::SIGCHLD));
+        .then(|| prepare_parent_signal_wake(graph, parent, linux_abi::signal::SIGCHLD));
     let node = graph.nodes.get_mut(&parent)?;
     Some(JobNotification {
         waiters: take_child_waiters(node),

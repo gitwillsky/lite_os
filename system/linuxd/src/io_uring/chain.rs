@@ -5,7 +5,7 @@
 //! 提交者（`syscall::io_uring`），因为它们需要 fd 表与地址空间。
 
 use alloc::vec::{self, Vec};
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::ring::{Flow, Ring};
 

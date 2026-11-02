@@ -6,7 +6,7 @@ use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::sync::Mutex;
-use syscall_abi::{
+use linux_abi::{
     errno, fuse,
     open::{O_CREAT, O_EXCL, O_NOCTTY, O_TRUNC},
 };

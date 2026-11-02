@@ -1,6 +1,6 @@
 //! FUSE 扩展属性：属性值仅属于服务端，不在 inode 中复制或缓存。
 use alloc::vec::Vec;
-use syscall_abi::{errno, fuse};
+use linux_abi::{errno, fuse};
 
 use super::{FuseInode, Inode, OwnerModeState, ReplyShape, Unsupported};
 use crate::fs::fuse::protocol::{Fields, Reader};

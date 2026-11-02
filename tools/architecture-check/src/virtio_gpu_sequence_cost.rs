@@ -37,12 +37,12 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
 fn bounded_multi_command_owner(sources: &[SourceFile]) -> bool {
     let adapter = sources
         .iter()
-        .find(|source| source.relative == "system/devmgr/src/drivers/virtio/gpu.rs")
+        .find(|source| source.relative == "system/driver-host/src/drivers/virtio/gpu.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let commands = sources
         .iter()
-        .find(|source| source.relative == "system/devmgr/src/drivers/virtio/gpu/command.rs")
+        .find(|source| source.relative == "system/driver-host/src/drivers/virtio/gpu/command.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let timeline = sources
@@ -64,8 +64,10 @@ fn bounded_multi_command_owner(sources: &[SourceFile]) -> bool {
 fn measure(sources: &[SourceFile]) -> Result<GpuSequenceCost, String> {
     let source = sources
         .iter()
-        .find(|source| source.relative == "system/devmgr/src/drivers/virtio/gpu.rs")
-        .ok_or_else(|| "system/devmgr/src/drivers/virtio/gpu.rs: missing GPU adapter".to_owned())?;
+        .find(|source| source.relative == "system/driver-host/src/drivers/virtio/gpu.rs")
+        .ok_or_else(|| {
+            "system/driver-host/src/drivers/virtio/gpu.rs: missing GPU adapter".to_owned()
+        })?;
     let method = source
         .syntax
         .items
@@ -79,7 +81,9 @@ fn measure(sources: &[SourceFile]) -> Result<GpuSequenceCost, String> {
             ImplItem::Fn(method) if method.sig.ident == "poll_update" => Some(method),
             _ => None,
         })
-        .ok_or_else(|| "system/devmgr/src/drivers/virtio/gpu.rs: missing poll_update".to_owned())?;
+        .ok_or_else(|| {
+            "system/driver-host/src/drivers/virtio/gpu.rs: missing poll_update".to_owned()
+        })?;
     let mut visitor = SequenceVisitor::default();
     visitor.visit_impl_item_fn(method);
     Ok(GpuSequenceCost {
@@ -94,8 +98,8 @@ fn runtime_fallback_removed(sources: &[SourceFile]) -> bool {
     let runtime_sources = sources
         .iter()
         .filter(|source| {
-            source.relative == "system/devmgr/src/drivers/virtio/gpu.rs"
-                || source.relative == "system/devmgr/src/drivers/virtio/gpu/resource.rs"
+            source.relative == "system/driver-host/src/drivers/virtio/gpu.rs"
+                || source.relative == "system/driver-host/src/drivers/virtio/gpu/resource.rs"
         })
         .collect::<Vec<_>>();
     let runtime = runtime_sources
@@ -108,7 +112,7 @@ fn runtime_fallback_removed(sources: &[SourceFile]) -> bool {
     }
     let command_owner = sources
         .iter()
-        .find(|source| source.relative == "system/devmgr/src/drivers/virtio/gpu/command.rs")
+        .find(|source| source.relative == "system/driver-host/src/drivers/virtio/gpu/command.rs")
         .is_some_and(|source| {
             source.text.contains("enum GpuCommand")
                 && source.text.contains("fn prepare(")

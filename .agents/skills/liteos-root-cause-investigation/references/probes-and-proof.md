@@ -75,7 +75,7 @@ make PROFILE=release addr2line ADDR="$LITEOS_PC"
 | first broken contract | 首选回归 |
 |---|---|
 | 纯状态转换/数据结构 | `kernel-unit` 或对应 host model |
-| syscall ABI/errno | `syscall-abi` 加最小 musl fixture |
+| syscall ABI/errno | `linux-abi` 加最小 musl fixture |
 | scheduler/wait membership | scheduler/kernel unit 加 runtime lifecycle |
 | trap、MMU、IPI、设备 | release/static gate 加目标 QEMU runtime |
 | rootfs、ELF、init、shell | BusyBox/musl/Rust std runtime gate |

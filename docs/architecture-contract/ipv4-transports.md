@@ -1,6 +1,6 @@
 # IPv4 与 TCP/UDP 传输契约
 
-Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system/linuxd`；IPv4/TCP/UDP/RAW、FIB、端口与 AF_PACKET 队列属于 `system/netd`。下述协议 owner 通过 `network-protocol` 交互，不共享内核状态。
+Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system/linuxd`；IPv4/TCP/UDP/RAW、FIB、端口与 AF_PACKET 队列属于 `system/netstack`。下述协议 owner 通过 `network-protocol` 交互，不共享内核状态。
 
 
 - TCP shutdown/AF_UNSPEC 源码：SYN_SENT 取消不分配、不发送 RST；listener SHUT_WR
@@ -32,7 +32,7 @@ default gateway；绑定保存真实设备index。UDP/raw准入metadata固定出
 completion预算，持续lo/eth0流量不饿死其他设备。配置/IFCONF/GETNAME/INDEX/MTU/
 SO_BINDTODEVICE getter查询实际设备，删除syscall eth0/index常量。raw创建按实际NET
 owning UserNS NET_RAW授权，普通NETLINK RAW不能按INET raw类型误授权。
-固定 smoltcp 的修改清单由 verify_smoltcp 管理，netd 与 netd-unit 使用相同 medium-ip features；
+固定 smoltcp 的修改清单由 verify_smoltcp 管理，netstack 与 netstack-unit 使用相同 medium-ip features；
 原inventory不变，其余upstream文件仍禁止漂移。真实无NIC LO UDP/TCP握手/数据、独立
 双NIC frozen-oif/bound ingress/LOCAL source/weak-host SYN回归源码已写。
 route selector 使用同一 FIB 的 33 个 prefix AVL roots，查找不扫描全部 route records。
@@ -49,7 +49,7 @@ NET、packet、uevent 捕获创建域；NEWNET publication 提供声明范围内
   NIC、时钟与 deferred raise 是显式边界，protocol/port/ring 是生产实现；
 
 SocketIoDirection/SocketTimeout 是向 syscall/文件 I/O caller 的语义超时接口。SocketTimeouts 的唯一 Mutex 只持 native receive/send policy，不持 backend state、wait membership 或 deadline cache；PreparedSocket 在 endpoint 副作用前 fallibly 预留该 Arc，OFD
-façade 与 INET façade 引用同一个 linuxd owner；该 policy 不传入 netd。wait_for_ofd/wait_for_socket_capacity 的 deadline 必须由 caller 在重试循环外冻结，
+façade 与 INET façade 引用同一个 linuxd owner；该 policy 不传入 netstack。wait_for_ofd/wait_for_socket_capacity 的 deadline 必须由 caller 在重试循环外冻结，
 None 保留其他文件无限等待。已到期先无分配复查 level readiness，再返回 TimedOut；普通期限发布原有 WaitRegistry membership。socket::interrupted_wait 只根据本次期限决定内部 RestartSys 或用户 EINTR，不能重读后来改变的 policy。
 time::scheduler_quantum_ns() 是 native scheduler cadence 的唯一投影，socket 禁止复制 HZ。native codec、owner、deadline、getter、guest 收发/accept 及既有 CPU benchmark 纳入集中门禁。
 

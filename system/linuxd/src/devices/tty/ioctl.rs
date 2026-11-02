@@ -1,7 +1,7 @@
 //! Linux termios/session/foreground 与 Unix98 PTY master ioctl 子集。
 
 use alloc::sync::Arc;
-use syscall_abi::{errno, signal};
+use linux_abi::{errno, signal};
 
 use super::{PtyMaster, Terminal, TerminalAccess, fault, job_control};
 use crate::fs::chardev::{DeviceError, IoctlCall};

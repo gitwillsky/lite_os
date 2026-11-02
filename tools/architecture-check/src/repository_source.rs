@@ -13,7 +13,7 @@ struct SourceDomain {
 
 const SOURCE_DOMAINS: &[SourceDomain] = &[
     SourceDomain {
-        root: "task-observer-protocol/src",
+        root: "system/task-observer-protocol/src",
         binary_crate: false,
     },
     SourceDomain {
@@ -25,19 +25,19 @@ const SOURCE_DOMAINS: &[SourceDomain] = &[
         binary_crate: true,
     },
     SourceDomain {
-        root: "native-abi/src",
+        root: "abi/native-abi/src",
         binary_crate: false,
     },
     SourceDomain {
-        root: "syscall-abi/src",
+        root: "abi/linux-abi/src",
         binary_crate: false,
     },
     SourceDomain {
-        root: "fallible-tree/src",
+        root: "libraries/fallible-tree/src",
         binary_crate: false,
     },
     SourceDomain {
-        root: "mmio/src",
+        root: "libraries/mmio/src",
         binary_crate: false,
     },
     SourceDomain {
@@ -49,7 +49,7 @@ const SOURCE_DOMAINS: &[SourceDomain] = &[
         binary_crate: false,
     },
     SourceDomain {
-        root: "system/devmgr/src",
+        root: "system/driver-host/src",
         binary_crate: true,
     },
     SourceDomain {
@@ -73,7 +73,7 @@ const SOURCE_DOMAINS: &[SourceDomain] = &[
         binary_crate: false,
     },
     SourceDomain {
-        root: "system/netd/src",
+        root: "system/netstack/src",
         binary_crate: true,
     },
     SourceDomain {

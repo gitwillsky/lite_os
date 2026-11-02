@@ -12,7 +12,7 @@ mod namespace;
 
 use alloc::sync::Arc;
 use ipc::{IpcAccess, IpcError, IpcNamespace};
-use syscall_abi::ipc::*;
+use linux_abi::ipc::*;
 
 fn access() -> IpcAccess {
     namespace::boot();

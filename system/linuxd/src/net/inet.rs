@@ -1,8 +1,8 @@
-//! AF_INET：协议状态（TCP/UDP/ICMP/RAW endpoint、接口与 FIB）属于 netd。
+//! AF_INET：协议状态（TCP/UDP/ICMP/RAW endpoint、接口与 FIB）属于 netstack。
 //!
-//! 1. socket 的每个操作经它的 socket channel 转发，netd 侧全部不阻塞；阻塞、超时与信号中断由本层
+//! 1. socket 的每个操作经它的 socket channel 转发，netstack 侧全部不阻塞；阻塞、超时与信号中断由本层
 //!    的调用者经本地 wait source 完成；
-//! 2. netd 在就绪状态可能变化时置位 socket 的就绪 Event，分派线程据此唤醒本地 notification，
+//! 2. netstack 在就绪状态可能变化时置位 socket 的就绪 Event，分派线程据此唤醒本地 notification，
 //!    等待者被唤醒后重新查询电平状态；
 //! 3. 接口与路由的查询和配置经所在网络域的域 channel 转发。
 
@@ -19,7 +19,7 @@ use network_protocol::{
 
 use super::{
     InetAddress, InternetOption, InternetPacketInfo, InternetSendPacketInfo, NetNamespace,
-    SocketError, SocketPollState, SocketWaitSource, netd,
+    SocketError, SocketPollState, SocketWaitSource, netstack,
 };
 use crate::ipc::{PipeDirection, PipeEnd, ReceiveBuffer};
 
@@ -30,35 +30,35 @@ pub(super) struct InetSocket {
     namespace: Arc<NetNamespace>,
     // 流式 socket 的一次发送可只部分完成；datagram 必须整条发送。
     stream: bool,
-    // OWNER: netd 就绪 Event 在分派表中的登记；最后一次文件关闭时摘除，缺失时分派表随 socket 数增长。
+    // OWNER: netstack 就绪 Event 在分派表中的登记；最后一次文件关闭时摘除，缺失时分派表随 socket 数增长。
     readiness: ActivityBinding,
     notify_read: Arc<PipeEnd>,
     notify_write: Arc<PipeEnd>,
 }
 
 impl InetSocket {
-    /// 在 `namespace` 的 netd 协议实例中创建 endpoint。
+    /// 在 `namespace` 的 netstack 协议实例中创建 endpoint。
     ///
     /// # Errors
     ///
-    /// 域没有协议实例、netd 拒绝（缓冲区不足等）或就绪登记失败。
+    /// 域没有协议实例、netstack 拒绝（缓冲区不足等）或就绪登记失败。
     pub(super) fn new(
         protocol: InetProtocol,
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
         namespace: Arc<NetNamespace>,
     ) -> Result<Arc<Self>, SocketError> {
-        let endpoint = netd::protocol(&namespace)?.socket(protocol)?;
+        let endpoint = netstack::protocol(&namespace)?.socket(protocol)?;
         Self::attach(endpoint, protocol == InetProtocol::Tcp, notify, namespace)
     }
 
-    /// 接上 netd 交回的 endpoint；任一步失败时 channel 随之关闭，netd 关闭该 endpoint。
+    /// 接上 netstack 交回的 endpoint；任一步失败时 channel 随之关闭，netstack 关闭该 endpoint。
     fn attach(
         endpoint: SocketEndpoint,
         stream: bool,
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
         namespace: Arc<NetNamespace>,
     ) -> Result<Arc<Self>, SocketError> {
-        let readiness = netd::bind_readiness(endpoint.readiness, &notify.1)?;
+        let readiness = netstack::bind_readiness(endpoint.readiness, &notify.1)?;
         Arc::try_new(Self {
             remote: RemoteInetSocket::new(endpoint.channel),
             namespace,
@@ -70,10 +70,10 @@ impl InetSocket {
         .map_err(|_| SocketError::NoMemory)
     }
 
-    /// 最后一次文件关闭：netd 关闭 endpoint（TCP 进入关闭握手），本地 notification 关闭。
+    /// 最后一次文件关闭：netstack 关闭 endpoint（TCP 进入关闭握手），本地 notification 关闭。
     pub(super) fn close_description(&self) {
         self.remote.close();
-        netd::retire_readiness(&self.readiness);
+        netstack::retire_readiness(&self.readiness);
         self.notify_read.close();
         self.notify_write.close();
     }
@@ -98,7 +98,7 @@ impl InetSocket {
         self.remote.peer_address()
     }
 
-    /// 流式 socket 一次至多传递 [`TRANSFER_LIMIT`] 字节（部分发送）；datagram 整条交给 netd。
+    /// 流式 socket 一次至多传递 [`TRANSFER_LIMIT`] 字节（部分发送）；datagram 整条交给 netstack。
     pub(super) fn send_to(
         &self,
         input: &[u8],
@@ -156,7 +156,7 @@ impl InetSocket {
     ///
     /// # Errors
     ///
-    /// 暂无连接为 `Again`；非 listener、netd 资源不足或就绪登记失败返回对应错误。
+    /// 暂无连接为 `Again`；非 listener、netstack 资源不足或就绪登记失败返回对应错误。
     pub(super) fn accept(
         &self,
         notify: (Arc<PipeEnd>, Arc<PipeEnd>),
@@ -181,7 +181,7 @@ impl InetSocket {
         self.remote.poll_state()
     }
 
-    /// 状态在 netd 中：无等待的投影不可得，epoll 把它作为候选并在任务上下文中精确复查。
+    /// 状态在 netstack 中：无等待的投影不可得，epoll 把它作为候选并在任务上下文中精确复查。
     pub(super) fn try_poll_state(&self) -> Option<SocketPollState> {
         None
     }
@@ -224,7 +224,7 @@ impl InetSocket {
         self.remote.set_option(InetOptionChange::Broadcast(enabled))
     }
 
-    /// 已绑定后改绑或解绑需要所在域 owning user namespace 中的 `CAP_NET_RAW`（由 netd 按绑定状态裁决）。
+    /// 已绑定后改绑或解绑需要所在域 owning user namespace 中的 `CAP_NET_RAW`（由 netstack 按绑定状态裁决）。
     pub(super) fn bind_to_device(
         &self,
         name: &[u8],
@@ -232,7 +232,7 @@ impl InetSocket {
     ) -> Result<(), SocketError> {
         let privileged = authority.capable(
             &self.namespace.user_namespace(),
-            syscall_abi::capability::Capability::NET_RAW,
+            linux_abi::capability::Capability::NET_RAW,
         );
         self.remote.bind_to_device(name, privileged)
     }
@@ -272,38 +272,38 @@ impl InetSocket {
 impl Drop for InetSocket {
     /// 未发布（构造失败）的 socket 也摘除就绪登记；摘除是幂等的。
     fn drop(&mut self) {
-        netd::retire_readiness(&self.readiness);
+        netstack::retire_readiness(&self.readiness);
     }
 }
 
 pub(crate) fn interface_index(scope: &NetNamespace, name: &[u8]) -> Result<u32, SocketError> {
-    netd::protocol(scope)?.interface_index(name)
+    netstack::protocol(scope)?.interface_index(name)
 }
 
 pub(crate) fn interface_snapshot(
     scope: &NetNamespace,
     index: u32,
 ) -> Result<InterfaceSnapshot, SocketError> {
-    netd::protocol(scope)?.interface_snapshot(index)
+    netstack::protocol(scope)?.interface_snapshot(index)
 }
 
 pub(crate) fn interface_snapshots(
     scope: &NetNamespace,
 ) -> Result<Vec<InterfaceSnapshot>, SocketError> {
-    netd::protocol(scope)?.interface_snapshots()
+    netstack::protocol(scope)?.interface_snapshots()
 }
 
 pub(crate) fn network_snapshot(scope: &NetNamespace) -> Result<Vec<NetworkSnapshot>, SocketError> {
-    netd::protocol(scope)?.network_snapshot()
+    netstack::protocol(scope)?.network_snapshot()
 }
 
 pub(crate) fn route_snapshot(scope: &NetNamespace) -> Result<Vec<RouteSnapshot>, SocketError> {
-    netd::protocol(scope)?.route_snapshot()
+    netstack::protocol(scope)?.route_snapshot()
 }
 
 /// SIOCSIFMTU / IFLA_MTU。
 pub(crate) fn configure_mtu(scope: &NetNamespace, index: u32, mtu: i32) -> Result<(), SocketError> {
-    netd::protocol(scope)?.configure_mtu(index, mtu)
+    netstack::protocol(scope)?.configure_mtu(index, mtu)
 }
 
 /// SIOCSIFADDR / RTM_NEWADDR；`0.0.0.0` 删除地址。
@@ -312,7 +312,7 @@ pub(crate) fn configure_address(
     index: u32,
     address: Ipv4Addr,
 ) -> Result<(), SocketError> {
-    netd::protocol(scope)?.configure_address(index, address)
+    netstack::protocol(scope)?.configure_address(index, address)
 }
 
 pub(crate) fn configure_netmask(
@@ -320,7 +320,7 @@ pub(crate) fn configure_netmask(
     index: u32,
     netmask: Ipv4Addr,
 ) -> Result<(), SocketError> {
-    netd::protocol(scope)?.configure_netmask(index, netmask)
+    netstack::protocol(scope)?.configure_netmask(index, netmask)
 }
 
 pub(crate) fn configure_broadcast(
@@ -328,11 +328,11 @@ pub(crate) fn configure_broadcast(
     index: u32,
     broadcast: Ipv4Addr,
 ) -> Result<(), SocketError> {
-    netd::protocol(scope)?.configure_broadcast(index, broadcast)
+    netstack::protocol(scope)?.configure_broadcast(index, broadcast)
 }
 
 pub(crate) fn configure_up(scope: &NetNamespace, index: u32, up: bool) -> Result<(), SocketError> {
-    netd::protocol(scope)?.configure_up(index, up)
+    netstack::protocol(scope)?.configure_up(index, up)
 }
 
 /// SIOCADDRT/SIOCDELRT 与 RTM_NEWROUTE/RTM_DELROUTE 进入同一实际 FIB。

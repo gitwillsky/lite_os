@@ -19,9 +19,9 @@
 | Owner | 独占事实 | 依赖与边界 |
 |---|---|---|
 | `system/root-server` | 服务启动顺序、初始 capability 分配 | native-runtime、launch-protocol；不执行 Linux init 或设备协议 |
-| `system/devmgr` | 设备 DTB、PCI、VirtIO、xHCI/UAC2、IRQ 完成线程、DMA、启动画面 | resource/IRQ/BTI native 对象；经 device-protocol 发布设备 |
+| `system/driver-host` | 设备 DTB、PCI、VirtIO、xHCI/UAC2、IRQ 完成线程、DMA、启动画面 | resource/IRQ/BTI native 对象；经 device-protocol 发布设备 |
 | `system/ext4d` | ext4 inode、extent、journal、块设备连接 | device-protocol 与 FUSE 服务；不拥有调用者凭据、Linux FD 或进程权限 |
-| `system/netd` | smoltcp、IPv4 FIB/地址、端口、TCP/UDP/RAW、AF_PACKET 队列 | device-protocol 与 network-protocol；不拥有 Linux syscall、信号或阻塞超时 |
+| `system/netstack` | smoltcp、IPv4 FIB/地址、端口、TCP/UDP/RAW、AF_PACKET 队列 | device-protocol 与 network-protocol；不拥有 Linux syscall、信号或阻塞超时 |
 | `system/linuxd` | Linux ABI、进程/线程/namespace、安全策略、VFS/页缓存、设备 UAPI、Linux IPC | restricted mode 执行应用；经服务协议访问设备、ext4 与网络 |
 
 `native-runtime` 封装原生对象和服务线程；`service-sync` 提供服务可睡眠同步；`service-rpc` 提供服务 RPC。

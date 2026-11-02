@@ -25,7 +25,7 @@ mod net {
     use alloc::sync::Arc;
     mod net_namespace;
     use net_namespace::{NetNamespace, initial_net, initialize_net};
-    mod netd {
+    mod netstack {
         pub(super) fn create_namespace() -> Result<crate::RemoteNamespace, super::SocketError> {
             Ok(crate::RemoteNamespace)
         }

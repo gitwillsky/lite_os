@@ -61,7 +61,7 @@ mod fs {
                     gids: [4, 5, 6],
                     fsids: [7, 8],
                     groups: None,
-                    capabilities: syscall_abi::capability::CapabilitySnapshot::default(),
+                    capabilities: linux_abi::capability::CapabilitySnapshot::default(),
                 };
                 let worker = ProcThreadSnapshot {
                     tracer: None,

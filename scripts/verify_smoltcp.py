@@ -35,8 +35,8 @@ def verify(root: Path = ROOT) -> None:
         relative = path.relative_to(vendor).as_posix()
         if relative not in manifest["files"] and relative not in LOCAL_FILES:
             raise ValueError(f"smoltcp: untracked source outside inventory: {relative}")
-    for relative, expected in [("system/netd/Cargo.toml", "../../vendor/smoltcp"),
-                               ("tools/netd-unit/Cargo.toml", "../../vendor/smoltcp")]:
+    for relative, expected in [("system/netstack/Cargo.toml", "../../vendor/smoltcp"),
+                               ("tools/netstack-unit/Cargo.toml", "../../vendor/smoltcp")]:
         dependency = tomllib.loads((root / relative).read_text())["dependencies"]["smoltcp"]
         if dependency.get("path") != expected or dependency.get("version") != "=0.13.1":
             raise ValueError(f"smoltcp: {relative} must use the single pinned local transport")

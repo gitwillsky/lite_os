@@ -24,7 +24,7 @@ impl TestRepository {
             "tools/kernel-unit/src",
             "tools/scheduler-unit/src",
             "tools/ext4-unit/src",
-            "tools/netd-unit/src",
+            "tools/netstack-unit/src",
             "tools/architecture-check/src",
         ] {
             fs::create_dir_all(root.join(relative)).unwrap();

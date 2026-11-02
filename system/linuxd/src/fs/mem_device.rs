@@ -1,7 +1,7 @@
 //! Linux mem major 1 字符设备：`null`、`zero`、`random`、`urandom` 与 `kmsg`。
 
 use alloc::sync::Arc;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::{
     FileSystemError,

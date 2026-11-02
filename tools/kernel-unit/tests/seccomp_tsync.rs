@@ -7,6 +7,7 @@ extern crate fallible_tree;
 mod namespace;
 
 use alloc::sync::Arc;
+use linux_abi::seccomp::*;
 use std::{
     alloc::{GlobalAlloc, Layout, System},
     cell::{Cell, RefCell},
@@ -14,7 +15,6 @@ use std::{
     ops::{Deref, DerefMut},
     sync::{LazyLock, Mutex, MutexGuard},
 };
-use syscall_abi::seccomp::*;
 macro_rules! info { ($($args:tt)*) => { let _ = format_args!($($args)*); }; }
 #[path = "seccomp/security.rs"]
 mod model;

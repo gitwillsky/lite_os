@@ -128,7 +128,7 @@ impl TaskControlBlock {
                 let pending = self.thread().pending_signals.lock();
                 let available = (pending.bits | shared_pending.bits) & !*mask;
                 let available = if fatal_only {
-                    available & (1u64 << (syscall_abi::signal::SIGKILL - 1))
+                    available & (1u64 << (linux_abi::signal::SIGKILL - 1))
                 } else {
                     available
                 };

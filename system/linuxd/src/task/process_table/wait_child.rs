@@ -68,8 +68,8 @@ impl ChildWaitFilter {
     fn eligible(self, node: &ProcessNode, claimant: usize) -> bool {
         (!self.creator_only || node.parent_thread == Some(claimant))
             && match self.class {
-                ChildWaitClass::Ordinary => node.exit_signal == syscall_abi::signal::SIGCHLD as u8,
-                ChildWaitClass::Clone => node.exit_signal != syscall_abi::signal::SIGCHLD as u8,
+                ChildWaitClass::Ordinary => node.exit_signal == linux_abi::signal::SIGCHLD as u8,
+                ChildWaitClass::Clone => node.exit_signal != linux_abi::signal::SIGCHLD as u8,
                 ChildWaitClass::All => true,
             }
     }
@@ -401,7 +401,7 @@ pub(crate) fn child_status_info(record: &ChildExit) -> (u32, u32, i32, i32) {
             }
         }
         ChildStatusKind::Stopped => (5, (record.status >> 8) & 0xff),
-        ChildStatusKind::Continued => (6, syscall_abi::signal::SIGCONT as i32),
+        ChildStatusKind::Continued => (6, linux_abi::signal::SIGCONT as i32),
         ChildStatusKind::TracedStop | ChildStatusKind::TracedExit => unreachable!(),
     };
     (pid, uid, code, status)

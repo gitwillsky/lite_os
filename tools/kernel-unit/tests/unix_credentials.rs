@@ -3,7 +3,7 @@
 //! actual native ucred codec/权限/namespace PID observer；calling Task 只提供冻结 owner 输入。
 extern crate alloc;
 use alloc::sync::Arc;
-use syscall_abi::errno;
+use linux_abi::errno;
 extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
@@ -13,7 +13,7 @@ mod net;
 #[path = "../../../system/linuxd/src/syscall"]
 mod syscall {
     pub(crate) mod socket {
-        use syscall_abi::errno;
+        use linux_abi::errno;
         pub(crate) mod credentials;
         pub(crate) fn prepare(
             task: &crate::task::TaskControlBlock,
@@ -100,7 +100,7 @@ fn actual_namespace_pid_lookup_retains_group_only_identity_and_rejects_nonexiste
     assert!(
         matches!(credentials::prepare(&actor, &bytes(pid,1001,2001)), Err(error) if error == -errno::EPERM)
     );
-    actor.authority.effective_capabilities = syscall_abi::capability::Capability::SYS_ADMIN.mask();
+    actor.authority.effective_capabilities = linux_abi::capability::Capability::SYS_ADMIN.mask();
     let group = target_registration.clone_in(namespace::PidLinkSlot::try_new().unwrap());
     drop(target_registration);
     let received = credentials::prepare(&actor, &bytes(pid, 1001, 2001)).unwrap();
@@ -138,7 +138,7 @@ fn namespace_scoped_capability_cannot_spoof_pid_owned_by_ancestor_user_namespace
         .publish_map(false, b"0 2001 3\n", &authority, &authority)
         .unwrap();
     actor.authority.namespace = child.clone();
-    actor.authority.effective_capabilities = syscall_abi::capability::VALID_MASK;
+    actor.authority.effective_capabilities = linux_abi::capability::VALID_MASK;
     let pid = actor.tgid.number_in(&actor.namespace) as i32;
     let allowed = credentials::prepare(&actor, &bytes(pid, 0, 0)).unwrap();
     assert_eq!([allowed.uid, allowed.gid], [1001, 2001]);
@@ -165,7 +165,7 @@ fn namespace_scoped_capability_cannot_spoof_pid_owned_by_ancestor_user_namespace
 
 #[test]
 fn setuid_and_setgid_claim_exemptions_require_each_actual_sender_capability() {
-    use syscall_abi::capability::Capability;
+    use linux_abi::capability::Capability;
     let (mut actor, _registration) = caller(72104);
     let pid = actor.tgid.number_in(&actor.namespace) as i32;
     actor.authority.effective_capabilities = Capability::SETUID.mask();

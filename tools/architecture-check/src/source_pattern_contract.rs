@@ -198,7 +198,7 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
 
     let gpu_boot = sources
         .iter()
-        .find(|source| source.relative == "system/devmgr/src/drivers/virtio/gpu/boot.rs")
+        .find(|source| source.relative == "system/driver-host/src/drivers/virtio/gpu/boot.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let drm_mode = sources
@@ -217,17 +217,17 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
 
     let gpu_runtime = sources
         .iter()
-        .find(|source| source.relative == "system/devmgr/src/drivers/virtio/gpu.rs")
+        .find(|source| source.relative == "system/driver-host/src/drivers/virtio/gpu.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let gpu_damage = sources
         .iter()
-        .find(|source| source.relative == "system/devmgr/src/drivers/virtio/gpu/damage.rs")
+        .find(|source| source.relative == "system/driver-host/src/drivers/virtio/gpu/damage.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let gpu_resources = sources
         .iter()
-        .find(|source| source.relative == "system/devmgr/src/drivers/virtio/gpu/resource.rs")
+        .find(|source| source.relative == "system/driver-host/src/drivers/virtio/gpu/resource.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     if !gpu_resources.contains("target.synchronized(&control.resources)")
@@ -246,12 +246,12 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
 
     let virtqueue = sources
         .iter()
-        .find(|source| source.relative == "system/devmgr/src/drivers/virtio/queue.rs")
+        .find(|source| source.relative == "system/driver-host/src/drivers/virtio/queue.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let ethernet_device = sources
         .iter()
-        .find(|source| source.relative == "system/netd/src/inet/device.rs")
+        .find(|source| source.relative == "system/netstack/src/inet/device.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     let socket_syscall = sources
@@ -266,7 +266,7 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
         .unwrap_or_default();
     let protocol_poll = sources
         .iter()
-        .find(|source| source.relative == "system/netd/src/inet/poll.rs")
+        .find(|source| source.relative == "system/netstack/src/inet/poll.rs")
         .map(|source| source.text.as_str())
         .unwrap_or_default();
     if !virtqueue.contains("Result<u16, VirtQueueError>")

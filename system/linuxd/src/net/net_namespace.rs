@@ -1,5 +1,5 @@
 //! 网络域的实际 namespace policy；socket 捕获对象，控制消息不从当前 Task 重新取 policy。
-//! 协议状态（接口、FIB、endpoint）在 netd 的对应实例中，经域 channel 访问。
+//! 协议状态（接口、FIB、endpoint）在 netstack 的对应实例中，经域 channel 访问。
 use crate::namespace::{NamespaceAuthority, NamespaceError, UserNamespace};
 use crate::sync::Once;
 use alloc::sync::Arc;
@@ -12,8 +12,8 @@ pub(crate) struct NetNamespace {
     user: Arc<UserNamespace>,
     // OWNER: Linux net.core.sysctl_optmem_max 的唯一 scalar；不复制到各个 socket。
     optmem_max: AtomicU32,
-    // OWNER: 同一网络域在 netd 中唯一协议实例的域 channel；boot 在设备装配后安装，新域在发布前安装，
-    // 之后不替换。随最后一个引用关闭，netd 据此退休该实例。
+    // OWNER: 同一网络域在 netstack 中唯一协议实例的域 channel；boot 在设备装配后安装，新域在发布前安装，
+    // 之后不替换。随最后一个引用关闭，netstack 据此退休该实例。
     protocol: Once<RemoteNamespace>,
     _charge: Option<crate::namespace::UserResourceCharge>,
 }
@@ -23,7 +23,7 @@ impl core::fmt::Debug for NetNamespace {
     }
 }
 impl NetNamespace {
-    /// 标准 NEWNET 的完整准备：固定独立 optmem 初值并对创建者/祖先实际 ucounts 收费，在 netd 中创建
+    /// 标准 NEWNET 的完整准备：固定独立 optmem 初值并对创建者/祖先实际 ucounts 收费，在 netstack 中创建
     /// 只有 DOWN 且无地址回环的协议实例；任一失败全部退款，不复制旧网络域的协议状态。
     pub(crate) fn create(
         user: Arc<UserNamespace>,
@@ -42,7 +42,7 @@ impl NetNamespace {
             _charge: Some(charge),
         })
         .map_err(|_| NamespaceError::OutOfMemory)?;
-        let protocol = super::netd::create_namespace().map_err(|error| match error {
+        let protocol = super::netstack::create_namespace().map_err(|error| match error {
             super::SocketError::NoMemory => NamespaceError::OutOfMemory,
             _ => NamespaceError::Invalid,
         })?;
@@ -72,7 +72,7 @@ impl NetNamespace {
         // net_ctl_permissions放大NET_ADMIN的mode；proc_sysctl::test_perm仍检查GLOBAL_ROOT_UID，
         // 不用stat显示的namespace-root kuid作为额外write豁免。
         authority.effective_uid == 0
-            || authority.capable(&self.user, syscall_abi::capability::Capability::NET_ADMIN)
+            || authority.capable(&self.user, linux_abi::capability::Capability::NET_ADMIN)
     }
     /// 原生 unsigned minmax 接受 0..INT_MAX；缩小不撤销已收费 allocation，下一次 admission 用新值。
     pub(crate) fn set_optmem_max(

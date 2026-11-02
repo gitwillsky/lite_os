@@ -106,10 +106,10 @@ pub(crate) mod chardev {
             match pipe.wait(super::ipc::PipeWaitCondition::Readable, None) {
                 crate::sync::WaitResult::Woken => {}
                 crate::sync::WaitResult::Interrupted => {
-                    return Err(DeviceError::Errno(syscall_abi::errno::EINTR));
+                    return Err(DeviceError::Errno(linux_abi::errno::EINTR));
                 }
                 crate::sync::WaitResult::OutOfMemory => {
-                    return Err(DeviceError::Errno(syscall_abi::errno::ENOMEM));
+                    return Err(DeviceError::Errno(linux_abi::errno::ENOMEM));
                 }
                 other => panic!("unexpected host notification wait: {other:?}"),
             }

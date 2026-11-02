@@ -1,10 +1,10 @@
 extern crate alloc;
 // The real driver-service decoder must retain device facts after kernel DTB scope shrinks.
-#[path = "../../../system/devmgr/src/platform/device_tree.rs"]
+#[path = "../../../system/driver-host/src/platform/device_tree.rs"]
 mod device_tree;
-#[path = "../../../system/devmgr/src/platform/pci_host.rs"]
+#[path = "../../../system/driver-host/src/platform/pci_host.rs"]
 mod pci_host;
-#[path = "../../../system/devmgr/src/platform/virtio_mmio.rs"]
+#[path = "../../../system/driver-host/src/platform/virtio_mmio.rs"]
 mod virtio_mmio;
 use dtb_walker::{Dtb, HeaderError};
 
@@ -21,7 +21,7 @@ fn parse(bytes: &[u8]) -> device_tree::DeviceFacts {
 
 #[cfg(target_arch = "aarch64")]
 #[test]
-fn actual_qemu_device_windows_and_routes_belong_to_devmgr() {
+fn actual_qemu_device_windows_and_routes_belong_to_driver_host() {
     let bytes =
         std::fs::read(std::env::var_os("LITEOS_AARCH64_DTB").expect("run make verify-unit"))
             .unwrap();

@@ -4,7 +4,7 @@ use crate::ext4::{
     reset_test_stage_capacity, reset_test_write_costs, set_test_stage_capacity, test_write_costs,
 };
 use crate::vfs::{OwnerModeChange, XattrChange};
-use syscall_abi::{
+use linux_abi::{
     capability::Capability,
     file_capability::{EFFECTIVE, FileCapabilityData, NAME, REVISION_2},
 };

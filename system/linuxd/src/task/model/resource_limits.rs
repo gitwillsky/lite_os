@@ -117,7 +117,7 @@ impl ResourceLimits {
     pub(super) fn cpu_signal(&mut self, runtime_us: u64) -> Option<usize> {
         let limit = self.values[RLIMIT_CPU];
         if limit.hard != RLIM_INFINITY && runtime_us >= limit.hard.saturating_mul(1_000_000) {
-            return Some(syscall_abi::signal::SIGKILL);
+            return Some(linux_abi::signal::SIGKILL);
         }
         if limit.soft == RLIM_INFINITY || runtime_us < limit.soft.saturating_mul(1_000_000) {
             return None;
@@ -130,7 +130,7 @@ impl ResourceLimits {
             return None;
         }
         self.last_cpu_signal_second = Some(elapsed_second);
-        Some(syscall_abi::signal::SIGXCPU)
+        Some(linux_abi::signal::SIGXCPU)
     }
 
     /// fork 复制限制值，但 child 的 CPU 消耗与 SIGXCPU cadence 从零开始。

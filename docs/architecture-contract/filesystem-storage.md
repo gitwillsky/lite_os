@@ -1,6 +1,6 @@
 # 文件系统与存储契约
 
-本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/devmgr/src/drivers/`。
+本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/driver-host/src/drivers/`。
 
 
 FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。

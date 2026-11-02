@@ -2,7 +2,7 @@
 use crate::fs::chardev::DeviceFile;
 use crate::sync::Mutex;
 use alloc::sync::{Arc, Weak};
-use syscall_abi::{capability::Capability, errno};
+use linux_abi::{capability::Capability, errno};
 
 use super::{
     connection::{Connection, Limit, unprivileged_limit},

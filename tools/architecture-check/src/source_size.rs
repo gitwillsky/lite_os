@@ -12,7 +12,7 @@ const UNIT_SOURCE_ROOTS: [&str; 4] = [
     "tools/kernel-unit/src",
     "tools/scheduler-unit/src",
     "tools/ext4-unit/src",
-    "tools/netd-unit/src",
+    "tools/netstack-unit/src",
 ];
 const UNIT_TEST_MODULE_ROOTS: [&str; 1] = ["tools/architecture-check/src"];
 

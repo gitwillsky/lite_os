@@ -183,7 +183,7 @@ pub(crate) fn sys_ftruncate(fd: usize, size: u64) -> isize {
         send_kernel_thread_signal(
             task.tgid(),
             task.tid(),
-            syscall_abi::signal::SIGXFSZ,
+            linux_abi::signal::SIGXFSZ,
             crate::task::PendingSignal::kernel(),
         )
         .expect("current ftruncate caller must exist");
@@ -245,7 +245,7 @@ pub(crate) fn sys_truncate(path: *const u8, size: i64) -> isize {
         send_kernel_thread_signal(
             task.tgid(),
             task.tid(),
-            syscall_abi::signal::SIGXFSZ,
+            linux_abi::signal::SIGXFSZ,
             crate::task::PendingSignal::kernel(),
         )
         .expect("current truncate caller must exist");
@@ -327,7 +327,7 @@ pub(crate) fn sys_fallocate(fd: usize, mode: usize, offset: i64, length: i64) ->
         send_kernel_thread_signal(
             task.tgid(),
             task.tid(),
-            syscall_abi::signal::SIGXFSZ,
+            linux_abi::signal::SIGXFSZ,
             crate::task::PendingSignal::kernel(),
         )
         .expect("current fallocate caller must exist");

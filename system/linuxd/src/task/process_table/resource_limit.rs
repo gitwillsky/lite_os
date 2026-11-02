@@ -84,8 +84,8 @@ impl ThreadSlotSnapshot {
         };
         let real_uid = caller.credential_id(true, false);
         if real_uid == 0
-            || caller.has_initial_capability(syscall_abi::capability::Capability::SYS_RESOURCE)
-            || caller.has_initial_capability(syscall_abi::capability::Capability::SYS_ADMIN)
+            || caller.has_initial_capability(linux_abi::capability::Capability::SYS_RESOURCE)
+            || caller.has_initial_capability(linux_abi::capability::Capability::SYS_ADMIN)
         {
             return true;
         }
@@ -237,8 +237,7 @@ pub(crate) fn process_resource_limit(
         }
     };
     let caller_identity = caller.credential_snapshot();
-    let privileged =
-        caller.has_initial_capability(syscall_abi::capability::Capability::SYS_RESOURCE);
+    let privileged = caller.has_initial_capability(linux_abi::capability::Capability::SYS_RESOURCE);
     let same_identity = target_identity
         .uids
         .iter()
@@ -249,7 +248,7 @@ pub(crate) fn process_resource_limit(
             .all(|gid| *gid == caller_identity.gids[0]);
     let target_authority = caller.has_namespace_capability(
         &target_identity.user_namespace,
-        syscall_abi::capability::Capability::SYS_RESOURCE,
+        linux_abi::capability::Capability::SYS_RESOURCE,
     );
     if pid != 0 && caller.tid() != selected && !target_authority && !same_identity {
         return Err(ResourceLimitError::PermissionDenied);

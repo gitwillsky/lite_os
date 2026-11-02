@@ -16,7 +16,7 @@ linuxd 发布 Linux ALSA PCM playback UAPI，设备身份为 `/dev/snd/pcmC0D0p`
 errno 必须逐项登记在 syscall/ABI 矩阵，未实现操作显式失败。
 
 UAPI layout 与编号固定到 [Linux ABI 基线](../standards-baseline.md#linux-arm64--riscv64-abi)；
-VirtIO Sound 只属于 devmgr adapter，不进入 ALSA 用户态契约。
+VirtIO Sound 只属于 driver-host adapter，不进入 ALSA 用户态契约。
 
 ## 结果
 

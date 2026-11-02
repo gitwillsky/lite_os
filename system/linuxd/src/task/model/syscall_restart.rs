@@ -25,7 +25,7 @@ impl SyscallRestart {
             self.policy == SyscallRestartPolicy::WithRestartHandler && flags & SA_RESTART != 0
         });
         if restart && self.policy == SyscallRestartPolicy::RestartBlock {
-            self.syscall_id = syscall_abi::SYSCALL_RESTART_SYSCALL;
+            self.syscall_id = linux_abi::SYSCALL_RESTART_SYSCALL;
         }
         restart.then_some(self)
     }

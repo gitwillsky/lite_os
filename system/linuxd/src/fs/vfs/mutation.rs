@@ -74,7 +74,7 @@ impl VirtualFileSystem {
         identity: &AccessIdentity,
         open_flags: u32,
     ) -> Result<(Arc<OpenedFile>, bool, Option<crate::fs::InodeOpen>), FileSystemError> {
-        let exclusive = open_flags & syscall_abi::open::O_EXCL != 0;
+        let exclusive = open_flags & linux_abi::open::O_EXCL != 0;
         let no_follow = open_flags & crate::fs::O_NOFOLLOW != 0;
         let mut create = |parent: Arc<OpenedFile>, name: &[u8]| {
             self.create_child(
@@ -164,7 +164,7 @@ impl VirtualFileSystem {
         if !identity.inode_capability(
             target_metadata.uid,
             target_metadata.gid,
-            syscall_abi::capability::Capability::FOWNER,
+            linux_abi::capability::Capability::FOWNER,
         ) && identity.uid() != target_metadata.uid
             && !safe_source
         {

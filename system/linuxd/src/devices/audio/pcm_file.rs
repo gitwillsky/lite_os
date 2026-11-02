@@ -1,7 +1,7 @@
 //! ALSA PCM 字符设备：所选卡与端点的子流打开及设备操作。
 
 use alloc::sync::Arc;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::engine::PcmEndpoint;
 use super::{AudioError, Card, PcmFile, ioctl};

@@ -2,7 +2,7 @@
 use super::super::chardev::{DeviceError, UserInput};
 use crate::namespace::{NamespaceAuthority, UserNamespace, UserResource};
 use alloc::{sync::Arc, vec::Vec};
-use syscall_abi::{capability::Capability, errno};
+use linux_abi::{capability::Capability, errno};
 
 /// 标准 base-0 unsigned integer、0..INT_MAX 与单值 consumed prefix；不接受符号或数字内垃圾。
 fn whitespace(byte: &u8) -> bool {

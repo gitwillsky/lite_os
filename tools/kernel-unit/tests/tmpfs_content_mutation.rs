@@ -167,7 +167,7 @@ mod fs {
             let mut state = inode.state().unwrap();
             state
                 .xattrs
-                .change(syscall_abi::file_capability::NAME, Some(vec![1; 24]), 0)
+                .change(linux_abi::file_capability::NAME, Some(vec![1; 24]), 0)
                 .unwrap();
             state
                 .xattrs
@@ -182,7 +182,7 @@ mod fs {
         let state = inode.state().unwrap();
         assert_eq!(state.mode, 0o6777);
         assert_eq!(
-            state.xattrs.get(syscall_abi::file_capability::NAME),
+            state.xattrs.get(linux_abi::file_capability::NAME),
             Err(FileSystemError::NotFound)
         );
         assert_eq!(state.xattrs.get(b"user.keep").unwrap(), b"content");
@@ -195,7 +195,7 @@ mod fs {
             .state()
             .unwrap()
             .xattrs
-            .change(syscall_abi::file_capability::NAME, Some(vec![1; 24]), 0)
+            .change(linux_abi::file_capability::NAME, Some(vec![1; 24]), 0)
             .unwrap();
         inode
             .update_owner_mode(OwnerModeChange::chmod(AccessIdentity::root(), 0o755))
@@ -205,7 +205,7 @@ mod fs {
                 .state()
                 .unwrap()
                 .xattrs
-                .get(syscall_abi::file_capability::NAME)
+                .get(linux_abi::file_capability::NAME)
                 .unwrap()
                 .len(),
             24
@@ -218,14 +218,14 @@ mod fs {
                 .state()
                 .unwrap()
                 .xattrs
-                .get(syscall_abi::file_capability::NAME),
+                .get(linux_abi::file_capability::NAME),
             Err(FileSystemError::NotFound)
         );
         inode
             .state()
             .unwrap()
             .xattrs
-            .change(syscall_abi::file_capability::NAME, Some(Vec::new()), 0)
+            .change(linux_abi::file_capability::NAME, Some(Vec::new()), 0)
             .unwrap();
         inode
             .remove_write_privileges(Some(&AccessIdentity::root()))
@@ -235,7 +235,7 @@ mod fs {
                 .state()
                 .unwrap()
                 .xattrs
-                .get(syscall_abi::file_capability::NAME)
+                .get(linux_abi::file_capability::NAME)
                 .unwrap(),
             Vec::<u8>::new()
         );
@@ -301,7 +301,7 @@ mod fs {
     }
 
     fn capability_value(magic: u32, root_uid: u32) -> Vec<u8> {
-        let (bytes, length) = syscall_abi::file_capability::FileCapabilityData {
+        let (bytes, length) = linux_abi::file_capability::FileCapabilityData {
             magic,
             permitted: 1 << 10,
             inheritable: 0,
@@ -316,7 +316,7 @@ mod fs {
             namespace: crate::namespace::boot(),
             effective_uid: 0,
             effective_gid: 0,
-            effective_capabilities: syscall_abi::capability::VALID_MASK,
+            effective_capabilities: linux_abi::capability::VALID_MASK,
         };
         let child = crate::namespace::UserNamespace::child(
             &root,
@@ -338,7 +338,7 @@ mod fs {
 
     #[test]
     fn actual_user_namespace_setcap_rootid_conversion_and_getsecurity_projection() {
-        use syscall_abi::file_capability::{
+        use linux_abi::file_capability::{
             EFFECTIVE, FileCapabilityData, NAME, REVISION_2, REVISION_3,
         };
         let user = mapped_user(1000, 1001);
@@ -347,7 +347,7 @@ mod fs {
             1001,
             None,
             user.clone(),
-            syscall_abi::capability::VALID_MASK,
+            linux_abi::capability::VALID_MASK,
             1000,
         );
         let owner = OwnerModeState::new(InodeType::File, 0o0000, 1000, 1001);
@@ -400,7 +400,7 @@ mod fs {
 
     #[test]
     fn xattr_authority_uses_live_inode_facts_and_security_namespace_rules() {
-        use syscall_abi::{
+        use linux_abi::{
             capability::Capability,
             file_capability::{EFFECTIVE, NAME, REVISION_2},
         };

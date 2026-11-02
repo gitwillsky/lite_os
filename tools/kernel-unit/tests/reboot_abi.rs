@@ -7,7 +7,7 @@ thread_local! {
     static RESET: Cell<Option<system::ResetKind>> = const { Cell::new(None) };
 }
 
-#[path = "../../../syscall-abi/src/errno.rs"]
+#[path = "../../../abi/linux-abi/src/errno.rs"]
 mod errno;
 
 mod syscall {
@@ -128,9 +128,9 @@ pub(crate) mod task {
     impl Task {
         pub(crate) fn has_initial_capability(
             &self,
-            cap: syscall_abi::capability::Capability,
+            cap: linux_abi::capability::Capability,
         ) -> bool {
-            assert_eq!(cap, syscall_abi::capability::Capability::SYS_BOOT);
+            assert_eq!(cap, linux_abi::capability::Capability::SYS_BOOT);
             crate::EFFECTIVE_UID.get() == 0 // injected authorization, not production UID policy
         }
     }

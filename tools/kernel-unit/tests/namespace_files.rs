@@ -179,7 +179,7 @@ mod fs {
             None
         }
         fn ioctl(&self, _: &chardev::IoctlCall<'_>) -> Result<isize, chardev::DeviceError> {
-            Err(chardev::DeviceError::Errno(syscall_abi::errno::ENOTTY))
+            Err(chardev::DeviceError::Errno(linux_abi::errno::ENOTTY))
         }
         fn read_storage(&self, offset: u64, bytes: &mut [u8]) -> Result<usize, FileSystemError>;
         fn write_storage(
@@ -374,7 +374,7 @@ mod fs {
                 None
             }
             fn ioctl(&self, _: &IoctlCall<'_>) -> Result<isize, DeviceError> {
-                Err(DeviceError::Errno(syscall_abi::errno::ENOTTY))
+                Err(DeviceError::Errno(linux_abi::errno::ENOTTY))
             }
         }
     }
@@ -538,7 +538,7 @@ mod fs {
                 namespace: crate::namespace::boot(),
                 effective_uid: 0,
                 effective_gid: 0,
-                effective_capabilities: syscall_abi::capability::VALID_MASK,
+                effective_capabilities: linux_abi::capability::VALID_MASK,
             }
         }
         fn inode(target: Arc<UserNamespace>, kind: UserNamespaceMap) -> ProcInode {
@@ -593,10 +593,10 @@ mod fs {
                 groups: None,
             };
             let id = namespace
-                .message_get(120019, syscall_abi::ipc::IPC_CREAT | 0o666, &access, 11)
+                .message_get(120019, linux_abi::ipc::IPC_CREAT | 0o666, &access, 11)
                 .unwrap();
             namespace
-                .message_get(120020, syscall_abi::ipc::IPC_CREAT | 0o666, &access, 12)
+                .message_get(120020, linux_abi::ipc::IPC_CREAT | 0o666, &access, 12)
                 .unwrap();
             let mut node = inode(caller.namespace.clone(), UserNamespaceMap::Uid);
             node.node = ProcNode::IpcTable(crate::ipc::IpcTable::Message);
@@ -610,7 +610,7 @@ mod fs {
             };
             assert_eq!(
                 opened.positioned().unwrap().read_at(&mut fault, 0),
-                Err(chardev::DeviceError::Errno(syscall_abi::errno::EFAULT))
+                Err(chardev::DeviceError::Errno(linux_abi::errno::EFAULT))
             );
             assert_eq!(fault.bytes, expected[..3]);
             let header = expected.iter().position(|byte| *byte == b'\n').unwrap() + 1;
@@ -663,10 +663,10 @@ mod fs {
                 groups: None,
             };
             namespace
-                .message_get(120010, syscall_abi::ipc::IPC_CREAT | 0o666, &access, 11)
+                .message_get(120010, linux_abi::ipc::IPC_CREAT | 0o666, &access, 11)
                 .unwrap();
             namespace
-                .message_get(120011, syscall_abi::ipc::IPC_CREAT | 0o666, &access, 12)
+                .message_get(120011, linux_abi::ipc::IPC_CREAT | 0o666, &access, 12)
                 .unwrap();
             let mut node = inode(caller.namespace.clone(), UserNamespaceMap::Uid);
             node.node = ProcNode::IpcTable(crate::ipc::IpcTable::Message);
@@ -726,13 +726,13 @@ mod fs {
                 groups: None,
             };
             let id = first
-                .message_get(120001, syscall_abi::ipc::IPC_CREAT, &access, 7)
+                .message_get(120001, linux_abi::ipc::IPC_CREAT, &access, 7)
                 .unwrap();
             assert!(matches!(
                 first.message_snapshot(id, false, false, &access),
                 Err(crate::ipc::IpcError::Access)
             ));
-            next.message_get(120002, syscall_abi::ipc::IPC_CREAT, &access, 8)
+            next.message_get(120002, linux_abi::ipc::IPC_CREAT, &access, 8)
                 .unwrap();
             let mut node = inode(caller.namespace.clone(), UserNamespaceMap::Uid);
             node.node = ProcNode::IpcTable(crate::ipc::IpcTable::Message);
@@ -794,16 +794,16 @@ mod fs {
                     b"1 100 0\n7 -3 0\n".as_slice(),
                     0,
                     false,
-                    syscall_abi::errno::ERANGE,
+                    linux_abi::errno::ERANGE,
                 ),
                 (
                     b"1 1 1000000000".as_slice(),
                     0,
                     false,
-                    syscall_abi::errno::EINVAL,
+                    linux_abi::errno::EINVAL,
                 ),
-                (b"1 1 0".as_slice(), 1, true, syscall_abi::errno::EINVAL),
-                (b"1 1 0".as_slice(), 0, true, syscall_abi::errno::EFAULT),
+                (b"1 1 0".as_slice(), 1, true, linux_abi::errno::EINVAL),
+                (b"1 1 0".as_slice(), 0, true, linux_abi::errno::EFAULT),
             ] {
                 let mut input = Input {
                     bytes,
@@ -825,7 +825,7 @@ mod fs {
             };
             assert_eq!(
                 operations.write_at(&mut input, 0, &caller),
-                Err(chardev::DeviceError::Errno(syscall_abi::errno::EACCES))
+                Err(chardev::DeviceError::Errno(linux_abi::errno::EACCES))
             );
             let replacement = initial.copy_for(caller.namespace.clone(), 0).unwrap();
             *inode.source.1.lock() = Some(replacement.clone());
@@ -843,12 +843,12 @@ mod fs {
                     .positioned()
                     .unwrap()
                     .write_at(&mut input, 0, &caller),
-                Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
+                Err(chardev::DeviceError::Errno(linux_abi::errno::EPERM))
             );
             *inode.source.1.lock() = None;
             assert_eq!(
                 operations.write_at(&mut input, 0, &caller),
-                Err(chardev::DeviceError::Errno(syscall_abi::errno::ESRCH))
+                Err(chardev::DeviceError::Errno(linux_abi::errno::ESRCH))
             );
         }
         #[test]
@@ -879,7 +879,7 @@ mod fs {
                         .positioned()
                         .unwrap()
                         .write_at(&mut fault, 0, &denied),
-                    Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
+                    Err(chardev::DeviceError::Errno(linux_abi::errno::EPERM))
                 );
                 assert_eq!(fault.consumed, 0);
                 let mut output = Output(Vec::new());
@@ -887,7 +887,7 @@ mod fs {
                 assert!(output.0.is_empty());
                 let capable = NamespaceAuthority {
                     effective_uid: 1000,
-                    effective_capabilities: syscall_abi::capability::Capability::NET_ADMIN.mask(),
+                    effective_capabilities: linux_abi::capability::Capability::NET_ADMIN.mask(),
                     ..root.clone()
                 };
                 assert!(opened_operations::open(&node, 2, &capable).is_ok());
@@ -945,11 +945,11 @@ mod fs {
             };
             assert_eq!(
                 file.positioned().unwrap().write_at(&mut fault, 0, &denied),
-                Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
+                Err(chardev::DeviceError::Errno(linux_abi::errno::EPERM))
             );
             assert_eq!(
                 file.positioned().unwrap().write_at(&mut fault, 0, &root),
-                Err(chardev::DeviceError::Errno(syscall_abi::errno::EFAULT))
+                Err(chardev::DeviceError::Errno(linux_abi::errno::EFAULT))
             );
             assert_eq!(target.optmem_max(), 64);
             let mut invalid = Input {
@@ -959,7 +959,7 @@ mod fs {
             };
             assert_eq!(
                 file.positioned().unwrap().write_at(&mut invalid, 0, &root),
-                Err(chardev::DeviceError::Errno(syscall_abi::errno::EINVAL))
+                Err(chardev::DeviceError::Errno(linux_abi::errno::EINVAL))
             );
             assert_eq!(target.optmem_max(), 64);
             let mut zero = Input {
@@ -1119,7 +1119,7 @@ mod fs {
                         .positioned()
                         .unwrap()
                         .write_at(&mut value, 0, &root),
-                    Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
+                    Err(chardev::DeviceError::Errno(linux_abi::errno::EPERM))
                 );
             }
         }
@@ -1153,7 +1153,7 @@ mod fs {
             };
             assert_eq!(
                 operations.write_at(&mut bad, 0, &caller),
-                Err(chardev::DeviceError::Errno(syscall_abi::errno::EINVAL))
+                Err(chardev::DeviceError::Errno(linux_abi::errno::EINVAL))
             );
             assert_eq!(mount_limit(), 32);
             let mut ignored = Input {
@@ -1174,7 +1174,7 @@ mod fs {
                 0,
                 None,
                 caller.namespace.clone(),
-                syscall_abi::capability::VALID_MASK,
+                linux_abi::capability::VALID_MASK,
                 1000,
             );
             assert_eq!(
@@ -1194,7 +1194,7 @@ mod fs {
             };
             assert_eq!(
                 operations.write_at(&mut value, 0, &denied),
-                Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
+                Err(chardev::DeviceError::Errno(linux_abi::errno::EPERM))
             );
             denied.namespace = UserNamespace::child(
                 &caller,
@@ -1207,7 +1207,7 @@ mod fs {
             .unwrap();
             assert_eq!(
                 operations.write_at(&mut value, 0, &denied),
-                Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
+                Err(chardev::DeviceError::Errno(linux_abi::errno::EPERM))
             );
             assert_eq!(value.consumed, 0);
             assert_eq!(mount_limit(), 32);
@@ -1432,7 +1432,7 @@ mod fs {
                 file.positioned()
                     .unwrap()
                     .write_at(&mut invalid, 0, &writer),
-                Err(DeviceError::Errno(syscall_abi::errno::ERANGE))
+                Err(DeviceError::Errno(linux_abi::errno::ERANGE))
             ));
             assert_eq!(target.semaphore_limits(), [-1, -2, -3, 5]);
             let mut prefix = Input {
@@ -1442,7 +1442,7 @@ mod fs {
             };
             assert!(matches!(
                 file.positioned().unwrap().write_at(&mut prefix, 0, &writer),
-                Err(DeviceError::Errno(syscall_abi::errno::EINVAL))
+                Err(DeviceError::Errno(linux_abi::errno::EINVAL))
             ));
             assert_eq!(target.semaphore_limits(), [8, 9, -3, 5]);
             node.sysctl_ipc_namespace = Some(Arc::downgrade(&next));
@@ -1478,7 +1478,7 @@ mod fs {
                 file.positioned()
                     .unwrap()
                     .write_at(&mut value, 0, &unprivileged),
-                Err(DeviceError::Errno(syscall_abi::errno::EPERM))
+                Err(DeviceError::Errno(linux_abi::errno::EPERM))
             ));
         }
         #[test]
@@ -1523,7 +1523,7 @@ mod fs {
                     file.positioned()
                         .unwrap()
                         .write_at(&mut invalid, 0, &writer),
-                    Err(DeviceError::Errno(syscall_abi::errno::EINVAL))
+                    Err(DeviceError::Errno(linux_abi::errno::EINVAL))
                 ));
             }
             let mut hex = Input {
@@ -1574,7 +1574,7 @@ mod fs {
                 };
                 assert_eq!(
                     operations.write_at(&mut value, 0, &writer),
-                    Err(chardev::DeviceError::Errno(syscall_abi::errno::EINVAL))
+                    Err(chardev::DeviceError::Errno(linux_abi::errno::EINVAL))
                 );
                 assert_eq!(target.limit(), initial);
                 assert_eq!(value.consumed, 0);
@@ -1586,7 +1586,7 @@ mod fs {
             };
             assert_eq!(
                 operations.write_at(&mut value, 0, &denied),
-                Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
+                Err(chardev::DeviceError::Errno(linux_abi::errno::EPERM))
             );
             assert_eq!(value.consumed, 0);
             let mut root_without_capability = writer.clone();
@@ -1613,7 +1613,7 @@ mod fs {
             };
             assert_eq!(
                 operations.write_at(&mut fault, 0, &writer),
-                Err(chardev::DeviceError::Errno(syscall_abi::errno::EFAULT))
+                Err(chardev::DeviceError::Errno(linux_abi::errno::EFAULT))
             );
             assert_eq!(target.limit(), 301);
         }
@@ -1722,7 +1722,7 @@ mod fs {
                         .positioned()
                         .unwrap()
                         .write_at(&mut value, 0, &denied),
-                    Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
+                    Err(chardev::DeviceError::Errno(linux_abi::errno::EPERM))
                 );
                 assert_eq!(value.consumed, 0);
                 node.node = ProcNode::InotifyLimit(global);
@@ -1744,7 +1744,7 @@ mod fs {
                         .positioned()
                         .unwrap()
                         .write_at(&mut value, 0, &dropped),
-                    Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
+                    Err(chardev::DeviceError::Errno(linux_abi::errno::EPERM))
                 ));
                 assert_eq!(value.consumed, 0);
             }
@@ -1853,7 +1853,7 @@ mod fs {
                 file.positioned()
                     .unwrap()
                     .write_at(&mut denied, 0, &foreign),
-                Err(chardev::DeviceError::Errno(syscall_abi::errno::EPERM))
+                Err(chardev::DeviceError::Errno(linux_abi::errno::EPERM))
             ));
             assert_eq!(denied.consumed, 0);
             let mut fault = Input {
@@ -1863,7 +1863,7 @@ mod fs {
             };
             assert!(matches!(
                 file.positioned().unwrap().write_at(&mut fault, 0, &current),
-                Err(chardev::DeviceError::Errno(syscall_abi::errno::EFAULT))
+                Err(chardev::DeviceError::Errno(linux_abi::errno::EFAULT))
             ));
             assert_eq!(child.resource_limit(UserResource::User), 2);
             let mut large = vec![b'x'; 5000];
@@ -1912,7 +1912,7 @@ mod fs {
                 };
                 assert!(matches!(
                     file.positioned().unwrap().write_at(&mut input, 0, &current),
-                    Err(chardev::DeviceError::Errno(syscall_abi::errno::EINVAL))
+                    Err(chardev::DeviceError::Errno(linux_abi::errno::EINVAL))
                 ));
                 assert_eq!(input.consumed, 0);
                 assert_eq!(child.resource_limit(UserResource::User), 2);
@@ -2044,7 +2044,7 @@ mod fs {
             namespace: crate::namespace::boot(),
             effective_uid: 0,
             effective_gid: 0,
-            effective_capabilities: syscall_abi::capability::VALID_MASK,
+            effective_capabilities: linux_abi::capability::VALID_MASK,
         };
         let namespace = UserNamespace::child(
             &authority,
@@ -2104,7 +2104,7 @@ mod fs {
             namespace: parent,
             effective_uid: 0,
             effective_gid: 0,
-            effective_capabilities: syscall_abi::capability::VALID_MASK,
+            effective_capabilities: linux_abi::capability::VALID_MASK,
         };
         let child = UserNamespace::child(
             &authority,
@@ -2138,7 +2138,7 @@ mod fs {
             namespace: crate::namespace::boot(),
             effective_uid: 0,
             effective_gid: 0,
-            effective_capabilities: syscall_abi::capability::VALID_MASK,
+            effective_capabilities: linux_abi::capability::VALID_MASK,
         };
         let child = UserNamespace::child(
             &authority,
@@ -2183,7 +2183,7 @@ mod fs {
             namespace: crate::namespace::boot(),
             effective_uid: 0,
             effective_gid: 0,
-            effective_capabilities: syscall_abi::capability::VALID_MASK,
+            effective_capabilities: linux_abi::capability::VALID_MASK,
         };
         let namespace = UserNamespace::child(
             &authority,
@@ -2235,7 +2235,7 @@ mod fs {
             namespace: crate::namespace::boot(),
             effective_uid: 0,
             effective_gid: 0,
-            effective_capabilities: syscall_abi::capability::VALID_MASK,
+            effective_capabilities: linux_abi::capability::VALID_MASK,
         };
         let namespace = UserNamespace::child(
             &authority,
@@ -2283,7 +2283,7 @@ mod fs {
             namespace: parent.clone(),
             effective_uid: 0,
             effective_gid: 0,
-            effective_capabilities: syscall_abi::capability::VALID_MASK,
+            effective_capabilities: linux_abi::capability::VALID_MASK,
         };
         let child = UserNamespace::child(
             &authority,

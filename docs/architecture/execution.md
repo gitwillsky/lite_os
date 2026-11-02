@@ -28,7 +28,7 @@ linuxd 的 Linux 线程由 native 服务线程承载：normal mode 执行兼容�
 restricted syscall/异常返回 linuxd，后者独占 Linux 寄存器 ABI、errno、signal、restart、ptrace 与进程政策。
 用户地址访问经 native VM 操作解析、固定实际 backing；内核机制不解释 Linux 线程状态。
 
-设备 IRQ 与完成分派在 devmgr 的服务线程中执行；netd 的协议工作线程、linuxd 的 pager/deferred 线程也各自拥有工作队列。
+设备 IRQ 与完成分派在 driver-host 的服务线程中执行；netstack 的协议工作线程、linuxd 的 pager/deferred 线程也各自拥有工作队列。
 没有当前 Linux 线程的服务线程使用 `ServiceThreadTarget` 停驻于自身 native 线程描述符。
 不存在启动期驱动 MMIO polling/WFI 的第二条等待路径。
 

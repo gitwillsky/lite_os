@@ -49,7 +49,7 @@ package manager → installed launcher → language runtime → bundled native E
 ## Kernel 活性与并发
 
 桌面退回欢迎页时，先核对 logon 的 child exit 与 compositor 的连接错误，不能直接推断 kernel 重启。
-Wayland 协议错误从 compositor 的 fatal owner 追到缓冲、DRM ioctl、device-protocol 与 devmgr；
+Wayland 协议错误从 compositor 的 fatal owner 追到缓冲、DRM ioctl、device-protocol 与 driver-host；
 固定同一 GPU 后端、输出尺寸、scale 与输入顺序。CPU 合成通过不能替代 VirGL 路径的绿色证明。
 
 | 第一个症状 | 先区分 | 下一 owner |

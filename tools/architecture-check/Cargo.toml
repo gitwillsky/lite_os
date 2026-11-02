@@ -13,4 +13,4 @@ syn = { version = "=2.0.101", features = ["full", "parsing", "visit"] }
 workspace = true
 
 [dev-dependencies]
-mmio = { path = "../../mmio" }
+mmio = { path = "../../libraries/mmio" }

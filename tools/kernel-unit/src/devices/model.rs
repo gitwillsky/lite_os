@@ -3,5 +3,5 @@ pub(crate) use device_model::{
     PcmCompletionObserver, PcmConfiguration, PcmFormat, PcmOutput, PcmOutputError,
 };
 pub(crate) const PCM_FRAME_BYTES: usize = PCM_PERIOD_BYTES / PCM_PERIOD_FRAMES;
-#[path = "../../../../tools/source-view/devmgr/io_completion/io_completion/io_completion.rs"]
+#[path = "../../../../tools/source-view/driver-host/io_completion/io_completion/io_completion.rs"]
 pub(crate) mod io_completion;

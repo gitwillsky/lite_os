@@ -55,8 +55,7 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
     {
         if contains_identifier(source.syntax.to_token_stream(), |name| {
             let lower = name.to_ascii_lowercase();
-            lower.contains("linux")
-                || matches!(name, "syscall_abi" | "Errno" | "SyscallRestartBlock")
+            lower.contains("linux") || matches!(name, "linux_abi" | "Errno" | "SyscallRestartBlock")
         }) {
             errors.push(format!(
                 "{}: Linux ABI and policy belong to system/linuxd, not native kernel mechanisms",
@@ -254,7 +253,7 @@ mod tests {
         assert!(
             violations(
                 "arch",
-                "mmio/src/lib.rs",
+                "libraries/mmio/src/lib.rs",
                 "fn f() { unsafe { crate::arch::read_mmio_u32(0) }; }"
             )
             .is_empty()
@@ -285,7 +284,7 @@ mod tests {
     #[test]
     fn native_kernel_cannot_import_linux_policy() {
         for text in [
-            "use syscall_abi::errno;",
+            "use linux_abi::errno;",
             "struct LinuxProcess;",
             "enum SyscallRestartBlock {}",
         ] {

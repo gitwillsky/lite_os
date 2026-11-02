@@ -304,9 +304,7 @@ pub(crate) trait Inode: Send + Sync {
         &self,
         _call: &super::chardev::IoctlCall<'_>,
     ) -> Result<isize, super::chardev::DeviceError> {
-        Err(super::chardev::DeviceError::Errno(
-            syscall_abi::errno::ENOTTY,
-        ))
+        Err(super::chardev::DeviceError::Errno(linux_abi::errno::ENOTTY))
     }
 
     /// regular file 内容的存放方式，决定 read/write 与 mmap 走哪条路径。

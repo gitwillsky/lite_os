@@ -376,17 +376,17 @@ pub(crate) fn sys_rt_sigreturn() -> isize {
         Ok(result) => result as isize,
         Err(crate::task::SignalFrameRestoreError::OutOfMemory) => {
             drop(task);
-            crate::task::exit_current_group_by_signal(syscall_abi::signal::SIGKILL);
+            crate::task::exit_current_group_by_signal(linux_abi::signal::SIGKILL);
         }
         Err(crate::task::SignalFrameRestoreError::Invalid { address }) => {
             let info = match task.signal_frame_fault(address) {
                 Ok(info) => info,
                 Err(_) => {
                     drop(task);
-                    crate::task::exit_current_group_by_signal(syscall_abi::signal::SIGKILL);
+                    crate::task::exit_current_group_by_signal(linux_abi::signal::SIGKILL);
                 }
             };
-            task.queue_synchronous_fault(syscall_abi::signal::SIGSEGV, info)
+            task.queue_synchronous_fault(linux_abi::signal::SIGSEGV, info)
                 .expect("bad signal frame must force SIGSEGV");
             0
         }

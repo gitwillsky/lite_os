@@ -2,7 +2,7 @@
 
 use crate::sync::Once;
 use alloc::sync::Arc;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use crate::{
     fs::{

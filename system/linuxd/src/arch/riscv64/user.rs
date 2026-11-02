@@ -18,7 +18,7 @@ pub(crate) const AUDIT_ARCH: u32 = 0xc000_00f3;
 ///
 /// 当前仅接纳 `riscv_hwprobe`；其他编号由通用 dispatcher 处理。
 pub(crate) const fn decode_private_syscall(syscall_id: usize) -> Option<usize> {
-    if syscall_id == syscall_abi::SYSCALL_RISCV_HWPROBE {
+    if syscall_id == linux_abi::SYSCALL_RISCV_HWPROBE {
         Some(syscall_id)
     } else {
         None
@@ -291,7 +291,7 @@ impl UserContext {
         bytes: &mut [u8],
         write: bool,
     ) -> Result<usize, ()> {
-        if note != syscall_abi::ptrace::NT_PRSTATUS || !bytes.len().is_multiple_of(8) {
+        if note != linux_abi::ptrace::NT_PRSTATUS || !bytes.len().is_multiple_of(8) {
             return Err(());
         }
         let length = bytes.len().min(256);
@@ -330,10 +330,10 @@ impl UserContext {
         match replay_number {
             None => {
                 self.sepc += 4;
-                self.x[10] = (-syscall_abi::errno::EINTR) as usize;
+                self.x[10] = (-linux_abi::errno::EINTR) as usize;
             }
-            Some(syscall_abi::SYSCALL_RESTART_SYSCALL) => {
-                self.x[17] = syscall_abi::SYSCALL_RESTART_SYSCALL
+            Some(linux_abi::SYSCALL_RESTART_SYSCALL) => {
+                self.x[17] = linux_abi::SYSCALL_RESTART_SYSCALL
             }
             Some(_) => {}
         }

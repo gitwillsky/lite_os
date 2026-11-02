@@ -441,7 +441,7 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
     let mut allocation_sites = Vec::new();
     let mut calls: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
     for source in sources.iter().filter(|source| {
-        source.relative == "fallible-tree/src/lib.rs"
+        source.relative == "libraries/fallible-tree/src/lib.rs"
             || source.relative.starts_with("kernel/src/fallible_tree/")
     }) {
         let mut visitor = FallibleTreeAllocationVisitor::default();
@@ -466,7 +466,7 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
         || allocation_sites
             .first()
             .is_none_or(|(source, function, _)| {
-                source != "fallible-tree/src/lib.rs" || function != "try_reserve_node"
+                source != "libraries/fallible-tree/src/lib.rs" || function != "try_reserve_node"
             })
     {
         let sites = allocation_sites

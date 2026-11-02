@@ -7,7 +7,7 @@ pub(super) use listener::ListenerFile;
 use crate::sync::Mutex;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use syscall_abi::{errno, seccomp::*};
+use linux_abi::{errno, seccomp::*};
 
 use super::{SeccompError, TaskControlBlock};
 use crate::{

@@ -21,7 +21,7 @@ SOURCES = {Path(member).name: f"{member}/src" for member in MEMBERS if (ROOT / m
 SOURCE_PATTERN = "|".join(re.escape(value) for value in sorted(SOURCES.values(), key=len, reverse=True))
 DIRECT = re.compile(rf"({SOURCE_PATTERN})/([\w/]+)\.rs")
 VIA_VIEW = re.compile(r"tools/source-view/([\w-]+)/((?:\w+/)*?(\w+))/\3/\3\.rs")
-FIXTURES = (*tuple(ROOT / "tools" / name for name in ("kernel-unit", "ext4-unit", "netd-unit", "scheduler-unit", "architecture-bench")), ROOT / "tools/architecture-check/tests")
+FIXTURES = (*tuple(ROOT / "tools" / name for name in ("kernel-unit", "ext4-unit", "netstack-unit", "scheduler-unit", "architecture-bench")), ROOT / "tools/architecture-check/tests")
 
 
 def fixture_sources() -> list[Path]:

@@ -8,13 +8,13 @@ extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 
+use linux_abi::{errno, seccomp::*};
 use std::{
     cell::{Cell, RefCell},
     collections::BTreeMap,
     mem::MaybeUninit,
     sync::Arc,
 };
-use syscall_abi::{errno, seccomp::*};
 const INTERNAL_RESTART_SYS: isize = -512;
 
 macro_rules! info { ($($args:tt)*) => { let _ = format_args!($($args)*); }; }
@@ -90,8 +90,8 @@ impl TaskControlBlock {
     fn enable_no_new_privileges(&self) {
         self.security.enable_no_new_privileges();
     }
-    fn has_capability(&self, cap: syscall_abi::capability::Capability) -> bool {
-        assert_eq!(cap, syscall_abi::capability::Capability::SYS_ADMIN);
+    fn has_capability(&self, cap: linux_abi::capability::Capability) -> bool {
+        assert_eq!(cap, linux_abi::capability::Capability::SYS_ADMIN);
         self.uid.get() == 0 // injected authorization; actual capability owner covered separately
     }
     fn capability_prctl(&self, _: u32, _: usize, _: [usize; 3]) -> Result<usize, ()> {
@@ -156,7 +156,7 @@ mod system {
 }
 pub(crate) use syscall::file_descriptor_error;
 mod syscall {
-    pub(crate) use syscall_abi::errno;
+    pub(crate) use linux_abi::errno;
     pub(crate) enum SyscallOutcome {
         Return(isize),
         PreserveRegisters,
@@ -443,7 +443,7 @@ pub(crate) mod task {
         bytes: &[u8],
         flags: u32,
     ) -> Result<Option<usize>, SeccompError> {
-        crate::LAST_SYNCHRONIZE.set(flags & syscall_abi::seccomp::FILTER_FLAG_TSYNC != 0);
+        crate::LAST_SYNCHRONIZE.set(flags & linux_abi::seccomp::FILTER_FLAG_TSYNC != 0);
         if let Some(tid) = crate::INSTALL_FAILURE.get() {
             return Err(SeccompError::Unsynchronized(tid));
         }

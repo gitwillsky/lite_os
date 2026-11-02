@@ -4,7 +4,7 @@ use alloc::{
     boxed::Box,
     sync::{Arc, Weak},
 };
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::{
     exec::{Outcome, run_lane},

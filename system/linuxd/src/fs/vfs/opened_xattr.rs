@@ -3,7 +3,7 @@ use super::super::{XattrChange, XattrError, xattr};
 use super::{AccessIdentity, FileSystemError, OpenedFile};
 use crate::namespace::UserNamespace;
 use alloc::{sync::Arc, vec::Vec};
-use syscall_abi::file_capability;
+use linux_abi::file_capability;
 
 impl OpenedFile {
     fn xattr_namespace(&self) -> Arc<UserNamespace> {

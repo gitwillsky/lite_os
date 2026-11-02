@@ -8,15 +8,15 @@
 | `kernel::object::resource` | 不可变 MMIO/IRQ/system 授权范围与中断投递、屏蔽、ack |
 | `kernel::iommu` / `kernel::vm::device_space` | stream domain、IOVA / 设备页表及 retirement |
 | `arch::dma` | 静态硬件后端、设备表编码与同步失效 |
-| `devmgr::platform` / `devmgr::drivers` | 设备事实解码、装配 / 全部硬件 adapter、DMA、queue、reset |
-| `devmgr::io_completion` / `devmgr::completion` | 请求槽与 capacity handshake / 合并完成通知与服务线程 |
+| `driver-host::platform` / `driver-host::drivers` | 设备事实解码、装配 / 全部硬件 adapter、DMA、queue、reset |
+| `driver-host::io_completion` / `driver-host::completion` | 请求槽与 capacity handshake / 合并完成通知与服务线程 |
 | `device-model` / `device-protocol` | 设备类接口 / 设备目录、channel、共享 VMO 的传输契约 |
 | `linuxd::devices` | DRM、evdev、ALSA、TTY、USB sysfs、virtio-port 的 Linux 语义 |
 | `linuxd::fs::chardev` / `devnode` | cdev minor 区间注册 / devfs inode identity |
-| `netd` / `ext4d` | 网络设备消费与协议栈 / 块设备消费与文件系统 |
+| `netstack` / `ext4d` | 网络设备消费与协议栈 / 块设备消费与文件系统 |
 | `user/linux-uapi` 与 compositor | 应用 Linux UAPI 资源封装 / DRM master、evdev、标准 Wayland |
 
-adapter 的 queue、slot generation 与设备地址只在 devmgr 有一份权威；Linux 文件壳和 RPC client
+adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份权威；Linux 文件壳和 RPC client
 只持有协议能力，不复制硬件 state。DMABUF/GEM/framebuffer、TTY session 与 evdev per-open queue
 分别留在 linuxd 的相应领域。用户态终端只消费标准 PTY，不使用私有显示或 console ABI。
 
@@ -24,10 +24,10 @@ adapter 的 queue、slot generation 与设备地址只在 devmgr 有一份权威
 
 1. BTI 绑定设备 stream，PMT 保活固定页和设备映射；固定期间不得 decommit、替换或 COW 冻结该页。
    恒等 BTI 只提供物理设备地址和 pin，不提供设备隔离。
-   root-server 保留初始根 authority，并只向可信 devmgr 委派根副本；linuxd 仅获得 system 子范围，
+   root-server 保留初始根 authority，并只向可信 driver-host 委派根副本；linuxd 仅获得 system 子范围，
    覆盖 debuglog 读取、串口、UTC 设置和电源。system resource 不能创建 MMIO/IRQ/IOMMU、不能扩大父范围或恢复根。
    Resource authority 属于不可变 kind/range，创建子 resource 另要求句柄 WRITE；普通应用不接触 native resource。
-   devmgr 按 DTB 路由分别持有恒等/硬件 IOMMU；MMIO 设备不借 PCI stream 0。
+   driver-host 按 DTB 路由分别持有恒等/硬件 IOMMU；MMIO 设备不借 PCI stream 0。
    PCI iommu-map 的全部区间经 phandle、重叠与溢出校验，应用 iommu-map-mask 后选择 stream；
    声明映射但 requester 未覆盖时 fail-stop，不隐式绕过。当前只支持一个平台 IOMMU。
    VirtIO transport 对平台提供的 ACCESS_PLATFORM 统一协商，全部 adapter 继续使用同一 BTI DMA 接口。
@@ -47,7 +47,7 @@ MMIO net/RNG 验证混合 DMA 的真实读写、同步与网络；不宣称设�
 
 ## Interface
 
-- devmgr 的中断线程只确认设备并请求完成分派；电平中断在设备侧清除后才 ack。
+- driver-host 的中断线程只确认设备并请求完成分派；电平中断在设备侧清除后才 ack。
   `completion::raise` 是可合并通知，完成线程清除 pending 后分派全部已注册 source；
   新完成必须重新置位，不能依赖下一次无关中断。普通 adapter lock 不跨等待持有。
 - VirtIO Console completion 必须先 claim/validate/recycle，再 repost RX 并通知对应 queue；
@@ -64,10 +64,10 @@ MMIO net/RNG 验证混合 DMA 的真实读写、同步与网络；不宣称设�
   stream；`PORT_REMOVE` 或 transport failure 必须使 read/write/poll 同时观察 terminal disconnect。
 - block 与 entropy request 使用 `IoCompletion` 的统一先复查、登记、睡眠握手，
   经服务线程描述符 park/unpark；不轮询 MMIO/used ring，也不在 queue lock 内等待。
-  `devmgr::io_completion` 的 typed device/slot/generation/ticket 是唯一请求身份，不交给内核解释。
+  `driver-host::io_completion` 的 typed device/slot/generation/ticket 是唯一请求身份，不交给内核解释。
 - block/RNG 中断处理共用 `VirtIOCompletionIrq`；transport error 锁存后仍须请求完成分派，
   使 completion owner reset 并唤醒全部 outstanding request，不能吞掉已确认的唯一设备边沿。
-- `devmgr::main` 决定装配顺序，`devmgr::drivers::virtio::binding` 拥有具体 VirtIO 绑定表；driver、DRM、input、filesystem 与 syscall 不得依赖 QEMU machine types。
+- `driver-host::main` 决定装配顺序，`driver-host::drivers::virtio::binding` 拥有具体 VirtIO 绑定表；driver、DRM、input、filesystem 与 syscall 不得依赖 QEMU machine types。
 - VirtIO PCI discovery 必须从 vendor capabilities 得到 modern common/notify/ISR/device windows，按
   `cap.offset + queue_notify_off * notify_off_multiplier` 计算 doorbell，禁用 MSI-X 并只消费 DTB
   `interrupt-map` 给出的 INTx。BAR、capability chain、queue size 或 route 非法时不得发布半初始化 adapter。
@@ -114,7 +114,7 @@ MMIO net/RNG 验证混合 DMA 的真实读写、同步与网络；不宣称设�
 ### UART 基线
 
 - init 只监督网络服务、`display-service`（有 `/dev/dri/card0` 时 exec `/bin/compositor`，否则安静待命）与 UART shell，不建立 seat socket、显示器文本 VT 或旧图形会话。
-- `compositor` 独占 DRM master 与 evdev 读取；其首帧必须与devmgr 的 `boot_screen` 的最后一帧逐像素一致（`verify_display.py` 以 `LBS1` 参考解码器裁决），光标素材是 `LCS1` 数据文件，不内置常量。
+- `compositor` 独占 DRM master 与 evdev 读取；其首帧必须与driver-host 的 `boot_screen` 的最后一帧逐像素一致（`verify_display.py` 以 `LBS1` 参考解码器裁决），光标素材是 `LCS1` 数据文件，不内置常量。
 - 指针焦点跟随光标下的窗口，键盘焦点跟随栈顶（活动）窗口；带描述符的消息（`wl_keyboard.keymap`）按段发送，fd 总先于引用它的消息到达。
 - `input::Decoder` 先累积原始相对位移并映射、钳制绝对坐标；会话仅原地合并同批相邻的语义指针位置，
   保留最新位置。按钮、按键和滚轮均为顺序屏障，不跨越屏障合并，不增加队列或分配。
@@ -312,7 +312,7 @@ render/adapter/display completion 都先推进 reset，再推进 detach/UNREF，
 
 ## USB host 与 UAC2 playback
 
-1. `drivers::usb::xhci::Host` 独占控制器 DMA 与 slot generation。中断服务线程只 ack/请求完成分派；State 短锁 只覆盖有界 ring 操作，task-only operations mutex 串行化 command、EP0、时钟与 alternate setting。枚举线程由 `devmgr::main` 创建，驱动不反向依赖 task。
+1. `drivers::usb::xhci::Host` 独占控制器 DMA 与 slot generation。中断服务线程只 ack/请求完成分派；State 短锁 只覆盖有界 ring 操作，task-only operations mutex 串行化 command、EP0、时钟与 alternate setting。枚举线程由 `driver-host::main` 创建，驱动不反向依赖 task。
    端口的 Empty/Seen/Addressed 状态同时覆盖未绑定的 HID 等设备，避免 reset 事件自激重枚举。
 2. producer 最后 Release 发布 TRB cycle，doorbell 前经过 `mmio` 的 device-ordering 屏障；consumer Acquire 读取 event cycle，核对地址/slot/DCI 后回收。event ring 每次最多处理 128 项，仍有工作则再次投递。
    每个 slot generation 在控制器生命周期内不复用；旧 PCM adapter 即使遇到相同 slot/port，也不能操作新连接。

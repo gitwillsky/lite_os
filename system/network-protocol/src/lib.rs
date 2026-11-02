@@ -1,6 +1,6 @@
 #![no_std]
 
-//! 网络服务（netd）与使用者之间的协议。
+//! 网络服务（netstack）与使用者之间的协议。
 //!
 //! 1. 控制 channel：使用者把设备目录中的网卡交给服务（[`NetworkService::attach_device`]），并为每个网络域
 //!    创建一条域 channel（[`NetworkService::create_namespace`]）；关闭域 channel 即退休该域。

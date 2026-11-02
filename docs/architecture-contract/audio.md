@@ -1,6 +1,6 @@
 # 音频契约
 
-本文 `audio`、Card、PCM/control 文件均指 `linuxd::devices::audio`。硬件 adapter 位于 devmgr，
+本文 `audio`、Card、PCM/control 文件均指 `linuxd::devices::audio`。硬件 adapter 位于 driver-host，
 `PcmOutput` 的 client/server 由 device-protocol 的 PCM channel 连接；应用不调用系统服务协议。
 
 ## Owner 与依赖

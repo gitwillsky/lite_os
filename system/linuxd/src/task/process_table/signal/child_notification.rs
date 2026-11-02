@@ -33,7 +33,7 @@ impl PreparedChildNotifications {
             };
             threads.get(&creator).cloned().map(|thread| {
                 let signal = match scope {
-                    ChildNotificationScope::Parent => syscall_abi::signal::SIGCHLD,
+                    ChildNotificationScope::Parent => linux_abi::signal::SIGCHLD,
                     ChildNotificationScope::Exit | ChildNotificationScope::ExitAdoption => {
                         exit_notification_signal(graph, node)
                     }
@@ -53,7 +53,7 @@ impl PreparedChildNotifications {
         };
         let adoption = adoption.filter(|thread| {
             parent.as_ref().is_none_or(|(parent, signal)| {
-                !Arc::ptr_eq(parent, thread) || *signal != syscall_abi::signal::SIGCHLD
+                !Arc::ptr_eq(parent, thread) || *signal != linux_abi::signal::SIGCHLD
             })
         });
         let recipient = |(thread, signal)| PreparedChildRecipient {
@@ -63,7 +63,7 @@ impl PreparedChildNotifications {
         };
         Self {
             parent: parent.map(recipient),
-            adoption: adoption.map(|thread| recipient((thread, syscall_abi::signal::SIGCHLD))),
+            adoption: adoption.map(|thread| recipient((thread, linux_abi::signal::SIGCHLD))),
         }
     }
     pub(in crate::task::process_table) fn prepare(&mut self) {
@@ -117,7 +117,7 @@ pub(in crate::task::process_table) fn exit_notification_signal(
         .and_then(|parent| graph.nodes.get(&parent))
         .is_some_and(|parent| parent.exec_generation != child.parent_exec_generation)
     {
-        syscall_abi::signal::SIGCHLD
+        linux_abi::signal::SIGCHLD
     } else {
         usize::from(child.exit_signal)
     }
@@ -204,7 +204,7 @@ pub(in crate::task::process_table) fn stage_child_signal(
     );
     let signal = match kind {
         super::super::super::model::ChildSignalKind::Exit => exit_notification_signal(graph, child),
-        super::super::super::model::ChildSignalKind::Job => syscall_abi::signal::SIGCHLD,
+        super::super::super::model::ChildSignalKind::Job => linux_abi::signal::SIGCHLD,
     };
     recipient.publish_child_signal(info, kind, signal, prepared.record_for(recipient, signal))
 }

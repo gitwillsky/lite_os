@@ -4,7 +4,7 @@ use super::{AccessIdentity, FileSystemError, Inode, InodeMetadata, InodeType};
 use crate::namespace::UserNamespace;
 use alloc::{sync::Arc, vec::Vec};
 use fallible_tree::FallibleMap;
-use syscall_abi::{
+use linux_abi::{
     capability::Capability,
     file_capability::{self, FileCapabilityData},
 };
@@ -344,7 +344,7 @@ impl Xattrs {
     }
     /// killpriv只摘实际capability属性；不分配、不调用外部权限或另一份xattr状态。
     pub(super) fn kill_capability(&mut self) -> Option<Vec<u8>> {
-        let name = syscall_abi::file_capability::NAME;
+        let name = linux_abi::file_capability::NAME;
         // cap_inode_need_killpriv只在值长度>0时删除；空attribute仍是标准可读的空值。
         if self
             .entries

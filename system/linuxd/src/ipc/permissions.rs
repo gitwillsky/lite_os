@@ -2,7 +2,7 @@
 use super::IpcError;
 use crate::namespace::{NamespaceAuthority, UserNamespace};
 use alloc::{sync::Arc, vec::Vec};
-use syscall_abi::capability::Capability;
+use linux_abi::capability::Capability;
 
 /// 一次 IPC operation 的不可变凭据输入；不保留 Task 或第二份可变 credential owner。
 pub(crate) struct IpcAccess {

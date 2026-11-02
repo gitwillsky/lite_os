@@ -216,5 +216,5 @@ dump 惰性生成：请求只冻结快照与游标，`recvmsg` 时按接收缓�
 新建 stream、已 accept 的连接及无监听语义的协议返回 0；短输出长度仍沿用通用 getsockopt codec。
 会话门禁的 Linux C consumer 覆盖 UNIX/IPv4 TCP 的初始、listen、accept 与 UDP/socketpair 查询。
 
-系统服务边界：INET/AF_PACKET 通过 network-protocol channel 访问 netd。epoll 无等待通知路径把它们保守作为候选，任务上下文经 RPC 精确复查。
+系统服务边界：INET/AF_PACKET 通过 network-protocol channel 访问 netstack。epoll 无等待通知路径把它们保守作为候选，任务上下文经 RPC 精确复查。
 stream send 每次服务调用最多传递 256 KiB，可返回部分发送；Linuxd 保留阻塞、信号、重试与 timeout 政策。

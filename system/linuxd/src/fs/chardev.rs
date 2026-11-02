@@ -8,7 +8,7 @@
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
 use crate::sync::Mutex;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::{AccessIdentity, DeviceNumber, FileSystemError};
 /// fdinfo 所属 proc mount 的 PID 视图，由文件系统传入；设备不反查调用者或持有第二份视图。

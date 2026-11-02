@@ -1,4 +1,4 @@
-//! 设备的 Linux 用户态 ABI 与设备级状态；设备本身由 devmgr 驱动，经设备目录以远端 client 接入。
+//! 设备的 Linux 用户态 ABI 与设备级状态；设备本身由 driver-host 驱动，经设备目录以远端 client 接入。
 pub(crate) mod audio;
 pub(crate) mod block;
 pub(crate) mod console;

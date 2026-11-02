@@ -163,7 +163,7 @@ pub(crate) fn sys_clone(
     tls: usize,
     child_tid: usize,
 ) -> isize {
-    use syscall_abi::clone::*;
+    use linux_abi::clone::*;
     if flags as u64 & (PIDFD | DETACHED) == (PIDFD | DETACHED) {
         return -errno::EINVAL;
     }
@@ -189,7 +189,7 @@ pub(crate) fn sys_clone(
 /// 短于 VER0 为 EINVAL、超过一页或非零未知尾部为 E2BIG、无效用户地址为 EFAULT；
 /// resource/namespace/PID 失败沿唯一 clone transaction 返回其实际 errno。
 pub(crate) fn sys_clone3(address: usize, size: usize) -> isize {
-    use syscall_abi::clone::*;
+    use linux_abi::clone::*;
     if size > 4096 {
         return -errno::E2BIG;
     }
@@ -282,7 +282,7 @@ pub(crate) fn sys_clone3(address: usize, size: usize) -> isize {
 }
 
 fn create_clone(flags: u64, exit_signal: u64, parameters: crate::task::CloneParameters) -> isize {
-    use syscall_abi::clone::*;
+    use linux_abi::clone::*;
     const SUPPORTED: u64 = VM
         | FS
         | FILES
@@ -579,7 +579,7 @@ pub(crate) fn sys_waitid(
         Ok(Some(record)) => {
             child_usage = crate::task::child_resource_usage(&record);
             let (pid, uid, code, status) = crate::task::child_status_info(&record);
-            info[0..4].copy_from_slice(&(syscall_abi::signal::SIGCHLD as i32).to_ne_bytes());
+            info[0..4].copy_from_slice(&(linux_abi::signal::SIGCHLD as i32).to_ne_bytes());
             info[8..12].copy_from_slice(&code.to_ne_bytes());
             info[16..20].copy_from_slice(&pid.to_ne_bytes());
             info[20..24].copy_from_slice(&uid.to_ne_bytes());
@@ -677,7 +677,7 @@ pub(crate) fn sys_execve(path: *const u8, argv: *const *const u8, envp: *const *
             drop(loaded);
             drop(envp);
             drop(task);
-            crate::task::exit_current_group_by_signal(syscall_abi::signal::SIGKILL)
+            crate::task::exit_current_group_by_signal(linux_abi::signal::SIGKILL)
         }
         Err(crate::task::ExecError::FatalImage) => {
             drop(loaded);

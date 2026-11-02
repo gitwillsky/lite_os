@@ -45,7 +45,7 @@ pub(crate) fn sys_set_uts_name(hostname: bool, address: usize, length: usize) ->
     let authority = task.namespace_authority();
     if !authority.capable(
         &namespace.user_namespace(),
-        syscall_abi::capability::Capability::SYS_ADMIN,
+        linux_abi::capability::Capability::SYS_ADMIN,
     ) {
         return -errno::EPERM;
     }

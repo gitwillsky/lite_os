@@ -196,7 +196,7 @@ impl PidNamespace {
     }
     /// pid namespace sysctl 的 root/SYS_ADMIN 权限；open 与每次 write 复查同一 owner。
     pub(crate) fn may_set_limit(&self, caller: &NamespaceAuthority) -> bool {
-        caller.capable(&self.user, syscall_abi::capability::Capability::SYS_ADMIN)
+        caller.capable(&self.user, linux_abi::capability::Capability::SYS_ADMIN)
             || self.user.to_kernel(true, 0) == Some(caller.effective_uid)
     }
     pub(crate) fn lookup(&self, number: u32) -> Option<PidKey> {

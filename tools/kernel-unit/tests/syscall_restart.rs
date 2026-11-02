@@ -60,7 +60,7 @@ fn timed_block_replays_native_restart_syscall_and_consumes_the_frozen_input_once
     state.set_block(block);
     state.arm(record(SyscallRestartPolicy::RestartBlock));
     let instruction = state.resolve(None).unwrap();
-    assert_eq!(instruction.syscall_id, syscall_abi::SYSCALL_RESTART_SYSCALL);
+    assert_eq!(instruction.syscall_id, linux_abi::SYSCALL_RESTART_SYSCALL);
     assert_eq!(instruction.syscall_pc, 0x1002);
     assert!(state.resolve(None).is_none());
     assert_eq!(state.take_block(), Some(block));

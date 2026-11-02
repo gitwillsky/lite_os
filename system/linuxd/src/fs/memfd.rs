@@ -90,7 +90,7 @@ impl Inode for MemFile {
         self.state()?.xattrs.get(name)
     }
     fn list_xattrs(&self, identity: &AccessIdentity) -> Result<Vec<u8>, FileSystemError> {
-        let trusted = identity.has_capability(syscall_abi::capability::Capability::SYS_ADMIN);
+        let trusted = identity.has_capability(linux_abi::capability::Capability::SYS_ADMIN);
         self.state()?
             .xattrs
             .list(|name| trusted || !name.starts_with(b"trusted."))

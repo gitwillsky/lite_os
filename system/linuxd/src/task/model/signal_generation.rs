@@ -6,7 +6,7 @@ impl TaskControlBlock {
     /// 不走外部 init exemption，也不重新取得 graph；不可屏蔽/改 disposition 的 kill 没有冲突集。
     pub(in crate::task) fn queue_group_exit_signal(&self) {
         self.thread().pending_signals.lock().queue(
-            syscall_abi::signal::SIGKILL,
+            linux_abi::signal::SIGKILL,
             PendingSignal::kernel(),
             &mut PreparedSignalRecord::default(),
         );
@@ -49,7 +49,7 @@ impl TaskControlBlock {
                 for thread in threads {
                     retired.append(thread.thread().pending_signals.lock().discard(conflicting));
                 }
-                if (!traced || signal == syscall_abi::signal::SIGKILL)
+                if (!traced || signal == linux_abi::signal::SIGKILL)
                     && handlers.ignores_generation(
                         signal,
                         *mask,
@@ -163,7 +163,7 @@ impl TaskControlBlock {
                     unblocked |= blocked & (1u64 << (signal - 1)) == 0;
                     retired.append(thread.thread().pending_signals.lock().discard(conflicting));
                 }
-                if (!traced || signal == syscall_abi::signal::SIGKILL)
+                if (!traced || signal == linux_abi::signal::SIGKILL)
                     && handlers.ignores_generation(
                         signal,
                         *mask,
@@ -206,8 +206,8 @@ fn default_fatal_action(
     namespace_init: bool,
 ) -> bool {
     action.handler == 0
-        && (!traced || signal == syscall_abi::signal::SIGKILL)
-        && (!namespace_init || signal == syscall_abi::signal::SIGKILL)
+        && (!traced || signal == linux_abi::signal::SIGKILL)
+        && (!namespace_init || signal == linux_abi::signal::SIGKILL)
         && !super::signal_is_ignored(signal, action)
         && !matches!(signal, 3..=8 | 11 | 19..=22 | 24 | 25 | 31)
 }
@@ -216,11 +216,11 @@ fn signal_conflicting_mask(signal: usize) -> u64 {
     const SIGCONT_MASK: u64 = 1u64 << (18 - 1);
     const STOP_MASK: u64 =
         (1u64 << (19 - 1)) | (1u64 << (20 - 1)) | (1u64 << (21 - 1)) | (1u64 << (22 - 1));
-    if signal == syscall_abi::signal::SIGCONT {
+    if signal == linux_abi::signal::SIGCONT {
         STOP_MASK
     } else if matches!(
         signal,
-        syscall_abi::signal::SIGSTOP..=syscall_abi::signal::SIGTTOU
+        linux_abi::signal::SIGSTOP..=linux_abi::signal::SIGTTOU
     ) {
         SIGCONT_MASK
     } else {
@@ -235,7 +235,7 @@ impl TaskControlBlock {
         signal: usize,
         info: PendingSignal,
     ) -> PreparedSignalRecord {
-        if !(1..=64).contains(&signal) || signal == syscall_abi::signal::SIGKILL {
+        if !(1..=64).contains(&signal) || signal == linux_abi::signal::SIGKILL {
             return PreparedSignalRecord::default();
         }
         let credentials = super::leader_credential_snapshot(&self.process().leader_credentials);
@@ -254,7 +254,7 @@ impl TaskControlBlock {
         signal: usize,
         info: PendingSignal,
     ) -> PreparedSignalRecord {
-        if !(1..=64).contains(&signal) || signal == syscall_abi::signal::SIGKILL {
+        if !(1..=64).contains(&signal) || signal == linux_abi::signal::SIGKILL {
             return PreparedSignalRecord::default();
         }
         let (namespace, uid) = self.user_resource_owner();

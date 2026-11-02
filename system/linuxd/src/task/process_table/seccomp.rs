@@ -39,7 +39,7 @@ pub(crate) fn install_seccomp_filter(
     PROCESS_TABLE.install_filter(
         &current,
         &program,
-        flags & syscall_abi::seccomp::FILTER_FLAG_TSYNC != 0,
+        flags & linux_abi::seccomp::FILTER_FLAG_TSYNC != 0,
     )?;
     Ok(listener.map(|(reservation, file)| reservation.publish(file)))
 }

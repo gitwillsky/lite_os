@@ -16,7 +16,7 @@ pub(in crate::task::process_table) fn publish_posix_timer_signal(
     };
     let mut retired = crate::task::model::RetiredSignals::default();
     let publication = {
-        let (mut child_records, mut graph) = if signal == syscall_abi::signal::SIGCONT {
+        let (mut child_records, mut graph) = if signal == linux_abi::signal::SIGCONT {
             let Some((records, graph)) =
                 lock_child_notifications(expired.tgid, ChildNotificationScope::Parent)
             else {
@@ -79,14 +79,14 @@ pub(in crate::task::process_table) fn publish_posix_timer_signal(
             // graph 保活实际 timer registry Arc；这里只归还 Box，不收费/析构最后 owner。
             prepared.recycle_timer();
         }
-        let notification = if signal == syscall_abi::signal::SIGCONT {
+        let notification = if signal == linux_abi::signal::SIGCONT {
             continue_process_locked(
                 &mut graph,
                 expired.tgid,
                 child_records.as_mut().expect("SIGCONT child preparation"),
             )
         } else {
-            if signal == syscall_abi::signal::SIGKILL {
+            if signal == linux_abi::signal::SIGKILL {
                 resume_for_fatal_signal_locked(&mut graph, expired.tgid);
             }
             None

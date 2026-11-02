@@ -13,10 +13,10 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use filesystem_protocol::{MAX_TRANSFER, MountControl, MountService, Mounted};
+use linux_abi::{errno, fuse};
 use native_runtime::Channel;
 use native_runtime::native_abi::{self, DEADLINE_INFINITE, Status};
 use native_runtime::sync::Mutex;
-use syscall_abi::{errno, fuse};
 
 use crate::ext4::{Ext4FileSystem, Ext4Inode};
 use crate::vfs::{

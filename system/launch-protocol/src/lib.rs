@@ -23,15 +23,15 @@ pub mod linuxd {
     pub const JOB: usize = ROLE_HANDLES + 1;
     /// 根 resource（串口、debuglog、时钟与电源）。
     pub const RESOURCE: usize = ROLE_HANDLES + 2;
-    /// devmgr 设备目录 channel 的读端。
+    /// driver-host 设备目录 channel 的读端。
     pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 3;
     /// ext4d 控制 channel 的客户端（请求挂载 ext4）。
     pub const EXT4: usize = ROLE_HANDLES + 4;
-    /// netd 控制 channel 的客户端（转交网卡、创建网络域）。
+    /// netstack 控制 channel 的客户端（转交网卡、创建网络域）。
     pub const NETWORK: usize = ROLE_HANDLES + 5;
     /// 原生系统服务的只读 INSPECT capability；顺序由根服务启动时的实际对象决定。
     pub const OBSERVERS: usize = ROLE_HANDLES + 6;
-    /// root-server、devmgr、ext4d、netd 四个观察句柄；linuxd 使用自身句柄。
+    /// root-server、driver-host、ext4d、netstack 四个观察句柄；linuxd 使用自身句柄。
     pub const OBSERVER_COUNT: usize = 4;
 }
 
@@ -48,11 +48,11 @@ pub mod ext4d {
 }
 
 /// 网络服务：拥有 IPv4 协议栈与 packet socket，按 linuxd 的请求创建网络域与 socket。
-pub mod netd {
+pub mod netstack {
     use super::ROLE_HANDLES;
 
     /// bootfs 中的映像路径。
-    pub const IMAGE: &[u8] = b"bin/netd";
+    pub const IMAGE: &[u8] = b"bin/netstack";
     /// 静态链接基址（普通进程的低地址区）。
     pub const BASE: usize = 0x40_0000;
     /// 控制 channel 的服务端。
@@ -60,11 +60,11 @@ pub mod netd {
 }
 
 /// 驱动宿主：平台设备发现、全部设备驱动与设备目录的发布者。
-pub mod devmgr {
+pub mod driver_host {
     use super::ROLE_HANDLES;
 
     /// bootfs 中的映像路径。
-    pub const IMAGE: &[u8] = b"bin/devmgr";
+    pub const IMAGE: &[u8] = b"bin/driver-host";
     /// 静态链接基址（普通进程的低地址区，与根服务不重叠）。
     pub const BASE: usize = 0x40_0000;
     /// 根 resource（切出 MMIO、IRQ resource，创建 IOMMU）。

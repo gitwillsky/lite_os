@@ -20,7 +20,7 @@ mod syscall {
     const INTERNAL_RESTART_NO_HANDLER: isize = isize::MIN + 1;
     pub(crate) use crate::timer;
     pub(crate) mod signal;
-    pub(crate) use syscall_abi::errno;
+    pub(crate) use linux_abi::errno;
 }
 use syscall::signal;
 
@@ -63,7 +63,7 @@ fn bad_frame_forwards_failure_stage_address_and_forces_sigsegv() {
         assert!(!task.restart_pending.get());
         assert_eq!(*task.looked_up.borrow(), Some(address));
         let (number, info) = task.signal.borrow_mut().take().unwrap();
-        assert_eq!(number, syscall_abi::signal::SIGSEGV);
+        assert_eq!(number, linux_abi::signal::SIGSEGV);
         assert!(info.is_forced_fault());
         assert_eq!(
             &info.encode(number)[16..24],
@@ -177,9 +177,9 @@ pub(crate) mod task {
             }
             Ok(PendingSignal::synchronous_fault(
                 if address.is_some() {
-                    syscall_abi::signal::SEGV_ACCERR
+                    linux_abi::signal::SEGV_ACCERR
                 } else {
-                    syscall_abi::signal::SI_KERNEL
+                    linux_abi::signal::SI_KERNEL
                 },
                 address.unwrap_or(0),
             ))

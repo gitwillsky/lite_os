@@ -37,15 +37,15 @@ name = "blocked-load-bench"
 path = "src/blocked_load.rs"
 
 [dependencies]
-mmio = { path = "../../mmio" }
-netd-unit = { path = "../netd-unit" }
-fallible-tree = { path = "../../fallible-tree" }
+mmio = { path = "../../libraries/mmio" }
+netstack-unit = { path = "../netstack-unit" }
+fallible-tree = { path = "../../libraries/fallible-tree" }
 native-runtime = { path = "../../system/native-runtime" }
 device-model = { path = "../../system/device-model" }
 network-protocol = { path = "../../system/network-protocol" }
 bitflags = "2.4"
 spin = { version = "0.10.0", default-features = false, features = ["mutex", "spin_mutex", "once"] }
-syscall-abi = { path = "../../syscall-abi" }
+linux-abi = { path = "../../abi/linux-abi" }
 
 [lints]
 workspace = true

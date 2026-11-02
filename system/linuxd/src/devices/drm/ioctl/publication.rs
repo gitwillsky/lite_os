@@ -1,4 +1,4 @@
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use crate::{
     devices::drm::{DrmFile, DumbBufferInfo},

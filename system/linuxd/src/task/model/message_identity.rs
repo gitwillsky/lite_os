@@ -1,6 +1,6 @@
 //! 一次实际 credential owner 快照；socket 消息不能混用不同 publication 的 UID/GID/capability。
 use crate::namespace::{NamespaceAuthority, UserNamespace};
-use syscall_abi::capability::Capability;
+use linux_abi::capability::Capability;
 
 /// Linux SCM_CREDENTIALS 的映射或身份声明拒绝；不修改 credential owner。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

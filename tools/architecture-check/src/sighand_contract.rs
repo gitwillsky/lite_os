@@ -374,10 +374,10 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         || !identity_compact.contains("node.exec_generation.checked_add(1)")
         || !identity
             .text
-            .contains("node.exit_signal = syscall_abi::signal::SIGCHLD as u8")
+            .contains("node.exit_signal = linux_abi::signal::SIGCHLD as u8")
         || !exit
             .text
-            .contains("node.exit_signal = syscall_abi::signal::SIGCHLD as u8")
+            .contains("node.exit_signal = linux_abi::signal::SIGCHLD as u8")
         || !child_compact.contains("parent.exec_generation!=child.parent_exec_generation")
         || !child_compact.contains("before.signal==after.signal")
         || !publication.contains("autoreap : ordinary && policy . autoreap")

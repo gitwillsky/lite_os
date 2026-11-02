@@ -648,7 +648,7 @@ impl Inode for ProcInode {
                 || requested & 2 != 0
                     && user.to_kernel(true, 0) != Some(identity.effective_uid())
                     && !identity
-                        .namespace_capable(&user, syscall_abi::capability::Capability::SYS_ADMIN)
+                        .namespace_capable(&user, linux_abi::capability::Capability::SYS_ADMIN)
             {
                 return Err(FileSystemError::AccessDenied);
             }
@@ -669,7 +669,7 @@ impl Inode for ProcInode {
                         || identity.effective_uid() != 0
                             && !identity.namespace_capable(
                                 &target.user_namespace(),
-                                syscall_abi::capability::Capability::NET_ADMIN,
+                                linux_abi::capability::Capability::NET_ADMIN,
                             ))
             {
                 return Err(FileSystemError::AccessDenied);
@@ -702,10 +702,8 @@ impl Inode for ProcInode {
                 .ok_or(FileSystemError::NotFound)?;
             if requested & 1 != 0
                 || requested & 2 != 0
-                    && !identity.namespace_capable(
-                        &target,
-                        syscall_abi::capability::Capability::SYS_RESOURCE,
-                    )
+                    && !identity
+                        .namespace_capable(&target, linux_abi::capability::Capability::SYS_RESOURCE)
             {
                 return Err(FileSystemError::AccessDenied);
             }

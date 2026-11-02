@@ -21,7 +21,7 @@ pub(crate) fn sys_reboot(magic: usize, magic2: usize, command: usize, argument: 
     // 标准 CAP_SYS_BOOT 先于参数解析，禁止只用 UID 0 绕过已撤销的 capability。
     if !current_task()
         .expect("reboot requires a current task")
-        .has_initial_capability(syscall_abi::capability::Capability::SYS_BOOT)
+        .has_initial_capability(linux_abi::capability::Capability::SYS_BOOT)
     {
         return -errno::EPERM;
     }

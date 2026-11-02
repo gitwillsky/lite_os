@@ -106,7 +106,7 @@ impl IpcNamespace {
         let pages = size.checked_add(PAGE_SIZE - 1).ok_or(IpcError::Invalid)? / PAGE_SIZE;
         let admit = |registry: &SharedMemoryRegistry| -> Result<(), IpcError> {
             // 当前没有配置 hugetlb hstate/pool；与 Linux hstate_sizelog(None) 同样拒绝。
-            if flags & syscall_abi::ipc::SHM_HUGETLB != 0 {
+            if flags & linux_abi::ipc::SHM_HUGETLB != 0 {
                 return Err(IpcError::Invalid);
             }
             if size == 0 || size > registry.maximum_size {

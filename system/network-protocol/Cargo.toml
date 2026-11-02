@@ -2,7 +2,7 @@
 name = "network-protocol"
 version = "0.1.0"
 edition = "2024"
-description = "网络服务（netd）与使用者之间的协议：网络域、socket 操作、接口与路由配置的词汇与线格式"
+description = "网络服务（netstack）与使用者之间的协议：网络域、socket 操作、接口与路由配置的词汇与线格式"
 
 [dependencies]
 native-runtime = { path = "../native-runtime" }

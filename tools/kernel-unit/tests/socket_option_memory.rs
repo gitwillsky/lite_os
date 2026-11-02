@@ -43,7 +43,7 @@ fn net_sysctl_permission_uses_global_root_and_namespace_capability_not_stat_owne
         Err(namespace::NamespaceError::Permission)
     ));
     let admin = namespace::NamespaceAuthority {
-        effective_capabilities: syscall_abi::capability::Capability::NET_ADMIN.mask(),
+        effective_capabilities: linux_abi::capability::Capability::NET_ADMIN.mask(),
         ..mapped_owner
     };
     net.set_optmem_max(41, &admin).unwrap();

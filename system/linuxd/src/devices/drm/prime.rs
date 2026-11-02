@@ -5,7 +5,7 @@ use crate::{
     memory::DeviceMappingSource,
 };
 use alloc::sync::Arc;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 pub(super) struct DmaBuf {
     pub(super) device: Arc<DrmDevice>,

@@ -5,7 +5,7 @@
 
 1. 串口出现 compositor 的首帧与输入就绪标记。
 2. 经 QMP `screendump` 取回 scanout，与 `LBS1` 参考解码器按同一整数缩放居中规则算出的帧逐像素比对；
-   两端（devmgr `boot_screen` 与 compositor）任何一方的缩放、居中或填充规则漂移，这里都会失败。
+   两端（driver-host `boot_screen` 与 compositor）任何一方的缩放、居中或填充规则漂移，这里都会失败。
 3. 经 QMP 注入一次平板移动与一次按键，要求 compositor 报告各自的首个事件。
 """
 
@@ -51,7 +51,7 @@ def gate_inputs(target: BuildTarget, image: Path) -> tuple[Path, ...]:
 
 
 def expected_frame(scene: bytes, width: int, height: int) -> list[tuple[int, int, int]]:
-    """按 devmgr 与 compositor 共同的规则算出接管后的整屏 RGB。
+    """按 driver-host 与 compositor 共同的规则算出接管后的整屏 RGB。
 
     整数倍 `min(W/640, H/480)` 放大并居中，位图外为黑；进度条从槽内部左端涂到 `HANDOFF_PERMILLE`。
     """

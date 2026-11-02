@@ -108,9 +108,9 @@ def build_kernel(environment: Mapping[str, str] | None = None) -> None:
     cargo_profile = ["--release"] if profile == "release" else []
     run(["cargo", "build", "--target", target.kernel_triple, *cargo_profile], cwd=ROOT / "kernel", environment=environment)
     run(
-        ["cargo", "build", "-p", "root-server", "-p", "devmgr", "-p", "ext4d", "-p", "netd", "-p", "linuxd", "--target", target.service_triple, *cargo_profile],
+        ["cargo", "build", "-p", "root-server", "-p", "driver-host", "-p", "ext4d", "-p", "netstack", "-p", "linuxd", "--target", target.service_triple, *cargo_profile],
         cwd=ROOT,
-        # 启动画面编入 devmgr；受 Git 管理的素材由 classic_assets 校验，cargo 会跟踪该环境变量与文件内容。
+        # 启动画面编入 driver-host；受 Git 管理的素材由 classic_assets 校验，cargo 会跟踪该环境变量与文件内容。
         environment=_env_with(environment, LITEOS_BOOT_SCENE=str(boot_scene())),
     )
     run(python_script("pack_bootfs.py", "--profile", profile), environment=environment)
@@ -393,13 +393,13 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
             "-p",
             "ext4-unit",
             "-p",
-            "netd-unit",
+            "netstack-unit",
             "-p",
             "fallible-tree",
             "-p",
             "scheduler-unit",
             "-p",
-            "syscall-abi",
+            "linux-abi",
         ],
         environment=_env_with(
             environment,
@@ -591,7 +591,7 @@ def verify_host(environment: Mapping[str, str] | None = None) -> None:
             "-p",
             "boot-scene",
             "-p",
-            "syscall-abi",
+            "linux-abi",
             "-p",
             "architecture-bench",
             "-p",
@@ -599,7 +599,7 @@ def verify_host(environment: Mapping[str, str] | None = None) -> None:
             "-p",
             "ext4-unit",
             "-p",
-            "netd-unit",
+            "netstack-unit",
             "-p",
             "fallible-tree",
             "-p",
@@ -619,7 +619,7 @@ def verify_host(environment: Mapping[str, str] | None = None) -> None:
             "-p",
             "boot-scene",
             "-p",
-            "syscall-abi",
+            "linux-abi",
             "-p",
             "kernel",
             "--target",
@@ -632,7 +632,7 @@ def verify_host(environment: Mapping[str, str] | None = None) -> None:
         ],
         environment=environment,
     )
-    run(["cargo", "clippy", "-p", "root-server", "-p", "devmgr", "-p", "ext4d", "-p", "netd", "-p", "linuxd", "--target", target.service_triple, "--bins", "--", "-D", "warnings"], environment=environment)
+    run(["cargo", "clippy", "-p", "root-server", "-p", "driver-host", "-p", "ext4d", "-p", "netstack", "-p", "linuxd", "--target", target.service_triple, "--bins", "--", "-D", "warnings"], environment=environment)
     if target.requires_bootloader:
         run(["cargo", "clippy", "--release", "--", "-D", "warnings"], cwd=ROOT / "bootloader", environment=environment)
     verify_unit(environment)
@@ -662,7 +662,7 @@ def verify_riscv64_secondary(environment: Mapping[str, str] | None = None) -> No
             "-p",
             "boot-scene",
             "-p",
-            "syscall-abi",
+            "linux-abi",
             "-p",
             "kernel",
             "--target",

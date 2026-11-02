@@ -1,5 +1,5 @@
 use alloc::sync::Arc;
-use syscall_abi::open::{O_CREAT, O_DIRECTORY, O_EXCL, O_TRUNC};
+use linux_abi::open::{O_CREAT, O_DIRECTORY, O_EXCL, O_TRUNC};
 
 use crate::{
     file::PreparedFileDescription,
@@ -83,7 +83,7 @@ pub(crate) fn sys_chroot(name: *const u8) -> isize {
     if let Err(error) = inode.require_access(&identity, 1 | crate::fs::MAY_CHDIR) {
         return ferr(error);
     }
-    if !task.has_capability(syscall_abi::capability::Capability::SYS_CHROOT) {
+    if !task.has_capability(linux_abi::capability::Capability::SYS_CHROOT) {
         return -errno::EPERM;
     }
     task.set_root_directory(opened);

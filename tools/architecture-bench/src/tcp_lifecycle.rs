@@ -2,7 +2,7 @@
 //! 实际 INET owner 的 TCP lifecycle、UDP ingress/readiness/loan 与有界扫描成本。
 mod cost_policy;
 fn main() {
-    netd_unit::benchmark_lifecycle(|name, iterations, handles, gated, operation| {
+    netstack_unit::benchmark_lifecycle(|name, iterations, handles, gated, operation| {
         for _ in 0..iterations {
             operation();
         }

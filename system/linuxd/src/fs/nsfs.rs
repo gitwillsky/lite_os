@@ -10,7 +10,7 @@ use super::{
 };
 use crate::namespace::{NamespaceReference, UserNamespace};
 use alloc::sync::{Arc, Weak};
-use syscall_abi::errno;
+use linux_abi::errno;
 
 const FILESYSTEM_ID: usize = PseudoFileSystem::Namespace.id();
 // OWNER: Weak identity registry 不保活 namespace；实际 inode 最后 Drop 精确摘除 entry。

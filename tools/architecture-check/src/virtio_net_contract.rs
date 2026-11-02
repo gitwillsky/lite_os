@@ -3,7 +3,7 @@ use syn::{Expr, ImplItem, Item, Type, visit::Visit};
 
 use super::SourceFile;
 
-const VIRTIO_NET_SOURCE: &str = "system/devmgr/src/drivers/virtio/net.rs";
+const VIRTIO_NET_SOURCE: &str = "system/driver-host/src/drivers/virtio/net.rs";
 
 /// 校验 production RX path 只能通过唯一 slot lifecycle owner 完成 completion。
 pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {

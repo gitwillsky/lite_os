@@ -68,7 +68,7 @@ impl UserMemory for TaskUserMemory<'_> {
                 prepared.finish(crate::fs::InodeOpen::Device(file))
             }
             crate::fs::InodeOpen::Storage(_) => {
-                return Err(DeviceError::Errno(syscall_abi::errno::EINVAL));
+                return Err(DeviceError::Errno(linux_abi::errno::EINVAL));
             }
         };
         ofd.notify(crate::fs::IN_OPEN);
@@ -76,14 +76,14 @@ impl UserMemory for TaskUserMemory<'_> {
     }
 
     fn device_file(&self, fd: i32) -> Result<alloc::sync::Arc<dyn DeviceFile>, DeviceError> {
-        let fd = usize::try_from(fd).map_err(|_| DeviceError::Errno(syscall_abi::errno::EBADF))?;
+        let fd = usize::try_from(fd).map_err(|_| DeviceError::Errno(linux_abi::errno::EBADF))?;
         let file = self
             .0
             .fd_get(fd)
-            .ok_or(DeviceError::Errno(syscall_abi::errno::EBADF))?;
+            .ok_or(DeviceError::Errno(linux_abi::errno::EBADF))?;
         match &file.kind {
             crate::file::OpenFileKind::Device(device) => Ok(device.clone()),
-            _ => Err(DeviceError::Errno(syscall_abi::errno::EINVAL)),
+            _ => Err(DeviceError::Errno(linux_abi::errno::EINVAL)),
         }
     }
     fn install_device(
@@ -100,14 +100,14 @@ impl UserMemory for TaskUserMemory<'_> {
             crate::file::PreparedDeviceDescription::try_new(file.anonymous_name(), flags)
                 .map_err(|error| DeviceError::Errno(-super::fs::filesystem_error(error)))?;
         let number = i32::try_from(reservation.descriptors()[0])
-            .map_err(|_| DeviceError::Errno(syscall_abi::errno::EMFILE))?;
+            .map_err(|_| DeviceError::Errno(linux_abi::errno::EMFILE))?;
         let candidate = prepared.finish(file.clone());
         let description = if let Some(cache) = file.shared_description() {
             let mut cache = cache.lock();
             if let Some(existing) = cache.as_ref().and_then(alloc::sync::Weak::upgrade) {
                 existing
                     .downcast::<OpenFileDescription>()
-                    .map_err(|_| DeviceError::Errno(syscall_abi::errno::EINVAL))?
+                    .map_err(|_| DeviceError::Errno(linux_abi::errno::EINVAL))?
             } else {
                 let erased: alloc::sync::Arc<dyn core::any::Any + Send + Sync> = candidate.clone();
                 *cache = Some(alloc::sync::Arc::downgrade(&erased));
@@ -117,7 +117,7 @@ impl UserMemory for TaskUserMemory<'_> {
             candidate
         };
         self.write(fd_address, &number.to_ne_bytes())
-            .map_err(|_| DeviceError::Errno(syscall_abi::errno::EFAULT))?;
+            .map_err(|_| DeviceError::Errno(linux_abi::errno::EFAULT))?;
         reservation.publish(description);
         Ok(number)
     }
@@ -292,7 +292,7 @@ pub(super) fn write_device(
     let result = file.write(&mut input, nonblocking);
     if result == Err(DeviceError::BrokenPipe) {
         // 无论是否已有进度，peer 关闭都投递 SIGPIPE；已有进度时返回值仍是已写字节数。
-        crate::task::send_thread_signal(task.tgid(), task.tid(), syscall_abi::signal::SIGPIPE)
+        crate::task::send_thread_signal(task.tgid(), task.tid(), linux_abi::signal::SIGPIPE)
             .expect("current device writer must exist");
     }
     progress_or(input.cursor.completed(), result)
@@ -307,7 +307,7 @@ pub(super) fn read_positioned_file(
     offset: u64,
 ) -> isize {
     if !file.supports_positioned_io() {
-        return -syscall_abi::errno::ESPIPE;
+        return -linux_abi::errno::ESPIPE;
     }
     let mut output = TaskUserOutput {
         task,
@@ -325,7 +325,7 @@ pub(super) fn write_positioned_file(
     offset: u64,
 ) -> isize {
     if !file.supports_positioned_io() {
-        return -syscall_abi::errno::ESPIPE;
+        return -linux_abi::errno::ESPIPE;
     }
     let mut input = TaskUserInput {
         task,
@@ -376,7 +376,7 @@ fn ioctl_call<'a>(
         user: memory,
         fd_readable: ofd.status_flags() & crate::fs::O_ACCMODE != crate::fs::O_WRONLY,
         nonblocking: ofd.status_flags() & O_NONBLOCK != 0,
-        privileged: task.has_initial_capability(syscall_abi::capability::Capability::SYS_ADMIN),
+        privileged: task.has_initial_capability(linux_abi::capability::Capability::SYS_ADMIN),
         authority: task.namespace_authority(),
     }
 }

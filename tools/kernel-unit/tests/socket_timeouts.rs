@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 //! 直接加载实际 socket timeout owner 与 native codec；scheduler cadence 是显式边界输入。
-use syscall_abi::errno;
+use linux_abi::errno;
 
 #[path = "../../../system/linuxd/src/net"]
 mod net {

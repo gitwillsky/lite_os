@@ -14,14 +14,14 @@
 
 use alloc::sync::Arc;
 
+use linux_abi::signal::{
+    BUS_ADRALN, BUS_ADRERR, ILL_ILLOPC, ILL_ILLTRP, SEGV_ACCERR, SEGV_MAPERR, SIGBUS, SIGILL,
+    SIGKILL, SIGSEGV, SIGTRAP, TRAP_BRKPT,
+};
 use native_runtime::Process;
 use native_runtime::native_abi::{ExceptionReport, exception};
 use native_runtime::restricted::{BoundState, Exit};
 use native_runtime::thread::PreparedThread;
-use syscall_abi::signal::{
-    BUS_ADRALN, BUS_ADRERR, ILL_ILLOPC, ILL_ILLTRP, SEGV_ACCERR, SEGV_MAPERR, SIGBUS, SIGILL,
-    SIGKILL, SIGSEGV, SIGTRAP, TRAP_BRKPT,
-};
 
 use crate::arch::context::{SyscallCompletion, UserFault};
 use crate::memory::{MemoryError, PageFaultAccess, PageFaultOutcome, SegmentationCause};

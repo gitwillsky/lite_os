@@ -222,7 +222,7 @@ impl UserContext {
         bytes: &mut [u8],
         write: bool,
     ) -> Result<usize, ()> {
-        if note != syscall_abi::ptrace::NT_PRSTATUS || !bytes.len().is_multiple_of(8) {
+        if note != linux_abi::ptrace::NT_PRSTATUS || !bytes.len().is_multiple_of(8) {
             return Err(());
         }
         let length = bytes.len().min(272);
@@ -271,10 +271,10 @@ impl UserContext {
         match replay_number {
             None => {
                 self.pc += 4;
-                self.x[0] = (-syscall_abi::errno::EINTR) as usize;
+                self.x[0] = (-linux_abi::errno::EINTR) as usize;
             }
-            Some(syscall_abi::SYSCALL_RESTART_SYSCALL) => {
-                self.x[8] = syscall_abi::SYSCALL_RESTART_SYSCALL
+            Some(linux_abi::SYSCALL_RESTART_SYSCALL) => {
+                self.x[8] = linux_abi::SYSCALL_RESTART_SYSCALL
             }
             Some(_) => {}
         }

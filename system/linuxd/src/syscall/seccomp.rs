@@ -1,6 +1,6 @@
 //! seccomp/prctl 共用的标准 UAPI installation 与 syscall-entry enforcement。
 
-use syscall_abi::{errno, seccomp::*, signal::SIGSYS};
+use linux_abi::{errno, seccomp::*, signal::SIGSYS};
 
 use super::{SyscallOutcome, user_iovec::UserInputStaging};
 use crate::task::{PendingSignal, SeccompDecision, SeccompError, TaskControlBlock, current_task};
@@ -56,7 +56,7 @@ fn install_filter(address: usize, flags: u32) -> isize {
     }
     // NNP 或 calling credential 的 CAP_SYS_ADMIN 授权；不允许 UID 0 绕过已撤销的 capability。
     if !current.no_new_privileges()
-        && !current.has_capability(syscall_abi::capability::Capability::SYS_ADMIN)
+        && !current.has_capability(linux_abi::capability::Capability::SYS_ADMIN)
     {
         return -errno::EACCES;
     }

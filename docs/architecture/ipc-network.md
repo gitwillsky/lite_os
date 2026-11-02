@@ -1,6 +1,6 @@
 # IPC 与网络当前架构
 
-Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system/linuxd`；IPv4/TCP/UDP/RAW、FIB、端口与 AF_PACKET 队列属于 `system/netd`。下述协议 owner 通过 `network-protocol` 交互，不共享内核状态。
+Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system/linuxd`；IPv4/TCP/UDP/RAW、FIB、端口与 AF_PACKET 队列属于 `system/netstack`。下述协议 owner 通过 `network-protocol` 交互，不共享内核状态。
 
 
 ## 当前设计
@@ -68,7 +68,7 @@ observer 无法重新发布 binding。
 
 SocketTimeouts 是收发超时唯一 owner；linuxd OFD 与 INET facade 引用同一个 policy Mutex。Linux LP64 old/new timeval 在 syscall codec 验证：非法 usec 为 EDOM，零禁用，负秒立即到期，合法有限时长按实际 scheduler tick 上取整并在 KTIME_MAX
 饱和。操作冻结一次 host-monotonic deadline，read/write/send/recv/accept/TCP connect 的实际等待全部交给已有 wait registry；源唤醒、队列容量变化和 option 后续修改不重置原期限。无限等待的 signal interruption 允许 SA_RESTART，有限超
-时保持 EINTR。UNIX accepted endpoint 按 unix_create1 默认禁用超时；TCP 协议选项由 netd 在握手完成时冻结；Linux 收发超时目前在 accept 时继承 listener，存在固定 Linux 语义差异，见 socket ABI。短 getsockopt 返回实际复制长度，负
+时保持 EINTR。UNIX accepted endpoint 按 unix_create1 默认禁用超时；TCP 协议选项由 netstack 在握手完成时冻结；Linux 收发超时目前在 accept 时继承 listener，存在固定 Linux 语义差异，见 socket ABI。短 getsockopt 返回实际复制长度，负
 容量拒绝且不消费 SO_ERROR。
 
 AF_UNIX blocking connect 与 datagram send 共用 SocketCapacityWait 和既有 wait registry。Backlog/PacketQueue 是实际 owner 的等待条件，拒绝保留第二份容量缓存；终态或类型变化视为可重新检查，避免最后关闭的 edge 在注册前被消费后永

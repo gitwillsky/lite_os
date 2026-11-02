@@ -1,6 +1,6 @@
 //! linuxd 使用的平台能力：内核串口 console、整机电源与启动参数。
 //!
-//! 设备发现、MMIO、中断与 DMA 属于 devmgr；linuxd 只经设备目录使用远端设备。
+//! 设备发现、MMIO、中断与 DMA 属于 driver-host；linuxd 只经设备目录使用远端设备。
 
 mod serial;
 

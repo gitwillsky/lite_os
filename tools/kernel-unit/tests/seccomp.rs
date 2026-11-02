@@ -7,9 +7,9 @@ extern crate fallible_tree;
 #[path = "../src/namespace_fixture.rs"]
 mod namespace;
 
+use linux_abi::seccomp::*;
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use syscall_abi::seccomp::*;
 
 #[allow(dead_code, unused_imports)]
 #[path = "../src/seccomp_environment.rs"]

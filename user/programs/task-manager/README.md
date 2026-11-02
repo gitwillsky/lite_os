@@ -11,7 +11,7 @@
 - 应用程序：foreign-toplevel 窗口列表，结束任务、切换至、新任务（以当前用户执行命令）。
 - 进程：标准 procfs 的 Linux 兼容任务，包含类型、PID、CPU、累计 CPU 时间和内存；linuxd 工作线程默认折叠。
   空闲行为统计项，不是真实 PID0。CPU 以全机时间归一化并保留两位小数；相同 PID 的不同 starttime 不沿用旧样本。
-- 系统服务：只读系统观测协议返回 root-server、devmgr、ext4d、netd、linuxd 的真实 KOID、状态、CPU、累计 CPU 时间、内存及线程数。
+- 系统服务：只读系统观测协议返回 root-server、driver-host、ext4d、netstack、linuxd 的真实 KOID、状态、CPU、累计 CPU 时间、内存及线程数。
   服务状态及指标读取失败显示不可用，不伪造零。关键服务不提供结束/重启操作，查询端也不持有管理 capability。
 - 性能：CPU 总使用率、按实际逻辑 CPU 编号采样的曲线；“查看 > CPU 使用记录”切换总图/每 CPU 图。
   总进程数与线程数包含原生服务；linuxd 工作线程已经在服务中统计，不重复相加。打开文件数只统计 Linux 进程的文件描述符。

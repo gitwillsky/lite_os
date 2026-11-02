@@ -3,11 +3,11 @@
 ## 当前设计
 
 1. 内核 `platform` 只发现 machine facts、路由中断并发布受权限约束的 MMIO/IRQ resource；
-   不装配设备驱动。`devmgr::platform` 解码 DTB，`devmgr::drivers` 装配 VirtIO、PCI 与 xHCI。
-2. devmgr 拥有全部硬件 adapter、queue、DMA、descriptor、completion 与 reset state。
+   不装配设备驱动。`driver-host::platform` 解码 DTB，`driver-host::drivers` 装配 VirtIO、PCI 与 xHCI。
+2. driver-host 拥有全部硬件 adapter、queue、DMA、descriptor、completion 与 reset state。
    `device-model` 定义设备类接口；`device-protocol` 通过目录、channel 与 VMO 发布设备，
-   linuxd 的 `devices::directory` 接入这些设备并建立 Linux 设备语义。netd 消费网络设备，ext4d 消费块设备。
-3. 内核只把中断交给 Interrupt 对象。devmgr 的中断服务线程等待、确认设备再 ack；
+   linuxd 的 `devices::directory` 接入这些设备并建立 Linux 设备语义。netstack 消费网络设备，ext4d 消费块设备。
+3. 内核只把中断交给 Interrupt 对象。driver-host 的中断服务线程等待、确认设备再 ack；
    独立完成线程消费合并通知并分派 completion。请求线程睡在同一完成 owner 上，
    启动期也使用服务线程，不保留内核 bootstrap WFI 或 user-return deferred 驱动路径。
 4. VirtIO ring 与固定 payload 用 VMO 分配，以对应 BTI 固定并持有 PMT；descriptor 使用设备地址，
@@ -26,7 +26,7 @@
   uevent 通知 userspace；preferred mode 与已完成的 active CRTC mode 独立，旧 CRTC 在 userspace
   modeset 新 generation 前仍可 page-flip。同步 DRM ioctl 遇到 adapter 内部 display-info transaction
   时等待统一 readiness edge 后重提，不把 controlq 的实现级串行化泄漏成 `EBUSY`。动态 mode 的
-  userspace transaction 由用户态 `compositor` 拥有：它是唯一 DRM master 与 evdev 读者，接管 devmgr 启动画面，
+  userspace transaction 由用户态 `compositor` 拥有：它是唯一 DRM master 与 evdev 读者，接管 driver-host 启动画面，
   以硬件光标跟随输入，并作为 Wayland 服务端把客户端窗口整帧合成到 scanout（`$XDG_RUNTIME_DIR/wayland-0`；
   `wl_seat` 有指针与键盘，特权连接有 layer-shell，所有连接有 foreign-toplevel）。键盘 keymap 由 `keyboard::xkb` 从同一张键码表生成，
   自包含、不依赖客户端的 xkeyboard-config。

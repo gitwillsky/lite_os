@@ -149,7 +149,7 @@ mod credential_syscall;
 
 #[test]
 fn scheduler_and_proc_use_permitted_and_effective_subset_respectively() {
-    use syscall_abi::capability::{Capability, CapabilitySets, VALID_MASK};
+    use linux_abi::capability::{Capability, CapabilitySets, VALID_MASK};
     let target = crate::task::TaskControlBlock::root_with_pid(82);
     let caller = crate::task::TaskControlBlock::root_with_pid(81);
     caller.set_capabilities(CapabilitySets::default()).unwrap();
@@ -185,7 +185,7 @@ fn scheduler_and_proc_use_permitted_and_effective_subset_respectively() {
 
 #[test]
 fn exec_prepared_ids_ambient_nnp_secure_and_parent_death_commit_together() {
-    use syscall_abi::capability::{Capability, CapabilitySets, VALID_MASK};
+    use linux_abi::capability::{Capability, CapabilitySets, VALID_MASK};
     let root = crate::task::TaskControlBlock::root();
     root.set_capabilities(CapabilitySets::default()).unwrap();
     let facts = root.exec_facts(0o755, 0, 0);
@@ -236,7 +236,7 @@ fn exec_prepared_ids_ambient_nnp_secure_and_parent_death_commit_together() {
 
 #[test]
 fn inode_dac_and_sticky_policy_are_capability_based() {
-    use syscall_abi::capability::Capability;
+    use linux_abi::capability::Capability;
     let file = fs::InodeMetadata {
         kind: fs::InodeType::File,
         mode: 0,
@@ -298,7 +298,7 @@ fn inode_dac_and_sticky_policy_are_capability_based() {
 
 #[test]
 fn production_capability_syscall_preserves_version_pid_and_copy_error_order() {
-    use syscall_abi::capability::{CapabilitySets, VERSION_3};
+    use linux_abi::capability::{CapabilitySets, VERSION_3};
     let caller = crate::task::TaskControlBlock::root();
     crate::task::enter(&caller);
     let mut bytes = [0u8; 32];
@@ -605,7 +605,7 @@ fn exec_fs_only_change_does_not_reenable_dumpability_after_credential_commit() {
 
 #[test]
 fn proc_fscreds_uses_caller_fs_ids_and_requires_dumpable_target() {
-    use syscall_abi::capability::CapabilitySets;
+    use linux_abi::capability::CapabilitySets;
     let target = crate::task::TaskControlBlock::root_with_pid(7);
     target.set_credential_id(false, 1000).unwrap();
     target.set_credential_id(true, 1000).unwrap();
@@ -624,7 +624,7 @@ fn proc_fscreds_uses_caller_fs_ids_and_requires_dumpable_target() {
 
 #[test]
 fn robust_read_uses_real_ids_and_permitted_capabilities_in_the_actual_authorization_owner() {
-    use syscall_abi::capability::{CapabilitySets, VALID_MASK};
+    use linux_abi::capability::{CapabilitySets, VALID_MASK};
     let target = crate::task::TaskControlBlock::root_with_pid(101);
     let caller = crate::task::TaskControlBlock::root_with_pid(102);
     caller
@@ -824,7 +824,7 @@ fn ordered_group_permission_and_credential_clone_cpu_cost() {
         black_box(parent.credential_id(true, true));
     });
     measure("credential capability getter", || {
-        black_box(parent.has_capability(syscall_abi::capability::Capability::SYS_ADMIN));
+        black_box(parent.has_capability(linux_abi::capability::Capability::SYS_ADMIN));
     });
     let identity = parent.access_identity(true);
     measure("content write kill-mask", || {
@@ -840,7 +840,7 @@ fn ordered_group_permission_and_credential_clone_cpu_cost() {
 
 #[test]
 fn actual_user_namespace_identity_projection_and_capabilities_never_authorize_global_inodes() {
-    use syscall_abi::capability::Capability;
+    use linux_abi::capability::Capability;
     let caller = crate::task::TaskControlBlock::root();
     let parent = caller.namespace_authority();
     caller
@@ -969,7 +969,7 @@ fn nondumpable_proc_access_requires_the_mm_namespace_even_after_user_unshare() {
 
 #[test]
 fn scoped_inode_operations_use_euid_ancestry_and_cannot_borrow_changed_fsuid() {
-    use syscall_abi::capability::Capability;
+    use linux_abi::capability::Capability;
     let initial = crate::namespace::boot();
     crate::ipc::initialize_namespaces().unwrap();
     let owner = crate::namespace::NamespaceAuthority {
@@ -1021,7 +1021,7 @@ pub(crate) mod task {
     thread_local! { static CURRENT: RefCell<Option<Arc<model::TaskControlBlock>>> = const { RefCell::new(None) }; }
     pub(crate) use model::CapabilityError;
     pub(crate) use model::{CredentialUpdateError, TaskControlBlock};
-    pub(crate) fn capability_sets(pid: usize) -> Option<syscall_abi::capability::CapabilitySets> {
+    pub(crate) fn capability_sets(pid: usize) -> Option<linux_abi::capability::CapabilitySets> {
         let caller = current_task()?;
         (pid == 0 || pid == caller.tid()).then(|| caller.capability_snapshot().sets)
     }
@@ -1183,7 +1183,7 @@ pub(crate) mod task {
             ));
             assert_eq!(
                 facts.capabilities.sets.effective,
-                syscall_abi::capability::VALID_MASK
+                linux_abi::capability::VALID_MASK
             );
             assert_eq!(kernel.proc_inode_owner(0o40555), (0, 0));
             let authority = kernel.namespace_authority();

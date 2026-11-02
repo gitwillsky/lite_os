@@ -32,7 +32,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         || !ledger.contains("ifforced{value.max(0)asusize}")
         || !ledger.contains(".min(i32::MAXasusize/2)")
         || ledger.contains("DEFAULT_BUFFER_BYTES")
-        || !abi.contains("ifforced&&!current_task().unwrap().has_initial_capability(syscall_abi::capability::Capability::NET_ADMIN)")
+        || !abi.contains("ifforced&&!current_task().unwrap().has_initial_capability(linux_abi::capability::Capability::NET_ADMIN)")
         || !abi.contains(".set_buffer_limit(direction,value,forced)")
     {
         errors.push("socket-buffer: one actual global tunable owner must capture independent defaults and unsigned option clamp with actual allocation minimum".into());

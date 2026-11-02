@@ -6,7 +6,7 @@
 use crate::sync::TaskMutex;
 use alloc::{sync::Arc, sync::Weak, vec::Vec};
 
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::chardev::{
     DeviceError, DeviceFile, DeviceWaitSource, DeviceWaitSources, IoctlCall, UserFault, UserInput,

@@ -28,7 +28,7 @@
 宿主计时器；guest 完成延迟仍会受到宿主调度影响，门禁串行执行并沿用固定宽阈值。gate 在固定 UTM VirGL 产品实例中启动 rootfs 的私有副本，先以固定上游 `eglinfo -B -p gbm -a gles` 创建 VirGL GLES context，再运行
 `drm-flip-probe`（`user/libraries/linux-uapi/src/bin/drm-flip-probe/main.rs`；只安装在私有镜像）。
 随后通过真实 display-service 启动 compositor，并运行上游 Weston simple-egl；它会实际创建窗口和共享 GPU 缓冲。
-探针走产品同一 DRM/device-protocol/devmgr 路径：VirGL2 能力、render target、EXECBUFFER 清屏、PAGE_FLIP。它先对清屏结果做像素读回比对
+探针走产品同一 DRM/device-protocol/driver-host 路径：VirGL2 能力、render target、EXECBUFFER 清屏、PAGE_FLIP。它先对清屏结果做像素读回比对
 （功能裁决），并提交跨 65 页的两包 inline-write，逐行回读校验 DMA 命令流的分散内存与异步寿命。
 随后连续翻页，丢弃 60 帧 warmup 后测量 600 次完成间隔。`dropped` 取设备 vblank sequence 间隙，严格要求
 为 0；p95/p99 按“宽但真实的绝对上限”设阈值，不在文档记录本机测量值。样本不足、读回像素不符、flip 事件与提交帧
@@ -37,7 +37,7 @@
 
 显示服务门禁（`scripts/verify_display.py`，`make verify-runtime-display`）在 QEMU（virtio-gpu、键盘、平板，无窗口）冷启动产品 rootfs：
 先等 compositor 的首帧与输入就绪标记，再经 QMP `screendump` 取回 scanout，与 `LBS1` 参考解码器按同一整数缩放居中规则算出的整帧逐像素
-比对；`devmgr::boot_screen` 与 compositor 任一方的缩放、居中或进度填充规则漂移都会失败。随后注入一次平板移动与一次按键，要求
+比对；`driver-host::boot_screen` 与 compositor 任一方的缩放、居中或进度填充规则漂移都会失败。随后注入一次平板移动与一次按键，要求
 compositor 报告各自的首个事件。它不测量时间，参考帧与比对函数由 `scripts/tests/test_verify_display.py` 约束；只在 AArch64+HVF 承担。
 
 ## classic-ui 消费者

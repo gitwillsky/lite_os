@@ -8,9 +8,9 @@ AArch64 和 RISC-V64 共用这些机制，具体指令与 machine 装配通过�
 
 1. `kernel/src/main.rs` 装配内核机制；`bootstrap` 从 bootfs 装载唯一的 `root-server`，交付根 Job、
    resource、bootfs 与 DTB。内核不解释服务目录、文件系统、网络和应用启动策略。
-2. `system/root-server` 启动 `devmgr`、`ext4d`、`netd` 和 `linuxd`，按角色交付句柄。
-   `devmgr` 接收硬件根 resource，`linuxd` 只接收日志、串口、UTC 设置与电源的 system resource 范围。
-   `devmgr` 拥有硬件驱动，`ext4d` 拥有 ext4 引擎，`netd` 拥有协议栈；`linuxd` 挂载根文件系统并启动 PID1。
+2. `system/root-server` 启动 `driver-host`、`ext4d`、`netstack` 和 `linuxd`，按角色交付句柄。
+   `driver-host` 接收硬件根 resource，`linuxd` 只接收日志、串口、UTC 设置与电源的 system resource 范围。
+   `driver-host` 拥有硬件驱动，`ext4d` 拥有 ext4 引擎，`netstack` 拥有协议栈；`linuxd` 挂载根文件系统并启动 PID1。
 3. 每个 Linux 进程对应一个共享进程的成员：低地址区属于应用，高地址区共享 `linuxd` 映像、堆与服务栈。
    每个 Linux 线程有一个原生承载线程；restricted 使用不含服务区 USER 映射的 private 页表根，
    syscall/未解决异常/kick 使其回到 normal 页表根的兼容服务。
@@ -29,12 +29,12 @@ AArch64 和 RISC-V64 共用这些机制，具体指令与 machine 装配通过�
 | `kernel/src/object`、`syscall` | 句柄、rights、对象生命周期及 native 参数编解码 |
 | `system/native-runtime`、`service-sync`、`service-rpc` | 服务入口、分配/线程/port reactor、可睡眠同步与 IPC codec |
 | `system/linuxd` | Linux ABI、VFS、进程/信号/安全、设备 UAPI、pager 与应用装载 |
-| `system/devmgr`、`device-model`、`device-protocol` | 驱动、设备类 trait、目录、设备协议与远端适配 |
+| `system/driver-host`、`device-model`、`device-protocol` | 驱动、设备类 trait、目录、设备协议与远端适配 |
 | `system/ext4d`、`filesystem-protocol` | ext4/JBD2 与 FUSE 服务；挂载控制和大消息传输 |
-| `system/netd`、`network-protocol` | IPv4/transport/FIB 与网络域；跨服务 socket 操作与就绪事件 |
-| `task-observer-protocol` | 原生系统服务观测的只读消息；KOID 不混入 Linux PID |
-| `native-abi`、`syscall-abi` | 系统服务接口与 Linux UAPI，边界分别固定 |
-| `fallible-tree`、`mmio` | 唯一的可失败有序存储与有界 MMIO 访问实现 |
+| `system/netstack`、`network-protocol` | IPv4/transport/FIB 与网络域；跨服务 socket 操作与就绪事件 |
+| `system/task-observer-protocol` | 原生系统服务观测的只读消息；KOID 不混入 Linux PID |
+| `abi/native-abi`、`abi/linux-abi` | 系统服务接口与 Linux UAPI，边界分别固定 |
+| `libraries/fallible-tree`、`libraries/mmio` | 唯一的可失败有序存储与有界 MMIO 访问实现 |
 | `user` | Linux 应用、桌面、运行库与 UI SDK |
 
 ## 领域导航

@@ -90,7 +90,7 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(commands[0][:2], ["cargo", "build"])
                 self.assertIn("--release", commands[0])
                 self.assertEqual(commands[1][:2], ["cargo", "build"])
-                for service in ("root-server", "devmgr", "ext4d", "netd", "linuxd"):
+                for service in ("root-server", "driver-host", "ext4d", "netstack", "linuxd"):
                     self.assertIn(service, commands[1])
                 self.assertEqual(Path(commands[2][1]).name, "pack_bootfs.py")
                 self.assertEqual(Path(commands[3][1]).name, "verify_artifacts.py")

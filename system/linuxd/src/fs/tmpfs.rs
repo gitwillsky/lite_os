@@ -340,7 +340,7 @@ impl Inode for TmpInode {
     fn list_xattrs(&self, identity: &super::AccessIdentity) -> Result<Vec<u8>, FileSystemError> {
         let trusted = identity.namespace_capable(
             &crate::namespace::initial_user(),
-            syscall_abi::capability::Capability::SYS_ADMIN,
+            linux_abi::capability::Capability::SYS_ADMIN,
         );
         self.state()?
             .xattrs

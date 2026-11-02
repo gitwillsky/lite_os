@@ -1,6 +1,6 @@
 //! Linux 7.1 native 64-bit ALSA PCM ioctl codec。
 
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::codec::{
     HW_PARAMS_BYTES, PCM_PROTOCOL_VERSION, PcmInfo, SNDRV_PCM_IOCTL_DELAY, SNDRV_PCM_IOCTL_DROP,

@@ -14,7 +14,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 
 use crate::sync::Mutex;
 use crate::sync::Once;
-use syscall_abi::{errno, fuse};
+use linux_abi::{errno, fuse};
 
 use super::{
     filesystem::Mount,
@@ -760,7 +760,7 @@ impl Connection {
                     (self.requester)().is_some_and(|requester| {
                         requester
                             .identity
-                            .has_capability(syscall_abi::capability::Capability::SYS_ADMIN)
+                            .has_capability(linux_abi::capability::Capability::SYS_ADMIN)
                     }),
                 );
             }

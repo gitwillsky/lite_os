@@ -5,7 +5,7 @@ use crate::{
     memory::{MapPermission, MemoryError, PAGE_SIZE},
     task::current_task,
 };
-use syscall_abi::{errno, ipc::*};
+use linux_abi::{errno, ipc::*};
 
 pub(in crate::syscall) fn sys_shmget(key: i32, size: usize, flags: u32) -> isize {
     let task = current_task().expect("shmget requires current Thread");

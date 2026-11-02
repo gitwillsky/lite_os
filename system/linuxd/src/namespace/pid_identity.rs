@@ -178,11 +178,9 @@ impl PreparedPid {
                     return Err(PidAllocationError::Invalid);
                 }
                 let user = namespace.user_namespace();
-                if !authority.capable(&user, syscall_abi::capability::Capability::SYS_ADMIN)
-                    && !authority.capable(
-                        &user,
-                        syscall_abi::capability::Capability::CHECKPOINT_RESTORE,
-                    )
+                if !authority.capable(&user, linux_abi::capability::Capability::SYS_ADMIN)
+                    && !authority
+                        .capable(&user, linux_abi::capability::Capability::CHECKPOINT_RESTORE)
                 {
                     return Err(PidAllocationError::Permission);
                 }

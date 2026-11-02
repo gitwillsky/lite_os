@@ -1,7 +1,7 @@
 //! ring fd 的 `DeviceFile` backend：poll/epoll、mmap 与匿名 inode 标签。
 
 use alloc::sync::Arc;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::ring::Ring;
 use crate::{

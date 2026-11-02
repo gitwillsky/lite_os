@@ -1,7 +1,7 @@
 //! `/dev/input/eventN` 字符设备：每次 open 一个独立 client queue。
 
 use alloc::sync::Arc;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::{INPUT_DEVICES, InputError, InputEvent, InputFile, ioctl};
 use crate::{

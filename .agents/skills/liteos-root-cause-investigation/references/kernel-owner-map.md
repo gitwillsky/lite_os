@@ -11,19 +11,19 @@ first broken contract。
 | VMAR、VMO、COW、TLB | `docs/architecture-contract/memory.md` | `kernel/src/vm/`、`kernel/src/syscall/memory.rs`、`kernel/src/arch/` |
 | Linux 地址空间与用户态 pager | `docs/architecture-contract/memory.md` | `system/linuxd/src/memory/` |
 | VFS、page cache、OFD、ext4 | `docs/architecture-contract/filesystem-storage.md` | `system/linuxd/src/fs/`、`system/ext4d/src/` |
-| epoll、pipe、AF_UNIX、IPv4 | `docs/architecture-contract/ipc-network.md` | `system/linuxd/src/fs/`、`system/linuxd/src/net/`、`system/netd/src/` |
+| epoll、pipe、AF_UNIX、IPv4 | `docs/architecture-contract/ipc-network.md` | `system/linuxd/src/fs/`、`system/linuxd/src/net/`、`system/netstack/src/` |
 | 设备 UAPI、TTY、DRM | `docs/architecture-contract/devices-terminal.md` | `system/linuxd/src/devices/` |
-| VirtIO、PCI、USB 与 DMA | `docs/architecture-contract/devices-terminal.md` | `system/devmgr/src/drivers/`、`system/device-model/src/`、`system/device-protocol/src/` |
+| VirtIO、PCI、USB 与 DMA | `docs/architecture-contract/devices-terminal.md` | `system/driver-host/src/drivers/`、`system/device-model/src/`、`system/device-protocol/src/` |
 | arch mechanism | 相关领域 contract 与 `docs/architecture-contract.md` | `kernel/src/arch/` |
 | machine facts、IPI、设备装配 | `docs/architecture-contract/boot-platform.md` | `kernel/src/platform/` |
-| Linux ABI | `docs/syscall-support.md` 路由到领域矩阵 | `syscall-abi/`、`system/linuxd/src/syscall/` |
+| Linux ABI | `docs/syscall-support.md` 路由到领域矩阵 | `abi/linux-abi/`、`system/linuxd/src/syscall/` |
 
 ## 调用链追踪
 
 从外向内追踪符号，而不是从怀疑模块向外猜：
 
 ```bash
-rg -n 'sys_clone|SYSCALL_CLONE' system/linuxd syscall-abi
+rg -n 'sys_clone|SYSCALL_CLONE' system/linuxd linux-abi
 LITEOS_QUERY='clone_process|clone_thread'
 rg -n "$LITEOS_QUERY" system/linuxd/src
 rg -n 'TaskMutex|try_lock|deferred|notify|wake' kernel/src system/linuxd/src

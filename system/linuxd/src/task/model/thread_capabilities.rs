@@ -1,5 +1,5 @@
 use super::{CapabilityError, TaskControlBlock};
-use syscall_abi::capability::{Capability, CapabilitySets, CapabilitySnapshot};
+use linux_abi::capability::{Capability, CapabilitySets, CapabilitySnapshot};
 
 impl TaskControlBlock {
     /// 读取 calling Thread 同一 credential owner 的 effective capability。

@@ -2,7 +2,7 @@
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::Ordering;
 
-use syscall_abi::{
+use linux_abi::{
     errno, fuse,
     open::{O_NOCTTY, O_TRUNC},
 };

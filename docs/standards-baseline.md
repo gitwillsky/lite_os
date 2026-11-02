@@ -132,13 +132,13 @@ ptrace 的 request、access policy、stop/wait、exec/exit 与 regset 布局取�
 
 - crate `0.13.1`；source commit `e347a1e2d3ac33c5ce2c0c114e24b85ae23c4897`。
 - 来源：[release 文档](https://docs.rs/crate/smoltcp/0.13.1)、[固定源码](https://github.com/smoltcp-rs/smoltcp/tree/e347a1e2d3ac33c5ce2c0c114e24b85ae23c4897)。
-- netd、netd-unit 与 architecture-bench 的唯一协议栈源码是 `vendor/smoltcp`；原 release 每个文件的 SHA-256
+- netstack、netstack-unit 与 architecture-bench 的唯一协议栈源码是 `vendor/smoltcp`；原 release 每个文件的 SHA-256
   记录于 `UPSTREAM.sha256.json`，保留原许可证与 upstream commit。Cargo 不保留 registry 备选路径。
 - 本地变化限定UDP/TCP/raw transport、UDP ingress及interface dispatch与IPv4地址mechanism十个文件（第十个只是 `wire/udp.rs` 里 6LoWPAN 专用函数的 feature 门控）：connected peer 在 ingress admission 前匹配，canonical local
   endpoint 修改保留已有 queue，bind/rehash order 选择单播目标，广播/组播交付实际匹配集合，
   TX packet 在 enqueue 时冻结source port/address/TTL/oif；TCP实际MSS cache约束广告及分段。
   bound device在ingress准入前筛选，kernel唯一route selector在dispatch前选设备；IPv4
-  weak-host tuple不因当前iface source列表而reset。Linux bind/shutdown/rlimit/netns UAPI 归 linuxd；netd 只拥有协议机制与 endpoint 状态。
+  weak-host tuple不因当前iface source列表而reset。Linux bind/shutdown/rlimit/netns UAPI 归 linuxd；netstack 只拥有协议机制与 endpoint 状态。
 - 只启用alloc、Ethernet、IP-medium实际loopback、IPv4、raw、UDP、TCP与Reno；Linux socket UAPI不由smoltcp定义，IPv6仍延期。
 
 原生IPv4地址/proc NET归属补充依据同一固定Linux commit的

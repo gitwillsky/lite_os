@@ -8,7 +8,7 @@ use alloc::{
     vec::Vec,
 };
 use core::fmt::Write;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 // OWNER: map target 与 opener authority 都不借 Task；SCM_RIGHTS/dup/fork 保持同一 f_cred。
 // Snapshot 分支仍只渲染 live source，viewer namespace 是打开时的 immutable credential projection。
@@ -112,7 +112,7 @@ pub(super) fn open(
             && flags & crate::fs::O_ACCMODE != crate::fs::O_RDONLY
             && !opener.capable(
                 &credentials.user_namespace,
-                syscall_abi::capability::Capability::SYS_ADMIN,
+                linux_abi::capability::Capability::SYS_ADMIN,
             )
         {
             return Err(FileSystemError::AccessDenied);
@@ -193,7 +193,7 @@ pub(super) fn open(
             .and_then(Weak::upgrade)
             .ok_or(FileSystemError::NotFound)?;
         if flags & crate::fs::O_ACCMODE != crate::fs::O_RDONLY
-            && !opener.capable(&target, syscall_abi::capability::Capability::SYS_RESOURCE)
+            && !opener.capable(&target, linux_abi::capability::Capability::SYS_RESOURCE)
         {
             return Err(FileSystemError::AccessDenied);
         }

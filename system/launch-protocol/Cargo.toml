@@ -8,7 +8,7 @@ test = false
 bench = false
 
 [dependencies]
-native-abi = { path = "../../native-abi" }
+native-abi = { path = "../../abi/native-abi" }
 
 [lints]
 workspace = true

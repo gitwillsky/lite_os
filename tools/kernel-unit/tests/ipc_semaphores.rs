@@ -15,7 +15,7 @@ use ipc::{
     IpcAccess, IpcError, IpcNamespace, SemaphoreChange, SemaphoreOperation, SemaphoreSet,
     SemaphoreUndoHandle,
 };
-use syscall_abi::ipc::*;
+use linux_abi::ipc::*;
 
 fn access() -> IpcAccess {
     namespace::boot();

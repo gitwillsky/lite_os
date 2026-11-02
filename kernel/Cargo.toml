@@ -12,9 +12,9 @@ bench = false
 spin = { version = "0.10.0", default-features = false, features = ["mutex", "once", "spin_mutex"] }
 dtb-walker = "=0.2.0-alpha.3"
 bitflags = "2.9.1"
-native-abi = { path = "../native-abi" }
-fallible-tree = { path = "../fallible-tree" }
-mmio = { path = "../mmio" }
+native-abi = { path = "../abi/native-abi" }
+fallible-tree = { path = "../libraries/fallible-tree" }
+mmio = { path = "../libraries/mmio" }
 
 [target.'cfg(target_arch = "riscv64")'.dependencies]
 riscv = "0.14.0"

@@ -75,7 +75,7 @@ pub(crate) fn sys_linkat(
         if flags & AT_EMPTY_PATH == 0 {
             return -errno::ENOENT;
         }
-        if !task.has_initial_capability(syscall_abi::capability::Capability::DAC_READ_SEARCH) {
+        if !task.has_initial_capability(linux_abi::capability::Capability::DAC_READ_SEARCH) {
             return -errno::EPERM;
         }
         match usize::try_from(old_dirfd)

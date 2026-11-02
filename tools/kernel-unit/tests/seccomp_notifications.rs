@@ -8,13 +8,13 @@ extern crate fallible_tree;
 mod namespace;
 
 use alloc::sync::Arc;
+use linux_abi::{errno, seccomp::*};
 use std::{
     cell::RefCell,
     collections::BTreeMap,
     sync::atomic::{AtomicBool, Ordering},
     sync::{Condvar, Mutex},
 };
-use syscall_abi::{errno, seccomp::*};
 macro_rules! info { ($($args:tt)*) => { let _ = format_args!($($args)*); }; }
 #[path = "../src/seccomp_environment.rs"]
 mod seccomp_environment;

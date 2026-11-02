@@ -3,7 +3,7 @@ use super::{FileSystemError, ProcSource};
 use crate::fs::chardev::{DeviceError, UserInput};
 use crate::namespace::{NamespaceAuthority, TimeClock, TimeOffset, TimeOffsetError};
 use alloc::vec::Vec;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 pub(super) fn contents(source: &dyn ProcSource, tid: usize) -> Result<Vec<u8>, FileSystemError> {
     let target = source

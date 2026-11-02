@@ -333,7 +333,7 @@ fn select_and_generate_process_signal(
             !initial_signal_thread.as_ref().map_or_else(
                 || sender.may_signal_process(&selected.process),
                 |thread| sender.may_signal_thread(thread),
-            ) && !(signal == syscall_abi::signal::SIGCONT
+            ) && !(signal == linux_abi::signal::SIGCONT
                 && graph
                     .nodes
                     .get(&sender.tgid())
@@ -373,7 +373,7 @@ fn select_and_generate_process_signal(
             }
             _ => None,
         };
-        let target = if signal != 0 && signal != syscall_abi::signal::SIGKILL {
+        let target = if signal != 0 && signal != linux_abi::signal::SIGKILL {
             graph.nodes.get(&tgid).and_then(|node| match &node.state {
                 ProcessState::Live(threads) => selected_thread
                     .clone()
@@ -398,7 +398,7 @@ fn select_and_generate_process_signal(
         } else {
             target.prepare_leader_signal_record(signal, preparation_info)
         };
-        let parent_preparation = if signal == syscall_abi::signal::SIGCONT {
+        let parent_preparation = if signal == linux_abi::signal::SIGCONT {
             let Some((records, owner)) =
                 lock_child_notifications(tgid, ChildNotificationScope::Parent)
             else {
@@ -486,7 +486,7 @@ fn select_and_generate_process_signal(
             selected_thread.as_ref().map_or_else(
                 || sender.may_signal_process(&node.process),
                 |thread| sender.may_signal_thread(thread),
-            ) || signal == syscall_abi::signal::SIGCONT
+            ) || signal == linux_abi::signal::SIGCONT
                 && graph
                     .nodes
                     .get(&sender.tgid())
@@ -587,14 +587,14 @@ fn select_and_generate_process_signal(
             complete_fatal_signal_locked(&mut graph, target, signal, default_fatal)
         });
     retired.recycle_timers(|event| PROCESS_TABLE.timers.lock().ignore_posix_notification(event));
-    let notification = if signal == syscall_abi::signal::SIGCONT {
+    let notification = if signal == linux_abi::signal::SIGCONT {
         continue_process_locked(
             &mut graph,
             tgid,
             child_records.as_mut().expect("SIGCONT child preparation"),
         )
     } else {
-        if signal == syscall_abi::signal::SIGKILL {
+        if signal == linux_abi::signal::SIGKILL {
             resume_for_fatal_signal_locked(&mut graph, tgid);
         }
         None

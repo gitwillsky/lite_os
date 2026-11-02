@@ -10,7 +10,7 @@
 
 use alloc::sync::Arc;
 use core::sync::atomic::Ordering;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::{
     abi::{

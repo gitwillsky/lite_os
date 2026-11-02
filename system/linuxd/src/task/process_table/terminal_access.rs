@@ -2,7 +2,7 @@ use crate::{
     devices::tty::{JobControl, Terminal, TerminalAccess},
     fs::chardev::DeviceError,
 };
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::*;
 
@@ -63,7 +63,7 @@ impl JobControl for TaskJobControl {
             .expect("TTY job-control signal must be valid");
         let blocked_or_ignored = mask & (1u64 << (signal - 1)) != 0 || action.handler == 1;
         if blocked_or_ignored {
-            return if signal == syscall_abi::signal::SIGTTIN {
+            return if signal == linux_abi::signal::SIGTTIN {
                 Err(DeviceError::Errno(errno::EIO))
             } else {
                 Ok(())
@@ -104,8 +104,8 @@ impl JobControl for TaskJobControl {
         }
         drop(graph);
         if let Some(group) = retired.foreground_group() {
-            send_process_group_signal(group, syscall_abi::signal::SIGHUP);
-            send_process_group_signal(group, syscall_abi::signal::SIGCONT);
+            send_process_group_signal(group, linux_abi::signal::SIGHUP);
+            send_process_group_signal(group, linux_abi::signal::SIGCONT);
         }
         drop(retired);
     }

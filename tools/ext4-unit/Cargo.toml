@@ -4,10 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dev-dependencies]
-fallible-tree = { path = "../../fallible-tree" }
+fallible-tree = { path = "../../libraries/fallible-tree" }
 device-model = { path = "../../system/device-model" }
 native-runtime = { path = "../../system/native-runtime" }
-syscall-abi = { path = "../../syscall-abi" }
+linux-abi = { path = "../../abi/linux-abi" }
 spin = { version = "0.10.0", default-features = false, features = ["mutex", "spin_mutex", "once"] }
 
 [lints]

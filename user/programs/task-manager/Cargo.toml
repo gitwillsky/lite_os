@@ -9,7 +9,7 @@ name = "taskmgr"
 path = "src/main.rs"
 
 [dependencies]
-task-observer-protocol = { path = "../../../task-observer-protocol" }
+task-observer-protocol = { path = "../../../system/task-observer-protocol" }
 liteos-ui = {path = "../../libraries/liteos-ui"}
 linux-uapi.workspace = true
 

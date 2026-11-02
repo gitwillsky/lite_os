@@ -1,6 +1,6 @@
 # Packet 与 Netlink 契约
 
-Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system/linuxd`；IPv4/TCP/UDP/RAW、FIB、端口与 AF_PACKET 队列属于 `system/netd`。下述协议 owner 通过 `network-protocol` 交互，不共享内核状态。
+Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system/linuxd`；IPv4/TCP/UDP/RAW、FIB、端口与 AF_PACKET 队列属于 `system/netstack`。下述协议 owner 通过 `network-protocol` 交互，不共享内核状态。
 
 
 IPv4 路由由同一 NET 的 FIB owner 决定，支持本地、直连和默认路由；LOCAL 重定向与

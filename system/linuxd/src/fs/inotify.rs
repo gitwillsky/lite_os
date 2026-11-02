@@ -12,7 +12,7 @@
 use crate::sync::Mutex;
 use alloc::{sync::Arc, sync::Weak, vec::Vec};
 use core::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::{
     Inode, InodeType, OpenedFile,

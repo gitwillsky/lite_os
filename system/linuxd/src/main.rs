@@ -62,7 +62,7 @@ pub(crate) fn system_info() -> &'static SystemBasic {
 ///
 /// 1. 取回启动句柄与 command line；
 /// 2. Linux 命名空间、VFS 与任务表，然后启动 deferred 线程（定时器、控制台输入与设备活动都经它分派）；
-/// 3. 读取 devmgr 设备目录并连接全部设备，注册 console；
+/// 3. 读取 driver-host 设备目录并连接全部设备，注册 console；
 /// 4. 装配块设备、音频、DRM、输入与 tty，创建初始网络域，启动后台线程；
 /// 5. `kernel_init` 内核线程挂载根文件系统并发布 init。main 线程随后退出（只结束本线程），linuxd 由各服务线程与 Linux 线程继续运行。
 fn main(mut startup: Startup) -> i64 {
@@ -191,7 +191,7 @@ fn start_deferred_worker() {
     drop(worker);
 }
 
-/// USB sysfs、AF_UNIX 回收与 io_uring 后台线程（USB 主控与枚举在 devmgr）。
+/// USB sysfs、AF_UNIX 回收与 io_uring 后台线程（USB 主控与枚举在 driver-host）。
 ///
 /// # Panics
 ///

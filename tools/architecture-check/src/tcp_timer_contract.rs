@@ -68,12 +68,12 @@ pub(super) fn check(root: &Path, sources: &[SourceFile], errors: &mut Vec<String
                 .text,
         )
     };
-    let poll = source("system/netd/src/inet/poll.rs");
-    let timing = source("system/netd/src/inet/timing.rs");
-    let owner = source("system/netd/src/inet/tcp/io.rs");
-    let options = source("system/netd/src/inet/options.rs");
-    let lifecycle = source("system/netd/src/inet/tcp/lifecycle.rs");
-    let replies = source("system/netd/src/inet/route_reply.rs");
+    let poll = source("system/netstack/src/inet/poll.rs");
+    let timing = source("system/netstack/src/inet/timing.rs");
+    let owner = source("system/netstack/src/inet/tcp/io.rs");
+    let options = source("system/netstack/src/inet/options.rs");
+    let lifecycle = source("system/netstack/src/inet/tcp/lifecycle.rs");
+    let replies = source("system/netstack/src/inet/route_reply.rs");
     if !matches!((poll.find("tcp::maintain_clocks(self,timestamp)"), poll.find("if!interface.state.up")), (Some(a), Some(b)) if a < b)
         || !timing.contains("tcp.maintenance_deadline()")
         || !owner.contains("socket.maintain(timestamp)")
@@ -132,7 +132,7 @@ mod tests {
         let mut sources = super::super::load_sources(&root).unwrap();
         let file = sources
             .iter_mut()
-            .find(|file| file.relative == "system/netd/src/inet/timing.rs")
+            .find(|file| file.relative == "system/netstack/src/inet/timing.rs")
             .unwrap();
         assert!(file.text.contains("tcp.maintenance_deadline()"));
         file.text = file.text.replace(
@@ -164,7 +164,7 @@ mod tests {
         let mut sources = super::super::load_sources(&root).unwrap();
         let file = sources
             .iter_mut()
-            .find(|file| file.relative == "system/netd/src/inet/tcp/lifecycle.rs")
+            .find(|file| file.relative == "system/netstack/src/inet/tcp/lifecycle.rs")
             .unwrap();
         let old = "network.queue_tcp_resets(super::super::now())";
         assert!(file.text.contains(old));

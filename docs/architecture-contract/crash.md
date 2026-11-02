@@ -3,7 +3,7 @@
 ## Owner
 
 `crash` 独占 panic CAS、停止请求、CPU 快照、记录与 watchdog；只消费静态 arch/CPU/log/memory/platform/timer/VM 接口。
-不依赖 devmgr、GPU 或 Linux procfs。boot 先 reserve，再把可分配上界交给 memory，页表仍映射完整 RAM。
+不依赖 driver-host、GPU 或 Linux procfs。boot 先 reserve，再把可分配上界交给 memory，页表仍映射完整 RAM。
 
 | 状态 | owner | 缺失后果 |
 |---|---|---|

@@ -7,7 +7,7 @@ use notification::{ListenerFile, NotificationQueue};
 use crate::sync::Mutex;
 use alloc::{sync::Arc, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
-use syscall_abi::{seccomp::*, signal::SIGKILL};
+use linux_abi::{seccomp::*, signal::SIGKILL};
 
 use super::TaskControlBlock;
 use filter::Program;
@@ -220,10 +220,10 @@ impl ThreadSecurityOwner {
             Mode::Strict => {
                 if matches!(
                     number as u32 as usize,
-                    syscall_abi::SYSCALL_READ
-                        | syscall_abi::SYSCALL_WRITE
-                        | syscall_abi::SYSCALL_EXIT
-                        | syscall_abi::SYSCALL_RT_SIGRETURN
+                    linux_abi::SYSCALL_READ
+                        | linux_abi::SYSCALL_WRITE
+                        | linux_abi::SYSCALL_EXIT
+                        | linux_abi::SYSCALL_RT_SIGRETURN
                 ) {
                     SeccompDecision::Allow
                 } else {
@@ -262,7 +262,7 @@ impl ThreadSecurityOwner {
                 let value = (result & RET_DATA) as u16;
                 match result & RET_ACTION_FULL {
                     RET_ALLOW => SeccompDecision::Allow,
-                    RET_KILL_THREAD => SeccompDecision::KillThread(syscall_abi::signal::SIGSYS),
+                    RET_KILL_THREAD => SeccompDecision::KillThread(linux_abi::signal::SIGSYS),
                     RET_TRAP => SeccompDecision::Trap(value),
                     RET_ERRNO => SeccompDecision::Errno(value.min(4095)),
                     RET_TRACE => SeccompDecision::NoObserver,

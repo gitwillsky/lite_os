@@ -271,7 +271,7 @@ pub(crate) mod task {
         let view = root_view.child(user.clone(), 0).unwrap();
         let current = namespace::NamespaceAuthority {
             namespace: user,
-            effective_capabilities: syscall_abi::capability::Capability::CHECKPOINT_RESTORE.mask(),
+            effective_capabilities: linux_abi::capability::Capability::CHECKPOINT_RESTORE.mask(),
             ..root.clone()
         };
         assert!(matches!(

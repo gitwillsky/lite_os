@@ -4,16 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dev-dependencies]
-native-abi = { path = "../../native-abi" }
-mmio = { path = "../../mmio" }
+native-abi = { path = "../../abi/native-abi" }
+mmio = { path = "../../libraries/mmio" }
 native-runtime = { path = "../../system/native-runtime" }
 device-model = { path = "../../system/device-model" }
 device-protocol = { path = "../../system/device-protocol" }
 network-protocol = { path = "../../system/network-protocol" }
 bitflags = "2.4"
-fallible-tree = { path = "../../fallible-tree" }
+fallible-tree = { path = "../../libraries/fallible-tree" }
 dtb-walker = "=0.2.0-alpha.3"
-syscall-abi = { path = "../../syscall-abi" }
+linux-abi = { path = "../../abi/linux-abi" }
 boot-scene = { path = "../../boot-scene" }
 spin = { version = "0.10.0", default-features = false, features = ["mutex", "once", "spin_mutex"] }
 

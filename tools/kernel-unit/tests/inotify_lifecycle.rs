@@ -119,7 +119,7 @@ mod fs {
                 nonblocking,
                 "blocking scheduler routing is exercised in guest"
             );
-            Err(DeviceError::Errno(syscall_abi::errno::EAGAIN))
+            Err(DeviceError::Errno(linux_abi::errno::EAGAIN))
         }
     }
     mod inotify;

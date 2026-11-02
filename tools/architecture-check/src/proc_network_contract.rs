@@ -16,7 +16,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
     let opened = source(sources, "system/linuxd/src/fs/procfs/opened_operations.rs");
     let provider = source(sources, "system/linuxd/src/task/process_table/procfs.rs");
     let snapshot = source(sources, "system/linuxd/src/fs/procfs/snapshot.rs");
-    let config = source(sources, "system/netd/src/inet/configuration.rs");
+    let config = source(sources, "system/netstack/src/inet/configuration.rs");
     let task = source(sources, "system/linuxd/src/task/model/namespaces.rs");
     let kernel = source(sources, "system/linuxd/src/task/model/kernel_thread.rs");
     let table = source(sources, "system/linuxd/src/fs/procfs/networking.rs");
@@ -97,7 +97,7 @@ mod tests {
                 "source.network_snapshot(&crate::net::initial_net())?",
             ),
             (
-                "system/netd/src/inet/configuration.rs",
+                "system/netstack/src/inet/configuration.rs",
                 "network.interfaces.iter().map(|interface| NetworkSnapshot",
                 "network.interfaces.iter().take(1).map(|interface| NetworkSnapshot",
             ),

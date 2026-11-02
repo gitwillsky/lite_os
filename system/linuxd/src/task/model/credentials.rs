@@ -6,7 +6,7 @@ use super::{
     thread_mm::MmMembership,
 };
 use crate::fs::AccessIdentity;
-use syscall_abi::capability::Capability;
+use linux_abi::capability::Capability;
 
 /// 原 leader owner 的可重定向只读 alias；Process/graph 共用同一 handle。
 pub(in crate::task) type LeaderCredentialsHandle =
@@ -488,7 +488,7 @@ impl TaskControlBlock {
         mode: u32,
         uid: u32,
         gid: u32,
-        file: Option<syscall_abi::file_capability::FileCapabilityData>,
+        file: Option<linux_abi::file_capability::FileCapabilityData>,
     ) -> Result<PreparedExecCredentials, super::capabilities::CapabilityError> {
         let nnp =
             self.no_new_privileges() || super::super::process_table::ptrace::restrict_exec(self);
@@ -549,9 +549,7 @@ impl Credentials {
         }
     }
 
-    pub(in crate::task) fn capability_snapshot(
-        &self,
-    ) -> syscall_abi::capability::CapabilitySnapshot {
+    pub(in crate::task) fn capability_snapshot(&self) -> linux_abi::capability::CapabilitySnapshot {
         self.capabilities.snapshot()
     }
     pub(super) fn root() -> Self {
@@ -770,7 +768,7 @@ impl Credentials {
         uid: u32,
         gid: u32,
         nnp: bool,
-        file: Option<syscall_abi::file_capability::FileCapabilityData>,
+        file: Option<linux_abi::file_capability::FileCapabilityData>,
     ) -> Result<PreparedExecCredentials, super::capabilities::CapabilityError> {
         let mut next = self.clone();
         let mapped_inode = self.user_namespace.map_kernel_id(true, uid).is_some()

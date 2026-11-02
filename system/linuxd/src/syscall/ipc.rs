@@ -7,9 +7,9 @@ use crate::{
     task::current_task,
 };
 use alloc::vec::Vec;
+use linux_abi::{errno, ipc::*};
 pub(super) use semaphore::{sys_semctl, sys_semget, sys_semop, sys_semtimedop};
 pub(super) use shared_memory::{sys_shmat, sys_shmctl, sys_shmdt, sys_shmget};
-use syscall_abi::{errno, ipc::*};
 
 pub(super) fn ipc_error(error: IpcError) -> isize {
     -match error {

@@ -86,7 +86,7 @@ pub(super) fn send_selected_thread_signal(
     if signal > 64 {
         return Err(SignalSendError::InvalidSignal);
     }
-    let prepared_target = if signal != 0 && signal != syscall_abi::signal::SIGKILL {
+    let prepared_target = if signal != 0 && signal != linux_abi::signal::SIGKILL {
         let graph = PROCESS_TABLE.graph.lock();
         match thread_by_tid(&graph, tid) {
             Some((tgid, target)) => {
@@ -95,7 +95,7 @@ pub(super) fn send_selected_thread_signal(
                 }
                 if origin.sender().is_some_and(|sender| {
                     !sender.may_signal_thread(&target)
-                        && !(signal == syscall_abi::signal::SIGCONT
+                        && !(signal == linux_abi::signal::SIGCONT
                             && graph.nodes.get(&sender.tgid()).is_some_and(|node| {
                                 node.session
                                     == graph.nodes.get(&tgid).expect("target process").session
@@ -122,7 +122,7 @@ pub(super) fn send_selected_thread_signal(
     let (target, queued, notification, retired, group_exit_started) = {
         let (mut child_records, mut graph) = if let Some(target) = prepared_target
             .as_ref()
-            .filter(|_| signal == syscall_abi::signal::SIGCONT)
+            .filter(|_| signal == linux_abi::signal::SIGCONT)
         {
             let (records, graph) =
                 lock_child_notifications(target.tgid(), ChildNotificationScope::Parent)
@@ -158,7 +158,7 @@ pub(super) fn send_selected_thread_signal(
             && !matches!(&node.state, ProcessState::Live(threads) if threads.contains_key(&tid))
         {
             // 原 leader zombie 仍有实际 PID association，合法 thread signal 不创建 pending。
-            let same_session = signal == syscall_abi::signal::SIGCONT
+            let same_session = signal == linux_abi::signal::SIGCONT
                 && origin.sender().is_some_and(|sender| {
                     graph
                         .nodes
@@ -179,7 +179,7 @@ pub(super) fn send_selected_thread_signal(
             .get(&tid)
             .and_then(|index| index.retiring_task.as_ref())
         {
-            let same_session = signal == syscall_abi::signal::SIGCONT
+            let same_session = signal == linux_abi::signal::SIGCONT
                 && origin.sender().is_some_and(|sender| {
                     graph
                         .nodes
@@ -205,7 +205,7 @@ pub(super) fn send_selected_thread_signal(
             .cloned()
             .ok_or(SignalSendError::NotFound)?;
         if signal != 0
-            && signal != syscall_abi::signal::SIGKILL
+            && signal != linux_abi::signal::SIGKILL
             && prepared_target
                 .as_ref()
                 .is_none_or(|original| !Arc::ptr_eq(original, &target))
@@ -213,7 +213,7 @@ pub(super) fn send_selected_thread_signal(
             return Err(SignalSendError::NotFound);
         }
         if let Some(sender_task) = origin.sender() {
-            let same_session = signal == syscall_abi::signal::SIGCONT
+            let same_session = signal == linux_abi::signal::SIGCONT
                 && graph.nodes.get(&sender_task.tgid()).is_some_and(|sender| {
                     sender.session == graph.nodes.get(&tgid).unwrap().session
                 });
@@ -258,14 +258,14 @@ pub(super) fn send_selected_thread_signal(
             .map_err(|()| SignalSendError::Again)?;
         retired
             .recycle_timers(|event| PROCESS_TABLE.timers.lock().ignore_posix_notification(event));
-        let notification = if signal == syscall_abi::signal::SIGCONT {
+        let notification = if signal == linux_abi::signal::SIGCONT {
             continue_process_locked(
                 &mut graph,
                 tgid,
                 child_records.as_mut().expect("SIGCONT child preparation"),
             )
         } else {
-            if signal == syscall_abi::signal::SIGKILL {
+            if signal == linux_abi::signal::SIGKILL {
                 resume_for_fatal_signal_locked(&mut graph, tgid);
             }
             None

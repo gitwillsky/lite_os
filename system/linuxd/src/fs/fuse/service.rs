@@ -7,9 +7,9 @@
 //!    两个线程都退出后本端 channel 关闭，服务端随之结束挂载。
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 
+use linux_abi::{errno, fuse};
 use native_runtime::native_abi::{self, DEADLINE_INFINITE, signals};
 use native_runtime::{Channel, Port};
-use syscall_abi::{errno, fuse};
 
 use super::{
     connection::Connection,

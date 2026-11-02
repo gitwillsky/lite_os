@@ -64,7 +64,7 @@ pub(super) fn shutdown(
 ) {
     super::signal::signal_action_for_group(
         task,
-        syscall_abi::signal::SIGCHLD,
+        linux_abi::signal::SIGCHLD,
         Some(crate::task::SignalAction {
             handler: 1,
             ..crate::task::SignalAction::default()
@@ -83,9 +83,7 @@ pub(super) fn shutdown(
         if let Some(target) = target {
             super::process_exit::request_group_exit(
                 &target,
-                super::process_exit::ProcessExitStatus::Signaled(
-                    syscall_abi::signal::SIGKILL as u8,
-                ),
+                super::process_exit::ProcessExitStatus::Signaled(linux_abi::signal::SIGKILL as u8),
                 false,
                 true,
             );

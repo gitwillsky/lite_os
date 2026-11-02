@@ -1,5 +1,5 @@
-//! devmgr 设备目录的使用者端：连接目录中的每个设备，把远端 client 登记到对应的设备类注册表；
-//! 网卡属于 netd，其目录记录原样转交给 netd。
+//! driver-host 设备目录的使用者端：连接目录中的每个设备，把远端 client 登记到对应的设备类注册表；
+//! 网卡属于 netstack，其目录记录原样转交给 netstack。
 //!
 //! 1. 启动时读取目录直到“枚举完成”，此后的块设备、console、显示、输入与音频装配都看到完整设备集；
 //! 2. 之后由目录线程继续接收热插拔设备（USB 连接与其 PCM 输出），登记后请求一轮音频发现；
@@ -78,7 +78,7 @@ fn attach(
 ///
 /// # Panics
 ///
-/// 目录在枚举完成前关闭（devmgr 失败），或事件分派/目录线程创建失败：没有设备无法继续启动。
+/// 目录在枚举完成前关闭（driver-host 失败），或事件分派/目录线程创建失败：没有设备无法继续启动。
 pub(crate) fn connect(channel: Channel) -> DeviceDirectory {
     let hub = EventHub::start().expect("device event hub");
     let mut boot = None;

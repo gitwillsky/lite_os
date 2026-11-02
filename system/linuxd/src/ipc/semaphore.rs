@@ -8,7 +8,7 @@ use crate::{
 };
 use alloc::{sync::Arc, vec::Vec};
 use fallible_tree::{FallibleMap, VacantEntry};
-use syscall_abi::ipc::{GETNCNT, GETPID, GETVAL, GETZCNT, IPC_NOWAIT, SEM_UNDO, SEM_VALUE_MAX};
+use linux_abi::ipc::{GETNCNT, GETPID, GETVAL, GETZCNT, IPC_NOWAIT, SEM_UNDO, SEM_VALUE_MAX};
 
 /// Linux sembuf 的语义输入；布局/用户指针只属于 syscall codec。
 #[derive(Clone, Copy, Debug)]

@@ -310,7 +310,7 @@ pub(crate) fn sys_socket(domain: usize, kind: usize, protocol: usize) -> isize {
     if domain == SocketDomain::Packet
         && !task.has_namespace_capability(
             &net.user_namespace(),
-            syscall_abi::capability::Capability::NET_RAW,
+            linux_abi::capability::Capability::NET_RAW,
         )
     {
         return -errno::EPERM;
@@ -323,7 +323,7 @@ pub(crate) fn sys_socket(domain: usize, kind: usize, protocol: usize) -> isize {
         && kind == SocketType::Raw
         && !task.has_namespace_capability(
             &net.user_namespace(),
-            syscall_abi::capability::Capability::NET_RAW,
+            linux_abi::capability::Capability::NET_RAW,
         )
     {
         return -errno::EPERM;

@@ -21,7 +21,7 @@ use core::{
     pin::Pin,
     task::{Context, Poll, Waker},
 };
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::wait::{Cancel, Interest, Target, Waiter};
 use crate::{

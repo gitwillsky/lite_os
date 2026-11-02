@@ -89,15 +89,15 @@ mod audio_readiness {
 }
 
 #[cfg(test)]
-#[path = "../../../system/devmgr/src/drivers/virtio/sound/wire.rs"]
+#[path = "../../../system/driver-host/src/drivers/virtio/sound/wire.rs"]
 mod virtio_sound_wire;
 
 #[cfg(test)]
-#[path = "../../../system/devmgr/src/drivers/virtio/console/wire.rs"]
+#[path = "../../../system/driver-host/src/drivers/virtio/console/wire.rs"]
 mod virtio_console_wire;
 
 #[cfg(test)]
-#[path = "../../../system/devmgr/src/drivers/virtio/sound/lifecycle.rs"]
+#[path = "../../../system/driver-host/src/drivers/virtio/sound/lifecycle.rs"]
 mod virtio_sound_lifecycle;
 
 #[cfg(test)]
@@ -170,7 +170,7 @@ mod ext4_dirhash;
 extern crate fallible_tree;
 
 #[cfg(test)]
-#[path = "../../../tools/source-view/netd/inet/port_namespace/port_namespace/port_namespace.rs"]
+#[path = "../../../tools/source-view/netstack/inet/port_namespace/port_namespace/port_namespace.rs"]
 #[allow(
     dead_code,
     reason = "独立 leaf fixture；组合生命周期接口由完整 endpoint 集成用例覆盖"
@@ -178,7 +178,7 @@ extern crate fallible_tree;
 mod inet_port_namespace;
 
 #[cfg(test)]
-#[path = "../../../system/netd/src/inet/protocol_owner/pending_cleanup.rs"]
+#[path = "../../../system/netstack/src/inet/protocol_owner/pending_cleanup.rs"]
 mod inet_pending_cleanup;
 
 #[cfg(test)]
@@ -189,11 +189,11 @@ mod listen_backlog;
 mod inet_port_namespace_tests;
 
 #[cfg(test)]
-#[path = "../../../system/devmgr/src/drivers/virtio/blk/policy.rs"]
+#[path = "../../../system/driver-host/src/drivers/virtio/blk/policy.rs"]
 mod virtio_blk_policy;
 
 #[cfg(test)]
-#[path = "../../../system/devmgr/src/drivers/virtio/rng/completion_policy.rs"]
+#[path = "../../../system/driver-host/src/drivers/virtio/rng/completion_policy.rs"]
 mod virtio_rng_completion_policy;
 
 #[cfg(test)]
@@ -230,16 +230,16 @@ mod frame_metadata_layout;
 mod io_uring_abi;
 
 #[cfg(test)]
-#[path = "../../../system/devmgr/src/drivers/virtio/net/rx_slots.rs"]
+#[path = "../../../system/driver-host/src/drivers/virtio/net/rx_slots.rs"]
 mod virtio_net_rx_slots;
 
 #[cfg(test)]
-#[path = "../../../system/devmgr/src/drivers/virtio/gpu/sequence_policy.rs"]
+#[path = "../../../system/driver-host/src/drivers/virtio/gpu/sequence_policy.rs"]
 #[allow(dead_code)]
 mod virtio_gpu_sequence_policy;
 
 #[cfg(test)]
-#[path = "../../../system/devmgr/src/drivers/virtio/gpu/scanout_state.rs"]
+#[path = "../../../system/driver-host/src/drivers/virtio/gpu/scanout_state.rs"]
 mod virtio_gpu_scanout_state;
 
 #[cfg(test)]
@@ -305,7 +305,7 @@ mod socket_message_limits;
 mod drm_publication;
 
 #[cfg(test)]
-#[path = "../../../system/netd/src/inet/device_error.rs"]
+#[path = "../../../system/netstack/src/inet/device_error.rs"]
 mod network_device_error;
 
 #[cfg(test)]
@@ -322,7 +322,7 @@ mod terminal_flush;
 mod terminal_input_batch;
 
 #[cfg(test)]
-use syscall_abi::errno;
+use linux_abi::errno;
 
 #[cfg(test)]
 #[path = "../../../system/linuxd/src/syscall/clone_errno.rs"]

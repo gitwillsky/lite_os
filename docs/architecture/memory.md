@@ -35,7 +35,7 @@ fork 按对象取快照并在同一子空间复用快照，保持拆分 VMA 的�
 
 每个持久文件 inode 的页缓存由 pager VMO 支撑。内核请求缺页，linuxd 的分派线程交给工作线程读取后端并补页；
 工作线程可增长，避免 pager 与 FUSE 守护进程自身缺页互锁。脏页通过 native dirty query/writeback 协议回写。
-ext4 的数据和元数据由 ext4d 经 FUSE channel 提供；设备 DMA 页由 devmgr 使用 BTI/PMT 固定。
+ext4 的数据和元数据由 ext4d 经 FUSE channel 提供；设备 DMA 页由 driver-host 使用 BTI/PMT 固定。
 
 内核先解决按需提交、COW 和 pager 缺页；仍失败才退出 restricted mode。linuxd 根据 VMA 分类
 SIGSEGV/SIGBUS 或扩展 GROWS_DOWN。成功解决的 restricted 缺页及其中的 pager 等待从承载线程 native runtime

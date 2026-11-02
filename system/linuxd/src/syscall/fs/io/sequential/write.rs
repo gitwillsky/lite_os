@@ -105,12 +105,8 @@ pub(super) fn write_descriptor(
                         }
                         PipeWrite::Broken => {
                             // 3. peer close 始终投递 SIGPIPE；已有进度时 syscall 只暴露 partial count。
-                            send_thread_signal(
-                                task.tgid(),
-                                task.tid(),
-                                syscall_abi::signal::SIGPIPE,
-                            )
-                            .expect("current sequential pipe writer must exist");
+                            send_thread_signal(task.tgid(), task.tid(), linux_abi::signal::SIGPIPE)
+                                .expect("current sequential pipe writer must exist");
                             return if written == 0 {
                                 -errno::EPIPE
                             } else {

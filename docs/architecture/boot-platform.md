@@ -11,16 +11,16 @@
 
 ## 系统服务启动
 
-root-server 创建服务连接并启动 devmgr、ext4d、netd、linuxd。devmgr 获取设备 resource、DTB 和目录写端；
+root-server 创建服务连接并启动 driver-host、ext4d、netstack、linuxd。driver-host 获取设备 resource、DTB 和目录写端；
 linuxd 获取设备目录读端、文件系统/网络控制连接、串口与电源能力，不持有设备根 resource。
-设备发现、PCI/VirtIO/xHCI 装配、IRQ 完成与启动画面均由 devmgr 执行。
+设备发现、PCI/VirtIO/xHCI 装配、IRQ 完成与启动画面均由 driver-host 执行。
 linuxd 在自身服务线程中建立 VFS、挂载根及 devtmpfs、选择 console，然后在 restricted mode 中执行 Linux init。
 启动参数中的 root/init/console 与 init argv/environment 规则属于 linuxd，见[用户态与 ABI](userspace-abi.md)。
 
 ## AArch64 / QEMU virt
 
 - QEMU 按 arm64 Image boot protocol 加载 kernel；x0 交付 DTB，低物理 stub 从 EL2 收敛到 EL1，建立永久 TTBR1 kernel root。没有独立 ARM bootloader。
-- kernel platform 从 DTB 验证 enabled CPU、RAM、PL011、PL031、GICv3 与 PSCI HVC；设备 MMIO、PCI window/INTx 和 IOMMU 设备事实由 devmgr 自行解码。
+- kernel platform 从 DTB 验证 enabled CPU、RAM、PL011、PL031、GICv3 与 PSCI HVC；设备 MMIO、PCI window/INTx 和 IOMMU 设备事实由 driver-host 自行解码。
 - GICv3 使用 Group-1、CNTV timer PPI 与 software SGI；PSCI `CPU_ON` 启动 secondary。PL011 hardirq 先清 RX/timeout 中断再 drain FIFO，字节送入 `serial`。
 - MMIO 由共用 `mmio::MmioBus` 验证范围/对齐；AArch64 backend 固定 base-register 单次 load/store，避免 HVF 无法解码的 post-index 访问。
 - supported baseline 为 ARMv8-A；privileged user-address 隔离使用统一 TTBR0 切换，不依赖 PAN 扩展。执行上下文约束见[执行域](execution.md)。

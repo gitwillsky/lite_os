@@ -1,7 +1,7 @@
 //! 块设备节点的 `BLK*` ioctl（Linux `block/ioctl.c` 中 mkfs/blkid/lsblk/fdisk 实际使用的子集）。
 
 use alloc::sync::Arc;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::{
     BlockNode, FileSystemError,

@@ -112,7 +112,7 @@ impl TaskControlBlock {
         bytes: &mut [u8],
         write: bool,
     ) -> Result<usize, super::super::PtraceError> {
-        if note != syscall_abi::ptrace::NT_PRSTATUS {
+        if note != linux_abi::ptrace::NT_PRSTATUS {
             return Err(super::super::PtraceError::Io);
         }
         self.thread()

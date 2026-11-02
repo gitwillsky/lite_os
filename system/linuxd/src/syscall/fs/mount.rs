@@ -82,7 +82,7 @@ impl crate::fs::CallerFiles for TaskFiles<'_> {
 fn may_mount(task: &TaskControlBlock) -> bool {
     task.namespace_authority().capable(
         &task.mount_namespace().user_namespace(),
-        syscall_abi::capability::Capability::SYS_ADMIN,
+        linux_abi::capability::Capability::SYS_ADMIN,
     )
 }
 

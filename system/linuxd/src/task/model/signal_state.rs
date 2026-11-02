@@ -26,10 +26,10 @@ pub(super) fn signal_is_ignored(signal: usize, action: SignalAction) -> bool {
         || action.handler == 0
             && matches!(
                 signal,
-                syscall_abi::signal::SIGCHLD
-                    | syscall_abi::signal::SIGCONT
-                    | syscall_abi::signal::SIGURG
-                    | syscall_abi::signal::SIGWINCH
+                linux_abi::signal::SIGCHLD
+                    | linux_abi::signal::SIGCONT
+                    | linux_abi::signal::SIGURG
+                    | linux_abi::signal::SIGWINCH
             )
 }
 
@@ -37,7 +37,7 @@ pub(super) fn signal_is_default_stop(signal: usize, action: SignalAction) -> boo
     action.handler == 0
         && matches!(
             signal,
-            syscall_abi::signal::SIGSTOP..=syscall_abi::signal::SIGTTOU
+            linux_abi::signal::SIGSTOP..=linux_abi::signal::SIGTTOU
         )
 }
 
@@ -281,7 +281,7 @@ impl TaskControlBlock {
         &self,
         address: Option<usize>,
     ) -> Result<PendingSignal, UserAccessError> {
-        use syscall_abi::signal::{SEGV_ACCERR, SEGV_MAPERR, SI_KERNEL};
+        use linux_abi::signal::{SEGV_ACCERR, SEGV_MAPERR, SI_KERNEL};
         let Some(address) = address else {
             return Ok(PendingSignal::synchronous_fault(SI_KERNEL, 0));
         };

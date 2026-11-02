@@ -110,7 +110,7 @@ mod fs {
             let owner = IpcNamespace::create(authority.namespace.clone(), 0).unwrap();
             for key in 1..=objects {
                 owner
-                    .message_get(key, syscall_abi::ipc::IPC_CREAT | 0o666, &access, 1)
+                    .message_get(key, linux_abi::ipc::IPC_CREAT | 0o666, &access, 1)
                     .unwrap();
             }
             let mut reader = ipc_description::IpcReadCursor::new();
@@ -198,7 +198,7 @@ fn verify(name: &str, mut operation: impl FnMut(u64) -> usize) {
 fn benchmark_system_v() {
     use alloc::sync::Arc;
     use ipc::{IpcAccess, IpcNamespace, SemaphoreChange, SemaphoreOperation};
-    use syscall_abi::ipc::{GETVAL, IPC_NOWAIT};
+    use linux_abi::ipc::{GETVAL, IPC_NOWAIT};
     let access = IpcAccess {
         authority: namespace::root_authority(),
         filesystem_gid: 0,

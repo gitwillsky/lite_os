@@ -24,7 +24,7 @@ pub(crate) use net_namespace::{NetNamespace, initial_net, initialize_net};
 mod credentials;
 pub(crate) use core_buffer_limit::CoreBufferLimit;
 pub(crate) use credentials::{UnixCredentials, UnixSendCredentials};
-mod netd;
+mod netstack;
 mod packet;
 mod retirement;
 mod rights;
@@ -49,7 +49,7 @@ pub(crate) use inet::{
     configure_up, interface_index, interface_snapshot, interface_snapshots, network_snapshot,
     route_snapshot,
 };
-pub(crate) use netd::init;
+pub(crate) use netstack::init;
 pub(crate) use network_protocol::{
     InetAddress, InterfaceSnapshot, InternetOption, InternetPacketInfo, InternetSendPacketInfo,
     Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest, PacketAddress, RouteChange,

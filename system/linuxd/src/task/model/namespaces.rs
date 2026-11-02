@@ -174,7 +174,7 @@ impl TaskControlBlock {
             }
             let owner = user.as_ref().unwrap_or(&authority.namespace).clone();
             if user.is_none()
-                && !authority.capable(&owner, syscall_abi::capability::Capability::SYS_ADMIN)
+                && !authority.capable(&owner, linux_abi::capability::Capability::SYS_ADMIN)
             {
                 return Err(NamespaceError::Permission);
             }
@@ -185,7 +185,7 @@ impl TaskControlBlock {
         if new_ipc {
             let owner = user.as_ref().unwrap_or(&authority.namespace).clone();
             if user.is_none()
-                && !authority.capable(&owner, syscall_abi::capability::Capability::SYS_ADMIN)
+                && !authority.capable(&owner, linux_abi::capability::Capability::SYS_ADMIN)
             {
                 return Err(NamespaceError::Permission);
             }
@@ -194,7 +194,7 @@ impl TaskControlBlock {
         if new_net {
             let owner = user.as_ref().unwrap_or(&authority.namespace).clone();
             if user.is_none()
-                && !authority.capable(&owner, syscall_abi::capability::Capability::SYS_ADMIN)
+                && !authority.capable(&owner, linux_abi::capability::Capability::SYS_ADMIN)
             {
                 return Err(NamespaceError::Permission);
             }
@@ -203,7 +203,7 @@ impl TaskControlBlock {
         if new_time {
             let owner = user.as_ref().unwrap_or(&authority.namespace).clone();
             if user.is_none()
-                && !authority.capable(&owner, syscall_abi::capability::Capability::SYS_ADMIN)
+                && !authority.capable(&owner, linux_abi::capability::Capability::SYS_ADMIN)
             {
                 return Err(NamespaceError::Permission);
             }
@@ -215,7 +215,7 @@ impl TaskControlBlock {
             let owner = user.as_ref().unwrap_or(&authority.namespace).clone();
             // NEWUSER 初始化完整能力；否则要求当前 owning user namespace 的 SYS_ADMIN。
             if user.is_none()
-                && !authority.capable(&owner, syscall_abi::capability::Capability::SYS_ADMIN)
+                && !authority.capable(&owner, linux_abi::capability::Capability::SYS_ADMIN)
             {
                 return Err(NamespaceError::Permission);
             }
@@ -224,7 +224,7 @@ impl TaskControlBlock {
         if let Some(snapshot) = &mut frozen_fs {
             let owner = user.as_ref().unwrap_or(&authority.namespace).clone();
             if user.is_none()
-                && !authority.capable(&owner, syscall_abi::capability::Capability::SYS_ADMIN)
+                && !authority.capable(&owner, linux_abi::capability::Capability::SYS_ADMIN)
             {
                 return Err(NamespaceError::Permission);
             }
@@ -327,10 +327,10 @@ impl TaskControlBlock {
                 let net = target.downcast::<crate::net::NetNamespace>()?;
                 if !authority.capable(
                     &authority.namespace,
-                    syscall_abi::capability::Capability::SYS_ADMIN,
+                    linux_abi::capability::Capability::SYS_ADMIN,
                 ) || !authority.capable(
                     &net.user_namespace(),
-                    syscall_abi::capability::Capability::SYS_ADMIN,
+                    linux_abi::capability::Capability::SYS_ADMIN,
                 ) {
                     return Err(NamespaceError::Permission);
                 }
@@ -351,10 +351,10 @@ impl TaskControlBlock {
                 let ipc = target.downcast::<crate::ipc::IpcNamespace>()?;
                 if !authority.capable(
                     &authority.namespace,
-                    syscall_abi::capability::Capability::SYS_ADMIN,
+                    linux_abi::capability::Capability::SYS_ADMIN,
                 ) || !authority.capable(
                     &ipc.user_namespace(),
-                    syscall_abi::capability::Capability::SYS_ADMIN,
+                    linux_abi::capability::Capability::SYS_ADMIN,
                 ) {
                     return Err(NamespaceError::Permission);
                 }
@@ -378,10 +378,10 @@ impl TaskControlBlock {
                 let pid = target.downcast::<crate::namespace::PidNamespace>()?;
                 if !authority.capable(
                     &authority.namespace,
-                    syscall_abi::capability::Capability::SYS_ADMIN,
+                    linux_abi::capability::Capability::SYS_ADMIN,
                 ) || !authority.capable(
                     &pid.user_namespace(),
-                    syscall_abi::capability::Capability::SYS_ADMIN,
+                    linux_abi::capability::Capability::SYS_ADMIN,
                 ) {
                     return Err(NamespaceError::Permission);
                 }
@@ -408,10 +408,10 @@ impl TaskControlBlock {
                 }
                 if !authority.capable(
                     &authority.namespace,
-                    syscall_abi::capability::Capability::SYS_ADMIN,
+                    linux_abi::capability::Capability::SYS_ADMIN,
                 ) || !authority.capable(
                     &time.user_namespace(),
-                    syscall_abi::capability::Capability::SYS_ADMIN,
+                    linux_abi::capability::Capability::SYS_ADMIN,
                 ) {
                     return Err(NamespaceError::Permission);
                 }
@@ -444,7 +444,7 @@ impl TaskControlBlock {
                 {
                     return Err(NamespaceError::Invalid);
                 }
-                if !authority.capable(&user, syscall_abi::capability::Capability::SYS_ADMIN) {
+                if !authority.capable(&user, linux_abi::capability::Capability::SYS_ADMIN) {
                     return Err(NamespaceError::Permission);
                 }
                 self.enter_user_namespace(user);
@@ -453,13 +453,13 @@ impl TaskControlBlock {
                 let mount = target.downcast::<crate::fs::MountNamespace>()?;
                 if !authority.capable(
                     &authority.namespace,
-                    syscall_abi::capability::Capability::SYS_ADMIN,
+                    linux_abi::capability::Capability::SYS_ADMIN,
                 ) || !authority.capable(
                     &authority.namespace,
-                    syscall_abi::capability::Capability::SYS_CHROOT,
+                    linux_abi::capability::Capability::SYS_CHROOT,
                 ) || !authority.capable(
                     &mount.user_namespace(),
-                    syscall_abi::capability::Capability::SYS_ADMIN,
+                    linux_abi::capability::Capability::SYS_ADMIN,
                 ) {
                     return Err(NamespaceError::Permission);
                 }
@@ -508,10 +508,10 @@ impl TaskControlBlock {
                 let uts = target.downcast::<UtsNamespace>()?;
                 if !authority.capable(
                     &authority.namespace,
-                    syscall_abi::capability::Capability::SYS_ADMIN,
+                    linux_abi::capability::Capability::SYS_ADMIN,
                 ) || !authority.capable(
                     &uts.user_namespace(),
-                    syscall_abi::capability::Capability::SYS_ADMIN,
+                    linux_abi::capability::Capability::SYS_ADMIN,
                 ) {
                     return Err(NamespaceError::Permission);
                 }
@@ -670,7 +670,7 @@ impl TaskControlBlock {
         selector: Option<crate::namespace::NamespaceSelector>,
     ) -> Result<crate::namespace::NamespaceReference, crate::fs::chardev::DeviceError> {
         use crate::fs::chardev::DeviceError;
-        use syscall_abi::errno;
+        use linux_abi::errno;
         // 固定 Linux pidfd_get_namespace 在 task_lock 下捕获一次 nsproxy，再释放锁授权。
         // cred/PID 引用先在各自 owner 下提升，随后与实际 nsproxy 是否存活一起线性化。
         let scalar = match selector {

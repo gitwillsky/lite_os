@@ -2,7 +2,7 @@
 
 use crate::sync::Mutex;
 use alloc::sync::Arc;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::codec::{PCM_INFO_BYTES, PcmInfo, encode_pcm_info, read_u32};
 use super::control::{

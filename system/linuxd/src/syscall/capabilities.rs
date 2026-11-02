@@ -2,7 +2,7 @@ use crate::{
     syscall::errno,
     task::{self, CapabilityError, current_task},
 };
-use syscall_abi::capability::{CapabilitySets, VERSION_3, data_size};
+use linux_abi::capability::{CapabilitySets, VERSION_3, data_size};
 
 /// version 先于 PID/data 读取；未知版本只更新首个 u32，不访问不可读 PID。
 fn version_size(header: usize) -> Result<usize, isize> {

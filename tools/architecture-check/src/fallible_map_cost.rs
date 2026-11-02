@@ -23,7 +23,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
 
     let Some(iterator) = sources
         .iter()
-        .find(|source| source.relative == "fallible-tree/src/iter.rs")
+        .find(|source| source.relative == "libraries/fallible-tree/src/iter.rs")
     else {
         errors.push("FallibleMap iterator owner disappeared".to_owned());
         return;
@@ -41,7 +41,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
 
     if let Some(tree) = sources
         .iter()
-        .find(|source| source.relative == "fallible-tree/src/lib.rs")
+        .find(|source| source.relative == "libraries/fallible-tree/src/lib.rs")
         && method_tokens(tree, "retain").is_none_or(|body| {
             body.contains("join_with_root")
                 || body.contains("join_ordered")
@@ -49,7 +49,7 @@ pub(super) fn check(sources: &[SourceFile], errors: &mut Vec<String>) {
         })
     {
         errors.push(
-            "fallible-tree/src/lib.rs: retain rebuilds at every node through AVL joins; require one linear ownership pass plus one linear balanced rebuild"
+            "libraries/fallible-tree/src/lib.rs: retain rebuilds at every node through AVL joins; require one linear ownership pass plus one linear balanced rebuild"
                 .to_owned(),
         );
     }

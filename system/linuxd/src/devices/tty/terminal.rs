@@ -412,11 +412,11 @@ impl Terminal {
                     }
                     let control = |index: usize| state.termios[17 + index];
                     let signal = if local_flags & ISIG != 0 && byte == control(0) {
-                        Some(syscall_abi::signal::SIGINT)
+                        Some(linux_abi::signal::SIGINT)
                     } else if local_flags & ISIG != 0 && byte == control(1) {
-                        Some(syscall_abi::signal::SIGQUIT)
+                        Some(linux_abi::signal::SIGQUIT)
                     } else if local_flags & ISIG != 0 && byte == control(10) {
-                        Some(syscall_abi::signal::SIGTSTP)
+                        Some(linux_abi::signal::SIGTSTP)
                     } else {
                         None
                     };
@@ -519,12 +519,12 @@ impl Terminal {
             return None;
         }
         match access {
-            TerminalAccess::Input => Some(syscall_abi::signal::SIGTTIN),
+            TerminalAccess::Input => Some(linux_abi::signal::SIGTTIN),
             TerminalAccess::Output if state.local_flags() & TOSTOP != 0 => {
-                Some(syscall_abi::signal::SIGTTOU)
+                Some(linux_abi::signal::SIGTTOU)
             }
             TerminalAccess::Output => None,
-            TerminalAccess::StateChange => Some(syscall_abi::signal::SIGTTOU),
+            TerminalAccess::StateChange => Some(linux_abi::signal::SIGTTOU),
         }
     }
 

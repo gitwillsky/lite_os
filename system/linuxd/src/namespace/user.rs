@@ -3,7 +3,7 @@ use super::quota::{UserQuotas, UserResource, UserResourceCharge};
 use super::{IdMap, NamespaceError};
 use crate::sync::Mutex;
 use alloc::sync::Arc;
-use syscall_abi::capability::Capability;
+use linux_abi::capability::Capability;
 
 /// proc map 控制文件种类；不把 UID/GID 与 setgroups 写成另一路 credential policy。
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]

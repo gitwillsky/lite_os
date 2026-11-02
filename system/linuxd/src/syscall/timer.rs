@@ -63,7 +63,7 @@ pub(crate) fn sys_gettimeofday(timeval: usize, timezone: usize) -> isize {
 /// 3. `tv_nsec` 越界或时间为负、早于本次启动返回 `-EINVAL`，copyin fault 返回 `-EFAULT`。
 pub(crate) fn sys_clock_settime(clock_id: i32, timespec: usize) -> isize {
     let task = current_task().expect("clock_settime requires a current task");
-    if !task.has_initial_capability(syscall_abi::capability::Capability::SYS_TIME) {
+    if !task.has_initial_capability(linux_abi::capability::Capability::SYS_TIME) {
         return -EPERM;
     }
     if clock_id != CLOCK_REALTIME {
@@ -94,7 +94,7 @@ pub(crate) fn sys_clock_settime(clock_id: i32, timespec: usize) -> isize {
 /// 状态（唯一策略是 UTC，本地时区由用户态的 `/etc/localtime` 负责），所以接受并忽略。
 pub(crate) fn sys_settimeofday(timeval: usize, timezone: usize) -> isize {
     let task = current_task().expect("settimeofday requires a current task");
-    if !task.has_initial_capability(syscall_abi::capability::Capability::SYS_TIME) {
+    if !task.has_initial_capability(linux_abi::capability::Capability::SYS_TIME) {
         return -EPERM;
     }
     let mut value = None;

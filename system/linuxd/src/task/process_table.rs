@@ -316,7 +316,7 @@ impl ProcessTable {
                 leader_credentials: task.leader_credentials_handle(),
                 parent: None,
                 parent_thread: None,
-                exit_signal: syscall_abi::signal::SIGCHLD as u8,
+                exit_signal: linux_abi::signal::SIGCHLD as u8,
                 parent_exec_generation: 0,
                 children: FallibleMap::new(),
                 session: INIT_PID,

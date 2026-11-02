@@ -313,7 +313,7 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
   barrier 后崩溃并以 `e2fsck -fn` 裁决恢复结果。
   platform DTB 解码用例读取 `verify_unit` 以 runtime gate 相同 machine 配置（TCG、2 CPU）经 QEMU
   `dumpdtb` 现场生成的 `target/kernel-unit/qemu-virt-{aarch64,riscv64}.dtb`（`LITEOS_<ARCH>_DTB`）；AArch64 另生成开启 SMMUv3 的 DTB，验证实际 phandle 与 stream 路由。
-- `netd-unit`：直接装配 netd 协议、FIB、端口和 packet 队列；NIC/event 是边界输入，Linux 策略另由 kernel-unit/guest 验证。
+- `netstack-unit`：直接装配 netstack 协议、FIB、端口和 packet 队列；NIC/event 是边界输入，Linux 策略另由 kernel-unit/guest 验证。
 - `fallible-tree`：实际 AVL 拓扑、fallible publication、节点迁移与 OOM。
 - `scheduler-unit`：实际 native SchedulingState 的 Ready token/generation、退出约束和 Policy 计时；另测 ready heap 与 placement/preemption。
 - `user/` Cargo workspace：linux-uapi、keyboard、terminal-model、terminal-font、canvas、classic-theme、classic-ui、typeface、wayland-scanner 与 wayland-wire 的单元测试。
@@ -321,7 +321,7 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
 - filesystem 可睡眠 owner 由静态字段/adapter contract 与真实 `TaskMutex` FIFO handoff host
   test 共同约束：两个排队 waiter 必须按 ticket 获取，handoff 期间 `try_lock` 不得插队，
   completion-before-arm/arming/sleeping 三种顺序均不得丢 wake。
-- `syscall-abi`：编号唯一性与 ABI 表一致性测试。
+- `linux-abi`：编号唯一性与 ABI 表一致性测试。
 
 kernel-unit 的 ASID 用例直接执行生产 generation owner，用 host local-TLB adapter 保留旧
 root canary，覆盖 8/64/128/256/65536 容量的零号保留/耗尽换代、并发切换、准备 OOM、
@@ -371,7 +371,7 @@ make verify-runtime-network-drive
 
 - boot、CPU topology、interrupt、timer 与基础 filesystem；SMMUv3/RISC-V IOMMU 的 PCI 根盘与恒等 DMA 的 MMIO net/RNG 混合拓扑，实际读写、sync/比较与 ping；
 - AArch64/HVF UTM VirGL 产品 GPU、keyboard、tablet、SPICE VirtIO Console 拓扑，以及空桌面启动链路：
-  devmgr 的 GPU、输入、音频与 SPICE port 拓扑逐条发布 marker；当前不验证真实登录或桌面交互；
+  driver-host 的 GPU、输入、音频与 SPICE port 拓扑逐条发布 marker；当前不验证真实登录或桌面交互；
   首帧后继续要求固定启动的 Files 与 Terminal 各自完成连接、PTY shell 和应用首帧。gate 使用隐藏的
   disposable 一 CPU UTM 产品实例；无窗口 plain QEMU 不再承担图形通过判定，真实 11-CPU 全拓扑由
   headless SMP gate 与同一静态路径覆盖；

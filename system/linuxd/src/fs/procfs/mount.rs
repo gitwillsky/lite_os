@@ -73,7 +73,7 @@ impl crate::fs::mount::FileSystemType for ProcFileSystemType {
         let user_namespace = pid_namespace.user_namespace();
         if !request.identity.namespace_capable(
             &user_namespace,
-            syscall_abi::capability::Capability::SYS_ADMIN,
+            linux_abi::capability::Capability::SYS_ADMIN,
         ) {
             return Err(FileSystemError::PermissionDenied);
         }

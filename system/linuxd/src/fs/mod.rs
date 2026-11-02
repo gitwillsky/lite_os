@@ -85,6 +85,10 @@ pub(crate) use inotify::{
     WatchError, add_watch_flags, filesystem_unmounted, next_cookie, notify_dentry_reclaimed,
     notify_entry, notify_opened, notify_self, watching,
 };
+pub(crate) use linux_abi::open::{
+    O_ACCMODE, O_APPEND, O_CLOEXEC, O_NOCTTY, O_NOFOLLOW, O_NONBLOCK, O_PATH, O_RDONLY, O_RDWR,
+    O_WRONLY,
+};
 pub(crate) use memfd::MemFile;
 pub(crate) use memory_file::MemoryFile;
 pub(crate) use mount::{
@@ -106,10 +110,6 @@ pub(crate) use procfs::{
 };
 use storage_budget::StorageBudget;
 pub(crate) use storage_open::{BackingFile, BackingOpen, DirectIo, StorageOpen};
-pub(crate) use syscall_abi::open::{
-    O_ACCMODE, O_APPEND, O_CLOEXEC, O_NOCTTY, O_NOFOLLOW, O_NONBLOCK, O_PATH, O_RDONLY, O_RDWR,
-    O_WRONLY,
-};
 pub(crate) use sysfs_net::{NetLinkSnapshot, NetLinkSource};
 pub(crate) use vfs::{
     AdvisoryLockAttempt, AdvisoryLockError, AdvisoryLockKey, AdvisoryLockMode,

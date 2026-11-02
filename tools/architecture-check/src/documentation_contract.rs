@@ -338,7 +338,7 @@ fn check_syscall_documentation(
             }
             if expected.get(&name) != Some(&number) {
                 errors.push(format!(
-                    "{path}: syscall row {number}/{name} does not match syscall-abi"
+                    "{path}: syscall row {number}/{name} does not match linux-abi"
                 ));
             }
             seen.entry((number, name)).or_default().push(path);
@@ -383,7 +383,7 @@ pub(super) fn check(
             return;
         }
     };
-    let abi_text = fs::read_to_string(root.join("syscall-abi/src/lib.rs"))
+    let abi_text = fs::read_to_string(root.join("abi/linux-abi/src/lib.rs"))
         .expect("syscall ABI source must exist");
     let abi = parse_file(&abi_text).expect("syscall ABI must parse");
     let syscalls = syscall_entries(&abi);

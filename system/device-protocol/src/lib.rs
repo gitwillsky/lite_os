@@ -1,7 +1,7 @@
 #![no_std]
 #![feature(allocator_ext)]
 
-//! 驱动宿主（devmgr）与设备使用者之间的设备线协议。
+//! 驱动宿主（driver-host）与设备使用者之间的设备线协议。
 //!
 //! 1. 驱动宿主为每个设备创建一条请求 channel 与一个活动 Event，经目录 channel 把它们连同设备的静态
 //!    描述[`directory::Announcement`]交给使用者；带载荷的设备回调（PCM 周期完成等）另有一条事件 channel。

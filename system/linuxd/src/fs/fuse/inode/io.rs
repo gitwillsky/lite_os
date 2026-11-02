@@ -2,7 +2,7 @@
 use super::{FuseInode, HandleRef, ReplyShape, io_in, protocol};
 use crate::fs::FileSystemError;
 use alloc::vec::Vec;
-use syscall_abi::fuse;
+use linux_abi::fuse;
 
 impl FuseInode {
     /// 用 `handle` 在 `offset` 读取至多 `size` 字节；返回唯一回复，传播连接/协议错误。

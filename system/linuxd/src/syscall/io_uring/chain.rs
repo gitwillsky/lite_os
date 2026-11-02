@@ -5,7 +5,7 @@
 //! 不分配 future；这与成员在提交者还是在 worker 线程里执行无关。
 
 use alloc::sync::{Arc, Weak};
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use super::{
     exec::{Issue, Op, Outcome, Wait, drive},

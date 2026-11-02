@@ -17,7 +17,7 @@ use alloc::{
     vec::Vec,
 };
 use core::sync::atomic::{AtomicU8, Ordering};
-use syscall_abi::errno;
+use linux_abi::errno;
 
 use crate::{
     fs::CompletionNotify,

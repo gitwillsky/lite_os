@@ -4,7 +4,7 @@
 extern crate alloc;
 extern crate fallible_tree;
 use alloc::sync::Arc;
-use syscall_abi::capability::{Capability, VALID_MASK};
+use linux_abi::capability::{Capability, VALID_MASK};
 #[path = "../src/allocation_failure.rs"]
 mod allocation_failure;
 #[path = "../../../system/linuxd/src/namespace/mod.rs"]

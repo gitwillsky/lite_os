@@ -9,12 +9,12 @@ dependencies = [
  "bitflags 2.9.1",
  "device-model",
  "fallible-tree",
+ "linux-abi",
  "mmio",
  "native-runtime",
- "netd-unit",
+ "netstack-unit",
  "network-protocol",
  "spin",
- "syscall-abi",
 ]
 
 [[package]]
@@ -118,7 +118,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "devmgr"
+name = "driver-host"
 version = "0.1.0"
 dependencies = [
  "boot-scene",
@@ -150,9 +150,9 @@ version = "0.1.0"
 dependencies = [
  "device-model",
  "fallible-tree",
+ "linux-abi",
  "native-runtime",
  "spin",
- "syscall-abi",
 ]
 
 [[package]]
@@ -164,9 +164,9 @@ dependencies = [
  "fallible-tree",
  "filesystem-protocol",
  "launch-protocol",
+ "linux-abi",
  "native-runtime",
  "service-sync",
- "syscall-abi",
 ]
 
 [[package]]
@@ -223,12 +223,12 @@ dependencies = [
  "device-protocol",
  "dtb-walker",
  "fallible-tree",
+ "linux-abi",
  "mmio",
  "native-abi",
  "native-runtime",
  "network-protocol",
  "spin",
- "syscall-abi",
 ]
 
 [[package]]
@@ -237,6 +237,10 @@ version = "0.1.0"
 dependencies = [
  "native-abi",
 ]
+
+[[package]]
+name = "linux-abi"
+version = "0.1.0"
 
 [[package]]
 name = "linuxd"
@@ -248,10 +252,10 @@ dependencies = [
  "fallible-tree",
  "filesystem-protocol",
  "launch-protocol",
+ "linux-abi",
  "native-runtime",
  "network-protocol",
  "service-sync",
- "syscall-abi",
  "task-observer-protocol",
 ]
 
@@ -286,7 +290,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "netd"
+name = "netstack"
 version = "0.1.0"
 dependencies = [
  "device-model",
@@ -301,7 +305,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "netd-unit"
+name = "netstack-unit"
 version = "0.1.0"
 dependencies = [
  "device-model",
@@ -447,10 +451,6 @@ dependencies = [
  "quote",
  "unicode-ident",
 ]
-
-[[package]]
-name = "syscall-abi"
-version = "0.1.0"
 
 [[package]]
 name = "task-observer-protocol"

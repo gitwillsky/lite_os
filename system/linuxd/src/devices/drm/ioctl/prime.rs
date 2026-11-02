@@ -6,7 +6,7 @@ use crate::{
 };
 use alloc::sync::Arc;
 use fallible_tree::FallibleMap;
-use syscall_abi::errno;
+use linux_abi::errno;
 
 pub(super) fn handle_to_fd(
     user: &dyn UserMemory,

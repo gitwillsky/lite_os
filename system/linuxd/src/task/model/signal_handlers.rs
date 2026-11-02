@@ -50,7 +50,7 @@ impl SignalHandlers {
     }
 
     fn child_policy(&self) -> ChildSignalPolicy {
-        let action = self.action(syscall_abi::signal::SIGCHLD);
+        let action = self.action(linux_abi::signal::SIGCHLD);
         ChildSignalPolicy {
             autoreap: action.handler == 1 || action.flags & 2 != 0,
             notify_exit: action.handler != 1,
@@ -196,7 +196,7 @@ impl TaskControlBlock {
         let mask = self.thread().signal_mask.lock();
         state.with_handlers(|handlers, pending| {
             let policy = handlers.child_policy();
-            let ordinary = signal == syscall_abi::signal::SIGCHLD;
+            let ordinary = signal == linux_abi::signal::SIGCHLD;
             let notify = signal != 0
                 && (!ordinary
                     || match kind {

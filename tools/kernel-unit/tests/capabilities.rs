@@ -3,10 +3,10 @@
 #[path = "../../../system/linuxd/src/task/model/capabilities.rs"]
 mod capabilities;
 use capabilities::{CapabilityError, CapabilityExecIds, CapabilityState};
-use syscall_abi::capability::{
+use linux_abi::capability::{
     Capability, CapabilitySets, VALID_MASK, VERSION_1, VERSION_2, VERSION_3, data_size,
 };
-use syscall_abi::file_capability::{EFFECTIVE, FileCapabilityData, REVISION_2};
+use linux_abi::file_capability::{EFFECTIVE, FileCapabilityData, REVISION_2};
 
 fn file_caps(permitted: u64, inheritable: u64, effective: bool) -> FileCapabilityData {
     FileCapabilityData {

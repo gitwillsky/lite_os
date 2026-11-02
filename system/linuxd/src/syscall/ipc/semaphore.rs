@@ -5,7 +5,7 @@ use crate::{
     task::current_task,
 };
 use alloc::vec::Vec;
-use syscall_abi::{errno, ipc::*};
+use linux_abi::{errno, ipc::*};
 
 pub(in crate::syscall) fn sys_semget(key: i32, count: i32, flags: u32) -> isize {
     let task = current_task().expect("semget requires calling Thread");

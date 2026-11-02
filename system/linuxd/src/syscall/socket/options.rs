@@ -104,7 +104,7 @@ pub(crate) fn sys_setsockopt(
                 if forced
                     && !current_task()
                         .unwrap()
-                        .has_initial_capability(syscall_abi::capability::Capability::NET_ADMIN)
+                        .has_initial_capability(linux_abi::capability::Capability::NET_ADMIN)
                 {
                     return Err(-errno::EPERM);
                 }

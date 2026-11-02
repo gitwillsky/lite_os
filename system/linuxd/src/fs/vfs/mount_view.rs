@@ -338,7 +338,7 @@ impl MountView {
         if superblock_change
             && !identity.namespace_capable(
                 &self.filesystem.user,
-                syscall_abi::capability::Capability::SYS_ADMIN,
+                linux_abi::capability::Capability::SYS_ADMIN,
             )
         {
             return Err(FileSystemError::PermissionDenied);

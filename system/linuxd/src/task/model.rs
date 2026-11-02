@@ -738,7 +738,7 @@ impl TaskControlBlock {
             || signal > 64
             || matches!(
                 signal,
-                syscall_abi::signal::SIGKILL | syscall_abi::signal::SIGSTOP
+                linux_abi::signal::SIGKILL | linux_abi::signal::SIGSTOP
             ) && replacement.is_some()
         {
             return Err(());

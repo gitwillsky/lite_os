@@ -98,7 +98,7 @@ fn send_error(
         && flags & MSG_NOSIGNAL == 0
         && socket.socket_type() == crate::net::SocketType::Stream
     {
-        send_thread_signal(task.tgid(), task.tid(), syscall_abi::signal::SIGPIPE)
+        send_thread_signal(task.tgid(), task.tid(), linux_abi::signal::SIGPIPE)
             .expect("current socket sender must remain live");
     }
     if completed == 0 {
@@ -171,7 +171,7 @@ impl SendContext<'_> {
         self.socket.domain() == crate::net::SocketDomain::Netlink
             && self.task.has_namespace_capability(
                 &self.socket.net_namespace().user_namespace(),
-                syscall_abi::capability::Capability::NET_ADMIN,
+                linux_abi::capability::Capability::NET_ADMIN,
             )
     }
 

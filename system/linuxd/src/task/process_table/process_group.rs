@@ -305,7 +305,7 @@ pub(super) fn claim_controlling_terminal(
 ) -> Result<(), ProcessGroupError> {
     let task = current_task().expect("TTY claim requires current task");
     let pid = task.tgid();
-    let privileged = task.has_initial_capability(syscall_abi::capability::Capability::SYS_ADMIN);
+    let privileged = task.has_initial_capability(linux_abi::capability::Capability::SYS_ADMIN);
     let graph = PROCESS_TABLE.graph.lock();
     let node = graph.nodes.get(&pid).ok_or(ProcessGroupError::NotFound)?;
     let owner = terminal.controlling_session();
@@ -391,8 +391,8 @@ pub(super) fn detach_controlling_terminal(
         .as_ref()
         .and_then(|control| control.foreground_group())
     {
-        send_process_group_signal(group, syscall_abi::signal::SIGHUP);
-        send_process_group_signal(group, syscall_abi::signal::SIGCONT);
+        send_process_group_signal(group, linux_abi::signal::SIGHUP);
+        send_process_group_signal(group, linux_abi::signal::SIGCONT);
     }
     drop(retired);
     Ok(())

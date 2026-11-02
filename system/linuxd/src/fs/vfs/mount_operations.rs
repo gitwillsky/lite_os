@@ -248,7 +248,7 @@ impl VirtualFileSystem {
         }
         if !authority.capable(
             &view.scope.user,
-            syscall_abi::capability::Capability::SYS_ADMIN,
+            linux_abi::capability::Capability::SYS_ADMIN,
         ) {
             return Err(FileSystemError::PermissionDenied);
         }

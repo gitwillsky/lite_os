@@ -35,7 +35,7 @@ fn configure_route(
     }
     if !task.has_namespace_capability(
         &scope.user_namespace(),
-        syscall_abi::capability::Capability::NET_ADMIN,
+        linux_abi::capability::Capability::NET_ADMIN,
     ) {
         return -errno::EPERM;
     }
@@ -270,7 +270,7 @@ pub(in crate::syscall) fn socket_ioctl(
         SIOCSIFFLAGS | SIOCSIFADDR | SIOCSIFNETMASK | SIOCSIFBRDADDR | SIOCSIFMTU
     ) && !task.has_namespace_capability(
         &scope.user_namespace(),
-        syscall_abi::capability::Capability::NET_ADMIN,
+        linux_abi::capability::Capability::NET_ADMIN,
     ) {
         return -errno::EPERM;
     }

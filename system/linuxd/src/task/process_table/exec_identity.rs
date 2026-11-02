@@ -77,7 +77,7 @@ fn commit_exec_identity(
         .exec_generation
         .checked_add(1)
         .expect("exec epoch overflow");
-    node.exit_signal = syscall_abi::signal::SIGCHLD as u8;
+    node.exit_signal = linux_abi::signal::SIGCHLD as u8;
     if old_tid == tgid {
         assert!(link.is_none(), "leader exec does not require identity link");
         return None;
