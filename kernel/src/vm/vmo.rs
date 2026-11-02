@@ -26,6 +26,7 @@
 mod pager;
 use pager::PageRequestCompletion;
 
+mod release;
 mod residency;
 use super::VmError;
 use super::address_space::{Mapping, ZapMode};

@@ -94,6 +94,31 @@ fn fork_exit_churn_with_resident_siblings_releases_transient_ancestors() {
     }
 }
 
+/// 每个常驻快照保留一层隐藏节点；整条祖先链释放时析构深度必须恒定，不能随链长递归。
+/// 在只有 64 KiB 栈的线程上释放 4096 层链：递归析构会在这里栈溢出（内核中表现为撞 guard page）。
+#[test]
+fn releasing_a_deep_hidden_ancestor_chain_uses_bounded_stack() {
+    std::thread::Builder::new()
+        .stack_size(64 * 1024)
+        .spawn(|| {
+            let parent = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
+            parent.write(0, &[11]).unwrap();
+            let siblings: Vec<_> = (0..4096)
+                .map(|_| {
+                    parent
+                        .create_child(0, parent.size(), ChildKind::Snapshot)
+                        .unwrap()
+                })
+                .collect();
+            assert_eq!(byte(&siblings[4095], 0), 11);
+            drop(siblings);
+            drop(parent);
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 #[test]
 fn snapshot_prunes_ancestors_when_exit_notification_precedes_mapping_retirement() {
     let parent = Vmo::create(PAGE_SIZE as u64, VmoOptions::default()).unwrap();
