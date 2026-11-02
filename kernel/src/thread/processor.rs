@@ -8,6 +8,7 @@ use core::{
 };
 
 use super::Thread;
+
 use super::scheduler::cfs_scheduler::{CfsRunQueue, RunQueueEntry};
 use super::scheduling::{CpuAffinity, RunState, WaitMembership};
 use crate::arch::context::KernelContext;
@@ -23,6 +24,13 @@ pub(super) use handoff::{publish_pending_handoff, resume_without_switch, take_pe
 pub(super) use placement::enqueue_new;
 use placement::{ready_entry, select_cpu, select_cpu_after_preemption};
 use ready_membership::{commit_ready_retirement, commit_ready_transition};
+
+/// 新的外部唤醒可以请求抢占；切出线程的回队不是新的唤醒，不能反抢刚选定的 successor。
+#[derive(Clone, Copy)]
+enum ReadyCause {
+    Wake,
+    SwitchOut,
+}
 
 /// idle 上下文被异常恢复时的 fail-stop 目标。
 fn idle_return() -> ! {
@@ -59,7 +67,7 @@ impl Processor {
         &mut self.idle_context
     }
 
-    fn add_ready_entry(&mut self, entry: RunQueueEntry) -> bool {
+    fn add_ready_entry(&mut self, entry: RunQueueEntry) {
         ready_queue::add_ready_entry(self, entry)
     }
 
@@ -70,7 +78,11 @@ impl Processor {
 
     /// 撤销 current 与 Running 负载计数。
     pub(super) fn take_current(&mut self) -> Option<Arc<Thread>> {
+        ready_queue::update_floor(self);
         let current = self.current.take()?;
+        current_per_cpu()
+            .reschedule_requested
+            .store(false, Ordering::Relaxed);
         let previous = current_per_cpu()
             .running_entries
             .fetch_sub(1, Ordering::Relaxed);
@@ -79,8 +91,8 @@ impl Processor {
     }
 
     /// 把远端 mailbox 中的线程转入本地 runqueue。
-    pub(super) fn drain_inbound(&mut self) {
-        ready_queue::drain_inbound(self);
+    pub(super) fn drain_inbound(&mut self) -> bool {
+        ready_queue::drain_inbound(self)
     }
 
     fn defer_reap(&mut self, thread: Arc<Thread>) {
@@ -289,6 +301,18 @@ fn publish_reschedule_at(cpu_id: CpuId) {
     }
 }
 
+/// 当前 CPU 在安全点接管远端 Ready，并仅按本批新的有效 entry 裁决抢占。
+///
+/// 只借用本 CPU 状态，IRQ guard 覆盖整个事务；高 vruntime/stale entry 不触发抢占。
+/// 不分配或复制 Ready membership；调用者已消费 RUNQUEUE deferred bit。
+pub(super) fn dispatch_inbound_ready() {
+    let _irq = LocalIrqGuard::disable();
+    let preempt = with_current_processor(Processor::drain_inbound);
+    if preempt {
+        request_reschedule();
+    }
+}
+
 /// tick 到来时，本 CPU 有竞争者才请求重新调度。
 pub(super) fn request_tick_reschedule() {
     let slot = current_per_cpu();
@@ -329,8 +353,8 @@ pub(super) fn begin_preempt_current(thread: &Arc<Thread>) {
     }
 }
 
-fn deliver_ready_entry(cpu_id: CpuId, entry: RunQueueEntry) {
-    ready_queue::deliver_ready_entry(cpu_id, entry);
+fn deliver_ready_entry(cpu_id: CpuId, entry: RunQueueEntry, cause: ReadyCause) {
+    ready_queue::deliver_ready_entry(cpu_id, entry, cause);
 }
 
 /// 原子替换线程 affinity，并迁移位于已禁止 CPU 的 Ready membership。
@@ -345,6 +369,7 @@ pub(super) fn replace_affinity(thread: &Arc<Thread>, affinity: CpuAffinity) {
         match scheduling.run_state() {
             RunState::Ready { cpu, .. } if !affinity.allows(cpu) => {
                 let target = select_cpu(thread, affinity);
+                placement::rebase_for_migration(thread, cpu, target);
                 replacement = Some((
                     target,
                     commit_ready_transition(scheduling.transition_to_ready(target)),
@@ -355,7 +380,11 @@ pub(super) fn replace_affinity(thread: &Arc<Thread>, affinity: CpuAffinity) {
         }
     }
     if let Some((cpu, generation)) = replacement {
-        deliver_ready_entry(cpu, ready_entry(thread.clone(), generation));
+        deliver_ready_entry(
+            cpu,
+            ready_entry(thread.clone(), generation),
+            ReadyCause::Wake,
+        );
     }
     if let Some(cpu) = running_elsewhere {
         publish_reschedule_at(cpu);
@@ -395,6 +424,11 @@ pub(super) fn wake_waiting(
                 } else {
                     select_cpu(&thread, scheduling.cpu_affinity)
                 };
+                // last_cpu 在当前 Blocked transaction 内是已保存 slice 的坐标 owner：
+                // begin_runtime 写入它后才可能进入 Blocking/Blocked，下一次 Running 前不会改写。
+                let source = cpu::id_at(thread.scheduling.last_cpu.load(Ordering::Relaxed))
+                    .expect("blocked thread has no execution CPU");
+                placement::rebase_for_migration(&thread, source, target);
                 // 实际睡眠才获得有界 I/O 响应额度；早到 wake 不曾离开 CPU，不走此分支。
                 thread.scheduling.policy.lock().place_waking(
                     processor_at(target.index())
@@ -410,7 +444,7 @@ pub(super) fn wake_waiting(
         }
     };
     if let Some((cpu, generation)) = ready {
-        deliver_ready_entry(cpu, ready_entry(thread, generation));
+        deliver_ready_entry(cpu, ready_entry(thread, generation), ReadyCause::Wake);
     }
     true
 }
@@ -440,24 +474,28 @@ pub(super) fn finish_deschedule(thread: &Arc<Thread>) {
                 } else {
                     select_cpu(thread, scheduling.cpu_affinity)
                 };
+                placement::rebase_for_migration(thread, owner, target);
                 Some((
                     target,
                     commit_ready_transition(scheduling.transition_to_ready(target)),
+                    ReadyCause::Wake,
                 ))
             }
             RunState::Preempting { cpu: owner } => {
                 assert_eq!(owner, cpu, "preempting thread returned on another CPU");
                 scheduling.involuntary_switches += 1;
                 let target = select_cpu_after_preemption(thread, scheduling.cpu_affinity);
+                placement::rebase_for_migration(thread, owner, target);
                 Some((
                     target,
                     commit_ready_transition(scheduling.transition_to_ready(target)),
+                    ReadyCause::SwitchOut,
                 ))
             }
             _ => None,
         }
     };
-    if let Some((target, generation)) = ready {
-        deliver_ready_entry(target, ready_entry(thread.clone(), generation));
+    if let Some((target, generation, cause)) = ready {
+        deliver_ready_entry(target, ready_entry(thread.clone(), generation), cause);
     }
 }

@@ -3,6 +3,9 @@ use super::thread_selector::thread_by_tid;
 use super::*;
 use syscall_abi::signal::SIGKILL;
 
+mod notification;
+pub(super) use notification::{complete_stop, defer_process_exit};
+
 /// ptrace 的领域失败；ABI adapter 唯一映射到 errno。
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum PtraceError {
@@ -258,37 +261,6 @@ pub(in crate::task) fn intercept_signal(
         return None;
     }
     Some((signal, info))
-}
-
-pub(super) fn complete_stop(task: &TaskControlBlock) {
-    let notification = {
-        let mut graph = PROCESS_TABLE.graph.lock();
-        let Some(tracee) = graph.tracees.get_mut(&task.tid()) else {
-            return;
-        };
-        let Phase::Stopping { signal, info } = tracee.phase else {
-            return;
-        };
-        tracee.uid = task.credential_id(true, false);
-        tracee.phase = Phase::Stopped {
-            signal,
-            info_signal: signal,
-            info,
-            reported: false,
-        };
-        let group = tracee.tracer_group;
-        let tracer_tid = tracee.tracer;
-        wake_tracer(&mut graph, group);
-        thread_by_tid(&graph, tracer_tid).map(|(_, tracer)| (group, tracer, signal))
-    };
-    if let Some((group, tracer, signal)) = notification {
-        let pid = task.tid_identity().number_in(&tracer.pid_namespace());
-        let uid = tracer
-            .user_namespace()
-            .display_id(true, task.credential_id(true, false));
-        let info = PendingSignal::ptrace_stopped(pid, uid, signal);
-        super::signal::send_kernel_process_signal(group, syscall_abi::signal::SIGCHLD, info);
-    }
 }
 
 /// proc producer 只捕获真实 tracer identity；格式化与 PID view 投影归 fs。
@@ -680,25 +652,7 @@ pub(super) fn thread_exited(task: &TaskControlBlock, status: i32) {
             super::process_exit::complete_process_exit(tgid);
         }
     }
-    let mut graph = PROCESS_TABLE.graph.lock();
-    if let Some(tracee) = graph.tracees.get_mut(&task.tid()) {
-        tracee.uid = task.credential_id(true, false);
-        tracee.phase = Phase::Exited(status);
-        let group = tracee.tracer_group;
-        wake_tracer(&mut graph, group);
-    }
-    let notice = (task.tid() != task.tgid())
-        .then(|| {
-            graph
-                .tracees
-                .get(&task.tid())
-                .and_then(|tracee| exit_notice(&graph, tracee, status))
-        })
-        .flatten();
-    drop(graph);
-    if let Some((group, info)) = notice {
-        super::signal::send_kernel_process_signal(group, syscall_abi::signal::SIGCHLD, info);
-    }
+    notification::publish_thread_exit(task, status);
 }
 
 /// exec 的新 context 已发布；传统 TRACEME/ATTACH 在返回用户态前产生 SIGTRAP。
@@ -720,37 +674,6 @@ pub(in crate::task) fn restrict_exec(task: &TaskControlBlock) -> bool {
             )
         })
     })
-}
-
-/// leader 的实际 retirement 完成后，先把 exit 交给 tracer；real parent 尚不可 reap。
-pub(super) fn defer_process_exit(tgid: usize) -> bool {
-    let (source, notice) = {
-        let mut graph = PROCESS_TABLE.graph.lock();
-        let Some(tracee) = graph.tracees.get(&tgid) else {
-            return false;
-        };
-        let group = tracee.tracer_group;
-        let node = graph
-            .nodes
-            .get_mut(&tgid)
-            .expect("traced process remains indexed");
-        let ProcessState::Exited(status, ExitRetirement::Retiring) = node.state else {
-            panic!("ptrace exit precedes retirement");
-        };
-        node.state = ProcessState::Exited(status, ExitRetirement::Traced);
-        let source = node.pidfd_source.upgrade();
-        wake_tracer(&mut graph, group);
-        let notice = exit_notice(&graph, &graph.tracees[&tgid], status.wait_status());
-        (source, notice)
-    };
-    if let Some(source) = source {
-        source.notify();
-    }
-    // SIGCHLD 真实 generation 在 graph 外准备 metadata；parent notification 延迟到 tracer 消费。
-    if let Some((group, info)) = notice {
-        super::signal::send_kernel_process_signal(group, syscall_abi::signal::SIGCHLD, info);
-    }
-    true
 }
 
 /// 已持 exec credential guard 时为非 leader tracee 的最终身份准备一个真实 PID link。
@@ -829,20 +752,4 @@ fn unlink_tracee(graph: &mut ProcessGraph, tid: usize) -> Option<Tracee> {
         .remove(&tid)
         .expect("trace membership exists");
     Some(tracee)
-}
-
-fn exit_notice(
-    graph: &ProcessGraph,
-    tracee: &Tracee,
-    status: i32,
-) -> Option<(usize, PendingSignal)> {
-    let tracer = thread_by_tid(graph, tracee.tracer)?.1;
-    let pid = tracee.pid.identity().number_in(&tracer.pid_namespace());
-    let uid = tracer.user_namespace().display_id(true, tracee.uid);
-    let info = if status & 0x7f == 0 {
-        PendingSignal::child_exited(pid as usize, status >> 8)
-    } else {
-        PendingSignal::child_killed(pid as usize, (status & 0x7f) as usize)
-    };
-    Some((tracee.tracer_group, info.with_identity(pid, uid, false)))
 }

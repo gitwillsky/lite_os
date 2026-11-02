@@ -111,10 +111,10 @@ impl Client {
                             wayland_wire::protocol::wl_display::Error::NoMemory as u32,
                             "cannot allocate shared memory snapshot",
                         ),
-                        super::shm::ReadError::Upload => Fail::new(
+                        super::shm::ReadError::Upload(error) => Fail::new(
                             ObjectId::DISPLAY,
                             wayland_wire::protocol::wl_display::Error::NoMemory as u32,
-                            "cannot upload shared memory to the compositor GPU",
+                            format!("cannot upload shared memory to the compositor GPU: {error}"),
                         ),
                     })?;
                     commit.state.content = Some(content);

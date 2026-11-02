@@ -455,6 +455,9 @@ pub(crate) fn dispatch_deferred() {
     } else if work.contains(DeferredWork::TIMER_BACKLOG) {
         timer_queue::expire(get_time_ns());
     }
+    if work.contains(DeferredWork::RUNQUEUE) {
+        processor::dispatch_inbound_ready();
+    }
     if work.contains(DeferredWork::CONSOLE) {
         crate::serial::input_ready();
     }

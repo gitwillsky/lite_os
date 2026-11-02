@@ -6,12 +6,39 @@
 - `execution::entry` 只解码 raw ABI；`execution::cpu` 独占 topology/lifecycle；`execution::deferred` 独占内核 merged work bitmap；`execution::barrier` 独占 CPU rendezvous generation。
 - native `thread::SchedulingState` 独占 run state、Ready generation、等待身份、切换计数及 restricted fault 计数；`Policy` 独占 active slice、权重快照与 normal/restricted CPU 时间。
 - `thread::processor` 独占 per-CPU current/runqueue/mailbox/pending handoff；Ready projection 不另存一份可人工同步的运行状态。
+  新的本地唤醒在入队事务中先 checkpoint current，再按该有效 entity 决定 reschedule；实际切换仍等释放锁后的安全点。
+  远端 Ready 在原 per-CPU deferred bitmap 发布 RUNQUEUE，空→非空发送 IPI；目标安全点计费 current，
+  接管 mailbox 并仅按本批新的有效 entity 裁决。空/过期批次不拿已有 runqueue root 伪造一次新唤醒。
+  不得拿未计入 active slice 的旧 vruntime 比较，否则同 CPU 的跨服务回复仍可能等到下一周期 tick。
+  与固定 Linux 的本地 `wakeup_preempt_fair` 先更新 current、远端 `sched_ttwu_pending` 在目标 CPU 裁决的顺序一致；
+  Preempting 线程以 SwitchOut 原因回队：本地回队不请求反抢刚选定的 successor，否则主动 yield 会在用户指令恢复前被撤销，
+  造成等待发布饥饿。WakePending 表示保存上下文前已经发生的真实唤醒，仍以 Wake 裁决抢占。
+  迁到其他 CPU 的回队仍通知目标接管。移除旧 current、选择/恢复新 current 时清除旧上下文的 reschedule 请求；
+  新 Running owner 的 affinity/stop 请求在同一 state guard 之后发表，不能被清掉。不强制每次 wake 切换，也不观察其他 CPU 的 current。
+  未消费的合并 bit 保活工作，take 后的新发布获得新 edge；SSIP/SGI 仍只由 trap handler 确认，barrier 不丢通知。
+  无新锁、队列、分配或 Atomic；ReadyCause 只随调用栈传递，RUNQUEUE 复用既有 owner。
+  无工作时保持原子空路径；actual deferred host fixture 验证目标隔离、合并与重新签发，CFS 测试保护条件抢占，
+  音频跨服务运行时与调度公平性门禁验证延迟及公平性，不新增或放宽阈值。
+- 每个 CPU 的 `placement_vruntime` 是独立、单调的虚拟时钟；有效 current/Ready root 更新它，撤销 current
+  前必须包含刚结束的 slice，不能让空 runqueue 把时钟停在初始值。idle 不重置该时钟。
+  迁移在 SchedulingState guard 内把 `Policy.vruntime - source_floor` 换算到 target_floor，再对真正睡眠者
+  应用已有的有界 credit；不得直接比较不同 CPU 的绝对坐标，也不得把换算计入实际 CPU 时间。
+  Ready affinity 迁移与 Preempting/WakePending 由状态中的 CPU 确定 source；Blocked 的 source 由上次执行 CPU
+  确定，begin_runtime 写入与 Blocking/Blocked 的锁交接保证该值稳定。generation 与新坐标一同发表，旧 entry 仍按 generation 淘汰。
+  不新增状态、锁、Atomic 或分配，只读原有 floor；实际 Policy 夹具保护正/负 lag、睡眠 credit 与 CPU 计费不变。
+- channel_call 的成功回复优先在 reply CPU 唤醒 caller；server 即将再次等请求，局部交接避免把就绪回复
+  留在另一忙 CPU 等下一 tick。该提示复用 TaskEvent/TaskWaitTarget，仍验证精确 wait membership、active 与 affinity，
+  不强置抢占或改变权重。peer close 与普通 event 维持正常选核，未保存的 Blocking context 仍沿原 handoff 完成。
+  没有额外线程、队列、锁或状态；实际音频的原始四 CPU/八路、1024-frame 软件缓冲门禁验证端到端延迟。
 - Linux signal/restart、进程 graph、wait registry 和 process timers 只属于 linuxd；设备完成工作只属于 devmgr。service-sync 不消费内核可变 Rust 状态。
 
 ## 上下文与返回
 
 1. native thread 创建时绑定 context 与 typed stack/address-space backing；普通 trap 只做短寄存器 transaction。
 2. `ThreadOwner::before_user_return` 在最终 IRQ mask 前完成，允许阻塞或要求退出。
+   首次进入、阻塞恢复和抢占恢复共用 `trap_return` 循环：owner 处理后消费 deferred 与重调度请求；
+   切出再恢复必须重新检查 owner。仅在 trap handler 尾部检查会漏过 handoff 新发表的本地唤醒，
+   即使该线程按 CFS 应优先运行，也会被拖到下一次 IRQ。
 3. `disable_for_transfer` 之后只允许非阻塞 snapshot、ASID activation 和硬件安装；所有 Arc 必须在 noreturn 前显式释放。
 
 RISC-V supervisor trap-context mapping 退休必须完成 translation fence；AArch64 context 随 kernel stack owner 退休。
@@ -86,8 +113,10 @@ ThreadOwner 的返回前处理移交 UserReturn（Enter 一个 ExecutionView，�
 ## 服务堆与 IPC 缓冲
 
 native-runtime::heap 独占分配器注册与 VMAR，allocator::Classes 在原互斥锁内拥有各尺寸空闲链。
-原有小块尺寸桶保留到服务进程 VMAR 退休，成本是小块并发高水位。另一个桶只接收完整 native channel
-缓冲，最多保留一个空闲 chunk；并发 RPC 回复结束后，多余 chunk 立即撤销，不能永久保留突发峰值。
+小块尺寸桶覆盖至 2 KiB，保留到服务进程 VMAR 退休，成本是小块并发高水位。
+整页请求与完整 native channel 回复各使用独立映射，每种尺寸最多保留一个备用块（4 KiB + 64 KiB）；
+并发 RPC 结束后的多余块立即撤销，不能用长期 slab 保留一页工作缓冲的突发峰值而耗尽小内存实例。
+整页桶覆盖带事务头、代际与长度前缀的半页 PCM 数据，顺序提交复用它以减少 VMAR/fence 成本。
 中等尺寸与超出 chunk 的分配仍为独立映射，在 dealloc 时撤销；撤销失败 fail-stop，不能丢失最后的映射回收责任。
 chunk 基址按 max(page, block) 对齐；较大对齐的 prefix/suffix 在发布地址前裁剪，活跃块不得重叠。
 裁剪拒绝先撤销整个未发表区间再返回空指针；回滚失败 fail-stop，不能发布失去所有权的部分映射。

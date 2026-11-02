@@ -6,29 +6,27 @@ use super::*;
 ///
 /// - `processor`: 当前 CPU 独占的 scheduler 执行状态。
 /// - `entry`: 已属于 processor CPU 的 membership token。
-///
-/// # Returns
-///
-/// Ready entity 的 vruntime 严格早于 current 时返回 true。
-pub(super) fn add_ready_entry(processor: &mut Processor, entry: RunQueueEntry) -> bool {
-    let slot = current_per_cpu();
+pub(super) fn add_ready_entry(processor: &mut Processor, entry: RunQueueEntry) {
     make_runqueue_room(processor, 1);
     processor.runqueue.push(entry);
+    // Membership/floor 与抢占是不同事实；delivery 原因决定能否请求抢占。
+    update_floor(processor);
+}
+
+/// 以前进的 current/有效 Ready root 更新本 CPU 的虚拟时间基准；idle 不重置时钟。
+pub(super) fn update_floor(processor: &mut Processor) {
     discard_stale_ready_roots(processor);
-    // Ready publication 与抢占 policy 是两个事实：handoff completion 会把高 vruntime
-    // outgoing 重新发布为 Ready，但它不得立刻反抢刚选中的低 vruntime successor。
-    // 比较清除 stale generation 后的真实 heap root，避免失效 delivery 产生伪抢占。
     let current_vruntime = processor
         .current
         .as_ref()
         .map(|current| current.scheduling.policy.lock().vruntime);
-    if let Some(floor) = processor.runqueue.minimum_vruntime() {
-        slot.advance_placement_floor(current_vruntime.map_or(floor, |current| current.min(floor)));
+    let floor = match (current_vruntime, processor.runqueue.minimum_vruntime()) {
+        (Some(current), Some(ready)) => Some(current.min(ready)),
+        (current, ready) => current.or(ready),
+    };
+    if let Some(floor) = floor {
+        current_per_cpu().advance_placement_floor(floor);
     }
-    crate::thread::scheduler::preemption_policy::local_ready_preempts(
-        current_vruntime,
-        processor.runqueue.minimum_vruntime(),
-    )
 }
 
 #[inline(always)]
@@ -80,17 +78,14 @@ pub(super) fn select(processor: &mut Processor) -> Option<Arc<Thread>> {
             RunState::Ready { cpu, generation }
                 if cpu == processor.cpu_id && generation == entry.generation =>
             {
+                // 旧 current 的请求已由本次选择兑现；state guard 阻止新 Running owner 的请求被清掉。
+                slot.reschedule_requested.store(false, Ordering::Relaxed);
                 commit_ready_retirement(
                     scheduling.transition_ready_to_running(processor.cpu_id, entry.generation),
                 );
                 drop(scheduling);
                 processor.current = Some(entry.thread.clone());
-                discard_stale_ready_roots(processor);
-                let floor = processor
-                    .runqueue
-                    .minimum_vruntime()
-                    .map_or(entry.vruntime, |ready| entry.vruntime.min(ready));
-                slot.advance_placement_floor(floor);
+                update_floor(processor);
                 slot.running_entries.fetch_add(1, Ordering::Relaxed);
                 return Some(entry.thread);
             }
@@ -106,17 +101,37 @@ pub(super) fn select(processor: &mut Processor) -> Option<Arc<Thread>> {
 /// # Parameters
 ///
 /// - `processor`: 当前 CPU 独占的 scheduler 执行状态。
-pub(super) fn drain_inbound(processor: &mut Processor) {
+///
+/// # Returns
+/// 本次接管的有效 entry 是否早于已计费 current；空/过期 batch 返回 false。
+pub(super) fn drain_inbound(processor: &mut Processor) -> bool {
     let slot = current_per_cpu();
     // 锁内只消费进入本轮时的 snapshot；后续 delivery 等待锁，
     // 解锁后留给下一轮。VecDeque 不 swap，始终保留启动期预留 backing。
     let mut inbound = slot.inbound.lock();
     if inbound.is_empty() {
-        return;
+        return false;
     }
-    inbound.retain(|candidate| candidate.is_current_ready(processor.cpu_id));
+    let current = processor.current.as_ref().map(|thread| {
+        thread
+            .scheduling
+            .policy
+            .lock()
+            .checkpoint_for_wakeup(crate::execution::timer::get_time_us())
+    });
+    let mut preempt = false;
+    inbound.retain(|candidate| {
+        let live = candidate.is_current_ready(processor.cpu_id);
+        if live {
+            preempt |= crate::thread::scheduler::preemption_policy::local_ready_preempts(
+                current,
+                Some(candidate.vruntime),
+            );
+        }
+        live
+    });
     if inbound.is_empty() {
-        return;
+        return false;
     }
 
     // inbound 每个 entry 都在这一次全量 pass 中验证；合并后只可能按 heap root
@@ -131,37 +146,49 @@ pub(super) fn drain_inbound(processor: &mut Processor) {
                 .expect("inbound batch shrank without mailbox owner"),
         );
     }
-    discard_stale_ready_roots(processor);
-    // Running 的时钟由 select/本地 admission 依据实际 current 前移；不可只按远端 Ready 抬高。
-    if processor.current.is_none()
-        && let Some(floor) = processor.runqueue.minimum_vruntime()
-    {
-        slot.advance_placement_floor(floor);
-    }
+    update_floor(processor);
+    preempt
 }
 
-/// 投递 Ready entry；本地按 CFS policy 抢占，远端只发布 mailbox wake edge。
+/// 投递 Ready entry；本地只为真实新唤醒裁决，远端由目标 CPU 接管 mailbox。
 ///
 /// # Parameters
 ///
 /// - `cpu_id`: 目标 logical CPU identity。
+/// - `cause`: 新唤醒可裁决抢占；本地 SwitchOut 只回队，让已经选定的 successor 先继续执行。
 /// - `entry`: 带 generation 的 membership token。
 ///
 /// # Errors
 ///
 /// 目标越界、未 active 或 platform IPI 失败均 fail-stop。
 #[inline(always)]
-pub(super) fn deliver_ready_entry(cpu_id: CpuId, entry: RunQueueEntry) {
+pub(super) fn deliver_ready_entry(cpu_id: CpuId, entry: RunQueueEntry, cause: ReadyCause) {
     if cpu_id == cpu::current_id() {
-        deliver_local(entry);
+        deliver_local(entry, cause);
     } else {
         deliver_remote(cpu_id, entry);
     }
 }
 
 #[inline(never)]
-fn deliver_local(entry: RunQueueEntry) {
-    if with_current_processor(|processor| processor.add_ready_entry(entry)) {
+fn deliver_local(entry: RunQueueEntry, cause: ReadyCause) {
+    let preempt = with_current_processor(|processor| {
+        let preempt = matches!(cause, ReadyCause::Wake)
+            && entry.is_current_ready(processor.cpu_id)
+            && crate::thread::scheduler::preemption_policy::local_ready_preempts(
+                processor.current.as_ref().map(|thread| {
+                    thread
+                        .scheduling
+                        .policy
+                        .lock()
+                        .checkpoint_for_wakeup(crate::execution::timer::get_time_us())
+                }),
+                Some(entry.vruntime),
+            );
+        processor.add_ready_entry(entry);
+        preempt
+    });
+    if preempt {
         request_reschedule();
     }
 }
@@ -180,11 +207,12 @@ fn deliver_remote(cpu_id: CpuId, entry: RunQueueEntry) {
     );
     inbound.push_back(entry);
     drop(inbound);
-    // Remote sender 不能读取 target 的 current/runqueue policy。这里只发 wake edge：idle
-    // target 立即 drain mailbox；busy target 由下一 timer tick 基于 Ready projection 调度。
-    // 强制 stop/affinity 的 reschedule flag 仍由各自独立控制路径发布。
-    platform::send_ipi(CpuSet::singleton(cpu_id))
-        .expect("platform IPI failed for remote Ready wake");
+    // Sender 不读取远端 current/runqueue，也不强置 reschedule。目标在安全点接管 mailbox，
+    // 使用自己已计费的 current 与 Ready root 裁决；缺失时跨服务 wake 可被拖到下一 10 ms tick。
+    crate::execution::deferred::raise_on(
+        cpu_id,
+        crate::execution::deferred::DeferredWork::RUNQUEUE,
+    );
 }
 
 impl RunQueueEntry {

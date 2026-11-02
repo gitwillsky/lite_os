@@ -16,6 +16,8 @@ pub(crate) struct DeferredWork(u32);
 impl DeferredWork {
     pub(crate) const TIMER: Self = Self(1);
     pub(crate) const CONSOLE: Self = Self(1 << 1);
+    /// 远端 Ready mailbox 有待接管；目标 CPU 在安全点计费 current 并裁决抢占，不能等下一 timer tick。
+    pub(crate) const RUNQUEUE: Self = Self(1 << 2);
     pub(crate) const TIMER_BACKLOG: Self = Self(1 << 3);
     /// 与 [`Self::TIMER`] 一同发布，表示该 tick 打断的是用户态；缺失时所有 tick 都按内核态计入，
     /// 线程运行时间的用户/内核拆分退化为全部计入内核。
@@ -109,12 +111,24 @@ fn pending(cpu: CpuId) -> &'static AtomicU32 {
 
 /// 合并发布 calling CPU 的 deferred work 并经 arch 触发 local software interrupt。
 pub(crate) fn raise(work: DeferredWork) {
-    let previous = pending(current_id()).fetch_or(work.0, Ordering::Release);
-    // 空→非空 transition 唯一签发 local edge；非空 bitmap 已拥有尚待 safe point 消费的
-    // durable edge/current hardirq continuation。若每次合并都重发，AArch64 SGI handler 在
-    // console raw ring 仍可读时会自触发 SGI storm，永远抢在 idle safe point 前运行。
+    raise_on(current_id(), work);
+}
+
+/// 向指定 logical CPU 合并工作；只有空→非空发布 IPI，非空集合已拥有尚待消费的 edge。
+///
+/// `cpu` 必须已初始化；Release 发布工作，目标安全点以 AcqRel 接管。同一 bitmap 保活本地与远端工作，
+/// 不额外镜像 mailbox 或 reschedule 状态；目标无效或平台 IPI 失败均 fail-stop。
+pub(crate) fn raise_on(cpu: CpuId, work: DeferredWork) {
+    let previous = pending(cpu).fetch_or(work.0, Ordering::Release);
+    // 非空 bitmap 已拥有尚待 safe point 消费的 durable edge/hardirq continuation。
+    // 每次合并都重发会使 console backlog 在 AArch64 上自触发 SGI storm。
     if previous == 0 {
-        crate::arch::interrupt::raise_software();
+        if cpu == current_id() {
+            crate::arch::interrupt::raise_software();
+        } else {
+            crate::platform::send_ipi(crate::execution::cpu::CpuSet::singleton(cpu))
+                .expect("platform IPI failed for remote deferred work");
+        }
     }
 }
 

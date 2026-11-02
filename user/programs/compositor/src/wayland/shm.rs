@@ -45,11 +45,11 @@ pub struct BufferSpec {
 }
 
 /// 读取 buffer 内容失败：文件截断、无法分配，或 GPU 后端无法建立/上传纹理。
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum ReadError {
     Truncated,
     NoMemory,
-    Upload,
+    Upload(std::io::Error),
 }
 use ReadError::{NoMemory, Truncated};
 
@@ -176,7 +176,7 @@ mod tests {
             );
             let short = MemFd::create("shm-short", len - 1).unwrap();
             spec.pool = Pool::new(short.as_fd().try_clone_to_owned().unwrap(), len);
-            assert_eq!(read(&spec, spec.bounds()), Err(Truncated));
+            assert!(matches!(read(&spec, spec.bounds()), Err(Truncated)));
         }
     }
 }

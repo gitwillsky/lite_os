@@ -1,5 +1,7 @@
 //! Seat 输入事件路由；Session 仍独占焦点、抓取与安全注意状态，模块不另存镜像。
-use super::{BUTTON_LEFT, BUTTON_RIGHT, ClientId, KeyboardInteractivity, Layer, Session};
+use super::{
+    BUTTON_LEFT, BUTTON_RIGHT, ClientId, KeyboardInteractivity, Layer, PointerGrab, Session,
+};
 use crate::input::Event;
 use std::io;
 impl Session {
@@ -20,7 +22,7 @@ impl Session {
                     let boxes = self.layer_boxes();
                     let grabbed = self
                         .pointer_grab
-                        .and_then(|target| self.locate_target(&boxes, target));
+                        .and_then(|grab| self.locate_target(&boxes, grab.target));
                     if grabbed.is_none() {
                         self.pointer_grab = None;
                     }
@@ -29,12 +31,14 @@ impl Session {
                         .update_pointer(&mut self.server, hit, (x, y), scale, time, true);
                 }
             }
-            Event::Button { code, pressed } => {
+            Event::Button {
+                code,
+                pressed,
+                position,
+            } => {
+                let first = pressed && self.pressed_buttons.is_empty();
                 // 在任何提前返回之前维护按钮集合，释放才不会漏掉而让抓取悬挂。
                 if pressed {
-                    if self.pressed_buttons.is_empty() {
-                        self.pointer_grab = self.seat.pointer_focus();
-                    }
                     self.pressed_buttons.insert(code);
                 } else {
                     self.pressed_buttons.remove(&code);
@@ -48,7 +52,7 @@ impl Session {
                 }
                 if self.window_menu.is_some() {
                     if pressed && matches!(code, BUTTON_LEFT | BUTTON_RIGHT) {
-                        self.menu_click()?;
+                        self.menu_click(position)?;
                     }
                     return Ok(());
                 }
@@ -62,7 +66,7 @@ impl Session {
                     self.end_grab()?;
                 } else if code == BUTTON_LEFT && pressed {
                     // 点在弹出层之外：持有 grab 的弹出层结束（客户端随后销毁它们）。
-                    let point = self.input.pointer().position();
+                    let point = position;
                     if self.popup_hit(point, self.stack.windows()).is_none() {
                         let clients: Vec<ClientId> = self
                             .server
@@ -75,7 +79,7 @@ impl Session {
                         }
                     }
                     // 单击应用窗口：激活并置顶。外壳 surface 不是窗口，点击它不改变活动窗口。
-                    let point = self.input.pointer().position();
+                    let point = position;
                     let boxes = self.layer_boxes();
                     let hit = self.hit_test(&boxes, point);
                     let root = hit.and_then(|hit| self.root_target(hit.target));
@@ -104,7 +108,16 @@ impl Session {
                     }
                 }
                 if !self.secure_pending {
-                    self.seat.button(&mut self.server, code, pressed, time);
+                    let target = self.seat.pointer_focus();
+                    let serial = self.seat.button(&mut self.server, code, pressed, time);
+                    if first {
+                        self.pointer_grab =
+                            target.zip(serial).map(|(target, serial)| PointerGrab {
+                                target,
+                                serial,
+                                position,
+                            });
+                    }
                 }
             }
             Event::Wheel {

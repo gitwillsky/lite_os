@@ -9,6 +9,7 @@
 #include <stdatomic.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <sys/mman.h>
 #include <sys/syscall.h>
 #include <sys/wait.h>
@@ -154,9 +155,18 @@ static int verify_bitset_requeue(struct shared_sync *shared)
 		affected = syscall(SYS_futex, &shared->source, FUTEX_CMP_REQUEUE, 0, 1,
 		                   &shared->target, 0);
 		if (affected == 1) break;
-		if (affected != 0 || sched_yield() != 0) return 15;
+		if (affected != 0 || sched_yield() != 0) {
+            fprintf(stderr, "shared-sync requeue: result=%d errno=%d attempt=%d\n", affected, errno, attempts);
+            return 15;
+        }
 	}
-	if (affected != 1) return 15;
+	if (affected != 1) {
+        int status = 0;
+        pid_t observed = waitpid(child, &status, WNOHANG);
+        fprintf(stderr, "shared-sync requeue: no waiter after %d yields child=%d observed=%d status=%#x errno=%d\n",
+                attempts, child, observed, status, errno);
+        return 15;
+    }
 
 	/* 3. Requeue preserves bitset/deadline: a disjoint target wake misses, the matching wake wins. */
 	if (syscall(SYS_futex, &shared->target, FUTEX_WAKE_BITSET, 1, 0, 0,

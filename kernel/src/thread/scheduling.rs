@@ -114,6 +114,8 @@ pub(crate) struct SchedulingEntity {
     pub(crate) state: IrqMutex<SchedulingState>,
     pub(crate) policy: Mutex<Policy>,
     /// 仅作为下次选核的亲和性提示，不发布状态。
+    /// begin_runtime 唯一写入的上次执行 CPU。选核时只是缓存提示；在 Blocked 的 state guard 内，
+    /// 前次 Running→Blocking→Blocked 的锁交接保证它是已保存 policy 的坐标 owner。
     pub(crate) last_cpu: AtomicUsize,
 }
 
@@ -314,6 +316,27 @@ impl Policy {
         self.vruntime = self.vruntime.max(floor.saturating_sub(credit));
     }
 
+    /// 换算到目标 CPU 的虚拟时间坐标；只改变 placement，不计入实际运行时间。
+    ///
+    /// # Parameters
+    /// - `source_floor`: source CPU 的单调虚拟时间下限。
+    /// - `target_floor`: target CPU 的单调虚拟时间下限。
+    ///
+    /// 正/负 lag 分别保留已消耗的服务债务与睡眠优势；绝对坐标在 u64 边界饱和。
+    /// # Panics
+    /// active slice 尚未结束时拒绝迁移，不能把正在计费的区间换到另一时钟。
+    pub(super) fn rebase(&mut self, source_floor: u64, target_floor: u64) {
+        assert!(
+            self.active_start.is_none(),
+            "cannot migrate an active slice"
+        );
+        self.vruntime = if self.vruntime >= source_floor {
+            target_floor.saturating_add(self.vruntime - source_floor)
+        } else {
+            target_floor.saturating_sub(source_floor - self.vruntime)
+        };
+    }
+
     /// 开始一个 active slice。
     pub(crate) fn begin(&mut self, now_us: u64) {
         let encoded = now_us
@@ -358,6 +381,14 @@ impl Policy {
             - 1;
         let priority = self.active_priority();
         self.commit(now_us.saturating_sub(start), priority);
+    }
+
+    /// 为新的唤醒裁决计费；尚未开始的切换目标只提供已提交的坐标，不伪造 active slice。
+    pub(super) fn checkpoint_for_wakeup(&mut self, now_us: u64) -> u64 {
+        if self.active_start.is_some() {
+            self.checkpoint(now_us);
+        }
+        self.vruntime
     }
 
     fn active_priority(&self) -> usize {

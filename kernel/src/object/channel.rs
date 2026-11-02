@@ -151,7 +151,9 @@ impl Channel {
         {
             let call = state[peer].calls.swap_remove(position);
             *call.reply.lock() = Some(Ok(message));
-            call.event.signal();
+            // 同步调用的 caller 接着消费本回复；留在 reply CPU 可复用即将再次等待请求的 server 时间片。
+            // 不绕过 waiter identity、affinity 或正常 CFS；peer close 等批量通知仍用普通 placement。
+            call.event.signal_on_current_cpu();
             return Ok(());
         }
         if state[peer].inbound.len() >= MAX_PENDING_MESSAGES {

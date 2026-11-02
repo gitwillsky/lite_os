@@ -108,6 +108,12 @@ impl TaskEvent {
         self.signal_with_placement(false);
     }
 
+    /// 同步回复已就绪时优先唤醒到通知者 CPU，减少一次跨 CPU 交接。
+    /// 只提供局部性提示；scheduler 仍核对 active/affinity，并在安全点按 CFS 决定是否抢占。
+    pub(crate) fn signal_on_current_cpu(&self) {
+        self.signal_with_placement(true);
+    }
+
     fn signal_with_placement(&self, current_cpu: bool) {
         self.pending.store(true, Ordering::Release);
         let wake = {

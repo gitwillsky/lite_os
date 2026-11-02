@@ -250,44 +250,57 @@ class UtmRuntimeTests(unittest.TestCase):
         ctl.assert_called_once_with("list")
 
     def test_interrupt_stops_only_the_managed_vm_and_exits_cleanly(self) -> None:
-        listener = MagicMock()
-        serial = MagicMock()
-        listener.accept.return_value = (serial, ("127.0.0.1", 1234))
-        debug = MagicMock()
-        debug.capture.side_effect = KeyboardInterrupt
-        with tempfile.TemporaryDirectory() as directory:
-            with (
-                patch.object(utm_runtime, "_installed_version"),
-                patch.object(utm_runtime, "_open_serial_listener", return_value=(listener, 4567)),
-                patch.object(utm_runtime, "_remove_registered"),
-                patch.object(utm_runtime, "prepare") as prepare,
-                patch.object(utm_runtime, "_ensure_registered"),
-                patch.object(utm_runtime, "_start_visible"),
-                patch.object(
-                    utm_runtime,
-                    "_status",
-                    side_effect=["stopped", "started"],
-                ),
-                patch.object(utm_runtime, "DebugSession", return_value=debug),
-                patch.object(utm_runtime, "UsbRedirection") as usb,
-                patch.object(utm_runtime, "_stop_managed") as stop,
-            ):
-                utm_runtime.run_gui(
-                    kernel=Path("kernel"),
-                    kernel_elf=Path("kernel.elf"),
-                    rootfs=Path("rootfs"),
-                    memory="2G",
-                    cpu_count=6,
-                    serial_log=Path(directory) / "serial.log",
-                )
+        for enabled in (True, False):
+            with self.subTest(usb_passthrough=enabled):
+                listener = MagicMock()
+                serial = MagicMock()
+                listener.accept.return_value = (serial, ("127.0.0.1", 1234))
+                debug = MagicMock()
+                debug.capture.side_effect = KeyboardInterrupt
+                with tempfile.TemporaryDirectory() as directory:
+                    with (
+                        patch.object(utm_runtime, "_installed_version"),
+                        patch.object(utm_runtime, "_open_serial_listener", return_value=(listener, 4567)),
+                        patch.object(utm_runtime, "_remove_registered"),
+                        patch.object(utm_runtime, "prepare") as prepare,
+                        patch.object(utm_runtime, "_ensure_registered"),
+                        patch.object(utm_runtime, "_start_visible"),
+                        patch.object(
+                            utm_runtime,
+                            "_status",
+                            side_effect=["stopped", "started"],
+                        ),
+                        patch.object(utm_runtime, "DebugSession", return_value=debug),
+                        patch.object(utm_runtime, "UsbRedirection") as usb,
+                        patch.object(utm_runtime, "_stop_managed") as stop,
+                    ):
+                        utm_runtime.run_gui(
+                            kernel=Path("kernel"),
+                            kernel_elf=Path("kernel.elf"),
+                            rootfs=Path("rootfs"),
+                            memory="2G",
+                            cpu_count=6,
+                            serial_log=Path(directory) / "serial.log",
+                            **({} if enabled else {"usb_passthrough": False}),
+                        )
 
-        stop.assert_called_once_with()
-        usb.return_value.close.assert_called_once_with()
-        self.assertEqual(prepare.call_args.kwargs["serial_tcp_port"], 4567)
-        serial.setblocking.assert_called_once_with(False)
-        serial.close.assert_called_once_with()
-        listener.close.assert_called_once_with()
-        debug.close.assert_called_once_with()
+                stop.assert_called_once_with()
+                if enabled:
+                    usb.return_value.authorize.assert_called_once_with()
+                    usb.return_value.release_ports.assert_called_once_with()
+                    usb.return_value.start.assert_called_once_with()
+                    usb.return_value.close.assert_called_once_with()
+                    self.assertIs(prepare.call_args.kwargs["usb_redirection"], usb.return_value)
+                    self.assertIsNotNone(debug.capture.call_args.kwargs["check"])
+                else:
+                    usb.assert_not_called()
+                    self.assertIsNone(prepare.call_args.kwargs["usb_redirection"])
+                    self.assertIsNone(debug.capture.call_args.kwargs["check"])
+                self.assertEqual(prepare.call_args.kwargs["serial_tcp_port"], 4567)
+                serial.setblocking.assert_called_once_with(False)
+                serial.close.assert_called_once_with()
+                listener.close.assert_called_once_with()
+                debug.close.assert_called_once_with()
 
 
 if __name__ == "__main__":

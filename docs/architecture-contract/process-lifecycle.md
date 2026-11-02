@@ -7,11 +7,9 @@
 
 - 调度路径只使用 logical `CpuId`/`CpuSet`；不得把 hardware identity 保存为 affinity、processor 或 mask。
 - Ready transition/retirement token 必须直接交给唯一 commit seam；不得缓存、遗忘或从全局 task 表重建 projection。
-- 本地 Ready publication 只有在其 vruntime 严格早于 current 时才发布 reschedule；post-switch
-  handoff 重新入队的高 vruntime outgoing 不得反向抢占刚选中的 successor。回归固定验证
-  `1_000_000 > 10_000` 不抢占、`1_000 < 20_000` 抢占，相等/stale root 不产生 ping-pong。
-  remote Ready sender 只发布 IPI wake edge，不读取 target policy 或强置 reschedule：idle target
-  立即 drain inbound，busy target 在下一 tick 按 authoritative Ready projection 进入 CFS 选择。
+- Ready publication 区分新唤醒与切出后回队；[执行域契约](execution.md)拥有计费、裁决与通知机制。
+  只有新的有效唤醒严格早于已计费 current 时才发布 reschedule；post-switch 本地回队不得反抢刚选中的
+  successor，相等或 stale generation 不产生 ping-pong，也不能把跨服务 wake 拖到下一 tick。
 - runnable successor 已存在时，scheduler 必须在一次 `task -> task` context switch 中转移
   `Processor.current`；只有没有 successor 且 outgoing 不能继续 Running 时才进入 idle。
   outgoing 是可继续的 Preempting/WakePending 且 runqueue 为空时直接恢复 current，不做自我切换。

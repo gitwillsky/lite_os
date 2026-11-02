@@ -5,8 +5,8 @@
 //!
 //! 1. 驱动宿主为每个设备创建一条请求 channel 与一个活动 Event，经目录 channel 把它们连同设备的静态
 //!    描述[`directory::Announcement`]交给使用者；带载荷的设备回调（PCM 周期完成等）另有一条事件 channel。
-//! 2. 使用者端每个设备类有一个实现 `device_model` trait 的远端 client：同步请求用 `channel_call`，
-//!    调用线程直接阻塞；活动 Event 与事件 channel 由一个 [`EventHub`] 线程统一等待并分派。
+//! 2. 使用者端每个设备类有一个实现 `device_model` trait 的远端 client：同步控制用 `channel_call`，
+//!    有界 PCM 数据使用单向请求；活动 Event 与事件 channel 由一个 [`EventHub`] 线程统一等待并分派。
 //! 3. 驱动宿主端每个设备类有一个 server 适配：若干工作线程读取请求、调用驱动 trait、写回同一事务号的回复。
 //!
 //! 线格式与请求/回复传输见 `service_rpc`。
@@ -51,7 +51,10 @@ enum Source {
     /// 活动 Event：清除信号后调用绑定的通知。
     Activity(Event, Mutex<Option<device_model::Activity>>),
     /// 事件 channel：逐条交给处理函数。
-    Events(Channel, Box<dyn Fn(native_runtime::Message) + Send + Sync>),
+    Events(
+        Channel,
+        Box<dyn Fn(Result<native_runtime::Message, Status>) + Send + Sync>,
+    ),
 }
 
 /// 使用者端的事件分派：一个线程在 port 上等待全部活动 Event 与事件 channel。
@@ -124,13 +127,17 @@ impl EventHub {
 
     /// 摘除活动 Event 的登记：之后不再调用其通知，Event 随最后一个引用关闭（取消挂起的等待）。
     pub fn retire(&self, binding: &ActivityBinding) {
+        self.remove_source(binding.key, &binding.source);
+    }
+
+    fn remove_source(&self, key: u64, source: &Arc<Source>) {
         let removed = {
             let mut sources = self.sources.lock();
-            match sources.get_mut(binding.key as usize) {
+            match sources.get_mut(key as usize) {
                 Some(slot)
                     if slot
                         .as_ref()
-                        .is_some_and(|source| Arc::ptr_eq(source, &binding.source)) =>
+                        .is_some_and(|installed| Arc::ptr_eq(installed, source)) =>
                 {
                     slot.take()
                 }
@@ -143,13 +150,22 @@ impl EventHub {
 
     /// 登记事件 channel 与处理函数。
     ///
+    /// # Parameters
+    ///
+    /// - `channel`: 由分派线程独占读取的事件端点。
+    /// - `handler`: 接收消息；终止性读取/重登记错误交付一次 `Err`，随后撤销 source。
+    ///
+    /// # Returns
+    ///
+    /// 登记成功返回 `Ok(())`；之后的消息与断开由 handler 接收。
+    ///
     /// # Errors
     ///
     /// 分配或等待登记失败。
     pub fn events(
         self: &Arc<Self>,
         channel: Channel,
-        handler: Box<dyn Fn(native_runtime::Message) + Send + Sync>,
+        handler: Box<dyn Fn(Result<native_runtime::Message, Status>) + Send + Sync>,
     ) -> Result<(), Status> {
         self.add(Source::Events(channel, handler)).map(drop)
     }
@@ -184,16 +200,21 @@ impl EventHub {
                     let mut closed = false;
                     loop {
                         match channel.read() {
-                            Ok(message) => handler(message),
+                            Ok(message) => handler(Ok(message)),
                             Err(native_abi::ERR_SHOULD_WAIT) => break,
-                            Err(_) => {
+                            Err(status) => {
+                                handler(Err(status));
                                 closed = true;
                                 break;
                             }
                         }
                     }
-                    if !closed {
-                        let _ = self.arm(&source, packet.key);
+                    if !closed && let Err(status) = self.arm(&source, packet.key) {
+                        handler(Err(status));
+                        closed = true;
+                    }
+                    if closed {
+                        self.remove_source(packet.key, &source);
                     }
                 }
             }

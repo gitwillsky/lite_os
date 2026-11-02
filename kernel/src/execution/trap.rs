@@ -110,11 +110,6 @@ pub(crate) fn handle_user_trap() -> ! {
             thread::exit_current();
         }
     }
-    // 汇合点：owner 已释放全部锁，统一处理中断登记的 deferred work。
-    thread::dispatch_deferred();
-    if thread::take_reschedule() && thread::current().is_some() {
-        thread::yield_current();
-    }
     trap_return()
 }
 
@@ -178,28 +173,38 @@ fn illegal_instruction(current: &alloc::sync::Arc<thread::Thread>) -> Option<Use
 
 /// 用户线程返回用户态；首次调度的线程也从这里进入。
 pub(crate) fn trap_return() -> ! {
-    // owner 的返回前处理可能阻塞或要求退出，因此在建立最终 transfer window 之前完成；
-    // 退出前释放本帧引用。
-    let user_return = {
-        let current = thread::current().expect("trap return without a current thread");
-        let owner = current.owner().clone();
-        owner.before_user_return(&current)
-    };
-    let view = match user_return {
-        thread::UserReturn::Enter(view) => view,
-        thread::UserReturn::Exit => thread::exit_current(),
-    };
-    arch::interrupt::disable_for_transfer();
-    let current = thread::current().expect("trap return lost its current thread");
-    let token = current
-        .address_space()
-        .expect("returning thread has no address space")
-        .token(view);
-    let context = current.prepare_user_return(crate::execution::cpu::current_id().index());
-    // noreturn trampoline 不展开 Rust frame；不显式释放会把线程引用永久留在内核栈上。
-    drop(current);
-    timer::note_return_to_user();
-    arch::trap::return_to_user(context, token, crate::arch::mmu::TRAMPOLINE_ADDRESS)
+    loop {
+        // owner 的返回前处理可能阻塞或要求退出，因此在建立最终 transfer window 之前完成；
+        // 退出前释放本帧引用。
+        let user_return = {
+            let current = thread::current().expect("trap return without a current thread");
+            let owner = current.owner().clone();
+            owner.before_user_return(&current)
+        };
+        let view = match user_return {
+            thread::UserReturn::Enter(view) => view,
+            thread::UserReturn::Exit => thread::exit_current(),
+        };
+        // 1. 首次进入、阻塞恢复与抢占恢复都在这里汇合；handoff/owner 可在上一检查后发布新工作。
+        // 2. 消费完 deferred 再裁决切换，不能把已经请求的本地抢占拖到下一次 IRQ。
+        thread::dispatch_deferred();
+        if thread::take_reschedule() {
+            thread::yield_current();
+            // 3. 再次获调度后重做 owner 检查，不能带着切出前的执行视图直接进入用户态。
+            continue;
+        }
+        arch::interrupt::disable_for_transfer();
+        let current = thread::current().expect("trap return lost its current thread");
+        let token = current
+            .address_space()
+            .expect("returning thread has no address space")
+            .token(view);
+        let context = current.prepare_user_return(crate::execution::cpu::current_id().index());
+        // noreturn trampoline 不展开 Rust frame；不显式释放会把线程引用永久留在内核栈上。
+        drop(current);
+        timer::note_return_to_user();
+        arch::trap::return_to_user(context, token, crate::arch::mmu::TRAMPOLINE_ADDRESS)
+    }
 }
 
 /// 内核态 trap：只接受中断；其他异常是内核自身的缺陷，fail-stop。

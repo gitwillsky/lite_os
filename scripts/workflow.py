@@ -389,6 +389,8 @@ def verify_unit(environment: Mapping[str, str] | None = None) -> None:
             "-p",
             "kernel-unit",
             "-p",
+            "device-protocol",
+            "-p",
             "ext4-unit",
             "-p",
             "netd-unit",
@@ -780,6 +782,9 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         acceleration = acceleration_from_environment(source)
         if target.arch != "aarch64" or acceleration != "hvf":
             raise RuntimeError("run-gui is the macOS UTM AArch64/HVF product path")
+        usb_passthrough = source.get("USB_PASSTHROUGH", "1")
+        if usb_passthrough not in ("0", "1"):
+            raise RuntimeError("USB_PASSTHROUGH must be 0 or 1")
         build_kernel(environment)
         build_bootloader(environment)
         sync_userland(environment)
@@ -792,6 +797,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
             cpu_count=int(_qemu_smp(source)),
             serial_log=ROOT / "target" / "logs" / "run-gui-serial.log",
             kernel_arguments="",
+            usb_passthrough=usb_passthrough == "1",
         )
         return
     if scope == "run-gdb":

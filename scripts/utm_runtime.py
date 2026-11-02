@@ -631,8 +631,9 @@ def run_gui(
     cpu_count: int,
     serial_log: Path,
     kernel_arguments: str | None = None,
+    usb_passthrough: bool = True,
 ) -> None:
-    """Start the generated VM while persistently capturing its complete serial stream."""
+    """Capture the GUI session; optional USB forwarding requires local sudo authorization."""
     _installed_version()
     serial_listener, serial_port = _open_serial_listener()
     serial_socket: socket.socket | None = None
@@ -644,8 +645,9 @@ def run_gui(
     # 只有删除旧的 stopped 注册后才取得本次 VM 的清理权；前置失败不能停止用户已有实例。
     owns_vm = False
     try:
-        usb = UsbRedirection()
-        usb.authorize()
+        if usb_passthrough:
+            usb = UsbRedirection()
+            usb.authorize()
         debug = DebugSession(kernel_elf)
         _remove_registered()
         owns_vm = True
@@ -663,7 +665,8 @@ def run_gui(
         status = _status()
         if status != "stopped":
             raise RuntimeError(f"UTM VM {VM_NAME!r} must be stopped before launch; status={status}")
-        usb.release_ports()
+        if usb is not None:
+            usb.release_ports()
         _start_visible()
         for _ in range(40):
             status = _status()
@@ -674,7 +677,8 @@ def run_gui(
             time.sleep(0.25)
         else:
             raise RuntimeError(f"UTM failed to start {VM_NAME}")
-        usb.start()
+        if usb is not None:
+            usb.start()
         serial_listener.settimeout(15.0)
         try:
             serial_socket, _ = serial_listener.accept()
@@ -687,13 +691,15 @@ def run_gui(
             # The capture file is the sole durable serial owner. Reading only
             # UTM's PTY UI loses the first failure as soon as the window closes.
             def check_usb() -> None:
+                if usb is None:
+                    return
                 try:
                     usb.check()
                 except RuntimeError:
                     # 正常关机也关闭 usbredir；仍由 UART EOF 判定会话结束。
                     if _status() not in ("stopping", "stopped"):
                         raise
-            debug.capture(serial_socket, output, check=check_usb)
+            debug.capture(serial_socket, output, check=check_usb if usb is not None else None)
             status = _status()
             if status not in ("stopping", "stopped"):
                 raise RuntimeError(f"UTM serial stream closed while VM status={status}")

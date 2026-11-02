@@ -19,7 +19,7 @@
 | `cpu` | `arch` | 静态机制与显式 owner 依赖 |
 | `serial` | `sync` | 输入字节与读者等待的唯一 owner |
 | `sync` | `arch`,`cpu` | 静态机制与显式 owner 依赖 |
-| `deferred` | `arch`,`cpu` | 静态机制与显式 owner 依赖 |
+| `deferred` | `arch`,`cpu`,`platform` | 合并工作 owner；本地 software interrupt 与跨 CPU 的静态平台 IPI edge |
 | `platform` | `arch`,`cpu`,`interrupt`,`serial`,`sync` | 静态机制与显式 owner 依赖 |
 | `barrier` | `cpu`,`platform` | 静态机制与显式 owner 依赖 |
 | `timer` | `arch`,`cpu`,`platform` | 静态机制与显式 owner 依赖 |

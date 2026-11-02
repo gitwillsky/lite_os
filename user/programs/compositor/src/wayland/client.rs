@@ -251,6 +251,12 @@ impl Client {
     }
 
     fn fatal(&mut self, fail: Fail) -> Result<(), Disconnected> {
+        eprintln!(
+            "compositor: protocol error object={} code={}: {}",
+            fail.object.get(),
+            fail.code,
+            fail.message
+        );
         self.dead = true;
         let event = wl_display::Event::Error {
             object_id: fail.object,

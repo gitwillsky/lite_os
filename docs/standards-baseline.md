@@ -26,6 +26,12 @@ ptrace 的 request、access policy、stop/wait、exec/exit 与 regset 布局取�
 - 睡眠额度必须有界的成熟语义参照同树 [fair.c 的 entity_lag](https://github.com/torvalds/linux/blob/8cd9520d35a6c38db6567e97dd93b1f11f185dc6/kernel/sched/fair.c)。
   LiteOS 使用自己的加权 vruntime 队列与一个时间片的归一化唤醒额度，不声明实现 Linux EEVDF 或实时调度 class。
 
+### 原生服务消息
+
+原生服务消息参照固定 Zircon revision 的
+[FIDL transaction ID 约定](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/reference/fidl/language/wire-format/README.md#transactional-messages)：
+零事务号不要求回复。LiteOS 只采用该 channel 消息语义，不声明 FIDL 编码兼容。
+
 ### 原生 resource 授权
 
 - immutable kind/range、同类子范围与创建所需 WRITE 参照 [固定 Zircon resource_create 规范](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/reference/syscalls/resource_create.md)。

@@ -77,7 +77,10 @@ pub trait PcmOutput: Send + Sync {
     /// 停止 stream，并完成全部已经发布的 I/O。
     fn stop(&self) -> Result<(), PcmOutputError>;
 
-    /// 发布一个完整的已协商格式 interleaved period。
+    /// 将一个完整的已协商格式 interleaved period 交给 adapter 的有界提交队列。
+    ///
+    /// 成功后调用者可复用 `bytes`；本地 DMA 或远端传输负责保活数据，完成由 observer 交付。
+    /// 每个已配置 adapter 至少容纳 [`PCM_PERIODS`] 个 period。异步设备失败经 `disconnected` 撤销流。
     ///
     /// # Parameters
     ///

@@ -3,6 +3,45 @@ use linux_uapi::drm::{
     CommandEncoder, DrmDevice, FORMAT_B8G8R8A8_UNORM, FORMAT_B8G8R8X8_UNORM, ObjectKind,
 };
 use std::{io, os::fd::AsFd};
+
+/// Exercise a command stream spanning more pages than a direct controlq chain can hold.
+/// Each inline packet respects VirGL's 16-bit length; the combined submission remains within
+/// EXECBUFFER's limit. Readback also checks the driver's DMA backing survives asynchronous use.
+fn fragmented_upload() -> Result<(), String> {
+    let device = step("upload open", DrmDevice::open("/dev/dri/renderD128"))?;
+    let graphics = step(
+        "upload context",
+        device.initialize_virgl("fragmented-upload"),
+    )?;
+    let (width, height) = (3008, 22);
+    let resource = step("upload texture", graphics.create_texture(width, height))?;
+    let pixels: Vec<_> = (0..width * height)
+        .map(|index| 0xff00_0000 | (index.wrapping_mul(7919) & 0x00ff_ffff))
+        .collect();
+    let boundary = width as usize * 21;
+    let mut commands = CommandEncoder::new();
+    commands.inline_write(resource.resource_id(), 0, 0, width, 21, &pixels[..boundary]);
+    commands.inline_write(resource.resource_id(), 0, 21, width, 1, &pixels[boundary..]);
+    step(
+        "fragmented upload exec",
+        graphics.exec(commands.words(), &[&resource]),
+    )?;
+    step("fragmented upload wait", resource.wait())?;
+    step(
+        "fragmented upload transfer",
+        resource.transfer_from_host(0, 0, width, height),
+    )?;
+    step("fragmented upload transfer wait", resource.wait())?;
+    let mut row = vec![0; width as usize];
+    for (index, expected) in pixels.chunks_exact(width as usize).enumerate() {
+        resource.read_row(index, 0, &mut row);
+        if row != expected {
+            return Err(format!("fragmented upload readback differs at row {index}"));
+        }
+    }
+    println!("drm-flip-probe: fragmented upload readback ok");
+    Ok(())
+}
 fn step<T>(phase: &str, result: io::Result<T>) -> Result<T, String> {
     result.map_err(|error| format!("PRIME {phase}: {error}"))
 }
@@ -10,6 +49,7 @@ fn step<T>(phase: &str, result: io::Result<T>) -> Result<T, String> {
 /// Verify exported resources survive their producer's OFD/context, repeat/self import returns
 /// the same file-local handle, and format aliases do not double-close their shared GEM owner.
 pub(super) fn verify() -> Result<(), String> {
+    fragmented_upload()?;
     let producer = step("producer open", DrmDevice::open("/dev/dri/renderD128"))?;
     if producer.set_master().is_ok() {
         return Err("render node acquired KMS master".into());

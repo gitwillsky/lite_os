@@ -134,8 +134,6 @@ pub struct Seat {
     pointer_focus: Option<Target>,
     keyboard_focus: Option<Target>,
     keys: KeyTracker,
-    /// 最近一次按下且尚未释放的按钮的序号；窗口的 move/resize 请求必须带它，否则视为过期请求。
-    button_serial: Option<u32>,
     /// 合成器正在抓取指针（交互式移动/缩放）：客户端看不到指针事件。
     grabbed: bool,
     /// 当前指针焦点收到的 `enter` 序号；`set_cursor` 必须带它才有效。
@@ -167,11 +165,6 @@ impl Seat {
 
     pub fn pointer_enter_serial(&self) -> u32 {
         self.pointer_enter_serial
-    }
-
-    /// 当前仍按住的按钮的序号。
-    pub fn button_serial(&self) -> Option<u32> {
-        self.button_serial
     }
 
     /// 开始抓取：指针对当前焦点客户端就像离开了窗口。
@@ -244,13 +237,23 @@ impl Seat {
         }
     }
 
-    pub fn button(&mut self, server: &mut Server, code: u16, pressed: bool, time: u32) {
+    /// 向当前指针焦点投递按钮；有焦点时返回该事件的 serial，供 Session 保有隐式抓取。
+    /// `code`/`pressed`/`time` 原样进入 wl_pointer.button；无焦点返回 None，不产生授权。
+    pub fn button(
+        &mut self,
+        server: &mut Server,
+        code: u16,
+        pressed: bool,
+        time: u32,
+    ) -> Option<u32> {
         if let Some((client, _)) = self.pointer_focus {
             let serial = self.next_serial();
-            self.button_serial = pressed.then_some(serial);
             server.with_client(client, |client| {
                 client.pointer_button(serial, time, u32::from(code), pressed)
             });
+            Some(serial)
+        } else {
+            None
         }
     }
 

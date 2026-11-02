@@ -148,6 +148,15 @@ pub struct Parts {
     pub boot_scene: Vec<u8>,
 }
 
+/// 一次隐式抓取的唯一事实：实际接收按下事件的 leaf、serial 与事件时的位置。
+/// Session 的按键集合负责寿命；分发延迟不能把锚点替换为后续指针位置。
+#[derive(Clone, Copy)]
+struct PointerGrab {
+    target: (ClientId, ObjectId),
+    serial: u32,
+    position: (i32, i32),
+}
+
 pub struct Session {
     scanout: Scanout,
     input: Input,
@@ -165,8 +174,8 @@ pub struct Session {
     /// 当前按下的指针按钮。非空期间指针焦点固定在按下时的 surface（Wayland 的隐式抓取）：
     /// 否则拖动 layer surface 这类“随指针移动”的界面时，指针一旦跑出 surface 就收不到后续 motion 与释放。
     pressed_buttons: BTreeSet<u16>,
-    /// 隐式抓取的目标；所有按钮释放或目标消失时清除。
-    pointer_grab: Option<(ClientId, ObjectId)>,
+    /// 隐式抓取；所有按钮释放或目标消失时清除，不在 Seat 复制按钮 serial。
+    pointer_grab: Option<PointerGrab>,
     /// 点击选中的 OnDemand 外壳；与 seat 的实际焦点分开保存策略，在窗口点击或图层消失时撤销。
     keyboard_layer: Option<(ClientId, ObjectId)>,
     /// 合成器拉起的外壳进程（`logon`）；目前只检测它的退出。
@@ -704,7 +713,10 @@ impl Session {
         );
         let time = self.now_ms();
         let pointer = self.input.pointer().position();
-        let hit = self.hit_test(&boxes, pointer);
+        let hit = self
+            .pointer_grab
+            .and_then(|grab| self.locate_target(&boxes, grab.target))
+            .or_else(|| self.hit_test(&boxes, pointer));
         self.seat
             .update_pointer(&mut self.server, hit, pointer, scale, time, false);
     }
@@ -718,27 +730,25 @@ impl Session {
             match request {
                 WindowRequest::Move { serial } | WindowRequest::Resize { serial, .. } => {
                     // 只接受由仍按住的按钮触发的请求，且窗口不能是最大化/全屏，也不能已有抓取。
-                    let valid = self.seat.button_serial() == Some(serial)
-                        && self
-                            .seat
-                            .pointer_focus()
-                            .and_then(|target| self.root_target(target))
-                            == Some((client, surface))
-                        && placement.mode == Mode::Normal
-                        && self.grab.is_none();
+                    let pressed = self.pointer_grab.filter(|grab| {
+                        grab.serial == serial
+                            && self.root_target(grab.target) == Some((client, surface))
+                            && placement.mode == Mode::Normal
+                            && self.grab.is_none()
+                    });
                     let kind = match request {
                         WindowRequest::Resize { edges, .. } => {
                             Edges::from_xdg(edges).map(Kind::Resize)
                         }
                         _ => Some(Kind::Move),
                     };
-                    if let (true, Some(kind)) = (valid, kind) {
+                    if let (Some(pressed), Some(kind)) = (pressed, kind) {
                         let start = (placement.x, placement.y, placement.width, placement.height);
                         let grab = Grab {
                             client,
                             surface,
                             kind,
-                            pointer: self.input.pointer().position(),
+                            pointer: pressed.position,
                             start,
                         };
                         self.seat.begin_grab(&mut self.server);
@@ -748,6 +758,8 @@ impl Session {
                             sticky: false,
                             origin: start,
                         });
+                        // motion 可先于客户端请求到达；立即补上从按下锚点到当前位置的位移。
+                        self.drag(self.input.pointer().position());
                         if let Kind::Resize(edges) = kind {
                             self.shape = Shape::Named(cursor::resize_cursor_name(edges));
                             self.apply_cursor()?;
@@ -770,7 +782,11 @@ impl Session {
                 }
                 WindowRequest::Minimize => self.minimize_window(client, surface),
                 WindowRequest::ShowMenu { serial, x, y } => {
-                    if self.seat.button_serial() == Some(serial) && self.window_menu.is_none() {
+                    if self.pointer_grab.is_some_and(|grab| {
+                        grab.serial == serial
+                            && self.root_target(grab.target) == Some((client, surface))
+                    }) && self.window_menu.is_none()
+                    {
                         let scale = self.scale as i32;
                         self.open_menu(
                             placement,

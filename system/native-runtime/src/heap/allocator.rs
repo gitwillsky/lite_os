@@ -9,9 +9,11 @@ use core::ptr::{NonNull, null_mut};
 const MIN_CLASS_SHIFT: u32 = 4;
 const SMALL_CLASS_COUNT: usize = 8;
 const SMALL_MAX_SIZE: usize = 1 << (MIN_CLASS_SHIFT as usize + SMALL_CLASS_COUNT - 1);
-// 只额外复用完整的 channel 缓冲；中等尺寸不保留并发峰值，避免挤占小内存机器的承载线程。
+// 整页与完整 channel 缓冲各只保留一个备用映射，不保留并发峰值。
 const CHUNK_SIZE: usize = native_abi::CHANNEL_MAX_BYTES;
-const CLASS_COUNT: usize = SMALL_CLASS_COUNT + 1;
+const PAGE_BUFFER_CLASS: usize = SMALL_CLASS_COUNT;
+const CHANNEL_BUFFER_CLASS: usize = SMALL_CLASS_COUNT + 1;
+const CLASS_COUNT: usize = SMALL_CLASS_COUNT + 2;
 const _: () = assert!(CHUNK_SIZE.is_power_of_two() && CHUNK_SIZE >= native_abi::PAGE_SIZE);
 
 struct FreeBlock {
@@ -34,10 +36,20 @@ fn class_of(layout: Layout) -> Option<usize> {
     let size = layout.size().max(layout.align()).max(1 << MIN_CLASS_SHIFT);
     if size <= SMALL_MAX_SIZE {
         Some((size.next_power_of_two().trailing_zeros() - MIN_CLASS_SHIFT) as usize)
+    } else if size <= native_abi::PAGE_SIZE {
+        Some(PAGE_BUFFER_CLASS)
     } else if size == CHUNK_SIZE {
-        Some(SMALL_CLASS_COUNT)
+        Some(CHANNEL_BUFFER_CLASS)
     } else {
         None
+    }
+}
+
+fn class_size(class: usize) -> usize {
+    match class {
+        PAGE_BUFFER_CLASS => native_abi::PAGE_SIZE,
+        CHANNEL_BUFFER_CLASS => CHUNK_SIZE,
+        _ => 1usize << (class as u32 + MIN_CLASS_SHIFT),
     }
 }
 
@@ -94,18 +106,20 @@ unsafe impl GlobalAlloc for Heap {
             return map(layout.size(), layout.align())
                 .map_or(null_mut(), |address| address as *mut u8);
         };
-        let block_size = if class == SMALL_CLASS_COUNT {
-            CHUNK_SIZE
-        } else {
-            1usize << (class as u32 + MIN_CLASS_SHIFT)
-        };
+        let block_size = class_size(class);
         let mut classes = CLASSES.lock();
         if classes.free[class].is_none() {
-            let Some(chunk) = map(CHUNK_SIZE, block_size.max(native_abi::PAGE_SIZE)) else {
+            // 整页消息（例如带头部的半页 PCM）独占映射；否则 slab 会永久保留短时的并发峰值。
+            let chunk_size = if class >= SMALL_CLASS_COUNT {
+                block_size
+            } else {
+                CHUNK_SIZE
+            };
+            let Some(chunk) = map(chunk_size, block_size.max(native_abi::PAGE_SIZE)) else {
                 return null_mut();
             };
             // 把新区块切成块并串入空闲链（逆序，使低地址先被取出）。
-            for index in (0..CHUNK_SIZE / block_size).rev() {
+            for index in (0..chunk_size / block_size).rev() {
                 let block = (chunk + index * block_size) as *mut FreeBlock;
                 // SAFETY: 块位于刚映射的可写区块内，按块大小对齐。
                 unsafe {
@@ -131,13 +145,13 @@ unsafe impl GlobalAlloc for Heap {
             return;
         };
         let mut classes = CLASSES.lock();
-        if class == SMALL_CLASS_COUNT && classes.free[class].is_some() {
-            // 1. 完整缓冲独占一个 chunk，不与小块共享映射。2. 已有一个备用缓冲时直接退休
+        if class >= SMALL_CLASS_COUNT && classes.free[class].is_some() {
+            // 1. 整页/完整缓冲独占映射，不与小块共享。2. 本桶已有一个备用缓冲时直接退休
             // 当前映射；必须先释放 Classes 锁，再执行可能等待翻译 fence 的 unmap。
             drop(classes);
-            // SAFETY: 调用者归还独占完整 chunk，地址已按 chunk 对齐，没有其他活跃块。
-            unsafe { vmar().unmap(pointer as usize, CHUNK_SIZE) }
-                .expect("surplus channel buffer must retire its mapping");
+            // SAFETY: 调用者归还独占映射，地址已按块大小对齐，没有其他活跃块。
+            unsafe { vmar().unmap(pointer as usize, class_size(class)) }
+                .expect("surplus message buffer must retire its mapping");
             return;
         }
         let block = pointer.cast::<FreeBlock>();

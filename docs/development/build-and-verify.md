@@ -89,7 +89,9 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
   当前 UTM/HVF 的 GDB 连接会在 `hvf_arch_update_guest_debug` 断言退出，即使先暂停也可复现，因此产品实例不开放 GDB stub。
   Make/Python 前台进程持有生命周期；Ctrl-C 只停止该 managed VM。旧 Cocoa QEMU window、激活脚本
   与 GUI 参数入口均不存在。
-- USB DAC 会话启动时由终端执行 `sudo -v` 授权，仅 USB 捕获与上游 `usbredirect` 以管理员身份运行。
+- `run-gui` 默认启用 USB 直通；不需要转发主机 USB 设备时使用 `make run-gui USB_PASSTHROUGH=0`，
+  此时不创建 USB 转发会话、不请求管理员授权，VirtIO 键鼠与虚拟声卡仍可使用。该选项仅接受 `0` 或 `1`。
+  启用 USB DAC 直通时由终端执行 `sudo -v` 授权，仅 USB 捕获与上游 `usbredirect` 以管理员身份运行。
   最多自动转发三个 USB Audio 2 等时输出设备，支持插拔；QEMU 的 usbredir socket 只监听 loopback。
   workflow 关闭唯一控制管道即释放设备并回收子进程，不安装常驻服务或修改 sudoers。
   原版 UTM 可保留；有运行中的 VM 时拒绝切换。首次启动开发副本时，macOS 可能要求用户允许访问已有 UTM 容器。
@@ -301,6 +303,7 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
 
 - `architecture-check`：dependency、owner、interface、文档索引/链接/事实归属与退化模式的纯函数测试。
 - `kernel-unit`：复用实际 native VMO/ASID、Linuxd 文件/IPC/socket/安全 owner、设备队列、codec 与错误清理。
+- `device-protocol`：实际 PCM 客户端的在途额度、完成代际和永久断开状态。
 - `ext4-unit`：直接装配 ext4d 磁盘引擎；ext4 cost/recovery 用例只读取 `verify_unit` 每次经 `create_fs.py` 重新生成的
   `target/ext4-unit/ext4-fixture.img`（`LITEOS_EXT4_FIXTURE`），写入只进入内存 overlay；不读取产品
   rootfs 或开发实例，因此 `verify-fast` 无需先构建 rootfs，直接 `cargo test` 会以变量未设置失败。

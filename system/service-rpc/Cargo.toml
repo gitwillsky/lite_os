@@ -2,7 +2,7 @@
 name = "service-rpc"
 version = "0.1.0"
 edition = "2024"
-description = "系统服务之间基于 channel_call 的同步请求/回复传输"
+description = "系统服务之间的 channel 请求/回复与单向消息传输"
 
 [dependencies]
 native-runtime = { path = "../native-runtime" }

@@ -1,4 +1,5 @@
-use device_model::{DisplayError, VirglCommand, VirglTransferDirection};
+use alloc::sync::Arc;
+use device_model::{DeviceBacking, DisplayError, VirglCommand, VirglTransferDirection};
 use native_runtime::native_abi::PAGE_SIZE;
 
 use super::{
@@ -20,6 +21,7 @@ use super::{
 ///
 /// - `command`: context/resource ownership 已在 DRM domain 固定的 operation。
 /// - `request`: 唯一 controlq request storage；publication 前由本函数完整覆写。
+/// - `descriptor_capacity`: 已协商的 controlq 大小；超出一条完整 chain 时在设备侧整理 DMA backing。
 ///
 /// # Returns
 ///
@@ -33,6 +35,7 @@ pub(super) fn prepare(
     command: VirglCommand<'_>,
     request: &mut [u8],
     bti: &native_runtime::Bti,
+    descriptor_capacity: usize,
 ) -> Result<PreparedCommand, DisplayError> {
     let mut stream = None;
     let (opcode, length) = match command {
@@ -138,12 +141,40 @@ pub(super) fn prepare(
                 u32::try_from(length).map_err(|_| DisplayError::Device)?,
             )
             .ok_or(DisplayError::Device)?;
-            // 命令流由设备经 DMA 读取：先以 GPU 的 BTI 固定；每个设备地址区段占一个 descriptor，
-            // 区段数受单条命令的 descriptor 预算约束（Linux virtio-gpu 同样把命令缓冲作为 sg 链提交）。
-            let extents = commands.pin(bti).map_err(|_| DisplayError::Device)?;
-            if extents.len() > device_model::VIRGL_COMMAND_EXTENTS_MAX {
-                return Err(DisplayError::Device);
+            // 1. 命令流由设备经 DMA 读取；片段数取决于本次 BTI 映射，不能把物理碎片数当作 UAPI 限制。
+            let mut remaining = length;
+            let mut descriptors = 2;
+            for extent in commands.pin(bti).map_err(|_| DisplayError::Device)? {
+                if remaining == 0 {
+                    break;
+                }
+                descriptors += 1;
+                remaining = remaining.saturating_sub(extent.pages * PAGE_SIZE);
             }
+            // 2. 为请求头与响应各留一个 descriptor。整条 chain 超出队列时必须在 publication 前
+            //    整理 DMA 存储，否则即使队列全空也无法提交，重试只会永久等待。
+            let commands = if descriptors > descriptor_capacity {
+                let contiguous =
+                    DeviceBacking::try_allocate_contiguous(length.div_ceil(PAGE_SIZE), bti)
+                        .ok_or(DisplayError::Device)?;
+                let source = commands.cpu_address().ok_or(DisplayError::Device)?;
+                let destination = contiguous.cpu_address().ok_or(DisplayError::Device)?;
+                // SAFETY: 两个独立 VMO 的映射覆盖上面验证的 length，源命令在提交期间不可变；
+                // 目标尚未发布给设备、没有其他访问者，且不与源映射重叠。
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        source as *const u8,
+                        destination as *mut u8,
+                        length,
+                    );
+                }
+                contiguous.pin(bti).map_err(|_| DisplayError::Device)?;
+                Arc::try_new(contiguous).map_err(|_| DisplayError::Device)?
+            } else {
+                commands
+            };
+            // 3. prepared/slot 独占最终 backing，沿已有 exact fence 保活到 used-ring 完成；
+            //    错误路径尚未发布，原始与整理后的 VMO/PMT 都由 RAII 回收。
             stream = Some((commands, length));
             (VIRTIO_GPU_CMD_SUBMIT_3D, 32)
         }

@@ -108,11 +108,11 @@ impl Content {
             Some(gpu) => {
                 let texture = gpu
                     .create_texture(width as u32, height as u32)
-                    .map_err(|_| Upload)?;
+                    .map_err(Upload)?;
                 spec.read_rect(spec.bounds(), |y, row| texture.write_row(y, 0, row))?;
                 texture
                     .transfer_to_host(0, 0, width as u32, height as u32)
-                    .map_err(|_| Upload)?;
+                    .map_err(Upload)?;
                 Pixels::Texture {
                     texture: Rc::new(texture),
                     readback: OnceCell::new(),
@@ -162,7 +162,7 @@ impl Content {
                         rect.height as u32,
                         &rows,
                     )
-                    .map_err(|_| Upload)?;
+                    .map_err(Upload)?;
                 }
             }
             _ => return Ok(false),

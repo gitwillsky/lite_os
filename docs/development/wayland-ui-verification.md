@@ -29,7 +29,8 @@
 `drm-flip-probe`（`user/libraries/linux-uapi/src/bin/drm-flip-probe/main.rs`；只安装在私有镜像）。
 随后通过真实 display-service 启动 compositor，并运行上游 Weston simple-egl；它会实际创建窗口和共享 GPU 缓冲。
 探针走产品同一 DRM/device-protocol/devmgr 路径：VirGL2 能力、render target、EXECBUFFER 清屏、PAGE_FLIP。它先对清屏结果做像素读回比对
-（功能裁决），再连续翻页，丢弃 60 帧 warmup 后测量 600 次完成间隔。`dropped` 取设备 vblank sequence 间隙，严格要求
+（功能裁决），并提交跨 65 页的两包 inline-write，逐行回读校验 DMA 命令流的分散内存与异步寿命。
+随后连续翻页，丢弃 60 帧 warmup 后测量 600 次完成间隔。`dropped` 取设备 vblank sequence 间隙，严格要求
 为 0；p95/p99 按“宽但真实的绝对上限”设阈值，不在文档记录本机测量值。样本不足、读回像素不符、flip 事件与提交帧
 不对应都使 gate 变红。此 gate 只在 AArch64+HVF 承担；RISC-V TCG 没有 VirGL 显示路径，脚本在该目标自跳过。
 统计与判定逻辑由探针内的 host 单测和 `scripts/tests/test_verify_gpu.py` 约束。

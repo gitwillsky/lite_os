@@ -94,6 +94,23 @@ pub(super) fn ready_entry(task: Arc<Thread>, generation: u64) -> RunQueueEntry {
     }
 }
 
+/// 在唯一 SchedulingState 事务内换算离开 source、进入 target 的虚拟时间坐标。
+/// 调用者证明线程已结束 active slice，且 source 是当前 policy 的基准 CPU；不改变 CPU 时间或 membership。
+pub(super) fn rebase_for_migration(task: &Thread, source: CpuId, target: CpuId) {
+    if source != target {
+        let source_floor = processor_at(source.index())
+            .placement_vruntime
+            .load(Ordering::Acquire);
+        let target_floor = processor_at(target.index())
+            .placement_vruntime
+            .load(Ordering::Acquire);
+        task.scheduling
+            .policy
+            .lock()
+            .rebase(source_floor, target_floor);
+    }
+}
+
 /// 将新建 Task 从 New 转换为唯一 Ready membership，并按目标 CPU 的
 /// 已发布的单调 vruntime floor 完成公平 placement。
 ///
@@ -121,6 +138,6 @@ pub(in crate::thread) fn enqueue_new(task: Arc<Thread>) -> CpuId {
     }
     let generation = commit_ready_transition(scheduling.transition_to_ready(cpu));
     drop(scheduling);
-    deliver_ready_entry(cpu, ready_entry(task, generation));
+    deliver_ready_entry(cpu, ready_entry(task, generation), ReadyCause::Wake);
     cpu
 }

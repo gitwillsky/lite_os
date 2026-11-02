@@ -30,6 +30,7 @@ fn motion_batch_keeps_the_latest_position_without_crossing_input_barriers() {
     let press = Event::Button {
         code: BTN_LEFT,
         pressed: true,
+        position: (2, 2),
     };
     let key = Event::Key {
         code: KEY_A,
@@ -170,11 +171,13 @@ fn buttons_and_keys_are_distinguished_and_autorepeat_is_dropped() {
         [
             Event::Button {
                 code: BTN_LEFT,
-                pressed: true
+                pressed: true,
+                position: (50, 50),
             },
             Event::Button {
                 code: BTN_LEFT,
-                pressed: false
+                pressed: false,
+                position: (50, 50),
             },
             Event::Key {
                 code: KEY_A,
@@ -202,4 +205,28 @@ fn degenerate_absolute_range_maps_to_zero_instead_of_dividing_by_zero() {
     let mut decoder = Decoder::new(Some([flat, flat]));
     run(&mut decoder, &mut pointer, &[(3, ABS_X, 5), SYN]);
     assert_eq!(pointer.position().0, 0);
+}
+
+#[test]
+fn a_button_captures_prior_motion_before_later_motion_in_the_same_batch() {
+    let mut pointer = Pointer::new(100, 100);
+    let mut decoder = Decoder::new(None);
+    let events = run(
+        &mut decoder,
+        &mut pointer,
+        &[(2, 0, 10), (1, BTN_LEFT, 1), (2, 0, 20), SYN],
+    );
+    assert_eq!(pointer.position(), (80, 50));
+    assert_eq!(
+        events,
+        [
+            Event::PointerMoved { x: 60, y: 50 },
+            Event::Button {
+                code: BTN_LEFT,
+                pressed: true,
+                position: (60, 50)
+            },
+            Event::PointerMoved { x: 80, y: 50 },
+        ]
+    );
 }

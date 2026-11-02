@@ -659,6 +659,7 @@ kernel/src/execution/cpu/mod.rs :: pub (crate) struct CpuSetIter
 kernel/src/execution/cpu/mod.rs :: pub (crate) struct HardwareCpuId
 kernel/src/execution/deferred.rs :: pub (crate) fn initialize (cpu_count : usize)
 kernel/src/execution/deferred.rs :: pub (crate) fn raise (work : DeferredWork)
+kernel/src/execution/deferred.rs :: pub (crate) fn raise_on (cpu : CpuId , work : DeferredWork)
 kernel/src/execution/deferred.rs :: pub (crate) fn register (handler : DeferredHandler) -> Result < DeferredWork , () >
 kernel/src/execution/deferred.rs :: pub (crate) fn take () -> DeferredWorkSet
 kernel/src/execution/deferred.rs :: pub (crate) impl DeferredWork :: const fn with (self , other : Self) -> Self
@@ -711,6 +712,7 @@ kernel/src/execution/sync/spare.rs :: trait SpareStorage :: fn reserve_exact (& 
 kernel/src/execution/sync/spare.rs :: trait SpareStorage :: fn spare_capacity (& self) -> usize
 kernel/src/execution/sync/task_event.rs :: pub (crate) impl TaskEvent :: const fn new () -> Self
 kernel/src/execution/sync/task_event.rs :: pub (crate) impl TaskEvent :: fn signal (& self)
+kernel/src/execution/sync/task_event.rs :: pub (crate) impl TaskEvent :: fn signal_on_current_cpu (& self)
 kernel/src/execution/sync/task_event.rs :: pub (crate) impl TaskEvent :: fn wait_interruptible (& self) -> WaitResult
 kernel/src/execution/sync/task_event.rs :: pub (crate) impl TaskEvent :: fn wait_interruptible_until (& self , deadline_ns : u64) -> WaitResult
 kernel/src/execution/sync/task_event.rs :: pub (crate) struct TaskEvent
@@ -1431,6 +1433,7 @@ kernel/src/thread/processor.rs :: pub (super) Processor :: current : Option < Ar
 kernel/src/thread/processor.rs :: pub (super) fn account_current_cpu_runtime (runtime_us : u64)
 kernel/src/thread/processor.rs :: pub (super) fn begin_preempt_current (thread : & Arc < Thread >)
 kernel/src/thread/processor.rs :: pub (super) fn defer_reap (thread : Arc < Thread >)
+kernel/src/thread/processor.rs :: pub (super) fn dispatch_inbound_ready ()
 kernel/src/thread/processor.rs :: pub (super) fn finish_deschedule (thread : & Arc < Thread >)
 kernel/src/thread/processor.rs :: pub (super) fn init_topology ()
 kernel/src/thread/processor.rs :: pub (super) fn reap_deferred ()
@@ -1440,7 +1443,7 @@ kernel/src/thread/processor.rs :: pub (super) fn request_tick_reschedule ()
 kernel/src/thread/processor.rs :: pub (super) fn waiting_membership (thread : & Thread) -> Option < WaitMembership >
 kernel/src/thread/processor.rs :: pub (super) fn wake_waiting (thread : Arc < Thread > , expected : WaitMembership , result : WaitResult , prefer_current_cpu : bool ,) -> bool
 kernel/src/thread/processor.rs :: pub (super) fn with_current_processor < R > (f : impl FnOnce (& mut Processor) -> R) -> R
-kernel/src/thread/processor.rs :: pub (super) impl Processor :: fn drain_inbound (& mut self)
+kernel/src/thread/processor.rs :: pub (super) impl Processor :: fn drain_inbound (& mut self) -> bool
 kernel/src/thread/processor.rs :: pub (super) impl Processor :: fn idle_context_ptr (& mut self) -> * mut KernelContext
 kernel/src/thread/processor.rs :: pub (super) impl Processor :: fn select (& mut self) -> Option < Arc < Thread > >
 kernel/src/thread/processor.rs :: pub (super) impl Processor :: fn take_current (& mut self) -> Option < Arc < Thread > >
@@ -1453,14 +1456,16 @@ kernel/src/thread/processor/handoff.rs :: pub (in crate :: thread) fn take_pendi
 kernel/src/thread/processor/handoff.rs :: pub (super) struct PendingHandoff
 kernel/src/thread/processor/placement.rs :: pub (in crate :: thread) fn enqueue_new (task : Arc < Thread >) -> CpuId
 kernel/src/thread/processor/placement.rs :: pub (super) fn ready_entry (task : Arc < Thread > , generation : u64) -> RunQueueEntry
+kernel/src/thread/processor/placement.rs :: pub (super) fn rebase_for_migration (task : & Thread , source : CpuId , target : CpuId)
 kernel/src/thread/processor/placement.rs :: pub (super) fn select_cpu (task : & Thread , affinity : CpuAffinity) -> CpuId
 kernel/src/thread/processor/placement.rs :: pub (super) fn select_cpu_after_preemption (task : & Thread , affinity : CpuAffinity) -> CpuId
 kernel/src/thread/processor/ready_membership.rs :: pub (super) fn commit_ready_retirement (retirement : ReadyRetirement < '_ >)
 kernel/src/thread/processor/ready_membership.rs :: pub (super) fn commit_ready_transition (transition : ReadyTransition < '_ >) -> u64
-kernel/src/thread/processor/ready_queue.rs :: pub (super) fn add_ready_entry (processor : & mut Processor , entry : RunQueueEntry) -> bool
-kernel/src/thread/processor/ready_queue.rs :: pub (super) fn deliver_ready_entry (cpu_id : CpuId , entry : RunQueueEntry)
-kernel/src/thread/processor/ready_queue.rs :: pub (super) fn drain_inbound (processor : & mut Processor)
+kernel/src/thread/processor/ready_queue.rs :: pub (super) fn add_ready_entry (processor : & mut Processor , entry : RunQueueEntry)
+kernel/src/thread/processor/ready_queue.rs :: pub (super) fn deliver_ready_entry (cpu_id : CpuId , entry : RunQueueEntry , cause : ReadyCause)
+kernel/src/thread/processor/ready_queue.rs :: pub (super) fn drain_inbound (processor : & mut Processor) -> bool
 kernel/src/thread/processor/ready_queue.rs :: pub (super) fn select (processor : & mut Processor) -> Option < Arc < Thread > >
+kernel/src/thread/processor/ready_queue.rs :: pub (super) fn update_floor (processor : & mut Processor)
 kernel/src/thread/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: generation : u64
 kernel/src/thread/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: thread : Arc < Thread >
 kernel/src/thread/scheduler/cfs_scheduler.rs :: pub (crate) RunQueueEntry :: vruntime : u64
@@ -1535,7 +1540,9 @@ kernel/src/thread/scheduling.rs :: pub (crate) struct ReadyRetirement < 'owner >
 kernel/src/thread/scheduling.rs :: pub (crate) struct ReadyTransition < 'owner >
 kernel/src/thread/scheduling.rs :: pub (crate) struct SchedulingEntity
 kernel/src/thread/scheduling.rs :: pub (crate) struct SchedulingState
+kernel/src/thread/scheduling.rs :: pub (super) impl Policy :: fn checkpoint_for_wakeup (& mut self , now_us : u64) -> u64
 kernel/src/thread/scheduling.rs :: pub (super) impl Policy :: fn place_waking (& mut self , floor : u64 , credit_us : u64)
+kernel/src/thread/scheduling.rs :: pub (super) impl Policy :: fn rebase (& mut self , source_floor : u64 , target_floor : u64)
 kernel/src/thread/scheduling.rs :: pub (super) impl ReadyRetirement < '_ > :: fn consume_ready_projection_cpu (mut self) -> CpuId
 kernel/src/thread/scheduling.rs :: pub (super) impl ReadyTransition < '_ > :: fn consume_ready_projection_parts (mut self) -> (Option < CpuId > , CpuId , u64)
 kernel/src/thread/timer_queue.rs :: pub (super) fn arm (timer : PreparedTimer) -> TimerToken
@@ -2003,7 +2010,7 @@ system/devmgr/src/drivers/virtio/gpu/damage.rs :: pub (super) impl DamageTransit
 system/devmgr/src/drivers/virtio/gpu/damage.rs :: pub (super) impl DamageTransition :: fn try_new (bti : & native_runtime :: Bti) -> Option < Self >
 system/devmgr/src/drivers/virtio/gpu/damage.rs :: pub (super) impl VirtIOGpuDevice :: fn submit_resident_damage (& self , identity : u64 , mode : DisplayMode , backing : Arc < DeviceBacking > , rectangles : & [DisplayRect] ,) -> Result < u64 , DisplayError >
 system/devmgr/src/drivers/virtio/gpu/damage.rs :: pub (super) struct DamageTransition
-system/devmgr/src/drivers/virtio/gpu/graphics_command.rs :: pub (super) fn prepare (command : VirglCommand < '_ > , request : & mut [u8] , bti : & native_runtime :: Bti ,) -> Result < PreparedCommand , DisplayError >
+system/devmgr/src/drivers/virtio/gpu/graphics_command.rs :: pub (super) fn prepare (command : VirglCommand < '_ > , request : & mut [u8] , bti : & native_runtime :: Bti , descriptor_capacity : usize ,) -> Result < PreparedCommand , DisplayError >
 system/devmgr/src/drivers/virtio/gpu/resource.rs :: enum CursorTarget :: New { next : CursorResource , evicted : Option < CursorResource > , }
 system/devmgr/src/drivers/virtio/gpu/resource.rs :: enum CursorTarget :: Resident
 system/devmgr/src/drivers/virtio/gpu/resource.rs :: enum ResourceTarget :: New { slot : usize , next : ResidentResource , evicted : Option < ResidentResource > , }
@@ -9258,8 +9265,6 @@ system/linuxd/src/task/process_table/ptrace.rs :: pub (in crate :: task) fn rest
 system/linuxd/src/task/process_table/ptrace.rs :: pub (super) TraceClaim :: pid : Arc < PidRegistration >
 system/linuxd/src/task/process_table/ptrace.rs :: pub (super) Tracee :: pid : Arc < PidRegistration >
 system/linuxd/src/task/process_table/ptrace.rs :: pub (super) Tracee :: tgid : usize
-system/linuxd/src/task/process_table/ptrace.rs :: pub (super) fn complete_stop (task : & TaskControlBlock)
-system/linuxd/src/task/process_table/ptrace.rs :: pub (super) fn defer_process_exit (tgid : usize) -> bool
 system/linuxd/src/task/process_table/ptrace.rs :: pub (super) fn find_event (graph : & mut ProcessGraph , parent : usize , claimant : usize , selector : wait_child :: ResolvedChildSelector , exited : bool , stopped : bool , creator_only : bool ,) -> (bool , Option < wait_child :: ChildExit >)
 system/linuxd/src/task/process_table/ptrace.rs :: pub (super) fn finish_claim (record : wait_child :: ChildExit , consume : bool)
 system/linuxd/src/task/process_table/ptrace.rs :: pub (super) fn group_traced (graph : & ProcessGraph , tgid : usize) -> bool
@@ -9271,6 +9276,10 @@ system/linuxd/src/task/process_table/ptrace.rs :: pub (super) fn thread_traced (
 system/linuxd/src/task/process_table/ptrace.rs :: pub (super) fn tracer_identity (tid : usize) -> Option < Arc < crate :: namespace :: PidIdentity > >
 system/linuxd/src/task/process_table/ptrace.rs :: pub (super) struct TraceClaim
 system/linuxd/src/task/process_table/ptrace.rs :: pub (super) struct Tracee
+system/linuxd/src/task/process_table/ptrace.rs :: pub (super) use notification :: { complete_stop , defer_process_exit }
+system/linuxd/src/task/process_table/ptrace/notification.rs :: pub (in crate :: task :: process_table) fn complete_stop (task : & TaskControlBlock)
+system/linuxd/src/task/process_table/ptrace/notification.rs :: pub (in crate :: task :: process_table) fn defer_process_exit (tgid : usize) -> bool
+system/linuxd/src/task/process_table/ptrace/notification.rs :: pub (super) fn publish_thread_exit (task : & TaskControlBlock , status : i32)
 system/linuxd/src/task/process_table/resource_limit.rs :: pub (crate) fn process_resource_limit (pid : usize , resource : usize , replacement : Option < ResourceLimit > ,) -> Result < ResourceLimit , ResourceLimitError >
 system/linuxd/src/task/process_table/resource_limit.rs :: pub (in crate :: task) fn with_credential_transition < T > (task : & TaskControlBlock , commit : impl FnOnce (& mut CredentialTransition < '_ >) -> T ,) -> T
 system/linuxd/src/task/process_table/resource_limit.rs :: pub (in crate :: task) impl CredentialTransition < '_ > :: fn clear_parent_death (& mut self)

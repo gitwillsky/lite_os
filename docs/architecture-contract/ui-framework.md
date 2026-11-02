@@ -290,6 +290,15 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   深度预算包含祖先和已有后代；超预算以标准 no_memory 失败，不能在绘制时悄悄漏掉深层节点。
 - Region 以 COW 不可变快照实现复制语义；每对象最多 4096 条加减操作，超限标准 no_memory，防止绕过对象数量限制耗尽内存。
   hit_testing 按提交树逆序和输入 region 命中，空洞穿透；实际 leaf 收指针，根窗口收键盘/激活，隐式抓取保留 leaf 坐标原点。
+- Session.pointer_grab 独占按下时的 leaf、serial 与物理位置；pressed_buttons 决定寿命，最后释放或目标消失时撤销。
+  Seat 只签发/投递 serial，不保存第二份按钮授权。输入 Decoder 在按钮前提交已有轴值，Button 携带事件位置；
+  同一批次之后的 motion 不能反向改变点击命中、菜单选择或抓取锚点。sync_focus 也保留仍存活的隐式目标。
+  xdg_toplevel.move/resize 校验该 serial 和根目标，以按下位置作锚点；请求到达时立即应用已发生的位移，
+  无须等待下一个 motion。语义遵循固定 xdg-shell 用户事件授权及
+  [Mutter 49.0 的 grab 坐标捕获](https://github.com/GNOME/mutter/blob/49.0/src/wayland/meta-wayland-pointer.c)。
+  只扩展既有抓取记录和语义事件，没有新锁、分配或全局状态；成本沿用 GPU/显示门禁。
+  实际 classic-ui 探针故意在 motion 后发送 move/resize，原位置与尺寸像素断言裁决延迟交错；
+  Decoder host 测试保护同批轴值→按钮→后续轴值的顺序边界。
 - Stack 从活动窗口的父链推导全屏组；该组及其 popup 位于 Top 外壳之上、Overlay 之下，绘制与命中共用同一分界。
   非全屏窗口激活后恢复普通层序；全屏对话框保持所属组，不另存层级状态。成本为栈/父链遍历，无新增逐帧分配，交互由桌面验收验证。
 - queued_callbacks 等待显示提交，in_flight_callbacks 只属于已送交 Scanout 的帧；finish_frame 不能消费 flip 在途期间新提交的回调。

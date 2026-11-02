@@ -70,11 +70,28 @@ workload 分别观察；不以 host 硬件浮点计时宣称 linuxd softfloat �
 
 完成计数的消费与 Engine 状态推进属于同一引擎锁事务；每次只消费一个快照，锁外立即通知写者。
 新的设备完成由回调发布的 AUDIO 工作位保活，不能恢复同步追赶循环，延迟应用补数直至 underrun。
-本改动不新增队列、锁或分配；八路 ALSA 实际播放与 WAV 门禁验证供数和混音，宿主数学 benchmark 不替代该验证。
+八路 ALSA 实际播放与 WAV 门禁验证供数和混音，宿主数学 benchmark 不替代该验证。
 
-物理 period 只由 `PcmOutput::submit_period` 原子准入：无 slot 返回 WouldBlock，Engine 不推进 mixed/queue。
-不保留 writable 预查 RPC 或客户端容量镜像；提交完成前的环读取与混音不消费应用指针，拒绝后可安全重试。
-此路径减少一次跨服务往返，成本与实际八路 ALSA/WAV 运行时一起验证。
+`PcmOutput::submit_period` 原子准入 adapter 的有界队列：无额度返回 WouldBlock，Engine 不推进 mixed/queue。
+每个物理 adapter 至少有四个 DMA period slots。RemotePcm 独占四个传输额度，涵盖请求 channel 中及设备中的全部
+已接受 period；成功入队后只有对应代际的硬件完成归还额度。它不是硬件 slot 查询或镜像，不保留 writable 预查 RPC。
+数据消息的事务号为零，设备线程按请求 channel 顺序消费；传输接管 bytes 后调用者可立即复用原缓冲。
+设备拒绝已准入的数据必须发出断开事件，不能丢数据后继续报告成功。断开、重复完成或错误帧数永久关闭准入。
+
+冷控制由 RemotePcm.control 串行化，先在原 observer mutex 扩展的 ClientState 事务中关闭准入，再发送同步请求。
+提交的预留与非阻塞 channel write 在同一 ClientState 事务内，控制不能越过旧提交；写失败唯一归还该预留。
+事件线程不取得 control 锁，先归还额度并克隆 observer，释放 ClientState 后才回调，不能被慢控制阻塞。
+RELEASE 保持设备原有 DMA/回调屏障；成功后撤销客户端配置，迟到事件不能再推进引擎。下一次 CONFIGURE 使用
+不回绕的代际；EventWriter 的 Mutex 独占事件端点与 generation，在旧 release 屏障后换代。
+两条 channel 接收顺序独立，故旧代际完成必须忽略；物理断开则与代际无关，未配置时同样永久撤销连接。
+EventHub 在事件 peer 关闭或重登记失败时交付一次终止错误并撤销 source，PCM 将它与错误格式消息统一视为断开；
+否则四个额度耗尽后会永久等待一个已不存在的 producer，而非向应用交付设备失败。
+EventWriter 发送失败时在其状态事务内撤销端点、锁外关闭；已排队消息消费完后交付终止，不能忽略失败而丢失额度。
+
+Benchmark 决策：数据提交取消混音锁内的同步回复等待，使用既有请求 channel、事件线程与固定四个额度，不新增
+工作线程或独立数据队列。新增的 control mutex 只用于冷操作，事件端点 mutex 串行发送/终止与换代；
+代际与准入标志分别防止迟到完成和控制越过数据。
+四个额度在途、迟到/重复完成与断开由实际客户端状态夹具保护；完整音频/WAV 门禁仍使用原八路、1024-frame 软件缓冲与零 XRUN 要求。
 
 ## 失败、范围与验证
 

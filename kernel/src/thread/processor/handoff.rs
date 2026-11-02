@@ -79,6 +79,9 @@ pub(in crate::thread) fn resume_without_switch(task: &Arc<Thread>) -> bool {
         if !resumable {
             return false;
         }
+        current_per_cpu()
+            .reschedule_requested
+            .store(false, Ordering::Relaxed);
         scheduling.replace_non_ready_state(RunState::Running { cpu });
         drop(scheduling);
         processor.current = Some(task.clone());

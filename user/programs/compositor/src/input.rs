@@ -27,10 +27,11 @@ pub enum Event {
         x: i32,
         y: i32,
     },
-    /// 鼠标按钮，`code` 是 Linux `BTN_*`。
+    /// 鼠标按钮，`code` 是 Linux `BTN_*`；`position` 是该事件发生时的物理位置，不能用批次结束位置替代。
     Button {
         code: u16,
         pressed: bool,
+        position: (i32, i32),
     },
     /// 键盘键，`code` 是 Linux `KEY_*`；自动重复由客户端自己负责，这里不产生。
     Key {
@@ -147,10 +148,15 @@ impl Decoder {
             (EV_REL, REL_HWHEEL) => self.wheel_low[1] += value,
             (EV_REL, REL_WHEEL_HI_RES) => self.wheel_high[0] -= value,
             (EV_REL, REL_HWHEEL_HI_RES) => self.wheel_high[1] += value,
-            (EV_KEY, BUTTON_FIRST..=BUTTON_LAST) if value != 2 => out.push(Event::Button {
-                code,
-                pressed: value != 0,
-            }),
+            (EV_KEY, BUTTON_FIRST..=BUTTON_LAST) if value != 2 => {
+                // 按钮是运动合并屏障：先提交此前轴值，后续同批 motion 不能改变按下时的锚点。
+                self.commit(pointer, out);
+                out.push(Event::Button {
+                    code,
+                    pressed: value != 0,
+                    position: pointer.position(),
+                });
+            }
             (EV_KEY, _) if value != 2 => out.push(Event::Key {
                 code,
                 pressed: value != 0,

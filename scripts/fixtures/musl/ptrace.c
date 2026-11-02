@@ -405,11 +405,43 @@ static int suppressed_suspend_mask(void)
     return 0;
 }
 
+/* Linux 在发布 stop/exit 通知后才唤醒 wait；wait 返回不能留下尚未生成的 SIGCHLD。 */
+static int stop_notification_precedes_wait(void)
+{
+    sigset_t blocked, original; sigemptyset(&blocked); sigaddset(&blocked, SIGCHLD);
+    CHECK(sigprocmask(SIG_BLOCK, &blocked, &original) == 0);
+    uint64_t mask = UINT64_C(1) << (SIGCHLD - 1);
+    struct timespec immediate = {0}; siginfo_t info = {0};
+    /* 丢弃此前独立 ptrace 场景的通知，本用例只检查自己创建的 child。 */
+    while (syscall(SYS_rt_sigtimedwait, &mask, &info, &immediate, 8) == SIGCHLD) {}
+    for (int round = 0; round < 16; round++) {
+        pid_t child = fork(); CHECK(child >= 0);
+        if (!child) {
+            if (ptrace(PTRACE_TRACEME, 0, 0, 0)) _exit(80);
+            raise(SIGSTOP); _exit(0);
+        }
+        int status;
+        CHECK(waitpid(child, &status, 0) == child && WIFSTOPPED(status) && WSTOPSIG(status) == SIGSTOP);
+        long signal = syscall(SYS_rt_sigtimedwait, &mask, &info, &immediate, 8);
+        if (signal != SIGCHLD || info.si_code != CLD_TRAPPED || info.si_pid != child) {
+            dprintf(2, "ptrace notification round=%d signal=%ld code=%d pid=%d child=%d\n",
+                round, signal, info.si_code, info.si_pid, child);
+            return 86;
+        }
+        CHECK(ptrace(round & 1 ? PTRACE_CONT : PTRACE_DETACH, child, 0, 0) == 0);
+        CHECK(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == 0);
+        CHECK(syscall(SYS_rt_sigtimedwait, &mask, &info, &immediate, 8) == SIGCHLD
+            && info.si_code == CLD_EXITED && info.si_pid == child);
+    }
+    CHECK(sigprocmask(SIG_SETMASK, &original, 0) == 0);
+    return 0;
+}
+
 int verify_ptrace(void)
 {
     int result;
 #define RUN(test) do { printf("ptrace %s\n", #test); if ((result = test())) return result; } while (0)
-    RUN(suppressed_suspend_mask); RUN(redirect_blocked_syscall); RUN(trace_me); RUN(blocked_signal_info); RUN(attach_exit); RUN(trace_exec);
+    RUN(stop_notification_precedes_wait); RUN(suppressed_suspend_mask); RUN(redirect_blocked_syscall); RUN(trace_me); RUN(blocked_signal_info); RUN(attach_exit); RUN(trace_exec);
     RUN(external_tracer); RUN(tracer_exit); RUN(credential_denial); RUN(thread_attach); RUN(concurrent_tracer_exit); RUN(traced_worker_exec_promotes_identity);
 #undef RUN
     return 0;

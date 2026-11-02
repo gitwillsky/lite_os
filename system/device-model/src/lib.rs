@@ -35,8 +35,7 @@ pub use display::{
 };
 pub use entropy::{EntropyError, EntropySource};
 pub use graphics::{
-    CursorCommand, GraphicsDevice, VIRGL_COMMAND_EXTENTS_MAX, VirglBox, VirglCapsetInfo,
-    VirglCommand, VirglTransferDirection,
+    CursorCommand, GraphicsDevice, VirglBox, VirglCapsetInfo, VirglCommand, VirglTransferDirection,
 };
 pub use input::{InputAbsInfo, InputDevice, InputDeviceError, InputId, RawInputEvent};
 pub use pcm_format::{

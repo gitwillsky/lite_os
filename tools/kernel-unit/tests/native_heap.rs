@@ -104,7 +104,11 @@ mod heap {
     fn channel_buffers_reuse_aligned_nonoverlapping_blocks_and_large_maps_retire() {
         use std::sync::atomic::Ordering;
         let heap = allocator::Heap;
-        for (size, align) in [(2048, 16), (65536, 65536)] {
+        for (size, align) in [
+            (2048, 16),
+            (8 + 8 + 4 + device_model::PCM_PERIOD_BYTES, 16),
+            (65536, 65536),
+        ] {
             let layout = Layout::from_size_align(size, align).unwrap();
             // SAFETY: valid nonzero layouts; every allocation is returned exactly once below.
             unsafe {
@@ -136,22 +140,24 @@ mod heap {
             }
         }
         let retained = MAPPINGS.lock().unwrap().len();
-        let layout = Layout::from_size_align(native_abi::CHANNEL_MAX_BYTES, 16).unwrap();
-        // SAFETY: model concurrent RPC replies, then return every buffer before checking retention.
-        unsafe {
-            let replies: Vec<_> = (0..24).map(|_| heap.alloc(layout)).collect();
-            assert!(replies.iter().all(|pointer| !pointer.is_null()));
-            for reply in replies {
-                heap.dealloc(reply, layout);
+        for size in [native_abi::PAGE_SIZE, native_abi::CHANNEL_MAX_BYTES] {
+            let layout = Layout::from_size_align(size, 16).unwrap();
+            // SAFETY: model concurrent RPC replies, then return every buffer before checking retention.
+            unsafe {
+                let replies: Vec<_> = (0..24).map(|_| heap.alloc(layout)).collect();
+                assert!(replies.iter().all(|pointer| !pointer.is_null()));
+                for reply in replies {
+                    heap.dealloc(reply, layout);
+                }
             }
+            assert_eq!(
+                MAPPINGS.lock().unwrap().len(),
+                retained,
+                "a completed RPC burst must not permanently retain its peak request/reply mappings"
+            );
         }
-        assert_eq!(
-            MAPPINGS.lock().unwrap().len(),
-            retained,
-            "a completed RPC burst must not permanently retain its peak reply mappings"
-        );
         let retained = MAPPINGS.lock().unwrap().len();
-        let layout = Layout::from_size_align(4096, 16).unwrap();
+        let layout = Layout::from_size_align(8192, 16).unwrap();
         // SAFETY: medium allocations own independent mappings and must retire on return.
         unsafe {
             let buffer = heap.alloc(layout);

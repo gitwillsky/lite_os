@@ -14,6 +14,27 @@ import workflow  # noqa: E402
 
 
 class WorkflowTests(unittest.TestCase):
+    def test_gui_usb_policy_is_validated_before_building_or_launching(self) -> None:
+        for value in (None, "0", "1", "invalid"):
+            with (
+                self.subTest(value=value),
+                patch.object(workflow, "build_kernel") as build,
+                patch.object(workflow, "build_bootloader"),
+                patch.object(workflow, "sync_userland"),
+                patch.object(workflow, "run_utm_gui") as launch,
+            ):
+                environment = {"ARCH": "aarch64", "ACCEL": "hvf"}
+                if value is not None:
+                    environment["USB_PASSTHROUGH"] = value
+                if value == "invalid":
+                    with self.assertRaisesRegex(RuntimeError, "USB_PASSTHROUGH"):
+                        workflow.dispatch("run-gui", environment)
+                    build.assert_not_called()
+                    launch.assert_not_called()
+                else:
+                    workflow.dispatch("run-gui", environment)
+                    self.assertEqual(launch.call_args.kwargs["usb_passthrough"], value != "0")
+
     def test_first_party_workspaces_share_and_inherit_the_strict_clippy_policy(self) -> None:
         root = tomllib.loads((ROOT / "Cargo.toml").read_text())
         policy = root["workspace"]["lints"]["clippy"]

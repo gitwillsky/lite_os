@@ -253,9 +253,9 @@ MMIO net/RNG 验证混合 DMA 的真实读写、同步与网络；不宣称设�
 
 - VirglBuffer 与导出 DrmFile 无关；dma-buf、KMS、GEM VMA、attachment 和提交 pins 分别保活它，禁止 dma-buf 反向持有 OFD/context。
   VirglLifecycle 的 mutex 只保护最后 fence 和导出 backend 的 Weak；后者保证重复导出同一 dma-buf identity，且不形成自环。
-  DeviceMappingSource 独立持有实际 OFD 与映射对象；DeviceArea 的 split/fork 克隆同一 lease，TLB 退休完成后才释放。
-  GEM 与 dumb backing 以 `DeviceMemoryKind::GemShmem` 分配：对照 Linux drm_gem_shmem，页计入 meminfo `Shmem`；
-  `drm_gem_shmem_object_mmap` 的 `VM_PFNMAP` 映射不计进程 RSS 与 `Mapped`。
+  DeviceMappingSource 保活实际 OFD、backing 与 MemoryObject；设备 VMA 的 split/fork 共享这些 owner，
+  native VMAR 撤销映射并完成 TLB 退休后才释放。GEM 与 dumb backing 使用匿名 VMO；
+  跨服务内存统计的当前边界由[内存 ABI](../syscall-support/memory.md)维护，不以 Linux shmem 分类冒充原生 VMO 统计。
   GEM VMA 与 PRIME 共用 DmaBuf 资源 owner，最后映射释放后主动推进退休，不依赖下一次无关 GPU 提交。
   只有组合独立设备对象与 OFD 的 mmap 准备阶段分配一次 lease；OOM 返回 ENOMEM 且不修改页表，unmap/fork 不新增 lease 分配。
   GEM_CLOSE 只撤销 handle/context attachment，不能提前 UNREF 仍有 VMA 的资源；仅保留物理 backing 不满足此契约。
@@ -270,10 +270,15 @@ MMIO net/RNG 验证混合 DMA 的真实读写、同步与网络；不宣称设�
   CPU 等待会把每次提交量化到主机 fence 通知周期（macOS QEMU 实测约 10 ms），合成每帧都被拖慢一个周期。
   VirglAccess 去重并保活真实 attachment，最后 fence 只取 max；独立资源不共享这把锁。
 - EXECBUFFER 命令流上限 `VIRGL_COMMAND_MAX` 等于 Mesa virgl 命令缓冲最大值（64 Ki + 1024 dwords）。
-  ioctl 在任何提交锁之前把命令流分段拷入 `DeviceMemoryKind::Driver` 的 DeviceBacking，`Submit3d` 以 Arc 持有它；
-  adapter 只在槽位写 32 字节请求头，命令流按 backing extent 作为第二个 descriptor 发布，槽位持有 backing 到 used ring 归还，
-  对应 Linux 每次提交复制命令缓冲并单独挂入 sg。extent 超过 `VIRGL_COMMAND_EXTENTS_MAX`（16）返回 ENOMEM，
-  否则这条 chain 永远装不进 64 项队列而无限重试。槽位请求缓冲只按 ATTACH_BACKING 的 256 个 extent 条目预留。
+  ioctl 在任何提交锁之前把命令流分段拷入匿名 VMO 的 DeviceBacking，`Submit3d` 以 Arc 持有它。
+  adapter 按实际 BTI 区段构造 scatter/gather chain，不把物理碎片数量作为应用限制；请求头、响应各占一个 descriptor。
+  若整条 chain 超过已协商的 controlq 容量，只有 GPU adapter 用自己的 BTI 分配连续 DMA backing 并复制命令，
+  再进入原有唯一 publication/fence 路径；linuxd 不取得硬件分配能力。其余提交不新增分配或复制。
+  整理时只复制已验证的 command 前缀：源在调用期间不可变，目标是独立新 VMO 的独占映射，
+  两份映射均覆盖该长度且互不重叠；目标完成复制与 BTI 固定前不得交给设备。
+  最终 backing/PMT 随槽位保活到 used-ring 归还；准备失败尚未发布，临时 VMO/映射/PMT 由 RAII 释放。
+  这避免了队列全空仍无法提交的永久重试，也保证最大合法 EXECBUFFER 不因物理页离散而失败。
+  大命令逐像素回读覆盖此边界；新增的条件复制由原有 600 帧 GPU 延迟门禁验证成本。
 - dma-buf 支持标准 PRIME FD、DMA_BUF_IOCTL_SYNC、poll 与共享 backing mmap（当前 offset=0）。
   BEGIN_SYNC 等待同一 reservation/fence；END_SYNC 使用当前一致性 DMA backing。poll generation 来自资源 fence，不能被其他资源 completion 制造 ET 边沿。
   DeviceFile 可提供弱 OFD identity；syscall 负责 reserve FD、复用实际 OFD、copyout 后发布，CLOEXEC 属于 FD。

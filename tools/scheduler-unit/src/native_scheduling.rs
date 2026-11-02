@@ -137,6 +137,29 @@ mod tests {
         assert_eq!(policy.restricted_runtime_us(), 10);
         assert_eq!(policy.vruntime, 30 * 1024);
     }
+
+    #[test]
+    fn migration_preserves_service_debt_and_sleep_credit_between_cpu_clocks() {
+        let entity = entity();
+        let mut policy = entity.policy.lock();
+        policy.begin(0);
+        policy.finish(100);
+        policy.vruntime = 101_000 * 1024;
+        policy.rebase(100_000 * 1024, 10_000 * 1024);
+        assert_eq!(policy.vruntime, 11_000 * 1024);
+        policy.rebase(10_000 * 1024, 100_000 * 1024);
+        assert_eq!(policy.vruntime, 101_000 * 1024);
+        assert_eq!(policy.total_runtime_us(), 100);
+
+        policy.vruntime = 99_500 * 1024;
+        policy.rebase(100_000 * 1024, 10_000 * 1024);
+        policy.place_waking(10_000 * 1024, 1000);
+        assert_eq!(policy.vruntime, 9500 * 1024);
+        policy.vruntime = 80_000 * 1024;
+        policy.rebase(100_000 * 1024, 10_000 * 1024);
+        policy.place_waking(10_000 * 1024, 1000);
+        assert_eq!(policy.vruntime, 9000 * 1024);
+    }
     #[test]
     fn waking_credit_is_bounded_and_never_charged_as_cpu_runtime() {
         let entity = entity();
@@ -162,7 +185,7 @@ mod tests {
         policy.place_waking(1000 * 1024, 1000);
         assert_eq!(
             policy.vruntime, charged,
-            "migration to an older CPU cannot erase charged service"
+            "a smaller sampled floor cannot erase charged service"
         );
         assert_eq!(policy.total_runtime_us(), 110);
         assert_eq!(policy.restricted_runtime_us(), 5);

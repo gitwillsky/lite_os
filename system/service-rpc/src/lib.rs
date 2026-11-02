@@ -1,11 +1,12 @@
 #![no_std]
 #![feature(allocator_ext)]
 
-//! 系统服务之间的同步请求/回复传输。
+//! 系统服务之间的 channel 请求/回复与单向消息传输。
 //!
 //! 线格式：请求 `[事务号 u32][操作码 u32][参数…]`，回复 `[事务号 u32][状态 i32][结果…]`；全部小端。
 //! 事务号由内核在 `channel_call` 时填写；状态非零时没有结果。客户端以 [`call`] 同步发出请求，
 //! 服务端以 [`serve`] 的若干工作线程读取请求、调用处理函数并写回同一事务号的回复。
+//! 事务号为零的消息是单向请求；不产生回复，异步失败通知由具体协议拥有。
 
 extern crate alloc;
 
@@ -201,7 +202,7 @@ pub type Handler<'a> = dyn Fn(u32, &mut Reader<'_>, Vec<Handle>, &mut Writer) ->
 ///
 /// 1. 每个线程阻塞读取一条请求（多个线程读同一 channel，内核保证每条消息只交给一个读者）；
 /// 2. 调用 `handler`，失败时回复只含状态；
-/// 3. 写回带原事务号的回复。
+/// 3. 对非零事务号写回回复；零事务号由协议自行交付完成/错误事件。
 ///
 /// # Errors
 ///
@@ -235,7 +236,7 @@ fn serve_loop(channel: &Channel, handler: &Handler<'_>) {
     }
 }
 
-/// 处理一条已读出的请求并写回同一事务号的回复；格式错误的请求被丢弃。
+/// 处理一条已读出的请求；非零事务号写回回复，零事务号不回复。格式错误的请求被丢弃。
 ///
 /// # Errors
 ///
@@ -258,7 +259,12 @@ pub fn respond(
             Vec::new()
         }
     };
-    channel.write(reply.as_bytes(), handles)
+    if transaction == 0 {
+        // 单向方法没有回复接收者；返回的句柄在此退休，不得向请求 channel 堆积孤儿回复。
+        Ok(())
+    } else {
+        channel.write(reply.as_bytes(), handles)
+    }
 }
 
 /// 取出句柄集合中第 `index` 个句柄（消息按约定位置携带句柄）。

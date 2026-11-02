@@ -6,7 +6,7 @@ use classic_theme::{SystemColor, Theme};
 use classic_ui::Fonts;
 use classic_ui::{
     ButtonState, Configuration, Decoration, DecorationAction, Display, Edit, EventKind, FocusChain,
-    FrameKind, Ink, Painter,
+    FrameKind, Ink, Painter, WindowRequest,
 };
 use std::{io, path::Path, process::ExitCode};
 use typeface::FontCatalog;
@@ -80,6 +80,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut pointer = (0.0, 0.0);
     let mut dirty = false;
     let mut frames = 0;
+    // 故意在下一次 motion 后才发送交互请求，固定输入先于 socket dispatch 的合法交错。
+    let mut pending_drag = None;
     loop {
         let event = display.next_event()?;
         if event.window != window {
@@ -90,8 +92,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             .ok_or("event before configure")?;
         match decoration.event(&event.kind, configuration) {
             Some(DecorationAction::Request(request)) => {
-                display.request(window, request)?;
-                println!("ui-probe: decoration {request:?}");
+                if matches!(
+                    request,
+                    WindowRequest::Move { .. } | WindowRequest::Resize { .. }
+                ) {
+                    pending_drag = Some(request);
+                    println!("ui-probe: drag armed");
+                } else {
+                    display.request(window, request)?;
+                    println!("ui-probe: decoration {request:?}");
+                }
             }
             Some(DecorationAction::Close) => {
                 display.destroy_window(window)?;
@@ -121,6 +131,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
                 pointer = (x, y);
+                if let Some(request) = pending_drag.take() {
+                    display.request(window, request)?;
+                    println!("ui-probe: decoration {request:?}");
+                }
                 dirty = true;
             }
             EventKind::PointerLeave | EventKind::Focus(_) => dirty = true,

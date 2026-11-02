@@ -8,7 +8,7 @@
 | 第一个症状 | 先区分 | 下一 owner |
 |---|---|---|
 | `development image is already in use` / write lock | 设置 `LITEOS_ARCH` 后执行 `lsof -- "fs-${LITEOS_ARCH}.img"`；确认 QEMU 与同步进程；private copy 是否复现 | `scripts/sync_userland.py`、Makefile |
-| `ENOSPC` | guest RAM、host 文件长度、ext superblock 容量、guest `df`、安装峰值分别取证 | `scripts/ext2_image.py`、`scripts/resize_ext2_image.py`、`scripts/verify_busybox.py`、`scripts/apk_rootfs.py` |
+| `ENOSPC` | guest RAM、host 文件长度、ext superblock 容量、guest `df`、安装峰值分别取证 | `scripts/ext4_image.py`、`scripts/resize_ext4_image.py`、`scripts/verify_busybox.py`、`scripts/apk_rootfs.py` |
 | 构建成功但 guest 仍是旧内容 | baseline 与开发实例、cache identity、`sync-userland` destination 分别核对 | Makefile、`scripts/sync_userland.py` |
 | QEMU 启动前退出 | 完整 QEMU command、artifact architecture、image lock、host signal | `scripts/build_target.py`、`scripts/qemu_gate.py` |
 
@@ -19,7 +19,7 @@ rg -n '^(ARCH|ACCEL|PROFILE|FS_IMAGE_SIZE_MIB|QEMU_MEMORY|QEMU_SMP) \\?=' Makefi
 LITEOS_ARCH=aarch64
 file "target/rootfs/${LITEOS_ARCH}.img" "fs-${LITEOS_ARCH}.img"
 LITEOS_IMAGE="fs-${LITEOS_ARCH}.img" PYTHONPATH=scripts python3 -c \
-  'import os; from pathlib import Path; from ext2_image import ext2_capacity_bytes; print(ext2_capacity_bytes(Path(os.environ["LITEOS_IMAGE"])))'
+  'import os; from pathlib import Path; from ext4_image import ext4_capacity_bytes; print(ext4_capacity_bytes(Path(os.environ["LITEOS_IMAGE"])))'
 ```
 
 容量判断必须同时报告 host 文件长度、ext filesystem capacity、guest 可用块和 workload 峰值；
@@ -30,7 +30,7 @@ LITEOS_IMAGE="fs-${LITEOS_ARCH}.img" PYTHONPATH=scripts python3 -c \
 | 第一个症状 | 先区分 | 下一 owner |
 |---|---|---|
 | `command not found` | 文件 inode、mode、PATH、shebang interpreter、ELF interpreter、target architecture | rootfs、`user/base/`、userspace ABI |
-| `illegal instruction` | shell 名称是否正确、ELF machine、用户态 PC/instruction、trap decode、CPU feature | userspace ABI、`kernel/src/execution/trap/`、`kernel/src/arch/` |
+| `illegal instruction` | shell 名称是否正确、ELF machine、用户态 PC/instruction、restricted exception、CPU feature | `system/linuxd/src/trap.rs`、`kernel/src/execution/trap.rs`、`kernel/src/arch/` |
 | spawn/fork 返回 `EAGAIN` | 精确 syscall 返回点、资源限制、single/multithread、child 是否已创建 | process syscall、task graph、process ABI |
 | launcher 失败但 native ELF 成功 | shebang、runtime、PATH、spawn/exec；native 主体退出路径暂时移出范围 | user session、process ABI |
 | native ELF 也失败 | 最小 musl fixture、ELF loader、syscall trace、相同输入 | userspace ABI、对应 syscall/domain |
@@ -47,6 +47,10 @@ package manager → installed launcher → language runtime → bundled native E
 绿色对照。
 
 ## Kernel 活性与并发
+
+桌面退回欢迎页时，先核对 logon 的 child exit 与 compositor 的连接错误，不能直接推断 kernel 重启。
+Wayland 协议错误从 compositor 的 fatal owner 追到缓冲、DRM ioctl、device-protocol 与 devmgr；
+固定同一 GPU 后端、输出尺寸、scale 与输入顺序。CPU 合成通过不能替代 VirGL 路径的绿色证明。
 
 | 第一个症状 | 先区分 | 下一 owner |
 |---|---|---|

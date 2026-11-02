@@ -117,7 +117,8 @@
 - scheduler 当前提供 Linux `SCHED_OTHER`/nice 语义子集，不包含实时调度 class。
 - 负载均衡只有抢占时的重新选核：没有跨 CPU 拉取或推送 Ready 任务，空闲 CPU 不会主动从别的 runqueue 取任务。
   Ready 任务只有在所在 CPU 的 current 被抢占或阻塞时才有机会迁走，内核态长时间不返回用户态的 current 会延迟这一点。
-  Ready 迁移不重新归一化 vruntime；真实睡眠唤醒仅按目标 CPU 的单调下限截断旧信用，公平性只验证了等权重的 CPU 密集任务，nice 混合负载未验证。
+  Ready、抢占与睡眠迁移按[执行域契约](../architecture-contract/execution.md)换算虚拟时间坐标；
+  真实睡眠信用仍有界。公平性只验证了等权重的 CPU 密集任务，nice 混合负载未验证。
 - 一个 CPU 刚变空闲时，排队在别处的任务要等到它所在 CPU 的下一次抢占才会被重新放置，延迟以 tick（10 ms）为量级，
   尾部可达数个 tick。`make diagnose-scheduler-latency` 量化该延迟及其在突发 CPU 密集负载下相对理想公平调度的
   额外耗时；是否补“空闲 CPU 请求推送”应以该数据为依据。

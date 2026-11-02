@@ -761,10 +761,12 @@ impl GraphicsDevice for VirtIOGpuDevice {
             .commands
             .idle_index()
             .ok_or(DisplayError::WouldBlock)?;
+        let descriptor_capacity = usize::from(control.queue.size);
         let prepared = graphics_command::prepare(
             command,
             control.commands.request_mut(slot).as_mut_slice(),
             self.device.bti(),
+            descriptor_capacity,
         )?;
         self.publish_prepared(&mut control, slot, prepared, None)
     }
@@ -796,10 +798,12 @@ impl GraphicsDevice for VirtIOGpuDevice {
 
         // 1. 在触碰 descriptor free-list 前完整编码并验证 SET_SCANOUT→RESOURCE_FLUSH。
         // 缺少后者时 QEMU 只替换 scanout texture，不会向 SPICE/GL display 发 dpy_gl_update。
+        let descriptor_capacity = usize::from(control.queue.size);
         let mut set_scanout = graphics_command::prepare(
             VirglCommand::SetScanout { mode, resource_id },
             control.commands.request_mut(set_slot).as_mut_slice(),
             self.device.bti(),
+            descriptor_capacity,
         )?;
         set_scanout.stage = sequence_policy::RuntimeStage::VirglSetScanout;
         let mut flush = graphics_command::prepare(
@@ -814,6 +818,7 @@ impl GraphicsDevice for VirtIOGpuDevice {
             },
             control.commands.request_mut(flush_slot).as_mut_slice(),
             self.device.bti(),
+            descriptor_capacity,
         )?;
         flush.stage = sequence_policy::RuntimeStage::VirglFlush;
         set_scanout

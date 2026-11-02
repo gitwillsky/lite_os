@@ -147,7 +147,12 @@ static int consume_realtime(uint64_t mask, int signal, uint64_t value, int code)
     memset(&info, 0xa5, sizeof info);
     long result = syscall(SYS_rt_sigtimedwait, &mask, &info, &immediate, 8);
     if (result != signal || info.si_signo != signal || info.si_code != code
-        || (uint64_t)(uintptr_t)info.si_value.sival_ptr != value) return 1;
+        || (uint64_t)(uintptr_t)info.si_value.sival_ptr != value) {
+        dprintf(1, "signal-consume: result=%ld errno=%d signal=%d code=%d value=%llu expected=%d/%d/%llu\n",
+            result, errno, info.si_signo, info.si_code, (unsigned long long)(uintptr_t)info.si_value.sival_ptr,
+            signal, code, (unsigned long long)value);
+        return 1;
+    }
     const unsigned char *bytes = (const unsigned char *)&info;
     for (size_t index = 48; index < sizeof info; index++) if (bytes[index]) return 2;
     return 0;
@@ -275,8 +280,11 @@ static int verify_ordinary_signal_accounting(void)
     if (sigqueue(getpid(), SIGUSR1, value)) return 6;
     uint64_t mask = UINT64_C(1) << (SIGUSR1 - 1);
     if (consume_realtime(mask, SIGUSR1, 91, SI_QUEUE)) return 7;
-    if (sigqueue(getpid(), SIGRTMIN, value)
-        || consume_realtime(UINT64_C(1) << (SIGRTMIN - 1), SIGRTMIN, 92, SI_QUEUE)) return 8;
+    if (sigqueue(getpid(), SIGRTMIN, value)) {
+        dprintf(1, "signal-ordinary: RT admission errno=%d\n", errno);
+        return 8;
+    }
+    if (consume_realtime(UINT64_C(1) << (SIGRTMIN - 1), SIGRTMIN, 92, SI_QUEUE)) return 8;
     limit.rlim_cur = 0;
     if (setrlimit(RLIMIT_SIGPENDING, &limit)) return 9;
     /* 普通负 code 没有 record 时保留 native SI_USER bit，仍返回成功。 */
@@ -299,8 +307,13 @@ static int verify_ordinary_signal_accounting(void)
     errno = 0;
     if (sigqueue(getpid(), SIGRTMIN, value) != -1 || errno != EAGAIN) return 17;
     mask = UINT64_C(1) << (SIGCHLD - 1);
-    if (syscall(SYS_rt_sigtimedwait, &mask, &info, &immediate, 8) != SIGCHLD
-        || info.si_code != CLD_EXITED || info.si_pid != child || info.si_status != 23) return 18;
+    long received_child = syscall(SYS_rt_sigtimedwait, &mask, &info, &immediate, 8);
+    if (received_child != SIGCHLD || info.si_code != CLD_EXITED
+        || info.si_pid != child || info.si_status != 23) {
+        dprintf(1, "signal-ordinary: result=%ld errno=%d code=%d pid=%d expected=%d status=%d\n",
+            received_child, errno, info.si_code, info.si_pid, child, info.si_status);
+        return 18;
+    }
     if (sigqueue(getpid(), SIGRTMIN, value)
         || consume_realtime(UINT64_C(1) << (SIGRTMIN - 1), SIGRTMIN, 92, SI_QUEUE)) return 19;
     if (setrlimit(RLIMIT_SIGPENDING, &saved) || sigprocmask(SIG_SETMASK, &previous, 0)) return 15;
@@ -476,6 +489,18 @@ static int verify_alignment_fault(void)
 }
 #endif
 
+static void report_signal_state(void)
+{
+    uint64_t blocked = 0, pending = 0, child = UINT64_C(1) << (SIGCHLD - 1);
+    struct timespec immediate = {0};
+    siginfo_t info = {0};
+    syscall(SYS_rt_sigprocmask, SIG_SETMASK, 0, &blocked, 8);
+    syscall(SYS_rt_sigpending, &pending, 8);
+    long result = syscall(SYS_rt_sigtimedwait, &child, &info, &immediate, 8);
+    dprintf(1, "signal-state: blocked=%llx pending=%llx child=%ld code=%d pid=%d status=%d\n",
+        (unsigned long long)blocked, (unsigned long long)pending, result, info.si_code, info.si_pid, info.si_status);
+}
+
 int verify_signal_frame_errors(void)
 {
 #if defined(__aarch64__)
@@ -484,9 +509,9 @@ int verify_signal_frame_errors(void)
     int realtime = verify_realtime_queue();
     if (realtime) { dprintf(1, "signal-realtime: step=%d\n", realtime); return 6; }
     int ordinary = verify_ordinary_signal_accounting();
-    if (ordinary) { dprintf(1, "signal-ordinary: step=%d\n", ordinary); return 8; }
+    if (ordinary) { dprintf(1, "signal-ordinary: step=%d\n", ordinary); report_signal_state(); return 8; }
     int timers = verify_posix_timer_notifications();
-    if (timers) { dprintf(1, "signal-posix-timer: step=%d\n", timers); return 7; }
+    if (timers) { dprintf(1, "signal-posix-timer: step=%d\n", timers); report_signal_state(); return 7; }
 	if (verify_action_layout()) return 4;
 	const int cases =
 #if defined(__aarch64__)

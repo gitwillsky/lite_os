@@ -5,29 +5,35 @@ first broken contract。
 
 | 领域 | 权威 contract | 代码入口 |
 |---|---|---|
-| boot、trap、CPU、deferred | `docs/architecture-contract/execution.md` | `kernel/src/execution/entry.rs`、`kernel/src/execution/trap/`、`kernel/src/execution/cpu/` |
-| process、scheduler、wait、signal | `docs/architecture-contract/process-scheduling.md` | `kernel/src/syscall/process*.rs`、`kernel/src/execution/task/` |
-| address space、page fault、COW、TLB | `docs/architecture-contract/memory.md` | `kernel/src/syscall/memory.rs`、`kernel/src/memory/`、`kernel/src/arch/*/mmu*` |
-| VFS、ext2、page cache、OFD | `docs/architecture-contract/filesystem-storage.md` | `kernel/src/syscall/fs/`、`kernel/src/fs/` |
-| epoll、pipe、AF_UNIX、IPv4 | `docs/architecture-contract/ipc-network.md` | `kernel/src/syscall/{epoll,poll,socket}.rs`、`kernel/src/fs/epoll*`、`kernel/src/net/` |
-| device、TTY、VirtIO | `docs/architecture-contract/devices-terminal.md` | `kernel/src/devices/model/`、`kernel/src/devices/input/`、`kernel/src/devices/drm/`、TTY/PTY modules |
+| boot、trap、CPU、deferred | `docs/architecture-contract/execution.md` | `kernel/src/execution/entry.rs`、`kernel/src/execution/trap.rs`、`kernel/src/execution/cpu/` |
+| 原生执行体、scheduler、wait | `docs/architecture-contract/execution.md` | `kernel/src/thread/`、`kernel/src/syscall/task.rs`、`kernel/src/object/` |
+| Linux 进程、ptrace、signal | `docs/architecture-contract/process-scheduling.md`、`docs/architecture-contract/ptrace.md` | `system/linuxd/src/task/`、`system/linuxd/src/syscall/` |
+| VMAR、VMO、COW、TLB | `docs/architecture-contract/memory.md` | `kernel/src/vm/`、`kernel/src/syscall/memory.rs`、`kernel/src/arch/` |
+| Linux 地址空间与用户态 pager | `docs/architecture-contract/memory.md` | `system/linuxd/src/memory/` |
+| VFS、page cache、OFD、ext4 | `docs/architecture-contract/filesystem-storage.md` | `system/linuxd/src/fs/`、`system/ext4d/src/` |
+| epoll、pipe、AF_UNIX、IPv4 | `docs/architecture-contract/ipc-network.md` | `system/linuxd/src/fs/`、`system/linuxd/src/net/`、`system/netd/src/` |
+| 设备 UAPI、TTY、DRM | `docs/architecture-contract/devices-terminal.md` | `system/linuxd/src/devices/` |
+| VirtIO、PCI、USB 与 DMA | `docs/architecture-contract/devices-terminal.md` | `system/devmgr/src/drivers/`、`system/device-model/src/`、`system/device-protocol/src/` |
 | arch mechanism | 相关领域 contract 与 `docs/architecture-contract.md` | `kernel/src/arch/` |
 | machine facts、IPI、设备装配 | `docs/architecture-contract/boot-platform.md` | `kernel/src/platform/` |
-| Linux ABI | `docs/syscall-support.md` 路由到领域矩阵 | `syscall-abi/`、`kernel/src/syscall/` |
+| Linux ABI | `docs/syscall-support.md` 路由到领域矩阵 | `syscall-abi/`、`system/linuxd/src/syscall/` |
 
 ## 调用链追踪
 
 从外向内追踪符号，而不是从怀疑模块向外猜：
 
 ```bash
-rg -n 'sys_clone|SYS_CLONE' kernel syscall-abi
-LITEOS_QUERY='fork_current_process|ProcessCloneError'
-rg -n "$LITEOS_QUERY" kernel/src
-rg -n 'TaskMutex|try_lock|deferred|notify|wake' kernel/src
+rg -n 'sys_clone|SYSCALL_CLONE' system/linuxd syscall-abi
+LITEOS_QUERY='clone_process|clone_thread'
+rg -n "$LITEOS_QUERY" system/linuxd/src
+rg -n 'TaskMutex|try_lock|deferred|notify|wake' kernel/src system/linuxd/src
 ```
 
 `clone` 与 `LITEOS_QUERY` 是可执行示例；实际运行时替换为红色路径中的 syscall、callee、state
 type 或 error variant。
+
+Linux syscall 在 restricted mode 退出后由 linuxd 处理；内核只接收原生对象调用。
+跨 channel、pager、BTI 或设备协议继续跟踪真实服务 owner，不把移出的 Linux 领域重新归到内核。
 
 每跨一个 module 记录：
 

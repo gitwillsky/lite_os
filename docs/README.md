@@ -31,6 +31,7 @@
 - [执行域契约](architecture-contract/execution.md)
 - [内存契约](architecture-contract/memory.md)
 - [进程与调度契约](architecture-contract/process-scheduling.md)
+- [ptrace 契约](architecture-contract/ptrace.md)
 - [文件系统与存储契约](architecture-contract/filesystem-storage.md)
 - [IPC 与网络契约](architecture-contract/ipc-network.md)
 - [设备与终端契约](architecture-contract/devices-terminal.md)
@@ -61,10 +62,6 @@
 - [Wayland 与经典控件验证](development/wayland-ui-verification.md)
 - [本机登录与桌面验证](development/desktop-verification.md)
 - [生成的 scoped interface baseline](generated/architecture-interface.txt)
-
-## 进行中的迁移
-
-- [微内核迁移与验收清单](plans/microkernel.md)
 
 ## 设计规格
 

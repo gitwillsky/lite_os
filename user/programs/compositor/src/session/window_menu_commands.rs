@@ -39,8 +39,7 @@ impl Session {
     }
 
     /// 菜单打开时的一次点击：执行命中的命令，点在菜单外则关闭。
-    pub(super) fn menu_click(&mut self) -> io::Result<()> {
-        let point = self.input.pointer().position();
+    pub(super) fn menu_click(&mut self, point: (i32, i32)) -> io::Result<()> {
         let Some(menu) = &self.window_menu else {
             return Ok(());
         };
