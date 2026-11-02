@@ -4,6 +4,7 @@ members = [
     "boot-scene",
     "syscall-abi",
     "native-abi",
+    "task-observer-protocol",
     "fallible-tree",
     "mmio",
     "system/native-runtime",

@@ -493,6 +493,8 @@ unsafe extern "C" {
     pub(crate) fn prctl(option: c_int, argument: c_int) -> c_int;
     pub(crate) fn kill(pid: c_int, signal: c_int) -> c_int;
     #[cfg(target_os = "linux")]
+    pub(crate) fn syscall(number: std::ffi::c_long, ...) -> std::ffi::c_long;
+    #[cfg(target_os = "linux")]
     pub(crate) fn setsid() -> c_int;
 }
 

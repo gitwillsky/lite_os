@@ -27,6 +27,7 @@ impl Speed {
 pub enum Page {
     Applications,
     Processes,
+    Services,
     Performance,
     Gpu,
 }

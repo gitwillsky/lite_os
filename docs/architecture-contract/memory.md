@@ -99,3 +99,11 @@ COW 祖先与树锁争用；musl runtime 固定验证真实缓存命中在提交
 Pager 补入的干净页在 read fault 时只授予只读翻译；首次 write fault 才置脏并放开写权限。
 writeback begin 先写保护全部别名并完成 fence，再清脏；失败保留 dirty，再读也不能重新授予写权限。此转换与供页/失败在 vmo/pager 复用同一树/页 owner，
 没有另一份 dirty bitmap；否则先读后写的硬件访问绕过 dirty tracking，文件回写会遗漏内容。
+
+## 观测口径
+
+原生 `TASK_STATS` 的 mapped bytes 是映射范围之和；resident bytes 是这些范围已有 RAM backing 的字节和，
+包含 COW 祖先和 slice，排除 MMIO 物理 VMO。不同虚拟映射可引用同一物理页，故它不是 PSS，不可跨进程相加。
+地址空间先复制 Mapping 引用并释放空间锁，再按 VMO 树锁查询 backing，保持 tree → address-space 的锁序；
+统计不会 fault-in、等待 pager 或提交页面。稀疏 VMO 按实际 committed entries 合并可见区间，不扫描整个虚拟范围。
+分配失败向调用者返回错误，不能把未知驻留量报告为零。

@@ -160,6 +160,10 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
                 },
             )
         }
+        info::TASK_STATS => match &entry.object {
+            Object::Process(process) => write_info(call, &process.stats()?),
+            _ => Err(native_abi::ERR_WRONG_TYPE),
+        },
         info::VMO => match &entry.object {
             Object::Vmo(vmo) => write_info(
                 call,

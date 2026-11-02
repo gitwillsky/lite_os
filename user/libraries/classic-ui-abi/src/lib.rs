@@ -502,6 +502,10 @@ pub struct Api {
         unsafe extern "C" fn(*mut c_void, u64, u64, u32, u32, *const u32, usize) -> i32,
     /// 请求本窗口进入（非 0）或退出（0）标准 xdg_toplevel 全屏；结果以 Configure 事件通知，非法窗口返回 NOT_FOUND。
     pub fullscreen: unsafe extern "C" fn(*mut c_void, u64, u32) -> i32,
+    /// 组合框展开时的总高度（逻辑像素，即对话框模板 COMBOBOX 的 cy）：下拉列表高度为其减去文字区高度，
+    /// 按整行取可见项数（未设 CBS_NOINTEGRALHEIGHT 的 USER32 语义），项目更少时收缩；0 恢复默认最多 16 行。
+    /// 非组合框或负数返回 INVALID。
+    pub combo_dropped_height: unsafe extern "C" fn(*mut c_void, u64, u64, i32) -> i32,
 }
 
 /// [`Api::sheet`] 的样式（Win32 PropertySheet 的标准样式）。

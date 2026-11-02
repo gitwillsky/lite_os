@@ -10,8 +10,8 @@ use classic_ui_abi::{self as abi, event, state, widget};
 const BUTTON: i32 = SCROLLBAR_WIDTH;
 /// 文字区左侧为当前项图标让出的宽度：16 像素图标加两侧间距。
 const LEADING: i32 = 16 + 4;
-/// 下拉列表最多可见行数。
-const VISIBLE: usize = 16;
+/// 未设置展开高度时下拉列表最多可见行数；窗口内放不下时再按可用空间减少。
+const VISIBLE: i32 = 16;
 /// ComboBoxEx 每级缩进（CBEIF_INDENT 的单位）。
 const INDENT: i32 = 10;
 const DOWN: [&str; 4] = ["#######", ".#####.", "..###..", "...#..."];
@@ -22,12 +22,36 @@ pub struct Combo {
     hover: Option<usize>,
     top: usize,
     pressed: bool,
+    /// 打开时求出的列表矩形：列表画在本窗口表面内，只能在窗口范围里向下或向上展开；
+    /// 缺少它时列表按固定行数伸出窗口底部被裁掉，末行与滚动条不可见。
+    list: Rect,
+    /// 应用声明的展开总高度（模板 cy），0 表示未声明；缺少它时所有组合框都按默认 16 行展开，
+    /// 与模板规定的列表高度不符。
+    pub dropped: i32,
 }
 
 impl Node {
+    /// 项目带图标时（ComboBoxEx）文字前留出图标列；纯文字组合框（USER32 COMBOBOX）文字贴左。
+    fn combo_leading(&self) -> i32 {
+        if self.row_icons.is_empty() {
+            0
+        } else {
+            LEADING
+        }
+    }
+
     /// 文字区左右边距；绘制与光标命中共用。
-    pub fn combo_margins() -> (i32, i32) {
-        (LEADING, BUTTON)
+    pub fn combo_margins(&self) -> (i32, i32) {
+        (self.combo_leading(), BUTTON)
+    }
+
+    /// 下拉列表项高度：纯文字项为字体行高（USER32 列表框项高 = tmHeight），带图标项取图标与文字的较大者再加 2。
+    pub fn combo_item_height(&self, line: i32) -> i32 {
+        if self.row_icons.is_empty() {
+            line
+        } else {
+            line.max(16) + 2
+        }
     }
 
     fn combo_button(&self) -> Rect {
@@ -44,15 +68,44 @@ impl Node {
         self.row_count()
     }
 
-    /// 下拉列表矩形：紧贴控件下方，1 像素黑框。
+    /// 在窗口 `area` 内为下拉列表选位置：1 像素黑框，默认紧贴控件下方；
+    /// 下方放不下全部可见行且上方更宽裕时贴着控件上方展开（USER32 下拉在屏幕底部的行为）。
+    fn place_combo_list(&self, area: Rect) -> Rect {
+        let item = self.row_height.max(1);
+        let declared = self.combo.as_ref().map_or(0, |combo| combo.dropped);
+        let limit = if declared > 0 {
+            ((declared - self.rect.height - 2) / item).max(1)
+        } else {
+            VISIBLE
+        };
+        let wanted = (self.combo_count() as i32).min(limit);
+        let below = self.rect.bottom().max(area.y);
+        let below = (area.bottom() - below - 2) / item;
+        let above = (self.rect.y - area.y - 2) / item;
+        let (rows, upward) = if below >= wanted || below >= above {
+            (wanted.min(below).max(1), false)
+        } else {
+            (wanted.min(above).max(1), true)
+        };
+        let height = rows * item + 2;
+        let y = if upward {
+            self.rect.y - height
+        } else {
+            self.rect.bottom()
+        };
+        Rect::new(self.rect.x, y, self.rect.width, height)
+    }
+
     fn combo_list(&self) -> Rect {
-        let visible = self.combo_count().min(VISIBLE) as i32;
-        Rect::new(
-            self.rect.x,
-            self.rect.bottom(),
-            self.rect.width,
-            visible * self.row_height + 2,
-        )
+        self.combo
+            .as_ref()
+            .map(|combo| combo.list)
+            .unwrap_or_default()
+    }
+
+    /// 当前列表能同时显示的行数。
+    fn combo_visible(&self) -> usize {
+        ((self.combo_list().height - 2) / self.row_height.max(1)).max(1) as usize
     }
 
     fn combo_row_at(&self, point: (i32, i32)) -> Option<usize> {
@@ -63,6 +116,25 @@ impl Node {
         let combo = self.combo.as_ref()?;
         let index = combo.top + ((point.1 - list.y - 1) / self.row_height.max(1)) as usize;
         (index < self.combo_count()).then_some(index)
+    }
+
+    /// 打开下拉列表：定位列表、高亮当前选中项并把它滚到可见范围。
+    fn open_combo(&mut self, area: Rect) {
+        let selected = self.selected.and_then(|value| {
+            (0..self.row_count())
+                .find(|index| self.row_at(*index).is_some_and(|row| row.0 == value))
+        });
+        let list = self.place_combo_list(area);
+        let combo = self.combo.as_mut().expect("combo");
+        combo.open = true;
+        combo.list = list;
+        combo.hover = selected;
+        let visible = self.combo_visible();
+        let maximum = self.combo_count().saturating_sub(visible);
+        let combo = self.combo.as_mut().expect("combo");
+        combo.top = selected
+            .map_or(0, |index| index.saturating_sub(visible - 1))
+            .min(maximum);
     }
 
     fn combo_depth(&self, index: usize) -> i32 {
@@ -94,15 +166,7 @@ impl Node {
             // 下拉列表：凹陷白框内显示选中项；有焦点时文字区为选择色并带焦点框（USER32 CBS_DROPDOWNLIST）。
             let inner = p.edge(self.rect, Edge::Sunken);
             p.fill(inner, if enabled { C::Window } else { C::ButtonFace });
-            let leading = if self
-                .selected
-                .and_then(|id| self.row_icons.get(&id))
-                .is_some()
-            {
-                LEADING
-            } else {
-                0
-            };
+            let leading = self.combo_leading();
             let field = Rect::new(
                 inner.x + 1 + leading,
                 inner.y + 1,
@@ -129,7 +193,7 @@ impl Node {
                 false,
             );
         } else if enabled {
-            p.edit_with_margins(self.rect, edit, focused, false, Self::combo_margins());
+            p.edit_with_margins(self.rect, edit, focused, false, self.combo_margins());
         } else {
             p.edit_enabled(self.rect, edit, false, false, false);
         }
@@ -174,7 +238,8 @@ impl Node {
         p.fill(list, C::Window);
         p.outline(list, C::WindowFrame);
         let count = self.combo_count();
-        let scroll = count > VISIBLE;
+        let visible = self.combo_visible();
+        let scroll = count > visible;
         let rows = Rect::new(
             list.x + 1,
             list.y + 1,
@@ -182,7 +247,7 @@ impl Node {
             list.height - 2,
         );
         p.clipped(rows, |p| {
-            for (slot, index) in (combo.top..count).take(VISIBLE).enumerate() {
+            for (slot, index) in (combo.top..count).take(visible).enumerate() {
                 let Some((id, text)) = self.row_at(index) else {
                     continue;
                 };
@@ -200,10 +265,11 @@ impl Node {
                 if let Some(icon) = self.row_icons.get(id).and_then(|icons| icons.0.as_ref()) {
                     icon.paint(p, x, row.y + (row.height - 16) / 2);
                 }
+                let left = x + self.combo_leading();
                 p.text_fit(
-                    x + 16 + 4,
+                    left,
                     row.y + (row.height - p.line_height()) / 2,
-                    (row.right() - x - 20).max(0),
+                    (row.right() - left - 2).max(0),
                     text,
                     Ink::Color(if hot { C::HilightText } else { C::WindowText }),
                     false,
@@ -214,7 +280,7 @@ impl Node {
             p.scrollbar(
                 Rect::new(rows.right(), rows.y, SCROLLBAR_WIDTH, rows.height),
                 true,
-                (count as i32 - 1, VISIBLE as i32, combo.top as i32),
+                (count as i32 - 1, visible as i32, combo.top as i32),
                 None,
             );
         }
@@ -226,6 +292,13 @@ fn contains(rect: Rect, point: (i32, i32)) -> bool {
 }
 
 impl Tree {
+    /// 下拉列表可占用的窗口区域；控件可交互时必已布局，未布局只会让列表保底一行。
+    fn combo_area(&self) -> Rect {
+        self.layout_bounds
+            .map(|(bounds, _)| bounds)
+            .unwrap_or_default()
+    }
+
     /// 组合框的下拉、选择与键盘；返回 (已消费, 需要重绘)。收起时的文字编辑交给普通编辑路径。
     pub fn combo_input(
         &mut self,
@@ -282,16 +355,10 @@ impl Tree {
                     return (false, false);
                 };
                 self.focus = Some(id);
+                let area = self.combo_area();
                 let node = self.nodes.get_mut(&id).expect("combo");
-                let selected = node.selected.and_then(|value| {
-                    (0..node.row_count())
-                        .find(|index| node.row_at(*index).is_some_and(|row| row.0 == value))
-                });
-                let combo = node.combo.as_mut().expect("combo");
-                combo.open = true;
-                combo.pressed = true;
-                combo.hover = selected;
-                combo.top = selected.map_or(0, |index| index.saturating_sub(VISIBLE - 1));
+                node.open_combo(area);
+                node.combo.as_mut().expect("combo").pressed = true;
                 (true, true)
             }
             EventKind::Button {
@@ -325,7 +392,7 @@ impl Tree {
                     return (false, false);
                 };
                 let node = self.nodes.get_mut(&id).expect("open combo");
-                let maximum = node.combo_count().saturating_sub(VISIBLE);
+                let maximum = node.combo_count().saturating_sub(node.combo_visible());
                 let combo = node.combo.as_mut().expect("combo");
                 combo.top =
                     (combo.top as i64 + i64::from(*vertical) * 3).clamp(0, maximum as i64) as usize;
@@ -348,13 +415,17 @@ impl Tree {
                 let Some(id) = self.focus.filter(|id| self.nodes[id].kind == widget::COMBO) else {
                     return (false, false);
                 };
+                let area = self.combo_area();
                 let node = self.nodes.get_mut(&id).expect("combo");
                 let count = node.combo_count();
                 let is_open = node.combo.as_ref().is_some_and(|combo| combo.open);
                 let toggle = key.code == 62 || (key.modifiers.alt && matches!(key.code, 103 | 108));
                 if toggle {
-                    let combo = node.combo.as_mut().expect("combo");
-                    combo.open = !is_open && count > 0;
+                    if is_open {
+                        node.combo.as_mut().expect("combo").open = false;
+                    } else if count > 0 {
+                        node.open_combo(area);
+                    }
                     return (true, true);
                 }
                 if !is_open && node.dropdown_list() {
@@ -398,6 +469,7 @@ impl Tree {
                     return (false, false);
                 }
                 let hover = node.combo.as_ref().and_then(|combo| combo.hover);
+                let visible = node.combo_visible();
                 match key.code {
                     1 => node.combo.as_mut().expect("combo").open = false,
                     28 => {
@@ -422,8 +494,8 @@ impl Tree {
                         combo.hover = Some(index);
                         if index < combo.top {
                             combo.top = index;
-                        } else if index >= combo.top + VISIBLE {
-                            combo.top = index + 1 - VISIBLE;
+                        } else if index >= combo.top + visible {
+                            combo.top = index + 1 - visible;
                         }
                     }
                     _ => {}

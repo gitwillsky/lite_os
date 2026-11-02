@@ -66,6 +66,7 @@ pub(crate) fn system_info() -> &'static SystemBasic {
 /// 4. 装配块设备、音频、DRM、输入与 tty，创建初始网络域，启动后台线程；
 /// 5. `kernel_init` 内核线程挂载根文件系统并发布 init。main 线程随后退出（只结束本线程），linuxd 由各服务线程与 Linux 线程继续运行。
 fn main(mut startup: Startup) -> i64 {
+    let observers = system::task_observer::take(&mut startup);
     let directory = handles::install(&mut startup);
     native_runtime::set_fatal_scope(
         handles::job()
@@ -92,6 +93,7 @@ fn main(mut startup: Startup) -> i64 {
     let vfs = fs::init_vfs();
     let scheduler = task::initialize(vfs);
     start_deferred_worker();
+    system::task_observer::start(observers);
     let devices = devices::directory::connect(directory);
     devices.advance(Milestone::Namespaces);
     devices.advance(Milestone::Scheduler);

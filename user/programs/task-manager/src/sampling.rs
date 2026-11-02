@@ -2,6 +2,7 @@
 use crate::{
     gpu,
     processes::{self, Process},
+    services,
     system::Monitor,
 };
 use liteos_ui::{Clock, Result};
@@ -17,13 +18,17 @@ use std::{
 pub struct Sampler {
     pub monitor: Monitor,
     pub gpu: gpu::Snapshot,
-    previous: HashMap<u32, u64>,
+    pub services: services::Snapshot,
+    previous_services: HashMap<u64, u64>,
+    previous: HashMap<(u32, u64), u64>,
 }
 impl Sampler {
     pub fn new() -> Self {
         Self {
             monitor: Monitor::new(),
             gpu: gpu::Snapshot::default(),
+            services: services::Snapshot::default(),
+            previous_services: HashMap::new(),
             previous: HashMap::new(),
         }
     }
@@ -31,7 +36,18 @@ impl Sampler {
         self.monitor.sample();
         let rows = processes::list(&self.previous, &self.monitor);
         self.gpu = gpu::Snapshot::read(&rows);
-        self.previous = rows.iter().map(|row| (row.pid, row.cpu_ticks)).collect();
+        self.services =
+            services::Snapshot::read(&self.previous_services, self.monitor.interval_ticks);
+        self.previous_services = self
+            .services
+            .rows
+            .iter()
+            .map(|service| (service.record.koid, service.record.cpu_ns))
+            .collect();
+        self.previous = rows
+            .iter()
+            .map(|row| ((row.pid, row.start_ticks), row.cpu_ticks))
+            .collect();
         (self, rows)
     }
 }

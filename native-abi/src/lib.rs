@@ -344,6 +344,8 @@ pub mod info {
     pub const NAME: u32 = 5;
     /// [`crate::VmoInfo`]。
     pub const VMO: u32 = 6;
+    /// [`crate::TaskStats`]：映射字节、驻留字节和存活线程数。
+    pub const TASK_STATS: u32 = 7;
 }
 
 /// `system_get_info` 主题与电源操作。
@@ -429,6 +431,18 @@ pub struct TaskRuntime {
     pub restricted_faults: u64,
     /// 其中本次解析等待了 pager 响应的次数。
     pub restricted_pager_waits: u64,
+}
+
+/// 进程映射的观测快照；同一物理页的不同虚拟映射可重复计数，不是 PSS。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TaskStats {
+    /// 所有映射区间的字节和，含当前未驻留的范围。
+    pub mapped_bytes: u64,
+    /// 各映射内已有 backing 的字节和；查询不触发缺页、不提交新页。
+    pub resident_bytes: u64,
+    /// 尚未退出的线程数。
+    pub threads: u64,
 }
 
 /// VMO 的大小与本对象自己持有的已提交字节（不含从父对象共享的页）。

@@ -66,6 +66,7 @@ plain!(
     i64,
     native_abi::HandleBasic,
     native_abi::TaskRuntime,
+    native_abi::TaskStats,
     native_abi::VmarRegion,
     native_abi::VmoInfo,
     native_abi::ProcessBasic,

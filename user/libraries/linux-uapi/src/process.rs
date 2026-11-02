@@ -169,6 +169,83 @@ pub fn signal(pid: Pid, signal: Signal) -> io::Result<()> {
     }
 }
 
+/// A Linux pidfd pins one process identity across numeric PID reuse.
+pub struct PidFd(OwnedFd);
+
+impl PidFd {
+    /// Opens a CLOEXEC identity handle for `pid`.
+    ///
+    /// # Errors
+    /// The process has exited, descriptors are exhausted, or pidfds are unsupported.
+    pub fn open(pid: Pid) -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::FromRawFd;
+            // SAFETY: Linux arm64/riscv64 share syscall 434; flags zero requests a new owned fd.
+            let fd = unsafe { raw::syscall(434, pid.get(), 0u32) };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: successful pidfd_open returns a fresh CLOEXEC descriptor.
+            Ok(Self(unsafe { OwnedFd::from_raw_fd(fd as i32) }))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = pid;
+            Err(io::ErrorKind::Unsupported.into())
+        }
+    }
+
+    /// Duplicates this handle without looking up its numeric PID again.
+    ///
+    /// # Errors
+    /// The descriptor limit has been reached.
+    pub fn try_clone(&self) -> io::Result<Self> {
+        self.0.try_clone().map(Self)
+    }
+
+    /// Checks signal permission without delivering a signal.
+    ///
+    /// # Errors
+    /// Permission denied, the process exited, or the operation is unsupported.
+    pub fn check_signal_permission(&self) -> io::Result<()> {
+        self.send(0)
+    }
+
+    /// Sends `signal` to the pinned process, never to a replacement with the same PID.
+    ///
+    /// # Errors
+    /// Permission denied, the process exited, or the operation is unsupported.
+    pub fn signal(&self, signal: Signal) -> io::Result<()> {
+        self.send(signal.raw())
+    }
+
+    fn send(&self, signal: i32) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            // SAFETY: syscall 424 takes a borrowed pidfd, a signal, null siginfo and flags zero.
+            if unsafe {
+                raw::syscall(
+                    424,
+                    self.0.as_raw_fd(),
+                    signal,
+                    std::ptr::null::<()>(),
+                    0u32,
+                )
+            } < 0
+            {
+                return Err(io::Error::last_os_error());
+            }
+            Ok(())
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = signal;
+            Err(io::ErrorKind::Unsupported.into())
+        }
+    }
+}
+
 /// A child that owns its process session and is killed and reaped on drop.
 pub struct SessionChild {
     child: Child,

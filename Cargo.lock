@@ -252,6 +252,7 @@ dependencies = [
  "network-protocol",
  "service-sync",
  "syscall-abi",
+ "task-observer-protocol",
 ]
 
 [[package]]
@@ -449,6 +450,10 @@ dependencies = [
 
 [[package]]
 name = "syscall-abi"
+version = "0.1.0"
+
+[[package]]
+name = "task-observer-protocol"
 version = "0.1.0"
 
 [[package]]

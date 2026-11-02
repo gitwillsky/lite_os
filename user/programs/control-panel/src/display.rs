@@ -228,7 +228,7 @@ impl Display {
             },
         )?;
         // shell32 原文是“选择背景图片或 HTML 文档作为墙纸”；LiteOS 不渲染 HTML 墙纸，不宣称该能力。
-        let heading = label(&left, "选择背景图片作为墙纸(&S):")?;
+        let heading = label(&left, "选择背景图片作为墙纸(S):")?;
         let list = child(
             &left,
             Kind::List,
@@ -252,13 +252,13 @@ impl Display {
         let browse = child(
             &right,
             Kind::Button,
-            "浏览(&B)...",
+            "浏览(B)...",
             Layout {
                 height: 23,
                 ..Default::default()
             },
         )?;
-        let style_label = label(&right, "显示图片(&D):")?;
+        let style_label = label(&right, "显示图片(D):")?;
         let fixed = Layout {
             height: 21,
             ..Default::default()
@@ -282,7 +282,7 @@ impl Display {
         let color_label = child(
             &colors_row,
             Kind::Label,
-            "背景颜色(&C):",
+            "背景颜色(C):",
             Layout {
                 width: 90,
                 ..Default::default()

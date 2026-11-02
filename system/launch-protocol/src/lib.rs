@@ -29,6 +29,10 @@ pub mod linuxd {
     pub const EXT4: usize = ROLE_HANDLES + 4;
     /// netd 控制 channel 的客户端（转交网卡、创建网络域）。
     pub const NETWORK: usize = ROLE_HANDLES + 5;
+    /// 原生系统服务的只读 INSPECT capability；顺序由根服务启动时的实际对象决定。
+    pub const OBSERVERS: usize = ROLE_HANDLES + 6;
+    /// root-server、devmgr、ext4d、netd 四个观察句柄；linuxd 使用自身句柄。
+    pub const OBSERVER_COUNT: usize = 4;
 }
 
 /// ext4 文件系统服务：按 linuxd 的挂载请求打开块设备上的 ext4，并以 FUSE 线协议服务每个挂载。

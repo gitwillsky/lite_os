@@ -107,6 +107,7 @@ def install(image: Path, directory: Path, volume_probe: Path) -> None:
         sources.append((source, destination))
     sources.append((ROOT / 'scripts/fixtures/desktop/check-session.sh', '/var/tmp/check-desktop'))
     sources.append((volume_probe, '/bin/volume-check'))
+    sources.append((ROOT / 'scripts/fixtures/desktop/check-task-observer.sh', '/var/tmp/check-task-observer'))
     install_files(image, sources, directory)
     # debugfs 新建目录/文件默认归 root；私有 fixture 的 home 必须符合实际 alice 账户的所有权。
     # 否则非 root 的删除/回收站测试只会得到 EACCES，根本没有验证文件操作。
@@ -183,6 +184,9 @@ def check_session(session) -> None:
     tap(session, 'esc')
     wait_screen(session, [(VOLUME_WINDOW_SAMPLE, DESKTOP_BACKGROUND)], 'restricted volume close')
     # 实际 Run 对话框启动后台进程；随后注销必须终止它。
+    mark = console.mark()
+    run_command(session, '/bin/sh /var/tmp/check-task-observer')
+    console.wait_for(('TASK_OBSERVER_READONLY_OK',), after=mark)
     run_command(session, '/bin/sleep 9999')
     console.wait_for(('DESKTOP_CHILD_RUNNING',))
     mark = console.mark()
@@ -401,7 +405,7 @@ def main() -> int:
     image = args.image.resolve()
     stamp = ROOT / 'target/verify-gates/desktop-aarch64.json'
     volume_probe = build_volume_probe(cached_musl_paths(find_compiler()))
-    payload = runtime_gate_payload('desktop', RECIPE_VERSION, (image, volume_probe, Path(__file__).resolve(), ROOT / 'scripts/fixtures/desktop/check-session.sh', ROOT / 'scripts/display_gate.py', ROOT / 'scripts/verify_wayland.py'))
+    payload = runtime_gate_payload('desktop', RECIPE_VERSION, (image, volume_probe, Path(__file__).resolve(), ROOT / 'scripts/fixtures/desktop/check-session.sh', ROOT / 'scripts/fixtures/desktop/check-task-observer.sh', ROOT / 'scripts/display_gate.py', ROOT / 'scripts/verify_wayland.py'))
     try:
         if runtime_gate_hit(stamp, payload, (image,)):
             print('desktop verification cache hit')

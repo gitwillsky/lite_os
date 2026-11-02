@@ -75,6 +75,8 @@ unsafe impl Plain for native_abi::ExceptionReport {}
 unsafe impl Plain for native_abi::HandleBasic {}
 // SAFETY: 同上。
 unsafe impl Plain for native_abi::TaskRuntime {}
+// SAFETY: TaskStats 是 repr(C) 的三个 u64，不含 padding、引用或无效位模式。
+unsafe impl Plain for native_abi::TaskStats {}
 // SAFETY: 同上。
 unsafe impl Plain for native_abi::VmarRegion {}
 // SAFETY: 同上。

@@ -29,8 +29,8 @@ pub struct View {
     memory_history: Widget,
     /// 句柄数、线程数、进程数。
     totals: [Widget; 3],
-    /// 总数、限制、峰值。
-    commit: [Widget; 3],
+    /// 已用内存、总内存、最高用量。
+    usage: [Widget; 3],
     /// 总数、可用数、系统缓存，以及 Linux 页类别：匿名页、共享内存、文件映射。
     physical: [Widget; 6],
     /// 总数与组成：内核堆、页表、内核栈。Linux 没有分页/未分页池之分，不显示这两行。
@@ -160,7 +160,7 @@ impl View {
         let totals = stats(
             &left,
             "总数",
-            ["句柄数", "线程数", "进程数"],
+            ["打开文件", "线程数", "进程数"],
             &mut containers,
         )?;
         let physical = stats(
@@ -176,10 +176,10 @@ impl View {
             ],
             &mut containers,
         )?;
-        let commit = stats(
+        let usage = stats(
             &right,
-            "认可用量",
-            ["总数", "限制", "峰值"],
+            "内存使用",
+            ["已用", "总量", "最高用量"],
             &mut containers,
         )?;
         let kernel = stats(
@@ -195,7 +195,7 @@ impl View {
             cpu_history,
             memory_history,
             totals,
-            commit,
+            usage,
             physical,
             kernel,
             _containers: containers,
@@ -208,23 +208,21 @@ impl View {
         totals: Totals,
         graph: CpuGraph,
     ) -> liteos_ui::Result<()> {
-        let (used, limit) = monitor.memory.commit();
+        let (used, limit) = monitor.memory.usage();
         let set = |widgets: &[Widget], values: &[u64], text: fn(u64) -> String| {
             widgets
                 .iter()
                 .zip(values)
                 .try_for_each(|(widget, value)| widget.set_text(&text(*value)))
         };
-        set(
-            &self.totals,
-            &[totals.handles, totals.threads, totals.processes],
-            grouped,
-        )?;
-        set(
-            &self.commit,
-            &[used, limit, monitor.commit_peak],
-            memory_text,
-        )?;
+        for (widget, value) in
+            self.totals
+                .iter()
+                .zip([Some(totals.handles), totals.threads, totals.processes])
+        {
+            widget.set_text(&value.map_or_else(|| "—".into(), grouped))?;
+        }
+        set(&self.usage, &[used, limit, monitor.usage_peak], memory_text)?;
         let memory = &monitor.memory;
         set(
             &self.physical,
@@ -253,7 +251,7 @@ impl View {
 
     /// 仪表与曲线依赖控件几何，采样或 configure 后都按同一份监视数据重画。
     pub fn charts(&self, monitor: &Monitor, graph: CpuGraph) -> liteos_ui::Result<()> {
-        let (used, limit) = monitor.memory.commit();
+        let (used, limit) = monitor.memory.usage();
         meter(
             &self.cpu_meter,
             monitor.cpu_percent,

@@ -343,3 +343,24 @@ fn supplied_page_invalidated_before_waiter_resumes_is_not_a_pager_failure() {
     assert_eq!(file.wait_for_page(&retry), Ok(()));
     assert_eq!(file.wait_for_page(&failed), Err(VmError::Io));
 }
+
+#[test]
+fn resident_observation_keeps_sparse_cow_and_slice_backing_without_faulting() {
+    let parent = Vmo::create((PAGE_SIZE * 8) as u64, VmoOptions::default()).unwrap();
+    parent.write(PAGE_SIZE as u64, &[17]).unwrap();
+    parent.write((PAGE_SIZE * 6) as u64, &[23]).unwrap();
+    let child = parent
+        .create_child(0, parent.size(), ChildKind::Snapshot)
+        .unwrap();
+    assert_eq!(child.resident_pages(0, 8).unwrap(), 2);
+    assert_eq!(child.committed_bytes().unwrap(), 0);
+    child.write(PAGE_SIZE as u64, &[31]).unwrap();
+    assert_eq!(child.resident_pages(0, 8).unwrap(), 2);
+    assert_eq!(child.resident_pages(2, 4).unwrap(), 0);
+    let slice = child
+        .create_child(PAGE_SIZE as u64, (PAGE_SIZE * 6) as u64, ChildKind::Slice)
+        .unwrap();
+    assert_eq!(slice.resident_pages(0, 6).unwrap(), 2);
+    assert_eq!(child.committed_bytes().unwrap(), PAGE_SIZE as u64);
+    assert_eq!(byte(&parent, PAGE_SIZE as u64), 17);
+}

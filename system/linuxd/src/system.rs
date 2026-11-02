@@ -1,3 +1,5 @@
+pub(crate) mod task_observer;
+
 pub(crate) use crate::arch::user::SignalActionBytes;
 pub(crate) use crate::platform::ResetKind;
 

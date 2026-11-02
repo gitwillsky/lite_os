@@ -123,3 +123,19 @@ chunk 基址按 max(page, block) 对齐；较大对齐的 prefix/suffix 在发�
 缺少完整消息备用块时，顺序 RPC 的每次回复都要创建/撤销 VMAR 并跨核 fence，放大音频等有期限的数据流延迟。
 实际分配器 fixture 验证大块对齐、复用时无新增映射、活跃块隔离、突发后的有界保留及独立映射退休；
 实际 RPC 成本与容量分别由音频/桌面、musl 地址空间压力门禁验证。
+
+## 原生任务观测
+
+- `object::Process` 的 lifecycle 锁同时保护存活线程索引与退出累计计费；最终 runtime 与线程摘除同一事务提交，
+  不丢失已退出线程，也不与并发查询重复计费。启动失败只回滚登记，不改变未启动执行体的状态。
+- `TASK_RUNTIME` 查询包括已退出线程；`TASK_STATS` 返回映射字节、映射驻留字节和存活线程数，均要求 INSPECT。
+  统计由实际 task/VM owner 提供，不在 root-server 或桌面另建人工同步计数。
+- root-server 启动 linuxd 时只交付自身与 devmgr/ext4d/netd 的 INSPECT/TRANSFER 观察句柄；没有 MANAGE、READ、WRITE。
+  linuxd 的观测 adapter 读取这些对象及自身，发布只读系统观测消息，不向应用传递原生句柄。
+- `task-observer-protocol` 拥有版本化查询/回复格式，Linuxd 的 `system::task_observer` 只适配初始 NET 中的 AF_UNIX datagram。
+  所有该 NET 内的用户都可读这些服务名称/运行状态/汇总资源量；不返回地址、寄存器、凭据、映射明细或管理 capability。
+  请求不持久化客户端状态；socket 队列沿用现有配额，回复不能立即发送时丢弃，不阻塞其他客户端。
+- 原生 KOID 与 Linux PID 分属不同身份空间。原生服务按自己的承载进程计费，Linux 应用及其 syscall 消耗归实际成员承载线程；
+  不再把相同应用的承载线程计入服务。Linuxd 工作线程是其服务的展开明细，系统总线程数不重复加它们。
+  普通 Linux 进程仍使用标准 procfs/pidfd；系统桌面工具消费只读服务协议，不新增 Linux syscall、ioctl 或伪造 PID。
+- 观测是低频、按请求执行的冷路径。锁序/稀疏驻留统计由生产 VMO fixture 与 runtime 验证；不在调度、fault 或 IPC 热路径新增采样。

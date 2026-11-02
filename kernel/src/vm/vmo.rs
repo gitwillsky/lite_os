@@ -26,11 +26,7 @@
 mod pager;
 use pager::PageRequestCompletion;
 
-use alloc::sync::{Arc, Weak};
-use alloc::vec::Vec;
-
-use spin::Mutex;
-
+mod residency;
 use super::VmError;
 use super::address_space::{Mapping, ZapMode};
 use crate::execution::sync::{
@@ -39,7 +35,10 @@ use crate::execution::sync::{
 use crate::memory::{
     FrameAllocationClass, FrameTracker, PAGE_SIZE, PhysicalPageNumber, frame_allocator,
 };
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 use fallible_tree::FallibleMap;
+use spin::Mutex;
 
 /// 物理 VMO 的缓存属性。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -381,21 +380,6 @@ impl Vmo {
     /// 字节大小。
     pub(crate) fn size(&self) -> u64 {
         (self.state.lock().pages * PAGE_SIZE) as u64
-    }
-
-    /// 本对象自己持有的已提交字节（不含从父对象共享的页）。
-    ///
-    /// # Errors
-    /// 等待者分配失败返回 `NoMemory`。
-    pub(crate) fn committed_bytes(&self) -> Result<u64, VmError> {
-        let _tree = self.lock_tree()?;
-        let state = self.state.lock();
-        let pages = match &self.kind {
-            Kind::Paged { .. } | Kind::Hidden => state.committed.len(),
-            Kind::Contiguous(_) | Kind::Physical { .. } => state.pages,
-            Kind::Slice => 0,
-        };
-        Ok((pages * PAGE_SIZE) as u64)
     }
 
     /// 创建子对象。

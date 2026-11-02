@@ -108,3 +108,10 @@ Wayland/控件协议回归仍由 [Wayland 门禁](wayland-ui-verification.md) �
 - 认证 crypt_r 是交互低频、由固定 musl 实现；错误后至少一秒重试窗口，不缓存密码。当前分配内的明文（含已删除尾部）在提交/取消/切换后 volatile 清空，不声称擦除此前已释放的旧分配。
 - SAS 期间仅可信 Overlay 的来源优先级与输入屏障新增到 compositor 策略，不改变普通窗口布局或通用 kernel ownership。
 - 光栅成本沿用 canvas/typeface 诊断 benchmark；交互门禁验证帧节流与更新正确性，不把截图正确性宣称为性能证明。
+
+## 任务观测
+
+`/bin/taskmgr --snapshot` 可从恢复串口查询同一系统观测链路。原生服务使用 KOID，Linux 进程使用 PID；
+统计与权限边界见[原生任务观测](../architecture-contract/execution.md#原生任务观测)，内存字段见[观测口径](../architecture-contract/memory.md#观测口径)。
+桌面门禁通过普通用户的真实 Run 启动正式 taskmgr 客户端，校验五个原生服务、独立 KOID、运行状态和可读资源量；
+不使用测试专用生产入口。pidfd 生命周期由现有 Linux ABI fixture 与桌面结束操作验收。

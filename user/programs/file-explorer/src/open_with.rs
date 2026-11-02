@@ -96,7 +96,7 @@ pub async fn choose(
     let always = node(
         &root,
         WidgetKind::CheckBox,
-        "始终使用此程序打开这类文件(&A)",
+        "始终使用此程序打开这类文件(A)",
         Layout {
             height: 23,
             ..Default::default()

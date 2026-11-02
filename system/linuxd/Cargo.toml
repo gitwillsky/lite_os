@@ -9,6 +9,7 @@ test = false
 bench = false
 
 [dependencies]
+task-observer-protocol = { path = "../../task-observer-protocol" }
 native-runtime = { path = "../native-runtime" }
 service-sync = { path = "../service-sync" }
 device-model = { path = "../device-model" }

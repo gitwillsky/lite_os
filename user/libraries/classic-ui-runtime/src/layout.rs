@@ -63,21 +63,29 @@ impl Tree {
             .collect();
         let natural = match node.kind {
             widget::ROW | widget::COLUMN | widget::GROUP => {
-                let sizes: Vec<_> = children
-                    .iter()
-                    .map(|id| {
-                        self.natural(
-                            *id,
-                            (available_width - node.layout.padding * 2).max(0),
-                            font,
-                            scale,
-                        )
-                    })
-                    .collect();
                 let gap = node
                     .layout
                     .gap
-                    .saturating_mul(sizes.len().saturating_sub(1) as i32);
+                    .saturating_mul(children.len().saturating_sub(1) as i32);
+                let inner = (available_width - node.layout.padding * 2).max(0);
+                // 行内定宽兄弟先占去宽度，其余子项只按剩余宽度度量；否则换行标签按整行宽度
+                // 算出偏少的行数，行高不足，末行被裁掉。
+                let flexible = if node.kind == widget::ROW {
+                    let fixed: i32 = children
+                        .iter()
+                        .map(|id| self.nodes[id].layout.width.max(0))
+                        .sum();
+                    (inner - fixed - gap).max(0)
+                } else {
+                    inner
+                };
+                let sizes: Vec<_> = children
+                    .iter()
+                    .map(|id| {
+                        let width = self.nodes[id].layout.width;
+                        self.natural(*id, if width >= 0 { width } else { flexible }, font, scale)
+                    })
+                    .collect();
                 if node.kind == widget::ROW {
                     (
                         sizes.iter().map(|v| v.0).sum::<i32>().saturating_add(gap),
@@ -325,7 +333,11 @@ impl Tree {
             }
             node.rect = rect;
             node.clip = intersection;
-            node.row_height = font.line_height() + 6;
+            node.row_height = if node.kind == widget::COMBO {
+                node.combo_item_height(font.line_height())
+            } else {
+                font.line_height() + 6
+            };
             if node.kind == widget::LIST {
                 // 小图标/列表的条目宽度取最宽标签 + 图标与内边距（comctl32 按最宽项排列），大图标取主题图标间距。
                 let widest = (0..node.row_count())

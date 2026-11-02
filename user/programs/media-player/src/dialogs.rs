@@ -41,7 +41,7 @@ pub async fn open_url(dialogs: &Dialogs, parent: &Window) -> liteos_ui::Result<O
     let prompt = node(
         &root,
         Kind::Label,
-        "请输入要播放的媒体文件或流的网址(&A):",
+        "请输入要播放的媒体文件或流的网址(A):",
         Layout::default(),
     )?;
     let address = node(

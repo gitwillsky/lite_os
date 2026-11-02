@@ -13,8 +13,6 @@ pub struct Memory {
     pub available: u64,
     /// 含 Shmem 的 Linux Cached。
     pub cached: u64,
-    pub swap_total: u64,
-    pub swap_free: u64,
     pub slab: u64,
     /// 至少被映射一次的私有匿名页，物理页只计一次。
     pub anon: u64,
@@ -39,8 +37,6 @@ impl Memory {
             total: field("MemTotal"),
             available: field("MemAvailable"),
             cached: field("Cached"),
-            swap_total: field("SwapTotal"),
-            swap_free: field("SwapFree"),
             slab: field("Slab"),
             anon: field("AnonPages"),
             mapped: field("Mapped"),
@@ -55,11 +51,9 @@ impl Memory {
         self.slab + self.kernel_stack + self.page_tables
     }
 
-    /// 已认可内存与上限：已用物理内存加已用交换空间，上限是物理内存加交换空间（Windows 的"认可用量"）。
-    pub fn commit(&self) -> (u64, u64) {
-        let used = self.total.saturating_sub(self.available)
-            + self.swap_total.saturating_sub(self.swap_free);
-        (used, self.total + self.swap_total)
+    /// 实际已用物理内存与总物理内存；不把它称为内存承诺，也不混入交换空间。
+    pub fn usage(&self) -> (u64, u64) {
+        (self.total.saturating_sub(self.available), self.total)
     }
 }
 
@@ -67,8 +61,8 @@ impl Memory {
 #[derive(Clone, Copy, Default)]
 pub struct Totals {
     pub handles: u64,
-    pub threads: u64,
-    pub processes: u64,
+    pub threads: Option<u64>,
+    pub processes: Option<u64>,
 }
 
 /// 一个逻辑 CPU 的独立采样状态；按 procfs 的 CPU 编号关联，不假定编号连续。
@@ -92,9 +86,11 @@ pub struct Monitor {
     pub samples: u64,
     pub memory_history: VecDeque<u8>,
     pub memory: Memory,
-    pub commit_peak: u64,
+    pub usage_peak: u64,
     /// 全部 CPU 累计的空闲滴答，作为"System Idle Process"的 CPU 时间。
     pub idle_ticks: u64,
+    /// 全机空闲百分比的百分之一；取自与 CPU 总量相同的采样区间。
+    pub idle_percent: u16,
     /// 最近一个采样区间内全部 CPU 的总滴答，进程 CPU 占比以它为分母。
     pub interval_ticks: u64,
 }
@@ -109,20 +105,22 @@ impl Monitor {
             samples: 0,
             memory_history: VecDeque::with_capacity(HISTORY),
             memory: Memory::default(),
-            commit_peak: 0,
+            usage_peak: 0,
             idle_ticks: 0,
+            idle_percent: 0,
             interval_ticks: 0,
         }
     }
 
     /// 采样一次并把结果推进历史。`/proc/stat` 不可读时 CPU 保持上次的值。
     pub fn sample(&mut self) {
+        self.interval_ticks = 0;
         if let Ok(text) = fs::read_to_string("/proc/stat") {
             self.sample_cpu(&text);
         }
         self.memory = Memory::read();
-        let (used, limit) = self.memory.commit();
-        self.commit_peak = self.commit_peak.max(used);
+        let (used, limit) = self.memory.usage();
+        self.usage_peak = self.usage_peak.max(used);
         let memory_percent = (used * 100).checked_div(limit).unwrap_or(0);
         push(&mut self.memory_history, memory_percent.min(100) as u8);
         push(&mut self.cpu_history, self.cpu_percent);
@@ -130,6 +128,7 @@ impl Monitor {
     }
 
     fn sample_cpu(&mut self, text: &str) {
+        self.interval_ticks = 0;
         let mut cpus = Vec::new();
         let mut previous = std::mem::take(&mut self.cpus);
         // 1. 同一次读取同时解析总体和各 CPU，避免两次读取的区间不一致。
@@ -166,6 +165,12 @@ impl Monitor {
                 let span = total.saturating_sub(previous_total);
                 if span > 0 {
                     self.interval_ticks = span;
+                    self.idle_percent = (total
+                        .saturating_sub(busy)
+                        .saturating_sub(previous_total.saturating_sub(previous_busy))
+                        .saturating_mul(10_000)
+                        / span)
+                        .min(10_000) as u16;
                     self.cpu_percent = cpu_percent((previous_busy, previous_total), (busy, total));
                 }
             }
@@ -242,6 +247,7 @@ mod tests {
             "cpu 150 0 0 150 0 0 0 0 80 0\ncpu3 0 0 0 150 0 0 0 0 0 0\ncpu0 150 0 0 0 0 0 0 0 80 0",
         );
         assert_eq!(monitor.cpu_percent, 50);
+        assert_eq!(monitor.idle_percent, 5_000);
         assert_eq!(monitor.interval_ticks, 100);
         assert_eq!((monitor.cpus[0].id, monitor.cpus[0].percent), (0, 100));
         assert_eq!((monitor.cpus[1].id, monitor.cpus[1].percent), (3, 0));
@@ -262,5 +268,14 @@ mod tests {
             ),
             (7, 0, 1)
         );
+    }
+    #[test]
+    fn idle_retains_fractional_load_and_zero_interval_does_not_reuse_the_old_span() {
+        let mut monitor = Monitor::new();
+        monitor.sample_cpu("cpu 0 0 0 0 0 0 0 0");
+        monitor.sample_cpu("cpu 1 0 0 1999 0 0 0 0");
+        assert_eq!(monitor.idle_percent, 9_995);
+        monitor.sample_cpu("cpu 1 0 0 1999 0 0 0 0");
+        assert_eq!(monitor.interval_ticks, 0);
     }
 }

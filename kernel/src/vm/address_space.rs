@@ -18,13 +18,7 @@
 //! 映射对象一经发布便不可变；部分解除映射或改变权限时，先在锁外构造剩余部分的新映射并登记到 VMO，
 //! 再在锁内原子替换，被替换的映射保活到 TLB fence 完成后才释放。
 
-use alloc::sync::{Arc, Weak};
-use alloc::vec::Vec;
-use core::ops::Range;
-use core::sync::atomic::{AtomicBool, Ordering};
-
-use spin::Mutex;
-
+mod observation;
 use super::execution_views::{ExecutionView, ExecutionViews};
 use super::page_table::PagePermissions;
 use super::translation::{TranslationCommit, synchronize_address_space_retirement};
@@ -33,7 +27,12 @@ use super::{FaultAccess, USER_END, USER_START, VmError};
 use crate::arch::mmu::AddressSpaceToken;
 use crate::execution::sync::{TaskMutex, TaskMutexGuard};
 use crate::memory::{FrameTracker, PAGE_SIZE, VirtualAddress, VirtualPageNumber, frame_allocator};
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
+use core::ops::Range;
+use core::sync::atomic::{AtomicBool, Ordering};
 use fallible_tree::FallibleMap;
+use spin::Mutex;
 
 /// 共享区起点：用户区间的上半部分，按 1 GiB 对齐，使两区不共享任何中间页表页。
 pub(crate) const SHARED_START: usize = (USER_END / 2) & !((1 << 30) - 1);
@@ -722,14 +721,6 @@ impl Vmar {
     /// 对象全局编号。
     pub(crate) fn koid(&self) -> u64 {
         self.koid
-    }
-
-    /// 区间信息。
-    pub(crate) fn info(&self) -> VmarInfo {
-        VmarInfo {
-            base: self.base,
-            size: self.size,
-        }
     }
 
     fn check_range(&self, address: usize, size: usize) -> Result<(), VmError> {

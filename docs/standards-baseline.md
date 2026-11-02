@@ -32,6 +32,14 @@ ptrace 的 request、access policy、stop/wait、exec/exit 与 regset 布局取�
 [FIDL transaction ID 约定](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/reference/fidl/language/wire-format/README.md#transactional-messages)：
 零事务号不要求回复。LiteOS 只采用该 channel 消息语义，不声明 FIDL 编码兼容。
 
+### 原生任务观测
+
+- 原生任务树身份、INSPECT 权限及包含已退出线程的 runtime 语义参照
+  [固定 Zircon object_get_info](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/reference/syscalls/object_get_info.md)。
+  LiteOS 的 TASK_STATS 是自身映射驻留观测，不声明 Zircon TASK_STATS/PSS 编码兼容。
+- Linux procfs 的 `Kthread`、`stat` starttime、RSS 与 pidfd 操作沿用上述固定 Linux revision 的 UAPI/实现；
+  原生服务不在 Linux PID 表中创建占位身份。
+
 ### 原生 resource 授权
 
 - immutable kind/range、同类子范围与创建所需 WRITE 参照 [固定 Zircon resource_create 规范](https://fuchsia.googlesource.com/fuchsia/+/bbc9ce36f629b624f5e950a7605d7d695beef5ee/docs/reference/syscalls/resource_create.md)。

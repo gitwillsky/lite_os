@@ -7,21 +7,21 @@ use liteos_ui::{
 use network_drive::{Credentials, Mapping, Store};
 
 /// 文字取自 Windows 2000 简中 netplwiz.dll 对话框 106（映射向导）、124（连接身份）与 mprui.dll 对话框 7002（断开），
-/// 其中 `&` 标出快捷键、`<A>` 标出链接范围。
+/// 资源中的 `&` 已换成工具包的 `(X)` 助记键写法（由 Painter 画下划线），`<A>` 标出链接范围。
 mod text {
     pub const MAP_TITLE: &str = "映射网络驱动器";
     pub const MAP_INTRO: &str = "Windows 可以帮助您连接到共享的网络文件夹，并给该连接指派一个盘符，这样您就可以从“我的电脑”访问该文件夹。";
     pub const MAP_PROMPT: &str = "请为要连接到的连接和文件夹指定盘符:";
-    pub const DRIVE: &str = "驱动器(&D):";
-    pub const FOLDER: &str = "文件夹(&O):";
-    pub const BROWSE: &str = "浏览(&B)...";
+    pub const DRIVE: &str = "驱动器(D):";
+    pub const FOLDER: &str = "文件夹(O):";
+    pub const BROWSE: &str = "浏览(B)...";
     pub const EXAMPLE: &str = "例如: \\\\server\\share";
-    pub const RECONNECT: &str = "登录时重新连接(&R)";
+    pub const RECONNECT: &str = "登录时重新连接(R)";
     pub const OTHER_USER: &str = "使用<A>其他用户名</A>进行连接。";
     pub const CONNECT_AS_TITLE: &str = "连接身份...";
     pub const CONNECT_AS_PROMPT: &str = "默认情况下，您会连接到 <\\\\server\\share>，身份为 <domain\\user>。要以其他用户身份连接，请在下面输入其用户名和密码。";
-    pub const USERNAME: &str = "用户名(&U):";
-    pub const PASSWORD: &str = "密码(&P):";
+    pub const USERNAME: &str = "用户名(U):";
+    pub const PASSWORD: &str = "密码(P):";
     pub const DISCONNECT_PROMPT: &str = "请选择您要断开的驱动器:";
     pub const DISCONNECT_TITLE: &str = "断开网络驱动器";
     pub const OK: &str = "确定";
@@ -33,9 +33,15 @@ const BUTTON_WIDTH: i32 = 75;
 /// 映射向导页：模板 294×154 单位，侧边图 88 单位宽；向导按钮条在页面下方。
 const PAGE: (i32, i32) = (441, 231);
 const BANNER_WIDTH: i32 = 132;
-/// 控件左缘相对侧边图的缩进（模板 x=100 对应 150 像素）与标签列宽（驱动器/文件夹到控件的 66 像素）。
+/// 控件左缘相对侧边图的缩进（模板 x=100 对应 150 像素）、标签列宽（驱动器/文件夹到控件的 66 像素）、
+/// 组合框宽（94 单位）与说明文字右边距（187 单位宽的文字框右侧余 10 像素）。
 const INDENT: i32 = 18;
 const CAPTION: i32 = 66;
+const FIELD: i32 = 141;
+/// 驱动器、文件夹组合框的模板 cy（66、73 单位）：展开时连同文字区的总高度，决定下拉列表行数。
+const DRIVE_DROPPED: i32 = 99;
+const FOLDER_DROPPED: i32 = 110;
+const MARGIN: i32 = 10;
 
 /// 对话框持有全部控件：`Widget` 析构会删除运行库里的节点，丢弃占位/标签/禁用按钮的句柄会让它们消失。
 #[derive(Default)]
@@ -67,6 +73,18 @@ fn spacer(held: &Held, parent: &Widget, width: i32, height: i32) -> liteos_ui::R
 /// 固定高度的一行，所有子控件由调用方按模板坐标排布。
 fn row(held: &Held, parent: &Widget, height: i32) -> liteos_ui::Result<Widget> {
     node(held, parent, Kind::Row, "", -1, height, 0)
+}
+/// 换行文字所在的一行：模板框高按 宋体 12 像素行高给出，至少保留该高度让下方控件留在模板位置；
+/// 实际字体行高更大或文字更长时按换行结果增高，不裁掉末行。
+fn text_row(held: &Held, parent: &Widget, template: i32) -> liteos_ui::Result<Widget> {
+    let line = row(held, parent, -1)?;
+    line.set_layout(Layout {
+        height: -1,
+        min_height: template,
+        gap: 0,
+        ..Default::default()
+    })?;
+    Ok(line)
 }
 /// 单行标签：模板中标签文字基线比同行输入控件低 5 像素，用顶部留白还原。
 fn caption(held: &Held, row: &Widget, text: &str, width: i32) -> liteos_ui::Result<Widget> {
@@ -121,7 +139,7 @@ async fn connect_as(
     };
     let root = window.widget(spec)?;
     spacer(&held, &root, -1, 9)?;
-    let intro = row(&held, &root, 38)?;
+    let intro = text_row(&held, &root, 38)?;
     spacer(&held, &intro, 10, -1)?;
     let me = std::env::var("USER").unwrap_or_default();
     let prompt = text::CONNECT_AS_PROMPT
@@ -129,6 +147,7 @@ async fn connect_as(
         .replace("<domain\\user>", &me);
     let label = node(&held, &intro, Kind::Label, &prompt, -1, -1, 1)?;
     label.set_state(state::WRAP)?;
+    spacer(&held, &intro, 10, -1)?;
     spacer(&held, &root, -1, 10)?;
     let user_row = row(&held, &root, 21)?;
     spacer(&held, &user_row, 10, -1)?;
@@ -239,7 +258,7 @@ fn wizard_buttons(held: &Held, root: &Widget) -> liteos_ui::Result<(Widget, Widg
         held,
         &buttons,
         Kind::Button,
-        "< 上一步(&B)",
+        "< 上一步(B)",
         BUTTON_WIDTH,
         21,
         0,
@@ -422,19 +441,22 @@ pub async fn show(
     banner.set_background(None, Some("network-drive-banner-1x"))?;
     let page = node(&held, &body, Kind::Column, "", -1, -1, 1)?;
     spacer(&held, &page, -1, 10)?;
-    let intro = row(&held, &page, 36)?;
+    let intro = text_row(&held, &page, 36)?;
     spacer(&held, &intro, INDENT, -1)?;
     node(&held, &intro, Kind::Label, text::MAP_INTRO, -1, -1, 1)?.set_state(state::WRAP)?;
+    spacer(&held, &intro, MARGIN, -1)?;
     spacer(&held, &page, -1, 11)?;
-    let prompt = row(&held, &page, 18)?;
+    let prompt = text_row(&held, &page, 24)?;
     spacer(&held, &prompt, INDENT, -1)?;
     node(&held, &prompt, Kind::Label, text::MAP_PROMPT, -1, -1, 1)?.set_state(state::WRAP)?;
-    spacer(&held, &page, -1, 12)?;
+    spacer(&held, &prompt, MARGIN, -1)?;
+    spacer(&held, &page, -1, 6)?;
     let drive_row = row(&held, &page, 21)?;
     spacer(&held, &drive_row, INDENT, -1)?;
     caption(&held, &drive_row, text::DRIVE, CAPTION)?;
-    let drive = node(&held, &drive_row, Kind::Combo, "", 141, 21, 0)?;
+    let drive = node(&held, &drive_row, Kind::Combo, "", FIELD, 21, 0)?;
     drive.set_state(state::DROPDOWN_LIST)?;
+    drive.set_dropped_height(DRIVE_DROPPED)?;
     // 下拉列出尚未映射的 D: 到 Z:，默认选最后一个空闲盘符（Windows 从 Z: 往前分配）。
     let free: Vec<char> = ('D'..='Z')
         .filter(|letter| !records.iter().any(|record| record.letter == *letter))
@@ -461,7 +483,8 @@ pub async fn show(
     let folder_row = row(&held, &page, 21)?;
     spacer(&held, &folder_row, INDENT, -1)?;
     caption(&held, &folder_row, text::FOLDER, CAPTION)?;
-    let folder = node(&held, &folder_row, Kind::Combo, "", 141, 21, 0)?;
+    let folder = node(&held, &folder_row, Kind::Combo, "", FIELD, 21, 0)?;
+    folder.set_dropped_height(FOLDER_DROPPED)?;
     spacer(&held, &folder_row, 4, -1)?;
     // 没有网络邻居枚举，“浏览”无事可做；保留控件位置与禁用外观，避免伪造一个空浏览器。
     node(

@@ -168,3 +168,29 @@ pub(super) unsafe extern "C" fn color(pointer: *mut c_void, role: u32, output: *
         })
     }
 }
+
+/// ABI `combo_dropped_height`：记录模板展开高度，下次打开列表时生效。
+pub(super) unsafe extern "C" fn combo_dropped_height(
+    pointer: *mut c_void,
+    window: u64,
+    id: u64,
+    height: i32,
+) -> i32 {
+    if height < 0 {
+        return abi::INVALID;
+    }
+    // SAFETY: 只修改本 context 中指定组合框的展开高度，不保留调用者指针。
+    unsafe {
+        invoke(pointer, |context| {
+            let host = context.host_mut(window)?;
+            host.controls_mut()?
+                .nodes
+                .get_mut(&id)
+                .and_then(|node| node.combo.as_mut())
+                .ok_or_else(|| invalid("not a combo box"))?
+                .dropped = height;
+            host.frame.invalidate();
+            Ok(())
+        })
+    }
+}

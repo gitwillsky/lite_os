@@ -257,8 +257,22 @@ struct Lifecycle {
     // OWNER: 已启动且尚未退出的线程；终止时逐个 kill，退出时按 koid 摘除。
     threads: FallibleMap<u64, Weak<Thread>>,
     live: usize,
+    // OWNER: lifecycle 锁内从退出线程转移的最终计费；缺失时服务 CPU 累计值会随线程退出回退。
+    retired_runtime: crate::thread::Runtime,
     /// `process_exit` 的退出码；被 kill 时为 `None`。
     exit_code: Option<i64>,
+}
+
+impl Lifecycle {
+    fn remove_thread(&mut self, koid: u64) -> bool {
+        drop(self.threads.remove(&koid));
+        self.live -= 1;
+        let finished = self.live == 0 && self.phase != Phase::Dead;
+        if finished {
+            self.phase = Phase::Dead;
+        }
+        finished
+    }
 }
 
 /// 进程创建方式。
@@ -365,6 +379,7 @@ impl Process {
                 started: false,
                 threads: FallibleMap::new(),
                 live: 0,
+                retired_runtime: crate::thread::Runtime::default(),
                 exit_code: None,
             }),
             exception_channel: Mutex::new(None),
@@ -462,17 +477,23 @@ impl Process {
     }
 
     fn unregister_thread(&self, koid: u64) {
-        let finished = {
+        let finished = self.lifecycle.lock().remove_thread(koid);
+        if finished {
+            self.finish();
+        }
+    }
+
+    fn complete_thread(&self, thread: &Thread) {
+        let (finished, retired) = {
             let mut lifecycle = self.lifecycle.lock();
-            drop(lifecycle.threads.remove(&koid));
-            lifecycle.live -= 1;
-            if lifecycle.live == 0 && lifecycle.phase != Phase::Dead {
-                lifecycle.phase = Phase::Dead;
-                true
-            } else {
-                false
+            let retired = core::mem::replace(&mut *thread.execution.lock(), Execution::Exited);
+            if let Execution::Running(execution) = &retired {
+                lifecycle.retired_runtime.add(execution.runtime());
             }
+            let finished = lifecycle.remove_thread(thread.koid);
+            (finished, retired)
         };
+        drop(retired);
         if finished {
             self.finish();
         }
@@ -545,25 +566,24 @@ impl Process {
         bind_exception(&self.exception_channel, channel)
     }
 
-    /// 已消耗的 `(全部, restricted mode)` CPU 时间（全部存活线程）。
+    /// 包含已退出线程的累计计费；同一 lifecycle 锁排除退出转移与采样重复计费。
     pub(crate) fn runtime(&self) -> crate::thread::Runtime {
-        let mut total = crate::thread::Runtime::default();
-        let mut cursor = 0;
-        loop {
-            let next = {
-                let lifecycle = self.lifecycle.lock();
-                lifecycle
-                    .threads
-                    .successor(&cursor)
-                    .map(|(&koid, thread)| (koid, thread.upgrade()))
-            };
-            let Some((koid, thread)) = next else { break };
-            cursor = koid;
-            if let Some(thread) = thread {
-                total.add(thread.runtime());
-            }
+        let lifecycle = self.lifecycle.lock();
+        let mut total = lifecycle.retired_runtime;
+        for thread in lifecycle.threads.values().filter_map(Weak::upgrade) {
+            total.add(thread.runtime());
         }
         total
+    }
+
+    /// 进程映射统计与存活线程数；共享服务区只由请求该进程统计的调用者归属。
+    pub(crate) fn stats(&self) -> Result<native_abi::TaskStats, Status> {
+        let (mapped_bytes, resident_bytes) = self.space.memory_stats().map_err(vm_status)?;
+        Ok(native_abi::TaskStats {
+            mapped_bytes,
+            resident_bytes,
+            threads: self.lifecycle.lock().live as u64,
+        })
     }
 }
 
@@ -760,11 +780,9 @@ impl Thread {
 
     /// 执行体退出后调用一次（由 `ThreadOwner::exited`）。
     pub(crate) fn exited(&self) {
-        let retired = core::mem::replace(&mut *self.execution.lock(), Execution::Exited);
-        drop(retired);
         self.restricted.lock().state = None;
         self.signals.update(0, signals::TERMINATED);
-        self.process.unregister_thread(self.koid);
+        self.process.complete_thread(self);
     }
 
     /// 运行中的执行体。

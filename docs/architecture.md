@@ -32,6 +32,7 @@ AArch64 和 RISC-V64 共用这些机制，具体指令与 machine 装配通过�
 | `system/devmgr`、`device-model`、`device-protocol` | 驱动、设备类 trait、目录、设备协议与远端适配 |
 | `system/ext4d`、`filesystem-protocol` | ext4/JBD2 与 FUSE 服务；挂载控制和大消息传输 |
 | `system/netd`、`network-protocol` | IPv4/transport/FIB 与网络域；跨服务 socket 操作与就绪事件 |
+| `task-observer-protocol` | 原生系统服务观测的只读消息；KOID 不混入 Linux PID |
 | `native-abi`、`syscall-abi` | 系统服务接口与 Linux UAPI，边界分别固定 |
 | `fallible-tree`、`mmio` | 唯一的可失败有序存储与有界 MMIO 访问实现 |
 | `user` | Linux 应用、桌面、运行库与 UI SDK |

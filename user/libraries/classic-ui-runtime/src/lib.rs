@@ -176,6 +176,7 @@ static API: Api = Api {
     image_palette: image_api::palette,
     canvas_frame: image_api::canvas_frame,
     fullscreen: window_api::fullscreen,
+    combo_dropped_height: context_api::combo_dropped_height,
 };
 
 /// 查询 ABI 主版本。返回进程存活期间有效的只读函数表；不支持的主版本返回空指针。

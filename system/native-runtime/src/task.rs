@@ -217,11 +217,18 @@ impl Process {
         self.info(native_abi::info::PROCESS)
     }
 
-    /// 已消耗的 CPU 时间。
+    /// 返回进程映射驻留统计与存活线程数，查询不提交物理页。
     ///
     /// # Errors
+    /// 缺少 INSPECT 权限，或统计临时内存不足。
+    pub fn stats(&self) -> Result<native_abi::TaskStats, Status> {
+        self.info(native_abi::info::TASK_STATS)
+    }
+
+    /// 已消耗的 CPU 时间，包含已退出线程。
     ///
-    /// 句柄无效。
+    /// # Errors
+    /// 句柄无效或缺少 INSPECT 权限。
     pub fn runtime(&self) -> Result<TaskRuntime, Status> {
         self.info(native_abi::info::TASK_RUNTIME)
     }

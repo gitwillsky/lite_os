@@ -650,6 +650,17 @@ impl Widget {
         })
     }
     /// ReBar 品牌 logo 的忙碌动画：导航或读取期间开启，完成后关闭。
+    /// 组合框展开时的总高度（对话框模板 COMBOBOX 的 cy 换算成逻辑像素）。
+    ///
+    /// 参数 `height`：下拉列表取其减去文字区后的整行数，0 恢复默认最多 16 行。
+    /// 返回：成功为 `Ok(())`。
+    /// 错误：窗口已关闭、控件不是组合框或 `height` 为负。
+    pub fn set_dropped_height(&self, height: i32) -> Result<()> {
+        self.call(|c, w, id| {
+            // SAFETY: 句柄有效，参数为整数，调用不保留任何借用。
+            unsafe { (c.api.combo_dropped_height)(c.context.as_ptr(), w, id, height) }
+        })
+    }
     pub fn set_busy(&self, busy: bool) -> Result<()> {
         self.call(|c, w, id| {
             // SAFETY: 句柄有效，参数为整数，调用不保留任何借用。

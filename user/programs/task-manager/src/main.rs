@@ -4,13 +4,14 @@ mod menus;
 mod performance;
 mod processes;
 mod sampling;
+mod services;
 mod system;
 use liteos_ui::{
     Application, ControlFlow, EventKind, Layout, Task, Toplevel, ToplevelRequest, Widget,
     WidgetKind as Kind, WidgetSpec, Window, WindowOptions, state,
 };
 use menus::{Command, CpuGraph, Page, Speed};
-use processes::{Column, Process, Sort};
+use processes::{Column, Kind as ProcessKind, Process, Sort};
 use sampling::{Refresh, Sampler};
 use std::{
     cell::RefCell,
@@ -27,7 +28,8 @@ fn child(parent: &Widget, kind: Kind, text: &str, layout: Layout) -> liteos_ui::
 struct View {
     menu: Widget,
     tabs: Widget,
-    pages: [Widget; 4],
+    pages: [Widget; 5],
+    services: Widget,
     applications: Widget,
     processes: Widget,
     performance: performance::View,
@@ -37,6 +39,7 @@ struct View {
     switch: Widget,
     new_task: Widget,
     end_process: Widget,
+    workers: Widget,
 }
 impl View {
     fn new(window: &Window) -> liteos_ui::Result<Self> {
@@ -70,6 +73,7 @@ impl View {
         let pages = [
             page("应用程序")?,
             page("进程")?,
+            page("系统服务")?,
             page("性能")?,
             page("GPU")?,
         ];
@@ -154,13 +158,68 @@ impl View {
             },
         )?;
         let end_process = button(&process_actions, "结束进程(E)")?;
-        let performance = performance::View::new(&pages[2])?;
-        let gpu = gpu::View::new(&pages[3])?;
+        let workers = button(&process_actions, "展开工作线程")?;
+        let services = child(
+            &pages[2],
+            Kind::List,
+            "",
+            Layout {
+                grow: 1,
+                ..Default::default()
+            },
+        )?;
+        services.set_list_style(
+            liteos_ui::ListStyle::Details,
+            liteos_ui::ListOptions {
+                multiple: false,
+                full_row_select: true,
+            },
+        )?;
+        services.set_columns(&[
+            liteos_ui::Column {
+                id: 1,
+                title: "服务",
+                width: 115,
+            },
+            liteos_ui::Column {
+                id: 2,
+                title: "服务 ID",
+                width: 55,
+            },
+            liteos_ui::Column {
+                id: 3,
+                title: "状态",
+                width: 65,
+            },
+            liteos_ui::Column {
+                id: 4,
+                title: "CPU",
+                width: 55,
+            },
+            liteos_ui::Column {
+                id: 5,
+                title: "累计 CPU 时间",
+                width: 96,
+            },
+            liteos_ui::Column {
+                id: 6,
+                title: "内存",
+                width: 92,
+            },
+            liteos_ui::Column {
+                id: 7,
+                title: "线程",
+                width: 45,
+            },
+        ])?;
+        let performance = performance::View::new(&pages[3])?;
+        let gpu = gpu::View::new(&pages[4])?;
         let status = child(&root, Kind::Status, "", Layout::default())?;
         let result = Self {
             menu,
             tabs,
             pages,
+            services,
             applications,
             processes,
             performance,
@@ -170,6 +229,7 @@ impl View {
             switch,
             new_task,
             end_process,
+            workers,
         };
         result.columns()?;
         Ok(result)
@@ -193,8 +253,19 @@ impl View {
         }
         Ok(())
     }
-    fn processes(&self, rows: &[Process]) -> liteos_ui::Result<()> {
-        let text: Vec<_> = rows
+    fn processes(&self, rows: &[Process], show_workers: bool) -> liteos_ui::Result<()> {
+        let visible: Vec<_> = rows
+            .iter()
+            .filter(|row| show_workers || row.kind != ProcessKind::Worker)
+            .collect();
+        self.workers.set_text(&format!(
+            "{}工作线程 ({})",
+            if show_workers { "收起" } else { "展开" },
+            rows.iter()
+                .filter(|row| row.kind == ProcessKind::Worker)
+                .count()
+        ))?;
+        let text: Vec<_> = visible
             .iter()
             .map(|row| {
                 Column::ALL
@@ -204,7 +275,7 @@ impl View {
                     .join("\t")
             })
             .collect();
-        let values: Vec<_> = rows
+        let values: Vec<_> = visible
             .iter()
             .zip(&text)
             .map(|(row, text)| (u64::from(row.pid) + 1, text.as_str()))
@@ -213,7 +284,16 @@ impl View {
         if self.processes.selection()?.is_none() {
             self.processes.select(values.first().map(|(id, _)| *id))?;
         }
+        self.process_action(rows)?;
         Ok(())
+    }
+    fn process_action(&self, rows: &[Process]) -> liteos_ui::Result<()> {
+        let selected = self.processes.selection()?;
+        let enabled = rows
+            .iter()
+            .any(|row| selected == Some(u64::from(row.pid) + 1) && row.can_terminate());
+        self.end_process
+            .set_state(if enabled { 0 } else { state::DISABLED })
     }
     fn applications(&self, apps: &[Toplevel]) -> liteos_ui::Result<()> {
         let text: Vec<_> = apps
@@ -259,8 +339,9 @@ impl View {
             .position(|page| Some(page.id()) == selected);
         Ok(match index {
             Some(1) => Page::Processes,
-            Some(2) => Page::Performance,
-            Some(3) => Page::Gpu,
+            Some(2) => Page::Services,
+            Some(3) => Page::Performance,
+            Some(4) => Page::Gpu,
             _ => Page::Applications,
         })
     }
@@ -268,6 +349,7 @@ impl View {
 struct State {
     rows: Vec<Process>,
     sort: Sort,
+    show_workers: bool,
     speed: Speed,
     graph: CpuGraph,
     // 只读采样快照用于 resize 后重新投影曲线；canonical 采样历史由后台 Sampler 独占。
@@ -285,24 +367,58 @@ impl State {
         monitor: &Monitor,
         mut rows: Vec<Process>,
         gpu: &gpu::Snapshot,
+        services: &services::Snapshot,
     ) -> liteos_ui::Result<()> {
         self.sort.apply(&mut rows);
+        let application_count = rows
+            .iter()
+            .filter(|row| row.kind == ProcessKind::Application)
+            .count() as u64;
+        let service_threads = services
+            .rows
+            .iter()
+            .try_fold(0u64, |sum, service| {
+                (service.record.threads != task_observer_protocol::UNAVAILABLE)
+                    .then_some(sum + service.record.threads)
+            })
+            .filter(|_| services.error.is_none());
+        let application_threads: u64 = rows
+            .iter()
+            .filter(|row| row.kind == ProcessKind::Application)
+            .map(|row| u64::from(row.threads))
+            .sum();
         let totals = Totals {
             handles: rows.iter().map(|row| u64::from(row.handles)).sum(),
-            threads: rows.iter().map(|row| u64::from(row.threads)).sum(),
-            processes: rows.len() as u64,
+            threads: service_threads.map(|threads| threads + application_threads),
+            processes: services
+                .error
+                .is_none()
+                .then_some(application_count + services.rows.len() as u64),
         };
-        view.processes(&rows)?;
+        view.processes(&rows, self.show_workers)?;
         view.performance.update(monitor, totals, self.graph)?;
         view.gpu.update(gpu, self.gpu_sort)?;
-        let (used, limit) = monitor.memory.commit();
+        let service_text: Vec<_> = services.rows.iter().map(services::Service::text).collect();
+        let service_rows: Vec<_> = services
+            .rows
+            .iter()
+            .zip(&service_text)
+            .map(|(service, text)| (service.record.koid, text.as_str()))
+            .collect();
+        view.services.set_rows(&service_rows)?;
+        let (used, limit) = monitor.memory.usage();
         view.status.set_text(&format!(
-            "进程数：{}\tCPU 使用：{}%\t认可用量：{} / {}",
-            rows.len(),
+            "进程：{}，系统服务：{}\tCPU 使用：{}%\t内存使用：{} / {}",
+            application_count,
+            services.rows.len(),
             monitor.cpu_percent,
             system::memory_text(used),
             system::memory_text(limit)
         ))?;
+        if let Some(error) = &services.error {
+            view.status
+                .set_text(&format!("系统服务查询失败：{error}"))?;
+        }
         self.rows = rows;
         self.monitor = monitor.clone();
         self.gpu = gpu.clone();
@@ -445,12 +561,39 @@ impl Dialog {
     }
 }
 fn run() -> Result<(), Box<dyn std::error::Error>> {
+    if std::env::args()
+        .skip(1)
+        .any(|argument| argument == "--snapshot")
+    {
+        let (sampler, rows) = Sampler::new().sample();
+        println!("系统服务\tKOID\t状态\tCPU\t累计 CPU 时间\t内存\t线程");
+        for service in &sampler.services.rows {
+            println!("{}", service.text());
+        }
+        if let Some(error) = &sampler.services.error {
+            return Err(error.clone().into());
+        }
+        println!("进程\tPID\t类型\tCPU\t累计 CPU 时间\t内存");
+        for row in &rows {
+            println!(
+                "{}",
+                Column::ALL
+                    .iter()
+                    .map(|column| column.text(row))
+                    .collect::<Vec<_>>()
+                    .join("\t")
+            );
+        }
+        return Ok(());
+    }
+
     let mut app = Application::new()?;
     let window = app.window(WindowOptions::new("任务管理器", APP_ID, 610, 570))?;
     let view = Rc::new(View::new(&window)?);
     let state = Rc::new(RefCell::new(State {
         rows: Vec::new(),
         sort: Sort::default(),
+        show_workers: false,
         speed: Speed::Normal,
         // Windows 2000 在多处理器上默认每个 CPU 一张图。
         graph: CpuGraph::PerCpu,
@@ -492,6 +635,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 &sampler.monitor,
                 rows,
                 &sampler.gpu,
+                &sampler.services,
             ) {
                 eprintln!("taskmgr: {error}");
                 break;
@@ -619,8 +763,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     state.sort.click(*column);
                     let sort = state.sort;
                     sort.apply(&mut state.rows);
-                    view.processes(&state.rows)?;
+                    view.processes(&state.rows, state.show_workers)?;
                 }
+            }
+            EventKind::Select { .. } if event.node == view.processes.id() => {
+                view.process_action(&state.borrow().rows)?;
+            }
+            EventKind::Activate { .. } if event.node == view.workers.id() => {
+                let mut state = state.borrow_mut();
+                state.show_workers = !state.show_workers;
+                view.processes(&state.rows, state.show_workers)?;
             }
             EventKind::Activate { value } if event.node == view.menu.id() => {
                 command = Command::decode(value)
@@ -668,13 +820,29 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             } else if view.page()? == Page::Processes
                 && let Some(id) = view.processes.selection()?
             {
-                let pid = id.saturating_sub(1) as u32;
-                let work = app.blocking(move || processes::terminate(pid))?;
+                let target = state
+                    .borrow()
+                    .rows
+                    .iter()
+                    .find(|row| u64::from(row.pid) + 1 == id)
+                    .map(Process::termination_target)
+                    .transpose();
+                let target = match target {
+                    Ok(target) => target.flatten(),
+                    Err(error) => {
+                        view.status.set_text(&error.to_string())?;
+                        return Ok(ControlFlow::Continue);
+                    }
+                };
+                let Some(target) = target else {
+                    return Ok(ControlFlow::Continue);
+                };
+                let work = app.blocking(move || processes::terminate(target))?;
                 let status = view.status.clone();
                 let refresh = refresh.clone();
                 operation = Some(app.spawn_local(&window, async move {
-                    if !work.await {
-                        let _ = status.set_text("无法结束进程；检查权限或进程是否仍存在。");
+                    if let Err(error) = work.await {
+                        let _ = status.set_text(&format!("无法结束进程：{error}"));
                     }
                     refresh.request();
                 })?);

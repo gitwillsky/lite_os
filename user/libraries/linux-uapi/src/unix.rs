@@ -465,6 +465,34 @@ fn parse_received_control(bytes: &[u8], length: usize) -> io::Result<Vec<OwnedFd
     }
 }
 
+/// 创建由 Linux 自动分配 abstract 地址的 CLOEXEC datagram socket。
+/// 地址由网络命名空间分配器拥有，不以 PID/时间猜测名字，也不留下 pathname。
+///
+/// # Errors
+/// 描述符/内存不足或非 Linux host 不支持该操作。
+pub fn anonymous_datagram() -> io::Result<std::os::unix::net::UnixDatagram> {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: AF_UNIX/SOCK_DGRAM|SOCK_CLOEXEC 请求新 fd，无用户指针。
+        let fd = unsafe { raw::socket(1, 2 | raw::O_CLOEXEC, 0) };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // SAFETY: fd 由成功 socket 调用新建，唯一所有权立刻转移到 RAII owner。
+        let socket = unsafe { std::os::unix::net::UnixDatagram::from_raw_fd(fd) };
+        let family: u16 = 1;
+        // SAFETY: 只传 sockaddr_un 的有效 family 字段；长度 2 明确请求 Linux autobind。
+        if unsafe { raw::bind(socket.as_raw_fd(), (&raw const family).cast(), 2) } < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(socket)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        Err(io::ErrorKind::Unsupported.into())
+    }
+}
+
 #[cfg(all(test, not(target_os = "linux")))]
 mod host_tests {
     use std::{

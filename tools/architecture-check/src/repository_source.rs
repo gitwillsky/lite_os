@@ -13,6 +13,10 @@ struct SourceDomain {
 
 const SOURCE_DOMAINS: &[SourceDomain] = &[
     SourceDomain {
+        root: "task-observer-protocol/src",
+        binary_crate: false,
+    },
+    SourceDomain {
         root: "kernel/src",
         binary_crate: true,
     },

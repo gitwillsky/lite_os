@@ -1044,6 +1044,7 @@ kernel/src/object/task.rs :: pub (crate) impl Process :: fn root_vmar (& self) -
 kernel/src/object/task.rs :: pub (crate) impl Process :: fn runtime (& self) -> crate :: thread :: Runtime
 kernel/src/object/task.rs :: pub (crate) impl Process :: fn set_name (& self , name : & [u8])
 kernel/src/object/task.rs :: pub (crate) impl Process :: fn space (& self) -> & Arc < AddressSpace >
+kernel/src/object/task.rs :: pub (crate) impl Process :: fn stats (& self) -> Result < native_abi :: TaskStats , Status >
 kernel/src/object/task.rs :: pub (crate) impl Process :: fn terminate (& self , code : Option < i64 >)
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn bind_restricted_state (& self , vmo : Arc < Vmo >)
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn create (process : & Arc < Process > , name : & [u8]) -> Result < Arc < Self > , Status >
@@ -1590,7 +1591,6 @@ kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn resolve_ob
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn token (& self , view : ExecutionView) -> AddressSpaceToken
 kernel/src/vm/address_space.rs :: pub (crate) impl Vmar :: fn allocate (& self , placement : Placement , size : usize , permissions : PagePermissions ,) -> Result < Arc < Vmar > , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl Vmar :: fn destroy (& self) -> Result < () , VmError >
-kernel/src/vm/address_space.rs :: pub (crate) impl Vmar :: fn info (& self) -> VmarInfo
 kernel/src/vm/address_space.rs :: pub (crate) impl Vmar :: fn koid (& self) -> u64
 kernel/src/vm/address_space.rs :: pub (crate) impl Vmar :: fn map (& self , vmo : & Arc < Vmo > , vmo_offset : u64 , size : usize , options : MapOptions ,) -> Result < usize , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl Vmar :: fn protect (& self , address : usize , size : usize , permissions : PagePermissions ,) -> Result < () , VmError >
@@ -1602,6 +1602,8 @@ kernel/src/vm/address_space.rs :: pub (crate) struct Vmar
 kernel/src/vm/address_space.rs :: pub (crate) struct VmarInfo
 kernel/src/vm/address_space.rs :: pub (super) impl AddressSpace :: fn zap_range (& self , range : Range < usize > , mode : ZapMode) -> Result < () , VmError >
 kernel/src/vm/address_space.rs :: pub (super) impl Mapping :: fn zap_vmo_pages (& self , pages : Range < usize > , mode : ZapMode) -> Result < () , VmError >
+kernel/src/vm/address_space/observation.rs :: pub (crate) impl AddressSpace :: fn memory_stats (& self) -> Result < (u64 , u64) , VmError >
+kernel/src/vm/address_space/observation.rs :: pub (crate) impl Vmar :: fn info (& self) -> VmarInfo
 kernel/src/vm/device_space.rs :: pub (crate) impl DeviceAddressSpace :: fn create () -> Result < Self , () >
 kernel/src/vm/device_space.rs :: pub (crate) impl DeviceAddressSpace :: fn map (& mut self , first : usize , pages : & [PhysicalPageNumber] , writable : bool ,) -> Result < () , Retired >
 kernel/src/vm/device_space.rs :: pub (crate) impl DeviceAddressSpace :: fn root (& self) -> PhysicalPageNumber
@@ -1736,7 +1738,6 @@ kernel/src/vm/vmo.rs :: pub (crate) enum ChildKind
 kernel/src/vm/vmo.rs :: pub (crate) enum FaultSource
 kernel/src/vm/vmo.rs :: pub (crate) enum RangeOp
 kernel/src/vm/vmo.rs :: pub (crate) impl PinnedRange :: fn pages (& self) -> & [PhysicalPageNumber]
-kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn committed_bytes (& self) -> Result < u64 , VmError >
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn create (size : u64 , options : VmoOptions) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn create_child (self : & Arc < Self > , offset : u64 , size : u64 , kind : ChildKind ,) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn create_contiguous (size : u64) -> Result < Arc < Self > , VmError >
@@ -1770,6 +1771,8 @@ kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn supply_pages (self : & 
 kernel/src/vm/vmo/pager.rs :: pub (super) impl Vmo :: fn request_page (& self , index : usize) -> Result < Arc < PageRequestCompletion > , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (super) impl Vmo :: fn wait_for_page (& self , request : & PageRequestCompletion) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (super) struct PageRequestCompletion
+kernel/src/vm/vmo/residency.rs :: pub (crate) impl Vmo :: fn committed_bytes (& self) -> Result < u64 , VmError >
+kernel/src/vm/vmo/residency.rs :: pub (crate) impl Vmo :: fn resident_pages (self : & Arc < Self > , first : usize , pages : usize ,) -> Result < usize , VmError >
 system/devmgr/src/boot_screen.rs :: pub (crate) impl BootScreen < 'a > :: fn advance (& mut self , milestone : Milestone)
 system/devmgr/src/boot_screen.rs :: pub (crate) impl BootScreen < 'a > :: fn start (framebuffer : Option < & 'a dyn BootFramebuffer > , scene : & 'static [u8] ,) -> Self
 system/devmgr/src/boot_screen.rs :: pub (crate) struct BootScreen < 'a >
@@ -8167,8 +8170,11 @@ system/linuxd/src/system.rs :: pub (crate) fn online_cpu_mask () -> usize
 system/linuxd/src/system.rs :: pub (crate) fn previous_panic () -> Option < & 'static [u8] >
 system/linuxd/src/system.rs :: pub (crate) fn reset (kind : ResetKind) -> Result < () , crate :: platform :: ResetError >
 system/linuxd/src/system.rs :: pub (crate) fn time_counter_frequency () -> u64
+system/linuxd/src/system.rs :: pub (crate) mod task_observer
 system/linuxd/src/system.rs :: pub (crate) use crate :: arch :: user :: SignalActionBytes
 system/linuxd/src/system.rs :: pub (crate) use crate :: platform :: ResetKind
+system/linuxd/src/system/task_observer.rs :: pub (crate) fn start (observers : [Process ; launch_protocol :: linuxd :: OBSERVER_COUNT])
+system/linuxd/src/system/task_observer.rs :: pub (crate) fn take (startup : & mut Startup) -> [Process ; launch_protocol :: linuxd :: OBSERVER_COUNT]
 system/linuxd/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " ELF header、program header 或 script interpreter line 不满足契约。"] InvalidExecutable
 system/linuxd/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " VFS pathname 解析或 executable source 读取失败。"] FileSystem (FileSystemError)
 system/linuxd/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " script interpreter rewrite 超过 Linux 固定上限。"] InterpreterLoop

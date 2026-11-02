@@ -184,6 +184,10 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   异步帧尺寸可落后于当前几何，Canvas 在同一绘制层采样旧帧，窗口配置与控件重绘无需等待新尺寸渲染。
   `fullscreen(window, on)` 只编码标准 `xdg_toplevel.set_fullscreen/unset_fullscreen`，结果由 Configure 事件通知。
   Benchmark 决策：每帧一次 O(像素数) 复制与一次 blit，与窗口重绘同量级；沿用现有 canvas 基线，不新增阈值。
+- `combo_dropped_height(window, id, height)` 追加到 ABI 表尾，对应对话框模板 COMBOBOX 的 cy：展开总高度减去文字区为列表高度，
+  按整行取可见项数，项目更少时收缩；0 恢复默认最多 16 行，负数或非组合框返回 INVALID。下拉列表画在本窗口表面内，
+  打开时在窗口范围内定位，下方放不下且上方更宽裕时向上展开；仍放不下时减少可见行而不越出窗口。
+  调用者：映射网络驱动器向导（netplwiz 模板 106）。Benchmark 决策：只在打开列表时做一次整数运算，不新增基线。
 
 ## 窗口动画与合成几何
 

@@ -205,12 +205,12 @@ impl Tree {
     }
     fn edit_pointer(&mut self, id: u64, probe: &classic_ui::Painter<'_>, extend: bool) {
         let node = self.nodes.get_mut(&id).expect("edit target");
-        let edit = node.edit.as_mut().expect("edit control");
         let margins = if node.kind == widget::COMBO {
-            super::widgets::Node::combo_margins()
+            node.combo_margins()
         } else {
             (0, 0)
         };
+        let edit = node.edit.as_mut().expect("edit control");
         let position = if node.kind == widget::EDIT && node.state & state::BORDERLESS != 0 {
             probe.edit_hit_borderless(node.rect, edit, self.pointer.0)
         } else {
