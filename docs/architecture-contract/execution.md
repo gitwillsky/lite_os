@@ -42,6 +42,9 @@
 3. `disable_for_transfer` 之后只允许非阻塞 snapshot、ASID activation 和硬件安装；所有 Arc 必须在 noreturn 前显式释放。
 
 RISC-V supervisor trap-context mapping 退休必须完成 translation fence；AArch64 context 随 kernel stack owner 退休。
+Boot、secondary 与每个原生线程的 kernel stack 统一为 `config::KERNEL_STACK_SIZE`（32 KiB，另有 guard page），
+创建时整栈提交，是每线程（含每个 Linux 线程的承载线程）的固定内存。尺寸依据实测峰值（musl 门禁 18648 字节，
+含 AArch64 顶部上下文保留）取约 1.7 倍余量；新增深调用路径或大栈帧时须重新测量，不得在 kernel stack 放大块 staging。
 illegal-instruction 分类与最终提交使用短 context transaction，读取用户指令在两者之间，禁止持有 context claim 获取可阻塞的 VM 锁。
 
 AArch64 lower-EL entry 必须在进入 Rust 前以 TTBR1 kernel root 替换 TTBR0 并执行 ISB；ASID 0 保留，kernel root 的低用户地址范围为空。

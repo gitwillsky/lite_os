@@ -606,7 +606,7 @@ kernel/src/bootstrap/elf.rs :: enum ElfError :: # [doc = " 映射或复制失败
 kernel/src/bootstrap/elf.rs :: pub (super) enum ElfError
 kernel/src/bootstrap/elf.rs :: pub (super) fn load (image : & [u8] , vmar : & Arc < Vmar >) -> Result < usize , ElfError >
 kernel/src/bootstrap/mod.rs :: pub (crate) fn start_root_server (command_line : & [u8])
-kernel/src/config.rs :: pub (crate) const KERNEL_STACK_SIZE : usize = 8192 * 16
+kernel/src/config.rs :: pub (crate) const KERNEL_STACK_SIZE : usize = 32 * 1024
 kernel/src/crash/backtrace.rs :: pub (super) const MAX_FRAMES : usize = 32
 kernel/src/crash/backtrace.rs :: pub (super) fn capture (frame : usize , frames : & mut [usize ; MAX_FRAMES]) -> usize
 kernel/src/crash/mod.rs :: pub (crate) fn previous_dump () -> Option < & 'static [u8] >
