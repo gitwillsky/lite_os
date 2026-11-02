@@ -1,0 +1,8 @@
+[package]
+name = "netcfg-protocol"
+version = "0.1.0"
+edition = "2024"
+description = "网络设置与 DHCP 租约的编码；netcfg、dhcp-client、linuxd 适配层与控制面板共用"
+
+[lints]
+workspace = true

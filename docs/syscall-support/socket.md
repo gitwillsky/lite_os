@@ -37,6 +37,9 @@
 
 IPv6、多网卡、其他 raw protocol、multicast、完整 rtnetlink/veth/设备迁移、userspace netlink publish 与高级 TCP 扩展不作为本轮新增要求。已接入的 NEWNET 保留已声明范围；
 
+原生 netstack 可独立重启（Linux 没有对应情形）：重启前创建的 AF_INET/AF_PACKET socket 之后的操作以 `ENETDOWN` 失败，
+已建立的 TCP 连接不保留；新 socket 进入重建后的网络域。非初始网络域重建后与新建的 NEWNET 一样从 DOWN 回环开始。
+
 IPv4 不开放分片/重组；UDP/raw 发送在真实出口 MTU 校验后入队，超长返回 EMSGSIZE。RAW ICMP(1) 与 IPPROTO_RAW(255) 使用实际 smoltcp 队列；后者默认 IP_HDRINCL、只发送。创建仍要求 CAP_NET_RAW，其他 raw protocol 返回 EPROTONOSUPPORT。
 IP_HDRINCL 支持基础 20-byte 未分片 IPv4 header：总长度和 checksum 总是重算，source/ID 仅在零值时填充，保留用户 TTL/TOS/DF/protocol。IP options、分片和与 sockaddr 不同的 header destination 返回 EOPNOTSUPP；不接受后丢弃。
 TCP/UDP/raw 当前使用固定有界协议缓冲，INET 的 SO_SNDBUF/SO_RCVBUF 调优明确返回 EOPNOTSUPP，不伪造 getter 或设置成功。

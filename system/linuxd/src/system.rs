@@ -1,3 +1,5 @@
+pub(crate) mod endpoint;
+pub(crate) mod network_settings;
 pub(crate) mod task_observer;
 
 pub(crate) use crate::arch::user::SignalActionBytes;

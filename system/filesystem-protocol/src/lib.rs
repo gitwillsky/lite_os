@@ -8,6 +8,8 @@
 //! 3. 挂载控制目前只有“转为可写”（只读挂载重新挂载为读写）；卸载经 FUSE `DESTROY` 完成。
 //! 4. fshost 拥有块设备与文件系统服务：经块设备清单协议（[`BlocksClient`]）交出块设备的全盘范围连接，
 //!    并把挂载协议原样转发给 ext4d（[`MountClient::serve_proxy`]），使用者看到的线格式不变。
+//! 5. fshost 在原生数据卷上为每个原生服务派生私有目录（[`StorageAdmin`]，只供根服务），服务经私有目录协议
+//!    （[`Storage`]）整文件读写自己的持久状态（Fuchsia 的 `storage` 能力）。
 
 extern crate alloc;
 
@@ -283,5 +285,173 @@ impl RemoteMount {
     /// 服务报告的失败。
     pub fn make_writable(&self) -> Result<(), Status> {
         call(&self.channel, &Writer::request(MAKE_WRITABLE), Vec::new()).map(|_| ())
+    }
+}
+
+const STORAGE_OPEN: u32 = 1;
+const STORAGE_READ: u32 = 1;
+const STORAGE_WRITE: u32 = 2;
+/// 私有目录中单个文件的上限：整文件随一条消息传递。
+pub const STORAGE_FILE_MAX: usize = 48 * 1024;
+/// 文件名上限；名称不得含 `/` 或 NUL，也不得是 `.` 或 `..`。
+pub const STORAGE_NAME_MAX: usize = 64;
+
+/// 校验私有目录中的文件名。
+///
+/// # Errors
+///
+/// 名称为空、过长、含路径分隔符或 NUL、或为 `.`/`..`。
+pub fn storage_name(name: &[u8]) -> Result<&[u8], Status> {
+    if name.is_empty()
+        || name.len() > STORAGE_NAME_MAX
+        || name.contains(&b'/')
+        || name.contains(&0)
+        || name == b"."
+        || name == b".."
+    {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    Ok(name)
+}
+
+/// 存储管理的服务端：按服务名派生私有目录连接。
+pub type StorageOpener = dyn Fn(&[u8]) -> Result<Channel, Status> + Send + Sync;
+
+/// 服务存储管理协议。
+///
+/// # Errors
+///
+/// 服务线程或闭包分配失败。
+pub fn serve_storage_admin(channel: Channel, open: Arc<StorageOpener>) -> Result<(), Status> {
+    serve(
+        channel,
+        1,
+        b"storage-admin",
+        Arc::try_new(
+            move |ordinal: u32, request: &mut Reader<'_>, _: Vec<Handle>, _: &mut Writer| {
+                if ordinal != STORAGE_OPEN {
+                    return Err(native_abi::ERR_NOT_SUPPORTED);
+                }
+                Ok(alloc::vec![
+                    open(storage_name(request.bytes()?)?)?.into_handle()
+                ])
+            },
+        )
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+    )
+}
+
+/// 使用者端（根服务）的存储管理。
+pub struct StorageAdmin(Channel);
+
+impl StorageAdmin {
+    pub fn new(channel: Channel) -> Self {
+        Self(channel)
+    }
+
+    /// 服务 `name` 的私有目录连接；目录不存在时创建。
+    ///
+    /// # Errors
+    ///
+    /// 名称非法、数据卷不可用或服务已终止。
+    pub fn open(&self, name: &[u8]) -> Result<Channel, Status> {
+        let mut request = Writer::request(STORAGE_OPEN);
+        request.bytes(name);
+        let mut reply = call(&self.0, &request, Vec::new())?;
+        Ok(Channel::from_handle(take_handle(&mut reply.handles, 0)?))
+    }
+}
+
+/// 服务端：一个私有目录。
+pub trait StorageService: Send + Sync {
+    /// 读取整个文件；不存在返回 `None`。
+    ///
+    /// # Errors
+    ///
+    /// 文件超过 [`STORAGE_FILE_MAX`] 或 I/O 失败。
+    fn read(&self, name: &[u8]) -> Result<Option<Vec<u8>>, Status>;
+
+    /// 原子替换整个文件：读者只会看到旧内容或完整的新内容，返回前内容已持久化。
+    ///
+    /// # Errors
+    ///
+    /// 空间不足或 I/O 失败。
+    fn write(&self, name: &[u8], bytes: &[u8]) -> Result<(), Status>;
+}
+
+/// 服务私有目录协议。
+///
+/// # Errors
+///
+/// 服务线程或闭包分配失败。
+pub fn serve_storage(channel: Channel, service: Arc<dyn StorageService>) -> Result<(), Status> {
+    serve(
+        channel,
+        1,
+        b"storage",
+        Arc::try_new(
+            move |ordinal: u32, request: &mut Reader<'_>, _: Vec<Handle>, reply: &mut Writer| {
+                let name = storage_name(request.bytes()?)?;
+                match ordinal {
+                    STORAGE_READ => match service.read(name)? {
+                        Some(bytes) => {
+                            reply.bool(true).bytes(&bytes);
+                        }
+                        None => {
+                            reply.bool(false);
+                        }
+                    },
+                    STORAGE_WRITE => {
+                        let bytes = request.bytes()?;
+                        if bytes.len() > STORAGE_FILE_MAX {
+                            return Err(native_abi::ERR_OUT_OF_RANGE);
+                        }
+                        service.write(name, bytes)?;
+                    }
+                    _ => return Err(native_abi::ERR_NOT_SUPPORTED),
+                }
+                Ok(Vec::new())
+            },
+        )
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+    )
+}
+
+/// 使用者端的私有目录。
+pub struct Storage(Channel);
+
+impl Storage {
+    pub fn new(channel: Channel) -> Self {
+        Self(channel)
+    }
+
+    /// 读取整个文件；不存在返回 `None`。
+    ///
+    /// # Errors
+    ///
+    /// 名称非法、I/O 失败或服务已终止。
+    pub fn read(&self, name: &[u8]) -> Result<Option<Vec<u8>>, Status> {
+        let mut request = Writer::request(STORAGE_READ);
+        request.bytes(storage_name(name)?);
+        let reply = call(&self.0, &request, Vec::new())?;
+        let mut reader = reply.reader();
+        if !reader.bool()? {
+            return Ok(None);
+        }
+        Ok(Some(reader.bytes()?.to_vec()))
+    }
+
+    /// 原子替换整个文件，返回前已持久化。
+    ///
+    /// # Errors
+    ///
+    /// 名称非法、文件过大、空间不足、I/O 失败或服务已终止。
+    pub fn write(&self, name: &[u8], bytes: &[u8]) -> Result<(), Status> {
+        if bytes.len() > STORAGE_FILE_MAX {
+            return Err(native_abi::ERR_OUT_OF_RANGE);
+        }
+        let mut request = Writer::request(STORAGE_WRITE);
+        request.bytes(storage_name(name)?).bytes(bytes);
+        call(&self.0, &request, Vec::new()).map(drop)
     }
 }

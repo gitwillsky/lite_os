@@ -65,7 +65,6 @@ FORBIDDEN_BOOT_MARKERS = (
     "init: can't log to /dev/tty5",
     "unsupported syscall_id:",
     "Please press Enter to activate this console.",
-    "udhcpc:",
     "LITEOS_DNS_FAILURE",
     "\ufffd",
 )
@@ -174,7 +173,6 @@ BUSYBOX_LINKS = (
     "uniq",
     "uname",
     "uptime",
-    "udhcpc",
     "unxz",
     "unzip",
     "wc",

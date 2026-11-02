@@ -3,10 +3,11 @@
 //! 网络服务（netstack）与使用者之间的协议。
 //!
 //! 1. 控制 channel：使用者经根服务的服务目录连接（`service_directory::NETWORK`），为每个网络域创建一条域
-//!    channel（[`NetworkService::create_namespace`]）；关闭域 channel 即退休该域。网卡由服务自己从设备目录
-//!    打开，不经使用者转交。
-//! 2. 域 channel：创建 socket、查询接口与路由快照、配置接口与路由（[`NamespaceService`]）。
-//! 3. socket channel：每个 socket 一条（[`InetSocketService`]、[`PacketSocketService`]）；使用者的最后一次
+//!    channel（[`NetworkService::create_namespace`]）；关闭域 channel 即退休该域。
+//! 2. 安装 channel（`service_directory::NETWORK_INSTALLER`，只路由给 netcfg）：把网卡会话安装为默认网络的接口
+//!    （[`InstallerService::install_device`]）。
+//! 3. 域 channel：创建 socket、查询接口与路由快照、配置接口与路由（[`NamespaceService`]）。
+//! 4. socket channel：每个 socket 一条（[`InetSocketService`]、[`PacketSocketService`]）；使用者的最后一次
 //!    文件关闭发出 CLOSE，关闭 channel 同样关闭 socket（使用者终止时）；
 //!    服务端在就绪状态可能变化时置位随 socket 交出的 Event 的 `USER_0`，使用者据此重新查询
 //!    [`SocketPollState`]。全部 socket 操作都不阻塞：等待、超时与信号中断属于使用者。
@@ -36,6 +37,9 @@ pub const MAX_IPV4_UDP_BYTES: usize = 65_507;
 /// 一次 send/receive 传递的最大字节数：容纳最大 IPv4 datagram 与以太网帧；流式 socket 更大的读写
 /// 由使用者按部分完成的语义分多次进行。
 pub const TRANSFER_LIMIT: usize = 256 * 1024;
+
+mod installer;
+pub use installer::{InstallerService, NetworkInstaller, dispatch_installer};
 
 mod ordinal {
     pub(super) const CREATE_NAMESPACE: u32 = 2;

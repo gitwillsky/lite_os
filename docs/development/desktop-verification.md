@@ -61,8 +61,9 @@ Terminal=true 桌面条目当前不显示；终端应用的使用与待验收范
 网络：控制面板、开始菜单“设置”与“网上邻居”属性打开“网络和拨号连接”文件夹，按 `/sys/class/net` 列出“本地连接”。
   右键为 netshell 的禁用/启用、状态、属性；双击打开“本地连接 状态”（只有“关闭”，内含“属性”“禁用”）。
   “本地连接 属性”（确定/取消）列出 Internet 协议 (TCP/IP)，其“属性”打开 TCP/IP 对话框：自动获得或指定 IP、掩码、网关与 DNS。
-  设置写入 `/etc/network/interfaces`（interfaces(5) 子集），network-service 重新配置：DHCP 由受监督的 udhcpc 完成，
-  静态地址用 ifconfig/route，DNS 写 `/etc/resolv.conf`，禁用即去掉 auto 并关闭接口。重命名、快捷方式与“高级”TCP/IP 设置禁用。
+  设置经 `/dev/network-settings`（需要 netdev 组）交给原生 netcfg：它持久化设置并重新配置接口，DHCP 由原生 dhcp-client
+  完成，resolvd 把生效的 DNS 写入 `/etc/resolv.conf`，禁用即关闭接口。重命名、快捷方式与“高级”TCP/IP 设置禁用。
+  旧开发镜像的 `/etc/group` 属于用户数据、不被同步覆盖：非 root 用户在 reset-rootfs 之后才有 netdev/adm 组。
 网络与设备管理器、记事本使用从原版 `netshell.dll`/`devmgr.dll`/`notepad.exe` 提取的专用图标，随受 Git 管理的资源集安装，来源见[资源清单](../design/classic-desktop/assets.md)。
 开始菜单程序项的图标来自各桌面条目的 `Icon=`，缺素材时退回通用图标。
 文件关联：桌面条目的 `MimeType=` 与 `Exec` 的 `%f` 决定谁打开文件，扩展名到类型的映射在 `desktop-entry`；`.wav` 交给媒体播放机 `/bin/mplay`，常见文本扩展名交给记事本 `/bin/notepad`，资源管理器与桌面图标共用这套查找。

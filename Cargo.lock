@@ -118,6 +118,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "dhcp-client"
+version = "0.1.0"
+dependencies = [
+ "launch-protocol",
+ "native-runtime",
+ "netcfg-protocol",
+ "network-protocol",
+ "service-directory",
+ "service-rpc",
+ "smoltcp",
+]
+
+[[package]]
 name = "driver-host"
 version = "0.1.0"
 dependencies = [
@@ -266,8 +279,10 @@ dependencies = [
  "launch-protocol",
  "linux-abi",
  "native-runtime",
+ "netcfg-protocol",
  "network-protocol",
  "service-directory",
+ "service-rpc",
  "service-sync",
  "task-observer-protocol",
 ]
@@ -301,6 +316,24 @@ version = "0.1.0"
 dependencies = [
  "native-abi",
 ]
+
+[[package]]
+name = "netcfg"
+version = "0.1.0"
+dependencies = [
+ "device-protocol",
+ "filesystem-protocol",
+ "launch-protocol",
+ "native-runtime",
+ "netcfg-protocol",
+ "network-protocol",
+ "service-directory",
+ "service-rpc",
+]
+
+[[package]]
+name = "netcfg-protocol"
+version = "0.1.0"
 
 [[package]]
 name = "netstack"
@@ -398,6 +431,7 @@ name = "root-server"
 version = "0.1.0"
 dependencies = [
  "device-protocol",
+ "filesystem-protocol",
  "launch-protocol",
  "native-runtime",
  "service-directory",

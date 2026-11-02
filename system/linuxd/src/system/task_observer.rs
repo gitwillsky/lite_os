@@ -3,16 +3,8 @@
 //! 1. 根服务交付根 Job 的 `INSPECT | ENUMERATE` 句柄；每次请求遍历任务树，新增服务自动可见，
 //!    不保留统计副本。
 //! 2. 端点是 [`task_observer_protocol::PATH`] 上的 pathname socket，属主 root、组
-//!    [`task_observer_protocol::GROUP`]、权限 0660；授权由 VFS 的 socket inode 写权限检查完成。
-use crate::{
-    fs::{AccessIdentity, OwnerModeChange, vfs},
-    ipc::{Pipe, PipeDirection, ReceiveBuffer},
-    net::{
-        self, PreparedSocket, Socket, SocketDomain, SocketRequest, SocketSendDestination,
-        SocketType, UnixAddress, UnixCredentials, UnixSendCredentials,
-    },
-    task::{self, PollWaitKey},
-};
+//!    [`task_observer_protocol::GROUP`]、权限 0660（发布与授权见 [`super::endpoint`]）。
+use crate::{net::Socket, task};
 use alloc::{boxed::Box, sync::Arc, vec, vec::Vec};
 use native_runtime::native_abi::{HandleBasic, info, rights};
 use native_runtime::{Job, Process, Startup};
@@ -23,94 +15,28 @@ pub(crate) fn take(startup: &mut Startup) -> Job {
     Job::from_handle(startup.take(launch_protocol::linuxd::ROOT_JOB_OBSERVER))
 }
 
-/// 在 VFS 上发布端点并启动服务线程；必须在根文件系统与 devtmpfs 挂载之后、init 发布之前调用，
-/// 这样任何 Linux 进程都看不到权限尚未收紧的端点，也无法抢先占用路径。
+/// 发布端点并启动服务线程；必须在根文件系统与 devtmpfs 挂载之后、init 发布之前调用（见
+/// [`super::endpoint`]）。
 ///
 /// # Panics
 ///
-/// socket、路径或线程创建失败时 fail-stop：端点缺失会让任务管理器静默丢失系统服务。
+/// 端点或线程创建失败时 fail-stop：端点缺失会让任务管理器静默丢失系统服务。
 pub(crate) fn start(observer: Job) {
-    let notify = Pipe::notification_pair().expect("task observer notifications");
-    let socket = PreparedSocket::try_new(net::initial_net())
-        .expect("task observer socket allocation")
-        .create(
-            SocketRequest::decode(SocketDomain::Unix, SocketType::Datagram, 0)
-                .expect("task observer transport"),
-            notify,
-        )
-        .expect("task observer socket");
-    let root = AccessIdentity::root();
-    let origin = vfs().initial_origin().expect("task observer lookup origin");
-    let path = task_observer_protocol::PATH;
-    // 1. 以 root:root 0660 创建：在改组之前只有 root 能连接，不存在过宽的窗口。
-    let status = crate::syscall::bind_unix_pathname(
-        &socket,
-        UnixAddress::new(path).expect("task observer address"),
-        origin.clone(),
-        0o660,
-        &root,
-    );
-    assert!(status == 0, "task observer bind: {status}");
-    // 2. 再把组交给监视组；组内成员由 socket inode 的组写权限放行。
-    vfs()
-        .open_at(origin, path, &root)
-        .and_then(|inode| {
-            inode.change_owner_mode(OwnerModeChange::chown(
-                root,
-                None,
-                Some(task_observer_protocol::GROUP),
-            ))
-        })
-        .expect("task observer ownership");
+    let socket =
+        super::endpoint::publish(task_observer_protocol::PATH, task_observer_protocol::GROUP);
     // OWNER: 工作线程独占根 Job 观察句柄与 socket；仅在请求到来时查询真实 owner，不保留统计副本。
     task::spawn_kernel_thread("task-observer", Box::new(move || serve(socket, observer)))
         .expect("task observer worker");
 }
 
 fn serve(socket: Arc<Socket>, observer: Job) {
-    let credentials = UnixSendCredentials {
-        sender: UnixCredentials {
-            pid: task::current_task()
-                .expect("task observer execution")
-                .tid_identity(),
-            uid: 0,
-            gid: 0,
-        },
-        claimed: None,
-    };
     loop {
         let mut storage = [0; 8];
-        let mut buffer = ReceiveBuffer::from_slice(&mut storage);
-        match socket.receive_message(&mut buffer, false, false, true) {
-            Ok(message) if message.full_length == QUERY.len() && storage == *QUERY => {
-                let Some(source) = message.source else {
-                    continue;
-                };
-                let reply = snapshot(&observer);
-                // 不等待缓慢或已关闭的客户端；一次请求最多一个快照，收发均受现有 socket 队列限额约束。
-                let _ = socket.send_to_with_ancillary(
-                    &reply,
-                    Some(SocketSendDestination::Address(source)),
-                    &mut None,
-                    &credentials,
-                    None,
-                    false,
-                );
+        match super::endpoint::receive(&socket, &mut storage) {
+            Ok((_, full_length, source)) if full_length == QUERY.len() && storage == *QUERY => {
+                super::endpoint::reply(&socket, source, &snapshot(&observer));
             }
             Ok(_) => {}
-            Err(net::SocketError::Again) => {
-                let (sources, _guard) = socket.wait_sources(1);
-                let pipes: Vec<_> = sources
-                    .into_iter()
-                    .flatten()
-                    .map(|source| source.into_notification())
-                    .collect();
-                let keys = pipes
-                    .iter()
-                    .map(|pipe| PollWaitKey::pipe(pipe, PipeDirection::Read, 1, false, None))
-                    .collect();
-                task::wait_for_poll(keys, None, || socket.poll_state().readable);
-            }
             Err(error) => {
                 error!("task observer receive: {error:?}");
                 return;

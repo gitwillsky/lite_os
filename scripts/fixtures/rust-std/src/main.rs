@@ -146,7 +146,7 @@ fn ipv4_host(port: u16) {
         }
     };
     stream
-        .write_all(b"GET /user/base/udhcpc.script HTTP/1.0\r\nHost: liteos-std-gate\r\n\r\n")
+        .write_all(b"GET /system/netcfg/default.conf HTTP/1.0\r\nHost: liteos-std-gate\r\n\r\n")
         .expect("write std IPv4 request");
     let mut response = Vec::new();
     stream
@@ -154,8 +154,8 @@ fn ipv4_host(port: u16) {
         .expect("read std IPv4 response");
     assert!(
         response
-            .windows(b"# @description BusyBox udhcpc".len())
-            .any(|window| window == b"# @description BusyBox udhcpc")
+            .windows(b"iface * inet dhcp".len())
+            .any(|window| window == b"iface * inet dhcp")
     );
     println!("LITEOS_RUST_STD_IPV4_61");
 }

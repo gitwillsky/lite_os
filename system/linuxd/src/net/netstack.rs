@@ -47,7 +47,9 @@ pub(crate) fn init() {
     let initial = client
         .create_namespace(true)
         .expect("initial network namespace");
-    super::net_namespace::initial_net_ref().install_protocol(initial);
+    super::net_namespace::initial_net_ref()
+        .install_protocol(initial)
+        .expect("initial network namespace installation");
     *CONTROL.lock() = Some(client.clone());
     let thread = native_runtime::thread::spawn(b"netstack-monitor", move || monitor(client))
         .expect("netstack monitor thread");
@@ -74,13 +76,29 @@ fn monitor(mut client: Arc<NetworkClient>) {
 
 fn rebuild(client: &NetworkClient) {
     let initial = super::net_namespace::initial_net_ref();
+    // 重建失败的域保留已失效的旧协议实例，其中的 socket 操作以 ENETDOWN 失败，不影响其他域。
     match client.create_namespace(true) {
-        Ok(protocol) => initial.install_protocol(protocol),
+        Ok(protocol) => {
+            if let Err(error) = initial.install_protocol(protocol) {
+                error!("initial network namespace rebuild failed: {error:?}");
+            }
+        }
         Err(status) => error!("initial network namespace rebuild failed: {status}"),
     }
-    for namespace in super::net_namespace::live_namespaces() {
+    let namespaces = match super::net_namespace::live_namespaces() {
+        Ok(namespaces) => namespaces,
+        Err(error) => {
+            error!("network namespace rebuild failed: {error:?}");
+            return;
+        }
+    };
+    for namespace in namespaces {
         match client.create_namespace(false) {
-            Ok(protocol) => namespace.install_protocol(protocol),
+            Ok(protocol) => {
+                if let Err(error) = namespace.install_protocol(protocol) {
+                    error!("network namespace rebuild failed: {error:?}");
+                }
+            }
             Err(status) => error!("network namespace rebuild failed: {status}"),
         }
     }

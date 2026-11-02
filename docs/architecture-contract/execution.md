@@ -136,10 +136,10 @@ chunk 基址按 max(page, block) 对齐；较大对齐的 prefix/suffix 在发�
 - root-server 交给 linuxd 根 Job 的 `INSPECT | ENUMERATE | TRANSFER` 句柄（对应 Fuchsia `RootJobForInspect`），
   没有 MANAGE、READ、WRITE。linuxd 每次请求遍历任务树，新增服务自动可见；linuxd 所在 Job 中除 linuxd 自身外的成员是
   Linux 进程或映像共享进程，前者由 /proc 呈现，二者都不进入快照。不向应用传递原生句柄。
-- `task-observer-protocol` 拥有版本化查询/回复格式与端点约定。linuxd 的 `system::task_observer` 在 devtmpfs 挂载后、
-  init 发布前创建 `/dev/task-observer` pathname datagram socket（root:adm 0660，先以 root:root 0660 创建再改组，
-  不存在过宽窗口）；连接与发送由 VFS socket inode 写权限按 fsuid 与附加组授权，组外进程得到 `EACCES`。
-  端点放在 linuxd 自挂的 devtmpfs 上，因为 `/run` 由 init 脚本稍后挂载。只返回服务名称/运行状态/汇总资源量，
+- `task-observer-protocol` 拥有版本化查询/回复格式与端点约定。linuxd 的 `system::task_observer` 经 `system::endpoint`
+  在 devtmpfs 挂载后、init 发布前发布 `/dev/task-observer` socket 节点（root:adm 0660）；devtmpfs 对 Linux 只读，
+  节点从发布起就是最终权限，Linux 进程无法抢先占用路径。连接与发送由 VFS socket inode 写权限按 fsuid 与附加组授权，
+  组外进程得到 `EACCES`。端点放在 linuxd 自有的 devtmpfs 上（同 Linux `/dev/log`），因为 `/run` 由 init 脚本稍后挂载。只返回服务名称/运行状态/汇总资源量，
   不返回地址、寄存器、凭据、映射明细或管理 capability。请求不持久化客户端状态；socket 队列沿用现有配额，
   回复不能立即发送时丢弃，不阻塞其他客户端。快照受单个 datagram 上限约束（80 字节/记录），原生服务数量远低于该界。
 - 原生 KOID 与 Linux PID 分属不同身份空间。原生服务按自己的承载进程计费，Linux 应用及其 syscall 消耗归实际成员承载线程；

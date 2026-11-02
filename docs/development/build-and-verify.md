@@ -54,6 +54,9 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
 - musl、BusyBox、APK 和 terminal font 输入必须由脚本中的固定 URL、版本与摘要构建；musl、BusyBox 与 APK 都为所选架构生成或下载原生产物，不得静默消费另一架构 cache、系统副本或滚动 latest。
 - kernel 位于 `target/<kernel-target>/<profile>/kernel`；可重复 rootfs 基线位于 `target/rootfs/<arch>.img`，开发实例是 `fs-<arch>.img`，只由显式 reset 初始化且不能反向污染基线。musl、BusyBox、APK 与 runtime success cache 均带 architecture
   identity，不允许跨目标命中。
+- 原生数据卷（卷标 `liteos-data` 的 32 MiB ext4，保存 netcfg 等原生服务的私有设置）与 Linux 根盘分开：`run` 使用
+  `data-<arch>.img`，缺失时创建，reset-rootfs 不清除它；`run-gui` 使用 UTM 产物目录中的 `data.img`；门禁每次启动
+  附加一块新的空数据卷，不跨启动保留原生设置。fshost 按卷标识别它且不交给 Linux，它不改变 `vda`/`vdb` 命名。
 - rootfs 基线容量按发布文件总量推导，覆盖原树、APK 压缩包和原子替换峰值（最小 512 MiB）；APK 装配显式使用产品 `QEMU_MEMORY`（默认 2G），不能隐式消费 QEMU 的 128 MiB 默认值。
 - rootfs 基线把同一个 BusyBox `env` inode 发布到 `/bin/env` 与 `/usr/bin/env` 并验证权限/identity，
   保证 community 中 npm/pnpm 等 `#!/usr/bin/env node` 入口安装后可执行。
@@ -188,7 +191,7 @@ recipe 换代后从同一固定归档解包干净 generation，避免 VPATH 跳�
   手动清理使用相同锁，异常退出自动释放；未完整发布的新产物不会触发淘汰。
 - `make prune-cache-preview` 只列出待删除路径与已分配空间；`make prune-cache` 在各架构内
   保留最近两份并实际清理。不删除 Cargo 编译缓存、sysroot、`target/rootfs/` 当前基线、
-  `fs-*.img` 开发实例、UTM 配置或 `.local/` 输入与实验资料。
+  `fs-*.img`、`data-*.img` 开发实例、UTM 配置或 `.local/` 输入与实验资料。
 - `make clean` 是完整 Cargo 清理，会删除根 `target/` 中的其他派生产物；日常释放历史镜像空间
   使用定向清理入口。关闭 `CARGO_INCREMENTAL` 不会删除已有缓存，并会增加后续源码修改的重编译量。
 

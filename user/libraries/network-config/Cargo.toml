@@ -6,6 +6,7 @@ publish.workspace = true
 
 [dependencies]
 linux-uapi = { path = "../linux-uapi" }
+netcfg-protocol = { path = "../../../system/netcfg-protocol" }
 
 [lints]
 workspace = true

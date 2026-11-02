@@ -186,6 +186,42 @@ def recover_ext4_journal(image: Path) -> None:
         raise RuntimeError(f"journal recovery failed for {image}\n{tail}")
 
 
+# 原生数据卷：fshost 按卷标识别、只由原生服务使用（netcfg 等的私有目录），不交给 Linux。
+DATA_VOLUME_LABEL = "liteos-data"
+DATA_VOLUME_MIB = 32
+
+
+def create_data_volume(path: Path) -> None:
+    """原子创建空的原生数据卷镜像（固定 ext4 profile、卷标 ``liteos-data``）。
+
+    Args:
+        path: 目标镜像；已存在时被替换。
+
+    Raises:
+        RuntimeError: mke2fs 缺失或失败。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    config = path.with_name(f".{path.name}.{os.getpid()}.conf")
+    config.write_text(MKE2FS_CONFIG)
+    try:
+        temporary.unlink(missing_ok=True)
+        result = subprocess.run(
+            [str(find_mke2fs()), "-q", "-t", "ext4", "-J", "size=4", "-L", DATA_VOLUME_LABEL,
+             str(temporary), f"{DATA_VOLUME_MIB}M"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            env={**os.environ, "MKE2FS_CONFIG": str(config)},
+        )
+        if result.returncode != 0:
+            raise RuntimeError(f"mke2fs failed for data volume {path}\n{result.stdout}")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
+        config.unlink(missing_ok=True)
+
+
 def run_debugfs(image: Path, request: str, *, writable: bool = False) -> str:
     """执行一次 debugfs request，并把 stdout/stderr 统一为可诊断异常。"""
     command = [str(find_debugfs())]

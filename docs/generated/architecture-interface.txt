@@ -2386,7 +2386,7 @@ system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) impl VirtIODevice :: fn write_config_u8 (& self , offset : usize , value : u8 ,) -> Result < () , BusError >
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) struct VirtIODevice
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) struct VirtQueueAddresses
-system/driver-host/src/handles.rs :: pub (crate) fn directory () -> & 'static Channel
+system/driver-host/src/handles.rs :: pub (crate) fn directory () -> & 'static Directory
 system/driver-host/src/handles.rs :: pub (crate) fn install (startup : & mut Startup) -> Vmo
 system/driver-host/src/handles.rs :: pub (crate) fn resource () -> & 'static Resource
 system/driver-host/src/interrupt.rs :: enum InterruptError :: DeviceFailure
@@ -3364,6 +3364,7 @@ system/linuxd/src/devices/block/identity.rs :: pub (crate) impl PartUuid :: fn m
 system/linuxd/src/devices/block/identity.rs :: pub (crate) impl PartUuid :: fn render (& self) -> Text
 system/linuxd/src/devices/block/identity.rs :: pub (crate) impl Text :: fn as_bytes (& self) -> & [u8]
 system/linuxd/src/devices/block/identity.rs :: pub (crate) struct Text
+system/linuxd/src/devices/block/mod.rs :: pub (crate) fn connect_storage ()
 system/linuxd/src/devices/block/mod.rs :: pub (crate) fn device (index : usize) -> Option < Arc < dyn BlockDevice > >
 system/linuxd/src/devices/block/mod.rs :: pub (crate) fn register (device : Arc < dyn BlockDevice >) -> Result < usize , Arc < dyn BlockDevice > >
 system/linuxd/src/devices/block/mod.rs :: pub (crate) mod identity
@@ -4126,7 +4127,7 @@ system/linuxd/src/fs/block_node.rs :: pub (super) PartitionInfo :: start : u64
 system/linuxd/src/fs/block_node.rs :: pub (super) PartitionInfo :: uuid : Option < PartUuid >
 system/linuxd/src/fs/block_node.rs :: pub (super) PartitionInfo :: whole : Arc < BlockNode >
 system/linuxd/src/fs/block_node.rs :: pub (super) fn wrap_block_node (inode : Arc < dyn Inode >) -> Result < Arc < dyn Inode > , FileSystemError >
-system/linuxd/src/fs/block_node.rs :: pub (super) impl BlockNode :: fn new (number : DeviceNumber , device : Arc < dyn BlockDevice > , partition : Option < PartitionInfo > ,) -> Result < Arc < Self > , FileSystemError >
+system/linuxd/src/fs/block_node.rs :: pub (super) impl BlockNode :: fn new (number : DeviceNumber , device : Arc < dyn BlockDevice > , partition : Option < PartitionInfo > , name : Vec < u8 > ,) -> Result < Arc < Self > , FileSystemError >
 system/linuxd/src/fs/block_node.rs :: pub (super) impl BlockNode :: fn set_partitions (& self , partitions : Vec < crate :: devices :: block :: partition_table :: Partition > ,)
 system/linuxd/src/fs/block_node.rs :: pub (super) struct PartitionInfo
 system/linuxd/src/fs/chardev.rs :: enum DeviceError :: # [doc = " Linux record read 的复制失败；即使先前记录已有进度也必须返回 EFAULT（如 inotify）。"] ReadFault
@@ -4237,14 +4238,16 @@ system/linuxd/src/fs/devnode.rs :: pub (crate) fn block_node (number : DeviceNum
 system/linuxd/src/fs/devnode.rs :: pub (crate) fn block_nodes () -> Result < Vec < Arc < BlockNode > > , FileSystemError >
 system/linuxd/src/fs/devnode.rs :: pub (crate) fn register_directory (path : & [u8]) -> Result < () , FileSystemError >
 system/linuxd/src/fs/devnode.rs :: pub (crate) fn register_node (path : & [u8] , number : DeviceNumber , permissions : u32 ,) -> Result < () , FileSystemError >
+system/linuxd/src/fs/devnode.rs :: pub (crate) fn register_socket (path : & [u8] , gid : u32) -> Result < () , FileSystemError >
+system/linuxd/src/fs/devnode.rs :: pub (super) DeviceNode :: gid : u32
 system/linuxd/src/fs/devnode.rs :: pub (super) DeviceNode :: mode : u32
 system/linuxd/src/fs/devnode.rs :: pub (super) DeviceNode :: number : DeviceNumber
 system/linuxd/src/fs/devnode.rs :: pub (super) DeviceNode :: path : Vec < u8 >
 system/linuxd/src/fs/devnode.rs :: pub (super) enum RegistryEntry
-system/linuxd/src/fs/devnode.rs :: pub (super) fn block_count () -> usize
 system/linuxd/src/fs/devnode.rs :: pub (super) fn block_number (path : & [u8]) -> Option < DeviceNumber >
 system/linuxd/src/fs/devnode.rs :: pub (super) fn device (index : usize) -> Option < Arc < DeviceNode > >
 system/linuxd/src/fs/devnode.rs :: pub (super) fn directory_path (index : usize , output : & mut Vec < u8 >) -> Result < () , FileSystemError >
+system/linuxd/src/fs/devnode.rs :: pub (super) fn disk_count () -> usize
 system/linuxd/src/fs/devnode.rs :: pub (super) fn for_each_child (parent : & [u8] , mut visit : impl FnMut (RegistryEntry , & [u8] , u32) -> bool ,)
 system/linuxd/src/fs/devnode.rs :: pub (super) fn lookup (parent : & [u8] , name : & [u8]) -> Option < RegistryEntry >
 system/linuxd/src/fs/devnode.rs :: pub (super) fn register_block (path : & [u8] , number : DeviceNumber , permissions : u32 , device : Arc < dyn BlockDevice > , partition : Option < super :: block_node :: PartitionInfo > ,) -> Result < () , FileSystemError >
@@ -5893,8 +5896,8 @@ system/linuxd/src/handles.rs :: pub (crate) fn command_line () -> & 'static [u8]
 system/linuxd/src/handles.rs :: pub (crate) fn ext4 () -> & 'static MountClient
 system/linuxd/src/handles.rs :: pub (crate) fn install (startup : & mut Startup) -> Channel
 system/linuxd/src/handles.rs :: pub (crate) fn job () -> & 'static Job
-system/linuxd/src/handles.rs :: pub (crate) fn network () -> & 'static NetworkClient
 system/linuxd/src/handles.rs :: pub (crate) fn resource () -> & 'static Resource
+system/linuxd/src/handles.rs :: pub (crate) fn services () -> & 'static ServiceDirectory
 system/linuxd/src/handles.rs :: pub (crate) fn shared_process () -> & 'static Process
 system/linuxd/src/id.rs :: pub (crate) fn next_runtime_object_id () -> u64
 system/linuxd/src/io_uring/abi.rs :: pub (crate) Cqe :: flags : u32
@@ -7212,12 +7215,13 @@ system/linuxd/src/net/net_namespace.rs :: pub (crate) impl NetNamespace :: fn se
 system/linuxd/src/net/net_namespace.rs :: pub (crate) impl NetNamespace :: fn user_namespace (& self) -> Arc < UserNamespace >
 system/linuxd/src/net/net_namespace.rs :: pub (crate) struct NetNamespace
 system/linuxd/src/net/net_namespace.rs :: pub (in crate :: net) fn initial_net_ref () -> & 'static NetNamespace
-system/linuxd/src/net/net_namespace.rs :: pub (in crate :: net) impl NetNamespace :: fn install_protocol (& self , protocol : RemoteNamespace)
-system/linuxd/src/net/net_namespace.rs :: pub (in crate :: net) impl NetNamespace :: fn protocol (& self) -> Option < & RemoteNamespace >
+system/linuxd/src/net/net_namespace.rs :: pub (in crate :: net) fn live_namespaces () -> Result < Vec < Arc < NetNamespace > > , NamespaceError >
+system/linuxd/src/net/net_namespace.rs :: pub (in crate :: net) impl NetNamespace :: fn install_protocol (& self , protocol : RemoteNamespace ,) -> Result < () , NamespaceError >
+system/linuxd/src/net/net_namespace.rs :: pub (in crate :: net) impl NetNamespace :: fn protocol (& self) -> Option < Arc < RemoteNamespace > >
 system/linuxd/src/net/netstack.rs :: pub (crate) fn init ()
 system/linuxd/src/net/netstack.rs :: pub (super) fn bind_readiness (event : Event , notify : & Arc < PipeEnd > ,) -> Result < ActivityBinding , SocketError >
 system/linuxd/src/net/netstack.rs :: pub (super) fn create_namespace () -> Result < RemoteNamespace , SocketError >
-system/linuxd/src/net/netstack.rs :: pub (super) fn protocol (scope : & NetNamespace) -> Result < & RemoteNamespace , SocketError >
+system/linuxd/src/net/netstack.rs :: pub (super) fn protocol (scope : & NetNamespace) -> Result < Arc < RemoteNamespace > , SocketError >
 system/linuxd/src/net/netstack.rs :: pub (super) fn retire_readiness (binding : & ActivityBinding)
 system/linuxd/src/net/observation.rs :: pub (crate) impl Socket :: fn address (& self) -> Result < Option < SocketAddress > , SocketError >
 system/linuxd/src/net/observation.rs :: pub (crate) impl Socket :: fn peer_address (& self) -> Result < Option < SocketAddress > , SocketError >
@@ -7916,7 +7920,6 @@ system/linuxd/src/syscall/mod.rs :: pub (crate) const INTERRUPTED_RESULT : isize
 system/linuxd/src/syscall/mod.rs :: pub (crate) enum SyscallOutcome
 system/linuxd/src/syscall/mod.rs :: pub (crate) fn syscall (syscall_id : usize , args : [usize ; 6] , current : alloc :: sync :: Arc < crate :: task :: TaskControlBlock > ,) -> SyscallOutcome
 system/linuxd/src/syscall/mod.rs :: pub (crate) use io_uring :: start_worker as start_io_uring_worker
-system/linuxd/src/syscall/mod.rs :: pub (crate) use socket :: bind_unix_pathname
 system/linuxd/src/syscall/mod.rs :: pub (in crate :: syscall) fn file_descriptor_error (error : crate :: file :: FileDescriptorError) -> isize
 system/linuxd/src/syscall/pidfd.rs :: pub (crate) fn sys_pidfd_getfd (pidfd : i32 , descriptor : i32 , flags : u32) -> isize
 system/linuxd/src/syscall/pidfd.rs :: pub (crate) fn sys_pidfd_open (pid : i32 , flags : u32) -> isize
@@ -8022,7 +8025,6 @@ system/linuxd/src/syscall/socket.rs :: pub (crate) fn sys_socket (domain : usize
 system/linuxd/src/syscall/socket.rs :: pub (crate) fn sys_socketpair (domain : usize , kind : usize , protocol : usize , output : usize) -> isize
 system/linuxd/src/syscall/socket.rs :: pub (crate) use message :: { sys_recvfrom , sys_recvmsg , sys_sendmsg , sys_sendto }
 system/linuxd/src/syscall/socket.rs :: pub (crate) use options :: { sys_getsockopt , sys_setsockopt }
-system/linuxd/src/syscall/socket.rs :: pub (crate) use unix_path :: bind_at as bind_unix_pathname
 system/linuxd/src/syscall/socket.rs :: pub (in crate :: syscall) const MSG_DONTWAIT : usize = 0x40
 system/linuxd/src/syscall/socket.rs :: pub (in crate :: syscall) const MSG_NOSIGNAL : usize = 0x4000
 system/linuxd/src/syscall/socket.rs :: pub (in crate :: syscall) const SOCK_CLOEXEC : usize = O_CLOEXEC as usize
@@ -8086,7 +8088,6 @@ system/linuxd/src/syscall/socket/options.rs :: pub (crate) fn sys_getsockopt (fd
 system/linuxd/src/syscall/socket/options.rs :: pub (crate) fn sys_setsockopt (fd : usize , level : usize , option : usize , value : usize , length : usize ,) -> isize
 system/linuxd/src/syscall/socket/timeout.rs :: pub (super) fn decode (bytes : [u8 ; 16]) -> Result < SocketTimeout , isize >
 system/linuxd/src/syscall/socket/timeout.rs :: pub (super) fn encode (timeout : SocketTimeout) -> [u8 ; 16]
-system/linuxd/src/syscall/socket/unix_path.rs :: pub (crate) fn bind_at (socket : & Arc < Socket > , address : UnixAddress , start : LookupOrigin , mode : u32 , access : & crate :: fs :: AccessIdentity ,) -> isize
 system/linuxd/src/syscall/socket/unix_path.rs :: pub (super) fn bind (socket : & Arc < Socket > , address : UnixAddress) -> isize
 system/linuxd/src/syscall/socket/unix_path.rs :: pub (super) fn resolve (task : & TaskControlBlock , address : & UnixAddress , require_write : bool ,) -> Result < (Arc < dyn Inode > , UnixPathIdentity) , isize >
 system/linuxd/src/syscall/system_identity.rs :: pub (crate) fn sys_set_uts_name (hostname : bool , address : usize , length : usize) -> isize
@@ -8176,9 +8177,15 @@ system/linuxd/src/system.rs :: pub (crate) fn online_cpu_mask () -> usize
 system/linuxd/src/system.rs :: pub (crate) fn previous_panic () -> Option < & 'static [u8] >
 system/linuxd/src/system.rs :: pub (crate) fn reset (kind : ResetKind) -> Result < () , crate :: platform :: ResetError >
 system/linuxd/src/system.rs :: pub (crate) fn time_counter_frequency () -> u64
+system/linuxd/src/system.rs :: pub (crate) mod endpoint
+system/linuxd/src/system.rs :: pub (crate) mod network_settings
 system/linuxd/src/system.rs :: pub (crate) mod task_observer
 system/linuxd/src/system.rs :: pub (crate) use crate :: arch :: user :: SignalActionBytes
 system/linuxd/src/system.rs :: pub (crate) use crate :: platform :: ResetKind
+system/linuxd/src/system/endpoint.rs :: pub (crate) fn publish (path : & [u8] , group : u32) -> Arc < Socket >
+system/linuxd/src/system/endpoint.rs :: pub (crate) fn receive (socket : & Socket , storage : & mut [u8] ,) -> Result < (usize , usize , SocketAddress) , net :: SocketError >
+system/linuxd/src/system/endpoint.rs :: pub (crate) fn reply (socket : & Socket , source : SocketAddress , reply : & [u8])
+system/linuxd/src/system/network_settings.rs :: pub (crate) fn start ()
 system/linuxd/src/system/task_observer.rs :: pub (crate) fn start (observer : Job)
 system/linuxd/src/system/task_observer.rs :: pub (crate) fn take (startup : & mut Startup) -> Job
 system/linuxd/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " ELF header、program header 或 script interpreter line 不满足契约。"] InvalidExecutable
@@ -9791,7 +9798,7 @@ system/netstack/src/inet.rs :: pub (crate) impl InetSocket :: fn send_to (& self
 system/netstack/src/inet.rs :: pub (crate) impl InetSocket :: fn shutdown (& self , how : usize) -> Result < () , SocketError >
 system/netstack/src/inet.rs :: pub (crate) impl InetSocket :: fn take_error (& self) -> Option < SocketError >
 system/netstack/src/inet.rs :: pub (crate) struct InetSocket
-system/netstack/src/inet.rs :: pub (crate) use configuration :: { configure_address , configure_broadcast , configure_mtu , configure_netmask , configure_route , configure_up , inject_loopback , interface_index , interface_snapshot , interface_snapshots , network_snapshot , packet_interface , packet_transmit_available , route_snapshot , }
+system/netstack/src/inet.rs :: pub (crate) use configuration :: { configure_address , configure_broadcast , configure_mtu , configure_netmask , configure_route , configure_up , inject_loopback , install_interface , interface_index , interface_snapshot , interface_snapshots , network_snapshot , packet_interface , packet_transmit_available , route_snapshot , }
 system/netstack/src/inet.rs :: pub (crate) use self :: protocol_owner :: NetworkStackOwner
 system/netstack/src/inet.rs :: pub (crate) use timing :: network_work_due
 system/netstack/src/inet/configuration.rs :: pub (crate) fn configure_address (scope : & Namespace , index : u32 , address : Ipv4Addr ,) -> Result < () , SocketError >
@@ -9801,6 +9808,7 @@ system/netstack/src/inet/configuration.rs :: pub (crate) fn configure_netmask (s
 system/netstack/src/inet/configuration.rs :: pub (crate) fn configure_route (scope : & Namespace , request : Ipv4RouteRequest , change : RouteChange ,) -> Result < () , Ipv4RouteError >
 system/netstack/src/inet/configuration.rs :: pub (crate) fn configure_up (scope : & Namespace , index : u32 , up : bool) -> Result < () , SocketError >
 system/netstack/src/inet/configuration.rs :: pub (crate) fn inject_loopback (scope : & Namespace , header : [u8 ; 14] , packet : & [u8] , sender : usize ,) -> Result < () , SocketError >
+system/netstack/src/inet/configuration.rs :: pub (crate) fn install_interface (scope : & Namespace , device : alloc :: sync :: Arc < dyn device_model :: network :: NetworkDevice > ,) -> Result < u32 , SocketError >
 system/netstack/src/inet/configuration.rs :: pub (crate) fn interface_index (scope : & Namespace , name : & [u8]) -> Result < u32 , SocketError >
 system/netstack/src/inet/configuration.rs :: pub (crate) fn interface_snapshot (scope : & Namespace , index : u32 ,) -> Result < InterfaceSnapshot , SocketError >
 system/netstack/src/inet/configuration.rs :: pub (crate) fn interface_snapshots (scope : & Namespace ,) -> Result < Vec < InterfaceSnapshot > , SocketError >
@@ -10094,8 +10102,11 @@ system/netstack/src/receive.rs :: pub (crate) struct ReceiveBuffer
 system/netstack/src/server.rs :: pub (crate) NamespaceServer :: <tuple> : Arc < Namespace >
 system/netstack/src/server.rs :: pub (crate) fn publish (socket : ServedSocket , readiness : & Event ,) -> Result < SocketEndpoint , SocketError >
 system/netstack/src/server.rs :: pub (crate) fn readiness () -> Result < Arc < Event > , SocketError >
-system/netstack/src/server.rs :: pub (crate) fn serve_control (control : Channel) -> Result < () , Status >
+system/netstack/src/server.rs :: pub (crate) fn serve_control (network : Arc < Network > , control : Channel) -> Result < () , Status >
+system/netstack/src/server.rs :: pub (crate) fn serve_installer (network : Arc < Network > , channel : Channel) -> Result < () , Status >
+system/netstack/src/server.rs :: pub (crate) fn start () -> Result < Arc < Network > , Status >
 system/netstack/src/server.rs :: pub (crate) struct NamespaceServer
+system/netstack/src/server.rs :: pub (crate) struct Network
 system/netstack/src/time.rs :: pub (crate) fn get_time_us () -> u64
 system/netstack/src/worker.rs :: pub (crate) fn device_activity () -> Result < device_model :: Activity , Status >
 system/netstack/src/worker.rs :: pub (crate) fn request_poll ()

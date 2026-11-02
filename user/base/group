@@ -1,3 +1,4 @@
 root:x:0:
 adm:x:4:root
+netdev:x:28:root
 nobody:x:65534:

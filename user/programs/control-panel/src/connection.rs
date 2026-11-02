@@ -1,6 +1,6 @@
 //! “本地连接 属性”与“Internet 协议 (TCP/IP) 属性”：按 Windows 2000 netshell 对话框 16004 与 netcfgx 对话框 2323 还原。
 //!
-//! 草稿是 `/etc/network/interfaces` 中该接口的配置；“确定”后原子写回并让 network-service 重新配置接口。
+//! 草稿是 netcfg 中该接口的设置；“确定”后经 `/dev/network-settings` 提交，netcfg 持久化并重新配置接口。
 //! 组件列表只有 Internet 协议 (TCP/IP)：系统没有 Microsoft 网络客户端、文件和打印机共享等组件，安装/卸载与
 //! 网卡“配置”没有对应后端而禁用；“高级”TCP/IP 设置（多地址、WINS、IP 筛选）同样禁用。
 use crate::{Activity, Apply, Page, Response, child, group, ip_address::IpAddress};
@@ -8,8 +8,8 @@ use liteos_ui::{
     Dialogs, Event, EventKind, Layout, PropertySheet, SheetStyle, ValidationError, Widget,
     WidgetKind as Kind, state,
 };
-use network_config::{CONFIG_PATH, Config, Interface, Method};
-use std::{cell::RefCell, net::Ipv4Addr, path::Path, rc::Rc};
+use network_config::{Interface, Method};
+use std::{cell::RefCell, net::Ipv4Addr, rc::Rc};
 
 /// 组件描述（nettcpip.inf 的 MS_TCPIP.HelpText）。
 const TCPIP_HELP: &str = "TCP/IP 是默认的广域网协议。它提供跨越多种互联网络的通讯。";
@@ -30,9 +30,8 @@ impl Data {
                     .is_none_or(|name| name == &link.interface)
             })
             .ok_or("没有网络连接")?;
-        let saved = Config::load(Path::new(CONFIG_PATH))
-            .map_err(|error| error.to_string())?
-            .interface(&link.interface);
+        let saved =
+            network_config::interface(&link.interface).map_err(|error| error.to_string())?;
         Ok(Self {
             saved,
             driver: link.driver,
@@ -198,13 +197,7 @@ impl Page for Connection {
     fn apply(&self) -> liteos_ui::Result<Apply> {
         let draft = self.draft.borrow().clone();
         Ok(Box::new(move || {
-            let path = Path::new(CONFIG_PATH);
-            let mut config = Config::load(path).map_err(|error| error.to_string())?;
-            config.set(draft);
-            config
-                .store(path)
-                .and_then(|()| network_config::reload_service())
-                .map_err(|error| format!("无法应用网络设置：{error}"))
+            network_config::apply(&draft).map_err(|error| format!("无法应用网络设置：{error}"))
         }))
     }
 

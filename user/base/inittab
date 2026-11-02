@@ -1,4 +1,4 @@
 ::sysinit:/etc/init.d/rcS
-::respawn:/etc/init.d/network-service
+::respawn:/bin/resolvd
 ::respawn:/etc/init.d/display-service
 ::respawn:-/bin/sh

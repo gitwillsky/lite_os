@@ -181,7 +181,7 @@ def gate_inputs(image: Path, binary: Path, musl: MuslCachePaths) -> tuple[Path, 
         ROOT / TARGET.kernel_elf(),
         ROOT / "scripts/musl_clang.py",
         ROOT / "scripts/qemu_gate.py",
-        ROOT / "user/base/udhcpc.script",
+        ROOT / "system/netcfg/default.conf",
         Path(__file__).resolve(),
     ]
     kernel_boot = ROOT / TARGET.kernel_boot_artifact()

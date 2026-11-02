@@ -1,0 +1,11 @@
+[package]
+name = "resolvd"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]
+network-config = { path = "../../libraries/network-config" }
+
+[lints]
+workspace = true

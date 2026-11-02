@@ -1,5 +1,7 @@
 # 计划：服务拓扑对齐 Fuchsia，linuxd 可插拔
 
+Status: Active
+
 执行期间存在；完成后把持久事实迁入架构/契约文档并删除本文件。
 
 ## 目标
@@ -49,5 +51,20 @@ linuxd 与 Starnix 一样只是消费者：不运行 linuxd 时其余系统服�
 - 步骤 4 代码完成：root-server 监督 linuxd（主成员终止 → 终止整个 Linux Job → 等 Job 结束 → 以新的设备范围与路由目录
   重启；与 netstack 共用崩溃循环判定）。netstack 自己拥有默认网络（全部网卡、回环启用、随 netstack 存续），
   linuxd 的初始网络域只是连上它，linuxd 重启不丢失接口配置。
-- 步骤 5 待定：D6 原定“配置文件经 fshost 读取”不可行——根文件系统由 linuxd 读写挂载，fshost 再挂载同一文件系统会与
-  它冲突（ext4d 的 UUID 串行化也会让二者互相等待）。需要重新决定配置的持久化位置与下发方式。
+- 步骤 5 改为完全按 Fuchsia 实现（2026-11-03 确认），D6 修订如下。
+
+## 步骤 5 细化（D6 修订）
+
+| # | 决策 | Fuchsia 对应 |
+|---|---|---|
+| D6.1 | 原生数据卷：独立磁盘镜像（ext4，卷标 `liteos-data`），fshost 按卷标识别、经 ext4d 挂载，不列入交给 Linux 的块设备清单 | fshost 按分区类型识别 data 分区 |
+| D6.2 | 存储能力：fshost 为每个原生服务在数据卷上派生私有目录，root-server 在启动服务时把目录连接作为角色句柄交付；协议为整文件原子读写 | `storage: "persistent"` 路由到 `/data` |
+| D6.3 | netstack 只提供协议：`liteos.network.Control`（网络域与 socket）与 `liteos.network.Installer`（安装网卡）；默认网络启动时只有回环 | fuchsia.posix.socket / interfaces.admin.Installer |
+| D6.4 | netcfg：从 Network 类目录发现网卡并经 Installer 安装；按 bootfs 只读默认策略（全部以太网口 DHCP）与数据目录中的用户设置配置接口；netstack 重启后重新安装并重配 | netcfg + `/config/data` + `/data` |
+| D6.5 | dhcp-client：独立服务，经 netstack 的 packet socket 完成 DHCPv4，向 netcfg 报告租约（地址、掩码、网关、DNS） | dhcp-client 组件 |
+| D6.6 | 每个消费者只拿到路由给它的协议：linuxd←Control/Blocks/Ext4/Settings；netcfg←Control/Installer/Dhcp | 按组件的能力路由 |
+| D6.7 | 设置：netcfg 提供 `liteos.network.Settings`；linuxd 以 `/dev/network-settings`（root:netdev 0660）适配给控制面板；DNS 由 linuxd 写入 Linux 的 `/etc/resolv.conf` | settings 组件 / Starnix 适配 |
+| D6.8 | 删除 network-service、`/etc/network/interfaces`、udhcpc 路径与 inittab 条目 | — |
+
+子步骤：5.1 netstack 协议拆分与安装接口 → 5.2 root-server 通用监督与按消费者路由 → 5.3 netcfg → 5.4 dhcp-client →
+5.5 fshost 数据卷与存储能力 → 5.6 linuxd 设置适配与 DNS → 5.7 控制面板与用户态清理 → 5.8 镜像、bootfs 与 QEMU 参数。

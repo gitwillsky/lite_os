@@ -2,6 +2,24 @@
 
 Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system/linuxd`；IPv4/TCP/UDP/RAW、FIB、端口与 AF_PACKET 队列属于 `system/netstack`。下述协议 owner 通过 `network-protocol` 交互，不共享内核状态。
 
+## 网络服务拓扑
+
+1. netstack 只提供协议栈：启动时创建只有回环（启用）的默认网络，经 `liteos.network.Control` 交出网络域与 socket，
+   经 `liteos.network.Installer` 接受网卡会话并在默认网络中安装为 `eth<n>` 接口。默认网络随 netstack 存续。
+2. netcfg 是接口配置 owner（Fuchsia netcfg）：从 Network 类设备目录打开网卡并安装；每个接口的配置依次取用户设置、
+   bootfs 只读默认策略（`data/netcfg/default.conf`，`iface * inet dhcp`）、DHCP。静态地址直接配置；DHCP 经
+   dhcp-client 取得租约后由 netcfg 配置地址、掩码、默认路由与 DNS。用户设置持久化在 netcfg 的私有数据目录。
+   一个事件循环线程以一个 Port 等待 netstack 断开（重连、重新安装网卡、重新配置）、设备目录变化（热插拔网卡）与
+   各接口的租约事件；设置变化经 `liteos.network.Settings` 提交，先持久化再应用。
+3. dhcp-client 为 netcfg 指定的接口在默认网络的 datagram packet socket（EtherType IPv4）上收发 IPv4/UDP/DHCP 报文，
+   按 RFC 2131 推进 INIT → SELECTING → REQUESTING → BOUND → RENEWING → REBINDING，向 netcfg 报告租约取得、
+   续租与失效；netcfg 关闭租约事件 channel 即停止该接口的 DHCP。报文编解码使用 smoltcp 的 wire 层。
+4. linuxd 的初始网络域连上默认网络，新网络域在 netstack 中创建只有 DOWN 回环的独立实例。netstack 重启后 linuxd 重连并为
+   全部存活网络域重建协议实例，旧 socket 的 channel 已随旧实例关闭，之后的操作以 `ENETDOWN` 失败；默认网络由 netcfg
+   重新配置。linuxd 重启不影响默认网络及其配置。
+5. Linux 侧不运行 DHCP 客户端或接口配置脚本。`/etc/resolv.conf` 由 resolvd（init 监督）依据 netcfg 的设置快照维护；
+   控制面板经 `/dev/network-settings` 读写设置（见[用户态与 ABI 契约](../architecture-contract/userspace-abi.md)）。
+
 
 ## 当前设计
 

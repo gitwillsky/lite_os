@@ -32,7 +32,7 @@ fn check_aarch64_el0_execution_access(root: &Path, errors: &mut Vec<String>) {
 }
 
 /// `user/programs/` 下的可执行程序包；每个都有 `src/main.rs`。
-const PROGRAMS: [&str; 13] = [
+const PROGRAMS: [&str; 14] = [
     "compositor",
     "smbfs",
     "logon",
@@ -46,6 +46,7 @@ const PROGRAMS: [&str; 13] = [
     "media-player",
     "notepad",
     "device-manager",
+    "resolvd",
 ];
 
 /// `user/libraries/` 下的库包；每个都有 `src/lib.rs`。其中带 `liteos-runtime` 依赖的会被构建成共享库。
@@ -280,10 +281,10 @@ fn check_ffi_owners(root: &Path, errors: &mut Vec<String>) {
 
 fn check_boot_route(root: &Path, errors: &mut Vec<String>) {
     let inittab = fs::read_to_string(root.join("user/base/inittab")).unwrap_or_default();
-    let expected = "::sysinit:/etc/init.d/rcS\n::respawn:/etc/init.d/network-service\n::respawn:/etc/init.d/display-service\n::respawn:-/bin/sh\n";
+    let expected = "::sysinit:/etc/init.d/rcS\n::respawn:/bin/resolvd\n::respawn:/etc/init.d/display-service\n::respawn:-/bin/sh\n";
     if inittab != expected {
         errors.push(
-            "user/base/inittab: must mount pseudo filesystems through rcS first, then supervise network, display and UART shell exactly once"
+            "user/base/inittab: must mount pseudo filesystems through rcS first, then supervise resolvd, display and UART shell exactly once"
                 .to_owned(),
         );
     }

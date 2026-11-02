@@ -12,6 +12,7 @@ import time
 from pathlib import Path
 from typing import BinaryIO
 
+from ext4_image import create_data_volume
 from runtime_debug import DebugSession
 from usb_redirection import UsbRedirection
 from utm_build import UTM_APP, UTM_VERSION, ensure_built
@@ -98,6 +99,10 @@ def _configuration(
     kernel = kernel or UTM_ARTIFACTS / "kernel"
     rootfs = rootfs or UTM_ARTIFACTS / "rootfs.img"
     bootfs = kernel.with_name(BOOTFS_NAME)
+    # 原生数据卷常驻 UTM 产物目录，不随根盘重新发布，原生服务的设置跨启动保留。
+    data_volume = UTM_ARTIFACTS / "data.img"
+    if not data_volume.is_file():
+        create_data_volume(data_volume)
     # UTM's generated SPICE server enables vdagent mouse delivery by default.
     # Disable it explicitly so the attached virtio-tablet remains the sole
     # pointer source; otherwise SPICE diverts host motion into mouse-state
@@ -126,6 +131,10 @@ def _configuration(
         f'"{bootfs}"',
         "-device",
         "virtio-blk-device,drive=driverootfs",
+        "-drive",
+        f'"if=none,media=disk,id=drivedata,format=raw,file.filename={_qemu_path(data_volume)}"',
+        "-device",
+        "virtio-blk-device,drive=drivedata",
         "-object",
         "rng-random,filename=/dev/urandom,id=rng0",
         "-device",

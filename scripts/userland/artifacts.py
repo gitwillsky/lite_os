@@ -39,7 +39,8 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
                               ("control-panel", "control-panel"), ("task-manager", "taskmgr"), ("volume-control", "sndvol"),
                               ("sound-player", "sndplay"), ("media-player", "mplay"),
                               ("notepad", "notepad"), ("device-manager", "devmgmt"),
-                              ("linux-uapi", "session-launch"), ("terminal", "terminal"))
+                              ("linux-uapi", "session-launch"), ("terminal", "terminal"),
+                              ("resolvd", "resolvd"))
     )
     library_targets = tuple(
         _RustUserTarget(package, name, f"system-library-{name}", 1, True)
@@ -67,8 +68,6 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
         UserlandArtifact(cursors(), "/usr/share/liteos/cursors.lcs"),
         UserlandArtifact(ROOT / "assets/fonts/liteos-terminal.a8", "/usr/share/liteos/liteos-terminal.a8"),
         UserlandArtifact(ROOT / "user/base/display-service", "/etc/init.d/display-service", 0o755),
-        UserlandArtifact(ROOT / "user/base/network-service", "/etc/init.d/network-service", 0o755),
-        UserlandArtifact(ROOT / "user/base/udhcpc.script", "/usr/share/udhcpc/default.script", 0o755),
         # 桌面条目：user/base 下的每个 .desktop 都安装；窗口图标、文件关联与控制面板入口都由它们声明。
         *(UserlandArtifact(path, f"/usr/share/applications/{path.name}")
           for path in sorted((ROOT / "user/base").glob("*.desktop"))),

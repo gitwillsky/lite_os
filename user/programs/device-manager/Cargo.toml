@@ -9,6 +9,7 @@ name = "devmgmt"
 path = "src/main.rs"
 
 [dependencies]
+network-config = { path = "../../libraries/network-config" }
 liteos-ui = { path = "../../libraries/liteos-ui" }
 linux-uapi.workspace = true
 

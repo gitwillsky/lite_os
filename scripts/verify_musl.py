@@ -338,6 +338,9 @@ def main() -> int:
                     "LiteOS musl consumer exit=0",
                 ),
                 forbidden_markers=("LiteOS musl consumer failed", "LiteOS musl ASID failed", "LiteOS musl mmap placement failed", " fail step="),
+                # 门禁验证 16 位 ASID 代际与 272 个常驻根，不验证内存容量：显式给出能容纳常驻根的内存，
+                # 不再依赖 QEMU 的隐式 128 MiB 默认值（服务拓扑变化会改变它的余量）。
+                memory="256M",
                 # 保留完整硬件 generation；稀疏 VMAR 退休与通知边界修复后恢复原 15 分钟硬上限。
                 # 无串口进展看门狗仍为 60 秒，不以放宽超时掩盖停顿。
                 timeout_seconds=30,

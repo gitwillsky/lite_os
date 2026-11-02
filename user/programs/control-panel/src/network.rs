@@ -1,6 +1,6 @@
 //! “本地连接 状态”：按 Windows 2000 netshell 对话框 1801（常规页）还原。
-//! 连接状态取 sysfs 与 network-service，活动计数在有界后台池按 `/proc/net/dev` 周期采样；
-//! “属性”打开“本地连接 属性”，“禁用”写回接口配置并让 network-service 重新配置后关闭本窗口。
+//! 连接状态取 sysfs 与网络设置（netcfg），活动计数在有界后台池按 `/proc/net/dev` 周期采样；
+//! “属性”打开“本地连接 属性”，“禁用”经网络设置关闭接口后关闭本窗口。
 use crate::{Activity, Page, Response, child, group};
 use liteos_ui::{
     Background, Clock, Event, EventKind, Layout, PropertySheet, Widget, WidgetKind as Kind, state,
@@ -28,20 +28,14 @@ fn counters(name: &str) -> Option<[u64; 4]> {
     })
 }
 
-/// 连接已建立的秒数：network-service 按当前配置启用接口的时刻到现在（/proc 的进程启动时刻与 uptime）。
-fn connected_seconds() -> Option<u64> {
-    let pid = fs::read_to_string("/run/network-service.pid").ok()?;
-    let stat = fs::read_to_string(format!("/proc/{}/stat", pid.trim())).ok()?;
-    let rest = &stat[stat.rfind(')')? + 2..];
-    // stat 第 22 个字段（`)` 之后第 20 个）是启动时刻，单位为时钟滴答（USER_HZ = 100）。
-    let start: u64 = rest.split_whitespace().nth(19)?.parse().ok()?;
-    let uptime: f64 = fs::read_to_string("/proc/uptime")
+/// 连接已建立的秒数：netcfg 记录的当前地址配置生效时长；读不到设置时为 None。
+fn connected_seconds(interface: &str) -> Option<u64> {
+    network_config::snapshot()
         .ok()?
-        .split_whitespace()
-        .next()?
-        .parse()
-        .ok()?;
-    Some((uptime as u64).saturating_sub(start / 100))
+        .interfaces
+        .iter()
+        .find(|state| state.name == interface.as_bytes())
+        .map(|state| u64::from(state.connected_seconds))
 }
 
 pub struct Data(network_config::Link);
@@ -201,7 +195,7 @@ impl Page for Network {
             ])));
         }
         if event.node == self.disable.id() {
-            // “禁用”：去掉接口的 auto 并让 network-service 关闭它，然后关闭状态窗口（与 Windows 2000 相同）。
+            // “禁用”：经网络设置关闭接口，然后关闭状态窗口（与 Windows 2000 相同）。
             network_config::set_enabled(&self.interface, false)
                 .map_err(|error| liteos_ui::Error::invalid(format!("无法禁用连接：{error}")))?;
             return Ok(Some(Response::Close));
@@ -219,7 +213,7 @@ impl Page for Network {
         Some(Box::pin(async move {
             loop {
                 let name = interface.clone();
-                let Ok(work) = background.run(move || (counters(&name), connected_seconds()))
+                let Ok(work) = background.run(move || (counters(&name), connected_seconds(&name)))
                 else {
                     break;
                 };

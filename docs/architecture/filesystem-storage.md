@@ -2,6 +2,19 @@
 
 本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/driver-host/src/drivers/`。
 
+## 存储所有权（fshost）
+
+1. fshost 从 Block 类设备目录打开启动时发现的全部块设备，持有各设备唯一的驱动会话与 ext4d 的控制连接（Fuchsia fshost）。
+   linuxd 不接触块设备驱动会话或 ext4d：它经 `liteos.storage.Blocks` 按序号取得全盘范围连接，在其上实现 Linux 块设备
+   UAPI、分区与挂载；经 `liteos.filesystem.Ext4` 发出的挂载由 fshost 原样转发给 ext4d。Linux 磁盘名（`vda`…）与设备号由 linuxd 按它看到的整盘顺序分配
+   （驱动名的两字母前缀加双射 26 进制后缀），不沿用驱动宿主为全部盘（含数据卷）分配的名字。
+2. 卷标为 `liteos-data` 的 ext4 是原生数据卷：不列入交给 Linux 的块设备清单，由 fshost 读写挂载，作为该挂载唯一的
+   FUSE 客户端为每个原生服务派生根下同名的私有目录（权限 0700）。root-server 启动服务时经 `liteos.storage.Admin`
+   取得私有目录连接并作为角色句柄交付（Fuchsia `storage` 能力）。私有目录协议只有整文件读与原子写：写入临时文件、
+   fsync、rename 覆盖、再 fsync 目录。数据卷缺失时需要私有目录的服务无法启动。
+3. ext4d 按超级块 UUID 串行化同一文件系统的挂载：同一文件系统只会在使用者重启时被再次挂载（linuxd 自己合并多次挂载），
+   新挂载等旧挂载 shutdown 完成，缺失时两个挂载会同时回放并写入同一日志。不同盘、不同分区互不影响。
+
 
 ## 当前设计
 

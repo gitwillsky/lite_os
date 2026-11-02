@@ -52,6 +52,7 @@ SYSTEM_LIBRARY_DIRECTORY = "/usr/lib/liteos"
 DYNAMIC_PROGRAMS = frozenset({
     ("compositor", "compositor"), ("logon", "logon"), ("desktop", "desktop"),
     ("sound-player", "sndplay"), ("smbfs", "smbfs"), ("linux-uapi", "session-launch"),
+    ("resolvd", "resolvd"),
     ("compositor", "wayland-probe"), ("compositor", "shell-probe"),
     ("classic-ui", "ui-probe"), ("classic-ui", "session-probe"), ("linux-uapi", "drm-flip-probe"),
 })

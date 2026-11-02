@@ -27,12 +27,17 @@ class QemuRoutingTests(unittest.TestCase):
         validator = patch("qemu_gate.validate_kernel_boot_artifact")
         self.validate_artifact = validator.start()
         self.addCleanup(validator.stop)
+        # 命令构造不应在宿主上创建镜像文件。
+        data_volume = patch("qemu_gate.create_data_volume")
+        self.data_volume = data_volume.start()
+        self.addCleanup(data_volume.stop)
 
     @patch("qemu_gate.shutil.which", return_value="/opt/qemu")
     def test_second_disk_keeps_root_first_in_each_machine_probe_order(self, _: Mock) -> None:
+        # 原生数据卷总在最后：fshost 按卷标识别并不交给 Linux，它不改变 root=vda、scratch=vdb。
         for arch, expected in (
-            ("aarch64", ["virtio-blk-device,drive=x1", "virtio-blk-device,drive=x0"]),
-            ("riscv64", ["virtio-blk-device,drive=x0", "virtio-blk-device,drive=x1"]),
+            ("aarch64", ["virtio-blk-device,drive=x1", "virtio-blk-device,drive=x0", "virtio-blk-device,drive=x2"]),
+            ("riscv64", ["virtio-blk-device,drive=x0", "virtio-blk-device,drive=x1", "virtio-blk-device,drive=x2"]),
         ):
             with self.subTest(arch=arch), patch.dict(
                 os.environ, {"ARCH": arch, "ACCEL": "tcg"}, clear=True
@@ -46,6 +51,8 @@ class QemuRoutingTests(unittest.TestCase):
                 )
                 self.assertIn("file=root.img,if=none,format=raw,id=x0", command)
                 self.assertIn("file=extra.img,if=none,format=raw,id=x1", command)
+                self.assertIn("file=root.img.data,if=none,format=raw,id=x2", command)
+                self.data_volume.assert_called_with(Path("root.img.data"))
 
     @patch("qemu_gate.shutil.which", return_value="/opt/qemu")
     def test_iommu_gate_translates_pci_root_and_retains_identity_mmio_devices(self, _: Mock) -> None:

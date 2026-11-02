@@ -149,9 +149,12 @@ class WorkflowTests(unittest.TestCase):
             ],
         )
 
+    @patch("workflow.create_data_volume")
     @patch("workflow.subprocess.Popen")
     @patch("workflow.shutil.which", return_value="/opt/qemu-system-aarch64")
-    def test_gdb_qemu_syncs_current_init_before_guest_execution(self, _: object, popen: object) -> None:
+    def test_gdb_qemu_syncs_current_init_before_guest_execution(
+        self, _: object, popen: object, __: object
+    ) -> None:
         process = popen.return_value
         process.returncode = 0
         with patch.object(workflow, "build_kernel") as build_kernel, patch.object(
@@ -167,8 +170,9 @@ class WorkflowTests(unittest.TestCase):
         sync_userland.assert_called_once()
         process.wait.assert_called_once()
 
+    @patch("workflow.create_data_volume")
     @patch("workflow.shutil.which", return_value="/opt/qemu-system-aarch64")
-    def test_headless_qemu_has_no_gui_backend_override(self, _: object) -> None:
+    def test_headless_qemu_has_no_gui_backend_override(self, _: object, __: object) -> None:
         command = workflow._qemu_command(
             Path("fs-aarch64.img"),
             mode="run",

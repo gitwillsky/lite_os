@@ -63,9 +63,9 @@
   仅当前 key 的 dead Weak 可被替换，不扫描无关 sockets；退休节点与 Weak 在两个 guard 外
   析构。最后 close 只摘除 dead binding，迟到的旧 close 不能删除已换代的 live endpoint。
   pathname 按 actual VFS filesystem/inode identity 检索，abstract 保留完整长度与 embedded NUL。
-- pathname bind 的 inode 创建、binding 发布与失败回滚只在 `syscall::socket::unix_path::bind_at` 实现，
-  以 `crate::syscall::bind_unix_pathname` 开放给 crate：`bind(2)` 传入调用任务的起点、umask 后的 mode 与身份；
-  唯一的另一调用者 `system::task_observer` 以 root 身份、固定 0660 在 init 之前发布系统端点。
+- `bind(2)` 的 pathname inode 创建、binding 发布与失败回滚只在 `syscall::socket::unix_path::bind` 实现。
+  linuxd 的授权端点不经 `bind(2)`：`system::endpoint` 在只读的 devtmpfs 中经注册表发布 socket 节点
+  （`fs::devnode::register_socket`），再以该节点的 inode identity 直接发布 binding。
   benchmark 决策：删去 O(n) retain，实际 bind/lookup/close 为 AVL O(log n)，bind node 的一次
   冷分配保持；加入 OOM、并发 bind 和迟到 close owner 回归。
 

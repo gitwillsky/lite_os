@@ -44,8 +44,9 @@ mod udp;
 mod wait;
 pub(crate) use configuration::{
     configure_address, configure_broadcast, configure_mtu, configure_netmask, configure_route,
-    configure_up, inject_loopback, interface_index, interface_snapshot, interface_snapshots,
-    network_snapshot, packet_interface, packet_transmit_available, route_snapshot,
+    configure_up, inject_loopback, install_interface, interface_index, interface_snapshot,
+    interface_snapshots, network_snapshot, packet_interface, packet_transmit_available,
+    route_snapshot,
 };
 pub(crate) use timing::network_work_due;
 

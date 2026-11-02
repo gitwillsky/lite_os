@@ -6,12 +6,11 @@ use core::net::Ipv4Addr;
 
 use device_model::network::NetworkDevice;
 use device_protocol::EventHub;
-use device_protocol::directory::{Class, DirectoryClient, OpenedDevice};
-use native_runtime::native_abi::{self, Status, rights, signals};
-use native_runtime::sync::Once;
+use device_protocol::directory::{Class, OpenedDevice};
+use native_runtime::native_abi::{self, Status, rights};
 use native_runtime::{Channel, Event, Handle};
 use network_protocol::{
-    InetAddress, InetOptionChange, InetProtocol, InetReceived, InetSocketService,
+    InetAddress, InetOptionChange, InetProtocol, InetReceived, InetSocketService, InstallerService,
     InterfaceSnapshot, InternetOption, InternetSendPacketInfo, Ipv4RouteError, Ipv4RouteRequest,
     NamespaceService, NetworkService, NetworkSnapshot, PacketAddress, PacketKind, PacketReceived,
     PacketSocketService, RouteChange, RouteSnapshot, ServedSocket, SocketEndpoint, SocketError,
@@ -27,65 +26,44 @@ use crate::receive::ReceiveBuffer;
 /// 控制面：默认网络与网卡事件分派。
 pub(crate) struct Network {
     hub: Arc<EventHub>,
-    // OWNER: 默认网络（对应 Fuchsia netstack 的默认栈）：持有全部网卡，随 netstack 存续，
-    // 不随任何使用者的连接退休；使用者重启后重新连上同一网络，接口配置不丢失。
-    default: Once<Arc<Namespace>>,
+    // OWNER: 默认网络（对应 Fuchsia netstack 的默认栈）：持有 netcfg 安装的全部网卡，随 netstack 存续，
+    // 不随任何使用者的连接退休；linuxd 重启后重新连上同一网络，接口配置不丢失。
+    default: Arc<Namespace>,
 }
 
-/// 创建控制面：接入设备目录中启动时已有的全部网卡，并以它们装配默认网络（回环启用）。
-/// 必须先于第一个连接完成，使用者的第一个请求就是连接默认网络。
+/// 创建控制面与默认网络（回环启用，尚无网卡）；网卡由 netcfg 经安装协议加入。
 ///
 /// # Errors
 ///
-/// 事件分派创建失败，或设备目录在启动枚举完成前关闭。
-pub(crate) fn start(directory: &DirectoryClient) -> Result<Arc<Network>, Status> {
-    let network = Arc::try_new(Network {
+/// 事件分派或默认网络创建失败。
+pub(crate) fn start() -> Result<Arc<Network>, Status> {
+    let namespace = Namespace::create().map_err(|()| native_abi::ERR_NO_MEMORY)?;
+    let owner =
+        inet::prepare_network(&namespace, &[], true).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    namespace.install_protocol(owner);
+    Arc::try_new(Network {
         hub: EventHub::start()?,
-        default: Once::new(),
+        default: namespace,
     })
+    .map_err(|_| native_abi::ERR_NO_MEMORY)
+}
+
+/// 以安装服务服务 netcfg 的一条连接。
+///
+/// # Errors
+///
+/// 服务线程创建失败。
+pub(crate) fn serve_installer(network: Arc<Network>, channel: Channel) -> Result<(), Status> {
+    let handler = Arc::try_new(
+        move |ordinal: u32,
+              request: &mut network_protocol::Reader<'_>,
+              handles: Vec<Handle>,
+              reply: &mut network_protocol::Writer| {
+            network_protocol::dispatch_installer(&*network, ordinal, request, handles, reply)
+        },
+    )
     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    let mut devices: Vec<Arc<dyn NetworkDevice>> = Vec::new();
-    let watch = directory.watch()?;
-    let mut last = 0;
-    loop {
-        let _ = watch.signal(signals::USER_0, 0);
-        let (enumerated, entries) = directory.list(last)?;
-        let progressed = !entries.is_empty();
-        for entry in entries {
-            last = entry.id;
-            if entry.class != Class::Network {
-                continue;
-            }
-            match directory
-                .open(&entry)
-                .and_then(|device| network.attach(device))
-            {
-                Ok(device) => {
-                    devices
-                        .try_reserve(1)
-                        .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-                    devices.push(device);
-                }
-                Err(status) => {
-                    error!(
-                        "netstack: network device {} attach failed: {status}",
-                        entry.id
-                    );
-                }
-            }
-        }
-        if !progressed && enumerated {
-            let namespace = Namespace::create().map_err(|()| native_abi::ERR_NO_MEMORY)?;
-            let owner = inet::prepare_network(&namespace, &devices, true)
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-            namespace.install_protocol(owner);
-            network.default.call_once(|| namespace);
-            return Ok(network);
-        }
-        if !progressed {
-            watch.wait_one(signals::USER_0, native_abi::DEADLINE_INFINITE)?;
-        }
-    }
+    service_rpc::serve(channel, 1, b"netstack-installer", handler)
 }
 
 /// 以控制服务服务一条使用者连接；全部连接共享同一控制面。
@@ -106,21 +84,28 @@ pub(crate) fn serve_control(network: Arc<Network>, control: Channel) -> Result<(
     service_rpc::serve(control, 1, b"netstack-control", handler)
 }
 
-impl Network {
-    fn attach(&self, device: OpenedDevice) -> Result<Arc<dyn NetworkDevice>, Status> {
-        let device = device_protocol::network::connect(device, &self.hub)?;
+impl InstallerService for Network {
+    fn install_device(&self, description: Vec<u8>, handles: Vec<Handle>) -> Result<u32, Status> {
+        let device = device_protocol::network::connect(
+            OpenedDevice {
+                class: Class::Network,
+                description,
+                handles,
+            },
+            &self.hub,
+        )?;
         device.bind_activity(crate::worker::device_activity()?);
-        Ok(device)
+        inet::install_interface(&self.default, device).map_err(|error| match error {
+            SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
+            _ => native_abi::ERR_NO_RESOURCES,
+        })
     }
 }
 
 impl NetworkService for Network {
     fn create_namespace(&self, initial: bool) -> Result<Channel, Status> {
         let namespace = if initial {
-            self.default
-                .get()
-                .cloned()
-                .ok_or(native_abi::ERR_BAD_STATE)?
+            self.default.clone()
         } else {
             // 新网络域与 Linux NEWNET 一致：只有 DOWN 且无地址的回环，没有网卡。
             let namespace = Namespace::create().map_err(|()| native_abi::ERR_NO_MEMORY)?;

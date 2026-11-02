@@ -35,14 +35,16 @@ def verify(root: Path = ROOT) -> None:
         relative = path.relative_to(vendor).as_posix()
         if relative not in manifest["files"] and relative not in LOCAL_FILES:
             raise ValueError(f"smoltcp: untracked source outside inventory: {relative}")
-    for relative, expected in [("system/netstack/Cargo.toml", "../../vendor/smoltcp"),
-                               ("tools/netstack-unit/Cargo.toml", "../../vendor/smoltcp")]:
+    transport = {"alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-raw", "socket-tcp", "socket-tcp-reno", "socket-udp"}
+    # dhcp-client 只用 wire 层编解码 DHCPv4 报文；协议栈与 socket 只属于 netstack。smoltcp 启用以太网 medium
+    # 时要求至少一种 socket 特性才能编译，dhcp-client 因此带上不使用的 socket-raw（链接时裁掉）。
+    for relative, features in [("system/netstack/Cargo.toml", transport),
+                               ("tools/netstack-unit/Cargo.toml", transport),
+                               ("system/dhcp-client/Cargo.toml", {"medium-ethernet", "proto-ipv4", "proto-dhcpv4", "socket-raw"})]:
         dependency = tomllib.loads((root / relative).read_text())["dependencies"]["smoltcp"]
-        if dependency.get("path") != expected or dependency.get("version") != "=0.13.1":
+        if dependency.get("path") != "../../vendor/smoltcp" or dependency.get("version") != "=0.13.1":
             raise ValueError(f"smoltcp: {relative} must use the single pinned local transport")
-        if dependency.get("default-features") is not False or set(dependency["features"]) != {
-            "alloc", "medium-ethernet", "medium-ip", "proto-ipv4", "socket-raw", "socket-tcp", "socket-tcp-reno", "socket-udp"
-        }:
+        if dependency.get("default-features") is not False or set(dependency["features"]) != features:
             raise ValueError(f"smoltcp: unexpected protocol features in {relative}")
 
 

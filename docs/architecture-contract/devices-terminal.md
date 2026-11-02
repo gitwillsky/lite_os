@@ -10,15 +10,28 @@
 | `arch::dma` | 静态硬件后端、设备表编码与同步失效 |
 | `driver-host::platform` / `driver-host::drivers` | 设备事实解码、装配 / 全部硬件 adapter、DMA、queue、reset |
 | `driver-host::io_completion` / `driver-host::completion` | 请求槽与 capacity handshake / 合并完成通知与服务线程 |
-| `device-model` / `device-protocol` | 设备类接口 / 设备目录、channel、共享 VMO 的传输契约 |
+| `device-model` / `device-protocol` | 设备类接口 / 设备目录、设备会话、channel、共享 VMO 的传输契约 |
 | `linuxd::devices` | DRM、evdev、ALSA、TTY、USB sysfs、virtio-port 的 Linux 语义 |
 | `linuxd::fs::chardev` / `devnode` | cdev minor 区间注册 / devfs inode identity |
-| `netstack` / `ext4d` | 网络设备消费与协议栈 / 块设备消费与文件系统 |
+| `netcfg` → `netstack` / `fshost` → `ext4d` | 网卡发现并安装进协议栈 / 块设备所有与文件系统服务 |
 | `user/linux-uapi` 与 compositor | 应用 Linux UAPI 资源封装 / DRM master、evdev、标准 Wayland |
 
 adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份权威；Linux 文件壳和 RPC client
 只持有协议能力，不复制硬件 state。DMABUF/GEM/framebuffer、TTY session 与 evdev per-open queue
 分别留在 linuxd 的相应领域。用户态终端只消费标准 PTY，不使用私有显示或 console ABI。
+
+## 设备目录与会话
+
+1. driver-host 持续服务设备目录（对应 Fuchsia devfs）：驱动只登记类、静态描述与开会话函数，目录分配单调不复用的 ID；
+   使用者 `LIST` 枚举、`WATCH` 取得变化 Event（先清除再读取，读取之后的变化不会丢失）、`OPEN` 建立新会话、
+   `SCOPE` 派生只含指定类的目录。root-server 持有完整目录并按类派生给各服务。
+2. 会话是设备类协议的一组句柄（请求 channel、活动 Event，PCM 另有事件 channel）。会话状态与结束标记由服务闭包
+   整体持有，随全部服务线程退出而析构：先回收会话状态，再置位结束标记。各类回收：网卡取消未提交的发送预留；
+   PCM 停止并释放流、撤销事件端点；显示关闭 scanout、释放 2D 缓冲、销毁本会话的 virgl context 与 resource、
+   隐藏光标。缺失回收时使用者崩溃会让发送槽、流或 GPU 对象永久残留。
+3. 块设备、网卡、显示、输入、PCM、port 是独占类：旧会话的使用者仍持有请求 channel 时 `OPEN` 返回
+   `ERR_ALREADY_BOUND`；已离开时等旧会话回收完毕再建立新会话。entropy、USB 连接与启动进度可共享。
+4. 活动 Event 在登记时绑定驱动一次，每个会话得到它的副本；会话结束不解除驱动侧绑定。
 
 ## DMA 与 IOMMU 寿命
 

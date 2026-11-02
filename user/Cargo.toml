@@ -28,6 +28,7 @@ members = [
     "programs/device-manager",
     "libraries/sound",
     "programs/task-manager",
+    "programs/resolvd",
     "libraries/linux-uapi",
     "libraries/mpv-client",
     "libraries/terminal-font",

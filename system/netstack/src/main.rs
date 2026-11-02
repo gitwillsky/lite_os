@@ -6,7 +6,8 @@
 //! netstack：网络服务。
 //!
 //! 拥有 IPv4 协议栈（smoltcp）、网卡、接口与路由、TCP/UDP/ICMP/RAW endpoint 与 packet socket。
-//! 启动时从根服务路由来的网卡目录打开全部网卡（重启后同样重新打开），再经 outgoing 接受使用者连接；
+//! 启动时只有带回环的默认网络；netcfg 经安装协议加入网卡（netstack 重启后由它重新安装）。经 outgoing 接受
+//! 控制与安装连接；
 //! 使用者为每个网络域创建域 channel，经域 channel 创建 socket；每个 socket 一条 channel，全部操作不阻塞，
 //! 就绪变化经 socket 的 Event 通知使用者（协议见 `network_protocol`）。
 
@@ -40,22 +41,21 @@ native_runtime::entry!(main);
 fn main(mut startup: Startup) -> i64 {
     let outgoing =
         native_runtime::Channel::from_handle(startup.take(launch_protocol::netstack::OUTGOING));
-    let directory =
-        device_protocol::directory::DirectoryClient::new(native_runtime::Channel::from_handle(
-            startup.take(launch_protocol::netstack::DEVICE_DIRECTORY),
-        ));
     packet::init();
     worker::start().expect("netstack protocol worker");
     dispatcher::start().expect("netstack dispatcher");
-    let network = server::start(&directory).expect("netstack network devices");
+    let network = server::start().expect("netstack default network");
     service_directory::serve_directory(
         outgoing,
         b"netstack-outgoing",
         alloc::sync::Arc::try_new(move |protocol: &[u8], channel: native_runtime::Channel| {
-            if protocol != service_directory::NETWORK {
-                return Err(native_runtime::native_abi::ERR_NOT_FOUND);
+            if protocol == service_directory::NETWORK {
+                server::serve_control(network.clone(), channel)
+            } else if protocol == service_directory::NETWORK_INSTALLER {
+                server::serve_installer(network.clone(), channel)
+            } else {
+                Err(native_runtime::native_abi::ERR_NOT_FOUND)
             }
-            server::serve_control(network.clone(), channel)
         })
         .expect("netstack outgoing connector"),
     )

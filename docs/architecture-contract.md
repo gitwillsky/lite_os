@@ -84,7 +84,7 @@
 | `system/linuxd/src/fs/procfs.rs` | 1397 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
 | `kernel/src/vm/vmo.rs` | 1064 | `vm` | COW tree、页解析与映射退休；pager 请求、页移交与脏页事务归 vmo/pager | 增加新的 backing kind 前审查页解析职责 |
 | `kernel/src/vm/address_space.rs` | 1105 | `vm` | VMAR 树与页表修改同锁裁决 | 新增 mapping operation 前拆出独立 transaction |
-| `system/network-protocol/src/lib.rs` | 1389 | `lib` | 域与 socket 的共享线格式及类型词汇 | 增加 wire family 前按控制/域/socket 边界拆分 |
+| `system/network-protocol/src/lib.rs` | 1372 | `lib` | 域与 socket 的共享线格式及类型词汇 | 增加 wire family 前按控制/域/socket 边界拆分 |
 
 ## Change contract
 

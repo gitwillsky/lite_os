@@ -13,6 +13,7 @@ native-runtime = { path = "../native-runtime" }
 launch-protocol = { path = "../launch-protocol" }
 device-protocol = { path = "../device-protocol" }
 service-directory = { path = "../service-directory" }
+filesystem-protocol = { path = "../filesystem-protocol" }
 
 [lints]
 workspace = true

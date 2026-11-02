@@ -1,16 +1,22 @@
 #![no_std]
 #![no_main]
+#![feature(allocator_ext)]
 
 //! fshost：存储宿主（对应 Fuchsia fshost）。
 //!
 //! 1. 从根服务路由来的块设备目录打开启动时发现的全部块设备，持有各设备唯一的驱动会话；
 //! 2. 持有 ext4d 的控制连接；使用者不直接接触块设备驱动会话或 ext4d；
-//! 3. 经 outgoing 提供两个协议：块设备清单（按序号交出全盘范围连接，Linux 块设备 UAPI 与挂载在其上实现）
-//!    与 ext4 挂载（原样转发给 ext4d）。使用者（linuxd）重启后重新连接即可，块设备会话与 ext4d 不受影响。
+//! 3. 卷标为 `liteos-data` 的 ext4 是原生数据卷：不交给 Linux，由 fshost 读写挂载，并为各原生服务派生私有目录
+//!    （存储能力，见 [`storage`]）；
+//! 4. 经 outgoing 提供协议：块设备清单（按序号交出全盘范围连接，Linux 块设备 UAPI 与挂载在其上实现）、
+//!    ext4 挂载（原样转发给 ext4d）与存储管理（只路由给根服务）。使用者（linuxd）重启后重新连接即可，
+//!    块设备会话、ext4d 与数据卷不受影响。
 
 extern crate alloc;
 #[macro_use]
 extern crate native_runtime;
+
+mod storage;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -23,8 +29,15 @@ use native_runtime::{Channel, Startup};
 
 native_runtime::entry!(main);
 
+/// 启动时发现的块设备：交给 Linux 的块设备与原生数据卷（若存在）。
+struct Devices {
+    linux: Vec<Arc<dyn BlockDevice>>,
+    data: Option<Arc<dyn BlockDevice>>,
+}
+
 /// 枚举块设备直到启动枚举完成；块设备没有热插拔，之后不再观察目录。
-fn open_devices(directory: &DirectoryClient) -> Result<Vec<Arc<dyn BlockDevice>>, Status> {
+fn open_devices(directory: &DirectoryClient) -> Result<Devices, Status> {
+    let mut data: Option<Arc<dyn BlockDevice>> = None;
     let watch = directory.watch()?;
     let mut devices: Vec<Arc<dyn BlockDevice>> = Vec::new();
     let mut last = 0;
@@ -41,6 +54,9 @@ fn open_devices(directory: &DirectoryClient) -> Result<Vec<Arc<dyn BlockDevice>>
                 .open(&entry)
                 .and_then(device_protocol::block::connect)
             {
+                Ok(device) if data.is_none() && storage::is_data_volume(&*device) => {
+                    data = Some(device);
+                }
                 Ok(device) => {
                     devices
                         .try_reserve(1)
@@ -51,7 +67,10 @@ fn open_devices(directory: &DirectoryClient) -> Result<Vec<Arc<dyn BlockDevice>>
             }
         }
         if !progressed && enumerated {
-            return Ok(devices);
+            return Ok(Devices {
+                linux: devices,
+                data,
+            });
         }
         if !progressed {
             watch.wait_one(signals::USER_0, native_abi::DEADLINE_INFINITE)?;
@@ -67,7 +86,17 @@ fn main(mut startup: Startup) -> i64 {
     let ext4 = Arc::new(MountClient::new(Channel::from_handle(
         startup.take(fshost::EXT4),
     )));
-    let devices = Arc::new(open_devices(&directory).expect("fshost block devices"));
+    let Devices {
+        linux: devices,
+        data,
+    } = open_devices(&directory).expect("fshost block devices");
+    let devices = Arc::new(devices);
+    // 数据卷缺失时存储管理返回 NOT_FOUND，需要私有目录的服务因此无法启动：镜像总是带数据卷。
+    let volume = data.and_then(|device| {
+        storage::DataVolume::mount(&ext4, &*device)
+            .inspect_err(|status| error!("fshost: data volume mount failed: {status}"))
+            .ok()
+    });
     service_directory::serve_directory(
         outgoing,
         b"fshost-outgoing",
@@ -86,6 +115,23 @@ fn main(mut startup: Startup) -> i64 {
                 )
             } else if protocol == service_directory::EXT4 {
                 ext4.serve_proxy(channel)
+            } else if protocol == service_directory::STORAGE_ADMIN {
+                let volume = volume.clone().ok_or(native_abi::ERR_NOT_FOUND)?;
+                filesystem_protocol::serve_storage_admin(
+                    channel,
+                    Arc::new(move |name: &[u8]| {
+                        let directory = volume.directory(name)?;
+                        let (client, server) = Channel::create()?;
+                        filesystem_protocol::serve_storage(
+                            server,
+                            Arc::new(storage::ServiceStorage {
+                                volume: volume.clone(),
+                                directory,
+                            }),
+                        )?;
+                        Ok(client)
+                    }),
+                )
             } else {
                 Err(native_abi::ERR_NOT_FOUND)
             }

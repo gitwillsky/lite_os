@@ -30,6 +30,8 @@ pub(super) struct PartitionInfo {
 pub(crate) struct BlockNode {
     number: DeviceNumber,
     device: Arc<dyn BlockDevice>,
+    /// `/dev` 下的节点名；Linux 的磁盘名由 linuxd 按自己看到的盘分配，不取驱动侧的名字。
+    name: Vec<u8>,
     /// 整盘节点已发布的分区；分区节点为空。`BLKRRPART` 以它判断分区表是否变化。
     partitions: crate::sync::Mutex<Vec<crate::devices::block::partition_table::Partition>>,
     /// 分区的位置与 `PARTUUID`；整盘为 `None`。
@@ -74,6 +76,7 @@ impl BlockNode {
         number: DeviceNumber,
         device: Arc<dyn BlockDevice>,
         partition: Option<PartitionInfo>,
+        name: Vec<u8>,
     ) -> Result<Arc<Self>, FileSystemError> {
         let bytes = device
             .block_count()
@@ -93,6 +96,7 @@ impl BlockNode {
         Arc::try_new(Self {
             number,
             device,
+            name,
             partitions: crate::sync::Mutex::new(Vec::new()),
             partition,
             claim,
@@ -116,7 +120,7 @@ impl BlockNode {
 
     /// `/dev` 下的节点名（`vda`、`vda1`）。
     pub(crate) fn name(&self) -> &[u8] {
-        self.device.disk_name()
+        &self.name
     }
 
     /// 记录整盘已发布的分区集合。

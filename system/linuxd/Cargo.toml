@@ -17,6 +17,8 @@ device-protocol = { path = "../device-protocol" }
 filesystem-protocol = { path = "../filesystem-protocol" }
 network-protocol = { path = "../network-protocol" }
 service-directory = { path = "../service-directory" }
+service-rpc = { path = "../service-rpc" }
+netcfg-protocol = { path = "../netcfg-protocol" }
 launch-protocol = { path = "../launch-protocol" }
 fallible-tree = { path = "../../libraries/fallible-tree" }
 linux-abi = { path = "../../abi/linux-abi" }

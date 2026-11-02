@@ -33,6 +33,7 @@ from build_target import (
     acceleration_from_environment,
     target_from_environment,
 )
+from ext4_image import create_data_volume
 
 ROOT = Path(__file__).resolve().parent.parent
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -147,11 +148,19 @@ def _qemu_command(
         "-drive", f"file={scratch_disk},if=none,format=raw,id=x1",
         "-device", "virtio-blk-device,drive=x1",
     ) if scratch_disk is not None else ()
+    # 每次启动一块空的原生数据卷（门禁不跨启动保留原生设置）；fshost 按卷标识别它且不交给 Linux，
+    # 因此它的位置不影响 Linux 的 vda/vdb 命名。
+    data_volume = image.with_name(f"{image.name}.data")
+    create_data_volume(data_volume)
+    data_device = (
+        "-drive", f"file={data_volume},if=none,format=raw,id=x2",
+        "-device", f"{block_transport},drive=x2",
+    )
     # guest 按 DTB transport 顺序装配；两个 virt machine 的节点顺序不同。
     # AArch64 先遇到后声明设备，RISC-V 先遇到先声明设备；都保证 root=vda、scratch=vdb。
     block_devices = (
-        (*scratch_device, *root_device) if runtime.arch == "aarch64"
-        else (*root_device, *scratch_device)
+        (*scratch_device, *root_device, *data_device) if runtime.arch == "aarch64"
+        else (*root_device, *scratch_device, *data_device)
     )
     command.extend(
         [

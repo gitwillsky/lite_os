@@ -79,7 +79,7 @@ class RustStdRoutingTests(unittest.TestCase):
         musl = type("Musl", (), {"install": Path("/musl")})()
         inputs = module.gate_inputs(Path("/rootfs.img"), Path("/std"), musl)
 
-        self.assertIn(module.ROOT / "user/base/udhcpc.script", inputs)
+        self.assertIn(module.ROOT / "system/netcfg/default.conf", inputs)
         self.assertIn(module.ROOT / module.TARGET.kernel_elf(), inputs)
 
     def test_make_routes_both_architectures_through_std_runtime_gate(self) -> None:

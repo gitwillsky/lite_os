@@ -170,7 +170,7 @@ pub enum Details {
         original: PathBuf,
         deleted: Option<i64>,
     },
-    /// 网络连接：状态文字、设备名、接口名与是否启用（`/etc/network/interfaces` 的 auto）。
+    /// 网络连接：状态文字、设备名、接口名与是否启用（网络设置中的“禁用”）。
     Connection {
         status: String,
         device: String,

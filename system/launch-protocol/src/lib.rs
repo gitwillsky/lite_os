@@ -61,7 +61,7 @@ pub mod ext4d {
     pub const CONTROL: usize = ROLE_HANDLES;
 }
 
-/// 网络服务：拥有 IPv4 协议栈、packet socket 与网卡；按使用者的请求创建网络域与 socket。
+/// 网络服务：拥有 IPv4 协议栈、packet socket 与默认网络；netcfg 安装网卡，使用者创建网络域与 socket。
 pub mod netstack {
     use super::ROLE_HANDLES;
 
@@ -69,10 +69,8 @@ pub mod netstack {
     pub const IMAGE: &[u8] = b"bin/netstack";
     /// 静态链接基址（普通进程的低地址区）。
     pub const BASE: usize = 0x40_0000;
-    /// outgoing 服务目录的服务端：经它接受 `service_directory::NETWORK` 连接。
+    /// outgoing 服务目录的服务端：接受 `service_directory::NETWORK` 与 `NETWORK_INSTALLER` 连接。
     pub const OUTGOING: usize = ROLE_HANDLES;
-    /// 只含网卡的设备目录连接；netstack 自己打开网卡，重启后重新打开。
-    pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 1;
 }
 
 /// 驱动宿主：平台设备发现、全部设备驱动与设备目录的发布者。
@@ -95,4 +93,41 @@ pub mod driver_host {
 pub mod root_server {
     /// 静态链接基址（普通进程的低地址区）。
     pub const BASE: usize = 0x20_0000;
+}
+
+/// 网络配置：发现网卡并经 netstack 的安装协议安装，按默认策略与用户设置配置接口（DHCP 经 dhcp-client），
+/// 提供网络设置协议（Fuchsia netcfg）。
+pub mod netcfg {
+    use super::ROLE_HANDLES;
+
+    /// bootfs 中的映像路径。
+    pub const IMAGE: &[u8] = b"bin/netcfg";
+    /// bootfs 中的只读默认策略（interfaces(5) 子集，`iface *` 匹配未单独配置的以太网口）。
+    pub const DEFAULT_CONFIG: &[u8] = b"data/netcfg/default.conf";
+    /// 静态链接基址（普通进程的低地址区）。
+    pub const BASE: usize = 0x40_0000;
+    /// outgoing 服务目录的服务端：接受 `service_directory::NETWORK_SETTINGS` 连接。
+    pub const OUTGOING: usize = ROLE_HANDLES;
+    /// 根服务的服务路由目录（netstack 控制与安装、dhcp-client）。
+    pub const SERVICES: usize = ROLE_HANDLES + 1;
+    /// 只含网卡的设备目录连接。
+    pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 2;
+    /// fshost 派生的私有数据目录（`filesystem_protocol::Storage`）：持久化用户设置。
+    pub const STORAGE: usize = ROLE_HANDLES + 3;
+    /// 默认策略的只读 VMO（内容即 [`DEFAULT_CONFIG`]）。
+    pub const CONFIG: usize = ROLE_HANDLES + 4;
+}
+
+/// DHCPv4 客户端：经 netstack 的 packet socket 为 netcfg 指定的接口取得并续租地址（Fuchsia dhcp-client）。
+pub mod dhcp_client {
+    use super::ROLE_HANDLES;
+
+    /// bootfs 中的映像路径。
+    pub const IMAGE: &[u8] = b"bin/dhcp-client";
+    /// 静态链接基址（普通进程的低地址区）。
+    pub const BASE: usize = 0x40_0000;
+    /// outgoing 服务目录的服务端：接受 `service_directory::DHCP` 连接。
+    pub const OUTGOING: usize = ROLE_HANDLES;
+    /// 根服务的服务路由目录（netstack 控制）。
+    pub const SERVICES: usize = ROLE_HANDLES + 1;
 }

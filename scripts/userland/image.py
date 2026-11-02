@@ -185,8 +185,6 @@ def create_image(
         "mkdir /usr/share/liteos/sounds",
         "mkdir /usr/share/applications",
         "mkdir /home",
-        "mkdir /usr/share/udhcpc",
-        "mkdir /etc/network",
         "mkdir /var",
         "mkdir /var/cache",
         "mkdir /var/empty",
@@ -199,8 +197,6 @@ def create_image(
         "set_inode_field /etc/shadow mode 0100600",
         # 默认时区（UTC+8）；之后由控制面板改写，同步器只在缺失时补上。
         f"write {ROOT / 'user' / 'base' / 'localtime'} /etc/localtime",
-        # 默认网络配置（eth0 DHCP）；之后由控制面板改写，同步器只在缺失时补上。
-        f"write {ROOT / 'user' / 'base' / 'interfaces'} /etc/network/interfaces",
         f"write {openssl.binary} /bin/openssl",
         "set_inode_field /bin/openssl mode 0100755",
         f"write {musl.install / 'usr/lib/libc.so'} /usr/lib/libc.so",
@@ -302,11 +298,9 @@ def create_image(
     )
     if "Type: symlink" not in loader or "Size: 16" not in loader:
         raise RuntimeError("BusyBox rootfs lacks the standard musl loader symlink")
-    network_service = run(
-        [str(find_debugfs()), "-R", "stat /etc/init.d/network-service", str(image)], ROOT
-    )
-    if "Type: regular" not in network_service or "Mode:  0755" not in network_service:
-        raise RuntimeError("BusyBox rootfs lacks the supervised network service")
+    resolver = run([str(find_debugfs()), "-R", "stat /bin/resolvd", str(image)], ROOT)
+    if "Type: regular" not in resolver or "Mode:  0755" not in resolver:
+        raise RuntimeError("BusyBox rootfs lacks the supervised resolver agent")
     openssl_binary = run([str(find_debugfs()), "-R", "stat /bin/openssl", str(image)], ROOT)
     if "Type: regular" not in openssl_binary or "Mode:  0755" not in openssl_binary:
         raise RuntimeError("BusyBox rootfs lacks the verified HTTPS helper")
@@ -387,10 +381,7 @@ def create_published_image(
         ROOT / "user/base/localtime",
         ROOT / "user/diagnostics/liteos-stress.c",
         boot_scene(),
-        ROOT / "user/base/network-service",
         ROOT / "user/base/shutdown",
-        ROOT / "user/base/udhcpc.script",
-        ROOT / "user/base/interfaces",
         ROOT / "create_fs.py",
         *(ROOT / "scripts/userland" / name for name in ("image.py", "artifacts.py", "busybox.py", "rust.py")),
         ROOT / "scripts/apk_cache.py",

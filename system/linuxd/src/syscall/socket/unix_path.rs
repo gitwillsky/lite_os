@@ -55,7 +55,7 @@ pub(super) fn resolve(
     Ok((inode, identity(metadata)))
 }
 
-/// 以调用任务的身份与 umask 绑定 pathname（`bind(2)`）。
+/// 创建真实 VFS socket inode并发布 AF_UNIX runtime binding。
 ///
 /// # Parameters
 ///
@@ -67,38 +67,16 @@ pub(super) fn resolve(
 /// 成功返回零；失败回滚尚未成功发布的目录项。
 pub(super) fn bind(socket: &Arc<Socket>, address: UnixAddress) -> isize {
     let task = current_task().expect("AF_UNIX pathname bind requires current task");
-    bind_at(
-        socket,
-        address,
-        start(&task),
-        task.creation_mode(0o777),
-        &task.access_identity(true),
-    )
-}
-
-/// 创建真实 VFS socket inode 并发布 AF_UNIX runtime binding；`bind(2)` 与 linuxd 自身发布的
-/// 服务端点共用这一条路径，inode 创建、registry 发布与失败回滚只有一份实现。
-///
-/// # Parameters
-///
-/// - `socket`: 尚未绑定的 AF_UNIX endpoint。
-/// - `address`: canonical pathname sockaddr value。
-/// - `start`: 相对路径的解析起点。
-/// - `mode`: 新 socket inode 的权限位（调用者已应用 umask）。
-/// - `access`: 创建者身份，决定目录写权限与新 inode 属主。
-///
-/// # Returns
-///
-/// 成功返回零；失败返回负 errno，并回滚尚未成功发布的目录项。
-pub(crate) fn bind_at(
-    socket: &Arc<Socket>,
-    address: UnixAddress,
-    start: LookupOrigin,
-    mode: u32,
-    access: &crate::fs::AccessIdentity,
-) -> isize {
+    let access = task.access_identity(true);
     let path = address.bytes();
-    let opened = match vfs().create_at(start.clone(), path, InodeType::Socket, mode, access) {
+    let start = start(&task);
+    let opened = match vfs().create_at(
+        start.clone(),
+        path,
+        InodeType::Socket,
+        task.creation_mode(0o777),
+        &access,
+    ) {
         Ok(opened) => opened,
         Err(FileSystemError::AlreadyExists) => return -errno::EADDRINUSE,
         Err(error) => return super::super::fs::filesystem_error(error),
@@ -107,7 +85,7 @@ pub(crate) fn bind_at(
         Ok(metadata) => identity(metadata),
         Err(error) => {
             let result = super::super::fs::filesystem_error(error);
-            return if vfs().unlink_at(start, path, false, access).is_ok() {
+            return if vfs().unlink_at(start, path, false, &access).is_ok() {
                 result
             } else {
                 -errno::EIO
@@ -117,7 +95,7 @@ pub(crate) fn bind_at(
     if let Err(error) = socket.bind_unix_path(address, socket_identity, opened.inode()) {
         // 1. VFS entry 尚未向 bind caller 发布成功，失败必须删除它。
         // 2. rollback 失败意味着 pathname 与 registry 已不可证明一致，只能返回 EIO。
-        if vfs().unlink_at(start, path, false, access).is_err() {
+        if vfs().unlink_at(start, path, false, &access).is_err() {
             return -errno::EIO;
         }
         return super::socket_error(error);

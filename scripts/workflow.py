@@ -20,7 +20,7 @@ from build_target import acceleration_from_environment, target_from_environment
 from classic_assets import boot_scene
 from local_inputs import TOOLS
 from host_topology import default_guest_cpu_count
-from ext4_image import find_debugfs, find_e2fsck, find_tune2fs
+from ext4_image import create_data_volume, find_debugfs, find_e2fsck, find_tune2fs
 from utm_runtime import run_gui as run_utm_gui
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -92,6 +92,8 @@ def target_paths(environment: Mapping[str, str] | None = None) -> dict[str, Path
         "boot": ROOT / target.kernel_boot_artifact(profile),
         "rootfs": ROOT / f"target/rootfs/{arch}.img",
         "fs": ROOT / f"fs-{arch}.img",
+        # 原生数据卷的开发实例：保存原生服务的持久设置，与 Linux 根盘分开（不随 reset-rootfs 清除）。
+        "data": ROOT / f"data-{arch}.img",
         "apk": ROOT / f"target/apk-apps/{arch}.img",
     }
 
@@ -108,7 +110,7 @@ def build_kernel(environment: Mapping[str, str] | None = None) -> None:
     cargo_profile = ["--release"] if profile == "release" else []
     run(["cargo", "build", "--target", target.kernel_triple, *cargo_profile], cwd=ROOT / "kernel", environment=environment)
     run(
-        ["cargo", "build", "-p", "root-server", "-p", "driver-host", "-p", "ext4d", "-p", "fshost", "-p", "netstack", "-p", "linuxd", "--target", target.service_triple, *cargo_profile],
+        ["cargo", "build", "-p", "root-server", "-p", "driver-host", "-p", "ext4d", "-p", "fshost", "-p", "netstack", "-p", "dhcp-client", "-p", "netcfg", "-p", "linuxd", "--target", target.service_triple, *cargo_profile],
         cwd=ROOT,
         # 启动画面编入 driver-host；受 Git 管理的素材由 classic_assets 校验，cargo 会跟踪该环境变量与文件内容。
         environment=_env_with(environment, LITEOS_BOOT_SCENE=str(boot_scene())),
@@ -163,6 +165,14 @@ def reset_rootfs(environment: Mapping[str, str] | None = None, *, size_mib: str 
         os.replace(temporary, paths["fs"])
     finally:
         temporary.unlink(missing_ok=True)
+
+
+def _data_volume(environment: Mapping[str, str] | None = None) -> Path:
+    """开发实例的原生数据卷；缺失时创建空卷。"""
+    path = target_paths(environment)["data"]
+    if not path.is_file():
+        create_data_volume(path)
+    return path
 
 
 def prepare_rootfs(environment: Mapping[str, str] | None = None, *, size_mib: str | None = None) -> None:
@@ -268,6 +278,10 @@ def _qemu_command(
             f"file={image},if=none,format=raw,id=x0",
             "-device",
             "virtio-blk-device,drive=x0",
+            "-drive",
+            f"file={_data_volume(source)},if=none,format=raw,id=x2",
+            "-device",
+            "virtio-blk-device,drive=x2",
             "-object",
             "rng-random,filename=/dev/urandom,id=rng0",
             "-device",
@@ -632,7 +646,7 @@ def verify_host(environment: Mapping[str, str] | None = None) -> None:
         ],
         environment=environment,
     )
-    run(["cargo", "clippy", "-p", "root-server", "-p", "driver-host", "-p", "ext4d", "-p", "fshost", "-p", "netstack", "-p", "linuxd", "--target", target.service_triple, "--bins", "--", "-D", "warnings"], environment=environment)
+    run(["cargo", "clippy", "-p", "root-server", "-p", "driver-host", "-p", "ext4d", "-p", "fshost", "-p", "netstack", "-p", "dhcp-client", "-p", "netcfg", "-p", "linuxd", "--target", target.service_triple, "--bins", "--", "-D", "warnings"], environment=environment)
     if target.requires_bootloader:
         run(["cargo", "clippy", "--release", "--", "-D", "warnings"], cwd=ROOT / "bootloader", environment=environment)
     verify_unit(environment)

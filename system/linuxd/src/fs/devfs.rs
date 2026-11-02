@@ -17,16 +17,17 @@ enum DevNode {
     Link(DevLink),
 }
 
-/// 注册节点的 inode type：按 mode 区分字符与块设备。
+/// 注册节点的 inode type：按 mode 区分字符设备、块设备与授权端点 socket。
 ///
 /// 只接收 mode 值：readdir 在持有注册表锁的 visitor 内调用，重新查询注册表会自旋死锁。
 fn node_type(mode: u32) -> InodeType {
     const S_IFMT: u32 = 0o170000;
     const S_IFBLK: u32 = 0o060000;
-    if mode & S_IFMT == S_IFBLK {
-        InodeType::BlockDevice
-    } else {
-        InodeType::CharacterDevice
+    const S_IFSOCK: u32 = 0o140000;
+    match mode & S_IFMT {
+        S_IFBLK => InodeType::BlockDevice,
+        S_IFSOCK => InodeType::Socket,
+        _ => InodeType::CharacterDevice,
     }
 }
 
@@ -155,11 +156,14 @@ impl Inode for DevInode {
     }
 
     fn metadata(&self) -> Result<InodeMetadata, FileSystemError> {
-        let device = match self.node {
-            DevNode::Root | DevNode::Pts => None,
-            DevNode::Registered(index) => registry::device(index).map(|node| node.number),
-            DevNode::Directory(_) | DevNode::Link(_) => None,
+        let registered = match self.node {
+            DevNode::Registered(index) => registry::device(index),
+            DevNode::Root | DevNode::Pts | DevNode::Directory(_) | DevNode::Link(_) => None,
         };
+        let device = registered
+            .as_ref()
+            .filter(|node| node_type(node.mode) != InodeType::Socket)
+            .map(|node| node.number);
         Ok(InodeMetadata {
             filesystem: self.filesystem_id as u64,
             inode: self.node.inode(),
@@ -167,7 +171,7 @@ impl Inode for DevInode {
             mode: self.node.mode(),
             links: if self.node.is_directory() { 2 } else { 1 },
             uid: 0,
-            gid: 0,
+            gid: registered.map_or(0, |node| node.gid),
             size: match self.node {
                 DevNode::Link(link) => link.target().len() as u64,
                 DevNode::Root | DevNode::Pts | DevNode::Directory(_) | DevNode::Registered(_) => 0,
@@ -207,7 +211,9 @@ impl Inode for DevInode {
 
     fn device_number(&self) -> Option<super::DeviceNumber> {
         match self.node {
-            DevNode::Registered(index) => registry::device(index).map(|node| node.number),
+            DevNode::Registered(index) => registry::device(index)
+                .filter(|node| node_type(node.mode) != InodeType::Socket)
+                .map(|node| node.number),
             _ => None,
         }
     }

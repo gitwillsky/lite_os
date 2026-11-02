@@ -52,6 +52,10 @@
 - [Socket](syscall-support/socket.md)
 - [系统](syscall-support/system.md)
 
+## 进行中的计划
+
+- [服务拓扑对齐 Fuchsia，linuxd 可插拔](plans/fuchsia-alignment.md)
+
 ## 工程基线
 
 - [固定规范与上游来源](standards-baseline.md)

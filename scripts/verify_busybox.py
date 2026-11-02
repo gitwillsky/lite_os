@@ -117,7 +117,7 @@ def install_dhcp_gate_script(image: Path, directory: Path) -> None:
         "done\n"
         "/bin/ifconfig eth0 | /bin/grep -q 'inet addr:10.0.2.15'\n"
         "/bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2'\n"
-        "/bin/grep -q 'lease of 10.0.2.15 obtained' /run/network-service.log\n"
+        "/bin/grep -q '^nameserver ' /etc/resolv.conf\n"
         "echo LITEOS_DHCP_$((7*7+2))\n"
     )
     commands = directory / "dhcp-gate.debugfs"
@@ -600,11 +600,7 @@ def main() -> int:
                 ROOT / "user/base/profile",
                 ROOT / "user/Cargo.toml",
                 ROOT / "user/Cargo.lock",
-                ROOT / "user/base/network-service",
                 ROOT / "user/base/shutdown",
-                ROOT / "user/base/udhcpc.script",
-                ROOT / "user/base/interfaces",
-        ROOT / "user/base/interfaces",
                 ROOT / "create_fs.py",
                 Path(__file__).resolve(),
                 *(ROOT / "scripts/userland" / name for name in ("busybox.py", "rust.py", "artifacts.py", "image.py")),
@@ -673,8 +669,8 @@ def main() -> int:
                 "LITEOS_BUSYBOX_SHELL_42",
                 "LITEOS_BUSYBOX_UNICODE_42",
                 "LITEOS_DHCP_51",
-                "LITEOS_DHCP_SINGLE_51",
-                "LITEOS_DHCP_RESPAWN_51",
+                "LITEOS_RESOLVD_SINGLE_51",
+                "LITEOS_RESOLVD_RESPAWN_51",
                 "LITEOS_PING_52",
                 "LITEOS_DNS_51",
                 "LITEOS_HTTP_51",
@@ -777,17 +773,16 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_DHCP_51",
-                    ShellCommand(b"count=$(/bin/ps | /bin/grep '[u]dhcpc' | /bin/wc -l); [ \"$count\" -eq 1 ] && echo LITEOS_DHCP_SINGLE_$((7*7+2))\n"),
+                    ShellCommand(b"count=$(/bin/ps | /bin/grep '[r]esolvd' | /bin/wc -l); [ \"$count\" -eq 1 ] && echo LITEOS_RESOLVD_SINGLE_$((7*7+2))\n"),
                 ),
                 (
-                    "LITEOS_DHCP_SINGLE_51",
-                    # PID publication precedes DHCP lease/route commit. Poll the complete final
-                    # state for the same bounded 20 seconds as dhcp-gate.sh; a fixed sleep makes
-                    # normal host-network scheduling jitter look like a kernel regression.
-                    ShellCommand(b"old=$(/bin/cat /run/udhcpc.eth0.pid); /bin/kill \"$old\"; attempt=0; while :; do new=$(/bin/cat /run/udhcpc.eth0.pid 2>/dev/null); count=$(/bin/ps | /bin/grep '[u]dhcpc' | /bin/wc -l); if [ -n \"$new\" ] && [ \"$new\" != \"$old\" ] && [ \"$count\" -eq 1 ] && [ -s /etc/resolv.conf ] && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2'; then break; fi; attempt=$((attempt+1)); [ \"$attempt\" -lt 20 ] || break; /bin/sleep 1; done; [ \"$new\" != \"$old\" ] && [ \"$count\" -eq 1 ] && [ -s /etc/resolv.conf ] && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2' && echo LITEOS_DHCP_RESPAWN_$((7*7+2))\n"),
+                    "LITEOS_RESOLVD_SINGLE_51",
+                    # resolvd 经 /dev/network-settings 读取 netcfg 的设置：删除 resolv.conf 并结束它，init 重启的
+                    # 新实例必须重新写出 DHCP 租约中的 DNS（端点授权、init 监督与 netcfg 快照一起被覆盖）。
+                    ShellCommand(b"old=$(/bin/ps | /bin/awk '/[r]esolvd/ {print $1}'); /bin/rm -f /etc/resolv.conf; /bin/kill \"$old\"; attempt=0; while :; do new=$(/bin/ps | /bin/awk '/[r]esolvd/ {print $1}'); if [ -n \"$new\" ] && [ \"$new\" != \"$old\" ] && /bin/grep -q '^nameserver ' /etc/resolv.conf 2>/dev/null; then break; fi; attempt=$((attempt+1)); [ \"$attempt\" -lt 20 ] || break; /bin/sleep 1; done; [ \"$new\" != \"$old\" ] && /bin/grep -q '^nameserver ' /etc/resolv.conf && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2' && echo LITEOS_RESOLVD_RESPAWN_$((7*7+2))\n"),
                 ),
                 (
-                    "LITEOS_DHCP_RESPAWN_51",
+                    "LITEOS_RESOLVD_RESPAWN_51",
                     ShellCommand(b"/bin/ping -c 3 -W 3 10.0.2.2 | /bin/grep -q '3 packets received' && echo LITEOS_PING_$((7*7+3))\n"),
                 ),
                 (
@@ -796,15 +791,15 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_DNS_51",
-                    ShellCommand(f"/bin/wget -q -T 10 -O /http.out http://10.0.2.2:{http_port}/user/base/udhcpc.script && /bin/grep -q '^# @description BusyBox udhcpc' /http.out && echo LITEOS_HTTP_$((7*7+2))\n".encode()),
+                    ShellCommand(f"/bin/wget -q -T 10 -O /http.out http://10.0.2.2:{http_port}/system/netcfg/default.conf && /bin/grep -q '^iface [*] inet dhcp' /http.out && echo LITEOS_HTTP_$((7*7+2))\n".encode()),
                 ),
                 (
                     "LITEOS_HTTP_51",
-                    ShellCommand(f"if /bin/wget -q -T 10 -O /tls-reject.out https://10.0.2.2:{https_port}/user/base/udhcpc.script; then false; else echo LITEOS_TLS_REJECT_$((7*7+3)); fi\n".encode()),
+                    ShellCommand(f"if /bin/wget -q -T 10 -O /tls-reject.out https://10.0.2.2:{https_port}/system/netcfg/default.conf; then false; else echo LITEOS_TLS_REJECT_$((7*7+3)); fi\n".encode()),
                 ),
                 (
                     "LITEOS_TLS_REJECT_52",
-                    ShellCommand(f"/bin/wget -q -T 10 -O /https.out https://liteos-gate.test:{https_port}/user/base/udhcpc.script && /bin/grep -q '^# @description BusyBox udhcpc' /https.out && echo LITEOS_HTTPS_$((7*7+3))\n".encode()),
+                    ShellCommand(f"/bin/wget -q -T 10 -O /https.out https://liteos-gate.test:{https_port}/system/netcfg/default.conf && /bin/grep -q '^iface [*] inet dhcp' /https.out && echo LITEOS_HTTPS_$((7*7+3))\n".encode()),
                 ),
                 (
                     "LITEOS_HTTPS_52",

@@ -625,6 +625,7 @@ version = "0.1.0"
 dependencies = [
  "linux-uapi",
  "liteos-ui",
+ "network-config",
 ]
 
 [[package]]
@@ -1474,10 +1475,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "netcfg-protocol"
+version = "0.1.0"
+
+[[package]]
 name = "network-config"
 version = "0.1.0"
 dependencies = [
  "linux-uapi",
+ "netcfg-protocol",
 ]
 
 [[package]]
@@ -2151,6 +2157,13 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+]
+
+[[package]]
+name = "resolvd"
+version = "0.1.0"
+dependencies = [
+ "network-config",
 ]
 
 [[package]]

@@ -6,13 +6,12 @@
 //! 1. 从启动消息取得根 Job、根 resource、bootfs 与 DTB；
 //! 2. 为根 Job 建立异常 channel：任何系统服务未处理的异常都在这里记录，随后交还内核终止该进程；
 //! 3. 启动 driver-host（持有 DTB 与设备目录服务端），根服务持有完整目录连接并按设备类路由：
-//!    Network 类给 netstack，Block 类给 fshost，其余给 linuxd；
-//! 4. 启动 ext4d、fshost（持有 ext4d 控制端）与受监督的 netstack，并为 linuxd 服务路由目录：
-//!    `service_directory::NETWORK` 转发到 netstack 的当前实例，`BLOCKS`/`EXT4` 转发到 fshost
-//!    （能力路由，对应 Fuchsia component_manager）；
-//! 5. netstack 与 linuxd 终止后重启（linuxd 先终止整个 Linux Job），[`CRASH_WINDOW`] 内达到
-//!    [`CRASH_LIMIT`] 次判定为崩溃循环并关机；driver-host、fshost、ext4d 终止时系统无法继续服务：
-//!    记录退出状态并关机。
+//!    Network 类给 netcfg，Block 类给 fshost，其余给 linuxd；
+//! 4. 启动 ext4d、fshost（持有 ext4d 控制端），以及受监督的 netstack、dhcp-client、netcfg 与 linuxd；
+//!    每个消费者拿到只含它声明协议的路由目录（[`ROUTES`] 与各 `*_USES`），连接转发给提供者的当前实例
+//!    （能力路由，对应 Fuchsia component_manager）；netcfg 另得 fshost 派生的私有数据目录与 bootfs 默认策略；
+//! 5. 受监督服务终止后重启（linuxd 先终止整个 Linux Job），[`CRASH_WINDOW`] 内达到 [`CRASH_LIMIT`] 次
+//!    判定为崩溃循环并关机；driver-host、fshost、ext4d 终止时系统无法继续服务：记录退出状态并关机。
 
 extern crate alloc;
 
@@ -20,7 +19,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 
 use device_protocol::directory::{ALL_CLASSES, Class, DirectoryClient};
-use launch_protocol::{driver_host, ext4d, fshost, linuxd, netstack};
+use launch_protocol::{dhcp_client, driver_host, ext4d, fshost, linuxd, netcfg, netstack};
 use native_runtime::executor::Executor;
 use native_runtime::native_abi::{self, ExceptionReport, Status, rights, signals, startup};
 use native_runtime::sync::{Mutex, Once};
@@ -36,6 +35,8 @@ const DRIVER_HOST_STACK_SIZE: usize = 256 * 1024;
 const EXT4D_STACK_SIZE: usize = 256 * 1024;
 const NETSTACK_STACK_SIZE: usize = 256 * 1024;
 const FSHOST_STACK_SIZE: usize = 128 * 1024;
+const NETCFG_STACK_SIZE: usize = 128 * 1024;
+const DHCP_STACK_SIZE: usize = 128 * 1024;
 /// 崩溃循环判定：[`CRASH_WINDOW`] 纳秒内终止达到 [`CRASH_LIMIT`] 次即不再重启（对应 systemd
 /// `StartLimitBurst`/`StartLimitIntervalSec`）。缺失时持续崩溃的服务会让根服务无限重启它。
 const CRASH_LIMIT: usize = 5;
@@ -93,10 +94,84 @@ impl Supervised {
     }
 }
 
-// OWNER: netstack 的唯一监督状态；路由目录线程与监督任务共享。
-static NETWORK: Once<Supervised> = Once::new();
-// OWNER: fshost 的 outgoing；fshost 不重启（终止即关机），启动后不变。
-static STORAGE: Once<ServiceDirectory> = Once::new();
+/// 协议的提供者。
+#[derive(Clone, Copy)]
+enum Provider {
+    Netstack,
+    Fshost,
+    Netcfg,
+    Dhcp,
+}
+
+// OWNER: 各提供者的唯一实例状态；路由目录线程与监督任务共享。fshost 不重启（终止即关机）。
+static NETSTACK: Once<Supervised> = Once::new();
+static FSHOST: Once<Supervised> = Once::new();
+static NETCFG: Once<Supervised> = Once::new();
+static DHCP: Once<Supervised> = Once::new();
+
+impl Provider {
+    fn instance(self) -> &'static Supervised {
+        let slot = match self {
+            Self::Netstack => &NETSTACK,
+            Self::Fshost => &FSHOST,
+            Self::Netcfg => &NETCFG,
+            Self::Dhcp => &DHCP,
+        };
+        slot.call_once(Supervised::new)
+    }
+}
+
+/// 协议 → 提供者（对应 Fuchsia 组件的 `expose`）。
+const ROUTES: &[(&[u8], Provider)] = &[
+    (service_directory::NETWORK, Provider::Netstack),
+    (service_directory::NETWORK_INSTALLER, Provider::Netstack),
+    (service_directory::BLOCKS, Provider::Fshost),
+    (service_directory::EXT4, Provider::Fshost),
+    (service_directory::STORAGE_ADMIN, Provider::Fshost),
+    (service_directory::NETWORK_SETTINGS, Provider::Netcfg),
+    (service_directory::DHCP, Provider::Dhcp),
+];
+
+/// 各消费者可连接的协议（对应 Fuchsia 组件的 `use`）；路由目录拒绝未声明的协议。
+const LINUXD_USES: &[&[u8]] = &[
+    service_directory::NETWORK,
+    service_directory::BLOCKS,
+    service_directory::EXT4,
+    service_directory::NETWORK_SETTINGS,
+];
+const NETCFG_USES: &[&[u8]] = &[
+    service_directory::NETWORK,
+    service_directory::NETWORK_INSTALLER,
+    service_directory::DHCP,
+];
+const DHCP_USES: &[&[u8]] = &[service_directory::NETWORK];
+
+/// 一个受监督原生服务的启动描述。
+struct ServiceSpec {
+    name: &'static [u8],
+    label: &'static str,
+    image: &'static [u8],
+    stack_size: usize,
+}
+
+const NETSTACK_SPEC: ServiceSpec = ServiceSpec {
+    name: b"netstack",
+    label: "netstack",
+    image: netstack::IMAGE,
+    stack_size: NETSTACK_STACK_SIZE,
+};
+const NETCFG_SPEC: ServiceSpec = ServiceSpec {
+    name: b"netcfg",
+    label: "netcfg",
+    image: netcfg::IMAGE,
+    stack_size: NETCFG_STACK_SIZE,
+};
+const DHCP_SPEC: ServiceSpec = ServiceSpec {
+    name: b"dhcp-client",
+    label: "dhcp-client",
+    image: dhcp_client::IMAGE,
+    stack_size: DHCP_STACK_SIZE,
+};
 
 fn main(mut startup: Startup) -> i64 {
     let job = Job::from_handle(startup.take(startup::root::JOB));
@@ -143,16 +218,61 @@ fn main(mut startup: Startup) -> i64 {
         ],
         FSHOST_STACK_SIZE,
     );
-    STORAGE.call_once(|| ServiceDirectory::new(storage));
-    let network = NETWORK.call_once(Supervised::new);
-    let network_devices = Arc::new(directory);
-    let linux_devices = network_devices.clone();
+    Provider::Fshost
+        .instance()
+        .install(ServiceDirectory::new(storage));
+    let devices_root = Arc::new(directory);
+    let linux_devices = devices_root.clone();
+    let netcfg_devices = devices_root.clone();
     let command_line: &'static [u8] =
         alloc::boxed::Box::leak(core::mem::take(&mut startup.arguments).into_boxed_slice());
     let executor = Executor::create().expect("root executor");
-    let supervisor_job = job.duplicate(rights::SAME).expect("root job duplicate");
+    let netstack_job = job.duplicate(rights::SAME).expect("root job duplicate");
     executor.spawn(async move {
-        supervise_network(executor, &supervisor_job, bootfs, &network_devices, network).await;
+        supervise(
+            executor,
+            &netstack_job,
+            bootfs,
+            &NETSTACK_SPEC,
+            Provider::Netstack,
+            alloc::vec::Vec::new,
+        )
+        .await;
+    });
+    let dhcp_job = job.duplicate(rights::SAME).expect("root job duplicate");
+    executor.spawn(async move {
+        supervise(
+            executor,
+            &dhcp_job,
+            bootfs,
+            &DHCP_SPEC,
+            Provider::Dhcp,
+            || vec![services(DHCP_USES).into_handle()],
+        )
+        .await;
+    });
+    let netcfg_job = job.duplicate(rights::SAME).expect("root job duplicate");
+    executor.spawn(async move {
+        supervise(
+            executor,
+            &netcfg_job,
+            bootfs,
+            &NETCFG_SPEC,
+            Provider::Netcfg,
+            || {
+                vec![
+                    services(NETCFG_USES).into_handle(),
+                    netcfg_devices
+                        .scope(Class::Network.bit())
+                        .expect("netcfg device scope")
+                        .into_channel()
+                        .into_handle(),
+                    private_storage(b"netcfg").into_handle(),
+                    config_vmo(bootfs, netcfg::DEFAULT_CONFIG).into_handle(),
+                ]
+            },
+        )
+        .await;
     });
     executor.spawn(async move {
         loop {
@@ -199,28 +319,50 @@ fn main(mut startup: Startup) -> i64 {
 }
 
 /// 服务路由（对应 Fuchsia component_manager 的能力路由）：把消费者的连接转发给提供该协议的当前实例。
-fn route(protocol: &[u8], server: Channel) -> Result<(), Status> {
-    if protocol == service_directory::NETWORK {
-        NETWORK
-            .get()
-            .expect("network supervision")
-            .forward(protocol, server)
-    } else if protocol == service_directory::BLOCKS || protocol == service_directory::EXT4 {
-        STORAGE
-            .get()
-            .expect("storage routing")
-            .forward(protocol, server)
-    } else {
-        Err(native_abi::ERR_NOT_FOUND)
+fn route(uses: &[&[u8]], protocol: &[u8], server: Channel) -> Result<(), Status> {
+    if !uses.contains(&protocol) {
+        return Err(native_abi::ERR_ACCESS_DENIED);
     }
+    let (_, provider) = ROUTES
+        .iter()
+        .find(|(name, _)| *name == protocol)
+        .ok_or(native_abi::ERR_NOT_FOUND)?;
+    provider.instance().forward(protocol, server)
 }
 
-/// 为一个消费者实例服务新的路由目录，返回交给它的一端。
-fn services() -> Channel {
+/// 为一个消费者实例服务新的路由目录（只含它声明使用的协议），返回交给它的一端。
+fn services(uses: &'static [&'static [u8]]) -> Channel {
     let (client, server) = Channel::create().expect("service directory channel");
-    service_directory::serve_directory(server, b"root-services", Arc::new(route))
-        .expect("service directory");
+    service_directory::serve_directory(
+        server,
+        b"root-services",
+        Arc::new(move |protocol: &[u8], channel: Channel| route(uses, protocol, channel)),
+    )
+    .expect("service directory");
     client
+}
+
+/// 经 fshost 为服务 `name` 派生私有数据目录（Fuchsia `storage` 能力）。
+fn private_storage(name: &[u8]) -> Channel {
+    let (admin, server) = Channel::create().expect("storage admin channel");
+    Provider::Fshost
+        .instance()
+        .forward(service_directory::STORAGE_ADMIN, server)
+        .expect("storage admin connection");
+    filesystem_protocol::StorageAdmin::new(admin)
+        .open(name)
+        .expect("private storage")
+}
+
+/// 把 bootfs 中的只读配置复制为 VMO 交给服务（Fuchsia `/config/data`）。
+fn config_vmo(bootfs: &native_runtime::bootfs::Bootfs, path: &[u8]) -> Vmo {
+    let data = bootfs
+        .find(path)
+        .unwrap_or_else(|| panic!("bootfs lacks {}", core::str::from_utf8(path).unwrap_or("")))
+        .data;
+    let vmo = Vmo::create(data.len() as u64, 0).expect("config vmo");
+    vmo.write(data, 0).expect("config vmo write");
+    vmo
 }
 
 /// 终止计数：[`CRASH_WINDOW`] 内达到 [`CRASH_LIMIT`] 次即判定为崩溃循环。
@@ -267,7 +409,7 @@ async fn supervise_linux(
                 .scope(ALL_CLASSES & !Class::Network.bit() & !Class::Block.bit())
                 .expect("linuxd device scope")
                 .into_channel(),
-            services(),
+            services(LINUXD_USES),
             command_line,
         );
         let _ = executor.on_signals(&linux, signals::TERMINATED).await;
@@ -282,44 +424,37 @@ async fn supervise_linux(
     }
 }
 
-/// 运行并监督 netstack：每个实例拿到新的 outgoing 与只含网卡的设备目录；终止后撤下实例并重启，
-/// 崩溃循环时关机。
-async fn supervise_network(
+/// 运行并监督一个可重启的原生服务：每个实例拿到新的 outgoing（第一个角色句柄）与 `handles` 组装的其余
+/// 角色句柄；终止后撤下实例并重启，崩溃循环时关机。
+async fn supervise(
     executor: &'static Executor,
     job: &Job,
     bootfs: &'static native_runtime::bootfs::Bootfs,
-    devices: &DirectoryClient,
-    network: &'static Supervised,
+    spec: &ServiceSpec,
+    provider: Provider,
+    mut handles: impl FnMut() -> alloc::vec::Vec<Handle>,
 ) {
+    let supervised = provider.instance();
     let mut crashes = CrashLoop::new();
     loop {
-        let (outgoing, outgoing_server) = Channel::create().expect("netstack outgoing channel");
-        let scope = devices
-            .scope(Class::Network.bit())
-            .expect("netstack device scope");
-        let process = start_service(
-            job,
-            bootfs,
-            netstack::IMAGE,
-            b"netstack",
-            vec![
-                outgoing_server.into_handle(),
-                scope.into_channel().into_handle(),
-            ],
-            NETSTACK_STACK_SIZE,
-        );
-        let instance = ServiceDirectory::new(outgoing);
-        network.install(instance);
+        let (outgoing, outgoing_server) = Channel::create().expect("outgoing channel");
+        let mut role = vec![outgoing_server.into_handle()];
+        role.extend(handles());
+        let process = start_service(job, bootfs, spec.image, spec.name, role, spec.stack_size);
+        supervised.install(ServiceDirectory::new(outgoing));
         let _ = executor.on_signals(&process, signals::TERMINATED).await;
-        if let Some(instance) = network.outgoing.lock().clone() {
-            network.retire(&instance);
+        if let Some(instance) = supervised.outgoing.lock().clone() {
+            supervised.retire(&instance);
         }
         let status = process.basic().map_or(-1, |basic| basic.return_code);
         if crashes.record() {
-            error!("netstack terminated {CRASH_LIMIT} times within 10 s (last status {status})");
-            native_runtime::task::exit_process(power_off(&process, "netstack"));
+            error!(
+                "{} terminated {CRASH_LIMIT} times within 10 s (last status {status})",
+                spec.label
+            );
+            native_runtime::task::exit_process(power_off(&process, spec.label));
         }
-        error!("netstack terminated with status {status}; restarting");
+        error!("{} terminated with status {status}; restarting", spec.label);
     }
 }
 

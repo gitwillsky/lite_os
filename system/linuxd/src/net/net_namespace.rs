@@ -47,7 +47,7 @@ impl NetNamespace {
             super::SocketError::NoMemory => NamespaceError::OutOfMemory,
             _ => NamespaceError::Invalid,
         })?;
-        namespace.install_protocol(protocol);
+        namespace.install_protocol(protocol)?;
         register(&namespace)?;
         Ok(namespace)
     }
@@ -58,10 +58,18 @@ impl NetNamespace {
         self.protocol.lock().clone()
     }
     /// 安装或替换协议实例；旧实例在锁外关闭。
-    pub(in crate::net) fn install_protocol(&self, protocol: RemoteNamespace) {
-        let protocol = Arc::new(protocol);
+    ///
+    /// # Errors
+    ///
+    /// 分配失败返回 `OutOfMemory`，原实例保持不变。
+    pub(in crate::net) fn install_protocol(
+        &self,
+        protocol: RemoteNamespace,
+    ) -> Result<(), NamespaceError> {
+        let protocol = Arc::try_new(protocol).map_err(|_| NamespaceError::OutOfMemory)?;
         let retired = self.protocol.lock().replace(protocol);
         drop(retired);
+        Ok(())
     }
     pub(crate) fn is_initial(&self) -> bool {
         self.id == 6
@@ -151,6 +159,15 @@ fn register(namespace: &Arc<NetNamespace>) -> Result<(), NamespaceError> {
 }
 
 /// 当前存活的非初始网络域（初始域另由 [`initial_net`] 取得）。
-pub(in crate::net) fn live_namespaces() -> Vec<Arc<NetNamespace>> {
-    NAMESPACES.lock().iter().filter_map(Weak::upgrade).collect()
+///
+/// # Errors
+///
+/// 结果分配失败返回 `OutOfMemory`。
+pub(in crate::net) fn live_namespaces() -> Result<Vec<Arc<NetNamespace>>, NamespaceError> {
+    let namespaces = NAMESPACES.lock();
+    let mut live = Vec::new();
+    live.try_reserve_exact(namespaces.len())
+        .map_err(|_| NamespaceError::OutOfMemory)?;
+    live.extend(namespaces.iter().filter_map(Weak::upgrade));
+    Ok(live)
 }

@@ -24,6 +24,27 @@ fn capture(interface: &NetworkInterface) -> InterfaceSnapshot {
         driver: interface.device.driver().map(DriverName::new),
     }
 }
+/// 把一块网卡安装为域的新以太网接口（名称 `eth<n>` 按安装顺序，初始 DOWN、无地址），返回接口序号。
+/// 接口随域存续；网卡会话的使用者（netcfg）在 netstack 重启后重新安装。
+pub(crate) fn install_interface(
+    scope: &Namespace,
+    device: alloc::sync::Arc<dyn device_model::network::NetworkDevice>,
+) -> Result<u32, SocketError> {
+    let mut network = stack(scope)?.lock()?;
+    // 第一个接口是回环；以太网序号即已安装以太网接口数。
+    let ordinal = u32::try_from(network.interfaces.len() - 1).map_err(|_| SocketError::NoSpace)?;
+    network
+        .interfaces
+        .try_reserve(1)
+        .map_err(|_| SocketError::NoMemory)?;
+    let interface = NetworkInterface::ethernet(scope.id(), ordinal, device)?;
+    let index = interface.index;
+    let route = RoutingTable::prepare_interface(index, interface.state)?;
+    network.routing.replace_interface(index, route);
+    network.interfaces.push(interface);
+    Ok(index)
+}
+
 pub(crate) fn interface_index(scope: &Namespace, name: &[u8]) -> Result<u32, SocketError> {
     stack(scope)?.lock()?.interface_index(name)
 }

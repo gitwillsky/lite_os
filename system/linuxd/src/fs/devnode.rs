@@ -1,4 +1,4 @@
-//! devfs 的设备节点表：哪些节点（字符与块设备）出现在 `/dev`，以及它们隐含的目录。
+//! devfs 的设备节点表：哪些节点（字符与块设备、linuxd 发布的授权端点 socket）出现在 `/dev`，以及它们隐含的目录。
 //!
 //! 设备子系统登记 `(路径, 设备号, 权限)`，devfs 按这张表生成节点，并以节点下标作为稳定 inode identity。
 //! 打开节点时按设备号找 driver 的部分在 [`super::chardev`]；块设备在这里登记设备号到 adapter 的映射。
@@ -15,8 +15,10 @@ pub(super) struct DeviceNode {
     /// 相对 `/dev` 的路径，例如 `input/event0`。
     pub(super) path: Vec<u8>,
     pub(super) number: DeviceNumber,
-    /// 包含 `S_IFCHR` 或 `S_IFBLK` 的完整 mode。
+    /// 包含 `S_IFCHR`、`S_IFBLK` 或 `S_IFSOCK` 的完整 mode。
     pub(super) mode: u32,
+    /// 属组；设备节点为 root，授权端点为被授权的组。
+    pub(super) gid: u32,
 }
 
 /// 注册表：块设备、devfs 设备节点与节点路径隐含的目录。字符设备 driver 区间在 [`super::chardev`]。
@@ -53,7 +55,18 @@ pub(crate) fn register_node(
     permissions: u32,
 ) -> Result<(), FileSystemError> {
     const S_IFCHR: u32 = 0o020000;
-    publish_node(path, number, S_IFCHR | (permissions & 0o7777), None)
+    publish_node(path, number, S_IFCHR | (permissions & 0o7777), 0, None)
+}
+
+/// 在 devfs 发布 linuxd 自己的授权端点 socket 节点（同 Linux `/dev/log`）：属主 root、属组 `gid`、权限 0660。
+/// devfs 对 Linux 只读，端点只能由 linuxd 经注册表发布；连接时 VFS 按节点的组写权限授权。
+///
+/// # Errors
+///
+/// 路径已注册返回 `AlreadyExists`；分配失败返回 `OutOfMemory`。
+pub(crate) fn register_socket(path: &[u8], gid: u32) -> Result<(), FileSystemError> {
+    const S_IFSOCK: u32 = 0o140000;
+    publish_node(path, DeviceNumber::new(0, 0), S_IFSOCK | 0o660, gid, None)
 }
 
 /// 发布一个块设备（Linux `add_disk`）：登记设备号到 adapter 的映射，并在 devfs 发布 `S_IFBLK`
@@ -74,13 +87,19 @@ pub(super) fn register_block(
         path,
         number,
         S_IFBLK | (permissions & 0o7777),
+        0,
         Some((device, partition)),
     )
 }
 
-/// 已发布的块设备数量。
-pub(super) fn block_count() -> usize {
-    REGISTRY.lock().blocks.len()
+/// 已发布的整盘数量（不含分区）：Linux 磁盘名与设备号按它分配。
+pub(super) fn disk_count() -> usize {
+    REGISTRY
+        .lock()
+        .blocks
+        .iter()
+        .filter(|node| !node.is_partition())
+        .count()
 }
 
 /// 按 devfs 路径（例如 `vda`）查找块设备号（Linux `name_to_dev_t`）。
@@ -181,6 +200,7 @@ fn publish_node(
     path: &[u8],
     number: DeviceNumber,
     mode: u32,
+    gid: u32,
     block: Option<(
         Arc<dyn BlockDevice>,
         Option<super::block_node::PartitionInfo>,
@@ -195,11 +215,19 @@ fn publish_node(
         path: owned,
         number,
         mode,
+        gid,
     })
     .map_err(|_| FileSystemError::OutOfMemory)?;
-    let block = block
-        .map(|(device, start)| BlockNode::new(number, device, start))
-        .transpose()?;
+    let block = match block {
+        Some((device, start)) => {
+            let mut name = Vec::new();
+            name.try_reserve_exact(path.len())
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+            name.extend_from_slice(path);
+            Some(BlockNode::new(number, device, start, name)?)
+        }
+        None => None,
+    };
     let mut registry = REGISTRY.lock();
     if registry
         .devices

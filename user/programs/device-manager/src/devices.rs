@@ -172,12 +172,17 @@ fn network() -> Vec<Device> {
         .filter_map(|line| Some(line.split_once(':')?.0.trim().to_owned()))
         .filter(|name| name != "lo")
         .map(|name| {
+            let method = match network_config::interface(&name).map(|settings| settings.method) {
+                Ok(network_config::Method::Dhcp) => "自动（DHCP）",
+                Ok(network_config::Method::Static { .. }) => "手动指定",
+                Err(_) => "无法读取（需要 netdev 组）",
+            };
             device(
                 format!("网络适配器 ({name})"),
                 vec![
                     ("设备类型", "网络适配器".to_owned()),
                     ("接口名", name),
-                    ("地址获取", "DHCP（network-service）".to_owned()),
+                    ("地址获取", method.to_owned()),
                 ],
             )
         })

@@ -379,7 +379,31 @@ fn publishable_partitions(
         .collect()
 }
 
-/// 发布一个块设备：按发布顺序分配设备号，并创建 `/dev/<disk_name>` 节点（Linux `add_disk`）。
+/// Linux 磁盘名：驱动名的两字母前缀（`vd`、`sd`）加 linuxd 按发布顺序分配的字母后缀（双射 26 进制：
+/// `a`..`z`、`aa`..，同 Linux `sd_format_disk_name`）。linuxd 只看到路由给它的盘，名字必须按它自己的顺序分配，
+/// 不能沿用驱动宿主为全部盘分配的名字。
+fn linux_disk_name(driver_name: &[u8], ordinal: usize) -> Result<Vec<u8>, FileSystemError> {
+    let prefix = driver_name
+        .get(..2)
+        .ok_or(FileSystemError::InvalidOperation)?;
+    let mut suffix = [0u8; 8];
+    let mut length = 0;
+    let mut value = ordinal + 1;
+    while value > 0 && length < suffix.len() {
+        value -= 1;
+        suffix[length] = b'a' + (value % 26) as u8;
+        length += 1;
+        value /= 26;
+    }
+    let mut name = Vec::new();
+    name.try_reserve_exact(prefix.len() + length)
+        .map_err(|_| FileSystemError::OutOfMemory)?;
+    name.extend_from_slice(prefix);
+    name.extend(suffix[..length].iter().rev());
+    Ok(name)
+}
+
+/// 发布一个块设备：按发布顺序分配设备号与 Linux 磁盘名，并创建 `/dev/<名>` 节点（Linux `add_disk`）。
 ///
 /// # Errors
 ///
@@ -387,14 +411,12 @@ fn publishable_partitions(
 pub(crate) fn publish_block_device(
     disk: Arc<dyn crate::devices::block::BlockDevice>,
 ) -> Result<(), FileSystemError> {
-    let minor = u32::try_from(devnode::block_count())
+    let disks = devnode::disk_count();
+    let minor = u32::try_from(disks)
         .ok()
         .and_then(|index| index.checked_mul(DISK_MINORS))
         .ok_or(FileSystemError::NoSpace)?;
-    let mut name = Vec::new();
-    name.try_reserve_exact(disk.disk_name().len())
-        .map_err(|_| FileSystemError::OutOfMemory)?;
-    name.extend_from_slice(disk.disk_name());
+    let name = linux_disk_name(disk.disk_name(), disks)?;
     let number = DeviceNumber::new(BLOCK_MAJOR, minor);
     devnode::register_block(&name, number, 0o660, disk, None)?;
     publish_partitions(&name, number)

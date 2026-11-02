@@ -33,7 +33,9 @@ RETIRED_FILES = tuple(f"/bin/{name}" for name in (
     "terminal-session",
 )) + ("/etc/init.d/graphical-session", "/etc/terminfo/l/liteos", "/bin/wine",
       "/usr/share/applications/wine-programs.desktop", "/usr/share/applications/wine-exe.desktop",
-      "/usr/share/applications/wine-msi.desktop", "/etc/fonts/conf.d/99-liteos-ui.conf")
+      "/usr/share/applications/wine-msi.desktop", "/etc/fonts/conf.d/99-liteos-ui.conf",
+      # 网络设置的 owner 改为原生 netcfg（数据卷中的私有目录）；Linux 侧的旧配置文件退役。
+      "/etc/network/interfaces")
 RETIRED_TREES = ("/usr/lib/lite-runtime", "/usr/share/liteos", "/opt/wine",
                  "/usr/share/fontconfig", "/usr/share/X11/xkb")
 
@@ -61,6 +63,7 @@ def managed_path(path: str) -> bool:
         *RETIRED_FILES, *(f"/bin/{name}" for name in ACCOUNT_APPLETS), "/bin/shutdown", "/bin/compositor", "/etc/inittab", "/etc/init.d/rcS",
         "/etc/init.d/display-service", "/etc/init.d/network-service", "/usr/share/udhcpc/default.script",
         "/etc/profile", "/bin/logon", "/bin/desktop", "/bin/file-explorer", "/bin/smbfs", "/bin/fusermount3", "/etc/fuse.conf", "/bin/control-panel", "/bin/taskmgr", "/bin/sndvol", "/bin/sndplay", "/bin/mplay", "/bin/notepad", "/bin/devmgmt", "/bin/session-launch",
+        "/bin/resolvd",
     } or any(path.startswith(root + "/") for root in RETIRED_TREES)
 
 
@@ -274,15 +277,6 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
             metadata = run_batch(image, ["stat /etc/localtime"], directory, "inspect-localtime", writable=False)
             if "Inode:" not in metadata:
                 run_batch(image, [f"write {ROOT / 'user/base/localtime'} /etc/localtime"], directory, "initialize-localtime", writable=True)
-        # /etc/network/interfaces 同样是用户拥有的网络设置（“Internet 协议 (TCP/IP) 属性”改写它）：只在缺失时写入默认值。
-        with tempfile.TemporaryDirectory(prefix="liteos-interfaces-") as temporary:
-            directory = Path(temporary)
-            metadata = run_batch(image, ["stat /etc/network/interfaces"], directory, "inspect-interfaces", writable=False)
-            if "Inode:" not in metadata:
-                directory_metadata = run_batch(image, ["stat /etc/network"], directory, "inspect-network-directory", writable=False)
-                commands = [] if "Inode:" in directory_metadata else ["mkdir /etc/network"]
-                commands.append(f"write {ROOT / 'user/base/interfaces'} /etc/network/interfaces")
-                run_batch(image, commands, directory, "initialize-interfaces", writable=True)
         previous = read_stamp(image)
         if previous is not None and previous.get("identity") == identity:
             print(f"userland sync cache hit: {identity[:12]}")

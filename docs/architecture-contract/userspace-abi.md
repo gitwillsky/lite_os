@@ -141,6 +141,13 @@ root-server 只分发初始 capability 和服务连接。linuxd 在 normal mode 
   EFAULT 只允许保留此前完整 batch/vector 的 partial progress。
 - pipe/socket/regular-file write 必须使用同一个 `UserInputStaging` seam；memory user-copy 直接初始化 `MaybeUninit<u8>` destination，不得为形成 `&mut [u8]` 预清零随后完整覆盖，也不得在各 syscall 保留 unsafe 转换分支。
 - userspace application 不得依赖 LiteOS 私有 runtime、init、device protocol 或第二条 rootfs path。
+- 授予指定系统程序的原生服务协议只经 linuxd 发布的授权端点适配（发布与授权见 `linuxd::system::endpoint`）：
+  `/dev/task-observer`（root:adm 0660，任务管理器）与 `/dev/network-settings`（root:netdev 0660，控制面板、
+  资源管理器、设备管理器与 resolvd）。帧格式由对应的协议 crate 拥有；组外进程连接得到 `EACCES`，不得退化为
+  抽象地址或新增 syscall/ioctl。`/dev/network-settings` 的 WAIT 会阻塞到设置变化，linuxd 同时至多转发 4 个，
+  超出返回资源不足。
+- Linux 侧不配置接口、不运行 DHCP 客户端：接口设置的 owner 是原生 netcfg，`network-config` 只是客户端；
+  `/etc/resolv.conf` 由 init 监督的 resolvd 依据设置快照以临时文件、fsync、rename 原子维护。
 - Rust application 必须使用标准 Linux/musl target；禁止 `os=none` custom target、预编译 bundled
   musl/CRT 或 LiteOS std fork。验证 fixture 只允许进入 disposable gate image，产品 rootfs 必须拒绝。
 - 应用优先使用 `std`；稳定 `std` 缺失的 Linux 专有机制只能通过
