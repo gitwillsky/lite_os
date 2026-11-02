@@ -2,8 +2,9 @@
 
 //! 网络服务（netstack）与使用者之间的协议。
 //!
-//! 1. 控制 channel：使用者把设备目录中的网卡交给服务（[`NetworkService::attach_device`]），并为每个网络域
-//!    创建一条域 channel（[`NetworkService::create_namespace`]）；关闭域 channel 即退休该域。
+//! 1. 控制 channel：使用者经根服务的服务目录连接（`service_directory::NETWORK`），为每个网络域创建一条域
+//!    channel（[`NetworkService::create_namespace`]）；关闭域 channel 即退休该域。网卡由服务自己从设备目录
+//!    打开，不经使用者转交。
 //! 2. 域 channel：创建 socket、查询接口与路由快照、配置接口与路由（[`NamespaceService`]）。
 //! 3. socket channel：每个 socket 一条（[`InetSocketService`]、[`PacketSocketService`]）；使用者的最后一次
 //!    文件关闭发出 CLOSE，关闭 channel 同样关闭 socket（使用者终止时）；
@@ -37,7 +38,6 @@ pub const MAX_IPV4_UDP_BYTES: usize = 65_507;
 pub const TRANSFER_LIMIT: usize = 256 * 1024;
 
 mod ordinal {
-    pub(super) const ATTACH_DEVICE: u32 = 1;
     pub(super) const CREATE_NAMESPACE: u32 = 2;
 
     pub(super) const SOCKET: u32 = 1;
@@ -113,14 +113,8 @@ pub struct PacketReceived {
 
 /// 服务端：网络服务的控制面。
 pub trait NetworkService: Send + Sync {
-    /// 接入设备目录中的一块网卡（目录记录的描述与句柄原样转交）。
-    ///
-    /// # Errors
-    ///
-    /// 记录无法解析或连接失败。
-    fn attach_device(&self, description: Vec<u8>, handles: Vec<Handle>) -> Result<(), Status>;
-
-    /// 创建网络域，返回交给使用者的域 channel；`initial` 的域接入全部网卡并启用回环。
+    /// 返回交给使用者的域 channel。`initial` 时连上 netstack 的默认网络（持有全部网卡、启用回环，
+    /// 随 netstack 存续，多个连接共享同一网络）；否则创建只有 DOWN 回环的新网络域，随其 channel 退休。
     ///
     /// # Errors
     ///
@@ -538,19 +532,10 @@ pub fn dispatch_control(
     service: &dyn NetworkService,
     ordinal: u32,
     request: &mut Reader<'_>,
-    handles: Vec<Handle>,
+    _handles: Vec<Handle>,
     _reply: &mut Writer,
 ) -> Result<Vec<Handle>, Status> {
     match ordinal {
-        ordinal::ATTACH_DEVICE => {
-            let description = request.bytes()?;
-            let mut copy = Vec::new();
-            copy.try_reserve_exact(description.len())
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-            copy.extend_from_slice(description);
-            service.attach_device(copy, handles)?;
-            Ok(Vec::new())
-        }
         ordinal::CREATE_NAMESPACE => {
             let channel = service.create_namespace(request.bool()?)?;
             Ok(alloc::vec![channel.into_handle()])
@@ -917,15 +902,9 @@ impl NetworkClient {
         Self { channel }
     }
 
-    /// 把一条网卡目录记录转交给服务。
-    ///
-    /// # Errors
-    ///
-    /// 服务拒绝该设备或已终止。
-    pub fn attach_device(&self, description: &[u8], handles: Vec<Handle>) -> Result<(), Status> {
-        let mut writer = Writer::request(ordinal::ATTACH_DEVICE);
-        writer.bytes(description);
-        call(&self.channel, &writer, handles).map(drop)
+    /// 连接的 channel：服务终止时置位 `PEER_CLOSED`，使用者据此重连。
+    pub fn channel(&self) -> &Channel {
+        &self.channel
     }
 
     /// 创建网络域。

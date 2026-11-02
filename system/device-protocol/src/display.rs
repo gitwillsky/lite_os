@@ -4,6 +4,7 @@
 //! 缓冲（GEM、cursor、virgl backing 与命令流）以 VMO 句柄随请求传递；驱动宿主按 VMO koid 缓存对应的
 //! [`DeviceBacking`]，同一缓冲反复提交时复用同一份固定记录，不重复向 IOMMU 申请设备地址。
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
@@ -16,8 +17,8 @@ use native_runtime::native_abi::{self, Status, rights};
 use native_runtime::sync::Mutex;
 use native_runtime::{Channel, Event, Handle, Vmo};
 
-use crate::directory::{self, Announcement, Class};
-use crate::{ActivityBinding, EventHub, Reader, Writer, activity_signal, call, serve, take_handle};
+use crate::directory::{self, Class, Directory, OpenedDevice, Session, SessionState};
+use crate::{ActivityBinding, EventHub, Reader, Writer, activity_signal, call, take_handle};
 
 const MODE: u32 = 1;
 const SUBMIT_SCANOUT: u32 = 2;
@@ -128,15 +129,13 @@ fn backing_handle(backing: &DeviceBacking) -> Result<Handle, DisplayError> {
         .map_err(|_| DisplayError::Device)
 }
 
-/// 驱动宿主：发布显示/图形设备。
+/// 驱动宿主：登记显示/图形设备（独占：同一时刻只有一个显示所有者）。
 ///
 /// # Errors
 ///
-/// 对象、线程创建或目录写入失败。
-pub fn publish(directory: &Channel, device: Arc<dyn GraphicsDevice>) -> Result<(), Status> {
-    let (client, server) = Channel::create()?;
-    let event = Event::create()?;
-    let peer_event = event.duplicate(rights::SAME)?;
+/// 对象创建或分配失败。
+pub fn publish(directory: &Directory, device: Arc<dyn GraphicsDevice>) -> Result<(), Status> {
+    let event = Arc::try_new(Event::create()?).map_err(|_| native_abi::ERR_NO_MEMORY)?;
     let mut description = directory::description();
     match device.platform_identity() {
         Some((base, irq)) => {
@@ -160,45 +159,116 @@ pub fn publish(directory: &Channel, device: Arc<dyn GraphicsDevice>) -> Result<(
         }
     }
     description.bool(device.supports_virgl_context_init());
-    device.bind_activity(activity_signal(
-        Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?,
-    )?);
+    device.bind_activity(activity_signal(event.clone())?);
     let cache = Arc::try_new(BackingCache {
         entries: Mutex::new(BTreeMap::new()),
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    serve(
-        server,
-        2,
-        b"display-server",
-        Arc::try_new(
-            move |ordinal: u32,
-                  request: &mut Reader<'_>,
-                  mut handles: Vec<Handle>,
-                  reply: &mut Writer| {
-                handle(&*device, &cache, ordinal, request, &mut handles, reply)?;
-                Ok(Vec::new())
-            },
-        )
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-    )?;
-    directory::announce(
-        directory,
+    directory.add(
         Class::Display,
         &description,
-        alloc::vec![client.into_handle(), peer_event.into_handle()],
+        true,
+        Box::new(move |end| {
+            let session = SessionState::new(
+                DisplaySession {
+                    device: device.clone(),
+                    cache: cache.clone(),
+                    footprint: Mutex::new(Footprint::default()),
+                },
+                end,
+            );
+            let (client, server) = Channel::create()?;
+            let server = directory::serve_session(
+                server,
+                2,
+                b"display-server",
+                Arc::try_new(
+                    move |ordinal: u32,
+                          request: &mut Reader<'_>,
+                          mut handles: Vec<Handle>,
+                          reply: &mut Writer| {
+                        handle(session.get(), ordinal, request, &mut handles, reply)?;
+                        Ok(Vec::new())
+                    },
+                )
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+            )?;
+            Ok(Session {
+                handles: alloc::vec![
+                    client.into_handle(),
+                    event.duplicate(rights::SAME)?.into_handle()
+                ],
+                server,
+            })
+        }),
     )
 }
 
+/// 会话在设备上留下的对象；会话结束时逐一回收，下一个使用者看到没有遗留 scanout、缓冲或 GPU 对象的设备。
+#[derive(Default)]
+struct Footprint {
+    buffers: Vec<u64>,
+    contexts: Vec<u32>,
+    resources: Vec<u32>,
+    cursor: bool,
+}
+
+fn track<T: PartialEq>(set: &mut Vec<T>, value: T, live: bool) -> Result<(), Status> {
+    match set.iter().position(|held| *held == value) {
+        Some(index) if !live => {
+            set.swap_remove(index);
+        }
+        None if live => {
+            set.try_reserve(1).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            set.push(value);
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+/// 一个会话的服务端状态。
+struct DisplaySession {
+    device: Arc<dyn GraphicsDevice>,
+    cache: Arc<BackingCache>,
+    // OWNER: 本会话创建且尚未释放的设备对象；缺失时使用者崩溃会让 scanout 与 GPU 对象永久残留。
+    footprint: Mutex<Footprint>,
+}
+
+impl Drop for DisplaySession {
+    fn drop(&mut self) {
+        // 回收命令异步完成，回收路径不等待栅栏；设备拒绝（对象已被驱动回收）同样不影响结果。
+        let device = &*self.device;
+        let footprint = core::mem::take(self.footprint.get_mut());
+        let _ = device.disable_scanout();
+        for identity in footprint.buffers {
+            let _ = device.release_buffer(identity);
+        }
+        for context_id in footprint.contexts {
+            let _ = device.submit_virgl(VirglCommand::ContextDestroy { context_id });
+        }
+        for resource_id in footprint.resources {
+            let _ = device.submit_virgl(VirglCommand::ResourceUnref { resource_id });
+        }
+        if footprint.cursor {
+            let _ = device.submit_cursor(CursorCommand::Move {
+                x: 0,
+                y: 0,
+                visible: false,
+            });
+        }
+    }
+}
+
 fn handle(
-    device: &dyn GraphicsDevice,
-    cache: &BackingCache,
+    session: &DisplaySession,
     ordinal: u32,
     request: &mut Reader<'_>,
     handles: &mut [Handle],
     reply: &mut Writer,
 ) -> Result<(), Status> {
-    let mut backing = |index: usize| cache.resolve(take_handle(handles, index)?);
+    let device = &*session.device;
+    let mut backing = |index: usize| session.cache.resolve(take_handle(handles, index)?);
     match ordinal {
         MODE => put_mode(reply, device.mode()),
         SUBMIT_SCANOUT => {
@@ -207,6 +277,7 @@ fn handle(
             let fence = device
                 .submit_scanout(identity, mode, backing(0)?)
                 .map_err(encode_error)?;
+            track(&mut session.footprint.lock().buffers, identity, true)?;
             reply.u64(fence);
         }
         SUBMIT_DAMAGE => {
@@ -223,19 +294,22 @@ fn handle(
             let fence = device
                 .submit_damage(identity, mode, backing(0)?, &rectangles)
                 .map_err(encode_error)?;
+            track(&mut session.footprint.lock().buffers, identity, true)?;
             reply.u64(fence);
         }
-        RELEASE_BUFFER => match device
-            .release_buffer(request.u64()?)
-            .map_err(encode_error)?
-        {
-            Some(fence) => {
-                reply.bool(true).u64(fence);
+        RELEASE_BUFFER => {
+            let identity = request.u64()?;
+            let released = device.release_buffer(identity).map_err(encode_error)?;
+            track(&mut session.footprint.lock().buffers, identity, false)?;
+            match released {
+                Some(fence) => {
+                    reply.bool(true).u64(fence);
+                }
+                None => {
+                    reply.bool(false);
+                }
             }
-            None => {
-                reply.bool(false);
-            }
-        },
+        }
         DISABLE_SCANOUT => {
             reply.u64(device.disable_scanout().map_err(encode_error)?);
         }
@@ -284,6 +358,7 @@ fn handle(
                 CursorCommand::Move { x, y, visible }
             };
             reply.u64(device.submit_cursor(command).map_err(encode_error)?);
+            session.footprint.lock().cursor = true;
         }
         MOVE_CURSOR => {
             let x = request.u32()?;
@@ -300,7 +375,7 @@ fn handle(
             reply.bytes(&output[..length]);
         }
         SUBMIT_VIRGL => {
-            let fence = submit_virgl(device, request, &mut backing)?;
+            let fence = submit_virgl(session, request, &mut backing)?;
             reply.u64(fence);
         }
         SUBMIT_VIRGL_SCANOUT => {
@@ -329,7 +404,7 @@ fn get_box(reader: &mut Reader<'_>) -> Result<VirglBox, Status> {
 }
 
 fn submit_virgl(
-    device: &dyn GraphicsDevice,
+    session: &DisplaySession,
     request: &mut Reader<'_>,
     backing: &mut dyn FnMut(usize) -> Result<Arc<DeviceBacking>, Status>,
 ) -> Result<u64, Status> {
@@ -399,7 +474,25 @@ fn submit_virgl(
         },
         _ => return Err(native_abi::ERR_INVALID_ARGS),
     };
-    device.submit_virgl(command).map_err(encode_error)
+    // 记录对象寿命：创建成功才登记，销毁请求被接受后摘除。
+    let change = match &command {
+        VirglCommand::ContextCreate { context_id, .. } => Some((true, *context_id, true)),
+        VirglCommand::ContextDestroy { context_id } => Some((true, *context_id, false)),
+        VirglCommand::ResourceCreate3d { resource_id, .. } => Some((false, *resource_id, true)),
+        VirglCommand::ResourceUnref { resource_id } => Some((false, *resource_id, false)),
+        _ => None,
+    };
+    let fence = session.device.submit_virgl(command).map_err(encode_error)?;
+    if let Some((context, id, live)) = change {
+        let mut footprint = session.footprint.lock();
+        let set = if context {
+            &mut footprint.contexts
+        } else {
+            &mut footprint.resources
+        };
+        track(set, id, live)?;
+    }
+    Ok(fence)
 }
 
 /// 使用者端的远端显示/图形设备。
@@ -418,7 +511,7 @@ pub struct RemoteDisplay {
 ///
 /// 描述或句柄不完整，或事件登记失败。
 pub fn connect(
-    mut announcement: Announcement,
+    mut announcement: OpenedDevice,
     hub: &Arc<EventHub>,
 ) -> Result<Arc<RemoteDisplay>, Status> {
     let channel = Channel::from_handle(take_handle(&mut announcement.handles, 0)?);

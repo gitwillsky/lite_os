@@ -1,5 +1,6 @@
 //! named byte-stream port（virtio-console 的 SPICE 剪贴板通道）。
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -7,8 +8,8 @@ use device_model::{Activity, PortActivity, PortDevice, PortError};
 use native_runtime::native_abi::{self, Status, rights};
 use native_runtime::{Channel, Event};
 
-use crate::directory::{self, Announcement, Class};
-use crate::{ActivityBinding, EventHub, Reader, Writer, activity_signal, call, serve, take_handle};
+use crate::directory::{self, Class, Directory, OpenedDevice, Session, SessionState};
+use crate::{ActivityBinding, EventHub, Reader, Writer, activity_signal, call, take_handle};
 
 const READ: u32 = 1;
 const WRITE: u32 = 2;
@@ -35,60 +36,68 @@ fn decode_error(status: Status) -> PortError {
     }
 }
 
-/// 驱动宿主：发布 port 设备；活动经 Event 通知使用者。
+/// 驱动宿主：登记 port 设备（独占）；活动经 Event 通知使用者，每个会话持有该 Event 的副本。
 ///
 /// # Errors
 ///
-/// 对象、线程创建或目录写入失败。
-pub fn publish(directory: &Channel, device: Arc<dyn PortDevice>) -> Result<(), Status> {
-    let (client, server) = Channel::create()?;
+/// 对象创建或分配失败。
+pub fn publish(directory: &Directory, device: Arc<dyn PortDevice>) -> Result<(), Status> {
     let event = Event::create()?;
-    let peer_event = event.duplicate(rights::SAME)?;
-    device.bind_activity(activity_signal(
-        Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?,
-    )?);
-    serve(
-        server,
-        1,
-        b"port-server",
-        Arc::try_new(
-            move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
-                match ordinal {
-                    READ => {
-                        let length = request.usize()?.min(CHUNK);
-                        let mut data = alloc::vec![0u8; length];
-                        let count = device.read(&mut data).map_err(encode_error)?;
-                        reply.bytes(&data[..count]);
-                    }
-                    WRITE => {
-                        let count = device.write(request.bytes()?).map_err(encode_error)?;
-                        reply.u64(count as u64);
-                    }
-                    STATE => {
-                        reply
-                            .bool(device.readable())
-                            .bool(device.writable())
-                            .bool(device.connected());
-                    }
-                    DISPATCH => {
-                        let activity = device.dispatch();
-                        reply
-                            .bool(activity.readable_changed)
-                            .bool(activity.writable_changed)
-                            .bool(activity.backlog);
-                    }
-                    _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-                }
-                Ok(Vec::new())
-            },
-        )
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-    )?;
-    directory::announce(
-        directory,
+    let event = Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    device.bind_activity(activity_signal(event.clone())?);
+    directory.add(
         Class::Port,
         &directory::description(),
-        alloc::vec![client.into_handle(), peer_event.into_handle()],
+        true,
+        Box::new(move |end| {
+            let session = SessionState::new(device.clone(), end);
+            let (client, server) = Channel::create()?;
+            let server = directory::serve_session(
+                server,
+                1,
+                b"port-server",
+                Arc::try_new(
+                    move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
+                        let device = session.get();
+                        match ordinal {
+                            READ => {
+                                let length = request.usize()?.min(CHUNK);
+                                let mut data = alloc::vec![0u8; length];
+                                let count = device.read(&mut data).map_err(encode_error)?;
+                                reply.bytes(&data[..count]);
+                            }
+                            WRITE => {
+                                let count = device.write(request.bytes()?).map_err(encode_error)?;
+                                reply.u64(count as u64);
+                            }
+                            STATE => {
+                                reply
+                                    .bool(device.readable())
+                                    .bool(device.writable())
+                                    .bool(device.connected());
+                            }
+                            DISPATCH => {
+                                let activity = device.dispatch();
+                                reply
+                                    .bool(activity.readable_changed)
+                                    .bool(activity.writable_changed)
+                                    .bool(activity.backlog);
+                            }
+                            _ => return Err(native_abi::ERR_NOT_SUPPORTED),
+                        }
+                        Ok(Vec::new())
+                    },
+                )
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+            )?;
+            Ok(Session {
+                handles: alloc::vec![
+                    client.into_handle(),
+                    event.duplicate(rights::SAME)?.into_handle()
+                ],
+                server,
+            })
+        }),
     )
 }
 
@@ -104,7 +113,7 @@ pub struct RemotePort {
 ///
 /// 句柄缺失或事件登记失败。
 pub fn connect(
-    mut announcement: Announcement,
+    mut announcement: OpenedDevice,
     hub: &Arc<EventHub>,
 ) -> Result<Arc<RemotePort>, Status> {
     let channel = Channel::from_handle(take_handle(&mut announcement.handles, 0)?);

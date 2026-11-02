@@ -182,6 +182,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fshost"
+version = "0.1.0"
+dependencies = [
+ "device-model",
+ "device-protocol",
+ "filesystem-protocol",
+ "launch-protocol",
+ "native-runtime",
+ "service-directory",
+]
+
+[[package]]
 name = "hash32"
 version = "0.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -255,6 +267,7 @@ dependencies = [
  "linux-abi",
  "native-runtime",
  "network-protocol",
+ "service-directory",
  "service-sync",
  "task-observer-protocol",
 ]
@@ -299,6 +312,7 @@ dependencies = [
  "launch-protocol",
  "native-runtime",
  "network-protocol",
+ "service-directory",
  "service-rpc",
  "service-sync",
  "smoltcp",
@@ -383,8 +397,10 @@ checksum = "8188909339ccc0c68cfb5a04648313f09621e8b87dc03095454f1a11f6c5d436"
 name = "root-server"
 version = "0.1.0"
 dependencies = [
+ "device-protocol",
  "launch-protocol",
  "native-runtime",
+ "service-directory",
 ]
 
 [[package]]
@@ -399,6 +415,14 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "service-directory"
+version = "0.1.0"
+dependencies = [
+ "native-runtime",
+ "service-rpc",
+]
 
 [[package]]
 name = "service-rpc"

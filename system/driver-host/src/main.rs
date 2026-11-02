@@ -45,7 +45,7 @@ static BOOT_SCENE: &[u8] = include_bytes!(env!("LITEOS_BOOT_SCENE"));
 /// 1. 取回启动句柄，解码平台设备事实，启动完成线程；
 /// 2. 初始化首个 GPU 并画出开机画面，发布启动进度通道；
 /// 3. 枚举 PCI，装配并发布全部 VirtIO 设备与 USB 主控；
-/// 4. 发布“枚举完成”；之后热插拔的设备沿目录继续发布。main 线程随后退出（只结束本线程）。
+/// 4. 标记启动枚举完成；之后热插拔的设备继续登记到目录。main 线程随后退出（只结束本线程）。
 fn main(mut startup: Startup) -> i64 {
     let device_tree = handles::install(&mut startup);
     platform::initialize(&device_tree);
@@ -78,13 +78,7 @@ fn main(mut startup: Startup) -> i64 {
             .expect("USB worker initialization failed");
         drop(thread);
     }
-    device_protocol::directory::announce(
-        handles::directory(),
-        device_protocol::directory::Class::EnumerationComplete,
-        &device_protocol::directory::description(),
-        alloc::vec::Vec::new(),
-    )
-    .expect("device directory closed during enumeration");
+    handles::directory().enumerated();
     info!("driver-host: devices published");
     native_runtime::task::exit_thread()
 }

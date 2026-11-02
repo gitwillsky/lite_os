@@ -1,5 +1,6 @@
 //! entropy 设备：按请求长度返回设备 entropy。
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::mem::MaybeUninit;
@@ -8,49 +9,57 @@ use device_model::{EntropyError, EntropySource};
 use native_runtime::Channel;
 use native_runtime::native_abi::{self, Status};
 
-use crate::directory::{self, Announcement, Class};
-use crate::{Reader, Writer, call, serve, take_handle};
+use crate::directory::{self, Class, Directory, OpenedDevice, Session, SessionState};
+use crate::{Reader, Writer, call, take_handle};
 
 const FILL: u32 = 1;
 /// 单次请求的最大字节数；更长的请求由 client 分段。
 const CHUNK: usize = 4096;
 
-/// 驱动宿主：发布 entropy 设备。
+/// 驱动宿主：登记 entropy 设备（可共享，会话无状态）。
 ///
 /// # Errors
 ///
-/// channel、线程创建或目录写入失败。
-pub fn publish(directory: &Channel, device: Arc<dyn EntropySource>) -> Result<(), Status> {
-    let (client, server) = Channel::create()?;
-    serve(
-        server,
-        1,
-        b"entropy-server",
-        Arc::try_new(
-            move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
-                if ordinal != FILL {
-                    return Err(native_abi::ERR_NOT_SUPPORTED);
-                }
-                let length = request.usize()?.min(CHUNK);
-                let mut bytes = alloc::vec![MaybeUninit::<u8>::uninit(); length];
-                device
-                    .fill(&mut bytes)
-                    .map_err(|EntropyError| native_abi::ERR_IO)?;
-                // SAFETY: `fill` 成功即完整初始化了全部字节。
-                let bytes = unsafe {
-                    &*(core::ptr::from_ref::<[MaybeUninit<u8>]>(bytes.as_slice()) as *const [u8])
-                };
-                reply.bytes(bytes);
-                Ok(Vec::new())
-            },
-        )
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-    )?;
-    directory::announce(
-        directory,
+/// 分配失败。
+pub fn publish(directory: &Directory, device: Arc<dyn EntropySource>) -> Result<(), Status> {
+    directory.add(
         Class::Entropy,
         &directory::description(),
-        alloc::vec![client.into_handle()],
+        false,
+        Box::new(move |end| {
+            let session = SessionState::new(device.clone(), end);
+            let (client, server) = Channel::create()?;
+            let server = directory::serve_session(
+                server,
+                1,
+                b"entropy-server",
+                Arc::try_new(
+                    move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
+                        if ordinal != FILL {
+                            return Err(native_abi::ERR_NOT_SUPPORTED);
+                        }
+                        let length = request.usize()?.min(CHUNK);
+                        let mut bytes = alloc::vec![MaybeUninit::<u8>::uninit(); length];
+                        session
+                            .get()
+                            .fill(&mut bytes)
+                            .map_err(|EntropyError| native_abi::ERR_IO)?;
+                        // SAFETY: `fill` 成功即完整初始化了全部字节。
+                        let bytes = unsafe {
+                            &*(core::ptr::from_ref::<[MaybeUninit<u8>]>(bytes.as_slice())
+                                as *const [u8])
+                        };
+                        reply.bytes(bytes);
+                        Ok(Vec::new())
+                    },
+                )
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+            )?;
+            Ok(Session {
+                handles: alloc::vec![client.into_handle()],
+                server,
+            })
+        }),
     )
 }
 
@@ -64,7 +73,7 @@ pub struct RemoteEntropy {
 /// # Errors
 ///
 /// 句柄缺失。
-pub fn connect(mut announcement: Announcement) -> Result<Arc<RemoteEntropy>, Status> {
+pub fn connect(mut announcement: OpenedDevice) -> Result<Arc<RemoteEntropy>, Status> {
     let channel = Channel::from_handle(take_handle(&mut announcement.handles, 0)?);
     Arc::try_new(RemoteEntropy { channel }).map_err(|_| native_abi::ERR_NO_MEMORY)
 }

@@ -12,6 +12,7 @@ bench = false
 native-runtime = { path = "../native-runtime" }
 service-sync = { path = "../service-sync" }
 service-rpc = { path = "../service-rpc" }
+service-directory = { path = "../service-directory" }
 device-model = { path = "../device-model" }
 device-protocol = { path = "../device-protocol" }
 network-protocol = { path = "../network-protocol" }

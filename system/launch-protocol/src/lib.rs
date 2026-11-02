@@ -23,18 +23,33 @@ pub mod linuxd {
     pub const JOB: usize = ROLE_HANDLES + 1;
     /// 根 resource（串口、debuglog、时钟与电源）。
     pub const RESOURCE: usize = ROLE_HANDLES + 2;
-    /// driver-host 设备目录 channel 的读端。
+    /// 根服务路由给 linuxd 的设备目录连接（`device_protocol::directory`，只含路由给它的设备类）。
     pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 3;
-    /// ext4d 控制 channel 的客户端（请求挂载 ext4）。
-    pub const EXT4: usize = ROLE_HANDLES + 4;
-    /// netstack 控制 channel 的客户端（转交网卡、创建网络域）。
-    pub const NETWORK: usize = ROLE_HANDLES + 5;
+    /// 根服务的服务路由目录（`service_directory`）：按协议名连接 netstack、fshost 等服务的当前实例。
+    pub const SERVICES: usize = ROLE_HANDLES + 4;
     /// 根 Job 的只读观察句柄（`INSPECT | ENUMERATE | TRANSFER`）：可遍历任务树并查询统计，
     /// 不能终止、改名或读写任何任务（Fuchsia `RootJobForInspect` 的同等权限）。
-    pub const ROOT_JOB_OBSERVER: usize = ROLE_HANDLES + 6;
+    pub const ROOT_JOB_OBSERVER: usize = ROLE_HANDLES + 5;
 }
 
-/// ext4 文件系统服务：按 linuxd 的挂载请求打开块设备上的 ext4，并以 FUSE 线协议服务每个挂载。
+/// 存储宿主：拥有全部块设备与 ext4d 的连接；向使用者交出块设备的全盘范围连接，并转发 ext4 挂载
+/// （Fuchsia fshost）。
+pub mod fshost {
+    use super::ROLE_HANDLES;
+
+    /// bootfs 中的映像路径。
+    pub const IMAGE: &[u8] = b"bin/fshost";
+    /// 静态链接基址（普通进程的低地址区）。
+    pub const BASE: usize = 0x40_0000;
+    /// outgoing 服务目录的服务端：接受 `service_directory::BLOCKS` 与 `EXT4` 连接。
+    pub const OUTGOING: usize = ROLE_HANDLES;
+    /// 只含块设备的设备目录连接。
+    pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 1;
+    /// ext4d 控制 channel 的客户端。
+    pub const EXT4: usize = ROLE_HANDLES + 2;
+}
+
+/// ext4 文件系统服务：按 fshost 转发的挂载请求打开块设备上的 ext4，并以 FUSE 线协议服务每个挂载。
 pub mod ext4d {
     use super::ROLE_HANDLES;
 
@@ -46,7 +61,7 @@ pub mod ext4d {
     pub const CONTROL: usize = ROLE_HANDLES;
 }
 
-/// 网络服务：拥有 IPv4 协议栈与 packet socket，按 linuxd 的请求创建网络域与 socket。
+/// 网络服务：拥有 IPv4 协议栈、packet socket 与网卡；按使用者的请求创建网络域与 socket。
 pub mod netstack {
     use super::ROLE_HANDLES;
 
@@ -54,8 +69,10 @@ pub mod netstack {
     pub const IMAGE: &[u8] = b"bin/netstack";
     /// 静态链接基址（普通进程的低地址区）。
     pub const BASE: usize = 0x40_0000;
-    /// 控制 channel 的服务端。
-    pub const CONTROL: usize = ROLE_HANDLES;
+    /// outgoing 服务目录的服务端：经它接受 `service_directory::NETWORK` 连接。
+    pub const OUTGOING: usize = ROLE_HANDLES;
+    /// 只含网卡的设备目录连接；netstack 自己打开网卡，重启后重新打开。
+    pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 1;
 }
 
 /// 驱动宿主：平台设备发现、全部设备驱动与设备目录的发布者。
@@ -70,7 +87,7 @@ pub mod driver_host {
     pub const RESOURCE: usize = ROLE_HANDLES;
     /// 平台 DTB VMO。
     pub const DEVICE_TREE: usize = ROLE_HANDLES + 1;
-    /// 设备目录 channel 的写端。
+    /// 设备目录的服务端：driver-host 以全部设备类服务它，根服务持有客户端并按类派生给各使用者。
     pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 2;
 }
 

@@ -11,6 +11,8 @@ bench = false
 [dependencies]
 native-runtime = { path = "../native-runtime" }
 launch-protocol = { path = "../launch-protocol" }
+device-protocol = { path = "../device-protocol" }
+service-directory = { path = "../service-directory" }
 
 [lints]
 workspace = true

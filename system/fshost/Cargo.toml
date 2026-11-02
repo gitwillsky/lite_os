@@ -1,0 +1,23 @@
+[package]
+name = "fshost"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "fshost"
+test = false
+bench = false
+
+[dependencies]
+native-runtime = { path = "../native-runtime" }
+device-model = { path = "../device-model" }
+device-protocol = { path = "../device-protocol" }
+filesystem-protocol = { path = "../filesystem-protocol" }
+launch-protocol = { path = "../launch-protocol" }
+service-directory = { path = "../service-directory" }
+
+[build-dependencies]
+launch-protocol = { path = "../launch-protocol" }
+
+[lints]
+workspace = true

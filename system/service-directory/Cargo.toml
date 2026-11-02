@@ -1,0 +1,16 @@
+[package]
+name = "service-directory"
+version = "0.1.0"
+edition = "2024"
+description = "系统服务按协议名建立连接的服务目录（服务 outgoing 与根服务路由共用）"
+
+[lib]
+test = false
+bench = false
+
+[dependencies]
+native-runtime = { path = "../native-runtime" }
+service-rpc = { path = "../service-rpc" }
+
+[lints]
+workspace = true

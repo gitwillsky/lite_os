@@ -1,18 +1,17 @@
-//! driver-host 设备目录的使用者端：连接目录中的每个设备，把远端 client 登记到对应的设备类注册表；
-//! 网卡属于 netstack，其目录记录原样转交给 netstack。
+//! 设备目录的使用者端：打开路由给 linuxd 的每个设备，把远端 client 登记到对应的设备类注册表。
 //!
-//! 1. 启动时读取目录直到“枚举完成”，此后的块设备、console、显示、输入与音频装配都看到完整设备集；
-//! 2. 之后由目录线程继续接收热插拔设备（USB 连接与其 PCM 输出），登记后请求一轮音频发现；
+//! 1. 启动时枚举目录直到“启动枚举完成”，此后的块设备、console、显示、输入与音频装配都看到完整设备集；
+//! 2. 之后由目录线程等待目录变化 Event，继续接入热插拔设备（USB 连接与其 PCM 输出），登记后请求一轮音频发现；
 //! 3. 全部设备的活动 Event 与事件 channel 由同一个 [`EventHub`] 线程分派。
 
 use alloc::sync::Arc;
 
 use device_model::InputDevice;
 use device_protocol::boot::{BootProgress, Milestone};
-use device_protocol::directory::{self, Announcement, Class};
-use device_protocol::{EventHub, block, display, entropy, input, pcm, port, usb};
-use native_runtime::Channel;
-use native_runtime::native_abi::Status;
+use device_protocol::directory::{Class, DirectoryClient, Entry, OpenedDevice};
+use device_protocol::{EventHub, display, entropy, input, pcm, port, usb};
+use native_runtime::native_abi::{self, Status, signals};
+use native_runtime::{Channel, Event};
 
 /// 启动阶段连接的设备集合。
 pub(crate) struct DeviceDirectory {
@@ -29,18 +28,13 @@ impl DeviceDirectory {
 }
 
 fn attach(
-    announcement: Announcement,
+    announcement: OpenedDevice,
     hub: &Arc<EventHub>,
     boot: &mut Option<BootProgress>,
 ) -> Result<(), Status> {
     match announcement.class {
-        Class::Block => {
-            let _ = super::block::register(block::connect(announcement)?);
-        }
-        Class::Network => {
-            crate::handles::network()
-                .attach_device(&announcement.description, announcement.handles)?;
-        }
+        // 块设备与网卡由根服务分别路由给 fshost 与 netstack，不在 linuxd 的目录范围内。
+        Class::Block | Class::Network => return Err(native_abi::ERR_NOT_SUPPORTED),
         Class::Display => {
             let _ = device_model::register_display_device(display::connect(announcement, hub)?);
         }
@@ -69,37 +63,73 @@ fn attach(
             let _ = device_model::register_usb_device(usb::connect(announcement)?);
         }
         Class::Boot => *boot = Some(device_protocol::boot::connect(announcement)?),
-        Class::EnumerationComplete => {}
     }
     Ok(())
 }
 
-/// 读取目录直到枚举完成，并启动热插拔接收线程。
+/// 接入 `last` 之后的新设备；返回（启动枚举是否已完成，是否接入了新设备）。
+fn advance(
+    directory: &DirectoryClient,
+    last: &mut u64,
+    hub: &Arc<EventHub>,
+    boot: &mut Option<BootProgress>,
+) -> Result<(bool, bool), Status> {
+    let (enumerated, entries) = directory.list(*last)?;
+    let progressed = !entries.is_empty();
+    for entry in entries {
+        *last = entry.id;
+        if let Err(status) = open(directory, &entry, hub, boot) {
+            error!(
+                "device directory: {:?} attach failed: {status}",
+                entry.class
+            );
+        }
+    }
+    Ok((enumerated, progressed))
+}
+
+fn open(
+    directory: &DirectoryClient,
+    entry: &Entry,
+    hub: &Arc<EventHub>,
+    boot: &mut Option<BootProgress>,
+) -> Result<(), Status> {
+    attach(directory.open(entry)?, hub, boot)
+}
+
+/// 先清除变化 Event 再读取，读取之后到达的变化不会丢失；没有新设备时等待下一次变化。
+fn wait_change(watch: &Event) -> Result<(), Status> {
+    watch.wait_one(signals::USER_0, native_abi::DEADLINE_INFINITE)?;
+    watch.signal(signals::USER_0, 0)
+}
+
+/// 枚举目录直到启动枚举完成，并启动热插拔接收线程。
 ///
 /// # Panics
 ///
 /// 目录在枚举完成前关闭（driver-host 失败），或事件分派/目录线程创建失败：没有设备无法继续启动。
 pub(crate) fn connect(channel: Channel) -> DeviceDirectory {
     let hub = EventHub::start().expect("device event hub");
+    let directory = DirectoryClient::new(channel);
+    let watch = directory.watch().expect("device directory watch");
     let mut boot = None;
+    let mut last = 0;
     loop {
-        let announcement =
-            directory::receive(&channel).expect("device directory closed during enumeration");
-        if announcement.class == Class::EnumerationComplete {
+        let (enumerated, progressed) = advance(&directory, &mut last, &hub, &mut boot)
+            .expect("device directory closed during enumeration");
+        if progressed {
+            continue;
+        }
+        if enumerated {
             break;
         }
-        let class = announcement.class;
-        if let Err(status) = attach(announcement, &hub, &mut boot) {
-            error!("device directory: {class:?} attach failed: {status}");
-        }
+        wait_change(&watch).expect("device directory closed during enumeration");
     }
     let thread = native_runtime::thread::spawn(b"device-directory", move || {
         let mut ignored = None;
-        while let Ok(announcement) = directory::receive(&channel) {
-            let class = announcement.class;
-            if let Err(status) = attach(announcement, &hub, &mut ignored) {
-                error!("device directory: hot-plugged {class:?} attach failed: {status}");
-            }
+        while wait_change(&watch).is_ok() {
+            // 一次变化可能对应多台设备；读到没有新设备为止。
+            while let Ok((_, true)) = advance(&directory, &mut last, &hub, &mut ignored) {}
         }
     })
     .expect("device directory thread");

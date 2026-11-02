@@ -1,15 +1,17 @@
 //! 以太网卡：帧随请求/回复内联传递；收发完成经活动 Event 通知使用者。
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use device_model::Activity;
 use device_model::network::{NetworkCompletion, NetworkDevice, NetworkError, NetworkStatistics};
 use native_runtime::native_abi::{self, Status, rights};
+use native_runtime::sync::Mutex;
 use native_runtime::{Channel, Event};
 
-use crate::directory::{self, Announcement, Class};
-use crate::{ActivityBinding, EventHub, Reader, Writer, activity_signal, call, serve, take_handle};
+use crate::directory::{self, Class, Directory, OpenedDevice, Session, SessionState};
+use crate::{ActivityBinding, EventHub, Reader, Writer, activity_signal, call, take_handle};
 
 const RECEIVE: u32 = 1;
 const RESERVE: u32 = 2;
@@ -41,83 +43,152 @@ fn decode_error(status: Status) -> NetworkError {
     }
 }
 
-/// 驱动宿主：发布网卡。
+/// 一个会话的服务端状态：会话结束时取消仍未提交的发送预留，使用者崩溃不会让发送槽永久泄漏。
+/// 只接受本会话发出的预留，防止客户端重复取消使驱动 fail-stop。
+struct NetworkSession {
+    device: Arc<dyn NetworkDevice>,
+    // OWNER: 本会话已预留、尚未提交或取消的发送槽；缺失时崩溃的使用者会永久占住发送池。
+    reservations: Mutex<Vec<u16>>,
+}
+
+impl NetworkSession {
+    fn release(&self, reservation: u16) -> Result<(), Status> {
+        let mut reservations = self.reservations.lock();
+        let index = reservations
+            .iter()
+            .position(|held| *held == reservation)
+            .ok_or(native_abi::ERR_INVALID_ARGS)?;
+        reservations.swap_remove(index);
+        Ok(())
+    }
+
+    fn handle(
+        &self,
+        ordinal: u32,
+        request: &mut Reader<'_>,
+        reply: &mut Writer,
+    ) -> Result<(), Status> {
+        let device = &self.device;
+        match ordinal {
+            RECEIVE => {
+                let mut frame = [0u8; MAX_FRAME];
+                let length = device.receive(&mut frame).map_err(encode_error)?;
+                reply.bytes(&frame[..length]);
+            }
+            RESERVE => {
+                let mut reservations = self.reservations.lock();
+                reservations
+                    .try_reserve(1)
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                let reservation = device.reserve_transmit().map_err(encode_error)?;
+                reservations.push(reservation);
+                reply.u16(reservation);
+            }
+            SUBMIT => {
+                let reservation = request.u16()?;
+                let frame = request.bytes()?;
+                if !self.reservations.lock().contains(&reservation) {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
+                // 提交失败时预留仍归本会话，由使用者取消或随会话结束取消。
+                device
+                    .submit_transmit(reservation, frame)
+                    .map_err(encode_error)?;
+                self.release(reservation)?;
+            }
+            CANCEL => {
+                let reservation = request.u16()?;
+                self.release(reservation)?;
+                device.cancel_transmit(reservation);
+            }
+            TRANSMIT_AVAILABLE => {
+                reply.bool(device.transmit_available());
+            }
+            POLL => {
+                let completion = device
+                    .poll_completions(request.usize()?)
+                    .map_err(encode_error)?;
+                reply
+                    .bool(completion.backlog)
+                    .bool(completion.transmit_became_available);
+            }
+            FINISH_RECEIVE => device.finish_receive_batch().map_err(encode_error)?,
+            STATISTICS => {
+                let statistics = device.statistics();
+                for value in [
+                    statistics.received_bytes,
+                    statistics.received_packets,
+                    statistics.received_errors,
+                    statistics.received_dropped,
+                    statistics.transmitted_bytes,
+                    statistics.transmitted_packets,
+                    statistics.transmitted_errors,
+                    statistics.transmitted_dropped,
+                ] {
+                    reply.u64(value);
+                }
+            }
+            _ => return Err(native_abi::ERR_NOT_SUPPORTED),
+        }
+        Ok(())
+    }
+}
+
+impl Drop for NetworkSession {
+    fn drop(&mut self) {
+        for reservation in self.reservations.get_mut().drain(..) {
+            self.device.cancel_transmit(reservation);
+        }
+    }
+}
+
+/// 驱动宿主：登记网卡（独占：同一时刻只有一个协议栈驱动它，协议栈重启后重新打开）。
 ///
 /// # Errors
 ///
-/// 对象、线程创建或目录写入失败。
-pub fn publish(directory: &Channel, device: Arc<dyn NetworkDevice>) -> Result<(), Status> {
-    let (client, server) = Channel::create()?;
-    let event = Event::create()?;
-    let peer_event = event.duplicate(rights::SAME)?;
+/// 对象创建或分配失败。
+pub fn publish(directory: &Directory, device: Arc<dyn NetworkDevice>) -> Result<(), Status> {
+    let event = Arc::try_new(Event::create()?).map_err(|_| native_abi::ERR_NO_MEMORY)?;
     let mut description = directory::description();
     description
         .bytes(&device.mac_address())
         .bytes(device.driver().as_bytes());
-    device.bind_activity(activity_signal(
-        Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?,
-    )?);
-    serve(
-        server,
-        2,
-        b"net-server",
-        Arc::try_new(
-            move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
-                match ordinal {
-                    RECEIVE => {
-                        let mut frame = [0u8; MAX_FRAME];
-                        let length = device.receive(&mut frame).map_err(encode_error)?;
-                        reply.bytes(&frame[..length]);
-                    }
-                    RESERVE => {
-                        reply.u16(device.reserve_transmit().map_err(encode_error)?);
-                    }
-                    SUBMIT => {
-                        let reservation = request.u16()?;
-                        device
-                            .submit_transmit(reservation, request.bytes()?)
-                            .map_err(encode_error)?;
-                    }
-                    CANCEL => device.cancel_transmit(request.u16()?),
-                    TRANSMIT_AVAILABLE => {
-                        reply.bool(device.transmit_available());
-                    }
-                    POLL => {
-                        let completion = device
-                            .poll_completions(request.usize()?)
-                            .map_err(encode_error)?;
-                        reply
-                            .bool(completion.backlog)
-                            .bool(completion.transmit_became_available);
-                    }
-                    FINISH_RECEIVE => device.finish_receive_batch().map_err(encode_error)?,
-                    STATISTICS => {
-                        let statistics = device.statistics();
-                        for value in [
-                            statistics.received_bytes,
-                            statistics.received_packets,
-                            statistics.received_errors,
-                            statistics.received_dropped,
-                            statistics.transmitted_bytes,
-                            statistics.transmitted_packets,
-                            statistics.transmitted_errors,
-                            statistics.transmitted_dropped,
-                        ] {
-                            reply.u64(value);
-                        }
-                    }
-                    _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-                }
-                Ok(Vec::new())
-            },
-        )
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-    )?;
-    directory::announce(
-        directory,
+    device.bind_activity(activity_signal(event.clone())?);
+    directory.add(
         Class::Network,
         &description,
-        alloc::vec![client.into_handle(), peer_event.into_handle()],
+        true,
+        Box::new(move |end| {
+            let session = SessionState::new(
+                NetworkSession {
+                    device: device.clone(),
+                    reservations: Mutex::new(Vec::new()),
+                },
+                end,
+            );
+            let (client, server) = Channel::create()?;
+            let server = directory::serve_session(
+                server,
+                2,
+                b"net-server",
+                Arc::try_new(
+                    move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
+                        session
+                            .get()
+                            .handle(ordinal, request, reply)
+                            .map(|()| Vec::new())
+                    },
+                )
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+            )?;
+            Ok(Session {
+                handles: alloc::vec![
+                    client.into_handle(),
+                    event.duplicate(rights::SAME)?.into_handle()
+                ],
+                server,
+            })
+        }),
     )
 }
 
@@ -137,7 +208,7 @@ pub struct RemoteNetwork {
 ///
 /// 描述或句柄不完整，或事件登记失败。
 pub fn connect(
-    mut announcement: Announcement,
+    mut announcement: OpenedDevice,
     hub: &Arc<EventHub>,
 ) -> Result<Arc<RemoteNetwork>, Status> {
     let channel = Channel::from_handle(take_handle(&mut announcement.handles, 0)?);

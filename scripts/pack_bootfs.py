@@ -2,7 +2,7 @@
 """把系统服务打包为 bootfs（cpio ``newc``），由 QEMU ``-initrd`` 交给内核。
 
 1. 内核从 initrd 取出 ``bin/root-server`` 并启动它；
-2. 根服务再从同一 bootfs 启动 ``bin/driver-host``、``bin/ext4d``、``bin/netstack`` 与 ``bin/linuxd``；
+2. 根服务再从同一 bootfs 启动 ``bin/driver-host``、``bin/ext4d``、``bin/fshost``、``bin/netstack`` 与 ``bin/linuxd``；
 3. 成员按路径排序、时间戳与 inode 固定，同样的输入总是得到同样的字节。
 """
 
@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parent.parent
 SERVICES: tuple[tuple[str, str], ...] = (
     ("bin/driver-host", "driver-host"),
     ("bin/ext4d", "ext4d"),
+    ("bin/fshost", "fshost"),
     ("bin/linuxd", "linuxd"),
     ("bin/netstack", "netstack"),
     ("bin/root-server", "root-server"),

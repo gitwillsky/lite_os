@@ -31,6 +31,27 @@ pub(crate) fn register(device: Arc<dyn BlockDevice>) -> Result<usize, Arc<dyn Bl
     DEVICES.register(device)
 }
 
+/// 从 fshost 的块设备清单接入全部块设备（全盘范围连接），按清单序号发布。
+///
+/// # Panics
+///
+/// fshost 不可用或某块设备无法连接：根文件系统所在的盘缺失时无法继续启动。
+pub(crate) fn connect_storage() {
+    let blocks = filesystem_protocol::BlocksClient::new(
+        crate::handles::services()
+            .connect(service_directory::BLOCKS)
+            .expect("fshost block connection"),
+    );
+    let count = blocks.count().expect("fshost block count");
+    for index in 0..count {
+        let channel = blocks.open(index).expect("fshost block device");
+        let device = device_protocol::block::from_channel(channel).expect("block device info");
+        if register(device).is_err() {
+            panic!("block device registry allocation failed");
+        }
+    }
+}
+
 /// 第 `index` 个已发布的块设备。
 pub(crate) fn device(index: usize) -> Option<Arc<dyn BlockDevice>> {
     DEVICES.get(index)

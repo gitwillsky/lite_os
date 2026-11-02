@@ -94,6 +94,7 @@ fn main(mut startup: Startup) -> i64 {
     let scheduler = task::initialize(vfs);
     start_deferred_worker();
     let devices = devices::directory::connect(directory);
+    devices::block::connect_storage();
     devices.advance(Milestone::Namespaces);
     devices.advance(Milestone::Scheduler);
 

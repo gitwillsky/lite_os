@@ -3,8 +3,8 @@
 
 //! 驱动宿主（driver-host）与设备使用者之间的设备线协议。
 //!
-//! 1. 驱动宿主为每个设备创建一条请求 channel 与一个活动 Event，经目录 channel 把它们连同设备的静态
-//!    描述[`directory::Announcement`]交给使用者；带载荷的设备回调（PCM 周期完成等）另有一条事件 channel。
+//! 1. 驱动宿主在[`directory::Directory`]登记设备；使用者每次打开设备得到一个会话：一条请求 channel 与一个
+//!    活动 Event（[`directory::OpenedDevice`]）；带载荷的设备回调（PCM 周期完成等）另有一条事件 channel。
 //! 2. 使用者端每个设备类有一个实现 `device_model` trait 的远端 client：同步控制用 `channel_call`，
 //!    有界 PCM 数据使用单向请求；活动 Event 与事件 channel 由一个 [`EventHub`] 线程统一等待并分派。
 //! 3. 驱动宿主端每个设备类有一个 server 适配：若干工作线程读取请求、调用驱动 trait、写回同一事务号的回复。

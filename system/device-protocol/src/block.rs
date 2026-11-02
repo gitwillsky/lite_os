@@ -1,5 +1,6 @@
 //! 块设备：整块读写与持久化屏障，块内容随请求/回复内联传递。
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
@@ -7,8 +8,8 @@ use device_model::{BlockDevice, BlockError};
 use native_runtime::native_abi::{self, Status};
 use native_runtime::{Channel, Handle};
 
-use crate::directory::{self, Announcement, Class};
-use crate::{Reader, Writer, call, serve, take_handle};
+use crate::directory::{self, Class, Directory, OpenedDevice, Session, SessionState};
+use crate::{Reader, Writer, call, take_handle};
 
 const READ: u32 = 1;
 const WRITE: u32 = 2;
@@ -84,16 +85,17 @@ impl BlockRange {
     }
 }
 
-/// 以 [`WORKERS`] 个线程服务 `device` 的一条连接，返回客户端一端。
-fn serve_device(device: Arc<dyn BlockDevice>) -> Result<Channel, Status> {
+/// 以 [`WORKERS`] 个线程服务一条连接，返回（客户端一端，服务端副本）。
+fn serve_device(session: SessionState<Arc<dyn BlockDevice>>) -> Result<(Channel, Channel), Status> {
     let (client, server) = Channel::create()?;
-    let block_size = device.block_size();
-    serve(
+    let block_size = session.get().block_size();
+    let server = directory::serve_session(
         server,
         WORKERS,
         b"block-server",
         Arc::try_new(
             move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
+                let device = session.get();
                 match ordinal {
                     READ => {
                         let block = request.usize()?;
@@ -128,7 +130,8 @@ fn serve_device(device: Arc<dyn BlockDevice>) -> Result<Channel, Status> {
                             count,
                         })
                         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-                        return Ok(alloc::vec![serve_device(range)?.into_handle()]);
+                        let (range, _) = serve_device(SessionState::derived(range))?;
+                        return Ok(alloc::vec![range.into_handle()]);
                     }
                     _ => return Err(native_abi::ERR_NOT_SUPPORTED),
                 }
@@ -137,26 +140,31 @@ fn serve_device(device: Arc<dyn BlockDevice>) -> Result<Channel, Status> {
         )
         .map_err(|_| native_abi::ERR_NO_MEMORY)?,
     )?;
-    Ok(client)
+    Ok((client, server))
 }
 
-/// 驱动宿主：发布块设备并服务其请求。
+/// 驱动宿主：登记块设备（独占：同一时刻只有一个所有者，子范围连接由所有者派生）。
 ///
 /// # Errors
 ///
-/// channel、线程创建或目录写入失败。
-pub fn publish(directory: &Channel, device: Arc<dyn BlockDevice>) -> Result<(), Status> {
+/// 分配失败。
+pub fn publish(directory: &Directory, device: Arc<dyn BlockDevice>) -> Result<(), Status> {
     let mut description = directory::description();
     description
         .bytes(device.disk_name())
         .u64(device.block_size() as u64)
         .u64(device.block_count());
-    let client = serve_device(device)?;
-    directory::announce(
-        directory,
+    directory.add(
         Class::Block,
         &description,
-        alloc::vec![client.into_handle()],
+        true,
+        Box::new(move |end| {
+            let (client, server) = serve_device(SessionState::new(device.clone(), end))?;
+            Ok(Session {
+                handles: alloc::vec![client.into_handle()],
+                server,
+            })
+        }),
     )
 }
 
@@ -193,7 +201,7 @@ pub fn from_channel(channel: Channel) -> Result<Arc<RemoteBlock>, Status> {
 /// # Errors
 ///
 /// 描述或句柄不完整。
-pub fn connect(mut announcement: Announcement) -> Result<Arc<RemoteBlock>, Status> {
+pub fn connect(mut announcement: OpenedDevice) -> Result<Arc<RemoteBlock>, Status> {
     let channel = Channel::from_handle(take_handle(&mut announcement.handles, 0)?);
     let mut reader = announcement.reader();
     let name = reader.bytes()?.to_vec();

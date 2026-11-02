@@ -5,18 +5,29 @@
 //!
 //! 1. 从启动消息取得根 Job、根 resource、bootfs 与 DTB；
 //! 2. 为根 Job 建立异常 channel：任何系统服务未处理的异常都在这里记录，随后交还内核终止该进程；
-//! 3. 创建设备目录 channel 与 ext4d、netstack 的控制 channel，启动 driver-host（持有 DTB 与目录写端）、ext4d 与 netstack
-//!    （各持控制服务端）以及 linuxd（共享进程 + 首个成员进程，持有目录读端与两个控制客户端）；
-//! 4. 任一服务终止即系统无法继续服务：记录退出状态并关机。
+//! 3. 启动 driver-host（持有 DTB 与设备目录服务端），根服务持有完整目录连接并按设备类路由：
+//!    Network 类给 netstack，Block 类给 fshost，其余给 linuxd；
+//! 4. 启动 ext4d、fshost（持有 ext4d 控制端）与受监督的 netstack，并为 linuxd 服务路由目录：
+//!    `service_directory::NETWORK` 转发到 netstack 的当前实例，`BLOCKS`/`EXT4` 转发到 fshost
+//!    （能力路由，对应 Fuchsia component_manager）；
+//! 5. netstack 与 linuxd 终止后重启（linuxd 先终止整个 Linux Job），[`CRASH_WINDOW`] 内达到
+//!    [`CRASH_LIMIT`] 次判定为崩溃循环并关机；driver-host、fshost、ext4d 终止时系统无法继续服务：
+//!    记录退出状态并关机。
 
 extern crate alloc;
 
+use alloc::sync::Arc;
 use alloc::vec;
 
-use launch_protocol::{driver_host, ext4d, linuxd, netstack};
+use device_protocol::directory::{ALL_CLASSES, Class, DirectoryClient};
+use launch_protocol::{driver_host, ext4d, fshost, linuxd, netstack};
 use native_runtime::executor::Executor;
-use native_runtime::native_abi::{self, ExceptionReport, rights, signals, startup};
-use native_runtime::{Channel, Handle, Job, Process, Resource, Startup, Vmar, Vmo, error, info};
+use native_runtime::native_abi::{self, ExceptionReport, Status, rights, signals, startup};
+use native_runtime::sync::{Mutex, Once};
+use native_runtime::{
+    Channel, Event, Handle, Job, Process, Resource, Startup, Vmar, Vmo, error, info,
+};
+use service_directory::ServiceDirectory;
 
 native_runtime::entry!(main);
 
@@ -24,6 +35,68 @@ const LINUXD_STACK_SIZE: usize = 512 * 1024;
 const DRIVER_HOST_STACK_SIZE: usize = 256 * 1024;
 const EXT4D_STACK_SIZE: usize = 256 * 1024;
 const NETSTACK_STACK_SIZE: usize = 256 * 1024;
+const FSHOST_STACK_SIZE: usize = 128 * 1024;
+/// 崩溃循环判定：[`CRASH_WINDOW`] 纳秒内终止达到 [`CRASH_LIMIT`] 次即不再重启（对应 systemd
+/// `StartLimitBurst`/`StartLimitIntervalSec`）。缺失时持续崩溃的服务会让根服务无限重启它。
+const CRASH_LIMIT: usize = 5;
+const CRASH_WINDOW: i64 = 10_000_000_000;
+
+// OWNER: bootfs 映射永不解除；监督任务重启服务时重复从中取映像。
+static BOOTFS: Once<native_runtime::bootfs::Bootfs> = Once::new();
+
+/// 受监督服务的当前实例：路由目录经它把连接转发给活着的实例。
+struct Supervised {
+    // OWNER: 当前实例的 outgoing；实例终止后为 None，重启完成后换成新实例。
+    outgoing: Mutex<Option<Arc<ServiceDirectory>>>,
+    // FLAG(USER_0): 当前实例可用；缺失时等待重启的连接请求只能轮询。
+    available: Event,
+}
+
+impl Supervised {
+    fn new() -> Self {
+        Self {
+            outgoing: Mutex::new(None),
+            available: Event::create().expect("supervision event"),
+        }
+    }
+
+    fn install(&self, outgoing: ServiceDirectory) {
+        *self.outgoing.lock() = Some(Arc::new(outgoing));
+        let _ = self.available.signal(0, signals::USER_0);
+    }
+
+    /// 撤下 `instance`（仍是当前实例时）；重启前与发现已终止的转发者都会调用，重复调用无害。
+    fn retire(&self, instance: &Arc<ServiceDirectory>) {
+        let mut outgoing = self.outgoing.lock();
+        if outgoing
+            .as_ref()
+            .is_some_and(|current| Arc::ptr_eq(current, instance))
+        {
+            let _ = self.available.signal(signals::USER_0, 0);
+            *outgoing = None;
+        }
+    }
+
+    /// 把连接转发给当前实例；实例已终止时等待重启完成再转发。
+    fn forward(&self, protocol: &[u8], server: Channel) -> Result<(), Status> {
+        loop {
+            let current = self.outgoing.lock().clone();
+            if let Some(instance) = current {
+                match instance.channel().wait_one(signals::PEER_CLOSED, 0) {
+                    Err(native_abi::ERR_TIMED_OUT) => return instance.forward(protocol, server),
+                    _ => self.retire(&instance),
+                }
+            }
+            self.available
+                .wait_one(signals::USER_0, native_abi::DEADLINE_INFINITE)?;
+        }
+    }
+}
+
+// OWNER: netstack 的唯一监督状态；路由目录线程与监督任务共享。
+static NETWORK: Once<Supervised> = Once::new();
+// OWNER: fshost 的 outgoing；fshost 不重启（终止即关机），启动后不变。
+static STORAGE: Once<ServiceDirectory> = Once::new();
 
 fn main(mut startup: Startup) -> i64 {
     let job = Job::from_handle(startup.take(startup::root::JOB));
@@ -39,37 +112,48 @@ fn main(mut startup: Startup) -> i64 {
 
     let exceptions =
         native_runtime::task::create_exception_channel(&job).expect("root exception channel");
-    let bootfs = native_runtime::bootfs::Bootfs::map(&bootfs_vmo).expect("bootfs mapping");
-    let (directory_reader, directory_writer) = Channel::create().expect("device directory channel");
+    let bootfs = BOOTFS
+        .call_once(|| native_runtime::bootfs::Bootfs::map(&bootfs_vmo).expect("bootfs mapping"));
+    let (directory, directory_server) = Channel::create().expect("device directory channel");
+    let directory = DirectoryClient::new(directory);
     let (ext4_client, ext4_server) = Channel::create().expect("ext4d control channel");
-    let (network_client, network_server) = Channel::create().expect("netstack control channel");
-    let devices = start_driver_host(&job, resource, &bootfs, device_tree, directory_writer);
+    let devices = start_driver_host(&job, resource, bootfs, device_tree, directory_server);
     let filesystems = start_service(
         &job,
-        &bootfs,
+        bootfs,
         ext4d::IMAGE,
         b"ext4d",
-        ext4_server,
+        vec![ext4_server.into_handle()],
         EXT4D_STACK_SIZE,
     );
-    let network = start_service(
+    let (storage, storage_server) = Channel::create().expect("fshost outgoing channel");
+    let storage_host = start_service(
         &job,
-        &bootfs,
-        netstack::IMAGE,
-        b"netstack",
-        network_server,
-        NETSTACK_STACK_SIZE,
+        bootfs,
+        fshost::IMAGE,
+        b"fshost",
+        vec![
+            storage_server.into_handle(),
+            directory
+                .scope(Class::Block.bit())
+                .expect("fshost device scope")
+                .into_channel()
+                .into_handle(),
+            ext4_client.into_handle(),
+        ],
+        FSHOST_STACK_SIZE,
     );
-    let linux = start_linuxd(
-        &job,
-        resource,
-        &bootfs,
-        directory_reader,
-        [ext4_client, network_client],
-        &startup.arguments,
-    );
-
+    STORAGE.call_once(|| ServiceDirectory::new(storage));
+    let network = NETWORK.call_once(Supervised::new);
+    let network_devices = Arc::new(directory);
+    let linux_devices = network_devices.clone();
+    let command_line: &'static [u8] =
+        alloc::boxed::Box::leak(core::mem::take(&mut startup.arguments).into_boxed_slice());
     let executor = Executor::create().expect("root executor");
+    let supervisor_job = job.duplicate(rights::SAME).expect("root job duplicate");
+    executor.spawn(async move {
+        supervise_network(executor, &supervisor_job, bootfs, &network_devices, network).await;
+    });
     executor.spawn(async move {
         loop {
             if executor
@@ -91,17 +175,152 @@ fn main(mut startup: Startup) -> i64 {
         native_runtime::task::exit_process(power_off(&devices, "driver-host"));
     });
     executor.spawn(async move {
+        let _ = executor
+            .on_signals(&storage_host, signals::TERMINATED)
+            .await;
+        native_runtime::task::exit_process(power_off(&storage_host, "fshost"));
+    });
+    executor.spawn(async move {
         let _ = executor.on_signals(&filesystems, signals::TERMINATED).await;
         native_runtime::task::exit_process(power_off(&filesystems, "ext4d"));
     });
-    executor.spawn(async move {
-        let _ = executor.on_signals(&network, signals::TERMINATED).await;
-        native_runtime::task::exit_process(power_off(&network, "netstack"));
-    });
+    let linux_root = job.duplicate(rights::SAME).expect("root job duplicate");
     executor.block_on(async move {
-        let _ = executor.on_signals(&linux, signals::TERMINATED).await;
-        power_off(&linux, "linuxd")
+        supervise_linux(
+            executor,
+            &linux_root,
+            resource,
+            bootfs,
+            &linux_devices,
+            command_line,
+        )
+        .await
     })
+}
+
+/// 服务路由（对应 Fuchsia component_manager 的能力路由）：把消费者的连接转发给提供该协议的当前实例。
+fn route(protocol: &[u8], server: Channel) -> Result<(), Status> {
+    if protocol == service_directory::NETWORK {
+        NETWORK
+            .get()
+            .expect("network supervision")
+            .forward(protocol, server)
+    } else if protocol == service_directory::BLOCKS || protocol == service_directory::EXT4 {
+        STORAGE
+            .get()
+            .expect("storage routing")
+            .forward(protocol, server)
+    } else {
+        Err(native_abi::ERR_NOT_FOUND)
+    }
+}
+
+/// 为一个消费者实例服务新的路由目录，返回交给它的一端。
+fn services() -> Channel {
+    let (client, server) = Channel::create().expect("service directory channel");
+    service_directory::serve_directory(server, b"root-services", Arc::new(route))
+        .expect("service directory");
+    client
+}
+
+/// 终止计数：[`CRASH_WINDOW`] 内达到 [`CRASH_LIMIT`] 次即判定为崩溃循环。
+struct CrashLoop {
+    // 环形记录最近 CRASH_LIMIT 次终止时刻；最旧一次仍在窗口内即为崩溃循环。
+    terminations: [i64; CRASH_LIMIT],
+    next: usize,
+}
+
+impl CrashLoop {
+    fn new() -> Self {
+        Self {
+            terminations: [i64::MIN; CRASH_LIMIT],
+            next: 0,
+        }
+    }
+
+    /// 记录一次终止；返回是否已构成崩溃循环。
+    fn record(&mut self) -> bool {
+        let now = native_runtime::system::monotonic();
+        self.terminations[self.next] = now;
+        self.next = (self.next + 1) % CRASH_LIMIT;
+        now.saturating_sub(self.terminations[self.next]) < CRASH_WINDOW
+    }
+}
+
+/// 运行并监督 linuxd（Linux 容器）：主成员终止后终止整个 linuxd Job，等全部 Linux 进程结束、
+/// 独占设备会话与网络域随之回收，再以新的设备目录范围与路由目录启动新实例；崩溃循环时关机。
+async fn supervise_linux(
+    executor: &'static Executor,
+    root: &Job,
+    resource: &Resource,
+    bootfs: &'static native_runtime::bootfs::Bootfs,
+    devices: &DirectoryClient,
+    command_line: &[u8],
+) -> i64 {
+    let mut crashes = CrashLoop::new();
+    loop {
+        let (linux, job) = start_linuxd(
+            root,
+            resource,
+            bootfs,
+            devices
+                .scope(ALL_CLASSES & !Class::Network.bit() & !Class::Block.bit())
+                .expect("linuxd device scope")
+                .into_channel(),
+            services(),
+            command_line,
+        );
+        let _ = executor.on_signals(&linux, signals::TERMINATED).await;
+        let _ = native_runtime::task::kill(&job);
+        let _ = executor.on_signals(&job, signals::TERMINATED).await;
+        let status = linux.basic().map_or(-1, |basic| basic.return_code);
+        if crashes.record() {
+            error!("linuxd terminated {CRASH_LIMIT} times within 10 s (last status {status})");
+            return power_off(&linux, "linuxd");
+        }
+        error!("linuxd terminated with status {status}; restarting");
+    }
+}
+
+/// 运行并监督 netstack：每个实例拿到新的 outgoing 与只含网卡的设备目录；终止后撤下实例并重启，
+/// 崩溃循环时关机。
+async fn supervise_network(
+    executor: &'static Executor,
+    job: &Job,
+    bootfs: &'static native_runtime::bootfs::Bootfs,
+    devices: &DirectoryClient,
+    network: &'static Supervised,
+) {
+    let mut crashes = CrashLoop::new();
+    loop {
+        let (outgoing, outgoing_server) = Channel::create().expect("netstack outgoing channel");
+        let scope = devices
+            .scope(Class::Network.bit())
+            .expect("netstack device scope");
+        let process = start_service(
+            job,
+            bootfs,
+            netstack::IMAGE,
+            b"netstack",
+            vec![
+                outgoing_server.into_handle(),
+                scope.into_channel().into_handle(),
+            ],
+            NETSTACK_STACK_SIZE,
+        );
+        let instance = ServiceDirectory::new(outgoing);
+        network.install(instance);
+        let _ = executor.on_signals(&process, signals::TERMINATED).await;
+        if let Some(instance) = network.outgoing.lock().clone() {
+            network.retire(&instance);
+        }
+        let status = process.basic().map_or(-1, |basic| basic.return_code);
+        if crashes.record() {
+            error!("netstack terminated {CRASH_LIMIT} times within 10 s (last status {status})");
+            native_runtime::task::exit_process(power_off(&process, "netstack"));
+        }
+        error!("netstack terminated with status {status}; restarting");
+    }
 }
 
 /// 系统服务终止后无法继续：记录退出状态并关机；关机请求被拒绝时返回根服务的退出码。
@@ -151,9 +370,9 @@ fn start_linuxd(
     resource: &Resource,
     bootfs: &native_runtime::bootfs::Bootfs,
     directory: Channel,
-    [ext4, network]: [Channel; 2],
+    services: Channel,
     command_line: &[u8],
-) -> Process {
+) -> (Process, Job) {
     let image = bootfs
         .find(linuxd::IMAGE)
         .unwrap_or_else(|| {
@@ -196,15 +415,14 @@ fn start_linuxd(
                 .into_handle(),
             system_resource.into_handle(),
             directory.into_handle(),
-            ext4.into_handle(),
-            network.into_handle(),
+            services.into_handle(),
             observer.into_handle(),
         ],
         stack_size: LINUXD_STACK_SIZE,
     })
     .expect("linuxd launch");
     info!("linuxd started");
-    process
+    (process, job)
 }
 
 /// 启动 driver-host：普通进程，持有根 resource、DTB 与设备目录写端。
@@ -251,13 +469,13 @@ fn start_driver_host(
     process
 }
 
-/// 启动只持有一个控制 channel 服务端的系统服务（ext4d、netstack）：普通进程，其余资源随使用者的请求交来。
+/// 在独立 Job 中启动普通进程形态的系统服务（ext4d、netstack），交付按其启动约定排列的角色句柄。
 fn start_service(
     root: &Job,
     bootfs: &native_runtime::bootfs::Bootfs,
     image: &[u8],
     name: &[u8],
-    control: Channel,
+    handles: alloc::vec::Vec<Handle>,
     stack_size: usize,
 ) -> Process {
     let label = core::str::from_utf8(name).unwrap_or("");
@@ -278,7 +496,7 @@ fn start_service(
         name,
         image,
         arguments: &[],
-        handles: vec![control.into_handle()],
+        handles,
         stack_size,
     })
     .unwrap_or_else(|status| panic!("{label} launch: {status}"));

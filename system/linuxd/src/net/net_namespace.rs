@@ -1,8 +1,9 @@
 //! 网络域的实际 namespace policy；socket 捕获对象，控制消息不从当前 Task 重新取 policy。
 //! 协议状态（接口、FIB、endpoint）在 netstack 的对应实例中，经域 channel 访问。
 use crate::namespace::{NamespaceAuthority, NamespaceError, UserNamespace};
-use crate::sync::Once;
-use alloc::sync::Arc;
+use crate::sync::{Mutex, Once};
+use alloc::sync::{Arc, Weak};
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 use network_protocol::RemoteNamespace;
 
@@ -12,9 +13,9 @@ pub(crate) struct NetNamespace {
     user: Arc<UserNamespace>,
     // OWNER: Linux net.core.sysctl_optmem_max 的唯一 scalar；不复制到各个 socket。
     optmem_max: AtomicU32,
-    // OWNER: 同一网络域在 netstack 中唯一协议实例的域 channel；boot 在设备装配后安装，新域在发布前安装，
-    // 之后不替换。随最后一个引用关闭，netstack 据此退休该实例。
-    protocol: Once<RemoteNamespace>,
+    // OWNER: 同一网络域在 netstack 当前实例中的唯一协议实例；boot 在连接后安装，新域在发布前安装，
+    // netstack 重启后换成新实例中重建的协议实例。随最后一个引用关闭，netstack 据此退休该实例。
+    protocol: Mutex<Option<Arc<RemoteNamespace>>>,
     _charge: Option<crate::namespace::UserResourceCharge>,
 }
 impl core::fmt::Debug for NetNamespace {
@@ -38,7 +39,7 @@ impl NetNamespace {
             id: crate::namespace::next_namespace_id(),
             user,
             optmem_max: AtomicU32::new(128 * 1024),
-            protocol: Once::new(),
+            protocol: Mutex::new(None),
             _charge: Some(charge),
         })
         .map_err(|_| NamespaceError::OutOfMemory)?;
@@ -47,17 +48,20 @@ impl NetNamespace {
             _ => NamespaceError::Invalid,
         })?;
         namespace.install_protocol(protocol);
+        register(&namespace)?;
         Ok(namespace)
     }
     pub(crate) fn id(&self) -> u64 {
         self.id
     }
-    pub(in crate::net) fn protocol(&self) -> Option<&RemoteNamespace> {
-        self.protocol.get()
+    pub(in crate::net) fn protocol(&self) -> Option<Arc<RemoteNamespace>> {
+        self.protocol.lock().clone()
     }
-    /// 只安装一次；之后不替换协议实例。
+    /// 安装或替换协议实例；旧实例在锁外关闭。
     pub(in crate::net) fn install_protocol(&self, protocol: RemoteNamespace) {
-        self.protocol.call_once(|| protocol);
+        let protocol = Arc::new(protocol);
+        let retired = self.protocol.lock().replace(protocol);
+        drop(retired);
     }
     pub(crate) fn is_initial(&self) -> bool {
         self.id == 6
@@ -100,7 +104,7 @@ pub(crate) fn initialize_net() -> Result<(), NamespaceError> {
                 id: 6,
                 user: crate::namespace::initial_user(),
                 optmem_max: AtomicU32::new(128 * 1024),
-                protocol: Once::new(),
+                protocol: Mutex::new(None),
                 _charge: None,
             })
             .map_err(|_| NamespaceError::OutOfMemory)
@@ -130,4 +134,23 @@ impl crate::namespace::NamespaceOwner for NetNamespace {
     fn owning_user(&self) -> Option<Arc<UserNamespace>> {
         Some(self.user.clone())
     }
+}
+
+// OWNER: 存活网络域的弱引用，netstack 重启后据此为每个域重建协议实例；只存 Weak，不延长域寿命。
+// 缺失时重启后的非初始网络域永久失去协议实例，其中的 socket 无法再创建。
+static NAMESPACES: Mutex<Vec<Weak<NetNamespace>>> = Mutex::new(Vec::new());
+
+fn register(namespace: &Arc<NetNamespace>) -> Result<(), NamespaceError> {
+    let mut namespaces = NAMESPACES.lock();
+    namespaces.retain(|namespace| namespace.strong_count() != 0);
+    namespaces
+        .try_reserve(1)
+        .map_err(|_| NamespaceError::OutOfMemory)?;
+    namespaces.push(Arc::downgrade(namespace));
+    Ok(())
+}
+
+/// 当前存活的非初始网络域（初始域另由 [`initial_net`] 取得）。
+pub(in crate::net) fn live_namespaces() -> Vec<Arc<NetNamespace>> {
+    NAMESPACES.lock().iter().filter_map(Weak::upgrade).collect()
 }

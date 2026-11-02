@@ -12,11 +12,12 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
+use device_model::BlockDevice;
 use filesystem_protocol::{MAX_TRANSFER, MountControl, MountService, Mounted};
 use linux_abi::{errno, fuse};
-use native_runtime::Channel;
-use native_runtime::native_abi::{self, DEADLINE_INFINITE, Status};
-use native_runtime::sync::Mutex;
+use native_runtime::native_abi::{self, DEADLINE_INFINITE, Status, signals};
+use native_runtime::sync::{Mutex, Once};
+use native_runtime::{Channel, Event};
 
 use crate::ext4::{Ext4FileSystem, Ext4Inode};
 use crate::vfs::{
@@ -48,12 +49,67 @@ fn status(error: FileSystemError) -> Status {
     }
 }
 
+/// ext4 超级块中文件系统 UUID 的字节偏移（超级块起于 1024，`s_uuid` 位于其 0x68）。
+const UUID_OFFSET: usize = 1024 + 0x68;
+
+// OWNER: 尚未完成 shutdown 的挂载的文件系统 UUID。同一文件系统只会在使用者重启时被再次挂载（使用者
+// 自己合并同一文件系统的多次挂载）；新挂载等旧挂载拆除完毕，缺失时两个挂载会同时回放并写入同一日志。
+static LIVE: Mutex<Vec<[u8; 16]>> = Mutex::new(Vec::new());
+// OWNER: 某个挂载完成拆除时置位 `USER_0`；首次使用时创建。
+static SETTLED: Once<Event> = Once::new();
+
+/// 一个挂载对其文件系统 UUID 的占用；析构时（拆除完毕或挂载失败）释放并通知等待者。
+struct Claim([u8; 16]);
+
+impl Claim {
+    /// 等待同一文件系统的旧挂载拆除完毕后占用。
+    fn acquire(uuid: [u8; 16]) -> Result<Self, Status> {
+        let settled = SETTLED.try_call_once(Event::create)?;
+        loop {
+            settled.signal(signals::USER_0, 0)?;
+            {
+                let mut live = LIVE.lock();
+                if !live.contains(&uuid) {
+                    live.try_reserve(1).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+                    live.push(uuid);
+                    return Ok(Self(uuid));
+                }
+            }
+            settled.wait_one(signals::USER_0, DEADLINE_INFINITE)?;
+        }
+    }
+}
+
+impl Drop for Claim {
+    fn drop(&mut self) {
+        LIVE.lock().retain(|uuid| *uuid != self.0);
+        if let Some(settled) = SETTLED.get() {
+            let _ = settled.signal(0, signals::USER_0);
+        }
+    }
+}
+
+/// 读取块设备上 ext4 超级块的 UUID（日志回放之前，只读）。
+fn filesystem_uuid(device: &dyn BlockDevice) -> Result<[u8; 16], Status> {
+    let block_size = device.block_size();
+    let mut block = alloc::vec![0u8; block_size];
+    device
+        .read_block(UUID_OFFSET / block_size, &mut block)
+        .map_err(|_| native_abi::ERR_IO)?;
+    let start = UUID_OFFSET % block_size;
+    block
+        .get(start..start + 16)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or(native_abi::ERR_INVALID_ARGS)
+}
+
 /// 挂载服务：打开块设备上的 ext4 并为它建立 FUSE channel。
 struct Ext4Service;
 
 impl MountService for Ext4Service {
     fn mount(&self, block: Channel, read_only: bool) -> Result<Mounted, Status> {
         let device = device_protocol::block::from_channel(block)?;
+        let claim = Claim::acquire(filesystem_uuid(&*device)?)?;
         let filesystem = Ext4FileSystem::new(device, read_only).map_err(status)?;
         filesystem.start_writeback().map_err(status)?;
         let root = filesystem.root_inode().map_err(status)?;
@@ -63,6 +119,7 @@ impl MountService for Ext4Service {
             handles: Mutex::new(BTreeMap::new()),
             next_handle: AtomicU64::new(1),
             destroyed: AtomicBool::new(false),
+            claim: Mutex::new(Some(claim)),
         })
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         mount.nodes.lock().insert(
@@ -123,6 +180,8 @@ struct Mount {
     next_handle: AtomicU64,
     // OWNER: DESTROY 已执行 shutdown；连接随后断开时不再重复。
     destroyed: AtomicBool,
+    // OWNER: 文件系统 UUID 的占用；shutdown 完成后释放，同一文件系统的新挂载随之继续。
+    claim: Mutex<Option<Claim>>,
 }
 
 /// 一条请求的头部（`fuse_in_header`）。
@@ -305,9 +364,18 @@ impl Mount {
             }
         }
         // 使用者断开（卸载或 linuxd 失败）：未经 DESTROY 时在这里结束挂载。
-        if !self.destroyed.swap(true, Ordering::AcqRel) {
-            let _ = self.filesystem.shutdown();
+        let _ = self.finish();
+    }
+
+    /// 恰好一次地拆除挂载并释放文件系统 UUID 的占用。shutdown 失败同样释放：失败后的文件系统
+    /// 已停止写回，不会再写日志。
+    fn finish(&self) -> Result<(), FileSystemError> {
+        if self.destroyed.swap(true, Ordering::AcqRel) {
+            return Ok(());
         }
+        let result = self.filesystem.shutdown();
+        drop(self.claim.lock().take());
+        result
     }
 
     fn header(input: &mut Input<'_>) -> Option<Header> {
@@ -400,9 +468,7 @@ impl Mount {
         match header.opcode {
             fuse::INIT => Self::init(input),
             fuse::DESTROY => {
-                if !self.destroyed.swap(true, Ordering::AcqRel) {
-                    self.filesystem.shutdown().map_err(fs_error)?;
-                }
+                self.finish().map_err(fs_error)?;
                 Ok(None)
             }
             fuse::LOOKUP => {

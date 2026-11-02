@@ -6,6 +6,8 @@
 //! 1. 使用者经服务的控制 channel 发出挂载请求，交出块设备连接（`device_protocol::block` 的一条 channel）；
 //! 2. 服务打开文件系统，回复该挂载的 FUSE channel（使用者的 FUSE 客户端经它访问文件）与挂载控制 channel；
 //! 3. 挂载控制目前只有“转为可写”（只读挂载重新挂载为读写）；卸载经 FUSE `DESTROY` 完成。
+//! 4. fshost 拥有块设备与文件系统服务：经块设备清单协议（[`BlocksClient`]）交出块设备的全盘范围连接，
+//!    并把挂载协议原样转发给 ext4d（[`MountClient::serve_proxy`]），使用者看到的线格式不变。
 
 extern crate alloc;
 
@@ -171,6 +173,105 @@ impl MountClient {
         let fuse = Channel::from_handle(take_handle(&mut reply.handles, 0)?);
         let control = Channel::from_handle(take_handle(&mut reply.handles, 1)?);
         Ok((fuse, RemoteMount { channel: control }))
+    }
+}
+
+impl MountClient {
+    /// 以本连接服务 `channel` 上的挂载请求：fshost 把使用者的挂载转发给它拥有的文件系统服务。
+    ///
+    /// # Errors
+    ///
+    /// 服务线程或闭包分配失败。
+    pub fn serve_proxy(self: &Arc<Self>, channel: Channel) -> Result<(), Status> {
+        let target = self.clone();
+        serve(
+            channel,
+            1,
+            b"mount-proxy",
+            Arc::try_new(
+                move |ordinal: u32,
+                      request: &mut Reader<'_>,
+                      mut handles: Vec<Handle>,
+                      _: &mut Writer| {
+                    if ordinal != MOUNT {
+                        return Err(native_abi::ERR_NOT_SUPPORTED);
+                    }
+                    let read_only = request.bool()?;
+                    let (fuse, control) = target.mount(take_handle(&mut handles, 0)?, read_only)?;
+                    Ok(alloc::vec![
+                        fuse.into_handle(),
+                        control.channel.into_handle()
+                    ])
+                },
+            )
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+        )
+    }
+}
+
+const BLOCKS_COUNT: u32 = 1;
+const BLOCKS_OPEN: u32 = 2;
+
+/// 块设备清单的服务端：启动枚举得到的块设备个数与按序号交出全盘范围连接的函数。
+pub type BlockOpener = dyn Fn(usize) -> Result<Handle, Status> + Send + Sync;
+
+/// 服务块设备清单协议。
+///
+/// # Errors
+///
+/// 服务线程或闭包分配失败。
+pub fn serve_blocks(channel: Channel, count: usize, open: Arc<BlockOpener>) -> Result<(), Status> {
+    serve(
+        channel,
+        1,
+        b"block-host",
+        Arc::try_new(
+            move |ordinal: u32, request: &mut Reader<'_>, _: Vec<Handle>, reply: &mut Writer| {
+                match ordinal {
+                    BLOCKS_COUNT => {
+                        reply.u64(count as u64);
+                        Ok(Vec::new())
+                    }
+                    BLOCKS_OPEN => Ok(alloc::vec![open(request.usize()?)?]),
+                    _ => Err(native_abi::ERR_NOT_SUPPORTED),
+                }
+            },
+        )
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+    )
+}
+
+/// 使用者端的块设备清单。
+pub struct BlocksClient {
+    channel: Channel,
+}
+
+impl BlocksClient {
+    pub fn new(channel: Channel) -> Self {
+        Self { channel }
+    }
+
+    /// 块设备个数（启动时发现的设备，序号稳定）。
+    ///
+    /// # Errors
+    ///
+    /// 服务已终止。
+    pub fn count(&self) -> Result<usize, Status> {
+        call(&self.channel, &Writer::request(BLOCKS_COUNT), Vec::new())?
+            .reader()
+            .usize()
+    }
+
+    /// 第 `index` 个块设备的全盘范围连接（`device_protocol::block` 线协议）。
+    ///
+    /// # Errors
+    ///
+    /// 序号越界、设备不可共享或服务已终止。
+    pub fn open(&self, index: usize) -> Result<Channel, Status> {
+        let mut request = Writer::request(BLOCKS_OPEN);
+        request.u64(index as u64);
+        let mut reply = call(&self.channel, &request, Vec::new())?;
+        Ok(Channel::from_handle(take_handle(&mut reply.handles, 0)?))
     }
 }
 

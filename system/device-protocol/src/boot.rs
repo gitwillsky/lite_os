@@ -1,13 +1,14 @@
 //! 启动画面进度：使用者在启动阶段推进，驱动宿主在启动帧缓冲上绘制。
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use native_runtime::Channel;
 use native_runtime::native_abi::{self, Status};
 
-use crate::directory::{self, Announcement, Class};
-use crate::{Reader, Writer, call, serve, take_handle};
+use crate::directory::{self, Class, Directory, OpenedDevice, Session, SessionState};
+use crate::{Reader, Writer, call, take_handle};
 
 const ADVANCE: u32 = 1;
 
@@ -37,36 +38,42 @@ impl Milestone {
     }
 }
 
-/// 驱动宿主：发布进度通道，`advance` 在收到每个阶段时调用。
+/// 驱动宿主：登记进度通道（可共享：各阶段的 owner 各自推进），`advance` 在收到每个阶段时调用。
 ///
 /// # Errors
 ///
-/// channel、线程创建或目录写入失败。
+/// 分配失败。
 pub fn publish(
-    directory: &Channel,
+    directory: &Directory,
     advance: Arc<dyn Fn(Milestone) + Send + Sync>,
 ) -> Result<(), Status> {
-    let (client, server) = Channel::create()?;
-    serve(
-        server,
-        1,
-        b"boot-progress",
-        Arc::try_new(
-            move |ordinal: u32, request: &mut Reader<'_>, _, _: &mut Writer| {
-                if ordinal != ADVANCE {
-                    return Err(native_abi::ERR_NOT_SUPPORTED);
-                }
-                advance(Milestone::decode(request.u32()?)?);
-                Ok(Vec::new())
-            },
-        )
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-    )?;
-    directory::announce(
-        directory,
+    directory.add(
         Class::Boot,
         &directory::description(),
-        alloc::vec![client.into_handle()],
+        false,
+        Box::new(move |end| {
+            let session = SessionState::new(advance.clone(), end);
+            let (client, server) = Channel::create()?;
+            let server = directory::serve_session(
+                server,
+                1,
+                b"boot-progress",
+                Arc::try_new(
+                    move |ordinal: u32, request: &mut Reader<'_>, _, _: &mut Writer| {
+                        if ordinal != ADVANCE {
+                            return Err(native_abi::ERR_NOT_SUPPORTED);
+                        }
+                        (session.get())(Milestone::decode(request.u32()?)?);
+                        Ok(Vec::new())
+                    },
+                )
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+            )?;
+            Ok(Session {
+                handles: alloc::vec![client.into_handle()],
+                server,
+            })
+        }),
     )
 }
 
@@ -80,7 +87,7 @@ pub struct BootProgress {
 /// # Errors
 ///
 /// 句柄缺失。
-pub fn connect(mut announcement: Announcement) -> Result<BootProgress, Status> {
+pub fn connect(mut announcement: OpenedDevice) -> Result<BootProgress, Status> {
     Ok(BootProgress {
         channel: Channel::from_handle(take_handle(&mut announcement.handles, 0)?),
     })

@@ -1,5 +1,6 @@
 //! evdev 输入设备：静态能力随目录记录一次传递，事件按批拉取。
 
+use alloc::boxed::Box;
 use alloc::collections::VecDeque;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -9,8 +10,8 @@ use native_runtime::native_abi::{self, Status, rights};
 use native_runtime::sync::Mutex;
 use native_runtime::{Channel, Event};
 
-use crate::directory::{self, Announcement, Class};
-use crate::{ActivityBinding, EventHub, Reader, Writer, activity_signal, call, serve, take_handle};
+use crate::directory::{self, Class, Directory, OpenedDevice, Session, SessionState};
+use crate::{ActivityBinding, EventHub, Reader, Writer, activity_signal, call, take_handle};
 
 const RECEIVE: u32 = 1;
 const HAS_PENDING: u32 = 2;
@@ -38,18 +39,16 @@ fn put_abs(description: &mut Writer, info: Option<InputAbsInfo>) {
     }
 }
 
-/// 驱动宿主：发布输入设备。
+/// 驱动宿主：登记输入设备（独占：事件流只交给一个使用者）。
 ///
 /// 一次拉取请求把驱动当前可取的事件（至多 [`BATCH`] 个）一并取出，随后由驱动宿主自己结束本批
 /// （重新投递接收缓冲），使用者端的 `finish_receive_batch` 因此不需要往返。
 ///
 /// # Errors
 ///
-/// 对象、线程创建或目录写入失败。
-pub fn publish(directory: &Channel, device: Arc<dyn InputDevice>) -> Result<(), Status> {
-    let (client, server) = Channel::create()?;
+/// 对象创建或分配失败。
+pub fn publish(directory: &Directory, device: Arc<dyn InputDevice>) -> Result<(), Status> {
     let event = Event::create()?;
-    let peer_event = event.duplicate(rights::SAME)?;
     let mut description = directory::description();
     let id = device.id();
     description
@@ -68,49 +67,59 @@ pub fn publish(directory: &Channel, device: Arc<dyn InputDevice>) -> Result<(), 
     for code in 0..ABS_AXES {
         put_abs(&mut description, device.abs_info(code));
     }
-    device.bind_activity(activity_signal(
-        Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?,
-    )?);
-    serve(
-        server,
-        1,
-        b"input-server",
-        Arc::try_new(
-            move |ordinal: u32, _: &mut Reader<'_>, _, reply: &mut Writer| {
-                match ordinal {
-                    RECEIVE => {
-                        let mut events = Vec::new();
-                        while events.len() < BATCH {
-                            match device.receive_event().map_err(|_| native_abi::ERR_IO)? {
-                                Some(event) => events.push(event),
-                                None => break,
-                            }
-                        }
-                        if !events.is_empty() {
-                            device
-                                .finish_receive_batch()
-                                .map_err(|_| native_abi::ERR_IO)?;
-                        }
-                        reply.u32(events.len() as u32);
-                        for event in events {
-                            reply.u16(event.event_type).u16(event.code).i32(event.value);
-                        }
-                    }
-                    HAS_PENDING => {
-                        reply.bool(device.has_pending_event());
-                    }
-                    _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-                }
-                Ok(Vec::new())
-            },
-        )
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-    )?;
-    directory::announce(
-        directory,
+    let event = Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    device.bind_activity(activity_signal(event.clone())?);
+    directory.add(
         Class::Input,
         &description,
-        alloc::vec![client.into_handle(), peer_event.into_handle()],
+        true,
+        Box::new(move |end| {
+            let session = SessionState::new(device.clone(), end);
+            let (client, server) = Channel::create()?;
+            let server = directory::serve_session(
+                server,
+                1,
+                b"input-server",
+                Arc::try_new(
+                    move |ordinal: u32, _: &mut Reader<'_>, _, reply: &mut Writer| {
+                        let device = session.get();
+                        match ordinal {
+                            RECEIVE => {
+                                let mut events = Vec::new();
+                                while events.len() < BATCH {
+                                    match device.receive_event().map_err(|_| native_abi::ERR_IO)? {
+                                        Some(event) => events.push(event),
+                                        None => break,
+                                    }
+                                }
+                                if !events.is_empty() {
+                                    device
+                                        .finish_receive_batch()
+                                        .map_err(|_| native_abi::ERR_IO)?;
+                                }
+                                reply.u32(events.len() as u32);
+                                for event in events {
+                                    reply.u16(event.event_type).u16(event.code).i32(event.value);
+                                }
+                            }
+                            HAS_PENDING => {
+                                reply.bool(device.has_pending_event());
+                            }
+                            _ => return Err(native_abi::ERR_NOT_SUPPORTED),
+                        }
+                        Ok(Vec::new())
+                    },
+                )
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+            )?;
+            Ok(Session {
+                handles: alloc::vec![
+                    client.into_handle(),
+                    event.duplicate(rights::SAME)?.into_handle()
+                ],
+                server,
+            })
+        }),
     )
 }
 
@@ -136,7 +145,7 @@ pub struct RemoteInput {
 ///
 /// 描述或句柄不完整，或事件登记失败。
 pub fn connect(
-    mut announcement: Announcement,
+    mut announcement: OpenedDevice,
     hub: &Arc<EventHub>,
 ) -> Result<Arc<RemoteInput>, Status> {
     let channel = Channel::from_handle(take_handle(&mut announcement.handles, 0)?);

@@ -13,8 +13,8 @@ use native_runtime::native_abi::{self, Status};
 use native_runtime::sync::Mutex;
 use native_runtime::{Channel, Message};
 
-use crate::directory::{self, Announcement, Class};
-use crate::{EventHub, Reader, Writer, call, serve, take_handle};
+use crate::directory::{self, Class, Directory, OpenedDevice, Session, SessionState};
+use crate::{EventHub, Reader, Writer, call, take_handle};
 
 const CONFIGURE: u32 = 1;
 const RELEASE: u32 = 2;
@@ -79,6 +79,19 @@ impl EventWriter {
         Ok(())
     }
 
+    /// 新会话接管事件端点；代际从零开始，与新使用者的计数一致。
+    fn attach(&self, channel: Channel) {
+        let mut state = self.state.lock();
+        state.channel = Some(channel);
+        state.generation = 0;
+    }
+
+    /// 会话结束：撤销事件端点（在锁外关闭）。
+    fn detach(&self) {
+        let retired = self.state.lock().channel.take();
+        drop(retired);
+    }
+
     fn send(&self, kind: u32, frames: u64) {
         let retired = {
             let mut state = self.state.lock();
@@ -112,17 +125,71 @@ impl PcmCompletionObserver for EventWriter {
     }
 }
 
-/// 驱动宿主：发布 PCM 输出。
+/// 一个会话的服务端状态：会话结束时停止并释放流、撤销事件端点，下一个使用者看到空闲设备。
+struct PcmSession {
+    device: Arc<dyn PcmOutput>,
+    observer: Arc<EventWriter>,
+}
+
+impl PcmSession {
+    fn handle(&self, ordinal: u32, request: &mut Reader<'_>) -> Result<(), Status> {
+        let (device, observer) = (&self.device, &self.observer);
+        match ordinal {
+            CONFIGURE => {
+                let generation = request.u64()?;
+                if generation <= observer.generation() {
+                    return Err(native_abi::ERR_INVALID_ARGS);
+                }
+                let configuration = PcmConfiguration {
+                    rate: request.u32()?,
+                    format: format(request.u8()?)?,
+                    period_frames: request.usize()?,
+                };
+                device.configure(configuration).map_err(encode_error)?;
+                observer.set_generation(generation)?;
+            }
+            RELEASE => device.release().map_err(encode_error)?,
+            PREPARE => device.prepare().map_err(encode_error)?,
+            START => device.start().map_err(encode_error)?,
+            STOP => device.stop().map_err(encode_error)?,
+            SUBMIT => {
+                // 客户端额度覆盖 channel 中及设备中的全部 period；这里拒绝已准入数据表示
+                // 设备失败或违反队列容量契约，必须异步断开，不能静默丢弃已接受的数据。
+                let result = (|| {
+                    let generation = request.u64()?;
+                    if generation != observer.generation() {
+                        return Err(native_abi::ERR_BAD_STATE);
+                    }
+                    device.submit_period(request.bytes()?).map_err(encode_error)
+                })();
+                if result.is_err() {
+                    observer.disconnected();
+                }
+            }
+            _ => return Err(native_abi::ERR_NOT_SUPPORTED),
+        }
+        Ok(())
+    }
+}
+
+impl Drop for PcmSession {
+    fn drop(&mut self) {
+        // 未配置或已停止的流返回状态错误，回收路径不关心：目标只是让设备回到空闲。
+        let _ = self.device.stop();
+        let _ = self.device.release();
+        self.observer.detach();
+    }
+}
+
+/// 驱动宿主：登记 PCM 输出（独占：同一时刻只有一个混音者）。
 ///
 /// # Errors
 ///
-/// 对象、线程创建、观察者登记或目录写入失败。
-pub fn publish(directory: &Channel, device: Arc<dyn PcmOutput>) -> Result<(), Status> {
-    let (client, server) = Channel::create()?;
-    let (events_client, events_server) = Channel::create()?;
+/// 观察者登记或分配失败。
+pub fn publish(directory: &Directory, device: Arc<dyn PcmOutput>) -> Result<(), Status> {
     let observer = Arc::try_new(EventWriter {
         state: Mutex::new(EventWriterState {
-            channel: Some(events_server),
+            channel: None,
             generation: 0,
         }),
     })
@@ -135,56 +202,37 @@ pub fn publish(directory: &Channel, device: Arc<dyn PcmOutput>) -> Result<(), St
     for rates in device.capabilities().rates {
         description.u32(rates);
     }
-    serve(
-        server,
-        1,
-        b"pcm-server",
-        Arc::try_new(
-            move |ordinal: u32, request: &mut Reader<'_>, _, _: &mut Writer| {
-                match ordinal {
-                    CONFIGURE => {
-                        let generation = request.u64()?;
-                        if generation <= observer.generation() {
-                            return Err(native_abi::ERR_INVALID_ARGS);
-                        }
-                        let configuration = PcmConfiguration {
-                            rate: request.u32()?,
-                            format: format(request.u8()?)?,
-                            period_frames: request.usize()?,
-                        };
-                        device.configure(configuration).map_err(encode_error)?;
-                        observer.set_generation(generation)?;
-                    }
-                    RELEASE => device.release().map_err(encode_error)?,
-                    PREPARE => device.prepare().map_err(encode_error)?,
-                    START => device.start().map_err(encode_error)?,
-                    STOP => device.stop().map_err(encode_error)?,
-                    SUBMIT => {
-                        // 客户端额度覆盖 channel 中及设备中的全部 period；这里拒绝已准入数据表示
-                        // 设备失败或违反队列容量契约，必须异步断开，不能静默丢弃已接受的数据。
-                        let result = (|| {
-                            let generation = request.u64()?;
-                            if generation != observer.generation() {
-                                return Err(native_abi::ERR_BAD_STATE);
-                            }
-                            device.submit_period(request.bytes()?).map_err(encode_error)
-                        })();
-                        if result.is_err() {
-                            observer.disconnected();
-                        }
-                    }
-                    _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-                }
-                Ok(Vec::new())
-            },
-        )
-        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-    )?;
-    directory::announce(
-        directory,
+    directory.add(
         Class::Pcm,
         &description,
-        alloc::vec![client.into_handle(), events_client.into_handle()],
+        true,
+        Box::new(move |end| {
+            let (client, server) = Channel::create()?;
+            let (events_client, events_server) = Channel::create()?;
+            observer.attach(events_server);
+            let session = SessionState::new(
+                PcmSession {
+                    device: device.clone(),
+                    observer: observer.clone(),
+                },
+                end,
+            );
+            let server = directory::serve_session(
+                server,
+                1,
+                b"pcm-server",
+                Arc::try_new(
+                    move |ordinal: u32, request: &mut Reader<'_>, _, _: &mut Writer| {
+                        session.get().handle(ordinal, request).map(|()| Vec::new())
+                    },
+                )
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+            )?;
+            Ok(Session {
+                handles: alloc::vec![client.into_handle(), events_client.into_handle()],
+                server,
+            })
+        }),
     )
 }
 
@@ -277,7 +325,7 @@ impl ClientState {
 ///
 /// 描述或句柄不完整，或事件登记失败。
 pub fn connect(
-    mut announcement: Announcement,
+    mut announcement: OpenedDevice,
     hub: &Arc<EventHub>,
 ) -> Result<Arc<RemotePcm>, Status> {
     let channel = Channel::from_handle(take_handle(&mut announcement.handles, 0)?);
