@@ -94,7 +94,8 @@ def install(image: Path, directory: Path, volume_probe: Path) -> None:
     sources = []
     files = {
         '/etc/passwd': (ROOT / 'user/base/passwd').read_text() + 'alice:x:1000:100:Alice:/home/alice:/bin/sh\nbob:x:1001:100:Bob:/home/bob:/bin/sh\n',
-        '/etc/group': (ROOT / 'user/base/group').read_text() + 'users:x:100:\nvideo:x:44:alice\n',
+        # alice 是监视组 adm 的成员，可查看原生系统服务；bob 不是。
+        '/etc/group': (ROOT / 'user/base/group').read_text().replace('adm:x:4:root\n', 'adm:x:4:root,alice\n') + 'users:x:100:\nvideo:x:44:alice\n',
         # 产品默认的 root 没有口令，开机即自动登录；本门禁要走完整的密码登录，所以给 root 设同一口令。
         '/etc/shadow': (ROOT / 'user/base/shadow').read_text().replace('root::', f'root:{HASH}:') + f'alice:{HASH}:1:0:99999:7:::\nbob:{HASH}:1:0:99999:7:::\n',
         '/etc/inittab': (ROOT / 'user/base/inittab').read_text() + '\n::once:/bin/sh /var/tmp/check-desktop\n',

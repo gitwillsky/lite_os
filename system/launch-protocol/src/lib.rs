@@ -29,10 +29,9 @@ pub mod linuxd {
     pub const EXT4: usize = ROLE_HANDLES + 4;
     /// netstack 控制 channel 的客户端（转交网卡、创建网络域）。
     pub const NETWORK: usize = ROLE_HANDLES + 5;
-    /// 原生系统服务的只读 INSPECT capability；顺序由根服务启动时的实际对象决定。
-    pub const OBSERVERS: usize = ROLE_HANDLES + 6;
-    /// root-server、driver-host、ext4d、netstack 四个观察句柄；linuxd 使用自身句柄。
-    pub const OBSERVER_COUNT: usize = 4;
+    /// 根 Job 的只读观察句柄（`INSPECT | ENUMERATE | TRANSFER`）：可遍历任务树并查询统计，
+    /// 不能终止、改名或读写任何任务（Fuchsia `RootJobForInspect` 的同等权限）。
+    pub const ROOT_JOB_OBSERVER: usize = ROLE_HANDLES + 6;
 }
 
 /// ext4 文件系统服务：按 linuxd 的挂载请求打开块设备上的 ext4，并以 FUSE 线协议服务每个挂载。

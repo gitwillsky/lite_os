@@ -73,6 +73,71 @@ impl Job {
         };
         new_handle(status, out).map(Self)
     }
+
+    /// 存活成员的 KOID（升序）：`children` 为真取子 Job，否则取直属进程。
+    ///
+    /// 成员在两次查询之间可能增加：内核以 `ERR_BUFFER_TOO_SMALL` 回报新的所需大小，这里按它扩容重试。
+    ///
+    /// # Errors
+    ///
+    /// 句柄缺少 `INSPECT` 或 `ENUMERATE`、结果缓冲分配失败（`ERR_NO_MEMORY`）。
+    pub fn member_koids(&self, children: bool) -> Result<alloc::vec::Vec<u64>, Status> {
+        let topic = if children {
+            native_abi::info::JOB_CHILDREN
+        } else {
+            native_abi::info::JOB_PROCESSES
+        };
+        let mut koids = alloc::vec::Vec::new();
+        loop {
+            let mut actual = 0usize;
+            // SAFETY: 缓冲区按 u64 数组的字节长度传入，输出位置有效。
+            let status = unsafe {
+                invoke(
+                    call::OBJECT_GET_INFO,
+                    &[
+                        self.raw() as usize,
+                        topic as usize,
+                        koids.as_mut_ptr() as usize,
+                        koids.capacity() * 8,
+                        (&raw mut actual) as usize,
+                    ],
+                )
+            };
+            match check(status) {
+                Ok(()) => {
+                    // SAFETY: 内核写入了 `actual` 字节（8 的倍数且不超过容量）的 KOID。
+                    unsafe { koids.set_len(actual / 8) };
+                    return Ok(koids);
+                }
+                Err(native_abi::ERR_BUFFER_TOO_SMALL) => koids
+                    .try_reserve_exact(actual / 8)
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                Err(status) => return Err(status),
+            }
+        }
+    }
+
+    /// 按 KOID 取直属成员（子 Job 或进程）句柄，rights 不超过本句柄。
+    ///
+    /// # Errors
+    ///
+    /// 缺少 `ENUMERATE`、`ERR_NOT_FOUND`（不是存活的直属成员）、`ERR_INVALID_ARGS`（rights 超出）。
+    pub fn member(&self, koid: u64, rights: u32) -> Result<Handle, Status> {
+        let mut out = native_abi::HANDLE_INVALID;
+        // SAFETY: 输出位置有效。
+        let status = unsafe {
+            invoke(
+                call::OBJECT_GET_CHILD,
+                &[
+                    self.raw() as usize,
+                    koid as usize,
+                    rights as usize,
+                    (&raw mut out) as usize,
+                ],
+            )
+        };
+        new_handle(status, out)
+    }
 }
 
 impl Process {

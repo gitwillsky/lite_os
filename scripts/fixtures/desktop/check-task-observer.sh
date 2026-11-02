@@ -1,7 +1,9 @@
 #!/bin/sh
-# 使用正式 taskmgr 客户端验证非 root 桌面能读取原生服务，且身份/错误值不被伪造。
+# 使用正式 taskmgr 客户端验证 adm 组内的非 root 桌面能读取原生服务，且身份/错误值不被伪造。
 set -eu
 exec 1>&2
+# 端点只授予 adm 组：属主 root、组 adm、0660 的 socket；组外进程由 VFS 写权限检查拒绝。
+[ "$(/bin/stat -c '%F %U:%G %a' /dev/task-observer)" = "socket root:adm 660" ]
 snapshot=$(/bin/mktemp)
 trap '/bin/rm -f "$snapshot"' EXIT
 /bin/taskmgr --snapshot > "$snapshot"

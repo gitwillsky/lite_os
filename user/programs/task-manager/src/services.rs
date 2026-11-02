@@ -110,14 +110,20 @@ impl Snapshot {
 fn query() -> io::Result<Vec<Record>> {
     #[cfg(target_os = "linux")]
     {
-        use std::os::linux::net::SocketAddrExt;
-        use std::os::unix::net::SocketAddr;
+        use std::{ffi::OsStr, os::unix::ffi::OsStrExt};
+        // 回复发往自动绑定的 abstract 源地址；端点本身的访问由其 inode 权限（adm 组）决定。
         let socket = linux_uapi::unix::anonymous_datagram()?;
         socket.set_read_timeout(Some(Duration::from_millis(500)))?;
         socket.set_write_timeout(Some(Duration::from_millis(500)))?;
-        socket.connect_addr(&SocketAddr::from_abstract_name(
-            task_observer_protocol::ADDRESS,
-        )?)?;
+        socket
+            .connect(OsStr::from_bytes(task_observer_protocol::PATH))
+            .map_err(|error| {
+                if error.kind() == io::ErrorKind::PermissionDenied {
+                    io::Error::new(error.kind(), "需要 adm 组成员身份才能查看系统服务")
+                } else {
+                    error
+                }
+            })?;
         socket.send(QUERY)?;
         // 单个 Unix datagram 的应用接收上限；超长消息截断后由长度校验拒绝，不解释部分记录。
         let mut bytes = vec![0; 64 * 1024];

@@ -55,6 +55,7 @@ use process_control::sys_prctl;
 use resource_limit::sys_prlimit64;
 use resource_usage::sys_getrusage;
 use riscv_hwprobe::sys_riscv_hwprobe;
+pub(crate) use socket::bind_unix_pathname;
 use timerfd::{sys_timerfd_create, sys_timerfd_gettime, sys_timerfd_settime};
 
 const INTERNAL_RESTART_SYS: isize = isize::MIN;

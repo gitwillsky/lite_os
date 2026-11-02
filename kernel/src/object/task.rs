@@ -193,6 +193,65 @@ impl Job {
         }
     }
 
+    /// 按升序收集存活的子 Job（`children`）或直属进程的 KOID。
+    ///
+    /// 只在锁内复制 KOID；调用者在锁外把结果写给用户空间。成员在锁释放后可能结束，取句柄时以
+    /// [`Job::member`] 再次确认。
+    ///
+    /// # Errors
+    /// 分配失败返回 `ERR_NO_MEMORY`。
+    pub(crate) fn member_koids(&self, children: bool) -> Result<alloc::vec::Vec<u64>, Status> {
+        let mut koids = alloc::vec::Vec::new();
+        loop {
+            // 锁内不分配：容量不足时释放锁扩容后重试，容量足够时一次复制完毕。
+            let required = {
+                let state = self.state.lock();
+                let required = if children {
+                    state.children.len()
+                } else {
+                    state.processes.len()
+                };
+                if koids.capacity() >= required {
+                    if children {
+                        koids.extend(
+                            state
+                                .children
+                                .iter()
+                                .filter(|(_, child)| child.strong_count() > 0)
+                                .map(|(&koid, _)| koid),
+                        );
+                    } else {
+                        koids.extend(
+                            state
+                                .processes
+                                .iter()
+                                .filter(|(_, process)| process.strong_count() > 0)
+                                .map(|(&koid, _)| koid),
+                        );
+                    }
+                    return Ok(koids);
+                }
+                required
+            };
+            koids
+                .try_reserve_exact(required)
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        }
+    }
+
+    /// 按 KOID 取存活的直属成员；不存在或已结束返回 `None`。
+    pub(crate) fn member(&self, koid: u64) -> Option<super::Object> {
+        let state = self.state.lock();
+        if let Some(process) = state.processes.get(&koid).and_then(Weak::upgrade) {
+            return Some(super::Object::Process(process));
+        }
+        state
+            .children
+            .get(&koid)
+            .and_then(Weak::upgrade)
+            .map(super::Object::Job)
+    }
+
     /// 异常处理者 channel（若已创建）。
     pub(crate) fn exception_channel(&self) -> Option<Arc<Channel>> {
         self.exception_channel.lock().clone()
@@ -233,7 +292,7 @@ impl KernelObject for Job {
         self.koid
     }
     fn default_rights(&self) -> u32 {
-        WAITABLE_RIGHTS | rights::MANAGE
+        WAITABLE_RIGHTS | rights::MANAGE | rights::ENUMERATE
     }
     fn signals(&self) -> Option<&SignalState> {
         Some(&self.signals)

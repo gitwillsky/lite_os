@@ -1030,6 +1030,8 @@ kernel/src/object/task.rs :: pub (crate) impl Job :: fn create_child (self : & A
 kernel/src/object/task.rs :: pub (crate) impl Job :: fn create_root () -> Result < Arc < Self > , Status >
 kernel/src/object/task.rs :: pub (crate) impl Job :: fn exception_channel (& self) -> Option < Arc < Channel > >
 kernel/src/object/task.rs :: pub (crate) impl Job :: fn kill (& self)
+kernel/src/object/task.rs :: pub (crate) impl Job :: fn member (& self , koid : u64) -> Option < super :: Object >
+kernel/src/object/task.rs :: pub (crate) impl Job :: fn member_koids (& self , children : bool) -> Result < alloc :: vec :: Vec < u64 > , Status >
 kernel/src/object/task.rs :: pub (crate) impl Job :: fn parent (& self) -> Option < & Arc < Job > >
 kernel/src/object/task.rs :: pub (crate) impl Process :: fn bind_exception_channel (& self , channel : Arc < Channel >) -> Result < () , Status >
 kernel/src/object/task.rs :: pub (crate) impl Process :: fn create (job : & Arc < Job > , name : & [u8] , kind : ProcessKind < '_ > ,) -> Result < Arc < Self > , Status >
@@ -1262,6 +1264,7 @@ kernel/src/syscall/futex.rs :: pub (super) fn wait (call : & Call < '_ >) -> Res
 kernel/src/syscall/futex.rs :: pub (super) fn wake (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/handles.rs :: pub (super) fn close (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/handles.rs :: pub (super) fn duplicate (call : & Call < '_ >) -> Result < () , Status >
+kernel/src/syscall/handles.rs :: pub (super) fn get_child (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/handles.rs :: pub (super) fn get_info (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/handles.rs :: pub (super) fn replace (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/handles.rs :: pub (super) fn set_name (call : & Call < '_ >) -> Result < () , Status >
@@ -4840,6 +4843,7 @@ system/linuxd/src/fs/mod.rs :: pub (crate) use file_information :: format_file_i
 system/linuxd/src/fs/mod.rs :: pub (crate) use inode :: { DataBacking , FineTimes , Inode , InodeMetadata , InodeOpen , InodeOpenError , InodeType , LinkTarget , StorageWriter , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use inotify :: { IN_ACCESS , IN_ATTRIB , IN_CLOEXEC , IN_CLOSE_NOWRITE , IN_CLOSE_WRITE , IN_CREATE , IN_DELETE , IN_MODIFY , IN_MOVE_SELF , IN_MOVED_FROM , IN_MOVED_TO , IN_NONBLOCK , IN_OPEN , InitError , Inotify , WatchError , add_watch_flags , filesystem_unmounted , next_cookie , notify_dentry_reclaimed , notify_entry , notify_opened , notify_self , watching , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use inotify :: { InotifyLimit , inotify_watch_limit }
+system/linuxd/src/fs/mod.rs :: pub (crate) use linux_abi :: open :: { O_ACCMODE , O_APPEND , O_CLOEXEC , O_NOCTTY , O_NOFOLLOW , O_NONBLOCK , O_PATH , O_RDONLY , O_RDWR , O_WRONLY , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use memfd :: MemFile
 system/linuxd/src/fs/mod.rs :: pub (crate) use memory_file :: MemoryFile
 system/linuxd/src/fs/mod.rs :: pub (crate) use mount :: { CallerFiles , CreatedFileSystem , CurrentRequester , FileSystemType , MountEnvironment , MountRequest , Requester , get_filesystem_type , mount , mount_root , register_filesystem , remount , unmount , unmount_root_read_only , }
@@ -4848,7 +4852,6 @@ system/linuxd/src/fs/mod.rs :: pub (crate) use page_cache :: { RegularFile , Reg
 system/linuxd/src/fs/mod.rs :: pub (crate) use permission :: { AccessIdentity , CreateMetadata , MAY_ACCESS , MAY_CHDIR , OwnerModeChange , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use procfs :: { ProcCpuSnapshot , ProcCredentialSnapshot , ProcDirectory , ProcFileDescriptorSnapshot , ProcIoSnapshot , ProcNetworkSnapshot , ProcProcessSnapshot , ProcRouteSnapshot , ProcSnapshot , ProcSnapshotScope , ProcSource , ProcTaskIdentity , ProcThreadSnapshot , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use storage_open :: { BackingFile , BackingOpen , DirectIo , StorageOpen }
-system/linuxd/src/fs/mod.rs :: pub (crate) use linux_abi :: open :: { O_ACCMODE , O_APPEND , O_CLOEXEC , O_NOCTTY , O_NOFOLLOW , O_NONBLOCK , O_PATH , O_RDONLY , O_RDWR , O_WRONLY , }
 system/linuxd/src/fs/mod.rs :: pub (crate) use sysfs_drm :: { GraphicsSysfsSource , register_source as register_graphics_sysfs }
 system/linuxd/src/fs/mod.rs :: pub (crate) use sysfs_net :: { NetLinkSnapshot , NetLinkSource }
 system/linuxd/src/fs/mod.rs :: pub (crate) use sysfs_usb :: { UsbSysfsSource , register_source as register_usb_sysfs }
@@ -7913,6 +7916,7 @@ system/linuxd/src/syscall/mod.rs :: pub (crate) const INTERRUPTED_RESULT : isize
 system/linuxd/src/syscall/mod.rs :: pub (crate) enum SyscallOutcome
 system/linuxd/src/syscall/mod.rs :: pub (crate) fn syscall (syscall_id : usize , args : [usize ; 6] , current : alloc :: sync :: Arc < crate :: task :: TaskControlBlock > ,) -> SyscallOutcome
 system/linuxd/src/syscall/mod.rs :: pub (crate) use io_uring :: start_worker as start_io_uring_worker
+system/linuxd/src/syscall/mod.rs :: pub (crate) use socket :: bind_unix_pathname
 system/linuxd/src/syscall/mod.rs :: pub (in crate :: syscall) fn file_descriptor_error (error : crate :: file :: FileDescriptorError) -> isize
 system/linuxd/src/syscall/pidfd.rs :: pub (crate) fn sys_pidfd_getfd (pidfd : i32 , descriptor : i32 , flags : u32) -> isize
 system/linuxd/src/syscall/pidfd.rs :: pub (crate) fn sys_pidfd_open (pid : i32 , flags : u32) -> isize
@@ -8018,6 +8022,7 @@ system/linuxd/src/syscall/socket.rs :: pub (crate) fn sys_socket (domain : usize
 system/linuxd/src/syscall/socket.rs :: pub (crate) fn sys_socketpair (domain : usize , kind : usize , protocol : usize , output : usize) -> isize
 system/linuxd/src/syscall/socket.rs :: pub (crate) use message :: { sys_recvfrom , sys_recvmsg , sys_sendmsg , sys_sendto }
 system/linuxd/src/syscall/socket.rs :: pub (crate) use options :: { sys_getsockopt , sys_setsockopt }
+system/linuxd/src/syscall/socket.rs :: pub (crate) use unix_path :: bind_at as bind_unix_pathname
 system/linuxd/src/syscall/socket.rs :: pub (in crate :: syscall) const MSG_DONTWAIT : usize = 0x40
 system/linuxd/src/syscall/socket.rs :: pub (in crate :: syscall) const MSG_NOSIGNAL : usize = 0x4000
 system/linuxd/src/syscall/socket.rs :: pub (in crate :: syscall) const SOCK_CLOEXEC : usize = O_CLOEXEC as usize
@@ -8081,6 +8086,7 @@ system/linuxd/src/syscall/socket/options.rs :: pub (crate) fn sys_getsockopt (fd
 system/linuxd/src/syscall/socket/options.rs :: pub (crate) fn sys_setsockopt (fd : usize , level : usize , option : usize , value : usize , length : usize ,) -> isize
 system/linuxd/src/syscall/socket/timeout.rs :: pub (super) fn decode (bytes : [u8 ; 16]) -> Result < SocketTimeout , isize >
 system/linuxd/src/syscall/socket/timeout.rs :: pub (super) fn encode (timeout : SocketTimeout) -> [u8 ; 16]
+system/linuxd/src/syscall/socket/unix_path.rs :: pub (crate) fn bind_at (socket : & Arc < Socket > , address : UnixAddress , start : LookupOrigin , mode : u32 , access : & crate :: fs :: AccessIdentity ,) -> isize
 system/linuxd/src/syscall/socket/unix_path.rs :: pub (super) fn bind (socket : & Arc < Socket > , address : UnixAddress) -> isize
 system/linuxd/src/syscall/socket/unix_path.rs :: pub (super) fn resolve (task : & TaskControlBlock , address : & UnixAddress , require_write : bool ,) -> Result < (Arc < dyn Inode > , UnixPathIdentity) , isize >
 system/linuxd/src/syscall/system_identity.rs :: pub (crate) fn sys_set_uts_name (hostname : bool , address : usize , length : usize) -> isize
@@ -8173,8 +8179,8 @@ system/linuxd/src/system.rs :: pub (crate) fn time_counter_frequency () -> u64
 system/linuxd/src/system.rs :: pub (crate) mod task_observer
 system/linuxd/src/system.rs :: pub (crate) use crate :: arch :: user :: SignalActionBytes
 system/linuxd/src/system.rs :: pub (crate) use crate :: platform :: ResetKind
-system/linuxd/src/system/task_observer.rs :: pub (crate) fn start (observers : [Process ; launch_protocol :: linuxd :: OBSERVER_COUNT])
-system/linuxd/src/system/task_observer.rs :: pub (crate) fn take (startup : & mut Startup) -> [Process ; launch_protocol :: linuxd :: OBSERVER_COUNT]
+system/linuxd/src/system/task_observer.rs :: pub (crate) fn start (observer : Job)
+system/linuxd/src/system/task_observer.rs :: pub (crate) fn take (startup : & mut Startup) -> Job
 system/linuxd/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " ELF header、program header 或 script interpreter line 不满足契约。"] InvalidExecutable
 system/linuxd/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " VFS pathname 解析或 executable source 读取失败。"] FileSystem (FileSystemError)
 system/linuxd/src/task/loader.rs :: enum ProgramLoadError :: # [doc = " script interpreter rewrite 超过 Linux 固定上限。"] InterpreterLoop

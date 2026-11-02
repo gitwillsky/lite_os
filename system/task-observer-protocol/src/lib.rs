@@ -1,8 +1,17 @@
 #![no_std]
 //! LiteOS 系统任务观测消息。只读快照，不传递 capability，不提供终止或重启操作。
+//!
+//! 这是授予指定系统程序的服务协议，不是一般应用 ABI：
+//! 1. 端点是 linuxd 在启动 init 之前创建的 pathname datagram socket [`PATH`]，属主 root、组 [`GROUP`]、
+//!    权限 0660；`connect`/`sendto` 按 Linux 规则检查 socket inode 写权限（fsuid 与附加组），
+//!    不在组内的进程得到 `EACCES`。
+//! 2. 快照覆盖根 Job 下的全部原生进程；Linux 进程已由 /proc 呈现，不在此重复。
 
-/// 抽象 AF_UNIX 地址（不含前导 NUL）；仅系统的初始网络命名空间发布。
-pub const ADDRESS: &[u8] = b"org.liteos.task-observer";
+/// 服务端点路径。linuxd 自己挂载的 devtmpfs 在 init 之前已存在（同 `/dev/log` 的先例），
+/// `/run` 由 init 脚本稍后挂载，内核侧无法提前在那里发布。
+pub const PATH: &[u8] = b"/dev/task-observer";
+/// 允许查询的组：Linux 发行版惯用的系统监视组 `adm`（Alpine/Debian 均为 GID 4）。
+pub const GROUP: u32 = 4;
 /// 一个请求恰为这八个字节；版本变化必须改变 magic，不猜测未知布局。
 pub const QUERY: &[u8; 8] = b"LTASK001";
 /// 每条记录的编码字节数；整数为 little endian，名称为 NUL 填充 UTF-8。

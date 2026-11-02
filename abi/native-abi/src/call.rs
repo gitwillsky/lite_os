@@ -337,5 +337,12 @@ pub const SERIAL_WRITE: usize = 77;
 /// 返回前每个 CPU 都执行过一次完整内存屏障（进程内存屏障的通用机制）。无参数。
 pub const SYSTEM_BARRIER: usize = 78;
 
+/// 按 KOID 取得 Job 的直属成员（子 Job 或进程）句柄。
+///
+/// 参数：`job`（需 `rights::ENUMERATE`）、`koid`、`rights`（`rights::SAME` 表示与 `job` 句柄相同，
+/// 否则不得超出 `job` 句柄的 rights）、`out: *mut Handle`。
+/// 错误：`ERR_NOT_FOUND`（不是存活的直属成员）、`ERR_INVALID_ARGS`（rights 超出）。
+pub const OBJECT_GET_CHILD: usize = 79;
+
 /// 编号上界（不含）。
-pub const COUNT: usize = 79;
+pub const COUNT: usize = 80;

@@ -30,6 +30,7 @@ mod unix_path;
 pub(super) use interface::socket_ioctl;
 pub(crate) use message::{sys_recvfrom, sys_recvmsg, sys_sendmsg, sys_sendto};
 pub(crate) use options::{sys_getsockopt, sys_setsockopt};
+pub(crate) use unix_path::bind_at as bind_unix_pathname;
 
 const AF_UNIX: usize = 1;
 const AF_INET: usize = 2;

@@ -64,9 +64,9 @@ pub(crate) fn system_info() -> &'static SystemBasic {
 /// 2. Linux 命名空间、VFS 与任务表，然后启动 deferred 线程（定时器、控制台输入与设备活动都经它分派）；
 /// 3. 读取 driver-host 设备目录并连接全部设备，注册 console；
 /// 4. 装配块设备、音频、DRM、输入与 tty，创建初始网络域，启动后台线程；
-/// 5. `kernel_init` 内核线程挂载根文件系统并发布 init。main 线程随后退出（只结束本线程），linuxd 由各服务线程与 Linux 线程继续运行。
+/// 5. `kernel_init` 内核线程挂载根文件系统，发布系统任务观测端点，然后发布 init。main 线程随后退出（只结束本线程），linuxd 由各服务线程与 Linux 线程继续运行。
 fn main(mut startup: Startup) -> i64 {
-    let observers = system::task_observer::take(&mut startup);
+    let observer = system::task_observer::take(&mut startup);
     let directory = handles::install(&mut startup);
     native_runtime::set_fatal_scope(
         handles::job()
@@ -93,7 +93,6 @@ fn main(mut startup: Startup) -> i64 {
     let vfs = fs::init_vfs();
     let scheduler = task::initialize(vfs);
     start_deferred_worker();
-    system::task_observer::start(observers);
     let devices = devices::directory::connect(directory);
     devices.advance(Milestone::Namespaces);
     devices.advance(Milestone::Scheduler);
@@ -121,7 +120,7 @@ fn main(mut startup: Startup) -> i64 {
         .expect("TTY initialization failed");
     net::init();
     start_background_threads();
-    start_kernel_init(scheduler, console, parameters);
+    start_kernel_init(scheduler, console, parameters, observer);
     // 装配完成：只结束主线程。从 main 返回会结束整个进程，连同已启动的 init 与全部服务线程。
     native_runtime::task::exit_thread()
 }
@@ -138,9 +137,12 @@ fn start_kernel_init(
     scheduler: task::SchedulerReady,
     console: devices::tty::ConsoleReady,
     parameters: cmdline::KernelParameters,
+    observer: native_runtime::Job,
 ) {
     let body = alloc::boxed::Box::try_new(move || {
         let root = mount_filesystems(scheduler, &parameters);
+        // 端点落在 /dev 上，必须等 devtmpfs 挂载；在 init 之前发布，Linux 进程看到的已是最终权限。
+        system::task_observer::start(observer);
         task::spawn_init(
             scheduler,
             root,

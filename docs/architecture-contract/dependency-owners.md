@@ -27,7 +27,8 @@
 `native-runtime` 封装原生对象和服务线程；`service-sync` 提供服务可睡眠同步；`service-rpc` 提供服务 RPC。
 `device-model` 定义设备类词汇与 backing；各 `*-protocol` crate 拥有服务消息和客户端/服务端适配。
 它们是系统服务接口；Linux 应用的内核入口只使用 Linux UAPI。服务不得直接链接另一个服务的 binary 源码。
-`task-observer-protocol` 是桌面系统工具的只读任务观测消息 owner；仅定义数据，不依赖 native ABI、Linuxd 或 UI。原生权限与观测契约见[执行契约](execution.md#原生任务观测)。
+`task-observer-protocol` 是授予 adm 组系统工具的只读任务观测消息与端点 owner；仅定义数据，不依赖 native ABI、Linuxd 或 UI。
+原生权限、授权与观测契约见[执行契约](execution.md#原生任务观测)。
 
 FUSE 线格式属于 ext4d 的服务适配边界，不把 Linux 凭据策略带进 ext4 引擎。
 

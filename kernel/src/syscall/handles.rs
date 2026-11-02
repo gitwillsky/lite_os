@@ -200,6 +200,21 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
             }
             _ => Err(native_abi::ERR_WRONG_TYPE),
         },
+        info::JOB_CHILDREN | info::JOB_PROCESSES => {
+            let Object::Job(job) = &entry.object else {
+                return Err(native_abi::ERR_WRONG_TYPE);
+            };
+            if entry.rights & rights::ENUMERATE == 0 {
+                return Err(native_abi::ERR_ACCESS_DENIED);
+            }
+            let koids = job.member_koids(call.arg_u32(1) == info::JOB_CHILDREN)?;
+            let size = koids.len() * 8;
+            call.write_optional(call.arg(4), &size)?;
+            if call.arg(3) < size {
+                return Err(native_abi::ERR_BUFFER_TOO_SMALL);
+            }
+            call.write_array(call.arg(2), &koids)
+        }
         info::NAME => {
             let (name, length) = match &entry.object {
                 Object::Process(process) => process.name(),
@@ -214,6 +229,25 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
         }
         _ => Err(native_abi::ERR_NOT_SUPPORTED),
     }
+}
+
+/// 按 KOID 取 Job 的直属成员；新句柄的 rights 不超过 Job 句柄，观察者因此无法借成员句柄提权。
+pub(super) fn get_child(call: &Call<'_>) -> Result<(), Status> {
+    let entry = call.entry(call.arg_handle(0), rights::ENUMERATE)?;
+    let rights = narrowed(&entry, call.arg_u32(2))?;
+    let Object::Job(job) = &entry.object else {
+        return Err(native_abi::ERR_WRONG_TYPE);
+    };
+    let object = job
+        .member(call.arg(1) as u64)
+        .ok_or(native_abi::ERR_NOT_FOUND)?;
+    let handles = call.process().handles();
+    let handle = handles.insert(HandleEntry { object, rights })?;
+    if let Err(status) = call.write(call.arg(3), &handle) {
+        drop(handles.remove(handle));
+        return Err(status);
+    }
+    Ok(())
 }
 
 pub(super) fn set_name(call: &Call<'_>) -> Result<(), Status> {

@@ -95,6 +95,8 @@ pub mod rights {
     pub const MANAGE: u32 = 1 << 8;
     /// 可读取对象信息。
     pub const INSPECT: u32 = 1 << 9;
+    /// 枚举 Job 的成员并取得其句柄（`info::JOB_*`、`OBJECT_GET_CHILD`）；Job 默认持有。
+    pub const ENUMERATE: u32 = 1 << 10;
     /// 显式请求“与原句柄相同”的 rights。
     pub const SAME: u32 = 1 << 31;
 }
@@ -346,6 +348,10 @@ pub mod info {
     pub const VMO: u32 = 6;
     /// [`crate::TaskStats`]：映射字节、驻留字节和存活线程数。
     pub const TASK_STATS: u32 = 7;
+    /// Job 的存活子 Job KOID，`u64` 数组（升序）；句柄还需 `rights::ENUMERATE`。
+    pub const JOB_CHILDREN: u32 = 8;
+    /// Job 直属的存活进程 KOID，`u64` 数组（升序）；句柄还需 `rights::ENUMERATE`。
+    pub const JOB_PROCESSES: u32 = 9;
 }
 
 /// `system_get_info` 主题与电源操作。

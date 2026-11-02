@@ -130,12 +130,19 @@ chunk 基址按 max(page, block) 对齐；较大对齐的 prefix/suffix 在发�
   不丢失已退出线程，也不与并发查询重复计费。启动失败只回滚登记，不改变未启动执行体的状态。
 - `TASK_RUNTIME` 查询包括已退出线程；`TASK_STATS` 返回映射字节、映射驻留字节和存活线程数，均要求 INSPECT。
   统计由实际 task/VM owner 提供，不在 root-server 或桌面另建人工同步计数。
-- root-server 启动 linuxd 时只交付自身与 driver-host/ext4d/netstack 的 INSPECT/TRANSFER 观察句柄；没有 MANAGE、READ、WRITE。
-  linuxd 的观测 adapter 读取这些对象及自身，发布只读系统观测消息，不向应用传递原生句柄。
-- `task-observer-protocol` 拥有版本化查询/回复格式，Linuxd 的 `system::task_observer` 只适配初始 NET 中的 AF_UNIX datagram。
-  所有该 NET 内的用户都可读这些服务名称/运行状态/汇总资源量；不返回地址、寄存器、凭据、映射明细或管理 capability。
-  请求不持久化客户端状态；socket 队列沿用现有配额，回复不能立即发送时丢弃，不阻塞其他客户端。
+- Job 默认持有 `ENUMERATE`：`JOB_CHILDREN`/`JOB_PROCESSES`（另需 INSPECT）返回存活直属成员的升序 KOID，
+  `OBJECT_GET_CHILD` 按 KOID 取成员句柄，rights 不得超出 Job 句柄。只读观察者因此只能取得只读成员，不能借枚举提权。
+  KOID 在锁内复制、锁外写回用户，结果是时点快照；成员随后结束时取句柄返回 `ERR_NOT_FOUND`。
+- root-server 交给 linuxd 根 Job 的 `INSPECT | ENUMERATE | TRANSFER` 句柄（对应 Fuchsia `RootJobForInspect`），
+  没有 MANAGE、READ、WRITE。linuxd 每次请求遍历任务树，新增服务自动可见；linuxd 所在 Job 中除 linuxd 自身外的成员是
+  Linux 进程或映像共享进程，前者由 /proc 呈现，二者都不进入快照。不向应用传递原生句柄。
+- `task-observer-protocol` 拥有版本化查询/回复格式与端点约定。linuxd 的 `system::task_observer` 在 devtmpfs 挂载后、
+  init 发布前创建 `/dev/task-observer` pathname datagram socket（root:adm 0660，先以 root:root 0660 创建再改组，
+  不存在过宽窗口）；连接与发送由 VFS socket inode 写权限按 fsuid 与附加组授权，组外进程得到 `EACCES`。
+  端点放在 linuxd 自挂的 devtmpfs 上，因为 `/run` 由 init 脚本稍后挂载。只返回服务名称/运行状态/汇总资源量，
+  不返回地址、寄存器、凭据、映射明细或管理 capability。请求不持久化客户端状态；socket 队列沿用现有配额，
+  回复不能立即发送时丢弃，不阻塞其他客户端。快照受单个 datagram 上限约束（80 字节/记录），原生服务数量远低于该界。
 - 原生 KOID 与 Linux PID 分属不同身份空间。原生服务按自己的承载进程计费，Linux 应用及其 syscall 消耗归实际成员承载线程；
   不再把相同应用的承载线程计入服务。Linuxd 工作线程是其服务的展开明细，系统总线程数不重复加它们。
-  普通 Linux 进程仍使用标准 procfs/pidfd；系统桌面工具消费只读服务协议，不新增 Linux syscall、ioctl 或伪造 PID。
+  普通 Linux 进程仍使用标准 procfs/pidfd；获授权的系统桌面工具消费只读服务协议，不新增 Linux syscall、ioctl 或伪造 PID。
 - 观测是低频、按请求执行的冷路径。锁序/稀疏驻留统计由生产 VMO fixture 与 runtime 验证；不在调度、fault 或 IPC 热路径新增采样。

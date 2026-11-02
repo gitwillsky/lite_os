@@ -67,12 +67,6 @@ fn main(mut startup: Startup) -> i64 {
         directory_reader,
         [ext4_client, network_client],
         &startup.arguments,
-        [
-            native_runtime::self_process(),
-            &devices,
-            &filesystems,
-            &network,
-        ],
     );
 
     let executor = Executor::create().expect("root executor");
@@ -159,7 +153,6 @@ fn start_linuxd(
     directory: Channel,
     [ext4, network]: [Channel; 2],
     command_line: &[u8],
-    observers: [&Process; linuxd::OBSERVER_COUNT],
 ) -> Process {
     let image = bootfs
         .find(linuxd::IMAGE)
@@ -185,11 +178,10 @@ fn start_linuxd(
         native_abi::resource::system::COUNT,
     )
     .expect("linuxd system resource");
-    let observers = observers.map(|process| {
-        process
-            .duplicate(rights::INSPECT | rights::TRANSFER)
-            .expect("service inspect capability")
-    });
+    // 观察者只拿到可枚举、可查询的根 Job：新增服务自动可见，且不能借此终止或修改任何任务。
+    let observer = root
+        .duplicate(rights::INSPECT | rights::ENUMERATE | rights::TRANSFER)
+        .expect("root job inspect capability");
     native_runtime::launch::launch(native_runtime::launch::Launch {
         process: &process,
         image_vmar: &shared_vmar,
@@ -206,10 +198,8 @@ fn start_linuxd(
             directory.into_handle(),
             ext4.into_handle(),
             network.into_handle(),
-        ]
-        .into_iter()
-        .chain(observers.into_iter().map(Process::into_handle))
-        .collect(),
+            observer.into_handle(),
+        ],
         stack_size: LINUXD_STACK_SIZE,
     })
     .expect("linuxd launch");
