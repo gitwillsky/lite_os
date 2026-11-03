@@ -601,7 +601,7 @@ def main() -> int:
                 ROOT / "user/Cargo.toml",
                 ROOT / "user/Cargo.lock",
                 ROOT / "user/base/shutdown",
-                ROOT / "create_fs.py",
+                ROOT / "scripts/create_fs.py",
                 Path(__file__).resolve(),
                 *(ROOT / "scripts/userland" / name for name in ("busybox.py", "rust.py", "artifacts.py", "image.py")),
                 ROOT / "scripts/https_gate.py",

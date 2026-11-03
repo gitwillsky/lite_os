@@ -11,8 +11,8 @@
 
 ## 启动所有权
 
-1. 内核 `main` 在发布 secondary-ready 前完成全局对象和 root-server 装配；secondary 只消费已发布状态。
-2. kernel bootstrap loader 只载入 root-server；root-server 唯一装配系统服务连接和初始 capability。
+1. 内核 `main` 在发布 secondary-ready 前完成全局对象和 component-manager 装配；secondary 只消费已发布状态。
+2. kernel bootstrap loader 只载入 component-manager；component-manager 唯一装配系统服务连接和初始 capability。
 3. driver-host 独占设备权限；linuxd 通过设备/文件系统/网络服务初始化 Linux 环境并执行 init。服务间不共享 Rust 全局状态。
 
 DTB、initrd 和崩溃保留区必须先从 frame allocator 排除；缺失时 bootstrap 尚未复制的输入可能被覆盖。
@@ -25,6 +25,6 @@ DTB、initrd 和崩溃保留区必须先从 frame allocator 排除；缺失时 b
 设备初始化、MMIO/IRQ/BTI 失败由 driver-host 拒绝相应设备，不能伪造 DMA 隔离或驱动能力。
 host DTB/MMIO fixture 验证解码与边界；release ELF 检查固定 ISA façade；双架构冷启动才验证真实装配与中断活性。
 
-root-server 的 role 句柄交付保留最小设备边界：driver-host 接收根 resource；linuxd 接收可再细分的 system
-操作范围（日志读取、串口、UTC 设置、电源），ext4d/netstack 只接收其服务和设备连接。
+component-manager 的 role 句柄交付保留最小设备边界：driver-host 接收根 resource；linuxd 接收可再细分的 system
+操作范围（日志读取、串口、UTC 设置、电源），ext4/netstack 只接收其服务和设备连接。
 resource::authorization 是 immutable kind/range 的唯一 owner；同类子范围不能扩大，hardware/system 不互相转换。

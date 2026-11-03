@@ -53,7 +53,11 @@ const SOURCE_DOMAINS: &[SourceDomain] = &[
         binary_crate: true,
     },
     SourceDomain {
-        root: "system/ext4d/src",
+        root: "system/driver-manager/src",
+        binary_crate: true,
+    },
+    SourceDomain {
+        root: "system/ext4/src",
         binary_crate: true,
     },
     SourceDomain {
@@ -81,7 +85,7 @@ const SOURCE_DOMAINS: &[SourceDomain] = &[
         binary_crate: false,
     },
     SourceDomain {
-        root: "system/root-server/src",
+        root: "system/component-manager/src",
         binary_crate: true,
     },
     SourceDomain {

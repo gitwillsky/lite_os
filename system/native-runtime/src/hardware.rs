@@ -24,10 +24,12 @@ object!(
     /// 一个 DMA 发起者的总线事务发起者。
     Bti
 );
-object!(
-    /// 固定记录：关闭或 `unpin` 时撤销设备地址。
-    Pmt
-);
+/// 固定记录：析构时显式解除固定并撤销设备地址。
+///
+/// 只有进程终止等未经析构的关闭会让页进入 BTI 隔离区，直到新驱动复位设备后
+/// [`Bti::release_quarantine`]。
+#[derive(Debug)]
+pub struct Pmt(Handle);
 
 fn new_handle(status: Status, out: native_abi::Handle) -> Result<Handle, Status> {
     check(status)?;
@@ -220,14 +222,22 @@ impl Bti {
     }
 }
 
-impl Pmt {
-    /// 解除固定并撤销设备地址。
+impl Bti {
+    /// 释放隔离区中的固定页；调用者已复位设备，设备不再访问上一驱动实例的缓冲。
     ///
     /// # Errors
     ///
-    /// 句柄无效。
-    pub fn unpin(self) -> Result<(), Status> {
-        // SAFETY: 无指针参数；内核随之消费该句柄。
-        check(unsafe { invoke(call::PMT_UNPIN, &[self.into_handle().into_raw() as usize]) })
+    /// 句柄缺少写权限。
+    pub fn release_quarantine(&self) -> Result<(), Status> {
+        // SAFETY: 无指针参数。
+        check(unsafe { invoke(call::BTI_RELEASE_QUARANTINE, &[self.raw() as usize]) })
+    }
+}
+
+impl Drop for Pmt {
+    fn drop(&mut self) {
+        let handle = core::mem::replace(&mut self.0, Handle::invalid());
+        // SAFETY: 无指针参数；内核随之消费该句柄。失败只可能是句柄无效，没有可恢复动作。
+        let _ = unsafe { invoke(call::PMT_UNPIN, &[handle.into_raw() as usize]) };
     }
 }

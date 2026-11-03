@@ -1,10 +1,10 @@
-//! ext4 的 `mount(2)` 类型：文件系统由 ext4d 服务承载，本 VFS 经块设备型 FUSE 挂载访问它。
+//! ext4 的 `mount(2)` 类型：文件系统由 ext4 服务承载，本 VFS 经块设备型 FUSE 挂载访问它。
 //!
-//! 1. 校验选项后把源块设备的整个区间共享给 ext4d，ext4d 打开文件系统（回放日志）并交回 FUSE channel
+//! 1. 校验选项后把源块设备的整个区间共享给 ext4，ext4 打开文件系统（回放日志）并交回 FUSE channel
 //!    与挂载控制；
 //! 2. FUSE 挂载承担 inode、页缓存与权限检查；本类型只投影 ext4 自己的 superblock 事实：类型名、
 //!    `data=ordered` 选项、`EXT4_SUPER_MAGIC` 与由 UUID 折叠的 fsid；
-//! 3. 只读挂载的 ro → rw 重新挂载经挂载控制让 ext4d 完成推迟的写前准备。
+//! 3. 只读挂载的 ro → rw 重新挂载经挂载控制让 ext4 完成推迟的写前准备。
 
 use alloc::{sync::Arc, vec::Vec};
 
@@ -90,7 +90,7 @@ fn fsid(uuid: &[u8; 16]) -> [u32; 2] {
     [folded as u32, (folded >> 32) as u32]
 }
 
-/// ext4d 报告的挂载失败：无效文件系统按 Linux `mount(2)` 报 `EINVAL`。
+/// ext4 报告的挂载失败：无效文件系统按 Linux `mount(2)` 报 `EINVAL`。
 fn status_error(status: Status) -> FileSystemError {
     match status {
         native_abi::ERR_NO_MEMORY => FileSystemError::OutOfMemory,

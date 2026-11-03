@@ -605,7 +605,7 @@ kernel/src/bootstrap/elf.rs :: enum ElfError :: # [doc = " 头部或程序头越
 kernel/src/bootstrap/elf.rs :: enum ElfError :: # [doc = " 映射或复制失败。"] Memory (VmError)
 kernel/src/bootstrap/elf.rs :: pub (super) enum ElfError
 kernel/src/bootstrap/elf.rs :: pub (super) fn load (image : & [u8] , vmar : & Arc < Vmar >) -> Result < usize , ElfError >
-kernel/src/bootstrap/mod.rs :: pub (crate) fn start_root_server (command_line : & [u8])
+kernel/src/bootstrap/mod.rs :: pub (crate) fn start_component_manager (command_line : & [u8])
 kernel/src/config.rs :: pub (crate) const KERNEL_STACK_SIZE : usize = 32 * 1024
 kernel/src/crash/backtrace.rs :: pub (super) const MAX_FRAMES : usize = 32
 kernel/src/crash/backtrace.rs :: pub (super) fn capture (frame : usize , frames : & mut [usize ; MAX_FRAMES]) -> usize
@@ -981,12 +981,14 @@ kernel/src/object/port.rs :: pub (super) impl Port :: fn release_reservation (& 
 kernel/src/object/port.rs :: pub (super) impl Port :: fn reserve (& self) -> Result < () , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Bti :: fn create (iommu : & Iommu , stream : u32) -> Self
 kernel/src/object/resource.rs :: pub (crate) impl Bti :: fn pin (self : & Arc < Self > , vmo : & Arc < Vmo > , offset : u64 , length : u64 , writable : bool ,) -> Result < Pmt , Status >
+kernel/src/object/resource.rs :: pub (crate) impl Bti :: fn release_quarantine (& self)
 kernel/src/object/resource.rs :: pub (crate) impl Interrupt :: fn ack (& self) -> Result < () , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Interrupt :: fn bind_port (& self , port : Arc < Port > , key : u64) -> Result < () , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Interrupt :: fn create (vector : u32 , level : bool) -> Result < Self , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Interrupt :: fn wait (& self , deadline_ns : Option < u64 >) -> Result < i64 , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Iommu :: fn create (kind : u32 , descriptor : & [u8]) -> Result < Self , Status >
 kernel/src/object/resource.rs :: pub (crate) impl Pmt :: fn addresses (& self) -> & [u64]
+kernel/src/object/resource.rs :: pub (crate) impl Pmt :: fn mark_unpinned (& self)
 kernel/src/object/resource.rs :: pub (crate) struct Bti
 kernel/src/object/resource.rs :: pub (crate) struct Interrupt
 kernel/src/object/resource.rs :: pub (crate) struct Iommu
@@ -1273,6 +1275,7 @@ kernel/src/syscall/handles.rs :: pub (super) fn wait_async (call : & Call < '_ >
 kernel/src/syscall/handles.rs :: pub (super) fn wait_one (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn bti_create (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn bti_pin (call : & Call < '_ >) -> Result < () , Status >
+kernel/src/syscall/hardware.rs :: pub (super) fn bti_release_quarantine (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_ack (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_bind (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/hardware.rs :: pub (super) fn interrupt_create (call : & Call < '_ >) -> Result < () , Status >
@@ -1787,11 +1790,10 @@ system/driver-host/src/drivers/mod.rs :: pub (crate) mod virtio
 system/driver-host/src/drivers/pci.rs :: pub (crate) Bar :: address : usize
 system/driver-host/src/drivers/pci.rs :: pub (crate) Bar :: size : usize
 system/driver-host/src/drivers/pci.rs :: pub (crate) Function :: bars : [Option < Bar > ; 6]
-system/driver-host/src/drivers/pci.rs :: pub (crate) Function :: bti : & 'static Bti
+system/driver-host/src/drivers/pci.rs :: pub (crate) Function :: bti : & 'static native_runtime :: Bti
 system/driver-host/src/drivers/pci.rs :: pub (crate) Function :: config : MmioBus
 system/driver-host/src/drivers/pci.rs :: pub (crate) Function :: interrupt : Option < u32 >
-system/driver-host/src/drivers/pci.rs :: pub (crate) fn functions () -> & 'static [Function]
-system/driver-host/src/drivers/pci.rs :: pub (crate) fn initialize (host : Option < & PciHost >) -> Result < () , () >
+system/driver-host/src/drivers/pci.rs :: pub (crate) fn function () -> Option < Function >
 system/driver-host/src/drivers/pci.rs :: pub (crate) struct Bar
 system/driver-host/src/drivers/pci.rs :: pub (crate) struct Function
 system/driver-host/src/drivers/usb/audio.rs :: pub (in crate :: drivers :: usb) Alternate :: alternate : u8
@@ -1875,7 +1877,7 @@ system/driver-host/src/drivers/usb/mod.rs :: enum Error :: Protocol
 system/driver-host/src/drivers/usb/mod.rs :: enum Error :: Timeout
 system/driver-host/src/drivers/usb/mod.rs :: enum Error :: Unsupported
 system/driver-host/src/drivers/usb/mod.rs :: pub (crate) enum Error
-system/driver-host/src/drivers/usb/mod.rs :: pub (crate) fn initialize () -> Result < Vec < Arc < Host > > >
+system/driver-host/src/drivers/usb/mod.rs :: pub (crate) fn initialize () -> Result < Arc < Host > >
 system/driver-host/src/drivers/usb/mod.rs :: pub (crate) use xhci :: Host
 system/driver-host/src/drivers/usb/xhci.rs :: pub (crate) struct Host
 system/driver-host/src/drivers/usb/xhci.rs :: pub (super) impl Host :: fn doorbell (& self , slot : u8 , endpoint : u8) -> Result < () >
@@ -1900,10 +1902,7 @@ system/driver-host/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers ::
 system/driver-host/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output :: name : String
 system/driver-host/src/drivers/usb/xhci/output.rs :: pub (in crate :: drivers :: usb) Output :: slot : u8
 system/driver-host/src/drivers/usb/xhci/output.rs :: pub (super) struct Output
-system/driver-host/src/drivers/virtio/binding.rs :: pub (crate) fn bind_display () -> Option < EarlyDisplay >
-system/driver-host/src/drivers/virtio/binding.rs :: pub (crate) fn bind_platform_devices (display : Option < & EarlyDisplay >)
-system/driver-host/src/drivers/virtio/binding.rs :: pub (crate) impl EarlyDisplay :: fn framebuffer (& self) -> & dyn BootFramebuffer
-system/driver-host/src/drivers/virtio/binding.rs :: pub (crate) struct EarlyDisplay
+system/driver-host/src/drivers/virtio/binding.rs :: pub (crate) fn bind (driver : Driver , bus : Bus)
 system/driver-host/src/drivers/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 system/driver-host/src/drivers/virtio/blk.rs :: pub (crate) impl VirtIOBlockDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 system/driver-host/src/drivers/virtio/blk.rs :: pub (crate) struct VirtIOBlockDevice
@@ -2183,7 +2182,7 @@ system/driver-host/src/drivers/virtio/gpu/wire.rs :: pub (super) type AttachEntr
 system/driver-host/src/drivers/virtio/input.rs :: pub (crate) impl VirtIOInputDevice :: fn irq_handler_for (self : & Arc < Self >) -> Arc < dyn InterruptHandler >
 system/driver-host/src/drivers/virtio/input.rs :: pub (crate) impl VirtIOInputDevice :: fn new (base_addr : usize) -> Option < Arc < Self > >
 system/driver-host/src/drivers/virtio/input.rs :: pub (crate) struct VirtIOInputDevice
-system/driver-host/src/drivers/virtio/mod.rs :: pub (crate) use binding :: { EarlyDisplay , bind_display , bind_platform_devices }
+system/driver-host/src/drivers/virtio/mod.rs :: pub (crate) use binding :: bind
 system/driver-host/src/drivers/virtio/mod.rs :: pub (crate) use blk :: VirtIOBlockDevice
 system/driver-host/src/drivers/virtio/mod.rs :: pub (crate) use console :: VirtIOConsoleDevice
 system/driver-host/src/drivers/virtio/mod.rs :: pub (crate) use gpu :: VirtIOGpuDevice
@@ -2233,7 +2232,7 @@ system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) VirtioPciF
 system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) VirtioPciFunction :: device_id : u32
 system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) VirtioPciFunction :: interrupt : u32
 system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) VirtioPciFunction :: transport : PciTransport
-system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) fn devices (wanted : u32) -> impl Iterator < Item = VirtioPciFunction >
+system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) fn discover () -> Option < VirtioPciFunction >
 system/driver-host/src/drivers/virtio/pci_discovery.rs :: pub (super) struct VirtioPciFunction
 system/driver-host/src/drivers/virtio/queue.rs :: enum VirtQueueError :: # [doc = " buffer 长度溢出或没有可发布的 segment。"] InvalidBuffer
 system/driver-host/src/drivers/virtio/queue.rs :: enum VirtQueueError :: # [doc = " 当前 free descriptor 不足。"] NoDescriptors
@@ -2387,8 +2386,7 @@ system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) struct VirtIODevice
 system/driver-host/src/drivers/virtio/transport.rs :: pub (in crate :: drivers :: virtio) struct VirtQueueAddresses
 system/driver-host/src/handles.rs :: pub (crate) fn directory () -> & 'static Directory
-system/driver-host/src/handles.rs :: pub (crate) fn install (startup : & mut Startup) -> Vmo
-system/driver-host/src/handles.rs :: pub (crate) fn resource () -> & 'static Resource
+system/driver-host/src/handles.rs :: pub (crate) fn install (startup : & mut Startup)
 system/driver-host/src/interrupt.rs :: enum InterruptError :: DeviceFailure
 system/driver-host/src/interrupt.rs :: pub (crate) enum InterruptError
 system/driver-host/src/interrupt.rs :: pub (crate) trait InterruptHandler
@@ -2451,461 +2449,490 @@ system/driver-host/src/io_completion/request_owner.rs :: pub (crate) struct Prep
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) struct RequestIdentity
 system/driver-host/src/io_completion/request_owner.rs :: pub (crate) struct RequestOwner
 system/driver-host/src/main.rs :: pub (crate) use native_runtime :: { debug , error , info , warn }
-system/driver-host/src/platform/device_tree.rs :: pub (crate) DeviceFacts :: iommu : Option < IommuFacts >
-system/driver-host/src/platform/device_tree.rs :: pub (crate) DeviceFacts :: pci : Option < PciHost >
-system/driver-host/src/platform/device_tree.rs :: pub (crate) DeviceFacts :: virtio : VirtioMmioTransports
-system/driver-host/src/platform/device_tree.rs :: pub (crate) IommuFacts :: base : usize
-system/driver-host/src/platform/device_tree.rs :: pub (crate) IommuFacts :: kind : u32
-system/driver-host/src/platform/device_tree.rs :: pub (crate) IommuFacts :: size : usize
-system/driver-host/src/platform/device_tree.rs :: pub (crate) fn parse (dtb : Dtb < '_ >) -> DeviceFacts
-system/driver-host/src/platform/device_tree.rs :: pub (crate) struct DeviceFacts
-system/driver-host/src/platform/device_tree.rs :: pub (crate) struct IommuFacts
-system/driver-host/src/platform/mod.rs :: pub (crate) fn bti (stream : Option < u32 >) -> & 'static Bti
-system/driver-host/src/platform/mod.rs :: pub (crate) fn initialize (device_tree : & Vmo)
-system/driver-host/src/platform/mod.rs :: pub (crate) fn map_device_window (physical : usize , size : usize) -> usize
-system/driver-host/src/platform/mod.rs :: pub (crate) fn pci_host () -> Option < & 'static PciHost >
-system/driver-host/src/platform/mod.rs :: pub (crate) fn register_device_interrupt (vector : InterruptVector , handler : Arc < dyn InterruptHandler > , label : & 'static str ,)
-system/driver-host/src/platform/mod.rs :: pub (crate) fn virtio_mmio_transports () -> & 'static VirtioMmioTransports
-system/driver-host/src/platform/mod.rs :: pub (crate) use device_tree :: IommuFacts
-system/driver-host/src/platform/mod.rs :: pub (crate) use pci_host :: PciHost
-system/driver-host/src/platform/mod.rs :: pub (crate) use virtio_mmio :: { VirtioMmioTransport , VirtioMmioTransports }
-system/driver-host/src/platform/pci_host.rs :: pub (crate) PciHost :: ecam : core :: ops :: Range < usize >
-system/driver-host/src/platform/pci_host.rs :: pub (crate) PciHost :: mmio32 : core :: ops :: Range < usize >
-system/driver-host/src/platform/pci_host.rs :: pub (crate) impl PciHost :: fn interrupt (& self , slot : usize , pin : usize) -> Option < u32 >
-system/driver-host/src/platform/pci_host.rs :: pub (crate) impl PciHost :: fn new (ecam : core :: ops :: Range < usize > , mmio32 : core :: ops :: Range < usize > , intx : [[u32 ; 4] ; 4] , stream_map : Vec < (u32 , u32 , u32) > , stream_mask : u32 ,) -> Self
-system/driver-host/src/platform/pci_host.rs :: pub (crate) impl PciHost :: fn stream (& self , requester : u32) -> Option < u32 >
-system/driver-host/src/platform/pci_host.rs :: pub (crate) struct PciHost
-system/driver-host/src/platform/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: base_addr : usize
-system/driver-host/src/platform/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: irq : u32
-system/driver-host/src/platform/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: size : usize
-system/driver-host/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: const fn new () -> Self
-system/driver-host/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn begin_node (& mut self)
-system/driver-host/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn compatible (& mut self , mut values : StrList < '_ >)
-system/driver-host/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn finish (mut self) -> VirtioMmioTransports
-system/driver-host/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn interrupt (& mut self , irq : Option < u32 >)
-system/driver-host/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn reg (& mut self , range : Option < Range < usize > >)
-system/driver-host/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioTransports :: fn iter (& self) -> impl Iterator < Item = & VirtioMmioTransport >
-system/driver-host/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioTransports :: fn len (& self) -> usize
-system/driver-host/src/platform/virtio_mmio.rs :: pub (crate) struct VirtioMmioScan
-system/driver-host/src/platform/virtio_mmio.rs :: pub (crate) struct VirtioMmioTransport
-system/driver-host/src/platform/virtio_mmio.rs :: pub (crate) struct VirtioMmioTransports
-system/ext4d/src/ext4.rs :: pub (crate) struct Ext4FileSystem
-system/ext4d/src/ext4.rs :: pub (crate) use inode :: Ext4Inode
-system/ext4d/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn allocate_block (& self , goal : u64 , contents : & [u8] , kind : BlockKind ,) -> Result < u64 , FileSystemError >
-system/ext4d/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn allocate_inode (& self , preferred_group : usize , directory : bool ,) -> Result < u32 , FileSystemError >
-system/ext4d/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn block_bitmap (& self , group : usize) -> Result < Vec < u8 > , FileSystemError >
-system/ext4d/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn count_free (bitmap : & [u8] , limit : usize) -> usize
-system/ext4d/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn free_blocks (& self , start : u64 , count : u64) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn free_inode (& self , inode : u32 , directory : bool) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn group_base_metadata_blocks (& self , group : usize) -> usize
-system/ext4d/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn group_block_count (& self , group : usize) -> usize
-system/ext4d/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn group_first_block (& self , group : usize) -> u64
-system/ext4d/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn group_of_block (& self , block : u64) -> Result < (usize , usize) , FileSystemError >
-system/ext4d/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn inode_bitmap (& self , group : usize) -> Result < Vec < u8 > , FileSystemError >
-system/ext4d/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn inode_table_blocks (& self) -> usize
-system/ext4d/src/ext4/allocation_dirty.rs :: pub (super) impl AllocationDirty :: const fn empty () -> Self
-system/ext4d/src/ext4/allocation_dirty.rs :: pub (super) impl AllocationDirty :: fn groups (& self) -> impl Iterator < Item = usize > + '_
-system/ext4d/src/ext4/allocation_dirty.rs :: pub (super) impl AllocationDirty :: fn is_empty (& self) -> bool
-system/ext4d/src/ext4/allocation_dirty.rs :: pub (super) impl AllocationDirty :: fn mark (& mut self , group : usize) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/allocation_dirty.rs :: pub (super) impl AllocationDirty :: fn try_new (group_count : usize) -> Result < Self , FileSystemError >
-system/ext4d/src/ext4/allocation_dirty.rs :: pub (super) struct AllocationDirty
-system/ext4d/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn group_has_superblock (& self , group : usize) -> bool
-system/ext4d/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn sync_allocation_metadata (& self , group : usize) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn write_dirty_allocation_metadata (& self , dirty : & allocation_dirty :: AllocationDirty ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn write_primary_superblock (& self) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn write_primary_superblock_home (& self) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn metadata_cached (& self , fs_block_id : u64) -> Option < Arc < Vec < u8 > > >
-system/ext4d/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block (& self , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block_from (device : & Arc < dyn BlockDevice > , fs_block_size : usize , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block_home (& self , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_metadata_block (& self , fs_block_id : u64 ,) -> Result < Arc < Vec < u8 > > , FileSystemError >
-system/ext4d/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn stage_block (& self , fs_block_id : u64 , buf : & [u8] , kind : BlockKind ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_data_block (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_fs_block (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_fs_block_home (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/checksum.rs :: pub (crate) fn crc32c (mut crc : u32 , bytes : & [u8]) -> u32
-system/ext4d/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn add_dir_entry_locked (& self , mutation : & mut MutationGuard < '_ > , child : u32 , name : & [u8] , kind : InodeType ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn create_hard_link (& self , name : & [u8] , target : Arc < Ext4Inode > ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn create_symlink (& self , name : & [u8] , target : & [u8] , metadata : crate :: vfs :: CreateMetadata ,) -> Result < Arc < Self > , FileSystemError >
-system/ext4d/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn dir_iterate_from (& self , cursor : u64 , visit : & mut EntryVisitor < '_ > ,) -> Result < DirectoryRead , FileSystemError >
-system/ext4d/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn initialize_directory_locked (& self , mutation : & mut MutationGuard < '_ > , parent : u32 ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn lookup_entry (& self , name : & [u8]) -> Result < Option < (u32 , u8) > , FileSystemError >
-system/ext4d/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn reload_after_lookup (& self , lookup : Arc < Ext4Inode > , number : u32 ,) -> Result < (Arc < Self > , bool) , FileSystemError >
-system/ext4d/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn remove_dir_entry_locked (& self , _mutation : & mut MutationGuard < '_ > , name : & [u8] ,) -> Result < u32 , FileSystemError >
-system/ext4d/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn rename_entry (& self , old_name : & [u8] , new_parent_inode : u64 , new_name : & [u8] , no_replace : bool ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn touch_parent (& self , mutation : & mut MutationGuard < '_ > , links : Option < u16 > ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/directory_block.rs :: pub (super) Record :: header : Ext4DirEntry2Header
-system/ext4d/src/ext4/directory_block.rs :: pub (super) Record :: offset : usize
-system/ext4d/src/ext4/directory_block.rs :: pub (super) const TAIL_SIZE : usize = 12
-system/ext4d/src/ext4/directory_block.rs :: pub (super) fn compact_records (block : & mut [u8] , usable : usize , entries : & [(u32 , u8 , & [u8])] ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/directory_block.rs :: pub (super) fn insert_record (block : & mut [u8] , usable : usize , child : u32 , name : & [u8] , file_type : u8 ,) -> Result < bool , FileSystemError >
-system/ext4d/src/ext4/directory_block.rs :: pub (super) fn record_size (name_len : usize) -> usize
-system/ext4d/src/ext4/directory_block.rs :: pub (super) fn records (block : & [u8] , usable : usize ,) -> impl Iterator < Item = Result < Record , FileSystemError > > + '_
-system/ext4d/src/ext4/directory_block.rs :: pub (super) fn remove_record (block : & mut [u8] , usable : usize , name : & [u8] ,) -> Result < Option < u32 > , FileSystemError >
-system/ext4d/src/ext4/directory_block.rs :: pub (super) impl Ext4Inode :: fn checksum_seed (& self) -> u32
-system/ext4d/src/ext4/directory_block.rs :: pub (super) impl Ext4Inode :: fn empty_leaf (& self) -> Result < Vec < u8 > , FileSystemError >
-system/ext4d/src/ext4/directory_block.rs :: pub (super) impl Ext4Inode :: fn leaf_usable (& self) -> usize
-system/ext4d/src/ext4/directory_block.rs :: pub (super) impl Ext4Inode :: fn read_leaf (& self , block : u64) -> Result < Arc < Vec < u8 > > , FileSystemError >
-system/ext4d/src/ext4/directory_block.rs :: pub (super) impl Ext4Inode :: fn write_leaf (& self , block : u64 , bytes : & mut [u8]) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/directory_block.rs :: pub (super) impl Record :: fn end (& self) -> usize
-system/ext4d/src/ext4/directory_block.rs :: pub (super) impl Record :: fn name < 'a > (& self , block : & 'a [u8]) -> & 'a [u8]
-system/ext4d/src/ext4/directory_block.rs :: pub (super) struct Record
-system/ext4d/src/ext4/directory_cursor.rs :: enum RecordPosition :: Skip
-system/ext4d/src/ext4/directory_cursor.rs :: enum RecordPosition :: Visit
-system/ext4d/src/ext4/directory_cursor.rs :: pub (super) enum RecordPosition
-system/ext4d/src/ext4/directory_cursor.rs :: pub (super) impl DirectoryCursor :: const fn new (start : usize , published : u64) -> Self
-system/ext4d/src/ext4/directory_cursor.rs :: pub (super) impl DirectoryCursor :: const fn published (self) -> u64
-system/ext4d/src/ext4/directory_cursor.rs :: pub (super) impl DirectoryCursor :: fn consume (& mut self , next : u64)
-system/ext4d/src/ext4/directory_cursor.rs :: pub (super) impl DirectoryCursor :: fn first_block (self , block_size : usize) -> usize
-system/ext4d/src/ext4/directory_cursor.rs :: pub (super) impl DirectoryCursor :: fn locate (& mut self , absolute : usize , next : usize) -> RecordPosition
-system/ext4d/src/ext4/directory_cursor.rs :: pub (super) struct DirectoryCursor
-system/ext4d/src/ext4/dirhash.rs :: enum HashSignedness :: # [doc = " `EXT2_FLAGS_SIGNED_HASH`：byte 按 `signed char` 扩展。"] Signed
-system/ext4d/src/ext4/dirhash.rs :: enum HashSignedness :: # [doc = " `EXT2_FLAGS_UNSIGNED_HASH`：byte 按 `unsigned char` 扩展。"] Unsigned
-system/ext4d/src/ext4/dirhash.rs :: pub (crate) DirectoryHash :: major : u32
-system/ext4d/src/ext4/dirhash.rs :: pub (crate) DirectoryHash :: minor : u32
-system/ext4d/src/ext4/dirhash.rs :: pub (crate) enum HashSignedness
-system/ext4d/src/ext4/dirhash.rs :: pub (crate) fn half_md4 (name : & [u8] , seed : [u32 ; 4] , signedness : HashSignedness) -> DirectoryHash
-system/ext4d/src/ext4/dirhash.rs :: pub (crate) struct DirectoryHash
-system/ext4d/src/ext4/extent.rs :: enum Mapping :: Hole { left : Option < Extent > }
-system/ext4d/src/ext4/extent.rs :: enum Mapping :: Mapped (Extent)
-system/ext4d/src/ext4/extent.rs :: pub (super) Extent :: length : u32
-system/ext4d/src/ext4/extent.rs :: pub (super) Extent :: logical : u32
-system/ext4d/src/ext4/extent.rs :: pub (super) Extent :: physical : u64
-system/ext4d/src/ext4/extent.rs :: pub (super) Extent :: unwritten : bool
-system/ext4d/src/ext4/extent.rs :: pub (super) enum Mapping
-system/ext4d/src/ext4/extent.rs :: pub (super) fn empty_root () -> [u8 ; INODE_BLOCK_BYTES]
-system/ext4d/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn default_goal (& self) -> u64
-system/ext4d/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn insert (& mut self , extent : Extent) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn lookup (& self , logical : u32) -> Result < Mapping , FileSystemError >
-system/ext4d/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn mark_written (& mut self , logical : u32) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn new (fs : & 'a Ext4FileSystem , inode_num : u32 , disk : & Ext4InodeDisk ,) -> Result < Self , FileSystemError >
-system/ext4d/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn remove_from (& mut self , start : u32) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn root (& self) -> [u8 ; INODE_BLOCK_BYTES]
-system/ext4d/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn sector_delta (& self) -> i64
-system/ext4d/src/ext4/extent.rs :: pub (super) struct Extent
-system/ext4d/src/ext4/extent.rs :: pub (super) struct ExtentTree < 'a >
-system/ext4d/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn remount_writable (& self) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn root_inode (& self) -> Result < Arc < Ext4Inode > , FileSystemError >
-system/ext4d/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn shutdown (& self) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn start_writeback (self : & Arc < Self >) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn statistics (& self) -> Result < FileSystemStatistics , FileSystemError >
-system/ext4d/src/ext4/filesystem.rs :: pub (super) impl Ext4FileSystem :: fn sync_journal (& self) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/htree.rs :: pub (super) const HTREE_EOF_POS : u64 = i64 :: MAX as u64
-system/ext4d/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn append_directory_block (& self , mutation : & mut MutationGuard < '_ > ,) -> Result < (u32 , u64) , FileSystemError >
-system/ext4d/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn dx_add (& self , mutation : & mut MutationGuard < '_ > , child : u32 , name : & [u8] , file_type : u8 ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn dx_lookup (& self , name : & [u8]) -> Result < Option < (u32 , u8) > , FileSystemError >
-system/ext4d/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn dx_parent (& self) -> Result < u32 , FileSystemError >
-system/ext4d/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn dx_read_directory (& self , cursor : u64 , visit : & mut EntryVisitor < '_ > ,) -> Result < DirectoryRead , FileSystemError >
-system/ext4d/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn dx_remove (& self , name : & [u8]) -> Result < Option < u32 > , FileSystemError >
-system/ext4d/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn is_indexed (& self) -> bool
-system/ext4d/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn make_indexed (& self , mutation : & mut MutationGuard < '_ > , root_physical : u64 , block : & [u8] ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn name_hash (& self , name : & [u8]) -> DirectoryHash
-system/ext4d/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn set_parent_entry (& self , parent : u32) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode.rs :: pub (crate) struct Ext4Inode
-system/ext4d/src/ext4/inode.rs :: pub (super) Ext4Inode :: disk : Mutex < LiveInode >
-system/ext4d/src/ext4/inode.rs :: pub (super) Ext4Inode :: fs : Arc < Ext4FileSystem >
-system/ext4d/src/ext4/inode.rs :: pub (super) Ext4Inode :: inode_num : u32
-system/ext4d/src/ext4/inode.rs :: pub (super) LiveInode :: disk : Ext4InodeDisk
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn apply_tree (disk : & mut Ext4InodeDisk , root : [u8 ; INODE_BLOCK_BYTES] , sector_delta : i64 ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn is_fast_symlink (disk : & Ext4InodeDisk) -> bool
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn load (fs : Arc < Ext4FileSystem > , inode_num : u32 ,) -> Result < Arc < Self > , FileSystemError >
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn map_block (& self , file_block : u32) -> Result < u64 , FileSystemError >
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn map_block_sparse (& self , file_block : u32) -> Result < Option < u64 > , FileSystemError >
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn new_disk (fs : & Ext4FileSystem , mode : u16 , uid : u32 , gid : u32 , links : u16 , extents : bool ,) -> Ext4InodeDisk
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn reclaim_locked (& self , mutation : & mut MutationGuard < '_ > , directory : bool ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn truncate_locked (& self , mutation : & mut MutationGuard < '_ > , size : u64 , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn validate_name (name : & [u8]) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Timestamp :: fn decode (low : u32 , extra : u32) -> Self
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Timestamp :: fn encode (self) -> (u32 , u32)
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Timestamp :: fn from_seconds (seconds : u64) -> Result < Self , FileSystemError >
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Timestamp :: fn nanoseconds (self) -> u32
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Timestamp :: fn now () -> Self
-system/ext4d/src/ext4/inode.rs :: pub (super) impl Timestamp :: fn seconds (self) -> u64
-system/ext4d/src/ext4/inode.rs :: pub (super) struct LiveInode
-system/ext4d/src/ext4/inode.rs :: pub (super) struct Timestamp
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn allocate_storage (& self , offset : u64 , length : u64 , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn change_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn change_xattr (& self , change : crate :: vfs :: XattrChange < '_ > ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn create (& self , name : & [u8] , kind : InodeType , metadata : crate :: vfs :: CreateMetadata ,) -> Result < Arc < Ext4Inode > , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn find_child (& self , name : & [u8]) -> Result < Arc < Ext4Inode > , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn inode_type (& self) -> InodeType
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn is_root (& self) -> bool
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn link (& self , name : & [u8] , target : Arc < Ext4Inode >) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn list_xattrs (& self , trusted : bool) -> Result < Vec < u8 > , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn metadata (& self) -> Result < InodeMetadata , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn mknod (& self , name : & [u8] , kind : InodeType , metadata : crate :: vfs :: CreateMetadata , device : Option < crate :: vfs :: DeviceNumber > ,) -> Result < Arc < Ext4Inode > , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn number (& self) -> u64
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn prepare_cached_write (& self , policy : crate :: vfs :: WritePolicy ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn read_directory (& self , cursor : u64 , visitor : & mut dyn DirectoryVisitor ,) -> Result < DirectoryRead , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn read_link (& self) -> Result < Vec < u8 > , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn read_storage (& self , offset : u64 , buf : & mut [u8] ,) -> Result < usize , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn read_xattr (& self , name : & [u8]) -> Result < Vec < u8 > , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn rename (& self , old_name : & [u8] , new_parent_inode : u64 , new_name : & [u8] , no_replace : bool ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn set_times (& self , atime : Option < u64 > , mtime : Option < u64 > ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn size (& self) -> u64
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn symlink (& self , name : & [u8] , target : & [u8] , metadata : crate :: vfs :: CreateMetadata ,) -> Result < Arc < Ext4Inode > , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn sync_storage (& self) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn touch_access (& self , now : u64) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn truncate_storage (& self , size : u64 , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn unlink (& self , name : & [u8] , remove_directory : bool ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn write_storage (& self , offset : u64 , buf : & [u8] , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < usize , FileSystemError >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (in crate :: ext4) impl Ext4Inode :: fn rdev (disk : & Ext4InodeDisk) -> Option < crate :: vfs :: DeviceNumber >
-system/ext4d/src/ext4/inode/vfs.rs :: pub (in crate :: ext4) impl Ext4Inode :: fn reclaim_dropped_orphan_locked (& self , mutation : & mut MutationGuard < '_ > ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/inode_kind.rs :: pub (super) fn create_mode (kind : InodeType , permissions : u32) -> u16
-system/ext4d/src/ext4/inode_kind.rs :: pub (super) fn decode_device (block : & [u8 ; 60]) -> (u32 , u32)
-system/ext4d/src/ext4/inode_kind.rs :: pub (super) fn encode_device (major : u32 , minor : u32) -> [u8 ; 60]
-system/ext4d/src/ext4/inode_kind.rs :: pub (super) fn file_type (kind : InodeType) -> u8
-system/ext4d/src/ext4/inode_kind.rs :: pub (super) fn from_file_type (file_type : u8) -> InodeType
-system/ext4d/src/ext4/inode_kind.rs :: pub (super) fn from_mode (mode : u16) -> InodeType
-system/ext4d/src/ext4/journal.rs :: pub (super) const COMMIT_INTERVAL_NS : u64 = 5_000_000_000
-system/ext4d/src/ext4/journal.rs :: pub (super) impl Ext4FileSystem :: fn commit_running_transaction (& self) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/journal.rs :: pub (super) impl Journal :: fn copy_staged (& self , block : u64 , output : & mut [u8]) -> bool
-system/ext4d/src/ext4/journal.rs :: pub (super) impl Journal :: fn is_uncommitted_free (& self , block : u64) -> bool
-system/ext4d/src/ext4/journal.rs :: pub (super) impl Journal :: fn load (fs : & Arc < Ext4FileSystem >) -> Result < Self , FileSystemError >
-system/ext4d/src/ext4/journal.rs :: pub (super) impl Journal :: fn mark_allocation_dirty (& mut self , group : usize) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/journal.rs :: pub (super) impl Journal :: fn record_freed (& mut self , start : u64 , count : u64) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/journal.rs :: pub (super) impl Journal :: fn recover (& mut self , fs : & Ext4FileSystem) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/journal.rs :: pub (super) impl Journal :: fn running_started_ns (& self) -> Option < u64 >
-system/ext4d/src/ext4/journal.rs :: pub (super) impl Journal :: fn stage (& mut self , block : u64 , bytes : & [u8] , block_size : usize , kind : BlockKind ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn begin (fs : & 'a Ext4FileSystem) -> Result < Self , FileSystemError >
-system/ext4d/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn begin_after < T > (fs : & 'a Ext4FileSystem , prepare : impl FnOnce () -> Result < T , FileSystemError > ,) -> Result < (Self , T) , FileSystemError >
-system/ext4d/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn commit (mut self) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn discard_inode_on_abort (& mut self , number : u32) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn inode < 'mutation , 'inode > (& 'mutation mut self , inode : & 'inode Ext4Inode ,) -> Result < InodeMutation < 'mutation , 'inode > , FileSystemError >
-system/ext4d/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn try_begin (fs : & 'a Ext4FileSystem) -> Result < Option < Self > , FileSystemError >
-system/ext4d/src/ext4/journal.rs :: pub (super) struct Journal
-system/ext4d/src/ext4/journal.rs :: pub (super) struct MutationGuard < 'a >
-system/ext4d/src/ext4/journal.rs :: pub (super) struct RunningTransaction
-system/ext4d/src/ext4/journal.rs :: pub (super) use commit_owner :: JournalOwner
-system/ext4d/src/ext4/journal.rs :: pub (super) use staged_blocks :: BlockKind
-system/ext4d/src/ext4/journal/codec.rs :: pub (super) fn be32 (bytes : & [u8] , offset : usize) -> Result < u32 , FileSystemError >
-system/ext4d/src/ext4/journal/codec.rs :: pub (super) fn put_be32 (bytes : & mut [u8] , offset : usize , value : u32) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/journal/codec.rs :: pub (super) fn put_header (bytes : & mut [u8] , kind : u32 , sequence : u32 ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/journal/commit_owner.rs :: enum JournalOwner :: Committing { running : Arc < StagedBlocks > , active : Option < Arc < StagedBlocks > > , }
-system/ext4d/src/ext4/journal/commit_owner.rs :: enum JournalOwner :: Ready (Journal)
-system/ext4d/src/ext4/journal/commit_owner.rs :: enum JournalOwner :: Unavailable
-system/ext4d/src/ext4/journal/commit_owner.rs :: pub (in crate :: ext4) enum JournalOwner
-system/ext4d/src/ext4/journal/commit_owner.rs :: pub (in crate :: ext4) impl JournalOwner :: const fn unavailable () -> Self
-system/ext4d/src/ext4/journal/commit_owner.rs :: pub (in crate :: ext4) impl JournalOwner :: fn copy_staged (& self , block : u64 , output : & mut [u8]) -> bool
-system/ext4d/src/ext4/journal/commit_owner.rs :: pub (in crate :: ext4) impl JournalOwner :: fn install (& mut self , journal : Journal)
-system/ext4d/src/ext4/journal/commit_owner.rs :: pub (in crate :: ext4) impl JournalOwner :: fn ready_mut (& mut self) -> Result < & mut Journal , FileSystemError >
-system/ext4d/src/ext4/journal/commit_owner.rs :: pub (in crate :: ext4) impl JournalOwner :: fn ready_mut_ref (& self) -> Result < & Journal , FileSystemError >
-system/ext4d/src/ext4/journal/commit_owner.rs :: pub (super) impl JournalCommit < 'a > :: fn begin (fs : & 'a Ext4FileSystem) -> Result < Self , FileSystemError >
-system/ext4d/src/ext4/journal/commit_owner.rs :: pub (super) impl JournalCommit < 'a > :: fn commit (mut self) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/journal/commit_owner.rs :: pub (super) struct JournalCommit < 'a >
-system/ext4d/src/ext4/journal/inode_mutation.rs :: pub (in crate :: ext4) struct InodeMutation < 'mutation , 'inode >
-system/ext4d/src/ext4/journal/inode_mutation.rs :: pub (super) impl InodeMutation < 'mutation , 'inode > :: const fn new (inode : & 'inode Ext4Inode , disk : Ext4InodeDisk) -> Self
-system/ext4d/src/ext4/journal/staged_blocks.rs :: enum BlockKind :: Data
-system/ext4d/src/ext4/journal/staged_blocks.rs :: enum BlockKind :: Metadata
-system/ext4d/src/ext4/journal/staged_blocks.rs :: pub (in crate :: ext4) enum BlockKind
-system/ext4d/src/ext4/journal/staged_blocks.rs :: pub (in crate :: ext4) struct StagedBlocks
-system/ext4d/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn all (& self) -> impl Iterator < Item = (& u64 , & Vec < u8 >) >
-system/ext4d/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn combined_metadata_count (& self , overlay : & Self) -> usize
-system/ext4d/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn data (& self) -> impl Iterator < Item = (& u64 , & Vec < u8 >) >
-system/ext4d/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn data_count (& self) -> usize
-system/ext4d/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn get (& self , block : u64) -> Option < & Vec < u8 > >
-system/ext4d/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn is_empty (& self) -> bool
-system/ext4d/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn merge (& mut self , mut overlay : Self)
-system/ext4d/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn metadata_count (& self) -> usize
-system/ext4d/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn metadata_from (& self , start : u64) -> impl Iterator < Item = (& u64 , & Vec < u8 >) >
-system/ext4d/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn stage (& mut self , block : u64 , bytes : & [u8] , kind : BlockKind , capacity : usize ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/journal_layout.rs :: pub (super) impl JournalLayout :: fn new (journal_blocks : usize , block_size : usize) -> Option < Self >
-system/ext4d/src/ext4/journal_layout.rs :: pub (super) impl JournalLayout :: fn tags_per_descriptor (self) -> usize
-system/ext4d/src/ext4/journal_layout.rs :: pub (super) impl JournalLayout :: fn write_capacity (self) -> usize
-system/ext4d/src/ext4/journal_layout.rs :: pub (super) struct JournalLayout
-system/ext4d/src/ext4/layout.rs :: pub (super) const INODE_BLOCK_BYTES : usize = mem :: size_of :: < [u32 ; 15] > ()
-system/ext4d/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn block_bytes (& self) -> [u8 ; INODE_BLOCK_BYTES]
-system/ext4d/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn copy_inline_symlink (& self , target : & mut [u8]) -> bool
-system/ext4d/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn file_acl (& self) -> u64
-system/ext4d/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn sectors (& self) -> u64
-system/ext4d/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn set_block_bytes (& mut self , bytes : & [u8 ; INODE_BLOCK_BYTES])
-system/ext4d/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn set_file_acl (& mut self , block : u64)
-system/ext4d/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn set_inline_symlink (& mut self , target : & [u8]) -> bool
-system/ext4d/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn set_sectors (& mut self , sectors : u64)
-system/ext4d/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn set_size (& mut self , size : u64)
-system/ext4d/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn size (& self) -> u64
-system/ext4d/src/ext4/link_count.rs :: enum LinkCountError :: Corrupt
-system/ext4d/src/ext4/link_count.rs :: enum LinkCountError :: TooMany
-system/ext4d/src/ext4/link_count.rs :: enum ParentLinkPlan :: CrossParent { old_parent : u16 , new_parent : u16 }
-system/ext4d/src/ext4/link_count.rs :: enum ParentLinkPlan :: SameParent { parent : u16 }
-system/ext4d/src/ext4/link_count.rs :: pub (super) const EXT4_LINK_MAX : u16 = 65_000
-system/ext4d/src/ext4/link_count.rs :: pub (super) enum LinkCountError
-system/ext4d/src/ext4/link_count.rs :: pub (super) enum ParentLinkPlan
-system/ext4d/src/ext4/link_count.rs :: pub (super) fn decrement_directory (count : u16) -> Result < u16 , LinkCountError >
-system/ext4d/src/ext4/link_count.rs :: pub (super) fn decrement_file (count : u16) -> Result < u16 , LinkCountError >
-system/ext4d/src/ext4/link_count.rs :: pub (super) fn increment_directory (count : u16) -> Result < u16 , LinkCountError >
-system/ext4d/src/ext4/link_count.rs :: pub (super) fn increment_file (count : u16) -> Result < u16 , LinkCountError >
-system/ext4d/src/ext4/link_count.rs :: pub (super) fn plan_rename_parent_links (old_parent : u16 , new_parent : u16 , crosses_parent : bool , replaces_directory : bool ,) -> Result < Option < ParentLinkPlan > , LinkCountError >
-system/ext4d/src/ext4/metadata.rs :: pub (super) impl Ext4Inode :: fn update_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/metadata.rs :: pub (super) impl Ext4Inode :: fn update_times (& self , atime : Option < u64 > , mtime : Option < u64 > ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn atime (& self) -> Timestamp
-system/ext4d/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn birth_time (& self) -> Option < Timestamp >
-system/ext4d/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn ctime (& self) -> Timestamp
-system/ext4d/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn gid (& self) -> u32
-system/ext4d/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn mtime (& self) -> Timestamp
-system/ext4d/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn set_atime (& mut self , time : Timestamp)
-system/ext4d/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn set_crtime (& mut self , time : Timestamp)
-system/ext4d/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn set_ctime (& mut self , time : Timestamp)
-system/ext4d/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn set_gid (& mut self , gid : u32)
-system/ext4d/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn set_mtime (& mut self , time : Timestamp)
-system/ext4d/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn set_uid (& mut self , uid : u32)
-system/ext4d/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn uid (& self) -> u32
-system/ext4d/src/ext4/metadata_cache.rs :: pub (super) impl MetadataBlockCache :: const fn generation (& self) -> u64
-system/ext4d/src/ext4/metadata_cache.rs :: pub (super) impl MetadataBlockCache :: const fn new () -> Self
-system/ext4d/src/ext4/metadata_cache.rs :: pub (super) impl MetadataBlockCache :: fn clear (& mut self)
-system/ext4d/src/ext4/metadata_cache.rs :: pub (super) impl MetadataBlockCache :: fn get (& mut self , block : u64) -> Option < Arc < Vec < u8 > > >
-system/ext4d/src/ext4/metadata_cache.rs :: pub (super) impl MetadataBlockCache :: fn insert_if_unchanged (& mut self , generation : u64 , block : u64 , bytes : Arc < Vec < u8 > >)
-system/ext4d/src/ext4/metadata_cache.rs :: pub (super) impl MetadataBlockCache :: fn invalidate (& mut self , block : u64)
-system/ext4d/src/ext4/metadata_cache.rs :: pub (super) impl MetadataBlockCache :: fn update_if_present (& mut self , block : u64 , bytes : & [u8])
-system/ext4d/src/ext4/metadata_cache.rs :: pub (super) struct MetadataBlockCache
-system/ext4d/src/ext4/metadata_csum.rs :: pub (super) fn directory_block_checksum (inode_seed : u32 , block : & [u8] , tail_offset : usize) -> u32
-system/ext4d/src/ext4/metadata_csum.rs :: pub (super) fn dx_checksum (inode_seed : u32 , block : & [u8] , used_bytes : usize , reserved : u32) -> u32
-system/ext4d/src/ext4/metadata_csum.rs :: pub (super) fn extent_block_checksum (inode_seed : u32 , block : & [u8] , tail_offset : usize) -> u32
-system/ext4d/src/ext4/metadata_csum.rs :: pub (super) fn orphan_block_checksum (orphan_seed : u32 , physical : u64 , entries : & [u8]) -> u32
-system/ext4d/src/ext4/metadata_csum.rs :: pub (super) fn xattr_block_checksum (filesystem_seed : u32 , block_number : u64 , block : & [u8]) -> u32
-system/ext4d/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn block_bitmap_checksum (& self , bitmap : & [u8]) -> u32
-system/ext4d/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn group_desc_checksum (& self , group : usize , descriptor : & Ext4GroupDesc) -> u16
-system/ext4d/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn inode_bitmap_checksum (& self , bitmap : & [u8]) -> u32
-system/ext4d/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn inode_checksum_seed (& self , inode_num : u32 , generation : u32) -> u32
-system/ext4d/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn inode_checksum_valid (& self , inode_num : u32 , inode : & Ext4InodeDisk) -> bool
-system/ext4d/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn seal_group_desc (& self , group : usize , descriptor : & mut Ext4GroupDesc)
-system/ext4d/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn seal_inode (& self , inode_num : u32 , inode : & mut Ext4InodeDisk)
-system/ext4d/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn seal_superblock (superblock : & mut Ext4SuperBlock)
-system/ext4d/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn superblock_checksum (superblock : & Ext4SuperBlock) -> u32
-system/ext4d/src/ext4/mount.rs :: pub (crate) impl Ext4FileSystem :: fn new (device : Arc < dyn BlockDevice > , read_only : bool ,) -> Result < Arc < Self > , FileSystemError >
-system/ext4d/src/ext4/mount.rs :: pub (super) impl Ext4FileSystem :: fn make_writable (& self) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/mount.rs :: pub (super) impl Ext4FileSystem :: fn validate_superblock (sb : & Ext4SuperBlock) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn defer_reclaim_locked (& self , mutation : & mut MutationGuard < '_ > , inode : & Arc < Ext4Inode > ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn load_orphan_file (& self) -> Result < OrphanFile , FileSystemError >
-system/ext4d/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn reclaim_pending_orphan (& self) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn recover_orphans (& self) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn remove_orphan_locked (& self , target : u32) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/orphan.rs :: pub (super) impl OrphanFile :: const fn unavailable () -> Self
-system/ext4d/src/ext4/orphan.rs :: pub (super) struct OrphanFile
-system/ext4d/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn allocate_range (& self , offset : u64 , length : u64 , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn ensure_block_mapped (& self , mutation : & mut MutationGuard < '_ > , file_block : u32 ,) -> Result < u64 , FileSystemError >
-system/ext4d/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn remove_write_privileges_locked (& self , mutation : & mut MutationGuard < '_ > , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write_at_locked (& self , mutation : & mut MutationGuard < '_ > , offset : usize , buf : & [u8] ,) -> Result < usize , FileSystemError >
-system/ext4d/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write_batch (& self , policy : Option < crate :: vfs :: WritePolicy > , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write_bytes (& self , offset : u64 , buf : & [u8] , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < usize , FileSystemError >
-system/ext4d/src/ext4/xattr.rs :: pub (super) impl Ext4FileSystem :: fn release_xattrs (& self , inode_num : u32 , disk : & mut Ext4InodeDisk ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/xattr.rs :: pub (super) impl Ext4Inode :: fn change_attribute (& self , change : crate :: vfs :: XattrChange < '_ > ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/xattr.rs :: pub (super) impl Ext4Inode :: fn kill_capability (& self , disk : & mut Ext4InodeDisk ,) -> Result < bool , FileSystemError >
-system/ext4d/src/ext4/xattr.rs :: pub (super) impl Ext4Inode :: fn list_attributes (& self , trusted : bool) -> Result < Vec < u8 > , FileSystemError >
-system/ext4d/src/ext4/xattr.rs :: pub (super) impl Ext4Inode :: fn read_attribute (& self , name : & [u8]) -> Result < Vec < u8 > , FileSystemError >
-system/ext4d/src/ext4/xattr.rs :: pub (super) impl Ext4Inode :: fn xattr_write_allowed (disk : & Ext4InodeDisk) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/xattr_inode.rs :: pub (super) const EA_INODE_FLAG : u32 = 0x0020_0000
-system/ext4d/src/ext4/xattr_inode.rs :: pub (super) fn value_entry_hash (name : & [u8] , value_hash : u32) -> u32
-system/ext4d/src/ext4/xattr_inode.rs :: pub (super) impl Ext4FileSystem :: fn change_xattr_value_references (& self , parent : u32 , inode : u32 , delta : i64 ,) -> Result < () , FileSystemError >
-system/ext4d/src/ext4/xattr_inode.rs :: pub (super) impl Ext4FileSystem :: fn create_xattr_value (& self , parent : u32 , parent_disk : & Ext4InodeDisk , value : & [u8] ,) -> Result < u32 , FileSystemError >
-system/ext4d/src/ext4/xattr_inode.rs :: pub (super) impl Ext4FileSystem :: fn has_xattr_inodes (& self) -> bool
-system/ext4d/src/ext4/xattr_inode.rs :: pub (super) impl Ext4FileSystem :: fn read_xattr_value (& self , parent : u32 , inode : u32 , size : usize , entry_hash : u32 , name : & [u8] ,) -> Result < Vec < u8 > , FileSystemError >
-system/ext4d/src/fuse_server.rs :: pub (crate) fn serve_control (control : Channel) -> i64
-system/ext4d/src/main.rs :: pub (crate) use native_runtime :: { debug , error , info , warn }
-system/ext4d/src/time.rs :: pub (crate) fn get_realtime_ns () -> u64
-system/ext4d/src/time.rs :: pub (crate) fn get_time_ns () -> u64
-system/ext4d/src/vfs.rs :: enum DirectoryVisit :: Continue
-system/ext4d/src/vfs.rs :: enum DirectoryVisit :: Stop
-system/ext4d/src/vfs.rs :: enum FileSystemError :: AlreadyExists
-system/ext4d/src/vfs.rs :: enum FileSystemError :: CrossDevice
-system/ext4d/src/vfs.rs :: enum FileSystemError :: DirectoryNotEmpty
-system/ext4d/src/vfs.rs :: enum FileSystemError :: InvalidFileSystem
-system/ext4d/src/vfs.rs :: enum FileSystemError :: InvalidOperation
-system/ext4d/src/vfs.rs :: enum FileSystemError :: InvalidPath
-system/ext4d/src/vfs.rs :: enum FileSystemError :: IoError
-system/ext4d/src/vfs.rs :: enum FileSystemError :: IsDirectory
-system/ext4d/src/vfs.rs :: enum FileSystemError :: NameTooLong
-system/ext4d/src/vfs.rs :: enum FileSystemError :: NoSpace
-system/ext4d/src/vfs.rs :: enum FileSystemError :: NotDirectory
-system/ext4d/src/vfs.rs :: enum FileSystemError :: NotFound
-system/ext4d/src/vfs.rs :: enum FileSystemError :: NotSupported
-system/ext4d/src/vfs.rs :: enum FileSystemError :: OutOfMemory
-system/ext4d/src/vfs.rs :: enum FileSystemError :: PermissionDenied
-system/ext4d/src/vfs.rs :: enum FileSystemError :: TooManyLinks
-system/ext4d/src/vfs.rs :: enum InodeType :: BlockDevice
-system/ext4d/src/vfs.rs :: enum InodeType :: CharacterDevice
-system/ext4d/src/vfs.rs :: enum InodeType :: Directory
-system/ext4d/src/vfs.rs :: enum InodeType :: Fifo
-system/ext4d/src/vfs.rs :: enum InodeType :: File
-system/ext4d/src/vfs.rs :: enum InodeType :: Socket
-system/ext4d/src/vfs.rs :: enum InodeType :: SymLink
-system/ext4d/src/vfs.rs :: pub (crate) CreateMetadata :: gid : u32
-system/ext4d/src/vfs.rs :: pub (crate) CreateMetadata :: mode : u32
-system/ext4d/src/vfs.rs :: pub (crate) CreateMetadata :: uid : u32
-system/ext4d/src/vfs.rs :: pub (crate) DeviceNumber :: major : u32
-system/ext4d/src/vfs.rs :: pub (crate) DeviceNumber :: minor : u32
-system/ext4d/src/vfs.rs :: pub (crate) DirectoryEntry :: inode : u64
-system/ext4d/src/vfs.rs :: pub (crate) DirectoryEntry :: kind : InodeType
-system/ext4d/src/vfs.rs :: pub (crate) DirectoryEntry :: name : & 'a [u8]
-system/ext4d/src/vfs.rs :: pub (crate) DirectoryRead :: cursor : u64
-system/ext4d/src/vfs.rs :: pub (crate) DirectoryRead :: eof : bool
-system/ext4d/src/vfs.rs :: pub (crate) FileSystemStatistics :: block_size : u64
-system/ext4d/src/vfs.rs :: pub (crate) FileSystemStatistics :: blocks : u64
-system/ext4d/src/vfs.rs :: pub (crate) FileSystemStatistics :: blocks_available : u64
-system/ext4d/src/vfs.rs :: pub (crate) FileSystemStatistics :: blocks_free : u64
-system/ext4d/src/vfs.rs :: pub (crate) FileSystemStatistics :: files : u64
-system/ext4d/src/vfs.rs :: pub (crate) FileSystemStatistics :: files_free : u64
-system/ext4d/src/vfs.rs :: pub (crate) FileSystemStatistics :: fragment_size : u64
-system/ext4d/src/vfs.rs :: pub (crate) FileSystemStatistics :: name_length : u64
-system/ext4d/src/vfs.rs :: pub (crate) FineTimes :: atime_nsec : u32
-system/ext4d/src/vfs.rs :: pub (crate) FineTimes :: birth : Option < (u64 , u32) >
-system/ext4d/src/vfs.rs :: pub (crate) FineTimes :: ctime_nsec : u32
-system/ext4d/src/vfs.rs :: pub (crate) FineTimes :: mtime_nsec : u32
-system/ext4d/src/vfs.rs :: pub (crate) InodeMetadata :: atime : u64
-system/ext4d/src/vfs.rs :: pub (crate) InodeMetadata :: block_size : u32
-system/ext4d/src/vfs.rs :: pub (crate) InodeMetadata :: blocks : u64
-system/ext4d/src/vfs.rs :: pub (crate) InodeMetadata :: ctime : u64
-system/ext4d/src/vfs.rs :: pub (crate) InodeMetadata :: device : Option < DeviceNumber >
-system/ext4d/src/vfs.rs :: pub (crate) InodeMetadata :: fine_times : FineTimes
-system/ext4d/src/vfs.rs :: pub (crate) InodeMetadata :: gid : u32
-system/ext4d/src/vfs.rs :: pub (crate) InodeMetadata :: inode : u64
-system/ext4d/src/vfs.rs :: pub (crate) InodeMetadata :: kind : InodeType
-system/ext4d/src/vfs.rs :: pub (crate) InodeMetadata :: links : u32
-system/ext4d/src/vfs.rs :: pub (crate) InodeMetadata :: mode : u32
-system/ext4d/src/vfs.rs :: pub (crate) InodeMetadata :: mtime : u64
-system/ext4d/src/vfs.rs :: pub (crate) InodeMetadata :: size : u64
-system/ext4d/src/vfs.rs :: pub (crate) InodeMetadata :: uid : u32
-system/ext4d/src/vfs.rs :: pub (crate) OwnerModeChange :: gid : Option < u32 >
-system/ext4d/src/vfs.rs :: pub (crate) OwnerModeChange :: kill_suidgid : bool
-system/ext4d/src/vfs.rs :: pub (crate) OwnerModeChange :: mode : Option < u32 >
-system/ext4d/src/vfs.rs :: pub (crate) OwnerModeChange :: uid : Option < u32 >
-system/ext4d/src/vfs.rs :: pub (crate) WritePolicy :: kill_suidgid : bool
-system/ext4d/src/vfs.rs :: pub (crate) XattrChange :: flags : u32
-system/ext4d/src/vfs.rs :: pub (crate) XattrChange :: name : & 'a [u8]
-system/ext4d/src/vfs.rs :: pub (crate) XattrChange :: value : Option < Vec < u8 > >
-system/ext4d/src/vfs.rs :: pub (crate) const fn kill_mask (mode : u16) -> u16
-system/ext4d/src/vfs.rs :: pub (crate) enum DirectoryVisit
-system/ext4d/src/vfs.rs :: pub (crate) enum FileSystemError
-system/ext4d/src/vfs.rs :: pub (crate) enum InodeType
-system/ext4d/src/vfs.rs :: pub (crate) fn needs_access_update (atime : u64 , mtime : u64 , ctime : u64 , now : u64) -> bool
-system/ext4d/src/vfs.rs :: pub (crate) impl DeviceNumber :: const fn decode (value : u32) -> Self
-system/ext4d/src/vfs.rs :: pub (crate) impl DeviceNumber :: const fn encode (self) -> u32
-system/ext4d/src/vfs.rs :: pub (crate) impl DeviceNumber :: const fn new (major : u32 , minor : u32) -> Self
-system/ext4d/src/vfs.rs :: pub (crate) impl FileSystemError :: fn errno (self) -> i32
-system/ext4d/src/vfs.rs :: pub (crate) impl InodeType :: const fn directory_type (self) -> u32
-system/ext4d/src/vfs.rs :: pub (crate) impl InodeType :: const fn mode_bits (self) -> u32
-system/ext4d/src/vfs.rs :: pub (crate) impl OwnerModeChange :: fn authorize (& self , mut current : OwnerModeState ,) -> Result < OwnerModeState , FileSystemError >
-system/ext4d/src/vfs.rs :: pub (crate) impl OwnerModeChange :: fn kills_privileges (& self , kind : InodeType) -> bool
-system/ext4d/src/vfs.rs :: pub (crate) impl OwnerModeState :: const fn gid (& self) -> u32
-system/ext4d/src/vfs.rs :: pub (crate) impl OwnerModeState :: const fn mode (& self) -> u16
-system/ext4d/src/vfs.rs :: pub (crate) impl OwnerModeState :: const fn new (kind : InodeType , mode : u16 , uid : u32 , gid : u32) -> Self
-system/ext4d/src/vfs.rs :: pub (crate) impl OwnerModeState :: const fn uid (& self) -> u32
-system/ext4d/src/vfs.rs :: pub (crate) impl WritePolicy :: fn write_kill_mask (& self , kind : InodeType , mode : u16) -> u16
-system/ext4d/src/vfs.rs :: pub (crate) struct CreateMetadata
-system/ext4d/src/vfs.rs :: pub (crate) struct DeviceNumber
-system/ext4d/src/vfs.rs :: pub (crate) struct DirectoryEntry < 'a >
-system/ext4d/src/vfs.rs :: pub (crate) struct DirectoryRead
-system/ext4d/src/vfs.rs :: pub (crate) struct FileSystemStatistics
-system/ext4d/src/vfs.rs :: pub (crate) struct FineTimes
-system/ext4d/src/vfs.rs :: pub (crate) struct InodeMetadata
-system/ext4d/src/vfs.rs :: pub (crate) struct OwnerModeChange
-system/ext4d/src/vfs.rs :: pub (crate) struct OwnerModeState
-system/ext4d/src/vfs.rs :: pub (crate) struct WritePolicy
-system/ext4d/src/vfs.rs :: pub (crate) struct XattrChange < 'a >
-system/ext4d/src/vfs.rs :: pub (crate) trait DirectoryVisitor
-system/ext4d/src/vfs.rs :: pub (crate) trait StorageWriter
-system/ext4d/src/vfs.rs :: trait DirectoryVisitor :: fn visit (& mut self , next_cursor : u64 , entry : DirectoryEntry < '_ > ,) -> Result < DirectoryVisit , FileSystemError >
-system/ext4d/src/vfs.rs :: trait StorageWriter :: fn write (& mut self , offset : u64 , bytes : & [u8]) -> Result < usize , FileSystemError >
+system/driver-host/src/platform.rs :: pub (crate) fn bti () -> & 'static Bti
+system/driver-host/src/platform.rs :: pub (crate) fn install (startup : & mut Startup)
+system/driver-host/src/platform.rs :: pub (crate) fn map_device_window (physical : usize , size : usize) -> usize
+system/driver-host/src/platform.rs :: pub (crate) fn node () -> & 'static Node
+system/driver-host/src/platform.rs :: pub (crate) fn register_device_interrupt (vector : InterruptVector , handler : Arc < dyn InterruptHandler > , label : & 'static str ,)
+system/driver-host/src/platform.rs :: pub (crate) fn release_quarantine ()
+system/driver-manager/src/handles.rs :: pub (crate) fn directory () -> & 'static Directory
+system/driver-manager/src/handles.rs :: pub (crate) fn host_image () -> & 'static [u8]
+system/driver-manager/src/handles.rs :: pub (crate) fn install (startup : & mut Startup) -> Vmo
+system/driver-manager/src/handles.rs :: pub (crate) fn job () -> & 'static Job
+system/driver-manager/src/handles.rs :: pub (crate) fn resource () -> & 'static Resource
+system/driver-manager/src/host.rs :: pub (crate) fn supervise (bound : BoundNode , index : usize , admission : Arc < Admission >)
+system/driver-manager/src/host.rs :: pub (crate) impl Admission :: fn new (count : usize) -> Arc < Self >
+system/driver-manager/src/host.rs :: pub (crate) impl Admission :: fn wait_all (& self)
+system/driver-manager/src/host.rs :: pub (crate) struct Admission
+system/driver-manager/src/main.rs :: pub (crate) use native_runtime :: { debug , error , info , warn }
+system/driver-manager/src/nodes.rs :: pub (crate) BoundNode :: bti : Bti
+system/driver-manager/src/nodes.rs :: pub (crate) BoundNode :: irq : Option < Resource >
+system/driver-manager/src/nodes.rs :: pub (crate) BoundNode :: mmio : Vec < Resource >
+system/driver-manager/src/nodes.rs :: pub (crate) BoundNode :: node : Node
+system/driver-manager/src/nodes.rs :: pub (crate) fn enumerate () -> Vec < BoundNode >
+system/driver-manager/src/nodes.rs :: pub (crate) struct BoundNode
+system/driver-manager/src/pci.rs :: pub (crate) Function :: bars : [Option < Bar > ; 6]
+system/driver-manager/src/pci.rs :: pub (crate) Function :: config : MmioBus
+system/driver-manager/src/pci.rs :: pub (crate) Function :: config_address : usize
+system/driver-manager/src/pci.rs :: pub (crate) Function :: interrupt : Option < u32 >
+system/driver-manager/src/pci.rs :: pub (crate) Function :: stream : Option < u32 >
+system/driver-manager/src/pci.rs :: pub (crate) fn enumerate (host : Option < & PciHost >) -> Result < Vec < Function > , () >
+system/driver-manager/src/pci.rs :: pub (crate) struct Function
+system/driver-manager/src/platform/device_tree.rs :: pub (crate) DeviceFacts :: iommu : Option < IommuFacts >
+system/driver-manager/src/platform/device_tree.rs :: pub (crate) DeviceFacts :: pci : Option < PciHost >
+system/driver-manager/src/platform/device_tree.rs :: pub (crate) DeviceFacts :: virtio : VirtioMmioTransports
+system/driver-manager/src/platform/device_tree.rs :: pub (crate) IommuFacts :: base : usize
+system/driver-manager/src/platform/device_tree.rs :: pub (crate) IommuFacts :: kind : u32
+system/driver-manager/src/platform/device_tree.rs :: pub (crate) IommuFacts :: size : usize
+system/driver-manager/src/platform/device_tree.rs :: pub (crate) fn parse (dtb : Dtb < '_ >) -> DeviceFacts
+system/driver-manager/src/platform/device_tree.rs :: pub (crate) struct DeviceFacts
+system/driver-manager/src/platform/device_tree.rs :: pub (crate) struct IommuFacts
+system/driver-manager/src/platform/mod.rs :: pub (crate) fn bti (stream : Option < u32 >) -> Bti
+system/driver-manager/src/platform/mod.rs :: pub (crate) fn initialize (device_tree : & Vmo)
+system/driver-manager/src/platform/mod.rs :: pub (crate) fn irq_resource (vector : u32) -> Resource
+system/driver-manager/src/platform/mod.rs :: pub (crate) fn map_device_window (physical : usize , size : usize) -> usize
+system/driver-manager/src/platform/mod.rs :: pub (crate) fn mmio_resource (physical : usize , size : usize) -> (Resource , usize , usize)
+system/driver-manager/src/platform/mod.rs :: pub (crate) fn pci_host () -> Option < & 'static PciHost >
+system/driver-manager/src/platform/mod.rs :: pub (crate) fn virtio_mmio_transports () -> & 'static VirtioMmioTransports
+system/driver-manager/src/platform/mod.rs :: pub (crate) use device_tree :: IommuFacts
+system/driver-manager/src/platform/mod.rs :: pub (crate) use pci_host :: PciHost
+system/driver-manager/src/platform/mod.rs :: pub (crate) use virtio_mmio :: { VirtioMmioTransport , VirtioMmioTransports }
+system/driver-manager/src/platform/pci_host.rs :: pub (crate) PciHost :: ecam : core :: ops :: Range < usize >
+system/driver-manager/src/platform/pci_host.rs :: pub (crate) PciHost :: mmio32 : core :: ops :: Range < usize >
+system/driver-manager/src/platform/pci_host.rs :: pub (crate) impl PciHost :: fn interrupt (& self , slot : usize , pin : usize) -> Option < u32 >
+system/driver-manager/src/platform/pci_host.rs :: pub (crate) impl PciHost :: fn new (ecam : core :: ops :: Range < usize > , mmio32 : core :: ops :: Range < usize > , intx : [[u32 ; 4] ; 4] , stream_map : Vec < (u32 , u32 , u32) > , stream_mask : u32 ,) -> Self
+system/driver-manager/src/platform/pci_host.rs :: pub (crate) impl PciHost :: fn stream (& self , requester : u32) -> Option < u32 >
+system/driver-manager/src/platform/pci_host.rs :: pub (crate) struct PciHost
+system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: base_addr : usize
+system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: irq : u32
+system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) VirtioMmioTransport :: size : usize
+system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: const fn new () -> Self
+system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn begin_node (& mut self)
+system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn compatible (& mut self , mut values : StrList < '_ >)
+system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn finish (mut self) -> VirtioMmioTransports
+system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn interrupt (& mut self , irq : Option < u32 >)
+system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioScan :: fn reg (& mut self , range : Option < Range < usize > >)
+system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmioTransports :: fn iter (& self) -> impl Iterator < Item = & VirtioMmioTransport >
+system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) struct VirtioMmioScan
+system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) struct VirtioMmioTransport
+system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) struct VirtioMmioTransports
+system/ext4/src/ext4.rs :: pub (crate) struct Ext4FileSystem
+system/ext4/src/ext4.rs :: pub (crate) use inode :: Ext4Inode
+system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn allocate_block (& self , goal : u64 , contents : & [u8] , kind : BlockKind ,) -> Result < u64 , FileSystemError >
+system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn allocate_inode (& self , preferred_group : usize , directory : bool ,) -> Result < u32 , FileSystemError >
+system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn block_bitmap (& self , group : usize) -> Result < Vec < u8 > , FileSystemError >
+system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn count_free (bitmap : & [u8] , limit : usize) -> usize
+system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn free_blocks (& self , start : u64 , count : u64) -> Result < () , FileSystemError >
+system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn free_inode (& self , inode : u32 , directory : bool) -> Result < () , FileSystemError >
+system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn group_base_metadata_blocks (& self , group : usize) -> usize
+system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn group_block_count (& self , group : usize) -> usize
+system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn group_first_block (& self , group : usize) -> u64
+system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn group_of_block (& self , block : u64) -> Result < (usize , usize) , FileSystemError >
+system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn inode_bitmap (& self , group : usize) -> Result < Vec < u8 > , FileSystemError >
+system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn inode_table_blocks (& self) -> usize
+system/ext4/src/ext4/allocation_dirty.rs :: pub (super) impl AllocationDirty :: const fn empty () -> Self
+system/ext4/src/ext4/allocation_dirty.rs :: pub (super) impl AllocationDirty :: fn groups (& self) -> impl Iterator < Item = usize > + '_
+system/ext4/src/ext4/allocation_dirty.rs :: pub (super) impl AllocationDirty :: fn is_empty (& self) -> bool
+system/ext4/src/ext4/allocation_dirty.rs :: pub (super) impl AllocationDirty :: fn mark (& mut self , group : usize) -> Result < () , FileSystemError >
+system/ext4/src/ext4/allocation_dirty.rs :: pub (super) impl AllocationDirty :: fn try_new (group_count : usize) -> Result < Self , FileSystemError >
+system/ext4/src/ext4/allocation_dirty.rs :: pub (super) struct AllocationDirty
+system/ext4/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn group_has_superblock (& self , group : usize) -> bool
+system/ext4/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn sync_allocation_metadata (& self , group : usize) -> Result < () , FileSystemError >
+system/ext4/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn write_dirty_allocation_metadata (& self , dirty : & allocation_dirty :: AllocationDirty ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn write_primary_superblock (& self) -> Result < () , FileSystemError >
+system/ext4/src/ext4/allocation_metadata.rs :: pub (super) impl Ext4FileSystem :: fn write_primary_superblock_home (& self) -> Result < () , FileSystemError >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn metadata_cached (& self , fs_block_id : u64) -> Option < Arc < Vec < u8 > > >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block (& self , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block_from (device : & Arc < dyn BlockDevice > , fs_block_size : usize , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_fs_block_home (& self , fs_block_id : u64 , buf : & mut [u8] ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn read_metadata_block (& self , fs_block_id : u64 ,) -> Result < Arc < Vec < u8 > > , FileSystemError >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn stage_block (& self , fs_block_id : u64 , buf : & [u8] , kind : BlockKind ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_data_block (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_fs_block (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/block_io.rs :: pub (super) impl Ext4FileSystem :: fn write_fs_block_home (& self , fs_block_id : u64 , buf : & [u8] ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/checksum.rs :: pub (crate) fn crc32c (mut crc : u32 , bytes : & [u8]) -> u32
+system/ext4/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn add_dir_entry_locked (& self , mutation : & mut MutationGuard < '_ > , child : u32 , name : & [u8] , kind : InodeType ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn create_hard_link (& self , name : & [u8] , target : Arc < Ext4Inode > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn create_symlink (& self , name : & [u8] , target : & [u8] , metadata : crate :: vfs :: CreateMetadata ,) -> Result < Arc < Self > , FileSystemError >
+system/ext4/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn dir_iterate_from (& self , cursor : u64 , visit : & mut EntryVisitor < '_ > ,) -> Result < DirectoryRead , FileSystemError >
+system/ext4/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn initialize_directory_locked (& self , mutation : & mut MutationGuard < '_ > , parent : u32 ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn lookup_entry (& self , name : & [u8]) -> Result < Option < (u32 , u8) > , FileSystemError >
+system/ext4/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn reload_after_lookup (& self , lookup : Arc < Ext4Inode > , number : u32 ,) -> Result < (Arc < Self > , bool) , FileSystemError >
+system/ext4/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn remove_dir_entry_locked (& self , _mutation : & mut MutationGuard < '_ > , name : & [u8] ,) -> Result < u32 , FileSystemError >
+system/ext4/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn rename_entry (& self , old_name : & [u8] , new_parent_inode : u64 , new_name : & [u8] , no_replace : bool ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/directory.rs :: pub (super) impl Ext4Inode :: fn touch_parent (& self , mutation : & mut MutationGuard < '_ > , links : Option < u16 > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/directory_block.rs :: pub (super) Record :: header : Ext4DirEntry2Header
+system/ext4/src/ext4/directory_block.rs :: pub (super) Record :: offset : usize
+system/ext4/src/ext4/directory_block.rs :: pub (super) const TAIL_SIZE : usize = 12
+system/ext4/src/ext4/directory_block.rs :: pub (super) fn compact_records (block : & mut [u8] , usable : usize , entries : & [(u32 , u8 , & [u8])] ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/directory_block.rs :: pub (super) fn insert_record (block : & mut [u8] , usable : usize , child : u32 , name : & [u8] , file_type : u8 ,) -> Result < bool , FileSystemError >
+system/ext4/src/ext4/directory_block.rs :: pub (super) fn record_size (name_len : usize) -> usize
+system/ext4/src/ext4/directory_block.rs :: pub (super) fn records (block : & [u8] , usable : usize ,) -> impl Iterator < Item = Result < Record , FileSystemError > > + '_
+system/ext4/src/ext4/directory_block.rs :: pub (super) fn remove_record (block : & mut [u8] , usable : usize , name : & [u8] ,) -> Result < Option < u32 > , FileSystemError >
+system/ext4/src/ext4/directory_block.rs :: pub (super) impl Ext4Inode :: fn checksum_seed (& self) -> u32
+system/ext4/src/ext4/directory_block.rs :: pub (super) impl Ext4Inode :: fn empty_leaf (& self) -> Result < Vec < u8 > , FileSystemError >
+system/ext4/src/ext4/directory_block.rs :: pub (super) impl Ext4Inode :: fn leaf_usable (& self) -> usize
+system/ext4/src/ext4/directory_block.rs :: pub (super) impl Ext4Inode :: fn read_leaf (& self , block : u64) -> Result < Arc < Vec < u8 > > , FileSystemError >
+system/ext4/src/ext4/directory_block.rs :: pub (super) impl Ext4Inode :: fn write_leaf (& self , block : u64 , bytes : & mut [u8]) -> Result < () , FileSystemError >
+system/ext4/src/ext4/directory_block.rs :: pub (super) impl Record :: fn end (& self) -> usize
+system/ext4/src/ext4/directory_block.rs :: pub (super) impl Record :: fn name < 'a > (& self , block : & 'a [u8]) -> & 'a [u8]
+system/ext4/src/ext4/directory_block.rs :: pub (super) struct Record
+system/ext4/src/ext4/directory_cursor.rs :: enum RecordPosition :: Skip
+system/ext4/src/ext4/directory_cursor.rs :: enum RecordPosition :: Visit
+system/ext4/src/ext4/directory_cursor.rs :: pub (super) enum RecordPosition
+system/ext4/src/ext4/directory_cursor.rs :: pub (super) impl DirectoryCursor :: const fn new (start : usize , published : u64) -> Self
+system/ext4/src/ext4/directory_cursor.rs :: pub (super) impl DirectoryCursor :: const fn published (self) -> u64
+system/ext4/src/ext4/directory_cursor.rs :: pub (super) impl DirectoryCursor :: fn consume (& mut self , next : u64)
+system/ext4/src/ext4/directory_cursor.rs :: pub (super) impl DirectoryCursor :: fn first_block (self , block_size : usize) -> usize
+system/ext4/src/ext4/directory_cursor.rs :: pub (super) impl DirectoryCursor :: fn locate (& mut self , absolute : usize , next : usize) -> RecordPosition
+system/ext4/src/ext4/directory_cursor.rs :: pub (super) struct DirectoryCursor
+system/ext4/src/ext4/dirhash.rs :: enum HashSignedness :: # [doc = " `EXT2_FLAGS_SIGNED_HASH`：byte 按 `signed char` 扩展。"] Signed
+system/ext4/src/ext4/dirhash.rs :: enum HashSignedness :: # [doc = " `EXT2_FLAGS_UNSIGNED_HASH`：byte 按 `unsigned char` 扩展。"] Unsigned
+system/ext4/src/ext4/dirhash.rs :: pub (crate) DirectoryHash :: major : u32
+system/ext4/src/ext4/dirhash.rs :: pub (crate) DirectoryHash :: minor : u32
+system/ext4/src/ext4/dirhash.rs :: pub (crate) enum HashSignedness
+system/ext4/src/ext4/dirhash.rs :: pub (crate) fn half_md4 (name : & [u8] , seed : [u32 ; 4] , signedness : HashSignedness) -> DirectoryHash
+system/ext4/src/ext4/dirhash.rs :: pub (crate) struct DirectoryHash
+system/ext4/src/ext4/extent.rs :: enum Mapping :: Hole { left : Option < Extent > }
+system/ext4/src/ext4/extent.rs :: enum Mapping :: Mapped (Extent)
+system/ext4/src/ext4/extent.rs :: pub (super) Extent :: length : u32
+system/ext4/src/ext4/extent.rs :: pub (super) Extent :: logical : u32
+system/ext4/src/ext4/extent.rs :: pub (super) Extent :: physical : u64
+system/ext4/src/ext4/extent.rs :: pub (super) Extent :: unwritten : bool
+system/ext4/src/ext4/extent.rs :: pub (super) enum Mapping
+system/ext4/src/ext4/extent.rs :: pub (super) fn empty_root () -> [u8 ; INODE_BLOCK_BYTES]
+system/ext4/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn default_goal (& self) -> u64
+system/ext4/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn insert (& mut self , extent : Extent) -> Result < () , FileSystemError >
+system/ext4/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn lookup (& self , logical : u32) -> Result < Mapping , FileSystemError >
+system/ext4/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn mark_written (& mut self , logical : u32) -> Result < () , FileSystemError >
+system/ext4/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn new (fs : & 'a Ext4FileSystem , inode_num : u32 , disk : & Ext4InodeDisk ,) -> Result < Self , FileSystemError >
+system/ext4/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn remove_from (& mut self , start : u32) -> Result < () , FileSystemError >
+system/ext4/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn root (& self) -> [u8 ; INODE_BLOCK_BYTES]
+system/ext4/src/ext4/extent.rs :: pub (super) impl ExtentTree < 'a > :: fn sector_delta (& self) -> i64
+system/ext4/src/ext4/extent.rs :: pub (super) struct Extent
+system/ext4/src/ext4/extent.rs :: pub (super) struct ExtentTree < 'a >
+system/ext4/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn remount_writable (& self) -> Result < () , FileSystemError >
+system/ext4/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn root_inode (& self) -> Result < Arc < Ext4Inode > , FileSystemError >
+system/ext4/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn shutdown (& self) -> Result < () , FileSystemError >
+system/ext4/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn start_writeback (self : & Arc < Self >) -> Result < () , FileSystemError >
+system/ext4/src/ext4/filesystem.rs :: pub (crate) impl Ext4FileSystem :: fn statistics (& self) -> Result < FileSystemStatistics , FileSystemError >
+system/ext4/src/ext4/filesystem.rs :: pub (super) impl Ext4FileSystem :: fn sync_journal (& self) -> Result < () , FileSystemError >
+system/ext4/src/ext4/htree.rs :: pub (super) const HTREE_EOF_POS : u64 = i64 :: MAX as u64
+system/ext4/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn append_directory_block (& self , mutation : & mut MutationGuard < '_ > ,) -> Result < (u32 , u64) , FileSystemError >
+system/ext4/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn dx_add (& self , mutation : & mut MutationGuard < '_ > , child : u32 , name : & [u8] , file_type : u8 ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn dx_lookup (& self , name : & [u8]) -> Result < Option < (u32 , u8) > , FileSystemError >
+system/ext4/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn dx_parent (& self) -> Result < u32 , FileSystemError >
+system/ext4/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn dx_read_directory (& self , cursor : u64 , visit : & mut EntryVisitor < '_ > ,) -> Result < DirectoryRead , FileSystemError >
+system/ext4/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn dx_remove (& self , name : & [u8]) -> Result < Option < u32 > , FileSystemError >
+system/ext4/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn is_indexed (& self) -> bool
+system/ext4/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn make_indexed (& self , mutation : & mut MutationGuard < '_ > , root_physical : u64 , block : & [u8] ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn name_hash (& self , name : & [u8]) -> DirectoryHash
+system/ext4/src/ext4/htree.rs :: pub (super) impl Ext4Inode :: fn set_parent_entry (& self , parent : u32) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode.rs :: pub (crate) struct Ext4Inode
+system/ext4/src/ext4/inode.rs :: pub (super) Ext4Inode :: disk : Mutex < LiveInode >
+system/ext4/src/ext4/inode.rs :: pub (super) Ext4Inode :: fs : Arc < Ext4FileSystem >
+system/ext4/src/ext4/inode.rs :: pub (super) Ext4Inode :: inode_num : u32
+system/ext4/src/ext4/inode.rs :: pub (super) LiveInode :: disk : Ext4InodeDisk
+system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn apply_tree (disk : & mut Ext4InodeDisk , root : [u8 ; INODE_BLOCK_BYTES] , sector_delta : i64 ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn is_fast_symlink (disk : & Ext4InodeDisk) -> bool
+system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn load (fs : Arc < Ext4FileSystem > , inode_num : u32 ,) -> Result < Arc < Self > , FileSystemError >
+system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn map_block (& self , file_block : u32) -> Result < u64 , FileSystemError >
+system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn map_block_sparse (& self , file_block : u32) -> Result < Option < u64 > , FileSystemError >
+system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn new_disk (fs : & Ext4FileSystem , mode : u16 , uid : u32 , gid : u32 , links : u16 , extents : bool ,) -> Ext4InodeDisk
+system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn reclaim_locked (& self , mutation : & mut MutationGuard < '_ > , directory : bool ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn truncate_locked (& self , mutation : & mut MutationGuard < '_ > , size : u64 , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode.rs :: pub (super) impl Ext4Inode :: fn validate_name (name : & [u8]) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode.rs :: pub (super) impl Timestamp :: fn decode (low : u32 , extra : u32) -> Self
+system/ext4/src/ext4/inode.rs :: pub (super) impl Timestamp :: fn encode (self) -> (u32 , u32)
+system/ext4/src/ext4/inode.rs :: pub (super) impl Timestamp :: fn from_seconds (seconds : u64) -> Result < Self , FileSystemError >
+system/ext4/src/ext4/inode.rs :: pub (super) impl Timestamp :: fn nanoseconds (self) -> u32
+system/ext4/src/ext4/inode.rs :: pub (super) impl Timestamp :: fn now () -> Self
+system/ext4/src/ext4/inode.rs :: pub (super) impl Timestamp :: fn seconds (self) -> u64
+system/ext4/src/ext4/inode.rs :: pub (super) struct LiveInode
+system/ext4/src/ext4/inode.rs :: pub (super) struct Timestamp
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn allocate_storage (& self , offset : u64 , length : u64 , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn change_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn change_xattr (& self , change : crate :: vfs :: XattrChange < '_ > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn create (& self , name : & [u8] , kind : InodeType , metadata : crate :: vfs :: CreateMetadata ,) -> Result < Arc < Ext4Inode > , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn find_child (& self , name : & [u8]) -> Result < Arc < Ext4Inode > , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn inode_type (& self) -> InodeType
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn is_root (& self) -> bool
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn link (& self , name : & [u8] , target : Arc < Ext4Inode >) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn list_xattrs (& self , trusted : bool) -> Result < Vec < u8 > , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn metadata (& self) -> Result < InodeMetadata , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn mknod (& self , name : & [u8] , kind : InodeType , metadata : crate :: vfs :: CreateMetadata , device : Option < crate :: vfs :: DeviceNumber > ,) -> Result < Arc < Ext4Inode > , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn number (& self) -> u64
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn prepare_cached_write (& self , policy : crate :: vfs :: WritePolicy ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn read_directory (& self , cursor : u64 , visitor : & mut dyn DirectoryVisitor ,) -> Result < DirectoryRead , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn read_link (& self) -> Result < Vec < u8 > , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn read_storage (& self , offset : u64 , buf : & mut [u8] ,) -> Result < usize , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn read_xattr (& self , name : & [u8]) -> Result < Vec < u8 > , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn rename (& self , old_name : & [u8] , new_parent_inode : u64 , new_name : & [u8] , no_replace : bool ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn set_times (& self , atime : Option < u64 > , mtime : Option < u64 > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn size (& self) -> u64
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn symlink (& self , name : & [u8] , target : & [u8] , metadata : crate :: vfs :: CreateMetadata ,) -> Result < Arc < Ext4Inode > , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn sync_storage (& self) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn touch_access (& self , now : u64) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn truncate_storage (& self , size : u64 , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn unlink (& self , name : & [u8] , remove_directory : bool ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (crate) impl Ext4Inode :: fn write_storage (& self , offset : u64 , buf : & [u8] , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < usize , FileSystemError >
+system/ext4/src/ext4/inode/vfs.rs :: pub (in crate :: ext4) impl Ext4Inode :: fn rdev (disk : & Ext4InodeDisk) -> Option < crate :: vfs :: DeviceNumber >
+system/ext4/src/ext4/inode/vfs.rs :: pub (in crate :: ext4) impl Ext4Inode :: fn reclaim_dropped_orphan_locked (& self , mutation : & mut MutationGuard < '_ > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/inode_kind.rs :: pub (super) fn create_mode (kind : InodeType , permissions : u32) -> u16
+system/ext4/src/ext4/inode_kind.rs :: pub (super) fn decode_device (block : & [u8 ; 60]) -> (u32 , u32)
+system/ext4/src/ext4/inode_kind.rs :: pub (super) fn encode_device (major : u32 , minor : u32) -> [u8 ; 60]
+system/ext4/src/ext4/inode_kind.rs :: pub (super) fn file_type (kind : InodeType) -> u8
+system/ext4/src/ext4/inode_kind.rs :: pub (super) fn from_file_type (file_type : u8) -> InodeType
+system/ext4/src/ext4/inode_kind.rs :: pub (super) fn from_mode (mode : u16) -> InodeType
+system/ext4/src/ext4/journal.rs :: pub (super) const COMMIT_INTERVAL_NS : u64 = 5_000_000_000
+system/ext4/src/ext4/journal.rs :: pub (super) impl Ext4FileSystem :: fn commit_running_transaction (& self) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn copy_staged (& self , block : u64 , output : & mut [u8]) -> bool
+system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn is_uncommitted_free (& self , block : u64) -> bool
+system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn load (fs : & Arc < Ext4FileSystem >) -> Result < Self , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn mark_allocation_dirty (& mut self , group : usize) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn record_freed (& mut self , start : u64 , count : u64) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn recover (& mut self , fs : & Ext4FileSystem) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn running_started_ns (& self) -> Option < u64 >
+system/ext4/src/ext4/journal.rs :: pub (super) impl Journal :: fn stage (& mut self , block : u64 , bytes : & [u8] , block_size : usize , kind : BlockKind ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn begin (fs : & 'a Ext4FileSystem) -> Result < Self , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn begin_after < T > (fs : & 'a Ext4FileSystem , prepare : impl FnOnce () -> Result < T , FileSystemError > ,) -> Result < (Self , T) , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn commit (mut self) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn discard_inode_on_abort (& mut self , number : u32) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn inode < 'mutation , 'inode > (& 'mutation mut self , inode : & 'inode Ext4Inode ,) -> Result < InodeMutation < 'mutation , 'inode > , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) impl MutationGuard < 'a > :: fn try_begin (fs : & 'a Ext4FileSystem) -> Result < Option < Self > , FileSystemError >
+system/ext4/src/ext4/journal.rs :: pub (super) struct Journal
+system/ext4/src/ext4/journal.rs :: pub (super) struct MutationGuard < 'a >
+system/ext4/src/ext4/journal.rs :: pub (super) struct RunningTransaction
+system/ext4/src/ext4/journal.rs :: pub (super) use commit_owner :: JournalOwner
+system/ext4/src/ext4/journal.rs :: pub (super) use staged_blocks :: BlockKind
+system/ext4/src/ext4/journal/codec.rs :: pub (super) fn be32 (bytes : & [u8] , offset : usize) -> Result < u32 , FileSystemError >
+system/ext4/src/ext4/journal/codec.rs :: pub (super) fn put_be32 (bytes : & mut [u8] , offset : usize , value : u32) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal/codec.rs :: pub (super) fn put_header (bytes : & mut [u8] , kind : u32 , sequence : u32 ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal/commit_owner.rs :: enum JournalOwner :: Committing { running : Arc < StagedBlocks > , active : Option < Arc < StagedBlocks > > , }
+system/ext4/src/ext4/journal/commit_owner.rs :: enum JournalOwner :: Ready (Journal)
+system/ext4/src/ext4/journal/commit_owner.rs :: enum JournalOwner :: Unavailable
+system/ext4/src/ext4/journal/commit_owner.rs :: pub (in crate :: ext4) enum JournalOwner
+system/ext4/src/ext4/journal/commit_owner.rs :: pub (in crate :: ext4) impl JournalOwner :: const fn unavailable () -> Self
+system/ext4/src/ext4/journal/commit_owner.rs :: pub (in crate :: ext4) impl JournalOwner :: fn copy_staged (& self , block : u64 , output : & mut [u8]) -> bool
+system/ext4/src/ext4/journal/commit_owner.rs :: pub (in crate :: ext4) impl JournalOwner :: fn install (& mut self , journal : Journal)
+system/ext4/src/ext4/journal/commit_owner.rs :: pub (in crate :: ext4) impl JournalOwner :: fn ready_mut (& mut self) -> Result < & mut Journal , FileSystemError >
+system/ext4/src/ext4/journal/commit_owner.rs :: pub (in crate :: ext4) impl JournalOwner :: fn ready_mut_ref (& self) -> Result < & Journal , FileSystemError >
+system/ext4/src/ext4/journal/commit_owner.rs :: pub (super) impl JournalCommit < 'a > :: fn begin (fs : & 'a Ext4FileSystem) -> Result < Self , FileSystemError >
+system/ext4/src/ext4/journal/commit_owner.rs :: pub (super) impl JournalCommit < 'a > :: fn commit (mut self) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal/commit_owner.rs :: pub (super) struct JournalCommit < 'a >
+system/ext4/src/ext4/journal/inode_mutation.rs :: pub (in crate :: ext4) struct InodeMutation < 'mutation , 'inode >
+system/ext4/src/ext4/journal/inode_mutation.rs :: pub (super) impl InodeMutation < 'mutation , 'inode > :: const fn new (inode : & 'inode Ext4Inode , disk : Ext4InodeDisk) -> Self
+system/ext4/src/ext4/journal/staged_blocks.rs :: enum BlockKind :: Data
+system/ext4/src/ext4/journal/staged_blocks.rs :: enum BlockKind :: Metadata
+system/ext4/src/ext4/journal/staged_blocks.rs :: pub (in crate :: ext4) enum BlockKind
+system/ext4/src/ext4/journal/staged_blocks.rs :: pub (in crate :: ext4) struct StagedBlocks
+system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn all (& self) -> impl Iterator < Item = (& u64 , & Vec < u8 >) >
+system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn combined_metadata_count (& self , overlay : & Self) -> usize
+system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn data (& self) -> impl Iterator < Item = (& u64 , & Vec < u8 >) >
+system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn data_count (& self) -> usize
+system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn get (& self , block : u64) -> Option < & Vec < u8 > >
+system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn is_empty (& self) -> bool
+system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn merge (& mut self , mut overlay : Self)
+system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn metadata_count (& self) -> usize
+system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn metadata_from (& self , start : u64) -> impl Iterator < Item = (& u64 , & Vec < u8 >) >
+system/ext4/src/ext4/journal/staged_blocks.rs :: pub (super) impl StagedBlocks :: fn stage (& mut self , block : u64 , bytes : & [u8] , kind : BlockKind , capacity : usize ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/journal_layout.rs :: pub (super) impl JournalLayout :: fn new (journal_blocks : usize , block_size : usize) -> Option < Self >
+system/ext4/src/ext4/journal_layout.rs :: pub (super) impl JournalLayout :: fn tags_per_descriptor (self) -> usize
+system/ext4/src/ext4/journal_layout.rs :: pub (super) impl JournalLayout :: fn write_capacity (self) -> usize
+system/ext4/src/ext4/journal_layout.rs :: pub (super) struct JournalLayout
+system/ext4/src/ext4/layout.rs :: pub (super) const INODE_BLOCK_BYTES : usize = mem :: size_of :: < [u32 ; 15] > ()
+system/ext4/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn block_bytes (& self) -> [u8 ; INODE_BLOCK_BYTES]
+system/ext4/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn copy_inline_symlink (& self , target : & mut [u8]) -> bool
+system/ext4/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn file_acl (& self) -> u64
+system/ext4/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn sectors (& self) -> u64
+system/ext4/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn set_block_bytes (& mut self , bytes : & [u8 ; INODE_BLOCK_BYTES])
+system/ext4/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn set_file_acl (& mut self , block : u64)
+system/ext4/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn set_inline_symlink (& mut self , target : & [u8]) -> bool
+system/ext4/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn set_sectors (& mut self , sectors : u64)
+system/ext4/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn set_size (& mut self , size : u64)
+system/ext4/src/ext4/layout.rs :: pub (super) impl Ext4InodeDisk :: fn size (& self) -> u64
+system/ext4/src/ext4/link_count.rs :: enum LinkCountError :: Corrupt
+system/ext4/src/ext4/link_count.rs :: enum LinkCountError :: TooMany
+system/ext4/src/ext4/link_count.rs :: enum ParentLinkPlan :: CrossParent { old_parent : u16 , new_parent : u16 }
+system/ext4/src/ext4/link_count.rs :: enum ParentLinkPlan :: SameParent { parent : u16 }
+system/ext4/src/ext4/link_count.rs :: pub (super) const EXT4_LINK_MAX : u16 = 65_000
+system/ext4/src/ext4/link_count.rs :: pub (super) enum LinkCountError
+system/ext4/src/ext4/link_count.rs :: pub (super) enum ParentLinkPlan
+system/ext4/src/ext4/link_count.rs :: pub (super) fn decrement_directory (count : u16) -> Result < u16 , LinkCountError >
+system/ext4/src/ext4/link_count.rs :: pub (super) fn decrement_file (count : u16) -> Result < u16 , LinkCountError >
+system/ext4/src/ext4/link_count.rs :: pub (super) fn increment_directory (count : u16) -> Result < u16 , LinkCountError >
+system/ext4/src/ext4/link_count.rs :: pub (super) fn increment_file (count : u16) -> Result < u16 , LinkCountError >
+system/ext4/src/ext4/link_count.rs :: pub (super) fn plan_rename_parent_links (old_parent : u16 , new_parent : u16 , crosses_parent : bool , replaces_directory : bool ,) -> Result < Option < ParentLinkPlan > , LinkCountError >
+system/ext4/src/ext4/metadata.rs :: pub (super) impl Ext4Inode :: fn update_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
+system/ext4/src/ext4/metadata.rs :: pub (super) impl Ext4Inode :: fn update_times (& self , atime : Option < u64 > , mtime : Option < u64 > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn atime (& self) -> Timestamp
+system/ext4/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn birth_time (& self) -> Option < Timestamp >
+system/ext4/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn ctime (& self) -> Timestamp
+system/ext4/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn gid (& self) -> u32
+system/ext4/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn mtime (& self) -> Timestamp
+system/ext4/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn set_atime (& mut self , time : Timestamp)
+system/ext4/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn set_crtime (& mut self , time : Timestamp)
+system/ext4/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn set_ctime (& mut self , time : Timestamp)
+system/ext4/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn set_gid (& mut self , gid : u32)
+system/ext4/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn set_mtime (& mut self , time : Timestamp)
+system/ext4/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn set_uid (& mut self , uid : u32)
+system/ext4/src/ext4/metadata.rs :: pub (super) impl Ext4InodeDisk :: fn uid (& self) -> u32
+system/ext4/src/ext4/metadata_cache.rs :: pub (super) impl MetadataBlockCache :: const fn generation (& self) -> u64
+system/ext4/src/ext4/metadata_cache.rs :: pub (super) impl MetadataBlockCache :: const fn new () -> Self
+system/ext4/src/ext4/metadata_cache.rs :: pub (super) impl MetadataBlockCache :: fn clear (& mut self)
+system/ext4/src/ext4/metadata_cache.rs :: pub (super) impl MetadataBlockCache :: fn get (& mut self , block : u64) -> Option < Arc < Vec < u8 > > >
+system/ext4/src/ext4/metadata_cache.rs :: pub (super) impl MetadataBlockCache :: fn insert_if_unchanged (& mut self , generation : u64 , block : u64 , bytes : Arc < Vec < u8 > >)
+system/ext4/src/ext4/metadata_cache.rs :: pub (super) impl MetadataBlockCache :: fn invalidate (& mut self , block : u64)
+system/ext4/src/ext4/metadata_cache.rs :: pub (super) impl MetadataBlockCache :: fn update_if_present (& mut self , block : u64 , bytes : & [u8])
+system/ext4/src/ext4/metadata_cache.rs :: pub (super) struct MetadataBlockCache
+system/ext4/src/ext4/metadata_csum.rs :: pub (super) fn directory_block_checksum (inode_seed : u32 , block : & [u8] , tail_offset : usize) -> u32
+system/ext4/src/ext4/metadata_csum.rs :: pub (super) fn dx_checksum (inode_seed : u32 , block : & [u8] , used_bytes : usize , reserved : u32) -> u32
+system/ext4/src/ext4/metadata_csum.rs :: pub (super) fn extent_block_checksum (inode_seed : u32 , block : & [u8] , tail_offset : usize) -> u32
+system/ext4/src/ext4/metadata_csum.rs :: pub (super) fn orphan_block_checksum (orphan_seed : u32 , physical : u64 , entries : & [u8]) -> u32
+system/ext4/src/ext4/metadata_csum.rs :: pub (super) fn xattr_block_checksum (filesystem_seed : u32 , block_number : u64 , block : & [u8]) -> u32
+system/ext4/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn block_bitmap_checksum (& self , bitmap : & [u8]) -> u32
+system/ext4/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn group_desc_checksum (& self , group : usize , descriptor : & Ext4GroupDesc) -> u16
+system/ext4/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn inode_bitmap_checksum (& self , bitmap : & [u8]) -> u32
+system/ext4/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn inode_checksum_seed (& self , inode_num : u32 , generation : u32) -> u32
+system/ext4/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn inode_checksum_valid (& self , inode_num : u32 , inode : & Ext4InodeDisk) -> bool
+system/ext4/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn seal_group_desc (& self , group : usize , descriptor : & mut Ext4GroupDesc)
+system/ext4/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn seal_inode (& self , inode_num : u32 , inode : & mut Ext4InodeDisk)
+system/ext4/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn seal_superblock (superblock : & mut Ext4SuperBlock)
+system/ext4/src/ext4/metadata_csum.rs :: pub (super) impl Ext4FileSystem :: fn superblock_checksum (superblock : & Ext4SuperBlock) -> u32
+system/ext4/src/ext4/mount.rs :: pub (crate) impl Ext4FileSystem :: fn new (device : Arc < dyn BlockDevice > , read_only : bool ,) -> Result < Arc < Self > , FileSystemError >
+system/ext4/src/ext4/mount.rs :: pub (super) impl Ext4FileSystem :: fn make_writable (& self) -> Result < () , FileSystemError >
+system/ext4/src/ext4/mount.rs :: pub (super) impl Ext4FileSystem :: fn validate_superblock (sb : & Ext4SuperBlock) -> Result < () , FileSystemError >
+system/ext4/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn defer_reclaim_locked (& self , mutation : & mut MutationGuard < '_ > , inode : & Arc < Ext4Inode > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn load_orphan_file (& self) -> Result < OrphanFile , FileSystemError >
+system/ext4/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn reclaim_pending_orphan (& self) -> Result < () , FileSystemError >
+system/ext4/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn recover_orphans (& self) -> Result < () , FileSystemError >
+system/ext4/src/ext4/orphan.rs :: pub (super) impl Ext4FileSystem :: fn remove_orphan_locked (& self , target : u32) -> Result < () , FileSystemError >
+system/ext4/src/ext4/orphan.rs :: pub (super) impl OrphanFile :: const fn unavailable () -> Self
+system/ext4/src/ext4/orphan.rs :: pub (super) struct OrphanFile
+system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn allocate_range (& self , offset : u64 , length : u64 , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn ensure_block_mapped (& self , mutation : & mut MutationGuard < '_ > , file_block : u32 ,) -> Result < u64 , FileSystemError >
+system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn remove_write_privileges_locked (& self , mutation : & mut MutationGuard < '_ > , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write_at_locked (& self , mutation : & mut MutationGuard < '_ > , offset : usize , buf : & [u8] ,) -> Result < usize , FileSystemError >
+system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write_batch (& self , policy : Option < crate :: vfs :: WritePolicy > , batch : & mut dyn FnMut (& mut dyn StorageWriter) -> Result < () , FileSystemError > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/storage_mutation.rs :: pub (super) impl Ext4Inode :: fn write_bytes (& self , offset : u64 , buf : & [u8] , policy : Option < crate :: vfs :: WritePolicy > ,) -> Result < usize , FileSystemError >
+system/ext4/src/ext4/xattr.rs :: pub (super) impl Ext4FileSystem :: fn release_xattrs (& self , inode_num : u32 , disk : & mut Ext4InodeDisk ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/xattr.rs :: pub (super) impl Ext4Inode :: fn change_attribute (& self , change : crate :: vfs :: XattrChange < '_ > ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/xattr.rs :: pub (super) impl Ext4Inode :: fn kill_capability (& self , disk : & mut Ext4InodeDisk ,) -> Result < bool , FileSystemError >
+system/ext4/src/ext4/xattr.rs :: pub (super) impl Ext4Inode :: fn list_attributes (& self , trusted : bool) -> Result < Vec < u8 > , FileSystemError >
+system/ext4/src/ext4/xattr.rs :: pub (super) impl Ext4Inode :: fn read_attribute (& self , name : & [u8]) -> Result < Vec < u8 > , FileSystemError >
+system/ext4/src/ext4/xattr.rs :: pub (super) impl Ext4Inode :: fn xattr_write_allowed (disk : & Ext4InodeDisk) -> Result < () , FileSystemError >
+system/ext4/src/ext4/xattr_inode.rs :: pub (super) const EA_INODE_FLAG : u32 = 0x0020_0000
+system/ext4/src/ext4/xattr_inode.rs :: pub (super) fn value_entry_hash (name : & [u8] , value_hash : u32) -> u32
+system/ext4/src/ext4/xattr_inode.rs :: pub (super) impl Ext4FileSystem :: fn change_xattr_value_references (& self , parent : u32 , inode : u32 , delta : i64 ,) -> Result < () , FileSystemError >
+system/ext4/src/ext4/xattr_inode.rs :: pub (super) impl Ext4FileSystem :: fn create_xattr_value (& self , parent : u32 , parent_disk : & Ext4InodeDisk , value : & [u8] ,) -> Result < u32 , FileSystemError >
+system/ext4/src/ext4/xattr_inode.rs :: pub (super) impl Ext4FileSystem :: fn has_xattr_inodes (& self) -> bool
+system/ext4/src/ext4/xattr_inode.rs :: pub (super) impl Ext4FileSystem :: fn read_xattr_value (& self , parent : u32 , inode : u32 , size : usize , entry_hash : u32 , name : & [u8] ,) -> Result < Vec < u8 > , FileSystemError >
+system/ext4/src/fuse_server.rs :: pub (crate) fn serve_control (control : Channel) -> i64
+system/ext4/src/main.rs :: pub (crate) use native_runtime :: { debug , error , info , warn }
+system/ext4/src/time.rs :: pub (crate) fn get_realtime_ns () -> u64
+system/ext4/src/time.rs :: pub (crate) fn get_time_ns () -> u64
+system/ext4/src/vfs.rs :: enum DirectoryVisit :: Continue
+system/ext4/src/vfs.rs :: enum DirectoryVisit :: Stop
+system/ext4/src/vfs.rs :: enum FileSystemError :: AlreadyExists
+system/ext4/src/vfs.rs :: enum FileSystemError :: CrossDevice
+system/ext4/src/vfs.rs :: enum FileSystemError :: DirectoryNotEmpty
+system/ext4/src/vfs.rs :: enum FileSystemError :: InvalidFileSystem
+system/ext4/src/vfs.rs :: enum FileSystemError :: InvalidOperation
+system/ext4/src/vfs.rs :: enum FileSystemError :: InvalidPath
+system/ext4/src/vfs.rs :: enum FileSystemError :: IoError
+system/ext4/src/vfs.rs :: enum FileSystemError :: IsDirectory
+system/ext4/src/vfs.rs :: enum FileSystemError :: NameTooLong
+system/ext4/src/vfs.rs :: enum FileSystemError :: NoSpace
+system/ext4/src/vfs.rs :: enum FileSystemError :: NotDirectory
+system/ext4/src/vfs.rs :: enum FileSystemError :: NotFound
+system/ext4/src/vfs.rs :: enum FileSystemError :: NotSupported
+system/ext4/src/vfs.rs :: enum FileSystemError :: OutOfMemory
+system/ext4/src/vfs.rs :: enum FileSystemError :: PermissionDenied
+system/ext4/src/vfs.rs :: enum FileSystemError :: TooManyLinks
+system/ext4/src/vfs.rs :: enum InodeType :: BlockDevice
+system/ext4/src/vfs.rs :: enum InodeType :: CharacterDevice
+system/ext4/src/vfs.rs :: enum InodeType :: Directory
+system/ext4/src/vfs.rs :: enum InodeType :: Fifo
+system/ext4/src/vfs.rs :: enum InodeType :: File
+system/ext4/src/vfs.rs :: enum InodeType :: Socket
+system/ext4/src/vfs.rs :: enum InodeType :: SymLink
+system/ext4/src/vfs.rs :: pub (crate) CreateMetadata :: gid : u32
+system/ext4/src/vfs.rs :: pub (crate) CreateMetadata :: mode : u32
+system/ext4/src/vfs.rs :: pub (crate) CreateMetadata :: uid : u32
+system/ext4/src/vfs.rs :: pub (crate) DeviceNumber :: major : u32
+system/ext4/src/vfs.rs :: pub (crate) DeviceNumber :: minor : u32
+system/ext4/src/vfs.rs :: pub (crate) DirectoryEntry :: inode : u64
+system/ext4/src/vfs.rs :: pub (crate) DirectoryEntry :: kind : InodeType
+system/ext4/src/vfs.rs :: pub (crate) DirectoryEntry :: name : & 'a [u8]
+system/ext4/src/vfs.rs :: pub (crate) DirectoryRead :: cursor : u64
+system/ext4/src/vfs.rs :: pub (crate) DirectoryRead :: eof : bool
+system/ext4/src/vfs.rs :: pub (crate) FileSystemStatistics :: block_size : u64
+system/ext4/src/vfs.rs :: pub (crate) FileSystemStatistics :: blocks : u64
+system/ext4/src/vfs.rs :: pub (crate) FileSystemStatistics :: blocks_available : u64
+system/ext4/src/vfs.rs :: pub (crate) FileSystemStatistics :: blocks_free : u64
+system/ext4/src/vfs.rs :: pub (crate) FileSystemStatistics :: files : u64
+system/ext4/src/vfs.rs :: pub (crate) FileSystemStatistics :: files_free : u64
+system/ext4/src/vfs.rs :: pub (crate) FileSystemStatistics :: fragment_size : u64
+system/ext4/src/vfs.rs :: pub (crate) FileSystemStatistics :: name_length : u64
+system/ext4/src/vfs.rs :: pub (crate) FineTimes :: atime_nsec : u32
+system/ext4/src/vfs.rs :: pub (crate) FineTimes :: birth : Option < (u64 , u32) >
+system/ext4/src/vfs.rs :: pub (crate) FineTimes :: ctime_nsec : u32
+system/ext4/src/vfs.rs :: pub (crate) FineTimes :: mtime_nsec : u32
+system/ext4/src/vfs.rs :: pub (crate) InodeMetadata :: atime : u64
+system/ext4/src/vfs.rs :: pub (crate) InodeMetadata :: block_size : u32
+system/ext4/src/vfs.rs :: pub (crate) InodeMetadata :: blocks : u64
+system/ext4/src/vfs.rs :: pub (crate) InodeMetadata :: ctime : u64
+system/ext4/src/vfs.rs :: pub (crate) InodeMetadata :: device : Option < DeviceNumber >
+system/ext4/src/vfs.rs :: pub (crate) InodeMetadata :: fine_times : FineTimes
+system/ext4/src/vfs.rs :: pub (crate) InodeMetadata :: gid : u32
+system/ext4/src/vfs.rs :: pub (crate) InodeMetadata :: inode : u64
+system/ext4/src/vfs.rs :: pub (crate) InodeMetadata :: kind : InodeType
+system/ext4/src/vfs.rs :: pub (crate) InodeMetadata :: links : u32
+system/ext4/src/vfs.rs :: pub (crate) InodeMetadata :: mode : u32
+system/ext4/src/vfs.rs :: pub (crate) InodeMetadata :: mtime : u64
+system/ext4/src/vfs.rs :: pub (crate) InodeMetadata :: size : u64
+system/ext4/src/vfs.rs :: pub (crate) InodeMetadata :: uid : u32
+system/ext4/src/vfs.rs :: pub (crate) OwnerModeChange :: gid : Option < u32 >
+system/ext4/src/vfs.rs :: pub (crate) OwnerModeChange :: kill_suidgid : bool
+system/ext4/src/vfs.rs :: pub (crate) OwnerModeChange :: mode : Option < u32 >
+system/ext4/src/vfs.rs :: pub (crate) OwnerModeChange :: uid : Option < u32 >
+system/ext4/src/vfs.rs :: pub (crate) WritePolicy :: kill_suidgid : bool
+system/ext4/src/vfs.rs :: pub (crate) XattrChange :: flags : u32
+system/ext4/src/vfs.rs :: pub (crate) XattrChange :: name : & 'a [u8]
+system/ext4/src/vfs.rs :: pub (crate) XattrChange :: value : Option < Vec < u8 > >
+system/ext4/src/vfs.rs :: pub (crate) const fn kill_mask (mode : u16) -> u16
+system/ext4/src/vfs.rs :: pub (crate) enum DirectoryVisit
+system/ext4/src/vfs.rs :: pub (crate) enum FileSystemError
+system/ext4/src/vfs.rs :: pub (crate) enum InodeType
+system/ext4/src/vfs.rs :: pub (crate) fn needs_access_update (atime : u64 , mtime : u64 , ctime : u64 , now : u64) -> bool
+system/ext4/src/vfs.rs :: pub (crate) impl DeviceNumber :: const fn decode (value : u32) -> Self
+system/ext4/src/vfs.rs :: pub (crate) impl DeviceNumber :: const fn encode (self) -> u32
+system/ext4/src/vfs.rs :: pub (crate) impl DeviceNumber :: const fn new (major : u32 , minor : u32) -> Self
+system/ext4/src/vfs.rs :: pub (crate) impl FileSystemError :: fn errno (self) -> i32
+system/ext4/src/vfs.rs :: pub (crate) impl InodeType :: const fn directory_type (self) -> u32
+system/ext4/src/vfs.rs :: pub (crate) impl InodeType :: const fn mode_bits (self) -> u32
+system/ext4/src/vfs.rs :: pub (crate) impl OwnerModeChange :: fn authorize (& self , mut current : OwnerModeState ,) -> Result < OwnerModeState , FileSystemError >
+system/ext4/src/vfs.rs :: pub (crate) impl OwnerModeChange :: fn kills_privileges (& self , kind : InodeType) -> bool
+system/ext4/src/vfs.rs :: pub (crate) impl OwnerModeState :: const fn gid (& self) -> u32
+system/ext4/src/vfs.rs :: pub (crate) impl OwnerModeState :: const fn mode (& self) -> u16
+system/ext4/src/vfs.rs :: pub (crate) impl OwnerModeState :: const fn new (kind : InodeType , mode : u16 , uid : u32 , gid : u32) -> Self
+system/ext4/src/vfs.rs :: pub (crate) impl OwnerModeState :: const fn uid (& self) -> u32
+system/ext4/src/vfs.rs :: pub (crate) impl WritePolicy :: fn write_kill_mask (& self , kind : InodeType , mode : u16) -> u16
+system/ext4/src/vfs.rs :: pub (crate) struct CreateMetadata
+system/ext4/src/vfs.rs :: pub (crate) struct DeviceNumber
+system/ext4/src/vfs.rs :: pub (crate) struct DirectoryEntry < 'a >
+system/ext4/src/vfs.rs :: pub (crate) struct DirectoryRead
+system/ext4/src/vfs.rs :: pub (crate) struct FileSystemStatistics
+system/ext4/src/vfs.rs :: pub (crate) struct FineTimes
+system/ext4/src/vfs.rs :: pub (crate) struct InodeMetadata
+system/ext4/src/vfs.rs :: pub (crate) struct OwnerModeChange
+system/ext4/src/vfs.rs :: pub (crate) struct OwnerModeState
+system/ext4/src/vfs.rs :: pub (crate) struct WritePolicy
+system/ext4/src/vfs.rs :: pub (crate) struct XattrChange < 'a >
+system/ext4/src/vfs.rs :: pub (crate) trait DirectoryVisitor
+system/ext4/src/vfs.rs :: pub (crate) trait StorageWriter
+system/ext4/src/vfs.rs :: trait DirectoryVisitor :: fn visit (& mut self , next_cursor : u64 , entry : DirectoryEntry < '_ > ,) -> Result < DirectoryVisit , FileSystemError >
+system/ext4/src/vfs.rs :: trait StorageWriter :: fn write (& mut self , offset : u64 , bytes : & [u8]) -> Result < usize , FileSystemError >
 system/linuxd/src/arch/aarch64/fp.rs :: pub (crate) FpState :: fpcr : u32
 system/linuxd/src/arch/aarch64/fp.rs :: pub (crate) FpState :: fpsr : u32
 system/linuxd/src/arch/aarch64/fp.rs :: pub (crate) FpState :: vregs : [u128 ; 32]

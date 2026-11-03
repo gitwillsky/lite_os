@@ -86,7 +86,7 @@ impl VirtIODevice {
             transport: Transport::Mmio(bus),
             device_id,
             // DTB 不为 virtio-mmio 声明 IOMMU 路由：设备直接访问物理地址。
-            bti: crate::platform::bti(None),
+            bti: crate::platform::bti(),
         })
     }
 

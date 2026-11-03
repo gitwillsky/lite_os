@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """把系统服务打包为 bootfs（cpio ``newc``），由 QEMU ``-initrd`` 交给内核。
 
-1. 内核从 initrd 取出 ``bin/root-server`` 并启动它；
-2. 根服务再从同一 bootfs 启动 ``bin/driver-host``、``bin/ext4d``、``bin/fshost``、``bin/netstack``、
+1. 内核从 initrd 取出 ``bin/component-manager`` 并启动它；
+2. 根服务再从同一 bootfs 启动 ``bin/driver-manager``（它再按节点启动 ``bin/driver-host``）、``bin/ext4``、``bin/fshost``、``bin/netstack``、
    ``bin/dhcp-client``、``bin/netcfg`` 与 ``bin/linuxd``，并把 ``data/`` 下的只读配置交给对应服务
    （Fuchsia 的 ``/config/data``）；
 3. 成员按路径排序、时间戳与 inode 固定，同样的输入总是得到同样的字节。
@@ -19,14 +19,15 @@ ROOT = Path(__file__).resolve().parent.parent
 
 # bootfs 路径 → 构建产物名（cargo bin 名）；内核与根服务按这些路径查找。
 SERVICES: tuple[tuple[str, str], ...] = (
+    ("bin/driver-manager", "driver-manager"),
     ("bin/driver-host", "driver-host"),
     ("bin/dhcp-client", "dhcp-client"),
-    ("bin/ext4d", "ext4d"),
+    ("bin/ext4", "ext4"),
     ("bin/fshost", "fshost"),
     ("bin/netcfg", "netcfg"),
     ("bin/linuxd", "linuxd"),
     ("bin/netstack", "netstack"),
-    ("bin/root-server", "root-server"),
+    ("bin/component-manager", "component-manager"),
 )
 
 # bootfs 路径 → 受 Git 管理的只读配置；路径与 `launch_protocol` 中的常量一致。

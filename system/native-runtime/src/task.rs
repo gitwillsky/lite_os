@@ -423,3 +423,44 @@ impl Exception {
         })
     }
 }
+
+/// 崩溃循环判定：[`CRASH_WINDOW`] 纳秒内终止达到 [`CRASH_LIMIT`] 次即不再重启（对应 systemd
+/// `StartLimitBurst`/`StartLimitIntervalSec`）。缺失时持续崩溃的服务会让监督者无限重启它。
+pub const CRASH_LIMIT: usize = 5;
+/// 崩溃循环判定窗口（纳秒）。
+pub const CRASH_WINDOW: i64 = 10_000_000_000;
+
+/// 受监督进程的终止计数：[`CRASH_WINDOW`] 内达到 [`CRASH_LIMIT`] 次即判定为崩溃循环。
+pub struct CrashLoop {
+    // 环形记录最近 CRASH_LIMIT 次终止时刻；最旧一次仍在窗口内即为崩溃循环。
+    terminations: [i64; CRASH_LIMIT],
+    next: usize,
+}
+
+impl CrashLoop {
+    /// 尚无终止记录。
+    pub fn new() -> Self {
+        Self {
+            terminations: [i64::MIN; CRASH_LIMIT],
+            next: 0,
+        }
+    }
+
+    /// 记录一次终止。
+    ///
+    /// # Returns
+    ///
+    /// 已构成崩溃循环时为 `true`，监督者应停止重启。
+    pub fn record(&mut self) -> bool {
+        let now = crate::system::monotonic();
+        self.terminations[self.next] = now;
+        self.next = (self.next + 1) % CRASH_LIMIT;
+        now.saturating_sub(self.terminations[self.next]) < CRASH_WINDOW
+    }
+}
+
+impl Default for CrashLoop {
+    fn default() -> Self {
+        Self::new()
+    }
+}

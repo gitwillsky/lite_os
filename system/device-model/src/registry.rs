@@ -36,7 +36,8 @@ pub fn usb_device(index: usize) -> Option<Arc<dyn UsbDevice>> {
 pub fn usb_device_count() -> usize {
     USB_DEVICES.count()
 }
-// OWNER: entropy source 的唯一发布点；`getrandom` 与 `/dev/random` 共用首个 source。
+// OWNER: entropy source 的唯一发布点；`getrandom` 与 `/dev/random` 共用最新的可用 source
+// （驱动宿主重启后旧 source 的会话已关闭，新 source 以新 index 登记）。
 static ENTROPY_SOURCES: AppendOnlyRegistry<dyn EntropySource> = AppendOnlyRegistry::new();
 // OWNER: named byte-stream port 的唯一发布点；缺失时两个 byte-stream owner 可能竞争同一 SPICE
 // channel。
@@ -102,13 +103,17 @@ pub fn register_entropy_source(
     ENTROPY_SOURCES.register(device)
 }
 
-/// 用首个 entropy source 完整初始化 caller-owned output。
+/// 用最新登记且可用的 entropy source 完整初始化 caller-owned output。
 ///
 /// # Errors
 ///
-/// 没有 entropy source 或设备失败返回 [`EntropyError`]。
+/// 没有 entropy source 或全部设备失败返回 [`EntropyError`]。
 pub fn fill_entropy(bytes: &mut [MaybeUninit<u8>]) -> Result<(), EntropyError> {
-    ENTROPY_SOURCES.get(0).ok_or(EntropyError)?.fill(bytes)
+    (0..ENTROPY_SOURCES.count())
+        .rev()
+        .filter_map(|index| ENTROPY_SOURCES.get(index))
+        .find_map(|source| source.fill(bytes).ok())
+        .ok_or(EntropyError)
 }
 
 /// 发布一个 named byte-stream port。

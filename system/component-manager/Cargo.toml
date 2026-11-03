@@ -1,0 +1,22 @@
+[package]
+name = "component-manager"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "component-manager"
+test = false
+bench = false
+
+[dependencies]
+native-runtime = { path = "../native-runtime" }
+launch-protocol = { path = "../launch-protocol" }
+device-protocol = { path = "../device-protocol" }
+service-directory = { path = "../service-directory" }
+filesystem-protocol = { path = "../filesystem-protocol" }
+
+[lints]
+workspace = true
+
+[build-dependencies]
+launch-protocol = { path = "../launch-protocol" }

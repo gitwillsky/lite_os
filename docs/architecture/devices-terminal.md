@@ -6,7 +6,7 @@
    不装配设备驱动。`driver-host::platform` 解码 DTB，`driver-host::drivers` 装配 VirtIO、PCI 与 xHCI。
 2. driver-host 拥有全部硬件 adapter、queue、DMA、descriptor、completion 与 reset state。
    `device-model` 定义设备类接口；`device-protocol` 通过目录、channel 与 VMO 发布设备，
-   linuxd 的 `devices::directory` 接入这些设备并建立 Linux 设备语义。netstack 消费网络设备，ext4d 消费块设备。
+   linuxd 的 `devices::directory` 接入这些设备并建立 Linux 设备语义。netstack 消费网络设备，ext4 消费块设备。
 3. 内核只把中断交给 Interrupt 对象。driver-host 的中断服务线程等待、确认设备再 ack；
    独立完成线程消费合并通知并分派 completion。请求线程睡在同一完成 owner 上，
    启动期也使用服务线程，不保留内核 bootstrap WFI 或 user-return deferred 驱动路径。

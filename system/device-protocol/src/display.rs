@@ -164,44 +164,46 @@ pub fn publish(directory: &Directory, device: Arc<dyn GraphicsDevice>) -> Result
         entries: Mutex::new(BTreeMap::new()),
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-    directory.add(
-        Class::Display,
-        &description,
-        true,
-        Box::new(move |end| {
-            let session = SessionState::new(
-                DisplaySession {
-                    device: device.clone(),
-                    cache: cache.clone(),
-                    footprint: Mutex::new(Footprint::default()),
-                },
-                end,
-            );
-            let (client, server) = Channel::create()?;
-            let server = directory::serve_session(
-                server,
-                2,
-                b"display-server",
-                Arc::try_new(
-                    move |ordinal: u32,
-                          request: &mut Reader<'_>,
-                          mut handles: Vec<Handle>,
-                          reply: &mut Writer| {
-                        handle(session.get(), ordinal, request, &mut handles, reply)?;
-                        Ok(Vec::new())
+    directory
+        .add(
+            Class::Display,
+            &description,
+            true,
+            Box::new(move |end| {
+                let session = SessionState::new(
+                    DisplaySession {
+                        device: device.clone(),
+                        cache: cache.clone(),
+                        footprint: Mutex::new(Footprint::default()),
                     },
-                )
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-            )?;
-            Ok(Session {
-                handles: alloc::vec![
-                    client.into_handle(),
-                    event.duplicate(rights::SAME)?.into_handle()
-                ],
-                server,
-            })
-        }),
-    )
+                    end,
+                );
+                let (client, server) = Channel::create()?;
+                let server = directory::serve_session(
+                    server,
+                    2,
+                    b"display-server",
+                    Arc::try_new(
+                        move |ordinal: u32,
+                              request: &mut Reader<'_>,
+                              mut handles: Vec<Handle>,
+                              reply: &mut Writer| {
+                            handle(session.get(), ordinal, request, &mut handles, reply)?;
+                            Ok(Vec::new())
+                        },
+                    )
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                )?;
+                Ok(Session {
+                    handles: alloc::vec![
+                        client.into_handle(),
+                        event.duplicate(rights::SAME)?.into_handle()
+                    ],
+                    server,
+                })
+            }),
+        )
+        .map(drop)
 }
 
 /// 会话在设备上留下的对象；会话结束时逐一回收，下一个使用者看到没有遗留 scanout、缓冲或 GPU 对象的设备。

@@ -154,42 +154,44 @@ pub fn publish(directory: &Directory, device: Arc<dyn NetworkDevice>) -> Result<
         .bytes(&device.mac_address())
         .bytes(device.driver().as_bytes());
     device.bind_activity(activity_signal(event.clone())?);
-    directory.add(
-        Class::Network,
-        &description,
-        true,
-        Box::new(move |end| {
-            let session = SessionState::new(
-                NetworkSession {
-                    device: device.clone(),
-                    reservations: Mutex::new(Vec::new()),
-                },
-                end,
-            );
-            let (client, server) = Channel::create()?;
-            let server = directory::serve_session(
-                server,
-                2,
-                b"net-server",
-                Arc::try_new(
-                    move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
-                        session
-                            .get()
-                            .handle(ordinal, request, reply)
-                            .map(|()| Vec::new())
+    directory
+        .add(
+            Class::Network,
+            &description,
+            true,
+            Box::new(move |end| {
+                let session = SessionState::new(
+                    NetworkSession {
+                        device: device.clone(),
+                        reservations: Mutex::new(Vec::new()),
                     },
-                )
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-            )?;
-            Ok(Session {
-                handles: alloc::vec![
-                    client.into_handle(),
-                    event.duplicate(rights::SAME)?.into_handle()
-                ],
-                server,
-            })
-        }),
-    )
+                    end,
+                );
+                let (client, server) = Channel::create()?;
+                let server = directory::serve_session(
+                    server,
+                    2,
+                    b"net-server",
+                    Arc::try_new(
+                        move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
+                            session
+                                .get()
+                                .handle(ordinal, request, reply)
+                                .map(|()| Vec::new())
+                        },
+                    )
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                )?;
+                Ok(Session {
+                    handles: alloc::vec![
+                        client.into_handle(),
+                        event.duplicate(rights::SAME)?.into_handle()
+                    ],
+                    server,
+                })
+            }),
+        )
+        .map(drop)
 }
 
 /// 使用者端的远端网卡。

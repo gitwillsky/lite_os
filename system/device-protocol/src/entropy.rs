@@ -22,45 +22,47 @@ const CHUNK: usize = 4096;
 ///
 /// 分配失败。
 pub fn publish(directory: &Directory, device: Arc<dyn EntropySource>) -> Result<(), Status> {
-    directory.add(
-        Class::Entropy,
-        &directory::description(),
-        false,
-        Box::new(move |end| {
-            let session = SessionState::new(device.clone(), end);
-            let (client, server) = Channel::create()?;
-            let server = directory::serve_session(
-                server,
-                1,
-                b"entropy-server",
-                Arc::try_new(
-                    move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
-                        if ordinal != FILL {
-                            return Err(native_abi::ERR_NOT_SUPPORTED);
-                        }
-                        let length = request.usize()?.min(CHUNK);
-                        let mut bytes = alloc::vec![MaybeUninit::<u8>::uninit(); length];
-                        session
-                            .get()
-                            .fill(&mut bytes)
-                            .map_err(|EntropyError| native_abi::ERR_IO)?;
-                        // SAFETY: `fill` 成功即完整初始化了全部字节。
-                        let bytes = unsafe {
-                            &*(core::ptr::from_ref::<[MaybeUninit<u8>]>(bytes.as_slice())
-                                as *const [u8])
-                        };
-                        reply.bytes(bytes);
-                        Ok(Vec::new())
-                    },
-                )
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-            )?;
-            Ok(Session {
-                handles: alloc::vec![client.into_handle()],
-                server,
-            })
-        }),
-    )
+    directory
+        .add(
+            Class::Entropy,
+            &directory::description(),
+            false,
+            Box::new(move |end| {
+                let session = SessionState::new(device.clone(), end);
+                let (client, server) = Channel::create()?;
+                let server = directory::serve_session(
+                    server,
+                    1,
+                    b"entropy-server",
+                    Arc::try_new(
+                        move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
+                            if ordinal != FILL {
+                                return Err(native_abi::ERR_NOT_SUPPORTED);
+                            }
+                            let length = request.usize()?.min(CHUNK);
+                            let mut bytes = alloc::vec![MaybeUninit::<u8>::uninit(); length];
+                            session
+                                .get()
+                                .fill(&mut bytes)
+                                .map_err(|EntropyError| native_abi::ERR_IO)?;
+                            // SAFETY: `fill` 成功即完整初始化了全部字节。
+                            let bytes = unsafe {
+                                &*(core::ptr::from_ref::<[MaybeUninit<u8>]>(bytes.as_slice())
+                                    as *const [u8])
+                            };
+                            reply.bytes(bytes);
+                            Ok(Vec::new())
+                        },
+                    )
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                )?;
+                Ok(Session {
+                    handles: alloc::vec![client.into_handle()],
+                    server,
+                })
+            }),
+        )
+        .map(drop)
 }
 
 /// 使用者端的远端 entropy 设备。

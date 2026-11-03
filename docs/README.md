@@ -80,6 +80,10 @@
 - [首期音频硬件只使用 VirtIO Sound](decisions/virtio-sound-backend.md)
 - [术语表](glossary.md)
 
+## 进行中的计划
+
+- [组件划分与命名对齐 Fuchsia](plans/fuchsia-components.md)
+
 完成的计划、阶段快照和已被当前文档吸收的设计草案不保留在工作树中；需要追溯时使用 Git 历史。
 
 ## 领域所有权细节

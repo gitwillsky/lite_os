@@ -1,7 +1,7 @@
 //! 启动根服务：内核唯一直接创建的用户进程。
 //!
 //! 1. 把 initrd（cpio `newc` bootfs）复制进 VMO，随后把 initrd 占用的物理页归还 frame allocator；
-//! 2. 从 bootfs 取出 `bin/root-server`（静态 ELF）装进新进程，映射栈；
+//! 2. 从 bootfs 取出 `bin/component-manager`（静态 ELF）装进新进程，映射栈；
 //! 3. 创建根 Job、根 resource 与 DTB 副本，按启动协议（`native_abi::startup`）经 startup channel
 //!    交给根服务，参数字节为内核启动参数文本；
 //! 4. 以 startup channel 句柄为第一个参数启动首个线程。
@@ -23,7 +23,7 @@ use crate::thread::UserStart;
 use crate::vm::page_table::PagePermissions;
 use crate::vm::{MapOptions, Placement, Vmo, VmoOptions};
 
-const ROOT_SERVER: &[u8] = b"bin/root-server";
+const ROOT_SERVER: &[u8] = b"bin/component-manager";
 const STACK_SIZE: usize = 256 * 1024;
 
 /// 把一段物理内存复制进新 VMO。
@@ -46,7 +46,7 @@ fn entry(object: Object, rights: u32) -> HandleEntry {
 /// # Panics
 ///
 /// 没有 initrd、bootfs 中缺少根服务或装载失败时 fail-stop：没有根服务系统无法继续。
-pub(crate) fn start_root_server(command_line: &[u8]) {
+pub(crate) fn start_component_manager(command_line: &[u8]) {
     let initrd =
         crate::platform::initrd_range().expect("boot requires an initrd carrying the bootfs");
     let bootfs = copy_physical(initrd.clone());
@@ -69,7 +69,7 @@ pub(crate) fn start_root_server(command_line: &[u8]) {
         });
 
     let job = Job::create_root().expect("root job allocation failed");
-    let process = Process::create(&job, b"root-server", ProcessKind::Plain)
+    let process = Process::create(&job, b"component-manager", ProcessKind::Plain)
         .expect("root process allocation failed");
     let vmar = process.root_vmar().clone();
     let entry_point = elf::load(server.data, &vmar).unwrap_or_else(|error| {
@@ -96,7 +96,8 @@ pub(crate) fn start_root_server(command_line: &[u8]) {
         )
         .expect("root stack mapping failed");
 
-    let thread = Thread::create(&process, b"root-server").expect("root thread allocation failed");
+    let thread =
+        Thread::create(&process, b"component-manager").expect("root thread allocation failed");
     let (kernel_end, user_end) =
         Channel::create_pair().expect("bootstrap channel allocation failed");
     let kernel_end = Arc::try_new(kernel_end).expect("bootstrap channel allocation failed");

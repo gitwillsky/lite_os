@@ -1,6 +1,6 @@
 # FUSE 契约
 
-本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/driver-host/src/drivers/`。
+本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4/src/ext4/`，设备 adapter 位于 `system/driver-host/src/drivers/`。
 
 
 本文件是 [文件系统与存储契约](filesystem-storage.md) 的 FUSE 部分。
@@ -51,8 +51,8 @@
 `fs/fuse/service` 为内置 ext4 挂载装配 native channel 传输，复用同一 Connection、请求、回复和页缓存 owner。
 请求/回复线程只转发标准 FUSE 消息；挂载控制由 filesystem-protocol 交付块设备连接和 remount 操作，
 不得在 native 内核重建文件系统状态。端点关闭与卸载中止连接，线程结束后关闭 channel；失败路径沿同一请求退休机制。
-ext4d 的 lookup/attr lease 当前为 60 秒；linuxd 修改后作废 canonical inode 缓存，外部磁盘修改不在 coherence 范围。
-LISTXATTR 名称遵从 FUSE 服务端；ext4d 仅能从请求头按 UID 0 决定 trusted 名称可见性，
+ext4 的 lookup/attr lease 当前为 60 秒；linuxd 修改后作废 canonical inode 缓存，外部磁盘修改不在 coherence 范围。
+LISTXATTR 名称遵从 FUSE 服务端；ext4 仅能从请求头按 UID 0 决定 trusted 名称可见性，
 不能等价于 Linux CAP_SYS_ADMIN 判定，具体应用限制由[文件 ABI](../syscall-support/filesystem-io.md)维护。
 
 ## VFS 接口

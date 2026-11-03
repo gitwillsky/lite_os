@@ -303,6 +303,22 @@ pub(crate) struct Bti {
     koid: u64,
     backend: Arc<dyn IommuBackend>,
     stream: u32,
+    // OWNER: 本 BTI 的隔离区与在用 PMT 计数；计数保证隔离在 PMT 析构时不必分配。
+    // FAILURE: 缺失时未经 unpin 就关闭的 PMT（持有者崩溃）会立即释放页，而设备仍可能向这些页 DMA。
+    quarantine: Mutex<Quarantine>,
+}
+
+/// 未经显式解除固定而关闭的 PMT（Zircon quarantine）。
+struct Quarantine {
+    pinnings: Vec<Pinning>,
+    // 在用 PMT 数；`pinnings` 的容量始终不小于 `pinnings.len() + live`。
+    live: usize,
+}
+
+/// 一段固定页及其设备地址。
+struct Pinning {
+    addresses: Vec<u64>,
+    pinned: PinnedRange,
 }
 
 impl Bti {
@@ -312,13 +328,17 @@ impl Bti {
             koid: next_koid(),
             backend: iommu.backend.clone(),
             stream,
+            quarantine: Mutex::new(Quarantine {
+                pinnings: Vec::new(),
+                live: 0,
+            }),
         }
     }
 
     /// 固定 VMO 区间并建立设备地址。
     ///
     /// # Errors
-    /// 参数非法、越界、pager 失败或设备地址空间耗尽。
+    /// 参数非法、越界、pager 失败、隔离区预留失败或设备地址空间耗尽。
     pub(crate) fn pin(
         self: &Arc<Self>,
         vmo: &Arc<Vmo>,
@@ -330,12 +350,57 @@ impl Bti {
         let mut addresses = Vec::new();
         self.backend
             .map(self.stream, pinned.pages(), writable, &mut addresses)?;
+        let pinning = Pinning { addresses, pinned };
+        {
+            let mut quarantine = self.quarantine.lock();
+            let needed = quarantine.live + 1;
+            if quarantine.pinnings.try_reserve(needed).is_err() {
+                drop(quarantine);
+                self.release(pinning);
+                return Err(native_abi::ERR_NO_MEMORY);
+            }
+            quarantine.live = needed;
+        }
         Ok(Pmt {
             koid: next_koid(),
             bti: self.clone(),
-            addresses,
-            _pinned: pinned,
+            pinning: Some(pinning),
+            unpinned: AtomicBool::new(false),
         })
+    }
+
+    /// 释放全部隔离的固定页；调用者已使设备停止访问它们（通常是复位设备之后）。
+    pub(crate) fn release_quarantine(&self) {
+        let pinnings = core::mem::take(&mut self.quarantine.lock().pinnings);
+        for pinning in pinnings {
+            self.release(pinning);
+        }
+    }
+
+    /// 先撤销设备映射，再解除固定。
+    fn release(&self, pinning: Pinning) {
+        self.backend.unmap(self.stream, &pinning.addresses);
+        drop(pinning.pinned);
+    }
+
+    /// PMT 退出在用状态：显式解除的立即释放，否则移入隔离区（容量已在 pin 时预留）。
+    fn retire(&self, pinning: Pinning, unpinned: bool) {
+        let mut quarantine = self.quarantine.lock();
+        quarantine.live -= 1;
+        if unpinned {
+            drop(quarantine);
+            self.release(pinning);
+        } else {
+            debug_assert!(quarantine.pinnings.len() < quarantine.pinnings.capacity());
+            quarantine.pinnings.push(pinning);
+        }
+    }
+}
+
+impl Drop for Bti {
+    fn drop(&mut self) {
+        // BTI 是 DMA 发起者的最后身份：它消失后没有设备地址再能指向这些页。
+        self.release_quarantine();
     }
 }
 
@@ -351,25 +416,37 @@ impl KernelObject for Bti {
     }
 }
 
-/// 固定内存令牌：析构时先撤销设备映射，再解除固定。
+/// 固定内存令牌：显式解除时撤销设备映射并解除固定；未解除就关闭时页进入所属 BTI 的隔离区。
 pub(crate) struct Pmt {
     koid: u64,
     bti: Arc<Bti>,
-    addresses: Vec<u64>,
-    // OWNER: 字段在 Drop 之后析构：设备映射撤销完成前页保持固定。
-    _pinned: PinnedRange,
+    pinning: Option<Pinning>,
+    // OWNER: 只由唯一句柄的 `PMT_UNPIN` 置位；缺失时持有者崩溃与正常解除无法区分。
+    unpinned: AtomicBool,
 }
 
 impl Pmt {
     /// 逐页设备地址。
     pub(crate) fn addresses(&self) -> &[u64] {
-        &self.addresses
+        &self
+            .pinning
+            .as_ref()
+            .expect("PMT pinning is present until drop")
+            .addresses
+    }
+
+    /// 标记为显式解除；随后关闭句柄即释放而不隔离。
+    pub(crate) fn mark_unpinned(&self) {
+        self.unpinned.store(true, Ordering::Release);
     }
 }
 
 impl Drop for Pmt {
     fn drop(&mut self) {
-        self.bti.backend.unmap(self.bti.stream, &self.addresses);
+        if let Some(pinning) = self.pinning.take() {
+            self.bti
+                .retire(pinning, self.unpinned.load(Ordering::Acquire));
+        }
     }
 }
 

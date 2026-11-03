@@ -4,8 +4,8 @@
 //!
 //! - **VFS 核心**：`vfs/`（路径解析、挂载命名空间、`OpenedFile`）、`inode`/`inode_identity`/`inode_times`、
 //!   `permission`、`xattr`、`mount`/`mount_options`、`directory`、`write_access`、`storage_budget`、`file_information`。
-//! - **磁盘文件系统**：`tmpfs`；ext4 引擎在 ext4d 服务中，`ext4_type`（`mount(2)` 类型，经块设备型 FUSE
-//!   挂载访问 ext4d）与 `ext4_identity`（`root=UUID=/LABEL=` 与 fsid 用的超级块纯函数）是本地的两个接缝。
+//! - **磁盘文件系统**：`tmpfs`；ext4 引擎在 ext4 服务中，`ext4_type`（`mount(2)` 类型，经块设备型 FUSE
+//!   挂载访问 ext4）与 `ext4_identity`（`root=UUID=/LABEL=` 与 fsid 用的超级块纯函数）是本地的两个接缝。
 //! - **伪文件系统**：`procfs`、`sysfs`、`devfs`、`nsfs`、`pidfs`、`anonymous`（匿名 inode）、`memfd`、`fifo`。
 //! - **用户态文件系统**：`fuse`（`/dev/fuse` 设备、系统服务 channel、连接与 inode 翻译）。
 //! - **字符设备**：`devnum`（`dev_t` 编解码）、`chardev`（driver 区间注册表与 `DeviceFile`）、`devnode`

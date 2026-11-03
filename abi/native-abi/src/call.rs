@@ -279,6 +279,9 @@ pub const BTI_CREATE: usize = 61;
 pub const BTI_PIN: usize = 62;
 
 /// 解除固定并撤销设备地址。参数：`pmt`。
+///
+/// 未经本调用而关闭的 PMT（如持有进程终止）不释放页：页与设备地址进入所属 BTI 的隔离区，
+/// 直到 [`BTI_RELEASE_QUARANTINE`] 或 BTI 销毁（Zircon quarantine 语义）。
 pub const PMT_UNPIN: usize = 63;
 
 // ---------------------------------------------------------------------------------------------
@@ -344,5 +347,10 @@ pub const SYSTEM_BARRIER: usize = 78;
 /// 错误：`ERR_NOT_FOUND`（不是存活的直属成员）、`ERR_INVALID_ARGS`（rights 超出）。
 pub const OBJECT_GET_CHILD: usize = 79;
 
+/// 释放 BTI 隔离区中的全部固定页。参数：`bti`（需 `rights::WRITE`）。
+///
+/// 调用者必须先使设备停止访问这些页（复位设备）；新的驱动实例接管同一设备时调用。
+pub const BTI_RELEASE_QUARANTINE: usize = 80;
+
 /// 编号上界（不含）。
-pub const COUNT: usize = 80;
+pub const COUNT: usize = 81;

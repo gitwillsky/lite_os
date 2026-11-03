@@ -27,7 +27,7 @@ pub(crate) static COST_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 /// 返回 `scripts/workflow.py` 的 `verify_unit` 生成的只读 ext4 fixture 路径。
 ///
-/// fixture 由 `create_fs.py` 的唯一 ext4 layout 生成：4K block、JBD2 journal、`/bin` 与跨越
+/// fixture 由 `scripts/create_fs.py` 的唯一 ext4 layout 生成：4K block、JBD2 journal、`/bin` 与跨越
 /// direct block 的 `/bin/init`。测试写入只进入内存 overlay，不修改 fixture。
 ///
 /// # Panics

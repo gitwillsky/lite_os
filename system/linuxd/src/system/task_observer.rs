@@ -76,7 +76,8 @@ fn snapshot(observer: &Job) -> Vec<u8> {
 
 /// linuxd 所在 Job 里除 linuxd 自身外的成员是 Linux 进程（共享进程的成员）或承载映像的共享进程：
 /// 前者已由 /proc 呈现，后者没有线程，两者都不进入快照。遍历期间结束的成员按 `ERR_NOT_FOUND` 跳过；
-/// Job 树深度由根服务的启动结构决定（目前两层），递归不随负载增长。
+/// Job 树深度由启动结构决定（根 Job → 服务 Job，driver-manager 下另有驱动宿主 Job 与每个宿主的 Job，
+/// 至多四层），递归不随负载增长。
 fn collect(job: &Job, linux_job: u64, linuxd: u64, records: &mut Vec<Record>) {
     let current = koid(job);
     for process in job.member_koids(false).unwrap_or_default() {

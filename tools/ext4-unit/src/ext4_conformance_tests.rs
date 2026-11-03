@@ -1,4 +1,4 @@
-//! 以 e2fsprogs `e2fsck -fn` 为裁决者，验证 ext4d 写出的 ext4 结构符合固定 profile。
+//! 以 e2fsprogs `e2fsck -fn` 为裁决者，验证 ext4 写出的 ext4 结构符合固定 profile。
 //!
 //! 测试在 fixture 的可写副本上执行 htree 转换与分裂、深层 extent tree、截断、跨目录 rename、
 //! fast/slow symlink、hard link 与 orphan file crash recovery，最后要求 e2fsck 报告零错误。

@@ -1,10 +1,10 @@
 extern crate alloc;
 // The real driver-service decoder must retain device facts after kernel DTB scope shrinks.
-#[path = "../../../system/driver-host/src/platform/device_tree.rs"]
+#[path = "../../../system/driver-manager/src/platform/device_tree.rs"]
 mod device_tree;
-#[path = "../../../system/driver-host/src/platform/pci_host.rs"]
+#[path = "../../../system/driver-manager/src/platform/pci_host.rs"]
 mod pci_host;
-#[path = "../../../system/driver-host/src/platform/virtio_mmio.rs"]
+#[path = "../../../system/driver-manager/src/platform/virtio_mmio.rs"]
 mod virtio_mmio;
 use dtb_walker::{Dtb, HeaderError};
 
@@ -26,7 +26,7 @@ fn actual_qemu_device_windows_and_routes_belong_to_driver_host() {
         std::fs::read(std::env::var_os("LITEOS_AARCH64_DTB").expect("run make verify-unit"))
             .unwrap();
     let facts = parse(&bytes);
-    assert_eq!(facts.virtio.len(), 32);
+    assert_eq!(facts.virtio.iter().count(), 32);
     assert!(
         facts
             .virtio
@@ -56,7 +56,7 @@ fn compatible_identity_survives_qemu_device_node_renaming() {
             renamed += 1;
         }
     }
-    assert_eq!(renamed, original.virtio.len());
+    assert_eq!(renamed, original.virtio.iter().count());
     let renamed = parse(&bytes);
     assert_eq!(
         original.virtio.iter().collect::<Vec<_>>(),
@@ -72,7 +72,7 @@ fn actual_smmu_phandle_routes_pci_and_retains_mmio_transports() {
             .unwrap();
     let facts = parse(&bytes);
     assert_eq!(facts.iommu.unwrap().kind, native_abi::iommu::ARM_SMMU_V3);
-    assert_eq!(facts.virtio.len(), 32);
+    assert_eq!(facts.virtio.iter().count(), 32);
     let pci = facts.pci.unwrap();
     assert_eq!(pci.stream(0), Some(0));
     assert_eq!(pci.stream(255), Some(255));

@@ -155,15 +155,15 @@ mod platform_device_tree_tests;
 mod directory_stream;
 
 #[cfg(test)]
-#[path = "../../../system/ext4d/src/ext4/directory_cursor.rs"]
+#[path = "../../../system/ext4/src/ext4/directory_cursor.rs"]
 mod ext4_directory_cursor;
 
 #[cfg(test)]
-#[path = "../../../system/ext4d/src/ext4/checksum.rs"]
+#[path = "../../../system/ext4/src/ext4/checksum.rs"]
 mod ext4_checksum;
 
 #[cfg(test)]
-#[path = "../../../system/ext4d/src/ext4/dirhash.rs"]
+#[path = "../../../system/ext4/src/ext4/dirhash.rs"]
 mod ext4_dirhash;
 
 #[cfg(test)]
@@ -205,7 +205,7 @@ mod indexed_slots;
 mod file_position;
 
 #[cfg(test)]
-#[path = "../../../system/ext4d/src/ext4/journal_layout.rs"]
+#[path = "../../../system/ext4/src/ext4/journal_layout.rs"]
 mod journal_layout;
 
 #[cfg(test)]
@@ -403,7 +403,7 @@ mod timer_transaction_loop;
 mod terminal_output_order;
 
 #[cfg(test)]
-#[path = "../../../system/ext4d/src/ext4/link_count.rs"]
+#[path = "../../../system/ext4/src/ext4/link_count.rs"]
 mod ext4_link_count;
 
 #[cfg(test)]

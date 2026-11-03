@@ -1,6 +1,6 @@
 #![no_std]
 
-//! Linux 64-bit UAPI：系统调用编号、errno、signal number 与结构布局；由 linuxd 与 ext4d 使用，内核不依赖。
+//! Linux 64-bit UAPI：系统调用编号、errno、signal number 与结构布局；由 linuxd 与 ext4 使用，内核不依赖。
 
 pub mod capability;
 pub mod clone;

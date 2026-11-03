@@ -15,7 +15,7 @@ macro_rules! error { ($($argument:tt)*) => { std::eprintln!($($argument)*) }; }
 mod sync;
 
 #[cfg(test)]
-#[path = "../../../system/ext4d/src/vfs.rs"]
+#[path = "../../../system/ext4/src/vfs.rs"]
 #[expect(
     dead_code,
     reason = "FUSE encoding methods are consumed by the guest service; this fixture tests the ext4 engine"
@@ -25,7 +25,7 @@ mod vfs;
 use vfs::InodeType;
 
 #[cfg(test)]
-#[path = "../../../tools/source-view/ext4d/ext4/ext4/ext4.rs"]
+#[path = "../../../tools/source-view/ext4/ext4/ext4/ext4.rs"]
 #[expect(
     dead_code,
     reason = "the host fixture mounts a memory-backed device; service mount and pager entry points run in the guest"

@@ -226,7 +226,7 @@ def create_image(binary: Path) -> Path:
     run(
         [
             sys.executable,
-            "create_fs.py",
+            "scripts/create_fs.py",
             "create",
             "--file",
             str(image),
@@ -292,7 +292,7 @@ def main() -> int:
             binary,
             binary.parent / "fs-root-dynamic",
             binary.parent / "libc.so",
-            ROOT / "create_fs.py",
+            ROOT / "scripts/create_fs.py",
             Path(__file__).resolve(),
             ROOT / "scripts/toolchain/musl.py",
             ROOT / "scripts/qemu_gate.py",

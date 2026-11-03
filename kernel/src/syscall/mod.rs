@@ -280,6 +280,7 @@ pub(super) fn dispatch(call: &Call<'_>, number: usize) -> Outcome {
         call::OBJECT_GET_INFO => handles::get_info(call).into(),
         call::OBJECT_SET_NAME => handles::set_name(call).into(),
         call::OBJECT_GET_CHILD => handles::get_child(call).into(),
+        call::BTI_RELEASE_QUARANTINE => hardware::bti_release_quarantine(call).into(),
         call::CHANNEL_CREATE => ipc::channel_create(call).into(),
         call::CHANNEL_WRITE => ipc::channel_write(call).into(),
         call::CHANNEL_READ => ipc::channel_read(call).into(),

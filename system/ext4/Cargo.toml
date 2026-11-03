@@ -1,0 +1,25 @@
+[package]
+name = "ext4"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "ext4"
+test = false
+bench = false
+
+[dependencies]
+native-runtime = { path = "../native-runtime" }
+service-sync = { path = "../service-sync" }
+device-model = { path = "../device-model" }
+device-protocol = { path = "../device-protocol" }
+filesystem-protocol = { path = "../filesystem-protocol" }
+launch-protocol = { path = "../launch-protocol" }
+fallible-tree = { path = "../../libraries/fallible-tree" }
+linux-abi = { path = "../../abi/linux-abi" }
+
+[build-dependencies]
+launch-protocol = { path = "../launch-protocol" }
+
+[lints]
+workspace = true

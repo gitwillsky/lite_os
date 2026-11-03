@@ -17,7 +17,6 @@ launch-protocol = { path = "../launch-protocol" }
 fallible-tree = { path = "../../libraries/fallible-tree" }
 mmio = { path = "../../libraries/mmio" }
 boot-scene = { path = "../../libraries/boot-scene" }
-dtb-walker = "=0.2.0-alpha.3"
 
 [build-dependencies]
 launch-protocol = { path = "../launch-protocol" }

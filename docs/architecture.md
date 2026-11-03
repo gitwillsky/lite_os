@@ -6,18 +6,18 @@ AArch64 和 RISC-V64 共用这些机制，具体指令与 machine 装配通过�
 
 ## 边界与启动
 
-1. `kernel/src/main.rs` 装配内核机制；`bootstrap` 从 bootfs 装载唯一的 `root-server`，交付根 Job、
+1. `kernel/src/main.rs` 装配内核机制；`bootstrap` 从 bootfs 装载唯一的 `component-manager`，交付根 Job、
    resource、bootfs 与 DTB。内核不解释服务目录、文件系统、网络和应用启动策略。
-2. `system/root-server` 是能力路由与监督者（对应 Fuchsia component_manager）：启动各服务，按设备类派生
+2. `system/component-manager` 是能力路由与监督者（对应 Fuchsia component_manager）：启动各服务，按设备类派生
    driver-host 的设备目录（Network → netcfg，Block → fshost，其余 → linuxd），并为每个消费者服务只含其声明协议的
-   路由目录。netstack、dhcp-client、netcfg 与 linuxd 终止后重启，崩溃循环时关机；driver-host、fshost、ext4d
+   路由目录。netstack、dhcp-client、netcfg 与 linuxd 终止后重启，崩溃循环时关机；driver-host、fshost、ext4
    终止即关机。规则见[依赖与 owner 契约](architecture-contract/dependency-owners.md#服务拓扑与能力路由)。
 3. `driver-host` 拥有硬件驱动并持续服务设备目录；设备会话可重开，使用者重启后重新打开。
-   `fshost` 拥有块设备会话与 ext4d，交出 Linux 块设备、转发 ext4 挂载，并在原生数据卷上为原生服务派生私有目录。
+   `fshost` 拥有块设备会话与 ext4，交出 Linux 块设备、转发 ext4 挂载，并在原生数据卷上为原生服务派生私有目录。
    `netstack` 只提供协议栈；`netcfg` 发现网卡并安装进 netstack 的默认网络，按默认策略与用户设置配置接口，
    DHCP 由 `dhcp-client` 完成。
 4. `linuxd` 是可插拔的 Linux 容器（Starnix 模型），只消费路由给它的能力：挂载根文件系统并启动 PID1；它退出后
-   root-server 终止整个 Linux Job 再重启它，其他服务不受影响。每个 Linux 进程对应一个共享进程的成员：低地址区
+   component-manager 终止整个 Linux Job 再重启它，其他服务不受影响。每个 Linux 进程对应一个共享进程的成员：低地址区
    属于应用，高地址区共享 `linuxd` 映像、堆与服务栈。每个 Linux 线程有一个原生承载线程；restricted 使用不含服务区
    USER 映射的 private 页表根，syscall/未解决异常/kick 使其回到 normal 页表根的兼容服务。
 5. `native-abi` 只连接内核与系统服务；Linux 应用的 syscall 总是先退出 restricted mode，不能调用该接口。
@@ -34,10 +34,10 @@ AArch64 和 RISC-V64 共用这些机制，具体指令与 machine 装配通过�
 | `kernel/src/vm`、`memory`、`iommu` | VMO/VMAR、页表与退休；物理页/堆；DMA 地址翻译 |
 | `kernel/src/object`、`syscall` | 句柄、rights、对象生命周期及 native 参数编解码 |
 | `system/native-runtime`、`service-sync`、`service-rpc` | 服务入口、分配/线程/port reactor、可睡眠同步与 IPC codec |
-| `system/root-server`、`service-directory` | 服务启动、监督与能力路由；按协议名连接服务的路由协议 |
+| `system/component-manager`、`service-directory` | 服务启动、监督与能力路由；按协议名连接服务的路由协议 |
 | `system/linuxd` | Linux ABI、VFS、进程/信号/安全、设备 UAPI、pager、应用装载与授权端点适配 |
 | `system/driver-host`、`device-model`、`device-protocol` | 驱动、设备类 trait、设备目录与可重开的设备会话 |
-| `system/fshost`、`ext4d`、`filesystem-protocol` | 块设备与数据卷所有者；ext4/JBD2 与 FUSE 服务；挂载、块设备清单与存储能力协议 |
+| `system/fshost`、`ext4`、`filesystem-protocol` | 块设备与数据卷所有者；ext4/JBD2 与 FUSE 服务；挂载、块设备清单与存储能力协议 |
 | `system/netstack`、`network-protocol` | IPv4/transport/FIB 与网络域；控制、安装、域与 socket 协议 |
 | `system/netcfg`、`dhcp-client`、`netcfg-protocol` | 接口配置策略与用户设置；DHCPv4 客户端；设置与租约编码 |
 | `system/task-observer-protocol` | 原生系统服务观测的只读消息；KOID 不混入 Linux PID |

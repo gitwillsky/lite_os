@@ -40,7 +40,7 @@ def gate_inputs(
         musl_install / "usr/lib/libc.so",
         ROOT / "user/base/inittab",
         ROOT / "user/base/rcS",
-        ROOT / "create_fs.py",
+        ROOT / "scripts/create_fs.py",
         ROOT / "scripts/verify_busybox.py",
         Path(__file__).resolve(),
         ROOT / "scripts/qemu_gate.py",

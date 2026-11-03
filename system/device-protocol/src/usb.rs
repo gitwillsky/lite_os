@@ -31,41 +31,43 @@ pub fn publish(directory: &Directory, device: Arc<dyn UsbDevice>) -> Result<(), 
         .u16(identity.vendor)
         .u16(identity.product)
         .bytes(device.name().as_bytes());
-    directory.add(
-        Class::Usb,
-        &description,
-        false,
-        Box::new(move |end| {
-            let session = SessionState::new(device.clone(), end);
-            let (client, server) = Channel::create()?;
-            let server = directory::serve_session(
-                server,
-                1,
-                b"usb-server",
-                Arc::try_new(
-                    move |ordinal: u32, _: &mut Reader<'_>, _, reply: &mut Writer| {
-                        let device = session.get();
-                        match ordinal {
-                            CONNECTED => {
-                                reply.bool(device.connected());
+    directory
+        .add(
+            Class::Usb,
+            &description,
+            false,
+            Box::new(move |end| {
+                let session = SessionState::new(device.clone(), end);
+                let (client, server) = Channel::create()?;
+                let server = directory::serve_session(
+                    server,
+                    1,
+                    b"usb-server",
+                    Arc::try_new(
+                        move |ordinal: u32, _: &mut Reader<'_>, _, reply: &mut Writer| {
+                            let device = session.get();
+                            match ordinal {
+                                CONNECTED => {
+                                    reply.bool(device.connected());
+                                }
+                                REMOVE => device.remove().map_err(|error| match error {
+                                    UsbRemoveError::Disconnected => ERROR_DISCONNECTED,
+                                    UsbRemoveError::Device => native_abi::ERR_IO,
+                                })?,
+                                _ => return Err(native_abi::ERR_NOT_SUPPORTED),
                             }
-                            REMOVE => device.remove().map_err(|error| match error {
-                                UsbRemoveError::Disconnected => ERROR_DISCONNECTED,
-                                UsbRemoveError::Device => native_abi::ERR_IO,
-                            })?,
-                            _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-                        }
-                        Ok(Vec::new())
-                    },
-                )
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-            )?;
-            Ok(Session {
-                handles: alloc::vec![client.into_handle()],
-                server,
-            })
-        }),
-    )
+                            Ok(Vec::new())
+                        },
+                    )
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                )?;
+                Ok(Session {
+                    handles: alloc::vec![client.into_handle()],
+                    server,
+                })
+            }),
+        )
+        .map(drop)
 }
 
 /// 使用者端的远端 USB 设备。

@@ -2,7 +2,7 @@
 mod audio;
 mod dma;
 mod xhci;
-use alloc::{sync::Arc, vec::Vec};
+use alloc::sync::Arc;
 pub(crate) use xhci::Host;
 
 /// USB 初始化或事务错误；传输超时不会允许重用未停止的 DMA。
@@ -23,20 +23,11 @@ impl From<mmio::BusError> for Error {
     }
 }
 
-/// 发现 PCI xHCI，返回由 composition root 启动的设备枚举工作者。
+/// 初始化本节点的 xHCI 主控，返回由 composition root 启动的设备枚举工作者。
 ///
-/// # Returns
-/// 每个已初始化控制器一个永久 DMA owner；无控制器时返回空列表。
 /// # Errors
-/// 内存不足或控制器初始化失败返回错误，不发布半初始化的音频设备。
-pub(crate) fn initialize() -> Result<Vec<Arc<Host>>> {
-    let mut hosts = Vec::new();
-    for function in crate::drivers::pci::functions() {
-        if function.config.read_u32(8)? >> 8 != 0x0c0330 {
-            continue;
-        }
-        hosts.try_reserve(1).map_err(|_| Error::Memory)?;
-        hosts.push(Host::new(function, hosts.len() + 1)?);
-    }
-    Ok(hosts)
+/// 节点不是 PCI function、内存不足或控制器初始化失败返回错误，不发布半初始化的音频设备。
+pub(crate) fn initialize() -> Result<Arc<Host>> {
+    let function = crate::drivers::pci::function().ok_or(Error::Unsupported)?;
+    Host::new(&function, 1)
 }

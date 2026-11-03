@@ -45,60 +45,63 @@ pub fn publish(directory: &Directory, device: Arc<dyn PortDevice>) -> Result<(),
     let event = Event::create()?;
     let event = Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?;
     device.bind_activity(activity_signal(event.clone())?);
-    directory.add(
-        Class::Port,
-        &directory::description(),
-        true,
-        Box::new(move |end| {
-            let session = SessionState::new(device.clone(), end);
-            let (client, server) = Channel::create()?;
-            let server = directory::serve_session(
-                server,
-                1,
-                b"port-server",
-                Arc::try_new(
-                    move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
-                        let device = session.get();
-                        match ordinal {
-                            READ => {
-                                let length = request.usize()?.min(CHUNK);
-                                let mut data = alloc::vec![0u8; length];
-                                let count = device.read(&mut data).map_err(encode_error)?;
-                                reply.bytes(&data[..count]);
+    directory
+        .add(
+            Class::Port,
+            &directory::description(),
+            true,
+            Box::new(move |end| {
+                let session = SessionState::new(device.clone(), end);
+                let (client, server) = Channel::create()?;
+                let server = directory::serve_session(
+                    server,
+                    1,
+                    b"port-server",
+                    Arc::try_new(
+                        move |ordinal: u32, request: &mut Reader<'_>, _, reply: &mut Writer| {
+                            let device = session.get();
+                            match ordinal {
+                                READ => {
+                                    let length = request.usize()?.min(CHUNK);
+                                    let mut data = alloc::vec![0u8; length];
+                                    let count = device.read(&mut data).map_err(encode_error)?;
+                                    reply.bytes(&data[..count]);
+                                }
+                                WRITE => {
+                                    let count =
+                                        device.write(request.bytes()?).map_err(encode_error)?;
+                                    reply.u64(count as u64);
+                                }
+                                STATE => {
+                                    reply
+                                        .bool(device.readable())
+                                        .bool(device.writable())
+                                        .bool(device.connected());
+                                }
+                                DISPATCH => {
+                                    let activity = device.dispatch();
+                                    reply
+                                        .bool(activity.readable_changed)
+                                        .bool(activity.writable_changed)
+                                        .bool(activity.backlog);
+                                }
+                                _ => return Err(native_abi::ERR_NOT_SUPPORTED),
                             }
-                            WRITE => {
-                                let count = device.write(request.bytes()?).map_err(encode_error)?;
-                                reply.u64(count as u64);
-                            }
-                            STATE => {
-                                reply
-                                    .bool(device.readable())
-                                    .bool(device.writable())
-                                    .bool(device.connected());
-                            }
-                            DISPATCH => {
-                                let activity = device.dispatch();
-                                reply
-                                    .bool(activity.readable_changed)
-                                    .bool(activity.writable_changed)
-                                    .bool(activity.backlog);
-                            }
-                            _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-                        }
-                        Ok(Vec::new())
-                    },
-                )
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-            )?;
-            Ok(Session {
-                handles: alloc::vec![
-                    client.into_handle(),
-                    event.duplicate(rights::SAME)?.into_handle()
-                ],
-                server,
-            })
-        }),
-    )
+                            Ok(Vec::new())
+                        },
+                    )
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                )?;
+                Ok(Session {
+                    handles: alloc::vec![
+                        client.into_handle(),
+                        event.duplicate(rights::SAME)?.into_handle()
+                    ],
+                    server,
+                })
+            }),
+        )
+        .map(drop)
 }
 
 /// 使用者端的远端 port。

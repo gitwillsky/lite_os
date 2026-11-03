@@ -4,14 +4,14 @@
 
 1. `arch` 建立高半映射和本地执行状态，`execution::entry` 把 raw handoff 解码为 `BootContext`。
 2. `main` 初始化堆、platform、logical CPU topology、ASID、barrier、frame allocator、VM 与线程；DTB、initrd 和崩溃记录区先从可分配 RAM 中排除。
-3. `bootstrap` 从 bootfs 载入 root-server，交付初始 resource、DTB 与启动参数；发布初始化完成后启动其他 CPU，所有 CPU online 后进入 native 调度器。
+3. `bootstrap` 从 bootfs 载入 component-manager，交付初始 resource、DTB 与启动参数；发布初始化完成后启动其他 CPU，所有 CPU online 后进入 native 调度器。
 
 内核不挂载根文件系统、不装配通用设备驱动、不启动 Linux init。`boot::cmdline` 只解释日志与 panic 参数。
 `platform` 只拥有 machine facts、firmware、中断控制器、早期串口与跨 CPU 同步。
 
 ## 系统服务启动
 
-root-server 启动 driver-host、ext4d、fshost、netstack、dhcp-client、netcfg 与 linuxd，按设备类派生设备目录并为每个
+component-manager 启动 driver-host、ext4、fshost、netstack、dhcp-client、netcfg 与 linuxd，按设备类派生设备目录并为每个
 消费者服务路由目录（见[服务拓扑与能力路由](../architecture-contract/dependency-owners.md#服务拓扑与能力路由)）。
 driver-host 获取设备 resource、DTB 与设备目录服务端；linuxd 获取路由给它的设备类、服务路由目录、串口与电源能力，
 不持有设备根 resource。

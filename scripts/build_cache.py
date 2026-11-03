@@ -269,7 +269,7 @@ def runtime_gate_payload(
             "machine": runtime.machine,
             "kernel_boot_artifact": runtime.kernel_boot_artifact,
             "kernel_boot_sha256": sha256(boot_artifact),
-            # 系统服务（root-server、driver-host、ext4d、fshost、netstack、dhcp-client、netcfg、linuxd）与 bootfs 只读配置随 bootfs 交给内核；它们变化同样使门禁结果失效。
+            # 系统服务（component-manager、driver-manager、driver-host、ext4、fshost、netstack、dhcp-client、netcfg、linuxd）与 bootfs 只读配置随 bootfs 交给内核；它们变化同样使门禁结果失效。
             "bootfs_sha256": sha256(ROOT / runtime.bootfs),
         },
     }

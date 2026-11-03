@@ -1,4 +1,4 @@
-//! VirtIO PCI function selection and vendor-capability decoding; PCI resources belong to drivers::pci.
+//! VirtIO PCI vendor-capability decoding for this host's node; PCI resources belong to drivers::pci.
 
 use super::PciTransport;
 use crate::drivers::pci::Bar;
@@ -32,33 +32,31 @@ pub(super) struct VirtioPciFunction {
     pub(super) bti: &'static native_runtime::Bti,
 }
 
-/// 按标准 device type 借用 PCI inventory，校验 capability 后逐个返回；不复制 inventory。
-pub(super) fn devices(wanted: u32) -> impl Iterator<Item = VirtioPciFunction> {
-    crate::drivers::pci::functions()
-        .iter()
-        .filter_map(move |function| {
-            let config = &function.config;
-            if config.read_u16(VENDOR_ID).ok()? != PCI_VENDOR_VIRTIO {
-                return None;
-            }
-            let pci_device = config.read_u16(DEVICE_ID).ok()?;
-            let device_id = if (0x1040..=0x107f).contains(&pci_device) {
-                u32::from(pci_device - 0x1040)
-            } else if (0x1000..=0x103f).contains(&pci_device) {
-                u32::from(config.read_u16(SUBSYSTEM_DEVICE_ID).ok()?)
-            } else {
-                return None;
-            };
-            if device_id != wanted {
-                return None;
-            }
-            Some(VirtioPciFunction {
-                device_id,
-                interrupt: function.interrupt?,
-                transport: capabilities(config, &function.bars)?,
-                bti: function.bti,
-            })
-        })
+/// 解码本节点的 VirtIO PCI function：校验厂商与 capability，返回 transport。
+///
+/// # Returns
+///
+/// 节点不是可用的 modern VirtIO PCI function（缺 capability 或 INTx 未路由）时为 `None`。
+pub(super) fn discover() -> Option<VirtioPciFunction> {
+    let function = crate::drivers::pci::function()?;
+    let config = &function.config;
+    if config.read_u16(VENDOR_ID).ok()? != PCI_VENDOR_VIRTIO {
+        return None;
+    }
+    let pci_device = config.read_u16(DEVICE_ID).ok()?;
+    let device_id = if (0x1040..=0x107f).contains(&pci_device) {
+        u32::from(pci_device - 0x1040)
+    } else if (0x1000..=0x103f).contains(&pci_device) {
+        u32::from(config.read_u16(SUBSYSTEM_DEVICE_ID).ok()?)
+    } else {
+        return None;
+    };
+    Some(VirtioPciFunction {
+        device_id,
+        interrupt: function.interrupt?,
+        transport: capabilities(config, &function.bars)?,
+        bti: function.bti,
+    })
 }
 
 fn capabilities(config: &MmioBus, bars: &[Option<Bar>; 6]) -> Option<PciTransport> {

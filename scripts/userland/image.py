@@ -147,7 +147,7 @@ def create_image(
     run(
         [
             sys.executable,
-            "create_fs.py",
+            "scripts/create_fs.py",
             "create",
             "--file",
             str(image),
@@ -382,7 +382,7 @@ def create_published_image(
         ROOT / "user/diagnostics/liteos-stress.c",
         boot_scene(),
         ROOT / "user/base/shutdown",
-        ROOT / "create_fs.py",
+        ROOT / "scripts/create_fs.py",
         *(ROOT / "scripts/userland" / name for name in ("image.py", "artifacts.py", "busybox.py", "rust.py")),
         ROOT / "scripts/apk_cache.py",
         ROOT / "scripts/apk_package.py",

@@ -307,7 +307,7 @@ LiteOS 当前没有 bubblewrap 依赖的 Linux namespace/seccomp/Landlock 完整
 - `architecture-check`：dependency、owner、interface、文档索引/链接/事实归属与退化模式的纯函数测试。
 - `kernel-unit`：复用实际 native VMO/ASID、Linuxd 文件/IPC/socket/安全 owner、设备队列、codec 与错误清理。
 - `device-protocol`：实际 PCM 客户端的在途额度、完成代际和永久断开状态。
-- `ext4-unit`：直接装配 ext4d 磁盘引擎；ext4 cost/recovery 用例只读取 `verify_unit` 每次经 `create_fs.py` 重新生成的
+- `ext4-unit`：直接装配 ext4 磁盘引擎；ext4 cost/recovery 用例只读取 `verify_unit` 每次经 `scripts/create_fs.py` 重新生成的
   `target/ext4-unit/ext4-fixture.img`（`LITEOS_EXT4_FIXTURE`），写入只进入内存 overlay；不读取产品
   rootfs 或开发实例，因此 `verify-fast` 无需先构建 rootfs，直接 `cargo test` 会以变量未设置失败。
   ext4 conformance 用例在 fixture 的临时副本上写入，再以 Homebrew e2fsprogs 的 `e2fsck -fn`

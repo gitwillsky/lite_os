@@ -7,7 +7,7 @@
 //! 2. 服务打开文件系统，回复该挂载的 FUSE channel（使用者的 FUSE 客户端经它访问文件）与挂载控制 channel；
 //! 3. 挂载控制目前只有“转为可写”（只读挂载重新挂载为读写）；卸载经 FUSE `DESTROY` 完成。
 //! 4. fshost 拥有块设备与文件系统服务：经块设备清单协议（[`BlocksClient`]）交出块设备的全盘范围连接，
-//!    并把挂载协议原样转发给 ext4d（[`MountClient::serve_proxy`]），使用者看到的线格式不变。
+//!    并把挂载协议原样转发给 ext4（[`MountClient::serve_proxy`]），使用者看到的线格式不变。
 //! 5. fshost 在原生数据卷上为每个原生服务派生私有目录（[`StorageAdmin`]，只供根服务），服务经私有目录协议
 //!    （[`Storage`]）整文件读写自己的持久状态（Fuchsia 的 `storage` 能力）。
 

@@ -10,7 +10,7 @@ first broken contract。
 | Linux 进程、ptrace、signal | `docs/architecture-contract/process-scheduling.md`、`docs/architecture-contract/ptrace.md` | `system/linuxd/src/task/`、`system/linuxd/src/syscall/` |
 | VMAR、VMO、COW、TLB | `docs/architecture-contract/memory.md` | `kernel/src/vm/`、`kernel/src/syscall/memory.rs`、`kernel/src/arch/` |
 | Linux 地址空间与用户态 pager | `docs/architecture-contract/memory.md` | `system/linuxd/src/memory/` |
-| VFS、page cache、OFD、ext4 | `docs/architecture-contract/filesystem-storage.md` | `system/linuxd/src/fs/`、`system/ext4d/src/` |
+| VFS、page cache、OFD、ext4 | `docs/architecture-contract/filesystem-storage.md` | `system/linuxd/src/fs/`、`system/ext4/src/` |
 | epoll、pipe、AF_UNIX、IPv4 | `docs/architecture-contract/ipc-network.md` | `system/linuxd/src/fs/`、`system/linuxd/src/net/`、`system/netstack/src/` |
 | 设备 UAPI、TTY、DRM | `docs/architecture-contract/devices-terminal.md` | `system/linuxd/src/devices/` |
 | VirtIO、PCI、USB 与 DMA | `docs/architecture-contract/devices-terminal.md` | `system/driver-host/src/drivers/`、`system/device-model/src/`、`system/device-protocol/src/` |

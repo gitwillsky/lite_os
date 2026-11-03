@@ -1,0 +1,22 @@
+[package]
+name = "driver-manager"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "driver-manager"
+test = false
+bench = false
+
+[dependencies]
+native-runtime = { path = "../native-runtime" }
+device-protocol = { path = "../device-protocol" }
+launch-protocol = { path = "../launch-protocol" }
+mmio = { path = "../../libraries/mmio" }
+dtb-walker = "=0.2.0-alpha.3"
+
+[build-dependencies]
+launch-protocol = { path = "../launch-protocol" }
+
+[lints]
+workspace = true

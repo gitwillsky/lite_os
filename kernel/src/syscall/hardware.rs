@@ -97,9 +97,17 @@ pub(super) fn pmt_unpin(call: &Call<'_>) -> Result<(), Status> {
     let handles = call.process().handles();
     let handle = call.arg_handle(0);
     let entry = handles.get(handle)?;
-    if !matches!(entry.object, Object::Pmt(_)) {
+    let Object::Pmt(pmt) = &entry.object else {
         return Err(native_abi::ERR_WRONG_TYPE);
-    }
+    };
+    // PMT 不可复制，句柄是唯一引用者：标记后关闭即释放，不进入隔离区。
+    pmt.mark_unpinned();
     drop(handles.remove(handle)?);
+    Ok(())
+}
+
+pub(super) fn bti_release_quarantine(call: &Call<'_>) -> Result<(), Status> {
+    call.bti(call.arg_handle(0), rights::WRITE)?
+        .release_quarantine();
     Ok(())
 }

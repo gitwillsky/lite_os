@@ -59,7 +59,7 @@ fn body_external_attributes_survive_replacement_remount_and_failed_capacity_admi
     let repository = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let payload = ext4_fixture_path().with_file_name("ext4-init-payload");
     let output = Command::new("python3")
-        .arg(repository.join("create_fs.py"))
+        .arg(repository.join("scripts/create_fs.py"))
         .args(["create", "--without-ea-inode", "--size", "64", "--file"])
         .arg(&path)
         .arg("--init")
@@ -389,7 +389,7 @@ fn shared_external_block_counts_one_value_holder_and_cow_adds_one_physical_holde
     root.sync_storage().unwrap();
     drop((left, right, root, fs));
     // 用原生 debugfs 指定共享关联，再由 e2fsck 构造正确 h_refcount/checksum。
-    // 测试不复制磁盘编码或引用算法；ext4d 接收前必须经严格 -fn 确认为干净卷。
+    // 测试不复制磁盘编码或引用算法；ext4 接收前必须经严格 -fn 确认为干净卷。
     let stat = debugfs(&path, "stat /ea-left");
     let block: u64 = stat
         .lines()

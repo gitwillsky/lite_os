@@ -1,7 +1,6 @@
-//! platform 发现的 VirtIO transport 到 driver adapter 的唯一装配表。
+//! 本宿主节点的 VirtIO 驱动装配：按 driver-manager 匹配的驱动构造 adapter 并发布到设备目录。
 //!
-//! platform 只给出 transport 窗口、INTx 路由、MMIO 映射与 interrupt 注册入口；device ID 分派、adapter
-//! 构造与设备目录发布只有这一份实现，因此 platform 不需要认识任何设备类。
+//! driver-manager 已按 device ID 匹配驱动；这里只构造 adapter、注册中断并发布，platform 不需要认识设备类。
 
 use alloc::sync::Arc;
 
@@ -9,140 +8,59 @@ use super::{
     VirtIOBlockDevice, VirtIOConsoleDevice, VirtIOGpuDevice, VirtIOInputDevice,
     VirtIONetworkDevice, VirtIORngDevice, VirtIOSoundDevice, pci_discovery,
 };
-use crate::platform::{VirtioMmioTransport, map_device_window, register_device_interrupt};
-use device_model::{BootFramebuffer, DisplayDevice, InputDevice};
-use mmio::MmioBus;
+use crate::platform::{map_device_window, register_device_interrupt};
+use device_model::{DisplayDevice, InputDevice};
+use launch_protocol::driver_host::{Bus, Driver};
 
-/// VirtIO 1.2 §5 device ID。
-const NETWORK: u32 = 1;
-const BLOCK: u32 = 2;
-const CONSOLE: u32 = 3;
-const ENTROPY: u32 = 4;
-const GPU: u32 = 16;
-const INPUT: u32 = 18;
-const SOUND: u32 = 25;
-/// VirtIO-MMIO §4.2.2：device ID 0 表示 transport 存在但未挂接设备，不是错误。
-const NO_DEVICE: u32 = 0;
+/// driver-host 编入的启动画面位图（`LBS1`）：任何文件系统挂载之前 GPU 就要显示它；具体文件由构建环境变量
+/// `LITEOS_BOOT_SCENE` 选择（默认值在根目录 `.cargo/config.toml`），缺失时编译失败。
+// OWNER: 进程映像内唯一只读启动位图；编译期嵌入，整个进程寿命内有效。
+static BOOT_SCENE: &[u8] = include_bytes!(env!("LITEOS_BOOT_SCENE"));
 
-/// 启动最早期建立的首个 GPU：开机画面已在它上面绘制，中断注册与目录发布推迟到设备装配阶段。
-///
-/// 令牌由 [`bind_display`] 产生并交给 [`bind_platform_devices`]，后者在 GPU transport 原本的装配位置补上
-/// 中断注册与发布；缺少这一步 GPU 永远收不到 completion，使用者也看不到显示设备。
-pub(crate) struct EarlyDisplay {
-    device: Arc<VirtIOGpuDevice>,
-    base_addr: usize,
-    irq: u32,
-}
-
-impl EarlyDisplay {
-    /// 启动期同步帧缓冲接口；DRM 绑定 completion work 之后它拒绝所有调用。
-    pub(crate) fn framebuffer(&self) -> &dyn BootFramebuffer {
-        &*self.device
-    }
-}
-
-/// 在启动最早期装配首个 VirtIO-MMIO GPU，在其余设备初始化之前就把启动画面送上屏幕。
-///
-/// GPU 初始化只需要设备窗口与 DTB 发现结果；中断注册与发布推迟到 [`bind_platform_devices`]。
-///
-/// # Returns
-///
-/// 找到并成功初始化 GPU 时返回令牌；没有 GPU（如恢复/自检启动）时返回 `None`。
+/// 装配本节点的 VirtIO 驱动。
 ///
 /// # Panics
 ///
-/// 已识别的 GPU adapter 初始化失败时 fail-stop。
-pub(crate) fn bind_display() -> Option<EarlyDisplay> {
-    for transport in crate::platform::virtio_mmio_transports().iter() {
-        let base = map_device_window(transport.base_addr, transport.size);
-        let device_id = MmioBus::new(base, transport.size)
-            .ok()
-            .and_then(|bus| bus.read_u32(0x08).ok());
-        if device_id == Some(GPU) {
-            let device = create_gpu(transport, base);
-            return Some(EarlyDisplay {
-                device,
-                base_addr: transport.base_addr,
-                irq: transport.irq,
-            });
+/// adapter 初始化或目录发布失败时 fail-stop：宿主终止后由 driver-manager 按驱动声明处理。
+pub(crate) fn bind(driver: Driver, bus: Bus) {
+    match bus {
+        Bus::VirtioMmio { base, size, irq } => {
+            let window = map_device_window(base as usize, size as usize);
+            match driver {
+                Driver::VirtioNetwork => bind_network(window, irq),
+                Driver::VirtioBlock => bind_block(window, irq),
+                Driver::VirtioConsole => bind_console(window, irq),
+                Driver::VirtioEntropy => bind_entropy(window, irq),
+                Driver::VirtioGpu => bind_gpu(window, irq),
+                Driver::VirtioInput => bind_input(window, irq),
+                Driver::VirtioSound => bind_sound(window, irq),
+                Driver::Xhci => unreachable!("xHCI is not a VirtIO-MMIO driver"),
+            }
         }
-    }
-    None
-}
-
-/// 装配 platform 发现的全部 VirtIO 设备：先 PCI console/block，再按 DTB 顺序装配 MMIO transport。
-///
-/// # Parameters
-///
-/// - `display`: [`bind_display`] 已建立的首个 GPU；其 transport 只补注册中断，不再重复初始化。
-///   按引用传入，因为开机画面仍要借用它的帧缓冲。
-///
-/// # Panics
-///
-/// 已识别设备的 adapter 初始化或 registry 发布失败时 fail-stop。
-pub(crate) fn bind_platform_devices(display: Option<&EarlyDisplay>) {
-    bind_pci_console();
-    bind_pci_block();
-    bind_mmio_transports(display);
-}
-
-/// UTM 产品路径通过 PCI transport 暴露 virtio-console；QEMU 门禁使用 MMIO transport。
-fn bind_pci_console() {
-    for function in pci_discovery::devices(CONSOLE) {
-        let device = VirtIOConsoleDevice::from_pci(function.transport, function.bti)
-            .expect("virtio-console PCI init failed");
-        publish_console(device, function.interrupt);
-        info!("VirtIO console PCI transport on IRQ {}", function.interrupt);
-    }
-}
-
-fn bind_pci_block() {
-    for function in pci_discovery::devices(BLOCK) {
-        let device = VirtIOBlockDevice::from_device(super::VirtIODevice::from_pci(
-            function.device_id,
-            function.transport,
-            function.bti,
-        ))
-        .expect("virtio-block PCI init failed");
-        publish_block(device, function.interrupt);
-        info!("VirtIO block PCI transport on IRQ {}", function.interrupt);
-    }
-}
-
-fn bind_mmio_transports(display: Option<&EarlyDisplay>) {
-    let transports = crate::platform::virtio_mmio_transports();
-    info!("Scanning {} VirtIO-MMIO transports", transports.len());
-    for transport in transports.iter() {
-        let base = map_device_window(transport.base_addr, transport.size);
-        let Some(device_id) = MmioBus::new(base, transport.size)
-            .ok()
-            .and_then(|bus| bus.read_u32(0x08).ok())
-        else {
-            warn!("Invalid VirtIO MMIO window at {:#x}", transport.base_addr);
-            continue;
-        };
-        match device_id {
-            NO_DEVICE => {}
-            NETWORK => bind_network(transport, base),
-            BLOCK => bind_block(transport, base),
-            CONSOLE => bind_console(transport, base),
-            ENTROPY => bind_entropy(transport, base),
-            GPU => match display {
-                // 已在 `bind_display` 初始化的那个 GPU 只缺中断；其余 GPU 按原路径完整装配。
-                Some(early) if early.base_addr == transport.base_addr => {
-                    publish_gpu(&early.device, early.irq);
+        Bus::Pci { .. } => {
+            let Some(function) = pci_discovery::discover() else {
+                warn!("VirtIO PCI function lacks a usable transport or interrupt");
+                return;
+            };
+            match driver {
+                // UTM 产品路径通过 PCI transport 暴露 virtio-console；QEMU 门禁使用 MMIO transport。
+                Driver::VirtioConsole => {
+                    let device = VirtIOConsoleDevice::from_pci(function.transport, function.bti)
+                        .expect("virtio-console PCI init failed");
+                    publish_console(device, function.interrupt);
                 }
-                _ => {
-                    let device = create_gpu(transport, base);
-                    publish_gpu(&device, transport.irq);
+                Driver::VirtioBlock => {
+                    let device = VirtIOBlockDevice::from_device(super::VirtIODevice::from_pci(
+                        function.device_id,
+                        function.transport,
+                        function.bti,
+                    ))
+                    .expect("virtio-block PCI init failed");
+                    publish_block(device, function.interrupt);
                 }
-            },
-            INPUT => bind_input(transport, base),
-            SOUND => bind_sound(transport, base),
-            _ => info!(
-                "Unsupported VirtIO device ID {} at {:#x}",
-                device_id, transport.base_addr
-            ),
+                _ => warn!("VirtIO PCI driver {driver:?} is not supported"),
+            }
+            info!("VirtIO PCI transport on IRQ {}", function.interrupt);
         }
     }
 }
@@ -154,78 +72,85 @@ fn publish_console(device: Arc<VirtIOConsoleDevice>, irq: u32) {
         .unwrap_or_else(|status| panic!("virtio-console publication failed: {status}"));
 }
 
-fn bind_console(transport: &VirtioMmioTransport, base: usize) {
+fn bind_console(base: usize, irq: u32) {
     let device = VirtIOConsoleDevice::new(base).expect("virtio-console init failed");
-    publish_console(device, transport.irq);
-    info!(
-        "VirtIO console clipboard port at {:#x}",
-        transport.base_addr
-    );
+    publish_console(device, irq);
+    info!("VirtIO console clipboard port on IRQ {irq}");
 }
 
-fn bind_sound(transport: &VirtioMmioTransport, base: usize) {
+fn bind_sound(base: usize, irq: u32) {
     let device = VirtIOSoundDevice::new(base).expect("virtio-sound init failed");
-    register_device_interrupt(transport.irq, device.irq_handler_for(), "virtio-sound");
+    register_device_interrupt(irq, device.irq_handler_for(), "virtio-sound");
     device_protocol::pcm::publish(crate::handles::directory(), device)
         .unwrap_or_else(|status| panic!("virtio-sound publication failed: {status}"));
 }
 
-fn bind_input(transport: &VirtioMmioTransport, base: usize) {
+fn bind_input(base: usize, irq: u32) {
     let device = VirtIOInputDevice::new(base).expect("virtio-input init failed");
-    register_device_interrupt(transport.irq, device.irq_handler_for(), "virtio-input");
+    register_device_interrupt(irq, device.irq_handler_for(), "virtio-input");
     info!(
-        "VirtIO input at {:#x}, name={}",
-        transport.base_addr,
+        "VirtIO input on IRQ {irq}, name={}",
         core::str::from_utf8(device.name()).unwrap_or("<non-utf8>")
     );
     device_protocol::input::publish(crate::handles::directory(), device)
         .unwrap_or_else(|status| panic!("virtio-input publication failed: {status}"));
 }
 
-fn bind_network(transport: &VirtioMmioTransport, base: usize) {
+fn bind_network(base: usize, irq: u32) {
     let device = VirtIONetworkDevice::new(base).expect("virtio-net init failed");
-    register_device_interrupt(transport.irq, device.irq_handler_for(), "virtio-net");
-    info!("VirtIO network at {:#x}", transport.base_addr);
+    register_device_interrupt(irq, device.irq_handler_for(), "virtio-net");
+    info!("VirtIO network on IRQ {irq}");
     device_protocol::network::publish(crate::handles::directory(), device)
         .unwrap_or_else(|status| panic!("virtio-net publication failed: {status}"));
 }
 
-fn bind_entropy(transport: &VirtioMmioTransport, base: usize) {
+fn bind_entropy(base: usize, irq: u32) {
     let device = VirtIORngDevice::new(base).expect("virtio-rng init failed");
-    register_device_interrupt(transport.irq, device.irq_handler_for(), "virtio-rng");
-    info!("VirtIO RNG at {:#x}", transport.base_addr);
+    register_device_interrupt(irq, device.irq_handler_for(), "virtio-rng");
+    info!("VirtIO RNG on IRQ {irq}");
     device_protocol::entropy::publish(crate::handles::directory(), device)
         .unwrap_or_else(|status| panic!("virtio-rng publication failed: {status}"));
 }
 
-/// 初始化 GPU adapter；中断注册与目录发布由 [`publish_gpu`] 在设备装配阶段完成。
-fn create_gpu(transport: &VirtioMmioTransport, base: usize) -> Arc<VirtIOGpuDevice> {
+/// 装配 GPU：先在帧缓冲上画出开机画面并发布启动进度，再注册中断、发布显示设备。
+///
+/// 开机画面借用同步帧缓冲接口，并在使用者推进进度时更新；DRM 绑定 completion work 之后该接口拒绝调用。
+fn bind_gpu(base: usize, irq: u32) {
     let device = VirtIOGpuDevice::new(base).expect("virtio-gpu init failed");
     let mode = DisplayDevice::mode(&*device);
     info!(
-        "VirtIO GPU at {:#x}, mode={}x{} pitch={}",
-        transport.base_addr, mode.width, mode.height, mode.pitch
+        "VirtIO GPU on IRQ {irq}, mode={}x{} pitch={}",
+        mode.width, mode.height, mode.pitch
     );
-    device
-}
-
-/// 注册 GPU 中断并发布到设备目录；没有中断 completion 不会到达，因此发布在注册之后。
-fn publish_gpu(device: &Arc<VirtIOGpuDevice>, irq: u32) {
+    // 开机画面与进度通道持有帧缓冲借用，二者都与进程同寿命。
+    let device: &'static Arc<VirtIOGpuDevice> =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(device));
+    let screen = crate::boot_screen::BootScreen::start(
+        Some(&**device as &dyn device_model::BootFramebuffer),
+        BOOT_SCENE,
+    );
+    // OWNER: 开机画面状态只由进度通道的服务线程推进。
+    let screen: &'static native_runtime::sync::Mutex<crate::boot_screen::BootScreen<'static>> =
+        alloc::boxed::Box::leak(alloc::boxed::Box::new(native_runtime::sync::Mutex::new(
+            screen,
+        )));
+    device_protocol::boot::publish(
+        crate::handles::directory(),
+        Arc::new(move |milestone| screen.lock().advance(milestone)),
+    )
+    .expect("boot progress publication failed");
     register_device_interrupt(irq, device.irq_handler_for(), "virtio-gpu");
     device_protocol::display::publish(crate::handles::directory(), device.clone())
         .unwrap_or_else(|status| panic!("virtio-gpu publication failed: {status}"));
 }
 
-fn bind_block(transport: &VirtioMmioTransport, base: usize) {
+fn bind_block(base: usize, irq: u32) {
     let Some(device) = VirtIOBlockDevice::new(base) else {
-        warn!(
-            "Failed to create VirtIO block at {:#x}",
-            transport.base_addr
-        );
+        warn!("Failed to create VirtIO block on IRQ {irq}");
         return;
     };
-    publish_block(device, transport.irq);
-    info!("VirtIO block at {:#x}", transport.base_addr);
+    publish_block(device, irq);
+    info!("VirtIO block on IRQ {irq}");
 }
 
 fn publish_block(device: Arc<VirtIOBlockDevice>, irq: u32) {

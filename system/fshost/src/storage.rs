@@ -1,6 +1,6 @@
 //! 原生数据卷与各服务的私有目录（Fuchsia 的 `data` 分区与 `storage` 能力）。
 //!
-//! 1. 数据卷是卷标为 [`DATA_LABEL`] 的 ext4 块设备；它不交给 Linux，由 fshost 经 ext4d 读写挂载；
+//! 1. 数据卷是卷标为 [`DATA_LABEL`] 的 ext4 块设备；它不交给 Linux，由 fshost 经 ext4 读写挂载；
 //! 2. fshost 作为该挂载唯一的 FUSE 客户端：请求串行发出（一次一个在途请求），只用到 LOOKUP、MKDIR、
 //!    CREATE、OPEN、READ、WRITE、FSYNC、RELEASE、RENAME 与 FORGET；
 //! 3. 每个服务的私有目录是数据卷根下的同名目录；写入先写临时文件并 fsync，再 rename 覆盖，
@@ -43,7 +43,7 @@ const OUT_HEADER: usize = 16;
 /// `fuse_entry_out` 的长度；CREATE 的文件句柄紧随其后。
 const ENTRY_OUT: usize = 128;
 const ENOENT: i32 = 2;
-/// 一次 READ/WRITE 的数据量，不超过 ext4d 协商的单条消息上限。
+/// 一次 READ/WRITE 的数据量，不超过 ext4 协商的单条消息上限。
 const CHUNK: usize = 32 * 1024;
 const O_WRONLY: u32 = 1;
 const O_TRUNC: u32 = 0o1000;
@@ -127,7 +127,7 @@ impl From<Failure> for Status {
 }
 
 impl DataVolume {
-    /// 经 ext4d 读写挂载数据卷并完成 FUSE INIT。
+    /// 经 ext4 读写挂载数据卷并完成 FUSE INIT。
     ///
     /// # Errors
     ///

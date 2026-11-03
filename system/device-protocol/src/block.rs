@@ -154,18 +154,20 @@ pub fn publish(directory: &Directory, device: Arc<dyn BlockDevice>) -> Result<()
         .bytes(device.disk_name())
         .u64(device.block_size() as u64)
         .u64(device.block_count());
-    directory.add(
-        Class::Block,
-        &description,
-        true,
-        Box::new(move |end| {
-            let (client, server) = serve_device(SessionState::new(device.clone(), end))?;
-            Ok(Session {
-                handles: alloc::vec![client.into_handle()],
-                server,
-            })
-        }),
-    )
+    directory
+        .add(
+            Class::Block,
+            &description,
+            true,
+            Box::new(move |end| {
+                let (client, server) = serve_device(SessionState::new(device.clone(), end))?;
+                Ok(Session {
+                    handles: alloc::vec![client.into_handle()],
+                    server,
+                })
+            }),
+        )
+        .map(drop)
 }
 
 /// 使用者端的远端块设备。

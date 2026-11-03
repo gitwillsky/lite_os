@@ -110,7 +110,7 @@ def build_kernel(environment: Mapping[str, str] | None = None) -> None:
     cargo_profile = ["--release"] if profile == "release" else []
     run(["cargo", "build", "--target", target.kernel_triple, *cargo_profile], cwd=ROOT / "kernel", environment=environment)
     run(
-        ["cargo", "build", "-p", "root-server", "-p", "driver-host", "-p", "ext4d", "-p", "fshost", "-p", "netstack", "-p", "dhcp-client", "-p", "netcfg", "-p", "linuxd", "--target", target.service_triple, *cargo_profile],
+        ["cargo", "build", "-p", "component-manager", "-p", "driver-manager", "-p", "driver-host", "-p", "ext4", "-p", "fshost", "-p", "netstack", "-p", "dhcp-client", "-p", "netcfg", "-p", "linuxd", "--target", target.service_triple, *cargo_profile],
         cwd=ROOT,
         # 启动画面编入 driver-host；受 Git 管理的素材由 classic_assets 校验，cargo 会跟踪该环境变量与文件内容。
         environment=_env_with(environment, LITEOS_BOOT_SCENE=str(boot_scene())),
@@ -324,7 +324,7 @@ def run_qemu(mode: str, environment: Mapping[str, str] | None = None, *, memory:
 
 
 def ext4_unit_fixture(environment: Mapping[str, str] | None = None) -> Path:
-    """用 ``create_fs.py`` 的唯一 ext4 layout 重新生成 ext4-unit 只读测试镜像。
+    """用 ``scripts/create_fs.py`` 的唯一 ext4 layout 重新生成 ext4-unit 只读测试镜像。
 
     1. ``/bin/init`` 写入 64 个 4K block 的固定 payload，供 extent mapping 成本测试读取；
     2. 镜像携带 create_fs 的 4 MiB JBD2 journal，64 MiB 容量覆盖 1 MiB 单事务写入；
@@ -339,7 +339,7 @@ def ext4_unit_fixture(environment: Mapping[str, str] | None = None) -> Path:
     image = directory / "ext4-fixture.img"
     image.unlink(missing_ok=True)
     run(
-        [PYTHON, "create_fs.py", "create", "--file", image, "--size", "64", "--init", payload],
+        [PYTHON, "scripts/create_fs.py", "create", "--file", image, "--size", "64", "--init", payload],
         environment=environment,
         capture=True,
     )
@@ -646,7 +646,7 @@ def verify_host(environment: Mapping[str, str] | None = None) -> None:
         ],
         environment=environment,
     )
-    run(["cargo", "clippy", "-p", "root-server", "-p", "driver-host", "-p", "ext4d", "-p", "fshost", "-p", "netstack", "-p", "dhcp-client", "-p", "netcfg", "-p", "linuxd", "--target", target.service_triple, "--bins", "--", "-D", "warnings"], environment=environment)
+    run(["cargo", "clippy", "-p", "component-manager", "-p", "driver-manager", "-p", "driver-host", "-p", "ext4", "-p", "fshost", "-p", "netstack", "-p", "dhcp-client", "-p", "netcfg", "-p", "linuxd", "--target", target.service_triple, "--bins", "--", "-D", "warnings"], environment=environment)
     if target.requires_bootloader:
         run(["cargo", "clippy", "--release", "--", "-D", "warnings"], cwd=ROOT / "bootloader", environment=environment)
     verify_unit(environment)

@@ -47,34 +47,36 @@ pub fn publish(
     directory: &Directory,
     advance: Arc<dyn Fn(Milestone) + Send + Sync>,
 ) -> Result<(), Status> {
-    directory.add(
-        Class::Boot,
-        &directory::description(),
-        false,
-        Box::new(move |end| {
-            let session = SessionState::new(advance.clone(), end);
-            let (client, server) = Channel::create()?;
-            let server = directory::serve_session(
-                server,
-                1,
-                b"boot-progress",
-                Arc::try_new(
-                    move |ordinal: u32, request: &mut Reader<'_>, _, _: &mut Writer| {
-                        if ordinal != ADVANCE {
-                            return Err(native_abi::ERR_NOT_SUPPORTED);
-                        }
-                        (session.get())(Milestone::decode(request.u32()?)?);
-                        Ok(Vec::new())
-                    },
-                )
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-            )?;
-            Ok(Session {
-                handles: alloc::vec![client.into_handle()],
-                server,
-            })
-        }),
-    )
+    directory
+        .add(
+            Class::Boot,
+            &directory::description(),
+            false,
+            Box::new(move |end| {
+                let session = SessionState::new(advance.clone(), end);
+                let (client, server) = Channel::create()?;
+                let server = directory::serve_session(
+                    server,
+                    1,
+                    b"boot-progress",
+                    Arc::try_new(
+                        move |ordinal: u32, request: &mut Reader<'_>, _, _: &mut Writer| {
+                            if ordinal != ADVANCE {
+                                return Err(native_abi::ERR_NOT_SUPPORTED);
+                            }
+                            (session.get())(Milestone::decode(request.u32()?)?);
+                            Ok(Vec::new())
+                        },
+                    )
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                )?;
+                Ok(Session {
+                    handles: alloc::vec![client.into_handle()],
+                    server,
+                })
+            }),
+        )
+        .map(drop)
 }
 
 /// 使用者端的进度通道。

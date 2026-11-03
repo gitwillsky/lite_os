@@ -88,7 +88,7 @@ fn kernel_main(context: execution::entry::BootContext) -> ! {
     });
     platform::initialize_devices();
     log::initialize_readers();
-    bootstrap::start_root_server(platform::kernel_command_line());
+    bootstrap::start_component_manager(platform::kernel_command_line());
 
     // Release 发布页表、设备与根服务；次级 CPU 在进入任何共享子系统前消费它。
     INIT_READY.store(true, Ordering::Release);

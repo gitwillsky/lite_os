@@ -69,58 +69,66 @@ pub fn publish(directory: &Directory, device: Arc<dyn InputDevice>) -> Result<()
     }
     let event = Arc::try_new(event).map_err(|_| native_abi::ERR_NO_MEMORY)?;
     device.bind_activity(activity_signal(event.clone())?);
-    directory.add(
-        Class::Input,
-        &description,
-        true,
-        Box::new(move |end| {
-            let session = SessionState::new(device.clone(), end);
-            let (client, server) = Channel::create()?;
-            let server = directory::serve_session(
-                server,
-                1,
-                b"input-server",
-                Arc::try_new(
-                    move |ordinal: u32, _: &mut Reader<'_>, _, reply: &mut Writer| {
-                        let device = session.get();
-                        match ordinal {
-                            RECEIVE => {
-                                let mut events = Vec::new();
-                                while events.len() < BATCH {
-                                    match device.receive_event().map_err(|_| native_abi::ERR_IO)? {
-                                        Some(event) => events.push(event),
-                                        None => break,
+    directory
+        .add(
+            Class::Input,
+            &description,
+            true,
+            Box::new(move |end| {
+                let session = SessionState::new(device.clone(), end);
+                let (client, server) = Channel::create()?;
+                let server = directory::serve_session(
+                    server,
+                    1,
+                    b"input-server",
+                    Arc::try_new(
+                        move |ordinal: u32, _: &mut Reader<'_>, _, reply: &mut Writer| {
+                            let device = session.get();
+                            match ordinal {
+                                RECEIVE => {
+                                    let mut events = Vec::new();
+                                    while events.len() < BATCH {
+                                        match device
+                                            .receive_event()
+                                            .map_err(|_| native_abi::ERR_IO)?
+                                        {
+                                            Some(event) => events.push(event),
+                                            None => break,
+                                        }
+                                    }
+                                    if !events.is_empty() {
+                                        device
+                                            .finish_receive_batch()
+                                            .map_err(|_| native_abi::ERR_IO)?;
+                                    }
+                                    reply.u32(events.len() as u32);
+                                    for event in events {
+                                        reply
+                                            .u16(event.event_type)
+                                            .u16(event.code)
+                                            .i32(event.value);
                                     }
                                 }
-                                if !events.is_empty() {
-                                    device
-                                        .finish_receive_batch()
-                                        .map_err(|_| native_abi::ERR_IO)?;
+                                HAS_PENDING => {
+                                    reply.bool(device.has_pending_event());
                                 }
-                                reply.u32(events.len() as u32);
-                                for event in events {
-                                    reply.u16(event.event_type).u16(event.code).i32(event.value);
-                                }
+                                _ => return Err(native_abi::ERR_NOT_SUPPORTED),
                             }
-                            HAS_PENDING => {
-                                reply.bool(device.has_pending_event());
-                            }
-                            _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-                        }
-                        Ok(Vec::new())
-                    },
-                )
-                .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-            )?;
-            Ok(Session {
-                handles: alloc::vec![
-                    client.into_handle(),
-                    event.duplicate(rights::SAME)?.into_handle()
-                ],
-                server,
-            })
-        }),
-    )
+                            Ok(Vec::new())
+                        },
+                    )
+                    .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+                )?;
+                Ok(Session {
+                    handles: alloc::vec![
+                        client.into_handle(),
+                        event.duplicate(rights::SAME)?.into_handle()
+                    ],
+                    server,
+                })
+            }),
+        )
+        .map(drop)
 }
 
 /// 使用者端的远端输入设备。

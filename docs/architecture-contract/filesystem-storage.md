@@ -1,6 +1,6 @@
 # 文件系统与存储契约
 
-本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4d/src/ext4/`，设备 adapter 位于 `system/driver-host/src/drivers/`。
+本文未限定路径的 Linux 领域名均位于 `system/linuxd/src/`；native 内核机制另见[架构总则](../architecture.md)。ext4 磁盘引擎位于 `system/ext4/src/ext4/`，设备 adapter 位于 `system/driver-host/src/drivers/`。
 
 
 FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
@@ -270,10 +270,10 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   1040 B、64-slot FileDescriptor chunk 1024 B；仅 fd 0 与 1,048,575 时 heap payload 为 5168 B，
   全物化时 metadata/chunk payload 上限分别为 134,160 B/16,777,216 B（不含 allocator header）。
 - ext4 owner 独占 inode/directory/link/allocation mutation；packed disk value 定义与字段保持
-  `ext4d::ext4` parent-private，`ext4d::ext4::layout` 只封装定长 decode/encode 与 raw byte access，
-  `ext4d::ext4::block_io` 封装 filesystem/device block 换算，`ext4d::ext4::inode` 独占 inode identity 与
-  VFS projection，`ext4d::ext4::extent` 独占 logical-block mapping，`ext4d::ext4::htree` 独占 dx index，
-  `ext4d::ext4::metadata_csum` 独占全部 metadata checksum 公式；`Ext4FileSystem` 的 64-entry metadata
+  `ext4::ext4` parent-private，`ext4::ext4::layout` 只封装定长 decode/encode 与 raw byte access，
+  `ext4::ext4::block_io` 封装 filesystem/device block 换算，`ext4::ext4::inode` 独占 inode identity 与
+  VFS projection，`ext4::ext4::extent` 独占 logical-block mapping，`ext4::ext4::htree` 独占 dx index，
+  `ext4::ext4::metadata_csum` 独占全部 metadata checksum 公式；`Ext4FileSystem` 的 64-entry metadata
   block cache 独占 directory/htree/extent/orphan block identity 与 LRU reclaim；JBD2 journal 独占
   transaction/commit/replay；page cache 独占 cached page lifecycle。
 - ext4 写路径固定为 Linux `data=ordered` + group commit：每次 mutation 的 handle overlay 独占本次
@@ -293,7 +293,7 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
   未提交事务释放的 block 在提交前不得重新分配，否则崩溃后旧文件会指向新文件已写回的数据。
 - running transaction 只在以下时机提交：handle 并入后 metadata 超过单个 journal transaction 容量
   （先提交 running，再并入）、staged data 超过 16 MiB、年龄超过 5 秒、`fsync`/`fdatasync`/`execution::sync`。
-  每个 ext4 filesystem 在 mount 时由 ext4d 创建原生写回服务线程（对应 Linux jbd2）：running transaction
+  每个 ext4 filesystem 在 mount 时由 ext4 创建原生写回服务线程（对应 Linux jbd2）：running transaction
   由空变非空时经 `TaskEvent` 唤醒，睡到开始时刻加 5 秒后在 mutation owner 下提交；没有未提交
   mutation 时线程无限期阻塞，不产生周期唤醒。mount 发布前预备唯一 shutdown waiter；
   `shutdown` 消费它无分配取得 mutation owner，同锁先发布 `stopping` 再最终 drain 并 signal。

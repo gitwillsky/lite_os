@@ -13,7 +13,7 @@
 | `device-model` / `device-protocol` | 设备类接口 / 设备目录、设备会话、channel、共享 VMO 的传输契约 |
 | `linuxd::devices` | DRM、evdev、ALSA、TTY、USB sysfs、virtio-port 的 Linux 语义 |
 | `linuxd::fs::chardev` / `devnode` | cdev minor 区间注册 / devfs inode identity |
-| `netcfg` → `netstack` / `fshost` → `ext4d` | 网卡发现并安装进协议栈 / 块设备所有与文件系统服务 |
+| `netcfg` → `netstack` / `fshost` → `ext4` | 网卡发现并安装进协议栈 / 块设备所有与文件系统服务 |
 | `user/linux-uapi` 与 compositor | 应用 Linux UAPI 资源封装 / DRM master、evdev、标准 Wayland |
 
 adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份权威；Linux 文件壳和 RPC client
@@ -24,7 +24,7 @@ adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份�
 
 1. driver-host 持续服务设备目录（对应 Fuchsia devfs）：驱动只登记类、静态描述与开会话函数，目录分配单调不复用的 ID；
    使用者 `LIST` 枚举、`WATCH` 取得变化 Event（先清除再读取，读取之后的变化不会丢失）、`OPEN` 建立新会话、
-   `SCOPE` 派生只含指定类的目录。root-server 持有完整目录并按类派生给各服务。
+   `SCOPE` 派生只含指定类的目录。component-manager 持有完整目录并按类派生给各服务。
 2. 会话是设备类协议的一组句柄（请求 channel、活动 Event，PCM 另有事件 channel）。会话状态与结束标记由服务闭包
    整体持有，随全部服务线程退出而析构：先回收会话状态，再置位结束标记。各类回收：网卡取消未提交的发送预留；
    PCM 停止并释放流、撤销事件端点；显示关闭 scanout、释放 2D 缓冲、销毁本会话的 virgl context 与 resource、
@@ -37,7 +37,7 @@ adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份�
 
 1. BTI 绑定设备 stream，PMT 保活固定页和设备映射；固定期间不得 decommit、替换或 COW 冻结该页。
    恒等 BTI 只提供物理设备地址和 pin，不提供设备隔离。
-   root-server 保留初始根 authority，并只向可信 driver-host 委派根副本；linuxd 仅获得 system 子范围，
+   component-manager 保留初始根 authority，并只向可信 driver-host 委派根副本；linuxd 仅获得 system 子范围，
    覆盖 debuglog 读取、串口、UTC 设置和电源。system resource 不能创建 MMIO/IRQ/IOMMU、不能扩大父范围或恢复根。
    Resource authority 属于不可变 kind/range，创建子 resource 另要求句柄 WRITE；普通应用不接触 native resource。
    driver-host 按 DTB 路由分别持有恒等/硬件 IOMMU；MMIO 设备不借 PCI stream 0。

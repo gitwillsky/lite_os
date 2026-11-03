@@ -132,11 +132,11 @@ chunk 基址按 max(page, block) 对齐；较大对齐的 prefix/suffix 在发�
 - `object::Process` 的 lifecycle 锁同时保护存活线程索引与退出累计计费；最终 runtime 与线程摘除同一事务提交，
   不丢失已退出线程，也不与并发查询重复计费。启动失败只回滚登记，不改变未启动执行体的状态。
 - `TASK_RUNTIME` 查询包括已退出线程；`TASK_STATS` 返回映射字节、映射驻留字节和存活线程数，均要求 INSPECT。
-  统计由实际 task/VM owner 提供，不在 root-server 或桌面另建人工同步计数。
+  统计由实际 task/VM owner 提供，不在 component-manager 或桌面另建人工同步计数。
 - Job 默认持有 `ENUMERATE`：`JOB_CHILDREN`/`JOB_PROCESSES`（另需 INSPECT）返回存活直属成员的升序 KOID，
   `OBJECT_GET_CHILD` 按 KOID 取成员句柄，rights 不得超出 Job 句柄。只读观察者因此只能取得只读成员，不能借枚举提权。
   KOID 在锁内复制、锁外写回用户，结果是时点快照；成员随后结束时取句柄返回 `ERR_NOT_FOUND`。
-- root-server 交给 linuxd 根 Job 的 `INSPECT | ENUMERATE | TRANSFER` 句柄（对应 Fuchsia `RootJobForInspect`），
+- component-manager 交给 linuxd 根 Job 的 `INSPECT | ENUMERATE | TRANSFER` 句柄（对应 Fuchsia `RootJobForInspect`），
   没有 MANAGE、READ、WRITE。linuxd 每次请求遍历任务树，新增服务自动可见；linuxd 所在 Job 中除 linuxd 自身外的成员是
   Linux 进程或映像共享进程，前者由 /proc 呈现，二者都不进入快照。不向应用传递原生句柄。
 - `task-observer-protocol` 拥有版本化查询/回复格式与端点约定。linuxd 的 `system::task_observer` 经 `system::endpoint`

@@ -6,6 +6,9 @@
 //! 3. `SCOPE` 派生只含指定类的目录 channel：根服务据此把各类设备路由给不同服务，派生目录不能扩大范围。
 //! 4. 独占类设备同一时刻只有一个会话。旧会话的使用者已离开时，`OPEN` 等待旧会话回收完毕再建立新会话；
 //!    使用者仍在时返回 `ERR_ALREADY_BOUND`。
+//! 5. 驱动宿主各自服务本进程设备的目录；driver-manager 把它们汇聚为一个目录（转发条目，
+//!    [`Directory::add_forwarded`]），宿主终止时撤下其条目（[`Directory::remove`]）。已撤下设备的会话
+//!    随宿主一起 `PEER_CLOSED`；宿主重启后设备以新 ID 重新登记。
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
@@ -149,6 +152,9 @@ pub struct Session {
 /// 设备类的开会话函数：建立会话 channel 并服务它，会话状态持有 `SessionEnd`。
 pub type Opener = Box<dyn Fn(SessionEnd) -> Result<Session, Status> + Send + Sync>;
 
+/// 转发条目的开会话函数：向设备所在宿主的目录发出 `OPEN`，原样返回会话句柄。
+pub type ForwardOpener = Box<dyn Fn() -> Result<Vec<Handle>, Status> + Send + Sync>;
+
 /// 服务会话请求 channel，并返回其服务端副本供目录判断会话存活。
 ///
 /// # Errors
@@ -170,22 +176,38 @@ struct Live {
     ended: Event,
 }
 
+/// 会话从哪里建立。
+enum Source {
+    /// 本进程的驱动。
+    Local {
+        exclusive: bool,
+        opener: Opener,
+        // OWNER: 独占类的当前会话；缺失时两个使用者会同时驱动同一硬件。
+        live: Mutex<Option<Live>>,
+    },
+    /// 另一宿主的目录：独占与会话回收由该宿主判定。
+    Forwarded(ForwardOpener),
+}
+
 struct Device {
     id: u64,
     class: Class,
     description: Vec<u8>,
-    exclusive: bool,
-    opener: Opener,
-    // OWNER: 独占类的当前会话；缺失时两个使用者会同时驱动同一硬件。
-    live: Mutex<Option<Live>>,
+    source: Source,
 }
 
 impl Device {
     fn open(&self) -> Result<Vec<Handle>, Status> {
-        let mut live = self.live.lock();
-        if self.exclusive
-            && let Some(current) = live.as_ref()
-        {
+        let (exclusive, opener, live) = match &self.source {
+            Source::Local {
+                exclusive,
+                opener,
+                live,
+            } => (*exclusive, opener, live),
+            Source::Forwarded(open) => return open(),
+        };
+        let mut live = live.lock();
+        if exclusive && let Some(current) = live.as_ref() {
             // 使用者仍持有请求 channel：拒绝；已离开：等服务线程退出、会话状态回收完毕。
             match current.server.wait_one(signals::PEER_CLOSED, 0) {
                 Err(native_abi::ERR_TIMED_OUT) => return Err(native_abi::ERR_ALREADY_BOUND),
@@ -199,8 +221,8 @@ impl Device {
         }
         let ended = Event::create()?;
         let end = SessionEnd(ended.duplicate(rights::SAME)?);
-        let session = (self.opener)(end)?;
-        if self.exclusive {
+        let session = opener(end)?;
+        if exclusive {
             *live = Some(Live {
                 server: session.server,
                 ended,
@@ -241,7 +263,11 @@ impl Directory {
         .map_err(|_| native_abi::ERR_NO_MEMORY)
     }
 
-    /// 登记设备并通知观察者。
+    /// 登记本进程驱动的设备并通知观察者。
+    ///
+    /// # Returns
+    ///
+    /// 设备在本目录中的 ID。
     ///
     /// # Errors
     ///
@@ -252,30 +278,77 @@ impl Directory {
         description: &Writer,
         exclusive: bool,
         opener: Opener,
-    ) -> Result<(), Status> {
+    ) -> Result<u64, Status> {
+        self.insert(
+            class,
+            description.as_bytes(),
+            Source::Local {
+                exclusive,
+                opener,
+                live: Mutex::new(None),
+            },
+        )
+    }
+
+    /// 登记另一宿主目录中的设备：`OPEN` 经 `open` 转发给该宿主。
+    ///
+    /// # Returns
+    ///
+    /// 设备在本目录中的 ID。
+    ///
+    /// # Errors
+    ///
+    /// 分配失败。
+    pub fn add_forwarded(
+        &self,
+        class: Class,
+        description: &[u8],
+        open: ForwardOpener,
+    ) -> Result<u64, Status> {
+        self.insert(class, description, Source::Forwarded(open))
+    }
+
+    fn insert(&self, class: Class, description: &[u8], source: Source) -> Result<u64, Status> {
         let mut bytes = Vec::new();
         bytes
-            .try_reserve_exact(description.as_bytes().len())
+            .try_reserve_exact(description.len())
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
-        bytes.extend_from_slice(description.as_bytes());
+        bytes.extend_from_slice(description);
         let mut state = self.state.lock();
         state
             .devices
             .try_reserve(1)
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        let id = state.next;
         let device = Arc::try_new(Device {
-            id: state.next,
+            id,
             class,
             description: bytes,
-            exclusive,
-            opener,
-            live: Mutex::new(None),
+            source,
         })
         .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         state.next += 1;
         state.devices.push(device);
         Self::notify(&state);
-        Ok(())
+        Ok(id)
+    }
+
+    /// 撤下设备并通知观察者；已建立的会话不受目录影响。
+    pub fn remove(&self, id: u64) {
+        let removed = {
+            let mut state = self.state.lock();
+            let removed = state
+                .devices
+                .iter()
+                .position(|device| device.id == id)
+                .map(|index| state.devices.remove(index));
+            if removed.is_some() {
+                Self::notify(&state);
+            }
+            removed
+        };
+        // 开会话闭包可能持有宿主连接，在目录锁外释放。
+        drop(removed);
     }
 
     /// 启动时发现的设备已全部登记。
