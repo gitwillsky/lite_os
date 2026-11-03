@@ -29,8 +29,10 @@ pub const DHCP: &[u8] = b"liteos.network.Dhcp";
 pub const STORAGE_ADMIN: &[u8] = b"liteos.storage.Admin";
 /// fshost 的块设备清单协议（`filesystem_protocol::BlocksClient`）。
 pub const BLOCKS: &[u8] = b"liteos.storage.Blocks";
-/// fshost 转发给 ext4 的挂载协议（`filesystem_protocol::MountClient`）。
+/// fshost 的卷挂载协议（`filesystem_protocol::VolumeMountClient`）。
 pub const EXT4: &[u8] = b"liteos.filesystem.Ext4";
+/// audio-core 的音频协议（`audio_protocol::AudioClient`）。
+pub const AUDIO: &[u8] = b"liteos.audio.Core";
 
 const CONNECT: u32 = 1;
 /// 协议名上限；超过即为格式错误。

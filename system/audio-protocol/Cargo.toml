@@ -1,0 +1,16 @@
+[package]
+name = "audio-protocol"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+test = false
+bench = false
+
+[dependencies]
+native-runtime = { path = "../native-runtime" }
+service-rpc = { path = "../service-rpc" }
+device-model = { path = "../device-model" }
+
+[lints]
+workspace = true

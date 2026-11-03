@@ -1,6 +1,6 @@
 //! 设备类注册表：platform 按发现顺序发布同一 seam 的多个 adapter。
 //!
-//! 每个设备类（network、display、input、PCM output、USB、entropy、named port）各有一个只追加的
+//! 每个设备类（network、display、input、USB、entropy、named port）各有一个只追加的
 //! 注册表；index 是 adapter 的稳定 identity。选择哪个实例是消费领域的策略，注册表不区分“主设备”。
 //! 注册表是进程内的：驱动宿主登记驱动 adapter，使用者登记对应的远端 client。
 
@@ -8,8 +8,8 @@ use alloc::sync::Arc;
 use core::mem::MaybeUninit;
 
 use crate::{
-    AppendOnlyRegistry, EntropyError, EntropySource, GraphicsDevice, InputDevice, PcmOutput,
-    PortDevice, UsbDevice,
+    AppendOnlyRegistry, EntropyError, EntropySource, GraphicsDevice, InputDevice, PortDevice,
+    UsbDevice,
 };
 
 // OWNER: display adapter 的唯一发布点；IRQ handler 与 DRM 持有同一 Arc，缺失时 scanout backing
@@ -18,8 +18,6 @@ static DISPLAY_DEVICES: AppendOnlyRegistry<dyn GraphicsDevice> = AppendOnlyRegis
 // OWNER: input adapter 按发现顺序的唯一发布点；index 即 evdev minor，缺失时 devfs event 号与 IRQ
 // adapter 身份分裂。
 static INPUT_DEVICES: AppendOnlyRegistry<dyn InputDevice> = AppendOnlyRegistry::new();
-// OWNER: PCM playback adapter 的唯一发布点；缺失时两个 ALSA owner 可能控制同一 stream。
-static PCM_OUTPUTS: AppendOnlyRegistry<dyn PcmOutput> = AppendOnlyRegistry::new();
 // OWNER: 每次 USB 连接只发布一个 adapter；永久 index 使旧 sysfs remove 不会命中新连接。
 // adapter 查询 host generation，不复制在线状态；缺少此来源则托盘只能猜测声卡名称。
 static USB_DEVICES: AppendOnlyRegistry<dyn UsbDevice> = AppendOnlyRegistry::new();
@@ -76,20 +74,6 @@ pub fn input_device(index: usize) -> Option<Arc<dyn InputDevice>> {
 /// 已发布 input adapter 数量。
 pub fn input_device_count() -> usize {
     INPUT_DEVICES.count()
-}
-
-/// 发布一个 PCM playback adapter。
-///
-/// # Errors
-///
-/// 注册表扩容失败时原样返回 adapter。
-pub fn register_pcm_output(device: Arc<dyn PcmOutput>) -> Result<usize, Arc<dyn PcmOutput>> {
-    PCM_OUTPUTS.register(device)
-}
-
-/// 第 `index` 个 PCM playback adapter。
-pub fn pcm_output(index: usize) -> Option<Arc<dyn PcmOutput>> {
-    PCM_OUTPUTS.get(index)
 }
 
 /// 发布一个 entropy source。

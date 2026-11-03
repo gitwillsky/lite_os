@@ -9,11 +9,13 @@ AArch64 和 RISC-V64 共用这些机制，具体指令与 machine 装配通过�
 1. `kernel/src/main.rs` 装配内核机制；`bootstrap` 从 bootfs 装载唯一的 `component-manager`，交付根 Job、
    resource、bootfs 与 DTB。内核不解释服务目录、文件系统、网络和应用启动策略。
 2. `system/component-manager` 是能力路由与监督者（对应 Fuchsia component_manager）：启动各服务，按设备类派生
-   driver-host 的设备目录（Network → netcfg，Block → fshost，其余 → linuxd），并为每个消费者服务只含其声明协议的
-   路由目录。netstack、dhcp-client、netcfg 与 linuxd 终止后重启，崩溃循环时关机；driver-host、fshost、ext4
-   终止即关机。规则见[依赖与 owner 契约](architecture-contract/dependency-owners.md#服务拓扑与能力路由)。
-3. `driver-host` 拥有硬件驱动并持续服务设备目录；设备会话可重开，使用者重启后重新打开。
-   `fshost` 拥有块设备会话与 ext4，交出 Linux 块设备、转发 ext4 挂载，并在原生数据卷上为原生服务派生私有目录。
+   driver-manager 的设备目录（Network → netcfg，Block → fshost，Pcm → audio-core，其余 → linuxd），并为每个消费者服务
+   只含其声明协议的路由目录。netstack、dhcp-client、netcfg、audio-core 与 linuxd 终止后重启，崩溃循环时关机；
+   driver-manager、fshost 终止即关机。规则见[依赖与 owner 契约](architecture-contract/dependency-owners.md#服务拓扑与能力路由)。
+3. `driver-manager` 拥有平台事实与节点拓扑，为每个节点启动一个 `driver-host` 并汇聚其设备目录（Fuchsia DFv2）；
+   设备会话可重开，使用者重启后重新打开。`fshost` 拥有块设备会话并为每块盘启动 ext4 实例，交出 Linux 块设备、
+   按盘挂载 ext4，并在原生数据卷上为原生服务派生私有目录；ext4 实例拥有普通文件内容（pager VMO）。
+   `audio-core` 拥有 PCM 输出与混音，linuxd 只翻译 ALSA。
    `netstack` 只提供协议栈；`netcfg` 发现网卡并安装进 netstack 的默认网络，按默认策略与用户设置配置接口，
    DHCP 由 `dhcp-client` 完成。
 4. `linuxd` 是可插拔的 Linux 容器（Starnix 模型），只消费路由给它的能力：挂载根文件系统并启动 PID1；它退出后
@@ -35,9 +37,10 @@ AArch64 和 RISC-V64 共用这些机制，具体指令与 machine 装配通过�
 | `kernel/src/object`、`syscall` | 句柄、rights、对象生命周期及 native 参数编解码 |
 | `system/native-runtime`、`service-sync`、`service-rpc` | 服务入口、分配/线程/port reactor、可睡眠同步与 IPC codec |
 | `system/component-manager`、`service-directory` | 服务启动、监督与能力路由；按协议名连接服务的路由协议 |
-| `system/linuxd` | Linux ABI、VFS、进程/信号/安全、设备 UAPI、pager、应用装载与授权端点适配 |
-| `system/driver-host`、`device-model`、`device-protocol` | 驱动、设备类 trait、设备目录与可重开的设备会话 |
-| `system/fshost`、`ext4`、`filesystem-protocol` | 块设备与数据卷所有者；ext4/JBD2 与 FUSE 服务；挂载、块设备清单与存储能力协议 |
+| `system/linuxd` | Linux ABI、VFS、进程/信号/安全、设备 UAPI（含 ALSA 状态机）、tmpfs 与 Linux FUSE 页缓存、应用装载与授权端点适配 |
+| `system/driver-manager`、`driver-host`、`device-model`、`device-protocol` | 平台事实、节点匹配与宿主监督；每节点一个驱动宿主；设备类 trait、汇聚设备目录与可重开的设备会话 |
+| `system/fshost`、`ext4`、`filesystem-protocol`、`pager-pool` | 块设备、数据卷与每盘 ext4 实例；ext4/JBD2、文件内容 VMO 与 FUSE 服务；卷挂载、块设备清单与存储能力协议；补页线程池 |
+| `system/audio-core`、`audio-protocol` | PCM 输出、混音与主音量；输出列表、渲染流与共享控制区协议 |
 | `system/netstack`、`network-protocol` | IPv4/transport/FIB 与网络域；控制、安装、域与 socket 协议 |
 | `system/netcfg`、`dhcp-client`、`netcfg-protocol` | 接口配置策略与用户设置；DHCPv4 客户端；设置与租约编码 |
 | `system/task-observer-protocol` | 原生系统服务观测的只读消息；KOID 不混入 Linux PID |
@@ -60,4 +63,7 @@ AArch64 和 RISC-V64 共用这些机制，具体指令与 machine 装配通过�
 - 内核不提供 swap/reclaim 策略；当前用户态 pager 尚未提供换出服务。相关 syscall、procfs 与门禁的范围由内存 ABI owner 声明。
 - 服务使用无浮点 ABI；应用浮点状态跨 restricted 退出保留。对信号帧的显式读写由 `linuxd::arch` 负责。
 - SMMUv3 与 RISC-V IOMMU 后端均存在；设备故障/事件队列、硬件验证范围由平台契约声明。
+- 驱动宿主崩溃后只有声明 `restart_on_crash` 的驱动（目前仅熵源）被重建；网卡、输入、声音、console 端口的使用者
+  尚无设备移除语义，这些节点被移除。主显示客户端（linuxd）断开时 GPU 宿主不重新显示开机画面（Fuchsia virtcon 的
+  回退客户端尚未实现）。audio-core 重启后 linuxd 不重连，已有声卡报告断开。
 - 缺失语义必须返回标准错误或保持接口不存在；不以 stub、忽略 flags 或放宽验收掩盖实现错误。

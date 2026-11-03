@@ -8,7 +8,8 @@
 | `kernel::object::resource` | 不可变 MMIO/IRQ/system 授权范围与中断投递、屏蔽、ack |
 | `kernel::iommu` / `kernel::vm::device_space` | stream domain、IOVA / 设备页表及 retirement |
 | `arch::dma` | 静态硬件后端、设备表编码与同步失效 |
-| `driver-host::platform` / `driver-host::drivers` | 设备事实解码、装配 / 全部硬件 adapter、DMA、queue、reset |
+| `driver-manager::platform` / `nodes` / `host` | 设备事实解码与节点资源 / 节点顺序与驱动匹配 / 宿主启动、目录汇聚与监督 |
+| `driver-host::platform` / `driver-host::drivers` | 节点资源（MMIO 映射、中断、BTI）/ 节点的硬件 adapter、DMA、queue、reset |
 | `driver-host::io_completion` / `driver-host::completion` | 请求槽与 capacity handshake / 合并完成通知与服务线程 |
 | `device-model` / `device-protocol` | 设备类接口 / 设备目录、设备会话、channel、共享 VMO 的传输契约 |
 | `linuxd::devices` | DRM、evdev、ALSA、TTY、USB sysfs、virtio-port 的 Linux 语义 |
@@ -22,9 +23,12 @@ adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份�
 
 ## 设备目录与会话
 
-1. driver-host 持续服务设备目录（对应 Fuchsia devfs）：驱动只登记类、静态描述与开会话函数，目录分配单调不复用的 ID；
-   使用者 `LIST` 枚举、`WATCH` 取得变化 Event（先清除再读取，读取之后的变化不会丢失）、`OPEN` 建立新会话、
-   `SCOPE` 派生只含指定类的目录。component-manager 持有完整目录并按类派生给各服务。
+1. 每个驱动宿主在自己的设备目录登记设备（类、静态描述与开会话函数）；driver-manager 把各宿主目录汇聚为唯一
+   设备目录（对应 Fuchsia devfs）：转发条目的 `OPEN` 原样交给所在宿主，独占与会话回收由宿主判定；宿主终止时撤下
+   它的全部条目（`remove`），宿主重启后设备以新 ID 重新登记。目录 ID 单调不复用；使用者 `LIST` 枚举、`WATCH`
+   取得变化 Event（先清除再读取，读取之后的变化不会丢失）、`OPEN` 建立新会话、`SCOPE` 派生只含指定类的目录。
+   初始枚举按节点顺序并入（首个 GPU、PCI console/block、按 DTB 顺序的 VirtIO-MMIO、xHCI），使用者据登记顺序命名
+   设备。component-manager 持有完整目录并按类派生给各服务。
 2. 会话是设备类协议的一组句柄（请求 channel、活动 Event，PCM 另有事件 channel）。会话状态与结束标记由服务闭包
    整体持有，随全部服务线程退出而析构：先回收会话状态，再置位结束标记。各类回收：网卡取消未提交的发送预留；
    PCM 停止并释放流、撤销事件端点；显示关闭 scanout、释放 2D 缓冲、销毁本会话的 virgl context 与 resource、
@@ -37,10 +41,14 @@ adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份�
 
 1. BTI 绑定设备 stream，PMT 保活固定页和设备映射；固定期间不得 decommit、替换或 COW 冻结该页。
    恒等 BTI 只提供物理设备地址和 pin，不提供设备隔离。
-   component-manager 保留初始根 authority，并只向可信 driver-host 委派根副本；linuxd 仅获得 system 子范围，
+   component-manager 保留初始根 authority，并只向 driver-manager 委派根副本；driver-manager 为每个节点切出覆盖其
+   窗口的 MMIO resource、其向量的 IRQ resource 并创建 BTI，驱动宿主只拿到这些；linuxd 仅获得 system 子范围，
    覆盖 debuglog 读取、串口、UTC 设置和电源。system resource 不能创建 MMIO/IRQ/IOMMU、不能扩大父范围或恢复根。
    Resource authority 属于不可变 kind/range，创建子 resource 另要求句柄 WRITE；普通应用不接触 native resource。
-   driver-host 按 DTB 路由分别持有恒等/硬件 IOMMU；MMIO 设备不借 PCI stream 0。
+   driver-manager 按 DTB 路由分别持有恒等/硬件 IOMMU；MMIO 设备不借 PCI stream 0。
+   PMT 只有经 `PMT_UNPIN` 才释放；持有者终止等未解除就关闭的 PMT 连同设备映射进入所属 BTI 的隔离区（Zircon
+   quarantine），直到 `BTI_RELEASE_QUARANTINE` 或 BTI 销毁。driver-manager 持有每个节点 BTI 的原件，重启的宿主在驱动
+   复位设备之后释放隔离区；缺失时恒等 BTI 上的设备可向已复用的页 DMA。
    PCI iommu-map 的全部区间经 phandle、重叠与溢出校验，应用 iommu-map-mask 后选择 stream；
    声明映射但 requester 未覆盖时 fail-stop，不隐式绕过。当前只支持一个平台 IOMMU。
    VirtIO transport 对平台提供的 ACCESS_PLATFORM 统一协商，全部 adapter 继续使用同一 BTI DMA 接口。
@@ -80,7 +88,7 @@ MMIO net/RNG 验证混合 DMA 的真实读写、同步与网络；不宣称设�
   `driver-host::io_completion` 的 typed device/slot/generation/ticket 是唯一请求身份，不交给内核解释。
 - block/RNG 中断处理共用 `VirtIOCompletionIrq`；transport error 锁存后仍须请求完成分派，
   使 completion owner reset 并唤醒全部 outstanding request，不能吞掉已确认的唯一设备边沿。
-- `driver-host::main` 决定装配顺序，`driver-host::drivers::virtio::binding` 拥有具体 VirtIO 绑定表；driver、DRM、input、filesystem 与 syscall 不得依赖 QEMU machine types。
+- `driver-manager::nodes` 决定节点顺序与驱动匹配，`driver-host::drivers::virtio::binding` 只装配本节点匹配的驱动；driver、DRM、input、filesystem 与 syscall 不得依赖 QEMU machine types。
 - VirtIO PCI discovery 必须从 vendor capabilities 得到 modern common/notify/ISR/device windows，按
   `cap.offset + queue_notify_off * notify_off_multiplier` 计算 doorbell，禁用 MSI-X 并只消费 DTB
   `interrupt-map` 给出的 INTx。BAR、capability chain、queue size 或 route 非法时不得发布半初始化 adapter。

@@ -1,7 +1,7 @@
 //! 设备目录的使用者端：打开路由给 linuxd 的每个设备，把远端 client 登记到对应的设备类注册表。
 //!
 //! 1. 启动时枚举目录直到“启动枚举完成”，此后的块设备、console、显示、输入与音频装配都看到完整设备集；
-//! 2. 之后由目录线程等待目录变化 Event，继续接入热插拔设备（USB 连接与其 PCM 输出），登记后请求一轮音频发现；
+//! 2. 之后由目录线程等待目录变化 Event，继续接入热插拔设备（USB 连接）；USB 声卡的 PCM 输出由 audio-core 接入；
 //! 3. 全部设备的活动 Event 与事件 channel 由同一个 [`EventHub`] 线程分派。
 
 use alloc::sync::Arc;
@@ -9,7 +9,7 @@ use alloc::sync::Arc;
 use device_model::InputDevice;
 use device_protocol::boot::{BootProgress, Milestone};
 use device_protocol::directory::{Class, DirectoryClient, Entry, OpenedDevice};
-use device_protocol::{EventHub, display, entropy, input, pcm, port, usb};
+use device_protocol::{EventHub, display, entropy, input, port, usb};
 use native_runtime::native_abi::{self, Status, signals};
 use native_runtime::{Channel, Event};
 
@@ -33,8 +33,8 @@ fn attach(
     boot: &mut Option<BootProgress>,
 ) -> Result<(), Status> {
     match announcement.class {
-        // 块设备与网卡由根服务分别路由给 fshost 与 netstack，不在 linuxd 的目录范围内。
-        Class::Block | Class::Network => return Err(native_abi::ERR_NOT_SUPPORTED),
+        // 块设备、网卡与 PCM 输出由根服务分别路由给 fshost、netstack 与 audio-core，不在 linuxd 的目录范围内。
+        Class::Block | Class::Network | Class::Pcm => return Err(native_abi::ERR_NOT_SUPPORTED),
         Class::Display => {
             let _ = device_model::register_display_device(display::connect(announcement, hub)?);
         }
@@ -48,10 +48,6 @@ fn attach(
                     core::str::from_utf8(&name).unwrap_or("<non-utf8>")
                 );
             }
-        }
-        Class::Pcm => {
-            let _ = device_model::register_pcm_output(pcm::connect(announcement, hub)?);
-            super::audio::request_processing();
         }
         Class::Port => {
             let _ = device_model::register_port_device(port::connect(announcement, hub)?);

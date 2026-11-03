@@ -17,6 +17,8 @@ members = [
     "system/driver-host",
     "system/driver-manager",
     "system/pager-pool",
+    "system/audio-protocol",
+    "system/audio-core",
     "system/ext4",
     "system/fshost",
     "system/dhcp-client",

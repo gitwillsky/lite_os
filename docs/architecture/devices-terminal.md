@@ -3,10 +3,12 @@
 ## 当前设计
 
 1. 内核 `platform` 只发现 machine facts、路由中断并发布受权限约束的 MMIO/IRQ resource；
-   不装配设备驱动。`driver-host::platform` 解码 DTB，`driver-host::drivers` 装配 VirtIO、PCI 与 xHCI。
-2. driver-host 拥有全部硬件 adapter、queue、DMA、descriptor、completion 与 reset state。
+   不装配设备驱动。`driver-manager::platform` 解码 DTB，`driver-manager::pci` 枚举 PCI 并分配 BAR，
+   `driver-manager::nodes` 为每个节点匹配驱动；每个节点在自己的 driver-host 进程中由 `driver-host::drivers` 装配。
+2. 驱动宿主拥有其节点的硬件 adapter、queue、DMA、descriptor、completion 与 reset state。
    `device-model` 定义设备类接口；`device-protocol` 通过目录、channel 与 VMO 发布设备，
-   linuxd 的 `devices::directory` 接入这些设备并建立 Linux 设备语义。netstack 消费网络设备，ext4 消费块设备。
+   linuxd 的 `devices::directory` 接入这些设备并建立 Linux 设备语义。netstack 消费网络设备，fshost 消费块设备，
+   audio-core 消费 PCM 输出。
 3. 内核只把中断交给 Interrupt 对象。driver-host 的中断服务线程等待、确认设备再 ack；
    独立完成线程消费合并通知并分派 completion。请求线程睡在同一完成 owner 上，
    启动期也使用服务线程，不保留内核 bootstrap WFI 或 user-return deferred 驱动路径。

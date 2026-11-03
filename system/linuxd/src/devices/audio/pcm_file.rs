@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use linux_abi::errno;
 
-use super::engine::PcmEndpoint;
+use super::PcmEndpoint;
 use super::{AudioError, Card, PcmFile, ioctl};
 use crate::{
     fs::{
@@ -29,12 +29,7 @@ pub(super) struct PcmDriver {
 
 impl CharacterDriver for PcmDriver {
     fn open(&self, _request: &OpenRequest<'_>) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
-        if self
-            .card
-            .events
-            .disconnected
-            .load(core::sync::atomic::Ordering::Acquire)
-        {
+        if self.card.disconnected() {
             return Err(FileSystemError::NoDevice);
         }
         super::open(self.card.clone(), self.endpoint)

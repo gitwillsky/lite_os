@@ -18,6 +18,6 @@ services {
     if ($1!="driver-host") count++;
 }
 END {
-    if (bad || count!=8 || !names["component-manager"] || !names["driver-manager"] || !names["driver-host"] || !names["ext4"] || !names["fshost"] || !names["netstack"] || !names["dhcp-client"] || !names["netcfg"] || !names["linuxd"]) exit 1;
+    if (bad || count!=9 || !names["audio-core"] || !names["component-manager"] || !names["driver-manager"] || !names["driver-host"] || !names["ext4"] || !names["fshost"] || !names["netstack"] || !names["dhcp-client"] || !names["netcfg"] || !names["linuxd"]) exit 1;
 }' "$snapshot"
 echo TASK_OBSERVER_READONLY_OK

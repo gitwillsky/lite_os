@@ -1,7 +1,8 @@
 # 音频契约
 
-本文 `audio`、Card、PCM/control 文件均指 `linuxd::devices::audio`。硬件 adapter 位于 driver-host，
-`PcmOutput` 的 client/server 由 device-protocol 的 PCM channel 连接；应用不调用系统服务协议。
+本文 `audio`、Card、PCM/control 文件均指 `linuxd::devices::audio`；`engine`、`mix`、`output` 指 `system/audio-core`。
+硬件 adapter 位于驱动宿主，`PcmOutput` 的 client/server 由 device-protocol 的 PCM channel 连接，其唯一使用者是
+audio-core；linuxd 经 `audio-protocol` 使用 audio-core；应用不调用系统服务协议。
 
 ## Owner 与依赖
 
@@ -9,9 +10,10 @@
 |---|---|
 | `drivers::usb` | UAC2 clock/alternate、反馈与等时队列；实现同一 PCM seam |
 | `drivers::virtio::sound` | 物理流 command、DMA、queue、completion 与 reset；实现 `devices::model::PcmOutput` |
-| `audio::Card` | 每个实际 adapter 的卡、observer、completion counter、Engine mutex、control 弱引用 registry 与两条 readiness pipe |
-| `audio::engine` | 纯状态机；8 个子流、物理队列、Master/PCM 音量、各流贡献帧数，由 Card 串行调用 |
-| `audio::mixer` | period float accumulation、声道增益与硬削波，由 Engine 调用 |
+| `audio-core::output` | 每个 PCM 输出的设备会话、observer、completion counter、Engine mutex、配置锁与混音线程；渲染流的原生数据面 |
+| `audio-core::engine` | 纯状态机；8 个渲染流、物理队列、主音量、各流增益与贡献帧数，经 `StreamIo` 读环形缓冲与发布位置 |
+| `audio-core::mix` | period float accumulation、声道增益与硬削波，由 Engine 调用 |
+| `audio::Card` | 每个 audio-core 输出的卡、子流表（ALSA 状态、ring、渲染流）、子流音量、control 弱引用 registry 与两条 readiness pipe |
 | `audio::state` | 单个子流的 ALSA state、应用/hardware 指针、软件参数与 xrun |
 | `audio::codec` / `ioctl` | PCM Linux layout、INFO/HW_REFINE/参数/status/pointer codec 与 user-copy |
 | `audio::control` / `control_file` | control layout、10 个固定元素、每 OFD 的订阅/FIFO/偏好、卡信息和 PCM 枚举 |
@@ -20,8 +22,8 @@
 
 PCM/control ioctl 的唯一 caller 是已注册 DeviceFile dispatch，不经过 syscall 中的设备专用分支。
 `PcmFile::write_frames` 只由 PCM ioctl 调用，返回实际写入帧数或原生 errno；XRUN 返回 EPIPE，
-不能进入仅处理 EAGAIN 的等待重试。`Engine::application_frames` 只由 PcmFile 的 WRITEI/mmap 提交调用；
-`PcmStateOwner::submit_frames` 与 `complete_period(frames)` 只由 Engine 推进真实帧数。
+不能进入仅处理 EAGAIN 的等待重试。`PcmStateOwner::submit_frames` 只由 PcmFile 的 WRITEI/mmap 提交调用，随后发布
+渲染流的已写入帧数；`complete_period(frames)` 只由 `Slot::sync` 按渲染流已播放帧数的增量推进真实帧数。
 `codec::SNDRV_PCM_IOCTL_STATUS_EXT` 只由 ioctl 分派消费，与 STATUS 共用参考时钟快照。
 `PcmStateOwner::buffer_frames` 独占已协商的软件容量；HW_REFINE 同时约束 period 数、buffer size/bytes/time，
 HW_PARAMS 按 Linux 顺序选择首个 access/format/subformat 和最大可行 buffer，再投影关联参数。
@@ -32,34 +34,37 @@ open 预留 backing 后不重分配，协商不改变物理 DMA 队列；旧 mma
 
 ## 接口与所有权证明
 
-1. `Card.engine` 是物理队列、子流状态与 Master/PCM 音量的唯一锁；OFD operation mutex 串行化同一 OFD 的控制与提交，
-   同时拥有该 OFD 的 timestamp clock 选择与启用状态。锁序为 operation → Engine，状态快照也遵守此顺序。
-   持 Engine 锁可能调用 adapter reclaim，因此 observer 只能累加 Atomic 完成计数和断开标志，不能重入 Engine。
-   Card.process 在锁内消费事件并 tick，锁外发 readiness；缺少该顺序会形成回调持锁自等。
+1. `Card.slots` 是子流 ALSA 状态与子流音量的唯一锁；OFD operation mutex 串行化同一 OFD 的控制与提交，同时拥有该 OFD
+   的 timestamp clock 选择与启用状态。锁序为 operation → slots，状态快照也遵守此顺序。audio-core 的 `Output.engine`
+   是物理队列、渲染流位置与主音量的唯一锁；持它可能调用 adapter reclaim，因此 observer 只能累加 Atomic 完成计数和
+   断开标志并向混音线程的 port 投递，不能重入 Engine。混音线程在锁内消费事件并 tick，渲染流的位置经控制区发布；
+   linuxd 的音频 deferred 工作（由渲染流 Event 唤醒）同步回 ALSA 状态后在锁外发 readiness。
    Engine 处理完成事件后必须先补填，再判断物理流是否空闲；TX 批量归还不等于应用欠载，提前 STOP 会打断连续 PCM。
    预送深度为 `PCM_PERIODS - 1`，保留一段应用数据跨越整批 TX 完成；额外缩短深度会使宿主断粮，全部预送会提前耗尽应用数据。
    缺少未来 period 的运行中子流若仍有在途贡献，不得提前混入缺口或置 Xrun；等待补充或在途耗尽后再裁决。
-2. 全局 `DISCOVERY` 只发布一次，按设备注册表的只追加顺序附加实际 PCM outputs，每张卡独占 observer 与 Engine。Discovery 聚合远端卡级 completion，由 linuxd 的 deferred 服务线程分派；重复 USB 拔插不会耗尽硬件源表。
-   共享与原生端点互斥；原生 HW_PARAMS/HW_FREE/CLOSE 经 `Card.configuration` 的 TaskMutex 串行化，
-   Engine 短锁 只保护状态，adapter configure/release 等等待发生在其外。原生提交不经过 Accumulator。
-   缺少卡级配置事务会让共享恢复和独占重配交错，或让 completion 等待自身持有的 Engine 锁。
+2. linuxd 的全局 `DISCOVERY` 只发布一次，按 audio-core 输出 ID 的递增顺序附加卡（含热插拔）；输出集合变化与各渲染流
+   的 Event 经同一 EventHub 唤醒音频 deferred 工作。audio-core 按设备目录顺序接入 PCM 设备，每个输出独占设备会话、
+   observer 与 Engine。共享与独占端点互斥；HW_PARAMS 建立渲染流（独占流触发 audio-core 的格式切换），HW_FREE/CLOSE
+   撤销渲染流（独占流离开时 audio-core 回到共享格式）；linuxd 的 `Card.configuration` TaskMutex 串行化这些冷事务。
+   audio-core 的 Engine 短锁只保护状态，adapter configure/release 等等待在输出配置锁下、Engine 锁外完成。原生提交不经过 Accumulator。
 3. 每次 open 分配新 DeviceBacking 和 mmap identity，再占槽、发布 OFD；OFD 分配失败回滚槽位。
    每个在途物理 period 保存各子流的有效帧数；短批次补零不增加应用/hardware 指针。
-   close/prepare/drop 清除该流的在途帧数，旧 completion 不得推进复用槽位的 hw_ptr。
-   backing 在 Engine 锁外销毁，旧映射可继续持有原 backing，但不能访问新 open 的音频。
+   close/prepare/drop 经渲染流 stop/关闭清除该流的在途帧数并清零计数，旧 completion 不得推进复用槽位的 hw_ptr。
+   backing 在子流锁外销毁，旧映射可继续持有原 backing，但不能访问新 open 的音频。
 4. `linuxd::main` 装配实际调用 TID observer，audio 不依赖 task；control open 保存 `Arc<PidIdentity>`，
    偏好只匹配原 opener 的 identity，数字 TID 复用、fd 传递或其他线程不能继承它。
-   `Card.controls` 只存 Weak，锁序 registry → OFD state；不得跨它们持 Engine 或调用 readiness。
+   `Card.controls` 只存 Weak，锁序 registry → OFD state；不得跨它们持子流锁或调用 readiness。
    actual fput 的 closed 状态立即撤销观察能力，backend Arc 或 wait observer 不得延长偏好生命期。
    open 时清理失效条目，registry 分配失败返回 ENOMEM、不发布 OFD；没有 per-event 堆分配。
 5. 每个 control OFD 的有界 FIFO 是订阅状态的唯一 owner；取消订阅清空，重复订阅保留事件。
    ELEM_WRITE 先完整校验两声道再提交，实际变更才通知；提交后的 copyout 失败保留变更及事件。
-   先释放 registry/state/Engine 再通过 control 专用 pipe 唤醒；否则 poll 回调可重入死锁。
+   先释放 registry/state/子流锁再通过 control 专用 pipe 唤醒；否则 poll 回调可重入死锁。主音量与静音经 audio-core 读写，
+   子流音量由 linuxd 保存并下发为渲染流增益。
    事件出队前预检用户输出，实际 user-copy 不持音频锁；空队列的 EAGAIN 优先于无效目标地址。
    control/PCM prepare_wait 都必须先查 level、排空旧 token、再查 level；否则阻塞 read/WRITEI
    可在服务线程中因 stale token 自旋，阻止同 CPU writer 或 completion 所需的调度。
 
-`Engine<Ring>` 的窄接口由 Card/PcmFile 使用，host fixture 注入假 ring/output 验证相同状态机；
+`Engine<S: StreamIo>` 的窄接口由 audio-core 的输出使用，host fixture（kernel-unit `audio_core`）注入假数据面与输出验证相同状态机；
 `Accumulator` 只由 Engine 消费。steady tick 使用固定栈数组与预分配 ring，不引入 period 级堆分配。
 短帧记账使用固定大小的每流帧数数组，跨 ring 边界至多两次复制；短尾补零不增加锁或分配。
 共享端点的 ring 每 OFD 最多 16 页（64 KiB），八个在用子流共 512 KiB；HW_REFINE 在冷路径最多枚举 29 个配置，
@@ -101,5 +106,5 @@ Benchmark 决策：数据提交取消混音锁内的同步回复等待，使用�
 - 未订阅 read 返回 EBADFD、长度不足一个 72-byte 事件返回 EINVAL、空队列非阻塞 read 返回 EAGAIN。
   control write 不开放。偏好为 -1 自动选择，其余值精确匹配；无槽位返回 EBUSY。
 - PCM 部分语义、capture、MIDI 和 sequencer 的范围见[当前架构](../architecture/audio.md)与 ABI 矩阵。
-- host 测试覆盖混音数学、Engine contributor/close/underrun、PCM 与 control codec。
+- host 测试覆盖混音数学、audio-core Engine 的 contributor/stop/underrun/传输、PCM 与 control codec。
   runtime fixture 使用真实 Linux UAPI、上游 amixer 与 alsa-lib 八路播放。

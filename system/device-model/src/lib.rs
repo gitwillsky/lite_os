@@ -43,9 +43,9 @@ pub use pcm_format::{
 };
 pub use port::{PortActivity, PortDevice, PortError};
 pub use registry::{
-    display_device, fill_entropy, input_device, input_device_count, pcm_output, port_device,
-    register_display_device, register_entropy_source, register_input_device, register_pcm_output,
-    register_port_device, register_usb_device, usb_device, usb_device_count,
+    display_device, fill_entropy, input_device, input_device_count, port_device,
+    register_display_device, register_entropy_source, register_input_device, register_port_device,
+    register_usb_device, usb_device, usb_device_count,
 };
 pub use usb::{UsbDevice, UsbIdentity, UsbRemoveError};
 

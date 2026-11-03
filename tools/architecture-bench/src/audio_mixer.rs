@@ -9,7 +9,7 @@ mod devices {
     }
 }
 
-#[path = "../../../system/linuxd/src/devices/audio/mixer.rs"]
+#[path = "../../../system/audio-core/src/mix.rs"]
 mod mixer;
 
 fn main() {

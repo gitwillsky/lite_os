@@ -4,6 +4,7 @@ use crate::sync::Mutex;
 use alloc::sync::Arc;
 use linux_abi::errno;
 
+use super::PcmEndpoint;
 use super::codec::{PCM_INFO_BYTES, PcmInfo, encode_pcm_info, read_u32};
 use super::control::{
     CARD_INFO_BYTES, CTL_PROTOCOL_VERSION, CardText, ControlError, ControlOpen, ELEM_INFO_BYTES,
@@ -14,7 +15,6 @@ use super::control::{
     SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS, describe_element, element_by_id, encode_card_info,
     encode_event, list_elements, read_element, write_element,
 };
-use super::engine::PcmEndpoint;
 use super::{Card, SUBSTREAMS};
 use crate::{
     fs::{
@@ -35,11 +35,7 @@ pub(super) struct ControlDriver {
 impl CharacterDriver for ControlDriver {
     fn open(&self, _request: &OpenRequest<'_>) -> Result<Arc<dyn DeviceFile>, FileSystemError> {
         let card = self.card.clone();
-        if card
-            .events
-            .disconnected
-            .load(core::sync::atomic::Ordering::Acquire)
-        {
+        if card.disconnected() {
             return Err(FileSystemError::NoDevice);
         }
         let opener = (card.caller)().ok_or(FileSystemError::IoError)?;
@@ -129,12 +125,7 @@ fn exchange<const N: usize>(
 
 impl ControlFile {
     fn dispatch(&self, call: &IoctlCall<'_>) -> Result<isize, isize> {
-        if self
-            .card
-            .events
-            .disconnected
-            .load(core::sync::atomic::Ordering::Acquire)
-        {
+        if self.card.disconnected() {
             return Err(errno::ENODEV);
         }
         let (user, argument) = (call.user, call.argument);
@@ -198,7 +189,7 @@ impl ControlFile {
             .map(|()| 0),
             SNDRV_CTL_IOCTL_ELEM_READ => exchange::<ELEM_VALUE_BYTES>(user, argument, |bytes| {
                 let element = element_by_id(bytes).map_err(control_errno)?;
-                let values = self.card.engine.lock().control_values(element);
+                let values = self.card.control_values(element);
                 read_element(bytes, values).map_err(control_errno)
             })
             .map(|()| 0),
@@ -207,7 +198,7 @@ impl ControlFile {
                 // Linux 的 put callback 以 bool 请求通知，但 ELEM_WRITE ioctl 成功统一返回 0。
                 let result = exchange::<ELEM_VALUE_BYTES>(user, argument, |bytes| {
                     let (element, values) = write_element(bytes).map_err(control_errno)?;
-                    if self.card.engine.lock().set_control(element, values) {
+                    if self.card.set_control(element, values) {
                         changed_element = Some(element);
                     }
                     read_element(bytes, values).map_err(control_errno)
@@ -266,7 +257,7 @@ impl ControlFile {
                 if stream != 0 || subdevice as usize >= count {
                     return Err(errno::ENOENT);
                 }
-                let available = self.card.engine.lock().endpoint_available(endpoint);
+                let available = self.card.slots.lock().endpoint_available(endpoint);
                 *bytes = encode_pcm_info(&PcmInfo {
                     device,
                     card: self.card.index,

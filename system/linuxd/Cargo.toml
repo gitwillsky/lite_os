@@ -15,6 +15,7 @@ pager-pool = { path = "../pager-pool" }
 service-sync = { path = "../service-sync" }
 device-model = { path = "../device-model" }
 device-protocol = { path = "../device-protocol" }
+audio-protocol = { path = "../audio-protocol" }
 filesystem-protocol = { path = "../filesystem-protocol" }
 network-protocol = { path = "../network-protocol" }
 service-directory = { path = "../service-directory" }

@@ -263,6 +263,20 @@ pub mod driver_host {
     }
 }
 
+/// 音频服务：拥有 PCM 输出设备与混音，经音频协议向使用者提供渲染流（Fuchsia audio_core）。
+pub mod audio_core {
+    use super::ROLE_HANDLES;
+
+    /// bootfs 中的映像路径。
+    pub const IMAGE: &[u8] = b"bin/audio-core";
+    /// 静态链接基址（普通进程的低地址区）。
+    pub const BASE: usize = 0x40_0000;
+    /// outgoing 服务目录的服务端：接受 `service_directory::AUDIO` 连接。
+    pub const OUTGOING: usize = ROLE_HANDLES;
+    /// 只含 PCM 输出的设备目录连接（含热插拔的 USB 声卡）。
+    pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 1;
+}
+
 /// 根服务。
 pub mod component_manager {
     /// 静态链接基址（普通进程的低地址区）。

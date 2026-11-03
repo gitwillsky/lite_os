@@ -1,4 +1,4 @@
-use super::{engine::PcmEndpoint, state::MAX_BUFFER_PERIODS};
+use super::{PcmEndpoint, state::MAX_BUFFER_PERIODS};
 use device_model::{PCM_RATES, PcmCapabilities, PcmConfiguration, PcmFormat};
 
 pub(crate) const SNDRV_PCM_IOCTL_PVERSION: usize = 0x8004_4100;

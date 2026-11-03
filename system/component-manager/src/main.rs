@@ -6,8 +6,9 @@
 //! 1. 从启动消息取得根 Job、根 resource、bootfs 与 DTB；
 //! 2. 为根 Job 建立异常 channel：任何系统服务未处理的异常都在这里记录，随后交还内核终止该进程；
 //! 3. 启动 driver-manager（持有 DTB 与设备目录服务端，按节点启动驱动宿主），根服务持有完整目录连接并按设备类路由：
-//!    Network 类给 netcfg，Block 类给 fshost，其余给 linuxd；
-//! 4. 启动 fshost（交给它 ext4 实例的 Job 与映像，由它为每块盘启动 ext4），以及受监督的 netstack、dhcp-client、netcfg 与 linuxd；
+//!    Network 类给 netcfg，Block 类给 fshost，Pcm 类给 audio-core，其余给 linuxd；
+//! 4. 启动 fshost（交给它 ext4 实例的 Job 与映像，由它为每块盘启动 ext4），以及受监督的 netstack、dhcp-client、
+//!    netcfg、audio-core 与 linuxd；
 //!    每个消费者拿到只含它声明协议的路由目录（[`ROUTES`] 与各 `*_USES`），连接转发给提供者的当前实例
 //!    （能力路由，对应 Fuchsia component_manager）；netcfg 另得 fshost 派生的私有数据目录与 bootfs 默认策略；
 //! 5. 受监督服务终止后重启（linuxd 先终止整个 Linux Job），`native_runtime::task::CRASH_WINDOW` 内达到 `CRASH_LIMIT` 次
@@ -20,7 +21,7 @@ use alloc::vec;
 
 use device_protocol::directory::{ALL_CLASSES, Class, DirectoryClient};
 use launch_protocol::{
-    dhcp_client, driver_host, driver_manager, ext4, fshost, linuxd, netcfg, netstack,
+    audio_core, dhcp_client, driver_host, driver_manager, ext4, fshost, linuxd, netcfg, netstack,
 };
 use native_runtime::executor::Executor;
 use native_runtime::native_abi::{self, ExceptionReport, Status, rights, signals, startup};
@@ -39,6 +40,7 @@ const NETSTACK_STACK_SIZE: usize = 256 * 1024;
 const FSHOST_STACK_SIZE: usize = 128 * 1024;
 const NETCFG_STACK_SIZE: usize = 128 * 1024;
 const DHCP_STACK_SIZE: usize = 128 * 1024;
+const AUDIO_STACK_SIZE: usize = 128 * 1024;
 
 // OWNER: bootfs 映射永不解除；监督任务重启服务时重复从中取映像。
 static BOOTFS: Once<native_runtime::bootfs::Bootfs> = Once::new();
@@ -99,6 +101,7 @@ enum Provider {
     Fshost,
     Netcfg,
     Dhcp,
+    AudioCore,
 }
 
 // OWNER: 各提供者的唯一实例状态；路由目录线程与监督任务共享。fshost 不重启（终止即关机）。
@@ -106,6 +109,8 @@ static NETSTACK: Once<Supervised> = Once::new();
 static FSHOST: Once<Supervised> = Once::new();
 static NETCFG: Once<Supervised> = Once::new();
 static DHCP: Once<Supervised> = Once::new();
+// OWNER: audio-core 的实例状态；linuxd 的音频连接经它转发给当前实例。
+static AUDIO_CORE: Once<Supervised> = Once::new();
 
 impl Provider {
     fn instance(self) -> &'static Supervised {
@@ -114,6 +119,7 @@ impl Provider {
             Self::Fshost => &FSHOST,
             Self::Netcfg => &NETCFG,
             Self::Dhcp => &DHCP,
+            Self::AudioCore => &AUDIO_CORE,
         };
         slot.call_once(Supervised::new)
     }
@@ -128,6 +134,7 @@ const ROUTES: &[(&[u8], Provider)] = &[
     (service_directory::STORAGE_ADMIN, Provider::Fshost),
     (service_directory::NETWORK_SETTINGS, Provider::Netcfg),
     (service_directory::DHCP, Provider::Dhcp),
+    (service_directory::AUDIO, Provider::AudioCore),
 ];
 
 /// 各消费者可连接的协议（对应 Fuchsia 组件的 `use`）；路由目录拒绝未声明的协议。
@@ -136,6 +143,7 @@ const LINUXD_USES: &[&[u8]] = &[
     service_directory::BLOCKS,
     service_directory::EXT4,
     service_directory::NETWORK_SETTINGS,
+    service_directory::AUDIO,
 ];
 const NETCFG_USES: &[&[u8]] = &[
     service_directory::NETWORK,
@@ -157,6 +165,12 @@ const NETSTACK_SPEC: ServiceSpec = ServiceSpec {
     label: "netstack",
     image: netstack::IMAGE,
     stack_size: NETSTACK_STACK_SIZE,
+};
+const AUDIO_SPEC: ServiceSpec = ServiceSpec {
+    name: b"audio-core",
+    label: "audio-core",
+    image: audio_core::IMAGE,
+    stack_size: AUDIO_STACK_SIZE,
 };
 const NETCFG_SPEC: ServiceSpec = ServiceSpec {
     name: b"netcfg",
@@ -241,6 +255,27 @@ fn main(mut startup: Startup) -> i64 {
             &DHCP_SPEC,
             Provider::Dhcp,
             || vec![services(DHCP_USES).into_handle()],
+        )
+        .await;
+    });
+    let audio_job = job.duplicate(rights::SAME).expect("root job duplicate");
+    let audio_devices = devices_root.clone();
+    executor.spawn(async move {
+        supervise(
+            executor,
+            &audio_job,
+            bootfs,
+            &AUDIO_SPEC,
+            Provider::AudioCore,
+            || {
+                vec![
+                    audio_devices
+                        .scope(Class::Pcm.bit())
+                        .expect("audio-core device scope")
+                        .into_channel()
+                        .into_handle(),
+                ]
+            },
         )
         .await;
     });
@@ -372,7 +407,9 @@ async fn supervise_linux(
             resource,
             bootfs,
             devices
-                .scope(ALL_CLASSES & !Class::Network.bit() & !Class::Block.bit())
+                .scope(
+                    ALL_CLASSES & !Class::Network.bit() & !Class::Block.bit() & !Class::Pcm.bit(),
+                )
                 .expect("linuxd device scope")
                 .into_channel(),
             services(LINUXD_USES),

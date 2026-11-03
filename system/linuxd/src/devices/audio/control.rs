@@ -1,8 +1,8 @@
 //! ALSA control 元素、标准结构 codec 与每个打开句柄的事件/偏好状态。
 
+use super::SUBSTREAMS;
+use super::VOLUME_MAX;
 use super::codec::{read_u32, read_u64, write_u32, write_u64};
-use super::engine::SUBSTREAMS;
-use super::mixer::VOLUME_MAX;
 
 /// `SNDRV_CTL_VERSION`：控制协议版本 2.0.9。
 pub(super) const CTL_PROTOCOL_VERSION: i32 = 0x0002_0009;

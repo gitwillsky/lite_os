@@ -73,6 +73,9 @@ macro_rules! info {
 }
 
 #[cfg(test)]
+mod audio_core;
+
+#[cfg(test)]
 #[allow(dead_code)]
 mod drivers;
 

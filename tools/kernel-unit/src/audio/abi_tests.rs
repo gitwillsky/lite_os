@@ -329,7 +329,7 @@ mod hw_refine {
         refine_hardware(
             &mut bytes,
             crate::devices::model::PcmCapabilities::SHARED,
-            crate::devices::audio::engine::PcmEndpoint::Shared,
+            crate::devices::audio::PcmEndpoint::Shared,
         )
         .unwrap();
         assert_eq!(interval(&bytes, 15), (19, 19, 0b100));
@@ -341,7 +341,7 @@ mod hw_refine {
             refine_hardware(
                 &mut bytes,
                 crate::devices::model::PcmCapabilities::SHARED,
-                crate::devices::audio::engine::PcmEndpoint::Shared
+                crate::devices::audio::PcmEndpoint::Shared
             )
             .is_err()
         );
@@ -353,7 +353,7 @@ mod hw_refine {
         choose_hardware(
             &mut bytes,
             crate::devices::model::PcmCapabilities::SHARED,
-            crate::devices::audio::engine::PcmEndpoint::Shared,
+            crate::devices::audio::PcmEndpoint::Shared,
         )
         .unwrap();
         assert_eq!(u32_at(&bytes, 4), 1, "first access is mmap interleaved");
@@ -367,7 +367,7 @@ mod hw_refine {
         choose_hardware(
             &mut exact,
             crate::devices::model::PcmCapabilities::SHARED,
-            crate::devices::audio::engine::PcmEndpoint::Shared,
+            crate::devices::audio::PcmEndpoint::Shared,
         )
         .unwrap();
         assert_eq!(u32_at(&exact, 4), 1 << 3);
@@ -381,7 +381,7 @@ mod hw_refine {
         refine_hardware(
             &mut bytes,
             crate::devices::model::PcmCapabilities::SHARED,
-            crate::devices::audio::engine::PcmEndpoint::Shared,
+            crate::devices::audio::PcmEndpoint::Shared,
         )
         .unwrap();
         assert_eq!(
@@ -442,7 +442,7 @@ mod hw_refine {
         refine_hardware(
             &mut bytes,
             crate::devices::model::PcmCapabilities::SHARED,
-            crate::devices::audio::engine::PcmEndpoint::Shared,
+            crate::devices::audio::PcmEndpoint::Shared,
         )
         .unwrap();
         // 256/48000 s = 5333.33 µs 不是整数：必须是开区间 (5333, 5334)，不能被写成整数点。
@@ -456,7 +456,7 @@ mod hw_refine {
         refine_hardware(
             &mut bytes,
             crate::devices::model::PcmCapabilities::SHARED,
-            crate::devices::audio::engine::PcmEndpoint::Shared,
+            crate::devices::audio::PcmEndpoint::Shared,
         )
         .unwrap();
         let first = bytes;
@@ -465,7 +465,7 @@ mod hw_refine {
         refine_hardware(
             &mut bytes,
             crate::devices::model::PcmCapabilities::SHARED,
-            crate::devices::audio::engine::PcmEndpoint::Shared,
+            crate::devices::audio::PcmEndpoint::Shared,
         )
         .unwrap();
         assert_eq!(u32_at(&bytes, 516), 0, "idempotent: nothing left to narrow");
@@ -483,7 +483,7 @@ mod hw_refine {
                 refine_hardware(
                     &mut bytes,
                     crate::devices::model::PcmCapabilities::SHARED,
-                    crate::devices::audio::engine::PcmEndpoint::Shared
+                    crate::devices::audio::PcmEndpoint::Shared
                 )
                 .is_err(),
                 "parameter {parameter} = {value} is unsupported"
@@ -499,7 +499,7 @@ mod hw_refine {
             refine_hardware(
                 &mut bytes,
                 crate::devices::model::PcmCapabilities::SHARED,
-                crate::devices::audio::engine::PcmEndpoint::Shared
+                crate::devices::audio::PcmEndpoint::Shared
             )
             .is_err(),
             "S16_LE alone has no common format"
@@ -514,7 +514,7 @@ mod hw_refine {
             refine_hardware(
                 &mut bytes,
                 crate::devices::model::PcmCapabilities::SHARED,
-                crate::devices::audio::engine::PcmEndpoint::Shared
+                crate::devices::audio::PcmEndpoint::Shared
             )
             .is_err()
         );
@@ -528,7 +528,7 @@ mod hw_refine {
         refine_hardware(
             &mut bytes,
             crate::devices::model::PcmCapabilities::SHARED,
-            crate::devices::audio::engine::PcmEndpoint::Shared,
+            crate::devices::audio::PcmEndpoint::Shared,
         )
         .unwrap();
         assert_eq!(
@@ -545,7 +545,7 @@ mod hw_refine {
             refine_hardware(
                 &mut bytes,
                 crate::devices::model::PcmCapabilities::SHARED,
-                crate::devices::audio::engine::PcmEndpoint::Shared
+                crate::devices::audio::PcmEndpoint::Shared
             )
             .is_err()
         );
@@ -556,7 +556,7 @@ mod hw_refine {
             refine_hardware(
                 &mut inverted,
                 crate::devices::model::PcmCapabilities::SHARED,
-                crate::devices::audio::engine::PcmEndpoint::Shared
+                crate::devices::audio::PcmEndpoint::Shared
             )
             .is_err(),
             "min > max is empty"
@@ -584,7 +584,7 @@ mod pcm_info {
     fn layout_matches_linux_snd_pcm_info() {
         let bytes = encode_pcm_info(&PcmInfo {
             card: 0,
-            device: crate::devices::audio::engine::PcmEndpoint::Shared.device(),
+            device: crate::devices::audio::PcmEndpoint::Shared.device(),
             subdevice: 3,
             subdevices_count: 8,
             subdevices_available: 5,
@@ -614,7 +614,7 @@ mod pcm_info {
         let name = |subdevice: u32| {
             let bytes = encode_pcm_info(&PcmInfo {
                 card: 0,
-                device: crate::devices::audio::engine::PcmEndpoint::Shared.device(),
+                device: crate::devices::audio::PcmEndpoint::Shared.device(),
                 subdevice,
                 subdevices_count: 8,
                 subdevices_available: 0,
@@ -634,8 +634,8 @@ mod pcm_info {
         let long = [b'x'; 200];
         let bytes = encode_pcm_info(&PcmInfo {
             card: 0,
-            device: crate::devices::audio::engine::PcmEndpoint::Shared.device(),
-            subdevice: crate::devices::audio::engine::PcmEndpoint::Shared.device(),
+            device: crate::devices::audio::PcmEndpoint::Shared.device(),
+            subdevice: crate::devices::audio::PcmEndpoint::Shared.device(),
             subdevices_count: 8,
             subdevices_available: 8,
             card_id: &long,

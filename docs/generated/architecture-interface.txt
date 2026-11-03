@@ -3270,49 +3270,13 @@ system/linuxd/src/devices/audio/control_file.rs :: pub (super) ControlDriver :: 
 system/linuxd/src/devices/audio/control_file.rs :: pub (super) impl Card :: fn preferred_subdevice (& self) -> i32
 system/linuxd/src/devices/audio/control_file.rs :: pub (super) struct ControlDriver
 system/linuxd/src/devices/audio/control_file.rs :: pub (super) struct ControlFile
-system/linuxd/src/devices/audio/engine.rs :: enum PcmEndpoint :: Direct
-system/linuxd/src/devices/audio/engine.rs :: enum PcmEndpoint :: Shared
-system/linuxd/src/devices/audio/engine.rs :: pub (super) Events :: completed : usize
-system/linuxd/src/devices/audio/engine.rs :: pub (super) Events :: disconnected : bool
-system/linuxd/src/devices/audio/engine.rs :: pub (super) Master :: enabled : [bool ; 2]
-system/linuxd/src/devices/audio/engine.rs :: pub (super) Master :: volume : [u32 ; 2]
-system/linuxd/src/devices/audio/engine.rs :: pub (super) const SUBSTREAMS : usize = 8
-system/linuxd/src/devices/audio/engine.rs :: pub (super) enum PcmEndpoint
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn allocate (& mut self , ring : R , preferred : i32 , endpoint : PcmEndpoint ,) -> Result < usize , R >
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn application_frames (& mut self , index : usize , frames : u64) -> Result < () , () >
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn available (& self) -> usize
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn begin_transition (& mut self) -> Result < bool , PcmOutputError >
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn configuration (& self) -> Option < PcmConfiguration >
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn configure (& mut self , index : usize , buffer_frames : u64 , configuration : PcmConfiguration ,) -> Result < () , () >
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn control_values (& self , element : Element) -> [u32 ; 2]
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn drop_stream (& mut self , index : usize) -> Result < () , () >
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn endpoint_available (& self , endpoint : PcmEndpoint) -> usize
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn fail (& mut self)
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn finish_transition (& mut self , configuration : Option < PcmConfiguration > ,) -> Result < () , PcmOutputError >
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn free_hardware (& mut self , index : usize) -> Result < () , () >
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn new (configuration : Option < PcmConfiguration >) -> Self
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn prepare (& mut self , index : usize) -> Result < () , () >
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn release (& mut self , index : usize) -> Option < R >
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn running (& self) -> bool
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn set_control (& mut self , element : Element , values : [u32 ; 2]) -> bool
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn set_software (& mut self , index : usize , available_min : u64 , start_threshold : u64 , stop_threshold : u64 , boundary : u64 ,) -> Result < () , () >
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn start (& mut self , index : usize) -> Result < () , () >
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn state (& self , index : usize) -> & PcmStateOwner
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl Engine < R > :: fn tick (& mut self , events : Events , output : & dyn PcmOutput) -> bool
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl PcmEndpoint :: const fn device (self) -> u32
-system/linuxd/src/devices/audio/engine.rs :: pub (super) impl PcmEndpoint :: const fn name (self) -> & 'static [u8]
-system/linuxd/src/devices/audio/engine.rs :: pub (super) struct Engine < R >
-system/linuxd/src/devices/audio/engine.rs :: pub (super) struct Events
-system/linuxd/src/devices/audio/engine.rs :: pub (super) struct Master
-system/linuxd/src/devices/audio/engine.rs :: pub (super) trait Ring
-system/linuxd/src/devices/audio/engine.rs :: trait Ring :: fn read (& self , offset : usize , output : & mut [u8]) -> Result < () , () >
+system/linuxd/src/devices/audio/endpoint.rs :: enum PcmEndpoint :: Direct
+system/linuxd/src/devices/audio/endpoint.rs :: enum PcmEndpoint :: Shared
+system/linuxd/src/devices/audio/endpoint.rs :: pub (crate) const SUBSTREAMS : usize = 8
+system/linuxd/src/devices/audio/endpoint.rs :: pub (crate) enum PcmEndpoint
+system/linuxd/src/devices/audio/endpoint.rs :: pub (crate) impl PcmEndpoint :: const fn device (self) -> u32
+system/linuxd/src/devices/audio/endpoint.rs :: pub (crate) impl PcmEndpoint :: const fn name (self) -> & 'static [u8]
 system/linuxd/src/devices/audio/ioctl.rs :: pub (super) fn ioctl (file : & PcmFile , call : & IoctlCall < '_ >) -> Result < isize , DeviceError >
-system/linuxd/src/devices/audio/mixer.rs :: pub (super) const VOLUME_MAX : u32 = 100
-system/linuxd/src/devices/audio/mixer.rs :: pub (super) fn volume_gain (volume : u32) -> f32
-system/linuxd/src/devices/audio/mixer.rs :: pub (super) impl Accumulator :: const fn new () -> Self
-system/linuxd/src/devices/audio/mixer.rs :: pub (super) impl Accumulator :: fn add (& mut self , period : & [u8 ; PCM_PERIOD_BYTES] , gain : [f32 ; 2])
-system/linuxd/src/devices/audio/mixer.rs :: pub (super) impl Accumulator :: fn finish (& self , gain : [f32 ; 2] , output : & mut [u8 ; PCM_PERIOD_BYTES])
-system/linuxd/src/devices/audio/mixer.rs :: pub (super) struct Accumulator
 system/linuxd/src/devices/audio/mod.rs :: pub (crate) HardwareParameters :: access : i32
 system/linuxd/src/devices/audio/mod.rs :: pub (crate) HardwareParameters :: buffer_frames : u64
 system/linuxd/src/devices/audio/mod.rs :: pub (crate) HardwareParameters :: channels : u32
@@ -3355,6 +3319,10 @@ system/linuxd/src/devices/audio/mod.rs :: pub (crate) struct PcmStatus
 system/linuxd/src/devices/audio/mod.rs :: pub (crate) struct SoftwareParameters
 system/linuxd/src/devices/audio/mod.rs :: pub (crate) use device_model :: PcmOutputError as AudioError
 system/linuxd/src/devices/audio/mod.rs :: pub (crate) use state :: PcmState
+system/linuxd/src/devices/audio/mod.rs :: pub (super) impl RemoteOutput :: fn capabilities (& self) -> PcmCapabilities
+system/linuxd/src/devices/audio/mod.rs :: pub (super) impl RemoteOutput :: fn name (& self) -> & str
+system/linuxd/src/devices/audio/mod.rs :: pub (super) struct RemoteOutput
+system/linuxd/src/devices/audio/mod.rs :: pub (super) use endpoint :: { PcmEndpoint , SUBSTREAMS }
 system/linuxd/src/devices/audio/pcm_file.rs :: pub (super) PcmDriver :: card : Arc < Card >
 system/linuxd/src/devices/audio/pcm_file.rs :: pub (super) PcmDriver :: endpoint : PcmEndpoint
 system/linuxd/src/devices/audio/pcm_file.rs :: pub (super) struct PcmDriver

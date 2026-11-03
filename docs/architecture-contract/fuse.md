@@ -48,8 +48,10 @@
 
 ## ext4 服务传输
 
-`fs/fuse/service` 为内置 ext4 挂载装配 native channel 传输，复用同一 Connection、请求、回复和页缓存 owner。
-请求/回复线程只转发标准 FUSE 消息；挂载控制由 filesystem-protocol 交付块设备连接和 remount 操作，
+`fs/fuse/service` 为内置 ext4 挂载装配 native channel 传输，复用同一 Connection、请求与回复。
+请求/回复线程只转发标准 FUSE 消息；挂载经 fshost 的卷挂载协议按盘序号建立，挂载控制提供 remount 与
+`BACKING_MEMORY(nodeid)`：服务挂载的普通文件声明 `DataBacking::Remote`，内容由 ext4 实例的 pager VMO 拥有，
+read 读该 VMO、write 经 FUSE WRITE、mmap 映射同一 VMO；linuxd 不为它建页缓存，ext4 不协商 WRITEBACK_CACHE。
 不得在 native 内核重建文件系统状态。端点关闭与卸载中止连接，线程结束后关闭 channel；失败路径沿同一请求退休机制。
 ext4 的 lookup/attr lease 当前为 60 秒；linuxd 修改后作废 canonical inode 缓存，外部磁盘修改不在 coherence 范围。
 LISTXATTR 名称遵从 FUSE 服务端；ext4 仅能从请求头按 UID 0 决定 trusted 名称可见性，

@@ -211,7 +211,9 @@ INIT 失败（请求 `ECONNREFUSED`）。按 entry/attr 超时缓存查找与属
 INVAL_INODE（作废属性与整个文件的页缓存）、INVAL_ENTRY、DELETE，其余通知 `ENOSYS`。
 支持 GETXATTR/SETXATTR/LISTXATTR/REMOVEXATTR：零缓冲查询、空值、CREATE/REPLACE、64 KiB 上限、
 列表格式校验与独立 ENOSYS 缓存；通用 namespace/capability policy 仍由 VFS 拥有，普通权限由实际 FUSE 判定。
-内置 ext4 同样经 FUSE 服务；其属性/目录项 lease 为 60 秒，客户端修改会使缓存过期，不支持外部磁盘修改的即时一致性。
+内置 ext4 同样经 FUSE 服务，但文件内容由 ext4 实例拥有（读与 mmap 使用其 VMO，写直达存储），不经 linuxd 页缓存；
+其属性/目录项 lease 为 60 秒，客户端修改会使缓存过期，不支持外部磁盘修改的即时一致性。映射写入由 ext4 在 fsync、
+syncfs 与 5 秒周期内写回，期间崩溃丢失尚未写回的映射写入（与 Linux 回写语义一致）。
 ext4 的 trusted 名称列举以请求 UID 0 判定，不能表达已降 CAP_SYS_ADMIN 的 root 或持该 capability 的非 root；
 GET/SET/REMOVE 的 namespace 授权仍由 linuxd VFS 实施。
 POSIX ACL 的 system.* handler 尚未实现。新增 xattr guest 探针已编写，未宣称运行通过。

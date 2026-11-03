@@ -19,13 +19,16 @@
 | Owner | 独占事实 | 依赖与边界 |
 |---|---|---|
 | `system/component-manager` | 服务启动顺序、监督策略、设备类与协议的能力路由 | native-runtime、launch-protocol、service-directory；不执行 Linux init，不解释设备协议内容 |
-| `system/driver-host` | 设备 DTB、PCI、VirtIO、xHCI/UAC2、IRQ 完成线程、DMA、启动画面、设备目录与会话回收 | resource/IRQ/BTI native 对象；经 device-protocol 服务设备目录 |
-| `system/fshost` | 块设备会话、原生数据卷挂载、各服务私有目录 | device-protocol、filesystem-protocol；ext4 的唯一调用者，不解释 Linux 挂载或块设备语义 |
-| `system/ext4` | ext4 inode、extent、journal、块设备连接、同一文件系统挂载的串行化 | device-protocol 与 FUSE 服务；不拥有调用者凭据、Linux FD 或进程权限 |
+| `system/driver-manager` | 根 resource、DTB/PCI 枚举与 BAR 分配、IOMMU/BTI、节点匹配、驱动宿主监督、汇聚设备目录 | resource/IOMMU/BTI native 对象；只读设备身份与 PCI 配置，不运行驱动 |
+| `system/driver-host` | 一个节点的驱动（VirtIO、xHCI 及其 UAC2 子设备）、IRQ 完成线程、DMA、GPU 宿主的启动画面、本宿主设备目录与会话回收 | 节点 MMIO/IRQ resource 与 BTI；经 device-protocol 服务设备目录 |
+| `system/fshost` | 块设备会话、每盘 ext4 实例、原生数据卷挂载、各服务私有目录 | device-protocol、filesystem-protocol；ext4 的唯一启动者，不解释 Linux 挂载或块设备语义 |
+| `system/ext4` | ext4 inode、extent、journal、普通文件的内容 VMO（补页、直写同步、回写）、同一文件系统会话的串行化 | device-protocol、pager-pool 与 FUSE 服务；不拥有调用者凭据、Linux FD 或进程权限 |
+| `system/audio-core` | PCM 输出会话、混音引擎、主音量、独占格式切换、USB 声卡热插拔 | device-protocol、audio-protocol；不拥有 ALSA 状态、子流编号或 Linux ioctl |
+| `system/pager-pool` | 进程内 native pager、port、key 注册与可增长补页线程池 | native-runtime；补页政策由各内容 owner 的 `PageSource` 决定 |
 | `system/netstack` | smoltcp、默认网络、IPv4 FIB/地址、端口、TCP/UDP/RAW、AF_PACKET 队列 | device-protocol 与 network-protocol；不发现网卡、不决定接口配置，不拥有 Linux syscall、信号或阻塞超时 |
 | `system/netcfg` | 网卡发现与安装、接口配置策略、用户网络设置及其持久化 | network-protocol、device-protocol、filesystem-protocol、netcfg-protocol；不拥有协议栈状态 |
 | `system/dhcp-client` | DHCPv4 会话与租约时序 | network-protocol 的 packet socket；租约交给 netcfg 配置，不直接改接口 |
-| `system/linuxd` | Linux ABI、进程/线程/namespace、安全策略、VFS/页缓存、设备 UAPI、Linux IPC、授权端点适配 | restricted mode 执行应用；只消费路由给它的设备类与协议 |
+| `system/linuxd` | Linux ABI、进程/线程/namespace、安全策略、VFS、tmpfs 与 Linux FUSE 守护进程的页缓存、设备 UAPI（含 ALSA 状态机）、Linux IPC、授权端点适配 | restricted mode 执行应用；只消费路由给它的设备类与协议 |
 
 `native-runtime` 封装原生对象和服务线程；`service-sync` 提供服务可睡眠同步；`service-rpc` 提供服务 RPC。
 `device-model` 定义设备类词汇与 backing；各 `*-protocol` crate 拥有服务消息和客户端/服务端适配。
@@ -41,16 +44,26 @@ netcfg、dhcp-client、linuxd 适配层与 Linux 侧的 `network-config` 共用�
    outgoing 的客户端，并为每个消费者服务一条路由目录：只转发该消费者声明使用的协议（component-manager 的 `ROUTES` 与各
    `*_USES` 表，对应 Fuchsia 的 `expose`/`use`），未声明的协议返回 `ERR_ACCESS_DENIED`。
 2. 路由给 linuxd 的协议：`liteos.network.Control`、`liteos.storage.Blocks`、`liteos.filesystem.Ext4`、
-   `liteos.network.Settings`；给 netcfg：`liteos.network.Control`、`liteos.network.Installer`、`liteos.network.Dhcp`；
-   给 dhcp-client：`liteos.network.Control`。`liteos.storage.Admin` 只供 component-manager 在启动服务时派生私有目录。
-3. 设备目录按类派生：Network → netcfg，Block → fshost，其余 → linuxd；派生目录不能扩大范围。
-4. 监督：netstack、dhcp-client、netcfg、linuxd 终止后重启（linuxd 先终止整个 Linux Job 并等它结束），10 秒内
-   5 次判定为崩溃循环并关机；driver-host、fshost、ext4 终止时系统无法继续服务，关机。被依赖的服务重启期间，
-   component-manager 让新的连接请求等待新实例就绪；消费者只需在 `PEER_CLOSED` 后重连。
+   `liteos.network.Settings`、`liteos.audio.Core`；给 netcfg：`liteos.network.Control`、`liteos.network.Installer`、
+   `liteos.network.Dhcp`；给 dhcp-client：`liteos.network.Control`。`liteos.storage.Admin` 只供 component-manager 派生私有目录。
+3. 设备目录按类派生：Network → netcfg，Block → fshost，Pcm → audio-core，其余 → linuxd；派生目录不能扩大范围。
+4. 监督：netstack、dhcp-client、netcfg、audio-core、linuxd 终止后重启（linuxd 先终止整个 Linux Job 并等它结束），
+   10 秒内 5 次判定为崩溃循环并关机（`native_runtime::task::CrashLoop`）；driver-manager、fshost 是关键组件，
+   终止即关机。被依赖的服务重启期间，component-manager 让新的连接请求等待新实例就绪；消费者在 `PEER_CLOSED` 后重连。
+   driver-manager 以同一判定监督各驱动宿主，fshost 监督 ext4 实例（见 6、7）。
 5. 重启后的状态恢复由各使用者负责：netcfg 重新安装网卡并重新配置；linuxd 为存活网络域重建协议实例，旧 socket
-   以 `ENETDOWN` 失败；默认网络随 netstack 存续，linuxd 重启不影响接口配置。
+   以 `ENETDOWN` 失败；默认网络随 netstack 存续，linuxd 重启不影响接口配置。audio-core 重启后 linuxd 不重连，
+   已有声卡报告断开，直到 linuxd 重启（当前限制）。
+6. 驱动框架（Fuchsia DFv2）：driver-manager 拥有根 resource、DTB/PCI 平台事实与节点拓扑，为每个节点在独立 Job 中
+   启动一个 `driver-host`，只交付该节点的 MMIO/IRQ resource 与 BTI；各宿主在自己的设备目录发布设备，driver-manager
+   以转发条目汇聚成唯一设备目录，并按节点顺序并入初始枚举（使用者按登记顺序命名设备）。驱动声明
+   `restart_on_crash` 时宿主终止后重建，否则节点移除。当前只有熵源声明：网卡、输入、声音、console 端口的使用者
+   尚无设备移除语义。
+7. fshost 为每块盘启动一个 ext4 实例；同盘再次挂载交给同一实例，实例按超级块 UUID 串行化会话。原生数据卷独占
+   一个实例，其终止使 fshost 失败停机。
 
-FUSE 线格式属于 ext4 的服务适配边界，不把 Linux 凭据策略带进 ext4 引擎。
+FUSE 线格式属于 ext4 的服务适配边界，不把 Linux 凭据策略带进 ext4 引擎。ext4 实例拥有普通文件的内容
+（每文件一个 pager VMO），linuxd 经挂载控制取得它做 mmap；PCM 设备与混音属于 audio-core，linuxd 只翻译 ALSA。
 
 ## 验证职责
 

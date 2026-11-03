@@ -12,7 +12,7 @@
 6. `kernel/src/object` → `syscall` → `bootstrap`：句柄、channel/port/event、resource 与 restricted mode；这里没有 Linux syscall 表。
 7. `system/component-manager/src/main.rs` → `system/linuxd/src/main.rs`：服务 capability 分配和 Linux 环境建立；应用从 restricted mode 返回服务处理 syscall。
 8. `system/linuxd/src/memory/mm` → `fs/pager.rs` → `fs/page_cache/fill.rs`：Linux VMA 政策如何使用 native 对象，pager 如何跨服务读取文件。
-9. `system/driver-host/src/platform` → `drivers` → `system/ext4/src/ext4` → `system/netstack/src/inet`：设备、磁盘格式、网络协议各有独立 owner，通过协议 crate 连接。
+9. `system/driver-manager/src/platform` → `system/driver-host/src/drivers` → `system/ext4/src/ext4` → `system/netstack/src/inet`：设备、磁盘格式、网络协议各有独立 owner，通过协议 crate 连接。
 
 ## 配合验证阅读
 

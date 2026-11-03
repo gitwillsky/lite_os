@@ -11,18 +11,18 @@
 
 ## 系统服务启动
 
-component-manager 启动 driver-host、ext4、fshost、netstack、dhcp-client、netcfg 与 linuxd，按设备类派生设备目录并为每个
+component-manager 启动 driver-manager、fshost、netstack、dhcp-client、netcfg、audio-core 与 linuxd，按设备类派生设备目录并为每个
 消费者服务路由目录（见[服务拓扑与能力路由](../architecture-contract/dependency-owners.md#服务拓扑与能力路由)）。
-driver-host 获取设备 resource、DTB 与设备目录服务端；linuxd 获取路由给它的设备类、服务路由目录、串口与电源能力，
-不持有设备根 resource。
-设备发现、PCI/VirtIO/xHCI 装配、IRQ 完成与启动画面均由 driver-host 执行。
+driver-manager 获取设备根 resource、DTB、设备目录服务端以及驱动宿主的 Job 与映像；fshost 获取 ext4 实例的 Job 与映像；
+linuxd 获取路由给它的设备类、服务路由目录、串口与电源能力，不持有设备根 resource。
+设备发现、PCI 枚举与节点匹配由 driver-manager 执行；VirtIO/xHCI 装配、IRQ 完成与启动画面（首个 GPU 的宿主）由各驱动宿主执行。
 linuxd 在自身服务线程中建立 VFS、挂载根及 devtmpfs、选择 console，然后在 restricted mode 中执行 Linux init。
 启动参数中的 root/init/console 与 init argv/environment 规则属于 linuxd，见[用户态与 ABI](userspace-abi.md)。
 
 ## AArch64 / QEMU virt
 
 - QEMU 按 arm64 Image boot protocol 加载 kernel；x0 交付 DTB，低物理 stub 从 EL2 收敛到 EL1，建立永久 TTBR1 kernel root。没有独立 ARM bootloader。
-- kernel platform 从 DTB 验证 enabled CPU、RAM、PL011、PL031、GICv3 与 PSCI HVC；设备 MMIO、PCI window/INTx 和 IOMMU 设备事实由 driver-host 自行解码。
+- kernel platform 从 DTB 验证 enabled CPU、RAM、PL011、PL031、GICv3 与 PSCI HVC；设备 MMIO、PCI window/INTx 和 IOMMU 设备事实由 driver-manager 自行解码。
 - GICv3 使用 Group-1、CNTV timer PPI 与 software SGI；PSCI `CPU_ON` 启动 secondary。PL011 hardirq 先清 RX/timeout 中断再 drain FIFO，字节送入 `serial`。
 - MMIO 由共用 `mmio::MmioBus` 验证范围/对齐；AArch64 backend 固定 base-register 单次 load/store，避免 HVF 无法解码的 post-index 访问。
 - supported baseline 为 ARMv8-A；privileged user-address 隔离使用统一 TTBR0 切换，不依赖 PAN 扩展。执行上下文约束见[执行域](execution.md)。
