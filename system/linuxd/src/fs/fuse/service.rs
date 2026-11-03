@@ -51,6 +51,7 @@ const STOP_KEY: u64 = 1;
 pub(in crate::fs) fn mount(
     channel: Channel,
     environment: &MountEnvironment,
+    backing: Arc<dyn super::filesystem::BackingMemory>,
 ) -> Result<Arc<dyn FileSystem>, FileSystemError> {
     let connection = Connection::new(
         environment.requester,
@@ -67,7 +68,7 @@ pub(in crate::fs) fn mount(
         max_read: Some(filesystem_protocol::MAX_TRANSFER),
         subtype: Vec::new(),
     };
-    let filesystem = FuseFileSystem::assemble(&connection, options, true, || {
+    let filesystem = FuseFileSystem::assemble(&connection, options, true, Some(backing), || {
         start_transport(&connection, channel, environment.threads)
     })?;
     Ok(filesystem)

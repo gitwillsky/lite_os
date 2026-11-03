@@ -30,6 +30,19 @@ Status: Active
   `driver-host`；目录协议增加转发条目与移除；内核 PMT 隔离与 `BTI_RELEASE_QUARANTINE`（Zircon 语义）；
   `CrashLoop` 移入 `native_runtime::task`。`restart_on_crash` 目前只声明给熵源：网卡、输入、声音与
   console 端口的使用者尚无设备移除语义（netstack 不撤下接口、evdev/ALSA 节点不撤下），按默认语义移除节点。
+- D8 完成：fshost 持有 ext4 映像与实例 Job，每块盘一个实例（同盘再挂载交给同一实例，实例内按 UUID 串行化会话），
+  数据卷独占一个实例且终止即 fshost 失败停机；linuxd 经卷挂载协议按盘序号挂载。
+- D5 方案（Starnix RemoteFs + fxfs）：ext4 为每个文件维持 pager VMO，是文件大小与内容的唯一 owner；READ 经
+  VMO（缺页由 ext4 补页），WRITE 直写存储并同步 VMO（块分配与 ENOSPC 同步报告），截断/分配调整 VMO；
+  mmap 写脏的页由 ext4 在 fsync、syncfs、周期回写与节点释放时写回。linuxd 对 ext4 服务挂载的文件不建
+  页缓存：read/write 经 FUSE READ/WRITE，mmap 映射挂载控制 `GET_BACKING_MEMORY(nodeid)` 交出的 VMO。
+  `/dev/fuse` 的 Linux 守护进程仍用 linuxd 页缓存。pager 分派线程池抽为两者共用的 crate。
+- D5 完成（两架构 clippy 通过）：`pager-pool` crate；ext4 `content`（每文件 pager VMO、直写同步、截断/分配
+  调整、FORGET/拆除/5 秒周期回写）；挂载控制 `BACKING_MEMORY`；ext4 不再协商 `WRITEBACK_CACHE`；linuxd
+  `DataBacking::Remote`、`Inode::backing_memory` 与 `page_cache::remote_file`。
+- D6/D7 待定：linuxd 的 DRM KMS 状态机（活动扫描输出、翻转完成、fence 时间线、主控关闭回退）与 ALSA 混音引擎
+  （8 子流、ALSA 状态与软件参数）都与 Linux UAPI 状态同锁耦合；下放需新的显示提交协议与渲染协议（共享环形缓冲
+  VMO、应用/硬件指针经共享内存），涉及实时路径，Starnix 不实现 ALSA，没有可直接沿用的先例。
 
 ## 阶段与验证点
 

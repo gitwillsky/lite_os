@@ -1,6 +1,6 @@
 //! ext4 的 `mount(2)` 类型：文件系统由 ext4 服务承载，本 VFS 经块设备型 FUSE 挂载访问它。
 //!
-//! 1. 校验选项后把源块设备的整个区间共享给 ext4，ext4 打开文件系统（回放日志）并交回 FUSE channel
+//! 1. 校验选项后按源块设备所在整盘的序号请求 fshost 挂载；fshost 交给该盘的 ext4 实例，实例打开文件系统（回放日志）并交回 FUSE channel
 //!    与挂载控制；
 //! 2. FUSE 挂载承担 inode、页缓存与权限检查；本类型只投影 ext4 自己的 superblock 事实：类型名、
 //!    `data=ordered` 选项、`EXT4_SUPER_MAGIC` 与由 UUID 折叠的 fsid；
@@ -49,14 +49,18 @@ impl FileSystemType for Ext4FileSystemType {
             return Err(FileSystemError::InvalidFileSystem);
         }
         let (uuid, _) = ext4_identity(&superblock).ok_or(FileSystemError::InvalidOperation)?;
+        // linuxd 按 fshost 块设备清单的序号依次登记整盘，序号即注册表下标；fshost 为每块盘维持一个 ext4 实例。
         let disk = node.device();
-        let block = disk
-            .share_range(0, disk.block_count())
+        let ordinal = (0..)
+            .map_while(crate::devices::block::device)
+            .position(|registered| Arc::ptr_eq(&registered, disk))
             .ok_or(FileSystemError::NoDevice)?;
         let (channel, control) = crate::handles::ext4()
-            .mount(block, request.read_only)
+            .mount_disk(ordinal, request.read_only)
             .map_err(status_error)?;
-        let inner = super::fuse::mount_service(channel, request.environment)?;
+        let control =
+            Arc::try_new(MountControl(control)).map_err(|_| FileSystemError::OutOfMemory)?;
+        let inner = super::fuse::mount_service(channel, request.environment, control.clone())?;
         let filesystem = Arc::try_new(Ext4Mount {
             inner,
             control,
@@ -100,9 +104,21 @@ fn status_error(status: Status) -> FileSystemError {
 }
 
 /// 一个 ext4 挂载：FUSE 挂载加上 ext4 的 superblock 事实与挂载控制。
+/// ext4 服务一个挂载的控制：ro → rw 与普通文件的内容 VMO。
+struct MountControl(RemoteMount);
+
+impl super::fuse::BackingMemory for MountControl {
+    fn backing_memory(
+        &self,
+        node: u64,
+    ) -> Result<native_runtime::Vmo, native_runtime::native_abi::Status> {
+        self.0.backing_memory(node)
+    }
+}
+
 struct Ext4Mount {
     inner: Arc<dyn FileSystem>,
-    control: RemoteMount,
+    control: Arc<MountControl>,
     fsid: [u32; 2],
 }
 
@@ -150,7 +166,7 @@ impl FileSystem for Ext4Mount {
     ) -> Result<(), FileSystemError> {
         validate_mount_options(options)?;
         if writable_transition {
-            self.control.make_writable().map_err(status_error)?;
+            self.control.0.make_writable().map_err(status_error)?;
         }
         Ok(())
     }

@@ -17,6 +17,7 @@ mod options;
 mod protocol;
 mod service;
 
+pub(super) use filesystem::BackingMemory;
 pub(super) use service::mount as mount_service;
 
 /// 登记 `/dev/fuse` 与 `fuse`/`fusectl` 文件系统类型。

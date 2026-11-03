@@ -402,6 +402,29 @@ fn io_in(handle: HandleRef, offset: u64, size: u32, io_flags: u32) -> [u8; 40] {
 }
 
 impl Inode for FuseInode {
+    /// 服务挂载的普通文件由服务拥有内容；`/dev/fuse` 守护进程的文件经 linuxd 页缓存。
+    fn data_backing(&self) -> crate::fs::DataBacking {
+        if self.kind == InodeType::File && self.mount.backing.is_some() {
+            crate::fs::DataBacking::Remote
+        } else {
+            crate::fs::DataBacking::PageCache
+        }
+    }
+
+    fn backing_memory(&self) -> Result<native_runtime::Vmo, FileSystemError> {
+        let backing = self
+            .mount
+            .backing
+            .as_ref()
+            .ok_or(FileSystemError::NotSupported)?;
+        backing
+            .backing_memory(self.nodeid)
+            .map_err(|status| match status {
+                native_runtime::native_abi::ERR_NO_MEMORY => FileSystemError::OutOfMemory,
+                _ => FileSystemError::IoError,
+            })
+    }
+
     fn stack_depth(&self) -> u32 {
         self.mount
             .connection

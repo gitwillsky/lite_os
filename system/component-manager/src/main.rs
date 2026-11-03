@@ -7,11 +7,11 @@
 //! 2. 为根 Job 建立异常 channel：任何系统服务未处理的异常都在这里记录，随后交还内核终止该进程；
 //! 3. 启动 driver-manager（持有 DTB 与设备目录服务端，按节点启动驱动宿主），根服务持有完整目录连接并按设备类路由：
 //!    Network 类给 netcfg，Block 类给 fshost，其余给 linuxd；
-//! 4. 启动 ext4、fshost（持有 ext4 控制端），以及受监督的 netstack、dhcp-client、netcfg 与 linuxd；
+//! 4. 启动 fshost（交给它 ext4 实例的 Job 与映像，由它为每块盘启动 ext4），以及受监督的 netstack、dhcp-client、netcfg 与 linuxd；
 //!    每个消费者拿到只含它声明协议的路由目录（[`ROUTES`] 与各 `*_USES`），连接转发给提供者的当前实例
 //!    （能力路由，对应 Fuchsia component_manager）；netcfg 另得 fshost 派生的私有数据目录与 bootfs 默认策略；
 //! 5. 受监督服务终止后重启（linuxd 先终止整个 Linux Job），`native_runtime::task::CRASH_WINDOW` 内达到 `CRASH_LIMIT` 次
-//!    判定为崩溃循环并关机；driver-manager、fshost、ext4 终止时系统无法继续服务：记录退出状态并关机。
+//!    判定为崩溃循环并关机；driver-manager、fshost 终止时系统无法继续服务：记录退出状态并关机。
 
 extern crate alloc;
 
@@ -35,7 +35,6 @@ native_runtime::entry!(main);
 
 const LINUXD_STACK_SIZE: usize = 512 * 1024;
 const DRIVER_MANAGER_STACK_SIZE: usize = 256 * 1024;
-const EXT4D_STACK_SIZE: usize = 256 * 1024;
 const NETSTACK_STACK_SIZE: usize = 256 * 1024;
 const FSHOST_STACK_SIZE: usize = 128 * 1024;
 const NETCFG_STACK_SIZE: usize = 128 * 1024;
@@ -190,16 +189,10 @@ fn main(mut startup: Startup) -> i64 {
         .call_once(|| native_runtime::bootfs::Bootfs::map(&bootfs_vmo).expect("bootfs mapping"));
     let (directory, directory_server) = Channel::create().expect("device directory channel");
     let directory = DirectoryClient::new(directory);
-    let (ext4_client, ext4_server) = Channel::create().expect("ext4 control channel");
     let devices = start_driver_manager(&job, resource, bootfs, device_tree, directory_server);
-    let filesystems = start_service(
-        &job,
-        bootfs,
-        ext4::IMAGE,
-        b"ext4",
-        vec![ext4_server.into_handle()],
-        EXT4D_STACK_SIZE,
-    );
+    // fshost 为每块盘启动 ext4 实例（Fuchsia fshost 启动文件系统）：只交给它实例的 Job 与映像。
+    let filesystems = Job::create(&job).expect("filesystem job");
+    let ext4_image = bootfs_copy(bootfs, ext4::IMAGE);
     let (storage, storage_server) = Channel::create().expect("fshost outgoing channel");
     let storage_host = start_service(
         &job,
@@ -213,7 +206,8 @@ fn main(mut startup: Startup) -> i64 {
                 .expect("fshost device scope")
                 .into_channel()
                 .into_handle(),
-            ext4_client.into_handle(),
+            filesystems.into_handle(),
+            ext4_image.into_handle(),
         ],
         FSHOST_STACK_SIZE,
     );
@@ -267,7 +261,7 @@ fn main(mut startup: Startup) -> i64 {
                         .into_channel()
                         .into_handle(),
                     private_storage(b"netcfg").into_handle(),
-                    config_vmo(bootfs, netcfg::DEFAULT_CONFIG).into_handle(),
+                    bootfs_copy(bootfs, netcfg::DEFAULT_CONFIG).into_handle(),
                 ]
             },
         )
@@ -298,10 +292,6 @@ fn main(mut startup: Startup) -> i64 {
             .on_signals(&storage_host, signals::TERMINATED)
             .await;
         native_runtime::task::exit_process(power_off(&storage_host, "fshost"));
-    });
-    executor.spawn(async move {
-        let _ = executor.on_signals(&filesystems, signals::TERMINATED).await;
-        native_runtime::task::exit_process(power_off(&filesystems, "ext4"));
     });
     let linux_root = job.duplicate(rights::SAME).expect("root job duplicate");
     executor.block_on(async move {
@@ -353,14 +343,15 @@ fn private_storage(name: &[u8]) -> Channel {
         .expect("private storage")
 }
 
-/// 把 bootfs 中的只读配置复制为 VMO 交给服务（Fuchsia `/config/data`）。
-fn config_vmo(bootfs: &native_runtime::bootfs::Bootfs, path: &[u8]) -> Vmo {
+/// 把 bootfs 中的文件复制为 VMO 交给服务：只读配置（Fuchsia `/config/data`），或自行启动子进程的服务
+/// （driver-manager、fshost）所需的映像。
+fn bootfs_copy(bootfs: &native_runtime::bootfs::Bootfs, path: &[u8]) -> Vmo {
     let data = bootfs
         .find(path)
         .unwrap_or_else(|| panic!("bootfs lacks {}", core::str::from_utf8(path).unwrap_or("")))
         .data;
-    let vmo = Vmo::create(data.len() as u64, 0).expect("config vmo");
-    vmo.write(data, 0).expect("config vmo write");
+    let vmo = Vmo::create(data.len() as u64, 0).expect("bootfs copy vmo");
+    vmo.write(data, 0).expect("bootfs copy write");
     vmo
 }
 
@@ -550,14 +541,10 @@ fn start_driver_manager(
             .data
     };
     let image = find(driver_manager::IMAGE);
-    let host_image = find(driver_host::IMAGE);
+    let host_vmo = bootfs_copy(bootfs, driver_host::IMAGE);
     let job = Job::create(root).expect("driver-manager job");
     // 驱动宿主运行在 driver-manager 的 Job 之下：driver-manager 终止时全部宿主随之终止。
     let drivers = Job::create(&job).expect("driver host job");
-    let host_vmo = Vmo::create(host_image.len() as u64, 0).expect("driver-host image vmo");
-    host_vmo
-        .write(host_image, 0)
-        .expect("driver-host image copy");
     let (process, vmar) =
         Process::create(&job, b"driver-manager", 0).expect("driver-manager process");
     let runtime_vmar: Vmar = vmar

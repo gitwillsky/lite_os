@@ -32,7 +32,7 @@ pub mod linuxd {
     pub const ROOT_JOB_OBSERVER: usize = ROLE_HANDLES + 5;
 }
 
-/// 存储宿主：拥有全部块设备与 ext4 的连接；向使用者交出块设备的全盘范围连接，并转发 ext4 挂载
+/// 存储宿主：拥有全部块设备与文件系统服务实例；向使用者交出块设备的全盘范围连接，按盘序号挂载 ext4
 /// （Fuchsia fshost）。
 pub mod fshost {
     use super::ROLE_HANDLES;
@@ -45,11 +45,13 @@ pub mod fshost {
     pub const OUTGOING: usize = ROLE_HANDLES;
     /// 只含块设备的设备目录连接。
     pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 1;
-    /// ext4 控制 channel 的客户端。
-    pub const EXT4: usize = ROLE_HANDLES + 2;
+    /// 文件系统服务实例所在的 Job（fshost 为每块盘启动一个 [`super::ext4`] 实例）。
+    pub const FILESYSTEM_JOB: usize = ROLE_HANDLES + 2;
+    /// ext4 映像（bootfs 中 [`super::ext4::IMAGE`] 的只读副本）。
+    pub const EXT4_IMAGE: usize = ROLE_HANDLES + 3;
 }
 
-/// ext4 文件系统服务：按 fshost 转发的挂载请求打开块设备上的 ext4，并以 FUSE 线协议服务每个挂载。
+/// ext4 文件系统服务：fshost 为每块盘启动的实例；按挂载请求打开块设备上的 ext4，以 FUSE 线协议服务每个挂载。
 pub mod ext4 {
     use super::ROLE_HANDLES;
 

@@ -17,6 +17,7 @@ enum RegularFileBackend {
         file: Arc<MemoryFile>,
         inode: Arc<dyn Inode>,
     },
+    Remote(Arc<super::remote_file::RemoteFile>),
 }
 
 /// 一次 regular-file cache read 的 logical 与实际 storage 结果。
@@ -71,6 +72,9 @@ impl RegularFile {
             })),
             DataBacking::Snapshot => Ok(Self(RegularFileBackend::Snapshot(inode))),
             DataBacking::Memory(file) => Ok(Self(RegularFileBackend::Memory { file, inode })),
+            DataBacking::Remote => Ok(Self(RegularFileBackend::Remote(
+                super::remote_file::remote_file(inode)?,
+            ))),
         }
     }
 
@@ -90,6 +94,7 @@ impl RegularFile {
                 Some(file.id)
             }
             RegularFileBackend::Memory { file, .. } => Some(file.id()),
+            RegularFileBackend::Remote(file) => Some(file.id),
             RegularFileBackend::Snapshot(_) => None,
         }
     }
@@ -105,6 +110,7 @@ impl RegularFile {
                 file.inode.size()
             }
             RegularFileBackend::Memory { file, .. } => file.size(),
+            RegularFileBackend::Remote(file) => file.inode.size(),
             RegularFileBackend::Snapshot(inode) => inode.size(),
         }
     }
@@ -170,6 +176,12 @@ impl RegularFile {
                     });
             }
             RegularFileBackend::Memory { file, .. } => {
+                return file.read(offset, output).map(|bytes| RegularFileRead {
+                    bytes,
+                    storage_bytes: 0,
+                });
+            }
+            RegularFileBackend::Remote(file) => {
                 return file.read(offset, output).map(|bytes| RegularFileRead {
                     bytes,
                     storage_bytes: 0,
@@ -266,6 +278,17 @@ impl RegularFile {
                     write: file.begin_write()?,
                     inode,
                     identity,
+                }))
+            }
+            RegularFileBackend::Remote(file) => {
+                let sequence = file
+                    .write_sequence
+                    .lock()
+                    .map_err(|_| FileSystemError::OutOfMemory)?;
+                Ok(RegularFileWrite::Remote(super::remote_file::RemoteWrite {
+                    file,
+                    identity,
+                    _sequence: sequence,
                 }))
             }
             RegularFileBackend::Snapshot(_) => Err(FileSystemError::ReadOnly),

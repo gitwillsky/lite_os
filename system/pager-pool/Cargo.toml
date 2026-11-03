@@ -1,0 +1,15 @@
+[package]
+name = "pager-pool"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+test = false
+bench = false
+
+[dependencies]
+native-runtime = { path = "../native-runtime" }
+fallible-tree = { path = "../../libraries/fallible-tree" }
+
+[lints]
+workspace = true

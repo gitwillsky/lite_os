@@ -11,6 +11,7 @@ bench = false
 [dependencies]
 task-observer-protocol = { path = "../task-observer-protocol" }
 native-runtime = { path = "../native-runtime" }
+pager-pool = { path = "../pager-pool" }
 service-sync = { path = "../service-sync" }
 device-model = { path = "../device-model" }
 device-protocol = { path = "../device-protocol" }

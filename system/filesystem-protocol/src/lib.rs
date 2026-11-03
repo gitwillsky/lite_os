@@ -5,9 +5,11 @@
 //!
 //! 1. 使用者经服务的控制 channel 发出挂载请求，交出块设备连接（`device_protocol::block` 的一条 channel）；
 //! 2. 服务打开文件系统，回复该挂载的 FUSE channel（使用者的 FUSE 客户端经它访问文件）与挂载控制 channel；
-//! 3. 挂载控制目前只有“转为可写”（只读挂载重新挂载为读写）；卸载经 FUSE `DESTROY` 完成。
-//! 4. fshost 拥有块设备与文件系统服务：经块设备清单协议（[`BlocksClient`]）交出块设备的全盘范围连接，
-//!    并把挂载协议原样转发给 ext4（[`MountClient::serve_proxy`]），使用者看到的线格式不变。
+//! 3. 挂载控制：“转为可写”（只读挂载重新挂载为读写）与普通文件的内容 VMO（mmap 映射服务端拥有的页缓存）；
+//!    卸载经 FUSE `DESTROY` 完成。
+//! 4. fshost 拥有块设备与文件系统服务实例：经块设备清单协议（[`BlocksClient`]）交出块设备的全盘范围连接，
+//!    经卷挂载协议（[`VolumeMountClient`]）按盘序号挂载——fshost 为每块盘启动一个 ext4 实例，
+//!    自己建立块设备连接并以上面的挂载协议交给实例。
 //! 5. fshost 在原生数据卷上为每个原生服务派生私有目录（[`StorageAdmin`]，只供根服务），服务经私有目录协议
 //!    （[`Storage`]）整文件读写自己的持久状态（Fuchsia 的 `storage` 能力）。
 
@@ -75,6 +77,7 @@ pub fn receive_fuse(mut message: Message) -> Result<Vec<u8>, Status> {
 
 const MOUNT: u32 = 1;
 const MAKE_WRITABLE: u32 = 1;
+const BACKING_MEMORY: u32 = 2;
 
 /// 服务端的一次挂载结果。
 pub struct Mounted {
@@ -100,6 +103,14 @@ pub trait MountControl: Send + Sync {
     ///
     /// 日志恢复或写入准备失败。
     fn make_writable(&self) -> Result<(), Status>;
+
+    /// 普通文件 `node`（FUSE nodeid）的内容 VMO（fuchsia.io `GetBackingMemory`）：服务端是其大小与内容的
+    /// 唯一 owner，使用者映射它实现 mmap，read/write 仍经 FUSE。
+    ///
+    /// # Errors
+    ///
+    /// 节点不存在（`ERR_NOT_FOUND`）、不是普通文件（`ERR_WRONG_TYPE`）或 VMO 建立失败。
+    fn backing_memory(&self, node: u64) -> Result<Vmo, Status>;
 }
 
 /// 服务端：以 `service` 服务控制 channel；每个挂载的控制 channel 由一个线程服务。
@@ -129,13 +140,17 @@ pub fn serve_mounts(control: Channel, service: Arc<dyn MountService>) -> Result<
                     server,
                     1,
                     b"mount",
-                    Arc::try_new(move |ordinal: u32, _: &mut Reader<'_>, _, _: &mut Writer| {
-                        match ordinal {
-                            MAKE_WRITABLE => control.make_writable()?,
-                            _ => return Err(native_abi::ERR_NOT_SUPPORTED),
-                        }
-                        Ok(Vec::new())
-                    })
+                    Arc::try_new(
+                        move |ordinal: u32, request: &mut Reader<'_>, _, _: &mut Writer| {
+                            match ordinal {
+                                MAKE_WRITABLE => control.make_writable().map(|()| Vec::new()),
+                                BACKING_MEMORY => Ok(alloc::vec![
+                                    control.backing_memory(request.u64()?)?.into_handle()
+                                ]),
+                                _ => Err(native_abi::ERR_NOT_SUPPORTED),
+                            }
+                        },
+                    )
                     .map_err(|_| native_abi::ERR_NO_MEMORY)?,
                 )?;
                 Ok(alloc::vec![
@@ -178,36 +193,74 @@ impl MountClient {
     }
 }
 
-impl MountClient {
-    /// 以本连接服务 `channel` 上的挂载请求：fshost 把使用者的挂载转发给它拥有的文件系统服务。
+const MOUNT_DISK: u32 = 1;
+
+/// fshost 端：挂载块设备清单中第 `disk` 块盘上的 ext4。fshost 为每块盘维持一个文件系统服务实例，
+/// 同一盘的再次挂载（使用者重启）交给同一实例，由实例串行化同一文件系统的会话。
+pub trait VolumeMountService: Send + Sync {
+    /// # Errors
+    ///
+    /// 序号越界、实例启动失败或实例报告的挂载失败。
+    fn mount_disk(&self, disk: usize, read_only: bool) -> Result<(Channel, RemoteMount), Status>;
+}
+
+/// 服务卷挂载协议。
+///
+/// # Errors
+///
+/// 服务线程或闭包分配失败。
+pub fn serve_volume_mounts(
+    channel: Channel,
+    service: Arc<dyn VolumeMountService>,
+) -> Result<(), Status> {
+    serve(
+        channel,
+        1,
+        b"volume-mount",
+        Arc::try_new(
+            move |ordinal: u32, request: &mut Reader<'_>, _: Vec<Handle>, _: &mut Writer| {
+                if ordinal != MOUNT_DISK {
+                    return Err(native_abi::ERR_NOT_SUPPORTED);
+                }
+                let disk = request.usize()?;
+                let read_only = request.bool()?;
+                let (fuse, control) = service.mount_disk(disk, read_only)?;
+                Ok(alloc::vec![
+                    fuse.into_handle(),
+                    control.channel.into_handle()
+                ])
+            },
+        )
+        .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+    )
+}
+
+/// 使用者端：fshost 的卷挂载连接。
+pub struct VolumeMountClient {
+    channel: Channel,
+}
+
+impl VolumeMountClient {
+    pub fn new(channel: Channel) -> Self {
+        Self { channel }
+    }
+
+    /// 挂载块设备清单中第 `disk` 块盘，返回 FUSE channel 与挂载控制。
     ///
     /// # Errors
     ///
-    /// 服务线程或闭包分配失败。
-    pub fn serve_proxy(self: &Arc<Self>, channel: Channel) -> Result<(), Status> {
-        let target = self.clone();
-        serve(
-            channel,
-            1,
-            b"mount-proxy",
-            Arc::try_new(
-                move |ordinal: u32,
-                      request: &mut Reader<'_>,
-                      mut handles: Vec<Handle>,
-                      _: &mut Writer| {
-                    if ordinal != MOUNT {
-                        return Err(native_abi::ERR_NOT_SUPPORTED);
-                    }
-                    let read_only = request.bool()?;
-                    let (fuse, control) = target.mount(take_handle(&mut handles, 0)?, read_only)?;
-                    Ok(alloc::vec![
-                        fuse.into_handle(),
-                        control.channel.into_handle()
-                    ])
-                },
-            )
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?,
-        )
+    /// fshost 或文件系统服务报告的挂载失败，或回复不完整。
+    pub fn mount_disk(
+        &self,
+        disk: usize,
+        read_only: bool,
+    ) -> Result<(Channel, RemoteMount), Status> {
+        let mut request = Writer::request(MOUNT_DISK);
+        request.u64(disk as u64).bool(read_only);
+        let mut reply = call(&self.channel, &request, Vec::new())?;
+        let fuse = Channel::from_handle(take_handle(&mut reply.handles, 0)?);
+        let control = Channel::from_handle(take_handle(&mut reply.handles, 1)?);
+        Ok((fuse, RemoteMount { channel: control }))
     }
 }
 
@@ -285,6 +338,18 @@ impl RemoteMount {
     /// 服务报告的失败。
     pub fn make_writable(&self) -> Result<(), Status> {
         call(&self.channel, &Writer::request(MAKE_WRITABLE), Vec::new()).map(|_| ())
+    }
+
+    /// 取得普通文件 `node`（FUSE nodeid）的内容 VMO，见 [`MountControl::backing_memory`]。
+    ///
+    /// # Errors
+    ///
+    /// 服务报告的失败，或回复不完整。
+    pub fn backing_memory(&self, node: u64) -> Result<Vmo, Status> {
+        let mut request = Writer::request(BACKING_MEMORY);
+        request.u64(node);
+        let mut reply = call(&self.channel, &request, Vec::new())?;
+        Ok(Vmo::from_handle(take_handle(&mut reply.handles, 0)?))
     }
 }
 

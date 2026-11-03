@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use crate::sync::Once;
-use filesystem_protocol::MountClient;
+use filesystem_protocol::VolumeMountClient;
 use native_runtime::{Channel, Job, Process, Resource, Startup};
 use service_directory::ServiceDirectory;
 
@@ -12,7 +12,7 @@ struct Handles {
     job: Job,
     resource: Resource,
     command_line: Vec<u8>,
-    ext4: MountClient,
+    ext4: VolumeMountClient,
     services: ServiceDirectory,
 }
 
@@ -30,7 +30,7 @@ pub(crate) fn install(startup: &mut Startup) -> Channel {
         job: Job::from_handle(startup.take(linuxd::JOB)),
         resource: Resource::from_handle(startup.take(linuxd::RESOURCE)),
         command_line,
-        ext4: MountClient::new(
+        ext4: VolumeMountClient::new(
             services
                 .connect(service_directory::EXT4)
                 .expect("fshost ext4 connection"),
@@ -64,8 +64,8 @@ pub(crate) fn command_line() -> &'static [u8] {
     &handles().command_line
 }
 
-/// 经 fshost 转发的 ext4 挂载：`ext4` 类型的每次挂载经它打开块设备上的文件系统。
-pub(crate) fn ext4() -> &'static MountClient {
+/// fshost 的卷挂载：`ext4` 类型的每次挂载经它按盘序号打开文件系统。
+pub(crate) fn ext4() -> &'static VolumeMountClient {
     &handles().ext4
 }
 

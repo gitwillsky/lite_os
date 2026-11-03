@@ -5,25 +5,25 @@
 //! fshost：存储宿主（对应 Fuchsia fshost）。
 //!
 //! 1. 从根服务路由来的块设备目录打开启动时发现的全部块设备，持有各设备唯一的驱动会话；
-//! 2. 持有 ext4 的控制连接；使用者不直接接触块设备驱动会话或 ext4；
+//! 2. 为每块盘启动一个 ext4 实例（[`volumes`]）；使用者不直接接触块设备驱动会话或 ext4；
 //! 3. 卷标为 `liteos-data` 的 ext4 是原生数据卷：不交给 Linux，由 fshost 读写挂载，并为各原生服务派生私有目录
 //!    （存储能力，见 [`storage`]）；
 //! 4. 经 outgoing 提供协议：块设备清单（按序号交出全盘范围连接，Linux 块设备 UAPI 与挂载在其上实现）、
-//!    ext4 挂载（原样转发给 ext4）与存储管理（只路由给根服务）。使用者（linuxd）重启后重新连接即可，
-//!    块设备会话、ext4 与数据卷不受影响。
+//!    按盘序号的 ext4 挂载与存储管理（只路由给根服务）。使用者（linuxd）重启后重新连接即可，
+//!    块设备会话、ext4 实例与数据卷不受影响。
 
 extern crate alloc;
 #[macro_use]
 extern crate native_runtime;
 
 mod storage;
+mod volumes;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use device_model::BlockDevice;
 use device_protocol::directory::{Class, DirectoryClient};
-use filesystem_protocol::MountClient;
 use native_runtime::native_abi::{self, Status, signals};
 use native_runtime::{Channel, Startup};
 
@@ -83,17 +83,26 @@ fn main(mut startup: Startup) -> i64 {
     let outgoing = Channel::from_handle(startup.take(fshost::OUTGOING));
     let directory =
         DirectoryClient::new(Channel::from_handle(startup.take(fshost::DEVICE_DIRECTORY)));
-    let ext4 = Arc::new(MountClient::new(Channel::from_handle(
-        startup.take(fshost::EXT4),
-    )));
+    let image = native_runtime::Vmo::from_handle(startup.take(fshost::EXT4_IMAGE));
+    let size = image.size().expect("ext4 image size") as usize;
+    let address = native_runtime::heap::vmar()
+        .map(native_abi::vm::READ, 0, &image, 0, size)
+        .expect("ext4 image mapping");
+    // SAFETY: 只读映射永不解除；映像在服务存活期间不变，每次启动实例都从中装载。
+    let image = unsafe { core::slice::from_raw_parts(address as *const u8, size) };
+    let launcher = Arc::new(volumes::Launcher::new(
+        native_runtime::Job::from_handle(startup.take(fshost::FILESYSTEM_JOB)),
+        image,
+    ));
     let Devices {
         linux: devices,
         data,
     } = open_devices(&directory).expect("fshost block devices");
     let devices = Arc::new(devices);
+    let volumes = Arc::new(volumes::Volumes::new(launcher.clone(), devices.clone()));
     // 数据卷缺失时存储管理返回 NOT_FOUND，需要私有目录的服务因此无法启动：镜像总是带数据卷。
     let volume = data.and_then(|device| {
-        storage::DataVolume::mount(&ext4, &*device)
+        storage::DataVolume::mount(&launcher, &*device)
             .inspect_err(|status| error!("fshost: data volume mount failed: {status}"))
             .ok()
     });
@@ -114,7 +123,7 @@ fn main(mut startup: Startup) -> i64 {
                     }),
                 )
             } else if protocol == service_directory::EXT4 {
-                ext4.serve_proxy(channel)
+                filesystem_protocol::serve_volume_mounts(channel, volumes.clone())
             } else if protocol == service_directory::STORAGE_ADMIN {
                 let volume = volume.clone().ok_or(native_abi::ERR_NOT_FOUND)?;
                 filesystem_protocol::serve_storage_admin(

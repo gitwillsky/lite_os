@@ -12,6 +12,7 @@ extern crate alloc;
 #[macro_use]
 extern crate native_runtime;
 
+mod content;
 mod ext4;
 mod fuse_server;
 mod time;

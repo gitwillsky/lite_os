@@ -16,6 +16,7 @@ members = [
     "system/device-protocol",
     "system/driver-host",
     "system/driver-manager",
+    "system/pager-pool",
     "system/ext4",
     "system/fshost",
     "system/dhcp-client",

@@ -189,6 +189,7 @@ dependencies = [
  "launch-protocol",
  "linux-abi",
  "native-runtime",
+ "pager-pool",
  "service-sync",
 ]
 
@@ -302,6 +303,7 @@ dependencies = [
  "native-runtime",
  "netcfg-protocol",
  "network-protocol",
+ "pager-pool",
  "service-directory",
  "service-rpc",
  "service-sync",
@@ -391,6 +393,14 @@ dependencies = [
  "device-model",
  "native-runtime",
  "service-rpc",
+]
+
+[[package]]
+name = "pager-pool"
+version = "0.1.0"
+dependencies = [
+ "fallible-tree",
+ "native-runtime",
 ]
 
 [[package]]

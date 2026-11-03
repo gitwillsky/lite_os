@@ -11,9 +11,9 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use device_model::BlockDevice;
-use filesystem_protocol::{MountClient, RemoteMount, STORAGE_FILE_MAX, StorageService};
+use filesystem_protocol::{RemoteMount, STORAGE_FILE_MAX, StorageService};
 use native_runtime::Channel;
-use native_runtime::native_abi::{self, Status};
+use native_runtime::native_abi::{self, Status, signals};
 use native_runtime::sync::Mutex;
 
 /// 数据卷的 ext4 卷标（`mkfs.ext4 -L`）。
@@ -127,16 +127,29 @@ impl From<Failure> for Status {
 }
 
 impl DataVolume {
-    /// 经 ext4 读写挂载数据卷并完成 FUSE INIT。
+    /// 在专属 ext4 实例上读写挂载数据卷并完成 FUSE INIT。
+    ///
+    /// 数据卷是原生服务的持久状态：实例终止时 fshost 失败停机（关键组件，根服务随之关机），
+    /// 不能在数据卷状态未知时继续提供存储能力。
     ///
     /// # Errors
     ///
-    /// 设备不可共享、挂载或 INIT 失败。
-    pub(crate) fn mount(ext4: &MountClient, device: &dyn BlockDevice) -> Result<Arc<Self>, Status> {
+    /// 实例启动、设备共享、挂载或 INIT 失败。
+    pub(crate) fn mount(
+        launcher: &crate::volumes::Launcher,
+        device: &dyn BlockDevice,
+    ) -> Result<Arc<Self>, Status> {
         let block = device
             .share_range(0, device.block_count())
             .ok_or(native_abi::ERR_NOT_SUPPORTED)?;
-        let (fuse, control) = ext4.mount(block, false)?;
+        let instance = launcher.launch()?;
+        let (fuse, control) = instance.control.mount(block, false)?;
+        let watched = instance.process;
+        let watcher = native_runtime::thread::spawn(b"data-volume-watch", move || {
+            let _ = watched.wait_one(signals::TERMINATED, native_abi::DEADLINE_INFINITE);
+            panic!("data volume filesystem terminated");
+        })?;
+        drop(watcher);
         let volume = Arc::try_new(Self {
             fuse: Mutex::new(fuse),
             unique: AtomicU64::new(1),

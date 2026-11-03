@@ -37,6 +37,22 @@ pub(super) struct Mount {
     // `no_fsyncdir`/`no_fallocate`/`no_flush`/`no_create`/xattr），按 [`Unsupported`] 位记录。缺失时每次 access/fsync 都多一个
     // 注定失败的往返，RENAME_NOREPLACE 在不支持的服务器上也得不到 Linux 的 EINVAL。
     unsupported: AtomicU16,
+    /// 服务挂载的文件内容 owner（ext4 服务）：普通文件的读与 mmap 经它交出的 VMO（[`BackingMemory`]）。
+    /// `/dev/fuse` 守护进程没有它，其文件仍由 linuxd 页缓存缓存。
+    pub(super) backing: Option<Arc<dyn BackingMemory>>,
+}
+
+/// 文件系统服务交出普通文件内容 VMO 的接口（fuchsia.io `GetBackingMemory`）。
+pub(in crate::fs) trait BackingMemory: Send + Sync {
+    /// nodeid 为 `node` 的普通文件的内容 VMO。
+    ///
+    /// # Errors
+    ///
+    /// 节点不存在、不是普通文件或连接已断开。
+    fn backing_memory(
+        &self,
+        node: u64,
+    ) -> Result<native_runtime::Vmo, native_runtime::native_abi::Status>;
 }
 
 /// 守护进程不实现的可选操作。
@@ -156,6 +172,7 @@ impl FuseFileSystem {
         connection: &Arc<Connection>,
         options: Options,
         server_durability: bool,
+        backing: Option<Arc<dyn BackingMemory>>,
         bind: impl FnOnce() -> Result<(), FileSystemError>,
     ) -> Result<Arc<Self>, FileSystemError> {
         let root_attributes =
@@ -166,6 +183,7 @@ impl FuseFileSystem {
             options,
             nodes: Mutex::new(FallibleMap::new()),
             unsupported: AtomicU16::new(0),
+            backing,
         })
         .map_err(|_| FileSystemError::OutOfMemory)?;
         let root = FuseInode::root(mount.clone(), &root_attributes)?;
@@ -350,8 +368,9 @@ impl FileSystemType for FuseFileSystemType {
             requester.thread.namespace(),
             options.max_read.unwrap_or(u32::MAX),
         )?;
-        let filesystem =
-            FuseFileSystem::assemble(&connection, options, false, || device.bind(&connection))?;
+        let filesystem = FuseFileSystem::assemble(&connection, options, false, None, || {
+            device.bind(&connection)
+        })?;
         Ok(CreatedFileSystem {
             filesystem,
             user_namespace: request.identity.user_namespace(),

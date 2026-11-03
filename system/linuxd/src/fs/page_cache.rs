@@ -29,6 +29,7 @@ use super::pager;
 mod registry;
 mod regular_file;
 mod regular_write;
+mod remote_file;
 mod writeback;
 mod writeback_batch;
 
@@ -185,6 +186,7 @@ pub(crate) enum RegularFileWrite<'a> {
     Cached(CachedWrite<'a>),
     Direct(DirectWrite<'a>),
     Memory(MemoryInodeWrite<'a>),
+    Remote(remote_file::RemoteWrite<'a>),
 }
 
 /// 同一缓存写串行化下的 per-open 直接写（FUSE direct_io）。
@@ -225,6 +227,7 @@ pub(crate) fn mapping(
     let inner: Arc<dyn SharedFileMapping> = match inode.data_backing() {
         DataBacking::PageCache => cached_file(inode)?.ok_or(FileSystemError::InvalidOperation)?,
         DataBacking::Memory(file) => file.mapping(shared, may_write, write)?,
+        DataBacking::Remote => remote_file::remote_file(inode)?,
         DataBacking::Snapshot => return Err(FileSystemError::InvalidOperation),
     };
     Arc::try_new(MappedFile {
@@ -283,6 +286,15 @@ pub(crate) fn truncate(
         DataBacking::Memory(_) | DataBacking::Snapshot => {
             return inode.truncate_storage(size, Some(identity));
         }
+        DataBacking::Remote => {
+            // 服务调整自己的内容 VMO；写串行化防止与并发 append 交错。
+            let file = remote_file::remote_file(inode)?;
+            let _sequence = file
+                .write_sequence
+                .lock()
+                .map_err(|_| FileSystemError::OutOfMemory)?;
+            return file.inode.truncate_storage(size, Some(identity));
+        }
     };
     let _sequence = file.lock(&file.write_sequence)?;
     let _operation = file.lock(&file.operation)?;
@@ -321,7 +333,9 @@ pub(crate) fn allocate(
     }
     let file = match inode.data_backing() {
         DataBacking::PageCache => cached_file(inode)?.ok_or(FileSystemError::InvalidOperation)?,
-        DataBacking::Memory(_) => return inode.allocate_storage(offset, length, Some(identity)),
+        DataBacking::Memory(_) | DataBacking::Remote => {
+            return inode.allocate_storage(offset, length, Some(identity));
+        }
         DataBacking::Snapshot => return Err(FileSystemError::ReadOnly),
     };
     let _sequence = file.lock(&file.write_sequence)?;
@@ -342,6 +356,8 @@ pub(crate) fn sync_inode(inode: Arc<dyn Inode>) -> Result<(), FileSystemError> {
     let file = match inode.data_backing() {
         DataBacking::PageCache => cached_file(inode)?.ok_or(FileSystemError::InvalidOperation)?,
         DataBacking::Memory(_) | DataBacking::Snapshot => return Ok(()),
+        // 服务写回映射写入并提交日志。
+        DataBacking::Remote => return inode.sync_storage(),
     };
     let _sequence = file.lock(&file.write_sequence)?;
     let _operation = file.lock(&file.operation)?;

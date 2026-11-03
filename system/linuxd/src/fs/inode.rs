@@ -75,6 +75,9 @@ pub(crate) enum DataBacking {
     Snapshot,
     /// 内存型文件（tmpfs、memfd）：页即内容，由该 inode 独占，没有 backing storage。
     Memory(alloc::sync::Arc<super::memory_file::MemoryFile>),
+    /// 内容由文件系统服务拥有（ext4 服务挂载，Starnix RemoteFs）：读与 mmap 使用服务交出的 VMO
+    /// （[`Inode::backing_memory`]），写经存储接口；linuxd 不缓存它的页，也不回写。
+    Remote,
 }
 
 /// 一次 inode-owned symlink lookup 的完整结果；不重试目标类型或身份。
@@ -317,6 +320,15 @@ pub(crate) trait Inode: Send + Sync {
     /// 持久文件为 [`DataBacking::PageCache`]（默认）。
     fn data_backing(&self) -> DataBacking {
         DataBacking::PageCache
+    }
+
+    /// [`DataBacking::Remote`] 文件的内容 VMO：服务端拥有其大小与页，读与 mmap 都经它。
+    ///
+    /// # Errors
+    ///
+    /// 不是远端内容（默认 `NotSupported`），或服务端拒绝/连接已断开。
+    fn backing_memory(&self) -> Result<native_runtime::Vmo, FileSystemError> {
+        Err(FileSystemError::NotSupported)
     }
 
     /// notification/last-dput 的最小 inode/link 事实；可变 storage backend 必须无分配、无失败投影。

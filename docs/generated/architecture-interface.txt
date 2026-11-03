@@ -2516,6 +2516,13 @@ system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) impl VirtioMmio
 system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) struct VirtioMmioScan
 system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) struct VirtioMmioTransport
 system/driver-manager/src/platform/virtio_mmio.rs :: pub (crate) struct VirtioMmioTransports
+system/ext4/src/content.rs :: pub (crate) impl Content :: fn backing_memory (& self) -> Result < Vmo , native_abi :: Status >
+system/ext4/src/content.rs :: pub (crate) impl Content :: fn new (inode : Arc < Ext4Inode >) -> Result < Arc < Self > , FileSystemError >
+system/ext4/src/content.rs :: pub (crate) impl Content :: fn read (& self , offset : u64 , output : & mut [u8]) -> Result < usize , FileSystemError >
+system/ext4/src/content.rs :: pub (crate) impl Content :: fn resized (& self) -> Result < () , FileSystemError >
+system/ext4/src/content.rs :: pub (crate) impl Content :: fn write (& self , offset : u64 , data : & [u8] , policy : Option < WritePolicy > ,) -> Result < usize , FileSystemError >
+system/ext4/src/content.rs :: pub (crate) impl Content :: fn writeback (& self) -> Result < () , FileSystemError >
+system/ext4/src/content.rs :: pub (crate) struct Content
 system/ext4/src/ext4.rs :: pub (crate) struct Ext4FileSystem
 system/ext4/src/ext4.rs :: pub (crate) use inode :: Ext4Inode
 system/ext4/src/ext4/allocation.rs :: pub (super) impl Ext4FileSystem :: fn allocate_block (& self , goal : u64 , contents : & [u8] , kind : BlockKind ,) -> Result < u64 , FileSystemError >
@@ -4329,6 +4336,7 @@ system/linuxd/src/fs/fifo.rs :: pub (super) enum SessionOpenError
 system/linuxd/src/fs/fifo.rs :: pub (super) fn open_session (pipe : Arc < Pipe > , access : FifoAccess , nonblocking : bool , kind : PipeOpenKind ,) -> Result < Arc < dyn DeviceFile > , SessionOpenError >
 system/linuxd/src/fs/file_information.rs :: pub (crate) fn format_file_information (opened : & OpenedFile , position : u64 , flags : u32 , backend : Option < & dyn DeviceFile > , view : & crate :: namespace :: PidNamespace ,) -> Result < Vec < u8 > , FileSystemError >
 system/linuxd/src/fs/fuse.rs :: pub (super) fn register () -> Result < () , FileSystemError >
+system/linuxd/src/fs/fuse.rs :: pub (super) use filesystem :: BackingMemory
 system/linuxd/src/fs/fuse.rs :: pub (super) use service :: mount as mount_service
 system/linuxd/src/fs/fuse/connection.rs :: pub (super) Connection :: max_read : u32
 system/linuxd/src/fs/fuse/connection.rs :: pub (super) Negotiated :: flags : u64
@@ -4420,6 +4428,8 @@ system/linuxd/src/fs/fuse/filesystem.rs :: enum Unsupported :: RemoveXattr = 1 <
 system/linuxd/src/fs/fuse/filesystem.rs :: enum Unsupported :: Rename2 = 1 << 1
 system/linuxd/src/fs/fuse/filesystem.rs :: enum Unsupported :: SetXattr = 1 << 8
 system/linuxd/src/fs/fuse/filesystem.rs :: enum Unsupported :: SyncFs = 1 << 11
+system/linuxd/src/fs/fuse/filesystem.rs :: pub (in crate :: fs) trait BackingMemory
+system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) Mount :: backing : Option < Arc < dyn BackingMemory > >
 system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) Mount :: connection : Arc < Connection >
 system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) Mount :: filesystem_id : usize
 system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) Mount :: options : Options
@@ -4433,7 +4443,7 @@ system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) SetAttributes :: uid : u3
 system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) SetAttributes :: valid : u32
 system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) enum Unsupported
 system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) fn notify (connection : & Connection , code : i32 , payload : & [u8] ,) -> Result < () , FileSystemError >
-system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) impl FuseFileSystem :: fn assemble (connection : & Arc < Connection > , options : Options , server_durability : bool , bind : impl FnOnce () -> Result < () , FileSystemError > ,) -> Result < Arc < Self > , FileSystemError >
+system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) impl FuseFileSystem :: fn assemble (connection : & Arc < Connection > , options : Options , server_durability : bool , backing : Option < Arc < dyn BackingMemory > > , bind : impl FnOnce () -> Result < () , FileSystemError > ,) -> Result < Arc < Self > , FileSystemError >
 system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) impl Mount :: fn adopt (self : & Arc < Self > , entry : & protocol :: Entry ,) -> Result < Arc < FuseInode > , FileSystemError >
 system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) impl Mount :: fn mark_unsupported (& self , operation : Unsupported)
 system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) impl Mount :: fn node (& self , nodeid : u64) -> Option < Arc < FuseInode > >
@@ -4445,6 +4455,7 @@ system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) struct FuseFileSystem
 system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) struct FuseFileSystemType
 system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) struct Mount
 system/linuxd/src/fs/fuse/filesystem.rs :: pub (super) struct SetAttributes
+system/linuxd/src/fs/fuse/filesystem.rs :: trait BackingMemory :: fn backing_memory (& self , node : u64 ,) -> Result < native_runtime :: Vmo , native_runtime :: native_abi :: Status >
 system/linuxd/src/fs/fuse/inode.rs :: pub (super) impl FuseInode :: fn add_lookup (& self)
 system/linuxd/src/fs/fuse/inode.rs :: pub (super) impl FuseInode :: fn invalidate_attributes (& self)
 system/linuxd/src/fs/fuse/inode.rs :: pub (super) impl FuseInode :: fn invalidate_data (& self , wait : bool) -> Result < () , FileSystemError >
@@ -4568,8 +4579,9 @@ system/linuxd/src/fs/fuse/protocol.rs :: pub (super) struct Fields < const N : u
 system/linuxd/src/fs/fuse/protocol.rs :: pub (super) struct Opened
 system/linuxd/src/fs/fuse/protocol.rs :: pub (super) struct Reader < 'a >
 system/linuxd/src/fs/fuse/protocol.rs :: pub (super) struct Statfs
-system/linuxd/src/fs/fuse/service.rs :: pub (in crate :: fs) fn mount (channel : Channel , environment : & MountEnvironment ,) -> Result < Arc < dyn FileSystem > , FileSystemError >
+system/linuxd/src/fs/fuse/service.rs :: pub (in crate :: fs) fn mount (channel : Channel , environment : & MountEnvironment , backing : Arc < dyn super :: filesystem :: BackingMemory > ,) -> Result < Arc < dyn FileSystem > , FileSystemError >
 system/linuxd/src/fs/inode.rs :: enum DataBacking :: # [doc = " 内存型文件（tmpfs、memfd）：页即内容，由该 inode 独占，没有 backing storage。"] Memory (alloc :: sync :: Arc < super :: memory_file :: MemoryFile >)
+system/linuxd/src/fs/inode.rs :: enum DataBacking :: # [doc = " 内容由文件系统服务拥有（ext4 服务挂载，Starnix RemoteFs）：读与 mmap 使用服务交出的 VMO"] # [doc = " （[`Inode::backing_memory`]），写经存储接口；linuxd 不缓存它的页，也不回写。"] Remote
 system/linuxd/src/fs/inode.rs :: enum DataBacking :: # [doc = " 持久文件：经全局 page cache 缓存 filesystem storage。"] PageCache
 system/linuxd/src/fs/inode.rs :: enum DataBacking :: # [doc = " 每次读取即时生成的只读快照（procfs）：不缓存、不可 mmap、不可写。"] Snapshot
 system/linuxd/src/fs/inode.rs :: enum InodeOpen :: # [doc = " 经 VFS/page cache 访问 inode storage；有 per-open 状态的 filesystem 附带其 release 令牌。"] Storage (Option < Arc < dyn StorageOpen > >)
@@ -4620,6 +4632,7 @@ system/linuxd/src/fs/inode.rs :: trait Inode :: fn add_seals (& self , seals : u
 system/linuxd/src/fs/inode.rs :: trait Inode :: fn allocate_storage (& self , _offset : u64 , _length : u64 , _identity : Option < & crate :: fs :: AccessIdentity > ,) -> Result < () , FileSystemError >
 system/linuxd/src/fs/inode.rs :: trait Inode :: fn allows_notifications (& self) -> bool
 system/linuxd/src/fs/inode.rs :: trait Inode :: fn append_storage (& self , buf : & [u8] , identity : Option < & crate :: fs :: AccessIdentity > ,) -> Result < (u64 , usize) , FileSystemError >
+system/linuxd/src/fs/inode.rs :: trait Inode :: fn backing_memory (& self) -> Result < native_runtime :: Vmo , FileSystemError >
 system/linuxd/src/fs/inode.rs :: trait Inode :: fn buffered_writes (& self) -> bool
 system/linuxd/src/fs/inode.rs :: trait Inode :: fn change_owner_mode (& self , change : OwnerModeChange) -> Result < () , FileSystemError >
 system/linuxd/src/fs/inode.rs :: trait Inode :: fn change_xattr (& self , mut change : super :: XattrChange < '_ > ,) -> Result < () , super :: FileSystemError >
@@ -4943,6 +4956,7 @@ system/linuxd/src/fs/nsfs.rs :: pub (crate) fn namespace_opened (namespace : Nam
 system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Cached (CachedWrite < 'a >)
 system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Direct (DirectWrite < 'a >)
 system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Memory (MemoryInodeWrite < 'a >)
+system/linuxd/src/fs/page_cache.rs :: enum RegularFileWrite :: Remote (remote_file :: RemoteWrite < 'a >)
 system/linuxd/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: dirty_pages : usize
 system/linuxd/src/fs/page_cache.rs :: pub (crate) PageCacheStatistics :: resident_pages : usize
 system/linuxd/src/fs/page_cache.rs :: pub (crate) enum RegularFileWrite < 'a >
@@ -4986,6 +5000,19 @@ system/linuxd/src/fs/page_cache/regular_write.rs :: pub (crate) impl RegularFile
 system/linuxd/src/fs/page_cache/regular_write.rs :: pub (crate) impl RegularFileWrite < '_ > :: fn prepare_content_write (& self) -> Result < () , FileSystemError >
 system/linuxd/src/fs/page_cache/regular_write.rs :: pub (crate) impl RegularFileWrite < '_ > :: fn size (& self) -> u64
 system/linuxd/src/fs/page_cache/regular_write.rs :: pub (crate) impl RegularFileWrite < '_ > :: fn write (& self , offset : u64 , input : & [u8]) -> Result < usize , FileSystemError >
+system/linuxd/src/fs/page_cache/remote_file.rs :: pub (crate) fn remote_file (inode : Arc < dyn Inode >) -> Result < Arc < RemoteFile > , FileSystemError >
+system/linuxd/src/fs/page_cache/remote_file.rs :: pub (crate) struct RemoteFile
+system/linuxd/src/fs/page_cache/remote_file.rs :: pub (crate) struct RemoteWrite < 'a >
+system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) RemoteFile :: id : SharedFileId
+system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) RemoteFile :: inode : Arc < dyn Inode >
+system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) RemoteFile :: memory : Arc < MemoryObject >
+system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) RemoteFile :: write_sequence : TaskMutex < () >
+system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) RemoteWrite :: _sequence : TaskMutexGuard < 'a , () >
+system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) RemoteWrite :: file : & 'a RemoteFile
+system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) RemoteWrite :: identity : AccessIdentity
+system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) impl RemoteFile :: fn read (& self , offset : u64 , output : & mut [u8]) -> Result < usize , FileSystemError >
+system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) impl RemoteWrite < '_ > :: fn append (& self , input : & [u8] , limit : u64) -> Result < (u64 , usize) , FileSystemError >
+system/linuxd/src/fs/page_cache/remote_file.rs :: pub (super) impl RemoteWrite < '_ > :: fn write (& self , offset : u64 , input : & [u8]) -> Result < usize , FileSystemError >
 system/linuxd/src/fs/page_cache/writeback.rs :: pub (super) impl CachedFile :: fn writeback_range (& self , offset : u64 , length : u64 , durable : bool ,) -> Result < () , FileSystemError >
 system/linuxd/src/fs/page_cache/writeback_batch.rs :: pub (super) CommittedPrefix :: bytes : usize
 system/linuxd/src/fs/page_cache/writeback_batch.rs :: pub (super) CommittedPrefix :: offset : u64
@@ -5000,8 +5027,7 @@ system/linuxd/src/fs/pager.rs :: pub (super) fn first_dirty (object : & MemoryOb
 system/linuxd/src/fs/pager.rs :: pub (super) fn handle () -> & 'static Pager
 system/linuxd/src/fs/pager.rs :: pub (super) fn register < T : PageSource + 'static > (key : u64 , file : & Arc < T > ,) -> Result < () , crate :: fs :: FileSystemError >
 system/linuxd/src/fs/pager.rs :: pub (super) fn unregister (key : u64)
-system/linuxd/src/fs/pager.rs :: pub (super) trait PageSource
-system/linuxd/src/fs/pager.rs :: trait PageSource :: fn page_request (& self , pager : & Pager , offset : u64 , length : u64 , aux : & mut Option < Vmo >)
+system/linuxd/src/fs/pager.rs :: pub (super) use pager_pool :: PageSource
 system/linuxd/src/fs/permission.rs :: pub (crate) CreateMetadata :: gid : u32
 system/linuxd/src/fs/permission.rs :: pub (crate) CreateMetadata :: mode : u32
 system/linuxd/src/fs/permission.rs :: pub (crate) CreateMetadata :: uid : u32
@@ -5920,7 +5946,7 @@ system/linuxd/src/fs/xattr.rs :: pub (super) impl Xattrs :: fn kill_capability (
 system/linuxd/src/fs/xattr.rs :: pub (super) impl Xattrs :: fn list (& self , visible : impl Fn (& [u8]) -> bool) -> Result < Vec < u8 > , FileSystemError >
 system/linuxd/src/fs/xattr.rs :: pub (super) struct Xattrs
 system/linuxd/src/handles.rs :: pub (crate) fn command_line () -> & 'static [u8]
-system/linuxd/src/handles.rs :: pub (crate) fn ext4 () -> & 'static MountClient
+system/linuxd/src/handles.rs :: pub (crate) fn ext4 () -> & 'static VolumeMountClient
 system/linuxd/src/handles.rs :: pub (crate) fn install (startup : & mut Startup) -> Channel
 system/linuxd/src/handles.rs :: pub (crate) fn job () -> & 'static Job
 system/linuxd/src/handles.rs :: pub (crate) fn resource () -> & 'static Resource
