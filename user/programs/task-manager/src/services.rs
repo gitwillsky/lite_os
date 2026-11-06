@@ -2,7 +2,7 @@
 use crate::system::{TICKS_PER_SECOND, memory_text};
 #[cfg(target_os = "linux")]
 use std::time::Duration;
-use std::{collections::HashMap, io};
+use std::{borrow::Cow, collections::HashMap, io};
 #[cfg(any(target_os = "linux", test))]
 use task_observer_protocol::{HEADER_BYTES, QUERY, RECORD_BYTES};
 use task_observer_protocol::{Record, UNAVAILABLE};
@@ -30,7 +30,26 @@ impl Service {
             .unwrap_or(32);
         std::str::from_utf8(&self.record.name[..end]).unwrap_or("无法读取名称")
     }
-    pub fn text(&self) -> String {
+    pub fn display_name(&self) -> Cow<'_, str> {
+        let name = self.name();
+        let Some((kind, address)) = name.split_once('@') else {
+            return name.into();
+        };
+        let label = match kind {
+            "virtio-net" => "虚拟网卡",
+            "virtio-block" => "虚拟磁盘",
+            "virtio-console" => "虚拟串口",
+            "virtio-rng" => "虚拟随机源",
+            "virtio-gpu" => "虚拟显卡",
+            "virtio-input" => "虚拟输入",
+            "virtio-sound" => "虚拟声卡",
+            "xHCI" => "USB 控制器",
+            _ => return name.into(),
+        };
+        format!("{label} @{address}").into()
+    }
+
+    pub fn text(&self, name: &str) -> String {
         let record = &self.record;
         let number = |value: u64| {
             if value == UNAVAILABLE {
@@ -55,7 +74,7 @@ impl Service {
         };
         format!(
             "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            self.name(),
+            name,
             record.koid,
             state,
             cpu,

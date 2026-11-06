@@ -430,6 +430,20 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
             p.clipped(geometry.header, |p| p.list_header_cell(filler, "", false));
         }
     }
+    // 竖向滚动条只覆盖行区。用按钮面色补齐其上下角落，表头命中范围仍只覆盖列区。
+    if geometry.vertical.width > 0 {
+        for strip in [geometry.header, geometry.horizontal] {
+            p.fill(
+                Rect::new(
+                    geometry.vertical.x,
+                    strip.y,
+                    geometry.vertical.width,
+                    strip.height,
+                ),
+                C::ButtonFace,
+            );
+        }
+    }
     p.clipped(geometry.rows, |p| {
         let count =
             ((geometry.rows.height + node.row_height - 1) / node.row_height).max(0) as usize;

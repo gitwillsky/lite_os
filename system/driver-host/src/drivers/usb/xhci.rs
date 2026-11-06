@@ -192,7 +192,8 @@ impl Host {
         let irq = function.interrupt.ok_or(Error::Unsupported)?;
         crate::io_completion::register_completion_source(host.clone())
             .map_err(|_| Error::Memory)?;
-        crate::platform::register_device_interrupt(irq, host.clone(), "xHCI");
+        let label = "xHCI";
+        crate::platform::register_device_interrupt(irq, host.clone(), label);
         let state = host.state.lock();
         host.op.write_u64(0x30, state.dcbaa.physical)?;
         host.op
@@ -207,6 +208,7 @@ impl Host {
         mmio::before_write();
         host.op.write_u32(0, 1 | 4)?;
         wait_register(&host.op, 4, 1, 0)?;
+        crate::name_host(label);
         crate::info!("USB xHCI ready: ports={}, slots={}", ports, slots);
         Ok(host)
     }

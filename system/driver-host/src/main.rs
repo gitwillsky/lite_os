@@ -30,10 +30,23 @@ use service_sync as sync;
 )]
 pub(crate) use native_runtime::{debug, error, info, warn};
 
-use launch_protocol::driver_host::Driver;
+use launch_protocol::driver_host::{Bus, Driver};
 use native_runtime::Startup;
 
 native_runtime::entry!(main);
+
+/// 将已绑定驱动的诊断标签与节点地址合成宿主进程名。
+fn name_host(driver: &str) {
+    let address = match platform::node().bus {
+        Bus::VirtioMmio { base, .. } => base,
+        Bus::Pci { config, .. } => config,
+    };
+    // 最长驱动标签 14 字节、分隔符 1 字节、u64 地址 16 字节，适合进程名的 32 字节上限。
+    let name = alloc::format!("{driver}@{address:x}");
+    if let Err(status) = native_runtime::self_process().set_name(name.as_bytes()) {
+        warn!("could not name driver host {name}: {status}");
+    }
+}
 
 /// 装配顺序：
 ///

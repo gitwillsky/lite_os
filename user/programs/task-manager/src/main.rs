@@ -398,7 +398,11 @@ impl State {
         view.processes(&rows, self.show_workers)?;
         view.performance.update(monitor, totals, self.graph)?;
         view.gpu.update(gpu, self.gpu_sort)?;
-        let service_text: Vec<_> = services.rows.iter().map(services::Service::text).collect();
+        let service_text: Vec<_> = services
+            .rows
+            .iter()
+            .map(|service| service.text(&service.display_name()))
+            .collect();
         let service_rows: Vec<_> = services
             .rows
             .iter()
@@ -568,7 +572,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let (sampler, rows) = Sampler::new().sample();
         println!("系统服务\tKOID\t状态\tCPU\t累计 CPU 时间\t内存\t线程");
         for service in &sampler.services.rows {
-            println!("{}", service.text());
+            println!("{}", service.text(service.name()));
         }
         if let Some(error) = &sampler.services.error {
             return Err(error.clone().into());

@@ -17,6 +17,8 @@
 | `netcfg` → `netstack` / `fshost` → `ext4` | 网卡发现并安装进协议栈 / 块设备所有与文件系统服务 |
 | `user/linux-uapi` 与 compositor | 应用 Linux UAPI 资源封装 / DRM master、evdev、标准 Wayland |
 
+驱动绑定时复用自身的诊断标签，由 driver-host 附加 MMIO 基址或 PCI 配置空间地址并发布进程名。
+任务管理器本地化标签，任务身份仍由 KOID 表示。
 adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份权威；Linux 文件壳和 RPC client
 只持有协议能力，不复制硬件 state。DMABUF/GEM/framebuffer、TTY session 与 evdev per-open queue
 分别留在 linuxd 的相应领域。用户态终端只消费标准 PTY，不使用私有显示或 console ABI。

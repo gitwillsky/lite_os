@@ -68,7 +68,9 @@ pub(crate) fn bind(driver: Driver, bus: Bus) {
 
 /// 装配一个 virtio-console clipboard port；MMIO 与 AArch64 PCI transport 共用发布路径。
 fn publish_console(device: Arc<VirtIOConsoleDevice>, irq: u32) {
-    register_device_interrupt(irq, device.irq_handler_for(), "virtio-console");
+    let label = "virtio-console";
+    crate::name_host(label);
+    register_device_interrupt(irq, device.irq_handler_for(), label);
     device_protocol::port::publish(crate::handles::directory(), device)
         .unwrap_or_else(|status| panic!("virtio-console publication failed: {status}"));
 }
@@ -81,14 +83,18 @@ fn bind_console(base: usize, irq: u32) {
 
 fn bind_sound(base: usize, irq: u32) {
     let device = VirtIOSoundDevice::new(base).expect("virtio-sound init failed");
-    register_device_interrupt(irq, device.irq_handler_for(), "virtio-sound");
+    let label = "virtio-sound";
+    crate::name_host(label);
+    register_device_interrupt(irq, device.irq_handler_for(), label);
     device_protocol::pcm::publish(crate::handles::directory(), device)
         .unwrap_or_else(|status| panic!("virtio-sound publication failed: {status}"));
 }
 
 fn bind_input(base: usize, irq: u32) {
     let device = VirtIOInputDevice::new(base).expect("virtio-input init failed");
-    register_device_interrupt(irq, device.irq_handler_for(), "virtio-input");
+    let label = "virtio-input";
+    crate::name_host(label);
+    register_device_interrupt(irq, device.irq_handler_for(), label);
     info!(
         "VirtIO input on IRQ {irq}, name={}",
         core::str::from_utf8(device.name()).unwrap_or("<non-utf8>")
@@ -99,7 +105,9 @@ fn bind_input(base: usize, irq: u32) {
 
 fn bind_network(base: usize, irq: u32) {
     let device = VirtIONetworkDevice::new(base).expect("virtio-net init failed");
-    register_device_interrupt(irq, device.irq_handler_for(), "virtio-net");
+    let label = "virtio-net";
+    crate::name_host(label);
+    register_device_interrupt(irq, device.irq_handler_for(), label);
     info!("VirtIO network on IRQ {irq}");
     device_protocol::network::publish(crate::handles::directory(), device)
         .unwrap_or_else(|status| panic!("virtio-net publication failed: {status}"));
@@ -107,7 +115,9 @@ fn bind_network(base: usize, irq: u32) {
 
 fn bind_entropy(base: usize, irq: u32) {
     let device = VirtIORngDevice::new(base).expect("virtio-rng init failed");
-    register_device_interrupt(irq, device.irq_handler_for(), "virtio-rng");
+    let label = "virtio-rng";
+    crate::name_host(label);
+    register_device_interrupt(irq, device.irq_handler_for(), label);
     info!("VirtIO RNG on IRQ {irq}");
     device_protocol::entropy::publish(crate::handles::directory(), device)
         .unwrap_or_else(|status| panic!("virtio-rng publication failed: {status}"));
@@ -118,6 +128,8 @@ fn bind_entropy(base: usize, irq: u32) {
 /// 开机画面借用同步帧缓冲接口，并在使用者推进进度时更新；DRM 绑定 completion work 之后该接口拒绝调用。
 fn bind_gpu(base: usize, irq: u32) {
     let device = VirtIOGpuDevice::new(base).expect("virtio-gpu init failed");
+    let label = "virtio-gpu";
+    crate::name_host(label);
     let mode = DisplayDevice::mode(&*device);
     info!(
         "VirtIO GPU on IRQ {irq}, mode={}x{} pitch={}",
@@ -140,7 +152,7 @@ fn bind_gpu(base: usize, irq: u32) {
         Arc::new(move |milestone| screen.lock().advance(milestone)),
     )
     .expect("boot progress publication failed");
-    register_device_interrupt(irq, device.irq_handler_for(), "virtio-gpu");
+    register_device_interrupt(irq, device.irq_handler_for(), label);
     // 主显示客户端（linuxd）断开后由宿主重新显示开机画面，直到下一个会话接管。
     let fallback: Arc<dyn device_protocol::display::FallbackScene> =
         Arc::new(crate::boot_screen::FallbackScene(BOOT_SCENE));
@@ -158,7 +170,9 @@ fn bind_block(base: usize, irq: u32) {
 }
 
 fn publish_block(device: Arc<VirtIOBlockDevice>, irq: u32) {
-    register_device_interrupt(irq, device.irq_handler_for(), "virtio-block");
+    let label = "virtio-block";
+    crate::name_host(label);
+    register_device_interrupt(irq, device.irq_handler_for(), label);
     device_protocol::block::publish(crate::handles::directory(), device)
         .unwrap_or_else(|status| panic!("VirtIO block publication failed: {status}"));
 }

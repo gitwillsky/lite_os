@@ -15,19 +15,24 @@ if ! /bin/awk -F '\t' '
 BEGIN {
     expected["audio-core"]=expected["component-manager"]=expected["driver-manager"]=1;
     expected["fshost"]=expected["netstack"]=expected["dhcp-client"]=expected["netcfg"]=expected["linuxd"]=1;
-    # 原生数据卷与 Linux 根卷各有一个 ext4 实例，驱动节点各有一个 driver-host。
+    # 原生数据卷与 Linux 根卷各有一个 ext4 实例。
     expected["ext4"]=2;
 }
 $1=="系统服务" {services=1; next}
 $1=="进程" {services=0; next}
 services {
     if (NF!=7 || $2!~/^[1-9][0-9]*$/ || $3!="运行中" || $6=="—" || $7!~/^[1-9][0-9]*$/) bad=1;
-    if (identities[$2]++ || ($1!="driver-host" && !($1 in expected))) bad=1;
+    if (identities[$2]++) bad=1;
+    if ($1 ~ /^(virtio-(net|block|console|rng|gpu|input|sound)|xHCI)@[0-9a-f]+$/) {
+        split($1, host, "@");
+        if (nodes[host[2]]++) bad=1;
+        drivers[host[1]]++;
+    } else if (!($1 in expected)) bad=1;
     names[$1]++;
 }
 END {
     for (name in expected) if (names[name]!=expected[name]) bad=1;
-    if (bad || !names["driver-host"]) exit 1;
+    if (bad || !drivers["virtio-gpu"] || drivers["virtio-input"] < 2 || drivers["virtio-block"] < 2) exit 1;
 }' "$snapshot"; then
     echo "task observer: unexpected service snapshot"
     /bin/cat "$snapshot"

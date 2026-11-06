@@ -69,7 +69,7 @@ struct Instance {
 
 fn launch(bound: &BoundNode) -> Instance {
     let driver = bound.node.driver;
-    // 与 Fuchsia 一样，所有宿主进程同名；节点由驱动与日志标签区分。
+    // 启动时只标识宿主角色，驱动绑定后由宿主进程设置设备名称。
     let name = b"driver-host";
     let label = alloc::format!("{driver:?} host");
     let job =
