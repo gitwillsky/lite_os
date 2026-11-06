@@ -549,6 +549,8 @@ pub struct Api {
         unsafe extern "C" fn(*mut c_void, *const ClipboardFormat, usize, u64) -> i32,
     /// 替换列表的复选框投影。行必须存在且唯一；空数组清除全部复选框。
     pub row_checks: unsafe extern "C" fn(*mut c_void, u64, u64, *const RowCheck, usize) -> i32,
+    /// 按列 ID 读取表头的实际逻辑宽度，包括拖动和自动调宽的结果。
+    pub read_column_width: unsafe extern "C" fn(*mut c_void, u64, u64, u64, *mut i32) -> i32,
 }
 
 /// [`Api::sheet`] 的样式（Win32 PropertySheet 的标准样式）。

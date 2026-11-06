@@ -148,24 +148,21 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
 
 ### 通过 SSH 开发和诊断
 
-预装 OpenSSH 使用标准 `/etc/ssh/sshd_config`。首次在可信本地控制台把开发机的公钥安装到
-`/root/.ssh/authorized_keys`，目录设为 0700、文件设为 0600。启用后 init 会在下次启动时启动
-`sshd`，也可以在当前来宾运行 `/etc/init.d/sshd`。首次启动生成机器自己的 Ed25519 主机密钥。
-首次连接前在可信控制台用 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 核对主机指纹。
-没有登记公钥时没有 SSH 监听，登记的钥匙具有管理员权限。实体机使用管理网地址，
-UTM 使用 `make run-gui DIAGNOSTIC_PORT=2222` 在 Mac 的回环地址转发来宾 22 端口。
-
-在开发机的 `~/.ssh/config` 配置 SSH 别名（如 `liteos-dev`），设置 `User root`，UTM 转发时使用
-`HostName 127.0.0.1` 和 `Port 2222`。随后可以使用：
+`make run-gui` 自动在 Mac 的 `127.0.0.1:2222` 转发来宾 SSH。启动流程只在离线开发镜像中登记
+本次会话的管理员公钥，并从镜像取得主机密钥身份。客户端私钥与固定主机公钥的标准 OpenSSH 配置随会话清理。
+使用终端打印的 `ssh -F … liteos-gui` 命令登录，`sftp` 可使用同一配置。诊断脚本自动解析 `liteos-gui`。
+端口可用 `DIAGNOSTIC_PORT` 修改，设为 `0` 则取消转发并撤销自动登记。
 
 ```sh
-ssh liteos-dev 'cat /proc/uptime'
-sftp liteos-dev
-python3 scripts/runtime_debug.py deploy liteos-dev ./my-app /bin/my-app --launch
-python3 scripts/runtime_debug.py screen liteos-dev desktop.ppm
-python3 scripts/runtime_debug.py pointer liteos-dev 100 200 --button left
-python3 scripts/runtime_debug.py key liteos-dev 0xffeb 0x72
+python3 scripts/runtime_debug.py deploy liteos-gui ./my-app /bin/my-app --launch
+python3 scripts/runtime_debug.py screen liteos-gui desktop.ppm
+python3 scripts/runtime_debug.py pointer liteos-gui 100 200 --button left
+python3 scripts/runtime_debug.py key liteos-gui 0xffeb 0x72
 ```
+
+实体机与手动部署继续使用标准 `/etc/ssh/sshd_config`。在可信本地控制台将开发机公钥装入
+`/root/.ssh/authorized_keys`（目录 0700、文件 0600），启动 `/etc/init.d/sshd` 或在下次启动时由 init 拉起。
+首次连接前用 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 核对指纹。诊断脚本也接受普通 SSH 地址或别名。
 
 `deploy` 在目标所在文件系统上传、校验 SHA-256 并通过 rename 替换应用。`--launch` 启动一个新进程，
 启动日志在 `/root/.liteos-launch.log`。桌面命令通过 SSH 的 Unix socket 转发访问 RFB，无独立网络监听。
@@ -176,17 +173,17 @@ python3 scripts/runtime_debug.py key liteos-dev 0xffeb 0x72
 
 #### 运行时更新驱动或驱动管理器
 
-开发实例用 `make run-gui DRIVER_UPDATE=1 DIAGNOSTIC_PORT=2222` 启动。实体机由可信启动配置传入
-`liteos.driver_update=1`。此选项授予初始 Linux root 执行本次启动的原生服务映像的权限，默认关闭。
+`make run-gui` 默认启用驱动换版，可用 `DRIVER_UPDATE=0` 关闭。实体机由可信启动配置显式传入
+`liteos.driver_update=1`。此选项授予初始 Linux root 执行本次启动的原生服务映像的权限。
 发布走原有 SSH/SFTP 链路，来宾工具通过标准 AF_UNIX 与 SCM_RIGHTS 递交已打开的映像。
 
 用 `make build-kernel` 构建与运行中系统同架构、协议兼容的 ELF。节点地址取任务管理器原生服务
 `驱动名@地址` 的十六进制后缀。节点已撤下时，可在 `dmesg` 的宿主故障日志中找到地址。以 AArch64 为例：
 
 ```sh
-python3 scripts/runtime_debug.py driver-update liteos-dev manager \
+python3 scripts/runtime_debug.py driver-update liteos-gui manager \
   target/aarch64-unknown-none-softfloat/release/driver-manager
-python3 scripts/runtime_debug.py driver-update liteos-dev 0xa003a00 \
+python3 scripts/runtime_debug.py driver-update liteos-gui 0xa003a00 \
   target/aarch64-unknown-none-softfloat/release/driver-host
 ```
 

@@ -18,6 +18,42 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 SESSION = Path(__file__).resolve().parent.parent / "target/run/gui-debug.json"
+GUI_TARGET = "liteos-gui"
+
+
+def configure_gui_ssh(image: Path, directory: Path, port: int | None) -> Path | None:
+    """Configure standard OpenSSH for this session, or revoke its key when forwarding is disabled."""
+    from sync_userland import enroll_development_ssh
+
+    if port is None:
+        enroll_development_ssh(image, None)
+        return None
+    identity = directory / "id_ed25519"
+    subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(identity)], check=True)
+    host_key = enroll_development_ssh(image, identity.with_suffix(".pub"))
+    known_hosts = directory / "known_hosts"
+    known_hosts.write_text(f"[127.0.0.1]:{port} {host_key}\n")
+    config = directory / "ssh_config"
+    config.write_text(
+        f"Host {GUI_TARGET}\nHostName 127.0.0.1\nUser root\nPort {port}\n"
+        f"IdentityFile {json.dumps(str(identity).replace('%', '%%'), ensure_ascii=False)}\n"
+        f"UserKnownHostsFile {json.dumps(str(known_hosts).replace('%', '%%'), ensure_ascii=False)}\n"
+        "IdentitiesOnly yes\nIdentityAgent none\nGlobalKnownHostsFile /dev/null\n"
+        "StrictHostKeyChecking yes\nBatchMode yes\nConnectTimeout 8\n"
+    )
+    return config
+
+
+def ssh_options(target: str) -> list[str]:
+    """Resolve the generated GUI alias, or let OpenSSH resolve a normal target."""
+    if target != GUI_TARGET:
+        return []
+    if not SESSION.is_file():
+        raise RuntimeError("no active make run-gui session")
+    config = json.loads(SESSION.read_text()).get("ssh_config")
+    if not config or not Path(config).is_file():
+        raise RuntimeError("the active run-gui session has no SSH configuration")
+    return ["-F", config]
 
 
 def qmp(path: str, command: str, arguments: dict, timeout: float = 10) -> object:
@@ -71,7 +107,7 @@ class DebugSession:
             "-trace", f"file={self.directory}/qemu-trace.log",
         ]
 
-    def publish(self, kernel: Path, image: Path, elf: Path, serial_log: Path) -> None:
+    def publish(self, kernel: Path, image: Path, elf: Path, serial_log: Path, ssh_config: Path | None = None) -> None:
         """只在本次串口已经连接后发布；符号文件用摘要约束，不能静默使用后来覆盖的 ELF。"""
         with self.elf.open("rb") as stream:
             digest = hashlib.file_digest(stream, "sha256").hexdigest()
@@ -87,12 +123,16 @@ class DebugSession:
             "source_elf": str(elf.resolve()),
             "elf_sha256": digest,
         }
+        if ssh_config is not None:
+            self.info["ssh_config"] = str(ssh_config)
         SESSION.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(mode="w", dir=SESSION.parent, delete=False) as stream:
             json.dump(self.info, stream, indent=2)
             temporary = Path(stream.name)
         os.replace(temporary, SESSION)
         print(f"LiteOS debug session: {SESSION}", flush=True)
+        if ssh_config is not None:
+            print(shlex.join(("ssh", "-F", str(ssh_config), GUI_TARGET)), flush=True)
 
     def close(self) -> None:
         """只清理自己的入口；旧进程退出不能删掉下一次运行已发布的 session。"""
@@ -116,7 +156,8 @@ def deploy(target: str, source: Path, destination: str, launch: bool) -> None:
         raise ValueError("destination must be a normalized absolute executable path")
     with source.open("rb") as file:
         checksum = hashlib.file_digest(file, "sha256").hexdigest()
-    ssh = ["ssh", "-oBatchMode=yes", "-oConnectTimeout=8", "--", target]
+    options = ssh_options(target)
+    ssh = ["ssh", *options, "-oBatchMode=yes", "-oConnectTimeout=8", "--", target]
     stage = subprocess.check_output(
         [*ssh, "mktemp -d " + shlex.quote(str(remote.parent / ".liteos-deploy.XXXXXX"))],
         text=True,
@@ -126,7 +167,7 @@ def deploy(target: str, source: Path, destination: str, launch: bool) -> None:
         raise RuntimeError("unexpected remote staging path")
     staged = str(stage_path / "application")
     try:
-        subprocess.run(["scp", "-q", "-B", "-oConnectTimeout=8", "-oServerAliveInterval=5",
+        subprocess.run(["scp", *options, "-q", "-B", "-oConnectTimeout=8", "-oServerAliveInterval=5",
                         "-oServerAliveCountMax=2", "--", str(source.resolve()), f"{target}:{staged}"], check=True)
         command = " && ".join((
             f"printf '%s  %s\\n' {checksum} {shlex.quote(staged)} | sha256sum -c -",
@@ -151,7 +192,7 @@ def update_driver(target: str, selector: str, image: Path) -> None:
     environment = dict(os.environ, LITEOS_MUSL_CLANG=str(musl.compiler),
                        LITEOS_MUSL_LLD=str(musl.linker), LITEOS_MUSL_SYSROOT=str(musl.install),
                        LITEOS_MUSL_COMPILER_RUNTIME=str(musl.compiler_runtime))
-    ssh = ["ssh", "-oBatchMode=yes", "-oConnectTimeout=8",
+    ssh = ["ssh", *ssh_options(target), "-oBatchMode=yes", "-oConnectTimeout=8",
            "-oServerAliveInterval=5", "-oServerAliveCountMax=2", "--", target]
     with tempfile.TemporaryDirectory(prefix="liteos-driver-update-") as temporary:
         tool = Path(temporary) / "driver-update"
@@ -220,7 +261,7 @@ def desktop(target: str, action: str, *, output: Path | None = None,
     with tempfile.TemporaryDirectory(prefix="liteos-rfb-", dir="/tmp") as temporary:
         path = Path(temporary) / "vnc"
         process = subprocess.Popen([
-            "ssh", "-NT", "-oBatchMode=yes", "-oConnectTimeout=8", "-oExitOnForwardFailure=yes",
+            "ssh", *ssh_options(target), "-NT", "-oBatchMode=yes", "-oConnectTimeout=8", "-oExitOnForwardFailure=yes",
             "-L", f"{path}:{RFB_SOCKET}", "--", target,
         ], stdin=subprocess.DEVNULL)
         try:
@@ -295,7 +336,7 @@ def main() -> int:
     monitor.add_argument("arguments", nargs="?", default="{}", help="QMP arguments JSON")
     commands.add_parser("symbols")
     update = commands.add_parser("deploy")
-    update.add_argument("target", help="SSH destination or alias from ~/.ssh/config")
+    update.add_argument("target", help="liteos-gui, or an SSH destination or alias")
     update.add_argument("source", type=Path)
     update.add_argument("destination")
     update.add_argument("--launch", action="store_true")

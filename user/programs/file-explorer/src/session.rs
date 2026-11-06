@@ -723,32 +723,42 @@ impl Session {
     }
 
     async fn choose_columns(&self) -> Result<()> {
-        let (location, initial) = {
+        let (location, configured) = {
             let browser = self.browser.borrow();
             (browser.location.clone(), browser.column_layout.clone())
         };
+        let mut current = configured.clone();
+        for column in current.iter_mut().filter(|column| column.visible) {
+            column.width = self.view.list.column_width(column.id)?;
+        }
         let Some(layout) = crate::column_dialog::edit(
             &self.dialogs,
             &self.view.window,
             &location,
-            initial.clone(),
+            current.clone(),
         )
         .await?
         else {
             return Ok(());
         };
-        if initial == layout {
+        if current == layout && configured == layout {
             return Ok(());
         }
-        let key = location.view_key()?;
-        let saved = if layout == location.column_layout(&[]) {
-            Vec::new()
-        } else {
-            layout.clone()
-        };
-        self.background
-            .run(move || Settings::update(|settings| settings.set_folder_columns(key, saved)))?
-            .await?;
+        if configured != layout {
+            let key = location.view_key()?;
+            let saved = if layout == location.column_layout(&[]) {
+                Vec::new()
+            } else {
+                layout.clone()
+            };
+            self.background
+                .run(move || Settings::update(|settings| settings.set_folder_columns(key, saved)))?
+                .await?;
+        }
+        if current != layout {
+            // 显式应用宽度也可还原为拖动前的值。清除旧列，避免重复发布保留拖动宽度。
+            self.view.list.set_columns(&[])?;
+        }
         let mut browser = self.browser.borrow_mut();
         browser.set_column_layout(&layout);
         self.view.rows(&browser)?;

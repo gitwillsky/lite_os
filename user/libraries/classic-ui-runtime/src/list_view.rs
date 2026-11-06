@@ -212,6 +212,38 @@ pub(super) unsafe extern "C" fn pointed_row(
     }
 }
 
+pub(super) unsafe extern "C" fn read_column_width(
+    pointer: *mut c_void,
+    window: u64,
+    id: u64,
+    column: u64,
+    output: *mut i32,
+) -> i32 {
+    if output.is_null() {
+        return abi::INVALID;
+    }
+    // SAFETY: 调用者独占有效输出，索引由同一个表头模型的列定义产生。
+    unsafe {
+        invoke(pointer, |context| {
+            let table = context
+                .host(window)?
+                .controls()?
+                .nodes
+                .get(&id)
+                .filter(|node| node.kind == widget::LIST)
+                .and_then(|node| node.table.as_ref())
+                .ok_or_else(|| invalid("not a list"))?;
+            let index = table
+                .columns
+                .iter()
+                .position(|(id, ..)| *id == column)
+                .ok_or_else(|| invalid("unknown list column"))?;
+            output.write(table.header.width(index));
+            Ok(())
+        })
+    }
+}
+
 pub(super) unsafe extern "C" fn read_style(
     pointer: *mut c_void,
     window: u64,

@@ -1,7 +1,7 @@
 #!/bin/sh
-# Only explicitly enrolled development machines start the diagnostics listener.
+# Start only with a user-enrolled key or a local development session key.
 set -eu
-[ -s /root/.ssh/authorized_keys ] || exit 0
+[ -s /root/.ssh/authorized_keys ] || [ -s /etc/ssh/authorized_keys/root ] || exit 0
 umask 077
 /bin/mkdir -p /var/empty
 # OpenSSH enters this empty, root-owned directory before authenticating clients.

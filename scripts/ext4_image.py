@@ -3,13 +3,15 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import shutil
 import struct
 import subprocess
 import tempfile
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -184,6 +186,18 @@ def recover_ext4_journal(image: Path) -> None:
     if check.returncode not in (0, 1):
         tail = "\n".join(check.stdout.splitlines()[-40:])
         raise RuntimeError(f"journal recovery failed for {image}\n{tail}")
+
+
+@contextmanager
+def offline_development_image(image: Path) -> Iterator[None]:
+    """独占开发镜像并重放 journal；镜像正在使用或恢复失败时拒绝修改。"""
+    with image.open("r+b") as stream:
+        try:
+            fcntl.lockf(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError(f"development image is already in use: {image}") from error
+        recover_ext4_journal(image)
+        yield
 
 
 # 原生数据卷：fshost 按卷标识别、只由原生服务使用（netcfg 等的私有目录），不交给 Linux。

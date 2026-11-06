@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import fcntl
 import json
 import stat
 import subprocess
@@ -14,7 +13,7 @@ from pathlib import Path, PurePosixPath
 
 from build_cache import fingerprint, sha256
 from build_target import target_from_environment
-from ext4_image import debugfs_path, find_debugfs, recover_ext4_journal, verify_root_owned_files
+from ext4_image import debugfs_path, find_debugfs, offline_development_image, verify_root_owned_files
 from userland.busybox import ACCOUNT_APPLETS, build_busybox, obtain_source
 from userland import UserlandArtifact
 from userland.artifacts import base_userland
@@ -225,6 +224,50 @@ def verify_artifacts(
     verify_root_owned_files(image, tuple((artifact.destination, artifact.mode) for artifact in artifacts))
 
 
+def enroll_development_ssh(image: Path, client_public_key: Path | None) -> str | None:
+    """在离线开发盘登记会话公钥，返回从来宾私钥导出的 Ed25519 公钥；None 撤销会话登记。"""
+    authorized = "/etc/ssh/authorized_keys/root"
+    host_key = "/etc/ssh/ssh_host_ed25519_key"
+    with offline_development_image(image), tempfile.TemporaryDirectory(prefix="liteos-ssh-keys-") as temporary:
+        directory = Path(temporary)
+        if client_public_key is None:
+            run_batch(image, [f"rm {authorized}"], directory, "disable-development-ssh", writable=True)
+            metadata = run_batch(image, [f"stat {authorized}"], directory, "check-development-ssh", writable=False)
+            if "Inode:" in metadata:
+                raise RuntimeError("could not revoke the previous development SSH key")
+            return None
+
+        private = directory / "ssh_host_ed25519_key"
+        public = private.with_suffix(".pub")
+        metadata = run_batch(image, [f"stat {host_key}"], directory, "inspect-host-key", writable=False)
+        artifacts = [UserlandArtifact(client_public_key, authorized, 0o644)]
+        if "Inode:" in metadata:
+            verify_root_owned_files(image, ((host_key, 0o600),))
+            run_batch(image, [f"dump {host_key} {debugfs_path(private)}"], directory, "read-host-key", writable=False)
+            private.chmod(0o600)
+        else:
+            subprocess.run(["ssh-keygen", "-q", "-t", "ed25519", "-N", "", "-f", str(private)], check=True)
+            artifacts.append(UserlandArtifact(private, host_key, 0o600))
+        host_public = subprocess.check_output(["ssh-keygen", "-y", "-P", "", "-f", str(private)], text=True)
+        algorithm, key, *_ = host_public.split()
+        if algorithm != "ssh-ed25519":
+            raise RuntimeError("development SSH host key must be Ed25519")
+        metadata = run_batch(image, [f"stat {host_key}.pub"], directory, "inspect-host-public-key", writable=False)
+        if "Inode:" not in metadata:
+            public.write_text(f"{algorithm} {key}\n")
+            artifacts.append(UserlandArtifact(public, f"{host_key}.pub", 0o644))
+        # 会话公钥与用户的 ~/.ssh/authorized_keys 分属不同 owner。写入失败时可重试，用户授权仍在。
+        commands = ["mkdir /etc/ssh/authorized_keys", f"rm {authorized}"]
+        for artifact in artifacts:
+            commands.extend((
+                f"write {debugfs_path(artifact.source)} {artifact.destination}",
+                f"set_inode_field {artifact.destination} mode 0{0o100000 | artifact.mode:o}",
+            ))
+        run_batch(image, commands, directory, "enroll-development-ssh", writable=True)
+        verify_artifacts(image, tuple(artifacts), directory)
+        return f"{algorithm} {key}"
+
+
 def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
     """同步产物并发布镜像内指纹；无变化返回 False。
 
@@ -250,12 +293,7 @@ def synchronize(image: Path, artifacts: tuple[UserlandArtifact, ...]) -> bool:
         if not managed_path(artifact.destination):
             raise RuntimeError(f"userland artifact escaped managed paths: {artifact.destination}")
     payload, identity = artifact_payload(artifacts)
-    with image.open("r+b") as stream:
-        try:
-            fcntl.lockf(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as error:
-            raise RuntimeError(f"development image is already in use: {image}") from error
-        recover_ext4_journal(image)
+    with offline_development_image(image):
         # 仅迁移完整匹配旧出厂模板的锁定默认；任何实际密码、自定义锁定或新增账户都必须保留。
         account_changed = False
         with tempfile.TemporaryDirectory(prefix="liteos-account-bootstrap-") as temporary:

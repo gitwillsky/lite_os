@@ -621,6 +621,17 @@ impl Widget {
             unsafe { (c.api.columns)(c.context.as_ptr(), w, id, columns.as_ptr(), columns.len()) }
         })
     }
+    /// 查询列表中 `column` 标识的列当前宽度，以逻辑像素返回。
+    ///
+    /// 宽度包含拖动和自动调宽的结果。控件不是列表或列未发布时返回错误。
+    pub fn column_width(&self, column: u64) -> Result<i32> {
+        let mut width = 0;
+        self.call(|c, w, id| {
+            // SAFETY: 调用期间独占输出，运行库验证列表与列标识。
+            unsafe { (c.api.read_column_width)(c.context.as_ptr(), w, id, column, &mut width) }
+        })?;
+        Ok(width)
+    }
     /// 原子替换列表数据，标识非零且唯一；仅可见行参与绘制。
     pub fn set_rows(&self, values: &[(u64, &str)]) -> Result<()> {
         let rows: Vec<_> = values

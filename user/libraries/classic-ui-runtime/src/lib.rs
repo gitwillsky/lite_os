@@ -182,6 +182,7 @@ static API: Api = Api {
     clipboard_receive: context_api::clipboard_receive,
     clipboard_offer: context_api::clipboard_offer,
     row_checks: widget_api::row_checks,
+    read_column_width: list_view::read_column_width,
 };
 
 /// 查询 ABI 主版本。返回进程存活期间有效的只读函数表；不支持的主版本返回空指针。

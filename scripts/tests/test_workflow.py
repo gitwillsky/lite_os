@@ -32,8 +32,13 @@ class WorkflowTests(unittest.TestCase):
                     build.assert_not_called()
                     launch.assert_not_called()
                 else:
+                    if value == "0":
+                        environment.update(DIAGNOSTIC_PORT="0", DRIVER_UPDATE="0")
                     workflow.dispatch("run-gui", environment)
-                    self.assertEqual(launch.call_args.kwargs["usb_passthrough"], value != "0")
+                    options = launch.call_args.kwargs
+                    self.assertEqual(options["usb_passthrough"], value != "0")
+                    self.assertEqual(options["diagnostic_port"], None if value == "0" else 2222)
+                    self.assertEqual(options["kernel_arguments"], "" if value == "0" else "liteos.driver_update=1")
 
     def test_first_party_workspaces_share_and_inherit_the_strict_clippy_policy(self) -> None:
         root = tomllib.loads((ROOT / "Cargo.toml").read_text())

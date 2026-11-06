@@ -3,17 +3,19 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import plistlib
 import shutil
 import socket
 import subprocess
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import BinaryIO
 
 from ext4_image import create_data_volume
-from runtime_debug import DebugSession
+from runtime_debug import DebugSession, configure_gui_ssh
 from usb_redirection import UsbRedirection
 from utm_build import UTM_APP, UTM_VERSION, ensure_built
 
@@ -645,6 +647,7 @@ def run_gui(
     memory: str,
     cpu_count: int,
     serial_log: Path,
+    synchronize: Callable[[], None],
     kernel_arguments: str | None = None,
     usb_passthrough: bool = True,
     diagnostic_port: int | None = None,
@@ -658,15 +661,25 @@ def run_gui(
     print(f"LiteOS serial log: {serial_log}")
     debug: DebugSession | None = None
     usb: UsbRedirection | None = None
+    launch_lock: int | None = None
     # 只有删除旧的 stopped 注册后才取得本次 VM 的清理权；前置失败不能停止用户已有实例。
     owns_vm = False
     try:
+        # The UTM registry check alone cannot arbitrate two simultaneous launches of a stopped VM.
+        VM_PACKAGE.parent.mkdir(parents=True, exist_ok=True)
+        launch_lock = os.open(VM_PACKAGE.parent, os.O_RDONLY)
+        try:
+            fcntl.flock(launch_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            raise RuntimeError("another make run-gui already owns the LiteOS development VM") from error
+        _remove_registered()
+        owns_vm = True
+        synchronize()
         if usb_passthrough:
             usb = UsbRedirection()
             usb.authorize()
         debug = DebugSession(kernel_elf)
-        _remove_registered()
-        owns_vm = True
+        ssh_config = configure_gui_ssh(rootfs, debug.directory, diagnostic_port)
         prepare(
             kernel=kernel,
             rootfs=rootfs,
@@ -703,7 +716,7 @@ def run_gui(
             _stop_managed()
             raise RuntimeError("UTM serial endpoint did not become ready") from error
         serial_socket.settimeout(0.25)
-        debug.publish(kernel, rootfs, kernel_elf, serial_log)
+        debug.publish(kernel, rootfs, kernel_elf, serial_log, ssh_config)
         with serial_log.open("wb", buffering=0) as output:
             # The capture file is the sole durable serial owner. Reading only
             # UTM's PTY UI loses the first failure as soon as the window closes.
@@ -741,3 +754,5 @@ def run_gui(
                 if serial_socket is not None:
                     serial_socket.close()
                 serial_listener.close()
+                if launch_lock is not None:
+                    os.close(launch_lock)

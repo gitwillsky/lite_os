@@ -270,6 +270,8 @@ class UtmRuntimeTests(unittest.TestCase):
                         patch.object(utm_runtime, "_installed_version"),
                         patch.object(utm_runtime, "_open_serial_listener", return_value=(listener, 4567)),
                         patch.object(utm_runtime, "_remove_registered"),
+                        patch.object(utm_runtime, "VM_PACKAGE", Path(directory) / "LiteOS.utm"),
+                        patch.object(utm_runtime, "configure_gui_ssh", return_value=None),
                         patch.object(utm_runtime, "prepare") as prepare,
                         patch.object(utm_runtime, "_ensure_registered"),
                         patch.object(utm_runtime, "_start_visible"),
@@ -283,6 +285,7 @@ class UtmRuntimeTests(unittest.TestCase):
                         patch.object(utm_runtime, "_stop_managed") as stop,
                     ):
                         log = Path(directory) / "serial.log"
+                        synchronize = MagicMock()
                         utm_runtime.run_gui(
                             kernel=Path("kernel"),
                             kernel_elf=Path("kernel.elf"),
@@ -290,9 +293,11 @@ class UtmRuntimeTests(unittest.TestCase):
                             memory="2G",
                             cpu_count=6,
                             serial_log=log,
+                            synchronize=synchronize,
                             **({} if enabled else {"usb_passthrough": False}),
                         )
                         self.assertEqual(log.read_bytes(), b"guest console")
+                        synchronize.assert_called_once_with()
 
                 stop.assert_called_once_with()
                 if enabled:

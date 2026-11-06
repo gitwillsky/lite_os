@@ -1,6 +1,6 @@
 Port 22
 HostKey /etc/ssh/ssh_host_ed25519_key
-AuthorizedKeysFile .ssh/authorized_keys
+AuthorizedKeysFile .ssh/authorized_keys /etc/ssh/authorized_keys/%u
 AllowUsers root
 PermitRootLogin prohibit-password
 AuthenticationMethods publickey
