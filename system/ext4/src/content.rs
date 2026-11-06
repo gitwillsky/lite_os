@@ -51,7 +51,8 @@ impl Content {
         Ok(content)
     }
 
-    /// 交给使用者映射的 VMO 副本：可读写、可执行映射（exec 映射程序段）与派生写时复制子对象（私有映射）。
+    /// 交给使用者映射的 VMO 副本，支持读写、执行和派生写时复制子对象。
+    /// INSPECT 允许使用者读取稳定对象编号与大小。缺少它时，linuxd 无法建立文件映射对象。
     ///
     /// # Errors
     ///
@@ -63,7 +64,8 @@ impl Content {
                 | rights::READ
                 | rights::WRITE
                 | rights::EXECUTE
-                | rights::MAP,
+                | rights::MAP
+                | rights::INSPECT,
         )
     }
 

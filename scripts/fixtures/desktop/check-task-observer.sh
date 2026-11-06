@@ -3,21 +3,34 @@
 set -eu
 exec 1>&2
 # 端点只授予 adm 组：属主 root、组 adm、0660 的 socket；组外进程由 VFS 写权限检查拒绝。
-[ "$(/bin/stat -c '%F %U:%G %a' /dev/task-observer)" = "socket root:adm 660" ]
+endpoint=$(/bin/stat -c '%F %U:%G %a' /dev/task-observer)
+if [ "$endpoint" != "socket root:adm 660" ]; then
+    echo "task observer: unexpected endpoint permissions: $endpoint"
+    exit 1
+fi
 snapshot=$(/bin/mktemp)
 trap '/bin/rm -f "$snapshot"' EXIT
 /bin/taskmgr --snapshot > "$snapshot"
-/bin/awk -F '\t' '
+if ! /bin/awk -F '\t' '
+BEGIN {
+    expected["audio-core"]=expected["component-manager"]=expected["driver-manager"]=1;
+    expected["fshost"]=expected["netstack"]=expected["dhcp-client"]=expected["netcfg"]=expected["linuxd"]=1;
+    # 原生数据卷与 Linux 根卷各有一个 ext4 实例，驱动节点各有一个 driver-host。
+    expected["ext4"]=2;
+}
 $1=="系统服务" {services=1; next}
 $1=="进程" {services=0; next}
 services {
     if (NF!=7 || $2!~/^[1-9][0-9]*$/ || $3!="运行中" || $6=="—" || $7!~/^[1-9][0-9]*$/) bad=1;
-    # 每个驱动节点一个同名 driver-host 进程（Fuchsia DFv2），其余系统服务各一个实例。
-    if (identities[$2]++ || ($1!="driver-host" && names[$1])) bad=1;
+    if (identities[$2]++ || ($1!="driver-host" && !($1 in expected))) bad=1;
     names[$1]++;
-    if ($1!="driver-host") count++;
 }
 END {
-    if (bad || count!=9 || !names["audio-core"] || !names["component-manager"] || !names["driver-manager"] || !names["driver-host"] || !names["ext4"] || !names["fshost"] || !names["netstack"] || !names["dhcp-client"] || !names["netcfg"] || !names["linuxd"]) exit 1;
-}' "$snapshot"
+    for (name in expected) if (names[name]!=expected[name]) bad=1;
+    if (bad || !names["driver-host"]) exit 1;
+}' "$snapshot"; then
+    echo "task observer: unexpected service snapshot"
+    /bin/cat "$snapshot"
+    exit 1
+fi
 echo TASK_OBSERVER_READONLY_OK

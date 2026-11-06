@@ -84,10 +84,23 @@ fn terminated(process: &Process) -> bool {
 }
 
 impl VolumeMountService for Volumes {
-    fn mount_disk(&self, disk: usize, read_only: bool) -> Result<(Channel, RemoteMount), Status> {
+    fn mount_volume(
+        &self,
+        disk: usize,
+        first: u64,
+        count: u64,
+        read_only: bool,
+    ) -> Result<(Channel, RemoteMount), Status> {
         let device = self.devices.get(disk).ok_or(native_abi::ERR_OUT_OF_RANGE)?;
+        if count == 0
+            || first
+                .checked_add(count)
+                .is_none_or(|end| end > device.block_count())
+        {
+            return Err(native_abi::ERR_INVALID_ARGS);
+        }
         let block = device
-            .share_range(0, device.block_count())
+            .share_range(first, count)
             .ok_or(native_abi::ERR_NOT_SUPPORTED)?;
         let mut instances = self.instances.lock();
         let slot = &mut instances[disk];

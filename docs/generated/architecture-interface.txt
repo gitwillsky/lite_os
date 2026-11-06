@@ -4153,6 +4153,7 @@ system/linuxd/src/fs/block_node.rs :: pub (super) PartitionInfo :: start : u64
 system/linuxd/src/fs/block_node.rs :: pub (super) PartitionInfo :: uuid : Option < PartUuid >
 system/linuxd/src/fs/block_node.rs :: pub (super) PartitionInfo :: whole : Arc < BlockNode >
 system/linuxd/src/fs/block_node.rs :: pub (super) fn wrap_block_node (inode : Arc < dyn Inode >) -> Result < Arc < dyn Inode > , FileSystemError >
+system/linuxd/src/fs/block_node.rs :: pub (super) impl BlockNode :: fn mount_extent (& self) -> (& Arc < dyn BlockDevice > , u64 , u64)
 system/linuxd/src/fs/block_node.rs :: pub (super) impl BlockNode :: fn new (number : DeviceNumber , device : Arc < dyn BlockDevice > , partition : Option < PartitionInfo > , name : Vec < u8 > ,) -> Result < Arc < Self > , FileSystemError >
 system/linuxd/src/fs/block_node.rs :: pub (super) impl BlockNode :: fn set_partitions (& self , partitions : Vec < crate :: devices :: block :: partition_table :: Partition > ,)
 system/linuxd/src/fs/block_node.rs :: pub (super) struct PartitionInfo

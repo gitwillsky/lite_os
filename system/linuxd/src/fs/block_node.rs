@@ -154,6 +154,18 @@ impl BlockNode {
         &self.device
     }
 
+    /// 投影挂载源所在整盘及其逻辑块范围（起点、块数）。分区发布时已验证对齐和边界。
+    pub(super) fn mount_extent(&self) -> (&Arc<dyn BlockDevice>, u64, u64) {
+        let (disk, first) = match &self.partition {
+            Some(partition) => {
+                let disk = partition.whole.device();
+                (disk, partition.start * 512 / disk.block_size() as u64)
+            }
+            None => (self.device(), 0),
+        };
+        (disk, first, self.device.block_count())
+    }
+
     /// 设备总字节数。
     pub(crate) fn capacity(&self) -> u64 {
         self.device

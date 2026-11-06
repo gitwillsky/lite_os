@@ -361,7 +361,9 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
 - 块设备节点在 VFS 里只有一种视图：`OpenedFile::child` 经 `wrap_block_node` 发布 `BlockSpecial`；
   文件系统的块设备 inode 不实现设备 I/O。命名管道的 open 汇合等待 `PeerOpened`（对端累计打开次数），
   `Pipe.rendezvous_waiters` 使对端 open 即使不改变 readable/writable 也会走到唤醒路径。
-- 分区节点只经 `PartitionDevice` 把块号平移到整盘的同一 `BlockDevice`，不复制任何状态；`FileSystem::remount`
+- `PartitionDevice` 把分区块号平移到整盘的同一 `BlockDevice`。Linuxd 挂载时提交父盘序号与实际块范围，
+  fshost 检查范围并交出仅覆盖该区间的块设备连接。同一盘的整盘与分区挂载共用一个 ext4 实例。
+  `FileSystem::remount`
   与 `Ext4FileSystem.writable` 共同保证写前准备（`RECOVER`、orphan 回收）恰好执行一次。
 - inotify 锁序：实例的 watch 列表 → 全局注册表；投递时只在注册表锁内克隆匹配的 `Arc<Watch>`，随后在锁外入队
   （队列锁）并经合并 readiness Pipe 唤醒 reader，所以注册表锁内不取队列锁或调度器锁。
@@ -420,6 +422,11 @@ FUSE（`fs/fuse`）及其引入的 VFS 接口见 [FUSE 契约](fuse.md)。
 注册在对象构造完成后进行，失败不发表；最终对象释放时注销，registry 不延长内容 owner 的寿命。
 页与 dirty 状态由同一 VMO 拥有，read/write、映射和回写不建立第二份内容缓存。
 io_uring 的缓存探测及回退边界由[文件 I/O 矩阵](../syscall-support/filesystem-io.md)维护。
+
+ext4 服务拥有远端文件的内容 VMO。Linuxd 使用服务交出的同一对象完成读取和映射。
+该句柄须带 `INSPECT`，因为 linuxd 在发布文件对象前查询 KOID，读取时也需查询 VMO 大小。
+权限错误与内存分配失败分别报告，不能将权限错误折叠为 `ENOMEM`。
+`io_uring` 的驻留探测也读取这一 VMO。缓存有效且请求区间完整驻留时内联完成，缺页时由阻塞车道重试。
 
 补充契约见 [文件系统接口、事务与退休契约](filesystem-transactions.md)。
 

@@ -105,7 +105,7 @@ pub trait MountControl: Send + Sync {
     fn make_writable(&self) -> Result<(), Status>;
 
     /// 普通文件 `node`（FUSE nodeid）的内容 VMO（fuchsia.io `GetBackingMemory`）：服务端是其大小与内容的
-    /// 唯一 owner，使用者映射它实现 mmap，read/write 仍经 FUSE。
+    /// 唯一 owner。句柄包含 `INSPECT`，供使用者在映射和读取前查询对象编号与大小。
     ///
     /// # Errors
     ///
@@ -193,15 +193,21 @@ impl MountClient {
     }
 }
 
-const MOUNT_DISK: u32 = 1;
+const MOUNT_VOLUME: u32 = 1;
 
-/// fshost 端：挂载块设备清单中第 `disk` 块盘上的 ext4。fshost 为每块盘维持一个文件系统服务实例，
+/// fshost 端：挂载块设备清单中第 `disk` 块盘上指定逻辑块范围内的 ext4。fshost 为每块盘维持一个文件系统服务实例，
 /// 同一盘的再次挂载（使用者重启）交给同一实例，由实例串行化同一文件系统的会话。
 pub trait VolumeMountService: Send + Sync {
     /// # Errors
     ///
-    /// 序号越界、实例启动失败或实例报告的挂载失败。
-    fn mount_disk(&self, disk: usize, read_only: bool) -> Result<(Channel, RemoteMount), Status>;
+    /// 序号或块范围越界、实例启动失败或实例报告的挂载失败。
+    fn mount_volume(
+        &self,
+        disk: usize,
+        first: u64,
+        count: u64,
+        read_only: bool,
+    ) -> Result<(Channel, RemoteMount), Status>;
 }
 
 /// 服务卷挂载协议。
@@ -219,12 +225,14 @@ pub fn serve_volume_mounts(
         b"volume-mount",
         Arc::try_new(
             move |ordinal: u32, request: &mut Reader<'_>, _: Vec<Handle>, _: &mut Writer| {
-                if ordinal != MOUNT_DISK {
+                if ordinal != MOUNT_VOLUME {
                     return Err(native_abi::ERR_NOT_SUPPORTED);
                 }
                 let disk = request.usize()?;
+                let first = request.u64()?;
+                let count = request.u64()?;
                 let read_only = request.bool()?;
-                let (fuse, control) = service.mount_disk(disk, read_only)?;
+                let (fuse, control) = service.mount_volume(disk, first, count, read_only)?;
                 Ok(alloc::vec![
                     fuse.into_handle(),
                     control.channel.into_handle()
@@ -245,18 +253,24 @@ impl VolumeMountClient {
         Self { channel }
     }
 
-    /// 挂载块设备清单中第 `disk` 块盘，返回 FUSE channel 与挂载控制。
+    /// 挂载第 `disk` 块盘的 `[first, first + count)` 逻辑块，返回 FUSE channel 与挂载控制。
     ///
     /// # Errors
     ///
     /// fshost 或文件系统服务报告的挂载失败，或回复不完整。
-    pub fn mount_disk(
+    pub fn mount_volume(
         &self,
         disk: usize,
+        first: u64,
+        count: u64,
         read_only: bool,
     ) -> Result<(Channel, RemoteMount), Status> {
-        let mut request = Writer::request(MOUNT_DISK);
-        request.u64(disk as u64).bool(read_only);
+        let mut request = Writer::request(MOUNT_VOLUME);
+        request
+            .u64(disk as u64)
+            .u64(first)
+            .u64(count)
+            .bool(read_only);
         let mut reply = call(&self.channel, &request, Vec::new())?;
         let fuse = Channel::from_handle(take_handle(&mut reply.handles, 0)?);
         let control = Channel::from_handle(take_handle(&mut reply.handles, 1)?);

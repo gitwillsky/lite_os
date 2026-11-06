@@ -30,8 +30,11 @@ pub(crate) fn remote_file(inode: Arc<dyn Inode>) -> Result<Arc<RemoteFile>, File
     if let Some(file) = REMOTES.lock().get(&id).and_then(Weak::upgrade) {
         return Ok(file);
     }
-    let memory =
-        MemoryObject::new(inode.backing_memory()?).map_err(|_| FileSystemError::OutOfMemory)?;
+    let memory = MemoryObject::new(inode.backing_memory()?).map_err(|error| match error {
+        crate::memory::MemoryError::OutOfMemory => FileSystemError::OutOfMemory,
+        crate::memory::MemoryError::PermissionDenied => FileSystemError::PermissionDenied,
+        _ => FileSystemError::IoError,
+    })?;
     let candidate = Arc::try_new(RemoteFile {
         id,
         inode,

@@ -170,7 +170,7 @@ impl MountControl for Ext4Control {
             .map_err(|_| native_abi::ERR_NOT_FOUND)?;
         self.mount
             .content(&inode)
-            .map_err(|_| native_abi::ERR_NO_MEMORY)?
+            .map_err(status)?
             .ok_or(native_abi::ERR_WRONG_TYPE)?
             .backing_memory()
     }

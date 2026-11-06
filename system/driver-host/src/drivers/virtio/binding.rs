@@ -48,6 +48,7 @@ pub(crate) fn bind(driver: Driver, bus: Bus) {
                     let device = VirtIOConsoleDevice::from_pci(function.transport, function.bti)
                         .expect("virtio-console PCI init failed");
                     publish_console(device, function.interrupt);
+                    info!("VirtIO console PCI transport on IRQ {}", function.interrupt);
                 }
                 Driver::VirtioBlock => {
                     let device = VirtIOBlockDevice::from_device(super::VirtIODevice::from_pci(
@@ -57,10 +58,10 @@ pub(crate) fn bind(driver: Driver, bus: Bus) {
                     ))
                     .expect("virtio-block PCI init failed");
                     publish_block(device, function.interrupt);
+                    info!("VirtIO block PCI transport on IRQ {}", function.interrupt);
                 }
                 _ => warn!("VirtIO PCI driver {driver:?} is not supported"),
             }
-            info!("VirtIO PCI transport on IRQ {}", function.interrupt);
         }
     }
 }

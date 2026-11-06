@@ -214,25 +214,23 @@ impl RegularFile {
         offset: u64,
         output: &mut [u8],
     ) -> Result<Option<RegularFileRead>, FileSystemError> {
-        let RegularFileBackend::Cached(file) = &self.0 else {
-            return Ok(None);
+        let (inode, object) = match &self.0 {
+            RegularFileBackend::Cached(file) => (&file.inode, &file.object),
+            RegularFileBackend::Remote(file) => (&file.inode, &file.memory),
+            _ => return Ok(None),
         };
-        if !file.inode.data_cache_valid() {
+        if !inode.data_cache_valid() {
             return Ok(None);
         }
-        let size = file.inode.size();
+        let size = inode.size();
         let count = output.len().min(size.saturating_sub(offset) as usize);
         if count != 0 {
             if offset.saturating_add(count as u64)
-                > file.object.size().map_err(|_| FileSystemError::IoError)?
+                > object.size().map_err(|_| FileSystemError::IoError)?
             {
                 return Ok(None);
             }
-            match file
-                .object
-                .vmo()
-                .read_available(&mut output[..count], offset)
-            {
+            match object.vmo().read_available(&mut output[..count], offset) {
                 Ok(()) => {}
                 Err(native_runtime::native_abi::ERR_SHOULD_WAIT) => return Ok(None),
                 Err(status) => return Err(status_error(status)),
