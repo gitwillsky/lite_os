@@ -806,6 +806,9 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         usb_passthrough = source.get("USB_PASSTHROUGH", "1")
         if usb_passthrough not in ("0", "1"):
             raise RuntimeError("USB_PASSTHROUGH must be 0 or 1")
+        driver_update = source.get("DRIVER_UPDATE", "0")
+        if driver_update not in ("0", "1"):
+            raise RuntimeError("DRIVER_UPDATE must be 0 or 1")
         diagnostic_port = source.get("DIAGNOSTIC_PORT", "")
         if diagnostic_port and (not diagnostic_port.isdecimal() or not 1024 <= int(diagnostic_port) <= 65535):
             raise RuntimeError("DIAGNOSTIC_PORT must be a local TCP port from 1024 to 65535")
@@ -820,7 +823,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
             memory=source.get("QEMU_MEMORY", "2G"),
             cpu_count=int(_qemu_smp(source)),
             serial_log=ROOT / "target" / "logs" / "run-gui-serial.log",
-            kernel_arguments="",
+            kernel_arguments="liteos.driver_update=1" if driver_update == "1" else "",
             usb_passthrough=usb_passthrough == "1",
             diagnostic_port=int(diagnostic_port) if diagnostic_port else None,
         )

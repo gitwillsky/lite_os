@@ -1,5 +1,4 @@
-//! 窗口内的菜单栏状态机：鼠标打开与切换、Alt 激活、方向键导航、Alt+字母直达，以及助记键下划线的显示时机
-//! （Windows 2000 在按过 Alt 或 Tab 之前隐藏下划线，见 `interaction.md` N1/N2、K11）。命令类型由调用者决定。
+//! 窗口内的菜单栏状态机：鼠标、方向键、Alt/F10 与助记键共用同一组命令。命令类型由调用者决定。
 
 use canvas::Rect;
 use std::time::{Duration, Instant};
@@ -9,6 +8,7 @@ use crate::{DropItem, DropMenu, Key, Painter, Popup, title_rects};
 const ESCAPE: u32 = 1;
 const ENTER: u32 = 28;
 const TAB: u32 = 15;
+const F10: u32 = 68;
 const UP: u32 = 103;
 const LEFT: u32 = 105;
 const RIGHT: u32 = 106;
@@ -39,9 +39,9 @@ pub struct MenuBar {
     pending: Option<(Instant, Popup)>,
     /// 子菜单翻转与平移的边界（客户区）；调用者每次输入前更新。
     bounds: Option<Rect>,
-    /// 键盘选中的菜单栏标题（单按 Alt 进入）。
+    /// 键盘选中的菜单栏标题（单按 Alt 或 F10 进入）。
     focus: Option<usize>,
-    /// 是否显示助记键下划线：按过 Alt 或 Tab 之后一直显示。
+    /// 是否显示当前窗口的键盘助记提示。
     cues: bool,
     /// Alt 按下后还没有别的按键：此时松开 Alt 才算"单独的 Alt"。
     alt_alone: bool,
@@ -56,12 +56,12 @@ pub struct MenuVisual {
     cues: bool,
 }
 
-/// 标题 `(X)` 里的助记字母，小写。
-fn mnemonic(title: &str) -> Option<char> {
-    let (_, rest) = title.split_once('(')?;
-    let letter = rest.chars().next()?;
-    (rest.chars().nth(1) == Some(')') && letter.is_ascii_alphabetic())
-        .then(|| letter.to_ascii_lowercase())
+/// 使用绘制下划线的同一字符作为助记键。
+fn mnemonic(label: &str) -> Option<char> {
+    let span = Painter::mnemonic_span(label)?;
+    Some(char::from(
+        label.as_bytes()[span.start].to_ascii_lowercase(),
+    ))
 }
 
 fn inside(rect: Rect, (x, y): (i32, i32)) -> bool {
@@ -212,6 +212,26 @@ impl MenuBar {
         &self.popups[layer].items(menus)[index]
     }
 
+    /// 激活最深层的可用条目。子菜单保留父项高亮，普通命令结束菜单会话。
+    fn activate<T: Copy, S: AsRef<str>>(
+        &mut self,
+        p: &Painter<'_>,
+        menus: &[DropMenu<T, S>],
+        index: usize,
+        keyboard: bool,
+    ) -> MenuEvent<T> {
+        let popup = self.popups.last_mut().expect("active popup");
+        popup.hover = Some(index);
+        let item = &popup.items(menus)[index];
+        if item.has_submenu() {
+            self.expand(p, menus, index, keyboard);
+            return MenuEvent::Handled;
+        }
+        let command = item.command;
+        self.close();
+        MenuEvent::Command(command)
+    }
+
     /// 左键按下：打开或切换菜单、执行点中的条目、点在菜单外则关闭（这次点击被消费）。
     pub fn press<T: Copy, S: AsRef<str>>(
         &mut self,
@@ -230,16 +250,8 @@ impl MenuBar {
                     if item.disabled {
                         return MenuEvent::Handled;
                     }
-                    if item.has_submenu() {
-                        // 单击子菜单父条目立即展开（不等延时）；已展开时保持。
-                        self.popups.truncate(layer + 1);
-                        self.popups[layer].hover = Some(index);
-                        self.expand(p, menus, index, false);
-                        return MenuEvent::Handled;
-                    }
-                    let command = item.command;
-                    self.close();
-                    return MenuEvent::Command(command);
+                    self.popups.truncate(layer + 1);
+                    return self.activate(p, menus, index, false);
                 }
                 return MenuEvent::Handled;
             }
@@ -329,7 +341,7 @@ impl MenuBar {
         true
     }
 
-    /// 按键按下。菜单打开或键盘选择期间吞掉全部按键；否则只在 Alt+字母命中标题时处理。
+    /// 按键按下。菜单打开时处理方向键与助记键；F10 或 Alt+标题字母可从窗口进入菜单。
     pub fn key<T: Copy, S: AsRef<str>>(
         &mut self,
         p: &Painter<'_>,
@@ -343,6 +355,31 @@ impl MenuBar {
             self.cues = true;
         }
         let count = menus.len();
+        if count == 0 {
+            self.close();
+            return MenuEvent::Ignored;
+        }
+        let modifiers = key.modifiers;
+        if key.code == F10
+            && bar.height > 0
+            && !modifiers.shift
+            && !modifiers.control
+            && !modifiers.alt
+            && !modifiers.super_key
+        {
+            if !key.repeat {
+                let active = self.active();
+                self.close();
+                self.focus = (!active).then_some(0);
+                self.cues = true;
+            }
+            return MenuEvent::Handled;
+        }
+        let letter = if !key.repeat && !modifiers.control && !modifiers.super_key {
+            key.letter()
+        } else {
+            None
+        };
         let depth = self.popups.len();
         if let Some(popup) = self.popups.last_mut() {
             self.pending = None;
@@ -355,7 +392,7 @@ impl MenuBar {
                 }
                 UP => popup.step(items, -1),
                 DOWN => popup.step(items, 1),
-                RIGHT | ENTER if submenu => {
+                RIGHT if submenu => {
                     self.expand(p, menus, hovered.expect("submenu parent"), true);
                 }
                 LEFT if depth > 1 => {
@@ -376,13 +413,35 @@ impl MenuBar {
                 }
                 ENTER => {
                     if let Some(index) = hovered {
-                        let command = items[index].command;
-                        self.close();
-                        return MenuEvent::Command(command);
+                        return self.activate(p, menus, index, true);
                     }
                 }
-                _ => {}
+                _ => {
+                    if let Some(letter) = letter {
+                        // 从高亮项之后开始查找。多个匹配只移动高亮，用户用 Enter 确认。
+                        let start = popup.hover.map_or(0, |index| index + 1);
+                        let mut matches = (start..items.len()).chain(0..start).filter(|&index| {
+                            let item = &items[index];
+                            !item.disabled && mnemonic(item.label.as_ref()) == Some(letter)
+                        });
+                        if let Some(index) = matches.next() {
+                            if matches.next().is_none() {
+                                return self.activate(p, menus, index, true);
+                            }
+                            popup.hover = Some(index);
+                        }
+                    }
+                }
             }
+            return MenuEvent::Handled;
+        }
+        if (modifiers.alt || self.focus.is_some())
+            && let Some(letter) = letter
+            && let Some(index) = menus
+                .iter()
+                .position(|menu| mnemonic(menu.title.as_ref()) == Some(letter))
+        {
+            self.open(p, bar, menus, index, true);
             return MenuEvent::Handled;
         }
         if let Some(index) = self.focus {
@@ -392,15 +451,6 @@ impl MenuBar {
                 ENTER | DOWN => self.open(p, bar, menus, index, true),
                 _ => self.focus = None,
             }
-            return MenuEvent::Handled;
-        }
-        if key.modifiers.alt
-            && let Some(letter) = key.letter()
-            && let Some(index) = menus
-                .iter()
-                .position(|menu| mnemonic(menu.title.as_ref()) == Some(letter))
-        {
-            self.open(p, bar, menus, index, true);
             return MenuEvent::Handled;
         }
         MenuEvent::Ignored

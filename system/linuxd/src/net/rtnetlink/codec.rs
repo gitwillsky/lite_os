@@ -170,7 +170,13 @@ pub(super) fn link(
     } else {
         ARPHRD_ETHER
     };
-    let interface_flags = u32::from(snapshot.flags()) | if snapshot.up { IFF_LOWER_UP } else { 0 };
+    let carrier = snapshot.carrier() == Some(true);
+    let interface_flags = u32::from(snapshot.flags())
+        | if snapshot.up && carrier {
+            IFF_LOWER_UP
+        } else {
+            0
+        };
     // ifinfomsg（16 字节）：family、pad、type(u16)、index(i32)、flags、change。必须一次写完整，
     // 否则 `put` 对 2 字节前缀做的对齐会把 type 推到错误偏移。
     let mut info = [0u8; 16];
@@ -190,21 +196,13 @@ pub(super) fn link(
     message.attribute_u32(IFLA_MIN_MTU, 68);
     message.attribute_string(IFLA_QDISC, b"noqueue");
     message.attribute_u32(IFLA_TXQLEN, 1000);
-    // lo 的 operstate 是 UNKNOWN（0）；其余按链路 UP（6）/DOWN（2）。
-    let operstate = if snapshot.loopback {
-        0
-    } else if snapshot.up {
-        6
-    } else {
-        2
-    };
-    message.attribute_u8(IFLA_OPERSTATE, operstate);
+    message.attribute_u8(IFLA_OPERSTATE, snapshot.operstate());
     message.attribute_u8(IFLA_LINKMODE, 0);
     message.attribute_u32(IFLA_GROUP, 0);
     message.attribute_u32(IFLA_PROMISCUITY, 0);
     message.attribute_u32(IFLA_NUM_TX_QUEUES, 1);
     message.attribute_u32(IFLA_NUM_RX_QUEUES, 1);
-    message.attribute_u8(IFLA_CARRIER, u8::from(snapshot.up));
+    message.attribute_u8(IFLA_CARRIER, u8::from(carrier));
     // rtnl_link_stats64 的 24 个 u64，未维护的计数为 0。
     let mut counters = [0u64; 24];
     counters[0] = statistics.received_packets;

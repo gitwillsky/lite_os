@@ -27,11 +27,12 @@ use native_runtime::native_abi::{self, DEADLINE_INFINITE, Status, packet, signal
 use native_runtime::sync::Mutex;
 use native_runtime::{Channel, Event, Port, Startup, Vmo};
 use netcfg_protocol::{
-    Decoder, Encoder, InterfaceConfig, InterfaceState, LeaseEvent, Method, Snapshot,
+    Decoder, DhcpAction, Encoder, InterfaceConfig, InterfaceState, LeaseEvent, LeaseStatus,
+    LeaseTiming, Method, Snapshot,
 };
 use network_protocol::{
-    Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest, NetworkClient, NetworkInstaller,
-    RemoteNamespace, RouteChange,
+    Ipv4RouteError, Ipv4RouteKind, Ipv4RouteMetrics, Ipv4RouteRequest, NetworkClient,
+    NetworkInstaller, RemoteNamespace, RouteChange,
 };
 use service_directory::ServiceDirectory;
 
@@ -45,6 +46,8 @@ const KEY_DIRECTORY: u64 = 2;
 const KEY_DHCP_FIRST: u64 = 1 << 32;
 /// dhcp-client 的 DHCP 请求序号（与 dhcp-client 一致）。
 const DHCP_START: u32 = 1;
+/// Bounds the settings RPC even when no DHCP server answers discovery.
+const DHCP_COMMAND_TIMEOUT: i64 = 15_000_000_000;
 /// 默认路由的路由协议标识（`RTPROT_DHCP` / `RTPROT_BOOT`）。
 const RTPROT_DHCP: u8 = 16;
 const RTPROT_BOOT: u8 = 3;
@@ -69,6 +72,8 @@ struct Interface {
     dns: Vec<Ipv4Addr>,
     // 当前地址配置生效的单调时刻（纳秒）；没有地址时为 None。
     connected: Option<i64>,
+    // 只有成功配置的租约提供 DHCP 后缀；手动后缀由 config 拥有。
+    lease: Option<(LeaseTiming, alloc::string::String)>,
     // OWNER: 本接口的 DHCP 会话（Port key 与租约事件 channel）；丢弃即关闭 channel，dhcp-client 随之停止。
     dhcp: Option<(u64, Channel)>,
     // netstack 交出的接口 lifetime（Port key 与 channel）：网卡会话关闭、接口被移除时 `PEER_CLOSED`。
@@ -79,7 +84,7 @@ struct Interface {
 struct Inner {
     generation: u64,
     // OWNER: 用户设置的唯一副本；修改后先持久化再应用。
-    saved: Vec<policy::Entry>,
+    saved: policy::Settings,
     link: Option<Link>,
     interfaces: Vec<Interface>,
     // 已处理的最后一个设备目录 ID；netstack 重启后清零，重新打开全部网卡。
@@ -112,12 +117,12 @@ fn main(mut startup: Startup) -> i64 {
     let saved = match storage.read(policy::SETTINGS_FILE) {
         Ok(Some(bytes)) => policy::decode_settings(&bytes).unwrap_or_else(|_| {
             warn!("netcfg: unreadable settings file ignored");
-            Vec::new()
+            policy::Settings::default()
         }),
-        Ok(None) => Vec::new(),
+        Ok(None) => policy::Settings::default(),
         Err(status) => {
             warn!("netcfg: settings unavailable: {status}");
-            Vec::new()
+            policy::Settings::default()
         }
     };
     let netcfg = Arc::new(Netcfg {
@@ -181,7 +186,7 @@ fn default_route(index: u32, gateway: Ipv4Addr, protocol: u8) -> Ipv4RouteReques
         destination: Ipv4Addr::UNSPECIFIED,
         prefix_length: 0,
         table: RT_TABLE_MAIN,
-        metric: 0,
+        metric: index,
         scope: 0,
         protocol,
         kind: Ipv4RouteKind::Unicast,
@@ -312,7 +317,7 @@ impl Netcfg {
             .position(|byte| *byte == 0)
             .unwrap_or(16);
         let name = snapshot.name[..length].to_vec();
-        let config = policy::resolve(&inner.saved, &self.defaults, &name);
+        let config = policy::resolve(&inner.saved.interfaces, &self.defaults, &name);
         info!(
             "netcfg: installed {} as interface {index}",
             core::str::from_utf8(&name).unwrap_or("<non-utf8>")
@@ -327,6 +332,7 @@ impl Netcfg {
             gateway: Ipv4Addr::UNSPECIFIED,
             dns: Vec::new(),
             connected: None,
+            lease: None,
             dhcp: None,
             lifetime: (key, lifetime),
         });
@@ -346,7 +352,7 @@ impl Netcfg {
         };
         let interface = &mut interfaces[position];
         interface.dhcp = None;
-        Self::clear_address(&link.network, interface);
+        let _ = Self::clear_address(&link.network, interface);
         let network = &link.network;
         let index = interface.index;
         let result = match interface.config.method {
@@ -395,24 +401,44 @@ impl Netcfg {
         Ok(())
     }
 
-    fn clear_address(network: &RemoteNamespace, interface: &mut Interface) {
-        if !interface.gateway.is_unspecified() {
-            let _ = network.configure_route(
-                default_route(interface.index, interface.gateway, RTPROT_DHCP),
+    fn clear_address(network: &RemoteNamespace, interface: &mut Interface) -> Result<(), Status> {
+        let route = if !interface.gateway.is_unspecified() {
+            let protocol = if interface.lease.is_some() {
+                RTPROT_DHCP
+            } else {
+                RTPROT_BOOT
+            };
+            network.configure_route(
+                default_route(interface.index, interface.gateway, protocol),
                 RouteChange {
                     delete: true,
                     ..RouteChange::default()
                 },
-            );
-        }
-        if !interface.address.is_unspecified() {
-            let _ = network.configure_address(interface.index, Ipv4Addr::UNSPECIFIED);
-        }
+            )
+        } else {
+            Ok(())
+        };
+        let address = if interface.address.is_unspecified() {
+            Ok(())
+        } else {
+            network.configure_address(interface.index, Ipv4Addr::UNSPECIFIED)
+        };
         interface.address = Ipv4Addr::UNSPECIFIED;
         interface.prefix_length = 0;
         interface.gateway = Ipv4Addr::UNSPECIFIED;
         interface.dns.clear();
         interface.connected = None;
+        interface.lease = None;
+        route
+            .or_else(|error| {
+                if error == Ipv4RouteError::NotFound {
+                    Ok(())
+                } else {
+                    Err(error)
+                }
+            })
+            .map_err(|_| native_abi::ERR_IO)
+            .and_then(|()| address.map_err(|_| native_abi::ERR_IO))
     }
 
     fn configure_address(
@@ -437,7 +463,6 @@ impl Netcfg {
                     default_route(index, gateway, protocol),
                     RouteChange {
                         create: true,
-                        replace: true,
                         ..RouteChange::default()
                     },
                 )
@@ -486,7 +511,17 @@ impl Netcfg {
             .as_ref()
             .map(|(_, events)| events.read());
         let event = match message {
-            Some(Ok(message)) => Decoder::new(&message.bytes).lease().ok(),
+            Some(Ok(message)) if message.handles.len() <= 1 => {
+                let mut decoder = Decoder::new(&message.bytes);
+                decoder
+                    .lease()
+                    .ok()
+                    .filter(|_| decoder.finish().is_ok())
+                    .map(|event| {
+                        let reply = message.handles.into_iter().next().map(Channel::from_handle);
+                        (event, reply)
+                    })
+            }
             // dhcp-client 终止：重新请求（根服务重启它期间连接会等待）。
             Some(Err(native_abi::ERR_PEER_CLOSED)) => {
                 warn!("netcfg: dhcp-client session closed; restarting DHCP");
@@ -502,37 +537,58 @@ impl Netcfg {
         if let Some((_, events)) = interface.dhcp.as_ref() {
             let _ = events.wait_async(&self.port, key, signals::READABLE | signals::PEER_CLOSED);
         }
-        let (Some(event), Some(link)) = (event, link.as_ref()) else {
+        let (Some((event, reply)), Some(link)) = (event, link.as_ref()) else {
             return;
         };
         let network = &link.network;
-        Self::clear_address(network, interface);
-        if let LeaseEvent::Bound {
-            address,
-            prefix_length,
-            gateway,
-            dns,
-            ..
-        } = event
-        {
-            if let Err(status) = Self::configure_address(
-                network,
-                interface,
+        let result = match event {
+            LeaseEvent::Lost => Self::clear_address(network, interface),
+            LeaseEvent::Bound {
                 address,
                 prefix_length,
                 gateway,
-                RTPROT_DHCP,
-            ) {
-                error!("netcfg: lease configuration failed: {status}");
+                dns,
+                dns_suffix,
+                timing,
+            } => {
+                let same_address = (
+                    interface.address,
+                    interface.prefix_length,
+                    interface.gateway,
+                ) == (address, prefix_length, gateway);
+                // 续租未改变地址或路由时保留现有配置及连接时长。
+                let result = if same_address {
+                    Ok(())
+                } else {
+                    let _ = Self::clear_address(network, interface);
+                    Self::configure_address(
+                        network,
+                        interface,
+                        address,
+                        prefix_length,
+                        gateway,
+                        RTPROT_DHCP,
+                    )
+                };
+                result.map(|()| {
+                    // 静态 DNS 覆盖租约中的 DNS（Windows“使用下面的 DNS 服务器地址”）。
+                    interface.dns = if interface.config.dns.is_empty() {
+                        dns
+                    } else {
+                        interface.config.dns.clone()
+                    };
+                    interface.lease = Some((timing, dns_suffix));
+                })
             }
-            // 静态 DNS 覆盖租约中的 DNS（Windows“使用下面的 DNS 服务器地址”）。
-            interface.dns = if interface.config.dns.is_empty() {
-                dns
-            } else {
-                interface.config.dns.clone()
-            };
-        }
+        };
         Self::changed(&mut inner);
+        let status = result.err().unwrap_or(native_abi::OK);
+        if status != native_abi::OK {
+            error!("netcfg: lease configuration failed: {status}");
+        }
+        if let Some(reply) = reply {
+            let _ = reply.write(&status.to_le_bytes(), Vec::new());
+        }
     }
 
     fn changed(inner: &mut Inner) {
@@ -544,51 +600,151 @@ impl Netcfg {
 
     fn snapshot(inner: &Inner) -> Snapshot {
         let now = native_runtime::system::monotonic();
+        let utc_offset = native_runtime::system::utc().saturating_sub(now);
         Snapshot {
             generation: inner.generation,
+            search_list: inner.saved.search_list.clone(),
+            primary_dns_suffix: inner.saved.primary_dns_suffix.clone(),
+            append_parent_suffixes: inner.saved.append_parent_suffixes,
             interfaces: inner
                 .interfaces
                 .iter()
                 .map(|interface| InterfaceState {
                     name: interface.name.clone(),
+                    connection_name: inner
+                        .saved
+                        .names
+                        .iter()
+                        .find(|(name, _)| *name == interface.name)
+                        .map_or_else(Vec::new, |(_, name)| name.as_bytes().to_vec()),
                     mac: interface.mac,
                     config: interface.config.clone(),
                     address: interface.address,
                     prefix_length: interface.prefix_length,
                     gateway: interface.gateway,
                     dns: interface.dns.clone(),
+                    dns_suffix: if interface.address.is_unspecified() {
+                        Default::default()
+                    } else if interface.config.dns_suffix.is_empty() {
+                        interface
+                            .lease
+                            .as_ref()
+                            .map_or_else(Default::default, |(_, suffix)| suffix.clone())
+                    } else {
+                        interface.config.dns_suffix.clone()
+                    },
                     connected_seconds: interface.connected.map_or(0, |since| {
                         u32::try_from(now.saturating_sub(since) / 1_000_000_000).unwrap_or(u32::MAX)
+                    }),
+                    lease: interface.lease.as_ref().map(|(lease, _)| {
+                        let obtained_at = lease
+                            .requested_at_ns
+                            .saturating_add(utc_offset)
+                            .div_euclid(1_000_000_000);
+                        LeaseStatus {
+                            server: lease.server,
+                            obtained_at,
+                            expires_at: (lease.duration_seconds != u32::MAX).then(|| {
+                                obtained_at.saturating_add(i64::from(lease.duration_seconds))
+                            }),
+                        }
                     }),
                 })
                 .collect(),
         }
     }
 
-    /// 修改一个接口的用户设置：先持久化，再应用到已安装的同名接口（未安装的在安装时生效）。
-    fn set(&self, name: &[u8], config: InterfaceConfig) -> Result<(), Status> {
-        if name.is_empty() || name.len() >= netcfg_protocol::NAME_MAX || !policy::valid(&config) {
+    /// 先持久化本次设置，再发布新的配置代际。
+    fn set(&self, update: netcfg_protocol::Update<'_>) -> Result<(), Status> {
+        let netcfg_protocol::Update {
+            interface: name,
+            config,
+            search_list,
+            primary_dns_suffix,
+            append_parent_suffixes,
+        } = update;
+        if config.as_ref().is_some_and(|config| {
+            name.is_empty() || name.len() >= netcfg_protocol::NAME_MAX || !policy::valid(config)
+        }) {
             return Err(native_abi::ERR_INVALID_ARGS);
         }
         let mut inner = self.inner.lock();
         let mut saved = inner.saved.clone();
-        match saved.iter_mut().find(|(entry, _)| entry.as_slice() == name) {
-            Some((_, entry)) => *entry = config.clone(),
-            None => saved.push((name.to_vec(), config.clone())),
+        if let Some(config) = &config {
+            match saved
+                .interfaces
+                .iter_mut()
+                .find(|(entry, _)| entry.as_slice() == name)
+            {
+                Some((_, entry)) => *entry = config.clone(),
+                None => saved.interfaces.push((name.to_vec(), config.clone())),
+            }
+        }
+        if let Some(search_list) = search_list {
+            saved.search_list = search_list;
+        }
+        if let Some(suffix) = primary_dns_suffix {
+            saved.primary_dns_suffix = suffix;
+        }
+        if let Some(append) = append_parent_suffixes {
+            saved.append_parent_suffixes = append;
         }
         self.storage
             .write(policy::SETTINGS_FILE, &policy::encode_settings(&saved))?;
         inner.saved = saved;
-        if let Some(position) = inner
-            .interfaces
-            .iter()
-            .position(|interface| interface.name.as_slice() == name)
+        if let Some(config) = config
+            && let Some(position) = inner
+                .interfaces
+                .iter()
+                .position(|interface| interface.name.as_slice() == name)
         {
-            inner.interfaces[position].config = config;
-            self.apply(&mut inner, position);
+            let current = &mut inner.interfaces[position].config;
+            let suffix_only = current.dns_suffix != config.dns_suffix
+                && current.method == config.method
+                && current.address == config.address
+                && current.prefix_length == config.prefix_length
+                && current.gateway == config.gateway
+                && current.dns == config.dns;
+            *current = config;
+            if suffix_only {
+                // 只改搜索后缀时，现有地址、路由和 DHCP 会话继续有效。
+                Self::changed(&mut inner);
+            } else {
+                self.apply(&mut inner, position);
+            }
         } else {
             Self::changed(&mut inner);
         }
+        Ok(())
+    }
+
+    /// 持久化连接名后发布新代际。IP 配置与 DHCP 会话继续使用原接口。
+    fn rename(&self, interface: &[u8], name: &[u8]) -> Result<(), Status> {
+        let name =
+            netcfg_protocol::connection_name(name).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+        let mut inner = self.inner.lock();
+        if !inner.interfaces.iter().any(|entry| entry.name == interface) {
+            return Err(native_abi::ERR_NOT_FOUND);
+        }
+        let folded = name.to_lowercase();
+        if inner
+            .saved
+            .names
+            .iter()
+            .any(|(entry, label)| entry != interface && label.to_lowercase() == folded)
+        {
+            return Err(native_abi::ERR_ALREADY_BOUND);
+        }
+        let mut saved = inner.saved.clone();
+        match saved.names.iter_mut().find(|(entry, _)| entry == interface) {
+            Some((_, label)) if label == name => return Ok(()),
+            Some((_, label)) => *label = name.into(),
+            None => saved.names.push((interface.to_vec(), name.into())),
+        }
+        self.storage
+            .write(policy::SETTINGS_FILE, &policy::encode_settings(&saved))?;
+        inner.saved = saved;
+        Self::changed(&mut inner);
         Ok(())
     }
 
@@ -603,6 +759,36 @@ impl Netcfg {
                 inner.changed.clone()
             };
             event.wait_one(signals::USER_0, DEADLINE_INFINITE)?;
+        }
+    }
+
+    /// Send an operation to the installed session. Its reply is completed only
+    /// after the resulting lease event has been applied by the configuration owner.
+    fn dhcp_command(&self, name: &[u8], action: DhcpAction) -> Result<(), Status> {
+        let (reply, completion) = Channel::create()?;
+        {
+            let inner = self.inner.lock();
+            let interface = inner
+                .interfaces
+                .iter()
+                .find(|interface| interface.name == name)
+                .ok_or(native_abi::ERR_NOT_FOUND)?;
+            let (_, session) = interface.dhcp.as_ref().ok_or(native_abi::ERR_BAD_STATE)?;
+            session.write(&[action as u8], alloc::vec![completion.into_handle()])?;
+        }
+        let deadline = native_runtime::system::monotonic().saturating_add(DHCP_COMMAND_TIMEOUT);
+        let response = reply.read_wait(deadline)?;
+        let status = Status::from_le_bytes(
+            response
+                .bytes
+                .as_slice()
+                .try_into()
+                .map_err(|_| native_abi::ERR_INVALID_ARGS)?,
+        );
+        if status == native_abi::OK {
+            Ok(())
+        } else {
+            Err(status)
         }
     }
 }
@@ -624,14 +810,22 @@ fn serve_settings(netcfg: Arc<Netcfg>, channel: Channel) -> Result<(), Status> {
                         reply.bytes(&encoder.0);
                     }
                     netcfg_protocol::ordinal::SET => {
-                        let name = request.bytes()?;
                         let mut decoder = Decoder::new(request.bytes()?);
-                        let config = decoder.config().map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+                        let update = decoder.update().map_err(|_| native_abi::ERR_INVALID_ARGS)?;
                         decoder.finish().map_err(|_| native_abi::ERR_INVALID_ARGS)?;
-                        netcfg.set(name, config)?;
+                        netcfg.set(update)?;
                     }
                     netcfg_protocol::ordinal::WAIT => {
                         reply.u64(netcfg.wait(request.u64()?)?);
+                    }
+                    netcfg_protocol::ordinal::DHCP => {
+                        let name = request.bytes()?;
+                        let action = DhcpAction::decode(request.u8()?)
+                            .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
+                        netcfg.dhcp_command(name, action)?;
+                    }
+                    netcfg_protocol::ordinal::RENAME => {
+                        netcfg.rename(request.bytes()?, request.bytes()?)?;
                     }
                     _ => return Err(native_abi::ERR_NOT_SUPPORTED),
                 }

@@ -88,12 +88,59 @@ pub mod driver_manager {
     pub const RESOURCE: usize = ROLE_HANDLES;
     /// 平台 DTB VMO。
     pub const DEVICE_TREE: usize = ROLE_HANDLES + 1;
-    /// 设备目录的服务端：以全部设备类服务，根服务持有客户端并按类派生给各使用者。
-    pub const DEVICE_DIRECTORY: usize = ROLE_HANDLES + 2;
+    /// 根服务持有设备目录及使用者连接；驱动管理器持发布端。
+    pub const DEVICE_PUBLISHER: usize = ROLE_HANDLES + 2;
     /// 驱动宿主所在的 Job。
     pub const DRIVER_JOB: usize = ROLE_HANDLES + 3;
     /// 驱动宿主映像（bootfs 中 [`super::driver_host::IMAGE`] 的只读副本）。
     pub const DRIVER_HOST_IMAGE: usize = ROLE_HANDLES + 4;
+    /// 根服务与管理器间的生命周期控制 channel。
+    pub const CONTROL: usize = ROLE_HANDLES + 5;
+    /// 切换时由旧管理器发给新管理器的节点状态流，冷启动为无效句柄。
+    pub const HANDOVER: usize = ROLE_HANDLES + 6;
+    /// 切换决策，USER_0 提交，USER_1 撤销；冷启动为无效句柄。
+    pub const DECISION: usize = ROLE_HANDLES + 7;
+}
+
+/// 驱动更新控制面的版本、请求格式及资源上限。
+pub mod driver_update {
+    /// Linux 管理员通过 Unix datagram 发送请求，并用 SCM_RIGHTS 交付已打开的 ELF。
+    pub const PATH: &[u8] = b"/dev/driver-update";
+    /// 固定请求前缀。后接一个小端 u64，0 表示管理器，否则为 MMIO 基址或 PCI 配置空间地址。
+    pub const VERSION: &[u8; 8] = b"LDRVUPD1";
+    /// 映像传输上限，约束常驻的升级与回退资源。
+    pub const IMAGE_LIMIT: u64 = 16 * 1024 * 1024;
+    /// 单阶段设备初始化期限，单位纳秒。
+    pub const START_TIMEOUT: i64 = 10_000_000_000;
+
+    /// ELF 生命周期 note 类型，标识驱动宿主。
+    pub const HOST_NOTE: u32 = 1;
+    /// ELF 生命周期 note 类型，标识驱动管理器。
+    pub const MANAGER_NOTE: u32 = 2;
+    /// 宿主启动与设备协议、管理器启动与交接协议的共同兼容代际。
+    pub const ABI: u32 = 1;
+
+    /// 生成独立 PT_NOTE，依次为 ELF note header、NUL 终止的 owner 及 ABI 代际。
+    pub const fn note(role: u32) -> [u8; 24] {
+        let mut bytes = *b"\x07\0\0\0\x04\0\0\0\0\0\0\0LiteOS\0\0\0\0\0\0";
+        let role = role.to_le_bytes();
+        let version = ABI.to_le_bytes();
+        let mut byte = 0;
+        while byte < 4 {
+            bytes[8 + byte] = role[byte];
+            bytes[20 + byte] = version[byte];
+            byte += 1;
+        }
+        bytes
+    }
+
+    /// 更新结果和回退结果各占一个小端 i32。回退未执行或成功时第二项为 0。
+    pub fn reply(update: i32, rollback: i32) -> [u8; 8] {
+        let mut bytes = [0; 8];
+        bytes[..4].copy_from_slice(&update.to_le_bytes());
+        bytes[4..].copy_from_slice(&rollback.to_le_bytes());
+        bytes
+    }
 }
 
 /// 驱动宿主：运行绑定到一个节点的驱动（及其同宿主的子驱动），在本进程的设备目录发布设备
@@ -109,10 +156,12 @@ pub mod driver_host {
     pub const DIRECTORY: usize = ROLE_HANDLES;
     /// 节点的 DMA 发起者。
     pub const BTI: usize = ROLE_HANDLES + 1;
-    /// 节点中断向量的 IRQ resource；节点没有中断时为无效句柄。
-    pub const IRQ: usize = ROLE_HANDLES + 2;
-    /// 节点 MMIO 窗口的 resource，从此下标起直到句柄末尾。
-    pub const MMIO: usize = ROLE_HANDLES + 3;
+    /// 宿主绑定及 DMA 隔离清理完成后置位 USER_0。
+    pub const READY: usize = ROLE_HANDLES + 2;
+    /// 转发 OPEN 的独立设备目录连接，避免独占会话的回收阻塞监督。
+    pub const OPEN_DIRECTORY: usize = ROLE_HANDLES + 3;
+    /// 节点 MMIO 窗口的 resource 起点；若节点声明 IRQ，第一个句柄为 IRQ resource。
+    pub const RESOURCES: usize = ROLE_HANDLES + 4;
 
     /// 绑定到节点的驱动。
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,8 +198,8 @@ pub mod driver_host {
         /// 只声明给使用者能在会话 `PEER_CLOSED` 后改用新登记设备的驱动：熵源（使用者总取最新的可用
         /// source）、声音（audio-core 把旧输出标为断开、把新设备接为新输出，linuxd 呈现为声卡重新插入）、
         /// 输入（linuxd 撤下 evdev 节点并发 remove/add uevent）、console 端口（linuxd 以新会话重新发布节点）
-        /// 与网卡（netstack 移除接口，netcfg 把重新出现的网卡安装为新接口并重新配置）。
-        /// 其余驱动不声明，宿主崩溃时节点被移除：块设备（文件系统无法跨驱动实例恢复）、显示与 USB 主控。
+        /// 网卡（netcfg 重新安装并配置网卡），以及 USB 主控（旧 USB 与 PCM 会话断开，主控复位后重新枚举端口）。
+        /// 块设备和显示仍缺少消费者恢复契约，宿主崩溃时节点被移除。
         pub const fn restart_on_crash(self) -> bool {
             matches!(
                 self,
@@ -159,6 +208,7 @@ pub mod driver_host {
                     | Self::VirtioInput
                     | Self::VirtioConsole
                     | Self::VirtioNetwork
+                    | Self::Xhci
             )
         }
     }
@@ -195,6 +245,22 @@ pub mod driver_host {
     const NO_INTERRUPT: u32 = u32::MAX;
 
     impl Node {
+        /// 启动资源中是否包含 IRQ。
+        pub fn has_irq(&self) -> bool {
+            match self.bus {
+                Bus::VirtioMmio { .. } => true,
+                Bus::Pci { interrupt, .. } => interrupt.is_some(),
+            }
+        }
+
+        /// 节点的运行时定位地址。
+        pub fn address(&self) -> u64 {
+            match self.bus {
+                Bus::VirtioMmio { base, .. } => base,
+                Bus::Pci { config, .. } => config,
+            }
+        }
+
         /// 编码为启动参数。
         pub fn encode(&self) -> [u8; NODE_BYTES] {
             let mut bytes = [0u8; NODE_BYTES];

@@ -154,7 +154,7 @@ impl Seat {
                 || (code == 19 && modifiers.super_key))
     }
 
-    fn next_serial(&mut self) -> u32 {
+    pub fn next_serial(&mut self) -> u32 {
         self.serial = self.serial.wrapping_add(1).max(1);
         self.serial
     }

@@ -22,8 +22,11 @@ pub(crate) fn take(startup: &mut Startup) -> Job {
 ///
 /// 端点或线程创建失败时 fail-stop：端点缺失会让任务管理器静默丢失系统服务。
 pub(crate) fn start(observer: Job) {
-    let socket =
-        super::endpoint::publish(task_observer_protocol::PATH, task_observer_protocol::GROUP);
+    let socket = super::endpoint::publish(
+        task_observer_protocol::PATH,
+        task_observer_protocol::GROUP,
+        0o660,
+    );
     // OWNER: 工作线程独占根 Job 观察句柄与 socket；仅在请求到来时查询真实 owner，不保留统计副本。
     task::spawn_kernel_thread("task-observer", Box::new(move || serve(socket, observer)))
         .expect("task observer worker");

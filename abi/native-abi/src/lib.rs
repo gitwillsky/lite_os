@@ -119,6 +119,8 @@ pub mod signals {
     pub const USER_ALL: u32 = 0xff << 24;
     /// 第一个用户 signal。
     pub const USER_0: u32 = 1 << 24;
+    /// 第二个用户 signal。
+    pub const USER_1: u32 = 1 << 25;
 }
 
 /// 句柄对应的对象类型。

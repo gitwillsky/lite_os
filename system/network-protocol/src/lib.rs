@@ -355,6 +355,12 @@ fn put_interface(writer: &mut Writer, snapshot: &InterfaceSnapshot) {
             .as_bytes(),
     );
     writer.bool(snapshot.driver.is_some());
+    writer.bool(snapshot.link.is_some());
+    if let Some(link) = snapshot.link {
+        writer
+            .bool(link.carrier)
+            .u32(link.speed_mbps.unwrap_or(u32::MAX));
+    }
 }
 
 fn fixed<const N: usize>(reader: &mut Reader<'_>) -> Result<[u8; N], Status> {
@@ -376,6 +382,16 @@ fn get_interface(reader: &mut Reader<'_>) -> Result<InterfaceSnapshot, Status> {
     let up = reader.bool()?;
     let driver = core::str::from_utf8(reader.bytes()?).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
     let driver = reader.bool()?.then(|| DriverName::new(driver));
+    let link = if reader.bool()? {
+        let carrier = reader.bool()?;
+        let speed = reader.u32()?;
+        Some(device_model::network::NetworkLink {
+            carrier,
+            speed_mbps: (speed <= i32::MAX as u32).then_some(speed),
+        })
+    } else {
+        None
+    };
     Ok(InterfaceSnapshot {
         index,
         name,
@@ -386,6 +402,7 @@ fn get_interface(reader: &mut Reader<'_>) -> Result<InterfaceSnapshot, Status> {
         prefix_length,
         broadcast,
         up,
+        link,
         driver,
     })
 }

@@ -13,6 +13,7 @@ mod clipboard;
 mod damage;
 mod dialog;
 mod dmabuf;
+mod drag;
 mod foreign;
 mod layer;
 mod popup;

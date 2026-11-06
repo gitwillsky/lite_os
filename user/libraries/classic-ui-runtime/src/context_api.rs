@@ -124,6 +124,20 @@ pub(super) unsafe extern "C" fn unwatch(pointer: *mut c_void, id: u64) -> i32 {
 }
 
 pub(super) unsafe extern "C" fn clipboard_get(pointer: *mut c_void, output: *mut i32) -> i32 {
+    // SAFETY: 同一上下文和独占输出契约，复用 FD 的所有权转换。
+    unsafe { clipboard_fd(pointer, None, output) }
+}
+
+pub(super) unsafe extern "C" fn clipboard_receive(
+    pointer: *mut c_void,
+    mime: Text,
+    output: *mut i32,
+) -> i32 {
+    // SAFETY: 传入的 MIME 在同步调用期间有效。
+    unsafe { clipboard_fd(pointer, Some(mime), output) }
+}
+
+unsafe fn clipboard_fd(pointer: *mut c_void, mime: Option<Text>, output: *mut i32) -> i32 {
     if output.is_null() {
         return abi::INVALID;
     }
@@ -133,7 +147,11 @@ pub(super) unsafe extern "C" fn clipboard_get(pointer: *mut c_void, output: *mut
         invoke(pointer, |context| {
             use std::os::fd::IntoRawFd;
             output.write(-1);
-            match context.display.receive_clipboard()? {
+            let stream = match mime {
+                Some(mime) => context.display.receive_selection(&text(mime)?)?,
+                None => context.display.receive_clipboard()?,
+            };
+            match stream {
                 Some(stream) => output.write(stream.into_raw_fd()),
                 None => empty = true,
             }
@@ -141,6 +159,68 @@ pub(super) unsafe extern "C" fn clipboard_get(pointer: *mut c_void, output: *mut
         })
     };
     if code == abi::OK && empty {
+        abi::PENDING
+    } else {
+        code
+    }
+}
+
+pub(super) unsafe extern "C" fn clipboard_revision(
+    pointer: *mut c_void,
+    mime: Text,
+    output: *mut u64,
+) -> i32 {
+    if output.is_null() {
+        return abi::INVALID;
+    }
+    // SAFETY: MIME 与输出在同步调用期间有效，输出位置独占。
+    unsafe {
+        invoke(pointer, |context| {
+            output.write(
+                context
+                    .display
+                    .selection_revision(&text(mime)?)
+                    .unwrap_or(0),
+            );
+            Ok(())
+        })
+    }
+}
+
+pub(super) unsafe extern "C" fn clipboard_offer(
+    pointer: *mut c_void,
+    formats: *const abi::ClipboardFormat,
+    count: usize,
+    expected: u64,
+) -> i32 {
+    if count > 8 || (count != 0 && formats.is_null()) {
+        return abi::INVALID;
+    }
+    let mut sent = false;
+    // SAFETY: 格式数组及其文本在同步调用期间有效，传给 Display 的数据为自有副本。
+    let code = unsafe {
+        invoke(pointer, |context| {
+            let formats = if count == 0 {
+                &[]
+            } else {
+                std::slice::from_raw_parts(formats, count)
+            };
+            let payloads = formats
+                .iter()
+                .map(|format| {
+                    if format.mime.len > 255 || format.value.len > 1 << 20 {
+                        return Err(super::invalid("clipboard format or payload too large"));
+                    }
+                    Ok((text(format.mime)?, text(format.value)?.into()))
+                })
+                .collect::<io::Result<Vec<_>>>()?;
+            sent = context
+                .display
+                .set_selection(payloads, (expected != 0).then_some(expected))?;
+            Ok(())
+        })
+    };
+    if code == abi::OK && !sent {
         abi::PENDING
     } else {
         code
@@ -165,6 +245,33 @@ pub(super) unsafe extern "C" fn color(pointer: *mut c_void, role: u32, output: *
         invoke(pointer, |context| {
             output.write(context.color(role)?);
             Ok(())
+        })
+    }
+}
+
+pub(super) unsafe extern "C" fn start_file_drag(
+    pointer: *mut c_void,
+    window: u64,
+    serial: u32,
+    paths: abi::Bytes,
+) -> i32 {
+    use std::{ffi::OsStr, os::unix::ffi::OsStrExt, path::PathBuf};
+    if paths.len == 0 || paths.len > 128 * 1024 || paths.data.is_null() {
+        return abi::INVALID;
+    }
+    // SAFETY: SDK keeps the counted input live for the synchronous call; paths are copied before return.
+    unsafe {
+        invoke(pointer, |context| {
+            let bytes = std::slice::from_raw_parts(paths.data, paths.len);
+            let bytes = bytes
+                .strip_suffix(&[0])
+                .ok_or_else(|| super::invalid("unterminated path list"))?;
+            let paths: Vec<_> = bytes
+                .split(|byte| *byte == 0)
+                .map(|path| PathBuf::from(OsStr::from_bytes(path)))
+                .collect();
+            let window = context.host(window)?.frame.window();
+            context.display.start_file_drag(window, serial, &paths)
         })
     }
 }

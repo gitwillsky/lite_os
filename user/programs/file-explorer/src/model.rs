@@ -1,6 +1,7 @@
 //! 资源管理器的位置与条目：真实目录加上“我的电脑”“控制面板”“网上邻居”“网络和拨号连接”等虚拟文件夹。
 //! 每个位置的详细资料列与文案取自 Windows 2000 SP4 简中 shell32/netshell 字符串表。
 use crate::fileops;
+use desktop_settings::FolderColumn;
 use std::{
     cmp::Ordering,
     fs, io,
@@ -25,6 +26,7 @@ pub enum Location {
     EntireNetwork,
     /// 网络和拨号连接：本机的局域网接口（`/sys/class/net`）。
     NetworkConnections,
+    RecycleBin,
     Directory(PathBuf),
 }
 
@@ -43,6 +45,7 @@ pub enum Icon {
     ControlPanel,
     MyDocuments,
     RecycleBin,
+    RecycleBinFull,
     DateTime,
     Sound,
     DisplaySettings,
@@ -71,6 +74,7 @@ impl Icon {
             Icon::ControlPanel => "control-panel",
             Icon::MyDocuments => "my-documents",
             Icon::RecycleBin => "recycle-bin-empty",
+            Icon::RecycleBinFull => "recycle-bin-full",
             Icon::DateTime => "date-time",
             Icon::Sound => "sound-volume",
             Icon::DisplaySettings => "display-properties",
@@ -82,6 +86,14 @@ impl Icon {
             Icon::DisabledConnection => "network-disabled",
             Icon::DisconnectedConnection => "network-disconnected",
             Icon::DeviceManager => "device-manager",
+        }
+    }
+
+    fn recycle_bin(home: &Path) -> Self {
+        if desktop_entry::trash::has_items(home).unwrap_or(false) {
+            Self::RecycleBinFull
+        } else {
+            Self::RecycleBin
         }
     }
 
@@ -118,6 +130,8 @@ pub enum Field {
     Status,
     Device,
     Owner,
+    Created,
+    Accessed,
 }
 
 impl Field {
@@ -135,6 +149,8 @@ impl Field {
             Field::Status,
             Field::Device,
             Field::Owner,
+            Field::Created,
+            Field::Accessed,
         ]
         .into_iter()
         .find(|field| *field as u64 == id)
@@ -149,7 +165,13 @@ impl Field {
     pub fn numeric(self) -> bool {
         matches!(
             self,
-            Field::Size | Field::Capacity | Field::Free | Field::Modified | Field::Deleted
+            Field::Size
+                | Field::Capacity
+                | Field::Free
+                | Field::Modified
+                | Field::Deleted
+                | Field::Created
+                | Field::Accessed
         )
     }
 }
@@ -194,6 +216,8 @@ pub struct Item {
     pub size: Option<u64>,
     /// 自 Unix epoch 起的秒数。
     pub modified: Option<i64>,
+    pub created: Option<i64>,
+    pub accessed: Option<i64>,
     /// 打开该条目时跳转的位置；`None` 表示不是文件夹（文件，由调用者决定如何处理）。
     pub target: Option<Location>,
     pub path: Option<PathBuf>,
@@ -212,6 +236,8 @@ impl Item {
             kind: kind.into(),
             size: None,
             modified: None,
+            created: None,
+            accessed: None,
             target: None,
             path: None,
             launch: None,
@@ -236,6 +262,8 @@ impl Item {
             (Field::Kind, _) => self.kind.clone(),
             (Field::Size, _) => self.size.map_or_else(String::new, size_text),
             (Field::Modified, _) => self.modified.map_or_else(String::new, date_text),
+            (Field::Created, _) => self.created.map_or_else(String::new, date_text),
+            (Field::Accessed, _) => self.accessed.map_or_else(String::new, date_text),
             (Field::Capacity, Details::Drive(Some((total, _)))) => byte_size_text(*total),
             (Field::Free, Details::Drive(Some((_, free)))) => byte_size_text(*free),
             (Field::Comment, Details::Comment(comment)) => comment.clone(),
@@ -258,6 +286,8 @@ impl Item {
             match (field, &item.details) {
                 (Field::Size, _) => item.size.map(i128::from),
                 (Field::Modified, _) => item.modified.map(i128::from),
+                (Field::Created, _) => item.created.map(i128::from),
+                (Field::Accessed, _) => item.accessed.map(i128::from),
                 (Field::Capacity, Details::Drive(capacity)) => {
                     capacity.map(|(total, _)| i128::from(total))
                 }
@@ -279,11 +309,31 @@ impl Item {
 }
 
 impl Location {
+    /// 用规范目录的文件 URI 或固定的外壳位置标识保存查看方式。
+    pub(super) fn view_key(&self) -> io::Result<String> {
+        let key = match self {
+            Self::Desktop => "::desktop",
+            Self::MyComputer => "::my-computer",
+            Self::ControlPanel => "::control-panel",
+            Self::NetworkPlaces => "::network-places",
+            Self::EntireNetwork => "::entire-network",
+            Self::NetworkConnections => "::network-connections",
+            Self::RecycleBin => "::recycle-bin",
+            Self::Directory(path) if path == Path::new("/") => "file:///",
+            Self::Directory(path) => {
+                let uri = desktop_entry::file_uris::encode(std::slice::from_ref(path), 1)?;
+                return Ok(uri.trim_end_matches("\r\n").to_owned());
+            }
+        };
+        Ok(key.to_owned())
+    }
+
     /// 解析命令行参数或地址栏文字：`::` 开头的虚拟文件夹名、虚拟文件夹的显示名，否则为文件系统路径。
     pub fn parse(argument: &str) -> Self {
         match argument {
             "::desktop" | "桌面" => Location::Desktop,
             "::my-computer" | "我的电脑" => Location::MyComputer,
+            "::recycle-bin" | "回收站" => Location::RecycleBin,
             "::control-panel" | "控制面板" => Location::ControlPanel,
             "::network-places" | "网上邻居" => Location::NetworkPlaces,
             "::entire-network" | "整个网络" => Location::EntireNetwork,
@@ -297,6 +347,7 @@ impl Location {
         match self {
             Location::Desktop => "桌面".into(),
             Location::MyComputer => "我的电脑".into(),
+            Location::RecycleBin => "回收站".into(),
             Location::ControlPanel => "控制面板".into(),
             Location::NetworkPlaces => "网上邻居".into(),
             Location::EntireNetwork => "整个网络".into(),
@@ -325,6 +376,7 @@ impl Location {
         match self {
             Location::Desktop => Icon::Desktop,
             Location::MyComputer => Icon::MyComputer,
+            Location::RecycleBin => Icon::RecycleBin,
             Location::ControlPanel => Icon::ControlPanel,
             Location::NetworkPlaces => Icon::NetworkPlaces,
             Location::EntireNetwork => Icon::EntireNetwork,
@@ -344,7 +396,7 @@ impl Location {
 
     /// 是否为回收站根目录；只有根目录使用回收站的列与 Web 视图。
     pub fn is_recycle_bin(&self) -> bool {
-        matches!(self, Location::Directory(path) if well_known(path).is_some_and(|(_, icon)| icon == Icon::RecycleBin))
+        matches!(self, Location::RecycleBin)
     }
 
     /// “向上”的目标（Windows 2000 的命名空间层次）：我的电脑、网上邻居、我的文档、回收站到“桌面”；
@@ -353,7 +405,9 @@ impl Location {
     pub fn parent(&self) -> Option<Location> {
         match self {
             Location::Desktop => None,
-            Location::MyComputer | Location::NetworkPlaces => Some(Location::Desktop),
+            Location::MyComputer | Location::NetworkPlaces | Location::RecycleBin => {
+                Some(Location::Desktop)
+            }
             Location::ControlPanel => Some(Location::MyComputer),
             Location::NetworkConnections => Some(Location::ControlPanel),
             Location::EntireNetwork => Some(Location::NetworkPlaces),
@@ -390,7 +444,7 @@ impl Location {
                 (Field::Device, "设备名", 160),
                 (Field::Owner, "所有者", 70),
             ],
-            location if location.is_recycle_bin() => &[
+            Location::RecycleBin => &[
                 (Field::Name, "名称", 160),
                 (Field::Original, "原位置", 180),
                 (Field::Deleted, "删除日期", 130),
@@ -404,6 +458,53 @@ impl Location {
                 (Field::Modified, "修改时间", 160),
             ],
         }
+    }
+
+    fn optional_columns(&self) -> &'static [ColumnSpec] {
+        if matches!(self, Location::Directory(_) | Location::Desktop) {
+            &[
+                (Field::Created, "创建时间", 160),
+                (Field::Accessed, "访问时间", 160),
+            ]
+        } else {
+            &[]
+        }
+    }
+
+    pub fn column_title(&self, id: u64) -> Option<(Field, &'static str)> {
+        self.columns()
+            .iter()
+            .chain(self.optional_columns())
+            .find(|(field, ..)| *field as u64 == id)
+            .map(|(field, title, _)| (*field, *title))
+    }
+
+    /// 合并该位置的列偏好，补全新字段并固定首列名称。
+    pub fn column_layout(&self, saved: &[FolderColumn]) -> Vec<FolderColumn> {
+        let mut layout: Vec<_> = saved
+            .iter()
+            .copied()
+            .filter(|column| self.column_title(column.id).is_some())
+            .collect();
+        for (columns, visible) in [(self.columns(), true), (self.optional_columns(), false)] {
+            for (field, _, width) in columns {
+                let id = *field as u64;
+                if !layout.iter().any(|column| column.id == id) {
+                    layout.push(FolderColumn {
+                        id,
+                        width: *width,
+                        visible,
+                    });
+                }
+            }
+        }
+        let name = layout
+            .iter()
+            .position(|column| column.id == Field::Name as u64)
+            .expect("every folder has a name column");
+        layout[..=name].rotate_right(1);
+        layout[0].visible = true;
+        layout
     }
 
     /// 列出内容；目录不可读返回其 I/O 错误。第二个返回值表示被截断。
@@ -441,9 +542,9 @@ impl Location {
                     ),
                     place(
                         "回收站",
-                        Icon::RecycleBin,
+                        Icon::recycle_bin(&home),
                         "系统文件夹",
-                        Location::Directory(fileops::trash_files(&home)),
+                        Location::RecycleBin,
                     ),
                 ];
                 // 桌面文件夹缺失时只显示系统图标，与桌面程序的行为一致。
@@ -488,40 +589,60 @@ impl Location {
             Location::NetworkConnections => {
                 return Ok((connections(), false));
             }
-            Location::Directory(path) => {
-                let trash = self.is_recycle_bin();
-                let home = std::env::var_os("HOME").map(PathBuf::from);
+            Location::RecycleBin => {
+                let home =
+                    std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from);
                 let mut items = Vec::new();
-                for entry in fs::read_dir(path)? {
-                    let Ok(entry) = entry else { continue };
+                'volumes: for volume in desktop_entry::trash::volumes(&home) {
+                    let entries = match fs::read_dir(volume.files()) {
+                        Ok(entries) => entries,
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+                        Err(error) => return Err(error),
+                    };
+                    for entry in entries {
+                        let entry = entry?;
+                        if items.len() == MAX_ENTRIES {
+                            truncated = true;
+                            break 'volumes;
+                        }
+                        let path = entry.path();
+                        let mut item =
+                            describe(&path, entry.file_name().to_string_lossy(), &associations);
+                        item.target = None;
+                        item.launch = None;
+                        match fileops::trash_info_of(&volume, &path) {
+                            Ok(info) => {
+                                if let Some(name) = info.original.file_name() {
+                                    item.name = name.to_string_lossy().into_owned();
+                                }
+                                item.details = Details::Trashed {
+                                    original: info
+                                        .original
+                                        .parent()
+                                        .unwrap_or_else(|| Path::new("/"))
+                                        .into(),
+                                    deleted: info.deleted,
+                                };
+                            }
+                            Err(_) => item.kind = "回收站信息损坏".into(),
+                        }
+                        items.push(item);
+                    }
+                }
+                items
+            }
+            Location::Directory(path) => {
+                let mut items = Vec::new();
+                for entry in fs::read_dir(path)?.flatten() {
                     if items.len() == MAX_ENTRIES {
                         truncated = true;
                         break;
                     }
-                    let mut item = describe(
+                    items.push(describe(
                         &entry.path(),
                         entry.file_name().to_string_lossy(),
                         &associations,
-                    );
-                    if trash
-                        && let Some(home) = &home
-                        && let Ok(info) = fileops::trash_info_of(home, &entry.path())
-                    {
-                        // 回收站显示原名称；回收站内的文件夹不可进入（Windows 2000 打开的是属性）。
-                        if let Some(name) = info.original.file_name() {
-                            item.name = name.to_string_lossy().into_owned();
-                        }
-                        item.target = None;
-                        item.details = Details::Trashed {
-                            original: info
-                                .original
-                                .parent()
-                                .unwrap_or_else(|| Path::new("/"))
-                                .into(),
-                            deleted: info.deleted,
-                        };
-                    }
-                    items.push(item);
+                    ));
                 }
                 items
             }
@@ -536,14 +657,12 @@ impl Location {
     }
 }
 
-/// 网络和拨号连接：每个以太网类接口一项，按接口序号命名“本地连接”“本地连接 2”……（netshell 16022）。
-/// 状态取管理状态与载波（netshell 1047/1048/1050），设备名取 `device/uevent` 的驱动名，打开即“本地连接 状态”。
+/// 网络和拨号连接：每个以太网类接口一项，打开连接的状态窗口。
 fn connections() -> Vec<Item> {
     network_config::ethernet_links()
         .unwrap_or_default()
         .into_iter()
-        .enumerate()
-        .map(|(index, link)| {
+        .map(|link| {
             let enabled = link.state != network_config::LinkState::Disabled;
             let (status, icon) = match link.state {
                 network_config::LinkState::Disabled => ("禁用", Icon::DisabledConnection),
@@ -551,11 +670,6 @@ fn connections() -> Vec<Item> {
                     ("网络电缆被拔出", Icon::DisconnectedConnection)
                 }
                 network_config::LinkState::Connected => ("已启用", Icon::LocalConnection),
-            };
-            let name = if index == 0 {
-                "本地连接".to_owned()
-            } else {
-                format!("本地连接 {}", index + 1)
             };
             Item {
                 launch: enabled.then(|| {
@@ -571,7 +685,7 @@ fn connections() -> Vec<Item> {
                     interface: link.interface,
                     enabled,
                 },
-                ..Item::new(name, icon, "LAN")
+                ..Item::new(link.name, icon, "LAN")
             }
         })
         .collect()
@@ -608,18 +722,10 @@ fn applets() -> Vec<Item> {
         .collect()
 }
 
-/// 桌面图标对应的用户目录：`$HOME` 是“我的文档”，其回收站目录是“回收站”。
-/// 它们仍是普通目录，只是名称与图标沿用 Windows 2000 的叫法。
+/// 用户目录在资源管理器中显示为“我的文档”。
 fn well_known(path: &Path) -> Option<(&'static str, Icon)> {
     let home = std::env::var_os("HOME").map(PathBuf::from)?;
-    let trash = fileops::trash_files(&home);
-    if path == home {
-        Some(("我的文档", Icon::MyDocuments))
-    } else if path == trash || fs::canonicalize(&trash).is_ok_and(|trash| path == trash) {
-        Some(("回收站", Icon::RecycleBin))
-    } else {
-        None
-    }
+    (path == home).then_some(("我的文档", Icon::MyDocuments))
 }
 
 /// 从 `/proc/mounts` 文本挑出真实存储：只认磁盘类文件系统，同一挂载点只出现一次。
@@ -696,6 +802,11 @@ fn describe(
     associations: &desktop_entry::Associations,
 ) -> Item {
     let metadata = fs::metadata(path).ok();
+    let timestamp = |time: io::Result<std::time::SystemTime>| {
+        time.ok()
+            .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
+            .map(|duration| duration.as_secs() as i64)
+    };
     let directory = metadata.as_ref().is_some_and(fs::Metadata::is_dir);
     let executable = metadata
         .as_ref()
@@ -720,11 +831,9 @@ fn describe(
             .flatten()
             .map(str::to_owned),
         size: (!directory).then(|| metadata.as_ref().map_or(0, fs::Metadata::len)),
-        modified: metadata
-            .as_ref()
-            .and_then(|m| m.modified().ok())
-            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-            .map(|d| d.as_secs() as i64),
+        modified: metadata.as_ref().and_then(|m| timestamp(m.modified())),
+        created: metadata.as_ref().and_then(|m| timestamp(m.created())),
+        accessed: metadata.as_ref().and_then(|m| timestamp(m.accessed())),
         target: directory.then(|| Location::Directory(path.into())),
         path: Some(path.into()),
         ..Item::new(name, icon, kind)
@@ -849,9 +958,7 @@ mod tests {
             well_known(Path::new(&home.address())).map(|(_, icon)| icon),
             Some(Icon::MyDocuments)
         );
-        let trash =
-            Location::Directory(PathBuf::from(home.address()).join(".local/share/Trash/files"));
-        assert_eq!(trash.title(), "回收站");
+        assert_eq!(Location::parse("::recycle-bin").title(), "回收站");
     }
 
     #[test]

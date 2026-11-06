@@ -1,6 +1,6 @@
-//! 剪贴板客户端：把文本放进 `wl_data_device` 的选择，或读出别的程序放进去的文本。
+//! 剪贴板客户端：经 `wl_data_device` 协商选择的 MIME 类型。
 //!
-//! 只支持纯文本（`text/plain`）。内容经管道直接在两个程序之间传递，合成器只转交管道的写端。
+//! 内容经管道直接在两个程序之间传递，合成器只转交管道的写端。
 
 use std::{
     collections::HashMap,
@@ -18,7 +18,10 @@ use wayland_wire::{
     wire::{ObjectId, Writer},
 };
 
-use super::Display;
+use super::{
+    Display, EventKind,
+    file_drag::{Hover, Offer, Reading},
+};
 
 /// 按偏好排列的文本类型。
 const TEXT_TYPES: [&str; 2] = ["text/plain;charset=utf-8", "text/plain"];
@@ -32,14 +35,24 @@ pub(super) struct Clipboard {
     pub(super) manager: Option<ObjectId>,
     pub(super) device: Option<ObjectId>,
     /// 已收到、还没成为选择的 offer 与它们声明的类型。
-    offers: HashMap<u32, Vec<String>>,
+    pub(super) offers: HashMap<u32, Offer>,
+    pub(super) drag_sources: HashMap<ObjectId, Arc<str>>,
+    pub(super) hover: Option<Hover>,
+    pub(super) reading: Option<Reading>,
     /// 当前选择对应的 offer；`None` 表示选择为空。
     selection: Option<ObjectId>,
     /// 本进程提供的来源与内容；被别人替换（`cancelled`）后清空。
-    own: Option<(ObjectId, Arc<str>)>,
+    own: Option<SelectionSource>,
+    /// 本地 offer 生命周期的身份，零表示尚无选择。异步粘贴用它拒绝覆盖更新后的选择。
+    revision: u64,
     outgoing: Vec<Transfer>,
     /// 最近一次键盘或按钮事件的序号；`set_selection` 必须带它。
     pub(super) serial: u32,
+}
+
+struct SelectionSource {
+    id: ObjectId,
+    payloads: Vec<(String, Arc<str>)>,
 }
 
 struct Transfer {
@@ -117,74 +130,145 @@ impl Display {
     ///
     /// 写 socket 失败。
     pub fn set_clipboard(&mut self, text: &str) -> io::Result<()> {
-        if text.len() > MAX_TEXT as usize {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "clipboard text exceeds 1 MiB",
-            ));
+        let text = Arc::from(text);
+        let formats = TEXT_TYPES
+            .map(|mime| (mime.to_owned(), Arc::clone(&text)))
+            .into();
+        self.set_selection(formats, None).map(drop)
+    }
+
+    /// 提供 MIME 数据。`expected` 限定替换仍在焦点内的同一次选择；空列表清空选择。
+    /// 返回是否已发送请求。格式或大小非法、或 socket 失败时返回错误。
+    pub fn set_selection(
+        &mut self,
+        formats: Vec<(String, Arc<str>)>,
+        expected: Option<u64>,
+    ) -> io::Result<bool> {
+        if formats.len() > 8
+            || formats.iter().any(|(mime, data)| {
+                mime.is_empty()
+                    || mime.len() > 255
+                    || mime.contains('\0')
+                    || data.len() > MAX_TEXT as usize
+            })
+        {
+            return Err(io::ErrorKind::InvalidInput.into());
         }
         let (Some(manager), Some(device)) = (self.clipboard.manager, self.clipboard.device) else {
-            return Ok(());
+            return Ok(false);
         };
-        if let Some((old, _)) = self.clipboard.own.take() {
-            wl_data_source::Request::Destroy
-                .encode(old, &mut self.transport.writer)
+        if expected.is_some_and(|revision| {
+            self.keyboard_focus().is_none() || revision != self.clipboard.revision
+        }) {
+            return Ok(false);
+        }
+        let next = if formats.is_empty() {
+            None
+        } else {
+            let source = self.transport.allocate(Interface::WlDataSource)?;
+            let writer = &mut self.transport.writer;
+            wl_data_device_manager::Request::CreateDataSource { id: source }
+                .encode(manager, writer)
                 .map_err(io::Error::other)?;
-        }
-        let source = self.transport.allocate(Interface::WlDataSource)?;
-        let writer = &mut self.transport.writer;
-        wl_data_device_manager::Request::CreateDataSource { id: source }
-            .encode(manager, writer)
-            .map_err(io::Error::other)?;
-        for mime in TEXT_TYPES {
-            wl_data_source::Request::Offer {
-                mime_type: mime.to_owned(),
+            for (mime, _) in &formats {
+                wl_data_source::Request::Offer {
+                    mime_type: mime.clone(),
+                }
+                .encode(source, writer)
+                .map_err(io::Error::other)?;
             }
-            .encode(source, writer)
-            .map_err(io::Error::other)?;
-        }
+            Some(SelectionSource {
+                id: source,
+                payloads: formats,
+            })
+        };
+        let writer = &mut self.transport.writer;
         wl_data_device::Request::SetSelection {
-            source: Some(source),
+            source: next.as_ref().map(|source| source.id),
             serial: self.clipboard.serial,
         }
         .encode(device, writer)
         .map_err(io::Error::other)?;
-        self.clipboard.own = Some((source, Arc::from(text)));
-        self.transport.flush()
+        if let Some(old) = std::mem::replace(&mut self.clipboard.own, next) {
+            wl_data_source::Request::Destroy
+                .encode(old.id, writer)
+                .map_err(io::Error::other)?;
+        }
+        self.clear_selection_offer()?;
+        self.selection_changed();
+        self.transport.flush()?;
+        Ok(true)
     }
 
-    /// 请求纯文本传输，返回非阻塞读端；无文本 offer 返回 None。
-    ///
-    /// 调用者在 EOF 前累积数据，并自行限制容量、超时与取消；Drop 读端取消传输。
-    /// 管道创建、fd 发送或队列满返回错误；不在这里等待对端。
+    fn selection_changed(&mut self) {
+        self.clipboard.revision = self.clipboard.revision.wrapping_add(1).max(1);
+        self.emit(self.keyboard_focus(), EventKind::ClipboardChanged);
+    }
+
+    fn clear_selection_offer(&mut self) -> io::Result<()> {
+        if let Some(offer) = self.clipboard.selection.take() {
+            self.destroy_offer(offer)?;
+        }
+        Ok(())
+    }
+
+    /// 指定 MIME 的当前选择身份；没有该格式时返回 None。
+    pub fn selection_revision(&self, mime: &str) -> Option<u64> {
+        self.keyboard_focus()?;
+        let available = if let Some(source) = &self.clipboard.own {
+            source.payloads.iter().any(|(kind, _)| kind == mime)
+        } else {
+            self.clipboard
+                .selection
+                .and_then(|offer| self.clipboard.offers.get(&offer.get()))
+                .is_some_and(|offer| offer.mimes.iter().any(|kind| kind == mime))
+        };
+        available.then_some(self.clipboard.revision)
+    }
+
+    /// 请求纯文本的非阻塞读端；无文本 offer 返回 None。
+    /// 管道、fd 发送或队列满返回错误；调用者负责限制容量与超时。
     pub fn receive_clipboard(&mut self) -> io::Result<Option<UnixStream>> {
+        let Some(mime) = TEXT_TYPES
+            .into_iter()
+            .find(|mime| self.selection_revision(mime).is_some())
+        else {
+            return Ok(None);
+        };
+        self.receive_selection(mime)
+    }
+
+    /// 请求指定 MIME 的非阻塞读端；没有该格式时返回 None。
+    /// 管道、fd 发送或队列满返回错误；调用者负责限制容量与超时。
+    pub fn receive_selection(&mut self, mime: &str) -> io::Result<Option<UnixStream>> {
+        if self.selection_revision(mime).is_none() {
+            return Ok(None);
+        }
         let (reader, writer_end) = UnixStream::pair()?;
         reader.set_nonblocking(true)?;
-        if let Some((_, text)) = &self.clipboard.own {
+        if let Some(source) = &self.clipboard.own {
+            let text = source
+                .payloads
+                .iter()
+                .find(|(kind, _)| kind == mime)
+                .expect("available clipboard MIME")
+                .1
+                .clone();
             if self.clipboard.outgoing.len() >= 8 {
                 return Err(io::ErrorKind::WouldBlock.into());
             }
             writer_end.set_nonblocking(true)?;
             self.clipboard.outgoing.push(Transfer {
                 file: File::from(std::os::fd::OwnedFd::from(writer_end)),
-                text: text.clone(),
+                text,
                 offset: 0,
             });
             return Ok(Some(reader));
         }
-        let Some(offer) = self.clipboard.selection else {
-            return Ok(None);
-        };
-        let Some(mime) = self.clipboard.offers.get(&offer.get()).and_then(|mimes| {
-            TEXT_TYPES
-                .iter()
-                .find(|wanted| mimes.iter().any(|mime| mime == *wanted))
-        }) else {
-            return Ok(None);
-        };
+        let offer = self.clipboard.selection.expect("available clipboard offer");
         let mut request = Writer::new();
         wl_data_offer::Request::Receive {
-            mime_type: (*mime).to_owned(),
+            mime_type: mime.to_owned(),
             fd: writer_end.try_clone()?.into(),
         }
         .encode(offer, &mut request)
@@ -200,8 +284,14 @@ impl Display {
     ///
     /// 建立管道或写 socket 失败。
     pub fn clipboard_text(&mut self) -> io::Result<Option<String>> {
-        if let Some((_, text)) = &self.clipboard.own {
-            return Ok(Some(text.to_string()));
+        if let Some(source) = &self.clipboard.own {
+            return Ok(TEXT_TYPES.into_iter().find_map(|mime| {
+                source
+                    .payloads
+                    .iter()
+                    .find(|(kind, _)| kind == mime)
+                    .map(|(_, text)| text.to_string())
+            }));
         }
         let Some(offer) = self.clipboard.selection else {
             return Ok(None);
@@ -209,7 +299,7 @@ impl Display {
         let Some(mime) = self.clipboard.offers.get(&offer.get()).and_then(|mimes| {
             TEXT_TYPES
                 .iter()
-                .find(|wanted| mimes.iter().any(|m| m == *wanted))
+                .find(|wanted| mimes.mimes.iter().any(|m| m == *wanted))
         }) else {
             return Ok(None);
         };
@@ -245,11 +335,11 @@ impl Display {
         match event {
             AnyEvent::WlDataDevice(wl_data_device::Event::DataOffer { id }) => {
                 self.transport.server_object(*id, Interface::WlDataOffer)?;
-                self.clipboard.offers.insert(id.get(), Vec::new());
+                self.clipboard.offers.insert(id.get(), Offer::default());
             }
             AnyEvent::WlDataOffer(wl_data_offer::Event::Offer { mime_type }) => {
                 if let Some(mimes) = self.clipboard.offers.get_mut(&object.get()) {
-                    mimes.push(mime_type.clone());
+                    mimes.mimes.push(mime_type.clone());
                 }
             }
             AnyEvent::WlDataDevice(wl_data_device::Event::Selection { id }) => {
@@ -257,39 +347,69 @@ impl Display {
                 if let Some(old) = self.clipboard.selection.take()
                     && Some(old) != *id
                 {
-                    wl_data_offer::Request::Destroy
-                        .encode(old, &mut self.transport.writer)
-                        .map_err(io::Error::other)?;
-                    self.clipboard.offers.remove(&old.get());
+                    self.destroy_offer(old)?;
                 }
                 self.clipboard.selection = *id;
+                self.selection_changed();
             }
-            AnyEvent::WlDataDevice(_) | AnyEvent::WlDataOffer(_) => {}
-            AnyEvent::WlDataSource(wl_data_source::Event::Send { mime_type, fd }) => {
-                let _ = mime_type;
-                if let Some((source, text)) = &self.clipboard.own
-                    && *source == object
-                {
-                    let text = text.clone();
-                    if self.clipboard.outgoing.len() < 8 {
-                        let file = File::from(fd.try_clone()?);
-                        linux_uapi::unix::set_nonblocking(file.as_fd(), true)?;
-                        self.clipboard.outgoing.push(Transfer {
-                            file,
-                            text,
-                            offset: 0,
-                        });
-                    }
+            AnyEvent::WlDataOffer(wl_data_offer::Event::SourceActions { source_actions }) => {
+                if let Some(offer) = self.clipboard.offers.get_mut(&object.get()) {
+                    offer.actions = *source_actions;
                 }
             }
-            AnyEvent::WlDataSource(wl_data_source::Event::Cancelled) => {
-                if self
+            AnyEvent::WlDataOffer(wl_data_offer::Event::Action { dnd_action }) => {
+                if let Some(offer) = self.clipboard.offers.get_mut(&object.get()) {
+                    offer.action = *dnd_action;
+                }
+            }
+            AnyEvent::WlDataDevice(wl_data_device::Event::Enter {
+                serial,
+                surface,
+                x,
+                y,
+                id,
+            }) => {
+                self.file_drag_enter(*surface, *id, *serial, (x.to_f64(), y.to_f64()))?;
+            }
+            AnyEvent::WlDataDevice(wl_data_device::Event::Motion { x, y, .. }) => {
+                self.file_drag_motion((x.to_f64(), y.to_f64()));
+            }
+            AnyEvent::WlDataDevice(wl_data_device::Event::Leave) => self.file_drag_leave()?,
+            AnyEvent::WlDataDevice(wl_data_device::Event::Drop) => self.file_drag_drop()?,
+            AnyEvent::WlDataSource(wl_data_source::Event::Send { mime_type, fd }) => {
+                let text = self
                     .clipboard
                     .own
                     .as_ref()
-                    .is_some_and(|(source, _)| *source == object)
+                    .filter(|source| source.id == object)
+                    .and_then(|source| source.payloads.iter().find(|(mime, _)| mime == mime_type))
+                    .map(|(_, text)| text.clone())
+                    .or_else(|| self.file_drag_payload(object, mime_type));
+                if let Some(text) = text
+                    && self.clipboard.outgoing.len() < 8
                 {
+                    let file = File::from(fd.try_clone()?);
+                    linux_uapi::unix::set_nonblocking(file.as_fd(), true)?;
+                    self.clipboard.outgoing.push(Transfer {
+                        file,
+                        text,
+                        offset: 0,
+                    });
+                }
+            }
+            AnyEvent::WlDataSource(
+                wl_data_source::Event::Cancelled | wl_data_source::Event::DndFinished,
+            ) => {
+                let clipboard = self
+                    .clipboard
+                    .own
+                    .as_ref()
+                    .is_some_and(|source| source.id == object);
+                if clipboard {
                     self.clipboard.own = None;
+                    self.selection_changed();
+                }
+                if clipboard || self.clipboard.drag_sources.remove(&object).is_some() {
                     wl_data_source::Request::Destroy
                         .encode(object, &mut self.transport.writer)
                         .map_err(io::Error::other)?;

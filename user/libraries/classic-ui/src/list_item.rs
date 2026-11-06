@@ -5,12 +5,50 @@ use crate::{Bitmap, Painter, painter::Ink};
 use canvas::Rect;
 use classic_theme::SystemColor;
 
+/// 当前系统的双击间隔，也用于等待已选标签上的单击是否接着成为双击。
+pub const ITEM_DOUBLE_CLICK: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// 最近一次列表项点击，用于区分同位置双击和图标、标签之间的两次点击。
+pub struct ItemClick<T> {
+    item: T,
+    point: (i32, i32),
+    time: std::time::Instant,
+}
+
+impl<T: PartialEq> ItemClick<T> {
+    /// 记录项目身份、逻辑像素坐标与单调时刻。
+    pub fn new(item: T, point: (i32, i32), time: std::time::Instant) -> Self {
+        Self { item, point, time }
+    }
+
+    /// 同一项在双击间隔内被再次点击，且两个位置仍落在同一个双击区。
+    pub fn follows(&self, item: T, point: (i32, i32), now: std::time::Instant) -> bool {
+        self.item == item
+            && now.saturating_duration_since(self.time) < ITEM_DOUBLE_CLICK
+            && self.near(point)
+    }
+
+    pub(crate) fn near(&self, point: (i32, i32)) -> bool {
+        self.point.0.abs_diff(point.0) <= 4 && self.point.1.abs_diff(point.1) <= 4
+    }
+}
+
 /// 图标顶部内边距（ICON_TOP_PADDING）。
 const ICON_TOP: i32 = 4;
 /// 图标与标签之间的间距（IMAGE_PADDING）。
 const IMAGE_PADDING: i32 = 2;
 /// 标签框相对文字的左右内边距。
 const LABEL_PADDING: i32 = 2;
+
+/// 大图标原位改名框。上缘比标签提前两像素，给编辑边框留出空间。
+pub fn large_icon_edit_rect(cell: Rect, icon_height: i32) -> Rect {
+    Rect::new(
+        cell.x,
+        cell.y + ICON_TOP + icon_height + IMAGE_PADDING - 2,
+        cell.width,
+        26,
+    )
+}
 
 /// 列表项的状态。
 #[derive(Clone, Copy)]
@@ -143,25 +181,18 @@ impl Painter<'_> {
         text: Option<&str>,
         look: ItemLook,
     ) -> Rect {
-        let leading = if let Some(icon) = icon {
+        if let Some(icon) = icon {
             look.icon(
                 self,
                 Some(icon),
                 cell.x + IMAGE_PADDING,
                 cell.y + (cell.height - icon.height()) / 2,
             );
-            IMAGE_PADDING + icon.width() + IMAGE_PADDING
-        } else {
-            0
-        };
+        }
         let Some(text) = text else {
             return Rect::new(cell.x, cell.y, 0, 0);
         };
-        let available = (cell.width - leading).max(0);
-        let shown = self.fit(text, available - 2 * LABEL_PADDING);
-        let width =
-            (self.logical_ceil(self.text_width(&shown, false)) + 2 * LABEL_PADDING).min(available);
-        let label = Rect::new(cell.x + leading, cell.y, width, cell.height);
+        let (label, shown) = self.small_icon_label(cell, icon, text);
         let (background, ink) = look.colors();
         if let Some(background) = background {
             self.fill(label, background);
@@ -178,5 +209,23 @@ impl Painter<'_> {
             self.focus_rect(label);
         }
         label
+    }
+
+    /// 小图标标签绘制及命中共用的矩形和截断文本。
+    pub fn small_icon_label(
+        &self,
+        cell: Rect,
+        icon: Option<&Bitmap>,
+        text: &str,
+    ) -> (Rect, String) {
+        let leading = icon.map_or(0, |icon| 2 * IMAGE_PADDING + icon.width());
+        let available = (cell.width - leading).max(0);
+        let shown = self.fit(text, available - 2 * LABEL_PADDING);
+        let width =
+            (self.logical_ceil(self.text_width(&shown, false)) + 2 * LABEL_PADDING).min(available);
+        (
+            Rect::new(cell.x + leading, cell.y, width, cell.height),
+            shown,
+        )
     }
 }

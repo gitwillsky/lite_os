@@ -14,6 +14,11 @@ impl Session {
                 if !std::mem::replace(&mut self.saw_pointer, true) {
                     println!("compositor: first pointer event {x},{y}");
                 }
+                if self.server.dragging() {
+                    let hit = self.hit_test(&self.layer_boxes(), (x, y));
+                    self.route_drag(hit, (x, y), time, true);
+                    return Ok(());
+                }
                 if let Some(menu) = &mut self.window_menu {
                     self.dirty |= menu.hover_at((x, y));
                 } else if self.grab.is_some() {
@@ -46,6 +51,13 @@ impl Session {
                         self.pointer_grab = None;
                     }
                 }
+                if self.server.dragging() {
+                    if !pressed && self.pressed_buttons.is_empty() {
+                        self.server.drop_drag(time);
+                        self.dirty = true;
+                    }
+                    return Ok(());
+                }
                 // 点击别处取消 Alt+Tab 面板；窗口仍留在原来的位置。
                 if pressed && self.switcher.take().is_some() {
                     self.dirty = true;
@@ -64,10 +76,11 @@ impl Session {
                 }
                 if code == BUTTON_LEFT && !pressed && self.grab.is_some() {
                     self.end_grab()?;
-                } else if code == BUTTON_LEFT && pressed {
+                } else if pressed && matches!(code, BUTTON_LEFT | BUTTON_RIGHT) {
                     // 点在弹出层之外：持有 grab 的弹出层结束（客户端随后销毁它们）。
                     let point = position;
-                    if self.popup_hit(point, self.stack.windows()).is_none() {
+                    if code == BUTTON_LEFT && self.popup_hit(point, self.stack.windows()).is_none()
+                    {
                         let clients: Vec<ClientId> = self
                             .server
                             .popups()
@@ -83,23 +96,25 @@ impl Session {
                     let boxes = self.layer_boxes();
                     let hit = self.hit_test(&boxes, point);
                     let root = hit.and_then(|hit| self.root_target(hit.target));
-                    if !self.secure_pending {
-                        self.keyboard_layer = root
-                            .and_then(|root| {
-                                boxes
-                                    .iter()
-                                    .find(|layer| (layer.client, layer.surface) == root)
-                            })
-                            .filter(|layer| layer.keyboard == KeyboardInteractivity::OnDemand)
-                            .map(|layer| (layer.client, layer.surface));
-                    }
-                    let covered = root.is_some_and(|root| {
-                        boxes.iter().any(|layer| {
-                            (layer.client, layer.surface) == root && layer.layer >= Layer::Top
-                        })
+                    let layer = root.and_then(|root| {
+                        boxes
+                            .iter()
+                            .find(|layer| (layer.client, layer.surface) == root)
                     });
-                    if !self.secure_pending
-                        && !covered
+                    if !self.secure_pending {
+                        match layer {
+                            Some(layer) if layer.keyboard == KeyboardInteractivity::OnDemand => {
+                                self.keyboard_layer = Some((layer.client, layer.surface));
+                            }
+                            // 独占层临时接收键盘。关闭时应恢复此前点击选中的 OnDemand 表面。
+                            Some(layer) if layer.keyboard == KeyboardInteractivity::Exclusive => {}
+                            _ if code == BUTTON_LEFT => self.keyboard_layer = None,
+                            _ => {}
+                        }
+                    }
+                    if code == BUTTON_LEFT
+                        && !self.secure_pending
+                        && !layer.is_some_and(|layer| layer.layer >= Layer::Top)
                         && let Some(target) =
                             root.filter(|target| self.stack.placement(target.0, target.1).is_some())
                         && self.stack.raise(target.0, target.1)
@@ -125,7 +140,11 @@ impl Session {
                 horizontal,
             } => {
                 // 窗口菜单、拖动抓取期间滚轮不交给应用。
-                if self.window_menu.is_none() && self.grab.is_none() && !self.secure_pending {
+                if self.window_menu.is_none()
+                    && self.grab.is_none()
+                    && !self.secure_pending
+                    && !self.server.dragging()
+                {
                     self.seat
                         .wheel(&mut self.server, vertical, horizontal, time);
                 }
@@ -141,6 +160,7 @@ impl Session {
                         .apply(u32::from(code), i32::from(pressed));
                 }
                 if physical && super::Seat::secure_attention(self.sas_modifiers, code, pressed) {
+                    self.server.cancel_drag();
                     self.close_menu();
                     if self.grab.is_some() {
                         self.end_grab()?;
@@ -151,6 +171,10 @@ impl Session {
                         .iter()
                         .find(|layer| Some(layer.client) == self.logon_client)
                         .map(|layer| (layer.client, layer.surface));
+                }
+                if code == 1 && pressed && self.server.dragging() {
+                    self.server.cancel_drag();
+                    self.dirty = true;
                 }
                 if self.modal_key(code, pressed)? {
                     return Ok(());

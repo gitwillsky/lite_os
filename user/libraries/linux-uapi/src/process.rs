@@ -13,6 +13,13 @@ use std::{
 
 use crate::raw;
 
+/// Effective user identifier used by filesystem authorization.
+#[cfg(target_os = "linux")]
+pub fn effective_uid() -> u32 {
+    // SAFETY: geteuid takes no arguments and returns the calling process's effective identity.
+    unsafe { raw::geteuid() }
+}
+
 /// 子进程的实际用户和主组；指定后标准 Command 会清空继承的补充组。
 /// 这是执行身份，不代表调用方已经通过认证；认证策略由会话应用拥有。
 #[derive(Debug, Clone, Copy)]

@@ -5,7 +5,9 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use device_model::Activity;
-use device_model::network::{NetworkCompletion, NetworkDevice, NetworkError, NetworkStatistics};
+use device_model::network::{
+    NetworkCompletion, NetworkDevice, NetworkError, NetworkLink, NetworkStatistics,
+};
 use native_runtime::native_abi::{self, Status, rights};
 use native_runtime::sync::Mutex;
 use native_runtime::{Channel, Event};
@@ -21,6 +23,7 @@ const TRANSMIT_AVAILABLE: u32 = 5;
 const POLL: u32 = 6;
 const FINISH_RECEIVE: u32 = 7;
 const STATISTICS: u32 = 8;
+const LINK: u32 = 9;
 /// 接收缓冲：大于任何驱动接收槽能交付的帧（以太网 1514 字节帧加 VLAN 标签与余量）。
 const MAX_FRAME: usize = 2048;
 
@@ -130,6 +133,12 @@ impl NetworkSession {
                 ] {
                     reply.u64(value);
                 }
+            }
+            LINK => {
+                let link = device.link().map_err(encode_error)?;
+                reply
+                    .bool(link.carrier)
+                    .u32(link.speed_mbps.unwrap_or(u32::MAX));
             }
             _ => return Err(native_abi::ERR_NOT_SUPPORTED),
         }
@@ -250,6 +259,18 @@ impl NetworkDevice for RemoteNetwork {
 
     fn driver(&self) -> &'static str {
         self.driver
+    }
+
+    fn link(&self) -> Result<NetworkLink, NetworkError> {
+        let reply =
+            call(&self.channel, &Writer::request(LINK), Vec::new()).map_err(decode_error)?;
+        let mut reader = reply.reader();
+        let carrier = reader.bool().map_err(|_| NetworkError::Device)?;
+        let speed = reader.u32().map_err(|_| NetworkError::Device)?;
+        Ok(NetworkLink {
+            carrier,
+            speed_mbps: (speed <= i32::MAX as u32).then_some(speed),
+        })
     }
 
     fn receive(&self, frame: &mut [u8]) -> Result<usize, NetworkError> {

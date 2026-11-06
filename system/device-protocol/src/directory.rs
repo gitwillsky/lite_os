@@ -7,7 +7,7 @@
 //! 4. 独占类设备同一时刻只有一个会话。旧会话的使用者已离开时，`OPEN` 等待旧会话回收完毕再建立新会话；
 //!    使用者仍在时返回 `ERR_ALREADY_BOUND`。
 //! 5. 驱动宿主各自服务本进程设备的目录；driver-manager 把它们汇聚为一个目录（转发条目，
-//!    [`Directory::add_forwarded`]），宿主终止时撤下其条目（[`Directory::remove`]）。已撤下设备的会话
+//!    [`Publisher::add`]），宿主终止时撤下其条目（[`Publisher::remove`]）。已撤下设备的会话
 //!    随宿主一起 `PEER_CLOSED`；宿主重启后设备以新 ID 重新登记。
 
 use alloc::boxed::Box;
@@ -290,24 +290,6 @@ impl Directory {
         )
     }
 
-    /// 登记另一宿主目录中的设备：`OPEN` 经 `open` 转发给该宿主。
-    ///
-    /// # Returns
-    ///
-    /// 设备在本目录中的 ID。
-    ///
-    /// # Errors
-    ///
-    /// 分配失败。
-    pub fn add_forwarded(
-        &self,
-        class: Class,
-        description: &[u8],
-        open: ForwardOpener,
-    ) -> Result<u64, Status> {
-        self.insert(class, description, Source::Forwarded(open))
-    }
-
     fn insert(&self, class: Class, description: &[u8], source: Source) -> Result<u64, Status> {
         let mut bytes = Vec::new();
         bytes
@@ -331,6 +313,39 @@ impl Directory {
         state.devices.push(device);
         Self::notify(&state);
         Ok(id)
+    }
+
+    /// 服务独立的目录发布端。只有持有发布 capability 的驱动管理器可以修改目录。
+    ///
+    /// # Errors
+    ///
+    /// 无法启动发布服务线程。
+    pub fn serve_publisher(self: &Arc<Self>, channel: Channel) -> Result<(), Status> {
+        let directory = self.clone();
+        serve(
+            channel,
+            1,
+            b"device-publisher",
+            Arc::new(move |ordinal, request, mut handles, reply| {
+                match ordinal {
+                    1 => {
+                        let class = Class::decode(request.u32()?)?;
+                        let id = request.u64()?;
+                        let description = request.bytes()?;
+                        let source = DirectoryClient::new(Channel::from_handle(take_handle(
+                            &mut handles,
+                            0,
+                        )?));
+                        let open = Box::new(move || source.open_handles(id));
+                        reply.u64(directory.insert(class, description, Source::Forwarded(open))?);
+                    }
+                    2 => directory.remove(request.u64()?),
+                    3 => directory.enumerated(),
+                    _ => return Err(native_abi::ERR_NOT_SUPPORTED),
+                }
+                Ok(Vec::new())
+            }),
+        )
     }
 
     /// 撤下设备并通知观察者；已建立的会话不受目录影响。
@@ -502,9 +517,7 @@ impl DirectoryClient {
     ///
     /// `ERR_NOT_FOUND`（不在本目录范围）、`ERR_ALREADY_BOUND`（独占类已有使用者）或设备类建立失败。
     pub fn open(&self, entry: &Entry) -> Result<OpenedDevice, Status> {
-        let mut request = Writer::request(OPEN);
-        request.u64(entry.id);
-        let handles = call(&self.0, &request, Vec::new())?.handles;
+        let handles = self.open_handles(entry.id)?;
         let mut description = Vec::new();
         description
             .try_reserve_exact(entry.description.len())
@@ -515,6 +528,21 @@ impl DirectoryClient {
             description,
             handles,
         })
+    }
+
+    fn open_handles(&self, id: u64) -> Result<Vec<Handle>, Status> {
+        let mut request = Writer::request(OPEN);
+        request.u64(id);
+        Ok(call(&self.0, &request, Vec::new())?.handles)
+    }
+
+    /// 复制底层目录能力，保留同一权限及会话。
+    ///
+    /// # Errors
+    ///
+    /// 内核无法复制句柄。
+    pub fn duplicate(&self) -> Result<Channel, Status> {
+        self.0.duplicate(rights::SAME)
     }
 
     /// 派生只含 `classes` 的目录连接。
@@ -535,5 +563,55 @@ impl DirectoryClient {
     /// 交出底层 channel（转交给另一个服务）。
     pub fn into_channel(self) -> Channel {
         self.0
+    }
+}
+
+/// 汇聚目录的发布能力。目录及已建立的使用者连接由根服务持有。
+pub struct Publisher(Channel);
+
+impl Publisher {
+    /// 接管发布 channel。
+    pub fn new(channel: Channel) -> Self {
+        Self(channel)
+    }
+
+    /// 发布宿主目录条目，返回汇聚目录分配的 ID。
+    ///
+    /// # Errors
+    ///
+    /// 宿主目录能力复制、请求或目录登记失败。
+    pub fn add(&self, source: &DirectoryClient, entry: &Entry) -> Result<u64, Status> {
+        let mut request = Writer::request(1);
+        request
+            .u32(entry.class as u32)
+            .u64(entry.id)
+            .bytes(&entry.description);
+        call(
+            &self.0,
+            &request,
+            alloc::vec![source.duplicate()?.into_handle()],
+        )?
+        .reader()
+        .u64()
+    }
+
+    /// 撤下汇聚条目。已建立的设备会话由宿主维持。
+    ///
+    /// # Errors
+    ///
+    /// 发布端已关闭或无法回复。
+    pub fn remove(&self, id: u64) -> Result<(), Status> {
+        let mut request = Writer::request(2);
+        request.u64(id);
+        call(&self.0, &request, Vec::new()).map(drop)
+    }
+
+    /// 标记引导枚举完成。
+    ///
+    /// # Errors
+    ///
+    /// 发布端已关闭或无法回复。
+    pub fn enumerated(&self) -> Result<(), Status> {
+        call(&self.0, &Writer::request(3), Vec::new()).map(drop)
     }
 }

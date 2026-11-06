@@ -6,6 +6,7 @@ PHDRS {
     text PT_LOAD FLAGS(5);
     rodata PT_LOAD FLAGS(4);
     data PT_LOAD FLAGS(6);
+    lifecycle PT_NOTE FLAGS(4);
 }
 
 SECTIONS {
@@ -13,6 +14,7 @@ SECTIONS {
     .text : { *(.text .text.*) } :text
     . = ALIGN(4K);
     .rodata : { *(.rodata .rodata.*) *(.srodata .srodata.*) *(.eh_frame_hdr) *(.eh_frame) } :rodata
+    .note.liteos.lifecycle ALIGN(4) : { KEEP(*(.note.liteos.lifecycle)) } :rodata :lifecycle
     . = ALIGN(4K);
     .data : { *(.data .data.*) *(.sdata .sdata.*) *(.got .got.*) } :data
     .bss : { *(.bss .bss.*) *(.sbss .sbss.*) *(COMMON) } :data

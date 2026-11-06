@@ -1,17 +1,18 @@
 //! 一个窗口的导航、文件事务、子进程与关闭生命周期。
 use crate::{
     Result,
-    browser::{self, Browser, Clipboard, Visit},
+    browser::{self, Browser, Visit},
     chrome::{self, Action, Availability, Command},
     fileops, folder_dialog,
     model::{self, Item, Location},
     open_with,
     view::{self, View},
 };
-use liteos_ui::{Background, Dialogs, ListStyle, MessageButtons, MessageResult, state};
+use desktop_entry::file_uris::{self, SELECTION_TYPES};
+use desktop_settings::{FolderView, Settings};
+use liteos_ui::{Background, Clipboard, Dialogs, ListStyle, MessageButtons, MessageResult, state};
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
     path::{Path, PathBuf},
     process::Child,
     rc::Rc,
@@ -29,23 +30,33 @@ pub(super) struct Session {
     pub(super) home: PathBuf,
     pub(super) background: Background,
     pub(super) dialogs: Dialogs,
+    pub(super) clipboard: Clipboard,
     pub(super) busy: Cell<bool>,
+    /// 单窗口的真实目录监听。目录变更经文件系统唤醒，避免靠拖放结果猜测源文件何时消失。
+    pub(super) directory_changes: RefCell<Option<linux_uapi::filesystem::DirectoryChanges>>,
+    /// History belongs to this Explorer window and expires with it.
+    pub(super) undo: RefCell<Vec<fileops::Undo>>,
     pub(super) closing: Cell<bool>,
     pub(super) one_shot: bool,
     pub(super) launches: Rc<RefCell<Launches>>,
-    // OWNER: 本窗口独占每个位置最后使用的查看方式（Windows 2000“记住每个文件夹的视图设置”）。
-    // FAILURE: 缺少它切换位置后总回到默认大图标，用户为某个文件夹选的详细资料等方式会丢失。
-    pub(super) views: RefCell<HashMap<Location, ListStyle>>,
-    /// 是否已经显示过一个位置；之前列表的查看方式只是控件初始值，不能当作上次的选择记录。
+    /// 首次发布列表前，后台刷新不能替换尚未打开的位置。
     pub(super) shown: Cell<bool>,
 }
+
+/// Bound the number of completed actions retained by each window.
+const UNDO_LIMIT: usize = 16;
+
 /// 一次占用窗口的业务事务。
 pub(super) enum Job {
     Command(Command),
+    DeletePermanently,
     Go(Location, Visit, bool),
     Expand(u64),
     Rename(u64, String),
-    Context(bool),
+    Context {
+        on_item: bool,
+        at: Option<(i32, i32)>,
+    },
     /// 工具栏下拉按钮：（按钮命令，菜单左上角）。
     Dropdown(Action, (i32, i32)),
 }
@@ -66,7 +77,9 @@ impl Session {
                         && item.drive.is_none()
                 }),
             editable: matches!(browser.location, Location::Directory(_)),
-            paste: browser.clipboard.is_some(),
+            paste: matches!(browser.location, Location::Directory(_) | Location::Desktop)
+                && self.file_selection()?.is_some(),
+            undo: self.undo.borrow().last().map(fileops::Undo::label),
             trash,
             trash_items: trash && !browser.items.is_empty(),
             standard_buttons: !hidden(&self.view.toolbar)?,
@@ -79,7 +92,6 @@ impl Session {
             forward: browser.history(1).is_some(),
             up: browser.location.parent().is_some(),
             columns: browser
-                .location
                 .columns()
                 .iter()
                 .map(|(field, title, _)| (*field, *title))
@@ -142,6 +154,25 @@ impl Session {
         let id = self.view.list.selection()?;
         Ok(id.and_then(|id| self.browser.borrow().item(id).cloned()))
     }
+
+    pub(super) fn begin_rename(&self, row: u64) -> liteos_ui::Result<()> {
+        let browser = self.browser.borrow();
+        if self.view.list.selection()? == Some(row)
+            && let Some(item) = browser.item(row)
+            && match browser.location {
+                Location::Directory(_) | Location::Desktop => {
+                    !browser.location.is_recycle_bin() && item.path.is_some()
+                }
+                Location::NetworkConnections => {
+                    matches!(item.details, model::Details::Connection { .. })
+                }
+                _ => false,
+            }
+        {
+            self.view.list.edit_label(row, &item.name)?;
+        }
+        Ok(())
+    }
     fn selected_paths(&self) -> liteos_ui::Result<Vec<PathBuf>> {
         let ids = self.view.list.selected_rows()?;
         let browser = self.browser.borrow();
@@ -150,6 +181,23 @@ impl Session {
             .filter_map(|id| browser.item(id)?.path.clone())
             .collect())
     }
+    pub(super) fn start_file_drag(&self, serial: u32) -> liteos_ui::Result<()> {
+        if self.busy.get() {
+            return Ok(());
+        }
+        let browser = self.browser.borrow();
+        if !matches!(browser.location, Location::Directory(_)) || browser.location.is_recycle_bin()
+        {
+            return Ok(());
+        }
+        drop(browser);
+        let paths = self.selected_paths()?;
+        if !paths.is_empty() {
+            self.view.window.start_file_drag(serial, &paths)?;
+        }
+        Ok(())
+    }
+
     fn record(&self, child: Child) {
         let wake = {
             let mut launches = self.launches.borrow_mut();
@@ -215,34 +263,62 @@ impl Session {
         self.view.status.set_text("正在读取…\t\t")?;
         // 品牌 logo 在读取期间转动（browseui 的 throbber）。
         self.view.rebar.set_busy(true)?;
-        let home = self.home.clone();
+        // F5 和目录变更通知保留当前窗口的样式。真正进入位置才读取已保存的值。
+        let read_view = !matches!(visit, Visit::Refresh) || !self.shown.get();
         let result = self
             .background
-            .run(move || browser::read(location, &home))?
+            .run(move || {
+                let listing = browser::read(location)?;
+                let view = read_view.then(|| {
+                    listing
+                        .location
+                        .view_key()
+                        .ok()
+                        .map(|key| {
+                            let settings = Settings::load();
+                            (
+                                settings.folder_view(&key),
+                                settings.folder_columns(&key).to_vec(),
+                            )
+                        })
+                        .unwrap_or_default()
+                });
+                Ok::<_, std::io::Error>((listing, view))
+            })?
             .await;
         self.view.rebar.set_busy(false)?;
-        let listing = result?;
+        let (listing, view) = result?;
+        if let Some(changes) = self.directory_changes.borrow_mut().as_mut() {
+            let desktop;
+            let path = match &listing.location {
+                Location::Directory(path) => Some(path.as_path()),
+                Location::Desktop => {
+                    desktop = self.home.join("Desktop");
+                    Some(desktop.as_path())
+                }
+                _ => None,
+            };
+            let _ = changes.follow(path);
+        }
         {
             let mut browser = self.browser.borrow_mut();
-            // 只记录已经显示过的位置；首次读取前列表还是控件初始样式，不是用户的选择。
-            if self.shown.replace(true) {
-                let style = self.view.list.list_style()?;
-                self.views
-                    .borrow_mut()
-                    .insert(browser.location.clone(), style);
-            }
             browser.publish(listing, visit);
-            // Windows 2000 文件夹的默认查看方式是大图标；访问过的位置沿用上次的方式。
-            let style = self
-                .views
-                .borrow()
-                .get(&browser.location)
-                .copied()
-                .unwrap_or(ListStyle::LargeIcons);
-            self.view.list.set_list_style(style, view::MULTIPLE)?;
+            if let Some((view, columns)) = view {
+                browser.set_column_layout(&columns);
+                // 新位置使用它保存的宽度。目录内刷新仍保留本窗口手动拖动后的宽度。
+                self.view.list.set_columns(&[])?;
+                let style = match view {
+                    FolderView::LargeIcons => ListStyle::LargeIcons,
+                    FolderView::SmallIcons => ListStyle::SmallIcons,
+                    FolderView::List => ListStyle::List,
+                    FolderView::Details => ListStyle::Details,
+                };
+                self.view.list.set_list_style(style, view::MULTIPLE)?;
+            }
             self.view.rows(&browser)?;
             self.view.tree(&browser)?;
             self.view.window.set_title(&browser.location.title())?;
+            self.shown.set(true);
         }
         if focus {
             self.view.list.focus()?;
@@ -283,6 +359,34 @@ impl Session {
         let location = self.browser.borrow().location.clone();
         self.navigate(location, Visit::Refresh, false).await
     }
+    pub(super) async fn refresh_external(&self) -> Result<()> {
+        if !matches!(
+            self.browser.borrow().location,
+            Location::Directory(_) | Location::Desktop | Location::RecycleBin
+        ) {
+            return Ok(());
+        }
+        let paths = self.selected_paths()?;
+        self.refresh().await?;
+        if !paths.is_empty() {
+            let rows = self
+                .browser
+                .borrow()
+                .items
+                .iter()
+                .filter_map(|(id, item)| {
+                    item.path
+                        .as_ref()
+                        .is_some_and(|path| paths.contains(path))
+                        .then_some(*id)
+                })
+                .collect::<Vec<_>>();
+            self.view.list.select_rows(&rows)?;
+            self.status()?;
+        }
+        Ok(())
+    }
+
     fn select_path(&self, path: &Path) -> liteos_ui::Result<Option<u64>> {
         let id = self
             .browser
@@ -319,9 +423,6 @@ impl Session {
             .item(row)
             .cloned()
             .ok_or("项目已不存在")?;
-        let Some(path) = item.path else {
-            return Ok(());
-        };
         if item.name == name {
             self.view.list.finish_label_edit(true)?;
             if self.one_shot {
@@ -329,12 +430,30 @@ impl Session {
             }
             return Ok(());
         }
+        if let model::Details::Connection { interface, .. } = item.details {
+            let result = self
+                .background
+                .run(move || network_config::rename_connection(&interface, &name))?
+                .await;
+            self.view.list.finish_label_edit(result.is_ok())?;
+            if let Err(error) = result {
+                self.report("重命名连接时出错", error).await;
+            } else {
+                self.refresh().await?;
+                self.view.list.select(Some(row))?;
+            }
+            return Ok(());
+        }
+        let Some(path) = item.path else {
+            return Ok(());
+        };
         let result = self
             .background
-            .run(move || fileops::rename(&path, &name))?
+            .run(move || fileops::Undo::rename(path, &name))?
             .await;
         match result {
-            Ok(target) => {
+            Ok((target, undo)) => {
+                self.record_undo(undo);
                 self.view.list.finish_label_edit(true)?;
                 self.refresh().await?;
                 self.select_path(&target)?;
@@ -345,11 +464,50 @@ impl Session {
             }
             Err(error) => {
                 self.view.list.finish_label_edit(false)?;
-                Err(error.into())
+                self.report("重命名文件或文件夹时出错", error).await;
+                Ok(())
             }
         }
     }
-    async fn delete(&self, empty: bool) -> Result<()> {
+
+    fn record_undo(&self, action: fileops::Undo) {
+        let mut history = self.undo.borrow_mut();
+        if history.len() == UNDO_LIMIT {
+            history.remove(0);
+        }
+        history.push(action);
+    }
+
+    async fn undo(&self) -> Result<()> {
+        let Some(mut action) = self.undo.borrow_mut().pop() else {
+            return Ok(());
+        };
+        let home = self.home.clone();
+        let (result, action) = self
+            .background
+            .run(move || {
+                let result = action.reverse(&home);
+                (result, action)
+            })?
+            .await;
+        if result.is_err() && !action.exhausted() {
+            self.record_undo(action);
+        }
+        self.refresh().await?;
+        if let Some(path) = result? {
+            self.select_path(&path)?;
+        }
+        Ok(())
+    }
+
+    async fn delete(&self, empty: bool, intent: fileops::DeleteIntent) -> Result<()> {
+        // “我的电脑”等虚拟位置也有带路径的行，但这些行代表磁盘或连接。
+        if !matches!(
+            self.browser.borrow().location,
+            Location::Directory(_) | Location::Desktop | Location::RecycleBin
+        ) {
+            return Ok(());
+        }
         let paths = self.selected_paths()?;
         if paths.is_empty() && !empty {
             return Ok(());
@@ -360,43 +518,14 @@ impl Session {
             Vec::new()
         } else {
             self.background
-                .run(move || {
-                    paths
-                        .into_iter()
-                        .map(|path| fileops::delete_mode(&home, &path).map(|mode| (path, mode)))
-                        .collect::<std::io::Result<Vec<_>>>()
-                })?
+                .run(move || fileops::Deletion::prepare(&home, paths, intent))?
                 .await?
         };
-        let permanent = paths
-            .iter()
-            .filter(|(_, mode)| *mode == fileops::DeleteMode::Permanent)
-            .count();
-        // shell32 67/68 与永久删除确认。
-        let message = if empty {
-            "确实要永久删除“回收站”中的所有项目吗?".to_owned()
-        } else if trash {
-            format!("确实要永久删除这 {} 项吗?", paths.len())
-        } else if permanent == paths.len() {
-            format!(
-                "这 {} 项无法移入本地回收站。确实要永久删除它们吗?",
-                paths.len()
-            )
-        } else if permanent != 0 {
-            format!(
-                "其中 {permanent} 项无法移入本地回收站，将永久删除；其余项目将移入回收站。确实要删除这 {} 项吗?",
-                paths.len()
-            )
-        } else if paths.len() == 1 {
-            "确实要将它移动到回收站吗?".to_owned()
-        } else {
-            format!("确实要将这 {} 项移动到回收站吗?", paths.len())
-        };
-        let title = if paths.len() > 1 {
-            "确认删除多个文件"
-        } else {
-            "确认文件删除"
-        };
+        let (title, message) = delete_prompt(
+            &paths,
+            trash || intent == fileops::DeleteIntent::Permanent,
+            empty,
+        );
         if self
             .dialogs
             .message(&self.view.window, title, &message, MessageButtons::YesNo)?
@@ -407,73 +536,119 @@ impl Session {
         }
         let home = self.home.clone();
         self.view.status.set_text("正在删除…\t\t")?;
-        let result = self
+        let (result, recycled, irreversible) = self
             .background
             .run(move || {
                 if empty {
-                    fileops::empty_trash(&home).map(drop)
+                    (fileops::empty_trash(&home).map(drop), Vec::new(), true)
                 } else {
-                    paths
-                        .iter()
-                        .try_for_each(|(path, mode)| fileops::delete(&home, path, *mode))
+                    let mut recycled = Vec::new();
+                    let mut irreversible = false;
+                    let result = fileops::Deletion::commit(&home, paths, |entry| {
+                        if let Some(entry) = entry {
+                            recycled.push(entry);
+                        } else {
+                            irreversible = true;
+                        }
+                    });
+                    (result, recycled, irreversible)
                 }
             })?
             .await;
+        if irreversible {
+            self.undo.borrow_mut().clear();
+        }
+        if !recycled.is_empty() {
+            self.record_undo(fileops::Undo::Delete(recycled));
+        }
         self.refresh().await?;
         result?;
         Ok(())
     }
-    /// 复制或移动到目录；返回最后一个目标路径。剪切的剩余项留在剪贴板。
-    async fn transfer(&self, paths: Vec<PathBuf>, directory: PathBuf, cut: bool) -> Result<()> {
+    /// 复制或移动并选中最后完成的目标；粘贴剪切项时只更新本次使用的选择。
+    async fn transfer(
+        &self,
+        paths: Vec<PathBuf>,
+        directory: PathBuf,
+        cut: bool,
+        revision: Option<u64>,
+    ) -> Result<()> {
         self.view.status.set_text("正在复制或移动…\t\t")?;
-        let (result, remaining, last) = self
+        let home = self.home.clone();
+        let fileops::Transfer {
+            result,
+            remaining,
+            last,
+        } = self
             .background
-            .run(move || {
-                let mut last = None;
-                for (index, path) in paths.iter().enumerate() {
-                    let result = if cut {
-                        fileops::relocate(path, &directory)
-                    } else {
-                        fileops::copy(path, &directory)
-                    };
-                    match result {
-                        Ok(target) => last = Some(target),
-                        Err(error) => return (Err(error), paths[index..].to_vec(), last),
-                    }
-                }
-                (Ok(()), Vec::new(), last)
-            })?
+            .run(move || fileops::transfer(&home, paths, &directory, cut))?
             .await;
-        if cut
-            && self
-                .browser
-                .borrow()
-                .clipboard
-                .as_ref()
-                .is_some_and(|clipboard| clipboard.cut)
+        let selection_update = if cut
+            && let Some(revision) = revision
+            && last.is_some()
         {
-            self.browser.borrow_mut().clipboard = (!remaining.is_empty()).then_some(Clipboard {
-                paths: remaining,
-                cut: true,
-            });
+            self.offer_files(&remaining, true, Some(revision))
+        } else {
+            Ok(())
+        };
+        if last.is_some() {
+            self.undo.borrow_mut().clear();
         }
         self.refresh().await?;
         if let Some(path) = last {
             self.select_path(&path)?;
         }
         result?;
+        selection_update
+    }
+    fn file_selection(&self) -> liteos_ui::Result<Option<(&'static str, u64)>> {
+        for mime in SELECTION_TYPES {
+            if let Some(revision) = self.clipboard.revision(mime)? {
+                return Ok(Some((mime, revision)));
+            }
+        }
+        Ok(None)
+    }
+
+    fn offer_files(&self, paths: &[PathBuf], cut: bool, revision: Option<u64>) -> Result<()> {
+        if paths.is_empty() {
+            if revision.is_some() {
+                self.clipboard.offer(&[], revision)?;
+            }
+            return Ok(());
+        }
+        let formats = file_uris::encode_selection(paths, cut, model::MAX_ENTRIES)?;
+        self.clipboard.offer(
+            &formats
+                .each_ref()
+                .map(|(mime, data)| (*mime, data.as_str())),
+            revision,
+        )?;
         Ok(())
     }
+
     async fn paste(&self) -> Result<()> {
-        let (clipboard, location) = {
-            let browser = self.browser.borrow();
-            (browser.clipboard.clone(), browser.location.clone())
+        let directory = match &self.browser.borrow().location {
+            Location::Directory(path) => path.clone(),
+            Location::Desktop => self.home.join("Desktop"),
+            _ => return Ok(()),
         };
-        let (Some(clipboard), Location::Directory(directory)) = (clipboard, location) else {
+        let Some((mime, revision)) = self.file_selection()? else {
             return Ok(());
         };
-        self.transfer(clipboard.paths, directory, clipboard.cut)
-            .await
+        let Some(payload) = self
+            .clipboard
+            .read(Some(mime), Duration::from_secs(2))?
+            .await?
+        else {
+            return Ok(());
+        };
+        if self.clipboard.revision(mime)? != Some(revision) {
+            return Ok(());
+        }
+        let (cut, paths) =
+            file_uris::decode_selection(mime, payload.as_bytes(), model::MAX_ENTRIES)?;
+        self.transfer(paths, directory, cut, Some(revision)).await
     }
     /// “复制到文件夹”/“移动到文件夹”：用共享的“浏览文件夹”对话框选目标（shell32 30306/30307）。
     async fn copy_to(&self, cut: bool) -> Result<()> {
@@ -503,7 +678,7 @@ impl Session {
         else {
             return Ok(());
         };
-        self.transfer(paths, directory, cut).await
+        self.transfer(paths, directory, cut, None).await
     }
     async fn create(&self, folder: bool) -> Result<()> {
         let location = self.browser.borrow().location.clone();
@@ -520,6 +695,7 @@ impl Session {
                 }
             })?
             .await?;
+        self.undo.borrow_mut().clear();
         self.refresh().await?;
         if let Some(id) = self.select_path(&path)? {
             let name = path.file_name().unwrap_or_default().to_string_lossy();
@@ -528,6 +704,10 @@ impl Session {
         Ok(())
     }
     async fn restore(&self, paths: Vec<PathBuf>) -> Result<()> {
+        if paths.is_empty() {
+            return Ok(());
+        }
+        self.undo.borrow_mut().clear();
         let home = self.home.clone();
         let result = self
             .background
@@ -541,6 +721,39 @@ impl Session {
         result?;
         Ok(())
     }
+
+    async fn choose_columns(&self) -> Result<()> {
+        let (location, initial) = {
+            let browser = self.browser.borrow();
+            (browser.location.clone(), browser.column_layout.clone())
+        };
+        let Some(layout) = crate::column_dialog::edit(
+            &self.dialogs,
+            &self.view.window,
+            &location,
+            initial.clone(),
+        )
+        .await?
+        else {
+            return Ok(());
+        };
+        if initial == layout {
+            return Ok(());
+        }
+        let key = location.view_key()?;
+        let saved = if layout == location.column_layout(&[]) {
+            Vec::new()
+        } else {
+            layout.clone()
+        };
+        self.background
+            .run(move || Settings::update(|settings| settings.set_folder_columns(key, saved)))?
+            .await?;
+        let mut browser = self.browser.borrow_mut();
+        browser.set_column_layout(&layout);
+        self.view.rows(&browser)?;
+        Ok(())
+    }
     fn toggle(&self, widget: &liteos_ui::Widget) -> liteos_ui::Result<()> {
         widget.set_state(widget.state()? ^ state::HIDDEN)?;
         self.view.fit_panel()
@@ -548,6 +761,16 @@ impl Session {
     pub(super) async fn command(&self, command: Command) -> Result<()> {
         if let Some(style) = command.style() {
             self.view.list.set_list_style(style, view::MULTIPLE)?;
+            let key = self.browser.borrow().location.view_key()?;
+            let saved = match style {
+                ListStyle::LargeIcons => FolderView::LargeIcons,
+                ListStyle::SmallIcons => FolderView::SmallIcons,
+                ListStyle::List => FolderView::List,
+                ListStyle::Details => FolderView::Details,
+            };
+            self.background
+                .run(move || Settings::update(|settings| settings.set_folder_view(key, saved)))?
+                .await?;
             return Ok(());
         }
         let action = match command {
@@ -631,22 +854,24 @@ impl Session {
             }
             Action::Close => self.closing.set(true),
             Action::Cut | Action::Copy => {
-                let paths = self.selected_paths()?;
-                self.browser.borrow_mut().clipboard = (!paths.is_empty()).then_some(Clipboard {
-                    paths,
-                    cut: action == Action::Cut,
-                });
+                let location = self.browser.borrow().location.clone();
+                if matches!(location, Location::Directory(_) | Location::Desktop) {
+                    let paths = self.selected_paths()?;
+                    self.offer_files(&paths, action == Action::Cut, None)?;
+                }
             }
             Action::Paste => self.paste().await?,
+            Action::ChooseColumns => self.choose_columns().await?,
             Action::CopyTo => self.copy_to(false).await?,
             Action::MoveTo => self.copy_to(true).await?,
             Action::SendToDocuments => {
                 let paths = self.selected_paths()?;
                 let home = self.home.clone();
-                self.transfer(paths, home, false).await?;
+                self.transfer(paths, home, false, None).await?;
             }
-            Action::Delete => self.delete(false).await?,
-            Action::EmptyTrash => self.delete(true).await?,
+            Action::Delete => self.delete(false, fileops::DeleteIntent::Default).await?,
+            Action::Undo => self.undo().await?,
+            Action::EmptyTrash => self.delete(true, fileops::DeleteIntent::Default).await?,
             Action::Restore => {
                 let paths = self.selected_paths()?;
                 self.restore(paths).await?;
@@ -662,11 +887,8 @@ impl Session {
                 self.restore(paths).await?;
             }
             Action::Rename => {
-                if let Some(item) = self.selected()?
-                    && item.path.is_some()
-                    && let Some(row) = self.view.list.selection()?
-                {
-                    self.view.list.edit_label(row, &item.name)?;
+                if let Some(row) = self.view.list.selection()? {
+                    self.begin_rename(row)?;
                 }
             }
             Action::NewFolder => self.create(true).await?,
@@ -760,38 +982,82 @@ impl Session {
     pub(super) async fn execute(&self, job: Job) -> Result<()> {
         match job {
             Job::Command(command) => self.command(command).await,
+            Job::DeletePermanently => self.delete(false, fileops::DeleteIntent::Permanent).await,
             Job::Go(location, visit, focus) => self.navigate(location, visit, focus).await,
             Job::Expand(id) => self.expand(id).await,
             Job::Rename(id, name) => self.rename(id, name).await,
             Job::Dropdown(action, at) => self.dropdown(action, at).await,
-            Job::Context(on_item) => {
+            Job::Context { on_item, at } => {
                 let entries = chrome::context(&self.availability()?, on_item);
                 let items: Vec<_> = entries.iter().map(chrome::Entry::item).collect();
-                if let Some(command) = self
-                    .dialogs
-                    .menu(&self.view.window, &items)?
-                    .await?
-                    .and_then(Command::from_id)
-                {
+                let menu = if let Some(at) = at {
+                    self.dialogs.menu_at(&self.view.window, &items, at)?
+                } else {
+                    self.dialogs.menu(&self.view.window, &items)?
+                };
+                if let Some(command) = menu.await?.and_then(Command::from_id) {
                     self.command(command).await?;
                 }
                 Ok(())
             }
         }
     }
-    pub(super) async fn report(&self, error: impl std::fmt::Display) {
+    pub(super) async fn report(&self, title: &str, error: impl std::fmt::Display) {
         let message = error.to_string();
         let _ = self.view.status.set_text(&format!("{message}\t\t"));
-        if let Ok(dialog) = self.dialogs.message(
-            &self.view.window,
-            "资源管理器",
-            &message,
-            MessageButtons::Ok,
-        ) {
+        if let Ok(dialog) =
+            self.dialogs
+                .message(&self.view.window, title, &message, MessageButtons::Ok)
+        {
             let _ = dialog.await;
         }
     }
 }
+pub(super) fn delete_prompt(
+    paths: &[fileops::Deletion],
+    explicit_permanent: bool,
+    empty: bool,
+) -> (&'static str, String) {
+    let permanent = paths
+        .iter()
+        .filter(|entry| entry.mode == fileops::DeleteMode::Permanent)
+        .count();
+    // shell32 67/68 与永久删除确认。
+    let message = if empty {
+        "确实要永久删除“回收站”中的所有项目吗?".to_owned()
+    } else if explicit_permanent {
+        if let [entry] = paths {
+            let name = entry
+                .path
+                .file_name()
+                .expect("prepared deletion has a name");
+            format!("确实要永久删除“{}”吗?", name.to_string_lossy())
+        } else {
+            format!("确实要永久删除这 {} 项吗?", paths.len())
+        }
+    } else if permanent == paths.len() {
+        format!(
+            "这 {} 项无法移入本地回收站。确实要永久删除它们吗?",
+            paths.len()
+        )
+    } else if permanent != 0 {
+        format!(
+            "其中 {permanent} 项无法移入本地回收站，将永久删除；其余项目将移入回收站。确实要删除这 {} 项吗?",
+            paths.len()
+        )
+    } else if paths.len() == 1 {
+        "确实要将它移动到回收站吗?".to_owned()
+    } else {
+        format!("确实要将这 {} 项移动到回收站吗?", paths.len())
+    };
+    let title = if paths.len() > 1 {
+        "确认删除多个文件"
+    } else {
+        "确认文件删除"
+    };
+    (title, message)
+}
+
 /// 一个业务事务占用期，UI 仍处理输入和合成；关闭请求等已开始的文件副作用完成后异步兑现。
 pub(super) struct Busy(pub(super) Rc<Session>);
 impl Drop for Busy {

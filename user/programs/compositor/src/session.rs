@@ -34,7 +34,7 @@ use crate::{
     compose::Drawable,
     cursor::{self, CursorSet},
     desktop::{Geometry, Initial, Mode, Stack},
-    focus::{Hit, Seat, Shortcut, window_configure},
+    focus::{Hit, Seat, Shortcut, local_position, window_configure},
     input::{self, Input},
     interaction::{Edges, Grab, Kind},
     scanout::Scanout,
@@ -484,6 +484,9 @@ impl Session {
             if returned[1 + input_count].contains(PollEvents::READ) {
                 self.input.handle_uevents()?;
             }
+            // 已由前一轮按钮按下授权的 start_drag/accept 先于同轮硬件释放生效。
+            self.server.dispatch(&returned[2 + input_count..])?;
+            self.process_data_device();
             // 一批积压的位置只应用最终状态，避免逐样本提交光标与 resize configure。
             input::coalesce_motion(&mut events);
             for event in events.drain(..) {
@@ -498,7 +501,6 @@ impl Session {
                     self.on_input(event, false)?;
                 }
             }
-            self.server.dispatch(&returned[2 + input_count..])?;
             self.sync_windows()?;
             self.sync_work_area();
             self.handle_requests()?;
@@ -756,6 +758,11 @@ impl Session {
         );
         let time = self.now_ms();
         let pointer = self.input.pointer().position();
+        if self.server.dragging() {
+            let hit = self.hit_test(&boxes, pointer);
+            self.route_drag(hit, pointer, time, false);
+            return;
+        }
         let hit = self
             .pointer_grab
             .and_then(|grab| self.locate_target(&boxes, grab.target))
@@ -928,10 +935,45 @@ impl Session {
         self.apply_cursor()
     }
 
+    fn process_data_device(&mut self) {
+        let previous = self.server.dragging();
+        let grab = self
+            .pointer_grab
+            .filter(|_| !self.secure_pending && self.grab.is_none())
+            .map(|grab| (grab.target.0, grab.target.1, grab.serial));
+        let time = self.now_ms();
+        self.server
+            .handle_data_device(self.seat.keyboard_client(), grab, time);
+        let dragging = self.server.dragging();
+        if dragging && !previous {
+            self.pointer_grab = None;
+            let pointer = self.input.pointer().position();
+            let time = self.now_ms();
+            self.seat.update_pointer(
+                &mut self.server,
+                None,
+                pointer,
+                self.scale as i32,
+                time,
+                false,
+            );
+        }
+        self.dirty |= previous != dragging;
+    }
+
+    fn route_drag(&mut self, hit: Option<Hit>, pointer: (i32, i32), time: u32, moved: bool) {
+        let destination = hit.map(|hit| {
+            let (x, y) = local_position(hit.origin, pointer, self.scale as i32);
+            (hit.target, x, y)
+        });
+        self.server
+            .drag_motion(destination, self.seat.next_serial(), time, moved);
+        self.dirty |= moved && self.server.drag_icon().is_some();
+    }
+
     /// 剪贴板跟随键盘焦点：处理选择请求，焦点换到新客户端时把当前选择告诉它。
     fn sync_selection(&mut self) {
         let focus = self.seat.keyboard_client();
-        self.server.handle_selection(focus);
         if focus != self.selection_focus {
             self.selection_focus = focus;
             self.server.announce_selection(focus);

@@ -45,6 +45,7 @@ impl Art {
             "my-computer-32",
             "network-places-32",
             "recycle-bin-empty-32",
+            "recycle-bin-full-32",
             "show-desktop-16",
             "my-documents-16",
             "start-banner-1x",
@@ -196,6 +197,42 @@ impl Art {
             separator_height: metrics.separator_height(),
         })
     }
+    /// 原位编辑框的鼠标命中，字体和滚动位置与实际绘制一致。
+    pub fn icon_edit_hit(
+        &mut self,
+        scale: i32,
+        rect: Rect,
+        edit: &classic_ui::Edit,
+        x: i32,
+    ) -> io::Result<usize> {
+        self.icon_geometry(scale, |p| p.edit_hit(rect, edit, false, x))
+    }
+
+    /// 可点击的标题矩形，和桌面实际绘制使用相同的图标高度、字体与换行。
+    pub fn icon_label_rect(
+        &mut self,
+        scale: i32,
+        cell: Rect,
+        icon: &super::icons::Icon,
+    ) -> io::Result<Rect> {
+        let height = self.bitmap(&icon.art).map_or(32, Bitmap::height);
+        self.icon_geometry(scale, |p| {
+            p.icon_label(cell, height, &icon.label, true).rect
+        })
+    }
+
+    fn icon_geometry<T>(
+        &mut self,
+        scale: i32,
+        measure: impl FnOnce(&Painter<'_>) -> T,
+    ) -> io::Result<T> {
+        let mut pixel = [0u32; 1];
+        let surface = Surface::new(&mut pixel, 1, 1, 1).expect("one pixel surface");
+        let fonts = self.resources.fonts(scale)?;
+        let mut painter = Painter::new(surface, self.resources.theme(), &fonts, scale);
+        Ok(painter.with_role(FontRole::Icon, |p| measure(p)))
+    }
+
     pub fn bitmap(&self, name: &str) -> Option<&Bitmap> {
         self.entry_bitmaps
             .get(name)
@@ -256,7 +293,11 @@ struct TaskbarLayout {
     pagers: [Rect; 2],
 }
 fn taskbar_layout(s: &Desktop, d: &Display, width: i32) -> TaskbarLayout {
-    let network_width = if s.network.current().is_some() { 24 } else { 0 };
+    let network_width = if s.network.current(&s.settings).is_some() {
+        24
+    } else {
+        0
+    };
     let clock_width = if s.settings.show_clock { 60 } else { 0 };
     let usb_width = if s.usb.connected() { 24 } else { 0 };
     let tray_width = 4 + network_width + usb_width + 24 + clock_width;
@@ -358,13 +399,25 @@ pub fn frame(
             }
             // 图标与标题按 comctl32 大图标项绘制（与资源管理器共用）：标题用主题的图标字体，
             // 选中时图标与高亮色混合、只高亮标题框；桌面拥有焦点时选中项带焦点框。
-            let selected = s.selected == Some(i);
-            let bitmap = art.bitmap(&icon.art).or_else(|| art.bitmap("file-app-32"));
+            let selected = s.selected == Some(i)
+                || (s.drop_hover
+                    && icon.target == super::icons::Target::Place(super::start::Place::RecycleBin));
+            let art_name = if s.icons.trash_full
+                && icon.target == super::icons::Target::Place(super::start::Place::RecycleBin)
+            {
+                "recycle-bin-full-32"
+            } else {
+                &icon.art
+            };
+            let bitmap = art.bitmap(art_name).or_else(|| art.bitmap("file-app-32"));
+            let editing = s.rename.as_ref().filter(|rename| {
+                matches!(&icon.target, super::icons::Target::Path(path) if *path == rename.path)
+            });
             p.with_role(FontRole::Icon, |p| {
                 p.large_icon_item(
                     r,
                     bitmap,
-                    Some(&icon.label),
+                    editing.is_none().then_some(&icon.label),
                     classic_ui::ItemLook {
                         selected,
                         active: true,
@@ -372,6 +425,11 @@ pub fn frame(
                         text: C::HilightText,
                     },
                 );
+                if let Some(rename) = editing {
+                    let edit =
+                        classic_ui::large_icon_edit_rect(r, bitmap.map_or(32, Bitmap::height));
+                    p.edit(edit, &rename.edit, true, false);
+                }
             });
         }
         if !s.message.is_empty() {
@@ -428,7 +486,7 @@ pub fn frame(
             rects[VOLUME].x + 4,
             7,
         );
-        if let Some(link) = s.network.current() {
+        if let Some(link) = s.network.current(&s.settings) {
             art.icon(
                 &mut p,
                 if link.state == network_config::LinkState::Connected {

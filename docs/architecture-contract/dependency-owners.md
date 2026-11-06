@@ -18,8 +18,8 @@
 
 | Owner | 独占事实 | 依赖与边界 |
 |---|---|---|
-| `system/component-manager` | 服务启动顺序、监督策略、设备类与协议的能力路由 | native-runtime、launch-protocol、service-directory；不执行 Linux init，不解释设备协议内容 |
-| `system/driver-manager` | 根 resource、DTB/PCI 枚举与 BAR 分配、IOMMU/BTI、节点匹配、驱动宿主监督、汇聚设备目录 | resource/IOMMU/BTI native 对象；只读设备身份与 PCI 配置，不运行驱动 |
+| `system/component-manager` | 服务启动顺序、监督策略、设备汇聚目录、宿主 Job 与管理器交接决策、能力路由 | native-runtime、launch-protocol、service-directory、device-protocol；不执行 Linux init，不解释设备协议内容 |
+| `system/driver-manager` | 根 resource、DTB/PCI 枚举与 BAR 分配、IOMMU/BTI、节点匹配、驱动宿主监督、向根设备目录发布 | resource/IOMMU/BTI native 对象；只读设备身份与 PCI 配置，不运行驱动 |
 | `system/driver-host` | 一个节点的驱动（VirtIO、xHCI 及其 UAC2 子设备）、IRQ 完成线程、DMA、GPU 宿主的启动画面、本宿主设备目录与会话回收 | 节点 MMIO/IRQ resource 与 BTI；经 device-protocol 服务设备目录 |
 | `system/fshost` | 块设备会话、每盘 ext4 实例、原生数据卷挂载、各服务私有目录 | device-protocol、filesystem-protocol；ext4 的唯一启动者，不解释 Linux 挂载或块设备语义 |
 | `system/ext4` | ext4 inode、extent、journal、普通文件的内容 VMO（补页、直写同步、回写）、同一文件系统会话的串行化 | device-protocol、pager-pool 与 FUSE 服务；不拥有调用者凭据、Linux FD 或进程权限 |
@@ -49,23 +49,20 @@ netcfg、dhcp-client、linuxd 适配层与 Linux 侧的 `network-config` 共用�
    outgoing 的客户端，并为每个消费者服务一条路由目录：只转发该消费者声明使用的协议（component-manager 的 `ROUTES` 与各
    `*_USES` 表，对应 Fuchsia 的 `expose`/`use`），未声明的协议返回 `ERR_ACCESS_DENIED`。
 2. 路由给 linuxd 的协议：`liteos.network.Control`、`liteos.storage.Blocks`、`liteos.filesystem.Ext4`、
-   `liteos.network.Settings`、`liteos.audio.Core`；给 netcfg：`liteos.network.Control`、`liteos.network.Installer`、
+   `liteos.network.Settings`、`liteos.audio.Core`、`liteos.driver.Update`；给 netcfg：`liteos.network.Control`、`liteos.network.Installer`、
    `liteos.network.Dhcp`；给 dhcp-client：`liteos.network.Control`。`liteos.storage.Admin` 只供 component-manager 派生私有目录。
 3. 设备目录按类派生：Network → netcfg，Block → fshost，Pcm → audio-core，其余 → linuxd；派生目录不能扩大范围。
 4. 监督：netstack、dhcp-client、netcfg、audio-core、linuxd 终止后重启（linuxd 先终止整个 Linux Job 并等它结束），
    10 秒内 5 次判定为崩溃循环并关机（`native_runtime::task::CrashLoop`）；driver-manager、fshost 是关键组件，
-   终止即关机。被依赖的服务重启期间，component-manager 让新的连接请求等待新实例就绪；消费者在 `PEER_CLOSED` 后重连。
+   当前实例意外终止即关机。被依赖的服务重启期间，component-manager 让新的连接请求等待新实例就绪；消费者在 `PEER_CLOSED` 后重连。
    driver-manager 以同一判定监督各驱动宿主，fshost 监督 ext4 实例（见 6、7）。
 5. 重启后的状态恢复由各使用者负责：netcfg 重新安装网卡并重新配置；linuxd 为存活网络域重建协议实例，旧 socket
    以 `ENETDOWN` 失败；默认网络随 netstack 存续，linuxd 重启不影响接口配置。audio-core 重启后 linuxd 重连新实例：
    旧声卡的渲染流随旧实例关闭而断开，新实例的输出作为新卡登记（与声卡重新插入一致）。
 6. 驱动框架（Fuchsia DFv2）：driver-manager 拥有根 resource、DTB/PCI 平台事实与节点拓扑，为每个节点在独立 Job 中
-   启动一个 `driver-host`，只交付该节点的 MMIO/IRQ resource 与 BTI；各宿主在自己的设备目录发布设备，driver-manager
-   以转发条目汇聚成唯一设备目录，并按节点顺序并入初始枚举（使用者按登记顺序命名设备）。驱动声明
-   `restart_on_crash` 时宿主终止后重建，否则节点移除。声明的驱动其使用者都在会话 `PEER_CLOSED` 时撤下设备、
-   接入新登记的设备：熵源、声音、输入（evdev 节点移除并发 remove/add uevent）、console 端口（节点以新会话
-   重新发布）与网卡（netstack 移除接口并关闭其 lifetime channel，netcfg 丢弃记录后重新安装）。块设备、显示与
-   USB 主控不声明。
+   启动一个 `driver-host`，只交付该节点的 MMIO/IRQ resource 与 BTI。根服务持有宿主 Job、汇聚目录和管理器交接决策。
+   管理器持有节点与宿主监督状态，通过独立的发布 capability 登记转发条目。重启、换版与会话边界见
+   [设备目录与换版](devices-terminal.md#设备目录与会话)。
 7. fshost 为每块盘启动一个 ext4 实例；同盘再次挂载交给同一实例，实例按超级块 UUID 串行化会话。原生数据卷独占
    一个实例，其终止使 fshost 失败停机。
 

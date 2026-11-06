@@ -177,6 +177,11 @@ static API: Api = Api {
     canvas_frame: image_api::canvas_frame,
     fullscreen: window_api::fullscreen,
     combo_dropped_height: context_api::combo_dropped_height,
+    start_file_drag: context_api::start_file_drag,
+    clipboard_revision: context_api::clipboard_revision,
+    clipboard_receive: context_api::clipboard_receive,
+    clipboard_offer: context_api::clipboard_offer,
+    row_checks: widget_api::row_checks,
 };
 
 /// 查询 ABI 主版本。返回进程存活期间有效的只读函数表；不支持的主版本返回空指针。

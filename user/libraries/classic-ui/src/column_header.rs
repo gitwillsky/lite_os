@@ -5,26 +5,38 @@
 
 use canvas::Rect;
 
-use crate::{CursorShape, Painter};
+use crate::{CursorShape, ItemClick, Painter};
+use std::time::Instant;
 
 /// 分隔线两侧各多少逻辑像素算命中。
 const GRIP: i32 = 3;
 /// 一列最窄的宽度。
 const MINIMUM: i32 = 24;
+const MAXIMUM: i32 = 32768;
 
-#[derive(Clone, Copy)]
 struct Drag {
     column: usize,
     /// 按下时指针的横坐标。
     origin: i32,
     /// 按下时这一列的宽度。
     width: i32,
+    /// 指针在释放前移出双击区时撤销；真正的拖动不能成为下次双击的第一击。
+    click: Option<ItemClick<usize>>,
+}
+
+/// 分隔线按下的结果。拖动和自动调宽均消费事件，调用者只在 `Outside` 时尝试排序。
+pub enum DividerPress {
+    Outside,
+    Drag,
+    Fit(usize),
 }
 
 /// 一排列的宽度与拖动状态。
 pub struct ColumnHeader {
     widths: Vec<i32>,
     drag: Option<Drag>,
+    /// 上一次已释放的分隔线点击；没有它无法把双击与两个独立拖动区分开。
+    last_click: Option<ItemClick<usize>>,
 }
 
 impl ColumnHeader {
@@ -33,6 +45,7 @@ impl ColumnHeader {
         Self {
             widths: widths.into_iter().collect(),
             drag: None,
+            last_click: None,
         }
     }
 
@@ -110,21 +123,31 @@ impl ColumnHeader {
             .position(|cell| (cell.x..cell.right()).contains(&point.0))
     }
 
-    /// 左键按下：落在分隔线上就开始拖动。
+    /// 左键在 `point` 按下；使用 `bar` 的逻辑坐标和单调时刻 `now` 判定分隔线双击。
     ///
     /// # Returns
     ///
-    /// 这次按下已被表头消费（调用者不要再当作点击表头排序）。
-    pub fn press(&mut self, bar: Rect, point: (i32, i32)) -> bool {
+    /// 返回拖动、按内容调宽或未命中。没有 I/O 错误。
+    pub fn press(&mut self, bar: Rect, point: (i32, i32), now: Instant) -> DividerPress {
+        let previous = self.last_click.take();
         let Some(column) = self.divider_at(bar, point) else {
-            return false;
+            return DividerPress::Outside;
         };
+        if previous.is_some_and(|click| click.follows(column, point, now)) {
+            return DividerPress::Fit(column);
+        }
         self.drag = Some(Drag {
             column,
             origin: point.0,
             width: self.widths[column],
+            click: Some(ItemClick::new(column, point, now)),
         });
-        true
+        DividerPress::Drag
+    }
+
+    /// 将 `column` 设为测量所得的 `width`，限制在列表允许的列宽范围内。
+    pub fn set_width(&mut self, column: usize, width: i32) {
+        self.widths[column] = width.clamp(MINIMUM, MAXIMUM);
     }
 
     /// 指针移动：拖动中按位移改变列宽。
@@ -133,16 +156,30 @@ impl ColumnHeader {
     ///
     /// 列宽是否变化（需要重绘）。
     pub fn motion(&mut self, point: (i32, i32)) -> bool {
-        let Some(drag) = self.drag else {
+        let Some(drag) = &mut self.drag else {
             return false;
         };
-        let width = (drag.width + point.0 - drag.origin).max(MINIMUM);
-        std::mem::replace(&mut self.widths[drag.column], width) != width
+        let width = (drag.width + point.0 - drag.origin).clamp(MINIMUM, MAXIMUM);
+        let changed = std::mem::replace(&mut self.widths[drag.column], width) != width;
+        if drag.click.as_ref().is_some_and(|click| !click.near(point)) {
+            drag.click = None;
+        }
+        changed
     }
 
-    /// 左键释放；返回刚才是否在拖动。
-    pub fn release(&mut self) -> bool {
-        self.drag.take().is_some()
+    /// 左键在 `point` 释放；只有仍在双击区的分隔线点击可以与下一次按下配对。
+    pub fn release(&mut self, point: (i32, i32)) {
+        self.last_click = self
+            .drag
+            .take()
+            .and_then(|drag| drag.click)
+            .filter(|click| click.near(point));
+    }
+
+    /// 失焦或转向其他控件操作时撤销分隔线手势。
+    pub fn cancel(&mut self) {
+        self.drag = None;
+        self.last_click = None;
     }
 
     /// 指针在分隔线上或正在拖动时应显示的光标；其他位置 `None`（由调用者决定默认光标）。

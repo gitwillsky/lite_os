@@ -1,8 +1,8 @@
 //! resolvd：把原生 netcfg 正在生效的 DNS 写入 Linux 的 `/etc/resolv.conf`（init 监督，root 运行）。
 //!
-//! 1. 经 `/dev/network-settings` 取设置快照，按接口顺序收集 DNS（去重，至多 3 个，与 musl 的 `MAXNS` 一致）；
+//! 1. 经 `/dev/network-status` 取设置快照，按接口顺序收集 DNS（去重，至多 3 个，与 musl 的 `MAXNS` 一致）；
 //! 2. 内容变化时以“同目录临时文件 → fsync → rename”原子替换，读者只会看到完整的旧内容或新内容；
-//! 3. 阻塞等待设置代际变化后重复；端点暂不可用（netcfg 或 linuxd 正在重启）时退避重试。
+//! 3. 经 `/dev/network-settings` 阻塞等待设置代际变化后重复；端点暂不可用（netcfg 或 linuxd 正在重启）时退避重试。
 use std::{
     fs,
     io::{self, Write},
@@ -20,6 +20,12 @@ fn render(snapshot: &network_config::Snapshot) -> String {
         String::from("# 由 resolvd 依据网络设置生成；修改请使用“Internet 协议 (TCP/IP) 属性”。\n");
     for server in snapshot.nameservers() {
         text.push_str(&format!("nameserver {server}\n"));
+    }
+    let search = snapshot.search_domains();
+    if !search.is_empty() {
+        text.push_str("search ");
+        text.push_str(&search.join(" "));
+        text.push('\n');
     }
     text
 }

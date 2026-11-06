@@ -10,8 +10,8 @@ impl Session {
             if self.stack.placement(client, surface).is_none() {
                 continue;
             }
-            // 任务栏操作交还窗口焦点；SAS 期间不能撤销可信目标，否则握手中的按键会回落到旧应用。
-            if !self.secure_pending {
+            // 窗口操作交还焦点。矩形只更新动画端点，不能抢走桌面刚获得的键盘焦点。
+            if !self.secure_pending && !matches!(request.action, ForeignAction::Rectangle { .. }) {
                 self.keyboard_layer = None;
             }
             match request.action {

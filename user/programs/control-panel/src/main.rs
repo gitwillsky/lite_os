@@ -160,7 +160,9 @@ fn build(
         ("connection", Data::Connection(data)) => {
             Box::new(connection::Connection::build(sheet, data, dialogs.clone())?)
         }
-        ("system", Data::System(data)) => Box::new(system::System::build(sheet, data)?),
+        ("system", Data::System(data)) => {
+            Box::new(system::System::build(sheet, data, dialogs.clone())?)
+        }
         ("network", Data::Network(data)) => Box::new(network::Network::build(sheet, data)?),
         ("properties", Data::Properties(data)) => {
             Box::new(fileprops::FileProperties::build(sheet, data)?)

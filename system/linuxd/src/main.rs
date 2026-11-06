@@ -141,6 +141,9 @@ fn start_kernel_init(
         // 授权端点落在 /dev 上，必须等 devtmpfs 挂载；在 init 之前发布，Linux 进程看到的已是最终权限。
         system::task_observer::start(observer);
         system::network_settings::start();
+        if parameters.driver_update {
+            system::driver_update::start();
+        }
         task::spawn_init(
             scheduler,
             root,

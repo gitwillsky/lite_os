@@ -13,6 +13,14 @@ pub enum NetworkError {
     Disconnected,
 }
 
+/// 当前以太网物理链路，与接口管理开关独立。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NetworkLink {
+    pub carrier: bool,
+    /// 设备报告的兆比特每秒；未报告时为 None。
+    pub speed_mbps: Option<u32>,
+}
+
 /// 唯一 Ethernet adapter owner 投影的累计 counters。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NetworkStatistics {
@@ -118,6 +126,9 @@ pub trait NetworkDevice: Send + Sync {
     /// 驱动名：Linux sysfs `/sys/class/net/<if>/device/uevent` 的 `DRIVER=` 值（如 `virtio_net`）。
     fn driver(&self) -> &'static str;
 
+    /// 读取驱动拥有的链路状态，不访问数据队列。设备无法读取时返回错误。
+    fn link(&self) -> Result<NetworkLink, NetworkError>;
+
     /// 非阻塞取出一个完整 Ethernet frame。
     ///
     /// # Parameters
@@ -212,7 +223,8 @@ pub trait NetworkDevice: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::{
-        NetworkCompletion, NetworkDevice, NetworkError, NetworkStatistics, NetworkTransmit,
+        NetworkCompletion, NetworkDevice, NetworkError, NetworkLink, NetworkStatistics,
+        NetworkTransmit,
     };
     use alloc::sync::Arc;
     use native_runtime::sync::Mutex;
@@ -230,6 +242,10 @@ mod tests {
 
         fn driver(&self) -> &'static str {
             "injected"
+        }
+
+        fn link(&self) -> Result<NetworkLink, NetworkError> {
+            Ok(NetworkLink::default())
         }
 
         fn receive(&self, _frame: &mut [u8]) -> Result<usize, NetworkError> {

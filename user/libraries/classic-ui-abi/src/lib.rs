@@ -33,6 +33,14 @@ pub struct Text {
     pub len: usize,
 }
 
+/// 一种由调用方提供的 UTF-8 剪贴板格式与数据。
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct ClipboardFormat {
+    pub mime: Text,
+    pub value: Text,
+}
+
 /// 借用的原始字节；文件路径遵循 Linux 原生字节语义，不强制转换 UTF-8。
 #[repr(C)]
 #[derive(Clone, Copy)]
@@ -149,6 +157,12 @@ pub mod state {
     pub const BORDERLESS: u32 = 512;
     /// 组合框为下拉列表（CBS_DROPDOWNLIST）：不可编辑，点击任意处展开，收起时方向键直接换选项。
     pub const DROPDOWN_LIST: u32 = 1024;
+    /// 列表通过 FILE_DRAG 事件把文件拖动手势交给应用。
+    pub const FILE_DRAG: u32 = 2048;
+    /// 已选列表项的标签允许通过慢速点击请求重命名。
+    pub const EDIT_LABELS: u32 = 4096;
+    /// 列表声明由应用提供右键菜单，运行库负责把键盘请求定位到当前选择。
+    pub const KEYBOARD_CONTEXT_MENU: u32 = 8192;
 }
 /// 运行库产生的事件标签，未知标签由 SDK 跳过。
 pub mod event {
@@ -174,6 +188,16 @@ pub mod event {
     pub const EXPAND: u32 = 20;
     /// 工具栏下拉箭头按下（TBN_DROPDOWN）：value 为按钮标识，x/y/width/height 为按钮在窗口客户区的逻辑矩形。
     pub const DROPDOWN: u32 = 21;
+    /// 文件列表拖动，value 是行标识，code 是抓取授权 serial。
+    pub const FILE_DRAG: u32 = 22;
+    /// Wayland 当前选择的 MIME 列表发生变化。
+    pub const CLIPBOARD_CHANGED: u32 = 23;
+    /// 标签单击超过双击间隔；value 为应用可接受或拒绝的行标识。
+    pub const RENAME_REQUESTED: u32 = 24;
+    /// 键盘请求右键菜单。value 为选中行标识或 0，x/y 为客户区逻辑坐标。
+    pub const CONTEXT_MENU: u32 = 25;
+    /// 单列列表项的复选框被点击或按下空格。value 是行 ID。
+    pub const TOGGLE_ROW_CHECK: u32 = 26;
 }
 
 /// 事件中的 value 用于选择行标识；text 是一个已提交 Unicode scalar，0 表示没有文本。
@@ -226,6 +250,14 @@ pub struct Draw {
 pub struct Row {
     pub id: u64,
     pub text: Text,
+}
+
+/// 单列列表的行复选框。state 只接受 CHECKED 与 DISABLED；没有记录的行不画复选框。
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct RowCheck {
+    pub id: u64,
+    pub state: u32,
 }
 
 /// 树节点，父节点须在数组中先出现；state bit 0 指定首次出现时是否展开，bit 1 表示尚未载入的子节点。
@@ -434,7 +466,7 @@ pub struct Api {
     pub tree_rows: unsafe extern "C" fn(*mut c_void, u64, u64, *const TreeRow, usize) -> i32,
     /// 编辑命令：1 剪切、2 复制、3 异步粘贴、4 删除、5 全选、6 插入 UTF-8。
     pub edit_command: unsafe extern "C" fn(*mut c_void, u64, u64, u32, Text) -> i32,
-    /// 标准消息对话框；buttons=0 确定、1 确定/取消、2 是/否/取消、3 是/否。
+    /// 标准消息对话框；parent=0 表示独立窗口。buttons=0 确定、1 确定/取消、2 是/否/取消、3 是/否。
     pub message_box:
         unsafe extern "C" fn(*mut c_void, u64, Text, Text, u32, *mut MessageBox) -> i32,
     /// 设置/读取 Calendar；日期按公历验证。
@@ -506,6 +538,17 @@ pub struct Api {
     /// 按整行取可见项数（未设 CBS_NOINTEGRALHEIGHT 的 USER32 语义），项目更少时收缩；0 恢复默认最多 16 行。
     /// 非组合框或负数返回 INVALID。
     pub combo_dropped_height: unsafe extern "C" fn(*mut c_void, u64, u64, i32) -> i32,
+    /// 以 FILE_DRAG 事件的 serial 发起 URI 拖放；paths 是 NUL 分隔的本地路径字节。
+    pub start_file_drag: unsafe extern "C" fn(*mut c_void, u64, u32, Bytes) -> i32,
+    /// 查询指定 MIME 当前选择的本地身份；零表示没有该格式。
+    pub clipboard_revision: unsafe extern "C" fn(*mut c_void, Text, *mut u64) -> i32,
+    /// 请求指定 MIME 的读端，成功转移唯一 FD 所有权；PENDING 表示无该格式。
+    pub clipboard_receive: unsafe extern "C" fn(*mut c_void, Text, *mut i32) -> i32,
+    /// 提供或清空选择。expected 非零时仅替换仍在焦点内的同一次选择，否则返回 PENDING。
+    pub clipboard_offer:
+        unsafe extern "C" fn(*mut c_void, *const ClipboardFormat, usize, u64) -> i32,
+    /// 替换列表的复选框投影。行必须存在且唯一；空数组清除全部复选框。
+    pub row_checks: unsafe extern "C" fn(*mut c_void, u64, u64, *const RowCheck, usize) -> i32,
 }
 
 /// [`Api::sheet`] 的样式（Win32 PropertySheet 的标准样式）。

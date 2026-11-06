@@ -446,6 +446,21 @@ impl CrashLoop {
         }
     }
 
+    /// 按最旧至最新顺序导出崩溃时刻，供监督权移交。
+    pub fn snapshot(&self) -> [i64; CRASH_LIMIT] {
+        let mut terminations = self.terminations;
+        terminations.rotate_left(self.next);
+        terminations
+    }
+
+    /// 从最旧至最新排列的崩溃时刻恢复监督窗口。
+    pub fn restore(terminations: [i64; CRASH_LIMIT]) -> Self {
+        Self {
+            terminations,
+            next: 0,
+        }
+    }
+
     /// 记录一次终止。
     ///
     /// # Returns

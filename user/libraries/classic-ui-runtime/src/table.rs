@@ -2,9 +2,15 @@
 use super::item_grid::ItemGrid;
 use super::widgets::{Node, Tree};
 use canvas::Rect;
-use classic_ui::{ColumnHeader, CursorShape, EventKind, SCROLLBAR_WIDTH, Scroll};
+use classic_ui::{
+    ColumnHeader, CursorShape, DividerPress, EventKind, FontRole, Painter, SCROLLBAR_WIDTH, Scroll,
+};
 use classic_ui_abi::{self as abi, event, widget};
 use std::collections::{BTreeMap, BTreeSet};
+use std::time::Instant;
+
+/// 复选框与标签之间留出可见间距；布局和绘制共用这一宽度。
+pub(super) const CHECK_GUTTER: i32 = 17;
 #[derive(Clone, Copy)]
 pub enum Gesture {
     Header,
@@ -13,7 +19,8 @@ pub enum Gesture {
     Horizontal,
 }
 pub struct Table {
-    pub columns: Vec<(u64, String)>,
+    /// 列 ID、标题、应用最后一次指定的宽度。header 独占当前拖动后的有效宽度。
+    pub columns: Vec<(u64, String, i32)>,
     pub header: ColumnHeader,
     pub horizontal: Scroll,
     pub gesture: Option<Gesture>,
@@ -21,15 +28,33 @@ pub struct Table {
     pub mode: u32,
     pub multiple: bool,
     pub selection: BTreeSet<u64>,
+    /// 应用提供的复选框投影。与键盘焦点和列表选区独立。
+    pub checks: BTreeMap<u64, u32>,
     pub anchor: Option<u64>,
     pub alignments: BTreeMap<u64, u32>,
-    pub last_click: Option<(u64, std::time::Instant)>,
+    pub last_click: Option<classic_ui::ItemClick<u64>>,
     /// 图标/列表视图的条目格子：（大图标格子，小图标与列表的条目宽度）；布局时由主题图标间距与最宽标签算出。
     pub cells: ((i32, i32), i32),
     /// LVS_EX_FULLROWSELECT：详细资料视图整行高亮；默认只高亮首列标签。
     pub full_row: bool,
 }
 impl Table {
+    pub fn check(&self, row: u64) -> Option<u32> {
+        if self.mode == 0 && self.columns.is_empty() {
+            self.checks.get(&row).copied()
+        } else {
+            None
+        }
+    }
+
+    pub fn check_rect(&self, row: Rect) -> Rect {
+        Rect::new(
+            row.x - self.horizontal.position + 3,
+            row.y + (row.height - 13) / 2,
+            13,
+            13,
+        )
+    }
     pub fn extent(&self) -> i32 {
         if self.columns.is_empty() {
             self.content_width
@@ -47,6 +72,7 @@ impl Table {
             mode: 0,
             multiple: false,
             selection: BTreeSet::new(),
+            checks: BTreeMap::new(),
             anchor: None,
             alignments: BTreeMap::new(),
             last_click: None,
@@ -172,6 +198,33 @@ impl Node {
         let table = self.table.as_mut().expect("list model");
         table.horizontal.clamp(table.extent() - geometry.rows.width);
     }
+
+    fn fit_column(&mut self, column: usize, painter: &Painter<'_>) {
+        let table = self.table.as_ref().expect("list model");
+        let measure = |text| painter.measure_role(FontRole::Message, text, false);
+        let title = measure(&table.columns[column].1);
+        let widest = (0..self.row_count())
+            .filter_map(|index| self.row_at(index))
+            .filter_map(|(id, row)| {
+                let text = row.split('\t').nth(column)?;
+                let icon = if column == 0 {
+                    self.row_icons
+                        .get(id)
+                        .and_then(|icons| icons.0.as_ref())
+                        .map_or(0, |icon| icon.width().max(16) + 4)
+                } else {
+                    0
+                };
+                Some(measure(text) + icon)
+            })
+            .fold(title, i32::max);
+        // 表头和普通单元格均在内容两侧留 4 个逻辑像素。
+        self.table
+            .as_mut()
+            .expect("list model")
+            .header
+            .set_width(column, widest + 8);
+    }
 }
 impl Tree {
     pub fn cursor(&self) -> CursorShape {
@@ -208,6 +261,7 @@ impl Tree {
         &mut self,
         window: u64,
         input: &EventKind,
+        painter: &Painter<'_>,
         out: &mut Vec<abi::Event>,
     ) -> bool {
         let point = match input {
@@ -238,20 +292,31 @@ impl Tree {
             .grid
             .map_or(1, |grid| if grid.vertical() { grid.height } else { 16 });
         let table = node.table.as_mut().expect("table model");
+        let mut fit_column = None;
         match input {
             EventKind::Button {
                 code: 0x110,
                 pressed: true,
                 ..
             } => {
-                let gesture = if contains(geometry.header, point) {
-                    if table.header.press(geometry.shifted_header, point) {
-                        Some(Gesture::Header)
-                    } else {
-                        table
+                let on_header = contains(geometry.header, point);
+                if !on_header {
+                    table.header.cancel();
+                }
+                let gesture = if on_header {
+                    match table
+                        .header
+                        .press(geometry.shifted_header, point, Instant::now())
+                    {
+                        DividerPress::Drag => Some(Gesture::Header),
+                        DividerPress::Fit(index) => {
+                            fit_column = Some(index);
+                            Some(Gesture::Header)
+                        }
+                        DividerPress::Outside => table
                             .header
                             .column_at(geometry.shifted_header, point)
-                            .map(Gesture::Column)
+                            .map(Gesture::Column),
                     }
                 } else if contains(geometry.vertical, point) {
                     node.position
@@ -327,16 +392,16 @@ impl Tree {
                         ..Default::default()
                     });
                 }
-                table.header.release();
+                table.header.release(point);
                 table.horizontal.release();
                 node.position.release();
                 self.armed = None;
             }
             EventKind::PointerLeave | EventKind::Focus(false) => {
+                table.header.cancel();
                 if table.gesture.take().is_none() {
                     return false;
                 }
-                table.header.release();
                 table.horizontal.release();
                 node.position.release();
                 self.armed = None;
@@ -367,12 +432,26 @@ impl Tree {
             }
             _ => return false,
         }
+        if let Some(column) = fit_column {
+            node.fit_column(column, painter);
+        }
         node.clamp_list();
         true
     }
 }
 
 impl Node {
+    /// 滚动列表，让索引 `index` 的条目进入当前视口。
+    pub fn reveal_list_row(&mut self, index: usize, geometry: Geometry) {
+        let scroll = self.position.position;
+        self.position.position = if let Some(grid) = geometry.grid {
+            grid.reveal(index, scroll)
+        } else {
+            let page = (geometry.rows.height / self.row_height).max(1);
+            scroll.min(index as i32).max(index as i32 + 1 - page)
+        };
+    }
+
     pub fn row_selected(&self, id: u64) -> bool {
         self.table
             .as_ref()

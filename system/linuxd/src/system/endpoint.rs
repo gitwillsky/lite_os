@@ -9,7 +9,7 @@ use crate::{
     fs::{AccessIdentity, vfs},
     ipc::{Pipe, PipeDirection, ReceiveBuffer},
     net::{
-        self, PreparedSocket, Socket, SocketAddress, SocketDomain, SocketRequest,
+        self, PreparedSocket, ReceivedMessage, Socket, SocketAddress, SocketDomain, SocketRequest,
         SocketSendDestination, SocketType, UnixAddress, UnixCredentials, UnixPathIdentity,
         UnixSendCredentials,
     },
@@ -17,12 +17,12 @@ use crate::{
 };
 use alloc::{sync::Arc, vec::Vec};
 
-/// 发布 `/dev` 下属主 root、组 `group`、权限 0660 的 datagram 端点（`path` 为完整路径，须以 `/dev/` 开头）。
+/// 发布 `/dev` 下属主 root、组 `group`、权限 `mode` 的 datagram 端点（`path` 为完整路径，须以 `/dev/` 开头）。
 ///
 /// # Panics
 ///
 /// socket、节点或绑定创建失败时 fail-stop：端点缺失会让获授权的系统程序静默失去服务。
-pub(crate) fn publish(path: &[u8], group: u32) -> Arc<Socket> {
+pub(crate) fn publish(path: &[u8], group: u32, mode: u32) -> Arc<Socket> {
     let notify = Pipe::notification_pair().expect("endpoint notifications");
     let socket = PreparedSocket::try_new(net::initial_net())
         .expect("endpoint socket allocation")
@@ -34,7 +34,7 @@ pub(crate) fn publish(path: &[u8], group: u32) -> Arc<Socket> {
         .expect("endpoint socket");
     // 1. devtmpfs 对 Linux 只读：节点经 devfs 注册表发布，元数据即最终的属主、属组与权限。
     let relative = path.strip_prefix(b"/dev/").expect("endpoint under /dev");
-    crate::fs::devnode::register_socket(relative, group).expect("endpoint node");
+    crate::fs::devnode::register_socket(relative, group, mode).expect("endpoint node");
     // 2. 把 socket 绑定到该节点的 inode 身份；connect/sendto 解析路径后按同一身份找到它。
     let root = AccessIdentity::root();
     let origin = vfs().initial_origin().expect("endpoint lookup origin");
@@ -65,12 +65,30 @@ pub(crate) fn receive(
     socket: &Socket,
     storage: &mut [u8],
 ) -> Result<(usize, usize, SocketAddress), net::SocketError> {
+    let mut message = receive_message(socket, storage, false)?;
+    Ok((
+        message.count,
+        message.full_length,
+        message.source.take().expect("endpoint source"),
+    ))
+}
+
+/// 接收可带 SCM_RIGHTS 和凭证的请求，返回完整消息。
+///
+/// # Errors
+///
+/// socket 失效。
+pub(crate) fn receive_message(
+    socket: &Socket,
+    storage: &mut [u8],
+    receive_rights: bool,
+) -> Result<ReceivedMessage, net::SocketError> {
     loop {
         let mut buffer = ReceiveBuffer::from_slice(storage);
-        match socket.receive_message(&mut buffer, false, false, true) {
+        match socket.receive_message(&mut buffer, false, receive_rights, true) {
             Ok(message) => {
-                if let Some(source) = message.source {
-                    return Ok((message.count, message.full_length, source));
+                if message.source.is_some() {
+                    return Ok(message);
                 }
             }
             Err(net::SocketError::Again) => {

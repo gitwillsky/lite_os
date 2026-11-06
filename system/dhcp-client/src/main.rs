@@ -14,13 +14,12 @@ extern crate alloc;
 #[macro_use]
 extern crate native_runtime;
 
-use alloc::sync::Arc;
-use alloc::vec::Vec;
+use alloc::{string::String, sync::Arc, vec::Vec};
 use core::net::Ipv4Addr;
 
 use native_runtime::native_abi::{self, Status, packet, signals};
 use native_runtime::{Channel, Event, Port, Startup};
-use netcfg_protocol::{Encoder, LeaseEvent};
+use netcfg_protocol::{DhcpAction, Encoder, LeaseEvent, LeaseTiming};
 use network_protocol::{NetworkClient, PacketAddress, PacketKind, RemotePacketSocket, SocketError};
 use service_directory::ServiceDirectory;
 use smoltcp::phy::ChecksumCapabilities;
@@ -37,8 +36,10 @@ const START: u32 = 1;
 const ETH_P_IP: u16 = 0x0800;
 /// 以太网硬件类型（`ARPHRD_ETHER`）。
 const ARPHRD_ETHER: u16 = 1;
-/// 请求的选项：子网掩码、路由器、DNS、租期、T1、T2。
-const PARAMETERS: &[u8] = &[1, 3, 6, 51, 58, 59];
+/// RFC 2132 §3.17 的连接域名选项。
+const DOMAIN_NAME: u8 = 15;
+/// 请求的选项：子网掩码、路由器、DNS、域名、租期、T1、T2。
+const PARAMETERS: &[u8] = &[1, 3, 6, DOMAIN_NAME, 51, 58, 59];
 /// 首次重传间隔与上限（RFC 2131 §4.1：从 4 秒指数退避到 64 秒）。
 const RETRANSMIT_FIRST: i64 = 4_000_000_000;
 const RETRANSMIT_MAX: i64 = 64_000_000_000;
@@ -47,6 +48,8 @@ const RENEW_RETRANSMIT_MIN: i64 = 60_000_000_000;
 /// REQUESTING 状态下请求的最多次数；用尽后回到 INIT。
 const REQUEST_ATTEMPTS: u32 = 4;
 const SECOND: i64 = 1_000_000_000;
+/// An explicit renewal gets a prompt retry while the existing lease remains valid.
+const MANUAL_RENEW_TIMEOUT: i64 = 10 * SECOND;
 const BROADCAST_MAC: [u8; 6] = [0xff; 6];
 const BUFFER: usize = 1500;
 
@@ -104,8 +107,20 @@ fn serve(channel: Channel, services: Arc<ServiceDirectory>) -> Result<(), Status
 /// 等待的唤醒原因。
 enum Wake {
     Readable,
+    Command(Command),
     Stopped,
     Timeout,
+}
+
+struct Command {
+    action: DhcpAction,
+    reply: Channel,
+}
+
+enum Session {
+    Acquiring,
+    Bound(Lease),
+    Released,
 }
 
 /// 一个接口的 DHCP 会话。
@@ -178,7 +193,7 @@ impl Interface {
         }
         if !self.events_armed {
             self.events
-                .wait_async(&self.port, 1, signals::PEER_CLOSED)?;
+                .wait_async(&self.port, 1, signals::READABLE | signals::PEER_CLOSED)?;
             self.events_armed = true;
         }
         match self.port.wait(deadline) {
@@ -187,19 +202,36 @@ impl Interface {
                 self.readiness.signal(signals::USER_0, 0)?;
                 Ok(Wake::Readable)
             }
-            Ok(_) => {
+            Ok(packet) => {
                 self.events_armed = false;
-                Ok(Wake::Stopped)
+                if packet.observed & signals::PEER_CLOSED != 0 {
+                    return Ok(Wake::Stopped);
+                }
+                let message = self.events.read()?;
+                match (
+                    message.bytes.as_slice(),
+                    <[_; 1]>::try_from(message.handles),
+                ) {
+                    ([action], Ok([reply])) => Ok(Wake::Command(Command {
+                        action: DhcpAction::decode(*action)
+                            .map_err(|_| native_abi::ERR_INVALID_ARGS)?,
+                        reply: Channel::from_handle(reply),
+                    })),
+                    _ => Err(native_abi::ERR_INVALID_ARGS),
+                }
             }
             Err(native_abi::ERR_TIMED_OUT) => Ok(Wake::Timeout),
             Err(status) => Err(status),
         }
     }
 
-    fn report(&self, event: &LeaseEvent) -> Result<(), Status> {
+    fn report(&self, event: &LeaseEvent, reply: Option<Channel>) -> Result<(), Status> {
         let mut encoder = Encoder::default();
         encoder.lease(event);
-        self.events.write(&encoder.0, Vec::new())
+        self.events.write(
+            &encoder.0,
+            reply.map(Channel::into_handle).into_iter().collect(),
+        )
     }
 
     fn run(mut self) {
@@ -207,105 +239,160 @@ impl Interface {
             Ok(()) => {}
             Err(status) => {
                 warn!("dhcp-client: interface {} stopped: {status}", self.index);
-                let _ = self.report(&LeaseEvent::Lost);
+                let _ = self.report(&LeaseEvent::Lost, None);
             }
         }
     }
 
     /// 反复获取并维持租约，直到 netcfg 停止本接口（返回 `Ok`）或 socket 失效（返回错误）。
     fn lease_loop(&mut self) -> Result<(), Status> {
+        let mut session = Session::Acquiring;
+        let mut renewal = None;
         loop {
-            let Some(offer) = self.select()? else {
-                return Ok(());
-            };
-            let Some(mut lease) = self.request(&offer)? else {
-                continue;
-            };
-            loop {
-                self.report(&lease.event())?;
-                match self.maintain(&lease)? {
-                    Maintained::Renewed(renewed) => lease = renewed,
-                    Maintained::Lost => {
-                        self.report(&LeaseEvent::Lost)?;
-                        break;
+            let progress = match &session {
+                Session::Acquiring => self.acquire()?,
+                Session::Bound(lease) => self.maintain(lease, renewal.is_some())?,
+                Session::Released => match self.wait(native_abi::DEADLINE_INFINITE)? {
+                    Wake::Command(command) => Progress::Command(command),
+                    Wake::Stopped => return Ok(()),
+                    Wake::Readable => {
+                        self.drain()?;
+                        continue;
                     }
-                    Maintained::Stopped => return Ok(()),
+                    Wake::Timeout => continue,
+                },
+            };
+            match progress {
+                Progress::Bound(lease) => {
+                    self.report(&lease.event(), renewal.take())?;
+                    session = Session::Bound(lease);
+                }
+                Progress::Restart => {
+                    if matches!(session, Session::Bound(_)) {
+                        self.report(&LeaseEvent::Lost, None)?;
+                    }
+                    session = Session::Acquiring;
+                }
+                Progress::Stopped => return Ok(()),
+                Progress::TimedOut => {
+                    if let Some(reply) = renewal.take() {
+                        let _ = reply.write(&native_abi::ERR_TIMED_OUT.to_le_bytes(), Vec::new());
+                    }
+                }
+                Progress::Command(command) => {
+                    if let Some(reply) = renewal.take() {
+                        let _ = reply.write(&native_abi::ERR_CANCELED.to_le_bytes(), Vec::new());
+                    }
+                    match command.action {
+                        DhcpAction::Renew => {
+                            renewal = Some(command.reply);
+                            if matches!(session, Session::Released) {
+                                session = Session::Acquiring;
+                            }
+                        }
+                        DhcpAction::Release => {
+                            if let Session::Bound(lease) = &session
+                                && native_runtime::system::monotonic() < lease.expiry
+                            {
+                                self.next_transaction();
+                                // DHCPRELEASE has no acknowledgment. Retire local state even if
+                                // the device cannot queue the packet.
+                                let _ = self.send(
+                                    DhcpMessageType::Release,
+                                    Some(lease.address),
+                                    None,
+                                    Some(lease.timing.server),
+                                    (lease.timing.server, lease.server_mac),
+                                );
+                            }
+                            self.report(&LeaseEvent::Lost, Some(command.reply))?;
+                            session = Session::Released;
+                        }
+                    }
                 }
             }
         }
     }
 
-    /// SELECTING：广播 DISCOVER 直到收到 OFFER；返回 `None` 表示被停止。
-    fn select(&mut self) -> Result<Option<Offer>, Status> {
+    /// SELECTING：广播 DISCOVER 直到收到 OFFER，再请求相应地址。
+    fn acquire(&mut self) -> Result<Progress, Status> {
         self.next_transaction();
         let mut interval = RETRANSMIT_FIRST;
         loop {
-            self.send(DhcpMessageType::Discover, None, None, None, BROADCAST_MAC)?;
+            self.send(
+                DhcpMessageType::Discover,
+                None,
+                None,
+                None,
+                (Ipv4Addr::BROADCAST, BROADCAST_MAC),
+            )?;
             let deadline = native_runtime::system::monotonic().saturating_add(interval);
             match self.receive_until(deadline, DhcpMessageType::Offer)? {
                 Received::Message(reply) => {
-                    if let Some(server) = reply.server {
-                        return Ok(Some(Offer {
-                            address: reply.address,
-                            server,
-                            server_mac: reply.source_mac,
-                        }));
-                    }
+                    return self.request(reply.address, reply.server);
                 }
-                Received::Stopped => return Ok(None),
+                Received::Command(command) => return Ok(Progress::Command(command)),
+                Received::Stopped => return Ok(Progress::Stopped),
                 Received::Timeout => interval = (interval * 2).min(RETRANSMIT_MAX),
             }
         }
     }
 
-    /// REQUESTING：请求 OFFER 中的地址；ACK 得到租约，NAK 或超时回到 INIT（`None`）。
-    fn request(&mut self, offer: &Offer) -> Result<Option<Lease>, Status> {
+    /// REQUESTING：请求 OFFER 中的地址；ACK 得到租约，NAK 或超时回到 INIT。
+    fn request(&mut self, address: Ipv4Addr, server: Ipv4Addr) -> Result<Progress, Status> {
         let mut interval = RETRANSMIT_FIRST;
         for _ in 0..REQUEST_ATTEMPTS {
+            let sent_at = native_runtime::system::monotonic();
             self.send(
                 DhcpMessageType::Request,
                 None,
-                Some(offer.address),
-                Some(offer.server),
-                BROADCAST_MAC,
+                Some(address),
+                Some(server),
+                (Ipv4Addr::BROADCAST, BROADCAST_MAC),
             )?;
             let deadline = native_runtime::system::monotonic().saturating_add(interval);
             match self.receive_until(deadline, DhcpMessageType::Ack)? {
-                Received::Message(reply) if reply.nak => return Ok(None),
+                Received::Message(reply) if reply.nak => return Ok(Progress::Restart),
                 Received::Message(reply) => {
-                    return Ok(Some(Lease::from_ack(&reply, offer.server_mac)));
+                    return Ok(Progress::Bound(Lease::from_ack(&reply, sent_at)));
                 }
-                Received::Stopped => return Err(native_abi::ERR_CANCELED),
+                Received::Command(command) => return Ok(Progress::Command(command)),
+                Received::Stopped => return Ok(Progress::Stopped),
                 Received::Timeout => interval = (interval * 2).min(RETRANSMIT_MAX),
             }
         }
-        Ok(None)
+        Ok(Progress::Restart)
     }
 
     /// BOUND → RENEWING → REBINDING：到 T1 向原服务器单播续租，到 T2 广播重新绑定，到期失效。
-    fn maintain(&mut self, lease: &Lease) -> Result<Maintained, Status> {
+    fn maintain(&mut self, lease: &Lease, force: bool) -> Result<Progress, Status> {
+        let manual_deadline =
+            force.then(|| native_runtime::system::monotonic().saturating_add(MANUAL_RENEW_TIMEOUT));
         loop {
             let now = native_runtime::system::monotonic();
             if now >= lease.expiry {
-                return Ok(Maintained::Lost);
+                return Ok(Progress::Restart);
             }
-            if now < lease.renew {
+            if manual_deadline.is_some_and(|deadline| now >= deadline) {
+                return Ok(Progress::TimedOut);
+            }
+            if !force && now < lease.renew {
                 match self.wait(lease.renew)? {
                     // 已绑定时的入站 DHCP 报文与本状态无关，丢弃。
                     Wake::Readable => {
                         self.drain()?;
                         continue;
                     }
-                    Wake::Stopped => return Ok(Maintained::Stopped),
+                    Wake::Command(command) => return Ok(Progress::Command(command)),
+                    Wake::Stopped => return Ok(Progress::Stopped),
                     Wake::Timeout => continue,
                 }
             }
             self.next_transaction();
-            let rebinding = now >= lease.rebind;
-            let (limit, destination) = if rebinding {
-                (lease.expiry, BROADCAST_MAC)
+            let (limit, destination) = if now >= lease.rebind {
+                (lease.expiry, (Ipv4Addr::BROADCAST, BROADCAST_MAC))
             } else {
-                (lease.rebind, lease.server_mac)
+                (lease.rebind, (lease.timing.server, lease.server_mac))
             };
             self.send(
                 DhcpMessageType::Request,
@@ -315,17 +402,20 @@ impl Interface {
                 destination,
             )?;
             let wait = ((limit - now) / 2).max(RENEW_RETRANSMIT_MIN);
-            match self.receive_until(now.saturating_add(wait).min(limit), DhcpMessageType::Ack)? {
-                Received::Message(reply) if reply.nak => return Ok(Maintained::Lost),
+            let deadline = if let Some(manual_deadline) = manual_deadline {
+                now.saturating_add(RETRANSMIT_FIRST)
+                    .min(manual_deadline)
+                    .min(limit)
+            } else {
+                now.saturating_add(wait).min(limit)
+            };
+            match self.receive_until(deadline, DhcpMessageType::Ack)? {
+                Received::Message(reply) if reply.nak => return Ok(Progress::Restart),
                 Received::Message(reply) => {
-                    let server_mac = if rebinding {
-                        reply.source_mac
-                    } else {
-                        lease.server_mac
-                    };
-                    return Ok(Maintained::Renewed(Lease::from_ack(&reply, server_mac)));
+                    return Ok(Progress::Bound(Lease::from_ack(&reply, now)));
                 }
-                Received::Stopped => return Ok(Maintained::Stopped),
+                Received::Command(command) => return Ok(Progress::Command(command)),
+                Received::Stopped => return Ok(Progress::Stopped),
                 Received::Timeout => {}
             }
         }
@@ -365,6 +455,7 @@ impl Interface {
             }
             match self.wait(deadline)? {
                 Wake::Readable => {}
+                Wake::Command(command) => return Ok(Received::Command(command)),
                 Wake::Stopped => return Ok(Received::Stopped),
                 Wake::Timeout => return Ok(Received::Timeout),
             }
@@ -386,13 +477,14 @@ impl Interface {
             &checksums,
         )
         .ok()?;
-        if udp.dst_port != DHCP_CLIENT_PORT {
+        if udp.src_port != DHCP_SERVER_PORT || udp.dst_port != DHCP_CLIENT_PORT {
             return None;
         }
         let dhcp_packet = DhcpPacket::new_checked(udp_packet.payload()).ok()?;
         let dhcp = DhcpRepr::parse(&dhcp_packet).ok()?;
         if dhcp.transaction_id != self.transaction
             || dhcp.client_hardware_address != EthernetAddress(self.mac)
+            || (dhcp.message_type == DhcpMessageType::Ack && dhcp.your_ip.is_unspecified())
         {
             return None;
         }
@@ -400,7 +492,9 @@ impl Interface {
             message_type: dhcp.message_type,
             nak: dhcp.message_type == DhcpMessageType::Nak,
             address: dhcp.your_ip,
-            server: dhcp.server_identifier,
+            server: dhcp.server_identifier.filter(|server| {
+                !server.is_unspecified() && !server.is_broadcast() && !server.is_multicast()
+            })?,
             source_mac,
             subnet: dhcp.subnet_mask,
             router: dhcp.router,
@@ -408,22 +502,33 @@ impl Interface {
                 .dns_servers
                 .map(|servers| servers.iter().copied().collect())
                 .unwrap_or_default(),
+            dns_suffix: dhcp_packet
+                .options()
+                .find(|option| option.kind == DOMAIN_NAME)
+                .and_then(|option| {
+                    netcfg_protocol::dns_suffix(
+                        option.data.strip_suffix(b".").unwrap_or(option.data),
+                    )
+                    .ok()
+                })
+                .unwrap_or_default()
+                .into(),
             lease_seconds: dhcp.lease_duration.unwrap_or(0),
             renew_seconds: dhcp.renew_duration,
             rebind_seconds: dhcp.rebind_duration,
         })
     }
 
-    /// 发送一条客户端报文：`client` 为续租时的当前地址（同时作为源地址），否则源地址为 0.0.0.0。
+    /// 发送 DHCP 报文。`client` 为续租时的源地址，`destination` 指定 IP 和以太网目的地址。
+    /// RFC 2131 续租要求单播，但不得携带 Server Identifier 选项，二者独立。
     fn send(
         &self,
         message_type: DhcpMessageType,
         client: Option<Ipv4Addr>,
         requested: Option<Ipv4Addr>,
-        server: Option<Ipv4Addr>,
-        destination: [u8; 6],
+        server_identifier: Option<Ipv4Addr>,
+        (target, destination): (Ipv4Addr, [u8; 6]),
     ) -> Result<(), Status> {
-        let unicast = destination != BROADCAST_MAC;
         let dhcp = DhcpRepr {
             message_type,
             transaction_id: self.transaction,
@@ -439,21 +544,17 @@ impl Interface {
             broadcast: client.is_none(),
             requested_ip: requested,
             client_identifier: Some(EthernetAddress(self.mac)),
-            server_identifier: server,
-            parameter_request_list: Some(PARAMETERS),
+            server_identifier,
+            parameter_request_list: (message_type != DhcpMessageType::Release)
+                .then_some(PARAMETERS),
             dns_servers: None,
-            max_size: Some(BUFFER as u16),
+            max_size: (message_type != DhcpMessageType::Release).then_some(BUFFER as u16),
             lease_duration: None,
             renew_duration: None,
             rebind_duration: None,
             additional_options: &[],
         };
         let source = client.unwrap_or(Ipv4Addr::UNSPECIFIED);
-        let target = if unicast {
-            server.unwrap_or(Ipv4Addr::BROADCAST)
-        } else {
-            Ipv4Addr::BROADCAST
-        };
         let dhcp_length = dhcp.buffer_len();
         let udp = UdpRepr {
             src_port: DHCP_CLIENT_PORT,
@@ -491,21 +592,16 @@ impl Interface {
     }
 }
 
-struct Offer {
-    address: Ipv4Addr,
-    server: Ipv4Addr,
-    server_mac: [u8; 6],
-}
-
 struct Reply {
     message_type: DhcpMessageType,
     nak: bool,
     address: Ipv4Addr,
-    server: Option<Ipv4Addr>,
+    server: Ipv4Addr,
     source_mac: [u8; 6],
     subnet: Option<Ipv4Addr>,
     router: Option<Ipv4Addr>,
     dns: Vec<Ipv4Addr>,
+    dns_suffix: String,
     lease_seconds: u32,
     renew_seconds: Option<u32>,
     rebind_seconds: Option<u32>,
@@ -513,14 +609,17 @@ struct Reply {
 
 enum Received {
     Message(Reply),
+    Command(Command),
     Stopped,
     Timeout,
 }
 
-enum Maintained {
-    Renewed(Lease),
-    Lost,
+enum Progress {
+    Bound(Lease),
+    Restart,
+    Command(Command),
     Stopped,
+    TimedOut,
 }
 
 /// 已绑定的租约；时刻为单调时钟纳秒。
@@ -529,7 +628,8 @@ struct Lease {
     prefix_length: u8,
     gateway: Ipv4Addr,
     dns: Vec<Ipv4Addr>,
-    lease_seconds: u32,
+    dns_suffix: String,
+    timing: LeaseTiming,
     server_mac: [u8; 6],
     renew: i64,
     rebind: i64,
@@ -537,23 +637,27 @@ struct Lease {
 }
 
 impl Lease {
-    fn from_ack(reply: &Reply, server_mac: [u8; 6]) -> Self {
-        let now = native_runtime::system::monotonic();
+    fn from_ack(reply: &Reply, sent_at: i64) -> Self {
         // 无租期选项按 RFC 2131 视为无限期；以 u32::MAX 秒近似。
         let lease = if reply.lease_seconds == 0 {
             u32::MAX
         } else {
             reply.lease_seconds
         };
-        let at = |seconds: u32| now.saturating_add(i64::from(seconds).saturating_mul(SECOND));
+        let at = |seconds: u32| sent_at.saturating_add(i64::from(seconds).saturating_mul(SECOND));
         let mask = reply.subnet.unwrap_or(Ipv4Addr::new(255, 255, 255, 0));
         Self {
             address: reply.address,
             prefix_length: u32::from(mask).leading_ones() as u8,
             gateway: reply.router.unwrap_or(Ipv4Addr::UNSPECIFIED),
             dns: reply.dns.clone(),
-            lease_seconds: lease,
-            server_mac,
+            dns_suffix: reply.dns_suffix.clone(),
+            timing: LeaseTiming {
+                server: reply.server,
+                requested_at_ns: sent_at,
+                duration_seconds: lease,
+            },
+            server_mac: reply.source_mac,
             renew: at(reply.renew_seconds.unwrap_or(lease / 2)),
             rebind: at(reply.rebind_seconds.unwrap_or(lease / 8 * 7)),
             expiry: at(lease),
@@ -566,7 +670,8 @@ impl Lease {
             prefix_length: self.prefix_length,
             gateway: self.gateway,
             dns: self.dns.clone(),
-            lease_seconds: self.lease_seconds,
+            dns_suffix: self.dns_suffix.clone(),
+            timing: self.timing,
         }
     }
 }

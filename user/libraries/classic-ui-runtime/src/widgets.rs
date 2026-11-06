@@ -203,7 +203,10 @@ pub fn validate_state(value: u32) -> io::Result<()> {
             | state::ALIGN_RIGHT
             | state::CLIENT_EDGE
             | state::BORDERLESS
-            | state::DROPDOWN_LIST)
+            | state::DROPDOWN_LIST
+            | state::FILE_DRAG
+            | state::EDIT_LABELS
+            | state::KEYBOARD_CONTEXT_MENU)
         != 0
     {
         return Err(invalid("unknown widget state"));
@@ -219,6 +222,9 @@ pub struct Tree {
     pub popup: Option<u64>,
     pub focus: Option<u64>,
     pub armed: Option<u64>,
+    pub file_press: Option<super::interaction::FilePress>,
+    /// 一次选中标签的单击（控件、行与等待双击的截止时刻）。
+    pub rename_click: Option<(u64, u64, std::time::Instant)>,
     pub pointer: (i32, i32),
     /// Tree 独占布局失效；内容/规则或 configure 改变才重新排版，普通指针移动复用现有几何。
     pub layout_dirty: bool,
@@ -238,6 +244,8 @@ impl Tree {
             popup: None,
             focus: None,
             armed: None,
+            file_press: None,
+            rename_click: None,
             pointer: (-1, -1),
             layout_dirty: true,
             layout_bounds: None,

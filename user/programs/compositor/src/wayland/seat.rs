@@ -134,7 +134,11 @@ impl Client {
                 };
                 if let Some(surface) = surface {
                     let state = self.surface_mut(surface)?;
-                    if state.xdg.is_some() || state.layer.is_some() || state.subsurface_role {
+                    if state.xdg.is_some()
+                        || state.layer.is_some()
+                        || state.subsurface_role
+                        || state.drag_icon
+                    {
                         return Err(Fail::new(
                             object,
                             wl_pointer::Error::Role as u32,

@@ -169,7 +169,7 @@ def check_session(session) -> None:
     # 原目录删除后已空；返回上级并选中首项，只有导航和选择都成功才会出现标签高亮。
     tap(session, 'backspace')
     # 我的文档的 shell parent 是桌面；等回收站图标真正 commit，不能把 Down 发送给尚未替换的空列表。
-    wait_screen(session, [icon_sample("recycle-bin-empty-32.bmp", (270, 155), (255, 255, 255))], 'shell parent navigation committed')
+    wait_screen(session, [icon_sample("recycle-bin-full-32.bmp", (270, 155), (255, 255, 255))], 'shell parent navigation committed')
     tap(session, 'down')
     wait_screen(session, [(EXPLORER_FIRST_LABEL, SELECTED)], 'taskbar activation navigation and keyboard focus')
     # 非 root 没有原始音频设备权限：单击托盘喇叭弹出面板（不是窗口），Esc 关闭；右键菜单才打开完整音量窗口。

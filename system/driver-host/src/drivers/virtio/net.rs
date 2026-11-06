@@ -11,9 +11,14 @@ use super::{
     queue::{DmaBuffer, VirtQueue},
 };
 use crate::{interrupt::InterruptError, interrupt::InterruptHandler, interrupt::InterruptVector};
-use device_model::network::{NetworkDevice, NetworkError, NetworkStatistics};
+use device_model::network::{NetworkDevice, NetworkError, NetworkLink, NetworkStatistics};
 
 const VIRTIO_NET_F_MAC: u64 = 1 << 5;
+const VIRTIO_NET_F_STATUS: u64 = 1 << 16;
+const VIRTIO_NET_F_SPEED_DUPLEX: u64 = 1 << 63;
+const STATUS_OFFSET: usize = 6;
+const SPEED_OFFSET: usize = 12;
+const VIRTIO_NET_S_LINK_UP: u16 = 1;
 const RX_QUEUE: u32 = 0;
 const TX_QUEUE: u32 = 1;
 const QUEUE_SIZE: u16 = 64;
@@ -56,6 +61,8 @@ struct QueueState {
 pub(crate) struct VirtIONetworkDevice {
     device: VirtIODevice,
     mac: [u8; 6],
+    /// 初始化后固定的配置能力；缺少它会读到设备未公布的 status/speed 字段。
+    features: u64,
     // OWNER: one queue lock serializes descriptor recycling, RX repost and TX slot state. IRQ only
     // acknowledges MMIO and publishes a deferred bit; queue consumers run exclusively at the
     // user-return/idle safe point, so no interrupt path may reenter this ordinary lock.
@@ -93,7 +100,9 @@ impl VirtIONetworkDevice {
         if features & required_features != required_features {
             return None;
         }
-        device.set_driver_features(required_features).ok()?;
+        let features =
+            required_features | features & (VIRTIO_NET_F_STATUS | VIRTIO_NET_F_SPEED_DUPLEX);
+        device.set_driver_features(features).ok()?;
         let status = device.get_status().ok()?;
         device
             .set_status(status | VIRTIO_CONFIG_S_FEATURES_OK)
@@ -140,14 +149,22 @@ impl VirtIONetworkDevice {
             .ok()?;
         transmit_by_head.resize(transmit.size as usize, None);
 
-        let config = device.read_config_u64(0).ok()?.to_le_bytes();
-        let mac = config[..6].try_into().ok()?;
+        let mac = device
+            .read_config_consistent(|device| {
+                let mut mac = [0; 6];
+                for (offset, byte) in mac.iter_mut().enumerate() {
+                    *byte = device.read_config_u8(offset)?;
+                }
+                Ok(mac)
+            })
+            .ok()?;
         let status = device.get_status().ok()?;
         device.set_status(status | VIRTIO_CONFIG_S_DRIVER_OK).ok()?;
         device.notify_queue(RX_QUEUE).ok()?;
         Arc::try_new(Self {
             device,
             mac,
+            features,
             activity: native_runtime::sync::Once::new(),
             queues: Mutex::new(QueueState {
                 receive,
@@ -210,6 +227,32 @@ impl NetworkDevice for VirtIONetworkDevice {
     fn driver(&self) -> &'static str {
         // Linux drivers/net/virtio_net.c 的 driver 名。
         "virtio_net"
+    }
+
+    fn link(&self) -> Result<NetworkLink, NetworkError> {
+        if self.device.get_status().map_err(|_| NetworkError::Device)? & VIRTIO_CONFIG_S_DRIVER_OK
+            == 0
+        {
+            return Err(NetworkError::Device);
+        }
+        // VirtIO §5.1.4.2：未协商 STATUS 时假定链路可用。
+        // 每次管理查询从同一配置代际读事实，配置 IRQ 无须维护镜像。
+        self.device
+            .read_config_consistent(|device| {
+                let carrier = self.features & VIRTIO_NET_F_STATUS == 0
+                    || device.read_config_u16(STATUS_OFFSET)? & VIRTIO_NET_S_LINK_UP != 0;
+                let speed_mbps = if self.features & VIRTIO_NET_F_SPEED_DUPLEX != 0 {
+                    let speed = device.read_config_u32(SPEED_OFFSET)?;
+                    (speed <= i32::MAX as u32).then_some(speed)
+                } else {
+                    None
+                };
+                Ok(NetworkLink {
+                    carrier,
+                    speed_mbps,
+                })
+            })
+            .map_err(|_| NetworkError::Device)
     }
 
     fn receive(&self, frame: &mut [u8]) -> Result<usize, NetworkError> {

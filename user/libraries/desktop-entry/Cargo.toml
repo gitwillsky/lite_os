@@ -9,6 +9,8 @@ crate-type = ["dylib", "rlib"]
 
 [dependencies]
 liteos-runtime = { path = "../liteos-runtime" }
+linux-uapi.workspace = true
+calendar = { path = "../calendar" }
 glob = "=0.3.3"
 roxmltree = "=0.21.1"
 

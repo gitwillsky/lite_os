@@ -168,7 +168,7 @@ impl Client {
             return Ok(());
         };
         let state = self.surface_mut(surface)?;
-        if state.xdg.is_some() || state.layer.is_some() || state.cursor {
+        if state.xdg.is_some() || state.layer.is_some() || state.cursor || state.drag_icon {
             return Err(Fail::new(
                 object,
                 shell::Error::Role as u32,

@@ -18,7 +18,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 
-use native_abi::{PortPacket, Status};
+use native_abi::{PortPacket, Status, signals};
 
 use crate::sync::Mutex;
 use crate::{Handle, Port};
@@ -217,6 +217,39 @@ impl Executor {
             handle,
             signals,
             key: None,
+        }
+    }
+
+    /// 读取 channel 消息；异步等待可读、对端退出或绝对时限。
+    ///
+    /// # Errors
+    ///
+    /// 对端关闭、读取失败或到期返回 `ERR_TIMED_OUT`。
+    pub async fn read_until(
+        &'static self,
+        channel: &crate::Channel,
+        deadline: i64,
+    ) -> Result<crate::Message, Status> {
+        loop {
+            match channel.read() {
+                Err(native_abi::ERR_SHOULD_WAIT) => {}
+                result => return result,
+            }
+            let mut readable = core::pin::pin!(
+                self.on_signals(channel, signals::READABLE | signals::PEER_CLOSED,)
+            );
+            if deadline == native_abi::DEADLINE_INFINITE {
+                readable.await?;
+                continue;
+            }
+            let mut timeout = core::pin::pin!(self.sleep_until(deadline));
+            core::future::poll_fn(|cx| {
+                if timeout.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(Err(native_abi::ERR_TIMED_OUT));
+                }
+                readable.as_mut().poll(cx).map(|result| result.map(drop))
+            })
+            .await?;
         }
     }
 

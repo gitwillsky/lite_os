@@ -1,11 +1,13 @@
 //! 稳定 ABI 表的唯一导入入口，以及错误和输出缓冲编解码；Rust owner 不穿过二进制边界。
 use classic_ui_abi::{self as abi, Api, Text};
 use std::{
+    cell::RefCell,
+    collections::BTreeMap,
     ffi::c_void,
     fmt,
     marker::PhantomData,
     ptr::{self, NonNull},
-    rc::Rc,
+    rc::{Rc, Weak},
 };
 
 #[link(name = "liteos_ui")]
@@ -45,6 +47,7 @@ pub fn text(value: &str) -> Text {
 pub struct Connection {
     pub api: &'static Api,
     pub context: NonNull<c_void>,
+    pub(crate) sources: RefCell<BTreeMap<u64, Weak<RefCell<crate::readiness::Ready>>>>,
     // Rc marker 使所有拥有连接的句柄不能 Send/Sync；禁止在另一线程借用裸 context。
     _thread: PhantomData<Rc<()>>,
 }
@@ -80,14 +83,30 @@ impl Connection {
         Ok(Rc::new(Self {
             api,
             context,
+            sources: RefCell::default(),
             _thread: PhantomData,
         }))
     }
-    pub fn clipboard(&self) -> Result<Option<std::os::unix::net::UnixStream>> {
+    pub(crate) fn watch(self: &Rc<Self>, fd: std::os::fd::OwnedFd) -> Result<crate::AsyncFd> {
+        let source = crate::AsyncFd::new(self.clone(), fd)?;
+        let mut sources = self.sources.borrow_mut();
+        sources.retain(|_, source| source.strong_count() != 0);
+        sources.insert(source.id, Rc::downgrade(&source.ready));
+        Ok(source)
+    }
+
+    pub fn clipboard(&self, mime: Option<&str>) -> Result<Option<std::os::unix::net::UnixStream>> {
         use std::os::fd::{FromRawFd, OwnedFd};
         let mut fd = -1;
         // SAFETY: context 存活，成功返回一个新 fd 的唯一所有权，本输出不与 context 重叠。
-        let code = unsafe { (self.api.clipboard_get)(self.context.as_ptr(), &mut fd) };
+        let code = unsafe {
+            match mime {
+                Some(mime) => {
+                    (self.api.clipboard_receive)(self.context.as_ptr(), text(mime), &mut fd)
+                }
+                None => (self.api.clipboard_get)(self.context.as_ptr(), &mut fd),
+            }
+        };
         if code == abi::PENDING {
             return Ok(None);
         }

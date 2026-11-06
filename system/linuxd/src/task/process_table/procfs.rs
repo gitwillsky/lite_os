@@ -964,6 +964,9 @@ impl crate::fs::NetLinkSource for KernelProcSource {
                     mtu: snapshot.mtu,
                     mac: snapshot.mac,
                     up: snapshot.up,
+                    carrier: snapshot.carrier(),
+                    operstate: snapshot.operstate(),
+                    speed_mbps: snapshot.link.and_then(|link| link.speed_mbps),
                     driver: snapshot.driver,
                 }),
         );

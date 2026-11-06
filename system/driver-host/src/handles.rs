@@ -17,12 +17,14 @@ static DIRECTORY: Once<Arc<Directory>> = Once::new();
 pub(crate) fn install(startup: &mut Startup) {
     DIRECTORY.call_once(|| {
         let directory = Directory::new().expect("device directory allocation");
-        directory
-            .serve(
-                Channel::from_handle(startup.take(launch_protocol::driver_host::DIRECTORY)),
-                ALL_CLASSES,
-            )
-            .expect("device directory service");
+        for role in [
+            launch_protocol::driver_host::DIRECTORY,
+            launch_protocol::driver_host::OPEN_DIRECTORY,
+        ] {
+            directory
+                .serve(Channel::from_handle(startup.take(role)), ALL_CLASSES)
+                .expect("device directory service");
+        }
         directory
     });
 }

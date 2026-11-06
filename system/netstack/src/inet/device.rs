@@ -10,7 +10,7 @@ use smoltcp::{
 use super::device_error;
 use crate::packet;
 use device_model::network::{
-    NetworkCompletion, NetworkDevice, NetworkError, NetworkStatistics, NetworkTransmit,
+    NetworkCompletion, NetworkDevice, NetworkError, NetworkLink, NetworkStatistics, NetworkTransmit,
 };
 
 const ETHERNET_MTU: usize = 1514;
@@ -56,6 +56,13 @@ impl ProtocolDevice {
     pub(super) fn driver(&self) -> Option<&'static str> {
         match self {
             Self::Ethernet(device) => Some(device.driver()),
+            Self::Loopback(_) => None,
+        }
+    }
+    /// 管理面读取当前物理链路；回环无物理设备，驱动读取失败也返回 None。
+    pub(super) fn link(&self) -> Option<NetworkLink> {
+        match self {
+            Self::Ethernet(device) => device.device.link().ok(),
             Self::Loopback(_) => None,
         }
     }

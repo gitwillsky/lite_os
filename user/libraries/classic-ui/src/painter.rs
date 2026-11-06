@@ -22,7 +22,7 @@ pub struct Painter<'a> {
     /// 正在使用的字体；默认是消息字体，`with_role`/`with_font` 期间临时替换。
     pub(crate) typeface: &'a Typeface,
     pub(crate) scale: i32,
-    /// 是否画助记键下划线（Windows 2000 在按 Alt 或 Tab 之前隐藏它，见 `interaction.md` N1/N2）。
+    /// 是否画助记键下划线，由窗口的键盘提示状态决定。
     cues: bool,
 }
 
@@ -362,7 +362,7 @@ impl<'a> Painter<'a> {
     }
 
     /// 助记键字母的字符区间：标签里形如 `(F)` 的括号内单个 ASCII 字母，返回字母在 `label` 中的字节范围。
-    fn mnemonic_span(label: &str) -> Option<std::ops::Range<usize>> {
+    pub(crate) fn mnemonic_span(label: &str) -> Option<std::ops::Range<usize>> {
         let open = label.rfind('(')?;
         let bytes = label.as_bytes();
         (bytes.get(open + 2) == Some(&b')') && bytes[open + 1].is_ascii_alphabetic())

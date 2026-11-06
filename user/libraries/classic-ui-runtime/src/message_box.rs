@@ -80,8 +80,12 @@ impl Context {
             .get_mut(&handles.buttons[0])
             .expect("default button")
             .state |= state::DEFAULT;
-        let app_id = self.host(parent)?.app_id.clone();
-        let window = self.window(title, &app_id, (400, 200), true, parent, true)?;
+        let app_id = if parent == 0 {
+            String::new()
+        } else {
+            self.host(parent)?.app_id.clone()
+        };
+        let window = self.window(title, &app_id, (400, 200), true, parent, parent != 0)?;
         self.host_mut(window)?.body = super::context::WindowBody::Widgets(tree);
         handles.window = window;
         Ok(handles)

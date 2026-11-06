@@ -1,6 +1,181 @@
 //! Typed filesystem capacity queries and read-only file mappings absent from std.
 
-use std::{fs::File, io, os::fd::AsRawFd, path::Path, ptr::NonNull};
+use std::{
+    fs::File,
+    io,
+    os::fd::AsRawFd,
+    path::{Path, PathBuf},
+    ptr::NonNull,
+};
+
+/// Check whether the effective identity can create entries in an existing directory.
+#[cfg(target_os = "linux")]
+pub fn can_create_in(path: &Path) -> io::Result<()> {
+    use std::{ffi::CString, os::unix::ffi::OsStrExt};
+    const AT_FDCWD: i32 = -100;
+    const AT_EACCESS: i32 = 0x200;
+    const WRITE_AND_SEARCH: i32 = 3;
+    let path = CString::new(path.as_os_str().as_bytes())?;
+    // SAFETY: The identity queries take no arguments. Equal credentials can use original faccessat.
+    let same_identity = unsafe {
+        crate::raw::getuid() == crate::raw::geteuid()
+            && crate::raw::getgid() == crate::raw::getegid()
+    };
+    let flags = if same_identity { 0 } else { AT_EACCESS };
+    // SAFETY: The pathname is live and NUL-terminated. No pointer is retained.
+    let result = unsafe { crate::raw::faccessat(AT_FDCWD, path.as_ptr(), WRITE_AND_SEARCH, flags) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(io::Error::last_os_error())
+    }
+}
+
+/// Decode an octal-escaped pathname field from the Linux mount table.
+pub fn mount_path(mut field: &[u8]) -> PathBuf {
+    use std::{ffi::OsString, os::unix::ffi::OsStringExt};
+    let mut bytes = Vec::with_capacity(field.len());
+    while let Some((&byte, rest)) = field.split_first() {
+        if let (b'\\', [a @ b'0'..=b'3', b @ b'0'..=b'7', c @ b'0'..=b'7', tail @ ..]) =
+            (byte, rest)
+        {
+            bytes.push((a - b'0') * 64 + (b - b'0') * 8 + (c - b'0'));
+            field = tail;
+        } else {
+            bytes.push(byte);
+            field = rest;
+        }
+    }
+    PathBuf::from(OsString::from_vec(bytes))
+}
+
+/// 在同目录改名；名称不能空、含 / 或 NUL，也不能是 . 或 ..。
+/// 目标已存在返回 AlreadyExists，其他失败返回 I/O 错误；不覆盖竞争创建的文件。
+pub fn rename_leaf(path: &Path, new_name: &str) -> io::Result<PathBuf> {
+    if new_name.is_empty() || new_name.contains(['/', '\0']) || matches!(new_name, "." | "..") {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "文件名不能为空，也不能包含 / 或 NUL",
+        ));
+    }
+    let target = path.with_file_name(new_name);
+    if target == path {
+        return Ok(target);
+    }
+    rename_noreplace(path, &target).map_err(|error| {
+        if error.kind() == io::ErrorKind::AlreadyExists {
+            io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("已存在名为“{new_name}”的文件或文件夹。"),
+            )
+        } else {
+            error
+        }
+    })?;
+    Ok(target)
+}
+/// An inotify instance following one directory. The owner consumes changes and reads a fresh listing.
+pub struct DirectoryChanges {
+    file: File,
+    #[cfg(target_os = "linux")]
+    watch: Option<i32>,
+}
+
+impl DirectoryChanges {
+    /// Open a nonblocking, close-on-exec notification instance.
+    ///
+    /// # Errors
+    ///
+    /// Inotify is unavailable or its descriptor/instance limit was reached.
+    pub fn open() -> io::Result<Self> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::os::fd::FromRawFd;
+            // SAFETY: inotify_init1 takes only flags; success transfers an owned descriptor.
+            let fd = unsafe {
+                crate::raw::inotify_init1(crate::raw::O_CLOEXEC | crate::raw::O_NONBLOCK)
+            };
+            if fd < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: fd is newly allocated and uniquely owned.
+            Ok(Self {
+                file: unsafe { File::from_raw_fd(fd) },
+                watch: None,
+            })
+        }
+        #[cfg(not(target_os = "linux"))]
+        Err(io::ErrorKind::Unsupported.into())
+    }
+
+    /// Set the single directory to monitor; None clears it. Changes include entry and metadata mutations.
+    ///
+    /// # Errors
+    ///
+    /// The new directory is inaccessible, invalid or beyond the watch limit. The previous watch is retired.
+    pub fn follow(&mut self, path: Option<&Path>) -> io::Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::{ffi::CString, os::unix::ffi::OsStrExt};
+            const DIRECTORY_MUTATIONS: u32 =
+                0x4 | 0x8 | 0x40 | 0x80 | 0x100 | 0x200 | 0x400 | 0x800;
+            const ONLY_DIRECTORY: u32 = 0x0100_0000;
+            let next = path
+                .map(|path| {
+                    let path = CString::new(path.as_os_str().as_bytes())
+                        .map_err(|_| io::ErrorKind::InvalidInput)?;
+                    // SAFETY: fd is owned by this instance and path is live and NUL-terminated.
+                    let watch = unsafe {
+                        crate::raw::inotify_add_watch(
+                            self.file.as_raw_fd(),
+                            path.as_ptr(),
+                            DIRECTORY_MUTATIONS | ONLY_DIRECTORY,
+                        )
+                    };
+                    if watch < 0 {
+                        Err(io::Error::last_os_error())
+                    } else {
+                        Ok(watch)
+                    }
+                })
+                .transpose();
+            let current = next.as_ref().ok().copied().flatten();
+            if let Some(old) = std::mem::replace(&mut self.watch, current)
+                && Some(old) != current
+            {
+                // SAFETY: fd remains live; removing an already retired watch is harmless.
+                let _ = unsafe { crate::raw::inotify_rm_watch(self.file.as_raw_fd(), old) };
+            }
+            next.map(drop)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = path;
+            Err(io::ErrorKind::Unsupported.into())
+        }
+    }
+
+    /// Borrow the read end for readiness notifications. Read from the original descriptor after readiness.
+    pub fn descriptor(&self) -> std::os::fd::BorrowedFd<'_> {
+        use std::os::fd::AsFd;
+        self.file.as_fd()
+    }
+
+    /// Consume one bounded batch, reporting whether the watched directory may have changed.
+    ///
+    /// # Errors
+    ///
+    /// The kernel rejected a read. An empty queue returns false.
+    pub fn drain(&mut self) -> io::Result<bool> {
+        use std::io::Read;
+        let mut buffer = [0u8; 8192];
+        match self.file.read(&mut buffer) {
+            Ok(bytes) => Ok(bytes != 0),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(false),
+            Err(error) => Err(error),
+        }
+    }
+}
 
 /// Atomically moves `from` to `to` without replacing an existing destination.
 ///

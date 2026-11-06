@@ -3,6 +3,9 @@ extern crate liteos_runtime as _;
 mod associations;
 mod mime;
 pub use associations::Associations;
+pub mod file_uris;
+pub mod fileops;
+
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -79,18 +82,22 @@ impl Entry {
     }
 }
 
-/// 按 XDG Base Directory 顺序返回用户与系统数据目录。
-///
-/// 用户目录优先，忽略非绝对 XDG 路径；未设置时使用规范默认值。返回值不要求目录已经存在。
-pub fn data_directories() -> Vec<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let user = std::env::var_os("XDG_DATA_HOME")
+fn user_data_directory(home: Option<&Path>) -> Option<PathBuf> {
+    std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
         .filter(|path| path.is_absolute())
         .or_else(|| {
             home.filter(|path| path.is_absolute())
                 .map(|path| path.join(".local/share"))
-        });
+        })
+}
+
+/// 按 XDG Base Directory 顺序返回用户与系统数据目录。
+///
+/// 用户目录优先，忽略非绝对 XDG 路径；未设置时使用规范默认值。返回值不要求目录已经存在。
+pub fn data_directories() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let user = user_data_directory(home.as_deref());
     let system = std::env::var_os("XDG_DATA_DIRS")
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "/usr/local/share:/usr/share".into());
@@ -98,6 +105,8 @@ pub fn data_directories() -> Vec<PathBuf> {
         .chain(std::env::split_paths(&system).filter(|path| path.is_absolute()))
         .collect()
 }
+
+pub mod trash;
 
 /// 读取一个标准应用快捷方式。
 ///

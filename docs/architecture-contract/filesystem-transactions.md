@@ -279,6 +279,7 @@ route_snapshot，不从接口配置重建路由。冷读取的 Vec/proc text 分
 sysfs `/sys/class/net` 由 `sysfs_net` 投影：`NetLinkSource`（task 层 `KernelProcSource` 实现，经
 `MountEnvironment::net_links` 注入）提供挂载者 NET 与实际接口快照，`NetView` 在 mount 时只弱引用该 NET，
 NET 销毁后列表为空；每次 lookup/read 重新取快照，以 ifindex 为节点身份，无缓存、global 或锁。
+sysfs 生成的属性使用 `DataBacking::Snapshot`，读取直接进入属性 owner，避免持久页缓存把首次读值留给后续打开。
 `InterfaceSnapshot::driver` 来自 `NetworkDevice::driver`（loopback 无驱动），`device/uevent` 输出 `DRIVER=`；
 `flags` 复用 `InterfaceSnapshot::flags`，与 `SIOCGIFFLAGS`、rtnetlink 同源。`SysFileSystem::new` 只由 sysfs 类型调用。
 

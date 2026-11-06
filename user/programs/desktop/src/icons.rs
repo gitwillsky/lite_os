@@ -1,4 +1,4 @@
-//! 桌面图标：三个系统图标加 `~/Desktop` 里的条目；按网格摆放，可拖动，位置按用户持久化。
+//! 桌面图标：系统图标加 `~/Desktop` 里的条目；按网格摆放，可拖动，位置按用户持久化。
 use crate::start::Place;
 use canvas::Rect;
 use std::{
@@ -6,7 +6,7 @@ use std::{
     fs, io,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
-    time::SystemTime,
+    time::{Duration, Instant, SystemTime},
 };
 
 /// 第一个网格单元的左上角，逻辑像素；单元尺寸是主题的图标间距（IconSpacing × IconVerticalSpacing）。
@@ -42,6 +42,10 @@ pub struct Icons {
     directory: PathBuf,
     layout_file: PathBuf,
     stamp: Option<SystemTime>,
+    home: PathBuf,
+    // Bound the mount-table scan independently of pointer and frame activity.
+    next_trash_check: Instant,
+    pub trash_full: bool,
 }
 
 fn system_icons() -> Vec<Icon> {
@@ -122,8 +126,12 @@ impl Icons {
             directory,
             layout_file,
             stamp: None,
+            home: home.to_owned(),
+            next_trash_check: Instant::now(),
+            trash_full: false,
         };
         icons.refresh();
+        icons.poll_trash();
         icons
     }
 
@@ -140,6 +148,19 @@ impl Icons {
         }
         self.refresh();
         true
+    }
+
+    /// 回收站满/空状态变化时返回 true；目录不存在的账户使用空图标。
+    pub fn poll_trash(&mut self) -> bool {
+        let now = Instant::now();
+        if now < self.next_trash_check {
+            return false;
+        }
+        self.next_trash_check = now + Duration::from_secs(1);
+        let Ok(full) = desktop_entry::trash::has_items(&self.home) else {
+            return false;
+        };
+        std::mem::replace(&mut self.trash_full, full) != full
     }
 
     /// 重新读取桌面文件夹并重新分配位置：保存过且仍空闲的用保存位置，其余按列顺序填空格。
@@ -270,6 +291,32 @@ impl Icons {
         fs::write(&self.layout_file, text)
     }
 
+    /// 同目录改名并保留原来的网格位置；文件系统冲突由原子 rename 裁决。
+    pub fn rename(&mut self, path: &Path, name: &str) -> io::Result<PathBuf> {
+        let target = linux_uapi::filesystem::rename_leaf(path, name)?;
+        if target == path {
+            return Ok(target);
+        }
+        if let Some(index) = self
+            .items
+            .iter()
+            .position(|icon| icon.target == Target::Path(path.to_owned()))
+        {
+            for (icon, cell) in self.items.iter().zip(&self.cells) {
+                self.saved.insert(icon.key.clone(), *cell);
+            }
+            let old = &self.items[index].key;
+            let cell = self.cells[index];
+            self.saved.remove(old);
+            self.saved.insert(name.to_owned(), cell);
+        }
+        self.refresh();
+        if let Err(error) = self.save() {
+            eprintln!("desktop: cannot persist renamed icon position: {error}");
+        }
+        Ok(target)
+    }
+
     /// 忘记所有保存的位置，图标按名称顺序重新排列。
     pub fn auto_arrange(&mut self) -> io::Result<()> {
         self.saved.clear();
@@ -281,7 +328,7 @@ impl Icons {
     }
 
     /// 在桌面文件夹里新建"新建文件夹"（重名加序号）。
-    pub fn new_folder(&mut self) -> io::Result<()> {
+    pub fn new_folder(&mut self) -> io::Result<PathBuf> {
         let mut path = self.directory.join("新建文件夹");
         for n in 2.. {
             match fs::create_dir(&path) {
@@ -295,6 +342,6 @@ impl Icons {
             }
         }
         self.refresh();
-        Ok(())
+        Ok(path)
     }
 }

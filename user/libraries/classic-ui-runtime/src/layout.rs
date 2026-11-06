@@ -377,7 +377,17 @@ impl Tree {
                                         + super::outline::Outline::label_width(text)
                                         + 2
                                 }
-                                None => text + 8 + if icon { 20 } else { 0 },
+                                None => {
+                                    let check =
+                                        node.table.as_ref().and_then(|table| table.check(*id));
+                                    text + 8
+                                        + if icon { 20 } else { 0 }
+                                        + if check.is_some() {
+                                            super::table::CHECK_GUTTER
+                                        } else {
+                                            0
+                                        }
+                                }
                             }
                         })
                         .max()

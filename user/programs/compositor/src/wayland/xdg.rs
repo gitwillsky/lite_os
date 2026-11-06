@@ -124,7 +124,7 @@ impl Client {
             xdg_wm_base::Request::CreatePositioner { id } => self.create_positioner(id, version),
             xdg_wm_base::Request::GetXdgSurface { id, surface } => {
                 let state = self.surface_mut(surface)?;
-                if state.xdg.is_some() || state.layer.is_some() || state.cursor {
+                if state.xdg.is_some() || state.layer.is_some() || state.cursor || state.drag_icon {
                     return Err(Fail::new(
                         object,
                         xdg_wm_base::Error::Role as u32,

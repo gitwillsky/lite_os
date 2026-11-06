@@ -1,12 +1,11 @@
 //! sysfs 的网络接口子树：`/sys/class/net/<接口>`。
 //!
 //! 内容在每次读取时从挂载者网络命名空间的实际接口表取快照，不缓存；接口以 ifindex 为稳定身份。属性文本与
-//! Linux `net/core/net-sysfs.c` 相同：`ifindex`、`type`、`flags`、`mtu`、`address`、`operstate`、`carrier`、`uevent`；
+//! Linux `net/core/net-sysfs.c` 相同：`ifindex`、`type`、`flags`、`mtu`、`address`、`operstate`、`carrier`、`speed`、`uevent`；
 //! 有驱动的接口另有 `device/uevent`（`DRIVER=`），供 ip、udhcpc、NetworkManager 一类工具与资源管理器枚举。
 //!
 //! 与 Linux 的差别：`/sys/class/net/<接口>` 与 `device` 是目录，而不是指向 `/sys/devices/...` 的符号链接
-//! （sysfs 在这里没有符号链接节点，与 `/sys/dev/block` 的处理一致）；`carrier` 跟随管理状态，
-//! 因为网络设备 seam 不报告物理链路状态。
+//! （sysfs 在这里没有符号链接节点，与 `/sys/dev/block` 的处理一致）。
 
 use alloc::{
     sync::{Arc, Weak},
@@ -37,6 +36,9 @@ pub(crate) struct NetLinkSnapshot {
     pub(crate) mtu: i32,
     pub(crate) mac: [u8; 6],
     pub(crate) up: bool,
+    pub(crate) carrier: Option<bool>,
+    pub(crate) operstate: u8,
+    pub(crate) speed_mbps: Option<u32>,
     pub(crate) driver: Option<network_protocol::DriverName>,
 }
 
@@ -87,9 +89,10 @@ pub(super) enum Attr {
     Operstate,
     Carrier,
     Uevent,
+    Speed,
 }
 
-const ATTRS: [(Attr, &[u8]); 8] = [
+const ATTRS: [(Attr, &[u8]); 9] = [
     (Attr::Ifindex, b"ifindex"),
     (Attr::Type, b"type"),
     (Attr::Flags, b"flags"),
@@ -98,6 +101,7 @@ const ATTRS: [(Attr, &[u8]); 8] = [
     (Attr::Operstate, b"operstate"),
     (Attr::Carrier, b"carrier"),
     (Attr::Uevent, b"uevent"),
+    (Attr::Speed, b"speed"),
 ];
 
 /// 网络子树中的一个节点；`u32` 是接口的 ifindex。
@@ -249,14 +253,22 @@ pub(super) fn contents(view: &NetView, node: NetSysNode) -> Result<Vec<u8>, File
         // RFC 2863 operstate：loopback 不报告链路，Linux 显示 unknown。
         Attr::Operstate => try_format_bytes(format_args!(
             "{}\n",
-            match (link.up, link.loopback) {
-                (false, _) => "down",
-                (true, true) => "unknown",
-                (true, false) => "up",
+            match link.operstate {
+                2 => "down",
+                6 => "up",
+                _ => "unknown",
             }
         )),
-        Attr::Carrier if link.up => try_format_bytes(format_args!("1\n")),
+        Attr::Carrier if link.up => {
+            let carrier = link.carrier.ok_or(FileSystemError::IoError)?;
+            try_format_bytes(format_args!("{}\n", u8::from(carrier)))
+        }
         Attr::Carrier => Err(FileSystemError::InvalidOperation),
+        Attr::Speed if link.up && !link.loopback => {
+            let speed = link.speed_mbps.map_or(-1, |speed| speed as i32);
+            try_format_bytes(format_args!("{speed}\n"))
+        }
+        Attr::Speed => Err(FileSystemError::InvalidOperation),
         Attr::Uevent => {
             try_format_bytes(format_args!("INTERFACE={name}\nIFINDEX={}\n", link.index))
         }

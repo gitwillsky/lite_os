@@ -156,7 +156,7 @@ pub(super) unsafe extern "C" fn alignment(
                 .get_mut(&id)
                 .and_then(|node| node.table.as_mut())
                 .ok_or_else(|| invalid("not a list"))?;
-            if !table.columns.iter().any(|(id, _)| *id == column) {
+            if !table.columns.iter().any(|(id, ..)| *id == column) {
                 return Err(invalid("unknown column"));
             }
             table.alignments.insert(column, alignment);

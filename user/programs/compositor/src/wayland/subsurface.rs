@@ -61,6 +61,7 @@ impl Client {
                 if child.xdg.is_some()
                     || child.layer.is_some()
                     || child.cursor
+                    || child.drag_icon
                     || child.subsurface.is_some()
                 {
                     return Err(bad(

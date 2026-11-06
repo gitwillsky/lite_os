@@ -7,6 +7,7 @@
 - 远程开发入口使用 SSH 2（[RFC 4251](https://www.rfc-editor.org/rfc/rfc4251)）、OpenSSH 的 SFTP 子系统与 Unix socket 转发。
   服务端来自 Alpine v3.22 的 OpenSSH `10.0_p1-r11`，各架构包摘要由 `scripts/userland/artifacts.py` 固定。
 - 桌面访问遵循 [RFB 3.8（RFC 6143）](https://www.rfc-editor.org/rfc/rfc6143)，在认证后的 SSH 流内使用 Raw 帧更新。
+- DHCPv4 状态、租约计时与报文选项分别以 [RFC 2131](https://www.rfc-editor.org/rfc/rfc2131) 和 [RFC 2132](https://www.rfc-editor.org/rfc/rfc2132) 为准。
 
 ### Linux arm64 + riscv64 ABI
 

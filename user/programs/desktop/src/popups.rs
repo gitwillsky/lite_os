@@ -11,6 +11,8 @@ pub enum Action {
     TaskManager,
     /// 打开完整的"音量控制"窗口。
     VolumeProperties,
+    NetworkStatus(u32),
+    DisableNetwork(u32),
     /// 打开桌面上第 n 个图标。
     OpenIcon(usize),
     /// 对桌面上第 n 个图标执行资源管理器动词（删除、重命名、属性）。
@@ -19,6 +21,14 @@ pub enum Action {
     SystemProperties,
     /// 在资源管理器中打开外壳位置。
     OpenPlace(crate::start::Place),
+    RenameIcon(usize),
+    DeleteIcon(usize),
+    FileSelection {
+        index: usize,
+        cut: bool,
+    },
+    PasteFiles,
+    EmptyRecycleBin,
     /// 在桌面文件夹里新建文件夹。
     NewFolder,
     /// 打开“任务栏属性”。
@@ -39,6 +49,7 @@ pub struct Item {
     pub separator_before: bool,
     /// 默认项（双击图标等价的命令），粗体显示。
     pub default: bool,
+    pub disabled: bool,
 }
 
 fn item(label: &'static str, action: Action) -> Item {
@@ -48,6 +59,7 @@ fn item(label: &'static str, action: Action) -> Item {
         action,
         separator_before: false,
         default: false,
+        disabled: false,
     }
 }
 
@@ -121,6 +133,22 @@ pub fn window_items(id: ToplevelId, info: &Toplevel) -> Vec<Item> {
 pub fn tray_volume_items() -> Vec<Item> {
     vec![item("调整音频属性(A)", Action::VolumeProperties)]
 }
+/// netshell.dll 15101/15102 的以太网通知菜单。`index` 是打开菜单时已选中的可用链路。
+pub fn tray_network_items(index: Option<u32>, disabling: bool) -> Vec<Item> {
+    let mut open = item(
+        "打开网络和拨号连接(O)",
+        Action::OpenPlace(crate::start::Place::NetworkConnections),
+    );
+    let Some(index) = index else {
+        return vec![open];
+    };
+    open.separator_before = true;
+    let mut disable = item("禁用(D)", Action::DisableNetwork(index));
+    disable.disabled = disabling;
+    let mut status = item("状态(S)", Action::NetworkStatus(index));
+    status.default = true;
+    vec![disable, status, open]
+}
 /// USB 设备通知图标的菜单。
 pub fn tray_usb_items() -> Vec<Item> {
     vec![item("拔出或弹出硬件(O)", Action::UsbDevices)]
@@ -146,8 +174,14 @@ pub fn icon_items(index: usize, kind: IconKind) -> Vec<Item> {
                     false,
                 );
             }
-            add("删除(D)", Action::IconVerb(index, "delete"), true);
-            add("重命名(M)", Action::IconVerb(index, "rename"), false);
+            add("剪切(T)", Action::FileSelection { index, cut: true }, true);
+            add(
+                "复制(C)",
+                Action::FileSelection { index, cut: false },
+                false,
+            );
+            add("删除(D)", Action::DeleteIcon(index), true);
+            add("重命名(M)", Action::RenameIcon(index), false);
             add("属性(R)", Action::IconVerb(index, "properties"), true);
         }
         IconKind::MyComputer => add("属性(R)", Action::SystemProperties, true),
@@ -156,6 +190,12 @@ pub fn icon_items(index: usize, kind: IconKind) -> Vec<Item> {
             Action::OpenPlace(crate::start::Place::NetworkConnections),
             true,
         ),
+        IconKind::RecycleBin { full } => {
+            let mut empty = item("清空回收站(B)", Action::EmptyRecycleBin);
+            empty.disabled = !full;
+            empty.separator_before = true;
+            items.push(empty);
+        }
         IconKind::Other => {}
     }
     items
@@ -169,11 +209,17 @@ pub enum IconKind {
     Path,
     MyComputer,
     NetworkPlaces,
-    /// 其余系统图标（我的文档、回收站……）。
+    RecycleBin {
+        full: bool,
+    },
+    /// 其余系统图标（例如我的文档）。
     Other,
 }
 
-pub fn desktop_items() -> Vec<Item> {
+pub fn desktop_items(can_paste: bool) -> Vec<Item> {
+    let mut paste = item("粘贴(P)", Action::PasteFiles);
+    paste.separator_before = true;
+    paste.disabled = !can_paste;
     let mut new_folder = item("新建文件夹(F)", Action::NewFolder);
     new_folder.separator_before = true;
     let mut properties = item("属性(R)", Action::DisplayProperties);
@@ -181,6 +227,7 @@ pub fn desktop_items() -> Vec<Item> {
     vec![
         item("排列图标(I)", Action::ArrangeIcons),
         item("刷新(E)", Action::Refresh),
+        paste,
         new_folder,
         properties,
     ]
@@ -267,6 +314,7 @@ impl ContextMenu {
                 MenuItemState {
                     highlighted: self.hover == Some(index),
                     default: item.default,
+                    disabled: item.disabled,
                     ..Default::default()
                 },
             );
@@ -304,7 +352,7 @@ mod tests {
         let corner = ContextMenu::new((790, 590), taskbar_items(), screen, SIZE);
         assert_eq!(corner.rect.right(), 790);
         assert_eq!(corner.rect.bottom(), 590);
-        let top_left = ContextMenu::new((0, 0), desktop_items(), screen, SIZE);
+        let top_left = ContextMenu::new((0, 0), desktop_items(false), screen, SIZE);
         assert_eq!((top_left.rect.x, top_left.rect.y), (0, 0));
     }
 

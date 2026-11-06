@@ -9,11 +9,11 @@ AArch64 和 RISC-V64 共用这些机制，具体指令与 machine 装配通过�
 1. `kernel/src/main.rs` 装配内核机制；`bootstrap` 从 bootfs 装载唯一的 `component-manager`，交付根 Job、
    resource、bootfs 与 DTB。内核不解释服务目录、文件系统、网络和应用启动策略。
 2. `system/component-manager` 是能力路由与监督者（对应 Fuchsia component_manager）：启动各服务，按设备类派生
-   driver-manager 的设备目录（Network → netcfg，Block → fshost，Pcm → audio-core，其余 → linuxd），并为每个消费者服务
+   自身持有的设备目录（Network → netcfg，Block → fshost，Pcm → audio-core，其余 → linuxd），并为每个消费者服务
    只含其声明协议的路由目录。netstack、dhcp-client、netcfg、audio-core 与 linuxd 终止后重启，崩溃循环时关机；
-   driver-manager、fshost 终止即关机。规则见[依赖与 owner 契约](architecture-contract/dependency-owners.md#服务拓扑与能力路由)。
-3. `driver-manager` 拥有平台事实与节点拓扑，为每个节点启动一个 `driver-host` 并汇聚其设备目录（Fuchsia DFv2）；
-   设备会话可重开，使用者重启后重新打开。`fshost` 拥有块设备会话并为每块盘启动 ext4 实例，交出 Linux 块设备、
+   当前 driver-manager 或 fshost 意外终止时关机。规则见[依赖与 owner 契约](architecture-contract/dependency-owners.md#服务拓扑与能力路由)。
+3. `driver-manager` 拥有平台事实与节点拓扑，为每个节点启动一个 `driver-host`（Fuchsia DFv2）。根服务的设备目录及宿主 Job
+   跨管理器换版保留，设备会话由宿主持有。驱动换版与管理器交接见[设备契约](architecture-contract/devices-terminal.md#运行时换版)。`fshost` 拥有块设备会话并为每块盘启动 ext4 实例，交出 Linux 块设备、
    按盘挂载 ext4，并在原生数据卷上为原生服务派生私有目录；ext4 实例拥有普通文件内容（pager VMO）。
    `audio-core` 拥有 PCM 输出与混音，linuxd 只翻译 ALSA。
    `netstack` 只提供协议栈；`netcfg` 发现网卡并安装进 netstack 的默认网络，按默认策略与用户设置配置接口，
@@ -63,6 +63,6 @@ AArch64 和 RISC-V64 共用这些机制，具体指令与 machine 装配通过�
 - 不做匿名页换出；内存紧张时内核只在用户缺页入口淘汰文件内容的干净页，没有后台回收线程。相关 syscall、procfs 与门禁的范围由内存 ABI owner 声明。
 - 服务使用无浮点 ABI；应用浮点状态跨 restricted 退出保留。对信号帧的显式读写由 `linuxd::arch` 负责。
 - SMMUv3 与 RISC-V IOMMU 后端均存在；故障队列以轮询排空、只做诊断计数，硬件验证范围由平台契约声明。
-- 驱动宿主崩溃后只有声明 `restart_on_crash` 的驱动（熵源、声音、输入、console 端口与网卡）被重建；块设备、
-  显示与 USB 主控的节点被移除。网卡重建后是新接口（新 ifindex，名称取最小空闲 `eth<n>`），旧 TCP 连接不迁移。
+- 驱动宿主崩溃后按[设备契约](architecture-contract/devices-terminal.md#运行时换版)重绑具有恢复路径的节点。
+  网卡重建后是新接口（新 ifindex，名称取最小空闲 `eth<n>`），旧 TCP 连接不迁移。
 - 缺失语义必须返回标准错误或保持接口不存在；不以 stub、忽略 flags 或放宽验收掩盖实现错误。

@@ -16,7 +16,7 @@ mod editing;
 mod fonts;
 mod list_item;
 pub use fonts::{FontRole, Fonts};
-pub use list_item::{IconLabel, ItemLook};
+pub use list_item::{ITEM_DOUBLE_CLICK, IconLabel, ItemClick, ItemLook, large_icon_edit_rect};
 mod menu;
 mod menubar;
 mod painter;
@@ -35,7 +35,7 @@ pub use wallpaper::WallpaperStyle;
 mod wayland;
 mod window;
 
-pub use column_header::ColumnHeader;
+pub use column_header::{ColumnHeader, DividerPress};
 pub use decoration::{Decoration, DecorationAction};
 pub use dropdown::{DropItem, DropMenu, Popup, title_rects};
 pub use editing::{Edit, FocusChain};

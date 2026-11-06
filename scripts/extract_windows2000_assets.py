@@ -44,6 +44,7 @@ ICONS = {
     "my-computer": ("shell32.dll", 16),
     "my-documents": ("mydocs.dll", 100),
     "recycle-bin-empty": ("shell32.dll", 32),
+    "recycle-bin-full": ("shell32.dll", 33),
     "folder-closed": ("shell32.dll", 4),
     "file-generic": ("shell32.dll", 1),
     "file-text": ("shell32.dll", 152),

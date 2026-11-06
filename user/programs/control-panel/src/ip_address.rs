@@ -70,6 +70,11 @@ impl IpAddress {
         self.frame.set_state(state::CLIENT_EDGE | flag)
     }
 
+    /// 将键盘焦点移到第一段。
+    pub fn focus(&self) -> liteos_ui::Result<()> {
+        self.fields[0].focus()
+    }
+
     /// 读取地址：四段都空为 Ok(None)；有段空、非数字或超过 255 为 Err(出错段)。
     pub fn value(&self) -> Result<Option<Ipv4Addr>, Widget> {
         let texts: Vec<String> = self

@@ -187,7 +187,7 @@ fn etched(p: &mut Painter<'_>, rect: Rect) {
 }
 
 impl Tree {
-    /// 最早的定时截止时刻：ReBar 品牌动画、菜单的子菜单展开延时与工具栏提示延时。
+    /// 窗口控件共享的定时截止时刻，包含等待双击的重命名手势。
     pub fn animation_deadline(&self) -> Option<Instant> {
         let now = Instant::now();
         self.nodes
@@ -205,6 +205,7 @@ impl Tree {
                     .and_then(super::updown::UpDown::deadline);
                 rebar.into_iter().chain(menu).chain(tip).chain(repeat).min()
             })
+            .chain(self.rename_click.map(|(_, _, deadline)| deadline))
             .min()
     }
 

@@ -10,7 +10,7 @@ use alloc::vec::Vec;
 use launch_protocol::driver_host::{self, Node};
 use native_runtime::native_abi;
 use native_runtime::sync::Once;
-use native_runtime::{Bti, Handle, Interrupt, Resource, Startup, Vmo};
+use native_runtime::{Bti, Interrupt, Resource, Startup, Vmo};
 
 use crate::interrupt::{InterruptHandler, InterruptVector};
 
@@ -32,15 +32,10 @@ static NODE: Once<NodeResources> = Once::new();
 pub(crate) fn install(startup: &mut Startup) {
     let node = Node::decode(&startup.arguments).expect("driver host node arguments");
     let bti = Bti::from_handle(startup.take(driver_host::BTI));
-    let irq_slot = driver_host::IRQ - native_abi::startup::ROLE_HANDLES;
-    let irq = core::mem::replace(&mut startup.handles[irq_slot], Handle::invalid());
-    let irq = (!irq.is_invalid()).then(|| Resource::from_handle(irq));
-    let first = driver_host::MMIO - native_abi::startup::ROLE_HANDLES;
-    let mmio = startup
-        .handles
-        .drain(first..)
-        .map(Resource::from_handle)
-        .collect();
+    let first = driver_host::RESOURCES - native_abi::startup::ROLE_HANDLES;
+    let mut resources = startup.handles.drain(first..).map(Resource::from_handle);
+    let irq = node.has_irq().then(|| resources.next().expect("node IRQ"));
+    let mmio = resources.collect();
     NODE.call_once(|| NodeResources {
         node,
         bti,

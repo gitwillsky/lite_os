@@ -607,7 +607,9 @@ dependencies = [
 name = "desktop-entry"
 version = "0.1.0"
 dependencies = [
+ "calendar",
  "glob",
+ "linux-uapi",
  "liteos-runtime",
  "roxmltree",
 ]
@@ -764,6 +766,7 @@ version = "0.1.0"
 dependencies = [
  "calendar",
  "desktop-entry",
+ "desktop-settings",
  "linux-uapi",
  "liteos-ui",
  "network-config",
@@ -1482,6 +1485,7 @@ version = "0.1.0"
 name = "network-config"
 version = "0.1.0"
 dependencies = [
+ "calendar",
  "linux-uapi",
  "netcfg-protocol",
 ]

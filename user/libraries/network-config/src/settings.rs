@@ -1,5 +1,5 @@
 //! `/dev/network-settings` 的客户端：一次请求一个 datagram，回复带状态码。
-use netcfg_protocol::{Decoder, Encoder, InterfaceConfig, ordinal};
+use netcfg_protocol::{Decoder, DhcpAction, Encoder, Update, ordinal};
 use std::{io, time::Duration};
 
 pub use netcfg_protocol::Snapshot;
@@ -16,15 +16,18 @@ fn request(ordinal: u32, payload: &[u8], timeout: Option<Duration>) -> io::Resul
         let socket = linux_uapi::unix::anonymous_datagram()?;
         socket.set_read_timeout(timeout)?;
         socket.set_write_timeout(Some(TIMEOUT))?;
-        socket
-            .connect(OsStr::from_bytes(bridge::PATH))
-            .map_err(|error| {
-                if error.kind() == io::ErrorKind::PermissionDenied {
-                    io::Error::new(error.kind(), "需要 netdev 组成员身份才能读取或修改网络设置")
-                } else {
-                    error
-                }
-            })?;
+        let path = if ordinal == ordinal::GET {
+            bridge::STATUS_PATH
+        } else {
+            bridge::PATH
+        };
+        socket.connect(OsStr::from_bytes(path)).map_err(|error| {
+            if error.kind() == io::ErrorKind::PermissionDenied {
+                io::Error::new(error.kind(), "需要 netdev 组成员身份才能修改网络设置")
+            } else {
+                error
+            }
+        })?;
         let mut message = Vec::with_capacity(bridge::HEADER_BYTES + payload.len());
         message.extend_from_slice(&ordinal.to_le_bytes());
         message.extend_from_slice(payload);
@@ -84,8 +87,25 @@ pub fn wait(generation: u64) -> io::Result<u64> {
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "网络设置回复无效"))
 }
 
-pub(crate) fn set(name: &[u8], config: &InterfaceConfig) -> io::Result<()> {
+pub(crate) fn set(update: Update<'_>) -> io::Result<()> {
     let mut encoder = Encoder::default();
-    encoder.bytes(name).config(config);
+    encoder.update(&update);
     request(ordinal::SET, &encoder.0, Some(TIMEOUT)).map(drop)
+}
+
+pub(crate) fn rename(interface: &str, name: &str) -> io::Result<()> {
+    let mut encoder = Encoder::default();
+    encoder.bytes(interface.as_bytes()).bytes(name.as_bytes());
+    request(ordinal::RENAME, &encoder.0, Some(TIMEOUT)).map(drop)
+}
+
+/// 在当前 DHCP 会话续租或释放，等待 netcfg 应用结果。
+///
+/// # Errors
+///
+/// 接口没有 DHCP 会话、请求未在时限内完成、服务不可用或没有权限。
+pub fn dhcp(name: &[u8], action: DhcpAction) -> io::Result<()> {
+    let mut encoder = Encoder::default();
+    encoder.bytes(name).u8(action as u8);
+    request(ordinal::DHCP, &encoder.0, Some(Duration::from_secs(17))).map(drop)
 }

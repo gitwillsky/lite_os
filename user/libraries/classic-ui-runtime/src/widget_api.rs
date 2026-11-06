@@ -247,6 +247,7 @@ pub(super) unsafe extern "C" fn rows(
             node.row_icons.retain(|id, _| identities.contains(id));
             if let Some(table) = node.table.as_mut() {
                 table.selection.retain(|id| identities.contains(id));
+                table.checks.retain(|id, _| identities.contains(id));
                 table.anchor = table.anchor.filter(|id| identities.contains(id));
             }
             if node
@@ -258,6 +259,65 @@ pub(super) unsafe extern "C" fn rows(
                 node.edit = None;
             }
             node.rows = rows;
+            host.frame.invalidate();
+            Ok(())
+        })
+    }
+}
+
+pub(super) unsafe extern "C" fn row_checks(
+    pointer: *mut c_void,
+    window: u64,
+    id: u64,
+    values: *const abi::RowCheck,
+    count: usize,
+) -> i32 {
+    if count != 0 && values.is_null() {
+        return abi::INVALID;
+    }
+    // SAFETY: ABI 输入切片在调用期间有效。校验全部行后原子替换投影。
+    unsafe {
+        invoke(pointer, |context| {
+            let host = context.host_mut(window)?;
+            let node = host
+                .controls_mut()?
+                .nodes
+                .get_mut(&id)
+                .ok_or_else(|| invalid("unknown list"))?;
+            let table = node
+                .table
+                .as_mut()
+                .filter(|table| table.mode == 0 && table.columns.is_empty())
+                .ok_or_else(|| invalid("row checks require a plain list"))?;
+            if node.kind != abi::widget::LIST || count > node.rows.len() {
+                return Err(invalid("invalid row checks"));
+            }
+            let values = if count == 0 {
+                &[]
+            } else {
+                slice::from_raw_parts(values, count)
+            };
+            let mut checks = std::collections::BTreeMap::new();
+            for check in values {
+                if check.state & !(abi::state::CHECKED | abi::state::DISABLED) != 0
+                    || checks.insert(check.id, check.state).is_some()
+                {
+                    return Err(invalid("invalid row check"));
+                }
+            }
+            if node
+                .rows
+                .iter()
+                .filter(|(row, _)| checks.contains_key(row))
+                .count()
+                != checks.len()
+            {
+                return Err(invalid("unknown row check"));
+            }
+            if table.checks == checks {
+                return Ok(());
+            }
+            table.checks = checks;
             host.frame.invalidate();
             Ok(())
         })
@@ -473,7 +533,7 @@ pub(super) unsafe extern "C" fn columns(
     if count > 256 || (count != 0 && values.is_null()) {
         return abi::INVALID;
     }
-    // SAFETY: 输入数组与标题在调用内有效；按稳定列 id 保留运行库的用户列宽，不回写应用快照。
+    // SAFETY: 输入数组与标题在调用内有效。重复发布同一列宽保留用户拖动；新指定的宽度替换它。
     unsafe {
         invoke(pointer, |context| {
             let values = if count == 0 {
@@ -506,14 +566,11 @@ pub(super) unsafe extern "C" fn columns(
                     table
                         .columns
                         .iter()
-                        .position(|column| column.0 == *id)
+                        .position(|column| column.0 == *id && column.2 == *width)
                         .map_or(*width, |index| table.header.width(index))
                 })
                 .collect();
-            table.columns = copied
-                .into_iter()
-                .map(|(id, title, _)| (id, title))
-                .collect();
+            table.columns = copied;
             table.header = classic_ui::ColumnHeader::new(widths);
             table.gesture = None;
             node.clamp_list();

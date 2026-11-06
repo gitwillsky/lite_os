@@ -102,6 +102,10 @@ pub struct Server {
     contexts: Vec<super::security::Listener>,
     /// 当前剪贴板选择：持有者连接、它的 `wl_data_source` 与声明的类型。
     selection: Option<Selection>,
+    /// 最后采纳的选择序号；即使选择清空，也不能让迟到的粘贴覆盖后来的复制。
+    selection_serial: Option<u32>,
+    pub(super) drag: Option<super::drag::Drag>,
+    pub(super) pending_drops: Vec<super::drag::Drag>,
     gpu: Option<linux_uapi::drm::VirglContext>,
 }
 
@@ -134,6 +138,9 @@ impl Server {
             output,
             contexts: Vec::new(),
             selection: None,
+            selection_serial: None,
+            drag: None,
+            pending_drops: Vec::new(),
             gpu: None,
         })
     }
@@ -337,6 +344,9 @@ impl Server {
             .find(|connection| connection.id == id)
         {
             action(&mut connection.client);
+            if connection.client.dead {
+                connection.closing = true;
+            }
             if connection.flush().is_err() {
                 connection.closing = true;
             }
@@ -373,18 +383,45 @@ impl Server {
     /// 处理剪贴板：采纳键盘焦点客户端的 `set_selection`，把读取请求转交持有者，并在持有者断开时清空选择。
     ///
     /// 只有键盘焦点所在的客户端能设置选择；缺少这个限制，后台程序能随时覆盖用户刚复制的内容。
-    pub fn handle_selection(&mut self, focus: Option<ClientId>) {
+    pub fn handle_data_device(
+        &mut self,
+        focus: Option<ClientId>,
+        grab: Option<(ClientId, ObjectId, u32)>,
+        time: u32,
+    ) {
         let mut changed = false;
         let mut sets = Vec::new();
         let mut receives = Vec::new();
+        let mut drags = Vec::new();
         for connection in &mut self.connections {
             if let Some(set) = connection.client.selection_set.take() {
                 sets.push((connection.id, set));
             }
-            receives.append(&mut connection.client.receives);
+            receives.extend(
+                connection
+                    .client
+                    .receives
+                    .drain(..)
+                    .map(|request| (connection.id, request)),
+            );
+            drags.extend(
+                connection
+                    .client
+                    .drag_requests
+                    .drain(..)
+                    .map(|request| (connection.id, request)),
+            );
         }
         for (client, set) in sets {
-            if Some(client) != focus {
+            let focused = Some(client) == focus;
+            let stale = self.selection_serial.is_some_and(|current| {
+                set.serial == 0 || set.serial.wrapping_sub(current) >= (1 << 31)
+            });
+            if !focused || stale {
+                if let Some(source) = set.source {
+                    self.with_client(client, |client| client.source_cancelled(source));
+                }
+                changed |= focused;
                 continue;
             }
             let old = self.selection.take();
@@ -402,21 +439,33 @@ impl Server {
                 self.with_client(old.owner, |client| client.source_cancelled(old.source));
             }
             self.selection = next;
+            self.selection_serial = Some(set.serial);
             changed = true;
         }
-        for request in receives {
-            if let Some(selection) = &self.selection {
-                let (owner, source) = (selection.owner, selection.source);
-                self.with_client(owner, |client| {
+        for (owner, request) in receives {
+            let (client, source) = request.source;
+            if Some(owner) == focus
+                && self.selection.as_ref().is_some_and(|selection| {
+                    (selection.owner, selection.source) == request.source
+                        && selection.mimes.contains(&request.mime)
+                })
+            {
+                self.with_client(client, |client| {
                     client.source_send(source, request.mime, request.fd)
                 });
             }
         }
-        if self
-            .selection
-            .as_ref()
-            .is_some_and(|s| !self.connections.iter().any(|c| c.id == s.owner))
-        {
+        for (owner, request) in drags {
+            self.drag_request(owner, request, grab);
+        }
+        self.prune_drags(time);
+        if self.selection.as_ref().is_some_and(|s| {
+            !self.client_has(
+                s.owner,
+                s.source,
+                wayland_wire::protocol::Interface::WlDataSource,
+            )
+        }) {
             self.selection = None;
             changed = true;
         }
@@ -428,10 +477,30 @@ impl Server {
     /// 把当前选择（或空）告诉 `client`；键盘焦点换到新客户端、选择变化时调用。
     pub fn announce_selection(&mut self, client: Option<ClientId>) {
         let Some(client) = client else { return };
-        let mimes = self.selection.as_ref().map(|s| s.mimes.clone());
+        let selection = self
+            .selection
+            .as_ref()
+            .map(|s| (s.owner, s.source, s.mimes.clone()));
         self.with_client(client, |client| {
-            let _ = client.send_selection(mimes.as_deref());
+            let _ = client.send_selection(
+                selection
+                    .as_ref()
+                    .map(|(owner, source, mimes)| (*owner, *source, mimes.as_slice())),
+            );
         });
+    }
+
+    pub(super) fn client_has(
+        &self,
+        id: ClientId,
+        object: ObjectId,
+        interface: wayland_wire::protocol::Interface,
+    ) -> bool {
+        self.connections.iter().any(|connection| {
+            connection.id == id
+                && !connection.closing
+                && connection.client.has_object(object, interface)
+        })
     }
 
     /// 全部连接的弹出层，附带所属连接；位置相对各自根窗口 surface。

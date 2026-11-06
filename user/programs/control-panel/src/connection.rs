@@ -2,7 +2,9 @@
 //!
 //! 草稿是 netcfg 中该接口的设置；“确定”后经 `/dev/network-settings` 提交，netcfg 持久化并重新配置接口。
 //! 组件列表只有 Internet 协议 (TCP/IP)：系统没有 Microsoft 网络客户端、文件和打印机共享等组件，安装/卸载与
-//! 网卡“配置”没有对应后端而禁用；“高级”TCP/IP 设置（多地址、WINS、IP 筛选）同样禁用。
+//! 网卡“配置”没有对应后端而禁用；“高级”TCP/IP 设置提供 DNS 服务器列表。
+mod dns;
+
 use crate::{Activity, Apply, Page, Response, child, group, ip_address::IpAddress};
 use liteos_ui::{
     Dialogs, Event, EventKind, Layout, PropertySheet, SheetStyle, ValidationError, Widget,
@@ -16,8 +18,10 @@ const TCPIP_HELP: &str = "TCP/IP 是默认的广域网协议。它提供跨越�
 
 /// 后台读取的连接属性；界面构建不再执行配置文件与 sysfs I/O。
 pub struct Data {
-    saved: Interface,
+    saved: Draft,
     driver: String,
+    name: String,
+    show_icon: bool,
 }
 impl Data {
     pub fn read(interface: Option<String>) -> Result<Self, String> {
@@ -30,13 +34,26 @@ impl Data {
                     .is_none_or(|name| name == &link.interface)
             })
             .ok_or("没有网络连接")?;
-        let saved =
-            network_config::interface(&link.interface).map_err(|error| error.to_string())?;
+        let snapshot = network_config::snapshot().map_err(|error| error.to_string())?;
+        let saved = Draft {
+            interface: Interface::from_snapshot(&link.interface, &snapshot),
+            search_list: snapshot.search_list,
+            append_parent_suffixes: snapshot.append_parent_suffixes,
+        };
         Ok(Self {
+            show_icon: desktop_settings::Settings::load().network_icon_visible(&link.interface),
             saved,
             driver: link.driver,
+            name: link.name,
         })
     }
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct Draft {
+    interface: Interface,
+    search_list: Vec<String>,
+    append_parent_suffixes: bool,
 }
 
 pub struct Connection {
@@ -46,13 +63,21 @@ pub struct Connection {
     description: Widget,
     dialogs: Dialogs,
     window: liteos_ui::Window,
-    saved: Interface,
-    draft: Rc<RefCell<Interface>>,
+    saved: Draft,
+    draft: Rc<RefCell<Draft>>,
+    tray: Widget,
+    saved_show_icon: bool,
 }
 
 impl Connection {
     pub fn build(sheet: &PropertySheet, data: Data, dialogs: Dialogs) -> liteos_ui::Result<Self> {
-        let Data { saved, driver } = data;
+        let Data {
+            saved,
+            driver,
+            name,
+            show_icon,
+        } = data;
+        sheet.window().set_title(&format!("{name} 属性"))?;
         let page = sheet.page("常规")?;
         let mut controls = Vec::new();
         controls.push(child(&page, Kind::Label, "连接时使用:", Layout::default())?);
@@ -138,21 +163,19 @@ impl Connection {
             Layout::default(),
         )?;
         description.set_state(state::WRAP)?;
-        // 当前通知区域汇总显示网络状态，单接口开关尚未提供。
         let tray = child(
             &page,
             Kind::CheckBox,
             "连接后在任务栏中显示图标(W)",
             Layout::default(),
         )?;
-        tray.set_state(state::DISABLED | state::CHECKED)?;
+        tray.set_state(if show_icon { state::CHECKED } else { 0 })?;
         controls.extend([
             adapter,
             configure_row,
             configure,
             buttons,
             description_group,
-            tray,
         ]);
         controls.push(page);
         Ok(Self {
@@ -164,7 +187,13 @@ impl Connection {
             window: sheet.window().clone(),
             draft: Rc::new(RefCell::new(saved.clone())),
             saved,
+            tray,
+            saved_show_icon: show_icon,
         })
+    }
+
+    fn show_icon(&self) -> liteos_ui::Result<bool> {
+        Ok(self.tray.state()? & state::CHECKED != 0)
     }
 }
 
@@ -191,18 +220,48 @@ impl Page for Connection {
     }
 
     fn dirty(&self) -> liteos_ui::Result<bool> {
-        Ok(*self.draft.borrow() != self.saved)
+        Ok(*self.draft.borrow() != self.saved || self.show_icon()? != self.saved_show_icon)
     }
 
     fn apply(&self) -> liteos_ui::Result<Apply> {
         let draft = self.draft.borrow().clone();
+        let interface_changed = draft.interface != self.saved.interface;
+        let search_changed = draft.search_list != self.saved.search_list;
+        let parents_changed = draft.append_parent_suffixes != self.saved.append_parent_suffixes;
+        let show_icon = self.show_icon()?;
+        let tray_changed = show_icon != self.saved_show_icon;
         Ok(Box::new(move || {
-            network_config::apply(&draft).map_err(|error| format!("无法应用网络设置：{error}"))
+            if interface_changed || search_changed || parents_changed {
+                let current = network_config::snapshot()
+                    .map_err(|error| format!("无法读取网络设置：{error}"))?;
+                // 两类设置由不同 owner 提交。若托盘保存失败，重试不重复应用已经生效的网络设置。
+                let interface = (interface_changed
+                    && Interface::from_snapshot(&draft.interface.name, &current)
+                        != draft.interface)
+                    .then_some(&draft.interface);
+                let search = (search_changed && current.search_list != draft.search_list)
+                    .then_some(draft.search_list);
+                let parents = (parents_changed
+                    && current.append_parent_suffixes != draft.append_parent_suffixes)
+                    .then_some(draft.append_parent_suffixes);
+                if interface.is_some() || search.is_some() || parents.is_some() {
+                    network_config::apply(interface, search, parents)
+                        .map_err(|error| format!("无法应用网络设置：{error}"))?;
+                }
+            }
+            if tray_changed {
+                desktop_settings::Settings::update(|settings| {
+                    settings.set_network_icon_visible(draft.interface.name, show_icon);
+                })
+                .map_err(|error| format!("无法保存网络图标设置：{error}"))?;
+            }
+            Ok(())
         }))
     }
 
     fn committed(&mut self) -> liteos_ui::Result<()> {
         self.saved = self.draft.borrow().clone();
+        self.saved_show_icon = self.show_icon()?;
         Ok(())
     }
 }
@@ -219,6 +278,9 @@ struct Tcpip {
     manual_dns: Widget,
     preferred: IpAddress,
     alternate: IpAddress,
+    advanced: Widget,
+    additional_dns: Vec<Ipv4Addr>,
+    dns_suffix: String,
     _controls: Vec<Widget>,
 }
 
@@ -299,8 +361,7 @@ impl Tcpip {
                 ..Default::default()
             },
         )?;
-        advanced.set_state(state::DISABLED)?;
-        controls.extend([intro, address_group, dns_group, advanced_row, advanced]);
+        controls.extend([intro, address_group, dns_group, advanced_row]);
         let tcpip = Self {
             page,
             automatic,
@@ -312,6 +373,9 @@ impl Tcpip {
             manual_dns,
             preferred,
             alternate,
+            advanced,
+            additional_dns: draft.dns.iter().skip(2).copied().collect(),
+            dns_suffix: draft.dns_suffix.clone(),
             _controls: controls,
         };
         if let Method::Static {
@@ -367,6 +431,29 @@ impl Tcpip {
         }
     }
 
+    fn dns(&self) -> Result<Vec<Ipv4Addr>, ValidationError> {
+        if !self.manual_dns() {
+            return Ok(Vec::new());
+        }
+        let mut addresses = Vec::new();
+        for field in [&self.preferred, &self.alternate] {
+            let address = field
+                .value()
+                .map_err(|control| self.error(control, "无效的 DNS 服务器地址。"))?;
+            addresses.extend(address);
+        }
+        addresses.extend(&self.additional_dns);
+        Ok(addresses)
+    }
+
+    fn set_dns(&mut self, addresses: Vec<Ipv4Addr>) -> liteos_ui::Result<()> {
+        self.preferred.set(addresses.first().copied())?;
+        self.alternate.set(addresses.get(1).copied())?;
+        self.choose(self.manual(), !addresses.is_empty())?;
+        self.additional_dns = addresses.into_iter().skip(2).collect();
+        Ok(())
+    }
+
     /// 校验并生成新的接口配置（netcfgx 23003–23066 的检查）。
     fn draft(&self, previous: &Interface) -> Result<Interface, ValidationError> {
         let read = |field: &IpAddress| {
@@ -415,17 +502,10 @@ impl Tcpip {
         } else {
             Method::Dhcp
         };
-        let dns: Vec<Ipv4Addr> = if self.manual_dns() {
-            [read(&self.preferred)?, read(&self.alternate)?]
-                .into_iter()
-                .flatten()
-                .collect()
-        } else {
-            Vec::new()
-        };
         let mut next = previous.clone();
         next.method = method;
-        next.dns = dns;
+        next.dns = self.dns()?;
+        next.dns_suffix.clone_from(&self.dns_suffix);
         Ok(next)
     }
 
@@ -460,7 +540,7 @@ impl Tcpip {
 }
 
 /// 模态的“Internet 协议 (TCP/IP) 属性”：确定时把校验后的设置写入连接属性的草稿（真正生效在连接属性的“确定”）。
-async fn tcpip_dialog(dialogs: Dialogs, parent: liteos_ui::Window, draft: Rc<RefCell<Interface>>) {
+async fn tcpip_dialog(dialogs: Dialogs, parent: liteos_ui::Window, draft: Rc<RefCell<Draft>>) {
     let Ok((sheet, mut events)) = dialogs.property_sheet(
         &parent,
         "Internet 协议 (TCP/IP) 属性",
@@ -470,15 +550,21 @@ async fn tcpip_dialog(dialogs: Dialogs, parent: liteos_ui::Window, draft: Rc<Ref
         return;
     };
     let current = draft.borrow().clone();
-    let Ok(tcpip) = Tcpip::build(&sheet, &current) else {
+    let Ok(mut tcpip) = Tcpip::build(&sheet, &current.interface) else {
         return;
     };
+    let mut search_list = current.search_list;
+    let mut append_parent_suffixes = current.append_parent_suffixes;
     let mut pending = None;
     while let Ok(Some(event)) = events.next().await {
         match event.kind {
             EventKind::Close => return,
             EventKind::Validate { token } => {
-                let result = tcpip.draft(&current);
+                let result = tcpip.draft(&current.interface).map(|interface| Draft {
+                    interface,
+                    search_list: search_list.clone(),
+                    append_parent_suffixes,
+                });
                 pending = result.as_ref().ok().cloned();
                 let _ = sheet.validated(token, result.map(drop));
             }
@@ -488,6 +574,38 @@ async fn tcpip_dialog(dialogs: Dialogs, parent: liteos_ui::Window, draft: Rc<Ref
                 }
                 let _ = sheet.applied(token, Ok(()));
             }
+            EventKind::Activate { .. } if event.node == tcpip.advanced.id() => match tcpip.dns() {
+                Ok(addresses) => {
+                    if let Ok(Some(settings)) = dns::edit(
+                        &dialogs,
+                        sheet.window(),
+                        addresses,
+                        &tcpip.dns_suffix,
+                        &search_list,
+                        append_parent_suffixes,
+                    )
+                    .await
+                    {
+                        let _ = tcpip.set_dns(settings.addresses);
+                        tcpip.dns_suffix = settings.suffix;
+                        search_list = settings.search_list;
+                        append_parent_suffixes = settings.append_parent_suffixes;
+                    }
+                }
+                Err(error) => {
+                    if let Ok(message) = dialogs.message(
+                        sheet.window(),
+                        "Internet 协议 (TCP/IP) 属性",
+                        &error.message,
+                        liteos_ui::MessageButtons::Ok,
+                    ) {
+                        let _ = message.await;
+                    }
+                    if let Some(control) = error.control {
+                        let _ = control.focus();
+                    }
+                }
+            },
             _ => {
                 let _ = tcpip.event(&event);
             }

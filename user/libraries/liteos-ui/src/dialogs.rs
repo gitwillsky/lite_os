@@ -77,20 +77,32 @@ impl Dialogs {
         message: &str,
         buttons: MessageButtons,
     ) -> Result<MessageBoxFuture> {
-        self.check(parent)?;
+        self.message_window(Some(parent), title, message, buttons)
+    }
+
+    pub(crate) fn message_window(
+        &self,
+        parent: Option<&Window>,
+        title: &str,
+        message: &str,
+        buttons: MessageButtons,
+    ) -> Result<MessageBoxFuture> {
+        if let Some(parent) = parent {
+            self.check(parent)?;
+        }
         let mut handles = abi::MessageBox::default();
         // SAFETY: 本次同步调用内文本有效、输出独占，运行库只保留副本。
         self.connection.check(unsafe {
             (self.connection.api.message_box)(
                 self.connection.context.as_ptr(),
-                parent.id(),
+                parent.map_or(0, Window::id),
                 text(title),
                 text(message),
                 buttons as u32,
                 &mut handles,
             )
         })?;
-        let window = Window::adopt(self.connection.clone(), handles.window, Some(parent));
+        let window = Window::adopt(self.connection.clone(), handles.window, parent);
         let events = self.events(&window)?;
         Ok(MessageBoxFuture::new(
             window,

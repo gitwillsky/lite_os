@@ -28,6 +28,8 @@ pub(crate) struct KernelParameters {
     pub(crate) log_level: Option<u8>,
     /// `panic=`：Linux 语义，0 停在蓝屏，正数为秒数后重启，负数立即重启。
     pub(crate) panic_seconds: Option<i32>,
+    /// 由可信启动者授予初始 Linux root 安装原生驱动及管理器映像的权限。
+    pub(crate) driver_update: bool,
     /// init 的 argv（不含 argv[0]）。
     pub(crate) init_arguments: Vec<Vec<u8>>,
     /// init 的环境（`name=value`），以 `HOME=/`、`TERM=linux` 开始。
@@ -232,6 +234,8 @@ pub(crate) fn parse(line: &[u8]) -> Result<KernelParameters, CommandLineError> {
                         .ok_or(CommandLineError::InvalidPanicTimeout)?,
                 );
             }
+            // 缺省保留 Linux root 与原生系统服务之间的信任边界。
+            (b"liteos.driver_update", Some(b"1")) => parameters.driver_update = true,
             // Linux `quiet` 等价 loglevel=4，`debug` 等价 loglevel=10。
             (b"quiet", None) => parameters.log_level = Some(4),
             (b"debug", None) => parameters.log_level = Some(10),

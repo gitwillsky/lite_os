@@ -270,7 +270,12 @@ impl View {
             },
         )?;
         list.set_list_style(liteos_ui::ListStyle::LargeIcons, MULTIPLE)?;
-        list.set_state(state::BORDERLESS)?;
+        list.set_state(
+            state::BORDERLESS
+                | state::FILE_DRAG
+                | state::EDIT_LABELS
+                | state::KEYBOARD_CONTEXT_MENU,
+        )?;
         let status = child(&root, Kind::Status, "\t\t", Layout::default())?;
         status.set_status_parts(&STATUS_PARTS)?;
         Ok(Self {
@@ -325,7 +330,7 @@ impl View {
     }
 
     pub fn rows(&self, browser: &Browser) -> liteos_ui::Result<()> {
-        let columns = browser.location.columns();
+        let columns = browser.columns();
         self.list.set_columns(
             &columns
                 .iter()

@@ -13,12 +13,17 @@ Linux syscall、阻塞超时、namespace 授权、AF_UNIX/NETLINK 属于 `system
    各接口的租约事件；设置变化经 `liteos.network.Settings` 提交，先持久化再应用。
 3. dhcp-client 为 netcfg 指定的接口在默认网络的 datagram packet socket（EtherType IPv4）上收发 IPv4/UDP/DHCP 报文，
    按 RFC 2131 推进 INIT → SELECTING → REQUESTING → BOUND → RENEWING → REBINDING，向 netcfg 报告租约取得、
-   续租与失效；netcfg 关闭租约事件 channel 即停止该接口的 DHCP。报文编解码使用 smoltcp 的 wire 层。
+   续租与失效。T1 使用租约服务器的 IP 和链路地址单播，T2 广播，两个阶段均不携带 Server Identifier。
+   续租未改变地址、前缀与网关时，netcfg 保留现有地址、路由与连接时长，并发布新的租约期限与生效 DNS。
+   netcfg 关闭租约事件 channel 即停止该接口的 DHCP。报文编解码使用 smoltcp 的 wire 层。
 4. linuxd 的初始网络域连上默认网络，新网络域在 netstack 中创建只有 DOWN 回环的独立实例。netstack 重启后 linuxd 重连并为
    全部存活网络域重建协议实例，旧 socket 的 channel 已随旧实例关闭，之后的操作以 `ENETDOWN` 失败；默认网络由 netcfg
    重新配置。linuxd 重启不影响默认网络及其配置。
-5. Linux 侧不运行 DHCP 客户端或接口配置脚本。`/etc/resolv.conf` 由 resolvd（init 监督）依据 netcfg 的设置快照维护；
-   控制面板经 `/dev/network-settings` 读写设置（见[用户态与 ABI 契约](../architecture-contract/userspace-abi.md)）。
+5. Linux 侧不运行 DHCP 客户端或接口配置脚本。`/etc/resolv.conf` 由 resolvd（init 监督）依据 netcfg 的设置快照维护。
+   `/dev/network-status` 向普通用户提供只读接口快照；`/dev/network-settings` 的修改和订阅能力限 netdev。
+   控制面板读取生效状态并经 `/dev/network-settings` 修改设置（见[用户态与 ABI 契约](../architecture-contract/userspace-abi.md)）。
+   接口管理开关由 netstack 持有。以太网载波与速率由网卡驱动读取，并随接口快照投影到 Linux sysfs 和 rtnetlink；
+   VirtIO 按协商的 STATUS 和 SPEED_DUPLEX 读取同一配置代际，未协商速率时显示未知。
 
 
 ## 当前设计

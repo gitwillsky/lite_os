@@ -950,6 +950,28 @@
         "conversion": "BMP V4; native dimensions"
       }
     },
+    "ui/recycle-bin-full-16.bmp": {
+      "group": "ui",
+      "bytes": 1146,
+      "sha256": "0172050ec664d1c704140c6aa20477d643e3acdabbb122be6b4a48133ffd72fc",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 33,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
+    "ui/recycle-bin-full-32.bmp": {
+      "group": "ui",
+      "bytes": 4218,
+      "sha256": "f9ef2cb5a57a89904033968de0f2d9265ab4c7a6c5ecd19e49707804e91118e9",
+      "origin": {
+        "source": "shell32.dll",
+        "resource": 33,
+        "language": 2052,
+        "conversion": "BMP V4; native dimensions"
+      }
+    },
     "ui/run-16.bmp": {
       "group": "ui",
       "bytes": 1146,

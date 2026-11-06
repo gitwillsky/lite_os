@@ -83,6 +83,44 @@ fn at_both_scales(check: impl Fn(i32)) {
 }
 
 #[test]
+fn duplicate_menu_mnemonics_cycle_without_dispatching_a_command() {
+    use crate::{DropItem, DropMenu, Key, MenuBar, MenuEvent};
+
+    let mut disabled = DropItem::new("禁用(D)", "", 2);
+    disabled.disabled = true;
+    let menus = [DropMenu {
+        title: "",
+        items: vec![
+            DropItem::new("第一项(D)", "", 1),
+            disabled,
+            DropItem::new("第三项(D)", "", 3),
+        ],
+    }];
+    let mnemonic = Key {
+        code: 32,
+        pressed: true,
+        repeat: false,
+        modifiers: Default::default(),
+        text: Some('d'),
+    };
+    let enter = Key {
+        code: 28,
+        text: None,
+        ..mnemonic
+    };
+    let bar = Rect::new(0, 0, 0, 0);
+    render(1, |p| {
+        let mut menu = MenuBar::new();
+        menu.show_popup(p, &menus, (0, 0), Rect::new(0, 0, SIZE, SIZE));
+        for _ in 0..2 {
+            assert_eq!(menu.key(p, bar, &menus, &mnemonic), MenuEvent::Handled);
+        }
+        assert_eq!(menu.key(p, bar, &menus, &enter), MenuEvent::Command(3));
+        assert!(!menu.active());
+    });
+}
+
+#[test]
 fn raised_edge_uses_documented_layers_and_scales_uniformly() {
     at_both_scales(|scale| {
         let image = render(scale, |p| {

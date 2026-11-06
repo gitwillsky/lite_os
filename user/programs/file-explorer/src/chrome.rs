@@ -188,6 +188,7 @@ pub struct Availability {
     /// 当前位置是可写的真实目录。
     pub editable: bool,
     pub paste: bool,
+    pub undo: Option<&'static str>,
     /// 当前位置是回收站根目录。
     pub trash: bool,
     /// 回收站中有项目。
@@ -212,7 +213,7 @@ pub struct Availability {
 }
 
 /// 网络连接的动词（netshell 菜单 11012 启用中 / 11010 已禁用）：启用中的默认动词是“状态”，已禁用的是“启用”。
-/// 局域网连接不能删除；系统没有 .lnk 快捷方式与连接名存储，创建快捷方式与重命名保留原位并禁用。
+/// 局域网连接不能删除，创建 .lnk 快捷方式未提供。
 fn connection_verbs(b: &mut Builder, enabled: bool, idle: bool) {
     let state = |default: bool| match (idle, default) {
         (false, _) => DISABLED,
@@ -229,7 +230,7 @@ fn connection_verbs(b: &mut Builder, enabled: bool, idle: bool) {
     b.separator();
     b.action(Action::CreateShortcut, "创建快捷方式(S)", "", false);
     b.action(Action::Delete, "删除(D)", "", false);
-    b.action(Action::Rename, "重命名(M)", "", false);
+    b.action(Action::Rename, "重命名(M)", "", idle);
     b.separator();
     b.action(Action::Properties, "属性(R)", "", idle);
 }
@@ -427,16 +428,16 @@ pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<Entry>)> {
     file.action(Action::Close, "关闭(C)", "", true);
 
     let mut edit = Builder::new(HEADER + 100);
-    edit.action(Action::Undo, "撤消(U)", "Ctrl+Z", false);
+    edit.action(
+        Action::Undo,
+        state.undo.unwrap_or("撤消(U)"),
+        "Ctrl+Z",
+        enabled && state.undo.is_some(),
+    );
     edit.separator();
     edit.action(Action::Cut, "剪切(T)", "Ctrl+X", selected && modify);
     edit.action(Action::Copy, "复制(C)", "Ctrl+C", selected && !state.trash);
-    edit.action(
-        Action::Paste,
-        "粘贴(P)",
-        "Ctrl+V",
-        modify && state.paste && !state.trash,
-    );
+    edit.action(Action::Paste, "粘贴(P)", "Ctrl+V", enabled && state.paste);
     edit.action(Action::PasteShortcut, "粘贴快捷方式(S)", "", false);
     edit.separator();
     edit.action(
@@ -483,7 +484,12 @@ pub fn menus(state: &Availability) -> Vec<(&'static str, Vec<Entry>)> {
     view.submenu("排列图标(I)", enabled, |b| arrange(b, state));
     view.action(Action::LineUpIcons, "对齐图标(U)", "", false);
     view.separator();
-    view.action(Action::ChooseColumns, "选择列(N)...", "", false);
+    view.action(
+        Action::ChooseColumns,
+        "选择列(N)...",
+        "",
+        enabled && state.style == ListStyle::Details,
+    );
     view.action(Action::CustomizeFolder, "自定义文件夹(C)...", "", false);
     view.separator();
     view.submenu("转到(O)", true, |b| {
@@ -584,14 +590,14 @@ pub fn context(state: &Availability, on_item: bool) -> Vec<Entry> {
         b.separator();
         b.action(Action::CustomizeFolder, "自定义文件夹(C)...", "", false);
         b.separator();
-        b.action(
-            Action::Paste,
-            "粘贴(P)",
-            "",
-            state.editable && state.paste && !state.trash,
-        );
+        b.action(Action::Paste, "粘贴(P)", "", state.paste);
         b.action(Action::PasteShortcut, "粘贴快捷方式(S)", "", false);
-        b.action(Action::Undo, "撤消(U)", "", false);
+        b.action(
+            Action::Undo,
+            state.undo.unwrap_or("撤消(U)"),
+            "",
+            state.undo.is_some(),
+        );
         if state.editable && !state.trash {
             b.separator();
             new_items(&mut b, true);
@@ -740,7 +746,7 @@ pub fn standard_buttons(state: &Availability) -> Vec<ToolbarButton<'static>> {
             8,
             "撤消",
             false,
-            false,
+            enabled && state.undo.is_some(),
         ),
         separator(HEADER + 902),
         button(

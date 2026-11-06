@@ -32,7 +32,7 @@ impl Display {
         }
     }
 
-    fn emit(&mut self, window: Option<WindowId>, kind: EventKind) {
+    pub(super) fn emit(&mut self, window: Option<WindowId>, kind: EventKind) {
         if let Some(window) = window.filter(|window| self.windows.contains_key(window)) {
             self.events.push_back(Event { window, kind });
         }
@@ -153,14 +153,15 @@ impl Display {
                 }
             }
             AnyEvent::XdgSurface(xdg_surface::Event::Configure { serial }) => {
-                xdg_surface::Request::AckConfigure { serial }
-                    .encode(object, &mut self.transport.writer)
-                    .map_err(io::Error::other)?;
                 if let Some((id, window)) = self
                     .windows
                     .iter_mut()
                     .find(|(_, window)| matches!(window.role, Role::Toplevel { xdg, .. } if xdg == object))
                 {
+                    // A queued configure can arrive after the local xdg_surface was destroyed.
+                    xdg_surface::Request::AckConfigure { serial }
+                        .encode(object, &mut self.transport.writer)
+                        .map_err(io::Error::other)?;
                     if let Role::Toplevel { pending, .. } = window.role { window.configuration = pending; }
                     window.configured = true;
                     self.events.push_back(Event {
@@ -471,6 +472,22 @@ mod tests {
             })
         ));
         assert!(display.repeat.is_none());
+    }
+
+    #[test]
+    fn configure_received_after_destroy_sends_no_acknowledgment() {
+        let (mut display, _peer, window) = display();
+        display.destroy_window(window).unwrap();
+        assert!(!display.transport.wants_write());
+
+        display
+            .dispatch(
+                id(11),
+                AnyEvent::XdgSurface(xdg_surface::Event::Configure { serial: 1 }),
+            )
+            .unwrap();
+        assert!(!display.transport.wants_write());
+        assert!(display.events.is_empty());
     }
 
     #[test]

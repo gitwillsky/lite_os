@@ -1,9 +1,132 @@
 //! 标准控件激活、焦点与选择；领域动作只在输入分发结束后由 ABI 事件交给应用。
 use super::widgets::Tree;
 use canvas::Rect;
-use classic_ui::{EventKind, Key};
+use classic_ui::{EventKind, ITEM_DOUBLE_CLICK, Key};
 use classic_ui_abi::{self as abi, event, state, widget};
+/// 可发起文件拖放的左键按下。保存行身份，列表在按住期间刷新也不会拖错行。
+pub struct FilePress {
+    node: u64,
+    row: u64,
+    point: (i32, i32),
+    serial: u32,
+}
+
+impl super::widgets::Node {
+    fn list_row_at(&self, point: (i32, i32), probe: &classic_ui::Painter<'_>) -> usize {
+        let geometry = self.list_geometry();
+        if let Some(grid) = geometry.grid {
+            // 图标视图只在图标或标签上命中（comctl32 LVHT_ONITEMICON/LABEL）；格子空白与无条目处
+            // 按单击背景处理：清除选择。行数作为越界下标交给 choose_row 走同一清除路径。
+            let miss = self.row_count();
+            grid.at(point, self.position.position)
+                .filter(|index| {
+                    grid.mode != 1
+                        || self.row_at(*index).is_some_and(|(row, text)| {
+                            let cell = grid.cell(*index, self.position.position);
+                            let size = self
+                                .row_icons
+                                .get(row)
+                                .and_then(|icons| icons.1.as_ref())
+                                .map_or(32, |icon| icon.height());
+                            let icon =
+                                Rect::new(cell.x + (cell.width - size) / 2, cell.y + 4, size, size);
+                            let text = text.split('\t').next().unwrap_or("");
+                            let full = self.selected == Some(*row);
+                            let label = probe.icon_label(cell, size, text, full).rect;
+                            [icon, label].iter().any(|rect| {
+                                (rect.x..rect.right()).contains(&point.0)
+                                    && (rect.y..rect.bottom()).contains(&point.1)
+                            })
+                        })
+                })
+                .unwrap_or(miss)
+        } else {
+            self.position.position as usize
+                + ((point.1 - geometry.rows.y).max(0) / self.row_height) as usize
+        }
+    }
+}
 impl Tree {
+    fn file_drag_input(
+        &mut self,
+        window: u64,
+        input: &EventKind,
+        probe: &classic_ui::Painter<'_>,
+        out: &mut Vec<abi::Event>,
+    ) -> bool {
+        match input {
+            EventKind::Button {
+                code: 0x110,
+                pressed: true,
+                serial,
+            } => {
+                self.file_press = self.hit().filter(|id| self.active(*id)).and_then(|id| {
+                    let node = self.nodes.get(&id)?;
+                    if node.kind != widget::LIST || node.state & state::FILE_DRAG == 0 {
+                        return None;
+                    }
+                    let rows = node.list_geometry().rows;
+                    let (x, y) = self.pointer;
+                    if !(rows.x..rows.right()).contains(&x) || !(rows.y..rows.bottom()).contains(&y)
+                    {
+                        return None;
+                    }
+                    let row = node.row_at(node.list_row_at(self.pointer, probe))?.0;
+                    Some(FilePress {
+                        node: id,
+                        row,
+                        point: self.pointer,
+                        serial: *serial,
+                    })
+                });
+            }
+            EventKind::PointerMove { .. }
+                if self.file_press.as_ref().is_some_and(|press| {
+                    (self.pointer.0 - press.point.0).abs() > 4
+                        || (self.pointer.1 - press.point.1).abs() > 4
+                }) =>
+            {
+                let press = self.file_press.take().expect("checked drag gesture");
+                if !self.active(press.node) {
+                    return false;
+                }
+                let Some(node) = self.nodes.get_mut(&press.node) else {
+                    return false;
+                };
+                let Some(index) = (0..node.row_count())
+                    .find(|index| node.row_at(*index).is_some_and(|row| row.0 == press.row))
+                else {
+                    return false;
+                };
+                if !node.row_selected(press.row) {
+                    node.choose_row(index, false, false, false);
+                }
+                if let Some(table) = &mut node.table {
+                    table.last_click = None;
+                }
+                self.armed = None;
+                out.push(abi::Event {
+                    window,
+                    node: press.node,
+                    kind: event::FILE_DRAG,
+                    value: press.row,
+                    code: press.serial,
+                    ..Default::default()
+                });
+                return true;
+            }
+            EventKind::Button {
+                code: 0x110,
+                pressed: false,
+                ..
+            }
+            | EventKind::PointerLeave
+            | EventKind::Focus(false) => self.file_press = None,
+            _ => {}
+        }
+        false
+    }
+
     pub fn input(
         &mut self,
         window: u64,
@@ -17,6 +140,15 @@ impl Tree {
             self.armed.filter(|id| self.hit() == Some(*id)),
         );
         let mut out = Vec::new();
+        if matches!(
+            input,
+            EventKind::Button { pressed: true, .. }
+                | EventKind::Focus(false)
+                | EventKind::Wheel { .. }
+        ) || matches!(input, EventKind::Key(key) if key.pressed)
+        {
+            self.rename_click = None;
+        }
         if let EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } = input {
             self.pointer = (x.floor() as i32, y.floor() as i32);
         }
@@ -26,6 +158,12 @@ impl Tree {
         let (menu_handled, menu_repaint) = self.menu_input(window, input, probe, &mut out);
         if menu_handled {
             return (out, true, menu_repaint);
+        }
+        if let EventKind::Key(key) = input
+            && let Some(request) = self.list_context_menu(window, *key)
+        {
+            out.push(request);
+            return (out, true, true);
         }
         let (combo_handled, combo_repaint) = self.combo_input(window, input, &mut out);
         if combo_handled {
@@ -45,13 +183,16 @@ impl Tree {
         if self.outline_input(window, input, &mut out) {
             return (out, true, true);
         }
-        if self.table_input(window, input, &mut out) {
+        if self.table_input(window, input, probe, &mut out) {
             return (out, true, true);
         }
         if self.updown_input(window, input, &mut out) {
             return (out, true, true);
         }
         if self.range_input(window, input, &mut out) {
+            return (out, true, true);
+        }
+        if self.file_drag_input(window, input, probe, &mut out) {
             return (out, true, true);
         }
         let mut consumed = false;
@@ -281,40 +422,24 @@ impl Tree {
             {
                 return;
             }
-            let index = if let Some(grid) = geometry.grid {
-                // 图标视图只在图标或标签上命中（comctl32 LVHT_ONITEMICON/LABEL）；格子空白与无条目处
-                // 按单击背景处理：清除选择。行数作为越界下标交给 choose_row 走同一清除路径。
-                let miss = node.row_count();
-                grid.at(self.pointer, node.position.position)
-                    .filter(|index| {
-                        grid.mode != 1
-                            || node.row_at(*index).is_some_and(|(row, text)| {
-                                let cell = grid.cell(*index, node.position.position);
-                                let size = node
-                                    .row_icons
-                                    .get(row)
-                                    .and_then(|icons| icons.1.as_ref())
-                                    .map_or(32, |icon| icon.height());
-                                let icon = Rect::new(
-                                    cell.x + (cell.width - size) / 2,
-                                    cell.y + 4,
-                                    size,
-                                    size,
-                                );
-                                let text = text.split('\t').next().unwrap_or("");
-                                let full = node.selected == Some(*row);
-                                let label = probe.icon_label(cell, size, text, full).rect;
-                                [icon, label].iter().any(|rect| {
-                                    (rect.x..rect.right()).contains(&self.pointer.0)
-                                        && (rect.y..rect.bottom()).contains(&self.pointer.1)
-                                })
-                            })
-                    })
-                    .unwrap_or(miss)
-            } else {
-                node.position.position as usize
-                    + ((self.pointer.1 - geometry.rows.y).max(0) / node.row_height) as usize
-            };
+            let index = node.list_row_at(self.pointer, probe);
+            if let Some((row, _)) = node.row_at(index)
+                && let Some(table) = &node.table
+                && let Some(check) = table.check(*row)
+            {
+                let rect = table.check_rect(Rect::new(
+                    geometry.rows.x,
+                    geometry.rows.y + (index as i32 - node.position.position) * node.row_height,
+                    geometry.rows.width,
+                    node.row_height,
+                ));
+                if (rect.x..rect.right()).contains(&self.pointer.0)
+                    && (rect.y..rect.bottom()).contains(&self.pointer.1)
+                {
+                    request_check(window, id, *row, check, out);
+                    return;
+                }
+            }
             // 树项只在图标或文字标签上命中（comctl32 TVHT_ONITEM），与绘制共用 RowGeometry；
             // 缩进、连线和标签右侧空白不改变选择。
             if let (Some(outline), Some((row_id, text)), true) = (
@@ -347,16 +472,27 @@ impl Tree {
                     return;
                 }
             }
+            let rename = kind == widget::LIST
+                && node.state & state::EDIT_LABELS != 0
+                && !modifiers.shift
+                && !modifiers.control
+                && !modifiers.alt
+                && !modifiers.super_key
+                && node
+                    .row_at(index)
+                    .is_some_and(|(row, _)| node.selected == Some(*row) && node.row_selected(*row))
+                && node.label_contains(index, self.pointer, probe);
             if let Some(selected) = node.choose_row(index, modifiers.shift, modifiers.control, true)
             {
                 value = selected;
                 let now = std::time::Instant::now();
                 let table = node.table.as_mut().expect("selection table");
-                let double = table.last_click.is_some_and(|(last, time)| {
-                    last == value
-                        && now.duration_since(time) < std::time::Duration::from_millis(500)
-                });
-                table.last_click = if double { None } else { Some((value, now)) };
+                let double = table
+                    .last_click
+                    .as_ref()
+                    .is_some_and(|last| last.follows(value, self.pointer, now));
+                table.last_click =
+                    (!double).then(|| classic_ui::ItemClick::new(value, self.pointer, now));
                 if double {
                     if let Some(outline) = node.outline.as_mut() {
                         outline.toggle_event(window, id, value, out);
@@ -369,6 +505,8 @@ impl Tree {
                         value,
                         ..Default::default()
                     });
+                } else if rename {
+                    self.rename_click = Some((id, value, now + ITEM_DOUBLE_CLICK));
                 }
             } else {
                 if kind == widget::LIST && !modifiers.control && !modifiers.shift {
@@ -376,6 +514,7 @@ impl Tree {
                     if let Some(table) = node.table.as_mut() {
                         table.selection.clear();
                         table.anchor = None;
+                        table.last_click = None;
                     }
                     out.push(abi::Event {
                         window,
@@ -488,9 +627,76 @@ impl Tree {
         self.select_tab(window, id, pages[index], out);
         true
     }
+
+    fn list_context_menu(&mut self, window: u64, key: Key) -> Option<abi::Event> {
+        let modifiers = key.modifiers;
+        // KEY_COMPOSE 是桌面键盘的 Applications 键，KEY_MENU 也用于实体菜单键。
+        if !key.pressed
+            || key.repeat
+            || modifiers.control
+            || modifiers.alt
+            || modifiers.super_key
+            || !matches!((key.code, modifiers.shift), (68, true) | (127 | 139, false))
+        {
+            return None;
+        }
+        let id = self.focus.filter(|id| self.active(*id))?;
+        let node = self.nodes.get_mut(&id)?;
+        if node.kind != widget::LIST || node.state & state::KEYBOARD_CONTEXT_MENU == 0 {
+            return None;
+        }
+        let table = node.table.as_ref().expect("list model");
+        let row = node
+            .selected
+            .filter(|row| node.row_selected(*row))
+            .or_else(|| table.selection.first().copied());
+        let index = row.and_then(|row| node.rows.iter().position(|entry| entry.0 == row));
+        let geometry = node.list_geometry();
+        let viewport = geometry.rows.intersect(node.clip);
+        let (x, y) = if let Some(index) = index {
+            // Ctrl+方向键可把焦点行移出所选集合。让单项命令与菜单锚点指向同一选中项。
+            node.selected = row;
+            node.reveal_list_row(index, geometry);
+            let scroll = node.position.position;
+            let cell = geometry.grid.map_or_else(
+                || {
+                    Rect::new(
+                        geometry.rows.x,
+                        geometry.rows.y + (index as i32 - scroll) * node.row_height,
+                        geometry.rows.width,
+                        node.row_height,
+                    )
+                },
+                |grid| grid.cell(index, scroll),
+            );
+            let visible = cell.intersect(viewport);
+            (visible.x, visible.bottom())
+        } else {
+            (viewport.x, viewport.y)
+        };
+        Some(abi::Event {
+            window,
+            node: id,
+            kind: event::CONTEXT_MENU,
+            value: row.unwrap_or(0),
+            x: f64::from(x),
+            y: f64::from(y),
+            ..Default::default()
+        })
+    }
+
     fn list_key(&mut self, window: u64, id: u64, key: Key, out: &mut Vec<abi::Event>) {
         let node = self.nodes.get_mut(&id).expect("focus node");
         if !matches!(node.kind, widget::LIST | widget::TREE) || node.row_count() == 0 {
+            return;
+        }
+        if key.code == 57
+            && let Some(row) = node.selected
+            && let Some(check) = node.table.as_ref().and_then(|table| table.check(row))
+        {
+            if !key.repeat {
+                request_check(window, id, row, check, out);
+            }
             return;
         }
         if key.modifiers.control && key.code == 30 {
@@ -564,21 +770,24 @@ impl Tree {
                 key.code == 57,
             )
             .expect("visible row");
-        if let Some(grid) = geometry.grid {
-            node.position.position = grid.reveal(index, node.position.position);
-        } else {
-            let visible = (geometry.rows.height / node.row_height).max(1) as usize;
-            if index < node.position.position as usize {
-                node.position.position = index as i32;
-            } else if index >= node.position.position as usize + visible {
-                node.position.position = (index + 1 - visible) as i32;
-            }
-        }
+        node.reveal_list_row(index, geometry);
         out.push(abi::Event {
             window,
             node: id,
             kind: event::SELECT,
             value,
+            ..Default::default()
+        });
+    }
+}
+
+fn request_check(window: u64, node: u64, row: u64, check: u32, out: &mut Vec<abi::Event>) {
+    if check & state::DISABLED == 0 {
+        out.push(abi::Event {
+            window,
+            node,
+            kind: event::TOGGLE_ROW_CHECK,
+            value: row,
             ..Default::default()
         });
     }

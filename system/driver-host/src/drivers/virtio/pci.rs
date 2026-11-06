@@ -145,6 +145,13 @@ impl PciTransport {
             .read_u32(offset)
     }
 
+    pub(crate) fn read_config_u16(&self, offset: usize) -> Result<u16, BusError> {
+        self.device
+            .as_ref()
+            .ok_or(BusError::InvalidAddress)?
+            .read_u16(offset)
+    }
+
     pub(crate) fn write_config_u32(&self, offset: usize, value: u32) -> Result<(), BusError> {
         self.device
             .as_ref()

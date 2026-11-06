@@ -571,6 +571,7 @@ impl Context {
                     event.kind = event::FOCUS;
                     event.flags = u32::from(active);
                 }
+                EventKind::ClipboardChanged => event.kind = event::CLIPBOARD_CHANGED,
                 EventKind::Key(key) => {
                     event.kind = event::KEY;
                     event.code = key.code;
@@ -620,6 +621,16 @@ impl Context {
                 self.events.push_back(event);
             }
             self.file_action(id, file_action);
+        }
+        let focus = self.display.keyboard_focus();
+        let now = std::time::Instant::now();
+        for (window, host) in &mut self.windows {
+            if let WindowBody::Widgets(tree) = &mut host.body
+                && let Some(request) = tree.rename_request(*window, now)
+                && Some(host.frame.window()) == focus
+            {
+                self.events.push_back(request);
+            }
         }
         // 外部图片 FD 唤醒时可能没有 Wayland 事件，也必须接收结果并提交失效的 Canvas。
         self.paint()?;

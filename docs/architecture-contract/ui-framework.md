@@ -57,6 +57,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   布局独立于像素提交；等待 frame 或 release 期间也可处理最新 configure 和命中。
 - Display 的 mapped 只表示本连接已经成功提交首个 buffer；pending_parents 只保存尚不能发送的标准父关系。
   首次提交后发送并删除等待项，父/子销毁时撤销；缺少该阶段，未映射父窗口会被服务端按 xdg-shell 规范当作 null。
+- 顶层窗口销毁后，已在途的 configure 仅被解码，活窗口才发送 ack；否则无效请求会断开同一应用的整条连接。
 - xdg-dialog 对象独占 compositor 的模态提示，toplevel 销毁后附属对象 inert；对象编号复用不得恢复旧关联。
   客户端 Context 拥有 UI 父子生命周期与输入筛选，不把可选的 compositor 策略当成应用安全保证。
 - 等宽 atlas 只在需要该文字角色时加载一份，Rc 保活绘制借用；缺少缓存会在终端输出时反复读入约 9 MiB 字体。
@@ -120,8 +121,13 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
 - GPU 方向约定由 linux-uapi 的 VirGL owner 固定：Y_0_TOP 只用于扫描目标，viewport 不取负 Y 比例。
 - Window/Widget/dialog 的 ABI 编解码分别位于 window_api、widget_api、dialog_api；image_api 拥有 Image 的资源选择和调色板入口，context_api 拥有等待和 FD 入口。
   这些模块只解释进程内公开 ABI，不引入 libc/设备 FFI；唯一可见动态符号仍是 liteos_ui_get_api。
-- desktop-settings 通过标准 flock 串行化跨进程读改写，UI 必须在后台调用；各属性页仅修改自己拥有的字段。
-  发布采用同目录 create_new 临时文件、sync 和 rename；正常错误清理临时文件，锁随 OFD 析构释放。
+- 剪贴板 MIME 查询、读取和提供接口追加到 ABI 表尾，原文本接口保留。读取转移一个非阻塞 FD，由 SDK 的同一事件循环等待。
+  运行库拥有当前选择与本地身份。条件替换要求身份匹配且仍有键盘焦点，供剪切粘贴清除已移动项目。
+- 设置 `EDIT_LABELS` 的列表使用绘制时的标签几何判断慢速点击，经同一事件循环等待双击窗口结束后发出 `RENAME_REQUESTED`。
+  应用用稳定行标识确认可编辑项，再走现有原位编辑与提交接口。控件不直接修改文件。
+- 设置 `KEYBOARD_CONTEXT_MENU` 的列表用自身选择和视口解析 Shift+F10 与菜单键，发出 `CONTEXT_MENU`。事件携带稳定行标识和逻辑锚点，命令及可用性由应用决定。声明此能力的列表才消费这些按键。
+- desktop-settings 通过标准 flock 串行化跨进程读改写，UI 必须在后台调用。属性页更新各自的字段，资源管理器只写当前文件夹的查看方式。
+  发布采用同目录 create_new 私有临时文件、sync 和 rename；正常错误清理临时文件，锁随 OFD 析构释放。
 
 - 文件对话框的 Filter 只拥有复制后的标签与扩展名；Tree 的“所有文件”勾选是唯一筛选模式状态。
   worker 先筛选普通文件再计入 4096 项额度，目录始终可导航；请求序号排除切换前的结果。
@@ -237,6 +243,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   原生执行需执行位与 ELF/shebang 文件头同时成立，不能把 SMB 投影的执行位当成文件格式。
   用户目录先于系统目录，递归条目以相对路径中的 `/` 替换为 `-` 得到 ID；Hidden 用户条目遮蔽系统同 ID 条目。
   Exec 按 string 与命令行两层转义解码，不经过 shell；Path 是应用工作目录。NoDisplay 不进入菜单，仍可用于 MIME 关联和窗口图标。
+- 桌面与资源管理器通过 `desktop-entry` 共用文件剪贴板编解码与文件事务。界面线程按选择身份核对数据，后台执行磁盘操作。已完成部分才从仍有效的剪切选择移除。
 - `classic-ui::Bitmap::application_icon` 拥有应用图标加载：绝对 PNG/BMP、XDG hicolor 的 NxN/apps PNG、pixmaps PNG 与经典系统 BMP。
   文件类型图标沿用同一加载器的 `NxN/mimetypes` 上下文；原版资源由 ISO 导入器发布，生成素材由 `file_type_icons.py` 转换并登记摘要。
   行图标来源区分系统资源、应用 app_id 和主题名/绝对路径（RowIcon kind 0/1/2）；不得把 MIME 图标名送入 app_id 查找。
@@ -326,6 +333,7 @@ SDK 只允许 connection.rs 导入 liteos_ui_get_api；ABI 声明与运行库导
   新资源先取得 keymap/repeat_info；即使 logical focus 未变化，也必须由 Seat 用当前真实状态补发 enter/modifiers。
   已 enter 的旧资源不能重复 enter，尚未 enter 的资源不接收按键；release 删除资源，surface 先销毁时只清理 wire 状态、不发送失效引用。
 - `Server::keyboard_needs_enter` 只读检查资源状态，不 flush socket、不维护另一份焦点或按键表；正常焦点改变仍先 leave 再 enter。
+- OnDemand 图层接受指针点选取得键盘焦点。独占图层只暂借焦点，任务栏提交最小化动画矩形只更新几何。
   成本决策：无新锁、缓存或逐帧分配，查询为现有连接/对象表的有界只读遍历；沿用控件/Wayland 门禁，以 wire 顺序和迟绑定输入验证，不另设 wall-clock 阈值。
 
 ## linux-dmabuf / EGL 客户端

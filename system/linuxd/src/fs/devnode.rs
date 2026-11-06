@@ -81,15 +81,21 @@ pub(crate) fn register_node(
     publish_node(path, number, S_IFCHR | (permissions & 0o7777), 0, None)
 }
 
-/// 在 devfs 发布 linuxd 自己的授权端点 socket 节点（同 Linux `/dev/log`）：属主 root、属组 `gid`、权限 0660。
+/// 在 devfs 发布 linuxd 自己的授权端点 socket 节点（同 Linux `/dev/log`）：属主 root、属组 `gid`、权限由端点 owner 指定。
 /// devfs 对 Linux 只读，端点只能由 linuxd 经注册表发布；连接时 VFS 按节点的组写权限授权。
 ///
 /// # Errors
 ///
 /// 路径已注册返回 `AlreadyExists`；分配失败返回 `OutOfMemory`。
-pub(crate) fn register_socket(path: &[u8], gid: u32) -> Result<(), FileSystemError> {
+pub(crate) fn register_socket(path: &[u8], gid: u32, mode: u32) -> Result<(), FileSystemError> {
     const S_IFSOCK: u32 = 0o140000;
-    publish_node(path, DeviceNumber::new(0, 0), S_IFSOCK | 0o660, gid, None)
+    publish_node(
+        path,
+        DeviceNumber::new(0, 0),
+        S_IFSOCK | (mode & 0o777),
+        gid,
+        None,
+    )
 }
 
 /// 发布一个块设备（Linux `add_disk`）：登记设备号到 adapter 的映射，并在 devfs 发布 `S_IFBLK`

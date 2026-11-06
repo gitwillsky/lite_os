@@ -22,7 +22,7 @@ mod window;
 pub use background::{Background, Blocking};
 use classic_ui_abi::{self as abi, event};
 pub use classic_ui_abi::{Date, Layout, Range, Rect, state};
-pub use clipboard::ClipboardRead;
+pub use clipboard::{Clipboard, ClipboardRead};
 use connection::Connection;
 pub use connection::{Error, Result};
 pub use events::{EventStream, NextEvent};
@@ -53,6 +53,11 @@ pub enum EventKind {
         row: u64,
         expanded: bool,
     },
+    /// 用户从启用 FILE_DRAG 的列表行开始拖动。
+    FileDrag {
+        row: u64,
+        serial: u32,
+    },
     LabelEdited {
         row: u64,
     },
@@ -66,6 +71,10 @@ pub enum EventKind {
         value: i64,
     },
     Select {
+        row: u64,
+    },
+    /// 用户请求切换该行的复选框。应用提交新的状态投影。
+    ToggleRowCheck {
         row: u64,
     },
     Key {
@@ -104,6 +113,15 @@ pub enum EventKind {
     ClipboardError {
         reason: u32,
     },
+    ClipboardChanged,
+    RenameRequested {
+        row: u64,
+    },
+    /// 键盘请求右键菜单，`row` 是选中项，`at` 是传给 `Dialogs::menu_at` 的位置。
+    ContextMenu {
+        row: Option<u64>,
+        at: (i32, i32),
+    },
     Validate {
         token: ValidationToken,
     },
@@ -133,6 +151,16 @@ impl Event {
                 token: ApplyToken(event.value),
             },
             event::CLIPBOARD_ERROR => EventKind::ClipboardError { reason: event.code },
+            event::CLIPBOARD_CHANGED => EventKind::ClipboardChanged,
+            event::RENAME_REQUESTED => EventKind::RenameRequested { row: event.value },
+            event::CONTEXT_MENU => EventKind::ContextMenu {
+                row: (event.value != 0).then_some(event.value),
+                at: (event.x as i32, event.y as i32),
+            },
+            event::FILE_DRAG => EventKind::FileDrag {
+                row: event.value,
+                serial: event.code,
+            },
             event::DROPDOWN => EventKind::Dropdown {
                 button: event.value,
                 rect: Rect::new(event.x as i32, event.y as i32, event.width, event.height),
@@ -156,6 +184,7 @@ impl Event {
                 value: event.value as i64,
             },
             event::SELECT => EventKind::Select { row: event.value },
+            event::TOGGLE_ROW_CHECK => EventKind::ToggleRowCheck { row: event.value },
             event::KEY => EventKind::Key {
                 handled: event.flags & 4 != 0,
                 code: event.code,
@@ -207,7 +236,6 @@ pub struct Application {
     timers: Rc<tasks::Timers>,
     notify: Arc<tasks::Notifications>,
     reader: UnixStream,
-    sources: BTreeMap<u64, std::rc::Weak<std::cell::RefCell<readiness::Ready>>>,
     background: Option<Background>,
     scope: Rc<tasks::Scope>,
     running: bool,
@@ -225,7 +253,6 @@ impl Application {
             timers: tasks::Timers::new(),
             notify,
             reader,
-            sources: BTreeMap::new(),
             background: None,
             scope: Rc::new(tasks::Scope::new()),
             running: false,
@@ -234,22 +261,15 @@ impl Application {
     }
     /// 把非阻塞 FD 接入统一等待；返回的 AsyncFd 独占原描述符，析构时撤销注册。
     pub fn watch(&mut self, fd: std::os::fd::OwnedFd) -> Result<AsyncFd> {
-        self.sources.retain(|_, source| source.strong_count() != 0);
-        let source = AsyncFd::new(self.connection.clone(), fd)?;
-        self.sources.insert(source.id, Rc::downgrade(&source.ready));
-        Ok(source)
+        self.connection.watch(fd)
     }
     /// 异步读取 UTF-8 剪贴板；无文本返回 None，超时、超限或无效 UTF-8 返回错误。
     pub fn clipboard_text(&mut self, timeout: Duration) -> Result<ClipboardRead> {
-        use std::os::fd::AsFd;
-        let stream = self.connection.clipboard()?;
-        let source = match &stream {
-            Some(stream) => {
-                Some(self.watch(stream.as_fd().try_clone_to_owned().map_err(io_error)?)?)
-            }
-            None => None,
-        };
-        Ok(ClipboardRead::new(stream, source, self.sleep(timeout)?))
+        self.clipboard().read(None, timeout)
+    }
+    /// 返回绑定到本 Application 事件循环的剪贴板入口。
+    pub fn clipboard(&self) -> Clipboard {
+        Clipboard::new(self.connection.clone(), self.clock())
     }
     /// 提供 UTF-8 文本选择；需要先收到有效的键盘或指针序号，容量上限 1 MiB。
     pub fn set_clipboard(&self, value: &str) -> Result<()> {
@@ -372,7 +392,9 @@ impl Application {
         self.connection.check(code)?;
         if event.kind == event::FD_READY {
             if let Some(ready) = self
+                .connection
                 .sources
+                .borrow()
                 .get(&event.value)
                 .and_then(std::rc::Weak::upgrade)
             {

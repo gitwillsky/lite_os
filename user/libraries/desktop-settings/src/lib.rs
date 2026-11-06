@@ -1,11 +1,55 @@
 //! 每用户的桌面设置文件：`$HOME/.config/liteos/desktop.conf`。
 extern crate liteos_runtime as _;
 use std::{
+    collections::BTreeSet,
     fs,
     io::{self, Write},
+    os::unix::fs::OpenOptionsExt,
     path::PathBuf,
     time::SystemTime,
 };
+
+/// 资源管理器为一个位置保存的查看方式。
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum FolderView {
+    #[default]
+    LargeIcons,
+    SmallIcons,
+    List,
+    Details,
+}
+
+/// 保存于文件夹视图中的一列。字段标识由该视图的 owner 定义。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FolderColumn {
+    /// 视图定义的稳定列 ID。
+    pub id: u64,
+    /// 逻辑像素宽度。
+    pub width: i32,
+    /// 是否参与详细资料视图。
+    pub visible: bool,
+}
+
+impl FolderView {
+    fn parse(value: &str) -> Option<Self> {
+        Some(match value {
+            "large-icons" => Self::LargeIcons,
+            "small-icons" => Self::SmallIcons,
+            "list" => Self::List,
+            "details" => Self::Details,
+            _ => return None,
+        })
+    }
+
+    fn key(self) -> &'static str {
+        match self {
+            Self::LargeIcons => "large-icons",
+            Self::SmallIcons => "small-icons",
+            Self::List => "list",
+            Self::Details => "details",
+        }
+    }
+}
 
 /// 墙纸显示方式；对应 `HKCU\Control Panel\Desktop` 的 TileWallpaper=1（平铺）、
 /// WallpaperStyle=2（拉伸），其余为居中。
@@ -40,6 +84,9 @@ pub struct Settings {
     /// 墙纸图片的绝对路径；`None` 即“(无)”。路径必须是不含换行的 UTF-8，否则不写入文件。
     pub wallpaper: Option<PathBuf>,
     pub wallpaper_style: WallpaperStyle,
+    folder_views: Vec<(String, FolderView)>,
+    folder_columns: Vec<(String, Vec<FolderColumn>)>,
+    hidden_network_icons: BTreeSet<String>,
 }
 
 impl Default for Settings {
@@ -51,6 +98,9 @@ impl Default for Settings {
             background: None,
             wallpaper: None,
             wallpaper_style: WallpaperStyle::Center,
+            folder_views: Vec::new(),
+            folder_columns: Vec::new(),
+            hidden_network_icons: BTreeSet::new(),
         }
     }
 }
@@ -65,6 +115,75 @@ fn parse_color(value: &str) -> Option<[u8; 3]> {
 }
 
 impl Settings {
+    /// 取该位置的列顺序、宽度和可见性。空切片表示使用默认列。
+    pub fn folder_columns(&self, location: &str) -> &[FolderColumn] {
+        self.folder_columns
+            .iter()
+            .find(|(key, _)| key == location)
+            .map_or(&[], |(_, columns)| columns)
+    }
+
+    /// 更新该位置的列布局，空布局移除已有偏好。
+    pub fn set_folder_columns(&mut self, location: String, columns: Vec<FolderColumn>) {
+        if location.is_empty()
+            || location.bytes().any(|byte| byte.is_ascii_control())
+            || columns.len() > 32
+            || columns.iter().enumerate().any(|(index, column)| {
+                column.id == 0
+                    || !(24..=32768).contains(&column.width)
+                    || columns[..index]
+                        .iter()
+                        .any(|earlier| earlier.id == column.id)
+            })
+        {
+            return;
+        }
+        self.folder_columns.retain(|(key, _)| key != &location);
+        if !columns.is_empty() {
+            if self.folder_columns.len() == 512 {
+                self.folder_columns.remove(0);
+            }
+            self.folder_columns.push((location, columns));
+        }
+    }
+    /// 返回 `interface` 是否参与通知区域显示。无用户设置的连接默认显示。
+    pub fn network_icon_visible(&self, interface: &str) -> bool {
+        !self.hidden_network_icons.contains(interface)
+    }
+
+    /// 设置 `interface` 是否参与通知区域显示。空名和含控制字符的名称忽略。
+    pub fn set_network_icon_visible(&mut self, interface: String, visible: bool) {
+        if visible {
+            self.hidden_network_icons.remove(&interface);
+        } else if !interface.is_empty() && !interface.bytes().any(|byte| byte.is_ascii_control()) {
+            self.hidden_network_icons.insert(interface);
+        }
+    }
+
+    /// 读取 `location` 的查看方式。未设置时使用大图标。
+    pub fn folder_view(&self, location: &str) -> FolderView {
+        self.folder_views
+            .iter()
+            .find(|(key, _)| key == location)
+            .map(|(_, view)| *view)
+            .unwrap_or_default()
+    }
+
+    /// 更新 `location` 的查看方式；键是本地文件 URI 或外壳位置标识。
+    pub fn set_folder_view(&mut self, location: String, view: FolderView) {
+        if location.is_empty() || location.bytes().any(|byte| byte.is_ascii_control()) {
+            return;
+        }
+        self.folder_views.retain(|(key, _)| key != &location);
+        if view != FolderView::default() {
+            // 只保留最近设置过的 512 个位置，防止设置文件随历史浏览无限增长。
+            if self.folder_views.len() == 512 {
+                self.folder_views.remove(0);
+            }
+            self.folder_views.push((location, view));
+        }
+    }
+
     /// 设置文件路径；没有 `HOME` 时为 `None`。
     pub fn path() -> Option<PathBuf> {
         Some(PathBuf::from(std::env::var_os("HOME")?).join(".config/liteos/desktop.conf"))
@@ -85,6 +204,9 @@ impl Settings {
                 "taskbar.always_on_top" => settings.always_on_top = flag().unwrap_or(true),
                 "taskbar.auto_hide" => settings.auto_hide = flag().unwrap_or(false),
                 "taskbar.show_clock" => settings.show_clock = flag().unwrap_or(true),
+                "taskbar.hide_network" => {
+                    settings.set_network_icon_visible(value.to_owned(), false)
+                }
                 "background.color" => settings.background = parse_color(value.trim()),
                 "background.wallpaper" => {
                     let path = PathBuf::from(value.trim());
@@ -95,6 +217,38 @@ impl Settings {
                         "tile" => WallpaperStyle::Tile,
                         "stretch" => WallpaperStyle::Stretch,
                         _ => WallpaperStyle::Center,
+                    }
+                }
+                "explorer.view" => {
+                    if let Some((location, style)) = value.split_once('\t')
+                        && let Some(style) = FolderView::parse(style)
+                    {
+                        settings.set_folder_view(location.to_owned(), style);
+                    }
+                }
+                "explorer.columns" => {
+                    if let Some((location, columns)) = value.split_once('\t') {
+                        let columns = columns
+                            .split(',')
+                            .map(|column| {
+                                let mut fields = column.split(':');
+                                let id = fields.next()?.parse().ok()?;
+                                let width = fields.next()?.parse().ok()?;
+                                let visible = match fields.next()? {
+                                    "0" => false,
+                                    "1" => true,
+                                    _ => return None,
+                                };
+                                fields.next().is_none().then_some(FolderColumn {
+                                    id,
+                                    width,
+                                    visible,
+                                })
+                            })
+                            .collect::<Option<Vec<_>>>();
+                        if let Some(columns) = columns {
+                            settings.set_folder_columns(location.to_owned(), columns);
+                        }
                     }
                 }
                 _ => {}
@@ -140,6 +294,10 @@ impl Settings {
             flag(self.auto_hide),
             flag(self.show_clock)
         );
+        for interface in &self.hidden_network_icons {
+            use std::fmt::Write as _;
+            writeln!(text, "taskbar.hide_network={interface}").expect("writing to a string");
+        }
         if let Some([red, green, blue]) = self.background {
             text.push_str(&format!(
                 "background.color=#{red:02x}{green:02x}{blue:02x}\n"
@@ -157,12 +315,37 @@ impl Settings {
             "background.wallpaper_style={}\n",
             self.wallpaper_style.key()
         ));
+        for (location, view) in &self.folder_views {
+            use std::fmt::Write as _;
+            writeln!(text, "explorer.view={location}\t{}", view.key())
+                .expect("writing to a string");
+        }
+        for (location, columns) in &self.folder_columns {
+            use std::fmt::Write as _;
+            write!(text, "explorer.columns={location}\t").expect("writing to a string");
+            for (index, column) in columns.iter().enumerate() {
+                if index != 0 {
+                    text.push(',');
+                }
+                write!(
+                    text,
+                    "{}:{}:{}",
+                    column.id,
+                    column.width,
+                    u8::from(column.visible)
+                )
+                .expect("writing to a string");
+            }
+            text.push('\n');
+        }
         let mut temporary = None;
         for index in 0..128 {
             let candidate = path.with_extension(format!("{}.{}.new", std::process::id(), index));
             match fs::OpenOptions::new()
                 .write(true)
                 .create_new(true)
+                // 设置可包含用户访问过的路径。
+                .mode(0o600)
                 .open(&candidate)
             {
                 Ok(file) => {

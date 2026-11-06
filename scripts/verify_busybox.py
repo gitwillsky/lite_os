@@ -110,14 +110,17 @@ def install_dhcp_gate_script(image: Path, directory: Path) -> None:
         "#!/bin/sh\n"
         "set -e\n"
         "attempt=0\n"
-        "while [ ! -s /etc/resolv.conf ]; do\n"
+        "while ! /bin/grep -q '^nameserver ' /etc/resolv.conf 2>/dev/null; do\n"
         "  attempt=$((attempt+1))\n"
         "  [ \"$attempt\" -lt 20 ] || exit 1\n"
         "  /bin/sleep 1\n"
         "done\n"
         "/bin/ifconfig eth0 | /bin/grep -q 'inet addr:10.0.2.15'\n"
         "/bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2'\n"
-        "/bin/grep -q '^nameserver ' /etc/resolv.conf\n"
+        "dns=$(/bin/awk '/^nameserver / { print $2; exit }' /etc/resolv.conf)\n"
+        "config=$(/bin/ipconfig /all)\n"
+        "printf '%s\\n' \"$config\" | /bin/grep -Fq '10.0.2.15'\n"
+        "printf '%s\\n' \"$config\" | /bin/grep -Fq \"$dns\"\n"
         "echo LITEOS_DHCP_$((7*7+2))\n"
     )
     commands = directory / "dhcp-gate.debugfs"
@@ -777,7 +780,7 @@ def main() -> int:
                 ),
                 (
                     "LITEOS_RESOLVD_SINGLE_51",
-                    # resolvd 经 /dev/network-settings 读取 netcfg 的设置：删除 resolv.conf 并结束它，init 重启的
+                    # resolvd 经 /dev/network-status 读取 netcfg 的设置：删除 resolv.conf 并结束它，init 重启的
                     # 新实例必须重新写出 DHCP 租约中的 DNS（端点授权、init 监督与 netcfg 快照一起被覆盖）。
                     ShellCommand(b"old=$(/bin/ps | /bin/awk '/[r]esolvd/ {print $1}'); /bin/rm -f /etc/resolv.conf; /bin/kill \"$old\"; attempt=0; while :; do new=$(/bin/ps | /bin/awk '/[r]esolvd/ {print $1}'); if [ -n \"$new\" ] && [ \"$new\" != \"$old\" ] && /bin/grep -q '^nameserver ' /etc/resolv.conf 2>/dev/null; then break; fi; attempt=$((attempt+1)); [ \"$attempt\" -lt 20 ] || break; /bin/sleep 1; done; [ \"$new\" != \"$old\" ] && /bin/grep -q '^nameserver ' /etc/resolv.conf && /bin/route -n | /bin/grep -q '^0.0.0.0 .*10.0.2.2' && echo LITEOS_RESOLVD_RESPAWN_$((7*7+2))\n"),
                 ),

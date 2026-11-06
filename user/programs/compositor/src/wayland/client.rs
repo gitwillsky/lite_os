@@ -92,6 +92,7 @@ pub(super) enum Data {
     LayerSurface(LayerSurface),
     SecurityContext(super::security::Context),
     DataSource(super::clipboard::DataSource),
+    Offer(super::clipboard::Offer),
     Viewport(super::viewport::Viewport),
     Subsurface(ObjectId),
     Positioner(super::popup::Positioner),
@@ -145,7 +146,7 @@ pub struct Client {
     fds: VecDeque<OwnedFd>,
     pub(super) objects: HashMap<u32, Entry>,
     pub(super) writer: Writer,
-    dead: bool,
+    pub(super) dead: bool,
     pub(super) gpu: Option<linux_uapi::drm::VirglContext>,
     pub(super) buffer_releases: super::dmabuf::Releases,
     /// 下一个 `xdg_surface.configure` 序号；每个连接独立。
@@ -166,6 +167,7 @@ pub struct Client {
     pub(super) selection_set: Option<super::clipboard::SelectionSet>,
     /// 接收方对当前选择的读取请求，由 Server 转交持有者。
     pub(super) receives: Vec<super::clipboard::ReceiveRequest>,
+    pub(super) drag_requests: Vec<super::drag::Request>,
     /// 下一个服务端分配的对象 id（窗口句柄）。
     pub(super) next_server_object: u32,
     /// 随消息发送的描述符：`(在待发字节中的偏移, fd)`，偏移按发送顺序递增。
@@ -213,6 +215,7 @@ impl Client {
             pointer_enter_serial: None,
             selection_set: None,
             receives: Vec::new(),
+            drag_requests: Vec::new(),
             next_server_object: SERVER_ID_BASE,
             outgoing_fds: VecDeque::new(),
         }
@@ -250,7 +253,7 @@ impl Client {
         }
     }
 
-    fn fatal(&mut self, fail: Fail) -> Result<(), Disconnected> {
+    pub(super) fn fatal(&mut self, fail: Fail) -> Result<(), Disconnected> {
         eprintln!(
             "compositor: protocol error object={} code={}: {}",
             fail.object.get(),
@@ -449,8 +452,8 @@ impl Client {
                 self.data_device_manager(object, version, request)
             }
             AnyRequest::WlDataSource(request) => self.data_source(object, request),
-            AnyRequest::WlDataDevice(request) => self.data_device(request),
-            AnyRequest::WlDataOffer(request) => self.data_offer(request),
+            AnyRequest::WlDataDevice(request) => self.data_device(object, request),
+            AnyRequest::WlDataOffer(request) => self.data_offer(object, request),
             AnyRequest::WpCursorShapeManagerV1(request) => {
                 self.cursor_shape_manager(object, version, request)
             }

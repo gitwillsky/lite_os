@@ -1,12 +1,10 @@
 //! 文件浏览的领域数据：目录快照、路径身份、导航历史和文件夹目录；不保存控件选择、展开或滚动。
-use crate::{
-    fileops,
-    model::{Field, Icon, Item, Location},
-};
+use crate::model::{ColumnSpec, Details, Field, Icon, Item, Location};
+use desktop_settings::FolderColumn;
 use std::{
     collections::{BTreeMap, HashMap},
     fs, io,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::{Child, Command},
 };
 pub struct Folder {
@@ -64,11 +62,8 @@ pub fn read_branch(location: Location) -> io::Result<Branch> {
         location,
     })
 }
-pub fn read(mut location: Location, home: &Path) -> io::Result<Listing> {
+pub fn read(mut location: Location) -> io::Result<Listing> {
     if let Location::Directory(path) = &mut location {
-        if *path == fileops::trash_files(home) {
-            fs::create_dir_all(&*path)?;
-        }
         *path = fs::canonicalize(&*path)?;
     }
     let mounts = fs::read_to_string("/proc/mounts").unwrap_or_default();
@@ -162,14 +157,10 @@ pub enum Visit {
     Refresh,
     History(usize),
 }
-#[derive(Clone)]
-pub struct Clipboard {
-    pub paths: Vec<PathBuf>,
-    pub cut: bool,
-}
 #[derive(Clone, Hash, PartialEq, Eq)]
 enum ItemKey {
     Path(PathBuf),
+    Connection(String),
     Virtual(Location, String, Option<Vec<String>>),
 }
 pub struct Node {
@@ -317,9 +308,9 @@ pub struct Browser {
     pub truncated: bool,
     pub free: Option<u64>,
     pub catalogue: Catalogue,
-    pub clipboard: Option<Clipboard>,
     /// 排序列与是否降序；切换位置时若新位置没有该列则回到按名称升序。
     pub sort: (Field, bool),
+    pub column_layout: Vec<FolderColumn>,
     history: Vec<Location>,
     pub cursor: usize,
     next: u64,
@@ -328,12 +319,12 @@ impl Browser {
     pub fn new(location: Location) -> Self {
         Self {
             history: vec![location.clone()],
+            column_layout: location.column_layout(&[]),
             location,
             items: Vec::new(),
             truncated: false,
             free: None,
             catalogue: Catalogue::new(),
-            clipboard: None,
             sort: (Field::Name, false),
             cursor: 0,
             next: 1,
@@ -351,10 +342,16 @@ impl Browser {
         }
         let old_location = self.location.clone();
         self.location = listing.location;
+        if self.location != old_location {
+            self.column_layout = self.location.column_layout(&[]);
+        }
         self.truncated = listing.truncated;
         self.free = listing.free;
         self.history[self.cursor] = self.location.clone();
         let key = |location: &Location, item: &Item| {
+            if let Details::Connection { interface, .. } = &item.details {
+                return ItemKey::Connection(interface.clone());
+            }
             item.path.clone().map(ItemKey::Path).unwrap_or_else(|| {
                 ItemKey::Virtual(location.clone(), item.name.clone(), item.launch.clone())
             })
@@ -385,7 +382,6 @@ impl Browser {
             self.catalogue.update(branch);
         }
         if !self
-            .location
             .columns()
             .iter()
             .any(|(field, ..)| *field == self.sort.0)
@@ -393,6 +389,30 @@ impl Browser {
             self.sort = (Field::Name, false);
         }
         self.sort_items();
+    }
+
+    pub fn columns(&self) -> Vec<ColumnSpec> {
+        self.column_layout
+            .iter()
+            .filter(|column| column.visible)
+            .filter_map(|column| {
+                self.location
+                    .column_title(column.id)
+                    .map(|(field, title)| (field, title, column.width))
+            })
+            .collect()
+    }
+
+    pub fn set_column_layout(&mut self, layout: &[FolderColumn]) {
+        self.column_layout = self.location.column_layout(layout);
+        if !self
+            .columns()
+            .iter()
+            .any(|(field, ..)| *field == self.sort.0)
+        {
+            self.sort = (Field::Name, false);
+            self.sort_items();
+        }
     }
     /// 当前列表中的映射盘投影，用于拒绝后台读取期间已经过时的结果。
     pub(super) fn network_drives(&self) -> Vec<Item> {

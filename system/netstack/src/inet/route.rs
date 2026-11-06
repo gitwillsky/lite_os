@@ -456,7 +456,7 @@ impl RoutingTable {
         drop(retired);
         Ok(())
     }
-    /// 原生删除匹配prefix/table及可选metric/gateway/oif；没有匹配返回ESRCH，不能清其他默认route。
+    /// 原生删除匹配 prefix/table 及可选 metric、gateway、oif、protocol 的路由。没有匹配返回 ESRCH。
     pub(super) fn remove(&mut self, request: Ipv4RouteRequest) -> Result<(), Ipv4RouteError> {
         if request.prefix_length > 32
             || u32::from(request.destination) & mask(request.prefix_length)
@@ -473,6 +473,7 @@ impl RoutingTable {
                 break;
             }
             if (request.metric == 0 || request.metric == record.request.metric)
+                && (request.protocol == 0 || request.protocol == record.request.protocol)
                 && request
                     .interface_index
                     .is_none_or(|index| record.interface_index == Some(index))

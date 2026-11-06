@@ -1,12 +1,14 @@
-//! 系统网络接口设置：经 linuxd 的 `/dev/network-settings`（netdev 组）读写原生 netcfg 的设置。
+//! 系统网络接口设置：经 linuxd 读取原生 netcfg 的生效状态；修改设置需要 netdev 组。
 //!
 //! 设置的 owner 是原生网络配置服务 netcfg：它持久化用户设置、运行 DHCP 并配置接口；本库只是 Linux 侧的
 //! 客户端，不再有配置文件或需要重载的 Linux 服务。没有单独设置的以太网接口按 Windows 默认处理：
 //! 启用、自动获得 IP 与 DNS。
 mod links;
 mod settings;
-pub use links::{Link, LinkState, ethernet_links};
-pub use settings::{Snapshot, snapshot, wait};
+pub use links::{Link, LinkState, ethernet_links, link_state, rename_connection};
+pub use netcfg_protocol::DNS_MAX;
+pub use netcfg_protocol::valid_search_list;
+pub use settings::{Snapshot, dhcp, snapshot, wait};
 
 use netcfg_protocol::{InterfaceConfig, Method as NetcfgMethod};
 use std::{io, net::Ipv4Addr};
@@ -31,9 +33,22 @@ pub struct Interface {
     pub method: Method,
     /// 指定的 DNS 服务器；空表示自动获得（DHCP 租约）。
     pub dns: Vec<Ipv4Addr>,
+    /// 手动连接 DNS 后缀，留空时由 DHCP 提供。
+    pub dns_suffix: String,
 }
 
 impl Interface {
+    /// 从已有快照读取接口配置。未安装的接口使用默认配置。
+    pub fn from_snapshot(name: &str, snapshot: &Snapshot) -> Self {
+        snapshot
+            .interfaces
+            .iter()
+            .find(|interface| interface.name == name.as_bytes())
+            .map_or_else(
+                || Self::default_for(name),
+                |state| Self::from_config(name, &state.config),
+            )
+    }
     /// Windows 默认：启用、DHCP、自动 DNS。
     pub fn default_for(name: &str) -> Self {
         Self {
@@ -41,6 +56,7 @@ impl Interface {
             enabled: true,
             method: Method::Dhcp,
             dns: Vec::new(),
+            dns_suffix: String::new(),
         }
     }
 
@@ -62,12 +78,14 @@ impl Interface {
             enabled: config.method != NetcfgMethod::Disabled,
             method,
             dns: config.dns.clone(),
+            dns_suffix: config.dns_suffix.clone(),
         }
     }
 
     fn to_config(&self) -> InterfaceConfig {
         let mut config = InterfaceConfig::dhcp();
         config.dns = self.dns.clone();
+        config.dns_suffix = self.dns_suffix.clone();
         if let Method::Static {
             address,
             netmask,
@@ -86,10 +104,11 @@ impl Interface {
     }
 }
 
-fn prefix_mask(prefix_length: u8) -> Ipv4Addr {
+/// 将 IPv4 前缀长度转换成点分十进制掩码。
+pub fn prefix_mask(prefix_length: u8) -> Ipv4Addr {
     Ipv4Addr::from(
         u32::MAX
-            .checked_shl(32 - u32::from(prefix_length))
+            .checked_shl(32 - u32::from(prefix_length.min(32)))
             .unwrap_or(0),
     )
 }
@@ -98,26 +117,51 @@ fn prefix_mask(prefix_length: u8) -> Ipv4Addr {
 ///
 /// # Errors
 ///
-/// 设置端点不可用或没有权限（需要 netdev 组）。
+/// 状态端点不可用或回复无效。
 pub fn interface(name: &str) -> io::Result<Interface> {
-    let snapshot = snapshot()?;
-    Ok(snapshot
-        .interfaces
-        .iter()
-        .find(|interface| interface.name == name.as_bytes())
-        .map_or_else(
-            || Interface::default_for(name),
-            |state| Interface::from_config(name, &state.config),
-        ))
+    Ok(Interface::from_snapshot(name, &snapshot()?))
 }
 
-/// 应用并持久化一个接口的设置（netcfg 先持久化再重新配置接口）。
+/// 一次提交接口设置、全局搜索列表或父后缀开关。缺省字段沿用系统当前值。
 ///
 /// # Errors
 ///
 /// 设置无效、设置端点不可用或没有权限。
-pub fn apply(interface: &Interface) -> io::Result<()> {
-    settings::set(interface.name.as_bytes(), &interface.to_config())
+pub fn apply(
+    interface: Option<&Interface>,
+    search_list: Option<Vec<String>>,
+    append_parent_suffixes: Option<bool>,
+) -> io::Result<()> {
+    settings::set(netcfg_protocol::Update {
+        interface: interface.map_or(&[], |interface| interface.name.as_bytes()),
+        config: interface.map(Interface::to_config),
+        search_list,
+        append_parent_suffixes,
+        ..Default::default()
+    })
+}
+
+/// 规范化对话框输入，去掉首尾空白与合法域名末尾的根点。
+/// 空白表示清除后缀，无效名称返回 `None`。
+pub fn normalize_dns_suffix(text: &str) -> Option<&str> {
+    let text = text.trim();
+    let text = text
+        .strip_suffix('.')
+        .filter(|suffix| !suffix.is_empty())
+        .unwrap_or(text);
+    netcfg_protocol::dns_suffix(text.as_bytes()).ok()
+}
+
+/// 保存主 DNS 后缀；空字符串恢复为未配置。
+///
+/// # Errors
+///
+/// 后缀无效、端点不可用或没有修改权限。
+pub fn set_primary_dns_suffix(suffix: String) -> io::Result<()> {
+    settings::set(netcfg_protocol::Update {
+        primary_dns_suffix: Some(suffix),
+        ..Default::default()
+    })
 }
 
 /// 启用或禁用连接（资源管理器右键“启用/禁用”与状态窗口的“禁用”共用）。
@@ -128,7 +172,7 @@ pub fn apply(interface: &Interface) -> io::Result<()> {
 pub fn set_enabled(name: &str, enabled: bool) -> io::Result<()> {
     let mut settings = interface(name)?;
     settings.enabled = enabled;
-    apply(&settings)
+    apply(Some(&settings), None, None)
 }
 
 #[cfg(test)]
@@ -146,6 +190,7 @@ mod tests {
                 gateway: Some(Ipv4Addr::new(192, 168, 1, 1)),
             },
             dns: vec![Ipv4Addr::new(8, 8, 8, 8)],
+            dns_suffix: "office.test".into(),
         };
         let config = interface.to_config();
         assert_eq!(config.method, NetcfgMethod::Disabled);

@@ -440,6 +440,23 @@ const _: () = assert!(size_of::<SockAddrNl>() == 12);
 const _: () = assert!(DRM_IOCTL_DROP_MASTER == 0x0000_641f);
 
 unsafe extern "C" {
+    #[cfg(target_os = "linux")]
+    pub(crate) fn uname(name: *mut c_void) -> c_int;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn geteuid() -> u32;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn getuid() -> u32;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn getgid() -> u32;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn getegid() -> u32;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn faccessat(
+        directory: i32,
+        path: *const std::ffi::c_char,
+        mode: i32,
+        flags: i32,
+    ) -> i32;
     #[cfg(target_os = "macos")]
     pub(crate) fn renamex_np(old_path: *const c_char, new_path: *const c_char, flags: u32)
     -> c_int;
@@ -451,6 +468,12 @@ unsafe extern "C" {
         new_path: *const c_char,
         flags: u32,
     ) -> c_int;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn inotify_init1(flags: c_int) -> c_int;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn inotify_add_watch(fd: c_int, path: *const c_char, mask: u32) -> c_int;
+    #[cfg(target_os = "linux")]
+    pub(crate) fn inotify_rm_watch(fd: c_int, watch: c_int) -> c_int;
     // musl/POSIX `open` 是 variadic；`mode` 只在 `O_CREAT`/`O_TMPFILE` 时读取，当前调用者都不创建文件。
     pub(crate) fn open(path: *const c_char, flags: c_int, ...) -> c_int;
     pub(crate) fn ioctl(fd: c_int, request: usize, argument: *mut c_void) -> c_int;

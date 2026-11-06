@@ -142,9 +142,8 @@ component-manager 只分发初始 capability 和服务连接。linuxd 在 normal
 - pipe/socket/regular-file write 必须使用同一个 `UserInputStaging` seam；memory user-copy 直接初始化 `MaybeUninit<u8>` destination，不得为形成 `&mut [u8]` 预清零随后完整覆盖，也不得在各 syscall 保留 unsafe 转换分支。
 - userspace application 不得依赖 LiteOS 私有 runtime、init、device protocol 或第二条 rootfs path。
 - 授予指定系统程序的原生服务协议只经 linuxd 发布的授权端点适配（发布与授权见 `linuxd::system::endpoint`）：
-  `/dev/task-observer`（root:adm 0660，任务管理器）与 `/dev/network-settings`（root:netdev 0660，控制面板、
-  资源管理器、设备管理器与 resolvd）。帧格式由对应的协议 crate 拥有；组外进程连接得到 `EACCES`，不得退化为
-  抽象地址或新增 syscall/ioctl。`/dev/network-settings` 的 WAIT 会阻塞到设置变化，linuxd 同时至多转发 4 个，
+  `/dev/task-observer`（root:adm 0660，任务管理器）、`/dev/network-status`（公开 GET）和
+  `/dev/network-settings`（root:netdev 0660，SET/WAIT/租约操作）。帧格式由对应协议 crate 拥有；受限端点由 VFS 组权限授权。WAIT 与租约操作共用至多 4 个阻塞转发名额，
   超出返回资源不足。
 - Linux 侧不配置接口、不运行 DHCP 客户端：接口设置的 owner 是原生 netcfg，`network-config` 只是客户端；
   `/etc/resolv.conf` 由 init 监督的 resolvd 依据设置快照以临时文件、fsync、rename 原子维护。
@@ -157,6 +156,7 @@ component-manager 只分发初始 capability 和服务连接。linuxd 在 normal
   `linux-uapi::filesystem` 拥有 LP64 statvfs codec、容量换算与标准 renameat2(RENAME_NOREPLACE)；
   属性页只消费 typed capacity，资源管理器的改名/移动/还原用原子不覆盖接口，不能用 exists+rename 模拟；
   `linux-uapi::time` 只拥有 timespec 与时钟设置；calendar 拥有 TZif 解析、日期投影、持久化和重载。
+  `linux-uapi::uts` 解码标准 `uname` 结果。系统属性、设备管理器和 `ipconfig` 读取调用者的 UTS 标识。
   已解析时区由读写锁保活，重载不修改进程环境，支持 UI 与后台线程同时查询；TZif 支持范围见 UI 架构。
   fd ancillary mechanism 委托 `linux-uapi::unix`。raw syscall、应用私有 ABI、裸 fd/device owner 和并行兼容路径均禁止。
 - 标准 `Command` spawn 的 AF_UNIX `SOCK_SEQPACKET|SOCK_CLOEXEC` socketpair 是 exec error

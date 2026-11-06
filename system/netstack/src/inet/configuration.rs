@@ -4,13 +4,14 @@ use super::{
 use crate::namespace::Namespace;
 use alloc::vec::Vec;
 use core::net::Ipv4Addr;
+use device_model::network::NetworkLink;
 use network_protocol::{
     DriverName, InterfaceSnapshot, Ipv4RouteError, Ipv4RouteRequest, NetworkSnapshot, RouteChange,
     RouteSnapshot, SocketError,
 };
 
 /// 接口的当前快照（名称、MTU、地址与链路状态）。
-fn capture(interface: &NetworkInterface) -> InterfaceSnapshot {
+fn capture(interface: &NetworkInterface, link: Option<NetworkLink>) -> InterfaceSnapshot {
     InterfaceSnapshot {
         index: interface.index,
         name: interface.name,
@@ -21,6 +22,7 @@ fn capture(interface: &NetworkInterface) -> InterfaceSnapshot {
         prefix_length: interface.state.prefix_length,
         broadcast: interface.state.broadcast,
         up: interface.state.up,
+        link,
         driver: interface.device.driver().map(DriverName::new),
     }
 }
@@ -57,7 +59,8 @@ pub(crate) fn interface_snapshot(
     index: u32,
 ) -> Result<InterfaceSnapshot, SocketError> {
     let network = stack(scope)?.lock()?;
-    Ok(capture(network.interface(index)?))
+    let interface = network.interface(index)?;
+    Ok(capture(interface, interface.device.link()))
 }
 pub(crate) fn interface_snapshots(
     scope: &Namespace,
@@ -67,7 +70,12 @@ pub(crate) fn interface_snapshots(
     snapshots
         .try_reserve_exact(network.interfaces.len())
         .map_err(|_| SocketError::NoMemory)?;
-    snapshots.extend(network.interfaces.iter().map(capture));
+    snapshots.extend(
+        network
+            .interfaces
+            .iter()
+            .map(|interface| capture(interface, interface.device.link())),
+    );
     Ok(snapshots)
 }
 pub(crate) fn network_snapshot(scope: &Namespace) -> Result<Vec<NetworkSnapshot>, SocketError> {
@@ -290,7 +298,7 @@ pub(crate) fn packet_interface(
         super::device::ProtocolDevice::Ethernet(device) => Some(device.network_device()),
         super::device::ProtocolDevice::Loopback(_) => None,
     };
-    Ok((capture(interface), device))
+    Ok((capture(interface, None), device))
 }
 /// native packet loopback injection沿同一IP-medium队列，不复制设备或绕开NET owner。
 pub(crate) fn inject_loopback(

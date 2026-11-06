@@ -173,6 +173,27 @@ python3 scripts/runtime_debug.py key liteos-dev 0xffeb 0x72
 桌面进程卡住时，SSH 命令和文件服务仍可独立工作。串口保留用于网络未就绪的启动与故障恢复。
 `make verify-runtime-diagnostics` 从独立镜像冷启动，校验公钥认证、两次 SFTP 发布、截图及其键鼠回路。
 
+
+#### 运行时更新驱动或驱动管理器
+
+开发实例用 `make run-gui DRIVER_UPDATE=1 DIAGNOSTIC_PORT=2222` 启动。实体机由可信启动配置传入
+`liteos.driver_update=1`。此选项授予初始 Linux root 执行本次启动的原生服务映像的权限，默认关闭。
+发布走原有 SSH/SFTP 链路，来宾工具通过标准 AF_UNIX 与 SCM_RIGHTS 递交已打开的映像。
+
+用 `make build-kernel` 构建与运行中系统同架构、协议兼容的 ELF。节点地址取任务管理器原生服务
+`驱动名@地址` 的十六进制后缀。节点已撤下时，可在 `dmesg` 的宿主故障日志中找到地址。以 AArch64 为例：
+
+```sh
+python3 scripts/runtime_debug.py driver-update liteos-dev manager \
+  target/aarch64-unknown-none-softfloat/release/driver-manager
+python3 scripts/runtime_debug.py driver-update liteos-dev 0xa003a00 \
+  target/aarch64-unknown-none-softfloat/release/driver-host
+```
+
+网卡换版可能断开经过该网卡的 SSH。命令会重连并读取原请求的更新和回退状态。超过 90 秒仍无法取得结果时，
+命令报告来宾暂存目录，恢复连接后可读取其中的 `result` 和 `output`，或用 `dmesg` 查看原生服务日志。
+可更新范围和设备会话行为见[设备契约](../architecture-contract/devices-terminal.md#运行时换版)。
+
 #### UTM 宿主侧取证
 
 需要读取来宾之外的 VM 状态、vCPU 或设备，或在来宾网络不可用时排查虚拟硬件，使用本机 QMP。

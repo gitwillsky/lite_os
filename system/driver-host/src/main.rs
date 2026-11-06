@@ -30,17 +30,20 @@ use service_sync as sync;
 )]
 pub(crate) use native_runtime::{debug, error, info, warn};
 
-use launch_protocol::driver_host::{Bus, Driver};
-use native_runtime::Startup;
+use launch_protocol::driver_host::{self, Driver};
+use native_runtime::{Event, Startup};
+
+// SAFETY: 链接脚本将独立 ELF note 保留于只读段，装载前可校验角色与协议代际。
+#[used]
+#[unsafe(link_section = ".note.liteos.lifecycle")]
+static UPDATE_ABI: [u8; 24] =
+    launch_protocol::driver_update::note(launch_protocol::driver_update::HOST_NOTE);
 
 native_runtime::entry!(main);
 
 /// 将已绑定驱动的诊断标签与节点地址合成宿主进程名。
 fn name_host(driver: &str) {
-    let address = match platform::node().bus {
-        Bus::VirtioMmio { base, .. } => base,
-        Bus::Pci { config, .. } => config,
-    };
+    let address = platform::node().address();
     // 最长驱动标签 14 字节、分隔符 1 字节、u64 地址 16 字节，适合进程名的 32 字节上限。
     let name = alloc::format!("{driver}@{address:x}");
     if let Err(status) = native_runtime::self_process().set_name(name.as_bytes()) {
@@ -63,8 +66,12 @@ fn main(mut startup: Startup) -> i64 {
         Driver::Xhci => {
             let host = drivers::usb::initialize().expect("xHCI initialization failed");
             platform::release_quarantine();
-            let thread = native_runtime::thread::spawn(b"usb-enumerate", move || host.run())
-                .expect("USB worker initialization failed");
+            let thread = native_runtime::thread::spawn(b"usb-enumerate", move || {
+                host.run();
+                // 枚举器只在主控永久失效时退出；结束宿主使监督者接管复位和重绑。
+                native_runtime::task::exit_process(-1);
+            })
+            .expect("USB worker initialization failed");
             drop(thread);
         }
         driver => {
@@ -73,5 +80,8 @@ fn main(mut startup: Startup) -> i64 {
         }
     }
     handles::directory().enumerated();
+    Event::from_handle(startup.take(driver_host::READY))
+        .signal(0, native_runtime::native_abi::signals::USER_0)
+        .expect("driver host readiness");
     native_runtime::task::exit_thread()
 }

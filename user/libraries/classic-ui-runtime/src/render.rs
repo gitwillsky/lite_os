@@ -499,14 +499,27 @@ fn paint_list(node: &Node, p: &mut Painter<'_>, focused: bool) {
                 C::WindowText
             });
             if table.columns.is_empty() {
-                let x = row.x - table.horizontal.position;
+                let mut x = row.x - table.horizontal.position;
+                let mut leading = 0;
+                if let Some(check) = table.check(*id) {
+                    let rect = table.check_rect(row);
+                    p.checkbox(
+                        rect.x,
+                        rect.y,
+                        check & state::CHECKED != 0,
+                        check & state::DISABLED != 0,
+                    );
+                    x += super::table::CHECK_GUTTER;
+                    leading += super::table::CHECK_GUTTER;
+                }
                 if let Some(image) = image {
                     image.paint(p, x + 3, row.y + (row.height - 16) / 2);
+                    x += 20;
+                    leading += 20;
                 }
-                let leading = if image.is_some() { 20 } else { 0 };
                 if !editing {
                     p.text_fit(
-                        x + 4 + leading,
+                        x + 4,
                         row.y + 3,
                         (row.width - 8 - leading).max(0),
                         text,

@@ -294,6 +294,8 @@ pub struct Surface {
     pub layer: Option<ObjectId>,
     /// cursor 角色在 surface 生命周期内保留；否则光标可能被再次用作应用窗口。
     pub cursor: bool,
+    /// wl_data_device.start_drag 的图标角色，和其它 surface 角色互斥。
+    pub drag_icon: bool,
     /// 已通知客户端进入输出（`wl_surface.enter`）。
     pub entered: bool,
     /// `wp_viewport` 的裁剪与缩放；缺少它客户端请求的视口裁剪与缩放无法生效。

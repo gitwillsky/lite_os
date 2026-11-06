@@ -5,7 +5,7 @@
 //!
 //! 1. 从启动消息取得根 Job、根 resource、bootfs 与 DTB；
 //! 2. 为根 Job 建立异常 channel：任何系统服务未处理的异常都在这里记录，随后交还内核终止该进程；
-//! 3. 启动 driver-manager（持有 DTB 与设备目录服务端，按节点启动驱动宿主），根服务持有完整目录连接并按设备类路由：
+//! 3. 启动 driver-manager（持有 DTB 与设备发布能力，按节点启动驱动宿主），根服务持有汇聚目录并按设备类路由：
 //!    Network 类给 netcfg，Block 类给 fshost，Pcm 类给 audio-core，其余给 linuxd；
 //! 4. 启动 fshost（交给它 ext4 实例的 Job 与映像，由它为每块盘启动 ext4），以及受监督的 netstack、dhcp-client、
 //!    netcfg、audio-core 与 linuxd；
@@ -14,15 +14,15 @@
 //! 5. 受监督服务终止后重启（linuxd 先终止整个 Linux Job），`native_runtime::task::CRASH_WINDOW` 内达到 `CRASH_LIMIT` 次
 //!    判定为崩溃循环并关机；driver-manager、fshost 终止时系统无法继续服务：记录退出状态并关机。
 
+mod drivers;
+
 extern crate alloc;
 
 use alloc::sync::Arc;
 use alloc::vec;
 
-use device_protocol::directory::{ALL_CLASSES, Class, DirectoryClient};
-use launch_protocol::{
-    audio_core, dhcp_client, driver_host, driver_manager, ext4, fshost, linuxd, netcfg, netstack,
-};
+use device_protocol::directory::{ALL_CLASSES, Class, Directory, DirectoryClient};
+use launch_protocol::{audio_core, dhcp_client, ext4, fshost, linuxd, netcfg, netstack};
 use native_runtime::executor::Executor;
 use native_runtime::native_abi::{self, ExceptionReport, Status, rights, signals, startup};
 use native_runtime::sync::{Mutex, Once};
@@ -35,7 +35,6 @@ use service_directory::ServiceDirectory;
 native_runtime::entry!(main);
 
 const LINUXD_STACK_SIZE: usize = 512 * 1024;
-const DRIVER_MANAGER_STACK_SIZE: usize = 256 * 1024;
 const NETSTACK_STACK_SIZE: usize = 256 * 1024;
 const FSHOST_STACK_SIZE: usize = 128 * 1024;
 const NETCFG_STACK_SIZE: usize = 128 * 1024;
@@ -143,6 +142,7 @@ const LINUXD_USES: &[&[u8]] = &[
     service_directory::BLOCKS,
     service_directory::EXT4,
     service_directory::NETWORK_SETTINGS,
+    service_directory::DRIVER_UPDATE,
     service_directory::AUDIO,
 ];
 const NETCFG_USES: &[&[u8]] = &[
@@ -203,7 +203,16 @@ fn main(mut startup: Startup) -> i64 {
         .call_once(|| native_runtime::bootfs::Bootfs::map(&bootfs_vmo).expect("bootfs mapping"));
     let (directory, directory_server) = Channel::create().expect("device directory channel");
     let directory = DirectoryClient::new(directory);
-    let devices = start_driver_manager(&job, resource, bootfs, device_tree, directory_server);
+    let aggregate = Directory::new().expect("device directory");
+    aggregate
+        .serve(directory_server, ALL_CLASSES)
+        .expect("device directory service");
+    let (publisher, publisher_server) = Channel::create().expect("device publisher channel");
+    aggregate
+        .serve_publisher(publisher_server)
+        .expect("device publisher service");
+    let devices = drivers::Drivers::start(&job, resource, bootfs, device_tree, publisher)
+        .expect("driver-manager launch");
     // fshost 为每块盘启动 ext4 实例（Fuchsia fshost 启动文件系统）：只交给它实例的 Job 与映像。
     let filesystems = Job::create(&job).expect("filesystem job");
     let ext4_image = bootfs_copy(bootfs, ext4::IMAGE);
@@ -319,8 +328,7 @@ fn main(mut startup: Startup) -> i64 {
         }
     });
     executor.spawn(async move {
-        let _ = executor.on_signals(&devices, signals::TERMINATED).await;
-        native_runtime::task::exit_process(power_off(&devices, "driver-manager"));
+        native_runtime::task::exit_process(devices.supervise(executor).await);
     });
     // 内存压力等级变化（Fuchsia memory_monitor）：内核已在缺页入口淘汰干净的文件页，仍不足时进入压力。
     let pressure = native_runtime::system::event(
@@ -364,6 +372,9 @@ fn main(mut startup: Startup) -> i64 {
 fn route(uses: &[&[u8]], protocol: &[u8], server: Channel) -> Result<(), Status> {
     if !uses.contains(&protocol) {
         return Err(native_abi::ERR_ACCESS_DENIED);
+    }
+    if protocol == service_directory::DRIVER_UPDATE {
+        return drivers::connect(server);
     }
     let (_, provider) = ROUTES
         .iter()
@@ -579,54 +590,6 @@ fn start_linuxd(
     .expect("linuxd launch");
     info!("linuxd started");
     (process, job)
-}
-
-/// 启动 driver-manager：持有根 resource、DTB、设备目录写端，以及启动驱动宿主所需的 Job 与映像。
-fn start_driver_manager(
-    root: &Job,
-    resource: &Resource,
-    bootfs: &native_runtime::bootfs::Bootfs,
-    device_tree: Handle,
-    directory: Channel,
-) -> Process {
-    let find = |path: &[u8]| {
-        bootfs
-            .find(path)
-            .unwrap_or_else(|| panic!("bootfs lacks {}", core::str::from_utf8(path).unwrap_or("")))
-            .data
-    };
-    let image = find(driver_manager::IMAGE);
-    let host_vmo = bootfs_copy(bootfs, driver_host::IMAGE);
-    let job = Job::create(root).expect("driver-manager job");
-    // 驱动宿主运行在 driver-manager 的 Job 之下：driver-manager 终止时全部宿主随之终止。
-    let drivers = Job::create(&job).expect("driver host job");
-    let (process, vmar) =
-        Process::create(&job, b"driver-manager", 0).expect("driver-manager process");
-    let runtime_vmar: Vmar = vmar
-        .duplicate(rights::SAME)
-        .expect("driver-manager vmar duplicate");
-    native_runtime::launch::launch(native_runtime::launch::Launch {
-        process: &process,
-        image_vmar: &vmar,
-        runtime_vmar,
-        name: b"driver-manager",
-        image,
-        arguments: &[],
-        handles: vec![
-            resource
-                .duplicate(rights::SAME)
-                .expect("resource duplicate")
-                .into_handle(),
-            device_tree,
-            directory.into_handle(),
-            drivers.into_handle(),
-            host_vmo.into_handle(),
-        ],
-        stack_size: DRIVER_MANAGER_STACK_SIZE,
-    })
-    .expect("driver-manager launch");
-    info!("driver-manager started");
-    process
 }
 
 /// 在独立 Job 中启动普通进程形态的系统服务（ext4、netstack），交付按其启动约定排列的角色句柄。

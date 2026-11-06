@@ -45,7 +45,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
                               ("sound-player", "sndplay"), ("media-player", "mplay"),
                               ("notepad", "notepad"), ("device-manager", "devmgmt"), ("savedump", "savedump"),
                               ("linux-uapi", "session-launch"), ("terminal", "terminal"),
-                              ("resolvd", "resolvd"))
+                              ("resolvd", "resolvd"), ("network-config", "ipconfig"))
     )
     library_targets = tuple(
         _RustUserTarget(package, name, f"system-library-{name}", 1, True)

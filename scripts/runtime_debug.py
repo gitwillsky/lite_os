@@ -11,6 +11,7 @@ import shutil
 import socket
 import struct
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -141,6 +142,73 @@ def deploy(target: str, source: Path, destination: str, launch: bool) -> None:
         subprocess.run([*ssh, f"rm -f {shlex.quote(staged)}; rmdir {shlex.quote(stage)}"], check=False)
 
 
+def update_driver(target: str, selector: str, image: Path) -> None:
+    """通过已有 SSH 发布链路上传工具和映像，并由来宾管理员发起原生更新。"""
+    from toolchain.musl import cached_musl_paths, find_compiler
+
+    root = SESSION.parents[2]
+    musl = cached_musl_paths(find_compiler())
+    environment = dict(os.environ, LITEOS_MUSL_CLANG=str(musl.compiler),
+                       LITEOS_MUSL_LLD=str(musl.linker), LITEOS_MUSL_SYSROOT=str(musl.install),
+                       LITEOS_MUSL_COMPILER_RUNTIME=str(musl.compiler_runtime))
+    ssh = ["ssh", "-oBatchMode=yes", "-oConnectTimeout=8",
+           "-oServerAliveInterval=5", "-oServerAliveCountMax=2", "--", target]
+    with tempfile.TemporaryDirectory(prefix="liteos-driver-update-") as temporary:
+        tool = Path(temporary) / "driver-update"
+        subprocess.run([
+            sys.executable, str(root / "scripts/musl_clang.py"),
+            str(root / "user/diagnostics/liteos-driver-update.c"),
+            "-std=gnu11", "-Wall", "-Wextra", "-Werror", "-fPIE", "-pie", "-o", str(tool),
+        ], cwd=root, env=environment, check=True)
+        remote = subprocess.check_output([
+            *ssh, "test -S /dev/driver-update || { echo 'driver updates disabled' >&2; exit 1; }; "
+            "mktemp -d /root/.liteos-driver-update.XXXXXX",
+        ], text=True).strip()
+        directory = PurePosixPath(remote)
+        if directory.parent != PurePosixPath("/root") or not directory.name.startswith(".liteos-driver-update."):
+            raise RuntimeError("unexpected remote update directory")
+        finished = True
+        try:
+            deploy(target, tool, f"{remote}/tool", False)
+            deploy(target, image, f"{remote}/image", False)
+            command = shlex.join(("./tool", selector, "./image"))
+            # Replacing the NIC can close the initiating SSH stream before the reply.
+            worker = (
+                f"{command} > output 2>&1; status=$?; "
+                "printf '%s\\n' \"$status\" > pending && mv pending result"
+            )
+            start = f"cd {shlex.quote(remote)} && " + shlex.join(("nohup", "/bin/sh", "-c", worker))
+            finished = False
+            started = subprocess.run([*ssh, start + " </dev/null >/dev/null 2>&1 &"], check=False)
+            if started.returncode not in (0, 255):
+                finished = True
+                started.check_returncode()
+            read_result = f"cd {shlex.quote(remote)} && test -f result && cat result output"
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                reply = subprocess.run([*ssh, read_result], capture_output=True, text=True, check=False)
+                if reply.returncode == 0:
+                    status, separator, output = reply.stdout.partition("\n")
+                    if not separator or not status.isascii() or not status.isdecimal() or len(status) > 3:
+                        raise RuntimeError(f"invalid driver update result in {remote}")
+                    finished = True
+                    print(output, end="", file=sys.stdout if status == "0" else sys.stderr)
+                    if status != "0":
+                        raise RuntimeError("driver update failed")
+                    return
+                if reply.returncode not in (1, 255):
+                    raise RuntimeError(f"cannot retrieve driver update result from {remote}")
+                time.sleep(1)
+            raise RuntimeError(
+                f"driver update result pending in {remote}; retrieve result and output after reconnecting"
+            )
+        finally:
+            if finished:
+                files = (f"{remote}/{name}" for name in ("tool", "image", "output", "pending", "result"))
+                cleanup = shlex.join(("rm", "-f", *files))
+                subprocess.run([*ssh, f"{cleanup}; rmdir {shlex.quote(remote)}"], check=False)
+
+
 RFB_SOCKET = "/run/liteos/diagnostics/rfb.sock"
 RFB_VERSION = b"RFB 003.008\n"
 RFB_FORMAT = bytes((32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0))
@@ -231,6 +299,10 @@ def main() -> int:
     update.add_argument("source", type=Path)
     update.add_argument("destination")
     update.add_argument("--launch", action="store_true")
+    driver = commands.add_parser("driver-update")
+    driver.add_argument("target", help="root SSH destination")
+    driver.add_argument("selector", help="manager or the hexadecimal node address")
+    driver.add_argument("image", type=Path)
     screen = commands.add_parser("screen")
     screen.add_argument("target")
     screen.add_argument("output", type=Path, help="PPM output path")
@@ -246,6 +318,9 @@ def main() -> int:
     try:
         if args.action == "deploy":
             deploy(args.target, args.source, args.destination, args.launch)
+            return 0
+        if args.action == "driver-update":
+            update_driver(args.target, args.selector, args.image)
             return 0
         if args.action in ("screen", "pointer", "key"):
             if args.action == "screen":

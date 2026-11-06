@@ -2,6 +2,7 @@
 
 mod clipboard;
 mod events;
+mod file_drag;
 mod foreign;
 mod frame;
 pub use foreign::{Toplevel, ToplevelId, ToplevelRequest};
@@ -113,6 +114,7 @@ impl Key {
 /// 应用看到的窗口事件；坐标为 surface 局部的逻辑像素，保留小数。
 #[derive(Debug, Clone, PartialEq)]
 pub enum EventKind {
+    ClipboardChanged,
     Configure(Configuration),
     Close,
     PointerEnter {
@@ -124,6 +126,18 @@ pub enum EventKind {
         y: f64,
     },
     PointerLeave,
+    /// 文件拖放光标进入或移动，坐标使用窗口逻辑像素。
+    FileDragOver {
+        x: f64,
+        y: f64,
+    },
+    FileDragLeave,
+    /// 收到一个完整的本地文件 URI 列表。
+    FilesDropped {
+        x: f64,
+        y: f64,
+        paths: Vec<std::path::PathBuf>,
+    },
     Button {
         code: u32,
         pressed: bool,
@@ -821,6 +835,7 @@ impl Display {
         }
         loop {
             self.clipboard.progress_writes();
+            self.progress_file_drop()?;
             if let Some(event) = self.events.pop_front() {
                 return Ok(Some(event));
             }
@@ -839,6 +854,7 @@ impl Display {
                 .map(|repeat| repeat.next)
                 .into_iter()
                 .chain(deadline)
+                .chain(self.clipboard.reading.as_ref().map(|read| read.deadline))
                 .min();
             // 向上保留不足 1ms，避免 deadline 前忙轮询；所有超时回到顶部重新判断来源。
             let timeout = wake.map(|wake| {
@@ -854,6 +870,9 @@ impl Display {
             descriptors.push(PollFd::new(self.transport.stream.as_fd(), interest));
             descriptors.extend(external.iter().copied());
             descriptors.extend(self.clipboard.write_sources());
+            if let Some(read) = &self.clipboard.reading {
+                descriptors.push(PollFd::new(read.stream.as_fd(), PollEvents::READ));
+            }
             match descriptors.wait(timeout) {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => return Err(error),

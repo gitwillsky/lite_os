@@ -8,6 +8,7 @@ publish.workspace = true
 network-drive = { path = "../../libraries/network-drive" }
 liteos-ui = { path = "../../libraries/liteos-ui" }
 desktop-entry = { path = "../../libraries/desktop-entry" }
+desktop-settings = { path = "../../libraries/desktop-settings" }
 calendar = { path = "../../libraries/calendar" }
 linux-uapi = { path = "../../libraries/linux-uapi" }
 network-config = { path = "../../libraries/network-config" }

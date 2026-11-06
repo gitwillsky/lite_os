@@ -57,6 +57,26 @@ impl Application {
     ) -> Result<MessageBoxFuture> {
         self.dialogs().message(parent, title, message, buttons)
     }
+
+    /// 显示没有父窗口的消息框，可作为进程的唯一窗口由 `run` 调度。
+    ///
+    /// # Errors
+    ///
+    /// 资源不足或窗口协议失败。
+    pub fn standalone_message_box(
+        &mut self,
+        title: &str,
+        message: &str,
+        buttons: MessageButtons,
+    ) -> Result<MessageBoxFuture> {
+        let dialog = self
+            .dialogs()
+            .message_window(None, title, message, buttons)?;
+        self.windows
+            .borrow_mut()
+            .insert(dialog.window.id(), dialog.window.downgrade());
+        Ok(dialog)
+    }
 }
 impl Future for MessageBoxFuture {
     type Output = Result<MessageResult>;

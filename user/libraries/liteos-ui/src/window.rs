@@ -169,6 +169,32 @@ impl Window {
         // SAFETY: 文本在同步调用内有效，运行库复制后持有。
         c.check(unsafe { (c.api.app_id)(c.context.as_ptr(), self.id(), text(value)) })
     }
+    /// 以本窗口收到的 `FileDrag` serial 提供待拖放的文件路径。
+    ///
+    /// # Errors
+    ///
+    /// 路径无效、数量超限、窗口关闭或协议发送失败。
+    pub fn start_file_drag(&self, serial: u32, paths: &[std::path::PathBuf]) -> Result<()> {
+        use std::os::unix::ffi::OsStrExt;
+        self.inner.check()?;
+        let mut bytes = Vec::new();
+        for path in paths {
+            let name = path.as_os_str().as_bytes();
+            if name.contains(&0) {
+                return Err(Error::invalid("file drag path contains NUL"));
+            }
+            bytes.extend_from_slice(name);
+            bytes.push(0);
+        }
+        let c = &self.inner.connection;
+        let paths = abi::Bytes {
+            data: bytes.as_ptr(),
+            len: bytes.len(),
+        };
+        // SAFETY: bytes remain live during the call and the window belongs to this connection.
+        c.check(unsafe { (c.api.start_file_drag)(c.context.as_ptr(), self.id(), serial, paths) })
+    }
+
     /// 关闭窗口并取消其任务；重复 close 成功，无副作用。
     pub fn close(&self) -> Result<()> {
         self.inner.close()
@@ -607,6 +633,26 @@ impl Widget {
         self.call(|c, w, id| {
             // SAFETY: 数组与引用的原始字符串在同步调用内存活，运行库复制后返回。
             unsafe { (c.api.rows)(c.context.as_ptr(), w, id, rows.as_ptr(), rows.len()) }
+        })
+    }
+
+    /// 为单列列表设置复选框，元组为行 ID、勾选状态、可切换状态。
+    ///
+    /// # Errors
+    ///
+    /// 控件不支持复选框、行不存在或 ID 重复时返回错误，保留旧状态。
+    pub fn set_row_checks(&self, values: &[(u64, bool, bool)]) -> Result<()> {
+        let checks: Vec<_> = values
+            .iter()
+            .map(|&(id, checked, enabled)| abi::RowCheck {
+                id,
+                state: (if checked { abi::state::CHECKED } else { 0 })
+                    | (if enabled { 0 } else { abi::state::DISABLED }),
+            })
+            .collect();
+        self.call(|c, w, id| {
+            // SAFETY: 数组在同步复制完成前存活。
+            unsafe { (c.api.row_checks)(c.context.as_ptr(), w, id, checks.as_ptr(), checks.len()) }
         })
     }
     /// 标签/链接改用某个系统字体用途派生的字体；`points`、`weight` 为 None 时沿用该用途的值。

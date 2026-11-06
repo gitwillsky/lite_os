@@ -203,6 +203,8 @@ zero-window 使用下述有界原生 timer；不声明完整 Linux TCP 扩展、
 `ip link/addr/route` 工作。
 
 **查询**：`RTM_GETLINK`（dump，以及按 `ifi_index` 或 `IFLA_IFNAME` 的单设备查询）、IPv4 的 `RTM_GETADDR` 与 `RTM_GETROUTE` dump。
+以太网接口的 `IFLA_CARRIER`、`IFLA_OPERSTATE` 和 `IFF_LOWER_UP` 取驱动载波状态；`IFF_UP` 仍独立反映管理开关。
+`/sys/class/net/<接口>/carrier` 与查询共用快照，`speed` 以 Mbps 为单位，驱动未报告时返回 `-1`。
 dump 惰性生成：请求只冻结快照与游标，`recvmsg` 时按接收缓冲容量逐包生成，最后以 `NLMSG_DONE` 结束；被截断的数据报余下部分丢失（`MSG_TRUNC`）。
 首次发送自动 bind；port 空间按（协议，NET）隔离。
 

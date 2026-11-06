@@ -1,5 +1,6 @@
 //! 用户身份运行的桌面外壳；仅持有 logon 委派的 Shell 连接。
 extern crate liteos_runtime as _;
+mod clipboard;
 mod dialogs;
 mod icons;
 mod network;
@@ -9,8 +10,8 @@ mod start;
 mod taskbar;
 mod usb;
 use classic_ui::{
-    Display, Event, EventKind, KeyboardInteractivity, Layer, LayerSettings, ToplevelRequest,
-    WindowId,
+    Display, Edit, Event, EventKind, ITEM_DOUBLE_CLICK, ItemClick, KeyboardInteractivity, Layer,
+    LayerSettings, ToplevelRequest, WindowId,
 };
 use dialogs::{Dialog, Kind};
 use std::{
@@ -37,6 +38,15 @@ struct Drag {
     grab: (i32, i32),
     pos: (i32, i32),
     moved: bool,
+    /// 按下时该项已选中，释放时点击标签可以请求重命名。
+    was_selected: bool,
+}
+
+/// 编辑绑定到原始路径，目录刷新或重新排序不会改到另一项。
+struct Rename {
+    path: PathBuf,
+    edit: Edit,
+    selecting: bool,
 }
 
 struct Desktop {
@@ -56,7 +66,13 @@ struct Desktop {
     icons: icons::Icons,
     /// 正在拖动的桌面图标。
     drag: Option<Drag>,
-    clicked: Option<(usize, Instant)>,
+    rename: Option<Rename>,
+    paste: Option<clipboard::Paste>,
+    /// 真实 Wayland 文件拖放当前是否悬停在回收站上；负责目标高亮与目录刷新边界。
+    drop_hover: bool,
+    clicked: Option<ItemClick<(WindowId, usize)>>,
+    /// 选中标签的单击先等待是否有下一次点击，期间新输入或目录刷新会取消。
+    rename_click: Option<(usize, Instant)>,
     task_page: usize,
     home: PathBuf,
     message: String,
@@ -123,7 +139,11 @@ impl Desktop {
             selected: None,
             icons: icons::Icons::load(&home, icon_cell),
             drag: None,
+            rename: None,
+            paste: None,
+            drop_hover: false,
             clicked: None,
+            rename_click: None,
             task_page: 0,
             home,
             message: String::new(),
@@ -172,6 +192,9 @@ impl Desktop {
             Some(icons::Target::Place(start::Place::NetworkPlaces)) => {
                 popups::IconKind::NetworkPlaces
             }
+            Some(icons::Target::Place(start::Place::RecycleBin)) => popups::IconKind::RecycleBin {
+                full: self.icons.trash_full,
+            },
             _ => popups::IconKind::Other,
         }
     }
@@ -193,6 +216,73 @@ impl Desktop {
             .arg(name)
             .args(["--verb", verb]);
         self.launch(command);
+    }
+
+    fn rename_icon(&mut self, index: usize) {
+        let Some(icons::Target::Path(path)) = self.icons.items.get(index).map(|icon| &icon.target)
+        else {
+            return;
+        };
+        let Some(name) = path.file_name().and_then(std::ffi::OsStr::to_str) else {
+            return;
+        };
+        let mut edit = Edit::new(name);
+        if edit.text() != name {
+            return;
+        }
+        edit.select_position(0, false);
+        edit.select_position(name.len(), true);
+        self.selected = Some(index);
+        self.clicked = None;
+        self.rename = Some(Rename {
+            path: path.clone(),
+            edit,
+            selecting: false,
+        });
+        self.message.clear();
+    }
+
+    fn commit_rename(&mut self) {
+        let Some(rename) = self.rename.take() else {
+            return;
+        };
+        match self.icons.rename(&rename.path, rename.edit.text()) {
+            Ok(path) => {
+                self.message.clear();
+                self.selected = self
+                    .icons
+                    .items
+                    .iter()
+                    .position(|icon| icon.target == icons::Target::Path(path.clone()));
+                self.apps_changed = true;
+            }
+            Err(error) => {
+                self.message = format!("无法重命名：{error}");
+                self.rename = Some(rename);
+            }
+        }
+    }
+
+    fn delete_icon(&mut self, index: usize, verb: &str) {
+        if let Some(icons::Target::Path(path)) =
+            self.icons.items.get(index).map(|icon| &icon.target)
+        {
+            let mut command = Command::new("/bin/file-explorer");
+            command.arg(verb).arg(path);
+            self.launch(command);
+            self.clicked = None;
+        }
+    }
+
+    fn recycle_target(&self, point: (f64, f64)) -> bool {
+        self.icons.items.iter().enumerate().any(|(index, icon)| {
+            if icon.target != icons::Target::Place(start::Place::RecycleBin) {
+                return false;
+            }
+            let rect = self.icons.rect(index);
+            (f64::from(rect.x)..f64::from(rect.right())).contains(&point.0)
+                && (f64::from(rect.y)..f64::from(rect.bottom())).contains(&point.1)
+        })
     }
 
     /// 启动控制面板的某个小程序。
@@ -254,20 +344,16 @@ impl Desktop {
         Ok(())
     }
 
-    /// 在资源管理器里打开桌面图标/菜单对应的位置；回收站目录不存在时先创建。
+    /// 在资源管理器里打开桌面图标或菜单对应的位置。
     fn open_place(&mut self, place: start::Place) {
         use start::Place;
-        let trash = self.home.join(".local/share/Trash/files");
         match place {
             Place::Documents => self.files(self.home.clone()),
             Place::MyComputer => self.files("::my-computer"),
             Place::ControlPanel => self.files("::control-panel"),
             Place::NetworkPlaces => self.files("::network-places"),
             Place::NetworkConnections => self.files("::network-connections"),
-            Place::RecycleBin => match std::fs::create_dir_all(&trash) {
-                Ok(()) => self.files(trash),
-                Err(error) => self.message = error.to_string(),
-            },
+            Place::RecycleBin => self.files("::recycle-bin"),
         }
     }
 
@@ -289,6 +375,62 @@ impl Desktop {
         }
     }
 
+    fn network_status(&mut self, index: u32) {
+        let Some(link) = self.network.link(index) else {
+            self.message = "网络连接已移除".into();
+            return;
+        };
+        let mut command = Command::new("/bin/control-panel");
+        command.args(["network", &link.interface]);
+        self.launch(command);
+    }
+
+    fn offer_icon(&mut self, display: &mut Display, index: usize, cut: bool) {
+        let Some(icons::Target::Path(path)) = self.icons.items.get(index).map(|icon| &icon.target)
+        else {
+            return;
+        };
+        let result = clipboard::offer(display, std::slice::from_ref(path), cut, None);
+        match result {
+            Ok(true) => self.message.clear(),
+            Ok(false) => self.message = "剪贴板不可用".into(),
+            Err(error) => self.message = format!("无法将项目放入剪贴板：{error}"),
+        }
+    }
+
+    fn begin_paste(&mut self, display: &mut Display) {
+        if self.paste.is_none() {
+            match clipboard::Paste::begin(display) {
+                Ok(Some(paste)) => {
+                    self.paste = Some(paste);
+                    self.message = "正在粘贴…".into();
+                }
+                Ok(None) => {}
+                Err(error) => self.message = format!("无法粘贴：{error}"),
+            }
+        }
+    }
+
+    fn poll_paste(&mut self, display: &mut Display) -> bool {
+        let Some(paste) = self.paste.take() else {
+            return false;
+        };
+        match paste.poll(display, &self.home) {
+            Ok(Some(waiting)) => {
+                self.paste = Some(waiting);
+                false
+            }
+            Ok(None) => {
+                self.message.clear();
+                true
+            }
+            Err(error) => {
+                self.message = format!("无法粘贴：{error}");
+                true
+            }
+        }
+    }
+
     fn perform(&mut self, display: &mut Display, action: popups::Action) -> io::Result<()> {
         use popups::Action;
         match action {
@@ -305,17 +447,41 @@ impl Desktop {
             Action::IconVerb(index, verb) => self.icon_verb(index, verb),
             Action::DisplayProperties => self.control_panel("display"),
             Action::VolumeProperties => self.launch(Command::new("/bin/sndvol")),
+            Action::NetworkStatus(index) => self.network_status(index),
+            Action::DisableNetwork(index) => {
+                if let Err(error) = self.network.disable(index) {
+                    self.message = format!("无法禁用连接：{error}");
+                }
+            }
             Action::UsbDevices => {
                 let mut command = Command::new("/bin/devmgmt");
                 command.arg("--eject");
                 self.launch(command);
             }
             Action::OpenIcon(index) => self.open_icon(index),
-            Action::NewFolder => {
-                if let Err(error) = self.icons.new_folder() {
-                    self.message = error.to_string();
-                }
+            Action::RenameIcon(index) => self.rename_icon(index),
+            Action::DeleteIcon(index) => self.delete_icon(index, "--delete"),
+            Action::FileSelection { index, cut } => self.offer_icon(display, index, cut),
+            Action::PasteFiles => self.begin_paste(display),
+            Action::EmptyRecycleBin => {
+                let mut command = Command::new("/bin/file-explorer");
+                command.arg("--empty-recycle-bin");
+                self.launch(command);
             }
+            Action::NewFolder => match self.icons.new_folder() {
+                Ok(path) => {
+                    self.apps_changed = true;
+                    if let Some(index) = self
+                        .icons
+                        .items
+                        .iter()
+                        .position(|icon| icon.target == icons::Target::Path(path.clone()))
+                    {
+                        self.rename_icon(index);
+                    }
+                }
+                Err(error) => self.message = error.to_string(),
+            },
             Action::ArrangeIcons => {
                 if let Err(error) = self.icons.auto_arrange() {
                     self.message = error.to_string();
@@ -354,7 +520,21 @@ impl Desktop {
                 let (_, x, y) = self.pointer;
                 match &self.overlay {
                     Some((_, Overlay::Menu(menu))) if !pressed => {
+                        if menu.hit(x, y).is_some_and(|i| menu.items[i].disabled) {
+                            return Ok(());
+                        }
                         let action = menu.hit(x, y).map(|i| menu.items[i].action);
+                        let action = match action {
+                            // 选择必须由仍持有键盘焦点的来源发送，关闭菜单后焦点可能已归还其他客户端。
+                            Some(
+                                action @ (popups::Action::FileSelection { .. }
+                                | popups::Action::PasteFiles),
+                            ) => {
+                                self.perform(display, action)?;
+                                None
+                            }
+                            action => action,
+                        };
                         self.close_overlay(display)?;
                         if let Some(action) = action {
                             self.perform(display, action)?;
@@ -415,7 +595,13 @@ impl Desktop {
             match hit {
                 Some(paint::VOLUME) => popups::tray_volume_items(),
                 Some(paint::USB) => popups::tray_usb_items(),
-                Some(paint::NETWORK) => return Ok(()),
+                Some(paint::NETWORK) => popups::tray_network_items(
+                    self.network
+                        .current(&self.settings)
+                        .filter(|link| link.state != network_config::LinkState::Disabled)
+                        .map(|link| link.index),
+                    self.network.disabling(),
+                ),
                 Some(paint::CLOCK) => return Ok(()),
                 Some(n) if n >= paint::TASKS_FROM => {
                     let ids = paint::task_ids(self, display, c.width);
@@ -436,7 +622,9 @@ impl Desktop {
                     self.selected = Some(index);
                     popups::icon_items(index, self.icon_kind(index))
                 }
-                None => popups::desktop_items(),
+                None => {
+                    popups::desktop_items(self.paste.is_none() && clipboard::can_paste(display))
+                }
             }
         } else {
             return Ok(());
@@ -558,6 +746,35 @@ impl Desktop {
         event: Event,
     ) -> io::Result<()> {
         let window = event.window;
+        if matches!(
+            event.kind,
+            EventKind::Button { pressed: true, .. }
+                | EventKind::Focus(false)
+                | EventKind::Wheel { .. }
+                | EventKind::FileDragOver { .. }
+        ) || matches!(event.kind, EventKind::Key(key) if key.pressed)
+        {
+            self.rename_click = None;
+        }
+        match &event.kind {
+            EventKind::FileDragOver { x, y } => {
+                self.drop_hover = window == self.background && self.recycle_target((*x, *y));
+                return display.accept_file_drag(self.drop_hover);
+            }
+            EventKind::FileDragLeave => {
+                self.drop_hover = false;
+                return Ok(());
+            }
+            EventKind::FilesDropped { x, y, paths } => {
+                if window == self.background && self.recycle_target((*x, *y)) {
+                    let mut command = Command::new("/bin/file-explorer");
+                    command.arg("--recycle").args(paths);
+                    self.launch(command);
+                }
+                return Ok(());
+            }
+            _ => {}
+        }
         if window == self.taskbar && self.settings.auto_hide {
             match event.kind {
                 EventKind::PointerEnter { .. } => {
@@ -608,6 +825,75 @@ impl Desktop {
                 dialogs::Action::None => {}
             }
             return Ok(());
+        }
+        if window == self.background
+            && let Some(rename) = &mut self.rename
+            && let Some(index) = self.icons.items.iter().position(
+                |icon| matches!(&icon.target, icons::Target::Path(path) if *path == rename.path),
+            )
+            && let Some(configuration) = display.configuration(window)
+        {
+            let icon = &self.icons.items[index];
+            let height = art.bitmap(&icon.art).map_or(32, classic_ui::Bitmap::height);
+            let rect = classic_ui::large_icon_edit_rect(self.icons.rect(index), height);
+            match event.kind {
+                EventKind::Key(key) if key.pressed => {
+                    match key.code {
+                        1 => {
+                            self.rename = None;
+                            self.message.clear();
+                        }
+                        28 => self.commit_rename(),
+                        _ => {
+                            rename.edit.key(key);
+                        }
+                    }
+                    return Ok(());
+                }
+                EventKind::Button {
+                    code: 0x110,
+                    pressed: true,
+                    ..
+                } if (f64::from(rect.x)..f64::from(rect.right())).contains(&self.pointer.1)
+                    && (f64::from(rect.y)..f64::from(rect.bottom())).contains(&self.pointer.2) =>
+                {
+                    let position = art.icon_edit_hit(
+                        configuration.scale,
+                        rect,
+                        &rename.edit,
+                        self.pointer.1 as i32,
+                    )?;
+                    rename
+                        .edit
+                        .select_position(position, display.keyboard_modifiers().shift);
+                    rename.selecting = true;
+                    return Ok(());
+                }
+                EventKind::PointerMove { x, y } if rename.selecting => {
+                    self.pointer = (window, x, y);
+                    let position =
+                        art.icon_edit_hit(configuration.scale, rect, &rename.edit, x as i32)?;
+                    rename.edit.select_position(position, true);
+                    return Ok(());
+                }
+                EventKind::Button {
+                    code: 0x110,
+                    pressed: false,
+                    ..
+                } if rename.selecting => {
+                    rename.selecting = false;
+                    return Ok(());
+                }
+                EventKind::Button { pressed: true, .. } => {
+                    self.commit_rename();
+                    if self.rename.is_some() {
+                        return Ok(());
+                    }
+                }
+                EventKind::Focus(false) => self.commit_rename(),
+                EventKind::PointerLeave => rename.selecting = false,
+                _ => {}
+            }
         }
         match event.kind {
             EventKind::PointerEnter { x, y } | EventKind::PointerMove { x, y } => {
@@ -672,10 +958,14 @@ impl Desktop {
                 if !pressed && hit.is_none() && Some(window) == self.menu {
                     self.toggle_menu(display)?;
                 }
+                let point = (self.pointer.1 as i32, self.pointer.2 as i32);
+                let drag = (!pressed).then(|| self.drag.take()).flatten();
                 if pressed {
                     self.armed = hit.map(|i| (window, i));
                     if window == self.background {
-                        self.selected = hit;
+                        if hit.is_none() {
+                            self.clicked = None;
+                        }
                         self.drag = hit.map(|index| {
                             let rect = self.icons.rect(index);
                             let pos = (self.pointer.1 as i32, self.pointer.2 as i32);
@@ -684,16 +974,31 @@ impl Desktop {
                                 grab: (pos.0 - rect.x, pos.1 - rect.y),
                                 pos,
                                 moved: false,
+                                was_selected: self.selected == Some(index),
                             }
                         });
+                        self.selected = hit;
                     }
-                } else if let Some(drag) = self.drag.take().filter(|d| d.moved) {
-                    // 拖动结束：落在最近的空格并保存位置，不当作点击。
+                } else if let Some(drag) = drag.as_ref().filter(|d| d.moved) {
                     self.armed = None;
-                    let screen = Self::screen(display, self.background);
-                    let center = (drag.pos.0 - drag.grab.0 + 37, drag.pos.1 - drag.grab.1 + 36);
-                    if let Err(error) = self.icons.drop_at(drag.index, center, screen) {
-                        self.message = error.to_string();
+                    self.clicked = None;
+                    if hit.is_some_and(|index| {
+                        window == self.background
+                            && self.icons.items[index].target
+                                == icons::Target::Place(start::Place::RecycleBin)
+                    }) && matches!(self.icons.items[drag.index].target, icons::Target::Path(_))
+                    {
+                        self.delete_icon(drag.index, "--recycle");
+                    } else if window == self.background {
+                        let screen = Self::screen(display, self.background);
+                        let rect = self.icons.rect(drag.index);
+                        let center = (
+                            drag.pos.0 - drag.grab.0 + rect.width / 2,
+                            drag.pos.1 - drag.grab.1 + rect.height / 2,
+                        );
+                        if let Err(error) = self.icons.drop_at(drag.index, center, screen) {
+                            self.message = error.to_string();
+                        }
                     }
                 } else if let Some((_, index)) = self
                     .armed
@@ -714,26 +1019,26 @@ impl Desktop {
                             3 => self.task_page = self.task_page.saturating_sub(1),
                             4 => self.task_page += 1,
                             paint::CLOCK => {
-                                if self.clicked.is_some_and(|(previous, time)| {
-                                    previous == paint::CLOCK
-                                        && time.elapsed() < Duration::from_millis(500)
+                                let now = Instant::now();
+                                if self.clicked.as_ref().is_some_and(|previous| {
+                                    previous.follows((window, paint::CLOCK), point, now)
                                 }) {
                                     let mut command = Command::new("/bin/control-panel");
                                     command.arg("datetime");
                                     self.launch(command);
                                     self.clicked = None;
                                 } else {
-                                    self.clicked = Some((paint::CLOCK, Instant::now()));
+                                    self.clicked =
+                                        Some(ItemClick::new((window, paint::CLOCK), point, now));
                                 }
                             }
-                            paint::NETWORK => {
-                                if let Some(link) = self.network.current() {
-                                    let interface = link.interface.clone();
-                                    let mut command = Command::new("/bin/control-panel");
-                                    command.args(["network", &interface]);
-                                    self.launch(command);
+                            paint::NETWORK => match self.network.current(&self.settings) {
+                                Some(link) if link.state != network_config::LinkState::Disabled => {
+                                    self.network_status(link.index);
                                 }
-                            }
+                                Some(_) => self.open_place(start::Place::NetworkConnections),
+                                None => {}
+                            },
                             paint::USB => self.perform(display, popups::Action::UsbDevices)?,
                             paint::VOLUME => {
                                 let rect = paint::areas(self, display, window, c)[paint::VOLUME];
@@ -760,13 +1065,33 @@ impl Desktop {
                         }
                     } else if window == self.background {
                         self.selected = Some(index);
-                        if self.clicked.is_some_and(|(previous, time)| {
-                            previous == index && time.elapsed() < Duration::from_millis(500)
-                        }) {
+                        let now = Instant::now();
+                        if self
+                            .clicked
+                            .as_ref()
+                            .is_some_and(|previous| previous.follows((window, index), point, now))
+                        {
                             self.open_icon(index);
                             self.clicked = None;
                         } else {
-                            self.clicked = Some((index, Instant::now()));
+                            self.clicked = Some(ItemClick::new((window, index), point, now));
+                            let modifiers = display.keyboard_modifiers();
+                            if drag.is_some_and(|drag| drag.was_selected && drag.index == index)
+                                && !modifiers.shift
+                                && !modifiers.control
+                                && !modifiers.alt
+                                && !modifiers.super_key
+                                && let Some(icon) = self.icons.items.get(index)
+                                && matches!(icon.target, icons::Target::Path(_))
+                            {
+                                let label =
+                                    art.icon_label_rect(c.scale, self.icons.rect(index), icon)?;
+                                if (label.x..label.right()).contains(&point.0)
+                                    && (label.y..label.bottom()).contains(&point.1)
+                                {
+                                    self.rename_click = Some((index, now + ITEM_DOUBLE_CLICK));
+                                }
+                            }
                         }
                     }
                 }
@@ -782,8 +1107,47 @@ impl Desktop {
                         }
                         1 if key.modifiers.control => self.toggle_menu(display)?,
                         19 if key.modifiers.super_key => self.dialog(display, Kind::Run)?,
+                        45..=47
+                            if window == self.background
+                                && !key.repeat
+                                && key.modifiers.control
+                                && !key.modifiers.shift
+                                && !key.modifiers.alt
+                                && !key.modifiers.super_key =>
+                        {
+                            if key.code == 47 {
+                                self.begin_paste(display);
+                            } else if let Some(index) = self.selected {
+                                self.offer_icon(display, index, key.code == 45);
+                            }
+                        }
+                        60 if window == self.background
+                            && !key.modifiers.alt
+                            && !key.modifiers.control =>
+                        {
+                            if let Some(index) = self.selected {
+                                self.rename_icon(index);
+                            }
+                        }
+                        111 if window == self.background
+                            && !key.repeat
+                            && !key.modifiers.alt
+                            && !key.modifiers.super_key
+                            && !key.modifiers.control =>
+                        {
+                            if let Some(index) = self.selected {
+                                let verb = if key.modifiers.shift {
+                                    "--delete-permanently"
+                                } else {
+                                    "--delete"
+                                };
+                                self.delete_icon(index, verb);
+                            }
+                        }
                         28 if window == self.background => {
-                            self.open_icon(self.selected.unwrap_or(0));
+                            if let Some(index) = self.selected {
+                                self.open_icon(index);
+                            }
                         }
                         62 if key.modifiers.alt && window == self.background => {
                             self.control.write_all(&[4])?
@@ -823,7 +1187,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         // 2. 每轮至多处理 64 项，持续输入时仍给绘制、外部状态和会话回收执行机会。
         for index in 0..64 {
             let timeout = if index == 0 {
-                Duration::from_millis(100)
+                state
+                    .rename_click
+                    .map_or(Duration::from_millis(100), |(_, deadline)| {
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .min(Duration::from_millis(100))
+                    })
             } else {
                 Duration::ZERO
             };
@@ -860,8 +1230,31 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             state.event(&mut display, &mut art, event)?;
         }
         dirty |= state.volume.poll();
-        dirty |= state.network.poll();
+        dirty |= state.poll_paste(&mut display);
+        // 菜单映射、键盘 enter 和剪贴板 offer 可分批到达，按本轮处理后的状态更新可用性。
+        if let Some((window, popups::Overlay::Menu(menu))) = &mut state.overlay
+            && let Some(item) = menu
+                .items
+                .iter_mut()
+                .find(|item| matches!(item.action, popups::Action::PasteFiles))
+        {
+            let disabled = state.paste.is_some() || !clipboard::can_paste(&display);
+            if item.disabled != disabled {
+                item.disabled = disabled;
+                pending.insert(*window);
+            }
+        }
+        match state.network.poll() {
+            Ok(changed) => dirty |= changed,
+            Err(error) => {
+                state.message = format!("无法禁用连接：{error}");
+                dirty = true;
+            }
+        }
         dirty |= state.usb.poll();
+        if state.icons.poll_trash() {
+            pending.insert(state.background);
+        }
         dirty |= state.poll_settings(&mut display)?;
         if art.update_wallpaper(state.settings.wallpaper.as_deref())? {
             pending.insert(state.background);
@@ -872,12 +1265,41 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let apps = installed_programs();
             if apps != state.apps {
                 state.apps = apps;
-                state.icons.refresh();
+                if state.overlay.is_none() && state.drag.is_none() && !state.drop_hover {
+                    state.icons.refresh();
+                    state.selected = None;
+                    state.clicked = None;
+                    state.rename_click = None;
+                }
                 state.apps_changed = true;
             }
         }
-        if state.icons.poll() {
-            state.apps_changed = true;
+        if state.overlay.is_none() && state.drag.is_none() && !state.drop_hover {
+            let target = state
+                .selected
+                .and_then(|index| state.icons.items.get(index))
+                .map(|icon| icon.target.clone());
+            if state.icons.poll() {
+                state.selected = target.and_then(|target| {
+                    state
+                        .icons
+                        .items
+                        .iter()
+                        .position(|icon| icon.target == target)
+                });
+                state.clicked = None;
+                state.rename_click = None;
+                state.apps_changed = true;
+            }
+        }
+        if let Some((index, deadline)) = state.rename_click
+            && deadline <= Instant::now()
+        {
+            state.rename_click = None;
+            if display.keyboard_focus() == Some(state.background) && state.selected == Some(index) {
+                state.rename_icon(index);
+                pending.insert(state.background);
+            }
         }
         if std::mem::take(&mut state.apps_changed) {
             art.register(&state.apps, &state.icons.items);

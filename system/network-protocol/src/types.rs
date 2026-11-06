@@ -2,7 +2,7 @@
 
 use core::net::Ipv4Addr;
 
-use device_model::network::NetworkStatistics;
+use device_model::network::{NetworkLink, NetworkStatistics};
 
 /// socket 操作的失败；使用者按自己的 ABI 映射为错误码。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -383,16 +383,36 @@ pub struct InterfaceSnapshot {
     pub prefix_length: u8,
     pub broadcast: Ipv4Addr,
     pub up: bool,
+    /// 物理链路事实；回环或驱动读取失败时为 None。
+    pub link: Option<NetworkLink>,
     /// 底层设备的驱动名；loopback 为 None。
     pub driver: Option<DriverName>,
 }
 
 impl InterfaceSnapshot {
+    /// 返回已知载波；无物理设备的回环按始终有载波处理。
+    pub fn carrier(&self) -> Option<bool> {
+        if self.loopback {
+            Some(true)
+        } else {
+            self.link.map(|link| link.carrier)
+        }
+    }
+
+    /// Linux IF_OPER_UNKNOWN、IF_OPER_DOWN 或 IF_OPER_UP。
+    pub fn operstate(&self) -> u8 {
+        match (self.up, self.loopback, self.carrier()) {
+            (false, _, _) | (_, _, Some(false)) => 2,
+            (true, true, _) | (_, _, None) => 0,
+            (true, false, Some(true)) => 6,
+        }
+    }
+
     /// `SIOCGIFFLAGS` 与 rtnetlink `ifi_flags` 共用的 `IFF_*`，保证两条路径报告同一份状态。
     ///
     /// # Returns
     ///
-    /// loopback 为 `IFF_LOOPBACK`，否则 `IFF_BROADCAST|IFF_MULTICAST`；链路 UP 时再加 `IFF_UP|IFF_RUNNING`。
+    /// 管理启用与实际可运行分别映射为 `IFF_UP` 和 `IFF_RUNNING`。
     pub fn flags(&self) -> u16 {
         const IFF_UP: u16 = 0x1;
         const IFF_BROADCAST: u16 = 0x2;
@@ -403,7 +423,16 @@ impl InterfaceSnapshot {
             IFF_LOOPBACK
         } else {
             IFF_BROADCAST | IFF_MULTICAST
-        }) | if self.up { IFF_UP | IFF_RUNNING } else { 0 }
+        }) | if self.up {
+            IFF_UP
+                | if self.carrier() == Some(true) {
+                    IFF_RUNNING
+                } else {
+                    0
+                }
+        } else {
+            0
+        }
     }
 }
 

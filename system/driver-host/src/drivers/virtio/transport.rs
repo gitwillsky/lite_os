@@ -327,16 +327,39 @@ impl VirtIODevice {
         &self,
         offset: usize,
     ) -> Result<u64, BusError> {
+        self.read_config_consistent(|device| {
+            let low = device.read_config_u32(offset)?;
+            let high = device.read_config_u32(offset + 4)?;
+            Ok(u64::from(low) | u64::from(high) << 32)
+        })
+    }
+
+    /// Read related device configuration fields from a single generation.
+    /// The read-only closure may be retried. Bus errors or unstable generations return an error.
+    pub(in crate::drivers::virtio) fn read_config_consistent<T>(
+        &self,
+        mut read: impl FnMut(&Self) -> Result<T, BusError>,
+    ) -> Result<T, BusError> {
         for _ in 0..4 {
             let before = self.config_generation()?;
-            let low = self.read_config_u32(offset)?;
-            let high = self.read_config_u32(offset + 4)?;
+            let value = read(self)?;
             let after = self.config_generation()?;
             if before == after {
-                return Ok(u64::from(low) | u64::from(high) << 32);
+                return Ok(value);
             }
         }
         Err(BusError::InvalidAddress)
+    }
+
+    /// Read one aligned little-endian 16-bit device configuration field.
+    pub(in crate::drivers::virtio) fn read_config_u16(
+        &self,
+        offset: usize,
+    ) -> Result<u16, BusError> {
+        match &self.transport {
+            Transport::Mmio(bus) => bus.read_u16(CONFIG + offset),
+            Transport::Pci(pci) => pci.read_config_u16(offset),
+        }
     }
 
     /// 读取 device-specific config 的单个 little-endian u32。

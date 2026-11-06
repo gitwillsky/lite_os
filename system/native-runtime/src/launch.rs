@@ -32,6 +32,41 @@ pub struct Launch<'a> {
 ///
 /// 装载、映射、句柄复制或启动失败；失败时进程仍未启动，由调用者决定是否终止。
 pub fn launch(launch: Launch<'_>) -> Result<(), Status> {
+    let process = launch.process;
+    prepare(launch)?.start(process)
+}
+
+/// 已完成装载的首线程及其启动消息。启动前不会执行任何服务代码。
+pub struct Prepared {
+    thread: Thread,
+    entry: usize,
+    stack_top: usize,
+    bootstrap: Channel,
+}
+
+impl Prepared {
+    /// 启动已装载的首线程。传入准备时使用的进程。
+    ///
+    /// # Errors
+    ///
+    /// 内核拒绝启动线程或转交启动句柄。
+    pub fn start(self, process: &Process) -> Result<(), Status> {
+        process.start(
+            &self.thread,
+            self.entry,
+            self.stack_top,
+            self.bootstrap.into_handle(),
+            0,
+        )
+    }
+}
+
+/// 完成 ELF 装载及启动准备，暂不执行服务代码。
+///
+/// # Errors
+///
+/// 映像无效、资源不足或启动句柄无法交付。
+pub fn prepare(launch: Launch<'_>) -> Result<Prepared, Status> {
     let entry = crate::elf::load(launch.image, launch.image_vmar)?;
     let stack_size = launch.stack_size.next_multiple_of(native_abi::PAGE_SIZE);
     let stack = Vmo::create(stack_size as u64, 0)?;
@@ -60,11 +95,10 @@ pub fn launch(launch: Launch<'_>) -> Result<(), Status> {
     handles.push(thread.duplicate(rights::SAME)?.into_handle());
     handles.extend(launch.handles);
     local.write(&bytes, handles)?;
-    launch.process.start(
-        &thread,
+    Ok(Prepared {
+        thread,
         entry,
-        stack_base + stack_size,
-        remote.into_handle(),
-        0,
-    )
+        stack_top: stack_base + stack_size,
+        bootstrap: remote,
+    })
 }

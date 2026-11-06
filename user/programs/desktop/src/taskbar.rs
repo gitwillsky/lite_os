@@ -54,10 +54,15 @@ impl Desktop {
             return Ok(false);
         }
         self.settings_stamp = stamp;
-        self.settings = desktop_settings::Settings::load();
-        self.taskbar_hidden = false;
-        self.leave_at = None;
-        self.apply_taskbar(display)?;
+        let settings = desktop_settings::Settings::load();
+        let layer_changed = settings.always_on_top != self.settings.always_on_top
+            || settings.auto_hide != self.settings.auto_hide;
+        self.settings = settings;
+        if layer_changed {
+            self.taskbar_hidden = false;
+            self.leave_at = None;
+            self.apply_taskbar(display)?;
+        }
         Ok(true)
     }
 
@@ -95,7 +100,7 @@ impl Desktop {
                     date.year, date.month, date.day
                 ))
             }
-            paint::NETWORK => self.network.tooltip(),
+            paint::NETWORK => self.network.tooltip(&self.settings),
             paint::USB => self.usb.tooltip(),
             paint::VOLUME => Some(match self.volume.value {
                 Some(value) if value.muted => "音量：静音".to_owned(),

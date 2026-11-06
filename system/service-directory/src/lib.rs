@@ -23,6 +23,8 @@ pub const NETWORK: &[u8] = b"liteos.network.Control";
 pub const NETWORK_INSTALLER: &[u8] = b"liteos.network.Installer";
 /// netcfg 的网络设置协议（`netcfg_protocol`），linuxd 适配给获授权的 Linux 程序。
 pub const NETWORK_SETTINGS: &[u8] = b"liteos.network.Settings";
+/// 驱动更新控制，只路由给 linuxd 的管理员端点。
+pub const DRIVER_UPDATE: &[u8] = b"liteos.driver.Update";
 /// dhcp-client 的 DHCPv4 租约协议（`netcfg_protocol::dhcp`），只路由给 netcfg。
 pub const DHCP: &[u8] = b"liteos.network.Dhcp";
 /// fshost 的存储管理协议（`filesystem_protocol::StorageAdmin`）：只供根服务为各服务派生私有数据目录。

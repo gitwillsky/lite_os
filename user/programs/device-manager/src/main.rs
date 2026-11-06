@@ -219,8 +219,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // 替换 Task 撤销旧结果投递；已经开始的只读扫描自行清理，不阻塞 UI。
             scan.take();
             let work = background.run(|| {
-                let computer = std::fs::read_to_string("/proc/sys/kernel/hostname")
-                    .map(|name| name.trim().to_uppercase())
+                let computer = linux_uapi::uts::read()
+                    .map(|identity| identity.hostname.to_string_lossy().to_uppercase())
                     .unwrap_or_else(|_| "LITEOS".into());
                 (computer, devices::scan())
             })?;

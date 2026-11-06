@@ -12,6 +12,44 @@ pub struct LabelEdit {
     pub pending: bool,
 }
 impl Node {
+    /// 只命中实际绘制的文件名，图标、其他列与行内空白不启动编辑。
+    pub(super) fn label_contains(&self, index: usize, point: (i32, i32), p: &Painter<'_>) -> bool {
+        let Some((row, text)) = self.row_at(index) else {
+            return false;
+        };
+        let name = text.split('\t').next().unwrap_or_default();
+        let geometry = self.list_geometry();
+        let images = self.row_icons.get(row);
+        let small = images.and_then(|icons| icons.0.as_deref());
+        let rect = if let Some(grid) = geometry.grid {
+            let cell = grid.cell(index, self.position.position);
+            if grid.mode == 1 {
+                let height = images
+                    .and_then(|icons| icons.1.as_ref())
+                    .map_or(32, |image| image.height());
+                p.icon_label(cell, height, name, true).rect
+            } else {
+                p.small_icon_label(cell, small, name).0
+            }
+        } else {
+            let Some(table) = self
+                .table
+                .as_ref()
+                .filter(|table| !table.columns.is_empty() && !table.full_row)
+            else {
+                return false;
+            };
+            let cell = Rect::new(
+                geometry.rows.x - table.horizontal.position + 1,
+                geometry.rows.y + (index as i32 - self.position.position) * self.row_height,
+                table.header.width(0) - 1,
+                self.row_height,
+            );
+            p.small_icon_label(cell, small, name).0
+        };
+        (rect.x..rect.right()).contains(&point.0) && (rect.y..rect.bottom()).contains(&point.1)
+    }
+
     /// 查询 `row` 的原标签是否由活动编辑器取代；提交待确认时恢复正常标签。
     pub fn editing_label(&self, row: u64) -> bool {
         self.label_edit
@@ -28,8 +66,12 @@ impl Node {
         if let Some(grid) = geometry.grid {
             let cell = grid.cell(index, self.position.position);
             if grid.mode == 1 {
-                // 与大图标标签同一起点（图标距顶 4 + 32 + 间距 2），编辑框边框向外让 2 像素。
-                Some(Rect::new(cell.x, cell.y + 36, cell.width, 26))
+                let height = self
+                    .row_icons
+                    .get(&editing.row)
+                    .and_then(|icons| icons.1.as_ref())
+                    .map_or(32, |bitmap| bitmap.height());
+                Some(classic_ui::large_icon_edit_rect(cell, height))
             } else {
                 let left = if self.row_icons.contains_key(&editing.row) {
                     20
@@ -91,6 +133,32 @@ impl Node {
     }
 }
 impl Tree {
+    /// 在处理新输入后，只向仍有焦点且保留原选中行的控件派发到期手势。
+    pub(super) fn rename_request(
+        &mut self,
+        window: u64,
+        now: std::time::Instant,
+    ) -> Option<abi::Event> {
+        let (node, row, deadline) = self.rename_click?;
+        if now < deadline {
+            return None;
+        }
+        self.rename_click = None;
+        let target = self.nodes.get(&node)?;
+        (self.focus == Some(node)
+            && self.active(node)
+            && target.selected == Some(row)
+            && target.label_edit.is_none()
+            && target.state & abi::state::EDIT_LABELS != 0)
+            .then_some(abi::Event {
+                window,
+                node,
+                kind: event::RENAME_REQUESTED,
+                value: row,
+                ..Default::default()
+            })
+    }
+
     pub fn label_input(
         &mut self,
         window: u64,
@@ -213,17 +281,7 @@ pub(super) unsafe extern "C" fn edit_label(
                     .position(|entry| entry.0 == row)
                     .ok_or_else(|| invalid("unknown label row"))?;
                 let geometry = node.list_geometry();
-                if let Some(grid) = geometry.grid {
-                    node.position.position = grid.reveal(index, node.position.position);
-                } else {
-                    let page = (geometry.rows.height / node.row_height).max(1);
-                    node.position.position = node
-                        .position
-                        .position
-                        .min(index as i32)
-                        .max(index as i32 + 1 - page)
-                        .max(0);
-                }
+                node.reveal_list_row(index, geometry);
                 node.choose_row(index, false, false, false);
                 let value = value.expect("label text");
                 let mut edit = Edit::new(&value);

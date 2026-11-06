@@ -80,3 +80,4 @@ pub(crate) fn previous_panic() -> Option<&'static [u8]> {
     });
     (!record.is_empty()).then_some(record.as_slice())
 }
+pub(crate) mod driver_update;
