@@ -15,6 +15,7 @@ mod selected;
 compile_error!("linuxd has no implementation for this target architecture");
 
 pub(crate) use selected::fp;
+pub(crate) mod user_copy;
 
 /// 用户寄存器上下文与 syscall 编解码。
 pub(crate) mod context {

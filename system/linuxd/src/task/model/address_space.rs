@@ -284,18 +284,14 @@ impl AddressSpace {
             .copy_from_user(user_address, destination)
     }
 
-    /// 复制到未初始化的缓冲区：先清零再复制，成功后整个缓冲区已初始化。
+    /// 复制到未初始化的缓冲区，成功后整个缓冲区已初始化。
     pub(super) fn copy_from_user_uninit(
         &self,
         user_address: usize,
         destination: &mut [core::mem::MaybeUninit<u8>],
     ) -> Result<(), UserAccessError> {
-        for byte in destination.iter_mut() {
-            byte.write(0);
-        }
-        // SAFETY: 上面已初始化每个字节；`MaybeUninit<u8>` 与 `u8` 布局相同。
-        let initialized = unsafe { &mut *(core::ptr::from_mut(destination) as *mut [u8]) };
-        self.copy_from_user(user_address, initialized)
+        self.lock_for_access()?
+            .copy_from_user_uninit(user_address, destination)
     }
 
     pub(super) fn copy_to_user(

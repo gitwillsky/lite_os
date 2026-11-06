@@ -19,6 +19,7 @@
 //! 再在锁内原子替换，被替换的映射保活到 TLB fence 完成后才释放。
 
 mod observation;
+mod view;
 use super::execution_views::{ExecutionView, ExecutionViews};
 use super::page_table::PagePermissions;
 use super::translation::{TranslationCommit, synchronize_address_space_retirement};
@@ -315,35 +316,6 @@ impl AddressSpace {
         let (_, mapping) = self.lookup(address)?;
         let offset = (mapping.vmo_page * PAGE_SIZE + (address - mapping.base)) as u64;
         Ok((mapping.vmo.id(), offset))
-    }
-
-    /// 返回用户态时激活的页表 token。
-    pub(crate) fn token(&self, view: ExecutionView) -> AddressSpaceToken {
-        match view {
-            ExecutionView::Normal => self.token.clone(),
-            ExecutionView::Private => self
-                .private_token
-                .as_ref()
-                .expect("restricted mode requires a shared-process member")
-                .clone(),
-        }
-    }
-
-    /// 共享进程成员具有独立 private 硬件根；普通/共享模板进程不能进入受限模式。
-    pub(crate) fn has_private_view(&self) -> bool {
-        self.private_token.is_some()
-    }
-
-    /// 受限缺页不能解析共享区；否则隐藏区会在下一次重试前被错误补入或无限重试。
-    pub(crate) fn fault_private(
-        self: &Arc<Self>,
-        address: usize,
-        access: FaultAccess,
-    ) -> Result<FaultSource, VmError> {
-        if !self.has_private_view() || !self.range.contains(&address) {
-            return Err(VmError::AccessDenied);
-        }
-        self.fault(address, access)
     }
 
     fn lock(&self) -> Result<TaskMutexGuard<'_, SpaceInner>, VmError> {

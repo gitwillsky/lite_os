@@ -64,6 +64,19 @@ COW 生命周期回归执行生产 VMO，覆盖重复快照/退出、有存活�
 4. context 部分映射失败先撤销已发布的叶项、完成 fence，再释放 context frame；地址空间退休先全 CPU fence，
    随后退还两个 ASID。host fixture 执行实际页表/视图/retirement owner；musl guest 验证直接访问服务区为 SIGSEGV。
 
+### 应用内存复制
+
+- Linuxd 在 MM 锁内验证 VMA 边界和权限。当前承载线程映射同一成员地址空间时，经架构叶函数直接复制。
+  exec 在发布新 MM 之前登记接班承载线程；交接前及后台线程的远程访问使用原生进程读写接口。
+  调试访问保留强制语义，可执行映射写入沿用原生指令翻译撤销。
+- 承载线程启动时登记一次共享映像中的恢复区间和入口。普通缺页仍由 VM 处理并重试。
+  仅未解决的 normal-mode 数据异常同时命中登记 PC 与成员私有地址区间时转向恢复入口，
+  由 linuxd 返回 EFAULT。其他异常继续使用既有分派。登记随线程退休，无额外锁或逐次 syscall。
+- 例程在 Rust 引用之外读写应用地址；调用方独占服务缓冲并持有 MM 锁，MM 可在复制期间缺页。
+  应用侧的多字节访问不跨页，复制失败可留下已写入前缀，未初始化缓冲仅在完整成功后发布。
+  参考[固定 Fuchsia Starnix 的 usercopy](https://fuchsia.googlesource.com/fuchsia/+/da8b4012beb596ba222a55b2fa6ba11336c0fc9b/src/starnix/lib/usercopy/src/lib.rs)
+  对指令区间和受限地址的双重判定。LiteOS 由内核恢复 PC，沿用自己的异常分派。
+
 ## Pager 与故障信息
 
 - requested map 是未完成请求的唯一 owner；投递失败在同一树事务中撤销登记，不能留下永不完成的请求。

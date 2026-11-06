@@ -332,6 +332,7 @@ pub(super) fn dispatch(call: &Call<'_>, number: usize) -> Outcome {
         call::RESTRICTED_UNBIND_STATE => restricted::unbind_state(call).into(),
         call::RESTRICTED_ENTER => restricted::enter(call),
         call::RESTRICTED_KICK => restricted::kick(call).into(),
+        call::THREAD_SET_FAULT_RECOVERY => restricted::set_fault_recovery(call).into(),
         call::RESOURCE_CREATE => hardware::resource_create(call).into(),
         call::INTERRUPT_CREATE => hardware::interrupt_create(call).into(),
         call::INTERRUPT_WAIT => hardware::interrupt_wait(call).into(),

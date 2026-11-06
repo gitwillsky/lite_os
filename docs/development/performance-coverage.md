@@ -47,6 +47,10 @@ critical section 仅固定整数运算，无分配/回调。生产 quota 的同�
 adapter 只代表无竞争计数成本，不宣称实际 local IRQ 指令/设备延迟，不新增虚假的窄时序门槛。
 硬件光标静态门禁固定 cursor queue 与 latest-position 合并；窗口交互与内核显示/GPU 门禁分别裁决。
 
+Linuxd 的同地址空间复制在驻留页上省去逐块进程内存 syscall。首次访问仍走 VM 缺页与页表发布，
+故障边界由 BusyBox 的 memfd 截断和正常读写验证。性能应在 guest 上按驻留和缺页分别观察，
+现有显示门禁不以这项改变推断窗口缩放延迟。
+
 显示/GPU 的 guest vblank 性能门禁、画面交接及 Wayland 验证由
 [Wayland 与经典控件验证](wayland-ui-verification.md#显示性能与帧交接)维护，沿用固定阈值与完整帧对应关系。
 

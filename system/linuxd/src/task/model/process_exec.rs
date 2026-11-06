@@ -130,6 +130,8 @@ impl TaskControlBlock {
 
         // 步骤2: 单次替换 Process 映像相关状态；vfork child 只替换自己的 Process handle，
         // parent 与 sibling 继续持有旧 AddressSpace，因此不存在共享 handle 被原地清空的窗口。
+        // 旧承载线程即将失去与当前 mm 的对应关系，先发布接班者，禁用本地地址访问。
+        self.set_prepared_carrier(new_carrier);
         let old_address_space = self.replace_address_space(new_address_space);
         let retired_scheduler_alias = core::mem::replace(
             &mut *self.process().leader_scheduler.lock(),
@@ -182,7 +184,6 @@ impl TaskControlBlock {
         // 步骤3: 参数与环境只存在于新初始栈。新地址空间属于另一个成员进程：Linux 线程主循环在
         // 下一次进入前发现承载线程不在新地址空间中，就在新成员进程中换上新的承载线程。
         self.replace_user_context(UserContext::new(entry_point, user_sp));
-        self.set_prepared_carrier(new_carrier);
         // exec 不继承旧映像的浮点状态。
         self.thread()
             .user_context

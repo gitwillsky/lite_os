@@ -1,5 +1,7 @@
 //! Linux/AArch64 用户执行状态。
 
+core::arch::global_asm!(include_str!("user_copy.S"));
+
 pub(crate) mod fp;
 pub(crate) mod signal_action;
 pub(crate) mod signal_frame;

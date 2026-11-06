@@ -18,6 +18,15 @@ pub(super) fn try_mm_handle(mm: Arc<AddressSpace>) -> Result<MmHandle, MemoryErr
 }
 
 impl TaskControlBlock {
+    /// 当前承载线程是否仍映射着目标成员的地址空间；只由当前 task 调用。
+    pub(crate) fn maps_process(&self, process: &Arc<native_runtime::Process>) -> bool {
+        if self.execution.prepared_carrier.lock().is_some() {
+            return false;
+        }
+        self.mm_snapshot()
+            .is_some_and(|mm| Arc::ptr_eq(mm.process(), process))
+    }
+
     /// 不可失败的 mm cleanup acquisition；spin 锁外阻塞，取得 guard 后归还可复用 waiter。
     /// closure 不得再次取得同一 mm，实际页 backing OOM 仍按 user-access 语义处理。
     pub(super) fn with_cleanup_memory<R>(

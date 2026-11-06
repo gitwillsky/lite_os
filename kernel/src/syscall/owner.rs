@@ -76,8 +76,8 @@ impl ThreadOwner for crate::object::Thread {
         if thread.is_killed() {
             return Disposition::Exit;
         }
-        let report = report(thread, &self, exception);
         if let Mode::Restricted(entry) = self.mode() {
+            let report = report(thread, &self, exception);
             return continue_unless(restricted::exit(
                 &self,
                 thread,
@@ -86,6 +86,10 @@ impl ThreadOwner for crate::object::Thread {
                 Some(report),
             ));
         }
+        if recover_data_fault(&self, thread, exception) {
+            return Disposition::Continue;
+        }
+        let report = report(thread, &self, exception);
         match deliver(&self, report) {
             Delivery::Resume(state) => {
                 if let Some(state) = state
@@ -143,6 +147,34 @@ impl ThreadOwner for crate::object::Thread {
     fn exited(self: Arc<Self>, _thread: &Arc<Thread>) {
         crate::object::Thread::exited(&self);
     }
+}
+
+fn recover_data_fault(
+    owner: &crate::object::Thread,
+    thread: &Thread,
+    exception: UserException,
+) -> bool {
+    let address = match exception {
+        UserException::PageFault {
+            address,
+            access: crate::vm::FaultAccess::Read | crate::vm::FaultAccess::Write,
+            ..
+        }
+        | UserException::AccessFault { address, .. } => address,
+        _ => return false,
+    };
+    let pc = thread.with_user_context(|context| context.program_counter());
+    let Some(resume) = owner.fault_recovery(pc) else {
+        return false;
+    };
+    if !thread
+        .address_space()
+        .is_some_and(|space| space.is_private_address(address))
+    {
+        return false;
+    }
+    thread.with_user_context(|context| context.set_program_counter(resume));
+    true
 }
 
 fn continue_unless(written: bool) -> Disposition {

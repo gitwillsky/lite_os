@@ -43,6 +43,24 @@ pub(super) fn unbind_state(call: &Call<'_>) -> Result<(), Status> {
     Ok(())
 }
 
+pub(super) fn set_fault_recovery(call: &Call<'_>) -> Result<(), Status> {
+    let space = call
+        .thread
+        .address_space()
+        .filter(|space| space.has_private_view())
+        .ok_or(native_abi::ERR_BAD_STATE)?;
+    let [start, end, resume] = [call.arg(0), call.arg(1), call.arg(2)];
+    if start >= end
+        || (start..end).contains(&resume)
+        || !space.is_shared_address(start)
+        || !space.is_shared_address(end - 1)
+        || !space.is_shared_address(resume)
+    {
+        return Err(native_abi::ERR_INVALID_ARGS);
+    }
+    call.owner.set_fault_recovery(start, end, resume)
+}
+
 fn read_state(vmo: &Arc<Vmo>) -> Result<RestrictedState, Status> {
     let mut state = RestrictedState::default();
     // SAFETY: RestrictedState 是 Plain；按字节写入任意内容都是合法值。

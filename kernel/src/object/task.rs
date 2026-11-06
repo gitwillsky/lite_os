@@ -711,6 +711,8 @@ struct Restricted {
     // OWNER: `restricted_bind_state` 绑定的状态 VMO；进入时读取、退出时写回。
     state: Option<Arc<Vmo>>,
     mode: Mode,
+    // OWNER: 当前线程登记的 normal-mode 恢复区间，随线程退出退休。没有它时不可恢复的故障按异常处理。
+    fault_recovery: Option<[usize; 3]>,
 }
 
 /// 线程对象。
@@ -741,6 +743,7 @@ impl Thread {
             restricted: Mutex::new(Restricted {
                 state: None,
                 mode: Mode::Normal,
+                fault_recovery: None,
             }),
         })
         .map_err(|_| native_abi::ERR_NO_MEMORY)
@@ -924,6 +927,28 @@ impl Thread {
     /// 切换执行模式。
     pub(crate) fn set_mode(&self, mode: Mode) {
         self.restricted.lock().mode = mode;
+    }
+
+    /// 为当前线程登记已验证的恢复区间及入口，重复登记返回 `ERR_BAD_STATE`。
+    pub(crate) fn set_fault_recovery(
+        &self,
+        start: usize,
+        end: usize,
+        resume: usize,
+    ) -> Result<(), Status> {
+        let mut state = self.restricted.lock();
+        if state.fault_recovery.is_some() {
+            return Err(native_abi::ERR_BAD_STATE);
+        }
+        state.fault_recovery = Some([start, end, resume]);
+        Ok(())
+    }
+
+    /// 仅当 normal-mode 故障指令在登记区间内时返回恢复入口。
+    pub(crate) fn fault_recovery(&self, pc: usize) -> Option<usize> {
+        let state = self.restricted.lock();
+        let [start, end, resume] = state.fault_recovery?;
+        (matches!(state.mode, Mode::Normal) && (start..end).contains(&pc)).then_some(resume)
     }
 }
 

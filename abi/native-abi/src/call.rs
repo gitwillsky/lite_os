@@ -358,5 +358,12 @@ pub const BTI_RELEASE_QUARANTINE: usize = 80;
 /// 句柄只可等待，不能置位。错误：`ERR_ACCESS_DENIED`（resource 不授权）、`ERR_NOT_SUPPORTED`（未知种类）。
 pub const SYSTEM_GET_EVENT: usize = 81;
 
+/// 为当前共享进程成员的线程登记一次 normal-mode 数据访问异常恢复区间。
+///
+/// 参数：共享映像中的 `start`（含）、`end`（不含）、`resume`（区间外）。
+/// 只有访问成员私有区的未解决数据异常、且 PC 在登记区间内时才重定向。
+/// 错误：`ERR_INVALID_ARGS`（地址非法）、`ERR_BAD_STATE`（不属于成员或已登记）。
+pub const THREAD_SET_FAULT_RECOVERY: usize = 82;
+
 /// 编号上界（不含）。
-pub const COUNT: usize = 82;
+pub const COUNT: usize = 83;

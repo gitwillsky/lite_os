@@ -1060,6 +1060,7 @@ kernel/src/object/task.rs :: pub (crate) impl Thread :: fn bind_restricted_state
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn create (process : & Arc < Process > , name : & [u8]) -> Result < Arc < Self > , Status >
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn execution (& self) -> Option < Arc < crate :: thread :: Thread > >
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn exited (& self)
+kernel/src/object/task.rs :: pub (crate) impl Thread :: fn fault_recovery (& self , pc : usize) -> Option < usize >
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn kill (self : & Arc < Self >)
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn mode (& self) -> Mode
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn name (& self) -> ([u8 ; NAME_CAPACITY] , usize)
@@ -1067,6 +1068,7 @@ kernel/src/object/task.rs :: pub (crate) impl Thread :: fn process (& self) -> &
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn restricted_state (& self) -> Option < Arc < Vmo > >
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn runtime (& self) -> crate :: thread :: Runtime
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn set_affinity (& self , cpus : crate :: execution :: cpu :: CpuSet) -> Result < () , Status >
+kernel/src/object/task.rs :: pub (crate) impl Thread :: fn set_fault_recovery (& self , start : usize , end : usize , resume : usize ,) -> Result < () , Status >
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn set_mode (& self , mode : Mode)
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn set_name (& self , name : & [u8])
 kernel/src/object/task.rs :: pub (crate) impl Thread :: fn set_priority (& self , priority : u8) -> Result < () , Status >
@@ -1346,6 +1348,7 @@ kernel/src/syscall/restricted.rs :: pub (super) fn bind_state (call : & Call < '
 kernel/src/syscall/restricted.rs :: pub (super) fn enter (call : & Call < '_ >) -> Outcome
 kernel/src/syscall/restricted.rs :: pub (super) fn exit (owner : & crate :: object :: Thread , thread : & Arc < crate :: thread :: Thread > , entry : RestrictedEntry , reason : u64 , exception : Option < ExceptionReport > ,) -> bool
 kernel/src/syscall/restricted.rs :: pub (super) fn kick (call : & Call < '_ >) -> Result < () , Status >
+kernel/src/syscall/restricted.rs :: pub (super) fn set_fault_recovery (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/restricted.rs :: pub (super) fn unbind_state (call : & Call < '_ >) -> Result < () , Status >
 kernel/src/syscall/system.rs :: pub (super) fn barrier () -> Result < () , Status >
 kernel/src/syscall/system.rs :: pub (super) fn clock_get_monotonic (call : & Call < '_ >) -> Result < () , Status >
@@ -1597,12 +1600,9 @@ kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn create () 
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn create_member (shared : & Arc < Self >) -> Result < (Arc < Self > , Arc < Vmar >) , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn create_shared () -> Result < (Arc < Self > , Arc < Vmar >) , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn fault (self : & Arc < Self > , address : usize , access : FaultAccess ,) -> Result < FaultSource , VmError >
-kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn fault_private (self : & Arc < Self > , address : usize , access : FaultAccess ,) -> Result < FaultSource , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn futex_owner (& self , address : usize) -> u64
-kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn has_private_view (& self) -> bool
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn release_context (& self , address : usize)
 kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn resolve_object (self : & Arc < Self > , address : usize) -> Result < (u64 , u64) , VmError >
-kernel/src/vm/address_space.rs :: pub (crate) impl AddressSpace :: fn token (& self , view : ExecutionView) -> AddressSpaceToken
 kernel/src/vm/address_space.rs :: pub (crate) impl Vmar :: fn allocate (& self , placement : Placement , size : usize , permissions : PagePermissions ,) -> Result < Arc < Vmar > , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl Vmar :: fn destroy (& self) -> Result < () , VmError >
 kernel/src/vm/address_space.rs :: pub (crate) impl Vmar :: fn koid (& self) -> u64
@@ -1618,6 +1618,11 @@ kernel/src/vm/address_space.rs :: pub (super) impl AddressSpace :: fn zap_range 
 kernel/src/vm/address_space.rs :: pub (super) impl Mapping :: fn zap_vmo_pages (& self , pages : Range < usize > , mode : ZapMode) -> Result < () , VmError >
 kernel/src/vm/address_space/observation.rs :: pub (crate) impl AddressSpace :: fn memory_stats (& self) -> Result < (u64 , u64) , VmError >
 kernel/src/vm/address_space/observation.rs :: pub (crate) impl Vmar :: fn info (& self) -> VmarInfo
+kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn fault_private (self : & Arc < Self > , address : usize , access : FaultAccess ,) -> Result < FaultSource , VmError >
+kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn has_private_view (& self) -> bool
+kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn is_private_address (& self , address : usize) -> bool
+kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn is_shared_address (& self , address : usize) -> bool
+kernel/src/vm/address_space/view.rs :: pub (crate) impl AddressSpace :: fn token (& self , view : ExecutionView) -> AddressSpaceToken
 kernel/src/vm/device_space.rs :: pub (crate) impl DeviceAddressSpace :: fn create () -> Result < Self , () >
 kernel/src/vm/device_space.rs :: pub (crate) impl DeviceAddressSpace :: fn map (& mut self , first : usize , pages : & [PhysicalPageNumber] , writable : bool ,) -> Result < () , Retired >
 kernel/src/vm/device_space.rs :: pub (crate) impl DeviceAddressSpace :: fn root (& self) -> PhysicalPageNumber
@@ -3055,6 +3060,7 @@ system/linuxd/src/arch/aarch64/user.rs :: pub (crate) struct InvalidSignalContex
 system/linuxd/src/arch/aarch64/user.rs :: pub (crate) struct SyscallRequest
 system/linuxd/src/arch/mod.rs :: pub (crate) mod context
 system/linuxd/src/arch/mod.rs :: pub (crate) mod user
+system/linuxd/src/arch/mod.rs :: pub (crate) mod user_copy
 system/linuxd/src/arch/mod.rs :: pub (crate) use selected :: fp
 system/linuxd/src/arch/mod.rs :: pub (crate) use super :: selected :: SIGRETURN_TRAMPOLINE
 system/linuxd/src/arch/mod.rs :: pub (crate) use super :: selected :: signal_action :: SignalActionBytes
@@ -3138,6 +3144,8 @@ system/linuxd/src/arch/riscv64/user.rs :: pub (crate) impl UserContext :: fn sta
 system/linuxd/src/arch/riscv64/user.rs :: pub (crate) impl UserContext :: fn take_syscall_request (& mut self) -> SyscallRequest
 system/linuxd/src/arch/riscv64/user.rs :: pub (crate) struct InvalidSignalContext
 system/linuxd/src/arch/riscv64/user.rs :: pub (crate) struct SyscallRequest
+system/linuxd/src/arch/user_copy.rs :: pub (crate) fn register () -> Result < () , Status >
+system/linuxd/src/arch/user_copy.rs :: pub (crate) unsafe fn copy (dst : * mut u8 , src : * const u8 , len : usize , to_user : bool) -> bool
 system/linuxd/src/cmdline.rs :: enum CommandLineError :: # [doc = " `loglevel=` 的值不是十进制整数。"] InvalidLogLevel
 system/linuxd/src/cmdline.rs :: enum CommandLineError :: # [doc = " `panic=` 的值不是十进制整数。"] InvalidPanicTimeout
 system/linuxd/src/cmdline.rs :: enum CommandLineError :: # [doc = " 分配失败。"] OutOfMemory
@@ -6621,6 +6629,7 @@ system/linuxd/src/memory/initial_stack.rs :: pub (super) struct ElfAuxInfo
 system/linuxd/src/memory/mm/access.rs :: pub (crate) impl MemorySet :: fn access_forced (& self , address : usize , buffer : & mut [u8] , write : bool) -> usize
 system/linuxd/src/memory/mm/access.rs :: pub (crate) impl MemorySet :: fn compare_exchange_user_u32 (& self , address : usize , current : u32 , replacement : u32 ,) -> Result < Result < u32 , u32 > , UserAccessError >
 system/linuxd/src/memory/mm/access.rs :: pub (crate) impl MemorySet :: fn copy_from_user (& self , address : usize , output : & mut [u8] ,) -> Result < () , UserAccessError >
+system/linuxd/src/memory/mm/access.rs :: pub (crate) impl MemorySet :: fn copy_from_user_uninit (& self , address : usize , output : & mut [MaybeUninit < u8 >] ,) -> Result < () , UserAccessError >
 system/linuxd/src/memory/mm/access.rs :: pub (crate) impl MemorySet :: fn copy_to_user (& self , address : usize , input : & [u8]) -> Result < () , UserAccessError >
 system/linuxd/src/memory/mm/access.rs :: pub (crate) impl MemorySet :: fn copy_user_c_string (& self , address : usize , limit : usize ,) -> Result < Vec < u8 > , UserAccessError >
 system/linuxd/src/memory/mm/access.rs :: pub (crate) impl MemorySet :: fn futex_key (& self , address : usize , address_space : usize , private : bool ,) -> Result < FutexKey , UserAccessError >
@@ -9033,6 +9042,7 @@ system/linuxd/src/task/model/thread_identity.rs :: pub (crate) impl TaskControlB
 system/linuxd/src/task/model/thread_identity.rs :: pub (in crate :: task) impl TaskControlBlock :: fn is_namespace_init (& self) -> bool
 system/linuxd/src/task/model/thread_identity.rs :: pub (in crate :: task) impl TaskControlBlock :: fn promote_exec_identity (& self) -> Arc < PidIdentity >
 system/linuxd/src/task/model/thread_identity.rs :: pub (in crate :: task) impl super :: Process :: fn tgid_identity (& self) -> & Arc < PidIdentity >
+system/linuxd/src/task/model/thread_mm.rs :: pub (crate) impl TaskControlBlock :: fn maps_process (& self , process : & Arc < native_runtime :: Process >) -> bool
 system/linuxd/src/task/model/thread_mm.rs :: pub (crate) impl TaskControlBlock :: fn set_user_dumpable (& self , user : bool)
 system/linuxd/src/task/model/thread_mm.rs :: pub (crate) impl TaskControlBlock :: fn user_dumpable (& self) -> bool
 system/linuxd/src/task/model/thread_mm.rs :: pub (in crate :: task) impl TaskControlBlock :: fn has_mm (& self) -> bool

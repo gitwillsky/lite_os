@@ -11,6 +11,7 @@
 #include <sys/stat.h>
 #include <sys/statfs.h>
 #include <sys/syscall.h>
+#include <sys/utsname.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -73,6 +74,14 @@ static void memfd_semantics(void)
 	CHECK(8, ftruncate(fd, PAGE) == 0);
 	CHECK(9, touch_in_child(map + PAGE, 0) == 1);
 	CHECK(10, touch_in_child(map, 0) == 0);
+
+	/* 仍有 VMA，但已无 backing。syscall 的复制异常必须返回 EFAULT，不能结束承载线程。 */
+	int pipefd[2];
+	CHECK(24, pipe(pipefd) == 0);
+	CHECK(25, write(pipefd[1], map + PAGE, 1) == -1 && errno == EFAULT);
+	CHECK(26, uname((struct utsname *)(map + PAGE)) == -1 && errno == EFAULT);
+	CHECK(27, write(pipefd[1], "r", 1) == 1 && read(pipefd[0], map + 1, 1) == 1);
+	CHECK(28, map[1] == 'r' && close(pipefd[0]) == 0 && close(pipefd[1]) == 0);
 
 	/* 再增长：被截掉的内容读为零，不会复活。 */
 	CHECK(11, ftruncate(fd, 2 * PAGE) == 0);

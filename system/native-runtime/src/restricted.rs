@@ -8,6 +8,27 @@ use native_abi::{RestrictedState, Status, call};
 
 use crate::{Handle, Vmar, Vmo};
 
+/// 为当前成员线程登记共享代码中可恢复的数据访问区间。
+///
+/// # Safety
+///
+/// `start..end` 必须是受控的访问例程。区间内发生私有地址数据异常时，
+/// `resume` 必须能用原寄存器和栈返回到调用方。例程必须活到当前线程结束。
+///
+/// # Errors
+///
+/// 地址非法、当前线程不属于共享进程成员或已登记。
+pub unsafe fn register_fault_recovery(
+    start: usize,
+    end: usize,
+    resume: usize,
+) -> Result<(), Status> {
+    // SAFETY: 只有整数参数；异常恢复的不变量由调用者保证。
+    crate::syscall::check(unsafe {
+        crate::syscall::invoke(call::THREAD_SET_FAULT_RECOVERY, &[start, end, resume])
+    })
+}
+
 #[cfg(all(target_os = "none", target_arch = "aarch64"))]
 core::arch::global_asm!(
     ".text",

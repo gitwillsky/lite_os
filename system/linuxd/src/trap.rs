@@ -73,6 +73,7 @@ fn run_kernel() {
 
 fn run_user() {
     let task = current_task().expect("user carrier started without a task");
+    crate::arch::user_copy::register().expect("carrier user copy recovery");
     if let Some(fp) = task.take_initial_fp() {
         crate::arch::fp::restore(&fp);
     }
