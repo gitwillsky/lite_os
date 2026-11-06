@@ -43,12 +43,37 @@ impl Uevent {
         event
     }
 
+    /// 输入设备节点的增删（Linux input core 为 `eventN` 发出的 uevent）。
+    fn input(added: bool, index: usize, minor: u32, sequence: u64) -> Self {
+        let action: &[u8] = if added { b"add" } else { b"remove" };
+        let mut event = Self::EMPTY;
+        event.push(action);
+        event.push(b"@/devices/virtual/input/input");
+        event.push_decimal(index as u64);
+        event.push(b"/event");
+        event.push_decimal(index as u64);
+        event.push(b"\0ACTION=");
+        event.push(action);
+        event.push(b"\0DEVPATH=/devices/virtual/input/input");
+        event.push_decimal(index as u64);
+        event.push(b"/event");
+        event.push_decimal(index as u64);
+        event.push(b"\0SUBSYSTEM=input\0DEVNAME=input/event");
+        event.push_decimal(index as u64);
+        event.push(b"\0MAJOR=13\0MINOR=");
+        event.push_decimal(u64::from(minor));
+        event.push(b"\0SEQNUM=");
+        event.push_decimal(sequence);
+        event.push(b"\0");
+        event
+    }
+
     fn push(&mut self, bytes: &[u8]) {
         let start = usize::from(self.length);
         let end = start
             .checked_add(bytes.len())
             .filter(|end| *end <= MESSAGE_CAPACITY)
-            .expect("fixed DRM uevent exceeds queue record");
+            .expect("fixed kernel uevent exceeds queue record");
         self.bytes[start..end].copy_from_slice(bytes);
         self.length = end as u16;
     }
@@ -464,16 +489,23 @@ impl KobjectSocket {
     }
 }
 
+/// DRM 连接器热插拔（`SUBSYSTEM=drm`、`HOTPLUG=1`）。
+pub(crate) fn publish_drm_hotplug() {
+    broadcast(Uevent::drm_hotplug);
+}
+
+/// 输入设备 `input/event<index>` 已登记（`added`）或已移除。
+pub(crate) fn publish_input(added: bool, index: usize, minor: u32) {
+    broadcast(|sequence| Uevent::input(added, index, minor, sequence));
+}
+
 /// 无tag的kernel uevent按Linux仅广播到owning initial UserNS的所有NET。
 /// 每次只取一个实际Arc，固定publication上界避免并发create延长本轮遍历。
-pub(crate) fn publish_drm_hotplug() {
+fn broadcast(build: impl FnOnce(u64) -> Uevent) {
     let (event, end) = {
         let mut registry = registry().lock();
         registry.sequence = registry.sequence.wrapping_add(1);
-        (
-            Uevent::drm_hotplug(registry.sequence),
-            registry.last_endpoint,
-        )
+        (build(registry.sequence), registry.last_endpoint)
     };
     let mut cursor = 0;
     loop {

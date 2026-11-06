@@ -322,6 +322,14 @@ struct Pinning {
 }
 
 impl Bti {
+    /// 诊断快照：IOMMU 中止的设备访问数与隔离区中的固定区间数。
+    pub(crate) fn info(&self) -> native_abi::BtiInfo {
+        native_abi::BtiInfo {
+            faults: self.backend.faults(self.stream),
+            quarantined: self.quarantine.lock().pinnings.len() as u64,
+        }
+    }
+
     /// 为 `stream` 创建 BTI。
     pub(crate) fn create(iommu: &Iommu, stream: u32) -> Self {
         Self {

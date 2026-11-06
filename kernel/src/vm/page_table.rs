@@ -12,9 +12,25 @@ pub(crate) use crate::arch::mmu::{PagePermissions, PageTableError};
 #[derive(Debug)]
 pub(in crate::vm) struct TableFrame(FrameTracker);
 
+// OWNER: 存活的页表页数（CPU 与设备页表），随 TableFrame 构造与析构增减；只作内存统计。
+static TABLE_PAGES: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// 页表占用的页数。
+pub(crate) fn table_pages() -> usize {
+    TABLE_PAGES.load(core::sync::atomic::Ordering::Relaxed)
+}
+
+impl Drop for TableFrame {
+    fn drop(&mut self) {
+        TABLE_PAGES.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 impl TablePage for TableFrame {
     fn allocate() -> Option<Self> {
-        frame_allocator::alloc().map(Self)
+        let frame = frame_allocator::alloc()?;
+        TABLE_PAGES.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
+        Some(Self(frame))
     }
 
     fn physical_page(&self) -> usize {

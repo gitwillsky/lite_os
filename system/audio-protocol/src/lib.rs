@@ -381,6 +381,13 @@ impl AudioClient {
         Ok(outputs)
     }
 
+    /// 阻塞到服务端关闭连接（audio-core 终止）；使用者据此重连新实例。
+    pub fn wait_closed(&self) {
+        let _ = self
+            .0
+            .wait_one(signals::PEER_CLOSED, native_abi::DEADLINE_INFINITE);
+    }
+
     /// 输出集合变化时置位 `USER_0` 的 Event。
     ///
     /// # Errors
@@ -469,6 +476,11 @@ impl StreamClient {
     /// 流 Event：使用者等待 [`PROGRESS`]，写入后置位 [`WRITTEN`]。
     pub fn event(&self) -> &Event {
         &self.event
+    }
+
+    /// 服务端已关闭流（audio-core 终止或输出移除）：流永久不可用。
+    pub fn closed(&self) -> bool {
+        self.channel.wait_one(signals::PEER_CLOSED, 0).is_ok()
     }
 
     /// 发布已写入帧数并通知服务。

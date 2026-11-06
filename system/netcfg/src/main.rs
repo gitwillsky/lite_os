@@ -41,7 +41,7 @@ native_runtime::entry!(main);
 const KEY_NETSTACK: u64 = 1;
 /// Port key：设备目录变化。
 const KEY_DIRECTORY: u64 = 2;
-/// Port key 的起点：各接口 DHCP 会话的租约事件 channel（每个会话一个新 key）。
+/// Port key 的起点：各接口 DHCP 会话的租约事件 channel 与接口 lifetime channel（每个一个新 key）。
 const KEY_DHCP_FIRST: u64 = 1 << 32;
 /// dhcp-client 的 DHCP 请求序号（与 dhcp-client 一致）。
 const DHCP_START: u32 = 1;
@@ -71,6 +71,9 @@ struct Interface {
     connected: Option<i64>,
     // OWNER: 本接口的 DHCP 会话（Port key 与租约事件 channel）；丢弃即关闭 channel，dhcp-client 随之停止。
     dhcp: Option<(u64, Channel)>,
+    // netstack 交出的接口 lifetime（Port key 与 channel）：网卡会话关闭、接口被移除时 `PEER_CLOSED`。
+    // 缺失时网卡热拔后本记录与 DHCP 会话残留，重新出现的网卡被当作第二个接口。
+    lifetime: (u64, Channel),
 }
 
 struct Inner {
@@ -209,6 +212,7 @@ impl Netcfg {
                 match packet.key {
                     KEY_NETSTACK => break,
                     KEY_DIRECTORY => self.devices_changed(),
+                    key if self.interface_removed(key) => {}
                     key => self.lease_ready(key),
                 }
             }
@@ -289,9 +293,15 @@ impl Netcfg {
         let Some(link) = inner.link.as_ref() else {
             return Err(native_abi::ERR_PEER_CLOSED);
         };
-        let index = link
+        let (index, lifetime) = link
             .installer
             .install_device(&device.description, device.handles)?;
+        let key = inner.next_key;
+        inner.next_key += 1;
+        lifetime.wait_async(&self.port, key, signals::PEER_CLOSED)?;
+        let Some(link) = inner.link.as_ref() else {
+            return Err(native_abi::ERR_PEER_CLOSED);
+        };
         let snapshot = link
             .network
             .interface_snapshot(index)
@@ -318,6 +328,7 @@ impl Netcfg {
             dns: Vec::new(),
             connected: None,
             dhcp: None,
+            lifetime: (key, lifetime),
         });
         let position = inner.interfaces.len() - 1;
         self.apply(&mut inner, position);
@@ -437,6 +448,29 @@ impl Netcfg {
     }
 
     /// 处理一个接口的租约事件；会话已被替换（设置变化）时忽略过时的 key。
+    /// 接口被 netstack 移除（网卡会话关闭）：丢弃记录与 DHCP 会话；网卡重新出现时由目录变化重新安装。
+    ///
+    /// # Returns
+    ///
+    /// `key` 是某个接口的 lifetime 时为 true。
+    fn interface_removed(&self, key: u64) -> bool {
+        let mut inner = self.inner.lock();
+        let Some(position) = inner
+            .interfaces
+            .iter()
+            .position(|interface| interface.lifetime.0 == key)
+        else {
+            return false;
+        };
+        let interface = inner.interfaces.remove(position);
+        info!(
+            "netcfg: interface {} removed",
+            core::str::from_utf8(&interface.name).unwrap_or("<non-utf8>")
+        );
+        Self::changed(&mut inner);
+        true
+    }
+
     fn lease_ready(&self, key: u64) {
         let mut inner = self.inner.lock();
         let Some(position) = inner.interfaces.iter().position(|interface| {

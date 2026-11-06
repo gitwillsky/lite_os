@@ -807,6 +807,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut display = Display::connect()?;
     let mut art = paint::Art::load()?;
     let mut state = Desktop::create(&mut display, art.icon_cell())?;
+    // Windows 2000 的 savedump.exe：上次以内核崩溃结束时提示“系统已从严重错误中恢复”，否则立即退出。
+    state.launch(Command::new("/bin/savedump"));
     let mut dirty = true;
     let mut ready = false;
     let mut presented = std::collections::HashSet::new();

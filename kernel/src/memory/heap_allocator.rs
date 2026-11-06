@@ -446,6 +446,11 @@ fn deallocate_backend(ptr: NonNull<u8>, layout: Layout) {
         .expect("direct heap page count underflow");
 }
 
+/// 内核堆当前占用的页（slab 页与直接分配的大块）；两项分别读取，只作统计。
+pub(crate) fn heap_pages() -> usize {
+    HEAP_STATE.lock().slab_pages + DIRECT_PAGES.load(Ordering::Relaxed)
+}
+
 pub(crate) struct KernelAllocator;
 
 // SAFETY: bootstrap bump ranges never overlap; frame-backed slab/direct ownership is serialized by

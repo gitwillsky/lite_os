@@ -191,6 +191,8 @@ pub fn connect(
             None
         });
     }
+    // 会话断开时活动 Event 不再置位：关闭通知让使用者再拉取一次并经 `Disconnected` 撤下设备。
+    hub.on_closed(channel.duplicate(rights::SAME)?, &activity)?;
     Arc::try_new(RemoteInput {
         channel,
         activity,
@@ -209,8 +211,14 @@ pub fn connect(
 
 impl RemoteInput {
     fn fetch(&self, pending: &mut VecDeque<RawInputEvent>) -> Result<(), InputDeviceError> {
-        let reply = call(&self.channel, &Writer::request(RECEIVE), Vec::new())
-            .map_err(|_| InputDeviceError::Device)?;
+        let reply =
+            call(&self.channel, &Writer::request(RECEIVE), Vec::new()).map_err(|status| {
+                if status == native_abi::ERR_PEER_CLOSED {
+                    InputDeviceError::Disconnected
+                } else {
+                    InputDeviceError::Device
+                }
+            })?;
         let mut reader = reply.reader();
         let count = reader.u32().map_err(|_| InputDeviceError::Device)?;
         pending

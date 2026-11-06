@@ -52,6 +52,17 @@ pub(crate) struct UserPageStatistics {
     pub(crate) stack_pages: usize,
 }
 
+/// `/proc/meminfo` 的系统级映射分类（页数）；后备对象跨进程去重，共享对象只计一次。
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct MappedMemory {
+    /// 私有匿名与私有文件映射写时复制出的页（AnonPages）。
+    pub(crate) anonymous_pages: usize,
+    /// 共享映射的驻留页（Mapped）；私有文件映射未复制的页属于文件对象，不在此计入。
+    pub(crate) mapped_pages: usize,
+    /// 共享匿名与 System V 共享内存段的驻留页（Shmem 的映射部分）。
+    pub(crate) shmem_pages: usize,
+}
+
 /// brk 状态：`start` 固定，`brk` 是程序看到的结尾，`mapped` 是已映射的页对齐结尾。
 #[derive(Debug, Clone)]
 struct Heap {
@@ -357,6 +368,41 @@ impl MemorySet {
             }
         }
         statistics
+    }
+
+    /// 把本地址空间的映射并入系统级分类；`seen` 是已计入后备对象的有序地址表。
+    ///
+    /// # Errors
+    ///
+    /// 去重表扩容失败。
+    pub(crate) fn classify_mapped_memory(
+        &self,
+        seen: &mut Vec<usize>,
+        totals: &mut MappedMemory,
+    ) -> Result<(), MemoryError> {
+        for (_, area) in self.areas.iter() {
+            let object = area.backing.object();
+            let key = Arc::as_ptr(object) as usize;
+            let Err(position) = seen.binary_search(&key) else {
+                continue;
+            };
+            seen.try_reserve(1).map_err(|_| MemoryError::OutOfMemory)?;
+            seen.insert(position, key);
+            let pages = object.committed_bytes().unwrap_or(0) as usize / PAGE_SIZE;
+            match area.backing {
+                Backing::Anonymous { .. } | Backing::PrivateFile { .. } => {
+                    totals.anonymous_pages += pages;
+                }
+                Backing::SharedAnonymous { .. } | Backing::SystemV { .. } => {
+                    totals.mapped_pages += pages;
+                    totals.shmem_pages += pages;
+                }
+                Backing::SharedFile { .. } => totals.mapped_pages += pages,
+                // 设备窗口不是可回收内存，trampoline 是内部页；Linux 同样不计入这些映射。
+                Backing::Device { .. } | Backing::Trampoline { .. } => {}
+            }
+        }
+        Ok(())
     }
 
     /// 是否存在起点不低于 `address` 的用户 VMA（`mremap`/`munmap` 的探测）。

@@ -446,12 +446,22 @@ impl VirtualFileSystem {
         } else {
             identity.gid()
         };
-        let mode = mode
+        let mut mode = mode
             | if kind == InodeType::Directory {
                 parent_metadata.mode & 0o2000
             } else {
                 0
             };
+        // Linux `mode_strip_sgid`：set-GID 目录中，组可执行的非目录若请求 set-GID，而调用者既不属于继承的组
+        // 也没有 CAP_FSETID，则在交给文件系统前清除 set-GID；缺失时组外用户可创建以该组身份执行的程序。
+        if kind != InodeType::Directory
+            && mode & 0o2010 == 0o2010
+            && parent_metadata.mode & 0o2000 != 0
+            && !identity.in_group(gid)
+            && !identity.has_capability(linux_abi::capability::Capability::FSETID)
+        {
+            mode &= !0o2000;
+        }
         let metadata = CreateMetadata {
             mode,
             uid: identity.uid(),

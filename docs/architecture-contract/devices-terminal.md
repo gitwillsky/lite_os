@@ -32,7 +32,9 @@ adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份�
 2. 会话是设备类协议的一组句柄（请求 channel、活动 Event，PCM 另有事件 channel）。会话状态与结束标记由服务闭包
    整体持有，随全部服务线程退出而析构：先回收会话状态，再置位结束标记。各类回收：网卡取消未提交的发送预留；
    PCM 停止并释放流、撤销事件端点；显示关闭 scanout、释放 2D 缓冲、销毁本会话的 virgl context 与 resource、
-   隐藏光标。缺失回收时使用者崩溃会让发送槽、流或 GPU 对象永久残留。
+   隐藏光标。缺失回收时使用者崩溃会让发送槽、流或 GPU 对象永久残留。显示回收后 GPU 宿主作为回退客户端
+   （Fuchsia virtcon）重新提交开机画面；下一次 `OPEN` 先推进它的事务至完成、disable 并释放其缓冲，再交出会话。
+   回退事务在独占边界上同步完成，此时活动 Event 只有宿主等待；超时只放弃画面，不阻止交接。
 3. 块设备、网卡、显示、输入、PCM、port 是独占类：旧会话的使用者仍持有请求 channel 时 `OPEN` 返回
    `ERR_ALREADY_BOUND`；已离开时等旧会话回收完毕再建立新会话。entropy、USB 连接与启动进度可共享。
 4. 活动 Event 在登记时绑定驱动一次，每个会话得到它的副本；会话结束不解除驱动侧绑定。
@@ -62,9 +64,13 @@ adapter 的 queue、slot generation 与设备地址只在 driver-host 有一份�
    和 arch direct-map，不反向依赖通用内存分配实现。
 
 当前 ARM 使用线性 stream table，最多 4096 streams；RISC-V 使用两级设备目录，basic/extended
-context 分别覆盖 16/15 位设备号。两者尚未启用事件/故障队列。host OOM 回归执行实际 domain owner，
-验证发布前预留与 tag 耗尽。boot gate 分别开启 SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和
-MMIO net/RNG 验证混合 DMA 的真实读写、同步与网络；不宣称设备热移除、硬件错误队列或物理机验收。
+context 分别覆盖 16/15 位设备号。SMMUv3 事件队列（寄存器窗口含页 1 时）与 RISC-V 故障队列不接中断，
+由 domain owner 在 map/unmap 与 BTI 查询（`info::BTI`）时在 domain 锁内排空：故障按 stream 计数，日志在
+第 2^n 次时输出，溢出与未绑定 stream 的故障单独计数；只做诊断，不改变映射。Benchmark 决策：排空给每次
+map/unmap 增加一至两次寄存器读、无分配，相对同路径的同步失效命令可忽略，不另设基准。driver-manager 在宿主终止时记录
+其节点 BTI 的故障数。host OOM 回归执行实际 domain owner，验证发布前预留与 tag 耗尽。boot gate 分别开启
+SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的真实读写、同步与网络；不宣称设备
+热移除、故障注入或物理机验收。
 
 ## Interface
 

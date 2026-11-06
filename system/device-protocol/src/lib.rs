@@ -55,6 +55,9 @@ enum Source {
         Channel,
         Box<dyn Fn(Result<native_runtime::Message, Status>) + Send + Sync>,
     ),
+    /// 会话对端关闭（驱动宿主终止）时调用一个活动登记的通知一次：活动 Event 不会再被置位，使用者只能经这条
+    /// 通知发现断开并撤下设备。
+    Closed(Channel, Arc<Source>),
 }
 
 /// 使用者端的事件分派：一个线程在 port 上等待全部活动 Event 与事件 channel。
@@ -112,6 +115,7 @@ impl EventHub {
             Source::Events(channel, _) => {
                 channel.wait_async(&self.port, key, signals::READABLE | signals::PEER_CLOSED)
             }
+            Source::Closed(peer, _) => peer.wait_async(&self.port, key, signals::PEER_CLOSED),
         }
     }
 
@@ -123,6 +127,20 @@ impl EventHub {
     pub fn activity(self: &Arc<Self>, event: Event) -> Result<ActivityBinding, Status> {
         let (source, key) = self.add(Source::Activity(event, Mutex::new(None)))?;
         Ok(ActivityBinding { source, key })
+    }
+
+    /// 会话 channel `peer`（使用者持有的副本）的对端关闭时调用 `binding` 的通知一次，随后撤销这条登记。
+    ///
+    /// # Errors
+    ///
+    /// 分配或等待登记失败。
+    pub fn on_closed(
+        self: &Arc<Self>,
+        peer: Channel,
+        binding: &ActivityBinding,
+    ) -> Result<(), Status> {
+        self.add(Source::Closed(peer, binding.source.clone()))
+            .map(drop)
     }
 
     /// 摘除活动 Event 的登记：之后不再调用其通知，Event 随最后一个引用关闭（取消挂起的等待）。
@@ -215,6 +233,14 @@ impl EventHub {
                     }
                     if closed {
                         self.remove_source(packet.key, &source);
+                    }
+                }
+                Source::Closed(_, activity) => {
+                    self.remove_source(packet.key, &source);
+                    if let Source::Activity(_, slot) = &**activity
+                        && let Some(activity) = slot.lock().clone()
+                    {
+                        activity();
                     }
                 }
             }

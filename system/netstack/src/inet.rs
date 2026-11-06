@@ -118,6 +118,9 @@ struct NetworkStack {
     // OWNER: 8-interface批次与完整轮次后的起点轮换，防止持续lo/单NIC流量饿死其他设备。
     interface_cursor: usize,
     interface_rotation: usize,
+    // OWNER: 下一个以太网 ifindex（回环为 1）；单调递增、移除后不复用。缺失时按接口数分配会让
+    // 新网卡继承已移除接口的序号，旧 SO_BINDTODEVICE 与 packet 绑定被静默转到新设备。
+    next_ethernet_index: u32,
     sockets: SocketSet<'static>,
     endpoints: FallibleMap<SocketHandle, EndpointState>,
     raw_endpoints: FallibleMap<SocketHandle, raw::RawEndpointState>,
@@ -167,6 +170,8 @@ impl NetworkStack {
 }
 
 /// 在publication前准备一个实际IPv4 owner；全部fallible allocation不留下注册/端口副作用。
+/// 运行期的网卡由安装协议逐块加入（[`install_interface`]）；`devices` 是没有安装者的初始网卡
+/// （eth{n}、ifindex n+2），不随会话关闭移除。
 pub(crate) fn prepare_network(
     scope: &Namespace,
     devices: &[Arc<dyn device_model::network::NetworkDevice>],
@@ -178,12 +183,18 @@ pub(crate) fn prepare_network(
         .map_err(|_| SocketError::NoMemory)?;
     interfaces.push(NetworkInterface::loopback(scope.id(), loopback_up)?);
     for (ordinal, device) in devices.iter().enumerate() {
+        let unit = u32::try_from(ordinal).map_err(|_| SocketError::NoSpace)?;
+        let index = unit.checked_add(2).ok_or(SocketError::NoSpace)?;
         interfaces.push(NetworkInterface::ethernet(
             scope.id(),
-            u32::try_from(ordinal).map_err(|_| SocketError::NoSpace)?,
+            index,
+            unit,
             device.clone(),
+            None,
         )?);
     }
+    let next_ethernet_index =
+        u32::try_from(interfaces.len() + 1).map_err(|_| SocketError::NoSpace)?;
     let mut socket_storage = Vec::new();
     socket_storage
         .try_reserve_exact(SOCKET_STORAGE_CAPACITY)
@@ -207,6 +218,7 @@ pub(crate) fn prepare_network(
         egress_routes,
         interface_cursor: 0,
         interface_rotation: 0,
+        next_ethernet_index,
         sockets: SocketSet::new(socket_storage),
         endpoints: FallibleMap::new(),
         raw_endpoints: FallibleMap::new(),
@@ -243,6 +255,15 @@ pub(crate) fn dispatch_network_work() -> bool {
         };
         let cleanup_backlog = network.cleanup_backlog();
         let poll = network.poll();
+        // 设备会话关闭（驱动宿主终止或网卡移除）：同一 owner 事务内撤下接口与 routes。
+        let mut removed = [None; 8];
+        for (slot, failure) in removed.iter_mut().zip(&poll.device_failures) {
+            if let Some((index, device_model::network::NetworkError::Disconnected)) = *failure
+                && network.remove_interface(index)
+            {
+                *slot = Some(index);
+            }
+        }
         let notifications = network.take_pending_notifications();
         let notification_backlog = notifications.backlog();
         drop(network);
@@ -250,7 +271,18 @@ pub(crate) fn dispatch_network_work() -> bool {
         for index in poll.packet_transmit_ready.into_iter().flatten() {
             packet::publish_transmit_ready(namespace.id(), index);
         }
+        for index in removed.into_iter().flatten() {
+            info!(
+                "network namespace {} interface {} removed",
+                namespace.id(),
+                index
+            );
+            packet::publish_interface_removed(namespace.id(), index);
+        }
         for (index, failure) in poll.device_failures.into_iter().flatten() {
+            if failure == device_model::network::NetworkError::Disconnected {
+                continue;
+            }
             error!(
                 "network namespace {} interface {} adapter error: {:?}",
                 namespace.id(),

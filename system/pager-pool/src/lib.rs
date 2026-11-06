@@ -36,7 +36,7 @@ pub trait PageSource: Send + Sync {
 struct Shared {
     pager: Pager,
     port: Port,
-    // OWNER: pager key → 内容 owner；owner 销毁后 Weak 失效，迟到的请求被丢弃（owner 与其 VMO 同寿命）。
+    // OWNER: pager key → 内容 owner；owner 退休时先 detach 再移除（[`retire`]），之后迟到的请求可以丢弃。
     files: Mutex<FallibleMap<u64, Weak<dyn PageSource>>>,
     next_key: Mutex<u64>,
     // OWNER: 待处理请求与空闲工作线程；分派线程与工作线程之间的唯一交接点。
@@ -106,8 +106,13 @@ pub fn register(key: u64, source: Weak<dyn PageSource>) -> Result<(), Status> {
         .map_err(|_| native_abi::ERR_NO_MEMORY)
 }
 
-/// 注销 key。
-pub fn unregister(key: u64) {
+/// 内容 owner 退休：先让 pager 与 VMO 分离（已发出的请求以失败结束，之后的缺页直接失败），再注销 key。
+///
+/// 仍存活的 VMO 副本（导出给使用者的映射、COW 子对象）因此不会把请求投给已不处理它的服务；
+/// 分离之后迟到的请求 packet 查不到 key，可安全忽略。缺失分离时这些请求被静默丢弃，等待者永久睡眠。
+pub fn retire(key: u64, vmo: &Vmo) {
+    // 只在 VMO 不由本 pager 支撑时失败，此时它本来就不会产生请求。
+    let _ = shared().pager.op(pager_op::OP_DETACH, vmo, 0, 0);
     shared().files.lock().remove(&key);
 }
 
@@ -116,11 +121,26 @@ pub fn handle() -> &'static Pager {
     &shared().pager
 }
 
-/// 清除区间的脏标记并写保护映射（回写开始）。区间越界时不做任何事：调用者已按对象大小裁剪。
+/// 回写开始：区间内的脏页转为待确认并写保护映射，之后的写入重新置脏。区间越界时不做任何事：
+/// 调用者已按对象大小裁剪。读出内容并写入存储成功后必须调用 [`end_writeback`]。
 pub fn begin_writeback(vmo: &Vmo, offset: u64, length: u64) {
     let _ = shared()
         .pager
         .op(pager_op::OP_WRITEBACK_BEGIN, vmo, offset, length);
+}
+
+/// 回写完成：存储已确认区间内容，仍待确认的页成为干净页，内核在内存紧张时可以淘汰它们。
+/// 缺失时页永远停在待确认状态而不可回收；在写入存储之前调用则会让淘汰丢掉未落盘的修改。
+pub fn end_writeback(vmo: &Vmo, offset: u64, length: u64) {
+    let _ = shared()
+        .pager
+        .op(pager_op::OP_WRITEBACK_END, vmo, offset, length);
+}
+
+/// 区间内容已经与存储一致（直写之后同步进缓存）：一次完成回写的开始与结束。
+pub fn mark_clean(vmo: &Vmo, offset: u64, length: u64) {
+    begin_writeback(vmo, offset, length);
+    end_writeback(vmo, offset, length);
 }
 
 /// `[offset, offset + length)` 中第一段脏区间。

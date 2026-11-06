@@ -1,6 +1,7 @@
 //! 驱动宿主的启动、设备镜像与监督（DFv2 driver host）。
 //!
-//! 每个节点一个监督线程：
+//! 每个节点一个监督任务，全部任务在 driver-manager 的单线程 executor 上推进（多来源监督者用 async，
+//! 设备与文件系统的阻塞服务保持每连接一个线程）：
 //! 1. 在独立子 Job 中启动 `driver-host`，交付编码后的节点、本宿主目录服务端与节点资源的副本；
 //! 2. 把宿主目录中的设备以转发条目并入汇聚目录。初始枚举按节点顺序进行：等前一个节点完成后才并入，
 //!    使汇聚目录的登记顺序与节点顺序一致；之后到达的设备（USB 热插拔）随到随并入；
@@ -11,15 +12,14 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use device_protocol::directory::{DirectoryClient, Entry};
-use native_runtime::native_abi::{self, rights, signals};
+use native_runtime::executor::Executor;
+use native_runtime::native_abi::{rights, signals};
 use native_runtime::task::CrashLoop;
-use native_runtime::{Channel, Event, Handle, Job, Port, Process, Vmar};
+use native_runtime::{Channel, Event, Handle, Job, Process, Vmar};
 
 use crate::nodes::BoundNode;
 
 const HOST_STACK_SIZE: usize = 256 * 1024;
-const KEY_TERMINATED: u64 = 1;
-const KEY_CHANGED: u64 = 2;
 
 /// 初始枚举的顺序门：节点 `i` 的初始设备并入后置位 `admitted[i]`。
 pub(crate) struct Admission {
@@ -40,10 +40,11 @@ impl Admission {
         })
     }
 
-    fn wait_turn(&self, index: usize) {
+    async fn wait_turn(&self, executor: &'static Executor, index: usize) {
         if let Some(previous) = index.checked_sub(1) {
-            let _ =
-                self.admitted[previous].wait_one(signals::USER_0, native_abi::DEADLINE_INFINITE);
+            let _ = executor
+                .on_signals(&self.admitted[previous], signals::USER_0)
+                .await;
         }
     }
 
@@ -52,9 +53,9 @@ impl Admission {
     }
 
     /// 等全部节点完成初始枚举。
-    pub(crate) fn wait_all(&self) {
+    pub(crate) async fn wait_all(&self, executor: &'static Executor) {
         if let Some(last) = self.admitted.last() {
-            let _ = last.wait_one(signals::USER_0, native_abi::DEADLINE_INFINITE);
+            let _ = executor.on_signals(last, signals::USER_0).await;
         }
     }
 }
@@ -148,32 +149,39 @@ fn mirror(instance: &Instance, cursor: &mut u64, forwarded: &mut Vec<u64>) -> bo
 }
 
 /// 运行一个宿主实例直到它终止；返回前撤下它的全部条目。
-fn run(bound: &BoundNode, admission: Option<(&Admission, usize)>) -> i32 {
+///
+/// 宿主终止与目录变化登记到同一个 packet 流，按 packet 的触发 signal 区分；目录 `LIST` 是对宿主
+/// 目录服务线程的短同步调用，不经过驱动代码。
+async fn run(
+    executor: &'static Executor,
+    bound: &BoundNode,
+    admission: Option<(&Admission, usize)>,
+) -> i32 {
     let instance = launch(bound);
-    let port = Port::create().expect("host supervision port");
+    let events = executor.packets();
     let watch = instance.directory.watch();
     instance
         .process
-        .wait_async(&port, KEY_TERMINATED, signals::TERMINATED)
+        .wait_async(executor.port(), events.key(), signals::TERMINATED)
         .expect("host termination wait");
     let mut cursor = 0;
     let mut forwarded = Vec::new();
     let mut pending = admission;
     loop {
+        // 先清除再登记，然后读取：读取之后到达的变化会重新置位并投递，不会丢失。
         if let Ok(watch) = &watch {
             let _ = watch.signal(signals::USER_0, 0);
-            let _ = watch.wait_async(&port, KEY_CHANGED, signals::USER_0);
+            let _ = watch.wait_async(executor.port(), events.key(), signals::USER_0);
         }
         if let Some((gate, index)) = pending {
-            gate.wait_turn(index);
+            gate.wait_turn(executor, index).await;
         }
         let enumerated = mirror(&instance, &mut cursor, &mut forwarded);
         if enumerated && let Some((gate, index)) = pending.take() {
             gate.admit(index);
         }
-        match port.wait(native_abi::DEADLINE_INFINITE) {
-            Ok(packet) if packet.key == KEY_CHANGED => continue,
-            _ => break,
+        if events.next().await.trigger & signals::TERMINATED != 0 {
+            break;
         }
     }
     // 宿主在完成初始枚举前终止：仍要放行后续节点，否则启动会永远等待。
@@ -183,6 +191,17 @@ fn run(bound: &BoundNode, admission: Option<(&Admission, usize)>) -> i32 {
     for id in forwarded {
         crate::handles::directory().remove(id);
     }
+    // 宿主终止的常见原因是设备越界 DMA：把节点 BTI 上被 IOMMU 中止的访问数一并记录。
+    if let Ok(info) = bound
+        .bti
+        .info::<native_runtime::native_abi::BtiInfo>(native_runtime::native_abi::info::BTI)
+        && info.faults != 0
+    {
+        error!(
+            "{:?} host: {} DMA accesses aborted by the IOMMU",
+            bound.node.driver, info.faults
+        );
+    }
     let _ = native_runtime::task::kill(&instance.job);
     instance
         .process
@@ -191,13 +210,18 @@ fn run(bound: &BoundNode, admission: Option<(&Admission, usize)>) -> i32 {
 }
 
 /// 监督节点 `index` 的宿主；只在节点被移除时返回。
-pub(crate) fn supervise(bound: BoundNode, index: usize, admission: Arc<Admission>) {
+pub(crate) async fn supervise(
+    executor: &'static Executor,
+    bound: BoundNode,
+    index: usize,
+    admission: Arc<Admission>,
+) {
     let driver = bound.node.driver;
     let label = alloc::format!("{driver:?} host");
     let mut crashes = CrashLoop::new();
     let mut gate = Some((&*admission, index));
     loop {
-        let status = run(&bound, gate.take());
+        let status = run(executor, &bound, gate.take()).await;
         if !driver.restart_on_crash() {
             error!("{label} terminated with status {status}; node removed");
             return;

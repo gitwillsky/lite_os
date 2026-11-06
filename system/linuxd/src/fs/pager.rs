@@ -40,14 +40,24 @@ pub(super) fn handle() -> &'static Pager {
     pager_pool::handle()
 }
 
-/// 注销 key。
-pub(super) fn unregister(key: u64) {
-    pager_pool::unregister(key);
+/// 内容 owner 退休：分离 pager 与对象后注销 key（见 [`pager_pool::retire`]）。
+pub(super) fn retire(key: u64, object: &MemoryObject) {
+    pager_pool::retire(key, object.vmo());
 }
 
-/// 清除区间的脏标记并写保护映射（回写开始）。
+/// 回写开始（见 [`pager_pool::begin_writeback`]）。
 pub(super) fn begin_writeback(object: &MemoryObject, offset: u64, length: u64) {
     pager_pool::begin_writeback(object.vmo(), offset, length);
+}
+
+/// 回写完成：存储已确认区间内容（见 [`pager_pool::end_writeback`]）。
+pub(super) fn end_writeback(object: &MemoryObject, offset: u64, length: u64) {
+    pager_pool::end_writeback(object.vmo(), offset, length);
+}
+
+/// 区间内容已与存储一致（见 [`pager_pool::mark_clean`]）。
+pub(super) fn mark_clean(object: &MemoryObject, offset: u64, length: u64) {
+    pager_pool::mark_clean(object.vmo(), offset, length);
 }
 
 /// `[offset, offset + length)` 中第一段脏区间。

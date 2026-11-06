@@ -124,6 +124,8 @@ pub fn connect(
         &mut announcement.handles,
         1,
     )?))?;
+    // 会话断开时活动 Event 不再置位：关闭通知让使用者再派发一次，观察到断开后撤下节点。
+    hub.on_closed(channel.duplicate(rights::SAME)?, &activity)?;
     Arc::try_new(RemotePort { channel, activity }).map_err(|_| native_abi::ERR_NO_MEMORY)
 }
 

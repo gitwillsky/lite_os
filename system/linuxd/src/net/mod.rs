@@ -35,7 +35,7 @@ pub(crate) use capacity::{
 };
 use inet::{InetProtocol, InetSocket};
 use kobject::KobjectSocket;
-pub(crate) use kobject::publish_drm_hotplug;
+pub(crate) use kobject::{publish_drm_hotplug, publish_input};
 use packet::PacketSocket;
 use rtnetlink::RouteSocket;
 use unix::UnixSocket;

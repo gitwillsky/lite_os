@@ -37,8 +37,8 @@ impl Vmo {
         }
         let _target = self.lock_tree()?;
         let _source = source.lock_tree()?;
-        let mut source_state = source.state.lock();
-        let mut state = self.state.lock();
+        let source_state = source.state.lock();
+        let state = self.state.lock();
         if first.checked_add(count).is_none_or(|end| end > state.pages)
             || source_first
                 .checked_add(count)
@@ -54,6 +54,13 @@ impl Vmo {
         }) {
             return Err(VmError::BadState);
         }
+        // 先撤销源 VMO 的映射并完成 fence，再移交页框：两棵树锁仍由本函数持有，期间没有新的源映射；
+        // 反序时重复供页的源页可能在仍被映射时释放，违反页框退休契约。
+        drop(state);
+        drop(source_state);
+        source.zap(source_first..source_first + count, ZapMode::Unmap)?;
+        let mut source_state = source.state.lock();
+        let mut state = self.state.lock();
         for page in 0..count {
             let moved = source_state
                 .committed
@@ -69,13 +76,11 @@ impl Vmo {
             }
             let mut moved = moved;
             moved.set_key(index);
-            moved.value_mut().dirty = false;
+            moved.value_mut().cleanliness = Cleanliness::Clean;
             state.committed.commit_vacant(moved);
         }
         drop(state);
         drop(source_state);
-        // 源 VMO 的映射仍可能指向被移走的页框，必须撤销。
-        source.zap(source_first..source_first + count, ZapMode::Unmap)?;
         self.supplied.wake_all();
         Ok(())
     }
@@ -93,6 +98,28 @@ impl Vmo {
         let _tree = self.lock_tree()?;
         let mut state = self.state.lock();
         for index in first..first + count {
+            if let Some(request) = state.requested.remove(&index) {
+                request.status.store(FAILED, Ordering::Release);
+            }
+        }
+        drop(state);
+        self.supplied.wake_all();
+        Ok(())
+    }
+
+    /// pager 与本对象分离：之后的缺页不再请求而以 `Io` 失败，已发出的请求全部以失败结束并唤醒等待者
+    /// （Zircon `pager_detach_vmo`）。内容 owner 退休前调用；之后迟到的请求 packet 可安全忽略。
+    ///
+    /// # Errors
+    /// 不是 pager 支撑的 VMO 返回 `NotSupported`。
+    pub(crate) fn detach_pager(&self) -> Result<(), VmError> {
+        if !matches!(self.kind, Kind::Paged { pager: Some(_), .. }) {
+            return Err(VmError::NotSupported);
+        }
+        let _tree = self.lock_tree()?;
+        let mut state = self.state.lock();
+        state.detached = true;
+        while let Some((&index, _)) = state.requested.first_key_value() {
             if let Some(request) = state.requested.remove(&index) {
                 request.status.store(FAILED, Ordering::Release);
             }
@@ -124,11 +151,13 @@ impl Vmo {
                 break;
             }
             match start {
-                None if page.dirty => {
+                None if page.cleanliness == Cleanliness::Dirty => {
                     start = Some(index);
                     end = index + 1;
                 }
-                Some(_) if page.dirty && index == end => end = index + 1,
+                Some(_) if page.cleanliness == Cleanliness::Dirty && index == end => {
+                    end = index + 1
+                }
                 Some(_) => break,
                 None => {}
             }
@@ -141,7 +170,7 @@ impl Vmo {
         }))
     }
 
-    /// 回写开始：清除区间脏标记并写保护映射，之后的写入重新置脏。
+    /// 回写开始：区间内的脏页转为 AwaitingClean 并写保护映射，之后的写入重新置脏。
     ///
     /// # Errors
     /// 不是 pager 支撑的 VMO 返回 `NotSupported`。
@@ -155,8 +184,29 @@ impl Vmo {
         // 树锁阻止新的 write fault；保护前完成的硬件写仍包含在随后读出的 writeback 快照中。
         self.zap(first..first + count, ZapMode::RemoveWrite)?;
         self.state.lock().committed.for_each_mut(|&index, page| {
-            if (first..first + count).contains(&index) {
-                page.dirty = false;
+            if (first..first + count).contains(&index) && page.cleanliness == Cleanliness::Dirty {
+                page.cleanliness = Cleanliness::AwaitingClean;
+            }
+        });
+        Ok(())
+    }
+
+    /// 回写完成（Zircon `WRITEBACK_END`）：存储已确认区间内容，仍为 AwaitingClean 的页转为 Clean，
+    /// 之后才可被淘汰；回写期间重新写脏的页保持 Dirty。
+    ///
+    /// # Errors
+    /// 不是 pager 支撑的 VMO 返回 `NotSupported`。
+    pub(crate) fn end_writeback(&self, offset: u64, length: u64) -> Result<(), VmError> {
+        if !matches!(self.kind, Kind::Paged { pager: Some(_), .. }) {
+            return Err(VmError::NotSupported);
+        }
+        let (first, count) = page_range(offset, length)?;
+        let _tree = self.lock_tree()?;
+        self.state.lock().committed.for_each_mut(|&index, page| {
+            if (first..first + count).contains(&index)
+                && page.cleanliness == Cleanliness::AwaitingClean
+            {
+                page.cleanliness = Cleanliness::Clean;
             }
         });
         Ok(())
@@ -164,6 +214,26 @@ impl Vmo {
 }
 
 impl Vmo {
+    /// 完成缩小后越界的读取请求，让等待者回到解析循环重新判断大小（Zircon `InvalidateReadRequestsLocked`）。
+    /// 调用者持树锁。完成结果只允许解析继续，不承诺该页存在或驻留；缺失时等待越界页的线程永远等不到 supply。
+    pub(super) fn invalidate_read_requests_locked(&self, range: core::ops::Range<usize>) {
+        let mut state = self.state.lock();
+        while let Some(index) = state
+            .requested
+            .ceiling(&range.start)
+            .map(|(&index, _)| index)
+            .filter(|&index| index < range.end)
+        {
+            let request = state
+                .requested
+                .remove(&index)
+                .expect("pager request disappeared under tree lock");
+            request.status.store(SUPPLIED, Ordering::Release);
+        }
+        drop(state);
+        self.supplied.wake_all();
+    }
+
     /// 为页索引 `index` 复用或投递请求；调用者持有树锁，成功返回后登记必须具有真实出口。
     ///
     /// # Returns
@@ -179,6 +249,9 @@ impl Vmo {
             unreachable!("page request on a VMO without pager");
         };
         let mut state = self.state.lock();
+        if state.detached {
+            return Err(VmError::Io);
+        }
         if let Some(request) = state.requested.get(&index) {
             return Ok(request.clone());
         }

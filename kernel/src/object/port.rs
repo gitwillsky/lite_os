@@ -83,29 +83,52 @@ impl Port {
         Ok(())
     }
 
-    /// 取出队首 packet，必要时等待。
+    /// 取出队首 packet 并交给 `receive`，必要时等待。
+    ///
+    /// 出队时保留该 packet 原有的队列空位；`receive`（把 packet 复制给调用者）在队列锁外执行，失败时无需
+    /// 分配即可把 packet 放回队首。缺失这一步，复制失败（含可睡眠锁的等待者分配失败）会永久丢失 packet：
+    /// pager 请求随之再也得不到 supply/fail，等待补页的线程永久睡眠。
     ///
     /// # Parameters
     /// - `cancel`: 调用所经句柄，句柄关闭会取消等待。
     /// - `deadline_ns`: 单调时钟绝对截止时间。
+    /// - `receive`: 交付 packet；返回错误时 packet 回到队首，错误原样返回。
     ///
     /// # Errors
-    /// `ERR_TIMED_OUT`、`ERR_CANCELED`、`ERR_NO_MEMORY`；进程终止返回 `ERR_CANCELED`。
+    /// `ERR_TIMED_OUT`、`ERR_CANCELED`、`ERR_NO_MEMORY` 或 `receive` 的错误；进程终止返回 `ERR_CANCELED`。
     pub(crate) fn wait(
         &self,
         cancel: CancelKey,
         deadline_ns: Option<u64>,
-    ) -> Result<PortPacket, Status> {
+        receive: impl FnOnce(&PortPacket) -> Result<(), Status>,
+    ) -> Result<(), Status> {
         loop {
-            {
+            let packet = {
                 let mut queue = self.queue.lock();
-                if let Some(packet) = queue.packets.pop_front() {
+                let packet = queue.packets.pop_front();
+                if packet.is_some() {
+                    // 保留出队包的原空位，保证交付失败时无需分配即可归还。
+                    queue.reserved += 1;
                     if queue.packets.is_empty() {
                         // 同一临界区清除，避免与并发投递交错后丢失 READABLE。
                         self.readable.update(signals::READABLE, 0);
                     }
-                    return Ok(packet);
                 }
+                packet
+            };
+            if let Some(packet) = packet {
+                // user-copy 可能缺页或阻塞，不能持队列锁执行。
+                let result = receive(&packet);
+                let mut queue = self.queue.lock();
+                queue.reserved = queue
+                    .reserved
+                    .checked_sub(1)
+                    .expect("port receive reservation released twice");
+                if result.is_err() {
+                    queue.packets.push_front(packet);
+                    self.readable.update(0, signals::READABLE);
+                }
+                return result;
             }
             match self.readable.wait(signals::READABLE, cancel, deadline_ns)? {
                 WaitOutcome::Satisfied(_) => {}

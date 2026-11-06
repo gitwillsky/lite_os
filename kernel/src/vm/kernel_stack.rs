@@ -32,7 +32,7 @@ impl KernelStack {
             mapped_bottom..top,
             PagePermissions::READ | PagePermissions::WRITE,
         )?;
-
+        LIVE_STACKS.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         Ok(Self { handle })
     }
 
@@ -72,6 +72,7 @@ impl Drop for KernelStack {
         //    stale TTBR1 translation 写入已经复用的新 kernel stack。
         let retirement = KERNEL_SPACE.wait().lock().retire_framed(mapped_bottom);
         retirement.synchronize();
+        LIVE_STACKS.fetch_sub(1, core::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -122,6 +123,14 @@ impl Drop for KernelStackHandle {
     fn drop(&mut self) {
         KERNEL_STACK_HANDLE_ALLOCATOR.lock().dealloc(self.0);
     }
+}
+
+// OWNER: 已映射的内核栈数，随映射建立与退休增减；只作内存统计，缺失时内核栈占用无从报告。
+static LIVE_STACKS: core::sync::atomic::AtomicUsize = core::sync::atomic::AtomicUsize::new(0);
+
+/// 已映射的内核栈页数（不含守护页）。
+pub(crate) fn mapped_pages() -> usize {
+    LIVE_STACKS.load(core::sync::atomic::Ordering::Relaxed) * (KERNEL_STACK_SIZE / PAGE_SIZE - 1)
 }
 
 // OWNER: kernel-stack module exclusively allocates virtual stack handles.

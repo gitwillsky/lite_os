@@ -421,3 +421,68 @@ mod control_tests {
         assert_eq!(&event[8..], &info[..ELEM_ID_BYTES]);
     }
 }
+
+#[cfg(test)]
+mod substream_tests {
+    use super::endpoint::{PcmEndpoint, SUBSTREAMS, choose_substream, endpoint_available};
+    use super::state::{PcmState, PcmStateOwner};
+    use crate::devices::model::{PCM_BUFFER_FRAMES, PcmConfiguration};
+
+    const FREE: [bool; SUBSTREAMS] = [false; SUBSTREAMS];
+
+    fn with(indices: &[usize]) -> [bool; SUBSTREAMS] {
+        let mut occupied = FREE;
+        for index in indices {
+            occupied[*index] = true;
+        }
+        occupied
+    }
+
+    #[test]
+    fn hardware_free_rejects_running_and_returns_to_open() {
+        let mut state = PcmStateOwner::new();
+        state
+            .configure(PCM_BUFFER_FRAMES as u64, PcmConfiguration::SHARED)
+            .unwrap();
+        state.prepare().unwrap();
+        state.start().unwrap();
+        assert!(state.free_hardware().is_err(), "HW_FREE while running");
+        state.drop_stream().unwrap();
+        state.free_hardware().unwrap();
+        assert_eq!(state.state, PcmState::Open);
+    }
+
+    #[test]
+    fn preferred_substream_never_falls_back_to_a_different_slot() {
+        let shared = PcmEndpoint::Shared;
+        assert_eq!(choose_substream(FREE, shared, shared, 5), Some(5));
+        assert_eq!(choose_substream(with(&[5]), shared, shared, -1), Some(0));
+        assert_eq!(choose_substream(with(&[0, 5]), shared, shared, 5), None);
+        assert_eq!(choose_substream(with(&[0, 5]), shared, shared, 1), Some(1));
+        assert_eq!(
+            choose_substream([true; SUBSTREAMS], shared, shared, -1),
+            None,
+            "all substreams are busy"
+        );
+    }
+
+    #[test]
+    fn exclusive_endpoint_requires_an_idle_card_and_excludes_shared() {
+        let (shared, direct) = (PcmEndpoint::Shared, PcmEndpoint::Direct);
+        assert_eq!(choose_substream(FREE, shared, direct, -1), Some(0));
+        assert_eq!(
+            choose_substream(FREE, shared, direct, 3),
+            None,
+            "no subdevice choice"
+        );
+        assert_eq!(choose_substream(with(&[2]), shared, direct, -1), None);
+        assert_eq!(choose_substream(with(&[0]), direct, shared, -1), None);
+        assert_eq!(endpoint_available(with(&[0]), direct, shared), 0);
+        assert_eq!(endpoint_available(FREE, shared, direct), 1);
+        assert_eq!(endpoint_available(with(&[1]), shared, direct), 0);
+        assert_eq!(
+            endpoint_available(with(&[1]), shared, shared),
+            SUBSTREAMS - 1
+        );
+    }
+}

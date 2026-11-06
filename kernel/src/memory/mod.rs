@@ -9,6 +9,7 @@ mod config;
 pub(crate) mod frame_allocator;
 mod frame_metadata_layout;
 mod heap_allocator;
+pub(crate) use heap_allocator::heap_pages;
 
 // OWNER: memory subsystem reserves one minimum buddy growth extent from single-frame consumers.
 // Without this low watermark, a user fault can consume the final frame before the kernel records

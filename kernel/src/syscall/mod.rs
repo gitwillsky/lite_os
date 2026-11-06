@@ -61,6 +61,10 @@ unsafe impl Plain for i64 {}
 unsafe impl Plain for usize {}
 // SAFETY: 同上。
 unsafe impl Plain for native_abi::ChannelActual {}
+// SAFETY: 两个 u64 字段的 repr(C) 结构，没有填充或无效位模式。
+unsafe impl Plain for native_abi::BtiInfo {}
+// SAFETY: 四个 u64 字段的 repr(C) 结构，没有填充或无效位模式。
+unsafe impl Plain for native_abi::SystemMemoryStats {}
 // SAFETY: 同上。
 unsafe impl Plain for native_abi::ChannelCallArgs {}
 // SAFETY: 同上。
@@ -347,6 +351,7 @@ pub(super) fn dispatch(call: &Call<'_>, number: usize) -> Outcome {
         call::CPRNG_DRAW => system::cprng_draw(call).into(),
         call::CPRNG_ADD_ENTROPY => system::cprng_add_entropy(call).into(),
         call::SYSTEM_GET_INFO => system::get_info(call).into(),
+        call::SYSTEM_GET_EVENT => system::get_event(call).into(),
         call::SYSTEM_POWER => system::power(call).into(),
         call::THREAD_SET_AFFINITY => task::thread_set_affinity(call).into(),
         call::CPU_CURRENT => task::cpu_current(call).into(),

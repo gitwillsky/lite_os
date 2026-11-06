@@ -70,7 +70,7 @@
 | 83 | `fdatasync` | Complete | data durability boundary |
 | 88 | `utimensat` | Partial | pathname/futimens(NULL fd)/AT_EMPTY_PATH；双 UTIME_OMIT 不访问 fd/path/flags；volatile 时间单 owner，显式过去/未来 mtime 不抬高 ctime；当前秒精度/非负范围 |
 | 166 | `umask` | Complete | Thread fs-context-owned mask |
-| 276 | `renameat2` | Partial | rename、NOREPLACE、EXCHANGE；其余 flags 拒绝 |
+| 276 | `renameat2` | Partial | rename、NOREPLACE；EXCHANGE 仅 tmpfs（ext4 返回 EINVAL）；其余 flags 拒绝 |
 | 279 | `memfd_create` | Partial | creator FSIDs 的 regular inode；proc FD 重开独立 OFD/offset/status，共享 content/seals；flags 与已开放操作见下文 |
 | 286 | `preadv2` | Partial | positioned vector I/O 与已声明 flags |
 | 287 | `pwritev2` | Partial | positioned vector I/O 与已声明 flags |

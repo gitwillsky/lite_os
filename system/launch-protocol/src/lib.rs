@@ -147,11 +147,19 @@ pub mod driver_host {
         /// 驱动清单的 `host_restart_on_crash`：宿主意外终止后重建宿主并重绑节点。
         ///
         /// 只声明给使用者能在会话 `PEER_CLOSED` 后改用新登记设备的驱动：熵源（使用者总取最新的可用
-        /// source）。其余驱动不声明，宿主崩溃时节点被移除：块设备（文件系统无法跨驱动实例恢复）、显示、
-        /// USB 主控，以及使用者尚无设备移除语义的网卡（netstack 不撤下接口）、输入（evdev 节点不撤下）、
-        /// 声音与 console 端口。
+        /// source）、声音（audio-core 把旧输出标为断开、把新设备接为新输出，linuxd 呈现为声卡重新插入）、
+        /// 输入（linuxd 撤下 evdev 节点并发 remove/add uevent）、console 端口（linuxd 以新会话重新发布节点）
+        /// 与网卡（netstack 移除接口，netcfg 把重新出现的网卡安装为新接口并重新配置）。
+        /// 其余驱动不声明，宿主崩溃时节点被移除：块设备（文件系统无法跨驱动实例恢复）、显示与 USB 主控。
         pub const fn restart_on_crash(self) -> bool {
-            matches!(self, Self::VirtioEntropy)
+            matches!(
+                self,
+                Self::VirtioEntropy
+                    | Self::VirtioSound
+                    | Self::VirtioInput
+                    | Self::VirtioConsole
+                    | Self::VirtioNetwork
+            )
         }
     }
 

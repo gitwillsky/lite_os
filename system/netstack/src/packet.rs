@@ -587,6 +587,21 @@ pub(crate) fn publish_transmit_ready(net_id: u64, index: u32) {
     });
 }
 
+/// NETDEV_UNREGISTER：绑定该接口的 endpoint 解除绑定（ifindex -1）并报告 ENETDOWN，与 Linux
+/// `packet_notifier` 一致；edge 由随后的统一 drain 在 registry lock 外发布。
+pub(crate) fn publish_interface_removed(net_id: u64, index: u32) {
+    let Some(registry) = PACKET_REGISTRY.get() else {
+        return;
+    };
+    registry.lock().endpoints.for_each_mut(|_, state| {
+        if state.net_id == net_id && state.interface_index == index as i32 {
+            state.interface_index = -1;
+            state.pending_error = Some(SocketError::NetworkDown);
+            state.notification_pending = true;
+        }
+    });
+}
+
 /// 按 endpoint ID 取出下一个待发布的 packet readable edge。
 ///
 /// # Parameters
@@ -638,5 +653,6 @@ fn network_error(error: NetworkError) -> SocketError {
         NetworkError::WouldBlock => SocketError::Again,
         NetworkError::FrameTooLarge => SocketError::MessageTooLarge,
         NetworkError::Device => SocketError::Device,
+        NetworkError::Disconnected => SocketError::NetworkDown,
     }
 }

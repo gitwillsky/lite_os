@@ -29,7 +29,7 @@ pub(crate) use executable::{
 pub(crate) use futex::{FutexAccessError, FutexKey, UserAtomicU32, UserAtomicU32Op};
 pub(crate) use initial_stack::{InitialStack, InitialStackCredentials};
 pub(crate) use mm::{
-    DeviceMappingSource, FileMappingError, FileMappingSource, MappingPlacement,
+    DeviceMappingSource, FileMappingError, FileMappingSource, MappedMemory, MappingPlacement,
     MappingResourceLimits, MemoryAdvice, MemorySet, PageFaultAccess, PageFaultOutcome, RemapError,
     RemapPlacement, RemapRequest, SegmentationCause, UserMappingRequest, UserMappingSource,
     UserPageStatistics,

@@ -69,6 +69,8 @@ plain!(
     native_abi::TaskStats,
     native_abi::VmarRegion,
     native_abi::VmoInfo,
+    native_abi::BtiInfo,
+    native_abi::SystemMemoryStats,
     native_abi::ProcessBasic,
     native_abi::SystemBasic,
     native_abi::StartupHeader,

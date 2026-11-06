@@ -26,6 +26,9 @@ pub(crate) trait Translation: Send + Sync {
     fn attach(&self, stream: u32, domain: u16, root: usize) -> Result<(), Status>;
     /// Invalidate the page range; completion precedes return and frame retirement.
     fn invalidate(&self, domain: u16, first_page: usize, pages: usize);
+    /// Drain recorded translation faults, calling `record(stream, device_address)` for each.
+    /// Returns `true` when the hardware queue overflowed since the previous drain (records lost).
+    fn drain_faults(&self, record: &mut dyn FnMut(u32, u64)) -> bool;
 }
 
 /// Publish coherent device page-table stores before returning IOVAs to a DMA producer.

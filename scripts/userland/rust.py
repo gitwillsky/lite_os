@@ -57,7 +57,7 @@ DYNAMIC_PROGRAMS = frozenset({
     ("classic-ui", "ui-probe"), ("classic-ui", "session-probe"), ("linux-uapi", "drm-flip-probe"),
 })
 
-STABLE_UI_PROGRAMS = frozenset({("file-explorer", "file-explorer"), ("control-panel", "control-panel"), ("notepad", "notepad"), ("device-manager", "devmgmt"), ("volume-control", "sndvol"), ("terminal", "terminal"), ("task-manager", "taskmgr"), ("media-player", "mplay")})
+STABLE_UI_PROGRAMS = frozenset({("file-explorer", "file-explorer"), ("control-panel", "control-panel"), ("notepad", "notepad"), ("device-manager", "devmgmt"), ("savedump", "savedump"), ("volume-control", "sndvol"), ("terminal", "terminal"), ("task-manager", "taskmgr"), ("media-player", "mplay")})
 
 RUST_USER_RUSTFLAGS = (
     "-C link-self-contained=no -C target-feature=-crt-static "

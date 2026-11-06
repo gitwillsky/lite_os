@@ -60,10 +60,9 @@ AArch64 和 RISC-V64 共用这些机制，具体指令与 machine 装配通过�
 - Apple Silicon 上的 AArch64/QEMU virt/HVF 是默认产品入口；TCG 必须显式选择。RISC-V64 使用 TCG，
   两个后端分别构建与验证，不能把一个后端的成功推定为另一个的成功。
 - Linux ABI 是矩阵列出的子集，不等于完整 Linux/POSIX 或任意 Linux 应用兼容。
-- 内核不提供 swap/reclaim 策略；当前用户态 pager 尚未提供换出服务。相关 syscall、procfs 与门禁的范围由内存 ABI owner 声明。
+- 不做匿名页换出；内存紧张时内核只在用户缺页入口淘汰文件内容的干净页，没有后台回收线程。相关 syscall、procfs 与门禁的范围由内存 ABI owner 声明。
 - 服务使用无浮点 ABI；应用浮点状态跨 restricted 退出保留。对信号帧的显式读写由 `linuxd::arch` 负责。
-- SMMUv3 与 RISC-V IOMMU 后端均存在；设备故障/事件队列、硬件验证范围由平台契约声明。
-- 驱动宿主崩溃后只有声明 `restart_on_crash` 的驱动（目前仅熵源）被重建；网卡、输入、声音、console 端口的使用者
-  尚无设备移除语义，这些节点被移除。主显示客户端（linuxd）断开时 GPU 宿主不重新显示开机画面（Fuchsia virtcon 的
-  回退客户端尚未实现）。audio-core 重启后 linuxd 不重连，已有声卡报告断开。
+- SMMUv3 与 RISC-V IOMMU 后端均存在；故障队列以轮询排空、只做诊断计数，硬件验证范围由平台契约声明。
+- 驱动宿主崩溃后只有声明 `restart_on_crash` 的驱动（熵源、声音、输入、console 端口与网卡）被重建；块设备、
+  显示与 USB 主控的节点被移除。网卡重建后是新接口（新 ifindex，名称取最小空闲 `eth<n>`），旧 TCP 连接不迁移。
 - 缺失语义必须返回标准错误或保持接口不存在；不以 stub、忽略 flags 或放宽验收掩盖实现错误。

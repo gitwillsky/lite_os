@@ -223,6 +223,9 @@ impl ProcSource for KernelProcSource {
     ) -> Result<ProcSnapshot, crate::fs::FileSystemError> {
         process_snapshot(scope, view)
     }
+    fn mapped_memory(&self) -> Result<crate::memory::MappedMemory, crate::fs::FileSystemError> {
+        mapped_memory()
+    }
     fn current_ipc_namespace(
         &self,
     ) -> Result<alloc::sync::Arc<crate::ipc::IpcNamespace>, crate::fs::FileSystemError> {
@@ -784,6 +787,40 @@ fn process_snapshot(
         cpus,
         processes,
     })
+}
+
+/// 系统级映射分类：graph lock 内只复制存活进程的 Arc（预留容量），锁外逐个扫描地址空间。
+fn mapped_memory() -> Result<crate::memory::MappedMemory, crate::fs::FileSystemError> {
+    use crate::fs::FileSystemError;
+    let mut capacity = 0;
+    let processes = loop {
+        let mut processes = alloc::vec::Vec::new();
+        processes
+            .try_reserve_exact(capacity)
+            .map_err(|_| FileSystemError::OutOfMemory)?;
+        let graph = PROCESS_TABLE.graph.lock();
+        if graph.nodes.len() > processes.capacity() {
+            capacity = graph.nodes.len();
+            drop(graph);
+            continue;
+        }
+        processes.extend(
+            graph
+                .nodes
+                .values()
+                .filter(|node| matches!(node.state, ProcessState::Live(_)))
+                .map(|node| node.process.clone()),
+        );
+        break processes;
+    };
+    let mut seen = alloc::vec::Vec::new();
+    let mut totals = crate::memory::MappedMemory::default();
+    for process in &processes {
+        process
+            .classify_mapped_memory(&mut seen, &mut totals)
+            .map_err(|()| FileSystemError::OutOfMemory)?;
+    }
+    Ok(totals)
 }
 
 /// boot worker 的 Linux proc 投影；无用户 Process/mm/file/fs owner，空资源由实际缺失决定。

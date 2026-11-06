@@ -84,6 +84,8 @@ struct InputDeviceState {
     grabbed: Option<Weak<InputFile>>,
     keys: [u8; KEY_BITMAP_BYTES],
     absolute_values: [i32; ABS_COUNT],
+    // FLAG: 设备已移除；之后的 open 失败，client 已撤销。
+    removed: bool,
 }
 
 struct InputClientState {
@@ -549,67 +551,152 @@ fn current_times() -> EventTimes {
     }
 }
 
-// OWNER: input core 永久拥有按 raw adapter index 排列的 evdev devices；devfs 只投影 index，
-// OFD 只持 Arc。缺失该 immutable owner 会让 event minor、client registry 与 hardware 分裂。
-static INPUT_DEVICES: Once<Vec<Arc<EvdevDevice>>> = Once::new();
+/// evdev minor 区间（Linux `EVDEV_MINORS`）；minor 不复用，热拔插累计超过上限后新设备不再登记。
+const MAX_DEVICES: usize = 32;
 
-/// 将全部 DTB input adapters 与各自的 notification Pipe 装配为 evdev devices。
+/// 已登记的 evdev devices 与输入工作。
+struct InputCore {
+    // OWNER: 按 minor 排列的 evdev devices；只追加，移除的设备保留为已移除（minor 不复用），
+    // devfs 只投影 index，OFD 只持 Arc。缺失该 owner 会让 event minor、client registry 与设备分裂。
+    devices: Mutex<Vec<Arc<EvdevDevice>>>,
+    work: crate::deferred::DeferredWork,
+}
+
+// OWNER: 首次接入设备时完整发布的 input core；缺失时热插拔设备无处登记。
+static INPUT: Once<InputCore> = Once::new();
+
+fn core() -> Result<&'static InputCore, ()> {
+    INPUT.try_call_once(|| {
+        let work = crate::deferred::register(input_work)?;
+        let driver = Arc::try_new(evdev_file::EvdevDriver).map_err(|_| ())?;
+        crate::fs::chardev::register_driver(
+            evdev_file::device_number(0),
+            MAX_DEVICES as u32,
+            driver,
+        )
+        .map_err(|_| ())?;
+        Ok(InputCore {
+            devices: Mutex::new(Vec::new()),
+            work,
+        })
+    })
+}
+
+/// 第 `index` 个 evdev device（含已移除的，其 client 已撤销）。
+fn device(index: usize) -> Option<Arc<EvdevDevice>> {
+    INPUT.get()?.devices.lock().get(index).cloned()
+}
+
+/// 登记一个输入设备：分配下一个 `input/eventN`，发布节点与 `add` uevent（Linux `input_register_device`）。
 ///
 /// # Returns
 ///
-/// 全部 adapter 原子发布成功返回 unit。
+/// evdev 下标 N。
 ///
 /// # Errors
 ///
-/// Pipe、device control block 或 registry allocation 失败返回 unit。
-pub(crate) fn init() -> Result<(), ()> {
-    if INPUT_DEVICES.get().is_some() {
-        return Err(());
-    }
-    let count = device_model::input_device_count();
-    let mut devices = Vec::new();
-    devices.try_reserve_exact(count).map_err(|_| ())?;
-    for index in 0..count {
-        let adapter = device_model::input_device(index).ok_or(())?;
-        let notification = crate::ipc::Pipe::notification_pair()?;
-        devices.push(
-            Arc::try_new(EvdevDevice {
-                adapter,
-                notification_read: notification.0,
-                notification_write: notification.1,
-                state: Mutex::new(InputDeviceState {
-                    clients: Vec::new(),
-                    grabbed: None,
-                    keys: [0; KEY_BITMAP_BYTES],
-                    absolute_values: [0; ABS_COUNT],
-                }),
-            })
-            .map_err(|_| ())?,
-        );
-    }
-    let count = devices.len();
-    INPUT_DEVICES.call_once(|| devices);
-    if count != 0 {
-        let work = crate::deferred::register(input_work)?;
-        for device in INPUT_DEVICES.get().into_iter().flatten() {
-            device
-                .adapter
-                .bind_activity(crate::deferred::activity(work)?);
+/// minor 用尽、分配或节点发布失败。
+pub(crate) fn attach(adapter: Arc<dyn InputDevice>) -> Result<usize, ()> {
+    let core = core()?;
+    let notification = crate::ipc::Pipe::notification_pair()?;
+    let device = Arc::try_new(EvdevDevice {
+        adapter,
+        notification_read: notification.0,
+        notification_write: notification.1,
+        state: Mutex::new(InputDeviceState {
+            clients: Vec::new(),
+            grabbed: None,
+            keys: [0; KEY_BITMAP_BYTES],
+            absolute_values: [0; ABS_COUNT],
+            removed: false,
+        }),
+    })
+    .map_err(|_| ())?;
+    let index = {
+        let mut devices = core.devices.lock();
+        if devices.len() == MAX_DEVICES {
+            return Err(());
         }
-    }
-    let driver = Arc::try_new(evdev_file::EvdevDriver).map_err(|_| ())?;
-    let count_minors = u32::try_from(count).map_err(|_| ())?;
-    if count_minors != 0 {
-        crate::fs::chardev::register_driver(evdev_file::device_number(0), count_minors, driver)
-            .map_err(|_| ())?;
-    }
-    for index in 0..count {
+        devices.try_reserve(1).map_err(|_| ())?;
+        devices.push(device.clone());
+        devices.len() - 1
+    };
+    let mut path = [0u8; 16];
+    let length = event_path(index, &mut path);
+    crate::fs::devnode::register_node(&path[..length], evdev_file::device_number(index), 0o600)
+        .map_err(|_| ())?;
+    device
+        .adapter
+        .bind_activity(crate::deferred::activity(core.work)?);
+    crate::net::publish_input(true, index, evdev_file::device_number(index).minor);
+    Ok(index)
+}
+
+impl EvdevDevice {
+    /// 设备已断开：撤销全部 client（read/ioctl 返回 ENODEV，poll 报告 ERR|HUP），撤下节点并发布 `remove`
+    /// uevent（Linux `input_unregister_device`）。
+    fn remove(&self, index: usize) {
+        {
+            let mut state = self.state.lock();
+            if state.removed {
+                return;
+            }
+            state.removed = true;
+            state.grabbed = None;
+            for client in state.clients.iter().filter_map(Weak::upgrade) {
+                client.client.lock().revoked = true;
+            }
+        }
         let mut path = [0u8; 16];
         let length = event_path(index, &mut path);
-        crate::fs::devnode::register_node(&path[..length], evdev_file::device_number(index), 0o600)
-            .map_err(|_| ())?;
+        crate::fs::devnode::unregister_node(&path[..length]);
+        crate::net::publish_input(false, index, evdev_file::device_number(index).minor);
+        self.notification_write.signal_readiness();
+        crate::info!("input event{index} removed");
     }
-    Ok(())
+}
+
+/// 在 deferred context 有界消费所有 input 事件并 fanout 到 evdev clients。
+///
+/// # Returns
+///
+/// 任一 adapter budget 用尽且仍有事件时返回 true。
+fn input_work(_now_ns: u64) -> bool {
+    dispatch_input_work()
+}
+
+fn dispatch_input_work() -> bool {
+    let Some(core) = INPUT.get() else {
+        return false;
+    };
+    let mut backlog = false;
+    let count = core.devices.lock().len();
+    for index in 0..count {
+        let Some(device) = device(index) else {
+            continue;
+        };
+        if device.state.lock().removed {
+            continue;
+        }
+        let mut failed = false;
+        for _ in 0..EVENT_BATCH {
+            match device.adapter.receive_event() {
+                Ok(Some(event)) => device.dispatch(event, current_times()),
+                Ok(None) => break,
+                Err(_) => {
+                    failed = true;
+                    break;
+                }
+            }
+        }
+        // 设备会话断开（驱动宿主终止）或传输损坏：按热拔出移除，不能带着不确定的 owner 继续读取。
+        if failed || device.adapter.finish_receive_batch().is_err() {
+            device.remove(index);
+            continue;
+        }
+        backlog |= device.adapter.has_pending_event();
+    }
+    backlog
 }
 
 /// 写出 `input/eventN` 并返回长度。
@@ -631,42 +718,4 @@ fn event_path(index: usize, output: &mut [u8; 16]) -> usize {
         output[PREFIX.len() + offset] = digits[count - 1 - offset];
     }
     PREFIX.len() + count
-}
-
-/// 在 deferred context 有界消费所有 input eventq 并 fanout 到 evdev clients。
-///
-/// # Returns
-///
-/// 任一 adapter budget 用尽且仍有 completion 时返回 true。
-///
-/// # Errors
-///
-/// queue/transport 损坏直接 fail-stop，禁止在 owner 不确定后继续 DMA。
-fn input_work(_now_ns: u64) -> bool {
-    dispatch_input_work()
-}
-
-fn dispatch_input_work() -> bool {
-    let Some(devices) = INPUT_DEVICES.get() else {
-        return false;
-    };
-    let mut backlog = false;
-    for device in devices {
-        for _ in 0..EVENT_BATCH {
-            let Some(event) = device
-                .adapter
-                .receive_event()
-                .unwrap_or_else(|_| panic!("VirtIO input eventq corrupted"))
-            else {
-                break;
-            };
-            device.dispatch(event, current_times());
-        }
-        device
-            .adapter
-            .finish_receive_batch()
-            .unwrap_or_else(|_| panic!("VirtIO input repost notification failed"));
-        backlog |= device.adapter.has_pending_event();
-    }
-    backlog
 }

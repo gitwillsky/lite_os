@@ -51,6 +51,8 @@ impl CachedFile {
                 let _ = self.object.vmo().write(&data, start);
                 return Err(error);
             }
+            // 存储已接收这批内容：之后淘汰这些页、再从存储读回不会丢修改。
+            pager::end_writeback(&self.object, start, chunk);
             cursor = start + chunk;
         }
         if durable {

@@ -38,7 +38,7 @@ def base_userland(musl: MuslCachePaths) -> tuple[UserlandArtifact, ...]:
                               ("desktop", "desktop"), ("file-explorer", "file-explorer"), ("smbfs", "smbfs"),
                               ("control-panel", "control-panel"), ("task-manager", "taskmgr"), ("volume-control", "sndvol"),
                               ("sound-player", "sndplay"), ("media-player", "mplay"),
-                              ("notepad", "notepad"), ("device-manager", "devmgmt"),
+                              ("notepad", "notepad"), ("device-manager", "devmgmt"), ("savedump", "savedump"),
                               ("linux-uapi", "session-launch"), ("terminal", "terminal"),
                               ("resolvd", "resolvd"))
     )

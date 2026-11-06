@@ -5,13 +5,14 @@
 //! - 线性 stream table：每个 stream 一个 64 字节 STE，Config = stage-1 translate、stage-2 bypass；
 //! - 每个 stream 一个上下文描述符（CD）：TTB0 指向该 stream 的设备页表，ASID 取 domain 编号，
 //!   MAIR/T0SZ 与 CPU 一致，因此页表项格式与 CPU 完全相同；
-//! - 命令队列：配置失效（CFGI_STE）、TLB 失效（TLBI_NH_ASID/VA）与 CMD_SYNC 完成等待。
+//! - 命令队列：配置失效（CFGI_STE）、TLB 失效（TLBI_NH_ASID/VA）与 CMD_SYNC 完成等待；
+//! - 事件队列：CD 的 R 位让翻译故障写入事件记录，[`Translation::drain_faults`] 由软件排空（不接中断）。
 //!
 //! # 限制
 //!
 //! stream table 采用线性格式，覆盖 `min(SIDSIZE, 12)` 位 stream ID（4096 个 stream）；
 //! 更大的 stream ID 返回 `ERR_OUT_OF_RANGE`。QEMU `virt` 的 PCI RID 都位于总线 0，满足该范围。
-//! 事件队列未启用：翻译故障由硬件中止事务，不向软件报告。
+//! 事件队列的生产者寄存器位于寄存器页 1；窗口不含页 1 时不启用事件队列，故障只由硬件中止事务。
 
 use native_abi::Status;
 use spin::Mutex;
@@ -35,8 +36,14 @@ const STRTAB_BASE_CFG: usize = 0x88;
 const CMDQ_BASE: usize = 0x90;
 const CMDQ_PROD: usize = 0x98;
 const CMDQ_CONS: usize = 0x9c;
+const EVENTQ_BASE: usize = 0xa0;
+const EVENTQ_PROD: usize = 0x1_00a8;
+const EVENTQ_CONS: usize = 0x1_00ac;
+/// 事件队列溢出标志（PROD）与其确认位（CONS）。
+const EVENTQ_OVERFLOW: u32 = 1 << 31;
 
 const CR0_SMMUEN: u32 = 1 << 0;
+const CR0_EVTQEN: u32 = 1 << 2;
 const CR0_CMDQEN: u32 = 1 << 3;
 /// 表与队列访问：内部/外部 WB 可缓存、内部可共享（与 CPU 的一致性域相同）。
 const CR1_ATTRIBUTES: u32 = 1 | (1 << 2) | (3 << 4) | (1 << 6) | (1 << 8) | (3 << 10);
@@ -44,6 +51,9 @@ const CR2_RECINVSID: u32 = 1 << 1;
 const READ_ALLOCATE: u64 = 1 << 62;
 
 const COMMAND_LOG2: u32 = 8;
+/// 128 条 32 字节事件记录，恰好一页。
+const EVENT_LOG2: u32 = 7;
+const EVENT_BYTES: usize = 32;
 const MAX_STREAM_BITS: u32 = 12;
 const STE_BYTES: usize = 64;
 const POLL_LIMIT: usize = 10_000_000;
@@ -62,6 +72,14 @@ struct CommandQueue<F> {
     producer: u32,
 }
 
+struct EventQueue<F> {
+    frames: F,
+    log2: u32,
+    consumer: u32,
+    // 最近确认的溢出标志：硬件每次溢出翻转 PROD.OVFLG，与 CONS.OVACKFLG 不等才是新的溢出。
+    acknowledged: u32,
+}
+
 pub(crate) struct Backend<F> {
     registers: MmioBus,
     stream_bits: u32,
@@ -72,6 +90,21 @@ pub(crate) struct Backend<F> {
     contexts: Mutex<fallible_tree::FallibleMap<u32, F>>,
     // OWNER: 命令队列的唯一写者；生产者索引与队列内容同锁发布。
     queue: Mutex<CommandQueue<F>>,
+    // OWNER: 事件队列的唯一消费者；None 表示寄存器窗口不含页 1、未启用。缺失消费者时队列写满后
+    // 硬件置溢出并丢弃后续故障，软件看不到任何 DMA 越界。
+    events: Option<Mutex<EventQueue<F>>>,
+}
+
+/// 读取设备写入的 DMA 记录前的屏障：保证先观察到生产者寄存器，再读记录内容。
+fn dma_read_barrier() {
+    // SAFETY: 只排序 outer-shareable 域内的读取，不访问内存。
+    unsafe { core::arch::asm!("dmb oshld", options(nostack, preserves_flags)) };
+}
+
+fn read_word(page: usize, offset: usize) -> u64 {
+    let base = crate::arch::mmu::physical_to_virtual(page * PAGE_SIZE) as *const u8;
+    // SAFETY: 页属于本驱动独占的事件队列，偏移在队列范围内且 8 字节对齐。
+    unsafe { core::ptr::read_volatile(base.add(offset).cast::<u64>()) }
 }
 
 fn write_words(page: usize, offset: usize, words: &[u64]) {
@@ -134,6 +167,24 @@ impl<F: DmaFrame> Backend<F> {
         )?;
         write32(CMDQ_PROD, 0)?;
         write32(CMDQ_CONS, 0)?;
+        let events = if size > EVENTQ_CONS {
+            let log2 = ((idr1 >> 16) & 0x1f).min(EVENT_LOG2);
+            let pages = ((1usize << log2) * EVENT_BYTES).div_ceil(PAGE_SIZE);
+            let frames = F::allocate_zeroed(pages).ok_or(native_abi::ERR_NO_MEMORY)?;
+            let address = (frames.physical_page() * PAGE_SIZE) as u64;
+            write64(EVENTQ_BASE, READ_ALLOCATE | address | u64::from(log2))?;
+            write32(EVENTQ_PROD, 0)?;
+            write32(EVENTQ_CONS, 0)?;
+            Some(Mutex::new(EventQueue {
+                frames,
+                log2,
+                consumer: 0,
+                acknowledged: 0,
+            }))
+        } else {
+            None
+        };
+        let queues = CR0_CMDQEN | if events.is_some() { CR0_EVTQEN } else { 0 };
         let smmu = Self {
             registers,
             stream_bits,
@@ -145,14 +196,15 @@ impl<F: DmaFrame> Backend<F> {
                 frames: queue_frames,
                 producer: 0,
             }),
+            events,
         };
         mmio::before_write();
-        write32(CR0, CR0_CMDQEN)?;
-        poll(|| read(CR0ACK).is_ok_and(|ack| ack == CR0_CMDQEN))?;
+        write32(CR0, queues)?;
+        poll(|| read(CR0ACK).is_ok_and(|ack| ack == queues))?;
 
         smmu.submit(&[[CMD_CFGI_ALL, 31], [CMD_TLBI_NSNH_ALL, 0]])?;
-        write32(CR0, CR0_CMDQEN | CR0_SMMUEN)?;
-        poll(|| read(CR0ACK).is_ok_and(|ack| ack == CR0_CMDQEN | CR0_SMMUEN))?;
+        write32(CR0, queues | CR0_SMMUEN)?;
+        poll(|| read(CR0ACK).is_ok_and(|ack| ack == queues | CR0_SMMUEN))?;
         Ok(smmu)
     }
 
@@ -285,6 +337,33 @@ impl<F: DmaFrame> Translation for Backend<F> {
         self.submit(&[[CMD_CFGI_STE | (u64::from(stream) << 32), 1]])
             .unwrap_or_else(|status| panic!("SMMUv3 stream publication failed: {status}"));
         Ok(())
+    }
+
+    fn drain_faults(&self, record: &mut dyn FnMut(u32, u64)) -> bool {
+        let Some(events) = &self.events else {
+            return false;
+        };
+        let mut queue = events.lock();
+        let entries = 1u32 << queue.log2;
+        let index_mask = (entries << 1) - 1;
+        let Ok(producer) = self.registers.read_u32(EVENTQ_PROD) else {
+            return false;
+        };
+        dma_read_barrier();
+        while queue.consumer & index_mask != producer & index_mask {
+            let offset = (queue.consumer & (entries - 1)) as usize * EVENT_BYTES;
+            let page = queue.frames.physical_page();
+            // 记录字 0 的 [63:32] 是 StreamID，字 2 是故障输入地址（翻译类事件）。
+            let stream = (read_word(page, offset) >> 32) as u32;
+            record(stream, read_word(page, offset + 16));
+            queue.consumer = (queue.consumer + 1) & index_mask;
+        }
+        // 回写消费者索引，并以 OVACKFLG 跟随生产者的溢出标志确认已观察到溢出。
+        let flag = producer & EVENTQ_OVERFLOW;
+        let overflowed = flag != queue.acknowledged;
+        queue.acknowledged = flag;
+        let _ = self.registers.write_u32(EVENTQ_CONS, queue.consumer | flag);
+        overflowed
     }
 
     fn invalidate(&self, domain: u16, first_page: usize, pages: usize) {

@@ -183,8 +183,9 @@ pub(super) fn port_wait(call: &Call<'_>) -> Result<(), Status> {
     let handle = call.arg_handle(0);
     let port = call.port(handle, rights::READ)?;
     let key = call.process().handles().cancel_key(handle);
-    let packet: PortPacket = port.wait(key, super::deadline(call.arg(1)))?;
-    call.write(call.arg(2), &packet)
+    port.wait(key, super::deadline(call.arg(1)), |packet| {
+        call.write(call.arg(2), packet)
+    })
 }
 
 pub(super) fn port_queue(call: &Call<'_>) -> Result<(), Status> {

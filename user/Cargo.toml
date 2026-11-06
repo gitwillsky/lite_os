@@ -26,6 +26,7 @@ members = [
     "programs/media-player",
     "programs/notepad",
     "programs/device-manager",
+    "programs/savedump",
     "libraries/sound",
     "programs/task-manager",
     "programs/resolvd",

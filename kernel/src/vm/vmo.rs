@@ -26,7 +26,10 @@
 mod pager;
 use pager::PageRequestCompletion;
 
+mod pin;
+mod reclaim;
 mod release;
+pub(crate) use pin::PinnedRange;
 mod residency;
 use super::VmError;
 use super::address_space::{Mapping, ZapMode};
@@ -39,6 +42,7 @@ use crate::memory::{
 use alloc::sync::{Arc, Weak};
 use alloc::vec::Vec;
 use fallible_tree::FallibleMap;
+pub(crate) use reclaim::{evicted_pages, relieve_memory_pressure};
 use spin::Mutex;
 
 /// 物理 VMO 的缓存属性。
@@ -84,31 +88,6 @@ pub(crate) struct PagerBinding {
     pub(crate) key: u64,
 }
 
-/// 一段已固定的页；固定期间页不会被撤销、替换或释放（DMA）。
-pub(crate) struct PinnedRange {
-    vmo: Arc<Vmo>,
-    first_page: usize,
-    pages: Vec<PhysicalPageNumber>,
-    // OWNER: 固定时预先准备的树锁 waiter；解除固定发生在 Drop 中，不能因 waiter 分配失败而遗漏，
-    // 否则页永远保持固定、无法撤销。
-    unpin_wait: Option<TaskMutexWaitPreparation>,
-}
-
-impl PinnedRange {
-    /// 固定页的物理页号，按 VMO 页序。
-    pub(crate) fn pages(&self) -> &[PhysicalPageNumber] {
-        &self.pages
-    }
-}
-
-impl Drop for PinnedRange {
-    fn drop(&mut self) {
-        let mut wait = self.unpin_wait.take().expect("pinned range released twice");
-        let _tree = self.vmo.tree.lock.lock_prepared(&mut wait);
-        self.vmo.unpin(self.first_page, self.pages.len());
-    }
-}
-
 struct Tree {
     // OWNER: 整棵 COW 树的唯一状态锁，见模块文档。
     lock: TaskMutex<()>,
@@ -132,8 +111,19 @@ enum Kind {
 struct Page {
     frame: FrameTracker,
     pins: u32,
-    // FLAG: pager 页在补入后被写过；缺失时回写会遗漏修改，只对 pager 支撑的 VMO 有意义。
-    dirty: bool,
+    // 只对 pager 支撑的 VMO 有意义的回写状态；缺失时回写会遗漏修改，或淘汰掉尚未落盘的内容。
+    cleanliness: Cleanliness,
+}
+
+/// pager 页的回写状态（Zircon page dirty state）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Cleanliness {
+    /// 内容与 pager 的存储一致，可以淘汰。
+    Clean,
+    /// 补入后被写过；映射可写。
+    Dirty,
+    /// 回写已开始（映射已写保护）但存储尚未确认；之后的写入回到 `Dirty`，不能淘汰。
+    AwaitingClean,
 }
 
 enum Relation {
@@ -152,12 +142,17 @@ struct State {
     pages: usize,
     committed: FallibleMap<usize, Page>,
     relation: Option<Relation>,
-    // OWNER: 直接 COW 子对象；用于翻译撤销与判定隐藏节点是否仅剩一个子对象。Weak 不延长寿命。
+    // OWNER: 直接 COW 与 slice 子对象；用于翻译撤销与判定隐藏节点是否仅剩一个子对象（隐藏节点没有
+    // slice 子对象）。Weak 不延长寿命。缺失 slice 时撤销本对象的页（decommit、补页替换、淘汰）留下 slice
+    // 映射指向已释放页框的翻译。
     children: Vec<Weak<Vmo>>,
     // OWNER: 映射本对象的地址空间映射；Weak 在映射销毁后失效并被惰性清理。
     mappings: Vec<Weak<Mapping>>,
     // OWNER: 未完成补页的唯一登记；等待者保活本次结果，不从页是否仍驻留推断成功/失败。
     requested: FallibleMap<usize, Arc<PageRequestCompletion>>,
+    // FLAG: pager 已 detach（Zircon `pager_detach_vmo`）：之后的缺页不再请求而以 I/O 错误失败。
+    // 缺失时内容 owner 退休后仍存活的 VMO（导出副本、COW 子对象）会把请求投给已不处理它的服务，等待者永久睡眠。
+    detached: bool,
 }
 
 /// 内存对象。
@@ -209,6 +204,7 @@ impl Vmo {
                 children: Vec::new(),
                 mappings: Vec::new(),
                 requested: FallibleMap::new(),
+                detached: false,
             }),
             supplied: WaitQueue::new(),
         })
@@ -247,7 +243,7 @@ impl Vmo {
         options: VmoOptions,
         pager: PagerBinding,
     ) -> Result<Arc<Self>, VmError> {
-        Self::new_in(
+        let vmo = Self::new_in(
             Self::new_tree()?,
             Kind::Paged {
                 resizable: options.resizable,
@@ -255,7 +251,9 @@ impl Vmo {
             },
             pages_for(size)?,
             None,
-        )
+        )?;
+        vmo.register_reclaimable()?;
+        Ok(vmo)
     }
 
     /// 创建物理连续、常驻的 VMO。
@@ -413,7 +411,7 @@ impl Vmo {
                 {
                     return Err(VmError::OutOfRange);
                 }
-                Self::new_in(
+                let child = Self::new_in(
                     self.tree.clone(),
                     Kind::Slice,
                     pages,
@@ -421,7 +419,15 @@ impl Vmo {
                         parent: self.clone(),
                         offset: offset_pages,
                     }),
-                )
+                )?;
+                let mut state = self.state.lock();
+                state.children.retain(|child| child.strong_count() != 0);
+                state
+                    .children
+                    .try_reserve(1)
+                    .map_err(|_| VmError::NoMemory)?;
+                state.children.push(Arc::downgrade(&child));
+                Ok(child)
             }
             ChildKind::AtLeastOnWrite => {
                 self.require_cow_capable()?;
@@ -585,13 +591,14 @@ impl Vmo {
         }
         if let Some(page) = state.committed.get_mut(&index) {
             if write {
-                page.dirty = true;
+                page.cleanliness = Cleanliness::Dirty;
             }
             return Ok(ResolvedPage {
                 source: FaultSource::Memory,
                 ppn: page.frame.ppn,
-                // pager 的干净页只能安装只读翻译；否则 read fault 后的硬件写入绕过置脏，回写丢数据。
-                writable: page.dirty || !matches!(self.kind, Kind::Paged { pager: Some(_), .. }),
+                // pager 的非脏页只能安装只读翻译；否则 read fault 后的硬件写入绕过置脏，回写丢数据。
+                writable: page.cleanliness == Cleanliness::Dirty
+                    || !matches!(self.kind, Kind::Paged { pager: Some(_), .. }),
                 cache: CachePolicy::Cached,
             });
         }
@@ -876,53 +883,10 @@ impl Vmo {
             }
         }
         self.state.lock().pages = pages;
-        Ok(())
-    }
-
-    /// 固定一段页供 DMA；返回期间页不可撤销。
-    ///
-    /// # Errors
-    /// 越界、分配失败或 pager 失败。
-    pub(crate) fn pin(self: &Arc<Self>, offset: u64, length: u64) -> Result<PinnedRange, VmError> {
-        let (first, count) = page_range(offset, length)?;
-        let unpin_wait = TaskMutexWaitPreparation::prepare().map_err(|_| VmError::NoMemory)?;
-        let mut pages = Vec::new();
-        pages
-            .try_reserve_exact(count)
-            .map_err(|_| VmError::NoMemory)?;
-        for index in first..first + count {
-            // 固定必须作用在本对象拥有的页上：写解析把祖先页复制到本对象。
-            let ppn = self.with_resolved(index, true, |page| {
-                if let Some(page) = self.state.lock().committed.get_mut(&index) {
-                    page.pins += 1;
-                }
-                Ok(page.ppn)
-            });
-            match ppn {
-                Ok(ppn) => pages.push(ppn),
-                Err(error) => {
-                    let mut wait = unpin_wait;
-                    let _tree = self.tree.lock.lock_prepared(&mut wait);
-                    self.unpin(first, pages.len());
-                    return Err(error);
-                }
-            }
+        if pages < old {
+            self.invalidate_read_requests_locked(pages..old);
         }
-        Ok(PinnedRange {
-            vmo: self.clone(),
-            first_page: first,
-            pages,
-            unpin_wait: Some(unpin_wait),
-        })
-    }
-
-    /// 调用者持有树锁。
-    fn unpin(&self, first: usize, count: usize) {
-        self.state.lock().committed.for_each_mut(|&index, page| {
-            if (first..first + count).contains(&index) && page.pins != 0 {
-                page.pins -= 1;
-            }
-        });
+        Ok(())
     }
 
     /// 登记一个映射本对象的映射。
@@ -963,8 +927,8 @@ impl Vmo {
         }
         for child in &children {
             let offset = match &child.state.lock().relation {
-                Some(Relation::Cow { offset, .. }) => *offset,
-                _ => continue,
+                Some(Relation::Cow { offset, .. } | Relation::Slice { offset, .. }) => *offset,
+                None => continue,
             };
             let start = pages.start.saturating_sub(offset);
             let end = pages.end.saturating_sub(offset);
@@ -1032,7 +996,7 @@ fn commit_page(
             Page {
                 frame,
                 pins: 0,
-                dirty: true,
+                cleanliness: Cleanliness::Dirty,
             },
         )
         .map_err(|_| Resolve::Error(VmError::NoMemory))?;

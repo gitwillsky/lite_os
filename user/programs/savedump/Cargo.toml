@@ -1,0 +1,15 @@
+[package]
+name = "savedump"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "savedump"
+path = "src/main.rs"
+
+[dependencies]
+liteos-ui = { path = "../../libraries/liteos-ui" }
+
+[lints]
+workspace = true

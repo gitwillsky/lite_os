@@ -81,10 +81,11 @@
 |---|---:|---|---|---|
 | `system/linuxd/src/fs/tmpfs.rs` | 984 | `fs` | inode 权限与通知事务 | 新增 metadata family 前拆分 |
 | `system/linuxd/src/task/process_table/signal.rs` | 723 | `task` | graph 下的生成与子进程通知事务 | 新增独立 signal producer 前拆分 |
-| `system/linuxd/src/fs/procfs.rs` | 1397 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
-| `kernel/src/vm/vmo.rs` | 1065 | `vm` | COW tree、页解析与映射退休；pager 请求、页移交与脏页事务归 vmo/pager，祖先链释放归 vmo/release | 增加新的 backing kind 前审查页解析职责 |
+| `system/linuxd/src/fs/procfs.rs` | 1399 | fs | 同一 ProcNode 的完整投影 | 新增独立目录 family 前拆分 |
+| `kernel/src/vm/vmo.rs` | 1029 | `vm` | COW tree、页解析与映射退休；pager 请求、页移交与脏页事务归 vmo/pager，祖先链释放归 vmo/release，DMA 固定归 vmo/pin，干净页淘汰归 vmo/reclaim | 增加新的 backing kind 前审查页解析职责 |
 | `kernel/src/vm/address_space.rs` | 1105 | `vm` | VMAR 树与页表修改同锁裁决 | 新增 mapping operation 前拆出独立 transaction |
 | `system/network-protocol/src/lib.rs` | 1372 | `lib` | 域与 socket 的共享线格式及类型词汇 | 增加 wire family 前按控制/域/socket 边界拆分 |
+| `system/ext4/src/fuse_server.rs` | 1001 | `fuse_server` | FUSE 操作分派与每文件内容缓存的生命周期在同一会话事务内（lookup/forget、写回与 syncfs） | 新增 FUSE 操作 family 前把内容缓存表拆到独立 owner |
 
 ## Change contract
 

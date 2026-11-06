@@ -19,6 +19,29 @@ pub(super) struct DeviceNode {
     pub(super) mode: u32,
     /// 属组；设备节点为 root，授权端点为被授权的组。
     pub(super) gid: u32,
+    // FLAG: 设备已移除（Linux devtmpfs `device_del`）：查找与列目录跳过本节点，注册下标仍是稳定 inode
+    // identity，不被复用。缺失时热拔出的设备在 `/dev` 中残留，使用者打开到已失效的设备。
+    removed: core::sync::atomic::AtomicBool,
+}
+
+impl DeviceNode {
+    fn live(&self) -> bool {
+        !self.removed.load(core::sync::atomic::Ordering::Acquire)
+    }
+}
+
+/// 撤下 [`register_node`] 发布的字符设备节点（Linux devtmpfs `device_del`）；已打开的文件不受影响，
+/// 其设备操作由设备 owner 报告移除。未登记的路径无事可做。
+pub(crate) fn unregister_node(path: &[u8]) {
+    let registry = REGISTRY.lock();
+    if let Some(node) = registry
+        .devices
+        .iter()
+        .find(|node| node.live() && node.path == path)
+    {
+        node.removed
+            .store(true, core::sync::atomic::Ordering::Release);
+    }
 }
 
 /// 注册表：块设备、devfs 设备节点与节点路径隐含的目录。字符设备 driver 区间在 [`super::chardev`]。
@@ -30,7 +53,7 @@ struct Registry {
     directories: Vec<Vec<u8>>,
 }
 
-// OWNER: 全部 devfs 设备节点、块设备及其目录的唯一集合；只追加、启动期发布，devfs 以节点下标作为稳定
+// OWNER: 全部 devfs 设备节点、块设备及其目录的唯一集合；只追加（移除只打标记），devfs 以节点下标作为稳定
 // inode identity。缺失时 devfs 与 stat 只能各自硬编码设备种类。
 static REGISTRY: Mutex<Registry> = Mutex::new(Registry {
     blocks: Vec::new(),
@@ -216,6 +239,7 @@ fn publish_node(
         number,
         mode,
         gid,
+        removed: core::sync::atomic::AtomicBool::new(false),
     })
     .map_err(|_| FileSystemError::OutOfMemory)?;
     let block = match block {
@@ -232,7 +256,7 @@ fn publish_node(
     if registry
         .devices
         .iter()
-        .any(|existing| existing.path == path)
+        .any(|existing| existing.live() && existing.path == path)
         || block.is_some()
             && registry
                 .blocks
@@ -277,7 +301,11 @@ pub(super) enum RegistryEntry {
 pub(super) fn lookup(parent: &[u8], name: &[u8]) -> Option<RegistryEntry> {
     let registry = REGISTRY.lock();
     let matches = |path: &[u8]| child_name(parent, path) == Some(name);
-    if let Some(index) = registry.devices.iter().position(|node| matches(&node.path)) {
+    if let Some(index) = registry
+        .devices
+        .iter()
+        .position(|node| node.live() && matches(&node.path))
+    {
         return Some(RegistryEntry::Device(index));
     }
     registry
@@ -301,6 +329,9 @@ pub(super) fn for_each_child(
         }
     }
     for (index, node) in registry.devices.iter().enumerate() {
+        if !node.live() {
+            continue;
+        }
         if let Some(name) = child_name(parent, &node.path)
             && !visit(RegistryEntry::Device(index), name, node.mode)
         {

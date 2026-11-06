@@ -18,7 +18,11 @@ use native_runtime::sync::Mutex;
 use native_runtime::{Channel, Event, Handle, Vmo};
 
 use crate::directory::{self, Class, Directory, OpenedDevice, Session, SessionState};
+
+mod virtcon;
 use crate::{ActivityBinding, EventHub, Reader, Writer, activity_signal, call, take_handle};
+pub use virtcon::FallbackScene;
+use virtcon::Virtcon;
 
 const MODE: u32 = 1;
 const SUBMIT_SCANOUT: u32 = 2;
@@ -131,10 +135,18 @@ fn backing_handle(backing: &DeviceBacking) -> Result<Handle, DisplayError> {
 
 /// 驱动宿主：登记显示/图形设备（独占：同一时刻只有一个显示所有者）。
 ///
+/// # Parameters
+///
+/// - `fallback`: 没有会话时显示的回退画面；`None` 表示会话结束后保持黑屏。
+///
 /// # Errors
 ///
 /// 对象创建或分配失败。
-pub fn publish(directory: &Directory, device: Arc<dyn GraphicsDevice>) -> Result<(), Status> {
+pub fn publish(
+    directory: &Directory,
+    device: Arc<dyn GraphicsDevice>,
+    fallback: Option<Arc<dyn FallbackScene>>,
+) -> Result<(), Status> {
     let event = Arc::try_new(Event::create()?).map_err(|_| native_abi::ERR_NO_MEMORY)?;
     let mut description = directory::description();
     match device.platform_identity() {
@@ -164,17 +176,34 @@ pub fn publish(directory: &Directory, device: Arc<dyn GraphicsDevice>) -> Result
         entries: Mutex::new(BTreeMap::new()),
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+    let virtcon = match fallback {
+        Some(scene) => Some(
+            Arc::try_new(Virtcon {
+                device: device.clone(),
+                event: event.clone(),
+                scene,
+                shown: Mutex::new(None),
+            })
+            .map_err(|_| native_abi::ERR_NO_MEMORY)?,
+        ),
+        None => None,
+    };
     directory
         .add(
             Class::Display,
             &description,
             true,
             Box::new(move |end| {
+                // 交接：回退画面的事务全部完成并撤下之后才交出新会话。
+                if let Some(virtcon) = &virtcon {
+                    virtcon.dismiss();
+                }
                 let session = SessionState::new(
                     DisplaySession {
                         device: device.clone(),
                         cache: cache.clone(),
                         footprint: Mutex::new(Footprint::default()),
+                        virtcon: virtcon.clone(),
                     },
                     end,
                 );
@@ -235,6 +264,7 @@ struct DisplaySession {
     cache: Arc<BackingCache>,
     // OWNER: 本会话创建且尚未释放的设备对象；缺失时使用者崩溃会让 scanout 与 GPU 对象永久残留。
     footprint: Mutex<Footprint>,
+    virtcon: Option<Arc<Virtcon>>,
 }
 
 impl Drop for DisplaySession {
@@ -258,6 +288,10 @@ impl Drop for DisplaySession {
                 y: 0,
                 visible: false,
             });
+        }
+        // 会话状态先于结束标记析构：回退画面在目录允许下一次 open 之前就位，与交接互斥。
+        if let Some(virtcon) = &self.virtcon {
+            virtcon.show();
         }
     }
 }

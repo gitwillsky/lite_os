@@ -14,6 +14,9 @@ impl Hardware for MockHardware {
         Ok(())
     }
     fn invalidate(&self, _: u16, _: usize, _: usize) {}
+    fn drain_faults(&self, _: &mut dyn FnMut(u32, u64)) -> bool {
+        false
+    }
 }
 fn owner(last_domain: u16) -> Iommu<MockHardware> {
     Iommu {
@@ -22,6 +25,7 @@ fn owner(last_domain: u16) -> Iommu<MockHardware> {
         },
         domains: TaskMutex::new(FallibleMap::new()),
         last_domain: AtomicU16::new(last_domain),
+        unattributed: AtomicU64::new(0),
     }
 }
 

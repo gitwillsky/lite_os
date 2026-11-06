@@ -32,6 +32,7 @@ fn encode_error(error: NetworkError) -> Status {
         NetworkError::WouldBlock => ERROR_WOULD_BLOCK,
         NetworkError::FrameTooLarge => ERROR_TOO_LARGE,
         NetworkError::Device => native_abi::ERR_IO,
+        NetworkError::Disconnected => native_abi::ERR_PEER_CLOSED,
     }
 }
 
@@ -39,6 +40,8 @@ fn decode_error(status: Status) -> NetworkError {
     match status {
         ERROR_WOULD_BLOCK => NetworkError::WouldBlock,
         ERROR_TOO_LARGE => NetworkError::FrameTooLarge,
+        // 会话 channel 关闭：call 返回 PEER_CLOSED，与设备内部错误区分，使用者据此移除接口。
+        native_abi::ERR_PEER_CLOSED => NetworkError::Disconnected,
         _ => NetworkError::Device,
     }
 }
@@ -225,6 +228,8 @@ pub fn connect(
         .map_err(|_| native_abi::ERR_INVALID_ARGS)?;
     let driver = core::str::from_utf8(reader.bytes()?).map_err(|_| native_abi::ERR_INVALID_ARGS)?;
     let driver: &'static str = alloc::boxed::Box::leak(alloc::boxed::Box::<str>::from(driver));
+    // 会话断开时活动 Event 不再置位：关闭通知让使用者再推进一轮，从调用错误观察到断开。
+    hub.on_closed(channel.duplicate(rights::SAME)?, &activity)?;
     Arc::try_new(RemoteNetwork {
         channel,
         activity,

@@ -117,7 +117,8 @@ impl Slot {
         };
         let control = stream.control();
         let status = control.status();
-        if status & STATUS_DISCONNECTED != 0 {
+        // 服务端关闭流（audio-core 终止）后控制区不再更新：按断开处理。
+        if status & STATUS_DISCONNECTED != 0 || stream.closed() {
             let changed = self.state.state != PcmState::Disconnected;
             self.state.disconnect();
             return changed;
@@ -146,22 +147,20 @@ struct Slots {
 }
 
 impl Slots {
-    /// 按 Linux control 偏好占用子流；-1 选择首个空闲槽，其余值只接受精确编号。
+    fn occupied(&self) -> [bool; SUBSTREAMS] {
+        core::array::from_fn(|index| self.slots[index].ring.is_some())
+    }
+
+    /// 按 Linux control 偏好占用子流（规则见 [`endpoint::choose_substream`]）。
     fn allocate(
         &mut self,
         ring: Arc<DeviceBacking>,
         preferred: i32,
         endpoint: PcmEndpoint,
     ) -> Result<usize, Arc<DeviceBacking>> {
-        let occupied = self.slots.iter().any(|slot| slot.ring.is_some());
-        if (endpoint == PcmEndpoint::Direct && (occupied || preferred > 0))
-            || (occupied && self.endpoint != endpoint)
-        {
-            return Err(ring);
-        }
-        let Some(index) = self.slots.iter().enumerate().position(|(index, slot)| {
-            slot.ring.is_none() && (preferred == -1 || preferred == index as i32)
-        }) else {
+        let Some(index) =
+            endpoint::choose_substream(self.occupied(), self.endpoint, endpoint, preferred)
+        else {
             return Err(ring);
         };
         self.endpoint = endpoint;
@@ -170,18 +169,8 @@ impl Slots {
         Ok(index)
     }
 
-    fn available(&self) -> usize {
-        self.slots.iter().filter(|slot| slot.ring.is_none()).count()
-    }
-
     fn endpoint_available(&self, endpoint: PcmEndpoint) -> usize {
-        if self.slots.iter().any(|slot| slot.ring.is_some()) && self.endpoint != endpoint {
-            0
-        } else if endpoint == PcmEndpoint::Direct {
-            usize::from(self.available() == SUBSTREAMS)
-        } else {
-            self.available()
-        }
+        endpoint::endpoint_available(self.occupied(), self.endpoint, endpoint)
     }
 }
 
@@ -212,15 +201,42 @@ struct Card {
 // OWNER: discovery 是 audio-core 输出 → ALSA card 的唯一绑定者；新输出（含热插拔）由音频 deferred
 // 工作绑定，事件分派线程不分配、不发布 devfs 节点。
 struct Discovery {
-    audio: Arc<AudioClient>,
     hub: Arc<EventHub>,
-    // 已绑定的最大输出 ID。
-    last: Mutex<u64>,
+    // OWNER: 当前 audio-core 实例的连接与发现游标；实例重启后由音频连接线程整体替换。
+    session: Mutex<Session>,
     // OWNER: 每卡的只追加索引；get 克隆 Arc 后立即释放 registry 锁，Card.process 不在 registry 锁下运行。
     cards: device_model::AppendOnlyRegistry<Card>,
     caller: fn() -> Option<Arc<PidIdentity>>,
-    // 输出集合变化的观察登记；随 Discovery 存续。
-    _watch: ActivityBinding,
+}
+
+/// 与一个 audio-core 实例的连接。
+struct Session {
+    audio: Arc<AudioClient>,
+    /// 已绑定的最大输出 ID（同一实例内单调）。
+    last: u64,
+    // 输出集合变化的观察登记；随会话存续，旧实例的登记随替换撤销。
+    watch: ActivityBinding,
+}
+
+impl Session {
+    /// 连接当前 audio-core 实例；路由在实例重启期间让连接等待新实例就绪。
+    fn connect(hub: &Arc<EventHub>) -> Result<Self, ()> {
+        let audio = Arc::try_new(AudioClient::new(
+            crate::handles::services()
+                .connect(service_directory::AUDIO)
+                .map_err(|_| ())?,
+        ))
+        .map_err(|_| ())?;
+        let watch = hub
+            .activity(audio.watch().map_err(|_| ())?)
+            .map_err(|_| ())?;
+        watch.bind(processing_activity()?);
+        Ok(Self {
+            audio,
+            last: 0,
+            watch,
+        })
+    }
 }
 // OWNER: 唯一音频发现游标及 caller 绑定，init 发布后由音频 deferred 工作处理新增输出；缺失时
 // 热插拔声卡不能发布 ALSA 节点。
@@ -261,46 +277,60 @@ pub(crate) fn init(caller: fn() -> Option<Arc<PidIdentity>>) -> Result<(), ()> {
     if DISCOVERY.get().is_some() {
         return Err(());
     }
-    let audio = Arc::try_new(AudioClient::new(
-        crate::handles::services()
-            .connect(service_directory::AUDIO)
-            .map_err(|_| ())?,
-    ))
-    .map_err(|_| ())?;
     let hub = EventHub::start().map_err(|_| ())?;
-    let watch = hub
-        .activity(audio.watch().map_err(|_| ())?)
-        .map_err(|_| ())?;
+    let session = Session::connect(&hub)?;
     let discovery = Arc::try_new(Discovery {
-        audio,
         hub,
-        last: Mutex::new(0),
+        session: Mutex::new(session),
         cards: device_model::AppendOnlyRegistry::new(),
         caller,
-        _watch: watch,
     })
     .map_err(|_| ())?;
     DISCOVERY.call_once(|| discovery.clone());
     let work = crate::deferred::register(audio_work)?;
     AUDIO_WORK.call_once(|| work);
-    discovery._watch.bind(processing_activity()?);
+    let keeper = discovery.clone();
+    let thread =
+        native_runtime::thread::spawn(b"audio-connection", move || keeper.keep_connected())
+            .map_err(|_| ())?;
+    drop(thread);
     discovery.process();
     Ok(())
 }
 
 impl Discovery {
+    /// 音频连接线程：audio-core 终止后重连新实例，新实例的输出作为新卡登记（与声卡重新插入一致）；
+    /// 旧卡的渲染流随旧实例关闭而断开。重连期间路由让连接等待，不占用音频 deferred 工作。
+    fn keep_connected(&self) {
+        loop {
+            let audio = self.session.lock().audio.clone();
+            audio.wait_closed();
+            crate::warn!("audio-core connection closed; reconnecting");
+            // 旧实例的流立即转为断开，等待者不必等到新实例就绪。
+            request_processing();
+            let Ok(session) = Session::connect(&self.hub) else {
+                crate::error!("audio-core reconnection failed");
+                return;
+            };
+            let previous = core::mem::replace(&mut *self.session.lock(), session);
+            self.hub.retire(&previous.watch);
+            drop(previous);
+            request_processing();
+        }
+    }
+
     fn process(&self) {
-        let mut last = self.last.lock();
-        if let Ok(outputs) = self.audio.outputs(*last) {
+        let mut session = self.session.lock();
+        if let Ok(outputs) = session.audio.outputs(session.last) {
             for info in outputs {
-                *last = info.id;
+                session.last = info.id;
                 let index = self.cards.count();
-                if attach(self, index, info).is_err() {
+                if attach(self, &session.audio, index, info).is_err() {
                     crate::error!("ALSA card {} initialization failed", index);
                 }
             }
         }
-        drop(last);
+        drop(session);
         let count = self.cards.count();
         for index in 0..count {
             if let Some(card) = self.cards.get(index) {
@@ -310,7 +340,12 @@ impl Discovery {
     }
 }
 
-fn attach(discovery: &Discovery, index: usize, info: OutputInfo) -> Result<(), ()> {
+fn attach(
+    discovery: &Discovery,
+    audio: &Arc<AudioClient>,
+    index: usize,
+    info: OutputInfo,
+) -> Result<(), ()> {
     let index = u32::try_from(index).map_err(|_| ())?;
     let minor = index.checked_mul(32).ok_or(())?;
     let shared = info.shared();
@@ -326,7 +361,7 @@ fn attach(discovery: &Discovery, index: usize, info: OutputInfo) -> Result<(), (
         },
         shared,
         output: RemoteOutput(info),
-        audio: discovery.audio.clone(),
+        audio: audio.clone(),
         hub: discovery.hub.clone(),
         caller: discovery.caller,
         controls: Mutex::new(Vec::new()),

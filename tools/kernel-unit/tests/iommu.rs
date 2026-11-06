@@ -1,6 +1,11 @@
 //! Real IOMMU admission transactions; frame/page-table allocation is the host boundary, not hardware emulation.
 #![feature(allocator_ext)]
 extern crate alloc;
+// 生产 IOMMU owner 的故障日志在 host 测试中写入被捕获的 stderr。
+macro_rules! error {
+    ($($argument:tt)*) => {{ std::eprintln!($($argument)*); }};
+}
+
 #[path = "../../../kernel/src/arch/dma.rs"]
 #[expect(
     dead_code,

@@ -25,31 +25,29 @@ mod platform;
 pub(crate) use native_runtime::{debug, error, info, warn};
 
 use native_runtime::Startup;
+use native_runtime::executor::Executor;
 
 native_runtime::entry!(main);
 
 /// 装配顺序：
 ///
 /// 1. 取回启动句柄，解码平台设备事实；
-/// 2. 枚举节点并匹配驱动，每个节点启动一个监督线程（宿主并发启动，设备按节点顺序并入目录）；
-/// 3. 全部节点完成初始枚举后标记目录枚举完成。main 线程随后退出（只结束本线程）。
+/// 2. 枚举节点并匹配驱动，每个节点一个监督任务（宿主并发启动，设备按节点顺序并入目录）；
+/// 3. 全部节点完成初始枚举后标记目录枚举完成，main 线程随后只运行 executor。
 fn main(mut startup: Startup) -> i64 {
     let device_tree = handles::install(&mut startup);
     platform::initialize(&device_tree);
     drop(device_tree);
 
+    let executor = Executor::create().expect("driver-manager executor");
     let nodes = nodes::enumerate();
     let admission = host::Admission::new(nodes.len());
     for (index, bound) in nodes.into_iter().enumerate() {
         let gate = admission.clone();
-        let thread = native_runtime::thread::spawn(b"driver-supervisor", move || {
-            host::supervise(bound, index, gate);
-        })
-        .expect("driver host supervision thread");
-        drop(thread);
+        executor.spawn(host::supervise(executor, bound, index, gate));
     }
-    admission.wait_all();
+    executor.block_on(async move { admission.wait_all(executor).await });
     handles::directory().enumerated();
     info!("driver-manager: devices published");
-    native_runtime::task::exit_thread()
+    executor.run()
 }

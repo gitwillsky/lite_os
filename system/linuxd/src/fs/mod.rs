@@ -90,7 +90,7 @@ pub(crate) use linux_abi::open::{
     O_WRONLY,
 };
 pub(crate) use memfd::MemFile;
-pub(crate) use memory_file::MemoryFile;
+pub(crate) use memory_file::{MemoryFile, charged_pages as memory_file_pages};
 pub(crate) use mount::{
     CallerFiles, CreatedFileSystem, CurrentRequester, FileSystemType, MountEnvironment,
     MountRequest, Requester, get_filesystem_type, mount, mount_root, register_filesystem, remount,

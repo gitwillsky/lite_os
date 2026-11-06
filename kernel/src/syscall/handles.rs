@@ -174,6 +174,10 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
             ),
             _ => Err(native_abi::ERR_WRONG_TYPE),
         },
+        info::BTI => match &entry.object {
+            Object::Bti(bti) => write_info(call, &bti.info()),
+            _ => Err(native_abi::ERR_WRONG_TYPE),
+        },
         info::VMAR => match &entry.object {
             Object::Vmar(vmar) => {
                 let region = vmar.info();

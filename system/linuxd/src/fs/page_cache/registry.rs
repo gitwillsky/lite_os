@@ -15,7 +15,7 @@ fn files() -> &'static Mutex<FallibleMap<SharedFileId, Arc<CachedFile>>> {
 
 impl Drop for CachedFile {
     fn drop(&mut self) {
-        pager::unregister(self.key);
+        pager::retire(self.key, &self.object);
     }
 }
 

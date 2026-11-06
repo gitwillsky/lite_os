@@ -140,7 +140,10 @@ fn bind_gpu(base: usize, irq: u32) {
     )
     .expect("boot progress publication failed");
     register_device_interrupt(irq, device.irq_handler_for(), "virtio-gpu");
-    device_protocol::display::publish(crate::handles::directory(), device.clone())
+    // 主显示客户端（linuxd）断开后由宿主重新显示开机画面，直到下一个会话接管。
+    let fallback: Arc<dyn device_protocol::display::FallbackScene> =
+        Arc::new(crate::boot_screen::FallbackScene(BOOT_SCENE));
+    device_protocol::display::publish(crate::handles::directory(), device.clone(), Some(fallback))
         .unwrap_or_else(|status| panic!("virtio-gpu publication failed: {status}"));
 }
 

@@ -85,21 +85,15 @@ impl KobjectUevent {
         self.socket.as_fd()
     }
 
-    /// Drains all queued datagrams and reports whether a standard DRM hotplug
-    /// was observed. Draining to `EAGAIN` makes a resize storm latest-wins
-    /// without inventing a second debounce timer.
-    ///
-    /// # Returns
-    ///
-    /// `true` when at least one exact `SUBSYSTEM=drm`, `HOTPLUG=1` event was
-    /// present.
+    /// Drains all queued datagrams, handing each parsed kernel uevent to
+    /// `visit`. Draining to `EAGAIN` makes a storm latest-wins without a
+    /// second debounce timer.
     ///
     /// # Errors
     ///
     /// Returns a non-`EAGAIN` receive failure.
     #[cfg(target_os = "linux")]
-    pub fn drain_drm_hotplug(&self) -> io::Result<bool> {
-        let mut found = false;
+    pub fn drain(&self, mut visit: impl FnMut(&Uevent<'_>)) -> io::Result<()> {
         let mut bytes = [0u8; EVENT_CAPACITY];
         loop {
             let length = unsafe {
@@ -113,48 +107,84 @@ impl KobjectUevent {
             if length < 0 {
                 let error = io::Error::last_os_error();
                 if error.kind() == io::ErrorKind::WouldBlock {
-                    return Ok(found);
+                    return Ok(());
                 }
                 return Err(error);
             }
             if length == 0 {
-                return Ok(found);
+                return Ok(());
             }
-            found |= is_drm_hotplug(&bytes[..length as usize]);
+            visit(&Uevent::parse(&bytes[..length as usize]));
         }
     }
 
     /// Non-Linux hosts cannot receive a Linux kobject datagram.
     #[cfg(not(target_os = "linux"))]
-    pub fn drain_drm_hotplug(&self) -> io::Result<bool> {
-        Ok(false)
+    pub fn drain(&self, _visit: impl FnMut(&Uevent<'_>)) -> io::Result<()> {
+        Ok(())
     }
 }
 
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
 
-#[cfg(any(target_os = "linux", test))]
-fn is_drm_hotplug(bytes: &[u8]) -> bool {
-    let mut drm = false;
-    let mut hotplug = false;
-    for field in bytes.split(|byte| *byte == 0) {
-        drm |= field == b"SUBSYSTEM=drm";
-        hotplug |= field == b"HOTPLUG=1";
+/// The standard fields of one kernel uevent (`KEY=value` records after the
+/// `action@devpath` header).
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct Uevent<'a> {
+    pub action: &'a [u8],
+    pub subsystem: &'a [u8],
+    /// Path relative to `/dev`, e.g. `input/event3`; empty when absent.
+    pub devname: &'a [u8],
+    /// `HOTPLUG=1` (DRM connector change).
+    pub hotplug: bool,
+}
+
+impl<'a> Uevent<'a> {
+    #[cfg(any(target_os = "linux", test))]
+    fn parse(bytes: &'a [u8]) -> Self {
+        let mut event = Self::default();
+        for field in bytes.split(|byte| *byte == 0) {
+            if let Some(value) = field.strip_prefix(b"ACTION=") {
+                event.action = value;
+            } else if let Some(value) = field.strip_prefix(b"SUBSYSTEM=") {
+                event.subsystem = value;
+            } else if let Some(value) = field.strip_prefix(b"DEVNAME=") {
+                event.devname = value;
+            } else if field == b"HOTPLUG=1" {
+                event.hotplug = true;
+            }
+        }
+        event
     }
-    drm && hotplug
+
+    /// A standard DRM connector hotplug.
+    pub fn is_drm_hotplug(&self) -> bool {
+        self.subsystem == b"drm" && self.hotplug
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::is_drm_hotplug;
+    use super::Uevent;
 
     #[test]
     fn requires_both_standard_drm_hotplug_fields() {
-        assert!(is_drm_hotplug(
-            b"change@/devices/card0\0ACTION=change\0SUBSYSTEM=drm\0HOTPLUG=1\0"
-        ));
-        assert!(!is_drm_hotplug(b"SUBSYSTEM=drm\0ACTION=change\0"));
-        assert!(!is_drm_hotplug(b"SUBSYSTEM=input\0HOTPLUG=1\0"));
+        assert!(
+            Uevent::parse(b"change@/devices/card0\0ACTION=change\0SUBSYSTEM=drm\0HOTPLUG=1\0")
+                .is_drm_hotplug()
+        );
+        assert!(!Uevent::parse(b"SUBSYSTEM=drm\0ACTION=change\0").is_drm_hotplug());
+        assert!(!Uevent::parse(b"SUBSYSTEM=input\0HOTPLUG=1\0").is_drm_hotplug());
+    }
+
+    #[test]
+    fn input_events_carry_action_and_device_name() {
+        let event = Uevent::parse(
+            b"remove@/devices/virtual/input/input2/event2\0ACTION=remove\0SUBSYSTEM=input\0DEVNAME=input/event2\0",
+        );
+        assert_eq!(event.action, b"remove");
+        assert_eq!(event.subsystem, b"input");
+        assert_eq!(event.devname, b"input/event2");
     }
 }

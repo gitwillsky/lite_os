@@ -85,7 +85,11 @@ pub(crate) fn serve_control(network: Arc<Network>, control: Channel) -> Result<(
 }
 
 impl InstallerService for Network {
-    fn install_device(&self, description: Vec<u8>, handles: Vec<Handle>) -> Result<u32, Status> {
+    fn install_device(
+        &self,
+        description: Vec<u8>,
+        handles: Vec<Handle>,
+    ) -> Result<(u32, Channel), Status> {
         let device = device_protocol::network::connect(
             OpenedDevice {
                 class: Class::Network,
@@ -95,10 +99,13 @@ impl InstallerService for Network {
             &self.hub,
         )?;
         device.bind_activity(crate::worker::device_activity()?);
-        inet::install_interface(&self.default, device).map_err(|error| match error {
-            SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
-            _ => native_abi::ERR_NO_RESOURCES,
-        })
+        let (lifetime, held) = Channel::create()?;
+        let index =
+            inet::install_interface(&self.default, device, held).map_err(|error| match error {
+                SocketError::NoMemory => native_abi::ERR_NO_MEMORY,
+                _ => native_abi::ERR_NO_RESOURCES,
+            })?;
+        Ok((index, lifetime))
     }
 }
 

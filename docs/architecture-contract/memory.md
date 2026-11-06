@@ -73,7 +73,23 @@ COW 生命周期回归执行生产 VMO，覆盖重复快照/退出、有存活�
   真实 FAIL 只影响该次请求，下一次访问可独立重试。记录在登记与最后等待者均退休后释放；无新锁或全局索引。
   正常投递不增加分配或锁；出口拒绝只在原树事务中回收既有节点，错误路径由实际 VMO fixture 覆盖，不另设吞吐 benchmark。
 - supply 复用源页节点，先保证目标与源窗口合法、源页完整且未固定；目标已存在的页保持不变。
-- dirty/writeback 与写保护遵循同一树/映射契约，回写开始后的新写入重新置脏。
+  移交前先撤销源对象的映射并完成 fence（两棵树锁全程持有），反序会让重复供页的源页在仍被映射时释放。
+- 缩小 VMO 时，越过新末尾的读取请求以“已完成”结束（Zircon `InvalidateReadRequestsLocked`），等待者回到解析循环
+  按新大小判定越界；之后重新增长得到新的请求。
+- 内容 owner 退休前先 `OP_DETACH`（Zircon `pager_detach_vmo`）：在途请求以 `ERR_IO` 结束，之后的缺页不再请求而直接
+  失败，迟到的请求 packet 可以忽略。缺失时仍存活的 VMO 副本或子对象会把请求投给不再处理它的服务，等待者永久睡眠。
+- port 出队与交付是一个事务：出队保留该 packet 的队列空位，复制给调用者在队列锁外进行，失败时无分配地放回队首；
+  缺失时复制失败会永久丢失 pager 请求 packet。
+- dirty/writeback 与写保护遵循同一树/映射契约，回写开始后的新写入重新置脏。页的回写状态为 Clean → Dirty（写入）
+  → AwaitingClean（`OP_WRITEBACK_BEGIN`）→ Clean（`OP_WRITEBACK_END`，存储确认之后）；直写后同步进缓存的区间一次
+  完成两步。只有 Clean 且未固定的页可被淘汰；缺失 AwaitingClean 时回写读取前被淘汰的页会从存储补回旧内容，修改丢失。
+- 淘汰（`vm::vmo::reclaim`）只在用户缺页的异常入口执行：此处不持任何内核锁，树锁只 `try_lock`，被占用的树跳过。
+  先 `zap` 本对象、COW 子孙与 slice 子对象的翻译并完成 fence，再释放页框；slice 因此登记在父对象的 `children` 中。
+  每个 PageSource 必须为任何缺页请求补页或 `OP_FAIL`，不能以“内容已存在”跳过：tmpfs/memfd 对已计费的页重新补零页
+  （内存文件从不回写，可淘汰的只有从未写过的零页）。
+  在分配失败的现场回收会在持地址空间锁时再取同一把锁。内存压力事件（`SYSTEM_GET_EVENT`，system 授权 `MEMORY`）
+  只可等待，`MEMORY_PRESSURE`/`MEMORY_NORMAL` 互斥置位，由同一入口在回收后切换。Benchmark 决策：无压力时每次缺页
+  只多读两个 Relaxed 标志；淘汰的成本只在压力下出现、每次有上限，不另设基准。
 - FaultSource 是单次解析结果：是否等待过 pager，不能作为持久 residency cache。只有成功安装翻译并完成 fence
   的 restricted fault 才进入线程统计。normal mode 服务缺页和失败解析不混入该计数。
 - restricted fault/pager-wait 计数与既有线程状态同锁更新，无新锁、分配或页级影子索引；native runtime

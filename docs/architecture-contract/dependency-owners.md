@@ -40,6 +40,11 @@ netcfg、dhcp-client、linuxd 适配层与 Linux 侧的 `network-config` 共用�
 
 ## 服务拓扑与能力路由
 
+线程模型：等待多个来源（子进程终止、目录变化、路由连接）的监督者与路由器在单线程 `native_runtime::executor`
+上以 async 任务推进（component-manager、driver-manager），或以单个 port 事件循环推进（netcfg）；任务内只做短的
+同步 RPC，不在任务内等待设备 I/O。设备、文件系统与协议服务的阻塞工作保持每连接（会话）一个服务线程，
+音频混音等实时工作保留独立线程。缺失该划分时一个慢来源会阻塞同一监督者的其他来源，或把阻塞 I/O 带进 executor。
+
 1. 每个原生服务启动时得到 outgoing 服务目录的服务端（`service_directory`），按协议名接受连接；component-manager 持有各
    outgoing 的客户端，并为每个消费者服务一条路由目录：只转发该消费者声明使用的协议（component-manager 的 `ROUTES` 与各
    `*_USES` 表，对应 Fuchsia 的 `expose`/`use`），未声明的协议返回 `ERR_ACCESS_DENIED`。
@@ -52,13 +57,15 @@ netcfg、dhcp-client、linuxd 适配层与 Linux 侧的 `network-config` 共用�
    终止即关机。被依赖的服务重启期间，component-manager 让新的连接请求等待新实例就绪；消费者在 `PEER_CLOSED` 后重连。
    driver-manager 以同一判定监督各驱动宿主，fshost 监督 ext4 实例（见 6、7）。
 5. 重启后的状态恢复由各使用者负责：netcfg 重新安装网卡并重新配置；linuxd 为存活网络域重建协议实例，旧 socket
-   以 `ENETDOWN` 失败；默认网络随 netstack 存续，linuxd 重启不影响接口配置。audio-core 重启后 linuxd 不重连，
-   已有声卡报告断开，直到 linuxd 重启（当前限制）。
+   以 `ENETDOWN` 失败；默认网络随 netstack 存续，linuxd 重启不影响接口配置。audio-core 重启后 linuxd 重连新实例：
+   旧声卡的渲染流随旧实例关闭而断开，新实例的输出作为新卡登记（与声卡重新插入一致）。
 6. 驱动框架（Fuchsia DFv2）：driver-manager 拥有根 resource、DTB/PCI 平台事实与节点拓扑，为每个节点在独立 Job 中
    启动一个 `driver-host`，只交付该节点的 MMIO/IRQ resource 与 BTI；各宿主在自己的设备目录发布设备，driver-manager
    以转发条目汇聚成唯一设备目录，并按节点顺序并入初始枚举（使用者按登记顺序命名设备）。驱动声明
-   `restart_on_crash` 时宿主终止后重建，否则节点移除。当前只有熵源声明：网卡、输入、声音、console 端口的使用者
-   尚无设备移除语义。
+   `restart_on_crash` 时宿主终止后重建，否则节点移除。声明的驱动其使用者都在会话 `PEER_CLOSED` 时撤下设备、
+   接入新登记的设备：熵源、声音、输入（evdev 节点移除并发 remove/add uevent）、console 端口（节点以新会话
+   重新发布）与网卡（netstack 移除接口并关闭其 lifetime channel，netcfg 丢弃记录后重新安装）。块设备、显示与
+   USB 主控不声明。
 7. fshost 为每块盘启动一个 ext4 实例；同盘再次挂载交给同一实例，实例按超级块 UUID 串行化会话。原生数据卷独占
    一个实例，其终止使 fshost 失败停机。
 

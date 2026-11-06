@@ -135,6 +135,18 @@ impl TaskControlBlock {
 
 // Process 生命周期内唯一投影；graph/proc observer 不保活任何 TCB。
 impl super::Process {
+    /// 把本进程地址空间的映射并入 `/proc/meminfo` 的系统级分类；无地址空间时不计。
+    pub(in crate::task) fn classify_mapped_memory(
+        &self,
+        seen: &mut alloc::vec::Vec<usize>,
+        totals: &mut crate::memory::MappedMemory,
+    ) -> Result<(), ()> {
+        match self.process_address_space() {
+            Some(mm) => mm.classify_mapped_memory(seen, totals).map_err(|_| ()),
+            None => Ok(()),
+        }
+    }
+
     pub(in crate::task) fn process_statistics(
         &self,
         threads: &[Arc<TaskControlBlock>],

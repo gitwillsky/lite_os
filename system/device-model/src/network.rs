@@ -9,6 +9,8 @@ pub enum NetworkError {
     FrameTooLarge,
     /// transport、queue 或设备返回了不可恢复错误。
     Device,
+    /// 设备会话已关闭（驱动宿主终止或网卡被移除）；使用者撤下该接口。
+    Disconnected,
 }
 
 /// 唯一 Ethernet adapter owner 投影的累计 counters。

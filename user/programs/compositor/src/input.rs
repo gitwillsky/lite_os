@@ -1,8 +1,16 @@
 //! evdev → 语义输入事件：指针位置（绝对与相对设备共用一个指针）、按钮与按键。
 
-use std::{fs, io, path::Path};
+use std::{
+    fs, io,
+    os::fd::BorrowedFd,
+    path::{Path, PathBuf},
+};
 
 use linux_uapi::input::{AbsoluteAxis, AbsoluteRange, InputDevice, InputEvent};
+use linux_uapi::kobject::KobjectUevent;
+
+/// Linux `ENODEV`：设备已移除（evdev OFD 被撤销）。
+const ENODEV: i32 = 19;
 
 const EV_SYN: u16 = 0;
 const EV_KEY: u16 = 1;
@@ -203,19 +211,49 @@ impl Decoder {
     }
 }
 
-/// 全部输入设备与共享的指针。
+/// 一个已打开的输入设备。
+struct Device {
+    path: PathBuf,
+    device: InputDevice,
+    decoder: Decoder,
+}
+
+/// 全部输入设备与共享的指针；设备随 `input` uevent 热插拔（Linux udev/libinput 的同一标准通知）。
 pub struct Input {
-    devices: Vec<(InputDevice, Decoder)>,
+    directory: PathBuf,
+    devices: Vec<Device>,
+    // 读取报告已移除的设备；本轮全部读取结束后统一丢弃，保持读取期间下标稳定。
+    removed: Vec<usize>,
+    uevents: Option<KobjectUevent>,
     pointer: Pointer,
 }
 
+fn open_device(path: &Path) -> io::Result<Device> {
+    let device = InputDevice::open(path)?;
+    // 能报告 ABS_X/ABS_Y 量程的是绝对指针设备（触摸板/平板）。
+    let ranges = match (
+        device.absolute_range(AbsoluteAxis::X),
+        device.absolute_range(AbsoluteAxis::Y),
+    ) {
+        (Ok(x), Ok(y)) if x.maximum > x.minimum && y.maximum > y.minimum => Some([x, y]),
+        _ => None,
+    };
+    Ok(Device {
+        path: path.to_path_buf(),
+        device,
+        decoder: Decoder::new(ranges),
+    })
+}
+
 impl Input {
-    /// 打开 `directory` 下所有 `event*` 设备。
+    /// 订阅输入设备的 uevent，再打开 `directory` 下现有的全部 `event*` 设备；先订阅保证扫描之后
+    /// 登记的设备不会漏掉（重复的 add 按路径去重）。
     ///
     /// # Errors
     ///
-    /// 目录不可读或设备无法打开。没有任何设备不是错误（无头运行）。
+    /// 目录不可读或设备无法打开。没有任何设备不是错误（无头运行）；没有 netlink 时不观察热插拔。
     pub fn open(directory: &Path, width: i32, height: i32) -> io::Result<Self> {
+        let uevents = KobjectUevent::open().ok();
         let mut paths: Vec<_> = fs::read_dir(directory)?
             .filter_map(Result::ok)
             .map(|entry| entry.path())
@@ -227,19 +265,13 @@ impl Input {
         paths.sort();
         let mut devices = Vec::new();
         for path in paths {
-            let device = InputDevice::open(&path)?;
-            // 能报告 ABS_X/ABS_Y 量程的是绝对指针设备（触摸板/平板）。
-            let ranges = match (
-                device.absolute_range(AbsoluteAxis::X),
-                device.absolute_range(AbsoluteAxis::Y),
-            ) {
-                (Ok(x), Ok(y)) if x.maximum > x.minimum && y.maximum > y.minimum => Some([x, y]),
-                _ => None,
-            };
-            devices.push((device, Decoder::new(ranges)));
+            devices.push(open_device(&path)?);
         }
         Ok(Self {
+            directory: directory.to_path_buf(),
             devices,
+            removed: Vec::new(),
+            uevents,
             pointer: Pointer::new(width, height),
         })
     }
@@ -249,21 +281,70 @@ impl Input {
     }
 
     pub fn devices(&self) -> impl Iterator<Item = &InputDevice> {
-        self.devices.iter().map(|(device, _)| device)
+        self.devices.iter().map(|device| &device.device)
     }
 
-    /// 读空第 `index` 个设备当前可读的事件。
+    /// 热插拔订阅的描述符，加入主循环的 poll。
+    pub fn uevent_fd(&self) -> Option<BorrowedFd<'_>> {
+        self.uevents.as_ref().map(KobjectUevent::as_fd)
+    }
+
+    /// 处理排队的 `input` uevent：`add` 打开新设备，`remove` 丢弃对应设备。
     ///
     /// # Errors
     ///
-    /// 读取失败（非 `WouldBlock`）。
+    /// netlink 接收失败。新设备打开失败只跳过该设备（它可能已再次移除）。
+    pub fn handle_uevents(&mut self) -> io::Result<()> {
+        let Some(uevents) = &self.uevents else {
+            return Ok(());
+        };
+        let mut changes = Vec::new();
+        uevents.drain(|event| {
+            if event.subsystem == b"input"
+                && let Some(name) = event.devname.strip_prefix(b"input/")
+                && name.starts_with(b"event")
+            {
+                changes.push((
+                    event.action == b"add",
+                    self.directory.join(String::from_utf8_lossy(name).as_ref()),
+                ));
+            }
+        })?;
+        for (added, path) in changes {
+            let existing = self.devices.iter().position(|device| device.path == path);
+            match (added, existing) {
+                (true, None) => {
+                    if let Ok(device) = open_device(&path) {
+                        self.devices.push(device);
+                    }
+                }
+                (false, Some(index)) => {
+                    self.devices.remove(index);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    /// 读空第 `index` 个设备当前可读的事件；设备已移除时记下它，由 [`Self::prune`] 丢弃。
+    ///
+    /// # Errors
+    ///
+    /// 读取失败（非 `WouldBlock`、非设备移除）。
     pub fn drain(&mut self, index: usize, out: &mut Vec<Event>) -> io::Result<()> {
-        let (device, decoder) = &mut self.devices[index];
+        let Device {
+            device, decoder, ..
+        } = &mut self.devices[index];
         let mut buffer = [InputEvent::EMPTY; 64];
         loop {
             let count = match device.read_events(&mut buffer) {
                 Ok(count) => count,
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => return Ok(()),
+                Err(error) if error.raw_os_error() == Some(ENODEV) => {
+                    self.forget(index);
+                    return Ok(());
+                }
                 Err(error) => return Err(error),
             };
             for event in &buffer[..count] {
@@ -278,6 +359,21 @@ impl Input {
             if count < buffer.len() {
                 return Ok(());
             }
+        }
+    }
+
+    /// poll 报告第 `index` 个设备挂断（已移除）：本轮结束后丢弃。
+    pub fn forget(&mut self, index: usize) {
+        if !self.removed.contains(&index) {
+            self.removed.push(index);
+        }
+    }
+
+    /// 丢弃本轮记下的已移除设备。
+    pub fn prune(&mut self) {
+        self.removed.sort_unstable();
+        for index in self.removed.drain(..).rev() {
+            self.devices.remove(index);
         }
     }
 }

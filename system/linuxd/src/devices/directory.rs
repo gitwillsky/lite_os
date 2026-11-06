@@ -41,8 +41,9 @@ fn attach(
         Class::Input => {
             let device = input::connect(announcement, hub)?;
             let name = device.name().to_vec();
-            // 注册顺序即 evdev minor：`/dev/input/event<index>` 绑定到这个设备。
-            if let Ok(index) = device_model::register_input_device(device) {
+            // 接入顺序即 evdev minor：`/dev/input/event<index>` 绑定到这个设备；运行期接入的设备（驱动宿主
+            // 重启后重新出现）同样登记并发布 `add` uevent。
+            if let Ok(index) = super::input::attach(device) {
                 info!(
                     "input event{index}: {}",
                     core::str::from_utf8(&name).unwrap_or("<non-utf8>")
@@ -50,7 +51,10 @@ fn attach(
             }
         }
         Class::Port => {
-            let _ = device_model::register_port_device(port::connect(announcement, hub)?);
+            // 驱动宿主重启后端口以新会话重新出现，替换旧会话并重新发布节点。
+            if super::virtio_port::attach(port::connect(announcement, hub)?).is_err() {
+                error!("virtio port attach failed");
+            }
         }
         Class::Entropy => {
             let _ = device_model::register_entropy_source(entropy::connect(announcement)?);

@@ -27,10 +27,27 @@ struct State {
 
 struct PageCharge(Arc<StorageBudget>);
 
+// OWNER: 全部 tmpfs/memfd 已计费页数（`/proc/meminfo` 的 Shmem），随 PageCharge 构造与析构增减；
+// 只作统计、不参与配额判定。缺失时只能逐个遍历全部文件，或把未映射的 tmpfs 页漏出 Shmem。
+static CHARGED_PAGES: AtomicUsize = AtomicUsize::new(0);
+
+impl PageCharge {
+    fn new(budget: Arc<StorageBudget>) -> Self {
+        CHARGED_PAGES.fetch_add(1, Ordering::Relaxed);
+        Self(budget)
+    }
+}
+
 impl Drop for PageCharge {
     fn drop(&mut self) {
+        CHARGED_PAGES.fetch_sub(1, Ordering::Relaxed);
         self.0.release_page();
     }
+}
+
+/// tmpfs/memfd 内容占用的页数。
+pub(crate) fn charged_pages() -> usize {
+    CHARGED_PAGES.load(Ordering::Relaxed)
 }
 
 /// tmpfs/memfd 文件内容。
@@ -225,7 +242,7 @@ impl MemoryFile {
         if !self.budget.reserve_page() {
             return Err(FileSystemError::NoSpace);
         }
-        FallibleMap::try_prepare(index, PageCharge(self.budget.clone()))
+        FallibleMap::try_prepare(index, PageCharge::new(self.budget.clone()))
             .map_err(|_| FileSystemError::OutOfMemory)
     }
 
@@ -444,7 +461,7 @@ impl MemoryFile {
 
 impl Drop for MemoryFile {
     fn drop(&mut self) {
-        super::pager::unregister(self.key);
+        super::pager::retire(self.key, &self.object);
         // object 先于 state 析构：物理 VMO 退休后才由 PageCharge Drop 归还存储名额。
     }
 }
@@ -456,7 +473,13 @@ impl super::pager::PageSource for MemoryFile {
                 if index >= pages_for(self.size()) {
                     return Err(FileSystemError::InvalidOperation);
                 }
-                self.commit_page(&mut state, pager, index, aux)?;
+                // 已计费的页再次缺页：内核在内存紧张时淘汰了它。内存文件从不回写，能被淘汰的只有补入后
+                // 从未写过的零页，因此重新补零页；缺失时请求永远得不到 supply，访问者永久睡眠。
+                if state.pages.contains_key(&index) {
+                    self.supply_zero(pager, index, aux)?;
+                } else {
+                    self.commit_page(&mut state, pager, index, aux)?;
+                }
             }
             Ok(())
         });

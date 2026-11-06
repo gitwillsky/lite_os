@@ -85,6 +85,8 @@ pub(crate) trait ProcSource: Send + Sync {
         view: &crate::namespace::PidNamespace,
         number: u32,
     ) -> Option<ProcTaskIdentity>;
+    /// `/proc/meminfo` 的映射分类（跨进程去重）；只在读取 meminfo 时扫描全部地址空间。
+    fn mapped_memory(&self) -> Result<crate::memory::MappedMemory, FileSystemError>;
     /// 在一次读取边界取得自洽的只读快照。
     fn snapshot(
         &self,
@@ -491,7 +493,7 @@ impl ProcInode {
         let snapshot = self.source.snapshot(scope, &self.pid_namespace)?;
         match self.node {
             ProcNode::Stat => format_cpu_stat(&snapshot),
-            ProcNode::MemInfo => format_meminfo(&snapshot),
+            ProcNode::MemInfo => format_meminfo(&snapshot, &self.source.mapped_memory()?),
             ProcNode::BuddyInfo => format_buddyinfo(&snapshot),
             ProcNode::VmStat => format_vmstat(&snapshot),
             ProcNode::LoadAvg => format_loadavg(&snapshot),

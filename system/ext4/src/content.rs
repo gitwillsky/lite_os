@@ -103,7 +103,7 @@ impl Content {
                 .map_err(vmo_error)?;
             let first = offset & !(PAGE - 1);
             let last = (offset + written as u64).next_multiple_of(PAGE);
-            pager_pool::begin_writeback(&self.vmo, first, last - first);
+            pager_pool::mark_clean(&self.vmo, first, last - first);
         }
         Ok(written)
     }
@@ -124,7 +124,7 @@ impl Content {
             self.vmo
                 .write(&zeros[..(PAGE - tail) as usize], size)
                 .map_err(vmo_error)?;
-            pager_pool::begin_writeback(&self.vmo, size - tail, PAGE);
+            pager_pool::mark_clean(&self.vmo, size - tail, PAGE);
         }
         Ok(())
     }
@@ -165,6 +165,7 @@ impl Content {
                 let _ = self.vmo.write(&data, start);
                 return Err(FileSystemError::IoError);
             }
+            pager_pool::end_writeback(&self.vmo, start, chunk);
             cursor = start + chunk;
         }
         Ok(())
@@ -173,7 +174,7 @@ impl Content {
 
 impl Drop for Content {
     fn drop(&mut self) {
-        pager_pool::unregister(self.key);
+        pager_pool::retire(self.key, &self.vmo);
     }
 }
 

@@ -24,24 +24,28 @@ fn capture(interface: &NetworkInterface) -> InterfaceSnapshot {
         driver: interface.device.driver().map(DriverName::new),
     }
 }
-/// 把一块网卡安装为域的新以太网接口（名称 `eth<n>` 按安装顺序，初始 DOWN、无地址），返回接口序号。
-/// 接口随域存续；网卡会话的使用者（netcfg）在 netstack 重启后重新安装。
+/// 把一块网卡安装为域的新以太网接口（初始 DOWN、无地址），返回接口序号。
+///
+/// 序号单调分配、移除后不复用（与 Linux ifindex 一致，旧 SO_BINDTODEVICE/packet 绑定不会指向新网卡）；
+/// 名称取最小未用的 `eth<n>`。接口随网卡会话存续：会话关闭时移除接口并关闭 `lifetime`，
+/// 安装者（netcfg）在网卡重新出现或 netstack 重启后重新安装。
 pub(crate) fn install_interface(
     scope: &Namespace,
     device: alloc::sync::Arc<dyn device_model::network::NetworkDevice>,
+    lifetime: native_runtime::Channel,
 ) -> Result<u32, SocketError> {
     let mut network = stack(scope)?.lock()?;
-    // 第一个接口是回环；以太网序号即已安装以太网接口数。
-    let ordinal = u32::try_from(network.interfaces.len() - 1).map_err(|_| SocketError::NoSpace)?;
     network
         .interfaces
         .try_reserve(1)
         .map_err(|_| SocketError::NoMemory)?;
-    let interface = NetworkInterface::ethernet(scope.id(), ordinal, device)?;
-    let index = interface.index;
+    let index = network.next_ethernet_index;
+    let unit = network.free_ethernet_unit();
+    let interface = NetworkInterface::ethernet(scope.id(), index, unit, device, Some(lifetime))?;
     let route = RoutingTable::prepare_interface(index, interface.state)?;
     network.routing.replace_interface(index, route);
     network.interfaces.push(interface);
+    network.next_ethernet_index = index + 1;
     Ok(index)
 }
 

@@ -258,6 +258,15 @@ impl RoutingTable {
         }
         None
     }
+    /// NETDEV_UNREGISTER：退休该接口的地址routes与全部用户routes。
+    pub(super) fn remove_interface(&mut self, index: u32) {
+        for aliases in &mut self.prefixes {
+            aliases.retain(|_, record| {
+                record.origin != Origin::Interface(index) && record.interface_index != Some(index)
+            });
+        }
+        self.reindex_prefixes();
+    }
     /// NETDEV_DOWN/最后地址删除按native nexthop scope退休用户routes；再次UP不复活旧static配置。
     pub(super) fn device_down(&mut self, index: u32, force: bool) {
         for aliases in &mut self.prefixes {

@@ -1,6 +1,7 @@
 #![feature(allocator_ext)]
 extern crate alloc;
 macro_rules! error { ($($message:tt)*) => { std::eprintln!($($message)*) }; }
+macro_rules! info { ($($message:tt)*) => { std::eprintln!($($message)*) }; }
 // Native events are host notification inputs; all protocol/queue/lifetime decisions execute netstack.
 extern crate self as native_runtime;
 pub use native_abi;
@@ -10,6 +11,8 @@ pub use native_abi;
     reason = "partial host scheduler seam; IRQ, deadline and readiness owners are tested by their own fixtures"
 )]
 mod sync;
+/// 安装协议交出的接口 lifetime channel；host 夹具只经初始网卡装配，不构造它。
+pub(crate) struct Channel;
 #[derive(Default)]
 pub(crate) struct Event(core::sync::atomic::AtomicU32);
 impl Event {

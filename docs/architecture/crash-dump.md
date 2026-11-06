@@ -10,6 +10,8 @@ owner 为 `kernel/src/crash/`，panic handler 只转交它。
 RAM 顶端保留记录区在 frame allocator 发布前排除，包含版本、长度和校验。下一次 boot 校验、复制后作废原区。
 内核经 native system-info `CRASH_LOG` 提供只读摘要；linuxd 缓存读取结果并经 `/proc/last_panic` 呈现。
 当前内核无 GPU/scanout owner，不绘制蓝屏。设备/服务失败与内核 panic 的监督路径不同。
+桌面会话开始时外壳启动 `/bin/savedump`（Windows 2000 `savedump.exe`）：记录非空时显示“系统已从严重错误中恢复”
+及记录首行，每次启动只提示一次（`/tmp` 标记）。
 
 boot CPU 的硬中断 tick 检查内核 deferred 进展；有 tick 而工作长时间不前进触发软 watchdog。
 全部 CPU 屏蔽 IRQ 的死锁无法由该机制发现。记录只跨 warm reset 存活，宿主销毁 VM 会丢失 RAM；它是文本摘要，不是完整内存转储。

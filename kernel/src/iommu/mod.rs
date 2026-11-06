@@ -11,10 +11,16 @@
 //! 1. `map`：首次使用某 stream 时创建 domain 并绑定；在 IOVA 空间中首次适配一段连续区间，逐页映射。
 //! 2. `unmap`：撤销页表项，硬件失效完成后才释放页表页与 IOVA 区间；调用者（PMT）随后才解除页固定，
 //!    设备因此不可能访问已释放的物理页。
+//!
+//! # 故障记录
+//!
+//! 硬件把被中止的设备访问写入故障队列（不接中断）。`map`、`unmap` 与 [`IommuBackend::faults`] 在 domain 锁内
+//! 排空队列，按 stream 累计；日志只在某 stream 的第 1、2、4、8… 次故障时输出一行，持续越界的设备不会刷屏。
+//! 计数只用于诊断，不改变设备或映射状态。
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU16, Ordering};
+use core::sync::atomic::{AtomicU16, AtomicU64, Ordering};
 
 use native_abi::Status;
 
@@ -38,6 +44,8 @@ pub(crate) trait IommuBackend: Send + Sync {
     ) -> Result<(), Status>;
     /// 撤销映射并在返回前完成设备侧 TLB 失效。
     fn unmap(&self, stream: u32, addresses: &[u64]);
+    /// 排空故障队列后返回该 stream 累计的设备访问故障数。
+    fn faults(&self, stream: u32) -> u64;
 }
 
 /// 无 IOMMU：设备地址等于物理地址。
@@ -63,6 +71,10 @@ impl IommuBackend for IdentityIommu {
     }
 
     fn unmap(&self, _stream: u32, _addresses: &[u64]) {}
+
+    fn faults(&self, _stream: u32) -> u64 {
+        0
+    }
 }
 
 use crate::arch::dma::{DmaFrame, Translation as Hardware};
@@ -81,6 +93,8 @@ struct Domain {
     space: DeviceAddressSpace,
     // OWNER: 已分配的 IOVA 区间（起始页 → 页数）；首次适配查找空隙。
     allocated: FallibleMap<usize, usize>,
+    // 本 stream 被硬件中止的设备访问数；只在 domain 锁内由排空累加。
+    faults: u64,
 }
 
 /// 设备地址空间的页范围：零页保留（空设备地址总是故障）。
@@ -94,6 +108,8 @@ struct Iommu<H> {
     domains: TaskMutex<FallibleMap<u32, Domain>>,
     // OWNER: 单调 domain tag，不回绕或复用；耗尽保持错误，避免旧设备翻译命中新 domain。
     last_domain: AtomicU16,
+    // 无法归属 domain 的故障与队列溢出次数；只在 domain 锁内累加，按 2 的幂限速日志。
+    unattributed: AtomicU64,
 }
 
 impl<H: Hardware> Iommu<H> {
@@ -106,6 +122,32 @@ impl<H: Hardware> Iommu<H> {
             cursor = start + length;
         }
         (END_PAGE - cursor >= count).then_some(cursor)
+    }
+
+    /// 排空硬件故障队列并按 stream 累计；调用者持有 domain 锁。
+    fn drain(&self, domains: &mut FallibleMap<u32, Domain>) {
+        let unattributed = |what: &str, stream: u32, address: u64| {
+            let count = self.unattributed.fetch_add(1, Ordering::Relaxed) + 1;
+            if count.is_power_of_two() {
+                error!("IOMMU {what}: stream {stream:#x} address {address:#x} (#{count})");
+            }
+        };
+        let overflowed = self.hardware.drain_faults(&mut |stream, address| {
+            let Some(domain) = domains.get_mut(&stream) else {
+                unattributed("fault on unattached stream", stream, address);
+                return;
+            };
+            domain.faults += 1;
+            if domain.faults.is_power_of_two() {
+                error!(
+                    "IOMMU fault: stream {stream:#x} device address {address:#x} (#{})",
+                    domain.faults
+                );
+            }
+        });
+        if overflowed {
+            unattributed("fault queue overflow", 0, 0);
+        }
     }
 }
 
@@ -121,6 +163,7 @@ impl<H: Hardware> IommuBackend for Iommu<H> {
             .try_reserve_exact(pages.len())
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
         let mut domains = self.domains.lock().map_err(|_| native_abi::ERR_NO_MEMORY)?;
+        self.drain(&mut domains);
         if !domains.contains_key(&stream) {
             let id = self
                 .last_domain
@@ -137,6 +180,7 @@ impl<H: Hardware> IommuBackend for Iommu<H> {
                     id,
                     space,
                     allocated: FallibleMap::new(),
+                    faults: 0,
                 },
             )
             .map_err(|_| native_abi::ERR_NO_MEMORY)?;
@@ -171,6 +215,7 @@ impl<H: Hardware> IommuBackend for Iommu<H> {
             .domains
             .lock()
             .unwrap_or_else(|_| panic!("IOMMU unmap cannot allocate a waiter"));
+        self.drain(&mut domains);
         let domain = domains
             .get_mut(&stream)
             .expect("unmapped stream has no domain");
@@ -178,6 +223,14 @@ impl<H: Hardware> IommuBackend for Iommu<H> {
         self.hardware.invalidate(domain.id, first, addresses.len());
         retired.release();
         domain.allocated.remove(&first);
+    }
+
+    fn faults(&self, stream: u32) -> u64 {
+        let Ok(mut domains) = self.domains.lock() else {
+            return 0;
+        };
+        self.drain(&mut domains);
+        domains.get(&stream).map_or(0, |domain| domain.faults)
     }
 }
 
@@ -200,6 +253,7 @@ pub(crate) fn create(kind: u32, descriptor: &[u8]) -> Result<Arc<dyn IommuBacken
         hardware,
         domains: TaskMutex::new(FallibleMap::new()),
         last_domain: AtomicU16::new(0),
+        unattributed: AtomicU64::new(0),
     })
     .map_err(|_| native_abi::ERR_NO_MEMORY)?;
     Ok(iommu)

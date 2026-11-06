@@ -352,5 +352,11 @@ pub const OBJECT_GET_CHILD: usize = 79;
 /// 调用者必须先使设备停止访问这些页（复位设备）；新的驱动实例接管同一设备时调用。
 pub const BTI_RELEASE_QUARANTINE: usize = 80;
 
+/// 取得系统事件（Zircon `zx_system_get_event`）。参数：`resource`（需覆盖对应的 system 操作）、
+/// `kind`（[`crate::system::EVENT_MEMORY_PRESSURE`]）、`out: *mut Handle`。
+///
+/// 句柄只可等待，不能置位。错误：`ERR_ACCESS_DENIED`（resource 不授权）、`ERR_NOT_SUPPORTED`（未知种类）。
+pub const SYSTEM_GET_EVENT: usize = 81;
+
 /// 编号上界（不含）。
-pub const COUNT: usize = 81;
+pub const COUNT: usize = 82;

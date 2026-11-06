@@ -33,5 +33,8 @@ native `ALLOW_FAULTS` 允许映射覆盖尚无 backing 的范围，实际访问�
 - DONTNEED/FREE 当前对私有页同步 decommit；FREE 不提供延迟回收的内容保留期。共享对象保持内容；没有物理 swap 或通用压力回收。
 - 没有 commit accounting、NUMA、userfaultfd、应用 huge page 或通用脏页压力政策。
 - 页缓存位于 linuxd，每个 inode 一个 VMO；外部文件通过 pager 线程池补页、dirty 查询与写回。NOWAIT 读当前仍可能阻塞，不声明非阻塞磁盘读取。
-- `/proc/swaps` 不存在，Swap 字段为 0。meminfo 的跨进程 AnonPages/Mapped/Shmem/Slab/KernelStack/PageTables 缺少汇总 owner，当前报告 0；MemAvailable=MemFree。
+- `/proc/swaps` 不存在，Swap 字段为 0。meminfo 的 AnonPages（私有匿名与私有文件映射的 COW 页）、Mapped（共享映射）由 linuxd 按全部存活进程的 VMA
+  后备对象去重求和；Shmem 为共享匿名/已附加 SysV 段的驻留页加 tmpfs/memfd 已计费页（未附加的 SysV 段不计）；Slab/KernelStack/PageTables 取内核
+  `MEMORY_STATS`（内核堆、已映射内核栈、CPU 与设备页表）。MemAvailable = MemFree + 干净页缓存（可被淘汰），vmstat 的 `pgscan_direct`/`pgsteal_direct`
+  为累计淘汰页数。私有文件映射中未复制的文件页属于文件对象，不计入 Mapped。
 - getrusage 的缺页计数来自成功 restricted-mode trap：minor=全部成功故障减 pager 等待，major=pager 等待。normal-mode user-copy 不在该计数中；不以块设备读取量伪造缺页次数。

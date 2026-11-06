@@ -215,6 +215,9 @@ dump 惰性生成：请求只冻结快照与游标，`recvmsg` 时按接收缓�
 改 MAC/txqlen 等其他链路属性与混杂/全组播等标志位；blackhole/prohibit/anycast/multicast 路由类型、多路径、源地址/TOS 路由、`RTAX_MTU` 等其他度量；
 邻居、规则、qdisc 等其他对象；非 dump 的 `RTM_GETADDR/GETROUTE`（含 `ip route get`）；多播订阅（bind 的 `nl_groups` 非零，`ip monitor`）；IPv6 地址族（dump 为空，修改 `EAFNOSUPPORT`）。
 
+网卡移除（驱动宿主终止）按 NETDEV_UNREGISTER：接口及其地址/路由从 dump 中消失，绑定该 ifindex 的 AF_PACKET socket 解绑并报告 `ENETDOWN`（`POLLERR`）；
+ifindex 不复用，`SO_BINDTODEVICE` 到已移除接口的 socket 无路由可选。因不支持组播订阅，不发 `RTM_DELLINK`/`RTM_NEWLINK` 通知。
+
 `SOL_SOCKET/SO_ACCEPTCONN` 对照固定 Linux `net/core/sock.c::sk_getsockopt` 的 TCP_LISTEN 判定，支持四字节整数查询：仅实际处于 Listening 的 AF_UNIX/IPv4 TCP endpoint 返回 1，
 新建 stream、已 accept 的连接及无监听语义的协议返回 0；短输出长度仍沿用通用 getsockopt codec。
 会话门禁的 Linux C consumer 覆盖 UNIX/IPv4 TCP 的初始、listen、accept 与 UDP/socketpair 查询。

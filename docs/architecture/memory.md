@@ -47,6 +47,8 @@ SIGSEGV/SIGBUS 或扩展 GROWS_DOWN。成功解决的 restricted 缺页及其中
 
 ## 当前限制
 
-没有换出服务，也没有旧内核 swap、后台 reclaim 或 memory-pressure 实现。`swapon`/`swapoff` 明确返回 ENOSYS，
+不做匿名页换出（与 Fuchsia 一致）。空闲页低于低水位（容量 1/64，至少 256 页）时，用户缺页入口同步淘汰 pager
+支撑 VMO 的 Clean 页（每次至多 256 页，回到 1.5 倍低水位即停），之后访问由 pager 从存储补回；仍不足时内存压力事件
+置位，component-manager 记录等级变化。没有后台回收线程：长时间无缺页时压力事件保持最近状态。`swapon`/`swapoff` 明确返回 ENOSYS，
 `/proc/swaps` 不存在，Swap 字段为零。用户可观察的内存统计、NOWAIT、RSS 与 fault accounting 边界以
 [内存 ABI](../syscall-support/memory.md)及[进程 ABI](../syscall-support/process-identity.md)为准。

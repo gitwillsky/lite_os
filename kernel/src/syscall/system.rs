@@ -17,6 +17,72 @@ fn require_resource(call: &Call<'_>, operation: u64) -> Result<(), Status> {
     }
 }
 
+// OWNER: 内存压力事件（Zircon `ZX_SYSTEM_EVENT_MEMORY_PRESSURE`），首次请求时创建，之后所有句柄共享；
+// 只由 [`relieve_memory_pressure`] 改变 signal。
+static MEMORY_PRESSURE: spin::Once<alloc::sync::Arc<crate::object::Event>> = spin::Once::new();
+// FLAG: 最近一次回收后仍处于压力；缺失时压力解除后缺页入口无从得知需要把事件切回 USER_1。
+static UNDER_PRESSURE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+fn pressure_signals(pressure: bool) -> (u32, u32) {
+    use native_abi::system::{MEMORY_NORMAL, MEMORY_PRESSURE};
+    if pressure {
+        (MEMORY_NORMAL, MEMORY_PRESSURE)
+    } else {
+        (MEMORY_PRESSURE, MEMORY_NORMAL)
+    }
+}
+
+/// 用户缺页入口（不持任何内核锁）：内存紧张时先淘汰干净的文件页，再按结果切换压力事件。
+pub(super) fn relieve_memory_pressure() {
+    use crate::object::KernelObject;
+    use core::sync::atomic::Ordering;
+    if !crate::memory::frame_allocator::under_pressure() && !UNDER_PRESSURE.load(Ordering::Relaxed)
+    {
+        return;
+    }
+    let pressure = crate::vm::relieve_memory_pressure();
+    if UNDER_PRESSURE.swap(pressure, Ordering::Relaxed) != pressure
+        && let Some(signals) = MEMORY_PRESSURE.get().and_then(|event| event.signals())
+    {
+        let (clear, set) = pressure_signals(pressure);
+        signals.update(clear, set);
+    }
+}
+
+/// 取得系统事件；句柄去掉 `SIGNAL` 权限，持有者只能等待。
+pub(super) fn get_event(call: &Call<'_>) -> Result<(), Status> {
+    use crate::object::{KernelObject, Object};
+    require_resource(call, authority::MEMORY)?;
+    if call.arg_u32(1) != native_abi::system::EVENT_MEMORY_PRESSURE {
+        return Err(native_abi::ERR_NOT_SUPPORTED);
+    }
+    let event = match MEMORY_PRESSURE.get() {
+        Some(event) => event.clone(),
+        None => {
+            let event = alloc::sync::Arc::try_new(crate::object::Event::new())
+                .map_err(|_| native_abi::ERR_NO_MEMORY)?;
+            MEMORY_PRESSURE
+                .call_once(|| {
+                    let pressure = UNDER_PRESSURE.load(core::sync::atomic::Ordering::Relaxed);
+                    let (clear, set) = pressure_signals(pressure);
+                    if let Some(signals) = event.signals() {
+                        signals.update(clear, set);
+                    }
+                    event
+                })
+                .clone()
+        }
+    };
+    let mut entry = Object::Event(event).into_entry();
+    entry.rights &= !native_abi::rights::SIGNAL;
+    let handle = call.process().handles().insert(entry)?;
+    if let Err(status) = call.write(call.arg(2), &handle) {
+        drop(call.process().handles().remove(handle));
+        return Err(status);
+    }
+    Ok(())
+}
+
 fn wait_status(result: WaitResult) -> Status {
     match result {
         WaitResult::TimedOut => native_abi::ERR_TIMED_OUT,
@@ -203,6 +269,20 @@ pub(super) fn get_info(call: &Call<'_>) -> Result<(), Status> {
                 return Err(native_abi::ERR_BUFFER_TOO_SMALL);
             }
             call.write_array(buffer, &values)
+        }
+        native_abi::system::MEMORY_STATS => {
+            let stats = native_abi::SystemMemoryStats {
+                heap_pages: crate::memory::heap_pages() as u64,
+                kernel_stack_pages: crate::vm::kernel_stack::mapped_pages() as u64,
+                page_table_pages: crate::vm::page_table::table_pages() as u64,
+                evicted_pages: crate::vm::evicted_pages() as u64,
+            };
+            let bytes = super::bytes_of(&stats);
+            call.write_optional(actual, &bytes.len())?;
+            if capacity < bytes.len() {
+                return Err(native_abi::ERR_BUFFER_TOO_SMALL);
+            }
+            call.write_bytes(buffer, bytes)
         }
         native_abi::system::CRASH_LOG => {
             let log = crate::crash::previous_dump().unwrap_or(&[]);

@@ -28,7 +28,7 @@ use native_runtime::native_abi::{self, ExceptionReport, Status, rights, signals,
 use native_runtime::sync::{Mutex, Once};
 use native_runtime::task::{CRASH_LIMIT, CrashLoop};
 use native_runtime::{
-    Channel, Event, Handle, Job, Process, Resource, Startup, Vmar, Vmo, error, info,
+    Channel, Event, Handle, Job, Process, Resource, Startup, Vmar, Vmo, error, info, warn,
 };
 use service_directory::ServiceDirectory;
 
@@ -321,6 +321,24 @@ fn main(mut startup: Startup) -> i64 {
     executor.spawn(async move {
         let _ = executor.on_signals(&devices, signals::TERMINATED).await;
         native_runtime::task::exit_process(power_off(&devices, "driver-manager"));
+    });
+    // 内存压力等级变化（Fuchsia memory_monitor）：内核已在缺页入口淘汰干净的文件页，仍不足时进入压力。
+    let pressure = native_runtime::system::event(
+        ROOT_RESOURCE.get().expect("root resource installed"),
+        native_abi::system::EVENT_MEMORY_PRESSURE,
+    )
+    .expect("memory pressure event");
+    executor.spawn(async move {
+        loop {
+            let _ = executor
+                .on_signals(&pressure, native_abi::system::MEMORY_PRESSURE)
+                .await;
+            warn!("memory pressure: free memory below the low watermark after page eviction");
+            let _ = executor
+                .on_signals(&pressure, native_abi::system::MEMORY_NORMAL)
+                .await;
+            info!("memory pressure relieved");
+        }
     });
     executor.spawn(async move {
         let _ = executor

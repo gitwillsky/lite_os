@@ -370,6 +370,80 @@ fn supplied_page_invalidated_before_waiter_resumes_is_not_a_pager_failure() {
 }
 
 #[test]
+fn shrinking_a_paged_object_completes_requests_beyond_the_new_end() {
+    struct Accept;
+    impl PagerSink for Accept {
+        fn request(&self, _: PagerRequest) -> Result<(), ()> {
+            Ok(())
+        }
+    }
+    let file = Vmo::create_paged(
+        (2 * PAGE_SIZE) as u64,
+        VmoOptions { resizable: true },
+        PagerBinding {
+            sink: Arc::new(Accept),
+            key: 1,
+        },
+    )
+    .unwrap();
+    let kept = file.request_page(0).unwrap();
+    let beyond = file.request_page(1).unwrap();
+    file.set_size(PAGE_SIZE as u64).unwrap();
+    // 越界请求完成后等待者回到解析循环，由新大小判定越界；不能永远等一个不再存在的页。
+    assert_eq!(file.wait_for_page(&beyond), Ok(()));
+    assert_eq!(
+        file.read(PAGE_SIZE as u64, &mut [0]),
+        Err(VmError::OutOfRange)
+    );
+    assert!(
+        Arc::ptr_eq(&kept, &file.request_page(0).unwrap()),
+        "in-range request survives"
+    );
+    file.set_size((2 * PAGE_SIZE) as u64).unwrap();
+    let regrown = file.request_page(1).unwrap();
+    assert!(
+        !Arc::ptr_eq(&beyond, &regrown),
+        "regrowth issues a new request"
+    );
+    file.fail_range(PAGE_SIZE as u64, PAGE_SIZE as u64).unwrap();
+    assert_eq!(
+        file.wait_for_page(&beyond),
+        Ok(()),
+        "a later failure cannot rewrite it"
+    );
+    assert_eq!(file.wait_for_page(&regrown), Err(VmError::Io));
+}
+
+#[test]
+fn detaching_the_pager_fails_outstanding_and_later_requests() {
+    use core::sync::atomic::{AtomicUsize, Ordering};
+    struct Count(AtomicUsize);
+    impl PagerSink for Count {
+        fn request(&self, _: PagerRequest) -> Result<(), ()> {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        }
+    }
+    let sink = Arc::new(Count(AtomicUsize::new(0)));
+    let file = Vmo::create_paged(
+        (2 * PAGE_SIZE) as u64,
+        VmoOptions::default(),
+        PagerBinding {
+            sink: sink.clone(),
+            key: 1,
+        },
+    )
+    .unwrap();
+    let outstanding = file.request_page(0).unwrap();
+    file.detach_pager().unwrap();
+    assert_eq!(file.wait_for_page(&outstanding), Err(VmError::Io));
+    assert!(file.state.lock().requested.is_empty());
+    // 内容 owner 已退休：仍存活的对象不再把请求投给它，缺页直接失败。
+    assert_eq!(file.read(PAGE_SIZE as u64, &mut [0]), Err(VmError::Io));
+    assert_eq!(sink.0.load(Ordering::Relaxed), 1, "no request after detach");
+}
+
+#[test]
 fn resident_observation_keeps_sparse_cow_and_slice_backing_without_faulting() {
     let parent = Vmo::create((PAGE_SIZE * 8) as u64, VmoOptions::default()).unwrap();
     parent.write(PAGE_SIZE as u64, &[17]).unwrap();
@@ -388,4 +462,47 @@ fn resident_observation_keeps_sparse_cow_and_slice_backing_without_faulting() {
     assert_eq!(slice.resident_pages(0, 6).unwrap(), 2);
     assert_eq!(child.committed_bytes().unwrap(), PAGE_SIZE as u64);
     assert_eq!(byte(&parent, PAGE_SIZE as u64), 17);
+}
+
+#[test]
+fn eviction_takes_only_clean_pages_and_waits_for_writeback_end() {
+    struct NoRequests;
+    impl PagerSink for NoRequests {
+        fn request(&self, _: PagerRequest) -> Result<(), ()> {
+            Ok(())
+        }
+    }
+    let page = PAGE_SIZE as u64;
+    let file = Vmo::create_paged(
+        3 * page,
+        VmoOptions::default(),
+        PagerBinding {
+            sink: Arc::new(NoRequests),
+            key: 1,
+        },
+    )
+    .unwrap();
+    let source = Vmo::create(3 * page, VmoOptions::default()).unwrap();
+    source.op_range(RangeOp::Commit, 0, 3 * page).unwrap();
+    file.supply_pages(0, 3 * page, &source, 0).unwrap();
+    // 页 1 被写脏；页 2 写脏后开始回写但存储尚未确认。
+    file.write(page, &[2]).unwrap();
+    file.write(2 * page, &[3]).unwrap();
+    file.begin_writeback(2 * page, page).unwrap();
+
+    assert_eq!(file.evict_clean(8), 1, "only the clean page 0 is evictable");
+    assert_eq!(file.committed_bytes().unwrap(), 2 * page);
+
+    file.end_writeback(2 * page, page).unwrap();
+    assert_eq!(
+        file.evict_clean(8),
+        1,
+        "page 2 becomes evictable after writeback end"
+    );
+    assert_eq!(file.committed_bytes().unwrap(), page);
+    assert_eq!(
+        file.first_dirty_range(0, 3 * page).unwrap(),
+        Some((page, page)),
+        "the dirty page stays resident and dirty"
+    );
 }

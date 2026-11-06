@@ -113,10 +113,6 @@ fn main(mut startup: Startup) -> i64 {
     if let Some(display) = device_model::display_device(0) {
         devices::drm::device::init(display).expect("primary DRM initialization failed");
     }
-    devices::input::init().expect("evdev input initialization failed");
-    if let Some(port) = device_model::port_device(0) {
-        devices::virtio_port::init(port).expect("VirtIO port initialization failed");
-    }
     let console = devices::tty::init(select_console(parameters.console.as_deref()))
         .expect("TTY initialization failed");
     net::init();

@@ -83,6 +83,11 @@ impl<'a> BootScreen<'a> {
         Self { canvas }
     }
 
+    /// 画面是否已画出（没有设备或绘制失败时为 false）。
+    pub(crate) fn shown(&self) -> bool {
+        self.canvas.is_some()
+    }
+
     /// 把进度条推进到 `milestone` 对应的位置；更新失败时关闭后续更新。
     pub(crate) fn advance(&mut self, milestone: Milestone) {
         let Some(canvas) = &mut self.canvas else {
@@ -187,4 +192,39 @@ fn paint_scene(
         row += 1;
     }
     Ok(())
+}
+
+/// 主显示客户端断开后的回退画面（Fuchsia virtcon 的角色）：同一张开机画面，进度停在内核阶段的终点。
+pub(crate) struct FallbackScene(pub(crate) &'static [u8]);
+
+/// 把回退缓冲包装成 boot 绘制接口：写入直接进 VMO，整幅画完后由显示服务端一次提交 scanout。
+struct FallbackFramebuffer<'a> {
+    mode: DisplayMode,
+    backing: &'a device_model::DeviceBacking,
+}
+
+impl BootFramebuffer for FallbackFramebuffer<'_> {
+    fn mode(&self) -> DisplayMode {
+        self.mode
+    }
+
+    fn write(&self, offset: usize, bytes: &[u8]) -> Result<(), DisplayError> {
+        self.backing
+            .vmo()
+            .write(bytes, offset as u64)
+            .map_err(|_| DisplayError::InvalidRectangle)
+    }
+
+    fn flush(&self, _rect: DisplayRect) -> Result<(), DisplayError> {
+        Ok(())
+    }
+}
+
+impl device_protocol::display::FallbackScene for FallbackScene {
+    fn paint(&self, mode: DisplayMode, backing: &device_model::DeviceBacking) -> bool {
+        let framebuffer = FallbackFramebuffer { mode, backing };
+        let mut screen = BootScreen::start(Some(&framebuffer), self.0);
+        screen.advance(Milestone::Audio);
+        screen.shown()
+    }
 }

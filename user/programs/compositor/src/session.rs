@@ -430,6 +430,17 @@ impl Session {
                         .devices()
                         .map(|device| PollFd::new(device.file().as_fd(), PollEvents::READ)),
                 );
+                // 输入热插拔的 uevent 订阅；没有 netlink 时用一个永不就绪的占位，保持下标布局固定。
+                descriptors.push(PollFd::new(
+                    self.input
+                        .uevent_fd()
+                        .unwrap_or_else(|| self.scanout.device().as_fd()),
+                    if self.input.uevent_fd().is_some() {
+                        PollEvents::READ
+                    } else {
+                        PollEvents::EMPTY
+                    },
+                ));
                 descriptors.extend(self.server.descriptors());
                 match descriptors.wait(timeout) {
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
@@ -446,16 +457,23 @@ impl Session {
                 self.server.finish_frame(time);
             }
             for index in 0..input_count {
-                if returned[1 + index].contains(PollEvents::READ) {
+                let returned = returned[1 + index];
+                if returned.contains(PollEvents::READ) {
                     self.input.drain(index, &mut events)?;
+                } else if returned.contains(PollEvents::HANGUP | PollEvents::ERROR) {
+                    self.input.forget(index);
                 }
+            }
+            self.input.prune();
+            if returned[1 + input_count].contains(PollEvents::READ) {
+                self.input.handle_uevents()?;
             }
             // 一批积压的位置只应用最终状态，避免逐样本提交光标与 resize configure。
             input::coalesce_motion(&mut events);
             for event in events.drain(..) {
                 self.on_input(event)?;
             }
-            self.server.dispatch(&returned[1 + input_count..])?;
+            self.server.dispatch(&returned[2 + input_count..])?;
             self.sync_windows()?;
             self.sync_work_area();
             self.handle_requests()?;

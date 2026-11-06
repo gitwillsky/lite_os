@@ -140,7 +140,7 @@ impl CachedFile {
             .map_err(status_error)?;
         let first = offset & !(PAGE_SIZE as u64 - 1);
         let last = end.next_multiple_of(PAGE_SIZE as u64);
-        pager::begin_writeback(&self.object, first, last - first);
+        pager::mark_clean(&self.object, first, last - first);
         Ok(())
     }
 

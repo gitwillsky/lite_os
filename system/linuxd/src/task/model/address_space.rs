@@ -130,6 +130,14 @@ impl AddressSpace {
         Ok(self.lock()?.user_page_statistics())
     }
 
+    pub(super) fn classify_mapped_memory(
+        &self,
+        seen: &mut alloc::vec::Vec<usize>,
+        totals: &mut crate::memory::MappedMemory,
+    ) -> Result<(), MemoryError> {
+        self.lock()?.classify_mapped_memory(seen, totals)
+    }
+
     pub(super) fn process_arguments(&self) -> Result<alloc::vec::Vec<u8>, UserAccessError> {
         self.lock_for_access()?.process_arguments()
     }

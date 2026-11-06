@@ -27,7 +27,10 @@ pub struct InputAbsInfo {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InputDeviceError {
+    /// 设备 queue/transport 损坏。
     Device,
+    /// 远端会话已断开（驱动宿主终止）：设备已移除，使用者撤下它。
+    Disconnected,
 }
 
 /// 不泄漏 VirtIO queue/config 的通用 input adapter seam。

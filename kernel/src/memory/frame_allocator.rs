@@ -52,6 +52,7 @@ use core::fmt::Debug;
 
 use super::address::{PhysicalAddress, PhysicalPageNumber};
 use super::frame_metadata_layout::frame_metadata_layout;
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Once;
 
 use crate::execution::sync::IrqMutex;
@@ -59,6 +60,11 @@ use crate::execution::sync::IrqMutex;
 // frame allocation 可由 global allocator 的 interrupt 路径到达，必须在取锁前关闭 local interrupt。
 // OWNER: frame allocator module owns all allocatable physical-frame metadata.
 static FRAME_ALLOCATOR: Once<IrqMutex<FrameAllocator>> = Once::new();
+
+// OWNER: 内存压力 FLAG。空闲页低于低水位（容量的 1/64，至少 256 页）时置位，回到高水位（低水位的 1.5 倍）才清除；
+// 只在 allocator 锁内写，读者（用户缺页入口的回收）只把它当提示。缺失时 pager 支撑页的干净页
+// 在分配失败之前不会被淘汰，缺页直接以 NoMemory 结束进程。
+static UNDER_PRESSURE: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug)]
 enum FrameAllocError {
@@ -395,6 +401,16 @@ impl FrameAllocator {
         self.free_blocks[order] -= 1;
     }
 
+    /// 按当前空闲页更新 [`UNDER_PRESSURE`]；高低水位之间保持原状态（滞回），避免在边界反复翻转。
+    fn update_pressure(&self) {
+        let low = (self.capacity() / 64).max(256);
+        if self.free_pages < low {
+            UNDER_PRESSURE.store(true, Ordering::Relaxed);
+        } else if self.free_pages >= low + low / 2 {
+            UNDER_PRESSURE.store(false, Ordering::Relaxed);
+        }
+    }
+
     fn has_capacity(&self, pages: usize, class: FrameAllocationClass) -> bool {
         let reserve = match class {
             FrameAllocationClass::Reclaimable => super::KERNEL_HEAP_GROWTH_PAGES,
@@ -438,6 +454,7 @@ impl FrameAllocator {
         assert_eq!(self.block_state[index], BLOCK_UNUSED);
         self.block_state[index] = BLOCK_ALLOCATED | requested_order as u8;
         self.free_pages -= pages;
+        self.update_pressure();
         Some(block)
     }
 
@@ -486,6 +503,7 @@ impl FrameAllocator {
             .checked_add(pages)
             .filter(|free| *free <= self.capacity())
             .expect("free frame count exceeds allocator capacity");
+        self.update_pressure();
 
         // 每层只通过一 byte state 定位 buddy，双链 remove 为 O(1)；释放大
         // FrameTracker 不再按页写链，IRQ-off 时间只与最终 order 成正比。
@@ -698,6 +716,11 @@ fn alloc_contiguous_uninitialized(
         .lock()
         .alloc_contiguous(pages, class)
         .map(|(ppn, pages)| FrameTracker { ppn, pages })
+}
+
+/// 空闲页是否低于低水位（尚未回到高水位）；只作回收提示，不保证下一次分配成功或失败。
+pub(crate) fn under_pressure() -> bool {
+    UNDER_PRESSURE.load(Ordering::Relaxed)
 }
 
 /// 返回 frame allocator 管辖范围的总页数与当前空闲页数。

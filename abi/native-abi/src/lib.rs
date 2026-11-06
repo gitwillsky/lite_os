@@ -254,10 +254,15 @@ pub mod vmo {
 pub mod pager {
     /// 区间无法提供：撤销区间内已发出的请求，当前等待者以 `ERR_IO` 失败；之后的访问重新请求。
     pub const OP_FAIL: u32 = 1;
-    /// 回写开始：清除脏标记并写保护映射。
+    /// 回写开始：脏页转为待确认并写保护映射。
     pub const OP_WRITEBACK_BEGIN: u32 = 2;
     /// 查询区间内第一段脏页。
     pub const OP_QUERY_DIRTY: u32 = 3;
+    /// 与 VMO 分离（Zircon `pager_detach_vmo`）：已发出的请求以 `ERR_IO` 结束，之后的缺页不再请求而直接失败。
+    /// 内容 owner 退休前调用；之后迟到的请求 packet 可以忽略。区间参数不使用。
+    pub const OP_DETACH: u32 = 4;
+    /// 回写完成（Zircon `WRITEBACK_END`）：存储已确认区间内容，待确认的页成为干净页，内存紧张时可被淘汰。
+    pub const OP_WRITEBACK_END: u32 = 5;
 }
 
 /// 进程创建选项。
@@ -303,8 +308,10 @@ pub mod resource {
         pub const UTC: u64 = 2;
         /// 电源关闭与重启。
         pub const POWER: u64 = 3;
+        /// 观察内存压力事件。
+        pub const MEMORY: u64 = 4;
         /// 有效 system operation 范围的结束（不含）。
-        pub const COUNT: u64 = 4;
+        pub const COUNT: u64 = 5;
     }
 }
 
@@ -352,6 +359,8 @@ pub mod info {
     pub const JOB_CHILDREN: u32 = 8;
     /// Job 直属的存活进程 KOID，`u64` 数组（升序）；句柄还需 `rights::ENUMERATE`。
     pub const JOB_PROCESSES: u32 = 9;
+    /// [`crate::BtiInfo`]（对应 Zircon `ZX_INFO_BTI`）。
+    pub const BTI: u32 = 10;
 }
 
 /// `system_get_info` 主题与电源操作。
@@ -364,6 +373,15 @@ pub mod system {
     pub const CRASH_LOG: u32 = 3;
     /// 物理页分配器每个 order 的空闲块数，`u64` 数组（order N 的块为 2^N 页）。
     pub const FREE_BLOCKS: u32 = 4;
+    /// 内存压力事件（`SYSTEM_GET_EVENT`）：淘汰干净的文件页之后空闲页仍低于低水位时置位
+    /// [`MEMORY_PRESSURE`]，否则置位 [`MEMORY_NORMAL`]；状态在用户缺页入口更新。
+    pub const EVENT_MEMORY_PRESSURE: u32 = 1;
+    /// 内存压力事件的 signal：处于压力。
+    pub const MEMORY_PRESSURE: u32 = crate::signals::USER_0;
+    /// 内存压力事件的 signal：不处于压力。
+    pub const MEMORY_NORMAL: u32 = crate::signals::USER_0 << 1;
+    /// [`crate::SystemMemoryStats`]：内核自身占用与淘汰计数。
+    pub const MEMORY_STATS: u32 = 5;
     /// 关机。
     pub const POWER_OFF: u32 = 1;
     /// 重启。
@@ -449,6 +467,28 @@ pub struct TaskStats {
     pub resident_bytes: u64,
     /// 尚未退出的线程数。
     pub threads: u64,
+}
+
+/// 内核自身的内存占用（页）与累计淘汰的文件页数；各项是瞬时投影，彼此不构成一致快照。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SystemMemoryStats {
+    /// 内核堆（slab 与大块直接分配）占用的页。
+    pub heap_pages: u64,
+    /// 已映射的内核栈页（不含守护页）。
+    pub kernel_stack_pages: u64,
+    /// CPU 与设备页表占用的页。
+    pub page_table_pages: u64,
+    /// 内存紧张时从 pager 支撑 VMO 淘汰的干净页累计数。
+    pub evicted_pages: u64,
+}
+
+/// BTI 的诊断状态：设备经该 BTI 的 stream 被 IOMMU 中止的访问数，与隔离区中的固定区间数。
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BtiInfo {
+    pub faults: u64,
+    pub quarantined: u64,
 }
 
 /// VMO 的大小与本对象自己持有的已提交字节（不含从父对象共享的页）。

@@ -3,7 +3,7 @@
 use alloc::sync::Arc;
 use linux_abi::errno;
 
-use super::{INPUT_DEVICES, InputError, InputEvent, InputFile, ioctl};
+use super::{InputError, InputEvent, InputFile, ioctl};
 use crate::{
     fs::{
         FileSystemError,
@@ -41,11 +41,10 @@ impl CharacterDriver for EvdevDriver {
             .minor
             .checked_sub(EVENT_MINOR_BASE)
             .ok_or(FileSystemError::NoDevice)? as usize;
-        let device = INPUT_DEVICES
-            .get()
-            .and_then(|devices| devices.get(index))
-            .cloned()
-            .ok_or(FileSystemError::NoDevice)?;
+        let device = super::device(index).ok_or(FileSystemError::NoDevice)?;
+        if device.state.lock().removed {
+            return Err(FileSystemError::NoDevice);
+        }
         let file = InputFile::new(device).map_err(|error| match error {
             InputError::OutOfMemory => FileSystemError::OutOfMemory,
             _ => FileSystemError::NotFound,

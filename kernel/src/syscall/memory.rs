@@ -353,6 +353,8 @@ pub(super) fn pager_op(call: &Call<'_>) -> Result<(), Status> {
         native_abi::pager::OP_WRITEBACK_BEGIN => {
             vmo.begin_writeback(offset, length).map_err(vm_status)
         }
+        native_abi::pager::OP_WRITEBACK_END => vmo.end_writeback(offset, length).map_err(vm_status),
+        native_abi::pager::OP_DETACH => vmo.detach_pager().map_err(vm_status),
         native_abi::pager::OP_QUERY_DIRTY => {
             let range = vmo.first_dirty_range(offset, length).map_err(vm_status)?;
             let value: [u64; 2] = range.map_or([0, 0], |(start, size)| [start, size]);

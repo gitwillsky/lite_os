@@ -121,6 +121,10 @@ mod memory {
     }
     pub(crate) mod frame_allocator {
         use super::*;
+        /// 夹具不模拟水位：回收只由用例直接驱动单个对象。
+        pub(crate) fn under_pressure() -> bool {
+            false
+        }
         pub(crate) fn alloc() -> Option<FrameTracker> {
             alloc_contiguous(1, FrameAllocationClass::Reclaimable)
         }
@@ -171,6 +175,10 @@ mod vm {
 }
 
 use vm::{VmError, address_space};
-#[expect(dead_code, reason = "本 fixture 只执行 COW 生命周期")]
+#[expect(
+    dead_code,
+    unused_imports,
+    reason = "本 fixture 只执行 COW、pager 与淘汰生命周期；固定与回收入口的 re-export 由内核其余模块消费"
+)]
 #[path = "../../../tools/source-view/kernel/vm/vmo/vmo/vmo.rs"]
 mod vmo;

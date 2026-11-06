@@ -224,6 +224,18 @@ pub fn basic() -> SystemBasic {
     basic
 }
 
+/// 内核自身的内存占用与累计淘汰页数。
+pub fn memory_stats() -> native_abi::SystemMemoryStats {
+    let mut stats = native_abi::SystemMemoryStats::default();
+    // 主题固定、缓冲区大小精确，失败只可能是内核不变量破坏。
+    get_info(
+        native_abi::system::MEMORY_STATS,
+        crate::bytes_of_mut(&mut stats),
+    )
+    .expect("system memory stats");
+    stats
+}
+
 /// 物理页分配器每个 order 的空闲块数（order N 的块为 2^N 页），末尾的全零 order 已截去。
 ///
 /// # Errors
@@ -245,6 +257,30 @@ pub fn free_blocks() -> Result<alloc::vec::Vec<u64>, Status> {
         counts.pop();
     }
     Ok(counts)
+}
+
+/// 取得系统事件（`kind` 为 `native_abi::system::EVENT_*`）；句柄只可等待。
+///
+/// # Errors
+///
+/// resource 不授权，或种类未知。
+pub fn event(resource: &Resource, kind: u32) -> Result<crate::Event, Status> {
+    let mut out = native_abi::HANDLE_INVALID;
+    // SAFETY: 输出位置有效。
+    check(unsafe {
+        invoke(
+            call::SYSTEM_GET_EVENT,
+            &[
+                resource.raw() as usize,
+                kind as usize,
+                (&raw mut out) as usize,
+            ],
+        )
+    })?;
+    // SAFETY: 调用成功时内核写入的新句柄由调用者独占。
+    Ok(crate::Event::from_handle(unsafe {
+        crate::Handle::from_raw(out)
+    }))
 }
 
 /// 关机或重启。
