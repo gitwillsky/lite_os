@@ -108,10 +108,10 @@ impl Output {
             name: device.name().as_bytes().to_vec(),
             capabilities: device.capabilities(),
         };
-        let shared = info.shared();
-        if shared {
+        let shared = info.shared_configuration();
+        if let Some(configuration) = shared {
             device
-                .configure(PcmConfiguration::SHARED)
+                .configure(configuration)
                 .and_then(|()| device.prepare())
                 .map_err(|_| native_abi::ERR_IO)?;
         }
@@ -119,7 +119,7 @@ impl Output {
             info,
             device: device.clone(),
             transition: Mutex::new(()),
-            engine: Mutex::new(Engine::new(shared.then_some(PcmConfiguration::SHARED))),
+            engine: Mutex::new(Engine::new(shared)),
             events: EventCounters::default(),
             port: Port::create()?,
         })
@@ -176,7 +176,7 @@ impl Output {
         drop(stream);
         // 独占流离开：释放协商格式；输出支持共享格式时回到共享格式，供之后的共享流使用。
         if exclusive && !self.engine.lock().occupied() {
-            let target = self.info.shared().then_some(PcmConfiguration::SHARED);
+            let target = self.info.shared_configuration();
             if let Err(error) = self.switch(target) {
                 warn!("audio output {} release failed: {error:?}", self.info.id);
             }
@@ -254,18 +254,22 @@ impl Output {
         buffer_frames: u64,
         ring: Vmo,
     ) -> Result<CreatedStream, Status> {
-        if buffer_frames == 0
-            || configuration.period_bytes() > MAX_PCM_PERIOD_BYTES
-            || !self.info.capabilities.supports(configuration)
-            || endpoint == Endpoint::Shared && configuration != PcmConfiguration::SHARED
-        {
+        if buffer_frames == 0 || configuration.period_bytes() > MAX_PCM_PERIOD_BYTES {
             return Err(native_abi::ERR_NOT_SUPPORTED);
         }
+        let physical = match endpoint {
+            Endpoint::Shared if configuration == PcmConfiguration::SHARED => self
+                .info
+                .shared_configuration()
+                .ok_or(native_abi::ERR_NOT_SUPPORTED)?,
+            Endpoint::Exclusive if self.info.capabilities.supports(configuration) => configuration,
+            _ => return Err(native_abi::ERR_NOT_SUPPORTED),
+        };
         if !self.engine.lock().admits(self::endpoint(endpoint)) {
             return Err(native_abi::ERR_ALREADY_BOUND);
         }
-        if self.engine.lock().configuration() != Some(configuration) {
-            self.switch(Some(configuration))
+        if self.engine.lock().configuration() != Some(physical) {
+            self.switch(Some(physical))
                 .map_err(|_| native_abi::ERR_IO)?;
         }
         let control = ControlPage::create()?;

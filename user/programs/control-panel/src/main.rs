@@ -125,7 +125,7 @@ enum Data {
     Connection(connection::Data),
     Properties(fileprops::Data),
     Settings(desktop_settings::Settings),
-    Sounds(bool),
+    Sounds(Vec<linux_uapi::alsa::NativeOutput>, Option<String>),
     Other,
 }
 fn load(name: &str, args: Vec<std::ffi::OsString>) -> Result<Data, String> {
@@ -142,7 +142,10 @@ fn load(name: &str, args: Vec<std::ffi::OsString>) -> Result<Data, String> {
                 .map(|name| name.to_string_lossy().into_owned()),
         )?),
         "properties" => Data::Properties(fileprops::Data::read(args.into_iter())?),
-        "sounds" => Data::Sounds(std::path::Path::new("/dev/snd/pcmC0D0p").exists()),
+        "sounds" => Data::Sounds(
+            linux_uapi::alsa::playback_outputs().unwrap_or_default(),
+            linux_uapi::alsa::preferred::id(),
+        ),
         "display" | "taskbar" => Data::Settings(desktop_settings::Settings::load()),
         _ => Data::Other,
     })
@@ -167,7 +170,9 @@ fn build(
         }
         ("taskbar", Data::Settings(data)) => Box::new(taskbar::Taskbar::build(sheet, data)?),
         ("datetime", _) => Box::new(datetime::DateTime::build(sheet)?),
-        ("sounds", Data::Sounds(available)) => Box::new(sounds::Sounds::build(sheet, available)?),
+        ("sounds", Data::Sounds(outputs, preferred)) => {
+            Box::new(sounds::Sounds::build(sheet, outputs, preferred)?)
+        }
         _ => Box::new(winver::Winver::build(sheet)?),
     })
 }

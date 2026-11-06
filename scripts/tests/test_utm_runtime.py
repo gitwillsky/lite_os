@@ -14,6 +14,14 @@ import utm_runtime  # noqa: E402
 
 
 class UtmRuntimeTests(unittest.TestCase):
+    def test_ssh_forwarding_is_opt_in_and_bound_to_loopback(self) -> None:
+        default = utm_runtime._configuration(memory_mib=2048, cpu_count=1)
+        configured = utm_runtime._configuration(memory_mib=2048, cpu_count=1, diagnostic_port=2222)
+        self.assertEqual(default["Network"][0]["PortForward"], [])
+        self.assertEqual(configured["Network"][0]["PortForward"], [{
+            "Protocol": "TCP", "HostAddress": "127.0.0.1", "HostPort": 2222, "GuestPort": 22,
+        }])
+
     def test_kernel_arguments_become_one_quoted_append_pair(self) -> None:
         plain = utm_runtime._configuration(memory_mib=2048, cpu_count=1)
         self.assertNotIn("-append", plain["QEMU"]["AdditionalArguments"])
@@ -254,9 +262,9 @@ class UtmRuntimeTests(unittest.TestCase):
             with self.subTest(usb_passthrough=enabled):
                 listener = MagicMock()
                 serial = MagicMock()
+                serial.recv.side_effect = [b"guest console", KeyboardInterrupt]
                 listener.accept.return_value = (serial, ("127.0.0.1", 1234))
                 debug = MagicMock()
-                debug.capture.side_effect = KeyboardInterrupt
                 with tempfile.TemporaryDirectory() as directory:
                     with (
                         patch.object(utm_runtime, "_installed_version"),
@@ -274,15 +282,17 @@ class UtmRuntimeTests(unittest.TestCase):
                         patch.object(utm_runtime, "UsbRedirection") as usb,
                         patch.object(utm_runtime, "_stop_managed") as stop,
                     ):
+                        log = Path(directory) / "serial.log"
                         utm_runtime.run_gui(
                             kernel=Path("kernel"),
                             kernel_elf=Path("kernel.elf"),
                             rootfs=Path("rootfs"),
                             memory="2G",
                             cpu_count=6,
-                            serial_log=Path(directory) / "serial.log",
+                            serial_log=log,
                             **({} if enabled else {"usb_passthrough": False}),
                         )
+                        self.assertEqual(log.read_bytes(), b"guest console")
 
                 stop.assert_called_once_with()
                 if enabled:
@@ -291,13 +301,12 @@ class UtmRuntimeTests(unittest.TestCase):
                     usb.return_value.start.assert_called_once_with()
                     usb.return_value.close.assert_called_once_with()
                     self.assertIs(prepare.call_args.kwargs["usb_redirection"], usb.return_value)
-                    self.assertIsNotNone(debug.capture.call_args.kwargs["check"])
+                    self.assertEqual(usb.return_value.check.call_count, 2)
                 else:
                     usb.assert_not_called()
                     self.assertIsNone(prepare.call_args.kwargs["usb_redirection"])
-                    self.assertIsNone(debug.capture.call_args.kwargs["check"])
                 self.assertEqual(prepare.call_args.kwargs["serial_tcp_port"], 4567)
-                serial.setblocking.assert_called_once_with(False)
+                serial.settimeout.assert_called_once_with(0.25)
                 serial.close.assert_called_once_with()
                 listener.close.assert_called_once_with()
                 debug.close.assert_called_once_with()

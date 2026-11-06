@@ -135,6 +135,7 @@ class WorkflowTests(unittest.TestCase):
             scripts,
             [
                 "verify_boot.py",
+                "verify_diagnostics.py",
                 "verify_shutdown.py",
                 "verify_musl.py",
                 "verify_rust_std.py",

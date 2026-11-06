@@ -280,6 +280,12 @@ impl Input {
         self.pointer
     }
 
+    pub(super) fn set_position(&mut self, x: i32, y: i32) {
+        self.pointer.x = x;
+        self.pointer.y = y;
+        self.pointer.clamp();
+    }
+
     pub fn devices(&self) -> impl Iterator<Item = &InputDevice> {
         self.devices.iter().map(|device| &device.device)
     }

@@ -119,6 +119,29 @@ impl Gpu {
     pub(crate) fn framebuffer(&self, back: usize) -> u32 {
         self.targets[back].framebuffer
     }
+
+    /// Read only an explicit remote request from the completed front target.
+    pub(crate) fn capture(
+        &self,
+        front: usize,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        output: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        let target = &self.targets[front].resource;
+        target.transfer_from_host(x as u32, y as u32, width as u32, height as u32)?;
+        target.wait()?;
+        let mut row = vec![0; width];
+        for line in y..y + height {
+            target.read_row(line, x, &mut row);
+            for &pixel in &row {
+                output.extend_from_slice(&pixel.to_le_bytes());
+            }
+        }
+        Ok(())
+    }
     /// 直接把启动画面写入 GPU 扫描目标的 guest backing，并用标准 transfer 发布。
     /// 调用方保证该 back 没有 flip 在途；不创建第二对 CPU framebuffer。
     pub(crate) fn paint_boot(

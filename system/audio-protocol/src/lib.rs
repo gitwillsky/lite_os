@@ -56,9 +56,27 @@ pub struct OutputInfo {
 }
 
 impl OutputInfo {
-    /// 输出是否支持共享混音格式。
+    /// 输出能以 48 kHz 接收共享混音；优先使用浮点或最高可用的整数精度。
+    pub fn shared_configuration(&self) -> Option<PcmConfiguration> {
+        use device_model::PcmFormat;
+        [
+            PcmFormat::Float,
+            PcmFormat::S32,
+            PcmFormat::S24,
+            PcmFormat::S24Packed,
+            PcmFormat::S16,
+        ]
+        .into_iter()
+        .map(|format| PcmConfiguration {
+            format,
+            ..PcmConfiguration::SHARED
+        })
+        .find(|&configuration| self.capabilities.supports(configuration))
+    }
+
+    /// 输出是否可以承载固定格式的桌面共享混音。
     pub fn shared(&self) -> bool {
-        self.capabilities.supports(PcmConfiguration::SHARED)
+        self.shared_configuration().is_some()
     }
 }
 

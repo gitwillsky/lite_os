@@ -52,7 +52,7 @@ fn wake_pipe_waiters(pipe: &Arc<Pipe>, current_cpu: bool) -> usize {
             }
         };
         // 没有 poll 事件时仍要检查命名管道 open 汇合的等待者：对端打开不改变 readable/writable。
-        if ready == 0 && !state.rendezvous {
+        if ready == 0 && !state.rendezvous && !state.notification {
             continue;
         }
         while let Some(wake) =
@@ -128,7 +128,12 @@ fn wait_for_pipe_until(
 ) -> WaitResult {
     let task = current_task().expect("pipe wait requires current task");
     let ticket = WAIT_REGISTRY.allocate_ticket();
-    let prepared = ticket.prepare_pipe(pipe, condition, deadline, task.clone());
+    let prepared = match condition {
+        PipeWaitCondition::ReadChanged { since } => {
+            ticket.prepare_pipe_notification(pipe, since, deadline, task.clone())
+        }
+        _ => ticket.prepare_pipe(pipe, condition, deadline, task.clone()),
+    };
     arm_indexed_wait(
         &task,
         prepared,

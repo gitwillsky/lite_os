@@ -6,6 +6,7 @@ use std::{io, os::unix::net::UnixStream};
 const OPTIONS: &[(&str, &str)] = &[
     ("vo", "libmpv"),
     ("ao", "alsa"),
+    ("audio-device", "alsa/default"),
     ("audio-fallback-to-null", "no"),
     ("alsa-resample", "no"),
     ("video-sync", "audio"),
@@ -459,7 +460,7 @@ impl Engine {
         };
         let device = |card: Option<u32>| {
             card.map_or_else(
-                || "alsa/hw:0,0".to_owned(),
+                || "alsa/default".to_owned(),
                 |card| format!("alsa/hw:{card},1"),
             )
         };

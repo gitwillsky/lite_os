@@ -110,6 +110,29 @@ impl Scanout {
         usize::from(self.topology.mode.height())
     }
 
+    /// Append a validated rectangle from the last completed front buffer as BGRX.
+    pub(super) fn capture(
+        &self,
+        x: usize,
+        y: usize,
+        width: usize,
+        height: usize,
+        output: &mut Vec<u8>,
+    ) -> io::Result<()> {
+        let front = self.back ^ 1;
+        match &self.backend {
+            Backend::Gpu(gpu) => gpu.capture(front, x, y, width, height, output),
+            Backend::Cpu(targets) => {
+                for row in y..y + height {
+                    for &pixel in &targets[front].buffer.row(row)[x..x + width] {
+                        output.extend_from_slice(&pixel.to_le_bytes());
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
     /// 在可写后缓冲绘制启动画面；flip 在途返回 WouldBlock，画面或设备错误直接传播。
     pub fn paint_boot(&mut self, scene: &[u8], permille: u16) -> io::Result<()> {
         if self.pending.is_some() {

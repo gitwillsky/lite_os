@@ -14,3 +14,5 @@ set -e
 /bin/mount -t tmpfs -o mode=0755 tmpfs /run
 /bin/mount -t tmpfs -o mode=1777 tmpfs /tmp
 /bin/mount -t tmpfs -o mode=1777 tmpfs /dev/shm
+# sshd checks enrollment itself and keeps running independently of the desktop.
+/etc/init.d/sshd </dev/null &

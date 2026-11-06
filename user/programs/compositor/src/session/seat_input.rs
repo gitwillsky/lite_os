@@ -5,7 +5,7 @@ use super::{
 use crate::input::Event;
 use std::io;
 impl Session {
-    pub(super) fn on_input(&mut self, event: Event) -> io::Result<()> {
+    pub(super) fn on_input(&mut self, event: Event, physical: bool) -> io::Result<()> {
         let time = self.now_ms();
         let scale = self.scale as i32;
         match event {
@@ -136,7 +136,11 @@ impl Session {
                 }
                 // SAS 只识别硬件输入；登录背景始终映射，因此使用标准 wl_keyboard 焦点与按键事件。
                 // 先撤销抓取，防止安全界面出现后旧窗口仍占有鼠标。
-                if self.seat.secure_attention(code, pressed) {
+                if physical {
+                    self.sas_modifiers
+                        .apply(u32::from(code), i32::from(pressed));
+                }
+                if physical && super::Seat::secure_attention(self.sas_modifiers, code, pressed) {
                     self.close_menu();
                     if self.grab.is_some() {
                         self.end_grab()?;

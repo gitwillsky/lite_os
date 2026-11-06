@@ -53,6 +53,10 @@ pub(crate) enum PipeDirection {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PipeWaitCondition {
     Readable,
+    /// 等待通知 Pipe 的读 generation 改变；token 被另一读取者排空也算完成。
+    ReadChanged {
+        since: u64,
+    },
     Writable {
         minimum: usize,
     },
@@ -71,7 +75,7 @@ impl PipeWaitCondition {
     /// read/write endpoint direction；非法写容量破坏 kernel 调用契约并 fail-stop。
     pub(crate) fn direction(self) -> PipeDirection {
         match self {
-            Self::Readable => PipeDirection::Read,
+            Self::Readable | Self::ReadChanged { .. } => PipeDirection::Read,
             Self::Writable { minimum } => {
                 assert!((1..=PIPE_BUF).contains(&minimum));
                 PipeDirection::Write
@@ -97,6 +101,9 @@ pub(crate) enum PipeWrite {
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PipePollState {
+    pub(crate) read_generation: u64,
+    /// 通知 Pipe 在 token 被排空后仍可能有等待 generation 的消费者。
+    pub(crate) notification: bool,
     pub(crate) readable: bool,
     pub(crate) writable: bool,
     pub(crate) hangup: bool,
@@ -123,6 +130,9 @@ impl PipePollState {
     pub(crate) fn satisfies(self, condition: PipeWaitCondition) -> bool {
         match condition {
             PipeWaitCondition::Readable => self.readable,
+            PipeWaitCondition::ReadChanged { since } => {
+                self.read_generation != since || self.hangup
+            }
             PipeWaitCondition::Writable { minimum } => self.error || self.write_capacity >= minimum,
             PipeWaitCondition::PeerOpened { since, .. } => self.peer_opens > since,
         }
@@ -494,6 +504,8 @@ impl Pipe {
         let state = self.state.lock();
         match direction {
             PipeDirection::Read => PipePollState {
+                read_generation: state.read_generation,
+                notification: state.bytes.len() == NOTIFICATION_CAPACITY.get(),
                 readable: state.length != 0 || state.writers == 0,
                 writable: false,
                 hangup: state.writers == 0,
@@ -504,6 +516,8 @@ impl Pipe {
                 rendezvous: state.rendezvous_waiters != 0,
             },
             PipeDirection::Write => PipePollState {
+                read_generation: state.read_generation,
+                notification: false,
                 readable: false,
                 writable: state.readers != 0 && state.length != state.bytes.len(),
                 hangup: false,
@@ -804,6 +818,21 @@ impl Drop for PipeEnd {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_drained_notification_still_completes_each_generation_waiter() {
+        let (read, write) = Pipe::notification_pair().unwrap();
+        let pipe = read.pipe();
+        let since = pipe.readiness_generation(PipeDirection::Read);
+        let condition = PipeWaitCondition::ReadChanged { since };
+        assert!(!pipe.wait_ready(condition));
+        write.signal_readiness();
+        read.drain_readiness();
+        assert!(!pipe.wait_ready(PipeWaitCondition::Readable));
+        assert!(pipe.wait_ready(condition));
+        let observed = pipe.readiness_generation(PipeDirection::Read);
+        assert!(!pipe.wait_ready(PipeWaitCondition::ReadChanged { since: observed }));
+    }
 
     #[test]
     fn explicit_close_consumes_open_once_while_endpoint_observers_survive() {

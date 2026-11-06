@@ -446,7 +446,11 @@ impl<S: StreamIo> Engine<S> {
         let Some(configuration) = self.configuration else {
             return Ok(0);
         };
-        let frame_bytes = configuration.frame_bytes();
+        let frame_bytes = if self.endpoint == Endpoint::Shared {
+            PcmConfiguration::SHARED.frame_bytes()
+        } else {
+            configuration.frame_bytes()
+        };
         let period_frames = configuration.period_frames as u64;
         let period_bytes = configuration.period_bytes();
         let mut changed = 0u8;
@@ -531,12 +535,20 @@ impl<S: StreamIo> Engine<S> {
             }
             if self.endpoint == Endpoint::Shared {
                 let gain = self.output_gain();
-                accumulator.finish(
-                    gain,
-                    (&mut self.period[..PCM_PERIOD_BYTES])
-                        .try_into()
-                        .map_err(|_| ())?,
-                );
+                if configuration.format == device_model::PcmFormat::Float {
+                    accumulator.finish(
+                        gain,
+                        (&mut self.period[..PCM_PERIOD_BYTES])
+                            .try_into()
+                            .map_err(|_| ())?,
+                    );
+                } else {
+                    accumulator.finish_format(
+                        gain,
+                        configuration.format,
+                        &mut self.period[..period_bytes],
+                    );
+                }
             }
             match output.submit_period(&self.period[..period_bytes]) {
                 Ok(()) => {}

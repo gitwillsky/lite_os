@@ -162,15 +162,19 @@ fn restoring_from_maximized_carries_the_size_without_the_resizing_flag() {
 #[test]
 fn secure_attention_requires_hardware_control_alt_delete_and_desktop_shortcuts_are_separate() {
     let mut seat = super::Seat::default();
-    assert!(!seat.secure_attention(111, true));
+    let mut hardware = keyboard::Modifiers::default();
+    assert!(!super::Seat::secure_attention(hardware, 111, true));
     seat.keys.track(29, true);
-    assert!(!seat.secure_attention(111, true));
     assert!(seat.desktop_shortcut(1, true));
     seat.keys.track(56, true);
-    assert!(seat.secure_attention(111, true));
-    assert!(!seat.secure_attention(111, false));
-    assert!(!seat.secure_attention(14, true));
     assert!(!seat.desktop_shortcut(1, true));
-    seat.keys.track(29, false);
-    assert!(!seat.secure_attention(111, true));
+    assert!(!super::Seat::secure_attention(hardware, 111, true));
+    hardware.apply(29, 1);
+    assert!(!super::Seat::secure_attention(hardware, 111, true));
+    hardware.apply(56, 1);
+    assert!(super::Seat::secure_attention(hardware, 111, true));
+    assert!(!super::Seat::secure_attention(hardware, 111, false));
+    assert!(!super::Seat::secure_attention(hardware, 14, true));
+    hardware.apply(29, 0);
+    assert!(!super::Seat::secure_attention(hardware, 111, true));
 }

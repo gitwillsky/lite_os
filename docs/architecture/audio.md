@@ -2,7 +2,8 @@
 
 ## 生产链路
 
-用户态通过 Linux ALSA 访问每张声卡：`pcmCND0p` 提供桌面共享混音，`pcmCND1p` 提供原生格式独占输出。
+用户态通过 Linux ALSA 访问声卡：支持 48 kHz 双声道的输出发布 `pcmCND0p` 桌面共享混音，
+`pcmCND1p` 提供原生格式独占输出。共享应用固定写 F32，整数 DAC 的格式转换归 audio-core。
 原生 `audio-core`（Fuchsia audio_core）经 `device-protocol` 独占每个 PCM 输出（驱动宿主内的 VirtIO Sound 与
 xHCI/UAC2 adapter），拥有混音引擎、主音量与独占格式切换；linuxd 只翻译 ALSA：每个已配置的子流是 audio-core 的一个
 渲染流（`audio-protocol`）。应用 mmap ring 由 linuxd 的 VMO 支撑并交给 audio-core 读取；应用指针经共享控制区发布，
@@ -63,6 +64,9 @@ RISC-V 复用源码，只有编译与静态覆盖。
 ## UTM USB DAC 使用
 
 `make run-gui` 通过标准 usbredir 自动转发 USB Audio 2 输出设备，设备由 guest 独占；宿主授权和会话清理见[构建与运行](../development/build-and-verify.md)。USB2 high-speed DAC 仍通过 xHCI 的 USB2 root port 工作。
-媒体播放机选择新出现的“原生独占”USB DAC，系统使用对应 `/dev/snd/pcmCND1p`；编号来自实际发现顺序，不固定为 card 1。D&A Alpha 的 24/32 位 PCM 与采样率按描述符及 clock range 发布，不按型号硬编码。
+在「控制面板 → 声音和多媒体 → 音频 → 声音播放」选择首选设备，点「应用」或「确定」后保存为标准
+ALSA 默认播放和 control 配置。普通播放器、系统提示音和音量控制在新打开流或控件时读取它；
+已打开的流继续使用原设备。选定端点不可用时，在同一界面重新选择可用设备。
+媒体播放机还可以明确选择「原生独占」USB DAC，对应 `/dev/snd/pcmCND1p`。D&A Alpha 的 24/32 位 PCM 与采样率按描述符及 clock range 发布，不按型号硬编码。
 
 Alpha 的 48 kHz 播放已在相同输入的原版/修补 QEMU 原生 libusb 路径对照验收；usbredir 产品链路、切换采样率、长时间无丢样及拔插仍需实机验收。

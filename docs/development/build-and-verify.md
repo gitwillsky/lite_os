@@ -83,17 +83,13 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
   UUID 的 UTM v4 配置，通过 UTM public scripting API import 注册，再由同一 API 创建 Metal
   display window。workflow 在 QEMU 启动前预监听 serial TCP，并把该次启动的完整 guest 输出覆盖写入
   `target/logs/run-gui-serial.log`；该文件是桌面退出、hang 或窗口关闭后的持久取证 owner。
-  日常实例同时发布本机 QMP 与串口命令入口；无需重启或切换到 headless 拓扑。
-  `python3 scripts/runtime_debug.py status` 返回当前实例和套接字；`exec '单行命令'` 返回 guest 输出与退出码，
-  `qmp query-cpus-fast` 查询 vCPU，`qmp trace-event-set-state '{"name":"usb_xhci_xfer_*","enable":true}'`
-  按需开启 QEMU 跟踪；用同一命令的 `"enable":false` 关闭。`symbols` 返回并校验启动时保留的内核 ELF 副本。
-  会话索引位于 `target/run/gui-debug.json`，套接字、ELF 副本与 trace 位于权限 0700 的 QEMUHelper 容器临时目录，正常退出时清理；
-  trace 默认关闭，所用 QMP 命令与事件由当前 QEMU 实际能力决定。串口超时不代表命令已取消，未结束前拒绝下一条命令。
+  来宾内的日常操作统一使用[通过 SSH 开发和诊断](#通过-ssh-开发和诊断)。
   当前 UTM/HVF 的 GDB 连接会在 `hvf_arch_update_guest_debug` 断言退出，即使先暂停也可复现，因此产品实例不开放 GDB stub。
   Make/Python 前台进程持有生命周期；Ctrl-C 只停止该 managed VM。旧 Cocoa QEMU window、激活脚本
   与 GUI 参数入口均不存在。
 - `run-gui` 默认启用 USB 直通；不需要转发主机 USB 设备时使用 `make run-gui USB_PASSTHROUGH=0`，
   此时不创建 USB 转发会话、不请求管理员授权，VirtIO 键鼠与虚拟声卡仍可使用。该选项仅接受 `0` 或 `1`。
+
   启用 USB DAC 直通时由终端执行 `sudo -v` 授权，仅 USB 捕获与上游 `usbredirect` 以管理员身份运行。
   最多自动转发三个 USB Audio 2 等时输出设备，支持插拔；QEMU 的 usbredir socket 只监听 loopback。
   workflow 关闭唯一控制管道即释放设备并回收子进程，不安装常驻服务或修改 sudoers。
@@ -149,6 +145,41 @@ compatible 找到实际设备，再等长改名，避免测试输入本身绑定
   benchmark 使用生产 owner 测量 disabled/单 filter/八 filter；disabled 不锁 state、不读取 PC，
   interpreter 无分配，forward branches 保证步数不超过 validated path cost。
 
+
+### 通过 SSH 开发和诊断
+
+预装 OpenSSH 使用标准 `/etc/ssh/sshd_config`。首次在可信本地控制台把开发机的公钥安装到
+`/root/.ssh/authorized_keys`，目录设为 0700、文件设为 0600。启用后 init 会在下次启动时启动
+`sshd`，也可以在当前来宾运行 `/etc/init.d/sshd`。首次启动生成机器自己的 Ed25519 主机密钥。
+首次连接前在可信控制台用 `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub` 核对主机指纹。
+没有登记公钥时没有 SSH 监听，登记的钥匙具有管理员权限。实体机使用管理网地址，
+UTM 使用 `make run-gui DIAGNOSTIC_PORT=2222` 在 Mac 的回环地址转发来宾 22 端口。
+
+在开发机的 `~/.ssh/config` 配置 SSH 别名（如 `liteos-dev`），设置 `User root`，UTM 转发时使用
+`HostName 127.0.0.1` 和 `Port 2222`。随后可以使用：
+
+```sh
+ssh liteos-dev 'cat /proc/uptime'
+sftp liteos-dev
+python3 scripts/runtime_debug.py deploy liteos-dev ./my-app /bin/my-app --launch
+python3 scripts/runtime_debug.py screen liteos-dev desktop.ppm
+python3 scripts/runtime_debug.py pointer liteos-dev 100 200 --button left
+python3 scripts/runtime_debug.py key liteos-dev 0xffeb 0x72
+```
+
+`deploy` 在目标所在文件系统上传、校验 SHA-256 并通过 rename 替换应用。`--launch` 启动一个新进程，
+启动日志在 `/root/.liteos-launch.log`。桌面命令通过 SSH 的 Unix socket 转发访问 RFB，无独立网络监听。
+当前 RFB 提供单连接、Raw XRGB8888 帧更新和常用键鼠操作。分辨率变化时重连，截图不包含独立的硬件光标。
+桌面进程卡住时，SSH 命令和文件服务仍可独立工作。串口保留用于网络未就绪的启动与故障恢复。
+`make verify-runtime-diagnostics` 从独立镜像冷启动，校验公钥认证、两次 SFTP 发布、截图及其键鼠回路。
+
+#### UTM 宿主侧取证
+
+需要读取来宾之外的 VM 状态、vCPU 或设备，或在来宾网络不可用时排查虚拟硬件，使用本机 QMP。
+`python3 scripts/runtime_debug.py status` 返回实例状态及产物路径，`qmp query-cpus-fast` 查询 vCPU。
+`qmp trace-event-set-state '{"name":"usb_xhci_xfer_*","enable":true}'` 开启设备跟踪，采样完成后用
+`"enable":false` 关闭。`symbols` 校验并返回本次启动对应的 ELF，便于解读启动日志或内核地址。
+会话索引位于 `target/run/gui-debug.json`。QMP socket、ELF 副本与 trace 保存在权限 0700 的临时目录并随会话清理。
 
 ## 持久本地输入与实验
 

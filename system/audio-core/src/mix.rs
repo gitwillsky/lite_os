@@ -3,7 +3,7 @@
 //! 只做算术，不认识子流、设备或锁，因此可以在宿主上逐值测试。linuxd 服务目标是 softfloat，浮点由编译器内建函数
 //! 软件实现；host benchmark 只裁决数学实现成本，实际设备路径另由 runtime gate 验证。
 
-use device_model::{PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES};
+use device_model::{PCM_PERIOD_BYTES, PCM_PERIOD_FRAMES, PcmFormat};
 
 /// 一个 period 内的样本总数（立体声交错）。
 const SAMPLES: usize = PCM_PERIOD_FRAMES * 2;
@@ -69,10 +69,15 @@ impl Accumulator {
     /// 限幅是无状态的硬削波：峰值不超过 1.0 的混音完全透明；超过时才会削波。没有前瞻限幅器，这是有意的
     /// 简化——它需要跨 period 的状态与 128 帧延迟线，等有真实的过载场景再引入。
     pub(super) fn finish(&self, gain: [f32; 2], output: &mut [u8; PCM_PERIOD_BYTES]) {
+        self.finish_format(gain, PcmFormat::Float, output);
+    }
+
+    /// 将共享混音转换为设备的 PCM 样本布局，增益与限幅只执行一次。
+    pub(super) fn finish_format(&self, gain: [f32; 2], format: PcmFormat, output: &mut [u8]) {
         for (index, (sum, bytes)) in self
             .sum
             .iter()
-            .zip(output.as_chunks_mut::<4>().0.iter_mut())
+            .zip(output.chunks_exact_mut(format.bytes()))
             .enumerate()
         {
             // 合法的有限输入相加也可能溢出到 infinity；静音必须直接输出 0，避免 infinity*0 变成 NaN。
@@ -82,7 +87,39 @@ impl Accumulator {
             } else {
                 (*sum * channel_gain).clamp(-1.0, 1.0)
             };
-            *bytes = scaled.to_le_bytes();
+            let sample = match format {
+                PcmFormat::Float => scaled.to_le_bytes(),
+                PcmFormat::S32 => ((scaled * (1_u32 << 31) as f32) as i32).to_le_bytes(),
+                PcmFormat::S24 | PcmFormat::S24Packed => {
+                    ((scaled * 8_388_608.0) as i32).min(8_388_607).to_le_bytes()
+                }
+                PcmFormat::S16 => ((scaled * 32_768.0) as i16 as i32).to_le_bytes(),
+            };
+            bytes.copy_from_slice(&sample[..format.bytes()]);
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn integer_output_preserves_sign_and_clips_positive_full_scale() {
+        let mut source = [0; PCM_PERIOD_BYTES];
+        source[..4].copy_from_slice(&1.0f32.to_le_bytes());
+        source[4..8].copy_from_slice(&(-0.5f32).to_le_bytes());
+        let mut mix = Accumulator::new();
+        mix.add(&source, [1.0; 2]);
+        for (format, first_frame) in [
+            (PcmFormat::S16, &[0xff, 0x7f, 0, 0xc0][..]),
+            (PcmFormat::S24Packed, &[0xff, 0xff, 0x7f, 0, 0, 0xc0][..]),
+            (PcmFormat::S24, &[0xff, 0xff, 0x7f, 0, 0, 0, 0xc0, 0xff][..]),
+            (PcmFormat::S32, &[0xff, 0xff, 0xff, 0x7f, 0, 0, 0, 0xc0][..]),
+        ] {
+            let mut output = [0; PCM_PERIOD_BYTES];
+            mix.finish_format([1.0; 2], format, &mut output[..SAMPLES * format.bytes()]);
+            assert_eq!(&output[..first_frame.len()], first_frame);
         }
     }
 }

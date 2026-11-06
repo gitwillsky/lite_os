@@ -29,13 +29,13 @@ struct Element {
     maximum: i64,
 }
 impl MasterControl {
-    /// 打开 card0 的标准 control 节点；权限、设备不存在等错误直接返回，不降级为伪控件。
+    /// 打开首选播放设备的标准 control 节点。
     pub fn open() -> io::Result<Self> {
         Ok(Self {
             file: OpenOptions::new()
                 .read(true)
                 .write(true)
-                .open("/dev/snd/controlC0")?,
+                .open(format!("/dev/snd/controlC{}", super::preferred::card()?))?,
         })
     }
     fn element(&self, name: &str, kind: u32) -> io::Result<Element> {

@@ -47,6 +47,9 @@ open 预留 backing 后不重分配，协商不改变物理 DMA 队列；旧 mma
    observer 与 Engine。共享与独占端点互斥；HW_PARAMS 建立渲染流（独占流触发 audio-core 的格式切换），HW_FREE/CLOSE
    撤销渲染流（独占流离开时 audio-core 回到共享格式）；linuxd 的 `Card.configuration` TaskMutex 串行化这些冷事务。
    audio-core 的 Engine 短锁只保护状态，adapter configure/release 等等待在输出配置锁下、Engine 锁外完成。原生提交不经过 Accumulator。
+   共享流的应用 ring 始终为 48 kHz 双声道 F32，物理 period 由 audio-core 按设备能力选择浮点或整数格式，
+   由累加器在输出阶段限幅并编码。应用指针按 F32 frame 步进，设备长度按物理格式计算；
+   固定帧数不引入额外的重采样、缓冲或热路径分配。
 3. 每次 open 分配新 DeviceBacking 和 mmap identity，再占槽、发布 OFD；OFD 分配失败回滚槽位。
    每个在途物理 period 保存各子流的有效帧数；短批次补零不增加应用/hardware 指针。
    close/prepare/drop 经渲染流 stop/关闭清除该流的在途帧数并清零计数，旧 completion 不得推进复用槽位的 hw_ptr。

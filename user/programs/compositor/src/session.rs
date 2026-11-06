@@ -184,6 +184,8 @@ pub struct Session {
     logon_client: Option<ClientId>,
     /// SAS 后直到可信 Overlay 映射的输入屏障；缺少它会把握手期间的输入泄露给旧窗口。
     secure_pending: bool,
+    /// 只有本地键盘更新 SAS 的修饰键；共享 seat 的远程修饰键不能参与安全注意序列。
+    sas_modifiers: keyboard::Modifiers,
     stack: Stack,
     /// 按住 Alt 期间的切换面板；松开 Alt 才激活选中窗口，缺少它 Alt+Tab 每按一次就改一次栈序，看不到目标。
     switcher: Option<Switcher>,
@@ -234,6 +236,7 @@ impl Session {
             shell: None,
             logon_client: None,
             secure_pending: false,
+            sas_modifiers: keyboard::Modifiers::default(),
             stack: Stack::default(),
             switcher: None,
             switcher_art: None,
@@ -392,6 +395,15 @@ impl Session {
     ///
     /// DRM、输入或监听 socket 的不可恢复错误。
     pub fn run(mut self) -> io::Result<()> {
+        let runtime =
+            std::env::var_os("XDG_RUNTIME_DIR").expect("runtime directory checked at startup");
+        let mut remote = match crate::rfb::Desktop::bind(Path::new(&runtime)) {
+            Ok(remote) => remote,
+            Err(error) => {
+                eprintln!("compositor: RFB unavailable: {error}");
+                None
+            }
+        };
         let mut events = Vec::new();
         // poll slot 和结果保留容量；每轮重建借用，输入设备/连接改变后不会轮询已关闭的编号。
         let mut poll_buffer = PollBuffer::default();
@@ -442,6 +454,9 @@ impl Session {
                     },
                 ));
                 descriptors.extend(self.server.descriptors());
+                if let Some(remote) = &remote {
+                    descriptors.push(remote.descriptor());
+                }
                 match descriptors.wait(timeout) {
                     Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                     Err(error) => return Err(error),
@@ -450,6 +465,7 @@ impl Session {
                 returned.clear();
                 returned.extend(descriptors.sources().iter().map(PollFd::returned));
             }
+            let remote_ready = remote.as_ref().and_then(|_| returned.pop());
             let drm_ready = returned[0].contains(PollEvents::READ);
             if drm_ready && self.scanout.flip_pending() {
                 self.scanout.complete_flip()?;
@@ -471,7 +487,16 @@ impl Session {
             // 一批积压的位置只应用最终状态，避免逐样本提交光标与 resize configure。
             input::coalesce_motion(&mut events);
             for event in events.drain(..) {
-                self.on_input(event)?;
+                self.on_input(event, true)?;
+            }
+            if let (Some(remote), Some(ready)) = (&mut remote, remote_ready) {
+                remote.dispatch(ready, &self.scanout, &mut events);
+                for event in events.drain(..) {
+                    if let input::Event::PointerMoved { x, y } = event {
+                        self.input.set_position(x, y);
+                    }
+                    self.on_input(event, false)?;
+                }
             }
             self.server.dispatch(&returned[2 + input_count..])?;
             self.sync_windows()?;

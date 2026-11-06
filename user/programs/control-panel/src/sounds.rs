@@ -1,6 +1,9 @@
 //! 声音事件只提供业务数据；列表选择、窗口、按钮和异步启动使用共同框架。
-use crate::{Page, child, group, label, pair};
-use liteos_ui::{Event, EventKind, Layout, PropertySheet, Widget, WidgetKind as Kind};
+use crate::{Apply, Page, child, group, label, pair};
+use linux_uapi::alsa::{NativeOutput, preferred};
+use liteos_ui::{
+    Event, EventKind, Layout, PropertySheet, TreeRow, Widget, WidgetKind as Kind, state,
+};
 struct SoundEvent {
     name: &'static str,
     file: &'static str,
@@ -49,9 +52,20 @@ pub struct Sounds {
     file: Widget,
     preview: Widget,
     volume: Widget,
+    output: Widget,
+    outputs: Vec<NativeOutput>,
+    saved: Option<usize>,
 }
 impl Sounds {
-    pub fn build(sheet: &PropertySheet, available: bool) -> liteos_ui::Result<Self> {
+    pub fn build(
+        sheet: &PropertySheet,
+        outputs: Vec<NativeOutput>,
+        preferred: Option<String>,
+    ) -> liteos_ui::Result<Self> {
+        let saved = match preferred {
+            Some(id) => outputs.iter().position(|output| output.id == id),
+            None => (!outputs.is_empty()).then_some(0),
+        };
         let sounds = sheet.page("声音")?;
         let mut controls = vec![label(&sounds, "选择声音事件，可试听对应声音文件。")?];
         let list = child(
@@ -85,14 +99,31 @@ impl Sounds {
         )?;
         let audio = sheet.page("音频")?;
         let playback = group(&audio, "声音播放")?;
-        controls.push(label(
+        controls.push(label(&playback, "首选设备(P)：")?);
+        let output = child(
             &playback,
-            if available {
-                "默认设备：LiteOS Playback"
-            } else {
-                "没有可用的音频输出"
+            Kind::Combo,
+            saved.map_or("首选设备不可用", |index| &outputs[index].name),
+            Layout {
+                height: 24,
+                ..Default::default()
             },
-        )?);
+        )?;
+        output.set_state(state::DROPDOWN_LIST)?;
+        output.set_tree_rows(
+            &outputs
+                .iter()
+                .enumerate()
+                .map(|(index, output)| TreeRow {
+                    id: index as u64 + 1,
+                    parent: 0,
+                    text: &output.name,
+                    expanded: false,
+                    has_children: false,
+                })
+                .collect::<Vec<_>>(),
+        )?;
+        output.select(saved.map(|index| index as u64 + 1))?;
         let volume = child(
             &playback,
             Kind::Button,
@@ -103,7 +134,10 @@ impl Sounds {
                 ..Default::default()
             },
         )?;
-        if !available {
+        if outputs.is_empty() {
+            output.set_state(state::DROPDOWN_LIST | state::DISABLED)?;
+        }
+        if saved.is_none() {
             preview.set_state(liteos_ui::state::DISABLED)?;
             volume.set_state(liteos_ui::state::DISABLED)?;
         }
@@ -116,10 +150,48 @@ impl Sounds {
             file,
             preview,
             volume,
+            output,
+            outputs,
+            saved,
         })
+    }
+
+    fn selected(&self) -> liteos_ui::Result<Option<usize>> {
+        Ok(self
+            .output
+            .selection()?
+            .and_then(|id| id.checked_sub(1))
+            .map(|index| index as usize))
     }
 }
 impl Page for Sounds {
+    fn dirty(&self) -> liteos_ui::Result<bool> {
+        Ok(self.selected()? != self.saved)
+    }
+
+    fn apply(&self) -> liteos_ui::Result<Apply> {
+        let selected = self.selected()?;
+        let output = selected
+            .filter(|_| selected != self.saved)
+            .and_then(|index| self.outputs.get(index))
+            .map(|output| output.id.clone());
+        Ok(Box::new(move || {
+            if let Some(id) = output {
+                preferred::set(&id).map_err(|error| format!("无法设置首选设备：{error}"))?;
+            }
+            Ok(())
+        }))
+    }
+
+    fn committed(&mut self) -> liteos_ui::Result<()> {
+        self.saved = self.selected()?;
+        if self.saved.is_some() {
+            self.preview.set_state(0)?;
+            self.volume.set_state(0)?;
+        }
+        Ok(())
+    }
+
     fn event(&mut self, event: &Event) -> liteos_ui::Result<Option<crate::Response>> {
         if event.node == self.volume.id() && matches!(event.kind, EventKind::Activate { .. }) {
             return Ok(Some(crate::Response::Launch(vec!["/bin/sndvol".into()])));

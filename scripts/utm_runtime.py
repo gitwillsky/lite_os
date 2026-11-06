@@ -95,6 +95,7 @@ def _configuration(
     kernel_arguments: str | None = None,
     debug: DebugSession | None = None,
     usb_redirection: UsbRedirection | None = None,
+    diagnostic_port: int | None = None,
 ) -> dict[str, object]:
     kernel = kernel or UTM_ARTIFACTS / "kernel"
     rootfs = rootfs or UTM_ARTIFACTS / "rootfs.img"
@@ -240,7 +241,10 @@ def _configuration(
                 "Hardware": "virtio-net-device",
                 "MacAddress": "02:4C:49:54:45:01",
                 "IsolateFromHost": False,
-                "PortForward": [],
+                "PortForward": [] if diagnostic_port is None else [{
+                    "Protocol": "TCP", "HostAddress": "127.0.0.1",
+                    "HostPort": diagnostic_port, "GuestPort": 22,
+                }],
             }
         ],
         "Serial": serial,
@@ -258,6 +262,7 @@ def prepare(
     kernel_arguments: str | None = None,
     debug: DebugSession | None = None,
     usb_redirection: UsbRedirection | None = None,
+    diagnostic_port: int | None = None,
 ) -> Path:
     """Publish current artifacts and an exact UTM v4 configuration."""
     _installed_version()
@@ -280,6 +285,7 @@ def prepare(
         kernel_arguments=kernel_arguments,
         debug=debug,
         usb_redirection=usb_redirection,
+        diagnostic_port=diagnostic_port,
     )
     with (VM_PACKAGE / "config.plist").open("wb") as stream:
         plistlib.dump(config, stream, fmt=plistlib.FMT_XML, sort_keys=False)
@@ -641,6 +647,7 @@ def run_gui(
     serial_log: Path,
     kernel_arguments: str | None = None,
     usb_passthrough: bool = True,
+    diagnostic_port: int | None = None,
 ) -> None:
     """Capture the GUI session; optional USB forwarding requires local sudo authorization."""
     _installed_version()
@@ -669,6 +676,7 @@ def run_gui(
             kernel_arguments=kernel_arguments,
             debug=debug,
             usb_redirection=usb,
+            diagnostic_port=diagnostic_port,
         )
         _ensure_registered()
         status = _status()
@@ -694,21 +702,26 @@ def run_gui(
         except TimeoutError as error:
             _stop_managed()
             raise RuntimeError("UTM serial endpoint did not become ready") from error
-        serial_socket.setblocking(False)
+        serial_socket.settimeout(0.25)
         debug.publish(kernel, rootfs, kernel_elf, serial_log)
         with serial_log.open("wb", buffering=0) as output:
             # The capture file is the sole durable serial owner. Reading only
             # UTM's PTY UI loses the first failure as soon as the window closes.
-            def check_usb() -> None:
-                if usb is None:
-                    return
+            while True:
+                if usb is not None:
+                    try:
+                        usb.check()
+                    except RuntimeError:
+                        # 正常关机也关闭 usbredir；仍由 UART EOF 判定会话结束。
+                        if _status() not in ("stopping", "stopped"):
+                            raise
                 try:
-                    usb.check()
-                except RuntimeError:
-                    # 正常关机也关闭 usbredir；仍由 UART EOF 判定会话结束。
-                    if _status() not in ("stopping", "stopped"):
-                        raise
-            debug.capture(serial_socket, output, check=check_usb if usb is not None else None)
+                    chunk = serial_socket.recv(16 * 1024)
+                except TimeoutError:
+                    continue
+                if not chunk:
+                    break
+                output.write(chunk)
             status = _status()
             if status not in ("stopping", "stopped"):
                 raise RuntimeError(f"UTM serial stream closed while VM status={status}")

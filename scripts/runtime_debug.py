@@ -1,26 +1,22 @@
 #!/usr/bin/env python3
-"""当前 UTM 开发实例的标准 QMP 入口、符号与串口命令调度。"""
+"""通过 SSH 操作 LiteOS，并查询 UTM 宿主状态、设备和调试符号。"""
 from __future__ import annotations
 
 import argparse
 import hashlib
 import json
 import os
-import select
 import shlex
 import shutil
 import socket
+import struct
+import subprocess
 import tempfile
 import time
 import uuid
-from pathlib import Path
-from typing import BinaryIO
-from collections.abc import Callable
-
-from qemu_gate import ShellCommand, send_shell_interaction
+from pathlib import Path, PurePosixPath
 
 SESSION = Path(__file__).resolve().parent.parent / "target/run/gui-debug.json"
-MAX_OUTPUT = 1024 * 1024
 
 
 def qmp(path: str, command: str, arguments: dict, timeout: float = 10) -> object:
@@ -57,7 +53,7 @@ class DebugSession:
     """run_gui 独占一个短命 session；不启动第二个 guest 或后台常驻服务。"""
 
     def __init__(self, elf: Path) -> None:
-        # 0700 系统临时目录同时限制 QMP/串口访问；不能使用监听所有网卡的端口。
+        # 0700 系统临时目录同时限制 QMP 访问；不能使用监听所有网卡的端口。
         # UTM helper 受 App Sandbox 约束，普通进程的 /var/folders 临时目录不可访问。
         # 使用 UTM 自己的系统容器 tmp；短目录名还须满足 macOS sockaddr_un 的路径长度。
         scratch = Path.home() / "Library/Containers/com.utmapp.QEMUHelper/Data/tmp"
@@ -66,10 +62,6 @@ class DebugSession:
         self.directory = Path(self.temporary.name)
         self.elf = self.directory / "kernel.elf"
         shutil.copyfile(elf, self.elf)
-        self.command = socket.socket(socket.AF_UNIX)
-        self.command.bind(str(self.directory / "shell.sock"))
-        self.command.listen(4)
-        self.command.setblocking(False)
 
     def arguments(self) -> list[str]:
         """调试端点不带 -S；日常启动不会等待调试器，trace 默认没有启用事件。"""
@@ -86,7 +78,6 @@ class DebugSession:
             "owner_pid": os.getpid(),
             "directory": str(self.directory),
             "qmp": str(self.directory / "qmp.sock"),
-            "shell": str(self.directory / "shell.sock"),
             "trace": str(self.directory / "qemu-trace.log"),
             "serial_log": str(serial_log),
             "kernel": str(kernel.resolve()),
@@ -104,7 +95,6 @@ class DebugSession:
 
     def close(self) -> None:
         """只清理自己的入口；旧进程退出不能删掉下一次运行已发布的 session。"""
-        self.command.close()
         try:
             try:
                 if json.loads(SESSION.read_text())["directory"] == str(self.directory):
@@ -114,157 +104,159 @@ class DebugSession:
         finally:
             self.temporary.cleanup()
 
-    @staticmethod
-    def reply(client: socket.socket, result: dict) -> None:
-        try:
-            client.settimeout(1)
-            client.sendall(json.dumps(result, ensure_ascii=False).encode() + b"\n")
-        except OSError:
-            pass
-        finally:
-            client.close()
 
-    def capture(self, serial: socket.socket, output: BinaryIO, *, check: Callable[[], None] | None = None) -> None:
-        """单一 owner 同时落盘 UART 与串行执行命令；超时不会伪称 guest 命令已取消。"""
-        clients: dict[socket.socket, tuple[bytearray, float]] = {}
-        active = None
+def deploy(target: str, source: Path, destination: str, launch: bool) -> None:
+    """Upload and verify a same-filesystem staging file before replacing an executable."""
+    remote = PurePosixPath(destination)
+    if (
+        not remote.is_absolute() or str(remote) != destination or ".." in remote.parts
+        or not remote.name or any(c.isspace() or c in "'\"\\:" for c in destination)
+    ):
+        raise ValueError("destination must be a normalized absolute executable path")
+    with source.open("rb") as file:
+        checksum = hashlib.file_digest(file, "sha256").hexdigest()
+    ssh = ["ssh", "-oBatchMode=yes", "-oConnectTimeout=8", "--", target]
+    stage = subprocess.check_output(
+        [*ssh, "mktemp -d " + shlex.quote(str(remote.parent / ".liteos-deploy.XXXXXX"))],
+        text=True,
+    ).strip()
+    stage_path = PurePosixPath(stage)
+    if stage_path.parent != remote.parent or not stage_path.name.startswith(".liteos-deploy."):
+        raise RuntimeError("unexpected remote staging path")
+    staged = str(stage_path / "application")
+    try:
+        subprocess.run(["scp", "-q", "-B", "-oConnectTimeout=8", "-oServerAliveInterval=5",
+                        "-oServerAliveCountMax=2", "--", str(source.resolve()), f"{target}:{staged}"], check=True)
+        command = " && ".join((
+            f"printf '%s  %s\\n' {checksum} {shlex.quote(staged)} | sha256sum -c -",
+            f"chmod 755 {shlex.quote(staged)}",
+            f"mv -fT {shlex.quote(staged)} {shlex.quote(destination)}",
+        ))
+        subprocess.run([*ssh, command], check=True)
+        if launch:
+            subprocess.run([*ssh, "test -S /run/liteos/wayland-0 || exit 1; "
+                            "XDG_RUNTIME_DIR=/run/liteos nohup " + shlex.quote(destination)
+                            + " </dev/null >>/root/.liteos-launch.log 2>&1 &"], check=True)
+    finally:
+        subprocess.run([*ssh, f"rm -f {shlex.quote(staged)}; rmdir {shlex.quote(stage)}"], check=False)
+
+
+RFB_SOCKET = "/run/liteos/diagnostics/rfb.sock"
+RFB_VERSION = b"RFB 003.008\n"
+RFB_FORMAT = bytes((32, 24, 0, 1, 0, 255, 0, 255, 0, 255, 16, 8, 0, 0, 0, 0))
+
+
+def desktop(target: str, action: str, *, output: Path | None = None,
+            position: tuple[int, int] = (0, 0), button: int = 0, keys: tuple[int, ...] = ()) -> None:
+    """Use RFB over a standard SSH Unix socket forward, with no macOS window input."""
+    with tempfile.TemporaryDirectory(prefix="liteos-rfb-", dir="/tmp") as temporary:
+        path = Path(temporary) / "vnc"
+        process = subprocess.Popen([
+            "ssh", "-NT", "-oBatchMode=yes", "-oConnectTimeout=8", "-oExitOnForwardFailure=yes",
+            "-L", f"{path}:{RFB_SOCKET}", "--", target,
+        ], stdin=subprocess.DEVNULL)
         try:
-            while True:
-                if check is not None:
-                    check()
-                readable, _, _ = select.select([serial, self.command, *clients], [], [], 0.25)
-                for source in readable:
-                    if source is self.command:
-                        client, _ = self.command.accept()
-                        client.setblocking(False)
-                        clients[client] = (bytearray(), time.monotonic() + 5)
-                    elif source is serial:
-                        chunk = serial.recv(16 * 1024)
-                        if not chunk:
-                            return
-                        output.write(chunk)
-                        if active is None:
-                            continue
-                        active["buffer"].extend(chunk)
-                        start = active["buffer"].find(active["start"])
-                        end = active["buffer"].find(active["end"], max(0, start))
-                        if end >= 0 and (start >= 0 or active["client"] is None):
-                            suffix = active["buffer"].find(b"\x1f", end)
-                            if suffix >= 0:
-                                status = int(active["buffer"][end + len(active["end"]):suffix])
-                                text = active["buffer"][start + len(active["start"]):end]
-                                if active["client"] is not None:
-                                    self.reply(active["client"], {
-                                        "exit_code": status,
-                                        "output": text.decode(errors="replace").strip("\r\n"),
-                                    })
-                                active = None
-                        if active is not None and len(active["buffer"]) > MAX_OUTPUT:
-                            if active["client"] is not None:
-                                self.reply(active["client"], {
-                                    "error": "output limit exceeded; command may still be running",
-                                })
-                            # 保留末尾用于识别结束标记；仍占用串口，不能与下一条命令交错。
-                            active["client"] = None
-                            del active["buffer"][:-256]
-                    else:
-                        buffer, _ = clients[source]
-                        try:
-                            chunk = source.recv(4096)
-                        except OSError:
-                            chunk = b""
-                        buffer.extend(chunk)
-                        if not chunk or len(buffer) > 65536:
-                            self.reply(source, {"error": "incomplete or oversized request"})
-                            del clients[source]
-                        elif b"\n" in buffer:
-                            del clients[source]
-                            try:
-                                request = json.loads(buffer.split(b"\n", 1)[0])
-                                command = request["command"]
-                                timeout = float(request["timeout"])
-                                if not isinstance(command, str) or not 0 < timeout <= 300:
-                                    raise ValueError("invalid command or timeout")
-                                if not command or any(ord(c) < 0x20 or c == "\x7f" for c in command):
-                                    raise ValueError(
-                                        "one printable shell command is required; use semicolons between statements"
-                                    )
-                                if active is not None:
-                                    raise RuntimeError("serial shell is busy; previous command has not finished")
-                                token = uuid.uuid4().hex
-                                active = {
-                                    "client": source,
-                                    "buffer": bytearray(),
-                                    "start": f"\x1e{token}:start\x1f".encode(),
-                                    "end": f"\x1e{token}:end ".encode(),
-                                    "deadline": time.monotonic() + timeout,
-                                }
-                                # marker 的完整控制字节不出现在 UART 回显中；子 shell 的 exit 不退出登录 shell。
-                                line = (
-                                    f"printf '\\036%s:start\\037\\n' {token}; "
-                                    f"sh -c {shlex.quote(command)} </dev/null; liteos_debug_rc=$?; "
-                                    f"printf '\\036%s:end %d\\037\\n' {token} \"$liteos_debug_rc\"\n"
-                                )
-                                echoed = bytearray()
-                                try:
-                                    # 复用 UART 的回显流控 owner；盲发长命令会溢出 FIFO，ash 只收到残句。
-                                    with (
-                                        serial.makefile("wb", buffering=0) as writer,
-                                        serial.makefile("rb", buffering=0) as reader,
-                                    ):
-                                        send_shell_interaction(
-                                            writer, reader, echoed, ShellCommand(line.encode()).data,
-                                            deadline=active["deadline"],
-                                        )
-                                finally:
-                                    output.write(echoed)
-                                    active["buffer"].extend(echoed)
-                            except (KeyError, ValueError, TypeError, RuntimeError, OSError) as error:
-                                self.reply(source, {"error": str(error)})
-                                if active is not None and active["client"] is source:
-                                    active["client"] = None
-                now = time.monotonic()
-                for client, (_, deadline) in list(clients.items()):
-                    if now >= deadline:
-                        self.reply(client, {"error": "request timed out"})
-                        del clients[client]
-                if active is not None and active["client"] is not None and now >= active["deadline"]:
-                    self.reply(active["client"], {
-                        "error": "guest command timed out; it may still be running; serial remains busy until completion",
-                    })
-                    active["client"] = None
+            deadline = time.monotonic() + 10
+            while not path.exists():
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    raise RuntimeError("SSH desktop forward did not become ready")
+                time.sleep(0.025)
+            with socket.socket(socket.AF_UNIX) as client:
+                client.settimeout(10)
+                client.connect(str(path))
+                with client.makefile("rb") as stream:
+                    def read(size: int) -> bytes:
+                        data = stream.read(size)
+                        if len(data) != size:
+                            raise RuntimeError("RFB connection closed before a complete reply")
+                        return data
+
+                    if read(12) != RFB_VERSION:
+                        raise RuntimeError("RFB 3.8 is required")
+                    client.sendall(RFB_VERSION)
+                    if 1 not in read(read(1)[0]):
+                        raise RuntimeError("RFB did not offer authentication by SSH")
+                    client.sendall(b"\x01")
+                    if read(4) != bytes(4):
+                        raise RuntimeError("RFB handshake failed")
+                    client.sendall(b"\x01")
+                    width, height = struct.unpack("!HH", read(4))
+                    if read(16) != RFB_FORMAT:
+                        raise RuntimeError("unexpected desktop pixel format")
+                    name_size, = struct.unpack("!I", read(4))
+                    if name_size > 1024 or width * height > 4096 * 4096:
+                        raise RuntimeError("RFB desktop exceeds supported limits")
+                    read(name_size)
+                    if action == "key":
+                        for down, symbols in ((1, keys), (0, reversed(keys))):
+                            for symbol in symbols:
+                                client.sendall(struct.pack("!BBHI", 4, down, 0, symbol))
+                    if action == "pointer":
+                        x, y = position
+                        if not (0 <= x < width and 0 <= y < height):
+                            raise ValueError("pointer coordinates outside the desktop")
+                        for mask in (button, 0) if button else (0,):
+                            client.sendall(struct.pack("!BBHH", 5, mask, x, y))
+                    # A complete reply also acknowledges that preceding input was decoded.
+                    w, h = (width, height) if output is not None else (1, 1)
+                    client.sendall(struct.pack("!BBHHHH", 3, 0, 0, 0, w, h))
+                    if read(4) != b"\0\0\0\1" or read(12) != struct.pack("!HHHHi", 0, 0, w, h, 0):
+                        raise RuntimeError("unexpected RFB framebuffer update")
+                    bgrx = read(w * h * 4)
+                    if output is not None:
+                        rgb = bytearray(w * h * 3)
+                        for channel in range(3):
+                            rgb[channel::3] = bgrx[2 - channel::4]
+                        output.write_bytes(f"P6\n{w} {h}\n255\n".encode() + rgb)
         finally:
-            for client in clients:
-                client.close()
-            if active is not None and active["client"] is not None:
-                self.reply(active["client"], {"error": "runtime disconnected before command completion"})
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="action", required=True)
-    commands.add_parser("status")
-    monitor = commands.add_parser("qmp")
+    commands.add_parser("status", help="UTM host-side instance status")
+    monitor = commands.add_parser("qmp", help="UTM host and virtual hardware diagnostics")
     monitor.add_argument("command")
     monitor.add_argument("arguments", nargs="?", default="{}", help="QMP arguments JSON")
-    shell = commands.add_parser("exec")
-    shell.add_argument("command")
-    shell.add_argument("--timeout", type=float, default=10)
     commands.add_parser("symbols")
+    update = commands.add_parser("deploy")
+    update.add_argument("target", help="SSH destination or alias from ~/.ssh/config")
+    update.add_argument("source", type=Path)
+    update.add_argument("destination")
+    update.add_argument("--launch", action="store_true")
+    screen = commands.add_parser("screen")
+    screen.add_argument("target")
+    screen.add_argument("output", type=Path, help="PPM output path")
+    pointer = commands.add_parser("pointer")
+    pointer.add_argument("target")
+    pointer.add_argument("x", type=int)
+    pointer.add_argument("y", type=int)
+    pointer.add_argument("--button", choices=("left", "middle", "right"))
+    key = commands.add_parser("key")
+    key.add_argument("target")
+    key.add_argument("keysyms", nargs="+", type=lambda value: int(value, 0), help="X11 keysyms, pressed as a chord")
     args = parser.parse_args()
     try:
+        if args.action == "deploy":
+            deploy(args.target, args.source, args.destination, args.launch)
+            return 0
+        if args.action in ("screen", "pointer", "key"):
+            if args.action == "screen":
+                desktop(args.target, args.action, output=args.output)
+            elif args.action == "pointer":
+                desktop(args.target, args.action, position=(args.x, args.y),
+                        button={None: 0, "left": 1, "middle": 2, "right": 4}[args.button])
+            else:
+                desktop(args.target, args.action, keys=tuple(args.keysyms))
+            return 0
         info = json.loads(SESSION.read_text())
-        if args.action == "exec":
-            if not 0 < args.timeout <= 300:
-                raise ValueError("timeout must be in (0, 300]")
-            with socket.socket(socket.AF_UNIX) as client:
-                client.settimeout(args.timeout + 2)
-                client.connect(info["shell"])
-                client.sendall(json.dumps({"command": args.command, "timeout": args.timeout}).encode() + b"\n")
-                with client.makefile("rb") as stream:
-                    result = json.loads(stream.readline())
-            print(json.dumps(result, ensure_ascii=False, indent=2))
-            return int(result.get("exit_code", 1))
         if args.action == "symbols":
             qmp(info["qmp"], "query-status", {})
             with Path(info["elf"]).open("rb") as stream:
@@ -277,7 +269,7 @@ def main() -> int:
             info["status"] = qmp(info["qmp"], "query-status", {})
             print(json.dumps(info, indent=2))
         return 0
-    except (OSError, ValueError, KeyError, RuntimeError) as error:
+    except (OSError, ValueError, KeyError, RuntimeError, struct.error, subprocess.CalledProcessError) as error:
         print(json.dumps({"error": str(error)}, ensure_ascii=False))
         return 1
 

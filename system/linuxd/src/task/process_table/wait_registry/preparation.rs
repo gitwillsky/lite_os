@@ -147,18 +147,46 @@ impl WaitTicket {
         deadline: Option<u64>,
         task: Arc<TaskControlBlock>,
     ) -> Result<PreparedWait, ()> {
-        let identity = Pipe::identity(pipe);
-        let mut keys = Self::keys(2 + usize::from(deadline.is_some()))?;
-        keys.push(WaitIndexKey::Pipe {
-            identity,
+        let key = WaitIndexKey::Pipe {
+            identity: Pipe::identity(pipe),
             direction: pipe_direction(condition.direction()),
             exclusive: true,
             id: self.id,
-        });
+        };
+        self.prepare_pipe_with_key(pipe, condition, deadline, task, key)
+    }
+
+    pub(in crate::task::process_table) fn prepare_pipe_notification(
+        self,
+        pipe: &Arc<Pipe>,
+        since: u64,
+        deadline: Option<u64>,
+        task: Arc<TaskControlBlock>,
+    ) -> Result<PreparedWait, ()> {
+        let condition = PipeWaitCondition::ReadChanged { since };
+        let key = WaitIndexKey::Pipe {
+            identity: Pipe::identity(pipe),
+            direction: pipe_direction(condition.direction()),
+            exclusive: false,
+            id: self.id,
+        };
+        self.prepare_pipe_with_key(pipe, condition, deadline, task, key)
+    }
+
+    fn prepare_pipe_with_key(
+        self,
+        pipe: &Arc<Pipe>,
+        condition: PipeWaitCondition,
+        deadline: Option<u64>,
+        task: Arc<TaskControlBlock>,
+        key: WaitIndexKey,
+    ) -> Result<PreparedWait, ()> {
+        let mut keys = Self::keys(2 + usize::from(deadline.is_some()))?;
+        keys.push(key);
         self.prepare(
             task,
             IndexedWaitKind::Pipe {
-                identity,
+                identity: Pipe::identity(pipe),
                 condition,
             },
             deadline,

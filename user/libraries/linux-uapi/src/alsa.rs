@@ -1,6 +1,7 @@
 //! Typed Linux ALSA PCM playback and Master controls for LiteOS's fixed output contract.
 
 pub mod control;
+pub mod preferred;
 
 use std::{
     ffi::{CString, c_void},
@@ -42,6 +43,7 @@ const SYNC_PTR_BYTES: usize = 136;
 /// 一个标准 ALSA 原生输出端点；card 编号来自实际存在的 PCM 节点。
 pub struct NativeOutput {
     pub card: u32,
+    pub id: String,
     pub name: String,
 }
 
@@ -53,6 +55,19 @@ pub struct NativeOutput {
 /// # Errors
 /// 无法枚举 `/dev/snd` 时返回文件系统错误。
 pub fn native_outputs() -> io::Result<Vec<NativeOutput>> {
+    outputs("D1p")
+}
+
+/// 枚举可访问的共享播放端点（device 0），按声卡编号排序。
+///
+/// # Errors
+///
+/// 无法读取声卡设备目录。
+pub fn playback_outputs() -> io::Result<Vec<NativeOutput>> {
+    outputs("D0p")
+}
+
+fn outputs(suffix: &str) -> io::Result<Vec<NativeOutput>> {
     use std::{
         fs::{self, OpenOptions},
         os::fd::AsFd,
@@ -64,7 +79,7 @@ pub fn native_outputs() -> io::Result<Vec<NativeOutput>> {
         let Some(card) = name
             .to_str()
             .and_then(|name| name.strip_prefix("pcmC"))
-            .and_then(|name| name.strip_suffix("D1p"))
+            .and_then(|name| name.strip_suffix(suffix))
             .and_then(|card| card.parse::<u32>().ok())
         else {
             continue;
@@ -80,14 +95,17 @@ pub fn native_outputs() -> io::Result<Vec<NativeOutput>> {
         if ioctl_bytes(control.as_fd(), 0x8178_5501, &mut info).is_err() {
             continue;
         }
-        let bytes = &info[40..72];
-        let end = bytes
-            .iter()
-            .position(|byte| *byte == 0)
-            .unwrap_or(bytes.len());
+        let text = |bytes: &[u8]| {
+            let end = bytes
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(bytes.len());
+            String::from_utf8_lossy(&bytes[..end]).into_owned()
+        };
         outputs.push(NativeOutput {
             card,
-            name: String::from_utf8_lossy(&bytes[..end]).into_owned(),
+            id: text(&info[8..24]),
+            name: text(&info[40..72]),
         });
     }
     outputs.sort_by_key(|output| output.card);
@@ -116,9 +134,10 @@ pub struct PlaybackPcm {
 }
 
 impl PlaybackPcm {
-    /// Opens and configures `/dev/snd/pcmC0D0p` and maps its data ring.
+    /// Opens the preferred shared playback device and maps its data ring.
     pub fn open() -> io::Result<Self> {
-        let path = CString::new("/dev/snd/pcmC0D0p").expect("static PCM path");
+        let path = CString::new(format!("/dev/snd/pcmC{}D0p", preferred::card()?))
+            .expect("numeric PCM path");
         let raw_fd = unsafe {
             raw::open(
                 path.as_ptr(),

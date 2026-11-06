@@ -730,7 +730,7 @@ impl View {
         audio.push(item(OUTPUT, "输出设备(O)", "", SEPARATOR, 0));
         audio.push(item(
             SHARED_OUTPUT,
-            "桌面共享混音",
+            "跟随系统首选设备",
             "",
             check(state_.native_card.is_none()),
             OUTPUT,

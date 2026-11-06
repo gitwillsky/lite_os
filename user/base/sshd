@@ -1,0 +1,20 @@
+#!/bin/sh
+# Only explicitly enrolled development machines start the diagnostics listener.
+set -eu
+[ -s /root/.ssh/authorized_keys ] || exit 0
+umask 077
+/bin/mkdir -p /var/empty
+# OpenSSH enters this empty, root-owned directory before authenticating clients.
+/bin/chmod 0755 /var/empty
+if ! /bin/id sshd >/dev/null 2>&1; then
+    # BusyBox otherwise assumes a group named nogroup; LiteOS uses nobody.
+    if ! /bin/grep -q '^sshd:' /etc/group; then
+        /bin/addgroup -S sshd
+    fi
+    /bin/adduser -S -D -H -G sshd -h /var/empty -s /bin/false sshd
+fi
+[ "$(/bin/id -u sshd)" -ne 0 ] && [ "$(/bin/id -g sshd)" -ne 0 ] || exit 1
+if [ ! -s /etc/ssh/ssh_host_ed25519_key ]; then
+    /usr/bin/ssh-keygen -q -t ed25519 -N '' -f /etc/ssh/ssh_host_ed25519_key
+fi
+exec /usr/sbin/sshd -D -e

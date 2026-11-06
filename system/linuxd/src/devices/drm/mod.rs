@@ -266,50 +266,42 @@ impl DrmWait {
         self.fence
     }
 
-    /// 排空旧 edge 并原子化地准备 scheduler wait。
+    /// 捕获通知 generation 后检查 fence，避免并发 waiter 消费共享通知后丢失唤醒。
     ///
     /// # Returns
     ///
     /// fence 已完成返回 None；否则返回统一 task registry 可等待的 Pipe source。
-    pub(crate) fn prepare_to_block(&self) -> Option<Arc<Pipe>> {
-        if self.device.completion.lock().timeline.completed() >= self.fence {
-            return None;
-        }
-        self.device.completion_read.drain_readiness();
-        (self.device.completion.lock().timeline.completed() < self.fence)
-            .then(|| self.device.completion_read.pipe())
+    pub(crate) fn prepare_to_block(&self) -> Option<(Arc<Pipe>, u64)> {
+        let source = self.device.completion_read.pipe();
+        let since = source.readiness_generation(crate::ipc::PipeDirection::Read);
+        (self.device.completion.lock().timeline.completed() < self.fence).then_some((source, since))
     }
 }
 
 impl DrmCursorWait {
-    /// 排空旧 edge 并原子化地准备 cursorq completion wait。
+    /// 捕获通知 generation 后检查 cursorq completion。
     ///
     /// # Returns
     ///
     /// sequence 已完成返回 None；否则返回统一 task registry 可等待的 Pipe source。
-    pub(crate) fn prepare_to_block(&self) -> Option<Arc<Pipe>> {
-        if self.device.completion.lock().cursor_completed >= self.sequence {
-            return None;
-        }
-        self.device.completion_read.drain_readiness();
-        (self.device.completion.lock().cursor_completed < self.sequence)
-            .then(|| self.device.completion_read.pipe())
+    pub(crate) fn prepare_to_block(&self) -> Option<(Arc<Pipe>, u64)> {
+        let source = self.device.completion_read.pipe();
+        let since = source.readiness_generation(crate::ipc::PipeDirection::Read);
+        (self.device.completion.lock().cursor_completed < self.sequence).then_some((source, since))
     }
 }
 
 impl DrmRetry {
-    /// 排空旧 edge 并原子化地准备 adapter-readiness wait。
+    /// 捕获通知 generation 后检查 adapter-readiness。
     ///
     /// # Returns
     ///
     /// 取得 token 后已有 transaction 完成返回 None；否则返回统一 Pipe source。
-    pub(crate) fn prepare_to_block(&self) -> Option<Arc<Pipe>> {
-        if self.device.completion.lock().adapter_generation != self.generation {
-            return None;
-        }
-        self.device.completion_read.drain_readiness();
+    pub(crate) fn prepare_to_block(&self) -> Option<(Arc<Pipe>, u64)> {
+        let source = self.device.completion_read.pipe();
+        let since = source.readiness_generation(crate::ipc::PipeDirection::Read);
         (self.device.completion.lock().adapter_generation == self.generation)
-            .then(|| self.device.completion_read.pipe())
+            .then_some((source, since))
     }
 }
 

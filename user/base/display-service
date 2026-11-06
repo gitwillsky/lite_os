@@ -9,6 +9,8 @@ fi
 # 2. Wayland socket 放在 XDG_RUNTIME_DIR；客户端用同一个变量找到它。
 mkdir -p /run/liteos
 chmod 0755 /run/liteos
+# RFB uses SSH authentication. Its parent is private before the socket is created.
+mkdir -p -m 0700 /run/liteos/diagnostics
 export XDG_RUNTIME_DIR=/run/liteos
 # 3. compositor 直接成为本进程；它退出后由 init 执行唯一 respawn policy。
 exec /bin/compositor

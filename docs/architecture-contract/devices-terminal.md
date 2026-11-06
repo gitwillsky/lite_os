@@ -112,6 +112,9 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   clipboard syscall；SPICE agent framing 属于用户态，agent 必须在单一 owner
   解析 capability/消息，并把 resize 只提交到标准 DRM/KMS seam。
 - display/input completion 经设备协议投递，PTY byte readiness 在 linuxd 的 Pipe owner 内投递；内核 IRQ 路径不执行这些领域逻辑。
+- RFB 由 compositor 持有唯一的前台 scanout 与 seat，不创建第二套场景。只接受 root 私有目录下的 Unix socket，
+  OpenSSH 负责身份验证与转发。正常渲染不复制帧；只在有效的远程请求到达时读取上一已完成 front target。
+  网络读写非阻塞，一个连接最多保留一份待发送更新，连接结束时撤销其按键和按钮。远程修饰键和按键不参与本地安全注意序列。
 - terminal userspace 只能使用标准 PTY、termios、signal、ANSI/ECMA-48；禁止私有 console syscall/protocol。用户态显示协议不进入内核 ABI。
 - 动态 client/window/child/config 集合必须使用 fallible `Vec`/`String` reserve 后发布，不得恢复任意
   8-slot 上限；damage、wire frame、input batch 与 renderer row 是协议或热路径 bounded buffer，继续
@@ -324,6 +327,9 @@ SMMUv3/RISC-V 系统 IOMMU，以 PCI 根盘和 MMIO net/RNG 验证混合 DMA 的
   dumb buffer 不可导出，恒为私有。fdinfo 在 OFD 锁内读取 lifecycle 锁，锁序与 `virgl_wait` 相同。
   统计沿用现有 owner，无新增状态、锁或分配；每次读取按客户端 GEM handle 数线性遍历，属于显式监控查询冷路径。
 - completion 将退休节点移出锁域再析构；回收不分配。已发布 resource ID 不复用，未发布 ID 等 UNREF completion 后回收。
+- 同步 fence、光标与队列准入等待先捕获设备通知 Pipe 的读 generation，再检查各自的完成条件。
+  注册与唤醒以 generation 为准，其他等待者排空合并 token 仍可观察到完成。设备通知唤醒所有命中该 generation 的等待者，
+  普通数据 Pipe 的读写继续按 level 与独占登记裁决。复用原有 generation、Pipe 和 wait registry，不增加队列或锁。
 - Benchmark 决策：命令流改为每次提交分配 backing（与 Linux memdup 同量级），换掉 32 个 64 KiB 预分配槽位与锁内整段拷贝；
   去掉 exec/transfer 的 CPU fence 等待后，合成帧与 SHM 提交不再各自付出一个主机 fence 通知周期。
   新增 reservation 成本属于共享资源同步的必要契约；沿用 GPU 门禁检查真实清屏读回、PRIME 寿命、上游 Wayland EGL 消费与 page-flip 节拍，

@@ -464,6 +464,7 @@ def verify_runtime_gates(environment: Mapping[str, str] | None = None) -> None:
     """串行运行全部 QEMU runtime gate；并发由契约明确禁止。"""
     commands = [
         ["verify_boot.py", "--image", target_paths(environment)["rootfs"]],
+        ["verify_diagnostics.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_shutdown.py", "--image", target_paths(environment)["rootfs"]],
         ["verify_musl.py"],
         ["verify_rust_std.py", "--image", target_paths(environment)["rootfs"]],
@@ -483,6 +484,11 @@ def verify_runtime_gates(environment: Mapping[str, str] | None = None) -> None:
 def verify_runtime_audio(environment: Mapping[str, str] | None = None) -> None:
     """通过上游 ALSA consumer 和实际 WAV 验证八路混音。"""
     run(python_script("verify_audio.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
+
+
+def verify_runtime_diagnostics(environment: Mapping[str, str] | None = None) -> None:
+    """冷启动私有镜像，验证标准 SSH、应用替换和转发的 RFB 交互。"""
+    run(python_script("verify_diagnostics.py", "--image", target_paths(environment)["rootfs"]), environment=environment)
 
 
 def verify_runtime_gpu(environment: Mapping[str, str] | None = None) -> None:
@@ -762,6 +768,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         "verify-runtime-boot": verify_runtime_boot,
         "verify-runtime-shutdown": verify_runtime_shutdown,
         "verify-runtime-audio": verify_runtime_audio,
+        "verify-runtime-diagnostics": verify_runtime_diagnostics,
         "verify-runtime-gpu": verify_runtime_gpu,
         "verify-runtime-display": verify_runtime_display,
         "verify-runtime-wayland": verify_runtime_wayland,
@@ -799,6 +806,9 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
         usb_passthrough = source.get("USB_PASSTHROUGH", "1")
         if usb_passthrough not in ("0", "1"):
             raise RuntimeError("USB_PASSTHROUGH must be 0 or 1")
+        diagnostic_port = source.get("DIAGNOSTIC_PORT", "")
+        if diagnostic_port and (not diagnostic_port.isdecimal() or not 1024 <= int(diagnostic_port) <= 65535):
+            raise RuntimeError("DIAGNOSTIC_PORT must be a local TCP port from 1024 to 65535")
         build_kernel(environment)
         build_bootloader(environment)
         sync_userland(environment)
@@ -812,6 +822,7 @@ def dispatch(scope: str, environment: Mapping[str, str] | None = None) -> None:
             serial_log=ROOT / "target" / "logs" / "run-gui-serial.log",
             kernel_arguments="",
             usb_passthrough=usb_passthrough == "1",
+            diagnostic_port=int(diagnostic_port) if diagnostic_port else None,
         )
         return
     if scope == "run-gdb":

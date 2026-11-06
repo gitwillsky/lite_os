@@ -482,10 +482,10 @@ fn dirty_framebuffer(user: &dyn UserMemory, file: &DrmFile, argument: usize) -> 
 
 pub(super) fn wait_scanout(wait: DrmWait) -> Result<(), isize> {
     loop {
-        let Some(pipe) = wait.prepare_to_block() else {
+        let Some((pipe, since)) = wait.prepare_to_block() else {
             return Ok(());
         };
-        match pipe.wait(PipeWaitCondition::Readable, None) {
+        match pipe.wait(PipeWaitCondition::ReadChanged { since }, None) {
             WaitResult::Woken => {}
             WaitResult::Interrupted => return Err(errno::EINTR),
             WaitResult::OutOfMemory => return Err(errno::ENOMEM),
@@ -496,10 +496,10 @@ pub(super) fn wait_scanout(wait: DrmWait) -> Result<(), isize> {
 
 fn wait_cursor(wait: DrmCursorWait) -> Result<(), isize> {
     loop {
-        let Some(pipe) = wait.prepare_to_block() else {
+        let Some((pipe, since)) = wait.prepare_to_block() else {
             return Ok(());
         };
-        match pipe.wait(PipeWaitCondition::Readable, None) {
+        match pipe.wait(PipeWaitCondition::ReadChanged { since }, None) {
             WaitResult::Woken => {}
             WaitResult::Interrupted => return Err(errno::EINTR),
             WaitResult::OutOfMemory => return Err(errno::ENOMEM),
@@ -510,10 +510,10 @@ fn wait_cursor(wait: DrmCursorWait) -> Result<(), isize> {
 
 fn wait_retry(retry: DrmRetry) -> Result<(), isize> {
     loop {
-        let Some(pipe) = retry.prepare_to_block() else {
+        let Some((pipe, since)) = retry.prepare_to_block() else {
             return Ok(());
         };
-        match pipe.wait(PipeWaitCondition::Readable, None) {
+        match pipe.wait(PipeWaitCondition::ReadChanged { since }, None) {
             WaitResult::Woken => {}
             WaitResult::Interrupted => return Err(errno::EINTR),
             WaitResult::OutOfMemory => return Err(errno::ENOMEM),

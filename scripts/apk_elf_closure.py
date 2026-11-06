@@ -40,7 +40,7 @@ def extract_closure(packages, seeds: dict[str, str], output: Path, *, label: str
     readelf = llvm_tool("llvm-readelf")
     data = dict(data or {})
     trees = trees or {}
-    wanted = set(data.values())
+    wanted = set(data.values()) | set(seeds.values())
     entries = {}
     with ExitStack() as stack:
         for package in packages:

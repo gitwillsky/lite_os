@@ -357,7 +357,18 @@ fn attach(
         id: if index == 0 {
             String::from("LiteOS")
         } else {
-            format!("LiteOS{index}")
+            // 以设备名称保存同一型号的首选项，避免把旧序号误路由到不同型号。
+            let hash = info.name.iter().fold(0x811c9dc5u32, |hash, byte| {
+                (hash ^ u32::from(*byte)).wrapping_mul(0x01000193)
+            });
+            let id = format!("LO{hash:08x}");
+            if (0..discovery.cards.count())
+                .any(|i| discovery.cards.get(i).is_some_and(|card| card.id == id))
+            {
+                format!("{id}{index:04x}")
+            } else {
+                id
+            }
         },
         shared,
         output: RemoteOutput(info),
@@ -592,7 +603,8 @@ impl PcmFile {
         };
         if !matches!(parameters.access, 0 | 3)
             || parameters.channels != 2
-            || !self.card.output.capabilities().supports(configuration)
+            || self.endpoint == PcmEndpoint::Direct
+                && !self.card.output.capabilities().supports(configuration)
             || parameters.buffer_frames != u64::from(parameters.periods) * parameters.period_frames
             || configuration.period_bytes() > MAX_PCM_PERIOD_BYTES
             || self.endpoint == PcmEndpoint::Shared && configuration != PcmConfiguration::SHARED

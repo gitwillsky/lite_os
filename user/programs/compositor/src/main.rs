@@ -8,6 +8,7 @@ mod desktop;
 mod focus;
 mod input;
 mod interaction;
+mod rfb;
 mod scanout;
 mod session;
 mod shell_layout;

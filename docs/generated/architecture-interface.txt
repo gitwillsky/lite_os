@@ -3637,7 +3637,7 @@ system/linuxd/src/devices/drm/mod.rs :: pub (crate) enum DrmCursorSubmission
 system/linuxd/src/devices/drm/mod.rs :: pub (crate) enum DrmError
 system/linuxd/src/devices/drm/mod.rs :: pub (crate) enum DrmSubmission
 system/linuxd/src/devices/drm/mod.rs :: pub (crate) enum FramebufferRemoval
-system/linuxd/src/devices/drm/mod.rs :: pub (crate) impl DrmCursorWait :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
+system/linuxd/src/devices/drm/mod.rs :: pub (crate) impl DrmCursorWait :: fn prepare_to_block (& self) -> Option < (Arc < Pipe > , u64) >
 system/linuxd/src/devices/drm/mod.rs :: pub (crate) impl DrmFile :: fn active_framebuffer (& self) -> Option < u32 >
 system/linuxd/src/devices/drm/mod.rs :: pub (crate) impl DrmFile :: fn destroy_dumb (& self , handle : u32) -> Result < () , DrmError >
 system/linuxd/src/devices/drm/mod.rs :: pub (crate) impl DrmFile :: fn dirty_framebuffer (& self , id : u32 , rectangles : & [DisplayRect] ,) -> Result < DrmSubmission , DrmError >
@@ -3653,9 +3653,9 @@ system/linuxd/src/devices/drm/mod.rs :: pub (crate) impl DrmFile :: fn prepare_d
 system/linuxd/src/devices/drm/mod.rs :: pub (crate) impl DrmFile :: fn prepare_framebuffer (& self , handle : u32 , width : u32 , height : u32 , pitch : u32 ,) -> Result < PreparedFramebuffer < '_ > , DrmError >
 system/linuxd/src/devices/drm/mod.rs :: pub (crate) impl DrmFile :: fn set_crtc (& self , id : u32 , mode : DisplayMode) -> Result < DrmSubmission , DrmError >
 system/linuxd/src/devices/drm/mod.rs :: pub (crate) impl DrmFile :: fn update_cursor (& self , handle : Option < u32 > , x : u32 , y : u32 , hot_x : u32 , hot_y : u32 ,) -> Result < DrmCursorSubmission , DrmError >
-system/linuxd/src/devices/drm/mod.rs :: pub (crate) impl DrmRetry :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
+system/linuxd/src/devices/drm/mod.rs :: pub (crate) impl DrmRetry :: fn prepare_to_block (& self) -> Option < (Arc < Pipe > , u64) >
 system/linuxd/src/devices/drm/mod.rs :: pub (crate) impl DrmWait :: const fn fence (& self) -> u64
-system/linuxd/src/devices/drm/mod.rs :: pub (crate) impl DrmWait :: fn prepare_to_block (& self) -> Option < Arc < Pipe > >
+system/linuxd/src/devices/drm/mod.rs :: pub (crate) impl DrmWait :: fn prepare_to_block (& self) -> Option < (Arc < Pipe > , u64) >
 system/linuxd/src/devices/drm/mod.rs :: pub (crate) mod device
 system/linuxd/src/devices/drm/mod.rs :: pub (crate) struct DrmCursorWait
 system/linuxd/src/devices/drm/mod.rs :: pub (crate) struct DrmFile
@@ -6348,6 +6348,7 @@ system/linuxd/src/ipc/pipe.rs :: enum PipeResizeError :: # [doc = " 未读数据
 system/linuxd/src/ipc/pipe.rs :: enum PipeResizeError :: # [doc = " 超过 [`PIPE_MAX_SIZE`]（`EPERM`）。"] TooLarge
 system/linuxd/src/ipc/pipe.rs :: enum PipeResizeError :: OutOfMemory
 system/linuxd/src/ipc/pipe.rs :: enum PipeWaitCondition :: # [doc = " 命名管道 open 汇合：对端自 `since` 之后又打开过一次。`waiter` 是等待者自己的方向。"] PeerOpened { waiter : PipeDirection , since : u64 , }
+system/linuxd/src/ipc/pipe.rs :: enum PipeWaitCondition :: # [doc = " 等待通知 Pipe 的读 generation 改变；token 被另一读取者排空也算完成。"] ReadChanged { since : u64 , }
 system/linuxd/src/ipc/pipe.rs :: enum PipeWaitCondition :: Readable
 system/linuxd/src/ipc/pipe.rs :: enum PipeWaitCondition :: Writable { minimum : usize , }
 system/linuxd/src/ipc/pipe.rs :: enum PipeWrite :: Broken
@@ -6356,7 +6357,9 @@ system/linuxd/src/ipc/pipe.rs :: enum PipeWrite :: Full
 system/linuxd/src/ipc/pipe.rs :: pub (crate) PipePollState :: error : bool
 system/linuxd/src/ipc/pipe.rs :: pub (crate) PipePollState :: hangup : bool
 system/linuxd/src/ipc/pipe.rs :: pub (crate) PipePollState :: has_data : bool
+system/linuxd/src/ipc/pipe.rs :: pub (crate) PipePollState :: notification : bool
 system/linuxd/src/ipc/pipe.rs :: pub (crate) PipePollState :: peer_opens : u64
+system/linuxd/src/ipc/pipe.rs :: pub (crate) PipePollState :: read_generation : u64
 system/linuxd/src/ipc/pipe.rs :: pub (crate) PipePollState :: readable : bool
 system/linuxd/src/ipc/pipe.rs :: pub (crate) PipePollState :: rendezvous : bool
 system/linuxd/src/ipc/pipe.rs :: pub (crate) PipePollState :: writable : bool
@@ -9763,6 +9766,7 @@ system/linuxd/src/task/process_table/wait_registry/preparation.rs :: pub (in cra
 system/linuxd/src/task/process_table/wait_registry/preparation.rs :: pub (in crate :: task :: process_table) impl WaitTicket :: fn prepare_deadline (self , deadline : u64 , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
 system/linuxd/src/task/process_table/wait_registry/preparation.rs :: pub (in crate :: task :: process_table) impl WaitTicket :: fn prepare_futex (self , key : FutexKey , bitset : u32 , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
 system/linuxd/src/task/process_table/wait_registry/preparation.rs :: pub (in crate :: task :: process_table) impl WaitTicket :: fn prepare_pipe (self , pipe : & Arc < Pipe > , condition : PipeWaitCondition , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
+system/linuxd/src/task/process_table/wait_registry/preparation.rs :: pub (in crate :: task :: process_table) impl WaitTicket :: fn prepare_pipe_notification (self , pipe : & Arc < Pipe > , since : u64 , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
 system/linuxd/src/task/process_table/wait_registry/preparation.rs :: pub (in crate :: task :: process_table) impl WaitTicket :: fn prepare_poll (self , keys : Vec < PollWaitKey > , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
 system/linuxd/src/task/process_table/wait_registry/preparation.rs :: pub (in crate :: task :: process_table) impl WaitTicket :: fn prepare_signal (self , mask : u64 , deadline : Option < u64 > , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >
 system/linuxd/src/task/process_table/wait_registry/preparation.rs :: pub (in crate :: task :: process_table) impl WaitTicket :: fn prepare_task_event (self , key : crate :: sync :: TaskWaitKey , task : Arc < TaskControlBlock > ,) -> Result < PreparedWait , () >

@@ -4,6 +4,10 @@
 
 ## 核心规范
 
+- 远程开发入口使用 SSH 2（[RFC 4251](https://www.rfc-editor.org/rfc/rfc4251)）、OpenSSH 的 SFTP 子系统与 Unix socket 转发。
+  服务端来自 Alpine v3.22 的 OpenSSH `10.0_p1-r11`，各架构包摘要由 `scripts/userland/artifacts.py` 固定。
+- 桌面访问遵循 [RFB 3.8（RFC 6143）](https://www.rfc-editor.org/rfc/rfc6143)，在认证后的 SSH 流内使用 Raw 帧更新。
+
 ### Linux arm64 + riscv64 ABI
 
 - Linux `v7.1`；tag object `b3f94b2b3f3e51ab880a51fc6510e1dafba654ed`；peeled commit `8cd9520d35a6c38db6567e97dd93b1f11f185dc6`。
