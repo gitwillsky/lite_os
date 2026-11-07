@@ -321,6 +321,8 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   批量提交已实现：`BlockDevice::transfer_batch`/`read_block_ranges`、协议 `TRANSFER_BATCH`（`LBLOCK03`）、
   virtio-blk 并发发布整批（自有在途占满 credit 时先收割最老的，避免自锁）、ext4 `read_storage` 把一次读里
   所有 extent 的运行合成一批；journal 的 ordered 数据 / checkpoint / replay 写 home 时连续块合并为区间写（≤64 块）。
+  槽数已按设备 virtqueue 容量协商。仍缺专用 FIFO/共享环请求与完成数据面：当前 TRANSFER_BATCH 仍经同步 channel RPC；
+  不能把“单批内硬件并发”记作原计划的数据面全部完成。
   双架构服务 Clippy 与 ext4-unit/kernel-unit 编译检查通过，未运行块 I/O 测试或更新实例。
 - 2 已实现待运行验收：ext4 `Content` 顺序预读窗口（32 KiB→512 KiB）；pager 工作线程的补页暂存区常驻映射，
   存储读直接写入，去掉 `Vec` 与 aux 复制（linuxd 持久文件与内存文件同步迁移）；内核 fault-around 在主页解析的同一树锁
@@ -361,13 +363,14 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
 - 移交前验证记录（不代表当前树已验收）：`architecture-check` 通过（已按设计登记 FallibleMap 持久表、校准源文件行数上限、补局部 SAFETY 证明，
   `--write-interface` 重新生成接口清单）；ext4-unit 69 项、kernel-unit 非 DTB 夹具、scheduler-unit、netstack-unit、
   span-heap 全部通过（DTB 夹具需要 `make verify-unit` 生成 QEMU DTB）。完整 `make verify` 与运行时验收待用户执行。
-- 8 部分实现：共享零页已落地；双架构 accessed 采集/清除、全 ASID fence、软件 access fault 恢复已接通；
-  COW/slice 访问观测按物理身份与继承窗口归并，页槽使用既有 3 位记录访问代，批量候选按代龄优先并给实际访问第二次机会。
-  后台内核线程按低/高水位推进，allocator 锁内只发布 boot CPU deferred 边沿，空闲无周期唤醒；无进展时限速重试。
-  原生压力事件移出 syscall 水位镜像，由同一实际 owner 的边沿更新；扩展现有视图用例覆盖 AF 清除/软件恢复，无新增测试实体。
-  访问采集与映射撤销已共用显式别名工作栈，根 truncate 旧窗口和 COW/slice 继承边界保持正确；登记扩容不在 spin guard 内执行。
-  尚缺：完整 oldest-first 分代索引（当前只在批量候选内排序）、全局扫描预算与多代完整遍历推进边界。
-  这些性能与深栈要求尚未被证明，不能以后台线程接通代替阶段 8 完成。
+- 8 已实现待运行验收：共享零页、双架构访问位采集/清除、全 ASID fence、软件 access fault 恢复已接通；
+  COW/slice 访问观测按物理身份与继承窗口归并，采集/撤销共用显式别名工作栈。
+  完成八代 oldest-first 滑动窗口：页槽仍为 8 字节，pager 页块额外位图/链表索引干净未固定成员；脏页/pin 离队，清洁/解 pin 以当前代重入。
+  扫描跨批保留登记和代游标，每批全局至多 256 页样本/64 个 VMO；只有最老代完整遍历证明排空才推进窗口，避免代号绕回误分类。
+  完整块样本轮转防止热点头部饿死块尾；锁忙/采集失败保留页框并阻止错误的排空证明。
+  登记改为锁外准备的 koid 弱索引，Drop 摘除；不在 IRQ guard 下分配或取树锁。
+  后台线程按实际低/高水位推进、批次间 yield，正常无周期唤醒，无进展限速重试；原生压力事件同源投影。
+  复用现有页列表/淘汰用例扩展索引资格与块轮转覆盖；源码检查与运行验收分开，尚未运行回收质量/内存压力验收。
 - 9 已实现待运行验收：`Content::write` 改为延迟分配（预留 + 大小/时间提交 + 只写内容 VMO），回写时才分配并只映射 block，
   脏页限流（单文件 8 MiB）；journal 写 home 的连续块区间合并；ext4-unit 70 项（含 e2fsck 校验的预留/回写用例）通过。
   数据不再同时存在于 journal staged 副本与内容 VMO。非整块写不再读盘（页由 pager 补入内容 VMO）。
@@ -377,10 +380,10 @@ RemoteFs 直接读内容 VMO、channel_call 回复留在当前 CPU。
   共享区软件 walk/read 锁实际 owner；supervisor 子树保留隔离。扩展既有隔离用例覆盖共享末页撤销/重装，无新增测试实体。
   双架构 kernel 与 kernel-unit（含现有用例的编译）Clippy 通过；没有运行测试或更新来宾。
 - 尚未完成：
-  8 余项（完整分代索引/全局扫描边界）、P2.1（截止时间调度类）、
+  1 的 FIFO/共享环请求与完成数据面、P2.1（截止时间调度类）、
   P2.4（合成器 damage 裁剪与遮挡剔除）、M1 区域级光栅裁剪、M2（桌面背景子表面，需要 Display 子表面能力）、
   M4 线程整合与内核栈尺寸评估、M7 余项、P2.3 缓冲复用；
   P2.5 的终态仍属于路由计划的 socket 共享环，当前未实现，不以转交计划代替能力完成。所有项最后统一运行验收。
 
-本轮源码验证：双架构 kernel、kernel-unit（含测试的编译）与 architecture-bench Clippy 通过；
+当前分代索引改动的源码验证：双架构 kernel 与 kernel-unit（含测试的编译）Clippy 通过；
 接口派生清单已由唯一生成器更新，architecture-check 通过。没有运行测试、基准、来宾采样或 `make verify`。

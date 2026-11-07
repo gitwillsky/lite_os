@@ -195,11 +195,14 @@ impl Vmo {
         // 先完成全部别名的 write protection/fence；失败时保留 dirty，不能把未保护的页标 clean。
         // 树锁阻止新的 write fault；保护前完成的硬件写仍包含在随后读出的 writeback 快照中。
         self.zap(first..first + count, ZapMode::RemoveWrite)?;
-        self.state.lock().committed.for_each_mut(|index, page| {
-            if (first..first + count).contains(&index) && page.cleanliness() == Cleanliness::Dirty {
-                page.set_cleanliness(Cleanliness::AwaitingClean);
-            }
-        });
+        self.state
+            .lock()
+            .committed
+            .for_each_range_mut(first..first + count, |_, page| {
+                if page.cleanliness() == Cleanliness::Dirty {
+                    page.set_cleanliness(Cleanliness::AwaitingClean);
+                }
+            });
         Ok(())
     }
 
@@ -214,13 +217,14 @@ impl Vmo {
         }
         let (first, count) = page_range(offset, length)?;
         let _tree = self.lock_tree()?;
-        self.state.lock().committed.for_each_mut(|index, page| {
-            if (first..first + count).contains(&index)
-                && page.cleanliness() == Cleanliness::AwaitingClean
-            {
-                page.set_cleanliness(Cleanliness::Clean);
-            }
-        });
+        self.state
+            .lock()
+            .committed
+            .for_each_range_mut(first..first + count, |_, page| {
+                if page.cleanliness() == Cleanliness::AwaitingClean {
+                    page.set_cleanliness(Cleanliness::Clean);
+                }
+            });
         Ok(())
     }
 }

@@ -16,13 +16,14 @@ slice 则直接别名父对象的区间。
 对象取得树锁时折叠仅剩自己的隐藏父节点；创建快照时再检查祖先链，以覆盖“退出状态已通知，但上一承载线程的
 映射稍后才退休”的交错。Drop 不等待树锁，也不创建回收队列。
 
-折叠复用已有 AVL 节点，转交仍可见且未被覆盖的页；偏移相加，可见窗口求交。窗口在缩短时收紧，之后增长
+折叠复用已有分块页列表，转交仍可见且未被覆盖的页；偏移相加，可见窗口求交。窗口在缩短时收紧，之后增长
 不能重新暴露被截断祖先的内容。页框地址保持不变；被覆盖页只在映射撤销和 fence 完成后才可释放。
 
 ## 地址空间与退休
 
 VMAR 持有区间树、映射权限与创建时的 rights 上限。共享地址空间管理高地址区，各成员独立管理低地址区；
-成员按需把共享映射填进自己的页表。撤销共享映射时，对全部成员撤销对应翻译并完成 fence。
+成员根入口按需借用共享 owner 的下级子树，normal/private 视图共用私有区下级表。
+共享撤销只修改一次叶项，以全 CPU/ASID fence 退休；不逐成员复制叶项或扇出撤销。
 
 锁序为 VMO 树 → 地址空间；共享地址空间先于其成员。缺页先找到并保活 Mapping，释放空间锁，再按此顺序解析
 VMO 与安装页表。Mapping publication/revalidation 和 translation retirement 的详细约束见[内存契约](../architecture-contract/memory.md)。
@@ -52,8 +53,12 @@ SIGSEGV/SIGBUS 或扩展 GROWS_DOWN。成功解决的 restricted 缺页及其中
 
 ## 当前限制
 
-不做匿名页换出（与 Fuchsia 一致）。空闲页低于低水位（容量 1/64，至少 256 页）时，用户缺页入口同步淘汰 pager
-支撑 VMO 的 Clean 页（每次至多 256 页，回到 1.5 倍低水位即停），之后访问由 pager 从存储补回；仍不足时内存压力事件
-置位，component-manager 记录等级变化。没有后台回收线程：长时间无缺页时压力事件保持最近状态。`swapon`/`swapoff` 明确返回 ENOSYS，
+不做匿名页换出（与 Fuchsia 一致）。空闲页低于低水位（容量 1/64，至少 256 页）后，后台内核线程回收 pager
+支撑 VMO 的 Clean 且未固定页，用户缺页入口保留有界兜底；回到 1.5 倍低水位即停止。
+页块分代队列先取最老活动代，采集所有实际别名的访问位，访问过的页晋升到最新代；旧代确认排空后才复用代号。
+每批最多 256 个页样本及 64 个 VMO 登记，批次间 yield；无进展时等待 10 ms，正常时睡眠而无周期唤醒。
+实际水位边沿经 boot CPU deferred 更新原生压力事件，component-manager 记录等级变化；
+淘汰先撤销翻译并完成 fence，之后访问由 pager 从存储补回。完整所有权及扫描边界见[内存契约](../architecture-contract/memory.md)。
+`swapon`/`swapoff` 明确返回 ENOSYS，
 `/proc/swaps` 不存在，Swap 字段为零。用户可观察的内存统计、NOWAIT、RSS 与 fault accounting 边界以
 [内存 ABI](../syscall-support/memory.md)及[进程 ABI](../syscall-support/process-identity.md)为准。

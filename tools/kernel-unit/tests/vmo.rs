@@ -16,6 +16,15 @@ mod id {
 )]
 mod execution {
     pub(crate) mod sync {
+        pub(crate) struct IrqMutex<T>(std::sync::Mutex<T>);
+        impl<T> IrqMutex<T> {
+            pub(crate) const fn new(value: T) -> Self {
+                Self(std::sync::Mutex::new(value))
+            }
+            pub(crate) fn lock(&self) -> std::sync::MutexGuard<'_, T> {
+                self.0.lock().unwrap()
+            }
+        }
         pub(crate) struct TaskMutex<T>(std::sync::Mutex<T>);
         pub(crate) type TaskMutexGuard<'a, T> = std::sync::MutexGuard<'a, T>;
         pub(crate) struct TaskMutexWaitPreparation;

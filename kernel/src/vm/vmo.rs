@@ -152,8 +152,6 @@ struct State {
     // FLAG: 本对象有读缺页被解析到共享零页（只读翻译指向全局零页）。之后首次提交真实页必须撤销该下标的翻译，
     // 否则读者继续读到零页而看不到后来的写入。只在根匿名对象上置位（见 `shared_zero_page`）。
     zero_mapped: bool,
-    // OWNER: 回收扫描下次起点；树锁串行化，限制一次扫描的实际页数，避免缺页兜底遍历整个大文件。
-    reclaim_cursor: usize,
 }
 
 /// 内存对象。
@@ -197,165 +195,6 @@ impl Vmo {
         let guard = self.tree.lock.lock().map_err(|_| VmError::NoMemory)?;
         self.collapse_hidden_parents();
         Ok(guard)
-    }
-
-    /// 创建子对象。
-    ///
-    /// # Parameters
-    /// - `offset`/`size`: 页对齐的字节区间（slice 必须落在父对象内）。
-    /// - `kind`: 子对象语义。
-    ///
-    /// # Errors
-    /// 参数未对齐或越界返回 `InvalidArgs`/`OutOfRange`；连续/物理对象不支持 COW 子对象。
-    pub(crate) fn create_child(
-        self: &Arc<Self>,
-        offset: u64,
-        size: u64,
-        kind: ChildKind,
-    ) -> Result<Arc<Self>, VmError> {
-        if !offset.is_multiple_of(PAGE_SIZE as u64) {
-            return Err(VmError::InvalidArgs);
-        }
-        let offset_pages =
-            usize::try_from(offset / PAGE_SIZE as u64).map_err(|_| VmError::InvalidArgs)?;
-        let pages = pages_for(size)?;
-        let _tree = self.lock_tree()?;
-        let parent_pages = self.state.lock().pages;
-        match kind {
-            ChildKind::Slice => {
-                if offset_pages
-                    .checked_add(pages)
-                    .is_none_or(|end| end > parent_pages)
-                {
-                    return Err(VmError::OutOfRange);
-                }
-                let child = Self::new_in(
-                    self.tree.clone(),
-                    Kind::Slice,
-                    pages,
-                    Some(Relation::Slice {
-                        parent: self.clone(),
-                        offset: offset_pages,
-                    }),
-                )?;
-                let mut state = self.state.lock();
-                state.children.retain(|child| child.strong_count() != 0);
-                state
-                    .children
-                    .try_reserve(1)
-                    .map_err(|_| VmError::NoMemory)?;
-                state.children.push(Arc::downgrade(&child));
-                Ok(child)
-            }
-            ChildKind::AtLeastOnWrite => {
-                self.require_cow_capable()?;
-                let child = Self::new_in(
-                    self.tree.clone(),
-                    Kind::Paged {
-                        resizable: false,
-                        pager: None,
-                        content: PageContent::Anonymous,
-                    },
-                    pages,
-                    Some(Relation::Cow {
-                        parent: self.clone(),
-                        offset: offset_pages,
-                        limit: pages.min(parent_pages.saturating_sub(offset_pages)),
-                    }),
-                )?;
-                let mut state = self.state.lock();
-                if state.children.try_reserve(1).is_err() {
-                    return Err(VmError::NoMemory);
-                }
-                state.children.retain(|child| child.strong_count() != 0);
-                state.children.push(Arc::downgrade(&child));
-                Ok(child)
-            }
-            ChildKind::Snapshot => {
-                self.require_cow_capable()?;
-                if matches!(self.kind, Kind::Paged { pager: Some(_), .. }) {
-                    // 被 pager 支撑的页可能被 pager 改写，无法冻结为不可变快照。
-                    return Err(VmError::NotSupported);
-                }
-                self.snapshot(offset_pages, pages)
-            }
-        }
-    }
-
-    fn require_cow_capable(&self) -> Result<(), VmError> {
-        match self.kind {
-            Kind::Paged { .. } => Ok(()),
-            Kind::Contiguous(_) | Kind::Physical { .. } | Kind::Slice | Kind::Hidden => {
-                Err(VmError::NotSupported)
-            }
-        }
-    }
-
-    /// 调用者持有树锁。
-    fn snapshot(self: &Arc<Self>, offset: usize, pages: usize) -> Result<Arc<Self>, VmError> {
-        // 退出通知可先于兄弟映射退休：下一次快照时，已死亡兄弟可能落在祖先链中间。
-        // 仅在快照慢路径遍历祖先，普通页访问仍只折叠直接父节点。
-        let mut ancestor = match &self.state.lock().relation {
-            Some(Relation::Cow { parent, .. }) => Some(parent.clone()),
-            _ => None,
-        };
-        while let Some(node) = ancestor {
-            node.collapse_hidden_parents();
-            ancestor = match &node.state.lock().relation {
-                Some(Relation::Cow { parent, .. }) => Some(parent.clone()),
-                _ => None,
-            };
-        }
-        let hidden = Self::new_in(self.tree.clone(), Kind::Hidden, 0, None)?;
-        let child = Self::new_in(
-            self.tree.clone(),
-            Kind::Paged {
-                resizable: false,
-                pager: None,
-                content: PageContent::Anonymous,
-            },
-            pages,
-            Some(Relation::Cow {
-                parent: hidden.clone(),
-                offset,
-                limit: pages.min(self.state.lock().pages.saturating_sub(offset)),
-            }),
-        )?;
-        {
-            let mut state = self.state.lock();
-            if state.committed.values().any(|page| page.pins() != 0) {
-                // 固定页正被 DMA 使用，移交给隐藏节点后写保护会破坏设备写入的可见性。
-                return Err(VmError::BadState);
-            }
-            let mut hidden_state = hidden.state.lock();
-            hidden_state
-                .children
-                .try_reserve_exact(2)
-                .map_err(|_| VmError::NoMemory)?;
-            hidden_state.children.push(Arc::downgrade(self));
-            hidden_state.children.push(Arc::downgrade(&child));
-            if let Some(Relation::Cow { parent, .. }) = &state.relation {
-                let mut parent_state = parent.state.lock();
-                let entry = parent_state
-                    .children
-                    .iter_mut()
-                    .find(|entry| core::ptr::eq(entry.as_ptr(), Arc::as_ptr(self)))
-                    .expect("snapshot source absent from COW tree");
-                *entry = Arc::downgrade(&hidden);
-            }
-            hidden_state.pages = state.pages;
-            hidden_state.committed = core::mem::take(&mut state.committed);
-            hidden_state.relation = state.relation.take();
-            state.relation = Some(Relation::Cow {
-                parent: hidden.clone(),
-                offset: 0,
-                limit: state.pages,
-            });
-        }
-        // 已提交页现属于隐藏节点：父对象的可写翻译必须撤销，否则写入会穿透到共享页。
-        let pages_total = self.state.lock().pages;
-        self.zap(0..pages_total, ZapMode::RemoveWrite)?;
-        Ok(child)
     }
 
     /// 解析一页供缺页或复制使用。调用者持有树锁。
@@ -409,19 +248,21 @@ impl Vmo {
         if index >= state.pages {
             return Err(Resolve::Error(VmError::OutOfRange));
         }
-        if let Some(page) = state.committed.get_mut(&index) {
+        if let Some(page) = state.committed.with_mut(&index, |page| {
             page.note_access();
             if write {
                 page.set_cleanliness(Cleanliness::Dirty);
             }
-            return Ok(ResolvedPage {
+            ResolvedPage {
                 source: FaultSource::Memory,
                 ppn: page.ppn(),
-                // pager 的非脏页只能安装只读翻译；否则 read fault 后的硬件写入绕过置脏，回写丢数据。
+                // 干净 pager 页只读安装，硬件写须先经历置脏。
                 writable: page.cleanliness() == Cleanliness::Dirty
                     || !matches!(self.kind, Kind::Paged { pager: Some(_), .. }),
                 cache: CachePolicy::Cached,
-            });
+            }
+        }) {
+            return Ok(page);
         }
         // 祖先链：找到页则只读共享，写入时复制到本对象。
         let mut ancestor = match &state.relation {
@@ -437,18 +278,25 @@ impl Vmo {
             if ancestor_index >= ancestor_state.pages {
                 break;
             }
-            if let Some(page) = ancestor_state.committed.get_mut(&ancestor_index) {
+            let inherited = ancestor_state.committed.with_mut(&ancestor_index, |page| {
                 page.note_access();
+                let frame = if write {
+                    frame_allocator::alloc_copy(page.bytes())
+                } else {
+                    None
+                };
+                (page.ppn(), frame)
+            });
+            if let Some((ppn, frame)) = inherited {
                 if !write {
                     return Ok(ResolvedPage {
                         source: FaultSource::Memory,
-                        ppn: page.ppn(),
+                        ppn,
                         writable: false,
                         cache: CachePolicy::Cached,
                     });
                 }
-                let frame = frame_allocator::alloc_copy(page.bytes())
-                    .ok_or(Resolve::Error(VmError::NoMemory))?;
+                let frame = frame.ok_or(Resolve::Error(VmError::NoMemory))?;
                 drop(ancestor_state);
                 let page = commit_page(&mut state, index, frame, self.page_content())?;
                 drop(state);

@@ -49,11 +49,7 @@ impl Vmo {
                         .committed
                         .remove(&index)
                         .expect("surviving page disappeared");
-                    if let Some(previous) = state.committed.get_mut(&index) {
-                        *previous = page;
-                    } else {
-                        state.committed.insert_reserved(index, page);
-                    }
+                    drop(state.committed.insert_reserved(index, page));
                 }
             } else {
                 // 部分继承必须按窗口求交，并跳过已有私有页。死亡兄弟的映射已退休。
@@ -123,6 +119,10 @@ impl Drop for Vmo {
     /// 2. 这里先取走父引用；本对象是父对象的最后一个强引用时，把父对象移出 `Arc`、同样取走它的父引用后再析构它
     ///    （它的 `drop` 不再有父引用可递归），循环直到某个祖先仍被其他对象引用。析构深度因此恒定。
     fn drop(&mut self) {
+        if matches!(self.kind, Kind::Paged { pager: Some(_), .. }) {
+            super::reclaim::unregister(self.id);
+        }
+
         if let Kind::Contiguous(frames) = &self.kind {
             residency::remove_contiguous(frames.pages);
         }

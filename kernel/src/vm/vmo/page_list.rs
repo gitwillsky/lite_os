@@ -1,4 +1,4 @@
-//! VMO 的已提交页列表：按 16 页一块的稀疏数组，块再用有序表索引（Zircon `VmPageList` 的结构）。
+//! VMO 的已提交页列表：按 64 页一块的稀疏数组，块再用有序表索引（Zircon `VmPageList` 的结构）。
 //!
 //! 每页一个有序表节点（约 64 字节）对稠密的文件/堆区是纯开销，区间扫描还要逐节点追指针。
 //! 已提交页和补页请求分别使用同一分块索引；压缩页 owner 与 Arc 请求槽均为 8 字节，区间操作变成块内数组遍历。
@@ -9,17 +9,38 @@
 //! [`PageList::reserve_range`] 把区间内的块建好（可失败，改动前完成），再用 [`PageList::insert_reserved`]
 //! 无分配地放入。块在最后一槽移除时立即释放；仅准备与提交之间允许临时空块，放弃准备时清理。
 
+use alloc::{boxed::Box, sync::Arc};
 use fallible_tree::FallibleMap;
 
-use super::Page;
+mod aging;
+use aging::{ChunkAges, GenerationIndex};
 
-/// 一块覆盖的页数。16 页（64 KiB）既让稠密区间的元数据摊薄，也不会在稀疏访问时浪费过多。
-pub(super) const CHUNK_PAGES: usize = 16;
+use super::{Page, PageRequestCompletion};
+
+/// 一个 u64 位图覆盖的页块；把分代链表的固定开销分摊到 64 个槽。
+pub(super) const CHUNK_PAGES: usize = 64;
+
+/// 列表槽的回收身份。请求和匿名页没有分代成员资格；存储页只在干净且未固定时入队。
+pub(super) trait Slot {
+    fn reclaim_generation(&self) -> Option<u8>;
+}
+impl Slot for Page {
+    fn reclaim_generation(&self) -> Option<u8> {
+        self.is_reclaimable().then(|| self.generation())
+    }
+}
+impl Slot for Arc<PageRequestCompletion> {
+    fn reclaim_generation(&self) -> Option<u8> {
+        None
+    }
+}
 
 struct Chunk<T> {
     slots: [Option<T>; CHUNK_PAGES],
     // 已占用槽数；为零的块立即从索引中移除。
     used: u8,
+    // OWNER: 仅 pager 的已提交页块有分代成员位图/链表；请求、匿名和 bootfs 不分配它。
+    ages: Option<Box<ChunkAges>>,
 }
 
 impl<T> Chunk<T> {
@@ -34,31 +55,39 @@ impl<T> Chunk<T> {
             })
     }
 
-    fn empty() -> Self {
-        Self {
+    fn try_empty(tracked: bool) -> Result<Self, ()> {
+        Ok(Self {
             slots: [const { None }; CHUNK_PAGES],
             used: 0,
-        }
+            ages: if tracked {
+                Some(Box::try_new(ChunkAges::new()).map_err(|_| ())?)
+            } else {
+                None
+            },
+        })
     }
 }
 
 /// VMO 已提交页或在途请求的分块列表；两者使用相同的准备/提交契约。
-pub(super) struct PageList<T = Page> {
+pub(super) struct PageList<T: Slot = Page> {
     chunks: FallibleMap<usize, Chunk<T>>,
     pages: usize,
+    // OWNER: 分代队列唯一索引；槽与索引只在 PageList 修改事务内一起变更，不把可变槽借给调用者。
+    generations: Option<Box<GenerationIndex>>,
 }
 
-impl<T> Default for PageList<T> {
+impl<T: Slot> Default for PageList<T> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl<T> PageList<T> {
+impl<T: Slot> PageList<T> {
     pub(super) const fn new() -> Self {
         Self {
             chunks: FallibleMap::new(),
             pages: 0,
+            generations: None,
         }
     }
 
@@ -80,12 +109,28 @@ impl<T> PageList<T> {
             .as_ref()
     }
 
-    pub(super) fn get_mut(&mut self, index: &usize) -> Option<&mut T> {
-        self.chunks
-            .get_mut(&(index / CHUNK_PAGES))?
-            .slots
-            .get_mut(index % CHUNK_PAGES)?
-            .as_mut()
+    /// 修改槽且同步回收成员资格；闭包不能把可变槽借用带出事务，不允许绕过索引更新。
+    pub(super) fn with_mut<R>(
+        &mut self,
+        index: &usize,
+        update: impl FnOnce(&mut T) -> R,
+    ) -> Option<R> {
+        let tracked = self.generations.is_some();
+        let page =
+            self.chunks.get_mut(&(index / CHUNK_PAGES))?.slots[index % CHUNK_PAGES].as_mut()?;
+        let before = if tracked {
+            page.reclaim_generation()
+        } else {
+            None
+        };
+        let result = update(page);
+        let after = if tracked {
+            page.reclaim_generation()
+        } else {
+            None
+        };
+        self.refresh_generation(*index, before, after);
+        Some(result)
     }
 
     pub(super) fn contains_key(&self, index: &usize) -> bool {
@@ -135,15 +180,56 @@ impl<T> PageList<T> {
         self.ceiling(&0)
     }
 
-    /// 对全部已提交页调用 `visit(页号, 页)`。
-    pub(super) fn for_each_mut(&mut self, mut visit: impl FnMut(usize, &mut T)) {
-        self.chunks.for_each_mut(|&chunk, content| {
-            for (slot, page) in content.slots.iter_mut().enumerate() {
-                if let Some(page) = page {
-                    visit(chunk * CHUNK_PAGES + slot, page);
+    /// 有界区间修改；按块更新位图，仅成员资格变化的块需要改变代队列链接。
+    pub(super) fn for_each_range_mut(
+        &mut self,
+        range: core::ops::Range<usize>,
+        mut visit: impl FnMut(usize, &mut T),
+    ) {
+        let mut cursor = range.start / CHUNK_PAGES;
+        while let Some(key) = self.chunks.ceiling(&cursor).map(|(key, _)| *key) {
+            if key > range.end.saturating_sub(1) / CHUNK_PAGES || range.is_empty() {
+                break;
+            }
+            let changes = {
+                let chunk = self.chunks.get_mut(&key).expect("range chunk disappeared");
+                let before = chunk.ages.as_ref().map(|ages| ages.masks);
+                for (slot, page) in chunk.slots.iter_mut().enumerate() {
+                    let index = key * CHUNK_PAGES + slot;
+                    if range.contains(&index)
+                        && let Some(page) = page
+                    {
+                        visit(index, page);
+                    }
+                }
+                before.map(|before| {
+                    let mut after = [0u64; 8];
+                    for (slot, page) in chunk.slots.iter().enumerate() {
+                        if let Some(generation) = page.as_ref().and_then(Slot::reclaim_generation) {
+                            after[generation as usize] |= 1 << slot;
+                        }
+                    }
+                    chunk.ages.as_mut().expect("tracked chunk lost ages").masks = after;
+                    (before, after)
+                })
+            };
+            if let Some((before, after)) = changes {
+                for (generation, (before, after)) in before.into_iter().zip(after).enumerate() {
+                    if before != 0 && after == 0 {
+                        self.unlink_generation(key, generation);
+                    }
+                    if before == 0 && after != 0 {
+                        self.link_generation(key, generation);
+                    }
                 }
             }
-        });
+            cursor = key + 1;
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn for_each_mut(&mut self, visit: impl FnMut(usize, &mut T)) {
+        self.for_each_range_mut(0..usize::MAX, visit);
     }
 
     /// 为 `[first, first + count)` 建好块，使其中任意页之后都能被 [`Self::insert_reserved`] 无分配地放入。
@@ -214,7 +300,8 @@ impl<T> PageList<T> {
         if self.chunks.contains_key(&chunk) {
             return Ok(());
         }
-        let entry = FallibleMap::try_prepare(chunk, Chunk::empty()).map_err(|_| ())?;
+        let content = Chunk::try_empty(self.generations.is_some())?;
+        let entry = FallibleMap::try_prepare(chunk, content).map_err(|_| ())?;
         self.chunks.commit_vacant(entry);
         Ok(())
     }
@@ -233,26 +320,40 @@ impl<T> PageList<T> {
     /// # Panics
     /// 块不存在——调用者违反了“先预留再提交”的契约。
     pub(super) fn insert_reserved(&mut self, index: usize, page: T) -> Option<T> {
+        let tracked = self.generations.is_some();
+        let after = if tracked {
+            page.reclaim_generation()
+        } else {
+            None
+        };
         let chunk = self
             .chunks
             .get_mut(&(index / CHUNK_PAGES))
             .expect("page chunk was not reserved before the commit phase");
         let previous = chunk.slots[index % CHUNK_PAGES].replace(page);
+        let before = if tracked {
+            previous.as_ref().and_then(Slot::reclaim_generation)
+        } else {
+            None
+        };
         if previous.is_none() {
             chunk.used += 1;
             self.pages += 1;
         }
+        self.refresh_generation(index, before, after);
         previous
     }
 
-    /// 移除一页；块空了就释放块。
+    /// 移除一槽；先退出分代队列，再释放最后一个槽所在的块。
     pub(super) fn remove(&mut self, index: &usize) -> Option<T> {
         let key = index / CHUNK_PAGES;
         let chunk = self.chunks.get_mut(&key)?;
         let page = chunk.slots[index % CHUNK_PAGES].take()?;
         chunk.used -= 1;
+        let empty = chunk.used == 0;
         self.pages -= 1;
-        if chunk.used == 0 {
+        self.refresh_generation(*index, page.reclaim_generation(), None);
+        if empty {
             drop(self.chunks.remove(&key));
         }
         Some(page)

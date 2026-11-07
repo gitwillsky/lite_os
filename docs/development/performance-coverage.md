@@ -197,4 +197,5 @@ proc 每个实际 open 只格式化一次连续读取序列，offset 0 重新观
 块 metadata 从每槽两个 VMO 改为一张固定表，16 槽下分配页数从 32 页减为 1 页（不含 payload）；
 初始化预触及的只是一张 metadata 表，不预读设备输出缓冲。提交使用 cached DMA extent 的现有 static gate，
 completion gate 同时约束 volatile status read 与 decode 都在 used-length 检查之后。
-本阶段不声称已完成登记 VMO/FIFO/客户端直接 DMA，也不以 metadata 收益代替整条 I/O 链路验收。
+当前源码已接通登记 VMO、客户端区间直接 DMA 和批量 RPC，尚未完成专用 FIFO/共享环数据面；
+metadata 收益不代替整条 I/O 链路的运行验收，完成度由性能计划维护。

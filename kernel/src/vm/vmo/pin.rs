@@ -62,9 +62,9 @@ impl Vmo {
         for index in first..first + count {
             // 固定必须作用在本对象拥有的页上：写解析把祖先页复制到本对象。
             let ppn = owner.with_resolved(index, true, |page| {
-                if let Some(page) = owner.state.lock().committed.get_mut(&index) {
+                let _ = owner.state.lock().committed.with_mut(&index, |page| {
                     page.set_pins(page.pins().checked_add(1).expect("VMO pin count overflow"));
-                }
+                });
                 Ok(page.ppn)
             });
             match ppn {
@@ -87,10 +87,13 @@ impl Vmo {
 
     /// 调用者持有树锁。
     fn unpin(&self, first: usize, count: usize) {
-        self.state.lock().committed.for_each_mut(|index, page| {
-            if (first..first + count).contains(&index) && page.pins() != 0 {
-                page.set_pins(page.pins() - 1);
-            }
-        });
+        self.state
+            .lock()
+            .committed
+            .for_each_range_mut(first..first + count, |_, page| {
+                if page.pins() != 0 {
+                    page.set_pins(page.pins() - 1);
+                }
+            });
     }
 }

@@ -1862,7 +1862,6 @@ kernel/src/vm/vmo.rs :: pub (crate) enum CachePolicy
 kernel/src/vm/vmo.rs :: pub (crate) enum ChildKind
 kernel/src/vm/vmo.rs :: pub (crate) enum FaultSource
 kernel/src/vm/vmo.rs :: pub (crate) enum RangeOp
-kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn create_child (self : & Arc < Self > , offset : u64 , size : u64 , kind : ChildKind ,) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn id (& self) -> u64
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn op_range (self : & Arc < Self > , op : RangeOp , offset : u64 , length : u64 ,) -> Result < () , VmError >
 kernel/src/vm/vmo.rs :: pub (crate) impl Vmo :: fn read (self : & Arc < Self > , offset : u64 , output : & mut [u8]) -> Result < () , VmError >
@@ -1892,6 +1891,7 @@ kernel/src/vm/vmo/attribution.rs :: pub (in crate :: vm) impl Vmo :: fn resident
 kernel/src/vm/vmo/attribution.rs :: pub (in crate :: vm) impl Vmo :: fn tree_identity (& self) -> usize
 kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create (size : u64 , options : VmoOptions) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_bootfs (size : u64) -> Result < Arc < Self > , VmError >
+kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_child (self : & Arc < Self > , offset : u64 , size : u64 , kind : ChildKind ,) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_contiguous (size : u64) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_paged (size : u64 , options : VmoOptions , pager : PagerBinding , anonymous : bool ,) -> Result < Arc < Self > , VmError >
 kernel/src/vm/vmo/creation.rs :: pub (crate) impl Vmo :: fn create_physical (physical : u64 , size : u64 , cache : CachePolicy ,) -> Result < Arc < Self > , VmError >
@@ -1902,15 +1902,15 @@ kernel/src/vm/vmo/fault_around.rs :: pub (super) impl Vmo :: fn collect_resident
 kernel/src/vm/vmo/mapping.rs :: pub (in crate :: vm) impl Vmo :: fn register_mapping (& self , mapping : & Arc < Mapping >) -> Result < () , VmError >
 kernel/src/vm/vmo/mapping.rs :: pub (super) impl Vmo :: fn harvest_accessed (& self , samples : & mut [AccessSample]) -> Result < () , VmError >
 kernel/src/vm/vmo/mapping.rs :: pub (super) impl Vmo :: fn zap (& self , pages : Range < usize > , mode : ZapMode) -> Result < () , VmError >
-kernel/src/vm/vmo/page_list.rs :: pub (super) const CHUNK_PAGES : usize = 16
+kernel/src/vm/vmo/page_list.rs :: pub (super) const CHUNK_PAGES : usize = 64
 kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: const fn new () -> Self
 kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn ceiling (& self , index : & usize) -> Option < (usize , & T) >
 kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn contains_key (& self , index : & usize) -> bool
 kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn discard_empty_chunks (& mut self)
 kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn first_key_value (& self) -> Option < (usize , & T) >
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn for_each_mut (& mut self , mut visit : impl FnMut (usize , & mut T))
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn for_each_mut (& mut self , visit : impl FnMut (usize , & mut T))
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn for_each_range_mut (& mut self , range : core :: ops :: Range < usize > , mut visit : impl FnMut (usize , & mut T) ,)
 kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn get (& self , index : & usize) -> Option < & T >
-kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn get_mut (& mut self , index : & usize) -> Option < & mut T >
 kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn insert_reserved (& mut self , index : usize , page : T) -> Option < T >
 kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn is_empty (& self) -> bool
 kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn iter_from (& self , start : & usize) -> impl Iterator < Item = (usize , & T) >
@@ -1920,7 +1920,20 @@ kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn reserve_
 kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn reserve_range (& mut self , first : usize , count : usize) -> Result < () , () >
 kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn try_insert (& mut self , index : usize , page : T) -> Result < Option < T > , () >
 kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn values (& self) -> impl Iterator < Item = & T >
-kernel/src/vm/vmo/page_list.rs :: pub (super) struct PageList < T = Page >
+kernel/src/vm/vmo/page_list.rs :: pub (super) impl PageList < T > :: fn with_mut < R > (& mut self , index : & usize , update : impl FnOnce (& mut T) -> R ,) -> Option < R >
+kernel/src/vm/vmo/page_list.rs :: pub (super) struct PageList < T : Slot = Page >
+kernel/src/vm/vmo/page_list.rs :: pub (super) trait Slot
+kernel/src/vm/vmo/page_list.rs :: trait Slot :: fn reclaim_generation (& self) -> Option < u8 >
+kernel/src/vm/vmo/page_list/aging.rs :: pub (in crate :: vm :: vmo) impl PageList < Page > :: fn try_reclaimable () -> Result < Self , () >
+kernel/src/vm/vmo/page_list/aging.rs :: pub (in crate :: vm :: vmo) impl PageList < T > :: fn generation_empty (& self , generation : u8) -> bool
+kernel/src/vm/vmo/page_list/aging.rs :: pub (in crate :: vm :: vmo) impl PageList < T > :: fn visit_generation (& mut self , generation : u8 , mut visit : impl FnMut (usize , & T) ,) -> usize
+kernel/src/vm/vmo/page_list/aging.rs :: pub (super) ChunkAges :: masks : [u64 ; 8]
+kernel/src/vm/vmo/page_list/aging.rs :: pub (super) impl ChunkAges :: fn new () -> Self
+kernel/src/vm/vmo/page_list/aging.rs :: pub (super) impl PageList < T > :: fn link_generation (& mut self , key : usize , generation : usize)
+kernel/src/vm/vmo/page_list/aging.rs :: pub (super) impl PageList < T > :: fn refresh_generation (& mut self , index : usize , before : Option < u8 > , after : Option < u8 > ,)
+kernel/src/vm/vmo/page_list/aging.rs :: pub (super) impl PageList < T > :: fn unlink_generation (& mut self , key : usize , generation : usize)
+kernel/src/vm/vmo/page_list/aging.rs :: pub (super) struct ChunkAges
+kernel/src/vm/vmo/page_list/aging.rs :: pub (super) struct GenerationIndex
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn begin_writeback (& self , offset : u64 , length : u64) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn detach_pager (& self) -> Result < () , VmError >
 kernel/src/vm/vmo/pager.rs :: pub (crate) impl Vmo :: fn end_writeback (& self , offset : u64 , length : u64) -> Result < () , VmError >
@@ -1942,9 +1955,13 @@ kernel/src/vm/vmo/reclaim.rs :: pub (in crate :: vm) AccessSample :: index : usi
 kernel/src/vm/vmo/reclaim.rs :: pub (in crate :: vm) AccessSample :: physical_page : usize
 kernel/src/vm/vmo/reclaim.rs :: pub (in crate :: vm) AccessSample :: referenced : bool
 kernel/src/vm/vmo/reclaim.rs :: pub (in crate :: vm) struct AccessSample
+kernel/src/vm/vmo/reclaim.rs :: pub (super) Reclaimed :: evicted : usize
+kernel/src/vm/vmo/reclaim.rs :: pub (super) Reclaimed :: examined : usize
 kernel/src/vm/vmo/reclaim.rs :: pub (super) fn current_generation () -> u8
-kernel/src/vm/vmo/reclaim.rs :: pub (super) impl Vmo :: fn evict_clean (& self , budget : usize) -> usize
+kernel/src/vm/vmo/reclaim.rs :: pub (super) fn unregister (id : u64)
+kernel/src/vm/vmo/reclaim.rs :: pub (super) impl Vmo :: fn evict_generation (& self , generation : u8 , current : u8) -> Reclaimed
 kernel/src/vm/vmo/reclaim.rs :: pub (super) impl Vmo :: fn register_reclaimable (self : & Arc < Self >) -> Result < () , VmError >
+kernel/src/vm/vmo/reclaim.rs :: pub (super) struct Reclaimed
 kernel/src/vm/vmo/release.rs :: pub (super) impl Vmo :: fn collapse_hidden_parents (& self)
 kernel/src/vm/vmo/residency.rs :: enum Cleanliness :: # [doc = " 内容与 pager 的存储一致，可以淘汰。"] Clean
 kernel/src/vm/vmo/residency.rs :: enum Cleanliness :: # [doc = " 回写已开始（映射已写保护）但存储尚未确认；之后的写入回到 `Dirty`，不能淘汰。"] AwaitingClean
@@ -1971,12 +1988,13 @@ kernel/src/vm/vmo/residency.rs :: pub (super) fn remove_contiguous (pages : usiz
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn bytes (& self) -> & [u8]
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn cleanliness (& self) -> Cleanliness
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn content (& self) -> PageContent
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn generation (& self) -> u8
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn is_reclaimable (& self) -> bool
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn new (frame : FrameTracker , content : PageContent) -> Self
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn note_access (& mut self)
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn pins (& self) -> u32
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn ppn (& self) -> PhysicalPageNumber
-kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn sampled_age (& mut self , generation : u8 , referenced : bool) -> u8
+kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn promote_access (& mut self , generation : u8)
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn set_cleanliness (& mut self , cleanliness : Cleanliness)
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn set_pins (& mut self , pins : u32)
 kernel/src/vm/vmo/residency.rs :: pub (super) impl Page :: fn supply_to_pager (& mut self , content : PageContent)

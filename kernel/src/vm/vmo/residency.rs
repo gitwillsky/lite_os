@@ -136,25 +136,17 @@ impl Page {
         ) {
             return;
         }
-        self.set_field(
-            Self::GENERATION_SHIFT,
-            7,
-            u64::from(super::reclaim::current_generation()),
-        );
+        self.promote_access(super::reclaim::current_generation());
     }
 
-    /// 采样后返回相对代龄（0 最新、3 最老）；旧代压到 oldest，避免环形计数失去顺序。
-    pub(super) fn sampled_age(&mut self, generation: u8, referenced: bool) -> u8 {
-        let previous = ((self.0.get() >> Self::GENERATION_SHIFT) & 7) as u8;
-        let age = if referenced {
-            0
-        } else {
-            generation.wrapping_sub(previous) & 7
-        }
-        .min(3);
-        let epoch = generation.wrapping_sub(age) & 7;
-        self.set_field(Self::GENERATION_SHIFT, 7, u64::from(epoch));
-        age
+    /// 晋升到调用者已固定的活动代；树锁/扫描协调器保证它不会在事务内被绕回复用。
+    pub(super) fn promote_access(&mut self, generation: u8) {
+        assert!(generation < 8, "generation exceeds compact page slot");
+        self.set_field(Self::GENERATION_SHIFT, 7, u64::from(generation));
+    }
+
+    pub(super) fn generation(&self) -> u8 {
+        ((self.0.get() >> Self::GENERATION_SHIFT) & 7) as u8
     }
 
     pub(super) fn new(frame: FrameTracker, content: PageContent) -> Self {
@@ -229,6 +221,10 @@ impl Page {
         assert!(u64::from(pins) <= Self::PINS_MASK, "VMO pin count overflow");
         let was_reclaimable = self.is_reclaimable();
         self.set_field(Self::PINS_SHIFT, Self::PINS_MASK, u64::from(pins));
+        // 固定期间不占代队列；解除最后一个 pin 时重入当前代，旧代可能已经排空并绕回。
+        if !was_reclaimable && self.is_reclaimable() {
+            self.note_access();
+        }
         self.update_reclaimable(was_reclaimable);
     }
 

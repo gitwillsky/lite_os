@@ -430,7 +430,15 @@ fn page_list_keeps_order_counts_and_frees_empty_chunks() {
     use super::page_list::{CHUNK_PAGES, PageList};
     let mut list = PageList::new();
     // 稀疏（跨块）与稠密（同块）混合，乱序插入。
-    let indexes = [0, 3, 15, 16, 17, 100, 7 * CHUNK_PAGES + 2];
+    let indexes = [
+        0,
+        3,
+        CHUNK_PAGES - 1,
+        CHUNK_PAGES,
+        CHUNK_PAGES + 1,
+        4 * CHUNK_PAGES,
+        7 * CHUNK_PAGES + 2,
+    ];
     for &index in indexes.iter().rev() {
         assert!(list.try_insert(index, page(index as u8)).unwrap().is_none());
     }
@@ -442,46 +450,101 @@ fn page_list_keeps_order_counts_and_frees_empty_chunks() {
         indexes
     );
     assert_eq!(
-        list.iter_from(&16)
+        list.iter_from(&CHUNK_PAGES)
             .map(|(index, _)| index)
             .collect::<Vec<_>>(),
         indexes[3..]
     );
     // 预留与提交之间会有空块；不能让 ceiling 在空块处停止，漏掉后续驻留页/请求。
-    list.reserve_range(32, CHUNK_PAGES).unwrap();
-    assert_eq!(list.ceiling(&18).map(|(index, _)| index), Some(100));
-    assert_eq!(list.ceiling(&4).map(|(index, _)| index), Some(15));
+    list.reserve_range(2 * CHUNK_PAGES, CHUNK_PAGES).unwrap();
     assert_eq!(
-        list.ceiling(&101).map(|(index, _)| index),
+        list.ceiling(&(CHUNK_PAGES + 2)).map(|(index, _)| index),
+        Some(4 * CHUNK_PAGES)
+    );
+    assert_eq!(
+        list.ceiling(&4).map(|(index, _)| index),
+        Some(CHUNK_PAGES - 1)
+    );
+    assert_eq!(
+        list.ceiling(&(4 * CHUNK_PAGES + 1)).map(|(index, _)| index),
         Some(7 * CHUNK_PAGES + 2)
     );
     assert!(list.ceiling(&1000).is_none());
     assert_eq!(list.first_key_value().map(|(index, _)| index), Some(0));
-    assert_eq!(tag(list.get(&17).unwrap()), 17);
-    // 替换返回旧页且不改变计数。
-    let old = list.try_insert(17, page(99)).unwrap().unwrap();
     assert_eq!(
-        (tag(&old), tag(list.get(&17).unwrap()), list.len()),
-        (17, 99, indexes.len())
+        tag(list.get(&(CHUNK_PAGES + 1)).unwrap()),
+        (CHUNK_PAGES + 1) as u8
+    );
+    // 替换返回旧页且不改变计数。
+    let old = list.try_insert(CHUNK_PAGES + 1, page(99)).unwrap().unwrap();
+    assert_eq!(
+        (
+            tag(&old),
+            tag(list.get(&(CHUNK_PAGES + 1)).unwrap()),
+            list.len()
+        ),
+        ((CHUNK_PAGES + 1) as u8, 99, indexes.len())
     );
     // 移除最后一页后块被释放：同块再插入需要重新分配（用 insert_reserved 会 panic，故走 try_insert）。
-    assert_eq!(tag(&list.remove(&100).unwrap()), 100);
-    assert!(list.remove(&100).is_none());
-    assert!(!list.contains_key(&100));
+    assert_eq!(
+        tag(&list.remove(&(4 * CHUNK_PAGES)).unwrap()),
+        (4 * CHUNK_PAGES) as u8
+    );
+    assert!(list.remove(&(4 * CHUNK_PAGES)).is_none());
+    assert!(!list.contains_key(&(4 * CHUNK_PAGES)));
     let mut seen = Vec::new();
     list.for_each_mut(|index, _| seen.push(index));
-    assert_eq!(seen, [0, 3, 15, 16, 17, 7 * CHUNK_PAGES + 2]);
+    assert_eq!(
+        seen,
+        [
+            0,
+            3,
+            CHUNK_PAGES - 1,
+            CHUNK_PAGES,
+            CHUNK_PAGES + 1,
+            7 * CHUNK_PAGES + 2
+        ]
+    );
     for index in seen {
         drop(list.remove(&index));
     }
     assert!(list.is_empty() && list.first_key_value().is_none());
+
+    // 复用页列表用例覆盖新索引的真实风险：小热点块不能让下一块尾部永远漏采样。
+    let mut tracked = PageList::try_reclaimable().unwrap();
+    for index in core::iter::once(0).chain(CHUNK_PAGES..2 * CHUNK_PAGES) {
+        let mut member = page(index as u8);
+        member.supply_to_pager(PageContent::Pager);
+        member.promote_access(0);
+        tracked.try_insert(index, member).unwrap();
+    }
+    let mut sampled = Vec::new();
+    tracked.visit_generation(0, |index, _| sampled.push(index));
+    assert_eq!(sampled, [0]);
+    sampled.clear();
+    tracked.visit_generation(0, |index, _| sampled.push(index));
+    assert_eq!(sampled, (CHUNK_PAGES..2 * CHUNK_PAGES).collect::<Vec<_>>());
+    // 修改入口必须同步迁移代号、脏页和 pin 的成员资格，且末页删除不能留下悬空链接。
+    tracked.with_mut(&0, |member| member.promote_access(7));
+    assert!(!tracked.generation_empty(7));
+    tracked.with_mut(&0, |member| member.set_cleanliness(Cleanliness::Dirty));
+    assert!(tracked.generation_empty(7));
+    tracked.with_mut(&0, |member| member.set_cleanliness(Cleanliness::Clean));
+    let current = super::reclaim::current_generation();
+    tracked.with_mut(&0, |member| member.set_pins(1));
+    tracked.with_mut(&0, |member| member.promote_access(7));
+    tracked.with_mut(&0, |member| member.set_pins(0));
+    assert_eq!(tracked.get(&0).unwrap().generation(), current);
+    assert!(tracked.generation_empty(7));
+    drop(tracked.remove(&0));
+    assert_eq!(tracked.len(), CHUNK_PAGES);
 }
 
 #[test]
 fn page_list_reservation_makes_the_commit_phase_allocation_free() {
     use super::page_list::{CHUNK_PAGES, PageList};
     let mut source = PageList::new();
-    for index in [20, 21, 40, 41] {
+    for index in [20, 21, CHUNK_PAGES + 24, CHUNK_PAGES + 25] {
         source.try_insert(index, page(index as u8)).unwrap();
     }
     // 目标只为真实存在的页建块（平移 -20 后落在块 0 与块 1），而不是为整个窗口建块。
@@ -496,9 +559,12 @@ fn page_list_reservation_makes_the_commit_phase_allocation_free() {
             .iter_from(&0)
             .map(|(index, _)| index)
             .collect::<Vec<_>>(),
-        [0, 1, 20, 21]
+        [0, 1, CHUNK_PAGES + 4, CHUNK_PAGES + 5]
     );
-    assert_eq!(target.get(&(CHUNK_PAGES + 4)).map(tag), Some(40));
+    assert_eq!(
+        target.get(&(CHUNK_PAGES + 4)).map(tag),
+        Some((CHUNK_PAGES + 24) as u8)
+    );
     // 窗口之外的页不建块。
     let mut narrow = PageList::new();
     narrow.reserve_for_shifted(&target, 0, 2).unwrap();
@@ -750,7 +816,12 @@ fn eviction_takes_only_clean_pages_and_waits_for_writeback_end() {
     file.write(2 * page, &[3]).unwrap();
     file.begin_writeback(2 * page, page).unwrap();
 
-    assert_eq!(file.evict_clean(8), 1, "only the clean page 0 is evictable");
+    let generation = super::reclaim::current_generation();
+    assert_eq!(
+        file.evict_generation(generation, generation).evicted,
+        1,
+        "only the clean page 0 is evictable"
+    );
     assert_eq!(file.committed_bytes().unwrap(), 2 * page);
 
     // slice 的 DMA 固定必须落到 backing owner；完成回写也不能把仍固定的页算作可淘汰。
@@ -758,14 +829,14 @@ fn eviction_takes_only_clean_pages_and_waits_for_writeback_end() {
     let pinned = slice.pin(0, page).unwrap();
     file.begin_writeback(2 * page, page).unwrap();
     file.end_writeback(2 * page, page).unwrap();
-    assert_eq!(file.evict_clean(8), 0);
+    assert_eq!(file.evict_generation(generation, generation).evicted, 0);
     assert_eq!(
         file.op_range(RangeOp::Decommit, 2 * page, page),
         Err(VmError::BadState)
     );
     drop(pinned);
     assert_eq!(
-        file.evict_clean(8),
+        file.evict_generation(generation, generation).evicted,
         1,
         "page 2 becomes evictable after writeback end"
     );
